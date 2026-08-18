@@ -429,6 +429,7 @@ async function pageEmpresas(){
   const { items } = await api('/empresas');
   const podePostar = can('empresas','postar');
   const podeEditar = can('empresas','editar');
+  const podeExcluir = STATE.user.perfil==='Administrador'; // exclusão é sempre restrita a Administrador (apaga em cascata)
   main().innerHTML = `
     <h1>Empresas</h1>
     <p class="subtitle">Clientes do escritório</p>
@@ -451,7 +452,10 @@ async function pageEmpresas(){
       <td><span class="tag muted">${e.origem==='dominio'?'Domínio Web':'Manual'}</span></td>
       <td><span class="tag ${e.ativo?'ok':'bad'}">${e.ativo?'Ativo':'Inativo'}</span></td>
       <td><span class="tag ${e.visivelRelatorios?'ok':'muted'}">${e.visivelRelatorios?'Sim':'Não'}</span></td>
-      <td style="text-align:right;">${podeEditar?`<button class="btn small" data-act="edit">Editar</button>`:''}</td>
+      <td style="text-align:right; display:flex; gap:6px; justify-content:flex-end;">
+        ${podeEditar?`<button class="btn small" data-act="edit">Editar</button>`:''}
+        ${podeExcluir?`<button class="btn small danger" data-act="excluir">Excluir</button>`:''}
+      </td>
     </tr>
   `).join('') : `<tr><td colspan="6"><div class="empty-state">Nenhuma empresa cadastrada.</div></td></tr>`;
 
@@ -460,6 +464,13 @@ async function pageEmpresas(){
   if(podeEditar) tbody.querySelectorAll('[data-act="edit"]').forEach(b=>b.addEventListener('click', e=>{
     const id=Number(e.target.closest('tr').dataset.id);
     empresaModal(items.find(x=>x.id===id));
+  }));
+  if(podeExcluir) tbody.querySelectorAll('[data-act="excluir"]').forEach(b=>b.addEventListener('click', async e=>{
+    const id = Number(e.target.closest('tr').dataset.id);
+    const emp = items.find(x=>x.id===id);
+    if(!confirmar(`Excluir a empresa "${emp.nome}"? Isso apaga também usuários, solicitações, anexos e financeiro dessa empresa. Não dá pra desfazer.`)) return;
+    try{ await api('/empresas/'+id, { method:'DELETE' }); toast('Empresa excluída.','ok'); pageEmpresas(); }
+    catch(err){ toast(err.message,'err'); }
   }));
 }
 function empresaModal(e){
@@ -642,6 +653,7 @@ function modeloModal(t){
 
 async function renderAtribuicoes(){
   const podePostar = can('solicitacoes','postar');
+  const podeEditar = can('solicitacoes','editar');
   const [{ items: atribs }, { items: empresas }, { items: templates }] = await Promise.all([
     api('/checklist/atribuicoes'), api('/empresas'), api('/checklist/templates'),
   ]);
@@ -660,13 +672,24 @@ async function renderAtribuicoes(){
       <td>${esc(a.empresaNome)}</td>
       <td>${esc(a.templateNome)}</td>
       <td>${({mensal:'Mensal',anual:'Anual',avulso:'Avulso'})[a.periodicidade]||a.periodicidade}</td>
-      <td style="text-align:right;"><button class="btn small" data-act="abrir">Abrir grade</button></td>
+      <td style="text-align:right; display:flex; gap:6px; justify-content:flex-end;">
+        <button class="btn small" data-act="abrir">Abrir grade</button>
+        ${podeEditar? `<button class="btn small danger" data-act="excluir-atrib">Excluir</button>`:''}
+      </td>
     </tr>
   `).join('') : `<tr><td colspan="4"><div class="empty-state">Nenhuma solicitação atribuída ainda.</div></td></tr>`;
   if(podePostar) document.getElementById('btnNovaAtrib').addEventListener('click', ()=>novaAtribModal(empresas, templates));
   box.querySelectorAll('[data-act="abrir"]').forEach(b=>b.addEventListener('click', e=>{
     const id=Number(e.target.closest('tr').dataset.id);
     abrirGrade(id, false);
+  }));
+  box.querySelectorAll('[data-act="excluir-atrib"]').forEach(b=>b.addEventListener('click', async e=>{
+    const tr = e.target.closest('tr');
+    const id = Number(tr.dataset.id);
+    const a = atribs.find(x=>x.id===id);
+    if(!confirmar(`Excluir "${a.templateNome}" de ${a.empresaNome}? Isso apaga também todos os anexos já enviados para essa solicitação. Não dá pra desfazer.`)) return;
+    try{ await api('/checklist/atribuicoes/'+id, { method:'DELETE' }); toast('Excluído.','ok'); renderAtribuicoes(); }
+    catch(err){ toast(err.message,'err'); }
   }));
 }
 function novaAtribModal(empresas, templates){
