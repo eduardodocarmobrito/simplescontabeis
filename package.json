@@ -1,0 +1,37 @@
+{
+  "name": "simplescontabeis",
+  "version": "1.0.0",
+  "description": "Portal do escritório Simples Contábeis: solicitações de documentos por cliente, financeiro, relatórios e integração com Domínio Web.",
+  "main": "index.js",
+  "scripts": {
+    "dev": "tsx src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dominio-agent:dev": "tsx src/dominio-agent.ts",
+    "dominio-agent": "node dist/dominio-agent.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "dependencies": {
+    "cookie-parser": "^1.4.7",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.6.2",
+    "multer": "^2.0.1",
+    "nodemailer": "^7.0.3"
+  },
+  "devDependencies": {
+    "@types/cookie-parser": "^1.4.10",
+    "@types/express": "^5.0.6",
+    "@types/multer": "^1.4.12",
+    "@types/node": "^22.10.0",
+    "@types/nodemailer": "^6.4.17",
+    "tsx": "^4.23.12",
+    "typescript": "^5.7.2"
+  }
+}
