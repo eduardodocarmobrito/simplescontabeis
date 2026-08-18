@@ -23,6 +23,14 @@ apagado, só marcado como `substituido`, mantendo o histórico.
 Qualquer outra tela nova que eu pedir para travar depois de salvo tem que ser um pedido explícito
 meu, do mesmo jeito que foi com os anexos — não vira padrão sozinho.
 
+**Segunda exceção (2026-08-18): documentos de Envio de Documentos não travam.** Ali é o
+escritório que posta pro cliente (`envio_documentos`), não o cliente que posta pro escritório —
+então não existe o risco de "cliente altera o que já mandou" que justificava a trava em
+Solicitações. O administrador pode substituir ou excluir um documento enviado a qualquer momento
+(`DELETE /api/envio/documentos/:id`, sem confirmação de "reabrir"). O único campo que tem edição
+específica ali é o `vencimento` (`PUT /api/envio/documentos/:id/vencimento`), porque é detectado
+automaticamente e pode vir errado.
+
 ## O que já segue a regra (referência rápida)
 
 Todas essas telas têm edição via `PUT`, sem trava:
@@ -57,3 +65,20 @@ campo novo de "escolher uma empresa/usuário/item numa lista" que eu pedir depoi
 mesmo componente por padrão, mesmo que eu não peça a busca explicitamente de novo — só usar um
 `<select>` simples se a lista for claramente curta e fixa (ex.: os 3-4 perfis de usuário, os tipos
 de arquivo aceitos).
+
+# Cuidado técnico: nunca disparar duas funções de render assíncronas em sequência sem esperar
+
+Achado em 2026-08-18, testando o fluxo de "criar atribuição → abrir a grade direto". Um bug real
+existia (e foi corrigido) tanto em `novaAtribModal` (Solicitações) quanto em `novaEnvioAtribModal`
+(Envio): depois de criar o registro, o código chamava `renderAtribuicoes()` (ou equivalente) e, na
+sequência, `abrirGrade(...)` — as duas são `async` e ambas fazem `main().innerHTML = ...` depois de
+esperar suas próprias chamadas de API. Como não há `await` entre elas, as duas rodam em paralelo e
+brigam pelo mesmo container: quem terminar por último "vence", e a outra segue tentando mexer em
+elementos que não existem mais no DOM (`Cannot set properties of null`), quebrando a tela sem
+aviso nenhum pro usuário.
+
+**Regra:** ao navegar pra uma tela nova depois de uma ação (criar, salvar, etc.), chamar só a
+função de destino — nunca uma função "de lista" seguida de uma função "de detalhe" sem `await`
+entre elas. Se a função de lista precisa rodar de novo depois, ela roda sozinha quando o usuário
+voltar (é exatamente pra isso que existe o botão "Voltar" chamando a página inteira de novo, não
+só a sub-função de render).

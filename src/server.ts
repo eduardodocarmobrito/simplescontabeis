@@ -141,6 +141,57 @@ sqlite.exec(`
     resolvido INTEGER NOT NULL DEFAULT 0
   );
 
+  -- ---- Envio de Documentos (sentido contrário de Solicitações: o escritório posta e o cliente recebe) ----
+  CREATE TABLE IF NOT EXISTS envio_templates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    nome TEXT NOT NULL, -- "DARF PIS", "FGTS", "Retenções de Notas Fiscais"...
+    descricao TEXT,
+    periodicidade TEXT NOT NULL DEFAULT 'mensal', -- 'mensal' | 'anual' | 'avulso'
+    accept_json TEXT NOT NULL DEFAULT '["pdf"]',
+    ativo INTEGER NOT NULL DEFAULT 1,
+    created_by INTEGER,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS envio_atribuicoes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    template_id INTEGER NOT NULL REFERENCES envio_templates(id) ON DELETE CASCADE,
+    empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+    ativo INTEGER NOT NULL DEFAULT 1,
+    created_by INTEGER,
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(template_id, empresa_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS envio_periodos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    atribuicao_id INTEGER NOT NULL REFERENCES envio_atribuicoes(id) ON DELETE CASCADE,
+    ano INTEGER NOT NULL,
+    mes INTEGER,
+    rotulo TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(atribuicao_id, ano, mes, rotulo)
+  );
+
+  -- Um documento por período (a guia em si) — sem trava: o administrador pode substituir/excluir
+  -- se anexou o arquivo errado (quem precisa ficar travado é o anexo que o CLIENTE manda, não o
+  -- que o escritório envia — ver memory.md).
+  CREATE TABLE IF NOT EXISTS envio_documentos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    periodo_id INTEGER NOT NULL REFERENCES envio_periodos(id) ON DELETE CASCADE,
+    file_name TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    mime TEXT,
+    size_bytes INTEGER,
+    vencimento TEXT, -- 'YYYY-MM-DD', detectado automaticamente do conteúdo do arquivo (editável)
+    vencimento_origem TEXT, -- 'automatico' | 'manual'
+    enviado_por INTEGER REFERENCES app_users(id),
+    enviado_em TEXT DEFAULT (datetime('now')),
+    email_enviado INTEGER NOT NULL DEFAULT 0,
+    email_erro TEXT,
+    UNIQUE(periodo_id)
+  );
+
   -- ---- Financeiro (honorários) ----
   CREATE TABLE IF NOT EXISTS honorarios (
     empresa_id INTEGER PRIMARY KEY REFERENCES empresas(id) ON DELETE CASCADE,
@@ -271,10 +322,11 @@ sqlite.exec(`
 
 sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_checklist_periodos_atrib ON checklist_periodos(atribuicao_id);`);
 sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_checklist_uploads_periodo ON checklist_uploads(periodo_id, item_chave);`);
+sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_envio_periodos_atrib ON envio_periodos(atribuicao_id);`);
 sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_honorarios_lanc_competencia ON honorarios_lancamentos(competencia);`);
 sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_dominio_dados_empresa ON dominio_dados(empresa_id, tipo, competencia);`);
 
-const MODULOS = ["dashboard", "empresas", "solicitacoes", "financeiro", "relatorios", "usuarios", "configuracoes"] as const;
+const MODULOS = ["dashboard", "empresas", "solicitacoes", "envio", "financeiro", "relatorios", "usuarios", "configuracoes"] as const;
 type Modulo = (typeof MODULOS)[number];
 
 // ========================= LOGIN (senha com hash + sessão via cookie) =========================
@@ -392,6 +444,31 @@ function empresaTemAnexos(empresaId: number): boolean {
          SELECT 1 FROM checklist_uploads u
          JOIN checklist_periodos p ON p.id = u.periodo_id
          JOIN checklist_atribuicoes a ON a.id = p.atribuicao_id
+         WHERE a.empresa_id = ?
+       ) as tem`
+    )
+    .get(empresaId) as any;
+  if (row.tem) return true;
+  return empresaTemDocumentosEnviados(empresaId);
+}
+function envioAtribuicaoTemDocumentos(atribuicaoId: number): boolean {
+  const row = sqlite
+    .prepare(
+      `SELECT EXISTS(
+         SELECT 1 FROM envio_documentos d JOIN envio_periodos p ON p.id = d.periodo_id
+         WHERE p.atribuicao_id = ?
+       ) as tem`
+    )
+    .get(atribuicaoId) as any;
+  return !!row.tem;
+}
+function empresaTemDocumentosEnviados(empresaId: number): boolean {
+  const row = sqlite
+    .prepare(
+      `SELECT EXISTS(
+         SELECT 1 FROM envio_documentos d
+         JOIN envio_periodos p ON p.id = d.periodo_id
+         JOIN envio_atribuicoes a ON a.id = p.atribuicao_id
          WHERE a.empresa_id = ?
        ) as tem`
     )
@@ -1154,6 +1231,322 @@ app.get("/api/checklist/uploads/:uploadId/download", blockCliente, requirePermis
   res.download(uploadRow.file_path, uploadRow.file_name);
 });
 
+// ---------- Envio de Documentos (o escritório posta e o cliente recebe — sentido contrário de Solicitações) ----------
+app.get("/api/envio/templates", blockCliente, requirePermissao("envio", "visualizar"), (_req, res) => {
+  const rows = sqlite.prepare(`SELECT * FROM envio_templates ORDER BY nome`).all() as any[];
+  res.json({ items: rows.map((r) => ({ ...r, accept: JSON.parse(r.accept_json) })) });
+});
+app.post("/api/envio/templates", blockCliente, requirePermissao("envio", "postar"), (req, res) => {
+  const user = (req as any).user;
+  const { nome, descricao, periodicidade, accept } = req.body || {};
+  if (!nome) return res.status(400).json({ error: "Informe o nome (ex.: \"DARF PIS\")." });
+  const acceptFinal = Array.isArray(accept) && accept.length ? accept : ["pdf"];
+  const info = sqlite
+    .prepare(`INSERT INTO envio_templates (nome, descricao, periodicidade, accept_json, created_by) VALUES (?, ?, ?, ?, ?)`)
+    .run(nome, descricao || null, periodicidade || "mensal", JSON.stringify(acceptFinal), user.id);
+  res.json({ id: Number(info.lastInsertRowid) });
+});
+app.put("/api/envio/templates/:id", blockCliente, requirePermissao("envio", "editar"), (req, res) => {
+  const id = Number(req.params.id);
+  const existing = sqlite.prepare(`SELECT * FROM envio_templates WHERE id = ?`).get(id) as any;
+  if (!existing) return res.status(404).json({ error: "Modelo não encontrado." });
+  const { nome, descricao, accept, ativo } = req.body || {};
+  sqlite
+    .prepare(`UPDATE envio_templates SET nome=?, descricao=?, accept_json=?, ativo=? WHERE id=?`)
+    .run(
+      nome ?? existing.nome,
+      descricao !== undefined ? descricao : existing.descricao,
+      Array.isArray(accept) && accept.length ? JSON.stringify(accept) : existing.accept_json,
+      ativo === undefined ? existing.ativo : ativo ? 1 : 0,
+      id
+    );
+  res.json({ ok: true });
+});
+app.delete("/api/envio/templates/:id", requireAdmin, (req, res) => {
+  sqlite.prepare(`DELETE FROM envio_templates WHERE id = ?`).run(Number(req.params.id));
+  res.json({ ok: true });
+});
+
+app.get("/api/envio/atribuicoes", blockCliente, requirePermissao("envio", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = req.query.empresaId ? Number(req.query.empresaId) : null;
+  if (empresaId && !podeAcessarEmpresa(user, empresaId)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  let sql = `SELECT a.*, t.nome as templateNome, t.periodicidade, t.accept_json as acceptJson, e.nome as empresaNome
+             FROM envio_atribuicoes a JOIN envio_templates t ON t.id = a.template_id JOIN empresas e ON e.id = a.empresa_id`;
+  const params: any[] = [];
+  if (empresaId) {
+    sql += ` WHERE a.empresa_id = ?`;
+    params.push(empresaId);
+  }
+  sql += ` ORDER BY e.nome, t.nome`;
+  let rows = sqlite.prepare(sql).all(...params) as any[];
+  const visiveis = empresasVisiveis(user);
+  if (visiveis !== null) rows = rows.filter((r) => visiveis.includes(r.empresa_id));
+  res.json({ items: rows.map((r) => ({ ...r, accept: JSON.parse(r.acceptJson), temDocumentos: envioAtribuicaoTemDocumentos(r.id) })) });
+});
+app.get("/api/envio/minhas-atribuicoes", (req, res) => {
+  const user = (req as any).user;
+  if (user.perfil !== "Cliente") return res.status(403).json({ error: "Rota exclusiva para clientes." });
+  if (!user.empresaId) return res.json({ items: [] });
+  const rows = sqlite
+    .prepare(
+      `SELECT a.*, t.nome as templateNome, t.periodicidade, t.descricao, e.nome as empresaNome
+       FROM envio_atribuicoes a JOIN envio_templates t ON t.id = a.template_id JOIN empresas e ON e.id = a.empresa_id
+       WHERE a.empresa_id = ? AND a.ativo = 1 ORDER BY t.nome`
+    )
+    .all(user.empresaId) as any[];
+  res.json({ items: rows });
+});
+app.post("/api/envio/atribuicoes", blockCliente, requirePermissao("envio", "postar"), (req, res) => {
+  const user = (req as any).user;
+  const { templateId, empresaId } = req.body || {};
+  if (!templateId || !empresaId) return res.status(400).json({ error: "Selecione o modelo e a empresa." });
+  if (!podeAcessarEmpresa(user, Number(empresaId))) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  try {
+    const info = sqlite
+      .prepare(`INSERT INTO envio_atribuicoes (template_id, empresa_id, created_by) VALUES (?, ?, ?)`)
+      .run(Number(templateId), Number(empresaId), user.id);
+    res.json({ id: Number(info.lastInsertRowid) });
+  } catch (e: any) {
+    if (String(e.message).includes("UNIQUE")) return res.status(409).json({ error: "Este modelo já está atribuído a esta empresa." });
+    res.status(500).json({ error: e.message });
+  }
+});
+app.delete("/api/envio/atribuicoes/:id", blockCliente, requirePermissao("envio", "editar"), (req, res) => {
+  const id = Number(req.params.id);
+  if (envioAtribuicaoTemDocumentos(id)) {
+    return res.status(409).json({ error: "Já existe documento enviado nesta atribuição — não é possível excluir." });
+  }
+  sqlite.prepare(`DELETE FROM envio_atribuicoes WHERE id = ?`).run(id);
+  res.json({ ok: true });
+});
+
+app.post("/api/envio/periodos/gerar", blockCliente, requirePermissao("envio", "postar"), (req, res) => {
+  const { atribuicaoId, ano, rotulo } = req.body || {};
+  const atrib = sqlite
+    .prepare(`SELECT a.*, t.periodicidade FROM envio_atribuicoes a JOIN envio_templates t ON t.id = a.template_id WHERE a.id = ?`)
+    .get(Number(atribuicaoId)) as any;
+  if (!atrib) return res.status(404).json({ error: "Atribuição não encontrada." });
+  const insert = sqlite.prepare(`INSERT OR IGNORE INTO envio_periodos (atribuicao_id, ano, mes, rotulo) VALUES (?, ?, ?, ?)`);
+  let criados = 0;
+  if (atrib.periodicidade === "mensal") {
+    for (let mes = 1; mes <= 12; mes++) {
+      const info = insert.run(atrib.id, Number(ano), mes, null);
+      if (info.changes) criados++;
+    }
+  } else if (atrib.periodicidade === "anual") {
+    const info = insert.run(atrib.id, Number(ano), null, null);
+    if (info.changes) criados++;
+  } else {
+    const info = insert.run(atrib.id, Number(ano) || new Date().getFullYear(), null, rotulo || `Envio avulso ${Date.now()}`);
+    if (info.changes) criados++;
+  }
+  res.json({ ok: true, criados });
+});
+
+app.get("/api/envio/grade/:atribuicaoId", (req, res) => {
+  const user = (req as any).user;
+  const atribuicaoId = Number(req.params.atribuicaoId);
+  const atrib = sqlite
+    .prepare(
+      `SELECT a.*, t.nome as templateNome, t.periodicidade, t.accept_json as acceptJson, e.nome as empresaNome
+       FROM envio_atribuicoes a JOIN envio_templates t ON t.id = a.template_id JOIN empresas e ON e.id = a.empresa_id WHERE a.id = ?`
+    )
+    .get(atribuicaoId) as any;
+  if (!atrib) return res.status(404).json({ error: "Atribuição não encontrada." });
+  if (user.perfil === "Cliente" && user.empresaId !== atrib.empresa_id) return res.status(403).json({ error: "Sem acesso." });
+  if (user.perfil === "Colaborador" && !hasPermissao(user, "envio", "visualizar")) return res.status(403).json({ error: "Sem permissão." });
+  if (user.perfil !== "Cliente" && !podeAcessarEmpresa(user, atrib.empresa_id)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+
+  const periodos = sqlite.prepare(`SELECT * FROM envio_periodos WHERE atribuicao_id = ? ORDER BY ano DESC, mes ASC`).all(atribuicaoId) as any[];
+  const periodoIds = periodos.map((p) => p.id);
+  const docs = periodoIds.length
+    ? (sqlite.prepare(`SELECT * FROM envio_documentos WHERE periodo_id IN (${periodoIds.map(() => "?").join(",")})`).all(...periodoIds) as any[])
+    : [];
+  const docPorPeriodo = new Map<number, any>();
+  for (const d of docs) docPorPeriodo.set(d.periodo_id, d);
+
+  const grade = periodos.map((p) => {
+    const d = docPorPeriodo.get(p.id);
+    return {
+      periodoId: p.id,
+      ano: p.ano,
+      mes: p.mes,
+      rotulo: p.rotulo,
+      documento: d
+        ? {
+            id: d.id,
+            fileName: d.file_name,
+            sizeBytes: d.size_bytes,
+            vencimento: d.vencimento,
+            vencimentoOrigem: d.vencimento_origem,
+            enviadoEm: d.enviado_em,
+            emailEnviado: !!d.email_enviado,
+            emailErro: d.email_erro,
+          }
+        : null,
+    };
+  });
+
+  res.json({
+    atribuicao: {
+      id: atrib.id,
+      templateNome: atrib.templateNome,
+      periodicidade: atrib.periodicidade,
+      empresaNome: atrib.empresaNome,
+      empresaId: atrib.empresa_id,
+      accept: JSON.parse(atrib.acceptJson),
+    },
+    grade,
+  });
+});
+
+app.post("/api/envio/periodos/:periodoId/enviar", blockCliente, requirePermissao("envio", "postar"), upload.single("arquivo"), async (req, res) => {
+  const user = (req as any).user;
+  const periodoId = Number(req.params.periodoId);
+  if (!req.file) return res.status(400).json({ error: "Selecione o arquivo." });
+
+  const periodo = sqlite
+    .prepare(
+      `SELECT p.*, a.empresa_id as empresaId, t.accept_json as acceptJson, t.nome as templateNome
+       FROM envio_periodos p JOIN envio_atribuicoes a ON a.id = p.atribuicao_id JOIN envio_templates t ON t.id = a.template_id WHERE p.id = ?`
+    )
+    .get(periodoId) as any;
+  if (!periodo) return res.status(404).json({ error: "Período não encontrado." });
+  if (!podeAcessarEmpresa(user, periodo.empresaId)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+
+  const accept = JSON.parse(periodo.acceptJson);
+  if (!extensaoPermitida(accept, req.file.originalname)) {
+    return res.status(400).json({ error: `Tipo de arquivo não permitido. Aceito: ${accept.join(", ")}.` });
+  }
+
+  const dir = path.join(UPLOADS_DIR, "envio", String(periodo.empresaId), String(periodoId));
+  fs.mkdirSync(dir, { recursive: true });
+  const nomeSeguro = `doc_${Date.now()}${path.extname(req.file.originalname)}`;
+  const destino = path.join(dir, nomeSeguro);
+  fs.writeFileSync(destino, req.file.buffer);
+
+  let vencimento: string | null = req.body?.vencimento ? String(req.body.vencimento) : null;
+  let vencimentoOrigem: string | null = vencimento ? "manual" : null;
+  if (!vencimento) {
+    try {
+      const texto = await extrairTextoArquivo(req.file);
+      const detectado = extrairVencimento(texto);
+      if (detectado) {
+        vencimento = detectado;
+        vencimentoOrigem = "automatico";
+      }
+    } catch {
+      // não é crítico — a data pode ser preenchida/corrigida manualmente depois
+    }
+  }
+
+  // Reenvio: substitui o documento anterior desse período (o antigo não fica travado — ver memory.md)
+  const existente = sqlite.prepare(`SELECT * FROM envio_documentos WHERE periodo_id = ?`).get(periodoId) as any;
+  if (existente) {
+    try {
+      fs.unlinkSync(existente.file_path);
+    } catch {}
+    sqlite.prepare(`DELETE FROM envio_documentos WHERE periodo_id = ?`).run(periodoId);
+  }
+
+  const info = sqlite
+    .prepare(
+      `INSERT INTO envio_documentos (periodo_id, file_name, file_path, mime, size_bytes, vencimento, vencimento_origem, enviado_por)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(periodoId, req.file.originalname, destino, req.file.mimetype, req.file.size, vencimento, vencimentoOrigem, user.id);
+  const docId = Number(info.lastInsertRowid);
+
+  const rotulo = periodo.mes ? `${periodo.mes}/${periodo.ano}` : periodo.rotulo || String(periodo.ano);
+  const contatos = sqlite.prepare(`SELECT email FROM empresa_contatos WHERE empresa_id = ? AND receber_emails = 1`).all(periodo.empresaId) as any[];
+  let emailEnviado = false;
+  let emailErro: string | null = null;
+  if (!contatos.length) {
+    emailErro = "Empresa sem contatos de e-mail cadastrados.";
+  } else {
+    const assunto = `${periodo.templateNome} — ${rotulo}`;
+    const corpo = `Segue em anexo: ${periodo.templateNome} (${rotulo}).${vencimento ? `\n\nVencimento: ${vencimento.split("-").reverse().join("/")}` : ""}`;
+    try {
+      await enviarEmail({ to: contatos.map((c) => c.email), subject: assunto, text: corpo, attachments: [{ filename: req.file.originalname, content: req.file.buffer }] });
+      emailEnviado = true;
+      sqlite
+        .prepare(`INSERT INTO emails_enviados (empresa_id, destinatarios, assunto, corpo, anexos_json, enviado_por, status) VALUES (?, ?, ?, ?, ?, ?, 'ok')`)
+        .run(periodo.empresaId, contatos.map((c) => c.email).join(", "), assunto, corpo, JSON.stringify([req.file.originalname]), user.id);
+    } catch (e: any) {
+      emailErro = e.message;
+      sqlite
+        .prepare(`INSERT INTO emails_enviados (empresa_id, destinatarios, assunto, corpo, enviado_por, status, erro) VALUES (?, ?, ?, ?, ?, 'erro', ?)`)
+        .run(periodo.empresaId, contatos.map((c) => c.email).join(", "), assunto, corpo, user.id, e.message);
+    }
+  }
+  sqlite.prepare(`UPDATE envio_documentos SET email_enviado = ?, email_erro = ? WHERE id = ?`).run(emailEnviado ? 1 : 0, emailErro, docId);
+
+  res.json({ id: docId, vencimento, vencimentoOrigem, emailEnviado, emailErro });
+});
+
+app.put("/api/envio/documentos/:id/vencimento", blockCliente, requirePermissao("envio", "editar"), (req, res) => {
+  const { vencimento } = req.body || {};
+  if (!vencimento) return res.status(400).json({ error: "Informe a data de vencimento." });
+  const info = sqlite.prepare(`UPDATE envio_documentos SET vencimento = ?, vencimento_origem = 'manual' WHERE id = ?`).run(vencimento, Number(req.params.id));
+  if (!info.changes) return res.status(404).json({ error: "Documento não encontrado." });
+  res.json({ ok: true });
+});
+app.delete("/api/envio/documentos/:id", blockCliente, requirePermissao("envio", "editar"), (req, res) => {
+  const doc = sqlite.prepare(`SELECT * FROM envio_documentos WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!doc) return res.status(404).json({ error: "Documento não encontrado." });
+  try {
+    fs.unlinkSync(doc.file_path);
+  } catch {}
+  sqlite.prepare(`DELETE FROM envio_documentos WHERE id = ?`).run(doc.id);
+  res.json({ ok: true });
+});
+app.post("/api/envio/documentos/:id/reenviar-email", blockCliente, requirePermissao("envio", "postar"), async (req, res) => {
+  const user = (req as any).user;
+  const doc = sqlite
+    .prepare(
+      `SELECT d.*, p.atribuicao_id as atribuicaoId, p.ano, p.mes, p.rotulo FROM envio_documentos d JOIN envio_periodos p ON p.id = d.periodo_id WHERE d.id = ?`
+    )
+    .get(Number(req.params.id)) as any;
+  if (!doc) return res.status(404).json({ error: "Documento não encontrado." });
+  const atrib = sqlite
+    .prepare(`SELECT a.empresa_id as empresaId, t.nome as templateNome FROM envio_atribuicoes a JOIN envio_templates t ON t.id = a.template_id WHERE a.id = ?`)
+    .get(doc.atribuicaoId) as any;
+  const contatos = sqlite.prepare(`SELECT email FROM empresa_contatos WHERE empresa_id = ? AND receber_emails = 1`).all(atrib.empresaId) as any[];
+  if (!contatos.length) return res.status(400).json({ error: "Esta empresa não tem contatos de e-mail cadastrados." });
+  if (!fs.existsSync(doc.file_path)) return res.status(404).json({ error: "Arquivo não encontrado no servidor." });
+  const rotulo = doc.mes ? `${doc.mes}/${doc.ano}` : doc.rotulo || String(doc.ano);
+  const assunto = `${atrib.templateNome} — ${rotulo}`;
+  const corpo = `Segue em anexo: ${atrib.templateNome} (${rotulo}).${doc.vencimento ? `\n\nVencimento: ${String(doc.vencimento).split("-").reverse().join("/")}` : ""}`;
+  try {
+    await enviarEmail({ to: contatos.map((c) => c.email), subject: assunto, text: corpo, attachments: [{ filename: doc.file_name, content: fs.readFileSync(doc.file_path) }] });
+    sqlite.prepare(`UPDATE envio_documentos SET email_enviado = 1, email_erro = NULL WHERE id = ?`).run(doc.id);
+    sqlite
+      .prepare(`INSERT INTO emails_enviados (empresa_id, destinatarios, assunto, corpo, anexos_json, enviado_por, status) VALUES (?, ?, ?, ?, ?, ?, 'ok')`)
+      .run(atrib.empresaId, contatos.map((c) => c.email).join(", "), assunto, corpo, JSON.stringify([doc.file_name]), user.id);
+    res.json({ ok: true });
+  } catch (e: any) {
+    sqlite.prepare(`UPDATE envio_documentos SET email_erro = ? WHERE id = ?`).run(e.message, doc.id);
+    res.status(500).json({ error: e.message });
+  }
+});
+app.get("/api/envio/documentos/:id/download", (req, res) => {
+  const user = (req as any).user;
+  const doc = sqlite
+    .prepare(`SELECT d.*, p.atribuicao_id as atribuicaoId FROM envio_documentos d JOIN envio_periodos p ON p.id = d.periodo_id WHERE d.id = ?`)
+    .get(Number(req.params.id)) as any;
+  if (!doc) return res.status(404).json({ error: "Documento não encontrado." });
+  const atrib = sqlite.prepare(`SELECT empresa_id as empresaId FROM envio_atribuicoes WHERE id = ?`).get(doc.atribuicaoId) as any;
+  if (user.perfil === "Cliente") {
+    if (user.empresaId !== atrib.empresaId) return res.status(403).json({ error: "Sem acesso." });
+  } else {
+    if (!hasPermissao(user, "envio", "visualizar")) return res.status(403).json({ error: "Sem permissão." });
+    if (!podeAcessarEmpresa(user, atrib.empresaId)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  }
+  if (!fs.existsSync(doc.file_path)) return res.status(404).json({ error: "Arquivo não encontrado." });
+  res.download(doc.file_path, doc.file_name);
+});
+
 // ---------- Financeiro (honorários) ----------
 app.get("/api/financeiro/honorarios", blockCliente, requirePermissao("financeiro", "visualizar"), (req, res) => {
   const user = (req as any).user;
@@ -1369,6 +1762,19 @@ function extrairDocumentos(texto: string): { documento: string; tipo: "cnpj" | "
     }
   }
   return encontrados;
+}
+// Procura a data de vencimento no texto de uma guia (DARF, FGTS etc.) — primeiro tenta perto da
+// palavra "vencimento", senão cai pra primeira data no formato dd/mm/aaaa encontrada no documento.
+function extrairVencimento(texto: string): string | null {
+  const brParaIso = (d: string) => {
+    const [dd, mm, yyyy] = d.split("/");
+    return `${yyyy}-${mm}-${dd}`;
+  };
+  const pertoDaPalavra = texto.match(/venc[a-zçã.]*[^0-9]{0,25}(\d{2}\/\d{2}\/\d{4})/i);
+  if (pertoDaPalavra) return brParaIso(pertoDaPalavra[1]);
+  const qualquerData = texto.match(/\d{2}\/\d{2}\/\d{4}/);
+  if (qualquerData) return brParaIso(qualquerData[0]);
+  return null;
 }
 app.post("/api/email/identificar", blockCliente, requirePermissao("configuracoes", "visualizar"), upload.single("arquivo"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "Envie um arquivo." });

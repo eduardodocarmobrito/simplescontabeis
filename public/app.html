@@ -209,6 +209,7 @@ async function api(path, opts){
 }
 function fmtMoney(v){ return (Number(v)||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'}); }
 function fmtDate(iso){ if(!iso) return '—'; const d=new Date(String(iso).replace(' ','T')+(String(iso).includes('Z')?'':'Z')); if(isNaN(d)) return iso; return d.toLocaleDateString('pt-BR'); }
+function fmtDateIso(iso){ if(!iso) return null; const [y,m,d]=iso.split('-'); return `${d}/${m}/${y}`; }
 function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 // Combobox com busca: renderiza <div class="combo"><input class="combo-input"><input type="hidden">
@@ -290,8 +291,10 @@ document.getElementById('btnLogout').addEventListener('click', async ()=>{
 const NAV = [
   { id:'dashboard', label:'Início', modulo:'dashboard', roles:['Administrador','Colaborador','Cliente'] },
   { id:'empresas', label:'Empresas', modulo:'empresas', roles:['Administrador','Colaborador'] },
-  { id:'solicitacoes', label:'Solicitações', modulo:'solicitacoes', roles:['Administrador','Colaborador'] },
+  { id:'solicitacoes', label:'Solicitações de Documentos', modulo:'solicitacoes', roles:['Administrador','Colaborador'] },
+  { id:'envio', label:'Envio de Documentos', modulo:'envio', roles:['Administrador','Colaborador'] },
   { id:'meus-documentos', label:'Meus Documentos', modulo:null, roles:['Cliente'] },
+  { id:'documentos-recebidos', label:'Documentos Recebidos', modulo:null, roles:['Cliente'] },
   { id:'financeiro', label:'Financeiro', modulo:'financeiro', roles:['Administrador','Colaborador'] },
   { id:'relatorios', label:'Relatórios', modulo:'relatorios', roles:['Administrador','Colaborador'] },
   { id:'usuarios', label:'Usuários', modulo:'usuarios', roles:['Administrador'] },
@@ -350,7 +353,9 @@ async function render(){
     if(STATE.page==='dashboard') await pageDashboard();
     else if(STATE.page==='empresas') await pageEmpresas();
     else if(STATE.page==='solicitacoes') await pageSolicitacoes();
+    else if(STATE.page==='envio') await pageEnvio();
     else if(STATE.page==='meus-documentos') await pageMeusDocumentos();
+    else if(STATE.page==='documentos-recebidos') await pageDocumentosRecebidos();
     else if(STATE.page==='financeiro') await pageFinanceiro();
     else if(STATE.page==='relatorios') await pageRelatorios();
     else if(STATE.page==='usuarios') await pageUsuarios();
@@ -745,7 +750,9 @@ function novaAtribModal(empresas, templates){
     try{
       const r = await api('/checklist/atribuicoes', { method:'POST', body:{ empresaId: Number(document.getElementById('atEmpresa').value), templateId: Number(document.getElementById('atTemplate').value) } });
       closeModal();
-      renderAtribuicoes();
+      // não chamar renderAtribuicoes() aqui: ela e abrirGrade() são ambas assíncronas e disputam o
+      // mesmo main().innerHTML — quem terminar por último "vence" e deixa a outra com elementos
+      // órfãos (erro de innerHTML em null). abrirGrade() já refaz a lista sozinha ao voltar.
       abrirGrade(r.id, false);
     }catch(e){ toast(e.message,'err'); }
   });
@@ -909,6 +916,326 @@ async function pageMeusDocumentos(){
         ${p.slots.map(s=>slotInner(p.periodoId, s, opts)).join('')}
       `;
       wireSlotEvents(painel, ()=>pageMeusDocumentos());
+    }catch(e){
+      painel.innerHTML = `<div class="doc-inline-empty">Não consegui carregar — abra o card.</div>`;
+    }
+  }
+}
+
+// ===================== Envio de Documentos (escritório posta, cliente recebe) =====================
+let ENVIO_TAB='atribuicoes';
+async function pageEnvio(){
+  main().innerHTML = `
+    <h1>Envio de Documentos</h1>
+    <p class="subtitle">Guias e documentos que o escritório envia para os clientes — DARF, FGTS, retenções, etc.</p>
+    <div class="tabs">
+      <div class="tab" data-tab="atribuicoes">Empresas &amp; Envios</div>
+      <div class="tab" data-tab="modelos">Modelos</div>
+    </div>
+    <div id="envioContent"></div>
+  `;
+  main().querySelectorAll('.tab').forEach(t=>t.addEventListener('click', ()=>{ ENVIO_TAB=t.dataset.tab; renderEnvioTabs(); }));
+  renderEnvioTabs();
+}
+function renderEnvioTabs(){
+  main().querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===ENVIO_TAB));
+  if(ENVIO_TAB==='modelos') renderEnvioModelos(); else renderEnvioAtribuicoes();
+}
+
+async function renderEnvioModelos(){
+  const podePostar = can('envio','postar');
+  const podeEditar = can('envio','editar');
+  const { items } = await api('/envio/templates');
+  const box = document.getElementById('envioContent');
+  box.innerHTML = `
+    <div class="row" style="margin-bottom:14px;">${podePostar?`<button class="btn primary" id="btnNovoEnvioModelo">+ Novo modelo</button>`:''}</div>
+    <div class="card" style="padding:0; overflow-x:auto;">
+      <table class="data-table">
+        <thead><tr><th>Nome</th><th>Periodicidade</th><th>Arquivo aceito</th><th></th></tr></thead>
+        <tbody id="envioModelosBody"></tbody>
+      </table>
+    </div>
+  `;
+  document.getElementById('envioModelosBody').innerHTML = items.length? items.map(t=>`
+    <tr data-id="${t.id}">
+      <td><b>${esc(t.nome)}</b>${t.descricao?`<br><span style="color:var(--ink-soft); font-size:12px;">${esc(t.descricao)}</span>`:''}</td>
+      <td>${({mensal:'Mensal',anual:'Anual',avulso:'Avulso'})[t.periodicidade]||t.periodicidade}</td>
+      <td>${t.accept.map(a=>`<span class="tag muted">${esc(a)}</span>`).join(' ')}</td>
+      <td style="text-align:right;">${podeEditar?`<button class="btn small" data-act="edit">Editar</button>`:''}</td>
+    </tr>
+  `).join('') : `<tr><td colspan="4"><div class="empty-state">Nenhum modelo cadastrado ainda.</div></td></tr>`;
+  if(podePostar) document.getElementById('btnNovoEnvioModelo').addEventListener('click', ()=>envioModeloModal());
+  if(podeEditar) document.getElementById('envioModelosBody').querySelectorAll('[data-act="edit"]').forEach(b=>b.addEventListener('click', e=>{
+    const id=Number(e.target.closest('tr').dataset.id);
+    envioModeloModal(items.find(x=>x.id===id));
+  }));
+}
+function envioModeloModal(t){
+  openModal(`
+    <h3>${t?'Editar':'Novo'} modelo de envio</h3>
+    <div class="field"><label>Nome</label><input id="evNome" value="${t?esc(t.nome):''}" placeholder='Ex.: "DARF PIS", "FGTS", "Retenções de Notas Fiscais"'></div>
+    <div class="field"><label>Descrição (opcional)</label><input id="evDesc" value="${t&&t.descricao?esc(t.descricao):''}"></div>
+    ${!t? `<div class="field"><label>Periodicidade</label>
+      <select id="evPeriodicidade">
+        <option value="mensal">Mensal (grade com os 12 meses do ano)</option>
+        <option value="anual">Anual (um envio por ano)</option>
+        <option value="avulso">Avulso (envios pontuais, com rótulo próprio — ex.: "IRPF 2026")</option>
+      </select>
+    </div>` : ''}
+    <div style="margin:10px 0 6px; font-size:12px; color:var(--ink-soft);">Tipo de arquivo aceito para a guia:</div>
+    <div class="row" style="gap:14px;">
+      ${TIPOS_ACEITE.map(ac=>`<label class="checkbox-row"><input type="checkbox" class="evAccept" value="${ac.v}" ${(t? t.accept.includes(ac.v) : ac.v==='pdf')?'checked':''}> ${ac.l}</label>`).join('')}
+    </div>
+    <div class="modal-actions">
+      <button class="btn" id="evCancel">Cancelar</button>
+      <button class="btn primary" id="evSalvar">Salvar</button>
+    </div>
+  `);
+  document.getElementById('evCancel').addEventListener('click', closeModal);
+  document.getElementById('evSalvar').addEventListener('click', async ()=>{
+    const nome=document.getElementById('evNome').value.trim();
+    if(!nome){ toast('Informe o nome.','err'); return; }
+    const accept=[...document.querySelectorAll('.evAccept:checked')].map(c=>c.value);
+    if(!accept.length){ toast('Selecione ao menos um tipo de arquivo.','err'); return; }
+    const body = { nome, descricao: document.getElementById('evDesc').value.trim(), accept };
+    if(!t) body.periodicidade = document.getElementById('evPeriodicidade').value;
+    try{
+      if(t) await api('/envio/templates/'+t.id, { method:'PUT', body });
+      else await api('/envio/templates', { method:'POST', body });
+      closeModal(); renderEnvioModelos();
+    }catch(e){ toast(e.message,'err'); }
+  });
+}
+
+async function renderEnvioAtribuicoes(){
+  const podePostar = can('envio','postar');
+  const podeEditar = can('envio','editar');
+  const [{ items: atribs }, { items: empresas }, { items: templates }] = await Promise.all([
+    api('/envio/atribuicoes'), api('/empresas'), api('/envio/templates'),
+  ]);
+  const box = document.getElementById('envioContent');
+  box.innerHTML = `
+    <div class="row" style="margin-bottom:14px;">${podePostar?`<button class="btn primary" id="btnNovaEnvioAtrib">+ Atribuir modelo a uma empresa</button>`:''}</div>
+    <div class="card" style="padding:0; overflow-x:auto;">
+      <table class="data-table">
+        <thead><tr><th>Empresa</th><th>Modelo</th><th>Periodicidade</th><th></th></tr></thead>
+        <tbody id="envioAtribBody"></tbody>
+      </table>
+    </div>
+  `;
+  document.getElementById('envioAtribBody').innerHTML = atribs.length? atribs.map(a=>`
+    <tr data-id="${a.id}">
+      <td>${esc(a.empresaNome)}</td>
+      <td>${esc(a.templateNome)}</td>
+      <td>${({mensal:'Mensal',anual:'Anual',avulso:'Avulso'})[a.periodicidade]||a.periodicidade}</td>
+      <td style="text-align:right; display:flex; gap:6px; justify-content:flex-end;">
+        <button class="btn small" data-act="abrir">Abrir grade</button>
+        ${podeEditar? (a.temDocumentos
+            ? `<span class="tag muted" title="Já tem documento enviado — não pode excluir">Excluir</span>`
+            : `<button class="btn small danger" data-act="excluir">Excluir</button>`)
+          : ''}
+      </td>
+    </tr>
+  `).join('') : `<tr><td colspan="4"><div class="empty-state">Nenhum envio atribuído ainda.</div></td></tr>`;
+  if(podePostar) document.getElementById('btnNovaEnvioAtrib').addEventListener('click', ()=>novaEnvioAtribModal(empresas, templates));
+  document.getElementById('envioAtribBody').querySelectorAll('[data-act="abrir"]').forEach(b=>b.addEventListener('click', e=>{
+    abrirEnvioGrade(Number(e.target.closest('tr').dataset.id), false);
+  }));
+  document.getElementById('envioAtribBody').querySelectorAll('[data-act="excluir"]').forEach(b=>b.addEventListener('click', async e=>{
+    const tr = e.target.closest('tr');
+    const id = Number(tr.dataset.id);
+    const a = atribs.find(x=>x.id===id);
+    if(!confirmar(`Excluir "${a.templateNome}" de ${a.empresaNome}?`)) return;
+    try{ await api('/envio/atribuicoes/'+id, { method:'DELETE' }); toast('Excluído.','ok'); renderEnvioAtribuicoes(); }
+    catch(err){ toast(err.message,'err'); }
+  }));
+}
+function novaEnvioAtribModal(empresas, templates){
+  openModal(`
+    <h3>Atribuir modelo de envio a uma empresa</h3>
+    <div class="field"><label>Empresa</label>${comboSelectHtml('evAtEmpresaCombo', 'Selecione a empresa…')}</div>
+    <div class="field"><label>Modelo</label><select id="evAtTemplate">${templates.map(t=>`<option value="${t.id}">${esc(t.nome)}</option>`).join('')}</select></div>
+    <div class="modal-actions">
+      <button class="btn" id="evAtCancel">Cancelar</button>
+      <button class="btn primary" id="evAtSalvar">Atribuir</button>
+    </div>
+  `);
+  setupComboSelect('evAtEmpresaCombo', empresas.map(e=>({id:e.id, label:e.nome})), ()=>{});
+  document.getElementById('evAtCancel').addEventListener('click', closeModal);
+  document.getElementById('evAtSalvar').addEventListener('click', async ()=>{
+    const empresaId = document.querySelector('#evAtEmpresaCombo .combo-value').value;
+    if(!empresaId){ toast('Selecione a empresa.','err'); return; }
+    try{
+      const r = await api('/envio/atribuicoes', { method:'POST', body:{ empresaId:Number(empresaId), templateId:Number(document.getElementById('evAtTemplate').value) } });
+      closeModal();
+      abrirEnvioGrade(r.id, false); // não chamar renderEnvioAtribuicoes() aqui — mesma corrida de innerHTML do fix em novaAtribModal
+    }catch(e){ toast(e.message,'err'); }
+  });
+}
+
+function vencimentoModal(docId, atualIso, onSalvo){
+  openModal(`
+    <h3>Vencimento do documento</h3>
+    <div class="field"><label>Data de vencimento</label><input type="date" id="vencInput" value="${atualIso||''}"></div>
+    <div class="modal-actions">
+      <button class="btn" id="vencCancel">Cancelar</button>
+      <button class="btn primary" id="vencSalvar">Salvar</button>
+    </div>
+  `);
+  document.getElementById('vencCancel').addEventListener('click', closeModal);
+  document.getElementById('vencSalvar').addEventListener('click', async ()=>{
+    const v = document.getElementById('vencInput').value;
+    if(!v){ toast('Informe a data.','err'); return; }
+    try{ await api('/envio/documentos/'+docId+'/vencimento', { method:'PUT', body:{ vencimento:v } }); closeModal(); onSalvo(); }
+    catch(e){ toast(e.message,'err'); }
+  });
+}
+function envioCelulaHtml(p, accept, podePostar, podeEditar, souCliente){
+  const inputId = `ef_${p.periodoId}`;
+  if(p.documento){
+    const d = p.documento;
+    const vencHtml = d.vencimento
+      ? `<span class="tag warn" style="font-weight:700;">Vencimento ${esc(fmtDateIso(d.vencimento))}</span>${d.vencimentoOrigem==='automatico'?' <span style="font-size:10.5px; color:var(--ink-soft);">(identificado automaticamente)</span>':''}`
+      : `<span class="tag muted">Vencimento não identificado</span>`;
+    return `<div class="slot">
+      <div class="slot-locked" style="background:var(--paper);"><span class="fname">${esc(d.fileName)}</span>Enviado em ${fmtDate(d.enviadoEm)}</div>
+      <div>${vencHtml}</div>
+      ${!souCliente ? `<div style="font-size:11px; color:var(--ink-soft);">${d.emailEnviado? '✓ Enviado por e-mail ao cliente' : (d.emailErro? '⚠ E-mail não enviado: '+esc(d.emailErro) : '')}</div>` : ''}
+      <div style="display:flex; gap:6px; flex-wrap:wrap;">
+        <button class="btn small" data-act="baixar-envio" data-doc="${d.id}">Baixar</button>
+        ${podeEditar? `<button class="btn small" data-act="editar-venc" data-doc="${d.id}" data-venc="${d.vencimento||''}">Vencimento</button>`:''}
+        ${!souCliente && podePostar && !d.emailEnviado? `<button class="btn small" data-act="reenviar-email" data-doc="${d.id}">Reenviar e-mail</button>`:''}
+        ${podeEditar? `<button class="btn small danger" data-act="excluir-doc" data-doc="${d.id}">Excluir</button>`:''}
+      </div>
+    </div>`;
+  }
+  if(souCliente || !podePostar) return `<span class="slot-label">Nada enviado ainda</span>`;
+  return `<div class="slot">
+    <input type="file" id="${inputId}" ${accept?`accept="${accept}"`:''}>
+    <button class="btn small primary" data-act="enviar-doc" data-periodo="${p.periodoId}" data-input="${inputId}">Enviar</button>
+  </div>`;
+}
+function wireEnvioGradeEvents(container, atribuicaoId, souCliente){
+  container.querySelectorAll('[data-act="enviar-doc"]').forEach(b=>b.addEventListener('click', async ()=>{
+    const input = document.getElementById(b.dataset.input);
+    const file = input.files[0];
+    if(!file){ toast('Selecione um arquivo.','err'); return; }
+    const fd = new FormData(); fd.append('arquivo', file);
+    try{
+      const r = await api('/envio/periodos/'+b.dataset.periodo+'/enviar', { method:'POST', body:fd });
+      if(r.emailEnviado) toast('Documento enviado e e-mail disparado ao cliente.','ok');
+      else toast('Documento salvo, mas o e-mail não foi enviado'+(r.emailErro?': '+r.emailErro:'')+'.', 'err');
+      abrirEnvioGrade(atribuicaoId, souCliente);
+    }catch(e){ toast(e.message,'err'); }
+  }));
+  container.querySelectorAll('[data-act="baixar-envio"]').forEach(b=>b.addEventListener('click', ()=>{
+    window.open('/api/envio/documentos/'+b.dataset.doc+'/download', '_blank');
+  }));
+  container.querySelectorAll('[data-act="editar-venc"]').forEach(b=>b.addEventListener('click', ()=>{
+    vencimentoModal(b.dataset.doc, b.dataset.venc||'', ()=>abrirEnvioGrade(atribuicaoId, souCliente));
+  }));
+  container.querySelectorAll('[data-act="reenviar-email"]').forEach(b=>b.addEventListener('click', async ()=>{
+    try{ await api('/envio/documentos/'+b.dataset.doc+'/reenviar-email', { method:'POST' }); toast('E-mail reenviado.','ok'); abrirEnvioGrade(atribuicaoId, souCliente); }
+    catch(e){ toast(e.message,'err'); }
+  }));
+  container.querySelectorAll('[data-act="excluir-doc"]').forEach(b=>b.addEventListener('click', async ()=>{
+    if(!confirmar('Excluir este documento enviado? O cliente já pode ter recebido por e-mail — isso só remove daqui do site.')) return;
+    try{ await api('/envio/documentos/'+b.dataset.doc, { method:'DELETE' }); toast('Excluído.','ok'); abrirEnvioGrade(atribuicaoId, souCliente); }
+    catch(e){ toast(e.message,'err'); }
+  }));
+}
+async function abrirEnvioGrade(atribuicaoId, souCliente){
+  const { atribuicao, grade } = await api('/envio/grade/'+atribuicaoId);
+  const podePostar = !souCliente && can('envio','postar');
+  const podeEditar = !souCliente && can('envio','editar');
+  const accept = (atribuicao.accept||[]).includes('qualquer') ? '' : (atribuicao.accept||[]).map(a=>({ofx:'.ofx',pdf:'.pdf',zip:'.zip,.rar,.7z',xml:'.xml',imagem:'.png,.jpg,.jpeg'}[a]||'')).join(',');
+
+  main().innerHTML = `
+    <h1>${esc(atribuicao.templateNome)}</h1>
+    <p class="subtitle">${esc(atribuicao.empresaNome)} — ${({mensal:'Mensal',anual:'Anual',avulso:'Avulso'})[atribuicao.periodicidade]||atribuicao.periodicidade}</p>
+    <div class="row" style="margin-bottom:14px;">
+      <button class="btn" id="btnVoltarEnvioGrade">← Voltar</button>
+      ${podePostar && atribuicao.periodicidade!=='avulso' ? `<button class="btn" id="btnGerarEnvioPeriodo">Gerar ano na grade</button>`:''}
+      ${podePostar && atribuicao.periodicidade==='avulso' ? `<button class="btn" id="btnNovoEnvioAvulso">+ Novo envio avulso</button>`:''}
+    </div>
+    <div class="card" style="overflow-x:auto;">
+      ${grade.length? `<table class="grade-table"><thead><tr><th>Período</th><th>Documento</th></tr></thead>
+      <tbody id="envioGradeBody"></tbody></table>` : `<div class="empty-state">Nenhum período gerado ainda.</div>`}
+    </div>
+  `;
+  document.getElementById('btnVoltarEnvioGrade').addEventListener('click', ()=> souCliente ? pageDocumentosRecebidos() : pageEnvio());
+
+  if(grade.length){
+    const tbody = document.getElementById('envioGradeBody');
+    tbody.innerHTML = grade.map(p=>
+      `<tr data-periodo="${p.periodoId}"><td><b>${esc(rotuloPeriodo(p))}</b></td><td>${envioCelulaHtml(p, accept, podePostar, podeEditar, souCliente)}</td></tr>`
+    ).join('');
+    wireEnvioGradeEvents(tbody, atribuicaoId, souCliente);
+  }
+
+  if(podePostar && atribuicao.periodicidade!=='avulso') document.getElementById('btnGerarEnvioPeriodo').addEventListener('click', async ()=>{
+    const ano = prompt('Gerar grade de qual ano?', new Date().getFullYear());
+    if(!ano) return;
+    await api('/envio/periodos/gerar', { method:'POST', body:{ atribuicaoId, ano:Number(ano) } });
+    abrirEnvioGrade(atribuicaoId, souCliente);
+  });
+  if(podePostar && atribuicao.periodicidade==='avulso') document.getElementById('btnNovoEnvioAvulso').addEventListener('click', async ()=>{
+    const rotulo = prompt('Descreva este envio avulso (ex.: "IRPF 2026")');
+    if(!rotulo) return;
+    await api('/envio/periodos/gerar', { method:'POST', body:{ atribuicaoId, ano:new Date().getFullYear(), rotulo } });
+    abrirEnvioGrade(atribuicaoId, souCliente);
+  });
+}
+
+// ===================== Documentos Recebidos (cliente) =====================
+function periodoEnvioMaisRecente(grade){
+  const comDoc = grade.filter(p=>p.documento);
+  if(!comDoc.length) return null;
+  return comDoc.reduce((a,b)=> (a.documento.enviadoEm > b.documento.enviadoEm ? a : b));
+}
+async function pageDocumentosRecebidos(){
+  const { items } = await api('/envio/minhas-atribuicoes');
+  main().innerHTML = `
+    <h1>Documentos Recebidos</h1>
+    <p class="subtitle">Guias e documentos enviados pelo seu escritório de contabilidade</p>
+    <div id="drList"></div>
+  `;
+  const box = document.getElementById('drList');
+  if(!items.length){ box.innerHTML = '<div class="empty-state">Nenhum documento configurado para sua empresa ainda.</div>'; return; }
+  box.innerHTML = items.map(a=>`
+    <div class="doc-row" data-id="${a.id}">
+      <div class="doc-card" data-id="${a.id}">
+        <h3>${esc(a.templateNome)}</h3>
+        <div class="doc-card-sub">${({mensal:'Mensal',anual:'Anual',avulso:'Avulso'})[a.periodicidade]||a.periodicidade}</div>
+        <div class="doc-card-link">Ver histórico completo →</div>
+      </div>
+      <div class="doc-inline" id="drInline${a.id}"><div class="empty-state" style="padding:10px;">Carregando…</div></div>
+    </div>
+  `).join('');
+  box.querySelectorAll('.doc-card').forEach(c=>c.addEventListener('click', ()=>abrirEnvioGrade(Number(c.dataset.id), true)));
+
+  for(const a of items){
+    const painel = document.getElementById('drInline'+a.id);
+    try{
+      const { grade } = await api('/envio/grade/'+a.id);
+      const p = periodoEnvioMaisRecente(grade);
+      if(!p){
+        painel.innerHTML = `<div class="doc-inline-empty">Nenhum documento recebido ainda.</div>`;
+        continue;
+      }
+      const d = p.documento;
+      const vencHtml = d.vencimento? `<span class="tag warn" style="font-weight:700;">Vencimento ${esc(fmtDateIso(d.vencimento))}</span>` : '';
+      painel.innerHTML = `
+        <div class="doc-inline-periodo">${esc(rotuloPeriodo(p))}</div>
+        <div class="slot">
+          <div class="slot-label" style="font-weight:600; color:var(--ink);">${esc(d.fileName)}</div>
+          ${vencHtml}
+          <button class="btn small" data-act="baixar-envio" data-doc="${d.id}">Baixar</button>
+        </div>
+      `;
+      painel.querySelectorAll('[data-act="baixar-envio"]').forEach(b=>b.addEventListener('click', ()=>{
+        window.open('/api/envio/documentos/'+b.dataset.doc+'/download', '_blank');
+      }));
     }catch(e){
       painel.innerHTML = `<div class="doc-inline-empty">Não consegui carregar — abra o card.</div>`;
     }
@@ -1109,7 +1436,7 @@ async function pageUsuarios(){
     usuarioModal(items.find(x=>x.id===id));
   }));
 }
-const MODS = [['dashboard','Início'],['empresas','Empresas'],['solicitacoes','Solicitações'],['financeiro','Financeiro'],['relatorios','Relatórios'],['usuarios','Usuários'],['configuracoes','Configurações']];
+const MODS = [['dashboard','Início'],['empresas','Empresas'],['solicitacoes','Solicitações de Documentos'],['envio','Envio de Documentos'],['financeiro','Financeiro'],['relatorios','Relatórios'],['usuarios','Usuários'],['configuracoes','Configurações']];
 async function usuarioModal(u){
   const { items: empresas } = await api('/empresas');
   openModal(`
