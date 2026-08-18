@@ -204,7 +204,51 @@ sqlite.exec(`
     version TEXT
   );
 
+  -- Configuração de acesso do agente do Domínio Web, editável pela tela Configurações (o agente
+  -- busca isso na nuvem a cada ciclo — não precisa mais editar o .env dele na mão).
+  CREATE TABLE IF NOT EXISTS dominio_config (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    source TEXT NOT NULL DEFAULT '', -- 'db' | 'http' | ''
+    db_driver TEXT,        -- 'mssql' | 'oracle'
+    db_host TEXT,
+    db_port INTEGER,
+    db_name TEXT,
+    db_user TEXT,
+    db_password TEXT,
+    db_connect_string TEXT, -- usado no modo oracle (easy connect: host:porta/servico)
+    query_clientes TEXT,
+    col_codigo TEXT DEFAULT 'CODIGO',
+    col_nome TEXT DEFAULT 'NOME',
+    col_cnpj TEXT DEFAULT 'CNPJ',
+    col_status TEXT DEFAULT 'STATUS',
+    api_url TEXT,
+    api_token TEXT,
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS dominio_test_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    status TEXT NOT NULL DEFAULT 'pending', -- 'pending' | 'ok' | 'erro'
+    resultado_json TEXT,
+    erro TEXT,
+    criado_por INTEGER REFERENCES app_users(id),
+    criado_em TEXT DEFAULT (datetime('now')),
+    resolvido_em TEXT
+  );
+
   -- ---- E-mail corporativo ----
+  -- Documentos (CNPJ/CPF) usados para identificar automaticamente qual cliente é dono de um
+  -- arquivo (PDF/OFX/XML) enviado — um cliente pode ter mais de um (ex.: CNPJ da empresa + CPF
+  -- de um sócio que aparece em algum extrato).
+  CREATE TABLE IF NOT EXISTS empresa_documentos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+    documento TEXT NOT NULL, -- só dígitos
+    tipo TEXT NOT NULL, -- 'cnpj' | 'cpf'
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(documento)
+  );
+
   CREATE TABLE IF NOT EXISTS emails_enviados (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     empresa_id INTEGER REFERENCES empresas(id) ON DELETE SET NULL,
@@ -569,6 +613,10 @@ app.put("/api/users/:id/permissoes", requireAdmin, (req, res) => {
   }
   res.json({ ok: true });
 });
+app.get("/api/users/:id/empresas", requireAdmin, (req, res) => {
+  const rows = sqlite.prepare(`SELECT empresa_id as empresaId FROM colaborador_empresas WHERE user_id = ?`).all(Number(req.params.id)) as any[];
+  res.json({ empresaIds: rows.map((r) => r.empresaId) });
+});
 app.put("/api/users/:id/empresas", requireAdmin, (req, res) => {
   const userId = Number(req.params.id);
   const empresaIds: number[] = Array.isArray(req.body?.empresaIds) ? req.body.empresaIds.map(Number) : [];
@@ -647,6 +695,29 @@ app.delete("/api/empresas/contatos/:contatoId", blockCliente, requirePermissao("
   res.json({ ok: true });
 });
 
+// CNPJ/CPF cadastrados por empresa — usados para identificar automaticamente o dono de um arquivo enviado
+app.get("/api/empresas/:id/documentos", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
+  const rows = sqlite.prepare(`SELECT * FROM empresa_documentos WHERE empresa_id = ? ORDER BY tipo, documento`).all(Number(req.params.id));
+  res.json({ items: rows });
+});
+app.post("/api/empresas/:id/documentos", blockCliente, requirePermissao("empresas", "editar"), (req, res) => {
+  const empresaId = Number(req.params.id);
+  const digitos = String(req.body?.documento || "").replace(/\D/g, "");
+  if (digitos.length !== 11 && digitos.length !== 14) return res.status(400).json({ error: "Informe um CNPJ (14 dígitos) ou CPF (11 dígitos) válido." });
+  const tipo = digitos.length === 14 ? "cnpj" : "cpf";
+  try {
+    const info = sqlite.prepare(`INSERT INTO empresa_documentos (empresa_id, documento, tipo) VALUES (?, ?, ?)`).run(empresaId, digitos, tipo);
+    res.json({ id: Number(info.lastInsertRowid), documento: digitos, tipo });
+  } catch (e: any) {
+    if (String(e.message).includes("UNIQUE")) return res.status(409).json({ error: "Este documento já está cadastrado em outra empresa." });
+    res.status(500).json({ error: e.message });
+  }
+});
+app.delete("/api/empresas/documentos/:docId", blockCliente, requirePermissao("empresas", "editar"), (req, res) => {
+  sqlite.prepare(`DELETE FROM empresa_documentos WHERE id = ?`).run(Number(req.params.docId));
+  res.json({ ok: true });
+});
+
 // Importação da lista de clientes exportada do Domínio Web (CSV: codigo;nome;cnpj;status)
 app.post("/api/dominio/importar-clientes", requireAdmin, upload.single("arquivo"), (req, res) => {
   if (!req.file) return res.status(400).json({ error: "Envie o arquivo CSV exportado do Domínio Web." });
@@ -696,6 +767,77 @@ app.get("/api/dominio/sync-log", requireAdmin, (_req, res) => {
   const rows = sqlite.prepare(`SELECT * FROM dominio_sync_log ORDER BY id DESC LIMIT 30`).all();
   const heartbeat = sqlite.prepare(`SELECT last_seen_at as lastSeenAt, version FROM agent_heartbeat WHERE id = 1`).get() as any;
   res.json({ items: rows, agente: heartbeat || null });
+});
+
+// ---------- Configuração de acesso do src/dominio-agent.ts (editável pela tela, sem mexer no .env) ----------
+function getDominioConfig(): any {
+  return sqlite.prepare(`SELECT * FROM dominio_config WHERE id = 1`).get() || {};
+}
+app.get("/api/dominio/config", requireAdmin, (_req, res) => {
+  const c = getDominioConfig();
+  res.json({
+    source: c.source || "",
+    dbDriver: c.db_driver || "",
+    dbHost: c.db_host || "",
+    dbPort: c.db_port || "",
+    dbName: c.db_name || "",
+    dbUser: c.db_user || "",
+    temSenhaBanco: !!c.db_password,
+    dbConnectString: c.db_connect_string || "",
+    queryClientes: c.query_clientes || "",
+    colCodigo: c.col_codigo || "CODIGO",
+    colNome: c.col_nome || "NOME",
+    colCnpj: c.col_cnpj || "CNPJ",
+    colStatus: c.col_status || "STATUS",
+    apiUrl: c.api_url || "",
+    temTokenApi: !!c.api_token,
+    updatedAt: c.updated_at || null,
+  });
+});
+app.put("/api/dominio/config", requireAdmin, (req, res) => {
+  const b = req.body || {};
+  const atual = getDominioConfig();
+  sqlite
+    .prepare(
+      `INSERT INTO dominio_config (id, source, db_driver, db_host, db_port, db_name, db_user, db_password, db_connect_string, query_clientes, col_codigo, col_nome, col_cnpj, col_status, api_url, api_token, updated_at)
+       VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(id) DO UPDATE SET source=excluded.source, db_driver=excluded.db_driver, db_host=excluded.db_host,
+         db_port=excluded.db_port, db_name=excluded.db_name, db_user=excluded.db_user,
+         db_password=excluded.db_password, db_connect_string=excluded.db_connect_string,
+         query_clientes=excluded.query_clientes, col_codigo=excluded.col_codigo, col_nome=excluded.col_nome,
+         col_cnpj=excluded.col_cnpj, col_status=excluded.col_status, api_url=excluded.api_url,
+         api_token=excluded.api_token, updated_at=datetime('now')`
+    )
+    .run(
+      b.source || "",
+      b.dbDriver || null,
+      b.dbHost || null,
+      b.dbPort ? Number(b.dbPort) : null,
+      b.dbName || null,
+      b.dbUser || null,
+      b.dbPassword ? String(b.dbPassword) : atual.db_password || null, // vazio = mantém a senha já salva
+      b.dbConnectString || null,
+      b.queryClientes || null,
+      b.colCodigo || "CODIGO",
+      b.colNome || "NOME",
+      b.colCnpj || "CNPJ",
+      b.colStatus || "STATUS",
+      b.apiUrl || null,
+      b.apiToken ? String(b.apiToken) : atual.api_token || null
+    );
+  res.json({ ok: true });
+});
+// Pede pro agente testar a conexão agora (o teste roda na máquina do agente, não na nuvem —
+// ela é quem tem acesso à rede do Domínio Web). O front faz polling neste id até status != pending.
+app.post("/api/dominio/testar-conexao", requireAdmin, (req, res) => {
+  const user = (req as any).user;
+  const info = sqlite.prepare(`INSERT INTO dominio_test_jobs (status, criado_por) VALUES ('pending', ?)`).run(user.id);
+  res.json({ id: Number(info.lastInsertRowid) });
+});
+app.get("/api/dominio/testar-conexao/:id", requireAdmin, (req, res) => {
+  const row = sqlite.prepare(`SELECT * FROM dominio_test_jobs WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!row) return res.status(404).json({ error: "Teste não encontrado." });
+  res.json({ status: row.status, resultado: row.resultado_json ? JSON.parse(row.resultado_json) : null, erro: row.erro });
 });
 
 // ---------- Checklist / Solicitações ----------
@@ -1150,6 +1292,66 @@ app.get("/api/email/log", blockCliente, requirePermissao("configuracoes", "visua
   res.json({ items: rows });
 });
 
+// Identificação automática do cliente a partir de um arquivo (PDF, OFX ou XML): extrai texto,
+// procura CNPJ/CPF e confere com o que está cadastrado em cada empresa. É só uma sugestão — quem
+// confirma e manda o e-mail continua sendo o administrador, na tela.
+async function extrairTextoArquivo(file: Express.Multer.File): Promise<string> {
+  const ext = path.extname(file.originalname).toLowerCase();
+  if (ext === ".pdf" || file.mimetype === "application/pdf") {
+    const pdfParse = require("pdf-parse");
+    // pdf-parse trata "instanceof Buffer" como um caso especial e acaba lendo o ArrayBuffer
+    // inteiro por baixo (ignorando byteOffset/length) — como o buffer do multer normalmente é uma
+    // "view" dentro do pool interno de Buffers do Node, isso lê lixo do pool e quebra a leitura
+    // do xref. Um Uint8Array "puro" (não Buffer) evita esse caminho com bug.
+    const data = await pdfParse(new Uint8Array(file.buffer));
+    return data.text || "";
+  }
+  // OFX, XML, TXT e a maioria dos extratos exportados são texto puro — dá pra ler direto.
+  return file.buffer.toString("utf8");
+}
+function extrairDocumentos(texto: string): { documento: string; tipo: "cnpj" | "cpf" }[] {
+  const encontrados: { documento: string; tipo: "cnpj" | "cpf" }[] = [];
+  const vistos = new Set<string>();
+  const reCnpj = /\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}/g;
+  let sobra = texto;
+  for (const m of texto.matchAll(reCnpj)) {
+    const digitos = m[0].replace(/\D/g, "");
+    if (digitos.length === 14 && !vistos.has(digitos)) {
+      vistos.add(digitos);
+      encontrados.push({ documento: digitos, tipo: "cnpj" });
+    }
+    sobra = sobra.replace(m[0], " "); // remove pra não gerar falso-positivo de CPF dentro do CNPJ
+  }
+  const reCpf = /\d{3}\.?\d{3}\.?\d{3}-?\d{2}/g;
+  for (const m of sobra.matchAll(reCpf)) {
+    const digitos = m[0].replace(/\D/g, "");
+    if (digitos.length === 11 && !vistos.has(digitos)) {
+      vistos.add(digitos);
+      encontrados.push({ documento: digitos, tipo: "cpf" });
+    }
+  }
+  return encontrados;
+}
+app.post("/api/email/identificar", blockCliente, requirePermissao("configuracoes", "visualizar"), upload.single("arquivo"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "Envie um arquivo." });
+  let texto = "";
+  try {
+    texto = await extrairTextoArquivo(req.file);
+  } catch (e: any) {
+    return res.status(400).json({ error: "Não consegui ler o conteúdo do arquivo: " + e.message });
+  }
+  const documentos = extrairDocumentos(texto);
+  if (!documentos.length) return res.json({ documentosEncontrados: [], matches: [] });
+  const placeholders = documentos.map(() => "?").join(",");
+  const matches = sqlite
+    .prepare(
+      `SELECT ed.documento, ed.tipo, e.id as empresaId, e.nome as empresaNome
+       FROM empresa_documentos ed JOIN empresas e ON e.id = ed.empresa_id WHERE ed.documento IN (${placeholders})`
+    )
+    .all(...documentos.map((d) => d.documento));
+  res.json({ documentosEncontrados: documentos, matches });
+});
+
 // ---------- API do agente do Domínio Web (autenticada por token — ver src/dominio-agent.ts) ----------
 const DOMINIO_AGENT_TOKEN = process.env.DOMINIO_AGENT_TOKEN || "";
 function requireDominioAgent(req: express.Request, res: express.Response, next: express.NextFunction) {
@@ -1186,6 +1388,40 @@ app.post("/api/dominio-agent/empresas", requireDominioAgent, (req, res) => {
   }
   sqlite.prepare(`INSERT INTO dominio_sync_log (origem, empresas_novas, empresas_atualizadas, status) VALUES ('agente', ?, ?, 'ok')`).run(novas, atualizadas);
   res.json({ ok: true, novas, atualizadas });
+});
+// Config completa (com senha/token em texto puro) — só o agente autenticado por token acessa isso.
+app.get("/api/dominio-agent/config", requireDominioAgent, (_req, res) => {
+  const c = getDominioConfig();
+  res.json({
+    source: c.source || "",
+    dbDriver: c.db_driver || "",
+    dbHost: c.db_host || "",
+    dbPort: c.db_port || null,
+    dbName: c.db_name || "",
+    dbUser: c.db_user || "",
+    dbPassword: c.db_password || "",
+    dbConnectString: c.db_connect_string || "",
+    queryClientes: c.query_clientes || "",
+    colCodigo: c.col_codigo || "CODIGO",
+    colNome: c.col_nome || "NOME",
+    colCnpj: c.col_cnpj || "CNPJ",
+    colStatus: c.col_status || "STATUS",
+    apiUrl: c.api_url || "",
+    apiToken: c.api_token || "",
+  });
+});
+app.get("/api/dominio-agent/work", requireDominioAgent, (_req, res) => {
+  const testJobs = sqlite.prepare(`SELECT id FROM dominio_test_jobs WHERE status = 'pending' ORDER BY id ASC LIMIT 5`).all();
+  res.json({ testJobs });
+});
+app.post("/api/dominio-agent/teste-resultado", requireDominioAgent, (req, res) => {
+  const { jobId, ok, resultado, erro } = req.body || {};
+  const job = sqlite.prepare(`SELECT * FROM dominio_test_jobs WHERE id = ?`).get(Number(jobId)) as any;
+  if (!job) return res.status(404).json({ error: "not found" });
+  sqlite
+    .prepare(`UPDATE dominio_test_jobs SET status=?, resultado_json=?, erro=?, resolvido_em=datetime('now') WHERE id=?`)
+    .run(ok ? "ok" : "erro", resultado ? JSON.stringify(resultado) : null, erro || null, job.id);
+  res.json({ ok: true });
 });
 
 app.listen(PORT, () => {
