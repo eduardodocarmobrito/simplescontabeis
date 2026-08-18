@@ -705,8 +705,10 @@ function slotInner(periodoId, s, opts){
     return `<div class="slot">
       ${label}
       <div class="slot-locked"><span class="fname">${esc(s.upload.fileName)}</span>Enviado em ${fmtDate(s.upload.uploadedAt)} · travado</div>
-      ${podeVerDownload? `<button class="btn small" data-act="download" data-upload="${s.upload.id}">Baixar</button>`:''}
-      ${podeEditar? `<button class="btn small danger" data-act="reabrir" data-upload="${s.upload.id}">Reabrir</button>`:''}
+      ${(podeVerDownload || podeEditar)? `<div style="display:flex; gap:6px;">
+        ${podeVerDownload? `<button class="btn small" data-act="download" data-upload="${s.upload.id}">Baixar</button>`:''}
+        ${podeEditar? `<button class="btn small danger" data-act="reabrir" data-upload="${s.upload.id}">Reabrir</button>`:''}
+      </div>`:''}
     </div>`;
   }
   return `<div class="slot">
@@ -765,7 +767,7 @@ async function abrirGrade(atribuicaoId, souCliente){
     </div>
   `;
   main().innerHTML = html;
-  document.getElementById('btnVoltarGrade').addEventListener('click', ()=> souCliente ? pageMeusDocumentos() : renderAtribuicoes());
+  document.getElementById('btnVoltarGrade').addEventListener('click', ()=> souCliente ? pageMeusDocumentos() : pageSolicitacoes());
 
   if(grade.length){
     const tbody = document.getElementById('gradeBody');
