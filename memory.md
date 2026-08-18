@@ -38,3 +38,22 @@ Todas essas telas têm edição via `PUT`, sem trava:
 
 Se eu criar uma tela nova de cadastro e ela não aparecer nesta lista com um jeito de editar,
 é sinal de que ficou faltando — não assumir que está certo assim.
+
+# Regra padrão: campo de seleção/busca tem que dar pra digitar e filtrar
+
+Definido em 2026-08-18. Vale pra todo campo novo que eu criar pra escolher um item numa lista
+(cliente, empresa, usuário, etc.) — nada de `<select>` nativo simples quando a lista pode crescer.
+
+**Todo campo de seleção/busca tem que ter a opção de digitar para filtrar** — o usuário não pode
+ficar preso rolando uma lista longa num `<select>` nativo. O padrão do projeto é o combobox com
+busca: `comboSelectHtml(id, placeholder)` gera o HTML e `setupComboSelect(id, items, onChange)`
+liga o filtro/seleção — ambos em [public/app.html](public/app.html), junto dos outros helpers
+(perto de `esc()`). `items` é `[{id, label}]`; `onChange(id|null)` roda a cada seleção ou quando o
+campo é limpo. O valor selecionado fica em `#{id} .combo-value` (input hidden) — é isso que o resto
+do código lê, não o texto digitado.
+
+Primeiro uso: filtro de **Cliente** em Relatórios (`renderRelTab`/`carregarRelatorio`). Qualquer
+campo novo de "escolher uma empresa/usuário/item numa lista" que eu pedir depois deve usar esse
+mesmo componente por padrão, mesmo que eu não peça a busca explicitamente de novo — só usar um
+`<select>` simples se a lista for claramente curta e fixa (ex.: os 3-4 perfis de usuário, os tipos
+de arquivo aceitos).

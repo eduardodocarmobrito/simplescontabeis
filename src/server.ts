@@ -462,9 +462,12 @@ const app = express();
 app.set("trust proxy", 1);
 app.use(express.json({ limit: "20mb" }));
 app.use(cookieParser());
-app.use(express.static(path.join(__dirname, "..", "public")));
+// cacheControl:false — o site é uma página só, ainda em ajuste frequente; sem isso o navegador
+// segura uma cópia velha do app.html em cache e mudanças de UI não aparecem sem hard refresh.
+app.use(express.static(path.join(__dirname, "..", "public"), { cacheControl: false }));
 
 app.get("/", (_req, res) => {
+  res.set("Cache-Control", "no-store");
   res.sendFile(path.join(__dirname, "..", "public", "app.html"));
 });
 app.get("/api/health", (_req, res) => res.json({ ok: true }));

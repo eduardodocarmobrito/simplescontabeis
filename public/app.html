@@ -32,6 +32,15 @@
   .field input:focus, .field select:focus, .field textarea:focus{outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-pale); background:var(--surface);}
   .login-error{margin-top:12px; padding:10px 12px; background:#F6E6E3; color:var(--debit); border:1px solid #E3B8AC; border-radius:6px; font-size:12.5px;}
 
+  .combo{position:relative;}
+  .combo-input{font-family:'Inter',sans-serif; font-size:14px; border:1px solid var(--rule); border-radius:8px; padding:9px 11px; background:var(--paper); color:var(--ink); width:100%;}
+  .combo-input:focus{outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-pale); background:var(--surface);}
+  .combo-list{position:absolute; z-index:60; top:calc(100% + 4px); left:0; right:0; max-height:240px; overflow-y:auto; background:var(--surface); border:1px solid var(--rule); border-radius:10px; box-shadow:var(--shadow); display:none;}
+  .combo-list.open{display:block;}
+  .combo-item{padding:9px 12px; font-size:13.5px; cursor:pointer;}
+  .combo-item:hover{background:var(--paper);}
+  .combo-empty{padding:9px 12px; font-size:12.5px; color:var(--ink-soft);}
+
   .btn{display:inline-flex; align-items:center; gap:6px; border:1px solid var(--rule); background:var(--surface); color:var(--ink); padding:9px 15px; border-radius:8px; font-size:13.5px; cursor:pointer; font-weight:500;}
   .btn:hover{border-color:var(--accent); color:var(--accent-deep);}
   .btn.primary{background:var(--accent); border-color:var(--accent); color:#fff;}
@@ -104,11 +113,22 @@
   .grade-table th{font-family:'IBM Plex Mono',monospace; font-size:10.5px; text-transform:uppercase; color:var(--ink-soft); padding:8px; border-bottom:1px solid var(--rule); text-align:left;}
   .grade-table td{padding:8px; border-bottom:1px solid var(--rule-soft); vertical-align:top;}
   .slot{display:flex; flex-direction:column; gap:6px; min-width:150px;}
+  .slot button{align-self:flex-start;}
   .slot .slot-label{font-size:11.5px; color:var(--ink-soft);}
   .slot input[type=file]{font-size:11px;}
   .slot-locked{background:var(--accent-pale); border-radius:8px; padding:8px 10px; font-size:12px; color:var(--accent-deep);}
   .slot-locked .fname{font-weight:600; display:block; word-break:break-all;}
   .slot-reopen-note{background:#F5E7D0; color:var(--amber); border-radius:8px; padding:6px 9px; font-size:11.5px; margin-bottom:4px;}
+
+  .doc-row{display:flex; gap:14px; align-items:stretch; margin-bottom:14px;}
+  .doc-card{width:340px; flex-shrink:0; background:var(--surface); border:1px solid var(--rule); border-radius:var(--radius); box-shadow:var(--shadow); padding:14px 16px; cursor:pointer; display:flex; flex-direction:column; justify-content:center; transition:border-color .15s;}
+  .doc-card:hover{border-color:var(--accent);}
+  .doc-card h3{margin:0 0 3px; font-size:14.5px;}
+  .doc-card .doc-card-sub{font-size:11.5px; color:var(--ink-soft);}
+  .doc-card .doc-card-link{margin-top:8px; font-family:'IBM Plex Mono',monospace; font-size:10px; letter-spacing:.04em; text-transform:uppercase; color:var(--accent-deep);}
+  .doc-inline{flex:1; min-width:0; background:var(--surface); border:1px solid var(--rule); border-radius:var(--radius); box-shadow:var(--shadow); padding:14px 16px; display:flex; gap:24px; align-items:flex-start; flex-wrap:wrap;}
+  .doc-inline-periodo{font-family:'IBM Plex Mono',monospace; font-size:11px; letter-spacing:.05em; text-transform:uppercase; color:var(--ink-soft); align-self:center; min-width:64px;}
+  .doc-inline-empty{color:var(--ink-soft); font-size:12.5px; align-self:center;}
 
   .badge-count{display:inline-flex; align-items:center; justify-content:center; min-width:18px; height:18px; padding:0 5px; border-radius:9px; background:var(--debit); color:#fff; font-size:10.5px; font-weight:700;}
 
@@ -188,6 +208,49 @@ async function api(path, opts){
 function fmtMoney(v){ return (Number(v)||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'}); }
 function fmtDate(iso){ if(!iso) return '—'; const d=new Date(String(iso).replace(' ','T')+(String(iso).includes('Z')?'':'Z')); if(isNaN(d)) return iso; return d.toLocaleDateString('pt-BR'); }
 function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+// Combobox com busca: renderiza <div class="combo"><input class="combo-input"><input type="hidden">
+// <div class="combo-list"></div></div> — usar em qualquer lugar que hoje seja um <select> grande
+// (ex.: escolher um cliente numa lista longa) e o usuário precise digitar pra filtrar.
+function comboSelectHtml(id, placeholder){
+  return `<div class="combo" id="${id}">
+    <input type="text" class="combo-input" placeholder="${esc(placeholder||'Digite para buscar…')}" autocomplete="off">
+    <input type="hidden" class="combo-value">
+    <div class="combo-list"></div>
+  </div>`;
+}
+// items: [{id, label}]. onChange(id|null) roda toda vez que a seleção muda (inclusive ao limpar).
+function setupComboSelect(id, items, onChange){
+  const root = document.getElementById(id);
+  const input = root.querySelector('.combo-input');
+  const hidden = root.querySelector('.combo-value');
+  const list = root.querySelector('.combo-list');
+  function renderList(filtro){
+    const termo = (filtro||'').trim().toLowerCase();
+    const filtrados = termo? items.filter(it=>it.label.toLowerCase().includes(termo)) : items;
+    list.innerHTML = filtrados.length
+      ? filtrados.map(it=>`<div class="combo-item" data-id="${it.id}">${esc(it.label)}</div>`).join('')
+      : `<div class="combo-empty">Nenhum resultado.</div>`;
+    list.querySelectorAll('.combo-item').forEach(el=>el.addEventListener('mousedown', e=>{
+      e.preventDefault();
+      const item = items.find(it=>String(it.id)===el.dataset.id);
+      hidden.value = item.id;
+      input.value = item.label;
+      list.classList.remove('open');
+      onChange(item.id);
+    }));
+  }
+  input.addEventListener('focus', ()=>{ renderList(input.value===selectedLabel()? '' : input.value); list.classList.add('open'); });
+  input.addEventListener('input', ()=>{ renderList(input.value); list.classList.add('open'); });
+  input.addEventListener('blur', ()=>{
+    setTimeout(()=>{
+      list.classList.remove('open');
+      // se o texto não corresponde mais ao item selecionado, considera que o usuário limpou a escolha
+      if(hidden.value && input.value !== selectedLabel()){ hidden.value=''; input.value=''; onChange(null); }
+    }, 150);
+  });
+  function selectedLabel(){ const it = items.find(it=>String(it.id)===hidden.value); return it? it.label : ''; }
+}
 
 function openModal(html){ document.getElementById('modalBody').innerHTML=html; document.getElementById('modalBg').classList.add('open'); }
 function closeModal(){ document.getElementById('modalBg').classList.remove('open'); document.getElementById('modalBody').innerHTML=''; }
@@ -628,11 +691,65 @@ function novaAtribModal(empresas, templates){
 }
 
 // Grade compartilhada (admin abre de dentro de Solicitações; cliente abre de Meus Documentos)
+const MESES=['','Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+function rotuloPeriodo(p){ return p.mes? `${MESES[p.mes]}/${p.ano}` : (p.rotulo || String(p.ano)); }
+
+// Conteúdo de um slot (anexar/baixar/reabrir), sem wrapper — usado tanto na grade completa
+// (dentro de um <td>) quanto no card compacto de "Meus Documentos" (dentro de uma div solta).
+function slotInner(periodoId, s, opts){
+  const { podePostar, podeVerDownload, podeEditar, mostrarLabel } = opts;
+  const inputId = `f_${periodoId}_${s.chave}`;
+  const accept = (s.accept||[]).includes('qualquer') ? '' : (s.accept||[]).map(a=>({ofx:'.ofx',pdf:'.pdf',zip:'.zip,.rar,.7z',xml:'.xml',imagem:'.png,.jpg,.jpeg'}[a]||'')).join(',');
+  const label = mostrarLabel? `<div class="slot-label" style="font-weight:600; color:var(--ink);">${esc(s.label)}${s.obrigatorio?' *':''}</div>` : '';
+  if(s.travado && s.upload){
+    return `<div class="slot">
+      ${label}
+      <div class="slot-locked"><span class="fname">${esc(s.upload.fileName)}</span>Enviado em ${fmtDate(s.upload.uploadedAt)} · travado</div>
+      ${podeVerDownload? `<button class="btn small" data-act="download" data-upload="${s.upload.id}">Baixar</button>`:''}
+      ${podeEditar? `<button class="btn small danger" data-act="reabrir" data-upload="${s.upload.id}">Reabrir</button>`:''}
+    </div>`;
+  }
+  return `<div class="slot">
+    ${label}
+    ${s.reaberto? `<div class="slot-reopen-note">Reaberto${s.motivoReabertura? ': '+esc(s.motivoReabertura):''} — pode reenviar</div>`:''}
+    ${s.upload? `<div class="slot-label">Anterior: ${esc(s.upload.fileName)} (substituído)</div>`:''}
+    ${podePostar? `
+      <input type="file" id="${inputId}" ${accept?`accept="${accept}"`:''}>
+      <button class="btn small primary" data-act="salvar" data-periodo="${periodoId}" data-item="${s.chave}" data-input="${inputId}">Salvar</button>
+    ` : `<span class="slot-label">Pendente</span>`}
+  </div>`;
+}
+// Liga os cliques de salvar/baixar/reabrir dentro de um container (a grade inteira, ou um card
+// compacto) — onDepois roda depois de qualquer ação que mude o estado, pra recarregar a tela certa.
+function wireSlotEvents(container, onDepois){
+  container.querySelectorAll('[data-act="salvar"]').forEach(b=>b.addEventListener('click', async ()=>{
+    const input = document.getElementById(b.dataset.input);
+    const file = input.files[0];
+    if(!file){ toast('Selecione um arquivo.','err'); return; }
+    const fd = new FormData(); fd.append('arquivo', file); fd.append('itemChave', b.dataset.item);
+    try{
+      await api('/checklist/periodos/'+b.dataset.periodo+'/upload', { method:'POST', body:fd });
+      toast('Arquivo salvo.','ok');
+      onDepois();
+    }catch(e){ toast(e.message,'err'); }
+  }));
+  container.querySelectorAll('[data-act="download"]').forEach(b=>b.addEventListener('click', ()=>{
+    window.open('/api/checklist/uploads/'+b.dataset.upload+'/download', '_blank');
+  }));
+  container.querySelectorAll('[data-act="reabrir"]').forEach(b=>b.addEventListener('click', async ()=>{
+    const motivo = prompt('Motivo da reabertura (aparece para o cliente):');
+    if(motivo===null) return;
+    await api('/checklist/uploads/'+b.dataset.upload+'/reabrir', { method:'POST', body:{ motivo } });
+    onDepois();
+  }));
+}
+
 async function abrirGrade(atribuicaoId, souCliente){
   const { atribuicao, grade } = await api('/checklist/grade/'+atribuicaoId);
   const podePostar = souCliente || can('solicitacoes','postar');
   const podeEditar = !souCliente && can('solicitacoes','editar');
   const podeVerDownload = !souCliente && can('solicitacoes','visualizar');
+  const opts = { podePostar, podeVerDownload, podeEditar, mostrarLabel:false };
 
   const html = `
     <h1>${esc(atribuicao.templateNome)}</h1>
@@ -651,13 +768,11 @@ async function abrirGrade(atribuicaoId, souCliente){
   document.getElementById('btnVoltarGrade').addEventListener('click', ()=> souCliente ? pageMeusDocumentos() : renderAtribuicoes());
 
   if(grade.length){
-    const MESES=['','Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
     const tbody = document.getElementById('gradeBody');
-    tbody.innerHTML = grade.map(p=>{
-      const rotulo = p.mes? `${MESES[p.mes]}/${p.ano}` : (p.rotulo || String(p.ano));
-      return `<tr data-periodo="${p.periodoId}"><td><b>${esc(rotulo)}</b></td>${p.slots.map(s=>slotHtml(p.periodoId, s, podePostar, podeVerDownload, podeEditar)).join('')}</tr>`;
-    }).join('');
-    wireGradeEvents();
+    tbody.innerHTML = grade.map(p=>
+      `<tr data-periodo="${p.periodoId}"><td><b>${esc(rotuloPeriodo(p))}</b></td>${p.slots.map(s=>`<td>${slotInner(p.periodoId, s, opts)}</td>`).join('')}</tr>`
+    ).join('');
+    wireSlotEvents(tbody, ()=>abrirGrade(atribuicaoId, souCliente));
   }
 
   if(podePostar && atribuicao.periodicidade!=='avulso') document.getElementById('btnGerarPeriodo').addEventListener('click', async ()=>{
@@ -672,51 +787,28 @@ async function abrirGrade(atribuicaoId, souCliente){
     await api('/checklist/periodos/gerar', { method:'POST', body:{ atribuicaoId, ano:new Date().getFullYear(), rotulo } });
     abrirGrade(atribuicaoId, souCliente);
   });
-
-  function slotHtml(periodoId, s, podePostar, podeVerDownload, podeEditar){
-    const inputId = `f_${periodoId}_${s.chave}`;
-    const accept = (s.accept||[]).includes('qualquer') ? '' : (s.accept||[]).map(a=>({ofx:'.ofx',pdf:'.pdf',zip:'.zip,.rar,.7z',xml:'.xml',imagem:'.png,.jpg,.jpeg'}[a]||'')).join(',');
-    if(s.travado && s.upload){
-      return `<td><div class="slot">
-        <div class="slot-locked"><span class="fname">${esc(s.upload.fileName)}</span>Enviado em ${fmtDate(s.upload.uploadedAt)} · travado</div>
-        ${podeVerDownload? `<button class="btn small" data-act="download" data-upload="${s.upload.id}">Baixar</button>`:''}
-        ${podeEditar? `<button class="btn small danger" data-act="reabrir" data-upload="${s.upload.id}">Reabrir</button>`:''}
-      </div></td>`;
-    }
-    return `<td><div class="slot">
-      ${s.reaberto? `<div class="slot-reopen-note">Reaberto${s.motivoReabertura? ': '+esc(s.motivoReabertura):''} — pode reenviar</div>`:''}
-      ${s.upload? `<div class="slot-label">Anterior: ${esc(s.upload.fileName)} (substituído)</div>`:''}
-      ${podePostar? `
-        <input type="file" id="${inputId}" ${accept?`accept="${accept}"`:''}>
-        <button class="btn small primary" data-act="salvar" data-periodo="${periodoId}" data-item="${s.chave}" data-input="${inputId}">Salvar</button>
-      ` : `<span class="slot-label">Pendente</span>`}
-    </div></td>`;
-  }
-  function wireGradeEvents(){
-    document.querySelectorAll('[data-act="salvar"]').forEach(b=>b.addEventListener('click', async ()=>{
-      const input = document.getElementById(b.dataset.input);
-      const file = input.files[0];
-      if(!file){ toast('Selecione um arquivo.','err'); return; }
-      const fd = new FormData(); fd.append('arquivo', file); fd.append('itemChave', b.dataset.item);
-      try{
-        await api('/checklist/periodos/'+b.dataset.periodo+'/upload', { method:'POST', body:fd });
-        toast('Arquivo salvo.','ok');
-        abrirGrade(atribuicaoId, souCliente);
-      }catch(e){ toast(e.message,'err'); }
-    }));
-    document.querySelectorAll('[data-act="download"]').forEach(b=>b.addEventListener('click', ()=>{
-      window.open('/api/checklist/uploads/'+b.dataset.upload+'/download', '_blank');
-    }));
-    document.querySelectorAll('[data-act="reabrir"]').forEach(b=>b.addEventListener('click', async ()=>{
-      const motivo = prompt('Motivo da reabertura (aparece para o cliente):');
-      if(motivo===null) return;
-      await api('/checklist/uploads/'+b.dataset.upload+'/reabrir', { method:'POST', body:{ motivo } });
-      abrirGrade(atribuicaoId, souCliente);
-    }));
-  }
 }
 
 // ===================== Meus Documentos (cliente) =====================
+// Cada solicitação vira uma linha compacta: um card pequeno pra abrir o histórico completo, e ao
+// lado o período "da vez" já pronto pra anexar — mensal mostra o mês anterior (o extrato que acabou
+// de fechar), anual mostra o ano corrente, avulso mostra a pendência mais recente ainda aberta.
+function periodoDaVez(atribuicao, grade){
+  if(!grade.length) return null;
+  if(atribuicao.periodicidade==='mensal'){
+    const hoje = new Date();
+    const anterior = new Date(hoje.getFullYear(), hoje.getMonth()-1, 1);
+    const ano = anterior.getFullYear(), mes = anterior.getMonth()+1;
+    return grade.find(p=>p.ano===ano && p.mes===mes) || null;
+  }
+  if(atribuicao.periodicidade==='anual'){
+    const anoAtual = new Date().getFullYear();
+    return grade.find(p=>p.ano===anoAtual) || grade.slice().sort((a,b)=>b.ano-a.ano)[0];
+  }
+  // avulso: a pendência aberta mais recente (algum slot ainda não travado)
+  const abertos = grade.filter(p=>p.slots.some(s=>!s.travado));
+  return abertos.length? abertos[abertos.length-1] : null;
+}
 async function pageMeusDocumentos(){
   const { items } = await api('/checklist/minhas-atribuicoes');
   main().innerHTML = `
@@ -726,13 +818,38 @@ async function pageMeusDocumentos(){
   `;
   const box = document.getElementById('mdList');
   if(!items.length){ box.innerHTML = '<div class="empty-state">Nenhuma solicitação criada para sua empresa ainda.</div>'; return; }
+
   box.innerHTML = items.map(a=>`
-    <div class="card" data-id="${a.id}" style="cursor:pointer;">
-      <h3 style="margin-bottom:2px;">${esc(a.templateNome)}</h3>
-      <div style="color:var(--ink-soft); font-size:12.5px;">${({mensal:'Mensal',anual:'Anual',avulso:'Avulso'})[a.periodicidade]||a.periodicidade}${a.descricao?' — '+esc(a.descricao):''}</div>
+    <div class="doc-row" data-id="${a.id}">
+      <div class="doc-card" data-id="${a.id}">
+        <h3>${esc(a.templateNome)}</h3>
+        <div class="doc-card-sub">${({mensal:'Mensal',anual:'Anual',avulso:'Avulso'})[a.periodicidade]||a.periodicidade}</div>
+        <div class="doc-card-link">Ver histórico completo →</div>
+      </div>
+      <div class="doc-inline" id="docInline${a.id}"><div class="empty-state" style="padding:10px;">Carregando…</div></div>
     </div>
   `).join('');
-  box.querySelectorAll('.card').forEach(c=>c.addEventListener('click', ()=>abrirGrade(Number(c.dataset.id), true)));
+  box.querySelectorAll('.doc-card').forEach(c=>c.addEventListener('click', ()=>abrirGrade(Number(c.dataset.id), true)));
+
+  for(const a of items){
+    const painel = document.getElementById('docInline'+a.id);
+    try{
+      const { grade } = await api('/checklist/grade/'+a.id);
+      const p = periodoDaVez(a, grade);
+      if(!p){
+        painel.innerHTML = `<div class="doc-inline-empty">Nenhuma pendência no momento — clique no card para ver o histórico.</div>`;
+        continue;
+      }
+      const opts = { podePostar:true, podeVerDownload:false, podeEditar:false, mostrarLabel:true };
+      painel.innerHTML = `
+        <div class="doc-inline-periodo">${esc(rotuloPeriodo(p))}</div>
+        ${p.slots.map(s=>slotInner(p.periodoId, s, opts)).join('')}
+      `;
+      wireSlotEvents(painel, ()=>pageMeusDocumentos());
+    }catch(e){
+      painel.innerHTML = `<div class="doc-inline-empty">Não consegui carregar — abra o card.</div>`;
+    }
+  }
 }
 
 // ===================== Financeiro =====================
@@ -874,16 +991,16 @@ async function renderRelTab(){
   const box = document.getElementById('relContent');
   box.innerHTML = `
     <div class="row" style="margin-bottom:16px;">
-      <div class="field" style="margin-bottom:0; min-width:260px;"><label>Cliente</label>
-        <select id="relEmpresa"><option value="">Selecione um cliente…</option>${empresas.map(e=>`<option value="${e.id}">${esc(e.nome)}</option>`).join('')}</select>
+      <div class="field" style="margin-bottom:0; min-width:280px;"><label>Cliente</label>
+        ${comboSelectHtml('relEmpresaCombo', 'Selecione um cliente…')}
       </div>
     </div>
     <div id="relResultado" class="card"><div class="empty-state">Selecione um cliente para ver o relatório.</div></div>
   `;
-  document.getElementById('relEmpresa').addEventListener('change', carregarRelatorio);
+  setupComboSelect('relEmpresaCombo', empresas.map(e=>({id:e.id, label:e.nome})), carregarRelatorio);
 }
 async function carregarRelatorio(){
-  const empresaId = document.getElementById('relEmpresa').value;
+  const empresaId = document.querySelector('#relEmpresaCombo .combo-value').value;
   const box = document.getElementById('relResultado');
   if(!empresaId){ box.innerHTML = '<div class="empty-state">Selecione um cliente para ver o relatório.</div>'; return; }
   const data = await api('/relatorios/'+REL_TAB+'?empresaId='+empresaId);
