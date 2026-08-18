@@ -176,6 +176,8 @@ sqlite.exec(`
   -- Um documento por período (a guia em si) — sem trava: o administrador pode substituir/excluir
   -- se anexou o arquivo errado (quem precisa ficar travado é o anexo que o CLIENTE manda, não o
   -- que o escritório envia — ver memory.md).
+  -- Mais de um documento pode existir no mesmo período (ex.: guia original + guia recalculada
+  -- porque o cliente não pagou no prazo) — por isso não há UNIQUE(periodo_id) aqui.
   CREATE TABLE IF NOT EXISTS envio_documentos (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     periodo_id INTEGER NOT NULL REFERENCES envio_periodos(id) ON DELETE CASCADE,
@@ -183,13 +185,13 @@ sqlite.exec(`
     file_path TEXT NOT NULL,
     mime TEXT,
     size_bytes INTEGER,
+    observacao TEXT, -- ex.: "Guia recalculada — juros/multa atualizados"
     vencimento TEXT, -- 'YYYY-MM-DD', detectado automaticamente do conteúdo do arquivo (editável)
     vencimento_origem TEXT, -- 'automatico' | 'manual'
     enviado_por INTEGER REFERENCES app_users(id),
     enviado_em TEXT DEFAULT (datetime('now')),
     email_enviado INTEGER NOT NULL DEFAULT 0,
-    email_erro TEXT,
-    UNIQUE(periodo_id)
+    email_erro TEXT
   );
 
   -- ---- Financeiro (honorários) ----
@@ -325,6 +327,39 @@ sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_checklist_uploads_periodo ON checkli
 sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_envio_periodos_atrib ON envio_periodos(atribuicao_id);`);
 sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_honorarios_lanc_competencia ON honorarios_lancamentos(competencia);`);
 sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_dominio_dados_empresa ON dominio_dados(empresa_id, tipo, competencia);`);
+sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_envio_documentos_periodo ON envio_documentos(periodo_id);`);
+
+// Migração: bancos criados antes de 2026-08-18 têm envio_documentos com UNIQUE(periodo_id) e sem
+// a coluna observacao — reconstrói a tabela preservando os documentos já enviados, sem essa trava
+// (o fluxo de "guia recalculada" precisa de mais de um documento no mesmo período).
+{
+  const def = sqlite.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='envio_documentos'`).get() as any;
+  if (def && /UNIQUE\s*\(\s*periodo_id\s*\)/i.test(def.sql)) {
+    sqlite.exec(`
+      CREATE TABLE envio_documentos_novo (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        periodo_id INTEGER NOT NULL REFERENCES envio_periodos(id) ON DELETE CASCADE,
+        file_name TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        mime TEXT,
+        size_bytes INTEGER,
+        observacao TEXT,
+        vencimento TEXT,
+        vencimento_origem TEXT,
+        enviado_por INTEGER REFERENCES app_users(id),
+        enviado_em TEXT DEFAULT (datetime('now')),
+        email_enviado INTEGER NOT NULL DEFAULT 0,
+        email_erro TEXT
+      );
+      INSERT INTO envio_documentos_novo (id, periodo_id, file_name, file_path, mime, size_bytes, vencimento, vencimento_origem, enviado_por, enviado_em, email_enviado, email_erro)
+      SELECT id, periodo_id, file_name, file_path, mime, size_bytes, vencimento, vencimento_origem, enviado_por, enviado_em, email_enviado, email_erro FROM envio_documentos;
+      DROP TABLE envio_documentos;
+      ALTER TABLE envio_documentos_novo RENAME TO envio_documentos;
+      CREATE INDEX IF NOT EXISTS idx_envio_documentos_periodo ON envio_documentos(periodo_id);
+    `);
+    console.log("Migração aplicada: envio_documentos agora aceita mais de um documento por período.");
+  }
+}
 
 const MODULOS = ["dashboard", "empresas", "solicitacoes", "envio", "financeiro", "relatorios", "usuarios", "configuracoes"] as const;
 type Modulo = (typeof MODULOS)[number];
@@ -1361,32 +1396,33 @@ app.get("/api/envio/grade/:atribuicaoId", (req, res) => {
   const periodos = sqlite.prepare(`SELECT * FROM envio_periodos WHERE atribuicao_id = ? ORDER BY ano DESC, mes ASC`).all(atribuicaoId) as any[];
   const periodoIds = periodos.map((p) => p.id);
   const docs = periodoIds.length
-    ? (sqlite.prepare(`SELECT * FROM envio_documentos WHERE periodo_id IN (${periodoIds.map(() => "?").join(",")})`).all(...periodoIds) as any[])
+    ? (sqlite
+        .prepare(`SELECT * FROM envio_documentos WHERE periodo_id IN (${periodoIds.map(() => "?").join(",")}) ORDER BY enviado_em ASC, id ASC`)
+        .all(...periodoIds) as any[])
     : [];
-  const docPorPeriodo = new Map<number, any>();
-  for (const d of docs) docPorPeriodo.set(d.periodo_id, d);
+  const docsPorPeriodo = new Map<number, any[]>();
+  for (const d of docs) {
+    if (!docsPorPeriodo.has(d.periodo_id)) docsPorPeriodo.set(d.periodo_id, []);
+    docsPorPeriodo.get(d.periodo_id)!.push({
+      id: d.id,
+      fileName: d.file_name,
+      sizeBytes: d.size_bytes,
+      observacao: d.observacao,
+      vencimento: d.vencimento,
+      vencimentoOrigem: d.vencimento_origem,
+      enviadoEm: d.enviado_em,
+      emailEnviado: !!d.email_enviado,
+      emailErro: d.email_erro,
+    });
+  }
 
-  const grade = periodos.map((p) => {
-    const d = docPorPeriodo.get(p.id);
-    return {
-      periodoId: p.id,
-      ano: p.ano,
-      mes: p.mes,
-      rotulo: p.rotulo,
-      documento: d
-        ? {
-            id: d.id,
-            fileName: d.file_name,
-            sizeBytes: d.size_bytes,
-            vencimento: d.vencimento,
-            vencimentoOrigem: d.vencimento_origem,
-            enviadoEm: d.enviado_em,
-            emailEnviado: !!d.email_enviado,
-            emailErro: d.email_erro,
-          }
-        : null,
-    };
-  });
+  const grade = periodos.map((p) => ({
+    periodoId: p.id,
+    ano: p.ano,
+    mes: p.mes,
+    rotulo: p.rotulo,
+    documentos: docsPorPeriodo.get(p.id) || [],
+  }));
 
   res.json({
     atribuicao: {
@@ -1441,21 +1477,15 @@ app.post("/api/envio/periodos/:periodoId/enviar", blockCliente, requirePermissao
     }
   }
 
-  // Reenvio: substitui o documento anterior desse período (o antigo não fica travado — ver memory.md)
-  const existente = sqlite.prepare(`SELECT * FROM envio_documentos WHERE periodo_id = ?`).get(periodoId) as any;
-  if (existente) {
-    try {
-      fs.unlinkSync(existente.file_path);
-    } catch {}
-    sqlite.prepare(`DELETE FROM envio_documentos WHERE periodo_id = ?`).run(periodoId);
-  }
-
+  // Não substitui documentos já enviados nesse período — soma (ex.: guia recalculada porque o
+  // cliente não pagou no prazo). O histórico das guias anteriores fica visível na grade.
+  const observacao = req.body?.observacao ? String(req.body.observacao).trim() : null;
   const info = sqlite
     .prepare(
-      `INSERT INTO envio_documentos (periodo_id, file_name, file_path, mime, size_bytes, vencimento, vencimento_origem, enviado_por)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO envio_documentos (periodo_id, file_name, file_path, mime, size_bytes, observacao, vencimento, vencimento_origem, enviado_por)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(periodoId, req.file.originalname, destino, req.file.mimetype, req.file.size, vencimento, vencimentoOrigem, user.id);
+    .run(periodoId, req.file.originalname, destino, req.file.mimetype, req.file.size, observacao, vencimento, vencimentoOrigem, user.id);
   const docId = Number(info.lastInsertRowid);
 
   const rotulo = periodo.mes ? `${periodo.mes}/${periodo.ano}` : periodo.rotulo || String(periodo.ano);

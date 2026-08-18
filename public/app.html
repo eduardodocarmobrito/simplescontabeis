@@ -1090,29 +1090,36 @@ function vencimentoModal(docId, atualIso, onSalvo){
     catch(e){ toast(e.message,'err'); }
   });
 }
+function envioDocBlocoHtml(d, podeEditar, podePostar, souCliente){
+  const vencHtml = d.vencimento
+    ? `<span class="tag warn" style="font-weight:700;">Vencimento ${esc(fmtDateIso(d.vencimento))}</span>${d.vencimentoOrigem==='automatico'?' <span style="font-size:10.5px; color:var(--ink-soft);">(identificado automaticamente)</span>':''}`
+    : `<span class="tag muted">Vencimento não identificado</span>`;
+  return `<div class="slot" style="padding-bottom:8px; margin-bottom:2px; border-bottom:1px dashed var(--rule);">
+    <div class="slot-locked" style="background:var(--paper);"><span class="fname">${esc(d.fileName)}</span>Enviado em ${fmtDate(d.enviadoEm)}</div>
+    ${d.observacao? `<div class="slot-reopen-note" style="background:var(--accent-pale); color:var(--accent-deep);">${esc(d.observacao)}</div>`:''}
+    <div>${vencHtml}</div>
+    ${!souCliente ? `<div style="font-size:11px; color:var(--ink-soft);">${d.emailEnviado? '✓ Enviado por e-mail ao cliente' : (d.emailErro? '⚠ E-mail não enviado: '+esc(d.emailErro) : '')}</div>` : ''}
+    <div style="display:flex; gap:6px; flex-wrap:wrap;">
+      <button class="btn small" data-act="baixar-envio" data-doc="${d.id}">Baixar</button>
+      ${podeEditar? `<button class="btn small" data-act="editar-venc" data-doc="${d.id}" data-venc="${d.vencimento||''}">Vencimento</button>`:''}
+      ${!souCliente && podePostar && !d.emailEnviado? `<button class="btn small" data-act="reenviar-email" data-doc="${d.id}">Reenviar e-mail</button>`:''}
+      ${podeEditar? `<button class="btn small danger" data-act="excluir-doc" data-doc="${d.id}">Excluir</button>`:''}
+    </div>
+  </div>`;
+}
 function envioCelulaHtml(p, accept, podePostar, podeEditar, souCliente){
   const inputId = `ef_${p.periodoId}`;
-  if(p.documento){
-    const d = p.documento;
-    const vencHtml = d.vencimento
-      ? `<span class="tag warn" style="font-weight:700;">Vencimento ${esc(fmtDateIso(d.vencimento))}</span>${d.vencimentoOrigem==='automatico'?' <span style="font-size:10.5px; color:var(--ink-soft);">(identificado automaticamente)</span>':''}`
-      : `<span class="tag muted">Vencimento não identificado</span>`;
-    return `<div class="slot">
-      <div class="slot-locked" style="background:var(--paper);"><span class="fname">${esc(d.fileName)}</span>Enviado em ${fmtDate(d.enviadoEm)}</div>
-      <div>${vencHtml}</div>
-      ${!souCliente ? `<div style="font-size:11px; color:var(--ink-soft);">${d.emailEnviado? '✓ Enviado por e-mail ao cliente' : (d.emailErro? '⚠ E-mail não enviado: '+esc(d.emailErro) : '')}</div>` : ''}
-      <div style="display:flex; gap:6px; flex-wrap:wrap;">
-        <button class="btn small" data-act="baixar-envio" data-doc="${d.id}">Baixar</button>
-        ${podeEditar? `<button class="btn small" data-act="editar-venc" data-doc="${d.id}" data-venc="${d.vencimento||''}">Vencimento</button>`:''}
-        ${!souCliente && podePostar && !d.emailEnviado? `<button class="btn small" data-act="reenviar-email" data-doc="${d.id}">Reenviar e-mail</button>`:''}
-        ${podeEditar? `<button class="btn small danger" data-act="excluir-doc" data-doc="${d.id}">Excluir</button>`:''}
-      </div>
-    </div>`;
+  const docs = p.documentos || [];
+  const blocos = docs.map(d=>envioDocBlocoHtml(d, podeEditar, podePostar, souCliente)).join('');
+  if(souCliente || !podePostar){
+    return docs.length? `<div class="slot">${blocos}</div>` : `<span class="slot-label">Nada enviado ainda</span>`;
   }
-  if(souCliente || !podePostar) return `<span class="slot-label">Nada enviado ainda</span>`;
+  const obsId = docs.length? inputId+'_obs' : '';
   return `<div class="slot">
+    ${blocos}
     <input type="file" id="${inputId}" ${accept?`accept="${accept}"`:''}>
-    <button class="btn small primary" data-act="enviar-doc" data-periodo="${p.periodoId}" data-input="${inputId}">Enviar</button>
+    ${docs.length? `<input type="text" id="${obsId}" placeholder="Observação (ex.: guia recalculada — cliente não pagou no prazo)" style="font-size:12.5px; border:1px solid var(--rule); border-radius:8px; padding:7px 9px;">`:''}
+    <button class="btn small primary" data-act="enviar-doc" data-periodo="${p.periodoId}" data-input="${inputId}" data-obs="${obsId}">${docs.length?'Incluir outro documento':'Enviar'}</button>
   </div>`;
 }
 function wireEnvioGradeEvents(container, atribuicaoId, souCliente){
@@ -1121,6 +1128,10 @@ function wireEnvioGradeEvents(container, atribuicaoId, souCliente){
     const file = input.files[0];
     if(!file){ toast('Selecione um arquivo.','err'); return; }
     const fd = new FormData(); fd.append('arquivo', file);
+    if(b.dataset.obs){
+      const obsEl = document.getElementById(b.dataset.obs);
+      if(obsEl && obsEl.value.trim()) fd.append('observacao', obsEl.value.trim());
+    }
     try{
       const r = await api('/envio/periodos/'+b.dataset.periodo+'/enviar', { method:'POST', body:fd });
       if(r.emailEnviado) toast('Documento enviado e e-mail disparado ao cliente.','ok');
@@ -1188,10 +1199,16 @@ async function abrirEnvioGrade(atribuicaoId, souCliente){
 }
 
 // ===================== Documentos Recebidos (cliente) =====================
-function periodoEnvioMaisRecente(grade){
-  const comDoc = grade.filter(p=>p.documento);
-  if(!comDoc.length) return null;
-  return comDoc.reduce((a,b)=> (a.documento.enviadoEm > b.documento.enviadoEm ? a : b));
+// Acha o documento mais recente entre todos os períodos (pode ter mais de um documento por
+// período — ex.: guia original + guia recalculada) e devolve o período junto com ele.
+function documentoEnvioMaisRecente(grade){
+  let melhor = null, melhorDoc = null;
+  for(const p of grade){
+    for(const d of (p.documentos||[])){
+      if(!melhorDoc || d.enviadoEm > melhorDoc.enviadoEm){ melhor = p; melhorDoc = d; }
+    }
+  }
+  return melhor? { periodo: melhor, documento: melhorDoc } : null;
 }
 async function pageDocumentosRecebidos(){
   const { items } = await api('/envio/minhas-atribuicoes');
@@ -1218,18 +1235,21 @@ async function pageDocumentosRecebidos(){
     const painel = document.getElementById('drInline'+a.id);
     try{
       const { grade } = await api('/envio/grade/'+a.id);
-      const p = periodoEnvioMaisRecente(grade);
-      if(!p){
+      const achado = documentoEnvioMaisRecente(grade);
+      if(!achado){
         painel.innerHTML = `<div class="doc-inline-empty">Nenhum documento recebido ainda.</div>`;
         continue;
       }
-      const d = p.documento;
+      const { periodo: p, documento: d } = achado;
       const vencHtml = d.vencimento? `<span class="tag warn" style="font-weight:700;">Vencimento ${esc(fmtDateIso(d.vencimento))}</span>` : '';
+      const outros = (p.documentos||[]).length - 1;
       painel.innerHTML = `
         <div class="doc-inline-periodo">${esc(rotuloPeriodo(p))}</div>
         <div class="slot">
           <div class="slot-label" style="font-weight:600; color:var(--ink);">${esc(d.fileName)}</div>
+          ${d.observacao? `<div class="slot-reopen-note" style="background:var(--accent-pale); color:var(--accent-deep);">${esc(d.observacao)}</div>`:''}
           ${vencHtml}
+          ${outros>0? `<div style="font-size:11px; color:var(--ink-soft);">+ ${outros} documento(s) anterior(es) nesse período</div>`:''}
           <button class="btn small" data-act="baixar-envio" data-doc="${d.id}">Baixar</button>
         </div>
       `;
