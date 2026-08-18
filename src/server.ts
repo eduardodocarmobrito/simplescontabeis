@@ -372,6 +372,33 @@ function podeAcessarEmpresa(user: any, empresaId: number): boolean {
   return ids === null || ids.includes(empresaId);
 }
 
+// Usado pra bloquear exclusão de empresa/atribuição que já tem histórico real de documentos —
+// nesse caso o caminho é inativar (não apaga nada), não excluir.
+function atribuicaoTemAnexos(atribuicaoId: number): boolean {
+  const row = sqlite
+    .prepare(
+      `SELECT EXISTS(
+         SELECT 1 FROM checklist_uploads u JOIN checklist_periodos p ON p.id = u.periodo_id
+         WHERE p.atribuicao_id = ?
+       ) as tem`
+    )
+    .get(atribuicaoId) as any;
+  return !!row.tem;
+}
+function empresaTemAnexos(empresaId: number): boolean {
+  const row = sqlite
+    .prepare(
+      `SELECT EXISTS(
+         SELECT 1 FROM checklist_uploads u
+         JOIN checklist_periodos p ON p.id = u.periodo_id
+         JOIN checklist_atribuicoes a ON a.id = p.atribuicao_id
+         WHERE a.empresa_id = ?
+       ) as tem`
+    )
+    .get(empresaId) as any;
+  return !!row.tem;
+}
+
 function passwordPolicyError(password: string): string | null {
   const p = String(password || "");
   if (p.length < 10) return "A senha precisa ter pelo menos 10 caracteres.";
@@ -647,6 +674,7 @@ app.get("/api/empresas", blockCliente, requirePermissao("empresas", "visualizar"
       visivelRelatorios: !!r.visivel_relatorios,
       origem: r.origem,
       createdAt: r.created_at,
+      temAnexos: empresaTemAnexos(r.id),
     })),
   });
 });
@@ -677,6 +705,9 @@ app.put("/api/empresas/:id", blockCliente, requirePermissao("empresas", "editar"
 });
 app.delete("/api/empresas/:id", requireAdmin, (req, res) => {
   const id = Number(req.params.id);
+  if (empresaTemAnexos(id)) {
+    return res.status(409).json({ error: "Esta empresa já tem documentos anexados e não pode ser excluída. Use \"Inativar\" em vez disso." });
+  }
   sqlite.prepare(`DELETE FROM empresas WHERE id = ?`).run(id);
   res.json({ id });
 });
@@ -903,7 +934,7 @@ app.get("/api/checklist/atribuicoes", blockCliente, requirePermissao("solicitaco
   let rows = sqlite.prepare(sql).all(...params) as any[];
   const visiveis = empresasVisiveis(user);
   if (visiveis !== null) rows = rows.filter((r) => visiveis.includes(r.empresa_id));
-  res.json({ items: rows.map((r) => ({ ...r, itens: JSON.parse(r.itensJson) })) });
+  res.json({ items: rows.map((r) => ({ ...r, itens: JSON.parse(r.itensJson), temAnexos: atribuicaoTemAnexos(r.id) })) });
 });
 // Cliente: lista só as próprias atribuições (a rota acima é bloqueada para este perfil)
 app.get("/api/checklist/minhas-atribuicoes", (req, res) => {
@@ -938,7 +969,11 @@ app.post("/api/checklist/atribuicoes", blockCliente, requirePermissao("solicitac
   }
 });
 app.delete("/api/checklist/atribuicoes/:id", blockCliente, requirePermissao("solicitacoes", "editar"), (req, res) => {
-  sqlite.prepare(`DELETE FROM checklist_atribuicoes WHERE id = ?`).run(Number(req.params.id));
+  const id = Number(req.params.id);
+  if (atribuicaoTemAnexos(id)) {
+    return res.status(409).json({ error: "Já existe documento anexado nesta solicitação — não é possível excluir." });
+  }
+  sqlite.prepare(`DELETE FROM checklist_atribuicoes WHERE id = ?`).run(id);
   res.json({ ok: true });
 });
 

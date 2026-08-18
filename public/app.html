@@ -93,6 +93,8 @@
   .tag.warn{background:#F5E7D0; color:var(--amber);}
   .tag.bad{background:#F6E6E3; color:var(--debit);}
   .tag.muted{background:var(--paper-deep); color:var(--ink-soft);}
+  .link-discreto{font-size:11.5px; color:var(--ink-soft); cursor:pointer; border-bottom:1px dotted var(--ink-soft); line-height:1.3;}
+  .link-discreto:hover{color:var(--accent-deep); border-bottom-color:var(--accent-deep);}
 
   .modal-bg{position:fixed; inset:0; background:rgba(20,30,26,.35); display:none; align-items:center; justify-content:center; z-index:1000; padding:20px;}
   .modal-bg.open{display:flex;}
@@ -425,21 +427,39 @@ function cardModal(c){
 }
 
 // ===================== Empresas =====================
+let EMP_TAB='ativas';
 async function pageEmpresas(){
-  const { items } = await api('/empresas');
-  const podePostar = can('empresas','postar');
-  const podeEditar = can('empresas','editar');
-  const podeExcluir = STATE.user.perfil==='Administrador'; // exclusão é sempre restrita a Administrador (apaga em cascata)
   main().innerHTML = `
     <h1>Empresas</h1>
     <p class="subtitle">Clientes do escritório</p>
-    <div class="row" style="margin-bottom:16px;">
+    <div class="tabs">
+      <div class="tab" data-tab="ativas">Ativas</div>
+      <div class="tab" data-tab="inativas">Empresas Inativadas</div>
+    </div>
+    <div id="empresasContent"></div>
+  `;
+  main().querySelectorAll('.tab').forEach(t=>t.addEventListener('click', ()=>{ EMP_TAB=t.dataset.tab; renderEmpresasTab(); }));
+  renderEmpresasTab();
+}
+async function renderEmpresasTab(){
+  main().querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===EMP_TAB));
+  const { items: todas } = await api('/empresas');
+  const podePostar = can('empresas','postar');
+  const podeEditar = can('empresas','editar');
+  const podeExcluir = STATE.user.perfil==='Administrador'; // exclusão é sempre restrita a Administrador (apaga em cascata)
+  const ativasTab = EMP_TAB==='ativas';
+  const items = todas.filter(e=> ativasTab ? e.ativo : !e.ativo);
+  const colspan = ativasTab? 5 : 4;
+
+  const box = document.getElementById('empresasContent');
+  box.innerHTML = `
+    ${ativasTab? `<div class="row" style="margin-bottom:16px;">
       ${podePostar? `<button class="btn primary" id="btnNovaEmpresa">+ Nova empresa</button>`:''}
       ${podePostar? `<button class="btn" id="btnImportarDominio">Importar do Domínio Web (CSV)</button>`:''}
-    </div>
+    </div>` : `<p class="subtitle" style="margin-top:-6px;">Empresas inativadas não aparecem em Relatórios nem podem receber novos anexos — mas nada foi apagado.</p>`}
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
-        <thead><tr><th>Nome</th><th>CNPJ</th><th>Origem</th><th>Ativo</th><th>Nos relatórios</th><th></th></tr></thead>
+        <thead><tr><th>Nome</th><th>CNPJ</th><th>Origem</th>${ativasTab?'<th>Nos relatórios</th>':''}<th></th></tr></thead>
         <tbody id="empresasBody"></tbody>
       </table>
     </div>
@@ -450,26 +470,41 @@ async function pageEmpresas(){
       <td><b>${esc(e.nome)}</b></td>
       <td>${esc(e.cnpj||'—')}</td>
       <td><span class="tag muted">${e.origem==='dominio'?'Domínio Web':'Manual'}</span></td>
-      <td><span class="tag ${e.ativo?'ok':'bad'}">${e.ativo?'Ativo':'Inativo'}</span></td>
-      <td><span class="tag ${e.visivelRelatorios?'ok':'muted'}">${e.visivelRelatorios?'Sim':'Não'}</span></td>
-      <td style="text-align:right; display:flex; gap:6px; justify-content:flex-end;">
-        ${podeEditar?`<button class="btn small" data-act="edit">Editar</button>`:''}
-        ${podeExcluir?`<button class="btn small danger" data-act="excluir">Excluir</button>`:''}
+      ${ativasTab? `<td><span class="tag ${e.visivelRelatorios?'ok':'muted'}">${e.visivelRelatorios?'Sim':'Não'}</span></td>`:''}
+      <td style="text-align:right;">
+        <div style="display:flex; gap:12px; justify-content:flex-end; align-items:center;">
+          ${podeEditar?`<span class="link-discreto" data-act="toggle-ativo">${e.ativo?'Inativar':'Reativar'}</span>`:''}
+          ${podeEditar?`<button class="btn small" data-act="edit">Editar</button>`:''}
+          ${podeExcluir? (e.temAnexos
+              ? `<span class="tag muted" title="Já tem documento anexado — inative em vez de excluir">Excluir</span>`
+              : `<button class="btn small danger" data-act="excluir">Excluir</button>`)
+            : ''}
+        </div>
       </td>
     </tr>
-  `).join('') : `<tr><td colspan="6"><div class="empty-state">Nenhuma empresa cadastrada.</div></td></tr>`;
+  `).join('') : `<tr><td colspan="${colspan}"><div class="empty-state">${ativasTab?'Nenhuma empresa ativa.':'Nenhuma empresa inativada.'}</div></td></tr>`;
 
-  if(podePostar) document.getElementById('btnNovaEmpresa').addEventListener('click', ()=>empresaModal());
-  if(podePostar) document.getElementById('btnImportarDominio').addEventListener('click', importarDominioModal);
+  if(podePostar && ativasTab){
+    document.getElementById('btnNovaEmpresa').addEventListener('click', ()=>empresaModal());
+    document.getElementById('btnImportarDominio').addEventListener('click', importarDominioModal);
+  }
   if(podeEditar) tbody.querySelectorAll('[data-act="edit"]').forEach(b=>b.addEventListener('click', e=>{
     const id=Number(e.target.closest('tr').dataset.id);
     empresaModal(items.find(x=>x.id===id));
   }));
+  if(podeEditar) tbody.querySelectorAll('[data-act="toggle-ativo"]').forEach(b=>b.addEventListener('click', async e=>{
+    const id = Number(e.target.closest('tr').dataset.id);
+    const emp = items.find(x=>x.id===id);
+    const novoAtivo = !emp.ativo;
+    if(!confirmar(`${novoAtivo?'Reativar':'Inativar'} "${emp.nome}"?`)) return;
+    try{ await api('/empresas/'+id, { method:'PUT', body:{ ativo: novoAtivo } }); toast(novoAtivo?'Empresa reativada.':'Empresa inativada.','ok'); renderEmpresasTab(); }
+    catch(err){ toast(err.message,'err'); }
+  }));
   if(podeExcluir) tbody.querySelectorAll('[data-act="excluir"]').forEach(b=>b.addEventListener('click', async e=>{
     const id = Number(e.target.closest('tr').dataset.id);
     const emp = items.find(x=>x.id===id);
-    if(!confirmar(`Excluir a empresa "${emp.nome}"? Isso apaga também usuários, solicitações, anexos e financeiro dessa empresa. Não dá pra desfazer.`)) return;
-    try{ await api('/empresas/'+id, { method:'DELETE' }); toast('Empresa excluída.','ok'); pageEmpresas(); }
+    if(!confirmar(`Excluir a empresa "${emp.nome}"? Isso apaga também usuários, solicitações e financeiro dessa empresa. Não dá pra desfazer.`)) return;
+    try{ await api('/empresas/'+id, { method:'DELETE' }); toast('Empresa excluída.','ok'); renderEmpresasTab(); }
     catch(err){ toast(err.message,'err'); }
   }));
 }
@@ -674,7 +709,10 @@ async function renderAtribuicoes(){
       <td>${({mensal:'Mensal',anual:'Anual',avulso:'Avulso'})[a.periodicidade]||a.periodicidade}</td>
       <td style="text-align:right; display:flex; gap:6px; justify-content:flex-end;">
         <button class="btn small" data-act="abrir">Abrir grade</button>
-        ${podeEditar? `<button class="btn small danger" data-act="excluir-atrib">Excluir</button>`:''}
+        ${podeEditar? (a.temAnexos
+            ? `<span class="tag muted" title="Já tem documento anexado — não pode excluir">Excluir</span>`
+            : `<button class="btn small danger" data-act="excluir-atrib">Excluir</button>`)
+          : ''}
       </td>
     </tr>
   `).join('') : `<tr><td colspan="4"><div class="empty-state">Nenhuma solicitação atribuída ainda.</div></td></tr>`;
