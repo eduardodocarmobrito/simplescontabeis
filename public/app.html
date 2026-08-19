@@ -951,7 +951,7 @@ async function renderEnvioModelos(){
     <div class="row" style="margin-bottom:14px;">${podePostar?`<button class="btn primary" id="btnNovoEnvioModelo">+ Novo modelo</button>`:''}</div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
-        <thead><tr><th>Nome</th><th>Periodicidade</th><th>Arquivo aceito</th><th></th></tr></thead>
+        <thead><tr><th>Nome</th><th>Periodicidade</th><th>Arquivo aceito</th><th>Vencimento</th><th></th></tr></thead>
         <tbody id="envioModelosBody"></tbody>
       </table>
     </div>
@@ -961,9 +961,10 @@ async function renderEnvioModelos(){
       <td><b>${esc(t.nome)}</b>${t.descricao?`<br><span style="color:var(--ink-soft); font-size:12px;">${esc(t.descricao)}</span>`:''}</td>
       <td>${({mensal:'Mensal',anual:'Anual',avulso:'Avulso'})[t.periodicidade]||t.periodicidade}</td>
       <td>${t.accept.map(a=>`<span class="tag muted">${esc(a)}</span>`).join(' ')}</td>
+      <td><span class="tag ${t.detectarVencimento?'ok':'muted'}">${t.detectarVencimento?'Detecta':'Não se aplica'}</span></td>
       <td style="text-align:right;">${podeEditar?`<button class="btn small" data-act="edit">Editar</button>`:''}</td>
     </tr>
-  `).join('') : `<tr><td colspan="4"><div class="empty-state">Nenhum modelo cadastrado ainda.</div></td></tr>`;
+  `).join('') : `<tr><td colspan="5"><div class="empty-state">Nenhum modelo cadastrado ainda.</div></td></tr>`;
   if(podePostar) document.getElementById('btnNovoEnvioModelo').addEventListener('click', ()=>envioModeloModal());
   if(podeEditar) document.getElementById('envioModelosBody').querySelectorAll('[data-act="edit"]').forEach(b=>b.addEventListener('click', e=>{
     const id=Number(e.target.closest('tr').dataset.id);
@@ -986,6 +987,8 @@ function envioModeloModal(t){
     <div class="row" style="gap:14px;">
       ${TIPOS_ACEITE.map(ac=>`<label class="checkbox-row"><input type="checkbox" class="evAccept" value="${ac.v}" ${(t? t.accept.includes(ac.v) : ac.v==='pdf')?'checked':''}> ${ac.l}</label>`).join('')}
     </div>
+    <label class="checkbox-row" style="margin-top:10px;"><input type="checkbox" id="evDetectarVenc" ${(!t || t.detectarVencimento)?'checked':''}> Detectar data de vencimento automaticamente no arquivo</label>
+    <p style="font-size:11.5px; color:var(--ink-soft); margin:2px 0 0;">Desmarque para tipos sem vencimento, como DRE e Balancete.</p>
     <div class="modal-actions">
       <button class="btn" id="evCancel">Cancelar</button>
       <button class="btn primary" id="evSalvar">Salvar</button>
@@ -997,7 +1000,7 @@ function envioModeloModal(t){
     if(!nome){ toast('Informe o nome.','err'); return; }
     const accept=[...document.querySelectorAll('.evAccept:checked')].map(c=>c.value);
     if(!accept.length){ toast('Selecione ao menos um tipo de arquivo.','err'); return; }
-    const body = { nome, descricao: document.getElementById('evDesc').value.trim(), accept };
+    const body = { nome, descricao: document.getElementById('evDesc').value.trim(), accept, detectarVencimento: document.getElementById('evDetectarVenc').checked };
     if(!t) body.periodicidade = document.getElementById('evPeriodicidade').value;
     try{
       if(t) await api('/envio/templates/'+t.id, { method:'PUT', body });
@@ -1090,27 +1093,27 @@ function vencimentoModal(docId, atualIso, onSalvo){
     catch(e){ toast(e.message,'err'); }
   });
 }
-function envioDocBlocoHtml(d, podeEditar, podePostar, souCliente){
-  const vencHtml = d.vencimento
-    ? `<span class="tag warn" style="font-weight:700;">Vencimento ${esc(fmtDateIso(d.vencimento))}</span>${d.vencimentoOrigem==='automatico'?' <span style="font-size:10.5px; color:var(--ink-soft);">(identificado automaticamente)</span>':''}`
-    : `<span class="tag muted">Vencimento não identificado</span>`;
+function envioDocBlocoHtml(d, podeEditar, podePostar, souCliente, mostrarVencimento){
+  const vencHtml = !mostrarVencimento ? '' : d.vencimento
+    ? `<div><span class="tag warn" style="font-weight:700;">Vencimento ${esc(fmtDateIso(d.vencimento))}</span>${d.vencimentoOrigem==='automatico'?' <span style="font-size:10.5px; color:var(--ink-soft);">(identificado automaticamente)</span>':''}</div>`
+    : `<div><span class="tag muted">Vencimento não identificado</span></div>`;
   return `<div class="slot" style="padding-bottom:8px; margin-bottom:2px; border-bottom:1px dashed var(--rule);">
     <div class="slot-locked" style="background:var(--paper);"><span class="fname">${esc(d.fileName)}</span>Enviado em ${fmtDate(d.enviadoEm)}</div>
     ${d.observacao? `<div class="slot-reopen-note" style="background:var(--accent-pale); color:var(--accent-deep);">${esc(d.observacao)}</div>`:''}
-    <div>${vencHtml}</div>
+    ${vencHtml}
     ${!souCliente ? `<div style="font-size:11px; color:var(--ink-soft);">${d.emailEnviado? '✓ Enviado por e-mail ao cliente' : (d.emailErro? '⚠ E-mail não enviado: '+esc(d.emailErro) : '')}</div>` : ''}
     <div style="display:flex; gap:6px; flex-wrap:wrap;">
       <button class="btn small" data-act="baixar-envio" data-doc="${d.id}">Baixar</button>
-      ${podeEditar? `<button class="btn small" data-act="editar-venc" data-doc="${d.id}" data-venc="${d.vencimento||''}">Vencimento</button>`:''}
+      ${podeEditar && mostrarVencimento? `<button class="btn small" data-act="editar-venc" data-doc="${d.id}" data-venc="${d.vencimento||''}">Vencimento</button>`:''}
       ${!souCliente && podePostar && !d.emailEnviado? `<button class="btn small" data-act="reenviar-email" data-doc="${d.id}">Reenviar e-mail</button>`:''}
       ${podeEditar? `<button class="btn small danger" data-act="excluir-doc" data-doc="${d.id}">Excluir</button>`:''}
     </div>
   </div>`;
 }
-function envioCelulaHtml(p, accept, podePostar, podeEditar, souCliente){
+function envioCelulaHtml(p, accept, podePostar, podeEditar, souCliente, mostrarVencimento){
   const inputId = `ef_${p.periodoId}`;
   const docs = p.documentos || [];
-  const blocos = docs.map(d=>envioDocBlocoHtml(d, podeEditar, podePostar, souCliente)).join('');
+  const blocos = docs.map(d=>envioDocBlocoHtml(d, podeEditar, podePostar, souCliente, mostrarVencimento)).join('');
   if(souCliente || !podePostar){
     return docs.length? `<div class="slot">${blocos}</div>` : `<span class="slot-label">Nada enviado ainda</span>`;
   }
@@ -1179,7 +1182,7 @@ async function abrirEnvioGrade(atribuicaoId, souCliente){
   if(grade.length){
     const tbody = document.getElementById('envioGradeBody');
     tbody.innerHTML = grade.map(p=>
-      `<tr data-periodo="${p.periodoId}"><td><b>${esc(rotuloPeriodo(p))}</b></td><td>${envioCelulaHtml(p, accept, podePostar, podeEditar, souCliente)}</td></tr>`
+      `<tr data-periodo="${p.periodoId}"><td><b>${esc(rotuloPeriodo(p))}</b></td><td>${envioCelulaHtml(p, accept, podePostar, podeEditar, souCliente, atribuicao.detectarVencimento)}</td></tr>`
     ).join('');
     wireEnvioGradeEvents(tbody, atribuicaoId, souCliente);
   }

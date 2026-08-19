@@ -148,6 +148,7 @@ sqlite.exec(`
     descricao TEXT,
     periodicidade TEXT NOT NULL DEFAULT 'mensal', -- 'mensal' | 'anual' | 'avulso'
     accept_json TEXT NOT NULL DEFAULT '["pdf"]',
+    detectar_vencimento INTEGER NOT NULL DEFAULT 1, -- desliga pra tipos sem data de vencimento (DRE, Balancete...)
     ativo INTEGER NOT NULL DEFAULT 1,
     created_by INTEGER,
     created_at TEXT DEFAULT (datetime('now'))
@@ -361,6 +362,20 @@ sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_envio_documentos_periodo ON envio_do
   }
 }
 
+// Migração leve: adiciona detectar_vencimento em bancos criados antes dessa coluna existir.
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(envio_templates)`).all() as any[];
+  if (!cols.some((c) => c.name === "detectar_vencimento")) {
+    sqlite.exec(`ALTER TABLE envio_templates ADD COLUMN detectar_vencimento INTEGER NOT NULL DEFAULT 1`);
+    // Modelos de relatório (sem data de vencimento) que já existiam ganham a detecção desligada
+    // de cara — evita mostrar uma data sem sentido "identificada" num Balancete/DRE.
+    sqlite
+      .prepare(`UPDATE envio_templates SET detectar_vencimento = 0 WHERE LOWER(nome) IN ('dre', 'balancete', 'balanço', 'balanco')`)
+      .run();
+    console.log("Migração aplicada: envio_templates.detectar_vencimento (desligado para modelos de relatório já existentes).");
+  }
+}
+
 const MODULOS = ["dashboard", "empresas", "solicitacoes", "envio", "financeiro", "relatorios", "usuarios", "configuracoes"] as const;
 type Modulo = (typeof MODULOS)[number];
 
@@ -560,6 +575,17 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 60 * 1024 * 1024 }, // 60MB por arquivo — extratos/PDFs de bancos não passam disso
 });
+// O multipart via multer/busboy decodifica o nome do arquivo como latin1 por padrão — quando o
+// navegador manda o nome em UTF-8 puro (acento, cedilha), ele chega corrompido (ex.:
+// "FiscalizaÃ§Ã£o.pdf" em vez de "Fiscalização.pdf"). Reinterpretar como UTF-8 corrige isso sem
+// afetar nomes só com caracteres ASCII.
+function corrigirNomeArquivo(nome: string): string {
+  try {
+    return Buffer.from(nome, "latin1").toString("utf8");
+  } catch {
+    return nome;
+  }
+}
 
 function empresaSlotDir(empresaId: number, periodoId: number) {
   return path.join(UPLOADS_DIR, String(empresaId), String(periodoId));
@@ -1192,6 +1218,7 @@ app.post("/api/checklist/periodos/:periodoId/upload", upload.single("arquivo"), 
   const periodoId = Number(req.params.periodoId);
   const itemChave = String(req.body?.itemChave || "");
   if (!req.file || !itemChave) return res.status(400).json({ error: "Selecione o arquivo e o item correspondente." });
+  req.file.originalname = corrigirNomeArquivo(req.file.originalname);
 
   const periodo = sqlite
     .prepare(`SELECT p.*, a.empresa_id as empresaId, t.itens_json as itensJson FROM checklist_periodos p
@@ -1269,29 +1296,30 @@ app.get("/api/checklist/uploads/:uploadId/download", blockCliente, requirePermis
 // ---------- Envio de Documentos (o escritório posta e o cliente recebe — sentido contrário de Solicitações) ----------
 app.get("/api/envio/templates", blockCliente, requirePermissao("envio", "visualizar"), (_req, res) => {
   const rows = sqlite.prepare(`SELECT * FROM envio_templates ORDER BY nome`).all() as any[];
-  res.json({ items: rows.map((r) => ({ ...r, accept: JSON.parse(r.accept_json) })) });
+  res.json({ items: rows.map((r) => ({ ...r, accept: JSON.parse(r.accept_json), detectarVencimento: !!r.detectar_vencimento })) });
 });
 app.post("/api/envio/templates", blockCliente, requirePermissao("envio", "postar"), (req, res) => {
   const user = (req as any).user;
-  const { nome, descricao, periodicidade, accept } = req.body || {};
+  const { nome, descricao, periodicidade, accept, detectarVencimento } = req.body || {};
   if (!nome) return res.status(400).json({ error: "Informe o nome (ex.: \"DARF PIS\")." });
   const acceptFinal = Array.isArray(accept) && accept.length ? accept : ["pdf"];
   const info = sqlite
-    .prepare(`INSERT INTO envio_templates (nome, descricao, periodicidade, accept_json, created_by) VALUES (?, ?, ?, ?, ?)`)
-    .run(nome, descricao || null, periodicidade || "mensal", JSON.stringify(acceptFinal), user.id);
+    .prepare(`INSERT INTO envio_templates (nome, descricao, periodicidade, accept_json, detectar_vencimento, created_by) VALUES (?, ?, ?, ?, ?, ?)`)
+    .run(nome, descricao || null, periodicidade || "mensal", JSON.stringify(acceptFinal), detectarVencimento === false ? 0 : 1, user.id);
   res.json({ id: Number(info.lastInsertRowid) });
 });
 app.put("/api/envio/templates/:id", blockCliente, requirePermissao("envio", "editar"), (req, res) => {
   const id = Number(req.params.id);
   const existing = sqlite.prepare(`SELECT * FROM envio_templates WHERE id = ?`).get(id) as any;
   if (!existing) return res.status(404).json({ error: "Modelo não encontrado." });
-  const { nome, descricao, accept, ativo } = req.body || {};
+  const { nome, descricao, accept, ativo, detectarVencimento } = req.body || {};
   sqlite
-    .prepare(`UPDATE envio_templates SET nome=?, descricao=?, accept_json=?, ativo=? WHERE id=?`)
+    .prepare(`UPDATE envio_templates SET nome=?, descricao=?, accept_json=?, detectar_vencimento=?, ativo=? WHERE id=?`)
     .run(
       nome ?? existing.nome,
       descricao !== undefined ? descricao : existing.descricao,
       Array.isArray(accept) && accept.length ? JSON.stringify(accept) : existing.accept_json,
+      detectarVencimento === undefined ? existing.detectar_vencimento : detectarVencimento ? 1 : 0,
       ativo === undefined ? existing.ativo : ativo ? 1 : 0,
       id
     );
@@ -1384,7 +1412,7 @@ app.get("/api/envio/grade/:atribuicaoId", (req, res) => {
   const atribuicaoId = Number(req.params.atribuicaoId);
   const atrib = sqlite
     .prepare(
-      `SELECT a.*, t.nome as templateNome, t.periodicidade, t.accept_json as acceptJson, e.nome as empresaNome
+      `SELECT a.*, t.nome as templateNome, t.periodicidade, t.accept_json as acceptJson, t.detectar_vencimento as detectarVencimento, e.nome as empresaNome
        FROM envio_atribuicoes a JOIN envio_templates t ON t.id = a.template_id JOIN empresas e ON e.id = a.empresa_id WHERE a.id = ?`
     )
     .get(atribuicaoId) as any;
@@ -1432,6 +1460,7 @@ app.get("/api/envio/grade/:atribuicaoId", (req, res) => {
       empresaNome: atrib.empresaNome,
       empresaId: atrib.empresa_id,
       accept: JSON.parse(atrib.acceptJson),
+      detectarVencimento: !!atrib.detectarVencimento,
     },
     grade,
   });
@@ -1441,10 +1470,11 @@ app.post("/api/envio/periodos/:periodoId/enviar", blockCliente, requirePermissao
   const user = (req as any).user;
   const periodoId = Number(req.params.periodoId);
   if (!req.file) return res.status(400).json({ error: "Selecione o arquivo." });
+  req.file.originalname = corrigirNomeArquivo(req.file.originalname);
 
   const periodo = sqlite
     .prepare(
-      `SELECT p.*, a.empresa_id as empresaId, t.accept_json as acceptJson, t.nome as templateNome
+      `SELECT p.*, a.empresa_id as empresaId, t.accept_json as acceptJson, t.nome as templateNome, t.detectar_vencimento as detectarVencimento
        FROM envio_periodos p JOIN envio_atribuicoes a ON a.id = p.atribuicao_id JOIN envio_templates t ON t.id = a.template_id WHERE p.id = ?`
     )
     .get(periodoId) as any;
@@ -1462,9 +1492,11 @@ app.post("/api/envio/periodos/:periodoId/enviar", blockCliente, requirePermissao
   const destino = path.join(dir, nomeSeguro);
   fs.writeFileSync(destino, req.file.buffer);
 
-  let vencimento: string | null = req.body?.vencimento ? String(req.body.vencimento) : null;
+  // Alguns tipos (DRE, Balancete, relatórios em geral) não têm data de vencimento — o modelo
+  // controla se vale a pena nem tentar detectar (ver detectar_vencimento em envio_templates).
+  let vencimento: string | null = periodo.detectarVencimento && req.body?.vencimento ? String(req.body.vencimento) : null;
   let vencimentoOrigem: string | null = vencimento ? "manual" : null;
-  if (!vencimento) {
+  if (periodo.detectarVencimento && !vencimento) {
     try {
       const texto = await extrairTextoArquivo(req.file);
       const detectado = extrairVencimento(texto);
@@ -1732,7 +1764,7 @@ app.post("/api/email/enviar", blockCliente, requirePermissao("configuracoes", "p
     .prepare(`SELECT email FROM empresa_contatos WHERE empresa_id = ? AND receber_emails = 1`)
     .all(Number(empresaId)) as any[];
   if (!contatos.length) return res.status(400).json({ error: "Esta empresa não tem contatos de e-mail cadastrados." });
-  const anexos = ((req.files as Express.Multer.File[]) || []).map((f) => ({ filename: f.originalname, content: f.buffer }));
+  const anexos = ((req.files as Express.Multer.File[]) || []).map((f) => ({ filename: corrigirNomeArquivo(f.originalname), content: f.buffer }));
   try {
     await enviarEmail({ to: contatos.map((c) => c.email), subject: assunto, text: corpo || "", attachments: anexos });
     sqlite
@@ -1808,6 +1840,7 @@ function extrairVencimento(texto: string): string | null {
 }
 app.post("/api/email/identificar", blockCliente, requirePermissao("configuracoes", "visualizar"), upload.single("arquivo"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "Envie um arquivo." });
+  req.file.originalname = corrigirNomeArquivo(req.file.originalname);
   let texto = "";
   try {
     texto = await extrairTextoArquivo(req.file);
