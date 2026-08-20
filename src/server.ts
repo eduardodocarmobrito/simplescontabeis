@@ -28,6 +28,12 @@ sqlite.exec(`
     nome TEXT NOT NULL,
     cnpj TEXT,
     codigo_dominio TEXT,
+    email TEXT,
+    telefone TEXT,
+    endereco TEXT,
+    cidade TEXT,
+    uf TEXT,
+    cep TEXT,
     ativo INTEGER NOT NULL DEFAULT 1,
     visivel_relatorios INTEGER NOT NULL DEFAULT 1,
     origem TEXT NOT NULL DEFAULT 'manual',
@@ -373,6 +379,23 @@ sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_envio_documentos_periodo ON envio_do
       .prepare(`UPDATE envio_templates SET detectar_vencimento = 0 WHERE LOWER(nome) IN ('dre', 'balancete', 'balanço', 'balanco')`)
       .run();
     console.log("Migração aplicada: envio_templates.detectar_vencimento (desligado para modelos de relatório já existentes).");
+  }
+}
+
+// Migração leve: cadastro de empresa ganhou os campos que o Domínio Web também tem
+// (e-mail, telefone, endereço) — adiciona nos bancos criados antes dessas colunas existirem.
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(empresas)`).all() as any[];
+  const nomes = new Set(cols.map((c) => c.name));
+  for (const [coluna, ddl] of [
+    ["email", "email TEXT"],
+    ["telefone", "telefone TEXT"],
+    ["endereco", "endereco TEXT"],
+    ["cidade", "cidade TEXT"],
+    ["uf", "uf TEXT"],
+    ["cep", "cep TEXT"],
+  ]) {
+    if (!nomes.has(coluna)) sqlite.exec(`ALTER TABLE empresas ADD COLUMN ${ddl}`);
   }
 }
 
@@ -808,6 +831,12 @@ app.get("/api/empresas", blockCliente, requirePermissao("empresas", "visualizar"
       nome: r.nome,
       cnpj: r.cnpj,
       codigoDominio: r.codigo_dominio,
+      email: r.email,
+      telefone: r.telefone,
+      endereco: r.endereco,
+      cidade: r.cidade,
+      uf: r.uf,
+      cep: r.cep,
       ativo: !!r.ativo,
       visivelRelatorios: !!r.visivel_relatorios,
       origem: r.origem,
@@ -817,24 +846,32 @@ app.get("/api/empresas", blockCliente, requirePermissao("empresas", "visualizar"
   });
 });
 app.post("/api/empresas", blockCliente, requirePermissao("empresas", "postar"), (req, res) => {
-  const { nome, cnpj, codigoDominio } = req.body || {};
+  const { nome, cnpj, codigoDominio, email, telefone, endereco, cidade, uf, cep } = req.body || {};
   if (!nome) return res.status(400).json({ error: "Informe o nome da empresa." });
   const info = sqlite
-    .prepare(`INSERT INTO empresas (nome, cnpj, codigo_dominio, origem) VALUES (?, ?, ?, 'manual')`)
-    .run(nome, cnpj || null, codigoDominio || null);
+    .prepare(`INSERT INTO empresas (nome, cnpj, codigo_dominio, email, telefone, endereco, cidade, uf, cep, origem) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual')`)
+    .run(nome, cnpj || null, codigoDominio || null, email || null, telefone || null, endereco || null, cidade || null, uf || null, cep || null);
   res.json({ id: Number(info.lastInsertRowid) });
 });
 app.put("/api/empresas/:id", blockCliente, requirePermissao("empresas", "editar"), (req, res) => {
   const id = Number(req.params.id);
   const existing = sqlite.prepare(`SELECT * FROM empresas WHERE id = ?`).get(id) as any;
   if (!existing) return res.status(404).json({ error: "Empresa não encontrada." });
-  const { nome, cnpj, codigoDominio, ativo, visivelRelatorios } = req.body || {};
+  const { nome, cnpj, codigoDominio, email, telefone, endereco, cidade, uf, cep, ativo, visivelRelatorios } = req.body || {};
   sqlite
-    .prepare(`UPDATE empresas SET nome=?, cnpj=?, codigo_dominio=?, ativo=?, visivel_relatorios=?, updated_at=datetime('now') WHERE id=?`)
+    .prepare(
+      `UPDATE empresas SET nome=?, cnpj=?, codigo_dominio=?, email=?, telefone=?, endereco=?, cidade=?, uf=?, cep=?, ativo=?, visivel_relatorios=?, updated_at=datetime('now') WHERE id=?`
+    )
     .run(
       nome ?? existing.nome,
       cnpj !== undefined ? cnpj : existing.cnpj,
       codigoDominio !== undefined ? codigoDominio : existing.codigo_dominio,
+      email !== undefined ? email : existing.email,
+      telefone !== undefined ? telefone : existing.telefone,
+      endereco !== undefined ? endereco : existing.endereco,
+      cidade !== undefined ? cidade : existing.cidade,
+      uf !== undefined ? uf : existing.uf,
+      cep !== undefined ? cep : existing.cep,
       ativo === undefined ? existing.ativo : ativo ? 1 : 0,
       visivelRelatorios === undefined ? existing.visivel_relatorios : visivelRelatorios ? 1 : 0,
       id

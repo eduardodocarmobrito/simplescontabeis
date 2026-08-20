@@ -517,9 +517,21 @@ function empresaModal(e){
   openModal(`
     <h3>${e?'Editar':'Nova'} empresa</h3>
     <div class="field"><label>Nome</label><input id="empNome" value="${e?esc(e.nome):''}"></div>
-    <div class="field"><label>CNPJ</label><input id="empCnpj" value="${e&&e.cnpj?esc(e.cnpj):''}"></div>
-    <div class="field"><label>Código no Domínio Web (opcional)</label><input id="empCodigo" value="${e&&e.codigoDominio?esc(e.codigoDominio):''}"></div>
+    <div class="row">
+      <div class="field grow"><label>CNPJ</label><input id="empCnpj" value="${e&&e.cnpj?esc(e.cnpj):''}"></div>
+      <div class="field grow"><label>Código no Domínio Web (opcional)</label><input id="empCodigo" value="${e&&e.codigoDominio?esc(e.codigoDominio):''}"></div>
+    </div>
+    <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Dados de contato (mesmos do cadastro no Domínio Web)</div>
+    <div class="field"><label>E-mail</label><input id="empEmail" type="email" value="${e&&e.email?esc(e.email):''}"></div>
+    <div class="field"><label>Telefone</label><input id="empTelefone" value="${e&&e.telefone?esc(e.telefone):''}"></div>
+    <div class="field"><label>Endereço</label><input id="empEndereco" value="${e&&e.endereco?esc(e.endereco):''}"></div>
+    <div class="row">
+      <div class="field grow"><label>Cidade</label><input id="empCidade" value="${e&&e.cidade?esc(e.cidade):''}"></div>
+      <div class="field" style="width:70px;"><label>UF</label><input id="empUf" maxlength="2" value="${e&&e.uf?esc(e.uf):''}"></div>
+      <div class="field" style="width:120px;"><label>CEP</label><input id="empCep" value="${e&&e.cep?esc(e.cep):''}"></div>
+    </div>
     ${e? `
+    <div style="margin:14px 0 8px; border-top:1px solid var(--rule); padding-top:12px;"></div>
     <div class="checkbox-row"><input type="checkbox" id="empAtivo" ${e.ativo?'checked':''}> <label for="empAtivo">Empresa ativa</label></div>
     <div class="checkbox-row"><input type="checkbox" id="empVisivel" ${e.visivelRelatorios?'checked':''}> <label for="empVisivel">Aparece no filtro de Relatórios</label></div>
     `:''}
@@ -532,7 +544,17 @@ function empresaModal(e){
   document.getElementById('empSalvar').addEventListener('click', async ()=>{
     const nome=document.getElementById('empNome').value.trim();
     if(!nome){ toast('Informe o nome.','err'); return; }
-    const body = { nome, cnpj: document.getElementById('empCnpj').value.trim(), codigoDominio: document.getElementById('empCodigo').value.trim() };
+    const body = {
+      nome,
+      cnpj: document.getElementById('empCnpj').value.trim(),
+      codigoDominio: document.getElementById('empCodigo').value.trim(),
+      email: document.getElementById('empEmail').value.trim(),
+      telefone: document.getElementById('empTelefone').value.trim(),
+      endereco: document.getElementById('empEndereco').value.trim(),
+      cidade: document.getElementById('empCidade').value.trim(),
+      uf: document.getElementById('empUf').value.trim(),
+      cep: document.getElementById('empCep').value.trim(),
+    };
     try{
       if(e){
         body.ativo = document.getElementById('empAtivo').checked;
