@@ -209,6 +209,7 @@ async function api(path, opts){
 }
 function fmtMoney(v){ return (Number(v)||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'}); }
 function fmtDate(iso){ if(!iso) return '—'; const d=new Date(String(iso).replace(' ','T')+(String(iso).includes('Z')?'':'Z')); if(isNaN(d)) return iso; return d.toLocaleDateString('pt-BR'); }
+function fmtDateHora(iso){ if(!iso) return '—'; const d=new Date(String(iso).replace(' ','T')+(String(iso).includes('Z')?'':'Z')); if(isNaN(d)) return iso; return d.toLocaleDateString('pt-BR')+' às '+d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}); }
 function fmtDateIso(iso){ if(!iso) return null; const [y,m,d]=iso.split('-'); return `${d}/${m}/${y}`; }
 function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
@@ -458,9 +459,11 @@ async function renderEmpresasTab(){
 
   const box = document.getElementById('empresasContent');
   box.innerHTML = `
-    ${ativasTab? `<div class="row" style="margin-bottom:16px;">
+    ${ativasTab? `<div class="row" style="margin-bottom:8px; align-items:center;">
       ${podePostar? `<button class="btn primary" id="btnNovaEmpresa">+ Nova empresa</button>`:''}
       ${podePostar? `<button class="btn" id="btnImportarDominio">Importar do Domínio Web (CSV)</button>`:''}
+      ${podePostar? `<button class="btn" id="btnAtualizarEmpresas">↻ Atualizar Empresas</button>`:''}
+      <span id="atualizarEmpresasStatus" style="font-size:12px; color:var(--ink-soft);"></span>
     </div>` : `<p class="subtitle" style="margin-top:-6px;">Empresas inativadas não aparecem em Relatórios nem podem receber novos anexos — mas nada foi apagado.</p>`}
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
@@ -492,6 +495,7 @@ async function renderEmpresasTab(){
   if(podePostar && ativasTab){
     document.getElementById('btnNovaEmpresa').addEventListener('click', ()=>empresaModal());
     document.getElementById('btnImportarDominio').addEventListener('click', importarDominioModal);
+    document.getElementById('btnAtualizarEmpresas').addEventListener('click', atualizarEmpresasDoDominio);
   }
   if(podeEditar) tbody.querySelectorAll('[data-act="edit"]').forEach(b=>b.addEventListener('click', e=>{
     const id=Number(e.target.closest('tr').dataset.id);
@@ -588,6 +592,44 @@ function importarDominioModal(){
       closeModal(); pageEmpresas();
     }catch(e){ toast(e.message,'err'); }
   });
+}
+// Botão "Atualizar Empresas": pede pro agente local sincronizar agora (não espera o ciclo automático).
+async function atualizarEmpresasDoDominio(){
+  const btn = document.getElementById('btnAtualizarEmpresas');
+  const status = document.getElementById('atualizarEmpresasStatus');
+  btn.disabled = true; btn.textContent = 'Atualizando…';
+  status.textContent = 'Aguardando o agente responder (precisa estar rodando na sua máquina)…';
+  try{
+    const { id } = await api('/dominio/sincronizar-empresas', { method:'POST' });
+    let tentativas = 0;
+    const poll = async ()=>{
+      tentativas++;
+      const r = await api('/dominio/sincronizar-empresas/'+id);
+      if(r.status==='pending'){
+        if(tentativas>30){
+          status.textContent = 'Sem resposta do agente — confira se ele está rodando (npm run dominio-agent:dev) e se a sessão do Onvio está válida (npm run onvio-login).';
+          btn.disabled=false; btn.textContent='↻ Atualizar Empresas';
+          return;
+        }
+        setTimeout(poll, 2000);
+        return;
+      }
+      btn.disabled = false; btn.textContent = '↻ Atualizar Empresas';
+      if(r.status==='ok'){
+        status.textContent = `Atualizado: ${r.novas} nova(s), ${r.atualizadas} atualizada(s).`;
+        toast('Empresas atualizadas.','ok');
+        renderEmpresasTab();
+      } else {
+        status.textContent = 'Falhou: '+(r.erro||'erro desconhecido.');
+        toast(r.erro || 'Falha ao atualizar empresas.','err');
+      }
+    };
+    poll();
+  }catch(e){
+    btn.disabled = false; btn.textContent = '↻ Atualizar Empresas';
+    status.textContent = '';
+    toast(e.message,'err');
+  }
 }
 
 // ===================== Solicitações (admin/colaborador) =====================
@@ -794,7 +836,7 @@ function slotInner(periodoId, s, opts){
   if(s.travado && s.upload){
     return `<div class="slot">
       ${label}
-      <div class="slot-locked"><span class="fname">${esc(s.upload.fileName)}</span>Enviado em ${fmtDate(s.upload.uploadedAt)} · travado</div>
+      <div class="slot-locked"><span class="fname">${esc(s.upload.fileName)}</span>Enviado em ${fmtDateHora(s.upload.uploadedAt)} · travado</div>
       ${(podeVerDownload || podeEditar)? `<div style="display:flex; gap:6px;">
         ${podeVerDownload? `<button class="btn small" data-act="download" data-upload="${s.upload.id}">Baixar</button>`:''}
         ${podeEditar? `<button class="btn small danger" data-act="reabrir" data-upload="${s.upload.id}">Reabrir</button>`:''}
@@ -1120,7 +1162,7 @@ function envioDocBlocoHtml(d, podeEditar, podePostar, souCliente, mostrarVencime
     ? `<div><span class="tag warn" style="font-weight:700;">Vencimento ${esc(fmtDateIso(d.vencimento))}</span>${d.vencimentoOrigem==='automatico'?' <span style="font-size:10.5px; color:var(--ink-soft);">(identificado automaticamente)</span>':''}</div>`
     : `<div><span class="tag muted">Vencimento não identificado</span></div>`;
   return `<div class="slot" style="padding-bottom:8px; margin-bottom:2px; border-bottom:1px dashed var(--rule);">
-    <div class="slot-locked" style="background:var(--paper);"><span class="fname">${esc(d.fileName)}</span>Enviado em ${fmtDate(d.enviadoEm)}</div>
+    <div class="slot-locked" style="background:var(--paper);"><span class="fname">${esc(d.fileName)}</span>Enviado em ${fmtDateHora(d.enviadoEm)}</div>
     ${d.observacao? `<div class="slot-reopen-note" style="background:var(--accent-pale); color:var(--accent-deep);">${esc(d.observacao)}</div>`:''}
     ${vencHtml}
     ${!souCliente ? `<div style="font-size:11px; color:var(--ink-soft);">${d.emailEnviado? '✓ Enviado por e-mail ao cliente' : (d.emailErro? '⚠ E-mail não enviado: '+esc(d.emailErro) : '')}</div>` : ''}
@@ -1627,9 +1669,18 @@ async function renderCfgDominio(box){
       <div class="field"><label>Forma de acesso</label>
         <select id="domSource">
           <option value="">Ainda não definido</option>
+          <option value="onvio">Onvio (login web)</option>
           <option value="db">Banco de dados (rede local/VPN do escritório)</option>
           <option value="http">API HTTP do Domínio Web/TOTVS</option>
         </select>
+      </div>
+      <div id="domOnvioFields" class="hidden">
+        <p style="font-size:12.5px; color:var(--ink-soft);">
+          Nesse modo o agente reaproveita uma sessão de login já feita no navegador. Na máquina onde o agente vai rodar,
+          execute uma vez: <code>npm run onvio-login</code> — vai abrir um navegador pra você logar no Onvio normalmente
+          (usuário, senha e verificação em duas etapas). Depois disso o agente e o botão "Atualizar Empresas" já funcionam
+          sozinhos, sem precisar preencher mais nada aqui. Se a sessão expirar um dia, é só rodar o comando de novo.
+        </p>
       </div>
       <div id="domDbFields" class="hidden">
         <div class="row">
@@ -1679,6 +1730,7 @@ async function renderCfgDominio(box){
   document.getElementById('domDbDriver').value = cfg.dbDriver || 'mssql';
   function syncSourceUI(){
     const v = document.getElementById('domSource').value;
+    document.getElementById('domOnvioFields').classList.toggle('hidden', v!=='onvio');
     document.getElementById('domDbFields').classList.toggle('hidden', v!=='db');
     document.getElementById('domHttpFields').classList.toggle('hidden', v!=='http');
   }

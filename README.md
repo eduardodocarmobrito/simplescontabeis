@@ -23,9 +23,11 @@ Acesse `http://localhost:3000`. O primeiro administrador é criado automaticamen
 - `src/server.ts` — servidor único (API + serve o frontend). Todo o schema do SQLite é criado
   automaticamente na primeira execução (arquivo em `DATA_DIR/simplescontabeis.db`).
 - `public/app.html` — frontend inteiro (login, todos os módulos).
-- `src/dominio-agent.ts` — processo opcional que sincroniza a lista de clientes ativos do Domínio
-  Web. Veja a seção **Domínio Web** abaixo — hoje o caminho que já funciona é a importação manual
-  de CSV, direto na tela **Configurações › Domínio Web** do site.
+- `src/dominio-agent.ts` — processo opcional que sincroniza a lista de clientes do Domínio Web
+  (Onvio). Veja a seção **Domínio Web / Onvio** abaixo.
+- `src/onvio-login-setup.ts` — script de configuração única (`npm run onvio-login`) que abre um
+  navegador de verdade para você logar no Onvio (usuário/senha + verificação em duas etapas) e
+  salva a sessão em `data/onvio-session.json`, reaproveitada pelo agente depois.
 
 ## Módulos
 
@@ -48,19 +50,43 @@ Acesse `http://localhost:3000`. O primeiro administrador é criado automaticamen
   enxerga "Meus Documentos").
 - **Configurações** — importação de clientes do Domínio Web e envio de e-mail corporativo.
 
-## Domínio Web — o que falta decidir
+## Domínio Web / Onvio — sincronização de clientes
 
-O agente (`src/dominio-agent.ts`) já está preparado para dois modos, mas nenhum foi ligado porque
-isso depende de como você acessa o Domínio Web:
+O agente (`src/dominio-agent.ts`) roda numa máquina com acesso ao Onvio (não precisa ser a
+Railway) e mantém a lista de empresas do site sincronizada com o Domínio Web. Existem três modos,
+configurados na tela **Configurações › Domínio Web** do site (campo "Forma de acesso" —
+`dominio_config` no banco, o agente busca essa configuração sozinho, sem precisar de `.env`):
 
+- **`onvio` (recomendado, é o que está em uso)** — o agente reaproveita uma sessão de navegador já
+  autenticada no Onvio. Configuração única, na máquina onde o agente roda:
+  ```bash
+  npm run onvio-login
+  ```
+  Abre um navegador de verdade para você logar normalmente (usuário, senha e verificação em duas
+  etapas — SMS ou e-mail). Ao terminar, aperte ENTER no terminal; a sessão fica salva em
+  `data/onvio-session.json` (caminho customizável via `DOMINIO_ONVIO_SESSION_PATH`). A partir daí
+  o agente consulta a API interna do Onvio (`core/v3/companies/{id}/clients/search`) sozinho, sem
+  precisar de MFA de novo — só repita o comando se a sessão expirar um dia.
 - `DOMINIO_SOURCE=db` — se você tiver acesso direto ao banco (SQL Server ou Oracle, numa rede
   local/VPN, do mesmo jeito que o agente do painellibra fala com o Oracle do Sankhya).
 - `DOMINIO_SOURCE=http` — se o Domínio Web/TOTVS oferecer alguma API HTTP para o seu plano.
 
-Enquanto isso não está definido, use a importação manual: exporte a lista de clientes em CSV
-direto do Domínio Web (colunas código/nome/CNPJ/status) e importe pela tela **Configurações ›
-Domínio Web**. Isso já resolve o item de "listar meus clientes ativos e controlar quem aparece
-nos relatórios".
+Também dá pra importar uma lista pontual via CSV (colunas código/nome/CNPJ/status) pela mesma
+tela, sem depender do agente.
+
+### Botão "Atualizar Empresas"
+
+Na tela **Empresas**, o botão **↻ Atualizar Empresas** cria um pedido de sincronização sob
+demanda: o site enfileira o pedido (`dominio_sync_jobs`), o agente (que precisa estar rodando —
+`npm run dominio-agent:dev`) pega esse pedido no próximo ciclo (poll rápido, a cada ~12s), busca
+os dados atuais no Onvio e atualiza o cadastro de empresas (novas entram, existentes são
+atualizadas — o campo `ativo` só muda se a fonte realmente informar o status, então a
+sincronização nunca zera o status de uma empresa sem essa informação). O botão fica desabilitado
+mostrando "Atualizando…" e consulta o resultado a cada 2s, com timeout de ~1 minuto se o agente
+não estiver rodando.
+
+Use este botão sempre que cadastrar um cliente novo ou alterar dados de um cliente existente no
+Domínio/Onvio, para refletir a mudança no site sem esperar o próximo ciclo automático do agente.
 
 ## E-mail corporativo
 

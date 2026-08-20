@@ -1,18 +1,29 @@
 import "dotenv/config";
+import path from "path";
+import fs from "fs";
 
 /**
  * Agente de sincronização com o Domínio Web.
  *
- * A configuração de acesso (banco de dados ou API) é preenchida na tela **Configurações › Domínio
- * Web** do site — não precisa mais editar o .env deste agente na mão. A cada ciclo, este processo
- * busca a configuração salva na nuvem (`GET /api/dominio-agent/config`) e usa ela. Se algum campo
- * não estiver preenchido lá, cai para a variável de ambiente equivalente (útil se você preferir
- * manter segredos só localmente, nunca salvos no banco do site).
+ * A configuração de acesso (banco de dados, API HTTP, ou login web do Onvio) é escolhida na tela
+ * **Configurações › Domínio Web** do site — não precisa editar o .env deste agente na mão pra
+ * trocar isso. A cada ciclo, este processo busca a configuração salva na nuvem
+ * (`GET /api/dominio-agent/config`) e usa ela. Se algum campo não estiver preenchido lá, cai para
+ * a variável de ambiente equivalente (útil se você preferir manter segredos só localmente, nunca
+ * salvos no banco do site).
+ *
+ * Modo "onvio" (o que realmente funciona pra puxar clientes do Domínio Web/Onvio, descoberto na
+ * prática): usa uma sessão de navegador salva localmente, porque o login do Onvio exige
+ * verificação em duas etapas (SMS/e-mail) que este agente não tem como resolver sozinho.
+ * Rode `npm run onvio-login` NESTA MÁQUINA uma vez (abre um navegador visível, você loga
+ * normalmente incluindo o código) — a sessão fica salva em `data/onvio-session.json` e este
+ * agente reaproveita ela. Só precisa repetir esse login se a sessão expirar (o agente avisa no
+ * log quando isso acontecer).
  *
  * Rode este processo numa máquina com acesso à fonte de dados do Domínio Web (não precisa ser a
- * mesma do agente do painellibra). Ele só faz leitura e só envia nome/CNPJ/código/status de cada
- * cliente — nenhum dado fiscal/contábil detalhado ainda (isso é o próximo passo, depois que a
- * sincronização de clientes estiver validada).
+ * mesma do agente do painellibra). Ele só faz leitura e só envia nome/CNPJ/código/status/contato
+ * de cada cliente — nenhum dado fiscal/contábil detalhado (isso continua sendo feito manualmente
+ * via Envio de Documentos, porque não existe API pra ler relatórios contábeis do Domínio).
  */
 
 const CLOUD_URL = (process.env.CLOUD_URL || "http://localhost:3000").replace(/\/$/, "");
@@ -66,14 +77,27 @@ async function carregarConfig(): Promise<Config> {
   };
 }
 
-function normalizarLinha(row: Record<string, any>, cfg: Config) {
-  const status = String(row[cfg.colStatus] ?? "").toLowerCase();
-  const ativo = !(status.includes("inativ") || status.includes("encerrad") || status === "0" || status === "n");
+type EmpresaNormalizada = {
+  codigo: string;
+  nome: string;
+  cnpj: string | null;
+  ativo?: boolean;
+  email?: string | null;
+  telefone?: string | null;
+  endereco?: string | null;
+  cidade?: string | null;
+  uf?: string | null;
+  cep?: string | null;
+};
+
+function normalizarLinha(row: Record<string, any>, cfg: Config): EmpresaNormalizada {
+  const statusTxt = String(row[cfg.colStatus] ?? "").toLowerCase();
+  const temStatus = row[cfg.colStatus] !== undefined && row[cfg.colStatus] !== null && row[cfg.colStatus] !== "";
   return {
     codigo: String(row[cfg.colCodigo] ?? "").trim(),
     nome: String(row[cfg.colNome] ?? "").trim(),
     cnpj: row[cfg.colCnpj] ? String(row[cfg.colCnpj]).trim() : null,
-    ativo,
+    ativo: temStatus ? !(statusTxt.includes("inativ") || statusTxt.includes("encerrad") || statusTxt === "0" || statusTxt === "n") : undefined,
   };
 }
 
@@ -149,23 +173,107 @@ async function buscarViaHttp(cfg: Config): Promise<Record<string, any>[]> {
   return Array.isArray(data) ? data : data.items || data.clientes || [];
 }
 
-async function buscarClientes(cfg: Config): Promise<Record<string, any>[]> {
-  if (cfg.source === "db") return buscarViaBanco(cfg);
-  if (cfg.source === "http") return buscarViaHttp(cfg);
-  throw new Error('Escolha a forma de acesso ("Banco de dados" ou "API HTTP") em Configurações › Domínio Web.');
+// ---- Modo "onvio": login web do Domínio Web/Onvio (Thomson Reuters) — sem API de leitura
+// documentada, então usamos a mesma chamada interna que a própria tela do Onvio usa, com uma
+// sessão de navegador já autenticada (ver npm run onvio-login). Precisa do pacote "playwright"
+// instalado nesta máquina (só aqui no agente — o servidor na nuvem não precisa dele).
+const ONVIO_SESSION_PATH = process.env.DOMINIO_ONVIO_SESSION_PATH || path.join(__dirname, "..", "data", "onvio-session.json");
+
+function extrairContato(item: any) {
+  const c = item?.primaryContactExpanded || {};
+  const email = (c.emailAddresses || []).find((e: any) => e.isPrimary)?.emailAddress || (c.emailAddresses || [])[0]?.emailAddress || null;
+  const telefone = (c.phoneNumbers || []).find((p: any) => p.isPrimary)?.phoneNumber || (c.phoneNumbers || [])[0]?.phoneNumber || null;
+  const end = (c.addresses || []).find((a: any) => a.isPrimary) || (c.addresses || [])[0];
+  const endereco = end ? [end.addressLine1, end.addressLine3].filter(Boolean).join(", ").trim() || null : null;
+  const cidade = end?.city || null;
+  const uf = end?.stateProvince?.id ? String(end.stateProvince.id).replace("BR-", "") : null;
+  const cep = end?.postalCode || null;
+  return { email, telefone, endereco, cidade, uf, cep };
+}
+function extrairDocumento(item: any): string | null {
+  const nats = item?.primaryContactExpanded?.nationalIdentitiesExpanded || [];
+  const cnpj = nats.find((n: any) => n.kind?.id === "BR-CNPJ" && n.identity);
+  const cpf = nats.find((n: any) => n.kind?.id === "BR-CPF" && n.identity);
+  return cnpj?.identity || cpf?.identity || null;
+}
+
+async function buscarViaOnvio(): Promise<EmpresaNormalizada[]> {
+  if (!fs.existsSync(ONVIO_SESSION_PATH)) {
+    throw new Error(`Sessão do Onvio não encontrada em "${ONVIO_SESSION_PATH}". Rode "npm run onvio-login" nesta máquina pra criar.`);
+  }
+  let chromium: any;
+  try {
+    ({ chromium } = require("playwright"));
+  } catch {
+    throw new Error('Pacote "playwright" não instalado nesta máquina. Rode: npm install playwright');
+  }
+
+  const browser = await chromium.launch();
+  try {
+    const context = await browser.newContext({ storageState: ONVIO_SESSION_PATH });
+    const page = await context.newPage();
+
+    let authHeader: string | null = null;
+    let companyId: string | null = null;
+    page.on("request", (req: any) => {
+      const m = req.url().match(/\/api\/core\/v3\/companies\/([A-Z0-9]+)\/clients\/search/);
+      if (m && !companyId) {
+        companyId = m[1];
+        authHeader = req.headers()["authorization"] || null;
+      }
+    });
+
+    await page.goto("https://onvio.com.br/br-api-integration/#/enable-clients", { waitUntil: "networkidle", timeout: 30000 });
+    await page.waitForTimeout(2500);
+
+    if (/\/login|auth\.thomsonreuters\.com/.test(page.url())) {
+      throw new Error('A sessão do Onvio expirou ou foi desconectada. Rode "npm run onvio-login" de novo nesta máquina pra renovar.');
+    }
+    if (!authHeader || !companyId) {
+      throw new Error("Não consegui identificar a empresa/token do Onvio nesta sessão — tente rodar \"npm run onvio-login\" de novo.");
+    }
+
+    const resp = await page.request.post(`https://onvio.com.br/api/core/v3/companies/${companyId}/clients/search`, {
+      headers: { authorization: authHeader },
+      data: {
+        pagingDataRequest: { startIndex: 1, pageIndex: 1, itemsPerPage: 500 },
+        expand: "primaryContactExpanded,primaryContactExpanded.nationalIdentitiesExpanded",
+        filterSearchSort: {},
+      },
+    });
+    if (!resp.ok()) throw new Error(`Onvio API -> HTTP ${resp.status()}`);
+    const json = await resp.json();
+    const items = (json.items || []) as any[];
+
+    return items
+      .filter((it) => it.code && it.code !== "FIRM" && !/^EMPRESA EXEMPLO/i.test(it.name || ""))
+      .map((it) => {
+        const contato = extrairContato(it);
+        return {
+          codigo: String(it.code),
+          nome: String(it.name || "").trim(),
+          cnpj: extrairDocumento(it),
+          ...contato,
+          // situação (ativo/inativo) não vem nessa API — a sincronização automática não mexe
+          // nisso pra não reativar/desativar empresa por engano (ver server.ts, COALESCE(ativo)).
+        };
+      });
+  } finally {
+    await browser.close();
+  }
+}
+
+async function buscarClientes(cfg: Config): Promise<EmpresaNormalizada[]> {
+  if (cfg.source === "onvio") return buscarViaOnvio();
+  if (cfg.source === "db") return (await buscarViaBanco(cfg)).map((r) => normalizarLinha(r, cfg));
+  if (cfg.source === "http") return (await buscarViaHttp(cfg)).map((r) => normalizarLinha(r, cfg));
+  throw new Error('Escolha a forma de acesso ("Banco de dados", "API HTTP" ou "Onvio") em Configurações › Domínio Web.');
 }
 
 // Testes de conexão pedidos pela tela (botão "Testar") — executa a consulta configurada e devolve
 // uma amostra pequena, sem gravar nada em empresas (é só um diagnóstico).
-async function processarTestesPendentes(cfg: Config) {
-  let work: any;
-  try {
-    work = await cloudFetch("/api/dominio-agent/work");
-  } catch (e: any) {
-    console.error("Não consegui buscar testes pendentes:", e.message);
-    return;
-  }
-  for (const job of work.testJobs || []) {
+async function processarTestesPendentes(cfg: Config, testJobs: any[]) {
+  for (const job of testJobs) {
     try {
       const linhas = await buscarClientes(cfg);
       const colunas = linhas.length ? Object.keys(linhas[0]) : [];
@@ -182,30 +290,54 @@ async function processarTestesPendentes(cfg: Config) {
   }
 }
 
+async function sincronizarClientes(cfg: Config) {
+  const linhas = await buscarClientes(cfg);
+  const items = linhas.filter((it) => it.codigo && it.nome);
+  const resultado = await cloudFetch("/api/dominio-agent/empresas", { items });
+  return { ...resultado, lidos: items.length };
+}
+
+// Pedidos de sincronização imediata (botão "Atualizar Empresas" na tela de Empresas) — atendido
+// no ciclo rápido, sem esperar o ritmo automático de SYNC_POLL_MINUTES.
+async function processarSincronizacoesPendentes(cfg: Config, syncJobs: any[]) {
+  for (const job of syncJobs) {
+    try {
+      if (!cfg.source) throw new Error("Forma de acesso ao Domínio Web ainda não configurada (Configurações › Domínio Web).");
+      const r = await sincronizarClientes(cfg);
+      await cloudFetch("/api/dominio-agent/sincronizar-resultado", { jobId: job.id, ok: true, novas: r.novas, atualizadas: r.atualizadas });
+      console.log(`[Atualizar Empresas #${job.id}] ${r.novas} nova(s), ${r.atualizadas} atualizada(s) de ${r.lidos} cliente(s) lido(s).`);
+      proximaSincroniaEm = Date.now() + SYNC_POLL_MINUTES * 60 * 1000; // adia o próximo ciclo automático, já que acabou de sincronizar
+    } catch (e: any) {
+      await cloudFetch("/api/dominio-agent/sincronizar-resultado", { jobId: job.id, ok: false, erro: e.message });
+      console.error(`[Atualizar Empresas #${job.id}] falhou:`, e.message);
+    }
+  }
+}
+
 let proximaSincroniaEm = 0; // timestamp — a sincronia completa de clientes só roda a cada SYNC_POLL_MINUTES
 async function tick() {
   if (!AGENT_TOKEN) {
     console.error("DOMINIO_AGENT_TOKEN não definido — precisa ser o mesmo token configurado na nuvem (variável DOMINIO_AGENT_TOKEN lá também).");
     return;
   }
+  let work: any;
   try {
-    await cloudFetch("/api/dominio-agent/heartbeat", { version: AGENT_VERSION });
+    work = await cloudFetch("/api/dominio-agent/heartbeat", { version: AGENT_VERSION }).then(() => cloudFetch("/api/dominio-agent/work"));
   } catch (e: any) {
     console.error("Não consegui falar com a nuvem:", e.message);
     return;
   }
 
   const cfg = await carregarConfig();
-  await processarTestesPendentes(cfg); // roda toda vez (rápido) — é o que o botão "Testar" espera
+  await processarTestesPendentes(cfg, work.testJobs || []); // roda toda vez (rápido) — é o que o botão "Testar" espera
+  await processarSincronizacoesPendentes(cfg, work.syncJobs || []); // idem, pro botão "Atualizar Empresas"
 
   if (!cfg.source) return;
-  if (Date.now() < proximaSincroniaEm) return; // sincronia completa só no ritmo configurado (padrão 60min)
+  if (Date.now() < proximaSincroniaEm) return; // sincronia automática só no ritmo configurado (padrão 60min)
 
   try {
-    const linhas = await buscarClientes(cfg);
-    const items = linhas.map((l) => normalizarLinha(l, cfg)).filter((it) => it.codigo && it.nome);
-    const resultado = await cloudFetch("/api/dominio-agent/empresas", { items });
-    console.log(`Sincronizado: ${resultado.novas} nova(s), ${resultado.atualizadas} atualizada(s) de ${items.length} cliente(s) lido(s).`);
+    const r = await sincronizarClientes(cfg);
+    console.log(`Sincronizado: ${r.novas} nova(s), ${r.atualizadas} atualizada(s) de ${r.lidos} cliente(s) lido(s).`);
   } catch (e: any) {
     console.error("Falha ao sincronizar clientes do Domínio Web:", e.message);
   } finally {

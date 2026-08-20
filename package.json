@@ -8,7 +8,8 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "dominio-agent:dev": "tsx src/dominio-agent.ts",
-    "dominio-agent": "node dist/dominio-agent.js"
+    "dominio-agent": "node dist/dominio-agent.js",
+    "onvio-login": "tsx src/onvio-login-setup.ts"
   },
   "keywords": [],
   "author": "",
@@ -24,7 +25,8 @@
     "express-rate-limit": "^8.6.2",
     "multer": "^2.0.1",
     "nodemailer": "^7.0.3",
-    "pdf-parse": "^1.1.1"
+    "pdf-parse": "^1.1.1",
+    "playwright": "^1.48.0"
   },
   "devDependencies": {
     "@types/cookie-parser": "^1.4.10",

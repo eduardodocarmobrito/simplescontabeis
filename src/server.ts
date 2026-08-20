@@ -296,6 +296,19 @@ sqlite.exec(`
     resolvido_em TEXT
   );
 
+  -- Pedido de sincronização imediata de empresas (botão "Atualizar Empresas") — o agente local
+  -- atende isso no ciclo rápido, sem esperar a sincronia automática de 60 em 60 minutos.
+  CREATE TABLE IF NOT EXISTS dominio_sync_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    status TEXT NOT NULL DEFAULT 'pending', -- 'pending' | 'ok' | 'erro'
+    novas INTEGER,
+    atualizadas INTEGER,
+    erro TEXT,
+    criado_por INTEGER REFERENCES app_users(id),
+    criado_em TEXT DEFAULT (datetime('now')),
+    resolvido_em TEXT
+  );
+
   -- ---- E-mail corporativo ----
   -- Documentos (CNPJ/CPF) usados para identificar automaticamente qual cliente é dono de um
   -- arquivo (PDF/OFX/XML) enviado — um cliente pode ter mais de um (ex.: CNPJ da empresa + CPF
@@ -1047,6 +1060,19 @@ app.get("/api/dominio/testar-conexao/:id", requireAdmin, (req, res) => {
   const row = sqlite.prepare(`SELECT * FROM dominio_test_jobs WHERE id = ?`).get(Number(req.params.id)) as any;
   if (!row) return res.status(404).json({ error: "Teste não encontrado." });
   res.json({ status: row.status, resultado: row.resultado_json ? JSON.parse(row.resultado_json) : null, erro: row.erro });
+});
+
+// Botão "Atualizar Empresas" — pede uma sincronização imediata (o agente local atende no ciclo
+// rápido, de ~12 em 12s, sem esperar a sincronia automática de 60 em 60 minutos).
+app.post("/api/dominio/sincronizar-empresas", blockCliente, requirePermissao("empresas", "postar"), (req, res) => {
+  const user = (req as any).user;
+  const info = sqlite.prepare(`INSERT INTO dominio_sync_jobs (status, criado_por) VALUES ('pending', ?)`).run(user.id);
+  res.json({ id: Number(info.lastInsertRowid) });
+});
+app.get("/api/dominio/sincronizar-empresas/:id", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
+  const row = sqlite.prepare(`SELECT * FROM dominio_sync_jobs WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!row) return res.status(404).json({ error: "Sincronização não encontrada." });
+  res.json({ status: row.status, novas: row.novas, atualizadas: row.atualizadas, erro: row.erro });
 });
 
 // ---------- Checklist / Solicitações ----------
@@ -1917,16 +1943,47 @@ app.post("/api/dominio-agent/empresas", requireDominioAgent, (req, res) => {
   const items = Array.isArray(req.body?.items) ? req.body.items : [];
   let novas = 0, atualizadas = 0;
   const getByCodigo = sqlite.prepare(`SELECT id FROM empresas WHERE codigo_dominio = ?`);
-  const insert = sqlite.prepare(`INSERT INTO empresas (nome, cnpj, codigo_dominio, ativo, origem) VALUES (?, ?, ?, ?, 'dominio')`);
-  const update = sqlite.prepare(`UPDATE empresas SET nome=?, cnpj=COALESCE(?, cnpj), ativo=?, updated_at=datetime('now') WHERE id=?`);
+  const insert = sqlite.prepare(
+    `INSERT INTO empresas (nome, cnpj, codigo_dominio, email, telefone, endereco, cidade, uf, cep, ativo, origem) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'dominio')`
+  );
+  const update = sqlite.prepare(
+    `UPDATE empresas SET nome=?, cnpj=COALESCE(?, cnpj), email=COALESCE(?, email), telefone=COALESCE(?, telefone),
+       endereco=COALESCE(?, endereco), cidade=COALESCE(?, cidade), uf=COALESCE(?, uf), cep=COALESCE(?, cep),
+       ativo=COALESCE(?, ativo), updated_at=datetime('now') WHERE id=?`
+  );
   for (const it of items) {
     if (!it?.codigo || !it?.nome) continue;
     const existente = getByCodigo.get(String(it.codigo)) as any;
     if (existente) {
-      update.run(it.nome, it.cnpj || null, it.ativo === false ? 0 : 1, existente.id);
+      // ativo só é alterado se o item trouxer o campo explicitamente — a sincronização via Onvio
+      // não sabe a situação real (isso vem só do relatório do Domínio, feito à parte), então não
+      // deve reativar/desativar sozinha uma empresa já cadastrada.
+      update.run(
+        it.nome,
+        it.cnpj || null,
+        it.email || null,
+        it.telefone || null,
+        it.endereco || null,
+        it.cidade || null,
+        it.uf || null,
+        it.cep || null,
+        it.ativo === undefined ? null : it.ativo ? 1 : 0,
+        existente.id
+      );
       atualizadas++;
     } else {
-      insert.run(it.nome, it.cnpj || null, String(it.codigo), it.ativo === false ? 0 : 1);
+      insert.run(
+        it.nome,
+        it.cnpj || null,
+        String(it.codigo),
+        it.email || null,
+        it.telefone || null,
+        it.endereco || null,
+        it.cidade || null,
+        it.uf || null,
+        it.cep || null,
+        it.ativo === false ? 0 : 1
+      );
       novas++;
     }
   }
@@ -1956,7 +2013,8 @@ app.get("/api/dominio-agent/config", requireDominioAgent, (_req, res) => {
 });
 app.get("/api/dominio-agent/work", requireDominioAgent, (_req, res) => {
   const testJobs = sqlite.prepare(`SELECT id FROM dominio_test_jobs WHERE status = 'pending' ORDER BY id ASC LIMIT 5`).all();
-  res.json({ testJobs });
+  const syncJobs = sqlite.prepare(`SELECT id FROM dominio_sync_jobs WHERE status = 'pending' ORDER BY id ASC LIMIT 5`).all();
+  res.json({ testJobs, syncJobs });
 });
 app.post("/api/dominio-agent/teste-resultado", requireDominioAgent, (req, res) => {
   const { jobId, ok, resultado, erro } = req.body || {};
@@ -1965,6 +2023,15 @@ app.post("/api/dominio-agent/teste-resultado", requireDominioAgent, (req, res) =
   sqlite
     .prepare(`UPDATE dominio_test_jobs SET status=?, resultado_json=?, erro=?, resolvido_em=datetime('now') WHERE id=?`)
     .run(ok ? "ok" : "erro", resultado ? JSON.stringify(resultado) : null, erro || null, job.id);
+  res.json({ ok: true });
+});
+app.post("/api/dominio-agent/sincronizar-resultado", requireDominioAgent, (req, res) => {
+  const { jobId, ok, novas, atualizadas, erro } = req.body || {};
+  const job = sqlite.prepare(`SELECT * FROM dominio_sync_jobs WHERE id = ?`).get(Number(jobId)) as any;
+  if (!job) return res.status(404).json({ error: "not found" });
+  sqlite
+    .prepare(`UPDATE dominio_sync_jobs SET status=?, novas=?, atualizadas=?, erro=?, resolvido_em=datetime('now') WHERE id=?`)
+    .run(ok ? "ok" : "erro", novas ?? null, atualizadas ?? null, erro || null, job.id);
   res.json({ ok: true });
 });
 
