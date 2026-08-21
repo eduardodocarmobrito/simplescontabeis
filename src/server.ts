@@ -1979,6 +1979,18 @@ app.delete("/api/nfse/certificados/:id", blockCliente, requireAdmin, (req, res) 
 
 // Modelos de serviço reutilizáveis — configurados uma vez (código de tributação, ISSQN, retenções)
 // e escolhidos na hora da emissão, que só pede descrição e valor.
+// Tabelas oficiais de referência (código de tributação nacional e NBS) — carregadas uma vez do
+// disco (extraídas do portal gov.br/nfse e do ANEXO_VIII do governo), usadas pelos comboboxes de
+// busca na tela de Modelos, igual ao que o próprio portal oficial do governo oferece.
+const nfseTabelaCTribNac = JSON.parse(fs.readFileSync(path.join(__dirname, "nfse-tabelas", "ctribnac.json"), "utf8")) as { codigo: string; descricao: string }[];
+const nfseTabelaNbs = JSON.parse(fs.readFileSync(path.join(__dirname, "nfse-tabelas", "nbs.json"), "utf8")) as { codigo: string; descricao: string }[];
+app.get("/api/nfse/ctribnac", blockCliente, requirePermissao("nfse", "visualizar"), (_req, res) => {
+  res.json({ items: nfseTabelaCTribNac.map((i) => ({ id: i.codigo, label: `${i.codigo} - ${i.descricao}` })) });
+});
+app.get("/api/nfse/nbs", blockCliente, requirePermissao("nfse", "visualizar"), (_req, res) => {
+  res.json({ items: nfseTabelaNbs.map((i) => ({ id: i.codigo, label: `${i.codigo} - ${i.descricao}` })) });
+});
+
 app.get("/api/nfse/modelos", blockCliente, requirePermissao("nfse", "visualizar"), (_req, res) => {
   const rows = sqlite.prepare(`SELECT * FROM nfse_modelos ORDER BY nome`).all() as any[];
   res.json({

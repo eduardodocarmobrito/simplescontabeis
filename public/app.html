@@ -1825,16 +1825,15 @@ async function renderNfseModelos(){
     nfseModeloModal(items.find(x=>x.id===id));
   }));
 }
-function nfseModeloModal(m){
+async function nfseModeloModal(m){
+  const [{ items: ctribItens }, { items: nbsItens }] = await Promise.all([ api('/nfse/ctribnac'), api('/nfse/nbs') ]);
   openModal(`
     <h3>${m?'Editar':'Novo'} modelo de serviço</h3>
     <div class="field"><label>Nome</label><input id="nmNome" value="${m?esc(m.nome):''}" placeholder='Ex.: "Serviços Administrativos"'></div>
-    <div class="row">
-      <div class="field grow"><label>Código de tributação nacional (cTribNac, 6 dígitos)</label><input id="nmCTribNac" maxlength="6" value="${m?esc(m.codigoTributacaoNacional):''}" placeholder="Ex.: 171001"></div>
-      <div class="field grow"><label>Código de tributação municipal (opcional)</label><input id="nmCTribMun" value="${m&&m.codigoTributacaoMunicipal?esc(m.codigoTributacaoMunicipal):''}"></div>
-    </div>
-    <div class="field"><label>Código NBS (9 dígitos)</label><input id="nmCodigoNbs" maxlength="9" value="${m&&m.codigoNbs?esc(m.codigoNbs):''}" placeholder="Ex.: 101075000"></div>
-    <p style="font-size:11.5px; color:var(--ink-soft); margin:2px 0 10px;">O portal oficial do governo trata esse campo como obrigatório na prática — consulte a lista de NBS correspondente ao serviço.</p>
+    <div class="field"><label>Código de tributação nacional</label>${comboSelectHtml('nmCTribNacCombo', 'Digite para buscar (ex.: advocacia, consultoria...)…')}</div>
+    <div class="field"><label>Código de tributação municipal (opcional)</label><input id="nmCTribMun" value="${m&&m.codigoTributacaoMunicipal?esc(m.codigoTributacaoMunicipal):''}"></div>
+    <div class="field"><label>Código NBS</label>${comboSelectHtml('nmNbsCombo', 'Digite para buscar…')}</div>
+    <p style="font-size:11.5px; color:var(--ink-soft); margin:2px 0 10px;">O portal oficial do governo trata esse campo como obrigatório na prática.</p>
     <div class="row">
       <div class="field grow"><label>Tributação do ISSQN</label>
         <select id="nmTribIssqn">
@@ -1868,16 +1867,32 @@ function nfseModeloModal(m){
       <button class="btn primary" id="nmSalvar">Salvar</button>
     </div>
   `);
+  setupComboSelect('nmCTribNacCombo', ctribItens, ()=>{});
+  setupComboSelect('nmNbsCombo', nbsItens, ()=>{});
+  if(m && m.codigoTributacaoNacional){
+    const item = ctribItens.find(it=>it.id===m.codigoTributacaoNacional);
+    if(item){
+      document.querySelector('#nmCTribNacCombo .combo-input').value = item.label;
+      document.querySelector('#nmCTribNacCombo .combo-value').value = item.id;
+    }
+  }
+  if(m && m.codigoNbs){
+    const item = nbsItens.find(it=>it.id===m.codigoNbs);
+    if(item){
+      document.querySelector('#nmNbsCombo .combo-input').value = item.label;
+      document.querySelector('#nmNbsCombo .combo-value').value = item.id;
+    }
+  }
   document.getElementById('nmCancel').addEventListener('click', closeModal);
   document.getElementById('nmSalvar').addEventListener('click', async ()=>{
     const nome = document.getElementById('nmNome').value.trim();
-    const cTribNac = document.getElementById('nmCTribNac').value.trim();
+    const cTribNac = document.querySelector('#nmCTribNacCombo .combo-value').value;
     if(!nome || !cTribNac){ toast('Informe o nome e o código de tributação nacional.','err'); return; }
     const body = {
       nome,
       codigoTributacaoNacional: cTribNac,
       codigoTributacaoMunicipal: document.getElementById('nmCTribMun').value.trim(),
-      codigoNbs: document.getElementById('nmCodigoNbs').value.trim(),
+      codigoNbs: document.querySelector('#nmNbsCombo .combo-value').value || '',
       tribIssqn: Number(document.getElementById('nmTribIssqn').value),
       tipoRetencaoIssqn: Number(document.getElementById('nmRetIssqn').value),
       aliquotaIssqn: document.getElementById('nmAliquota').value,

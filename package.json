@@ -5,7 +5,8 @@
   "main": "index.js",
   "scripts": {
     "dev": "tsx src/server.ts",
-    "build": "tsc",
+    "build": "tsc && npm run copy-assets",
+    "copy-assets": "mkdir -p dist/nfse-tabelas && cp src/nfse-tabelas/*.json dist/nfse-tabelas/",
     "start": "node dist/server.js",
     "dominio-agent:dev": "tsx src/dominio-agent.ts",
     "dominio-agent": "node dist/dominio-agent.js",
