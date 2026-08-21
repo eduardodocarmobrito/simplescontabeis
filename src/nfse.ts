@@ -158,6 +158,27 @@ export interface DadosServico {
   tipoRetencaoIssqn?: number; // 1=Não retido 2=Retido pelo tomador 3=Retido pelo intermediário (default 1)
   aliquotaIssqn?: number | null; // % — quando o município não retornar via API de parâmetros
   tipoRetencaoPisCofins?: number | null; // 1-4, ver nfse_modelos — null = não informar o grupo
+  // Exigibilidade suspensa do ISSQN (decisão judicial/processo administrativo)
+  issqnExigibilidadeSuspensa?: boolean;
+  issqnMotivoSuspensao?: number | null; // 1=Decisão Judicial 2=Processo Administrativo
+  issqnNumeroProcesso?: string | null;
+  // Benefício municipal do ISSQN
+  beneficioMunicipalCodigo?: string | null; // nBM
+  // Tributação Federal — CST do PIS/COFINS e valores retidos (calculados a partir do % do modelo × valor do serviço)
+  pisCofinsCst?: string | null; // default "00"
+  valorIrrf?: number | null;
+  valorCsll?: number | null;
+  valorCofinsRetido?: number | null;
+  valorPisRetido?: number | null;
+  valorContribPrevidenciaria?: number | null;
+  // IBS/CBS (Reforma Tributária) — só obrigatório a partir de out/2026 (jan/2027 Simples Nacional)
+  ibscbsPreencher?: boolean;
+  ibscbsCst?: string | null; // default "000"
+  ibscbsCclasstrib?: string | null; // default "000001"
+  // Informações complementares
+  docResponsabilidadeTecnica?: string | null;
+  docReferencia?: string | null;
+  informacoesComplementares?: string | null;
 }
 export interface MontarDpsInput {
   ambiente: AmbienteNfse;
@@ -238,6 +259,15 @@ ${servico.codigoTributacaoMunicipal ? `<cTribMun>${xmlEscape(servico.codigoTribu
 <xDescServ>${xmlEscape(servico.descricao)}</xDescServ>
 ${servico.codigoNbs ? `<cNBS>${xmlEscape(servico.codigoNbs)}</cNBS>` : ""}
 </cServ>
+${
+  servico.docResponsabilidadeTecnica || servico.docReferencia || servico.informacoesComplementares
+    ? `<infoCompl>
+${servico.docResponsabilidadeTecnica ? `<idDocTec>${xmlEscape(servico.docResponsabilidadeTecnica)}</idDocTec>` : ""}
+${servico.docReferencia ? `<docRef>${xmlEscape(servico.docReferencia)}</docRef>` : ""}
+${servico.informacoesComplementares ? `<xInfComp>${xmlEscape(servico.informacoesComplementares)}</xInfComp>` : ""}
+</infoCompl>`
+    : ""
+}
 </serv>
 <valores>
 <vServPrest>
@@ -246,15 +276,37 @@ ${servico.codigoNbs ? `<cNBS>${xmlEscape(servico.codigoNbs)}</cNBS>` : ""}
 <trib>
 <tribMun>
 <tribISSQN>${servico.tribIssqn ?? 1}</tribISSQN>
+${
+  servico.issqnExigibilidadeSuspensa
+    ? `<exigSusp>\n<tpSusp>${servico.issqnMotivoSuspensao ?? 1}</tpSusp>\n<nProcesso>${xmlEscape(servico.issqnNumeroProcesso || "")}</nProcesso>\n</exigSusp>`
+    : ""
+}
+${servico.beneficioMunicipalCodigo ? `<BM>\n<nBM>${xmlEscape(servico.beneficioMunicipalCodigo)}</nBM>\n</BM>` : ""}
 <tpRetISSQN>${servico.tipoRetencaoIssqn ?? 1}</tpRetISSQN>
 ${servico.aliquotaIssqn != null ? `<pAliq>${servico.aliquotaIssqn.toFixed(2)}</pAliq>` : ""}
 </tribMun>
 ${
-  // CST fixo em "00 - Nenhum": não modelamos o tipo de operação do PIS/COFINS ainda, só a
-  // retenção — suficiente pro caso comum (prestador do Simples Nacional), mas precisa revisitar
-  // se algum modelo precisar de um CST diferente.
-  servico.tipoRetencaoPisCofins != null
-    ? `<tribFed>\n<piscofins>\n<CST>00</CST>\n<tpRetPisCofins>${servico.tipoRetencaoPisCofins}</tpRetPisCofins>\n</piscofins>\n</tribFed>`
+  // O grupo tribFed entra se houver qualquer retenção federal configurada no modelo (PIS/COFINS,
+  // IRRF, CSLL ou contribuição previdenciária) — senão fica de fora, já que é opcional (0-1).
+  servico.tipoRetencaoPisCofins != null ||
+  servico.valorIrrf != null ||
+  servico.valorCsll != null ||
+  servico.valorContribPrevidenciaria != null
+    ? `<tribFed>
+${
+  servico.tipoRetencaoPisCofins != null || servico.valorPisRetido != null || servico.valorCofinsRetido != null
+    ? `<piscofins>
+<CST>${xmlEscape(servico.pisCofinsCst || "00")}</CST>
+${servico.valorPisRetido != null ? `<vPis>${servico.valorPisRetido.toFixed(2)}</vPis>` : ""}
+${servico.valorCofinsRetido != null ? `<vCofins>${servico.valorCofinsRetido.toFixed(2)}</vCofins>` : ""}
+${servico.tipoRetencaoPisCofins != null ? `<tpRetPisCofins>${servico.tipoRetencaoPisCofins}</tpRetPisCofins>` : ""}
+</piscofins>`
+    : ""
+}
+${servico.valorContribPrevidenciaria != null ? `<vRetCP>${servico.valorContribPrevidenciaria.toFixed(2)}</vRetCP>` : ""}
+${servico.valorIrrf != null ? `<vRetIRRF>${servico.valorIrrf.toFixed(2)}</vRetIRRF>` : ""}
+${servico.valorCsll != null ? `<vRetCSLL>${servico.valorCsll.toFixed(2)}</vRetCSLL>` : ""}
+</tribFed>`
     : ""
 }
 <totTrib>
@@ -262,6 +314,27 @@ ${
 </totTrib>
 </trib>
 </valores>
+${
+  // IBS/CBS (Reforma Tributária) — só obrigatório a partir de out/2026 (jan/2027 pro Simples
+  // Nacional). Usa os mesmos valores padrão observados numa DPS real já emitida (cIndOp/finNFSe/
+  // indFinal/indDest fixos — só CST e cClassTrib são configuráveis por modelo).
+  servico.ibscbsPreencher
+    ? `<IBSCBS>
+<finNFSe>0</finNFSe>
+<indFinal>0</indFinal>
+<cIndOp>100601</cIndOp>
+<indDest>0</indDest>
+<valores>
+<trib>
+<gIBSCBS>
+<CST>${xmlEscape(servico.ibscbsCst || "000")}</CST>
+<cClassTrib>${xmlEscape(servico.ibscbsCclasstrib || "000001")}</cClassTrib>
+</gIBSCBS>
+</trib>
+</valores>
+</IBSCBS>`
+    : ""
+}
 </infDPS></DPS>`;
 
   return { xml, idDps };

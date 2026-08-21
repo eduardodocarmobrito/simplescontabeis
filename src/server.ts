@@ -388,6 +388,27 @@ sqlite.exec(`
     tipo_retencao_issqn INTEGER NOT NULL DEFAULT 1, -- 1=Não retido 2=Retido pelo tomador 3=Retido pelo intermediário
     aliquota_issqn REAL, -- % — opcional, alguns municípios calculam automaticamente
     tipo_retencao_pis_cofins INTEGER, -- 1=Retido 2=Não retido 3=PIS retido/COFINS não 4=PIS não/COFINS retido — NULL=não informar
+    -- Tributação Municipal (ISSQN) — exigibilidade suspensa e benefício municipal
+    issqn_exigibilidade_suspensa INTEGER NOT NULL DEFAULT 0,
+    issqn_motivo_suspensao INTEGER, -- 1=Decisão Judicial 2=Processo Administrativo
+    issqn_numero_processo TEXT,
+    beneficio_municipal_codigo TEXT, -- nBM
+    -- Tributação Federal (PIS/COFINS/IRRF/Contribuições) — percentuais aplicados sobre o valor do
+    -- serviço em cada emissão pra calcular os valores retidos automaticamente
+    pis_cofins_cst TEXT DEFAULT '00', -- Código de Situação Tributária do PIS/COFINS
+    percentual_irrf REAL,
+    percentual_csll REAL,
+    percentual_cofins_retido REAL,
+    percentual_pis_retido REAL,
+    percentual_contrib_previdenciaria REAL,
+    -- IBS/CBS (Reforma Tributária) — só obrigatório a partir de out/2026 (jan/2027 Simples Nacional)
+    ibscbs_preencher INTEGER NOT NULL DEFAULT 0,
+    ibscbs_cst TEXT DEFAULT '000', -- Código de Situação Tributária
+    ibscbs_cclasstrib TEXT DEFAULT '000001', -- Código de Classificação Tributária
+    -- Informações complementares (texto padrão do modelo — pode ser sobrescrito na emissão)
+    doc_responsabilidade_tecnica TEXT,
+    doc_referencia TEXT,
+    informacoes_complementares TEXT,
     ativo INTEGER NOT NULL DEFAULT 1,
     created_by INTEGER REFERENCES app_users(id),
     created_at TEXT DEFAULT (datetime('now'))
@@ -527,6 +548,33 @@ sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_envio_documentos_periodo ON envio_do
   const cols = sqlite.prepare(`PRAGMA table_info(nfse_modelos)`).all() as any[];
   if (!cols.some((c) => c.name === "codigo_nbs")) {
     sqlite.exec(`ALTER TABLE nfse_modelos ADD COLUMN codigo_nbs TEXT`);
+  }
+}
+// Migração leve: modelo de serviço ganhou todos os campos de tributação avançada (exigibilidade
+// suspensa/benefício municipal do ISSQN, retenções federais com percentual, IBS/CBS, informações
+// complementares) — cobrindo os mesmos campos do formulário oficial do governo.
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(nfse_modelos)`).all() as any[];
+  const nomes = new Set(cols.map((c) => c.name));
+  for (const [coluna, ddl] of [
+    ["issqn_exigibilidade_suspensa", "issqn_exigibilidade_suspensa INTEGER NOT NULL DEFAULT 0"],
+    ["issqn_motivo_suspensao", "issqn_motivo_suspensao INTEGER"],
+    ["issqn_numero_processo", "issqn_numero_processo TEXT"],
+    ["beneficio_municipal_codigo", "beneficio_municipal_codigo TEXT"],
+    ["pis_cofins_cst", "pis_cofins_cst TEXT DEFAULT '00'"],
+    ["percentual_irrf", "percentual_irrf REAL"],
+    ["percentual_csll", "percentual_csll REAL"],
+    ["percentual_cofins_retido", "percentual_cofins_retido REAL"],
+    ["percentual_pis_retido", "percentual_pis_retido REAL"],
+    ["percentual_contrib_previdenciaria", "percentual_contrib_previdenciaria REAL"],
+    ["ibscbs_preencher", "ibscbs_preencher INTEGER NOT NULL DEFAULT 0"],
+    ["ibscbs_cst", "ibscbs_cst TEXT DEFAULT '000'"],
+    ["ibscbs_cclasstrib", "ibscbs_cclasstrib TEXT DEFAULT '000001'"],
+    ["doc_responsabilidade_tecnica", "doc_responsabilidade_tecnica TEXT"],
+    ["doc_referencia", "doc_referencia TEXT"],
+    ["informacoes_complementares", "informacoes_complementares TEXT"],
+  ]) {
+    if (!nomes.has(coluna)) sqlite.exec(`ALTER TABLE nfse_modelos ADD COLUMN ${ddl}`);
   }
 }
 
@@ -1984,48 +2032,125 @@ app.delete("/api/nfse/certificados/:id", blockCliente, requireAdmin, (req, res) 
 // busca na tela de Modelos, igual ao que o próprio portal oficial do governo oferece.
 const nfseTabelaCTribNac = JSON.parse(fs.readFileSync(path.join(__dirname, "nfse-tabelas", "ctribnac.json"), "utf8")) as { codigo: string; descricao: string }[];
 const nfseTabelaNbs = JSON.parse(fs.readFileSync(path.join(__dirname, "nfse-tabelas", "nbs.json"), "utf8")) as { codigo: string; descricao: string }[];
+const nfseTabelaCClassTrib = JSON.parse(fs.readFileSync(path.join(__dirname, "nfse-tabelas", "cclasstrib.json"), "utf8")) as { codigo: string; descricao: string }[];
 app.get("/api/nfse/ctribnac", blockCliente, requirePermissao("nfse", "visualizar"), (_req, res) => {
   res.json({ items: nfseTabelaCTribNac.map((i) => ({ id: i.codigo, label: `${i.codigo} - ${i.descricao}` })) });
 });
 app.get("/api/nfse/nbs", blockCliente, requirePermissao("nfse", "visualizar"), (_req, res) => {
   res.json({ items: nfseTabelaNbs.map((i) => ({ id: i.codigo, label: `${i.codigo} - ${i.descricao}` })) });
 });
+app.get("/api/nfse/cclasstrib", blockCliente, requirePermissao("nfse", "visualizar"), (_req, res) => {
+  res.json({ items: nfseTabelaCClassTrib.map((i) => ({ id: i.codigo, label: `${i.codigo} - ${i.descricao}` })) });
+});
 
+function nfseModeloParaJson(r: any) {
+  return {
+    id: r.id,
+    nome: r.nome,
+    codigoTributacaoNacional: r.codigo_tributacao_nacional,
+    codigoTributacaoMunicipal: r.codigo_tributacao_municipal,
+    codigoNbs: r.codigo_nbs,
+    tribIssqn: r.trib_issqn,
+    tipoRetencaoIssqn: r.tipo_retencao_issqn,
+    aliquotaIssqn: r.aliquota_issqn,
+    tipoRetencaoPisCofins: r.tipo_retencao_pis_cofins,
+    issqnExigibilidadeSuspensa: !!r.issqn_exigibilidade_suspensa,
+    issqnMotivoSuspensao: r.issqn_motivo_suspensao,
+    issqnNumeroProcesso: r.issqn_numero_processo,
+    beneficioMunicipalCodigo: r.beneficio_municipal_codigo,
+    pisCofinsCst: r.pis_cofins_cst,
+    percentualIrrf: r.percentual_irrf,
+    percentualCsll: r.percentual_csll,
+    percentualCofinsRetido: r.percentual_cofins_retido,
+    percentualPisRetido: r.percentual_pis_retido,
+    percentualContribPrevidenciaria: r.percentual_contrib_previdenciaria,
+    ibscbsPreencher: !!r.ibscbs_preencher,
+    ibscbsCst: r.ibscbs_cst,
+    ibscbsCclasstrib: r.ibscbs_cclasstrib,
+    docResponsabilidadeTecnica: r.doc_responsabilidade_tecnica,
+    docReferencia: r.doc_referencia,
+    informacoesComplementares: r.informacoes_complementares,
+    ativo: !!r.ativo,
+  };
+}
+// Lê o corpo da requisição de modelo (POST/PUT) e devolve os valores já normalizados pro banco,
+// usando `existing` (quando editando) pra manter o valor atual em campos não enviados.
+function nfseModeloDoBody(body: any, existing: any | null) {
+  const pegar = (chave: string, coluna: string) => (body[chave] !== undefined ? body[chave] : existing ? existing[coluna] : undefined);
+  const numOuNull = (v: any) => (v != null && v !== "" ? Number(v) : null);
+  return {
+    nome: body.nome !== undefined ? String(body.nome).trim() : existing?.nome,
+    codigoTributacaoNacional:
+      body.codigoTributacaoNacional !== undefined ? String(body.codigoTributacaoNacional).replace(/\D/g, "") : existing?.codigo_tributacao_nacional,
+    codigoTributacaoMunicipal:
+      body.codigoTributacaoMunicipal !== undefined ? (body.codigoTributacaoMunicipal ? String(body.codigoTributacaoMunicipal).trim() : null) : existing?.codigo_tributacao_municipal ?? null,
+    codigoNbs: body.codigoNbs !== undefined ? (body.codigoNbs ? String(body.codigoNbs).replace(/\D/g, "") : null) : existing?.codigo_nbs ?? null,
+    tribIssqn: body.tribIssqn !== undefined ? Number(body.tribIssqn) || 1 : existing?.trib_issqn ?? 1,
+    tipoRetencaoIssqn: body.tipoRetencaoIssqn !== undefined ? Number(body.tipoRetencaoIssqn) || 1 : existing?.tipo_retencao_issqn ?? 1,
+    aliquotaIssqn: body.aliquotaIssqn !== undefined ? numOuNull(body.aliquotaIssqn) : existing?.aliquota_issqn ?? null,
+    tipoRetencaoPisCofins: body.tipoRetencaoPisCofins !== undefined ? numOuNull(body.tipoRetencaoPisCofins) : existing?.tipo_retencao_pis_cofins ?? null,
+    issqnExigibilidadeSuspensa: body.issqnExigibilidadeSuspensa !== undefined ? (body.issqnExigibilidadeSuspensa ? 1 : 0) : existing?.issqn_exigibilidade_suspensa ?? 0,
+    issqnMotivoSuspensao: body.issqnMotivoSuspensao !== undefined ? numOuNull(body.issqnMotivoSuspensao) : existing?.issqn_motivo_suspensao ?? null,
+    issqnNumeroProcesso: pegar("issqnNumeroProcesso", "issqn_numero_processo") || null,
+    beneficioMunicipalCodigo: pegar("beneficioMunicipalCodigo", "beneficio_municipal_codigo") || null,
+    pisCofinsCst: body.pisCofinsCst !== undefined ? String(body.pisCofinsCst || "00") : existing?.pis_cofins_cst ?? "00",
+    percentualIrrf: body.percentualIrrf !== undefined ? numOuNull(body.percentualIrrf) : existing?.percentual_irrf ?? null,
+    percentualCsll: body.percentualCsll !== undefined ? numOuNull(body.percentualCsll) : existing?.percentual_csll ?? null,
+    percentualCofinsRetido: body.percentualCofinsRetido !== undefined ? numOuNull(body.percentualCofinsRetido) : existing?.percentual_cofins_retido ?? null,
+    percentualPisRetido: body.percentualPisRetido !== undefined ? numOuNull(body.percentualPisRetido) : existing?.percentual_pis_retido ?? null,
+    percentualContribPrevidenciaria:
+      body.percentualContribPrevidenciaria !== undefined ? numOuNull(body.percentualContribPrevidenciaria) : existing?.percentual_contrib_previdenciaria ?? null,
+    ibscbsPreencher: body.ibscbsPreencher !== undefined ? (body.ibscbsPreencher ? 1 : 0) : existing?.ibscbs_preencher ?? 0,
+    ibscbsCst: body.ibscbsCst !== undefined ? String(body.ibscbsCst || "000") : existing?.ibscbs_cst ?? "000",
+    ibscbsCclasstrib: body.ibscbsCclasstrib !== undefined ? String(body.ibscbsCclasstrib || "000001") : existing?.ibscbs_cclasstrib ?? "000001",
+    docResponsabilidadeTecnica: pegar("docResponsabilidadeTecnica", "doc_responsabilidade_tecnica") || null,
+    docReferencia: pegar("docReferencia", "doc_referencia") || null,
+    informacoesComplementares: pegar("informacoesComplementares", "informacoes_complementares") || null,
+    ativo: body.ativo !== undefined ? (body.ativo ? 1 : 0) : existing?.ativo ?? 1,
+  };
+}
 app.get("/api/nfse/modelos", blockCliente, requirePermissao("nfse", "visualizar"), (_req, res) => {
   const rows = sqlite.prepare(`SELECT * FROM nfse_modelos ORDER BY nome`).all() as any[];
-  res.json({
-    items: rows.map((r) => ({
-      id: r.id,
-      nome: r.nome,
-      codigoTributacaoNacional: r.codigo_tributacao_nacional,
-      codigoTributacaoMunicipal: r.codigo_tributacao_municipal,
-      codigoNbs: r.codigo_nbs,
-      tribIssqn: r.trib_issqn,
-      tipoRetencaoIssqn: r.tipo_retencao_issqn,
-      aliquotaIssqn: r.aliquota_issqn,
-      tipoRetencaoPisCofins: r.tipo_retencao_pis_cofins,
-      ativo: !!r.ativo,
-    })),
-  });
+  res.json({ items: rows.map(nfseModeloParaJson) });
 });
 app.post("/api/nfse/modelos", blockCliente, requirePermissao("nfse", "postar"), (req, res) => {
   const user = (req as any).user;
-  const { nome, codigoTributacaoNacional, codigoTributacaoMunicipal, codigoNbs, tribIssqn, tipoRetencaoIssqn, aliquotaIssqn, tipoRetencaoPisCofins } = req.body || {};
-  if (!nome || !codigoTributacaoNacional) return res.status(400).json({ error: "Informe o nome e o código de tributação nacional." });
+  const v = nfseModeloDoBody(req.body || {}, null);
+  if (!v.nome || !v.codigoTributacaoNacional) return res.status(400).json({ error: "Informe o nome e o código de tributação nacional." });
   const info = sqlite
     .prepare(
-      `INSERT INTO nfse_modelos (nome, codigo_tributacao_nacional, codigo_tributacao_municipal, codigo_nbs, trib_issqn, tipo_retencao_issqn, aliquota_issqn, tipo_retencao_pis_cofins, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO nfse_modelos (
+         nome, codigo_tributacao_nacional, codigo_tributacao_municipal, codigo_nbs, trib_issqn, tipo_retencao_issqn, aliquota_issqn, tipo_retencao_pis_cofins,
+         issqn_exigibilidade_suspensa, issqn_motivo_suspensao, issqn_numero_processo, beneficio_municipal_codigo,
+         pis_cofins_cst, percentual_irrf, percentual_csll, percentual_cofins_retido, percentual_pis_retido, percentual_contrib_previdenciaria,
+         ibscbs_preencher, ibscbs_cst, ibscbs_cclasstrib, doc_responsabilidade_tecnica, doc_referencia, informacoes_complementares, created_by
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
-      String(nome).trim(),
-      String(codigoTributacaoNacional).replace(/\D/g, ""),
-      codigoTributacaoMunicipal ? String(codigoTributacaoMunicipal).trim() : null,
-      codigoNbs ? String(codigoNbs).replace(/\D/g, "") : null,
-      Number(tribIssqn) || 1,
-      Number(tipoRetencaoIssqn) || 1,
-      aliquotaIssqn != null && aliquotaIssqn !== "" ? Number(aliquotaIssqn) : null,
-      tipoRetencaoPisCofins != null && tipoRetencaoPisCofins !== "" ? Number(tipoRetencaoPisCofins) : null,
+      v.nome,
+      v.codigoTributacaoNacional,
+      v.codigoTributacaoMunicipal,
+      v.codigoNbs,
+      v.tribIssqn,
+      v.tipoRetencaoIssqn,
+      v.aliquotaIssqn,
+      v.tipoRetencaoPisCofins,
+      v.issqnExigibilidadeSuspensa,
+      v.issqnMotivoSuspensao,
+      v.issqnNumeroProcesso,
+      v.beneficioMunicipalCodigo,
+      v.pisCofinsCst,
+      v.percentualIrrf,
+      v.percentualCsll,
+      v.percentualCofinsRetido,
+      v.percentualPisRetido,
+      v.percentualContribPrevidenciaria,
+      v.ibscbsPreencher,
+      v.ibscbsCst,
+      v.ibscbsCclasstrib,
+      v.docResponsabilidadeTecnica,
+      v.docReferencia,
+      v.informacoesComplementares,
       user.id
     );
   res.json({ id: Number(info.lastInsertRowid) });
@@ -2034,21 +2159,42 @@ app.put("/api/nfse/modelos/:id", blockCliente, requirePermissao("nfse", "editar"
   const id = Number(req.params.id);
   const existing = sqlite.prepare(`SELECT * FROM nfse_modelos WHERE id = ?`).get(id) as any;
   if (!existing) return res.status(404).json({ error: "Modelo não encontrado." });
-  const { nome, codigoTributacaoNacional, codigoTributacaoMunicipal, codigoNbs, tribIssqn, tipoRetencaoIssqn, aliquotaIssqn, tipoRetencaoPisCofins, ativo } = req.body || {};
+  const v = nfseModeloDoBody(req.body || {}, existing);
   sqlite
     .prepare(
-      `UPDATE nfse_modelos SET nome=?, codigo_tributacao_nacional=?, codigo_tributacao_municipal=?, codigo_nbs=?, trib_issqn=?, tipo_retencao_issqn=?, aliquota_issqn=?, tipo_retencao_pis_cofins=?, ativo=? WHERE id=?`
+      `UPDATE nfse_modelos SET
+         nome=?, codigo_tributacao_nacional=?, codigo_tributacao_municipal=?, codigo_nbs=?, trib_issqn=?, tipo_retencao_issqn=?, aliquota_issqn=?, tipo_retencao_pis_cofins=?,
+         issqn_exigibilidade_suspensa=?, issqn_motivo_suspensao=?, issqn_numero_processo=?, beneficio_municipal_codigo=?,
+         pis_cofins_cst=?, percentual_irrf=?, percentual_csll=?, percentual_cofins_retido=?, percentual_pis_retido=?, percentual_contrib_previdenciaria=?,
+         ibscbs_preencher=?, ibscbs_cst=?, ibscbs_cclasstrib=?, doc_responsabilidade_tecnica=?, doc_referencia=?, informacoes_complementares=?, ativo=?
+       WHERE id=?`
     )
     .run(
-      nome !== undefined ? String(nome).trim() : existing.nome,
-      codigoTributacaoNacional !== undefined ? String(codigoTributacaoNacional).replace(/\D/g, "") : existing.codigo_tributacao_nacional,
-      codigoTributacaoMunicipal !== undefined ? (codigoTributacaoMunicipal ? String(codigoTributacaoMunicipal).trim() : null) : existing.codigo_tributacao_municipal,
-      codigoNbs !== undefined ? (codigoNbs ? String(codigoNbs).replace(/\D/g, "") : null) : existing.codigo_nbs,
-      tribIssqn !== undefined ? Number(tribIssqn) || 1 : existing.trib_issqn,
-      tipoRetencaoIssqn !== undefined ? Number(tipoRetencaoIssqn) || 1 : existing.tipo_retencao_issqn,
-      aliquotaIssqn !== undefined ? (aliquotaIssqn != null && aliquotaIssqn !== "" ? Number(aliquotaIssqn) : null) : existing.aliquota_issqn,
-      tipoRetencaoPisCofins !== undefined ? (tipoRetencaoPisCofins != null && tipoRetencaoPisCofins !== "" ? Number(tipoRetencaoPisCofins) : null) : existing.tipo_retencao_pis_cofins,
-      ativo === undefined ? existing.ativo : ativo ? 1 : 0,
+      v.nome,
+      v.codigoTributacaoNacional,
+      v.codigoTributacaoMunicipal,
+      v.codigoNbs,
+      v.tribIssqn,
+      v.tipoRetencaoIssqn,
+      v.aliquotaIssqn,
+      v.tipoRetencaoPisCofins,
+      v.issqnExigibilidadeSuspensa,
+      v.issqnMotivoSuspensao,
+      v.issqnNumeroProcesso,
+      v.beneficioMunicipalCodigo,
+      v.pisCofinsCst,
+      v.percentualIrrf,
+      v.percentualCsll,
+      v.percentualCofinsRetido,
+      v.percentualPisRetido,
+      v.percentualContribPrevidenciaria,
+      v.ibscbsPreencher,
+      v.ibscbsCst,
+      v.ibscbsCclasstrib,
+      v.docResponsabilidadeTecnica,
+      v.docReferencia,
+      v.informacoesComplementares,
+      v.ativo,
       id
     );
   res.json({ ok: true });
@@ -2203,6 +2349,40 @@ app.get("/api/nfse/emissoes/:id/xml", blockCliente, requirePermissao("nfse", "vi
   res.send(xml);
 });
 
+// Monta os dados de serviço da DPS a partir do modelo — os valores de retenção federal (IRRF,
+// CSLL, PIS, COFINS, contribuição previdenciária) são calculados aplicando o percentual
+// configurado no modelo sobre o valor do serviço desta emissão específica.
+function nfseServicoDoModelo(modelo: any, descricao: string, valor: number, competencia: string): nfse.DadosServico {
+  const calc = (pct: number | null) => (pct != null ? Number(((valor * pct) / 100).toFixed(2)) : null);
+  return {
+    codigoTributacaoNacional: modelo.codigo_tributacao_nacional,
+    codigoTributacaoMunicipal: modelo.codigo_tributacao_municipal || null,
+    codigoNbs: modelo.codigo_nbs || null,
+    descricao,
+    valor,
+    competencia,
+    tribIssqn: modelo.trib_issqn,
+    tipoRetencaoIssqn: modelo.tipo_retencao_issqn,
+    aliquotaIssqn: modelo.aliquota_issqn != null ? Number(modelo.aliquota_issqn) : null,
+    tipoRetencaoPisCofins: modelo.tipo_retencao_pis_cofins != null ? Number(modelo.tipo_retencao_pis_cofins) : null,
+    issqnExigibilidadeSuspensa: !!modelo.issqn_exigibilidade_suspensa,
+    issqnMotivoSuspensao: modelo.issqn_motivo_suspensao,
+    issqnNumeroProcesso: modelo.issqn_numero_processo || null,
+    beneficioMunicipalCodigo: modelo.beneficio_municipal_codigo || null,
+    pisCofinsCst: modelo.pis_cofins_cst || "00",
+    valorIrrf: calc(modelo.percentual_irrf),
+    valorCsll: calc(modelo.percentual_csll),
+    valorCofinsRetido: calc(modelo.percentual_cofins_retido),
+    valorPisRetido: calc(modelo.percentual_pis_retido),
+    valorContribPrevidenciaria: calc(modelo.percentual_contrib_previdenciaria),
+    ibscbsPreencher: !!modelo.ibscbs_preencher,
+    ibscbsCst: modelo.ibscbs_cst || "000",
+    ibscbsCclasstrib: modelo.ibscbs_cclasstrib || "000001",
+    docResponsabilidadeTecnica: modelo.doc_responsabilidade_tecnica || null,
+    docReferencia: modelo.doc_referencia || null,
+    informacoesComplementares: modelo.informacoes_complementares || null,
+  };
+}
 app.post("/api/nfse/emitir", blockCliente, requirePermissao("nfse", "postar"), async (req, res) => {
   const user = (req as any).user;
   const { empresaId, modeloId, tomador, servico } = req.body || {};
@@ -2285,18 +2465,7 @@ app.post("/api/nfse/emitir", blockCliente, requirePermissao("nfse", "postar"), a
           bairro: tomador.bairro || null,
           codigoMunicipio: tomador.codigoMunicipio || null,
         },
-        servico: {
-          codigoTributacaoNacional: modelo.codigo_tributacao_nacional,
-          codigoTributacaoMunicipal: modelo.codigo_tributacao_municipal || null,
-          codigoNbs: modelo.codigo_nbs || null,
-          descricao: String(servico.descricao).trim(),
-          valor: Number(servico.valor),
-          competencia: String(servico.competencia),
-          tribIssqn: modelo.trib_issqn,
-          tipoRetencaoIssqn: modelo.tipo_retencao_issqn,
-          aliquotaIssqn: modelo.aliquota_issqn != null ? Number(modelo.aliquota_issqn) : null,
-          tipoRetencaoPisCofins: modelo.tipo_retencao_pis_cofins != null ? Number(modelo.tipo_retencao_pis_cofins) : null,
-        },
+        servico: nfseServicoDoModelo(modelo, String(servico.descricao).trim(), Number(servico.valor), String(servico.competencia)),
       },
       cert
     );

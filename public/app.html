@@ -1826,7 +1826,7 @@ async function renderNfseModelos(){
   }));
 }
 async function nfseModeloModal(m){
-  const [{ items: ctribItens }, { items: nbsItens }] = await Promise.all([ api('/nfse/ctribnac'), api('/nfse/nbs') ]);
+  const [{ items: ctribItens }, { items: nbsItens }, { items: cclasstribItens }] = await Promise.all([ api('/nfse/ctribnac'), api('/nfse/nbs'), api('/nfse/cclasstrib') ]);
   openModal(`
     <h3>${m?'Editar':'Novo'} modelo de serviço</h3>
     <div class="field"><label>Nome</label><input id="nmNome" value="${m?esc(m.nome):''}" placeholder='Ex.: "Serviços Administrativos"'></div>
@@ -1861,6 +1861,44 @@ async function nfseModeloModal(m){
         <option value="4" ${m&&m.tipoRetencaoPisCofins===4?'selected':''}>PIS não retido / COFINS retido</option>
       </select>
     </div>
+
+    <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Tributação Municipal — avançado</div>
+    <label class="checkbox-row"><input type="checkbox" id="nmExigSuspensa" ${m&&m.issqnExigibilidadeSuspensa?'checked':''}> Exigibilidade do ISSQN suspensa (decisão judicial/processo administrativo)</label>
+    <div id="nmExigSuspensaWrap" class="row" style="margin-top:8px;"></div>
+    <div class="field"><label>Código do benefício municipal (opcional)</label><input id="nmBeneficioMunicipal" value="${m&&m.beneficioMunicipalCodigo?esc(m.beneficioMunicipalCodigo):''}" placeholder="nBM — deixe em branco se não houver"></div>
+
+    <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Tributação Federal — retenções (% sobre o valor do serviço)</div>
+    <div class="field" style="width:220px;"><label>CST do PIS/COFINS</label>
+      <select id="nmPisCofinsCst">
+        <option value="00" ${(!m||m.pisCofinsCst==='00'||!m.pisCofinsCst)?'selected':''}>00 - Nenhum</option>
+        <option value="01" ${m&&m.pisCofinsCst==='01'?'selected':''}>01 - Tributável alíquota básica</option>
+        <option value="04" ${m&&m.pisCofinsCst==='04'?'selected':''}>04 - Monofásica revenda alíquota zero</option>
+        <option value="06" ${m&&m.pisCofinsCst==='06'?'selected':''}>06 - Tributável alíquota zero</option>
+        <option value="08" ${m&&m.pisCofinsCst==='08'?'selected':''}>08 - Sem incidência da contribuição</option>
+        <option value="09" ${m&&m.pisCofinsCst==='09'?'selected':''}>09 - Suspensão da contribuição</option>
+      </select>
+    </div>
+    <div class="row">
+      <div class="field" style="width:140px;"><label>IRRF %</label><input id="nmPctIrrf" type="number" step="0.01" min="0" value="${m&&m.percentualIrrf!=null?m.percentualIrrf:''}"></div>
+      <div class="field" style="width:140px;"><label>CSLL %</label><input id="nmPctCsll" type="number" step="0.01" min="0" value="${m&&m.percentualCsll!=null?m.percentualCsll:''}"></div>
+      <div class="field" style="width:140px;"><label>COFINS retido %</label><input id="nmPctCofins" type="number" step="0.01" min="0" value="${m&&m.percentualCofinsRetido!=null?m.percentualCofinsRetido:''}"></div>
+      <div class="field" style="width:140px;"><label>PIS retido %</label><input id="nmPctPis" type="number" step="0.01" min="0" value="${m&&m.percentualPisRetido!=null?m.percentualPisRetido:''}"></div>
+      <div class="field" style="width:180px;"><label>Contrib. previdenciária %</label><input id="nmPctCp" type="number" step="0.01" min="0" value="${m&&m.percentualContribPrevidenciaria!=null?m.percentualContribPrevidenciaria:''}"></div>
+    </div>
+    <p style="font-size:11.5px; color:var(--ink-soft); margin:2px 0 10px;">Deixe em branco o que não se aplica. O valor retido é calculado automaticamente na hora da emissão (% × valor do serviço).</p>
+
+    <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">IBS/CBS (Reforma Tributária)</div>
+    <label class="checkbox-row"><input type="checkbox" id="nmIbscbsPreencher" ${m&&m.ibscbsPreencher?'checked':''}> Preencher informações de IBS/CBS nesta emissão</label>
+    <p style="font-size:11.5px; color:var(--ink-soft); margin:2px 0 10px;">Só fica obrigatório a partir de out/2026 (jan/2027 para o Simples Nacional) — hoje é opcional.</p>
+    <div id="nmIbscbsWrap"></div>
+
+    <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Informações complementares</div>
+    <div class="row">
+      <div class="field grow"><label>Documento de responsabilidade técnica (opcional)</label><input id="nmDocTec" value="${m&&m.docResponsabilidadeTecnica?esc(m.docResponsabilidadeTecnica):''}"></div>
+      <div class="field grow"><label>Documento de referência (opcional)</label><input id="nmDocRef" value="${m&&m.docReferencia?esc(m.docReferencia):''}"></div>
+    </div>
+    <div class="field"><label>Texto complementar (opcional)</label><textarea id="nmInfoComp" rows="2">${m&&m.informacoesComplementares?esc(m.informacoesComplementares):''}</textarea></div>
+
     ${m? `<label class="checkbox-row" style="margin-top:10px;"><input type="checkbox" id="nmAtivo" ${m.ativo?'checked':''}> Ativo (aparece na tela Emitir)</label>` : ''}
     <div class="modal-actions">
       <button class="btn" id="nmCancel">Cancelar</button>
@@ -1869,6 +1907,40 @@ async function nfseModeloModal(m){
   `);
   setupComboSelect('nmCTribNacCombo', ctribItens, ()=>{});
   setupComboSelect('nmNbsCombo', nbsItens, ()=>{});
+  function desenhaExigSuspensaWrap(){
+    const wrap = document.getElementById('nmExigSuspensaWrap');
+    if(!document.getElementById('nmExigSuspensa').checked){ wrap.innerHTML=''; return; }
+    wrap.innerHTML = `
+      <div class="field grow"><label>Motivo</label>
+        <select id="nmMotivoSuspensao">
+          <option value="1" ${(!m||m.issqnMotivoSuspensao!==2)?'selected':''}>Decisão judicial</option>
+          <option value="2" ${m&&m.issqnMotivoSuspensao===2?'selected':''}>Processo administrativo</option>
+        </select>
+      </div>
+      <div class="field grow"><label>Número do processo</label><input id="nmNumeroProcesso" value="${m&&m.issqnNumeroProcesso?esc(m.issqnNumeroProcesso):''}"></div>
+    `;
+  }
+  desenhaExigSuspensaWrap();
+  document.getElementById('nmExigSuspensa').addEventListener('change', desenhaExigSuspensaWrap);
+  function desenhaIbscbsWrap(){
+    const wrap = document.getElementById('nmIbscbsWrap');
+    if(!document.getElementById('nmIbscbsPreencher').checked){ wrap.innerHTML=''; return; }
+    wrap.innerHTML = `
+      <div class="row">
+        <div class="field" style="width:160px;"><label>Cód. Situação Tributária</label><input id="nmIbscbsCst" value="${m&&m.ibscbsCst?esc(m.ibscbsCst):'000'}" maxlength="3"></div>
+        <div class="field grow"><label>Cód. Classificação Tributária</label>${comboSelectHtml('nmCclasstribCombo', 'Digite para buscar…')}</div>
+      </div>
+    `;
+    setupComboSelect('nmCclasstribCombo', cclasstribItens, ()=>{});
+    const alvo = (m && m.ibscbsCclasstrib) || '000001';
+    const item = cclasstribItens.find(it=>it.id===alvo);
+    if(item){
+      document.querySelector('#nmCclasstribCombo .combo-input').value = item.label;
+      document.querySelector('#nmCclasstribCombo .combo-value').value = item.id;
+    }
+  }
+  desenhaIbscbsWrap();
+  document.getElementById('nmIbscbsPreencher').addEventListener('change', desenhaIbscbsWrap);
   if(m && m.codigoTributacaoNacional){
     const item = ctribItens.find(it=>it.id===m.codigoTributacaoNacional);
     if(item){
@@ -1897,6 +1969,22 @@ async function nfseModeloModal(m){
       tipoRetencaoIssqn: Number(document.getElementById('nmRetIssqn').value),
       aliquotaIssqn: document.getElementById('nmAliquota').value,
       tipoRetencaoPisCofins: document.getElementById('nmRetPisCofins').value,
+      issqnExigibilidadeSuspensa: document.getElementById('nmExigSuspensa').checked,
+      issqnMotivoSuspensao: document.getElementById('nmExigSuspensa').checked ? Number(document.getElementById('nmMotivoSuspensao').value) : '',
+      issqnNumeroProcesso: document.getElementById('nmExigSuspensa').checked ? document.getElementById('nmNumeroProcesso').value.trim() : '',
+      beneficioMunicipalCodigo: document.getElementById('nmBeneficioMunicipal').value.trim(),
+      pisCofinsCst: document.getElementById('nmPisCofinsCst').value,
+      percentualIrrf: document.getElementById('nmPctIrrf').value,
+      percentualCsll: document.getElementById('nmPctCsll').value,
+      percentualCofinsRetido: document.getElementById('nmPctCofins').value,
+      percentualPisRetido: document.getElementById('nmPctPis').value,
+      percentualContribPrevidenciaria: document.getElementById('nmPctCp').value,
+      ibscbsPreencher: document.getElementById('nmIbscbsPreencher').checked,
+      ibscbsCst: document.getElementById('nmIbscbsPreencher').checked ? document.getElementById('nmIbscbsCst').value.trim() : '',
+      ibscbsCclasstrib: document.getElementById('nmIbscbsPreencher').checked ? (document.querySelector('#nmCclasstribCombo .combo-value')?.value || '') : '',
+      docResponsabilidadeTecnica: document.getElementById('nmDocTec').value.trim(),
+      docReferencia: document.getElementById('nmDocRef').value.trim(),
+      informacoesComplementares: document.getElementById('nmInfoComp').value.trim(),
     };
     if(m) body.ativo = document.getElementById('nmAtivo').checked;
     try{
