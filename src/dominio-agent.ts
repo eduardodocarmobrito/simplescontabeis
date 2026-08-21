@@ -88,6 +88,7 @@ type EmpresaNormalizada = {
   cidade?: string | null;
   uf?: string | null;
   cep?: string | null;
+  inscricaoMunicipal?: string | null;
 };
 
 function normalizarLinha(row: Record<string, any>, cfg: Config): EmpresaNormalizada {
@@ -196,6 +197,13 @@ function extrairDocumento(item: any): string | null {
   const cpf = nats.find((n: any) => n.kind?.id === "BR-CPF" && n.identity);
   return cnpj?.identity || cpf?.identity || null;
 }
+// Nem toda empresa tem isso preenchido no Onvio (na prática, poucas) — quando não tem, o campo
+// fica em branco e é preenchido manualmente na tela (usado pra emissão de NFS-e).
+function extrairInscricaoMunicipal(item: any): string | null {
+  const nats = item?.primaryContactExpanded?.nationalIdentitiesExpanded || [];
+  const im = nats.find((n: any) => n.kind?.id === "BR-IM" && n.identity);
+  return im?.identity || null;
+}
 
 async function buscarViaOnvio(): Promise<EmpresaNormalizada[]> {
   if (!fs.existsSync(ONVIO_SESSION_PATH)) {
@@ -253,6 +261,7 @@ async function buscarViaOnvio(): Promise<EmpresaNormalizada[]> {
           codigo: String(it.code),
           nome: String(it.name || "").trim(),
           cnpj: extrairDocumento(it),
+          inscricaoMunicipal: extrairInscricaoMunicipal(it),
           ...contato,
           // situação (ativo/inativo) não vem nessa API — a sincronização automática não mexe
           // nisso pra não reativar/desativar empresa por engano (ver server.ts, COALESCE(ativo)).

@@ -28,6 +28,8 @@ Acesse `http://localhost:3000`. O primeiro administrador é criado automaticamen
 - `src/onvio-login-setup.ts` — script de configuração única (`npm run onvio-login`) que abre um
   navegador de verdade para você logar no Onvio (usuário/senha + verificação em duas etapas) e
   salva a sessão em `data/onvio-session.json`, reaproveitada pelo agente depois.
+- `src/nfse.ts` — módulo de emissão de NFS-e (assinatura de XML, criptografia de certificado,
+  chamadas ao Sistema Nacional NFS-e). Veja a seção **NFS-e** abaixo.
 
 ## Módulos
 
@@ -49,6 +51,8 @@ Acesse `http://localhost:3000`. O primeiro administrador é criado automaticamen
   e opcionalmente restrito a empresas específicas) e Cliente (vinculado a uma única empresa, só
   enxerga "Meus Documentos").
 - **Configurações** — importação de clientes do Domínio Web e envio de e-mail corporativo.
+- **NFS-e** — emissão de nota fiscal de serviço direto pelo Sistema Nacional NFS-e (ADN). Veja a
+  seção **NFS-e** abaixo.
 
 ## Domínio Web / Onvio — sincronização de clientes
 
@@ -87,6 +91,47 @@ não estiver rodando.
 
 Use este botão sempre que cadastrar um cliente novo ou alterar dados de um cliente existente no
 Domínio/Onvio, para refletir a mudança no site sem esperar o próximo ciclo automático do agente.
+
+## NFS-e — emissão via Sistema Nacional NFS-e (ADN)
+
+Emite nota fiscal de serviço direto pelo webservice oficial da Receita Federal (Ambiente de Dados
+Nacional — ADN), sem depender de emissor de terceiros. Baseado na documentação oficial em
+[gov.br/nfse](https://www.gov.br/nfse/pt-br/biblioteca/documentacao-tecnica) (Manual dos
+Contribuintes e leiaute ANEXO_I-SEFIN_ADN-DPS_NFSe-SNNFSe).
+
+**Autenticação é sempre por certificado digital (mTLS)** — o ADN exige um certificado ICP-Brasil
+na própria conexão TLS para toda chamada (emissão, consulta, cancelamento); não existe login por
+usuário/senha para as APIs. Por isso:
+
+- `NFSE_CERT_ENCRYPTION_KEY` (no `.env`) — chave AES-256-GCM usada para criptografar todo
+  certificado `.pfx` e senha em repouso (arquivo em `data/nfse-certificados/`, senha cifrada no
+  banco). Gere uma vez com `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`
+  e nunca reaproveite entre ambientes.
+- **Certificado do escritório** (tela NFS-e › Configuração) — usado via **procuração eletrônica**
+  para emitir em nome de empresas-clientes que outorgaram procuração ao CNPJ do escritório no
+  e-CAC/gov.br (isso é feito pelo cliente fora deste site — o sistema não automatiza a outorga,
+  só assume que ela já existe quando o método "Procuração eletrônica" é escolhido).
+- **Certificado próprio por empresa** (tela NFS-e › Empresas) — para clientes que já têm e-CNPJ
+  próprio, evita depender da procuração.
+
+Cada empresa precisa ser habilitada individualmente (NFS-e › Empresas), com código do município
+(IBGE, 7 dígitos), inscrição municipal e opção pelo Simples Nacional preenchidos antes de emitir.
+
+**Estado atual: só o ambiente de produção restrita (sandbox oficial do governo)** —
+`https://adn.producaorestrita.nfse.gov.br`. Nenhuma NFS-e emitida por aqui tem validade fiscal
+ainda. A troca para produção real é uma mudança de uma linha (`ambiente` em `POST /api/nfse/emitir`
+no `server.ts`), só depois de validar emissões reais no sandbox.
+
+**Limitação importante**: o Swagger do próprio ambiente de testes exige um certificado válido só
+para ser visualizado (é mTLS na conexão, não só na autenticação da API) — não foi possível
+confirmar 100% os paths exatos de cada endpoint sem um certificado real em mãos. O envio de XML
+assinado até o servidor foi testado e chega corretamente (handshake mTLS alcança o ADN de
+verdade), mas o primeiro teste com um certificado ICP-Brasil real pode expor ajustes de path ou de
+schema — isso é esperado, não é um retrabalho do zero.
+
+Também não implementado ainda (ficou fora da Fase 1, de propósito): cancelamento de NFS-e,
+consulta de parâmetros municipais (alíquota/código de serviço são preenchidos manualmente na
+emissão), casos de comércio exterior, obra, evento e deduções da base de cálculo.
 
 ## E-mail corporativo
 

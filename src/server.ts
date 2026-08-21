@@ -8,6 +8,7 @@ import rateLimit from "express-rate-limit";
 import multer from "multer";
 import nodemailer from "nodemailer";
 import { DatabaseSync } from "node:sqlite";
+import * as nfse from "./nfse";
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 
@@ -155,6 +156,7 @@ sqlite.exec(`
     periodicidade TEXT NOT NULL DEFAULT 'mensal', -- 'mensal' | 'anual' | 'avulso'
     accept_json TEXT NOT NULL DEFAULT '["pdf"]',
     detectar_vencimento INTEGER NOT NULL DEFAULT 1, -- desliga pra tipos sem data de vencimento (DRE, Balancete...)
+    visivel_cliente INTEGER NOT NULL DEFAULT 0, -- aparece no menu "Solicitar Documentos" do cliente
     ativo INTEGER NOT NULL DEFAULT 1,
     created_by INTEGER,
     created_at TEXT DEFAULT (datetime('now'))
@@ -176,6 +178,8 @@ sqlite.exec(`
     ano INTEGER NOT NULL,
     mes INTEGER,
     rotulo TEXT,
+    solicitado_por INTEGER REFERENCES app_users(id), -- preenchido quando o período nasce de um pedido do cliente (menu "Solicitar Documentos")
+    solicitado_em TEXT,
     created_at TEXT DEFAULT (datetime('now')),
     UNIQUE(atribuicao_id, ano, mes, rotulo)
   );
@@ -340,6 +344,79 @@ sqlite.exec(`
     value_data TEXT,
     updated_at TEXT DEFAULT (datetime('now'))
   );
+
+  -- ---- NFS-e (emissão via Sistema Nacional NFS-e / ADN) ----
+  -- Certificados digitais (.pfx) usados para assinar a DPS. empresa_id NULL = certificado do
+  -- escritório (usado via procuração eletrônica para emitir em nome de clientes sem certificado
+  -- próprio). O arquivo .pfx e a senha ficam criptografados em repouso (AES-256-GCM, ver nfse.ts) —
+  -- nunca gravar o .pfx ou a senha em texto puro no banco ou no disco.
+  CREATE TABLE IF NOT EXISTS nfse_certificados (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    empresa_id INTEGER REFERENCES empresas(id) ON DELETE CASCADE,
+    arquivo_path TEXT NOT NULL, -- caminho do .pfx criptografado em disco (data/nfse-certificados/)
+    senha_cifrada TEXT NOT NULL, -- senha do .pfx, criptografada (iv:authTag:ciphertext em hex)
+    titular TEXT, -- Common Name extraído do certificado, só pra exibição/conferência
+    cnpj_certificado TEXT, -- CNPJ extraído do certificado (quando identificável), só conferência
+    validade_ate TEXT, -- data de expiração do certificado, extraída no upload
+    criado_por INTEGER REFERENCES app_users(id),
+    criado_em TEXT DEFAULT (datetime('now')),
+    UNIQUE(empresa_id)
+  );
+
+  -- Habilitação e dados fiscais do módulo NFS-e por empresa-cliente.
+  CREATE TABLE IF NOT EXISTS nfse_empresa_config (
+    empresa_id INTEGER PRIMARY KEY REFERENCES empresas(id) ON DELETE CASCADE,
+    habilitado INTEGER NOT NULL DEFAULT 0,
+    metodo_assinatura TEXT NOT NULL DEFAULT 'procuracao_escritorio', -- 'procuracao_escritorio' | 'certificado_proprio'
+    codigo_municipio TEXT, -- código IBGE de 7 dígitos do município do prestador
+    nome_municipio TEXT, -- só pra exibição (nome oficial IBGE do código acima), não vai na DPS
+    inscricao_municipal TEXT,
+    opcao_simples_nacional INTEGER NOT NULL DEFAULT 1, -- 1=Optante MEI/ME/EPP (regTrib/opSimpNac simplificado — ver nfse.ts)
+    regime_especial_trib INTEGER NOT NULL DEFAULT 0, -- 0=Nenhum (regTrib/regEspTrib)
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+
+  -- Modelos de serviço reutilizáveis (ex.: "Serviços Administrativos") — o admin configura uma vez
+  -- os códigos/tributação e na emissão só escolhe o modelo + preenche descrição e valor.
+  CREATE TABLE IF NOT EXISTS nfse_modelos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    nome TEXT NOT NULL, -- ex.: "Serviços Administrativos"
+    codigo_tributacao_nacional TEXT NOT NULL, -- cTribNac, 6 dígitos (ex.: "171001")
+    codigo_tributacao_municipal TEXT, -- cTribMun, opcional — nem todo município usa
+    codigo_nbs TEXT, -- cNBS, 9 dígitos — o portal oficial do governo trata como obrigatório na prática
+    trib_issqn INTEGER NOT NULL DEFAULT 1, -- 1=Operação tributável 2=Imunidade 3=Exportação de serviço 4=Não incidência
+    tipo_retencao_issqn INTEGER NOT NULL DEFAULT 1, -- 1=Não retido 2=Retido pelo tomador 3=Retido pelo intermediário
+    aliquota_issqn REAL, -- % — opcional, alguns municípios calculam automaticamente
+    tipo_retencao_pis_cofins INTEGER, -- 1=Retido 2=Não retido 3=PIS retido/COFINS não 4=PIS não/COFINS retido — NULL=não informar
+    ativo INTEGER NOT NULL DEFAULT 1,
+    created_by INTEGER REFERENCES app_users(id),
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+
+  -- Cada tentativa de emissão (DPS enviada) e o resultado — histórico completo, inclusive erros.
+  CREATE TABLE IF NOT EXISTS nfse_emissoes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+    serie INTEGER NOT NULL DEFAULT 1,
+    numero_dps INTEGER NOT NULL,
+    ambiente TEXT NOT NULL DEFAULT 'producaorestrita', -- 'producaorestrita' | 'producao'
+    tomador_documento TEXT NOT NULL,
+    tomador_nome TEXT NOT NULL,
+    tomador_email TEXT,
+    codigo_tributacao_nacional TEXT NOT NULL,
+    modelo_nome TEXT, -- nome do modelo de serviço usado (nfse_modelos), só pra exibição no histórico
+    descricao_servico TEXT NOT NULL,
+    valor_servico REAL NOT NULL,
+    competencia TEXT NOT NULL, -- 'YYYY-MM-DD'
+    status TEXT NOT NULL DEFAULT 'pendente', -- 'pendente' | 'emitida' | 'rejeitada' | 'erro'
+    chave_acesso TEXT,
+    xml_dps TEXT,
+    xml_nfse TEXT,
+    erro TEXT,
+    criado_por INTEGER REFERENCES app_users(id),
+    criado_em TEXT DEFAULT (datetime('now')),
+    UNIQUE(empresa_id, serie, numero_dps)
+  );
 `);
 
 sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_checklist_periodos_atrib ON checklist_periodos(atribuicao_id);`);
@@ -395,6 +472,22 @@ sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_envio_documentos_periodo ON envio_do
   }
 }
 
+// Migração leve: menu "Solicitar Documentos" do cliente — modelos ganham a opção de aparecer lá,
+// e os períodos passam a registrar quem pediu e quando (quando nascem de um pedido do cliente).
+{
+  const colsTemplates = sqlite.prepare(`PRAGMA table_info(envio_templates)`).all() as any[];
+  if (!colsTemplates.some((c) => c.name === "visivel_cliente")) {
+    sqlite.exec(`ALTER TABLE envio_templates ADD COLUMN visivel_cliente INTEGER NOT NULL DEFAULT 0`);
+    console.log("Migração aplicada: envio_templates.visivel_cliente.");
+  }
+  const colsPeriodos = sqlite.prepare(`PRAGMA table_info(envio_periodos)`).all() as any[];
+  if (!colsPeriodos.some((c) => c.name === "solicitado_por")) {
+    sqlite.exec(`ALTER TABLE envio_periodos ADD COLUMN solicitado_por INTEGER REFERENCES app_users(id)`);
+    sqlite.exec(`ALTER TABLE envio_periodos ADD COLUMN solicitado_em TEXT`);
+    console.log("Migração aplicada: envio_periodos.solicitado_por / solicitado_em.");
+  }
+}
+
 // Migração leve: cadastro de empresa ganhou os campos que o Domínio Web também tem
 // (e-mail, telefone, endereço) — adiciona nos bancos criados antes dessas colunas existirem.
 {
@@ -407,12 +500,37 @@ sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_envio_documentos_periodo ON envio_do
     ["cidade", "cidade TEXT"],
     ["uf", "uf TEXT"],
     ["cep", "cep TEXT"],
+    ["inscricao_municipal", "inscricao_municipal TEXT"],
   ]) {
     if (!nomes.has(coluna)) sqlite.exec(`ALTER TABLE empresas ADD COLUMN ${ddl}`);
   }
 }
 
-const MODULOS = ["dashboard", "empresas", "solicitacoes", "envio", "financeiro", "relatorios", "usuarios", "configuracoes"] as const;
+// Migração leve: NFS-e ganhou o nome do município (só exibição) ao lado do código IBGE.
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(nfse_empresa_config)`).all() as any[];
+  if (!cols.some((c) => c.name === "nome_municipio")) {
+    sqlite.exec(`ALTER TABLE nfse_empresa_config ADD COLUMN nome_municipio TEXT`);
+  }
+}
+// Migração leve: NFS-e ganhou os modelos de serviço reutilizáveis — a emissão passa a guardar
+// qual modelo foi usado, só pra exibição no histórico.
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(nfse_emissoes)`).all() as any[];
+  if (!cols.some((c) => c.name === "modelo_nome")) {
+    sqlite.exec(`ALTER TABLE nfse_emissoes ADD COLUMN modelo_nome TEXT`);
+  }
+}
+// Migração leve: modelo de serviço ganhou o código NBS (conferido em XML real — o portal do
+// governo trata como obrigatório na prática, mesmo o leiaute oficial marcando como opcional).
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(nfse_modelos)`).all() as any[];
+  if (!cols.some((c) => c.name === "codigo_nbs")) {
+    sqlite.exec(`ALTER TABLE nfse_modelos ADD COLUMN codigo_nbs TEXT`);
+  }
+}
+
+const MODULOS = ["dashboard", "empresas", "solicitacoes", "envio", "nfse", "financeiro", "relatorios", "usuarios", "configuracoes"] as const;
 type Modulo = (typeof MODULOS)[number];
 
 // ========================= LOGIN (senha com hash + sessão via cookie) =========================
@@ -547,6 +665,18 @@ function envioAtribuicaoTemDocumentos(atribuicaoId: number): boolean {
     )
     .get(atribuicaoId) as any;
   return !!row.tem;
+}
+// Pedidos feitos pelo cliente (menu "Solicitar Documentos") que ainda não foram atendidos —
+// usado pra destacar a atribuição na lista do escritório ("caixa de entrada" de pedidos).
+function envioAtribuicaoPendentesCliente(atribuicaoId: number): number {
+  const row = sqlite
+    .prepare(
+      `SELECT COUNT(*) as c FROM envio_periodos p
+       WHERE p.atribuicao_id = ? AND p.solicitado_em IS NOT NULL
+         AND NOT EXISTS (SELECT 1 FROM envio_documentos d WHERE d.periodo_id = p.id)`
+    )
+    .get(atribuicaoId) as any;
+  return Number(row.c) || 0;
 }
 function empresaTemDocumentosEnviados(empresaId: number): boolean {
   const row = sqlite
@@ -850,6 +980,7 @@ app.get("/api/empresas", blockCliente, requirePermissao("empresas", "visualizar"
       cidade: r.cidade,
       uf: r.uf,
       cep: r.cep,
+      inscricaoMunicipal: r.inscricao_municipal,
       ativo: !!r.ativo,
       visivelRelatorios: !!r.visivel_relatorios,
       origem: r.origem,
@@ -859,21 +990,21 @@ app.get("/api/empresas", blockCliente, requirePermissao("empresas", "visualizar"
   });
 });
 app.post("/api/empresas", blockCliente, requirePermissao("empresas", "postar"), (req, res) => {
-  const { nome, cnpj, codigoDominio, email, telefone, endereco, cidade, uf, cep } = req.body || {};
+  const { nome, cnpj, codigoDominio, email, telefone, endereco, cidade, uf, cep, inscricaoMunicipal } = req.body || {};
   if (!nome) return res.status(400).json({ error: "Informe o nome da empresa." });
   const info = sqlite
-    .prepare(`INSERT INTO empresas (nome, cnpj, codigo_dominio, email, telefone, endereco, cidade, uf, cep, origem) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual')`)
-    .run(nome, cnpj || null, codigoDominio || null, email || null, telefone || null, endereco || null, cidade || null, uf || null, cep || null);
+    .prepare(`INSERT INTO empresas (nome, cnpj, codigo_dominio, email, telefone, endereco, cidade, uf, cep, inscricao_municipal, origem) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual')`)
+    .run(nome, cnpj || null, codigoDominio || null, email || null, telefone || null, endereco || null, cidade || null, uf || null, cep || null, inscricaoMunicipal || null);
   res.json({ id: Number(info.lastInsertRowid) });
 });
 app.put("/api/empresas/:id", blockCliente, requirePermissao("empresas", "editar"), (req, res) => {
   const id = Number(req.params.id);
   const existing = sqlite.prepare(`SELECT * FROM empresas WHERE id = ?`).get(id) as any;
   if (!existing) return res.status(404).json({ error: "Empresa não encontrada." });
-  const { nome, cnpj, codigoDominio, email, telefone, endereco, cidade, uf, cep, ativo, visivelRelatorios } = req.body || {};
+  const { nome, cnpj, codigoDominio, email, telefone, endereco, cidade, uf, cep, inscricaoMunicipal, ativo, visivelRelatorios } = req.body || {};
   sqlite
     .prepare(
-      `UPDATE empresas SET nome=?, cnpj=?, codigo_dominio=?, email=?, telefone=?, endereco=?, cidade=?, uf=?, cep=?, ativo=?, visivel_relatorios=?, updated_at=datetime('now') WHERE id=?`
+      `UPDATE empresas SET nome=?, cnpj=?, codigo_dominio=?, email=?, telefone=?, endereco=?, cidade=?, uf=?, cep=?, inscricao_municipal=?, ativo=?, visivel_relatorios=?, updated_at=datetime('now') WHERE id=?`
     )
     .run(
       nome ?? existing.nome,
@@ -885,6 +1016,7 @@ app.put("/api/empresas/:id", blockCliente, requirePermissao("empresas", "editar"
       cidade !== undefined ? cidade : existing.cidade,
       uf !== undefined ? uf : existing.uf,
       cep !== undefined ? cep : existing.cep,
+      inscricaoMunicipal !== undefined ? inscricaoMunicipal : existing.inscricao_municipal,
       ativo === undefined ? existing.ativo : ativo ? 1 : 0,
       visivelRelatorios === undefined ? existing.visivel_relatorios : visivelRelatorios ? 1 : 0,
       id
@@ -1359,30 +1491,31 @@ app.get("/api/checklist/uploads/:uploadId/download", blockCliente, requirePermis
 // ---------- Envio de Documentos (o escritório posta e o cliente recebe — sentido contrário de Solicitações) ----------
 app.get("/api/envio/templates", blockCliente, requirePermissao("envio", "visualizar"), (_req, res) => {
   const rows = sqlite.prepare(`SELECT * FROM envio_templates ORDER BY nome`).all() as any[];
-  res.json({ items: rows.map((r) => ({ ...r, accept: JSON.parse(r.accept_json), detectarVencimento: !!r.detectar_vencimento })) });
+  res.json({ items: rows.map((r) => ({ ...r, accept: JSON.parse(r.accept_json), detectarVencimento: !!r.detectar_vencimento, visivelCliente: !!r.visivel_cliente })) });
 });
 app.post("/api/envio/templates", blockCliente, requirePermissao("envio", "postar"), (req, res) => {
   const user = (req as any).user;
-  const { nome, descricao, periodicidade, accept, detectarVencimento } = req.body || {};
+  const { nome, descricao, periodicidade, accept, detectarVencimento, visivelCliente } = req.body || {};
   if (!nome) return res.status(400).json({ error: "Informe o nome (ex.: \"DARF PIS\")." });
   const acceptFinal = Array.isArray(accept) && accept.length ? accept : ["pdf"];
   const info = sqlite
-    .prepare(`INSERT INTO envio_templates (nome, descricao, periodicidade, accept_json, detectar_vencimento, created_by) VALUES (?, ?, ?, ?, ?, ?)`)
-    .run(nome, descricao || null, periodicidade || "mensal", JSON.stringify(acceptFinal), detectarVencimento === false ? 0 : 1, user.id);
+    .prepare(`INSERT INTO envio_templates (nome, descricao, periodicidade, accept_json, detectar_vencimento, visivel_cliente, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run(nome, descricao || null, periodicidade || "mensal", JSON.stringify(acceptFinal), detectarVencimento === false ? 0 : 1, visivelCliente ? 1 : 0, user.id);
   res.json({ id: Number(info.lastInsertRowid) });
 });
 app.put("/api/envio/templates/:id", blockCliente, requirePermissao("envio", "editar"), (req, res) => {
   const id = Number(req.params.id);
   const existing = sqlite.prepare(`SELECT * FROM envio_templates WHERE id = ?`).get(id) as any;
   if (!existing) return res.status(404).json({ error: "Modelo não encontrado." });
-  const { nome, descricao, accept, ativo, detectarVencimento } = req.body || {};
+  const { nome, descricao, accept, ativo, detectarVencimento, visivelCliente } = req.body || {};
   sqlite
-    .prepare(`UPDATE envio_templates SET nome=?, descricao=?, accept_json=?, detectar_vencimento=?, ativo=? WHERE id=?`)
+    .prepare(`UPDATE envio_templates SET nome=?, descricao=?, accept_json=?, detectar_vencimento=?, visivel_cliente=?, ativo=? WHERE id=?`)
     .run(
       nome ?? existing.nome,
       descricao !== undefined ? descricao : existing.descricao,
       Array.isArray(accept) && accept.length ? JSON.stringify(accept) : existing.accept_json,
       detectarVencimento === undefined ? existing.detectar_vencimento : detectarVencimento ? 1 : 0,
+      visivelCliente === undefined ? existing.visivel_cliente : visivelCliente ? 1 : 0,
       ativo === undefined ? existing.ativo : ativo ? 1 : 0,
       id
     );
@@ -1408,7 +1541,14 @@ app.get("/api/envio/atribuicoes", blockCliente, requirePermissao("envio", "visua
   let rows = sqlite.prepare(sql).all(...params) as any[];
   const visiveis = empresasVisiveis(user);
   if (visiveis !== null) rows = rows.filter((r) => visiveis.includes(r.empresa_id));
-  res.json({ items: rows.map((r) => ({ ...r, accept: JSON.parse(r.acceptJson), temDocumentos: envioAtribuicaoTemDocumentos(r.id) })) });
+  res.json({
+    items: rows.map((r) => ({
+      ...r,
+      accept: JSON.parse(r.acceptJson),
+      temDocumentos: envioAtribuicaoTemDocumentos(r.id),
+      pendentesCliente: envioAtribuicaoPendentesCliente(r.id),
+    })),
+  });
 });
 app.get("/api/envio/minhas-atribuicoes", (req, res) => {
   const user = (req as any).user;
@@ -1423,6 +1563,99 @@ app.get("/api/envio/minhas-atribuicoes", (req, res) => {
     .all(user.empresaId) as any[];
   res.json({ items: rows });
 });
+
+// ---- Solicitar Documentos (cliente pede, sem depender do escritório já ter atribuído o modelo) ----
+app.get("/api/envio/templates-disponiveis", (req, res) => {
+  const user = (req as any).user;
+  if (user.perfil !== "Cliente") return res.status(403).json({ error: "Rota exclusiva para clientes." });
+  const rows = sqlite.prepare(`SELECT id, nome, descricao, periodicidade FROM envio_templates WHERE ativo = 1 AND visivel_cliente = 1 ORDER BY nome`).all();
+  res.json({ items: rows });
+});
+app.post("/api/envio/solicitar", (req, res) => {
+  const user = (req as any).user;
+  if (user.perfil !== "Cliente") return res.status(403).json({ error: "Rota exclusiva para clientes." });
+  if (!user.empresaId) return res.status(400).json({ error: "Seu usuário não está vinculado a uma empresa." });
+  const { templateId, ano, mes, rotulo } = req.body || {};
+  const template = sqlite.prepare(`SELECT * FROM envio_templates WHERE id = ? AND ativo = 1 AND visivel_cliente = 1`).get(Number(templateId)) as any;
+  if (!template) return res.status(404).json({ error: "Documento não disponível para solicitação." });
+
+  let anoFinal: number, mesFinal: number | null, rotuloFinal: string | null;
+  if (template.periodicidade === "mensal") {
+    mesFinal = Number(mes);
+    anoFinal = Number(ano);
+    if (!anoFinal || !mesFinal || mesFinal < 1 || mesFinal > 12) return res.status(400).json({ error: "Informe o mês e o ano." });
+    rotuloFinal = null;
+  } else if (template.periodicidade === "anual") {
+    anoFinal = Number(ano);
+    if (!anoFinal) return res.status(400).json({ error: "Informe o ano." });
+    mesFinal = null;
+    rotuloFinal = null;
+  } else {
+    rotuloFinal = rotulo ? String(rotulo).trim() : "";
+    if (!rotuloFinal) return res.status(400).json({ error: 'Descreva o que você está solicitando (ex.: "Relação de Faturamento — Jan a Jul/2026").' });
+    anoFinal = Number(ano) || new Date().getFullYear();
+    mesFinal = null;
+  }
+
+  let atrib = sqlite.prepare(`SELECT * FROM envio_atribuicoes WHERE template_id = ? AND empresa_id = ?`).get(template.id, user.empresaId) as any;
+  if (!atrib) {
+    const info = sqlite.prepare(`INSERT INTO envio_atribuicoes (template_id, empresa_id, created_by) VALUES (?, ?, ?)`).run(template.id, user.empresaId, user.id);
+    atrib = { id: Number(info.lastInsertRowid) };
+  } else if (!atrib.ativo) {
+    sqlite.prepare(`UPDATE envio_atribuicoes SET ativo = 1 WHERE id = ?`).run(atrib.id);
+  }
+
+  const insertPeriodo = sqlite.prepare(
+    `INSERT OR IGNORE INTO envio_periodos (atribuicao_id, ano, mes, rotulo, solicitado_por, solicitado_em) VALUES (?, ?, ?, ?, ?, datetime('now'))`
+  );
+  const info = insertPeriodo.run(atrib.id, anoFinal, mesFinal, rotuloFinal, user.id);
+  let periodoId: number;
+  let jaExistia = false;
+  if (info.changes) {
+    periodoId = Number(info.lastInsertRowid);
+  } else {
+    // já existia (ex.: o escritório tinha gerado a grade do ano antes) — marca como solicitado agora, se ainda não tinha sido
+    const existente = sqlite
+      .prepare(`SELECT * FROM envio_periodos WHERE atribuicao_id = ? AND ano = ? AND mes IS ? AND rotulo IS ?`)
+      .get(atrib.id, anoFinal, mesFinal, rotuloFinal) as any;
+    periodoId = existente.id;
+    jaExistia = true;
+    if (!existente.solicitado_em) {
+      sqlite.prepare(`UPDATE envio_periodos SET solicitado_por = ?, solicitado_em = datetime('now') WHERE id = ?`).run(user.id, periodoId);
+    }
+  }
+  const jaConcluido = !!sqlite.prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id = ?`).get(periodoId);
+  res.json({ ok: true, atribuicaoId: atrib.id, periodoId, jaExistia, jaConcluido });
+});
+app.get("/api/envio/minhas-solicitacoes", (req, res) => {
+  const user = (req as any).user;
+  if (user.perfil !== "Cliente") return res.status(403).json({ error: "Rota exclusiva para clientes." });
+  if (!user.empresaId) return res.json({ items: [] });
+  const rows = sqlite
+    .prepare(
+      `SELECT p.id as periodoId, p.ano, p.mes, p.rotulo, p.solicitado_em as solicitadoEm,
+              t.nome as templateNome, t.periodicidade, a.id as atribuicaoId
+       FROM envio_periodos p
+       JOIN envio_atribuicoes a ON a.id = p.atribuicao_id
+       JOIN envio_templates t ON t.id = a.template_id
+       WHERE a.empresa_id = ? AND p.solicitado_em IS NOT NULL
+       ORDER BY p.solicitado_em DESC`
+    )
+    .all(user.empresaId) as any[];
+  const periodoIds = rows.map((r) => r.periodoId);
+  const docs = periodoIds.length
+    ? (sqlite
+        .prepare(`SELECT * FROM envio_documentos WHERE periodo_id IN (${periodoIds.map(() => "?").join(",")}) ORDER BY enviado_em ASC, id ASC`)
+        .all(...periodoIds) as any[])
+    : [];
+  const docsPorPeriodo = new Map<number, any[]>();
+  for (const d of docs) {
+    if (!docsPorPeriodo.has(d.periodo_id)) docsPorPeriodo.set(d.periodo_id, []);
+    docsPorPeriodo.get(d.periodo_id)!.push({ id: d.id, fileName: d.file_name, enviadoEm: d.enviado_em });
+  }
+  res.json({ items: rows.map((r) => ({ ...r, documentos: docsPorPeriodo.get(r.periodoId) || [] })) });
+});
+
 app.post("/api/envio/atribuicoes", blockCliente, requirePermissao("envio", "postar"), (req, res) => {
   const user = (req as any).user;
   const { templateId, empresaId } = req.body || {};
@@ -1512,6 +1745,7 @@ app.get("/api/envio/grade/:atribuicaoId", (req, res) => {
     ano: p.ano,
     mes: p.mes,
     rotulo: p.rotulo,
+    solicitadoEm: p.solicitado_em,
     documentos: docsPorPeriodo.get(p.id) || [],
   }));
 
@@ -1670,6 +1904,401 @@ app.get("/api/envio/documentos/:id/download", (req, res) => {
   }
   if (!fs.existsSync(doc.file_path)) return res.status(404).json({ error: "Arquivo não encontrado." });
   res.download(doc.file_path, doc.file_name);
+});
+
+// ---------- NFS-e (emissão via Sistema Nacional NFS-e / ADN) ----------
+// Certificados ficam sempre criptografados em repouso — só decifrados em memória, no momento de
+// assinar/enviar (ver src/nfse.ts). O acesso a certificados é restrito ao Administrador: é a
+// chave de assinatura de documentos fiscais, mais sensível que qualquer outro dado do sistema.
+function nfseCarregarCertificado(row: any): nfse.CertificadoInfo {
+  const pfxBuf = nfse.lerCertificadoCifradoDoDisco(row.arquivo_path);
+  const senha = nfse.decifrarTexto(row.senha_cifrada);
+  return nfse.lerCertificadoPfx(pfxBuf, senha);
+}
+// Resolve qual certificado usar para emitir em nome de uma empresa: o dela própria (se o método
+// for 'certificado_proprio') ou o do escritório (via procuração eletrônica, outorgada fora do
+// sistema no e-CAC/gov.br — aqui só assumimos que a outorga já foi feita).
+function nfseCertificadoParaEmpresa(empresaId: number, metodo: string): { cert: nfse.CertificadoInfo; cnpjPrestador: string } {
+  const empresa = sqlite.prepare(`SELECT cnpj FROM empresas WHERE id = ?`).get(empresaId) as any;
+  if (metodo === "certificado_proprio") {
+    const row = sqlite.prepare(`SELECT * FROM nfse_certificados WHERE empresa_id = ?`).get(empresaId) as any;
+    if (!row) throw new Error("Esta empresa está configurada para usar certificado próprio, mas nenhum certificado foi enviado ainda.");
+    return { cert: nfseCarregarCertificado(row), cnpjPrestador: (empresa?.cnpj || "").replace(/\D/g, "") };
+  }
+  const row = sqlite.prepare(`SELECT * FROM nfse_certificados WHERE empresa_id IS NULL`).get() as any;
+  if (!row) throw new Error('Nenhum certificado do escritório configurado ainda — envie em "NFS-e › Configuração".');
+  return { cert: nfseCarregarCertificado(row), cnpjPrestador: (empresa?.cnpj || "").replace(/\D/g, "") };
+}
+
+app.get("/api/nfse/certificados", blockCliente, requireAdmin, (_req, res) => {
+  const rows = sqlite
+    .prepare(
+      `SELECT c.id, c.empresa_id as empresaId, e.nome as empresaNome, c.titular, c.cnpj_certificado as cnpjCertificado,
+              c.validade_ate as validadeAte, c.criado_em as criadoEm
+       FROM nfse_certificados c LEFT JOIN empresas e ON e.id = c.empresa_id
+       ORDER BY (c.empresa_id IS NOT NULL), e.nome`
+    )
+    .all();
+  res.json({ items: rows });
+});
+app.post("/api/nfse/certificados", blockCliente, requireAdmin, upload.single("arquivo"), (req, res) => {
+  const user = (req as any).user;
+  if (!req.file) return res.status(400).json({ error: "Selecione o arquivo .pfx." });
+  const { senha, empresaId } = req.body || {};
+  if (!senha) return res.status(400).json({ error: "Informe a senha do certificado." });
+  const empId = empresaId ? Number(empresaId) : null;
+  let info: nfse.CertificadoInfo;
+  try {
+    info = nfse.lerCertificadoPfx(req.file.buffer, senha);
+  } catch (e: any) {
+    return res.status(400).json({ error: e.message });
+  }
+  const existente = sqlite.prepare(`SELECT * FROM nfse_certificados WHERE empresa_id IS ?`).get(empId) as any;
+  const arquivoPath = nfse.salvarCertificadoCifrado(req.file.buffer, req.file.originalname);
+  const senhaCifrada = nfse.cifrarTexto(senha);
+  const validadeIso = info.validadeAte ? info.validadeAte.toISOString() : null;
+  if (existente) {
+    nfse.excluirCertificadoDoDisco(existente.arquivo_path);
+    sqlite
+      .prepare(`UPDATE nfse_certificados SET arquivo_path=?, senha_cifrada=?, titular=?, cnpj_certificado=?, validade_ate=?, criado_por=?, criado_em=datetime('now') WHERE id=?`)
+      .run(arquivoPath, senhaCifrada, info.titular, info.cnpjCertificado, validadeIso, user.id, existente.id);
+  } else {
+    sqlite
+      .prepare(`INSERT INTO nfse_certificados (empresa_id, arquivo_path, senha_cifrada, titular, cnpj_certificado, validade_ate, criado_por) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(empId, arquivoPath, senhaCifrada, info.titular, info.cnpjCertificado, validadeIso, user.id);
+  }
+  res.json({ ok: true, titular: info.titular, cnpjCertificado: info.cnpjCertificado, validadeAte: validadeIso });
+});
+app.delete("/api/nfse/certificados/:id", blockCliente, requireAdmin, (req, res) => {
+  const row = sqlite.prepare(`SELECT * FROM nfse_certificados WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!row) return res.status(404).json({ error: "Certificado não encontrado." });
+  nfse.excluirCertificadoDoDisco(row.arquivo_path);
+  sqlite.prepare(`DELETE FROM nfse_certificados WHERE id = ?`).run(row.id);
+  res.json({ ok: true });
+});
+
+// Modelos de serviço reutilizáveis — configurados uma vez (código de tributação, ISSQN, retenções)
+// e escolhidos na hora da emissão, que só pede descrição e valor.
+app.get("/api/nfse/modelos", blockCliente, requirePermissao("nfse", "visualizar"), (_req, res) => {
+  const rows = sqlite.prepare(`SELECT * FROM nfse_modelos ORDER BY nome`).all() as any[];
+  res.json({
+    items: rows.map((r) => ({
+      id: r.id,
+      nome: r.nome,
+      codigoTributacaoNacional: r.codigo_tributacao_nacional,
+      codigoTributacaoMunicipal: r.codigo_tributacao_municipal,
+      codigoNbs: r.codigo_nbs,
+      tribIssqn: r.trib_issqn,
+      tipoRetencaoIssqn: r.tipo_retencao_issqn,
+      aliquotaIssqn: r.aliquota_issqn,
+      tipoRetencaoPisCofins: r.tipo_retencao_pis_cofins,
+      ativo: !!r.ativo,
+    })),
+  });
+});
+app.post("/api/nfse/modelos", blockCliente, requirePermissao("nfse", "postar"), (req, res) => {
+  const user = (req as any).user;
+  const { nome, codigoTributacaoNacional, codigoTributacaoMunicipal, codigoNbs, tribIssqn, tipoRetencaoIssqn, aliquotaIssqn, tipoRetencaoPisCofins } = req.body || {};
+  if (!nome || !codigoTributacaoNacional) return res.status(400).json({ error: "Informe o nome e o código de tributação nacional." });
+  const info = sqlite
+    .prepare(
+      `INSERT INTO nfse_modelos (nome, codigo_tributacao_nacional, codigo_tributacao_municipal, codigo_nbs, trib_issqn, tipo_retencao_issqn, aliquota_issqn, tipo_retencao_pis_cofins, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      String(nome).trim(),
+      String(codigoTributacaoNacional).replace(/\D/g, ""),
+      codigoTributacaoMunicipal ? String(codigoTributacaoMunicipal).trim() : null,
+      codigoNbs ? String(codigoNbs).replace(/\D/g, "") : null,
+      Number(tribIssqn) || 1,
+      Number(tipoRetencaoIssqn) || 1,
+      aliquotaIssqn != null && aliquotaIssqn !== "" ? Number(aliquotaIssqn) : null,
+      tipoRetencaoPisCofins != null && tipoRetencaoPisCofins !== "" ? Number(tipoRetencaoPisCofins) : null,
+      user.id
+    );
+  res.json({ id: Number(info.lastInsertRowid) });
+});
+app.put("/api/nfse/modelos/:id", blockCliente, requirePermissao("nfse", "editar"), (req, res) => {
+  const id = Number(req.params.id);
+  const existing = sqlite.prepare(`SELECT * FROM nfse_modelos WHERE id = ?`).get(id) as any;
+  if (!existing) return res.status(404).json({ error: "Modelo não encontrado." });
+  const { nome, codigoTributacaoNacional, codigoTributacaoMunicipal, codigoNbs, tribIssqn, tipoRetencaoIssqn, aliquotaIssqn, tipoRetencaoPisCofins, ativo } = req.body || {};
+  sqlite
+    .prepare(
+      `UPDATE nfse_modelos SET nome=?, codigo_tributacao_nacional=?, codigo_tributacao_municipal=?, codigo_nbs=?, trib_issqn=?, tipo_retencao_issqn=?, aliquota_issqn=?, tipo_retencao_pis_cofins=?, ativo=? WHERE id=?`
+    )
+    .run(
+      nome !== undefined ? String(nome).trim() : existing.nome,
+      codigoTributacaoNacional !== undefined ? String(codigoTributacaoNacional).replace(/\D/g, "") : existing.codigo_tributacao_nacional,
+      codigoTributacaoMunicipal !== undefined ? (codigoTributacaoMunicipal ? String(codigoTributacaoMunicipal).trim() : null) : existing.codigo_tributacao_municipal,
+      codigoNbs !== undefined ? (codigoNbs ? String(codigoNbs).replace(/\D/g, "") : null) : existing.codigo_nbs,
+      tribIssqn !== undefined ? Number(tribIssqn) || 1 : existing.trib_issqn,
+      tipoRetencaoIssqn !== undefined ? Number(tipoRetencaoIssqn) || 1 : existing.tipo_retencao_issqn,
+      aliquotaIssqn !== undefined ? (aliquotaIssqn != null && aliquotaIssqn !== "" ? Number(aliquotaIssqn) : null) : existing.aliquota_issqn,
+      tipoRetencaoPisCofins !== undefined ? (tipoRetencaoPisCofins != null && tipoRetencaoPisCofins !== "" ? Number(tipoRetencaoPisCofins) : null) : existing.tipo_retencao_pis_cofins,
+      ativo === undefined ? existing.ativo : ativo ? 1 : 0,
+      id
+    );
+  res.json({ ok: true });
+});
+app.delete("/api/nfse/modelos/:id", blockCliente, requireAdmin, (req, res) => {
+  sqlite.prepare(`DELETE FROM nfse_modelos WHERE id = ?`).run(Number(req.params.id));
+  res.json({ ok: true });
+});
+
+app.get("/api/nfse/empresas", blockCliente, requirePermissao("nfse", "visualizar"), (_req, res) => {
+  const rows = sqlite
+    .prepare(
+      `SELECT e.id, e.nome, e.cnpj, e.cidade, e.uf, e.inscricao_municipal as inscricaoMunicipalCadastro,
+              c.habilitado, c.metodo_assinatura as metodoAssinatura, c.codigo_municipio as codigoMunicipio,
+              c.nome_municipio as nomeMunicipio,
+              c.inscricao_municipal as inscricaoMunicipal, c.opcao_simples_nacional as opcaoSimplesNacional,
+              c.regime_especial_trib as regimeEspecialTrib,
+              (SELECT 1 FROM nfse_certificados nc WHERE nc.empresa_id = e.id) as temCertificadoProprio
+       FROM empresas e LEFT JOIN nfse_empresa_config c ON c.empresa_id = e.id
+       WHERE e.ativo = 1 ORDER BY e.nome`
+    )
+    .all() as any[];
+  res.json({ items: rows.map((r) => ({ ...r, habilitado: !!r.habilitado, opcaoSimplesNacional: !!r.opcaoSimplesNacional, temCertificadoProprio: !!r.temCertificadoProprio })) });
+});
+// Código do município (IBGE) — o próprio leiaute oficial da DPS referencia "Tabela do IBGE" pra
+// esse campo, então é a fonte certa (mesma origem que o Sistema Nacional NFS-e usa). Cache em
+// memória por UF pra não repetir a chamada à API pública do IBGE a cada empresa.
+const nfseCacheMunicipiosPorUf = new Map<string, { id: number; nome: string }[]>();
+function nfseNormalizaCidade(s: string): string {
+  return String(s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+}
+async function nfseMunicipiosDaUf(uf: string): Promise<{ id: number; nome: string }[]> {
+  let municipios = nfseCacheMunicipiosPorUf.get(uf);
+  if (!municipios) {
+    const resp = await fetch(`https://servicodados.ibge.gov.br/api/v1/localidades/estados/${uf}/municipios`);
+    if (!resp.ok) throw new Error(`API do IBGE retornou HTTP ${resp.status}.`);
+    const json = (await resp.json()) as any[];
+    municipios = json.map((m) => ({ id: m.id, nome: m.nome }));
+    nfseCacheMunicipiosPorUf.set(uf, municipios);
+  }
+  return municipios;
+}
+// Lista completa de municípios de uma UF — usado pelo combobox de busca manual (o admin digita
+// pra filtrar, ver setupComboSelect no frontend).
+app.get("/api/nfse/municipios-ibge", blockCliente, requirePermissao("nfse", "visualizar"), async (req, res) => {
+  const uf = String(req.query.uf || "").toUpperCase().trim();
+  if (!uf) return res.status(400).json({ error: "Informe a UF." });
+  try {
+    const municipios = await nfseMunicipiosDaUf(uf);
+    res.json({ items: municipios.map((m) => ({ id: String(m.id), label: m.nome })) });
+  } catch (e: any) {
+    res.status(502).json({ error: `Não consegui consultar a API do IBGE: ${e.message}` });
+  }
+});
+// Busca exata por cidade+UF (usado no auto-preenchimento a partir do cadastro da empresa).
+app.get("/api/nfse/municipio-ibge", blockCliente, requirePermissao("nfse", "visualizar"), async (req, res) => {
+  const uf = String(req.query.uf || "").toUpperCase().trim();
+  const cidade = String(req.query.cidade || "").trim();
+  if (!uf || !cidade) return res.status(400).json({ error: "Informe cidade e UF." });
+  try {
+    const municipios = await nfseMunicipiosDaUf(uf);
+    const alvo = nfseNormalizaCidade(cidade);
+    const achado = municipios.find((m) => nfseNormalizaCidade(m.nome) === alvo);
+    if (!achado) return res.status(404).json({ error: `Não encontrei "${cidade}" na lista de municípios de ${uf}.` });
+    res.json({ codigoMunicipio: String(achado.id), nomeOficial: achado.nome });
+  } catch (e: any) {
+    res.status(502).json({ error: `Não consegui consultar a API do IBGE: ${e.message}` });
+  }
+});
+// Consulta de CNPJ (dados públicos da Receita Federal) — usado pra pré-preencher o tomador do
+// serviço na tela de emissão. BrasilAPI é um espelho gratuito e sem autenticação dos mesmos dados
+// públicos do CNPJ; não expõe nenhum dado sigiloso.
+app.get("/api/nfse/cnpj/:cnpj", blockCliente, requirePermissao("nfse", "visualizar"), async (req, res) => {
+  const cnpj = String(req.params.cnpj).replace(/\D/g, "");
+  if (cnpj.length !== 14) return res.status(400).json({ error: "CNPJ inválido — precisa ter 14 dígitos." });
+  try {
+    // BrasilAPI bloqueia (403) requisições sem User-Agent — o fetch nativo do Node não manda um por padrão.
+    const resp = await fetch(`https://brasilapi.com.br/api/cnpj/v1/${cnpj}`, { headers: { "User-Agent": "SimplesContabeis/1.0" } });
+    if (resp.status === 404) return res.status(404).json({ error: "CNPJ não encontrado na Receita Federal." });
+    if (!resp.ok) throw new Error(`API retornou HTTP ${resp.status}.`);
+    const j = (await resp.json()) as any;
+    res.json({
+      razaoSocial: j.razao_social || null,
+      nomeFantasia: j.nome_fantasia || null,
+      email: j.email || null,
+      logradouro: j.logradouro || null,
+      numero: j.numero || null,
+      complemento: j.complemento || null,
+      bairro: j.bairro || null,
+      cep: j.cep || null,
+      municipio: j.municipio || null,
+      uf: j.uf || null,
+    });
+  } catch (e: any) {
+    res.status(502).json({ error: `Não consegui consultar o CNPJ: ${e.message}` });
+  }
+});
+app.put("/api/nfse/empresas/:id", blockCliente, requirePermissao("nfse", "editar"), (req, res) => {
+  const empresaId = Number(req.params.id);
+  const empresa = sqlite.prepare(`SELECT id FROM empresas WHERE id = ?`).get(empresaId);
+  if (!empresa) return res.status(404).json({ error: "Empresa não encontrada." });
+  const { habilitado, metodoAssinatura, codigoMunicipio, nomeMunicipio, inscricaoMunicipal, opcaoSimplesNacional, regimeEspecialTrib } = req.body || {};
+  sqlite
+    .prepare(
+      `INSERT INTO nfse_empresa_config (empresa_id, habilitado, metodo_assinatura, codigo_municipio, nome_municipio, inscricao_municipal, opcao_simples_nacional, regime_especial_trib, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(empresa_id) DO UPDATE SET habilitado=excluded.habilitado, metodo_assinatura=excluded.metodo_assinatura,
+         codigo_municipio=excluded.codigo_municipio, nome_municipio=excluded.nome_municipio, inscricao_municipal=excluded.inscricao_municipal,
+         opcao_simples_nacional=excluded.opcao_simples_nacional, regime_especial_trib=excluded.regime_especial_trib, updated_at=datetime('now')`
+    )
+    .run(
+      empresaId,
+      habilitado ? 1 : 0,
+      metodoAssinatura === "certificado_proprio" ? "certificado_proprio" : "procuracao_escritorio",
+      codigoMunicipio || null,
+      nomeMunicipio || null,
+      inscricaoMunicipal || null,
+      opcaoSimplesNacional === false ? 0 : 1,
+      Number(regimeEspecialTrib) || 0
+    );
+  res.json({ ok: true });
+});
+
+app.get("/api/nfse/emissoes", blockCliente, requirePermissao("nfse", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = req.query.empresaId ? Number(req.query.empresaId) : null;
+  if (empresaId && !podeAcessarEmpresa(user, empresaId)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  let sql = `SELECT n.id, n.empresa_id as empresaId, e.nome as empresaNome, n.serie, n.numero_dps as numeroDps, n.ambiente,
+                    n.tomador_documento as tomadorDocumento, n.tomador_nome as tomadorNome, n.modelo_nome as modeloNome, n.descricao_servico as descricaoServico,
+                    n.valor_servico as valorServico, n.competencia, n.status, n.chave_acesso as chaveAcesso, n.erro, n.criado_em as criadoEm
+             FROM nfse_emissoes n JOIN empresas e ON e.id = n.empresa_id`;
+  const params: any[] = [];
+  if (empresaId) {
+    sql += ` WHERE n.empresa_id = ?`;
+    params.push(empresaId);
+  }
+  sql += ` ORDER BY n.criado_em DESC, n.id DESC`;
+  let rows = sqlite.prepare(sql).all(...params) as any[];
+  const visiveis = empresasVisiveis(user);
+  if (visiveis !== null) rows = rows.filter((r) => visiveis.includes(r.empresaId));
+  res.json({ items: rows });
+});
+app.get("/api/nfse/emissoes/:id/xml", blockCliente, requirePermissao("nfse", "visualizar"), (req, res) => {
+  const row = sqlite.prepare(`SELECT * FROM nfse_emissoes WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!row) return res.status(404).json({ error: "Emissão não encontrada." });
+  const user = (req as any).user;
+  if (!podeAcessarEmpresa(user, row.empresa_id)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  const xml = row.xml_nfse || row.xml_dps;
+  if (!xml) return res.status(404).json({ error: "Nenhum XML disponível para esta emissão." });
+  res.setHeader("Content-Type", "application/xml");
+  res.setHeader("Content-Disposition", `attachment; filename="dps-${row.id}.xml"`);
+  res.send(xml);
+});
+
+app.post("/api/nfse/emitir", blockCliente, requirePermissao("nfse", "postar"), async (req, res) => {
+  const user = (req as any).user;
+  const { empresaId, modeloId, tomador, servico } = req.body || {};
+  if (!empresaId) return res.status(400).json({ error: "Selecione a empresa." });
+  if (!podeAcessarEmpresa(user, Number(empresaId))) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  if (!modeloId) return res.status(400).json({ error: "Selecione o modelo de serviço." });
+  if (!tomador?.documento || !tomador?.nome) return res.status(400).json({ error: "Informe o documento (CPF/CNPJ) e o nome do tomador do serviço." });
+  if (!servico?.descricao || !servico?.valor || !servico?.competencia) {
+    return res.status(400).json({ error: "Preencha a descrição, o valor e a competência do serviço." });
+  }
+  const modelo = sqlite.prepare(`SELECT * FROM nfse_modelos WHERE id = ? AND ativo = 1`).get(Number(modeloId)) as any;
+  if (!modelo) return res.status(404).json({ error: "Modelo de serviço não encontrado ou inativo." });
+  const config = sqlite.prepare(`SELECT * FROM nfse_empresa_config WHERE empresa_id = ?`).get(Number(empresaId)) as any;
+  if (!config || !config.habilitado) return res.status(400).json({ error: "Módulo NFS-e não está habilitado para esta empresa." });
+  if (!config.codigo_municipio) {
+    return res.status(400).json({ error: "Preencha o código do município (IBGE) da empresa antes de emitir." });
+  }
+
+  let cert: nfse.CertificadoInfo, cnpjPrestador: string;
+  try {
+    ({ cert, cnpjPrestador } = nfseCertificadoParaEmpresa(Number(empresaId), config.metodo_assinatura));
+  } catch (e: any) {
+    return res.status(400).json({ error: e.message });
+  }
+  if (!cnpjPrestador) return res.status(400).json({ error: "Esta empresa não tem CNPJ cadastrado — preencha em Empresas antes de emitir." });
+  const empresaContato = sqlite.prepare(`SELECT telefone, email FROM empresas WHERE id = ?`).get(Number(empresaId)) as any;
+
+  const documentoTomador = String(tomador.documento).replace(/\D/g, "");
+  const ambiente: nfse.AmbienteNfse = "producaorestrita"; // Fase 1: só ambiente de testes do governo — nenhuma NFS-e válida é gerada ainda.
+  const serie = 70000; // faixa "Emissor Web" conforme o manual oficial
+  const ultimo = sqlite.prepare(`SELECT MAX(numero_dps) as m FROM nfse_emissoes WHERE empresa_id = ? AND serie = ?`).get(Number(empresaId), serie) as any;
+  const numeroDps = (ultimo?.m || 0) + 1;
+
+  const registro = sqlite
+    .prepare(
+      `INSERT INTO nfse_emissoes (empresa_id, serie, numero_dps, ambiente, tomador_documento, tomador_nome, tomador_email,
+         codigo_tributacao_nacional, modelo_nome, descricao_servico, valor_servico, competencia, status, criado_por)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pendente', ?)`
+    )
+    .run(
+      Number(empresaId),
+      serie,
+      numeroDps,
+      ambiente,
+      documentoTomador,
+      String(tomador.nome).trim(),
+      tomador.email || null,
+      modelo.codigo_tributacao_nacional,
+      modelo.nome,
+      String(servico.descricao).trim(),
+      Number(servico.valor),
+      String(servico.competencia),
+      user.id
+    );
+  const emissaoId = Number(registro.lastInsertRowid);
+
+  try {
+    const { xmlAssinado, resposta } = await nfse.emitirDps(
+      {
+        ambiente,
+        serie,
+        numeroDps,
+        prestador: {
+          cnpj: cnpjPrestador,
+          inscricaoMunicipal: config.inscricao_municipal || null,
+          codigoMunicipio: config.codigo_municipio,
+          opcaoSimplesNacional: !!config.opcao_simples_nacional,
+          regimeEspecialTrib: config.regime_especial_trib || 0,
+          telefone: empresaContato?.telefone || null,
+          email: empresaContato?.email || null,
+        },
+        tomador: {
+          documento: documentoTomador,
+          nome: String(tomador.nome).trim(),
+          email: tomador.email || null,
+          cep: tomador.cep || null,
+          logradouro: tomador.logradouro || null,
+          numero: tomador.numero || null,
+          complemento: tomador.complemento || null,
+          bairro: tomador.bairro || null,
+          codigoMunicipio: tomador.codigoMunicipio || null,
+        },
+        servico: {
+          codigoTributacaoNacional: modelo.codigo_tributacao_nacional,
+          codigoTributacaoMunicipal: modelo.codigo_tributacao_municipal || null,
+          codigoNbs: modelo.codigo_nbs || null,
+          descricao: String(servico.descricao).trim(),
+          valor: Number(servico.valor),
+          competencia: String(servico.competencia),
+          tribIssqn: modelo.trib_issqn,
+          tipoRetencaoIssqn: modelo.tipo_retencao_issqn,
+          aliquotaIssqn: modelo.aliquota_issqn != null ? Number(modelo.aliquota_issqn) : null,
+          tipoRetencaoPisCofins: modelo.tipo_retencao_pis_cofins != null ? Number(modelo.tipo_retencao_pis_cofins) : null,
+        },
+      },
+      cert
+    );
+    const status = resposta.ok ? "emitida" : "rejeitada";
+    const chaveMatch = resposta.ok ? resposta.corpo.match(/<chAcesso>([^<]+)<\/chAcesso>/) : null;
+    sqlite
+      .prepare(`UPDATE nfse_emissoes SET status=?, xml_dps=?, xml_nfse=?, chave_acesso=?, erro=? WHERE id=?`)
+      .run(status, xmlAssinado, resposta.ok ? resposta.corpo : null, chaveMatch ? chaveMatch[1] : null, resposta.ok ? null : resposta.corpo.slice(0, 4000), emissaoId);
+    if (!resposta.ok) return res.status(422).json({ error: `O Sistema Nacional NFS-e rejeitou a emissão (HTTP ${resposta.status}).`, detalhe: resposta.corpo, emissaoId });
+    res.json({ ok: true, emissaoId, chaveAcesso: chaveMatch ? chaveMatch[1] : null });
+  } catch (e: any) {
+    sqlite.prepare(`UPDATE nfse_emissoes SET status='erro', erro=? WHERE id=?`).run(e.message, emissaoId);
+    res.status(500).json({ error: e.message, emissaoId });
+  }
 });
 
 // ---------- Financeiro (honorários) ----------
@@ -1944,11 +2573,12 @@ app.post("/api/dominio-agent/empresas", requireDominioAgent, (req, res) => {
   let novas = 0, atualizadas = 0;
   const getByCodigo = sqlite.prepare(`SELECT id FROM empresas WHERE codigo_dominio = ?`);
   const insert = sqlite.prepare(
-    `INSERT INTO empresas (nome, cnpj, codigo_dominio, email, telefone, endereco, cidade, uf, cep, ativo, origem) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'dominio')`
+    `INSERT INTO empresas (nome, cnpj, codigo_dominio, email, telefone, endereco, cidade, uf, cep, inscricao_municipal, ativo, origem) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'dominio')`
   );
   const update = sqlite.prepare(
     `UPDATE empresas SET nome=?, cnpj=COALESCE(?, cnpj), email=COALESCE(?, email), telefone=COALESCE(?, telefone),
        endereco=COALESCE(?, endereco), cidade=COALESCE(?, cidade), uf=COALESCE(?, uf), cep=COALESCE(?, cep),
+       inscricao_municipal=COALESCE(?, inscricao_municipal),
        ativo=COALESCE(?, ativo), updated_at=datetime('now') WHERE id=?`
   );
   for (const it of items) {
@@ -1967,6 +2597,7 @@ app.post("/api/dominio-agent/empresas", requireDominioAgent, (req, res) => {
         it.cidade || null,
         it.uf || null,
         it.cep || null,
+        it.inscricaoMunicipal || null,
         it.ativo === undefined ? null : it.ativo ? 1 : 0,
         existente.id
       );
@@ -1982,6 +2613,7 @@ app.post("/api/dominio-agent/empresas", requireDominioAgent, (req, res) => {
         it.cidade || null,
         it.uf || null,
         it.cep || null,
+        it.inscricaoMunicipal || null,
         it.ativo === false ? 0 : 1
       );
       novas++;
