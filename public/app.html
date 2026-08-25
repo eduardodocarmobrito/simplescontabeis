@@ -41,6 +41,34 @@
   .combo-item:hover{background:var(--paper);}
   .combo-empty{padding:9px 12px; font-size:12.5px; color:var(--ink-soft);}
 
+  /* ===== Seletor de datas (calendário) — mesmo padrão do painel-contabil-libra ===== */
+  .date-field{display:flex; flex-direction:column; gap:5px; width:168px;}
+  .date-field label{font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-soft); font-family:'IBM Plex Mono',monospace;}
+  .date-input-wrap{position:relative;}
+  input.date-text{width:100%; font-family:'Inter',sans-serif; font-size:14px; border:1px solid var(--rule); border-radius:8px; background:var(--paper); padding:9px 12px 9px 38px; color:var(--ink); transition:border-color .15s, box-shadow .15s; cursor:pointer;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2366756F' stroke-width='1.6'%3E%3Crect x='3.5' y='5' width='17' height='16' rx='2.5'/%3E%3Cpath d='M3.5 9.5h17M8 3v3.6M16 3v3.6' stroke-linecap='round'/%3E%3C/svg%3E");
+    background-repeat:no-repeat; background-position:11px center; background-size:15px 15px;}
+  input.date-text:focus{outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-pale); background-color:var(--surface);}
+  .cal-popup{position:fixed; z-index:9999; width:272px; background:var(--surface); border:1px solid var(--rule); border-radius:14px; box-shadow:var(--shadow); padding:14px; font-family:'Inter',sans-serif; display:none;}
+  .cal-popup.open{display:block;}
+  .cal-head{display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;}
+  .cal-head .cal-label{font-weight:600; font-size:13.5px; text-transform:capitalize; font-family:inherit; border:none; background:none; padding:2px 6px; border-radius:6px; cursor:pointer; color:var(--ink);}
+  .cal-head button.cal-label:hover{background:var(--accent-pale); color:var(--accent-deep);}
+  .cal-head .cal-nav{display:flex; gap:4px;}
+  .cal-nav button{width:26px; height:26px; border:1px solid var(--rule); background:var(--paper); border-radius:8px; cursor:pointer; color:var(--ink-soft); font-size:13px; line-height:1; display:flex; align-items:center; justify-content:center;}
+  .cal-nav button:hover{border-color:var(--accent); color:var(--accent-deep);}
+  .cal-weekdays{display:grid; grid-template-columns:repeat(7,1fr); gap:2px; margin-bottom:4px;}
+  .cal-weekdays span{text-align:center; font-family:'IBM Plex Mono',monospace; font-size:10px; text-transform:uppercase; color:var(--ink-soft);}
+  .cal-grid{display:grid; grid-template-columns:repeat(7,1fr); gap:2px;}
+  .cal-day{border:none; background:transparent; padding:0; height:32px; border-radius:9px; font-size:12.5px; color:var(--ink); cursor:pointer; font-family:'Inter',sans-serif;}
+  .cal-day:hover{background:var(--accent-pale); color:var(--accent-deep);}
+  .cal-day.other{color:var(--ink-soft); opacity:.45;}
+  .cal-day.today{font-weight:700; color:var(--accent-deep);}
+  .cal-day.selected{background:var(--accent); color:#fff; font-weight:600;}
+  .cal-foot{margin-top:10px; text-align:center;}
+  .cal-foot button{background:none; border:none; color:var(--accent-deep); font-size:11.5px; font-family:'IBM Plex Mono',monospace; text-transform:uppercase; letter-spacing:.05em; cursor:pointer;}
+  .cal-foot button:hover{text-decoration:underline;}
+
   .btn{display:inline-flex; align-items:center; gap:6px; border:1px solid var(--rule); background:var(--surface); color:var(--ink); padding:9px 15px; border-radius:8px; font-size:13.5px; cursor:pointer; font-weight:500;}
   .btn:hover{border-color:var(--accent); color:var(--accent-deep);}
   .btn.primary{background:var(--accent); border-color:var(--accent); color:#fff;}
@@ -101,6 +129,21 @@
   .modal{background:var(--surface); border-radius:var(--radius); box-shadow:0 10px 40px rgba(20,30,26,.25); padding:24px 26px; width:520px; max-width:100%; max-height:88vh; overflow-y:auto;}
   .modal h3{margin:0 0 16px; font-size:17px;}
   .modal-actions{display:flex; justify-content:flex-end; gap:8px; margin-top:18px;}
+
+  .drawer-bg{position:fixed; inset:0; background:rgba(20,30,26,.35); display:none; z-index:1000;}
+  .drawer-bg.open{display:block;}
+  .drawer{position:fixed; top:0; right:0; bottom:0; width:min(920px,96vw); background:var(--surface); box-shadow:-10px 0 40px rgba(20,30,26,.25); display:flex; flex-direction:column; transform:translateX(100%); transition:transform .22s ease;}
+  .drawer-bg.open .drawer{transform:translateX(0);}
+  .drawer-header{display:flex; justify-content:space-between; align-items:center; padding:18px 24px; border-bottom:1px solid var(--line);}
+  .drawer-header h3{margin:0; font-size:17px;}
+  .drawer-body{flex:1; overflow-y:auto; padding:20px 24px;}
+  .drawer-footer{display:flex; justify-content:flex-end; gap:8px; flex-wrap:wrap; padding:16px 24px; border-top:1px solid var(--line);}
+  .rte-toolbar{display:flex; gap:4px; flex-wrap:wrap; padding:8px; background:var(--paper); border:1px solid var(--line); border-bottom:none; border-radius:8px 8px 0 0;}
+  .rte-toolbar button{border:1px solid transparent; background:transparent; border-radius:5px; padding:5px 9px; font-size:13px; cursor:pointer; color:var(--ink);}
+  .rte-toolbar button:hover{background:var(--accent-pale);}
+  .rte-body{border:1px solid var(--line); border-radius:0 0 8px 8px; padding:22px 28px; min-height:420px; background:#fff; font-family:Georgia,'Times New Roman',serif; font-size:14px; line-height:1.65; outline:none;}
+  .rte-body:focus{border-color:var(--accent);}
+  .campos-grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:12px; margin-bottom:16px;}
 
   .toast-wrap{position:fixed; bottom:20px; right:20px; z-index:2000; display:flex; flex-direction:column; gap:8px;}
   .toast{background:var(--ink); color:#fff; padding:11px 16px; border-radius:8px; font-size:13px; box-shadow:var(--shadow); max-width:340px;}
@@ -176,6 +219,7 @@
 </div>
 
 <div class="modal-bg" id="modalBg"><div class="modal" id="modalBody"></div></div>
+<div class="drawer-bg" id="drawerBg"><div class="drawer" id="drawerBody"></div></div>
 <div class="toast-wrap" id="toastWrap"></div>
 
 <script>
@@ -212,6 +256,158 @@ function fmtDate(iso){ if(!iso) return '—'; const d=new Date(String(iso).repla
 function fmtDateHora(iso){ if(!iso) return '—'; const d=new Date(String(iso).replace(' ','T')+(String(iso).includes('Z')?'':'Z')); if(isNaN(d)) return iso; return d.toLocaleDateString('pt-BR')+' às '+d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}); }
 function fmtDateIso(iso){ if(!iso) return null; const [y,m,d]=iso.split('-'); return `${d}/${m}/${y}`; }
 function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+/* ===== Seletor de datas (calendário) — mesmo componente do painel-contabil-libra ===== */
+function parseDateBR(str){
+  if(!str) return null; str=str.trim();
+  let m=str.match(/^(\d{4})-(\d{2})-(\d{2})/); if(m) return new Date(+m[1],+m[2]-1,+m[3]);
+  m=str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/); if(m) return new Date(+m[3],+m[2]-1,+m[1]);
+  return null;
+}
+const MESES_PT=['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
+let calPopupEl=null, calActiveHiddenId=null, calActiveTextId=null, calViewDate=new Date(), calViewMode='days';
+function isoFromParts(y,m,d){ return y+'-'+String(m+1).padStart(2,'0')+'-'+String(d).padStart(2,'0'); }
+function ensureCalPopup(){
+  if(calPopupEl) return calPopupEl;
+  calPopupEl=document.createElement('div');
+  calPopupEl.className='cal-popup';
+  document.body.appendChild(calPopupEl);
+  document.addEventListener('click', e=>{
+    if(!calPopupEl.classList.contains('open')) return;
+    const textEl=document.getElementById(calActiveTextId);
+    if(calPopupEl.contains(e.target) || (textEl && textEl.contains(e.target))) return;
+    closeCalendar();
+  });
+  window.addEventListener('resize', ()=>{ if(calPopupEl.classList.contains('open')) positionCalPopup(); });
+  window.addEventListener('scroll', ()=>{ if(calPopupEl.classList.contains('open')) positionCalPopup(); }, true);
+  return calPopupEl;
+}
+function positionCalPopup(){
+  const textEl=document.getElementById(calActiveTextId);
+  if(!textEl) return;
+  const r=textEl.getBoundingClientRect();
+  const popupW=272;
+  let left=r.left;
+  if(left+popupW>window.innerWidth-8) left=window.innerWidth-popupW-8;
+  calPopupEl.style.left=Math.max(8,left)+'px';
+  calPopupEl.style.top=(r.bottom+6)+'px';
+}
+function openCalendar(hiddenId, textId){
+  ensureCalPopup();
+  calActiveHiddenId=hiddenId; calActiveTextId=textId;
+  calViewMode='days';
+  const hidden=document.getElementById(hiddenId);
+  const d=hidden.value ? parseDateBR(fmtDateIso(hidden.value)) : null;
+  calViewDate=(d && !isNaN(d)) ? new Date(d.getFullYear(), d.getMonth(), 1) : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+  renderCalendar();
+  calPopupEl.classList.add('open');
+  positionCalPopup();
+}
+function closeCalendar(){
+  if(calPopupEl) calPopupEl.classList.remove('open');
+  calActiveHiddenId=null; calActiveTextId=null;
+}
+function selectCalDay(y,m,d){
+  const hidden=document.getElementById(calActiveHiddenId);
+  const text=document.getElementById(calActiveTextId);
+  const iso=isoFromParts(y,m,d);
+  hidden.value=iso;
+  hidden.dispatchEvent(new Event('change'));
+  text.value=fmtDateIso(iso);
+  closeCalendar();
+}
+function renderCalendar(){
+  if(!calActiveHiddenId) return;
+  if(calViewMode==='months') renderMonthView(); else renderDayView();
+}
+function renderDayView(){
+  const hidden=document.getElementById(calActiveHiddenId);
+  const selectedIso=hidden.value;
+  const y=calViewDate.getFullYear(), m=calViewDate.getMonth();
+  const startOffset=new Date(y,m,1).getDay();
+  const daysInMonth=new Date(y,m+1,0).getDate();
+  const daysInPrevMonth=new Date(y,m,0).getDate();
+  const hoje=new Date(); const todayIso=isoFromParts(hoje.getFullYear(), hoje.getMonth(), hoje.getDate());
+  let cells='';
+  for(let i=0;i<startOffset;i++){ const dd=daysInPrevMonth-startOffset+1+i; cells+=`<button type="button" class="cal-day other" data-y="${m===0?y-1:y}" data-m="${(m-1+12)%12}" data-d="${dd}">${dd}</button>`; }
+  for(let d=1; d<=daysInMonth; d++){ const iso=isoFromParts(y,m,d); const cls=['cal-day']; if(iso===todayIso) cls.push('today'); if(iso===selectedIso) cls.push('selected'); cells+=`<button type="button" class="${cls.join(' ')}" data-y="${y}" data-m="${m}" data-d="${d}">${d}</button>`; }
+  const trailing=(7-((startOffset+daysInMonth)%7))%7;
+  for(let d=1; d<=trailing; d++){ cells+=`<button type="button" class="cal-day other" data-y="${m===11?y+1:y}" data-m="${(m+1)%12}" data-d="${d}">${d}</button>`; }
+  calPopupEl.innerHTML=`
+    <div class="cal-head">
+      <div class="cal-nav"><button type="button" id="calPrev">‹</button></div>
+      <button type="button" class="cal-label" id="calLabel">${MESES_PT[m]} de ${y}</button>
+      <div class="cal-nav"><button type="button" id="calNext">›</button></div>
+    </div>
+    <div class="cal-weekdays"><span>D</span><span>S</span><span>T</span><span>Q</span><span>Q</span><span>S</span><span>S</span></div>
+    <div class="cal-grid">${cells}</div>
+    <div class="cal-foot"><button type="button" id="calToday">Hoje</button></div>`;
+  calPopupEl.querySelector('#calPrev').addEventListener('click', e=>{ e.stopPropagation(); calViewDate=new Date(y,m-1,1); renderCalendar(); });
+  calPopupEl.querySelector('#calNext').addEventListener('click', e=>{ e.stopPropagation(); calViewDate=new Date(y,m+1,1); renderCalendar(); });
+  calPopupEl.querySelector('#calLabel').addEventListener('click', e=>{ e.stopPropagation(); calViewMode='months'; renderCalendar(); });
+  calPopupEl.querySelector('#calToday').addEventListener('click', e=>{ e.stopPropagation(); const t=new Date(); selectCalDay(t.getFullYear(), t.getMonth(), t.getDate()); });
+  calPopupEl.querySelectorAll('.cal-day').forEach(btn=>{
+    btn.addEventListener('click', e=>{ e.stopPropagation(); selectCalDay(+btn.dataset.y, +btn.dataset.m, +btn.dataset.d); });
+  });
+}
+function renderMonthView(){
+  const y=calViewDate.getFullYear(), mSel=calViewDate.getMonth();
+  const hoje=new Date();
+  let cells='';
+  for(let mi=0; mi<12; mi++){
+    const cls=['cal-day']; if(y===hoje.getFullYear() && mi===hoje.getMonth()) cls.push('today'); if(mi===mSel) cls.push('selected');
+    cells+=`<button type="button" class="${cls.join(' ')}" data-m="${mi}" style="height:40px;">${MESES_PT[mi].slice(0,3)}</button>`;
+  }
+  calPopupEl.innerHTML=`
+    <div class="cal-head">
+      <div class="cal-nav"><button type="button" id="calYearPrev">‹</button></div>
+      <span class="cal-label">${y}</span>
+      <div class="cal-nav"><button type="button" id="calYearNext">›</button></div>
+    </div>
+    <div class="cal-grid" style="grid-template-columns:repeat(3,1fr); gap:6px;">${cells}</div>`;
+  calPopupEl.querySelector('#calYearPrev').addEventListener('click', e=>{ e.stopPropagation(); calViewDate=new Date(y-1,mSel,1); renderCalendar(); });
+  calPopupEl.querySelector('#calYearNext').addEventListener('click', e=>{ e.stopPropagation(); calViewDate=new Date(y+1,mSel,1); renderCalendar(); });
+  calPopupEl.querySelectorAll('.cal-grid .cal-day').forEach(btn=>{
+    btn.addEventListener('click', e=>{ e.stopPropagation(); calViewDate=new Date(y,+btn.dataset.m,1); calViewMode='days'; renderCalendar(); });
+  });
+}
+function maskDateInput(input){
+  let v=input.value.replace(/[^\d]/g,'').slice(0,8);
+  let out='';
+  if(v.length>0) out=v.slice(0,2);
+  if(v.length>=3) out+='/'+v.slice(2,4);
+  if(v.length>=5) out+='/'+v.slice(4,8);
+  input.value=out;
+}
+function setupDatePicker(hiddenId, textId){
+  const hidden=document.getElementById(hiddenId), text=document.getElementById(textId);
+  function syncFromHidden(){ text.value = hidden.value ? fmtDateIso(hidden.value) : ''; }
+  syncFromHidden();
+  hidden._syncText=syncFromHidden;
+  text.addEventListener('focus', ()=>openCalendar(hiddenId, textId));
+  text.addEventListener('click', ()=>{ if(calActiveTextId!==textId) openCalendar(hiddenId, textId); });
+  text.addEventListener('input', ()=>{
+    maskDateInput(text);
+    if(text.value.length===10){
+      const d=parseDateBR(text.value);
+      if(d && !isNaN(d)){
+        hidden.value=isoFromParts(d.getFullYear(), d.getMonth(), d.getDate());
+        hidden.dispatchEvent(new Event('change'));
+        if(calActiveHiddenId===hiddenId){ calViewDate=new Date(d.getFullYear(), d.getMonth(), 1); renderCalendar(); }
+      }
+    }
+  });
+  text.addEventListener('keydown', e=>{
+    if(e.key==='Escape'){ closeCalendar(); text.blur(); }
+    if(e.key==='Enter'){ e.preventDefault(); closeCalendar(); }
+  });
+}
+// Monta o par de campos (texto mascarado dd/mm/aaaa + input date escondido) — troque um
+// <input type="date" id="X"> por isso e chame setupDatePicker(idHidden, idHidden+'_text') logo
+// após inserir o HTML no DOM.
+function dateFieldHtml(hiddenId, label, value){
+  return `<div class="date-field"><label>${esc(label)}</label><div class="date-input-wrap"><input type="text" id="${hiddenId}_text" class="date-text" placeholder="dd/mm/aaaa" inputmode="numeric" autocomplete="off" maxlength="10"><input type="date" id="${hiddenId}" value="${value?esc(value):''}" style="display:none;"></div></div>`;
+}
 function normalizaTxt(s){ return String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,''); }
 
 // Combobox com busca: renderiza <div class="combo"><input class="combo-input"><input type="hidden">
@@ -260,6 +456,9 @@ function setupComboSelect(id, items, onChange){
 function openModal(html){ document.getElementById('modalBody').innerHTML=html; document.getElementById('modalBg').classList.add('open'); }
 function closeModal(){ document.getElementById('modalBg').classList.remove('open'); document.getElementById('modalBody').innerHTML=''; }
 document.getElementById('modalBg').addEventListener('click', e=>{ if(e.target.id==='modalBg') closeModal(); });
+function openDrawer(html){ document.getElementById('drawerBody').innerHTML=html; document.getElementById('drawerBg').classList.add('open'); }
+function closeDrawer(){ document.getElementById('drawerBg').classList.remove('open'); document.getElementById('drawerBody').innerHTML=''; }
+document.getElementById('drawerBg').addEventListener('click', e=>{ if(e.target.id==='drawerBg') closeDrawer(); });
 
 function confirmar(msg){ return window.confirm(msg); }
 
@@ -299,7 +498,11 @@ const NAV = [
   { id:'meus-documentos', label:'Meus Documentos', modulo:null, roles:['Cliente'] },
   { id:'solicitar-documentos', label:'Solicitar Documentos', modulo:null, roles:['Cliente'] },
   { id:'documentos-recebidos', label:'Documentos Recebidos', modulo:null, roles:['Cliente'] },
+  { id:'minha-nfse', label:'NFS-e', modulo:null, roles:['Cliente'] },
+  { id:'minha-financeiro', label:'Financeiro', modulo:null, roles:['Cliente'] },
+  { id:'minha-assinatura', label:'Assinatura', modulo:null, roles:['Cliente'] },
   { id:'financeiro', label:'Financeiro', modulo:'financeiro', roles:['Administrador','Colaborador'] },
+  { id:'contratos', label:'Contratos', modulo:'contratos', roles:['Administrador','Colaborador'] },
   { id:'relatorios', label:'Relatórios', modulo:'relatorios', roles:['Administrador','Colaborador'] },
   { id:'usuarios', label:'Usuários', modulo:'usuarios', roles:['Administrador'] },
   { id:'configuracoes', label:'Configurações', modulo:'configuracoes', roles:['Administrador'] },
@@ -362,7 +565,11 @@ async function render(){
     else if(STATE.page==='meus-documentos') await pageMeusDocumentos();
     else if(STATE.page==='solicitar-documentos') await pageSolicitarDocumentos();
     else if(STATE.page==='documentos-recebidos') await pageDocumentosRecebidos();
+    else if(STATE.page==='minha-nfse') await pageMinhaNfse();
+    else if(STATE.page==='minha-financeiro') await pageMinhaFinanceiro();
+    else if(STATE.page==='minha-assinatura') await pageMinhaAssinatura();
     else if(STATE.page==='financeiro') await pageFinanceiro();
+    else if(STATE.page==='contratos') await pageContratos();
     else if(STATE.page==='relatorios') await pageRelatorios();
     else if(STATE.page==='usuarios') await pageUsuarios();
     else if(STATE.page==='configuracoes') await pageConfiguracoes();
@@ -1599,11 +1806,43 @@ function nfseEmpresaConfigModal(e){
     </div>
     <div class="field"><label>Inscrição municipal</label><input id="nfseEmpIM" value="${esc(e.inscricaoMunicipal||e.inscricaoMunicipalCadastro||'')}"></div>
     <label class="checkbox-row"><input type="checkbox" id="nfseEmpSimples" ${e.opcaoSimplesNacional!==false?'checked':''}> Optante pelo Simples Nacional</label>
+    <div id="nfseEmpRegApuracaoWrap"></div>
+    <div class="card" style="margin:6px 0 14px; background:var(--paper);">
+      <div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">Módulos contratados — preço definido em Configurações &gt; Módulos</div>
+      <div id="nfseEmpModulosWrap"><div class="empty-state">Carregando…</div></div>
+    </div>
     <div class="modal-actions">
       <button class="btn" id="nfseEmpCancel">Cancelar</button>
       <button class="btn primary" id="nfseEmpSalvar">Salvar</button>
     </div>
   `);
+  (async ()=>{
+    const wrap = document.getElementById('nfseEmpModulosWrap');
+    try{
+      const { items } = await api('/nfse/empresas/'+e.id+'/modulos');
+      const STATUS_LABEL = { nao_contratado:'Não contratado', teste:'Em teste', teste_vencido:'Teste vencido', ativo:'Ativo', vencido:'Vencido' };
+      wrap.innerHTML = items.map(m=>`
+        <div class="row" style="justify-content:space-between; align-items:center; padding:6px 0;">
+          <div>
+            <b>${esc(m.nome)}</b>
+            <span class="tag ${m.status==='ativo'||m.status==='teste'?'ok':(m.status==='nao_contratado'?'muted':'bad')}" style="margin-left:8px;">${STATUS_LABEL[m.status]||m.status}</span>
+            ${m.status==='teste'?`<div style="font-size:11.5px; color:var(--ink-soft);">Até ${fmtDateHora(m.trialFim)}${m.trialProrrogado?' (já prorrogado)':''}</div>`:''}
+            ${m.status==='ativo'?`<div style="font-size:11.5px; color:var(--ink-soft);">${(new Date(String(m.assinaturaAtivaAte||'').replace(' ','T')).getTime()-Date.now())>1000*60*60*24*365*3?'Acesso liberado (conta legada, sem vencimento)':'Até '+fmtDateIso(String(m.assinaturaAtivaAte||'').slice(0,10))}</div>`:''}
+          </div>
+          ${m.status==='teste'&&!m.trialProrrogado?`<button class="btn small" data-acao="prorrogar" data-chave="${m.chave}">Conceder +3 dias</button>`:''}
+        </div>
+      `).join('') || `<div class="empty-state">Nenhum módulo no catálogo ainda.</div>`;
+      wrap.querySelectorAll('[data-acao="prorrogar"]').forEach(b=>b.addEventListener('click', async ()=>{
+        try{
+          await api('/nfse/empresas/'+e.id+'/modulos/'+b.dataset.chave+'/prorrogar', { method:'POST' });
+          toast('Teste prorrogado por mais 3 dias.','ok');
+          nfseEmpresaConfigModal(e);
+        }catch(err){ toast(err.message,'err'); }
+      }));
+    }catch(err){
+      wrap.innerHTML = `<div class="empty-state">Não consegui carregar os módulos: ${esc(err.message)}</div>`;
+    }
+  })();
   async function carregarCidadesDaUf(uf, tentaPreencherDe){
     const combo = document.getElementById('nfseEmpCidadeCombo');
     if(!uf){ setupComboSelect('nfseEmpCidadeCombo', [], ()=>{}); return; }
@@ -1648,6 +1887,25 @@ function nfseEmpresaConfigModal(e){
   }
   desenhaCertWrap();
   document.getElementById('nfseEmpMetodo').addEventListener('change', desenhaCertWrap);
+  function desenhaRegApuracaoWrap(){
+    const wrap = document.getElementById('nfseEmpRegApuracaoWrap');
+    if(!document.getElementById('nfseEmpSimples').checked){ wrap.innerHTML=''; return; }
+    const atual = e.regimeApuracaoSn || '1';
+    wrap.innerHTML = `
+      <div class="field"><label>Regime de apuração dos tributos do Simples Nacional</label>
+        <select id="nfseEmpRegApuracao">
+          <option value="1" ${atual==='1'?'selected':''}>Tributos federais e municipal apurados pelo Simples Nacional (padrão)</option>
+          <option value="2" ${atual==='2'?'selected':''}>Tributos federais pelo Simples Nacional, ISSQN por fora (legislação municipal)</option>
+          <option value="3" ${atual==='3'?'selected':''}>Tributos federais e municipal apurados por fora do Simples Nacional</option>
+        </select>
+        <div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">Só muda de "padrão" se a empresa tiver ultrapassado algum sublimite do Simples Nacional — exigido pelo governo pra optante ME/EPP.</div>
+      </div>
+      <div class="field"><label>% total de tributos (Simples Nacional)</label><input id="nfseEmpTotTribSN" type="number" step="0.01" min="0" max="99.99" value="${e.percentualTotalTributosSn!=null?e.percentualTotalTributosSn:''}" placeholder="Ex.: 6.00"></div>
+      <div style="font-size:11.5px; color:var(--ink-soft); margin-top:-6px; margin-bottom:14px;">Percentual aproximado do total de tributos embutido no preço (Lei 12.741/2012), conforme a alíquota efetiva do Simples Nacional da empresa (do DAS/faixa atual) — obrigatório pra emitir.</div>
+    `;
+  }
+  desenhaRegApuracaoWrap();
+  document.getElementById('nfseEmpSimples').addEventListener('change', desenhaRegApuracaoWrap);
   document.getElementById('nfseEmpCancel').addEventListener('click', closeModal);
   document.getElementById('nfseEmpSalvar').addEventListener('click', async ()=>{
     const metodo = document.getElementById('nfseEmpMetodo').value;
@@ -1658,6 +1916,8 @@ function nfseEmpresaConfigModal(e){
       nomeMunicipio: document.getElementById('nfseEmpMunicipioDesc').value.trim(),
       inscricaoMunicipal: document.getElementById('nfseEmpIM').value.trim(),
       opcaoSimplesNacional: document.getElementById('nfseEmpSimples').checked,
+      regimeApuracaoSn: document.getElementById('nfseEmpRegApuracao')?.value || '1',
+      percentualTotalTributosSn: document.getElementById('nfseEmpTotTribSN')?.value || null,
     };
     try{
       if(metodo==='certificado_proprio'){
@@ -1680,6 +1940,7 @@ function nfseEmpresaConfigModal(e){
 
 let NFSE_PREFILL = null;
 let NFSE_RASCUNHO_ID = null;
+let NFSE_EMITIR_EMPRESA_ID = null;
 async function renderNfseEmitir(){
   const prefill = NFSE_PREFILL;
   NFSE_PREFILL = null;
@@ -1696,12 +1957,35 @@ async function renderNfseEmitir(){
     box.innerHTML = `<div class="empty-state">Nenhum modelo de serviço cadastrado ainda — crie um na aba Modelos antes de emitir.</div>`;
     return;
   }
+  // Com mais de uma empresa habilitada, obriga escolher a empresa antes de mostrar o resto do
+  // formulário — evita preencher tudo e emitir sem querer pra empresa errada. Com só uma
+  // habilitada, ou vindo de Duplicar/Continuar (que já trazem a empresa definida), pula direto.
+  if(prefill) NFSE_EMITIR_EMPRESA_ID = prefill.empresaId;
+  else if(habilitadas.length===1) NFSE_EMITIR_EMPRESA_ID = habilitadas[0].id;
+  else if(!habilitadas.some(e=>e.id===NFSE_EMITIR_EMPRESA_ID)) NFSE_EMITIR_EMPRESA_ID = null;
+  if(habilitadas.length>1 && !NFSE_EMITIR_EMPRESA_ID){
+    box.innerHTML = `
+      <div class="card">
+        <div class="field"><label>Selecione a empresa (prestador do serviço)</label>
+          <select id="nfseEmiEmpresaPick">
+            <option value="">Selecione…</option>
+            ${habilitadas.map(e=>`<option value="${e.id}">${esc(e.nome)}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+    `;
+    document.getElementById('nfseEmiEmpresaPick').addEventListener('change', e=>{
+      const id = Number(e.target.value) || null;
+      if(id){ NFSE_EMITIR_EMPRESA_ID = id; renderNfseEmitir(); }
+    });
+    return;
+  }
   const hoje = new Date();
   box.innerHTML = `
     <div class="card">
       <div class="row">
         <div class="field grow"><label>Empresa (prestador do serviço)</label>
-          <select id="nfseEmiEmpresa">${habilitadas.map(e=>`<option value="${e.id}">${esc(e.nome)}</option>`).join('')}</select>
+          <select id="nfseEmiEmpresa">${habilitadas.map(e=>`<option value="${e.id}" ${e.id===NFSE_EMITIR_EMPRESA_ID?'selected':''}>${esc(e.nome)}</option>`).join('')}</select>
         </div>
         <div class="field grow"><label>Modelo de serviço</label>
           <select id="nfseEmiModelo">${modelosAtivos.map(m=>`<option value="${m.id}">${esc(m.nome)}</option>`).join('')}</select>
@@ -1756,6 +2040,11 @@ async function renderNfseEmitir(){
     setVal('nfseEmiValor', prefill.valorServico);
     toast(prefill.__modo==='continuar' ? 'Continuando rascunho — revise os dados antes de emitir.' : 'Dados duplicados — revise antes de emitir.', 'ok');
   }
+  if(habilitadas.length>1) document.getElementById('nfseEmiEmpresa').addEventListener('change', e=>{
+    NFSE_EMITIR_EMPRESA_ID = Number(e.target.value) || null;
+    NFSE_RASCUNHO_ID = null;
+    renderNfseEmitir();
+  });
   document.getElementById('nfseEmiDocTomador').addEventListener('input', async e=>{
     const doc = e.target.value.replace(/\D/g,'');
     e.target.value = doc;
@@ -1876,8 +2165,9 @@ async function renderNfseModelos(){
     nfseModeloModal(items.find(x=>x.id===id));
   }));
 }
-async function nfseModeloModal(m){
-  const [{ items: ctribItens }, { items: nbsItens }, { items: cclasstribItens }] = await Promise.all([ api('/nfse/ctribnac'), api('/nfse/nbs'), api('/nfse/cclasstrib') ]);
+async function nfseModeloModal(m, opts){
+  opts = Object.assign({ basePath:'/nfse/modelos', ctribPath:'/nfse/ctribnac', nbsPath:'/nfse/nbs', cclasstribPath:'/nfse/cclasstrib', aoSalvar:renderNfseModelos }, opts||{});
+  const [{ items: ctribItens }, { items: nbsItens }, { items: cclasstribItens }] = await Promise.all([ api(opts.ctribPath), api(opts.nbsPath), api(opts.cclasstribPath) ]);
   openModal(`
     <h3>${m?'Editar':'Novo'} modelo de serviço</h3>
     <div class="field"><label>Nome</label><input id="nmNome" value="${m?esc(m.nome):''}" placeholder='Ex.: "Serviços Administrativos"'></div>
@@ -1908,8 +2198,6 @@ async function nfseModeloModal(m){
         <option value="">Não informar</option>
         <option value="1" ${m&&m.tipoRetencaoPisCofins===1?'selected':''}>PIS/COFINS retido</option>
         <option value="2" ${m&&m.tipoRetencaoPisCofins===2?'selected':''}>PIS/COFINS não retido</option>
-        <option value="3" ${m&&m.tipoRetencaoPisCofins===3?'selected':''}>PIS retido / COFINS não retido</option>
-        <option value="4" ${m&&m.tipoRetencaoPisCofins===4?'selected':''}>PIS não retido / COFINS retido</option>
       </select>
     </div>
 
@@ -2039,24 +2327,71 @@ async function nfseModeloModal(m){
     };
     if(m) body.ativo = document.getElementById('nmAtivo').checked;
     try{
-      if(m) await api('/nfse/modelos/'+m.id, { method:'PUT', body });
-      else await api('/nfse/modelos', { method:'POST', body });
-      closeModal(); toast('Modelo salvo.','ok'); renderNfseModelos();
+      if(m) await api(opts.basePath+'/'+m.id, { method:'PUT', body });
+      else await api(opts.basePath, { method:'POST', body });
+      closeModal(); toast('Modelo salvo.','ok'); opts.aoSalvar();
     }catch(e){ toast(e.message,'err'); }
   });
 }
 
+function nfseCancelarModal(n){
+  openModal(`
+    <h3>Cancelar NFS-e</h3>
+    <p style="color:var(--ink-soft); font-size:13px; margin-top:-6px;">Empresa: ${esc(n.empresaNome)} — Tomador: ${esc(n.tomadorNome)} — ${fmtMoney(n.valorServico)}<br>
+    <b>Atenção: cancelamento é uma ação real e definitiva no Sistema Nacional NFS-e, não tem como desfazer depois.</b></p>
+    <div class="field"><label>Motivo</label>
+      <select id="ncMotivo">
+        <option value="1">Erro na emissão</option>
+        <option value="2">Serviço não prestado</option>
+        <option value="9">Outros</option>
+      </select>
+    </div>
+    <div class="field"><label>Justificativa (mínimo 15 caracteres)</label><textarea id="ncJustificativa" rows="3"></textarea></div>
+    <button class="btn primary" id="btnConfirmarCancelar" style="background:var(--debit); border-color:var(--debit);">Confirmar cancelamento</button>
+  `);
+  document.getElementById('btnConfirmarCancelar').addEventListener('click', async ()=>{
+    const motivo = document.getElementById('ncMotivo').value;
+    const justificativa = document.getElementById('ncJustificativa').value.trim();
+    if(justificativa.length<15){ toast('A justificativa precisa ter pelo menos 15 caracteres.','err'); return; }
+    if(!confirm('Confirma o cancelamento desta NFS-e? Essa ação não pode ser desfeita.')) return;
+    try{
+      await api('/nfse/emissoes/'+n.id+'/cancelar', { method:'POST', body:{ motivo, justificativa } });
+      closeModal();
+      toast('NFS-e cancelada.','ok');
+      renderNfseNotas();
+    }catch(e){ toast(e.message,'err'); }
+  });
+}
+let NFSE_NOTAS_SELECIONADAS = new Set();
+let NFSE_NOTAS_FILTRO = { dataDe:'', dataAte:'', empresaId:'' };
 async function renderNfseNotas(){
-  const { items } = await api('/nfse/emissoes');
+  const { dataDe, dataAte, empresaId } = NFSE_NOTAS_FILTRO;
+  const { items: empresas } = await api('/nfse/empresas');
+  const habilitadas = empresas.filter(e=>e.habilitado);
+  const qs = new URLSearchParams();
+  if(dataDe) qs.set('dataDe', dataDe);
+  if(dataAte) qs.set('dataAte', dataAte);
+  if(empresaId) qs.set('empresaId', empresaId);
+  const { items } = await api('/nfse/emissoes'+(qs.toString()?'?'+qs.toString():''));
+  NFSE_NOTAS_SELECIONADAS = new Set([...NFSE_NOTAS_SELECIONADAS].filter(id=>items.some(i=>i.id===id)));
   const box = document.getElementById('nfseContent');
-  const STATUS_LABEL={emitida:'Emitida',pendente:'Pendente',rejeitada:'Rejeitada',erro:'Erro',rascunho:'Rascunho'};
+  const STATUS_LABEL={emitida:'Emitida',pendente:'Pendente',rejeitada:'Rejeitada',erro:'Erro',rascunho:'Rascunho',cancelada:'Cancelada'};
   box.innerHTML = `
+    <div class="row" style="margin-bottom:12px; align-items:flex-end;">
+      ${habilitadas.length>1?`<div class="field" style="width:260px; margin-bottom:0;"><label>Empresa</label>
+        <select id="nfseNotasEmpresa"><option value="">Todas as empresas</option>${habilitadas.map(e=>`<option value="${e.id}" ${String(e.id)===String(empresaId)?'selected':''}>${esc(e.nome)}</option>`).join('')}</select>
+      </div>`:''}
+      ${dateFieldHtml('nfseNotasDe','De',dataDe)}
+      ${dateFieldHtml('nfseNotasAte','Até',dataAte)}
+      <div id="nfseNotasLoteBar" style="margin-bottom:2px;"></div>
+    </div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
-        <thead><tr><th>Empresa</th><th>Tomador</th><th>Modelo</th><th>Serviço</th><th>Valor</th><th>Status</th><th>Emitido em</th><th></th></tr></thead>
+        <thead><tr><th style="width:34px;"><input type="checkbox" id="nfseNotasSelAll"></th><th>Empresa</th><th>Tomador</th><th>Modelo</th><th>Serviço</th><th>Valor</th><th>Status</th><th>Emitido em</th><th></th></tr></thead>
         <tbody>
           ${items.length? items.map(n=>`
             <tr>
+              <td><input type="checkbox" class="nfseNotaSel" data-id="${n.id}" ${NFSE_NOTAS_SELECIONADAS.has(n.id)?'checked':''}></td>
               <td>${esc(n.empresaNome)}</td>
               <td>${esc(n.tomadorNome)}</td>
               <td>${esc(n.modeloNome||'—')}</td>
@@ -2067,16 +2402,66 @@ async function renderNfseNotas(){
               <td style="text-align:right; white-space:nowrap;">
                 ${n.status==='rascunho'?`<button class="btn small" data-id="${n.id}" data-act="continuar">Continuar</button> <button class="btn small" data-id="${n.id}" data-act="excluir">Excluir</button>`:''}
                 ${n.status!=='rascunho'?`<button class="btn small" data-id="${n.id}" data-act="duplicar">Duplicar</button>`:''}
-                ${n.status==='emitida'?`<button class="btn small" data-id="${n.id}" data-act="baixar-xml">XML</button>`:''}
+                ${n.status==='emitida'||n.status==='cancelada'?`<button class="btn small" data-id="${n.id}" data-act="baixar-xml">XML</button> <button class="btn small" data-id="${n.id}" data-act="baixar-pdf">PDF</button>`:''}
+                ${n.status==='emitida'?`<button class="btn small" data-id="${n.id}" data-act="cancelar" style="color:var(--debit);">Cancelar</button>`:''}
               </td>
             </tr>
-          `).join('') : `<tr><td colspan="8"><div class="empty-state">Nenhuma emissão ainda.</div></td></tr>`}
+          `).join('') : `<tr><td colspan="9"><div class="empty-state">Nenhuma emissão neste período.</div></td></tr>`}
         </tbody>
       </table>
     </div>
   `;
+  setupDatePicker('nfseNotasDe','nfseNotasDe_text');
+  setupDatePicker('nfseNotasAte','nfseNotasAte_text');
+  document.getElementById('nfseNotasDe').addEventListener('change', e=>{ NFSE_NOTAS_FILTRO.dataDe = e.target.value; renderNfseNotas(); });
+  document.getElementById('nfseNotasAte').addEventListener('change', e=>{ NFSE_NOTAS_FILTRO.dataAte = e.target.value; renderNfseNotas(); });
+  document.getElementById('nfseNotasEmpresa')?.addEventListener('change', e=>{ NFSE_NOTAS_FILTRO.empresaId = e.target.value; renderNfseNotas(); });
+  function desenhaLoteBar(){
+    const bar = document.getElementById('nfseNotasLoteBar');
+    const qtd = NFSE_NOTAS_SELECIONADAS.size;
+    bar.innerHTML = qtd? `
+      <span style="font-size:12.5px; color:var(--ink-soft); margin-right:8px;">${qtd} selecionada${qtd>1?'s':''}</span>
+      <button class="btn small" data-lote="xml">Baixar XML</button>
+      <button class="btn small" data-lote="pdf">Baixar PDF</button>
+      <button class="btn small" data-lote="ambos">Baixar XML + PDF (.zip)</button>
+    ` : '';
+    bar.querySelectorAll('[data-lote]').forEach(b=>b.addEventListener('click', ()=>{
+      const ids = [...NFSE_NOTAS_SELECIONADAS].join(',');
+      window.open('/api/nfse/emissoes/baixar-lote?ids='+ids+'&formato='+b.dataset.lote, '_blank');
+    }));
+  }
+  desenhaLoteBar();
+  const selAll = document.getElementById('nfseNotasSelAll');
+  function atualizaSelAll(){
+    const boxes = [...box.querySelectorAll('.nfseNotaSel')];
+    selAll.checked = boxes.length>0 && boxes.every(b=>b.checked);
+    selAll.indeterminate = boxes.some(b=>b.checked) && !selAll.checked;
+  }
+  atualizaSelAll();
+  box.querySelectorAll('.nfseNotaSel').forEach(b=>b.addEventListener('change', ()=>{
+    const id = Number(b.dataset.id);
+    if(b.checked) NFSE_NOTAS_SELECIONADAS.add(id); else NFSE_NOTAS_SELECIONADAS.delete(id);
+    atualizaSelAll();
+    desenhaLoteBar();
+  }));
+  selAll.addEventListener('change', ()=>{
+    box.querySelectorAll('.nfseNotaSel').forEach(b=>{
+      b.checked = selAll.checked;
+      const id = Number(b.dataset.id);
+      if(selAll.checked) NFSE_NOTAS_SELECIONADAS.add(id); else NFSE_NOTAS_SELECIONADAS.delete(id);
+    });
+    selAll.indeterminate = false;
+    desenhaLoteBar();
+  });
   box.querySelectorAll('[data-act="baixar-xml"]').forEach(b=>b.addEventListener('click', ()=>{
     window.open('/api/nfse/emissoes/'+b.dataset.id+'/xml', '_blank');
+  }));
+  box.querySelectorAll('[data-act="baixar-pdf"]').forEach(b=>b.addEventListener('click', ()=>{
+    window.open('/api/nfse/emissoes/'+b.dataset.id+'/danfse', '_blank');
+  }));
+  box.querySelectorAll('[data-act="cancelar"]').forEach(b=>b.addEventListener('click', ()=>{
+    const n = items.find(i=>i.id===Number(b.dataset.id));
+    nfseCancelarModal(n);
   }));
   box.querySelectorAll('[data-act="duplicar"]').forEach(b=>b.addEventListener('click', ()=>{
     const n = items.find(i=>i.id===Number(b.dataset.id));
@@ -2098,6 +2483,791 @@ async function renderNfseNotas(){
       renderNfseNotas();
     }catch(e){ toast(e.message,'err'); }
   }));
+}
+
+// ===================== NFS-e self-service (perfil Cliente) =====================
+// Bloqueio de acesso por módulo — teste grátis de 3 dias ou assinatura paga (Asaas). Reaproveitado
+// pelas telas de NFS-e e Financeiro (A Receber/A Pagar) do perfil Cliente.
+async function moduloDaChave(chave){
+  const { items } = await api('/financeiro/minha-empresa/modulos');
+  return items.find(i=>i.chave===chave);
+}
+function moduloPaywallHtml(item){
+  const preco = fmtMoney(item.valorMensal);
+  let titulo, texto, botaoHtml;
+  if(item.status==='nao_contratado'){
+    titulo = 'Você ainda não contratou este módulo';
+    texto = `Teste grátis por 3 dias, sem compromisso. Depois do teste, ${preco}/mês.`;
+    botaoHtml = `<button class="btn primary" id="paywallAcao" data-acao="testar" data-chave="${item.chave}">Iniciar teste grátis de 3 dias</button>`;
+  } else if(item.status==='teste_vencido'){
+    titulo = 'Seu teste grátis venceu';
+    texto = `Contrate este módulo por ${preco}/mês pra continuar usando.`;
+    botaoHtml = `<button class="btn primary" id="paywallAcao" data-acao="assinatura">Ir para Assinatura</button>`;
+  } else {
+    titulo = 'Assinatura vencida';
+    texto = `Renove este módulo por ${preco}/mês pra continuar usando.`;
+    botaoHtml = `<button class="btn primary" id="paywallAcao" data-acao="assinatura">Ir para Assinatura</button>`;
+  }
+  return `
+    <div class="card" style="max-width:480px; margin:60px auto; text-align:center; padding:32px;">
+      <h3>${esc(titulo)}</h3>
+      <p style="color:var(--ink-soft); margin:10px 0 20px;">${esc(texto)}</p>
+      ${botaoHtml}
+    </div>
+  `;
+}
+function ligarModuloPaywall(box, aoLiberar){
+  const btn = box.querySelector('#paywallAcao');
+  if(!btn) return;
+  btn.addEventListener('click', async ()=>{
+    if(btn.dataset.acao==='assinatura'){ goPage('minha-assinatura'); return; }
+    try{
+      await api('/financeiro/minha-empresa/modulos/'+btn.dataset.chave+'/iniciar-teste', { method:'POST' });
+      toast('Teste iniciado! Você tem 3 dias de acesso completo.','ok');
+      aoLiberar();
+    }catch(e){ toast(e.message,'err'); }
+  });
+}
+
+let MINHA_NFSE_TAB='emitir';
+async function pageMinhaNfse(){
+  const item = await moduloDaChave('nfse');
+  if(!item.acesso){
+    main().innerHTML = `<h1>NFS-e</h1>` + moduloPaywallHtml(item);
+    ligarModuloPaywall(main(), pageMinhaNfse);
+    return;
+  }
+  main().innerHTML = `
+    <h1>NFS-e</h1>
+    <p class="subtitle">Emissão de nota fiscal de serviço direto pelo Sistema Nacional NFS-e — ambiente de produção real: toda NFS-e emitida aqui tem validade fiscal.</p>
+    <div class="tabs">
+      <div class="tab" data-tab="emitir">Emitir</div>
+      <div class="tab" data-tab="notas">Notas emitidas</div>
+      <div class="tab" data-tab="modelos">Modelos</div>
+      <div class="tab" data-tab="config">Configuração</div>
+    </div>
+    <div id="nfseContent"></div>
+  `;
+  main().querySelectorAll('.tab').forEach(t=>t.addEventListener('click', ()=>{ MINHA_NFSE_TAB=t.dataset.tab; renderMinhaNfseTabs(); }));
+  renderMinhaNfseTabs();
+}
+function renderMinhaNfseTabs(){
+  main().querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===MINHA_NFSE_TAB));
+  if(MINHA_NFSE_TAB==='notas') renderMinhaNfseNotas();
+  else if(MINHA_NFSE_TAB==='modelos') renderMinhaNfseModelos();
+  else if(MINHA_NFSE_TAB==='config') renderMinhaNfseConfig();
+  else renderMinhaNfseEmitir();
+}
+async function renderMinhaNfseConfig(){
+  const e = await api('/nfse/minha-empresa');
+  const box = document.getElementById('nfseContent');
+  if(!e.habilitado){
+    box.innerHTML = `<div class="empty-state">Seu acesso ao módulo de emissão de NFS-e ainda não foi liberado. Entre em contato com o suporte.</div>`;
+    return;
+  }
+  box.innerHTML = `
+    <div class="card">
+      <div class="row">
+        <div class="field" style="width:140px;"><label>Código do município</label><input id="mnfMunicipio" value="${esc(e.codigoMunicipio||'')}" maxlength="7"></div>
+        <div class="field grow"><label>Descrição</label><input id="mnfMunicipioDesc" value="${esc(e.nomeMunicipio||'')}" readonly style="background:var(--paper);"></div>
+      </div>
+      <div class="card" style="margin:6px 0 14px; background:var(--paper);">
+        <div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">Buscar cidade manualmente</div>
+        <div class="row">
+          <div class="field" style="width:90px;"><label>UF</label>
+            <select id="mnfUf"><option value="">—</option>${UFS_BR.map(u=>`<option value="${u}">${u}</option>`).join('')}</select>
+          </div>
+          <div class="field grow"><label>Cidade</label>${comboSelectHtml('mnfCidadeCombo','Selecione a UF primeiro…')}</div>
+        </div>
+      </div>
+      <div class="field"><label>Inscrição municipal</label><input id="mnfIM" value="${esc(e.inscricaoMunicipal||'')}"></div>
+      <label class="checkbox-row"><input type="checkbox" id="mnfSimples" ${e.opcaoSimplesNacional!==false?'checked':''}> Optante pelo Simples Nacional</label>
+      <div id="mnfRegApuracaoWrap"></div>
+      <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Certificado digital</div>
+      <div class="card" style="margin:10px 0; background:var(--paper);">
+        ${e.temCertificadoProprio? `<p style="font-size:12.5px; color:var(--ink-soft); margin:0;">Certificado já enviado. Envie outro arquivo abaixo só se quiser substituir.</p>`:'<p style="font-size:12.5px; color:var(--ink-soft); margin:0;">Envie o certificado digital (.pfx) da sua empresa — necessário pra emitir.</p>'}
+        <div class="field" style="margin-top:6px;"><label>Arquivo do certificado (.pfx)</label><input type="file" id="mnfCertArquivo" accept=".pfx,.p12"></div>
+        <div class="field"><label>Senha do certificado</label><input type="password" id="mnfCertSenha"></div>
+      </div>
+      <button class="btn primary" id="mnfSalvar">Salvar</button>
+    </div>
+  `;
+  async function carregarCidadesDaUf(uf){
+    const combo = document.getElementById('mnfCidadeCombo');
+    if(!uf){ setupComboSelect('mnfCidadeCombo', [], ()=>{}); return; }
+    combo.querySelector('.combo-input').placeholder = 'Carregando cidades…';
+    try{
+      const { items } = await api('/nfse/minha-empresa/municipios-ibge?uf='+encodeURIComponent(uf));
+      setupComboSelect('mnfCidadeCombo', items, (id)=>{
+        const item = items.find(it=>String(it.id)===String(id));
+        document.getElementById('mnfMunicipio').value = item? item.id : '';
+        document.getElementById('mnfMunicipioDesc').value = item? item.label : '';
+      });
+      combo.querySelector('.combo-input').placeholder = 'Digite para buscar a cidade…';
+    }catch(err){
+      combo.querySelector('.combo-input').placeholder = 'Não consegui carregar as cidades.';
+      toast(err.message,'err');
+    }
+  }
+  document.getElementById('mnfUf').addEventListener('change', ev=>carregarCidadesDaUf(ev.target.value));
+  setupComboSelect('mnfCidadeCombo', [], ()=>{});
+  function desenhaRegApuracaoWrap(){
+    const wrap = document.getElementById('mnfRegApuracaoWrap');
+    if(!document.getElementById('mnfSimples').checked){ wrap.innerHTML=''; return; }
+    const atual = e.regimeApuracaoSn || '1';
+    wrap.innerHTML = `
+      <div class="field"><label>Regime de apuração dos tributos do Simples Nacional</label>
+        <select id="mnfRegApuracao">
+          <option value="1" ${atual==='1'?'selected':''}>Tributos federais e municipal apurados pelo Simples Nacional (padrão)</option>
+          <option value="2" ${atual==='2'?'selected':''}>Tributos federais pelo Simples Nacional, ISSQN por fora (legislação municipal)</option>
+          <option value="3" ${atual==='3'?'selected':''}>Tributos federais e municipal apurados por fora do Simples Nacional</option>
+        </select>
+        <div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">Só muda de "padrão" se sua empresa tiver ultrapassado algum sublimite do Simples Nacional.</div>
+      </div>
+      <div class="field"><label>% total de tributos (Simples Nacional)</label><input id="mnfTotTribSN" type="number" step="0.01" min="0" max="99.99" value="${e.percentualTotalTributosSn!=null?e.percentualTotalTributosSn:''}" placeholder="Ex.: 6.00"></div>
+      <div style="font-size:11.5px; color:var(--ink-soft); margin-top:-6px; margin-bottom:14px;">Percentual aproximado do total de tributos embutido no preço (Lei 12.741/2012), conforme a alíquota efetiva do Simples Nacional da sua empresa (do DAS/faixa atual) — obrigatório pra emitir.</div>
+    `;
+  }
+  desenhaRegApuracaoWrap();
+  document.getElementById('mnfSimples').addEventListener('change', desenhaRegApuracaoWrap);
+  document.getElementById('mnfSalvar').addEventListener('click', async ()=>{
+    const body = {
+      codigoMunicipio: document.getElementById('mnfMunicipio').value.trim(),
+      nomeMunicipio: document.getElementById('mnfMunicipioDesc').value.trim(),
+      inscricaoMunicipal: document.getElementById('mnfIM').value.trim(),
+      opcaoSimplesNacional: document.getElementById('mnfSimples').checked,
+      regimeApuracaoSn: document.getElementById('mnfRegApuracao')?.value || '1',
+      percentualTotalTributosSn: document.getElementById('mnfTotTribSN')?.value || null,
+    };
+    try{
+      const arquivo = document.getElementById('mnfCertArquivo').files[0];
+      if(arquivo){
+        const senha = document.getElementById('mnfCertSenha').value;
+        if(!senha){ toast('Informe a senha do certificado.','err'); return; }
+        const fd = new FormData(); fd.append('arquivo', arquivo); fd.append('senha', senha);
+        await api('/nfse/minha-empresa/certificado', { method:'POST', body:fd });
+      }
+      await api('/nfse/minha-empresa', { method:'PUT', body });
+      toast('Configuração salva.','ok');
+      renderMinhaNfseConfig();
+    }catch(err){ toast(err.message,'err'); }
+  });
+}
+async function renderMinhaNfseModelos(){
+  const { items } = await api('/nfse/minha-empresa/modelos');
+  const box = document.getElementById('nfseContent');
+  box.innerHTML = `
+    <div class="row" style="margin-bottom:14px;"><button class="btn primary" id="btnNovoMinhaNfseModelo">+ Novo modelo</button></div>
+    <div class="card" style="padding:0; overflow-x:auto;">
+      <table class="data-table">
+        <thead><tr><th>Nome</th><th>Cód. tributação nacional</th><th>ISSQN</th><th>Ativo</th><th></th></tr></thead>
+        <tbody id="minhaNfseModelosBody"></tbody>
+      </table>
+    </div>
+  `;
+  const TRIB_ISSQN_LABEL={1:'Operação tributável',2:'Imunidade',3:'Exportação de serviço',4:'Não incidência'};
+  const opts = { basePath:'/nfse/minha-empresa/modelos', ctribPath:'/nfse/minha-empresa/ctribnac', nbsPath:'/nfse/minha-empresa/nbs', cclasstribPath:'/nfse/minha-empresa/cclasstrib', aoSalvar:renderMinhaNfseModelos };
+  document.getElementById('minhaNfseModelosBody').innerHTML = items.length? items.map(m=>`
+    <tr data-id="${m.id}">
+      <td><b>${esc(m.nome)}</b></td>
+      <td>${esc(m.codigoTributacaoNacional)}</td>
+      <td>${TRIB_ISSQN_LABEL[m.tribIssqn]||m.tribIssqn}</td>
+      <td><span class="tag ${m.ativo?'ok':'muted'}">${m.ativo?'Sim':'Não'}</span></td>
+      <td style="text-align:right;"><button class="btn small" data-act="edit">Editar</button></td>
+    </tr>
+  `).join('') : `<tr><td colspan="5"><div class="empty-state">Nenhum modelo cadastrado ainda — crie um antes de emitir.</div></td></tr>`;
+  document.getElementById('btnNovoMinhaNfseModelo').addEventListener('click', ()=>nfseModeloModal(null, opts));
+  document.getElementById('minhaNfseModelosBody').querySelectorAll('[data-act="edit"]').forEach(b=>b.addEventListener('click', e=>{
+    const id=Number(e.target.closest('tr').dataset.id);
+    nfseModeloModal(items.find(x=>x.id===id), opts);
+  }));
+}
+async function renderMinhaNfseEmitir(){
+  const prefill = NFSE_PREFILL;
+  NFSE_PREFILL = null;
+  NFSE_RASCUNHO_ID = (prefill && prefill.__modo === 'continuar') ? prefill.id : null;
+  const { items: modelos } = await api('/nfse/minha-empresa/modelos');
+  const modelosAtivos = modelos.filter(m=>m.ativo);
+  const box = document.getElementById('nfseContent');
+  if(!modelosAtivos.length){
+    box.innerHTML = `<div class="empty-state">Nenhum modelo de serviço cadastrado ainda — crie um na aba Modelos antes de emitir.</div>`;
+    return;
+  }
+  const hoje = new Date();
+  box.innerHTML = `
+    <div class="card">
+      <div class="field"><label>Modelo de serviço</label>
+        <select id="mnfEmiModelo">${modelosAtivos.map(m=>`<option value="${m.id}">${esc(m.nome)}</option>`).join('')}</select>
+      </div>
+      <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Tomador do serviço</div>
+      <div class="row">
+        <div class="field grow"><label>CPF ou CNPJ</label><input id="mnfEmiDocTomador" placeholder="Só números"></div>
+        <div class="field grow"><label>Nome / Razão social</label><input id="mnfEmiNomeTomador"></div>
+      </div>
+      <div id="mnfEmiCnpjStatus" style="font-size:11.5px; color:var(--ink-soft); margin:-6px 0 8px;"></div>
+      <div class="field"><label>E-mail (opcional)</label><input id="mnfEmiEmailTomador" type="email"></div>
+      <div class="row">
+        <div class="field grow"><label>Endereço</label><input id="mnfEmiEndereco"></div>
+        <div class="field" style="width:100px;"><label>Número</label><input id="mnfEmiNumero"></div>
+        <div class="field grow"><label>Complemento</label><input id="mnfEmiComplemento"></div>
+        <div class="field" style="width:130px;"><label>CEP</label><input id="mnfEmiCep"></div>
+      </div>
+      <div class="row">
+        <div class="field grow"><label>Bairro</label><input id="mnfEmiBairro"></div>
+        <div class="field grow"><label>Cidade</label><input id="mnfEmiCidade"></div>
+        <div class="field" style="width:70px;"><label>UF</label><input id="mnfEmiUf" maxlength="2"></div>
+      </div>
+      <input type="hidden" id="mnfEmiCodMun">
+      <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Serviço prestado</div>
+      <div class="row">
+        <div class="field" style="width:140px;"><label>Valor (R$)</label><input id="mnfEmiValor" type="number" step="0.01" min="0"></div>
+        <div class="field" style="width:160px;"><label>Competência</label><input id="mnfEmiCompetencia" type="date" value="${hoje.toISOString().slice(0,10)}"></div>
+      </div>
+      <div class="field"><label>Descrição do serviço</label><textarea id="mnfEmiDescricao" rows="2"></textarea></div>
+      <div class="row">
+        <button class="btn" id="btnSalvarMinhaNfse">${NFSE_RASCUNHO_ID?'Salvar rascunho':'Salvar como rascunho'}</button>
+        <button class="btn primary" id="btnEmitirMinhaNfse">Emitir NFS-e</button>
+      </div>
+      <div id="mnfEmiResultado" style="margin-top:12px;"></div>
+    </div>
+  `;
+  if(prefill){
+    const setVal=(id,v)=>{ const el=document.getElementById(id); if(el && v!=null) el.value=v; };
+    setVal('mnfEmiModelo', prefill.modeloId);
+    setVal('mnfEmiDocTomador', prefill.tomadorDocumento);
+    setVal('mnfEmiNomeTomador', prefill.tomadorNome);
+    setVal('mnfEmiEmailTomador', prefill.tomadorEmail);
+    setVal('mnfEmiEndereco', prefill.tomadorLogradouro);
+    setVal('mnfEmiNumero', prefill.tomadorNumero);
+    setVal('mnfEmiComplemento', prefill.tomadorComplemento);
+    setVal('mnfEmiCep', prefill.tomadorCep);
+    setVal('mnfEmiBairro', prefill.tomadorBairro);
+    setVal('mnfEmiCodMun', prefill.tomadorCodigoMunicipio);
+    setVal('mnfEmiDescricao', prefill.descricaoServico);
+    setVal('mnfEmiValor', prefill.valorServico);
+    toast(prefill.__modo==='continuar' ? 'Continuando rascunho — revise os dados antes de emitir.' : 'Dados duplicados — revise antes de emitir.', 'ok');
+  }
+  document.getElementById('mnfEmiDocTomador').addEventListener('input', async e=>{
+    const doc = e.target.value.replace(/\D/g,'');
+    e.target.value = doc;
+    if(doc.length!==14) return;
+    const status = document.getElementById('mnfEmiCnpjStatus');
+    status.textContent = 'Consultando CNPJ na Receita Federal…';
+    try{
+      const r = await api('/nfse/minha-empresa/cnpj/'+doc);
+      document.getElementById('mnfEmiNomeTomador').value = r.razaoSocial || '';
+      document.getElementById('mnfEmiEmailTomador').value = r.email || '';
+      document.getElementById('mnfEmiEndereco').value = r.logradouro || '';
+      document.getElementById('mnfEmiNumero').value = r.numero || '';
+      document.getElementById('mnfEmiComplemento').value = r.complemento || '';
+      document.getElementById('mnfEmiCep').value = r.cep || '';
+      document.getElementById('mnfEmiBairro').value = r.bairro || '';
+      document.getElementById('mnfEmiCidade').value = r.municipio || '';
+      document.getElementById('mnfEmiUf').value = r.uf || '';
+      status.textContent = 'Dados preenchidos a partir do CNPJ.';
+      if(r.municipio && r.uf){
+        try{
+          const m = await api('/nfse/minha-empresa/municipio-ibge?cidade='+encodeURIComponent(r.municipio)+'&uf='+encodeURIComponent(r.uf));
+          document.getElementById('mnfEmiCodMun').value = m.codigoMunicipio;
+        }catch(errIbge){ /* segue sem o código IBGE do tomador */ }
+      }
+    }catch(err){
+      status.textContent = err.message;
+    }
+  });
+  function lerFormulario(){
+    return {
+      modeloId: Number(document.getElementById('mnfEmiModelo').value),
+      tomador: {
+        documento: document.getElementById('mnfEmiDocTomador').value.replace(/\D/g,''),
+        nome: document.getElementById('mnfEmiNomeTomador').value.trim(),
+        email: document.getElementById('mnfEmiEmailTomador').value.trim() || null,
+        logradouro: document.getElementById('mnfEmiEndereco').value.trim() || null,
+        numero: document.getElementById('mnfEmiNumero').value.trim() || null,
+        complemento: document.getElementById('mnfEmiComplemento').value.trim() || null,
+        cep: document.getElementById('mnfEmiCep').value.trim() || null,
+        bairro: document.getElementById('mnfEmiBairro').value.trim() || null,
+        codigoMunicipio: document.getElementById('mnfEmiCodMun').value || null,
+      },
+      servico: {
+        descricao: document.getElementById('mnfEmiDescricao').value.trim(),
+        valor: Number(document.getElementById('mnfEmiValor').value),
+        competencia: document.getElementById('mnfEmiCompetencia').value,
+      },
+    };
+  }
+  document.getElementById('btnSalvarMinhaNfse').addEventListener('click', async ()=>{
+    const body = lerFormulario();
+    if(!body.tomador.documento || !body.tomador.nome){ toast('Preencha o documento e o nome do tomador.','err'); return; }
+    if(!body.servico.descricao || !body.servico.valor || !body.servico.competencia){ toast('Preencha a descrição, o valor e a competência.','err'); return; }
+    try{
+      if(NFSE_RASCUNHO_ID){
+        await api('/nfse/minha-empresa/rascunhos/'+NFSE_RASCUNHO_ID, { method:'PUT', body });
+        toast('Rascunho atualizado.','ok');
+      }else{
+        const r = await api('/nfse/minha-empresa/rascunhos', { method:'POST', body });
+        NFSE_RASCUNHO_ID = r.id;
+        document.getElementById('btnSalvarMinhaNfse').textContent = 'Salvar rascunho';
+        toast('Rascunho salvo — você pode continuar depois em Notas emitidas.','ok');
+      }
+    }catch(e){ toast(e.message,'err'); }
+  });
+  document.getElementById('btnEmitirMinhaNfse').addEventListener('click', async ()=>{
+    const resultado = document.getElementById('mnfEmiResultado');
+    const body = lerFormulario();
+    if(!body.tomador.documento || !body.tomador.nome){ toast('Preencha o documento e o nome do tomador.','err'); return; }
+    if(!body.servico.descricao || !body.servico.valor || !body.servico.competencia){ toast('Preencha a descrição, o valor e a competência.','err'); return; }
+    resultado.innerHTML = `<div class="empty-state">Enviando ao Sistema Nacional NFS-e…</div>`;
+    try{
+      let r;
+      if(NFSE_RASCUNHO_ID){
+        await api('/nfse/minha-empresa/rascunhos/'+NFSE_RASCUNHO_ID, { method:'PUT', body });
+        r = await api('/nfse/minha-empresa/rascunhos/'+NFSE_RASCUNHO_ID+'/emitir', { method:'POST' });
+        NFSE_RASCUNHO_ID = null;
+      }else{
+        r = await api('/nfse/minha-empresa/emitir', { method:'POST', body });
+      }
+      resultado.innerHTML = `<div class="slot-locked" style="background:var(--paper);"><span class="fname">Emitida com sucesso</span>Chave de acesso: ${esc(r.chaveAcesso||'—')}</div>`;
+      toast('NFS-e emitida com sucesso.','ok');
+    }catch(e){
+      resultado.innerHTML = `<div class="slot-locked" style="background:var(--paper); border-color:var(--debit);"><span class="fname">Rejeitada pelo Sistema Nacional NFS-e</span>${esc(e.message)}</div>`;
+      toast(e.message,'err');
+    }
+  });
+}
+let MINHA_NFSE_SELECIONADAS = new Set();
+let MINHA_NFSE_NOTAS_FILTRO = { dataDe:'', dataAte:'' };
+async function renderMinhaNfseNotas(){
+  const { dataDe, dataAte } = MINHA_NFSE_NOTAS_FILTRO;
+  const qs = new URLSearchParams();
+  if(dataDe) qs.set('dataDe', dataDe);
+  if(dataAte) qs.set('dataAte', dataAte);
+  const { items } = await api('/nfse/minha-empresa/emissoes'+(qs.toString()?'?'+qs.toString():''));
+  MINHA_NFSE_SELECIONADAS = new Set([...MINHA_NFSE_SELECIONADAS].filter(id=>items.some(i=>i.id===id)));
+  const box = document.getElementById('nfseContent');
+  const STATUS_LABEL={emitida:'Emitida',pendente:'Pendente',rejeitada:'Rejeitada',erro:'Erro',rascunho:'Rascunho',cancelada:'Cancelada'};
+  box.innerHTML = `
+    <div class="row" style="margin-bottom:12px; align-items:flex-end;">
+      ${dateFieldHtml('mnfNotasDe','De',dataDe)}
+      ${dateFieldHtml('mnfNotasAte','Até',dataAte)}
+      <div id="mnfNotasLoteBar" style="margin-bottom:2px;"></div>
+    </div>
+    <div class="card" style="padding:0; overflow-x:auto;">
+      <table class="data-table">
+        <thead><tr><th style="width:34px;"><input type="checkbox" id="mnfNotasSelAll"></th><th>Tomador</th><th>Modelo</th><th>Serviço</th><th>Valor</th><th>Status</th><th>Emitido em</th><th></th></tr></thead>
+        <tbody>
+          ${items.length? items.map(n=>`
+            <tr>
+              <td><input type="checkbox" class="mnfNotaSel" data-id="${n.id}" ${MINHA_NFSE_SELECIONADAS.has(n.id)?'checked':''}></td>
+              <td>${esc(n.tomadorNome)}</td>
+              <td>${esc(n.modeloNome||'—')}</td>
+              <td>${esc(n.descricaoServico)}</td>
+              <td>${fmtMoney(n.valorServico)}</td>
+              <td><span class="tag ${n.status==='emitida'?'ok':(n.status==='pendente'?'muted':(n.status==='rascunho'?'muted':'bad'))}">${STATUS_LABEL[n.status]||n.status}</span></td>
+              <td>${fmtDateHora(n.criadoEm)}</td>
+              <td style="text-align:right; white-space:nowrap;">
+                ${n.status==='rascunho'?`<button class="btn small" data-id="${n.id}" data-act="continuar">Continuar</button> <button class="btn small" data-id="${n.id}" data-act="excluir">Excluir</button>`:''}
+                ${n.status!=='rascunho'?`<button class="btn small" data-id="${n.id}" data-act="duplicar">Duplicar</button>`:''}
+                ${n.status==='emitida'||n.status==='cancelada'?`<button class="btn small" data-id="${n.id}" data-act="baixar-xml">XML</button> <button class="btn small" data-id="${n.id}" data-act="baixar-pdf">PDF</button>`:''}
+                ${n.status==='emitida'?`<button class="btn small" data-id="${n.id}" data-act="cancelar" style="color:var(--debit);">Cancelar</button>`:''}
+              </td>
+            </tr>
+          `).join('') : `<tr><td colspan="8"><div class="empty-state">Nenhuma emissão neste período.</div></td></tr>`}
+        </tbody>
+      </table>
+    </div>
+  `;
+  setupDatePicker('mnfNotasDe','mnfNotasDe_text');
+  setupDatePicker('mnfNotasAte','mnfNotasAte_text');
+  document.getElementById('mnfNotasDe').addEventListener('change', e=>{ MINHA_NFSE_NOTAS_FILTRO.dataDe = e.target.value; renderMinhaNfseNotas(); });
+  document.getElementById('mnfNotasAte').addEventListener('change', e=>{ MINHA_NFSE_NOTAS_FILTRO.dataAte = e.target.value; renderMinhaNfseNotas(); });
+  function desenhaLoteBar(){
+    const bar = document.getElementById('mnfNotasLoteBar');
+    const qtd = MINHA_NFSE_SELECIONADAS.size;
+    bar.innerHTML = qtd? `
+      <span style="font-size:12.5px; color:var(--ink-soft); margin-right:8px;">${qtd} selecionada${qtd>1?'s':''}</span>
+      <button class="btn small" data-lote="xml">Baixar XML</button>
+      <button class="btn small" data-lote="pdf">Baixar PDF</button>
+      <button class="btn small" data-lote="ambos">Baixar XML + PDF (.zip)</button>
+    ` : '';
+    bar.querySelectorAll('[data-lote]').forEach(b=>b.addEventListener('click', ()=>{
+      const ids = [...MINHA_NFSE_SELECIONADAS].join(',');
+      window.open('/api/nfse/minha-empresa/baixar-lote?ids='+ids+'&formato='+b.dataset.lote, '_blank');
+    }));
+  }
+  desenhaLoteBar();
+  const selAll = document.getElementById('mnfNotasSelAll');
+  function atualizaSelAll(){
+    const boxes = [...box.querySelectorAll('.mnfNotaSel')];
+    selAll.checked = boxes.length>0 && boxes.every(b=>b.checked);
+    selAll.indeterminate = boxes.some(b=>b.checked) && !selAll.checked;
+  }
+  atualizaSelAll();
+  box.querySelectorAll('.mnfNotaSel').forEach(b=>b.addEventListener('change', ()=>{
+    const id = Number(b.dataset.id);
+    if(b.checked) MINHA_NFSE_SELECIONADAS.add(id); else MINHA_NFSE_SELECIONADAS.delete(id);
+    atualizaSelAll();
+    desenhaLoteBar();
+  }));
+  selAll.addEventListener('change', ()=>{
+    box.querySelectorAll('.mnfNotaSel').forEach(b=>{
+      b.checked = selAll.checked;
+      const id = Number(b.dataset.id);
+      if(selAll.checked) MINHA_NFSE_SELECIONADAS.add(id); else MINHA_NFSE_SELECIONADAS.delete(id);
+    });
+    selAll.indeterminate = false;
+    desenhaLoteBar();
+  });
+  box.querySelectorAll('[data-act="baixar-xml"]').forEach(b=>b.addEventListener('click', ()=>{
+    window.open('/api/nfse/minha-empresa/emissoes/'+b.dataset.id+'/xml', '_blank');
+  }));
+  box.querySelectorAll('[data-act="baixar-pdf"]').forEach(b=>b.addEventListener('click', ()=>{
+    window.open('/api/nfse/minha-empresa/emissoes/'+b.dataset.id+'/danfse', '_blank');
+  }));
+  box.querySelectorAll('[data-act="cancelar"]').forEach(b=>b.addEventListener('click', ()=>{
+    const n = items.find(i=>i.id===Number(b.dataset.id));
+    minhaNfseCancelarModal(n);
+  }));
+  box.querySelectorAll('[data-act="duplicar"]').forEach(b=>b.addEventListener('click', ()=>{
+    const n = items.find(i=>i.id===Number(b.dataset.id));
+    NFSE_PREFILL = { ...n, __modo:'duplicar' };
+    MINHA_NFSE_TAB='emitir';
+    renderMinhaNfseTabs();
+  }));
+  box.querySelectorAll('[data-act="continuar"]').forEach(b=>b.addEventListener('click', ()=>{
+    const n = items.find(i=>i.id===Number(b.dataset.id));
+    NFSE_PREFILL = { ...n, __modo:'continuar' };
+    MINHA_NFSE_TAB='emitir';
+    renderMinhaNfseTabs();
+  }));
+  box.querySelectorAll('[data-act="excluir"]').forEach(b=>b.addEventListener('click', async ()=>{
+    if(!confirm('Excluir este rascunho?')) return;
+    try{
+      await api('/nfse/minha-empresa/emissoes/'+b.dataset.id, { method:'DELETE' });
+      toast('Rascunho excluído.','ok');
+      renderMinhaNfseNotas();
+    }catch(e){ toast(e.message,'err'); }
+  }));
+}
+function minhaNfseCancelarModal(n){
+  openModal(`
+    <h3>Cancelar NFS-e</h3>
+    <p style="color:var(--ink-soft); font-size:13px; margin-top:-6px;">Tomador: ${esc(n.tomadorNome)} — ${fmtMoney(n.valorServico)}<br>
+    <b>Atenção: cancelamento é uma ação real e definitiva no Sistema Nacional NFS-e, não tem como desfazer depois.</b></p>
+    <div class="field"><label>Motivo</label>
+      <select id="mncMotivo">
+        <option value="1">Erro na emissão</option>
+        <option value="2">Serviço não prestado</option>
+        <option value="9">Outros</option>
+      </select>
+    </div>
+    <div class="field"><label>Justificativa (mínimo 15 caracteres)</label><textarea id="mncJustificativa" rows="3"></textarea></div>
+    <button class="btn primary" id="btnConfirmarCancelarMinhaNfse" style="background:var(--debit); border-color:var(--debit);">Confirmar cancelamento</button>
+  `);
+  document.getElementById('btnConfirmarCancelarMinhaNfse').addEventListener('click', async ()=>{
+    const motivo = document.getElementById('mncMotivo').value;
+    const justificativa = document.getElementById('mncJustificativa').value.trim();
+    if(justificativa.length<15){ toast('A justificativa precisa ter pelo menos 15 caracteres.','err'); return; }
+    if(!confirm('Confirma o cancelamento desta NFS-e? Essa ação não pode ser desfeita.')) return;
+    try{
+      await api('/nfse/minha-empresa/emissoes/'+n.id+'/cancelar', { method:'POST', body:{ motivo, justificativa } });
+      closeModal();
+      toast('NFS-e cancelada.','ok');
+      renderMinhaNfseNotas();
+    }catch(e){ toast(e.message,'err'); }
+  });
+}
+
+// ===================== Financeiro do próprio negócio (perfil Cliente) =====================
+let MINHA_FIN_TAB='receber';
+async function pageMinhaFinanceiro(){
+  const item = await moduloDaChave('financeiro');
+  if(!item.acesso){
+    main().innerHTML = `<h1>Financeiro</h1>` + moduloPaywallHtml(item);
+    ligarModuloPaywall(main(), pageMinhaFinanceiro);
+    return;
+  }
+  main().innerHTML = `
+    <h1>Financeiro</h1>
+    <p class="subtitle">Contas a receber e a pagar da sua empresa.</p>
+    <div class="tabs">
+      <div class="tab" data-tab="receber">A Receber</div>
+      <div class="tab" data-tab="pagar">A Pagar</div>
+    </div>
+    <div id="minhaFinContent"></div>
+  `;
+  main().querySelectorAll('.tab').forEach(t=>t.addEventListener('click', ()=>{ MINHA_FIN_TAB=t.dataset.tab; renderMinhaFinTabs(); }));
+  renderMinhaFinTabs();
+}
+function renderMinhaFinTabs(){
+  main().querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===MINHA_FIN_TAB));
+  if(MINHA_FIN_TAB==='pagar') renderMinhaFinPagar();
+  else renderMinhaFinReceber();
+}
+// Modal de lançamento manual, compartilhado entre Receber e Pagar — os campos são quase iguais,
+// só muda o rótulo "Cliente"/"Fornecedor" e a rota da API.
+function minhaFinLancamentoModal(tipo, item){
+  const ehReceber = tipo==='receber';
+  const rota = ehReceber ? '/financeiro/minha-empresa/receber' : '/financeiro/minha-empresa/pagar';
+  const rotuloTerceiro = ehReceber ? 'Cliente' : 'Fornecedor';
+  const campoTerceiro = ehReceber ? 'clienteNome' : 'fornecedor';
+  const valorTerceiro = item ? (ehReceber? item.clienteNome : item.fornecedor) : '';
+  const travado = ehReceber && item && item.origem==='nfse';
+  openModal(`
+    <h3>${item?'Editar':'Novo'} lançamento — ${ehReceber?'a receber':'a pagar'}</h3>
+    ${travado?`<p style="font-size:12px; color:var(--ink-soft); margin:-4px 0 10px;">Este recebível veio de uma NFS-e emitida — descrição, ${rotuloTerceiro.toLowerCase()} e valor ficam travados.</p>`:''}
+    <div class="field"><label>Descrição</label><input id="mflDescricao" value="${item?esc(item.descricao):''}" ${travado?'readonly style="background:var(--paper);"':''}></div>
+    <div class="field"><label>${rotuloTerceiro} (opcional)</label><input id="mflTerceiro" value="${valorTerceiro?esc(valorTerceiro):''}" ${travado?'readonly style="background:var(--paper);"':''}></div>
+    <div class="row">
+      <div class="field" style="width:160px;"><label>Valor (R$)</label><input id="mflValor" type="number" step="0.01" min="0" value="${item?item.valor:''}" ${travado?'readonly style="background:var(--paper);"':''}></div>
+      <div class="field" style="width:170px;">${dateFieldHtml('mflVencimento','Vencimento', item?item.vencimento:'')}</div>
+    </div>
+    ${item?`<div class="field"><label>Status</label>
+      <select id="mflStatus">
+        <option value="pendente" ${item.status==='pendente'?'selected':''}>Pendente</option>
+        <option value="${ehReceber?'pago':'pago'}" ${item.status==='pago'?'selected':''}>${ehReceber?'Recebido':'Pago'}</option>
+        <option value="atrasado" ${item.status==='atrasado'?'selected':''}>Atrasado</option>
+        <option value="cancelado" ${item.status==='cancelado'?'selected':''}>Cancelado</option>
+      </select>
+    </div>`:''}
+    <div class="field"><label>Observação (opcional)</label><textarea id="mflObs" rows="2">${item&&item.observacao?esc(item.observacao):''}</textarea></div>
+    <div class="modal-actions">
+      <button class="btn" id="mflCancel">Cancelar</button>
+      <button class="btn primary" id="mflSalvar">Salvar</button>
+    </div>
+  `);
+  setupDatePicker('mflVencimento','mflVencimento_text');
+  document.getElementById('mflCancel').addEventListener('click', closeModal);
+  document.getElementById('mflSalvar').addEventListener('click', async ()=>{
+    const descricao = document.getElementById('mflDescricao').value.trim();
+    const valor = Number(document.getElementById('mflValor').value);
+    const vencimento = document.getElementById('mflVencimento').value;
+    if(!descricao || !valor || !vencimento){ toast('Preencha a descrição, o valor e o vencimento.','err'); return; }
+    const body = { descricao, valor, vencimento, observacao: document.getElementById('mflObs').value.trim() };
+    body[campoTerceiro] = document.getElementById('mflTerceiro').value.trim();
+    if(item) body.status = document.getElementById('mflStatus').value;
+    try{
+      if(item) await api(rota+'/'+item.id, { method:'PUT', body });
+      else await api(rota, { method:'POST', body });
+      closeModal();
+      toast('Lançamento salvo.','ok');
+      if(ehReceber) renderMinhaFinReceber(); else renderMinhaFinPagar();
+    }catch(e){ toast(e.message,'err'); }
+  });
+}
+let MINHA_FIN_RECEBER_FILTRO = { dataDe:'', dataAte:'' };
+async function renderMinhaFinReceber(){
+  const { dataDe, dataAte } = MINHA_FIN_RECEBER_FILTRO;
+  const qs = new URLSearchParams();
+  if(dataDe) qs.set('dataDe', dataDe);
+  if(dataAte) qs.set('dataAte', dataAte);
+  const { items } = await api('/financeiro/minha-empresa/receber'+(qs.toString()?'?'+qs.toString():''));
+  const box = document.getElementById('minhaFinContent');
+  const STATUS_LABEL={pendente:'Pendente',pago:'Recebido',atrasado:'Atrasado',cancelado:'Cancelado'};
+  box.innerHTML = `
+    <div class="row" style="margin-bottom:12px; align-items:flex-end;">
+      ${dateFieldHtml('mfrDe','De',dataDe)}
+      ${dateFieldHtml('mfrAte','Até',dataAte)}
+      <button class="btn primary" id="btnNovoReceber">+ Novo lançamento</button>
+    </div>
+    <div class="card" style="padding:0; overflow-x:auto;">
+      <table class="data-table">
+        <thead><tr><th>Descrição</th><th>Cliente</th><th>Valor</th><th>Vencimento</th><th>Status</th><th></th></tr></thead>
+        <tbody>
+          ${items.length? items.map(i=>`
+            <tr>
+              <td><b>${esc(i.descricao)}</b>${i.origem==='nfse'?`<div style="font-size:11px; color:var(--ink-soft);">Gerado pela NFS-e</div>`:''}</td>
+              <td>${esc(i.clienteNome||'—')}</td>
+              <td>${fmtMoney(i.valor)}</td>
+              <td>${fmtDateIso(i.vencimento)}</td>
+              <td><span class="tag ${i.status==='pago'?'ok':(i.status==='atrasado'?'bad':'muted')}">${STATUS_LABEL[i.status]||i.status}</span></td>
+              <td style="text-align:right; white-space:nowrap;">
+                ${i.status==='pendente'?`<button class="btn small" data-id="${i.id}" data-act="marcar-recebido">Marcar recebido</button>`:''}
+                <button class="btn small" data-id="${i.id}" data-act="editar">Editar</button>
+                ${i.origem!=='nfse'?`<button class="btn small" data-id="${i.id}" data-act="excluir">Excluir</button>`:''}
+              </td>
+            </tr>
+          `).join('') : `<tr><td colspan="6"><div class="empty-state">Nenhum lançamento neste período.</div></td></tr>`}
+        </tbody>
+      </table>
+    </div>
+  `;
+  setupDatePicker('mfrDe','mfrDe_text');
+  setupDatePicker('mfrAte','mfrAte_text');
+  document.getElementById('mfrDe').addEventListener('change', e=>{ MINHA_FIN_RECEBER_FILTRO.dataDe = e.target.value; renderMinhaFinReceber(); });
+  document.getElementById('mfrAte').addEventListener('change', e=>{ MINHA_FIN_RECEBER_FILTRO.dataAte = e.target.value; renderMinhaFinReceber(); });
+  document.getElementById('btnNovoReceber').addEventListener('click', ()=>minhaFinLancamentoModal('receber'));
+  box.querySelectorAll('[data-act="editar"]').forEach(b=>b.addEventListener('click', ()=>{
+    minhaFinLancamentoModal('receber', items.find(i=>i.id===Number(b.dataset.id)));
+  }));
+  box.querySelectorAll('[data-act="marcar-recebido"]').forEach(b=>b.addEventListener('click', async ()=>{
+    try{ await api('/financeiro/minha-empresa/receber/'+b.dataset.id, { method:'PUT', body:{ status:'pago' } }); toast('Marcado como recebido.','ok'); renderMinhaFinReceber(); }
+    catch(e){ toast(e.message,'err'); }
+  }));
+  box.querySelectorAll('[data-act="excluir"]').forEach(b=>b.addEventListener('click', async ()=>{
+    if(!confirm('Excluir este lançamento?')) return;
+    try{ await api('/financeiro/minha-empresa/receber/'+b.dataset.id, { method:'DELETE' }); toast('Excluído.','ok'); renderMinhaFinReceber(); }
+    catch(e){ toast(e.message,'err'); }
+  }));
+}
+let MINHA_FIN_PAGAR_FILTRO = { dataDe:'', dataAte:'' };
+async function renderMinhaFinPagar(){
+  const { dataDe, dataAte } = MINHA_FIN_PAGAR_FILTRO;
+  const qs = new URLSearchParams();
+  if(dataDe) qs.set('dataDe', dataDe);
+  if(dataAte) qs.set('dataAte', dataAte);
+  const { items } = await api('/financeiro/minha-empresa/pagar'+(qs.toString()?'?'+qs.toString():''));
+  const box = document.getElementById('minhaFinContent');
+  const STATUS_LABEL={pendente:'Pendente',pago:'Pago',atrasado:'Atrasado',cancelado:'Cancelado'};
+  box.innerHTML = `
+    <div class="row" style="margin-bottom:12px; align-items:flex-end;">
+      ${dateFieldHtml('mfpDe','De',dataDe)}
+      ${dateFieldHtml('mfpAte','Até',dataAte)}
+      <button class="btn primary" id="btnNovoPagar">+ Novo lançamento</button>
+    </div>
+    <div class="card" style="padding:0; overflow-x:auto;">
+      <table class="data-table">
+        <thead><tr><th>Descrição</th><th>Fornecedor</th><th>Valor</th><th>Vencimento</th><th>Status</th><th></th></tr></thead>
+        <tbody>
+          ${items.length? items.map(i=>`
+            <tr>
+              <td><b>${esc(i.descricao)}</b></td>
+              <td>${esc(i.fornecedor||'—')}</td>
+              <td>${fmtMoney(i.valor)}</td>
+              <td>${fmtDateIso(i.vencimento)}</td>
+              <td><span class="tag ${i.status==='pago'?'ok':(i.status==='atrasado'?'bad':'muted')}">${STATUS_LABEL[i.status]||i.status}</span></td>
+              <td style="text-align:right; white-space:nowrap;">
+                ${i.status==='pendente'?`<button class="btn small" data-id="${i.id}" data-act="marcar-pago">Marcar pago</button>`:''}
+                <button class="btn small" data-id="${i.id}" data-act="editar">Editar</button>
+                <button class="btn small" data-id="${i.id}" data-act="excluir">Excluir</button>
+              </td>
+            </tr>
+          `).join('') : `<tr><td colspan="6"><div class="empty-state">Nenhum lançamento neste período.</div></td></tr>`}
+        </tbody>
+      </table>
+    </div>
+  `;
+  setupDatePicker('mfpDe','mfpDe_text');
+  setupDatePicker('mfpAte','mfpAte_text');
+  document.getElementById('mfpDe').addEventListener('change', e=>{ MINHA_FIN_PAGAR_FILTRO.dataDe = e.target.value; renderMinhaFinPagar(); });
+  document.getElementById('mfpAte').addEventListener('change', e=>{ MINHA_FIN_PAGAR_FILTRO.dataAte = e.target.value; renderMinhaFinPagar(); });
+  document.getElementById('btnNovoPagar').addEventListener('click', ()=>minhaFinLancamentoModal('pagar'));
+  box.querySelectorAll('[data-act="editar"]').forEach(b=>b.addEventListener('click', ()=>{
+    minhaFinLancamentoModal('pagar', items.find(i=>i.id===Number(b.dataset.id)));
+  }));
+  box.querySelectorAll('[data-act="marcar-pago"]').forEach(b=>b.addEventListener('click', async ()=>{
+    try{ await api('/financeiro/minha-empresa/pagar/'+b.dataset.id, { method:'PUT', body:{ status:'pago' } }); toast('Marcado como pago.','ok'); renderMinhaFinPagar(); }
+    catch(e){ toast(e.message,'err'); }
+  }));
+  box.querySelectorAll('[data-act="excluir"]').forEach(b=>b.addEventListener('click', async ()=>{
+    if(!confirm('Excluir este lançamento?')) return;
+    try{ await api('/financeiro/minha-empresa/pagar/'+b.dataset.id, { method:'DELETE' }); toast('Excluído.','ok'); renderMinhaFinPagar(); }
+    catch(e){ toast(e.message,'err'); }
+  }));
+}
+// ===================== Assinatura (catálogo de módulos, teste grátis, pagamento — perfil Cliente) =====================
+async function pageMinhaAssinatura(){
+  main().innerHTML = `
+    <h1>Assinatura</h1>
+    <p class="subtitle">Teste qualquer módulo grátis por 3 dias, ou contrate direto via Pix/cartão.</p>
+    <div id="assinaturaContent"></div>
+  `;
+  await renderMinhaAssinatura();
+}
+let ASSINATURA_POLL = null;
+function assinaturaModuloCardHtml(item){
+  let badgeClass='muted', badgeText='Não contratado';
+  // Contas migradas antes de existir o controle de teste/assinatura ganharam acesso liberado "pra
+  // sempre" (ver migração de compatibilidade em src/server.ts) — uma data 100 anos no futuro é só
+  // um jeito de representar isso no banco, não deve aparecer literalmente pro cliente.
+  const dataAssinatura = item.assinaturaAtivaAte ? new Date(String(item.assinaturaAtivaAte).replace(' ','T')) : null;
+  const semVencimento = dataAssinatura && (dataAssinatura.getTime() - Date.now()) > 1000*60*60*24*365*3;
+  if(item.status==='teste'){ badgeClass='ok'; badgeText='Em teste até '+fmtDateHora(item.trialFim); }
+  else if(item.status==='teste_vencido'){ badgeClass='bad'; badgeText='Teste grátis vencido'; }
+  else if(item.status==='ativo'){ badgeClass='ok'; badgeText = semVencimento ? 'Ativo' : 'Ativo até '+fmtDateIso(String(item.assinaturaAtivaAte||'').slice(0,10)); }
+  else if(item.status==='vencido'){ badgeClass='bad'; badgeText='Assinatura vencida'; }
+  const mostraBotaoTeste = item.status==='nao_contratado';
+  const rotuloCheckbox = item.status==='ativo' ? 'Incluir no pagamento (renovar antecipado)' : 'Incluir no pagamento';
+  return `
+    <div class="card" style="margin-bottom:10px;">
+      <div class="row" style="justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+        <div>
+          <div style="font-weight:600;">${esc(item.nome)}</div>
+          <div style="font-size:12.5px; color:var(--ink-soft);">${fmtMoney(item.valorMensal)}/mês</div>
+        </div>
+        <div style="display:flex; align-items:center; gap:14px;">
+          <span class="tag ${badgeClass}">${esc(badgeText)}</span>
+          ${mostraBotaoTeste?`<button class="btn small" data-acao="testar" data-chave="${item.chave}">Iniciar teste grátis</button>`:''}
+          <label class="checkbox-row" style="margin:0;"><input type="checkbox" class="assinaturaCheck" data-chave="${item.chave}" data-valor="${item.valorMensal}" data-nome="${esc(item.nome)}"> ${rotuloCheckbox}</label>
+        </div>
+      </div>
+    </div>
+  `;
+}
+async function renderMinhaAssinatura(){
+  if(ASSINATURA_POLL){ clearInterval(ASSINATURA_POLL); ASSINATURA_POLL=null; }
+  const { items } = await api('/financeiro/minha-empresa/modulos');
+  const box = document.getElementById('assinaturaContent');
+  box.innerHTML = `
+    ${items.map(assinaturaModuloCardHtml).join('')}
+    <div class="card" style="margin-top:14px;">
+      <div class="row" style="justify-content:space-between; align-items:center;">
+        <div>Total selecionado: <b id="assinaturaTotal">${fmtMoney(0)}</b></div>
+        <button class="btn primary" id="btnPagarAssinatura" disabled>Pagar agora</button>
+      </div>
+      <div id="assinaturaPagamentoResultado" style="margin-top:12px;"></div>
+    </div>
+  `;
+  box.querySelectorAll('[data-acao="testar"]').forEach(b=>b.addEventListener('click', async ()=>{
+    try{
+      await api('/financeiro/minha-empresa/modulos/'+b.dataset.chave+'/iniciar-teste', { method:'POST' });
+      toast('Teste iniciado! Você tem 3 dias de acesso completo.','ok');
+      renderMinhaAssinatura();
+    }catch(e){ toast(e.message,'err'); }
+  }));
+  const btnPagar = document.getElementById('btnPagarAssinatura');
+  function recomputarTotal(){
+    const marcados = [...box.querySelectorAll('.assinaturaCheck:checked')];
+    const total = marcados.reduce((soma,c)=>soma+Number(c.dataset.valor),0);
+    document.getElementById('assinaturaTotal').textContent = fmtMoney(total);
+    btnPagar.disabled = marcados.length===0;
+  }
+  box.querySelectorAll('.assinaturaCheck').forEach(c=>c.addEventListener('change', recomputarTotal));
+  btnPagar.addEventListener('click', async ()=>{
+    const chaves = [...box.querySelectorAll('.assinaturaCheck:checked')].map(c=>c.dataset.chave);
+    if(!chaves.length) return;
+    const resultado = document.getElementById('assinaturaPagamentoResultado');
+    resultado.innerHTML = `<div class="empty-state">Gerando cobrança…</div>`;
+    try{
+      const r = await api('/financeiro/minha-empresa/modulos/pagar', { method:'POST', body:{ modulos: chaves } });
+      resultado.innerHTML = `
+        <div class="card" style="background:var(--paper);">
+          ${r.pixImagemBase64?`
+            <div style="text-align:center;">
+              <img src="data:image/png;base64,${r.pixImagemBase64}" alt="QR Code Pix" style="width:200px; height:200px;">
+              <div style="font-size:12px; color:var(--ink-soft); margin:8px 0 4px;">Pix copia e cola</div>
+              <input readonly value="${esc(r.pixPayload||'')}" style="width:100%; font-family:'IBM Plex Mono',monospace; font-size:11px; text-align:center;" onclick="this.select()">
+            </div>
+          `:''}
+          ${r.invoiceUrl?`<div style="text-align:center; margin-top:12px;"><a class="btn primary" href="${esc(r.invoiceUrl)}" target="_blank" rel="noopener">Pagar com cartão de crédito</a></div>`:''}
+          <div style="text-align:center; margin-top:12px; font-size:12px; color:var(--ink-soft);">Assim que o pagamento confirmar, o acesso libera sozinho aqui.</div>
+        </div>
+      `;
+      ASSINATURA_POLL = setInterval(async ()=>{
+        try{
+          const { items: atualizados } = await api('/financeiro/minha-empresa/modulos');
+          const todosLiberados = chaves.every(ch=>{ const m=atualizados.find(i=>i.chave===ch); return m && m.status==='ativo'; });
+          if(todosLiberados){
+            clearInterval(ASSINATURA_POLL); ASSINATURA_POLL=null;
+            toast('Pagamento confirmado!','ok');
+            renderMinhaAssinatura();
+          }
+        }catch(e){ /* ignora falha pontual de rede no polling */ }
+      }, 5000);
+    }catch(e){
+      resultado.innerHTML = `<div class="slot-locked" style="background:var(--paper); border-color:var(--debit);"><span class="fname">Não consegui gerar a cobrança</span>${esc(e.message)}</div>`;
+    }
+  });
 }
 
 // ===================== Financeiro =====================
@@ -2220,6 +3390,329 @@ async function renderLancamentos(){
   carregar();
 }
 
+// ===================== Contratos =====================
+function rteToolbarHtml(){
+  return `
+    <div class="rte-toolbar">
+      <button type="button" data-cmd="bold"><b>N</b></button>
+      <button type="button" data-cmd="italic"><i>I</i></button>
+      <button type="button" data-cmd="underline"><u>S</u></button>
+      <button type="button" data-cmd="formatBlock" data-val="h1">Título</button>
+      <button type="button" data-cmd="formatBlock" data-val="h2">Subtítulo</button>
+      <button type="button" data-cmd="formatBlock" data-val="p">Parágrafo</button>
+      <button type="button" data-cmd="insertUnorderedList">• Lista</button>
+      <button type="button" data-cmd="insertOrderedList">1. Lista</button>
+      <button type="button" data-cmd="justifyLeft">Esq.</button>
+      <button type="button" data-cmd="justifyCenter">Centro</button>
+      <button type="button" data-cmd="justifyFull">Justif.</button>
+    </div>
+  `;
+}
+function setupRte(toolbarEl, bodyEl){
+  toolbarEl.querySelectorAll('button').forEach(b=>b.addEventListener('click', ()=>{
+    bodyEl.focus();
+    document.execCommand(b.dataset.cmd, false, b.dataset.val||null);
+  }));
+}
+const CONTRATO_AUTO_PREENCHER = [
+  ['', '— Digitar manualmente —'], ['nome','Nome da empresa'], ['cnpj','CNPJ'],
+  ['endereco','Endereço'], ['cidade','Cidade'], ['uf','UF'], ['email','E-mail'], ['inscricaoMunicipal','Inscrição municipal'],
+];
+let CONTRATOS_TAB='contratos';
+async function pageContratos(){
+  main().innerHTML = `
+    <h1>Contratos</h1>
+    <p class="subtitle">Contratos de prestação de serviços e aditivos com as empresas-cliente.</p>
+    <div class="tabs">
+      <div class="tab" data-tab="contratos">Contratos</div>
+      <div class="tab" data-tab="modelos">Modelos</div>
+    </div>
+    <div id="contratosContent"></div>
+  `;
+  main().querySelectorAll('.tab').forEach(t=>t.addEventListener('click', ()=>{ CONTRATOS_TAB=t.dataset.tab; renderContratosTab(); }));
+  renderContratosTab();
+}
+function renderContratosTab(){
+  main().querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===CONTRATOS_TAB));
+  if(CONTRATOS_TAB==='modelos') renderContratosModelos(); else renderContratosLista();
+}
+let CONTRATOS_FILTRO={ empresaId:'', status:'' };
+async function renderContratosLista(){
+  const box = document.getElementById('contratosContent');
+  const qs = new URLSearchParams();
+  if(CONTRATOS_FILTRO.empresaId) qs.set('empresaId', CONTRATOS_FILTRO.empresaId);
+  if(CONTRATOS_FILTRO.status) qs.set('status', CONTRATOS_FILTRO.status);
+  const [{ items }, { items: empresas }] = await Promise.all([
+    api('/contratos'+(qs.toString()?'?'+qs.toString():'')),
+    api('/empresas'),
+  ]);
+  const STATUS_LABEL={rascunho:'Rascunho',ativo:'Ativo',encerrado:'Encerrado'};
+  const TIPO_LABEL={contrato:'Contrato',aditivo:'Aditivo'};
+  box.innerHTML = `
+    <div class="row" style="margin-bottom:12px; align-items:flex-end;">
+      <div class="field" style="width:260px;"><label>Empresa</label>
+        <select id="ctrFiltroEmpresa"><option value="">Todas</option>${empresas.map(e=>`<option value="${e.id}" ${String(CONTRATOS_FILTRO.empresaId)===String(e.id)?'selected':''}>${esc(e.nome)}</option>`).join('')}</select>
+      </div>
+      <div class="field" style="width:160px;"><label>Status</label>
+        <select id="ctrFiltroStatus">
+          <option value="">Todos</option>
+          <option value="rascunho" ${CONTRATOS_FILTRO.status==='rascunho'?'selected':''}>Rascunho</option>
+          <option value="ativo" ${CONTRATOS_FILTRO.status==='ativo'?'selected':''}>Ativo</option>
+          <option value="encerrado" ${CONTRATOS_FILTRO.status==='encerrado'?'selected':''}>Encerrado</option>
+        </select>
+      </div>
+      <button class="btn primary" id="btnNovoContrato">+ Novo contrato</button>
+    </div>
+    <div class="card" style="padding:0; overflow-x:auto;">
+      <table class="data-table">
+        <thead><tr><th>Empresa</th><th>Título</th><th>Tipo</th><th>Status</th><th>Atualizado em</th><th></th></tr></thead>
+        <tbody>
+          ${items.length? items.map(c=>`
+            <tr>
+              <td>${esc(c.empresaNome)}</td>
+              <td>${esc(c.titulo)}</td>
+              <td>${TIPO_LABEL[c.tipo]||c.tipo}</td>
+              <td><span class="tag ${c.status==='ativo'?'ok':'muted'}">${STATUS_LABEL[c.status]||c.status}</span></td>
+              <td>${fmtDateHora(c.updatedAt)}</td>
+              <td style="text-align:right;"><button class="btn small" data-id="${c.id}" data-act="abrir">Abrir</button></td>
+            </tr>
+          `).join('') : `<tr><td colspan="6"><div class="empty-state">Nenhum contrato encontrado.</div></td></tr>`}
+        </tbody>
+      </table>
+    </div>
+  `;
+  document.getElementById('ctrFiltroEmpresa').addEventListener('change', e=>{ CONTRATOS_FILTRO.empresaId=e.target.value; renderContratosLista(); });
+  document.getElementById('ctrFiltroStatus').addEventListener('change', e=>{ CONTRATOS_FILTRO.status=e.target.value; renderContratosLista(); });
+  document.getElementById('btnNovoContrato').addEventListener('click', ()=>novoContratoModal(empresas));
+  box.querySelectorAll('[data-act="abrir"]').forEach(b=>b.addEventListener('click', ()=>abrirContratoDrawer(Number(b.dataset.id))));
+}
+async function novoContratoModal(empresas){
+  const { items: modelos } = await api('/contratos/modelos');
+  const ativos = modelos.filter(m=>m.ativo);
+  if(!ativos.length){ toast('Cadastre um modelo de contrato primeiro, na aba Modelos.','err'); return; }
+  openModal(`
+    <h3>Novo contrato</h3>
+    <div class="field"><label>Modelo</label>
+      <select id="ncModelo">${ativos.map(m=>`<option value="${m.id}">${esc(m.nome)}</option>`).join('')}</select>
+    </div>
+    <div class="field"><label>Empresa</label>
+      <select id="ncEmpresa">${empresas.map(e=>`<option value="${e.id}">${esc(e.nome)}</option>`).join('')}</select>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" id="ncCancel">Cancelar</button>
+      <button class="btn primary" id="ncCriar">Criar</button>
+    </div>
+  `);
+  document.getElementById('ncCancel').addEventListener('click', closeModal);
+  document.getElementById('ncCriar').addEventListener('click', async ()=>{
+    try{
+      const r = await api('/contratos', { method:'POST', body:{ modeloId:Number(document.getElementById('ncModelo').value), empresaId:Number(document.getElementById('ncEmpresa').value), dados:{} } });
+      closeModal();
+      renderContratosLista();
+      abrirContratoDrawer(r.id);
+    }catch(e){ toast(e.message,'err'); }
+  });
+}
+async function abrirContratoDrawer(id){
+  const c = await api('/contratos/'+id);
+  const campos = c.modeloCampos || [];
+  const dados = c.dadosPreenchidos || {};
+  openDrawer(`
+    <div class="drawer-header">
+      <h3>${esc(c.titulo)}</h3>
+      <button class="btn small" id="drwFechar">Fechar</button>
+    </div>
+    <div class="drawer-body">
+      ${c.tipo==='aditivo'?`<p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Aditivo ao contrato: <b>${esc(c.contratoPaiTitulo||'')}</b></p>`:''}
+      <div class="field"><label>Título</label><input id="drwTitulo" value="${esc(c.titulo)}"></div>
+      ${campos.length?`
+        <div class="card" style="background:var(--paper); margin-bottom:16px;">
+          <div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">Dados do contrato</div>
+          <div class="campos-grid">
+            ${campos.map(f=>`<div class="field"><label>${esc(f.rotulo)}</label><input class="drwCampo" data-chave="${esc(f.chave)}" value="${esc(dados[f.chave]||'')}"></div>`).join('')}
+          </div>
+          <button class="btn small" id="drwAplicarCampos">Aplicar no documento</button>
+        </div>
+      `:''}
+      ${rteToolbarHtml()}
+      <div class="rte-body" id="drwCorpo" contenteditable="true">${c.conteudoHtml}</div>
+    </div>
+    <div class="drawer-footer">
+      <div id="drwEmailForm" style="display:none; width:100%; margin-bottom:8px;"></div>
+      <button class="btn" id="drwRascunho">Salvar como rascunho</button>
+      <button class="btn primary" id="drwSalvar">Salvar</button>
+      <button class="btn" id="drwPdf">Baixar PDF</button>
+      <button class="btn" id="drwEmail">Enviar por e-mail</button>
+      ${c.tipo==='contrato'?`<button class="btn" id="drwAditivo">Criar aditivo</button>`:''}
+    </div>
+  `);
+  const toolbar = document.querySelector('#drawerBody .rte-toolbar');
+  const corpo = document.getElementById('drwCorpo');
+  setupRte(toolbar, corpo);
+  document.getElementById('drwFechar').addEventListener('click', closeDrawer);
+  const salvarComStatus = async (status)=>{
+    try{
+      await api('/contratos/'+id, { method:'PUT', body:{ titulo: document.getElementById('drwTitulo').value.trim(), conteudoHtml: corpo.innerHTML, status } });
+      toast('Salvo.','ok');
+      renderContratosLista();
+    }catch(e){ toast(e.message,'err'); }
+  };
+  document.getElementById('drwRascunho').addEventListener('click', ()=>salvarComStatus('rascunho'));
+  document.getElementById('drwSalvar').addEventListener('click', ()=>salvarComStatus('ativo'));
+  document.getElementById('drwPdf').addEventListener('click', ()=>{
+    window.open('/api/contratos/'+id+'/pdf', '_blank');
+  });
+  const emailForm = document.getElementById('drwEmailForm');
+  document.getElementById('drwEmail').addEventListener('click', ()=>{
+    if(emailForm.style.display==='none'){
+      emailForm.style.display='block';
+      emailForm.innerHTML = `
+        <div class="row">
+          <input id="drwEmailDestino" style="flex:1;" placeholder="E-mail do destinatário" value="${esc(c.empresaEmail||'')}">
+          <button class="btn primary small" id="drwEmailEnviar">Enviar</button>
+        </div>
+      `;
+      document.getElementById('drwEmailEnviar').addEventListener('click', async ()=>{
+        const destino = document.getElementById('drwEmailDestino').value.trim();
+        if(!destino){ toast('Informe o e-mail.','err'); return; }
+        try{
+          await api('/contratos/'+id+'/enviar-email', { method:'POST', body:{ email: destino } });
+          toast('E-mail enviado.','ok');
+          emailForm.style.display='none';
+        }catch(e){ toast(e.message,'err'); }
+      });
+    } else {
+      emailForm.style.display='none';
+    }
+  });
+  if(campos.length){
+    document.getElementById('drwAplicarCampos').addEventListener('click', ()=>{
+      const novosDados = {};
+      document.querySelectorAll('.drwCampo').forEach(inp=>novosDados[inp.dataset.chave]=inp.value);
+      let html = corpo.innerHTML;
+      Object.keys(novosDados).forEach(chave=>{
+        const valor = novosDados[chave];
+        if(valor) html = html.split('{{'+chave+'}}').join(esc(valor));
+      });
+      corpo.innerHTML = html;
+      toast('Dados aplicados no documento.','ok');
+    });
+  }
+  if(c.tipo==='contrato'){
+    document.getElementById('drwAditivo').addEventListener('click', async ()=>{
+      try{
+        const r = await api('/contratos/'+id+'/aditivo', { method:'POST' });
+        toast('Aditivo criado.','ok');
+        abrirContratoDrawer(r.id);
+      }catch(e){ toast(e.message,'err'); }
+    });
+  }
+}
+async function renderContratosModelos(){
+  const box = document.getElementById('contratosContent');
+  const { items } = await api('/contratos/modelos');
+  box.innerHTML = `
+    <div class="row" style="margin-bottom:12px;">
+      <button class="btn primary" id="btnNovoModelo">+ Novo modelo</button>
+    </div>
+    <div class="card" style="padding:0; overflow-x:auto;">
+      <table class="data-table">
+        <thead><tr><th>Nome</th><th>Campos</th><th>Ativo</th><th></th></tr></thead>
+        <tbody>
+          ${items.length? items.map(m=>`
+            <tr>
+              <td>${esc(m.nome)}</td>
+              <td>${m.campos.length}</td>
+              <td><span class="tag ${m.ativo?'ok':'muted'}">${m.ativo?'Ativo':'Inativo'}</span></td>
+              <td style="text-align:right;">
+                <button class="btn small" data-id="${m.id}" data-act="editar">Editar</button>
+                <button class="btn small" data-id="${m.id}" data-act="excluir">Excluir</button>
+              </td>
+            </tr>
+          `).join('') : `<tr><td colspan="4"><div class="empty-state">Nenhum modelo cadastrado ainda.</div></td></tr>`}
+        </tbody>
+      </table>
+    </div>
+  `;
+  document.getElementById('btnNovoModelo').addEventListener('click', ()=>contratoModeloDrawer(null));
+  box.querySelectorAll('[data-act="editar"]').forEach(b=>b.addEventListener('click', ()=>{
+    contratoModeloDrawer(items.find(m=>m.id===Number(b.dataset.id)));
+  }));
+  box.querySelectorAll('[data-act="excluir"]').forEach(b=>b.addEventListener('click', async ()=>{
+    if(!confirm('Excluir este modelo?')) return;
+    try{ await api('/contratos/modelos/'+b.dataset.id, { method:'DELETE' }); toast('Excluído.','ok'); renderContratosModelos(); }
+    catch(e){ toast(e.message,'err'); }
+  }));
+}
+function contratoModeloCampoRowHtml(campo){
+  campo = campo || { chave:'', rotulo:'', autoPreencherDe:'' };
+  return `
+    <div class="row cmCampoRow" style="margin-bottom:8px; align-items:center;">
+      <input class="cmChave" placeholder="chave (ex: cliente_nome)" value="${esc(campo.chave)}" style="width:170px;">
+      <input class="cmRotulo" placeholder="Rótulo exibido" value="${esc(campo.rotulo)}" style="flex:1;">
+      <select class="cmAuto" style="width:200px;">
+        ${CONTRATO_AUTO_PREENCHER.map(([v,l])=>`<option value="${v}" ${campo.autoPreencherDe===v?'selected':''}>${esc(l)}</option>`).join('')}
+      </select>
+      <button type="button" class="btn small cmRemover">Remover</button>
+    </div>
+  `;
+}
+function contratoModeloDrawer(m){
+  openDrawer(`
+    <div class="drawer-header">
+      <h3>${m?'Editar modelo':'Novo modelo'}</h3>
+      <button class="btn small" id="cmFechar">Fechar</button>
+    </div>
+    <div class="drawer-body">
+      <div class="field"><label>Nome do modelo</label><input id="cmNome" value="${m?esc(m.nome):''}"></div>
+      ${m?`<label class="checkbox-row"><input type="checkbox" id="cmAtivo" ${m.ativo?'checked':''}> Ativo (disponível pra criar contratos novos)</label>`:''}
+      <div class="card" style="background:var(--paper); margin:14px 0;">
+        <div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">
+          Campos que serão preenchidos por contrato — use <code>{{chave}}</code> no texto do contrato em cada lugar onde esse dado deve aparecer.
+        </div>
+        <div id="cmCamposList">${(m?m.campos:[]).map(contratoModeloCampoRowHtml).join('')}</div>
+        <button type="button" class="btn small" id="cmAddCampo">+ Adicionar campo</button>
+      </div>
+      ${rteToolbarHtml()}
+      <div class="rte-body" id="cmCorpo" contenteditable="true">${m?m.conteudoHtml:'<h1>Contrato de Prestação de Serviços</h1><p></p>'}</div>
+    </div>
+    <div class="modal-actions" style="padding:16px 24px; border-top:1px solid var(--line);">
+      <button class="btn primary" id="cmSalvar">Salvar modelo</button>
+    </div>
+  `);
+  const lista = document.getElementById('cmCamposList');
+  function ligarRemover(){
+    lista.querySelectorAll('.cmRemover').forEach(b=>b.addEventListener('click', ()=>{ b.closest('.cmCampoRow').remove(); }));
+  }
+  ligarRemover();
+  document.getElementById('cmAddCampo').addEventListener('click', ()=>{
+    lista.insertAdjacentHTML('beforeend', contratoModeloCampoRowHtml());
+    ligarRemover();
+  });
+  const toolbar = document.querySelector('#drawerBody .rte-toolbar');
+  const corpo = document.getElementById('cmCorpo');
+  setupRte(toolbar, corpo);
+  document.getElementById('cmFechar').addEventListener('click', closeDrawer);
+  document.getElementById('cmSalvar').addEventListener('click', async ()=>{
+    const nome = document.getElementById('cmNome').value.trim();
+    if(!nome){ toast('Informe o nome do modelo.','err'); return; }
+    const campos = [...lista.querySelectorAll('.cmCampoRow')].map(row=>({
+      chave: row.querySelector('.cmChave').value.trim(),
+      rotulo: row.querySelector('.cmRotulo').value.trim(),
+      autoPreencherDe: row.querySelector('.cmAuto').value || null,
+    })).filter(c=>c.chave && c.rotulo);
+    const body = { nome, conteudoHtml: corpo.innerHTML, campos };
+    if(m) body.ativo = document.getElementById('cmAtivo').checked;
+    try{
+      if(m) await api('/contratos/modelos/'+m.id, { method:'PUT', body });
+      else await api('/contratos/modelos', { method:'POST', body });
+      closeDrawer();
+      toast('Modelo salvo.','ok');
+      renderContratosModelos();
+    }catch(e){ toast(e.message,'err'); }
+  });
+}
+
 // ===================== Relatórios =====================
 const TIPOS_REL = [ {v:'balanco', l:'Balanço'}, {v:'balancete', l:'Balancete'}, {v:'dre', l:'DRE'}, {v:'faturamento', l:'Relação de Faturamento'}, {v:'folha', l:'Folha'} ];
 let REL_TAB='balanco';
@@ -2294,7 +3787,7 @@ async function pageUsuarios(){
     usuarioModal(items.find(x=>x.id===id));
   }));
 }
-const MODS = [['dashboard','Início'],['empresas','Empresas'],['solicitacoes','Solicitações de Documentos'],['envio','Envio de Documentos'],['nfse','NFS-e'],['financeiro','Financeiro'],['relatorios','Relatórios'],['usuarios','Usuários'],['configuracoes','Configurações']];
+const MODS = [['dashboard','Início'],['empresas','Empresas'],['solicitacoes','Solicitações de Documentos'],['envio','Envio de Documentos'],['nfse','NFS-e'],['financeiro','Financeiro'],['contratos','Contratos'],['relatorios','Relatórios'],['usuarios','Usuários'],['configuracoes','Configurações']];
 async function usuarioModal(u){
   const { items: empresas } = await api('/empresas');
   openModal(`
@@ -2411,6 +3904,7 @@ async function pageConfiguracoes(){
     <div class="tabs">
       <div class="tab" data-tab="dominio">Domínio Web</div>
       <div class="tab" data-tab="email">E-mail corporativo</div>
+      <div class="tab" data-tab="modulos">Módulos</div>
     </div>
     <div id="cfgContent"></div>
   `;
@@ -2422,7 +3916,9 @@ async function renderCfgTab(){
   domTestPolling = false; // interrompe qualquer polling de teste da aba anterior
   main().querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===CFG_TAB));
   const box = document.getElementById('cfgContent');
-  if(CFG_TAB==='dominio') await renderCfgDominio(box); else await renderCfgEmail(box);
+  if(CFG_TAB==='dominio') await renderCfgDominio(box);
+  else if(CFG_TAB==='modulos') await renderCfgModulos(box);
+  else await renderCfgEmail(box);
 }
 
 async function renderCfgDominio(box){
@@ -2565,6 +4061,38 @@ async function renderCfgDominio(box){
   });
 }
 
+async function renderCfgModulos(box){
+  const { items } = await api('/modulos-catalogo');
+  box.innerHTML = `
+    <div class="card">
+      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-4px;">Preço mensal de cada módulo vendável no self-service das empresas-cliente. Ao desativar um módulo, ele some da tela de contratação — quem já contratou continua com acesso normalmente.</p>
+      <table class="data-table">
+        <thead><tr><th>Módulo</th><th>Valor mensal (R$)</th><th>Ativo</th><th></th></tr></thead>
+        <tbody>
+          ${items.map(m=>`
+            <tr data-chave="${m.chave}">
+              <td><input class="cfgModNome" value="${esc(m.nome)}" style="width:100%;"></td>
+              <td style="width:160px;"><input class="cfgModValor" type="number" step="0.01" min="0" value="${m.valorMensal}" style="width:100%;"></td>
+              <td style="width:70px; text-align:center;"><input class="cfgModAtivo" type="checkbox" ${m.ativo?'checked':''}></td>
+              <td style="width:90px;"><button class="btn small cfgModSalvar">Salvar</button></td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+  box.querySelectorAll('.cfgModSalvar').forEach(btn=>btn.addEventListener('click', async ()=>{
+    const tr = btn.closest('tr');
+    const chave = tr.dataset.chave;
+    const body = {
+      nome: tr.querySelector('.cfgModNome').value.trim(),
+      valorMensal: Number(tr.querySelector('.cfgModValor').value) || 0,
+      ativo: tr.querySelector('.cfgModAtivo').checked,
+    };
+    try{ await api('/modulos-catalogo/'+chave, { method:'PUT', body }); toast('Módulo atualizado.','ok'); }
+    catch(e){ toast(e.message,'err'); }
+  }));
+}
 async function renderCfgEmail(box){
   const status = await api('/email/status');
   const { items } = await api('/email/log');

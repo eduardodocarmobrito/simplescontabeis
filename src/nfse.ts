@@ -32,9 +32,23 @@ const ADN_BASE_URL = {
   producao: "https://sefin.nfse.gov.br/SefinNacional",
 } as const;
 export type AmbienteNfse = keyof typeof ADN_BASE_URL;
+// DANFSe (representação em PDF da NFS-e) fica no host do ADN, não no da Sefin Nacional.
+const ADN_DANFSE_BASE_URL = {
+  producaorestrita: "https://adn.producaorestrita.nfse.gov.br/danfse",
+  producao: "https://adn.nfse.gov.br/danfse",
+} as const;
 
 const CERT_DIR = path.join(process.env.DATA_DIR || path.join(__dirname, "..", "data"), "nfse-certificados");
 fs.mkdirSync(CERT_DIR, { recursive: true });
+// DANFSe já emitida não é segredo (é o mesmo documento que o tomador recebe) — guardado em cache
+// local sem cifra, só pra não precisar baixar de novo do governo toda vez que alguém pedir o PDF.
+const DANFSE_DIR = path.join(process.env.DATA_DIR || path.join(__dirname, "..", "data"), "nfse-danfse");
+fs.mkdirSync(DANFSE_DIR, { recursive: true });
+export function salvarDanfsePdfEmCache(chaveAcesso: string, pdfBuffer: Buffer): string {
+  const destino = path.join(DANFSE_DIR, `${chaveAcesso}.pdf`);
+  fs.writeFileSync(destino, pdfBuffer);
+  return destino;
+}
 
 // ===================== Criptografia em repouso (certificado .pfx e senha) =====================
 function chaveCifra(): Buffer {
@@ -138,6 +152,15 @@ export interface DadosPrestador {
   // LTDA/EIRELI, não MEI; testado contra o ambiente real (enviar "2" pra uma LTDA causa E0160,
   // rejeição por divergência com o cadastro Simples Nacional da Receita Federal).
   opcaoSimplesNacional: boolean;
+  // regApTribSN: obrigatório quando opcaoSimplesNacional=true (opSimpNac=3) — testado contra o
+  // ambiente real (E0166 sem isso). 1=tributos federais+municipal apurados pelo SN (padrão) |
+  // 2=federais pelo SN e ISSQN por fora | 3=ambos por fora do SN (só relevante se a empresa
+  // ultrapassou algum sublimite do Simples Nacional).
+  regimeApuracaoSn?: "1" | "2" | "3" | null;
+  // pTotTribSN — % aproximado do total de tributos (Lei 12.741/2012) pela alíquota efetiva do
+  // Simples Nacional. Obrigatório quando opcaoSimplesNacional=true: indTotTrib=0 (usado pros
+  // demais prestadores) é rejeitado nesse caso — testado contra o ambiente real (E0712).
+  percentualTotalTributosSn?: number | null;
   regimeEspecialTrib: number; // 0 = Nenhum
   telefone?: string | null;
   email?: string | null;
@@ -163,7 +186,7 @@ export interface DadosServico {
   tribIssqn?: number; // 1=Tributável 2=Imunidade 3=Exportação 4=Não incidência (default 1)
   tipoRetencaoIssqn?: number; // 1=Não retido 2=Retido pelo tomador 3=Retido pelo intermediário (default 1)
   aliquotaIssqn?: number | null; // % — quando o município não retornar via API de parâmetros
-  tipoRetencaoPisCofins?: number | null; // 1-4, ver nfse_modelos — null = não informar o grupo
+  tipoRetencaoPisCofins?: number | null; // 1=Retido, 2=Não Retido (domínio oficial TSTipoRetPISCofins) — null = não informar o grupo
   // Exigibilidade suspensa do ISSQN (decisão judicial/processo administrativo)
   issqnExigibilidadeSuspensa?: boolean;
   issqnMotivoSuspensao?: number | null; // 1=Decisão Judicial 2=Processo Administrativo
@@ -241,6 +264,7 @@ ${prestador.telefone ? `<fone>${xmlEscape(prestador.telefone.replace(/\D/g, ""))
 ${prestador.email ? `<email>${xmlEscape(prestador.email)}</email>` : ""}
 <regTrib>
 <opSimpNac>${prestador.opcaoSimplesNacional ? "3" : "1"}</opSimpNac>
+${prestador.opcaoSimplesNacional ? `<regApTribSN>${prestador.regimeApuracaoSn || "1"}</regApTribSN>` : ""}
 <regEspTrib>${prestador.regimeEspecialTrib}</regEspTrib>
 </regTrib>
 </prest>
@@ -299,7 +323,16 @@ ${
 }
 ${servico.beneficioMunicipalCodigo ? `<BM>\n<nBM>${xmlEscape(servico.beneficioMunicipalCodigo)}</nBM>\n</BM>` : ""}
 <tpRetISSQN>${servico.tipoRetencaoIssqn ?? 1}</tpRetISSQN>
-${servico.aliquotaIssqn != null ? `<pAliq>${servico.aliquotaIssqn.toFixed(2)}</pAliq>` : ""}
+${
+  // A ADN rejeita (E0625) alíquota informada quando o ISSQN não é retido (tpRetISSQN=1) pra um
+  // prestador ME/EPP (opSimpNac=3) cujo regime de apuração do SN inclui o ISSQN (regApTribSN=1) e
+  // não há benefício municipal de isenção/alíquota diferenciada — nesse caso quem determina o
+  // ISSQN é a própria tabela do Simples Nacional, não uma alíquota informada por nota.
+  servico.aliquotaIssqn != null &&
+  !(prestador.opcaoSimplesNacional && (prestador.regimeApuracaoSn ?? "1") === "1" && (servico.tipoRetencaoIssqn ?? 1) === 1 && !servico.beneficioMunicipalCodigo)
+    ? `<pAliq>${servico.aliquotaIssqn.toFixed(2)}</pAliq>`
+    : ""
+}
 </tribMun>
 ${
   // O grupo tribFed entra se houver qualquer retenção federal configurada no modelo (PIS/COFINS,
@@ -326,7 +359,12 @@ ${servico.valorCsll != null ? `<vRetCSLL>${servico.valorCsll.toFixed(2)}</vRetCS
     : ""
 }
 <totTrib>
-<indTotTrib>0</indTotTrib>
+${
+  // indTotTrib=0 é rejeitado (E0712) pra prestador ME/EPP — usa pTotTribSN nesse caso.
+  prestador.opcaoSimplesNacional
+    ? `<pTotTribSN>${(prestador.percentualTotalTributosSn ?? 0).toFixed(2)}</pTotTribSN>`
+    : `<indTotTrib>0</indTotTrib>`
+}
 </totTrib>
 </trib>
 </valores>
@@ -419,6 +457,20 @@ export function chamarAdn(
   });
 }
 
+// A Sefin Nacional NFS-e responde erro em formatos diferentes conforme o serviço: /nfse devolve
+// {erros:[{Codigo,Descricao}]} (confirmado em teste real); /eventos devolve {erro:[{codigo,descricao}]}
+// — também um array, apesar do nome no singular (confirmado em teste real, diferente do que o
+// swagger documentava) — aceita "erros" ou "erro" como array OU objeto único, com ou sem
+// capitalização, pra não quebrar se algum serviço mudar o formato de novo.
+function extrairMensagemErro(json: any, corpoOriginal: string): string {
+  let lista: any[] | null = null;
+  if (Array.isArray(json?.erros)) lista = json.erros;
+  else if (Array.isArray(json?.erro)) lista = json.erro;
+  else if (json?.erro) lista = [json.erro];
+  if (!lista) return corpoOriginal;
+  return lista.map((e: any) => `${e.Codigo || e.codigo || ""}: ${e.Descricao || e.descricao || ""}`.trim()).join(" | ") || corpoOriginal;
+}
+
 // A Sefin Nacional NFS-e espera/devolve o XML comprimido (gzip) e em base64 dentro de um envelope
 // JSON — não o XML cru. Sucesso (2xx): {chaveAcesso, nfseXmlGZipB64}. Erro: {erros:[{Codigo,Descricao}]}.
 function interpretarRespostaEmissao(resposta: RespostaAdn): { chaveAcesso: string | null; xmlNfse: string | null; mensagemErro: string | null } {
@@ -432,8 +484,7 @@ function interpretarRespostaEmissao(resposta: RespostaAdn): { chaveAcesso: strin
     const xmlNfse = json.nfseXmlGZipB64 ? zlib.gunzipSync(Buffer.from(json.nfseXmlGZipB64, "base64")).toString("utf8") : null;
     return { chaveAcesso: json.chaveAcesso || null, xmlNfse, mensagemErro: null };
   }
-  const erros = Array.isArray(json.erros) ? json.erros.map((e: any) => `${e.Codigo || ""}: ${e.Descricao || ""}`.trim()).join(" | ") : null;
-  return { chaveAcesso: null, xmlNfse: null, mensagemErro: erros || resposta.corpo };
+  return { chaveAcesso: null, xmlNfse: null, mensagemErro: extrairMensagemErro(json, resposta.corpo) };
 }
 
 // Fluxo completo: monta, assina e envia a DPS; devolve o XML assinado (pra guardar) e o resultado interpretado.
@@ -447,4 +498,113 @@ export async function emitirDps(
   const resposta = await chamarAdn(input.ambiente, "POST", "/nfse", cert, corpoRequisicao, "application/json");
   const { chaveAcesso, xmlNfse, mensagemErro } = interpretarRespostaEmissao(resposta);
   return { xmlAssinado, resposta, chaveAcesso, xmlNfse, mensagemErro };
+}
+
+// ===================== Cancelamento de NFS-e (evento e101101) =====================
+// Código de justificativa de cancelamento (TSCodJustCanc): 1=Erro na Emissão, 2=Serviço não
+// Prestado, 9=Outros. xMotivo (TSMotivo) precisa ter entre 15 e 255 caracteres.
+export type MotivoCancelamento = "1" | "2" | "9";
+export interface CancelarNfseInput {
+  ambiente: AmbienteNfse;
+  chaveAcesso: string;
+  cnpjAutor: string;
+  motivo: MotivoCancelamento;
+  xMotivo: string;
+}
+// Monta e assina o pedido de registro de evento de cancelamento (e101101) — mesmo padrão da DPS:
+// elemento raiz nomeado conforme o tipo complexo (pedRegEvento/TCPedRegEvt), infPedReg assinado
+// com enveloped signature. Id = "PRE" + chave(50) + tipoEvento(6) — SEM o nPedRegEvento no final.
+// O schema desse campo (TSIdPedRegEvt) mudou em dez/2025 (a documentação nos manuais ainda cita a
+// composição antiga com nPedRegEvento incluído, mas o maxLength/pattern real caíram de 62→59
+// chars, ou seja 56 dígitos após "PRE", não mais 59 — confirmado testando contra produção real:
+// incluir os 3 dígitos do nPedRegEvento no Id causa E1235 "Pattern constraint failed").
+export function montarEAssinarCancelamento(input: CancelarNfseInput, cert: CertificadoInfo): { xmlAssinado: string; idPedido: string } {
+  const tpAmb = input.ambiente === "producao" ? "1" : "2";
+  const tipoEvento = "e101101"; // nome da tag XML do evento
+  const codigoEvento = "101101"; // só os dígitos — é o que entra no Id, sem o "e"
+  const idPedido = `PRE${input.chaveAcesso}${codigoEvento}`;
+  const dhEvento = dataHoraBrasilia(-60_000);
+  const documentoAutor = input.cnpjAutor.replace(/\D/g, "");
+  const tagAutor = documentoAutor.length === 14 ? "CNPJAutor" : "CPFAutor";
+
+  // nPedRegEvento também saiu do corpo do infPedReg na mesma atualização do schema (dez/2025) —
+  // testado contra produção real: incluí-lo aqui causa E1235 "invalid child element 'nPedRegEvento'".
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<pedRegEvento xmlns="http://www.sped.fazenda.gov.br/nfse" versao="1.00"><infPedReg Id="${idPedido}">
+<tpAmb>${tpAmb}</tpAmb>
+<verAplic>simplescontabeis-1.0</verAplic>
+<dhEvento>${xmlEscape(dhEvento)}</dhEvento>
+<${tagAutor}>${documentoAutor}</${tagAutor}>
+<chNFSe>${input.chaveAcesso}</chNFSe>
+<e101101>
+<xDesc>Cancelamento de NFS-e</xDesc>
+<cMotivo>${input.motivo}</cMotivo>
+<xMotivo>${xmlEscape(input.xMotivo)}</xMotivo>
+</e101101>
+</infPedReg></pedRegEvento>`;
+
+  const sig = new SignedXml({ privateKey: cert.privateKeyPem, publicCert: cert.certPem, getKeyInfoContent: SignedXml.getKeyInfoContent });
+  sig.addReference({
+    xpath: "//*[local-name(.)='infPedReg']",
+    transforms: ["http://www.w3.org/2000/09/xmldsig#enveloped-signature", "http://www.w3.org/TR/2001/REC-xml-c14n-20010315"],
+    digestAlgorithm: "http://www.w3.org/2001/04/xmlenc#sha256",
+    uri: `#${idPedido}`,
+  });
+  sig.signatureAlgorithm = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256";
+  sig.canonicalizationAlgorithm = "http://www.w3.org/TR/2001/REC-xml-c14n-20010315";
+  sig.computeSignature(xml, { location: { reference: "//*[local-name(.)='infPedReg']", action: "after" } });
+  return { xmlAssinado: sig.getSignedXml(), idPedido };
+}
+// Fluxo completo de cancelamento: monta, assina e envia o evento; devolve o XML assinado (pra
+// guardar) e o resultado interpretado. IMPORTANTE: montado a partir do leiaute oficial (ANEXO_II-
+// LeiautesRN_Eventos-SNNFSe) mas ainda não confirmado contra o ambiente real (precisa de uma
+// NFS-e de verdade já emitida pra poder testar) — diferente da emissão, que foi validada ponta a
+// ponta contra o governo.
+export async function cancelarNfse(input: CancelarNfseInput, cert: CertificadoInfo): Promise<{ xmlAssinado: string; resposta: RespostaAdn; xmlEvento: string | null; mensagemErro: string | null }> {
+  const { xmlAssinado } = montarEAssinarCancelamento(input, cert);
+  const corpoRequisicao = JSON.stringify({ pedidoRegistroEventoXmlGZipB64: zlib.gzipSync(Buffer.from(xmlAssinado, "utf8")).toString("base64") });
+  const resposta = await chamarAdn(input.ambiente, "POST", `/nfse/${input.chaveAcesso}/eventos`, cert, corpoRequisicao, "application/json");
+  let xmlEvento: string | null = null;
+  let mensagemErro: string | null = null;
+  try {
+    const json = JSON.parse(resposta.corpo);
+    if (resposta.ok) xmlEvento = json.eventoXmlGZipB64 ? zlib.gunzipSync(Buffer.from(json.eventoXmlGZipB64, "base64")).toString("utf8") : null;
+    else mensagemErro = extrairMensagemErro(json, resposta.corpo);
+  } catch {
+    if (!resposta.ok) mensagemErro = resposta.corpo || `HTTP ${resposta.status}`;
+  }
+  return { xmlAssinado, resposta, xmlEvento, mensagemErro };
+}
+
+// ===================== DANFSe (representação em PDF da NFS-e) =====================
+// Serviço separado, hospedado no host do ADN (não na Sefin Nacional) — GET autenticado por mTLS,
+// resposta binária (PDF), por isso não reaproveita chamarAdn (que decodifica tudo como texto UTF-8).
+// IMPORTANTE: o serviço de docs/swagger do DANFSe estava indisponível (503) durante o
+// desenvolvimento, então o path exato (GET /danfse/{chaveAcesso}) segue o mesmo padrão usado pelos
+// outros serviços (GET /nfse/{chaveAcesso}) mas não foi confirmado contra o ambiente real ainda.
+export function baixarDanfsePdf(ambiente: AmbienteNfse, chaveAcesso: string, cert: CertificadoInfo): Promise<{ ok: boolean; status: number; pdf: Buffer | null; mensagemErro: string | null }> {
+  return new Promise((resolve, reject) => {
+    const base = new URL(`${ADN_DANFSE_BASE_URL[ambiente]}/${chaveAcesso}`);
+    const agent = new https.Agent({ cert: cert.certPem, key: cert.privateKeyPem });
+    const req = https.request({ hostname: base.hostname, path: base.pathname + base.search, method: "GET", agent, timeout: 30000 }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("end", () => {
+        const corpo = Buffer.concat(chunks);
+        const ok = (res.statusCode || 0) >= 200 && (res.statusCode || 0) < 300;
+        const tipo = String(res.headers["content-type"] || "");
+        if (ok && tipo.includes("pdf")) return resolve({ ok: true, status: res.statusCode || 0, pdf: corpo, mensagemErro: null });
+        let mensagemErro = corpo.toString("utf8");
+        try {
+          mensagemErro = extrairMensagemErro(JSON.parse(mensagemErro), mensagemErro);
+        } catch {
+          /* corpo não era JSON — mantém o texto cru como mensagem */
+        }
+        resolve({ ok: false, status: res.statusCode || 0, pdf: null, mensagemErro: mensagemErro || `HTTP ${res.statusCode}` });
+      });
+    });
+    req.on("timeout", () => req.destroy(new Error("Tempo esgotado ao conectar no serviço de DANFSe.")));
+    req.on("error", (e) => reject(e));
+    req.end();
+  });
 }

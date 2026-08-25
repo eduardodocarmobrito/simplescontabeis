@@ -7,8 +7,11 @@ import cookieParser from "cookie-parser";
 import rateLimit from "express-rate-limit";
 import multer from "multer";
 import nodemailer from "nodemailer";
+import archiver from "archiver";
 import { DatabaseSync } from "node:sqlite";
 import * as nfse from "./nfse";
+import * as asaas from "./asaas";
+import * as contratos from "./contratos";
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 
@@ -229,6 +232,110 @@ sqlite.exec(`
     UNIQUE(empresa_id, competencia)
   );
 
+  -- ---- Financeiro do próprio negócio da empresa-cliente self-service (perfil Cliente) ----
+  CREATE TABLE IF NOT EXISTS financeiro_pagar (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+    descricao TEXT NOT NULL,
+    fornecedor TEXT,
+    valor REAL NOT NULL,
+    vencimento TEXT NOT NULL, -- 'YYYY-MM-DD'
+    status TEXT NOT NULL DEFAULT 'pendente', -- 'pendente' | 'pago' | 'atrasado' | 'cancelado'
+    data_pagamento TEXT,
+    observacao TEXT,
+    criado_por INTEGER REFERENCES app_users(id),
+    criado_em TEXT DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS financeiro_receber (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+    descricao TEXT NOT NULL,
+    cliente_nome TEXT,
+    valor REAL NOT NULL,
+    vencimento TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pendente', -- 'pendente' | 'pago' | 'atrasado' | 'cancelado'
+    data_recebimento TEXT,
+    observacao TEXT,
+    origem TEXT NOT NULL DEFAULT 'manual', -- 'manual' | 'nfse'
+    nfse_emissao_id INTEGER REFERENCES nfse_emissoes(id) ON DELETE SET NULL,
+    criado_por INTEGER REFERENCES app_users(id),
+    criado_em TEXT DEFAULT (datetime('now'))
+  );
+
+  -- ---- Catálogo de módulos vendáveis (self-service) e contratação por empresa-cliente ----
+  CREATE TABLE IF NOT EXISTS modulos_catalogo (
+    chave TEXT PRIMARY KEY, -- 'nfse' | 'financeiro' | outros, nascem no código junto com o módulo
+    nome TEXT NOT NULL,
+    valor_mensal REAL NOT NULL DEFAULT 0,
+    ativo INTEGER NOT NULL DEFAULT 1, -- posso tirar um módulo de venda sem apagar o histórico
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS empresa_modulos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+    modulo_chave TEXT NOT NULL REFERENCES modulos_catalogo(chave),
+    trial_inicio TEXT NOT NULL,
+    trial_fim TEXT NOT NULL,
+    trial_prorrogado INTEGER NOT NULL DEFAULT 0,
+    assinatura_ativa_ate TEXT, -- NULL até o 1º pagamento confirmado
+    criado_em TEXT DEFAULT (datetime('now')),
+    UNIQUE(empresa_id, modulo_chave)
+  );
+  -- ---- Cobrança combinada (Pix/cartão via Asaas) de um ou mais módulos de uma vez ----
+  CREATE TABLE IF NOT EXISTS financeiro_licenca_cobrancas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+    valor_total REAL NOT NULL,
+    vencimento TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pendente', -- espelha o status do Asaas: pendente|confirmado|recebido|vencido|cancelado
+    asaas_payment_id TEXT,
+    invoice_url TEXT,
+    pix_qrcode TEXT, -- payload copia-e-cola
+    pix_qrcode_imagem TEXT, -- base64 do QR code (cacheado, evita rebaixar do Asaas toda hora)
+    criado_em TEXT DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS financeiro_licenca_cobranca_itens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cobranca_id INTEGER NOT NULL REFERENCES financeiro_licenca_cobrancas(id) ON DELETE CASCADE,
+    modulo_chave TEXT NOT NULL,
+    valor REAL NOT NULL
+  );
+
+  -- ---- Contratos (gestão dos contratos e aditivos do escritório com as empresas-cliente) ----
+  CREATE TABLE IF NOT EXISTS contratos_modelos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    nome TEXT NOT NULL,
+    conteudo_html TEXT NOT NULL, -- corpo do contrato com placeholders {{chave}}
+    campos TEXT NOT NULL DEFAULT '[]', -- JSON [{chave, rotulo, tipo, autoPreencherDe}]
+    ativo INTEGER NOT NULL DEFAULT 1,
+    criado_em TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS contratos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    modelo_id INTEGER REFERENCES contratos_modelos(id) ON DELETE SET NULL,
+    empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+    tipo TEXT NOT NULL DEFAULT 'contrato', -- 'contrato' | 'aditivo'
+    contrato_pai_id INTEGER REFERENCES contratos(id) ON DELETE SET NULL, -- só em aditivos
+    titulo TEXT NOT NULL,
+    conteudo_html TEXT NOT NULL, -- cópia independente, editável, já com os dados aplicados
+    dados_preenchidos TEXT NOT NULL DEFAULT '{}', -- JSON dos valores usados no preenchimento
+    status TEXT NOT NULL DEFAULT 'rascunho', -- 'rascunho' | 'ativo' | 'encerrado'
+    ultimo_pdf_path TEXT, -- cache do PDF gerado; limpo a cada edição salva
+    criado_por INTEGER REFERENCES app_users(id),
+    criado_em TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS contratos_envios (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    contrato_id INTEGER NOT NULL REFERENCES contratos(id) ON DELETE CASCADE,
+    email_destino TEXT NOT NULL,
+    sucesso INTEGER NOT NULL,
+    erro TEXT,
+    enviado_por INTEGER REFERENCES app_users(id),
+    enviado_em TEXT DEFAULT (datetime('now'))
+  );
+
   -- ---- Painel (cards de indicadores configuráveis) ----
   CREATE TABLE IF NOT EXISTS dashboard_cards (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -373,6 +480,8 @@ sqlite.exec(`
     inscricao_municipal TEXT,
     opcao_simples_nacional INTEGER NOT NULL DEFAULT 1, -- 1=Optante MEI/ME/EPP (regTrib/opSimpNac simplificado — ver nfse.ts)
     regime_especial_trib INTEGER NOT NULL DEFAULT 0, -- 0=Nenhum (regTrib/regEspTrib)
+    regime_apuracao_sn TEXT NOT NULL DEFAULT '1', -- regApTribSN: '1' tributos federais+municipal pelo SN | '2' federais pelo SN e ISSQN fora | '3' ambos fora do SN — obrigatório pra optante ME/EPP (testado contra o ambiente real: E0166 sem isso)
+    percentual_total_tributos_sn REAL, -- pTotTribSN — % aproximado do total de tributos (Lei 12.741/2012) pela alíquota efetiva do Simples Nacional; obrigatório pra optante ME/EPP, pois indTotTrib=0 é rejeitado nesse caso (E0712)
     updated_at TEXT DEFAULT (datetime('now'))
   );
 
@@ -380,6 +489,7 @@ sqlite.exec(`
   -- os códigos/tributação e na emissão só escolhe o modelo + preenche descrição e valor.
   CREATE TABLE IF NOT EXISTS nfse_modelos (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    empresa_id INTEGER REFERENCES empresas(id) ON DELETE CASCADE, -- NULL = modelo interno do escritório; com valor = modelo próprio de uma empresa-cliente self-service
     nome TEXT NOT NULL, -- ex.: "Serviços Administrativos"
     codigo_tributacao_nacional TEXT NOT NULL, -- cTribNac, 6 dígitos (ex.: "171001")
     codigo_tributacao_municipal TEXT, -- cTribMun, opcional — nem todo município usa
@@ -436,11 +546,16 @@ sqlite.exec(`
     descricao_servico TEXT NOT NULL,
     valor_servico REAL NOT NULL,
     competencia TEXT NOT NULL, -- 'YYYY-MM-DD'
-    status TEXT NOT NULL DEFAULT 'pendente', -- 'rascunho' | 'pendente' | 'emitida' | 'rejeitada' | 'erro'
+    status TEXT NOT NULL DEFAULT 'pendente', -- 'rascunho' | 'pendente' | 'emitida' | 'rejeitada' | 'erro' | 'cancelada'
     chave_acesso TEXT,
     xml_dps TEXT,
     xml_nfse TEXT,
+    numero_nfse TEXT, -- nNFSe (número da NFS-e no município, diferente do número da DPS) — usado no nome dos arquivos baixados
     erro TEXT,
+    danfse_path TEXT, -- caminho do PDF do DANFSe em cache local (baixado sob demanda, uma vez só)
+    motivo_cancelamento TEXT, -- código TSCodJustCanc: '1' Erro na Emissão | '2' Serviço não Prestado | '9' Outros
+    justificativa_cancelamento TEXT,
+    cancelado_em TEXT,
     criado_por INTEGER REFERENCES app_users(id),
     criado_em TEXT DEFAULT (datetime('now')),
     UNIQUE(empresa_id, serie, numero_dps)
@@ -541,6 +656,31 @@ sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_envio_documentos_periodo ON envio_do
     sqlite.exec(`ALTER TABLE nfse_empresa_config ADD COLUMN nome_municipio TEXT`);
   }
 }
+// Migração leve: regApTribSN (regime de apuração dos tributos do Simples Nacional) é obrigatório
+// pra optante ME/EPP — descoberto com E0166 num teste real, não estava no leiaute original.
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(nfse_empresa_config)`).all() as any[];
+  if (!cols.some((c) => c.name === "regime_apuracao_sn")) {
+    sqlite.exec(`ALTER TABLE nfse_empresa_config ADD COLUMN regime_apuracao_sn TEXT NOT NULL DEFAULT '1'`);
+  }
+}
+// Migração leve: pTotTribSN (% aproximado do total de tributos pela alíquota do Simples Nacional)
+// é obrigatório pra optante ME/EPP — descoberto com E0712 num teste real (indTotTrib=0, que era o
+// que sempre mandávamos, é rejeitado pra ME/EPP).
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(nfse_empresa_config)`).all() as any[];
+  if (!cols.some((c) => c.name === "percentual_total_tributos_sn")) {
+    sqlite.exec(`ALTER TABLE nfse_empresa_config ADD COLUMN percentual_total_tributos_sn REAL`);
+  }
+}
+// Migração leve: NFS-e self-service pra empresa-cliente (perfil Cliente) — cada empresa precisa
+// dos próprios modelos de serviço, não mais só o conjunto único do escritório.
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(nfse_modelos)`).all() as any[];
+  if (!cols.some((c) => c.name === "empresa_id")) {
+    sqlite.exec(`ALTER TABLE nfse_modelos ADD COLUMN empresa_id INTEGER REFERENCES empresas(id) ON DELETE CASCADE`);
+  }
+}
 // Migração leve: NFS-e ganhou os modelos de serviço reutilizáveis — a emissão passa a guardar
 // qual modelo foi usado, só pra exibição no histórico.
 {
@@ -597,12 +737,71 @@ sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_envio_documentos_periodo ON envio_do
     ["tomador_complemento", "tomador_complemento TEXT"],
     ["tomador_bairro", "tomador_bairro TEXT"],
     ["tomador_codigo_municipio", "tomador_codigo_municipio TEXT"],
+    ["danfse_path", "danfse_path TEXT"],
+    ["motivo_cancelamento", "motivo_cancelamento TEXT"],
+    ["justificativa_cancelamento", "justificativa_cancelamento TEXT"],
+    ["cancelado_em", "cancelado_em TEXT"],
+    ["numero_nfse", "numero_nfse TEXT"],
   ]) {
     if (!nomes.has(coluna)) sqlite.exec(`ALTER TABLE nfse_emissoes ADD COLUMN ${ddl}`);
   }
+  // Backfill único: emissões já feitas antes do numero_nfse existir já têm o XML salvo — só extrair.
+  const semNumero = sqlite.prepare(`SELECT id, xml_nfse FROM nfse_emissoes WHERE status='emitida' AND numero_nfse IS NULL AND xml_nfse IS NOT NULL`).all() as any[];
+  for (const r of semNumero) {
+    const m = String(r.xml_nfse).match(/<nNFSe>([^<]+)<\/nNFSe>/);
+    if (m) sqlite.prepare(`UPDATE nfse_emissoes SET numero_nfse = ? WHERE id = ?`).run(m[1], r.id);
+  }
+}
+// Migração leve: as tabelas antigas de "licença única por empresa" (nfse_licenca/
+// nfse_licenca_cobrancas) foram substituídas pelo catálogo de módulos abaixo — nunca tiveram uso
+// real (só dados de teste, já limpos), então é seguro descartar sem migrar dado nenhum.
+sqlite.exec(`DROP TABLE IF EXISTS nfse_licenca_cobrancas`);
+sqlite.exec(`DROP TABLE IF EXISTS nfse_licenca`);
+// Migração leve: cobrança da licença via Asaas reaproveita um customerId por empresa entre módulos.
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(empresas)`).all() as any[];
+  if (!cols.some((c) => c.name === "asaas_customer_id")) {
+    sqlite.exec(`ALTER TABLE empresas ADD COLUMN asaas_customer_id TEXT`);
+  }
+}
+// Seed do catálogo de módulos vendáveis — preço 0 até eu configurar em Configurações > Módulos.
+sqlite.exec(`INSERT OR IGNORE INTO modulos_catalogo (chave, nome, valor_mensal) VALUES ('nfse', 'NFS-e', 0)`);
+sqlite.exec(`INSERT OR IGNORE INTO modulos_catalogo (chave, nome, valor_mensal) VALUES ('financeiro', 'Financeiro', 0)`);
+// Migração de compatibilidade: empresas que JÁ usam NFS-e ou Financeiro de verdade (antes de existir
+// o controle de teste/assinatura) ganham acesso permanente automático — nunca bloqueia quem já era
+// cliente real antes desta mudança.
+{
+  const jaUsaNfse = sqlite
+    .prepare(
+      `SELECT DISTINCT empresa_id FROM nfse_empresa_config WHERE habilitado = 1
+       UNION SELECT DISTINCT empresa_id FROM nfse_emissoes`
+    )
+    .all() as any[];
+  for (const r of jaUsaNfse) {
+    sqlite
+      .prepare(
+        `INSERT OR IGNORE INTO empresa_modulos (empresa_id, modulo_chave, trial_inicio, trial_fim, assinatura_ativa_ate)
+         VALUES (?, 'nfse', datetime('now'), datetime('now'), datetime('now','+100 years'))`
+      )
+      .run(r.empresa_id);
+  }
+  const jaUsaFinanceiro = sqlite
+    .prepare(
+      `SELECT DISTINCT empresa_id FROM financeiro_pagar
+       UNION SELECT DISTINCT empresa_id FROM financeiro_receber`
+    )
+    .all() as any[];
+  for (const r of jaUsaFinanceiro) {
+    sqlite
+      .prepare(
+        `INSERT OR IGNORE INTO empresa_modulos (empresa_id, modulo_chave, trial_inicio, trial_fim, assinatura_ativa_ate)
+         VALUES (?, 'financeiro', datetime('now'), datetime('now'), datetime('now','+100 years'))`
+      )
+      .run(r.empresa_id);
+  }
 }
 
-const MODULOS = ["dashboard", "empresas", "solicitacoes", "envio", "nfse", "financeiro", "relatorios", "usuarios", "configuracoes"] as const;
+const MODULOS = ["dashboard", "empresas", "solicitacoes", "envio", "nfse", "financeiro", "contratos", "relatorios", "usuarios", "configuracoes"] as const;
 type Modulo = (typeof MODULOS)[number];
 
 // ========================= LOGIN (senha com hash + sessão via cookie) =========================
@@ -920,7 +1119,7 @@ app.post("/api/auth/change-password", requireAuth, (req, res) => {
 });
 
 app.use("/api", (req, res, next) => {
-  if (req.path.startsWith("/auth/") || req.path === "/health" || req.path.startsWith("/dominio-agent/")) return next();
+  if (req.path.startsWith("/auth/") || req.path === "/health" || req.path.startsWith("/dominio-agent/") || req.path === "/asaas/webhook") return next();
   requireAuth(req, res, next);
 });
 
@@ -2134,23 +2333,23 @@ function nfseModeloDoBody(body: any, existing: any | null) {
   };
 }
 app.get("/api/nfse/modelos", blockCliente, requirePermissao("nfse", "visualizar"), (_req, res) => {
-  const rows = sqlite.prepare(`SELECT * FROM nfse_modelos ORDER BY nome`).all() as any[];
+  const rows = sqlite.prepare(`SELECT * FROM nfse_modelos WHERE empresa_id IS NULL ORDER BY nome`).all() as any[];
   res.json({ items: rows.map(nfseModeloParaJson) });
 });
-app.post("/api/nfse/modelos", blockCliente, requirePermissao("nfse", "postar"), (req, res) => {
-  const user = (req as any).user;
-  const v = nfseModeloDoBody(req.body || {}, null);
-  if (!v.nome || !v.codigoTributacaoNacional) return res.status(400).json({ error: "Informe o nome e o código de tributação nacional." });
-  const info = sqlite
+// Reaproveitado tanto pelas rotas admin (empresaId=null, modelo interno do escritório) quanto
+// pelas rotas de empresa-cliente self-service (empresaId = user.empresaId, modelo privado dela).
+function nfseInserirModelo(empresaId: number | null, v: ReturnType<typeof nfseModeloDoBody>, criadoPor: number) {
+  return sqlite
     .prepare(
       `INSERT INTO nfse_modelos (
-         nome, codigo_tributacao_nacional, codigo_tributacao_municipal, codigo_nbs, trib_issqn, tipo_retencao_issqn, aliquota_issqn, tipo_retencao_pis_cofins,
+         empresa_id, nome, codigo_tributacao_nacional, codigo_tributacao_municipal, codigo_nbs, trib_issqn, tipo_retencao_issqn, aliquota_issqn, tipo_retencao_pis_cofins,
          issqn_exigibilidade_suspensa, issqn_motivo_suspensao, issqn_numero_processo, beneficio_municipal_codigo,
          pis_cofins_cst, percentual_irrf, percentual_csll, percentual_cofins_retido, percentual_pis_retido, percentual_contrib_previdenciaria,
          ibscbs_preencher, ibscbs_cst, ibscbs_cclasstrib, doc_responsabilidade_tecnica, doc_referencia, informacoes_complementares, created_by
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
+      empresaId,
       v.nome,
       v.codigoTributacaoNacional,
       v.codigoTributacaoMunicipal,
@@ -2175,15 +2374,17 @@ app.post("/api/nfse/modelos", blockCliente, requirePermissao("nfse", "postar"), 
       v.docResponsabilidadeTecnica,
       v.docReferencia,
       v.informacoesComplementares,
-      user.id
+      criadoPor
     );
+}
+app.post("/api/nfse/modelos", blockCliente, requirePermissao("nfse", "postar"), (req, res) => {
+  const user = (req as any).user;
+  const v = nfseModeloDoBody(req.body || {}, null);
+  if (!v.nome || !v.codigoTributacaoNacional) return res.status(400).json({ error: "Informe o nome e o código de tributação nacional." });
+  const info = nfseInserirModelo(null, v, user.id);
   res.json({ id: Number(info.lastInsertRowid) });
 });
-app.put("/api/nfse/modelos/:id", blockCliente, requirePermissao("nfse", "editar"), (req, res) => {
-  const id = Number(req.params.id);
-  const existing = sqlite.prepare(`SELECT * FROM nfse_modelos WHERE id = ?`).get(id) as any;
-  if (!existing) return res.status(404).json({ error: "Modelo não encontrado." });
-  const v = nfseModeloDoBody(req.body || {}, existing);
+function nfseAtualizarModelo(id: number, v: ReturnType<typeof nfseModeloDoBody>) {
   sqlite
     .prepare(
       `UPDATE nfse_modelos SET
@@ -2221,10 +2422,17 @@ app.put("/api/nfse/modelos/:id", blockCliente, requirePermissao("nfse", "editar"
       v.ativo,
       id
     );
+}
+app.put("/api/nfse/modelos/:id", blockCliente, requirePermissao("nfse", "editar"), (req, res) => {
+  const id = Number(req.params.id);
+  const existing = sqlite.prepare(`SELECT * FROM nfse_modelos WHERE id = ? AND empresa_id IS NULL`).get(id) as any;
+  if (!existing) return res.status(404).json({ error: "Modelo não encontrado." });
+  const v = nfseModeloDoBody(req.body || {}, existing);
+  nfseAtualizarModelo(id, v);
   res.json({ ok: true });
 });
 app.delete("/api/nfse/modelos/:id", blockCliente, requireAdmin, (req, res) => {
-  sqlite.prepare(`DELETE FROM nfse_modelos WHERE id = ?`).run(Number(req.params.id));
+  sqlite.prepare(`DELETE FROM nfse_modelos WHERE id = ? AND empresa_id IS NULL`).run(Number(req.params.id));
   res.json({ ok: true });
 });
 
@@ -2235,7 +2443,8 @@ app.get("/api/nfse/empresas", blockCliente, requirePermissao("nfse", "visualizar
               c.habilitado, c.metodo_assinatura as metodoAssinatura, c.codigo_municipio as codigoMunicipio,
               c.nome_municipio as nomeMunicipio,
               c.inscricao_municipal as inscricaoMunicipal, c.opcao_simples_nacional as opcaoSimplesNacional,
-              c.regime_especial_trib as regimeEspecialTrib,
+              c.regime_especial_trib as regimeEspecialTrib, c.regime_apuracao_sn as regimeApuracaoSn,
+              c.percentual_total_tributos_sn as percentualTotalTributosSn,
               (SELECT 1 FROM nfse_certificados nc WHERE nc.empresa_id = e.id) as temCertificadoProprio
        FROM empresas e LEFT JOIN nfse_empresa_config c ON c.empresa_id = e.id
        WHERE e.ativo = 1 ORDER BY e.nome`
@@ -2320,14 +2529,15 @@ app.put("/api/nfse/empresas/:id", blockCliente, requirePermissao("nfse", "editar
   const empresaId = Number(req.params.id);
   const empresa = sqlite.prepare(`SELECT id FROM empresas WHERE id = ?`).get(empresaId);
   if (!empresa) return res.status(404).json({ error: "Empresa não encontrada." });
-  const { habilitado, metodoAssinatura, codigoMunicipio, nomeMunicipio, inscricaoMunicipal, opcaoSimplesNacional, regimeEspecialTrib } = req.body || {};
+  const { habilitado, metodoAssinatura, codigoMunicipio, nomeMunicipio, inscricaoMunicipal, opcaoSimplesNacional, regimeEspecialTrib, regimeApuracaoSn, percentualTotalTributosSn } = req.body || {};
   sqlite
     .prepare(
-      `INSERT INTO nfse_empresa_config (empresa_id, habilitado, metodo_assinatura, codigo_municipio, nome_municipio, inscricao_municipal, opcao_simples_nacional, regime_especial_trib, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      `INSERT INTO nfse_empresa_config (empresa_id, habilitado, metodo_assinatura, codigo_municipio, nome_municipio, inscricao_municipal, opcao_simples_nacional, regime_especial_trib, regime_apuracao_sn, percentual_total_tributos_sn, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
        ON CONFLICT(empresa_id) DO UPDATE SET habilitado=excluded.habilitado, metodo_assinatura=excluded.metodo_assinatura,
          codigo_municipio=excluded.codigo_municipio, nome_municipio=excluded.nome_municipio, inscricao_municipal=excluded.inscricao_municipal,
-         opcao_simples_nacional=excluded.opcao_simples_nacional, regime_especial_trib=excluded.regime_especial_trib, updated_at=datetime('now')`
+         opcao_simples_nacional=excluded.opcao_simples_nacional, regime_especial_trib=excluded.regime_especial_trib,
+         regime_apuracao_sn=excluded.regime_apuracao_sn, percentual_total_tributos_sn=excluded.percentual_total_tributos_sn, updated_at=datetime('now')`
     )
     .run(
       empresaId,
@@ -2337,8 +2547,46 @@ app.put("/api/nfse/empresas/:id", blockCliente, requirePermissao("nfse", "editar
       nomeMunicipio || null,
       inscricaoMunicipal || null,
       opcaoSimplesNacional === false ? 0 : 1,
-      Number(regimeEspecialTrib) || 0
+      Number(regimeEspecialTrib) || 0,
+      ["1", "2", "3"].includes(regimeApuracaoSn) ? regimeApuracaoSn : "1",
+      percentualTotalTributosSn != null && percentualTotalTributosSn !== "" ? Number(percentualTotalTributosSn) : null
     );
+  res.json({ ok: true });
+});
+
+// ---------- Módulos vendáveis: catálogo (preço) e estado de contratação por empresa (admin) ----------
+app.get("/api/nfse/empresas/:id/modulos", blockCliente, requirePermissao("nfse", "editar"), (req, res) => {
+  const empresaId = Number(req.params.id);
+  const empresa = sqlite.prepare(`SELECT id FROM empresas WHERE id = ?`).get(empresaId);
+  if (!empresa) return res.status(404).json({ error: "Empresa não encontrada." });
+  res.json({ items: nfseModulosDaEmpresa(empresaId) });
+});
+app.post("/api/nfse/empresas/:id/modulos/:chave/prorrogar", blockCliente, requirePermissao("nfse", "editar"), (req, res) => {
+  const empresaId = Number(req.params.id);
+  const chave = String(req.params.chave);
+  const contratado = sqlite.prepare(`SELECT * FROM empresa_modulos WHERE empresa_id = ? AND modulo_chave = ?`).get(empresaId, chave) as any;
+  const agora = new Date().toISOString().replace("T", " ").slice(0, 19);
+  if (!contratado) return res.status(404).json({ error: "Esta empresa ainda não iniciou o teste desse módulo." });
+  if (contratado.assinatura_ativa_ate) return res.status(409).json({ error: "Esta empresa já tem assinatura paga desse módulo." });
+  if (contratado.trial_prorrogado) return res.status(409).json({ error: "O teste desse módulo já foi prorrogado antes." });
+  if (contratado.trial_fim < agora) return res.status(409).json({ error: "O teste desse módulo já venceu — oriente o cliente a contratar." });
+  sqlite
+    .prepare(`UPDATE empresa_modulos SET trial_fim = datetime(trial_fim, '+3 days'), trial_prorrogado = 1 WHERE empresa_id = ? AND modulo_chave = ?`)
+    .run(empresaId, chave);
+  res.json({ ok: true, items: nfseModulosDaEmpresa(empresaId) });
+});
+app.get("/api/modulos-catalogo", blockCliente, requirePermissao("nfse", "editar"), (_req, res) => {
+  const rows = sqlite.prepare(`SELECT chave, nome, valor_mensal as valorMensal, ativo FROM modulos_catalogo ORDER BY chave`).all() as any[];
+  res.json({ items: rows.map((r) => ({ ...r, ativo: !!r.ativo })) });
+});
+app.put("/api/modulos-catalogo/:chave", blockCliente, requirePermissao("nfse", "editar"), (req, res) => {
+  const chave = String(req.params.chave);
+  const existente = sqlite.prepare(`SELECT chave FROM modulos_catalogo WHERE chave = ?`).get(chave);
+  if (!existente) return res.status(404).json({ error: "Módulo não encontrado." });
+  const { nome, valorMensal, ativo } = req.body || {};
+  sqlite
+    .prepare(`UPDATE modulos_catalogo SET nome = COALESCE(?, nome), valor_mensal = COALESCE(?, valor_mensal), ativo = COALESCE(?, ativo), updated_at = datetime('now') WHERE chave = ?`)
+    .run(nome ?? null, valorMensal != null ? Number(valorMensal) : null, ativo != null ? (ativo ? 1 : 0) : null, chave);
   res.json({ ok: true });
 });
 
@@ -2346,25 +2594,47 @@ app.get("/api/nfse/emissoes", blockCliente, requirePermissao("nfse", "visualizar
   const user = (req as any).user;
   const empresaId = req.query.empresaId ? Number(req.query.empresaId) : null;
   if (empresaId && !podeAcessarEmpresa(user, empresaId)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
+  const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
   let sql = `SELECT n.id, n.empresa_id as empresaId, e.nome as empresaNome, n.serie, n.numero_dps as numeroDps, n.ambiente,
                     n.modelo_id as modeloId, n.modelo_nome as modeloNome,
                     n.tomador_documento as tomadorDocumento, n.tomador_nome as tomadorNome, n.tomador_email as tomadorEmail,
                     n.tomador_cep as tomadorCep, n.tomador_logradouro as tomadorLogradouro, n.tomador_numero as tomadorNumero,
                     n.tomador_complemento as tomadorComplemento, n.tomador_bairro as tomadorBairro, n.tomador_codigo_municipio as tomadorCodigoMunicipio,
                     n.descricao_servico as descricaoServico, n.valor_servico as valorServico, n.competencia,
-                    n.status, n.chave_acesso as chaveAcesso, n.erro, n.criado_em as criadoEm
+                    n.status, n.chave_acesso as chaveAcesso, n.numero_nfse as numeroNfse, n.erro, n.criado_em as criadoEm
              FROM nfse_emissoes n JOIN empresas e ON e.id = n.empresa_id`;
+  const condicoes: string[] = [];
   const params: any[] = [];
   if (empresaId) {
-    sql += ` WHERE n.empresa_id = ?`;
+    condicoes.push(`n.empresa_id = ?`);
     params.push(empresaId);
   }
+  if (dataDe) {
+    condicoes.push(`date(n.criado_em) >= date(?)`);
+    params.push(dataDe);
+  }
+  if (dataAte) {
+    condicoes.push(`date(n.criado_em) <= date(?)`);
+    params.push(dataAte);
+  }
+  if (condicoes.length) sql += ` WHERE ` + condicoes.join(" AND ");
   sql += ` ORDER BY n.criado_em DESC, n.id DESC`;
   let rows = sqlite.prepare(sql).all(...params) as any[];
   const visiveis = empresasVisiveis(user);
   if (visiveis !== null) rows = rows.filter((r) => visiveis.includes(r.empresaId));
   res.json({ items: rows });
 });
+// Nome de exibição pro arquivo baixado: "Tomador - NFS-e Nº <número>" — usa o número da NFS-e (do
+// município) quando já emitida, senão o id interno como fallback (rascunho/rejeitada).
+function nfseNomeArquivo(row: any, extensao: string): string {
+  const base = `${row.tomador_nome || "NFSe"} - NFS-e ${row.numero_nfse || row.id}`.replace(/[\\/:*?"<>|]/g, "").trim();
+  return `${base}.${extensao}`;
+}
+function nfseContentDisposition(tipo: "attachment" | "inline", nomeArquivo: string): string {
+  const asciiFallback = nomeArquivo.replace(/[^\x20-\x7E]/g, "_");
+  return `${tipo}; filename="${asciiFallback}"; filename*=UTF-8''${encodeURIComponent(nomeArquivo)}`;
+}
 app.get("/api/nfse/emissoes/:id/xml", blockCliente, requirePermissao("nfse", "visualizar"), (req, res) => {
   const row = sqlite.prepare(`SELECT * FROM nfse_emissoes WHERE id = ?`).get(Number(req.params.id)) as any;
   if (!row) return res.status(404).json({ error: "Emissão não encontrada." });
@@ -2373,8 +2643,122 @@ app.get("/api/nfse/emissoes/:id/xml", blockCliente, requirePermissao("nfse", "vi
   const xml = row.xml_nfse || row.xml_dps;
   if (!xml) return res.status(404).json({ error: "Nenhum XML disponível para esta emissão." });
   res.setHeader("Content-Type", "application/xml");
-  res.setHeader("Content-Disposition", `attachment; filename="dps-${row.id}.xml"`);
+  res.setHeader("Content-Disposition", nfseContentDisposition("attachment", nfseNomeArquivo(row, "xml")));
   res.send(xml);
+});
+// Busca o PDF do DANFSe pro registro — cache local (data/nfse-danfse/) se já tiver sido baixado
+// antes; senão busca no ADN, guarda em cache. Usado tanto pelo download único quanto pelo lote.
+async function nfseObterDanfsePdf(row: any): Promise<{ pdf: Buffer | null; erro: string | null }> {
+  if (!row.chave_acesso) return { pdf: null, erro: "Esta emissão ainda não tem chave de acesso — só é possível baixar o DANFSe de uma NFS-e emitida." };
+  if (row.danfse_path && fs.existsSync(row.danfse_path)) return { pdf: fs.readFileSync(row.danfse_path), erro: null };
+  const config = sqlite.prepare(`SELECT metodo_assinatura FROM nfse_empresa_config WHERE empresa_id = ?`).get(row.empresa_id) as any;
+  let cert: nfse.CertificadoInfo;
+  try {
+    ({ cert } = nfseCertificadoParaEmpresa(row.empresa_id, config?.metodo_assinatura));
+  } catch (e: any) {
+    return { pdf: null, erro: e.message };
+  }
+  const r = await nfse.baixarDanfsePdf(row.ambiente, row.chave_acesso, cert);
+  if (!r.ok || !r.pdf) return { pdf: null, erro: r.mensagemErro || "Não consegui baixar o DANFSe do Sistema Nacional NFS-e." };
+  const caminho = nfse.salvarDanfsePdfEmCache(row.chave_acesso, r.pdf);
+  sqlite.prepare(`UPDATE nfse_emissoes SET danfse_path = ? WHERE id = ?`).run(caminho, row.id);
+  return { pdf: r.pdf, erro: null };
+}
+// DANFSe (PDF) — serve do cache local (data/nfse-danfse/) se já tiver sido baixado antes; senão
+// busca no ADN, guarda em cache e serve. Assim não reconsulta o governo toda vez que alguém pede
+// o mesmo PDF de novo.
+app.get("/api/nfse/emissoes/:id/danfse", blockCliente, requirePermissao("nfse", "visualizar"), async (req, res) => {
+  const row = sqlite.prepare(`SELECT * FROM nfse_emissoes WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!row) return res.status(404).json({ error: "Emissão não encontrada." });
+  const user = (req as any).user;
+  if (!podeAcessarEmpresa(user, row.empresa_id)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  try {
+    const { pdf, erro } = await nfseObterDanfsePdf(row);
+    if (!pdf) return res.status(502).json({ error: erro });
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", nfseContentDisposition("inline", nfseNomeArquivo(row, "pdf")));
+    res.send(pdf);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+// Download em lote — zip com XML e/ou PDF de várias emissões de uma vez (selecionadas na tela).
+app.get("/api/nfse/emissoes/baixar-lote", blockCliente, requirePermissao("nfse", "visualizar"), async (req, res) => {
+  const user = (req as any).user;
+  const ids = String(req.query.ids || "")
+    .split(",")
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isInteger(n) && n > 0);
+  if (!ids.length) return res.status(400).json({ error: "Selecione ao menos uma emissão." });
+  const formato = req.query.formato === "pdf" ? "pdf" : req.query.formato === "ambos" ? "ambos" : "xml";
+  const placeholders = ids.map(() => "?").join(",");
+  const rows = sqlite.prepare(`SELECT * FROM nfse_emissoes WHERE id IN (${placeholders})`).all(...ids) as any[];
+  const visiveis = empresasVisiveis(user);
+  const permitidas = rows.filter((r) => podeAcessarEmpresa(user, r.empresa_id) && (visiveis === null || visiveis.includes(r.empresa_id)));
+  if (!permitidas.length) return res.status(403).json({ error: "Sem acesso às emissões selecionadas." });
+
+  res.setHeader("Content-Type", "application/zip");
+  res.setHeader("Content-Disposition", `attachment; filename="nfse-lote-${new Date().toISOString().slice(0, 10)}.zip"`);
+  const zip = archiver("zip", { zlib: { level: 9 } });
+  zip.on("error", (e) => { if (!res.headersSent) res.status(500); res.end(); console.error("Erro ao gerar zip de NFS-e:", e); });
+  zip.pipe(res);
+  const usados = new Set<string>();
+  const nomeUnico = (nome: string) => {
+    let final = nome, i = 2;
+    while (usados.has(final)) final = nome.replace(/(\.[^.]+)$/, ` (${i++})$1`);
+    usados.add(final);
+    return final;
+  };
+  for (const row of permitidas) {
+    if (formato === "xml" || formato === "ambos") {
+      const xml = row.xml_nfse || row.xml_dps;
+      if (xml) zip.append(xml, { name: nomeUnico(nfseNomeArquivo(row, "xml")) });
+    }
+    if (formato === "pdf" || formato === "ambos") {
+      try {
+        const { pdf } = await nfseObterDanfsePdf(row);
+        if (pdf) zip.append(pdf, { name: nomeUnico(nfseNomeArquivo(row, "pdf")) });
+      } catch {
+        // PDF de uma nota específica falhou — segue pras outras, não aborta o lote inteiro.
+      }
+    }
+  }
+  await zip.finalize();
+});
+// Cancelamento — evento e101101, só é possível pra NFS-e já emitida (status 'emitida'). É uma ação
+// real e definitiva no Sistema Nacional NFS-e, sem "desfazer" depois.
+app.post("/api/nfse/emissoes/:id/cancelar", blockCliente, requirePermissao("nfse", "postar"), async (req, res) => {
+  const row = sqlite.prepare(`SELECT * FROM nfse_emissoes WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!row) return res.status(404).json({ error: "Emissão não encontrada." });
+  const user = (req as any).user;
+  if (!podeAcessarEmpresa(user, row.empresa_id)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  if (row.status !== "emitida") return res.status(409).json({ error: "Só é possível cancelar uma NFS-e que já foi emitida." });
+  if (!row.chave_acesso) return res.status(400).json({ error: "Esta emissão não tem chave de acesso." });
+  const { motivo, justificativa } = req.body || {};
+  if (!["1", "2", "9"].includes(motivo)) return res.status(400).json({ error: "Selecione o motivo do cancelamento." });
+  if (!justificativa || String(justificativa).trim().length < 15) return res.status(400).json({ error: "A justificativa precisa ter pelo menos 15 caracteres." });
+
+  const empresa = sqlite.prepare(`SELECT cnpj FROM empresas WHERE id = ?`).get(row.empresa_id) as any;
+  const config = sqlite.prepare(`SELECT metodo_assinatura FROM nfse_empresa_config WHERE empresa_id = ?`).get(row.empresa_id) as any;
+  let cert: nfse.CertificadoInfo;
+  try {
+    ({ cert } = nfseCertificadoParaEmpresa(row.empresa_id, config?.metodo_assinatura));
+  } catch (e: any) {
+    return res.status(400).json({ error: e.message });
+  }
+  try {
+    const r = await nfse.cancelarNfse(
+      { ambiente: row.ambiente, chaveAcesso: row.chave_acesso, cnpjAutor: (empresa?.cnpj || "").replace(/\D/g, ""), motivo, xMotivo: String(justificativa).trim() },
+      cert
+    );
+    if (!r.resposta.ok) return res.status(422).json({ error: `O Sistema Nacional NFS-e rejeitou o cancelamento: ${r.mensagemErro}` });
+    sqlite
+      .prepare(`UPDATE nfse_emissoes SET status='cancelada', motivo_cancelamento=?, justificativa_cancelamento=?, cancelado_em=datetime('now') WHERE id=?`)
+      .run(motivo, String(justificativa).trim(), row.id);
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // Faixa 80.000-89.999 é reservada ao Emissor Web do próprio governo (confirmado no manual oficial,
@@ -2427,7 +2811,12 @@ function nfseValidarEntrada(user: any, body: any): { erro: string; status?: numb
   if (!servico?.descricao || !servico?.valor || !servico?.competencia) {
     return { erro: "Preencha a descrição, o valor e a competência do serviço." };
   }
-  const modelo = sqlite.prepare(`SELECT * FROM nfse_modelos WHERE id = ? AND ativo = 1`).get(Number(modeloId)) as any;
+  // empresa_id IS NULL cobre os modelos internos do escritório (usáveis por qualquer empresa da
+  // carteira dele); um valor precisa bater com a própria empresa — impede que uma empresa-cliente
+  // self-service force o modeloId de outra empresa (ou vice-versa) na requisição.
+  const modelo = sqlite
+    .prepare(`SELECT * FROM nfse_modelos WHERE id = ? AND ativo = 1 AND (empresa_id IS NULL OR empresa_id = ?)`)
+    .get(Number(modeloId), Number(empresaId)) as any;
   if (!modelo) return { erro: "Modelo de serviço não encontrado ou inativo.", status: 404 };
   return { empresaId: Number(empresaId), modelo, tomador, servico };
 }
@@ -2479,6 +2868,9 @@ async function nfseTransmitirEmissao(emissaoId: number, empresaId: number, model
   const config = sqlite.prepare(`SELECT * FROM nfse_empresa_config WHERE empresa_id = ?`).get(empresaId) as any;
   if (!config || !config.habilitado) return falhaValidacao("Módulo NFS-e não está habilitado para esta empresa.");
   if (!config.codigo_municipio) return falhaValidacao("Preencha o código do município (IBGE) da empresa antes de emitir.");
+  if (config.opcao_simples_nacional && config.percentual_total_tributos_sn == null) {
+    return falhaValidacao('Preencha o "% total de tributos (Simples Nacional)" da empresa em NFS-e › Empresas antes de emitir — obrigatório pra optante ME/EPP.');
+  }
 
   let cert: nfse.CertificadoInfo, cnpjPrestador: string;
   try {
@@ -2512,6 +2904,8 @@ async function nfseTransmitirEmissao(emissaoId: number, empresaId: number, model
           codigoMunicipio: config.codigo_municipio,
           opcaoSimplesNacional: !!config.opcao_simples_nacional,
           regimeEspecialTrib: config.regime_especial_trib || 0,
+          regimeApuracaoSn: config.regime_apuracao_sn || "1",
+          percentualTotalTributosSn: config.percentual_total_tributos_sn != null ? Number(config.percentual_total_tributos_sn) : null,
           telefone: empresaContato?.telefone || null,
           email: empresaContato?.email || null,
         },
@@ -2531,9 +2925,10 @@ async function nfseTransmitirEmissao(emissaoId: number, empresaId: number, model
       cert
     );
     const status = resposta.ok ? "emitida" : "rejeitada";
+    const numeroNfse = xmlNfse ? (xmlNfse.match(/<nNFSe>([^<]+)<\/nNFSe>/)?.[1] ?? null) : null;
     sqlite
-      .prepare(`UPDATE nfse_emissoes SET status=?, xml_dps=?, xml_nfse=?, chave_acesso=?, erro=? WHERE id=?`)
-      .run(status, xmlAssinado, xmlNfse, chaveAcesso, resposta.ok ? null : (mensagemErro || "").slice(0, 4000), emissaoId);
+      .prepare(`UPDATE nfse_emissoes SET status=?, xml_dps=?, xml_nfse=?, chave_acesso=?, numero_nfse=?, erro=? WHERE id=?`)
+      .run(status, xmlAssinado, xmlNfse, chaveAcesso, numeroNfse, resposta.ok ? null : (mensagemErro || "").slice(0, 4000), emissaoId);
     if (!resposta.ok) return res.status(422).json({ error: `O Sistema Nacional NFS-e rejeitou a emissão: ${mensagemErro}`, detalhe: mensagemErro, emissaoId });
     res.json({ ok: true, emissaoId, chaveAcesso });
   } catch (e: any) {
@@ -2613,10 +3008,649 @@ app.post("/api/nfse/rascunhos/:id/emitir", blockCliente, requirePermissao("nfse"
   await nfseTransmitirEmissao(existente.id, existente.empresa_id, modelo, tomador, servico, res);
 });
 app.delete("/api/nfse/emissoes/:id", blockCliente, requirePermissao("nfse", "editar"), (req, res) => {
+  const user = (req as any).user;
   const row = sqlite.prepare(`SELECT * FROM nfse_emissoes WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!row) return res.status(404).json({ error: "Registro não encontrado." });
+  if (!podeAcessarEmpresa(user, row.empresa_id)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  if (row.status !== "rascunho") return res.status(409).json({ error: "Só é possível excluir rascunhos — emissões já transmitidas ficam no histórico." });
+  sqlite.prepare(`DELETE FROM nfse_emissoes WHERE id = ?`).run(row.id);
+  res.json({ ok: true });
+});
+
+// ---------- NFS-e self-service (perfil Cliente — empresa emite pra si mesma) ----------
+// Todas as rotas abaixo são escritas do zero (não reaproveitam blockCliente/requirePermissao) e
+// usam exclusivamente user.empresaId (nunca um empresaId vindo do corpo/query) — é a garantia de
+// isolamento entre empresas-cliente diferentes. Reaproveitam as funções puras já existentes
+// (nfseValidarEntrada, nfseInserirEmissao, nfseTransmitirEmissao, nfseObterDanfsePdf etc.), só
+// mudando a camada de autorização.
+function requireCliente(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const user = (req as any).user;
+  if (user?.perfil !== "Cliente" || !user.empresaId) return res.status(403).json({ error: "Rota exclusiva para empresas-cliente." });
+  next();
+}
+// Teste grátis de 3 dias (prorrogável manualmente pelo admin) ou assinatura paga em dia — sem
+// nenhum dos dois, a empresa-cliente não acessa aquele módulo específico (as demais telas do
+// Cliente, como Meus Documentos, não passam por aqui — só NFS-e e Financeiro, que são pagos).
+function empresaTemAcessoModulo(empresaId: number, chave: string): boolean {
+  const row = sqlite.prepare(`SELECT assinatura_ativa_ate, trial_fim FROM empresa_modulos WHERE empresa_id = ? AND modulo_chave = ?`).get(empresaId, chave) as any;
+  if (!row) return false;
+  const agora = new Date().toISOString().replace("T", " ").slice(0, 19);
+  if (row.assinatura_ativa_ate && agora <= row.assinatura_ativa_ate) return true;
+  return agora <= row.trial_fim;
+}
+function requireModuloAtivo(chave: string) {
+  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const user = (req as any).user;
+    if (!empresaTemAcessoModulo(user.empresaId, chave)) {
+      return res.status(402).json({ error: "Módulo não contratado ou período de teste/assinatura vencido.", bloqueado: true, modulo: chave });
+    }
+    next();
+  };
+}
+app.get("/api/nfse/minha-empresa", requireCliente, requireModuloAtivo('nfse'), (req, res) => {
+  const empresaId = (req as any).user.empresaId;
+  const row = sqlite
+    .prepare(
+      `SELECT c.habilitado, c.metodo_assinatura as metodoAssinatura, c.codigo_municipio as codigoMunicipio, c.nome_municipio as nomeMunicipio,
+              c.inscricao_municipal as inscricaoMunicipal, c.opcao_simples_nacional as opcaoSimplesNacional,
+              c.regime_especial_trib as regimeEspecialTrib, c.regime_apuracao_sn as regimeApuracaoSn, c.percentual_total_tributos_sn as percentualTotalTributosSn,
+              (SELECT 1 FROM nfse_certificados nc WHERE nc.empresa_id = e.id) as temCertificadoProprio,
+              e.nome as empresaNome, e.cnpj
+       FROM empresas e LEFT JOIN nfse_empresa_config c ON c.empresa_id = e.id WHERE e.id = ?`
+    )
+    .get(empresaId) as any;
+  if (!row) return res.status(404).json({ error: "Empresa não encontrada." });
+  res.json({ ...row, habilitado: !!row.habilitado, opcaoSimplesNacional: !!row.opcaoSimplesNacional, temCertificadoProprio: !!row.temCertificadoProprio });
+});
+app.put("/api/nfse/minha-empresa", requireCliente, requireModuloAtivo('nfse'), (req, res) => {
+  const empresaId = (req as any).user.empresaId;
+  const atual = sqlite.prepare(`SELECT habilitado FROM nfse_empresa_config WHERE empresa_id = ?`).get(empresaId) as any;
+  if (!atual || !atual.habilitado) return res.status(403).json({ error: "Seu acesso ao módulo NFS-e ainda não foi liberado — entre em contato com o suporte." });
+  const { codigoMunicipio, nomeMunicipio, inscricaoMunicipal, opcaoSimplesNacional, regimeEspecialTrib, regimeApuracaoSn, percentualTotalTributosSn } = req.body || {};
+  sqlite
+    .prepare(
+      `UPDATE nfse_empresa_config SET metodo_assinatura='certificado_proprio', codigo_municipio=?, nome_municipio=?, inscricao_municipal=?,
+         opcao_simples_nacional=?, regime_especial_trib=?, regime_apuracao_sn=?, percentual_total_tributos_sn=?, updated_at=datetime('now')
+       WHERE empresa_id=?`
+    )
+    .run(
+      codigoMunicipio || null,
+      nomeMunicipio || null,
+      inscricaoMunicipal || null,
+      opcaoSimplesNacional === false ? 0 : 1,
+      Number(regimeEspecialTrib) || 0,
+      ["1", "2", "3"].includes(regimeApuracaoSn) ? regimeApuracaoSn : "1",
+      percentualTotalTributosSn != null && percentualTotalTributosSn !== "" ? Number(percentualTotalTributosSn) : null,
+      empresaId
+    );
+  res.json({ ok: true });
+});
+app.post("/api/nfse/minha-empresa/certificado", requireCliente, requireModuloAtivo('nfse'), upload.single("arquivo"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = user.empresaId;
+  if (!req.file) return res.status(400).json({ error: "Selecione o arquivo .pfx." });
+  const { senha } = req.body || {};
+  if (!senha) return res.status(400).json({ error: "Informe a senha do certificado." });
+  let info: nfse.CertificadoInfo;
+  try {
+    info = nfse.lerCertificadoPfx(req.file.buffer, senha);
+  } catch (e: any) {
+    return res.status(400).json({ error: e.message });
+  }
+  const existente = sqlite.prepare(`SELECT * FROM nfse_certificados WHERE empresa_id = ?`).get(empresaId) as any;
+  const arquivoPath = nfse.salvarCertificadoCifrado(req.file.buffer, req.file.originalname);
+  const senhaCifrada = nfse.cifrarTexto(senha);
+  const validadeIso = info.validadeAte ? info.validadeAte.toISOString() : null;
+  if (existente) {
+    nfse.excluirCertificadoDoDisco(existente.arquivo_path);
+    sqlite
+      .prepare(`UPDATE nfse_certificados SET arquivo_path=?, senha_cifrada=?, titular=?, cnpj_certificado=?, validade_ate=?, criado_por=?, criado_em=datetime('now') WHERE id=?`)
+      .run(arquivoPath, senhaCifrada, info.titular, info.cnpjCertificado, validadeIso, user.id, existente.id);
+  } else {
+    sqlite
+      .prepare(`INSERT INTO nfse_certificados (empresa_id, arquivo_path, senha_cifrada, titular, cnpj_certificado, validade_ate, criado_por) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(empresaId, arquivoPath, senhaCifrada, info.titular, info.cnpjCertificado, validadeIso, user.id);
+  }
+  res.json({ ok: true, titular: info.titular, cnpjCertificado: info.cnpjCertificado, validadeAte: validadeIso });
+});
+app.get("/api/nfse/minha-empresa/modelos", requireCliente, requireModuloAtivo('nfse'), (req, res) => {
+  const empresaId = (req as any).user.empresaId;
+  const rows = sqlite.prepare(`SELECT * FROM nfse_modelos WHERE empresa_id = ? ORDER BY nome`).all(empresaId) as any[];
+  res.json({ items: rows.map(nfseModeloParaJson) });
+});
+app.post("/api/nfse/minha-empresa/modelos", requireCliente, requireModuloAtivo('nfse'), (req, res) => {
+  const user = (req as any).user;
+  const v = nfseModeloDoBody(req.body || {}, null);
+  if (!v.nome || !v.codigoTributacaoNacional) return res.status(400).json({ error: "Informe o nome e o código de tributação nacional." });
+  const info = nfseInserirModelo(user.empresaId, v, user.id);
+  res.json({ id: Number(info.lastInsertRowid) });
+});
+app.put("/api/nfse/minha-empresa/modelos/:id", requireCliente, requireModuloAtivo('nfse'), (req, res) => {
+  const user = (req as any).user;
+  const id = Number(req.params.id);
+  const existing = sqlite.prepare(`SELECT * FROM nfse_modelos WHERE id = ? AND empresa_id = ?`).get(id, user.empresaId) as any;
+  if (!existing) return res.status(404).json({ error: "Modelo não encontrado." });
+  const v = nfseModeloDoBody(req.body || {}, existing);
+  nfseAtualizarModelo(id, v);
+  res.json({ ok: true });
+});
+app.delete("/api/nfse/minha-empresa/modelos/:id", requireCliente, requireModuloAtivo('nfse'), (req, res) => {
+  const user = (req as any).user;
+  sqlite.prepare(`DELETE FROM nfse_modelos WHERE id = ? AND empresa_id = ?`).run(Number(req.params.id), user.empresaId);
+  res.json({ ok: true });
+});
+app.get("/api/nfse/minha-empresa/emissoes", requireCliente, requireModuloAtivo('nfse'), (req, res) => {
+  const empresaId = (req as any).user.empresaId;
+  const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
+  const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
+  let sql = `SELECT n.id, n.empresa_id as empresaId, n.serie, n.numero_dps as numeroDps, n.ambiente,
+                    n.modelo_id as modeloId, n.modelo_nome as modeloNome,
+                    n.tomador_documento as tomadorDocumento, n.tomador_nome as tomadorNome, n.tomador_email as tomadorEmail,
+                    n.tomador_cep as tomadorCep, n.tomador_logradouro as tomadorLogradouro, n.tomador_numero as tomadorNumero,
+                    n.tomador_complemento as tomadorComplemento, n.tomador_bairro as tomadorBairro, n.tomador_codigo_municipio as tomadorCodigoMunicipio,
+                    n.descricao_servico as descricaoServico, n.valor_servico as valorServico, n.competencia,
+                    n.status, n.chave_acesso as chaveAcesso, n.numero_nfse as numeroNfse, n.erro, n.criado_em as criadoEm
+             FROM nfse_emissoes n WHERE n.empresa_id = ?`;
+  const params: any[] = [empresaId];
+  if (dataDe) { sql += ` AND date(n.criado_em) >= date(?)`; params.push(dataDe); }
+  if (dataAte) { sql += ` AND date(n.criado_em) <= date(?)`; params.push(dataAte); }
+  sql += ` ORDER BY n.criado_em DESC, n.id DESC`;
+  res.json({ items: sqlite.prepare(sql).all(...params) });
+});
+app.get("/api/nfse/minha-empresa/emissoes/:id/xml", requireCliente, requireModuloAtivo('nfse'), (req, res) => {
+  const user = (req as any).user;
+  const row = sqlite.prepare(`SELECT * FROM nfse_emissoes WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), user.empresaId) as any;
+  if (!row) return res.status(404).json({ error: "Emissão não encontrada." });
+  const xml = row.xml_nfse || row.xml_dps;
+  if (!xml) return res.status(404).json({ error: "Nenhum XML disponível para esta emissão." });
+  res.setHeader("Content-Type", "application/xml");
+  res.setHeader("Content-Disposition", nfseContentDisposition("attachment", nfseNomeArquivo(row, "xml")));
+  res.send(xml);
+});
+app.get("/api/nfse/minha-empresa/emissoes/:id/danfse", requireCliente, requireModuloAtivo('nfse'), async (req, res) => {
+  const user = (req as any).user;
+  const row = sqlite.prepare(`SELECT * FROM nfse_emissoes WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), user.empresaId) as any;
+  if (!row) return res.status(404).json({ error: "Emissão não encontrada." });
+  try {
+    const { pdf, erro } = await nfseObterDanfsePdf(row);
+    if (!pdf) return res.status(502).json({ error: erro });
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", nfseContentDisposition("inline", nfseNomeArquivo(row, "pdf")));
+    res.send(pdf);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+app.get("/api/nfse/minha-empresa/baixar-lote", requireCliente, requireModuloAtivo('nfse'), async (req, res) => {
+  const empresaId = (req as any).user.empresaId;
+  const ids = String(req.query.ids || "")
+    .split(",")
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isInteger(n) && n > 0);
+  if (!ids.length) return res.status(400).json({ error: "Selecione ao menos uma emissão." });
+  const formato = req.query.formato === "pdf" ? "pdf" : req.query.formato === "ambos" ? "ambos" : "xml";
+  const placeholders = ids.map(() => "?").join(",");
+  const rows = sqlite.prepare(`SELECT * FROM nfse_emissoes WHERE id IN (${placeholders}) AND empresa_id = ?`).all(...ids, empresaId) as any[];
+  if (!rows.length) return res.status(404).json({ error: "Nenhuma emissão encontrada." });
+
+  res.setHeader("Content-Type", "application/zip");
+  res.setHeader("Content-Disposition", `attachment; filename="nfse-lote-${new Date().toISOString().slice(0, 10)}.zip"`);
+  const zip = archiver("zip", { zlib: { level: 9 } });
+  zip.on("error", (e) => { if (!res.headersSent) res.status(500); res.end(); console.error("Erro ao gerar zip de NFS-e:", e); });
+  zip.pipe(res);
+  const usados = new Set<string>();
+  const nomeUnico = (nome: string) => {
+    let final = nome, i = 2;
+    while (usados.has(final)) final = nome.replace(/(\.[^.]+)$/, ` (${i++})$1`);
+    usados.add(final);
+    return final;
+  };
+  for (const row of rows) {
+    if (formato === "xml" || formato === "ambos") {
+      const xml = row.xml_nfse || row.xml_dps;
+      if (xml) zip.append(xml, { name: nomeUnico(nfseNomeArquivo(row, "xml")) });
+    }
+    if (formato === "pdf" || formato === "ambos") {
+      try {
+        const { pdf } = await nfseObterDanfsePdf(row);
+        if (pdf) zip.append(pdf, { name: nomeUnico(nfseNomeArquivo(row, "pdf")) });
+      } catch {
+        // segue pras outras — uma falha de PDF não deve derrubar o lote inteiro
+      }
+    }
+  }
+  await zip.finalize();
+});
+// Depois que uma emissão do cliente self-service é transmitida com sucesso, gera automaticamente
+// a conta a receber correspondente — só pro fluxo self-service (não mexe em nada do admin, que
+// não usa esse financeiro). Chamado sempre DEPOIS que nfseTransmitirEmissao já respondeu a
+// requisição, então só faz trabalho de banco em segundo plano, sem afetar a resposta HTTP.
+function nfseGerarRecebivelSeEmitida(emissaoId: number) {
+  const linha = sqlite.prepare(`SELECT * FROM nfse_emissoes WHERE id = ?`).get(emissaoId) as any;
+  if (!linha || linha.status !== "emitida") return;
+  const jaExiste = sqlite.prepare(`SELECT 1 FROM financeiro_receber WHERE nfse_emissao_id = ?`).get(emissaoId);
+  if (jaExiste) return;
+  sqlite
+    .prepare(
+      `INSERT INTO financeiro_receber (empresa_id, descricao, cliente_nome, valor, vencimento, origem, nfse_emissao_id)
+       VALUES (?, ?, ?, ?, ?, 'nfse', ?)`
+    )
+    .run(linha.empresa_id, `NFS-e nº ${linha.numero_nfse || linha.id} — ${linha.descricao_servico}`, linha.tomador_nome, linha.valor_servico, linha.competencia, emissaoId);
+}
+app.post("/api/nfse/minha-empresa/emitir", requireCliente, requireModuloAtivo('nfse'), async (req, res) => {
+  const user = (req as any).user;
+  const v = nfseValidarEntrada(user, { ...req.body, empresaId: user.empresaId });
+  if ("erro" in v) return res.status(v.status || 400).json({ error: v.erro });
+  const emissaoId = nfseInserirEmissao(user, v.empresaId, v.modelo, v.tomador, v.servico, "pendente");
+  await nfseTransmitirEmissao(emissaoId, v.empresaId, v.modelo, v.tomador, v.servico, res);
+  nfseGerarRecebivelSeEmitida(emissaoId);
+});
+app.post("/api/nfse/minha-empresa/rascunhos", requireCliente, requireModuloAtivo('nfse'), (req, res) => {
+  const user = (req as any).user;
+  const v = nfseValidarEntrada(user, { ...req.body, empresaId: user.empresaId });
+  if ("erro" in v) return res.status(v.status || 400).json({ error: v.erro });
+  const emissaoId = nfseInserirEmissao(user, v.empresaId, v.modelo, v.tomador, v.servico, "rascunho");
+  res.json({ id: emissaoId });
+});
+app.put("/api/nfse/minha-empresa/rascunhos/:id", requireCliente, requireModuloAtivo('nfse'), (req, res) => {
+  const user = (req as any).user;
+  const existente = sqlite.prepare(`SELECT * FROM nfse_emissoes WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), user.empresaId) as any;
+  if (!existente) return res.status(404).json({ error: "Rascunho não encontrado." });
+  if (!["rascunho", "rejeitada", "erro"].includes(existente.status)) return res.status(409).json({ error: "Esta emissão já foi transmitida e não pode ser editada." });
+  const v = nfseValidarEntrada(user, { ...req.body, empresaId: user.empresaId });
+  if ("erro" in v) return res.status(v.status || 400).json({ error: v.erro });
+  sqlite
+    .prepare(
+      `UPDATE nfse_emissoes SET modelo_id=?, modelo_nome=?, tomador_documento=?, tomador_nome=?, tomador_email=?, tomador_cep=?, tomador_logradouro=?, tomador_numero=?, tomador_complemento=?, tomador_bairro=?, tomador_codigo_municipio=?, codigo_tributacao_nacional=?, descricao_servico=?, valor_servico=?, competencia=?, status='rascunho', erro=NULL WHERE id=?`
+    )
+    .run(
+      v.modelo.id,
+      v.modelo.nome,
+      String(v.tomador.documento).replace(/\D/g, ""),
+      String(v.tomador.nome).trim(),
+      v.tomador.email || null,
+      v.tomador.cep || null,
+      v.tomador.logradouro || null,
+      v.tomador.numero || null,
+      v.tomador.complemento || null,
+      v.tomador.bairro || null,
+      v.tomador.codigoMunicipio || null,
+      v.modelo.codigo_tributacao_nacional,
+      String(v.servico.descricao).trim(),
+      Number(v.servico.valor),
+      String(v.servico.competencia),
+      existente.id
+    );
+  res.json({ ok: true });
+});
+app.post("/api/nfse/minha-empresa/rascunhos/:id/emitir", requireCliente, requireModuloAtivo('nfse'), async (req, res) => {
+  const user = (req as any).user;
+  const existente = sqlite.prepare(`SELECT * FROM nfse_emissoes WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), user.empresaId) as any;
+  if (!existente) return res.status(404).json({ error: "Rascunho não encontrado." });
+  if (!["rascunho", "rejeitada", "erro"].includes(existente.status)) return res.status(409).json({ error: "Esta emissão já foi transmitida." });
+  if (!existente.modelo_id) return res.status(400).json({ error: "Este rascunho não tem um modelo de serviço válido — edite antes de emitir." });
+  const modelo = sqlite.prepare(`SELECT * FROM nfse_modelos WHERE id = ? AND ativo = 1 AND empresa_id = ?`).get(existente.modelo_id, user.empresaId) as any;
+  if (!modelo) return res.status(404).json({ error: "O modelo de serviço deste rascunho não existe mais ou está inativo." });
+  const tomador = {
+    documento: existente.tomador_documento,
+    nome: existente.tomador_nome,
+    email: existente.tomador_email,
+    cep: existente.tomador_cep,
+    logradouro: existente.tomador_logradouro,
+    numero: existente.tomador_numero,
+    complemento: existente.tomador_complemento,
+    bairro: existente.tomador_bairro,
+    codigoMunicipio: existente.tomador_codigo_municipio,
+  };
+  const servico = { descricao: existente.descricao_servico, valor: existente.valor_servico, competencia: existente.competencia };
+  await nfseTransmitirEmissao(existente.id, existente.empresa_id, modelo, tomador, servico, res);
+  nfseGerarRecebivelSeEmitida(existente.id);
+});
+app.delete("/api/nfse/minha-empresa/emissoes/:id", requireCliente, requireModuloAtivo('nfse'), (req, res) => {
+  const user = (req as any).user;
+  const row = sqlite.prepare(`SELECT * FROM nfse_emissoes WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), user.empresaId) as any;
   if (!row) return res.status(404).json({ error: "Registro não encontrado." });
   if (row.status !== "rascunho") return res.status(409).json({ error: "Só é possível excluir rascunhos — emissões já transmitidas ficam no histórico." });
   sqlite.prepare(`DELETE FROM nfse_emissoes WHERE id = ?`).run(row.id);
+  res.json({ ok: true });
+});
+app.post("/api/nfse/minha-empresa/emissoes/:id/cancelar", requireCliente, requireModuloAtivo('nfse'), async (req, res) => {
+  const user = (req as any).user;
+  const row = sqlite.prepare(`SELECT * FROM nfse_emissoes WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), user.empresaId) as any;
+  if (!row) return res.status(404).json({ error: "Emissão não encontrada." });
+  if (row.status !== "emitida") return res.status(409).json({ error: "Só é possível cancelar uma NFS-e que já foi emitida." });
+  if (!row.chave_acesso) return res.status(400).json({ error: "Esta emissão não tem chave de acesso." });
+  const { motivo, justificativa } = req.body || {};
+  if (!["1", "2", "9"].includes(motivo)) return res.status(400).json({ error: "Selecione o motivo do cancelamento." });
+  if (!justificativa || String(justificativa).trim().length < 15) return res.status(400).json({ error: "A justificativa precisa ter pelo menos 15 caracteres." });
+
+  const empresa = sqlite.prepare(`SELECT cnpj FROM empresas WHERE id = ?`).get(row.empresa_id) as any;
+  const config = sqlite.prepare(`SELECT metodo_assinatura FROM nfse_empresa_config WHERE empresa_id = ?`).get(row.empresa_id) as any;
+  let cert: nfse.CertificadoInfo;
+  try {
+    ({ cert } = nfseCertificadoParaEmpresa(row.empresa_id, config?.metodo_assinatura));
+  } catch (e: any) {
+    return res.status(400).json({ error: e.message });
+  }
+  try {
+    const r = await nfse.cancelarNfse(
+      { ambiente: row.ambiente, chaveAcesso: row.chave_acesso, cnpjAutor: (empresa?.cnpj || "").replace(/\D/g, ""), motivo, xMotivo: String(justificativa).trim() },
+      cert
+    );
+    if (!r.resposta.ok) return res.status(422).json({ error: `O Sistema Nacional NFS-e rejeitou o cancelamento: ${r.mensagemErro}` });
+    sqlite
+      .prepare(`UPDATE nfse_emissoes SET status='cancelada', motivo_cancelamento=?, justificativa_cancelamento=?, cancelado_em=datetime('now') WHERE id=?`)
+      .run(motivo, String(justificativa).trim(), row.id);
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+// Tabelas de referência (cTribNac/NBS/cClassTrib) e busca de município/CNPJ são só leitura de
+// dados públicos — reexpõe iguais às versões admin, mesmo formato de resposta (id = código real,
+// não índice, pra bater com o valor gravado no modelo).
+app.get("/api/nfse/minha-empresa/ctribnac", requireCliente, requireModuloAtivo('nfse'), (_req, res) => {
+  res.json({ items: nfseTabelaCTribNac.map((i) => ({ id: i.codigo, label: `${i.codigo} - ${i.descricao}` })) });
+});
+app.get("/api/nfse/minha-empresa/nbs", requireCliente, requireModuloAtivo('nfse'), (_req, res) => {
+  res.json({ items: nfseTabelaNbs.map((i) => ({ id: i.codigo, label: `${i.codigo} - ${i.descricao}` })) });
+});
+app.get("/api/nfse/minha-empresa/cclasstrib", requireCliente, requireModuloAtivo('nfse'), (_req, res) => {
+  res.json({ items: nfseTabelaCClassTrib.map((i) => ({ id: i.codigo, label: `${i.codigo} - ${i.descricao}` })) });
+});
+app.get("/api/nfse/minha-empresa/municipios-ibge", requireCliente, requireModuloAtivo('nfse'), async (req, res) => {
+  const uf = String(req.query.uf || "").toUpperCase().trim();
+  if (!uf) return res.status(400).json({ error: "Informe a UF." });
+  try {
+    const municipios = await nfseMunicipiosDaUf(uf);
+    res.json({ items: municipios.map((m) => ({ id: String(m.id), label: m.nome })) });
+  } catch (e: any) {
+    res.status(502).json({ error: `Não consegui consultar a API do IBGE: ${e.message}` });
+  }
+});
+app.get("/api/nfse/minha-empresa/municipio-ibge", requireCliente, requireModuloAtivo('nfse'), async (req, res) => {
+  const uf = String(req.query.uf || "").toUpperCase().trim();
+  const cidade = String(req.query.cidade || "").trim();
+  if (!uf || !cidade) return res.status(400).json({ error: "Informe cidade e UF." });
+  try {
+    const municipios = await nfseMunicipiosDaUf(uf);
+    const alvo = nfseNormalizaCidade(cidade);
+    const achado = municipios.find((m) => nfseNormalizaCidade(m.nome) === alvo);
+    if (!achado) return res.status(404).json({ error: `Não encontrei "${cidade}" na lista de municípios de ${uf}.` });
+    res.json({ codigoMunicipio: String(achado.id), nomeOficial: achado.nome });
+  } catch (e: any) {
+    res.status(502).json({ error: `Não consegui consultar a API do IBGE: ${e.message}` });
+  }
+});
+app.get("/api/nfse/minha-empresa/cnpj/:cnpj", requireCliente, requireModuloAtivo('nfse'), async (req, res) => {
+  const cnpj = String(req.params.cnpj).replace(/\D/g, "");
+  if (cnpj.length !== 14) return res.status(400).json({ error: "CNPJ inválido — precisa ter 14 dígitos." });
+  try {
+    const resp = await fetch(`https://brasilapi.com.br/api/cnpj/v1/${cnpj}`, { headers: { "User-Agent": "SimplesContabeis/1.0" } });
+    if (resp.status === 404) return res.status(404).json({ error: "CNPJ não encontrado na Receita Federal." });
+    if (!resp.ok) throw new Error(`API retornou HTTP ${resp.status}.`);
+    const j = (await resp.json()) as any;
+    res.json({
+      razaoSocial: j.razao_social || null,
+      nomeFantasia: j.nome_fantasia || null,
+      email: j.email || null,
+      logradouro: j.logradouro || null,
+      numero: j.numero || null,
+      complemento: j.complemento || null,
+      bairro: j.bairro || null,
+      cep: j.cep || null,
+      municipio: j.municipio || null,
+      uf: j.uf || null,
+    });
+  } catch (e: any) {
+    res.status(502).json({ error: `Não consegui consultar o CNPJ: ${e.message}` });
+  }
+});
+
+// ---------- Financeiro do próprio negócio da empresa-cliente self-service (perfil Cliente) ----------
+app.get("/api/financeiro/minha-empresa/pagar", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
+  const empresaId = (req as any).user.empresaId;
+  const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
+  const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
+  let sql = `SELECT id, descricao, fornecedor, valor, vencimento, status, data_pagamento as dataPagamento, observacao, criado_em as criadoEm
+             FROM financeiro_pagar WHERE empresa_id = ?`;
+  const params: any[] = [empresaId];
+  if (dataDe) { sql += ` AND date(vencimento) >= date(?)`; params.push(dataDe); }
+  if (dataAte) { sql += ` AND date(vencimento) <= date(?)`; params.push(dataAte); }
+  sql += ` ORDER BY vencimento DESC, id DESC`;
+  res.json({ items: sqlite.prepare(sql).all(...params) });
+});
+app.post("/api/financeiro/minha-empresa/pagar", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
+  const user = (req as any).user;
+  const { descricao, fornecedor, valor, vencimento, observacao } = req.body || {};
+  if (!descricao || !valor || !vencimento) return res.status(400).json({ error: "Preencha a descrição, o valor e o vencimento." });
+  const info = sqlite
+    .prepare(`INSERT INTO financeiro_pagar (empresa_id, descricao, fornecedor, valor, vencimento, observacao, criado_por) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run(user.empresaId, String(descricao).trim(), fornecedor || null, Number(valor), String(vencimento), observacao || null, user.id);
+  res.json({ id: Number(info.lastInsertRowid) });
+});
+app.put("/api/financeiro/minha-empresa/pagar/:id", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
+  const user = (req as any).user;
+  const existente = sqlite.prepare(`SELECT * FROM financeiro_pagar WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), user.empresaId) as any;
+  if (!existente) return res.status(404).json({ error: "Lançamento não encontrado." });
+  const { descricao, fornecedor, valor, vencimento, status, observacao } = req.body || {};
+  const statusValido = ["pendente", "pago", "atrasado", "cancelado"].includes(status) ? status : existente.status;
+  sqlite
+    .prepare(
+      `UPDATE financeiro_pagar SET descricao=?, fornecedor=?, valor=?, vencimento=?, status=?, data_pagamento=?, observacao=? WHERE id=?`
+    )
+    .run(
+      descricao != null ? String(descricao).trim() : existente.descricao,
+      fornecedor !== undefined ? fornecedor || null : existente.fornecedor,
+      valor != null ? Number(valor) : existente.valor,
+      vencimento || existente.vencimento,
+      statusValido,
+      statusValido === "pago" ? new Date().toISOString().slice(0, 10) : statusValido === existente.status ? existente.data_pagamento : null,
+      observacao !== undefined ? observacao || null : existente.observacao,
+      existente.id
+    );
+  res.json({ ok: true });
+});
+app.delete("/api/financeiro/minha-empresa/pagar/:id", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
+  const user = (req as any).user;
+  sqlite.prepare(`DELETE FROM financeiro_pagar WHERE id = ? AND empresa_id = ?`).run(Number(req.params.id), user.empresaId);
+  res.json({ ok: true });
+});
+app.get("/api/financeiro/minha-empresa/receber", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
+  const empresaId = (req as any).user.empresaId;
+  const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
+  const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
+  let sql = `SELECT id, descricao, cliente_nome as clienteNome, valor, vencimento, status, data_recebimento as dataRecebimento, observacao,
+                    origem, nfse_emissao_id as nfseEmissaoId, criado_em as criadoEm
+             FROM financeiro_receber WHERE empresa_id = ?`;
+  const params: any[] = [empresaId];
+  if (dataDe) { sql += ` AND date(vencimento) >= date(?)`; params.push(dataDe); }
+  if (dataAte) { sql += ` AND date(vencimento) <= date(?)`; params.push(dataAte); }
+  sql += ` ORDER BY vencimento DESC, id DESC`;
+  res.json({ items: sqlite.prepare(sql).all(...params) });
+});
+app.post("/api/financeiro/minha-empresa/receber", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
+  const user = (req as any).user;
+  const { descricao, clienteNome, valor, vencimento, observacao } = req.body || {};
+  if (!descricao || !valor || !vencimento) return res.status(400).json({ error: "Preencha a descrição, o valor e o vencimento." });
+  const info = sqlite
+    .prepare(`INSERT INTO financeiro_receber (empresa_id, descricao, cliente_nome, valor, vencimento, observacao, origem, criado_por) VALUES (?, ?, ?, ?, ?, ?, 'manual', ?)`)
+    .run(user.empresaId, String(descricao).trim(), clienteNome || null, Number(valor), String(vencimento), observacao || null, user.id);
+  res.json({ id: Number(info.lastInsertRowid) });
+});
+app.put("/api/financeiro/minha-empresa/receber/:id", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
+  const user = (req as any).user;
+  const existente = sqlite.prepare(`SELECT * FROM financeiro_receber WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), user.empresaId) as any;
+  if (!existente) return res.status(404).json({ error: "Lançamento não encontrado." });
+  const { descricao, clienteNome, valor, vencimento, status, observacao } = req.body || {};
+  const statusValido = ["pendente", "pago", "atrasado", "cancelado"].includes(status) ? status : existente.status;
+  // Lançamentos gerados pela NFS-e (origem='nfse') têm descrição/valor travados — só vencimento,
+  // status e observação são editáveis, pra não desalinhar do valor real da nota emitida.
+  const travadoPelaNfse = existente.origem === "nfse";
+  sqlite
+    .prepare(
+      `UPDATE financeiro_receber SET descricao=?, cliente_nome=?, valor=?, vencimento=?, status=?, data_recebimento=?, observacao=? WHERE id=?`
+    )
+    .run(
+      travadoPelaNfse ? existente.descricao : descricao != null ? String(descricao).trim() : existente.descricao,
+      travadoPelaNfse ? existente.cliente_nome : clienteNome !== undefined ? clienteNome || null : existente.cliente_nome,
+      travadoPelaNfse ? existente.valor : valor != null ? Number(valor) : existente.valor,
+      vencimento || existente.vencimento,
+      statusValido,
+      statusValido === "pago" ? new Date().toISOString().slice(0, 10) : statusValido === existente.status ? existente.data_recebimento : null,
+      observacao !== undefined ? observacao || null : existente.observacao,
+      existente.id
+    );
+  res.json({ ok: true });
+});
+app.delete("/api/financeiro/minha-empresa/receber/:id", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
+  const user = (req as any).user;
+  const existente = sqlite.prepare(`SELECT origem FROM financeiro_receber WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), user.empresaId) as any;
+  if (!existente) return res.status(404).json({ error: "Lançamento não encontrado." });
+  if (existente.origem === "nfse") return res.status(409).json({ error: "Este recebível veio de uma NFS-e emitida — cancele a nota se não for mais válido, em vez de excluir aqui." });
+  sqlite.prepare(`DELETE FROM financeiro_receber WHERE id = ?`).run(Number(req.params.id));
+  res.json({ ok: true });
+});
+
+// ---------- Catálogo de módulos, teste grátis de 3 dias e contratação self-service (Asaas) ----------
+function moduloStatusParaEmpresa(catalogo: any, contratado: any) {
+  const agora = new Date().toISOString().replace("T", " ").slice(0, 19);
+  if (!contratado) return { status: "nao_contratado", acesso: false };
+  if (contratado.assinatura_ativa_ate && agora <= contratado.assinatura_ativa_ate) return { status: "ativo", acesso: true };
+  if (agora <= contratado.trial_fim) return { status: "teste", acesso: true };
+  if (contratado.assinatura_ativa_ate) return { status: "vencido", acesso: false };
+  return { status: "teste_vencido", acesso: false };
+}
+function nfseModulosDaEmpresa(empresaId: number) {
+  const catalogo = sqlite.prepare(`SELECT * FROM modulos_catalogo ORDER BY chave`).all() as any[];
+  const contratados = sqlite.prepare(`SELECT * FROM empresa_modulos WHERE empresa_id = ?`).all(empresaId) as any[];
+  const porChave = new Map(contratados.map((c) => [c.modulo_chave, c]));
+  return catalogo.map((m) => {
+    const contratado = porChave.get(m.chave);
+    const { status, acesso } = moduloStatusParaEmpresa(m, contratado);
+    return {
+      chave: m.chave,
+      nome: m.nome,
+      valorMensal: m.valor_mensal,
+      ativo: !!m.ativo,
+      status,
+      acesso,
+      trialFim: contratado?.trial_fim || null,
+      trialProrrogado: !!contratado?.trial_prorrogado,
+      assinaturaAtivaAte: contratado?.assinatura_ativa_ate || null,
+    };
+  });
+}
+app.get("/api/financeiro/minha-empresa/modulos", requireCliente, (req, res) => {
+  res.json({ items: nfseModulosDaEmpresa((req as any).user.empresaId) });
+});
+app.post("/api/financeiro/minha-empresa/modulos/:chave/iniciar-teste", requireCliente, (req, res) => {
+  const empresaId = (req as any).user.empresaId;
+  const chave = String(req.params.chave);
+  const modulo = sqlite.prepare(`SELECT * FROM modulos_catalogo WHERE chave = ? AND ativo = 1`).get(chave) as any;
+  if (!modulo) return res.status(404).json({ error: "Módulo não encontrado." });
+  const existente = sqlite.prepare(`SELECT 1 FROM empresa_modulos WHERE empresa_id = ? AND modulo_chave = ?`).get(empresaId, chave);
+  if (existente) return res.status(409).json({ error: "O teste desse módulo já foi iniciado antes." });
+  sqlite
+    .prepare(`INSERT INTO empresa_modulos (empresa_id, modulo_chave, trial_inicio, trial_fim) VALUES (?, ?, datetime('now'), datetime('now','+3 days'))`)
+    .run(empresaId, chave);
+  res.json({ ok: true, items: nfseModulosDaEmpresa(empresaId) });
+});
+app.post("/api/financeiro/minha-empresa/modulos/pagar", requireCliente, async (req, res) => {
+  const empresaId = (req as any).user.empresaId;
+  const chaves: string[] = Array.isArray(req.body?.modulos) ? req.body.modulos : [];
+  if (!chaves.length) return res.status(400).json({ error: "Selecione ao menos um módulo." });
+  const catalogo = sqlite
+    .prepare(`SELECT chave, nome, valor_mensal FROM modulos_catalogo WHERE ativo = 1 AND chave IN (${chaves.map(() => "?").join(",")})`)
+    .all(...chaves) as any[];
+  if (!catalogo.length) return res.status(400).json({ error: "Nenhum dos módulos selecionados está disponível." });
+  const valorTotal = catalogo.reduce((soma, m) => soma + Number(m.valor_mensal), 0);
+  if (!valorTotal) return res.status(400).json({ error: "O valor desses módulos ainda não foi configurado — entre em contato com o suporte." });
+  const empresa = sqlite.prepare(`SELECT nome, cnpj, email, telefone, asaas_customer_id FROM empresas WHERE id = ?`).get(empresaId) as any;
+  // Reaproveita uma cobrança pendente já gerada com exatamente o mesmo conjunto de módulos, pra não
+  // duplicar cobrança no Asaas se o cliente clicar "Pagar" mais de uma vez.
+  const pendentes = sqlite.prepare(`SELECT * FROM financeiro_licenca_cobrancas WHERE empresa_id = ? AND status = 'pendente' ORDER BY id DESC`).all(empresaId) as any[];
+  let cobranca = pendentes.find((c) => {
+    const itens = sqlite.prepare(`SELECT modulo_chave FROM financeiro_licenca_cobranca_itens WHERE cobranca_id = ?`).all(c.id) as any[];
+    const chavesCobranca = itens.map((i) => i.modulo_chave).sort().join(",");
+    return chavesCobranca === [...chaves].sort().join(",");
+  });
+  try {
+    let customerId = empresa.asaas_customer_id;
+    if (!customerId) {
+      customerId = await asaas.obterOuCriarCliente({ cpfCnpj: empresa.cnpj, nome: empresa.nome, email: empresa.email, telefone: empresa.telefone });
+      sqlite.prepare(`UPDATE empresas SET asaas_customer_id = ? WHERE id = ?`).run(customerId, empresaId);
+    }
+    if (!cobranca) {
+      const vencimento = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      const descricao = `Assinatura — ${catalogo.map((m) => m.nome).join(", ")}`;
+      const gerada = await asaas.criarCobranca({ customerId, valor: valorTotal, vencimento, descricao });
+      const info = sqlite
+        .prepare(`INSERT INTO financeiro_licenca_cobrancas (empresa_id, valor_total, vencimento, status, asaas_payment_id, invoice_url) VALUES (?, ?, ?, 'pendente', ?, ?)`)
+        .run(empresaId, valorTotal, vencimento, gerada.id, gerada.invoiceUrl);
+      const cobrancaId = Number(info.lastInsertRowid);
+      for (const m of catalogo) {
+        sqlite.prepare(`INSERT INTO financeiro_licenca_cobranca_itens (cobranca_id, modulo_chave, valor) VALUES (?, ?, ?)`).run(cobrancaId, m.chave, m.valor_mensal);
+      }
+      cobranca = sqlite.prepare(`SELECT * FROM financeiro_licenca_cobrancas WHERE id = ?`).get(cobrancaId);
+    }
+    // O QR code Pix não fica pronto no exato instante em que a cobrança é criada no Asaas — se a
+    // primeira tentativa falhar, espera um pouco e tenta de novo antes de desistir e seguir só com
+    // o link da fatura (confirmado num teste real: falha na hora, funciona ~1s depois).
+    let pix: asaas.PixQrCode | null = null;
+    for (let tentativa = 0; tentativa < 3 && !pix; tentativa++) {
+      try {
+        pix = await asaas.obterQrCodePix(cobranca.asaas_payment_id);
+      } catch {
+        if (tentativa < 2) await new Promise((r) => setTimeout(r, 1200));
+      }
+    }
+    if (pix) {
+      sqlite.prepare(`UPDATE financeiro_licenca_cobrancas SET pix_qrcode = ?, pix_qrcode_imagem = ? WHERE id = ?`).run(pix.payload, pix.imagemBase64, cobranca.id);
+    }
+    res.json({ invoiceUrl: cobranca.invoice_url, pixPayload: pix?.payload || null, pixImagemBase64: pix?.imagemBase64 || null, valorTotal });
+  } catch (e: any) {
+    res.status(502).json({ error: e.message });
+  }
+});
+// Webhook público do Asaas — validado por um token simples configurado no painel deles (query
+// string ?token=... apontando pro mesmo valor de ASAAS_WEBHOOK_TOKEN no .env), já que não tem
+// sessão de usuário nessa chamada (o Asaas quem chama, não o navegador de ninguém).
+app.post("/api/asaas/webhook", (req, res) => {
+  const tokenEsperado = process.env.ASAAS_WEBHOOK_TOKEN;
+  if (tokenEsperado && req.query.token !== tokenEsperado) return res.status(403).json({ error: "Token inválido." });
+  const { event, payment } = req.body || {};
+  if (!payment?.id) return res.status(400).json({ error: "Corpo inválido." });
+  const statusMap: Record<string, string> = {
+    PAYMENT_CONFIRMED: "confirmado",
+    PAYMENT_RECEIVED: "recebido",
+    PAYMENT_OVERDUE: "vencido",
+    PAYMENT_DELETED: "cancelado",
+  };
+  const novoStatus = statusMap[event];
+  if (!novoStatus) return res.json({ ok: true });
+  const cobranca = sqlite.prepare(`SELECT * FROM financeiro_licenca_cobrancas WHERE asaas_payment_id = ?`).get(payment.id) as any;
+  if (!cobranca) return res.json({ ok: true });
+  sqlite.prepare(`UPDATE financeiro_licenca_cobrancas SET status = ? WHERE id = ?`).run(novoStatus, cobranca.id);
+  if (novoStatus === "confirmado" || novoStatus === "recebido") {
+    const itens = sqlite.prepare(`SELECT modulo_chave FROM financeiro_licenca_cobranca_itens WHERE cobranca_id = ?`).all(cobranca.id) as any[];
+    const agora = new Date().toISOString().replace("T", " ").slice(0, 19);
+    for (const item of itens) {
+      const atual = sqlite.prepare(`SELECT assinatura_ativa_ate FROM empresa_modulos WHERE empresa_id = ? AND modulo_chave = ?`).get(cobranca.empresa_id, item.modulo_chave) as any;
+      if (atual) {
+        const base = atual.assinatura_ativa_ate && atual.assinatura_ativa_ate > agora ? atual.assinatura_ativa_ate : agora;
+        sqlite
+          .prepare(`UPDATE empresa_modulos SET assinatura_ativa_ate = datetime(?, '+1 month') WHERE empresa_id = ? AND modulo_chave = ?`)
+          .run(base, cobranca.empresa_id, item.modulo_chave);
+      } else {
+        sqlite
+          .prepare(
+            `INSERT INTO empresa_modulos (empresa_id, modulo_chave, trial_inicio, trial_fim, assinatura_ativa_ate) VALUES (?, ?, datetime('now'), datetime('now'), datetime('now','+1 month'))`
+          )
+          .run(cobranca.empresa_id, item.modulo_chave);
+      }
+    }
+  }
   res.json({ ok: true });
 });
 
@@ -2735,6 +3769,190 @@ app.put("/api/dashboard/cards/:id", blockCliente, requirePermissao("dashboard", 
 app.delete("/api/dashboard/cards/:id", blockCliente, requirePermissao("dashboard", "editar"), (req, res) => {
   sqlite.prepare(`DELETE FROM dashboard_cards WHERE id = ?`).run(Number(req.params.id));
   res.json({ ok: true });
+});
+
+// ---------- Contratos (gestão dos contratos e aditivos do escritório com as empresas-cliente) ----------
+const CONTRATO_EMPRESA_CAMPO_SQL: Record<string, string> = {
+  nome: "nome",
+  cnpj: "cnpj",
+  endereco: "endereco",
+  cidade: "cidade",
+  uf: "uf",
+  email: "email",
+  inscricaoMunicipal: "inscricao_municipal",
+};
+app.get("/api/contratos/modelos", blockCliente, requirePermissao("contratos", "visualizar"), (_req, res) => {
+  const rows = sqlite.prepare(`SELECT id, nome, conteudo_html as conteudoHtml, campos, ativo, criado_em as criadoEm FROM contratos_modelos ORDER BY nome`).all() as any[];
+  res.json({ items: rows.map((r) => ({ ...r, campos: JSON.parse(r.campos || "[]"), ativo: !!r.ativo })) });
+});
+app.post("/api/contratos/modelos", blockCliente, requirePermissao("contratos", "postar"), (req, res) => {
+  const { nome, conteudoHtml, campos } = req.body || {};
+  if (!nome || !conteudoHtml) return res.status(400).json({ error: "Informe o nome e o conteúdo do modelo." });
+  const info = sqlite
+    .prepare(`INSERT INTO contratos_modelos (nome, conteudo_html, campos) VALUES (?, ?, ?)`)
+    .run(String(nome).trim(), String(conteudoHtml), JSON.stringify(Array.isArray(campos) ? campos : []));
+  res.json({ id: Number(info.lastInsertRowid) });
+});
+app.put("/api/contratos/modelos/:id", blockCliente, requirePermissao("contratos", "editar"), (req, res) => {
+  const id = Number(req.params.id);
+  const existente = sqlite.prepare(`SELECT * FROM contratos_modelos WHERE id = ?`).get(id) as any;
+  if (!existente) return res.status(404).json({ error: "Modelo não encontrado." });
+  const { nome, conteudoHtml, campos, ativo } = req.body || {};
+  sqlite
+    .prepare(`UPDATE contratos_modelos SET nome=?, conteudo_html=?, campos=?, ativo=?, updated_at=datetime('now') WHERE id=?`)
+    .run(
+      nome !== undefined ? String(nome).trim() : existente.nome,
+      conteudoHtml !== undefined ? String(conteudoHtml) : existente.conteudo_html,
+      campos !== undefined ? JSON.stringify(campos) : existente.campos,
+      ativo !== undefined ? (ativo ? 1 : 0) : existente.ativo,
+      id
+    );
+  res.json({ ok: true });
+});
+app.delete("/api/contratos/modelos/:id", blockCliente, requirePermissao("contratos", "editar"), (req, res) => {
+  const id = Number(req.params.id);
+  const emUso = sqlite.prepare(`SELECT COUNT(*) as n FROM contratos WHERE modelo_id = ?`).get(id) as any;
+  if (emUso.n > 0) return res.status(409).json({ error: "Este modelo já foi usado em contratos — desative-o em vez de excluir." });
+  sqlite.prepare(`DELETE FROM contratos_modelos WHERE id = ?`).run(id);
+  res.json({ ok: true });
+});
+
+app.get("/api/contratos", blockCliente, requirePermissao("contratos", "visualizar"), (req, res) => {
+  const empresaId = req.query.empresaId ? Number(req.query.empresaId) : null;
+  const status = typeof req.query.status === "string" && req.query.status ? req.query.status : null;
+  const tipo = typeof req.query.tipo === "string" && req.query.tipo ? req.query.tipo : null;
+  let sql = `SELECT c.id, c.empresa_id as empresaId, e.nome as empresaNome, c.tipo, c.contrato_pai_id as contratoPaiId,
+                    c.titulo, c.status, c.criado_em as criadoEm, c.updated_at as updatedAt
+             FROM contratos c JOIN empresas e ON e.id = c.empresa_id WHERE 1=1`;
+  const params: any[] = [];
+  if (empresaId) { sql += ` AND c.empresa_id = ?`; params.push(empresaId); }
+  if (status) { sql += ` AND c.status = ?`; params.push(status); }
+  if (tipo) { sql += ` AND c.tipo = ?`; params.push(tipo); }
+  sql += ` ORDER BY c.updated_at DESC`;
+  res.json({ items: sqlite.prepare(sql).all(...params) });
+});
+app.post("/api/contratos", blockCliente, requirePermissao("contratos", "postar"), (req, res) => {
+  const user = (req as any).user;
+  const { modeloId, empresaId, dados } = req.body || {};
+  const modelo = sqlite.prepare(`SELECT * FROM contratos_modelos WHERE id = ? AND ativo = 1`).get(Number(modeloId)) as any;
+  if (!modelo) return res.status(404).json({ error: "Modelo não encontrado ou inativo." });
+  const empresa = sqlite.prepare(`SELECT * FROM empresas WHERE id = ?`).get(Number(empresaId)) as any;
+  if (!empresa) return res.status(404).json({ error: "Empresa não encontrada." });
+  const camposModelo = JSON.parse(modelo.campos || "[]") as any[];
+  const dadosFinal: Record<string, any> = { ...(dados || {}) };
+  for (const campo of camposModelo) {
+    if (campo.autoPreencherDe && CONTRATO_EMPRESA_CAMPO_SQL[campo.autoPreencherDe] && (dadosFinal[campo.chave] === undefined || dadosFinal[campo.chave] === "")) {
+      dadosFinal[campo.chave] = empresa[CONTRATO_EMPRESA_CAMPO_SQL[campo.autoPreencherDe]] ?? "";
+    }
+  }
+  const conteudoHtml = contratos.aplicarCamposNoModelo(modelo.conteudo_html, dadosFinal);
+  const info = sqlite
+    .prepare(`INSERT INTO contratos (modelo_id, empresa_id, titulo, conteudo_html, dados_preenchidos, criado_por) VALUES (?, ?, ?, ?, ?, ?)`)
+    .run(modelo.id, empresa.id, `${modelo.nome} — ${empresa.nome}`, conteudoHtml, JSON.stringify(dadosFinal), user.id);
+  res.json({ id: Number(info.lastInsertRowid) });
+});
+app.get("/api/contratos/:id", blockCliente, requirePermissao("contratos", "visualizar"), (req, res) => {
+  const row = sqlite
+    .prepare(
+      `SELECT c.*, e.nome as empresaNome, e.email as empresaEmail, m.nome as modeloNome, m.campos as modeloCampos, pai.titulo as contratoPaiTitulo
+       FROM contratos c JOIN empresas e ON e.id = c.empresa_id
+       LEFT JOIN contratos_modelos m ON m.id = c.modelo_id
+       LEFT JOIN contratos pai ON pai.id = c.contrato_pai_id
+       WHERE c.id = ?`
+    )
+    .get(Number(req.params.id)) as any;
+  if (!row) return res.status(404).json({ error: "Contrato não encontrado." });
+  res.json({
+    id: row.id,
+    empresaId: row.empresa_id,
+    empresaNome: row.empresaNome,
+    empresaEmail: row.empresaEmail,
+    modeloId: row.modelo_id,
+    modeloNome: row.modeloNome,
+    modeloCampos: row.modeloCampos ? JSON.parse(row.modeloCampos) : [],
+    tipo: row.tipo,
+    contratoPaiId: row.contrato_pai_id,
+    contratoPaiTitulo: row.contratoPaiTitulo,
+    titulo: row.titulo,
+    conteudoHtml: row.conteudo_html,
+    dadosPreenchidos: JSON.parse(row.dados_preenchidos || "{}"),
+    status: row.status,
+    criadoEm: row.criado_em,
+    updatedAt: row.updated_at,
+  });
+});
+app.put("/api/contratos/:id", blockCliente, requirePermissao("contratos", "editar"), (req, res) => {
+  const id = Number(req.params.id);
+  const existente = sqlite.prepare(`SELECT * FROM contratos WHERE id = ?`).get(id) as any;
+  if (!existente) return res.status(404).json({ error: "Contrato não encontrado." });
+  const { titulo, conteudoHtml, status } = req.body || {};
+  const statusValido = ["rascunho", "ativo", "encerrado"].includes(status) ? status : existente.status;
+  sqlite
+    .prepare(`UPDATE contratos SET titulo=?, conteudo_html=?, status=?, ultimo_pdf_path=NULL, updated_at=datetime('now') WHERE id=?`)
+    .run(titulo !== undefined ? String(titulo).trim() : existente.titulo, conteudoHtml !== undefined ? String(conteudoHtml) : existente.conteudo_html, statusValido, id);
+  if (existente.ultimo_pdf_path && fs.existsSync(existente.ultimo_pdf_path)) fs.unlinkSync(existente.ultimo_pdf_path);
+  res.json({ ok: true });
+});
+app.post("/api/contratos/:id/aditivo", blockCliente, requirePermissao("contratos", "postar"), (req, res) => {
+  const user = (req as any).user;
+  const original = sqlite.prepare(`SELECT * FROM contratos WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!original) return res.status(404).json({ error: "Contrato não encontrado." });
+  if (original.tipo !== "contrato") return res.status(400).json({ error: "Só é possível criar aditivo a partir de um contrato original." });
+  const empresa = sqlite.prepare(`SELECT nome FROM empresas WHERE id = ?`).get(original.empresa_id) as any;
+  const conteudoInicial = `<h1>Aditivo Contratual</h1><p>Aditivo ao contrato "${original.titulo}", firmado entre o escritório e ${empresa?.nome || ""}.</p><p>As partes acordam alterar/complementar o contrato original nos seguintes termos:</p><p></p>`;
+  const info = sqlite
+    .prepare(`INSERT INTO contratos (modelo_id, empresa_id, tipo, contrato_pai_id, titulo, conteudo_html, criado_por) VALUES (?, ?, 'aditivo', ?, ?, ?, ?)`)
+    .run(original.modelo_id, original.empresa_id, original.id, `Aditivo ao Contrato — ${original.titulo}`, conteudoInicial, user.id);
+  res.json({ id: Number(info.lastInsertRowid) });
+});
+app.delete("/api/contratos/:id", blockCliente, requirePermissao("contratos", "editar"), (req, res) => {
+  const existente = sqlite.prepare(`SELECT status, ultimo_pdf_path FROM contratos WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!existente) return res.status(404).json({ error: "Contrato não encontrado." });
+  if (existente.status !== "rascunho") return res.status(409).json({ error: "Só é possível excluir contratos em rascunho — encerre em vez de excluir um contrato já ativo." });
+  if (existente.ultimo_pdf_path && fs.existsSync(existente.ultimo_pdf_path)) fs.unlinkSync(existente.ultimo_pdf_path);
+  sqlite.prepare(`DELETE FROM contratos WHERE id = ?`).run(Number(req.params.id));
+  res.json({ ok: true });
+});
+async function contratoObterPdf(row: any): Promise<Buffer> {
+  if (row.ultimo_pdf_path && fs.existsSync(row.ultimo_pdf_path)) return fs.readFileSync(row.ultimo_pdf_path);
+  const pdf = await contratos.gerarPdfDeHtml(row.conteudo_html, row.titulo);
+  const destino = contratos.caminhoPdfContrato(row.id);
+  fs.writeFileSync(destino, pdf);
+  sqlite.prepare(`UPDATE contratos SET ultimo_pdf_path = ? WHERE id = ?`).run(destino, row.id);
+  return pdf;
+}
+app.get("/api/contratos/:id/pdf", blockCliente, requirePermissao("contratos", "visualizar"), async (req, res) => {
+  const row = sqlite.prepare(`SELECT * FROM contratos WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!row) return res.status(404).json({ error: "Contrato não encontrado." });
+  try {
+    const pdf = await contratoObterPdf(row);
+    res.set("Content-Type", "application/pdf");
+    res.set("Content-Disposition", `attachment; filename="${row.titulo.replace(/[^\w\-. ]/g, "")}.pdf"`);
+    res.send(pdf);
+  } catch (e: any) {
+    res.status(502).json({ error: `Não consegui gerar o PDF: ${e.message}` });
+  }
+});
+app.post("/api/contratos/:id/enviar-email", blockCliente, requirePermissao("contratos", "editar"), async (req, res) => {
+  const user = (req as any).user;
+  const row = sqlite.prepare(`SELECT c.*, e.email as empresaEmail FROM contratos c JOIN empresas e ON e.id = c.empresa_id WHERE c.id = ?`).get(Number(req.params.id)) as any;
+  if (!row) return res.status(404).json({ error: "Contrato não encontrado." });
+  const destino = (req.body?.email && String(req.body.email).trim()) || row.empresaEmail;
+  if (!destino) return res.status(400).json({ error: "Esta empresa não tem e-mail cadastrado — digite um e-mail pra enviar." });
+  try {
+    const pdf = await contratoObterPdf(row);
+    await enviarEmail({
+      to: [destino],
+      subject: row.titulo,
+      text: `Segue em anexo o documento "${row.titulo}".`,
+      attachments: [{ filename: `${row.titulo.replace(/[^\w\-. ]/g, "")}.pdf`, content: pdf }],
+    });
+    sqlite.prepare(`INSERT INTO contratos_envios (contrato_id, email_destino, sucesso, enviado_por) VALUES (?, ?, 1, ?)`).run(row.id, destino, user.id);
+    res.json({ ok: true });
+  } catch (e: any) {
+    sqlite.prepare(`INSERT INTO contratos_envios (contrato_id, email_destino, sucesso, erro, enviado_por) VALUES (?, ?, 0, ?, ?)`).run(row.id, destino, e.message, user.id);
+    res.status(502).json({ error: e.message });
+  }
 });
 
 // ---------- Relatórios ----------
