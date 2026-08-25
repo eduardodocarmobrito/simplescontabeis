@@ -133,6 +133,10 @@ export interface DadosPrestador {
   cnpj: string;
   inscricaoMunicipal?: string | null; // opcional — confirmado em XML real de MEI sem IM cadastrada
   codigoMunicipio: string; // IBGE, 7 dígitos
+  // Mapeia pra opSimpNac=3 (Optante ME/EPP) quando true, opSimpNac=1 (Não Optante) quando false.
+  // Não cobre opSimpNac=2 (Optante MEI) — os clientes do escritório são majoritariamente
+  // LTDA/EIRELI, não MEI; testado contra o ambiente real (enviar "2" pra uma LTDA causa E0160,
+  // rejeição por divergência com o cadastro Simples Nacional da Receita Federal).
   opcaoSimplesNacional: boolean;
   regimeEspecialTrib: number; // 0 = Nenhum
   telefone?: string | null;
@@ -236,7 +240,7 @@ ${prestador.inscricaoMunicipal ? `<IM>${xmlEscape(prestador.inscricaoMunicipal)}
 ${prestador.telefone ? `<fone>${xmlEscape(prestador.telefone.replace(/\D/g, ""))}</fone>` : ""}
 ${prestador.email ? `<email>${xmlEscape(prestador.email)}</email>` : ""}
 <regTrib>
-<opSimpNac>${prestador.opcaoSimplesNacional ? "2" : "1"}</opSimpNac>
+<opSimpNac>${prestador.opcaoSimplesNacional ? "3" : "1"}</opSimpNac>
 <regEspTrib>${prestador.regimeEspecialTrib}</regEspTrib>
 </regTrib>
 </prest>

@@ -1467,7 +1467,7 @@ let NFSE_TAB='emitir';
 async function pageNfse(){
   main().innerHTML = `
     <h1>NFS-e</h1>
-    <p class="subtitle">Emissão de nota fiscal de serviço direto pelo Sistema Nacional NFS-e (ADN) — hoje só no ambiente de testes do governo (produção restrita); nenhuma nota emitida aqui tem validade fiscal ainda.</p>
+    <p class="subtitle">Emissão de nota fiscal de serviço direto pelo Sistema Nacional NFS-e (ADN) — ambiente de produção real: toda NFS-e emitida aqui tem validade fiscal.</p>
     <div class="tabs">
       <div class="tab" data-tab="emitir">Emitir</div>
       <div class="tab" data-tab="notas">Notas emitidas</div>
@@ -1734,7 +1734,7 @@ async function renderNfseEmitir(){
       <div class="field"><label>Descrição do serviço</label><textarea id="nfseEmiDescricao" rows="2" placeholder="Ex.: Fabricação de 01 toldo sombrite medidas 6x4"></textarea></div>
       <div class="row">
         <button class="btn" id="btnSalvarNfse">${NFSE_RASCUNHO_ID?'Salvar rascunho':'Salvar como rascunho'}</button>
-        <button class="btn primary" id="btnEmitirNfse">Emitir NFS-e (ambiente de testes)</button>
+        <button class="btn primary" id="btnEmitirNfse">Emitir NFS-e</button>
       </div>
       <div id="nfseEmiResultado" style="margin-top:12px;"></div>
     </div>
@@ -1838,7 +1838,7 @@ async function renderNfseEmitir(){
         r = await api('/nfse/emitir', { method:'POST', body });
       }
       resultado.innerHTML = `<div class="slot-locked" style="background:var(--paper);"><span class="fname">Emitida com sucesso</span>Chave de acesso: ${esc(r.chaveAcesso||'—')}</div>`;
-      toast('NFS-e emitida (ambiente de testes).','ok');
+      toast('NFS-e emitida com sucesso.','ok');
     }catch(e){
       resultado.innerHTML = `<div class="slot-locked" style="background:var(--paper); border-color:var(--debit);"><span class="fname">Rejeitada pelo Sistema Nacional NFS-e</span>${esc(e.message)}</div>`;
       toast(e.message,'err');

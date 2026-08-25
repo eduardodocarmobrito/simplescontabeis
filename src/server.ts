@@ -2377,6 +2377,11 @@ app.get("/api/nfse/emissoes/:id/xml", blockCliente, requirePermissao("nfse", "vi
   res.send(xml);
 });
 
+// Faixa 80.000-89.999 é reservada ao Emissor Web do próprio governo (confirmado no manual oficial,
+// guia-emissorpubliconacionalweb); quem emite via API/webservice com certificado próprio (nosso
+// caso) precisa usar uma série fora dessa faixa — testado contra o ambiente real (E0010 corrigido).
+const NFSE_SERIE = 1;
+
 // Monta os dados de serviço da DPS a partir do modelo — os valores de retenção federal (IRRF,
 // CSLL, PIS, COFINS, contribuição previdenciária) são calculados aplicando o percentual
 // configurado no modelo sobre o valor do serviço desta emissão específica.
@@ -2436,7 +2441,7 @@ function nfseInserirEmissao(user: any, empresaId: number, modelo: any, tomador: 
       `INSERT INTO nfse_emissoes (empresa_id, serie, numero_dps, ambiente, modelo_id, modelo_nome,
          tomador_documento, tomador_nome, tomador_email, tomador_cep, tomador_logradouro, tomador_numero, tomador_complemento, tomador_bairro, tomador_codigo_municipio,
          codigo_tributacao_nacional, descricao_servico, valor_servico, competencia, status, criado_por)
-       VALUES (?, 70000, (SELECT COALESCE(MIN(numero_dps), 0) - 1 FROM nfse_emissoes WHERE empresa_id = ? AND serie = 70000), 'producaorestrita', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       VALUES (?, ${NFSE_SERIE}, (SELECT COALESCE(MIN(numero_dps), 0) - 1 FROM nfse_emissoes WHERE empresa_id = ? AND serie = ${NFSE_SERIE}), 'producao', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       empresaId,
@@ -2485,8 +2490,12 @@ async function nfseTransmitirEmissao(emissaoId: number, empresaId: number, model
   const empresaContato = sqlite.prepare(`SELECT telefone, email FROM empresas WHERE id = ?`).get(empresaId) as any;
 
   const documentoTomador = String(tomador.documento).replace(/\D/g, "");
-  const ambiente: nfse.AmbienteNfse = "producaorestrita"; // Fase 1: só ambiente de testes do governo — nenhuma NFS-e válida é gerada ainda.
-  const serie = 70000; // faixa "Emissor Web" conforme o manual oficial
+  // Produção real — cada emissão a partir daqui gera uma NFS-e com efeito fiscal de verdade.
+  // Confirmado com o convênio oficial (adn.nfse.gov.br/parametrizacao) que os municípios da
+  // carteira do escritório aderiram ao Emissor Nacional em produção (mesmo quando o ambiente de
+  // testes ainda não reflete isso).
+  const ambiente: nfse.AmbienteNfse = "producao";
+  const serie = NFSE_SERIE;
   const ultimo = sqlite.prepare(`SELECT MAX(numero_dps) as m FROM nfse_emissoes WHERE empresa_id = ? AND serie = ? AND numero_dps > 0`).get(empresaId, serie) as any;
   const numeroDps = (ultimo?.m || 0) + 1;
   sqlite.prepare(`UPDATE nfse_emissoes SET numero_dps = ?, ambiente = ?, status = 'pendente' WHERE id = ?`).run(numeroDps, ambiente, emissaoId);
