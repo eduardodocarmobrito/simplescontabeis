@@ -419,17 +419,24 @@ sqlite.exec(`
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
     serie INTEGER NOT NULL DEFAULT 1,
-    numero_dps INTEGER NOT NULL,
+    numero_dps INTEGER NOT NULL, -- rascunhos usam -id (negativo) como placeholder até serem emitidos de verdade
     ambiente TEXT NOT NULL DEFAULT 'producaorestrita', -- 'producaorestrita' | 'producao'
+    modelo_id INTEGER REFERENCES nfse_modelos(id) ON DELETE SET NULL,
+    modelo_nome TEXT, -- nome do modelo de serviço usado, só pra exibição (sobrevive mesmo se o modelo for excluído depois)
     tomador_documento TEXT NOT NULL,
     tomador_nome TEXT NOT NULL,
     tomador_email TEXT,
+    tomador_cep TEXT,
+    tomador_logradouro TEXT,
+    tomador_numero TEXT,
+    tomador_complemento TEXT,
+    tomador_bairro TEXT,
+    tomador_codigo_municipio TEXT,
     codigo_tributacao_nacional TEXT NOT NULL,
-    modelo_nome TEXT, -- nome do modelo de serviço usado (nfse_modelos), só pra exibição no histórico
     descricao_servico TEXT NOT NULL,
     valor_servico REAL NOT NULL,
     competencia TEXT NOT NULL, -- 'YYYY-MM-DD'
-    status TEXT NOT NULL DEFAULT 'pendente', -- 'pendente' | 'emitida' | 'rejeitada' | 'erro'
+    status TEXT NOT NULL DEFAULT 'pendente', -- 'rascunho' | 'pendente' | 'emitida' | 'rejeitada' | 'erro'
     chave_acesso TEXT,
     xml_dps TEXT,
     xml_nfse TEXT,
@@ -575,6 +582,23 @@ sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_envio_documentos_periodo ON envio_do
     ["informacoes_complementares", "informacoes_complementares TEXT"],
   ]) {
     if (!nomes.has(coluna)) sqlite.exec(`ALTER TABLE nfse_modelos ADD COLUMN ${ddl}`);
+  }
+}
+// Migração leve: emissão de NFS-e ganhou rascunhos (salvar sem transmitir) e duplicar — precisa
+// guardar o endereço completo do tomador e o id do modelo usado pra poder pré-preencher de novo.
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(nfse_emissoes)`).all() as any[];
+  const nomes = new Set(cols.map((c) => c.name));
+  for (const [coluna, ddl] of [
+    ["modelo_id", "modelo_id INTEGER REFERENCES nfse_modelos(id) ON DELETE SET NULL"],
+    ["tomador_cep", "tomador_cep TEXT"],
+    ["tomador_logradouro", "tomador_logradouro TEXT"],
+    ["tomador_numero", "tomador_numero TEXT"],
+    ["tomador_complemento", "tomador_complemento TEXT"],
+    ["tomador_bairro", "tomador_bairro TEXT"],
+    ["tomador_codigo_municipio", "tomador_codigo_municipio TEXT"],
+  ]) {
+    if (!nomes.has(coluna)) sqlite.exec(`ALTER TABLE nfse_emissoes ADD COLUMN ${ddl}`);
   }
 }
 
@@ -2323,8 +2347,12 @@ app.get("/api/nfse/emissoes", blockCliente, requirePermissao("nfse", "visualizar
   const empresaId = req.query.empresaId ? Number(req.query.empresaId) : null;
   if (empresaId && !podeAcessarEmpresa(user, empresaId)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
   let sql = `SELECT n.id, n.empresa_id as empresaId, e.nome as empresaNome, n.serie, n.numero_dps as numeroDps, n.ambiente,
-                    n.tomador_documento as tomadorDocumento, n.tomador_nome as tomadorNome, n.modelo_nome as modeloNome, n.descricao_servico as descricaoServico,
-                    n.valor_servico as valorServico, n.competencia, n.status, n.chave_acesso as chaveAcesso, n.erro, n.criado_em as criadoEm
+                    n.modelo_id as modeloId, n.modelo_nome as modeloNome,
+                    n.tomador_documento as tomadorDocumento, n.tomador_nome as tomadorNome, n.tomador_email as tomadorEmail,
+                    n.tomador_cep as tomadorCep, n.tomador_logradouro as tomadorLogradouro, n.tomador_numero as tomadorNumero,
+                    n.tomador_complemento as tomadorComplemento, n.tomador_bairro as tomadorBairro, n.tomador_codigo_municipio as tomadorCodigoMunicipio,
+                    n.descricao_servico as descricaoServico, n.valor_servico as valorServico, n.competencia,
+                    n.status, n.chave_acesso as chaveAcesso, n.erro, n.criado_em as criadoEm
              FROM nfse_emissoes n JOIN empresas e ON e.id = n.empresa_id`;
   const params: any[] = [];
   if (empresaId) {
@@ -2383,64 +2411,88 @@ function nfseServicoDoModelo(modelo: any, descricao: string, valor: number, comp
     informacoesComplementares: modelo.informacoes_complementares || null,
   };
 }
-app.post("/api/nfse/emitir", blockCliente, requirePermissao("nfse", "postar"), async (req, res) => {
-  const user = (req as any).user;
-  const { empresaId, modeloId, tomador, servico } = req.body || {};
-  if (!empresaId) return res.status(400).json({ error: "Selecione a empresa." });
-  if (!podeAcessarEmpresa(user, Number(empresaId))) return res.status(403).json({ error: "Sem acesso a esta empresa." });
-  if (!modeloId) return res.status(400).json({ error: "Selecione o modelo de serviço." });
-  if (!tomador?.documento || !tomador?.nome) return res.status(400).json({ error: "Informe o documento (CPF/CNPJ) e o nome do tomador do serviço." });
+// Valida o corpo comum de emissão/rascunho (empresa, modelo, tomador, serviço) e devolve tudo já
+// carregado do banco — usado tanto por /emitir quanto por /rascunhos.
+function nfseValidarEntrada(user: any, body: any): { erro: string; status?: number } | { empresaId: number; modelo: any; tomador: any; servico: any } {
+  const { empresaId, modeloId, tomador, servico } = body || {};
+  if (!empresaId) return { erro: "Selecione a empresa." };
+  if (!podeAcessarEmpresa(user, Number(empresaId))) return { erro: "Sem acesso a esta empresa.", status: 403 };
+  if (!modeloId) return { erro: "Selecione o modelo de serviço." };
+  if (!tomador?.documento || !tomador?.nome) return { erro: "Informe o documento (CPF/CNPJ) e o nome do tomador do serviço." };
   if (!servico?.descricao || !servico?.valor || !servico?.competencia) {
-    return res.status(400).json({ error: "Preencha a descrição, o valor e a competência do serviço." });
+    return { erro: "Preencha a descrição, o valor e a competência do serviço." };
   }
   const modelo = sqlite.prepare(`SELECT * FROM nfse_modelos WHERE id = ? AND ativo = 1`).get(Number(modeloId)) as any;
-  if (!modelo) return res.status(404).json({ error: "Modelo de serviço não encontrado ou inativo." });
-  const config = sqlite.prepare(`SELECT * FROM nfse_empresa_config WHERE empresa_id = ?`).get(Number(empresaId)) as any;
-  if (!config || !config.habilitado) return res.status(400).json({ error: "Módulo NFS-e não está habilitado para esta empresa." });
-  if (!config.codigo_municipio) {
-    return res.status(400).json({ error: "Preencha o código do município (IBGE) da empresa antes de emitir." });
-  }
+  if (!modelo) return { erro: "Modelo de serviço não encontrado ou inativo.", status: 404 };
+  return { empresaId: Number(empresaId), modelo, tomador, servico };
+}
+// Insere a linha em nfse_emissoes (rascunho ou pendente-pra-emitir-na-hora) e devolve o id.
+// numero_dps recebe um placeholder negativo (menor que qualquer numero_dps já usado pra essa
+// empresa/série) calculado na própria inserção — nunca colide com outro rascunho/pendente
+// pendurado nem com um número de DPS real, que é sempre positivo.
+function nfseInserirEmissao(user: any, empresaId: number, modelo: any, tomador: any, servico: any, status: "rascunho" | "pendente"): number {
+  const info = sqlite
+    .prepare(
+      `INSERT INTO nfse_emissoes (empresa_id, serie, numero_dps, ambiente, modelo_id, modelo_nome,
+         tomador_documento, tomador_nome, tomador_email, tomador_cep, tomador_logradouro, tomador_numero, tomador_complemento, tomador_bairro, tomador_codigo_municipio,
+         codigo_tributacao_nacional, descricao_servico, valor_servico, competencia, status, criado_por)
+       VALUES (?, 70000, (SELECT COALESCE(MIN(numero_dps), 0) - 1 FROM nfse_emissoes WHERE empresa_id = ? AND serie = 70000), 'producaorestrita', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      empresaId,
+      empresaId,
+      modelo.id,
+      modelo.nome,
+      String(tomador.documento).replace(/\D/g, ""),
+      String(tomador.nome).trim(),
+      tomador.email || null,
+      tomador.cep || null,
+      tomador.logradouro || null,
+      tomador.numero || null,
+      tomador.complemento || null,
+      tomador.bairro || null,
+      tomador.codigoMunicipio || null,
+      modelo.codigo_tributacao_nacional,
+      String(servico.descricao).trim(),
+      Number(servico.valor),
+      String(servico.competencia),
+      status,
+      user.id
+    );
+  return Number(info.lastInsertRowid);
+}
+// Transmite de verdade uma linha já existente (rascunho ou recém-criada) — assina e envia ao ADN,
+// atualizando a linha com o resultado. Usado tanto pela emissão direta quanto por "Emitir" a
+// partir de um rascunho salvo.
+async function nfseTransmitirEmissao(emissaoId: number, empresaId: number, modelo: any, tomador: any, servico: any, res: any) {
+  // Falhas de validação (antes de tentar transmitir) também marcam a linha como 'erro' — assim ela
+  // não fica presa em 'pendente' pra sempre e continua editável/reemitível como um rascunho normal.
+  const falhaValidacao = (msg: string) => {
+    sqlite.prepare(`UPDATE nfse_emissoes SET status='erro', erro=? WHERE id=?`).run(msg, emissaoId);
+    return res.status(400).json({ error: msg, emissaoId });
+  };
+  const config = sqlite.prepare(`SELECT * FROM nfse_empresa_config WHERE empresa_id = ?`).get(empresaId) as any;
+  if (!config || !config.habilitado) return falhaValidacao("Módulo NFS-e não está habilitado para esta empresa.");
+  if (!config.codigo_municipio) return falhaValidacao("Preencha o código do município (IBGE) da empresa antes de emitir.");
 
   let cert: nfse.CertificadoInfo, cnpjPrestador: string;
   try {
-    ({ cert, cnpjPrestador } = nfseCertificadoParaEmpresa(Number(empresaId), config.metodo_assinatura));
+    ({ cert, cnpjPrestador } = nfseCertificadoParaEmpresa(empresaId, config.metodo_assinatura));
   } catch (e: any) {
-    return res.status(400).json({ error: e.message });
+    return falhaValidacao(e.message);
   }
-  if (!cnpjPrestador) return res.status(400).json({ error: "Esta empresa não tem CNPJ cadastrado — preencha em Empresas antes de emitir." });
-  const empresaContato = sqlite.prepare(`SELECT telefone, email FROM empresas WHERE id = ?`).get(Number(empresaId)) as any;
+  if (!cnpjPrestador) return falhaValidacao("Esta empresa não tem CNPJ cadastrado — preencha em Empresas antes de emitir.");
+  const empresaContato = sqlite.prepare(`SELECT telefone, email FROM empresas WHERE id = ?`).get(empresaId) as any;
 
   const documentoTomador = String(tomador.documento).replace(/\D/g, "");
   const ambiente: nfse.AmbienteNfse = "producaorestrita"; // Fase 1: só ambiente de testes do governo — nenhuma NFS-e válida é gerada ainda.
   const serie = 70000; // faixa "Emissor Web" conforme o manual oficial
-  const ultimo = sqlite.prepare(`SELECT MAX(numero_dps) as m FROM nfse_emissoes WHERE empresa_id = ? AND serie = ?`).get(Number(empresaId), serie) as any;
+  const ultimo = sqlite.prepare(`SELECT MAX(numero_dps) as m FROM nfse_emissoes WHERE empresa_id = ? AND serie = ? AND numero_dps > 0`).get(empresaId, serie) as any;
   const numeroDps = (ultimo?.m || 0) + 1;
-
-  const registro = sqlite
-    .prepare(
-      `INSERT INTO nfse_emissoes (empresa_id, serie, numero_dps, ambiente, tomador_documento, tomador_nome, tomador_email,
-         codigo_tributacao_nacional, modelo_nome, descricao_servico, valor_servico, competencia, status, criado_por)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pendente', ?)`
-    )
-    .run(
-      Number(empresaId),
-      serie,
-      numeroDps,
-      ambiente,
-      documentoTomador,
-      String(tomador.nome).trim(),
-      tomador.email || null,
-      modelo.codigo_tributacao_nacional,
-      modelo.nome,
-      String(servico.descricao).trim(),
-      Number(servico.valor),
-      String(servico.competencia),
-      user.id
-    );
-  const emissaoId = Number(registro.lastInsertRowid);
+  sqlite.prepare(`UPDATE nfse_emissoes SET numero_dps = ?, ambiente = ?, status = 'pendente' WHERE id = ?`).run(numeroDps, ambiente, emissaoId);
 
   try {
-    const { xmlAssinado, resposta } = await nfse.emitirDps(
+    const { xmlAssinado, resposta, chaveAcesso, xmlNfse, mensagemErro } = await nfse.emitirDps(
       {
         ambiente,
         serie,
@@ -2470,16 +2522,93 @@ app.post("/api/nfse/emitir", blockCliente, requirePermissao("nfse", "postar"), a
       cert
     );
     const status = resposta.ok ? "emitida" : "rejeitada";
-    const chaveMatch = resposta.ok ? resposta.corpo.match(/<chAcesso>([^<]+)<\/chAcesso>/) : null;
     sqlite
       .prepare(`UPDATE nfse_emissoes SET status=?, xml_dps=?, xml_nfse=?, chave_acesso=?, erro=? WHERE id=?`)
-      .run(status, xmlAssinado, resposta.ok ? resposta.corpo : null, chaveMatch ? chaveMatch[1] : null, resposta.ok ? null : resposta.corpo.slice(0, 4000), emissaoId);
-    if (!resposta.ok) return res.status(422).json({ error: `O Sistema Nacional NFS-e rejeitou a emissão (HTTP ${resposta.status}).`, detalhe: resposta.corpo, emissaoId });
-    res.json({ ok: true, emissaoId, chaveAcesso: chaveMatch ? chaveMatch[1] : null });
+      .run(status, xmlAssinado, xmlNfse, chaveAcesso, resposta.ok ? null : (mensagemErro || "").slice(0, 4000), emissaoId);
+    if (!resposta.ok) return res.status(422).json({ error: `O Sistema Nacional NFS-e rejeitou a emissão: ${mensagemErro}`, detalhe: mensagemErro, emissaoId });
+    res.json({ ok: true, emissaoId, chaveAcesso });
   } catch (e: any) {
     sqlite.prepare(`UPDATE nfse_emissoes SET status='erro', erro=? WHERE id=?`).run(e.message, emissaoId);
     res.status(500).json({ error: e.message, emissaoId });
   }
+}
+app.post("/api/nfse/emitir", blockCliente, requirePermissao("nfse", "postar"), async (req, res) => {
+  const user = (req as any).user;
+  const v = nfseValidarEntrada(user, req.body);
+  if ("erro" in v) return res.status(v.status || 400).json({ error: v.erro });
+  const emissaoId = nfseInserirEmissao(user, v.empresaId, v.modelo, v.tomador, v.servico, "pendente");
+  await nfseTransmitirEmissao(emissaoId, v.empresaId, v.modelo, v.tomador, v.servico, res);
+});
+// Rascunhos — salva os dados preenchidos sem transmitir ao governo. O usuário pode continuar
+// depois ("Emitir" a partir do rascunho) ou usar como base pra "Duplicar" outra emissão.
+app.post("/api/nfse/rascunhos", blockCliente, requirePermissao("nfse", "postar"), (req, res) => {
+  const user = (req as any).user;
+  const v = nfseValidarEntrada(user, req.body);
+  if ("erro" in v) return res.status(v.status || 400).json({ error: v.erro });
+  const emissaoId = nfseInserirEmissao(user, v.empresaId, v.modelo, v.tomador, v.servico, "rascunho");
+  res.json({ id: emissaoId });
+});
+app.put("/api/nfse/rascunhos/:id", blockCliente, requirePermissao("nfse", "postar"), (req, res) => {
+  const user = (req as any).user;
+  const existente = sqlite.prepare(`SELECT * FROM nfse_emissoes WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!existente) return res.status(404).json({ error: "Rascunho não encontrado." });
+  if (!["rascunho", "rejeitada", "erro"].includes(existente.status)) return res.status(409).json({ error: "Esta emissão já foi transmitida e não pode ser editada." });
+  if (!podeAcessarEmpresa(user, existente.empresa_id)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  const v = nfseValidarEntrada(user, req.body);
+  if ("erro" in v) return res.status(v.status || 400).json({ error: v.erro });
+  sqlite
+    .prepare(
+      `UPDATE nfse_emissoes SET modelo_id=?, modelo_nome=?, tomador_documento=?, tomador_nome=?, tomador_email=?, tomador_cep=?, tomador_logradouro=?, tomador_numero=?, tomador_complemento=?, tomador_bairro=?, tomador_codigo_municipio=?, codigo_tributacao_nacional=?, descricao_servico=?, valor_servico=?, competencia=?, status='rascunho', erro=NULL WHERE id=?`
+    )
+    .run(
+      v.modelo.id,
+      v.modelo.nome,
+      String(v.tomador.documento).replace(/\D/g, ""),
+      String(v.tomador.nome).trim(),
+      v.tomador.email || null,
+      v.tomador.cep || null,
+      v.tomador.logradouro || null,
+      v.tomador.numero || null,
+      v.tomador.complemento || null,
+      v.tomador.bairro || null,
+      v.tomador.codigoMunicipio || null,
+      v.modelo.codigo_tributacao_nacional,
+      String(v.servico.descricao).trim(),
+      Number(v.servico.valor),
+      String(v.servico.competencia),
+      existente.id
+    );
+  res.json({ ok: true });
+});
+app.post("/api/nfse/rascunhos/:id/emitir", blockCliente, requirePermissao("nfse", "postar"), async (req, res) => {
+  const user = (req as any).user;
+  const existente = sqlite.prepare(`SELECT * FROM nfse_emissoes WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!existente) return res.status(404).json({ error: "Rascunho não encontrado." });
+  if (!["rascunho", "rejeitada", "erro"].includes(existente.status)) return res.status(409).json({ error: "Esta emissão já foi transmitida." });
+  if (!podeAcessarEmpresa(user, existente.empresa_id)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  if (!existente.modelo_id) return res.status(400).json({ error: "Este rascunho não tem um modelo de serviço válido — edite antes de emitir." });
+  const modelo = sqlite.prepare(`SELECT * FROM nfse_modelos WHERE id = ? AND ativo = 1`).get(existente.modelo_id) as any;
+  if (!modelo) return res.status(404).json({ error: "O modelo de serviço deste rascunho não existe mais ou está inativo." });
+  const tomador = {
+    documento: existente.tomador_documento,
+    nome: existente.tomador_nome,
+    email: existente.tomador_email,
+    cep: existente.tomador_cep,
+    logradouro: existente.tomador_logradouro,
+    numero: existente.tomador_numero,
+    complemento: existente.tomador_complemento,
+    bairro: existente.tomador_bairro,
+    codigoMunicipio: existente.tomador_codigo_municipio,
+  };
+  const servico = { descricao: existente.descricao_servico, valor: existente.valor_servico, competencia: existente.competencia };
+  await nfseTransmitirEmissao(existente.id, existente.empresa_id, modelo, tomador, servico, res);
+});
+app.delete("/api/nfse/emissoes/:id", blockCliente, requirePermissao("nfse", "editar"), (req, res) => {
+  const row = sqlite.prepare(`SELECT * FROM nfse_emissoes WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!row) return res.status(404).json({ error: "Registro não encontrado." });
+  if (row.status !== "rascunho") return res.status(409).json({ error: "Só é possível excluir rascunhos — emissões já transmitidas ficam no histórico." });
+  sqlite.prepare(`DELETE FROM nfse_emissoes WHERE id = ?`).run(row.id);
+  res.json({ ok: true });
 });
 
 // ---------- Financeiro (honorários) ----------

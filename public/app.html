@@ -1678,7 +1678,12 @@ function nfseEmpresaConfigModal(e){
   });
 }
 
+let NFSE_PREFILL = null;
+let NFSE_RASCUNHO_ID = null;
 async function renderNfseEmitir(){
+  const prefill = NFSE_PREFILL;
+  NFSE_PREFILL = null;
+  NFSE_RASCUNHO_ID = (prefill && prefill.__modo === 'continuar') ? prefill.id : null;
   const [{ items }, { items: modelos }] = await Promise.all([ api('/nfse/empresas'), api('/nfse/modelos') ]);
   const habilitadas = items.filter(e=>e.habilitado);
   const modelosAtivos = modelos.filter(m=>m.ativo);
@@ -1727,10 +1732,30 @@ async function renderNfseEmitir(){
         <div class="field" style="width:160px;"><label>Competência</label><input id="nfseEmiCompetencia" type="date" value="${hoje.toISOString().slice(0,10)}"></div>
       </div>
       <div class="field"><label>Descrição do serviço</label><textarea id="nfseEmiDescricao" rows="2" placeholder="Ex.: Fabricação de 01 toldo sombrite medidas 6x4"></textarea></div>
-      <button class="btn primary" id="btnEmitirNfse">Emitir NFS-e (ambiente de testes)</button>
+      <div class="row">
+        <button class="btn" id="btnSalvarNfse">${NFSE_RASCUNHO_ID?'Salvar rascunho':'Salvar como rascunho'}</button>
+        <button class="btn primary" id="btnEmitirNfse">Emitir NFS-e (ambiente de testes)</button>
+      </div>
       <div id="nfseEmiResultado" style="margin-top:12px;"></div>
     </div>
   `;
+  if(prefill){
+    const setVal=(id,v)=>{ const el=document.getElementById(id); if(el && v!=null) el.value=v; };
+    setVal('nfseEmiEmpresa', prefill.empresaId);
+    setVal('nfseEmiModelo', prefill.modeloId);
+    setVal('nfseEmiDocTomador', prefill.tomadorDocumento);
+    setVal('nfseEmiNomeTomador', prefill.tomadorNome);
+    setVal('nfseEmiEmailTomador', prefill.tomadorEmail);
+    setVal('nfseEmiEndereco', prefill.tomadorLogradouro);
+    setVal('nfseEmiNumero', prefill.tomadorNumero);
+    setVal('nfseEmiComplemento', prefill.tomadorComplemento);
+    setVal('nfseEmiCep', prefill.tomadorCep);
+    setVal('nfseEmiBairro', prefill.tomadorBairro);
+    setVal('nfseEmiCodMun', prefill.tomadorCodigoMunicipio);
+    setVal('nfseEmiDescricao', prefill.descricaoServico);
+    setVal('nfseEmiValor', prefill.valorServico);
+    toast(prefill.__modo==='continuar' ? 'Continuando rascunho — revise os dados antes de emitir.' : 'Dados duplicados — revise antes de emitir.', 'ok');
+  }
   document.getElementById('nfseEmiDocTomador').addEventListener('input', async e=>{
     const doc = e.target.value.replace(/\D/g,'');
     e.target.value = doc;
@@ -1759,9 +1784,8 @@ async function renderNfseEmitir(){
       status.textContent = err.message;
     }
   });
-  document.getElementById('btnEmitirNfse').addEventListener('click', async ()=>{
-    const resultado = document.getElementById('nfseEmiResultado');
-    const body = {
+  function nfseLerFormulario(){
+    return {
       empresaId: Number(document.getElementById('nfseEmiEmpresa').value),
       modeloId: Number(document.getElementById('nfseEmiModelo').value),
       tomador: {
@@ -1781,11 +1805,38 @@ async function renderNfseEmitir(){
         competencia: document.getElementById('nfseEmiCompetencia').value,
       },
     };
+  }
+  document.getElementById('btnSalvarNfse').addEventListener('click', async ()=>{
+    const body = nfseLerFormulario();
+    if(!body.tomador.documento || !body.tomador.nome){ toast('Preencha o documento e o nome do tomador.','err'); return; }
+    if(!body.servico.descricao || !body.servico.valor || !body.servico.competencia){ toast('Preencha a descrição, o valor e a competência.','err'); return; }
+    try{
+      if(NFSE_RASCUNHO_ID){
+        await api('/nfse/rascunhos/'+NFSE_RASCUNHO_ID, { method:'PUT', body });
+        toast('Rascunho atualizado.','ok');
+      }else{
+        const r = await api('/nfse/rascunhos', { method:'POST', body });
+        NFSE_RASCUNHO_ID = r.id;
+        document.getElementById('btnSalvarNfse').textContent = 'Salvar rascunho';
+        toast('Rascunho salvo — você pode continuar depois em Notas emitidas.','ok');
+      }
+    }catch(e){ toast(e.message,'err'); }
+  });
+  document.getElementById('btnEmitirNfse').addEventListener('click', async ()=>{
+    const resultado = document.getElementById('nfseEmiResultado');
+    const body = nfseLerFormulario();
     if(!body.tomador.documento || !body.tomador.nome){ toast('Preencha o documento e o nome do tomador.','err'); return; }
     if(!body.servico.descricao || !body.servico.valor || !body.servico.competencia){ toast('Preencha a descrição, o valor e a competência.','err'); return; }
     resultado.innerHTML = `<div class="empty-state">Enviando ao Sistema Nacional NFS-e…</div>`;
     try{
-      const r = await api('/nfse/emitir', { method:'POST', body });
+      let r;
+      if(NFSE_RASCUNHO_ID){
+        await api('/nfse/rascunhos/'+NFSE_RASCUNHO_ID, { method:'PUT', body });
+        r = await api('/nfse/rascunhos/'+NFSE_RASCUNHO_ID+'/emitir', { method:'POST' });
+        NFSE_RASCUNHO_ID = null;
+      }else{
+        r = await api('/nfse/emitir', { method:'POST', body });
+      }
       resultado.innerHTML = `<div class="slot-locked" style="background:var(--paper);"><span class="fname">Emitida com sucesso</span>Chave de acesso: ${esc(r.chaveAcesso||'—')}</div>`;
       toast('NFS-e emitida (ambiente de testes).','ok');
     }catch(e){
@@ -1998,6 +2049,7 @@ async function nfseModeloModal(m){
 async function renderNfseNotas(){
   const { items } = await api('/nfse/emissoes');
   const box = document.getElementById('nfseContent');
+  const STATUS_LABEL={emitida:'Emitida',pendente:'Pendente',rejeitada:'Rejeitada',erro:'Erro',rascunho:'Rascunho'};
   box.innerHTML = `
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
@@ -2010,9 +2062,13 @@ async function renderNfseNotas(){
               <td>${esc(n.modeloNome||'—')}</td>
               <td>${esc(n.descricaoServico)}</td>
               <td>${fmtMoney(n.valorServico)}</td>
-              <td><span class="tag ${n.status==='emitida'?'ok':(n.status==='pendente'?'muted':'bad')}">${({emitida:'Emitida',pendente:'Pendente',rejeitada:'Rejeitada',erro:'Erro'})[n.status]||n.status}</span></td>
+              <td><span class="tag ${n.status==='emitida'?'ok':(n.status==='pendente'?'muted':(n.status==='rascunho'?'muted':'bad'))}">${STATUS_LABEL[n.status]||n.status}</span></td>
               <td>${fmtDateHora(n.criadoEm)}</td>
-              <td style="text-align:right;"><button class="btn small" data-id="${n.id}" data-act="baixar-xml">XML</button></td>
+              <td style="text-align:right; white-space:nowrap;">
+                ${n.status==='rascunho'?`<button class="btn small" data-id="${n.id}" data-act="continuar">Continuar</button> <button class="btn small" data-id="${n.id}" data-act="excluir">Excluir</button>`:''}
+                ${n.status!=='rascunho'?`<button class="btn small" data-id="${n.id}" data-act="duplicar">Duplicar</button>`:''}
+                ${n.status==='emitida'?`<button class="btn small" data-id="${n.id}" data-act="baixar-xml">XML</button>`:''}
+              </td>
             </tr>
           `).join('') : `<tr><td colspan="8"><div class="empty-state">Nenhuma emissão ainda.</div></td></tr>`}
         </tbody>
@@ -2021,6 +2077,26 @@ async function renderNfseNotas(){
   `;
   box.querySelectorAll('[data-act="baixar-xml"]').forEach(b=>b.addEventListener('click', ()=>{
     window.open('/api/nfse/emissoes/'+b.dataset.id+'/xml', '_blank');
+  }));
+  box.querySelectorAll('[data-act="duplicar"]').forEach(b=>b.addEventListener('click', ()=>{
+    const n = items.find(i=>i.id===Number(b.dataset.id));
+    NFSE_PREFILL = { ...n, __modo:'duplicar' };
+    NFSE_TAB='emitir';
+    renderNfseTabs();
+  }));
+  box.querySelectorAll('[data-act="continuar"]').forEach(b=>b.addEventListener('click', ()=>{
+    const n = items.find(i=>i.id===Number(b.dataset.id));
+    NFSE_PREFILL = { ...n, __modo:'continuar' };
+    NFSE_TAB='emitir';
+    renderNfseTabs();
+  }));
+  box.querySelectorAll('[data-act="excluir"]').forEach(b=>b.addEventListener('click', async ()=>{
+    if(!confirm('Excluir este rascunho?')) return;
+    try{
+      await api('/nfse/emissoes/'+b.dataset.id, { method:'DELETE' });
+      toast('Rascunho excluído.','ok');
+      renderNfseNotas();
+    }catch(e){ toast(e.message,'err'); }
   }));
 }
 

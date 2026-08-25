@@ -2,6 +2,7 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import https from "https";
+import zlib from "zlib";
 import forge from "node-forge";
 import { SignedXml } from "xml-crypto";
 
@@ -19,15 +20,16 @@ import { SignedXml } from "xml-crypto";
  * escritório ou de uma empresa-cliente) fica guardado criptografado em repouso (AES-256-GCM) e só
  * é decifrado em memória, no momento da chamada.
  *
- * IMPORTANTE: a URL base abaixo foi montada a partir da documentação (o Swagger do ambiente de
- * produção restrita exige ele mesmo um certificado válido para ser sequer visualizado, então não
- * deu pra confirmar o path exato de cada endpoint sem um certificado real em mãos). Ajuste
- * ADN_BASE_URL/os paths se o primeiro teste real retornar 404.
+ * A recepção de DPS (emissão síncrona da NFS-e) é atendida pela "Sefin Nacional NFS-e", que fica
+ * num host diferente do ADN de distribuição/consulta (adn.*.nfse.gov.br/contribuintes/...) — foi
+ * confirmado com teste real (certificado do escritório): GET em .../contribuintes/nfse devolve 404
+ * (rota não existe), enquanto GET em sefin.producaorestrita.nfse.gov.br/SefinNacional/nfse devolve
+ * 405 Method Not Allowed (rota existe, só aceita POST).
  */
 
 const ADN_BASE_URL = {
-  producaorestrita: "https://adn.producaorestrita.nfse.gov.br/contribuintes",
-  producao: "https://adn.nfse.gov.br/contribuintes",
+  producaorestrita: "https://sefin.producaorestrita.nfse.gov.br/SefinNacional",
+  producao: "https://sefin.nfse.gov.br/SefinNacional",
 } as const;
 export type AmbienteNfse = keyof typeof ADN_BASE_URL;
 
@@ -195,6 +197,14 @@ function so2(n: number): string {
 function xmlEscape(s: string): string {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" }[c]!));
 }
+// dhEmi exige hora local com o offset real (TZD +hh:mm/-hh:mm) — testado com certificado real: a
+// ADN rejeita (E0008) um horário UTC relabelado como "-00:00", mesmo representando o mesmo
+// instante. Brasil não tem mais horário de verão desde 2019, então -03:00 (Brasília) é fixo pra
+// praticamente todos os municípios emissores.
+function dataHoraBrasilia(deslocamentoMs = 0): string {
+  const d = new Date(Date.now() - 3 * 60 * 60 * 1000 + deslocamentoMs);
+  return d.toISOString().replace(/\.\d{3}Z$/, "-03:00");
+}
 
 // Monta o XML da DPS (sem assinatura ainda) seguindo o leiaute oficial (ANEXO_I-SEFIN_ADN-DPS_NFSe-SNNFSe).
 // Cobre só o caso comum — serviço nacional, tributável, sem obra/evento/comércio exterior/dedução.
@@ -204,17 +214,19 @@ export function montarXmlDps(input: MontarDpsInput): { xml: string; idDps: strin
   const tpInsc = "2"; // 2 = CNPJ (prestador sempre pessoa jurídica no nosso caso)
   const inscFederal = prestador.cnpj.padStart(14, "0");
   const idDps = `DPS${prestador.codigoMunicipio}${tpInsc}${inscFederal}${String(serie).padStart(5, "0")}${String(numeroDps).padStart(15, "0")}`;
-  const dhEmi = new Date().toISOString().replace(/\.\d{3}Z$/, "-00:00");
+  const dhEmi = dataHoraBrasilia(-60_000); // 60s de folga pra latência de rede/desvio de relógio
 
   const tomadorTpInsc = tomador.documento.length === 14 ? "CNPJ" : "CPF";
   const tomadorMun = tomador.codigoMunicipio || prestador.codigoMunicipio;
 
-  const xml = `<DPS xmlns="http://www.sped.fazenda.gov.br/nfse"><infDPS Id="${idDps}">
+  const versaoDps = servico.ibscbsPreencher ? "1.01" : "1.00"; // 1.01 = layout com o grupo IBSCBS; 1.00 = sem
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<DPS xmlns="http://www.sped.fazenda.gov.br/nfse" versao="${versaoDps}"><infDPS Id="${idDps}">
 <tpAmb>${tpAmb}</tpAmb>
 <dhEmi>${xmlEscape(dhEmi)}</dhEmi>
 <verAplic>simplescontabeis-1.0</verAplic>
 <serie>${String(serie).padStart(5, "0")}</serie>
-<nDPS>${String(numeroDps).padStart(15, "0")}</nDPS>
+<nDPS>${numeroDps}</nDPS>
 <dCompet>${servico.competencia}</dCompet>
 <tpEmit>1</tpEmit>
 <cLocEmi>${prestador.codigoMunicipio}</cLocEmi>
@@ -361,14 +373,15 @@ export interface RespostaAdn {
   status: number;
   corpo: string;
 }
-// POST genérico ao ADN autenticado com o certificado (mTLS) — usado tanto para /nfse quanto para
-// consultas. O corpo pode ser XML (emissão) ou vazio (GET).
+// POST genérico à Sefin Nacional NFS-e autenticado com o certificado (mTLS) — usado tanto para
+// /nfse quanto para consultas. O corpo pode ser JSON (emissão) ou vazio (GET).
 export function chamarAdn(
   ambiente: AmbienteNfse,
   metodo: "GET" | "POST",
   caminho: string,
   cert: CertificadoInfo,
-  corpo?: string
+  corpo?: string,
+  contentType: string = "application/json"
 ): Promise<RespostaAdn> {
   return new Promise((resolve, reject) => {
     const base = new URL(ADN_BASE_URL[ambiente] + caminho);
@@ -381,7 +394,7 @@ export function chamarAdn(
         method: metodo,
         agent,
         headers: {
-          "Content-Type": "application/xml",
+          "Content-Type": contentType,
           ...(bodyBuffer ? { "Content-Length": String(bodyBuffer.length) } : {}),
         },
         timeout: 30000,
@@ -402,13 +415,32 @@ export function chamarAdn(
   });
 }
 
-// Fluxo completo: monta, assina e envia a DPS; devolve o XML assinado (pra guardar) e a resposta.
+// A Sefin Nacional NFS-e espera/devolve o XML comprimido (gzip) e em base64 dentro de um envelope
+// JSON — não o XML cru. Sucesso (2xx): {chaveAcesso, nfseXmlGZipB64}. Erro: {erros:[{Codigo,Descricao}]}.
+function interpretarRespostaEmissao(resposta: RespostaAdn): { chaveAcesso: string | null; xmlNfse: string | null; mensagemErro: string | null } {
+  let json: any;
+  try {
+    json = JSON.parse(resposta.corpo);
+  } catch {
+    return { chaveAcesso: null, xmlNfse: null, mensagemErro: resposta.corpo || `HTTP ${resposta.status}` };
+  }
+  if (resposta.ok) {
+    const xmlNfse = json.nfseXmlGZipB64 ? zlib.gunzipSync(Buffer.from(json.nfseXmlGZipB64, "base64")).toString("utf8") : null;
+    return { chaveAcesso: json.chaveAcesso || null, xmlNfse, mensagemErro: null };
+  }
+  const erros = Array.isArray(json.erros) ? json.erros.map((e: any) => `${e.Codigo || ""}: ${e.Descricao || ""}`.trim()).join(" | ") : null;
+  return { chaveAcesso: null, xmlNfse: null, mensagemErro: erros || resposta.corpo };
+}
+
+// Fluxo completo: monta, assina e envia a DPS; devolve o XML assinado (pra guardar) e o resultado interpretado.
 export async function emitirDps(
   input: MontarDpsInput,
   cert: CertificadoInfo
-): Promise<{ xmlAssinado: string; resposta: RespostaAdn }> {
+): Promise<{ xmlAssinado: string; resposta: RespostaAdn; chaveAcesso: string | null; xmlNfse: string | null; mensagemErro: string | null }> {
   const { xml, idDps } = montarXmlDps(input);
   const xmlAssinado = assinarXmlDps(xml, idDps, cert);
-  const resposta = await chamarAdn(input.ambiente, "POST", "/nfse", cert, xmlAssinado);
-  return { xmlAssinado, resposta };
+  const corpoRequisicao = JSON.stringify({ dpsXmlGZipB64: zlib.gzipSync(Buffer.from(xmlAssinado, "utf8")).toString("base64") });
+  const resposta = await chamarAdn(input.ambiente, "POST", "/nfse", cert, corpoRequisicao, "application/json");
+  const { chaveAcesso, xmlNfse, mensagemErro } = interpretarRespostaEmissao(resposta);
+  return { xmlAssinado, resposta, chaveAcesso, xmlNfse, mensagemErro };
 }
