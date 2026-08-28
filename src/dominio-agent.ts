@@ -24,13 +24,20 @@ import fs from "fs";
  * mesma do agente do painellibra). Ele só faz leitura e só envia nome/CNPJ/código/status/contato
  * de cada cliente — nenhum dado fiscal/contábil detalhado (isso continua sendo feito manualmente
  * via Envio de Documentos, porque não existe API pra ler relatórios contábeis do Domínio).
+ *
+ * Também exporta (opcional, "Exportar XML pro Domínio Web" em Configurações › Domínio Web) os
+ * documentos fiscais buscados via NF-e/NFC-e/NFS-e (Busca de XML) pra uma pasta local, organizados
+ * por empresa/competência — prontos pra selecionar de uma vez na tela nativa de importação de XML em
+ * lote do Domínio ("NF-e Arquivo XML", "NFS-e Arquivo XML - ABRASF" etc.). Não empurra pra dentro do
+ * Domínio automaticamente: isso exigiria integração formal com a API de parceiros do Onvio (é assim
+ * que o SIEG faz), fora do alcance deste agente.
  */
 
 const CLOUD_URL = (process.env.CLOUD_URL || "http://localhost:3000").replace(/\/$/, "");
 const AGENT_TOKEN = process.env.DOMINIO_AGENT_TOKEN || "";
 const SYNC_POLL_MINUTES = process.env.DOMINIO_AGENT_POLL_MINUTES ? Number(process.env.DOMINIO_AGENT_POLL_MINUTES) : 60;
 const FAST_POLL_SECONDS = 12; // heartbeat + testes de conexão pedidos pela tela — precisa ser rápido pro botão "Testar" responder logo
-const AGENT_VERSION = "dominio-agent-2-2026-08-18";
+const AGENT_VERSION = "dominio-agent-3-2026-08-27";
 
 type Config = {
   source: string;
@@ -48,6 +55,8 @@ type Config = {
   colStatus: string;
   apiUrl: string;
   apiToken: string;
+  xmlExportAtivo: boolean;
+  xmlExportDir: string;
 };
 
 // Config vinda da nuvem tem prioridade; campo vazio cai para a variável de ambiente local.
@@ -74,6 +83,8 @@ async function carregarConfig(): Promise<Config> {
     colStatus: remoto.colStatus || process.env.DOMINIO_COL_STATUS || "STATUS",
     apiUrl: remoto.apiUrl || process.env.DOMINIO_API_URL || "",
     apiToken: remoto.apiToken || process.env.DOMINIO_API_TOKEN || "",
+    xmlExportAtivo: remoto.xmlExportAtivo ?? process.env.DOMINIO_XML_EXPORT_ATIVO === "1",
+    xmlExportDir: remoto.xmlExportDir || process.env.DOMINIO_XML_EXPORT_DIR || "",
   };
 }
 
@@ -89,6 +100,9 @@ type EmpresaNormalizada = {
   uf?: string | null;
   cep?: string | null;
   inscricaoMunicipal?: string | null;
+  inscricaoEstadual?: string | null;
+  nomeRepresentanteLegal?: string | null;
+  cpfRepresentanteLegal?: string | null;
 };
 
 function normalizarLinha(row: Record<string, any>, cfg: Config): EmpresaNormalizada {
@@ -204,6 +218,27 @@ function extrairInscricaoMunicipal(item: any): string | null {
   const im = nats.find((n: any) => n.kind?.id === "BR-IM" && n.identity);
   return im?.identity || null;
 }
+// Mesmo padrão da Inscrição Municipal acima — "BR-IE" é o código do Onvio pra Inscrição Estadual
+// (obrigatória só pra empresas que vendem mercadoria/circulam ICMS; a maioria dos prestadores de
+// serviço não tem, então costuma ficar em branco).
+function extrairInscricaoEstadual(item: any): string | null {
+  const nats = item?.primaryContactExpanded?.nationalIdentitiesExpanded || [];
+  const ie = nats.find((n: any) => n.kind?.id === "BR-IE" && n.identity);
+  return ie?.identity || null;
+}
+// O contato principal do cliente no Onvio normalmente É o representante legal/sócio-administrador
+// (quem o escritório cadastra como responsável pela empresa) — nome vem do próprio contato, CPF
+// vem junto com o CNPJ na mesma lista de documentos (o CNPJ já é usado em extrairDocumento; aqui só
+// pega o CPF que sobra, que nem sempre existe — nesse caso fica em branco pra preencher na mão).
+function extrairNomeRepresentante(item: any): string | null {
+  const nome = item?.primaryContactExpanded?.name;
+  return nome ? String(nome).trim() : null;
+}
+function extrairCpfRepresentante(item: any): string | null {
+  const nats = item?.primaryContactExpanded?.nationalIdentitiesExpanded || [];
+  const cpf = nats.find((n: any) => n.kind?.id === "BR-CPF" && n.identity);
+  return cpf?.identity || null;
+}
 
 async function buscarViaOnvio(): Promise<EmpresaNormalizada[]> {
   if (!fs.existsSync(ONVIO_SESSION_PATH)) {
@@ -262,6 +297,9 @@ async function buscarViaOnvio(): Promise<EmpresaNormalizada[]> {
           nome: String(it.name || "").trim(),
           cnpj: extrairDocumento(it),
           inscricaoMunicipal: extrairInscricaoMunicipal(it),
+          inscricaoEstadual: extrairInscricaoEstadual(it),
+          nomeRepresentanteLegal: extrairNomeRepresentante(it),
+          cpfRepresentanteLegal: extrairCpfRepresentante(it),
           ...contato,
           // situação (ativo/inativo) não vem nessa API — a sincronização automática não mexe
           // nisso pra não reativar/desativar empresa por engano (ver server.ts, COALESCE(ativo)).
@@ -323,6 +361,50 @@ async function processarSincronizacoesPendentes(cfg: Config, syncJobs: any[]) {
   }
 }
 
+// ---- Exportação de XML pro Domínio Web (pasta local, pra importação em lote nativa do Domínio) ----
+// O Domínio já tem uma tela própria de importação de XML em lote ("NF-e Arquivo XML", "NFC-e Arquivo
+// XML", "NFS-e Arquivo XML - ABRASF") que aceita selecionar vários arquivos do computador de uma vez
+// só. A automação "sem clique nenhum" que o SIEG oferece passa por um acordo de integração formal com
+// a Thomson Reuters/Onvio (API de parceiro, não pública) — fora do alcance de um agente como este. O
+// que dá pra automatizar de verdade: manter uma pasta local sempre atualizada com os XMLs buscados
+// (organizados por empresa/competência), prontos pra selecionar de uma vez só na tela de importação
+// do Domínio — sem precisar baixar ZIP nem organizar arquivo por arquivo na mão todo dia.
+const XML_CURSOR_PATH = path.join(__dirname, "..", "data", "dominio-agent-xml-cursor.json");
+function lerCursorXml(): number {
+  try {
+    return JSON.parse(fs.readFileSync(XML_CURSOR_PATH, "utf8")).ultimoId || 0;
+  } catch {
+    return 0;
+  }
+}
+function salvarCursorXml(ultimoId: number) {
+  fs.mkdirSync(path.dirname(XML_CURSOR_PATH), { recursive: true });
+  fs.writeFileSync(XML_CURSOR_PATH, JSON.stringify({ ultimoId }));
+}
+function sanitizarNomeArquivo(s: string): string {
+  return String(s || "").replace(/[\\/:*?"<>|]/g, "_").trim().slice(0, 120);
+}
+async function exportarDocumentosNovos(cfg: Config) {
+  if (!cfg.xmlExportAtivo || !cfg.xmlExportDir) return;
+  let ultimoId = lerCursorXml();
+  for (;;) {
+    const { items } = await cloudFetch(`/api/dominio-agent/documentos-novos?desdeId=${ultimoId}&limite=200`);
+    if (!items || !items.length) break;
+    for (const doc of items) {
+      const competencia = doc.dataEmissao ? String(doc.dataEmissao).slice(0, 7) : "sem-data"; // AAAA-MM
+      const pastaEmpresa = sanitizarNomeArquivo(doc.empresaNome || "Sem empresa");
+      const destino = path.join(cfg.xmlExportDir, pastaEmpresa, competencia);
+      fs.mkdirSync(destino, { recursive: true });
+      const nomeArquivo = sanitizarNomeArquivo(doc.chaveAcesso || `doc-${doc.id}`) + ".xml";
+      fs.writeFileSync(path.join(destino, nomeArquivo), doc.xml, "utf8");
+      ultimoId = doc.id;
+    }
+    salvarCursorXml(ultimoId);
+    console.log(`[exportação XML] ${items.length} documento(s) salvo(s) em ${cfg.xmlExportDir}.`);
+    if (items.length < 200) break; // menos que o limite pedido — não tem mais novos por enquanto
+  }
+}
+
 let proximaSincroniaEm = 0; // timestamp — a sincronia completa de clientes só roda a cada SYNC_POLL_MINUTES
 async function tick() {
   if (!AGENT_TOKEN) {
@@ -340,6 +422,11 @@ async function tick() {
   const cfg = await carregarConfig();
   await processarTestesPendentes(cfg, work.testJobs || []); // roda toda vez (rápido) — é o que o botão "Testar" espera
   await processarSincronizacoesPendentes(cfg, work.syncJobs || []); // idem, pro botão "Atualizar Empresas"
+  try {
+    await exportarDocumentosNovos(cfg); // independente da sincronização de clientes — roda todo tick
+  } catch (e: any) {
+    console.error("Falha ao exportar XML pro Domínio Web:", e.message);
+  }
 
   if (!cfg.source) return;
   if (Date.now() < proximaSincroniaEm) return; // sincronia automática só no ritmo configurado (padrão 60min)

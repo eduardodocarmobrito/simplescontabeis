@@ -1,0 +1,282 @@
+import https from "https";
+import * as nfse from "./nfse";
+
+/**
+ * Integração com o "Integra Contador" (Receita Federal + SERPRO) — DAS, Declaração do Simples
+ * Nacional (PGDAS-D), Situação Fiscal (SITFIS) e DCTFWeb.
+ *
+ * IMPORTANTE — diferente de NF-e/NFS-e/OneDrive: este é um serviço PAGO (cobrança por uso, ex.:
+ * R$0,80 por DAS emitido em 01/2025), contratado pelo próprio escritório na Loja SERPRO
+ * (loja.serpro.gov.br) com o e-CNPJ dele — não é o certificado da empresa-cliente. Cada
+ * empresa-cliente precisa dar "autorização de acesso" pro CNPJ do escritório no e-CAC dela, E o
+ * escritório precisa aceitar essa autorização manualmente (até 30 dias) — isso não dá pra
+ * automatizar por API, é um passo humano no e-CAC.
+ *
+ * Construído a partir da documentação oficial (apicenter.estaleiro.serpro.gov.br/documentacao/
+ * api-integra-contador) — a autenticação e o fluxo do PGDASD/SITFIS foram confirmados contra a
+ * documentação real (exemplos literais de request/response). O DCTFWeb (consultarDctfWeb) tem a
+ * estrutura pronta mas os idServico exatos NÃO foram confirmados — só usar depois de checar contra
+ * o Swagger real (só acessível com uma conta contratada). NUNCA testado contra uma conta real (o
+ * escritório ainda não contratou) — é bem possível que algum campo precise de ajuste no primeiro
+ * uso de verdade, do mesmo jeito que aconteceu com nfse.ts e asaas.ts antes de funcionarem.
+ */
+
+const AUTH_URL = "https://autenticacao.sapi.serpro.gov.br/authenticate";
+const GATEWAY_BASE = "https://gateway.apiserpro.serpro.gov.br/integra-contador/v1";
+
+export interface TokenIntegraContador {
+  accessToken: string;
+  jwtToken: string;
+  expiresIn: number;
+  obtidoEm: number; // Date.now() no momento da obtenção, pra saber quando renovar
+}
+
+function chamarHttps(opts: {
+  hostname: string;
+  path: string;
+  method: string;
+  headers: Record<string, string>;
+  cert?: string;
+  key?: string;
+  corpo?: Buffer;
+}): Promise<{ status: number; corpo: string }> {
+  return new Promise((resolve, reject) => {
+    const req = https.request(
+      { hostname: opts.hostname, path: opts.path, method: opts.method, headers: opts.headers, cert: opts.cert, key: opts.key, timeout: 30000 },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () => resolve({ status: res.statusCode || 0, corpo: Buffer.concat(chunks).toString("utf8") }));
+      }
+    );
+    req.on("timeout", () => req.destroy(new Error("Tempo esgotado ao conectar no Integra Contador (SERPRO).")));
+    req.on("error", reject);
+    if (opts.corpo) req.write(opts.corpo);
+    req.end();
+  });
+}
+
+// Autenticação: mTLS com o e-CNPJ do escritório + Basic auth (consumerKey:consumerSecret, da Loja
+// SERPRO) → devolve um par de tokens (access_token curto, ~33min) usado nas chamadas seguintes.
+export async function autenticar(cert: nfse.CertificadoInfo, consumerKey: string, consumerSecret: string): Promise<TokenIntegraContador> {
+  const basic = Buffer.from(`${consumerKey}:${consumerSecret}`).toString("base64");
+  const corpo = Buffer.from("grant_type=client_credentials", "utf8");
+  const url = new URL(AUTH_URL);
+  const { status, corpo: resposta } = await chamarHttps({
+    hostname: url.hostname,
+    path: url.pathname,
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${basic}`,
+      "Role-Type": "TERCEIROS",
+      "Content-Type": "application/x-www-form-urlencoded",
+      "Content-Length": String(corpo.length),
+    },
+    cert: cert.certPem,
+    key: cert.privateKeyPem,
+    corpo,
+  });
+  let json: any;
+  try {
+    json = JSON.parse(resposta);
+  } catch {
+    throw new Error(`Resposta inesperada do Integra Contador ao autenticar (HTTP ${status}): ${resposta.slice(0, 300)}`);
+  }
+  if (status !== 200 || !json.access_token) {
+    throw new Error(json.mensagem || json.message || `Falha ao autenticar no Integra Contador (HTTP ${status}).`);
+  }
+  return { accessToken: json.access_token, jwtToken: json.jwt_token, expiresIn: json.expires_in || 1800, obtidoEm: Date.now() };
+}
+export function tokenValido(token: TokenIntegraContador | null): boolean {
+  if (!token) return false;
+  // Renova um pouco antes de expirar de verdade (30s de folga), pra não arriscar usar um token
+  // que expira no meio da chamada seguinte.
+  return Date.now() - token.obtidoEm < (token.expiresIn - 30) * 1000;
+}
+
+export interface PedidoIntegraContador {
+  base: "Emitir" | "Consultar" | "Declarar" | "Apoiar" | "Monitorar";
+  contratanteCnpj: string; // CNPJ do escritório (quem contratou o serviço)
+  contribuinteDocumento: string; // CNPJ ou CPF da empresa-cliente sendo consultada
+  idSistema: string;
+  idServico: string;
+  versaoSistema: string;
+  dados: object;
+}
+interface RespostaIntegraContador {
+  status: number;
+  mensagens: { codigo: string; texto: string }[];
+  dados: any; // já decodificado de JSON, se a Receita mandar string JSON escapada dentro de "dados"
+}
+export async function chamarServico(token: TokenIntegraContador, pedido: PedidoIntegraContador): Promise<RespostaIntegraContador> {
+  const documentoLimpo = pedido.contribuinteDocumento.replace(/\D/g, "");
+  const cnpjContratanteLimpo = pedido.contratanteCnpj.replace(/\D/g, "");
+  const corpoObj = {
+    contratante: { numero: cnpjContratanteLimpo, tipo: 2 },
+    autorPedidoDados: { numero: cnpjContratanteLimpo, tipo: 2 },
+    contribuinte: { numero: documentoLimpo, tipo: documentoLimpo.length === 11 ? 1 : 2 },
+    pedidoDados: {
+      idSistema: pedido.idSistema,
+      idServico: pedido.idServico,
+      versaoSistema: pedido.versaoSistema,
+      dados: JSON.stringify(pedido.dados),
+    },
+  };
+  const corpo = Buffer.from(JSON.stringify(corpoObj), "utf8");
+  const url = new URL(`${GATEWAY_BASE}/${pedido.base}`);
+  const { status, corpo: resposta } = await chamarHttps({
+    hostname: url.hostname,
+    path: url.pathname,
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token.accessToken}`,
+      jwt_token: token.jwtToken,
+      "Content-Type": "application/json",
+      "Content-Length": String(corpo.length),
+    },
+    corpo,
+  });
+  let json: any;
+  try {
+    json = JSON.parse(resposta);
+  } catch {
+    throw new Error(`Resposta inesperada do Integra Contador (HTTP ${status}): ${resposta.slice(0, 300)}`);
+  }
+  if (status === 401) throw new Error("TOKEN_EXPIRADO"); // sinal especial — quem chama deve reautenticar e tentar de novo uma vez
+  const mensagens = Array.isArray(json.mensagens) ? json.mensagens.map((m: any) => ({ codigo: m.codigo || m.Codigo, texto: m.texto || m.Texto })) : [];
+  if (status < 200 || status >= 300) {
+    const texto = mensagens.map((m: any) => `${m.codigo}: ${m.texto}`).join(" | ") || `HTTP ${status}`;
+    throw new Error(texto);
+  }
+  let dados = json.dados;
+  if (typeof dados === "string") {
+    try {
+      dados = JSON.parse(dados);
+    } catch {
+      /* alguns serviços devolvem "dados" já como objeto, outros como string JSON escapada — mantém como veio se não for parseável */
+    }
+  }
+  return { status: json.status ?? status, mensagens, dados };
+}
+
+// ===================== PGDASD (DAS + Declaração do Simples Nacional) — confirmado na doc oficial =====================
+export interface DasEmitido {
+  numeroDocumento: string | null;
+  periodoApuracao: string | null;
+  dataVencimento: string | null;
+  dataLimiteAcolhimento: string | null;
+  valores: any;
+  pdfBase64: string | null;
+}
+// Gera um DAS avulso pra um período de apuração já conhecido (não recalcula declaração — é o mesmo
+// serviço usado quando o "recálculo" só significa "gerar de novo com o período certo").
+export async function gerarDasAvulso(token: TokenIntegraContador, contratanteCnpj: string, cnpjEmpresa: string, periodoApuracao: string): Promise<DasEmitido> {
+  const r = await chamarServico(token, {
+    base: "Emitir",
+    contratanteCnpj,
+    contribuinteDocumento: cnpjEmpresa,
+    idSistema: "PGDASD",
+    idServico: "GERARDASAVULSO19",
+    versaoSistema: "1.0",
+    dados: { periodoApuracao: Number(periodoApuracao) },
+  });
+  const d = r.dados || {};
+  return {
+    numeroDocumento: d.numeroDocumento || null,
+    periodoApuracao: d.detalhamento?.periodoApuracao || d.periodoApuracao || null,
+    dataVencimento: d.detalhamento?.dataVencimento || d.dataVencimento || null,
+    dataLimiteAcolhimento: d.detalhamento?.dataLimiteAcolhimento || null,
+    valores: d.detalhamento?.valores || d.valores || null,
+    pdfBase64: d.pdf || null,
+  };
+}
+export interface DeclaracaoSimplesNacional {
+  numeroDeclaracao: string | null;
+  periodoApuracao: string | null;
+  dataTransmissao: string | null;
+  situacaoEspecial: string | null;
+}
+// Lista as declarações do Simples Nacional já entregues (não transmite uma nova — só consulta o
+// que já existe). Transmitir uma declaração nova exige todos os dados de apuração de receita por
+// atividade/período, que este sistema ainda não coleta — fica pra uma etapa futura.
+export async function consultarDeclaracoesPorAno(token: TokenIntegraContador, contratanteCnpj: string, cnpjEmpresa: string, ano: string): Promise<DeclaracaoSimplesNacional[]> {
+  const r = await chamarServico(token, {
+    base: "Consultar",
+    contratanteCnpj,
+    contribuinteDocumento: cnpjEmpresa,
+    idSistema: "PGDASD",
+    idServico: "CONSDECLARACAO13",
+    versaoSistema: "1.0",
+    dados: { ano: Number(ano) },
+  });
+  const lista = Array.isArray(r.dados) ? r.dados : Array.isArray(r.dados?.declaracoes) ? r.dados.declaracoes : [];
+  return lista.map((d: any) => ({
+    numeroDeclaracao: d.numeroDeclaracao || null,
+    periodoApuracao: d.periodoApuracao || null,
+    dataTransmissao: d.dataTransmissao || null,
+    situacaoEspecial: d.situacaoEspecial || null,
+  }));
+}
+
+// ===================== SITFIS (Situação Fiscal) — confirmado na doc oficial, fluxo em 2 passos =====================
+// Passo 1: pede um "protocolo" (a Receita processa em segundo plano). Passo 2: usa o protocolo pra
+// pegar o relatório em PDF — pode vir "ainda processando" (202, espera X segundos) antes do PDF
+// ficar pronto (200).
+export async function solicitarProtocoloSitfis(token: TokenIntegraContador, contratanteCnpj: string, documentoEmpresa: string): Promise<string> {
+  const r = await chamarServico(token, {
+    base: "Apoiar",
+    contratanteCnpj,
+    contribuinteDocumento: documentoEmpresa,
+    idSistema: "SITFIS",
+    idServico: "SOLICITARPROTOCOLO91",
+    versaoSistema: "2.0",
+    dados: {},
+  });
+  const protocolo = r.dados?.protocoloRelatorio || r.dados?.protocolo;
+  if (!protocolo) throw new Error("A Receita não devolveu um protocolo de relatório.");
+  return protocolo;
+}
+export async function emitirRelatorioSitfis(token: TokenIntegraContador, contratanteCnpj: string, documentoEmpresa: string, protocoloRelatorio: string): Promise<{ pronto: boolean; pdfBase64: string | null; tempoEsperaSegundos: number | null }> {
+  const r = await chamarServico(token, {
+    base: "Emitir",
+    contratanteCnpj,
+    contribuinteDocumento: documentoEmpresa,
+    idSistema: "SITFIS",
+    idServico: "RELATORIOSITFIS92",
+    versaoSistema: "2.0",
+    dados: { protocoloRelatorio },
+  });
+  if (r.status === 202) return { pronto: false, pdfBase64: null, tempoEsperaSegundos: r.dados?.tempoEspera ?? 5 };
+  return { pronto: true, pdfBase64: r.dados?.pdf || null, tempoEsperaSegundos: null };
+}
+// Junta os dois passos — pede o protocolo e espera o relatório ficar pronto (poll respeitando o
+// tempoEspera que a própria Receita manda), com um teto de tentativas pra não esperar pra sempre.
+export async function obterRelatorioSitfisCompleto(token: TokenIntegraContador, contratanteCnpj: string, documentoEmpresa: string): Promise<string> {
+  const protocolo = await solicitarProtocoloSitfis(token, contratanteCnpj, documentoEmpresa);
+  for (let tentativa = 0; tentativa < 10; tentativa++) {
+    const r = await emitirRelatorioSitfis(token, contratanteCnpj, documentoEmpresa, protocolo);
+    if (r.pronto && r.pdfBase64) return r.pdfBase64;
+    await new Promise((resolve) => setTimeout(resolve, (r.tempoEsperaSegundos || 5) * 1000));
+  }
+  throw new Error("O relatório de situação fiscal não ficou pronto a tempo — tente de novo em alguns minutos.");
+}
+
+// ===================== DCTFWeb — estrutura pronta, idServico NÃO confirmado ainda =====================
+// Diferente do PGDASD/SITFIS acima, não consegui confirmar os idServico exatos do DCTFWeb contra a
+// documentação oficial (só o nome do módulo — "DCTFWEB" — e que existem operações de consulta de
+// declaração/débito). Os valores abaixo são um palpite razoável baseado no padrão dos outros
+// serviços (Consultar + sufixo numérico), mas PRECISAM ser confirmados contra o Swagger real antes
+// de usar — só é possível acessá-lo com uma conta já contratada. Não chamar em produção sem
+// confirmar antes.
+export async function consultarDctfWeb(token: TokenIntegraContador, contratanteCnpj: string, cnpjEmpresa: string, periodoApuracao: string): Promise<any> {
+  const r = await chamarServico(token, {
+    base: "Consultar",
+    contratanteCnpj,
+    contribuinteDocumento: cnpjEmpresa,
+    idSistema: "DCTFWEB",
+    idServico: "CONSRECIBO32", // não confirmado — ver comentário acima
+    versaoSistema: "1.0",
+    dados: { periodoApuracao },
+  });
+  return r.dados;
+}

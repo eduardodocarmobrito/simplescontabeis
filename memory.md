@@ -66,6 +66,39 @@ mesmo componente por padrão, mesmo que eu não peça a busca explicitamente de 
 `<select>` simples se a lista for claramente curta e fixa (ex.: os 3-4 perfis de usuário, os tipos
 de arquivo aceitos).
 
+# Regra padrão: telas com dado por empresa abrem resumidas, não tudo solto de uma vez
+
+Definido em 2026-08-28. Vale pra toda tela nova (e telas existentes que eu pedir pra ajustar) que
+lista registros de várias empresas ao mesmo tempo — documentos buscados, notas emitidas, lançamentos,
+etc.
+
+**A tela abre mostrando uma lista de empresas** (nome + uma contagem relevante, tipo "12 documentos"
+ou "15 notas emitidas" + data do último registro), não a tabela cheia com tudo misturado. Clicar numa
+empresa abre o **detalhe** — a tabela cheia (filtros, seleção em lote, ações por linha), só daquela
+empresa, com um botão "← Voltar pra lista de empresas" no topo que volta pra lista resumida.
+
+Isso evita a tela ficar "solta" quando o escritório tem muitas empresas ativas — sem esse resumo, a
+primeira coisa que a pessoa vê é uma tabela enorme com dado de todo mundo misturado.
+
+**Como implementar** (mesmo esqueleto nas duas primeiras vezes que apliquei, ver
+[public/app.html](public/app.html)):
+- Uma variável de estado (ex.: `NFSE_NOTAS_EMPRESA_ATUAL`, `let ... = null`) guarda o id da empresa
+  aberta no momento; `null` = mostrando a lista.
+- A função "roteadora" da aba (a que já existia antes, chamada pelas abas/menu) só decide entre
+  lista e detalhe, checando essa variável — não redesenha nada sozinha.
+- Função de **lista**: busca os registros (ou usa um endpoint que já devolve tudo), agrupa por
+  `empresaId` no próprio JS (`reduce`/loop simples, não precisa de rota nova no backend na maioria
+  dos casos), mostra numa tabela com uma linha clicável por empresa (`cursor:pointer`, um botão "Ver").
+- Função de **detalhe**: recebe o `empresaId` fixo (não é mais um `<select>` de "todas as empresas"
+  dentro da tabela — isso vira redundante já que a navegação por lista substitui esse filtro),
+  mantém todo o resto que já existia (filtros de data, seleção em lote, ações), e tem o botão Voltar
+  que zera a variável de estado e chama a função roteadora nome novo.
+
+Primeiro uso: **Busca de XML** (`pageNfeBusca` → `mostrarLista`/`mostrarDetalhe`). Segundo uso:
+**NFS-e › Notas emitidas** (`renderNfseNotas` → `renderNfseNotasLista`/`renderNfseNotasDetalhe`).
+Candidatas óbvias pra quando eu pedir ajuste nelas depois: Financeiro (lançamentos), Contratos,
+Envio de Documentos — qualquer tabela que hoje mistura várias empresas na mesma grade.
+
 # Cuidado técnico: nunca disparar duas funções de render assíncronas em sequência sem esperar
 
 Achado em 2026-08-18, testando o fluxo de "criar atribuição → abrir a grade direto". Um bug real

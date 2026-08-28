@@ -5,6 +5,7 @@ import https from "https";
 import zlib from "zlib";
 import forge from "node-forge";
 import { SignedXml } from "xml-crypto";
+import { XMLParser } from "fast-xml-parser";
 
 /**
  * Módulo de emissão de NFS-e via Sistema Nacional NFS-e (ADN — Ambiente de Dados Nacional).
@@ -36,6 +37,17 @@ export type AmbienteNfse = keyof typeof ADN_BASE_URL;
 const ADN_DANFSE_BASE_URL = {
   producaorestrita: "https://adn.producaorestrita.nfse.gov.br/danfse",
   producao: "https://adn.nfse.gov.br/danfse",
+} as const;
+// Distribuição de DF-e (busca de NFS-e recebidas/emitidas nacionalmente por NSU) — mesmo host do
+// ADN acima, path /contribuintes. Confirmado contra uma implementação de referência real
+// (nfse-nacional/nfse-php, MIT) e contra o "Manual dos Contribuintes - Guia para utilização das
+// API's do ADN" (gov.br/nfse) — a rota GET /contribuintes/docs/index.html (Swagger) exige mTLS já
+// na conexão TLS (confirmado: o handshake pede certificado do cliente mesmo pra ver a doc), então
+// não foi possível abrir o Swagger sem um certificado real; a implementação abaixo segue o formato
+// de resposta já usado pela lib de referência (testada em produção pelos mantenedores dela).
+const ADN_DISTRIBUICAO_BASE_URL = {
+  producaorestrita: "https://adn.producaorestrita.nfse.gov.br/contribuintes",
+  producao: "https://adn.nfse.gov.br/contribuintes",
 } as const;
 
 const CERT_DIR = path.join(process.env.DATA_DIR || path.join(__dirname, "..", "data"), "nfse-certificados");
@@ -607,4 +619,140 @@ export function baixarDanfsePdf(ambiente: AmbienteNfse, chaveAcesso: string, cer
     req.on("error", (e) => reject(e));
     req.end();
   });
+}
+
+// ===================== Distribuição de DF-e (busca de NFS-e nacionalmente, por NSU) =====================
+// Diferente da emissão (POST /nfse na Sefin Nacional), a busca de documentos já existentes usa o
+// ADN de Distribuição (GET /contribuintes/DFe/{nsu}). Cobre tanto NFS-e em que a empresa é
+// prestadora (emitente) quanto tomadora de serviço de terceiros — o ADN decide isso pela regra de
+// visibilidade do documento, não pela nossa consulta.
+export interface ItemDistribuicaoNfse {
+  nsu: string;
+  chaveAcesso: string | null;
+  xml: string; // XML completo da NFSe (já descompactado), no mesmo leiaute usado por montarXmlDps/emitirDps
+}
+export interface RespostaDistribuicaoNfse {
+  ultimoNsu: string;
+  maiorNsu: string;
+  documentos: ItemDistribuicaoNfse[];
+}
+// Formato real confirmado em teste contra produção restrita (ambiente de homologação, certificado
+// real): {"StatusProcessamento":"DOCUMENTOS_LOCALIZADOS","LoteDFe":[{"NSU":2,"ChaveAcesso":"...",
+// "TipoDocumento":"NFSE","ArquivoXml":"...","DataHoraGeracao":"..."}],"Alertas":[],"Erros":[],
+// "TipoAmbiente":"HOMOLOGACAO","VersaoAplicativo":"1.0.0.0","DataHoraProcessamento":"..."} — sem
+// campo UltimoNSU/MaiorNSU (diferente do que a lib de referência nfse-php assumia); "sem documento
+// novo" também não veio como erro no teste real, então tratamos os dois casos: um StatusProcessamento
+// de "nenhum documento" (se a API mandar) OU, na ausência de UltimoNSU, o maior NSU dentre os itens
+// retornados vira o próximo cursor (mesma lógica de fallback que a lib de referência já usava).
+function respostaSemNovosDocumentos(json: any, erros: any[]): boolean {
+  const status = String(json?.StatusProcessamento || "").toUpperCase();
+  if (status.includes("NENHUM_DOCUMENTO") || status.includes("NAO_LOCALIZADO") || status.includes("NÃO_LOCALIZADO")) return true;
+  return erros.some((e: any) => {
+    const codigo = String(e?.Codigo || e?.codigo || "").toUpperCase();
+    const texto = String(e?.Descricao || e?.descricao || e?.Mensagem || e?.mensagem || "").toUpperCase();
+    return codigo.includes("E2220") || texto.includes("NENHUM_DOCUMENTO_LOCALIZADO") || texto.includes("NENHUM DOCUMENTO LOCALIZADO");
+  });
+}
+// cnpjConsulta só se aplica quando o certificado é de pessoa jurídica — confirmado em teste real
+// contra produção com um certificado de pessoa física (e-CPF): "E2242: A consulta de documentos
+// pelo CNPJ Base não se aplica ao Contribuinte PF solicitante". Pra CPF, omite o parâmetro (a Sefaz
+// já sabe quem está perguntando pelo próprio certificado da conexão mTLS).
+export function consultarDistribuicaoNfse(ambiente: AmbienteNfse, nsu: string, cnpjConsulta: string, cert: CertificadoInfo): Promise<RespostaDistribuicaoNfse> {
+  return new Promise((resolve, reject) => {
+    const documentoLimpo = cnpjConsulta.replace(/\D/g, "");
+    const query = documentoLimpo.length === 11 ? "" : `?cnpjConsulta=${encodeURIComponent(documentoLimpo)}`;
+    const base = new URL(`${ADN_DISTRIBUICAO_BASE_URL[ambiente]}/DFe/${encodeURIComponent(nsu)}${query}`);
+    const agent = new https.Agent({ cert: cert.certPem, key: cert.privateKeyPem });
+    const req = https.request(
+      { hostname: base.hostname, path: base.pathname + base.search, method: "GET", agent, headers: { Accept: "application/json" }, timeout: 30000 },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () => {
+          const texto = Buffer.concat(chunks).toString("utf8");
+          let json: any;
+          try {
+            json = JSON.parse(texto);
+          } catch {
+            return reject(new Error(texto || `HTTP ${res.statusCode}`));
+          }
+          const erros: any[] = Array.isArray(json?.Erros) ? json.Erros : [];
+          const ok = (res.statusCode || 0) >= 200 && (res.statusCode || 0) < 300;
+          const semNovos = respostaSemNovosDocumentos(json, erros);
+          if (!ok && !semNovos) {
+            const msg = erros.map((e: any) => `${e.Codigo || e.codigo || ""}: ${e.Descricao || e.descricao || e.Mensagem || e.mensagem || ""}`.trim()).join(" | ") || texto || `HTTP ${res.statusCode}`;
+            return reject(new Error(msg));
+          }
+          try {
+            const lote: any[] = Array.isArray(json?.LoteDFe) ? json.LoteDFe : [];
+            const documentos: ItemDistribuicaoNfse[] = lote.map((item: any) => ({
+              nsu: String(item.NSU),
+              chaveAcesso: item.ChaveAcesso || null,
+              xml: zlib.gunzipSync(Buffer.from(item.ArquivoXml, "base64")).toString("utf8"),
+            }));
+            // UltimoNSU nem sempre vem no corpo (confirmado em teste real) — nesse caso o cursor
+            // avança pro maior NSU recebido no lote; sem nenhum documento, mantém o NSU pedido.
+            const maiorNsuDoLote = documentos.length ? String(Math.max(...documentos.map((d) => Number(d.nsu)))) : nsu;
+            const ultimoNsu = json.UltimoNSU != null ? String(json.UltimoNSU) : maiorNsuDoLote;
+            resolve({ ultimoNsu, maiorNsu: json.MaiorNSU != null ? String(json.MaiorNSU) : ultimoNsu, documentos });
+          } catch (e: any) {
+            reject(e);
+          }
+        });
+      }
+    );
+    req.on("timeout", () => req.destroy(new Error("Tempo esgotado ao conectar no ADN (distribuição de NFS-e).")));
+    req.on("error", (e) => reject(e));
+    req.end();
+  });
+}
+
+const xmlParserNfse = new XMLParser({ attributeNamePrefix: "@_", ignoreAttributes: false, parseAttributeValue: false, parseTagValue: false, trimValues: true });
+export interface NfseDistribuidaInfo {
+  chaveAcesso: string | null;
+  numeroNfse: string | null;
+  emitenteDocumento: string | null;
+  emitenteNome: string | null;
+  tomadorDocumento: string | null;
+  tomadorNome: string | null;
+  valorTotal: number | null;
+  dataEmissao: string | null;
+  descricaoServico: string | null;
+  codigoMunicipio: string | null;
+}
+// Extrai os campos principais do XML completo de uma NFS-e (mesmo leiaute infNFSe/DPS/infDPS
+// documentado no ANEXO_I-SEFIN_ADN-DPS_NFSe-SNNFSe.xlsx e já usado por montarXmlDps ao emitir).
+export function identificarNfseDistribuida(xml: string): NfseDistribuidaInfo {
+  const base: NfseDistribuidaInfo = {
+    chaveAcesso: null,
+    numeroNfse: null,
+    emitenteDocumento: null,
+    emitenteNome: null,
+    tomadorDocumento: null,
+    tomadorNome: null,
+    valorTotal: null,
+    dataEmissao: null,
+    descricaoServico: null,
+    codigoMunicipio: null,
+  };
+  const json = xmlParserNfse.parse(xml) as any;
+  const infNFSe = json?.NFSe?.infNFSe;
+  if (!infNFSe) return base;
+  const emit = infNFSe.emit || {};
+  const infDPS = infNFSe.DPS?.infDPS || {};
+  const toma = infDPS.toma || {};
+  const valoresNfse = infNFSe.valores || {};
+  const valoresDps = infDPS.valores?.vServPrest || {};
+  return {
+    chaveAcesso: String(infNFSe["@_Id"] || "").replace(/^NFS/, "") || null,
+    numeroNfse: infNFSe.nNFSe || null,
+    emitenteDocumento: emit.CNPJ || emit.CPF || null,
+    emitenteNome: emit.xNome || null,
+    tomadorDocumento: toma.CNPJ || toma.CPF || null,
+    tomadorNome: toma.xNome || null,
+    valorTotal: valoresNfse.vLiq != null ? Number(valoresNfse.vLiq) : valoresDps.vServ != null ? Number(valoresDps.vServ) : null,
+    dataEmissao: infNFSe.dhProc || infDPS.dhEmi || null,
+    descricaoServico: infDPS.serv?.cServ?.xDescServ || null,
+    codigoMunicipio: infNFSe.cLocIncid || null,
+  };
 }

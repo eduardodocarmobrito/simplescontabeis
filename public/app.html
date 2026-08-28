@@ -8,32 +8,32 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   :root{
-    --paper:#F1F3F2; --paper-deep:#E3E7E5; --rule:#D7DBD9; --rule-soft:#E7EAE8;
+    --paper:#F2FAF6; --paper-deep:#E3EFE9; --rule:#DCE9E3; --rule-soft:#EAF3EF;
     --ink:#22302B; --ink-soft:#66756F; --surface:#FFFFFF;
-    --accent:#1F7A5C; --accent-deep:#155B44; --accent-pale:#DCEFE7;
-    --credit:#1F7A5C; --debit:#B8433A; --amber:#B7791F;
-    --sidebar:#FFFFFF; --sidebar-ink:#22302B; --sidebar-soft:#8A968F; --sidebar-active:#DCEFE7;
-    --shadow: 0 1px 3px rgba(20,30,26,0.10), 0 4px 12px rgba(20,30,26,0.06);
-    --radius: 10px;
+    --accent:#2ECC8F; --accent-deep:#159873; --accent-pale:#DFF7EC;
+    --credit:#159873; --debit:#B8433A; --amber:#B7791F;
+    --sidebar:#FFFFFF; --sidebar-ink:#22302B; --sidebar-soft:#8A968F; --sidebar-active:#DFF7EC;
+    --shadow: 0 1px 3px rgba(20,30,26,0.07), 0 8px 24px rgba(20,30,26,0.07);
+    --radius: 16px;
   }
   *{box-sizing:border-box;}
   html,body{margin:0;padding:0;}
-  body{background:var(--paper); color:var(--ink); font-family:'Inter',sans-serif; -webkit-font-smoothing:antialiased;}
+  body{background:linear-gradient(180deg, #EAFAF4 0%, #FCFEFD 340px, #FCFEFD 100%); color:var(--ink); font-family:'Inter',sans-serif; -webkit-font-smoothing:antialiased;}
   button{font-family:inherit;}
   a{color:var(--accent-deep);}
 
   .login-screen{display:flex; align-items:center; justify-content:center; min-height:100vh; background:var(--paper);}
-  .login-box{width:360px; max-width:90vw; background:var(--surface); border:1px solid var(--rule); border-radius:var(--radius); box-shadow:var(--shadow); padding:34px 32px;}
+  .login-box{width:360px; max-width:90vw; background:var(--surface); border-radius:var(--radius); box-shadow:var(--shadow); padding:34px 32px;}
   .login-box .eyebrow{font-family:'IBM Plex Mono',monospace; font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--accent);}
   .login-box h1{font-weight:700; font-size:24px; margin:4px 0 20px;}
   .field{display:flex; flex-direction:column; gap:5px; margin-bottom:14px;}
   .field label{font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-soft); font-family:'IBM Plex Mono',monospace;}
-  .field input, .field select, .field textarea{font-family:'Inter',sans-serif; font-size:14px; border:1px solid var(--rule); border-radius:8px; padding:9px 11px; background:var(--paper); color:var(--ink); width:100%;}
+  .field input, .field select, .field textarea{font-family:'Inter',sans-serif; font-size:14px; border:1px solid var(--rule); border-radius:10px; padding:9px 11px; background:var(--paper); color:var(--ink); width:100%;}
   .field input:focus, .field select:focus, .field textarea:focus{outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-pale); background:var(--surface);}
   .login-error{margin-top:12px; padding:10px 12px; background:#F6E6E3; color:var(--debit); border:1px solid #E3B8AC; border-radius:6px; font-size:12.5px;}
 
   .combo{position:relative;}
-  .combo-input{font-family:'Inter',sans-serif; font-size:14px; border:1px solid var(--rule); border-radius:8px; padding:9px 11px; background:var(--paper); color:var(--ink); width:100%;}
+  .combo-input{font-family:'Inter',sans-serif; font-size:14px; border:1px solid var(--rule); border-radius:10px; padding:9px 11px; background:var(--paper); color:var(--ink); width:100%;}
   .combo-input:focus{outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-pale); background:var(--surface);}
   .combo-list{position:absolute; z-index:60; top:calc(100% + 4px); left:0; right:0; max-height:240px; overflow-y:auto; background:var(--surface); border:1px solid var(--rule); border-radius:10px; box-shadow:var(--shadow); display:none;}
   .combo-list.open{display:block;}
@@ -69,13 +69,13 @@
   .cal-foot button{background:none; border:none; color:var(--accent-deep); font-size:11.5px; font-family:'IBM Plex Mono',monospace; text-transform:uppercase; letter-spacing:.05em; cursor:pointer;}
   .cal-foot button:hover{text-decoration:underline;}
 
-  .btn{display:inline-flex; align-items:center; gap:6px; border:1px solid var(--rule); background:var(--surface); color:var(--ink); padding:9px 15px; border-radius:8px; font-size:13.5px; cursor:pointer; font-weight:500;}
+  .btn{display:inline-flex; align-items:center; gap:6px; border:1px solid var(--rule); background:var(--surface); color:var(--ink); padding:9px 16px; border-radius:12px; font-size:13.5px; cursor:pointer; font-weight:500; transition:border-color .15s, background .15s, color .15s;}
   .btn:hover{border-color:var(--accent); color:var(--accent-deep);}
-  .btn.primary{background:var(--accent); border-color:var(--accent); color:#fff;}
+  .btn.primary{background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600;}
   .btn.primary:hover{background:var(--accent-deep); border-color:var(--accent-deep); color:#fff;}
   .btn.danger{color:var(--debit); border-color:#E3B8AC;}
   .btn.danger:hover{background:#F6E6E3;}
-  .btn.small{padding:5px 10px; font-size:12px; border-radius:6px;}
+  .btn.small{padding:6px 12px; font-size:12px; border-radius:9px;}
   .btn:disabled{opacity:.45; cursor:not-allowed;}
 
   .shell{display:flex; min-height:100vh;}
@@ -97,24 +97,24 @@
   .main{flex:1; min-width:0; padding:30px 34px 80px;}
   h1{font-size:25px; font-weight:700; margin:0 0 3px;}
   .subtitle{color:var(--ink-soft); font-size:13.5px; margin:0 0 20px;}
-  .card{background:var(--surface); border:1px solid var(--rule); border-radius:var(--radius); box-shadow:var(--shadow); padding:18px 20px; margin-bottom:18px;}
+  .card{background:var(--surface); border-radius:var(--radius); box-shadow:var(--shadow); padding:20px 22px; margin-bottom:18px;}
   .card h3{margin:0 0 12px; font-size:15px;}
   .row{display:flex; gap:12px; flex-wrap:wrap; align-items:flex-end;}
   .grow{flex:1; min-width:160px;}
 
   .kpi-grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); gap:14px; margin-bottom:20px;}
-  .kpi{background:var(--surface); border:1px solid var(--rule); border-radius:var(--radius); box-shadow:var(--shadow); padding:16px 18px; position:relative;}
+  .kpi{background:var(--surface); border-radius:var(--radius); box-shadow:var(--shadow); padding:16px 18px; position:relative;}
   .kpi .eyebrow{font-family:'IBM Plex Mono',monospace; font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-soft);}
   .kpi .val{font-size:26px; font-weight:700; margin-top:4px;}
   .kpi .sub{font-size:12px; color:var(--ink-soft); margin-top:3px;}
   .kpi .kpi-actions{position:absolute; top:10px; right:10px; display:none; gap:4px;}
   .kpi:hover .kpi-actions{display:flex;}
-  .kpi.add{display:flex; align-items:center; justify-content:center; border-style:dashed; cursor:pointer; color:var(--ink-soft); font-size:13px;}
+  .kpi.add{display:flex; align-items:center; justify-content:center; border:1.5px dashed var(--rule); cursor:pointer; color:var(--ink-soft); font-size:13px; box-shadow:none;}
   .kpi.add:hover{color:var(--accent-deep); border-color:var(--accent);}
 
   table.data-table{width:100%; border-collapse:collapse; font-size:13.5px;}
   table.data-table th{text-align:left; font-family:'IBM Plex Mono',monospace; font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-soft); padding:8px 10px; border-bottom:1px solid var(--rule);}
-  table.data-table td{padding:9px 10px; border-bottom:1px solid var(--rule-soft); vertical-align:middle;}
+  table.data-table td{padding:11px 10px; border-bottom:1px solid var(--rule-soft); vertical-align:middle;}
   table.data-table tbody tr:hover{background:var(--paper);}
   .tag{display:inline-block; padding:2px 9px; border-radius:20px; font-size:11px; font-weight:600;}
   .tag.ok{background:var(--accent-pale); color:var(--accent-deep);}
@@ -143,6 +143,11 @@
   .rte-toolbar button:hover{background:var(--accent-pale);}
   .rte-body{border:1px solid var(--line); border-radius:0 0 8px 8px; padding:22px 28px; min-height:420px; background:#fff; font-family:Georgia,'Times New Roman',serif; font-size:14px; line-height:1.65; outline:none;}
   .rte-body:focus{border-color:var(--accent);}
+  .rte-body img{max-width:100%;}
+  .rte-body .align-center{text-align:center;}
+  .rte-body .align-right{text-align:right;}
+  .rte-body .align-justify{text-align:justify;}
+  .rte-body .clausula-titulo{font-weight:700; text-align:center; font-size:15px; margin:22px 0 10px;}
   .campos-grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:12px; margin-bottom:16px;}
 
   .toast-wrap{position:fixed; bottom:20px; right:20px; z-index:2000; display:flex; flex-direction:column; gap:8px;}
@@ -212,6 +217,7 @@
     <div id="navList"></div>
     <div class="sidebar-foot">
       <div class="who">Conectado como<b id="whoName"></b><span id="whoProfile"></span></div>
+      <div id="empresaSwitchWrap"></div>
       <div class="logout" id="btnLogout">Sair</div>
     </div>
   </div>
@@ -252,8 +258,13 @@ async function api(path, opts){
   return data;
 }
 function fmtMoney(v){ return (Number(v)||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'}); }
-function fmtDate(iso){ if(!iso) return '—'; const d=new Date(String(iso).replace(' ','T')+(String(iso).includes('Z')?'':'Z')); if(isNaN(d)) return iso; return d.toLocaleDateString('pt-BR'); }
-function fmtDateHora(iso){ if(!iso) return '—'; const d=new Date(String(iso).replace(' ','T')+(String(iso).includes('Z')?'':'Z')); if(isNaN(d)) return iso; return d.toLocaleDateString('pt-BR')+' às '+d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}); }
+// Datas do próprio site vêm sem fuso (formato do SQLite, ex.: "2026-08-01 10:00:00" = já em horário
+// local) — precisam de "Z" pra não serem reinterpretadas pelo fuso do navegador. Datas de XML fiscal
+// (NF-e/NFS-e) já vêm com o fuso explícito (ex.: "...T10:00:00-03:00") — nesse caso NÃO acrescenta
+// "Z", senão o Date fica inválido.
+function temFusoExplicito(iso){ return /(Z|[+-]\d{2}:\d{2})$/.test(String(iso)); }
+function fmtDate(iso){ if(!iso) return '—'; const s=String(iso).replace(' ','T'); const d=new Date(temFusoExplicito(s)?s:s+'Z'); if(isNaN(d)) return iso; return d.toLocaleDateString('pt-BR'); }
+function fmtDateHora(iso){ if(!iso) return '—'; const s=String(iso).replace(' ','T'); const d=new Date(temFusoExplicito(s)?s:s+'Z'); if(isNaN(d)) return iso; return d.toLocaleDateString('pt-BR')+' às '+d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}); }
 function fmtDateIso(iso){ if(!iso) return null; const [y,m,d]=iso.split('-'); return `${d}/${m}/${y}`; }
 function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
@@ -495,6 +506,8 @@ const NAV = [
   { id:'solicitacoes', label:'Solicitações de Documentos', modulo:'solicitacoes', roles:['Administrador','Colaborador'] },
   { id:'envio', label:'Envio de Documentos', modulo:'envio', roles:['Administrador','Colaborador'] },
   { id:'nfse', label:'NFS-e', modulo:'nfse', roles:['Administrador','Colaborador'] },
+  { id:'nfe-busca', label:'Busca de XML', modulo:'nfe-busca', roles:['Administrador'] },
+  { id:'integracontador', label:'Integra Contador', modulo:'integracontador', roles:['Administrador'] },
   { id:'meus-documentos', label:'Meus Documentos', modulo:null, roles:['Cliente'] },
   { id:'solicitar-documentos', label:'Solicitar Documentos', modulo:null, roles:['Cliente'] },
   { id:'documentos-recebidos', label:'Documentos Recebidos', modulo:null, roles:['Cliente'] },
@@ -506,6 +519,8 @@ const NAV = [
   { id:'relatorios', label:'Relatórios', modulo:'relatorios', roles:['Administrador','Colaborador'] },
   { id:'usuarios', label:'Usuários', modulo:'usuarios', roles:['Administrador'] },
   { id:'configuracoes', label:'Configurações', modulo:'configuracoes', roles:['Administrador'] },
+  { id:'escritorios', label:'Escritórios', modulo:null, roles:['SuperAdmin'] },
+  { id:'modulos-plataforma', label:'Módulos da plataforma', modulo:null, roles:['SuperAdmin'] },
 ];
 function podeVerModulo(item){
   if(!item.roles.includes(STATE.user.perfil)) return false;
@@ -541,9 +556,32 @@ async function boot(){
   document.getElementById('shell').classList.remove('hidden');
   document.getElementById('whoName').innerHTML = esc(STATE.user.nome);
   document.getElementById('whoProfile').textContent = STATE.user.perfil;
-  STATE.page = STATE.user.perfil==='Cliente' ? 'meus-documentos' : 'dashboard';
+  if(STATE.user.perfil==='Cliente') await renderEmpresaSwitch();
+  STATE.page = STATE.user.perfil==='Cliente' ? 'meus-documentos' : (STATE.user.perfil==='SuperAdmin' ? 'escritorios' : 'dashboard');
   renderNav();
   render();
+}
+// Só aparece pro Cliente com mais de uma empresa atribuída — trocar recarrega a página inteira,
+// pra todas as telas de autoatendimento (NFS-e, Financeiro, Assinatura) já virem escopadas na
+// empresa nova sem precisar de nenhuma lógica extra nelas.
+async function renderEmpresaSwitch(){
+  const wrap = document.getElementById('empresaSwitchWrap');
+  try{
+    const { items, empresaAtivaId } = await api('/auth/minhas-empresas');
+    if(items.length<=1){ wrap.innerHTML=''; return; }
+    wrap.innerHTML = `
+      <div class="field" style="margin:10px 0 0;">
+        <label style="font-size:11px;">Empresa ativa</label>
+        <select id="empresaSwitchSelect">${items.map(e=>`<option value="${e.id}" ${e.id===empresaAtivaId?'selected':''}>${esc(e.nome)}</option>`).join('')}</select>
+      </div>
+    `;
+    document.getElementById('empresaSwitchSelect').addEventListener('change', async (ev)=>{
+      try{
+        await api('/auth/empresa-ativa', { method:'POST', body:{ empresaId: Number(ev.target.value) } });
+        location.reload();
+      }catch(e){ toast(e.message,'err'); }
+    });
+  }catch(e){ wrap.innerHTML=''; }
 }
 
 function main(){ return document.getElementById('main'); }
@@ -562,6 +600,8 @@ async function render(){
     else if(STATE.page==='solicitacoes') await pageSolicitacoes();
     else if(STATE.page==='envio') await pageEnvio();
     else if(STATE.page==='nfse') await pageNfse();
+    else if(STATE.page==='nfe-busca') await pageNfeBusca();
+    else if(STATE.page==='integracontador') await pageIntegraContador();
     else if(STATE.page==='meus-documentos') await pageMeusDocumentos();
     else if(STATE.page==='solicitar-documentos') await pageSolicitarDocumentos();
     else if(STATE.page==='documentos-recebidos') await pageDocumentosRecebidos();
@@ -573,6 +613,8 @@ async function render(){
     else if(STATE.page==='relatorios') await pageRelatorios();
     else if(STATE.page==='usuarios') await pageUsuarios();
     else if(STATE.page==='configuracoes') await pageConfiguracoes();
+    else if(STATE.page==='escritorios') await pageEscritorios();
+    else if(STATE.page==='modulos-plataforma') await pageModulosPlataforma();
     else m.innerHTML = '<div class="empty-state">Página não encontrada.</div>';
   }catch(e){
     m.innerHTML = `<div class="empty-state">Não foi possível carregar esta página.<br><span style="color:var(--debit)">${esc(e.message)}</span></div>`;
@@ -754,8 +796,19 @@ function empresaModal(e){
       <div class="field" style="width:70px;"><label>UF</label><input id="empUf" maxlength="2" value="${e&&e.uf?esc(e.uf):''}"></div>
       <div class="field" style="width:120px;"><label>CEP</label><input id="empCep" value="${e&&e.cep?esc(e.cep):''}"></div>
     </div>
-    <div class="field"><label>Inscrição municipal</label><input id="empInscricaoMunicipal" value="${e&&e.inscricaoMunicipal?esc(e.inscricaoMunicipal):''}"></div>
+    <div class="row">
+      <div class="field grow"><label>Inscrição municipal</label><input id="empInscricaoMunicipal" value="${e&&e.inscricaoMunicipal?esc(e.inscricaoMunicipal):''}"></div>
+      <div class="field grow"><label>Inscrição estadual</label><input id="empInscricaoEstadual" value="${e&&e.inscricaoEstadual?esc(e.inscricaoEstadual):''}"></div>
+    </div>
+    <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Representante legal (usado em contratos/distratos)</div>
+    <div class="row">
+      <div class="field grow"><label>Nome do representante legal</label><input id="empNomeRepresentante" value="${e&&e.nomeRepresentanteLegal?esc(e.nomeRepresentanteLegal):''}"></div>
+      <div class="field" style="width:160px;"><label>CPF do representante legal</label><input id="empCpfRepresentante" value="${e&&e.cpfRepresentanteLegal?esc(e.cpfRepresentanteLegal):''}"></div>
+    </div>
     ${e? `
+    <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Certificado digital (Busca de XML — NF-e/NFC-e/NFS-e)</div>
+    <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Certificado próprio desta empresa, usado só pra buscar os documentos fiscais dela na Sefaz e no Sistema Nacional NFS-e — não é o mesmo certificado usado pra emitir NFS-e.</p>
+    <div id="empCertBuscaXml"><div class="empty-state">Carregando…</div></div>
     <div style="margin:14px 0 8px; border-top:1px solid var(--rule); padding-top:12px;"></div>
     <div class="checkbox-row"><input type="checkbox" id="empAtivo" ${e.ativo?'checked':''}> <label for="empAtivo">Empresa ativa</label></div>
     <div class="checkbox-row"><input type="checkbox" id="empVisivel" ${e.visivelRelatorios?'checked':''}> <label for="empVisivel">Aparece no filtro de Relatórios</label></div>
@@ -765,6 +818,7 @@ function empresaModal(e){
       <button class="btn primary" id="empSalvar">Salvar</button>
     </div>
   `);
+  if(e) renderCertificadoBuscaXml(document.getElementById('empCertBuscaXml'), e.id, e.uf);
   document.getElementById('empCancel').addEventListener('click', closeModal);
   document.getElementById('empSalvar').addEventListener('click', async ()=>{
     const nome=document.getElementById('empNome').value.trim();
@@ -780,6 +834,9 @@ function empresaModal(e){
       uf: document.getElementById('empUf').value.trim(),
       cep: document.getElementById('empCep').value.trim(),
       inscricaoMunicipal: document.getElementById('empInscricaoMunicipal').value.trim(),
+      inscricaoEstadual: document.getElementById('empInscricaoEstadual').value.trim(),
+      nomeRepresentanteLegal: document.getElementById('empNomeRepresentante').value.trim(),
+      cpfRepresentanteLegal: document.getElementById('empCpfRepresentante').value.trim(),
     };
     try{
       if(e){
@@ -1503,10 +1560,12 @@ function envioDocBlocoHtml(d, podeEditar, podePostar, souCliente, mostrarVencime
     ${d.observacao? `<div class="slot-reopen-note" style="background:var(--accent-pale); color:var(--accent-deep);">${esc(d.observacao)}</div>`:''}
     ${vencHtml}
     ${!souCliente ? `<div style="font-size:11px; color:var(--ink-soft);">${d.emailEnviado? '✓ Enviado por e-mail ao cliente' : (d.emailErro? '⚠ E-mail não enviado: '+esc(d.emailErro) : '')}</div>` : ''}
+    ${!souCliente ? `<div style="font-size:11px; color:var(--ink-soft);">${d.whatsappEnviado? '✓ Enviado por WhatsApp ao cliente' : (d.whatsappErro? '⚠ WhatsApp não enviado: '+esc(d.whatsappErro) : '')}</div>` : ''}
     <div style="display:flex; gap:6px; flex-wrap:wrap;">
       <button class="btn small" data-act="baixar-envio" data-doc="${d.id}">Baixar</button>
       ${podeEditar && mostrarVencimento? `<button class="btn small" data-act="editar-venc" data-doc="${d.id}" data-venc="${d.vencimento||''}">Vencimento</button>`:''}
-      ${!souCliente && podePostar && !d.emailEnviado? `<button class="btn small" data-act="reenviar-email" data-doc="${d.id}">Reenviar e-mail</button>`:''}
+      ${!souCliente && podePostar? `<button class="btn small" data-act="reenviar-email" data-doc="${d.id}">${d.emailEnviado?'Reenviar e-mail':'Enviar e-mail'}</button>`:''}
+      ${!souCliente && podePostar? `<button class="btn small" data-act="enviar-whatsapp" data-doc="${d.id}">${d.whatsappEnviado?'Reenviar WhatsApp':'Enviar WhatsApp'}</button>`:''}
       ${podeEditar? `<button class="btn small danger" data-act="excluir-doc" data-doc="${d.id}">Excluir</button>`:''}
     </div>
   </div>`;
@@ -1554,6 +1613,10 @@ function wireEnvioGradeEvents(container, atribuicaoId, souCliente){
   }));
   container.querySelectorAll('[data-act="reenviar-email"]').forEach(b=>b.addEventListener('click', async ()=>{
     try{ await api('/envio/documentos/'+b.dataset.doc+'/reenviar-email', { method:'POST' }); toast('E-mail reenviado.','ok'); abrirEnvioGrade(atribuicaoId, souCliente); }
+    catch(e){ toast(e.message,'err'); }
+  }));
+  container.querySelectorAll('[data-act="enviar-whatsapp"]').forEach(b=>b.addEventListener('click', async ()=>{
+    try{ await api('/envio/documentos/'+b.dataset.doc+'/enviar-whatsapp', { method:'POST' }); toast('WhatsApp enviado.','ok'); abrirEnvioGrade(atribuicaoId, souCliente); }
     catch(e){ toast(e.message,'err'); }
   }));
   container.querySelectorAll('[data-act="excluir-doc"]').forEach(b=>b.addEventListener('click', async ()=>{
@@ -2363,36 +2426,78 @@ function nfseCancelarModal(n){
   });
 }
 let NFSE_NOTAS_SELECIONADAS = new Set();
-let NFSE_NOTAS_FILTRO = { dataDe:'', dataAte:'', empresaId:'' };
+let NFSE_NOTAS_FILTRO = { dataDe:'', dataAte:'' };
+let NFSE_NOTAS_EMPRESA_ATUAL = null;
+// Lista → detalhe (padrão do projeto, ver memory.md "Resumir por empresa antes do detalhe"): a aba
+// abre mostrando quantas notas cada empresa tem, não tudo solto numa tabela só. Clicar numa empresa
+// abre a tabela cheia (filtros de data, seleção em lote, cancelar/duplicar/continuar) só daquela empresa.
 async function renderNfseNotas(){
-  const { dataDe, dataAte, empresaId } = NFSE_NOTAS_FILTRO;
-  const { items: empresas } = await api('/nfse/empresas');
+  if(NFSE_NOTAS_EMPRESA_ATUAL) return renderNfseNotasDetalhe(NFSE_NOTAS_EMPRESA_ATUAL);
+  return renderNfseNotasLista();
+}
+async function renderNfseNotasLista(){
+  const box = document.getElementById('nfseContent');
+  box.innerHTML = `<div class="empty-state">Carregando…</div>`;
+  const [{ items: empresas }, { items: notas }] = await Promise.all([ api('/nfse/empresas'), api('/nfse/emissoes') ]);
+  const contagem = {}, ultimaPorEmpresa = {};
+  notas.forEach(n=>{
+    contagem[n.empresaId] = (contagem[n.empresaId]||0)+1;
+    if(!ultimaPorEmpresa[n.empresaId] || n.criadoEm>ultimaPorEmpresa[n.empresaId]) ultimaPorEmpresa[n.empresaId] = n.criadoEm;
+  });
   const habilitadas = empresas.filter(e=>e.habilitado);
-  const qs = new URLSearchParams();
+  const idsAtivos = new Set([...habilitadas.map(e=>e.id), ...Object.keys(contagem).map(Number)]);
+  const linhas = [...idsAtivos].map(id=>{
+    const emp = empresas.find(e=>e.id===id);
+    return { id, nome: emp?emp.nome:'(empresa removida)', qtd: contagem[id]||0, ultima: ultimaPorEmpresa[id]||null };
+  }).sort((a,b)=>a.nome.localeCompare(b.nome));
+  box.innerHTML = `
+    <div class="card" style="padding:0; overflow-x:auto;">
+      <table class="data-table">
+        <thead><tr><th>Empresa</th><th>Notas emitidas</th><th>Última emissão</th><th></th></tr></thead>
+        <tbody>
+          ${linhas.length? linhas.map(l=>`
+            <tr class="nfseEmpresaRow" data-id="${l.id}" style="cursor:pointer;">
+              <td><b>${esc(l.nome)}</b></td>
+              <td>${l.qtd}</td>
+              <td>${l.ultima?fmtDateHora(l.ultima):'—'}</td>
+              <td style="text-align:right;"><button class="btn small">Ver</button></td>
+            </tr>
+          `).join('') : '<tr><td colspan="4"><div class="empty-state">Nenhuma empresa habilitada pra NFS-e ainda.</div></td></tr>'}
+        </tbody>
+      </table>
+    </div>
+  `;
+  box.querySelectorAll('.nfseEmpresaRow').forEach(tr=>tr.addEventListener('click', ()=>{
+    NFSE_NOTAS_EMPRESA_ATUAL = Number(tr.dataset.id);
+    renderNfseNotas();
+  }));
+}
+async function renderNfseNotasDetalhe(empresaId){
+  const { dataDe, dataAte } = NFSE_NOTAS_FILTRO;
+  const { items: empresas } = await api('/nfse/empresas');
+  const empresa = empresas.find(e=>e.id===empresaId);
+  const qs = new URLSearchParams({ empresaId });
   if(dataDe) qs.set('dataDe', dataDe);
   if(dataAte) qs.set('dataAte', dataAte);
-  if(empresaId) qs.set('empresaId', empresaId);
-  const { items } = await api('/nfse/emissoes'+(qs.toString()?'?'+qs.toString():''));
+  const { items } = await api('/nfse/emissoes?'+qs.toString());
   NFSE_NOTAS_SELECIONADAS = new Set([...NFSE_NOTAS_SELECIONADAS].filter(id=>items.some(i=>i.id===id)));
   const box = document.getElementById('nfseContent');
   const STATUS_LABEL={emitida:'Emitida',pendente:'Pendente',rejeitada:'Rejeitada',erro:'Erro',rascunho:'Rascunho',cancelada:'Cancelada'};
   box.innerHTML = `
+    <button class="btn small" id="btnNfseNotasVoltar">← Voltar pra lista de empresas</button>
+    <h3 style="margin:12px 0 10px;">${esc(empresa?empresa.nome:'Empresa')}</h3>
     <div class="row" style="margin-bottom:12px; align-items:flex-end;">
-      ${habilitadas.length>1?`<div class="field" style="width:260px; margin-bottom:0;"><label>Empresa</label>
-        <select id="nfseNotasEmpresa"><option value="">Todas as empresas</option>${habilitadas.map(e=>`<option value="${e.id}" ${String(e.id)===String(empresaId)?'selected':''}>${esc(e.nome)}</option>`).join('')}</select>
-      </div>`:''}
       ${dateFieldHtml('nfseNotasDe','De',dataDe)}
       ${dateFieldHtml('nfseNotasAte','Até',dataAte)}
       <div id="nfseNotasLoteBar" style="margin-bottom:2px;"></div>
     </div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
-        <thead><tr><th style="width:34px;"><input type="checkbox" id="nfseNotasSelAll"></th><th>Empresa</th><th>Tomador</th><th>Modelo</th><th>Serviço</th><th>Valor</th><th>Status</th><th>Emitido em</th><th></th></tr></thead>
+        <thead><tr><th style="width:34px;"><input type="checkbox" id="nfseNotasSelAll"></th><th>Tomador</th><th>Modelo</th><th>Serviço</th><th>Valor</th><th>Status</th><th>Emitido em</th><th></th></tr></thead>
         <tbody>
           ${items.length? items.map(n=>`
             <tr>
               <td><input type="checkbox" class="nfseNotaSel" data-id="${n.id}" ${NFSE_NOTAS_SELECIONADAS.has(n.id)?'checked':''}></td>
-              <td>${esc(n.empresaNome)}</td>
               <td>${esc(n.tomadorNome)}</td>
               <td>${esc(n.modeloNome||'—')}</td>
               <td>${esc(n.descricaoServico)}</td>
@@ -2406,16 +2511,19 @@ async function renderNfseNotas(){
                 ${n.status==='emitida'?`<button class="btn small" data-id="${n.id}" data-act="cancelar" style="color:var(--debit);">Cancelar</button>`:''}
               </td>
             </tr>
-          `).join('') : `<tr><td colspan="9"><div class="empty-state">Nenhuma emissão neste período.</div></td></tr>`}
+          `).join('') : `<tr><td colspan="8"><div class="empty-state">Nenhuma emissão neste período.</div></td></tr>`}
         </tbody>
       </table>
     </div>
   `;
+  document.getElementById('btnNfseNotasVoltar').addEventListener('click', ()=>{
+    NFSE_NOTAS_EMPRESA_ATUAL = null;
+    renderNfseNotas();
+  });
   setupDatePicker('nfseNotasDe','nfseNotasDe_text');
   setupDatePicker('nfseNotasAte','nfseNotasAte_text');
   document.getElementById('nfseNotasDe').addEventListener('change', e=>{ NFSE_NOTAS_FILTRO.dataDe = e.target.value; renderNfseNotas(); });
   document.getElementById('nfseNotasAte').addEventListener('change', e=>{ NFSE_NOTAS_FILTRO.dataAte = e.target.value; renderNfseNotas(); });
-  document.getElementById('nfseNotasEmpresa')?.addEventListener('change', e=>{ NFSE_NOTAS_FILTRO.empresaId = e.target.value; renderNfseNotas(); });
   function desenhaLoteBar(){
     const bar = document.getElementById('nfseNotasLoteBar');
     const qtd = NFSE_NOTAS_SELECIONADAS.size;
@@ -2483,6 +2591,433 @@ async function renderNfseNotas(){
       renderNfseNotas();
     }catch(e){ toast(e.message,'err'); }
   }));
+}
+
+// ===================== Busca de XML (NF-e/NFC-e/NFS-e — Sefaz + Sistema Nacional NFS-e) =====================
+// Bloco de certificado por empresa — reaproveitado tanto na página "Busca de XML" quanto direto no
+// cadastro da empresa (um só lugar pra configurar, em vez de precisar ir numa tela separada).
+async function renderCertificadoBuscaXml(containerEl, empresaId, empresaUfPadrao, opts){
+  opts = opts || {};
+  const { items, moduloAtivo } = await api('/nfe/config');
+  if(opts.onModuloStatus) opts.onModuloStatus(moduloAtivo);
+  const cfg = items.find(c=>c.empresaId===Number(empresaId));
+  if(cfg){
+    containerEl.innerHTML = `
+      <div class="slot-locked" style="background:var(--paper);">
+        <span class="fname">${esc(cfg.titular||'Certificado configurado')}</span>
+        CNPJ do certificado: ${esc(cfg.cnpjCertificado||'—')} · Válido até ${fmtValidade(cfg.validadeAte)} · UF autora: ${esc(cfg.ufAutor)} · Ambiente: ${cfg.ambiente==='homologacao'?'Homologação':'Produção'}
+        <br>NF-e/NFC-e — última busca: ${cfg.ultimaBuscaEm?fmtDateHora(cfg.ultimaBuscaEm):'nunca'}${cfg.ultimoErro?` — <span style="color:var(--debit);">${esc(cfg.ultimoErro)}</span>`:''}
+        <br>NFS-e — última busca: ${cfg.ultimaBuscaNfseEm?fmtDateHora(cfg.ultimaBuscaNfseEm):'nunca'}${cfg.ultimoErroNfse?` — <span style="color:var(--debit);">${esc(cfg.ultimoErroNfse)}</span>`:''}
+      </div>
+      <label class="checkbox-row"><input type="checkbox" id="nfeCfgAtivo_${empresaId}" ${cfg.ativo?'checked':''}> Busca ativa para esta empresa</label>
+      <div class="row" style="margin-top:6px;">
+        <button class="btn primary" id="btnNfeBuscarAgora_${empresaId}" ${moduloAtivo?'':'disabled'}>Buscar agora</button>
+        <button class="btn danger" id="btnNfeRemoverCert_${empresaId}">Remover certificado</button>
+      </div>
+      <div id="nfeBuscaResultado_${empresaId}" style="margin-top:10px;"></div>
+    `;
+    containerEl.querySelector(`#nfeCfgAtivo_${empresaId}`).addEventListener('change', async (ev)=>{
+      const ligando = ev.target.checked;
+      try{
+        const r = await api('/nfe/config/'+empresaId+'/ativo', { method:'PUT', body:{ ativo: ligando } });
+        const s = r.sync;
+        if(ligando && s && (s.novosNfe||s.novosNfse)) toast(`Ativado — trouxe ${s.novosNfe||0} NF-e/NFC-e e ${s.novosNfse||0} NFS-e do histórico.`,'ok');
+        else toast('Atualizado.','ok');
+        if(ligando && (s?.novosNfe||s?.novosNfse) && opts.onDocumentosMudou) opts.onDocumentosMudou();
+      }
+      catch(e){ toast(e.message,'err'); ev.target.checked=!ev.target.checked; }
+    });
+    containerEl.querySelector(`#btnNfeRemoverCert_${empresaId}`).addEventListener('click', async ()=>{
+      if(!confirmar('Remover o certificado desta empresa? A busca automática para de funcionar até você enviar outro.')) return;
+      try{ await api('/nfe/config/'+empresaId, { method:'DELETE' }); toast('Certificado removido.','ok'); renderCertificadoBuscaXml(containerEl, empresaId, empresaUfPadrao, opts); }
+      catch(e){ toast(e.message,'err'); }
+    });
+    containerEl.querySelector(`#btnNfeBuscarAgora_${empresaId}`).addEventListener('click', async ()=>{
+      const btn = containerEl.querySelector(`#btnNfeBuscarAgora_${empresaId}`);
+      const resultado = containerEl.querySelector(`#nfeBuscaResultado_${empresaId}`);
+      btn.disabled = true; btn.textContent = 'Buscando…';
+      resultado.innerHTML = `<div class="empty-state">Consultando a Sefaz e o Sistema Nacional NFS-e…</div>`;
+      try{
+        const r = await api('/nfe/config/'+empresaId+'/buscar', { method:'POST' });
+        const partes = [`${r.novosNfe} NF-e/NFC-e`, `${r.novosNfse} NFS-e`];
+        resultado.innerHTML = `<div class="tag ${(r.erroNfe||r.erroNfse)?'bad':'ok'}">${(r.erroNfe||r.erroNfse)?'Concluído com falhas':'Concluído'}</div> <span style="font-size:12.5px;">${partes.join(' · ')} novo(s).</span>
+          ${r.erroNfe?`<div style="font-size:12px; color:var(--debit); margin-top:4px;">NF-e/NFC-e: ${esc(r.erroNfe)}</div>`:''}
+          ${r.erroNfse?`<div style="font-size:12px; color:var(--debit); margin-top:4px;">NFS-e: ${esc(r.erroNfse)}</div>`:''}`;
+        if(opts.onDocumentosMudou) opts.onDocumentosMudou();
+      }catch(e){
+        resultado.innerHTML = `<div class="tag bad">Falhou</div> <span style="font-size:12.5px;">${esc(e.message)}</span>`;
+      }finally{
+        btn.disabled = false; btn.textContent = 'Buscar agora';
+      }
+    });
+  } else {
+    containerEl.innerHTML = `
+      <div class="field"><label>Arquivo do certificado (.pfx)</label><input type="file" id="nfeCertArquivo_${empresaId}" accept=".pfx,.p12"></div>
+      <div class="field"><label>Senha do certificado</label><input type="password" id="nfeCertSenha_${empresaId}"></div>
+      <div class="row">
+        <div class="field grow"><label>UF autora</label><input id="nfeCertUf_${empresaId}" maxlength="2" style="text-transform:uppercase;" placeholder="ex.: SP" value="${esc(empresaUfPadrao||'')}"></div>
+        <div class="field grow"><label>Ambiente</label>
+          <select id="nfeCertAmbiente_${empresaId}"><option value="producao">Produção</option><option value="homologacao">Homologação</option></select>
+        </div>
+      </div>
+      <button class="btn primary" id="btnEnviarNfeCert_${empresaId}">Enviar certificado</button>
+    `;
+    containerEl.querySelector(`#btnEnviarNfeCert_${empresaId}`).addEventListener('click', async ()=>{
+      const arquivo = containerEl.querySelector(`#nfeCertArquivo_${empresaId}`).files[0];
+      const senha = containerEl.querySelector(`#nfeCertSenha_${empresaId}`).value;
+      const ufAutor = containerEl.querySelector(`#nfeCertUf_${empresaId}`).value.trim().toUpperCase();
+      const ambiente = containerEl.querySelector(`#nfeCertAmbiente_${empresaId}`).value;
+      if(!arquivo){ toast('Selecione o arquivo .pfx.','err'); return; }
+      if(!senha){ toast('Informe a senha do certificado.','err'); return; }
+      if(!ufAutor){ toast('Informe a UF.','err'); return; }
+      const fd = new FormData();
+      fd.append('arquivo', arquivo); fd.append('senha', senha); fd.append('ufAutor', ufAutor); fd.append('ambiente', ambiente); fd.append('empresaId', empresaId);
+      const btnEnviar = containerEl.querySelector(`#btnEnviarNfeCert_${empresaId}`);
+      btnEnviar.disabled = true; btnEnviar.textContent = 'Enviando e buscando histórico…';
+      try{
+        const r = await api('/nfe/config', { method:'POST', body:fd });
+        const s = r.sync || {};
+        if(s.novosNfe || s.novosNfse){
+          toast(`Certificado enviado — trouxe ${s.novosNfe||0} NF-e/NFC-e e ${s.novosNfse||0} NFS-e do histórico.`,'ok');
+        } else if(s.erroNfe || s.erroNfse){
+          toast(`Certificado enviado, mas a busca do histórico falhou: ${s.erroNfe||s.erroNfse}`,'err');
+        } else {
+          toast('Certificado enviado.','ok');
+        }
+        renderCertificadoBuscaXml(containerEl, empresaId, empresaUfPadrao, opts);
+        if(opts.onDocumentosMudou) opts.onDocumentosMudou();
+      }catch(e){ toast(e.message,'err'); btnEnviar.disabled = false; btnEnviar.textContent = 'Enviar certificado'; }
+    });
+  }
+  return cfg;
+}
+// Duas telas: lista de empresas (o que já tem certificado configurado ou algum documento) e, ao
+// clicar numa delas, o detalhe (certificado + documentos daquela empresa só). Evita jogar tudo solto
+// na mesma tela quando o escritório tem várias empresas na Busca de XML.
+async function pageNfeBusca(){
+  main().innerHTML = `
+    <h1>Busca de XML</h1>
+    <p class="subtitle">Busca automática de NF-e, NFC-e e NFS-e direto na Sefaz e no Sistema Nacional NFS-e, usando o certificado digital de cada cliente — não depende do certificado do escritório.</p>
+    <div id="nfeBuscaModuloAviso"></div>
+    <div id="nfeBuscaMain"></div>
+  `;
+  const box = document.getElementById('nfeBuscaMain');
+  const { items: empresas } = await api('/empresas');
+
+  function avisoModulo(ativo){
+    document.getElementById('nfeBuscaModuloAviso').innerHTML = ativo ? '' : `
+      <div class="card" style="background:var(--paper); border-color:var(--warn, #c9a227);">
+        <span style="font-size:12.5px;">Módulo "Busca automática de XML (NF-e/NFC-e/NFS-e)" não contratado para este escritório — você pode cadastrar certificados, mas o botão "Buscar agora" fica desativado. Contrate em <b>Configurações › Assinatura da plataforma</b>.</span>
+      </div>
+    `;
+  }
+
+  async function mostrarLista(){
+    box.innerHTML = `<div class="empty-state">Carregando…</div>`;
+    const [{ items: configs, moduloAtivo }, { items: docs }] = await Promise.all([ api('/nfe/config'), api('/nfe/documentos') ]);
+    avisoModulo(moduloAtivo);
+    const contagem = {};
+    docs.forEach(d=>{ contagem[d.empresaId] = (contagem[d.empresaId]||0)+1; });
+    const idsAtivos = new Set([...configs.map(c=>c.empresaId), ...Object.keys(contagem).map(Number)]);
+    const linhas = [...idsAtivos].map(id=>{
+      const emp = empresas.find(e=>e.id===id);
+      const cfg = configs.find(c=>c.empresaId===id);
+      return {
+        id, nome: emp?emp.nome:'(empresa removida)',
+        temCert: !!cfg, qtdDocs: contagem[id]||0,
+        ultimaBusca: cfg ? (cfg.ultimaBuscaEm && cfg.ultimaBuscaNfseEm ? (cfg.ultimaBuscaEm>cfg.ultimaBuscaNfseEm?cfg.ultimaBuscaEm:cfg.ultimaBuscaNfseEm) : (cfg.ultimaBuscaEm||cfg.ultimaBuscaNfseEm)) : null,
+      };
+    }).sort((a,b)=>a.nome.localeCompare(b.nome));
+    box.innerHTML = `
+      <div class="card">
+        <h3>Adicionar empresa</h3>
+        <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Busque uma empresa pra cadastrar o certificado dela e começar a buscar os documentos.</p>
+        <div class="field" style="max-width:420px; margin-bottom:0;"><label>Empresa</label>${comboSelectHtml('nfeAddEmpresaCombo', 'Digite para buscar a empresa…')}</div>
+      </div>
+      <div class="card" style="padding:0; overflow-x:auto;">
+        <table class="data-table">
+          <thead><tr><th>Empresa</th><th>Certificado</th><th>Documentos</th><th>Última busca</th><th></th></tr></thead>
+          <tbody>
+            ${linhas.length ? linhas.map(l=>`
+              <tr class="nfeEmpresaRow" data-id="${l.id}" style="cursor:pointer;">
+                <td><b>${esc(l.nome)}</b></td>
+                <td><span class="tag ${l.temCert?'ok':'muted'}">${l.temCert?'Configurado':'Sem certificado'}</span></td>
+                <td>${l.qtdDocs}</td>
+                <td>${l.ultimaBusca?fmtDateHora(l.ultimaBusca):'—'}</td>
+                <td style="text-align:right;"><button class="btn small">Ver</button></td>
+              </tr>
+            `).join('') : '<tr><td colspan="5"><div class="empty-state">Nenhuma empresa configurada ainda — use a busca acima pra adicionar a primeira.</div></td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    `;
+    setupComboSelect('nfeAddEmpresaCombo', empresas.map(e=>({id:e.id, label:e.nome})), (id)=>{ if(id) mostrarDetalhe(Number(id)); });
+    box.querySelectorAll('.nfeEmpresaRow').forEach(tr=>tr.addEventListener('click', ()=>mostrarDetalhe(Number(tr.dataset.id))));
+  }
+
+  async function mostrarDetalhe(empresaId){
+    const empresa = empresas.find(e=>e.id===empresaId);
+    box.innerHTML = `
+      <button class="btn small" id="btnNfeVoltarLista">← Voltar pra lista de empresas</button>
+      <div class="card" style="margin-top:10px;">
+        <h3>${esc(empresa?empresa.nome:'Empresa')}</h3>
+        <div id="nfeConfigBody"></div>
+      </div>
+      <div class="card">
+        <h3>Documentos recebidos</h3>
+        <div class="row" style="margin-bottom:8px; align-items:flex-end;">
+          <div class="field" style="margin-bottom:0; width:220px;"><label>Tipo</label>
+            <select id="nfeDocTipo"><option value="">Todos</option><option value="nfe">NF-e</option><option value="nfce">NFC-e</option><option value="nfse">NFS-e</option><option value="evento">Evento</option><option value="outro">Outro</option></select>
+          </div>
+        </div>
+        <div class="row" style="margin-bottom:8px; align-items:center; gap:10px;">
+          <span style="font-size:12.5px; color:var(--ink-soft);"><span id="nfeDocSelecionadosCount">0</span> selecionado(s)</span>
+          <button class="btn small" id="btnNfeBaixarLoteXml" disabled>Baixar selecionados — XML</button>
+          <button class="btn small" id="btnNfeBaixarLotePdf" disabled>Baixar selecionados — PDF</button>
+          <button class="btn small" id="btnNfeBaixarLoteAmbos" disabled>Baixar selecionados — XML + PDF</button>
+        </div>
+        <div class="card" style="padding:0; overflow-x:auto;">
+          <table class="data-table">
+            <thead><tr><th style="width:32px;"><input type="checkbox" id="nfeDocSelecionarTodos"></th><th>Data</th><th>Tipo</th><th>Emitente</th><th>Chave de acesso</th><th>Valor</th><th></th></tr></thead>
+            <tbody id="nfeDocBody"><tr><td colspan="7"><div class="empty-state">Carregando…</div></td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    `;
+    document.getElementById('btnNfeVoltarLista').addEventListener('click', mostrarLista);
+
+    async function carregarConfig(){
+      const cbody = document.getElementById('nfeConfigBody');
+      await renderCertificadoBuscaXml(cbody, empresaId, empresa&&empresa.uf, {
+        onDocumentosMudou: carregarDocumentos,
+        onModuloStatus: avisoModulo,
+      });
+    }
+
+    function atualizarBarraSelecao(){
+      const marcados = [...document.querySelectorAll('.nfeDocCheck:checked')];
+      document.getElementById('nfeDocSelecionadosCount').textContent = marcados.length;
+      const semSelecao = marcados.length===0;
+      document.getElementById('btnNfeBaixarLoteXml').disabled = semSelecao;
+      document.getElementById('btnNfeBaixarLotePdf').disabled = semSelecao;
+      document.getElementById('btnNfeBaixarLoteAmbos').disabled = semSelecao;
+    }
+    function baixarLote(formato){
+      const ids = [...document.querySelectorAll('.nfeDocCheck:checked')].map(c=>c.dataset.id);
+      if(!ids.length) return;
+      window.open('/api/nfe/documentos/baixar-lote?ids='+ids.join(',')+'&formato='+formato, '_blank');
+    }
+    document.getElementById('btnNfeBaixarLoteXml').addEventListener('click', ()=>baixarLote('xml'));
+    document.getElementById('btnNfeBaixarLotePdf').addEventListener('click', ()=>baixarLote('pdf'));
+    document.getElementById('btnNfeBaixarLoteAmbos').addEventListener('click', ()=>baixarLote('ambos'));
+    document.getElementById('nfeDocSelecionarTodos').addEventListener('change', (ev)=>{
+      document.querySelectorAll('.nfeDocCheck').forEach(c=>c.checked=ev.target.checked);
+      atualizarBarraSelecao();
+    });
+
+    async function carregarDocumentos(){
+      const tbody = document.getElementById('nfeDocBody');
+      tbody.innerHTML = `<tr><td colspan="7"><div class="empty-state">Carregando…</div></td></tr>`;
+      document.getElementById('nfeDocSelecionarTodos').checked = false;
+      const tipo = document.getElementById('nfeDocTipo').value;
+      const params = new URLSearchParams({ empresaId });
+      if(tipo) params.set('tipo', tipo);
+      const { items } = await api('/nfe/documentos?'+params.toString());
+      tbody.innerHTML = items.length ? items.map(d=>`
+        <tr>
+          <td><input type="checkbox" class="nfeDocCheck" data-id="${d.id}"></td>
+          <td>${d.dataEmissao?fmtDateHora(d.dataEmissao):'—'}</td>
+          <td><span class="tag ${d.tipo==='evento'?'muted':'ok'}">${d.tipo.toUpperCase()}</span></td>
+          <td>${esc(d.emitenteNome||'—')}</td>
+          <td style="font-family:'IBM Plex Mono',monospace; font-size:11px;">${esc(d.chaveAcesso||'—')}</td>
+          <td>${d.valorTotal!=null?fmtMoney(d.valorTotal):'—'}</td>
+          <td style="text-align:right; white-space:nowrap;">
+            <a class="btn small" href="/api/nfe/documentos/${d.id}/xml" target="_blank" rel="noopener">XML</a>
+            ${d.tipo!=='evento'?`<a class="btn small" href="/api/nfe/documentos/${d.id}/pdf" target="_blank" rel="noopener">PDF</a>`:''}
+          </td>
+        </tr>
+      `).join('') : '<tr><td colspan="7"><div class="empty-state">Nenhum documento encontrado ainda.</div></td></tr>';
+      document.querySelectorAll('.nfeDocCheck').forEach(c=>c.addEventListener('change', atualizarBarraSelecao));
+      atualizarBarraSelecao();
+    }
+
+    document.getElementById('nfeDocTipo').addEventListener('change', carregarDocumentos);
+    carregarConfig();
+    carregarDocumentos();
+  }
+
+  mostrarLista();
+}
+
+// ===================== Integra Contador (DAS, Declaração, Situação Fiscal) =====================
+const IC_TIPO_LABEL = { das:'DAS', declaracao:'Declaração do Simples', situacao_fiscal:'Situação Fiscal' };
+async function pageIntegraContador(){
+  main().innerHTML = `
+    <h1>Integra Contador</h1>
+    <p class="subtitle">Busca automática de DAS, Declaração do Simples Nacional e Relatório de Situação Fiscal direto na Receita Federal, usando o certificado digital do próprio escritório — serviço pago por consulta (SERPRO).</p>
+    <div class="card" id="icConfigCard">
+      <h3>Configuração do escritório</h3>
+      <div id="icConfigBody"><div class="empty-state">Carregando…</div></div>
+    </div>
+    <div id="icAviso"></div>
+    <div id="icMain"></div>
+  `;
+  await renderIcConfig();
+  const cfgAtual = await api('/integracontador/config');
+  avisoIc(cfgAtual.ativo);
+  mostrarIcLista();
+
+  function avisoIc(ativo){
+    document.getElementById('icAviso').innerHTML = ativo ? '' : `
+      <div class="card" style="background:var(--paper); border-color:var(--warn, #c9a227);">
+        <span style="font-size:12.5px;">Configure e ative o Integra Contador acima antes de habilitar empresas — sem isso, o botão "Buscar agora" fica desativado.</span>
+      </div>
+    `;
+  }
+
+  async function renderIcConfig(){
+    const cfg = await api('/integracontador/config');
+    const body = document.getElementById('icConfigBody');
+    body.innerHTML = `
+      <div class="row">
+        <div class="field"><label>CNPJ do escritório (contratante junto à Loja SERPRO)</label><input id="icCnpj" value="${esc(cfg.cnpj||'')}"></div>
+        <div class="field"><label>Consumer Key</label><input id="icConsumerKey" value="${esc(cfg.consumerKey||'')}"></div>
+        <div class="field"><label>Consumer Secret</label><input id="icConsumerSecret" type="password" placeholder="${cfg.temConsumerSecret?'••••••••  (deixe em branco pra manter)':''}"></div>
+      </div>
+      <div class="row">
+        <div class="field"><label>Certificado digital do escritório (.pfx) ${cfg.temCertificado?`— atual: <b>${esc(cfg.titularCertificado||'')}</b>${cfg.validadeCertificadoAte?', válido até '+fmtDate(cfg.validadeCertificadoAte):''}`:''}</label><input id="icCertArquivo" type="file" accept=".pfx,.p12"></div>
+        <div class="field"><label>Senha do certificado</label><input id="icCertSenha" type="password" placeholder="${cfg.temCertificado?'só necessário se enviar um certificado novo':''}"></div>
+      </div>
+      <label class="checkbox-row"><input type="checkbox" id="icAtivo" ${cfg.ativo?'checked':''}> Manter o Integra Contador ativo</label>
+      ${cfg.ultimoErro?`<p style="color:var(--debit); font-size:12.5px;">Último erro: ${esc(cfg.ultimoErro)}</p>`:''}
+      <div class="row" style="margin-top:8px;">
+        <button class="btn primary" id="btnIcSalvarConfig">Salvar</button>
+        <button class="btn" id="btnIcTestar" ${cfg.temCertificado&&cfg.consumerKey?'':'disabled'}>Testar conexão</button>
+      </div>
+    `;
+    document.getElementById('btnIcSalvarConfig').addEventListener('click', async (ev)=>{
+      const btn = ev.target; btn.disabled = true; btn.textContent = 'Salvando…';
+      try{
+        const fd = new FormData();
+        fd.append('cnpj', document.getElementById('icCnpj').value.trim());
+        fd.append('consumerKey', document.getElementById('icConsumerKey').value.trim());
+        const secret = document.getElementById('icConsumerSecret').value;
+        if(secret) fd.append('consumerSecret', secret);
+        fd.append('ativo', document.getElementById('icAtivo').checked);
+        const arquivo = document.getElementById('icCertArquivo').files[0];
+        const senha = document.getElementById('icCertSenha').value;
+        if(arquivo){ fd.append('certificado', arquivo); fd.append('senhaCertificado', senha); }
+        await api('/integracontador/config', { method:'PUT', body: fd });
+        toast('Configuração salva.','ok');
+        await renderIcConfig();
+        avisoIc(document.getElementById('icAtivo').checked);
+      }catch(e){ toast(e.message,'err'); }
+      finally{ btn.disabled = false; btn.textContent = 'Salvar'; }
+    });
+    const btnTestar = document.getElementById('btnIcTestar');
+    if(btnTestar) btnTestar.addEventListener('click', async ()=>{
+      btnTestar.disabled = true; btnTestar.textContent = 'Testando…';
+      try{
+        await api('/integracontador/config/testar', { method:'POST' });
+        toast('Conexão validada com sucesso.','ok');
+      }catch(e){ toast(e.message,'err'); }
+      finally{ btnTestar.disabled = false; btnTestar.textContent = 'Testar conexão'; }
+    });
+  }
+
+  async function mostrarIcLista(){
+    const box = document.getElementById('icMain');
+    box.innerHTML = `<div class="empty-state">Carregando…</div>`;
+    const { items } = await api('/integracontador/empresas');
+    box.innerHTML = `
+      <div class="card" style="padding:0; overflow-x:auto;">
+        <table class="data-table">
+          <thead><tr><th>Empresa</th><th>Status</th><th>Optante Simples</th><th>Documentos</th><th>Última busca</th><th></th></tr></thead>
+          <tbody>
+            ${items.length ? items.map(e=>`
+              <tr class="icEmpresaRow" data-id="${e.id}" style="cursor:pointer;">
+                <td><b>${esc(e.nome)}</b></td>
+                <td><span class="tag ${e.ativo?'ok':'muted'}">${e.ativo?'Ativo':'Inativo'}</span></td>
+                <td>${e.optanteSimplesNacional?'<span class="tag ok">Optante</span>':'—'}</td>
+                <td>${e.qtdDocumentos}</td>
+                <td>${e.ultimaBuscaEm?fmtDateHora(e.ultimaBuscaEm):'—'}</td>
+                <td style="text-align:right;"><button class="btn small">Ver</button></td>
+              </tr>
+            `).join('') : '<tr><td colspan="6"><div class="empty-state">Nenhuma empresa cadastrada ainda.</div></td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    `;
+    box.querySelectorAll('.icEmpresaRow').forEach(tr=>tr.addEventListener('click', ()=>mostrarIcDetalhe(Number(tr.dataset.id))));
+  }
+
+  async function mostrarIcDetalhe(empresaId){
+    const box = document.getElementById('icMain');
+    const { items } = await api('/integracontador/empresas');
+    const emp = items.find(e=>e.id===empresaId);
+    box.innerHTML = `
+      <button class="btn small" id="btnIcVoltarLista">← Voltar pra lista de empresas</button>
+      <div class="card" style="margin-top:10px;">
+        <h3>${esc(emp?emp.nome:'Empresa')}</h3>
+        <label class="checkbox-row"><input type="checkbox" id="icEmpAtivo" ${emp?.ativo?'checked':''}> Buscar dados desta empresa</label>
+        <label class="checkbox-row"><input type="checkbox" id="icEmpOptante" ${emp?.optanteSimplesNacional?'checked':''}> Optante do Simples Nacional (habilita DAS e Declaração — Situação Fiscal vale pra qualquer regime)</label>
+        ${emp?.ultimoErro?`<p style="color:var(--debit); font-size:12.5px;">Último erro: ${esc(emp.ultimoErro)}</p>`:''}
+        <div class="row" style="margin-top:8px;">
+          <button class="btn primary" id="btnIcSalvarEmpresa">Salvar</button>
+          <button class="btn" id="btnIcBuscarAgora" ${emp?.ativo?'':'disabled'}>Buscar agora</button>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Documentos</h3>
+        <div class="card" style="padding:0; overflow-x:auto;">
+          <table class="data-table">
+            <thead><tr><th>Tipo</th><th>Período</th><th>Número</th><th>Vencimento</th><th>Recebido em</th><th></th></tr></thead>
+            <tbody id="icDocBody"><tr><td colspan="6"><div class="empty-state">Carregando…</div></td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    `;
+    document.getElementById('btnIcVoltarLista').addEventListener('click', mostrarIcLista);
+    document.getElementById('btnIcSalvarEmpresa').addEventListener('click', async (ev)=>{
+      const btn = ev.target; btn.disabled = true; btn.textContent = 'Salvando…';
+      try{
+        const body = { ativo: document.getElementById('icEmpAtivo').checked, optanteSimplesNacional: document.getElementById('icEmpOptante').checked };
+        const r = await api('/integracontador/empresas/'+empresaId, { method:'PUT', body });
+        if(r.sync && (r.sync.novos>0)) toast(r.sync.novos+' documento(s) novo(s) encontrado(s).','ok');
+        else if(r.sync && r.sync.erro) toast('Salvo, mas a busca inicial falhou: '+r.sync.erro,'err');
+        else toast('Salvo.','ok');
+        mostrarIcDetalhe(empresaId);
+        carregarIcDocumentos();
+      }catch(e){ toast(e.message,'err'); }
+      finally{ btn.disabled = false; btn.textContent = 'Salvar'; }
+    });
+    document.getElementById('btnIcBuscarAgora').addEventListener('click', async (ev)=>{
+      const btn = ev.target; btn.disabled = true; btn.textContent = 'Buscando…';
+      try{
+        const r = await api('/integracontador/empresas/'+empresaId+'/buscar', { method:'POST' });
+        toast(r.novos>0 ? r.novos+' documento(s) novo(s) encontrado(s).' : 'Busca concluída, sem documentos novos.','ok');
+        carregarIcDocumentos();
+      }catch(e){ toast(e.message,'err'); }
+      finally{ btn.disabled = false; btn.textContent = 'Buscar agora'; }
+    });
+
+    async function carregarIcDocumentos(){
+      const tbody = document.getElementById('icDocBody');
+      tbody.innerHTML = `<tr><td colspan="6"><div class="empty-state">Carregando…</div></td></tr>`;
+      const { items: docs } = await api('/integracontador/documentos?empresaId='+empresaId);
+      tbody.innerHTML = docs.length ? docs.map(d=>`
+        <tr>
+          <td>${esc(IC_TIPO_LABEL[d.tipo]||d.tipo)}</td>
+          <td>${esc(d.periodoApuracao||'—')}</td>
+          <td>${esc(d.numeroDocumento||'—')}</td>
+          <td>${d.dataVencimento?fmtDate(d.dataVencimento):'—'}</td>
+          <td>${fmtDateHora(d.criadoEm)}</td>
+          <td style="text-align:right;">${d.temPdf?`<a class="btn small" href="/api/integracontador/documentos/${d.id}/pdf" target="_blank" rel="noopener">PDF</a>`:'—'}</td>
+        </tr>
+      `).join('') : '<tr><td colspan="6"><div class="empty-state">Nenhum documento encontrado ainda.</div></td></tr>';
+    }
+    carregarIcDocumentos();
+  }
 }
 
 // ===================== NFS-e self-service (perfil Cliente) =====================
@@ -3405,19 +3940,37 @@ function rteToolbarHtml(){
       <button type="button" data-cmd="justifyLeft">Esq.</button>
       <button type="button" data-cmd="justifyCenter">Centro</button>
       <button type="button" data-cmd="justifyFull">Justif.</button>
+      <button type="button" data-acao="imagem">Imagem</button>
     </div>
   `;
 }
 function setupRte(toolbarEl, bodyEl){
-  toolbarEl.querySelectorAll('button').forEach(b=>b.addEventListener('click', ()=>{
+  toolbarEl.querySelectorAll('button[data-cmd]').forEach(b=>b.addEventListener('click', ()=>{
     bodyEl.focus();
     document.execCommand(b.dataset.cmd, false, b.dataset.val||null);
   }));
+  const btnImagem = toolbarEl.querySelector('button[data-acao="imagem"]');
+  if(btnImagem){
+    const inputArquivo = document.createElement('input');
+    inputArquivo.type = 'file'; inputArquivo.accept = 'image/*'; inputArquivo.style.display = 'none';
+    btnImagem.after(inputArquivo);
+    btnImagem.addEventListener('click', ()=> inputArquivo.click());
+    inputArquivo.addEventListener('change', ()=>{
+      const arquivo = inputArquivo.files[0];
+      if(!arquivo) return;
+      const leitor = new FileReader();
+      leitor.onload = ()=>{ bodyEl.focus(); document.execCommand('insertImage', false, leitor.result); };
+      leitor.readAsDataURL(arquivo);
+      inputArquivo.value = '';
+    });
+  }
 }
 const CONTRATO_AUTO_PREENCHER = [
   ['', '— Digitar manualmente —'], ['nome','Nome da empresa'], ['cnpj','CNPJ'],
-  ['endereco','Endereço'], ['cidade','Cidade'], ['uf','UF'], ['email','E-mail'], ['inscricaoMunicipal','Inscrição municipal'],
+  ['endereco','Endereço'], ['cidade','Cidade'], ['uf','UF'], ['cep','CEP'], ['email','E-mail'], ['inscricaoMunicipal','Inscrição municipal'],
+  ['nomeRepresentanteLegal','Nome do representante legal'], ['cpfRepresentanteLegal','CPF do representante legal'],
 ];
+const MESES_PT_EXTENSO_JS = ['janeiro','fevereiro','março','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro'];
 let CONTRATOS_TAB='contratos';
 async function pageContratos(){
   main().innerHTML = `
@@ -3447,11 +4000,11 @@ async function renderContratosLista(){
     api('/empresas'),
   ]);
   const STATUS_LABEL={rascunho:'Rascunho',ativo:'Ativo',encerrado:'Encerrado'};
-  const TIPO_LABEL={contrato:'Contrato',aditivo:'Aditivo'};
+  const TIPO_LABEL={contrato:'Contrato',aditivo:'Aditivo',distrato:'Distrato'};
   box.innerHTML = `
     <div class="row" style="margin-bottom:12px; align-items:flex-end;">
-      <div class="field" style="width:260px;"><label>Empresa</label>
-        <select id="ctrFiltroEmpresa"><option value="">Todas</option>${empresas.map(e=>`<option value="${e.id}" ${String(CONTRATOS_FILTRO.empresaId)===String(e.id)?'selected':''}>${esc(e.nome)}</option>`).join('')}</select>
+      <div class="field" style="width:280px;"><label>Empresa</label>
+        ${comboSelectHtml('ctrFiltroEmpresaCombo', 'Todas as empresas')}
       </div>
       <div class="field" style="width:160px;"><label>Status</label>
         <select id="ctrFiltroStatus">
@@ -3474,17 +4027,29 @@ async function renderContratosLista(){
               <td>${TIPO_LABEL[c.tipo]||c.tipo}</td>
               <td><span class="tag ${c.status==='ativo'?'ok':'muted'}">${STATUS_LABEL[c.status]||c.status}</span></td>
               <td>${fmtDateHora(c.updatedAt)}</td>
-              <td style="text-align:right;"><button class="btn small" data-id="${c.id}" data-act="abrir">Abrir</button></td>
+              <td style="text-align:right; white-space:nowrap;">
+                <button class="btn small" data-id="${c.id}" data-act="abrir">Abrir</button>
+                <button class="btn small danger" data-id="${c.id}" data-act="excluir">Excluir</button>
+              </td>
             </tr>
           `).join('') : `<tr><td colspan="6"><div class="empty-state">Nenhum contrato encontrado.</div></td></tr>`}
         </tbody>
       </table>
     </div>
   `;
-  document.getElementById('ctrFiltroEmpresa').addEventListener('change', e=>{ CONTRATOS_FILTRO.empresaId=e.target.value; renderContratosLista(); });
+  setupComboSelect('ctrFiltroEmpresaCombo', empresas.map(e=>({id:e.id, label:e.nome})), (id)=>{ CONTRATOS_FILTRO.empresaId=id||''; renderContratosLista(); });
+  if(CONTRATOS_FILTRO.empresaId){
+    const atual = empresas.find(e=>String(e.id)===String(CONTRATOS_FILTRO.empresaId));
+    if(atual){ document.querySelector('#ctrFiltroEmpresaCombo .combo-value').value=atual.id; document.querySelector('#ctrFiltroEmpresaCombo .combo-input').value=atual.nome; }
+  }
   document.getElementById('ctrFiltroStatus').addEventListener('change', e=>{ CONTRATOS_FILTRO.status=e.target.value; renderContratosLista(); });
   document.getElementById('btnNovoContrato').addEventListener('click', ()=>novoContratoModal(empresas));
   box.querySelectorAll('[data-act="abrir"]').forEach(b=>b.addEventListener('click', ()=>abrirContratoDrawer(Number(b.dataset.id))));
+  box.querySelectorAll('[data-act="excluir"]').forEach(b=>b.addEventListener('click', async ()=>{
+    if(!confirm('Excluir este contrato? Só é possível excluir documentos em rascunho — encerre em vez de excluir um já ativo.')) return;
+    try{ await api('/contratos/'+b.dataset.id, { method:'DELETE' }); toast('Excluído.','ok'); renderContratosLista(); }
+    catch(e){ toast(e.message,'err'); }
+  }));
 }
 async function novoContratoModal(empresas){
   const { items: modelos } = await api('/contratos/modelos');
@@ -3496,17 +4061,20 @@ async function novoContratoModal(empresas){
       <select id="ncModelo">${ativos.map(m=>`<option value="${m.id}">${esc(m.nome)}</option>`).join('')}</select>
     </div>
     <div class="field"><label>Empresa</label>
-      <select id="ncEmpresa">${empresas.map(e=>`<option value="${e.id}">${esc(e.nome)}</option>`).join('')}</select>
+      ${comboSelectHtml('ncEmpresaCombo', 'Digite para buscar a empresa…')}
     </div>
     <div class="modal-actions">
       <button class="btn" id="ncCancel">Cancelar</button>
       <button class="btn primary" id="ncCriar">Criar</button>
     </div>
   `);
+  setupComboSelect('ncEmpresaCombo', empresas.map(e=>({id:e.id, label:e.nome})), ()=>{});
   document.getElementById('ncCancel').addEventListener('click', closeModal);
   document.getElementById('ncCriar').addEventListener('click', async ()=>{
+    const empresaId = document.querySelector('#ncEmpresaCombo .combo-value').value;
+    if(!empresaId){ toast('Selecione a empresa.','err'); return; }
     try{
-      const r = await api('/contratos', { method:'POST', body:{ modeloId:Number(document.getElementById('ncModelo').value), empresaId:Number(document.getElementById('ncEmpresa').value), dados:{} } });
+      const r = await api('/contratos', { method:'POST', body:{ modeloId:Number(document.getElementById('ncModelo').value), empresaId:Number(empresaId), dados:{} } });
       closeModal();
       renderContratosLista();
       abrirContratoDrawer(r.id);
@@ -3524,6 +4092,7 @@ async function abrirContratoDrawer(id){
     </div>
     <div class="drawer-body">
       ${c.tipo==='aditivo'?`<p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Aditivo ao contrato: <b>${esc(c.contratoPaiTitulo||'')}</b></p>`:''}
+      ${c.tipo==='distrato'?`<p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Distrato do contrato: <b>${esc(c.contratoPaiTitulo||'')}</b></p>`:''}
       <div class="field"><label>Título</label><input id="drwTitulo" value="${esc(c.titulo)}"></div>
       ${campos.length?`
         <div class="card" style="background:var(--paper); margin-bottom:16px;">
@@ -3543,7 +4112,7 @@ async function abrirContratoDrawer(id){
       <button class="btn primary" id="drwSalvar">Salvar</button>
       <button class="btn" id="drwPdf">Baixar PDF</button>
       <button class="btn" id="drwEmail">Enviar por e-mail</button>
-      ${c.tipo==='contrato'?`<button class="btn" id="drwAditivo">Criar aditivo</button>`:''}
+      ${c.tipo==='contrato'?`<button class="btn" id="drwAditivo">Criar aditivo</button><button class="btn" id="drwDistrato">Criar distrato</button>`:''}
     </div>
   `);
   const toolbar = document.querySelector('#drawerBody .rte-toolbar');
@@ -3586,9 +4155,23 @@ async function abrirContratoDrawer(id){
     }
   });
   if(campos.length){
-    document.getElementById('drwAplicarCampos').addEventListener('click', ()=>{
+    document.getElementById('drwAplicarCampos').addEventListener('click', async ()=>{
       const novosDados = {};
       document.querySelectorAll('.drwCampo').forEach(inp=>novosDados[inp.dataset.chave]=inp.value);
+      // {{dia}}/{{mes}}/{{ano}} são automáticos (data de hoje) — só não sobrescreve se o admin já
+      // tiver digitado algo manualmente nesses campos.
+      const hoje = new Date();
+      if(!novosDados['dia']) novosDados['dia'] = String(hoje.getDate());
+      if(!novosDados['mes']) novosDados['mes'] = MESES_PT_EXTENSO_JS[hoje.getMonth()];
+      if(!novosDados['ano']) novosDados['ano'] = String(hoje.getFullYear());
+      // {{vlr_extenso}} é calculado a partir de {{valor_honorário}} — só busca se o campo existir
+      // no modelo e o admin já tiver digitado um valor.
+      if(!novosDados['vlr_extenso'] && novosDados['valor_honorário']){
+        try{
+          const r = await api('/contratos/valor-extenso', { method:'POST', body:{ valor: novosDados['valor_honorário'] } });
+          novosDados['vlr_extenso'] = r.extenso;
+        }catch(e){ toast('Não consegui calcular o valor por extenso: '+e.message,'err'); }
+      }
       let html = corpo.innerHTML;
       Object.keys(novosDados).forEach(chave=>{
         const valor = novosDados[chave];
@@ -3599,18 +4182,46 @@ async function abrirContratoDrawer(id){
     });
   }
   if(c.tipo==='contrato'){
-    document.getElementById('drwAditivo').addEventListener('click', async ()=>{
-      try{
-        const r = await api('/contratos/'+id+'/aditivo', { method:'POST' });
-        toast('Aditivo criado.','ok');
-        abrirContratoDrawer(r.id);
-      }catch(e){ toast(e.message,'err'); }
-    });
+    document.getElementById('drwAditivo').addEventListener('click', ()=>novoAditivoModal(id));
+    document.getElementById('drwDistrato').addEventListener('click', ()=>criarDistrato(id));
   }
+}
+async function criarDistrato(contratoId){
+  if(!confirm('Criar um distrato deste contrato? O documento já sai pronto com o cabeçalho do contrato original, a cláusula e as assinaturas padrão — você revisa e ajusta antes de salvar.')) return;
+  try{
+    const r = await api('/contratos/'+contratoId+'/distrato', { method:'POST' });
+    toast('Distrato criado.','ok');
+    abrirContratoDrawer(r.id);
+  }catch(e){ toast(e.message,'err'); }
+}
+function novoAditivoModal(contratoId){
+  openModal(`
+    <h3>Criar aditivo</h3>
+    <div class="field"><label>O que vai mudar neste aditivo?</label>
+      <textarea id="adDados" rows="5" placeholder="Ex.: O valor mensal dos honorários passa de R$ 500,00 para R$ 650,00, a partir de 01/09/2026."></textarea>
+    </div>
+    <p style="font-size:12px; color:var(--ink-soft); margin-top:-6px;">O aditivo já nasce com o mesmo timbrado do contrato original — esse texto entra pronto no documento, e você continua livre pra editar antes de salvar.</p>
+    <div class="modal-actions">
+      <button class="btn" id="adCancel">Cancelar</button>
+      <button class="btn primary" id="adCriar">Criar aditivo</button>
+    </div>
+  `);
+  document.getElementById('adCancel').addEventListener('click', closeModal);
+  document.getElementById('adCriar').addEventListener('click', async ()=>{
+    try{
+      const r = await api('/contratos/'+contratoId+'/aditivo', { method:'POST', body:{ dadosAlterados: document.getElementById('adDados').value.trim() } });
+      closeModal();
+      toast('Aditivo criado.','ok');
+      abrirContratoDrawer(r.id);
+    }catch(e){ toast(e.message,'err'); }
+  });
 }
 async function renderContratosModelos(){
   const box = document.getElementById('contratosContent');
-  const { items } = await api('/contratos/modelos');
+  const [{ items }, distratoConfig] = await Promise.all([
+    api('/contratos/modelos'),
+    api('/contratos/distrato-config'),
+  ]);
   box.innerHTML = `
     <div class="row" style="margin-bottom:12px;">
       <button class="btn primary" id="btnNovoModelo">+ Novo modelo</button>
@@ -3630,10 +4241,17 @@ async function renderContratosModelos(){
               </td>
             </tr>
           `).join('') : `<tr><td colspan="4"><div class="empty-state">Nenhum modelo cadastrado ainda.</div></td></tr>`}
+          <tr>
+            <td>Modelo padrão de Distrato</td>
+            <td>—</td>
+            <td><span class="tag muted">Cláusula + assinaturas</span></td>
+            <td style="text-align:right;"><button class="btn small" id="btnEditarDistrato">Editar</button></td>
+          </tr>
         </tbody>
       </table>
     </div>
   `;
+  document.getElementById('btnEditarDistrato').addEventListener('click', ()=>distratoModeloDrawer(distratoConfig));
   document.getElementById('btnNovoModelo').addEventListener('click', ()=>contratoModeloDrawer(null));
   box.querySelectorAll('[data-act="editar"]').forEach(b=>b.addEventListener('click', ()=>{
     contratoModeloDrawer(items.find(m=>m.id===Number(b.dataset.id)));
@@ -3673,6 +4291,17 @@ function contratoModeloDrawer(m){
         <div id="cmCamposList">${(m?m.campos:[]).map(contratoModeloCampoRowHtml).join('')}</div>
         <button type="button" class="btn small" id="cmAddCampo">+ Adicionar campo</button>
       </div>
+      <div class="card" style="background:var(--paper); margin:14px 0;">
+        <div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">
+          Já tem o contrato pronto num arquivo Word? Carregue aqui — o texto entra no editor abaixo,
+          já formatado, e continua livre pra editar e inserir os campos.
+        </div>
+        <div class="row" style="align-items:center;">
+          <input type="file" id="cmArquivoDocx" accept=".docx">
+          <button type="button" class="btn small" id="cmCarregarDocx">Carregar Word</button>
+        </div>
+        <div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">Só arquivo .docx — se o seu estiver em .doc antigo, abra e salve como .docx no Word primeiro.</div>
+      </div>
       ${rteToolbarHtml()}
       <div class="rte-body" id="cmCorpo" contenteditable="true">${m?m.conteudoHtml:'<h1>Contrato de Prestação de Serviços</h1><p></p>'}</div>
     </div>
@@ -3693,6 +4322,16 @@ function contratoModeloDrawer(m){
   const corpo = document.getElementById('cmCorpo');
   setupRte(toolbar, corpo);
   document.getElementById('cmFechar').addEventListener('click', closeDrawer);
+  document.getElementById('cmCarregarDocx').addEventListener('click', async ()=>{
+    const arquivo = document.getElementById('cmArquivoDocx').files[0];
+    if(!arquivo){ toast('Selecione um arquivo .docx.','err'); return; }
+    const fd = new FormData(); fd.append('arquivo', arquivo);
+    try{
+      const r = await api('/contratos/modelos/importar-docx', { method:'POST', body:fd });
+      corpo.innerHTML = r.html;
+      toast('Arquivo carregado — revise o texto e insira os campos onde precisar.','ok');
+    }catch(e){ toast(e.message,'err'); }
+  });
   document.getElementById('cmSalvar').addEventListener('click', async ()=>{
     const nome = document.getElementById('cmNome').value.trim();
     if(!nome){ toast('Informe o nome do modelo.','err'); return; }
@@ -3709,6 +4348,46 @@ function contratoModeloDrawer(m){
       closeDrawer();
       toast('Modelo salvo.','ok');
       renderContratosModelos();
+    }catch(e){ toast(e.message,'err'); }
+  });
+}
+function distratoModeloDrawer(config){
+  openDrawer(`
+    <div class="drawer-header">
+      <h3>Modelo padrão de Distrato</h3>
+      <button class="btn small" id="dtFechar">Fechar</button>
+    </div>
+    <div class="drawer-body">
+      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">
+        Configurado uma única vez e reaproveitado em todo distrato — ao clicar em "Criar distrato" num
+        contrato, o documento já sai pronto com o cabeçalho daquele contrato + a cláusula e as
+        assinaturas definidas aqui. Use <code>{{empresa_nome}}</code> (cliente/contratante),
+        <code>{{escritorio_nome}}</code> (seu escritório/contratada), <code>{{contrato_titulo}}</code>,
+        <code>{{n_contrato_sequencial}}</code> e <code>{{data}}</code> onde quiser que apareçam automaticamente.
+      </p>
+      <div class="field"><label>Cláusula padrão</label></div>
+      ${rteToolbarHtml()}
+      <div class="rte-body" id="dtClausulaCorpo" contenteditable="true">${config.clausulaPadrao || '<p>Pelo presente instrumento, as partes acordam em rescindir/distratar o contrato acima identificado, nada mais tendo a reclamar uma da outra, a qualquer título.</p>'}</div>
+      <div class="field" style="margin-top:16px;"><label>Assinaturas padrão</label></div>
+      ${rteToolbarHtml()}
+      <div class="rte-body" id="dtAssinaturasCorpo" contenteditable="true">${config.assinaturasPadrao || '<p>{{contrato_titulo}}, {{data}}.</p><p>_________________________________<br>CONTRATANTE</p><p>_________________________________<br>CONTRATADA</p>'}</div>
+    </div>
+    <div class="modal-actions" style="padding:16px 24px; border-top:1px solid var(--line);">
+      <button class="btn primary" id="dtSalvar">Salvar modelo de distrato</button>
+    </div>
+  `);
+  const toolbars = document.querySelectorAll('#drawerBody .rte-toolbar');
+  setupRte(toolbars[0], document.getElementById('dtClausulaCorpo'));
+  setupRte(toolbars[1], document.getElementById('dtAssinaturasCorpo'));
+  document.getElementById('dtFechar').addEventListener('click', closeDrawer);
+  document.getElementById('dtSalvar').addEventListener('click', async ()=>{
+    try{
+      await api('/contratos/distrato-config', { method:'PUT', body:{
+        clausulaPadrao: document.getElementById('dtClausulaCorpo').innerHTML,
+        assinaturasPadrao: document.getElementById('dtAssinaturasCorpo').innerHTML,
+      }});
+      closeDrawer();
+      toast('Modelo de distrato salvo.','ok');
     }catch(e){ toast(e.message,'err'); }
   });
 }
@@ -3776,7 +4455,7 @@ async function pageUsuarios(){
       <td>${esc(u.nome)}</td>
       <td>${esc(u.email)}</td>
       <td><span class="tag muted">${u.perfil}</span></td>
-      <td>${esc(u.empresaNome||'—')}</td>
+      <td>${u.totalEmpresas>1?`${u.totalEmpresas} empresas`:esc(u.empresaNome||'—')}</td>
       <td><span class="tag ${u.ativo?'ok':'bad'}">${u.ativo?'Ativo':'Inativo'}</span></td>
       <td style="text-align:right;"><button class="btn small" data-act="edit">Editar</button></td>
     </tr>
@@ -3788,6 +4467,28 @@ async function pageUsuarios(){
   }));
 }
 const MODS = [['dashboard','Início'],['empresas','Empresas'],['solicitacoes','Solicitações de Documentos'],['envio','Envio de Documentos'],['nfse','NFS-e'],['financeiro','Financeiro'],['contratos','Contratos'],['relatorios','Relatórios'],['usuarios','Usuários'],['configuracoes','Configurações']];
+// Lista de empresas com busca por texto — usada nos dois pickers de empresa do modal de usuário
+// (Cliente com múltiplas empresas, Colaborador com acesso restrito), já que a base de empresas
+// pode ter centenas de linhas (import do Domínio Web).
+function checklistComFiltroHtml(idPrefix, empresas, selecionados){
+  selecionados = selecionados || [];
+  return `
+    <input type="text" id="${idPrefix}Filtro" placeholder="Buscar empresa…" style="margin-bottom:6px;">
+    <div style="max-height:180px; overflow-y:auto; border:1px solid var(--rule); border-radius:8px; padding:8px 10px;">
+      ${empresas.map(e=>`<label class="checkbox-row ${idPrefix}Linha" data-nome="${esc(normalizaTxt(e.nome))}"><input type="checkbox" class="${idPrefix}Check" value="${e.id}" ${selecionados.includes(e.id)?'checked':''}> ${esc(e.nome)}</label>`).join('') || '<span style="font-size:12px; color:var(--ink-soft);">Nenhuma empresa cadastrada.</span>'}
+    </div>
+  `;
+}
+function setupChecklistFiltro(idPrefix){
+  const filtro = document.getElementById(idPrefix+'Filtro');
+  if(!filtro) return;
+  filtro.addEventListener('input', ()=>{
+    const termo = normalizaTxt(filtro.value);
+    document.querySelectorAll('.'+idPrefix+'Linha').forEach(el=>{
+      el.style.display = el.dataset.nome.includes(termo) ? '' : 'none';
+    });
+  });
+}
 async function usuarioModal(u){
   const { items: empresas } = await api('/empresas');
   openModal(`
@@ -3797,13 +4498,16 @@ async function usuarioModal(u){
     <div class="field"><label>Senha ${u?'(deixe em branco para manter)':''}</label><input id="usSenha" type="password"></div>
     ${!u? `<div class="field"><label>Perfil</label><select id="usPerfil"><option value="Colaborador">Colaborador (escritório)</option><option value="Administrador">Administrador</option><option value="Cliente">Cliente</option></select></div>`
         : `<div class="field"><label>Perfil</label><input value="${esc(u.perfil)}" disabled></div>`}
-    <div id="usEmpresaWrap" class="field hidden"><label>Empresa</label><select id="usEmpresa">${empresas.map(e=>`<option value="${e.id}" ${u&&u.empresaId===e.id?'selected':''}>${esc(e.nome)}</option>`).join('')}</select></div>
+    <div id="usEmpresaWrap" class="field hidden">
+      <label>Empresa(s) — pode marcar mais de uma</label>
+      ${checklistComFiltroHtml('usCliEmp', empresas, [])}
+    </div>
     ${u? `<label class="checkbox-row"><input type="checkbox" id="usAtivo" ${u.ativo?'checked':''}> Ativo</label>`:''}
     <div id="usColabWrap" class="hidden">
       <div style="margin:16px 0 8px; padding-top:12px; border-top:1px solid var(--rule); font-weight:600; font-size:13.5px;">Permissões e acessos</div>
       <label class="checkbox-row"><input type="checkbox" id="usAcessoTodas" checked> Acesso a todas as empresas</label>
-      <div id="usEmpresasRestritasWrap" class="hidden" style="margin:6px 0 10px; max-height:140px; overflow-y:auto; border:1px solid var(--rule); border-radius:8px; padding:8px 10px;">
-        ${empresas.map(e=>`<label class="checkbox-row"><input type="checkbox" class="usEmpresaRestrita" value="${e.id}"> ${esc(e.nome)}</label>`).join('') || '<span style="font-size:12px; color:var(--ink-soft);">Nenhuma empresa cadastrada.</span>'}
+      <div id="usEmpresasRestritasWrap" class="hidden" style="margin:6px 0 10px;">
+        ${checklistComFiltroHtml('usColabEmp', empresas, [])}
       </div>
       <div id="usPermWrap"></div>
     </div>
@@ -3812,6 +4516,8 @@ async function usuarioModal(u){
       <button class="btn primary" id="usSalvar">Salvar</button>
     </div>
   `);
+  setupChecklistFiltro('usCliEmp');
+  setupChecklistFiltro('usColabEmp');
   const perfilSel = document.getElementById('usPerfil');
   function syncPerfilUI(){
     const perfil = u? u.perfil : perfilSel.value;
@@ -3849,7 +4555,11 @@ async function usuarioModal(u){
     renderPermGrid(perms);
     acessoTodasEl.checked = !!u.acessoTodasEmpresas;
     empresasRestritasWrap.classList.toggle('hidden', acessoTodasEl.checked);
-    empresasRestritasWrap.querySelectorAll('.usEmpresaRestrita').forEach(c=>{ c.checked = empresaIds.includes(Number(c.value)); });
+    empresasRestritasWrap.querySelectorAll('.usColabEmpCheck').forEach(c=>{ c.checked = empresaIds.includes(Number(c.value)); });
+  }
+  if(u && u.perfil==='Cliente'){
+    const { empresaIds } = await api('/users/'+u.id+'/empresas');
+    document.querySelectorAll('.usCliEmpCheck').forEach(c=>{ c.checked = empresaIds.includes(Number(c.value)); });
   }
 
   document.getElementById('usCancel').addEventListener('click', closeModal);
@@ -3859,19 +4569,20 @@ async function usuarioModal(u){
     const senha=document.getElementById('usSenha').value;
     if(!nome||!email){ toast('Preencha nome e e-mail.','err'); return; }
     const perfil = u? u.perfil : perfilSel.value;
+    if(perfil==='Cliente' && ![...document.querySelectorAll('.usCliEmpCheck')].some(c=>c.checked)){
+      toast('Marque ao menos uma empresa para o cliente.','err'); return;
+    }
     try{
       let userId;
       if(u){
         const body = { nome, email, ativo: document.getElementById('usAtivo').checked };
         if(senha) body.password = senha;
-        if(perfil==='Cliente') body.empresaId = Number(document.getElementById('usEmpresa').value);
         if(perfil==='Colaborador') body.acessoTodasEmpresas = document.getElementById('usAcessoTodas').checked;
         await api('/users/'+u.id, { method:'PUT', body });
         userId = u.id;
       } else {
         if(!senha){ toast('Defina uma senha.','err'); return; }
         const body = { nome, email, perfil, password: senha };
-        if(perfil==='Cliente') body.empresaId = Number(document.getElementById('usEmpresa').value);
         if(perfil==='Colaborador') body.acessoTodasEmpresas = document.getElementById('usAcessoTodas').checked;
         const r = await api('/users', { method:'POST', body });
         userId = r.id;
@@ -3887,12 +4598,156 @@ async function usuarioModal(u){
         });
         await api('/users/'+userId+'/permissoes', { method:'PUT', body:{ permissoes } });
         const empresaIds = document.getElementById('usAcessoTodas').checked ? [] :
-          [...document.querySelectorAll('.usEmpresaRestrita:checked')].map(c=>Number(c.value));
+          [...document.querySelectorAll('.usColabEmpCheck:checked')].map(c=>Number(c.value));
+        await api('/users/'+userId+'/empresas', { method:'PUT', body:{ empresaIds } });
+      }
+      if(perfil==='Cliente'){
+        const empresaIds = [...document.querySelectorAll('.usCliEmpCheck:checked')].map(c=>Number(c.value));
         await api('/users/'+userId+'/empresas', { method:'PUT', body:{ empresaIds } });
       }
       closeModal(); pageUsuarios();
     }catch(e){ toast(e.message,'err'); }
   });
+}
+
+// ===================== Escritórios (SuperAdmin) =====================
+async function pageEscritorios(){
+  const { items } = await api('/super/escritorios');
+  main().innerHTML = `
+    <h1>Escritórios</h1>
+    <p class="subtitle">Escritórios de contabilidade que usam este sistema</p>
+    <div class="row" style="margin-bottom:14px;"><button class="btn primary" id="btnNovoEscritorio">+ Novo escritório</button></div>
+    <div class="card" style="padding:0; overflow-x:auto;">
+      <table class="data-table">
+        <thead><tr><th>Nome</th><th>CNPJ</th><th>E-mail</th><th>Empresas</th><th>Usuários</th><th>Situação</th><th></th></tr></thead>
+        <tbody id="escritoriosBody"></tbody>
+      </table>
+    </div>
+  `;
+  document.getElementById('escritoriosBody').innerHTML = items.map(e=>`
+    <tr data-id="${e.id}">
+      <td>${esc(e.nome)}</td>
+      <td>${esc(e.cnpj||'—')}</td>
+      <td>${esc(e.email||'—')}</td>
+      <td>${e.totalEmpresas}</td>
+      <td>${e.totalUsuarios}</td>
+      <td><span class="tag ${e.ativo?'ok':'bad'}">${e.ativo?'Ativo':'Inativo'}</span></td>
+      <td style="text-align:right; white-space:nowrap;">
+        <button class="btn small" data-act="editar">Editar</button>
+        <button class="btn small" data-act="admin">+ Administrador</button>
+        <button class="btn small" data-act="toggle">${e.ativo?'Desativar':'Ativar'}</button>
+      </td>
+    </tr>
+  `).join('') || '<tr><td colspan="7" class="empty-state">Nenhum escritório cadastrado ainda.</td></tr>';
+  document.getElementById('btnNovoEscritorio').addEventListener('click', ()=>escritorioModal());
+  document.getElementById('escritoriosBody').querySelectorAll('[data-act="editar"]').forEach(b=>b.addEventListener('click', e=>{
+    const tr = e.target.closest('tr');
+    const id = Number(tr.dataset.id);
+    escritorioModal(items.find(x=>x.id===id));
+  }));
+  document.getElementById('escritoriosBody').querySelectorAll('[data-act="admin"]').forEach(b=>b.addEventListener('click', e=>{
+    const tr = e.target.closest('tr');
+    const id = Number(tr.dataset.id);
+    administradorModal(items.find(x=>x.id===id));
+  }));
+  document.getElementById('escritoriosBody').querySelectorAll('[data-act="toggle"]').forEach(b=>b.addEventListener('click', async e=>{
+    const tr = e.target.closest('tr');
+    const id = Number(tr.dataset.id);
+    const item = items.find(x=>x.id===id);
+    try{
+      await api('/super/escritorios/'+id+'/ativo', { method:'PUT', body:{ ativo: !item.ativo } });
+      pageEscritorios();
+    }catch(err){ toast(err.message,'err'); }
+  }));
+}
+function escritorioModal(esc_){
+  openModal(`
+    <h3>${esc_?'Editar':'Novo'} escritório</h3>
+    <div class="field"><label>Nome</label><input id="escNome" value="${esc_?esc(esc_.nome):''}"></div>
+    <div class="field"><label>CNPJ</label><input id="escCnpj" value="${esc_&&esc_.cnpj?esc(esc_.cnpj):''}"></div>
+    <div class="field"><label>E-mail</label><input id="escEmail" type="email" value="${esc_&&esc_.email?esc(esc_.email):''}"></div>
+    <div class="field"><label>Telefone</label><input id="escTelefone" value="${esc_&&esc_.telefone?esc(esc_.telefone):''}"></div>
+    ${!esc_?'<p class="subtitle" style="margin-top:0;">Depois de criado, use o botão "+ Administrador" na lista pra cadastrar o primeiro acesso desse escritório.</p>':''}
+    <div class="modal-actions">
+      <button class="btn" id="escCancel">Cancelar</button>
+      <button class="btn primary" id="escSalvar">Salvar</button>
+    </div>
+  `);
+  document.getElementById('escCancel').addEventListener('click', closeModal);
+  document.getElementById('escSalvar').addEventListener('click', async ()=>{
+    const nome = document.getElementById('escNome').value.trim();
+    if(!nome){ toast('Informe o nome do escritório.','err'); return; }
+    const body = {
+      nome,
+      cnpj: document.getElementById('escCnpj').value.trim() || null,
+      email: document.getElementById('escEmail').value.trim() || null,
+      telefone: document.getElementById('escTelefone').value.trim() || null,
+    };
+    try{
+      if(esc_) await api('/super/escritorios/'+esc_.id, { method:'PUT', body });
+      else await api('/super/escritorios', { method:'POST', body });
+      closeModal(); pageEscritorios();
+    }catch(e){ toast(e.message,'err'); }
+  });
+}
+function administradorModal(esc_){
+  openModal(`
+    <h3>Novo Administrador — ${esc(esc_.nome)}</h3>
+    <div class="field"><label>Nome</label><input id="admNome"></div>
+    <div class="field"><label>E-mail</label><input id="admEmail" type="email"></div>
+    <div class="field"><label>Senha</label><input id="admSenha" type="password"></div>
+    <p class="subtitle" style="margin-top:0;">Mínimo 10 caracteres, com letras e números.</p>
+    <div class="modal-actions">
+      <button class="btn" id="admCancel">Cancelar</button>
+      <button class="btn primary" id="admSalvar">Salvar</button>
+    </div>
+  `);
+  document.getElementById('admCancel').addEventListener('click', closeModal);
+  document.getElementById('admSalvar').addEventListener('click', async ()=>{
+    const nome = document.getElementById('admNome').value.trim();
+    const email = document.getElementById('admEmail').value.trim();
+    const password = document.getElementById('admSenha').value;
+    if(!nome || !email || !password){ toast('Preencha nome, e-mail e senha.','err'); return; }
+    try{
+      await api('/super/escritorios/'+esc_.id+'/administrador', { method:'POST', body:{ nome, email, password } });
+      closeModal(); toast('Administrador criado.','ok'); pageEscritorios();
+    }catch(e){ toast(e.message,'err'); }
+  });
+}
+
+// ===================== Módulos da plataforma (SuperAdmin) =====================
+async function pageModulosPlataforma(){
+  const { items } = await api('/super/modulos-catalogo');
+  main().innerHTML = `
+    <h1>Módulos da plataforma</h1>
+    <p class="subtitle">Preço mensal de cada módulo que um escritório-cliente pode contratar (Configurações › Assinatura da plataforma, no login dele). Desativar some da tela de contratação — quem já contratou continua com acesso.</p>
+    <div class="card">
+      <table class="data-table">
+        <thead><tr><th>Módulo</th><th>Valor mensal (R$)</th><th>Ativo</th><th></th></tr></thead>
+        <tbody>
+          ${items.map(m=>`
+            <tr data-chave="${m.chave}">
+              <td><input class="mpNome" value="${esc(m.nome)}" style="width:100%;"></td>
+              <td style="width:160px;"><input class="mpValor" type="number" step="0.01" min="0" value="${m.valorMensal}" style="width:100%;"></td>
+              <td style="width:70px; text-align:center;"><input class="mpAtivo" type="checkbox" ${m.ativo?'checked':''}></td>
+              <td style="width:90px;"><button class="btn small mpSalvar">Salvar</button></td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+  main().querySelectorAll('.mpSalvar').forEach(btn=>btn.addEventListener('click', async ()=>{
+    const tr = btn.closest('tr');
+    const chave = tr.dataset.chave;
+    const body = {
+      nome: tr.querySelector('.mpNome').value.trim(),
+      valorMensal: Number(tr.querySelector('.mpValor').value) || 0,
+      ativo: tr.querySelector('.mpAtivo').checked,
+    };
+    try{ await api('/super/modulos-catalogo/'+chave, { method:'PUT', body }); toast('Módulo atualizado.','ok'); }
+    catch(e){ toast(e.message,'err'); }
+  }));
 }
 
 // ===================== Configurações =====================
@@ -3904,7 +4759,10 @@ async function pageConfiguracoes(){
     <div class="tabs">
       <div class="tab" data-tab="dominio">Domínio Web</div>
       <div class="tab" data-tab="email">E-mail corporativo</div>
+      <div class="tab" data-tab="whatsapp">WhatsApp</div>
+      <div class="tab" data-tab="nfse-agendamento">Emissão de NFS-e</div>
       <div class="tab" data-tab="modulos">Módulos</div>
+      <div class="tab" data-tab="assinatura-plataforma">Assinatura da plataforma</div>
     </div>
     <div id="cfgContent"></div>
   `;
@@ -3916,13 +4774,16 @@ async function renderCfgTab(){
   domTestPolling = false; // interrompe qualquer polling de teste da aba anterior
   main().querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===CFG_TAB));
   const box = document.getElementById('cfgContent');
-  if(CFG_TAB==='dominio') await renderCfgDominio(box);
+  if(CFG_TAB==='assinatura-plataforma') await renderCfgAssinaturaPlataforma(box);
+  else if(CFG_TAB==='dominio') await renderCfgDominio(box);
   else if(CFG_TAB==='modulos') await renderCfgModulos(box);
+  else if(CFG_TAB==='nfse-agendamento') await renderCfgNfseAgendamento(box);
+  else if(CFG_TAB==='whatsapp') await renderCfgWhatsapp(box);
   else await renderCfgEmail(box);
 }
 
 async function renderCfgDominio(box){
-  const [{ items, agente }, cfg] = await Promise.all([ api('/dominio/sync-log'), api('/dominio/config') ]);
+  const [{ items, agente }, cfg, oneDriveCfg] = await Promise.all([ api('/dominio/sync-log'), api('/dominio/config'), api('/onedrive/config') ]);
   box.innerHTML = `
     <div class="card">
       <h3>Status do agente automático</h3>
@@ -3984,6 +4845,43 @@ async function renderCfgDominio(box){
       <div id="domTestResult" style="margin-top:12px;"></div>
     </div>
     <div class="card">
+      <h3>Exportar XML pro Domínio Web</h3>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">
+        O agente mantém uma pasta na sua máquina sempre atualizada com os documentos fiscais buscados
+        em "Busca de XML" (NF-e, NFC-e, NFS-e), organizados por empresa e competência — prontos pra
+        selecionar de uma vez na tela nativa de importação de XML em lote do Domínio ("NF-e Arquivo
+        XML", "NFS-e Arquivo XML - ABRASF" etc.). Não empurra pra dentro do Domínio sozinho — isso
+        exigiria um acordo de integração formal com a Thomson Reuters/Onvio (é assim que o SIEG faz).
+      </p>
+      <label class="checkbox-row"><input type="checkbox" id="domXmlExportAtivo" ${cfg.xmlExportAtivo?'checked':''}> Manter a pasta sincronizada automaticamente</label>
+      <div class="field"><label>Pasta local (na máquina onde o agente roda)</label><input id="domXmlExportDir" value="${esc(cfg.xmlExportDir)}" placeholder="ex.: C:\\NFe-para-Dominio ou /Users/voce/NFe-para-Dominio"></div>
+      <button class="btn primary" id="btnSalvarDomXmlExport">Salvar</button>
+    </div>
+    <div class="card">
+      <h3>OneDrive (direto da nuvem, sem depender do computador ligado)</h3>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">
+        Alternativa à pasta local acima: o próprio servidor sobe os XMLs direto pro seu OneDrive,
+        organizados por empresa e competência — funciona mesmo com o computador desligado, não
+        depende de nenhum agente rodando. Precisa de um app registrado no
+        <a href="https://portal.azure.com" target="_blank" rel="noopener" class="link-discreto">portal Azure</a>
+        (Microsoft) pra autorizar o acesso — passo único.
+      </p>
+      <p style="font-size:13px;">${oneDriveCfg.conectado ? `<span class="tag ok">Conectado</span> ${esc(oneDriveCfg.contaNome||oneDriveCfg.contaEmail||'')}` : `<span class="tag bad">Não conectado</span>`}</p>
+      <div class="row">
+        <div class="field grow"><label>Client ID (do app registrado no Azure)</label><input id="odClientId" value="${esc(oneDriveCfg.clientId)}"></div>
+        <div class="field grow"><label>Client Secret ${oneDriveCfg.temClientSecret?'(já salvo — preencha só se quiser trocar)':''}</label><input id="odClientSecret" type="password" placeholder="${oneDriveCfg.temClientSecret?'••••••••':''}"></div>
+      </div>
+      <div class="field"><label>Pasta de destino no OneDrive</label><input id="odPastaDestino" value="${esc(oneDriveCfg.pastaDestino)}"></div>
+      <label class="checkbox-row"><input type="checkbox" id="odAtivo" ${oneDriveCfg.ativo?'checked':''}> Manter o OneDrive sincronizado automaticamente</label>
+      ${oneDriveCfg.ultimaExportacaoEm?`<p style="font-size:12px; color:var(--ink-soft);">Última exportação: ${fmtDateHora(oneDriveCfg.ultimaExportacaoEm)}${oneDriveCfg.ultimoErro?` — <span style="color:var(--debit);">${esc(oneDriveCfg.ultimoErro)}</span>`:''}</p>`:''}
+      <div class="row" style="margin-top:6px;">
+        <button class="btn primary" id="btnSalvarOneDrive">Salvar</button>
+        <a class="btn" href="/api/onedrive/conectar">${oneDriveCfg.conectado?'Reconectar':'Conectar com o OneDrive'}</a>
+        ${oneDriveCfg.conectado?'<button class="btn danger" id="btnDesconectarOneDrive">Desconectar</button><button class="btn" id="btnExportarOneDriveAgora">Exportar agora</button>':''}
+      </div>
+      <div id="odResultado" style="margin-top:10px;"></div>
+    </div>
+    <div class="card">
       <h3>Histórico de sincronizações</h3>
       <table class="data-table">
         <thead><tr><th>Quando</th><th>Origem</th><th>Novas</th><th>Atualizadas</th><th>Status</th></tr></thead>
@@ -4024,6 +4922,53 @@ async function renderCfgDominio(box){
     };
     try{ await api('/dominio/config', { method:'PUT', body }); toast('Configuração salva.','ok'); renderCfgDominio(box); }
     catch(e){ toast(e.message,'err'); }
+  });
+
+  // Botão próprio, separado do form de acesso acima — mas reaproveita os valores já carregados em
+  // "cfg" pros outros campos, pra não sobrescrever a configuração de acesso ao salvar só isto aqui
+  // (o PUT /api/dominio/config espera o objeto inteiro; senha/token já tratam campo vazio = mantém,
+  // os demais campos não, por isso preciso reenviar o valor atual deles também).
+  document.getElementById('btnSalvarDomXmlExport').addEventListener('click', async ()=>{
+    const body = {
+      source: cfg.source, dbDriver: cfg.dbDriver, dbHost: cfg.dbHost, dbPort: cfg.dbPort, dbName: cfg.dbName, dbUser: cfg.dbUser,
+      dbConnectString: cfg.dbConnectString, queryClientes: cfg.queryClientes, colCodigo: cfg.colCodigo, colNome: cfg.colNome,
+      colCnpj: cfg.colCnpj, colStatus: cfg.colStatus, apiUrl: cfg.apiUrl,
+      xmlExportAtivo: document.getElementById('domXmlExportAtivo').checked,
+      xmlExportDir: document.getElementById('domXmlExportDir').value.trim(),
+    };
+    try{ await api('/dominio/config', { method:'PUT', body }); toast('Configuração salva.','ok'); renderCfgDominio(box); }
+    catch(e){ toast(e.message,'err'); }
+  });
+
+  document.getElementById('btnSalvarOneDrive').addEventListener('click', async ()=>{
+    const body = {
+      clientId: document.getElementById('odClientId').value.trim(),
+      clientSecret: document.getElementById('odClientSecret').value,
+      pastaDestino: document.getElementById('odPastaDestino').value.trim(),
+      ativo: document.getElementById('odAtivo').checked,
+    };
+    try{ await api('/onedrive/config', { method:'PUT', body }); toast('Configuração salva.','ok'); renderCfgDominio(box); }
+    catch(e){ toast(e.message,'err'); }
+  });
+  const btnDesconectarOneDrive = document.getElementById('btnDesconectarOneDrive');
+  if(btnDesconectarOneDrive) btnDesconectarOneDrive.addEventListener('click', async ()=>{
+    if(!confirmar('Desconectar o OneDrive? A exportação automática para de funcionar até você conectar de novo.')) return;
+    try{ await api('/onedrive/desconectar', { method:'POST' }); toast('Desconectado.','ok'); renderCfgDominio(box); }
+    catch(e){ toast(e.message,'err'); }
+  });
+  const btnExportarOneDriveAgora = document.getElementById('btnExportarOneDriveAgora');
+  if(btnExportarOneDriveAgora) btnExportarOneDriveAgora.addEventListener('click', async ()=>{
+    const resultado = document.getElementById('odResultado');
+    btnExportarOneDriveAgora.disabled = true; btnExportarOneDriveAgora.textContent = 'Exportando…';
+    resultado.innerHTML = `<div class="empty-state">Enviando pro OneDrive…</div>`;
+    try{
+      const r = await api('/onedrive/exportar-agora', { method:'POST' });
+      resultado.innerHTML = `<div class="tag ok">Concluído</div> <span style="font-size:12.5px;">${r.novos} documento(s) novo(s) enviado(s).</span>`;
+    }catch(e){
+      resultado.innerHTML = `<div class="tag bad">Falhou</div> <span style="font-size:12.5px;">${esc(e.message)}</span>`;
+    }finally{
+      btnExportarOneDriveAgora.disabled = false; btnExportarOneDriveAgora.textContent = 'Exportar agora';
+    }
   });
 
   document.getElementById('btnTestarDomCfg').addEventListener('click', async ()=>{
@@ -4093,34 +5038,464 @@ async function renderCfgModulos(box){
     catch(e){ toast(e.message,'err'); }
   }));
 }
+
+let CFG_ASSINATURA_POLL = null;
+async function renderCfgAssinaturaPlataforma(box){
+  if(CFG_ASSINATURA_POLL){ clearInterval(CFG_ASSINATURA_POLL); CFG_ASSINATURA_POLL=null; }
+  const { items } = await api('/escritorio/modulos');
+  box.innerHTML = `
+    <div class="card">
+      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-4px;">
+        Módulos que o seu escritório contrata da plataforma (diferente do catálogo que você vende
+        pras suas empresas-cliente, na aba "Módulos"). Teste qualquer um grátis por 3 dias, ou
+        contrate direto via Pix/cartão.
+      </p>
+    </div>
+    <div id="cfgAssinaturaContent"></div>
+  `;
+  const content = document.getElementById('cfgAssinaturaContent');
+  content.innerHTML = `
+    ${items.map(assinaturaModuloCardHtml).join('')}
+    <div class="card" style="margin-top:14px;">
+      <div class="row" style="justify-content:space-between; align-items:center;">
+        <div>Total selecionado: <b id="cfgAssinaturaTotal">${fmtMoney(0)}</b></div>
+        <button class="btn primary" id="btnPagarAssinaturaPlataforma" disabled>Pagar agora</button>
+      </div>
+      <div id="cfgAssinaturaPagamentoResultado" style="margin-top:12px;"></div>
+    </div>
+  `;
+  content.querySelectorAll('[data-acao="testar"]').forEach(b=>b.addEventListener('click', async ()=>{
+    try{
+      await api('/escritorio/modulos/'+b.dataset.chave+'/iniciar-teste', { method:'POST' });
+      toast('Teste iniciado! Você tem 3 dias de acesso completo.','ok');
+      renderCfgAssinaturaPlataforma(box);
+    }catch(e){ toast(e.message,'err'); }
+  }));
+  const btnPagar = document.getElementById('btnPagarAssinaturaPlataforma');
+  function recomputarTotal(){
+    const marcados = [...content.querySelectorAll('.assinaturaCheck:checked')];
+    const total = marcados.reduce((soma,c)=>soma+Number(c.dataset.valor),0);
+    document.getElementById('cfgAssinaturaTotal').textContent = fmtMoney(total);
+    btnPagar.disabled = marcados.length===0;
+  }
+  content.querySelectorAll('.assinaturaCheck').forEach(c=>c.addEventListener('change', recomputarTotal));
+  btnPagar.addEventListener('click', async ()=>{
+    const chaves = [...content.querySelectorAll('.assinaturaCheck:checked')].map(c=>c.dataset.chave);
+    if(!chaves.length) return;
+    const resultado = document.getElementById('cfgAssinaturaPagamentoResultado');
+    resultado.innerHTML = `<div class="empty-state">Gerando cobrança…</div>`;
+    try{
+      const r = await api('/escritorio/modulos/pagar', { method:'POST', body:{ modulos: chaves } });
+      resultado.innerHTML = `
+        <div class="card" style="background:var(--paper);">
+          ${r.pixImagemBase64?`
+            <div style="text-align:center;">
+              <img src="data:image/png;base64,${r.pixImagemBase64}" alt="QR Code Pix" style="width:200px; height:200px;">
+              <div style="font-size:12px; color:var(--ink-soft); margin:8px 0 4px;">Pix copia e cola</div>
+              <input readonly value="${esc(r.pixPayload||'')}" style="width:100%; font-family:'IBM Plex Mono',monospace; font-size:11px; text-align:center;" onclick="this.select()">
+            </div>
+          `:''}
+          ${r.invoiceUrl?`<div style="text-align:center; margin-top:12px;"><a class="btn primary" href="${esc(r.invoiceUrl)}" target="_blank" rel="noopener">Pagar com cartão de crédito</a></div>`:''}
+          <div style="text-align:center; margin-top:12px; font-size:12px; color:var(--ink-soft);">Assim que o pagamento confirmar, o acesso libera sozinho aqui.</div>
+        </div>
+      `;
+      CFG_ASSINATURA_POLL = setInterval(async ()=>{
+        try{
+          const { items: atualizados } = await api('/escritorio/modulos');
+          const todosLiberados = chaves.every(ch=>{ const m=atualizados.find(i=>i.chave===ch); return m && m.status==='ativo'; });
+          if(todosLiberados){
+            clearInterval(CFG_ASSINATURA_POLL); CFG_ASSINATURA_POLL=null;
+            toast('Pagamento confirmado!','ok');
+            renderCfgAssinaturaPlataforma(box);
+          }
+        }catch(e){ /* ignora falha pontual de rede no polling */ }
+      }, 5000);
+    }catch(e){
+      resultado.innerHTML = `<div class="slot-locked" style="background:var(--paper); border-color:var(--debit);"><span class="fname">Não consegui gerar a cobrança</span>${esc(e.message)}</div>`;
+    }
+  });
+}
+
+// ===================== WhatsApp (Cloud API da Meta) =====================
+async function renderCfgWhatsapp(box){
+  const cfg = await api('/whatsapp/config');
+  box.innerHTML = `
+    <div class="card">
+      <h3>Status</h3>
+      <p style="font-size:13px;">${cfg.ativo && cfg.temAccessToken ? `<span class="tag ok">Ativo</span> ${cfg.numeroExibicao?('Número: '+esc(cfg.numeroExibicao)):''}` : `<span class="tag bad">Não configurado</span> Preencha e salve os dados abaixo.`}</p>
+    </div>
+    <div class="card">
+      <h3>WhatsApp Business Platform (Cloud API)</h3>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">
+        Precisa de uma conta na WhatsApp Business Platform da Meta (developers.facebook.com), com um
+        número verificado e um modelo de mensagem (template) aprovado com anexo de documento — não é
+        o mesmo cadastro do aplicativo comum do WhatsApp Business.
+      </p>
+      <div class="field"><label>Phone Number ID</label><input id="wppPhoneId" value="${esc(cfg.phoneNumberId)}" placeholder="ex.: 109876543210987"></div>
+      <div class="field"><label>WhatsApp Business Account ID (opcional)</label><input id="wppWabaId" value="${esc(cfg.businessAccountId)}"></div>
+      <div class="field"><label>Access Token${cfg.temAccessToken?' (já salvo — preencha só se quiser trocar)':''}</label><input id="wppToken" type="password" placeholder="${cfg.temAccessToken?'••••••••••••••••':'token permanente do System User'}"></div>
+      <div class="row">
+        <div class="field grow"><label>Nome do template aprovado</label><input id="wppTemplate" value="${esc(cfg.templateDocumento)}" placeholder="documento_disponivel"></div>
+        <div class="field" style="width:120px;"><label>Idioma do template</label><input id="wppIdioma" value="${esc(cfg.templateIdioma)}" placeholder="pt_BR"></div>
+      </div>
+      <label class="checkbox-row"><input type="checkbox" id="wppAtivo" ${cfg.ativo?'checked':''}> Envio por WhatsApp ativo (rotina automática de NFS-e e envio manual de documentos)</label>
+      <div class="row">
+        <button class="btn primary" id="wppSalvar">Salvar</button>
+        <button class="btn" id="wppTestar">Testar conexão</button>
+      </div>
+      <div id="wppResultado" style="margin-top:10px;"></div>
+    </div>
+  `;
+  document.getElementById('wppSalvar').addEventListener('click', async ()=>{
+    const body = {
+      phoneNumberId: document.getElementById('wppPhoneId').value.trim(),
+      businessAccountId: document.getElementById('wppWabaId').value.trim(),
+      accessToken: document.getElementById('wppToken').value,
+      templateDocumento: document.getElementById('wppTemplate').value.trim(),
+      templateIdioma: document.getElementById('wppIdioma').value.trim(),
+      ativo: document.getElementById('wppAtivo').checked,
+    };
+    try{ await api('/whatsapp/config', { method:'PUT', body }); toast('Configuração salva.','ok'); renderCfgTab(); }
+    catch(e){ toast(e.message,'err'); }
+  });
+  document.getElementById('wppTestar').addEventListener('click', async ()=>{
+    const resEl = document.getElementById('wppResultado');
+    resEl.innerHTML = 'Testando…';
+    try{
+      const r = await api('/whatsapp/testar', { method:'POST' });
+      resEl.innerHTML = `<span class="tag ok">Conectado</span> ${r.numeroExibicao?('Número: '+esc(r.numeroExibicao)):''}`;
+    }catch(e){ resEl.innerHTML = `<div class="tag bad">Falhou</div> <span style="font-size:12.5px;">${esc(e.message)}</span>`; }
+  });
+}
+
+// ===================== Emissão de NFS-e (rotina automática de honorários) =====================
+let NFSE_AG_FILTRO_DISPONIVEIS='';
+let NFSE_AG_EMPRESA_ABERTA=null;
+async function renderCfgNfseAgendamento(box){
+  const [config, { items: quadro2 }, { items: envioTemplates }, { items: empresas }] = await Promise.all([
+    api('/nfse/agendamento/config'),
+    api('/nfse/agendamento/empresas'),
+    api('/envio/templates'),
+    api('/empresas'),
+  ]);
+  box.innerHTML = `
+    <div class="card">
+      <h3>Configuração geral da rotina</h3>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">
+        Emite de verdade no Sistema Nacional NFS-e (produção, com efeito fiscal real) — confira tudo
+        antes de ativar. Nunca emite duas notas pro mesmo cliente na mesma competência.
+      </p>
+      <div class="field"><label>Empresa prestador (o seu escritório, emitindo as notas)</label>
+        ${comboSelectHtml('agEmpresaPrestadorCombo', 'Digite para buscar a empresa…')}
+      </div>
+      <div class="field"><label>Anexar automaticamente em Envio de Documentos como</label>
+        <select id="agEnvioTemplate">
+          <option value="">— Não anexar automaticamente —</option>
+          ${envioTemplates.map(t=>`<option value="${t.id}" ${config.envioTemplateId===t.id?'selected':''}>${esc(t.nome)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="row">
+        <div class="field" style="width:120px;"><label>Dia do mês</label><input id="agDiaMes" type="number" min="1" max="28" value="${config.diaMes}"></div>
+        <div class="field" style="width:100px;"><label>Hora</label><input id="agHora" type="number" min="0" max="23" value="${config.hora}"></div>
+        <div class="field" style="width:100px;"><label>Minuto</label><input id="agMinuto" type="number" min="0" max="59" value="${config.minuto}"></div>
+      </div>
+      <label class="checkbox-row"><input type="checkbox" id="agAtivo" ${config.ativo?'checked':''}> Rotina ativa (dispara sozinha no dia/hora configurado, todo mês)</label>
+      <div style="font-size:12.5px; color:var(--ink-soft); margin:4px 0 12px;">
+        ${config.ultimaExecucaoCompetencia? `Última execução: competência ${esc(config.ultimaExecucaoCompetencia)}.` : 'Ainda não executou.'}
+      </div>
+      <div class="row">
+        <button class="btn primary" id="agSalvarConfig">Salvar configuração</button>
+        <button class="btn" id="agExecutarAgora">Executar agora</button>
+      </div>
+    </div>
+    <div class="row" style="align-items:flex-start; gap:16px; flex-wrap:wrap;">
+      <div class="card" style="flex:1; min-width:260px;">
+        <h3>Empresas disponíveis</h3>
+        <input type="text" id="agFiltroDisponiveis" placeholder="Buscar empresa…" style="margin-bottom:8px;" value="${esc(NFSE_AG_FILTRO_DISPONIVEIS)}">
+        <div id="agListaDisponiveis" style="max-height:420px; overflow-y:auto;"><div class="empty-state">Carregando…</div></div>
+      </div>
+      <div class="card" style="flex:1; min-width:260px;">
+        <h3>Em rotina automática</h3>
+        <div id="agListaSelecionadas" style="max-height:420px; overflow-y:auto;"></div>
+      </div>
+      <div class="card" id="agPainelEmpresaWrap" style="flex:1; min-width:260px; ${NFSE_AG_EMPRESA_ABERTA?'':'display:none;'}"></div>
+    </div>
+    <div class="card">
+      <h3>Histórico de execuções</h3>
+      <div id="agLog"><div class="empty-state">Carregando…</div></div>
+    </div>
+  `;
+  setupComboSelect('agEmpresaPrestadorCombo', empresas.map(e=>({id:e.id, label:e.nome})), ()=>{});
+  if(config.empresaPrestadorId){
+    const atual = empresas.find(e=>e.id===config.empresaPrestadorId);
+    if(atual){ document.querySelector('#agEmpresaPrestadorCombo .combo-value').value=atual.id; document.querySelector('#agEmpresaPrestadorCombo .combo-input').value=atual.nome; }
+  }
+  document.getElementById('agSalvarConfig').addEventListener('click', async ()=>{
+    const body = {
+      empresaPrestadorId: document.querySelector('#agEmpresaPrestadorCombo .combo-value').value || null,
+      envioTemplateId: document.getElementById('agEnvioTemplate').value || null,
+      diaMes: document.getElementById('agDiaMes').value,
+      hora: document.getElementById('agHora').value,
+      minuto: document.getElementById('agMinuto').value,
+      ativo: document.getElementById('agAtivo').checked,
+    };
+    if(body.ativo && !body.empresaPrestadorId){ toast('Selecione a empresa prestador antes de ativar a rotina.','err'); return; }
+    try{ await api('/nfse/agendamento/config', { method:'PUT', body }); toast('Configuração salva.','ok'); renderCfgTab(); }
+    catch(e){ toast(e.message,'err'); }
+  });
+  document.getElementById('agExecutarAgora').addEventListener('click', async ()=>{
+    if(!confirm('Isso vai emitir de verdade as NFS-e de todas as empresas ativas no quadro da rotina, agora — não é uma simulação. Confirma?')) return;
+    try{
+      toast('Executando… isso pode levar alguns minutos.','ok');
+      const r = await api('/nfse/agendamento/executar-agora', { method:'POST' });
+      if(r.processados===0){
+        toast(r.motivo||'Nada foi processado.','err');
+      } else {
+        toast(`Execução concluída: ${r.sucesso} emitida(s), ${r.falha} com falha, de ${r.processados} serviço(s) processado(s) — confira o histórico abaixo.`, r.falha>0?'err':'ok');
+      }
+      carregarLogAgendamento();
+    }catch(e){ toast(e.message,'err'); }
+  });
+  document.getElementById('agFiltroDisponiveis').addEventListener('input', (e)=>{
+    NFSE_AG_FILTRO_DISPONIVEIS = e.target.value;
+    carregarQuadroDisponiveis();
+  });
+  async function carregarQuadroDisponiveis(){
+    const lista = document.getElementById('agListaDisponiveis');
+    const { items } = await api('/nfse/agendamento/empresas-disponiveis'+(NFSE_AG_FILTRO_DISPONIVEIS?'?q='+encodeURIComponent(NFSE_AG_FILTRO_DISPONIVEIS):''));
+    lista.innerHTML = items.length? items.map(e=>{
+      const digitos = (e.cnpj||'').replace(/\D/g,'');
+      const pessoaFisica = digitos.length>0 && digitos.length<=11;
+      const identificador = pessoaFisica ? (e.inscricaoEstadual||'sem IE') : (e.cnpj||'sem CNPJ');
+      return `
+      <div class="row" style="justify-content:space-between; align-items:center; padding:6px 0; border-bottom:1px solid var(--rule);">
+        <span style="font-size:12.5px;">${esc(identificador)} — ${esc(e.nome)}</span>
+        <button class="btn small" data-act="add" data-id="${e.id}">Adicionar →</button>
+      </div>
+    `;
+    }).join('') : `<div class="empty-state">Nenhuma empresa disponível.</div>`;
+    lista.querySelectorAll('[data-act="add"]').forEach(b=>b.addEventListener('click', async ()=>{
+      try{ await api('/nfse/agendamento/empresas/'+b.dataset.id, { method:'POST' }); carregarQuadroDisponiveis(); carregarQuadroSelecionadas(); }
+      catch(e){ toast(e.message,'err'); }
+    }));
+  }
+  async function carregarQuadroSelecionadas(){
+    const lista = document.getElementById('agListaSelecionadas');
+    const { items } = await api('/nfse/agendamento/empresas');
+    lista.innerHTML = items.length? items.map(e=>`
+      <div class="row" style="justify-content:space-between; align-items:center; padding:6px 0; border-bottom:1px solid var(--rule);">
+        <a href="javascript:void(0)" class="link-discreto" data-act="abrir" data-id="${e.empresaId}">${esc(e.nome)}</a>
+        <span style="display:flex; align-items:center; gap:8px;">
+          ${!e.ativo?'<span class="tag muted">Pausada</span>':''}
+          ${e.totalItens===0?'<span class="tag bad">Sem serviço configurado</span>':(e.itensIncompletos>0?'<span class="tag bad">Falta configurar</span>':`<span class="tag ok">${e.totalItens} serviço${e.totalItens>1?'s':''}</span>`)}
+          <button class="btn small danger" data-act="remover" data-id="${e.empresaId}">← Remover</button>
+        </span>
+      </div>
+    `).join('') : `<div class="empty-state">Nenhuma empresa nesta rotina ainda — adicione pelo quadro ao lado.</div>`;
+    lista.querySelectorAll('[data-act="abrir"]').forEach(a=>a.addEventListener('click', ()=>{ NFSE_AG_EMPRESA_ABERTA=Number(a.dataset.id); abrirPainelEmpresa(items.find(x=>x.empresaId===NFSE_AG_EMPRESA_ABERTA)); }));
+    lista.querySelectorAll('[data-act="remover"]').forEach(b=>b.addEventListener('click', async ()=>{
+      if(!confirm('Remover esta empresa da rotina automática?')) return;
+      try{
+        await api('/nfse/agendamento/empresas/'+b.dataset.id, { method:'DELETE' });
+        if(NFSE_AG_EMPRESA_ABERTA===Number(b.dataset.id)){ NFSE_AG_EMPRESA_ABERTA=null; document.getElementById('agPainelEmpresaWrap').style.display='none'; }
+        carregarQuadroDisponiveis(); carregarQuadroSelecionadas();
+      }catch(e){ toast(e.message,'err'); }
+    }));
+  }
+  async function abrirPainelEmpresa(item){
+    const painel = document.getElementById('agPainelEmpresaWrap');
+    painel.style.display='';
+    painel.innerHTML = `<div class="empty-state">Carregando…</div>`;
+    const [{ items: modelos }, { items: servicos }] = await Promise.all([
+      api('/nfse/modelos'),
+      api('/nfse/agendamento/empresas/'+item.empresaId+'/itens'),
+    ]);
+    const modelosAtivos = modelos.filter(m=>m.ativo);
+    painel.innerHTML = `
+      <h3>${esc(item.nome)}</h3>
+      <label class="checkbox-row"><input type="checkbox" id="agAtivoEmpresa" ${item.ativo?'checked':''}> Empresa ativa nesta rotina (desmarque pra pausar todos os serviços dela sem remover nada)</label>
+      <div style="font-size:12px; color:var(--ink-soft); margin:2px 0 12px;">Cada serviço abaixo vira uma NFS-e separada por competência — use quando o mesmo cliente precisar de mais de uma nota (ex.: honorários contábeis + licença do módulo NFS-e).</div>
+      <div id="agItensLista"></div>
+      <button class="btn" id="agAdicionarItem" style="margin-top:8px;">+ Adicionar outro serviço</button>
+    `;
+    document.getElementById('agAtivoEmpresa').addEventListener('change', async (e)=>{
+      try{ await api('/nfse/agendamento/empresas/'+item.empresaId, { method:'PUT', body:{ ativo: e.target.checked } }); toast('Salvo.','ok'); carregarQuadroSelecionadas(); }
+      catch(err){ toast(err.message,'err'); }
+    });
+    function renderItens(){
+      const lista = document.getElementById('agItensLista');
+      lista.innerHTML = servicos.length? servicos.map((s,idx)=>`
+        <div class="card" style="background:var(--paper-deep); margin-bottom:10px;" data-item-id="${s.id}">
+          <div class="row" style="justify-content:space-between; align-items:center;">
+            <strong style="font-size:13px;">Serviço ${idx+1}</strong>
+            <button class="btn small danger" data-act="remover-item" data-id="${s.id}">Remover</button>
+          </div>
+          <div class="field"><label>Modelo (NFS-e › Modelos)</label>
+            <select data-f="modelo">
+              <option value="">— Selecione —</option>
+              ${modelosAtivos.map(m=>`<option value="${m.id}" ${s.modeloId===m.id?'selected':''}>${esc(m.nome)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field"><label>Descrição do serviço</label>
+            <textarea data-f="descricao" rows="3">${esc(s.descricaoServico)}</textarea>
+            <div style="font-size:11px; color:var(--ink-soft); margin-top:4px;">Use <code>{{mes_competencia}}</code> onde quiser que apareça o mês/ano da competência (ex.: "agosto/2026").</div>
+          </div>
+          <div class="field"><label>Valor do serviço (R$)</label><input data-f="valor" type="number" step="0.01" min="0" value="${s.valorServico!=null?s.valorServico:''}"></div>
+          <label class="checkbox-row"><input type="checkbox" data-f="ativo" ${s.ativo?'checked':''}> Ativo (desmarque pra pausar só este serviço)</label>
+          <button class="btn primary small" data-act="salvar-item" data-id="${s.id}">Salvar este serviço</button>
+        </div>
+      `).join('') : `<div class="empty-state">Nenhum serviço configurado ainda — adicione pelo botão abaixo.</div>`;
+      lista.querySelectorAll('[data-act="salvar-item"]').forEach(b=>b.addEventListener('click', async ()=>{
+        const card = b.closest('[data-item-id]');
+        const body = {
+          modeloId: card.querySelector('[data-f="modelo"]').value || null,
+          descricaoServico: card.querySelector('[data-f="descricao"]').value,
+          valorServico: card.querySelector('[data-f="valor"]').value,
+          ativo: card.querySelector('[data-f="ativo"]').checked,
+        };
+        try{ await api('/nfse/agendamento/itens/'+b.dataset.id, { method:'PUT', body }); toast('Salvo.','ok'); carregarQuadroSelecionadas(); }
+        catch(err){ toast(err.message,'err'); }
+      }));
+      lista.querySelectorAll('[data-act="remover-item"]').forEach(b=>b.addEventListener('click', async ()=>{
+        if(!confirm('Remover este serviço? Ele deixa de gerar NFS-e nas próximas execuções.')) return;
+        try{
+          await api('/nfse/agendamento/itens/'+b.dataset.id, { method:'DELETE' });
+          const idx = servicos.findIndex(s=>String(s.id)===b.dataset.id);
+          if(idx>=0) servicos.splice(idx,1);
+          renderItens();
+          carregarQuadroSelecionadas();
+        }catch(err){ toast(err.message,'err'); }
+      }));
+    }
+    renderItens();
+    document.getElementById('agAdicionarItem').addEventListener('click', async ()=>{
+      try{
+        const r = await api('/nfse/agendamento/empresas/'+item.empresaId+'/itens', { method:'POST' });
+        servicos.push({ id:r.id, empresaId:item.empresaId, modeloId:null, descricaoServico:'Honorários contábeis referente ao Mês {{mes_competencia}}', valorServico:null, ativo:true });
+        renderItens();
+        carregarQuadroSelecionadas();
+      }catch(err){ toast(err.message,'err'); }
+    });
+  }
+  async function carregarLogAgendamento(){
+    const logBox = document.getElementById('agLog');
+    const { items } = await api('/nfse/agendamento/log');
+    // "Tentar novamente" só aparece na linha mais recente de cada emissão — sem isso, depois de um
+    // reenvio bem-sucedido (que entra como uma linha NOVA no histórico), a linha antiga com erro
+    // continuava mostrando o botão pra sempre, e clicar nela de novo criaria um anexo/e-mail
+    // duplicado pro cliente.
+    const maisRecentePorEmissao = {};
+    items.forEach(l=>{ if(!(l.emissaoId in maisRecentePorEmissao)) maisRecentePorEmissao[l.emissaoId] = l; });
+    logBox.innerHTML = items.length? `
+      <table class="data-table">
+        <thead><tr><th>Quando</th><th>Empresa</th><th>Competência</th><th>Status</th><th>Mensagem</th><th></th></tr></thead>
+        <tbody>
+          ${items.map(l=>{
+            const falhouAnexo = l.sucesso && /não consegui anexar/i.test(l.mensagem||'') && maisRecentePorEmissao[l.emissaoId]===l;
+            return `
+            <tr>
+              <td>${fmtDateHora(l.executadoEm)}</td>
+              <td>${esc(l.empresaNome||'—')}</td>
+              <td>${esc(l.competencia)}</td>
+              <td><span class="tag ${l.sucesso?'ok':'bad'}">${l.sucesso?'Sucesso':'Falhou'}</span></td>
+              <td style="font-size:12px;">${esc(l.mensagem||'')}</td>
+              <td>${falhouAnexo?`<button class="btn small" data-act="reenviar-doc" data-emissao="${l.emissaoId}">Tentar novamente</button>`:''}</td>
+            </tr>
+          `}).join('')}
+        </tbody>
+      </table>
+    ` : `<div class="empty-state">Nenhuma execução ainda.</div>`;
+    logBox.querySelectorAll('[data-act="reenviar-doc"]').forEach(b=>b.addEventListener('click', async ()=>{
+      b.disabled = true; b.textContent = 'Tentando…';
+      try{
+        const r = await api('/nfse/agendamento/emissoes/'+b.dataset.emissao+'/reenviar-documento', { method:'POST' });
+        toast(r.mensagem,'ok');
+        carregarLogAgendamento();
+      }catch(e){ toast(e.message,'err'); b.disabled=false; b.textContent='Tentar novamente'; }
+    }));
+  }
+  carregarQuadroDisponiveis();
+  carregarQuadroSelecionadas();
+  carregarLogAgendamento();
+  if(NFSE_AG_EMPRESA_ABERTA){
+    const item = quadro2.find(x=>x.empresaId===NFSE_AG_EMPRESA_ABERTA);
+    if(item) abrirPainelEmpresa(item);
+  }
+}
+let CFG_EMAIL_SUBTAB='smtp';
 async function renderCfgEmail(box){
+  box.innerHTML = `
+    <div class="tabs" style="margin-bottom:14px;">
+      <div class="tab" data-subtab="smtp">Configuração SMTP</div>
+      <div class="tab" data-subtab="nfse-texto">Texto padrão para NFS-e</div>
+    </div>
+    <div id="cfgEmailSubContent"></div>
+  `;
+  box.querySelectorAll('.tab').forEach(t=>t.addEventListener('click', ()=>{ CFG_EMAIL_SUBTAB=t.dataset.subtab; renderCfgEmailSubTab(); }));
+  renderCfgEmailSubTab();
+}
+function renderCfgEmailSubTab(){
+  document.querySelectorAll('#cfgContent .tab[data-subtab]').forEach(t=>t.classList.toggle('active', t.dataset.subtab===CFG_EMAIL_SUBTAB));
+  const sub = document.getElementById('cfgEmailSubContent');
+  if(CFG_EMAIL_SUBTAB==='nfse-texto') renderCfgEmailTextoNfse(sub);
+  else renderCfgEmailSmtp(sub);
+}
+async function renderCfgEmailTextoNfse(box){
+  const cfg = await api('/email/config');
+  box.innerHTML = `
+    <div class="card">
+      <h3>Texto padrão para envio de NFS-e para o cliente</h3>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">
+        Usado automaticamente quando a rotina de emissão de NFS-e (Configurações › Emissão de NFS-e)
+        manda a nota por e-mail pro cliente, com o PDF já anexado.
+      </p>
+      <div class="field"><label>Descrição / corpo do e-mail</label>
+        <textarea id="cfgNfseEmailTexto" rows="6" placeholder="Ex.: Prezado cliente, segue em anexo a nota fiscal de serviço referente aos honorários contábeis do mês.">${esc(cfg.nfseEmailTexto)}</textarea>
+      </div>
+      <button class="btn primary" id="cfgNfseEmailSalvar">Salvar</button>
+    </div>
+  `;
+  document.getElementById('cfgNfseEmailSalvar').addEventListener('click', async ()=>{
+    try{
+      await api('/email/config', { method:'PUT', body:{ nfseEmailTexto: document.getElementById('cfgNfseEmailTexto').value } });
+      toast('Texto salvo.','ok');
+    }catch(e){ toast(e.message,'err'); }
+  });
+}
+async function renderCfgEmailSmtp(box){
   const status = await api('/email/status');
+  const cfg = await api('/email/config');
   const { items } = await api('/email/log');
   const { items: empresas } = await api('/empresas');
   box.innerHTML = `
     <div class="card">
       <h3>Status</h3>
-      <p style="font-size:13px;">${status.configurado? `<span class="tag ok">Configurado</span> Enviando como ${esc(status.from)}` : `<span class="tag bad">Não configurado</span> Defina SMTP_HOST, SMTP_USER e SMTP_PASSWORD no .env do servidor.`}</p>
+      <p style="font-size:13px;">${status.configurado? `<span class="tag ok">Configurado</span> Enviando como ${esc(status.from)}` : `<span class="tag bad">Não configurado</span> Preencha e salve os dados abaixo.`}</p>
     </div>
     <div class="card">
-      <h3>Identificar cliente automaticamente</h3>
-      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Envie um PDF, OFX ou XML — o site procura um CNPJ/CPF no conteúdo e sugere o cliente já cadastrado (é uma sugestão: você confirma antes de enviar).</p>
-      <div class="field"><label>Arquivo</label><input type="file" id="idArquivo"></div>
-      <button class="btn" id="btnIdentificar">Identificar</button>
-      <div id="idResultado" style="margin-top:10px;"></div>
-    </div>
-    <div class="card">
-      <h3>Enviar mensagem para um cliente</h3>
-      <div class="field"><label>Empresa</label><select id="emEmpresa">${empresas.map(e=>`<option value="${e.id}">${esc(e.nome)}</option>`).join('')}</select></div>
-      <div class="field"><label>Assunto</label><input id="emAssunto"></div>
-      <div class="field"><label>Mensagem</label><textarea id="emCorpo" rows="4"></textarea></div>
-      <div class="field"><label>Anexos (opcional)</label><input type="file" id="emAnexos" multiple></div>
-      <button class="btn primary" id="btnEnviarEmail">Enviar</button>
+      <h3>Configuração SMTP</h3>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Se for Gmail/Google Workspace, use uma <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener" class="link-discreto">senha de app</a> — a senha normal da conta não funciona aqui.</p>
+      <div class="row">
+        <div class="field grow"><label>Host SMTP</label><input id="cfgSmtpHost" value="${esc(cfg.smtpHost)}" placeholder="smtp.gmail.com"></div>
+        <div class="field" style="width:110px;"><label>Porta</label><input id="cfgSmtpPort" type="number" value="${cfg.smtpPort}"></div>
+      </div>
+      <label class="checkbox-row"><input type="checkbox" id="cfgSmtpSecure" ${cfg.smtpSecure?'checked':''}> Conexão segura (SSL direto na porta — deixe desmarcado pra porta 587/TLS, padrão do Gmail)</label>
+      <div class="field"><label>Usuário / e-mail de login</label><input id="cfgSmtpUser" value="${esc(cfg.smtpUser)}" placeholder="simplescontabeis@gmail.com"></div>
+      <div class="field"><label>Senha${cfg.temSenha?' (já salva — preencha só se quiser trocar)':''}</label><input id="cfgSmtpPassword" type="password" placeholder="${cfg.temSenha?'••••••••••••••••':'senha de app'}"></div>
+      <div class="row">
+        <div class="field grow"><label>Nome do remetente</label><input id="cfgFromName" value="${esc(cfg.fromName)}" placeholder="Simples Contábeis"></div>
+        <div class="field grow"><label>E-mail do remetente (opcional, padrão = usuário)</label><input id="cfgFromEmail" value="${esc(cfg.fromEmail)}" placeholder="simplescontabeis@gmail.com"></div>
+      </div>
+      <div class="row">
+        <button class="btn primary" id="cfgSmtpSalvar">Salvar</button>
+        <button class="btn" id="cfgSmtpTestar">Testar conexão</button>
+      </div>
+      <div id="cfgSmtpResultado" style="margin-top:10px;"></div>
     </div>
     <div class="card">
       <h3>Contatos e documentos por cliente</h3>
       <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Cadastre aqui os e-mails (pode ser mais de um) e os CNPJ/CPF de cada cliente, uma vez só — ficam salvos para o envio e para a identificação automática.</p>
-      <div class="field"><label>Empresa</label><select id="ccEmpresa">${empresas.map(e=>`<option value="${e.id}">${esc(e.nome)}</option>`).join('')}</select></div>
+      <div class="field"><label>Empresa</label>${comboSelectHtml('ccEmpresaCombo', 'Digite para buscar a empresa…')}</div>
       <div id="ccBody"></div>
     </div>
     <div class="card">
@@ -4132,54 +5507,51 @@ async function renderCfgEmail(box){
     </div>
   `;
 
-  document.getElementById('btnIdentificar').addEventListener('click', async ()=>{
-    const f = document.getElementById('idArquivo').files[0];
-    const resEl = document.getElementById('idResultado');
-    if(!f){ toast('Selecione um arquivo.','err'); return; }
-    const fd = new FormData(); fd.append('arquivo', f);
+  document.getElementById('cfgSmtpSalvar').addEventListener('click', async ()=>{
+    const body = {
+      smtpHost: document.getElementById('cfgSmtpHost').value.trim(),
+      smtpPort: Number(document.getElementById('cfgSmtpPort').value) || 587,
+      smtpSecure: document.getElementById('cfgSmtpSecure').checked,
+      smtpUser: document.getElementById('cfgSmtpUser').value.trim(),
+      smtpPassword: document.getElementById('cfgSmtpPassword').value,
+      fromName: document.getElementById('cfgFromName').value.trim(),
+      fromEmail: document.getElementById('cfgFromEmail').value.trim(),
+    };
     try{
-      const r = await api('/email/identificar', { method:'POST', body:fd });
-      if(!r.documentosEncontrados.length){ resEl.innerHTML = `<p style="font-size:12.5px; color:var(--ink-soft);">Nenhum CNPJ/CPF encontrado no arquivo.</p>`; return; }
-      if(!r.matches.length){ resEl.innerHTML = `<p style="font-size:12.5px;">Encontrei ${r.documentosEncontrados.map(d=>esc(d.documento)).join(', ')}, mas nenhum cliente cadastrado com esse documento ainda (cadastre abaixo, em "Contatos e documentos por cliente").</p>`; return; }
-      resEl.innerHTML = `<div style="font-size:12.5px; margin-bottom:6px;">Cliente identificado:</div>` + r.matches.map(m=>
-        `<button class="btn small" data-emp="${m.empresaId}">${esc(m.empresaNome)} (${m.tipo.toUpperCase()} ${esc(m.documento)})</button>`
-      ).join(' ');
-      resEl.querySelectorAll('[data-emp]').forEach(b=>b.addEventListener('click', ()=>{
-        document.getElementById('emEmpresa').value = b.dataset.emp;
-        toast('Cliente selecionado no formulário de envio abaixo.','ok');
-      }));
-    }catch(e){ toast(e.message,'err'); }
-  });
-
-  document.getElementById('btnEnviarEmail').addEventListener('click', async ()=>{
-    const fd = new FormData();
-    fd.append('empresaId', document.getElementById('emEmpresa').value);
-    fd.append('assunto', document.getElementById('emAssunto').value);
-    fd.append('corpo', document.getElementById('emCorpo').value);
-    [...document.getElementById('emAnexos').files].forEach(f=>fd.append('anexos', f));
-    try{
-      await api('/email/enviar', { method:'POST', body:fd });
-      toast('E-mail enviado.','ok');
+      await api('/email/config', { method:'PUT', body });
+      toast('Configuração salva.','ok');
       renderCfgTab();
     }catch(e){ toast(e.message,'err'); }
   });
+  document.getElementById('cfgSmtpTestar').addEventListener('click', async ()=>{
+    const resEl = document.getElementById('cfgSmtpResultado');
+    resEl.innerHTML = `<div class="empty-state">Testando…</div>`;
+    try{
+      await api('/email/testar', { method:'POST' });
+      resEl.innerHTML = `<div class="tag ok">Conexão OK</div>`;
+    }catch(e){
+      resEl.innerHTML = `<div class="tag bad">Falhou</div> <span style="font-size:12.5px;">${esc(e.message)}</span>`;
+    }
+  });
 
   async function carregarContatosEDocs(){
-    const empresaId = document.getElementById('ccEmpresa').value;
+    const empresaId = document.querySelector('#ccEmpresaCombo .combo-value').value;
     const ccBody = document.getElementById('ccBody');
     if(!empresaId){ ccBody.innerHTML=''; return; }
     const [{items:contatos}, {items:docs}] = await Promise.all([
       api('/empresas/'+empresaId+'/contatos'), api('/empresas/'+empresaId+'/documentos'),
     ]);
     ccBody.innerHTML = `
-      <div style="font-weight:600; font-size:12.5px; margin:10px 0 6px;">E-mails de contato</div>
+      <div style="font-weight:600; font-size:12.5px; margin:10px 0 6px;">Contatos (e-mail e WhatsApp)</div>
       <table class="data-table"><tbody id="ccContatosBody">
-        ${contatos.map(c=>`<tr data-id="${c.id}"><td>${esc(c.nome)}</td><td>${esc(c.email)}</td><td style="text-align:right;"><button class="btn small danger" data-act="rmContato">Remover</button></td></tr>`).join('') || '<tr><td colspan="3"><span style="font-size:12px; color:var(--ink-soft);">Nenhum contato cadastrado.</span></td></tr>'}
+        ${contatos.map(c=>`<tr data-id="${c.id}"><td>${esc(c.nome)}</td><td>${esc(c.email)}</td><td>${c.telefone?esc(c.telefone):'—'}${c.receber_whatsapp?' <span class="tag ok">WhatsApp</span>':''}</td><td style="text-align:right;"><button class="btn small danger" data-act="rmContato">Remover</button></td></tr>`).join('') || '<tr><td colspan="4"><span style="font-size:12px; color:var(--ink-soft);">Nenhum contato cadastrado.</span></td></tr>'}
       </tbody></table>
-      <div class="row" style="margin-top:8px;">
+      <div class="row" style="margin-top:8px; align-items:flex-end;">
         <div class="field" style="margin-bottom:0;"><input id="ccNome" placeholder="Nome do contato"></div>
         <div class="field" style="margin-bottom:0;"><input id="ccEmail" type="email" placeholder="e-mail@cliente.com"></div>
-        <button class="btn small" id="btnAddContato">+ Adicionar e-mail</button>
+        <div class="field" style="margin-bottom:0;"><input id="ccTelefone" placeholder="WhatsApp (DDD + número)"></div>
+        <label class="checkbox-row" style="margin-bottom:8px;"><input type="checkbox" id="ccReceberWhatsapp"> Receber por WhatsApp</label>
+        <button class="btn small" id="btnAddContato">+ Adicionar</button>
       </div>
       <div style="font-weight:600; font-size:12.5px; margin:16px 0 6px;">CNPJ / CPF cadastrados</div>
       <table class="data-table"><tbody id="ccDocsBody">
@@ -4193,8 +5565,10 @@ async function renderCfgEmail(box){
     document.getElementById('btnAddContato').addEventListener('click', async ()=>{
       const nome = document.getElementById('ccNome').value.trim();
       const email = document.getElementById('ccEmail').value.trim();
+      const telefone = document.getElementById('ccTelefone').value.trim();
+      const receberWhatsapp = document.getElementById('ccReceberWhatsapp').checked;
       if(!nome||!email){ toast('Preencha nome e e-mail.','err'); return; }
-      try{ await api('/empresas/'+empresaId+'/contatos', { method:'POST', body:{ nome, email } }); carregarContatosEDocs(); }
+      try{ await api('/empresas/'+empresaId+'/contatos', { method:'POST', body:{ nome, email, telefone, receberWhatsapp } }); carregarContatosEDocs(); }
       catch(e){ toast(e.message,'err'); }
     });
     document.querySelectorAll('[data-act="rmContato"]').forEach(b=>b.addEventListener('click', async e=>{
@@ -4212,8 +5586,7 @@ async function renderCfgEmail(box){
       carregarContatosEDocs();
     }));
   }
-  document.getElementById('ccEmpresa').addEventListener('change', carregarContatosEDocs);
-  if(empresas.length) carregarContatosEDocs();
+  setupComboSelect('ccEmpresaCombo', empresas.map(e=>({id:e.id, label:e.nome})), carregarContatosEDocs);
 }
 
 // ===================== start =====================
