@@ -2930,6 +2930,9 @@ async function pageIntegraContador(){
     box.innerHTML = `<div class="empty-state">Carregando…</div>`;
     const { items } = await api('/integracontador/empresas');
     box.innerHTML = `
+      <div class="card">
+        <div class="field" style="max-width:420px; margin-bottom:0;"><label>Buscar empresa</label>${comboSelectHtml('icFiltroEmpresaCombo', 'Digite para buscar a empresa…')}</div>
+      </div>
       <div class="card" style="padding:0; overflow-x:auto;">
         <table class="data-table">
           <thead><tr><th>Empresa</th><th>Status</th><th>Optante Simples</th><th>Documentos</th><th>Última busca</th><th></th></tr></thead>
@@ -2948,6 +2951,7 @@ async function pageIntegraContador(){
         </table>
       </div>
     `;
+    setupComboSelect('icFiltroEmpresaCombo', items.map(e=>({id:e.id, label:e.nome})), (id)=>{ if(id) mostrarIcDetalhe(Number(id)); });
     box.querySelectorAll('.icEmpresaRow').forEach(tr=>tr.addEventListener('click', ()=>mostrarIcDetalhe(Number(tr.dataset.id))));
   }
 
