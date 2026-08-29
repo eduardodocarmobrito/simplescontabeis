@@ -4720,38 +4720,57 @@ function administradorModal(esc_){
 }
 
 // ===================== Módulos da plataforma (SuperAdmin) =====================
-async function pageModulosPlataforma(){
-  const { items } = await api('/super/modulos-catalogo');
-  main().innerHTML = `
-    <h1>Módulos da plataforma</h1>
-    <p class="subtitle">Preço mensal de cada módulo que um escritório-cliente pode contratar (Configurações › Assinatura da plataforma, no login dele). Desativar some da tela de contratação — quem já contratou continua com acesso.</p>
-    <div class="card">
-      <table class="data-table">
-        <thead><tr><th>Módulo</th><th>Valor mensal (R$)</th><th>Ativo</th><th></th></tr></thead>
-        <tbody>
-          ${items.map(m=>`
-            <tr data-chave="${m.chave}">
-              <td><input class="mpNome" value="${esc(m.nome)}" style="width:100%;"></td>
-              <td style="width:160px;"><input class="mpValor" type="number" step="0.01" min="0" value="${m.valorMensal}" style="width:100%;"></td>
-              <td style="width:70px; text-align:center;"><input class="mpAtivo" type="checkbox" ${m.ativo?'checked':''}></td>
-              <td style="width:90px;"><button class="btn small mpSalvar">Salvar</button></td>
-            </tr>
-          `).join('')}
-        </tbody>
-      </table>
-    </div>
+function tabelaModulosHtml(prefixo, items){
+  return `
+    <table class="data-table">
+      <thead><tr><th>Módulo</th><th>Valor mensal (R$)</th><th>Ativo</th><th></th></tr></thead>
+      <tbody>
+        ${items.map(m=>`
+          <tr data-chave="${m.chave}">
+            <td><input class="${prefixo}Nome" value="${esc(m.nome)}" style="width:100%;"></td>
+            <td style="width:160px;"><input class="${prefixo}Valor" type="number" step="0.01" min="0" value="${m.valorMensal}" style="width:100%;"></td>
+            <td style="width:70px; text-align:center;"><input class="${prefixo}Ativo" type="checkbox" ${m.ativo?'checked':''}></td>
+            <td style="width:90px;"><button class="btn small ${prefixo}Salvar">Salvar</button></td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
   `;
-  main().querySelectorAll('.mpSalvar').forEach(btn=>btn.addEventListener('click', async ()=>{
+}
+function ligarSalvarModulos(container, prefixo, endpoint){
+  container.querySelectorAll('.'+prefixo+'Salvar').forEach(btn=>btn.addEventListener('click', async ()=>{
     const tr = btn.closest('tr');
     const chave = tr.dataset.chave;
     const body = {
-      nome: tr.querySelector('.mpNome').value.trim(),
-      valorMensal: Number(tr.querySelector('.mpValor').value) || 0,
-      ativo: tr.querySelector('.mpAtivo').checked,
+      nome: tr.querySelector('.'+prefixo+'Nome').value.trim(),
+      valorMensal: Number(tr.querySelector('.'+prefixo+'Valor').value) || 0,
+      ativo: tr.querySelector('.'+prefixo+'Ativo').checked,
     };
-    try{ await api('/super/modulos-catalogo/'+chave, { method:'PUT', body }); toast('Módulo atualizado.','ok'); }
+    try{ await api(endpoint+'/'+chave, { method:'PUT', body }); toast('Módulo atualizado.','ok'); }
     catch(e){ toast(e.message,'err'); }
   }));
+}
+async function pageModulosPlataforma(){
+  const [{ items: itemsEscritorios }, { items: itemsClientes }] = await Promise.all([
+    api('/super/modulos-catalogo'),
+    api('/super/modulos-clientes'),
+  ]);
+  main().innerHTML = `
+    <h1>Módulos da plataforma</h1>
+    <p class="subtitle">Preço mensal dos módulos vendáveis na plataforma — o que cada escritório-cliente contrata da Simples Contábeis, e o que cada empresa-cliente contrata do escritório dela.</p>
+    <div class="card">
+      <h3>Módulos para escritórios-cliente</h3>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Aparece em Configurações › Assinatura da plataforma, no login de cada escritório. Desativar some da tela de contratação — quem já contratou continua com acesso.</p>
+      ${tabelaModulosHtml('mp', itemsEscritorios)}
+    </div>
+    <div class="card">
+      <h3>Módulos para empresas-cliente</h3>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Aparece na aba Assinatura, no login de cada empresa-cliente (perfil Cliente) — é o que ela pode contratar do próprio escritório (ex.: Financeiro, NFS-e). Desativar some da tela de contratação — quem já contratou continua com acesso.</p>
+      ${tabelaModulosHtml('mc', itemsClientes)}
+    </div>
+  `;
+  ligarSalvarModulos(main(), 'mp', '/super/modulos-catalogo');
+  ligarSalvarModulos(main(), 'mc', '/super/modulos-clientes');
 }
 
 // ===================== Configurações =====================
@@ -4765,7 +4784,6 @@ async function pageConfiguracoes(){
       <div class="tab" data-tab="email">E-mail corporativo</div>
       <div class="tab" data-tab="whatsapp">WhatsApp</div>
       <div class="tab" data-tab="nfse-agendamento">Emissão de NFS-e</div>
-      <div class="tab" data-tab="modulos">Módulos</div>
       <div class="tab" data-tab="assinatura-plataforma">Assinatura da plataforma</div>
     </div>
     <div id="cfgContent"></div>
@@ -4780,7 +4798,6 @@ async function renderCfgTab(){
   const box = document.getElementById('cfgContent');
   if(CFG_TAB==='assinatura-plataforma') await renderCfgAssinaturaPlataforma(box);
   else if(CFG_TAB==='dominio') await renderCfgDominio(box);
-  else if(CFG_TAB==='modulos') await renderCfgModulos(box);
   else if(CFG_TAB==='nfse-agendamento') await renderCfgNfseAgendamento(box);
   else if(CFG_TAB==='whatsapp') await renderCfgWhatsapp(box);
   else await renderCfgEmail(box);
@@ -5008,39 +5025,6 @@ async function renderCfgDominio(box){
       resultEl.innerHTML = `<div class="tag bad">Falhou</div> <span style="font-size:12.5px;">${esc(e.message)}</span>`;
     }
   });
-}
-
-async function renderCfgModulos(box){
-  const { items } = await api('/modulos-catalogo');
-  box.innerHTML = `
-    <div class="card">
-      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-4px;">Preço mensal de cada módulo vendável no self-service das empresas-cliente. Ao desativar um módulo, ele some da tela de contratação — quem já contratou continua com acesso normalmente.</p>
-      <table class="data-table">
-        <thead><tr><th>Módulo</th><th>Valor mensal (R$)</th><th>Ativo</th><th></th></tr></thead>
-        <tbody>
-          ${items.map(m=>`
-            <tr data-chave="${m.chave}">
-              <td><input class="cfgModNome" value="${esc(m.nome)}" style="width:100%;"></td>
-              <td style="width:160px;"><input class="cfgModValor" type="number" step="0.01" min="0" value="${m.valorMensal}" style="width:100%;"></td>
-              <td style="width:70px; text-align:center;"><input class="cfgModAtivo" type="checkbox" ${m.ativo?'checked':''}></td>
-              <td style="width:90px;"><button class="btn small cfgModSalvar">Salvar</button></td>
-            </tr>
-          `).join('')}
-        </tbody>
-      </table>
-    </div>
-  `;
-  box.querySelectorAll('.cfgModSalvar').forEach(btn=>btn.addEventListener('click', async ()=>{
-    const tr = btn.closest('tr');
-    const chave = tr.dataset.chave;
-    const body = {
-      nome: tr.querySelector('.cfgModNome').value.trim(),
-      valorMensal: Number(tr.querySelector('.cfgModValor').value) || 0,
-      ativo: tr.querySelector('.cfgModAtivo').checked,
-    };
-    try{ await api('/modulos-catalogo/'+chave, { method:'PUT', body }); toast('Módulo atualizado.','ok'); }
-    catch(e){ toast(e.message,'err'); }
-  }));
 }
 
 let CFG_ASSINATURA_POLL = null;

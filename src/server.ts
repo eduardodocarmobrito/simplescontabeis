@@ -4293,11 +4293,15 @@ app.post("/api/nfse/empresas/:id/modulos/:chave/prorrogar", blockCliente, requir
     .run(empresaId, chave);
   res.json({ ok: true, items: nfseModulosDaEmpresa(empresaId) });
 });
-app.get("/api/modulos-catalogo", blockCliente, requirePermissao("nfse", "editar"), (_req, res) => {
+// Catálogo de módulos vendáveis pras EMPRESAS-CLIENTE (Financeiro, NFS-e) — compartilhado entre
+// todos os escritórios da plataforma, por isso só o SuperAdmin edita (não o Administrador de um
+// escritório específico). Ver também /api/super/modulos-catalogo, que é o catálogo irmão vendido
+// pra ESCRITÓRIOS (WhatsApp, Busca de XML etc.) — catálogos e tabelas diferentes.
+app.get("/api/super/modulos-clientes", requireSuperAdmin, (_req, res) => {
   const rows = sqlite.prepare(`SELECT chave, nome, valor_mensal as valorMensal, ativo FROM modulos_catalogo ORDER BY chave`).all() as any[];
   res.json({ items: rows.map((r) => ({ ...r, ativo: !!r.ativo })) });
 });
-app.put("/api/modulos-catalogo/:chave", requireSuperAdmin, (req, res) => {
+app.put("/api/super/modulos-clientes/:chave", requireSuperAdmin, (req, res) => {
   const chave = String(req.params.chave);
   const existente = sqlite.prepare(`SELECT chave FROM modulos_catalogo WHERE chave = ?`).get(chave);
   if (!existente) return res.status(404).json({ error: "Módulo não encontrado." });
