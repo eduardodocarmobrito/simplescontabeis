@@ -183,9 +183,42 @@ export interface DasEmitido {
   valores: any;
   pdfBase64: string | null;
 }
-// Gera um DAS avulso pra um período de apuração já conhecido (não recalcula declaração — é o mesmo
-// serviço usado quando o "recálculo" só significa "gerar de novo com o período certo").
-export async function gerarDasAvulso(token: TokenIntegraContador, contratanteCnpj: string, cnpjEmpresa: string, periodoApuracao: string): Promise<DasEmitido> {
+// Resposta real confirmada contra conta de produção (bem diferente do que a doc oficial sozinha
+// sugeria): "dados" vem como array com 1 item — { pdf, cnpjCompleto, detalhamentoDas: { ... } } —
+// não como um objeto plano com pdf/numeroDocumento direto na raiz.
+function extrairDasEmitido(dadosResposta: any): DasEmitido {
+  const item = Array.isArray(dadosResposta) ? dadosResposta[0] : dadosResposta?.["0"] || dadosResposta;
+  const det = item?.detalhamentoDas || {};
+  return {
+    numeroDocumento: det.numeroDocumento || null,
+    periodoApuracao: det.periodoApuracao || null,
+    dataVencimento: det.dataVencimento || null,
+    dataLimiteAcolhimento: det.dataLimiteAcolhimento || null,
+    valores: det.valores || null,
+    pdfBase64: item?.pdf || null,
+  };
+}
+// Gera o DAS a partir de uma declaração PGDAS-D já transmitida (o que a maioria dos escritórios
+// quer: "o DAS de tal competência"), usando os valores já apurados/declarados — não pede pra
+// informar tributo/valor na mão. Rodar de novo pro mesmo período recalcula o DAS (útil se a
+// declaração daquela competência foi retificada depois da primeira busca).
+export async function gerarDas(token: TokenIntegraContador, contratanteCnpj: string, cnpjEmpresa: string, periodoApuracao: string): Promise<DasEmitido> {
+  const r = await chamarServico(token, {
+    base: "Emitir",
+    contratanteCnpj,
+    contribuinteDocumento: cnpjEmpresa,
+    idSistema: "PGDASD",
+    idServico: "GERARDAS12",
+    versaoSistema: "1.0",
+    dados: { periodoApuracao: String(periodoApuracao) },
+  });
+  return extrairDasEmitido(r.dados);
+}
+// Gera um DAS avulso informando os tributos/valores na mão (idServico GERARDASAVULSO19) — diferente
+// do gerarDas acima, esse NÃO usa uma declaração já transmitida; exige montar ListaTributos
+// (Codigo/Valor/CodMunicipio/uf) por fora, então não é chamado automaticamente na busca — deixado
+// pronto pra um caso de uso futuro que realmente precise montar um DAS do zero.
+export async function gerarDasAvulso(token: TokenIntegraContador, contratanteCnpj: string, cnpjEmpresa: string, periodoApuracao: string, listaTributos: object[]): Promise<DasEmitido> {
   const r = await chamarServico(token, {
     base: "Emitir",
     contratanteCnpj,
@@ -193,27 +226,26 @@ export async function gerarDasAvulso(token: TokenIntegraContador, contratanteCnp
     idSistema: "PGDASD",
     idServico: "GERARDASAVULSO19",
     versaoSistema: "1.0",
-    dados: { periodoApuracao: Number(periodoApuracao) },
+    dados: { periodoApuracao: Number(periodoApuracao), listaTributos },
   });
-  const d = r.dados || {};
-  return {
-    numeroDocumento: d.numeroDocumento || null,
-    periodoApuracao: d.detalhamento?.periodoApuracao || d.periodoApuracao || null,
-    dataVencimento: d.detalhamento?.dataVencimento || d.dataVencimento || null,
-    dataLimiteAcolhimento: d.detalhamento?.dataLimiteAcolhimento || null,
-    valores: d.detalhamento?.valores || d.valores || null,
-    pdfBase64: d.pdf || null,
-  };
+  return extrairDasEmitido(r.dados);
 }
 export interface DeclaracaoSimplesNacional {
   numeroDeclaracao: string | null;
-  periodoApuracao: string | null;
+  periodoApuracao: string; // AAAAMM
   dataTransmissao: string | null;
-  situacaoEspecial: string | null;
+  numeroDasGerado: string | null; // último DAS já gerado no histórico do SERPRO pra esse período, se houver (só o número — não vem PDF aqui)
+  dasPago: boolean | null;
 }
 // Lista as declarações do Simples Nacional já entregues (não transmite uma nova — só consulta o
 // que já existe). Transmitir uma declaração nova exige todos os dados de apuração de receita por
 // atividade/período, que este sistema ainda não coleta — fica pra uma etapa futura.
+//
+// Resposta real da Receita (confirmado contra conta de produção, bem diferente do que a doc oficial
+// sozinha sugeria): dados.periodos[] — cada item tem periodoApuracao e uma lista "operacoes" com
+// tipoOperacao "Original" (a declaração em si, dentro de indiceDeclaracao) ou "Geração de DAS" /
+// "DAS de Cobrança" (dentro de indiceDas) — não vem um array plano de declarações como o nome do
+// serviço sugere.
 export async function consultarDeclaracoesPorAno(token: TokenIntegraContador, contratanteCnpj: string, cnpjEmpresa: string, ano: string): Promise<DeclaracaoSimplesNacional[]> {
   const r = await chamarServico(token, {
     base: "Consultar",
@@ -222,15 +254,25 @@ export async function consultarDeclaracoesPorAno(token: TokenIntegraContador, co
     idSistema: "PGDASD",
     idServico: "CONSDECLARACAO13",
     versaoSistema: "1.0",
-    dados: { ano: Number(ano) },
+    dados: { anoCalendario: String(ano) },
   });
-  const lista = Array.isArray(r.dados) ? r.dados : Array.isArray(r.dados?.declaracoes) ? r.dados.declaracoes : [];
-  return lista.map((d: any) => ({
-    numeroDeclaracao: d.numeroDeclaracao || null,
-    periodoApuracao: d.periodoApuracao || null,
-    dataTransmissao: d.dataTransmissao || null,
-    situacaoEspecial: d.situacaoEspecial || null,
-  }));
+  const periodos = Array.isArray(r.dados?.periodos) ? r.dados.periodos : [];
+  const resultado: DeclaracaoSimplesNacional[] = [];
+  for (const p of periodos) {
+    const operacoes = Array.isArray(p.operacoes) ? p.operacoes : [];
+    const original = operacoes.find((o: any) => o.tipoOperacao === "Original" && o.indiceDeclaracao);
+    if (!original) continue; // período sem declaração transmitida ainda (ex.: mês corrente) — nada a mostrar
+    const dasOperacoes = operacoes.filter((o: any) => o.indiceDas).map((o: any) => o.indiceDas);
+    const ultimoDas = dasOperacoes[dasOperacoes.length - 1] || null;
+    resultado.push({
+      numeroDeclaracao: original.indiceDeclaracao.numeroDeclaracao || null,
+      periodoApuracao: String(p.periodoApuracao),
+      dataTransmissao: original.indiceDeclaracao.dataHoraTransmissao || null,
+      numeroDasGerado: ultimoDas?.numeroDas || null,
+      dasPago: ultimoDas ? !!ultimoDas.dasPago : null,
+    });
+  }
+  return resultado;
 }
 
 // ===================== SITFIS (Situação Fiscal) — confirmado na doc oficial, fluxo em 2 passos =====================

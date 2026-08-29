@@ -3852,6 +3852,7 @@ async function integraContadorBuscarEmpresa(empresaId: number, empresaCnpj: stri
     // DAS + Declaração — só pra quem é optante do Simples Nacional.
     if (optante) {
       const anoAtual = new Date().getFullYear();
+      let ultimoPeriodoDeclarado: string | null = null;
       try {
         const declaracoes = await integracontador.consultarDeclaracoesPorAno(token, cnpjEscritorio, empresaCnpj, String(anoAtual));
         const inserirDecl = sqlite.prepare(
@@ -3860,10 +3861,31 @@ async function integraContadorBuscarEmpresa(empresaId: number, empresaCnpj: stri
         for (const d of declaracoes) {
           inserirDecl.run(empresaId, empConfig.escritorio_id, d.periodoApuracao, d.numeroDeclaracao, JSON.stringify(d));
           novos++;
+          if (!ultimoPeriodoDeclarado || d.periodoApuracao > ultimoPeriodoDeclarado) ultimoPeriodoDeclarado = d.periodoApuracao;
         }
       } catch (e: any) {
         console.error(`[Integra Contador] declarações da empresa ${empresaId} falharam:`, e.message);
         falhas.push(`Declaração: ${e.message}`);
+      }
+      // DAS — da competência mais recente que já tem declaração transmitida (o mês corrente ainda
+      // não tem declaração pra gerar DAS a partir dela). Rodar de novo pro mesmo período recalcula
+      // o DAS (útil se a declaração foi retificada depois da última busca).
+      if (ultimoPeriodoDeclarado) {
+        try {
+          const das = await integracontador.gerarDas(token, cnpjEscritorio, empresaCnpj, ultimoPeriodoDeclarado);
+          if (das.pdfBase64) {
+            const caminho = salvarPdfBase64EmCache(`das_${empresaId}_${ultimoPeriodoDeclarado}_${Date.now()}`, das.pdfBase64);
+            sqlite
+              .prepare(
+                `INSERT INTO integracontador_documentos (empresa_id, escritorio_id, tipo, periodo_apuracao, numero_documento, data_vencimento, pdf_path, detalhes_json) VALUES (?, ?, 'das', ?, ?, ?, ?, ?)`
+              )
+              .run(empresaId, empConfig.escritorio_id, das.periodoApuracao || ultimoPeriodoDeclarado, das.numeroDocumento, das.dataVencimento, caminho, JSON.stringify(das.valores || {}));
+            novos++;
+          }
+        } catch (e: any) {
+          console.error(`[Integra Contador] DAS da empresa ${empresaId} falhou:`, e.message);
+          falhas.push(`DAS: ${e.message}`);
+        }
       }
     }
     const erroResumo = falhas.length ? falhas.join(" | ") : null;
