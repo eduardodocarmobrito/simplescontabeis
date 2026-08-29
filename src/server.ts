@@ -3806,6 +3806,7 @@ async function integraContadorBuscarEmpresa(empresaId: number, empresaCnpj: stri
   const empConfig = getIntegraContadorEmpresaConfig(empresaId);
   const cfg = getIntegraContadorConfig(empConfig.escritorio_id);
   let novos = 0;
+  const falhas: string[] = [];
   try {
     const token = await obterTokenIntegraContador(cfg);
     const cnpjEscritorio = cfg.cnpj;
@@ -3819,6 +3820,7 @@ async function integraContadorBuscarEmpresa(empresaId: number, empresaCnpj: stri
       novos++;
     } catch (e: any) {
       console.error(`[Integra Contador] situação fiscal da empresa ${empresaId} falhou:`, e.message);
+      falhas.push(`Situação Fiscal: ${e.message}`);
     }
     // DAS + Declaração — só pra quem é optante do Simples Nacional.
     if (optante) {
@@ -3834,10 +3836,12 @@ async function integraContadorBuscarEmpresa(empresaId: number, empresaCnpj: stri
         }
       } catch (e: any) {
         console.error(`[Integra Contador] declarações da empresa ${empresaId} falharam:`, e.message);
+        falhas.push(`Declaração: ${e.message}`);
       }
     }
-    sqlite.prepare(`UPDATE integracontador_empresa_config SET ultima_busca_em = datetime('now'), ultimo_erro = NULL WHERE empresa_id = ?`).run(empresaId);
-    return { novos, erro: null };
+    const erroResumo = falhas.length ? falhas.join(" | ") : null;
+    sqlite.prepare(`UPDATE integracontador_empresa_config SET ultima_busca_em = datetime('now'), ultimo_erro = ? WHERE empresa_id = ?`).run(erroResumo, empresaId);
+    return { novos, erro: erroResumo };
   } catch (e: any) {
     sqlite.prepare(`UPDATE integracontador_empresa_config SET ultima_busca_em = datetime('now'), ultimo_erro = ? WHERE empresa_id = ?`).run(e.message, empresaId);
     return { novos, erro: e.message };
