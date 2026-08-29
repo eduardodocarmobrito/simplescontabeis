@@ -3885,15 +3885,15 @@ app.get("/api/integracontador/empresas", blockCliente, requireAdmin, (req, res) 
 // empresa — assim toda empresa que tiver DAS habilitado no Integra Contador já ganha, sozinha, o
 // mesmo mecanismo de Envio de Documentos que qualquer outro modelo usa, e o cliente já enxerga o
 // DAS em "Meus Documentos" no login dele, sem o escritório precisar anexar nada na mão.
-function integraContadorObterOuCriarAtribuicaoDas(escritorioId: number, empresaId: number): number {
-  let template = sqlite.prepare(`SELECT id FROM envio_templates WHERE escritorio_id = ? AND nome = 'DAS - Mensal'`).get(escritorioId) as any;
+function integraContadorObterOuCriarAtribuicaoModelo(escritorioId: number, empresaId: number, nomeTemplate: string, descricaoTemplate: string): number {
+  let template = sqlite.prepare(`SELECT id FROM envio_templates WHERE escritorio_id = ? AND nome = ?`).get(escritorioId, nomeTemplate) as any;
   if (!template) {
     const info = sqlite
       .prepare(
         `INSERT INTO envio_templates (nome, descricao, periodicidade, accept_json, detectar_vencimento, visivel_cliente, escritorio_id)
-         VALUES ('DAS - Mensal', 'Guia de recolhimento do Simples Nacional (DAS), gerada automaticamente pelo Integra Contador', 'mensal', '["pdf"]', 0, 1, ?)`
+         VALUES (?, ?, 'mensal', '["pdf"]', 0, 1, ?)`
       )
-      .run(escritorioId);
+      .run(nomeTemplate, descricaoTemplate, escritorioId);
     template = { id: Number(info.lastInsertRowid) };
   }
   let atribuicao = sqlite.prepare(`SELECT id FROM envio_atribuicoes WHERE template_id = ? AND empresa_id = ?`).get(template.id, empresaId) as any;
@@ -3909,31 +3909,65 @@ function integraContadorFormatarVencimento(vencAAAAMMDD: string | null): string 
   if (!vencAAAAMMDD || vencAAAAMMDD.length !== 8) return null;
   return `${vencAAAAMMDD.slice(0, 4)}-${vencAAAAMMDD.slice(4, 6)}-${vencAAAAMMDD.slice(6, 8)}`;
 }
-// Anexa o PDF do DAS já gerado em Envio de Documentos, criando o período (competência) se ainda não
-// existir. Cada chamada INSERE um documento novo — nunca substitui um já existente — então o
-// histórico completo fica registrado: o DAS original e cada recálculo posterior, quantas vezes
-// precisar, sem perder nenhuma versão.
-function integraContadorAnexarDasEmEnvio(escritorioId: number, empresaId: number, das: integracontador.DasEmitido, periodoApuracao: string, observacao: string): void {
-  if (!das.pdfBase64) return;
-  const atribuicaoId = integraContadorObterOuCriarAtribuicaoDas(escritorioId, empresaId);
-  const ano = Number(periodoApuracao.slice(0, 4));
-  const mes = Number(periodoApuracao.slice(4, 6));
+// Cria o período (se ainda não existir) e insere o documento em Envio de Documentos — usado tanto
+// pelo DAS quanto pela Situação Fiscal. Cada chamada INSERE um documento novo, nunca substitui um
+// já existente, então o histórico completo fica registrado (ex.: DAS original + cada recálculo).
+function integraContadorAnexarPdfEmEnvio(
+  atribuicaoId: number,
+  empresaId: number,
+  ano: number,
+  mes: number,
+  nomeArquivo: string,
+  pdfBase64: string,
+  observacao: string,
+  vencimentoIso: string | null
+): void {
   let periodo = sqlite.prepare(`SELECT id FROM envio_periodos WHERE atribuicao_id = ? AND ano = ? AND mes = ?`).get(atribuicaoId, ano, mes) as any;
   if (!periodo) {
     const info = sqlite.prepare(`INSERT INTO envio_periodos (atribuicao_id, ano, mes) VALUES (?, ?, ?)`).run(atribuicaoId, ano, mes);
     periodo = { id: Number(info.lastInsertRowid) };
   }
-  const nomeArquivo = `DAS ${MESES_PT_EXTENSO[mes - 1]} ${ano}${das.numeroDocumento ? " - " + das.numeroDocumento : ""}.pdf`;
   const dir = path.join(UPLOADS_DIR, "envio", String(empresaId), String(periodo.id));
   fs.mkdirSync(dir, { recursive: true });
   const destino = path.join(dir, `${Date.now()}-${nomeArquivo}`);
-  const buf = Buffer.from(das.pdfBase64, "base64");
+  const buf = Buffer.from(pdfBase64, "base64");
   fs.writeFileSync(destino, buf);
   sqlite
     .prepare(
       `INSERT INTO envio_documentos (periodo_id, file_name, file_path, mime, size_bytes, observacao, vencimento, vencimento_origem) VALUES (?, ?, ?, 'application/pdf', ?, ?, ?, 'automatico')`
     )
-    .run(periodo.id, nomeArquivo, destino, buf.length, observacao, integraContadorFormatarVencimento(das.dataVencimento));
+    .run(periodo.id, nomeArquivo, destino, buf.length, observacao, vencimentoIso);
+}
+function integraContadorAnexarDasEmEnvio(escritorioId: number, empresaId: number, das: integracontador.DasEmitido, periodoApuracao: string, observacao: string): void {
+  if (!das.pdfBase64) return;
+  const atribuicaoId = integraContadorObterOuCriarAtribuicaoModelo(
+    escritorioId,
+    empresaId,
+    "DAS - Mensal",
+    "Guia de recolhimento do Simples Nacional (DAS), gerada automaticamente pelo Integra Contador"
+  );
+  const ano = Number(periodoApuracao.slice(0, 4));
+  const mes = Number(periodoApuracao.slice(4, 6));
+  const nomeArquivo = `DAS ${MESES_PT_EXTENSO[mes - 1]} ${ano}${das.numeroDocumento ? " - " + das.numeroDocumento : ""}.pdf`;
+  integraContadorAnexarPdfEmEnvio(atribuicaoId, empresaId, ano, mes, nomeArquivo, das.pdfBase64, observacao, integraContadorFormatarVencimento(das.dataVencimento));
+}
+// Mesmo mecanismo do DAS, mas pra Situação Fiscal — não tem "competência" de verdade (é uma foto do
+// momento, não atrelada a um período de apuração), então usa o mês/ano de quando a consulta rodou
+// como período na grade. Reaproveita a mesma pasta/documento a cada busca (semanal ou manual),
+// então o cliente sempre vê a mais atual, com o histórico de meses anteriores preservado.
+function integraContadorAnexarSitfisEmEnvio(escritorioId: number, empresaId: number, pdfBase64: string): void {
+  const atribuicaoId = integraContadorObterOuCriarAtribuicaoModelo(
+    escritorioId,
+    empresaId,
+    "Consultar Situação Fiscal - RFB",
+    "Relatório de situação fiscal da empresa junto à Receita Federal, gerado automaticamente pelo Integra Contador"
+  );
+  const hoje = new Date();
+  const ano = hoje.getFullYear();
+  const mes = hoje.getMonth() + 1;
+  const nomeArquivo = `Situação Fiscal - ${MESES_PT_EXTENSO[mes - 1]} ${ano}.pdf`;
+  const observacao = `Relatório de Situação Fiscal — gerado automaticamente pela busca do Integra Contador em ${hoje.toLocaleDateString("pt-BR")}.`;
+  integraContadorAnexarPdfEmEnvio(atribuicaoId, empresaId, ano, mes, nomeArquivo, pdfBase64, observacao, null);
 }
 async function integraContadorBuscarEmpresa(empresaId: number, empresaCnpj: string, optante: boolean): Promise<{ novos: number; erro: string | null }> {
   const empConfig = getIntegraContadorEmpresaConfig(empresaId);
@@ -3950,6 +3984,7 @@ async function integraContadorBuscarEmpresa(empresaId: number, empresaCnpj: stri
       sqlite
         .prepare(`INSERT INTO integracontador_documentos (empresa_id, escritorio_id, tipo, pdf_path) VALUES (?, ?, 'situacao_fiscal', ?)`)
         .run(empresaId, empConfig.escritorio_id, caminho);
+      integraContadorAnexarSitfisEmEnvio(empConfig.escritorio_id, empresaId, pdfBase64);
       novos++;
     } catch (e: any) {
       console.error(`[Integra Contador] situação fiscal da empresa ${empresaId} falhou:`, e.message);
