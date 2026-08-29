@@ -3849,6 +3849,9 @@ function salvarPdfBase64EmCache(nome: string, base64: string): string {
   fs.writeFileSync(destino, Buffer.from(base64, "base64"));
   return destino;
 }
+// Trava por empresa — evita que a busca manual e a rotina automática semanal rodem ao mesmo tempo
+// pra mesma empresa (cada chamada ao SERPRO é paga, não vale a pena arriscar duplicar).
+const integraContadorBuscasEmAndamento = new Set<number>();
 app.put("/api/integracontador/empresas/:id", blockCliente, requireAdmin, async (req, res) => {
   const user = (req as any).user;
   const empId = Number(req.params.id);
@@ -3866,8 +3869,13 @@ app.put("/api/integracontador/empresas/:id", blockCliente, requireAdmin, async (
     .run(empId, user.escritorioId, b.ativo ? 1 : 0, b.optanteSimplesNacional ? 1 : 0);
   let sync = { novos: 0, erro: null as string | null };
   const cfg = getIntegraContadorConfig(user.escritorioId);
-  if (ativando && cfg.ativo) {
-    sync = await integraContadorBuscarEmpresa(empId, empresa?.cnpj || "", !!b.optanteSimplesNacional);
+  if (ativando && cfg.ativo && !integraContadorBuscasEmAndamento.has(empId)) {
+    integraContadorBuscasEmAndamento.add(empId);
+    try {
+      sync = await integraContadorBuscarEmpresa(empId, empresa?.cnpj || "", !!b.optanteSimplesNacional);
+    } finally {
+      integraContadorBuscasEmAndamento.delete(empId);
+    }
   }
   res.json({ ok: true, sync });
 });
@@ -3879,10 +3887,16 @@ app.post("/api/integracontador/empresas/:id/buscar", blockCliente, requireAdmin,
   if (!cfg.ativo) return res.status(400).json({ error: "Configure e ative o Integra Contador em Configurações antes de buscar." });
   const empConfig = getIntegraContadorEmpresaConfig(empId);
   if (!empConfig.ativo) return res.status(400).json({ error: "Habilite esta empresa antes de buscar." });
-  const empresa = sqlite.prepare(`SELECT cnpj FROM empresas WHERE id = ?`).get(empId) as any;
-  const r = await integraContadorBuscarEmpresa(empId, empresa?.cnpj || "", !!empConfig.optante_simples_nacional);
-  if (r.erro) return res.status(400).json({ error: r.erro });
-  res.json({ ok: true, novos: r.novos });
+  if (integraContadorBuscasEmAndamento.has(empId)) return res.status(409).json({ error: "Já existe uma busca em andamento pra esta empresa." });
+  integraContadorBuscasEmAndamento.add(empId);
+  try {
+    const empresa = sqlite.prepare(`SELECT cnpj FROM empresas WHERE id = ?`).get(empId) as any;
+    const r = await integraContadorBuscarEmpresa(empId, empresa?.cnpj || "", !!empConfig.optante_simples_nacional);
+    if (r.erro) return res.status(400).json({ error: r.erro });
+    res.json({ ok: true, novos: r.novos });
+  } finally {
+    integraContadorBuscasEmAndamento.delete(empId);
+  }
 });
 app.get("/api/integracontador/documentos", blockCliente, requireAdmin, (req, res) => {
   const user = (req as any).user;
@@ -3911,6 +3925,40 @@ app.get("/api/integracontador/documentos/:id/pdf", blockCliente, requireAdmin, (
   res.setHeader("Content-Type", "application/pdf");
   res.send(fs.readFileSync(row.pdf_path));
 });
+
+// Rotina automática semanal — cada chamada ao Integra Contador é paga, então (diferente da busca de
+// XML, que é grátis e roda de hora em hora) aqui só busca de novo depois de ~7 dias da última vez.
+const INTEGRACONTADOR_AUTO_INTERVALO_MS = 6 * 60 * 60 * 1000; // verifica a cada 6h quem já completou a janela
+const INTEGRACONTADOR_AUTO_PAUSA_ENTRE_EMPRESAS_MS = 5000;
+async function integraContadorExecutarBuscaAutomatica() {
+  const configs = sqlite
+    .prepare(
+      `SELECT c.empresa_id as empresaId, c.optante_simples_nacional as optante, c.ultima_busca_em as ultimaBuscaEm, e.cnpj as cnpj
+       FROM integracontador_empresa_config c
+       JOIN empresas e ON e.id = c.empresa_id
+       JOIN integracontador_config ic ON ic.escritorio_id = c.escritorio_id
+       WHERE c.ativo = 1 AND ic.ativo = 1`
+    )
+    .all() as any[];
+  for (const cfg of configs) {
+    if (integraContadorBuscasEmAndamento.has(cfg.empresaId)) continue;
+    const ultimaBuscaMs = cfg.ultimaBuscaEm ? new Date(String(cfg.ultimaBuscaEm).replace(" ", "T") + "Z").getTime() : 0;
+    if (ultimaBuscaMs && Date.now() - ultimaBuscaMs < 6.5 * 24 * 60 * 60 * 1000) continue;
+    integraContadorBuscasEmAndamento.add(cfg.empresaId);
+    try {
+      const r = await integraContadorBuscarEmpresa(cfg.empresaId, cfg.cnpj || "", !!cfg.optante);
+      if (r.erro) console.error(`[Integra Contador] busca automática da empresa ${cfg.empresaId} falhou:`, r.erro);
+    } catch (e: any) {
+      console.error(`[Integra Contador] busca automática da empresa ${cfg.empresaId} falhou:`, e.message);
+    } finally {
+      integraContadorBuscasEmAndamento.delete(cfg.empresaId);
+    }
+    await new Promise((resolve) => setTimeout(resolve, INTEGRACONTADOR_AUTO_PAUSA_ENTRE_EMPRESAS_MS));
+  }
+}
+setInterval(() => {
+  integraContadorExecutarBuscaAutomatica().catch((e) => console.error("Erro na rotina automática do Integra Contador:", e.message));
+}, INTEGRACONTADOR_AUTO_INTERVALO_MS);
 
 // Modelos de serviço reutilizáveis — configurados uma vez (código de tributação, ISSQN, retenções)
 // e escolhidos na hora da emissão, que só pede descrição e valor.
