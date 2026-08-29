@@ -2944,7 +2944,7 @@ async function pageIntegraContador(){
       </div>
       <div class="card" style="padding:0; overflow-x:auto;">
         <table class="data-table">
-          <thead><tr><th>Empresa</th><th>Status</th><th>Optante Simples</th><th>Documentos</th><th>Última busca</th><th></th></tr></thead>
+          <thead><tr><th>Empresa</th><th>Status</th><th>Optante Simples</th><th>Documentos</th><th>Última busca</th><th>Alerta</th><th></th></tr></thead>
           <tbody>
             ${items.length ? items.map(e=>`
               <tr class="icEmpresaRow" data-id="${e.id}" style="cursor:pointer;">
@@ -2953,9 +2953,10 @@ async function pageIntegraContador(){
                 <td>${e.optanteSimplesNacional?'<span class="tag ok">Optante</span>':'—'}</td>
                 <td>${e.qtdDocumentos}</td>
                 <td>${e.ultimaBuscaEm?fmtDateHora(e.ultimaBuscaEm):'—'}</td>
+                <td>${e.alertaDeclaracao?`<span class="tag bad" title="${esc(e.alertaDeclaracao)}">Não declarado</span>`:''}</td>
                 <td style="text-align:right;"><button class="btn small">Ver</button></td>
               </tr>
-            `).join('') : '<tr><td colspan="6"><div class="empty-state">Nenhuma empresa cadastrada ainda.</div></td></tr>'}
+            `).join('') : '<tr><td colspan="7"><div class="empty-state">Nenhuma empresa cadastrada ainda.</div></td></tr>'}
           </tbody>
         </table>
       </div>
@@ -2974,6 +2975,7 @@ async function pageIntegraContador(){
         <h3>${esc(emp?emp.nome:'Empresa')}</h3>
         <label class="checkbox-row"><input type="checkbox" id="icEmpAtivo" ${emp?.ativo?'checked':''}> Buscar dados desta empresa</label>
         <label class="checkbox-row"><input type="checkbox" id="icEmpOptante" ${emp?.optanteSimplesNacional?'checked':''}> Optante do Simples Nacional (habilita DAS e Declaração — Situação Fiscal vale pra qualquer regime)</label>
+        ${emp?.alertaDeclaracao?`<div class="card" style="background:var(--paper); border-color:var(--warn, #c9a227); margin:8px 0;"><span style="font-size:12.5px;">⚠ ${esc(emp.alertaDeclaracao)}</span></div>`:''}
         ${emp?.ultimoErro?`<p style="color:var(--debit); font-size:12.5px;">Último erro: ${esc(emp.ultimoErro)}</p>`:''}
         <div class="row" style="margin-top:8px;">
           <button class="btn primary" id="btnIcSalvarEmpresa">Salvar</button>

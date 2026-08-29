@@ -720,6 +720,7 @@ sqlite.exec(`
     optante_simples_nacional INTEGER NOT NULL DEFAULT 0,
     ultima_busca_em TEXT,
     ultimo_erro TEXT,
+    alerta_declaracao TEXT, -- preenchido quando a declaração/DAS do mês anterior ainda não foi localizada (monitoramento de atraso, não é erro técnico)
     updated_at TEXT DEFAULT (datetime('now'))
   );
   -- Documentos obtidos (DAS, declaração consultada, relatório de situação fiscal). "detalhes_json"
@@ -942,6 +943,13 @@ sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_envio_documentos_periodo ON envio_do
   const nomes = new Set(cols.map((c) => c.name));
   if (!nomes.has("whatsapp_enviado")) sqlite.exec(`ALTER TABLE nfse_emissoes ADD COLUMN whatsapp_enviado INTEGER NOT NULL DEFAULT 0`);
   if (!nomes.has("whatsapp_erro")) sqlite.exec(`ALTER TABLE nfse_emissoes ADD COLUMN whatsapp_erro TEXT`);
+}
+// Migração leve: alerta de declaração/DAS do mês anterior não localizada (monitoramento de atraso
+// por empresa optante do Simples).
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(integracontador_empresa_config)`).all() as any[];
+  const nomes = new Set(cols.map((c) => c.name));
+  if (!nomes.has("alerta_declaracao")) sqlite.exec(`ALTER TABLE integracontador_empresa_config ADD COLUMN alerta_declaracao TEXT`);
 }
 // Migração leve: nfe_busca_config ganhou um cursor de NSU próprio pra busca de NFS-e (Distribuição
 // DF-e do ADN) — sequência independente da de NF-e/NFC-e, que já usava a coluna ultimo_nsu.
@@ -3822,6 +3830,7 @@ app.get("/api/integracontador/empresas", blockCliente, requireAdmin, (req, res) 
   const rows = sqlite
     .prepare(
       `SELECT e.id, e.nome, c.ativo, c.optante_simples_nacional as optanteSimplesNacional, c.ultima_busca_em as ultimaBuscaEm, c.ultimo_erro as ultimoErro,
+              c.alerta_declaracao as alertaDeclaracao,
               (SELECT COUNT(*) FROM integracontador_documentos d WHERE d.empresa_id = e.id) as qtdDocumentos
        FROM empresas e LEFT JOIN integracontador_empresa_config c ON c.empresa_id = e.id
        WHERE e.id IN (${placeholders}) ORDER BY e.nome`
@@ -3850,6 +3859,10 @@ async function integraContadorBuscarEmpresa(empresaId: number, empresaCnpj: stri
       falhas.push(`Situação Fiscal: ${e.message}`);
     }
     // DAS + Declaração — só pra quem é optante do Simples Nacional.
+    // "alertaDeclaracao" fica undefined se a consulta de declarações falhar (não sabemos de verdade
+    // se falta ou não, então não sobrescreve o alerta anterior) — só vira null/mensagem quando a
+    // consulta realmente funcionou.
+    let alertaDeclaracao: string | null | undefined;
     if (optante) {
       const anoAtual = new Date().getFullYear();
       let ultimoPeriodoDeclarado: string | null = null;
@@ -3862,6 +3875,18 @@ async function integraContadorBuscarEmpresa(empresaId: number, empresaCnpj: stri
           inserirDecl.run(empresaId, empConfig.escritorio_id, d.periodoApuracao, d.numeroDeclaracao, JSON.stringify(d));
           novos++;
           if (!ultimoPeriodoDeclarado || d.periodoApuracao > ultimoPeriodoDeclarado) ultimoPeriodoDeclarado = d.periodoApuracao;
+        }
+        // Monitoramento de atraso: a competência do mês anterior já devia estar declarada a essa
+        // altura (PGDAS-D vence dia 20 do mês seguinte) — se não achou nada pra ela (nem período
+        // mais recente que ela), acende o alerta pra você conferir se o cliente esqueceu de mandar.
+        const hoje = new Date();
+        const mesAnterior = new Date(hoje.getFullYear(), hoje.getMonth() - 1, 1);
+        const competenciaEsperada = `${mesAnterior.getFullYear()}${String(mesAnterior.getMonth() + 1).padStart(2, "0")}`;
+        if (!ultimoPeriodoDeclarado || ultimoPeriodoDeclarado < competenciaEsperada) {
+          const rotulo = `${competenciaEsperada.slice(4, 6)}/${competenciaEsperada.slice(0, 4)}`;
+          alertaDeclaracao = `Declaração/DAS de ${rotulo} ainda não localizada — verifique se foi transmitida.`;
+        } else {
+          alertaDeclaracao = null;
         }
       } catch (e: any) {
         console.error(`[Integra Contador] declarações da empresa ${empresaId} falharam:`, e.message);
@@ -3890,6 +3915,9 @@ async function integraContadorBuscarEmpresa(empresaId: number, empresaCnpj: stri
     }
     const erroResumo = falhas.length ? falhas.join(" | ") : null;
     sqlite.prepare(`UPDATE integracontador_empresa_config SET ultima_busca_em = datetime('now'), ultimo_erro = ? WHERE empresa_id = ?`).run(erroResumo, empresaId);
+    if (alertaDeclaracao !== undefined) {
+      sqlite.prepare(`UPDATE integracontador_empresa_config SET alerta_declaracao = ? WHERE empresa_id = ?`).run(alertaDeclaracao, empresaId);
+    }
     return { novos, erro: erroResumo };
   } catch (e: any) {
     sqlite.prepare(`UPDATE integracontador_empresa_config SET ultima_busca_em = datetime('now'), ultimo_erro = ? WHERE empresa_id = ?`).run(e.message, empresaId);
