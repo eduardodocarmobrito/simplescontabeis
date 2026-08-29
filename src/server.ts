@@ -935,6 +935,14 @@ sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_envio_documentos_periodo ON envio_do
   if (!nomes.has("whatsapp_enviado")) sqlite.exec(`ALTER TABLE envio_documentos ADD COLUMN whatsapp_enviado INTEGER NOT NULL DEFAULT 0`);
   if (!nomes.has("whatsapp_erro")) sqlite.exec(`ALTER TABLE envio_documentos ADD COLUMN whatsapp_erro TEXT`);
 }
+// Migração leve: mesmo controle de status do WhatsApp, agora direto na NFS-e emitida (não precisa
+// passar por Envio de Documentos pra mandar a nota pro cliente).
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(nfse_emissoes)`).all() as any[];
+  const nomes = new Set(cols.map((c) => c.name));
+  if (!nomes.has("whatsapp_enviado")) sqlite.exec(`ALTER TABLE nfse_emissoes ADD COLUMN whatsapp_enviado INTEGER NOT NULL DEFAULT 0`);
+  if (!nomes.has("whatsapp_erro")) sqlite.exec(`ALTER TABLE nfse_emissoes ADD COLUMN whatsapp_erro TEXT`);
+}
 // Migração leve: nfe_busca_config ganhou um cursor de NSU próprio pra busca de NFS-e (Distribuição
 // DF-e do ADN) — sequência independente da de NF-e/NFC-e, que já usava a coluna ultimo_nsu.
 {
@@ -4343,7 +4351,8 @@ app.get("/api/nfse/emissoes", blockCliente, requirePermissao("nfse", "visualizar
                     n.tomador_cep as tomadorCep, n.tomador_logradouro as tomadorLogradouro, n.tomador_numero as tomadorNumero,
                     n.tomador_complemento as tomadorComplemento, n.tomador_bairro as tomadorBairro, n.tomador_codigo_municipio as tomadorCodigoMunicipio,
                     n.descricao_servico as descricaoServico, n.valor_servico as valorServico, n.competencia,
-                    n.status, n.chave_acesso as chaveAcesso, n.numero_nfse as numeroNfse, n.erro, n.criado_em as criadoEm
+                    n.status, n.chave_acesso as chaveAcesso, n.numero_nfse as numeroNfse, n.erro, n.criado_em as criadoEm,
+                    n.whatsapp_enviado as whatsappEnviado, n.whatsapp_erro as whatsappErro
              FROM nfse_emissoes n JOIN empresas e ON e.id = n.empresa_id`;
   const condicoes: string[] = [];
   const params: any[] = [];
@@ -4424,6 +4433,38 @@ app.get("/api/nfse/emissoes/:id/danfse", blockCliente, requirePermissao("nfse", 
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
+});
+// Manda o DANFSe já emitido direto pro(s) contato(s) de WhatsApp da empresa — mesmo caminho da
+// Envio de Documentos, só que direto da tela de NFS-e, sem precisar anexar o PDF manualmente lá.
+app.post("/api/nfse/emissoes/:id/enviar-whatsapp", blockCliente, requirePermissao("nfse", "editar"), async (req, res) => {
+  const row = sqlite.prepare(`SELECT * FROM nfse_emissoes WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!row) return res.status(404).json({ error: "Emissão não encontrada." });
+  const user = (req as any).user;
+  if (!podeAcessarEmpresa(user, row.empresa_id)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  if (row.status !== "emitida") return res.status(400).json({ error: "Só é possível enviar uma NFS-e já emitida." });
+  const empresa = sqlite.prepare(`SELECT nome FROM empresas WHERE id = ?`).get(row.empresa_id) as any;
+  const contatos = sqlite
+    .prepare(`SELECT telefone FROM empresa_contatos WHERE empresa_id = ? AND receber_whatsapp = 1 AND telefone IS NOT NULL AND telefone != ''`)
+    .all(row.empresa_id) as any[];
+  if (!contatos.length) return res.status(400).json({ error: "Esta empresa não tem contato de WhatsApp cadastrado (marque \"Receber WhatsApp\" no contato, em Configurações › E-mail corporativo)." });
+  const { pdf, erro: erroPdf } = await nfseObterDanfsePdf(row);
+  if (!pdf) return res.status(502).json({ error: erroPdf });
+  const arquivo = { nome: nfseNomeArquivo(row, "pdf"), tipo: "application/pdf", buffer: pdf };
+  const descricao = `NFS-e ${row.numero_nfse || row.numero_dps} — competência ${row.competencia?.slice(0, 7) || ""}`;
+  let enviados = 0;
+  const erros: string[] = [];
+  for (const c of contatos) {
+    try {
+      await whatsappEnviarArquivo(user.escritorioId, c.telefone, [{ nome: "empresa_nome", valor: empresa?.nome || "" }, { nome: "descricao", valor: descricao }], arquivo);
+      enviados++;
+    } catch (e: any) {
+      erros.push(e.message);
+    }
+  }
+  if (enviados > 0) sqlite.prepare(`UPDATE nfse_emissoes SET whatsapp_enviado = 1, whatsapp_erro = NULL WHERE id = ?`).run(row.id);
+  else sqlite.prepare(`UPDATE nfse_emissoes SET whatsapp_erro = ? WHERE id = ?`).run(erros[0] || "Falha desconhecida.", row.id);
+  if (!enviados) return res.status(502).json({ error: erros[0] || "Não consegui enviar por WhatsApp." });
+  res.json({ ok: true, enviados, falhas: erros.length });
 });
 // Download em lote — zip com XML e/ou PDF de várias emissões de uma vez (selecionadas na tela).
 app.get("/api/nfse/emissoes/baixar-lote", blockCliente, requirePermissao("nfse", "visualizar"), async (req, res) => {

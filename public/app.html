@@ -2508,6 +2508,7 @@ async function renderNfseNotasDetalhe(empresaId){
                 ${n.status==='rascunho'?`<button class="btn small" data-id="${n.id}" data-act="continuar">Continuar</button> <button class="btn small" data-id="${n.id}" data-act="excluir">Excluir</button>`:''}
                 ${n.status!=='rascunho'?`<button class="btn small" data-id="${n.id}" data-act="duplicar">Duplicar</button>`:''}
                 ${n.status==='emitida'||n.status==='cancelada'?`<button class="btn small" data-id="${n.id}" data-act="baixar-xml">XML</button> <button class="btn small" data-id="${n.id}" data-act="baixar-pdf">PDF</button>`:''}
+                ${n.status==='emitida'?`<button class="btn small" data-id="${n.id}" data-act="enviar-whatsapp-nfse">${n.whatsappEnviado?'Reenviar WhatsApp':'Enviar WhatsApp'}</button>`:''}
                 ${n.status==='emitida'?`<button class="btn small" data-id="${n.id}" data-act="cancelar" style="color:var(--debit);">Cancelar</button>`:''}
               </td>
             </tr>
@@ -2566,6 +2567,14 @@ async function renderNfseNotasDetalhe(empresaId){
   }));
   box.querySelectorAll('[data-act="baixar-pdf"]').forEach(b=>b.addEventListener('click', ()=>{
     window.open('/api/nfse/emissoes/'+b.dataset.id+'/danfse', '_blank');
+  }));
+  box.querySelectorAll('[data-act="enviar-whatsapp-nfse"]').forEach(b=>b.addEventListener('click', async ()=>{
+    b.disabled = true; b.textContent = 'Enviando…';
+    try{
+      const r = await api('/nfse/emissoes/'+b.dataset.id+'/enviar-whatsapp', { method:'POST' });
+      toast('Enviado por WhatsApp'+(r.falhas?' (algum contato falhou)':'')+'.','ok');
+      renderNfseNotas();
+    }catch(e){ toast(e.message,'err'); b.disabled = false; b.textContent = 'Enviar WhatsApp'; }
   }));
   box.querySelectorAll('[data-act="cancelar"]').forEach(b=>b.addEventListener('click', ()=>{
     const n = items.find(i=>i.id===Number(b.dataset.id));
