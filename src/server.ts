@@ -3898,17 +3898,20 @@ app.put("/api/integracontador/empresas/:id", blockCliente, requireAdmin, async (
        ON CONFLICT(empresa_id) DO UPDATE SET ativo=excluded.ativo, optante_simples_nacional=excluded.optante_simples_nacional, updated_at=datetime('now')`
     )
     .run(empId, user.escritorioId, b.ativo ? 1 : 0, b.optanteSimplesNacional ? 1 : 0);
-  let sync = { novos: 0, erro: null as string | null };
   const cfg = getIntegraContadorConfig(user.escritorioId);
+  let buscaIniciada = false;
   if (ativando && cfg.ativo && !integraContadorBuscasEmAndamento.has(empId)) {
+    buscaIniciada = true;
     integraContadorBuscasEmAndamento.add(empId);
-    try {
-      sync = await integraContadorBuscarEmpresa(empId, empresa?.cnpj || "", !!b.optanteSimplesNacional);
-    } finally {
+    // Não espera terminar — a Situação Fiscal sozinha já pode passar de 1 minuto (poll da própria
+    // Receita), tempo suficiente pro proxy do Railway devolver 502 pro navegador mesmo com a busca
+    // tendo dado certo do lado do servidor. Roda em segundo plano; a tela confere o resultado
+    // reconsultando a lista (ultimaBuscaEm muda quando termina).
+    integraContadorBuscarEmpresa(empId, empresa?.cnpj || "", !!b.optanteSimplesNacional).finally(() => {
       integraContadorBuscasEmAndamento.delete(empId);
-    }
+    });
   }
-  res.json({ ok: true, sync });
+  res.json({ ok: true, buscaIniciada });
 });
 app.post("/api/integracontador/empresas/:id/buscar", blockCliente, requireAdmin, async (req, res) => {
   const user = (req as any).user;
@@ -3920,14 +3923,13 @@ app.post("/api/integracontador/empresas/:id/buscar", blockCliente, requireAdmin,
   if (!empConfig.ativo) return res.status(400).json({ error: "Habilite esta empresa antes de buscar." });
   if (integraContadorBuscasEmAndamento.has(empId)) return res.status(409).json({ error: "Já existe uma busca em andamento pra esta empresa." });
   integraContadorBuscasEmAndamento.add(empId);
-  try {
-    const empresa = sqlite.prepare(`SELECT cnpj FROM empresas WHERE id = ?`).get(empId) as any;
-    const r = await integraContadorBuscarEmpresa(empId, empresa?.cnpj || "", !!empConfig.optante_simples_nacional);
-    if (r.erro) return res.status(400).json({ error: r.erro });
-    res.json({ ok: true, novos: r.novos });
-  } finally {
+  const empresa = sqlite.prepare(`SELECT cnpj FROM empresas WHERE id = ?`).get(empId) as any;
+  // Mesma lógica do PUT acima: dispara e não espera, pra não bater no timeout do proxy numa busca
+  // de Situação Fiscal que demora — o front confere o resultado consultando de novo em alguns segundos.
+  integraContadorBuscarEmpresa(empId, empresa?.cnpj || "", !!empConfig.optante_simples_nacional).finally(() => {
     integraContadorBuscasEmAndamento.delete(empId);
-  }
+  });
+  res.json({ ok: true, buscaIniciada: true });
 });
 app.get("/api/integracontador/documentos", blockCliente, requireAdmin, (req, res) => {
   const user = (req as any).user;

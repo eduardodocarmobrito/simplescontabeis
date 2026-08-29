@@ -2991,14 +2991,33 @@ async function pageIntegraContador(){
       </div>
     `;
     document.getElementById('btnIcVoltarLista').addEventListener('click', mostrarIcLista);
+    // A busca de Situação Fiscal sozinha já pode passar de 1 minuto (fica reconsultando a Receita
+    // até o relatório ficar pronto) — tempo suficiente pro proxy do Railway devolver um erro 502 pro
+    // navegador mesmo quando a busca deu certo do lado do servidor. Por isso o backend não segura a
+    // resposta esperando terminar: dispara em segundo plano, e aqui a tela fica reconsultando até
+    // "ultimaBuscaEm" mudar, sem travar o botão o tempo todo nem depender do request original.
+    async function esperarIcBuscaTerminar(ultimaBuscaAntes){
+      for(let i=0;i<20;i++){
+        await new Promise(r=>setTimeout(r, 4000));
+        const { items } = await api('/integracontador/empresas');
+        const atualizado = items.find(e=>e.id===empresaId);
+        if(atualizado && atualizado.ultimaBuscaEm !== ultimaBuscaAntes) return atualizado;
+      }
+      return null;
+    }
     document.getElementById('btnIcSalvarEmpresa').addEventListener('click', async (ev)=>{
       const btn = ev.target; btn.disabled = true; btn.textContent = 'Salvando…';
       try{
+        const ultimaBuscaAntes = emp?.ultimaBuscaEm || null;
         const body = { ativo: document.getElementById('icEmpAtivo').checked, optanteSimplesNacional: document.getElementById('icEmpOptante').checked };
         const r = await api('/integracontador/empresas/'+empresaId, { method:'PUT', body });
-        if(r.sync && (r.sync.novos>0)) toast(r.sync.novos+' documento(s) novo(s) encontrado(s).','ok');
-        else if(r.sync && r.sync.erro) toast('Salvo, mas a busca inicial falhou: '+r.sync.erro,'err');
-        else toast('Salvo.','ok');
+        if(r.buscaIniciada){
+          toast('Salvo — buscando dados em segundo plano…','ok');
+          btn.textContent = 'Buscando…';
+          const atualizado = await esperarIcBuscaTerminar(ultimaBuscaAntes);
+          if(atualizado) toast(atualizado.ultimoErro ? 'Busca terminou com erro: '+atualizado.ultimoErro : 'Busca concluída.', atualizado.ultimoErro?'err':'ok');
+          else toast('Busca ainda em andamento — confira em alguns instantes.','ok');
+        } else toast('Salvo.','ok');
         mostrarIcDetalhe(empresaId);
         carregarIcDocumentos();
       }catch(e){ toast(e.message,'err'); }
@@ -3007,8 +3026,11 @@ async function pageIntegraContador(){
     document.getElementById('btnIcBuscarAgora').addEventListener('click', async (ev)=>{
       const btn = ev.target; btn.disabled = true; btn.textContent = 'Buscando…';
       try{
-        const r = await api('/integracontador/empresas/'+empresaId+'/buscar', { method:'POST' });
-        toast(r.novos>0 ? r.novos+' documento(s) novo(s) encontrado(s).' : 'Busca concluída, sem documentos novos.','ok');
+        const ultimaBuscaAntes = emp?.ultimaBuscaEm || null;
+        await api('/integracontador/empresas/'+empresaId+'/buscar', { method:'POST' });
+        const atualizado = await esperarIcBuscaTerminar(ultimaBuscaAntes);
+        if(atualizado) toast(atualizado.ultimoErro ? 'Busca terminou com erro: '+atualizado.ultimoErro : 'Busca concluída.', atualizado.ultimoErro?'err':'ok');
+        else toast('Busca ainda em andamento — confira em alguns instantes.','ok');
         carregarIcDocumentos();
       }catch(e){ toast(e.message,'err'); }
       finally{ btn.disabled = false; btn.textContent = 'Buscar agora'; }
