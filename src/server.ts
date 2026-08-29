@@ -2892,6 +2892,49 @@ app.get("/api/envio/grade/:atribuicaoId", (req, res) => {
   });
 });
 
+// Cliente pede recálculo do DAS de uma competência (ex.: esqueceu de pagar no prazo e precisa da
+// guia com juros/multa atualizados). Dispara uma chamada nova e PAGA à Receita (a mesma usada na
+// busca automática), então trava em 1x por dia por competência — evita clique duplicado/acidental
+// gerando custo em dobro sem necessidade real; ainda dá pra recalcular de novo no dia seguinte se o
+// atraso continuar.
+app.post("/api/envio/periodos/:periodoId/solicitar-recalculo-das", async (req, res) => {
+  const user = (req as any).user;
+  if (user.perfil !== "Cliente") return res.status(403).json({ error: "Esse recurso é só pro cliente pedir sozinho — o escritório usa \"Buscar agora\" em Integra Contador." });
+  const periodoId = Number(req.params.periodoId);
+  const periodo = sqlite
+    .prepare(
+      `SELECT p.*, a.empresa_id as empresaId, t.nome as templateNome
+       FROM envio_periodos p JOIN envio_atribuicoes a ON a.id = p.atribuicao_id JOIN envio_templates t ON t.id = a.template_id
+       WHERE p.id = ?`
+    )
+    .get(periodoId) as any;
+  if (!periodo || periodo.empresaId !== user.empresaId) return res.status(404).json({ error: "Período não encontrado." });
+  if (periodo.templateNome !== "DAS - Mensal") return res.status(400).json({ error: "Esse período não é de DAS." });
+  const jaPediuHoje = sqlite
+    .prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id = ? AND observacao LIKE 'DAS recalculado%' AND date(enviado_em) = date('now')`)
+    .get(periodoId);
+  if (jaPediuHoje) return res.status(429).json({ error: "Só é possível pedir um recálculo por dia pra essa competência — tente de novo amanhã." });
+  const empConfig = getIntegraContadorEmpresaConfig(periodo.empresaId);
+  const cfg = getIntegraContadorConfig(empConfig.escritorio_id);
+  if (!cfg.ativo || !empConfig.ativo) return res.status(400).json({ error: "O Integra Contador não está ativo pra essa empresa — fale com o escritório." });
+  const empresa = sqlite.prepare(`SELECT cnpj FROM empresas WHERE id = ?`).get(periodo.empresaId) as any;
+  const periodoApuracao = `${periodo.ano}${String(periodo.mes).padStart(2, "0")}`;
+  try {
+    const token = await obterTokenIntegraContador(cfg);
+    const das = await integracontador.gerarDas(token, cfg.cnpj, empresa.cnpj, periodoApuracao);
+    if (!das.pdfBase64) return res.status(502).json({ error: "A Receita não devolveu o DAS recalculado — tente de novo mais tarde." });
+    const observacao = `DAS recalculado — solicitado pelo cliente em ${new Date().toLocaleDateString("pt-BR")}.`;
+    integraContadorAnexarDasEmEnvio(empConfig.escritorio_id, periodo.empresaId, das, das.periodoApuracao || periodoApuracao, observacao);
+    sqlite
+      .prepare(
+        `INSERT INTO integracontador_documentos (empresa_id, escritorio_id, tipo, periodo_apuracao, numero_documento, data_vencimento, detalhes_json) VALUES (?, ?, 'das', ?, ?, ?, ?)`
+      )
+      .run(periodo.empresaId, empConfig.escritorio_id, das.periodoApuracao || periodoApuracao, das.numeroDocumento, das.dataVencimento, JSON.stringify(das.valores || {}));
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(502).json({ error: e.message });
+  }
+});
 app.post("/api/envio/periodos/:periodoId/enviar", blockCliente, requirePermissao("envio", "postar"), upload.single("arquivo"), async (req, res) => {
   const user = (req as any).user;
   const periodoId = Number(req.params.periodoId);
@@ -3838,6 +3881,60 @@ app.get("/api/integracontador/empresas", blockCliente, requireAdmin, (req, res) 
     .all(...ids);
   res.json({ items: rows });
 });
+// Template "DAS - Mensal" (cria uma vez por escritório, reaproveita depois) e a atribuição pra
+// empresa — assim toda empresa que tiver DAS habilitado no Integra Contador já ganha, sozinha, o
+// mesmo mecanismo de Envio de Documentos que qualquer outro modelo usa, e o cliente já enxerga o
+// DAS em "Meus Documentos" no login dele, sem o escritório precisar anexar nada na mão.
+function integraContadorObterOuCriarAtribuicaoDas(escritorioId: number, empresaId: number): number {
+  let template = sqlite.prepare(`SELECT id FROM envio_templates WHERE escritorio_id = ? AND nome = 'DAS - Mensal'`).get(escritorioId) as any;
+  if (!template) {
+    const info = sqlite
+      .prepare(
+        `INSERT INTO envio_templates (nome, descricao, periodicidade, accept_json, detectar_vencimento, visivel_cliente, escritorio_id)
+         VALUES ('DAS - Mensal', 'Guia de recolhimento do Simples Nacional (DAS), gerada automaticamente pelo Integra Contador', 'mensal', '["pdf"]', 0, 1, ?)`
+      )
+      .run(escritorioId);
+    template = { id: Number(info.lastInsertRowid) };
+  }
+  let atribuicao = sqlite.prepare(`SELECT id FROM envio_atribuicoes WHERE template_id = ? AND empresa_id = ?`).get(template.id, empresaId) as any;
+  if (!atribuicao) {
+    const info = sqlite.prepare(`INSERT INTO envio_atribuicoes (template_id, empresa_id, ativo) VALUES (?, ?, 1)`).run(template.id, empresaId);
+    atribuicao = { id: Number(info.lastInsertRowid) };
+  } else {
+    sqlite.prepare(`UPDATE envio_atribuicoes SET ativo = 1 WHERE id = ?`).run(atribuicao.id);
+  }
+  return atribuicao.id;
+}
+function integraContadorFormatarVencimento(vencAAAAMMDD: string | null): string | null {
+  if (!vencAAAAMMDD || vencAAAAMMDD.length !== 8) return null;
+  return `${vencAAAAMMDD.slice(0, 4)}-${vencAAAAMMDD.slice(4, 6)}-${vencAAAAMMDD.slice(6, 8)}`;
+}
+// Anexa o PDF do DAS já gerado em Envio de Documentos, criando o período (competência) se ainda não
+// existir. Cada chamada INSERE um documento novo — nunca substitui um já existente — então o
+// histórico completo fica registrado: o DAS original e cada recálculo posterior, quantas vezes
+// precisar, sem perder nenhuma versão.
+function integraContadorAnexarDasEmEnvio(escritorioId: number, empresaId: number, das: integracontador.DasEmitido, periodoApuracao: string, observacao: string): void {
+  if (!das.pdfBase64) return;
+  const atribuicaoId = integraContadorObterOuCriarAtribuicaoDas(escritorioId, empresaId);
+  const ano = Number(periodoApuracao.slice(0, 4));
+  const mes = Number(periodoApuracao.slice(4, 6));
+  let periodo = sqlite.prepare(`SELECT id FROM envio_periodos WHERE atribuicao_id = ? AND ano = ? AND mes = ?`).get(atribuicaoId, ano, mes) as any;
+  if (!periodo) {
+    const info = sqlite.prepare(`INSERT INTO envio_periodos (atribuicao_id, ano, mes) VALUES (?, ?, ?)`).run(atribuicaoId, ano, mes);
+    periodo = { id: Number(info.lastInsertRowid) };
+  }
+  const nomeArquivo = `DAS ${MESES_PT_EXTENSO[mes - 1]} ${ano}${das.numeroDocumento ? " - " + das.numeroDocumento : ""}.pdf`;
+  const dir = path.join(UPLOADS_DIR, "envio", String(empresaId), String(periodo.id));
+  fs.mkdirSync(dir, { recursive: true });
+  const destino = path.join(dir, `${Date.now()}-${nomeArquivo}`);
+  const buf = Buffer.from(das.pdfBase64, "base64");
+  fs.writeFileSync(destino, buf);
+  sqlite
+    .prepare(
+      `INSERT INTO envio_documentos (periodo_id, file_name, file_path, mime, size_bytes, observacao, vencimento, vencimento_origem) VALUES (?, ?, ?, 'application/pdf', ?, ?, ?, 'automatico')`
+    )
+    .run(periodo.id, nomeArquivo, destino, buf.length, observacao, integraContadorFormatarVencimento(das.dataVencimento));
+}
 async function integraContadorBuscarEmpresa(empresaId: number, empresaCnpj: string, optante: boolean): Promise<{ novos: number; erro: string | null }> {
   const empConfig = getIntegraContadorEmpresaConfig(empresaId);
   const cfg = getIntegraContadorConfig(empConfig.escritorio_id);
@@ -3905,6 +4002,13 @@ async function integraContadorBuscarEmpresa(empresaId: number, empresaCnpj: stri
                 `INSERT INTO integracontador_documentos (empresa_id, escritorio_id, tipo, periodo_apuracao, numero_documento, data_vencimento, pdf_path, detalhes_json) VALUES (?, ?, 'das', ?, ?, ?, ?, ?)`
               )
               .run(empresaId, empConfig.escritorio_id, das.periodoApuracao || ultimoPeriodoDeclarado, das.numeroDocumento, das.dataVencimento, caminho, JSON.stringify(das.valores || {}));
+            integraContadorAnexarDasEmEnvio(
+              empConfig.escritorio_id,
+              empresaId,
+              das,
+              das.periodoApuracao || ultimoPeriodoDeclarado,
+              "DAS original — gerado automaticamente pela busca do Integra Contador."
+            );
             novos++;
           }
         } catch (e: any) {

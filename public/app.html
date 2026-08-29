@@ -1570,14 +1570,16 @@ function envioDocBlocoHtml(d, podeEditar, podePostar, souCliente, mostrarVencime
     </div>
   </div>`;
 }
-function envioCelulaHtml(p, accept, podePostar, podeEditar, souCliente, mostrarVencimento){
+function envioCelulaHtml(p, accept, podePostar, podeEditar, souCliente, mostrarVencimento, ehDas){
   const inputId = `ef_${p.periodoId}`;
   const docs = p.documentos || [];
   const blocos = docs.map(d=>envioDocBlocoHtml(d, podeEditar, podePostar, souCliente, mostrarVencimento)).join('');
   const pedidoPendente = !souCliente && p.solicitadoEm && !docs.length
     ? `<div class="slot-reopen-note" style="background:var(--accent-pale); color:var(--accent-deep);">Solicitado pelo cliente em ${fmtDateHora(p.solicitadoEm)}</div>` : '';
+  const btnRecalculo = souCliente && ehDas && docs.length
+    ? `<button class="btn small" data-act="recalcular-das" data-periodo="${p.periodoId}" style="margin-top:6px;">Solicitar recálculo do DAS</button>` : '';
   if(souCliente || !podePostar){
-    return docs.length? `<div class="slot">${blocos}</div>` : `<span class="slot-label">Nada enviado ainda</span>`;
+    return docs.length? `<div class="slot">${blocos}${btnRecalculo}</div>` : `<span class="slot-label">Nada enviado ainda</span>`;
   }
   const obsId = docs.length? inputId+'_obs' : '';
   return `<div class="slot">
@@ -1619,6 +1621,14 @@ function wireEnvioGradeEvents(container, atribuicaoId, souCliente){
     try{ await api('/envio/documentos/'+b.dataset.doc+'/enviar-whatsapp', { method:'POST' }); toast('WhatsApp enviado.','ok'); abrirEnvioGrade(atribuicaoId, souCliente); }
     catch(e){ toast(e.message,'err'); }
   }));
+  container.querySelectorAll('[data-act="recalcular-das"]').forEach(b=>b.addEventListener('click', async ()=>{
+    b.disabled = true; b.textContent = 'Recalculando…';
+    try{
+      await api('/envio/periodos/'+b.dataset.periodo+'/solicitar-recalculo-das', { method:'POST' });
+      toast('DAS recalculado — já disponível pra baixar.','ok');
+      abrirEnvioGrade(atribuicaoId, souCliente);
+    }catch(e){ toast(e.message,'err'); b.disabled = false; b.textContent = 'Solicitar recálculo do DAS'; }
+  }));
   container.querySelectorAll('[data-act="excluir-doc"]').forEach(b=>b.addEventListener('click', async ()=>{
     if(!confirmar('Excluir este documento enviado? O cliente já pode ter recebido por e-mail — isso só remove daqui do site.')) return;
     try{ await api('/envio/documentos/'+b.dataset.doc, { method:'DELETE' }); toast('Excluído.','ok'); abrirEnvioGrade(atribuicaoId, souCliente); }
@@ -1629,6 +1639,7 @@ async function abrirEnvioGrade(atribuicaoId, souCliente){
   const { atribuicao, grade } = await api('/envio/grade/'+atribuicaoId);
   const podePostar = !souCliente && can('envio','postar');
   const podeEditar = !souCliente && can('envio','editar');
+  const ehDas = atribuicao.templateNome === 'DAS - Mensal';
   const accept = (atribuicao.accept||[]).includes('qualquer') ? '' : (atribuicao.accept||[]).map(a=>({ofx:'.ofx',pdf:'.pdf',zip:'.zip,.rar,.7z',xml:'.xml',imagem:'.png,.jpg,.jpeg'}[a]||'')).join(',');
 
   main().innerHTML = `
@@ -1649,7 +1660,7 @@ async function abrirEnvioGrade(atribuicaoId, souCliente){
   if(grade.length){
     const tbody = document.getElementById('envioGradeBody');
     tbody.innerHTML = grade.map(p=>
-      `<tr data-periodo="${p.periodoId}"><td><b>${esc(rotuloPeriodo(p))}</b></td><td>${envioCelulaHtml(p, accept, podePostar, podeEditar, souCliente, atribuicao.detectarVencimento)}</td></tr>`
+      `<tr data-periodo="${p.periodoId}"><td><b>${esc(rotuloPeriodo(p))}</b></td><td>${envioCelulaHtml(p, accept, podePostar, podeEditar, souCliente, atribuicao.detectarVencimento, ehDas)}</td></tr>`
     ).join('');
     wireEnvioGradeEvents(tbody, atribuicaoId, souCliente);
   }
