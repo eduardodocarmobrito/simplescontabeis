@@ -136,6 +136,9 @@ export async function chamarServico(token: TokenIntegraContador, pedido: PedidoI
     },
     corpo,
   });
+  // 304 (Not Modified) aparece sem corpo enquanto o SITFIS ainda está processando o relatório — a
+  // Receita usa isso na prática com o mesmo sentido do 202 "ainda não pronto", não é uma falha real.
+  if (status === 304) return { status, mensagens: [], dados: null };
   let json: any;
   try {
     json = JSON.parse(resposta);
@@ -246,7 +249,7 @@ export async function emitirRelatorioSitfis(token: TokenIntegraContador, contrat
     versaoSistema: "2.0",
     dados: { protocoloRelatorio },
   });
-  if (r.status === 202) return { pronto: false, pdfBase64: null, tempoEsperaSegundos: r.dados?.tempoEspera ?? 5 };
+  if (r.status === 202 || r.status === 304) return { pronto: false, pdfBase64: null, tempoEsperaSegundos: r.dados?.tempoEspera ?? 5 };
   return { pronto: true, pdfBase64: r.dados?.pdf || null, tempoEsperaSegundos: null };
 }
 // Junta os dois passos — pede o protocolo e espera o relatório ficar pronto (poll respeitando o
