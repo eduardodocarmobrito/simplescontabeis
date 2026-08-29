@@ -2714,10 +2714,10 @@ async function pageNfeBusca(){
 
   async function mostrarLista(){
     box.innerHTML = `<div class="empty-state">Carregando…</div>`;
-    const [{ items: configs, moduloAtivo }, { items: docs }] = await Promise.all([ api('/nfe/config'), api('/nfe/documentos') ]);
+    const [{ items: configs, moduloAtivo }, { items: contagens }] = await Promise.all([ api('/nfe/config'), api('/nfe/documentos/contagem') ]);
     avisoModulo(moduloAtivo);
     const contagem = {};
-    docs.forEach(d=>{ contagem[d.empresaId] = (contagem[d.empresaId]||0)+1; });
+    contagens.forEach(c=>{ contagem[c.empresaId] = c.qtd; });
     const idsAtivos = new Set([...configs.map(c=>c.empresaId), ...Object.keys(contagem).map(Number)]);
     const linhas = [...idsAtivos].map(id=>{
       const emp = empresas.find(e=>e.id===id);

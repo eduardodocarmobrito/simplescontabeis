@@ -3464,6 +3464,25 @@ app.get("/api/nfe/documentos", blockCliente, requireAdmin, (req, res) => {
     .all(user.escritorioId, ...empresasIds, ...(tipo ? [tipo] : []));
   res.json({ items: rows });
 });
+// Contagem de verdade por empresa, sem o LIMIT 500 da listagem acima — a listagem só serve pra
+// mostrar as últimas notas na tela de detalhe, não é confiável pra somar quantos documentos cada
+// empresa tem (com volume grande, os 500 mais recentes do escritório inteiro ficam concentrados em
+// poucas empresas e a soma por empresa fica errada pras outras).
+app.get("/api/nfe/documentos/contagem", blockCliente, requireAdmin, (req, res) => {
+  const user = (req as any).user;
+  const empresasIds = empresasVisiveis(user);
+  if (empresasIds.length === 0) return res.json({ items: [] });
+  const placeholders = empresasIds.map(() => "?").join(",");
+  const rows = sqlite
+    .prepare(
+      `SELECT empresa_id as empresaId, COUNT(*) as qtd
+       FROM nfe_documentos
+       WHERE escritorio_id = ? AND empresa_id IN (${placeholders})
+       GROUP BY empresa_id`
+    )
+    .all(user.escritorioId, ...empresasIds);
+  res.json({ items: rows });
+});
 app.get("/api/nfe/documentos/:id/xml", blockCliente, requireAdmin, (req, res) => {
   const user = (req as any).user;
   const row = sqlite.prepare(`SELECT * FROM nfe_documentos WHERE id = ?`).get(Number(req.params.id)) as any;
