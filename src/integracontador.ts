@@ -39,14 +39,14 @@ function chamarHttps(opts: {
   cert?: string;
   key?: string;
   corpo?: Buffer;
-}): Promise<{ status: number; corpo: string }> {
+}): Promise<{ status: number; corpo: string; headers: Record<string, string | string[] | undefined> }> {
   return new Promise((resolve, reject) => {
     const req = https.request(
       { hostname: opts.hostname, path: opts.path, method: opts.method, headers: opts.headers, cert: opts.cert, key: opts.key, timeout: 30000 },
       (res) => {
         const chunks: Buffer[] = [];
         res.on("data", (c) => chunks.push(c));
-        res.on("end", () => resolve({ status: res.statusCode || 0, corpo: Buffer.concat(chunks).toString("utf8") }));
+        res.on("end", () => resolve({ status: res.statusCode || 0, corpo: Buffer.concat(chunks).toString("utf8"), headers: res.headers as any }));
       }
     );
     req.on("timeout", () => req.destroy(new Error("Tempo esgotado ao conectar no Integra Contador (SERPRO).")));
@@ -54,6 +54,17 @@ function chamarHttps(opts: {
     if (opts.corpo) req.write(opts.corpo);
     req.end();
   });
+}
+// No cache do SITFIS, uma resposta 304 (protocolo já solicitado antes, ainda não consumido no
+// /emitir) não tem corpo — o protocolo vem dentro do header ETag, no formato
+// `"protocoloRelatorio:<valor>"` (com aspas, padrão HTTP de ETag). Ver documentação oficial:
+// apicenter.estaleiro.serpro.gov.br/documentacao/api-integra-contador/pt/solucoes/integra-sitfis/sitfis/cache/
+function extrairProtocoloDoETag(etag: string | string[] | undefined): string | null {
+  const valor = Array.isArray(etag) ? etag[0] : etag;
+  if (!valor) return null;
+  const semAspas = valor.replace(/^W\//, "").replace(/^"|"$/g, "");
+  const m = semAspas.match(/^protocoloRelatorio:(.+)$/);
+  return m ? m[1] : null;
 }
 
 // Autenticação: mTLS com o e-CNPJ do escritório + Basic auth (consumerKey:consumerSecret, da Loja
@@ -107,6 +118,7 @@ interface RespostaIntegraContador {
   status: number;
   mensagens: { codigo: string; texto: string }[];
   dados: any; // já decodificado de JSON, se a Receita mandar string JSON escapada dentro de "dados"
+  etagProtocolo: string | null; // só preenchido quando status===304 no SITFIS — ver extrairProtocoloDoETag
 }
 export async function chamarServico(token: TokenIntegraContador, pedido: PedidoIntegraContador): Promise<RespostaIntegraContador> {
   const documentoLimpo = pedido.contribuinteDocumento.replace(/\D/g, "");
@@ -124,7 +136,7 @@ export async function chamarServico(token: TokenIntegraContador, pedido: PedidoI
   };
   const corpo = Buffer.from(JSON.stringify(corpoObj), "utf8");
   const url = new URL(`${GATEWAY_BASE}/${pedido.base}`);
-  const { status, corpo: resposta } = await chamarHttps({
+  const { status, corpo: resposta, headers: respHeaders } = await chamarHttps({
     hostname: url.hostname,
     path: url.pathname,
     method: "POST",
@@ -136,9 +148,9 @@ export async function chamarServico(token: TokenIntegraContador, pedido: PedidoI
     },
     corpo,
   });
-  // 304 (Not Modified) aparece sem corpo enquanto o SITFIS ainda está processando o relatório — a
-  // Receita usa isso na prática com o mesmo sentido do 202 "ainda não pronto", não é uma falha real.
-  if (status === 304) return { status, mensagens: [], dados: null };
+  // 304 (Not Modified) no SITFIS não é erro — é o mecanismo de cache deles: o protocolo (pedido
+  // anterior, ainda não consumido no /emitir) vem no header ETag em vez do corpo, que fica vazio.
+  if (status === 304) return { status, mensagens: [], dados: null, etagProtocolo: extrairProtocoloDoETag(respHeaders.etag) };
   let json: any;
   try {
     json = JSON.parse(resposta);
@@ -159,7 +171,7 @@ export async function chamarServico(token: TokenIntegraContador, pedido: PedidoI
       /* alguns serviços devolvem "dados" já como objeto, outros como string JSON escapada — mantém como veio se não for parseável */
     }
   }
-  return { status: json.status ?? status, mensagens, dados };
+  return { status: json.status ?? status, mensagens, dados, etagProtocolo: null };
 }
 
 // ===================== PGDASD (DAS + Declaração do Simples Nacional) — confirmado na doc oficial =====================
@@ -225,7 +237,7 @@ export async function consultarDeclaracoesPorAno(token: TokenIntegraContador, co
 // Passo 1: pede um "protocolo" (a Receita processa em segundo plano). Passo 2: usa o protocolo pra
 // pegar o relatório em PDF — pode vir "ainda processando" (202, espera X segundos) antes do PDF
 // ficar pronto (200).
-export async function solicitarProtocoloSitfis(token: TokenIntegraContador, contratanteCnpj: string, documentoEmpresa: string): Promise<string> {
+export async function solicitarProtocoloSitfis(token: TokenIntegraContador, contratanteCnpj: string, documentoEmpresa: string): Promise<string | null> {
   const r = await chamarServico(token, {
     base: "Apoiar",
     contratanteCnpj,
@@ -235,6 +247,9 @@ export async function solicitarProtocoloSitfis(token: TokenIntegraContador, cont
     versaoSistema: "2.0",
     dados: {},
   });
+  // 304 aqui é o cache do SITFIS: já existe um protocolo pedido antes pra esse contribuinte, ainda
+  // não consumido no /emitir — vem no header ETag (extraído em chamarServico), não no corpo.
+  if (r.status === 304) return r.etagProtocolo;
   const protocolo = r.dados?.protocoloRelatorio || r.dados?.protocolo;
   if (!protocolo) throw new Error("A Receita não devolveu um protocolo de relatório.");
   return protocolo;
@@ -255,7 +270,12 @@ export async function emitirRelatorioSitfis(token: TokenIntegraContador, contrat
 // Junta os dois passos — pede o protocolo e espera o relatório ficar pronto (poll respeitando o
 // tempoEspera que a própria Receita manda), com um teto de tentativas pra não esperar pra sempre.
 export async function obterRelatorioSitfisCompleto(token: TokenIntegraContador, contratanteCnpj: string, documentoEmpresa: string): Promise<string> {
-  const protocolo = await solicitarProtocoloSitfis(token, contratanteCnpj, documentoEmpresa);
+  let protocolo: string | null = null;
+  for (let tentativa = 0; tentativa < 10 && !protocolo; tentativa++) {
+    protocolo = await solicitarProtocoloSitfis(token, contratanteCnpj, documentoEmpresa);
+    if (!protocolo) await new Promise((resolve) => setTimeout(resolve, 5000));
+  }
+  if (!protocolo) throw new Error("A Receita não devolveu um protocolo de relatório a tempo — tente de novo em alguns minutos.");
   for (let tentativa = 0; tentativa < 10; tentativa++) {
     const r = await emitirRelatorioSitfis(token, contratanteCnpj, documentoEmpresa, protocolo);
     if (r.pronto && r.pdfBase64) return r.pdfBase64;
