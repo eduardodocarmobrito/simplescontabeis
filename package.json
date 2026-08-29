@@ -28,6 +28,7 @@
     "express": "^5.2.1",
     "express-rate-limit": "^8.6.2",
     "fast-xml-parser": "^5.11.1",
+    "jsbarcode": "^3.12.3",
     "jszip": "^3.10.1",
     "mammoth": "^1.12.1",
     "multer": "^2.0.1",
