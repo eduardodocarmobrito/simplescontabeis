@@ -2683,9 +2683,23 @@ app.get("/api/checklist/uploads/:uploadId/download", blockCliente, requirePermis
 });
 
 // ---------- Envio de Documentos (o escritório posta e o cliente recebe — sentido contrário de Solicitações) ----------
+// Modelos de Envio de Documentos criados/reaproveitados automaticamente pelo Integra Contador
+// (integraContadorObterOuCriarAtribuicaoModelo busca por esse nome exato) — excluir ou renomear
+// qualquer um deles quebra silenciosamente o anexo automático de DAS/Situação Fiscal (a próxima
+// busca automática cria um modelo NOVO em vez de reaproveitar, perdendo a ligação com o histórico
+// já entregue ao cliente).
+const ENVIO_TEMPLATES_PROTEGIDOS = ["DAS - Mensal", "Consultar Situação Fiscal - RFB"];
 app.get("/api/envio/templates", blockCliente, requirePermissao("envio", "visualizar"), (req, res) => {
   const rows = sqlite.prepare(`SELECT * FROM envio_templates WHERE escritorio_id = ? ORDER BY nome`).all((req as any).user.escritorioId) as any[];
-  res.json({ items: rows.map((r) => ({ ...r, accept: JSON.parse(r.accept_json), detectarVencimento: !!r.detectar_vencimento, visivelCliente: !!r.visivel_cliente })) });
+  res.json({
+    items: rows.map((r) => ({
+      ...r,
+      accept: JSON.parse(r.accept_json),
+      detectarVencimento: !!r.detectar_vencimento,
+      visivelCliente: !!r.visivel_cliente,
+      protegido: ENVIO_TEMPLATES_PROTEGIDOS.includes(r.nome),
+    })),
+  });
 });
 app.post("/api/envio/templates", blockCliente, requirePermissao("envio", "postar"), (req, res) => {
   const user = (req as any).user;
@@ -2701,7 +2715,11 @@ app.put("/api/envio/templates/:id", blockCliente, requirePermissao("envio", "edi
   const id = Number(req.params.id);
   const existing = sqlite.prepare(`SELECT * FROM envio_templates WHERE id = ? AND escritorio_id = ?`).get(id, (req as any).user.escritorioId) as any;
   if (!existing) return res.status(404).json({ error: "Modelo não encontrado." });
+  const protegido = ENVIO_TEMPLATES_PROTEGIDOS.includes(existing.nome);
   const { nome, descricao, accept, ativo, detectarVencimento, visivelCliente } = req.body || {};
+  if (protegido && nome !== undefined && nome !== existing.nome) {
+    return res.status(409).json({ error: `"${existing.nome}" é usado automaticamente pelo Integra Contador — renomear quebraria o anexo automático de DAS/Situação Fiscal.` });
+  }
   sqlite
     .prepare(`UPDATE envio_templates SET nome=?, descricao=?, accept_json=?, detectar_vencimento=?, visivel_cliente=?, ativo=? WHERE id=?`)
     .run(
@@ -2716,6 +2734,11 @@ app.put("/api/envio/templates/:id", blockCliente, requirePermissao("envio", "edi
   res.json({ ok: true });
 });
 app.delete("/api/envio/templates/:id", requireAdmin, (req, res) => {
+  const existing = sqlite.prepare(`SELECT nome FROM envio_templates WHERE id = ? AND escritorio_id = ?`).get(Number(req.params.id), (req as any).user.escritorioId) as any;
+  if (!existing) return res.status(404).json({ error: "Modelo não encontrado." });
+  if (ENVIO_TEMPLATES_PROTEGIDOS.includes(existing.nome)) {
+    return res.status(409).json({ error: `"${existing.nome}" é usado automaticamente pelo Integra Contador e não pode ser excluído.` });
+  }
   sqlite.prepare(`DELETE FROM envio_templates WHERE id = ? AND escritorio_id = ?`).run(Number(req.params.id), (req as any).user.escritorioId);
   res.json({ ok: true });
 });

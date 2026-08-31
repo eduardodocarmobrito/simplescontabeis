@@ -1435,10 +1435,11 @@ async function renderEnvioModelos(){
         <tbody id="envioModelosBody"></tbody>
       </table>
     </div>
+    ${items.some(t=>t.protegido)? `<p style="font-size:11.5px; color:var(--ink-soft); margin:8px 0 0;">* Modelo usado automaticamente pelo Integra Contador — nome travado, não pode ser excluído.</p>` : ''}
   `;
   document.getElementById('envioModelosBody').innerHTML = items.length? items.map(t=>`
     <tr data-id="${t.id}">
-      <td><b>${esc(t.nome)}</b>${t.descricao?`<br><span style="color:var(--ink-soft); font-size:12px;">${esc(t.descricao)}</span>`:''}</td>
+      <td><b>${esc(t.nome)}</b>${t.protegido?` <span title="Usado automaticamente pelo Integra Contador — não pode ser renomeado nem excluído">*</span>`:''}${t.descricao?`<br><span style="color:var(--ink-soft); font-size:12px;">${esc(t.descricao)}</span>`:''}</td>
       <td>${({mensal:'Mensal',anual:'Anual',avulso:'Avulso'})[t.periodicidade]||t.periodicidade}</td>
       <td>${t.accept.map(a=>`<span class="tag muted">${esc(a)}</span>`).join(' ')}</td>
       <td><span class="tag ${t.detectarVencimento?'ok':'muted'}">${t.detectarVencimento?'Detecta':'Não se aplica'}</span></td>
@@ -1455,7 +1456,8 @@ async function renderEnvioModelos(){
 function envioModeloModal(t){
   openModal(`
     <h3>${t?'Editar':'Novo'} modelo de envio</h3>
-    <div class="field"><label>Nome</label><input id="evNome" value="${t?esc(t.nome):''}" placeholder='Ex.: "DARF PIS", "FGTS", "Retenções de Notas Fiscais"'></div>
+    ${t&&t.protegido? `<p style="font-size:12px; color:var(--ink-soft); margin:-4px 0 10px;">Este modelo é usado automaticamente pelo Integra Contador — o nome fica travado pra não quebrar o anexo automático de DAS/Situação Fiscal.</p>`:''}
+    <div class="field"><label>Nome</label><input id="evNome" value="${t?esc(t.nome):''}" placeholder='Ex.: "DARF PIS", "FGTS", "Retenções de Notas Fiscais"' ${t&&t.protegido?'readonly style="background:var(--paper);"':''}></div>
     <div class="field"><label>Descrição (opcional)</label><input id="evDesc" value="${t&&t.descricao?esc(t.descricao):''}"></div>
     ${!t? `<div class="field"><label>Periodicidade</label>
       <select id="evPeriodicidade">
