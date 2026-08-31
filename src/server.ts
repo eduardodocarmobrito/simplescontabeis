@@ -6061,7 +6061,7 @@ app.get("/api/financeiro/minha-empresa/pagar", requireCliente, requireModuloAtiv
   const params: any[] = [empresaId];
   if (dataDe) { sql += ` AND date(vencimento) >= date(?)`; params.push(dataDe); }
   if (dataAte) { sql += ` AND date(vencimento) <= date(?)`; params.push(dataAte); }
-  sql += ` ORDER BY vencimento DESC, id DESC`;
+  sql += ` ORDER BY p.vencimento DESC, p.id DESC`;
   res.json({ items: sqlite.prepare(sql).all(...params) });
 });
 app.post("/api/financeiro/minha-empresa/pagar", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
@@ -6111,7 +6111,7 @@ app.get("/api/financeiro/minha-empresa/receber", requireCliente, requireModuloAt
   const params: any[] = [empresaId];
   if (dataDe) { sql += ` AND date(vencimento) >= date(?)`; params.push(dataDe); }
   if (dataAte) { sql += ` AND date(vencimento) <= date(?)`; params.push(dataAte); }
-  sql += ` ORDER BY vencimento DESC, id DESC`;
+  sql += ` ORDER BY r.vencimento DESC, r.id DESC`;
   res.json({ items: sqlite.prepare(sql).all(...params) });
 });
 app.post("/api/financeiro/minha-empresa/receber", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
