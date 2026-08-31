@@ -18,6 +18,7 @@ import * as nfe from "./nfe";
 import * as nfePdf from "./nfe-pdf";
 import * as onedrive from "./onedrive";
 import * as integracontador from "./integracontador";
+import { buscarViaOnvio } from "./onvio-sync";
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 
@@ -2335,6 +2336,97 @@ app.get("/api/dominio/sync-log", blockCliente, requirePermissao("configuracoes",
 function getDominioConfig(escritorioId: number): any {
   return sqlite.prepare(`SELECT * FROM dominio_config WHERE escritorio_id = ?`).get(escritorioId) || {};
 }
+// ---- Sincronização de clientes via Onvio direto no servidor (sem depender de nenhum agente local
+// ligado) — o container do Railway já roda Playwright/Chromium (ver Dockerfile, usado hoje pra
+// gerar PDF de DANFSe/NF-e/contratos), então basta ter a sessão do Onvio salva aqui pra sincronizar
+// sozinho. A sessão em si (data/onvio-session.json) ainda precisa ser gerada localmente por um
+// humano (npm run onvio-login exige verificação em duas etapas), mas depois de gerada uma vez, é
+// só enviar o arquivo pela tela (ver POST /api/dominio/onvio-sessao) — o dia a dia deixa de
+// depender de qualquer computador ficar ligado.
+function onvioSessionPath(escritorioId: number): string {
+  const dir = path.join(__dirname, "..", "data");
+  // escritório 1 mantém o caminho antigo (compatível com o arquivo já usado pelo agente local via
+  // DOMINIO_ONVIO_SESSION_PATH) — outros escritórios ganham um arquivo próprio.
+  return escritorioId === 1 ? path.join(dir, "onvio-session.json") : path.join(dir, `onvio-session-${escritorioId}.json`);
+}
+async function executarSincronizacaoOnvio(escritorioId: number, jobId?: number): Promise<void> {
+  try {
+    const items = (await buscarViaOnvio(onvioSessionPath(escritorioId))).filter((it) => it.codigo && it.nome);
+    let novas = 0, atualizadas = 0;
+    const getByCodigo = sqlite.prepare(`SELECT id FROM empresas WHERE codigo_dominio = ? AND escritorio_id = ?`);
+    const insert = sqlite.prepare(
+      `INSERT INTO empresas (nome, cnpj, codigo_dominio, email, telefone, endereco, cidade, uf, cep, inscricao_municipal, inscricao_estadual, nome_representante_legal, cpf_representante_legal, origem, escritorio_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'dominio', ?)`
+    );
+    const update = sqlite.prepare(
+      `UPDATE empresas SET nome=?, cnpj=COALESCE(?, cnpj), email=COALESCE(?, email), telefone=COALESCE(?, telefone),
+         endereco=COALESCE(?, endereco), cidade=COALESCE(?, cidade), uf=COALESCE(?, uf), cep=COALESCE(?, cep),
+         inscricao_municipal=COALESCE(?, inscricao_municipal), inscricao_estadual=COALESCE(?, inscricao_estadual),
+         nome_representante_legal=COALESCE(?, nome_representante_legal), cpf_representante_legal=COALESCE(?, cpf_representante_legal),
+         updated_at=datetime('now') WHERE id=?`
+    );
+    // situação (ativo/inativo) não vem na API do Onvio — não mexe nesse campo pra não
+    // reativar/desativar uma empresa por engano (mesma regra do agente local).
+    for (const it of items) {
+      const existente = getByCodigo.get(String(it.codigo), escritorioId) as any;
+      if (existente) {
+        update.run(
+          it.nome, it.cnpj || null, it.email || null, it.telefone || null, it.endereco || null,
+          it.cidade || null, it.uf || null, it.cep || null, it.inscricaoMunicipal || null,
+          it.inscricaoEstadual || null, it.nomeRepresentanteLegal || null, it.cpfRepresentanteLegal || null,
+          existente.id
+        );
+        atualizadas++;
+      } else {
+        insert.run(
+          it.nome, it.cnpj || null, String(it.codigo), it.email || null, it.telefone || null,
+          it.endereco || null, it.cidade || null, it.uf || null, it.cep || null,
+          it.inscricaoMunicipal || null, it.inscricaoEstadual || null, it.nomeRepresentanteLegal || null,
+          it.cpfRepresentanteLegal || null, escritorioId
+        );
+        novas++;
+      }
+    }
+    sqlite.prepare(`INSERT INTO dominio_sync_log (origem, empresas_novas, empresas_atualizadas, status) VALUES ('nuvem', ?, ?, 'ok')`).run(novas, atualizadas);
+    if (jobId) sqlite.prepare(`UPDATE dominio_sync_jobs SET status='ok', novas=?, atualizadas=?, resolvido_em=datetime('now') WHERE id=?`).run(novas, atualizadas, jobId);
+  } catch (e: any) {
+    sqlite.prepare(`INSERT INTO dominio_sync_log (origem, empresas_novas, empresas_atualizadas, status, detalhe) VALUES ('nuvem', 0, 0, 'erro', ?)`).run(e.message);
+    if (jobId) sqlite.prepare(`UPDATE dominio_sync_jobs SET status='erro', erro=?, resolvido_em=datetime('now') WHERE id=?`).run(e.message, jobId);
+    else console.error("Falha na sincronização automática de clientes via Onvio:", e.message);
+  }
+}
+app.get("/api/dominio/onvio-sessao", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
+  const p = onvioSessionPath((req as any).user.escritorioId);
+  const existe = fs.existsSync(p);
+  res.json({ existe, atualizadaEm: existe ? fs.statSync(p).mtime.toISOString() : null });
+});
+app.post("/api/dominio/onvio-sessao", blockCliente, requirePermissao("configuracoes", "editar"), upload.single("arquivo"), (req, res) => {
+  const file = (req as any).file;
+  if (!file) return res.status(400).json({ error: 'Envie o arquivo "onvio-session.json" gerado por "npm run onvio-login".' });
+  let parsed: any;
+  try {
+    parsed = JSON.parse(file.buffer.toString("utf8"));
+  } catch {
+    return res.status(400).json({ error: 'Arquivo inválido — precisa ser o "onvio-session.json" gerado pelo login (JSON), não outro tipo de arquivo.' });
+  }
+  if (!parsed || !Array.isArray(parsed.cookies)) {
+    return res.status(400).json({ error: 'O arquivo enviado não parece ser uma sessão salva pelo Playwright (esperava a chave "cookies").' });
+  }
+  const p = onvioSessionPath((req as any).user.escritorioId);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, file.buffer);
+  res.json({ ok: true });
+});
+// Sincronia automática de clientes via Onvio, direto no servidor — substitui, pra quem já enviou a
+// sessão pela tela, o ciclo de 60 em 60 minutos que antes só o agente local fazia. Roda pra todo
+// escritório configurado em modo "onvio" com sessão salva; os demais continuam dependendo do
+// agente local (modos banco de dados/API HTTP).
+setInterval(() => {
+  const escritorios = sqlite.prepare(`SELECT escritorio_id FROM dominio_config WHERE source = 'onvio'`).all() as any[];
+  for (const { escritorio_id } of escritorios) {
+    if (fs.existsSync(onvioSessionPath(escritorio_id))) executarSincronizacaoOnvio(escritorio_id);
+  }
+}, 60 * 60 * 1000);
 app.get("/api/dominio/config", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
   const c = getDominioConfig((req as any).user.escritorioId);
   res.json({
@@ -2409,12 +2501,19 @@ app.get("/api/dominio/testar-conexao/:id", blockCliente, requirePermissao("confi
   res.json({ status: row.status, resultado: row.resultado_json ? JSON.parse(row.resultado_json) : null, erro: row.erro });
 });
 
-// Botão "Atualizar Empresas" — pede uma sincronização imediata (o agente local atende no ciclo
-// rápido, de ~12 em 12s, sem esperar a sincronia automática de 60 em 60 minutos).
+// Botão "Atualizar Empresas" — pede uma sincronização imediata. No modo "onvio" com a sessão já
+// salva na nuvem, o próprio servidor resolve na hora (sem depender de nenhum agente local ligado);
+// nos outros modos (banco de dados/API HTTP, que exigem rede local do escritório), o job fica
+// pendente e o agente local atende no ciclo rápido, de ~12 em 12s.
 app.post("/api/dominio/sincronizar-empresas", blockCliente, requirePermissao("empresas", "postar"), (req, res) => {
   const user = (req as any).user;
   const info = sqlite.prepare(`INSERT INTO dominio_sync_jobs (status, criado_por) VALUES ('pending', ?)`).run(user.id);
-  res.json({ id: Number(info.lastInsertRowid) });
+  const jobId = Number(info.lastInsertRowid);
+  const cfg = getDominioConfig(user.escritorioId);
+  if (cfg.source === "onvio" && fs.existsSync(onvioSessionPath(user.escritorioId))) {
+    executarSincronizacaoOnvio(user.escritorioId, jobId);
+  }
+  res.json({ id: jobId });
 });
 app.get("/api/dominio/sincronizar-empresas/:id", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
   const row = sqlite.prepare(`SELECT * FROM dominio_sync_jobs WHERE id = ?`).get(Number(req.params.id)) as any;

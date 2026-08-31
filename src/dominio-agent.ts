@@ -1,6 +1,7 @@
 import "dotenv/config";
 import path from "path";
 import fs from "fs";
+import { buscarViaOnvio as buscarViaOnvioCompartilhado } from "./onvio-sync";
 
 /**
  * Agente de sincronização com o Domínio Web.
@@ -190,124 +191,13 @@ async function buscarViaHttp(cfg: Config): Promise<Record<string, any>[]> {
 
 // ---- Modo "onvio": login web do Domínio Web/Onvio (Thomson Reuters) — sem API de leitura
 // documentada, então usamos a mesma chamada interna que a própria tela do Onvio usa, com uma
-// sessão de navegador já autenticada (ver npm run onvio-login). Precisa do pacote "playwright"
-// instalado nesta máquina (só aqui no agente — o servidor na nuvem não precisa dele).
+// sessão de navegador já autenticada (ver npm run onvio-login). A busca em si mora em
+// ./onvio-sync.ts, compartilhada com o servidor (que hoje faz essa sincronização sozinho — este
+// agente local só entra em cena pros modos "banco de dados"/"API HTTP" e pra exportação de XML).
 const ONVIO_SESSION_PATH = process.env.DOMINIO_ONVIO_SESSION_PATH || path.join(__dirname, "..", "data", "onvio-session.json");
 
-function extrairContato(item: any) {
-  const c = item?.primaryContactExpanded || {};
-  const email = (c.emailAddresses || []).find((e: any) => e.isPrimary)?.emailAddress || (c.emailAddresses || [])[0]?.emailAddress || null;
-  const telefone = (c.phoneNumbers || []).find((p: any) => p.isPrimary)?.phoneNumber || (c.phoneNumbers || [])[0]?.phoneNumber || null;
-  const end = (c.addresses || []).find((a: any) => a.isPrimary) || (c.addresses || [])[0];
-  const endereco = end ? [end.addressLine1, end.addressLine3].filter(Boolean).join(", ").trim() || null : null;
-  const cidade = end?.city || null;
-  const uf = end?.stateProvince?.id ? String(end.stateProvince.id).replace("BR-", "") : null;
-  const cep = end?.postalCode || null;
-  return { email, telefone, endereco, cidade, uf, cep };
-}
-function extrairDocumento(item: any): string | null {
-  const nats = item?.primaryContactExpanded?.nationalIdentitiesExpanded || [];
-  const cnpj = nats.find((n: any) => n.kind?.id === "BR-CNPJ" && n.identity);
-  const cpf = nats.find((n: any) => n.kind?.id === "BR-CPF" && n.identity);
-  return cnpj?.identity || cpf?.identity || null;
-}
-// Nem toda empresa tem isso preenchido no Onvio (na prática, poucas) — quando não tem, o campo
-// fica em branco e é preenchido manualmente na tela (usado pra emissão de NFS-e).
-function extrairInscricaoMunicipal(item: any): string | null {
-  const nats = item?.primaryContactExpanded?.nationalIdentitiesExpanded || [];
-  const im = nats.find((n: any) => n.kind?.id === "BR-IM" && n.identity);
-  return im?.identity || null;
-}
-// Mesmo padrão da Inscrição Municipal acima — "BR-IE" é o código do Onvio pra Inscrição Estadual
-// (obrigatória só pra empresas que vendem mercadoria/circulam ICMS; a maioria dos prestadores de
-// serviço não tem, então costuma ficar em branco).
-function extrairInscricaoEstadual(item: any): string | null {
-  const nats = item?.primaryContactExpanded?.nationalIdentitiesExpanded || [];
-  const ie = nats.find((n: any) => n.kind?.id === "BR-IE" && n.identity);
-  return ie?.identity || null;
-}
-// O contato principal do cliente no Onvio normalmente É o representante legal/sócio-administrador
-// (quem o escritório cadastra como responsável pela empresa) — nome vem do próprio contato, CPF
-// vem junto com o CNPJ na mesma lista de documentos (o CNPJ já é usado em extrairDocumento; aqui só
-// pega o CPF que sobra, que nem sempre existe — nesse caso fica em branco pra preencher na mão).
-function extrairNomeRepresentante(item: any): string | null {
-  const nome = item?.primaryContactExpanded?.name;
-  return nome ? String(nome).trim() : null;
-}
-function extrairCpfRepresentante(item: any): string | null {
-  const nats = item?.primaryContactExpanded?.nationalIdentitiesExpanded || [];
-  const cpf = nats.find((n: any) => n.kind?.id === "BR-CPF" && n.identity);
-  return cpf?.identity || null;
-}
-
 async function buscarViaOnvio(): Promise<EmpresaNormalizada[]> {
-  if (!fs.existsSync(ONVIO_SESSION_PATH)) {
-    throw new Error(`Sessão do Onvio não encontrada em "${ONVIO_SESSION_PATH}". Rode "npm run onvio-login" nesta máquina pra criar.`);
-  }
-  let chromium: any;
-  try {
-    ({ chromium } = require("playwright"));
-  } catch {
-    throw new Error('Pacote "playwright" não instalado nesta máquina. Rode: npm install playwright');
-  }
-
-  const browser = await chromium.launch();
-  try {
-    const context = await browser.newContext({ storageState: ONVIO_SESSION_PATH });
-    const page = await context.newPage();
-
-    let authHeader: string | null = null;
-    let companyId: string | null = null;
-    page.on("request", (req: any) => {
-      const m = req.url().match(/\/api\/core\/v3\/companies\/([A-Z0-9]+)\/clients\/search/);
-      if (m && !companyId) {
-        companyId = m[1];
-        authHeader = req.headers()["authorization"] || null;
-      }
-    });
-
-    await page.goto("https://onvio.com.br/br-api-integration/#/enable-clients", { waitUntil: "networkidle", timeout: 30000 });
-    await page.waitForTimeout(2500);
-
-    if (/\/login|auth\.thomsonreuters\.com/.test(page.url())) {
-      throw new Error('A sessão do Onvio expirou ou foi desconectada. Rode "npm run onvio-login" de novo nesta máquina pra renovar.');
-    }
-    if (!authHeader || !companyId) {
-      throw new Error("Não consegui identificar a empresa/token do Onvio nesta sessão — tente rodar \"npm run onvio-login\" de novo.");
-    }
-
-    const resp = await page.request.post(`https://onvio.com.br/api/core/v3/companies/${companyId}/clients/search`, {
-      headers: { authorization: authHeader },
-      data: {
-        pagingDataRequest: { startIndex: 1, pageIndex: 1, itemsPerPage: 500 },
-        expand: "primaryContactExpanded,primaryContactExpanded.nationalIdentitiesExpanded",
-        filterSearchSort: {},
-      },
-    });
-    if (!resp.ok()) throw new Error(`Onvio API -> HTTP ${resp.status()}`);
-    const json = await resp.json();
-    const items = (json.items || []) as any[];
-
-    return items
-      .filter((it) => it.code && it.code !== "FIRM" && !/^EMPRESA EXEMPLO/i.test(it.name || ""))
-      .map((it) => {
-        const contato = extrairContato(it);
-        return {
-          codigo: String(it.code),
-          nome: String(it.name || "").trim(),
-          cnpj: extrairDocumento(it),
-          inscricaoMunicipal: extrairInscricaoMunicipal(it),
-          inscricaoEstadual: extrairInscricaoEstadual(it),
-          nomeRepresentanteLegal: extrairNomeRepresentante(it),
-          cpfRepresentanteLegal: extrairCpfRepresentante(it),
-          ...contato,
-          // situação (ativo/inativo) não vem nessa API — a sincronização automática não mexe
-          // nisso pra não reativar/desativar empresa por engano (ver server.ts, COALESCE(ativo)).
-        };
-      });
-  } finally {
-    await browser.close();
-  }
+  return buscarViaOnvioCompartilhado(ONVIO_SESSION_PATH);
 }
 
 async function buscarClientes(cfg: Config): Promise<EmpresaNormalizada[]> {

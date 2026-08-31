@@ -5115,17 +5115,17 @@ async function renderCfgTab(){
 }
 
 async function renderCfgDominio(box){
-  const [{ items, agente }, cfg, oneDriveCfg] = await Promise.all([ api('/dominio/sync-log'), api('/dominio/config'), api('/onedrive/config') ]);
+  const [{ items, agente }, cfg, oneDriveCfg, onvioSessao] = await Promise.all([ api('/dominio/sync-log'), api('/dominio/config'), api('/onedrive/config'), api('/dominio/onvio-sessao') ]);
   box.innerHTML = `
     <div class="card">
       <h3>Status do agente automático</h3>
       <p style="font-size:13px; color:var(--ink-soft);">
-        ${agente && agente.lastSeenAt ? `Última comunicação: ${fmtDate(agente.lastSeenAt)} (versão ${esc(agente.version||'—')})` : 'O agente automático (src/dominio-agent.ts) ainda não se conectou nesta instalação. Rode-o numa máquina com acesso ao Domínio Web — ele busca a configuração abaixo sozinho, a cada ciclo.'}
+        ${agente && agente.lastSeenAt ? `Última comunicação: ${fmtDate(agente.lastSeenAt)} (versão ${esc(agente.version||'—')})` : 'O agente automático (src/dominio-agent.ts) ainda não se conectou nesta instalação. Só é necessário rodá-lo se você usar o modo "Banco de dados"/"API HTTP" abaixo, ou a exportação de XML pra pasta local — no modo Onvio com a sessão enviada, o próprio servidor sincroniza sozinho, sem precisar de agente nenhum.'}
       </p>
     </div>
     <div class="card">
       <h3>Acesso do agente (src/dominio-agent.ts)</h3>
-      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Preencha aqui os dados de acesso ao Domínio Web — o agente busca essa configuração sozinho, sem precisar editar o .env dele na máquina onde roda.</p>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Preencha aqui os dados de acesso ao Domínio Web.</p>
       <div class="field"><label>Forma de acesso</label>
         <select id="domSource">
           <option value="">Ainda não definido</option>
@@ -5136,11 +5136,27 @@ async function renderCfgDominio(box){
       </div>
       <div id="domOnvioFields" class="hidden">
         <p style="font-size:12.5px; color:var(--ink-soft);">
-          Nesse modo o agente reaproveita uma sessão de login já feita no navegador. Na máquina onde o agente vai rodar,
-          execute uma vez: <code>npm run onvio-login</code> — vai abrir um navegador pra você logar no Onvio normalmente
-          (usuário, senha e verificação em duas etapas). Depois disso o agente e o botão "Atualizar Empresas" já funcionam
-          sozinhos, sem precisar preencher mais nada aqui. Se a sessão expirar um dia, é só rodar o comando de novo.
+          Nesse modo o login do Onvio (que exige verificação em duas etapas) é feito uma vez em qualquer computador,
+          e a sessão gerada é enviada pra cá — depois disso o próprio servidor sincroniza os clientes sozinho, de hora
+          em hora e sempre que você clicar em "Atualizar Empresas", sem precisar de nenhum computador ligado.
         </p>
+        <div class="card" style="background:var(--paper); margin:10px 0;">
+          <p style="font-size:13px; margin:0 0 8px;">
+            ${onvioSessao.existe
+              ? `<span class="tag ok">Sessão enviada</span> salva em ${fmtDateHora(onvioSessao.atualizadaEm)}`
+              : `<span class="tag bad">Nenhuma sessão enviada ainda</span>`}
+          </p>
+          <p style="font-size:12.5px; color:var(--ink-soft); margin:0 0 8px;">
+            Passo 1 — em qualquer computador com Node instalado, na pasta do projeto, rode:
+            <code>npm run onvio-login</code>. Vai abrir um navegador pra você logar normalmente no Onvio, incluindo o
+            código de verificação. Ao terminar, vai gerar o arquivo <code>data/onvio-session.json</code>.<br>
+            Passo 2 — envie esse arquivo aqui embaixo. Repita os dois passos só quando a sincronização começar a
+            falhar avisando que a sessão expirou.
+          </p>
+          <div class="field"><label>Arquivo da sessão (onvio-session.json)</label><input type="file" id="onvioSessaoArquivo" accept=".json"></div>
+          <button class="btn primary" id="btnEnviarOnvioSessao">Enviar sessão</button>
+          <div id="onvioSessaoResultado" style="margin-top:8px;"></div>
+        </div>
       </div>
       <div id="domDbFields" class="hidden">
         <div class="row">
@@ -5223,6 +5239,22 @@ async function renderCfgDominio(box){
     <button class="btn primary" id="btnImportarCfg">Importar clientes do Domínio Web (CSV)</button>
   `;
   document.getElementById('btnImportarCfg').addEventListener('click', importarDominioModal);
+  document.getElementById('btnEnviarOnvioSessao').addEventListener('click', async ()=>{
+    const arquivo = document.getElementById('onvioSessaoArquivo').files[0];
+    const resultado = document.getElementById('onvioSessaoResultado');
+    if(!arquivo){ toast('Selecione o arquivo onvio-session.json.','err'); return; }
+    const fd = new FormData(); fd.append('arquivo', arquivo);
+    const btn = document.getElementById('btnEnviarOnvioSessao');
+    btn.disabled = true; btn.textContent = 'Enviando…';
+    try{
+      await api('/dominio/onvio-sessao', { method:'POST', body:fd });
+      toast('Sessão enviada — a sincronização automática já pode usar ela.','ok');
+      renderCfgDominio(box);
+    }catch(e){
+      resultado.innerHTML = `<div class="tag bad">Falhou</div> <span style="font-size:12.5px;">${esc(e.message)}</span>`;
+      btn.disabled = false; btn.textContent = 'Enviar sessão';
+    }
+  });
   document.getElementById('domSource').value = cfg.source || '';
   document.getElementById('domDbDriver').value = cfg.dbDriver || 'mssql';
   function syncSourceUI(){
