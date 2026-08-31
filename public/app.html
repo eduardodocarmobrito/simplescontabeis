@@ -1290,9 +1290,8 @@ async function pageSolicitarDocumentos(){
     <h1>Solicitar Documentos</h1>
     <p class="subtitle">Peça aqui os documentos que seu escritório de contabilidade disponibiliza sob demanda</p>
     <div class="row" style="margin-bottom:14px;">
-      <button class="btn primary" id="btnNovaSolicitacao" ${disponiveis.length?'':'disabled'}>+ Nova solicitação</button>
+      <button class="btn primary" id="btnNovaSolicitacao">+ Nova solicitação</button>
     </div>
-    ${!disponiveis.length? `<p class="subtitle" style="margin-top:-6px;">Seu escritório ainda não liberou nenhum tipo de documento para solicitação.</p>`:''}
     <div id="solicList"></div>
   `;
   const box = document.getElementById('solicList');
@@ -1316,15 +1315,22 @@ async function pageSolicitarDocumentos(){
   box.querySelectorAll('[data-act="baixar"]').forEach(b=>b.addEventListener('click', ()=>{
     window.open('/api/envio/documentos/'+b.dataset.doc+'/download', '_blank');
   }));
-  if(disponiveis.length) document.getElementById('btnNovaSolicitacao').addEventListener('click', ()=>novaSolicitacaoModal(disponiveis));
+  document.getElementById('btnNovaSolicitacao').addEventListener('click', ()=>novaSolicitacaoModal(disponiveis));
 }
+// "Recalcular DAS" não é um template do banco — dispara direto a busca no Integra Contador pra
+// competência escolhida, achando sozinho o DAS original já entregue pela rotina mensal e devolvendo
+// a guia recalculada em Envio de Documentos.
+const RECALCULO_DAS_ID = '__recalculo_das';
 function novaSolicitacaoModal(disponiveis){
   const porId = new Map(disponiveis.map(t=>[String(t.id), t]));
   const hoje = new Date();
   openModal(`
     <h3>Nova solicitação</h3>
     <div class="field"><label>O que você precisa?</label>
-      <select id="solTemplate">${disponiveis.map(t=>`<option value="${t.id}">${esc(t.nome)}</option>`).join('')}</select>
+      <select id="solTemplate">
+        <option value="${RECALCULO_DAS_ID}">Recalcular DAS</option>
+        ${disponiveis.map(t=>`<option value="${t.id}">${esc(t.nome)}</option>`).join('')}
+      </select>
     </div>
     <div id="solPeriodoWrap"></div>
     <div class="modal-actions">
@@ -1332,16 +1338,24 @@ function novaSolicitacaoModal(disponiveis){
       <button class="btn primary" id="solEnviar">Solicitar</button>
     </div>
   `);
+  function desenhaMesAno(idMes, idAno){
+    const mesAnterior = hoje.getMonth()===0 ? 12 : hoje.getMonth();
+    const anoDefault = hoje.getMonth()===0 ? hoje.getFullYear()-1 : hoje.getFullYear();
+    return `<div class="row">
+      <div class="field grow"><label>Mês</label><select id="${idMes}">${MESES.slice(1).map((m,i)=>`<option value="${i+1}" ${i+1===mesAnterior?'selected':''}>${m}</option>`).join('')}</select></div>
+      <div class="field" style="width:110px;"><label>Ano</label><input id="${idAno}" type="number" value="${anoDefault}"></div>
+    </div>`;
+  }
   function desenhaPeriodo(){
-    const t = porId.get(document.getElementById('solTemplate').value);
+    const valor = document.getElementById('solTemplate').value;
     const wrap = document.getElementById('solPeriodoWrap');
+    if(valor===RECALCULO_DAS_ID){
+      wrap.innerHTML = `<p style="font-size:12px; color:var(--ink-soft); margin:-4px 0 10px;">Buscamos direto na Receita o DAS recalculado (com juros/multa atualizados) da competência escolhida — só funciona se o DAS original dessa competência já tiver sido entregue pela rotina mensal.</p>` + desenhaMesAno('solMes','solAno');
+      return;
+    }
+    const t = porId.get(valor);
     if(t.periodicidade==='mensal'){
-      const mesAnterior = hoje.getMonth()===0 ? 12 : hoje.getMonth();
-      const anoDefault = hoje.getMonth()===0 ? hoje.getFullYear()-1 : hoje.getFullYear();
-      wrap.innerHTML = `<div class="row">
-        <div class="field grow"><label>Mês</label><select id="solMes">${MESES.slice(1).map((m,i)=>`<option value="${i+1}" ${i+1===mesAnterior?'selected':''}>${m}</option>`).join('')}</select></div>
-        <div class="field" style="width:110px;"><label>Ano</label><input id="solAno" type="number" value="${anoDefault}"></div>
-      </div>`;
+      wrap.innerHTML = desenhaMesAno('solMes','solAno');
     } else if(t.periodicidade==='anual'){
       wrap.innerHTML = `<div class="field" style="width:110px;"><label>Ano</label><input id="solAno" type="number" value="${hoje.getFullYear()}"></div>`;
     } else {
@@ -1352,7 +1366,20 @@ function novaSolicitacaoModal(disponiveis){
   document.getElementById('solTemplate').addEventListener('change', desenhaPeriodo);
   document.getElementById('solCancel').addEventListener('click', closeModal);
   document.getElementById('solEnviar').addEventListener('click', async ()=>{
-    const t = porId.get(document.getElementById('solTemplate').value);
+    const valor = document.getElementById('solTemplate').value;
+    if(valor===RECALCULO_DAS_ID){
+      const body = { mes: Number(document.getElementById('solMes').value), ano: Number(document.getElementById('solAno').value) };
+      const btn = document.getElementById('solEnviar');
+      btn.disabled = true; btn.textContent = 'Consultando a Receita…';
+      try{
+        await api('/envio/solicitar-recalculo-das', { method:'POST', body });
+        closeModal();
+        toast('DAS recalculado! Já está disponível em Meus Documentos.','ok');
+        pageSolicitarDocumentos();
+      }catch(e){ toast(e.message,'err'); btn.disabled=false; btn.textContent='Solicitar'; }
+      return;
+    }
+    const t = porId.get(valor);
     const body = { templateId: Number(t.id) };
     if(t.periodicidade==='mensal'){
       body.mes = Number(document.getElementById('solMes').value);

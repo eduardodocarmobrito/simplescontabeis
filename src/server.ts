@@ -2953,11 +2953,10 @@ app.get("/api/envio/grade/:atribuicaoId", (req, res) => {
 // guia com juros/multa atualizados). Dispara uma chamada nova e PAGA à Receita (a mesma usada na
 // busca automática), então trava em 1x por dia por competência — evita clique duplicado/acidental
 // gerando custo em dobro sem necessidade real; ainda dá pra recalcular de novo no dia seguinte se o
-// atraso continuar.
-app.post("/api/envio/periodos/:periodoId/solicitar-recalculo-das", async (req, res) => {
-  const user = (req as any).user;
-  if (user.perfil !== "Cliente") return res.status(403).json({ error: "Esse recurso é só pro cliente pedir sozinho — o escritório usa \"Buscar agora\" em Integra Contador." });
-  const periodoId = Number(req.params.periodoId);
+// atraso continuar. Compartilhada pelas duas rotas que disparam isso: o botão na grade de Envio de
+// Documentos (já sabe o periodoId) e o pedido em Solicitar Documentos (resolve o periodoId pela
+// competência antes de chamar aqui).
+async function executarRecalculoDas(periodoId: number, empresaIdCliente: number): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
   const periodo = sqlite
     .prepare(
       `SELECT p.*, a.empresa_id as empresaId, t.nome as templateNome
@@ -2965,21 +2964,23 @@ app.post("/api/envio/periodos/:periodoId/solicitar-recalculo-das", async (req, r
        WHERE p.id = ?`
     )
     .get(periodoId) as any;
-  if (!periodo || periodo.empresaId !== user.empresaId) return res.status(404).json({ error: "Período não encontrado." });
-  if (periodo.templateNome !== "DAS - Mensal") return res.status(400).json({ error: "Esse período não é de DAS." });
+  if (!periodo || periodo.empresaId !== empresaIdCliente) return { ok: false, status: 404, error: "Período não encontrado." };
+  if (periodo.templateNome !== "DAS - Mensal") return { ok: false, status: 400, error: "Esse período não é de DAS." };
+  const temDocumento = sqlite.prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id = ?`).get(periodoId);
+  if (!temDocumento) return { ok: false, status: 409, error: "O DAS original dessa competência ainda não foi disponibilizado — aguarde a rotina mensal antes de pedir recálculo." };
   const jaPediuHoje = sqlite
     .prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id = ? AND observacao LIKE 'DAS recalculado%' AND date(enviado_em) = date('now')`)
     .get(periodoId);
-  if (jaPediuHoje) return res.status(429).json({ error: "Só é possível pedir um recálculo por dia pra essa competência — tente de novo amanhã." });
+  if (jaPediuHoje) return { ok: false, status: 429, error: "Só é possível pedir um recálculo por dia pra essa competência — tente de novo amanhã." };
   const empConfig = getIntegraContadorEmpresaConfig(periodo.empresaId);
   const cfg = getIntegraContadorConfig(empConfig.escritorio_id);
-  if (!cfg.ativo || !empConfig.ativo) return res.status(400).json({ error: "O Integra Contador não está ativo pra essa empresa — fale com o escritório." });
+  if (!cfg.ativo || !empConfig.ativo) return { ok: false, status: 400, error: "O Integra Contador não está ativo pra essa empresa — fale com o escritório." };
   const empresa = sqlite.prepare(`SELECT cnpj FROM empresas WHERE id = ?`).get(periodo.empresaId) as any;
   const periodoApuracao = `${periodo.ano}${String(periodo.mes).padStart(2, "0")}`;
   try {
     const token = await obterTokenIntegraContador(cfg);
     const das = await integracontador.gerarDas(token, cfg.cnpj, empresa.cnpj, periodoApuracao);
-    if (!das.pdfBase64) return res.status(502).json({ error: "A Receita não devolveu o DAS recalculado — tente de novo mais tarde." });
+    if (!das.pdfBase64) return { ok: false, status: 502, error: "A Receita não devolveu o DAS recalculado — tente de novo mais tarde." };
     const observacao = `DAS recalculado — solicitado pelo cliente em ${new Date().toLocaleDateString("pt-BR")}.`;
     integraContadorAnexarDasEmEnvio(empConfig.escritorio_id, periodo.empresaId, das, das.periodoApuracao || periodoApuracao, observacao);
     sqlite
@@ -2987,10 +2988,35 @@ app.post("/api/envio/periodos/:periodoId/solicitar-recalculo-das", async (req, r
         `INSERT INTO integracontador_documentos (empresa_id, escritorio_id, tipo, periodo_apuracao, numero_documento, data_vencimento, detalhes_json) VALUES (?, ?, 'das', ?, ?, ?, ?)`
       )
       .run(periodo.empresaId, empConfig.escritorio_id, das.periodoApuracao || periodoApuracao, das.numeroDocumento, das.dataVencimento, JSON.stringify(das.valores || {}));
-    res.json({ ok: true });
+    return { ok: true };
   } catch (e: any) {
-    res.status(502).json({ error: e.message });
+    return { ok: false, status: 502, error: e.message };
   }
+}
+app.post("/api/envio/periodos/:periodoId/solicitar-recalculo-das", async (req, res) => {
+  const user = (req as any).user;
+  if (user.perfil !== "Cliente") return res.status(403).json({ error: "Esse recurso é só pro cliente pedir sozinho — o escritório usa \"Buscar agora\" em Integra Contador." });
+  const r = await executarRecalculoDas(Number(req.params.periodoId), user.empresaId);
+  if (!r.ok) return res.status(r.status).json({ error: r.error });
+  res.json({ ok: true });
+});
+// Mesmo recurso, mas disparado a partir de Solicitar Documentos — o cliente escolhe a competência
+// (mês/ano) em vez de já estar na grade de Envio de Documentos com o periodoId em mãos.
+app.post("/api/envio/solicitar-recalculo-das", requireCliente, async (req, res) => {
+  const user = (req as any).user;
+  const mes = Number(req.body?.mes);
+  const ano = Number(req.body?.ano);
+  if (!mes || !ano) return res.status(400).json({ error: "Informe o mês e o ano da competência." });
+  const periodo = sqlite
+    .prepare(
+      `SELECT p.id FROM envio_periodos p JOIN envio_atribuicoes a ON a.id = p.atribuicao_id JOIN envio_templates t ON t.id = a.template_id
+       WHERE a.empresa_id = ? AND t.nome = 'DAS - Mensal' AND p.mes = ? AND p.ano = ?`
+    )
+    .get(user.empresaId, mes, ano) as any;
+  if (!periodo) return res.status(404).json({ error: "O DAS dessa competência ainda não foi disponibilizado — aguarde a rotina mensal antes de pedir recálculo." });
+  const r = await executarRecalculoDas(periodo.id, user.empresaId);
+  if (!r.ok) return res.status(r.status).json({ error: r.error });
+  res.json({ ok: true });
 });
 app.post("/api/envio/periodos/:periodoId/enviar", blockCliente, requirePermissao("envio", "postar"), upload.single("arquivo"), async (req, res) => {
   const user = (req as any).user;
