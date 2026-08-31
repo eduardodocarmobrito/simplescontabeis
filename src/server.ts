@@ -61,6 +61,7 @@ sqlite.exec(`
     ativo INTEGER NOT NULL DEFAULT 1,
     visivel_relatorios INTEGER NOT NULL DEFAULT 1,
     origem TEXT NOT NULL DEFAULT 'manual',
+    isento_assinatura INTEGER NOT NULL DEFAULT 0, -- conta cortesia: acesso liberado a NFS-e/Financeiro sem cobrança
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
   );
@@ -1256,6 +1257,14 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
     sqlite.exec(`ALTER TABLE escritorio_licenca_cobranca_itens ADD COLUMN quantidade INTEGER NOT NULL DEFAULT 1`);
   }
 }
+// Migração leve: conta cortesia — empresa-cliente isenta de cobrança de NFS-e/Financeiro (acesso
+// liberado sem precisar de teste grátis nem assinatura paga via Asaas).
+{
+  const colsEmpresas = sqlite.prepare(`PRAGMA table_info(empresas)`).all() as any[];
+  if (!colsEmpresas.some((c) => c.name === "isento_assinatura")) {
+    sqlite.exec(`ALTER TABLE empresas ADD COLUMN isento_assinatura INTEGER NOT NULL DEFAULT 0`);
+  }
+}
 // Migração leve: Cliente passa a poder ter mais de uma empresa atribuída — a sessão guarda qual
 // está "ativa" no momento (troca pela barra lateral quando o usuário tem mais de uma).
 {
@@ -2143,6 +2152,7 @@ app.get("/api/empresas", blockCliente, requirePermissao("empresas", "visualizar"
       cpfRepresentanteLegal: r.cpf_representante_legal,
       ativo: !!r.ativo,
       visivelRelatorios: !!r.visivel_relatorios,
+      isentoAssinatura: !!r.isento_assinatura,
       origem: r.origem,
       createdAt: r.created_at,
       temAnexos: empresaTemAnexos(r.id),
@@ -2180,11 +2190,11 @@ app.put("/api/empresas/:id", blockCliente, requirePermissao("empresas", "editar"
   const id = Number(req.params.id);
   const existing = sqlite.prepare(`SELECT * FROM empresas WHERE id = ?`).get(id) as any;
   if (!existing || !podeAcessarEmpresa((req as any).user, id)) return res.status(404).json({ error: "Empresa não encontrada." });
-  const { nome, cnpj, codigoDominio, email, telefone, endereco, cidade, uf, cep, inscricaoMunicipal, inscricaoEstadual, nomeRepresentanteLegal, cpfRepresentanteLegal, ativo, visivelRelatorios } = req.body || {};
+  const { nome, cnpj, codigoDominio, email, telefone, endereco, cidade, uf, cep, inscricaoMunicipal, inscricaoEstadual, nomeRepresentanteLegal, cpfRepresentanteLegal, ativo, visivelRelatorios, isentoAssinatura } = req.body || {};
   sqlite
     .prepare(
       `UPDATE empresas SET nome=?, cnpj=?, codigo_dominio=?, email=?, telefone=?, endereco=?, cidade=?, uf=?, cep=?, inscricao_municipal=?, inscricao_estadual=?,
-         nome_representante_legal=?, cpf_representante_legal=?, ativo=?, visivel_relatorios=?, updated_at=datetime('now') WHERE id=?`
+         nome_representante_legal=?, cpf_representante_legal=?, ativo=?, visivel_relatorios=?, isento_assinatura=?, updated_at=datetime('now') WHERE id=?`
     )
     .run(
       nome ?? existing.nome,
@@ -2202,6 +2212,7 @@ app.put("/api/empresas/:id", blockCliente, requirePermissao("empresas", "editar"
       cpfRepresentanteLegal !== undefined ? cpfRepresentanteLegal : existing.cpf_representante_legal,
       ativo === undefined ? existing.ativo : ativo ? 1 : 0,
       visivelRelatorios === undefined ? existing.visivel_relatorios : visivelRelatorios ? 1 : 0,
+      isentoAssinatura === undefined ? existing.isento_assinatura : isentoAssinatura ? 1 : 0,
       id
     );
   res.json({ ok: true });
@@ -5275,6 +5286,8 @@ function requireCliente(req: express.Request, res: express.Response, next: expre
 // nenhum dos dois, a empresa-cliente não acessa aquele módulo específico (as demais telas do
 // Cliente, como Meus Documentos, não passam por aqui — só NFS-e e Financeiro, que são pagos).
 function empresaTemAcessoModulo(empresaId: number, chave: string): boolean {
+  const empresa = sqlite.prepare(`SELECT isento_assinatura FROM empresas WHERE id = ?`).get(empresaId) as any;
+  if (empresa?.isento_assinatura) return true;
   const row = sqlite.prepare(`SELECT assinatura_ativa_ate, trial_fim FROM empresa_modulos WHERE empresa_id = ? AND modulo_chave = ?`).get(empresaId, chave) as any;
   if (!row) return false;
   const agora = new Date().toISOString().replace("T", " ").slice(0, 19);
@@ -6275,12 +6288,14 @@ function moduloStatusParaEmpresa(catalogo: any, contratado: any) {
   return { status: "teste_vencido", acesso: false };
 }
 function nfseModulosDaEmpresa(empresaId: number) {
+  const empresa = sqlite.prepare(`SELECT isento_assinatura FROM empresas WHERE id = ?`).get(empresaId) as any;
+  const isento = !!empresa?.isento_assinatura;
   const catalogo = sqlite.prepare(`SELECT * FROM modulos_catalogo ORDER BY chave`).all() as any[];
   const contratados = sqlite.prepare(`SELECT * FROM empresa_modulos WHERE empresa_id = ?`).all(empresaId) as any[];
   const porChave = new Map(contratados.map((c) => [c.modulo_chave, c]));
   return catalogo.map((m) => {
     const contratado = porChave.get(m.chave);
-    const { status, acesso } = moduloStatusParaEmpresa(m, contratado);
+    const { status, acesso } = isento ? { status: "isento", acesso: true } : moduloStatusParaEmpresa(m, contratado);
     return {
       chave: m.chave,
       nome: m.nome,

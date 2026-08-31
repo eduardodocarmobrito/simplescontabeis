@@ -834,6 +834,8 @@ function empresaModal(e){
     <div style="margin:14px 0 8px; border-top:1px solid var(--rule); padding-top:12px;"></div>
     <div class="checkbox-row"><input type="checkbox" id="empAtivo" ${e.ativo?'checked':''}> <label for="empAtivo">Empresa ativa</label></div>
     <div class="checkbox-row"><input type="checkbox" id="empVisivel" ${e.visivelRelatorios?'checked':''}> <label for="empVisivel">Aparece no filtro de Relatórios</label></div>
+    <div class="checkbox-row"><input type="checkbox" id="empIsento" ${e.isentoAssinatura?'checked':''}> <label for="empIsento">Conta cortesia — isenta de cobrança de NFS-e/Financeiro</label></div>
+    <p style="font-size:12px; color:var(--ink-soft); margin-top:-4px;">Libera acesso completo aos módulos NFS-e e Financeiro pra esta empresa sem exigir teste grátis nem assinatura paga.</p>
     `:''}
     <div class="modal-actions">
       <button class="btn" id="empCancel">Cancelar</button>
@@ -864,6 +866,7 @@ function empresaModal(e){
       if(e){
         body.ativo = document.getElementById('empAtivo').checked;
         body.visivelRelatorios = document.getElementById('empVisivel').checked;
+        body.isentoAssinatura = document.getElementById('empIsento').checked;
         await api('/empresas/'+e.id, { method:'PUT', body });
       } else {
         await api('/empresas', { method:'POST', body });
@@ -1945,12 +1948,12 @@ function nfseEmpresaConfigModal(e){
     const wrap = document.getElementById('nfseEmpModulosWrap');
     try{
       const { items } = await api('/nfse/empresas/'+e.id+'/modulos');
-      const STATUS_LABEL = { nao_contratado:'Não contratado', teste:'Em teste', teste_vencido:'Teste vencido', ativo:'Ativo', vencido:'Vencido' };
+      const STATUS_LABEL = { nao_contratado:'Não contratado', teste:'Em teste', teste_vencido:'Teste vencido', ativo:'Ativo', vencido:'Vencido', isento:'Isento (cortesia)' };
       wrap.innerHTML = items.map(m=>`
         <div class="row" style="justify-content:space-between; align-items:center; padding:6px 0;">
           <div>
             <b>${esc(m.nome)}</b>
-            <span class="tag ${m.status==='ativo'||m.status==='teste'?'ok':(m.status==='nao_contratado'?'muted':'bad')}" style="margin-left:8px;">${STATUS_LABEL[m.status]||m.status}</span>
+            <span class="tag ${m.status==='ativo'||m.status==='teste'||m.status==='isento'?'ok':(m.status==='nao_contratado'?'muted':'bad')}" style="margin-left:8px;">${STATUS_LABEL[m.status]||m.status}</span>
             ${m.status==='teste'?`<div style="font-size:11.5px; color:var(--ink-soft);">Até ${fmtDateHora(m.trialFim)}${m.trialProrrogado?' (já prorrogado)':''}</div>`:''}
             ${m.status==='ativo'?`<div style="font-size:11.5px; color:var(--ink-soft);">${(new Date(String(m.assinaturaAtivaAte||'').replace(' ','T')).getTime()-Date.now())>1000*60*60*24*365*3?'Acesso liberado (conta legada, sem vencimento)':'Até '+fmtDateIso(String(m.assinaturaAtivaAte||'').slice(0,10))}</div>`:''}
           </div>
@@ -3994,7 +3997,8 @@ function assinaturaModuloCardHtml(item){
   // um jeito de representar isso no banco, não deve aparecer literalmente pro cliente.
   const dataAssinatura = item.assinaturaAtivaAte ? new Date(String(item.assinaturaAtivaAte).replace(' ','T')) : null;
   const semVencimento = dataAssinatura && (dataAssinatura.getTime() - Date.now()) > 1000*60*60*24*365*3;
-  if(item.status==='teste'){ badgeClass='ok'; badgeText='Em teste até '+fmtDateHora(item.trialFim); }
+  if(item.status==='isento'){ badgeClass='ok'; badgeText='Isento (cortesia)'; }
+  else if(item.status==='teste'){ badgeClass='ok'; badgeText='Em teste até '+fmtDateHora(item.trialFim); }
   else if(item.status==='teste_vencido'){ badgeClass='bad'; badgeText='Teste grátis vencido'; }
   else if(item.status==='ativo'){ badgeClass='ok'; badgeText = semVencimento ? 'Ativo' : 'Ativo até '+fmtDateIso(String(item.assinaturaAtivaAte||'').slice(0,10)); }
   else if(item.status==='vencido'){ badgeClass='bad'; badgeText='Assinatura vencida'; }
@@ -4009,8 +4013,10 @@ function assinaturaModuloCardHtml(item){
         </div>
         <div style="display:flex; align-items:center; gap:14px;">
           <span class="tag ${badgeClass}">${esc(badgeText)}</span>
-          ${mostraBotaoTeste?`<button class="btn small" data-acao="testar" data-chave="${item.chave}">Iniciar teste grátis</button>`:''}
-          <label class="checkbox-row" style="margin:0;"><input type="checkbox" class="assinaturaCheck" data-chave="${item.chave}" data-valor="${item.valorMensal}" data-nome="${esc(item.nome)}"> ${rotuloCheckbox}</label>
+          ${item.status==='isento' ? '' : `
+            ${mostraBotaoTeste?`<button class="btn small" data-acao="testar" data-chave="${item.chave}">Iniciar teste grátis</button>`:''}
+            <label class="checkbox-row" style="margin:0;"><input type="checkbox" class="assinaturaCheck" data-chave="${item.chave}" data-valor="${item.valorMensal}" data-nome="${esc(item.nome)}"> ${rotuloCheckbox}</label>
+          `}
         </div>
       </div>
     </div>
