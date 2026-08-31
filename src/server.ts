@@ -233,8 +233,10 @@ sqlite.exec(`
     enviado_por INTEGER REFERENCES app_users(id),
     enviado_em TEXT DEFAULT (datetime('now')),
     email_enviado INTEGER NOT NULL DEFAULT 0,
+    email_enviado_em TEXT,
     email_erro TEXT,
     whatsapp_enviado INTEGER NOT NULL DEFAULT 0,
+    whatsapp_enviado_em TEXT,
     whatsapp_erro TEXT
   );
 
@@ -964,6 +966,8 @@ sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_envio_documentos_periodo ON envio_do
   const nomes = new Set(cols.map((c) => c.name));
   if (!nomes.has("whatsapp_enviado")) sqlite.exec(`ALTER TABLE envio_documentos ADD COLUMN whatsapp_enviado INTEGER NOT NULL DEFAULT 0`);
   if (!nomes.has("whatsapp_erro")) sqlite.exec(`ALTER TABLE envio_documentos ADD COLUMN whatsapp_erro TEXT`);
+  if (!nomes.has("email_enviado_em")) sqlite.exec(`ALTER TABLE envio_documentos ADD COLUMN email_enviado_em TEXT`);
+  if (!nomes.has("whatsapp_enviado_em")) sqlite.exec(`ALTER TABLE envio_documentos ADD COLUMN whatsapp_enviado_em TEXT`);
 }
 // Migração leve: mesmo controle de status do WhatsApp, agora direto na NFS-e emitida (não precisa
 // passar por Envio de Documentos pra mandar a nota pro cliente).
@@ -2914,8 +2918,10 @@ app.get("/api/envio/grade/:atribuicaoId", (req, res) => {
       vencimentoOrigem: d.vencimento_origem,
       enviadoEm: d.enviado_em,
       emailEnviado: !!d.email_enviado,
+      emailEnviadoEm: d.email_enviado_em,
       emailErro: d.email_erro,
       whatsappEnviado: !!d.whatsapp_enviado,
+      whatsappEnviadoEm: d.whatsapp_enviado_em,
       whatsappErro: d.whatsapp_erro,
     });
   }
@@ -3062,7 +3068,9 @@ app.post("/api/envio/periodos/:periodoId/enviar", blockCliente, requirePermissao
         .run(periodo.empresaId, contatos.map((c) => c.email).join(", "), assunto, corpo, user.id, e.message);
     }
   }
-  sqlite.prepare(`UPDATE envio_documentos SET email_enviado = ?, email_erro = ? WHERE id = ?`).run(emailEnviado ? 1 : 0, emailErro, docId);
+  sqlite
+    .prepare(`UPDATE envio_documentos SET email_enviado = ?, email_enviado_em = ?, email_erro = ? WHERE id = ?`)
+    .run(emailEnviado ? 1 : 0, emailEnviado ? new Date().toISOString().replace("T", " ").slice(0, 19) : null, emailErro, docId);
 
   res.json({ id: docId, vencimento, vencimentoOrigem, emailEnviado, emailErro });
 });
@@ -3129,7 +3137,7 @@ app.post("/api/envio/documentos/:id/reenviar-email", blockCliente, requirePermis
   }
   try {
     await enviarEmail(user.escritorioId, { to: contatos.map((c) => c.email), subject: assunto, text: corpo, attachments: [{ filename: doc.file_name, content: fs.readFileSync(doc.file_path) }] });
-    sqlite.prepare(`UPDATE envio_documentos SET email_enviado = 1, email_erro = NULL WHERE id = ?`).run(doc.id);
+    sqlite.prepare(`UPDATE envio_documentos SET email_enviado = 1, email_enviado_em = datetime('now'), email_erro = NULL WHERE id = ?`).run(doc.id);
     sqlite
       .prepare(`INSERT INTO emails_enviados (empresa_id, destinatarios, assunto, corpo, anexos_json, enviado_por, status) VALUES (?, ?, ?, ?, ?, ?, 'ok')`)
       .run(atrib.empresaId, contatos.map((c) => c.email).join(", "), assunto, corpo, JSON.stringify([doc.file_name]), user.id);
@@ -3181,7 +3189,7 @@ app.post("/api/envio/documentos/:id/enviar-whatsapp", blockCliente, requirePermi
       erros.push(e.message);
     }
   }
-  if (enviados > 0) sqlite.prepare(`UPDATE envio_documentos SET whatsapp_enviado = 1, whatsapp_erro = NULL WHERE id = ?`).run(doc.id);
+  if (enviados > 0) sqlite.prepare(`UPDATE envio_documentos SET whatsapp_enviado = 1, whatsapp_enviado_em = datetime('now'), whatsapp_erro = NULL WHERE id = ?`).run(doc.id);
   else sqlite.prepare(`UPDATE envio_documentos SET whatsapp_erro = ? WHERE id = ?`).run(erros[0] || "Falha desconhecida.", doc.id);
   if (!enviados) return res.status(502).json({ error: erros[0] || "Não consegui enviar por WhatsApp." });
   res.json({ ok: true, enviados, falhas: erros.length });
@@ -5573,7 +5581,7 @@ async function nfseAnexarEEnviarDocumento(escritorioId: number, emissaoId: numbe
     const assunto = `Nota Fiscal de Serviço — ${emissao.descricao_servico}`;
     try {
       await enviarEmail(escritorioId, { to: contatos.map((c) => c.email), subject: assunto, text: corpo, attachments: [{ filename: nomeArquivo, content: pdf }] });
-      sqlite.prepare(`UPDATE envio_documentos SET email_enviado = 1 WHERE id = ?`).run(docId);
+      sqlite.prepare(`UPDATE envio_documentos SET email_enviado = 1, email_enviado_em = datetime('now') WHERE id = ?`).run(docId);
       sqlite
         .prepare(`INSERT INTO emails_enviados (empresa_id, destinatarios, assunto, corpo, anexos_json, status) VALUES (?, ?, ?, ?, ?, 'ok')`)
         .run(empresaId, contatos.map((c) => c.email).join(", "), assunto, corpo, JSON.stringify([nomeArquivo]));
@@ -5617,7 +5625,7 @@ async function nfseAnexarEEnviarDocumento(escritorioId: number, emissaoId: numbe
       }
     }
     if (algumEnviado) {
-      sqlite.prepare(`UPDATE envio_documentos SET whatsapp_enviado = 1, whatsapp_erro = NULL WHERE id = ?`).run(docId);
+      sqlite.prepare(`UPDATE envio_documentos SET whatsapp_enviado = 1, whatsapp_enviado_em = datetime('now'), whatsapp_erro = NULL WHERE id = ?`).run(docId);
       msgWhatsapp = "enviado por WhatsApp.";
     } else {
       sqlite.prepare(`UPDATE envio_documentos SET whatsapp_erro = ? WHERE id = ?`).run(ultimoErro, docId);
