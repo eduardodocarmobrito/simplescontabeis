@@ -6938,17 +6938,21 @@ function cardSituacaoFiscal(user: any): any[] {
 }
 
 // Empresas que já passaram do prazo (dia do mês) de um modelo de Solicitação de Documentos e ainda
-// têm ao menos um item obrigatório sem upload salvo na competência atual.
+// têm ao menos um item obrigatório sem upload salvo na competência ANTERIOR (ex.: hoje é 08/2026 e
+// o prazo é dia 2 — depois do dia 2 de agosto, verifica se a competência de julho/2026 já foi
+// entregue; a competência do mês corrente nunca é cobrada, porque ainda está em curso).
 function cardChecklistAtraso(user: any): any[] {
   const escritorioId = user.escritorioId;
   const visiveis = new Set(empresasVisiveis(user));
   const agora = agoraBrasilia();
+  const mesRef = agora.mes === 1 ? 12 : agora.mes - 1;
+  const anoRef = agora.mes === 1 ? agora.ano - 1 : agora.ano;
   const templates = sqlite
     .prepare(`SELECT id, nome, itens_json as itensJson, prazo_dia as prazoDia FROM checklist_templates WHERE escritorio_id = ? AND ativo = 1 AND prazo_dia IS NOT NULL`)
     .all(escritorioId) as any[];
   const resultado: any[] = [];
   for (const t of templates) {
-    if (agora.dia <= t.prazoDia) continue; // prazo desse mês ainda não venceu
+    if (agora.dia <= t.prazoDia) continue; // prazo desse mês (pra entregar a competência anterior) ainda não venceu
     const itensObrigatorios = (JSON.parse(t.itensJson) as any[]).filter((it) => it.obrigatorio);
     if (!itensObrigatorios.length) continue;
     const atribuicoes = sqlite
@@ -6956,7 +6960,7 @@ function cardChecklistAtraso(user: any): any[] {
       .all(t.id) as any[];
     for (const a of atribuicoes) {
       if (!visiveis.has(a.empresaId)) continue;
-      const periodo = sqlite.prepare(`SELECT id FROM checklist_periodos WHERE atribuicao_id = ? AND ano = ? AND mes = ?`).get(a.id, agora.ano, agora.mes) as any;
+      const periodo = sqlite.prepare(`SELECT id FROM checklist_periodos WHERE atribuicao_id = ? AND ano = ? AND mes = ?`).get(a.id, anoRef, mesRef) as any;
       let faltando: string[];
       if (!periodo) {
         faltando = itensObrigatorios.map((it) => it.label);
@@ -6966,7 +6970,15 @@ function cardChecklistAtraso(user: any): any[] {
         );
         faltando = itensObrigatorios.filter((it) => !enviados.has(it.chave)).map((it) => it.label);
       }
-      if (faltando.length) resultado.push({ empresaId: a.empresaId, empresaNome: a.empresaNome, templateNome: t.nome, prazoDia: t.prazoDia, itensFaltando: faltando });
+      if (faltando.length)
+        resultado.push({
+          empresaId: a.empresaId,
+          empresaNome: a.empresaNome,
+          templateNome: t.nome,
+          competencia: `${String(mesRef).padStart(2, "0")}/${anoRef}`,
+          prazoDia: t.prazoDia,
+          itensFaltando: faltando,
+        });
     }
   }
   return resultado;

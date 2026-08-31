@@ -691,7 +691,7 @@ const CARD_TIPOS_INFO = {
   certificados_vencer: { label:'Certificados a Vencer', subtitulo:'Vencendo nos próximos 30 dias' },
   das_atraso: { label:'DAS em Atraso', subtitulo:'Competências não entregues' },
   situacao_fiscal: { label:'Situação Fiscal', subtitulo:'Empresas com pendência' },
-  checklist_atraso: { label:'Documentos Pendentes', subtitulo:'Após o prazo, sem envio do cliente' },
+  checklist_atraso: { label:'Documentos Pendentes', subtitulo:'Competência anterior, após o prazo, sem envio do cliente' },
   solicitacoes_pendentes: { label:'Solicitações dos Clientes', subtitulo:'Aguardando retorno do escritório' },
 };
 function cardModal(c){
@@ -768,8 +768,8 @@ function cardDetalheModal(c){
           ${items.map(i=>`<tr><td>${esc(i.empresaNome)}</td><td>${esc(i.alerta)}</td></tr>`).join('')}
         </tbody></table>`;
       } else if(tipo==='checklist_atraso'){
-        box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Modelo</th><th>Prazo</th><th>Itens faltando</th></tr></thead><tbody>
-          ${items.map(i=>`<tr><td>${esc(i.empresaNome)}</td><td>${esc(i.templateNome)}</td><td>Dia ${i.prazoDia}</td><td>${i.itensFaltando.map(esc).join(', ')}</td></tr>`).join('')}
+        box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Modelo</th><th>Competência</th><th>Prazo</th><th>Itens faltando</th></tr></thead><tbody>
+          ${items.map(i=>`<tr><td>${esc(i.empresaNome)}</td><td>${esc(i.templateNome)}</td><td>${esc(i.competencia)}</td><td>Dia ${i.prazoDia}</td><td>${i.itensFaltando.map(esc).join(', ')}</td></tr>`).join('')}
         </tbody></table>`;
       } else if(tipo==='solicitacoes_pendentes'){
         box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Modelo</th><th>Competência</th><th>Solicitado em</th></tr></thead><tbody>
