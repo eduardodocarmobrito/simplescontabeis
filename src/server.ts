@@ -1536,7 +1536,7 @@ function clienteEmpresasDoUsuario(userId: number): { id: number; nome: string }[
   return sqlite
     .prepare(
       `SELECT e.id, e.nome FROM cliente_empresas ce JOIN empresas e ON e.id = ce.empresa_id
-       WHERE ce.user_id = ? ORDER BY e.nome`
+       WHERE ce.user_id = ? AND e.ativo = 1 ORDER BY e.nome`
     )
     .all(userId) as any[];
 }
@@ -2619,10 +2619,11 @@ app.get("/api/checklist/atribuicoes", blockCliente, requirePermissao("solicitaco
   let sql = `SELECT a.*, t.nome as templateNome, t.periodicidade, t.itens_json as itensJson, e.nome as empresaNome
              FROM checklist_atribuicoes a
              JOIN checklist_templates t ON t.id = a.template_id
-             JOIN empresas e ON e.id = a.empresa_id`;
+             JOIN empresas e ON e.id = a.empresa_id
+             WHERE e.ativo = 1`;
   const params: any[] = [];
   if (empresaId) {
-    sql += ` WHERE a.empresa_id = ?`;
+    sql += ` AND a.empresa_id = ?`;
     params.push(empresaId);
   }
   sql += ` ORDER BY e.nome, t.nome`;
@@ -2936,10 +2937,11 @@ app.get("/api/envio/atribuicoes", blockCliente, requirePermissao("envio", "visua
   const empresaId = req.query.empresaId ? Number(req.query.empresaId) : null;
   if (empresaId && !podeAcessarEmpresa(user, empresaId)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
   let sql = `SELECT a.*, t.nome as templateNome, t.periodicidade, t.accept_json as acceptJson, e.nome as empresaNome
-             FROM envio_atribuicoes a JOIN envio_templates t ON t.id = a.template_id JOIN empresas e ON e.id = a.empresa_id`;
+             FROM envio_atribuicoes a JOIN envio_templates t ON t.id = a.template_id JOIN empresas e ON e.id = a.empresa_id
+             WHERE e.ativo = 1`;
   const params: any[] = [];
   if (empresaId) {
-    sql += ` WHERE a.empresa_id = ?`;
+    sql += ` AND a.empresa_id = ?`;
     params.push(empresaId);
   }
   sql += ` ORDER BY e.nome, t.nome`;
@@ -3498,7 +3500,7 @@ app.get("/api/nfse/certificados", blockCliente, requireAdmin, (req, res) => {
       `SELECT c.id, c.empresa_id as empresaId, e.nome as empresaNome, c.titular, c.cnpj_certificado as cnpjCertificado,
               c.validade_ate as validadeAte, c.criado_em as criadoEm
        FROM nfse_certificados c LEFT JOIN empresas e ON e.id = c.empresa_id
-       WHERE c.escritorio_id = ?
+       WHERE c.escritorio_id = ? AND (c.empresa_id IS NULL OR e.ativo = 1)
        ORDER BY (c.empresa_id IS NOT NULL), e.nome`
     )
     .all((req as any).user.escritorioId);
@@ -3558,7 +3560,7 @@ app.get("/api/nfe/config", blockCliente, requireAdmin, (req, res) => {
               c.ultimo_nsu as ultimoNsu, c.ultima_busca_em as ultimaBuscaEm, c.ultimo_erro as ultimoErro,
               c.ultimo_nsu_nfse as ultimoNsuNfse, c.ultima_busca_nfse_em as ultimaBuscaNfseEm, c.ultimo_erro_nfse as ultimoErroNfse
        FROM nfe_busca_config c JOIN empresas e ON e.id = c.empresa_id
-       WHERE c.escritorio_id = ? ORDER BY e.nome`
+       WHERE c.escritorio_id = ? AND e.ativo = 1 ORDER BY e.nome`
     )
     .all((req as any).user.escritorioId);
   res.json({ items: rows, moduloAtivo: escritorioTemModulo((req as any).user.escritorioId, "busca_xml_nfe") });
@@ -4193,7 +4195,7 @@ app.get("/api/integracontador/empresas", blockCliente, requireAdmin, (req, res) 
               c.alerta_declaracao as alertaDeclaracao,
               (SELECT COUNT(*) FROM integracontador_documentos d WHERE d.empresa_id = e.id) as qtdDocumentos
        FROM empresas e LEFT JOIN integracontador_empresa_config c ON c.empresa_id = e.id
-       WHERE e.id IN (${placeholders}) ORDER BY e.nome`
+       WHERE e.id IN (${placeholders}) AND e.ativo = 1 ORDER BY e.nome`
     )
     .all(...ids);
   res.json({ items: rows });
@@ -4513,7 +4515,7 @@ async function integraContadorExecutarBuscaAutomatica() {
        FROM integracontador_empresa_config c
        JOIN empresas e ON e.id = c.empresa_id
        JOIN integracontador_config ic ON ic.escritorio_id = c.escritorio_id
-       WHERE c.ativo = 1 AND ic.ativo = 1`
+       WHERE c.ativo = 1 AND ic.ativo = 1 AND e.ativo = 1`
     )
     .all() as any[];
   for (const cfg of configs) {
@@ -5769,7 +5771,7 @@ async function nfseExecutarAgendamentoAutomatico(forcarMesmoSeJaExecutou = false
       `SELECT i.* FROM nfse_agendamento_itens i
        JOIN nfse_agendamento_empresas ae ON ae.empresa_id = i.empresa_id
        JOIN empresas e ON e.id = i.empresa_id
-       WHERE i.ativo = 1 AND ae.ativo = 1 AND e.escritorio_id = ?`
+       WHERE i.ativo = 1 AND ae.ativo = 1 AND e.ativo = 1 AND e.escritorio_id = ?`
     )
     .all(config.escritorio_id) as any[];
   let sucesso = 0;
@@ -6017,7 +6019,7 @@ app.get("/api/nfse/agendamento/empresas", blockCliente, requirePermissao("config
               (SELECT COUNT(*) FROM nfse_agendamento_itens i WHERE i.empresa_id = ae.empresa_id) as totalItens,
               (SELECT COUNT(*) FROM nfse_agendamento_itens i WHERE i.empresa_id = ae.empresa_id AND i.ativo = 1 AND (i.modelo_id IS NULL OR i.valor_servico IS NULL)) as itensIncompletos
        FROM nfse_agendamento_empresas ae JOIN empresas e ON e.id = ae.empresa_id
-       WHERE e.escritorio_id = ? ORDER BY e.nome`
+       WHERE e.escritorio_id = ? AND e.ativo = 1 ORDER BY e.nome`
     )
     .all((req as any).user.escritorioId) as any[];
   res.json({ items: rows.map((r) => ({ ...r, ativo: !!r.ativo })) });
@@ -6857,7 +6859,7 @@ app.post("/api/asaas/webhook", (req, res) => {
 app.get("/api/financeiro/honorarios", blockCliente, requirePermissao("financeiro", "visualizar"), (req, res) => {
   const user = (req as any).user;
   let rows = sqlite
-    .prepare(`SELECT h.*, e.nome as empresaNome FROM honorarios h JOIN empresas e ON e.id = h.empresa_id ORDER BY e.nome`)
+    .prepare(`SELECT h.*, e.nome as empresaNome FROM honorarios h JOIN empresas e ON e.id = h.empresa_id WHERE e.ativo = 1 ORDER BY e.nome`)
     .all() as any[];
   const visiveis = empresasVisiveis(user);
   if (visiveis !== null) rows = rows.filter((r) => visiveis.includes(r.empresa_id));
@@ -6896,7 +6898,7 @@ app.post("/api/financeiro/lancamentos/gerar", blockCliente, requirePermissao("fi
   const { competencia } = req.body || {}; // 'YYYY-MM'
   if (!/^\d{4}-\d{2}$/.test(competencia || "")) return res.status(400).json({ error: "Informe a competência no formato AAAA-MM." });
   const honorariosAtivos = sqlite
-    .prepare(`SELECT h.* FROM honorarios h JOIN empresas e ON e.id = h.empresa_id WHERE h.ativo = 1 AND e.escritorio_id = ?`)
+    .prepare(`SELECT h.* FROM honorarios h JOIN empresas e ON e.id = h.empresa_id WHERE h.ativo = 1 AND e.ativo = 1 AND e.escritorio_id = ?`)
     .all((req as any).user.escritorioId) as any[];
   const insert = sqlite.prepare(
     `INSERT OR IGNORE INTO honorarios_lancamentos (empresa_id, competencia, valor, vencimento, status) VALUES (?, ?, ?, ?, 'pendente')`
@@ -6961,20 +6963,20 @@ function cardCertificadosAVencer(user: any, diasLimite = 30): any[] {
   const itens: any[] = [];
   const nfse = sqlite
     .prepare(
-      `SELECT c.empresa_id as empresaId, e.nome as empresaNome, c.validade_ate as validadeAte
+      `SELECT c.empresa_id as empresaId, e.nome as empresaNome, e.ativo as empresaAtivo, c.validade_ate as validadeAte
        FROM nfse_certificados c LEFT JOIN empresas e ON e.id = c.empresa_id
        WHERE c.escritorio_id = ? AND c.validade_ate IS NOT NULL AND c.validade_ate <= ?`
     )
     .all(escritorioId, limite) as any[];
   for (const r of nfse) {
-    if (r.empresaId && !visiveis.has(r.empresaId)) continue;
+    if (r.empresaId && (!visiveis.has(r.empresaId) || !r.empresaAtivo)) continue;
     itens.push({ tipo: "NFS-e (emissão)", empresaId: r.empresaId, empresaNome: r.empresaNome || "Escritório (procuração)", validadeAte: r.validadeAte });
   }
   const nfe = sqlite
     .prepare(
       `SELECT c.empresa_id as empresaId, e.nome as empresaNome, c.validade_ate as validadeAte
        FROM nfe_busca_config c JOIN empresas e ON e.id = c.empresa_id
-       WHERE c.escritorio_id = ? AND c.validade_ate IS NOT NULL AND c.validade_ate <= ?`
+       WHERE c.escritorio_id = ? AND e.ativo = 1 AND c.validade_ate IS NOT NULL AND c.validade_ate <= ?`
     )
     .all(escritorioId, limite) as any[];
   for (const r of nfe) {
@@ -7081,12 +7083,18 @@ async function cardSituacaoFiscal(user: any): Promise<any[]> {
       continue;
     }
     const doc = sqlite
-      .prepare(`SELECT pdf_path as pdfPath FROM integracontador_documentos WHERE empresa_id = ? AND tipo = 'situacao_fiscal' ORDER BY criado_em DESC LIMIT 1`)
+      .prepare(`SELECT id as docId, pdf_path as pdfPath FROM integracontador_documentos WHERE empresa_id = ? AND tipo = 'situacao_fiscal' ORDER BY criado_em DESC LIMIT 1`)
       .get(r.empresaId) as any;
     if (!doc?.pdfPath || !fs.existsSync(doc.pdfPath)) continue;
     try {
       const analise = await sitfisAnalisar(doc.pdfPath);
-      if (analise.temPendencia) resultado.push({ empresaId: r.empresaId, empresaNome: r.empresaNome, alerta: `Situação Fiscal: ${analise.resumo}` });
+      if (analise.temPendencia)
+        resultado.push({
+          empresaId: r.empresaId,
+          empresaNome: r.empresaNome,
+          alerta: `Atenção: precisa de atenção pois consta pendência no âmbito da Receita Federal (${analise.resumo}).`,
+          docId: doc.docId,
+        });
     } catch (e: any) {
       console.error(`[Situação Fiscal] falha ao ler o relatório da empresa ${r.empresaId}:`, e.message);
     }
@@ -7570,22 +7578,29 @@ app.get("/api/email/status", blockCliente, (req, res) => {
   const fallback = escritorioId === 1;
   res.json({ configurado: emailConfigurado(escritorioId), from: c.from_email || (fallback && process.env.SMTP_FROM_EMAIL) || c.smtp_user || (fallback && process.env.SMTP_USER) || null });
 });
+// As credenciais SMTP (host/usuário/senha) ficam restritas ao Administrador — um Colaborador com
+// acesso à aba "E-mail corporativo" (ex.: só pra editar o texto padrão do NFS-e ou cadastrar
+// contatos de cliente) não deve ver nem conseguir trocar a conta de e-mail do escritório inteiro.
 app.get("/api/email/config", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
-  const c = getEmailConfig((req as any).user.escritorioId);
+  const user = (req as any).user;
+  const isAdmin = user.perfil === "Administrador";
+  const c = getEmailConfig(user.escritorioId);
   res.json({
-    smtpHost: c.smtp_host || "",
-    smtpPort: c.smtp_port || 587,
-    smtpSecure: !!c.smtp_secure,
-    smtpUser: c.smtp_user || "",
-    temSenha: !!c.smtp_password,
-    fromName: c.from_name || "",
-    fromEmail: c.from_email || "",
+    smtpHost: isAdmin ? c.smtp_host || "" : null,
+    smtpPort: isAdmin ? c.smtp_port || 587 : null,
+    smtpSecure: isAdmin ? !!c.smtp_secure : null,
+    smtpUser: isAdmin ? c.smtp_user || "" : null,
+    temSenha: isAdmin ? !!c.smtp_password : null,
+    fromName: isAdmin ? c.from_name || "" : null,
+    fromEmail: isAdmin ? c.from_email || "" : null,
     nfseEmailTexto: c.nfse_email_texto || "",
     updatedAt: c.updated_at || null,
   });
 });
 app.put("/api/email/config", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
-  const escritorioId = (req as any).user.escritorioId;
+  const user = (req as any).user;
+  const isAdmin = user.perfil === "Administrador";
+  const escritorioId = user.escritorioId;
   const b = req.body || {};
   const atual = getEmailConfig(escritorioId);
   sqlite
@@ -7598,21 +7613,22 @@ app.put("/api/email/config", blockCliente, requirePermissao("configuracoes", "ed
     )
     .run(
       escritorioId,
-      b.smtpHost ? String(b.smtpHost).trim() : null,
-      b.smtpPort ? Number(b.smtpPort) : 587,
-      b.smtpSecure ? 1 : 0,
-      b.smtpUser ? String(b.smtpUser).trim() : null,
+      isAdmin ? (b.smtpHost ? String(b.smtpHost).trim() : null) : atual.smtp_host || null,
+      isAdmin ? (b.smtpPort ? Number(b.smtpPort) : 587) : atual.smtp_port || 587,
+      isAdmin ? (b.smtpSecure ? 1 : 0) : atual.smtp_secure || 0,
+      isAdmin ? (b.smtpUser ? String(b.smtpUser).trim() : null) : atual.smtp_user || null,
       // Senha de app do Google vem formatada com espaços pra leitura ("abcd efgh ijkl mnop") — se
       // colada assim, o SMTP recusa (BadCredentials), já que a senha de verdade não tem espaço
       // nenhum. Remove todos os espaços aqui pra isso nunca mais quebrar o login por esse motivo.
-      b.smtpPassword ? String(b.smtpPassword).replace(/\s+/g, "") : atual.smtp_password || null, // vazio = mantém a senha já salva
-      b.fromName || null,
-      b.fromEmail ? String(b.fromEmail).trim() : null,
+      isAdmin ? (b.smtpPassword ? String(b.smtpPassword).replace(/\s+/g, "") : atual.smtp_password || null) : atual.smtp_password || null, // vazio = mantém a senha já salva
+      isAdmin ? b.fromName || null : atual.from_name || null,
+      isAdmin ? (b.fromEmail ? String(b.fromEmail).trim() : null) : atual.from_email || null,
       b.nfseEmailTexto !== undefined ? String(b.nfseEmailTexto) : atual.nfse_email_texto || null
     );
   res.json({ ok: true });
 });
 app.post("/api/email/testar", blockCliente, requirePermissao("configuracoes", "postar"), async (req, res) => {
+  if ((req as any).user.perfil !== "Administrador") return res.status(403).json({ error: "Configuração SMTP restrita ao Administrador." });
   const t = getTransporter((req as any).user.escritorioId);
   if (!t) return res.status(400).json({ error: "Preencha e salve host, usuário e senha primeiro." });
   try {
@@ -7862,7 +7878,7 @@ app.post("/api/email/identificar", blockCliente, requirePermissao("configuracoes
   const matches = sqlite
     .prepare(
       `SELECT ed.documento, ed.tipo, e.id as empresaId, e.nome as empresaNome
-       FROM empresa_documentos ed JOIN empresas e ON e.id = ed.empresa_id WHERE ed.documento IN (${placeholders})`
+       FROM empresa_documentos ed JOIN empresas e ON e.id = ed.empresa_id WHERE ed.documento IN (${placeholders}) AND e.ativo = 1`
     )
     .all(...documentos.map((d) => d.documento));
   res.json({ documentosEncontrados: documentos, matches });

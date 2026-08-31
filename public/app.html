@@ -811,8 +811,8 @@ function cardDetalheModal(c){
           ${items.map(i=>`<tr><td>${esc(i.empresaNome)}</td><td>${i.competencias.map(esc).join(', ')}</td></tr>`).join('')}
         </tbody></table>`;
       } else if(tipo==='situacao_fiscal'){
-        box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Alerta</th></tr></thead><tbody>
-          ${items.map(i=>`<tr><td>${esc(i.empresaNome)}</td><td>${esc(i.alerta)}</td></tr>`).join('')}
+        box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Alerta</th><th></th></tr></thead><tbody>
+          ${items.map(i=>`<tr><td>${esc(i.empresaNome)}</td><td>${esc(i.alerta)}</td><td style="text-align:right;">${i.docId?`<a class="btn small" href="/api/integracontador/documentos/${i.docId}/pdf" target="_blank" rel="noopener">Baixar Situação Fiscal</a>`:''}</td></tr>`).join('')}
         </tbody></table>`;
       } else if(tipo==='checklist_atraso'){
         box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Modelo</th><th>Competência</th><th>Prazo</th><th>Itens faltando</th></tr></thead><tbody>
@@ -1750,7 +1750,15 @@ function envioDocBlocoHtml(d, podeEditar, podePostar, souCliente, mostrarVencime
 function envioCelulaHtml(p, accept, podePostar, podeEditar, souCliente, mostrarVencimento, ehDas){
   const inputId = `ef_${p.periodoId}`;
   const docs = p.documentos || [];
-  const blocos = docs.map(d=>envioDocBlocoHtml(d, podeEditar, podePostar, souCliente, mostrarVencimento)).join('');
+  const blocosHtml = docs.map(d=>envioDocBlocoHtml(d, podeEditar, podePostar, souCliente, mostrarVencimento)).join('');
+  // Com 2+ documentos no mesmo período (ex.: guia original + guia recalculada), a lista expandida
+  // ocupa muito espaço vertical na grade — fica recolhida atrás de uma setinha por padrão.
+  const blocos = docs.length>=2
+    ? `<div class="envio-docs-toggle" data-act="toggle-docs" data-periodo="${p.periodoId}" style="cursor:pointer; display:flex; align-items:center; gap:6px; font-size:12.5px; color:var(--ink-soft); margin-bottom:6px; user-select:none;">
+         <span class="envio-docs-arrow" style="display:inline-block; transition:transform .15s;">▶</span><span>${docs.length} documentos anexados — clique para ver</span>
+       </div>
+       <div class="envio-docs-list" id="envioDocsList_${p.periodoId}" style="display:none;">${blocosHtml}</div>`
+    : blocosHtml;
   const pedidoPendente = !souCliente && p.solicitadoEm && !docs.length
     ? `<div class="slot-reopen-note" style="background:var(--accent-pale); color:var(--accent-deep);">Solicitado pelo cliente em ${fmtDateHora(p.solicitadoEm)}</div>` : '';
   const btnRecalculo = souCliente && ehDas && docs.length
@@ -1768,6 +1776,13 @@ function envioCelulaHtml(p, accept, podePostar, podeEditar, souCliente, mostrarV
   </div>`;
 }
 function wireEnvioGradeEvents(container, atribuicaoId, souCliente){
+  container.querySelectorAll('[data-act="toggle-docs"]').forEach(t=>t.addEventListener('click', ()=>{
+    const lista = document.getElementById('envioDocsList_'+t.dataset.periodo);
+    const arrow = t.querySelector('.envio-docs-arrow');
+    const aberto = lista.style.display !== 'none';
+    lista.style.display = aberto ? 'none' : '';
+    arrow.style.transform = aberto ? '' : 'rotate(90deg)';
+  }));
   container.querySelectorAll('[data-act="enviar-doc"]').forEach(b=>b.addEventListener('click', async ()=>{
     const input = document.getElementById(b.dataset.input);
     const file = input.files[0];
@@ -6058,12 +6073,13 @@ async function renderCfgEmailSmtp(box){
   const cfg = await api('/email/config');
   const { items } = await api('/email/log');
   const { items: empresas } = await api('/empresas');
+  const isAdmin = STATE.user.perfil==='Administrador';
   box.innerHTML = `
     <div class="card">
       <h3>Status</h3>
-      <p style="font-size:13px;">${status.configurado? `<span class="tag ok">Configurado</span> Enviando como ${esc(status.from)}` : `<span class="tag bad">Não configurado</span> Preencha e salve os dados abaixo.`}</p>
+      <p style="font-size:13px;">${status.configurado? `<span class="tag ok">Configurado</span> Enviando como ${esc(status.from)}` : `<span class="tag bad">Não configurado</span> ${isAdmin?'Preencha e salve os dados abaixo.':'Fale com o Administrador.'}`}</p>
     </div>
-    <div class="card">
+    ${isAdmin? `<div class="card">
       <h3>Configuração SMTP</h3>
       <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Se for Gmail/Google Workspace, use uma <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener" class="link-discreto">senha de app</a> — a senha normal da conta não funciona aqui.</p>
       <div class="row">
@@ -6082,7 +6098,7 @@ async function renderCfgEmailSmtp(box){
         <button class="btn" id="cfgSmtpTestar">Testar conexão</button>
       </div>
       <div id="cfgSmtpResultado" style="margin-top:10px;"></div>
-    </div>
+    </div>` : ''}
     <div class="card">
       <h3>Contatos e documentos por cliente</h3>
       <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Cadastre aqui os e-mails (pode ser mais de um) e os CNPJ/CPF de cada cliente, uma vez só — ficam salvos para o envio e para a identificação automática.</p>
@@ -6098,32 +6114,34 @@ async function renderCfgEmailSmtp(box){
     </div>
   `;
 
-  document.getElementById('cfgSmtpSalvar').addEventListener('click', async ()=>{
-    const body = {
-      smtpHost: document.getElementById('cfgSmtpHost').value.trim(),
-      smtpPort: Number(document.getElementById('cfgSmtpPort').value) || 587,
-      smtpSecure: document.getElementById('cfgSmtpSecure').checked,
-      smtpUser: document.getElementById('cfgSmtpUser').value.trim(),
-      smtpPassword: document.getElementById('cfgSmtpPassword').value,
-      fromName: document.getElementById('cfgFromName').value.trim(),
-      fromEmail: document.getElementById('cfgFromEmail').value.trim(),
-    };
-    try{
-      await api('/email/config', { method:'PUT', body });
-      toast('Configuração salva.','ok');
-      renderCfgTab();
-    }catch(e){ toast(e.message,'err'); }
-  });
-  document.getElementById('cfgSmtpTestar').addEventListener('click', async ()=>{
-    const resEl = document.getElementById('cfgSmtpResultado');
-    resEl.innerHTML = `<div class="empty-state">Testando…</div>`;
-    try{
-      await api('/email/testar', { method:'POST' });
-      resEl.innerHTML = `<div class="tag ok">Conexão OK</div>`;
-    }catch(e){
-      resEl.innerHTML = `<div class="tag bad">Falhou</div> <span style="font-size:12.5px;">${esc(e.message)}</span>`;
-    }
-  });
+  if(isAdmin){
+    document.getElementById('cfgSmtpSalvar').addEventListener('click', async ()=>{
+      const body = {
+        smtpHost: document.getElementById('cfgSmtpHost').value.trim(),
+        smtpPort: Number(document.getElementById('cfgSmtpPort').value) || 587,
+        smtpSecure: document.getElementById('cfgSmtpSecure').checked,
+        smtpUser: document.getElementById('cfgSmtpUser').value.trim(),
+        smtpPassword: document.getElementById('cfgSmtpPassword').value,
+        fromName: document.getElementById('cfgFromName').value.trim(),
+        fromEmail: document.getElementById('cfgFromEmail').value.trim(),
+      };
+      try{
+        await api('/email/config', { method:'PUT', body });
+        toast('Configuração salva.','ok');
+        renderCfgTab();
+      }catch(e){ toast(e.message,'err'); }
+    });
+    document.getElementById('cfgSmtpTestar').addEventListener('click', async ()=>{
+      const resEl = document.getElementById('cfgSmtpResultado');
+      resEl.innerHTML = `<div class="empty-state">Testando…</div>`;
+      try{
+        await api('/email/testar', { method:'POST' });
+        resEl.innerHTML = `<div class="tag ok">Conexão OK</div>`;
+      }catch(e){
+        resEl.innerHTML = `<div class="tag bad">Falhou</div> <span style="font-size:12.5px;">${esc(e.message)}</span>`;
+      }
+    });
+  }
 
   async function carregarContatosEDocs(){
     const empresaId = document.querySelector('#ccEmpresaCombo .combo-value').value;
