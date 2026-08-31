@@ -31,7 +31,13 @@ export interface TokenIntegraContador {
   obtidoEm: number; // Date.now() no momento da obtenção, pra saber quando renovar
 }
 
-function chamarHttps(opts: {
+type RespostaHttps = { status: number; corpo: string; headers: Record<string, string | string[] | undefined> };
+// Retry automático pra falha de conexão (não pra erro de negócio — HTTP 4xx/5xx já vem como
+// resposta normal, resolvida, não como rejeição; só timeout/conexão encerrada chegam aqui). Achado
+// ao vivo: o gateway do SERPRO fecha a conexão sem aviso de vez em quando — chamadas isoladas logo
+// em seguida sempre funcionaram na hora, então vale muito a pena tentar de novo automaticamente em
+// vez de deixar a busca inteira falhar (ou pior, ficar presa até o timeout externo de 3 minutos).
+async function chamarHttps(opts: {
   hostname: string;
   path: string;
   method: string;
@@ -39,14 +45,48 @@ function chamarHttps(opts: {
   cert?: string;
   key?: string;
   corpo?: Buffer;
-}): Promise<{ status: number; corpo: string; headers: Record<string, string | string[] | undefined> }> {
+}): Promise<RespostaHttps> {
+  const TENTATIVAS = 3;
+  let ultimoErro: Error = new Error("Falha desconhecida ao chamar o Integra Contador.");
+  for (let tentativa = 1; tentativa <= TENTATIVAS; tentativa++) {
+    try {
+      return await chamarHttpsUmaVez(opts);
+    } catch (e: any) {
+      ultimoErro = e;
+      if (tentativa < TENTATIVAS) await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+  }
+  throw ultimoErro;
+}
+function chamarHttpsUmaVez(opts: {
+  hostname: string;
+  path: string;
+  method: string;
+  headers: Record<string, string>;
+  cert?: string;
+  key?: string;
+  corpo?: Buffer;
+}): Promise<RespostaHttps> {
   return new Promise((resolve, reject) => {
+    let finalizado = false;
     const req = https.request(
       { hostname: opts.hostname, path: opts.path, method: opts.method, headers: opts.headers, cert: opts.cert, key: opts.key, timeout: 30000 },
       (res) => {
         const chunks: Buffer[] = [];
         res.on("data", (c) => chunks.push(c));
-        res.on("end", () => resolve({ status: res.statusCode || 0, corpo: Buffer.concat(chunks).toString("utf8"), headers: res.headers as any }));
+        res.on("end", () => {
+          finalizado = true;
+          resolve({ status: res.statusCode || 0, corpo: Buffer.concat(chunks).toString("utf8"), headers: res.headers as any });
+        });
+        // Achado ao vivo: o gateway do SERPRO às vezes encerra a conexão sem disparar "end" (a
+        // conexão TCP fecha de verdade em segundos, confirmado via /proc/net/tcp — TIME_WAIT), e
+        // como só "end" era escutado, a Promise nunca resolvia nem rejeitava, ficando presa até o
+        // timeout externo de 3 minutos estourar. "close" dispara tanto no fim normal (depois de
+        // "end", quando finalizado já é true — não faz nada) quanto quando a conexão é encerrada
+        // prematuramente (finalizado ainda false — rejeita na hora, sem esperar os 3 minutos).
+        res.on("close", () => {
+          if (!finalizado) reject(new Error("A conexão com o Integra Contador (SERPRO) foi encerrada antes da resposta terminar — tente de novo."));
+        });
       }
     );
     req.on("timeout", () => req.destroy(new Error("Tempo esgotado ao conectar no Integra Contador (SERPRO).")));
