@@ -5237,7 +5237,11 @@ async function renderCfgDominio(box){
 let CFG_ASSINATURA_POLL = null;
 async function renderCfgAssinaturaPlataforma(box){
   if(CFG_ASSINATURA_POLL){ clearInterval(CFG_ASSINATURA_POLL); CFG_ASSINATURA_POLL=null; }
-  const { items } = await api('/escritorio/modulos');
+  const [{ items }, dados] = await Promise.all([
+    api('/escritorio/modulos'),
+    api('/escritorio/dados-faturamento'),
+  ]);
+  const faltaCnpj = !dados.cnpj;
   box.innerHTML = `
     <div class="card">
       <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-4px;">
@@ -5246,8 +5250,35 @@ async function renderCfgAssinaturaPlataforma(box){
         contrate direto via Pix/cartão.
       </p>
     </div>
+    <div class="card">
+      <div style="font-weight:600; margin-bottom:4px;">Dados de faturamento</div>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-2px;">Precisa estar preenchido pra gerar qualquer cobrança — é o CNPJ que identifica o escritório no Asaas.</p>
+      ${faltaCnpj? `<p style="font-size:12.5px; color:var(--debit); margin:6px 0;">⚠ CNPJ ainda não cadastrado — preencha antes de contratar um módulo pago.</p>` : ''}
+      <div class="row">
+        <div class="field grow"><label>Nome / Razão social</label><input id="cfgFatNome" value="${esc(dados.nome||'')}"></div>
+        <div class="field" style="width:200px;"><label>CNPJ</label><input id="cfgFatCnpj" value="${esc(dados.cnpj||'')}" placeholder="Só números"></div>
+      </div>
+      <div class="row">
+        <div class="field grow"><label>E-mail (opcional)</label><input id="cfgFatEmail" type="email" value="${esc(dados.email||'')}"></div>
+        <div class="field" style="width:200px;"><label>Telefone (opcional)</label><input id="cfgFatTelefone" value="${esc(dados.telefone||'')}"></div>
+      </div>
+      <button class="btn" id="btnSalvarFaturamento">Salvar dados de faturamento</button>
+      <div id="cfgFaturamentoResultado" style="margin-top:8px;"></div>
+    </div>
     <div id="cfgAssinaturaContent"></div>
   `;
+  document.getElementById('btnSalvarFaturamento').addEventListener('click', async ()=>{
+    try{
+      await api('/escritorio/dados-faturamento', { method:'PUT', body:{
+        nome: document.getElementById('cfgFatNome').value.trim(),
+        cnpj: document.getElementById('cfgFatCnpj').value.trim(),
+        email: document.getElementById('cfgFatEmail').value.trim(),
+        telefone: document.getElementById('cfgFatTelefone').value.trim(),
+      }});
+      toast('Dados de faturamento salvos.','ok');
+      renderCfgAssinaturaPlataforma(box);
+    }catch(e){ document.getElementById('cfgFaturamentoResultado').innerHTML = `<span style="color:var(--debit); font-size:12.5px;">${esc(e.message)}</span>`; }
+  });
   const content = document.getElementById('cfgAssinaturaContent');
   content.innerHTML = `
     ${items.map(assinaturaModuloCardHtml).join('')}

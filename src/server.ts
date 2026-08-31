@@ -6382,6 +6382,22 @@ function escritorioTemModulo(escritorioId: number, chave: string): boolean {
   const contratado = sqlite.prepare(`SELECT * FROM escritorio_modulos WHERE escritorio_id = ? AND modulo_chave = ?`).get(escritorioId, chave) as any;
   return moduloStatusParaEscritorio(m, contratado).acesso;
 }
+// Dados de faturamento do próprio escritório (CNPJ/e-mail/telefone) — precisa estar preenchido
+// antes de gerar qualquer cobrança via Asaas (é o CPF/CNPJ que identifica o cliente lá).
+app.get("/api/escritorio/dados-faturamento", blockCliente, requireAdmin, (req, res) => {
+  const row = sqlite.prepare(`SELECT nome, cnpj, email, telefone FROM escritorios WHERE id = ?`).get((req as any).user.escritorioId) as any;
+  res.json(row || {});
+});
+app.put("/api/escritorio/dados-faturamento", blockCliente, requireAdmin, (req, res) => {
+  const { nome, cnpj, email, telefone } = req.body || {};
+  if (!nome || !String(nome).trim()) return res.status(400).json({ error: "Informe o nome do escritório." });
+  const cnpjLimpo = cnpj ? String(cnpj).replace(/\D/g, "") : "";
+  if (!cnpjLimpo || cnpjLimpo.length !== 14) return res.status(400).json({ error: "Informe um CNPJ válido (14 dígitos)." });
+  sqlite
+    .prepare(`UPDATE escritorios SET nome = ?, cnpj = ?, email = ?, telefone = ?, updated_at = datetime('now') WHERE id = ?`)
+    .run(String(nome).trim(), cnpjLimpo, email ? String(email).trim() : null, telefone ? String(telefone).replace(/\D/g, "") : null, (req as any).user.escritorioId);
+  res.json({ ok: true });
+});
 app.get("/api/escritorio/modulos", blockCliente, requireAdmin, (req, res) => {
   res.json({ items: modulosDoEscritorio((req as any).user.escritorioId) });
 });

@@ -79,6 +79,7 @@ function mensagemErroAsaas(resposta: RespostaAsaas): string {
 // Busca um cliente Asaas já cadastrado pelo CPF/CNPJ; cria um novo se não existir. Devolve o
 // customerId do Asaas (formato "cus_xxx"), pra reaproveitar nas cobranças seguintes.
 export async function obterOuCriarCliente(params: { cpfCnpj: string; nome: string; email?: string | null; telefone?: string | null }): Promise<string> {
+  if (!params.cpfCnpj || !params.cpfCnpj.trim()) throw new Error("CPF/CNPJ não cadastrado — preencha antes de gerar a cobrança.");
   const cpfCnpj = params.cpfCnpj.replace(/\D/g, "");
   const busca = await chamarAsaas("GET", `/customers?cpfCnpj=${cpfCnpj}`);
   if (busca.ok && Array.isArray(busca.corpo?.data) && busca.corpo.data.length) return busca.corpo.data[0].id;
