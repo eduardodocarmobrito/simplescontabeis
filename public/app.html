@@ -5244,10 +5244,14 @@ function tabelaModulosHtml(prefixo, items){
       <tbody>
         ${items.map(m=>`
           <tr data-chave="${m.chave}">
-            <td><input class="${prefixo}Nome" value="${esc(m.nome)}" style="width:100%;"></td>
-            <td style="width:160px;"><input class="${prefixo}Valor" type="number" step="0.01" min="0" value="${m.valorMensal}" style="width:100%;"></td>
-            <td style="width:70px; text-align:center;"><input class="${prefixo}Ativo" type="checkbox" ${m.ativo?'checked':''}></td>
-            <td style="width:90px;"><button class="btn small ${prefixo}Salvar">Salvar</button></td>
+            <td><input class="${prefixo}Nome" value="${esc(m.nome)}" style="width:100%;" disabled></td>
+            <td style="width:160px;"><input class="${prefixo}Valor" type="number" step="0.01" min="0" value="${m.valorMensal}" style="width:100%;" disabled></td>
+            <td style="width:70px; text-align:center;"><input class="${prefixo}Ativo" type="checkbox" ${m.ativo?'checked':''} disabled></td>
+            <td style="width:150px; white-space:nowrap;">
+              <button class="btn small ${prefixo}Editar">Editar</button>
+              <button class="btn small primary ${prefixo}Salvar" style="display:none;" disabled>Salvar</button>
+              <button class="btn small ${prefixo}Cancelar" style="display:none;" title="Cancelar edição">✕</button>
+            </td>
           </tr>
         `).join('')}
       </tbody>
@@ -5255,17 +5259,54 @@ function tabelaModulosHtml(prefixo, items){
   `;
 }
 function ligarSalvarModulos(container, prefixo, endpoint){
-  container.querySelectorAll('.'+prefixo+'Salvar').forEach(btn=>btn.addEventListener('click', async ()=>{
-    const tr = btn.closest('tr');
-    const chave = tr.dataset.chave;
-    const body = {
-      nome: tr.querySelector('.'+prefixo+'Nome').value.trim(),
-      valorMensal: Number(tr.querySelector('.'+prefixo+'Valor').value) || 0,
-      ativo: tr.querySelector('.'+prefixo+'Ativo').checked,
-    };
-    try{ await api(endpoint+'/'+chave, { method:'PUT', body }); toast('Módulo atualizado.','ok'); }
-    catch(e){ toast(e.message,'err'); }
-  }));
+  container.querySelectorAll('tr[data-chave]').forEach(tr=>{
+    const inputNome = tr.querySelector('.'+prefixo+'Nome');
+    const inputValor = tr.querySelector('.'+prefixo+'Valor');
+    const inputAtivo = tr.querySelector('.'+prefixo+'Ativo');
+    const btnEditar = tr.querySelector('.'+prefixo+'Editar');
+    const btnSalvar = tr.querySelector('.'+prefixo+'Salvar');
+    const btnCancelar = tr.querySelector('.'+prefixo+'Cancelar');
+    let original = { nome: inputNome.value, valor: inputValor.value, ativo: inputAtivo.checked };
+    function entrarModoEdicao(){
+      inputNome.disabled = false;
+      inputValor.disabled = false;
+      inputAtivo.disabled = false;
+      btnEditar.style.display = 'none';
+      btnSalvar.style.display = '';
+      btnSalvar.disabled = false;
+      btnCancelar.style.display = '';
+    }
+    function sairModoEdicao(){
+      inputNome.disabled = true;
+      inputValor.disabled = true;
+      inputAtivo.disabled = true;
+      btnEditar.style.display = '';
+      btnSalvar.style.display = 'none';
+      btnSalvar.disabled = true;
+      btnCancelar.style.display = 'none';
+    }
+    btnEditar.addEventListener('click', entrarModoEdicao);
+    btnCancelar.addEventListener('click', ()=>{
+      inputNome.value = original.nome;
+      inputValor.value = original.valor;
+      inputAtivo.checked = original.ativo;
+      sairModoEdicao();
+    });
+    btnSalvar.addEventListener('click', async ()=>{
+      const chave = tr.dataset.chave;
+      const body = {
+        nome: inputNome.value.trim(),
+        valorMensal: Number(inputValor.value) || 0,
+        ativo: inputAtivo.checked,
+      };
+      try{
+        await api(endpoint+'/'+chave, { method:'PUT', body });
+        toast('Módulo atualizado.','ok');
+        original = { nome: inputNome.value, valor: inputValor.value, ativo: inputAtivo.checked };
+        sairModoEdicao();
+      }catch(e){ toast(e.message,'err'); }
+    });
+  });
 }
 async function pageModulosPlataforma(){
   const [{ items: itemsEscritorios }, { items: itemsClientes }] = await Promise.all([
