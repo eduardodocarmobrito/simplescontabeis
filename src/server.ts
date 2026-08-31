@@ -4267,7 +4267,9 @@ function integraContadorAnexarSitfisEmEnvio(escritorioId: number, empresaId: num
 // presa pra sempre (só um restart do processo destrava), já que o .finally() que libera a trava só
 // roda quando a promise da busca finalmente resolve. Achado ao vivo: a busca da GO COLOR ficou
 // travada de um dia pro outro e bloqueou toda tentativa nova até eu reiniciar manualmente.
-const INTEGRACONTADOR_TIMEOUT_BUSCA_MS = 3 * 60 * 1000;
+// 5 minutos (não 3): o SITFIS tem dois polls de até 10 tentativas cada, de verdade assíncronos do
+// lado da Receita — em dia ruim, esperar mais é melhor que cortar uma busca que ia dar certo.
+const INTEGRACONTADOR_TIMEOUT_BUSCA_MS = 5 * 60 * 1000;
 async function integraContadorBuscarEmpresa(empresaId: number, empresaCnpj: string, optante: boolean): Promise<{ novos: number; erro: string | null }> {
   return Promise.race([
     integraContadorBuscarEmpresaInterno(empresaId, empresaCnpj, optante),

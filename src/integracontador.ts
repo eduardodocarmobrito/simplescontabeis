@@ -69,28 +69,44 @@ function chamarHttpsUmaVez(opts: {
 }): Promise<RespostaHttps> {
   return new Promise((resolve, reject) => {
     let finalizado = false;
-    const req = https.request(
-      { hostname: opts.hostname, path: opts.path, method: opts.method, headers: opts.headers, cert: opts.cert, key: opts.key, timeout: 30000 },
-      (res) => {
-        const chunks: Buffer[] = [];
-        res.on("data", (c) => chunks.push(c));
-        res.on("end", () => {
-          finalizado = true;
-          resolve({ status: res.statusCode || 0, corpo: Buffer.concat(chunks).toString("utf8"), headers: res.headers as any });
-        });
-        // Achado ao vivo: o gateway do SERPRO às vezes encerra a conexão sem disparar "end" (a
-        // conexão TCP fecha de verdade em segundos, confirmado via /proc/net/tcp — TIME_WAIT), e
-        // como só "end" era escutado, a Promise nunca resolvia nem rejeitava, ficando presa até o
-        // timeout externo de 3 minutos estourar. "close" dispara tanto no fim normal (depois de
-        // "end", quando finalizado já é true — não faz nada) quanto quando a conexão é encerrada
-        // prematuramente (finalizado ainda false — rejeita na hora, sem esperar os 3 minutos).
-        res.on("close", () => {
-          if (!finalizado) reject(new Error("A conexão com o Integra Contador (SERPRO) foi encerrada antes da resposta terminar — tente de novo."));
-        });
-      }
-    );
-    req.on("timeout", () => req.destroy(new Error("Tempo esgotado ao conectar no Integra Contador (SERPRO).")));
-    req.on("error", reject);
+    // Achado ao vivo (2ª rodada): a opção "timeout" do https.request é um timeout de INATIVIDADE do
+    // socket — se o SERPRO for mandando dados aos poucos (mesmo bem devagar), cada byte reinicia a
+    // contagem e o timeout nunca dispara, mesmo a chamada toda demorando minutos. Por isso troca por
+    // um prazo explícito (setTimeout comum), que sempre dispara no tempo certo, não importa o que
+    // aconteça na conexão — junto com o fix anterior de "close" sem "end" (conexão fechada cedo sem
+    // avisar), fecha as duas formas encontradas de a Promise nunca resolver nem rejeitar sozinha.
+    const PRAZO_MS = 25000;
+    const prazoTimer = setTimeout(() => {
+      if (finalizado) return;
+      finalizado = true;
+      req.destroy();
+      reject(new Error("Tempo esgotado ao conectar no Integra Contador (SERPRO)."));
+    }, PRAZO_MS);
+    const req = https.request({ hostname: opts.hostname, path: opts.path, method: opts.method, headers: opts.headers, cert: opts.cert, key: opts.key }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("end", () => {
+        if (finalizado) return;
+        finalizado = true;
+        clearTimeout(prazoTimer);
+        resolve({ status: res.statusCode || 0, corpo: Buffer.concat(chunks).toString("utf8"), headers: res.headers as any });
+      });
+      // "close" dispara tanto no fim normal (depois de "end", quando finalizado já é true — não faz
+      // nada) quanto quando a conexão é encerrada prematuramente pelo servidor (finalizado ainda
+      // false — rejeita na hora, sem esperar o prazo inteiro).
+      res.on("close", () => {
+        if (finalizado) return;
+        finalizado = true;
+        clearTimeout(prazoTimer);
+        reject(new Error("A conexão com o Integra Contador (SERPRO) foi encerrada antes da resposta terminar — tente de novo."));
+      });
+    });
+    req.on("error", (e) => {
+      if (finalizado) return;
+      finalizado = true;
+      clearTimeout(prazoTimer);
+      reject(e);
+    });
     if (opts.corpo) req.write(opts.corpo);
     req.end();
   });
