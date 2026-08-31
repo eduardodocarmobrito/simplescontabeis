@@ -4527,7 +4527,7 @@ function checklistComFiltroHtml(idPrefix, empresas, selecionados){
   return `
     <input type="text" id="${idPrefix}Filtro" placeholder="Buscar empresa…" style="margin-bottom:6px;">
     <div style="max-height:180px; overflow-y:auto; border:1px solid var(--rule); border-radius:8px; padding:8px 10px;">
-      ${empresas.map(e=>`<label class="checkbox-row ${idPrefix}Linha" data-nome="${esc(normalizaTxt(e.nome))}"><input type="checkbox" class="${idPrefix}Check" value="${e.id}" ${selecionados.includes(e.id)?'checked':''}><span>${esc(e.nome)}</span></label>`).join('') || '<span style="font-size:12px; color:var(--ink-soft);">Nenhuma empresa cadastrada.</span>'}
+      ${empresas.map(e=>`<label class="checkbox-row ${idPrefix}Linha" data-nome="${esc(normalizaTxt(e.nome))}" style="align-items:flex-start; text-align:left;"><input type="checkbox" class="${idPrefix}Check" value="${e.id}" style="flex-shrink:0; margin-top:2px;" ${selecionados.includes(e.id)?'checked':''}><span style="flex:1; text-align:left;">${esc(e.nome)}</span></label>`).join('') || '<span style="font-size:12px; color:var(--ink-soft);">Nenhuma empresa cadastrada.</span>'}
     </div>
   `;
 }
