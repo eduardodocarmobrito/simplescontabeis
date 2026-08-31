@@ -2749,28 +2749,81 @@ async function renderCertificadoBuscaXml(containerEl, empresaId, empresaUfPadrao
 // Duas telas: lista de empresas (o que já tem certificado configurado ou algum documento) e, ao
 // clicar numa delas, o detalhe (certificado + documentos daquela empresa só). Evita jogar tudo solto
 // na mesma tela quando o escritório tem várias empresas na Busca de XML.
+// Paywall completo pra um módulo do ESCRITÓRIO (diferente do paywall do Cliente — aqui não tem
+// "iniciar teste" porque só aparece quando o módulo já venceu/nunca foi contratado; o admin ativa
+// direto contratando). Genérico o bastante pra reusar em qualquer tela que dependa de um módulo do
+// escritório, não só Busca de XML.
+async function escritorioModuloPaywallHtml(chave){
+  const { items } = await api('/escritorio/modulos');
+  const item = items.find(i=>i.chave===chave);
+  if(!item) return '<div class="empty-state">Módulo não encontrado.</div>';
+  const preco = fmtMoney(item.valorMensal);
+  const titulo = item.status==='teste_vencido' ? 'Seu teste grátis venceu' : (item.status==='vencido' ? 'Assinatura vencida' : 'Módulo não contratado');
+  return `
+    <div class="card" style="max-width:480px; margin:40px auto; text-align:center; padding:32px;">
+      <h3>${esc(titulo)}</h3>
+      <p style="color:var(--ink-soft); margin:10px 0 6px;">${esc(item.nome)} — ${preco}/mês</p>
+      <p style="color:var(--ink-soft); font-size:12.5px; margin:0 0 20px;">Contrate pra liberar esta tela.</p>
+      <button class="btn primary" id="escPaywallPagar" data-chave="${chave}">Pagar agora</button>
+      <div id="escPaywallResultado" style="margin-top:16px; text-align:left;"></div>
+    </div>
+  `;
+}
+let ESC_PAYWALL_POLL = null;
+function ligarEscritorioModuloPaywall(container, chave, aoLiberar){
+  if(ESC_PAYWALL_POLL){ clearInterval(ESC_PAYWALL_POLL); ESC_PAYWALL_POLL=null; }
+  const btn = container.querySelector('#escPaywallPagar');
+  if(!btn) return;
+  btn.addEventListener('click', async ()=>{
+    const resultado = container.querySelector('#escPaywallResultado');
+    btn.disabled = true;
+    resultado.innerHTML = `<div class="empty-state">Gerando cobrança…</div>`;
+    try{
+      const r = await api('/escritorio/modulos/pagar', { method:'POST', body:{ modulos:[chave] } });
+      resultado.innerHTML = `
+        <div class="card" style="background:var(--paper);">
+          ${r.pixImagemBase64?`
+            <div style="text-align:center;">
+              <img src="data:image/png;base64,${r.pixImagemBase64}" alt="QR Code Pix" style="width:200px; height:200px;">
+              <div style="font-size:12px; color:var(--ink-soft); margin:8px 0 4px;">Pix copia e cola</div>
+              <input readonly value="${esc(r.pixPayload||'')}" style="width:100%; font-family:'IBM Plex Mono',monospace; font-size:11px; text-align:center;" onclick="this.select()">
+            </div>
+          `:''}
+          ${r.invoiceUrl?`<div style="text-align:center; margin-top:12px;"><a class="btn" href="${esc(r.invoiceUrl)}" target="_blank" rel="noopener">Pagar com cartão de crédito</a></div>`:''}
+          <div style="text-align:center; margin-top:12px; font-size:12px; color:var(--ink-soft);">Assim que o pagamento confirmar, a tela libera sozinha.</div>
+        </div>
+      `;
+      ESC_PAYWALL_POLL = setInterval(async ()=>{
+        try{
+          const { items } = await api('/escritorio/modulos');
+          const item = items.find(i=>i.chave===chave);
+          if(item && item.status==='ativo'){
+            clearInterval(ESC_PAYWALL_POLL); ESC_PAYWALL_POLL=null;
+            toast('Pagamento confirmado!','ok');
+            aoLiberar();
+          }
+        }catch(e){ /* ignora falha pontual de rede no polling */ }
+      }, 5000);
+    }catch(e){ resultado.innerHTML = `<span style="color:var(--debit); font-size:12.5px;">${esc(e.message)}</span>`; btn.disabled=false; }
+  });
+}
 async function pageNfeBusca(){
   main().innerHTML = `
     <h1>Busca de XML</h1>
     <p class="subtitle">Busca automática de NF-e, NFC-e e NFS-e direto na Sefaz e no Sistema Nacional NFS-e, usando o certificado digital de cada cliente — não depende do certificado do escritório.</p>
-    <div id="nfeBuscaModuloAviso"></div>
     <div id="nfeBuscaMain"></div>
   `;
   const box = document.getElementById('nfeBuscaMain');
   const { items: empresas } = await api('/empresas');
 
-  function avisoModulo(ativo){
-    document.getElementById('nfeBuscaModuloAviso').innerHTML = ativo ? '' : `
-      <div class="card" style="background:var(--paper); border-color:var(--warn, #c9a227);">
-        <span style="font-size:12.5px;">Módulo "Busca automática de XML (NF-e/NFC-e/NFS-e)" não contratado para este escritório — você pode cadastrar certificados, mas o botão "Buscar agora" fica desativado. Contrate em <b>Configurações › Assinatura da plataforma</b>.</span>
-      </div>
-    `;
-  }
-
   async function mostrarLista(){
     box.innerHTML = `<div class="empty-state">Carregando…</div>`;
     const [{ items: configs, moduloAtivo }, { items: contagens }] = await Promise.all([ api('/nfe/config'), api('/nfe/documentos/contagem') ]);
-    avisoModulo(moduloAtivo);
+    if(!moduloAtivo){
+      box.innerHTML = await escritorioModuloPaywallHtml('busca_xml_nfe');
+      ligarEscritorioModuloPaywall(box, 'busca_xml_nfe', mostrarLista);
+      return;
+    }
     const contagem = {};
     contagens.forEach(c=>{ contagem[c.empresaId] = c.qtd; });
     const idsAtivos = new Set([...configs.map(c=>c.empresaId), ...Object.keys(contagem).map(Number)]);

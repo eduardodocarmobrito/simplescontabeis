@@ -98,12 +98,14 @@ export interface CobrancaAsaas {
   status: string;
   invoiceUrl: string | null;
 }
-// Cria uma cobrança (billingType UNDEFINED = o próprio Asaas oferece Pix/cartão/boleto na fatura
-// hospedada por eles, sem precisarmos lidar com dados de cartão no nosso servidor).
+// Cria uma cobrança com billingType PIX — diferente de "UNDEFINED" (que só gera o QR code depois
+// do pagador escolher Pix na fatura hospedada), isso garante o QR code disponível imediatamente
+// via GET /payments/{id}/pixQrCode. A fatura hospedada (invoiceUrl) continua permitindo pagar com
+// cartão normalmente, então não perde a outra forma de pagamento.
 export async function criarCobranca(params: { customerId: string; valor: number; vencimento: string; descricao: string }): Promise<CobrancaAsaas> {
   const r = await chamarAsaas("POST", "/payments", {
     customer: params.customerId,
-    billingType: "UNDEFINED",
+    billingType: "PIX",
     value: params.valor,
     dueDate: params.vencimento,
     description: params.descricao,
