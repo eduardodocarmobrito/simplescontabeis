@@ -234,6 +234,10 @@
 
 // ===================== estado & helpers =====================
 let STATE = { user:null, permissoes:{}, page:'dashboard' };
+// Incrementado a cada render() disparado — protege contra a resposta atrasada de uma página que o
+// usuário já saiu (ex.: dashboard.card demora pra carregar, usuário já clicou em outro menu; sem
+// isso, quando o dashboard finalmente responde ele sobrescreve a página nova com a antiga).
+let RENDER_SEQ = 0;
 
 function toast(msg, kind){
   const el=document.createElement('div');
@@ -597,6 +601,7 @@ function can(modulo, acao){
 }
 
 async function render(){
+  RENDER_SEQ++;
   const m = main();
   m.innerHTML = '<div class="empty-state">Carregando…</div>';
   try{
@@ -629,7 +634,9 @@ async function render(){
 
 // ===================== Dashboard =====================
 async function pageDashboard(){
+  const meuSeq = RENDER_SEQ;
   const { items } = await api('/dashboard/cards');
+  if(meuSeq !== RENDER_SEQ) return; // usuário já navegou pra outra tela enquanto isso carregava
   const podeEditar = can('dashboard','editar');
   main().innerHTML = `
     <h1>Área de Trabalho</h1>
