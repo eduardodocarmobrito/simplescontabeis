@@ -519,7 +519,7 @@ const NAV = [
   { id:'contratos', label:'Contratos', modulo:'contratos', roles:['Administrador','Colaborador'] },
   { id:'relatorios', label:'Relatórios', modulo:'relatorios', roles:['Administrador','Colaborador'] },
   { id:'usuarios', label:'Usuários', modulo:'usuarios', roles:['Administrador'] },
-  { id:'configuracoes', label:'Configurações', modulo:'configuracoes', roles:['Administrador'] },
+  { id:'configuracoes', label:'Configurações', modulo:'configuracoes', roles:['Administrador','Colaborador'] },
   { id:'escritorios', label:'Escritórios', modulo:null, roles:['SuperAdmin'] },
   { id:'modulos-plataforma', label:'Módulos da plataforma', modulo:null, roles:['SuperAdmin'] },
 ];
@@ -558,6 +558,7 @@ async function boot(){
   document.getElementById('whoName').innerHTML = esc(STATE.user.nome);
   document.getElementById('whoProfile').textContent = STATE.user.perfil;
   if(STATE.user.perfil==='Cliente') await renderEmpresaSwitch();
+  else document.getElementById('sidebarBrand').innerHTML = `<div class="eyebrow">Escritório contábil</div><h2>Simples Contábeis</h2>`;
   STATE.page = STATE.user.perfil==='Cliente' ? 'minha-nfse' : (STATE.user.perfil==='SuperAdmin' ? 'escritorios' : 'dashboard');
   renderNav();
   render();
