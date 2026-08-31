@@ -7001,6 +7001,7 @@ app.get("/api/whatsapp/webhook", (req, res) => {
 });
 app.post("/api/whatsapp/webhook", (req, res) => {
   res.sendStatus(200); // confirma rápido — a Meta reenvia (com backoff) se demorar ou não responder 200
+  console.log("[WhatsApp webhook] POST recebido:", JSON.stringify(req.body));
   try {
     for (const entrada of req.body?.entry || []) {
       for (const mudanca of entrada.changes || []) {
