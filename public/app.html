@@ -565,7 +565,14 @@ async function boot(){
   document.getElementById('whoProfile').textContent = STATE.user.perfil;
   if(STATE.user.perfil==='Cliente') await renderEmpresaSwitch();
   else document.getElementById('sidebarBrand').innerHTML = `<div class="eyebrow">Escritório contábil</div><h2>Simples Contábeis</h2>`;
-  STATE.page = STATE.user.perfil==='Cliente' ? 'minha-nfse' : (STATE.user.perfil==='SuperAdmin' ? 'escritorios' : 'dashboard');
+  if(STATE.user.perfil==='Cliente') STATE.page = 'minha-nfse';
+  else if(STATE.user.perfil==='SuperAdmin') STATE.page = 'escritorios';
+  else{
+    // Colaborador pode não ter permissão nem pra ver "Início" — cai na primeira página do menu que
+    // ele realmente enxerga, em vez de sempre tentar abrir o dashboard e quebrar com 403.
+    const primeiraDisponivel = NAV.find(item=>podeVerModulo(item));
+    STATE.page = primeiraDisponivel ? primeiraDisponivel.id : 'dashboard';
+  }
   renderNav();
   render();
 }
