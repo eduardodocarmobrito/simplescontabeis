@@ -1166,8 +1166,10 @@ sqlite.exec(`INSERT OR IGNORE INTO modulos_escritorio_catalogo (chave, nome, val
 sqlite.exec(`UPDATE modulos_escritorio_catalogo SET nome = 'Busca automática de XML (NF-e/NFC-e/NFS-e)' WHERE chave = 'busca_xml_nfe' AND nome = 'Busca automática de NF-e/NFC-e'`);
 // Migração de compatibilidade: empresas que JÁ usam NFS-e ou Financeiro de verdade (antes de existir
 // o controle de teste/assinatura) ganham acesso permanente automático — nunca bloqueia quem já era
-// cliente real antes desta mudança.
-{
+// cliente real antes desta mudança. Só roda quando a tabela está zerada (1ª vez que essa feature
+// sobe): sem essa trava, ela rodava em TODO restart do processo, recriando acesso permanente até
+// pra empresa que o admin removeu manualmente do teste/assinatura de propósito.
+if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c === 0) {
   const jaUsaNfse = sqlite
     .prepare(
       `SELECT DISTINCT empresa_id FROM nfse_empresa_config WHERE habilitado = 1
