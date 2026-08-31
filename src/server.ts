@@ -6935,27 +6935,64 @@ function cardDasEmAtraso(user: any): any[] {
 // Proxy disponível hoje pra "pendência fiscal": o relatório de Situação Fiscal (SITFIS) é um PDF
 // opaco (não lido pelo sistema) — o único sinal estruturado que já existe é o alerta de
 // DAS/Declaração do Simples Nacional ainda não localizado.
-function cardSituacaoFiscal(user: any): any[] {
+// O relatório de Situação Fiscal (SITFIS) "limpo" nunca contém esses três cabeçalhos — eles só
+// aparecem no PDF quando existe conteúdo real embaixo (parcelamento em andamento, débito
+// pendente, ou débito com exigibilidade suspensa). Confirmado comparando um relatório com
+// pendência real (GO COLOR, débitos em negociação de parcelamento) contra um limpo (MSM
+// AGROPECUARIA, só a frase "Não foram detectadas pendências...").
+const SITFIS_MARCADORES_PENDENCIA: { chave: string; regex: RegExp }[] = [
+  { chave: "Parcelamento em andamento", regex: /Parcelamento com Exigibilidade Suspensa/i },
+  { chave: "Débito pendente", regex: /Pend[êe]ncia\s*-\s*D[ée]bito/i },
+  { chave: "Débito com exigibilidade suspensa", regex: /D[ée]bito com Exigibilidade Suspensa/i },
+];
+async function sitfisAnalisar(pdfPath: string): Promise<{ temPendencia: boolean; resumo: string | null }> {
+  const pdfParseLib = require("pdf-parse");
+  const buf = fs.readFileSync(pdfPath);
+  // Mesmo cuidado de extrairTextoArquivo: pdf-parse lê o ArrayBuffer inteiro quando recebe um
+  // Buffer de verdade (ignora byteOffset/length) — um Uint8Array "puro" evita esse bug.
+  const data = await pdfParseLib(new Uint8Array(buf));
+  const texto: string = data.text || "";
+  const achados = SITFIS_MARCADORES_PENDENCIA.filter((m) => m.regex.test(texto)).map((m) => m.chave);
+  return { temPendencia: achados.length > 0, resumo: achados.length ? achados.join(", ") : null };
+}
+async function cardSituacaoFiscal(user: any): Promise<any[]> {
   const escritorioId = user.escritorioId;
   const visiveis = new Set(empresasVisiveis(user));
   const rows = sqlite
     .prepare(
       `SELECT c.empresa_id as empresaId, e.nome as empresaNome, c.alerta_declaracao as alertaDeclaracao, c.ultimo_erro as ultimoErro
        FROM integracontador_empresa_config c JOIN empresas e ON e.id = c.empresa_id
-       WHERE c.escritorio_id = ? AND c.ativo = 1 AND e.ativo = 1 AND (c.alerta_declaracao IS NOT NULL OR c.ultimo_erro IS NOT NULL)
+       WHERE c.escritorio_id = ? AND c.ativo = 1 AND e.ativo = 1
        ORDER BY e.nome`
     )
     .all(escritorioId) as any[];
-  // Duas origens de pendência: um alerta de verdade (declaração/DAS não localizada, busca funcionou
-  // e confirmou a falta) e uma falha técnica na última busca (a consulta nem completou — a situação
-  // real é desconhecida, o que também merece atenção, só que por outro motivo).
-  return rows
-    .filter((r) => visiveis.has(r.empresaId))
-    .map((r) => ({
-      empresaId: r.empresaId,
-      empresaNome: r.empresaNome,
-      alerta: r.alertaDeclaracao || `Falha na última busca — situação não confirmada: ${r.ultimoErro}`,
-    }));
+  const resultado: any[] = [];
+  for (const r of rows) {
+    if (!visiveis.has(r.empresaId)) continue;
+    // Três origens de pendência, checadas nessa ordem: um alerta de verdade (declaração/DAS não
+    // localizada), uma falha técnica na última busca (situação desconhecida, não confirmada), e —
+    // só quando a busca funcionou sem erro — o conteúdo real do relatório de Situação Fiscal já
+    // baixado (parcelamento/débito).
+    if (r.alertaDeclaracao) {
+      resultado.push({ empresaId: r.empresaId, empresaNome: r.empresaNome, alerta: r.alertaDeclaracao });
+      continue;
+    }
+    if (r.ultimoErro) {
+      resultado.push({ empresaId: r.empresaId, empresaNome: r.empresaNome, alerta: `Falha na última busca — situação não confirmada: ${r.ultimoErro}` });
+      continue;
+    }
+    const doc = sqlite
+      .prepare(`SELECT pdf_path as pdfPath FROM integracontador_documentos WHERE empresa_id = ? AND tipo = 'situacao_fiscal' ORDER BY criado_em DESC LIMIT 1`)
+      .get(r.empresaId) as any;
+    if (!doc?.pdfPath || !fs.existsSync(doc.pdfPath)) continue;
+    try {
+      const analise = await sitfisAnalisar(doc.pdfPath);
+      if (analise.temPendencia) resultado.push({ empresaId: r.empresaId, empresaNome: r.empresaNome, alerta: `Situação Fiscal: ${analise.resumo}` });
+    } catch (e: any) {
+      console.error(`[Situação Fiscal] falha ao ler o relatório da empresa ${r.empresaId}:`, e.message);
+    }
+  }
+  return resultado;
 }
 
 // Empresas que já passaram do prazo (dia do mês) de um modelo de Solicitação de Documentos e ainda
@@ -7029,7 +7066,7 @@ function cardSolicitacoesPendentes(user: any): any[] {
   return rows.filter((r) => visiveis.has(r.empresaId));
 }
 
-function calcularCardComputado(tipo: string, user: any): any[] {
+async function calcularCardComputado(tipo: string, user: any): Promise<any[]> {
   if (tipo === "certificados_vencer") return cardCertificadosAVencer(user);
   if (tipo === "das_atraso") return cardDasEmAtraso(user);
   if (tipo === "situacao_fiscal") return cardSituacaoFiscal(user);
@@ -7038,25 +7075,27 @@ function calcularCardComputado(tipo: string, user: any): any[] {
   return [];
 }
 
-app.get("/api/dashboard/cards", requirePermissao("dashboard", "visualizar"), (req, res) => {
+app.get("/api/dashboard/cards", requirePermissao("dashboard", "visualizar"), async (req, res) => {
   const user = (req as any).user;
   const rows = sqlite.prepare(`SELECT * FROM dashboard_cards WHERE escritorio_id = ? ORDER BY ordem, id`).all(user.escritorioId) as any[];
-  const items = rows.map((r) => {
-    if (!r.tipo) return r;
-    try {
-      return { ...r, valor: String(calcularCardComputado(r.tipo, user).length) };
-    } catch {
-      return { ...r, valor: "—" };
-    }
-  });
+  const items = await Promise.all(
+    rows.map(async (r) => {
+      if (!r.tipo) return r;
+      try {
+        return { ...r, valor: String((await calcularCardComputado(r.tipo, user)).length) };
+      } catch {
+        return { ...r, valor: "—" };
+      }
+    })
+  );
   res.json({ items });
 });
-app.get("/api/dashboard/cards/:id/detalhe", requirePermissao("dashboard", "visualizar"), (req, res) => {
+app.get("/api/dashboard/cards/:id/detalhe", requirePermissao("dashboard", "visualizar"), async (req, res) => {
   const user = (req as any).user;
   const card = sqlite.prepare(`SELECT * FROM dashboard_cards WHERE id = ? AND escritorio_id = ?`).get(Number(req.params.id), user.escritorioId) as any;
   if (!card) return res.status(404).json({ error: "Card não encontrado." });
   if (!card.tipo) return res.status(400).json({ error: "Este card não tem detalhamento — é um valor digitado manualmente." });
-  res.json({ tipo: card.tipo, items: calcularCardComputado(card.tipo, user) });
+  res.json({ tipo: card.tipo, items: await calcularCardComputado(card.tipo, user) });
 });
 app.post("/api/dashboard/cards", blockCliente, requirePermissao("dashboard", "editar"), (req, res) => {
   const user = (req as any).user;
