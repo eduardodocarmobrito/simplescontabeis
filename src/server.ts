@@ -4763,6 +4763,37 @@ async function nfseMunicipiosDaUf(uf: string): Promise<{ id: number; nome: strin
   }
   return municipios;
 }
+// Busca de CEP (BrasilAPI) já resolvendo o código IBGE do município junto — usado pra
+// pré-preencher o endereço do tomador na emissão de NFS-e mesmo quando ele é pessoa física (CPF
+// não tem consulta pública de CNPJ, então até agora só CNPJ ganhava esse preenchimento automático;
+// sem código de município preenchido, o servidor caía no padrão do prestador, que não bate com o
+// CEP real do tomador quando ele é de outra cidade — rejeição real da Receita, achado ao vivo).
+async function nfseResolverCep(cep: string): Promise<{
+  logradouro: string | null;
+  bairro: string | null;
+  cidade: string | null;
+  uf: string | null;
+  codigoMunicipio: string | null;
+}> {
+  const resp = await fetch(`https://brasilapi.com.br/api/cep/v2/${cep}`, { headers: { "User-Agent": "SimplesContabeis/1.0" } });
+  if (resp.status === 404) throw new Error("CEP não encontrado.");
+  if (!resp.ok) throw new Error(`API retornou HTTP ${resp.status}.`);
+  const j = (await resp.json()) as any;
+  const cidade: string | null = j.city || null;
+  const uf: string | null = j.state || null;
+  let codigoMunicipio: string | null = null;
+  if (cidade && uf) {
+    try {
+      const municipios = await nfseMunicipiosDaUf(uf);
+      const alvo = nfseNormalizaCidade(cidade);
+      const achado = municipios.find((m) => nfseNormalizaCidade(m.nome) === alvo);
+      if (achado) codigoMunicipio = String(achado.id);
+    } catch {
+      /* segue sem o código IBGE — quem chama decide se bloqueia a emissão sem ele ou não */
+    }
+  }
+  return { logradouro: j.street || null, bairro: j.neighborhood || null, cidade, uf, codigoMunicipio };
+}
 // Lista completa de municípios de uma UF — usado pelo combobox de busca manual (o admin digita
 // pra filtrar, ver setupComboSelect no frontend).
 app.get("/api/nfse/municipios-ibge", blockCliente, requirePermissao("nfse", "visualizar"), async (req, res) => {
@@ -4816,6 +4847,15 @@ app.get("/api/nfse/cnpj/:cnpj", blockCliente, requirePermissao("nfse", "visualiz
     });
   } catch (e: any) {
     res.status(502).json({ error: `Não consegui consultar o CNPJ: ${e.message}` });
+  }
+});
+app.get("/api/nfse/cep/:cep", blockCliente, requirePermissao("nfse", "visualizar"), async (req, res) => {
+  const cep = String(req.params.cep).replace(/\D/g, "");
+  if (cep.length !== 8) return res.status(400).json({ error: "CEP inválido — precisa ter 8 dígitos." });
+  try {
+    res.json(await nfseResolverCep(cep));
+  } catch (e: any) {
+    res.status(502).json({ error: `Não consegui consultar o CEP: ${e.message}` });
   }
 });
 app.put("/api/nfse/empresas/:id", blockCliente, requirePermissao("nfse", "editar"), (req, res) => {
@@ -6294,6 +6334,15 @@ app.get("/api/nfse/minha-empresa/cnpj/:cnpj", requireCliente, requireModuloAtivo
     });
   } catch (e: any) {
     res.status(502).json({ error: `Não consegui consultar o CNPJ: ${e.message}` });
+  }
+});
+app.get("/api/nfse/minha-empresa/cep/:cep", requireCliente, requireModuloAtivo('nfse'), async (req, res) => {
+  const cep = String(req.params.cep).replace(/\D/g, "");
+  if (cep.length !== 8) return res.status(400).json({ error: "CEP inválido — precisa ter 8 dígitos." });
+  try {
+    res.json(await nfseResolverCep(cep));
+  } catch (e: any) {
+    res.status(502).json({ error: `Não consegui consultar o CEP: ${e.message}` });
   }
 });
 

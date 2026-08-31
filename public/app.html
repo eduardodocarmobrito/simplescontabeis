@@ -263,6 +263,33 @@ async function api(path, opts){
   return data;
 }
 function fmtMoney(v){ return (Number(v)||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'}); }
+// Máscara de campo de valor em R$ — digita só números, formata milhar/centavos ao vivo (ex.: digitar
+// "1798604" mostra "17.986,04"). moedaInputParaNumero() faz o caminho inverso na leitura do form.
+function ligarMascaraMoeda(el){
+  el.addEventListener('input', ()=>{
+    const digitos = el.value.replace(/\D/g,'');
+    el.value = digitos ? (Number(digitos)/100).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}) : '';
+  });
+}
+function moedaInputParaNumero(el){
+  const digitos = el.value.replace(/\D/g,'');
+  return digitos ? Number(digitos)/100 : 0;
+}
+// Máscara de CPF/CNPJ — decide o formato pela quantidade de dígitos já digitados (até 11 = CPF em
+// formação, 12+ = CNPJ). A leitura do form sempre re-extrai só os dígitos, então a máscara é só
+// visual.
+function formatarDocumentoBR(digitos){
+  if(digitos.length<=11){
+    return digitos.replace(/(\d{3})(\d)/,'$1.$2').replace(/(\d{3})(\d)/,'$1.$2').replace(/(\d{3})(\d{1,2})$/,'$1-$2');
+  }
+  return digitos.replace(/(\d{2})(\d)/,'$1.$2').replace(/(\d{3})(\d)/,'$1.$2').replace(/(\d{3})(\d)/,'$1/$2').replace(/(\d{4})(\d{1,2})$/,'$1-$2');
+}
+function ligarMascaraCep(el){
+  el.addEventListener('input', ()=>{
+    const digitos = el.value.replace(/\D/g,'').slice(0,8);
+    el.value = digitos.length>5 ? digitos.replace(/(\d{5})(\d)/,'$1-$2') : digitos;
+  });
+}
 // Datas do próprio site vêm sem fuso (formato do SQLite, ex.: "2026-08-01 10:00:00" = já em horário
 // local) — precisam de "Z" pra não serem reinterpretadas pelo fuso do navegador. Datas de XML fiscal
 // (NF-e/NFS-e) já vêm com o fuso explícito (ex.: "...T10:00:00-03:00") — nesse caso NÃO acrescenta
@@ -2236,7 +2263,7 @@ async function renderNfseEmitir(){
       <input type="hidden" id="nfseEmiCodMun">
       <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Serviço prestado</div>
       <div class="row">
-        <div class="field" style="width:140px;"><label>Valor (R$)</label><input id="nfseEmiValor" type="number" step="0.01" min="0"></div>
+        <div class="field" style="width:140px;"><label>Valor (R$)</label><input id="nfseEmiValor" inputmode="decimal" placeholder="0,00"></div>
         <div class="field" style="width:160px;"><label>Competência</label><input id="nfseEmiCompetencia" type="date" value="${hoje.toISOString().slice(0,10)}"></div>
       </div>
       <div class="field"><label>Descrição do serviço</label><textarea id="nfseEmiDescricao" rows="2" placeholder="Ex.: Fabricação de 01 toldo sombrite medidas 6x4"></textarea></div>
@@ -2251,7 +2278,6 @@ async function renderNfseEmitir(){
     const setVal=(id,v)=>{ const el=document.getElementById(id); if(el && v!=null) el.value=v; };
     setVal('nfseEmiEmpresa', prefill.empresaId);
     setVal('nfseEmiModelo', prefill.modeloId);
-    setVal('nfseEmiDocTomador', prefill.tomadorDocumento);
     setVal('nfseEmiNomeTomador', prefill.tomadorNome);
     setVal('nfseEmiEmailTomador', prefill.tomadorEmail);
     setVal('nfseEmiEndereco', prefill.tomadorLogradouro);
@@ -2261,17 +2287,20 @@ async function renderNfseEmitir(){
     setVal('nfseEmiBairro', prefill.tomadorBairro);
     setVal('nfseEmiCodMun', prefill.tomadorCodigoMunicipio);
     setVal('nfseEmiDescricao', prefill.descricaoServico);
-    setVal('nfseEmiValor', prefill.valorServico);
+    if(prefill.valorServico!=null) document.getElementById('nfseEmiValor').value = Number(prefill.valorServico).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+    if(prefill.tomadorDocumento) document.getElementById('nfseEmiDocTomador').value = formatarDocumentoBR(String(prefill.tomadorDocumento).replace(/\D/g,''));
     toast(prefill.__modo==='continuar' ? 'Continuando rascunho — revise os dados antes de emitir.' : 'Dados duplicados — revise antes de emitir.', 'ok');
   }
+  ligarMascaraMoeda(document.getElementById('nfseEmiValor'));
+  ligarMascaraCep(document.getElementById('nfseEmiCep'));
   if(habilitadas.length>1) document.getElementById('nfseEmiEmpresa').addEventListener('change', e=>{
     NFSE_EMITIR_EMPRESA_ID = Number(e.target.value) || null;
     NFSE_RASCUNHO_ID = null;
     renderNfseEmitir();
   });
   document.getElementById('nfseEmiDocTomador').addEventListener('input', async e=>{
-    const doc = e.target.value.replace(/\D/g,'');
-    e.target.value = doc;
+    const doc = e.target.value.replace(/\D/g,'').slice(0,14);
+    e.target.value = formatarDocumentoBR(doc);
     if(doc.length!==14) return; // busca automática só existe pra CNPJ — CPF não tem consulta pública
     const status = document.getElementById('nfseEmiCnpjStatus');
     status.textContent = 'Consultando CNPJ na Receita Federal…';
@@ -2297,6 +2326,27 @@ async function renderNfseEmitir(){
       status.textContent = err.message;
     }
   });
+  // Preenchimento automático pelo CEP — funciona pra qualquer tomador (inclusive CPF, que não tem
+  // consulta pública de CNPJ pra puxar o endereço). Sem isso, faltando o código do município do
+  // tomador, o servidor cai no padrão do prestador — rejeição real da Receita quando o CEP digitado
+  // é de outra cidade (achado ao vivo).
+  document.getElementById('nfseEmiCep').addEventListener('input', async e=>{
+    const cep = e.target.value.replace(/\D/g,'').slice(0,8);
+    if(cep.length!==8) return;
+    const status = document.getElementById('nfseEmiCnpjStatus');
+    status.textContent = 'Consultando CEP…';
+    try{
+      const r = await api('/nfse/cep/'+cep);
+      if(r.logradouro && !document.getElementById('nfseEmiEndereco').value) document.getElementById('nfseEmiEndereco').value = r.logradouro;
+      if(r.bairro && !document.getElementById('nfseEmiBairro').value) document.getElementById('nfseEmiBairro').value = r.bairro;
+      document.getElementById('nfseEmiCidade').value = r.cidade || '';
+      document.getElementById('nfseEmiUf').value = r.uf || '';
+      document.getElementById('nfseEmiCodMun').value = r.codigoMunicipio || '';
+      status.textContent = r.codigoMunicipio ? 'Cidade preenchida a partir do CEP.' : 'CEP encontrado, mas não identifiquei o município — confira Cidade/UF na mão.';
+    }catch(err){
+      status.textContent = 'Não consegui consultar o CEP — confira Cidade/UF na mão.';
+    }
+  });
   function nfseLerFormulario(){
     return {
       empresaId: Number(document.getElementById('nfseEmiEmpresa').value),
@@ -2314,7 +2364,7 @@ async function renderNfseEmitir(){
       },
       servico: {
         descricao: document.getElementById('nfseEmiDescricao').value.trim(),
-        valor: Number(document.getElementById('nfseEmiValor').value),
+        valor: moedaInputParaNumero(document.getElementById('nfseEmiValor')),
         competencia: document.getElementById('nfseEmiCompetencia').value,
       },
     };
@@ -3506,7 +3556,7 @@ async function renderMinhaNfseEmitir(){
       <input type="hidden" id="mnfEmiCodMun">
       <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Serviço prestado</div>
       <div class="row">
-        <div class="field" style="width:140px;"><label>Valor (R$)</label><input id="mnfEmiValor" type="number" step="0.01" min="0"></div>
+        <div class="field" style="width:140px;"><label>Valor (R$)</label><input id="mnfEmiValor" inputmode="decimal" placeholder="0,00"></div>
         <div class="field" style="width:160px;"><label>Competência</label><input id="mnfEmiCompetencia" type="date" value="${hoje.toISOString().slice(0,10)}"></div>
       </div>
       <div class="field"><label>Descrição do serviço</label><textarea id="mnfEmiDescricao" rows="2"></textarea></div>
@@ -3520,7 +3570,6 @@ async function renderMinhaNfseEmitir(){
   if(prefill){
     const setVal=(id,v)=>{ const el=document.getElementById(id); if(el && v!=null) el.value=v; };
     setVal('mnfEmiModelo', prefill.modeloId);
-    setVal('mnfEmiDocTomador', prefill.tomadorDocumento);
     setVal('mnfEmiNomeTomador', prefill.tomadorNome);
     setVal('mnfEmiEmailTomador', prefill.tomadorEmail);
     setVal('mnfEmiEndereco', prefill.tomadorLogradouro);
@@ -3530,12 +3579,15 @@ async function renderMinhaNfseEmitir(){
     setVal('mnfEmiBairro', prefill.tomadorBairro);
     setVal('mnfEmiCodMun', prefill.tomadorCodigoMunicipio);
     setVal('mnfEmiDescricao', prefill.descricaoServico);
-    setVal('mnfEmiValor', prefill.valorServico);
+    if(prefill.valorServico!=null) document.getElementById('mnfEmiValor').value = Number(prefill.valorServico).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+    if(prefill.tomadorDocumento) document.getElementById('mnfEmiDocTomador').value = formatarDocumentoBR(String(prefill.tomadorDocumento).replace(/\D/g,''));
     toast(prefill.__modo==='continuar' ? 'Continuando rascunho — revise os dados antes de emitir.' : 'Dados duplicados — revise antes de emitir.', 'ok');
   }
+  ligarMascaraMoeda(document.getElementById('mnfEmiValor'));
+  ligarMascaraCep(document.getElementById('mnfEmiCep'));
   document.getElementById('mnfEmiDocTomador').addEventListener('input', async e=>{
-    const doc = e.target.value.replace(/\D/g,'');
-    e.target.value = doc;
+    const doc = e.target.value.replace(/\D/g,'').slice(0,14);
+    e.target.value = formatarDocumentoBR(doc);
     if(doc.length!==14) return;
     const status = document.getElementById('mnfEmiCnpjStatus');
     status.textContent = 'Consultando CNPJ na Receita Federal…';
@@ -3561,6 +3613,26 @@ async function renderMinhaNfseEmitir(){
       status.textContent = err.message;
     }
   });
+  // Preenchimento automático pelo CEP — funciona pra qualquer tomador (inclusive CPF, sem consulta
+  // pública de CNPJ). Sem isso, faltando o código do município do tomador, o servidor cai no padrão
+  // do prestador — rejeição real da Receita quando o CEP digitado é de outra cidade.
+  document.getElementById('mnfEmiCep').addEventListener('input', async e=>{
+    const cep = e.target.value.replace(/\D/g,'').slice(0,8);
+    if(cep.length!==8) return;
+    const status = document.getElementById('mnfEmiCnpjStatus');
+    status.textContent = 'Consultando CEP…';
+    try{
+      const r = await api('/nfse/minha-empresa/cep/'+cep);
+      if(r.logradouro && !document.getElementById('mnfEmiEndereco').value) document.getElementById('mnfEmiEndereco').value = r.logradouro;
+      if(r.bairro && !document.getElementById('mnfEmiBairro').value) document.getElementById('mnfEmiBairro').value = r.bairro;
+      document.getElementById('mnfEmiCidade').value = r.cidade || '';
+      document.getElementById('mnfEmiUf').value = r.uf || '';
+      document.getElementById('mnfEmiCodMun').value = r.codigoMunicipio || '';
+      status.textContent = r.codigoMunicipio ? 'Cidade preenchida a partir do CEP.' : 'CEP encontrado, mas não identifiquei o município — confira Cidade/UF na mão.';
+    }catch(err){
+      status.textContent = 'Não consegui consultar o CEP — confira Cidade/UF na mão.';
+    }
+  });
   function lerFormulario(){
     return {
       modeloId: Number(document.getElementById('mnfEmiModelo').value),
@@ -3577,7 +3649,7 @@ async function renderMinhaNfseEmitir(){
       },
       servico: {
         descricao: document.getElementById('mnfEmiDescricao').value.trim(),
-        valor: Number(document.getElementById('mnfEmiValor').value),
+        valor: moedaInputParaNumero(document.getElementById('mnfEmiValor')),
         competencia: document.getElementById('mnfEmiCompetencia').value,
       },
     };
