@@ -510,10 +510,10 @@ const NAV = [
   { id:'nfse', label:'NFS-e', modulo:'nfse', roles:['Administrador','Colaborador'] },
   { id:'nfe-busca', label:'Busca de XML', modulo:'nfe-busca', roles:['Administrador'] },
   { id:'integracontador', label:'Integra Contador', modulo:'integracontador', roles:['Administrador'] },
+  { id:'minha-nfse', label:'NFS-e', modulo:null, roles:['Cliente'] },
   { id:'meus-documentos', label:'Meus Documentos', modulo:null, roles:['Cliente'] },
   { id:'solicitar-documentos', label:'Solicitar Documentos', modulo:null, roles:['Cliente'] },
   { id:'documentos-recebidos', label:'Documentos Recebidos', modulo:null, roles:['Cliente'] },
-  { id:'minha-nfse', label:'NFS-e', modulo:null, roles:['Cliente'] },
   { id:'minha-financeiro', label:'Financeiro', modulo:null, roles:['Cliente'] },
   { id:'minha-assinatura', label:'Assinatura', modulo:null, roles:['Cliente'] },
   { id:'financeiro', label:'Financeiro', modulo:'financeiro', roles:['Administrador','Colaborador'] },
@@ -559,7 +559,7 @@ async function boot(){
   document.getElementById('whoName').innerHTML = esc(STATE.user.nome);
   document.getElementById('whoProfile').textContent = STATE.user.perfil;
   if(STATE.user.perfil==='Cliente') await renderEmpresaSwitch();
-  STATE.page = STATE.user.perfil==='Cliente' ? 'meus-documentos' : (STATE.user.perfil==='SuperAdmin' ? 'escritorios' : 'dashboard');
+  STATE.page = STATE.user.perfil==='Cliente' ? 'minha-nfse' : (STATE.user.perfil==='SuperAdmin' ? 'escritorios' : 'dashboard');
   renderNav();
   render();
 }
