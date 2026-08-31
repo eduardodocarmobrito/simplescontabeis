@@ -602,7 +602,7 @@ function can(modulo, acao){
 }
 
 async function render(){
-  RENDER_SEQ++;
+  const meuSeq = ++RENDER_SEQ;
   const m = main();
   m.innerHTML = '<div class="empty-state">Carregando…</div>';
   try{
@@ -629,6 +629,7 @@ async function render(){
     else if(STATE.page==='modulos-plataforma') await pageModulosPlataforma();
     else m.innerHTML = '<div class="empty-state">Página não encontrada.</div>';
   }catch(e){
+    if(meuSeq !== RENDER_SEQ) return; // usuário já navegou pra outra tela — essa resposta chegou atrasada, não sobrescreve
     m.innerHTML = `<div class="empty-state">Não foi possível carregar esta página.<br><span style="color:var(--debit)">${esc(e.message)}</span></div>`;
   }
 }
