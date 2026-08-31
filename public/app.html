@@ -520,6 +520,7 @@ const NAV = [
   { id:'relatorios', label:'Relatórios', modulo:'relatorios', roles:['Administrador','Colaborador'] },
   { id:'usuarios', label:'Usuários', modulo:'usuarios', roles:['Administrador'] },
   { id:'configuracoes', label:'Configurações', modulo:'configuracoes', roles:['Administrador','Colaborador'] },
+  { id:'minha-assinatura-colaborador', label:'Assinatura', modulo:null, roles:['Colaborador'] },
   { id:'escritorios', label:'Escritórios', modulo:null, roles:['SuperAdmin'] },
   { id:'modulos-plataforma', label:'Módulos da plataforma', modulo:null, roles:['SuperAdmin'] },
 ];
@@ -617,6 +618,7 @@ async function render(){
     else if(STATE.page==='relatorios') await pageRelatorios();
     else if(STATE.page==='usuarios') await pageUsuarios();
     else if(STATE.page==='configuracoes') await pageConfiguracoes();
+    else if(STATE.page==='minha-assinatura-colaborador') await pageMinhaAssinaturaColaborador();
     else if(STATE.page==='escritorios') await pageEscritorios();
     else if(STATE.page==='modulos-plataforma') await pageModulosPlataforma();
     else m.innerHTML = '<div class="empty-state">Página não encontrada.</div>';
@@ -3868,6 +3870,43 @@ async function renderMinhaFinPagar(){
   }));
 }
 // ===================== Assinatura (catálogo de módulos, teste grátis, pagamento — perfil Cliente) =====================
+// ===================== Minha Assinatura (Colaborador) =====================
+// Diferente da tela do Cliente: quem paga de verdade é o escritório (cobrança agregada em
+// Configurações > Assinatura, vista só pelo Administrador) — essa tela é só informativa, mostra pro
+// próprio colaborador se o assento dele está isento ou incluído na cobrança.
+async function pageMinhaAssinaturaColaborador(){
+  const info = await api('/colaborador/minha-assinatura');
+  let badgeClass='muted', badgeText='—', texto='';
+  if(info.isento){
+    badgeClass='ok'; badgeText='Isento';
+    texto = 'Você não entra na contagem de assentos cobrados do escritório.';
+  } else if(info.status==='ativo'){
+    badgeClass='ok'; badgeText='Incluído na assinatura';
+    texto = `Seu assento está ativo${info.assinaturaAtivaAte?(' até '+fmtDateIso(String(info.assinaturaAtivaAte).slice(0,10))):''}.`;
+  } else if(info.status==='teste'){
+    badgeClass='ok'; badgeText='Em teste';
+    texto = `Seu assento está no período de teste do escritório${info.trialFim?(', até '+fmtDateHora(info.trialFim)):''}.`;
+  } else if(info.status==='teste_vencido' || info.status==='vencido'){
+    badgeClass='bad'; badgeText='Assinatura vencida';
+    texto = 'A assinatura por assento do escritório está vencida — fale com o Administrador.';
+  } else {
+    badgeClass='muted'; badgeText='Não contratado';
+    texto = 'O escritório ainda não contratou a cobrança por assento — fale com o Administrador.';
+  }
+  main().innerHTML = `
+    <h1>Assinatura</h1>
+    <p class="subtitle">O escritório é quem paga sua cobrança por assento — aqui você só acompanha o status.</p>
+    <div class="card" style="max-width:480px;">
+      <div class="row" style="justify-content:space-between; align-items:center;">
+        <div>
+          <div style="font-weight:600;">Seu assento</div>
+          <div style="font-size:12.5px; color:var(--ink-soft); margin-top:2px;">${esc(texto)}</div>
+        </div>
+        <span class="tag ${badgeClass}">${esc(badgeText)}</span>
+      </div>
+    </div>
+  `;
+}
 async function pageMinhaAssinatura(){
   main().innerHTML = `
     <h1>Assinatura</h1>
@@ -3895,7 +3934,7 @@ function assinaturaModuloCardHtml(item){
       <div class="row" style="justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
         <div>
           <div style="font-weight:600;">${esc(item.nome)}</div>
-          <div style="font-size:12.5px; color:var(--ink-soft);">${fmtMoney(item.valorMensal)}/mês</div>
+          <div style="font-size:12.5px; color:var(--ink-soft);">${item.quantidade!=null?`${item.quantidade} × ${fmtMoney(item.valorUnitario)} = `:''}${fmtMoney(item.valorMensal)}/mês</div>
         </div>
         <div style="display:flex; align-items:center; gap:14px;">
           <span class="tag ${badgeClass}">${esc(badgeText)}</span>
@@ -4671,6 +4710,8 @@ async function usuarioModal(u){
     </div>
     ${u? `<label class="checkbox-row"><input type="checkbox" id="usAtivo" ${u.ativo?'checked':''}> Ativo</label>`:''}
     <div id="usColabWrap" class="hidden">
+      ${u? `<label class="checkbox-row"><input type="checkbox" id="usIsentoAssinatura" ${u.isentoAssinatura?'checked':''}> Isento da cobrança por assento</label>
+      <p style="font-size:11.5px; color:var(--ink-soft); margin:-4px 0 10px;">Colaboradores isentos não entram na contagem de assentos cobrados do escritório.</p>` : ''}
       <div style="margin:16px 0 8px; padding-top:12px; border-top:1px solid var(--rule); font-weight:600; font-size:13.5px;">Permissões e acessos</div>
       <label class="checkbox-row"><input type="checkbox" id="usAcessoTodas" checked> Acesso a todas as empresas</label>
       <div id="usEmpresasRestritasWrap" class="hidden" style="margin:6px 0 10px;">
@@ -4744,7 +4785,10 @@ async function usuarioModal(u){
       if(u){
         const body = { nome, email, ativo: document.getElementById('usAtivo').checked };
         if(senha) body.password = senha;
-        if(perfil==='Colaborador') body.acessoTodasEmpresas = document.getElementById('usAcessoTodas').checked;
+        if(perfil==='Colaborador'){
+          body.acessoTodasEmpresas = document.getElementById('usAcessoTodas').checked;
+          body.isentoAssinatura = document.getElementById('usIsentoAssinatura').checked;
+        }
         await api('/users/'+u.id, { method:'PUT', body });
         userId = u.id;
       } else {

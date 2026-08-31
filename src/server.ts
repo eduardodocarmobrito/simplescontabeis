@@ -83,6 +83,7 @@ sqlite.exec(`
     acesso_todas_empresas INTEGER NOT NULL DEFAULT 1, -- só relevante para Colaborador
     password_hash TEXT NOT NULL,
     ativo INTEGER NOT NULL DEFAULT 1,
+    isento_assinatura INTEGER NOT NULL DEFAULT 0, -- Colaborador isento da cobrança por assento (não entra na contagem)
     created_at TEXT DEFAULT (datetime('now'))
   );
 
@@ -382,7 +383,8 @@ sqlite.exec(`
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     cobranca_id INTEGER NOT NULL REFERENCES escritorio_licenca_cobrancas(id) ON DELETE CASCADE,
     modulo_chave TEXT NOT NULL,
-    valor REAL NOT NULL
+    valor REAL NOT NULL,
+    quantidade INTEGER NOT NULL DEFAULT 1 -- só relevante pro item 'assento_colaborador' (valor já é o total, quantidade fica pra auditoria/histórico)
   );
 
   -- ---- Contratos (gestão dos contratos e aditivos do escritório com as empresas-cliente) ----
@@ -1179,6 +1181,11 @@ sqlite.exec(`INSERT OR IGNORE INTO modulos_escritorio_catalogo (chave, nome, val
 sqlite.exec(`INSERT OR IGNORE INTO modulos_escritorio_catalogo (chave, nome, valor_mensal) VALUES ('envio_email_automatico', 'Envio automático por e-mail', 0)`);
 sqlite.exec(`INSERT OR IGNORE INTO modulos_escritorio_catalogo (chave, nome, valor_mensal) VALUES ('envio_whatsapp', 'Envio automático por WhatsApp', 0)`);
 sqlite.exec(`INSERT OR IGNORE INTO modulos_escritorio_catalogo (chave, nome, valor_mensal) VALUES ('busca_xml_nfe', 'Busca automática de XML (NF-e/NFC-e/NFS-e)', 0)`);
+// Valor "por assento" — diferente dos outros módulos (fixo, contratado ou não), o valor final desse
+// item na fatura é o preço unitário aqui multiplicado pela quantidade de colaboradores ativos e não
+// isentos (ver contarAssentosColaborador). Preço 0 até o SuperAdmin configurar em Escritórios >
+// Módulos da plataforma — mesma tela que já edita os outros módulos desse catálogo.
+sqlite.exec(`INSERT OR IGNORE INTO modulos_escritorio_catalogo (chave, nome, valor_mensal) VALUES ('assento_colaborador', 'Assento por colaborador (cobrado por usuário)', 0)`);
 sqlite.exec(`UPDATE modulos_escritorio_catalogo SET nome = 'Busca automática de XML (NF-e/NFC-e/NFS-e)' WHERE chave = 'busca_xml_nfe' AND nome = 'Busca automática de NF-e/NFC-e'`);
 // Migração de compatibilidade: empresas que JÁ usam NFS-e ou Financeiro de verdade (antes de existir
 // o controle de teste/assinatura) ganham acesso permanente automático — nunca bloqueia quem já era
@@ -1225,6 +1232,18 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
   const colsReceber = sqlite.prepare(`PRAGMA table_info(financeiro_receber)`).all() as any[];
   if (!colsReceber.some((c) => c.name === "conta_id")) {
     sqlite.exec(`ALTER TABLE financeiro_receber ADD COLUMN conta_id INTEGER REFERENCES financeiro_contas(id) ON DELETE SET NULL`);
+  }
+}
+// Migração leve: isenção de cobrança por assento (app_users) e quantidade no item de fatura do
+// escritório (escritorio_licenca_cobranca_itens).
+{
+  const colsUsers = sqlite.prepare(`PRAGMA table_info(app_users)`).all() as any[];
+  if (!colsUsers.some((c) => c.name === "isento_assinatura")) {
+    sqlite.exec(`ALTER TABLE app_users ADD COLUMN isento_assinatura INTEGER NOT NULL DEFAULT 0`);
+  }
+  const colsItens = sqlite.prepare(`PRAGMA table_info(escritorio_licenca_cobranca_itens)`).all() as any[];
+  if (!colsItens.some((c) => c.name === "quantidade")) {
+    sqlite.exec(`ALTER TABLE escritorio_licenca_cobranca_itens ADD COLUMN quantidade INTEGER NOT NULL DEFAULT 1`);
   }
 }
 // Migração leve: Cliente passa a poder ter mais de uma empresa atribuída — a sessão guarda qual
@@ -1935,7 +1954,7 @@ app.get("/api/users", requireAdmin, (req, res) => {
   const rows = sqlite
     .prepare(
       `SELECT u.id, u.nome, u.email, u.perfil, u.empresa_id as empresaId, e.nome as empresaNome,
-              u.acesso_todas_empresas as acessoTodasEmpresas, u.ativo, u.created_at as createdAt,
+              u.acesso_todas_empresas as acessoTodasEmpresas, u.ativo, u.isento_assinatura as isentoAssinatura, u.created_at as createdAt,
               (SELECT COUNT(*) FROM cliente_empresas ce WHERE ce.user_id = u.id) as totalEmpresas
        FROM app_users u LEFT JOIN empresas e ON e.id = u.empresa_id
        WHERE u.escritorio_id = ?
@@ -1980,7 +1999,7 @@ app.put("/api/users/:id", requireAdmin, (req, res) => {
   const id = Number(req.params.id);
   const existing = sqlite.prepare(`SELECT * FROM app_users WHERE id = ?`).get(id) as any;
   if (!existing || existing.escritorio_id !== (req as any).user.escritorioId) return res.status(404).json({ error: "Usuário não encontrado." });
-  const { nome, email, password, ativo, acessoTodasEmpresas } = req.body || {};
+  const { nome, email, password, ativo, acessoTodasEmpresas, isentoAssinatura } = req.body || {};
   if (password) {
     const pwError = passwordPolicyError(password);
     if (pwError) return res.status(400).json({ error: pwError });
@@ -1988,13 +2007,14 @@ app.put("/api/users/:id", requireAdmin, (req, res) => {
   const newHash = password ? hashPassword(password) : existing.password_hash;
   try {
     sqlite
-      .prepare(`UPDATE app_users SET nome=?, email=?, password_hash=?, ativo=?, acesso_todas_empresas=? WHERE id=?`)
+      .prepare(`UPDATE app_users SET nome=?, email=?, password_hash=?, ativo=?, acesso_todas_empresas=?, isento_assinatura=? WHERE id=?`)
       .run(
         nome ?? existing.nome,
         email ? String(email).trim().toLowerCase() : existing.email,
         newHash,
         ativo === undefined ? existing.ativo : ativo ? 1 : 0,
         acessoTodasEmpresas !== undefined ? (acessoTodasEmpresas ? 1 : 0) : existing.acesso_todas_empresas,
+        isentoAssinatura !== undefined ? (isentoAssinatura ? 1 : 0) : existing.isento_assinatura,
         id
       );
     if (ativo === false) sqlite.prepare(`DELETE FROM sessions WHERE user_id = ?`).run(id);
@@ -6319,6 +6339,14 @@ function moduloStatusParaEscritorio(catalogo: any, contratado: any) {
   if (contratado.assinatura_ativa_ate) return { status: "vencido", acesso: false };
   return { status: "teste_vencido", acesso: false };
 }
+// Colaboradores ativos e não isentos — é essa contagem que multiplica o valor unitário do módulo
+// 'assento_colaborador' na fatura do escritório.
+function contarAssentosColaborador(escritorioId: number): number {
+  const r = sqlite
+    .prepare(`SELECT COUNT(*) as c FROM app_users WHERE escritorio_id = ? AND perfil = 'Colaborador' AND ativo = 1 AND isento_assinatura = 0`)
+    .get(escritorioId) as any;
+  return r.c;
+}
 // Usado tanto pela tela de assinatura (Administrador do escritório) quanto pelos pontos do código
 // que precisam saber se um escritório tem direito a rodar a rotina automática de NFS-e / mandar por
 // e-mail ou WhatsApp automaticamente.
@@ -6326,13 +6354,17 @@ function modulosDoEscritorio(escritorioId: number) {
   const catalogo = sqlite.prepare(`SELECT * FROM modulos_escritorio_catalogo ORDER BY chave`).all() as any[];
   const contratados = sqlite.prepare(`SELECT * FROM escritorio_modulos WHERE escritorio_id = ?`).all(escritorioId) as any[];
   const porChave = new Map(contratados.map((c) => [c.modulo_chave, c]));
+  const assentos = contarAssentosColaborador(escritorioId);
   return catalogo.map((m) => {
     const contratado = porChave.get(m.chave);
     const { status, acesso } = moduloStatusParaEscritorio(m, contratado);
+    const porAssento = m.chave === "assento_colaborador";
     return {
       chave: m.chave,
       nome: m.nome,
-      valorMensal: m.valor_mensal,
+      valorMensal: porAssento ? m.valor_mensal * assentos : m.valor_mensal,
+      valorUnitario: porAssento ? m.valor_mensal : null,
+      quantidade: porAssento ? assentos : null,
       ativo: !!m.ativo,
       status,
       acesso,
@@ -6352,6 +6384,25 @@ function escritorioTemModulo(escritorioId: number, chave: string): boolean {
 }
 app.get("/api/escritorio/modulos", blockCliente, requireAdmin, (req, res) => {
   res.json({ items: modulosDoEscritorio((req as any).user.escritorioId) });
+});
+// Status individual do Colaborador logado — quem paga de verdade é o escritório (cobrança agregada
+// em /api/escritorio/modulos/pagar), essa tela é só informativa: mostra se esse assento específico
+// está isento, incluído no teste/assinatura ativa do escritório, ou fora (assinatura vencida).
+app.get("/api/colaborador/minha-assinatura", (req, res) => {
+  const user = (req as any).user;
+  if (user.perfil !== "Colaborador") return res.status(403).json({ error: "Essa tela é só para o perfil Colaborador." });
+  const isento = sqlite.prepare(`SELECT isento_assinatura FROM app_users WHERE id = ?`).get(user.id) as any;
+  const m = sqlite.prepare(`SELECT * FROM modulos_escritorio_catalogo WHERE chave = 'assento_colaborador'`).get() as any;
+  const contratado = sqlite.prepare(`SELECT * FROM escritorio_modulos WHERE escritorio_id = ? AND modulo_chave = 'assento_colaborador'`).get(user.escritorioId) as any;
+  const { status, acesso } = moduloStatusParaEscritorio(m, contratado);
+  res.json({
+    isento: !!isento?.isento_assinatura,
+    valorUnitario: m?.valor_mensal ?? 0,
+    status,
+    acesso,
+    trialFim: contratado?.trial_fim || null,
+    assinaturaAtivaAte: contratado?.assinatura_ativa_ate || null,
+  });
 });
 app.post("/api/escritorio/modulos/:chave/iniciar-teste", blockCliente, requireAdmin, (req, res) => {
   const escritorioId = (req as any).user.escritorioId;
@@ -6374,14 +6425,27 @@ app.post("/api/escritorio/modulos/pagar", blockCliente, requireAdmin, async (req
     .prepare(`SELECT chave, nome, valor_mensal FROM modulos_escritorio_catalogo WHERE ativo = 1 AND chave IN (${chaves.map(() => "?").join(",")})`)
     .all(...chaves) as any[];
   if (!catalogo.length) return res.status(400).json({ error: "Nenhum dos módulos selecionados está disponível." });
-  const valorTotal = catalogo.reduce((soma, m) => soma + Number(m.valor_mensal), 0);
+  const assentos = contarAssentosColaborador(escritorioId);
+  // 'assento_colaborador' não é preço fixo — o item cobra o valor unitário do catálogo multiplicado
+  // pela quantidade de colaboradores ativos e não isentos no momento da cobrança.
+  const itensCalculados = catalogo.map((m) => ({
+    chave: m.chave,
+    nome: m.chave === "assento_colaborador" ? `${m.nome} (${assentos}x)` : m.nome,
+    quantidade: m.chave === "assento_colaborador" ? assentos : 1,
+    valor: m.chave === "assento_colaborador" ? Number(m.valor_mensal) * assentos : Number(m.valor_mensal),
+  }));
+  const valorTotal = itensCalculados.reduce((soma, m) => soma + m.valor, 0);
   if (!valorTotal) return res.status(400).json({ error: "O valor desses módulos ainda não foi configurado — entre em contato com o suporte." });
   const escritorio = sqlite.prepare(`SELECT nome, cnpj, email, telefone, asaas_customer_id FROM escritorios WHERE id = ?`).get(escritorioId) as any;
   const pendentes = sqlite.prepare(`SELECT * FROM escritorio_licenca_cobrancas WHERE escritorio_id = ? AND status = 'pendente' ORDER BY id DESC`).all(escritorioId) as any[];
   let cobranca = pendentes.find((c) => {
-    const itens = sqlite.prepare(`SELECT modulo_chave FROM escritorio_licenca_cobranca_itens WHERE cobranca_id = ?`).all(c.id) as any[];
+    const itens = sqlite.prepare(`SELECT modulo_chave, quantidade FROM escritorio_licenca_cobranca_itens WHERE cobranca_id = ?`).all(c.id) as any[];
     const chavesCobranca = itens.map((i) => i.modulo_chave).sort().join(",");
-    return chavesCobranca === [...chaves].sort().join(",");
+    if (chavesCobranca !== [...chaves].sort().join(",")) return false;
+    // Se a quantidade de assentos mudou desde a última cobrança pendente gerada, não reaproveita —
+    // gera uma nova, senão o cliente pagaria um valor desatualizado.
+    const itemAssento = itens.find((i) => i.modulo_chave === "assento_colaborador");
+    return !itemAssento || itemAssento.quantidade === assentos;
   });
   try {
     let customerId = escritorio.asaas_customer_id;
@@ -6391,14 +6455,14 @@ app.post("/api/escritorio/modulos/pagar", blockCliente, requireAdmin, async (req
     }
     if (!cobranca) {
       const vencimento = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-      const descricao = `Assinatura — ${catalogo.map((m) => m.nome).join(", ")}`;
+      const descricao = `Assinatura — ${itensCalculados.map((m) => m.nome).join(", ")}`;
       const gerada = await asaas.criarCobranca({ customerId, valor: valorTotal, vencimento, descricao });
       const info = sqlite
         .prepare(`INSERT INTO escritorio_licenca_cobrancas (escritorio_id, valor_total, vencimento, status, asaas_payment_id, invoice_url) VALUES (?, ?, ?, 'pendente', ?, ?)`)
         .run(escritorioId, valorTotal, vencimento, gerada.id, gerada.invoiceUrl);
       const cobrancaId = Number(info.lastInsertRowid);
-      for (const m of catalogo) {
-        sqlite.prepare(`INSERT INTO escritorio_licenca_cobranca_itens (cobranca_id, modulo_chave, valor) VALUES (?, ?, ?)`).run(cobrancaId, m.chave, m.valor_mensal);
+      for (const m of itensCalculados) {
+        sqlite.prepare(`INSERT INTO escritorio_licenca_cobranca_itens (cobranca_id, modulo_chave, valor, quantidade) VALUES (?, ?, ?, ?)`).run(cobrancaId, m.chave, m.valor, m.quantidade);
       }
       cobranca = sqlite.prepare(`SELECT * FROM escritorio_licenca_cobrancas WHERE id = ?`).get(cobrancaId);
     }
