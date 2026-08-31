@@ -6928,13 +6928,22 @@ function cardSituacaoFiscal(user: any): any[] {
   const visiveis = new Set(empresasVisiveis(user));
   const rows = sqlite
     .prepare(
-      `SELECT c.empresa_id as empresaId, e.nome as empresaNome, c.alerta_declaracao as alerta
+      `SELECT c.empresa_id as empresaId, e.nome as empresaNome, c.alerta_declaracao as alertaDeclaracao, c.ultimo_erro as ultimoErro
        FROM integracontador_empresa_config c JOIN empresas e ON e.id = c.empresa_id
-       WHERE c.escritorio_id = ? AND c.alerta_declaracao IS NOT NULL AND e.ativo = 1
+       WHERE c.escritorio_id = ? AND c.ativo = 1 AND e.ativo = 1 AND (c.alerta_declaracao IS NOT NULL OR c.ultimo_erro IS NOT NULL)
        ORDER BY e.nome`
     )
     .all(escritorioId) as any[];
-  return rows.filter((r) => visiveis.has(r.empresaId));
+  // Duas origens de pendência: um alerta de verdade (declaração/DAS não localizada, busca funcionou
+  // e confirmou a falta) e uma falha técnica na última busca (a consulta nem completou — a situação
+  // real é desconhecida, o que também merece atenção, só que por outro motivo).
+  return rows
+    .filter((r) => visiveis.has(r.empresaId))
+    .map((r) => ({
+      empresaId: r.empresaId,
+      empresaNome: r.empresaNome,
+      alerta: r.alertaDeclaracao || `Falha na última busca — situação não confirmada: ${r.ultimoErro}`,
+    }));
 }
 
 // Empresas que já passaram do prazo (dia do mês) de um modelo de Solicitação de Documentos e ainda
