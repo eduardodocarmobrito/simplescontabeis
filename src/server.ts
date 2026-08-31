@@ -2265,7 +2265,7 @@ app.delete("/api/empresas/documentos/:docId", blockCliente, requirePermissao("em
 });
 
 // Importação da lista de clientes exportada do Domínio Web (CSV: codigo;nome;cnpj;status)
-app.post("/api/dominio/importar-clientes", requireAdmin, upload.single("arquivo"), (req, res) => {
+app.post("/api/dominio/importar-clientes", blockCliente, requirePermissao("configuracoes", "postar"), upload.single("arquivo"), (req, res) => {
   if (!req.file) return res.status(400).json({ error: "Envie o arquivo CSV exportado do Domínio Web." });
   const texto = req.file.buffer.toString("utf8").replace(/\r/g, "");
   const linhas = texto.split("\n").map((l) => l.trim()).filter(Boolean);
@@ -2312,7 +2312,7 @@ app.post("/api/dominio/importar-clientes", requireAdmin, upload.single("arquivo"
     .run(novas, atualizadas);
   res.json({ ok: true, novas, atualizadas });
 });
-app.get("/api/dominio/sync-log", requireAdmin, (req, res) => {
+app.get("/api/dominio/sync-log", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
   // dominio_sync_log ainda não é escopado por escritório (o agente do Domínio Web continua com
   // token único/global — ver requireDominioAgent) — fica pra quando um segundo agente real existir.
   const rows = sqlite.prepare(`SELECT * FROM dominio_sync_log ORDER BY id DESC LIMIT 30`).all();
@@ -2324,7 +2324,7 @@ app.get("/api/dominio/sync-log", requireAdmin, (req, res) => {
 function getDominioConfig(escritorioId: number): any {
   return sqlite.prepare(`SELECT * FROM dominio_config WHERE escritorio_id = ?`).get(escritorioId) || {};
 }
-app.get("/api/dominio/config", requireAdmin, (req, res) => {
+app.get("/api/dominio/config", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
   const c = getDominioConfig((req as any).user.escritorioId);
   res.json({
     source: c.source || "",
@@ -2347,7 +2347,7 @@ app.get("/api/dominio/config", requireAdmin, (req, res) => {
     updatedAt: c.updated_at || null,
   });
 });
-app.put("/api/dominio/config", requireAdmin, (req, res) => {
+app.put("/api/dominio/config", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
   const escritorioId = (req as any).user.escritorioId;
   const b = req.body || {};
   const atual = getDominioConfig(escritorioId);
@@ -2387,12 +2387,12 @@ app.put("/api/dominio/config", requireAdmin, (req, res) => {
 });
 // Pede pro agente testar a conexão agora (o teste roda na máquina do agente, não na nuvem —
 // ela é quem tem acesso à rede do Domínio Web). O front faz polling neste id até status != pending.
-app.post("/api/dominio/testar-conexao", requireAdmin, (req, res) => {
+app.post("/api/dominio/testar-conexao", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
   const user = (req as any).user;
   const info = sqlite.prepare(`INSERT INTO dominio_test_jobs (status, criado_por) VALUES ('pending', ?)`).run(user.id);
   res.json({ id: Number(info.lastInsertRowid) });
 });
-app.get("/api/dominio/testar-conexao/:id", requireAdmin, (req, res) => {
+app.get("/api/dominio/testar-conexao/:id", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
   const row = sqlite.prepare(`SELECT * FROM dominio_test_jobs WHERE id = ?`).get(Number(req.params.id)) as any;
   if (!row) return res.status(404).json({ error: "Teste não encontrado." });
   res.json({ status: row.status, resultado: row.resultado_json ? JSON.parse(row.resultado_json) : null, erro: row.erro });
@@ -3789,7 +3789,7 @@ app.get("/api/nfe/documentos/baixar-lote", blockCliente, requireAdmin, async (re
 function getOnedriveConfig(escritorioId: number): any {
   return sqlite.prepare(`SELECT * FROM onedrive_config WHERE escritorio_id = ?`).get(escritorioId) || {};
 }
-app.get("/api/onedrive/config", blockCliente, requireAdmin, (req, res) => {
+app.get("/api/onedrive/config", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
   const c = getOnedriveConfig((req as any).user.escritorioId);
   res.json({
     clientId: c.client_id || "",
@@ -3803,7 +3803,7 @@ app.get("/api/onedrive/config", blockCliente, requireAdmin, (req, res) => {
     ultimoErro: c.ultimo_erro || null,
   });
 });
-app.put("/api/onedrive/config", blockCliente, requireAdmin, (req, res) => {
+app.put("/api/onedrive/config", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
   const escritorioId = (req as any).user.escritorioId;
   const b = req.body || {};
   const atual = getOnedriveConfig(escritorioId);
@@ -3823,7 +3823,7 @@ app.put("/api/onedrive/config", blockCliente, requireAdmin, (req, res) => {
     );
   res.json({ ok: true });
 });
-app.post("/api/onedrive/desconectar", blockCliente, requireAdmin, (req, res) => {
+app.post("/api/onedrive/desconectar", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
   sqlite
     .prepare(`UPDATE onedrive_config SET refresh_token_cifrado = NULL, conta_nome = NULL, conta_email = NULL WHERE escritorio_id = ?`)
     .run((req as any).user.escritorioId);
@@ -3832,7 +3832,7 @@ app.post("/api/onedrive/desconectar", blockCliente, requireAdmin, (req, res) => 
 function onedriveRedirectUri(req: express.Request): string {
   return `${req.protocol}://${req.get("host")}/api/onedrive/callback`;
 }
-app.get("/api/onedrive/conectar", requireAdmin, (req, res) => {
+app.get("/api/onedrive/conectar", requirePermissao("configuracoes", "editar"), (req, res) => {
   const escritorioId = (req as any).user.escritorioId;
   const cfg = getOnedriveConfig(escritorioId);
   if (!cfg.client_id || !cfg.client_secret_cifrado) {
@@ -3842,7 +3842,7 @@ app.get("/api/onedrive/conectar", requireAdmin, (req, res) => {
   sqlite.prepare(`UPDATE onedrive_config SET oauth_state_pendente = ? WHERE escritorio_id = ?`).run(state, escritorioId);
   res.redirect(onedrive.montarUrlAutorizacao(cfg.client_id, onedriveRedirectUri(req), state));
 });
-app.get("/api/onedrive/callback", requireAdmin, async (req, res) => {
+app.get("/api/onedrive/callback", requirePermissao("configuracoes", "editar"), async (req, res) => {
   const escritorioId = (req as any).user.escritorioId;
   const cfg = getOnedriveConfig(escritorioId);
   const { code, state, error, error_description } = req.query as any;
@@ -3912,7 +3912,7 @@ async function onedriveExportarDocumentosNovos(escritorioId: number): Promise<{ 
   }
   return { novos };
 }
-app.post("/api/onedrive/exportar-agora", blockCliente, requireAdmin, async (req, res) => {
+app.post("/api/onedrive/exportar-agora", blockCliente, requirePermissao("configuracoes", "postar"), async (req, res) => {
   try {
     const r = await onedriveExportarDocumentosNovos((req as any).user.escritorioId);
     res.json({ ok: true, novos: r.novos });
@@ -5747,7 +5747,7 @@ setInterval(() => {
 }, 60_000);
 
 // ---------- Configuração da rotina automática (admin — efeito fiscal direto, requireAdmin) ----------
-app.get("/api/nfse/agendamento/config", blockCliente, requireAdmin, (req, res) => {
+app.get("/api/nfse/agendamento/config", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
   const c = sqlite.prepare(`SELECT * FROM nfse_agendamento_config WHERE escritorio_id = ?`).get((req as any).user.escritorioId) as any;
   res.json({
     ativo: !!c?.ativo,
@@ -5759,7 +5759,7 @@ app.get("/api/nfse/agendamento/config", blockCliente, requireAdmin, (req, res) =
     ultimaExecucaoCompetencia: c?.ultima_execucao_competencia ?? null,
   });
 });
-app.put("/api/nfse/agendamento/config", blockCliente, requireAdmin, (req, res) => {
+app.put("/api/nfse/agendamento/config", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
   const user = (req as any).user;
   const b = req.body || {};
   const diaMes = Math.min(28, Math.max(1, Number(b.diaMes) || 1));
@@ -5778,7 +5778,7 @@ app.put("/api/nfse/agendamento/config", blockCliente, requireAdmin, (req, res) =
     .run(user.escritorioId, b.ativo ? 1 : 0, b.empresaPrestadorId ? Number(b.empresaPrestadorId) : null, b.envioTemplateId ? Number(b.envioTemplateId) : null, diaMes, hora, minuto);
   res.json({ ok: true });
 });
-app.get("/api/nfse/agendamento/empresas-disponiveis", blockCliente, requireAdmin, (req, res) => {
+app.get("/api/nfse/agendamento/empresas-disponiveis", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
   const termo = typeof req.query.q === "string" ? req.query.q.trim() : "";
   let sql = `SELECT id, nome, cnpj, inscricao_estadual as inscricaoEstadual FROM empresas WHERE ativo = 1 AND escritorio_id = ? AND id NOT IN (SELECT empresa_id FROM nfse_agendamento_empresas)`;
   const params: any[] = [(req as any).user.escritorioId];
@@ -5789,7 +5789,7 @@ app.get("/api/nfse/agendamento/empresas-disponiveis", blockCliente, requireAdmin
   sql += ` ORDER BY nome LIMIT 200`;
   res.json({ items: sqlite.prepare(sql).all(...params) });
 });
-app.get("/api/nfse/agendamento/empresas", blockCliente, requireAdmin, (req, res) => {
+app.get("/api/nfse/agendamento/empresas", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
   const rows = sqlite
     .prepare(
       `SELECT ae.empresa_id as empresaId, e.nome, e.cnpj, ae.ativo,
@@ -5801,7 +5801,7 @@ app.get("/api/nfse/agendamento/empresas", blockCliente, requireAdmin, (req, res)
     .all((req as any).user.escritorioId) as any[];
   res.json({ items: rows.map((r) => ({ ...r, ativo: !!r.ativo })) });
 });
-app.post("/api/nfse/agendamento/empresas/:empresaId", blockCliente, requireAdmin, (req, res) => {
+app.post("/api/nfse/agendamento/empresas/:empresaId", blockCliente, requirePermissao("configuracoes", "postar"), (req, res) => {
   const empresaId = Number(req.params.empresaId);
   if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
   const empresa = sqlite.prepare(`SELECT id, email FROM empresas WHERE id = ?`).get(empresaId) as any;
@@ -5825,7 +5825,7 @@ app.post("/api/nfse/agendamento/empresas/:empresaId", blockCliente, requireAdmin
   }
   res.json({ ok: true });
 });
-app.delete("/api/nfse/agendamento/empresas/:empresaId", blockCliente, requireAdmin, (req, res) => {
+app.delete("/api/nfse/agendamento/empresas/:empresaId", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
   const empresaId = Number(req.params.empresaId);
   if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
   sqlite.prepare(`DELETE FROM nfse_agendamento_itens WHERE empresa_id = ?`).run(empresaId);
@@ -5833,7 +5833,7 @@ app.delete("/api/nfse/agendamento/empresas/:empresaId", blockCliente, requireAdm
   res.json({ ok: true });
 });
 // Pausa/ativa a empresa inteira de uma vez (todos os itens juntos), sem mexer na configuração de cada um.
-app.put("/api/nfse/agendamento/empresas/:empresaId", blockCliente, requireAdmin, (req, res) => {
+app.put("/api/nfse/agendamento/empresas/:empresaId", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
   const empresaId = Number(req.params.empresaId);
   if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
   const existente = sqlite.prepare(`SELECT * FROM nfse_agendamento_empresas WHERE empresa_id = ?`).get(empresaId) as any;
@@ -5846,7 +5846,7 @@ app.put("/api/nfse/agendamento/empresas/:empresaId", blockCliente, requireAdmin,
 });
 // ---- Itens (serviços/notas) de cada empresa — uma empresa pode ter mais de um, ex.: "honorários
 // contábeis" + "licença do módulo NFS-e" como duas notas separadas na mesma competência.
-app.get("/api/nfse/agendamento/empresas/:empresaId/itens", blockCliente, requireAdmin, (req, res) => {
+app.get("/api/nfse/agendamento/empresas/:empresaId/itens", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
   if (!podeAcessarEmpresa((req as any).user, Number(req.params.empresaId))) return res.status(404).json({ error: "Empresa não encontrada." });
   const rows = sqlite
     .prepare(
@@ -5856,7 +5856,7 @@ app.get("/api/nfse/agendamento/empresas/:empresaId/itens", blockCliente, require
     .all(Number(req.params.empresaId)) as any[];
   res.json({ items: rows.map((r) => ({ ...r, ativo: !!r.ativo })) });
 });
-app.post("/api/nfse/agendamento/empresas/:empresaId/itens", blockCliente, requireAdmin, (req, res) => {
+app.post("/api/nfse/agendamento/empresas/:empresaId/itens", blockCliente, requirePermissao("configuracoes", "postar"), (req, res) => {
   const empresaId = Number(req.params.empresaId);
   if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
   const existente = sqlite.prepare(`SELECT 1 FROM nfse_agendamento_empresas WHERE empresa_id = ?`).get(empresaId);
@@ -5864,7 +5864,7 @@ app.post("/api/nfse/agendamento/empresas/:empresaId/itens", blockCliente, requir
   const info = sqlite.prepare(`INSERT INTO nfse_agendamento_itens (empresa_id) VALUES (?)`).run(empresaId);
   res.json({ ok: true, id: Number(info.lastInsertRowid) });
 });
-app.put("/api/nfse/agendamento/itens/:itemId", blockCliente, requireAdmin, (req, res) => {
+app.put("/api/nfse/agendamento/itens/:itemId", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
   const itemId = Number(req.params.itemId);
   const existente = sqlite.prepare(`SELECT * FROM nfse_agendamento_itens WHERE id = ?`).get(itemId) as any;
   if (!existente || !podeAcessarEmpresa((req as any).user, existente.empresa_id)) return res.status(404).json({ error: "Serviço não encontrado." });
@@ -5880,14 +5880,14 @@ app.put("/api/nfse/agendamento/itens/:itemId", blockCliente, requireAdmin, (req,
     );
   res.json({ ok: true });
 });
-app.delete("/api/nfse/agendamento/itens/:itemId", blockCliente, requireAdmin, (req, res) => {
+app.delete("/api/nfse/agendamento/itens/:itemId", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
   const itemId = Number(req.params.itemId);
   const existente = sqlite.prepare(`SELECT empresa_id FROM nfse_agendamento_itens WHERE id = ?`).get(itemId) as any;
   if (!existente || !podeAcessarEmpresa((req as any).user, existente.empresa_id)) return res.status(404).json({ error: "Serviço não encontrado." });
   sqlite.prepare(`DELETE FROM nfse_agendamento_itens WHERE id = ?`).run(itemId);
   res.json({ ok: true });
 });
-app.get("/api/nfse/agendamento/log", blockCliente, requireAdmin, (req, res) => {
+app.get("/api/nfse/agendamento/log", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
   const rows = sqlite
     .prepare(
       `SELECT l.id, l.empresa_id as empresaId, e.nome as empresaNome, l.competencia, l.sucesso, l.emissao_id as emissaoId, l.mensagem, l.executado_em as executadoEm
@@ -5897,7 +5897,7 @@ app.get("/api/nfse/agendamento/log", blockCliente, requireAdmin, (req, res) => {
     .all((req as any).user.escritorioId) as any[];
   res.json({ items: rows.map((r) => ({ ...r, sucesso: !!r.sucesso })) });
 });
-app.post("/api/nfse/agendamento/executar-agora", blockCliente, requireAdmin, async (req, res) => {
+app.post("/api/nfse/agendamento/executar-agora", blockCliente, requirePermissao("configuracoes", "postar"), async (req, res) => {
   try {
     const resumo = await nfseExecutarAgendamentoAutomatico(true, (req as any).user.escritorioId);
     res.json({ ok: true, ...resumo });
@@ -5910,7 +5910,7 @@ app.post("/api/nfse/agendamento/executar-agora", blockCliente, requireAdmin, asy
 // mais comum é uma instabilidade momentânea do Sistema Nacional NFS-e ao baixar o DANFSe (erro 503).
 // Não usa "agora" (a data de hoje) pro período — usa a competência real da própria emissão, senão um
 // retry feito num mês seguinte cairia no período errado.
-app.post("/api/nfse/agendamento/emissoes/:id/reenviar-documento", blockCliente, requireAdmin, async (req, res) => {
+app.post("/api/nfse/agendamento/emissoes/:id/reenviar-documento", blockCliente, requirePermissao("configuracoes", "postar"), async (req, res) => {
   const emissaoId = Number(req.params.id);
   const emissao = sqlite.prepare(`SELECT * FROM nfse_emissoes WHERE id = ?`).get(emissaoId) as any;
   if (!emissao || !podeAcessarEmpresa((req as any).user, emissao.empresa_id)) return res.status(404).json({ error: "Emissão não encontrada." });
@@ -6437,11 +6437,11 @@ function escritorioTemModulo(escritorioId: number, chave: string): boolean {
 }
 // Dados de faturamento do próprio escritório (CNPJ/e-mail/telefone) — precisa estar preenchido
 // antes de gerar qualquer cobrança via Asaas (é o CPF/CNPJ que identifica o cliente lá).
-app.get("/api/escritorio/dados-faturamento", blockCliente, requireAdmin, (req, res) => {
+app.get("/api/escritorio/dados-faturamento", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
   const row = sqlite.prepare(`SELECT nome, cnpj, email, telefone FROM escritorios WHERE id = ?`).get((req as any).user.escritorioId) as any;
   res.json(row || {});
 });
-app.put("/api/escritorio/dados-faturamento", blockCliente, requireAdmin, (req, res) => {
+app.put("/api/escritorio/dados-faturamento", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
   const { nome, cnpj, email, telefone } = req.body || {};
   if (!nome || !String(nome).trim()) return res.status(400).json({ error: "Informe o nome do escritório." });
   const cnpjLimpo = cnpj ? String(cnpj).replace(/\D/g, "") : "";
@@ -6451,7 +6451,7 @@ app.put("/api/escritorio/dados-faturamento", blockCliente, requireAdmin, (req, r
     .run(String(nome).trim(), cnpjLimpo, email ? String(email).trim() : null, telefone ? String(telefone).replace(/\D/g, "") : null, (req as any).user.escritorioId);
   res.json({ ok: true });
 });
-app.get("/api/escritorio/modulos", blockCliente, requireAdmin, (req, res) => {
+app.get("/api/escritorio/modulos", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
   res.json({ items: modulosDoEscritorio((req as any).user.escritorioId) });
 });
 // Status individual do Colaborador logado — quem paga de verdade é o escritório (cobrança agregada
@@ -6473,7 +6473,7 @@ app.get("/api/colaborador/minha-assinatura", (req, res) => {
     assinaturaAtivaAte: contratado?.assinatura_ativa_ate || null,
   });
 });
-app.post("/api/escritorio/modulos/:chave/iniciar-teste", blockCliente, requireAdmin, (req, res) => {
+app.post("/api/escritorio/modulos/:chave/iniciar-teste", blockCliente, requirePermissao("configuracoes", "postar"), (req, res) => {
   const escritorioId = (req as any).user.escritorioId;
   const chave = String(req.params.chave);
   const modulo = sqlite.prepare(`SELECT * FROM modulos_escritorio_catalogo WHERE chave = ? AND ativo = 1`).get(chave) as any;
@@ -6485,7 +6485,7 @@ app.post("/api/escritorio/modulos/:chave/iniciar-teste", blockCliente, requireAd
     .run(escritorioId, chave);
   res.json({ ok: true, items: modulosDoEscritorio(escritorioId) });
 });
-app.post("/api/escritorio/modulos/pagar", blockCliente, requireAdmin, async (req, res) => {
+app.post("/api/escritorio/modulos/pagar", blockCliente, requirePermissao("configuracoes", "postar"), async (req, res) => {
   const user = (req as any).user;
   const escritorioId = user.escritorioId;
   const chaves: string[] = Array.isArray(req.body?.modulos) ? req.body.modulos : [];
@@ -7086,7 +7086,7 @@ app.get("/api/email/status", blockCliente, (req, res) => {
   const fallback = escritorioId === 1;
   res.json({ configurado: emailConfigurado(escritorioId), from: c.from_email || (fallback && process.env.SMTP_FROM_EMAIL) || c.smtp_user || (fallback && process.env.SMTP_USER) || null });
 });
-app.get("/api/email/config", blockCliente, requireAdmin, (req, res) => {
+app.get("/api/email/config", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
   const c = getEmailConfig((req as any).user.escritorioId);
   res.json({
     smtpHost: c.smtp_host || "",
@@ -7100,7 +7100,7 @@ app.get("/api/email/config", blockCliente, requireAdmin, (req, res) => {
     updatedAt: c.updated_at || null,
   });
 });
-app.put("/api/email/config", blockCliente, requireAdmin, (req, res) => {
+app.put("/api/email/config", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
   const escritorioId = (req as any).user.escritorioId;
   const b = req.body || {};
   const atual = getEmailConfig(escritorioId);
@@ -7128,7 +7128,7 @@ app.put("/api/email/config", blockCliente, requireAdmin, (req, res) => {
     );
   res.json({ ok: true });
 });
-app.post("/api/email/testar", blockCliente, requireAdmin, async (req, res) => {
+app.post("/api/email/testar", blockCliente, requirePermissao("configuracoes", "postar"), async (req, res) => {
   const t = getTransporter((req as any).user.escritorioId);
   if (!t) return res.status(400).json({ error: "Preencha e salve host, usuário e senha primeiro." });
   try {
@@ -7175,7 +7175,7 @@ app.get("/api/email/log", blockCliente, requirePermissao("configuracoes", "visua
 function getWhatsappConfig(escritorioId: number): any {
   return sqlite.prepare(`SELECT * FROM whatsapp_config WHERE escritorio_id = ?`).get(escritorioId) || {};
 }
-app.get("/api/whatsapp/config", blockCliente, requireAdmin, (req, res) => {
+app.get("/api/whatsapp/config", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
   const escritorioId = (req as any).user.escritorioId;
   let c = getWhatsappConfig(escritorioId);
   // Gera o verify token na primeira vez que a tela é aberta — precisa existir antes do usuário
@@ -7204,7 +7204,7 @@ app.get("/api/whatsapp/config", blockCliente, requireAdmin, (req, res) => {
     webhookVerifyToken: c.webhook_verify_token,
   });
 });
-app.put("/api/whatsapp/config", blockCliente, requireAdmin, (req, res) => {
+app.put("/api/whatsapp/config", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
   const escritorioId = (req as any).user.escritorioId;
   const b = req.body || {};
   const atual = getWhatsappConfig(escritorioId);
@@ -7266,7 +7266,7 @@ app.post("/api/whatsapp/webhook", (req, res) => {
     console.error("[WhatsApp webhook] erro processando payload:", e.message);
   }
 });
-app.post("/api/whatsapp/testar", blockCliente, requireAdmin, async (req, res) => {
+app.post("/api/whatsapp/testar", blockCliente, requirePermissao("configuracoes", "postar"), async (req, res) => {
   const c = getWhatsappConfig((req as any).user.escritorioId);
   if (!c.phone_number_id || !c.access_token_cifrado) return res.status(400).json({ error: "Preencha e salve o Phone Number ID e o Access Token primeiro." });
   try {

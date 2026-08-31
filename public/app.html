@@ -5097,11 +5097,15 @@ async function renderCfgTab(){
   domTestPolling = false; // interrompe qualquer polling de teste da aba anterior
   main().querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===CFG_TAB));
   const box = document.getElementById('cfgContent');
-  if(CFG_TAB==='assinatura-plataforma') await renderCfgAssinaturaPlataforma(box);
-  else if(CFG_TAB==='dominio') await renderCfgDominio(box);
-  else if(CFG_TAB==='nfse-agendamento') await renderCfgNfseAgendamento(box);
-  else if(CFG_TAB==='whatsapp') await renderCfgWhatsapp(box);
-  else await renderCfgEmail(box);
+  try{
+    if(CFG_TAB==='assinatura-plataforma') await renderCfgAssinaturaPlataforma(box);
+    else if(CFG_TAB==='dominio') await renderCfgDominio(box);
+    else if(CFG_TAB==='nfse-agendamento') await renderCfgNfseAgendamento(box);
+    else if(CFG_TAB==='whatsapp') await renderCfgWhatsapp(box);
+    else await renderCfgEmail(box);
+  }catch(e){
+    box.innerHTML = `<div class="empty-state">Não foi possível carregar esta aba: ${esc(e.message||'erro desconhecido')}</div>`;
+  }
 }
 
 async function renderCfgDominio(box){
