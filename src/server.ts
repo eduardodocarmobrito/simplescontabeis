@@ -858,6 +858,7 @@ sqlite.exec(`
     tomador_documento TEXT NOT NULL,
     tomador_nome TEXT NOT NULL,
     tomador_email TEXT,
+    tomador_telefone TEXT,
     tomador_cep TEXT,
     tomador_logradouro TEXT,
     tomador_numero TEXT,
@@ -998,6 +999,10 @@ sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_envio_documentos_periodo ON envio_do
   const nomes = new Set(cols.map((c) => c.name));
   if (!nomes.has("whatsapp_enviado")) sqlite.exec(`ALTER TABLE nfse_emissoes ADD COLUMN whatsapp_enviado INTEGER NOT NULL DEFAULT 0`);
   if (!nomes.has("whatsapp_erro")) sqlite.exec(`ALTER TABLE nfse_emissoes ADD COLUMN whatsapp_erro TEXT`);
+  // Achado ao vivo: "Enviar WhatsApp" mandava pros contatos da empresa PRESTADORA (o próprio
+  // escritório), nunca pro tomador — não existia telefone do tomador nenhum pra usar. O e-mail já
+  // tinha esse campo (tomador_email); o telefone só não tinha sido adicionado junto.
+  if (!nomes.has("tomador_telefone")) sqlite.exec(`ALTER TABLE nfse_emissoes ADD COLUMN tomador_telefone TEXT`);
 }
 // Migração leve: alerta de declaração/DAS do mês anterior não localizada (monitoramento de atraso
 // por empresa optante do Simples).
@@ -4936,7 +4941,7 @@ app.get("/api/nfse/emissoes", blockCliente, requirePermissao("nfse", "visualizar
   const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
   let sql = `SELECT n.id, n.empresa_id as empresaId, e.nome as empresaNome, n.serie, n.numero_dps as numeroDps, n.ambiente,
                     n.modelo_id as modeloId, n.modelo_nome as modeloNome,
-                    n.tomador_documento as tomadorDocumento, n.tomador_nome as tomadorNome, n.tomador_email as tomadorEmail,
+                    n.tomador_documento as tomadorDocumento, n.tomador_nome as tomadorNome, n.tomador_email as tomadorEmail, n.tomador_telefone as tomadorTelefone,
                     n.tomador_cep as tomadorCep, n.tomador_logradouro as tomadorLogradouro, n.tomador_numero as tomadorNumero,
                     n.tomador_complemento as tomadorComplemento, n.tomador_bairro as tomadorBairro, n.tomador_codigo_municipio as tomadorCodigoMunicipio,
                     n.descricao_servico as descricaoServico, n.valor_servico as valorServico, n.competencia,
@@ -5031,32 +5036,33 @@ app.post("/api/nfse/emissoes/:id/enviar-whatsapp", blockCliente, requirePermissa
   const user = (req as any).user;
   if (!podeAcessarEmpresa(user, row.empresa_id)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
   if (row.status !== "emitida") return res.status(400).json({ error: "Só é possível enviar uma NFS-e já emitida." });
-  const empresa = sqlite.prepare(`SELECT nome FROM empresas WHERE id = ?`).get(row.empresa_id) as any;
-  const contatos = sqlite
-    .prepare(`SELECT telefone FROM empresa_contatos WHERE empresa_id = ? AND receber_whatsapp = 1 AND telefone IS NOT NULL AND telefone != ''`)
-    .all(row.empresa_id) as any[];
-  if (!contatos.length) return res.status(400).json({ error: "Esta empresa não tem contato de WhatsApp cadastrado (marque \"Receber WhatsApp\" no contato, em Configurações › E-mail corporativo)." });
+  // Achado ao vivo: isso mandava pros contatos da empresa PRESTADORA (o próprio escritório), nunca
+  // pro tomador — quem devia receber a nota é o cliente que a comprou, usando o telefone dele
+  // mesmo (capturado na emissão), o mesmo padrão já usado pro e-mail (tomador_email).
+  if (!row.tomador_telefone) {
+    return res.status(400).json({ error: 'Esta emissão não tem telefone do tomador cadastrado — edite em "Duplicar" ou emita a próxima já preenchendo o campo Telefone do tomador.' });
+  }
   const { pdf, erro: erroPdf } = await nfseObterDanfsePdf(row);
   if (!pdf) return res.status(502).json({ error: erroPdf });
   const arquivo = { nome: nfseNomeArquivo(row, "pdf"), tipo: "application/pdf", buffer: pdf };
   const descricao = `NFS-e ${row.numero_nfse || row.numero_dps} — competência ${row.competencia?.slice(0, 7) || ""}`;
-  let enviados = 0;
-  const erros: string[] = [];
-  for (const c of contatos) {
-    try {
-      await whatsappEnviarArquivo(user.escritorioId, c.telefone, [{ nome: "empresa_nome", valor: empresa?.nome || "" }, { nome: "descricao", valor: descricao }], arquivo, {
-        tabela: "nfse_emissoes",
-        id: row.id,
-      });
-      enviados++;
-    } catch (e: any) {
-      erros.push(e.message);
-    }
+  try {
+    await whatsappEnviarArquivo(
+      user.escritorioId,
+      row.tomador_telefone,
+      [
+        { nome: "empresa_nome", valor: row.tomador_nome || "" },
+        { nome: "descricao", valor: descricao },
+      ],
+      arquivo,
+      { tabela: "nfse_emissoes", id: row.id }
+    );
+    sqlite.prepare(`UPDATE nfse_emissoes SET whatsapp_enviado = 1, whatsapp_erro = NULL WHERE id = ?`).run(row.id);
+    res.json({ ok: true, enviados: 1, falhas: 0 });
+  } catch (e: any) {
+    sqlite.prepare(`UPDATE nfse_emissoes SET whatsapp_erro = ? WHERE id = ?`).run(e.message, row.id);
+    res.status(502).json({ error: e.message });
   }
-  if (enviados > 0) sqlite.prepare(`UPDATE nfse_emissoes SET whatsapp_enviado = 1, whatsapp_erro = NULL WHERE id = ?`).run(row.id);
-  else sqlite.prepare(`UPDATE nfse_emissoes SET whatsapp_erro = ? WHERE id = ?`).run(erros[0] || "Falha desconhecida.", row.id);
-  if (!enviados) return res.status(502).json({ error: erros[0] || "Não consegui enviar por WhatsApp." });
-  res.json({ ok: true, enviados, falhas: erros.length });
 });
 // Download em lote — zip com XML e/ou PDF de várias emissões de uma vez (selecionadas na tela).
 app.get("/api/nfse/emissoes/baixar-lote", blockCliente, requirePermissao("nfse", "visualizar"), async (req, res) => {
@@ -5292,9 +5298,9 @@ function nfseInserirEmissao(user: any, empresaId: number, modelo: any, tomador: 
   const info = sqlite
     .prepare(
       `INSERT INTO nfse_emissoes (empresa_id, serie, numero_dps, ambiente, modelo_id, modelo_nome,
-         tomador_documento, tomador_nome, tomador_email, tomador_cep, tomador_logradouro, tomador_numero, tomador_complemento, tomador_bairro, tomador_codigo_municipio,
+         tomador_documento, tomador_nome, tomador_email, tomador_telefone, tomador_cep, tomador_logradouro, tomador_numero, tomador_complemento, tomador_bairro, tomador_codigo_municipio,
          codigo_tributacao_nacional, descricao_servico, valor_servico, competencia, status, criado_por)
-       VALUES (?, ${NFSE_SERIE}, (SELECT COALESCE(MIN(numero_dps), 0) - 1 FROM nfse_emissoes WHERE empresa_id = ? AND serie = ${NFSE_SERIE}), 'producao', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       VALUES (?, ${NFSE_SERIE}, (SELECT COALESCE(MIN(numero_dps), 0) - 1 FROM nfse_emissoes WHERE empresa_id = ? AND serie = ${NFSE_SERIE}), 'producao', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       empresaId,
@@ -5304,6 +5310,7 @@ function nfseInserirEmissao(user: any, empresaId: number, modelo: any, tomador: 
       String(tomador.documento).replace(/\D/g, ""),
       String(tomador.nome).trim(),
       tomador.email || null,
+      tomador.telefone ? String(tomador.telefone).replace(/\D/g, "") : null,
       tomador.cep || null,
       tomador.logradouro || null,
       tomador.numero || null,
@@ -5426,7 +5433,7 @@ app.put("/api/nfse/rascunhos/:id", blockCliente, requirePermissao("nfse", "posta
   if ("erro" in v) return res.status(v.status || 400).json({ error: v.erro });
   sqlite
     .prepare(
-      `UPDATE nfse_emissoes SET modelo_id=?, modelo_nome=?, tomador_documento=?, tomador_nome=?, tomador_email=?, tomador_cep=?, tomador_logradouro=?, tomador_numero=?, tomador_complemento=?, tomador_bairro=?, tomador_codigo_municipio=?, codigo_tributacao_nacional=?, descricao_servico=?, valor_servico=?, competencia=?, status='rascunho', erro=NULL WHERE id=?`
+      `UPDATE nfse_emissoes SET modelo_id=?, modelo_nome=?, tomador_documento=?, tomador_nome=?, tomador_email=?, tomador_telefone=?, tomador_cep=?, tomador_logradouro=?, tomador_numero=?, tomador_complemento=?, tomador_bairro=?, tomador_codigo_municipio=?, codigo_tributacao_nacional=?, descricao_servico=?, valor_servico=?, competencia=?, status='rascunho', erro=NULL WHERE id=?`
     )
     .run(
       v.modelo.id,
@@ -5434,6 +5441,7 @@ app.put("/api/nfse/rascunhos/:id", blockCliente, requirePermissao("nfse", "posta
       String(v.tomador.documento).replace(/\D/g, ""),
       String(v.tomador.nome).trim(),
       v.tomador.email || null,
+      v.tomador.telefone ? String(v.tomador.telefone).replace(/\D/g, "") : null,
       v.tomador.cep || null,
       v.tomador.logradouro || null,
       v.tomador.numero || null,
@@ -5461,6 +5469,7 @@ app.post("/api/nfse/rascunhos/:id/emitir", blockCliente, requirePermissao("nfse"
     documento: existente.tomador_documento,
     nome: existente.tomador_nome,
     email: existente.tomador_email,
+    telefone: existente.tomador_telefone,
     cep: existente.tomador_cep,
     logradouro: existente.tomador_logradouro,
     numero: existente.tomador_numero,
@@ -6189,7 +6198,7 @@ app.put("/api/nfse/minha-empresa/rascunhos/:id", requireCliente, requireModuloAt
   if ("erro" in v) return res.status(v.status || 400).json({ error: v.erro });
   sqlite
     .prepare(
-      `UPDATE nfse_emissoes SET modelo_id=?, modelo_nome=?, tomador_documento=?, tomador_nome=?, tomador_email=?, tomador_cep=?, tomador_logradouro=?, tomador_numero=?, tomador_complemento=?, tomador_bairro=?, tomador_codigo_municipio=?, codigo_tributacao_nacional=?, descricao_servico=?, valor_servico=?, competencia=?, status='rascunho', erro=NULL WHERE id=?`
+      `UPDATE nfse_emissoes SET modelo_id=?, modelo_nome=?, tomador_documento=?, tomador_nome=?, tomador_email=?, tomador_telefone=?, tomador_cep=?, tomador_logradouro=?, tomador_numero=?, tomador_complemento=?, tomador_bairro=?, tomador_codigo_municipio=?, codigo_tributacao_nacional=?, descricao_servico=?, valor_servico=?, competencia=?, status='rascunho', erro=NULL WHERE id=?`
     )
     .run(
       v.modelo.id,
@@ -6197,6 +6206,7 @@ app.put("/api/nfse/minha-empresa/rascunhos/:id", requireCliente, requireModuloAt
       String(v.tomador.documento).replace(/\D/g, ""),
       String(v.tomador.nome).trim(),
       v.tomador.email || null,
+      v.tomador.telefone ? String(v.tomador.telefone).replace(/\D/g, "") : null,
       v.tomador.cep || null,
       v.tomador.logradouro || null,
       v.tomador.numero || null,
@@ -6223,6 +6233,7 @@ app.post("/api/nfse/minha-empresa/rascunhos/:id/emitir", requireCliente, require
     documento: existente.tomador_documento,
     nome: existente.tomador_nome,
     email: existente.tomador_email,
+    telefone: existente.tomador_telefone,
     cep: existente.tomador_cep,
     logradouro: existente.tomador_logradouro,
     numero: existente.tomador_numero,

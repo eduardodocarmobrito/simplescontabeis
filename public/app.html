@@ -2263,7 +2263,10 @@ async function renderNfseEmitir(){
         <div class="field grow"><label>Nome / Razão social</label><input id="nfseEmiNomeTomador"></div>
       </div>
       <div id="nfseEmiCnpjStatus" style="font-size:11.5px; color:var(--ink-soft); margin:-6px 0 8px;"></div>
-      <div class="field"><label>E-mail (opcional)</label><input id="nfseEmiEmailTomador" type="email"></div>
+      <div class="row">
+        <div class="field grow"><label>E-mail (opcional)</label><input id="nfseEmiEmailTomador" type="email"></div>
+        <div class="field grow"><label>Telefone / WhatsApp (opcional)</label><input id="nfseEmiTelTomador" placeholder="DDD + número"></div>
+      </div>
       <div class="row">
         <div class="field grow"><label>Endereço</label><input id="nfseEmiEndereco"></div>
         <div class="field" style="width:100px;"><label>Número</label><input id="nfseEmiNumero"></div>
@@ -2295,6 +2298,7 @@ async function renderNfseEmitir(){
     setVal('nfseEmiModelo', prefill.modeloId);
     setVal('nfseEmiNomeTomador', prefill.tomadorNome);
     setVal('nfseEmiEmailTomador', prefill.tomadorEmail);
+    setVal('nfseEmiTelTomador', prefill.tomadorTelefone);
     setVal('nfseEmiEndereco', prefill.tomadorLogradouro);
     setVal('nfseEmiNumero', prefill.tomadorNumero);
     setVal('nfseEmiComplemento', prefill.tomadorComplemento);
@@ -2370,6 +2374,7 @@ async function renderNfseEmitir(){
         documento: document.getElementById('nfseEmiDocTomador').value.replace(/\D/g,''),
         nome: document.getElementById('nfseEmiNomeTomador').value.trim(),
         email: document.getElementById('nfseEmiEmailTomador').value.trim() || null,
+        telefone: document.getElementById('nfseEmiTelTomador').value.replace(/\D/g,'') || null,
         logradouro: document.getElementById('nfseEmiEndereco').value.trim() || null,
         numero: document.getElementById('nfseEmiNumero').value.trim() || null,
         complemento: document.getElementById('nfseEmiComplemento').value.trim() || null,
@@ -2433,7 +2438,7 @@ async function renderNfseEmitir(){
 // selecionados pra facilitar emitir a próxima nota em seguida (fluxo real observado: mesma empresa,
 // vários tomadores diferentes em sequência). Evita reenviar sem querer os mesmos dados da nota anterior.
 function nfseLimparFormularioEmissao(prefixo){
-  ['DocTomador','NomeTomador','EmailTomador','Endereco','Numero','Complemento','Cep','Bairro','Cidade','Uf','CodMun','Valor','Descricao'].forEach(suf=>{
+  ['DocTomador','NomeTomador','EmailTomador','TelTomador','Endereco','Numero','Complemento','Cep','Bairro','Cidade','Uf','CodMun','Valor','Descricao'].forEach(suf=>{
     const el = document.getElementById(prefixo+suf);
     if(el) el.value = '';
   });
@@ -2753,7 +2758,7 @@ async function renderNfseNotasDetalhe(empresaId){
                 ${n.status==='rascunho'?`<button class="btn small" data-id="${n.id}" data-act="continuar">Continuar</button> <button class="btn small" data-id="${n.id}" data-act="excluir">Excluir</button>`:''}
                 ${n.status!=='rascunho'?`<button class="btn small" data-id="${n.id}" data-act="duplicar">Duplicar</button>`:''}
                 ${n.status==='emitida'||n.status==='cancelada'?`<button class="btn small" data-id="${n.id}" data-act="baixar-xml">XML</button> <button class="btn small" data-id="${n.id}" data-act="baixar-pdf">PDF</button>`:''}
-                ${n.status==='emitida'?`<button class="btn small" data-id="${n.id}" data-act="enviar-whatsapp-nfse">${n.whatsappEnviado?'Reenviar WhatsApp':'Enviar WhatsApp'}</button>`:''}
+                ${n.status==='emitida'?(n.tomadorTelefone?`<button class="btn small" data-id="${n.id}" data-act="enviar-whatsapp-nfse">${n.whatsappEnviado?'Reenviar WhatsApp':'Enviar WhatsApp'}</button>`:`<button class="btn small" disabled title="Esta nota não tem telefone do tomador cadastrado">Enviar WhatsApp</button>`):''}
                 ${n.status==='emitida'?`<button class="btn small" data-id="${n.id}" data-act="cancelar" style="color:var(--debit);">Cancelar</button>`:''}
               </td>
             </tr>
@@ -3575,7 +3580,10 @@ async function renderMinhaNfseEmitir(){
         <div class="field grow"><label>Nome / Razão social</label><input id="mnfEmiNomeTomador"></div>
       </div>
       <div id="mnfEmiCnpjStatus" style="font-size:11.5px; color:var(--ink-soft); margin:-6px 0 8px;"></div>
-      <div class="field"><label>E-mail (opcional)</label><input id="mnfEmiEmailTomador" type="email"></div>
+      <div class="row">
+        <div class="field grow"><label>E-mail (opcional)</label><input id="mnfEmiEmailTomador" type="email"></div>
+        <div class="field grow"><label>Telefone / WhatsApp (opcional)</label><input id="mnfEmiTelTomador" placeholder="DDD + número"></div>
+      </div>
       <div class="row">
         <div class="field grow"><label>Endereço</label><input id="mnfEmiEndereco"></div>
         <div class="field" style="width:100px;"><label>Número</label><input id="mnfEmiNumero"></div>
@@ -3606,6 +3614,7 @@ async function renderMinhaNfseEmitir(){
     setVal('mnfEmiModelo', prefill.modeloId);
     setVal('mnfEmiNomeTomador', prefill.tomadorNome);
     setVal('mnfEmiEmailTomador', prefill.tomadorEmail);
+    setVal('mnfEmiTelTomador', prefill.tomadorTelefone);
     setVal('mnfEmiEndereco', prefill.tomadorLogradouro);
     setVal('mnfEmiNumero', prefill.tomadorNumero);
     setVal('mnfEmiComplemento', prefill.tomadorComplemento);
@@ -3674,6 +3683,7 @@ async function renderMinhaNfseEmitir(){
         documento: document.getElementById('mnfEmiDocTomador').value.replace(/\D/g,''),
         nome: document.getElementById('mnfEmiNomeTomador').value.trim(),
         email: document.getElementById('mnfEmiEmailTomador').value.trim() || null,
+        telefone: document.getElementById('mnfEmiTelTomador').value.replace(/\D/g,'') || null,
         logradouro: document.getElementById('mnfEmiEndereco').value.trim() || null,
         numero: document.getElementById('mnfEmiNumero').value.trim() || null,
         complemento: document.getElementById('mnfEmiComplemento').value.trim() || null,
