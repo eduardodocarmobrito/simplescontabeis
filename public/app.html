@@ -212,14 +212,13 @@
 
 <div id="shell" class="shell hidden">
   <div class="sidebar">
-    <div class="sidebar-brand">
+    <div class="sidebar-brand" id="sidebarBrand">
       <div class="eyebrow">Escritório contábil</div>
       <h2>Simples Contábeis</h2>
     </div>
     <div id="navList"></div>
     <div class="sidebar-foot">
       <div class="who">Conectado como<b id="whoName"></b><span id="whoProfile"></span></div>
-      <div id="empresaSwitchWrap"></div>
       <div class="logout" id="btnLogout">Sair</div>
     </div>
   </div>
@@ -567,19 +566,17 @@ async function boot(){
 // pra todas as telas de autoatendimento (NFS-e, Financeiro, Assinatura) já virem escopadas na
 // empresa nova sem precisar de nenhuma lógica extra nelas.
 async function renderEmpresaSwitch(){
-  const wrap = document.getElementById('empresaSwitchWrap');
+  const wrap = document.getElementById('sidebarBrand');
   try{
     const { items, empresaAtivaId } = await api('/auth/minhas-empresas');
-    if(!items.length){ wrap.innerHTML=''; return; }
+    if(!items.length) return;
     if(items.length===1){
-      wrap.innerHTML = `<div class="field" style="margin:10px 0 0;"><label style="font-size:11px;">Empresa</label><div style="font-size:12.5px; font-weight:600;">${esc(items[0].nome)}</div></div>`;
+      wrap.innerHTML = `<div class="eyebrow">Empresa</div><h2>${esc(items[0].nome)}</h2>`;
       return;
     }
     wrap.innerHTML = `
-      <div class="field" style="margin:10px 0 0;">
-        <label style="font-size:11px;">Empresa ativa</label>
-        <select id="empresaSwitchSelect">${items.map(e=>`<option value="${e.id}" ${e.id===empresaAtivaId?'selected':''}>${esc(e.nome)}</option>`).join('')}</select>
-      </div>
+      <div class="eyebrow">Empresa ativa</div>
+      <select id="empresaSwitchSelect" style="font-size:15px; font-weight:700; border:none; background:transparent; padding:3px 0 0; width:100%;">${items.map(e=>`<option value="${e.id}" ${e.id===empresaAtivaId?'selected':''}>${esc(e.nome)}</option>`).join('')}</select>
     `;
     document.getElementById('empresaSwitchSelect').addEventListener('change', async (ev)=>{
       try{
@@ -587,7 +584,7 @@ async function renderEmpresaSwitch(){
         location.reload();
       }catch(e){ toast(e.message,'err'); }
     });
-  }catch(e){ wrap.innerHTML=''; }
+  }catch(e){ wrap.innerHTML = `<div class="eyebrow">Escritório contábil</div><h2>Simples Contábeis</h2>`; }
 }
 
 function main(){ return document.getElementById('main'); }
