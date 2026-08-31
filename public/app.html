@@ -654,7 +654,7 @@ async function pageDashboard(){
   `;
   const grid = document.getElementById('kpiGrid');
   grid.innerHTML = items.map(c=>`
-    <div class="kpi" data-id="${c.id}">
+    <div class="kpi" data-id="${c.id}" data-tipo="${c.tipo||''}" ${c.tipo?'style="cursor:pointer;"':''}>
       <div class="kpi-actions">
         ${podeEditar? `<button class="btn small" data-act="edit-card">✎</button><button class="btn small danger" data-act="del-card">✕</button>` : ''}
       </div>
@@ -664,6 +664,14 @@ async function pageDashboard(){
     </div>
   `).join('') + (podeEditar? `<div class="kpi add" id="addCard">+ Adicionar card</div>` : (items.length? '' : '<div class="empty-state">Nenhum indicador cadastrado ainda.</div>'));
 
+  grid.querySelectorAll('.kpi[data-tipo]').forEach(el=>{
+    if(!el.dataset.tipo) return;
+    el.addEventListener('click', e=>{
+      if(e.target.closest('.kpi-actions')) return;
+      const id = Number(el.dataset.id);
+      cardDetalheModal(items.find(x=>x.id===id));
+    });
+  });
   if(podeEditar){
     document.getElementById('addCard').addEventListener('click', ()=>cardModal());
     grid.querySelectorAll('[data-act="edit-card"]').forEach(b=>b.addEventListener('click', e=>{
@@ -679,11 +687,25 @@ async function pageDashboard(){
     }));
   }
 }
+const CARD_TIPOS_INFO = {
+  certificados_vencer: { label:'Certificados a Vencer', subtitulo:'Vencendo nos próximos 30 dias' },
+  das_atraso: { label:'DAS em Atraso', subtitulo:'Competências não entregues' },
+  situacao_fiscal: { label:'Situação Fiscal', subtitulo:'Empresas com pendência' },
+  checklist_atraso: { label:'Documentos Pendentes', subtitulo:'Após o prazo, sem envio do cliente' },
+  solicitacoes_pendentes: { label:'Solicitações dos Clientes', subtitulo:'Aguardando retorno do escritório' },
+};
 function cardModal(c){
+  const tipoAtual = c&&c.tipo || '';
   openModal(`
     <h3>${c?'Editar':'Novo'} card</h3>
+    <div class="field"><label>Tipo</label>
+      <select id="cardTipo">
+        <option value="">Manual (eu digito o valor)</option>
+        ${Object.entries(CARD_TIPOS_INFO).map(([v,info])=>`<option value="${v}">${esc(info.label)}</option>`).join('')}
+      </select>
+    </div>
     <div class="field"><label>Título</label><input id="cardTitulo" value="${c?esc(c.titulo):''}"></div>
-    <div class="field"><label>Valor</label><input id="cardValor" value="${c?esc(c.valor):''}"></div>
+    <div class="field" id="cardValorWrap"><label>Valor</label><input id="cardValor" value="${c?esc(c.valor):''}"></div>
     <div class="field"><label>Subtítulo (opcional)</label><input id="cardSubtitulo" value="${c&&c.subtitulo?esc(c.subtitulo):''}"></div>
     <div class="field"><label>Ordem</label><input id="cardOrdem" type="number" value="${c?c.ordem:0}"></div>
     <div class="modal-actions">
@@ -691,21 +713,73 @@ function cardModal(c){
       <button class="btn primary" id="cardSalvar">Salvar</button>
     </div>
   `);
+  document.getElementById('cardTipo').value = tipoAtual;
+  function syncTipoUI(){
+    const tipo = document.getElementById('cardTipo').value;
+    document.getElementById('cardValorWrap').classList.toggle('hidden', !!tipo);
+    if(tipo && !c){
+      const info = CARD_TIPOS_INFO[tipo];
+      document.getElementById('cardTitulo').value = info.label;
+      document.getElementById('cardSubtitulo').value = info.subtitulo;
+    }
+  }
+  document.getElementById('cardTipo').addEventListener('change', syncTipoUI);
+  syncTipoUI();
   document.getElementById('cardCancel').addEventListener('click', closeModal);
   document.getElementById('cardSalvar').addEventListener('click', async ()=>{
+    const tipo = document.getElementById('cardTipo').value;
     const body = {
+      tipo: tipo || null,
       titulo: document.getElementById('cardTitulo').value.trim(),
-      valor: document.getElementById('cardValor').value.trim(),
       subtitulo: document.getElementById('cardSubtitulo').value.trim(),
       ordem: Number(document.getElementById('cardOrdem').value)||0,
     };
-    if(!body.titulo || !body.valor){ toast('Preencha título e valor.','err'); return; }
+    if(!tipo) body.valor = document.getElementById('cardValor').value.trim();
+    if(!body.titulo || (!tipo && !body.valor)){ toast('Preencha título e valor.','err'); return; }
     try{
       if(c) await api('/dashboard/cards/'+c.id, { method:'PUT', body });
       else await api('/dashboard/cards', { method:'POST', body });
       closeModal(); pageDashboard();
     }catch(e){ toast(e.message,'err'); }
   });
+}
+function cardDetalheModal(c){
+  openModal(`
+    <h3>${esc(c.titulo)}</h3>
+    <div id="cardDetalheBody"><div class="empty-state">Carregando…</div></div>
+    <div class="modal-actions"><button class="btn" id="cdFechar">Fechar</button></div>
+  `);
+  document.getElementById('cdFechar').addEventListener('click', closeModal);
+  (async ()=>{
+    const box = document.getElementById('cardDetalheBody');
+    try{
+      const { tipo, items } = await api('/dashboard/cards/'+c.id+'/detalhe');
+      if(!items.length){ box.innerHTML = '<div class="empty-state">Nada pendente — tudo em dia.</div>'; return; }
+      if(tipo==='certificados_vencer'){
+        box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Certificado</th><th>Vence em</th></tr></thead><tbody>
+          ${items.map(i=>`<tr><td>${esc(i.empresaNome)}</td><td>${esc(i.tipo)}</td><td>${fmtDateIso(String(i.validadeAte).slice(0,10))}</td></tr>`).join('')}
+        </tbody></table>`;
+      } else if(tipo==='das_atraso'){
+        box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Competências em aberto</th></tr></thead><tbody>
+          ${items.map(i=>`<tr><td>${esc(i.empresaNome)}</td><td>${i.competencias.map(esc).join(', ')}</td></tr>`).join('')}
+        </tbody></table>`;
+      } else if(tipo==='situacao_fiscal'){
+        box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Alerta</th></tr></thead><tbody>
+          ${items.map(i=>`<tr><td>${esc(i.empresaNome)}</td><td>${esc(i.alerta)}</td></tr>`).join('')}
+        </tbody></table>`;
+      } else if(tipo==='checklist_atraso'){
+        box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Modelo</th><th>Prazo</th><th>Itens faltando</th></tr></thead><tbody>
+          ${items.map(i=>`<tr><td>${esc(i.empresaNome)}</td><td>${esc(i.templateNome)}</td><td>Dia ${i.prazoDia}</td><td>${i.itensFaltando.map(esc).join(', ')}</td></tr>`).join('')}
+        </tbody></table>`;
+      } else if(tipo==='solicitacoes_pendentes'){
+        box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Modelo</th><th>Competência</th><th>Solicitado em</th></tr></thead><tbody>
+          ${items.map(i=>`<tr><td>${esc(i.empresaNome)}</td><td>${esc(i.templateNome)}</td><td>${i.mes?String(i.mes).padStart(2,'0')+'/'+i.ano:esc(i.rotulo||String(i.ano))}</td><td>${fmtDateHora(i.solicitadoEm)}</td></tr>`).join('')}
+        </tbody></table>`;
+      } else {
+        box.innerHTML = '<div class="empty-state">Tipo de card desconhecido.</div>';
+      }
+    }catch(e){ box.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; }
+  })();
 }
 
 // ===================== Empresas =====================
@@ -1017,6 +1091,8 @@ function modeloModal(t){
       </select>
     </div>` : ''}
     <label class="checkbox-row"><input type="checkbox" id="mdNotificar" ${t&&t.notificar_email?'checked':''}> Notificar cliente por e-mail ao criar/reabrir</label>
+    <div class="field"><label>Prazo (dia do mês, opcional)</label><input id="mdPrazoDia" type="number" min="1" max="28" value="${t&&t.prazo_dia?t.prazo_dia:''}" placeholder="ex.: 2"></div>
+    <p style="font-size:12px; color:var(--ink-soft); margin-top:-8px;">Usado pelo card "Documentos Pendentes" no Painel — depois desse dia, empresas sem os itens obrigatórios da competência atual entram na lista.</p>
     <div style="margin:14px 0 6px; font-weight:600; font-size:13.5px;">Itens para anexar</div>
     <div id="itensWrap">${itens.map(itemRowHtml).join('')}</div>
     <button class="btn small" id="btnAddItem" style="margin-top:4px;">+ Adicionar item</button>
@@ -1049,7 +1125,7 @@ function modeloModal(t){
       obrigatorio: el.querySelector('.itObrig').checked,
     }));
     if(!itensBody.length){ toast('Adicione ao menos um item.','err'); return; }
-    const body = { nome, descricao: document.getElementById('mdDesc').value.trim(), itens: itensBody, notificarEmail: document.getElementById('mdNotificar').checked };
+    const body = { nome, descricao: document.getElementById('mdDesc').value.trim(), itens: itensBody, notificarEmail: document.getElementById('mdNotificar').checked, prazoDia: document.getElementById('mdPrazoDia').value.trim() || null };
     if(!t) body.periodicidade = document.getElementById('mdPeriodicidade').value;
     try{
       if(t) await api('/checklist/templates/'+t.id, { method:'PUT', body });

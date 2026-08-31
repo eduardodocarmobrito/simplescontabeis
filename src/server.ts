@@ -1266,6 +1266,22 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
     sqlite.exec(`ALTER TABLE empresas ADD COLUMN isento_assinatura INTEGER NOT NULL DEFAULT 0`);
   }
 }
+// Migração leve: cards do Painel podem virar "computados" (tipo preenchido) em vez de só texto
+// digitado à mão — o valor passa a ser calculado na hora em GET /api/dashboard/cards.
+{
+  const colsCards = sqlite.prepare(`PRAGMA table_info(dashboard_cards)`).all() as any[];
+  if (!colsCards.some((c) => c.name === "tipo")) {
+    sqlite.exec(`ALTER TABLE dashboard_cards ADD COLUMN tipo TEXT`);
+  }
+}
+// Migração leve: prazo (dia do mês) de um modelo de Solicitação de Documentos — usado pelo card
+// "Documentos pendentes" pra saber quando um item obrigatório já venceu sem upload.
+{
+  const colsChecklist = sqlite.prepare(`PRAGMA table_info(checklist_templates)`).all() as any[];
+  if (!colsChecklist.some((c) => c.name === "prazo_dia")) {
+    sqlite.exec(`ALTER TABLE checklist_templates ADD COLUMN prazo_dia INTEGER`);
+  }
+}
 // Migração leve: Cliente passa a poder ter mais de uma empresa atribuída — a sessão guarda qual
 // está "ativa" no momento (troca pela barra lateral quando o usuário tem mais de uma).
 {
@@ -2528,7 +2544,7 @@ app.get("/api/checklist/templates", blockCliente, requirePermissao("solicitacoes
 });
 app.post("/api/checklist/templates", blockCliente, requirePermissao("solicitacoes", "postar"), (req, res) => {
   const user = (req as any).user;
-  const { nome, descricao, periodicidade, itens, notificarEmail } = req.body || {};
+  const { nome, descricao, periodicidade, itens, notificarEmail, prazoDia } = req.body || {};
   if (!nome || !Array.isArray(itens) || !itens.length) return res.status(400).json({ error: "Informe o nome e ao menos um item para anexar." });
   const itensNormalizados = itens.map((it: any, i: number) => ({
     chave: it.chave || `item${i + 1}`,
@@ -2536,25 +2552,28 @@ app.post("/api/checklist/templates", blockCliente, requirePermissao("solicitacoe
     accept: Array.isArray(it.accept) && it.accept.length ? it.accept : ["qualquer"],
     obrigatorio: it.obrigatorio !== false,
   }));
+  const prazoDiaNum = prazoDia ? Math.min(28, Math.max(1, Number(prazoDia))) : null;
   const info = sqlite
-    .prepare(`INSERT INTO checklist_templates (nome, descricao, periodicidade, itens_json, notificar_email, created_by, escritorio_id) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .run(nome, descricao || null, periodicidade || "mensal", JSON.stringify(itensNormalizados), notificarEmail ? 1 : 0, user.id, user.escritorioId);
+    .prepare(`INSERT INTO checklist_templates (nome, descricao, periodicidade, itens_json, notificar_email, prazo_dia, created_by, escritorio_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(nome, descricao || null, periodicidade || "mensal", JSON.stringify(itensNormalizados), notificarEmail ? 1 : 0, prazoDiaNum, user.id, user.escritorioId);
   res.json({ id: Number(info.lastInsertRowid) });
 });
 app.put("/api/checklist/templates/:id", blockCliente, requirePermissao("solicitacoes", "editar"), (req, res) => {
   const id = Number(req.params.id);
   const existing = sqlite.prepare(`SELECT * FROM checklist_templates WHERE id = ? AND escritorio_id = ?`).get(id, (req as any).user.escritorioId) as any;
   if (!existing) return res.status(404).json({ error: "Modelo não encontrado." });
-  const { nome, descricao, itens, notificarEmail, ativo } = req.body || {};
+  const { nome, descricao, itens, notificarEmail, ativo, prazoDia } = req.body || {};
   const itensJson = Array.isArray(itens) ? JSON.stringify(itens) : existing.itens_json;
+  const prazoDiaNum = prazoDia === undefined ? existing.prazo_dia : prazoDia ? Math.min(28, Math.max(1, Number(prazoDia))) : null;
   sqlite
-    .prepare(`UPDATE checklist_templates SET nome=?, descricao=?, itens_json=?, notificar_email=?, ativo=? WHERE id=?`)
+    .prepare(`UPDATE checklist_templates SET nome=?, descricao=?, itens_json=?, notificar_email=?, ativo=?, prazo_dia=? WHERE id=?`)
     .run(
       nome ?? existing.nome,
       descricao !== undefined ? descricao : existing.descricao,
       itensJson,
       notificarEmail === undefined ? existing.notificar_email : notificarEmail ? 1 : 0,
       ativo === undefined ? existing.ativo : ativo ? 1 : 0,
+      prazoDiaNum,
       id
     );
   res.json({ ok: true });
@@ -6826,32 +6845,207 @@ app.get("/api/financeiro/resumo", blockCliente, requirePermissao("financeiro", "
 });
 
 // ---------- Painel (cards de indicadores) ----------
+// Cards "computados": em vez de um valor digitado à mão, mostram uma contagem calculada na hora a
+// partir de dados reais — e ao clicar, abrem a lista detalhada por trás daquela contagem. Cada
+// função abaixo devolve a lista (o card mostra só items.length); todas já filtram pelas empresas
+// que o usuário logado pode ver (empresasVisiveis), pro caso de um Colaborador restrito abrir o
+// Painel.
+const CARD_TIPOS: string[] = ["certificados_vencer", "das_atraso", "situacao_fiscal", "checklist_atraso", "solicitacoes_pendentes"];
+
+// Unifica os 3 lugares onde uma data de validade de certificado é guardada hoje (emissão de NFS-e,
+// Busca de XML, e-CNPJ do Integra Contador) numa lista só — o card não sabe (nem precisa saber) de
+// onde cada item veio, só que "vence em breve".
+function cardCertificadosAVencer(user: any, diasLimite = 30): any[] {
+  const escritorioId = user.escritorioId;
+  const visiveis = new Set(empresasVisiveis(user));
+  const limite = new Date(Date.now() + diasLimite * 86400000).toISOString();
+  const itens: any[] = [];
+  const nfse = sqlite
+    .prepare(
+      `SELECT c.empresa_id as empresaId, e.nome as empresaNome, c.validade_ate as validadeAte
+       FROM nfse_certificados c LEFT JOIN empresas e ON e.id = c.empresa_id
+       WHERE c.escritorio_id = ? AND c.validade_ate IS NOT NULL AND c.validade_ate <= ?`
+    )
+    .all(escritorioId, limite) as any[];
+  for (const r of nfse) {
+    if (r.empresaId && !visiveis.has(r.empresaId)) continue;
+    itens.push({ tipo: "NFS-e (emissão)", empresaId: r.empresaId, empresaNome: r.empresaNome || "Escritório (procuração)", validadeAte: r.validadeAte });
+  }
+  const nfe = sqlite
+    .prepare(
+      `SELECT c.empresa_id as empresaId, e.nome as empresaNome, c.validade_ate as validadeAte
+       FROM nfe_busca_config c JOIN empresas e ON e.id = c.empresa_id
+       WHERE c.escritorio_id = ? AND c.validade_ate IS NOT NULL AND c.validade_ate <= ?`
+    )
+    .all(escritorioId, limite) as any[];
+  for (const r of nfe) {
+    if (!visiveis.has(r.empresaId)) continue;
+    itens.push({ tipo: "Busca de XML", empresaId: r.empresaId, empresaNome: r.empresaNome, validadeAte: r.validadeAte });
+  }
+  const ic = sqlite
+    .prepare(
+      `SELECT validade_certificado_ate as validadeAte FROM integracontador_config WHERE escritorio_id = ? AND validade_certificado_ate IS NOT NULL AND validade_certificado_ate <= ?`
+    )
+    .get(escritorioId, limite) as any;
+  if (ic) itens.push({ tipo: "Integra Contador", empresaId: null, empresaNome: "Escritório", validadeAte: ic.validadeAte });
+  itens.sort((a, b) => (a.validadeAte < b.validadeAte ? -1 : 1));
+  return itens;
+}
+
+// Empresas com o DAS (template protegido "DAS - Mensal") de uma competência passada ainda sem
+// nenhum documento anexado em Envio de Documentos — inclui qualquer mês em aberto, não só o
+// anterior (uma empresa pode acumular mais de um).
+function cardDasEmAtraso(user: any): any[] {
+  const escritorioId = user.escritorioId;
+  const visiveis = new Set(empresasVisiveis(user));
+  const agora = agoraBrasilia();
+  const rows = sqlite
+    .prepare(
+      `SELECT a.empresa_id as empresaId, e.nome as empresaNome, p.ano, p.mes
+       FROM envio_atribuicoes a
+       JOIN envio_templates t ON t.id = a.template_id AND t.nome = 'DAS - Mensal' AND t.escritorio_id = ?
+       JOIN empresas e ON e.id = a.empresa_id AND e.escritorio_id = ? AND e.ativo = 1
+       JOIN envio_periodos p ON p.atribuicao_id = a.id AND p.mes IS NOT NULL
+       WHERE a.ativo = 1 AND (p.ano < ? OR (p.ano = ? AND p.mes < ?))
+         AND NOT EXISTS (SELECT 1 FROM envio_documentos d WHERE d.periodo_id = p.id)
+       ORDER BY e.nome, p.ano, p.mes`
+    )
+    .all(escritorioId, escritorioId, agora.ano, agora.ano, agora.mes) as any[];
+  const porEmpresa = new Map<number, any>();
+  for (const r of rows) {
+    if (!visiveis.has(r.empresaId)) continue;
+    if (!porEmpresa.has(r.empresaId)) porEmpresa.set(r.empresaId, { empresaId: r.empresaId, empresaNome: r.empresaNome, competencias: [] as string[] });
+    porEmpresa.get(r.empresaId).competencias.push(`${String(r.mes).padStart(2, "0")}/${r.ano}`);
+  }
+  return [...porEmpresa.values()];
+}
+
+// Proxy disponível hoje pra "pendência fiscal": o relatório de Situação Fiscal (SITFIS) é um PDF
+// opaco (não lido pelo sistema) — o único sinal estruturado que já existe é o alerta de
+// DAS/Declaração do Simples Nacional ainda não localizado.
+function cardSituacaoFiscal(user: any): any[] {
+  const escritorioId = user.escritorioId;
+  const visiveis = new Set(empresasVisiveis(user));
+  const rows = sqlite
+    .prepare(
+      `SELECT c.empresa_id as empresaId, e.nome as empresaNome, c.alerta_declaracao as alerta
+       FROM integracontador_empresa_config c JOIN empresas e ON e.id = c.empresa_id
+       WHERE c.escritorio_id = ? AND c.alerta_declaracao IS NOT NULL AND e.ativo = 1
+       ORDER BY e.nome`
+    )
+    .all(escritorioId) as any[];
+  return rows.filter((r) => visiveis.has(r.empresaId));
+}
+
+// Empresas que já passaram do prazo (dia do mês) de um modelo de Solicitação de Documentos e ainda
+// têm ao menos um item obrigatório sem upload salvo na competência atual.
+function cardChecklistAtraso(user: any): any[] {
+  const escritorioId = user.escritorioId;
+  const visiveis = new Set(empresasVisiveis(user));
+  const agora = agoraBrasilia();
+  const templates = sqlite
+    .prepare(`SELECT id, nome, itens_json as itensJson, prazo_dia as prazoDia FROM checklist_templates WHERE escritorio_id = ? AND ativo = 1 AND prazo_dia IS NOT NULL`)
+    .all(escritorioId) as any[];
+  const resultado: any[] = [];
+  for (const t of templates) {
+    if (agora.dia <= t.prazoDia) continue; // prazo desse mês ainda não venceu
+    const itensObrigatorios = (JSON.parse(t.itensJson) as any[]).filter((it) => it.obrigatorio);
+    if (!itensObrigatorios.length) continue;
+    const atribuicoes = sqlite
+      .prepare(`SELECT a.id, a.empresa_id as empresaId, e.nome as empresaNome FROM checklist_atribuicoes a JOIN empresas e ON e.id = a.empresa_id WHERE a.template_id = ? AND a.ativo = 1 AND e.ativo = 1`)
+      .all(t.id) as any[];
+    for (const a of atribuicoes) {
+      if (!visiveis.has(a.empresaId)) continue;
+      const periodo = sqlite.prepare(`SELECT id FROM checklist_periodos WHERE atribuicao_id = ? AND ano = ? AND mes = ?`).get(a.id, agora.ano, agora.mes) as any;
+      let faltando: string[];
+      if (!periodo) {
+        faltando = itensObrigatorios.map((it) => it.label);
+      } else {
+        const enviados = new Set(
+          (sqlite.prepare(`SELECT item_chave FROM checklist_uploads WHERE periodo_id = ? AND status = 'salvo'`).all(periodo.id) as any[]).map((u) => u.item_chave)
+        );
+        faltando = itensObrigatorios.filter((it) => !enviados.has(it.chave)).map((it) => it.label);
+      }
+      if (faltando.length) resultado.push({ empresaId: a.empresaId, empresaNome: a.empresaNome, templateNome: t.nome, prazoDia: t.prazoDia, itensFaltando: faltando });
+    }
+  }
+  return resultado;
+}
+
+// Pedidos que o cliente já fez pela tela "Solicitar Documentos" (envio_periodos.solicitado_em
+// preenchido) e que o escritório ainda não respondeu (nenhum documento anexado naquele período).
+function cardSolicitacoesPendentes(user: any): any[] {
+  const escritorioId = user.escritorioId;
+  const visiveis = new Set(empresasVisiveis(user));
+  const rows = sqlite
+    .prepare(
+      `SELECT p.id as periodoId, a.empresa_id as empresaId, e.nome as empresaNome, t.nome as templateNome, p.ano, p.mes, p.rotulo, p.solicitado_em as solicitadoEm
+       FROM envio_periodos p
+       JOIN envio_atribuicoes a ON a.id = p.atribuicao_id
+       JOIN envio_templates t ON t.id = a.template_id AND t.escritorio_id = ?
+       JOIN empresas e ON e.id = a.empresa_id AND e.ativo = 1
+       WHERE p.solicitado_em IS NOT NULL AND NOT EXISTS (SELECT 1 FROM envio_documentos d WHERE d.periodo_id = p.id)
+       ORDER BY p.solicitado_em ASC`
+    )
+    .all(escritorioId) as any[];
+  return rows.filter((r) => visiveis.has(r.empresaId));
+}
+
+function calcularCardComputado(tipo: string, user: any): any[] {
+  if (tipo === "certificados_vencer") return cardCertificadosAVencer(user);
+  if (tipo === "das_atraso") return cardDasEmAtraso(user);
+  if (tipo === "situacao_fiscal") return cardSituacaoFiscal(user);
+  if (tipo === "checklist_atraso") return cardChecklistAtraso(user);
+  if (tipo === "solicitacoes_pendentes") return cardSolicitacoesPendentes(user);
+  return [];
+}
+
 app.get("/api/dashboard/cards", requirePermissao("dashboard", "visualizar"), (req, res) => {
-  const rows = sqlite.prepare(`SELECT * FROM dashboard_cards WHERE escritorio_id = ? ORDER BY ordem, id`).all((req as any).user.escritorioId);
-  res.json({ items: rows });
+  const user = (req as any).user;
+  const rows = sqlite.prepare(`SELECT * FROM dashboard_cards WHERE escritorio_id = ? ORDER BY ordem, id`).all(user.escritorioId) as any[];
+  const items = rows.map((r) => {
+    if (!r.tipo) return r;
+    try {
+      return { ...r, valor: String(calcularCardComputado(r.tipo, user).length) };
+    } catch {
+      return { ...r, valor: "—" };
+    }
+  });
+  res.json({ items });
+});
+app.get("/api/dashboard/cards/:id/detalhe", requirePermissao("dashboard", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const card = sqlite.prepare(`SELECT * FROM dashboard_cards WHERE id = ? AND escritorio_id = ?`).get(Number(req.params.id), user.escritorioId) as any;
+  if (!card) return res.status(404).json({ error: "Card não encontrado." });
+  if (!card.tipo) return res.status(400).json({ error: "Este card não tem detalhamento — é um valor digitado manualmente." });
+  res.json({ tipo: card.tipo, items: calcularCardComputado(card.tipo, user) });
 });
 app.post("/api/dashboard/cards", blockCliente, requirePermissao("dashboard", "editar"), (req, res) => {
   const user = (req as any).user;
-  const { titulo, valor, subtitulo, cor, ordem } = req.body || {};
-  if (!titulo || valor === undefined) return res.status(400).json({ error: "Informe título e valor do card." });
+  const { titulo, valor, subtitulo, cor, ordem, tipo } = req.body || {};
+  if (tipo && !CARD_TIPOS.includes(tipo)) return res.status(400).json({ error: "Tipo de card inválido." });
+  if (!titulo || (!tipo && valor === undefined)) return res.status(400).json({ error: "Informe título e valor do card." });
   const info = sqlite
-    .prepare(`INSERT INTO dashboard_cards (titulo, valor, subtitulo, cor, ordem, created_by, escritorio_id) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .run(titulo, String(valor), subtitulo || null, cor || "brass", Number(ordem) || 0, user.id, user.escritorioId);
+    .prepare(`INSERT INTO dashboard_cards (titulo, valor, subtitulo, cor, ordem, created_by, escritorio_id, tipo) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(titulo, tipo ? "0" : String(valor), subtitulo || null, cor || "brass", Number(ordem) || 0, user.id, user.escritorioId, tipo || null);
   res.json({ id: Number(info.lastInsertRowid) });
 });
 app.put("/api/dashboard/cards/:id", blockCliente, requirePermissao("dashboard", "editar"), (req, res) => {
   const id = Number(req.params.id);
   const existing = sqlite.prepare(`SELECT * FROM dashboard_cards WHERE id = ? AND escritorio_id = ?`).get(id, (req as any).user.escritorioId) as any;
   if (!existing) return res.status(404).json({ error: "Card não encontrado." });
-  const { titulo, valor, subtitulo, cor, ordem } = req.body || {};
+  const { titulo, valor, subtitulo, cor, ordem, tipo } = req.body || {};
+  if (tipo !== undefined && tipo !== null && tipo !== "" && !CARD_TIPOS.includes(tipo)) return res.status(400).json({ error: "Tipo de card inválido." });
+  const novoTipo = tipo !== undefined ? tipo || null : existing.tipo;
   sqlite
-    .prepare(`UPDATE dashboard_cards SET titulo=?, valor=?, subtitulo=?, cor=?, ordem=?, updated_at=datetime('now') WHERE id=?`)
+    .prepare(`UPDATE dashboard_cards SET titulo=?, valor=?, subtitulo=?, cor=?, ordem=?, tipo=?, updated_at=datetime('now') WHERE id=?`)
     .run(
       titulo ?? existing.titulo,
-      valor !== undefined ? String(valor) : existing.valor,
+      novoTipo ? "0" : valor !== undefined ? String(valor) : existing.valor,
       subtitulo !== undefined ? subtitulo : existing.subtitulo,
       cor ?? existing.cor,
       ordem !== undefined ? Number(ordem) : existing.ordem,
+      novoTipo,
       id
     );
   res.json({ ok: true });
