@@ -130,6 +130,14 @@ sqlite.exec(`
     aba TEXT NOT NULL, -- 'dominio' | 'email' | 'whatsapp' | 'nfse-agendamento' | 'assinatura-plataforma'
     PRIMARY KEY (user_id, aba)
   );
+  -- Mesma ideia acima, mas pro menu inteiro de um Cliente — controla quais das próprias páginas
+  -- dele (NFS-e, Meus Documentos, Solicitar Documentos, Documentos Recebidos, Financeiro,
+  -- Assinatura) aparecem no menu. Sem nenhuma linha aqui pro cliente = vê todas (default seguro).
+  CREATE TABLE IF NOT EXISTS cliente_paginas_visiveis (
+    user_id INTEGER NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+    pagina TEXT NOT NULL, -- 'minha-nfse' | 'meus-documentos' | 'solicitar-documentos' | 'documentos-recebidos' | 'minha-financeiro' | 'minha-assinatura'
+    PRIMARY KEY (user_id, pagina)
+  );
 
   -- ---- Solicitações de documentos (checklist) ----
   CREATE TABLE IF NOT EXISTS checklist_templates (
@@ -1868,6 +1876,7 @@ app.get("/api/auth/me", (req, res) => {
   if (!user) return res.status(401).json({ error: "Não autenticado." });
   let permissoes: Record<string, { visualizar: boolean; postar: boolean; editar: boolean }> = {};
   let configAbas: string[] | null = null; // null = sem restrição (vê todas)
+  let paginasCliente: string[] | null = null; // null = sem restrição (cliente vê todas as próprias páginas)
   if (user.perfil === "Administrador") {
     for (const m of MODULOS) permissoes[m] = { visualizar: true, postar: true, editar: true };
   } else if (user.perfil === "Colaborador") {
@@ -1876,8 +1885,11 @@ app.get("/api/auth/me", (req, res) => {
     for (const r of rows) permissoes[r.modulo] = { visualizar: !!r.pode_visualizar, postar: !!r.pode_postar, editar: !!r.pode_editar };
     const abas = sqlite.prepare(`SELECT aba FROM colaborador_config_abas WHERE user_id = ?`).all(user.id) as any[];
     if (abas.length) configAbas = abas.map((a) => a.aba);
+  } else if (user.perfil === "Cliente") {
+    const paginas = sqlite.prepare(`SELECT pagina FROM cliente_paginas_visiveis WHERE user_id = ?`).all(user.id) as any[];
+    if (paginas.length) paginasCliente = paginas.map((p) => p.pagina);
   }
-  res.json({ user, permissoes, configAbas });
+  res.json({ user, permissoes, configAbas, paginasCliente });
 });
 app.get("/api/auth/minhas-empresas", requireAuth, (req, res) => {
   const user = (req as any).user;
@@ -2109,6 +2121,23 @@ app.put("/api/users/:id/config-abas", requireAdmin, (req, res) => {
   sqlite.prepare(`DELETE FROM colaborador_config_abas WHERE user_id = ?`).run(userId);
   const stmt = sqlite.prepare(`INSERT INTO colaborador_config_abas (user_id, aba) VALUES (?, ?)`);
   for (const aba of abas) stmt.run(userId, aba);
+  res.json({ ok: true });
+});
+const PAGINAS_CLIENTE_VALIDAS = ["minha-nfse", "meus-documentos", "solicitar-documentos", "documentos-recebidos", "minha-financeiro", "minha-assinatura"];
+app.get("/api/users/:id/paginas-cliente", requireAdmin, (req, res) => {
+  if (!pertenceAoEscritorio(req, Number(req.params.id))) return res.status(404).json({ error: "Usuário não encontrado." });
+  const rows = sqlite.prepare(`SELECT pagina FROM cliente_paginas_visiveis WHERE user_id = ?`).all(Number(req.params.id)) as any[];
+  res.json({ paginas: rows.map((r) => r.pagina) });
+});
+// Body { paginas: [...] } vazio ou omitido = sem restrição (cliente vê todas as próprias páginas)
+// — só grava linhas quando o admin explicitamente restringe a algumas.
+app.put("/api/users/:id/paginas-cliente", requireAdmin, (req, res) => {
+  const userId = Number(req.params.id);
+  if (!pertenceAoEscritorio(req, userId)) return res.status(404).json({ error: "Usuário não encontrado." });
+  const paginas: string[] = Array.isArray(req.body?.paginas) ? req.body.paginas.filter((p: string) => PAGINAS_CLIENTE_VALIDAS.includes(p)) : [];
+  sqlite.prepare(`DELETE FROM cliente_paginas_visiveis WHERE user_id = ?`).run(userId);
+  const stmt = sqlite.prepare(`INSERT INTO cliente_paginas_visiveis (user_id, pagina) VALUES (?, ?)`);
+  for (const pagina of paginas) stmt.run(userId, pagina);
   res.json({ ok: true });
 });
 // Empresas vinculadas a um usuário — pra Colaborador é a lista de acesso restrito (só relevante

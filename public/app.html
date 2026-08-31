@@ -233,7 +233,7 @@
 "use strict";
 
 // ===================== estado & helpers =====================
-let STATE = { user:null, permissoes:{}, page:'dashboard', configAbas:null };
+let STATE = { user:null, permissoes:{}, page:'dashboard', configAbas:null, paginasCliente:null };
 // Incrementado a cada render() disparado — protege contra a resposta atrasada de uma página que o
 // usuário já saiu (ex.: dashboard.card demora pra carregar, usuário já clicou em outro menu; sem
 // isso, quando o dashboard finalmente responde ele sobrescreve a página nova com a antiga).
@@ -528,9 +528,23 @@ const NAV = [
   { id:'escritorios', label:'Escritórios', modulo:null, roles:['SuperAdmin'] },
   { id:'modulos-plataforma', label:'Módulos da plataforma', modulo:null, roles:['SuperAdmin'] },
 ];
+const PAGINAS_CLIENTE_RESTRINGIVEIS = ['minha-nfse','meus-documentos','solicitar-documentos','documentos-recebidos','minha-financeiro','minha-assinatura'];
+const PAGINAS_CLIENTE_TODAS = [
+  { id:'minha-nfse', label:'NFS-e' },
+  { id:'meus-documentos', label:'Meus Documentos' },
+  { id:'solicitar-documentos', label:'Solicitar Documentos' },
+  { id:'documentos-recebidos', label:'Documentos Recebidos' },
+  { id:'minha-financeiro', label:'Financeiro' },
+  { id:'minha-assinatura', label:'Assinatura' },
+];
 function podeVerModulo(item){
   if(!item.roles.includes(STATE.user.perfil)) return false;
-  if(!item.modulo) return true;
+  if(!item.modulo){
+    if(STATE.user.perfil==='Cliente' && Array.isArray(STATE.paginasCliente) && PAGINAS_CLIENTE_RESTRINGIVEIS.includes(item.id)){
+      return STATE.paginasCliente.includes(item.id);
+    }
+    return true;
+  }
   if(STATE.user.perfil==='Administrador') return true;
   if(STATE.user.perfil==='Cliente') return false;
   return STATE.permissoes[item.modulo] && STATE.permissoes[item.modulo].visualizar;
@@ -555,6 +569,7 @@ async function boot(){
     STATE.user = data.user;
     STATE.permissoes = data.permissoes || {};
     STATE.configAbas = data.configAbas || null; // null = sem restrição, vê todas as abas de Configurações
+    STATE.paginasCliente = data.paginasCliente || null; // null = sem restrição, cliente vê todas as próprias páginas
   }catch(e){
     showLogin();
     return;
@@ -565,7 +580,12 @@ async function boot(){
   document.getElementById('whoProfile').textContent = STATE.user.perfil;
   if(STATE.user.perfil==='Cliente') await renderEmpresaSwitch();
   else document.getElementById('sidebarBrand').innerHTML = `<div class="eyebrow">Escritório contábil</div><h2>Simples Contábeis</h2>`;
-  if(STATE.user.perfil==='Cliente') STATE.page = 'minha-nfse';
+  if(STATE.user.perfil==='Cliente'){
+    // Igual ao Colaborador abaixo: cai na primeira página do menu que esse cliente realmente
+    // enxerga, caso a página padrão (NFS-e) tenha sido restringida pra ele.
+    const primeiraDisponivel = NAV.find(item=>podeVerModulo(item));
+    STATE.page = primeiraDisponivel ? primeiraDisponivel.id : 'minha-nfse';
+  }
   else if(STATE.user.perfil==='SuperAdmin') STATE.page = 'escritorios';
   else{
     // Colaborador pode não ter permissão nem pra ver "Início" — cai na primeira página do menu que
@@ -4860,6 +4880,11 @@ async function usuarioModal(u){
     <div id="usEmpresaWrap" class="field hidden">
       <label>Empresa(s) — pode marcar mais de uma</label>
       ${checklistComFiltroHtml('usCliEmp', empresas, [])}
+      ${u? `<div style="margin-top:14px;">
+        <div style="font-size:12px; font-weight:600; margin-bottom:4px;">Abas visíveis pro cliente</div>
+        <p style="font-size:11.5px; color:var(--ink-soft); margin:-2px 0 8px;">Nenhuma marcada = vê todas. Marque só as que esse cliente deve acessar.</p>
+        ${PAGINAS_CLIENTE_TODAS.map(p=>`<label class="checkbox-row"><input type="checkbox" class="usPaginaCliente" value="${p.id}"> ${esc(p.label)}</label>`).join('')}
+      </div>` : ''}
     </div>
     ${u? `<label class="checkbox-row"><input type="checkbox" id="usAtivo" ${u.ativo?'checked':''}> Ativo</label>`:''}
     <div id="usColabWrap" class="hidden">
@@ -4930,8 +4955,12 @@ async function usuarioModal(u){
     document.querySelectorAll('.usConfigAba').forEach(c=>{ c.checked = configAbas.includes(c.value); });
   }
   if(u && u.perfil==='Cliente'){
-    const { empresaIds } = await api('/users/'+u.id+'/empresas');
+    const [{ empresaIds }, { paginas: paginasCliente }] = await Promise.all([
+      api('/users/'+u.id+'/empresas'),
+      api('/users/'+u.id+'/paginas-cliente'),
+    ]);
     document.querySelectorAll('.usCliEmpCheck').forEach(c=>{ c.checked = empresaIds.includes(Number(c.value)); });
+    document.querySelectorAll('.usPaginaCliente').forEach(c=>{ c.checked = paginasCliente.includes(c.value); });
   }
 
   document.getElementById('usCancel').addEventListener('click', closeModal);
@@ -4981,6 +5010,10 @@ async function usuarioModal(u){
       if(perfil==='Cliente'){
         const empresaIds = [...document.querySelectorAll('.usCliEmpCheck:checked')].map(c=>Number(c.value));
         await api('/users/'+userId+'/empresas', { method:'PUT', body:{ empresaIds } });
+        if(u){
+          const paginasCliente = [...document.querySelectorAll('.usPaginaCliente:checked')].map(c=>c.value);
+          await api('/users/'+userId+'/paginas-cliente', { method:'PUT', body:{ paginas: paginasCliente } });
+        }
       }
       closeModal(); pageUsuarios();
     }catch(e){ toast(e.message,'err'); }
