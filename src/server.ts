@@ -6911,9 +6911,21 @@ function cardDasEmAtraso(user: any): any[] {
        ORDER BY e.nome, p.ano, p.mes`
     )
     .all(escritorioId, escritorioId, agora.ano, agora.ano, agora.mes) as any[];
+  // Uma competência sem PDF anexado aqui ainda conta como "resolvida" se já existe a declaração do
+  // Simples Nacional transmitida pra ela (Integra Contador) — o Integra Contador só gera o PDF do
+  // DAS pra competência mais recente já declarada, não retroativamente pras anteriores, e meses
+  // anteriores à automação podem ter sido entregues por fora (e-mail, WhatsApp) sem passar por
+  // aqui. Declaração transmitida é sinal forte o bastante de que o mês já foi tratado.
+  const declaradasPorEmpresa = new Map<number, Set<string>>();
   const porEmpresa = new Map<number, any>();
   for (const r of rows) {
     if (!visiveis.has(r.empresaId)) continue;
+    if (!declaradasPorEmpresa.has(r.empresaId)) {
+      const decls = sqlite.prepare(`SELECT periodo_apuracao FROM integracontador_documentos WHERE empresa_id = ? AND tipo = 'declaracao'`).all(r.empresaId) as any[];
+      declaradasPorEmpresa.set(r.empresaId, new Set(decls.map((d) => d.periodo_apuracao)));
+    }
+    const competenciaAAAAMM = `${r.ano}${String(r.mes).padStart(2, "0")}`;
+    if (declaradasPorEmpresa.get(r.empresaId)!.has(competenciaAAAAMM)) continue;
     if (!porEmpresa.has(r.empresaId)) porEmpresa.set(r.empresaId, { empresaId: r.empresaId, empresaNome: r.empresaNome, competencias: [] as string[] });
     porEmpresa.get(r.empresaId).competencias.push(`${String(r.mes).padStart(2, "0")}/${r.ano}`);
   }
