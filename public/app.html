@@ -2400,13 +2400,32 @@ async function renderNfseEmitir(){
       }else{
         r = await api('/nfse/emitir', { method:'POST', body });
       }
-      resultado.innerHTML = `<div class="slot-locked" style="background:var(--paper);"><span class="fname">Emitida com sucesso</span>Chave de acesso: ${esc(r.chaveAcesso||'—')}</div>`;
+      const empresaNome = habilitadas.find(emp=>emp.id===body.empresaId)?.nome || '';
+      resultado.innerHTML = `<div class="slot-locked" style="background:var(--paper);"><span class="fname">Emitida com sucesso</span>Chave de acesso: ${esc(r.chaveAcesso||'—')}<div style="margin-top:8px;"><button class="btn small" id="btnCancelarNfseRecemEmitida" style="color:var(--debit);">Cancelar esta NFS-e</button></div></div>`;
+      document.getElementById('btnCancelarNfseRecemEmitida').addEventListener('click', ()=>{
+        nfseCancelarModal({ id:r.emissaoId, empresaNome, tomadorNome:body.tomador.nome, valorServico:body.servico.valor });
+      });
       toast('NFS-e emitida com sucesso.','ok');
+      nfseLimparFormularioEmissao('nfseEmi');
+      document.getElementById('btnSalvarNfse').textContent = 'Salvar como rascunho';
     }catch(e){
       resultado.innerHTML = `<div class="slot-locked" style="background:var(--paper); border-color:var(--debit);"><span class="fname">Rejeitada pelo Sistema Nacional NFS-e</span>${esc(e.message)}</div>`;
       toast(e.message,'err');
     }
   });
+}
+// Limpa só os campos do tomador/serviço depois de emitir com sucesso — mantém empresa e modelo
+// selecionados pra facilitar emitir a próxima nota em seguida (fluxo real observado: mesma empresa,
+// vários tomadores diferentes em sequência). Evita reenviar sem querer os mesmos dados da nota anterior.
+function nfseLimparFormularioEmissao(prefixo){
+  ['DocTomador','NomeTomador','EmailTomador','Endereco','Numero','Complemento','Cep','Bairro','Cidade','Uf','CodMun','Valor','Descricao'].forEach(suf=>{
+    const el = document.getElementById(prefixo+suf);
+    if(el) el.value = '';
+  });
+  const status = document.getElementById(prefixo+'CnpjStatus');
+  if(status) status.textContent = '';
+  const competencia = document.getElementById(prefixo+'Competencia');
+  if(competencia) competencia.value = new Date().toISOString().slice(0,10);
 }
 
 async function renderNfseModelos(){
@@ -3685,8 +3704,13 @@ async function renderMinhaNfseEmitir(){
       }else{
         r = await api('/nfse/minha-empresa/emitir', { method:'POST', body });
       }
-      resultado.innerHTML = `<div class="slot-locked" style="background:var(--paper);"><span class="fname">Emitida com sucesso</span>Chave de acesso: ${esc(r.chaveAcesso||'—')}</div>`;
+      resultado.innerHTML = `<div class="slot-locked" style="background:var(--paper);"><span class="fname">Emitida com sucesso</span>Chave de acesso: ${esc(r.chaveAcesso||'—')}<div style="margin-top:8px;"><button class="btn small" id="btnCancelarMinhaNfseRecemEmitida" style="color:var(--debit);">Cancelar esta NFS-e</button></div></div>`;
+      document.getElementById('btnCancelarMinhaNfseRecemEmitida').addEventListener('click', ()=>{
+        minhaNfseCancelarModal({ id:r.emissaoId, tomadorNome:body.tomador.nome, valorServico:body.servico.valor });
+      });
       toast('NFS-e emitida com sucesso.','ok');
+      nfseLimparFormularioEmissao('mnfEmi');
+      document.getElementById('btnSalvarMinhaNfse').textContent = 'Salvar como rascunho';
     }catch(e){
       resultado.innerHTML = `<div class="slot-locked" style="background:var(--paper); border-color:var(--debit);"><span class="fname">Rejeitada pelo Sistema Nacional NFS-e</span>${esc(e.message)}</div>`;
       toast(e.message,'err');
