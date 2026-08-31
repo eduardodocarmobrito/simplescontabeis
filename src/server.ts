@@ -4280,7 +4280,12 @@ async function integraContadorBuscarEmpresa(empresaId: number, empresaCnpj: stri
     ),
   ]);
 }
-async function integraContadorBuscarEmpresaInterno(empresaId: number, empresaCnpj: string, optante: boolean): Promise<{ novos: number; erro: string | null }> {
+async function integraContadorBuscarEmpresaInterno(
+  empresaId: number,
+  empresaCnpj: string,
+  optante: boolean,
+  tentandoComTokenNovo = false
+): Promise<{ novos: number; erro: string | null }> {
   const DIAG = (etapa: string) => console.log(`[IC-DIAG] empresa=${empresaId} t=${Date.now()} ${etapa}`);
   DIAG("inicio");
   const empConfig = getIntegraContadorEmpresaConfig(empresaId);
@@ -4376,6 +4381,18 @@ async function integraContadorBuscarEmpresaInterno(empresaId: number, empresaCnp
           falhas.push(`DAS: ${e.message}`);
         }
       }
+    }
+    // Achado ao vivo: um token com validade "ainda dentro do prazo" localmente (ver tokenValido) às
+    // vezes já não é mais aceito pelo SERPRO — cada chamada com ele responde 401 (convertido em
+    // "TOKEN_EXPIRADO" por chamarServico). O comentário original de obterTokenIntegraContador já
+    // previa que "quem chama deve reautenticar e tentar de novo uma vez", mas isso nunca tinha sido
+    // implementado — a busca inteira falhava direto. Descarta o token em cache e tenta a busca
+    // inteira de novo, uma única vez (tentandoComTokenNovo evita loop infinito se a reautenticação
+    // também falhar).
+    if (!tentandoComTokenNovo && falhas.some((f) => f.includes("TOKEN_EXPIRADO"))) {
+      DIAG("token expirado detectado — descartando cache e tentando de novo com token novo");
+      integraContadorTokens.delete(empConfig.escritorio_id);
+      return integraContadorBuscarEmpresaInterno(empresaId, empresaCnpj, optante, true);
     }
     DIAG("antes-update-final");
     const erroResumo = falhas.length ? falhas.join(" | ") : null;
