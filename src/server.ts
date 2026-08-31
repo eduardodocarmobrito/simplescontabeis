@@ -118,6 +118,16 @@ sqlite.exec(`
     pode_editar INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (user_id, modulo)
   );
+  -- Controle fino de QUAIS abas dentro de "Configurações" um Colaborador enxerga — o módulo
+  -- "configuracoes" já libera a tela toda (ver/postar/editar acima), isso restringe ainda mais,
+  -- só pra esse módulo específico (as outras telas não têm sub-abas sensíveis o bastante pra
+  -- precisar disso). Sem nenhuma linha aqui pro colaborador = vê todas as abas (comportamento
+  -- anterior preservado; a restrição só entra em vigor quando o admin marca algo explicitamente).
+  CREATE TABLE IF NOT EXISTS colaborador_config_abas (
+    user_id INTEGER NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+    aba TEXT NOT NULL, -- 'dominio' | 'email' | 'whatsapp' | 'nfse-agendamento' | 'assinatura-plataforma'
+    PRIMARY KEY (user_id, aba)
+  );
 
   -- ---- Solicitações de documentos (checklist) ----
   CREATE TABLE IF NOT EXISTS checklist_templates (
@@ -1831,14 +1841,17 @@ app.get("/api/auth/me", (req, res) => {
   const user = getSessionUser(req.cookies?.sid);
   if (!user) return res.status(401).json({ error: "Não autenticado." });
   let permissoes: Record<string, { visualizar: boolean; postar: boolean; editar: boolean }> = {};
+  let configAbas: string[] | null = null; // null = sem restrição (vê todas)
   if (user.perfil === "Administrador") {
     for (const m of MODULOS) permissoes[m] = { visualizar: true, postar: true, editar: true };
   } else if (user.perfil === "Colaborador") {
     const rows = sqlite.prepare(`SELECT * FROM colaborador_permissoes WHERE user_id = ?`).all(user.id) as any[];
     for (const m of MODULOS) permissoes[m] = { visualizar: false, postar: false, editar: false };
     for (const r of rows) permissoes[r.modulo] = { visualizar: !!r.pode_visualizar, postar: !!r.pode_postar, editar: !!r.pode_editar };
+    const abas = sqlite.prepare(`SELECT aba FROM colaborador_config_abas WHERE user_id = ?`).all(user.id) as any[];
+    if (abas.length) configAbas = abas.map((a) => a.aba);
   }
-  res.json({ user, permissoes });
+  res.json({ user, permissoes, configAbas });
 });
 app.get("/api/auth/minhas-empresas", requireAuth, (req, res) => {
   const user = (req as any).user;
@@ -2053,6 +2066,23 @@ app.put("/api/users/:id/permissoes", requireAdmin, (req, res) => {
     const p = permissoes[m] || {};
     stmt.run(userId, m, p.visualizar ? 1 : 0, p.postar ? 1 : 0, p.editar ? 1 : 0);
   }
+  res.json({ ok: true });
+});
+const CONFIG_ABAS_VALIDAS = ["dominio", "email", "whatsapp", "nfse-agendamento", "assinatura-plataforma"];
+app.get("/api/users/:id/config-abas", requireAdmin, (req, res) => {
+  if (!pertenceAoEscritorio(req, Number(req.params.id))) return res.status(404).json({ error: "Usuário não encontrado." });
+  const rows = sqlite.prepare(`SELECT aba FROM colaborador_config_abas WHERE user_id = ?`).all(Number(req.params.id)) as any[];
+  res.json({ abas: rows.map((r) => r.aba) });
+});
+// Body { abas: [...] } vazio ou omitido = sem restrição (colaborador vê todas as abas de
+// Configurações) — só grava linhas quando o admin explicitamente restringe a algumas.
+app.put("/api/users/:id/config-abas", requireAdmin, (req, res) => {
+  const userId = Number(req.params.id);
+  if (!pertenceAoEscritorio(req, userId)) return res.status(404).json({ error: "Usuário não encontrado." });
+  const abas: string[] = Array.isArray(req.body?.abas) ? req.body.abas.filter((a: string) => CONFIG_ABAS_VALIDAS.includes(a)) : [];
+  sqlite.prepare(`DELETE FROM colaborador_config_abas WHERE user_id = ?`).run(userId);
+  const stmt = sqlite.prepare(`INSERT INTO colaborador_config_abas (user_id, aba) VALUES (?, ?)`);
+  for (const aba of abas) stmt.run(userId, aba);
   res.json({ ok: true });
 });
 // Empresas vinculadas a um usuário — pra Colaborador é a lista de acesso restrito (só relevante

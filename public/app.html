@@ -233,7 +233,7 @@
 "use strict";
 
 // ===================== estado & helpers =====================
-let STATE = { user:null, permissoes:{}, page:'dashboard' };
+let STATE = { user:null, permissoes:{}, page:'dashboard', configAbas:null };
 // Incrementado a cada render() disparado — protege contra a resposta atrasada de uma página que o
 // usuário já saiu (ex.: dashboard.card demora pra carregar, usuário já clicou em outro menu; sem
 // isso, quando o dashboard finalmente responde ele sobrescreve a página nova com a antiga).
@@ -554,6 +554,7 @@ async function boot(){
     const data = await api('/auth/me');
     STATE.user = data.user;
     STATE.permissoes = data.permissoes || {};
+    STATE.configAbas = data.configAbas || null; // null = sem restrição, vê todas as abas de Configurações
   }catch(e){
     showLogin();
     return;
@@ -4780,6 +4781,11 @@ async function usuarioModal(u){
         ${checklistComFiltroHtml('usColabEmp', empresas, [])}
       </div>
       <div id="usPermWrap"></div>
+      <div id="usConfigAbasWrap" class="hidden" style="margin-top:14px;">
+        <div style="font-size:12px; font-weight:600; margin-bottom:4px;">Abas de Configurações visíveis</div>
+        <p style="font-size:11.5px; color:var(--ink-soft); margin:-2px 0 8px;">Nenhuma marcada = vê todas. Marque só as que esse colaborador deve acessar.</p>
+        ${CFG_ABAS_TODAS.map(a=>`<label class="checkbox-row"><input type="checkbox" class="usConfigAba" value="${a.id}"> ${esc(a.label)}</label>`).join('')}
+      </div>
     </div>
     <div class="modal-actions">
       <button class="btn" id="usCancel">Cancelar</button>
@@ -4811,6 +4817,10 @@ async function usuarioModal(u){
             <div><input type="checkbox" class="pe" data-mod="${m}" ${p.pode_editar?'checked':''}></div>`;
         }).join('')}
       </div>`;
+    const configAbasWrap = document.getElementById('usConfigAbasWrap');
+    const pvConfig = wrap.querySelector('.pv[data-mod="configuracoes"]');
+    const syncConfigAbasVisibilidade = ()=> configAbasWrap.classList.toggle('hidden', !pvConfig.checked);
+    if(pvConfig){ pvConfig.addEventListener('change', syncConfigAbasVisibilidade); syncConfigAbasVisibilidade(); }
   }
   renderPermGrid([]);
   const acessoTodasEl = document.getElementById('usAcessoTodas');
@@ -4818,14 +4828,16 @@ async function usuarioModal(u){
   acessoTodasEl.addEventListener('change', ()=> empresasRestritasWrap.classList.toggle('hidden', acessoTodasEl.checked));
 
   if(u && u.perfil==='Colaborador'){
-    const [{ items: perms }, { empresaIds }] = await Promise.all([
+    const [{ items: perms }, { empresaIds }, { abas: configAbas }] = await Promise.all([
       api('/users/'+u.id+'/permissoes'),
       api('/users/'+u.id+'/empresas'),
+      api('/users/'+u.id+'/config-abas'),
     ]);
     renderPermGrid(perms);
     acessoTodasEl.checked = !!u.acessoTodasEmpresas;
     empresasRestritasWrap.classList.toggle('hidden', acessoTodasEl.checked);
     empresasRestritasWrap.querySelectorAll('.usColabEmpCheck').forEach(c=>{ c.checked = empresaIds.includes(Number(c.value)); });
+    document.querySelectorAll('.usConfigAba').forEach(c=>{ c.checked = configAbas.includes(c.value); });
   }
   if(u && u.perfil==='Cliente'){
     const { empresaIds } = await api('/users/'+u.id+'/empresas');
@@ -4873,6 +4885,8 @@ async function usuarioModal(u){
         const empresaIds = document.getElementById('usAcessoTodas').checked ? [] :
           [...document.querySelectorAll('.usColabEmpCheck:checked')].map(c=>Number(c.value));
         await api('/users/'+userId+'/empresas', { method:'PUT', body:{ empresaIds } });
+        const configAbas = [...document.querySelectorAll('.usConfigAba:checked')].map(c=>c.value);
+        await api('/users/'+userId+'/config-abas', { method:'PUT', body:{ abas: configAbas } });
       }
       if(perfil==='Cliente'){
         const empresaIds = [...document.querySelectorAll('.usCliEmpCheck:checked')].map(c=>Number(c.value));
@@ -5044,19 +5058,29 @@ async function pageModulosPlataforma(){
 
 // ===================== Configurações =====================
 let CFG_TAB='dominio';
+const CFG_ABAS_TODAS = [
+  { id:'dominio', label:'Domínio Web' },
+  { id:'email', label:'E-mail corporativo' },
+  { id:'whatsapp', label:'WhatsApp' },
+  { id:'nfse-agendamento', label:'Emissão de NFS-e' },
+  { id:'assinatura-plataforma', label:'Assinatura da plataforma' },
+];
 async function pageConfiguracoes(){
+  // Administrador e Colaborador sem restrição explícita (configAbas===null) veem todas as abas —
+  // um Colaborador só fica restrito quando o admin marca abas específicas pra ele em Usuários.
+  const abasVisiveis = (STATE.user.perfil==='Colaborador' && Array.isArray(STATE.configAbas))
+    ? CFG_ABAS_TODAS.filter(a=>STATE.configAbas.includes(a.id))
+    : CFG_ABAS_TODAS;
+  if(!abasVisiveis.some(a=>a.id===CFG_TAB)) CFG_TAB = abasVisiveis[0]?.id || 'dominio';
   main().innerHTML = `
     <h1>Configurações</h1>
     <p class="subtitle">Integrações do escritório</p>
-    <div class="tabs">
-      <div class="tab" data-tab="dominio">Domínio Web</div>
-      <div class="tab" data-tab="email">E-mail corporativo</div>
-      <div class="tab" data-tab="whatsapp">WhatsApp</div>
-      <div class="tab" data-tab="nfse-agendamento">Emissão de NFS-e</div>
-      <div class="tab" data-tab="assinatura-plataforma">Assinatura da plataforma</div>
-    </div>
-    <div id="cfgContent"></div>
+    ${abasVisiveis.length? `<div class="tabs">
+      ${abasVisiveis.map(a=>`<div class="tab" data-tab="${a.id}">${esc(a.label)}</div>`).join('')}
+    </div>` : ''}
+    <div id="cfgContent">${abasVisiveis.length? '' : '<div class="empty-state">Você não tem acesso a nenhuma aba de Configurações — fale com o Administrador.</div>'}</div>
   `;
+  if(!abasVisiveis.length) return;
   main().querySelectorAll('.tab').forEach(t=>t.addEventListener('click', ()=>{ CFG_TAB=t.dataset.tab; renderCfgTab(); }));
   renderCfgTab();
 }
