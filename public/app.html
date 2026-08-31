@@ -6056,15 +6056,44 @@ async function renderCfgEmailTextoNfse(box){
         manda a nota por e-mail pro cliente, com o PDF já anexado.
       </p>
       <div class="field"><label>Descrição / corpo do e-mail</label>
-        <textarea id="cfgNfseEmailTexto" rows="6" placeholder="Ex.: Prezado cliente, segue em anexo a nota fiscal de serviço referente aos honorários contábeis do mês.">${esc(cfg.nfseEmailTexto)}</textarea>
+        <textarea id="cfgNfseEmailTexto" rows="6" disabled placeholder="Ex.: Prezado cliente, segue em anexo a nota fiscal de serviço referente aos honorários contábeis do mês.">${esc(cfg.nfseEmailTexto)}</textarea>
       </div>
-      <button class="btn primary" id="cfgNfseEmailSalvar">Salvar</button>
+      <div class="row">
+        <button class="btn" id="cfgNfseEmailEditar">Editar</button>
+        <button class="btn" id="cfgNfseEmailCancelar" style="display:none;">Cancelar</button>
+        <button class="btn primary" id="cfgNfseEmailSalvar" disabled>Salvar</button>
+      </div>
     </div>
   `;
-  document.getElementById('cfgNfseEmailSalvar').addEventListener('click', async ()=>{
+  let textoOriginal = cfg.nfseEmailTexto || '';
+  const textarea = document.getElementById('cfgNfseEmailTexto');
+  const btnEditar = document.getElementById('cfgNfseEmailEditar');
+  const btnCancelar = document.getElementById('cfgNfseEmailCancelar');
+  const btnSalvar = document.getElementById('cfgNfseEmailSalvar');
+  function entrarModoEdicao(){
+    textarea.disabled = false;
+    textarea.focus();
+    btnSalvar.disabled = false;
+    btnEditar.style.display = 'none';
+    btnCancelar.style.display = '';
+  }
+  function sairModoEdicao(){
+    textarea.disabled = true;
+    btnSalvar.disabled = true;
+    btnEditar.style.display = '';
+    btnCancelar.style.display = 'none';
+  }
+  btnEditar.addEventListener('click', entrarModoEdicao);
+  btnCancelar.addEventListener('click', ()=>{
+    textarea.value = textoOriginal;
+    sairModoEdicao();
+  });
+  btnSalvar.addEventListener('click', async ()=>{
     try{
-      await api('/email/config', { method:'PUT', body:{ nfseEmailTexto: document.getElementById('cfgNfseEmailTexto').value } });
+      await api('/email/config', { method:'PUT', body:{ nfseEmailTexto: textarea.value } });
       toast('Texto salvo.','ok');
+      textoOriginal = textarea.value;
+      sairModoEdicao();
     }catch(e){ toast(e.message,'err'); }
   });
 }
