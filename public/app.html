@@ -568,7 +568,11 @@ async function renderEmpresaSwitch(){
   const wrap = document.getElementById('empresaSwitchWrap');
   try{
     const { items, empresaAtivaId } = await api('/auth/minhas-empresas');
-    if(items.length<=1){ wrap.innerHTML=''; return; }
+    if(!items.length){ wrap.innerHTML=''; return; }
+    if(items.length===1){
+      wrap.innerHTML = `<div class="field" style="margin:10px 0 0;"><label style="font-size:11px;">Empresa</label><div style="font-size:12.5px; font-weight:600;">${esc(items[0].nome)}</div></div>`;
+      return;
+    }
     wrap.innerHTML = `
       <div class="field" style="margin:10px 0 0;">
         <label style="font-size:11px;">Empresa ativa</label>
