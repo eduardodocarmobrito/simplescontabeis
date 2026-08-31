@@ -6968,7 +6968,12 @@ function cardChecklistAtraso(user: any): any[] {
         const enviados = new Set(
           (sqlite.prepare(`SELECT item_chave FROM checklist_uploads WHERE periodo_id = ? AND status = 'salvo'`).all(periodo.id) as any[]).map((u) => u.item_chave)
         );
-        faltando = itensObrigatorios.filter((it) => !enviados.has(it.chave)).map((it) => it.label);
+        // Reabrir um item (pra o cliente reenviar) não apaga o upload antigo, só destrava — sem
+        // essa checagem, o item continuaria contando como "enviado" mesmo depois de reaberto.
+        const reabertos = new Set(
+          (sqlite.prepare(`SELECT item_chave FROM checklist_reaberturas WHERE periodo_id = ? AND resolvido = 0`).all(periodo.id) as any[]).map((r) => r.item_chave)
+        );
+        faltando = itensObrigatorios.filter((it) => !enviados.has(it.chave) || reabertos.has(it.chave)).map((it) => it.label);
       }
       if (faltando.length)
         resultado.push({
