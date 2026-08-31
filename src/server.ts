@@ -4454,14 +4454,15 @@ app.get("/api/integracontador/documentos/:id/pdf", blockCliente, requireAdmin, (
   res.send(fs.readFileSync(row.pdf_path));
 });
 
-// Rotina automática semanal — cada chamada ao Integra Contador é paga, então (diferente da busca de
-// XML, que é grátis e roda de hora em hora) aqui só busca de novo depois de ~7 dias da última vez.
-const INTEGRACONTADOR_AUTO_INTERVALO_MS = 6 * 60 * 60 * 1000; // verifica a cada 6h quem já completou a janela
+// Rotina automática 2x ao dia, às 8h e 12h (horário de Brasília) — decisão explícita do usuário,
+// pra manter os cards do Painel (Situação Fiscal, DAS em Atraso) com dado fresco, mesmo sabendo que
+// cada chamada ao Integra Contador é paga (antes rodava só 1x por semana, ~14x mais barato). Roda
+// pra toda empresa ativa nos dois horários, uma de cada vez, com uma pausa entre elas.
 const INTEGRACONTADOR_AUTO_PAUSA_ENTRE_EMPRESAS_MS = 5000;
 async function integraContadorExecutarBuscaAutomatica() {
   const configs = sqlite
     .prepare(
-      `SELECT c.empresa_id as empresaId, c.optante_simples_nacional as optante, c.ultima_busca_em as ultimaBuscaEm, e.cnpj as cnpj
+      `SELECT c.empresa_id as empresaId, c.optante_simples_nacional as optante, e.cnpj as cnpj
        FROM integracontador_empresa_config c
        JOIN empresas e ON e.id = c.empresa_id
        JOIN integracontador_config ic ON ic.escritorio_id = c.escritorio_id
@@ -4470,8 +4471,6 @@ async function integraContadorExecutarBuscaAutomatica() {
     .all() as any[];
   for (const cfg of configs) {
     if (integraContadorBuscasEmAndamento.has(cfg.empresaId)) continue;
-    const ultimaBuscaMs = cfg.ultimaBuscaEm ? new Date(String(cfg.ultimaBuscaEm).replace(" ", "T") + "Z").getTime() : 0;
-    if (ultimaBuscaMs && Date.now() - ultimaBuscaMs < 6.5 * 24 * 60 * 60 * 1000) continue;
     integraContadorBuscasEmAndamento.add(cfg.empresaId);
     try {
       const r = await integraContadorBuscarEmpresa(cfg.empresaId, cfg.cnpj || "", !!cfg.optante);
@@ -4484,9 +4483,13 @@ async function integraContadorExecutarBuscaAutomatica() {
     await new Promise((resolve) => setTimeout(resolve, INTEGRACONTADOR_AUTO_PAUSA_ENTRE_EMPRESAS_MS));
   }
 }
+// Confere a cada minuto se bateu 8h00 ou 12h00 (só no minuto exato, pra não disparar de novo a cada
+// tick dentro da mesma hora) — mesmo padrão de setInterval de 60 em 60s já usado na rotina do NFS-e.
 setInterval(() => {
+  const agora = agoraBrasilia();
+  if (agora.minuto !== 0 || (agora.hora !== 8 && agora.hora !== 12)) return;
   integraContadorExecutarBuscaAutomatica().catch((e) => console.error("Erro na rotina automática do Integra Contador:", e.message));
-}, INTEGRACONTADOR_AUTO_INTERVALO_MS);
+}, 60_000);
 
 // Modelos de serviço reutilizáveis — configurados uma vez (código de tributação, ISSQN, retenções)
 // e escolhidos na hora da emissão, que só pede descrição e valor.
