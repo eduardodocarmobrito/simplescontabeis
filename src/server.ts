@@ -7613,16 +7613,20 @@ app.put("/api/email/config", blockCliente, requirePermissao("configuracoes", "ed
     )
     .run(
       escritorioId,
-      isAdmin ? (b.smtpHost ? String(b.smtpHost).trim() : null) : atual.smtp_host || null,
-      isAdmin ? (b.smtpPort ? Number(b.smtpPort) : 587) : atual.smtp_port || 587,
-      isAdmin ? (b.smtpSecure ? 1 : 0) : atual.smtp_secure || 0,
-      isAdmin ? (b.smtpUser ? String(b.smtpUser).trim() : null) : atual.smtp_user || null,
+      // Cada campo só é tocado quando vem de fato no corpo da requisição (!== undefined) — a aba
+      // "Texto padrão para NFS-e" chama esse mesmo PUT mandando só nfseEmailTexto, então sem essa
+      // checagem os campos de SMTP eram apagados (viravam null) toda vez que alguém salvava só o
+      // texto padrão (bug real que já derrubou a configuração de e-mail em produção uma vez).
+      isAdmin && b.smtpHost !== undefined ? String(b.smtpHost || "").trim() || null : atual.smtp_host || null,
+      isAdmin && b.smtpPort !== undefined ? Number(b.smtpPort) || 587 : atual.smtp_port || 587,
+      isAdmin && b.smtpSecure !== undefined ? (b.smtpSecure ? 1 : 0) : atual.smtp_secure || 0,
+      isAdmin && b.smtpUser !== undefined ? String(b.smtpUser || "").trim() || null : atual.smtp_user || null,
       // Senha de app do Google vem formatada com espaços pra leitura ("abcd efgh ijkl mnop") — se
       // colada assim, o SMTP recusa (BadCredentials), já que a senha de verdade não tem espaço
       // nenhum. Remove todos os espaços aqui pra isso nunca mais quebrar o login por esse motivo.
-      isAdmin ? (b.smtpPassword ? String(b.smtpPassword).replace(/\s+/g, "") : atual.smtp_password || null) : atual.smtp_password || null, // vazio = mantém a senha já salva
-      isAdmin ? b.fromName || null : atual.from_name || null,
-      isAdmin ? (b.fromEmail ? String(b.fromEmail).trim() : null) : atual.from_email || null,
+      isAdmin && b.smtpPassword ? String(b.smtpPassword).replace(/\s+/g, "") : atual.smtp_password || null, // vazio/ausente = mantém a senha já salva
+      isAdmin && b.fromName !== undefined ? b.fromName || null : atual.from_name || null,
+      isAdmin && b.fromEmail !== undefined ? String(b.fromEmail || "").trim() || null : atual.from_email || null,
       b.nfseEmailTexto !== undefined ? String(b.nfseEmailTexto) : atual.nfse_email_texto || null
     );
   res.json({ ok: true });
