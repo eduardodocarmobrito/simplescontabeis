@@ -513,7 +513,24 @@ sqlite.exec(`
     template_documento TEXT NOT NULL DEFAULT 'documento_disponivel', -- nome do modelo aprovado na Meta
     template_idioma TEXT NOT NULL DEFAULT 'pt_BR',
     ativo INTEGER NOT NULL DEFAULT 0,
+    webhook_verify_token TEXT, -- gerado uma vez, colado no campo "Verify Token" do Webhook no Meta for Developers
+    app_secret_cifrado TEXT, -- opcional — valida a assinatura (X-Hub-Signature-256) das chamadas do webhook, se preenchido
     updated_at TEXT DEFAULT (datetime('now'))
+  );
+  -- Status real de entrega de cada mensagem, recebido via webhook do WhatsApp (sem isso, só
+  -- sabemos se a Meta ACEITOU o envio, não se entregou de verdade no celular do cliente).
+  CREATE TABLE IF NOT EXISTS whatsapp_mensagens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    escritorio_id INTEGER NOT NULL REFERENCES escritorios(id),
+    wamid TEXT NOT NULL UNIQUE,
+    origem_tabela TEXT NOT NULL, -- 'envio_documentos' | 'nfse_emissoes'
+    origem_id INTEGER NOT NULL,
+    telefone TEXT,
+    status TEXT NOT NULL DEFAULT 'accepted', -- 'accepted' | 'sent' | 'delivered' | 'read' | 'failed'
+    erro_codigo TEXT,
+    erro_mensagem TEXT,
+    criado_em TEXT DEFAULT (datetime('now')),
+    atualizado_em TEXT DEFAULT (datetime('now'))
   );
 
   -- ---- Rotina automática de emissão de NFS-e (honorários do próprio escritório) ----
@@ -950,6 +967,14 @@ sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_envio_documentos_periodo ON envio_do
   const cols = sqlite.prepare(`PRAGMA table_info(integracontador_empresa_config)`).all() as any[];
   const nomes = new Set(cols.map((c) => c.name));
   if (!nomes.has("alerta_declaracao")) sqlite.exec(`ALTER TABLE integracontador_empresa_config ADD COLUMN alerta_declaracao TEXT`);
+}
+// Migração leve: webhook do WhatsApp (status real de entrega, em vez de só saber se a Meta aceitou
+// o envio).
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(whatsapp_config)`).all() as any[];
+  const nomes = new Set(cols.map((c) => c.name));
+  if (!nomes.has("webhook_verify_token")) sqlite.exec(`ALTER TABLE whatsapp_config ADD COLUMN webhook_verify_token TEXT`);
+  if (!nomes.has("app_secret_cifrado")) sqlite.exec(`ALTER TABLE whatsapp_config ADD COLUMN app_secret_cifrado TEXT`);
 }
 // Migração leve: nfe_busca_config ganhou um cursor de NSU próprio pra busca de NFS-e (Distribuição
 // DF-e do ADN) — sequência independente da de NF-e/NFC-e, que já usava a coluna ultimo_nsu.
@@ -1794,7 +1819,7 @@ app.post("/api/auth/change-password", requireAuth, (req, res) => {
 });
 
 app.use("/api", (req, res, next) => {
-  if (req.path.startsWith("/auth/") || req.path === "/health" || req.path.startsWith("/dominio-agent/") || req.path === "/asaas/webhook") return next();
+  if (req.path.startsWith("/auth/") || req.path === "/health" || req.path.startsWith("/dominio-agent/") || req.path === "/asaas/webhook" || req.path === "/whatsapp/webhook") return next();
   requireAuth(req, res, next);
 });
 
@@ -3122,7 +3147,8 @@ app.post("/api/envio/documentos/:id/enviar-whatsapp", blockCliente, requirePermi
           { nome: "empresa_nome", valor: empresa?.nome || "" },
           { nome: "descricao", valor: descricao },
         ],
-        arquivo
+        arquivo,
+        { tabela: "envio_documentos", id: doc.id }
       );
       enviados++;
     } catch (e: any) {
@@ -4664,7 +4690,10 @@ app.post("/api/nfse/emissoes/:id/enviar-whatsapp", blockCliente, requirePermissa
   const erros: string[] = [];
   for (const c of contatos) {
     try {
-      await whatsappEnviarArquivo(user.escritorioId, c.telefone, [{ nome: "empresa_nome", valor: empresa?.nome || "" }, { nome: "descricao", valor: descricao }], arquivo);
+      await whatsappEnviarArquivo(user.escritorioId, c.telefone, [{ nome: "empresa_nome", valor: empresa?.nome || "" }, { nome: "descricao", valor: descricao }], arquivo, {
+        tabela: "nfse_emissoes",
+        id: row.id,
+      });
       enviados++;
     } catch (e: any) {
       erros.push(e.message);
@@ -5550,7 +5579,8 @@ async function nfseAnexarEEnviarDocumento(escritorioId: number, emissaoId: numbe
             { nome: "empresa_nome", valor: empresaNome },
             { nome: "descricao", valor: `Nota Fiscal de Serviço — ${emissao.descricao_servico}` },
           ],
-          { nome: nomeArquivo, tipo: "application/pdf", buffer: pdf }
+          { nome: nomeArquivo, tipo: "application/pdf", buffer: pdf },
+          { tabela: "envio_documentos", id: docId }
         );
         algumEnviado = true;
       } catch (e: any) {
@@ -6903,16 +6933,32 @@ function getWhatsappConfig(escritorioId: number): any {
   return sqlite.prepare(`SELECT * FROM whatsapp_config WHERE escritorio_id = ?`).get(escritorioId) || {};
 }
 app.get("/api/whatsapp/config", blockCliente, requireAdmin, (req, res) => {
-  const c = getWhatsappConfig((req as any).user.escritorioId);
+  const escritorioId = (req as any).user.escritorioId;
+  let c = getWhatsappConfig(escritorioId);
+  // Gera o verify token na primeira vez que a tela é aberta — precisa existir antes do usuário
+  // colar a URL do webhook no Meta for Developers.
+  if (!c.webhook_verify_token) {
+    const token = crypto.randomBytes(20).toString("hex");
+    sqlite
+      .prepare(
+        `INSERT INTO whatsapp_config (escritorio_id, webhook_verify_token, updated_at) VALUES (?, ?, datetime('now'))
+         ON CONFLICT(escritorio_id) DO UPDATE SET webhook_verify_token = excluded.webhook_verify_token`
+      )
+      .run(escritorioId, token);
+    c = getWhatsappConfig(escritorioId);
+  }
   res.json({
     phoneNumberId: c.phone_number_id || "",
     businessAccountId: c.business_account_id || "",
     temAccessToken: !!c.access_token_cifrado,
+    temAppSecret: !!c.app_secret_cifrado,
     numeroExibicao: c.numero_exibicao || "",
     templateDocumento: c.template_documento || "documento_disponivel",
     templateIdioma: c.template_idioma || "pt_BR",
     ativo: !!c.ativo,
     updatedAt: c.updated_at || null,
+    webhookUrl: `${req.protocol}://${req.get("host")}/api/whatsapp/webhook`,
+    webhookVerifyToken: c.webhook_verify_token,
   });
 });
 app.put("/api/whatsapp/config", blockCliente, requireAdmin, (req, res) => {
@@ -6921,11 +6967,11 @@ app.put("/api/whatsapp/config", blockCliente, requireAdmin, (req, res) => {
   const atual = getWhatsappConfig(escritorioId);
   sqlite
     .prepare(
-      `INSERT INTO whatsapp_config (escritorio_id, phone_number_id, business_account_id, access_token_cifrado, template_documento, template_idioma, ativo, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      `INSERT INTO whatsapp_config (escritorio_id, phone_number_id, business_account_id, access_token_cifrado, template_documento, template_idioma, ativo, app_secret_cifrado, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
        ON CONFLICT(escritorio_id) DO UPDATE SET phone_number_id=excluded.phone_number_id, business_account_id=excluded.business_account_id,
          access_token_cifrado=excluded.access_token_cifrado, template_documento=excluded.template_documento,
-         template_idioma=excluded.template_idioma, ativo=excluded.ativo, updated_at=datetime('now')`
+         template_idioma=excluded.template_idioma, ativo=excluded.ativo, app_secret_cifrado=excluded.app_secret_cifrado, updated_at=datetime('now')`
     )
     .run(
       escritorioId,
@@ -6934,9 +6980,48 @@ app.put("/api/whatsapp/config", blockCliente, requireAdmin, (req, res) => {
       b.accessToken ? nfse.cifrarTexto(String(b.accessToken).trim()) : atual.access_token_cifrado || null,
       b.templateDocumento !== undefined ? (String(b.templateDocumento).trim() || "documento_disponivel") : atual.template_documento || "documento_disponivel",
       b.templateIdioma !== undefined ? (String(b.templateIdioma).trim() || "pt_BR") : atual.template_idioma || "pt_BR",
-      b.ativo !== undefined ? (b.ativo ? 1 : 0) : atual.ativo || 0
+      b.ativo !== undefined ? (b.ativo ? 1 : 0) : atual.ativo || 0,
+      b.appSecret ? nfse.cifrarTexto(String(b.appSecret).trim()) : atual.app_secret_cifrado || null
     );
   res.json({ ok: true });
+});
+// Webhook do WhatsApp — a Meta chama isso direto (sem sessão nossa), por isso fica de fora do
+// requireAuth (ver exceção no início do arquivo). GET é a verificação inicial (challenge/response,
+// feita uma vez ao salvar o webhook no Meta for Developers); POST é onde chegam os status reais de
+// entrega/leitura/falha de cada mensagem — sem isso só sabíamos se a Meta ACEITOU o envio, nunca se
+// entregou de verdade no celular do cliente.
+app.get("/api/whatsapp/webhook", (req, res) => {
+  const modo = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+  if (modo !== "subscribe" || !token) return res.sendStatus(403);
+  const bate = sqlite.prepare(`SELECT 1 FROM whatsapp_config WHERE webhook_verify_token = ?`).get(String(token));
+  if (!bate) return res.sendStatus(403);
+  res.status(200).send(String(challenge ?? ""));
+});
+app.post("/api/whatsapp/webhook", (req, res) => {
+  res.sendStatus(200); // confirma rápido — a Meta reenvia (com backoff) se demorar ou não responder 200
+  try {
+    for (const entrada of req.body?.entry || []) {
+      for (const mudanca of entrada.changes || []) {
+        for (const s of mudanca.value?.statuses || []) {
+          const erroTexto = Array.isArray(s.errors) && s.errors.length ? s.errors.map((e: any) => `${e.code}: ${e.title || e.message || ""}`).join(" | ") : null;
+          sqlite
+            .prepare(`UPDATE whatsapp_mensagens SET status = ?, erro_codigo = ?, erro_mensagem = ?, atualizado_em = datetime('now') WHERE wamid = ?`)
+            .run(s.status || "desconhecido", s.errors?.[0]?.code != null ? String(s.errors[0].code) : null, erroTexto, s.id);
+          if (s.status === "failed") {
+            const msg = sqlite.prepare(`SELECT origem_tabela, origem_id FROM whatsapp_mensagens WHERE wamid = ?`).get(s.id) as any;
+            if (msg) {
+              const tabela = msg.origem_tabela === "nfse_emissoes" ? "nfse_emissoes" : "envio_documentos";
+              sqlite.prepare(`UPDATE ${tabela} SET whatsapp_erro = ? WHERE id = ?`).run(erroTexto || "Falha na entrega — ver detalhes no webhook.", msg.origem_id);
+            }
+          }
+        }
+      }
+    }
+  } catch (e: any) {
+    console.error("[WhatsApp webhook] erro processando payload:", e.message);
+  }
 });
 app.post("/api/whatsapp/testar", blockCliente, requireAdmin, async (req, res) => {
   const c = getWhatsappConfig((req as any).user.escritorioId);
@@ -6957,13 +7042,14 @@ async function whatsappEnviarArquivo(
   escritorioId: number,
   paraNumero: string,
   variaveisCorpo: { nome: string; valor: string }[],
-  arquivo: { nome: string; tipo: string; buffer: Buffer }
+  arquivo: { nome: string; tipo: string; buffer: Buffer },
+  origem: { tabela: "envio_documentos" | "nfse_emissoes"; id: number }
 ): Promise<void> {
   const c = getWhatsappConfig(escritorioId);
   if (!c.ativo || !c.phone_number_id || !c.access_token_cifrado) {
     throw new Error("WhatsApp não configurado ou desativado — configure em Configurações > WhatsApp.");
   }
-  await whatsapp.enviarDocumento({
+  const { wamid, numeroNormalizado } = await whatsapp.enviarDocumento({
     phoneNumberId: c.phone_number_id,
     accessToken: nfse.decifrarTexto(c.access_token_cifrado),
     templateName: c.template_documento || "documento_disponivel",
@@ -6972,6 +7058,13 @@ async function whatsappEnviarArquivo(
     variaveisCorpo,
     arquivo,
   });
+  // Guarda o wamid pra casar com o status real de entrega que chegar depois pelo webhook — sem
+  // isso, "enviado com sucesso" só significa que a Meta aceitou, não que chegou no celular.
+  if (wamid) {
+    sqlite
+      .prepare(`INSERT OR IGNORE INTO whatsapp_mensagens (escritorio_id, wamid, origem_tabela, origem_id, telefone) VALUES (?, ?, ?, ?, ?)`)
+      .run(escritorioId, wamid, origem.tabela, origem.id, numeroNormalizado);
+  }
 }
 
 // Identificação automática do cliente a partir de um arquivo (PDF, OFX ou XML): extrai texto,

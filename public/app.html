@@ -5177,6 +5177,22 @@ async function renderCfgWhatsapp(box){
       </div>
       <div id="wppResultado" style="margin-top:10px;"></div>
     </div>
+    <div class="card">
+      <h3>Status real de entrega (webhook)</h3>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">
+        O envio "ter sido aceito" pela Meta não garante que chegou no celular do cliente — pra ver
+        entregue/lido/falhou de verdade, configure este webhook no Meta for Developers, em
+        <b>WhatsApp › Configuration › Webhook</b>. Cole a URL e o Verify Token abaixo lá, clique em
+        "Verify and Save" e depois marque o campo <b>messages</b> pra receber as atualizações.
+      </p>
+      <div class="field"><label>URL de callback</label>
+        <div class="row" style="gap:6px;"><input id="wppWebhookUrl" value="${esc(cfg.webhookUrl)}" readonly style="flex:1;"><button class="btn" id="wppCopiarUrl" type="button">Copiar</button></div>
+      </div>
+      <div class="field"><label>Verify Token</label>
+        <div class="row" style="gap:6px;"><input id="wppWebhookToken" value="${esc(cfg.webhookVerifyToken)}" readonly style="flex:1;"><button class="btn" id="wppCopiarToken" type="button">Copiar</button></div>
+      </div>
+      <div class="field"><label>App Secret${cfg.temAppSecret?' (já salvo — preencha só se quiser trocar)':' (opcional — valida a assinatura das chamadas do webhook)'}</label><input id="wppAppSecret" type="password" placeholder="${cfg.temAppSecret?'••••••••••••••••':'em Configurações do App, no Meta for Developers'}"></div>
+    </div>
   `;
   document.getElementById('wppSalvar').addEventListener('click', async ()=>{
     const body = {
@@ -5186,6 +5202,7 @@ async function renderCfgWhatsapp(box){
       templateDocumento: document.getElementById('wppTemplate').value.trim(),
       templateIdioma: document.getElementById('wppIdioma').value.trim(),
       ativo: document.getElementById('wppAtivo').checked,
+      appSecret: document.getElementById('wppAppSecret').value,
     };
     try{ await api('/whatsapp/config', { method:'PUT', body }); toast('Configuração salva.','ok'); renderCfgTab(); }
     catch(e){ toast(e.message,'err'); }
@@ -5198,6 +5215,13 @@ async function renderCfgWhatsapp(box){
       resEl.innerHTML = `<span class="tag ok">Conectado</span> ${r.numeroExibicao?('Número: '+esc(r.numeroExibicao)):''}`;
     }catch(e){ resEl.innerHTML = `<div class="tag bad">Falhou</div> <span style="font-size:12.5px;">${esc(e.message)}</span>`; }
   });
+  const copiar = async (id, rotulo)=>{
+    const val = document.getElementById(id).value;
+    try{ await navigator.clipboard.writeText(val); toast(rotulo+' copiado.','ok'); }
+    catch{ toast('Não consegui copiar — selecione e copie manualmente.','err'); }
+  };
+  document.getElementById('wppCopiarUrl').addEventListener('click', ()=>copiar('wppWebhookUrl','URL'));
+  document.getElementById('wppCopiarToken').addEventListener('click', ()=>copiar('wppWebhookToken','Verify Token'));
 }
 
 // ===================== Emissão de NFS-e (rotina automática de honorários) =====================

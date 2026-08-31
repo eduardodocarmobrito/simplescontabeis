@@ -106,7 +106,10 @@ export interface EnvioDocumentoParams {
 }
 // Envia um documento (PDF) por WhatsApp usando um template aprovado com cabeçalho tipo "documento".
 // Uso: rotina automática de NFS-e e o botão manual "Enviar por WhatsApp" em Envio de Documentos.
-export async function enviarDocumento(params: EnvioDocumentoParams): Promise<void> {
+// Devolve o wamid (id da mensagem) — a Meta só confirma que ACEITOU o envio nessa resposta; o status
+// real de entrega (entregue/lido/falhou) só chega depois, via webhook (ver POST /api/whatsapp/webhook
+// em server.ts). Sem guardar o wamid não dá pra casar o status que chegar com o documento certo.
+export async function enviarDocumento(params: EnvioDocumentoParams): Promise<{ wamid: string | null; numeroNormalizado: string }> {
   const digitos = params.paraNumero.replace(/\D/g, "");
   if (digitos.length < 10) throw new Error("Número de WhatsApp inválido — informe DDD + número.");
   // Números brasileiros sem o código do país (55) na frente — a Cloud API exige o código do país.
@@ -135,6 +138,8 @@ export async function enviarDocumento(params: EnvioDocumentoParams): Promise<voi
     },
   });
   if (!r.ok) throw new Error(`Não consegui enviar a mensagem no WhatsApp: ${mensagemErro(r)}`);
+  const wamid = r.corpo?.messages?.[0]?.id || null;
+  return { wamid, numeroNormalizado: numero };
 }
 
 // Testa a conexão/credenciais sem gastar um envio de template real — só confere se o número
