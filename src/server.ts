@@ -4067,17 +4067,12 @@ function getIntegraContadorConfig(escritorioId: number): any {
 const integraContadorTokens = new Map<number, integracontador.TokenIntegraContador>();
 async function obterTokenIntegraContador(cfg: any): Promise<integracontador.TokenIntegraContador> {
   const existente = integraContadorTokens.get(cfg.escritorio_id);
-  if (integracontador.tokenValido(existente || null)) {
-    console.log(`[IC-DIAG] token em cache reaproveitado, escritorio=${cfg.escritorio_id} t=${Date.now()}`);
-    return existente!;
-  }
-  console.log(`[IC-DIAG] token do cache expirado/ausente, autenticando de novo, escritorio=${cfg.escritorio_id} t=${Date.now()}`);
+  if (integracontador.tokenValido(existente || null)) return existente!;
   const pfxBuf = nfse.lerCertificadoCifradoDoDisco(cfg.arquivo_certificado_path);
   const senha = nfse.decifrarTexto(cfg.senha_certificado_cifrada);
   const cert = nfse.lerCertificadoPfx(pfxBuf, senha);
   const consumerSecret = nfse.decifrarTexto(cfg.consumer_secret_cifrado);
   const token = await integracontador.autenticar(cert, cfg.consumer_key, consumerSecret);
-  console.log(`[IC-DIAG] autenticacao concluida, escritorio=${cfg.escritorio_id} t=${Date.now()}`);
   integraContadorTokens.set(cfg.escritorio_id, token);
   return token;
 }
@@ -4288,31 +4283,23 @@ async function integraContadorBuscarEmpresaInterno(
   optante: boolean,
   tentandoComTokenNovo = false
 ): Promise<{ novos: number; erro: string | null }> {
-  const DIAG = (etapa: string) => console.log(`[IC-DIAG] empresa=${empresaId} t=${Date.now()} ${etapa}`);
-  DIAG("inicio");
   const empConfig = getIntegraContadorEmpresaConfig(empresaId);
   const cfg = getIntegraContadorConfig(empConfig.escritorio_id);
   let novos = 0;
   const falhas: string[] = [];
   try {
-    DIAG("antes-token");
     const token = await obterTokenIntegraContador(cfg);
-    DIAG("depois-token");
     const cnpjEscritorio = cfg.cnpj;
     // Situação Fiscal — vale pra qualquer empresa, independente do regime tributário.
     try {
-      DIAG("antes-sitfis");
       const pdfBase64 = await integracontador.obterRelatorioSitfisCompleto(token, cnpjEscritorio, empresaCnpj);
-      DIAG("depois-sitfis");
       const caminho = salvarPdfBase64EmCache(`sitfis_${empresaId}_${Date.now()}`, pdfBase64);
       sqlite
         .prepare(`INSERT INTO integracontador_documentos (empresa_id, escritorio_id, tipo, pdf_path) VALUES (?, ?, 'situacao_fiscal', ?)`)
         .run(empresaId, empConfig.escritorio_id, caminho);
       integraContadorAnexarSitfisEmEnvio(empConfig.escritorio_id, empresaId, pdfBase64);
-      DIAG("depois-sitfis-anexo");
       novos++;
     } catch (e: any) {
-      DIAG("erro-sitfis: " + e.message);
       console.error(`[Integra Contador] situação fiscal da empresa ${empresaId} falhou:`, e.message);
       falhas.push(`Situação Fiscal: ${e.message}`);
     }
@@ -4325,9 +4312,7 @@ async function integraContadorBuscarEmpresaInterno(
       const anoAtual = new Date().getFullYear();
       let ultimoPeriodoDeclarado: string | null = null;
       try {
-        DIAG("antes-declaracoes");
         const declaracoes = await integracontador.consultarDeclaracoesPorAno(token, cnpjEscritorio, empresaCnpj, String(anoAtual));
-        DIAG("depois-declaracoes");
         const inserirDecl = sqlite.prepare(
           `INSERT INTO integracontador_documentos (empresa_id, escritorio_id, tipo, periodo_apuracao, numero_documento, detalhes_json) VALUES (?, ?, 'declaracao', ?, ?, ?)`
         );
@@ -4349,7 +4334,6 @@ async function integraContadorBuscarEmpresaInterno(
           alertaDeclaracao = null;
         }
       } catch (e: any) {
-        DIAG("erro-declaracoes: " + e.message);
         console.error(`[Integra Contador] declarações da empresa ${empresaId} falharam:`, e.message);
         falhas.push(`Declaração: ${e.message}`);
       }
@@ -4358,9 +4342,7 @@ async function integraContadorBuscarEmpresaInterno(
       // o DAS (útil se a declaração foi retificada depois da última busca).
       if (ultimoPeriodoDeclarado) {
         try {
-          DIAG("antes-das");
           const das = await integracontador.gerarDas(token, cnpjEscritorio, empresaCnpj, ultimoPeriodoDeclarado);
-          DIAG("depois-das");
           if (das.pdfBase64) {
             const caminho = salvarPdfBase64EmCache(`das_${empresaId}_${ultimoPeriodoDeclarado}_${Date.now()}`, das.pdfBase64);
             sqlite
@@ -4378,7 +4360,6 @@ async function integraContadorBuscarEmpresaInterno(
             novos++;
           }
         } catch (e: any) {
-          DIAG("erro-das: " + e.message);
           console.error(`[Integra Contador] DAS da empresa ${empresaId} falhou:`, e.message);
           falhas.push(`DAS: ${e.message}`);
         }
@@ -4392,20 +4373,16 @@ async function integraContadorBuscarEmpresaInterno(
     // inteira de novo, uma única vez (tentandoComTokenNovo evita loop infinito se a reautenticação
     // também falhar).
     if (!tentandoComTokenNovo && falhas.some((f) => f.includes("TOKEN_EXPIRADO"))) {
-      DIAG("token expirado detectado — descartando cache e tentando de novo com token novo");
       integraContadorTokens.delete(empConfig.escritorio_id);
       return integraContadorBuscarEmpresaInterno(empresaId, empresaCnpj, optante, true);
     }
-    DIAG("antes-update-final");
     const erroResumo = falhas.length ? falhas.join(" | ") : null;
     sqlite.prepare(`UPDATE integracontador_empresa_config SET ultima_busca_em = datetime('now'), ultimo_erro = ? WHERE empresa_id = ?`).run(erroResumo, empresaId);
     if (alertaDeclaracao !== undefined) {
       sqlite.prepare(`UPDATE integracontador_empresa_config SET alerta_declaracao = ? WHERE empresa_id = ?`).run(alertaDeclaracao, empresaId);
     }
-    DIAG("fim-sucesso");
     return { novos, erro: erroResumo };
   } catch (e: any) {
-    DIAG("erro-geral: " + e.message);
     sqlite.prepare(`UPDATE integracontador_empresa_config SET ultima_busca_em = datetime('now'), ultimo_erro = ? WHERE empresa_id = ?`).run(e.message, empresaId);
     return { novos, erro: e.message };
   }
