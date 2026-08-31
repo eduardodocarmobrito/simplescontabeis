@@ -3969,7 +3969,25 @@ function integraContadorAnexarSitfisEmEnvio(escritorioId: number, empresaId: num
   const observacao = `Relatório de Situação Fiscal — gerado automaticamente pela busca do Integra Contador em ${hoje.toLocaleDateString("pt-BR")}.`;
   integraContadorAnexarPdfEmEnvio(atribuicaoId, empresaId, ano, mes, nomeArquivo, pdfBase64, observacao, null);
 }
+// Teto de tempo pra busca inteira — sem isso, uma chamada à Receita/SERPRO que trava (sem dar
+// timeout HTTP limpo, ex.: handshake mTLS pendurado) deixa a trava "integraContadorBuscasEmAndamento"
+// presa pra sempre (só um restart do processo destrava), já que o .finally() que libera a trava só
+// roda quando a promise da busca finalmente resolve. Achado ao vivo: a busca da GO COLOR ficou
+// travada de um dia pro outro e bloqueou toda tentativa nova até eu reiniciar manualmente.
+const INTEGRACONTADOR_TIMEOUT_BUSCA_MS = 3 * 60 * 1000;
 async function integraContadorBuscarEmpresa(empresaId: number, empresaCnpj: string, optante: boolean): Promise<{ novos: number; erro: string | null }> {
+  return Promise.race([
+    integraContadorBuscarEmpresaInterno(empresaId, empresaCnpj, optante),
+    new Promise<{ novos: number; erro: string | null }>((resolve) =>
+      setTimeout(() => {
+        const msg = "A busca não respondeu em 3 minutos (Receita/SERPRO travado ou muito lento) — tente de novo mais tarde.";
+        sqlite.prepare(`UPDATE integracontador_empresa_config SET ultima_busca_em = datetime('now'), ultimo_erro = ? WHERE empresa_id = ?`).run(msg, empresaId);
+        resolve({ novos: 0, erro: msg });
+      }, INTEGRACONTADOR_TIMEOUT_BUSCA_MS)
+    ),
+  ]);
+}
+async function integraContadorBuscarEmpresaInterno(empresaId: number, empresaCnpj: string, optante: boolean): Promise<{ novos: number; erro: string | null }> {
   const empConfig = getIntegraContadorEmpresaConfig(empresaId);
   const cfg = getIntegraContadorConfig(empConfig.escritorio_id);
   let novos = 0;
