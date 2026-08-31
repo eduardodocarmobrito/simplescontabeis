@@ -3579,6 +3579,7 @@ async function pageMinhaFinanceiro(){
     <div class="tabs">
       <div class="tab" data-tab="receber">A Receber</div>
       <div class="tab" data-tab="pagar">A Pagar</div>
+      <div class="tab" data-tab="contas">Contas</div>
     </div>
     <div id="minhaFinContent"></div>
   `;
@@ -3588,17 +3589,100 @@ async function pageMinhaFinanceiro(){
 function renderMinhaFinTabs(){
   main().querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===MINHA_FIN_TAB));
   if(MINHA_FIN_TAB==='pagar') renderMinhaFinPagar();
+  else if(MINHA_FIN_TAB==='contas') renderMinhaFinContas();
   else renderMinhaFinReceber();
+}
+// ===================== Contas (banco/caixa) — só organiza onde cada título foi pago/recebido =====
+async function minhaFinContasCache(){
+  const { items } = await api('/financeiro/minha-empresa/contas');
+  return items;
+}
+function contaSelectHtml(id, contas, contaIdAtual){
+  const TIPO_LABEL={banco:'Banco',caixa:'Caixa',outro:'Outro'};
+  return `<select id="${id}">
+    <option value="">— Não informar —</option>
+    ${contas.map(c=>`<option value="${c.id}" ${c.id===contaIdAtual?'selected':''}>${esc(c.nome)} (${TIPO_LABEL[c.tipo]||c.tipo})</option>`).join('')}
+  </select>`;
+}
+async function renderMinhaFinContas(){
+  const items = await minhaFinContasCache();
+  const box = document.getElementById('minhaFinContent');
+  const TIPO_LABEL={banco:'Banco',caixa:'Caixa',outro:'Outro'};
+  box.innerHTML = `
+    <div class="row" style="margin-bottom:12px; justify-content:flex-end;">
+      <button class="btn primary" id="btnNovaConta">+ Nova conta</button>
+    </div>
+    <div class="card" style="padding:0; overflow-x:auto;">
+      <table class="data-table">
+        <thead><tr><th>Nome</th><th>Tipo</th><th>Ativo</th><th></th></tr></thead>
+        <tbody>
+          ${items.length? items.map(c=>`
+            <tr>
+              <td><b>${esc(c.nome)}</b></td>
+              <td>${TIPO_LABEL[c.tipo]||c.tipo}</td>
+              <td><span class="tag ${c.ativo?'ok':'muted'}">${c.ativo?'Ativa':'Inativa'}</span></td>
+              <td style="text-align:right; white-space:nowrap;">
+                <button class="btn small" data-id="${c.id}" data-act="editar">Editar</button>
+                <button class="btn small" data-id="${c.id}" data-act="excluir">Excluir</button>
+              </td>
+            </tr>
+          `).join('') : `<tr><td colspan="4"><div class="empty-state">Nenhuma conta cadastrada — use pra indicar em qual banco/caixa cada título foi pago ou recebido.</div></td></tr>`}
+        </tbody>
+      </table>
+    </div>
+  `;
+  document.getElementById('btnNovaConta').addEventListener('click', ()=>minhaFinContaModal());
+  box.querySelectorAll('[data-act="editar"]').forEach(b=>b.addEventListener('click', ()=>{
+    minhaFinContaModal(items.find(c=>c.id===Number(b.dataset.id)));
+  }));
+  box.querySelectorAll('[data-act="excluir"]').forEach(b=>b.addEventListener('click', async ()=>{
+    if(!confirm('Excluir esta conta?')) return;
+    try{ await api('/financeiro/minha-empresa/contas/'+b.dataset.id, { method:'DELETE' }); toast('Excluída.','ok'); renderMinhaFinContas(); }
+    catch(e){ toast(e.message,'err'); }
+  }));
+}
+function minhaFinContaModal(item){
+  openModal(`
+    <h3>${item?'Editar':'Nova'} conta</h3>
+    <div class="field"><label>Nome</label><input id="mfcNome" value="${item?esc(item.nome):''}" placeholder="Ex.: Banco Itaú, Caixa da loja…"></div>
+    <div class="field"><label>Tipo</label>
+      <select id="mfcTipo">
+        <option value="banco" ${(!item||item.tipo==='banco')?'selected':''}>Banco</option>
+        <option value="caixa" ${item&&item.tipo==='caixa'?'selected':''}>Caixa</option>
+        <option value="outro" ${item&&item.tipo==='outro'?'selected':''}>Outro</option>
+      </select>
+    </div>
+    ${item?`<label class="checkbox-row"><input type="checkbox" id="mfcAtivo" ${item.ativo?'checked':''}> Ativa</label>`:''}
+    <div class="modal-actions">
+      <button class="btn" id="mfcCancel">Cancelar</button>
+      <button class="btn primary" id="mfcSalvar">Salvar</button>
+    </div>
+  `);
+  document.getElementById('mfcCancel').addEventListener('click', closeModal);
+  document.getElementById('mfcSalvar').addEventListener('click', async ()=>{
+    const nome = document.getElementById('mfcNome').value.trim();
+    if(!nome){ toast('Informe o nome da conta.','err'); return; }
+    const body = { nome, tipo: document.getElementById('mfcTipo').value };
+    if(item) body.ativo = document.getElementById('mfcAtivo').checked;
+    try{
+      if(item) await api('/financeiro/minha-empresa/contas/'+item.id, { method:'PUT', body });
+      else await api('/financeiro/minha-empresa/contas', { method:'POST', body });
+      closeModal();
+      toast('Conta salva.','ok');
+      renderMinhaFinContas();
+    }catch(e){ toast(e.message,'err'); }
+  });
 }
 // Modal de lançamento manual, compartilhado entre Receber e Pagar — os campos são quase iguais,
 // só muda o rótulo "Cliente"/"Fornecedor" e a rota da API.
-function minhaFinLancamentoModal(tipo, item){
+async function minhaFinLancamentoModal(tipo, item){
   const ehReceber = tipo==='receber';
   const rota = ehReceber ? '/financeiro/minha-empresa/receber' : '/financeiro/minha-empresa/pagar';
   const rotuloTerceiro = ehReceber ? 'Cliente' : 'Fornecedor';
   const campoTerceiro = ehReceber ? 'clienteNome' : 'fornecedor';
   const valorTerceiro = item ? (ehReceber? item.clienteNome : item.fornecedor) : '';
   const travado = ehReceber && item && item.origem==='nfse';
+  const contas = await minhaFinContasCache();
   openModal(`
     <h3>${item?'Editar':'Novo'} lançamento — ${ehReceber?'a receber':'a pagar'}</h3>
     ${travado?`<p style="font-size:12px; color:var(--ink-soft); margin:-4px 0 10px;">Este recebível veio de uma NFS-e emitida — descrição, ${rotuloTerceiro.toLowerCase()} e valor ficam travados.</p>`:''}
@@ -3608,6 +3692,7 @@ function minhaFinLancamentoModal(tipo, item){
       <div class="field" style="width:160px;"><label>Valor (R$)</label><input id="mflValor" type="number" step="0.01" min="0" value="${item?item.valor:''}" ${travado?'readonly style="background:var(--paper);"':''}></div>
       <div class="field" style="width:170px;">${dateFieldHtml('mflVencimento','Vencimento', item?item.vencimento:'')}</div>
     </div>
+    <div class="field"><label>Conta (${ehReceber?'onde recebeu':'de onde pagou'}, opcional)</label>${contaSelectHtml('mflConta', contas, item?item.contaId:null)}</div>
     ${item?`<div class="field"><label>Status</label>
       <select id="mflStatus">
         <option value="pendente" ${item.status==='pendente'?'selected':''}>Pendente</option>
@@ -3629,7 +3714,8 @@ function minhaFinLancamentoModal(tipo, item){
     const valor = Number(document.getElementById('mflValor').value);
     const vencimento = document.getElementById('mflVencimento').value;
     if(!descricao || !valor || !vencimento){ toast('Preencha a descrição, o valor e o vencimento.','err'); return; }
-    const body = { descricao, valor, vencimento, observacao: document.getElementById('mflObs').value.trim() };
+    const contaVal = document.getElementById('mflConta').value;
+    const body = { descricao, valor, vencimento, observacao: document.getElementById('mflObs').value.trim(), contaId: contaVal?Number(contaVal):null };
     body[campoTerceiro] = document.getElementById('mflTerceiro').value.trim();
     if(item) body.status = document.getElementById('mflStatus').value;
     try{
@@ -3658,7 +3744,7 @@ async function renderMinhaFinReceber(){
     </div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
-        <thead><tr><th>Descrição</th><th>Cliente</th><th>Valor</th><th>Vencimento</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th>Descrição</th><th>Cliente</th><th>Valor</th><th>Vencimento</th><th>Conta</th><th>Status</th><th></th></tr></thead>
         <tbody>
           ${items.length? items.map(i=>`
             <tr>
@@ -3666,14 +3752,15 @@ async function renderMinhaFinReceber(){
               <td>${esc(i.clienteNome||'—')}</td>
               <td>${fmtMoney(i.valor)}</td>
               <td>${fmtDateIso(i.vencimento)}</td>
-              <td><span class="tag ${i.status==='pago'?'ok':(i.status==='atrasado'?'bad':'muted')}">${STATUS_LABEL[i.status]||i.status}</span></td>
+              <td>${esc(i.contaNome||'—')}</td>
+              <td><span class="tag ${i.status==='pago'?'ok':(i.status==='atrasado'||i.status==='cancelado'?'bad':'muted')}">${STATUS_LABEL[i.status]||i.status}</span></td>
               <td style="text-align:right; white-space:nowrap;">
                 ${i.status==='pendente'?`<button class="btn small" data-id="${i.id}" data-act="marcar-recebido">Marcar recebido</button>`:''}
                 <button class="btn small" data-id="${i.id}" data-act="editar">Editar</button>
                 ${i.origem!=='nfse'?`<button class="btn small" data-id="${i.id}" data-act="excluir">Excluir</button>`:''}
               </td>
             </tr>
-          `).join('') : `<tr><td colspan="6"><div class="empty-state">Nenhum lançamento neste período.</div></td></tr>`}
+          `).join('') : `<tr><td colspan="7"><div class="empty-state">Nenhum lançamento neste período.</div></td></tr>`}
         </tbody>
       </table>
     </div>
@@ -3713,7 +3800,7 @@ async function renderMinhaFinPagar(){
     </div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
-        <thead><tr><th>Descrição</th><th>Fornecedor</th><th>Valor</th><th>Vencimento</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th>Descrição</th><th>Fornecedor</th><th>Valor</th><th>Vencimento</th><th>Conta</th><th>Status</th><th></th></tr></thead>
         <tbody>
           ${items.length? items.map(i=>`
             <tr>
@@ -3721,14 +3808,15 @@ async function renderMinhaFinPagar(){
               <td>${esc(i.fornecedor||'—')}</td>
               <td>${fmtMoney(i.valor)}</td>
               <td>${fmtDateIso(i.vencimento)}</td>
-              <td><span class="tag ${i.status==='pago'?'ok':(i.status==='atrasado'?'bad':'muted')}">${STATUS_LABEL[i.status]||i.status}</span></td>
+              <td>${esc(i.contaNome||'—')}</td>
+              <td><span class="tag ${i.status==='pago'?'ok':(i.status==='atrasado'||i.status==='cancelado'?'bad':'muted')}">${STATUS_LABEL[i.status]||i.status}</span></td>
               <td style="text-align:right; white-space:nowrap;">
                 ${i.status==='pendente'?`<button class="btn small" data-id="${i.id}" data-act="marcar-pago">Marcar pago</button>`:''}
                 <button class="btn small" data-id="${i.id}" data-act="editar">Editar</button>
                 <button class="btn small" data-id="${i.id}" data-act="excluir">Excluir</button>
               </td>
             </tr>
-          `).join('') : `<tr><td colspan="6"><div class="empty-state">Nenhum lançamento neste período.</div></td></tr>`}
+          `).join('') : `<tr><td colspan="7"><div class="empty-state">Nenhum lançamento neste período.</div></td></tr>`}
         </tbody>
       </table>
     </div>

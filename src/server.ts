@@ -273,6 +273,7 @@ sqlite.exec(`
     status TEXT NOT NULL DEFAULT 'pendente', -- 'pendente' | 'pago' | 'atrasado' | 'cancelado'
     data_pagamento TEXT,
     observacao TEXT,
+    conta_id INTEGER REFERENCES financeiro_contas(id) ON DELETE SET NULL,
     criado_por INTEGER REFERENCES app_users(id),
     criado_em TEXT DEFAULT (datetime('now'))
   );
@@ -288,7 +289,18 @@ sqlite.exec(`
     observacao TEXT,
     origem TEXT NOT NULL DEFAULT 'manual', -- 'manual' | 'nfse'
     nfse_emissao_id INTEGER REFERENCES nfse_emissoes(id) ON DELETE SET NULL,
+    conta_id INTEGER REFERENCES financeiro_contas(id) ON DELETE SET NULL,
     criado_por INTEGER REFERENCES app_users(id),
+    criado_em TEXT DEFAULT (datetime('now'))
+  );
+  -- Conta (banco/caixa) onde o título foi de fato pago/recebido — só pra indicar/organizar, sem
+  -- nenhuma integração bancária real (sem saldo calculado, sem extrato importado).
+  CREATE TABLE IF NOT EXISTS financeiro_contas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+    nome TEXT NOT NULL,
+    tipo TEXT NOT NULL DEFAULT 'banco', -- 'banco' | 'caixa' | 'outro'
+    ativo INTEGER NOT NULL DEFAULT 1,
     criado_em TEXT DEFAULT (datetime('now'))
   );
 
@@ -1197,6 +1209,18 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
          VALUES (?, 'financeiro', datetime('now'), datetime('now'), datetime('now','+100 years'))`
       )
       .run(r.empresa_id);
+  }
+}
+// Migração leve: conta bancária/caixa opcional em cada título do Financeiro, pra indicar onde o
+// pagamento/recebimento caiu.
+{
+  const colsPagar = sqlite.prepare(`PRAGMA table_info(financeiro_pagar)`).all() as any[];
+  if (!colsPagar.some((c) => c.name === "conta_id")) {
+    sqlite.exec(`ALTER TABLE financeiro_pagar ADD COLUMN conta_id INTEGER REFERENCES financeiro_contas(id) ON DELETE SET NULL`);
+  }
+  const colsReceber = sqlite.prepare(`PRAGMA table_info(financeiro_receber)`).all() as any[];
+  if (!colsReceber.some((c) => c.name === "conta_id")) {
+    sqlite.exec(`ALTER TABLE financeiro_receber ADD COLUMN conta_id INTEGER REFERENCES financeiro_contas(id) ON DELETE SET NULL`);
   }
 }
 // Migração leve: Cliente passa a poder ter mais de uma empresa atribuída — a sessão guarda qual
@@ -4862,6 +4886,9 @@ app.post("/api/nfse/emissoes/:id/cancelar", blockCliente, requirePermissao("nfse
     sqlite
       .prepare(`UPDATE nfse_emissoes SET status='cancelada', motivo_cancelamento=?, justificativa_cancelamento=?, cancelado_em=datetime('now'), danfse_path=NULL WHERE id=?`)
       .run(motivo, String(justificativa).trim(), row.id);
+    // O recebível gerado por essa nota fica marcado como cancelado, não é apagado — quem vê o
+    // Financeiro continua tendo o histórico completo, só que sinalizado como não mais válido.
+    sqlite.prepare(`UPDATE financeiro_receber SET status='cancelado' WHERE nfse_emissao_id = ?`).run(row.id);
     await nfseNotificarCancelamento(row.id);
     res.json({ ok: true });
   } catch (e: any) {
@@ -5912,6 +5939,9 @@ app.post("/api/nfse/minha-empresa/emissoes/:id/cancelar", requireCliente, requir
     sqlite
       .prepare(`UPDATE nfse_emissoes SET status='cancelada', motivo_cancelamento=?, justificativa_cancelamento=?, cancelado_em=datetime('now'), danfse_path=NULL WHERE id=?`)
       .run(motivo, String(justificativa).trim(), row.id);
+    // O recebível gerado por essa nota fica marcado como cancelado, não é apagado — quem vê o
+    // Financeiro continua tendo o histórico completo, só que sinalizado como não mais válido.
+    sqlite.prepare(`UPDATE financeiro_receber SET status='cancelado' WHERE nfse_emissao_id = ?`).run(row.id);
     await nfseNotificarCancelamento(row.id);
     res.json({ ok: true });
   } catch (e: any) {
@@ -5980,12 +6010,54 @@ app.get("/api/nfse/minha-empresa/cnpj/:cnpj", requireCliente, requireModuloAtivo
 });
 
 // ---------- Financeiro do próprio negócio da empresa-cliente self-service (perfil Cliente) ----------
+// Contas (banco/caixa) — só organizam/indicam onde cada título foi pago ou recebido, sem nenhuma
+// integração bancária real (sem saldo calculado, sem extrato importado).
+app.get("/api/financeiro/minha-empresa/contas", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
+  const empresaId = (req as any).user.empresaId;
+  const items = sqlite
+    .prepare(`SELECT id, nome, tipo, ativo FROM financeiro_contas WHERE empresa_id = ? ORDER BY ativo DESC, nome`)
+    .all(empresaId) as any[];
+  res.json({ items: items.map((r) => ({ ...r, ativo: !!r.ativo })) });
+});
+app.post("/api/financeiro/minha-empresa/contas", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
+  const user = (req as any).user;
+  const { nome, tipo } = req.body || {};
+  if (!nome || !String(nome).trim()) return res.status(400).json({ error: "Informe o nome da conta." });
+  const tipoValido = ["banco", "caixa", "outro"].includes(tipo) ? tipo : "banco";
+  const info = sqlite
+    .prepare(`INSERT INTO financeiro_contas (empresa_id, nome, tipo) VALUES (?, ?, ?)`)
+    .run(user.empresaId, String(nome).trim(), tipoValido);
+  res.json({ id: Number(info.lastInsertRowid) });
+});
+app.put("/api/financeiro/minha-empresa/contas/:id", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
+  const user = (req as any).user;
+  const existente = sqlite.prepare(`SELECT * FROM financeiro_contas WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), user.empresaId) as any;
+  if (!existente) return res.status(404).json({ error: "Conta não encontrada." });
+  const { nome, tipo, ativo } = req.body || {};
+  const tipoValido = ["banco", "caixa", "outro"].includes(tipo) ? tipo : existente.tipo;
+  sqlite
+    .prepare(`UPDATE financeiro_contas SET nome=?, tipo=?, ativo=? WHERE id=?`)
+    .run(nome != null ? String(nome).trim() : existente.nome, tipoValido, ativo != null ? (ativo ? 1 : 0) : existente.ativo, existente.id);
+  res.json({ ok: true });
+});
+app.delete("/api/financeiro/minha-empresa/contas/:id", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
+  const user = (req as any).user;
+  const existente = sqlite.prepare(`SELECT id FROM financeiro_contas WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), user.empresaId);
+  if (!existente) return res.status(404).json({ error: "Conta não encontrada." });
+  const emUso = sqlite
+    .prepare(`SELECT (SELECT COUNT(*) FROM financeiro_pagar WHERE conta_id = ?) + (SELECT COUNT(*) FROM financeiro_receber WHERE conta_id = ?) as c`)
+    .get(Number(req.params.id), Number(req.params.id)) as any;
+  if (emUso.c > 0) return res.status(409).json({ error: "Esta conta já está usada em algum título — desative em vez de excluir." });
+  sqlite.prepare(`DELETE FROM financeiro_contas WHERE id = ?`).run(Number(req.params.id));
+  res.json({ ok: true });
+});
 app.get("/api/financeiro/minha-empresa/pagar", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
   const empresaId = (req as any).user.empresaId;
   const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
   const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
-  let sql = `SELECT id, descricao, fornecedor, valor, vencimento, status, data_pagamento as dataPagamento, observacao, criado_em as criadoEm
-             FROM financeiro_pagar WHERE empresa_id = ?`;
+  let sql = `SELECT p.id, p.descricao, p.fornecedor, p.valor, p.vencimento, p.status, p.data_pagamento as dataPagamento, p.observacao,
+                    p.conta_id as contaId, c.nome as contaNome, p.criado_em as criadoEm
+             FROM financeiro_pagar p LEFT JOIN financeiro_contas c ON c.id = p.conta_id WHERE p.empresa_id = ?`;
   const params: any[] = [empresaId];
   if (dataDe) { sql += ` AND date(vencimento) >= date(?)`; params.push(dataDe); }
   if (dataAte) { sql += ` AND date(vencimento) <= date(?)`; params.push(dataAte); }
@@ -5994,22 +6066,22 @@ app.get("/api/financeiro/minha-empresa/pagar", requireCliente, requireModuloAtiv
 });
 app.post("/api/financeiro/minha-empresa/pagar", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
   const user = (req as any).user;
-  const { descricao, fornecedor, valor, vencimento, observacao } = req.body || {};
+  const { descricao, fornecedor, valor, vencimento, observacao, contaId } = req.body || {};
   if (!descricao || !valor || !vencimento) return res.status(400).json({ error: "Preencha a descrição, o valor e o vencimento." });
   const info = sqlite
-    .prepare(`INSERT INTO financeiro_pagar (empresa_id, descricao, fornecedor, valor, vencimento, observacao, criado_por) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .run(user.empresaId, String(descricao).trim(), fornecedor || null, Number(valor), String(vencimento), observacao || null, user.id);
+    .prepare(`INSERT INTO financeiro_pagar (empresa_id, descricao, fornecedor, valor, vencimento, observacao, conta_id, criado_por) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(user.empresaId, String(descricao).trim(), fornecedor || null, Number(valor), String(vencimento), observacao || null, contaId ? Number(contaId) : null, user.id);
   res.json({ id: Number(info.lastInsertRowid) });
 });
 app.put("/api/financeiro/minha-empresa/pagar/:id", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
   const user = (req as any).user;
   const existente = sqlite.prepare(`SELECT * FROM financeiro_pagar WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), user.empresaId) as any;
   if (!existente) return res.status(404).json({ error: "Lançamento não encontrado." });
-  const { descricao, fornecedor, valor, vencimento, status, observacao } = req.body || {};
+  const { descricao, fornecedor, valor, vencimento, status, observacao, contaId } = req.body || {};
   const statusValido = ["pendente", "pago", "atrasado", "cancelado"].includes(status) ? status : existente.status;
   sqlite
     .prepare(
-      `UPDATE financeiro_pagar SET descricao=?, fornecedor=?, valor=?, vencimento=?, status=?, data_pagamento=?, observacao=? WHERE id=?`
+      `UPDATE financeiro_pagar SET descricao=?, fornecedor=?, valor=?, vencimento=?, status=?, data_pagamento=?, observacao=?, conta_id=? WHERE id=?`
     )
     .run(
       descricao != null ? String(descricao).trim() : existente.descricao,
@@ -6019,6 +6091,7 @@ app.put("/api/financeiro/minha-empresa/pagar/:id", requireCliente, requireModulo
       statusValido,
       statusValido === "pago" ? new Date().toISOString().slice(0, 10) : statusValido === existente.status ? existente.data_pagamento : null,
       observacao !== undefined ? observacao || null : existente.observacao,
+      contaId !== undefined ? (contaId ? Number(contaId) : null) : existente.conta_id,
       existente.id
     );
   res.json({ ok: true });
@@ -6032,9 +6105,9 @@ app.get("/api/financeiro/minha-empresa/receber", requireCliente, requireModuloAt
   const empresaId = (req as any).user.empresaId;
   const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
   const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
-  let sql = `SELECT id, descricao, cliente_nome as clienteNome, valor, vencimento, status, data_recebimento as dataRecebimento, observacao,
-                    origem, nfse_emissao_id as nfseEmissaoId, criado_em as criadoEm
-             FROM financeiro_receber WHERE empresa_id = ?`;
+  let sql = `SELECT r.id, r.descricao, r.cliente_nome as clienteNome, r.valor, r.vencimento, r.status, r.data_recebimento as dataRecebimento, r.observacao,
+                    r.origem, r.nfse_emissao_id as nfseEmissaoId, r.conta_id as contaId, c.nome as contaNome, r.criado_em as criadoEm
+             FROM financeiro_receber r LEFT JOIN financeiro_contas c ON c.id = r.conta_id WHERE r.empresa_id = ?`;
   const params: any[] = [empresaId];
   if (dataDe) { sql += ` AND date(vencimento) >= date(?)`; params.push(dataDe); }
   if (dataAte) { sql += ` AND date(vencimento) <= date(?)`; params.push(dataAte); }
@@ -6043,25 +6116,25 @@ app.get("/api/financeiro/minha-empresa/receber", requireCliente, requireModuloAt
 });
 app.post("/api/financeiro/minha-empresa/receber", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
   const user = (req as any).user;
-  const { descricao, clienteNome, valor, vencimento, observacao } = req.body || {};
+  const { descricao, clienteNome, valor, vencimento, observacao, contaId } = req.body || {};
   if (!descricao || !valor || !vencimento) return res.status(400).json({ error: "Preencha a descrição, o valor e o vencimento." });
   const info = sqlite
-    .prepare(`INSERT INTO financeiro_receber (empresa_id, descricao, cliente_nome, valor, vencimento, observacao, origem, criado_por) VALUES (?, ?, ?, ?, ?, ?, 'manual', ?)`)
-    .run(user.empresaId, String(descricao).trim(), clienteNome || null, Number(valor), String(vencimento), observacao || null, user.id);
+    .prepare(`INSERT INTO financeiro_receber (empresa_id, descricao, cliente_nome, valor, vencimento, observacao, origem, conta_id, criado_por) VALUES (?, ?, ?, ?, ?, ?, 'manual', ?, ?)`)
+    .run(user.empresaId, String(descricao).trim(), clienteNome || null, Number(valor), String(vencimento), observacao || null, contaId ? Number(contaId) : null, user.id);
   res.json({ id: Number(info.lastInsertRowid) });
 });
 app.put("/api/financeiro/minha-empresa/receber/:id", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
   const user = (req as any).user;
   const existente = sqlite.prepare(`SELECT * FROM financeiro_receber WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), user.empresaId) as any;
   if (!existente) return res.status(404).json({ error: "Lançamento não encontrado." });
-  const { descricao, clienteNome, valor, vencimento, status, observacao } = req.body || {};
+  const { descricao, clienteNome, valor, vencimento, status, observacao, contaId } = req.body || {};
   const statusValido = ["pendente", "pago", "atrasado", "cancelado"].includes(status) ? status : existente.status;
   // Lançamentos gerados pela NFS-e (origem='nfse') têm descrição/valor travados — só vencimento,
-  // status e observação são editáveis, pra não desalinhar do valor real da nota emitida.
+  // status, conta e observação são editáveis, pra não desalinhar do valor real da nota emitida.
   const travadoPelaNfse = existente.origem === "nfse";
   sqlite
     .prepare(
-      `UPDATE financeiro_receber SET descricao=?, cliente_nome=?, valor=?, vencimento=?, status=?, data_recebimento=?, observacao=? WHERE id=?`
+      `UPDATE financeiro_receber SET descricao=?, cliente_nome=?, valor=?, vencimento=?, status=?, data_recebimento=?, observacao=?, conta_id=? WHERE id=?`
     )
     .run(
       travadoPelaNfse ? existente.descricao : descricao != null ? String(descricao).trim() : existente.descricao,
@@ -6071,6 +6144,7 @@ app.put("/api/financeiro/minha-empresa/receber/:id", requireCliente, requireModu
       statusValido,
       statusValido === "pago" ? new Date().toISOString().slice(0, 10) : statusValido === existente.status ? existente.data_recebimento : null,
       observacao !== undefined ? observacao || null : existente.observacao,
+      contaId !== undefined ? (contaId ? Number(contaId) : null) : existente.conta_id,
       existente.id
     );
   res.json({ ok: true });
