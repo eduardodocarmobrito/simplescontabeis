@@ -2940,15 +2940,22 @@ app.put("/api/envio/templates/:id", blockCliente, requirePermissao("envio", "edi
   const existing = sqlite.prepare(`SELECT * FROM envio_templates WHERE id = ? AND escritorio_id = ?`).get(id, (req as any).user.escritorioId) as any;
   if (!existing) return res.status(404).json({ error: "Modelo não encontrado." });
   const protegido = ENVIO_TEMPLATES_PROTEGIDOS.includes(existing.nome);
-  const { nome, descricao, accept, ativo, detectarVencimento, visivelCliente } = req.body || {};
+  const { nome, descricao, periodicidade, accept, ativo, detectarVencimento, visivelCliente } = req.body || {};
   if (protegido && nome !== undefined && nome !== existing.nome) {
     return res.status(409).json({ error: `"${existing.nome}" é usado automaticamente pelo Integra Contador — renomear quebraria o anexo automático de DAS/Situação Fiscal.` });
   }
+  if (periodicidade !== undefined && !["mensal", "anual", "avulso"].includes(periodicidade)) {
+    return res.status(400).json({ error: "Periodicidade inválida." });
+  }
+  // Trocar a periodicidade não migra os períodos já gerados (ficam como estavam, com o formato
+  // antigo) — só passa a valer pra próxima vez que "Gerar ano na grade" (ou "+ Nova solicitação
+  // avulsa") for usado em cada atribuição desse modelo.
   sqlite
-    .prepare(`UPDATE envio_templates SET nome=?, descricao=?, accept_json=?, detectar_vencimento=?, visivel_cliente=?, ativo=? WHERE id=?`)
+    .prepare(`UPDATE envio_templates SET nome=?, descricao=?, periodicidade=?, accept_json=?, detectar_vencimento=?, visivel_cliente=?, ativo=? WHERE id=?`)
     .run(
       nome ?? existing.nome,
       descricao !== undefined ? descricao : existing.descricao,
+      periodicidade ?? existing.periodicidade,
       Array.isArray(accept) && accept.length ? JSON.stringify(accept) : existing.accept_json,
       detectarVencimento === undefined ? existing.detectar_vencimento : detectarVencimento ? 1 : 0,
       visivelCliente === undefined ? existing.visivel_cliente : visivelCliente ? 1 : 0,

@@ -1691,13 +1691,14 @@ function envioModeloModal(t){
     ${t&&t.protegido? `<p style="font-size:12px; color:var(--ink-soft); margin:-4px 0 10px;">Este modelo é usado automaticamente pelo Integra Contador — o nome fica travado pra não quebrar o anexo automático de DAS/Situação Fiscal.</p>`:''}
     <div class="field"><label>Nome</label><input id="evNome" value="${t?esc(t.nome):''}" placeholder='Ex.: "DARF PIS", "FGTS", "Retenções de Notas Fiscais"' ${t&&t.protegido?'readonly style="background:var(--paper);"':''}></div>
     <div class="field"><label>Descrição (opcional)</label><input id="evDesc" value="${t&&t.descricao?esc(t.descricao):''}"></div>
-    ${!t? `<div class="field"><label>Periodicidade</label>
+    <div class="field"><label>Periodicidade</label>
       <select id="evPeriodicidade">
         <option value="mensal">Mensal (grade com os 12 meses do ano)</option>
         <option value="anual">Anual (um envio por ano)</option>
         <option value="avulso">Avulso (envios pontuais, com rótulo próprio — ex.: "IRPF 2026")</option>
       </select>
-    </div>` : ''}
+      ${t? `<p style="font-size:11.5px; color:var(--ink-soft); margin:4px 0 0;">Mudar aqui não altera o que já foi gerado na grade de cada empresa — vale a partir da próxima vez que "Gerar ano na grade" (ou "Nova solicitação avulsa") for usado.</p>`:''}
+    </div>
     <div style="margin:10px 0 6px; font-size:12px; color:var(--ink-soft);">Tipo de arquivo aceito para a guia:</div>
     <div class="row" style="gap:14px;">
       ${TIPOS_ACEITE.map(ac=>`<label class="checkbox-row"><input type="checkbox" class="evAccept" value="${ac.v}" ${(t? t.accept.includes(ac.v) : ac.v==='pdf')?'checked':''}> ${ac.l}</label>`).join('')}
@@ -1711,14 +1712,14 @@ function envioModeloModal(t){
       <button class="btn primary" id="evSalvar">Salvar</button>
     </div>
   `);
+  if(t) document.getElementById('evPeriodicidade').value = t.periodicidade;
   document.getElementById('evCancel').addEventListener('click', closeModal);
   document.getElementById('evSalvar').addEventListener('click', async ()=>{
     const nome=document.getElementById('evNome').value.trim();
     if(!nome){ toast('Informe o nome.','err'); return; }
     const accept=[...document.querySelectorAll('.evAccept:checked')].map(c=>c.value);
     if(!accept.length){ toast('Selecione ao menos um tipo de arquivo.','err'); return; }
-    const body = { nome, descricao: document.getElementById('evDesc').value.trim(), accept, detectarVencimento: document.getElementById('evDetectarVenc').checked, visivelCliente: document.getElementById('evVisivelCliente').checked };
-    if(!t) body.periodicidade = document.getElementById('evPeriodicidade').value;
+    const body = { nome, descricao: document.getElementById('evDesc').value.trim(), periodicidade: document.getElementById('evPeriodicidade').value, accept, detectarVencimento: document.getElementById('evDetectarVenc').checked, visivelCliente: document.getElementById('evVisivelCliente').checked };
     try{
       if(t) await api('/envio/templates/'+t.id, { method:'PUT', body });
       else await api('/envio/templates', { method:'POST', body });
