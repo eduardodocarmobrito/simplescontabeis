@@ -3041,7 +3041,7 @@ async function pageNfeBusca(){
     const idsAtivos = new Set([...configs.map(c=>c.empresaId), ...Object.keys(contagem).map(Number)]);
     const linhas = [...idsAtivos].map(id=>{
       const emp = empresas.find(e=>e.id===id);
-      return { id, nome: emp?emp.nome:'(empresa removida)' };
+      return { id, nome: emp?emp.nome:'(empresa removida)', qtd: contagem[id]||0 };
     }).sort((a,b)=>a.nome.localeCompare(b.nome));
     box.innerHTML = `
       <div class="card">
@@ -3054,7 +3054,10 @@ async function pageNfeBusca(){
         <input type="text" id="nfeListaFiltro" placeholder="Buscar empresa…" style="margin-bottom:6px;">
         <div style="max-height:420px; overflow-y:auto; overflow-x:hidden; border:1px solid var(--rule); border-radius:8px; padding:4px 10px;">
           ${linhas.length ? linhas.map(l=>`
-            <div class="nfeEmpresaRow" data-id="${l.id}" data-nome="${esc(normalizaTxt(l.nome))}" style="padding:6px 8px; font-size:13px; cursor:pointer; border-bottom:1px solid var(--rule);">${esc(l.nome)}</div>
+            <div class="nfeEmpresaRow" data-id="${l.id}" data-nome="${esc(normalizaTxt(l.nome))}" style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:6px 8px; font-size:13px; cursor:pointer; border-bottom:1px solid var(--rule);">
+              <span>${esc(l.nome)}</span>
+              <span class="tag muted" style="flex:none;">${l.qtd} nota${l.qtd===1?'':'s'}</span>
+            </div>
           `).join('') : '<div class="empty-state">Nenhuma empresa configurada ainda — use a busca acima pra adicionar a primeira.</div>'}
         </div>
       </div>
