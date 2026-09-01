@@ -1777,13 +1777,15 @@ function envioDocBlocoHtml(d, podeEditar, podePostar, souCliente, mostrarVencime
   const vencHtml = !mostrarVencimento ? '' : d.vencimento
     ? `<div><span class="tag warn" style="font-weight:700;">Vencimento ${esc(fmtDateIso(d.vencimento))}</span>${d.vencimentoOrigem==='automatico'?' <span style="font-size:10.5px; color:var(--ink-soft);">(identificado automaticamente)</span>':''}</div>`
     : `<div><span class="tag muted">Vencimento não identificado</span></div>`;
-  return `<div class="slot" style="padding-bottom:8px; margin-bottom:2px; border-bottom:1px dashed var(--rule);">
-    <div class="slot-locked" style="background:var(--paper);"><span class="fname">${esc(d.fileName)}</span>Enviado em ${fmtDateHora(d.enviadoEm)}</div>
-    ${d.observacao? `<div class="slot-reopen-note" style="background:var(--accent-pale); color:var(--accent-deep);">${esc(d.observacao)}</div>`:''}
-    ${vencHtml}
-    ${!souCliente ? `<div style="font-size:11px; color:var(--ink-soft);">${d.emailEnviado? `✓ Enviado por e-mail ao cliente${d.emailEnviadoEm?' em '+fmtDateHora(d.emailEnviadoEm):''}` : (d.emailErro? '⚠ E-mail não enviado: '+esc(d.emailErro) : '')}</div>` : ''}
-    ${!souCliente ? `<div style="font-size:11px; color:var(--ink-soft);">${d.whatsappEnviado? `✓ Enviado por WhatsApp ao cliente${d.whatsappEnviadoEm?' em '+fmtDateHora(d.whatsappEnviadoEm):''}` : (d.whatsappErro? '⚠ WhatsApp não enviado: '+esc(d.whatsappErro) : '')}</div>` : ''}
-    <div style="display:flex; gap:6px; flex-wrap:wrap;">
+  return `<div class="slot" style="flex-direction:row; align-items:flex-start; justify-content:space-between; flex-wrap:wrap; gap:10px; padding-bottom:8px; margin-bottom:2px; border-bottom:1px dashed var(--rule);">
+    <div style="flex:1; min-width:220px; display:flex; flex-direction:column; gap:6px;">
+      <div class="slot-locked" style="background:var(--paper);"><span class="fname">${esc(d.fileName)}</span>Enviado em ${fmtDateHora(d.enviadoEm)}</div>
+      ${d.observacao? `<div class="slot-reopen-note" style="background:var(--accent-pale); color:var(--accent-deep);">${esc(d.observacao)}</div>`:''}
+      ${vencHtml}
+      ${!souCliente ? `<div style="font-size:11px; color:var(--ink-soft);">${d.emailEnviado? `✓ Enviado por e-mail ao cliente${d.emailEnviadoEm?' em '+fmtDateHora(d.emailEnviadoEm):''}` : (d.emailErro? '⚠ E-mail não enviado: '+esc(d.emailErro) : '')}</div>` : ''}
+      ${!souCliente ? `<div style="font-size:11px; color:var(--ink-soft);">${d.whatsappEnviado? `✓ Enviado por WhatsApp ao cliente${d.whatsappEnviadoEm?' em '+fmtDateHora(d.whatsappEnviadoEm):''}` : (d.whatsappErro? '⚠ WhatsApp não enviado: '+esc(d.whatsappErro) : '')}</div>` : ''}
+    </div>
+    <div style="display:flex; gap:6px; flex-wrap:wrap; flex-shrink:0;">
       <button class="btn small" data-act="baixar-envio" data-doc="${d.id}">Baixar</button>
       ${podeEditar && mostrarVencimento? `<button class="btn small" data-act="editar-venc" data-doc="${d.id}" data-venc="${d.vencimento||''}">Vencimento</button>`:''}
       ${!souCliente && podePostar? `<button class="btn small" data-act="reenviar-email" data-doc="${d.id}">${d.emailEnviado?'Reenviar e-mail':'Enviar e-mail'}</button>`:''}
