@@ -6185,6 +6185,17 @@ async function renderCfgEmailTextoNfse(box){
     }catch(e){ toast(e.message,'err'); }
   });
 }
+function linhaContatoHtml(c, editando){
+  if(!editando){
+    return `<tr data-id="${c.id}"><td>${esc(c.nome)}</td><td>${esc(c.email)}</td><td>${c.telefone?esc(c.telefone):'—'}${c.receber_whatsapp?' <span class="tag ok">WhatsApp</span>':''}</td><td style="text-align:right; white-space:nowrap;"><button class="btn small" data-act="editContato">Editar</button> <button class="btn small danger" data-act="rmContato">Remover</button></td></tr>`;
+  }
+  return `<tr data-id="${c.id}">
+    <td><input data-f="nome" value="${esc(c.nome)}"></td>
+    <td><input data-f="email" type="email" value="${esc(c.email)}"></td>
+    <td><input data-f="telefone" value="${esc(c.telefone||'')}" placeholder="WhatsApp (DDD + número)" style="margin-bottom:4px;"><label class="checkbox-row" style="margin:0;"><input type="checkbox" data-f="receberWhatsapp" ${c.receber_whatsapp?'checked':''}> Receber por WhatsApp</label></td>
+    <td style="text-align:right; white-space:nowrap;"><button class="btn small primary" data-act="salvarContato">Salvar</button> <button class="btn small" data-act="cancelEditContato">Cancelar</button></td>
+  </tr>`;
+}
 async function renderCfgEmailSmtp(box){
   const status = await api('/email/status');
   const cfg = await api('/email/config');
@@ -6270,7 +6281,7 @@ async function renderCfgEmailSmtp(box){
     ccBody.innerHTML = `
       <div style="font-weight:600; font-size:12.5px; margin:10px 0 6px;">Contatos (e-mail e WhatsApp)</div>
       <table class="data-table"><tbody id="ccContatosBody">
-        ${contatos.map(c=>`<tr data-id="${c.id}"><td>${esc(c.nome)}</td><td>${esc(c.email)}</td><td>${c.telefone?esc(c.telefone):'—'}${c.receber_whatsapp?' <span class="tag ok">WhatsApp</span>':''}</td><td style="text-align:right;"><button class="btn small danger" data-act="rmContato">Remover</button></td></tr>`).join('') || '<tr><td colspan="4"><span style="font-size:12px; color:var(--ink-soft);">Nenhum contato cadastrado.</span></td></tr>'}
+        ${contatos.map(c=>linhaContatoHtml(c)).join('') || '<tr><td colspan="4"><span style="font-size:12px; color:var(--ink-soft);">Nenhum contato cadastrado.</span></td></tr>'}
       </tbody></table>
       <div class="row" style="margin-top:8px; align-items:flex-end;">
         <div class="field" style="margin-bottom:0;"><input id="ccNome" placeholder="Nome do contato"></div>
@@ -6297,10 +6308,34 @@ async function renderCfgEmailSmtp(box){
       try{ await api('/empresas/'+empresaId+'/contatos', { method:'POST', body:{ nome, email, telefone, receberWhatsapp } }); carregarContatosEDocs(); }
       catch(e){ toast(e.message,'err'); }
     });
-    document.querySelectorAll('[data-act="rmContato"]').forEach(b=>b.addEventListener('click', async e=>{
-      await api('/empresas/contatos/'+e.target.closest('tr').dataset.id, { method:'DELETE' });
-      carregarContatosEDocs();
-    }));
+    // Delegação num único listener no tbody — sobrevive às trocas de outerHTML ao entrar/sair do
+    // modo de edição de uma linha, sem precisar reatar handler nenhum depois de cada troca.
+    document.getElementById('ccContatosBody').addEventListener('click', async e=>{
+      const btn = e.target.closest('button[data-act]');
+      if(!btn) return;
+      const tr = btn.closest('tr');
+      const contatoId = tr.dataset.id;
+      const c = contatos.find(x=>String(x.id)===contatoId);
+      if(btn.dataset.act==='rmContato'){
+        await api('/empresas/contatos/'+contatoId, { method:'DELETE' });
+        carregarContatosEDocs();
+      } else if(btn.dataset.act==='editContato'){
+        tr.outerHTML = linhaContatoHtml(c, true);
+      } else if(btn.dataset.act==='cancelEditContato'){
+        tr.outerHTML = linhaContatoHtml(c);
+      } else if(btn.dataset.act==='salvarContato'){
+        const nome = tr.querySelector('[data-f="nome"]').value.trim();
+        const email = tr.querySelector('[data-f="email"]').value.trim();
+        const telefone = tr.querySelector('[data-f="telefone"]').value.trim();
+        const receberWhatsapp = tr.querySelector('[data-f="receberWhatsapp"]').checked;
+        if(!nome||!email){ toast('Preencha nome e e-mail.','err'); return; }
+        try{
+          await api('/empresas/contatos/'+contatoId, { method:'PUT', body:{ nome, email, telefone, receberWhatsapp } });
+          toast('Contato atualizado.','ok');
+          carregarContatosEDocs();
+        }catch(err){ toast(err.message,'err'); }
+      }
+    });
     document.getElementById('btnAddDoc').addEventListener('click', async ()=>{
       const documento = document.getElementById('ccDocumento').value.trim();
       if(!documento){ toast('Informe o CNPJ ou CPF.','err'); return; }

@@ -2292,6 +2292,16 @@ app.post("/api/empresas/:id/contatos", blockCliente, requirePermissao("empresas"
     .run(empresaId, nome, email, receberEmails === false ? 0 : 1, telefone || null, receberWhatsapp ? 1 : 0);
   res.json({ id: Number(info.lastInsertRowid) });
 });
+app.put("/api/empresas/contatos/:contatoId", blockCliente, requirePermissao("empresas", "editar"), (req, res) => {
+  const contato = sqlite.prepare(`SELECT empresa_id FROM empresa_contatos WHERE id = ?`).get(Number(req.params.contatoId)) as any;
+  if (!contato || !podeAcessarEmpresa((req as any).user, contato.empresa_id)) return res.status(404).json({ error: "Contato não encontrado." });
+  const { nome, email, receberEmails, telefone, receberWhatsapp } = req.body || {};
+  if (!nome || !email) return res.status(400).json({ error: "Informe nome e e-mail do contato." });
+  sqlite
+    .prepare(`UPDATE empresa_contatos SET nome=?, email=?, receber_emails=?, telefone=?, receber_whatsapp=? WHERE id=?`)
+    .run(nome, email, receberEmails === false ? 0 : 1, telefone || null, receberWhatsapp ? 1 : 0, Number(req.params.contatoId));
+  res.json({ ok: true });
+});
 app.delete("/api/empresas/contatos/:contatoId", blockCliente, requirePermissao("empresas", "editar"), (req, res) => {
   const contato = sqlite.prepare(`SELECT empresa_id FROM empresa_contatos WHERE id = ?`).get(Number(req.params.contatoId)) as any;
   if (!contato || !podeAcessarEmpresa((req as any).user, contato.empresa_id)) return res.status(404).json({ error: "Contato não encontrado." });
