@@ -3036,6 +3036,36 @@ app.get("/api/envio/atribuicoes", blockCliente, requirePermissao("envio", "visua
     })),
   });
 });
+// Histórico de todo pedido feito por qualquer cliente — tanto pela tela "Solicitar Documentos"
+// (modelos com visivel_cliente) quanto pelo "Recalcular DAS" — os dois usam o mesmo campo
+// envio_periodos.solicitado_em, então essa lista já cobre tudo junto, sem precisar de tabela nova.
+// Diferente de cardSolicitacoesPendentes() (só as que ainda faltam atender), aqui mostra as duas
+// situações com uma coluna de status — é o registro histórico completo, não só a fila de pendências.
+app.get("/api/envio/solicitacoes", blockCliente, requirePermissao("envio", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = req.query.empresaId ? Number(req.query.empresaId) : null;
+  if (empresaId && !podeAcessarEmpresa(user, empresaId)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  let sql = `SELECT p.id as periodoId, p.ano, p.mes, p.rotulo, p.solicitado_em as solicitadoEm,
+              t.nome as templateNome, a.id as atribuicaoId, a.empresa_id as empresaId, e.nome as empresaNome,
+              u.nome as solicitadoPorNome, u.perfil as solicitadoPorPerfil,
+              EXISTS(SELECT 1 FROM envio_documentos d WHERE d.periodo_id = p.id) as concluida
+             FROM envio_periodos p
+             JOIN envio_atribuicoes a ON a.id = p.atribuicao_id
+             JOIN envio_templates t ON t.id = a.template_id AND t.escritorio_id = ?
+             JOIN empresas e ON e.id = a.empresa_id
+             LEFT JOIN app_users u ON u.id = p.solicitado_por
+             WHERE p.solicitado_em IS NOT NULL`;
+  const params: any[] = [user.escritorioId];
+  if (empresaId) {
+    sql += ` AND a.empresa_id = ?`;
+    params.push(empresaId);
+  }
+  sql += ` ORDER BY p.solicitado_em DESC LIMIT 300`;
+  let rows = sqlite.prepare(sql).all(...params) as any[];
+  const visiveis = empresasVisiveis(user);
+  if (visiveis !== null) rows = rows.filter((r) => visiveis.includes(r.empresaId));
+  res.json({ items: rows.map((r) => ({ ...r, concluida: !!r.concluida })) });
+});
 app.get("/api/envio/minhas-atribuicoes", (req, res) => {
   const user = (req as any).user;
   if (user.perfil !== "Cliente") return res.status(403).json({ error: "Rota exclusiva para clientes." });
@@ -3268,7 +3298,7 @@ app.get("/api/envio/grade/:atribuicaoId", (req, res) => {
 // atraso continuar. Compartilhada pelas duas rotas que disparam isso: o botão na grade de Envio de
 // Documentos (já sabe o periodoId) e o pedido em Solicitar Documentos (resolve o periodoId pela
 // competência antes de chamar aqui).
-async function executarRecalculoDas(periodoId: number, empresaIdCliente: number): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+async function executarRecalculoDas(periodoId: number, empresaIdCliente: number, solicitanteUserId: number): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
   const periodo = sqlite
     .prepare(
       `SELECT p.*, a.empresa_id as empresaId, t.nome as templateNome
@@ -3295,6 +3325,11 @@ async function executarRecalculoDas(periodoId: number, empresaIdCliente: number)
     if (!das.pdfBase64) return { ok: false, status: 502, error: "A Receita não devolveu o DAS recalculado — tente de novo mais tarde." };
     const observacao = `DAS recalculado — solicitado pelo cliente em ${new Date().toLocaleDateString("pt-BR")}.`;
     integraContadorAnexarDasEmEnvio(empConfig.escritorio_id, periodo.empresaId, das, das.periodoApuracao || periodoApuracao, observacao);
+    // Registra a solicitação de verdade (mesmo campo que "Solicitar Documentos" já usa pros modelos
+    // normais) — sem isso o pedido de recálculo não ficava registrado em lugar nenhum: nem na lista
+    // "Solicitar Documentos" do próprio cliente, nem em nenhum histórico do escritório. DAS - Mensal
+    // não é visivel_cliente, então esse campo nunca é preenchido por outro caminho.
+    sqlite.prepare(`UPDATE envio_periodos SET solicitado_em = datetime('now'), solicitado_por = ? WHERE id = ?`).run(solicitanteUserId, periodoId);
     sqlite
       .prepare(
         `INSERT INTO integracontador_documentos (empresa_id, escritorio_id, tipo, periodo_apuracao, numero_documento, data_vencimento, detalhes_json) VALUES (?, ?, 'das', ?, ?, ?, ?)`
@@ -3308,7 +3343,7 @@ async function executarRecalculoDas(periodoId: number, empresaIdCliente: number)
 app.post("/api/envio/periodos/:periodoId/solicitar-recalculo-das", async (req, res) => {
   const user = (req as any).user;
   if (user.perfil !== "Cliente") return res.status(403).json({ error: "Esse recurso é só pro cliente pedir sozinho — o escritório usa \"Buscar agora\" em Integra Contador." });
-  const r = await executarRecalculoDas(Number(req.params.periodoId), user.empresaId);
+  const r = await executarRecalculoDas(Number(req.params.periodoId), user.empresaId, user.id);
   if (!r.ok) return res.status(r.status).json({ error: r.error });
   res.json({ ok: true });
 });
@@ -3326,7 +3361,7 @@ app.post("/api/envio/solicitar-recalculo-das", requireCliente, async (req, res) 
     )
     .get(user.empresaId, mes, ano) as any;
   if (!periodo) return res.status(404).json({ error: "O DAS dessa competência ainda não foi disponibilizado — aguarde a rotina mensal antes de pedir recálculo." });
-  const r = await executarRecalculoDas(periodo.id, user.empresaId);
+  const r = await executarRecalculoDas(periodo.id, user.empresaId, user.id);
   if (!r.ok) return res.status(r.status).json({ error: r.error });
   res.json({ ok: true });
 });

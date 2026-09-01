@@ -1705,6 +1705,7 @@ async function pageEnvio(){
     <p class="subtitle">Guias e documentos que o escritório envia para os clientes — DARF, FGTS, retenções, etc.</p>
     <div class="tabs">
       <div class="tab" data-tab="atribuicoes">Empresas &amp; Envios</div>
+      <div class="tab" data-tab="solicitacoes">Solicitações</div>
       <div class="tab" data-tab="modelos">Modelos</div>
     </div>
     <div id="envioContent"></div>
@@ -1714,7 +1715,43 @@ async function pageEnvio(){
 }
 function renderEnvioTabs(){
   main().querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===ENVIO_TAB));
-  if(ENVIO_TAB==='modelos') renderEnvioModelos(); else renderEnvioAtribuicoes();
+  if(ENVIO_TAB==='modelos') renderEnvioModelos();
+  else if(ENVIO_TAB==='solicitacoes') renderEnvioSolicitacoes();
+  else renderEnvioAtribuicoes();
+}
+// Registro de todo pedido que um cliente já fez — tanto pela tela "Solicitar Documentos" quanto
+// pelo "Recalcular DAS" (os dois gravam no mesmo lugar, ver rota no backend). Complementa a lista
+// de atribuições: aquela mostra "o que está configurado pra cada empresa", esta mostra "o que os
+// clientes já pediram, quando, e se já foi atendido".
+async function renderEnvioSolicitacoes(){
+  const { items } = await api('/envio/solicitacoes');
+  const box = document.getElementById('envioContent');
+  box.innerHTML = `
+    <div class="field" style="max-width:360px; margin-bottom:10px;"><input type="text" id="envioSolicFiltro" placeholder="Buscar por empresa…" autocomplete="off"></div>
+    <div class="card" style="padding:0; overflow-x:auto;">
+      <table class="data-table">
+        <thead><tr><th>Empresa</th><th>Modelo</th><th>Competência</th><th>Solicitado por</th><th>Solicitado em</th><th>Status</th></tr></thead>
+        <tbody id="envioSolicBody"></tbody>
+      </table>
+    </div>
+  `;
+  const tbody = document.getElementById('envioSolicBody');
+  function desenha(filtro){
+    const termo = normalizaTxt(filtro).trim();
+    const visiveis = termo ? items.filter(i=>normalizaTxt(i.empresaNome).includes(termo)) : items;
+    tbody.innerHTML = visiveis.length ? visiveis.map(i=>`
+      <tr>
+        <td><b>${esc(i.empresaNome)}</b></td>
+        <td>${esc(i.templateNome)}</td>
+        <td>${i.mes?String(i.mes).padStart(2,'0')+'/'+i.ano:esc(i.rotulo||String(i.ano))}</td>
+        <td>${i.solicitadoPorNome?esc(i.solicitadoPorNome)+(i.solicitadoPorPerfil==='Cliente'?'':' <span class="tag muted">escritório</span>'):'—'}</td>
+        <td>${fmtDateHora(i.solicitadoEm)}</td>
+        <td><span class="tag ${i.concluida?'ok':'warn'}">${i.concluida?'Concluída':'Aguardando o escritório'}</span></td>
+      </tr>
+    `).join('') : `<tr><td colspan="6"><div class="empty-state">${termo?'Nenhuma empresa encontrada.':'Nenhuma solicitação registrada ainda.'}</div></td></tr>`;
+  }
+  desenha('');
+  document.getElementById('envioSolicFiltro').addEventListener('input', e=>desenha(e.target.value));
 }
 
 async function renderEnvioModelos(){
