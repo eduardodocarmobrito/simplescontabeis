@@ -3084,8 +3084,8 @@ async function pageNfeBusca(){
           <div class="field grow" style="margin-bottom:0; min-width:260px;"><label>Buscar</label>
             <input id="nfeDocBusca" placeholder="Número da nota, nome, CNPJ ou valor…">
           </div>
-          <div class="field" style="margin-bottom:0; width:160px;"><label>Data de</label><input type="date" id="nfeDocDataDe"></div>
-          <div class="field" style="margin-bottom:0; width:160px;"><label>Data até</label><input type="date" id="nfeDocDataAte"></div>
+          ${dateFieldHtml('nfeDocDataDe','Data de','')}
+          ${dateFieldHtml('nfeDocDataAte','Data até','')}
           <div class="field" style="margin-bottom:0; width:180px;"><label>Tipo</label>
             <select id="nfeDocTipo"><option value="">Todos</option><option value="nfe">NF-e</option><option value="nfce">NFC-e</option><option value="nfse">NFS-e</option><option value="evento">Evento</option><option value="outro">Outro</option></select>
           </div>
@@ -3175,6 +3175,8 @@ async function pageNfeBusca(){
     }));
     box.querySelector('.tab[data-direcao="emitida"]').classList.add('active');
     document.getElementById('nfeDocTipo').addEventListener('change', carregarDocumentos);
+    setupDatePicker('nfeDocDataDe','nfeDocDataDe_text');
+    setupDatePicker('nfeDocDataAte','nfeDocDataAte_text');
     document.getElementById('nfeDocDataDe').addEventListener('change', carregarDocumentos);
     document.getElementById('nfeDocDataAte').addEventListener('change', carregarDocumentos);
     let nfeDocBuscaTimer = null;
