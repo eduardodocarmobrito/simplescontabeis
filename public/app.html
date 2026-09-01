@@ -266,6 +266,18 @@ async function api(path, opts){
   }
   return data;
 }
+// Fonte única pra "lista de empresas ativas" — usada por todo seletor/combo que serve pra ESCOLHER
+// uma empresa e agir sobre ela (atribuir modelo, cadastrar contato, criar contrato, dar acesso a
+// usuário, configurar emissão automática, etc.). GET /api/empresas sempre traz ativas+inativas
+// junto (é a mesma rota que a aba Empresas usa pras duas sub-abas dela) — o filtro de ativo=true
+// é responsabilidade de quem usa a lista, e antes cada tela repetia (ou esquecia) esse filtro na
+// mão, deixando empresa inativa vazar pra dentro de buscas que deviam ser só de ativas. Uma tela
+// que precisa mesmo das duas (ex.: filtro de contratos, pra achar contrato antigo de empresa já
+// inativada) continua chamando api('/empresas') direto, sem essa função.
+async function empresasAtivas(){
+  const { items } = await api('/empresas');
+  return items.filter(e=>e.ativo);
+}
 function fmtMoney(v){ return (Number(v)||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'}); }
 // Máscara de campo de valor em R$ — digita só números, formata milhar/centavos ao vivo (ex.: digitar
 // "1798604" mostra "17.986,04"). moedaInputParaNumero() faz o caminho inverso na leitura do form.
@@ -1189,8 +1201,8 @@ function modeloModal(t){
 async function renderAtribuicoes(){
   const podePostar = can('solicitacoes','postar');
   const podeEditar = can('solicitacoes','editar');
-  const [{ items: atribs }, { items: empresas }, { items: templates }] = await Promise.all([
-    api('/checklist/atribuicoes'), api('/empresas'), api('/checklist/templates'),
+  const [{ items: atribs }, empresas, { items: templates }] = await Promise.all([
+    api('/checklist/atribuicoes'), empresasAtivas(), api('/checklist/templates'),
   ]);
   const box = document.getElementById('solicContent');
   box.innerHTML = `
@@ -1644,8 +1656,8 @@ function envioModeloModal(t){
 async function renderEnvioAtribuicoes(){
   const podePostar = can('envio','postar');
   const podeEditar = can('envio','editar');
-  const [{ items: atribs }, { items: empresas }, { items: templates }] = await Promise.all([
-    api('/envio/atribuicoes'), api('/empresas'), api('/envio/templates'),
+  const [{ items: atribs }, empresas, { items: templates }] = await Promise.all([
+    api('/envio/atribuicoes'), empresasAtivas(), api('/envio/templates'),
   ]);
   const box = document.getElementById('envioContent');
   box.innerHTML = `
@@ -3049,7 +3061,7 @@ async function pageNfeBusca(){
     <div id="nfeBuscaMain"></div>
   `;
   const box = document.getElementById('nfeBuscaMain');
-  const { items: empresas } = await api('/empresas');
+  const empresas = await empresasAtivas();
 
   async function mostrarLista(){
     box.innerHTML = `<div class="empty-state">Carregando…</div>`;
@@ -4386,7 +4398,7 @@ function renderFinTabs(){
 async function renderHonorarios(){
   const podeEditar = can('financeiro','editar');
   const { items } = await api('/financeiro/honorarios');
-  const { items: empresas } = await api('/empresas');
+  const empresas = await empresasAtivas();
   const semHonorario = empresas.filter(e=>!items.some(h=>h.empresa_id===e.id));
   const box = document.getElementById('finContent');
   box.innerHTML = `
@@ -4602,7 +4614,7 @@ async function renderContratosLista(){
     if(atual){ document.querySelector('#ctrFiltroEmpresaCombo .combo-value').value=atual.id; document.querySelector('#ctrFiltroEmpresaCombo .combo-input').value=atual.nome; }
   }
   document.getElementById('ctrFiltroStatus').addEventListener('change', e=>{ CONTRATOS_FILTRO.status=e.target.value; renderContratosLista(); });
-  document.getElementById('btnNovoContrato').addEventListener('click', ()=>novoContratoModal(empresas));
+  document.getElementById('btnNovoContrato').addEventListener('click', ()=>novoContratoModal(empresas.filter(e=>e.ativo)));
   box.querySelectorAll('[data-act="abrir"]').forEach(b=>b.addEventListener('click', ()=>abrirContratoDrawer(Number(b.dataset.id))));
   box.querySelectorAll('[data-act="excluir"]').forEach(b=>b.addEventListener('click', async ()=>{
     if(!confirm('Excluir este contrato? Só é possível excluir documentos em rascunho — encerre em vez de excluir um já ativo.')) return;
@@ -5049,7 +5061,7 @@ function setupChecklistFiltro(idPrefix){
   });
 }
 async function usuarioModal(u){
-  const { items: empresas } = await api('/empresas');
+  const empresas = await empresasAtivas();
   openModal(`
     <h3>${u?'Editar':'Novo'} usuário</h3>
     <div class="field"><label>Nome</label><input id="usNome" value="${u?esc(u.nome):''}"></div>
@@ -5888,11 +5900,11 @@ async function renderCfgWhatsapp(box){
 let NFSE_AG_FILTRO_DISPONIVEIS='';
 let NFSE_AG_EMPRESA_ABERTA=null;
 async function renderCfgNfseAgendamento(box){
-  const [config, { items: quadro2 }, { items: envioTemplates }, { items: empresas }] = await Promise.all([
+  const [config, { items: quadro2 }, { items: envioTemplates }, empresas] = await Promise.all([
     api('/nfse/agendamento/config'),
     api('/nfse/agendamento/empresas'),
     api('/envio/templates'),
-    api('/empresas'),
+    empresasAtivas(),
   ]);
   box.innerHTML = `
     <div class="card">
@@ -6237,7 +6249,7 @@ async function renderCfgEmailSmtp(box){
   const status = await api('/email/status');
   const cfg = await api('/email/config');
   const { items } = await api('/email/log');
-  const { items: empresas } = await api('/empresas');
+  const empresas = await empresasAtivas();
   const isAdmin = STATE.user.perfil==='Administrador';
   box.innerHTML = `
     <div class="card">
