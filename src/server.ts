@@ -7270,20 +7270,36 @@ function cardDasEmAtraso(user: any): any[] {
 // mais antigo já gerado na grade até o mês passado, tratando período sem documento OU nunca gerado
 // como pendente) — só não tem a exceção de "resolvido pela declaração do Simples Nacional", que é
 // específica do DAS e não faz sentido pra Balancete/DRE/Nota Fiscal.
-function cardEnvioAtraso(user: any, templateId: number): any[] {
+// Aceita tanto o formato antigo (um id só, ex.: "12") quanto o novo (lista em JSON, ex.: "[12,6,5]")
+// — cards "envio_atraso" criados antes de virar multi-seleção continuam funcionando sem migração.
+function parseParametroIds(parametro: string | null | undefined): number[] {
+  if (!parametro) return [];
+  try {
+    const parsed = JSON.parse(parametro);
+    if (Array.isArray(parsed)) return parsed.map(Number).filter((n) => Number.isFinite(n) && n > 0);
+  } catch {
+    // não era JSON — cai no formato antigo abaixo
+  }
+  const n = Number(parametro);
+  return Number.isFinite(n) && n > 0 ? [n] : [];
+}
+function cardEnvioAtraso(user: any, templateIds: number[]): any[] {
   const escritorioId = user.escritorioId;
   const visiveis = new Set(empresasVisiveis(user));
   const agora = agoraBrasilia();
+  const placeholders = templateIds.map(() => "?").join(",");
   const atribuicoes = sqlite
     .prepare(
-      `SELECT a.id as atribuicaoId, a.empresa_id as empresaId, e.nome as empresaNome
+      `SELECT a.id as atribuicaoId, a.empresa_id as empresaId, e.nome as empresaNome, t.id as templateId, t.nome as templateNome
        FROM envio_atribuicoes a
-       JOIN envio_templates t ON t.id = a.template_id AND t.id = ? AND t.escritorio_id = ?
+       JOIN envio_templates t ON t.id = a.template_id AND t.id IN (${placeholders}) AND t.escritorio_id = ?
        JOIN empresas e ON e.id = a.empresa_id AND e.escritorio_id = ? AND e.ativo = 1
        WHERE a.ativo = 1`
     )
-    .all(templateId, escritorioId, escritorioId) as any[];
-  const porEmpresa = new Map<number, any>();
+    .all(...templateIds, escritorioId, escritorioId) as any[];
+  // Chave por empresa+modelo (não só empresa) — uma empresa pode estar atrasada em mais de um
+  // modelo ao mesmo tempo (ex.: Nota Fiscal E DRE), e cada linha do card precisa dizer qual é qual.
+  const resultado: any[] = [];
   for (const atrib of atribuicoes) {
     if (!visiveis.has(atrib.empresaId)) continue;
     const periodos = sqlite.prepare(`SELECT p.id, p.ano, p.mes FROM envio_periodos p WHERE p.atribuicao_id = ? AND p.mes IS NOT NULL`).all(atrib.atribuicaoId) as any[];
@@ -7292,7 +7308,9 @@ function cardEnvioAtraso(user: any, templateId: number): any[] {
     const maisAntigo = periodos.reduce((min, p) => (p.ano * 100 + p.mes < min.ano * 100 + min.mes ? p : min));
     const competenciasFaltando: string[] = [];
     let ano = maisAntigo.ano, mes = maisAntigo.mes, iteracoes = 0;
-    while ((ano < agora.ano || (ano === agora.ano && mes < agora.mes)) && iteracoes < 60) {
+    // <= (não <): a pedido do usuário, esse card também valida o mês corrente — diferente do DAS e
+    // das Solicitações de Documentos, que só cobram a competência já fechada (mês anterior).
+    while ((ano < agora.ano || (ano === agora.ano && mes <= agora.mes)) && iteracoes < 60) {
       iteracoes++;
       const chave = `${ano}${String(mes).padStart(2, "0")}`;
       const periodo = porCompetencia.get(chave);
@@ -7304,9 +7322,9 @@ function cardEnvioAtraso(user: any, templateId: number): any[] {
         ano++;
       }
     }
-    if (competenciasFaltando.length) porEmpresa.set(atrib.empresaId, { empresaId: atrib.empresaId, empresaNome: atrib.empresaNome, competencias: competenciasFaltando });
+    if (competenciasFaltando.length) resultado.push({ empresaId: atrib.empresaId, empresaNome: atrib.empresaNome, templateNome: atrib.templateNome, competencias: competenciasFaltando });
   }
-  return [...porEmpresa.values()];
+  return resultado;
 }
 
 // Proxy disponível hoje pra "pendência fiscal": o relatório de Situação Fiscal (SITFIS) é um PDF
@@ -7501,9 +7519,9 @@ async function calcularCardComputado(tipo: string, user: any, parametro?: string
   if (tipo === "checklist_atraso") return cardChecklistAtraso(user);
   if (tipo === "solicitacoes_pendentes") return cardSolicitacoesPendentes(user);
   if (tipo === "envio_atraso") {
-    const templateId = Number(parametro);
-    if (!templateId) return [];
-    return cardEnvioAtraso(user, templateId);
+    const templateIds = parseParametroIds(parametro);
+    if (!templateIds.length) return [];
+    return cardEnvioAtraso(user, templateIds);
   }
   if (tipo === "solicitacao_atraso") {
     const templateId = Number(parametro);
@@ -7540,10 +7558,13 @@ app.get("/api/dashboard/cards/:id/detalhe", requirePermissao("dashboard", "visua
 // segue a mesma ideia, só que apontando pra um checklist_templates com prazo configurado.
 function dashboardCardParametroErro(tipo: string | null, parametro: string | null | undefined, escritorioId: number): string | null {
   if (tipo === "envio_atraso") {
-    const templateId = Number(parametro);
-    if (!templateId) return "Selecione o modelo de Envio de Documentos que este card vai validar.";
-    const template = sqlite.prepare(`SELECT id FROM envio_templates WHERE id = ? AND escritorio_id = ? AND periodicidade = 'mensal' AND ativo = 1`).get(templateId, escritorioId);
-    if (!template) return "Modelo de envio inválido — precisa ser um modelo mensal ativo.";
+    const templateIds = parseParametroIds(parametro);
+    if (!templateIds.length) return "Selecione ao menos um modelo de Envio de Documentos que este card vai validar.";
+    const placeholders = templateIds.map(() => "?").join(",");
+    const validos = sqlite
+      .prepare(`SELECT id FROM envio_templates WHERE escritorio_id = ? AND periodicidade = 'mensal' AND ativo = 1 AND id IN (${placeholders})`)
+      .all(escritorioId, ...templateIds) as any[];
+    if (validos.length !== templateIds.length) return "Modelo de envio inválido — todos precisam ser modelos mensais ativos.";
     return null;
   }
   if (tipo === "solicitacao_atraso") {
