@@ -7133,33 +7133,40 @@ async function cardSituacaoFiscal(user: any): Promise<any[]> {
   const resultado: any[] = [];
   for (const r of rows) {
     if (!visiveis.has(r.empresaId)) continue;
-    // Três origens de pendência, checadas nessa ordem: um alerta de verdade (declaração/DAS não
-    // localizada), uma falha técnica na última busca (situação desconhecida, não confirmada), e —
-    // só quando a busca funcionou sem erro — o conteúdo real do relatório de Situação Fiscal já
-    // baixado (parcelamento/débito).
     if (r.alertaDeclaracao) {
       resultado.push({ empresaId: r.empresaId, empresaNome: r.empresaNome, alerta: r.alertaDeclaracao });
       continue;
     }
-    if (r.ultimoErro) {
-      resultado.push({ empresaId: r.empresaId, empresaNome: r.empresaNome, alerta: formatarErroIntegraContador(r.ultimoErro) });
-      continue;
-    }
+    // Achado ao vivo: a última TENTATIVA de busca pode ter falhado (ex.: timeout num passo
+    // qualquer) mesmo já existindo um relatório de Situação Fiscal baixado com sucesso numa busca
+    // anterior — nesse caso o card mostrava só "situação não confirmada" e escondia uma pendência
+    // real que já estava disponível. Agora sempre confere primeiro o relatório mais recente já
+    // salvo, independente do resultado da última tentativa; só cai na mensagem de falha quando não
+    // existe relatório nenhum pra conferir.
     const doc = sqlite
       .prepare(`SELECT id as docId, pdf_path as pdfPath FROM integracontador_documentos WHERE empresa_id = ? AND tipo = 'situacao_fiscal' ORDER BY criado_em DESC LIMIT 1`)
       .get(r.empresaId) as any;
-    if (!doc?.pdfPath || !fs.existsSync(doc.pdfPath)) continue;
-    try {
-      const analise = await sitfisAnalisar(doc.pdfPath);
-      if (analise.temPendencia)
-        resultado.push({
-          empresaId: r.empresaId,
-          empresaNome: r.empresaNome,
-          alerta: `Atenção: precisa de atenção pois consta pendência no âmbito da Receita Federal (${analise.resumo}).`,
-          docId: doc.docId,
-        });
-    } catch (e: any) {
-      console.error(`[Situação Fiscal] falha ao ler o relatório da empresa ${r.empresaId}:`, e.message);
+    if (doc?.pdfPath && fs.existsSync(doc.pdfPath)) {
+      try {
+        const analise = await sitfisAnalisar(doc.pdfPath);
+        if (analise.temPendencia) {
+          resultado.push({
+            empresaId: r.empresaId,
+            empresaNome: r.empresaNome,
+            alerta: `Atenção: precisa de atenção pois consta pendência no âmbito da Receita Federal (${analise.resumo}).`,
+            docId: doc.docId,
+          });
+          continue;
+        }
+        // Relatório existe e está limpo — segue sem alerta mesmo que a última tentativa de busca
+        // tenha falhado (a informação que temos, mesmo que não seja da última tentativa, é boa).
+        continue;
+      } catch (e: any) {
+        console.error(`[Situação Fiscal] falha ao ler o relatório da empresa ${r.empresaId}:`, e.message);
+      }
+    }
+    if (r.ultimoErro) {
+      resultado.push({ empresaId: r.empresaId, empresaNome: r.empresaNome, alerta: formatarErroIntegraContador(r.ultimoErro) });
     }
   }
   return resultado;
