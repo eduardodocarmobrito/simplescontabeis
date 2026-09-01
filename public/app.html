@@ -1672,7 +1672,7 @@ function novaSolicitacaoModal(disponiveis){
       try{
         await api('/envio/solicitar-recalculo-das', { method:'POST', body });
         closeModal();
-        toast('DAS recalculado! Já está disponível em Meus Documentos.','ok');
+        toast('DAS recalculado! Já está disponível em Documentos Recebidos.','ok');
         pageSolicitarDocumentos();
       }catch(e){ toast(e.message,'err'); btn.disabled=false; btn.textContent='Solicitar'; }
       return;
