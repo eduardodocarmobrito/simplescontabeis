@@ -7128,35 +7128,59 @@ function cardDasEmAtraso(user: any): any[] {
   const escritorioId = user.escritorioId;
   const visiveis = new Set(empresasVisiveis(user));
   const agora = agoraBrasilia();
-  const rows = sqlite
+  const atribuicoes = sqlite
     .prepare(
-      `SELECT a.empresa_id as empresaId, e.nome as empresaNome, p.ano, p.mes
+      `SELECT a.id as atribuicaoId, a.empresa_id as empresaId, e.nome as empresaNome
        FROM envio_atribuicoes a
        JOIN envio_templates t ON t.id = a.template_id AND t.nome = 'DAS - Mensal' AND t.escritorio_id = ?
        JOIN empresas e ON e.id = a.empresa_id AND e.escritorio_id = ? AND e.ativo = 1
-       JOIN envio_periodos p ON p.atribuicao_id = a.id AND p.mes IS NOT NULL
-       WHERE a.ativo = 1 AND (p.ano < ? OR (p.ano = ? AND p.mes < ?))
-         AND NOT EXISTS (SELECT 1 FROM envio_documentos d WHERE d.periodo_id = p.id)
-       ORDER BY e.nome, p.ano, p.mes`
+       WHERE a.ativo = 1`
     )
-    .all(escritorioId, escritorioId, agora.ano, agora.ano, agora.mes) as any[];
-  // Uma competência sem PDF anexado aqui ainda conta como "resolvida" se já existe a declaração do
-  // Simples Nacional transmitida pra ela (Integra Contador) — o Integra Contador só gera o PDF do
-  // DAS pra competência mais recente já declarada, não retroativamente pras anteriores, e meses
-  // anteriores à automação podem ter sido entregues por fora (e-mail, WhatsApp) sem passar por
-  // aqui. Declaração transmitida é sinal forte o bastante de que o mês já foi tratado.
-  const declaradasPorEmpresa = new Map<number, Set<string>>();
+    .all(escritorioId, escritorioId) as any[];
   const porEmpresa = new Map<number, any>();
-  for (const r of rows) {
-    if (!visiveis.has(r.empresaId)) continue;
-    if (!declaradasPorEmpresa.has(r.empresaId)) {
-      const decls = sqlite.prepare(`SELECT periodo_apuracao FROM integracontador_documentos WHERE empresa_id = ? AND tipo = 'declaracao'`).all(r.empresaId) as any[];
-      declaradasPorEmpresa.set(r.empresaId, new Set(decls.map((d) => d.periodo_apuracao)));
+  for (const atrib of atribuicoes) {
+    if (!visiveis.has(atrib.empresaId)) continue;
+    // Achado ao vivo (DU CALLO): "Gerar ano na grade" é manual — se ninguém clicar de novo depois
+    // que o ano vira, os meses seguintes nunca ganham uma linha em envio_periodos. A versão antiga
+    // deste card só sabia flagar um período que JÁ EXISTIA sem documento — um mês que nunca chegou
+    // a existir na grade (caso do DU CALLO em 08/2026) passava batido, mesmo continuando sem nada
+    // entregue. Agora monta o calendário completo (do período mais antigo já gerado até o mês
+    // passado) e trata tanto "existe mas sem documento" quanto "nem chegou a ser gerado" como
+    // pendente — só usa o período mais antigo como início porque não existe outro jeito de saber
+    // desde quando a empresa devia entregar; sem nenhum período gerado ainda, não dá pra inferir
+    // nada, então pula (evita marcar uma atribuição recém-criada como atrasada desde sempre).
+    const periodos = sqlite.prepare(`SELECT p.id, p.ano, p.mes FROM envio_periodos p WHERE p.atribuicao_id = ? AND p.mes IS NOT NULL`).all(atrib.atribuicaoId) as any[];
+    if (!periodos.length) continue;
+    const porCompetencia = new Map<string, any>(periodos.map((p) => [`${p.ano}${String(p.mes).padStart(2, "0")}`, p]));
+    const maisAntigo = periodos.reduce((min, p) => (p.ano * 100 + p.mes < min.ano * 100 + min.mes ? p : min));
+    let declaradas: Set<string> | null = null;
+    const competenciasFaltando: string[] = [];
+    let ano = maisAntigo.ano, mes = maisAntigo.mes, iteracoes = 0;
+    while ((ano < agora.ano || (ano === agora.ano && mes < agora.mes)) && iteracoes < 60) {
+      iteracoes++;
+      const chave = `${ano}${String(mes).padStart(2, "0")}`;
+      const periodo = porCompetencia.get(chave);
+      const temDocumento = periodo ? sqlite.prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id = ?`).get(periodo.id) : null;
+      if (!temDocumento) {
+        // Uma competência sem PDF (ou sem período gerado) ainda conta como "resolvida" se já existe
+        // a declaração do Simples Nacional transmitida pra ela (Integra Contador) — o Integra
+        // Contador só gera o PDF do DAS pra competência mais recente já declarada, não
+        // retroativamente pras anteriores, e meses anteriores à automação podem ter sido entregues
+        // por fora (e-mail, WhatsApp) sem passar por aqui. Declaração transmitida é sinal forte o
+        // bastante de que o mês já foi tratado.
+        if (declaradas === null) {
+          const decls = sqlite.prepare(`SELECT periodo_apuracao FROM integracontador_documentos WHERE empresa_id = ? AND tipo = 'declaracao'`).all(atrib.empresaId) as any[];
+          declaradas = new Set(decls.map((d) => d.periodo_apuracao));
+        }
+        if (!declaradas.has(chave)) competenciasFaltando.push(`${String(mes).padStart(2, "0")}/${ano}`);
+      }
+      mes++;
+      if (mes > 12) {
+        mes = 1;
+        ano++;
+      }
     }
-    const competenciaAAAAMM = `${r.ano}${String(r.mes).padStart(2, "0")}`;
-    if (declaradasPorEmpresa.get(r.empresaId)!.has(competenciaAAAAMM)) continue;
-    if (!porEmpresa.has(r.empresaId)) porEmpresa.set(r.empresaId, { empresaId: r.empresaId, empresaNome: r.empresaNome, competencias: [] as string[] });
-    porEmpresa.get(r.empresaId).competencias.push(`${String(r.mes).padStart(2, "0")}/${r.ano}`);
+    if (competenciasFaltando.length) porEmpresa.set(atrib.empresaId, { empresaId: atrib.empresaId, empresaNome: atrib.empresaNome, competencias: competenciasFaltando });
   }
   return [...porEmpresa.values()];
 }
