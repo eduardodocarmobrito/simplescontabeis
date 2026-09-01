@@ -1358,29 +1358,37 @@ function rotuloPeriodo(p){ return p.mes? `${MESES[p.mes]}/${p.ano}` : (p.rotulo 
 // Conteúdo de um slot (anexar/baixar/reabrir), sem wrapper — usado tanto na grade completa
 // (dentro de um <td>) quanto no card compacto de "Meus Documentos" (dentro de uma div solta).
 function slotInner(periodoId, s, opts){
-  const { podePostar, podeVerDownload, podeEditar, mostrarLabel } = opts;
+  const { podePostar, podeVerDownload, podeEditar, mostrarLabel, souCliente } = opts;
   const inputId = `f_${periodoId}_${s.chave}`;
+  const inputIdExtra = `fx_${periodoId}_${s.chave}`;
   const accept = (s.accept||[]).includes('qualquer') ? '' : (s.accept||[]).map(a=>({ofx:'.ofx',pdf:'.pdf',zip:'.zip,.rar,.7z',xml:'.xml',imagem:'.png,.jpg,.jpeg'}[a]||'')).join(',');
   const label = mostrarLabel? `<div class="slot-label" style="font-weight:600; color:var(--ink);">${esc(s.label)}${s.obrigatorio?' *':''}</div>` : '';
-  if(s.travado && s.upload){
-    return `<div class="slot">
-      ${label}
-      <div class="slot-locked"><span class="fname">${esc(s.upload.fileName)}</span>Enviado em ${fmtDateHora(s.upload.uploadedAt)} · travado</div>
-      ${(podeVerDownload || podeEditar)? `<div style="display:flex; gap:6px;">
-        ${podeVerDownload? `<button class="btn small" data-act="download" data-upload="${s.upload.id}">Baixar</button>`:''}
-        ${podeEditar? `<button class="btn small danger" data-act="reabrir" data-upload="${s.upload.id}">Reabrir</button>`:''}
+  const uploads = s.uploads || [];
+  // "Incluir outro documento" é só do escritório (não do self-service do cliente) e só depois que
+  // já existe pelo menos um anexo — pra um item ainda pendente, "Salvar" já resolve.
+  const podeAdicionar = podePostar && !souCliente && uploads.length>0;
+  const blocosUploads = uploads.map(u=>`
+    <div class="slot-locked" style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; flex-wrap:wrap;">
+      <div style="flex:1; min-width:140px;"><span class="fname">${esc(u.fileName)}</span>Enviado em ${fmtDateHora(u.uploadedAt)}${s.travado?' · travado':''}</div>
+      ${(podeVerDownload || podeEditar)? `<div style="display:flex; gap:6px; flex-shrink:0;">
+        ${podeVerDownload? `<button class="btn small" data-act="download" data-upload="${u.id}">Baixar</button>`:''}
+        ${podeEditar? `<button class="btn small danger" data-act="reabrir" data-upload="${u.id}">Reabrir</button>`:''}
       </div>`:''}
-    </div>`;
-  }
-  return `<div class="slot">
-    ${label}
-    ${s.reaberto? `<div class="slot-reopen-note">Reaberto${s.motivoReabertura? ': '+esc(s.motivoReabertura):''} — pode reenviar</div>`:''}
-    ${s.upload? `<div class="slot-label">Anterior: ${esc(s.upload.fileName)} (substituído)</div>`:''}
-    ${podePostar? `
-      <input type="file" id="${inputId}" ${accept?`accept="${accept}"`:''}>
-      <button class="btn small primary" data-act="salvar" data-periodo="${periodoId}" data-item="${s.chave}" data-input="${inputId}">Salvar</button>
-    ` : `<span class="slot-label">Pendente</span>`}
-  </div>`;
+    </div>
+  `).join('');
+  const blocoNovo = !s.travado
+    ? `${s.reaberto? `<div class="slot-reopen-note">Reaberto${s.motivoReabertura? ': '+esc(s.motivoReabertura):''} — pode reenviar</div>`:''}
+       ${(!uploads.length && s.ultimoSubstituido)? `<div class="slot-label">Anterior: ${esc(s.ultimoSubstituido.fileName)} (substituído)</div>`:''}
+       ${podePostar? `
+         <input type="file" id="${inputId}" ${accept?`accept="${accept}"`:''}>
+         <button class="btn small primary" data-act="salvar" data-periodo="${periodoId}" data-item="${s.chave}" data-input="${inputId}">Salvar</button>
+       ` : (!uploads.length? `<span class="slot-label">Pendente</span>` : '')}`
+    : '';
+  const blocoAdicional = podeAdicionar
+    ? `<input type="file" id="${inputIdExtra}" ${accept?`accept="${accept}"`:''}>
+       <button class="btn small" data-act="salvar-adicional" data-periodo="${periodoId}" data-item="${s.chave}" data-input="${inputIdExtra}">Incluir outro documento</button>`
+    : '';
+  return `<div class="slot">${label}${blocosUploads}${blocoNovo}${blocoAdicional}</div>`;
 }
 // Liga os cliques de salvar/baixar/reabrir dentro de um container (a grade inteira, ou um card
 // compacto) — onDepois roda depois de qualquer ação que mude o estado, pra recarregar a tela certa.
@@ -1393,6 +1401,17 @@ function wireSlotEvents(container, onDepois){
     try{
       await api('/checklist/periodos/'+b.dataset.periodo+'/upload', { method:'POST', body:fd });
       toast('Arquivo salvo.','ok');
+      onDepois();
+    }catch(e){ toast(e.message,'err'); }
+  }));
+  container.querySelectorAll('[data-act="salvar-adicional"]').forEach(b=>b.addEventListener('click', async ()=>{
+    const input = document.getElementById(b.dataset.input);
+    const file = input.files[0];
+    if(!file){ toast('Selecione um arquivo.','err'); return; }
+    const fd = new FormData(); fd.append('arquivo', file); fd.append('itemChave', b.dataset.item); fd.append('adicional', 'true');
+    try{
+      await api('/checklist/periodos/'+b.dataset.periodo+'/upload', { method:'POST', body:fd });
+      toast('Documento incluído.','ok');
       onDepois();
     }catch(e){ toast(e.message,'err'); }
   }));
@@ -1412,7 +1431,7 @@ async function abrirGrade(atribuicaoId, souCliente){
   const podePostar = souCliente || can('solicitacoes','postar');
   const podeEditar = !souCliente && can('solicitacoes','editar');
   const podeVerDownload = !souCliente && can('solicitacoes','visualizar');
-  const opts = { podePostar, podeVerDownload, podeEditar, mostrarLabel:false };
+  const opts = { podePostar, podeVerDownload, podeEditar, mostrarLabel:false, souCliente };
 
   const html = `
     <h1>${esc(atribuicao.templateNome)}</h1>
@@ -1503,7 +1522,7 @@ async function pageMeusDocumentos(){
         painel.innerHTML = `<div class="doc-inline-empty">Nenhuma pendência no momento — clique no card para ver o histórico.</div>`;
         continue;
       }
-      const opts = { podePostar:true, podeVerDownload:false, podeEditar:false, mostrarLabel:true };
+      const opts = { podePostar:true, podeVerDownload:false, podeEditar:false, mostrarLabel:true, souCliente:true };
       painel.innerHTML = `
         <div class="doc-inline-periodo">${esc(rotuloPeriodo(p))}</div>
         ${p.slots.map(s=>slotInner(p.periodoId, s, opts)).join('')}

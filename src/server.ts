@@ -2752,12 +2752,12 @@ app.get("/api/checklist/grade/:atribuicaoId", (req, res) => {
 
   const periodos = sqlite.prepare(`SELECT * FROM checklist_periodos WHERE atribuicao_id = ? ORDER BY ano DESC, mes ASC`).all(atribuicaoId) as any[];
   const periodoIds = periodos.map((p) => p.id);
+  // Traz salvo + substituído junto (não só 'salvo' como antes) — precisa dos dois: 'salvo' vira a
+  // lista de anexos ativos do slot (pode ter mais de um agora, ver "adicional" no POST de upload
+  // abaixo) e o 'substituído' mais recente vira só a legenda "Anterior: ... (substituído)" de
+  // referência quando o admin reabre o item.
   const uploads = periodoIds.length
-    ? (sqlite
-        .prepare(
-          `SELECT * FROM checklist_uploads WHERE periodo_id IN (${periodoIds.map(() => "?").join(",")}) AND status = 'salvo' ORDER BY id DESC`
-        )
-        .all(...periodoIds) as any[])
+    ? (sqlite.prepare(`SELECT * FROM checklist_uploads WHERE periodo_id IN (${periodoIds.map(() => "?").join(",")}) ORDER BY id DESC`).all(...periodoIds) as any[])
     : [];
   const reaberturasAbertas = periodoIds.length
     ? (sqlite
@@ -2765,10 +2765,11 @@ app.get("/api/checklist/grade/:atribuicaoId", (req, res) => {
         .all(...periodoIds) as any[])
     : [];
 
-  const uploadsPorSlot = new Map<string, any>();
+  const uploadsPorSlot = new Map<string, any[]>();
   for (const u of uploads) {
     const key = `${u.periodo_id}:${u.item_chave}`;
-    if (!uploadsPorSlot.has(key)) uploadsPorSlot.set(key, u); // primeiro = mais recente, por causa do ORDER BY id DESC
+    if (!uploadsPorSlot.has(key)) uploadsPorSlot.set(key, []);
+    uploadsPorSlot.get(key)!.push(u); // ORDER BY id DESC já garante mais recente primeiro
   }
   const reaberturaPorSlot = new Map<string, any>();
   for (const r of reaberturasAbertas) reaberturaPorSlot.set(`${r.periodo_id}:${r.item_chave}`, r);
@@ -2781,24 +2782,20 @@ app.get("/api/checklist/grade/:atribuicaoId", (req, res) => {
     rotulo: p.rotulo,
     slots: itens.map((it: any) => {
       const key = `${p.id}:${it.chave}`;
-      const uploadAtual = uploadsPorSlot.get(key);
+      const todosDoSlot = uploadsPorSlot.get(key) || [];
+      const salvos = todosDoSlot.filter((u) => u.status === "salvo");
+      const ultimoSubstituido = todosDoSlot.find((u) => u.status === "substituido") || null;
       const reaberto = reaberturaPorSlot.get(key);
       return {
         chave: it.chave,
         label: it.label,
         accept: it.accept,
         obrigatorio: it.obrigatorio,
-        travado: !!uploadAtual && !reaberto,
+        travado: salvos.length > 0 && !reaberto,
         reaberto: !!reaberto,
         motivoReabertura: reaberto?.motivo || null,
-        upload: uploadAtual
-          ? {
-              id: uploadAtual.id,
-              fileName: uploadAtual.file_name,
-              sizeBytes: uploadAtual.size_bytes,
-              uploadedAt: uploadAtual.uploaded_at,
-            }
-          : null,
+        uploads: salvos.map((u) => ({ id: u.id, fileName: u.file_name, sizeBytes: u.size_bytes, uploadedAt: u.uploaded_at })),
+        ultimoSubstituido: ultimoSubstituido ? { fileName: ultimoSubstituido.file_name } : null,
       };
     }),
   }));
@@ -2844,7 +2841,12 @@ app.post("/api/checklist/periodos/:periodoId/upload", upload.single("arquivo"), 
   const reabertura = sqlite
     .prepare(`SELECT * FROM checklist_reaberturas WHERE periodo_id = ? AND item_chave = ? AND resolvido = 0 ORDER BY id DESC LIMIT 1`)
     .get(periodoId, itemChave) as any;
-  if (jaSalvo && !reabertura) {
+  // "adicional" deixa o escritório anexar MAIS um documento no mesmo item sem precisar reabrir
+  // (ex.: extrato da conta corrente + extrato de aplicação no mesmo mês) — só pra quem já tem
+  // permissão de postar aqui (Colaborador/Administrador); o Cliente continua sempre travado até
+  // o escritório reabrir explicitamente, pra não perder o controle de auditoria do que ele mandou.
+  const adicional = String(req.body?.adicional) === "true" && user.perfil !== "Cliente";
+  if (jaSalvo && !reabertura && !adicional) {
     return res.status(409).json({ error: "Este documento já foi enviado e está travado. Peça ao administrador para reabrir a solicitação." });
   }
 
@@ -2855,14 +2857,18 @@ app.post("/api/checklist/periodos/:periodoId/upload", upload.single("arquivo"), 
   const destino = path.join(dir, nomeSeguro);
   fs.writeFileSync(destino, req.file.buffer);
 
-  if (jaSalvo) sqlite.prepare(`UPDATE checklist_uploads SET status = 'substituido' WHERE id = ?`).run(jaSalvo.id);
+  // Só marca o anterior como substituído numa troca de verdade (primeiro upload, ou reabertura) —
+  // um "adicional" soma ao lado do que já existe, não troca nada.
+  if (jaSalvo && !adicional) sqlite.prepare(`UPDATE checklist_uploads SET status = 'substituido' WHERE id = ?`).run(jaSalvo.id);
   const info = sqlite
     .prepare(
       `INSERT INTO checklist_uploads (periodo_id, item_chave, versao, file_name, file_path, mime, size_bytes, status, uploaded_by)
        VALUES (?, ?, ?, ?, ?, ?, ?, 'salvo', ?)`
     )
     .run(periodoId, itemChave, versao, req.file.originalname, destino, req.file.mimetype, req.file.size, user.id);
-  if (reabertura) sqlite.prepare(`UPDATE checklist_reaberturas SET resolvido = 1 WHERE id = ?`).run(reabertura.id);
+  // Idem: um "adicional" não resolve uma reabertura aberta — ela continua pedindo a substituição
+  // de verdade, independente de outro documento ter sido incluído do lado.
+  if (reabertura && !adicional) sqlite.prepare(`UPDATE checklist_reaberturas SET resolvido = 1 WHERE id = ?`).run(reabertura.id);
 
   res.json({ id: Number(info.lastInsertRowid), ok: true });
 });
