@@ -7609,7 +7609,12 @@ app.put("/api/dashboard/cards/:id", blockCliente, requirePermissao("dashboard", 
   const { titulo, valor, subtitulo, cor, ordem, tipo, parametro } = req.body || {};
   if (tipo !== undefined && tipo !== null && tipo !== "" && !CARD_TIPOS.includes(tipo)) return res.status(400).json({ error: "Tipo de card inválido." });
   const novoTipo = tipo !== undefined ? tipo || null : existing.tipo;
-  const novoParametro = tipo !== undefined ? (novoTipo ? parametro || null : null) : existing.parametro;
+  // Bug real: antes só dava pra trocar o parametro reenviando o tipo junto no mesmo PUT — mandar só
+  // {parametro} sozinho (ex.: reconfigurar quais modelos um card "envio_atraso" já existente valida)
+  // silenciosamente não fazia nada, mesmo respondendo {ok:true}. Agora parametro é independente do
+  // tipo ter mudado ou não: se veio no body, usa; senão, mantém o que já tinha (e se o tipo virou
+  // "Manual", zera junto, já que manual não tem parametro).
+  const novoParametro = !novoTipo ? null : parametro !== undefined ? parametro || null : existing.parametro;
   const erroParametro = dashboardCardParametroErro(novoTipo, novoParametro, user.escritorioId);
   if (erroParametro) return res.status(400).json({ error: erroParametro });
   sqlite
