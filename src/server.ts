@@ -2347,6 +2347,10 @@ app.post("/api/dominio/importar-clientes", blockCliente, requirePermissao("confi
   const idxCodigo = header.findIndex((h) => h.includes("codigo") || h.includes("código"));
   const idxNome = header.findIndex((h) => h.includes("nome") || h.includes("razao") || h.includes("razão"));
   const idxCnpj = header.findIndex((h) => h.includes("cnpj"));
+  // Clientes pessoa física (ex.: produtor rural) não têm CNPJ — o CSV do Domínio Web costuma trazer
+  // uma coluna de CPF separada nesses casos. Usa CNPJ quando tiver; senão cai pro CPF, do mesmo jeito
+  // que a sincronização via Onvio já faz (ver extrairDocumento em onvio-sync.ts).
+  const idxCpf = header.findIndex((h) => h.includes("cpf"));
   const idxIe = header.findIndex((h) => h.includes("inscricao estadual") || h.includes("inscrição estadual") || h === "ie" || h.includes(" ie") || h.startsWith("ie "));
   const idxStatus = header.findIndex((h) => h.includes("status") || h.includes("situacao") || h.includes("situação") || h.includes("ativo"));
   if (idxNome === -1) return res.status(400).json({ error: "Não encontrei a coluna de nome/razão social no CSV." });
@@ -2365,7 +2369,7 @@ app.post("/api/dominio/importar-clientes", blockCliente, requirePermissao("confi
     const nome = idxNome >= 0 ? cols[idxNome] : "";
     if (!nome) continue;
     const codigo = idxCodigo >= 0 ? cols[idxCodigo] : null;
-    const cnpj = idxCnpj >= 0 ? cols[idxCnpj] : null;
+    const cnpj = (idxCnpj >= 0 && cols[idxCnpj]) || (idxCpf >= 0 && cols[idxCpf]) || null;
     const inscricaoEstadual = idxIe >= 0 ? cols[idxIe] : null;
     const statusTxt = (idxStatus >= 0 ? cols[idxStatus] : "").toLowerCase();
     const ativo = statusTxt ? (statusTxt.includes("inativ") || statusTxt.includes("encerrad") || statusTxt === "0" || statusTxt === "n" ? 0 : 1) : 1;

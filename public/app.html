@@ -869,7 +869,7 @@ async function renderEmpresasTab(){
     <div class="field" style="max-width:360px; margin-bottom:10px;"><input type="text" id="empFiltro" placeholder="Buscar por nome ou CNPJ…" autocomplete="off"></div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
-        <thead><tr><th>Nome</th><th>CNPJ</th><th>Origem</th>${ativasTab?'<th>Nos relatórios</th>':''}<th></th></tr></thead>
+        <thead><tr><th>Nome</th><th>CNPJ/CPF</th><th>Origem</th>${ativasTab?'<th>Nos relatórios</th>':''}<th></th></tr></thead>
         <tbody id="empresasBody"></tbody>
       </table>
     </div>
@@ -931,7 +931,7 @@ function empresaModal(e){
     <h3>${e?'Editar':'Nova'} empresa</h3>
     <div class="field"><label>Nome</label><input id="empNome" value="${e?esc(e.nome):''}"></div>
     <div class="row">
-      <div class="field grow"><label>CNPJ</label><input id="empCnpj" value="${e&&e.cnpj?esc(e.cnpj):''}"></div>
+      <div class="field grow"><label>CNPJ/CPF</label><input id="empCnpj" value="${e&&e.cnpj?esc(e.cnpj):''}" placeholder="Pessoa física: CPF do produtor rural"></div>
       <div class="field grow"><label>Código no Domínio Web (opcional)</label><input id="empCodigo" value="${e&&e.codigoDominio?esc(e.codigoDominio):''}"></div>
     </div>
     <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Dados de contato (mesmos do cadastro no Domínio Web)</div>
