@@ -187,6 +187,8 @@
   .empty-state .big{font-size:34px; margin-bottom:8px;}
 
   .checkbox-row{display:flex; align-items:center; gap:8px; font-size:13px; margin:4px 0;}
+  .checkbox-grid{display:grid; grid-template-columns:repeat(auto-fill, minmax(190px,1fr)); column-gap:10px;}
+  .checkbox-grid .checkbox-row{margin:2px 0;}
   .checklist-item{display:grid; grid-template-columns:16px 1fr; align-items:start; gap:8px; font-size:13px; margin:4px 0; cursor:pointer;}
   .checklist-item input{margin:2px 0 0;}
   .perm-grid{display:grid; grid-template-columns:1.4fr repeat(3,0.7fr); gap:6px; align-items:center; font-size:12.5px;}
@@ -5034,7 +5036,7 @@ async function usuarioModal(u){
       ${u? `<div style="margin-top:14px;">
         <div style="font-size:12px; font-weight:600; margin-bottom:4px;">Abas visíveis pro cliente</div>
         <p style="font-size:11.5px; color:var(--ink-soft); margin:-2px 0 8px;">Nenhuma marcada = vê todas. Marque só as que esse cliente deve acessar.</p>
-        ${PAGINAS_CLIENTE_TODAS.map(p=>`<label class="checkbox-row"><input type="checkbox" class="usPaginaCliente" value="${p.id}"> ${esc(p.label)}</label>`).join('')}
+        <div class="checkbox-grid">${PAGINAS_CLIENTE_TODAS.map(p=>`<label class="checkbox-row"><input type="checkbox" class="usPaginaCliente" value="${p.id}"> ${esc(p.label)}</label>`).join('')}</div>
       </div>` : ''}
     </div>
     ${u? `<label class="checkbox-row"><input type="checkbox" id="usAtivo" ${u.ativo?'checked':''}> Ativo</label>`:''}
@@ -5050,7 +5052,7 @@ async function usuarioModal(u){
       <div id="usConfigAbasWrap" class="hidden" style="margin-top:14px;">
         <div style="font-size:12px; font-weight:600; margin-bottom:4px;">Abas de Configurações visíveis</div>
         <p style="font-size:11.5px; color:var(--ink-soft); margin:-2px 0 8px;">Nenhuma marcada = vê todas. Marque só as que esse colaborador deve acessar.</p>
-        ${CFG_ABAS_TODAS.map(a=>`<label class="checkbox-row"><input type="checkbox" class="usConfigAba" value="${a.id}"> ${esc(a.label)}</label>`).join('')}
+        <div class="checkbox-grid">${CFG_ABAS_TODAS.map(a=>`<label class="checkbox-row"><input type="checkbox" class="usConfigAba" value="${a.id}"> ${esc(a.label)}</label>`).join('')}</div>
       </div>
     </div>
     <div class="modal-actions">
