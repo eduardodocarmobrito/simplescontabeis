@@ -7228,7 +7228,7 @@ async function cardSituacaoFiscal(user: any): Promise<any[]> {
   const visiveis = new Set(empresasVisiveis(user));
   const rows = sqlite
     .prepare(
-      `SELECT c.empresa_id as empresaId, e.nome as empresaNome, c.alerta_declaracao as alertaDeclaracao, c.ultimo_erro as ultimoErro
+      `SELECT c.empresa_id as empresaId, e.nome as empresaNome, c.ultimo_erro as ultimoErro
        FROM integracontador_empresa_config c JOIN empresas e ON e.id = c.empresa_id
        WHERE c.escritorio_id = ? AND c.ativo = 1 AND e.ativo = 1
        ORDER BY e.nome`
@@ -7237,10 +7237,9 @@ async function cardSituacaoFiscal(user: any): Promise<any[]> {
   const resultado: any[] = [];
   for (const r of rows) {
     if (!visiveis.has(r.empresaId)) continue;
-    if (r.alertaDeclaracao) {
-      resultado.push({ empresaId: r.empresaId, empresaNome: r.empresaNome, alerta: r.alertaDeclaracao });
-      continue;
-    }
+    // Achado ao vivo: "Declaração/DAS ainda não localizada" (alerta_declaracao) saiu daqui — não é
+    // informação de Situação Fiscal (SITFIS), é sobre a declaração do Simples não ter sido
+    // localizada/transmitida, um assunto diferente que estava poluindo este card.
     // Achado ao vivo: a última TENTATIVA de busca pode ter falhado (ex.: timeout num passo
     // qualquer) mesmo já existindo um relatório de Situação Fiscal baixado com sucesso numa busca
     // anterior — nesse caso o card mostrava só "situação não confirmada" e escondia uma pendência
