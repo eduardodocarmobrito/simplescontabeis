@@ -3037,12 +3037,7 @@ async function pageNfeBusca(){
     const idsAtivos = new Set([...configs.map(c=>c.empresaId), ...Object.keys(contagem).map(Number)]);
     const linhas = [...idsAtivos].map(id=>{
       const emp = empresas.find(e=>e.id===id);
-      const cfg = configs.find(c=>c.empresaId===id);
-      return {
-        id, nome: emp?emp.nome:'(empresa removida)',
-        temCert: !!cfg, qtdDocs: contagem[id]||0,
-        ultimaBusca: cfg ? (cfg.ultimaBuscaEm && cfg.ultimaBuscaNfseEm ? (cfg.ultimaBuscaEm>cfg.ultimaBuscaNfseEm?cfg.ultimaBuscaEm:cfg.ultimaBuscaNfseEm) : (cfg.ultimaBuscaEm||cfg.ultimaBuscaNfseEm)) : null,
-      };
+      return { id, nome: emp?emp.nome:'(empresa removida)' };
     }).sort((a,b)=>a.nome.localeCompare(b.nome));
     box.innerHTML = `
       <div class="card">
@@ -3050,25 +3045,23 @@ async function pageNfeBusca(){
         <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Busque uma empresa pra cadastrar o certificado dela e começar a buscar os documentos.</p>
         <div class="field" style="max-width:420px; margin-bottom:0;"><label>Empresa</label>${comboSelectHtml('nfeAddEmpresaCombo', 'Digite para buscar a empresa…')}</div>
       </div>
-      <div class="card" style="padding:0; overflow-x:auto;">
-        <table class="data-table">
-          <thead><tr><th>Empresa</th><th>Certificado</th><th>Documentos</th><th>Última busca</th><th></th></tr></thead>
-          <tbody>
-            ${linhas.length ? linhas.map(l=>`
-              <tr class="nfeEmpresaRow" data-id="${l.id}" style="cursor:pointer;">
-                <td><b>${esc(l.nome)}</b></td>
-                <td><span class="tag ${l.temCert?'ok':'muted'}">${l.temCert?'Configurado':'Sem certificado'}</span></td>
-                <td>${l.qtdDocs}</td>
-                <td>${l.ultimaBusca?fmtDateHora(l.ultimaBusca):'—'}</td>
-                <td style="text-align:right;"><button class="btn small">Ver</button></td>
-              </tr>
-            `).join('') : '<tr><td colspan="5"><div class="empty-state">Nenhuma empresa configurada ainda — use a busca acima pra adicionar a primeira.</div></td></tr>'}
-          </tbody>
-        </table>
+      <div class="card">
+        <h3>Empresas configuradas</h3>
+        <input type="text" id="nfeListaFiltro" placeholder="Buscar empresa…" style="margin-bottom:6px;">
+        <div style="max-height:420px; overflow-y:auto; overflow-x:hidden; border:1px solid var(--rule); border-radius:8px; padding:4px 10px;">
+          ${linhas.length ? linhas.map(l=>`
+            <div class="nfeEmpresaRow" data-id="${l.id}" data-nome="${esc(normalizaTxt(l.nome))}" style="padding:6px 2px; font-size:13px; cursor:pointer; border-bottom:1px solid var(--rule);">${esc(l.nome)}</div>
+          `).join('') : '<div class="empty-state">Nenhuma empresa configurada ainda — use a busca acima pra adicionar a primeira.</div>'}
+        </div>
       </div>
     `;
     setupComboSelect('nfeAddEmpresaCombo', empresas.map(e=>({id:e.id, label:e.nome})), (id)=>{ if(id) mostrarDetalhe(Number(id)); });
-    box.querySelectorAll('.nfeEmpresaRow').forEach(tr=>tr.addEventListener('click', ()=>mostrarDetalhe(Number(tr.dataset.id))));
+    box.querySelectorAll('.nfeEmpresaRow').forEach(row=>row.addEventListener('click', ()=>mostrarDetalhe(Number(row.dataset.id))));
+    const filtro = document.getElementById('nfeListaFiltro');
+    if(filtro) filtro.addEventListener('input', ()=>{
+      const termo = normalizaTxt(filtro.value);
+      box.querySelectorAll('.nfeEmpresaRow').forEach(row=>{ row.style.display = row.dataset.nome.includes(termo) ? '' : 'none'; });
+    });
   }
 
   async function mostrarDetalhe(empresaId){
