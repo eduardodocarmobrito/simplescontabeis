@@ -2081,6 +2081,10 @@ function nfseEmpresaConfigModal(e){
       <div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">Módulos contratados — preço definido em Configurações &gt; Módulos</div>
       <div id="nfseEmpModulosWrap"><div class="empty-state">Carregando…</div></div>
     </div>
+    <div class="card" style="margin:6px 0 14px; background:var(--paper);">
+      <div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">Modelos de serviço liberados para esta empresa — nenhum marcado = sem restrição, aparecem todos na hora de emitir</div>
+      <div id="nfseEmpModelosWrap"><div class="empty-state">Carregando…</div></div>
+    </div>
     <div class="modal-actions">
       <button class="btn" id="nfseEmpCancel">Cancelar</button>
       <button class="btn primary" id="nfseEmpSalvar">Salvar</button>
@@ -2111,6 +2115,22 @@ function nfseEmpresaConfigModal(e){
       }));
     }catch(err){
       wrap.innerHTML = `<div class="empty-state">Não consegui carregar os módulos: ${esc(err.message)}</div>`;
+    }
+  })();
+  (async ()=>{
+    const wrap = document.getElementById('nfseEmpModelosWrap');
+    try{
+      const { items } = await api('/nfse/empresas/'+e.id+'/modelos');
+      if(!items.length){ wrap.innerHTML = `<div class="empty-state">Nenhum modelo de serviço cadastrado ainda — crie um na aba Modelos.</div>`; return; }
+      wrap.innerHTML = `
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:4px 12px;">
+          ${items.map(m=>`
+            <label class="checkbox-row" style="min-width:0;"><input type="checkbox" class="nfseEmpModeloChk" value="${m.id}" ${m.atribuido?'checked':''}> <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${esc(m.nome)}</span></label>
+          `).join('')}
+        </div>
+      `;
+    }catch(err){
+      wrap.innerHTML = `<div class="empty-state">Não consegui carregar os modelos: ${esc(err.message)}</div>`;
     }
   })();
   async function carregarCidadesDaUf(uf, tentaPreencherDe){
@@ -2203,6 +2223,8 @@ function nfseEmpresaConfigModal(e){
         }
       }
       await api('/nfse/empresas/'+e.id, { method:'PUT', body });
+      const modeloIds = Array.from(document.querySelectorAll('.nfseEmpModeloChk:checked')).map(el=>Number(el.value));
+      await api('/nfse/empresas/'+e.id+'/modelos', { method:'PUT', body:{ modeloIds } });
       closeModal(); toast('Configuração salva.','ok'); renderNfseEmpresas();
     }catch(err){ toast(err.message,'err'); }
   });
@@ -2215,16 +2237,11 @@ async function renderNfseEmitir(){
   const prefill = NFSE_PREFILL;
   NFSE_PREFILL = null;
   NFSE_RASCUNHO_ID = (prefill && prefill.__modo === 'continuar') ? prefill.id : null;
-  const [{ items }, { items: modelos }] = await Promise.all([ api('/nfse/empresas'), api('/nfse/modelos') ]);
+  const { items } = await api('/nfse/empresas');
   const habilitadas = items.filter(e=>e.habilitado);
-  const modelosAtivos = modelos.filter(m=>m.ativo);
   const box = document.getElementById('nfseContent');
   if(!habilitadas.length){
     box.innerHTML = `<div class="empty-state">Nenhuma empresa habilitada para emitir NFS-e ainda — configure na aba Empresas.</div>`;
-    return;
-  }
-  if(!modelosAtivos.length){
-    box.innerHTML = `<div class="empty-state">Nenhum modelo de serviço cadastrado ainda — crie um na aba Modelos antes de emitir.</div>`;
     return;
   }
   // Com mais de uma empresa habilitada, obriga escolher a empresa antes de mostrar o resto do
@@ -2248,6 +2265,12 @@ async function renderNfseEmitir(){
       const id = Number(e.target.value) || null;
       if(id){ NFSE_EMITIR_EMPRESA_ID = id; renderNfseEmitir(); }
     });
+    return;
+  }
+  const { items: modelos } = await api('/nfse/modelos?empresaId='+NFSE_EMITIR_EMPRESA_ID);
+  const modelosAtivos = modelos.filter(m=>m.ativo);
+  if(!modelosAtivos.length){
+    box.innerHTML = `<div class="empty-state">Nenhum modelo de serviço liberado para esta empresa ainda — crie um na aba Modelos ou libere um em Empresas.</div>`;
     return;
   }
   const hoje = new Date();

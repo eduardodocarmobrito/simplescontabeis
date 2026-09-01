@@ -846,6 +846,16 @@ sqlite.exec(`
     created_at TEXT DEFAULT (datetime('now'))
   );
 
+  -- Restringe, por empresa, quais modelos do catálogo do escritório ficam disponíveis na hora de
+  -- emitir NFS-e pra ela. Empresa sem nenhuma linha aqui = sem restrição (vê todos os modelos do
+  -- escritório, comportamento padrão de sempre). Só se aplica a modelos do escritório
+  -- (empresa_id IS NULL) — modelos próprios de uma empresa-cliente (self-service) não passam por isso.
+  CREATE TABLE IF NOT EXISTS nfse_empresa_modelos (
+    empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+    modelo_id INTEGER NOT NULL REFERENCES nfse_modelos(id) ON DELETE CASCADE,
+    PRIMARY KEY (empresa_id, modelo_id)
+  );
+
   -- Cada tentativa de emissão (DPS enviada) e o resultado — histórico completo, inclusive erros.
   CREATE TABLE IF NOT EXISTS nfse_emissoes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -4682,10 +4692,59 @@ function nfseModeloDoBody(body: any, existing: any | null) {
   };
 }
 app.get("/api/nfse/modelos", blockCliente, requirePermissao("nfse", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = req.query.empresaId ? Number(req.query.empresaId) : null;
+  // Se a empresa tiver uma lista de modelos liberados configurada (nfse_empresa_modelos não-vazia
+  // pra ela), o dropdown de emissão só mostra esses — senão, mostra todo o catálogo do escritório
+  // (comportamento padrão de sempre, sem restrição nenhuma).
+  if (empresaId) {
+    if (!podeAcessarEmpresa(user, empresaId)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+    const restritos = sqlite.prepare(`SELECT modelo_id FROM nfse_empresa_modelos WHERE empresa_id = ?`).all(empresaId) as any[];
+    if (restritos.length) {
+      const ids = restritos.map((r) => r.modelo_id);
+      const placeholders = ids.map(() => "?").join(",");
+      const rows = sqlite
+        .prepare(`SELECT * FROM nfse_modelos WHERE empresa_id IS NULL AND escritorio_id = ? AND id IN (${placeholders}) ORDER BY nome`)
+        .all(user.escritorioId, ...ids) as any[];
+      return res.json({ items: rows.map(nfseModeloParaJson) });
+    }
+  }
   const rows = sqlite
     .prepare(`SELECT * FROM nfse_modelos WHERE empresa_id IS NULL AND escritorio_id = ? ORDER BY nome`)
-    .all((req as any).user.escritorioId) as any[];
+    .all(user.escritorioId) as any[];
   res.json({ items: rows.map(nfseModeloParaJson) });
+});
+// Lista os modelos do escritório com uma flag "atribuido" indicando se estão na lista de liberados
+// dessa empresa — usado pela tela do admin de configuração da empresa pra montar o checklist de
+// seleção. Lista vazia (nenhum atribuido=true) tem o mesmo efeito de "sem restrição" na emissão.
+app.get("/api/nfse/empresas/:empresaId/modelos", blockCliente, requirePermissao("nfse", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa(user, empresaId)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  const rows = sqlite
+    .prepare(`SELECT * FROM nfse_modelos WHERE empresa_id IS NULL AND escritorio_id = ? ORDER BY nome`)
+    .all(user.escritorioId) as any[];
+  const atribuidos = new Set(
+    (sqlite.prepare(`SELECT modelo_id FROM nfse_empresa_modelos WHERE empresa_id = ?`).all(empresaId) as any[]).map((r) => r.modelo_id)
+  );
+  res.json({ items: rows.map((r) => ({ ...nfseModeloParaJson(r), atribuido: atribuidos.has(r.id) })) });
+});
+// Substitui a lista inteira de modelos liberados pra essa empresa. body.modeloIds = [] remove a
+// restrição (empresa volta a ver todo o catálogo do escritório na emissão).
+app.put("/api/nfse/empresas/:empresaId/modelos", blockCliente, requirePermissao("nfse", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa(user, empresaId)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  const modeloIds: number[] = Array.isArray(req.body?.modeloIds) ? req.body.modeloIds.map(Number).filter((n: number) => Number.isFinite(n)) : [];
+  const permitidos = modeloIds.length
+    ? (sqlite
+        .prepare(`SELECT id FROM nfse_modelos WHERE empresa_id IS NULL AND escritorio_id = ? AND id IN (${modeloIds.map(() => "?").join(",")})`)
+        .all(user.escritorioId, ...modeloIds) as any[])
+    : [];
+  sqlite.prepare(`DELETE FROM nfse_empresa_modelos WHERE empresa_id = ?`).run(empresaId);
+  const inserir = sqlite.prepare(`INSERT INTO nfse_empresa_modelos (empresa_id, modelo_id) VALUES (?, ?)`);
+  for (const m of permitidos) inserir.run(empresaId, m.id);
+  res.json({ ok: true });
 });
 // Reaproveitado tanto pelas rotas admin (empresaId=null, modelo interno do escritório) quanto
 // pelas rotas de empresa-cliente self-service (empresaId = user.empresaId, modelo privado dela).
@@ -5356,6 +5415,20 @@ function nfseValidarEntrada(user: any, body: any): { erro: string; status?: numb
     .prepare(`SELECT * FROM nfse_modelos WHERE id = ? AND ativo = 1 AND ((empresa_id IS NULL AND escritorio_id = ?) OR empresa_id = ?)`)
     .get(Number(modeloId), user.escritorioId, Number(empresaId)) as any;
   if (!modelo) return { erro: "Modelo de serviço não encontrado ou inativo.", status: 404 };
+  // Modelo interno do escritório: se essa empresa tiver uma lista de modelos liberados configurada
+  // (nfse_empresa_modelos não-vazia), só pode emitir com um modelo dessa lista — reforça no servidor
+  // a mesma restrição que o dropdown já aplica, pra não bastar montar a requisição na mão pra
+  // contornar. Lista vazia = sem restrição, todo modelo do escritório disponível (padrão de sempre).
+  // Não se aplica a modelo próprio da empresa-cliente self-service (empresa_id preenchido).
+  if (modelo.empresa_id === null) {
+    const restritos = sqlite.prepare(`SELECT 1 FROM nfse_empresa_modelos WHERE empresa_id = ?`).all(Number(empresaId)) as any[];
+    if (restritos.length) {
+      const permitido = sqlite
+        .prepare(`SELECT 1 FROM nfse_empresa_modelos WHERE empresa_id = ? AND modelo_id = ?`)
+        .get(Number(empresaId), modelo.id);
+      if (!permitido) return { erro: "Este modelo de serviço não está liberado para esta empresa.", status: 403 };
+    }
+  }
   return { empresaId: Number(empresaId), modelo, tomador, servico };
 }
 // Insere a linha em nfse_emissoes (rascunho ou pendente-pra-emitir-na-hora) e devolve o id.
