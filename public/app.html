@@ -3093,7 +3093,7 @@ async function pageNfeBusca(){
           ${dateFieldHtml('nfeDocDataDe','Data de','')}
           ${dateFieldHtml('nfeDocDataAte','Data até','')}
           <div class="field" style="margin-bottom:0; width:180px;"><label>Tipo</label>
-            <select id="nfeDocTipo"><option value="">Todos</option><option value="nfe">NF-e</option><option value="nfce">NFC-e</option><option value="nfse">NFS-e</option><option value="evento">Evento</option><option value="outro">Outro</option></select>
+            <select id="nfeDocTipo"><option value="">Todos</option><option value="nfe">NF-e</option><option value="nfce">NFC-e</option><option value="nfse">NFS-e</option><option value="cte">CT-e</option><option value="evento">Evento</option><option value="outro">Outro</option></select>
           </div>
         </div>
         <div class="row" style="margin-bottom:8px; align-items:center; gap:10px;">
@@ -3166,7 +3166,7 @@ async function pageNfeBusca(){
           <td>${d.valorTotal!=null?fmtMoney(d.valorTotal):'—'}</td>
           <td style="text-align:right; white-space:nowrap;">
             <a class="btn small" href="/api/nfe/documentos/${d.id}/xml" target="_blank" rel="noopener">XML</a>
-            ${d.tipo!=='evento'?`<a class="btn small" href="/api/nfe/documentos/${d.id}/pdf" target="_blank" rel="noopener">PDF</a>`:''}
+            ${(d.tipo!=='evento'&&d.tipo!=='cte')?`<a class="btn small" href="/api/nfe/documentos/${d.id}/pdf" target="_blank" rel="noopener">PDF</a>`:''}
           </td>
         </tr>
       `).join('') : '<tr><td colspan="8"><div class="empty-state">Nenhum documento encontrado.</div></td></tr>';

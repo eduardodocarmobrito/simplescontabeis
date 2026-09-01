@@ -711,7 +711,7 @@ sqlite.exec(`
     fonte TEXT NOT NULL DEFAULT 'nfe', -- 'nfe' (Sefaz) | 'nfse' (ADN, Sistema Nacional NFS-e)
     nsu TEXT NOT NULL,
     doc_schema TEXT NOT NULL, -- ex.: 'resNFe_v1.01.xsd', 'procNFe_v4.00.xsd', 'resEvento_v1.01.xsd', 'NFSe_v1.00'
-    tipo TEXT NOT NULL, -- 'nfe' | 'nfce' | 'evento' | 'nfse' | 'outro'
+    tipo TEXT NOT NULL, -- 'nfe' | 'nfce' | 'cte' | 'evento' | 'nfse' | 'outro'
     chave_acesso TEXT,
     emitente_cnpj TEXT,
     emitente_nome TEXT,
@@ -3935,6 +3935,7 @@ function nfeDocNomeArquivo(row: any, extensao: string): string {
 async function nfeDocumentoObterPdf(row: any): Promise<{ pdf: Buffer | null; erro: string | null }> {
   if (row.pdf_path && fs.existsSync(row.pdf_path)) return { pdf: fs.readFileSync(row.pdf_path), erro: null };
   if (row.tipo === "evento") return { pdf: null, erro: "Eventos não têm representação em PDF — baixe o XML." };
+  if (row.tipo === "cte") return { pdf: null, erro: "Representação em PDF do CT-e (DACTE) ainda não implementada — baixe o XML." };
   try {
     const pdf = row.fonte === "nfse" ? await danfse.gerarDanfsePdf(row.xml) : await nfePdf.gerarPdfSimplificadoNfe(row.xml);
     const caminho = nfePdf.salvarPdfEmCache(row.chave_acesso || `doc-${row.id}`, pdf);
@@ -3985,7 +3986,7 @@ app.get("/api/nfe/documentos/baixar-lote", blockCliente, requirePermissao("nfe-b
   };
   for (const row of permitidas) {
     if (formato === "xml" || formato === "ambos") zip.append(row.xml, { name: nomeUnico(nfeDocNomeArquivo(row, "xml")) });
-    if ((formato === "pdf" || formato === "ambos") && row.tipo !== "evento") {
+    if ((formato === "pdf" || formato === "ambos") && row.tipo !== "evento" && row.tipo !== "cte") {
       try {
         const { pdf } = await nfeDocumentoObterPdf(row);
         if (pdf) zip.append(pdf, { name: nomeUnico(nfeDocNomeArquivo(row, "pdf")) });

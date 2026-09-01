@@ -211,6 +211,42 @@ export function identificarDocumento(xml: string, schema: string): DocumentoIden
       dataEmissao: r.dhEmi || null,
     };
   }
+  // resCTe (resumo do CT-e, mesma família de schema do resNFe — só não confirmado ainda contra um
+  // CT-e real, já que nenhuma empresa cadastrada até agora recebeu um pela Distribuição DFe).
+  if (schema.startsWith("resCTe")) {
+    const r = json?.resCTe;
+    if (!r) return base;
+    return {
+      ...base,
+      tipo: "cte",
+      chaveAcesso: r.chCTe || null,
+      emitenteCnpj: r.CNPJ || null,
+      emitenteNome: r.xNome || null,
+      valorTotal: r.vCT != null ? Number(r.vCT) : null,
+      dataEmissao: r.dhEmi || null,
+    };
+  }
+  // cteProc (completo, assinado) — vem envelopado em cteProc > CTe > infCte, estrutura paralela ao
+  // nfeProc. CT-e não tem um "dest" único e simples como a NF-e (o tomador do serviço pode ser
+  // remetente/expedidor/recebedor/destinatário, indicado em ide.toma) — usamos o bloco <dest> quando
+  // presente, que na prática é o mais comum de aparecer preenchido.
+  const infCte = json?.cteProc?.CTe?.infCte;
+  if (infCte) {
+    const emit = infCte.emit || {};
+    const dest = infCte.dest || {};
+    const vPrest = infCte.vPrest || {};
+    return {
+      ...base,
+      tipo: "cte",
+      chaveAcesso: (infCte["@_Id"] || "").replace(/^CTe/, "") || null,
+      emitenteCnpj: emit.CNPJ || null,
+      emitenteNome: emit.xNome || null,
+      destinatarioCnpj: dest.CNPJ || dest.CPF || null,
+      destinatarioNome: dest.xNome || null,
+      valorTotal: vPrest.vTPrest != null ? Number(vPrest.vTPrest) : null,
+      dataEmissao: infCte.ide?.dhEmi || null,
+    };
+  }
   // procNFe (completo, assinado) — vem envelopado em nfeProc > NFe > infNFe.
   const infNFe = json?.nfeProc?.NFe?.infNFe;
   if (infNFe) {
