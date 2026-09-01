@@ -1296,6 +1296,12 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
   if (!colsCards.some((c) => c.name === "tipo")) {
     sqlite.exec(`ALTER TABLE dashboard_cards ADD COLUMN tipo TEXT`);
   }
+  // "parametro" guarda um valor extra que alguns tipos de card computado precisam além do tipo em
+  // si — hoje só o "envio_atraso" usa (o id do envio_templates que esse card específico valida),
+  // mas fica genérico o bastante pra outro tipo futuro reaproveitar sem nova migração.
+  if (!colsCards.some((c) => c.name === "parametro")) {
+    sqlite.exec(`ALTER TABLE dashboard_cards ADD COLUMN parametro TEXT`);
+  }
 }
 // Migração leve: prazo (dia do mês) de um modelo de Solicitação de Documentos — usado pelo card
 // "Documentos pendentes" pra saber quando um item obrigatório já venceu sem upload.
@@ -7152,7 +7158,7 @@ app.get("/api/financeiro/resumo", blockCliente, requirePermissao("financeiro", "
 // função abaixo devolve a lista (o card mostra só items.length); todas já filtram pelas empresas
 // que o usuário logado pode ver (empresasVisiveis), pro caso de um Colaborador restrito abrir o
 // Painel.
-const CARD_TIPOS: string[] = ["certificados_vencer", "das_atraso", "situacao_fiscal", "checklist_atraso", "solicitacoes_pendentes"];
+const CARD_TIPOS: string[] = ["certificados_vencer", "das_atraso", "situacao_fiscal", "checklist_atraso", "solicitacoes_pendentes", "envio_atraso"];
 
 // Unifica os 3 lugares onde uma data de validade de certificado é guardada hoje (emissão de NFS-e,
 // Busca de XML, e-CNPJ do Integra Contador) numa lista só — o card não sabe (nem precisa saber) de
@@ -7247,6 +7253,51 @@ function cardDasEmAtraso(user: any): any[] {
         }
         if (!declaradas.has(chave)) competenciasFaltando.push(`${String(mes).padStart(2, "0")}/${ano}`);
       }
+      mes++;
+      if (mes > 12) {
+        mes = 1;
+        ano++;
+      }
+    }
+    if (competenciasFaltando.length) porEmpresa.set(atrib.empresaId, { empresaId: atrib.empresaId, empresaNome: atrib.empresaNome, competencias: competenciasFaltando });
+  }
+  return [...porEmpresa.values()];
+}
+
+// Versão genérica do card acima ("DAS em Atraso" é o caso fixo/embutido) — qualquer modelo de
+// Envio de Documentos mensal (Balancete, DRE, Razão Contábil, Nota Fiscal do mês anterior, etc.)
+// pode virar um card do Painel escolhendo o modelo aqui. Mesma lógica de calendário (do período
+// mais antigo já gerado na grade até o mês passado, tratando período sem documento OU nunca gerado
+// como pendente) — só não tem a exceção de "resolvido pela declaração do Simples Nacional", que é
+// específica do DAS e não faz sentido pra Balancete/DRE/Nota Fiscal.
+function cardEnvioAtraso(user: any, templateId: number): any[] {
+  const escritorioId = user.escritorioId;
+  const visiveis = new Set(empresasVisiveis(user));
+  const agora = agoraBrasilia();
+  const atribuicoes = sqlite
+    .prepare(
+      `SELECT a.id as atribuicaoId, a.empresa_id as empresaId, e.nome as empresaNome
+       FROM envio_atribuicoes a
+       JOIN envio_templates t ON t.id = a.template_id AND t.id = ? AND t.escritorio_id = ?
+       JOIN empresas e ON e.id = a.empresa_id AND e.escritorio_id = ? AND e.ativo = 1
+       WHERE a.ativo = 1`
+    )
+    .all(templateId, escritorioId, escritorioId) as any[];
+  const porEmpresa = new Map<number, any>();
+  for (const atrib of atribuicoes) {
+    if (!visiveis.has(atrib.empresaId)) continue;
+    const periodos = sqlite.prepare(`SELECT p.id, p.ano, p.mes FROM envio_periodos p WHERE p.atribuicao_id = ? AND p.mes IS NOT NULL`).all(atrib.atribuicaoId) as any[];
+    if (!periodos.length) continue;
+    const porCompetencia = new Map<string, any>(periodos.map((p) => [`${p.ano}${String(p.mes).padStart(2, "0")}`, p]));
+    const maisAntigo = periodos.reduce((min, p) => (p.ano * 100 + p.mes < min.ano * 100 + min.mes ? p : min));
+    const competenciasFaltando: string[] = [];
+    let ano = maisAntigo.ano, mes = maisAntigo.mes, iteracoes = 0;
+    while ((ano < agora.ano || (ano === agora.ano && mes < agora.mes)) && iteracoes < 60) {
+      iteracoes++;
+      const chave = `${ano}${String(mes).padStart(2, "0")}`;
+      const periodo = porCompetencia.get(chave);
+      const temDocumento = periodo ? sqlite.prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id = ?`).get(periodo.id) : null;
+      if (!temDocumento) competenciasFaltando.push(`${String(mes).padStart(2, "0")}/${ano}`);
       mes++;
       if (mes > 12) {
         mes = 1;
@@ -7394,12 +7445,17 @@ function cardSolicitacoesPendentes(user: any): any[] {
   return rows.filter((r) => visiveis.has(r.empresaId));
 }
 
-async function calcularCardComputado(tipo: string, user: any): Promise<any[]> {
+async function calcularCardComputado(tipo: string, user: any, parametro?: string | null): Promise<any[]> {
   if (tipo === "certificados_vencer") return cardCertificadosAVencer(user);
   if (tipo === "das_atraso") return cardDasEmAtraso(user);
   if (tipo === "situacao_fiscal") return cardSituacaoFiscal(user);
   if (tipo === "checklist_atraso") return cardChecklistAtraso(user);
   if (tipo === "solicitacoes_pendentes") return cardSolicitacoesPendentes(user);
+  if (tipo === "envio_atraso") {
+    const templateId = Number(parametro);
+    if (!templateId) return [];
+    return cardEnvioAtraso(user, templateId);
+  }
   return [];
 }
 
@@ -7410,7 +7466,7 @@ app.get("/api/dashboard/cards", requirePermissao("dashboard", "visualizar"), asy
     rows.map(async (r) => {
       if (!r.tipo) return r;
       try {
-        return { ...r, valor: String((await calcularCardComputado(r.tipo, user)).length) };
+        return { ...r, valor: String((await calcularCardComputado(r.tipo, user, r.parametro)).length) };
       } catch {
         return { ...r, valor: "—" };
       }
@@ -7423,27 +7479,43 @@ app.get("/api/dashboard/cards/:id/detalhe", requirePermissao("dashboard", "visua
   const card = sqlite.prepare(`SELECT * FROM dashboard_cards WHERE id = ? AND escritorio_id = ?`).get(Number(req.params.id), user.escritorioId) as any;
   if (!card) return res.status(404).json({ error: "Card não encontrado." });
   if (!card.tipo) return res.status(400).json({ error: "Este card não tem detalhamento — é um valor digitado manualmente." });
-  res.json({ tipo: card.tipo, items: await calcularCardComputado(card.tipo, user) });
+  res.json({ tipo: card.tipo, items: await calcularCardComputado(card.tipo, user, card.parametro) });
 });
+// "envio_atraso" precisa de um envio_templates válido (do mesmo escritório, mensal, ativo) como
+// parâmetro — sem isso o card ficaria "computado" mas sem saber o que calcular.
+function dashboardCardParametroErro(tipo: string | null, parametro: string | null | undefined, escritorioId: number): string | null {
+  if (tipo !== "envio_atraso") return null;
+  const templateId = Number(parametro);
+  if (!templateId) return "Selecione o modelo de Envio de Documentos que este card vai validar.";
+  const template = sqlite.prepare(`SELECT id FROM envio_templates WHERE id = ? AND escritorio_id = ? AND periodicidade = 'mensal' AND ativo = 1`).get(templateId, escritorioId);
+  if (!template) return "Modelo de envio inválido — precisa ser um modelo mensal ativo.";
+  return null;
+}
 app.post("/api/dashboard/cards", blockCliente, requirePermissao("dashboard", "editar"), (req, res) => {
   const user = (req as any).user;
-  const { titulo, valor, subtitulo, cor, ordem, tipo } = req.body || {};
+  const { titulo, valor, subtitulo, cor, ordem, tipo, parametro } = req.body || {};
   if (tipo && !CARD_TIPOS.includes(tipo)) return res.status(400).json({ error: "Tipo de card inválido." });
   if (!titulo || (!tipo && valor === undefined)) return res.status(400).json({ error: "Informe título e valor do card." });
+  const erroParametro = dashboardCardParametroErro(tipo || null, parametro, user.escritorioId);
+  if (erroParametro) return res.status(400).json({ error: erroParametro });
   const info = sqlite
-    .prepare(`INSERT INTO dashboard_cards (titulo, valor, subtitulo, cor, ordem, created_by, escritorio_id, tipo) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(titulo, tipo ? "0" : String(valor), subtitulo || null, cor || "brass", Number(ordem) || 0, user.id, user.escritorioId, tipo || null);
+    .prepare(`INSERT INTO dashboard_cards (titulo, valor, subtitulo, cor, ordem, created_by, escritorio_id, tipo, parametro) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(titulo, tipo ? "0" : String(valor), subtitulo || null, cor || "brass", Number(ordem) || 0, user.id, user.escritorioId, tipo || null, tipo ? parametro || null : null);
   res.json({ id: Number(info.lastInsertRowid) });
 });
 app.put("/api/dashboard/cards/:id", blockCliente, requirePermissao("dashboard", "editar"), (req, res) => {
   const id = Number(req.params.id);
-  const existing = sqlite.prepare(`SELECT * FROM dashboard_cards WHERE id = ? AND escritorio_id = ?`).get(id, (req as any).user.escritorioId) as any;
+  const user = (req as any).user;
+  const existing = sqlite.prepare(`SELECT * FROM dashboard_cards WHERE id = ? AND escritorio_id = ?`).get(id, user.escritorioId) as any;
   if (!existing) return res.status(404).json({ error: "Card não encontrado." });
-  const { titulo, valor, subtitulo, cor, ordem, tipo } = req.body || {};
+  const { titulo, valor, subtitulo, cor, ordem, tipo, parametro } = req.body || {};
   if (tipo !== undefined && tipo !== null && tipo !== "" && !CARD_TIPOS.includes(tipo)) return res.status(400).json({ error: "Tipo de card inválido." });
   const novoTipo = tipo !== undefined ? tipo || null : existing.tipo;
+  const novoParametro = tipo !== undefined ? (novoTipo ? parametro || null : null) : existing.parametro;
+  const erroParametro = dashboardCardParametroErro(novoTipo, novoParametro, user.escritorioId);
+  if (erroParametro) return res.status(400).json({ error: erroParametro });
   sqlite
-    .prepare(`UPDATE dashboard_cards SET titulo=?, valor=?, subtitulo=?, cor=?, ordem=?, tipo=?, updated_at=datetime('now') WHERE id=?`)
+    .prepare(`UPDATE dashboard_cards SET titulo=?, valor=?, subtitulo=?, cor=?, ordem=?, tipo=?, parametro=?, updated_at=datetime('now') WHERE id=?`)
     .run(
       titulo ?? existing.titulo,
       novoTipo ? "0" : valor !== undefined ? String(valor) : existing.valor,
@@ -7451,6 +7523,7 @@ app.put("/api/dashboard/cards/:id", blockCliente, requirePermissao("dashboard", 
       cor ?? existing.cor,
       ordem !== undefined ? Number(ordem) : existing.ordem,
       novoTipo,
+      novoParametro,
       id
     );
   res.json({ ok: true });

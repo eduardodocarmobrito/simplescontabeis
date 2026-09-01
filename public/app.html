@@ -756,9 +756,14 @@ const CARD_TIPOS_INFO = {
   situacao_fiscal: { label:'Situação Fiscal', subtitulo:'Empresas com pendência' },
   checklist_atraso: { label:'Documentos Pendentes', subtitulo:'Competência anterior, após o prazo, sem envio do cliente' },
   solicitacoes_pendentes: { label:'Solicitações dos Clientes', subtitulo:'Aguardando retorno do escritório' },
+  envio_atraso: { label:'Modelo de Envio em Atraso', subtitulo:'Competências não entregues' },
 };
-function cardModal(c){
+async function cardModal(c){
   const tipoAtual = c&&c.tipo || '';
+  // Só busca os modelos de Envio de Documentos quando existe algum tipo "envio_atraso" envolvido
+  // (card novo sempre busca, pra já deixar o seletor pronto se o admin escolher esse tipo depois).
+  const { items: envioTemplatesTodos } = await api('/envio/templates');
+  const envioTemplatesMensais = envioTemplatesTodos.filter(t=>t.periodicidade==='mensal' && t.ativo);
   openModal(`
     <h3>${c?'Editar':'Novo'} card</h3>
     <div class="field"><label>Tipo</label>
@@ -766,6 +771,13 @@ function cardModal(c){
         <option value="">Manual (eu digito o valor)</option>
         ${Object.entries(CARD_TIPOS_INFO).map(([v,info])=>`<option value="${v}">${esc(info.label)}</option>`).join('')}
       </select>
+    </div>
+    <div class="field hidden" id="cardParametroWrap"><label>Modelo de envio</label>
+      <select id="cardParametro">
+        <option value="">Selecione…</option>
+        ${envioTemplatesMensais.map(t=>`<option value="${t.id}">${esc(t.nome)}</option>`).join('')}
+      </select>
+      ${!envioTemplatesMensais.length? `<div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">Nenhum modelo mensal cadastrado ainda — crie um em Envio de Documentos &gt; Modelos.</div>`:''}
     </div>
     <div class="field"><label>Título</label><input id="cardTitulo" value="${c?esc(c.titulo):''}"></div>
     <div class="field" id="cardValorWrap"><label>Valor</label><input id="cardValor" value="${c?esc(c.valor):''}"></div>
@@ -777,9 +789,11 @@ function cardModal(c){
     </div>
   `);
   document.getElementById('cardTipo').value = tipoAtual;
+  if(c && c.tipo==='envio_atraso' && c.parametro) document.getElementById('cardParametro').value = c.parametro;
   function syncTipoUI(){
     const tipo = document.getElementById('cardTipo').value;
     document.getElementById('cardValorWrap').classList.toggle('hidden', !!tipo);
+    document.getElementById('cardParametroWrap').classList.toggle('hidden', tipo!=='envio_atraso');
     if(tipo && !c){
       const info = CARD_TIPOS_INFO[tipo];
       document.getElementById('cardTitulo').value = info.label;
@@ -788,6 +802,13 @@ function cardModal(c){
   }
   document.getElementById('cardTipo').addEventListener('change', syncTipoUI);
   syncTipoUI();
+  // Ao escolher o modelo, sugere um título mais específico do que o genérico "Modelo de Envio em
+  // Atraso" — só quando o título ainda está no valor genérico (não sobrescreve se o admin já mexeu).
+  document.getElementById('cardParametro').addEventListener('change', e=>{
+    const nome = e.target.options[e.target.selectedIndex]?.textContent;
+    const tituloEl = document.getElementById('cardTitulo');
+    if(nome && (!c || tituloEl.value===CARD_TIPOS_INFO.envio_atraso.label)) tituloEl.value = nome+' em Atraso';
+  });
   document.getElementById('cardCancel').addEventListener('click', closeModal);
   document.getElementById('cardSalvar').addEventListener('click', async ()=>{
     const tipo = document.getElementById('cardTipo').value;
@@ -798,6 +819,10 @@ function cardModal(c){
       ordem: Number(document.getElementById('cardOrdem').value)||0,
     };
     if(!tipo) body.valor = document.getElementById('cardValor').value.trim();
+    if(tipo==='envio_atraso'){
+      body.parametro = document.getElementById('cardParametro').value;
+      if(!body.parametro){ toast('Selecione o modelo de envio que este card vai validar.','err'); return; }
+    }
     if(!body.titulo || (!tipo && !body.valor)){ toast('Preencha título e valor.','err'); return; }
     try{
       if(c) await api('/dashboard/cards/'+c.id, { method:'PUT', body });
@@ -837,6 +862,10 @@ function cardDetalheModal(c){
       } else if(tipo==='solicitacoes_pendentes'){
         box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Modelo</th><th>Competência</th><th>Solicitado em</th></tr></thead><tbody>
           ${items.map(i=>`<tr><td>${esc(i.empresaNome)}</td><td>${esc(i.templateNome)}</td><td>${i.mes?String(i.mes).padStart(2,'0')+'/'+i.ano:esc(i.rotulo||String(i.ano))}</td><td>${fmtDateHora(i.solicitadoEm)}</td></tr>`).join('')}
+        </tbody></table>`;
+      } else if(tipo==='envio_atraso'){
+        box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Competências em aberto</th></tr></thead><tbody>
+          ${items.map(i=>`<tr><td>${esc(i.empresaNome)}</td><td>${i.competencias.map(esc).join(', ')}</td></tr>`).join('')}
         </tbody></table>`;
       } else {
         box.innerHTML = '<div class="empty-state">Tipo de card desconhecido.</div>';
