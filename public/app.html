@@ -116,6 +116,7 @@
   table.data-table th{text-align:left; font-family:'IBM Plex Mono',monospace; font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-soft); padding:8px 10px; border-bottom:1px solid var(--rule);}
   table.data-table td{padding:11px 10px; border-bottom:1px solid var(--rule-soft); vertical-align:middle;}
   table.data-table tbody tr:hover{background:var(--paper);}
+  .nfeEmpresaRow:hover{background:var(--paper); border-radius:6px;}
   .tag{display:inline-block; padding:2px 9px; border-radius:20px; font-size:11px; font-weight:600;}
   .tag.ok{background:var(--accent-pale); color:var(--accent-deep);}
   .tag.warn{background:#F5E7D0; color:var(--amber);}
@@ -3050,7 +3051,7 @@ async function pageNfeBusca(){
         <input type="text" id="nfeListaFiltro" placeholder="Buscar empresa…" style="margin-bottom:6px;">
         <div style="max-height:420px; overflow-y:auto; overflow-x:hidden; border:1px solid var(--rule); border-radius:8px; padding:4px 10px;">
           ${linhas.length ? linhas.map(l=>`
-            <div class="nfeEmpresaRow" data-id="${l.id}" data-nome="${esc(normalizaTxt(l.nome))}" style="padding:6px 2px; font-size:13px; cursor:pointer; border-bottom:1px solid var(--rule);">${esc(l.nome)}</div>
+            <div class="nfeEmpresaRow" data-id="${l.id}" data-nome="${esc(normalizaTxt(l.nome))}" style="padding:6px 8px; font-size:13px; cursor:pointer; border-bottom:1px solid var(--rule);">${esc(l.nome)}</div>
           `).join('') : '<div class="empty-state">Nenhuma empresa configurada ainda — use a busca acima pra adicionar a primeira.</div>'}
         </div>
       </div>
