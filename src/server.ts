@@ -7104,6 +7104,21 @@ async function sitfisAnalisar(pdfPath: string): Promise<{ temPendencia: boolean;
   const achados = SITFIS_MARCADORES_PENDENCIA.filter((m) => m.regex.test(texto)).map((m) => m.chave);
   return { temPendencia: achados.length > 0, resumo: achados.length ? achados.join(", ") : null };
 }
+// Duas causas bem diferentes por trás de "a busca falhou": (a) instabilidade técnica passageira do
+// SERPRO/Receita (rede, timeout) — tentar de novo mais tarde costuma resolver; (b) a empresa nunca
+// deu (ou o escritório nunca aceitou, prazo de até 30 dias) a autorização de acesso no e-CAC pro
+// CNPJ do escritório — nesse caso tentar de novo não adianta nada, precisa resolver isso no e-CAC
+// primeiro. Sem confirmação contra uma conta SERPRO real do texto exato que a Receita devolve nesse
+// segundo caso (ver comentário no topo de integracontador.ts), então a detecção é por palavra-chave
+// no texto real do erro — propositalmente ampla, cobre variações plausíveis sem travar em um texto
+// único, mas mantém a mensagem original visível junto pra conferência.
+const INTEGRACONTADOR_ERRO_AUTORIZACAO_REGEX = /procura[cç][aã]o|outorg|n[aã]o possui acesso|sem autoriza|autoriza[cç][aã]o.{0,20}pendente|acesso negado/i;
+function formatarErroIntegraContador(mensagemErro: string): string {
+  if (INTEGRACONTADOR_ERRO_AUTORIZACAO_REGEX.test(mensagemErro)) {
+    return `Falta autorização (procuração eletrônica) da empresa no e-CAC pro Integra Contador — outorgue/aceite a autorização antes de tentar de novo. Detalhe: ${mensagemErro}`;
+  }
+  return `Falha na última busca — situação não confirmada: ${mensagemErro}`;
+}
 async function cardSituacaoFiscal(user: any): Promise<any[]> {
   const escritorioId = user.escritorioId;
   const visiveis = new Set(empresasVisiveis(user));
@@ -7127,7 +7142,7 @@ async function cardSituacaoFiscal(user: any): Promise<any[]> {
       continue;
     }
     if (r.ultimoErro) {
-      resultado.push({ empresaId: r.empresaId, empresaNome: r.empresaNome, alerta: `Falha na última busca — situação não confirmada: ${r.ultimoErro}` });
+      resultado.push({ empresaId: r.empresaId, empresaNome: r.empresaNome, alerta: formatarErroIntegraContador(r.ultimoErro) });
       continue;
     }
     const doc = sqlite
