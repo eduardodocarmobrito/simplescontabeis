@@ -6033,17 +6033,18 @@ async function renderCfgNfseAgendamento(box){
             <textarea data-f="descricao" rows="3">${esc(s.descricaoServico)}</textarea>
             <div style="font-size:11px; color:var(--ink-soft); margin-top:4px;">Use <code>{{mes_competencia}}</code> onde quiser que apareça o mês/ano da competência (ex.: "agosto/2026").</div>
           </div>
-          <div class="field"><label>Valor do serviço (R$)</label><input data-f="valor" type="number" step="0.01" min="0" value="${s.valorServico!=null?s.valorServico:''}"></div>
+          <div class="field"><label>Valor do serviço (R$)</label><input data-f="valor" inputmode="decimal" placeholder="0,00" value="${s.valorServico!=null?Number(s.valorServico).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}):''}"></div>
           <label class="checkbox-row"><input type="checkbox" data-f="ativo" ${s.ativo?'checked':''}> Ativo (desmarque pra pausar só este serviço)</label>
           <button class="btn primary small" data-act="salvar-item" data-id="${s.id}">Salvar este serviço</button>
         </div>
       `).join('') : `<div class="empty-state">Nenhum serviço configurado ainda — adicione pelo botão abaixo.</div>`;
+      lista.querySelectorAll('[data-f="valor"]').forEach(el=>ligarMascaraMoeda(el));
       lista.querySelectorAll('[data-act="salvar-item"]').forEach(b=>b.addEventListener('click', async ()=>{
         const card = b.closest('[data-item-id]');
         const body = {
           modeloId: card.querySelector('[data-f="modelo"]').value || null,
           descricaoServico: card.querySelector('[data-f="descricao"]').value,
-          valorServico: card.querySelector('[data-f="valor"]').value,
+          valorServico: moedaInputParaNumero(card.querySelector('[data-f="valor"]')),
           ativo: card.querySelector('[data-f="ativo"]').checked,
         };
         try{ await api('/nfse/agendamento/itens/'+b.dataset.id, { method:'PUT', body }); toast('Salvo.','ok'); carregarQuadroSelecionadas(); }
