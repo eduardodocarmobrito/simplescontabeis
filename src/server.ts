@@ -4418,7 +4418,7 @@ async function integraContadorBuscarEmpresa(empresaId: number, empresaCnpj: stri
     integraContadorBuscarEmpresaInterno(empresaId, empresaCnpj, optante),
     new Promise<{ novos: number; erro: string | null }>((resolve) =>
       setTimeout(() => {
-        const msg = "A busca não respondeu em 3 minutos (Receita/SERPRO travado ou muito lento) — tente de novo mais tarde.";
+        const msg = "A busca não respondeu em 5 minutos (Receita/SERPRO travado ou muito lento) — tente de novo mais tarde.";
         sqlite.prepare(`UPDATE integracontador_empresa_config SET ultima_busca_em = datetime('now'), ultimo_erro = ? WHERE empresa_id = ?`).run(msg, empresaId);
         resolve({ novos: 0, erro: msg });
       }, INTEGRACONTADOR_TIMEOUT_BUSCA_MS)

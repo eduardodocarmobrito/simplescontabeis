@@ -3491,6 +3491,7 @@ async function pageIntegraContador(){
         <h3>${esc(emp?emp.nome:'Empresa')}</h3>
         <label class="checkbox-row"><input type="checkbox" id="icEmpAtivo" ${emp?.ativo?'checked':''}> Buscar dados desta empresa</label>
         <label class="checkbox-row"><input type="checkbox" id="icEmpOptante" ${emp?.optanteSimplesNacional?'checked':''}> Optante do Simples Nacional (habilita DAS e Declaração — Situação Fiscal vale pra qualquer regime)</label>
+        <p style="font-size:12.5px; color:var(--ink-soft); margin:6px 0 0;">Última busca: <span id="icUltimaBusca">${emp?.ultimaBuscaEm?fmtDateHora(emp.ultimaBuscaEm):'nunca buscado'}</span></p>
         ${emp?.alertaDeclaracao?`<div class="card" style="background:var(--paper); border-color:var(--warn, #c9a227); margin:8px 0;"><span style="font-size:12.5px;">⚠ ${esc(emp.alertaDeclaracao)}</span></div>`:''}
         ${emp?.ultimoErro?`<p style="color:var(--debit); font-size:12.5px;">Último erro: ${esc(emp.ultimoErro)}</p>`:''}
         <div class="row" style="margin-top:8px;">
@@ -3514,8 +3515,12 @@ async function pageIntegraContador(){
     // navegador mesmo quando a busca deu certo do lado do servidor. Por isso o backend não segura a
     // resposta esperando terminar: dispara em segundo plano, e aqui a tela fica reconsultando até
     // "ultimaBuscaEm" mudar, sem travar o botão o tempo todo nem depender do request original.
+    // O backend só desiste de verdade depois de 5 minutos (INTEGRACONTADOR_TIMEOUT_BUSCA_MS) — o
+    // poll aqui precisa cobrir essa janela inteira, senão a tela desiste antes da hora e mostra
+    // "ainda em andamento" numa busca que só estava demorando (SITFIS pode reconsultar a Receita
+    // várias vezes até o relatório ficar pronto).
     async function esperarIcBuscaTerminar(ultimaBuscaAntes){
-      for(let i=0;i<20;i++){
+      for(let i=0;i<80;i++){
         await new Promise(r=>setTimeout(r, 4000));
         const { items } = await api('/integracontador/empresas');
         const atualizado = items.find(e=>e.id===empresaId);
@@ -3547,8 +3552,10 @@ async function pageIntegraContador(){
         const ultimaBuscaAntes = emp?.ultimaBuscaEm || null;
         await api('/integracontador/empresas/'+empresaId+'/buscar', { method:'POST' });
         const atualizado = await esperarIcBuscaTerminar(ultimaBuscaAntes);
-        if(atualizado) toast(atualizado.ultimoErro ? 'Busca terminou com erro: '+atualizado.ultimoErro : 'Busca concluída.', atualizado.ultimoErro?'err':'ok');
-        else toast('Busca ainda em andamento — confira em alguns instantes.','ok');
+        if(atualizado){
+          toast(atualizado.ultimoErro ? 'Busca terminou com erro: '+atualizado.ultimoErro : 'Busca concluída.', atualizado.ultimoErro?'err':'ok');
+          document.getElementById('icUltimaBusca').textContent = fmtDateHora(atualizado.ultimaBuscaEm);
+        } else toast('Busca ainda em andamento — confira em alguns instantes.','ok');
         carregarIcDocumentos();
       }catch(e){ toast(e.message,'err'); }
       finally{ btn.disabled = false; btn.textContent = 'Buscar agora'; }
