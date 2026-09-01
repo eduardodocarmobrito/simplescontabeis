@@ -707,14 +707,22 @@ async function render(){
 // ===================== Dashboard =====================
 async function pageDashboard(){
   const meuSeq = RENDER_SEQ;
-  const { items } = await api('/dashboard/cards');
-  if(meuSeq !== RENDER_SEQ) return; // usuário já navegou pra outra tela enquanto isso carregava
   const podeEditar = can('dashboard','editar');
+  const [{ items }, { competenciaInicio }] = await Promise.all([
+    api('/dashboard/cards'),
+    podeEditar ? api('/dashboard/monitoramento-config') : Promise.resolve({ competenciaInicio: null }),
+  ]);
+  if(meuSeq !== RENDER_SEQ) return; // usuário já navegou pra outra tela enquanto isso carregava
   main().innerHTML = `
     <h1>Área de Trabalho</h1>
     <p class="subtitle">Indicadores do escritório — ${esc(STATE.user.nome)}</p>
+    ${podeEditar? `<p style="font-size:12.5px; color:var(--ink-soft); margin:-10px 0 16px;">
+      Monitorando pendências ${competenciaInicio? `a partir de <b>${MESES[competenciaInicio.mes]}/${competenciaInicio.ano}</b>` : 'desde o período mais antigo gerado na grade de cada empresa'} —
+      <span class="link-discreto" id="btnMonitoramentoConfig" style="cursor:pointer; text-decoration:underline;">${competenciaInicio?'alterar':'configurar um início'}</span>
+    </p>` : ''}
     <div class="kpi-grid" id="kpiGrid"></div>
   `;
+  if(podeEditar) document.getElementById('btnMonitoramentoConfig').addEventListener('click', ()=>monitoramentoConfigModal(competenciaInicio));
   const grid = document.getElementById('kpiGrid');
   grid.innerHTML = items.map(c=>`
     <div class="kpi" data-id="${c.id}" data-tipo="${c.tipo||''}" ${c.tipo?'style="cursor:pointer;"':''}>
@@ -917,6 +925,42 @@ function cardDetalheModal(c){
       }
     }catch(e){ box.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; }
   })();
+}
+// Piso de competência aplicado por TODOS os cards de pendência (DAS em Atraso, Documentos
+// Pendentes de Envio, Documentos Pendentes, Solicitações de Documentos) — nenhum deles cobra
+// competência anterior à escolhida aqui, mesmo que exista período mais antigo sem documento na
+// grade. Útil pra "zerar o histórico" quando o controle começou a valer só a partir de um mês.
+function monitoramentoConfigModal(cfg){
+  const anoAtual = new Date().getFullYear();
+  openModal(`
+    <h3>Início do monitoramento de pendências</h3>
+    <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-4px;">Vale para todos os cards do Painel que checam competências (DAS em Atraso, Documentos Pendentes de Envio, Documentos Pendentes, Solicitações de Documentos) — nada anterior a este mês entra na contagem, mesmo que a grade tenha período mais antigo sem documento.</p>
+    <div class="row">
+      <div class="field" style="width:160px;"><label>Mês</label>
+        <select id="monMes">${MESES.slice(1).map((m,i)=>`<option value="${i+1}" ${cfg&&cfg.mes===i+1?'selected':''}>${m}</option>`).join('')}</select>
+      </div>
+      <div class="field" style="width:120px;"><label>Ano</label><input id="monAno" type="number" value="${cfg?cfg.ano:anoAtual}"></div>
+    </div>
+    <div class="modal-actions">
+      ${cfg? `<span class="link-discreto" id="monRemover" style="margin-right:auto; color:var(--debit); cursor:pointer;">Remover corte</span>`:''}
+      <button class="btn" id="monCancel">Cancelar</button>
+      <button class="btn primary" id="monSalvar">Salvar</button>
+    </div>
+  `);
+  document.getElementById('monCancel').addEventListener('click', closeModal);
+  if(cfg) document.getElementById('monRemover').addEventListener('click', async ()=>{
+    try{ await api('/dashboard/monitoramento-config', { method:'PUT', body:{ ano:null, mes:null } }); closeModal(); toast('Corte removido.','ok'); pageDashboard(); }
+    catch(e){ toast(e.message,'err'); }
+  });
+  document.getElementById('monSalvar').addEventListener('click', async ()=>{
+    const mes = Number(document.getElementById('monMes').value);
+    const ano = Number(document.getElementById('monAno').value);
+    if(!ano || ano<2000 || ano>2100){ toast('Informe um ano válido.','err'); return; }
+    try{
+      await api('/dashboard/monitoramento-config', { method:'PUT', body:{ ano, mes } });
+      closeModal(); toast('Início do monitoramento salvo.','ok'); pageDashboard();
+    }catch(e){ toast(e.message,'err'); }
+  });
 }
 
 // ===================== Empresas =====================

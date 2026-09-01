@@ -466,6 +466,19 @@ sqlite.exec(`
     updated_at TEXT DEFAULT (datetime('now'))
   );
 
+  -- Piso de competência pros cards "computados" de pendência (DAS em Atraso, Documentos Pendentes
+  -- de Envio, Solicitações de Documentos, Documentos Pendentes) — sem linha aqui, cada card usa o
+  -- período mais antigo já gerado na grade (comportamento de sempre). Com uma linha, nenhum desses
+  -- cards flagra competência anterior à configurada, mesmo que a grade tenha períodos mais antigos
+  -- sem documento — útil pra "zerar o histórico" quando o controle começou a valer só a partir de
+  -- um certo mês (o que veio antes foi resolvido por fora do sistema).
+  CREATE TABLE IF NOT EXISTS painel_monitoramento_config (
+    escritorio_id INTEGER PRIMARY KEY,
+    competencia_inicio_ano INTEGER,
+    competencia_inicio_mes INTEGER,
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+
   -- ---- Relatórios: cache alimentado pela sincronização com o Domínio Web (ainda não conectado) ----
   CREATE TABLE IF NOT EXISTS dominio_dados (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -7173,6 +7186,17 @@ app.get("/api/financeiro/resumo", blockCliente, requirePermissao("financeiro", "
 // Painel.
 const CARD_TIPOS: string[] = ["certificados_vencer", "das_atraso", "situacao_fiscal", "checklist_atraso", "solicitacoes_pendentes", "envio_atraso", "solicitacao_atraso"];
 
+// Piso de competência (aaaamm, ex.: 202607) configurado em painel_monitoramento_config — null
+// quando não há corte definido (comportamento de sempre: cada card usa o período mais antigo já
+// gerado na grade). Usado por todo card "computado" de pendência que varre um calendário mês a mês.
+function painelMonitoramentoCorte(escritorioId: number): number | null {
+  const row = sqlite
+    .prepare(`SELECT competencia_inicio_ano as ano, competencia_inicio_mes as mes FROM painel_monitoramento_config WHERE escritorio_id = ?`)
+    .get(escritorioId) as any;
+  if (!row || !row.ano || !row.mes) return null;
+  return row.ano * 100 + row.mes;
+}
+
 // Unifica os 3 lugares onde uma data de validade de certificado é guardada hoje (emissão de NFS-e,
 // Busca de XML, e-CNPJ do Integra Contador) numa lista só — o card não sabe (nem precisa saber) de
 // onde cada item veio, só que "vence em breve".
@@ -7220,6 +7244,7 @@ function cardDasEmAtraso(user: any): any[] {
   const escritorioId = user.escritorioId;
   const visiveis = new Set(empresasVisiveis(user));
   const agora = agoraBrasilia();
+  const corte = painelMonitoramentoCorte(escritorioId);
   const atribuicoes = sqlite
     .prepare(
       `SELECT a.id as atribuicaoId, a.empresa_id as empresaId, e.nome as empresaNome
@@ -7245,9 +7270,13 @@ function cardDasEmAtraso(user: any): any[] {
     if (!periodos.length) continue;
     const porCompetencia = new Map<string, any>(periodos.map((p) => [`${p.ano}${String(p.mes).padStart(2, "0")}`, p]));
     const maisAntigo = periodos.reduce((min, p) => (p.ano * 100 + p.mes < min.ano * 100 + min.mes ? p : min));
+    // Corte configurado em painel_monitoramento_config (opcional): não deixa o calendário começar
+    // antes da competência escolhida, mesmo que exista período mais antigo sem documento na grade.
+    let anoMesInicio = maisAntigo.ano * 100 + maisAntigo.mes;
+    if (corte && corte > anoMesInicio) anoMesInicio = corte;
     let declaradas: Set<string> | null = null;
     const competenciasFaltando: string[] = [];
-    let ano = maisAntigo.ano, mes = maisAntigo.mes, iteracoes = 0;
+    let ano = Math.floor(anoMesInicio / 100), mes = anoMesInicio % 100, iteracoes = 0;
     while ((ano < agora.ano || (ano === agora.ano && mes < agora.mes)) && iteracoes < 60) {
       iteracoes++;
       const chave = `${ano}${String(mes).padStart(2, "0")}`;
@@ -7300,6 +7329,7 @@ function cardEnvioAtraso(user: any, templateIds: number[]): any[] {
   const escritorioId = user.escritorioId;
   const visiveis = new Set(empresasVisiveis(user));
   const agora = agoraBrasilia();
+  const corte = painelMonitoramentoCorte(escritorioId);
   const placeholders = templateIds.map(() => "?").join(",");
   const atribuicoes = sqlite
     .prepare(
@@ -7319,8 +7349,10 @@ function cardEnvioAtraso(user: any, templateIds: number[]): any[] {
     if (!periodos.length) continue;
     const porCompetencia = new Map<string, any>(periodos.map((p) => [`${p.ano}${String(p.mes).padStart(2, "0")}`, p]));
     const maisAntigo = periodos.reduce((min, p) => (p.ano * 100 + p.mes < min.ano * 100 + min.mes ? p : min));
+    let anoMesInicio = maisAntigo.ano * 100 + maisAntigo.mes;
+    if (corte && corte > anoMesInicio) anoMesInicio = corte;
     const competenciasFaltando: string[] = [];
-    let ano = maisAntigo.ano, mes = maisAntigo.mes, iteracoes = 0;
+    let ano = Math.floor(anoMesInicio / 100), mes = anoMesInicio % 100, iteracoes = 0;
     // <= (não <): a pedido do usuário, esse card também valida o mês corrente — diferente do DAS e
     // das Solicitações de Documentos, que só cobram a competência já fechada (mês anterior).
     while ((ano < agora.ano || (ano === agora.ano && mes <= agora.mes)) && iteracoes < 60) {
@@ -7415,6 +7447,11 @@ function cardChecklistAtraso(user: any): any[] {
   const agora = agoraBrasilia();
   const mesRef = agora.mes === 1 ? 12 : agora.mes - 1;
   const anoRef = agora.mes === 1 ? agora.ano - 1 : agora.ano;
+  // Corte configurado: a competência do mês anterior ainda não chegou no piso escolhido — nada a
+  // checar (evita flagrar meses de antes do corte, já que aqui só existe "a competência anterior",
+  // sem backlog acumulado pra clampar dentro de um range como no DAS/Envio).
+  const corte = painelMonitoramentoCorte(escritorioId);
+  if (corte && anoRef * 100 + mesRef < corte) return [];
   const templates = sqlite
     .prepare(`SELECT id, nome, itens_json as itensJson, prazo_dia as prazoDia FROM checklist_templates WHERE escritorio_id = ? AND ativo = 1 AND prazo_dia IS NOT NULL`)
     .all(escritorioId) as any[];
@@ -7467,6 +7504,8 @@ function cardSolicitacaoAtraso(user: any, templateId: number): any[] {
   const agora = agoraBrasilia();
   const mesRef = agora.mes === 1 ? 12 : agora.mes - 1;
   const anoRef = agora.mes === 1 ? agora.ano - 1 : agora.ano;
+  const corte = painelMonitoramentoCorte(escritorioId);
+  if (corte && anoRef * 100 + mesRef < corte) return [];
   const t = sqlite
     .prepare(`SELECT id, nome, itens_json as itensJson, prazo_dia as prazoDia FROM checklist_templates WHERE id = ? AND escritorio_id = ? AND ativo = 1 AND prazo_dia IS NOT NULL`)
     .get(templateId, escritorioId) as any;
@@ -7544,6 +7583,32 @@ async function calcularCardComputado(tipo: string, user: any, parametro?: string
   return [];
 }
 
+app.get("/api/dashboard/monitoramento-config", requirePermissao("dashboard", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const row = sqlite
+    .prepare(`SELECT competencia_inicio_ano as ano, competencia_inicio_mes as mes FROM painel_monitoramento_config WHERE escritorio_id = ?`)
+    .get(user.escritorioId) as any;
+  res.json({ competenciaInicio: row && row.ano && row.mes ? { ano: row.ano, mes: row.mes } : null });
+});
+app.put("/api/dashboard/monitoramento-config", blockCliente, requirePermissao("dashboard", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const { ano, mes } = req.body || {};
+  if (ano === null || mes === null) {
+    sqlite.prepare(`DELETE FROM painel_monitoramento_config WHERE escritorio_id = ?`).run(user.escritorioId);
+    return res.json({ ok: true });
+  }
+  const anoNum = Number(ano), mesNum = Number(mes);
+  if (!Number.isInteger(anoNum) || anoNum < 2000 || anoNum > 2100 || !Number.isInteger(mesNum) || mesNum < 1 || mesNum > 12) {
+    return res.status(400).json({ error: "Informe um mês (1-12) e um ano válidos." });
+  }
+  sqlite
+    .prepare(
+      `INSERT INTO painel_monitoramento_config (escritorio_id, competencia_inicio_ano, competencia_inicio_mes, updated_at) VALUES (?, ?, ?, datetime('now'))
+       ON CONFLICT(escritorio_id) DO UPDATE SET competencia_inicio_ano = excluded.competencia_inicio_ano, competencia_inicio_mes = excluded.competencia_inicio_mes, updated_at = datetime('now')`
+    )
+    .run(user.escritorioId, anoNum, mesNum);
+  res.json({ ok: true });
+});
 app.get("/api/dashboard/cards", requirePermissao("dashboard", "visualizar"), async (req, res) => {
   const user = (req as any).user;
   const rows = sqlite.prepare(`SELECT * FROM dashboard_cards WHERE escritorio_id = ? ORDER BY ordem, id`).all(user.escritorioId) as any[];
