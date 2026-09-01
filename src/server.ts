@@ -5803,6 +5803,19 @@ function resFalso() {
     },
   };
 }
+// Achado ao vivo (LIBRA AGROINDUSTRIAL): empresas.email veio cadastrado com 2 endereços separados
+// por vírgula ("compras@x.com,contabilidade@x.com") — provavelmente de uma importação do Domínio
+// Web ou digitação manual. O Sistema Nacional NFS-e só aceita UM endereço no campo de e-mail do
+// tomador e rejeita a nota inteira com "E0247: Email inválido" quando recebe os dois juntos — a
+// rotina automática falhava (e ia continuar falhando) todo mês por causa disso. Usa só o primeiro
+// que parecer um e-mail válido, em vez do campo cru.
+function primeiroEmailValido(valor: string | null | undefined): string | null {
+  if (!valor) return null;
+  const partes = String(valor)
+    .split(/[,;]/)
+    .map((p) => p.trim());
+  return partes.find((p) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(p)) || null;
+}
 type ResumoExecucaoAgendamento = { processados: number; sucesso: number; falha: number; motivo?: string };
 async function nfseExecutarAgendamentoAutomatico(forcarMesmoSeJaExecutou = false, escritorioIdFiltro?: number): Promise<ResumoExecucaoAgendamento> {
   const config = escritorioIdFiltro
@@ -5886,7 +5899,7 @@ async function nfseExecutarAgendamentoAutomatico(forcarMesmoSeJaExecutou = false
       const v = nfseValidarEntrada(usuarioSistema, {
         empresaId: config.empresa_prestador_id,
         modeloId: item.modelo_id,
-        tomador: { documento: cnpjTomador, nome: empresa.nome, email: empresa.email || null, cep: empresa.cep || null },
+        tomador: { documento: cnpjTomador, nome: empresa.nome, email: primeiroEmailValido(empresa.email), cep: empresa.cep || null },
         servico: { descricao, valor: Number(item.valor_servico), competencia: `${competenciaAtual}-01` },
       });
       if ("erro" in v) {
