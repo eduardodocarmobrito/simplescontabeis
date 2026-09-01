@@ -208,6 +208,7 @@ sqlite.exec(`
     periodicidade TEXT NOT NULL DEFAULT 'mensal', -- 'mensal' | 'anual' | 'avulso'
     accept_json TEXT NOT NULL DEFAULT '["pdf"]',
     detectar_vencimento INTEGER NOT NULL DEFAULT 1, -- desliga pra tipos sem data de vencimento (DRE, Balancete...)
+    considera_mes_atual INTEGER NOT NULL DEFAULT 1, -- pro card "envio_atraso": 1 cobra a competência do mês corrente (ex.: Nota Fiscal, pode ser emitida a qualquer momento do mês) | 0 só cobra depois que o mês fecha, igual DAS (ex.: DRE/Balancete/Razão Contábil, só existem depois do mês acabar)
     visivel_cliente INTEGER NOT NULL DEFAULT 0, -- aparece no menu "Solicitar Documentos" do cliente
     ativo INTEGER NOT NULL DEFAULT 1,
     created_by INTEGER,
@@ -958,6 +959,21 @@ sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_envio_documentos_periodo ON envio_do
       .prepare(`UPDATE envio_templates SET detectar_vencimento = 0 WHERE LOWER(nome) IN ('dre', 'balancete', 'balanço', 'balanco')`)
       .run();
     console.log("Migração aplicada: envio_templates.detectar_vencimento (desligado para modelos de relatório já existentes).");
+  }
+}
+
+// Migração leve: considera_mes_atual — pro card "envio_atraso" saber se cobra a competência do mês
+// corrente ou só depois que o mês fecha. Modelos de fechamento contábil que já existiam (não têm
+// como existir antes do mês acabar) ganham a flag desligada de cara, igual já acontece com
+// detectar_vencimento acima.
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(envio_templates)`).all() as any[];
+  if (!cols.some((c) => c.name === "considera_mes_atual")) {
+    sqlite.exec(`ALTER TABLE envio_templates ADD COLUMN considera_mes_atual INTEGER NOT NULL DEFAULT 1`);
+    sqlite
+      .prepare(`UPDATE envio_templates SET considera_mes_atual = 0 WHERE LOWER(nome) IN ('dre', 'balancete', 'balanço', 'balanco', 'razão contábil', 'razao contabil')`)
+      .run();
+    console.log("Migração aplicada: envio_templates.considera_mes_atual (desligado para DRE/Balancete/Razão Contábil já existentes).");
   }
 }
 
@@ -2939,6 +2955,7 @@ app.get("/api/envio/templates", blockCliente, requirePermissao("envio", "visuali
       ...r,
       accept: JSON.parse(r.accept_json),
       detectarVencimento: !!r.detectar_vencimento,
+      considerarMesAtual: !!r.considera_mes_atual,
       visivelCliente: !!r.visivel_cliente,
       protegido: ENVIO_TEMPLATES_PROTEGIDOS.includes(r.nome),
     })),
@@ -2946,12 +2963,12 @@ app.get("/api/envio/templates", blockCliente, requirePermissao("envio", "visuali
 });
 app.post("/api/envio/templates", blockCliente, requirePermissao("envio", "postar"), (req, res) => {
   const user = (req as any).user;
-  const { nome, descricao, periodicidade, accept, detectarVencimento, visivelCliente } = req.body || {};
+  const { nome, descricao, periodicidade, accept, detectarVencimento, considerarMesAtual, visivelCliente } = req.body || {};
   if (!nome) return res.status(400).json({ error: "Informe o nome (ex.: \"DARF PIS\")." });
   const acceptFinal = Array.isArray(accept) && accept.length ? accept : ["pdf"];
   const info = sqlite
-    .prepare(`INSERT INTO envio_templates (nome, descricao, periodicidade, accept_json, detectar_vencimento, visivel_cliente, created_by, escritorio_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(nome, descricao || null, periodicidade || "mensal", JSON.stringify(acceptFinal), detectarVencimento === false ? 0 : 1, visivelCliente ? 1 : 0, user.id, user.escritorioId);
+    .prepare(`INSERT INTO envio_templates (nome, descricao, periodicidade, accept_json, detectar_vencimento, considera_mes_atual, visivel_cliente, created_by, escritorio_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(nome, descricao || null, periodicidade || "mensal", JSON.stringify(acceptFinal), detectarVencimento === false ? 0 : 1, considerarMesAtual === false ? 0 : 1, visivelCliente ? 1 : 0, user.id, user.escritorioId);
   res.json({ id: Number(info.lastInsertRowid) });
 });
 app.put("/api/envio/templates/:id", blockCliente, requirePermissao("envio", "editar"), (req, res) => {
@@ -2959,7 +2976,7 @@ app.put("/api/envio/templates/:id", blockCliente, requirePermissao("envio", "edi
   const existing = sqlite.prepare(`SELECT * FROM envio_templates WHERE id = ? AND escritorio_id = ?`).get(id, (req as any).user.escritorioId) as any;
   if (!existing) return res.status(404).json({ error: "Modelo não encontrado." });
   const protegido = ENVIO_TEMPLATES_PROTEGIDOS.includes(existing.nome);
-  const { nome, descricao, periodicidade, accept, ativo, detectarVencimento, visivelCliente } = req.body || {};
+  const { nome, descricao, periodicidade, accept, ativo, detectarVencimento, considerarMesAtual, visivelCliente } = req.body || {};
   if (protegido && nome !== undefined && nome !== existing.nome) {
     return res.status(409).json({ error: `"${existing.nome}" é usado automaticamente pelo Integra Contador — renomear quebraria o anexo automático de DAS/Situação Fiscal.` });
   }
@@ -2970,13 +2987,14 @@ app.put("/api/envio/templates/:id", blockCliente, requirePermissao("envio", "edi
   // antigo) — só passa a valer pra próxima vez que "Gerar ano na grade" (ou "+ Nova solicitação
   // avulsa") for usado em cada atribuição desse modelo.
   sqlite
-    .prepare(`UPDATE envio_templates SET nome=?, descricao=?, periodicidade=?, accept_json=?, detectar_vencimento=?, visivel_cliente=?, ativo=? WHERE id=?`)
+    .prepare(`UPDATE envio_templates SET nome=?, descricao=?, periodicidade=?, accept_json=?, detectar_vencimento=?, considera_mes_atual=?, visivel_cliente=?, ativo=? WHERE id=?`)
     .run(
       nome ?? existing.nome,
       descricao !== undefined ? descricao : existing.descricao,
       periodicidade ?? existing.periodicidade,
       Array.isArray(accept) && accept.length ? JSON.stringify(accept) : existing.accept_json,
       detectarVencimento === undefined ? existing.detectar_vencimento : detectarVencimento ? 1 : 0,
+      considerarMesAtual === undefined ? existing.considera_mes_atual : considerarMesAtual ? 1 : 0,
       visivelCliente === undefined ? existing.visivel_cliente : visivelCliente ? 1 : 0,
       ativo === undefined ? existing.ativo : ativo ? 1 : 0,
       id
@@ -7333,7 +7351,7 @@ function cardEnvioAtraso(user: any, templateIds: number[]): any[] {
   const placeholders = templateIds.map(() => "?").join(",");
   const atribuicoes = sqlite
     .prepare(
-      `SELECT a.id as atribuicaoId, a.empresa_id as empresaId, e.nome as empresaNome, t.id as templateId, t.nome as templateNome
+      `SELECT a.id as atribuicaoId, a.empresa_id as empresaId, e.nome as empresaNome, t.id as templateId, t.nome as templateNome, t.considera_mes_atual as considerarMesAtual
        FROM envio_atribuicoes a
        JOIN envio_templates t ON t.id = a.template_id AND t.id IN (${placeholders}) AND t.escritorio_id = ?
        JOIN empresas e ON e.id = a.empresa_id AND e.escritorio_id = ? AND e.ativo = 1
@@ -7353,9 +7371,11 @@ function cardEnvioAtraso(user: any, templateIds: number[]): any[] {
     if (corte && corte > anoMesInicio) anoMesInicio = corte;
     const competenciasFaltando: string[] = [];
     let ano = Math.floor(anoMesInicio / 100), mes = anoMesInicio % 100, iteracoes = 0;
-    // <= (não <): a pedido do usuário, esse card também valida o mês corrente — diferente do DAS e
-    // das Solicitações de Documentos, que só cobram a competência já fechada (mês anterior).
-    while ((ano < agora.ano || (ano === agora.ano && mes <= agora.mes)) && iteracoes < 60) {
+    // Por modelo: Nota Fiscal (considera_mes_atual=1) cobra até o mês corrente, porque pode ser
+    // emitida a qualquer momento do mês — já DRE/Balancete/Razão Contábil (considera_mes_atual=0)
+    // só existem depois que o mês fecha, então param no mês anterior, igual DAS e Solicitações.
+    const incluirMesAtual = !!atrib.considerarMesAtual;
+    while ((ano < agora.ano || (ano === agora.ano && (incluirMesAtual ? mes <= agora.mes : mes < agora.mes))) && iteracoes < 60) {
       iteracoes++;
       const chave = `${ano}${String(mes).padStart(2, "0")}`;
       const periodo = porCompetencia.get(chave);

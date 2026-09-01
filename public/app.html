@@ -764,7 +764,7 @@ const CARD_TIPOS_INFO = {
   situacao_fiscal: { label:'Situação Fiscal', subtitulo:'Empresas com pendência' },
   checklist_atraso: { label:'Documentos Pendentes', subtitulo:'Competência anterior, após o prazo, sem envio do cliente' },
   solicitacoes_pendentes: { label:'Solicitações dos Clientes', subtitulo:'Aguardando retorno do escritório' },
-  envio_atraso: { label:'Modelo de Envio em Atraso', subtitulo:'Competências não entregues (inclui o mês atual)', multi:true,
+  envio_atraso: { label:'Modelo de Envio em Atraso', subtitulo:'Competências não entregues', multi:true,
     parametroLabel:'Modelos de envio — marque um ou mais', parametroVazio:'Nenhum modelo mensal cadastrado ainda — crie um em Envio de Documentos › Modelos.' },
   solicitacao_atraso: { label:'Modelo de Solicitação em Atraso', subtitulo:'Competência anterior, após o prazo, sem envio do cliente',
     parametroLabel:'Modelo de solicitação', parametroVazio:'Nenhum modelo com prazo configurado ainda — crie (ou edite) um em Solicitações de Documentos e defina o prazo (dia do mês).' },
@@ -1768,6 +1768,8 @@ function envioModeloModal(t){
     </div>
     <label class="checkbox-row" style="margin-top:10px;"><input type="checkbox" id="evDetectarVenc" ${(!t || t.detectarVencimento)?'checked':''}> Detectar data de vencimento automaticamente no arquivo</label>
     <p style="font-size:11.5px; color:var(--ink-soft); margin:2px 0 0;">Desmarque para tipos sem vencimento, como DRE e Balancete.</p>
+    <label class="checkbox-row" style="margin-top:10px;"><input type="checkbox" id="evConsiderarMesAtual" ${(!t || t.considerarMesAtual)?'checked':''}> No card "Modelo de Envio em Atraso", cobrar já a competência do mês atual</label>
+    <p style="font-size:11.5px; color:var(--ink-soft); margin:2px 0 0;">Desmarque para modelos que só existem depois que o mês fecha (DRE, Balancete, Razão Contábil) — aí o card só cobra a partir do mês anterior, igual o DAS.</p>
     <label class="checkbox-row" style="margin-top:10px;"><input type="checkbox" id="evVisivelCliente" ${(t&&t.visivelCliente)?'checked':''}> Cliente pode solicitar este documento</label>
     <p style="font-size:11.5px; color:var(--ink-soft); margin:2px 0 0;">Marque para este modelo aparecer no menu "Solicitar Documentos" do cliente.</p>
     <div class="modal-actions">
@@ -1782,7 +1784,7 @@ function envioModeloModal(t){
     if(!nome){ toast('Informe o nome.','err'); return; }
     const accept=[...document.querySelectorAll('.evAccept:checked')].map(c=>c.value);
     if(!accept.length){ toast('Selecione ao menos um tipo de arquivo.','err'); return; }
-    const body = { nome, descricao: document.getElementById('evDesc').value.trim(), periodicidade: document.getElementById('evPeriodicidade').value, accept, detectarVencimento: document.getElementById('evDetectarVenc').checked, visivelCliente: document.getElementById('evVisivelCliente').checked };
+    const body = { nome, descricao: document.getElementById('evDesc').value.trim(), periodicidade: document.getElementById('evPeriodicidade').value, accept, detectarVencimento: document.getElementById('evDetectarVenc').checked, considerarMesAtual: document.getElementById('evConsiderarMesAtual').checked, visivelCliente: document.getElementById('evVisivelCliente').checked };
     try{
       if(t) await api('/envio/templates/'+t.id, { method:'PUT', body });
       else await api('/envio/templates', { method:'POST', body });
