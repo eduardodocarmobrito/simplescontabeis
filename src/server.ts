@@ -5817,7 +5817,14 @@ function primeiroEmailValido(valor: string | null | undefined): string | null {
   return partes.find((p) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(p)) || null;
 }
 type ResumoExecucaoAgendamento = { processados: number; sucesso: number; falha: number; motivo?: string };
-async function nfseExecutarAgendamentoAutomatico(forcarMesmoSeJaExecutou = false, escritorioIdFiltro?: number): Promise<ResumoExecucaoAgendamento> {
+// empresaIdsFiltro (opcional): restringe a rodada só a essas empresas — usado pelo botão "Executar
+// só as que falharam", pra não reprocessar (nem re-logar como "pulado") quem já emitiu certo nesta
+// competência.
+async function nfseExecutarAgendamentoAutomatico(
+  forcarMesmoSeJaExecutou = false,
+  escritorioIdFiltro?: number,
+  empresaIdsFiltro?: number[]
+): Promise<ResumoExecucaoAgendamento> {
   const config = escritorioIdFiltro
     ? (sqlite.prepare(`SELECT * FROM nfse_agendamento_config WHERE escritorio_id = ?`).get(escritorioIdFiltro) as any)
     : null;
@@ -5857,9 +5864,10 @@ async function nfseExecutarAgendamentoAutomatico(forcarMesmoSeJaExecutou = false
       `SELECT i.* FROM nfse_agendamento_itens i
        JOIN nfse_agendamento_empresas ae ON ae.empresa_id = i.empresa_id
        JOIN empresas e ON e.id = i.empresa_id
-       WHERE i.ativo = 1 AND ae.ativo = 1 AND e.ativo = 1 AND e.escritorio_id = ?`
+       WHERE i.ativo = 1 AND ae.ativo = 1 AND e.ativo = 1 AND e.escritorio_id = ?
+       ${empresaIdsFiltro && empresaIdsFiltro.length ? `AND i.empresa_id IN (${empresaIdsFiltro.map(() => "?").join(",")})` : ""}`
     )
-    .all(config.escritorio_id) as any[];
+    .all(config.escritorio_id, ...(empresaIdsFiltro && empresaIdsFiltro.length ? empresaIdsFiltro : [])) as any[];
   let sucesso = 0;
   let falha = 0;
   for (const item of itens) {
@@ -6209,6 +6217,34 @@ app.get("/api/nfse/agendamento/log", blockCliente, requirePermissao("configuraco
 app.post("/api/nfse/agendamento/executar-agora", blockCliente, requirePermissao("configuracoes", "postar"), async (req, res) => {
   try {
     const resumo = await nfseExecutarAgendamentoAutomatico(true, (req as any).user.escritorioId);
+    res.json({ ok: true, ...resumo });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+// Reprocessa só as empresas cuja última execução da competência atual falhou — evita bater de novo
+// nas que já emitiram certo (o que "Executar agora" já pula pela trava de item duplicado, mas ainda
+// gastaria tempo/consultas à toa percorrendo todo mundo de novo).
+app.post("/api/nfse/agendamento/executar-falhas", blockCliente, requirePermissao("configuracoes", "postar"), async (req, res) => {
+  try {
+    const escritorioId = (req as any).user.escritorioId;
+    const agora = agoraBrasilia();
+    const competenciaAtual = `${agora.ano}-${String(agora.mes).padStart(2, "0")}`;
+    const falhas = sqlite
+      .prepare(
+        `SELECT l.empresa_id as empresaId
+         FROM nfse_agendamento_log l
+         JOIN empresas e ON e.id = l.empresa_id
+         WHERE e.escritorio_id = ? AND l.competencia = ? AND l.sucesso = 0
+           AND l.id = (SELECT MAX(id) FROM nfse_agendamento_log WHERE empresa_id = l.empresa_id AND competencia = l.competencia)`
+      )
+      .all(escritorioId, competenciaAtual) as any[];
+    if (!falhas.length) return res.json({ ok: true, processados: 0, sucesso: 0, falha: 0, motivo: "Nenhuma execução com falha nesta competência." });
+    const resumo = await nfseExecutarAgendamentoAutomatico(
+      true,
+      escritorioId,
+      falhas.map((f) => f.empresaId)
+    );
     res.json({ ok: true, ...resumo });
   } catch (e: any) {
     res.status(500).json({ error: e.message });

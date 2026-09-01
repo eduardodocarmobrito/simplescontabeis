@@ -5899,6 +5899,7 @@ async function renderCfgNfseAgendamento(box){
       <div class="row">
         <button class="btn primary" id="agSalvarConfig">Salvar configuração</button>
         <button class="btn" id="agExecutarAgora">Executar agora</button>
+        <button class="btn" id="agExecutarFalhas">Executar só as que falharam</button>
       </div>
     </div>
     <div class="row" style="align-items:flex-start; gap:16px; flex-wrap:wrap;">
@@ -5941,6 +5942,19 @@ async function renderCfgNfseAgendamento(box){
     try{
       toast('Executando… isso pode levar alguns minutos.','ok');
       const r = await api('/nfse/agendamento/executar-agora', { method:'POST' });
+      if(r.processados===0){
+        toast(r.motivo||'Nada foi processado.','err');
+      } else {
+        toast(`Execução concluída: ${r.sucesso} emitida(s), ${r.falha} com falha, de ${r.processados} serviço(s) processado(s) — confira o histórico abaixo.`, r.falha>0?'err':'ok');
+      }
+      carregarLogAgendamento();
+    }catch(e){ toast(e.message,'err'); }
+  });
+  document.getElementById('agExecutarFalhas').addEventListener('click', async ()=>{
+    if(!confirm('Isso vai tentar emitir de novo, agora, só as empresas cuja última execução deste mês falhou — não é uma simulação. Confirma?')) return;
+    try{
+      toast('Executando… isso pode levar alguns minutos.','ok');
+      const r = await api('/nfse/agendamento/executar-falhas', { method:'POST' });
       if(r.processados===0){
         toast(r.motivo||'Nada foi processado.','err');
       } else {
