@@ -1512,7 +1512,7 @@ sqlite.exec(`INSERT OR IGNORE INTO whatsapp_config (escritorio_id) SELECT id FRO
   }
 }
 
-const MODULOS = ["dashboard", "empresas", "solicitacoes", "envio", "nfse", "financeiro", "contratos", "relatorios", "usuarios", "configuracoes"] as const;
+const MODULOS = ["dashboard", "empresas", "solicitacoes", "envio", "nfse", "nfe-busca", "financeiro", "contratos", "relatorios", "usuarios", "configuracoes"] as const;
 type Modulo = (typeof MODULOS)[number];
 
 // ========================= LOGIN (senha com hash + sessão via cookie) =========================
@@ -3557,7 +3557,7 @@ function nfeCarregarCertificado(row: any): nfse.CertificadoInfo {
   const senha = nfse.decifrarTexto(row.senha_cifrada);
   return nfse.lerCertificadoPfx(pfxBuf, senha);
 }
-app.get("/api/nfe/config", blockCliente, requireAdmin, (req, res) => {
+app.get("/api/nfe/config", blockCliente, requirePermissao("nfe-busca", "visualizar"), (req, res) => {
   const rows = sqlite
     .prepare(
       `SELECT c.empresa_id as empresaId, e.nome as empresaNome, c.cnpj, c.uf_autor as ufAutor, c.ambiente,
@@ -3570,7 +3570,7 @@ app.get("/api/nfe/config", blockCliente, requireAdmin, (req, res) => {
     .all((req as any).user.escritorioId);
   res.json({ items: rows, moduloAtivo: escritorioTemModulo((req as any).user.escritorioId, "busca_xml_nfe") });
 });
-app.post("/api/nfe/config", blockCliente, requireAdmin, upload.single("arquivo"), async (req, res) => {
+app.post("/api/nfe/config", blockCliente, requirePermissao("nfe-busca", "postar"), upload.single("arquivo"), async (req, res) => {
   const user = (req as any).user;
   if (!req.file) return res.status(400).json({ error: "Selecione o arquivo .pfx." });
   const { senha, empresaId, ufAutor, ambiente } = req.body || {};
@@ -3624,7 +3624,7 @@ app.post("/api/nfe/config", blockCliente, requireAdmin, upload.single("arquivo")
 // Reativar a busca de uma empresa que estava desligada também já sincroniza na hora, pelo mesmo
 // motivo do upload de certificado — senão ela só voltaria a ser buscada até 65min depois (rotina
 // automática) ou quando alguém lembrasse de clicar "Buscar agora".
-app.put("/api/nfe/config/:empresaId/ativo", blockCliente, requireAdmin, async (req, res) => {
+app.put("/api/nfe/config/:empresaId/ativo", blockCliente, requirePermissao("nfe-busca", "editar"), async (req, res) => {
   const user = (req as any).user;
   const empId = Number(req.params.empresaId);
   const row = sqlite.prepare(`SELECT * FROM nfe_busca_config WHERE empresa_id = ?`).get(empId) as any;
@@ -3645,7 +3645,7 @@ app.put("/api/nfe/config/:empresaId/ativo", blockCliente, requireAdmin, async (r
   }
   res.json({ ok: true, sync });
 });
-app.delete("/api/nfe/config/:empresaId", blockCliente, requireAdmin, (req, res) => {
+app.delete("/api/nfe/config/:empresaId", blockCliente, requirePermissao("nfe-busca", "editar"), (req, res) => {
   const empId = Number(req.params.empresaId);
   const row = sqlite.prepare(`SELECT * FROM nfe_busca_config WHERE empresa_id = ?`).get(empId) as any;
   if (!row || row.escritorio_id !== (req as any).user.escritorioId) return res.status(404).json({ error: "Configuração não encontrada." });
@@ -3767,7 +3767,7 @@ async function nfeENfseBuscarTudo(empresaId: number, cfg: any, cert: nfse.Certif
 }
 // Busca "completa" (o que o usuário pediu: "um buscar por completo igual ao SIEG") — roda NF-e/NFC-e
 // e NFS-e no mesmo clique, com falhas independentes (uma fonte fora do ar não trava a outra).
-app.post("/api/nfe/config/:empresaId/buscar", blockCliente, requireAdmin, async (req, res) => {
+app.post("/api/nfe/config/:empresaId/buscar", blockCliente, requirePermissao("nfe-busca", "postar"), async (req, res) => {
   const user = (req as any).user;
   const empId = Number(req.params.empresaId);
   if (!podeAcessarEmpresa(user, empId)) return res.status(404).json({ error: "Empresa não encontrada." });
@@ -3827,7 +3827,7 @@ async function nfeExecutarBuscaAutomatica() {
 setInterval(() => {
   nfeExecutarBuscaAutomatica().catch((e) => console.error("Erro na busca automática de XML:", e.message));
 }, NFE_AUTO_INTERVALO_MS);
-app.get("/api/nfe/documentos", blockCliente, requireAdmin, (req, res) => {
+app.get("/api/nfe/documentos", blockCliente, requirePermissao("nfe-busca", "visualizar"), (req, res) => {
   const user = (req as any).user;
   const empresaId = req.query.empresaId ? Number(req.query.empresaId) : null;
   if (empresaId && !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
@@ -3851,7 +3851,7 @@ app.get("/api/nfe/documentos", blockCliente, requireAdmin, (req, res) => {
 // mostrar as últimas notas na tela de detalhe, não é confiável pra somar quantos documentos cada
 // empresa tem (com volume grande, os 500 mais recentes do escritório inteiro ficam concentrados em
 // poucas empresas e a soma por empresa fica errada pras outras).
-app.get("/api/nfe/documentos/contagem", blockCliente, requireAdmin, (req, res) => {
+app.get("/api/nfe/documentos/contagem", blockCliente, requirePermissao("nfe-busca", "visualizar"), (req, res) => {
   const user = (req as any).user;
   const empresasIds = empresasVisiveis(user);
   if (empresasIds.length === 0) return res.json({ items: [] });
@@ -3866,7 +3866,7 @@ app.get("/api/nfe/documentos/contagem", blockCliente, requireAdmin, (req, res) =
     .all(user.escritorioId, ...empresasIds);
   res.json({ items: rows });
 });
-app.get("/api/nfe/documentos/:id/xml", blockCliente, requireAdmin, (req, res) => {
+app.get("/api/nfe/documentos/:id/xml", blockCliente, requirePermissao("nfe-busca", "visualizar"), (req, res) => {
   const user = (req as any).user;
   const row = sqlite.prepare(`SELECT * FROM nfe_documentos WHERE id = ?`).get(Number(req.params.id)) as any;
   if (!row || row.escritorio_id !== user.escritorioId || !podeAcessarEmpresa(user, row.empresa_id)) {
@@ -3897,7 +3897,7 @@ async function nfeDocumentoObterPdf(row: any): Promise<{ pdf: Buffer | null; err
     return { pdf: null, erro: `Não consegui gerar o PDF: ${e.message}` };
   }
 }
-app.get("/api/nfe/documentos/:id/pdf", blockCliente, requireAdmin, async (req, res) => {
+app.get("/api/nfe/documentos/:id/pdf", blockCliente, requirePermissao("nfe-busca", "visualizar"), async (req, res) => {
   const user = (req as any).user;
   const row = sqlite.prepare(`SELECT * FROM nfe_documentos WHERE id = ?`).get(Number(req.params.id)) as any;
   if (!row || row.escritorio_id !== user.escritorioId || !podeAcessarEmpresa(user, row.empresa_id)) {
@@ -3911,7 +3911,7 @@ app.get("/api/nfe/documentos/:id/pdf", blockCliente, requireAdmin, async (req, r
 });
 // Download em lote — zip com XML e/ou PDF de vários documentos buscados de uma vez (mesmo padrão de
 // /api/nfse/emissoes/baixar-lote).
-app.get("/api/nfe/documentos/baixar-lote", blockCliente, requireAdmin, async (req, res) => {
+app.get("/api/nfe/documentos/baixar-lote", blockCliente, requirePermissao("nfe-busca", "visualizar"), async (req, res) => {
   const user = (req as any).user;
   const ids = String(req.query.ids || "")
     .split(",")
