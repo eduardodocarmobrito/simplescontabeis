@@ -7208,27 +7208,12 @@ async function sitfisAnalisar(pdfPath: string): Promise<{ temPendencia: boolean;
   const achados = SITFIS_MARCADORES_PENDENCIA.filter((m) => m.regex.test(texto)).map((m) => m.chave);
   return { temPendencia: achados.length > 0, resumo: achados.length ? achados.join(", ") : null };
 }
-// Duas causas bem diferentes por trás de "a busca falhou": (a) instabilidade técnica passageira do
-// SERPRO/Receita (rede, timeout) — tentar de novo mais tarde costuma resolver; (b) a empresa nunca
-// deu (ou o escritório nunca aceitou, prazo de até 30 dias) a autorização de acesso no e-CAC pro
-// CNPJ do escritório — nesse caso tentar de novo não adianta nada, precisa resolver isso no e-CAC
-// primeiro. Sem confirmação contra uma conta SERPRO real do texto exato que a Receita devolve nesse
-// segundo caso (ver comentário no topo de integracontador.ts), então a detecção é por palavra-chave
-// no texto real do erro — propositalmente ampla, cobre variações plausíveis sem travar em um texto
-// único, mas mantém a mensagem original visível junto pra conferência.
-const INTEGRACONTADOR_ERRO_AUTORIZACAO_REGEX = /procura[cç][aã]o|outorg|n[aã]o possui acesso|sem autoriza|autoriza[cç][aã]o.{0,20}pendente|acesso negado/i;
-function formatarErroIntegraContador(mensagemErro: string): string {
-  if (INTEGRACONTADOR_ERRO_AUTORIZACAO_REGEX.test(mensagemErro)) {
-    return `Falta autorização (procuração eletrônica) da empresa no e-CAC pro Integra Contador — outorgue/aceite a autorização antes de tentar de novo. Detalhe: ${mensagemErro}`;
-  }
-  return `Falha na última busca — situação não confirmada: ${mensagemErro}`;
-}
 async function cardSituacaoFiscal(user: any): Promise<any[]> {
   const escritorioId = user.escritorioId;
   const visiveis = new Set(empresasVisiveis(user));
   const rows = sqlite
     .prepare(
-      `SELECT c.empresa_id as empresaId, e.nome as empresaNome, c.ultimo_erro as ultimoErro
+      `SELECT c.empresa_id as empresaId, e.nome as empresaNome
        FROM integracontador_empresa_config c JOIN empresas e ON e.id = c.empresa_id
        WHERE c.escritorio_id = ? AND c.ativo = 1 AND e.ativo = 1
        ORDER BY e.nome`
@@ -7240,36 +7225,26 @@ async function cardSituacaoFiscal(user: any): Promise<any[]> {
     // Achado ao vivo: "Declaração/DAS ainda não localizada" (alerta_declaracao) saiu daqui — não é
     // informação de Situação Fiscal (SITFIS), é sobre a declaração do Simples não ter sido
     // localizada/transmitida, um assunto diferente que estava poluindo este card.
-    // Achado ao vivo: a última TENTATIVA de busca pode ter falhado (ex.: timeout num passo
-    // qualquer) mesmo já existindo um relatório de Situação Fiscal baixado com sucesso numa busca
-    // anterior — nesse caso o card mostrava só "situação não confirmada" e escondia uma pendência
-    // real que já estava disponível. Agora sempre confere primeiro o relatório mais recente já
-    // salvo, independente do resultado da última tentativa; só cai na mensagem de falha quando não
-    // existe relatório nenhum pra conferir.
+    // Achado ao vivo: "Falha na última busca" (sem relatório nenhum pra conferir) também saiu — o
+    // usuário quer só empresa com pendência REAL, com o PDF pra baixar; falha técnica de busca sem
+    // documento nenhum não é uma pendência confirmada, só ruído. Esse status de falha continua
+    // disponível na tela Integra Contador (coluna por empresa), só não aparece mais aqui.
     const doc = sqlite
       .prepare(`SELECT id as docId, pdf_path as pdfPath FROM integracontador_documentos WHERE empresa_id = ? AND tipo = 'situacao_fiscal' ORDER BY criado_em DESC LIMIT 1`)
       .get(r.empresaId) as any;
-    if (doc?.pdfPath && fs.existsSync(doc.pdfPath)) {
-      try {
-        const analise = await sitfisAnalisar(doc.pdfPath);
-        if (analise.temPendencia) {
-          resultado.push({
-            empresaId: r.empresaId,
-            empresaNome: r.empresaNome,
-            alerta: `Atenção: precisa de atenção pois consta pendência no âmbito da Receita Federal (${analise.resumo}).`,
-            docId: doc.docId,
-          });
-          continue;
-        }
-        // Relatório existe e está limpo — segue sem alerta mesmo que a última tentativa de busca
-        // tenha falhado (a informação que temos, mesmo que não seja da última tentativa, é boa).
-        continue;
-      } catch (e: any) {
-        console.error(`[Situação Fiscal] falha ao ler o relatório da empresa ${r.empresaId}:`, e.message);
+    if (!doc?.pdfPath || !fs.existsSync(doc.pdfPath)) continue;
+    try {
+      const analise = await sitfisAnalisar(doc.pdfPath);
+      if (analise.temPendencia) {
+        resultado.push({
+          empresaId: r.empresaId,
+          empresaNome: r.empresaNome,
+          alerta: `Atenção: precisa de atenção pois consta pendência no âmbito da Receita Federal (${analise.resumo}).`,
+          docId: doc.docId,
+        });
       }
-    }
-    if (r.ultimoErro) {
-      resultado.push({ empresaId: r.empresaId, empresaNome: r.empresaNome, alerta: formatarErroIntegraContador(r.ultimoErro) });
+    } catch (e: any) {
+      console.error(`[Situação Fiscal] falha ao ler o relatório da empresa ${r.empresaId}:`, e.message);
     }
   }
   return resultado;
