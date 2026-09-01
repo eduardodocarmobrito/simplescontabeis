@@ -7158,7 +7158,7 @@ app.get("/api/financeiro/resumo", blockCliente, requirePermissao("financeiro", "
 // função abaixo devolve a lista (o card mostra só items.length); todas já filtram pelas empresas
 // que o usuário logado pode ver (empresasVisiveis), pro caso de um Colaborador restrito abrir o
 // Painel.
-const CARD_TIPOS: string[] = ["certificados_vencer", "das_atraso", "situacao_fiscal", "checklist_atraso", "solicitacoes_pendentes", "envio_atraso"];
+const CARD_TIPOS: string[] = ["certificados_vencer", "das_atraso", "situacao_fiscal", "checklist_atraso", "solicitacoes_pendentes", "envio_atraso", "solicitacao_atraso"];
 
 // Unifica os 3 lugares onde uma data de validade de certificado é guardada hoje (emissão de NFS-e,
 // Busca de XML, e-CNPJ do Integra Contador) numa lista só — o card não sabe (nem precisa saber) de
@@ -7426,6 +7426,55 @@ function cardChecklistAtraso(user: any): any[] {
   return resultado;
 }
 
+// Versão de cardChecklistAtraso() pra UM modelo específico de Solicitação de Documentos, em vez de
+// somar todos junto — permite um card por modelo (ex.: "Extratos Bancários em Atraso", "Extratos
+// de Parcelamento em Atraso"), cada um com seu próprio prazo. Mesma regra: só olha a competência
+// do mês anterior (essas solicitações são renovadas todo mês, sem backlog acumulado como o DAS).
+function cardSolicitacaoAtraso(user: any, templateId: number): any[] {
+  const escritorioId = user.escritorioId;
+  const visiveis = new Set(empresasVisiveis(user));
+  const agora = agoraBrasilia();
+  const mesRef = agora.mes === 1 ? 12 : agora.mes - 1;
+  const anoRef = agora.mes === 1 ? agora.ano - 1 : agora.ano;
+  const t = sqlite
+    .prepare(`SELECT id, nome, itens_json as itensJson, prazo_dia as prazoDia FROM checklist_templates WHERE id = ? AND escritorio_id = ? AND ativo = 1 AND prazo_dia IS NOT NULL`)
+    .get(templateId, escritorioId) as any;
+  if (!t) return [];
+  if (agora.dia <= t.prazoDia) return []; // prazo desse mês (pra entregar a competência anterior) ainda não venceu
+  const itensObrigatorios = (JSON.parse(t.itensJson) as any[]).filter((it) => it.obrigatorio);
+  if (!itensObrigatorios.length) return [];
+  const atribuicoes = sqlite
+    .prepare(`SELECT a.id, a.empresa_id as empresaId, e.nome as empresaNome FROM checklist_atribuicoes a JOIN empresas e ON e.id = a.empresa_id WHERE a.template_id = ? AND a.ativo = 1 AND e.ativo = 1`)
+    .all(t.id) as any[];
+  const resultado: any[] = [];
+  for (const a of atribuicoes) {
+    if (!visiveis.has(a.empresaId)) continue;
+    const periodo = sqlite.prepare(`SELECT id FROM checklist_periodos WHERE atribuicao_id = ? AND ano = ? AND mes = ?`).get(a.id, anoRef, mesRef) as any;
+    let faltando: string[];
+    if (!periodo) {
+      faltando = itensObrigatorios.map((it) => it.label);
+    } else {
+      const enviados = new Set(
+        (sqlite.prepare(`SELECT item_chave FROM checklist_uploads WHERE periodo_id = ? AND status = 'salvo'`).all(periodo.id) as any[]).map((u) => u.item_chave)
+      );
+      const reabertos = new Set(
+        (sqlite.prepare(`SELECT item_chave FROM checklist_reaberturas WHERE periodo_id = ? AND resolvido = 0`).all(periodo.id) as any[]).map((r) => r.item_chave)
+      );
+      faltando = itensObrigatorios.filter((it) => !enviados.has(it.chave) || reabertos.has(it.chave)).map((it) => it.label);
+    }
+    if (faltando.length)
+      resultado.push({
+        empresaId: a.empresaId,
+        empresaNome: a.empresaNome,
+        templateNome: t.nome,
+        competencia: `${String(mesRef).padStart(2, "0")}/${anoRef}`,
+        prazoDia: t.prazoDia,
+        itensFaltando: faltando,
+      });
+  }
+  return resultado;
+}
+
 // Pedidos que o cliente já fez pela tela "Solicitar Documentos" (envio_periodos.solicitado_em
 // preenchido) e que o escritório ainda não respondeu (nenhum documento anexado naquele período).
 function cardSolicitacoesPendentes(user: any): any[] {
@@ -7456,6 +7505,11 @@ async function calcularCardComputado(tipo: string, user: any, parametro?: string
     if (!templateId) return [];
     return cardEnvioAtraso(user, templateId);
   }
+  if (tipo === "solicitacao_atraso") {
+    const templateId = Number(parametro);
+    if (!templateId) return [];
+    return cardSolicitacaoAtraso(user, templateId);
+  }
   return [];
 }
 
@@ -7482,13 +7536,23 @@ app.get("/api/dashboard/cards/:id/detalhe", requirePermissao("dashboard", "visua
   res.json({ tipo: card.tipo, items: await calcularCardComputado(card.tipo, user, card.parametro) });
 });
 // "envio_atraso" precisa de um envio_templates válido (do mesmo escritório, mensal, ativo) como
-// parâmetro — sem isso o card ficaria "computado" mas sem saber o que calcular.
+// parâmetro — sem isso o card ficaria "computado" mas sem saber o que calcular. "solicitacao_atraso"
+// segue a mesma ideia, só que apontando pra um checklist_templates com prazo configurado.
 function dashboardCardParametroErro(tipo: string | null, parametro: string | null | undefined, escritorioId: number): string | null {
-  if (tipo !== "envio_atraso") return null;
-  const templateId = Number(parametro);
-  if (!templateId) return "Selecione o modelo de Envio de Documentos que este card vai validar.";
-  const template = sqlite.prepare(`SELECT id FROM envio_templates WHERE id = ? AND escritorio_id = ? AND periodicidade = 'mensal' AND ativo = 1`).get(templateId, escritorioId);
-  if (!template) return "Modelo de envio inválido — precisa ser um modelo mensal ativo.";
+  if (tipo === "envio_atraso") {
+    const templateId = Number(parametro);
+    if (!templateId) return "Selecione o modelo de Envio de Documentos que este card vai validar.";
+    const template = sqlite.prepare(`SELECT id FROM envio_templates WHERE id = ? AND escritorio_id = ? AND periodicidade = 'mensal' AND ativo = 1`).get(templateId, escritorioId);
+    if (!template) return "Modelo de envio inválido — precisa ser um modelo mensal ativo.";
+    return null;
+  }
+  if (tipo === "solicitacao_atraso") {
+    const templateId = Number(parametro);
+    if (!templateId) return "Selecione o modelo de Solicitação de Documentos que este card vai validar.";
+    const template = sqlite.prepare(`SELECT id FROM checklist_templates WHERE id = ? AND escritorio_id = ? AND ativo = 1 AND prazo_dia IS NOT NULL`).get(templateId, escritorioId);
+    if (!template) return "Modelo de solicitação inválido — precisa ser um modelo ativo com prazo configurado.";
+    return null;
+  }
   return null;
 }
 app.post("/api/dashboard/cards", blockCliente, requirePermissao("dashboard", "editar"), (req, res) => {
