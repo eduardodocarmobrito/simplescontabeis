@@ -3067,6 +3067,7 @@ async function pageNfeBusca(){
 
   async function mostrarDetalhe(empresaId){
     const empresa = empresas.find(e=>e.id===empresaId);
+    let nfeDocDirecao = 'emitida';
     box.innerHTML = `
       <button class="btn small" id="btnNfeVoltarLista">← Voltar pra lista de empresas</button>
       <div class="card" style="margin-top:10px;">
@@ -3074,9 +3075,18 @@ async function pageNfeBusca(){
         <div id="nfeConfigBody"></div>
       </div>
       <div class="card">
-        <h3>Documentos recebidos</h3>
-        <div class="row" style="margin-bottom:8px; align-items:flex-end;">
-          <div class="field" style="margin-bottom:0; width:220px;"><label>Tipo</label>
+        <h3>Documentos</h3>
+        <div class="tabs" style="margin-bottom:12px;">
+          <div class="tab" data-direcao="emitida">Notas emitidas</div>
+          <div class="tab" data-direcao="recebida">Notas recebidas</div>
+        </div>
+        <div class="row" style="margin-bottom:8px; align-items:flex-end; flex-wrap:wrap;">
+          <div class="field grow" style="margin-bottom:0; min-width:260px;"><label>Buscar</label>
+            <input id="nfeDocBusca" placeholder="Número da nota, nome, CNPJ ou valor…">
+          </div>
+          <div class="field" style="margin-bottom:0; width:160px;"><label>Data de</label><input type="date" id="nfeDocDataDe"></div>
+          <div class="field" style="margin-bottom:0; width:160px;"><label>Data até</label><input type="date" id="nfeDocDataAte"></div>
+          <div class="field" style="margin-bottom:0; width:180px;"><label>Tipo</label>
             <select id="nfeDocTipo"><option value="">Todos</option><option value="nfe">NF-e</option><option value="nfce">NFC-e</option><option value="nfse">NFS-e</option><option value="evento">Evento</option><option value="outro">Outro</option></select>
           </div>
         </div>
@@ -3088,8 +3098,8 @@ async function pageNfeBusca(){
         </div>
         <div class="card" style="padding:0; overflow-x:auto;">
           <table class="data-table">
-            <thead><tr><th style="width:32px;"><input type="checkbox" id="nfeDocSelecionarTodos"></th><th>Data</th><th>Tipo</th><th>Emitente</th><th>Chave de acesso</th><th>Valor</th><th></th></tr></thead>
-            <tbody id="nfeDocBody"><tr><td colspan="7"><div class="empty-state">Carregando…</div></td></tr></tbody>
+            <thead><tr><th style="width:32px;"><input type="checkbox" id="nfeDocSelecionarTodos"></th><th>Data</th><th>Tipo</th><th>Emitente</th><th>Destinatário / Tomador</th><th>Chave de acesso</th><th>Valor</th><th></th></tr></thead>
+            <tbody id="nfeDocBody"><tr><td colspan="8"><div class="empty-state">Carregando…</div></td></tr></tbody>
           </table>
         </div>
       </div>
@@ -3127,11 +3137,17 @@ async function pageNfeBusca(){
 
     async function carregarDocumentos(){
       const tbody = document.getElementById('nfeDocBody');
-      tbody.innerHTML = `<tr><td colspan="7"><div class="empty-state">Carregando…</div></td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="8"><div class="empty-state">Carregando…</div></td></tr>`;
       document.getElementById('nfeDocSelecionarTodos').checked = false;
       const tipo = document.getElementById('nfeDocTipo').value;
-      const params = new URLSearchParams({ empresaId });
+      const busca = document.getElementById('nfeDocBusca').value.trim();
+      const dataDe = document.getElementById('nfeDocDataDe').value;
+      const dataAte = document.getElementById('nfeDocDataAte').value;
+      const params = new URLSearchParams({ empresaId, direcao: nfeDocDirecao });
       if(tipo) params.set('tipo', tipo);
+      if(busca) params.set('busca', busca);
+      if(dataDe) params.set('dataDe', dataDe);
+      if(dataAte) params.set('dataAte', dataAte);
       const { items } = await api('/nfe/documentos?'+params.toString());
       tbody.innerHTML = items.length ? items.map(d=>`
         <tr>
@@ -3139,6 +3155,7 @@ async function pageNfeBusca(){
           <td>${d.dataEmissao?fmtDateHora(d.dataEmissao):'—'}</td>
           <td><span class="tag ${d.tipo==='evento'?'muted':'ok'}">${d.tipo.toUpperCase()}</span></td>
           <td>${esc(d.emitenteNome||'—')}</td>
+          <td>${esc(d.destinatarioNome||'—')}</td>
           <td style="font-family:'IBM Plex Mono',monospace; font-size:11px;">${esc(d.chaveAcesso||'—')}</td>
           <td>${d.valorTotal!=null?fmtMoney(d.valorTotal):'—'}</td>
           <td style="text-align:right; white-space:nowrap;">
@@ -3146,12 +3163,25 @@ async function pageNfeBusca(){
             ${d.tipo!=='evento'?`<a class="btn small" href="/api/nfe/documentos/${d.id}/pdf" target="_blank" rel="noopener">PDF</a>`:''}
           </td>
         </tr>
-      `).join('') : '<tr><td colspan="7"><div class="empty-state">Nenhum documento encontrado ainda.</div></td></tr>';
+      `).join('') : '<tr><td colspan="8"><div class="empty-state">Nenhum documento encontrado.</div></td></tr>';
       document.querySelectorAll('.nfeDocCheck').forEach(c=>c.addEventListener('change', atualizarBarraSelecao));
       atualizarBarraSelecao();
     }
 
+    box.querySelectorAll('.tab[data-direcao]').forEach(t=>t.addEventListener('click', ()=>{
+      nfeDocDirecao = t.dataset.direcao;
+      box.querySelectorAll('.tab[data-direcao]').forEach(x=>x.classList.toggle('active', x===t));
+      carregarDocumentos();
+    }));
+    box.querySelector('.tab[data-direcao="emitida"]').classList.add('active');
     document.getElementById('nfeDocTipo').addEventListener('change', carregarDocumentos);
+    document.getElementById('nfeDocDataDe').addEventListener('change', carregarDocumentos);
+    document.getElementById('nfeDocDataAte').addEventListener('change', carregarDocumentos);
+    let nfeDocBuscaTimer = null;
+    document.getElementById('nfeDocBusca').addEventListener('input', ()=>{
+      clearTimeout(nfeDocBuscaTimer);
+      nfeDocBuscaTimer = setTimeout(carregarDocumentos, 350);
+    });
     carregarConfig();
     carregarDocumentos();
   }

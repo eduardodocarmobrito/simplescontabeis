@@ -3834,17 +3834,54 @@ app.get("/api/nfe/documentos", blockCliente, requirePermissao("nfe-busca", "visu
   const empresasIds = empresaId ? [empresaId] : empresasVisiveis(user);
   if (empresasIds.length === 0) return res.json({ items: [] });
   const placeholders = empresasIds.map(() => "?").join(",");
-  const tipo = typeof req.query.tipo === "string" ? req.query.tipo : null;
+  const tipo = typeof req.query.tipo === "string" && req.query.tipo ? req.query.tipo : null;
+  const direcao = typeof req.query.direcao === "string" && ["emitida", "recebida"].includes(req.query.direcao) ? req.query.direcao : null;
+  const busca = typeof req.query.busca === "string" ? req.query.busca.trim() : "";
+  const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
+  const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
+  // "Emitida" = o CNPJ da própria empresa (dona do certificado) é o emitente do documento; senão é
+  // "recebida" — cobre tanto NF-e de compra (destinatário é a empresa) quanto casos em que a
+  // Distribuição DFe devolve o documento sem o destinatário preenchido (comum no schema resumido).
+  const direcaoExpr = `(CASE WHEN d.emitente_cnpj = REPLACE(REPLACE(REPLACE(e.cnpj,'.',''),'/',''),'-','') THEN 'emitida' ELSE 'recebida' END)`;
+  const condicoes: string[] = [`d.escritorio_id = ?`, `d.empresa_id IN (${placeholders})`];
+  const params: any[] = [user.escritorioId, ...empresasIds];
+  if (tipo) {
+    condicoes.push(`d.tipo = ?`);
+    params.push(tipo);
+  }
+  if (direcao) {
+    condicoes.push(`${direcaoExpr} = ?`);
+    params.push(direcao);
+  }
+  if (dataDe) {
+    condicoes.push(`substr(d.data_emissao,1,10) >= ?`);
+    params.push(dataDe);
+  }
+  if (dataAte) {
+    condicoes.push(`substr(d.data_emissao,1,10) <= ?`);
+    params.push(dataAte);
+  }
+  if (busca) {
+    const digits = busca.replace(/\D/g, "");
+    const valorNorm = busca.replace(",", ".");
+    condicoes.push(
+      `(d.emitente_nome LIKE ? OR d.destinatario_nome LIKE ? OR d.chave_acesso LIKE ? OR d.emitente_cnpj LIKE ? OR d.destinatario_cnpj LIKE ? OR CAST(d.valor_total AS TEXT) LIKE ?)`
+    );
+    const likeTexto = `%${busca}%`;
+    const likeDigits = `%${digits || busca}%`;
+    params.push(likeTexto, likeTexto, likeTexto, likeDigits, likeDigits, `%${valorNorm}%`);
+  }
   const rows = sqlite
     .prepare(
       `SELECT d.id, d.empresa_id as empresaId, e.nome as empresaNome, d.tipo, d.chave_acesso as chaveAcesso,
               d.emitente_cnpj as emitenteCnpj, d.emitente_nome as emitenteNome, d.destinatario_cnpj as destinatarioCnpj,
-              d.destinatario_nome as destinatarioNome, d.valor_total as valorTotal, d.data_emissao as dataEmissao, d.criado_em as criadoEm
+              d.destinatario_nome as destinatarioNome, d.valor_total as valorTotal, d.data_emissao as dataEmissao, d.criado_em as criadoEm,
+              ${direcaoExpr} as direcao
        FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id
-       WHERE d.escritorio_id = ? AND d.empresa_id IN (${placeholders}) ${tipo ? "AND d.tipo = ?" : ""}
+       WHERE ${condicoes.join(" AND ")}
        ORDER BY d.data_emissao DESC, d.id DESC LIMIT 500`
     )
-    .all(user.escritorioId, ...empresasIds, ...(tipo ? [tipo] : []));
+    .all(...params);
   res.json({ items: rows });
 });
 // Contagem de verdade por empresa, sem o LIMIT 500 da listagem acima — a listagem só serve pra
