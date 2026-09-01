@@ -2762,7 +2762,7 @@ async function renderNfseNotasDetalhe(empresaId){
                 ${n.status==='rascunho'?`<button class="btn small" data-id="${n.id}" data-act="continuar">Continuar</button> <button class="btn small" data-id="${n.id}" data-act="excluir">Excluir</button>`:''}
                 ${n.status!=='rascunho'?`<button class="btn small" data-id="${n.id}" data-act="duplicar">Duplicar</button>`:''}
                 ${n.status==='emitida'||n.status==='cancelada'?`<button class="btn small" data-id="${n.id}" data-act="baixar-xml">XML</button> <button class="btn small" data-id="${n.id}" data-act="baixar-pdf">PDF</button>`:''}
-                ${n.status==='emitida'?(n.tomadorTelefone?`<button class="btn small" data-id="${n.id}" data-act="enviar-whatsapp-nfse">${n.whatsappEnviado?'Reenviar WhatsApp':'Enviar WhatsApp'}</button>`:`<button class="btn small" disabled title="Esta nota não tem telefone do tomador cadastrado">Enviar WhatsApp</button>`):''}
+                ${n.status==='emitida'?`<button class="btn small" data-id="${n.id}" data-act="enviar-whatsapp-nfse">${n.whatsappEnviado?'Reenviar WhatsApp':'Enviar WhatsApp'}</button>`:''}
                 ${n.status==='emitida'?`<button class="btn small" data-id="${n.id}" data-act="cancelar" style="color:var(--debit);">Cancelar</button>`:''}
               </td>
             </tr>

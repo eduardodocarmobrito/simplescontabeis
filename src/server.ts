@@ -5073,32 +5073,48 @@ app.post("/api/nfse/emissoes/:id/enviar-whatsapp", blockCliente, requirePermissa
   const user = (req as any).user;
   if (!podeAcessarEmpresa(user, row.empresa_id)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
   if (row.status !== "emitida") return res.status(400).json({ error: "Só é possível enviar uma NFS-e já emitida." });
-  // Achado ao vivo: isso mandava pros contatos da empresa PRESTADORA (o próprio escritório), nunca
-  // pro tomador — quem devia receber a nota é o cliente que a comprou, usando o telefone dele
-  // mesmo (capturado na emissão), o mesmo padrão já usado pro e-mail (tomador_email).
-  if (!row.tomador_telefone) {
-    return res.status(400).json({ error: 'Esta emissão não tem telefone do tomador cadastrado — edite em "Duplicar" ou emita a próxima já preenchendo o campo Telefone do tomador.' });
+  // Decisão explícita do usuário: o aviso de NFS-e emitida por WhatsApp vai sempre pros contatos do
+  // PRÓPRIO escritório, nunca pro tomador — usa escritorios.empresa_id (não o prestador desta nota
+  // específica), pra sempre acertar o time interno mesmo quando a nota é emitida em nome de outra
+  // empresa da carteira do escritório.
+  const escritorioEmpresa = sqlite.prepare(`SELECT empresa_id FROM escritorios WHERE id = ?`).get(user.escritorioId) as any;
+  const contatos = escritorioEmpresa?.empresa_id
+    ? (sqlite
+        .prepare(`SELECT telefone FROM empresa_contatos WHERE empresa_id = ? AND receber_whatsapp = 1 AND telefone IS NOT NULL AND telefone != ''`)
+        .all(escritorioEmpresa.empresa_id) as any[])
+    : [];
+  if (!contatos.length) {
+    return res.status(400).json({ error: 'O escritório não tem contato de WhatsApp cadastrado (marque "Receber WhatsApp" no contato, em Configurações › E-mail corporativo).' });
   }
   const { pdf, erro: erroPdf } = await nfseObterDanfsePdf(row);
   if (!pdf) return res.status(502).json({ error: erroPdf });
   const arquivo = { nome: nfseNomeArquivo(row, "pdf"), tipo: "application/pdf", buffer: pdf };
   const descricao = `NFS-e ${row.numero_nfse || row.numero_dps} — competência ${row.competencia?.slice(0, 7) || ""}`;
-  try {
-    await whatsappEnviarArquivo(
-      user.escritorioId,
-      row.tomador_telefone,
-      [
-        { nome: "empresa_nome", valor: row.tomador_nome || "" },
-        { nome: "descricao", valor: descricao },
-      ],
-      arquivo,
-      { tabela: "nfse_emissoes", id: row.id }
-    );
-    sqlite.prepare(`UPDATE nfse_emissoes SET whatsapp_enviado = 1, whatsapp_erro = NULL WHERE id = ?`).run(row.id);
-    res.json({ ok: true, enviados: 1, falhas: 0 });
-  } catch (e: any) {
-    sqlite.prepare(`UPDATE nfse_emissoes SET whatsapp_erro = ? WHERE id = ?`).run(e.message, row.id);
-    res.status(502).json({ error: e.message });
+  let enviados = 0;
+  const erros: string[] = [];
+  for (const c of contatos) {
+    try {
+      await whatsappEnviarArquivo(
+        user.escritorioId,
+        c.telefone,
+        [
+          { nome: "empresa_nome", valor: row.tomador_nome || "" },
+          { nome: "descricao", valor: descricao },
+        ],
+        arquivo,
+        { tabela: "nfse_emissoes", id: row.id }
+      );
+      enviados++;
+    } catch (e: any) {
+      erros.push(e.message);
+    }
+  }
+  if (enviados > 0) sqlite.prepare(`UPDATE nfse_emissoes SET whatsapp_enviado = 1, whatsapp_erro = NULL WHERE id = ?`).run(row.id);
+  else sqlite.prepare(`UPDATE nfse_emissoes SET whatsapp_erro = ? WHERE id = ?`).run(erros[0] || "Falha desconhecida.", row.id);
+  if (!enviados) {
+    res.status(502).json({ error: erros[0] || "Não consegui enviar por WhatsApp." });
+  } else {
+    res.json({ ok: true, enviados, falhas: erros.length });
   }
 });
 // Download em lote — zip com XML e/ou PDF de várias emissões de uma vez (selecionadas na tela).
