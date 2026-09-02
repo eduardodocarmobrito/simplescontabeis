@@ -1961,7 +1961,7 @@ function envioCelulaHtml(p, accept, podePostar, podeEditar, souCliente, mostrarV
   // remove a linha inteira nesse caso; com documento já anexado, o jeito é excluir os documentos um
   // a um (histórico já enviado ao cliente não some sozinho).
   const btnExcluirPeriodo = ehAvulso && podeEditar && !docs.length
-    ? `<button class="btn small danger" data-act="excluir-periodo" data-periodo="${p.periodoId}" style="margin-top:6px;">Excluir</button>` : '';
+    ? `<button class="btn small danger" data-act="excluir-periodo" data-periodo="${p.periodoId}">Excluir</button>` : '';
   const blocosHtml = docs.map(d=>envioDocBlocoHtml(d, podeEditar, podePostar, souCliente, mostrarVencimento)).join('');
   // Com 2+ documentos no mesmo período (ex.: guia original + guia recalculada), a lista expandida
   // ocupa muito espaço vertical na grade — fica recolhida atrás de uma setinha por padrão.
@@ -1988,8 +1988,10 @@ function envioCelulaHtml(p, accept, podePostar, podeEditar, souCliente, mostrarV
     ${btnRecalculo}
     <input type="file" id="${inputId}" ${accept?`accept="${accept}"`:''}>
     ${docs.length? `<input type="text" id="${obsId}" placeholder="Observação (ex.: guia recalculada — cliente não pagou no prazo)" style="font-size:12.5px; border:1px solid var(--rule); border-radius:8px; padding:7px 9px;">`:''}
-    <button class="btn small primary" data-act="enviar-doc" data-periodo="${p.periodoId}" data-input="${inputId}" data-obs="${obsId}">${docs.length?'Incluir outro documento':'Enviar'}</button>
-    ${btnExcluirPeriodo}
+    <div style="display:flex; align-items:center; gap:8px;">
+      <button class="btn small primary" data-act="enviar-doc" data-periodo="${p.periodoId}" data-input="${inputId}" data-obs="${obsId}">${docs.length?'Incluir outro documento':'Enviar'}</button>
+      ${btnExcluirPeriodo}
+    </div>
   </div>`;
 }
 function wireEnvioGradeEvents(container, atribuicaoId, souCliente){
