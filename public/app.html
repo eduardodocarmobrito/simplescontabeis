@@ -1960,7 +1960,10 @@ function envioCelulaHtml(p, accept, podePostar, podeEditar, souCliente, mostrarV
     : blocosHtml;
   const pedidoPendente = !souCliente && p.solicitadoEm && !docs.length
     ? `<div class="slot-reopen-note" style="background:var(--accent-pale); color:var(--accent-deep);">Solicitado pelo cliente em ${fmtDateHora(p.solicitadoEm)}</div>` : '';
-  const btnRecalculo = souCliente && ehDas && docs.length
+  // Antes só o cliente via esse botão — o escritório (Colaborador/Administrador) tinha que abrir o
+  // Integra Contador e usar "Buscar agora" pra conseguir o mesmo resultado. Agora quem pode postar
+  // nessa grade também recalcula direto daqui, sem sair da tela.
+  const btnRecalculo = (souCliente || podePostar) && ehDas && docs.length
     ? `<button class="btn small" data-act="recalcular-das" data-periodo="${p.periodoId}" style="margin-top:6px;">Solicitar recálculo do DAS</button>` : '';
   if(souCliente || !podePostar){
     return docs.length? `<div class="slot">${blocos}${btnRecalculo}</div>` : `<span class="slot-label">Nada enviado ainda</span>`;
@@ -1969,6 +1972,7 @@ function envioCelulaHtml(p, accept, podePostar, podeEditar, souCliente, mostrarV
   return `<div class="slot">
     ${pedidoPendente}
     ${blocos}
+    ${btnRecalculo}
     <input type="file" id="${inputId}" ${accept?`accept="${accept}"`:''}>
     ${docs.length? `<input type="text" id="${obsId}" placeholder="Observação (ex.: guia recalculada — cliente não pagou no prazo)" style="font-size:12.5px; border:1px solid var(--rule); border-radius:8px; padding:7px 9px;">`:''}
     <button class="btn small primary" data-act="enviar-doc" data-periodo="${p.periodoId}" data-input="${inputId}" data-obs="${obsId}">${docs.length?'Incluir outro documento':'Enviar'}</button>
