@@ -7448,7 +7448,13 @@ async function sitfisAnalisar(pdfPath: string): Promise<{ temPendencia: boolean;
   const data = await pdfParseLib(new Uint8Array(buf));
   const texto: string = data.text || "";
   const achados = SITFIS_MARCADORES_PENDENCIA.filter((m) => m.regex.test(texto)).map((m) => m.chave);
-  return { temPendencia: achados.length > 0, resumo: achados.length ? achados.join(", ") : null };
+  // Achado ao vivo: "Parcelamento em andamento" e "Débito com exigibilidade suspensa" sozinhos não
+  // significam pendência de verdade (parcelamento em dia, ou débito com a cobrança suspensa por
+  // decisão judicial/processo administrativo, não é algo pra correr atrás) — só "Débito pendente"
+  // (sem parcelamento nem suspensão) é urgente o bastante pra acender o card. Continua mostrando os
+  // outros marcadores no resumo quando aparecem junto, só não usa eles sozinhos pra disparar o card.
+  const temDebitoPendente = achados.includes("Débito pendente");
+  return { temPendencia: temDebitoPendente, resumo: achados.length ? achados.join(", ") : null };
 }
 async function cardSituacaoFiscal(user: any): Promise<any[]> {
   const escritorioId = user.escritorioId;
