@@ -3322,6 +3322,14 @@ async function pageNfeBusca(){
   async function mostrarDetalhe(empresaId){
     const empresa = empresas.find(e=>e.id===empresaId);
     let nfeDocDirecao = 'emitida';
+    // mostrarLista() já barrou a entrada aqui se o módulo estivesse inativo (paywall antes de
+    // chegar no detalhe) — esse callback só cobre o caso raro de o módulo vencer com a tela já
+    // aberta; sem handler nenhum, renderCertificadoBuscaXml tentava chamar uma função inexistente
+    // (avisoModulo) e quebrava antes de desenhar qualquer coisa, deixando o card do certificado
+    // sempre em branco pra qualquer empresa.
+    function avisoModulo(moduloAtivo){
+      if(!moduloAtivo) toast('O módulo de Busca de XML não está mais ativo pra este escritório.','err');
+    }
     box.innerHTML = `
       <button class="btn small" id="btnNfeVoltarLista">← Voltar pra lista de empresas</button>
       <div class="card" style="margin-top:10px;">
