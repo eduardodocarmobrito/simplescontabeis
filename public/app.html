@@ -1739,11 +1739,12 @@ async function renderEnvioSolicitacoes(){
     <div class="field" style="max-width:360px; margin-bottom:10px;"><input type="text" id="envioSolicFiltro" placeholder="Buscar por empresa…" autocomplete="off"></div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
-        <thead><tr><th>Empresa</th><th>Modelo</th><th>Competência</th><th>Solicitado por</th><th>Solicitado em</th><th>Status</th></tr></thead>
+        <thead><tr><th>Empresa</th><th>Modelo</th><th>Tipo de solicitação</th><th>Competência</th><th>Solicitado por</th><th>Solicitado em</th><th>Retorno ao cliente em</th><th>Status</th></tr></thead>
         <tbody id="envioSolicBody"></tbody>
       </table>
     </div>
   `;
+  const TIPO_SOLIC_LABEL = { recalculo_das:'Recálculo de DAS', documento:'Solicitação de documento' };
   const tbody = document.getElementById('envioSolicBody');
   function desenha(filtro){
     const termo = normalizaTxt(filtro).trim();
@@ -1752,12 +1753,14 @@ async function renderEnvioSolicitacoes(){
       <tr>
         <td><b>${esc(i.empresaNome)}</b></td>
         <td>${esc(i.templateNome)}</td>
+        <td>${esc(TIPO_SOLIC_LABEL[i.tipo] || 'Solicitação de documento')}</td>
         <td>${i.mes?String(i.mes).padStart(2,'0')+'/'+i.ano:esc(i.rotulo||String(i.ano))}</td>
         <td>${i.solicitadoPorNome?esc(i.solicitadoPorNome)+(i.solicitadoPorPerfil==='Cliente'?'':' <span class="tag muted">escritório</span>'):'—'}</td>
         <td>${fmtDateHora(i.solicitadoEm)}</td>
+        <td>${i.retornoClienteEm?fmtDateHora(i.retornoClienteEm):'—'}</td>
         <td><span class="tag ${i.concluida?'ok':'warn'}">${i.concluida?'Concluída':'Aguardando o escritório'}</span></td>
       </tr>
-    `).join('') : `<tr><td colspan="6"><div class="empty-state">${termo?'Nenhuma empresa encontrada.':'Nenhuma solicitação registrada ainda.'}</div></td></tr>`;
+    `).join('') : `<tr><td colspan="8"><div class="empty-state">${termo?'Nenhuma empresa encontrada.':'Nenhuma solicitação registrada ainda.'}</div></td></tr>`;
   }
   desenha('');
   document.getElementById('envioSolicFiltro').addEventListener('input', e=>desenha(e.target.value));

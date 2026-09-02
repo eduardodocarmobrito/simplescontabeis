@@ -233,6 +233,7 @@ sqlite.exec(`
     rotulo TEXT,
     solicitado_por INTEGER REFERENCES app_users(id), -- preenchido quando o período nasce de um pedido do cliente (menu "Solicitar Documentos")
     solicitado_em TEXT,
+    solicitacao_tipo TEXT, -- 'documento' (pedido normal, "Solicitar Documentos") ou 'recalculo_das' — só pra exibir na lista de Solicitações
     created_at TEXT DEFAULT (datetime('now')),
     UNIQUE(atribuicao_id, ano, mes, rotulo)
   );
@@ -990,6 +991,20 @@ sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_envio_documentos_periodo ON envio_do
     sqlite.exec(`ALTER TABLE envio_periodos ADD COLUMN solicitado_por INTEGER REFERENCES app_users(id)`);
     sqlite.exec(`ALTER TABLE envio_periodos ADD COLUMN solicitado_em TEXT`);
     console.log("Migração aplicada: envio_periodos.solicitado_por / solicitado_em.");
+  }
+  if (!colsPeriodos.some((c) => c.name === "solicitacao_tipo")) {
+    sqlite.exec(`ALTER TABLE envio_periodos ADD COLUMN solicitacao_tipo TEXT`);
+    // Backfill das solicitações já existentes: um período com algum documento com observação "DAS
+    // recalculado..." só pode ter vindo do fluxo de recálculo; o resto (que já tinha solicitado_em
+    // preenchido) era do fluxo normal "Solicitar Documentos", o único que existia antes desta coluna.
+    sqlite.exec(`
+      UPDATE envio_periodos SET solicitacao_tipo = 'recalculo_das'
+      WHERE solicitado_em IS NOT NULL AND EXISTS (
+        SELECT 1 FROM envio_documentos d WHERE d.periodo_id = envio_periodos.id AND d.observacao LIKE 'DAS recalculado%'
+      )
+    `);
+    sqlite.exec(`UPDATE envio_periodos SET solicitacao_tipo = 'documento' WHERE solicitado_em IS NOT NULL AND solicitacao_tipo IS NULL`);
+    console.log("Migração aplicada: envio_periodos.solicitacao_tipo (com backfill dos registros existentes).");
   }
 }
 
@@ -3045,10 +3060,11 @@ app.get("/api/envio/solicitacoes", blockCliente, requirePermissao("envio", "visu
   const user = (req as any).user;
   const empresaId = req.query.empresaId ? Number(req.query.empresaId) : null;
   if (empresaId && !podeAcessarEmpresa(user, empresaId)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
-  let sql = `SELECT p.id as periodoId, p.ano, p.mes, p.rotulo, p.solicitado_em as solicitadoEm,
+  let sql = `SELECT p.id as periodoId, p.ano, p.mes, p.rotulo, p.solicitado_em as solicitadoEm, p.solicitacao_tipo as tipo,
               t.nome as templateNome, a.id as atribuicaoId, a.empresa_id as empresaId, e.nome as empresaNome,
               u.nome as solicitadoPorNome, u.perfil as solicitadoPorPerfil,
-              EXISTS(SELECT 1 FROM envio_documentos d WHERE d.periodo_id = p.id) as concluida
+              EXISTS(SELECT 1 FROM envio_documentos d WHERE d.periodo_id = p.id) as concluida,
+              (SELECT MAX(d.enviado_em) FROM envio_documentos d WHERE d.periodo_id = p.id) as retornoClienteEm
              FROM envio_periodos p
              JOIN envio_atribuicoes a ON a.id = p.atribuicao_id
              JOIN envio_templates t ON t.id = a.template_id AND t.escritorio_id = ?
@@ -3126,7 +3142,7 @@ app.post("/api/envio/solicitar", (req, res) => {
   }
 
   const insertPeriodo = sqlite.prepare(
-    `INSERT OR IGNORE INTO envio_periodos (atribuicao_id, ano, mes, rotulo, solicitado_por, solicitado_em) VALUES (?, ?, ?, ?, ?, datetime('now'))`
+    `INSERT OR IGNORE INTO envio_periodos (atribuicao_id, ano, mes, rotulo, solicitado_por, solicitado_em, solicitacao_tipo) VALUES (?, ?, ?, ?, ?, datetime('now'), 'documento')`
   );
   const info = insertPeriodo.run(atrib.id, anoFinal, mesFinal, rotuloFinal, user.id);
   let periodoId: number;
@@ -3141,7 +3157,7 @@ app.post("/api/envio/solicitar", (req, res) => {
     periodoId = existente.id;
     jaExistia = true;
     if (!existente.solicitado_em) {
-      sqlite.prepare(`UPDATE envio_periodos SET solicitado_por = ?, solicitado_em = datetime('now') WHERE id = ?`).run(user.id, periodoId);
+      sqlite.prepare(`UPDATE envio_periodos SET solicitado_por = ?, solicitado_em = datetime('now'), solicitacao_tipo = 'documento' WHERE id = ?`).run(user.id, periodoId);
     }
   }
   const jaConcluido = !!sqlite.prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id = ?`).get(periodoId);
@@ -3356,7 +3372,7 @@ async function executarRecalculoDas(periodoId: number, user: any): Promise<{ ok:
     // normais) — sem isso o pedido de recálculo não ficava registrado em lugar nenhum: nem na lista
     // "Solicitar Documentos" do próprio cliente, nem em nenhum histórico do escritório. DAS - Mensal
     // não é visivel_cliente, então esse campo nunca é preenchido por outro caminho.
-    sqlite.prepare(`UPDATE envio_periodos SET solicitado_em = datetime('now'), solicitado_por = ? WHERE id = ?`).run(user.id, periodoId);
+    sqlite.prepare(`UPDATE envio_periodos SET solicitado_em = datetime('now'), solicitado_por = ?, solicitacao_tipo = 'recalculo_das' WHERE id = ?`).run(user.id, periodoId);
     sqlite
       .prepare(
         `INSERT INTO integracontador_documentos (empresa_id, escritorio_id, tipo, periodo_apuracao, numero_documento, data_vencimento, detalhes_json) VALUES (?, ?, 'das', ?, ?, ?, ?)`
