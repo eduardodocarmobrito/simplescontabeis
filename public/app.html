@@ -2086,6 +2086,14 @@ function documentoEnvioMaisRecente(grade){
   }
   return melhor? { periodo: melhor, documento: melhorDoc } : null;
 }
+// Pra modelo mensal, "Documentos Recebidos" sempre mostra a competência do mês anterior ao atual
+// (ex.: em setembro, mostra agosto) — mesmo sem nenhum documento ainda, porque é isso que o cliente
+// espera ver ali (o mês que já fechou), não necessariamente o último arquivo que chegou (que podia
+// ser de um mês bem mais antigo recalculado agora, escondendo o mês certo). Se o período nem foi
+// gerado ainda na grade, devolve um período "virtual" só pra exibição, sem id nenhum atrás.
+function periodoEnvioDaVez(ano, mes, grade){
+  return grade.find(p=>p.ano===ano && p.mes===mes) || { periodoId:null, ano, mes, rotulo:null, documentos:[] };
+}
 async function pageDocumentosRecebidos(){
   const { items } = await api('/envio/minhas-atribuicoes');
   main().innerHTML = `
@@ -2107,16 +2115,29 @@ async function pageDocumentosRecebidos(){
   `).join('');
   box.querySelectorAll('.doc-card').forEach(c=>c.addEventListener('click', ()=>abrirEnvioGrade(Number(c.dataset.id), true)));
 
+  const hoje = new Date();
+  const mesAnterior = new Date(hoje.getFullYear(), hoje.getMonth()-1, 1);
   for(const a of items){
     const painel = document.getElementById('drInline'+a.id);
     try{
       const { grade } = await api('/envio/grade/'+a.id);
-      const achado = documentoEnvioMaisRecente(grade);
-      if(!achado){
-        painel.innerHTML = `<div class="doc-inline-empty">Nenhum documento recebido ainda.</div>`;
+      let p, d;
+      if(a.periodicidade==='mensal'){
+        p = periodoEnvioDaVez(mesAnterior.getFullYear(), mesAnterior.getMonth()+1, grade);
+        const docs = p.documentos || [];
+        d = docs.length ? docs[docs.length-1] : null;
+      } else {
+        const achado = documentoEnvioMaisRecente(grade);
+        if(!achado){ painel.innerHTML = `<div class="doc-inline-empty">Nenhum documento recebido ainda.</div>`; continue; }
+        p = achado.periodo; d = achado.documento;
+      }
+      if(!d){
+        painel.innerHTML = `
+          <div class="doc-inline-periodo">${esc(rotuloPeriodo(p))}</div>
+          <div class="doc-inline-empty">Nenhum documento recebido ainda para essa competência.</div>
+        `;
         continue;
       }
-      const { periodo: p, documento: d } = achado;
       const vencHtml = d.vencimento? `<span class="tag warn" style="font-weight:700;">Vencimento ${esc(fmtDateIso(d.vencimento))}</span>` : '';
       const outros = (p.documentos||[]).length - 1;
       painel.innerHTML = `
