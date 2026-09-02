@@ -3417,6 +3417,7 @@ async function pageNfeBusca(){
 
 // ===================== Integra Contador (DAS, Declaração, Situação Fiscal) =====================
 const IC_TIPO_LABEL = { das:'DAS', declaracao:'Declaração do Simples', situacao_fiscal:'Situação Fiscal' };
+let IC_TAB = 'configuradas';
 async function pageIntegraContador(){
   main().innerHTML = `
     <h1>Integra Contador</h1>
@@ -3495,7 +3496,14 @@ async function pageIntegraContador(){
     const box = document.getElementById('icMain');
     box.innerHTML = `<div class="empty-state">Carregando…</div>`;
     const { items } = await api('/integracontador/empresas');
+    const configuradas = items.filter(e=>e.ativo);
+    const naoConfiguradas = items.filter(e=>!e.ativo);
+    const visiveis = IC_TAB==='configuradas' ? configuradas : naoConfiguradas;
     box.innerHTML = `
+      <div class="tabs">
+        <div class="tab" data-tab="configuradas">Empresas Configuradas <span class="tag muted">${configuradas.length}</span></div>
+        <div class="tab" data-tab="naoConfiguradas">Empresas Não Configuradas <span class="tag muted">${naoConfiguradas.length}</span></div>
+      </div>
       <div class="card">
         <div class="field" style="max-width:420px; margin-bottom:0;"><label>Buscar empresa</label>${comboSelectHtml('icFiltroEmpresaCombo', 'Digite para buscar a empresa…')}</div>
       </div>
@@ -3503,7 +3511,7 @@ async function pageIntegraContador(){
         <table class="data-table">
           <thead><tr><th>Empresa</th><th>Status</th><th>Optante Simples</th><th>Documentos</th><th>Última busca</th><th>Alerta</th><th></th></tr></thead>
           <tbody>
-            ${items.length ? items.map(e=>`
+            ${visiveis.length ? visiveis.map(e=>`
               <tr class="icEmpresaRow" data-id="${e.id}" style="cursor:pointer;">
                 <td><b>${esc(e.nome)}</b></td>
                 <td><span class="tag ${e.ativo?'ok':'muted'}">${e.ativo?'Ativo':'Inativo'}</span></td>
@@ -3513,13 +3521,17 @@ async function pageIntegraContador(){
                 <td>${e.alertaDeclaracao?`<span class="tag bad" title="${esc(e.alertaDeclaracao)}">Não declarado</span>`:''}</td>
                 <td style="text-align:right;"><button class="btn small">Ver</button></td>
               </tr>
-            `).join('') : '<tr><td colspan="7"><div class="empty-state">Nenhuma empresa cadastrada ainda.</div></td></tr>'}
+            `).join('') : `<tr><td colspan="7"><div class="empty-state">${IC_TAB==='configuradas'?'Nenhuma empresa configurada ainda.':'Todas as empresas já estão configuradas.'}</div></td></tr>`}
           </tbody>
         </table>
       </div>
     `;
-    setupComboSelect('icFiltroEmpresaCombo', items.map(e=>({id:e.id, label:e.nome})), (id)=>{ if(id) mostrarIcDetalhe(Number(id)); });
+    box.querySelectorAll('.tab').forEach(t=>{
+      t.classList.toggle('active', t.dataset.tab===IC_TAB);
+      t.addEventListener('click', ()=>{ IC_TAB = t.dataset.tab; mostrarIcLista(); });
+    });
     box.querySelectorAll('.icEmpresaRow').forEach(tr=>tr.addEventListener('click', ()=>mostrarIcDetalhe(Number(tr.dataset.id))));
+    setupComboSelect('icFiltroEmpresaCombo', items.map(e=>({id:e.id, label:e.nome})), (id)=>{ if(id) mostrarIcDetalhe(Number(id)); });
   }
 
   async function mostrarIcDetalhe(empresaId){
