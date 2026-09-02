@@ -4356,7 +4356,7 @@ app.get("/api/integracontador/empresas", blockCliente, requireAdmin, (req, res) 
   const placeholders = ids.map(() => "?").join(",");
   const rows = sqlite
     .prepare(
-      `SELECT e.id, e.nome, c.ativo, c.optante_simples_nacional as optanteSimplesNacional, c.ultima_busca_em as ultimaBuscaEm, c.ultimo_erro as ultimoErro,
+      `SELECT e.id, e.nome, e.cnpj, c.ativo, c.optante_simples_nacional as optanteSimplesNacional, c.ultima_busca_em as ultimaBuscaEm, c.ultimo_erro as ultimoErro,
               c.alerta_declaracao as alertaDeclaracao,
               (SELECT COUNT(*) FROM integracontador_documentos d WHERE d.empresa_id = e.id) as qtdDocumentos
        FROM empresas e LEFT JOIN integracontador_empresa_config c ON c.empresa_id = e.id
@@ -8085,7 +8085,7 @@ app.post("/api/contratos/:id/enviar-email", blockCliente, requirePermissao("cont
 // Lista de empresas para o filtro de cliente nos relatórios (só as marcadas como visíveis em relatórios)
 app.get("/api/relatorios/empresas", blockCliente, requirePermissao("relatorios", "visualizar"), (req, res) => {
   const user = (req as any).user;
-  let rows = sqlite.prepare(`SELECT id, nome FROM empresas WHERE ativo = 1 AND visivel_relatorios = 1 ORDER BY nome`).all() as any[];
+  let rows = sqlite.prepare(`SELECT id, nome, cnpj FROM empresas WHERE ativo = 1 AND visivel_relatorios = 1 ORDER BY nome`).all() as any[];
   const visiveis = empresasVisiveis(user);
   if (visiveis !== null) rows = rows.filter((r) => visiveis.includes(r.id));
   res.json({ items: rows });

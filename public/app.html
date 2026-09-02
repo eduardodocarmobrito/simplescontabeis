@@ -278,6 +278,11 @@ async function empresasAtivas(){
   const { items } = await api('/empresas');
   return items.filter(e=>e.ativo);
 }
+// Nome sozinho não basta pra escolher a empresa certa em nenhum combobox — nomes duplicados (mesmo
+// grupo econômico com várias empresas de nome igual, cadastro repetido, etc.) são comuns na base
+// real. Todo combobox de empresa usa isso como label, tanto na lista de opções quanto depois de
+// selecionado, pra deixar sempre claro qual CNPJ foi escolhido.
+function empresaComboLabel(e){ return e.cnpj? `${e.nome} - ${e.cnpj}` : e.nome; }
 function fmtMoney(v){ return (Number(v)||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'}); }
 // Máscara de campo de valor em R$ — digita só números, formata milhar/centavos ao vivo (ex.: digitar
 // "1798604" mostra "17.986,04"). moedaInputParaNumero() faz o caminho inverso na leitura do form.
@@ -1382,7 +1387,7 @@ function novaAtribModal(empresas, templates){
       <button class="btn primary" id="atSalvar">Atribuir</button>
     </div>
   `);
-  setupComboSelect('atEmpresaCombo', empresas.map(e=>({id:e.id, label:e.nome})), ()=>{});
+  setupComboSelect('atEmpresaCombo', empresas.map(e=>({id:e.id, label:empresaComboLabel(e)})), ()=>{});
   document.getElementById('atCancel').addEventListener('click', closeModal);
   document.getElementById('atSalvar').addEventListener('click', async ()=>{
     const empresaId = document.querySelector('#atEmpresaCombo .combo-value').value;
@@ -1895,7 +1900,7 @@ function novaEnvioAtribModal(empresas, templates){
       <button class="btn primary" id="evAtSalvar">Atribuir</button>
     </div>
   `);
-  setupComboSelect('evAtEmpresaCombo', empresas.map(e=>({id:e.id, label:e.nome})), ()=>{});
+  setupComboSelect('evAtEmpresaCombo', empresas.map(e=>({id:e.id, label:empresaComboLabel(e)})), ()=>{});
   document.getElementById('evAtCancel').addEventListener('click', closeModal);
   document.getElementById('evAtSalvar').addEventListener('click', async ()=>{
     const empresaId = document.querySelector('#evAtEmpresaCombo .combo-value').value;
@@ -3305,7 +3310,7 @@ async function pageNfeBusca(){
         </div>
       </div>
     `;
-    setupComboSelect('nfeAddEmpresaCombo', empresas.map(e=>({id:e.id, label:e.nome})), (id)=>{ if(id) mostrarDetalhe(Number(id)); });
+    setupComboSelect('nfeAddEmpresaCombo', empresas.map(e=>({id:e.id, label:empresaComboLabel(e)})), (id)=>{ if(id) mostrarDetalhe(Number(id)); });
     box.querySelectorAll('.nfeEmpresaRow').forEach(row=>row.addEventListener('click', ()=>mostrarDetalhe(Number(row.dataset.id))));
     const filtro = document.getElementById('nfeListaFiltro');
     if(filtro) filtro.addEventListener('input', ()=>{
@@ -3556,7 +3561,7 @@ async function pageIntegraContador(){
       t.addEventListener('click', ()=>{ IC_TAB = t.dataset.tab; mostrarIcLista(); });
     });
     box.querySelectorAll('.icEmpresaRow').forEach(tr=>tr.addEventListener('click', ()=>mostrarIcDetalhe(Number(tr.dataset.id))));
-    setupComboSelect('icFiltroEmpresaCombo', items.map(e=>({id:e.id, label:e.nome})), (id)=>{ if(id) mostrarIcDetalhe(Number(id)); });
+    setupComboSelect('icFiltroEmpresaCombo', items.map(e=>({id:e.id, label:empresaComboLabel(e)})), (id)=>{ if(id) mostrarIcDetalhe(Number(id)); });
   }
 
   async function mostrarIcDetalhe(empresaId){
@@ -4835,7 +4840,7 @@ async function renderContratosLista(){
       </table>
     </div>
   `;
-  setupComboSelect('ctrFiltroEmpresaCombo', empresas.map(e=>({id:e.id, label:e.nome})), (id)=>{ CONTRATOS_FILTRO.empresaId=id||''; renderContratosLista(); });
+  setupComboSelect('ctrFiltroEmpresaCombo', empresas.map(e=>({id:e.id, label:empresaComboLabel(e)})), (id)=>{ CONTRATOS_FILTRO.empresaId=id||''; renderContratosLista(); });
   if(CONTRATOS_FILTRO.empresaId){
     const atual = empresas.find(e=>String(e.id)===String(CONTRATOS_FILTRO.empresaId));
     if(atual){ document.querySelector('#ctrFiltroEmpresaCombo .combo-value').value=atual.id; document.querySelector('#ctrFiltroEmpresaCombo .combo-input').value=atual.nome; }
@@ -4866,7 +4871,7 @@ async function novoContratoModal(empresas){
       <button class="btn primary" id="ncCriar">Criar</button>
     </div>
   `);
-  setupComboSelect('ncEmpresaCombo', empresas.map(e=>({id:e.id, label:e.nome})), ()=>{});
+  setupComboSelect('ncEmpresaCombo', empresas.map(e=>({id:e.id, label:empresaComboLabel(e)})), ()=>{});
   document.getElementById('ncCancel').addEventListener('click', closeModal);
   document.getElementById('ncCriar').addEventListener('click', async ()=>{
     const empresaId = document.querySelector('#ncEmpresaCombo .combo-value').value;
@@ -5215,7 +5220,7 @@ async function renderRelTab(){
     </div>
     <div id="relResultado" class="card"><div class="empty-state">Selecione um cliente para ver o relatório.</div></div>
   `;
-  setupComboSelect('relEmpresaCombo', empresas.map(e=>({id:e.id, label:e.nome})), carregarRelatorio);
+  setupComboSelect('relEmpresaCombo', empresas.map(e=>({id:e.id, label:empresaComboLabel(e)})), carregarRelatorio);
 }
 async function carregarRelatorio(){
   const empresaId = document.querySelector('#relEmpresaCombo .combo-value').value;
@@ -6181,7 +6186,7 @@ async function renderCfgNfseAgendamento(box){
       <div id="agLog"><div class="empty-state">Carregando…</div></div>
     </div>
   `;
-  setupComboSelect('agEmpresaPrestadorCombo', empresas.map(e=>({id:e.id, label:e.nome})), ()=>{});
+  setupComboSelect('agEmpresaPrestadorCombo', empresas.map(e=>({id:e.id, label:empresaComboLabel(e)})), ()=>{});
   if(config.empresaPrestadorId){
     const atual = empresas.find(e=>e.id===config.empresaPrestadorId);
     if(atual){ document.querySelector('#agEmpresaPrestadorCombo .combo-value').value=atual.id; document.querySelector('#agEmpresaPrestadorCombo .combo-input').value=atual.nome; }
@@ -6623,7 +6628,7 @@ async function renderCfgEmailSmtp(box){
       carregarContatosEDocs();
     }));
   }
-  setupComboSelect('ccEmpresaCombo', empresas.map(e=>({id:e.id, label:e.nome})), carregarContatosEDocs);
+  setupComboSelect('ccEmpresaCombo', empresas.map(e=>({id:e.id, label:empresaComboLabel(e)})), carregarContatosEDocs);
 }
 
 // ===================== start =====================
