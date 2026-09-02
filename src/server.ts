@@ -3332,7 +3332,7 @@ async function executarRecalculoDas(periodoId: number, user: any): Promise<{ ok:
     if (!das.pdfBase64) return { ok: false, status: 502, error: "A Receita não devolveu o DAS recalculado — tente de novo mais tarde." };
     const quem = user.perfil === "Cliente" ? "pelo cliente" : `pelo escritório (${user.nome})`;
     const observacao = `DAS recalculado — solicitado ${quem} em ${new Date().toLocaleDateString("pt-BR")}.`;
-    integraContadorAnexarDasEmEnvio(empConfig.escritorio_id, periodo.empresaId, das, das.periodoApuracao || periodoApuracao, observacao);
+    integraContadorAnexarDasEmEnvio(empConfig.escritorio_id, periodo.empresaId, das, das.periodoApuracao || periodoApuracao, observacao, true);
     // Registra a solicitação de verdade (mesmo campo que "Solicitar Documentos" já usa pros modelos
     // normais) — sem isso o pedido de recálculo não ficava registrado em lugar nenhum: nem na lista
     // "Solicitar Documentos" do próprio cliente, nem em nenhum histórico do escritório. DAS - Mensal
@@ -4422,7 +4422,20 @@ function integraContadorAnexarPdfEmEnvio(
     )
     .run(periodo.id, nomeArquivo, destino, buf.length, observacao, vencimentoIso);
 }
-function integraContadorAnexarDasEmEnvio(escritorioId: number, empresaId: number, das: integracontador.DasEmitido, periodoApuracao: string, observacao: string): void {
+// forcarNovoDocumento: só vem true no fluxo de recálculo explicitamente solicitado (usuário clicou
+// em "Solicitar recálculo do DAS"). A busca automática (1x/dia) e o botão manual "Buscar" reprocessam
+// a mesma competência todo dia até a próxima declarar — sem essa trava, cada execução que encontra o
+// DAS de novo (sem nada ter mudado) anexava outro PDF duplicado em Envio de Documentos. Achado ao
+// vivo: DU CALLO SERVICOS LTDA acumulou 4 cópias do DAS de julho/2026, uma por dia de busca, sem
+// nenhum recálculo real ter sido pedido.
+function integraContadorAnexarDasEmEnvio(
+  escritorioId: number,
+  empresaId: number,
+  das: integracontador.DasEmitido,
+  periodoApuracao: string,
+  observacao: string,
+  forcarNovoDocumento = false
+): void {
   if (!das.pdfBase64) return;
   const atribuicaoId = integraContadorObterOuCriarAtribuicaoModelo(
     escritorioId,
@@ -4432,6 +4445,13 @@ function integraContadorAnexarDasEmEnvio(escritorioId: number, empresaId: number
   );
   const ano = Number(periodoApuracao.slice(0, 4));
   const mes = Number(periodoApuracao.slice(4, 6));
+  if (!forcarNovoDocumento) {
+    const periodo = sqlite.prepare(`SELECT id FROM envio_periodos WHERE atribuicao_id = ? AND ano = ? AND mes = ?`).get(atribuicaoId, ano, mes) as any;
+    if (periodo) {
+      const jaTemDocumento = sqlite.prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id = ? LIMIT 1`).get(periodo.id);
+      if (jaTemDocumento) return; // já tem o DAS dessa competência — só anexa outro se for recálculo pedido de verdade
+    }
+  }
   const nomeArquivo = `DAS ${MESES_PT_EXTENSO[mes - 1]} ${ano}${das.numeroDocumento ? " - " + das.numeroDocumento : ""}.pdf`;
   integraContadorAnexarPdfEmEnvio(atribuicaoId, empresaId, ano, mes, nomeArquivo, das.pdfBase64, observacao, integraContadorFormatarVencimento(das.dataVencimento));
 }
