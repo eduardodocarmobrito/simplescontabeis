@@ -3227,6 +3227,25 @@ app.post("/api/envio/periodos/gerar", blockCliente, requirePermissao("envio", "p
   res.json({ ok: true, criados });
 });
 
+// Só pra período avulso (rótulo próprio, ex.: "CND - Receita Federal") e só quando não tem nenhum
+// documento anexado ainda — mensal/anual nunca entra aqui (fazem parte do calendário fixo da grade,
+// não faz sentido "excluir" um mês) e um avulso já com documento também não, pra não sumir com
+// histórico de algo já enviado (aí o jeito é excluir os documentos um a um, como já existe).
+app.delete("/api/envio/periodos/:id", blockCliente, requirePermissao("envio", "editar"), (req, res) => {
+  const periodo = sqlite
+    .prepare(
+      `SELECT p.*, a.empresa_id as empresaId, t.periodicidade
+       FROM envio_periodos p JOIN envio_atribuicoes a ON a.id = p.atribuicao_id JOIN envio_templates t ON t.id = a.template_id
+       WHERE p.id = ?`
+    )
+    .get(Number(req.params.id)) as any;
+  if (!periodo || !podeAcessarEmpresa((req as any).user, periodo.empresaId)) return res.status(404).json({ error: "Período não encontrado." });
+  if (periodo.periodicidade !== "avulso") return res.status(400).json({ error: "Só é possível excluir um período avulso." });
+  const temDocumento = sqlite.prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id = ?`).get(periodo.id);
+  if (temDocumento) return res.status(400).json({ error: "Este período já tem documento anexado — exclua o(s) documento(s) primeiro." });
+  sqlite.prepare(`DELETE FROM envio_periodos WHERE id = ?`).run(periodo.id);
+  res.json({ ok: true });
+});
 app.get("/api/envio/grade/:atribuicaoId", (req, res) => {
   const user = (req as any).user;
   const atribuicaoId = Number(req.params.atribuicaoId);

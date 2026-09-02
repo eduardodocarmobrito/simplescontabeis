@@ -1951,9 +1951,14 @@ function envioDocBlocoHtml(d, podeEditar, podePostar, souCliente, mostrarVencime
     </div>
   </div>`;
 }
-function envioCelulaHtml(p, accept, podePostar, podeEditar, souCliente, mostrarVencimento, ehDas){
+function envioCelulaHtml(p, accept, podePostar, podeEditar, souCliente, mostrarVencimento, ehDas, ehAvulso){
   const inputId = `ef_${p.periodoId}`;
   const docs = p.documentos || [];
+  // Período avulso criado por engano (ou que não é mais necessário) sem nada anexado ainda — só
+  // remove a linha inteira nesse caso; com documento já anexado, o jeito é excluir os documentos um
+  // a um (histórico já enviado ao cliente não some sozinho).
+  const btnExcluirPeriodo = ehAvulso && podeEditar && !docs.length
+    ? `<button class="btn small danger" data-act="excluir-periodo" data-periodo="${p.periodoId}" style="margin-top:6px;">Excluir</button>` : '';
   const blocosHtml = docs.map(d=>envioDocBlocoHtml(d, podeEditar, podePostar, souCliente, mostrarVencimento)).join('');
   // Com 2+ documentos no mesmo período (ex.: guia original + guia recalculada), a lista expandida
   // ocupa muito espaço vertical na grade — fica recolhida atrás de uma setinha por padrão.
@@ -1981,6 +1986,7 @@ function envioCelulaHtml(p, accept, podePostar, podeEditar, souCliente, mostrarV
     <input type="file" id="${inputId}" ${accept?`accept="${accept}"`:''}>
     ${docs.length? `<input type="text" id="${obsId}" placeholder="Observação (ex.: guia recalculada — cliente não pagou no prazo)" style="font-size:12.5px; border:1px solid var(--rule); border-radius:8px; padding:7px 9px;">`:''}
     <button class="btn small primary" data-act="enviar-doc" data-periodo="${p.periodoId}" data-input="${inputId}" data-obs="${obsId}">${docs.length?'Incluir outro documento':'Enviar'}</button>
+    ${btnExcluirPeriodo}
   </div>`;
 }
 function wireEnvioGradeEvents(container, atribuicaoId, souCliente){
@@ -2034,6 +2040,11 @@ function wireEnvioGradeEvents(container, atribuicaoId, souCliente){
     try{ await api('/envio/documentos/'+b.dataset.doc, { method:'DELETE' }); toast('Excluído.','ok'); abrirEnvioGrade(atribuicaoId, souCliente); }
     catch(e){ toast(e.message,'err'); }
   }));
+  container.querySelectorAll('[data-act="excluir-periodo"]').forEach(b=>b.addEventListener('click', async ()=>{
+    if(!confirmar('Excluir este envio avulso? Ele some da grade — como não tem nada anexado, não afeta o cliente.')) return;
+    try{ await api('/envio/periodos/'+b.dataset.periodo, { method:'DELETE' }); toast('Excluído.','ok'); abrirEnvioGrade(atribuicaoId, souCliente); }
+    catch(e){ toast(e.message,'err'); }
+  }));
 }
 async function abrirEnvioGrade(atribuicaoId, souCliente){
   const { atribuicao, grade } = await api('/envio/grade/'+atribuicaoId);
@@ -2059,8 +2070,9 @@ async function abrirEnvioGrade(atribuicaoId, souCliente){
 
   if(grade.length){
     const tbody = document.getElementById('envioGradeBody');
+    const ehAvulso = atribuicao.periodicidade==='avulso';
     tbody.innerHTML = grade.map(p=>
-      `<tr data-periodo="${p.periodoId}"><td><b>${esc(rotuloPeriodo(p))}</b></td><td>${envioCelulaHtml(p, accept, podePostar, podeEditar, souCliente, atribuicao.detectarVencimento, ehDas)}</td></tr>`
+      `<tr data-periodo="${p.periodoId}"><td><b>${esc(rotuloPeriodo(p))}</b></td><td>${envioCelulaHtml(p, accept, podePostar, podeEditar, souCliente, atribuicao.detectarVencimento, ehDas, ehAvulso)}</td></tr>`
     ).join('');
     wireEnvioGradeEvents(tbody, atribuicaoId, souCliente);
   }
