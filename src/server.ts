@@ -4655,10 +4655,10 @@ app.get("/api/integracontador/documentos/:id/pdf", blockCliente, requireAdmin, (
   res.send(fs.readFileSync(row.pdf_path));
 });
 
-// Rotina automática 2x ao dia, às 8h e 12h (horário de Brasília) — decisão explícita do usuário,
-// pra manter os cards do Painel (Situação Fiscal, DAS em Atraso) com dado fresco, mesmo sabendo que
-// cada chamada ao Integra Contador é paga (antes rodava só 1x por semana, ~14x mais barato). Roda
-// pra toda empresa ativa nos dois horários, uma de cada vez, com uma pausa entre elas.
+// Rotina automática 1x ao dia, às 12h (horário de Brasília) — decisão explícita do usuário (antes
+// era 2x/dia, 8h e 12h; antes disso, 1x por semana). Cada chamada ao Integra Contador é paga, então
+// menos execuções = mais barato — troca-se dado um pouco menos fresco por menos custo. Roda pra
+// toda empresa ativa, uma de cada vez, com uma pausa entre elas.
 const INTEGRACONTADOR_AUTO_PAUSA_ENTRE_EMPRESAS_MS = 5000;
 async function integraContadorExecutarBuscaAutomatica() {
   const configs = sqlite
@@ -4688,7 +4688,7 @@ async function integraContadorExecutarBuscaAutomatica() {
 // tick dentro da mesma hora) — mesmo padrão de setInterval de 60 em 60s já usado na rotina do NFS-e.
 setInterval(() => {
   const agora = agoraBrasilia();
-  if (agora.minuto !== 0 || (agora.hora !== 8 && agora.hora !== 12)) return;
+  if (agora.minuto !== 0 || agora.hora !== 12) return;
   integraContadorExecutarBuscaAutomatica().catch((e) => console.error("Erro na rotina automática do Integra Contador:", e.message));
 }, 60_000);
 
