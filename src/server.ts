@@ -7353,12 +7353,25 @@ function cardDasEmAtraso(user: any): any[] {
     // desde quando a empresa devia entregar; sem nenhum período gerado ainda, não dá pra inferir
     // nada, então pula (evita marcar uma atribuição recém-criada como atrasada desde sempre).
     const periodos = sqlite.prepare(`SELECT p.id, p.ano, p.mes FROM envio_periodos p WHERE p.atribuicao_id = ? AND p.mes IS NOT NULL`).all(atrib.atribuicaoId) as any[];
-    if (!periodos.length) continue;
     const porCompetencia = new Map<string, any>(periodos.map((p) => [`${p.ano}${String(p.mes).padStart(2, "0")}`, p]));
-    const maisAntigo = periodos.reduce((min, p) => (p.ano * 100 + p.mes < min.ano * 100 + min.mes ? p : min));
+    let anoMesInicio: number;
+    if (periodos.length) {
+      const maisAntigo = periodos.reduce((min, p) => (p.ano * 100 + p.mes < min.ano * 100 + min.mes ? p : min));
+      anoMesInicio = maisAntigo.ano * 100 + maisAntigo.mes;
+    } else {
+      // Nunca teve período gerado na grade (nem "Gerar ano na grade" nem um DAS automático que tenha
+      // dado certo). Antes disso pulava direto — achado ao vivo: SIMPLES SERVICOS DE CONTABILIDADE
+      // (empresa do próprio escritório) tem 7 competências com declaração do Simples já transmitida,
+      // mas a geração do DAS sempre falhou, então nunca existiu período nenhum na grade e a empresa
+      // ficava invisível neste card mesmo estando claramente em atraso. Se já existe alguma
+      // declaração transmitida, usa a mais antiga como início do calendário; sem nenhuma declaração
+      // também, aí sim não tem base nenhuma pra inferir desde quando cobrar — pula.
+      const decl = sqlite.prepare(`SELECT MIN(periodo_apuracao) as minPeriodo FROM integracontador_documentos WHERE empresa_id = ? AND tipo = 'declaracao'`).get(atrib.empresaId) as any;
+      if (!decl || !decl.minPeriodo) continue;
+      anoMesInicio = Number(decl.minPeriodo);
+    }
     // Corte configurado em painel_monitoramento_config (opcional): não deixa o calendário começar
     // antes da competência escolhida, mesmo que exista período mais antigo sem documento na grade.
-    let anoMesInicio = maisAntigo.ano * 100 + maisAntigo.mes;
     if (corte && corte > anoMesInicio) anoMesInicio = corte;
     let declaradas: Set<string> | null = null;
     const competenciasFaltando: string[] = [];
