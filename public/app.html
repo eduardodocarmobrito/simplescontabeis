@@ -1284,7 +1284,7 @@ function empresaModal(e){
       <button class="btn" id="empCancel">Cancelar</button>
       <button class="btn primary" id="empSalvar">Salvar</button>
     </div>
-  `);
+  `, '1100px');
   if(e) renderCertificadoBuscaXml(document.getElementById('empCertBuscaXml'), e.id, e.uf);
   document.getElementById('empCancel').addEventListener('click', closeModal);
   document.getElementById('empSalvar').addEventListener('click', async ()=>{
