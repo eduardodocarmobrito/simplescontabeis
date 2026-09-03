@@ -168,7 +168,7 @@ export interface PedidoIntegraContador {
   idSistema: string;
   idServico: string;
   versaoSistema: string;
-  dados: object;
+  dados: object | ""; // "" (string vazia) pros poucos serviços que rejeitam até "{}" — ex.: PARCSN Consultar Pedidos (ver PEDIDOSPARC163)
 }
 interface RespostaIntegraContador {
   status: number;
@@ -187,7 +187,10 @@ export async function chamarServico(token: TokenIntegraContador, pedido: PedidoI
       idSistema: pedido.idSistema,
       idServico: pedido.idServico,
       versaoSistema: pedido.versaoSistema,
-      dados: JSON.stringify(pedido.dados),
+      // typeof "" === "string": alguns serviços (achado ao vivo: PARCSN Consultar Pedidos, erro
+      // "ER_N007") rejeitam até "{}" e exigem o campo "dados" literalmente vazio — diferente do
+      // resto dos serviços, que aceitam (e a doc pede) um objeto JSON stringificado normal.
+      dados: typeof pedido.dados === "string" ? pedido.dados : JSON.stringify(pedido.dados),
     },
   };
   const corpo = Buffer.from(JSON.stringify(corpoObj), "utf8");
@@ -429,7 +432,7 @@ export async function consultarPedidosParcelamento(token: TokenIntegraContador, 
     idSistema: "PARCSN",
     idServico: "PEDIDOSPARC163",
     versaoSistema: "1.0",
-    dados: {},
+    dados: "", // achado ao vivo: rejeita "{}" com ER_N007 ("não requer nenhuma informação no campo dados")
   });
   const lista = r.dados?.parcelamentos || r.dados?.listaParcelamentos || [];
   return (Array.isArray(lista) ? lista : []).map((p: any) => ({
