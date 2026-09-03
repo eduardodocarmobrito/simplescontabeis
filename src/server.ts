@@ -7635,6 +7635,26 @@ function cardDasEmAtraso(user: any): any[] {
        WHERE a.ativo = 1`
     )
     .all(escritorioId, escritorioId) as any[];
+  // Achado ao vivo (AMIL COMERCIO DE PEÇAS, FERNANDO CARVALHO DA SILVA): a atribuição "DAS - Mensal"
+  // só nasce quando um DAS ou Situação Fiscal é gerado com sucesso ao menos uma vez (ver
+  // integraContadorAnexarDasEmEnvio/integraContadorAnexarSitfisEmEnvio) — uma empresa optante do
+  // Simples que nunca teve nenhum PDF gerado (mesmo com declaração transmitida e alerta de pendência
+  // real em integracontador_empresa_config.alerta_declaracao) nunca tinha atribuição nenhuma, então
+  // nem entrava na query acima. Acrescenta essas "órfãs" — mesma checagem por declaração já usada
+  // abaixo pro caso de atribuição sem período nenhum, só que aqui não existe nem atribuicaoId real
+  // (fica null; o resto da lógica já sabe lidar com isso, já que só usa atribuicaoId pra achar
+  // período, e sem atribuição não tem período mesmo).
+  const idsComAtribuicao = new Set(atribuicoes.map((a) => a.empresaId));
+  const orfas = sqlite
+    .prepare(
+      `SELECT c.empresa_id as empresaId, e.nome as empresaNome
+       FROM integracontador_empresa_config c JOIN empresas e ON e.id = c.empresa_id
+       WHERE c.escritorio_id = ? AND c.ativo = 1 AND c.optante_simples_nacional = 1 AND e.ativo = 1 AND e.escritorio_id = ?`
+    )
+    .all(escritorioId, escritorioId) as any[];
+  for (const o of orfas) {
+    if (!idsComAtribuicao.has(o.empresaId)) atribuicoes.push({ atribuicaoId: null, empresaId: o.empresaId, empresaNome: o.empresaNome });
+  }
   const porEmpresa = new Map<number, any>();
   for (const atrib of atribuicoes) {
     if (!visiveis.has(atrib.empresaId)) continue;
