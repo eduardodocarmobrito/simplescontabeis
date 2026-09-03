@@ -86,6 +86,7 @@ sqlite.exec(`
     password_hash TEXT NOT NULL,
     ativo INTEGER NOT NULL DEFAULT 1,
     isento_assinatura INTEGER NOT NULL DEFAULT 0, -- Colaborador isento da cobrança por assento (não entra na contagem)
+    painel_tv INTEGER NOT NULL DEFAULT 0, -- conta dedicada pro Painel de TV (Início em tela cheia, sem menu) — sessão de vida longa
     created_at TEXT DEFAULT (datetime('now'))
   );
 
@@ -1345,6 +1346,13 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
   if (!colsUsers.some((c) => c.name === "isento_assinatura")) {
     sqlite.exec(`ALTER TABLE app_users ADD COLUMN isento_assinatura INTEGER NOT NULL DEFAULT 0`);
   }
+  // Conta dedicada pro "Painel de TV" (Início em tela cheia, ciclando os cards do dashboard, pensado
+  // pra ficar ligado o dia todo numa TV do escritório) — login normal, mas ao entrar pula direto pro
+  // painel, sem menu nenhum. Sessão de vida bem mais longa (ver createSession) já que fica logado por
+  // meses sem ninguém digitar senha de novo.
+  if (!colsUsers.some((c) => c.name === "painel_tv")) {
+    sqlite.exec(`ALTER TABLE app_users ADD COLUMN painel_tv INTEGER NOT NULL DEFAULT 0`);
+  }
   const colsItens = sqlite.prepare(`PRAGMA table_info(escritorio_licenca_cobranca_itens)`).all() as any[];
   if (!colsItens.some((c) => c.name === "quantidade")) {
     sqlite.exec(`ALTER TABLE escritorio_licenca_cobranca_itens ADD COLUMN quantidade INTEGER NOT NULL DEFAULT 1`);
@@ -1615,9 +1623,15 @@ function verifyPassword(password: string, stored: string): boolean {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 const SESSION_DAYS = 7;
-function createSession(userId: number): string {
+// Conta de Painel de TV: fica logada meses a fio, ninguém vai digitar senha de novo — sessão nasce
+// com validade bem mais longa (ver createSession) e além disso é renovada a cada request válido (ver
+// getSessionUser), então na prática nunca expira sozinha enquanto a TV continuar recarregando a
+// página periodicamente.
+const SESSION_DAYS_PAINEL_TV = 730;
+function createSession(userId: number, painelTv = false): string {
   const token = crypto.randomBytes(32).toString("hex");
-  const expiresAt = new Date(Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const dias = painelTv ? SESSION_DAYS_PAINEL_TV : SESSION_DAYS;
+  const expiresAt = new Date(Date.now() + dias * 24 * 60 * 60 * 1000).toISOString();
   sqlite.prepare(`INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)`).run(token, userId, expiresAt);
   return token;
 }
@@ -1646,7 +1660,7 @@ function getSessionUser(token: string | undefined) {
   const row = sqlite
     .prepare(
       `SELECT s.expires_at as expiresAt, s.empresa_ativa_id as empresaAtivaId, u.id, u.nome, u.email, u.perfil,
-              u.acesso_todas_empresas as acessoTodasEmpresas, u.ativo, u.escritorio_id as escritorioId
+              u.acesso_todas_empresas as acessoTodasEmpresas, u.ativo, u.escritorio_id as escritorioId, u.painel_tv as painelTv
        FROM sessions s JOIN app_users u ON u.id = s.user_id
        WHERE s.token = ?`
     )
@@ -1655,6 +1669,13 @@ function getSessionUser(token: string | undefined) {
   if (new Date(row.expiresAt) < new Date() || !row.ativo) {
     sqlite.prepare(`DELETE FROM sessions WHERE token = ?`).run(token);
     return null;
+  }
+  // Conta de Painel de TV: empurra a validade da sessão pra sempre bem lá na frente a cada request
+  // válido — na prática não expira sozinha enquanto a TV continuar recarregando periodicamente (o
+  // painel recarrega a página a cada 30min, bem menos que os 2 anos de folga).
+  if (row.painelTv) {
+    const novaExpiracao = new Date(Date.now() + SESSION_DAYS_PAINEL_TV * 24 * 60 * 60 * 1000).toISOString();
+    sqlite.prepare(`UPDATE sessions SET expires_at = ? WHERE token = ?`).run(novaExpiracao, token);
   }
   const empresaId = row.perfil === "Cliente" ? resolverEmpresaAtivaCliente(token, row.id, row.empresaAtivaId) : null;
   return {
@@ -1665,6 +1686,7 @@ function getSessionUser(token: string | undefined) {
     empresaId,
     acessoTodasEmpresas: !!row.acessoTodasEmpresas,
     escritorioId: row.escritorioId as number | null,
+    painelTv: !!row.painelTv,
   };
 }
 function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
@@ -1950,10 +1972,11 @@ app.post("/api/auth/login", loginRateLimiter, (req, res) => {
   if (!row || !row.ativo || !verifyPassword(password, row.password_hash)) {
     return res.status(401).json({ error: "E-mail ou senha inválidos." });
   }
-  const token = createSession(row.id);
-  res.cookie("sid", token, { httpOnly: true, sameSite: "lax", secure: req.secure, maxAge: SESSION_DAYS * 24 * 60 * 60 * 1000 });
+  const token = createSession(row.id, !!row.painel_tv);
+  const diasCookie = row.painel_tv ? SESSION_DAYS_PAINEL_TV : SESSION_DAYS;
+  res.cookie("sid", token, { httpOnly: true, sameSite: "lax", secure: req.secure, maxAge: diasCookie * 24 * 60 * 60 * 1000 });
   const user = getSessionUser(token);
-  res.json({ ok: true, user: { id: user!.id, nome: user!.nome, email: user!.email, perfil: user!.perfil, empresaId: user!.empresaId } });
+  res.json({ ok: true, user: { id: user!.id, nome: user!.nome, email: user!.email, perfil: user!.perfil, empresaId: user!.empresaId, painelTv: user!.painelTv } });
 });
 app.post("/api/auth/logout", (req, res) => {
   const token = req.cookies?.sid;
@@ -2095,7 +2118,7 @@ app.get("/api/users", requireAdmin, (req, res) => {
   const rows = sqlite
     .prepare(
       `SELECT u.id, u.nome, u.email, u.perfil, u.empresa_id as empresaId, e.nome as empresaNome,
-              u.acesso_todas_empresas as acessoTodasEmpresas, u.ativo, u.isento_assinatura as isentoAssinatura, u.created_at as createdAt,
+              u.acesso_todas_empresas as acessoTodasEmpresas, u.ativo, u.isento_assinatura as isentoAssinatura, u.painel_tv as painelTv, u.created_at as createdAt,
               (SELECT COUNT(*) FROM cliente_empresas ce WHERE ce.user_id = u.id) as totalEmpresas
        FROM app_users u LEFT JOIN empresas e ON e.id = u.empresa_id
        WHERE u.escritorio_id = ?
@@ -2106,21 +2129,22 @@ app.get("/api/users", requireAdmin, (req, res) => {
 });
 app.post("/api/users", requireAdmin, (req, res) => {
   const user = (req as any).user;
-  const { nome, email, perfil, password, acessoTodasEmpresas } = req.body || {};
+  const { nome, email, perfil, password, acessoTodasEmpresas, painelTv } = req.body || {};
   if (!nome || !email || !perfil || !password) return res.status(400).json({ error: "Preencha nome, e-mail, perfil e senha." });
   if (!["Administrador", "Colaborador", "Cliente"].includes(perfil)) return res.status(400).json({ error: "Perfil inválido." });
   const pwError = passwordPolicyError(password);
   if (pwError) return res.status(400).json({ error: pwError });
   try {
     const info = sqlite
-      .prepare(`INSERT INTO app_users (nome, email, perfil, acesso_todas_empresas, password_hash, escritorio_id) VALUES (?, ?, ?, ?, ?, ?)`)
+      .prepare(`INSERT INTO app_users (nome, email, perfil, acesso_todas_empresas, password_hash, escritorio_id, painel_tv) VALUES (?, ?, ?, ?, ?, ?, ?)`)
       .run(
         nome,
         String(email).trim().toLowerCase(),
         perfil,
         perfil === "Colaborador" ? (acessoTodasEmpresas === false ? 0 : 1) : 1,
         hashPassword(password),
-        user.escritorioId
+        user.escritorioId,
+        perfil === "Colaborador" && painelTv ? 1 : 0 // só faz sentido pra Colaborador — dono do Painel de TV não deve ser Administrador nem Cliente
       );
     const userId = Number(info.lastInsertRowid);
     if (perfil === "Colaborador") {
@@ -2140,15 +2164,17 @@ app.put("/api/users/:id", requireAdmin, (req, res) => {
   const id = Number(req.params.id);
   const existing = sqlite.prepare(`SELECT * FROM app_users WHERE id = ?`).get(id) as any;
   if (!existing || existing.escritorio_id !== (req as any).user.escritorioId) return res.status(404).json({ error: "Usuário não encontrado." });
-  const { nome, email, password, ativo, acessoTodasEmpresas, isentoAssinatura } = req.body || {};
+  const { nome, email, password, ativo, acessoTodasEmpresas, isentoAssinatura, painelTv } = req.body || {};
   if (password) {
     const pwError = passwordPolicyError(password);
     if (pwError) return res.status(400).json({ error: pwError });
   }
   const newHash = password ? hashPassword(password) : existing.password_hash;
+  // Só faz sentido pra Colaborador — perfil não muda aqui, então basta olhar o que já está gravado.
+  const novoPainelTv = existing.perfil === "Colaborador" && painelTv !== undefined ? (painelTv ? 1 : 0) : existing.painel_tv;
   try {
     sqlite
-      .prepare(`UPDATE app_users SET nome=?, email=?, password_hash=?, ativo=?, acesso_todas_empresas=?, isento_assinatura=? WHERE id=?`)
+      .prepare(`UPDATE app_users SET nome=?, email=?, password_hash=?, ativo=?, acesso_todas_empresas=?, isento_assinatura=?, painel_tv=? WHERE id=?`)
       .run(
         nome ?? existing.nome,
         email ? String(email).trim().toLowerCase() : existing.email,
@@ -2156,9 +2182,12 @@ app.put("/api/users/:id", requireAdmin, (req, res) => {
         ativo === undefined ? existing.ativo : ativo ? 1 : 0,
         acessoTodasEmpresas !== undefined ? (acessoTodasEmpresas ? 1 : 0) : existing.acesso_todas_empresas,
         isentoAssinatura !== undefined ? (isentoAssinatura ? 1 : 0) : existing.isento_assinatura,
+        novoPainelTv,
         id
       );
-    if (ativo === false) sqlite.prepare(`DELETE FROM sessions WHERE user_id = ?`).run(id);
+    // Painel de TV usa sessão de vida longa — se acabou de virar (ou deixar de ser) painel_tv, ou se
+    // ficou inativo, derruba a sessão atual pra ela ser recriada com a duração certa no próximo login.
+    if (ativo === false || novoPainelTv !== existing.painel_tv) sqlite.prepare(`DELETE FROM sessions WHERE user_id = ?`).run(id);
     res.json({ ok: true });
   } catch (e: any) {
     if (String(e.message).includes("UNIQUE")) return res.status(409).json({ error: "Já existe um usuário com esse e-mail." });

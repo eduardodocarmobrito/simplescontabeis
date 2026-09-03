@@ -199,6 +199,38 @@
 
   ::placeholder{color:#A7B0AB;}
   .hidden{display:none !important;}
+
+  /* ===== Painel de TV — pensado pra rodar sozinho, em tela cheia, numa TV do escritório ===== */
+  .tvp{position:fixed; inset:0; z-index:500; background:radial-gradient(ellipse at top,#182420 0%,#0b1310 62%,#070c0a 100%); color:#EAF3EE; font-family:'IBM Plex Sans',system-ui,sans-serif; display:flex; flex-direction:column; overflow:hidden;}
+  .tvp-header{display:flex; align-items:center; justify-content:space-between; padding:clamp(16px,2.6vh,34px) clamp(20px,3vw,52px) clamp(6px,1.4vh,16px);}
+  .tvp-brand{display:flex; align-items:center; gap:16px;}
+  .tvp-brand .dot{width:12px; height:12px; border-radius:50%; background:#5FE0A0; box-shadow:0 0 0 0 rgba(95,224,160,.6); animation:tvpDotPulse 2.2s infinite;}
+  .tvp-brand h1{margin:0; font-size:clamp(20px,2.4vw,32px); font-weight:700; letter-spacing:.01em;}
+  .tvp-brand .eyebrow{font-family:'IBM Plex Mono',monospace; font-size:11px; letter-spacing:.16em; text-transform:uppercase; color:#7FA895;}
+  .tvp-clockwrap{text-align:right;}
+  .tvp-clock{font-family:'IBM Plex Mono',monospace; font-size:clamp(28px,3.4vw,46px); font-weight:600; letter-spacing:.02em; font-variant-numeric:tabular-nums;}
+  .tvp-date{font-size:clamp(11px,1.1vw,14px); color:#8FB3A2; text-transform:capitalize; margin-top:2px;}
+  .tvp-body{flex:1; display:flex; align-items:center; padding:0 clamp(20px,3vw,52px);}
+  .tvp-grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:clamp(14px,1.8vw,26px); width:100%;}
+  .tvp-card{position:relative; background:linear-gradient(160deg,rgba(255,255,255,.05),rgba(255,255,255,.015)); border:1px solid rgba(234,243,238,.09); border-radius:18px; padding:clamp(18px,2vw,28px) clamp(18px,2.2vw,26px); overflow:hidden; transition:box-shadow .5s ease, border-color .5s ease; cursor:pointer;}
+  .tvp-card::before{content:''; position:absolute; left:0; top:0; bottom:0; width:5px; background:var(--tvp-accent,#5FE0A0);}
+  .tvp-card .tvp-eyebrow{font-family:'IBM Plex Mono',monospace; font-size:clamp(10px,.95vw,13px); letter-spacing:.12em; text-transform:uppercase; color:#8FB3A2; display:flex; justify-content:space-between; align-items:center; gap:8px;}
+  .tvp-card .tvp-val{font-size:clamp(34px,4.6vw,60px); font-weight:700; margin-top:10px; line-height:1; font-variant-numeric:tabular-nums; color:var(--tvp-accent,#5FE0A0); text-shadow:0 0 24px color-mix(in srgb, var(--tvp-accent,#5FE0A0) 35%, transparent);}
+  .tvp-card .tvp-sub{font-size:clamp(12px,1.05vw,15px); color:#B9CFC4; margin-top:8px;}
+  .tvp-card.tvp-scan{border-color:var(--tvp-accent,#5FE0A0); box-shadow:0 0 0 1px var(--tvp-accent,#5FE0A0), 0 0 34px -6px var(--tvp-accent,#5FE0A0);}
+  .tvp-card.tvp-flash .tvp-val{animation:tvpFlash .9s ease;}
+  .tvp-empty{font-size:18px; color:#8FB3A2; text-align:center; width:100%;}
+  .tvp-footer{display:flex; align-items:center; justify-content:space-between; gap:16px; padding:clamp(10px,1.6vh,18px) clamp(20px,3vw,52px) clamp(14px,2vh,24px); font-family:'IBM Plex Mono',monospace; font-size:clamp(10px,.9vw,12.5px); color:#6E9384;}
+  .tvp-ticker{flex:1; overflow:hidden; white-space:nowrap; position:relative; height:1.4em;}
+  .tvp-ticker-track{position:absolute; white-space:nowrap; animation:tvpTicker linear infinite; will-change:transform;}
+  .tvp-sync{white-space:nowrap;}
+  .tvp-fs-btn{position:fixed; right:18px; bottom:18px; z-index:600; background:rgba(234,243,238,.08); border:1px solid rgba(234,243,238,.18); color:#EAF3EE; font-family:'IBM Plex Mono',monospace; font-size:11px; letter-spacing:.06em; text-transform:uppercase; padding:9px 14px; border-radius:9px; cursor:pointer; opacity:.55; transition:opacity .2s;}
+  .tvp-fs-btn:hover{opacity:1;}
+  .tvp-exit{position:fixed; left:18px; bottom:18px; z-index:600; font-size:11px; color:#4E6B5F; text-decoration:none; opacity:.4; font-family:'IBM Plex Mono',monospace;}
+  .tvp-exit:hover{opacity:.9;}
+  @keyframes tvpDotPulse{0%{box-shadow:0 0 0 0 rgba(95,224,160,.55);}70%{box-shadow:0 0 0 11px rgba(95,224,160,0);}100%{box-shadow:0 0 0 0 rgba(95,224,160,0);}}
+  @keyframes tvpFlash{0%{opacity:1;}30%{opacity:.25;}100%{opacity:1;}}
+  @keyframes tvpTicker{from{transform:translateX(0);}to{transform:translateX(-50%);}}
 </style>
 </head>
 <body>
@@ -228,6 +260,8 @@
   </div>
   <div class="main" id="main"></div>
 </div>
+
+<div id="painelTv" class="tvp hidden"></div>
 
 <div class="modal-bg" id="modalBg"><div class="modal" id="modalBody"></div></div>
 <div class="drawer-bg" id="drawerBg"><div class="drawer" id="drawerBody"></div></div>
@@ -533,6 +567,8 @@ function confirmar(msg){ return window.confirm(msg); }
 function showLogin(){
   document.getElementById('loginScreen').classList.remove('hidden');
   document.getElementById('shell').classList.add('hidden');
+  document.getElementById('painelTv').classList.add('hidden');
+  pararPainelTv();
 }
 document.getElementById('btnLogin').addEventListener('click', doLogin);
 document.getElementById('loginPassword').addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
@@ -626,6 +662,13 @@ async function boot(){
     return;
   }
   document.getElementById('loginScreen').classList.add('hidden');
+  // Conta de Painel de TV: pula direto pro modo tela cheia, sem sidebar nem navegação nenhuma —
+  // essa conta não faz mais nada além disso, então nem vale montar o shell normal.
+  if(STATE.user.painelTv){
+    document.getElementById('shell').classList.add('hidden');
+    pagePainelTv();
+    return;
+  }
   document.getElementById('shell').classList.remove('hidden');
   document.getElementById('whoName').innerHTML = esc(STATE.user.nome);
   document.getElementById('whoProfile').textContent = STATE.user.perfil;
@@ -710,6 +753,139 @@ async function render(){
     if(meuSeq !== RENDER_SEQ) return; // usuário já navegou pra outra tela — essa resposta chegou atrasada, não sobrescreve
     m.innerHTML = `<div class="empty-state">Não foi possível carregar esta página.<br><span style="color:var(--debit)">${esc(e.message)}</span></div>`;
   }
+}
+
+// ===================== Painel de TV (Início em tela cheia, sem menu) =====================
+// Pensado pra ficar ligado o dia todo numa TV do escritório — cicla os cards do Início como um
+// quadro de embarque de aeroporto (giro de destaque + "piscada" a cada atualização), atualiza os
+// valores sozinho a cada minuto, e recarrega a página inteira a cada 30min pra pegar card
+// novo/editado/removido (ou uma atualização do próprio site) sem precisar mexer na TV manualmente.
+let TVP_TIMERS = { refresh:null, reload:null, clock:null, scan:null };
+function pararPainelTv(){
+  Object.values(TVP_TIMERS).forEach(t=>{ if(t) clearInterval(t); });
+  TVP_TIMERS = { refresh:null, reload:null, clock:null, scan:null };
+}
+const TVP_CORES = ['#5FE0A0','#61B8E8','#E8C15F','#E88F61','#B98CE8','#5FE0C7','#E85F8F','#8CE85F'];
+const TVP_DIAS = ['domingo','segunda-feira','terça-feira','quarta-feira','quinta-feira','sexta-feira','sábado'];
+async function pagePainelTv(){
+  pararPainelTv();
+  const el = document.getElementById('painelTv');
+  el.classList.remove('hidden');
+  el.innerHTML = `
+    <div class="tvp-header">
+      <div class="tvp-brand">
+        <span class="dot"></span>
+        <div>
+          <div class="eyebrow">Escritório contábil · painel ao vivo</div>
+          <h1>Simples Contábeis</h1>
+        </div>
+      </div>
+      <div class="tvp-clockwrap">
+        <div class="tvp-clock" id="tvpClock">--:--:--</div>
+        <div class="tvp-date" id="tvpDate"></div>
+      </div>
+    </div>
+    <div class="tvp-body"><div class="tvp-grid" id="tvpGrid"><div class="tvp-empty">Carregando…</div></div></div>
+    <div class="tvp-footer">
+      <div class="tvp-sync" id="tvpSync">—</div>
+      <div class="tvp-ticker"><div class="tvp-ticker-track" id="tvpTicker"></div></div>
+    </div>
+    <button class="tvp-fs-btn" id="tvpFsBtn">Tela cheia</button>
+    <a href="#" class="tvp-exit" id="tvpExit">sair do painel</a>
+  `;
+  document.getElementById('tvpExit').addEventListener('click', async (ev)=>{
+    ev.preventDefault();
+    if(!confirmar('Sair do modo painel de TV?')) return;
+    pararPainelTv();
+    try{ await api('/auth/logout', { method:'POST' }); }catch(e){}
+    STATE.user = null;
+    showLogin();
+  });
+  const fsBtn = document.getElementById('tvpFsBtn');
+  fsBtn.addEventListener('click', ()=>{
+    if(document.fullscreenElement) document.exitFullscreen().catch(()=>{});
+    else el.requestFullscreen?.().catch(()=>{});
+  });
+  document.addEventListener('fullscreenchange', ()=>{
+    if(!document.getElementById('tvpFsBtn')) return;
+    fsBtn.textContent = document.fullscreenElement ? 'Sair da tela cheia' : 'Tela cheia';
+  });
+
+  function tickClock(){
+    const agora = new Date();
+    const clockEl = document.getElementById('tvpClock');
+    if(!clockEl) return; // painel já foi trocado (logout) — timer velho ainda rodando um tick
+    clockEl.textContent = agora.toLocaleTimeString('pt-BR');
+    document.getElementById('tvpDate').textContent = `${TVP_DIAS[agora.getDay()]}, ${agora.toLocaleDateString('pt-BR')}`;
+  }
+  tickClock();
+  TVP_TIMERS.clock = setInterval(tickClock, 1000);
+
+  function renderCards(items, animar){
+    const grid = document.getElementById('tvpGrid');
+    if(!grid) return;
+    if(!items.length){ grid.innerHTML = '<div class="tvp-empty">Nenhum card configurado ainda — adicione um em Início.</div>'; return; }
+    grid.innerHTML = items.map((c,i)=>`
+      <div class="tvp-card" data-id="${c.id}" style="--tvp-accent:${TVP_CORES[i % TVP_CORES.length]}">
+        <div class="tvp-eyebrow"><span>${esc(c.titulo)}</span></div>
+        <div class="tvp-val">${esc(c.valor)}</div>
+        ${c.subtitulo? `<div class="tvp-sub">${esc(c.subtitulo)}</div>` : ''}
+      </div>
+    `).join('');
+    grid.querySelectorAll('.tvp-card').forEach(elCard=>elCard.addEventListener('click', ()=>{
+      const item = items.find(x=>String(x.id)===elCard.dataset.id);
+      if(item && item.tipo) cardDetalheModal(item);
+    }));
+    if(animar){
+      grid.querySelectorAll('.tvp-card').forEach(elCard=>{
+        elCard.classList.add('tvp-flash');
+        setTimeout(()=>elCard.classList.remove('tvp-flash'), 950);
+      });
+    }
+  }
+  function montarTicker(items){
+    const track = document.getElementById('tvpTicker');
+    if(!track) return;
+    const partes = items.map(c=>`${c.titulo}: ${c.valor}`);
+    if(!partes.length){ track.textContent=''; return; }
+    const texto = partes.join('   ·   ') + '   ·   ';
+    track.style.animation = 'none';
+    track.textContent = texto + texto; // duplicado pra o loop (translateX -50%) ficar sem costura
+    const largura = track.scrollWidth/2;
+    track.style.animation = '';
+    track.style.animationDuration = Math.max(18, largura/55) + 's';
+  }
+  async function carregar(animar){
+    try{
+      const { items } = await api('/dashboard/cards');
+      renderCards(items, animar);
+      montarTicker(items);
+      const syncEl = document.getElementById('tvpSync');
+      if(syncEl) syncEl.textContent = 'Atualizado às ' + new Date().toLocaleTimeString('pt-BR');
+    }catch(e){
+      const syncEl = document.getElementById('tvpSync');
+      if(syncEl) syncEl.textContent = 'Falha ao atualizar — tentando de novo…';
+    }
+  }
+
+  await carregar(false);
+  // Valores atualizam sozinhos a cada 1min (com uma "piscada" rápida, sensação de painel ao vivo) —
+  // bem mais frequente que os 30min pedidos, que são só o teto máximo pra pegar mudança estrutural
+  // (card novo, removido, editado). Mesma rota que a tela normal de Início já usa, sem custo extra.
+  TVP_TIMERS.refresh = setInterval(()=>carregar(true), 60_000);
+  // Recarrega a página inteira periodicamente — garante que card novo/editado/removido (e qualquer
+  // atualização de código do próprio site) apareça sem precisar mexer na TV manualmente.
+  TVP_TIMERS.reload = setTimeout(()=>location.reload(), 30*60*1000);
+  // Efeito "quadro de embarque de aeroporto": vai destacando um card por vez, girando — só visual,
+  // não muda dado nenhum, é pra dar movimento e sinal de vida no painel.
+  let scanIdx = -1;
+  TVP_TIMERS.scan = setInterval(()=>{
+    const cards = document.querySelectorAll('#tvpGrid .tvp-card');
+    if(!cards.length) return;
+    cards.forEach(c=>c.classList.remove('tvp-scan'));
+    scanIdx = (scanIdx+1) % cards.length;
+    cards[scanIdx].classList.add('tvp-scan');
+  }, 3500);
 }
 
 // ===================== Dashboard =====================
@@ -5418,7 +5594,7 @@ async function pageUsuarios(){
     <tr data-id="${u.id}">
       <td>${esc(u.nome)}</td>
       <td>${esc(u.email)}</td>
-      <td><span class="tag muted">${u.perfil}</span></td>
+      <td><span class="tag muted">${u.perfil}</span>${u.painelTv?' <span class="tag ok">Painel de TV</span>':''}</td>
       <td>${u.totalEmpresas>1?`${u.totalEmpresas} empresas`:esc(u.empresaNome||'—')}</td>
       <td><span class="tag ${u.ativo?'ok':'bad'}">${u.ativo?'Ativo':'Inativo'}</span></td>
       <td style="text-align:right;"><button class="btn small" data-act="edit">Editar</button></td>
@@ -5475,6 +5651,8 @@ async function usuarioModal(u){
     <div id="usColabWrap" class="hidden">
       ${u? `<label class="checkbox-row"><input type="checkbox" id="usIsentoAssinatura" ${u.isentoAssinatura?'checked':''}> Isento da cobrança por assento</label>
       <p style="font-size:11.5px; color:var(--ink-soft); margin:-4px 0 10px;">Colaboradores isentos não entram na contagem de assentos cobrados do escritório.</p>` : ''}
+      <label class="checkbox-row"><input type="checkbox" id="usPainelTv" ${u?.painelTv?'checked':''}> Painel de TV</label>
+      <p style="font-size:11.5px; color:var(--ink-soft); margin:-4px 0 10px;">Ao logar com esse usuário, abre direto em tela cheia mostrando os cards do Início, sem menu — pensado pra ficar ligado numa TV do escritório. A sessão dura muito mais tempo (não cai sozinha).</p>
       <div style="margin:16px 0 8px; padding-top:12px; border-top:1px solid var(--rule); font-weight:600; font-size:13.5px;">Permissões e acessos</div>
       <label class="checkbox-row"><input type="checkbox" id="usAcessoTodas" checked> Acesso a todas as empresas</label>
       <div id="usEmpresasRestritasWrap" class="hidden" style="margin:6px 0 10px;">
@@ -5566,13 +5744,17 @@ async function usuarioModal(u){
         if(perfil==='Colaborador'){
           body.acessoTodasEmpresas = document.getElementById('usAcessoTodas').checked;
           body.isentoAssinatura = document.getElementById('usIsentoAssinatura').checked;
+          body.painelTv = document.getElementById('usPainelTv').checked;
         }
         await api('/users/'+u.id, { method:'PUT', body });
         userId = u.id;
       } else {
         if(!senha){ toast('Defina uma senha.','err'); return; }
         const body = { nome, email, perfil, password: senha };
-        if(perfil==='Colaborador') body.acessoTodasEmpresas = document.getElementById('usAcessoTodas').checked;
+        if(perfil==='Colaborador'){
+          body.acessoTodasEmpresas = document.getElementById('usAcessoTodas').checked;
+          body.painelTv = document.getElementById('usPainelTv').checked;
+        }
         const r = await api('/users', { method:'POST', body });
         userId = r.id;
       }
