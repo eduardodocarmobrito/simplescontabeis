@@ -3909,16 +3909,34 @@ const nfeInserirDocumento = sqlite.prepare(
   `INSERT OR IGNORE INTO nfe_documentos (empresa_id, escritorio_id, fonte, nsu, doc_schema, tipo, chave_acesso, emitente_cnpj, emitente_nome, destinatario_cnpj, destinatario_nome, valor_total, data_emissao, xml)
    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 );
+// Achado ao vivo (LUCELIO MARTINS DE OLIVEIRA): nfe_busca_config.cnpj é uma cópia de empresas.cnpj
+// tirada só no momento em que o certificado é cadastrado — se o CPF/CNPJ da empresa ainda estava em
+// branco naquela hora (comum pra pessoa física recém-cadastrada), a cópia ficou vazia pra sempre,
+// mesmo depois do cadastro da empresa ser completado. Um <CNPJ></CNPJ> vazio no pedido pra Sefaz é
+// rejeitado direto na validação de schema (cStat 215 "Falha no esquema xml") — o tratamento de CPF
+// vs CNPJ (ver consultarNovosDocumentos) nem chega a entrar em ação, porque o documento chega vazio.
+// Resolve isso na hora do uso (não só no cadastro) e já corrige o registro, pra não repetir a
+// consulta toda vez.
+function nfeResolverCnpjBusca(cfg: any, empresaId: number): string {
+  if (cfg.cnpj && String(cfg.cnpj).replace(/\D/g, "").length) return cfg.cnpj;
+  const empresa = sqlite.prepare(`SELECT cnpj FROM empresas WHERE id = ?`).get(empresaId) as any;
+  const cnpjEmpresa = empresa?.cnpj || "";
+  if (cnpjEmpresa.replace(/\D/g, "").length) {
+    sqlite.prepare(`UPDATE nfe_busca_config SET cnpj = ? WHERE empresa_id = ?`).run(cnpjEmpresa, empresaId);
+  }
+  return cnpjEmpresa;
+}
 async function nfeBuscarDocumentosNovos(empresaId: number, cfg: any, cert: nfse.CertificadoInfo): Promise<{ novos: number }> {
   let novos = 0;
   let ultNsu = cfg.ultimo_nsu;
+  const cnpjBusca = nfeResolverCnpjBusca(cfg, empresaId);
   try {
     // Teto de 20 páginas (até 1000 documentos) por chamada manual/automática — evita loop longo
     // demais numa única requisição; se sobrar mais, a próxima busca continua do NSU salvo.
     for (let pagina = 0; pagina < 20; pagina++) {
       const resp = await nfe.consultarNovosDocumentos({
         ambiente: cfg.ambiente as nfe.AmbienteNfe,
-        cnpj: cfg.cnpj,
+        cnpj: cnpjBusca,
         cUFAutor: nfe.UF_CODIGO_IBGE[cfg.uf_autor],
         cert,
         ultimoNsuConhecido: ultNsu,
@@ -3958,9 +3976,10 @@ async function nfeBuscarDocumentosNovos(empresaId: number, cfg: any, cert: nfse.
 async function nfseBuscarDocumentosNovos(empresaId: number, cfg: any, cert: nfse.CertificadoInfo): Promise<{ novos: number }> {
   let novos = 0;
   let ultNsu = cfg.ultimo_nsu_nfse || "0";
+  const cnpjBusca = nfeResolverCnpjBusca(cfg, empresaId);
   try {
     for (let pagina = 0; pagina < 20; pagina++) {
-      const resp = await nfse.consultarDistribuicaoNfse(cfg.ambiente as nfse.AmbienteNfse, ultNsu, cfg.cnpj, cert);
+      const resp = await nfse.consultarDistribuicaoNfse(cfg.ambiente as nfse.AmbienteNfse, ultNsu, cnpjBusca, cert);
       for (const doc of resp.documentos) {
         const info = nfse.identificarNfseDistribuida(doc.xml);
         const r = nfeInserirDocumento.run(
