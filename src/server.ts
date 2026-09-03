@@ -7796,13 +7796,20 @@ async function sitfisAnalisar(pdfPath: string): Promise<{ temPendencia: boolean;
   const data = await pdfParseLib(new Uint8Array(buf));
   const texto: string = data.text || "";
   const achados = SITFIS_MARCADORES_PENDENCIA.filter((m) => m.regex.test(texto)).map((m) => m.chave);
+  // "Omissão de X" (X = DITR, DIRPF, GFIP, DCTF etc.) é outra seção que só aparece no relatório
+  // quando existe declaração de verdade faltando — diferente das pendências acima (débito/dívida
+  // ativa), aqui o problema é papelada não entregue pro Fisco, mas ainda assim urgente (gera multa
+  // por atraso, pode até gerar cobrança de ofício depois). Extrai qual declaração falta em vez de só
+  // marcar "tem omissão", pra o alerta já dizer o quê.
+  const omissoes = [...new Set([...texto.matchAll(/Omiss[ãa]o de\s+([A-ZÀ-Ú0-9][A-ZÀ-Ú0-9\-\/]*)/gi)].map((m) => `Omissão de ${m[1].toUpperCase()}`))];
+  achados.push(...omissoes);
   // Achado ao vivo: "Parcelamento em andamento" e "Débito com exigibilidade suspensa" sozinhos não
   // significam pendência de verdade (parcelamento em dia, ou débito com a cobrança suspensa por
-  // decisão judicial/processo administrativo, não é algo pra correr atrás) — só "Débito pendente" e
-  // "Débito inscrito em Dívida Ativa" (sem parcelamento nem suspensão) são urgentes o bastante pra
+  // decisão judicial/processo administrativo, não é algo pra correr atrás) — "Débito pendente",
+  // "Débito inscrito em Dívida Ativa" e qualquer "Omissão de declaração" são urgentes o bastante pra
   // acender o card. Continua mostrando os outros marcadores no resumo quando aparecem junto, só não
   // usa eles sozinhos pra disparar o card.
-  const temDebitoPendente = achados.includes("Débito pendente") || achados.includes("Débito inscrito em Dívida Ativa (PGFN)");
+  const temDebitoPendente = achados.includes("Débito pendente") || achados.includes("Débito inscrito em Dívida Ativa (PGFN)") || omissoes.length > 0;
   return { temPendencia: temDebitoPendente, resumo: achados.length ? achados.join(", ") : null };
 }
 async function cardSituacaoFiscal(user: any): Promise<any[]> {
