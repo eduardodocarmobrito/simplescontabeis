@@ -3539,6 +3539,7 @@ function ligarEscritorioModuloPaywall(container, chave, aoLiberar){
     }catch(e){ resultado.innerHTML = `<span style="color:var(--debit); font-size:12.5px;">${esc(e.message)}</span>`; btn.disabled=false; }
   });
 }
+let NFE_TAB = 'configuradas';
 async function pageNfeBusca(){
   main().innerHTML = `
     <h1>Busca de XML</h1>
@@ -3558,11 +3559,18 @@ async function pageNfeBusca(){
     }
     const contagem = {};
     contagens.forEach(c=>{ contagem[c.empresaId] = c.qtd; });
-    const idsAtivos = new Set([...configs.map(c=>c.empresaId), ...Object.keys(contagem).map(Number)]);
-    const linhas = [...idsAtivos].map(id=>{
+    // "Configurada" = já tem certificado cadastrado (linha em configs), igual ao Integra Contador
+    // usa "Buscar dados desta empresa" pra separar as abas — as demais empresas ativas do escritório
+    // caem em "Não Configuradas", mesmo que tenham nota antiga de um certificado já removido.
+    const idsConfigurados = new Set(configs.map(c=>c.empresaId));
+    const configuradas = [...idsConfigurados].map(id=>{
       const emp = empresas.find(e=>e.id===id);
       return { id, nome: emp?emp.nome:'(empresa removida)', qtd: contagem[id]||0 };
     }).sort((a,b)=>a.nome.localeCompare(b.nome));
+    const naoConfiguradas = empresas.filter(e=>!idsConfigurados.has(e.id))
+      .map(e=>({ id:e.id, nome:e.nome, qtd: contagem[e.id]||0 }))
+      .sort((a,b)=>a.nome.localeCompare(b.nome));
+    const visiveis = NFE_TAB==='configuradas' ? configuradas : naoConfiguradas;
     box.innerHTML = `
       <div class="card">
         <h3>Adicionar empresa</h3>
@@ -3570,18 +3578,25 @@ async function pageNfeBusca(){
         <div class="field" style="max-width:420px; margin-bottom:0;"><label>Empresa</label>${comboSelectHtml('nfeAddEmpresaCombo', 'Digite para buscar a empresa…')}</div>
       </div>
       <div class="card">
-        <h3>Empresas configuradas</h3>
-        <input type="text" id="nfeListaFiltro" placeholder="Buscar empresa…" style="margin-bottom:6px;">
+        <div class="tabs">
+          <div class="tab" data-tab="configuradas">Empresas Configuradas <span class="tag muted">${configuradas.length}</span></div>
+          <div class="tab" data-tab="naoConfiguradas">Empresas Não Configuradas <span class="tag muted">${naoConfiguradas.length}</span></div>
+        </div>
+        <input type="text" id="nfeListaFiltro" placeholder="Buscar empresa…" style="margin:10px 0 6px;">
         <div style="max-height:420px; overflow-y:auto; overflow-x:hidden; border:1px solid var(--rule); border-radius:8px; padding:4px 10px;">
-          ${linhas.length ? linhas.map(l=>`
+          ${visiveis.length ? visiveis.map(l=>`
             <div class="nfeEmpresaRow" data-id="${l.id}" data-nome="${esc(normalizaTxt(l.nome))}" style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:6px 8px; font-size:13px; cursor:pointer; border-bottom:1px solid var(--rule);">
               <span>${esc(l.nome)}</span>
               <span class="tag muted" style="flex:none;">${l.qtd} nota${l.qtd===1?'':'s'}</span>
             </div>
-          `).join('') : '<div class="empty-state">Nenhuma empresa configurada ainda — use a busca acima pra adicionar a primeira.</div>'}
+          `).join('') : `<div class="empty-state">${NFE_TAB==='configuradas'?'Nenhuma empresa configurada ainda — use a busca acima pra adicionar a primeira.':'Todas as empresas já estão configuradas.'}</div>`}
         </div>
       </div>
     `;
+    box.querySelectorAll('.tab').forEach(t=>{
+      t.classList.toggle('active', t.dataset.tab===NFE_TAB);
+      t.addEventListener('click', ()=>{ NFE_TAB = t.dataset.tab; mostrarLista(); });
+    });
     setupComboSelect('nfeAddEmpresaCombo', empresas.map(e=>({id:e.id, label:empresaComboLabel(e)})), (id)=>{ if(id) mostrarDetalhe(Number(id)); });
     box.querySelectorAll('.nfeEmpresaRow').forEach(row=>row.addEventListener('click', ()=>mostrarDetalhe(Number(row.dataset.id))));
     const filtro = document.getElementById('nfeListaFiltro');
