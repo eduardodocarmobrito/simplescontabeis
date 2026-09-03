@@ -479,7 +479,13 @@ export async function consultarParcelamentoEspecifico(token: TokenIntegraContado
 // mecanismo usado pra "gerar a parcela de entrada" (é só a parcela do mês em que o parcelamento foi
 // vinculado) quanto pras parcelas seguintes, buscadas pela mesma rotina automática mensal que já
 // busca o DAS normal.
-export async function emitirParcelaParcelamento(token: TokenIntegraContador, contratanteCnpj: string, cnpjEmpresa: string, anoMesParcela: number): Promise<{ pdfBase64: string | null }> {
+// Achado ao vivo: logo depois de vincular um parcelamento novo (situação "Aguardando Pagamento da 1ª
+// Parcela"), a Receita bloqueia a emissão de QUALQUER parcela — não só as seguintes, a própria guia da
+// entrada também — até confirmar o pagamento da 1ª parcela do lado deles (leva alguns dias úteis; a
+// guia da entrada em si normalmente já foi baixada pelo escritório direto no e-CAC no momento da
+// adesão). Isso volta como HTTP 200 com "dados" vazio e um aviso em "mensagens", não como erro — por
+// isso devolve o aviso pro chamador guardar, em vez de descartar silenciosamente.
+export async function emitirParcelaParcelamento(token: TokenIntegraContador, contratanteCnpj: string, cnpjEmpresa: string, anoMesParcela: number): Promise<{ pdfBase64: string | null; aviso: string | null }> {
   const r = await chamarServico(token, {
     base: "Emitir",
     contratanteCnpj,
@@ -489,5 +495,7 @@ export async function emitirParcelaParcelamento(token: TokenIntegraContador, con
     versaoSistema: "1.0",
     dados: { parcelaParaEmitir: anoMesParcela },
   });
-  return { pdfBase64: r.dados?.docArrecadacaoPdfB64 || null };
+  const pdfBase64 = r.dados?.docArrecadacaoPdfB64 || null;
+  const aviso = !pdfBase64 && r.mensagens?.length ? r.mensagens.map((m) => m.texto).join(" | ") : null;
+  return { pdfBase64, aviso };
 }

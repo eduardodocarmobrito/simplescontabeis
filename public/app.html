@@ -1837,7 +1837,7 @@ async function vincularParcelamentoModal(empresaId, empresaNome, periodoSolicita
     try{
       const r = await api('/integracontador/parcelamentos', { method:'POST', body:{ empresaId, numeroParcelamento:selecionado, periodoSolicitacaoId } });
       closeModal();
-      toast(r.entradaGerada? 'Parcelamento vinculado — a guia deste mês já foi buscada.' : 'Parcelamento vinculado. A guia deste mês ainda não estava disponível — a busca automática tenta de novo.', 'ok');
+      toast(r.entradaGerada? 'Parcelamento vinculado — a guia deste mês já foi buscada.' : 'Parcelamento vinculado.'+(r.avisoEntrada?' '+r.avisoEntrada:' Nenhuma guia disponível ainda — a busca automática tenta de novo todo dia.'), 'ok');
       if(onDone) onDone();
     }catch(e){ toast(e.message,'err'); btnConfirmar.disabled=false; btnConfirmar.textContent='Vincular'; }
   });

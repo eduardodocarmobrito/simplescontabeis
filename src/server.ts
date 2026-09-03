@@ -4701,12 +4701,15 @@ async function integraContadorBuscarEmpresaInterno(
       try {
         const hoje = new Date();
         const anoMes = hoje.getFullYear() * 100 + (hoje.getMonth() + 1);
-        const { pdfBase64 } = await integracontador.emitirParcelaParcelamento(token, cnpjEscritorio, empresaCnpj, anoMes);
+        const { pdfBase64, aviso } = await integracontador.emitirParcelaParcelamento(token, cnpjEscritorio, empresaCnpj, anoMes);
         if (pdfBase64) {
           const anexou = integraContadorAnexarParcelaEmEnvio(parc.atribuicaoId, empresaId, hoje.getFullYear(), hoje.getMonth() + 1, pdfBase64);
           if (anexou) novos++;
         }
-        sqlite.prepare(`UPDATE integracontador_parcelamentos SET ultima_busca_em = datetime('now'), ultimo_erro = NULL WHERE id = ?`).run(parc.id);
+        // "aviso" não é um erro técnico (ex.: "aguardando confirmação do pagamento da 1ª parcela") —
+        // mesmo assim grava em ultimo_erro pra aparecer no painel, já que também é motivo de nada ter
+        // sido anexado.
+        sqlite.prepare(`UPDATE integracontador_parcelamentos SET ultima_busca_em = datetime('now'), ultimo_erro = ? WHERE id = ?`).run(aviso, parc.id);
       } catch (e: any) {
         console.error(`[Integra Contador] parcela do parcelamento ${parc.numero} (empresa ${empresaId}) falhou:`, e.message);
         sqlite.prepare(`UPDATE integracontador_parcelamentos SET ultima_busca_em = datetime('now'), ultimo_erro = ? WHERE id = ?`).run(e.message, parc.id);
@@ -4856,22 +4859,29 @@ app.post("/api/integracontador/parcelamentos", blockCliente, requireAdmin, async
       );
     // "Gerar a parcela de entrada" — tenta emitir a guia do mês corrente na hora, pra já deixar
     // disponível pro cliente assim que vincula (a rotina automática cuida dos meses seguintes).
+    // Achado ao vivo: logo depois de vincular um parcelamento recém-concedido, a Receita costuma
+    // recusar QUALQUER emissão (mesmo a da entrada) até confirmar o pagamento da 1ª parcela do lado
+    // deles — isso não é erro técnico, então guarda o aviso em vez de só logar.
     let entradaGerada = false;
+    let avisoEntrada: string | null = null;
     try {
       const hoje = new Date();
       const anoMes = hoje.getFullYear() * 100 + (hoje.getMonth() + 1);
-      const { pdfBase64 } = await integracontador.emitirParcelaParcelamento(token, cfg.cnpj, empresa.cnpj, anoMes);
+      const { pdfBase64, aviso } = await integracontador.emitirParcelaParcelamento(token, cfg.cnpj, empresa.cnpj, anoMes);
       if (pdfBase64) entradaGerada = integraContadorAnexarParcelaEmEnvio(atribuicaoId, empId, hoje.getFullYear(), hoje.getMonth() + 1, pdfBase64);
+      avisoEntrada = aviso;
     } catch (e: any) {
       console.error(`[Integra Contador] guia de entrada do parcelamento ${numeroParcelamento} (empresa ${empId}) falhou:`, e.message);
+      avisoEntrada = e.message;
     }
+    sqlite.prepare(`UPDATE integracontador_parcelamentos SET ultimo_erro = ? WHERE empresa_id = ? AND numero_parcelamento = ?`).run(avisoEntrada, empId, numeroParcelamento);
     // Baixa a solicitação original do cliente (se veio de uma) — só se ainda não tiver documento
     // nenhum anexado nela, mesma regra do DELETE manual de período avulso.
     if (periodoSolicitacaoId) {
       const temDoc = sqlite.prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id = ?`).get(periodoSolicitacaoId);
       if (!temDoc) sqlite.prepare(`DELETE FROM envio_periodos WHERE id = ? AND solicitacao_tipo = 'parcelamento_das'`).run(periodoSolicitacaoId);
     }
-    res.json({ ok: true, entradaGerada, resumo: detalhe });
+    res.json({ ok: true, entradaGerada, avisoEntrada, resumo: detalhe });
   } catch (e: any) {
     res.status(502).json({ error: e.message });
   }
