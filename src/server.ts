@@ -7950,11 +7950,13 @@ function cardChecklistAtraso(user: any): any[] {
   return resultado;
 }
 
-// Versão de cardChecklistAtraso() pra UM modelo específico de Solicitação de Documentos, em vez de
-// somar todos junto — permite um card por modelo (ex.: "Extratos Bancários em Atraso", "Extratos
-// de Parcelamento em Atraso"), cada um com seu próprio prazo. Mesma regra: só olha a competência
-// do mês anterior (essas solicitações são renovadas todo mês, sem backlog acumulado como o DAS).
-function cardSolicitacaoAtraso(user: any, templateId: number): any[] {
+// Versão de cardChecklistAtraso() pra um ou mais modelos específicos de Solicitação de Documentos,
+// em vez de somar todos junto — permite um card por modelo (ex.: "Extratos Bancários em Atraso",
+// "Extratos de Parcelamento em Atraso") ou por um grupo deles, cada um com seu próprio prazo. Mesma
+// regra: só olha a competência do mês anterior (essas solicitações são renovadas todo mês, sem
+// backlog acumulado como o DAS). Mesmo padrão de cardEnvioAtraso — uma empresa pode estar atrasada
+// em mais de um modelo ao mesmo tempo, cada linha do resultado diz qual.
+function cardSolicitacaoAtraso(user: any, templateIds: number[]): any[] {
   const escritorioId = user.escritorioId;
   const visiveis = new Set(empresasVisiveis(user));
   const agora = agoraBrasilia();
@@ -7962,41 +7964,43 @@ function cardSolicitacaoAtraso(user: any, templateId: number): any[] {
   const anoRef = agora.mes === 1 ? agora.ano - 1 : agora.ano;
   const corte = painelMonitoramentoCorte(escritorioId);
   if (corte && anoRef * 100 + mesRef < corte) return [];
-  const t = sqlite
-    .prepare(`SELECT id, nome, itens_json as itensJson, prazo_dia as prazoDia FROM checklist_templates WHERE id = ? AND escritorio_id = ? AND ativo = 1 AND prazo_dia IS NOT NULL`)
-    .get(templateId, escritorioId) as any;
-  if (!t) return [];
-  if (agora.dia <= t.prazoDia) return []; // prazo desse mês (pra entregar a competência anterior) ainda não venceu
-  const itensObrigatorios = (JSON.parse(t.itensJson) as any[]).filter((it) => it.obrigatorio);
-  if (!itensObrigatorios.length) return [];
-  const atribuicoes = sqlite
-    .prepare(`SELECT a.id, a.empresa_id as empresaId, e.nome as empresaNome FROM checklist_atribuicoes a JOIN empresas e ON e.id = a.empresa_id WHERE a.template_id = ? AND a.ativo = 1 AND e.ativo = 1`)
-    .all(t.id) as any[];
   const resultado: any[] = [];
-  for (const a of atribuicoes) {
-    if (!visiveis.has(a.empresaId)) continue;
-    const periodo = sqlite.prepare(`SELECT id FROM checklist_periodos WHERE atribuicao_id = ? AND ano = ? AND mes = ?`).get(a.id, anoRef, mesRef) as any;
-    let faltando: string[];
-    if (!periodo) {
-      faltando = itensObrigatorios.map((it) => it.label);
-    } else {
-      const enviados = new Set(
-        (sqlite.prepare(`SELECT item_chave FROM checklist_uploads WHERE periodo_id = ? AND status = 'salvo'`).all(periodo.id) as any[]).map((u) => u.item_chave)
-      );
-      const reabertos = new Set(
-        (sqlite.prepare(`SELECT item_chave FROM checklist_reaberturas WHERE periodo_id = ? AND resolvido = 0`).all(periodo.id) as any[]).map((r) => r.item_chave)
-      );
-      faltando = itensObrigatorios.filter((it) => !enviados.has(it.chave) || reabertos.has(it.chave)).map((it) => it.label);
+  for (const templateId of templateIds) {
+    const t = sqlite
+      .prepare(`SELECT id, nome, itens_json as itensJson, prazo_dia as prazoDia FROM checklist_templates WHERE id = ? AND escritorio_id = ? AND ativo = 1 AND prazo_dia IS NOT NULL`)
+      .get(templateId, escritorioId) as any;
+    if (!t) continue;
+    if (agora.dia <= t.prazoDia) continue; // prazo desse mês (pra entregar a competência anterior) ainda não venceu
+    const itensObrigatorios = (JSON.parse(t.itensJson) as any[]).filter((it) => it.obrigatorio);
+    if (!itensObrigatorios.length) continue;
+    const atribuicoes = sqlite
+      .prepare(`SELECT a.id, a.empresa_id as empresaId, e.nome as empresaNome FROM checklist_atribuicoes a JOIN empresas e ON e.id = a.empresa_id WHERE a.template_id = ? AND a.ativo = 1 AND e.ativo = 1`)
+      .all(t.id) as any[];
+    for (const a of atribuicoes) {
+      if (!visiveis.has(a.empresaId)) continue;
+      const periodo = sqlite.prepare(`SELECT id FROM checklist_periodos WHERE atribuicao_id = ? AND ano = ? AND mes = ?`).get(a.id, anoRef, mesRef) as any;
+      let faltando: string[];
+      if (!periodo) {
+        faltando = itensObrigatorios.map((it) => it.label);
+      } else {
+        const enviados = new Set(
+          (sqlite.prepare(`SELECT item_chave FROM checklist_uploads WHERE periodo_id = ? AND status = 'salvo'`).all(periodo.id) as any[]).map((u) => u.item_chave)
+        );
+        const reabertos = new Set(
+          (sqlite.prepare(`SELECT item_chave FROM checklist_reaberturas WHERE periodo_id = ? AND resolvido = 0`).all(periodo.id) as any[]).map((r) => r.item_chave)
+        );
+        faltando = itensObrigatorios.filter((it) => !enviados.has(it.chave) || reabertos.has(it.chave)).map((it) => it.label);
+      }
+      if (faltando.length)
+        resultado.push({
+          empresaId: a.empresaId,
+          empresaNome: a.empresaNome,
+          templateNome: t.nome,
+          competencia: `${String(mesRef).padStart(2, "0")}/${anoRef}`,
+          prazoDia: t.prazoDia,
+          itensFaltando: faltando,
+        });
     }
-    if (faltando.length)
-      resultado.push({
-        empresaId: a.empresaId,
-        empresaNome: a.empresaNome,
-        templateNome: t.nome,
-        competencia: `${String(mesRef).padStart(2, "0")}/${anoRef}`,
-        prazoDia: t.prazoDia,
-        itensFaltando: faltando,
-      });
   }
   return resultado;
 }
@@ -8032,9 +8036,9 @@ async function calcularCardComputado(tipo: string, user: any, parametro?: string
     return cardEnvioAtraso(user, templateIds);
   }
   if (tipo === "solicitacao_atraso") {
-    const templateId = Number(parametro);
-    if (!templateId) return [];
-    return cardSolicitacaoAtraso(user, templateId);
+    const templateIds = parseParametroIds(parametro);
+    if (!templateIds.length) return [];
+    return cardSolicitacaoAtraso(user, templateIds);
   }
   return [];
 }
@@ -8102,10 +8106,13 @@ function dashboardCardParametroErro(tipo: string | null, parametro: string | nul
     return null;
   }
   if (tipo === "solicitacao_atraso") {
-    const templateId = Number(parametro);
-    if (!templateId) return "Selecione o modelo de Solicitação de Documentos que este card vai validar.";
-    const template = sqlite.prepare(`SELECT id FROM checklist_templates WHERE id = ? AND escritorio_id = ? AND ativo = 1 AND prazo_dia IS NOT NULL`).get(templateId, escritorioId);
-    if (!template) return "Modelo de solicitação inválido — precisa ser um modelo ativo com prazo configurado.";
+    const templateIds = parseParametroIds(parametro);
+    if (!templateIds.length) return "Selecione ao menos um modelo de Solicitação de Documentos que este card vai validar.";
+    const placeholders = templateIds.map(() => "?").join(",");
+    const validos = sqlite
+      .prepare(`SELECT id FROM checklist_templates WHERE escritorio_id = ? AND ativo = 1 AND prazo_dia IS NOT NULL AND id IN (${placeholders})`)
+      .all(escritorioId, ...templateIds) as any[];
+    if (validos.length !== templateIds.length) return "Modelo de solicitação inválido — todos precisam ser modelos ativos com prazo configurado.";
     return null;
   }
   return null;
