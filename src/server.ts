@@ -7776,10 +7776,17 @@ function cardEnvioAtraso(user: any, templateIds: number[]): any[] {
 // pendente, ou débito com exigibilidade suspensa). Confirmado comparando um relatório com
 // pendência real (GO COLOR, débitos em negociação de parcelamento) contra um limpo (MSM
 // AGROPECUARIA, só a frase "Não foram detectadas pendências...").
+// Achado ao vivo (LUCELIO MARTINS DE OLIVEIRA): a seção "Pendência - Inscrição (SIDA)" — dívida já
+// inscrita em Dívida Ativa da União na Procuradoria-Geral da Fazenda Nacional, cobrança "ATIVA A SER
+// COBRADA" — não batia em nenhum dos três marcadores existentes (eles cobrem pendência/parcelamento
+// do lado da Receita Federal via SIEF, essa é do lado da PGFN via SIDA, cabeçalho diferente) e por
+// isso passava batido pelo card, mesmo sendo uma pendência real e mais grave que a de SIEF (dívida
+// ativa pode virar penhora/protesto/execução fiscal).
 const SITFIS_MARCADORES_PENDENCIA: { chave: string; regex: RegExp }[] = [
   { chave: "Parcelamento em andamento", regex: /Parcelamento com Exigibilidade Suspensa/i },
   { chave: "Débito pendente", regex: /Pend[êe]ncia\s*-\s*D[ée]bito/i },
   { chave: "Débito com exigibilidade suspensa", regex: /D[ée]bito com Exigibilidade Suspensa/i },
+  { chave: "Débito inscrito em Dívida Ativa (PGFN)", regex: /Pend[êe]ncia\s*-\s*Inscri[çc][ãa]o/i },
 ];
 async function sitfisAnalisar(pdfPath: string): Promise<{ temPendencia: boolean; resumo: string | null }> {
   const pdfParseLib = require("pdf-parse");
@@ -7791,10 +7798,11 @@ async function sitfisAnalisar(pdfPath: string): Promise<{ temPendencia: boolean;
   const achados = SITFIS_MARCADORES_PENDENCIA.filter((m) => m.regex.test(texto)).map((m) => m.chave);
   // Achado ao vivo: "Parcelamento em andamento" e "Débito com exigibilidade suspensa" sozinhos não
   // significam pendência de verdade (parcelamento em dia, ou débito com a cobrança suspensa por
-  // decisão judicial/processo administrativo, não é algo pra correr atrás) — só "Débito pendente"
-  // (sem parcelamento nem suspensão) é urgente o bastante pra acender o card. Continua mostrando os
-  // outros marcadores no resumo quando aparecem junto, só não usa eles sozinhos pra disparar o card.
-  const temDebitoPendente = achados.includes("Débito pendente");
+  // decisão judicial/processo administrativo, não é algo pra correr atrás) — só "Débito pendente" e
+  // "Débito inscrito em Dívida Ativa" (sem parcelamento nem suspensão) são urgentes o bastante pra
+  // acender o card. Continua mostrando os outros marcadores no resumo quando aparecem junto, só não
+  // usa eles sozinhos pra disparar o card.
+  const temDebitoPendente = achados.includes("Débito pendente") || achados.includes("Débito inscrito em Dívida Ativa (PGFN)");
   return { temPendencia: temDebitoPendente, resumo: achados.length ? achados.join(", ") : null };
 }
 async function cardSituacaoFiscal(user: any): Promise<any[]> {
