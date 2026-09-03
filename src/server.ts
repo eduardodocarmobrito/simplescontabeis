@@ -806,6 +806,31 @@ sqlite.exec(`
     pdf_path TEXT, -- cache em disco do PDF já decodificado (evita rebaixar/redecodificar à toa — cada chamada é paga)
     criado_em TEXT DEFAULT (datetime('now'))
   );
+  -- Parcelamento de DAS (PARCSN) vinculado por empresa — a adesão em si é feita pelo escritório no
+  -- e-CAC (a API não permite simular nem aderir), aqui só guardamos o parcelamento JÁ CONCEDIDO que o
+  -- escritório escolheu vincular, pra rotina automática buscar e anexar a guia de cada parcela todo
+  -- mês. "ativo=0" quando o escritório encerra manualmente ou a situação lida da Receita indica
+  -- quitado/rescindido/excluído — nesse caso a rotina automática para de tentar emitir parcela nova.
+  CREATE TABLE IF NOT EXISTS integracontador_parcelamentos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+    escritorio_id INTEGER NOT NULL REFERENCES escritorios(id),
+    numero_parcelamento INTEGER NOT NULL,
+    atribuicao_id INTEGER REFERENCES envio_atribuicoes(id), -- onde a grade de parcelas (uma por mês) vive, reaproveitando Envio de Documentos
+    situacao TEXT,
+    data_do_pedido TEXT,
+    valor_total_consolidado REAL,
+    quantidade_parcelas INTEGER,
+    valor_primeira_parcela REAL,
+    valor_parcela_basica REAL,
+    detalhes_json TEXT,
+    ativo INTEGER NOT NULL DEFAULT 1,
+    vinculado_por INTEGER REFERENCES app_users(id),
+    vinculado_em TEXT DEFAULT (datetime('now')),
+    ultima_busca_em TEXT,
+    ultimo_erro TEXT,
+    UNIQUE(empresa_id, numero_parcelamento)
+  );
 
   -- Habilitação e dados fiscais do módulo NFS-e por empresa-cliente.
   CREATE TABLE IF NOT EXISTS nfse_empresa_config (
@@ -3413,6 +3438,36 @@ app.post("/api/envio/solicitar-recalculo-das", requireCliente, async (req, res) 
   if (!r.ok) return res.status(r.status).json({ error: r.error });
   res.json({ ok: true });
 });
+// Cliente pede parcelamento do DAS em atraso — diferente do recálculo, aqui não tem nada pra buscar
+// na hora: a Receita não expõe simulação nem adesão a parcelamento novo por API (só consulta de um
+// parcelamento que já existe), então esse pedido só avisa o escritório, que negocia no e-CAC como já
+// faz hoje e depois vincula o parcelamento concedido (ver POST /api/integracontador/parcelamentos).
+app.post("/api/envio/solicitar-parcelamento-das", requireCliente, (req, res) => {
+  const user = (req as any).user;
+  if (!user.empresaId) return res.status(400).json({ error: "Seu usuário não está vinculado a uma empresa." });
+  const atribuicaoId = integraContadorObterOuCriarAtribuicaoModelo(
+    user.escritorioId,
+    user.empresaId,
+    "Solicitação de Parcelamento de DAS",
+    "Pedido do cliente pra negociar parcelamento do DAS em atraso — o escritório trata no e-CAC e vincula aqui depois.",
+    "avulso",
+    false
+  );
+  const pendente = sqlite
+    .prepare(
+      `SELECT p.id FROM envio_periodos p
+       WHERE p.atribuicao_id = ? AND p.solicitacao_tipo = 'parcelamento_das' AND NOT EXISTS (SELECT 1 FROM envio_documentos d WHERE d.periodo_id = p.id)
+       ORDER BY p.id DESC LIMIT 1`
+    )
+    .get(atribuicaoId) as any;
+  if (pendente) return res.json({ ok: true, jaExistia: true });
+  const agora = new Date();
+  const rotulo = `Pedido de parcelamento — ${agora.toLocaleDateString("pt-BR")} ${agora.toLocaleTimeString("pt-BR")}`;
+  sqlite
+    .prepare(`INSERT INTO envio_periodos (atribuicao_id, ano, rotulo, solicitado_por, solicitado_em, solicitacao_tipo) VALUES (?, ?, ?, ?, datetime('now'), 'parcelamento_das')`)
+    .run(atribuicaoId, agora.getFullYear(), rotulo, user.id);
+  res.json({ ok: true, jaExistia: false });
+});
 app.post("/api/envio/periodos/:periodoId/enviar", blockCliente, requirePermissao("envio", "postar"), upload.single("arquivo"), async (req, res) => {
   const user = (req as any).user;
   const periodoId = Number(req.params.periodoId);
@@ -4404,15 +4459,22 @@ app.get("/api/integracontador/empresas", blockCliente, requireAdmin, (req, res) 
 // empresa — assim toda empresa que tiver DAS habilitado no Integra Contador já ganha, sozinha, o
 // mesmo mecanismo de Envio de Documentos que qualquer outro modelo usa, e o cliente já enxerga o
 // DAS em "Meus Documentos" no login dele, sem o escritório precisar anexar nada na mão.
-function integraContadorObterOuCriarAtribuicaoModelo(escritorioId: number, empresaId: number, nomeTemplate: string, descricaoTemplate: string): number {
+function integraContadorObterOuCriarAtribuicaoModelo(
+  escritorioId: number,
+  empresaId: number,
+  nomeTemplate: string,
+  descricaoTemplate: string,
+  periodicidade: "mensal" | "avulso" = "mensal",
+  visivelCliente = true
+): number {
   let template = sqlite.prepare(`SELECT id FROM envio_templates WHERE escritorio_id = ? AND nome = ?`).get(escritorioId, nomeTemplate) as any;
   if (!template) {
     const info = sqlite
       .prepare(
         `INSERT INTO envio_templates (nome, descricao, periodicidade, accept_json, detectar_vencimento, visivel_cliente, escritorio_id)
-         VALUES (?, ?, 'mensal', '["pdf"]', 0, 1, ?)`
+         VALUES (?, ?, ?, '["pdf"]', 0, ?, ?)`
       )
-      .run(nomeTemplate, descricaoTemplate, escritorioId);
+      .run(nomeTemplate, descricaoTemplate, periodicidade, visivelCliente ? 1 : 0, escritorioId);
     template = { id: Number(info.lastInsertRowid) };
   }
   let atribuicao = sqlite.prepare(`SELECT id FROM envio_atribuicoes WHERE template_id = ? AND empresa_id = ?`).get(template.id, empresaId) as any;
@@ -4507,6 +4569,17 @@ function integraContadorAnexarSitfisEmEnvio(escritorioId: number, empresaId: num
   const nomeArquivo = `Situação Fiscal - ${MESES_PT_EXTENSO[mes - 1]} ${ano}.pdf`;
   const observacao = `Relatório de Situação Fiscal — gerado automaticamente pela busca do Integra Contador em ${hoje.toLocaleDateString("pt-BR")}.`;
   integraContadorAnexarPdfEmEnvio(atribuicaoId, empresaId, ano, mes, nomeArquivo, pdfBase64, observacao, null);
+}
+// Mesma trava de duplicata do DAS normal — a rotina roda todo dia, e sem essa checagem reanexaria a
+// mesma guia de parcela todo dia até o mês virar (o serviço de emissão do PARCSN não tem "recálculo"
+// como o do DAS normal, então nunca precisa forçar um documento novo pro mesmo mês).
+function integraContadorAnexarParcelaEmEnvio(atribuicaoId: number, empresaId: number, ano: number, mes: number, pdfBase64: string): boolean {
+  const periodo = sqlite.prepare(`SELECT id FROM envio_periodos WHERE atribuicao_id = ? AND ano = ? AND mes = ?`).get(atribuicaoId, ano, mes) as any;
+  if (periodo && sqlite.prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id = ? LIMIT 1`).get(periodo.id)) return false;
+  const nomeArquivo = `Parcelamento DAS - parcela ${MESES_PT_EXTENSO[mes - 1]} ${ano}.pdf`;
+  const observacao = `Guia da parcela — gerada automaticamente pela busca do Integra Contador em ${new Date().toLocaleDateString("pt-BR")}.`;
+  integraContadorAnexarPdfEmEnvio(atribuicaoId, empresaId, ano, mes, nomeArquivo, pdfBase64, observacao, null);
+  return true;
 }
 // Teto de tempo pra busca inteira — sem isso, uma chamada à Receita/SERPRO que trava (sem dar
 // timeout HTTP limpo, ex.: handshake mTLS pendurado) deixa a trava "integraContadorBuscasEmAndamento"
@@ -4616,6 +4689,29 @@ async function integraContadorBuscarEmpresaInterno(
         }
       }
     }
+    // Parcelamento de DAS (PARCSN) — só entra aqui depois que o escritório já vinculou um
+    // parcelamento concedido (ver POST /api/integracontador/parcelamentos); tenta emitir a guia da
+    // parcela do mês corrente, igual já faz pro DAS normal. Uma empresa raramente tem mais de um
+    // parcelamento ativo ao mesmo tempo, mas o loop cobre esse caso sem problema.
+    const parcelamentosAtivos = sqlite
+      .prepare(`SELECT id, numero_parcelamento as numero, atribuicao_id as atribuicaoId FROM integracontador_parcelamentos WHERE empresa_id = ? AND ativo = 1`)
+      .all(empresaId) as any[];
+    for (const parc of parcelamentosAtivos) {
+      if (!parc.atribuicaoId) continue;
+      try {
+        const hoje = new Date();
+        const anoMes = hoje.getFullYear() * 100 + (hoje.getMonth() + 1);
+        const { pdfBase64 } = await integracontador.emitirParcelaParcelamento(token, cnpjEscritorio, empresaCnpj, anoMes);
+        if (pdfBase64) {
+          const anexou = integraContadorAnexarParcelaEmEnvio(parc.atribuicaoId, empresaId, hoje.getFullYear(), hoje.getMonth() + 1, pdfBase64);
+          if (anexou) novos++;
+        }
+        sqlite.prepare(`UPDATE integracontador_parcelamentos SET ultima_busca_em = datetime('now'), ultimo_erro = NULL WHERE id = ?`).run(parc.id);
+      } catch (e: any) {
+        console.error(`[Integra Contador] parcela do parcelamento ${parc.numero} (empresa ${empresaId}) falhou:`, e.message);
+        sqlite.prepare(`UPDATE integracontador_parcelamentos SET ultima_busca_em = datetime('now'), ultimo_erro = ? WHERE id = ?`).run(e.message, parc.id);
+      }
+    }
     // Achado ao vivo: um token com validade "ainda dentro do prazo" localmente (ver tokenValido) às
     // vezes já não é mais aceito pelo SERPRO — cada chamada com ele responde 401 (convertido em
     // "TOKEN_EXPIRADO" por chamarServico). O comentário original de obterTokenIntegraContador já
@@ -4694,6 +4790,120 @@ app.post("/api/integracontador/empresas/:id/buscar", blockCliente, requireAdmin,
     integraContadorBuscasEmAndamento.delete(empId);
   });
   res.json({ ok: true, buscaIniciada: true });
+});
+// ---- Parcelamento de DAS (PARCSN) — vincular um parcelamento JÁ CONCEDIDO (a adesão em si é feita
+// pelo escritório no e-CAC, fora do sistema — a API não permite simular nem aderir, só consultar) ----
+app.get("/api/integracontador/parcelamentos/pedidos", blockCliente, requireAdmin, async (req, res) => {
+  const user = (req as any).user;
+  const empId = Number(req.query.empresaId);
+  if (!empId || !podeAcessarEmpresa(user, empId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const cfg = getIntegraContadorConfig(user.escritorioId);
+  if (!cfg.ativo) return res.status(400).json({ error: "Configure e ative o Integra Contador em Configurações antes de consultar." });
+  const empresa = sqlite.prepare(`SELECT cnpj FROM empresas WHERE id = ?`).get(empId) as any;
+  if (!empresa?.cnpj) return res.status(400).json({ error: "Empresa sem CNPJ cadastrado." });
+  try {
+    const token = await obterTokenIntegraContador(cfg);
+    const pedidos = await integracontador.consultarPedidosParcelamento(token, cfg.cnpj, empresa.cnpj);
+    res.json({ items: pedidos });
+  } catch (e: any) {
+    res.status(502).json({ error: e.message });
+  }
+});
+app.post("/api/integracontador/parcelamentos", blockCliente, requireAdmin, async (req, res) => {
+  const user = (req as any).user;
+  const empId = Number(req.body?.empresaId);
+  const numeroParcelamento = Number(req.body?.numeroParcelamento);
+  const periodoSolicitacaoId = req.body?.periodoSolicitacaoId ? Number(req.body.periodoSolicitacaoId) : null;
+  if (!empId || !podeAcessarEmpresa(user, empId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  if (!numeroParcelamento) return res.status(400).json({ error: "Informe o número do parcelamento." });
+  const cfg = getIntegraContadorConfig(user.escritorioId);
+  if (!cfg.ativo) return res.status(400).json({ error: "Configure e ative o Integra Contador em Configurações antes de vincular." });
+  const empresa = sqlite.prepare(`SELECT cnpj FROM empresas WHERE id = ?`).get(empId) as any;
+  if (!empresa?.cnpj) return res.status(400).json({ error: "Empresa sem CNPJ cadastrado." });
+  try {
+    const token = await obterTokenIntegraContador(cfg);
+    const detalhe = await integracontador.consultarParcelamentoEspecifico(token, cfg.cnpj, empresa.cnpj, numeroParcelamento);
+    const atribuicaoId = integraContadorObterOuCriarAtribuicaoModelo(
+      user.escritorioId,
+      empId,
+      "Parcelamento de DAS",
+      "Guias das parcelas do parcelamento do Simples Nacional, geradas automaticamente pelo Integra Contador"
+    );
+    sqlite
+      .prepare(
+        `INSERT INTO integracontador_parcelamentos
+           (empresa_id, escritorio_id, numero_parcelamento, atribuicao_id, situacao, data_do_pedido, valor_total_consolidado, quantidade_parcelas, valor_primeira_parcela, valor_parcela_basica, detalhes_json, ativo, vinculado_por, vinculado_em, ultima_busca_em)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, datetime('now'), datetime('now'))
+         ON CONFLICT(empresa_id, numero_parcelamento) DO UPDATE SET
+           atribuicao_id = excluded.atribuicao_id, situacao = excluded.situacao, data_do_pedido = excluded.data_do_pedido,
+           valor_total_consolidado = excluded.valor_total_consolidado, quantidade_parcelas = excluded.quantidade_parcelas,
+           valor_primeira_parcela = excluded.valor_primeira_parcela, valor_parcela_basica = excluded.valor_parcela_basica,
+           detalhes_json = excluded.detalhes_json, ativo = 1, vinculado_por = excluded.vinculado_por, vinculado_em = datetime('now'), ultima_busca_em = datetime('now')`
+      )
+      .run(
+        empId,
+        user.escritorioId,
+        numeroParcelamento,
+        atribuicaoId,
+        detalhe.situacao,
+        detalhe.dataDoPedido,
+        detalhe.valorTotalConsolidado,
+        detalhe.quantidadeParcelas,
+        detalhe.valorPrimeiraParcela,
+        detalhe.valorParcelaBasica,
+        JSON.stringify(detalhe.detalhesJson || {}),
+        user.id
+      );
+    // "Gerar a parcela de entrada" — tenta emitir a guia do mês corrente na hora, pra já deixar
+    // disponível pro cliente assim que vincula (a rotina automática cuida dos meses seguintes).
+    let entradaGerada = false;
+    try {
+      const hoje = new Date();
+      const anoMes = hoje.getFullYear() * 100 + (hoje.getMonth() + 1);
+      const { pdfBase64 } = await integracontador.emitirParcelaParcelamento(token, cfg.cnpj, empresa.cnpj, anoMes);
+      if (pdfBase64) entradaGerada = integraContadorAnexarParcelaEmEnvio(atribuicaoId, empId, hoje.getFullYear(), hoje.getMonth() + 1, pdfBase64);
+    } catch (e: any) {
+      console.error(`[Integra Contador] guia de entrada do parcelamento ${numeroParcelamento} (empresa ${empId}) falhou:`, e.message);
+    }
+    // Baixa a solicitação original do cliente (se veio de uma) — só se ainda não tiver documento
+    // nenhum anexado nela, mesma regra do DELETE manual de período avulso.
+    if (periodoSolicitacaoId) {
+      const temDoc = sqlite.prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id = ?`).get(periodoSolicitacaoId);
+      if (!temDoc) sqlite.prepare(`DELETE FROM envio_periodos WHERE id = ? AND solicitacao_tipo = 'parcelamento_das'`).run(periodoSolicitacaoId);
+    }
+    res.json({ ok: true, entradaGerada, resumo: detalhe });
+  } catch (e: any) {
+    res.status(502).json({ error: e.message });
+  }
+});
+app.get("/api/integracontador/parcelamentos", blockCliente, requireAdmin, (req, res) => {
+  const user = (req as any).user;
+  const empresaId = req.query.empresaId ? Number(req.query.empresaId) : null;
+  if (empresaId && !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const ids = empresaId ? [empresaId] : empresasVisiveis(user);
+  if (ids !== null && !ids.length) return res.json({ items: [] });
+  let sql = `SELECT p.id, p.empresa_id as empresaId, e.nome as empresaNome, p.numero_parcelamento as numero, p.situacao,
+             p.data_do_pedido as dataDoPedido, p.valor_total_consolidado as valorTotalConsolidado, p.quantidade_parcelas as quantidadeParcelas,
+             p.valor_primeira_parcela as valorPrimeiraParcela, p.valor_parcela_basica as valorParcelaBasica, p.ativo,
+             p.atribuicao_id as atribuicaoId, p.vinculado_em as vinculadoEm, p.ultima_busca_em as ultimaBuscaEm, p.ultimo_erro as ultimoErro
+             FROM integracontador_parcelamentos p JOIN empresas e ON e.id = p.empresa_id
+             WHERE p.escritorio_id = ?`;
+  const params: any[] = [user.escritorioId];
+  if (empresaId) {
+    sql += ` AND p.empresa_id = ?`;
+    params.push(empresaId);
+  }
+  sql += ` ORDER BY p.vinculado_em DESC`;
+  let rows = sqlite.prepare(sql).all(...params) as any[];
+  if (ids !== null) rows = rows.filter((r) => ids.includes(r.empresaId));
+  res.json({ items: rows });
+});
+app.put("/api/integracontador/parcelamentos/:id/ativo", blockCliente, requireAdmin, (req, res) => {
+  const user = (req as any).user;
+  const row = sqlite.prepare(`SELECT * FROM integracontador_parcelamentos WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!row || row.escritorio_id !== user.escritorioId || !podeAcessarEmpresa(user, row.empresa_id)) return res.status(404).json({ error: "Parcelamento não encontrado." });
+  sqlite.prepare(`UPDATE integracontador_parcelamentos SET ativo = ? WHERE id = ?`).run(req.body?.ativo ? 1 : 0, row.id);
+  res.json({ ok: true });
 });
 app.get("/api/integracontador/documentos", blockCliente, requireAdmin, (req, res) => {
   const user = (req as any).user;

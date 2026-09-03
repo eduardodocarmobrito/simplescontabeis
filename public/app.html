@@ -318,6 +318,9 @@ function ligarMascaraCep(el){
 function temFusoExplicito(iso){ return /(Z|[+-]\d{2}:\d{2})$/.test(String(iso)); }
 function fmtDate(iso){ if(!iso) return '—'; const s=String(iso).replace(' ','T'); const d=new Date(temFusoExplicito(s)?s:s+'Z'); if(isNaN(d)) return iso; return d.toLocaleDateString('pt-BR'); }
 function fmtDateHora(iso){ if(!iso) return '—'; const s=String(iso).replace(' ','T'); const d=new Date(temFusoExplicito(s)?s:s+'Z'); if(isNaN(d)) return iso; return d.toLocaleDateString('pt-BR')+' às '+d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}); }
+// Datas cruas da Receita (Integra Contador) vêm no formato AAAAMMDD, sem separador — diferente do
+// resto do sistema (ISO). Usado só pros campos de parcelamento (dataDoPedido, dataDaSituacao).
+function fmtDataReceita(aaaammdd){ if(!aaaammdd || String(aaaammdd).length!==8) return '—'; const s=String(aaaammdd); return `${s.slice(6,8)}/${s.slice(4,6)}/${s.slice(0,4)}`; }
 function fmtDateIso(iso){ if(!iso) return null; const [y,m,d]=iso.split('-'); return `${d}/${m}/${y}`; }
 function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
@@ -1628,6 +1631,10 @@ async function pageSolicitarDocumentos(){
 // competência escolhida, achando sozinho o DAS original já entregue pela rotina mensal e devolvendo
 // a guia recalculada em Envio de Documentos.
 const RECALCULO_DAS_ID = '__recalculo_das';
+// Igual ao Recalcular DAS: não é um template do banco. Diferente dele, não busca nada na hora — a
+// Receita não deixa simular nem aderir a um parcelamento novo por API, só avisa o escritório, que
+// negocia no e-CAC (fora do sistema) e depois vincula o parcelamento concedido em Solicitações.
+const PARCELAMENTO_DAS_ID = '__parcelamento_das';
 function novaSolicitacaoModal(disponiveis){
   const porId = new Map(disponiveis.map(t=>[String(t.id), t]));
   const hoje = new Date();
@@ -1636,6 +1643,7 @@ function novaSolicitacaoModal(disponiveis){
     <div class="field"><label>O que você precisa?</label>
       <select id="solTemplate">
         <option value="${RECALCULO_DAS_ID}">Recalcular DAS</option>
+        <option value="${PARCELAMENTO_DAS_ID}">Solicitar parcelamento de DAS</option>
         ${disponiveis.map(t=>`<option value="${t.id}">${esc(t.nome)}</option>`).join('')}
       </select>
     </div>
@@ -1660,6 +1668,10 @@ function novaSolicitacaoModal(disponiveis){
       wrap.innerHTML = `<p style="font-size:12px; color:var(--ink-soft); margin:-4px 0 10px;">Buscamos direto na Receita o DAS recalculado (com juros/multa atualizados) da competência escolhida — só funciona se o DAS original dessa competência já tiver sido entregue pela rotina mensal.</p>` + desenhaMesAno('solMes','solAno');
       return;
     }
+    if(valor===PARCELAMENTO_DAS_ID){
+      wrap.innerHTML = `<p style="font-size:12px; color:var(--ink-soft); margin:-4px 0 10px;">Avisamos o escritório do seu pedido — a negociação do parcelamento (entrada, número de parcelas) é feita direto com a Receita. Depois que o parcelamento for concedido, as guias de cada parcela aparecem aqui todo mês pra você acompanhar e pagar.</p>`;
+      return;
+    }
     const t = porId.get(valor);
     if(t.periodicidade==='mensal'){
       wrap.innerHTML = desenhaMesAno('solMes','solAno');
@@ -1682,6 +1694,17 @@ function novaSolicitacaoModal(disponiveis){
         await api('/envio/solicitar-recalculo-das', { method:'POST', body });
         closeModal();
         toast('DAS recalculado! Já está disponível em Documentos Recebidos.','ok');
+        pageSolicitarDocumentos();
+      }catch(e){ toast(e.message,'err'); btn.disabled=false; btn.textContent='Solicitar'; }
+      return;
+    }
+    if(valor===PARCELAMENTO_DAS_ID){
+      const btn = document.getElementById('solEnviar');
+      btn.disabled = true; btn.textContent = 'Enviando…';
+      try{
+        const r = await api('/envio/solicitar-parcelamento-das', { method:'POST' });
+        closeModal();
+        toast(r.jaExistia? 'Você já tinha pedido isso — seguimos aguardando o escritório negociar com a Receita.' : 'Pedido enviado ao escritório.', 'ok');
         pageSolicitarDocumentos();
       }catch(e){ toast(e.message,'err'); btn.disabled=false; btn.textContent='Solicitar'; }
       return;
@@ -1739,12 +1762,12 @@ async function renderEnvioSolicitacoes(){
     <div class="field" style="max-width:360px; margin-bottom:10px;"><input type="text" id="envioSolicFiltro" placeholder="Buscar por empresa…" autocomplete="off"></div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
-        <thead><tr><th>Empresa</th><th>Modelo</th><th>Tipo de solicitação</th><th>Competência</th><th>Solicitado por</th><th>Solicitado em</th><th>Retorno ao cliente em</th><th>Status</th></tr></thead>
+        <thead><tr><th>Empresa</th><th>Modelo</th><th>Tipo de solicitação</th><th>Competência</th><th>Solicitado por</th><th>Solicitado em</th><th>Retorno ao cliente em</th><th>Status</th><th></th></tr></thead>
         <tbody id="envioSolicBody"></tbody>
       </table>
     </div>
   `;
-  const TIPO_SOLIC_LABEL = { recalculo_das:'Recálculo de DAS', documento:'Solicitação de documento' };
+  const TIPO_SOLIC_LABEL = { recalculo_das:'Recálculo de DAS', documento:'Solicitação de documento', parcelamento_das:'Parcelamento de DAS' };
   const tbody = document.getElementById('envioSolicBody');
   function desenha(filtro){
     const termo = normalizaTxt(filtro).trim();
@@ -1759,11 +1782,65 @@ async function renderEnvioSolicitacoes(){
         <td>${fmtDateHora(i.solicitadoEm)}</td>
         <td>${i.retornoClienteEm?fmtDateHora(i.retornoClienteEm):'—'}</td>
         <td><span class="tag ${i.concluida?'ok':'warn'}">${i.concluida?'Concluída':'Aguardando o escritório'}</span></td>
+        <td style="text-align:right;">${i.tipo==='parcelamento_das'?`<button class="btn small" data-act="vincular-parc" data-empresa="${i.empresaId}" data-nome="${esc(i.empresaNome)}" data-periodo="${i.periodoId}">Vincular parcelamento</button>`:''}</td>
       </tr>
-    `).join('') : `<tr><td colspan="8"><div class="empty-state">${termo?'Nenhuma empresa encontrada.':'Nenhuma solicitação registrada ainda.'}</div></td></tr>`;
+    `).join('') : `<tr><td colspan="9"><div class="empty-state">${termo?'Nenhuma empresa encontrada.':'Nenhuma solicitação registrada ainda.'}</div></td></tr>`;
+    tbody.querySelectorAll('[data-act="vincular-parc"]').forEach(b=>b.addEventListener('click', ()=>{
+      vincularParcelamentoModal(Number(b.dataset.empresa), b.dataset.nome, Number(b.dataset.periodo), ()=>renderEnvioSolicitacoes());
+    }));
   }
   desenha('');
   document.getElementById('envioSolicFiltro').addEventListener('input', e=>desenha(e.target.value));
+}
+// Vincula um parcelamento JÁ CONCEDIDO na Receita — a Receita não deixa simular nem aderir a um
+// parcelamento novo por API, só consultar o que já existe (a negociação continua sendo feita pelo
+// escritório no e-CAC, fora do sistema). "periodoSolicitacaoId" é opcional: quando vem de uma
+// solicitação do cliente em Solicitações, some da fila ao vincular; quando vem direto do Integra
+// Contador (escritório vinculando sem esperar pedido do cliente), passa null.
+async function vincularParcelamentoModal(empresaId, empresaNome, periodoSolicitacaoId, onDone){
+  openModal(`
+    <h3>Vincular parcelamento</h3>
+    <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">${esc(empresaNome)} — consultamos direto na Receita os parcelamentos já concedidos. A adesão (entrada, número de parcelas) é feita pelo escritório no e-CAC; aqui só vinculamos o que já existe pra passar a acompanhar e emitir as guias automaticamente todo mês.</p>
+    <div id="vpLista"><div class="empty-state">Consultando a Receita…</div></div>
+    <div class="modal-actions">
+      <button class="btn" id="vpCancel">Cancelar</button>
+      <button class="btn primary" id="vpConfirmar" disabled>Vincular</button>
+    </div>
+  `);
+  document.getElementById('vpCancel').addEventListener('click', closeModal);
+  const lista = document.getElementById('vpLista');
+  const btnConfirmar = document.getElementById('vpConfirmar');
+  let selecionado = null;
+  try{
+    const { items } = await api('/integracontador/parcelamentos/pedidos?empresaId='+empresaId);
+    if(!items.length){
+      lista.innerHTML = `<div class="empty-state">Nenhum parcelamento encontrado na Receita pra esta empresa ainda. Confirme se a adesão já foi concluída no e-CAC.</div>`;
+      return;
+    }
+    lista.innerHTML = items.map((p,i)=>`
+      <label class="checkbox-row" style="align-items:flex-start;">
+        <input type="radio" name="vpNumero" value="${p.numero}" ${items.length===1?'checked':''}>
+        <span><b>Nº ${esc(p.numero)}</b> — ${esc(p.situacao||'—')}<br><span style="font-size:11.5px; color:var(--ink-soft);">Pedido em ${fmtDataReceita(p.dataDoPedido)}${p.dataDaSituacao?' · situação desde '+fmtDataReceita(p.dataDaSituacao):''}</span></span>
+      </label>
+    `).join('');
+    if(items.length===1){ selecionado = items[0].numero; btnConfirmar.disabled = false; }
+    lista.querySelectorAll('input[name="vpNumero"]').forEach(r=>r.addEventListener('change', ()=>{
+      selecionado = Number(r.value); btnConfirmar.disabled = false;
+    }));
+  }catch(e){
+    lista.innerHTML = `<span style="color:var(--debit); font-size:12.5px;">${esc(e.message)}</span>`;
+    return;
+  }
+  btnConfirmar.addEventListener('click', async ()=>{
+    if(!selecionado) return;
+    btnConfirmar.disabled = true; btnConfirmar.textContent = 'Vinculando…';
+    try{
+      const r = await api('/integracontador/parcelamentos', { method:'POST', body:{ empresaId, numeroParcelamento:selecionado, periodoSolicitacaoId } });
+      closeModal();
+      toast(r.entradaGerada? 'Parcelamento vinculado — a guia deste mês já foi buscada.' : 'Parcelamento vinculado. A guia deste mês ainda não estava disponível — a busca automática tenta de novo.', 'ok');
+      if(onDone) onDone();
+    }catch(e){ toast(e.message,'err'); btnConfirmar.disabled=false; btnConfirmar.textContent='Vincular'; }
+  });
 }
 
 async function renderEnvioModelos(){
@@ -3608,6 +3685,14 @@ async function pageIntegraContador(){
         </div>
       </div>
       <div class="card">
+        <div class="row" style="justify-content:space-between; align-items:center;">
+          <h3 style="margin:0;">Parcelamentos</h3>
+          <button class="btn small" id="btnIcVincularParc">+ Vincular parcelamento</button>
+        </div>
+        <p style="font-size:12.5px; color:var(--ink-soft); margin:4px 0 8px;">Parcelamentos do Simples Nacional (PARCSN) já concedidos e vinculados — as guias de cada parcela são buscadas e anexadas automaticamente em Envio de Documentos todo mês.</p>
+        <div id="icParcBody"><div class="empty-state">Carregando…</div></div>
+      </div>
+      <div class="card">
         <h3>Documentos</h3>
         <div class="card" style="padding:0; overflow-x:auto;">
           <table class="data-table">
@@ -3618,6 +3703,55 @@ async function pageIntegraContador(){
       </div>
     `;
     document.getElementById('btnIcVoltarLista').addEventListener('click', mostrarIcLista);
+    document.getElementById('btnIcVincularParc').addEventListener('click', ()=>{
+      vincularParcelamentoModal(empresaId, emp?emp.nome:'Empresa', null, carregarIcParcelamentos);
+    });
+    async function carregarIcParcelamentos(){
+      const wrap = document.getElementById('icParcBody');
+      wrap.innerHTML = `<div class="empty-state">Carregando…</div>`;
+      const { items: parcs } = await api('/integracontador/parcelamentos?empresaId='+empresaId);
+      if(!parcs.length){ wrap.innerHTML = `<div class="empty-state">Nenhum parcelamento vinculado ainda.</div>`; return; }
+      wrap.innerHTML = `
+        <table class="data-table">
+          <thead><tr><th>Número</th><th>Situação</th><th>Valor total</th><th>Parcelas</th><th>Valor da parcela</th><th>Última busca</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            ${parcs.map(p=>`
+              <tr>
+                <td><b>${esc(p.numero)}</b></td>
+                <td>${esc(p.situacao||'—')}</td>
+                <td>${p.valorTotalConsolidado!=null?fmtMoney(p.valorTotalConsolidado):'—'}</td>
+                <td>${p.quantidadeParcelas!=null?p.quantidadeParcelas:'—'}</td>
+                <td>${p.valorParcelaBasica!=null?fmtMoney(p.valorParcelaBasica):'—'}</td>
+                <td>${p.ultimaBuscaEm?fmtDateHora(p.ultimaBuscaEm):'—'}${p.ultimoErro?`<br><span style="color:var(--debit); font-size:11px;">${esc(p.ultimoErro)}</span>`:''}</td>
+                <td><span class="tag ${p.ativo?'ok':'muted'}">${p.ativo?'Ativo':'Encerrado'}</span></td>
+                <td style="text-align:right; white-space:nowrap;">
+                  <button class="btn small" data-act="parc-atualizar" data-numero="${p.numero}">Atualizar</button>
+                  <button class="btn small" data-act="parc-toggle" data-id="${p.id}" data-ativo="${p.ativo?1:0}">${p.ativo?'Encerrar':'Reativar'}</button>
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      `;
+      wrap.querySelectorAll('[data-act="parc-atualizar"]').forEach(b=>b.addEventListener('click', async ()=>{
+        b.disabled = true; b.textContent = 'Atualizando…';
+        try{
+          await api('/integracontador/parcelamentos', { method:'POST', body:{ empresaId, numeroParcelamento:Number(b.dataset.numero) } });
+          toast('Parcelamento atualizado.','ok');
+          carregarIcParcelamentos();
+        }catch(e){ toast(e.message,'err'); b.disabled=false; b.textContent='Atualizar'; }
+      }));
+      wrap.querySelectorAll('[data-act="parc-toggle"]').forEach(b=>b.addEventListener('click', async ()=>{
+        const ativoAgora = b.dataset.ativo==='1';
+        if(ativoAgora && !confirmar('Encerrar este parcelamento? A busca automática para de tentar emitir parcela nova pra ele.')) return;
+        try{
+          await api('/integracontador/parcelamentos/'+b.dataset.id+'/ativo', { method:'PUT', body:{ ativo: !ativoAgora } });
+          toast(ativoAgora?'Parcelamento encerrado.':'Parcelamento reativado.','ok');
+          carregarIcParcelamentos();
+        }catch(e){ toast(e.message,'err'); }
+      }));
+    }
+    carregarIcParcelamentos();
     // A busca de Situação Fiscal sozinha já pode passar de 1 minuto (fica reconsultando a Receita
     // até o relatório ficar pronto) — tempo suficiente pro proxy do Railway devolver um erro 502 pro
     // navegador mesmo quando a busca deu certo do lado do servidor. Por isso o backend não segura a

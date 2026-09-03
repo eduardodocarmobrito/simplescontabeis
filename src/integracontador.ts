@@ -401,3 +401,90 @@ export async function consultarDctfWeb(token: TokenIntegraContador, contratanteC
   });
   return r.dados;
 }
+
+// ===================== PARCSN (Integra Parcelamento — Simples Nacional ordinário) — confirmado na
+// documentação oficial (apicenter.estaleiro.serpro.gov.br/documentacao/api-integra-contador/pt/
+// solucoes/integra-parcelamento/parcsn/), lançado pela SERPRO em nov/2024.
+//
+// IMPORTANTE — diferente do que o nome "Integra Parcelamento" sugere, NÃO existe serviço de
+// simulação nem de adesão a um parcelamento novo por API — a Receita não expõe isso. A adesão em si
+// (aceitar entrada, escolher quantidade de parcelas) só existe no e-CAC, é feita pelo escritório fora
+// deste sistema. O que a API oferece é só CONSULTA de um parcelamento que já existe + EMISSÃO da guia
+// de uma parcela específica — por isso o fluxo aqui é "vincular um parcelamento já concedido", não
+// "solicitar/simular um parcelamento novo".
+export interface ParcelamentoResumo {
+  numero: number;
+  dataDoPedido: string | null; // AAAAMMDD
+  situacao: string | null;
+  dataDaSituacao: string | null;
+}
+// Lista os parcelamentos (de qualquer situação, inclusive já encerrados) que já existem pra essa
+// empresa na Receita — usado só pra o escritório escolher qual número vincular, sem precisar digitar
+// às cegas.
+export async function consultarPedidosParcelamento(token: TokenIntegraContador, contratanteCnpj: string, cnpjEmpresa: string): Promise<ParcelamentoResumo[]> {
+  const r = await chamarServico(token, {
+    base: "Consultar",
+    contratanteCnpj,
+    contribuinteDocumento: cnpjEmpresa,
+    idSistema: "PARCSN",
+    idServico: "PEDIDOSPARC163",
+    versaoSistema: "1.0",
+    dados: {},
+  });
+  const lista = r.dados?.parcelamentos || r.dados?.listaParcelamentos || [];
+  return (Array.isArray(lista) ? lista : []).map((p: any) => ({
+    numero: p.numero,
+    dataDoPedido: p.dataDoPedido || null,
+    situacao: p.situacao || null,
+    dataDaSituacao: p.dataDaSituacao || null,
+  }));
+}
+export interface ParcelamentoDetalhado extends ParcelamentoResumo {
+  valorTotalConsolidado: number | null;
+  quantidadeParcelas: number | null;
+  valorPrimeiraParcela: number | null;
+  valorParcelaBasica: number | null;
+  detalhesJson: any; // payload cru da Receita (detalhesConsolidacao, demonstrativoPagamentos etc.) — guardado sem perder nada, mesmo o que este código ainda não usa pra decidir nada
+}
+// Detalhes completos de UM parcelamento específico (já concedido) — usado tanto pra vincular quanto
+// pra atualizar o resumo mostrado ao escritório/cliente.
+export async function consultarParcelamentoEspecifico(token: TokenIntegraContador, contratanteCnpj: string, cnpjEmpresa: string, numeroParcelamento: number): Promise<ParcelamentoDetalhado> {
+  const r = await chamarServico(token, {
+    base: "Consultar",
+    contratanteCnpj,
+    contribuinteDocumento: cnpjEmpresa,
+    idSistema: "PARCSN",
+    idServico: "OBTERPARC164",
+    versaoSistema: "1.0",
+    dados: { numeroParcelamento },
+  });
+  const d = r.dados || {};
+  const cons = d.consolidacaoOriginal || d.consolidacao || {};
+  return {
+    numero: d.numero ?? numeroParcelamento,
+    dataDoPedido: d.dataDoPedido || null,
+    situacao: d.situacao || null,
+    dataDaSituacao: d.dataDaSituacao || null,
+    valorTotalConsolidado: cons.valorTotalConsolidado ?? null,
+    quantidadeParcelas: cons.quantidadeParcelas ?? null,
+    valorPrimeiraParcela: cons.primeiraParcela ?? null,
+    valorParcelaBasica: cons.parcelaBasica ?? null,
+    detalhesJson: d,
+  };
+}
+// Emite a guia (DAS) de UMA parcela específica (mês AAAAMM) de um parcelamento já concedido — mesmo
+// mecanismo usado pra "gerar a parcela de entrada" (é só a parcela do mês em que o parcelamento foi
+// vinculado) quanto pras parcelas seguintes, buscadas pela mesma rotina automática mensal que já
+// busca o DAS normal.
+export async function emitirParcelaParcelamento(token: TokenIntegraContador, contratanteCnpj: string, cnpjEmpresa: string, anoMesParcela: number): Promise<{ pdfBase64: string | null }> {
+  const r = await chamarServico(token, {
+    base: "Emitir",
+    contratanteCnpj,
+    contribuinteDocumento: cnpjEmpresa,
+    idSistema: "PARCSN",
+    idServico: "GERARDAS161",
+    versaoSistema: "1.0",
+    dados: { parcelaParaEmitir: anoMesParcela },
+  });
+  return { pdfBase64: r.dados?.docArrecadacaoPdfB64 || null };
+}
