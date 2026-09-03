@@ -1605,7 +1605,7 @@ sqlite.exec(`INSERT OR IGNORE INTO whatsapp_config (escritorio_id) SELECT id FRO
   }
 }
 
-const MODULOS = ["dashboard", "empresas", "solicitacoes", "envio", "nfse", "nfe-busca", "financeiro", "contratos", "relatorios", "usuarios", "configuracoes"] as const;
+const MODULOS = ["dashboard", "empresas", "solicitacoes", "envio", "nfse", "nfe-busca", "integracontador", "financeiro", "contratos", "relatorios", "usuarios", "configuracoes"] as const;
 type Modulo = (typeof MODULOS)[number];
 
 // ========================= LOGIN (senha com hash + sessão via cookie) =========================
@@ -4398,7 +4398,7 @@ async function obterTokenIntegraContador(cfg: any): Promise<integracontador.Toke
   integraContadorTokens.set(cfg.escritorio_id, token);
   return token;
 }
-app.get("/api/integracontador/config", blockCliente, requireAdmin, (req, res) => {
+app.get("/api/integracontador/config", blockCliente, requirePermissao("integracontador", "visualizar"), (req, res) => {
   const c = getIntegraContadorConfig((req as any).user.escritorioId);
   res.json({
     cnpj: c.cnpj || "",
@@ -4411,7 +4411,7 @@ app.get("/api/integracontador/config", blockCliente, requireAdmin, (req, res) =>
     ultimoErro: c.ultimo_erro || null,
   });
 });
-app.put("/api/integracontador/config", blockCliente, requireAdmin, upload.single("certificado"), (req, res) => {
+app.put("/api/integracontador/config", blockCliente, requirePermissao("integracontador", "editar"), upload.single("certificado"), (req, res) => {
   const escritorioId = (req as any).user.escritorioId;
   const b = req.body || {};
   const atual = getIntegraContadorConfig(escritorioId);
@@ -4456,7 +4456,7 @@ app.put("/api/integracontador/config", blockCliente, requireAdmin, upload.single
   integraContadorTokens.delete(escritorioId); // credenciais podem ter mudado — descarta token em cache
   res.json({ ok: true });
 });
-app.post("/api/integracontador/config/testar", blockCliente, requireAdmin, async (req, res) => {
+app.post("/api/integracontador/config/testar", blockCliente, requirePermissao("integracontador", "postar"), async (req, res) => {
   const escritorioId = (req as any).user.escritorioId;
   const cfg = getIntegraContadorConfig(escritorioId);
   if (!cfg.consumer_key || !cfg.consumer_secret_cifrado || !cfg.arquivo_certificado_path) {
@@ -4475,7 +4475,7 @@ app.post("/api/integracontador/config/testar", blockCliente, requireAdmin, async
 function getIntegraContadorEmpresaConfig(empresaId: number): any {
   return sqlite.prepare(`SELECT * FROM integracontador_empresa_config WHERE empresa_id = ?`).get(empresaId) || {};
 }
-app.get("/api/integracontador/empresas", blockCliente, requireAdmin, (req, res) => {
+app.get("/api/integracontador/empresas", blockCliente, requirePermissao("integracontador", "visualizar"), (req, res) => {
   const user = (req as any).user;
   const ids = empresasVisiveis(user);
   if (!ids.length) return res.json({ items: [] });
@@ -4782,7 +4782,7 @@ function salvarPdfBase64EmCache(nome: string, base64: string): string {
 // Trava por empresa — evita que a busca manual e a rotina automática semanal rodem ao mesmo tempo
 // pra mesma empresa (cada chamada ao SERPRO é paga, não vale a pena arriscar duplicar).
 const integraContadorBuscasEmAndamento = new Set<number>();
-app.put("/api/integracontador/empresas/:id", blockCliente, requireAdmin, async (req, res) => {
+app.put("/api/integracontador/empresas/:id", blockCliente, requirePermissao("integracontador", "editar"), async (req, res) => {
   const user = (req as any).user;
   const empId = Number(req.params.id);
   if (!podeAcessarEmpresa(user, empId)) return res.status(404).json({ error: "Empresa não encontrada." });
@@ -4812,7 +4812,7 @@ app.put("/api/integracontador/empresas/:id", blockCliente, requireAdmin, async (
   }
   res.json({ ok: true, buscaIniciada });
 });
-app.post("/api/integracontador/empresas/:id/buscar", blockCliente, requireAdmin, async (req, res) => {
+app.post("/api/integracontador/empresas/:id/buscar", blockCliente, requirePermissao("integracontador", "postar"), async (req, res) => {
   const user = (req as any).user;
   const empId = Number(req.params.id);
   if (!podeAcessarEmpresa(user, empId)) return res.status(404).json({ error: "Empresa não encontrada." });
@@ -4832,7 +4832,7 @@ app.post("/api/integracontador/empresas/:id/buscar", blockCliente, requireAdmin,
 });
 // ---- Parcelamento de DAS (PARCSN) — vincular um parcelamento JÁ CONCEDIDO (a adesão em si é feita
 // pelo escritório no e-CAC, fora do sistema — a API não permite simular nem aderir, só consultar) ----
-app.get("/api/integracontador/parcelamentos/pedidos", blockCliente, requireAdmin, async (req, res) => {
+app.get("/api/integracontador/parcelamentos/pedidos", blockCliente, requirePermissao("integracontador", "postar"), async (req, res) => {
   const user = (req as any).user;
   const empId = Number(req.query.empresaId);
   if (!empId || !podeAcessarEmpresa(user, empId)) return res.status(404).json({ error: "Empresa não encontrada." });
@@ -4848,7 +4848,7 @@ app.get("/api/integracontador/parcelamentos/pedidos", blockCliente, requireAdmin
     res.status(502).json({ error: e.message });
   }
 });
-app.post("/api/integracontador/parcelamentos", blockCliente, requireAdmin, async (req, res) => {
+app.post("/api/integracontador/parcelamentos", blockCliente, requirePermissao("integracontador", "postar"), async (req, res) => {
   const user = (req as any).user;
   const empId = Number(req.body?.empresaId);
   const numeroParcelamento = Number(req.body?.numeroParcelamento);
@@ -4922,7 +4922,7 @@ app.post("/api/integracontador/parcelamentos", blockCliente, requireAdmin, async
     res.status(502).json({ error: e.message });
   }
 });
-app.get("/api/integracontador/parcelamentos", blockCliente, requireAdmin, (req, res) => {
+app.get("/api/integracontador/parcelamentos", blockCliente, requirePermissao("integracontador", "visualizar"), (req, res) => {
   const user = (req as any).user;
   const empresaId = req.query.empresaId ? Number(req.query.empresaId) : null;
   if (empresaId && !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
@@ -4944,14 +4944,14 @@ app.get("/api/integracontador/parcelamentos", blockCliente, requireAdmin, (req, 
   if (ids !== null) rows = rows.filter((r) => ids.includes(r.empresaId));
   res.json({ items: rows });
 });
-app.put("/api/integracontador/parcelamentos/:id/ativo", blockCliente, requireAdmin, (req, res) => {
+app.put("/api/integracontador/parcelamentos/:id/ativo", blockCliente, requirePermissao("integracontador", "editar"), (req, res) => {
   const user = (req as any).user;
   const row = sqlite.prepare(`SELECT * FROM integracontador_parcelamentos WHERE id = ?`).get(Number(req.params.id)) as any;
   if (!row || row.escritorio_id !== user.escritorioId || !podeAcessarEmpresa(user, row.empresa_id)) return res.status(404).json({ error: "Parcelamento não encontrado." });
   sqlite.prepare(`UPDATE integracontador_parcelamentos SET ativo = ? WHERE id = ?`).run(req.body?.ativo ? 1 : 0, row.id);
   res.json({ ok: true });
 });
-app.get("/api/integracontador/documentos", blockCliente, requireAdmin, (req, res) => {
+app.get("/api/integracontador/documentos", blockCliente, requirePermissao("integracontador", "visualizar"), (req, res) => {
   const user = (req as any).user;
   const empresaId = req.query.empresaId ? Number(req.query.empresaId) : null;
   if (empresaId && !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });

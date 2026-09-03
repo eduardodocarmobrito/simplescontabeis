@@ -599,7 +599,7 @@ const NAV = [
   { id:'envio', label:'Envio de Documentos', modulo:'envio', roles:['Administrador','Colaborador'] },
   { id:'nfse', label:'NFS-e', modulo:'nfse', roles:['Administrador','Colaborador'] },
   { id:'nfe-busca', label:'Busca de XML', modulo:'nfe-busca', roles:['Administrador','Colaborador'] },
-  { id:'integracontador', label:'Integra Contador', modulo:'integracontador', roles:['Administrador'] },
+  { id:'integracontador', label:'Integra Contador', modulo:'integracontador', roles:['Administrador','Colaborador'] },
   { id:'minha-nfse', label:'NFS-e', modulo:null, roles:['Cliente'] },
   { id:'meus-documentos', label:'Meus Documentos', modulo:null, roles:['Cliente'] },
   { id:'solicitar-documentos', label:'Solicitar Documentos', modulo:null, roles:['Cliente'] },
@@ -1958,7 +1958,7 @@ async function renderEnvioSolicitacoes(){
         <td>${fmtDateHora(i.solicitadoEm)}</td>
         <td>${i.retornoClienteEm?fmtDateHora(i.retornoClienteEm):'—'}</td>
         <td><span class="tag ${i.concluida?'ok':'warn'}">${i.concluida?'Concluída':'Aguardando o escritório'}</span></td>
-        <td style="text-align:right;">${i.tipo==='parcelamento_das'?`<button class="btn small" data-act="vincular-parc" data-empresa="${i.empresaId}" data-nome="${esc(i.empresaNome)}" data-periodo="${i.periodoId}">Vincular parcelamento</button>`:''}</td>
+        <td style="text-align:right;">${i.tipo==='parcelamento_das'&&can('integracontador','postar')?`<button class="btn small" data-act="vincular-parc" data-empresa="${i.empresaId}" data-nome="${esc(i.empresaNome)}" data-periodo="${i.periodoId}">Vincular parcelamento</button>`:''}</td>
       </tr>
     `).join('') : `<tr><td colspan="9"><div class="empty-state">${termo?'Nenhuma empresa encontrada.':'Nenhuma solicitação registrada ainda.'}</div></td></tr>`;
     tbody.querySelectorAll('[data-act="vincular-parc"]').forEach(b=>b.addEventListener('click', ()=>{
@@ -3729,6 +3729,8 @@ async function pageNfeBusca(){
 const IC_TIPO_LABEL = { das:'DAS', declaracao:'Declaração do Simples', situacao_fiscal:'Situação Fiscal' };
 let IC_TAB = 'configuradas';
 async function pageIntegraContador(){
+  const podePostar = can('integracontador','postar');
+  const podeEditar = can('integracontador','editar');
   main().innerHTML = `
     <h1>Integra Contador</h1>
     <p class="subtitle">Busca automática de DAS, Declaração do Simples Nacional e Relatório de Situação Fiscal direto na Receita Federal, usando o certificado digital do próprio escritório — serviço pago por consulta (SERPRO).</p>
@@ -3765,14 +3767,15 @@ async function pageIntegraContador(){
         <div class="field"><label>Certificado digital do escritório (.pfx) ${cfg.temCertificado?`— atual: <b>${esc(cfg.titularCertificado||'')}</b>${cfg.validadeCertificadoAte?', válido até '+fmtDate(cfg.validadeCertificadoAte):''}`:''}</label><input id="icCertArquivo" type="file" accept=".pfx,.p12"></div>
         <div class="field"><label>Senha do certificado</label><input id="icCertSenha" type="password" placeholder="${cfg.temCertificado?'só necessário se enviar um certificado novo':''}"></div>
       </div>
-      <label class="checkbox-row"><input type="checkbox" id="icAtivo" ${cfg.ativo?'checked':''}> Manter o Integra Contador ativo</label>
+      <label class="checkbox-row"><input type="checkbox" id="icAtivo" ${cfg.ativo?'checked':''} ${podeEditar?'':'disabled'}> Manter o Integra Contador ativo</label>
       ${cfg.ultimoErro?`<p style="color:var(--debit); font-size:12.5px;">Último erro: ${esc(cfg.ultimoErro)}</p>`:''}
       <div class="row" style="margin-top:8px;">
-        <button class="btn primary" id="btnIcSalvarConfig">Salvar</button>
-        <button class="btn" id="btnIcTestar" ${cfg.temCertificado&&cfg.consumerKey?'':'disabled'}>Testar conexão</button>
+        ${podeEditar?`<button class="btn primary" id="btnIcSalvarConfig">Salvar</button>`:''}
+        ${podePostar?`<button class="btn" id="btnIcTestar" ${cfg.temCertificado&&cfg.consumerKey?'':'disabled'}>Testar conexão</button>`:''}
       </div>
     `;
-    document.getElementById('btnIcSalvarConfig').addEventListener('click', async (ev)=>{
+    if(!podeEditar) body.querySelectorAll('input').forEach(el=>el.disabled=true);
+    if(podeEditar) document.getElementById('btnIcSalvarConfig').addEventListener('click', async (ev)=>{
       const btn = ev.target; btn.disabled = true; btn.textContent = 'Salvando…';
       try{
         const fd = new FormData();
@@ -3852,20 +3855,20 @@ async function pageIntegraContador(){
       <button class="btn small" id="btnIcVoltarLista">← Voltar pra lista de empresas</button>
       <div class="card" style="margin-top:10px;">
         <h3>${esc(emp?emp.nome:'Empresa')}</h3>
-        <label class="checkbox-row"><input type="checkbox" id="icEmpAtivo" ${emp?.ativo?'checked':''}> Buscar dados desta empresa</label>
-        <label class="checkbox-row"><input type="checkbox" id="icEmpOptante" ${emp?.optanteSimplesNacional?'checked':''}> Optante do Simples Nacional (habilita DAS e Declaração — Situação Fiscal vale pra qualquer regime)</label>
+        <label class="checkbox-row"><input type="checkbox" id="icEmpAtivo" ${emp?.ativo?'checked':''} ${podeEditar?'':'disabled'}> Buscar dados desta empresa</label>
+        <label class="checkbox-row"><input type="checkbox" id="icEmpOptante" ${emp?.optanteSimplesNacional?'checked':''} ${podeEditar?'':'disabled'}> Optante do Simples Nacional (habilita DAS e Declaração — Situação Fiscal vale pra qualquer regime)</label>
         <p style="font-size:12.5px; color:var(--ink-soft); margin:6px 0 0;">Última busca: <span id="icUltimaBusca">${emp?.ultimaBuscaEm?fmtDateHora(emp.ultimaBuscaEm):'nunca buscado'}</span></p>
         ${emp?.alertaDeclaracao?`<div class="card" style="background:var(--paper); border-color:var(--warn, #c9a227); margin:8px 0;"><span style="font-size:12.5px;">⚠ ${esc(emp.alertaDeclaracao)}</span></div>`:''}
         ${emp?.ultimoErro?`<p style="color:var(--debit); font-size:12.5px;">Último erro: ${esc(emp.ultimoErro)}</p>`:''}
         <div class="row" style="margin-top:8px;">
-          <button class="btn primary" id="btnIcSalvarEmpresa">Salvar</button>
-          <button class="btn" id="btnIcBuscarAgora" ${emp?.ativo?'':'disabled'}>Buscar agora</button>
+          ${podeEditar?`<button class="btn primary" id="btnIcSalvarEmpresa">Salvar</button>`:''}
+          ${podePostar?`<button class="btn" id="btnIcBuscarAgora" ${emp?.ativo?'':'disabled'}>Buscar agora</button>`:''}
         </div>
       </div>
       <div class="card">
         <div class="row" style="justify-content:space-between; align-items:center;">
           <h3 style="margin:0;">Parcelamentos</h3>
-          <button class="btn small" id="btnIcVincularParc">+ Vincular parcelamento</button>
+          ${podePostar?`<button class="btn small" id="btnIcVincularParc">+ Vincular parcelamento</button>`:''}
         </div>
         <p style="font-size:12.5px; color:var(--ink-soft); margin:4px 0 8px;">Parcelamentos do Simples Nacional (PARCSN) já concedidos e vinculados — as guias de cada parcela são buscadas e anexadas automaticamente em Envio de Documentos todo mês.</p>
         <div id="icParcBody"><div class="empty-state">Carregando…</div></div>
@@ -3881,7 +3884,7 @@ async function pageIntegraContador(){
       </div>
     `;
     document.getElementById('btnIcVoltarLista').addEventListener('click', mostrarIcLista);
-    document.getElementById('btnIcVincularParc').addEventListener('click', ()=>{
+    if(podePostar) document.getElementById('btnIcVincularParc').addEventListener('click', ()=>{
       vincularParcelamentoModal(empresaId, emp?emp.nome:'Empresa', null, carregarIcParcelamentos);
     });
     async function carregarIcParcelamentos(){
@@ -3903,8 +3906,8 @@ async function pageIntegraContador(){
                 <td>${p.ultimaBuscaEm?fmtDateHora(p.ultimaBuscaEm):'—'}${p.ultimoErro?`<br><span style="color:var(--debit); font-size:11px;">${esc(p.ultimoErro)}</span>`:''}</td>
                 <td><span class="tag ${p.ativo?'ok':'muted'}">${p.ativo?'Ativo':'Encerrado'}</span></td>
                 <td style="text-align:right; white-space:nowrap;">
-                  <button class="btn small" data-act="parc-atualizar" data-numero="${p.numero}">Atualizar</button>
-                  <button class="btn small" data-act="parc-toggle" data-id="${p.id}" data-ativo="${p.ativo?1:0}">${p.ativo?'Encerrar':'Reativar'}</button>
+                  ${podePostar?`<button class="btn small" data-act="parc-atualizar" data-numero="${p.numero}">Atualizar</button>`:''}
+                  ${podeEditar?`<button class="btn small" data-act="parc-toggle" data-id="${p.id}" data-ativo="${p.ativo?1:0}">${p.ativo?'Encerrar':'Reativar'}</button>`:''}
                 </td>
               </tr>
             `).join('')}
@@ -3948,7 +3951,7 @@ async function pageIntegraContador(){
       }
       return null;
     }
-    document.getElementById('btnIcSalvarEmpresa').addEventListener('click', async (ev)=>{
+    if(podeEditar) document.getElementById('btnIcSalvarEmpresa').addEventListener('click', async (ev)=>{
       const btn = ev.target; btn.disabled = true; btn.textContent = 'Salvando…';
       try{
         const ultimaBuscaAntes = emp?.ultimaBuscaEm || null;
@@ -3966,7 +3969,7 @@ async function pageIntegraContador(){
       }catch(e){ toast(e.message,'err'); }
       finally{ btn.disabled = false; btn.textContent = 'Salvar'; }
     });
-    document.getElementById('btnIcBuscarAgora').addEventListener('click', async (ev)=>{
+    if(podePostar) document.getElementById('btnIcBuscarAgora').addEventListener('click', async (ev)=>{
       const btn = ev.target; btn.disabled = true; btn.textContent = 'Buscando…';
       try{
         const ultimaBuscaAntes = emp?.ultimaBuscaEm || null;
@@ -5606,7 +5609,7 @@ async function pageUsuarios(){
     usuarioModal(items.find(x=>x.id===id));
   }));
 }
-const MODS = [['dashboard','Início'],['empresas','Empresas'],['solicitacoes','Solicitações de Documentos'],['envio','Envio de Documentos'],['nfse','NFS-e'],['nfe-busca','Busca de XML'],['financeiro','Financeiro'],['contratos','Contratos'],['relatorios','Relatórios'],['usuarios','Usuários'],['configuracoes','Configurações']];
+const MODS = [['dashboard','Início'],['empresas','Empresas'],['solicitacoes','Solicitações de Documentos'],['envio','Envio de Documentos'],['nfse','NFS-e'],['nfe-busca','Busca de XML'],['integracontador','Integra Contador'],['financeiro','Financeiro'],['contratos','Contratos'],['relatorios','Relatórios'],['usuarios','Usuários'],['configuracoes','Configurações']];
 // Lista de empresas com busca por texto — usada nos dois pickers de empresa do modal de usuário
 // (Cliente com múltiplas empresas, Colaborador com acesso restrito), já que a base de empresas
 // pode ter centenas de linhas (import do Domínio Web).
