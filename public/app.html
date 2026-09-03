@@ -2036,8 +2036,10 @@ function envioCelulaHtml(p, accept, podePostar, podeEditar, souCliente, mostrarV
   const docs = p.documentos || [];
   // Período avulso criado por engano (ou que não é mais necessário) sem nada anexado ainda — só
   // remove a linha inteira nesse caso; com documento já anexado, o jeito é excluir os documentos um
-  // a um (histórico já enviado ao cliente não some sozinho).
-  const btnExcluirPeriodo = ehAvulso && podeEditar && !docs.length
+  // a um (histórico já enviado ao cliente não some sozinho). Pedido feito pelo cliente (p.solicitadoEm)
+  // nunca ganha esse botão — excluir sumiria com o pedido dele sem responder, precisa ser atendido
+  // (ou excluído de propósito lá em Solicitações), não descartado sem querer aqui na grade.
+  const btnExcluirPeriodo = ehAvulso && podeEditar && !docs.length && !p.solicitadoEm
     ? `<button class="btn small danger" data-act="excluir-periodo" data-periodo="${p.periodoId}">Excluir</button>` : '';
   const blocosHtml = docs.map(d=>envioDocBlocoHtml(d, podeEditar, podePostar, souCliente, mostrarVencimento)).join('');
   // Com 2+ documentos no mesmo período (ex.: guia original + guia recalculada), a lista expandida
