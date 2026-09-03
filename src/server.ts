@@ -4969,7 +4969,11 @@ app.get("/api/integracontador/documentos", blockCliente, requireAdmin, (req, res
     .all(user.escritorioId, ...ids);
   res.json({ items: rows.map((r: any) => ({ ...r, detalhesJson: undefined, detalhes: r.detalhesJson ? JSON.parse(r.detalhesJson) : null, temPdf: !!r.temPdf })) });
 });
-app.get("/api/integracontador/documentos/:id/pdf", blockCliente, requireAdmin, (req, res) => {
+// Só blockCliente (não requireAdmin) — o link "Baixar Situação Fiscal" já aparece pra qualquer
+// Colaborador que enxergue o card no Início (card só exige "dashboard: visualizar"), então exigir
+// Administrador aqui só travava o download sem servir pra nada além de confundir; podeAcessarEmpresa
+// abaixo já garante que só baixa PDF de empresa que esse usuário realmente pode ver.
+app.get("/api/integracontador/documentos/:id/pdf", blockCliente, (req, res) => {
   const user = (req as any).user;
   const row = sqlite.prepare(`SELECT * FROM integracontador_documentos WHERE id = ?`).get(Number(req.params.id)) as any;
   if (!row || row.escritorio_id !== user.escritorioId || !podeAcessarEmpresa(user, row.empresa_id) || !row.pdf_path) {
