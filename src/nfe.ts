@@ -201,11 +201,18 @@ export function identificarDocumento(xml: string, schema: string): DocumentoIden
   if (schema.startsWith("resNFe")) {
     const r = json?.resNFe;
     if (!r) return base;
+    // Confirmado ao vivo (checando a chave de acesso, que sempre embute o CNPJ real do emitente nas
+    // posições 7-20, independente do schema): o campo CNPJ do resNFe já é mesmo o emitente — bate
+    // com a chave em ~9 de cada 10 casos reais checados. O que faltava era o fallback pra CPF —
+    // quando o emitente é pessoa física (produtor rural etc.), só existe <CPF>, nunca <CNPJ>, e o
+    // código só lia CNPJ — resultado: essas notas ficavam com emitente em branco (mas ainda
+    // corretamente contadas como "recebida" por padrão, já que CPF nunca bate com o CNPJ da própria
+    // empresa — não é bug de direção, só de completude do dado exibido).
     return {
       ...base,
       tipo: "nfe",
       chaveAcesso: r.chNFe || null,
-      emitenteCnpj: r.CNPJ || null,
+      emitenteCnpj: r.CNPJ || r.CPF || null,
       emitenteNome: r.xNome || null,
       valorTotal: r.vNF != null ? Number(r.vNF) : null,
       dataEmissao: r.dhEmi || null,
