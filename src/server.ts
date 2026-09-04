@@ -1653,7 +1653,7 @@ sqlite.exec(`INSERT OR IGNORE INTO whatsapp_config (escritorio_id) SELECT id FRO
   }
 }
 
-const MODULOS = ["dashboard", "empresas", "solicitacoes", "envio", "nfse", "nfe-busca", "integracontador", "financeiro", "contratos", "relatorios", "usuarios", "configuracoes"] as const;
+const MODULOS = ["dashboard", "empresas", "solicitacoes", "envio", "nfse", "nfe-busca", "integracontador", "licencas", "financeiro", "contratos", "relatorios", "usuarios", "configuracoes"] as const;
 type Modulo = (typeof MODULOS)[number];
 
 // ========================= LOGIN (senha com hash + sessão via cookie) =========================
@@ -1776,6 +1776,18 @@ function requirePermissao(modulo: Modulo, acao: "visualizar" | "postar" | "edita
   return (req: express.Request, res: express.Response, next: express.NextFunction) => {
     const user = (req as any).user;
     if (!hasPermissao(user, modulo, acao)) {
+      return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
+    }
+    next();
+  };
+}
+// Pra rota que serve DOIS fluxos com permissão própria (ex.: a lista de anos de licença é usada
+// tanto pela aba Licenças de dentro de Empresas quanto pelo módulo Licenças em lote) — basta ter
+// UMA das duas pra passar, sem forçar quem só usa um dos dois fluxos a pedir a outra permissão.
+function requirePermissaoOr(moduloA: Modulo, moduloB: Modulo, acao: "visualizar" | "postar" | "editar") {
+  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const user = (req as any).user;
+    if (!hasPermissao(user, moduloA, acao) && !hasPermissao(user, moduloB, acao)) {
       return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
     }
     next();
@@ -2526,12 +2538,12 @@ async function extrairVencimentoDeAnexo(buf: Buffer, mime: string | undefined): 
 }
 // Anos disponíveis na aba Licenças — um só lugar, compartilhado por todas as empresas do escritório
 // (o layout ano→tipo é o mesmo pra qualquer uma), não precisa cadastrar ano por empresa.
-app.get("/api/empresas/licenca-anos", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
+app.get("/api/empresas/licenca-anos", blockCliente, requirePermissaoOr("empresas", "licencas", "visualizar"), (req, res) => {
   const user = (req as any).user;
   const rows = sqlite.prepare(`SELECT ano FROM empresa_licenca_anos WHERE escritorio_id = ? ORDER BY ano DESC`).all(user.escritorioId) as any[];
   res.json({ anos: rows.map((r) => r.ano) });
 });
-app.post("/api/empresas/licenca-anos", blockCliente, requirePermissao("empresas", "editar"), (req, res) => {
+app.post("/api/empresas/licenca-anos", blockCliente, requirePermissaoOr("empresas", "licencas", "editar"), (req, res) => {
   const user = (req as any).user;
   const ano = Number(req.body?.ano);
   if (!Number.isInteger(ano) || ano < 2000 || ano > 2100) return res.status(400).json({ error: "Ano inválido." });
@@ -2600,7 +2612,7 @@ app.post("/api/empresas/:id/anexos", blockCliente, requirePermissao("empresas", 
 // monta com a resposta daqui, pra preencher rápido depois.
 const REGEX_CNPJ_BUSCA = /\b\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}\b/g;
 const REGEX_CPF_BUSCA = /\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b/g;
-app.post("/api/empresas/anexos/licencas-bulk", blockCliente, requirePermissao("empresas", "editar"), upload.array("arquivos", 300), async (req, res) => {
+app.post("/api/empresas/anexos/licencas-bulk", blockCliente, requirePermissao("licencas", "postar"), upload.array("arquivos", 300), async (req, res) => {
   const user = (req as any).user;
   const tipo = String(req.body?.tipo || "");
   const info = EMPRESA_ANEXO_TIPOS[tipo];
@@ -2686,7 +2698,7 @@ app.post("/api/empresas/anexos/licencas-bulk", blockCliente, requirePermissao("e
 
   res.json({ total: arquivos.length, identificados, semVencimento, naoIdentificados });
 });
-app.put("/api/empresas/anexos/:anexoId/vencimento", blockCliente, requirePermissao("empresas", "editar"), (req, res) => {
+app.put("/api/empresas/anexos/:anexoId/vencimento", blockCliente, requirePermissaoOr("empresas", "licencas", "editar"), (req, res) => {
   const anexo = sqlite.prepare(`SELECT empresa_id, categoria FROM empresa_anexos WHERE id = ?`).get(Number(req.params.anexoId)) as any;
   if (!anexo || !podeAcessarEmpresa((req as any).user, anexo.empresa_id)) return res.status(404).json({ error: "Anexo não encontrado." });
   if (anexo.categoria !== "licenca") return res.status(400).json({ error: "Só licenças têm data de vencimento." });

@@ -595,7 +595,7 @@ document.getElementById('btnLogout').addEventListener('click', async ()=>{
 const NAV = [
   { id:'dashboard', label:'Início', modulo:'dashboard', roles:['Administrador','Colaborador','Cliente'] },
   { id:'empresas', label:'Empresas', modulo:'empresas', roles:['Administrador','Colaborador'] },
-  { id:'licencas-bulk', label:'Licenças', modulo:'empresas', roles:['Administrador','Colaborador'] },
+  { id:'licencas-bulk', label:'Licenças', modulo:'licencas', roles:['Administrador','Colaborador'] },
   { id:'solicitacoes', label:'Solicitações de Documentos', modulo:'solicitacoes', roles:['Administrador','Colaborador'] },
   { id:'envio', label:'Envio de Documentos', modulo:'envio', roles:['Administrador','Colaborador'] },
   { id:'nfse', label:'NFS-e', modulo:'nfse', roles:['Administrador','Colaborador'] },
@@ -1624,10 +1624,13 @@ function ligarAbaLicencasEmpresa(empresaId){
 // ainda deixa selecionar vários arquivos de uma vez na mão) e manda tudo pro backend, que lê o
 // CNPJ/CPF de cada PDF pra descobrir sozinho a empresa — sem precisar escolher empresa por empresa.
 async function pageLicencasBulk(){
+  const podePostar = can('licencas','postar');
+  const podeEditar = can('licencas','editar');
   const tiposLicenca = Object.entries(EMPRESA_ANEXO_TIPOS).filter(([,info])=>info.categoria==='licenca');
   main().innerHTML = `
     <h1>Licenças</h1>
     <p class="subtitle">Carregue de uma vez todos os PDFs de um tipo de licença — o sistema lê o CNPJ/CPF de dentro de cada arquivo e anexa sozinho na empresa certa (mesmo lugar da aba Licenças de cada empresa).</p>
+    ${!podePostar? `<p class="tag muted">Você só tem permissão de visualização neste módulo.</p>`:''}
     <div class="card">
       <h3>1. Tipo de licença</h3>
       <div class="row" id="lbTipos" style="flex-wrap:wrap; gap:10px;">
@@ -1656,18 +1659,19 @@ async function pageLicencasBulk(){
           <div class="field" style="width:140px; margin-bottom:0;"><label>Ano</label>
             <select id="lbAno">${anosBase.map(a=>`<option value="${a}">${a}</option>`).join('')}</select>
           </div>
-          <button class="btn small" id="lbOutroAno">+ Outro ano</button>
+          ${podePostar? `<button class="btn small" id="lbOutroAno">+ Outro ano</button>` : ''}
         </div>
       </div>
       <div class="card">
         <h3>3. Pasta com os PDFs</h3>
         <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Escolha a pasta no computador com todas as licenças de "${esc(EMPRESA_ANEXO_TIPOS[tipoEscolhido].label)}" em PDF — cada arquivo precisa ter o CNPJ ou CPF da empresa em algum lugar do texto. Se o navegador não deixar escolher a pasta inteira, selecione todos os PDFs dela na mão (Cmd/Ctrl+A dentro da pasta).</p>
-        <input type="file" id="lbPasta" webkitdirectory multiple accept="application/pdf">
+        <input type="file" id="lbPasta" webkitdirectory multiple accept="application/pdf" ${podePostar? '' : 'disabled'}>
         <div id="lbPastaResumo" style="font-size:12.5px; color:var(--ink-soft); margin-top:6px;"></div>
-        <button class="btn primary" id="lbCarregar" style="margin-top:10px;" disabled>Carregar Licenças</button>
+        ${podePostar? `<button class="btn primary" id="lbCarregar" style="margin-top:10px;" disabled>Carregar Licenças</button>` : ''}
       </div>
       <div id="lbRelatorio"></div>
     `;
+    if(!podePostar) return;
     document.getElementById('lbOutroAno').addEventListener('click', async ()=>{
       const digitado = prompt('Adicionar/usar qual ano? (fica disponível pra todas as empresas)', String(anoAtual));
       if(!digitado) return;
@@ -1738,12 +1742,13 @@ async function pageLicencasBulk(){
           <div style="font-weight:600; margin-bottom:6px;">${esc(i.nomeArquivo)}</div>
           <div class="row" style="align-items:flex-end; gap:8px;">
             ${dateFieldHtml('lbVenc'+i.anexoId, 'Vencimento', '')}
-            <button class="btn small primary" data-act="salvar-venc-lote" data-id="${i.anexoId}">Salvar</button>
+            ${podeEditar? `<button class="btn small primary" data-act="salvar-venc-lote" data-id="${i.anexoId}">Salvar</button>` : ''}
             <span class="tag ok hidden" id="lbVencOk${i.anexoId}">Salvo!</span>
           </div>
         </div>
       `).join('');
       r.semVencimento.forEach(i=>setupDatePicker('lbVenc'+i.anexoId, 'lbVenc'+i.anexoId+'_text'));
+      if(!podeEditar) return;
       box.querySelectorAll('[data-act="salvar-venc-lote"]').forEach(b=>b.addEventListener('click', async ()=>{
         const input = document.getElementById('lbVenc'+b.dataset.id);
         if(!input.value){ toast('Escolha uma data.','err'); return; }
@@ -6062,7 +6067,7 @@ async function pageUsuarios(){
     usuarioModal(items.find(x=>x.id===id));
   }));
 }
-const MODS = [['dashboard','Início'],['empresas','Empresas'],['solicitacoes','Solicitações de Documentos'],['envio','Envio de Documentos'],['nfse','NFS-e'],['nfe-busca','Busca de XML'],['integracontador','Integra Contador'],['financeiro','Financeiro'],['contratos','Contratos'],['relatorios','Relatórios'],['usuarios','Usuários'],['configuracoes','Configurações']];
+const MODS = [['dashboard','Início'],['empresas','Empresas'],['solicitacoes','Solicitações de Documentos'],['envio','Envio de Documentos'],['nfse','NFS-e'],['nfe-busca','Busca de XML'],['integracontador','Integra Contador'],['licencas','Licenças'],['financeiro','Financeiro'],['contratos','Contratos'],['relatorios','Relatórios'],['usuarios','Usuários'],['configuracoes','Configurações']];
 // Lista de empresas com busca por texto — usada nos dois pickers de empresa do modal de usuário
 // (Cliente com múltiplas empresas, Colaborador com acesso restrito), já que a base de empresas
 // pode ter centenas de linhas (import do Domínio Web).
