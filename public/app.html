@@ -1310,12 +1310,9 @@ function empresaModal(e){
       <div id="empAnexosConstituicao"><div class="empty-state">Carregando…</div></div>
     </div>
     <div id="empTabLicencas" class="hidden">
-      <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:10px;">
-        <p style="font-size:12.5px; color:var(--ink-soft); margin:0; max-width:640px;">Alvará, Vigilância Sanitária, Corpo de Bombeiros, Ambiental (SEMMA). O vencimento é lido automaticamente do PDF quando dá pra achar — sempre confira e corrija se precisar.</p>
-        <button class="btn small" id="btnAddAnexoLicenca">+ Adicionar Anexo</button>
-      </div>
-      <div id="empAddAnexoFormLicenca" class="hidden card" style="background:var(--paper); margin-bottom:12px;"></div>
-      <div id="empAnexosLicencas"><div class="empty-state">Carregando…</div></div>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin:0 0 10px; max-width:760px;">Alvará, Vigilância Sanitária, Corpo de Bombeiros e Ambiental (SEMMA), organizados por ano — escolha o ano, depois a licença, pra ver o histórico e anexar. O vencimento é sempre lido do anexo em si (PDF), nunca herdado de outro ano.</p>
+      <div class="tabs" id="empLicencasAnos"></div>
+      <div id="empLicencasTipos" style="margin-top:12px;"></div>
     </div>
     <div id="empTabConfiguracoes" class="hidden">
       <div class="empty-state">Em breve.</div>
@@ -1341,7 +1338,7 @@ function empresaModal(e){
     document.querySelector('#empModalTabs .tab[data-tab="empresa"]').classList.add('active');
     document.getElementById('empTabEmpresa').classList.remove('hidden');
     ligarAbaAnexosEmpresa(e.id, 'constituicao', 'empAnexosConstituicao', 'empAddAnexoFormConstituicao', 'btnAddAnexoConstituicao');
-    ligarAbaAnexosEmpresa(e.id, 'licenca', 'empAnexosLicencas', 'empAddAnexoFormLicenca', 'btnAddAnexoLicenca');
+    ligarAbaLicencasEmpresa(e.id);
   }
   // Ao sair do campo CNPJ (com 14 dígitos — CPF de produtor rural não tem consulta pública), busca
   // os dados na Receita Federal e preenche só os campos que ainda estão vazios — nunca sobrescreve
@@ -1398,8 +1395,52 @@ function empresaModal(e){
     }catch(err){ toast(err.message,'err'); }
   });
 }
-// Carrega, lista, envia e exclui os anexos de uma aba (Constituição ou Licenças) do modal de
-// empresa — as duas abas usam exatamente a mesma mecânica, só muda a categoria e os tipos aceitos.
+// Card de UM anexo — reaproveitado pela lista simples (Constituição) e pelo histórico por ano/tipo
+// (Licenças). Só licença ganha o campo de vencimento (contrato social/cartão CNPJ não vencem).
+function anexoCardHtml(a){
+  const tipoLabel = (EMPRESA_ANEXO_TIPOS[a.tipo]||{}).label || a.tipo;
+  const vencTag = a.vencimentoOrigem==='automatico' ? `<span class="tag ok" style="font-size:10px;">lido automaticamente do PDF</span>`
+    : a.vencimentoOrigem==='manual' ? `<span class="tag muted" style="font-size:10px;">informado manualmente</span>`
+    : `<span class="tag bad" style="font-size:10px;">não identificado — informe a data</span>`;
+  return `
+  <div class="card" style="padding:10px 12px; margin-bottom:8px;">
+    <div class="row" style="justify-content:space-between; align-items:flex-start; gap:10px;">
+      <div>
+        <div style="font-size:11px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.04em;">${esc(tipoLabel)}</div>
+        <a href="/api/empresas/anexos/${a.id}/arquivo" target="_blank" rel="noopener" style="font-weight:600;">${esc(a.nomeArquivo)}</a>
+        <div style="font-size:11.5px; color:var(--ink-soft);">Enviado em ${fmtDateHora(a.criadoEm)}${a.criadoPorNome? ' por '+esc(a.criadoPorNome):''}</div>
+      </div>
+      <button class="btn small danger" data-act="rm-anexo" data-id="${a.id}">Excluir</button>
+    </div>
+    ${a.categoria==='licenca'? `
+      <div class="row" style="align-items:flex-end; gap:8px; margin-top:8px;">
+        ${dateFieldHtml('vencAnexo'+a.id, 'Vencimento', a.vencimento||'')}
+        <button class="btn small" data-act="salvar-venc-anexo" data-id="${a.id}">Salvar</button>
+        ${vencTag}
+      </div>
+    `:''}
+  </div>`;
+}
+// Liga excluir/salvar-vencimento de uma lista de anexos já renderizada dentro de `container` — chama
+// setupDatePicker pros que têm vencimento, e onChange() (recarregar) depois de qualquer ação.
+function wireAnexoCardEvents(container, items, onChange){
+  items.filter(a=>a.categoria==='licenca').forEach(a=>setupDatePicker('vencAnexo'+a.id, 'vencAnexo'+a.id+'_text'));
+  container.querySelectorAll('[data-act="rm-anexo"]').forEach(b=>b.addEventListener('click', async ()=>{
+    if(!confirmar('Excluir este anexo?')) return;
+    try{ await api('/empresas/anexos/'+b.dataset.id, { method:'DELETE' }); onChange(); }
+    catch(err){ toast(err.message,'err'); }
+  }));
+  container.querySelectorAll('[data-act="salvar-venc-anexo"]').forEach(b=>b.addEventListener('click', async ()=>{
+    const input = document.getElementById('vencAnexo'+b.dataset.id);
+    try{
+      await api('/empresas/anexos/'+b.dataset.id+'/vencimento', { method:'PUT', body:{ vencimento: input.value || null } });
+      toast('Vencimento atualizado.','ok');
+      onChange();
+    }catch(err){ toast(err.message,'err'); }
+  }));
+}
+// Carrega, lista e envia os anexos da aba Constituição — lista simples, sem agrupamento por ano
+// (contrato social/cartão CNPJ não têm essa noção de exercício).
 function ligarAbaAnexosEmpresa(empresaId, categoria, listId, formId, btnId){
   const tiposDaCategoria = Object.entries(EMPRESA_ANEXO_TIPOS).filter(([,info])=>info.categoria===categoria);
   async function carregar(){
@@ -1407,44 +1448,8 @@ function ligarAbaAnexosEmpresa(empresaId, categoria, listId, formId, btnId){
     wrap.innerHTML = `<div class="empty-state">Carregando…</div>`;
     const { items } = await api('/empresas/'+empresaId+'/anexos?categoria='+categoria);
     if(!items.length){ wrap.innerHTML = `<div class="empty-state">Nenhum anexo enviado ainda.</div>`; return; }
-    wrap.innerHTML = items.map(a=>{
-      const tipoLabel = (EMPRESA_ANEXO_TIPOS[a.tipo]||{}).label || a.tipo;
-      const vencTag = a.vencimentoOrigem==='automatico' ? `<span class="tag ok" style="font-size:10px;">lido automaticamente do PDF</span>`
-        : a.vencimentoOrigem==='manual' ? `<span class="tag muted" style="font-size:10px;">informado manualmente</span>`
-        : `<span class="tag bad" style="font-size:10px;">não identificado — informe a data</span>`;
-      return `
-      <div class="card" style="padding:10px 12px; margin-bottom:8px;">
-        <div class="row" style="justify-content:space-between; align-items:flex-start; gap:10px;">
-          <div>
-            <div style="font-size:11px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.04em;">${esc(tipoLabel)}</div>
-            <a href="/api/empresas/anexos/${a.id}/arquivo" target="_blank" rel="noopener" style="font-weight:600;">${esc(a.nomeArquivo)}</a>
-            <div style="font-size:11.5px; color:var(--ink-soft);">Enviado em ${fmtDateHora(a.criadoEm)}${a.criadoPorNome? ' por '+esc(a.criadoPorNome):''}</div>
-          </div>
-          <button class="btn small danger" data-act="rm" data-id="${a.id}">Excluir</button>
-        </div>
-        ${categoria==='licenca'? `
-          <div class="row" style="align-items:flex-end; gap:8px; margin-top:8px;">
-            ${dateFieldHtml('vencAnexo'+a.id, 'Vencimento', a.vencimento||'')}
-            <button class="btn small" data-act="salvar-venc" data-id="${a.id}">Salvar</button>
-            ${vencTag}
-          </div>
-        `:''}
-      </div>`;
-    }).join('');
-    if(categoria==='licenca') items.forEach(a=>setupDatePicker('vencAnexo'+a.id, 'vencAnexo'+a.id+'_text'));
-    wrap.querySelectorAll('[data-act="rm"]').forEach(b=>b.addEventListener('click', async ()=>{
-      if(!confirmar('Excluir este anexo?')) return;
-      try{ await api('/empresas/anexos/'+b.dataset.id, { method:'DELETE' }); carregar(); }
-      catch(err){ toast(err.message,'err'); }
-    }));
-    wrap.querySelectorAll('[data-act="salvar-venc"]').forEach(b=>b.addEventListener('click', async ()=>{
-      const input = document.getElementById('vencAnexo'+b.dataset.id);
-      try{
-        await api('/empresas/anexos/'+b.dataset.id+'/vencimento', { method:'PUT', body:{ vencimento: input.value || null } });
-        toast('Vencimento atualizado.','ok');
-        carregar();
-      }catch(err){ toast(err.message,'err'); }
-    }));
+    wrap.innerHTML = items.map(anexoCardHtml).join('');
+    wireAnexoCardEvents(wrap, items, carregar);
   }
   document.getElementById(btnId).addEventListener('click', ()=>{
     const formWrap = document.getElementById(formId);
@@ -1477,6 +1482,119 @@ function ligarAbaAnexosEmpresa(empresaId, categoria, listId, formId, btnId){
     });
   });
   carregar();
+}
+// Aba Licenças: ano → tipo (Alvará, Vigilância Sanitária, Corpo de Bombeiros, Ambiental-SEMMA) →
+// histórico de anexos daquele tipo naquele ano. Clica no ano, os 4 tipos já aparecem prontos (com
+// ou sem anexo ainda); clica num tipo, expande o histórico + botão pra anexar mais um daquele
+// mesmo tipo/ano — cada anexo mantém o próprio vencimento, lido dele mesmo, nunca herdado.
+function ligarAbaLicencasEmpresa(empresaId){
+  const tiposLicenca = Object.entries(EMPRESA_ANEXO_TIPOS).filter(([,info])=>info.categoria==='licenca');
+  const anoAtual = new Date().getFullYear();
+  let ano = anoAtual;
+  let tipoAberto = null;
+  let todosAnexos = [];
+
+  function anosParaMostrar(){
+    const anosComDados = todosAnexos.map(a=>a.ano).filter(Boolean);
+    const base = [anoAtual-2, anoAtual-1, anoAtual, anoAtual+1];
+    return [...new Set([...base, ...anosComDados, ano])].sort((x,y)=>y-x);
+  }
+  function renderAnos(){
+    const wrap = document.getElementById('empLicencasAnos');
+    wrap.innerHTML = anosParaMostrar().map(a=>`<div class="tab ${a===ano?'active':''}" data-ano="${a}">${a}</div>`).join('')
+      + `<div class="tab" data-act="outro-ano">+ Ano</div>`;
+    wrap.querySelectorAll('[data-ano]').forEach(t=>t.addEventListener('click', ()=>{
+      ano = Number(t.dataset.ano);
+      tipoAberto = null;
+      renderAnos();
+      renderTipos();
+    }));
+    const btnOutro = wrap.querySelector('[data-act="outro-ano"]');
+    if(btnOutro) btnOutro.addEventListener('click', ()=>{
+      const digitado = prompt('Ver/adicionar qual ano?', String(anoAtual));
+      if(!digitado) return;
+      const n = Number(digitado);
+      if(!Number.isInteger(n) || n<2000 || n>2100){ toast('Ano inválido.','err'); return; }
+      ano = n; tipoAberto = null;
+      renderAnos(); renderTipos();
+    });
+  }
+  function anexosDoTipo(tipo){ return todosAnexos.filter(a=>a.tipo===tipo && a.ano===ano); }
+  function renderTipos(){
+    const wrap = document.getElementById('empLicencasTipos');
+    wrap.innerHTML = tiposLicenca.map(([tipo,info])=>{
+      const lista = anexosDoTipo(tipo);
+      const maisRecente = lista[0]; // /anexos já vem ordenado desc por criado_em
+      let vencTag = '';
+      if(maisRecente && maisRecente.vencimento){
+        const hoje = new Date().toISOString().slice(0,10);
+        const vencida = maisRecente.vencimento < hoje;
+        vencTag = `<span class="tag ${vencida?'bad':'ok'}" style="margin-left:8px;">${vencida?'Vencida em':'Vence em'} ${fmtDateIso(maisRecente.vencimento)}</span>`;
+      }
+      const aberto = tipoAberto===tipo;
+      return `
+      <div class="card" style="padding:0; margin-bottom:8px; overflow:hidden;">
+        <div class="row" data-act="toggle-tipo" data-tipo="${tipo}" style="justify-content:space-between; align-items:center; padding:12px 14px; cursor:pointer;">
+          <div>
+            <b>${esc(info.label)}</b>
+            <span class="tag muted" style="margin-left:8px;">${lista.length} anexo${lista.length===1?'':'s'}</span>
+            ${vencTag}
+          </div>
+          <span style="color:var(--ink-soft);">${aberto?'▲':'▼'}</span>
+        </div>
+        <div id="empLicTipoCorpo_${tipo}" class="${aberto?'':'hidden'}" style="padding:0 14px 14px; border-top:1px solid var(--rule);"></div>
+      </div>`;
+    }).join('');
+    wrap.querySelectorAll('[data-act="toggle-tipo"]').forEach(el=>el.addEventListener('click', ()=>{
+      const tipo = el.dataset.tipo;
+      tipoAberto = tipoAberto===tipo? null : tipo;
+      renderTipos();
+    }));
+    if(tipoAberto) renderCorpoTipo(tipoAberto);
+  }
+  function renderCorpoTipo(tipo){
+    const corpo = document.getElementById('empLicTipoCorpo_'+tipo);
+    if(!corpo) return;
+    const lista = anexosDoTipo(tipo);
+    corpo.innerHTML = `
+      <div style="padding-top:12px;">${lista.map(anexoCardHtml).join('') || `<div class="empty-state">Nenhum anexo enviado ainda pra ${ano}.</div>`}</div>
+      <div id="empLicAddForm_${tipo}" class="hidden card" style="background:var(--paper); margin-top:8px;"></div>
+      <button class="btn small" data-act="add-anexo-lic" data-tipo="${tipo}" style="margin-top:8px;">+ Adicionar Anexo</button>
+    `;
+    wireAnexoCardEvents(corpo, lista, carregarTudo);
+    corpo.querySelector('[data-act="add-anexo-lic"]').addEventListener('click', ()=>{
+      const formWrap = document.getElementById('empLicAddForm_'+tipo);
+      const vaiAbrir = formWrap.classList.contains('hidden');
+      formWrap.classList.toggle('hidden', !vaiAbrir);
+      if(!vaiAbrir) return;
+      formWrap.innerHTML = `
+        <div class="row" style="align-items:flex-end; padding:12px;">
+          <div class="field grow" style="margin-bottom:0;"><label>Arquivo</label><input type="file" id="empLicArquivo_${tipo}"></div>
+          <button class="btn small primary" id="empLicEnviar_${tipo}">Enviar</button>
+        </div>
+      `;
+      document.getElementById('empLicEnviar_'+tipo).addEventListener('click', async ()=>{
+        const arquivo = document.getElementById('empLicArquivo_'+tipo).files[0];
+        if(!arquivo){ toast('Selecione um arquivo.','err'); return; }
+        const btn = document.getElementById('empLicEnviar_'+tipo);
+        btn.disabled = true; btn.textContent = 'Enviando…';
+        const fd = new FormData(); fd.append('tipo', tipo); fd.append('ano', String(ano)); fd.append('arquivo', arquivo);
+        try{
+          await api('/empresas/'+empresaId+'/anexos', { method:'POST', body: fd });
+          toast('Anexo enviado.','ok');
+          await carregarTudo();
+        }catch(err){ toast(err.message,'err'); }
+        finally{ btn.disabled=false; btn.textContent='Enviar'; }
+      });
+    });
+  }
+  async function carregarTudo(){
+    const { items } = await api('/empresas/'+empresaId+'/anexos?categoria=licenca');
+    todosAnexos = items;
+    renderAnos();
+    renderTipos();
+  }
+  carregarTudo();
 }
 function importarDominioModal(){
   openModal(`

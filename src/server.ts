@@ -666,6 +666,7 @@ sqlite.exec(`
     empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
     categoria TEXT NOT NULL, -- 'constituicao' | 'licenca'
     tipo TEXT NOT NULL, -- ex.: 'contrato_social', 'cartao_cnpj', 'alvara', 'vigilancia_sanitaria', 'corpo_bombeiros', 'ambiental_semma'
+    ano INTEGER, -- exercício/competência da licença (só categoria='licenca') — organiza o histórico por ano na aba Licenças
     nome_arquivo TEXT NOT NULL,
     arquivo_path TEXT NOT NULL,
     mime TEXT,
@@ -1358,6 +1359,13 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
   const colsReceber = sqlite.prepare(`PRAGMA table_info(financeiro_receber)`).all() as any[];
   if (!colsReceber.some((c) => c.name === "conta_id")) {
     sqlite.exec(`ALTER TABLE financeiro_receber ADD COLUMN conta_id INTEGER REFERENCES financeiro_contas(id) ON DELETE SET NULL`);
+  }
+}
+// Migração leve: empresa_anexos.ano (organiza a aba Licenças por exercício/competência).
+{
+  const colsAnexos = sqlite.prepare(`PRAGMA table_info(empresa_anexos)`).all() as any[];
+  if (!colsAnexos.some((c) => c.name === "ano")) {
+    sqlite.exec(`ALTER TABLE empresa_anexos ADD COLUMN ano INTEGER`);
   }
 }
 // Migração leve: isenção de cobrança por assento (app_users) e quantidade no item de fatura do
@@ -2501,7 +2509,7 @@ app.get("/api/empresas/:id/anexos", blockCliente, requirePermissao("empresas", "
   const empresaId = Number(req.params.id);
   if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
   const categoria = typeof req.query.categoria === "string" ? req.query.categoria : null;
-  let sql = `SELECT a.id, a.categoria, a.tipo, a.nome_arquivo as nomeArquivo, a.mime, a.size_bytes as sizeBytes,
+  let sql = `SELECT a.id, a.categoria, a.tipo, a.ano, a.nome_arquivo as nomeArquivo, a.mime, a.size_bytes as sizeBytes,
              a.vencimento, a.vencimento_origem as vencimentoOrigem, a.criado_em as criadoEm, u.nome as criadoPorNome
              FROM empresa_anexos a LEFT JOIN app_users u ON u.id = a.criado_por WHERE a.empresa_id = ?`;
   const params: any[] = [empresaId];
@@ -2521,6 +2529,11 @@ app.post("/api/empresas/:id/anexos", blockCliente, requirePermissao("empresas", 
   const tipo = String(req.body?.tipo || "");
   const info = EMPRESA_ANEXO_TIPOS[tipo];
   if (!info) return res.status(400).json({ error: "Tipo de anexo inválido." });
+  let ano: number | null = null;
+  if (info.categoria === "licenca") {
+    ano = Number(req.body?.ano);
+    if (!Number.isInteger(ano) || ano < 2000 || ano > 2100) return res.status(400).json({ error: "Informe o ano da licença." });
+  }
   req.file.originalname = corrigirNomeArquivo(req.file.originalname);
   const dir = path.join(UPLOADS_DIR, "empresa-anexos", String(empresaId));
   fs.mkdirSync(dir, { recursive: true });
@@ -2540,11 +2553,11 @@ app.post("/api/empresas/:id/anexos", blockCliente, requirePermissao("empresas", 
   }
   const result = sqlite
     .prepare(
-      `INSERT INTO empresa_anexos (empresa_id, categoria, tipo, nome_arquivo, arquivo_path, mime, size_bytes, vencimento, vencimento_origem, criado_por)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO empresa_anexos (empresa_id, categoria, tipo, ano, nome_arquivo, arquivo_path, mime, size_bytes, vencimento, vencimento_origem, criado_por)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(empresaId, info.categoria, tipo, req.file.originalname, destino, req.file.mimetype, req.file.buffer.length, vencimento, vencimentoOrigem, user.id);
-  res.json({ id: Number(result.lastInsertRowid), vencimento, vencimentoOrigem });
+    .run(empresaId, info.categoria, tipo, ano, req.file.originalname, destino, req.file.mimetype, req.file.buffer.length, vencimento, vencimentoOrigem, user.id);
+  res.json({ id: Number(result.lastInsertRowid), ano, vencimento, vencimentoOrigem });
 });
 app.put("/api/empresas/anexos/:anexoId/vencimento", blockCliente, requirePermissao("empresas", "editar"), (req, res) => {
   const anexo = sqlite.prepare(`SELECT empresa_id, categoria FROM empresa_anexos WHERE id = ?`).get(Number(req.params.anexoId)) as any;
