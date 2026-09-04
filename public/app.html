@@ -595,6 +595,7 @@ document.getElementById('btnLogout').addEventListener('click', async ()=>{
 const NAV = [
   { id:'dashboard', label:'Início', modulo:'dashboard', roles:['Administrador','Colaborador','Cliente'] },
   { id:'empresas', label:'Empresas', modulo:'empresas', roles:['Administrador','Colaborador'] },
+  { id:'licencas-bulk', label:'Licenças', modulo:'empresas', roles:['Administrador','Colaborador'] },
   { id:'solicitacoes', label:'Solicitações de Documentos', modulo:'solicitacoes', roles:['Administrador','Colaborador'] },
   { id:'envio', label:'Envio de Documentos', modulo:'envio', roles:['Administrador','Colaborador'] },
   { id:'nfse', label:'NFS-e', modulo:'nfse', roles:['Administrador','Colaborador'] },
@@ -729,6 +730,7 @@ async function render(){
   try{
     if(STATE.page==='dashboard') await pageDashboard();
     else if(STATE.page==='empresas') await pageEmpresas();
+    else if(STATE.page==='licencas-bulk') await pageLicencasBulk();
     else if(STATE.page==='solicitacoes') await pageSolicitacoes();
     else if(STATE.page==='envio') await pageEnvio();
     else if(STATE.page==='nfse') await pageNfse();
@@ -1606,6 +1608,144 @@ function ligarAbaLicencasEmpresa(empresaId){
     renderTipos();
   }
   carregarTudo();
+}
+// ===================== Licenças (carga em lote por pasta) =====================
+// Escolhe uma pasta inteira de PDFs (o navegador junta tudo o que tem lá dentro num FileList só,
+// via webkitdirectory — suportado em Chrome/Edge/Safari; em navegador sem suporte, "multiple"
+// ainda deixa selecionar vários arquivos de uma vez na mão) e manda tudo pro backend, que lê o
+// CNPJ/CPF de cada PDF pra descobrir sozinho a empresa — sem precisar escolher empresa por empresa.
+async function pageLicencasBulk(){
+  const tiposLicenca = Object.entries(EMPRESA_ANEXO_TIPOS).filter(([,info])=>info.categoria==='licenca');
+  main().innerHTML = `
+    <h1>Licenças</h1>
+    <p class="subtitle">Carregue de uma vez todos os PDFs de um tipo de licença — o sistema lê o CNPJ/CPF de dentro de cada arquivo e anexa sozinho na empresa certa (mesmo lugar da aba Licenças de cada empresa).</p>
+    <div class="card">
+      <h3>1. Tipo de licença</h3>
+      <div class="row" id="lbTipos" style="flex-wrap:wrap; gap:10px;">
+        ${tiposLicenca.map(([v,info])=>`<div class="kpi" data-tipo="${v}" style="cursor:pointer; min-width:220px;"><div class="eyebrow">Selecionar</div><div class="val" style="font-size:16px;">${esc(info.label)}</div></div>`).join('')}
+      </div>
+    </div>
+    <div id="lbResto"></div>
+  `;
+  let tipoEscolhido = null;
+  const tiposWrap = document.getElementById('lbTipos');
+  tiposWrap.querySelectorAll('[data-tipo]').forEach(el=>el.addEventListener('click', ()=>{
+    tipoEscolhido = el.dataset.tipo;
+    tiposWrap.querySelectorAll('[data-tipo]').forEach(x=>x.style.boxShadow = x===el? '0 0 0 2px var(--accent) inset' : '');
+    montarResto();
+  }));
+
+  async function montarResto(){
+    const wrap = document.getElementById('lbResto');
+    const anoAtual = new Date().getFullYear();
+    const { anos } = await api('/empresas/licenca-anos');
+    let anosBase = [...new Set([anoAtual, anoAtual+1, ...anos])].sort((a,b)=>b-a);
+    wrap.innerHTML = `
+      <div class="card">
+        <h3>2. Ano da licença</h3>
+        <div class="row" style="align-items:flex-end; gap:10px;">
+          <div class="field" style="width:140px; margin-bottom:0;"><label>Ano</label>
+            <select id="lbAno">${anosBase.map(a=>`<option value="${a}">${a}</option>`).join('')}</select>
+          </div>
+          <button class="btn small" id="lbOutroAno">+ Outro ano</button>
+        </div>
+      </div>
+      <div class="card">
+        <h3>3. Pasta com os PDFs</h3>
+        <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Escolha a pasta no computador com todas as licenças de "${esc(EMPRESA_ANEXO_TIPOS[tipoEscolhido].label)}" em PDF — cada arquivo precisa ter o CNPJ ou CPF da empresa em algum lugar do texto. Se o navegador não deixar escolher a pasta inteira, selecione todos os PDFs dela na mão (Cmd/Ctrl+A dentro da pasta).</p>
+        <input type="file" id="lbPasta" webkitdirectory multiple accept="application/pdf">
+        <div id="lbPastaResumo" style="font-size:12.5px; color:var(--ink-soft); margin-top:6px;"></div>
+        <button class="btn primary" id="lbCarregar" style="margin-top:10px;" disabled>Carregar Licenças</button>
+      </div>
+      <div id="lbRelatorio"></div>
+    `;
+    document.getElementById('lbOutroAno').addEventListener('click', async ()=>{
+      const digitado = prompt('Adicionar/usar qual ano? (fica disponível pra todas as empresas)', String(anoAtual));
+      if(!digitado) return;
+      const n = Number(digitado);
+      if(!Number.isInteger(n) || n<2000 || n>2100){ toast('Ano inválido.','err'); return; }
+      try{ await api('/empresas/licenca-anos', { method:'POST', body:{ ano:n } }); }catch(e){ toast(e.message,'err'); return; }
+      if(!anosBase.includes(n)){ anosBase = [...anosBase, n].sort((a,b)=>b-a); }
+      const sel = document.getElementById('lbAno');
+      sel.innerHTML = anosBase.map(a=>`<option value="${a}">${a}</option>`).join('');
+      sel.value = String(n);
+    });
+    const inputPasta = document.getElementById('lbPasta');
+    const btnCarregar = document.getElementById('lbCarregar');
+    function arquivosPdf(){ return [...inputPasta.files].filter(f=>f.type==='application/pdf' || f.name.toLowerCase().endsWith('.pdf')); }
+    inputPasta.addEventListener('change', ()=>{
+      const arquivos = arquivosPdf();
+      document.getElementById('lbPastaResumo').textContent = arquivos.length? `${arquivos.length} PDF(s) encontrados.` : 'Nenhum PDF encontrado nessa pasta.';
+      btnCarregar.disabled = !arquivos.length;
+    });
+    btnCarregar.addEventListener('click', async ()=>{
+      const arquivos = arquivosPdf();
+      if(!arquivos.length) return;
+      const ano = document.getElementById('lbAno').value;
+      btnCarregar.disabled = true; btnCarregar.textContent = `Carregando… (${arquivos.length} arquivo(s))`;
+      document.getElementById('lbRelatorio').innerHTML = '';
+      const fd = new FormData();
+      fd.append('tipo', tipoEscolhido);
+      fd.append('ano', ano);
+      arquivos.forEach(f=>fd.append('arquivos', f, f.name));
+      try{
+        const r = await api('/empresas/anexos/licencas-bulk', { method:'POST', body: fd });
+        renderRelatorio(r);
+        toast(`Concluído: ${r.identificados.length + r.semVencimento.length} anexados, ${r.naoIdentificados.length} não identificados.`, 'ok');
+      }catch(e){ toast(e.message,'err'); }
+      finally{ btnCarregar.disabled = false; btnCarregar.textContent = 'Carregar Licenças'; }
+    });
+  }
+
+  function renderRelatorio(r){
+    const wrap = document.getElementById('lbRelatorio');
+    wrap.innerHTML = `
+      <div class="card">
+        <h3>Resultado</h3>
+        <div class="row" style="gap:20px; margin-bottom:10px; flex-wrap:wrap;">
+          <span class="tag ok">${r.identificados.length} com vencimento lido</span>
+          <span class="tag muted">${r.semVencimento.length} sem vencimento (falta preencher)</span>
+          <span class="tag bad">${r.naoIdentificados.length} não identificados</span>
+        </div>
+        ${r.semVencimento.length? `
+          <div style="margin:14px 0 8px; font-weight:600; font-size:13.5px;">Já foram anexados — só falta a data de vencimento (não deu pra ler sozinho)</div>
+          <div id="lbSemVenc"></div>
+        `:''}
+        ${r.naoIdentificados.length? `
+          <div style="margin:14px 0 8px; font-weight:600; font-size:13.5px;">Não foi possível anexar automaticamente</div>
+          <div class="card" style="padding:0; overflow-x:auto;">
+            <table class="data-table"><thead><tr><th>Arquivo</th><th>Motivo</th></tr></thead>
+            <tbody>${r.naoIdentificados.map(i=>`<tr><td>${esc(i.nomeArquivo)}</td><td>${esc(i.motivo)}</td></tr>`).join('')}</tbody></table>
+          </div>
+          <p style="font-size:12px; color:var(--ink-soft); margin-top:6px;">Esses precisam ser anexados na mão, na aba Licenças da empresa certa.</p>
+        `:''}
+      </div>
+    `;
+    if(r.semVencimento.length){
+      const box = document.getElementById('lbSemVenc');
+      box.innerHTML = r.semVencimento.map(i=>`
+        <div class="card" style="padding:10px 12px; margin-bottom:8px;">
+          <div style="font-size:11.5px; color:var(--ink-soft);">${esc(i.empresaNome)}</div>
+          <div style="font-weight:600; margin-bottom:6px;">${esc(i.nomeArquivo)}</div>
+          <div class="row" style="align-items:flex-end; gap:8px;">
+            ${dateFieldHtml('lbVenc'+i.anexoId, 'Vencimento', '')}
+            <button class="btn small primary" data-act="salvar-venc-lote" data-id="${i.anexoId}">Salvar</button>
+            <span class="tag ok hidden" id="lbVencOk${i.anexoId}">Salvo!</span>
+          </div>
+        </div>
+      `).join('');
+      r.semVencimento.forEach(i=>setupDatePicker('lbVenc'+i.anexoId, 'lbVenc'+i.anexoId+'_text'));
+      box.querySelectorAll('[data-act="salvar-venc-lote"]').forEach(b=>b.addEventListener('click', async ()=>{
+        const input = document.getElementById('lbVenc'+b.dataset.id);
+        if(!input.value){ toast('Escolha uma data.','err'); return; }
+        try{
+          await api('/empresas/anexos/'+b.dataset.id+'/vencimento', { method:'PUT', body:{ vencimento: input.value } });
+          document.getElementById('lbVencOk'+b.dataset.id).classList.remove('hidden');
+          b.disabled = true;
+        }catch(e){ toast(e.message,'err'); }
+      }));
+    }
+  }
 }
 function importarDominioModal(){
   openModal(`

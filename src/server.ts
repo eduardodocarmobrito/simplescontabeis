@@ -2592,6 +2592,100 @@ app.post("/api/empresas/:id/anexos", blockCliente, requirePermissao("empresas", 
     .run(empresaId, info.categoria, tipo, ano, req.file.originalname, destino, req.file.mimetype, req.file.buffer.length, vencimento, vencimentoOrigem, user.id);
   res.json({ id: Number(result.lastInsertRowid), ano, vencimento, vencimentoOrigem });
 });
+// Carrega uma pasta inteira de licenças de uma vez (o navegador junta os PDFs da pasta escolhida e
+// manda tudo num só POST) — lê o CNPJ/CPF de dentro de CADA PDF pra descobrir sozinho de qual
+// empresa é cada arquivo, sem precisar escolher empresa por empresa. Tenta ler o vencimento também
+// (mesma heurística do upload individual); quando não acha, salva assim mesmo — o CNPJ já basta
+// pra identificar a licença certa, e o vencimento fica pro relatório de "sem data" que o front
+// monta com a resposta daqui, pra preencher rápido depois.
+const REGEX_CNPJ_BUSCA = /\b\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}\b/g;
+const REGEX_CPF_BUSCA = /\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b/g;
+app.post("/api/empresas/anexos/licencas-bulk", blockCliente, requirePermissao("empresas", "editar"), upload.array("arquivos", 300), async (req, res) => {
+  const user = (req as any).user;
+  const tipo = String(req.body?.tipo || "");
+  const info = EMPRESA_ANEXO_TIPOS[tipo];
+  if (!info || info.categoria !== "licenca") return res.status(400).json({ error: "Tipo de licença inválido." });
+  const ano = Number(req.body?.ano);
+  if (!Number.isInteger(ano) || ano < 2000 || ano > 2100) return res.status(400).json({ error: "Informe o ano da licença." });
+  const arquivos = (req.files as Express.Multer.File[]) || [];
+  if (!arquivos.length) return res.status(400).json({ error: "Selecione a pasta com os PDFs das licenças." });
+
+  const visiveis = empresasVisiveis(user);
+  const empresasDoEscritorio = sqlite.prepare(`SELECT id, nome, cnpj FROM empresas WHERE escritorio_id = ?`).all(user.escritorioId) as any[];
+  const porDocumento = new Map<string, any>();
+  for (const e of empresasDoEscritorio) {
+    if (!e.cnpj) continue;
+    const digitos = String(e.cnpj).replace(/\D/g, "");
+    if (digitos.length === 11 || digitos.length === 14) porDocumento.set(digitos, e);
+  }
+
+  const identificados: any[] = [];
+  const semVencimento: any[] = [];
+  const naoIdentificados: any[] = [];
+
+  for (const file of arquivos) {
+    file.originalname = corrigirNomeArquivo(file.originalname);
+    if (file.mimetype !== "application/pdf") {
+      naoIdentificados.push({ nomeArquivo: file.originalname, motivo: "Não é um PDF." });
+      continue;
+    }
+    let texto = "";
+    try {
+      const pdfParseLib = require("pdf-parse");
+      const data = await pdfParseLib(new Uint8Array(file.buffer));
+      texto = data.text || "";
+    } catch {
+      naoIdentificados.push({ nomeArquivo: file.originalname, motivo: "Não consegui ler o PDF (protegido ou escaneado sem texto)." });
+      continue;
+    }
+    const candidatosCnpj = [...texto.matchAll(REGEX_CNPJ_BUSCA)].map((m) => m[0].replace(/\D/g, ""));
+    const candidatosCpf = [...texto.matchAll(REGEX_CPF_BUSCA)].map((m) => m[0].replace(/\D/g, ""));
+    let empresa: any = null;
+    for (const c of candidatosCnpj) {
+      if (porDocumento.has(c)) {
+        empresa = porDocumento.get(c);
+        break;
+      }
+    }
+    if (!empresa) {
+      for (const c of candidatosCpf) {
+        if (porDocumento.has(c)) {
+          empresa = porDocumento.get(c);
+          break;
+        }
+      }
+    }
+    if (!empresa) {
+      const achado = candidatosCnpj[0] || candidatosCpf[0];
+      naoIdentificados.push({
+        nomeArquivo: file.originalname,
+        motivo: achado ? `CNPJ/CPF encontrado (${achado}) não bate com nenhuma empresa cadastrada.` : "Não encontrei CNPJ/CPF no texto do PDF.",
+      });
+      continue;
+    }
+    if (visiveis !== null && !visiveis.includes(empresa.id)) {
+      naoIdentificados.push({ nomeArquivo: file.originalname, motivo: `Empresa identificada (${empresa.nome}), mas você não tem acesso a ela.` });
+      continue;
+    }
+    const dir = path.join(UPLOADS_DIR, "empresa-anexos", String(empresa.id));
+    fs.mkdirSync(dir, { recursive: true });
+    const destino = path.join(dir, `${Date.now()}-${file.originalname}`);
+    fs.writeFileSync(destino, file.buffer);
+    const vencimento = await extrairVencimentoDeAnexo(file.buffer, file.mimetype);
+    const vencimentoOrigem = vencimento ? "automatico" : null;
+    const result = sqlite
+      .prepare(
+        `INSERT INTO empresa_anexos (empresa_id, categoria, tipo, ano, nome_arquivo, arquivo_path, mime, size_bytes, vencimento, vencimento_origem, criado_por)
+         VALUES (?, 'licenca', ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(empresa.id, tipo, ano, file.originalname, destino, file.mimetype, file.buffer.length, vencimento, vencimentoOrigem, user.id);
+    const item = { anexoId: Number(result.lastInsertRowid), empresaId: empresa.id, empresaNome: empresa.nome, nomeArquivo: file.originalname, vencimento };
+    if (vencimento) identificados.push(item);
+    else semVencimento.push(item);
+  }
+
+  res.json({ total: arquivos.length, identificados, semVencimento, naoIdentificados });
+});
 app.put("/api/empresas/anexos/:anexoId/vencimento", blockCliente, requirePermissao("empresas", "editar"), (req, res) => {
   const anexo = sqlite.prepare(`SELECT empresa_id, categoria FROM empresa_anexos WHERE id = ?`).get(Number(req.params.anexoId)) as any;
   if (!anexo || !podeAcessarEmpresa((req as any).user, anexo.empresa_id)) return res.status(404).json({ error: "Anexo não encontrado." });
