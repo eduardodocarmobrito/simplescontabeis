@@ -655,6 +655,27 @@ sqlite.exec(`
     UNIQUE(documento)
   );
 
+  -- Anexos do cadastro da empresa (abas Constituição/Licenças do modal de Editar Empresa) — arquivo
+  -- de verdade (contrato social, cartão CNPJ, alvará, licenças) diferente de empresa_documentos
+  -- acima, que só guarda CNPJ/CPF pra identificar remetente de e-mail. "categoria" separa a aba,
+  -- "tipo" o rótulo específico dentro dela — livre o bastante pra crescer sem migração de schema.
+  -- "vencimento" só se aplica a licenças (com data de validade) — lido automaticamente do PDF quando
+  -- dá (ver extrairVencimentoDeAnexo), sempre corrigível na mão depois.
+  CREATE TABLE IF NOT EXISTS empresa_anexos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+    categoria TEXT NOT NULL, -- 'constituicao' | 'licenca'
+    tipo TEXT NOT NULL, -- ex.: 'contrato_social', 'cartao_cnpj', 'alvara', 'vigilancia_sanitaria', 'corpo_bombeiros', 'ambiental_semma'
+    nome_arquivo TEXT NOT NULL,
+    arquivo_path TEXT NOT NULL,
+    mime TEXT,
+    size_bytes INTEGER,
+    vencimento TEXT, -- ISO (AAAA-MM-DD), só quando categoria='licenca'
+    vencimento_origem TEXT, -- 'automatico' | 'manual'
+    criado_por INTEGER REFERENCES app_users(id),
+    criado_em TEXT DEFAULT (datetime('now'))
+  );
+
   CREATE TABLE IF NOT EXISTS emails_enviados (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     empresa_id INTEGER REFERENCES empresas(id) ON DELETE SET NULL,
@@ -2434,6 +2455,121 @@ app.delete("/api/empresas/contatos/:contatoId", blockCliente, requirePermissao("
   const contato = sqlite.prepare(`SELECT empresa_id FROM empresa_contatos WHERE id = ?`).get(Number(req.params.contatoId)) as any;
   if (!contato || !podeAcessarEmpresa((req as any).user, contato.empresa_id)) return res.status(404).json({ error: "Contato não encontrado." });
   sqlite.prepare(`DELETE FROM empresa_contatos WHERE id = ?`).run(Number(req.params.contatoId));
+  res.json({ ok: true });
+});
+
+// ---- Anexos do cadastro (Constituição/Licenças) ----
+const EMPRESA_ANEXO_TIPOS: Record<string, { categoria: string; label: string }> = {
+  contrato_social: { categoria: "constituicao", label: "Contrato Social / Alteração" },
+  cartao_cnpj: { categoria: "constituicao", label: "Cartão CNPJ" },
+  alvara: { categoria: "licenca", label: "Licença de Alvará" },
+  vigilancia_sanitaria: { categoria: "licenca", label: "Licença Vigilância Sanitária" },
+  corpo_bombeiros: { categoria: "licenca", label: "Licença Corpo de Bombeiros" },
+  ambiental_semma: { categoria: "licenca", label: "Licença Ambiental - SEMMA" },
+};
+// Tenta achar a data de validade dentro do PDF (só funciona pra licença — contrato social/cartão
+// CNPJ não têm vencimento). Heurística, não mágica: procura um padrão de data (DD/MM/AAAA) logo
+// depois de uma palavra-chave típica de licença ("validade", "vencimento", "válido até" etc.) — não
+// tenta OCR de imagem, só texto real do PDF. Sempre fica editável na hora — se errar ou não achar,
+// o usuário corrige na mão, nunca trava o upload por causa disso.
+async function extrairVencimentoDeAnexo(buf: Buffer, mime: string | undefined): Promise<string | null> {
+  if (mime !== "application/pdf") return null;
+  try {
+    const pdfParseLib = require("pdf-parse");
+    const data = await pdfParseLib(new Uint8Array(buf));
+    const texto: string = data.text || "";
+    const regexPalavraChave = /(validade|vencimento|v[aá]lid[ao]\s+at[eé]|vence\s+em|data\s+de\s+validade)/gi;
+    const regexData = /(\d{2})[\/\-.](\d{2})[\/\-.](\d{4})/;
+    let m: RegExpExecArray | null;
+    while ((m = regexPalavraChave.exec(texto))) {
+      const trecho = texto.slice(m.index, m.index + 60);
+      const dm = regexData.exec(trecho);
+      if (dm) {
+        const [, dia, mes, ano] = dm;
+        const diaN = Number(dia), mesN = Number(mes), anoN = Number(ano);
+        if (diaN >= 1 && diaN <= 31 && mesN >= 1 && mesN <= 12 && anoN >= 2000 && anoN <= 2100) {
+          return `${ano}-${mes}-${dia}`;
+        }
+      }
+    }
+    return null;
+  } catch {
+    return null; // PDF ilegível/protegido/escaneado sem texto — segue sem vencimento automático
+  }
+}
+app.get("/api/empresas/:id/anexos", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
+  const empresaId = Number(req.params.id);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const categoria = typeof req.query.categoria === "string" ? req.query.categoria : null;
+  let sql = `SELECT a.id, a.categoria, a.tipo, a.nome_arquivo as nomeArquivo, a.mime, a.size_bytes as sizeBytes,
+             a.vencimento, a.vencimento_origem as vencimentoOrigem, a.criado_em as criadoEm, u.nome as criadoPorNome
+             FROM empresa_anexos a LEFT JOIN app_users u ON u.id = a.criado_por WHERE a.empresa_id = ?`;
+  const params: any[] = [empresaId];
+  if (categoria) {
+    sql += ` AND a.categoria = ?`;
+    params.push(categoria);
+  }
+  sql += ` ORDER BY a.criado_em DESC`;
+  const rows = sqlite.prepare(sql).all(...params);
+  res.json({ items: rows });
+});
+app.post("/api/empresas/:id/anexos", blockCliente, requirePermissao("empresas", "editar"), upload.single("arquivo"), async (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.params.id);
+  if (!podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  if (!req.file) return res.status(400).json({ error: "Selecione o arquivo." });
+  const tipo = String(req.body?.tipo || "");
+  const info = EMPRESA_ANEXO_TIPOS[tipo];
+  if (!info) return res.status(400).json({ error: "Tipo de anexo inválido." });
+  req.file.originalname = corrigirNomeArquivo(req.file.originalname);
+  const dir = path.join(UPLOADS_DIR, "empresa-anexos", String(empresaId));
+  fs.mkdirSync(dir, { recursive: true });
+  const destino = path.join(dir, `${Date.now()}-${req.file.originalname}`);
+  fs.writeFileSync(destino, req.file.buffer);
+  let vencimento: string | null = null;
+  let vencimentoOrigem: string | null = null;
+  const vencimentoManual = req.body?.vencimento ? String(req.body.vencimento).trim() : "";
+  if (info.categoria === "licenca") {
+    if (vencimentoManual) {
+      vencimento = vencimentoManual;
+      vencimentoOrigem = "manual";
+    } else {
+      vencimento = await extrairVencimentoDeAnexo(req.file.buffer, req.file.mimetype);
+      if (vencimento) vencimentoOrigem = "automatico";
+    }
+  }
+  const result = sqlite
+    .prepare(
+      `INSERT INTO empresa_anexos (empresa_id, categoria, tipo, nome_arquivo, arquivo_path, mime, size_bytes, vencimento, vencimento_origem, criado_por)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(empresaId, info.categoria, tipo, req.file.originalname, destino, req.file.mimetype, req.file.buffer.length, vencimento, vencimentoOrigem, user.id);
+  res.json({ id: Number(result.lastInsertRowid), vencimento, vencimentoOrigem });
+});
+app.put("/api/empresas/anexos/:anexoId/vencimento", blockCliente, requirePermissao("empresas", "editar"), (req, res) => {
+  const anexo = sqlite.prepare(`SELECT empresa_id, categoria FROM empresa_anexos WHERE id = ?`).get(Number(req.params.anexoId)) as any;
+  if (!anexo || !podeAcessarEmpresa((req as any).user, anexo.empresa_id)) return res.status(404).json({ error: "Anexo não encontrado." });
+  if (anexo.categoria !== "licenca") return res.status(400).json({ error: "Só licenças têm data de vencimento." });
+  const vencimento = String(req.body?.vencimento || "").trim() || null;
+  sqlite.prepare(`UPDATE empresa_anexos SET vencimento = ?, vencimento_origem = 'manual' WHERE id = ?`).run(vencimento, Number(req.params.anexoId));
+  res.json({ ok: true });
+});
+app.get("/api/empresas/anexos/:anexoId/arquivo", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
+  const anexo = sqlite.prepare(`SELECT * FROM empresa_anexos WHERE id = ?`).get(Number(req.params.anexoId)) as any;
+  if (!anexo || !podeAcessarEmpresa((req as any).user, anexo.empresa_id) || !fs.existsSync(anexo.arquivo_path)) {
+    return res.status(404).json({ error: "Arquivo não encontrado." });
+  }
+  res.setHeader("Content-Type", anexo.mime || "application/octet-stream");
+  res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(anexo.nome_arquivo)}"`);
+  res.send(fs.readFileSync(anexo.arquivo_path));
+});
+app.delete("/api/empresas/anexos/:anexoId", blockCliente, requirePermissao("empresas", "editar"), (req, res) => {
+  const anexo = sqlite.prepare(`SELECT * FROM empresa_anexos WHERE id = ?`).get(Number(req.params.anexoId)) as any;
+  if (!anexo || !podeAcessarEmpresa((req as any).user, anexo.empresa_id)) return res.status(404).json({ error: "Anexo não encontrado." });
+  try {
+    fs.unlinkSync(anexo.arquivo_path);
+  } catch {}
+  sqlite.prepare(`DELETE FROM empresa_anexos WHERE id = ?`).run(anexo.id);
   res.json({ ok: true });
 });
 

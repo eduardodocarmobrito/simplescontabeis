@@ -1244,49 +1244,105 @@ async function renderEmpresasTab(){
     document.getElementById('btnAtualizarEmpresas').addEventListener('click', atualizarEmpresasDoDominio);
   }
 }
+// Rótulos dos tipos de anexo — espelha EMPRESA_ANEXO_TIPOS do backend (server.ts), só pra montar os
+// selects e legendas aqui; a validação de verdade (categoria certa pro tipo) é sempre no backend.
+const EMPRESA_ANEXO_TIPOS = {
+  contrato_social: { categoria:'constituicao', label:'Contrato Social / Alteração' },
+  cartao_cnpj: { categoria:'constituicao', label:'Cartão CNPJ' },
+  alvara: { categoria:'licenca', label:'Licença de Alvará' },
+  vigilancia_sanitaria: { categoria:'licenca', label:'Licença Vigilância Sanitária' },
+  corpo_bombeiros: { categoria:'licenca', label:'Licença Corpo de Bombeiros' },
+  ambiental_semma: { categoria:'licenca', label:'Licença Ambiental - SEMMA' },
+};
 function empresaModal(e){
+  let empTabAtual = 'empresa';
   openModal(`
     <h3>${e?'Editar':'Nova'} empresa</h3>
-    <div class="row">
-      <div class="field" style="width:200px;"><label>CNPJ/CPF</label><input id="empCnpj" value="${e&&e.cnpj?esc(e.cnpj):''}" placeholder="Pessoa física: CPF do produtor rural"></div>
-      <div class="field grow"><label>Nome da empresa</label><input id="empNome" value="${e?esc(e.nome):''}"></div>
-      <div class="field" style="width:70px;"><label>Código no Domínio Web (opcional)</label><input id="empCodigo" value="${e&&e.codigoDominio?esc(e.codigoDominio):''}"></div>
-    </div>
-    <div id="empCnpjStatus" style="font-size:12px; color:var(--ink-soft); margin:-8px 0 10px;"></div>
-    <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Dados de contato (mesmos do cadastro no Domínio Web)</div>
-    <div class="row">
-      <div class="field grow"><label>E-mail</label><input id="empEmail" type="email" value="${e&&e.email?esc(e.email):''}"></div>
-      <div class="field" style="width:200px;"><label>Telefone</label><input id="empTelefone" value="${e&&e.telefone?esc(e.telefone):''}"></div>
-      <div class="field grow"><label>Inscrição municipal</label><input id="empInscricaoMunicipal" value="${e&&e.inscricaoMunicipal?esc(e.inscricaoMunicipal):''}"></div>
-      <div class="field grow"><label>Inscrição estadual</label><input id="empInscricaoEstadual" value="${e&&e.inscricaoEstadual?esc(e.inscricaoEstadual):''}"></div>
-    </div>
-    <div class="row">
-      <div class="field grow"><label>Endereço</label><input id="empEndereco" value="${e&&e.endereco?esc(e.endereco):''}"></div>
-      <div class="field grow"><label>Cidade</label><input id="empCidade" value="${e&&e.cidade?esc(e.cidade):''}"></div>
-      <div class="field" style="width:70px;"><label>UF</label><input id="empUf" maxlength="2" value="${e&&e.uf?esc(e.uf):''}"></div>
-      <div class="field" style="width:120px;"><label>CEP</label><input id="empCep" value="${e&&e.cep?esc(e.cep):''}"></div>
-    </div>
-    <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Representante legal (usado em contratos/distratos)</div>
-    <div class="row">
-      <div class="field grow"><label>Nome do representante legal</label><input id="empNomeRepresentante" value="${e&&e.nomeRepresentanteLegal?esc(e.nomeRepresentanteLegal):''}"></div>
-      <div class="field" style="width:160px;"><label>CPF do representante legal</label><input id="empCpfRepresentante" value="${e&&e.cpfRepresentanteLegal?esc(e.cpfRepresentanteLegal):''}"></div>
+    ${e? `<div class="tabs" id="empModalTabs">
+      <div class="tab" data-tab="empresa">Empresa</div>
+      <div class="tab" data-tab="constituicao">Constituição</div>
+      <div class="tab" data-tab="licencas">Licenças</div>
+      <div class="tab" data-tab="configuracoes">Configurações</div>
+    </div>` : ''}
+    <div id="empTabEmpresa">
+      <div class="row">
+        <div class="field" style="width:200px;"><label>CNPJ/CPF</label><input id="empCnpj" value="${e&&e.cnpj?esc(e.cnpj):''}" placeholder="Pessoa física: CPF do produtor rural"></div>
+        <div class="field grow"><label>Nome da empresa</label><input id="empNome" value="${e?esc(e.nome):''}"></div>
+        <div class="field" style="width:70px;"><label>Código no Domínio Web (opcional)</label><input id="empCodigo" value="${e&&e.codigoDominio?esc(e.codigoDominio):''}"></div>
+      </div>
+      <div id="empCnpjStatus" style="font-size:12px; color:var(--ink-soft); margin:-8px 0 10px;"></div>
+      <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Dados de contato (mesmos do cadastro no Domínio Web)</div>
+      <div class="row">
+        <div class="field grow"><label>E-mail</label><input id="empEmail" type="email" value="${e&&e.email?esc(e.email):''}"></div>
+        <div class="field" style="width:200px;"><label>Telefone</label><input id="empTelefone" value="${e&&e.telefone?esc(e.telefone):''}"></div>
+        <div class="field grow"><label>Inscrição municipal</label><input id="empInscricaoMunicipal" value="${e&&e.inscricaoMunicipal?esc(e.inscricaoMunicipal):''}"></div>
+        <div class="field grow"><label>Inscrição estadual</label><input id="empInscricaoEstadual" value="${e&&e.inscricaoEstadual?esc(e.inscricaoEstadual):''}"></div>
+      </div>
+      <div class="row">
+        <div class="field grow"><label>Endereço</label><input id="empEndereco" value="${e&&e.endereco?esc(e.endereco):''}"></div>
+        <div class="field grow"><label>Cidade</label><input id="empCidade" value="${e&&e.cidade?esc(e.cidade):''}"></div>
+        <div class="field" style="width:70px;"><label>UF</label><input id="empUf" maxlength="2" value="${e&&e.uf?esc(e.uf):''}"></div>
+        <div class="field" style="width:120px;"><label>CEP</label><input id="empCep" value="${e&&e.cep?esc(e.cep):''}"></div>
+      </div>
+      <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Representante legal (usado em contratos/distratos)</div>
+      <div class="row">
+        <div class="field grow"><label>Nome do representante legal</label><input id="empNomeRepresentante" value="${e&&e.nomeRepresentanteLegal?esc(e.nomeRepresentanteLegal):''}"></div>
+        <div class="field" style="width:160px;"><label>CPF do representante legal</label><input id="empCpfRepresentante" value="${e&&e.cpfRepresentanteLegal?esc(e.cpfRepresentanteLegal):''}"></div>
+      </div>
+      ${e? `
+      <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Certificado digital (Busca de XML — NF-e/NFC-e/NFS-e)</div>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Certificado próprio desta empresa, usado só pra buscar os documentos fiscais dela na Sefaz e no Sistema Nacional NFS-e — não é o mesmo certificado usado pra emitir NFS-e.</p>
+      <div id="empCertBuscaXml"><div class="empty-state">Carregando…</div></div>
+      <div style="margin:14px 0 8px; border-top:1px solid var(--rule); padding-top:12px;"></div>
+      <div class="checkbox-row"><input type="checkbox" id="empAtivo" ${e.ativo?'checked':''}> <label for="empAtivo">Empresa ativa</label></div>
+      <div class="checkbox-row"><input type="checkbox" id="empVisivel" ${e.visivelRelatorios?'checked':''}> <label for="empVisivel">Aparece no filtro de Relatórios</label></div>
+      <div class="checkbox-row"><input type="checkbox" id="empIsento" ${e.isentoAssinatura?'checked':''}> <label for="empIsento">Conta cortesia — isenta de cobrança de NFS-e/Financeiro</label></div>
+      <p style="font-size:12px; color:var(--ink-soft); margin-top:-4px;">Libera acesso completo aos módulos NFS-e e Financeiro pra esta empresa sem exigir teste grátis nem assinatura paga.</p>
+      `:''}
     </div>
     ${e? `
-    <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Certificado digital (Busca de XML — NF-e/NFC-e/NFS-e)</div>
-    <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Certificado próprio desta empresa, usado só pra buscar os documentos fiscais dela na Sefaz e no Sistema Nacional NFS-e — não é o mesmo certificado usado pra emitir NFS-e.</p>
-    <div id="empCertBuscaXml"><div class="empty-state">Carregando…</div></div>
-    <div style="margin:14px 0 8px; border-top:1px solid var(--rule); padding-top:12px;"></div>
-    <div class="checkbox-row"><input type="checkbox" id="empAtivo" ${e.ativo?'checked':''}> <label for="empAtivo">Empresa ativa</label></div>
-    <div class="checkbox-row"><input type="checkbox" id="empVisivel" ${e.visivelRelatorios?'checked':''}> <label for="empVisivel">Aparece no filtro de Relatórios</label></div>
-    <div class="checkbox-row"><input type="checkbox" id="empIsento" ${e.isentoAssinatura?'checked':''}> <label for="empIsento">Conta cortesia — isenta de cobrança de NFS-e/Financeiro</label></div>
-    <p style="font-size:12px; color:var(--ink-soft); margin-top:-4px;">Libera acesso completo aos módulos NFS-e e Financeiro pra esta empresa sem exigir teste grátis nem assinatura paga.</p>
-    `:''}
+    <div id="empTabConstituicao" class="hidden">
+      <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:10px;">
+        <p style="font-size:12.5px; color:var(--ink-soft); margin:0;">Contrato social (e alterações) e cartão CNPJ da empresa.</p>
+        <button class="btn small" id="btnAddAnexoConstituicao">+ Adicionar Anexo</button>
+      </div>
+      <div id="empAddAnexoFormConstituicao" class="hidden card" style="background:var(--paper); margin-bottom:12px;"></div>
+      <div id="empAnexosConstituicao"><div class="empty-state">Carregando…</div></div>
+    </div>
+    <div id="empTabLicencas" class="hidden">
+      <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:10px;">
+        <p style="font-size:12.5px; color:var(--ink-soft); margin:0; max-width:640px;">Alvará, Vigilância Sanitária, Corpo de Bombeiros, Ambiental (SEMMA). O vencimento é lido automaticamente do PDF quando dá pra achar — sempre confira e corrija se precisar.</p>
+        <button class="btn small" id="btnAddAnexoLicenca">+ Adicionar Anexo</button>
+      </div>
+      <div id="empAddAnexoFormLicenca" class="hidden card" style="background:var(--paper); margin-bottom:12px;"></div>
+      <div id="empAnexosLicencas"><div class="empty-state">Carregando…</div></div>
+    </div>
+    <div id="empTabConfiguracoes" class="hidden">
+      <div class="empty-state">Em breve.</div>
+    </div>
+    ` : ''}
     <div class="modal-actions">
       <button class="btn" id="empCancel">Cancelar</button>
       <button class="btn primary" id="empSalvar">Salvar</button>
     </div>
   `, '1100px');
-  if(e) renderCertificadoBuscaXml(document.getElementById('empCertBuscaXml'), e.id, e.uf);
+  if(e){
+    renderCertificadoBuscaXml(document.getElementById('empCertBuscaXml'), e.id, e.uf);
+    document.getElementById('empModalTabs').querySelectorAll('.tab').forEach(t=>{
+      t.classList.toggle('active', t.dataset.tab===empTabAtual);
+      t.addEventListener('click', ()=>{
+        empTabAtual = t.dataset.tab;
+        document.getElementById('empModalTabs').querySelectorAll('.tab').forEach(x=>x.classList.toggle('active', x===t));
+        ['empresa','constituicao','licencas','configuracoes'].forEach(nome=>{
+          document.getElementById('empTab'+nome[0].toUpperCase()+nome.slice(1)).classList.toggle('hidden', nome!==empTabAtual);
+        });
+      });
+    });
+    document.querySelector('#empModalTabs .tab[data-tab="empresa"]').classList.add('active');
+    document.getElementById('empTabEmpresa').classList.remove('hidden');
+    ligarAbaAnexosEmpresa(e.id, 'constituicao', 'empAnexosConstituicao', 'empAddAnexoFormConstituicao', 'btnAddAnexoConstituicao');
+    ligarAbaAnexosEmpresa(e.id, 'licenca', 'empAnexosLicencas', 'empAddAnexoFormLicenca', 'btnAddAnexoLicenca');
+  }
   // Ao sair do campo CNPJ (com 14 dígitos — CPF de produtor rural não tem consulta pública), busca
   // os dados na Receita Federal e preenche só os campos que ainda estão vazios — nunca sobrescreve
   // algo que já foi digitado/cadastrado antes, pra não perder dado real corrigido na mão.
@@ -1341,6 +1397,86 @@ function empresaModal(e){
       closeModal(); pageEmpresas();
     }catch(err){ toast(err.message,'err'); }
   });
+}
+// Carrega, lista, envia e exclui os anexos de uma aba (Constituição ou Licenças) do modal de
+// empresa — as duas abas usam exatamente a mesma mecânica, só muda a categoria e os tipos aceitos.
+function ligarAbaAnexosEmpresa(empresaId, categoria, listId, formId, btnId){
+  const tiposDaCategoria = Object.entries(EMPRESA_ANEXO_TIPOS).filter(([,info])=>info.categoria===categoria);
+  async function carregar(){
+    const wrap = document.getElementById(listId);
+    wrap.innerHTML = `<div class="empty-state">Carregando…</div>`;
+    const { items } = await api('/empresas/'+empresaId+'/anexos?categoria='+categoria);
+    if(!items.length){ wrap.innerHTML = `<div class="empty-state">Nenhum anexo enviado ainda.</div>`; return; }
+    wrap.innerHTML = items.map(a=>{
+      const tipoLabel = (EMPRESA_ANEXO_TIPOS[a.tipo]||{}).label || a.tipo;
+      const vencTag = a.vencimentoOrigem==='automatico' ? `<span class="tag ok" style="font-size:10px;">lido automaticamente do PDF</span>`
+        : a.vencimentoOrigem==='manual' ? `<span class="tag muted" style="font-size:10px;">informado manualmente</span>`
+        : `<span class="tag bad" style="font-size:10px;">não identificado — informe a data</span>`;
+      return `
+      <div class="card" style="padding:10px 12px; margin-bottom:8px;">
+        <div class="row" style="justify-content:space-between; align-items:flex-start; gap:10px;">
+          <div>
+            <div style="font-size:11px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.04em;">${esc(tipoLabel)}</div>
+            <a href="/api/empresas/anexos/${a.id}/arquivo" target="_blank" rel="noopener" style="font-weight:600;">${esc(a.nomeArquivo)}</a>
+            <div style="font-size:11.5px; color:var(--ink-soft);">Enviado em ${fmtDateHora(a.criadoEm)}${a.criadoPorNome? ' por '+esc(a.criadoPorNome):''}</div>
+          </div>
+          <button class="btn small danger" data-act="rm" data-id="${a.id}">Excluir</button>
+        </div>
+        ${categoria==='licenca'? `
+          <div class="row" style="align-items:center; gap:8px; margin-top:8px;">
+            <label style="font-size:12px; color:var(--ink-soft);">Vencimento</label>
+            <input type="date" class="anexoVencimento" data-id="${a.id}" value="${a.vencimento||''}" style="width:160px;">
+            <button class="btn small" data-act="salvar-venc" data-id="${a.id}">Salvar</button>
+            ${vencTag}
+          </div>
+        `:''}
+      </div>`;
+    }).join('');
+    wrap.querySelectorAll('[data-act="rm"]').forEach(b=>b.addEventListener('click', async ()=>{
+      if(!confirmar('Excluir este anexo?')) return;
+      try{ await api('/empresas/anexos/'+b.dataset.id, { method:'DELETE' }); carregar(); }
+      catch(err){ toast(err.message,'err'); }
+    }));
+    wrap.querySelectorAll('[data-act="salvar-venc"]').forEach(b=>b.addEventListener('click', async ()=>{
+      const input = wrap.querySelector('.anexoVencimento[data-id="'+b.dataset.id+'"]');
+      try{
+        await api('/empresas/anexos/'+b.dataset.id+'/vencimento', { method:'PUT', body:{ vencimento: input.value || null } });
+        toast('Vencimento atualizado.','ok');
+        carregar();
+      }catch(err){ toast(err.message,'err'); }
+    }));
+  }
+  document.getElementById(btnId).addEventListener('click', ()=>{
+    const formWrap = document.getElementById(formId);
+    const vaiAbrir = formWrap.classList.contains('hidden');
+    formWrap.classList.toggle('hidden', !vaiAbrir);
+    if(!vaiAbrir) return;
+    formWrap.innerHTML = `
+      <div class="row" style="align-items:flex-end; padding:12px;">
+        <div class="field grow" style="margin-bottom:0;"><label>Tipo</label>
+          <select id="${formId}Tipo">${tiposDaCategoria.map(([v,info])=>`<option value="${v}">${esc(info.label)}</option>`).join('')}</select>
+        </div>
+        <div class="field grow" style="margin-bottom:0;"><label>Arquivo</label><input type="file" id="${formId}Arquivo"></div>
+        <button class="btn small primary" id="${formId}Enviar">Enviar</button>
+      </div>
+    `;
+    document.getElementById(formId+'Enviar').addEventListener('click', async ()=>{
+      const tipo = document.getElementById(formId+'Tipo').value;
+      const arquivo = document.getElementById(formId+'Arquivo').files[0];
+      if(!arquivo){ toast('Selecione um arquivo.','err'); return; }
+      const btn = document.getElementById(formId+'Enviar');
+      btn.disabled = true; btn.textContent = 'Enviando…';
+      const fd = new FormData(); fd.append('tipo', tipo); fd.append('arquivo', arquivo);
+      try{
+        await api('/empresas/'+empresaId+'/anexos', { method:'POST', body: fd });
+        toast('Anexo enviado.','ok');
+        formWrap.classList.add('hidden');
+        carregar();
+      }catch(err){ toast(err.message,'err'); }
+      finally{ btn.disabled=false; btn.textContent='Enviar'; }
+    });
+  });
+  carregar();
 }
 function importarDominioModal(){
   openModal(`
