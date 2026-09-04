@@ -1247,16 +1247,19 @@ async function renderEmpresasTab(){
 function empresaModal(e){
   openModal(`
     <h3>${e?'Editar':'Nova'} empresa</h3>
-    <div class="field"><label>Nome</label><input id="empNome" value="${e?esc(e.nome):''}"></div>
     <div class="row">
-      <div class="field grow"><label>CNPJ/CPF</label><input id="empCnpj" value="${e&&e.cnpj?esc(e.cnpj):''}" placeholder="Pessoa física: CPF do produtor rural"></div>
+      <div class="field" style="width:200px;"><label>CNPJ/CPF</label><input id="empCnpj" value="${e&&e.cnpj?esc(e.cnpj):''}" placeholder="Pessoa física: CPF do produtor rural"></div>
+      <div class="field" style="width:180px;"><label>Nome da empresa</label><input id="empNome" value="${e?esc(e.nome):''}"></div>
       <div class="field grow"><label>Código no Domínio Web (opcional)</label><input id="empCodigo" value="${e&&e.codigoDominio?esc(e.codigoDominio):''}"></div>
     </div>
+    <div id="empCnpjStatus" style="font-size:12px; color:var(--ink-soft); margin:-8px 0 10px;"></div>
     <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Dados de contato (mesmos do cadastro no Domínio Web)</div>
-    <div class="field"><label>E-mail</label><input id="empEmail" type="email" value="${e&&e.email?esc(e.email):''}"></div>
-    <div class="field"><label>Telefone</label><input id="empTelefone" value="${e&&e.telefone?esc(e.telefone):''}"></div>
-    <div class="field"><label>Endereço</label><input id="empEndereco" value="${e&&e.endereco?esc(e.endereco):''}"></div>
     <div class="row">
+      <div class="field grow"><label>E-mail</label><input id="empEmail" type="email" value="${e&&e.email?esc(e.email):''}"></div>
+      <div class="field" style="width:200px;"><label>Telefone</label><input id="empTelefone" value="${e&&e.telefone?esc(e.telefone):''}"></div>
+    </div>
+    <div class="row">
+      <div class="field grow"><label>Endereço</label><input id="empEndereco" value="${e&&e.endereco?esc(e.endereco):''}"></div>
       <div class="field grow"><label>Cidade</label><input id="empCidade" value="${e&&e.cidade?esc(e.cidade):''}"></div>
       <div class="field" style="width:70px;"><label>UF</label><input id="empUf" maxlength="2" value="${e&&e.uf?esc(e.uf):''}"></div>
       <div class="field" style="width:120px;"><label>CEP</label><input id="empCep" value="${e&&e.cep?esc(e.cep):''}"></div>
@@ -1286,6 +1289,29 @@ function empresaModal(e){
     </div>
   `, '1100px');
   if(e) renderCertificadoBuscaXml(document.getElementById('empCertBuscaXml'), e.id, e.uf);
+  // Ao sair do campo CNPJ (com 14 dígitos — CPF de produtor rural não tem consulta pública), busca
+  // os dados na Receita Federal e preenche só os campos que ainda estão vazios — nunca sobrescreve
+  // algo que já foi digitado/cadastrado antes, pra não perder dado real corrigido na mão.
+  document.getElementById('empCnpj').addEventListener('blur', async ev=>{
+    const doc = ev.target.value.replace(/\D/g,'');
+    const status = document.getElementById('empCnpjStatus');
+    if(doc.length!==14){ status.textContent=''; return; }
+    status.textContent = 'Consultando CNPJ na Receita Federal…';
+    try{
+      const r = await api('/empresas/cnpj/'+doc);
+      const preencher = (id, valor)=>{ const el=document.getElementById(id); if(valor && !el.value.trim()) el.value = valor; };
+      preencher('empNome', r.razaoSocial);
+      preencher('empEmail', r.email);
+      preencher('empCidade', r.municipio);
+      preencher('empUf', r.uf);
+      preencher('empCep', r.cep);
+      const endereco = [r.logradouro, r.numero].filter(Boolean).join(', ') + (r.bairro? ' - '+r.bairro : '') + (r.complemento? ' ('+r.complemento+')' : '');
+      preencher('empEndereco', endereco.trim().replace(/^,\s*/,''));
+      status.textContent = 'Dados preenchidos a partir do CNPJ (campos já preenchidos não foram alterados).';
+    }catch(err){
+      status.textContent = err.message;
+    }
+  });
   document.getElementById('empCancel').addEventListener('click', closeModal);
   document.getElementById('empSalvar').addEventListener('click', async ()=>{
     const nome=document.getElementById('empNome').value.trim();

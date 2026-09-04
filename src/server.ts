@@ -2324,6 +2324,20 @@ app.get("/api/empresas", blockCliente, requirePermissao("empresas", "visualizar"
     })),
   });
 });
+// Preenche o formulário de cadastro/edição de empresa a partir do CNPJ digitado — mesma consulta
+// pública (BrasilAPI/Receita Federal) já usada na emissão de NFS-e, só que sob o módulo "empresas"
+// (o de NFS-e exige a permissão de NFS-e, que nem todo Colaborador que cadastra empresa tem).
+app.get("/api/empresas/cnpj/:cnpj", blockCliente, requirePermissao("empresas", "visualizar"), async (req, res) => {
+  const cnpj = String(req.params.cnpj).replace(/\D/g, "");
+  if (cnpj.length !== 14) return res.status(400).json({ error: "CNPJ inválido — precisa ter 14 dígitos." });
+  try {
+    const dados = await consultarCnpjBrasilApi(cnpj);
+    if (dados.notFound) return res.status(404).json({ error: "CNPJ não encontrado na Receita Federal." });
+    res.json(dados);
+  } catch (e: any) {
+    res.status(502).json({ error: `Não consegui consultar o CNPJ: ${e.message}` });
+  }
+});
 app.post("/api/empresas", blockCliente, requirePermissao("empresas", "postar"), (req, res) => {
   const user = (req as any).user;
   const { nome, cnpj, codigoDominio, email, telefone, endereco, cidade, uf, cep, inscricaoMunicipal, inscricaoEstadual, nomeRepresentanteLegal, cpfRepresentanteLegal } = req.body || {};
@@ -5371,30 +5385,36 @@ app.get("/api/nfse/municipio-ibge", blockCliente, requirePermissao("nfse", "visu
     res.status(502).json({ error: `Não consegui consultar a API do IBGE: ${e.message}` });
   }
 });
-// Consulta de CNPJ (dados públicos da Receita Federal) — usado pra pré-preencher o tomador do
-// serviço na tela de emissão. BrasilAPI é um espelho gratuito e sem autenticação dos mesmos dados
-// públicos do CNPJ; não expõe nenhum dado sigiloso.
+// Consulta de CNPJ (dados públicos da Receita Federal) — usado pra pré-preencher formulários com
+// CNPJ (tomador do serviço na emissão de NFS-e, cadastro de empresa etc.). BrasilAPI é um espelho
+// gratuito e sem autenticação dos mesmos dados públicos do CNPJ; não expõe nenhum dado sigiloso.
+async function consultarCnpjBrasilApi(cnpj: string) {
+  // BrasilAPI bloqueia (403) requisições sem User-Agent — o fetch nativo do Node não manda um por padrão.
+  const resp = await fetch(`https://brasilapi.com.br/api/cnpj/v1/${cnpj}`, { headers: { "User-Agent": "SimplesContabeis/1.0" } });
+  if (resp.status === 404) return { notFound: true as const };
+  if (!resp.ok) throw new Error(`API retornou HTTP ${resp.status}.`);
+  const j = (await resp.json()) as any;
+  return {
+    notFound: false as const,
+    razaoSocial: j.razao_social || null,
+    nomeFantasia: j.nome_fantasia || null,
+    email: j.email || null,
+    logradouro: j.logradouro || null,
+    numero: j.numero || null,
+    complemento: j.complemento || null,
+    bairro: j.bairro || null,
+    cep: j.cep || null,
+    municipio: j.municipio || null,
+    uf: j.uf || null,
+  };
+}
 app.get("/api/nfse/cnpj/:cnpj", blockCliente, requirePermissao("nfse", "visualizar"), async (req, res) => {
   const cnpj = String(req.params.cnpj).replace(/\D/g, "");
   if (cnpj.length !== 14) return res.status(400).json({ error: "CNPJ inválido — precisa ter 14 dígitos." });
   try {
-    // BrasilAPI bloqueia (403) requisições sem User-Agent — o fetch nativo do Node não manda um por padrão.
-    const resp = await fetch(`https://brasilapi.com.br/api/cnpj/v1/${cnpj}`, { headers: { "User-Agent": "SimplesContabeis/1.0" } });
-    if (resp.status === 404) return res.status(404).json({ error: "CNPJ não encontrado na Receita Federal." });
-    if (!resp.ok) throw new Error(`API retornou HTTP ${resp.status}.`);
-    const j = (await resp.json()) as any;
-    res.json({
-      razaoSocial: j.razao_social || null,
-      nomeFantasia: j.nome_fantasia || null,
-      email: j.email || null,
-      logradouro: j.logradouro || null,
-      numero: j.numero || null,
-      complemento: j.complemento || null,
-      bairro: j.bairro || null,
-      cep: j.cep || null,
-      municipio: j.municipio || null,
-      uf: j.uf || null,
-    });
+    const dados = await consultarCnpjBrasilApi(cnpj);
+    if (dados.notFound) return res.status(404).json({ error: "CNPJ não encontrado na Receita Federal." });
+    res.json(dados);
   } catch (e: any) {
     res.status(502).json({ error: `Não consegui consultar o CNPJ: ${e.message}` });
   }
@@ -6951,22 +6971,9 @@ app.get("/api/nfse/minha-empresa/cnpj/:cnpj", requireCliente, requireModuloAtivo
   const cnpj = String(req.params.cnpj).replace(/\D/g, "");
   if (cnpj.length !== 14) return res.status(400).json({ error: "CNPJ inválido — precisa ter 14 dígitos." });
   try {
-    const resp = await fetch(`https://brasilapi.com.br/api/cnpj/v1/${cnpj}`, { headers: { "User-Agent": "SimplesContabeis/1.0" } });
-    if (resp.status === 404) return res.status(404).json({ error: "CNPJ não encontrado na Receita Federal." });
-    if (!resp.ok) throw new Error(`API retornou HTTP ${resp.status}.`);
-    const j = (await resp.json()) as any;
-    res.json({
-      razaoSocial: j.razao_social || null,
-      nomeFantasia: j.nome_fantasia || null,
-      email: j.email || null,
-      logradouro: j.logradouro || null,
-      numero: j.numero || null,
-      complemento: j.complemento || null,
-      bairro: j.bairro || null,
-      cep: j.cep || null,
-      municipio: j.municipio || null,
-      uf: j.uf || null,
-    });
+    const dados = await consultarCnpjBrasilApi(cnpj);
+    if (dados.notFound) return res.status(404).json({ error: "CNPJ não encontrado na Receita Federal." });
+    res.json(dados);
   } catch (e: any) {
     res.status(502).json({ error: `Não consegui consultar o CNPJ: ${e.message}` });
   }
