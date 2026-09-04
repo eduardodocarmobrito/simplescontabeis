@@ -3465,9 +3465,9 @@ async function renderCertificadoBuscaXml(containerEl, empresaId, empresaUfPadrao
     containerEl.innerHTML = `<div class="empty-state">Nenhum certificado configurado ainda — você não tem permissão para adicionar um.</div>`;
   } else {
     containerEl.innerHTML = `
-      <div class="field"><label>Arquivo do certificado (.pfx)</label><input type="file" id="nfeCertArquivo_${empresaId}" accept=".pfx,.p12"></div>
-      <div class="field"><label>Senha do certificado</label><input type="password" id="nfeCertSenha_${empresaId}"></div>
       <div class="row">
+        <div class="field grow"><label>Arquivo do certificado (.pfx)</label><input type="file" id="nfeCertArquivo_${empresaId}" accept=".pfx,.p12"></div>
+        <div class="field" style="width:160px;"><label>Senha do certificado</label><input type="password" id="nfeCertSenha_${empresaId}"></div>
         <div class="field grow"><label>UF autora</label><input id="nfeCertUf_${empresaId}" maxlength="2" style="text-transform:uppercase;" placeholder="ex.: SP" value="${esc(empresaUfPadrao||'')}"></div>
         <div class="field grow"><label>Ambiente</label>
           <select id="nfeCertAmbiente_${empresaId}"><option value="producao">Produção</option><option value="homologacao">Homologação</option></select>
