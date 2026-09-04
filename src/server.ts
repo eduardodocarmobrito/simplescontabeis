@@ -7872,7 +7872,7 @@ app.get("/api/financeiro/resumo", blockCliente, requirePermissao("financeiro", "
 // função abaixo devolve a lista (o card mostra só items.length); todas já filtram pelas empresas
 // que o usuário logado pode ver (empresasVisiveis), pro caso de um Colaborador restrito abrir o
 // Painel.
-const CARD_TIPOS: string[] = ["certificados_vencer", "das_atraso", "situacao_fiscal", "checklist_atraso", "solicitacoes_pendentes", "envio_atraso", "solicitacao_atraso"];
+const CARD_TIPOS: string[] = ["certificados_vencer", "das_atraso", "situacao_fiscal", "checklist_atraso", "solicitacoes_pendentes", "envio_atraso", "solicitacao_atraso", "licencas_vencer"];
 
 // Piso de competência (aaaamm, ex.: 202607) configurado em painel_monitoramento_config — null
 // quando não há corte definido (comportamento de sempre: cada card usa o período mais antigo já
@@ -7922,6 +7922,45 @@ function cardCertificadosAVencer(user: any, diasLimite = 30): any[] {
     .get(escritorioId, limite) as any;
   if (ic) itens.push({ tipo: "Integra Contador", empresaId: null, empresaNome: "Escritório", validadeAte: ic.validadeAte });
   itens.sort((a, b) => (a.validadeAte < b.validadeAte ? -1 : 1));
+  return itens;
+}
+
+// Licenças (Alvará, Vigilância Sanitária, Corpo de Bombeiros, Ambiental-SEMMA) vencidas ou
+// vencendo nos próximos 30 dias — só considera o anexo mais recente de cada empresa+tipo (maior
+// ano, e dentro do mesmo ano o mais recente enviado). Assim que uma licença renovada é anexada
+// (ex.: 2027, substituindo a de 2026), ela vira a "mais recente" daquele empresa+tipo sozinha, e a
+// pendência da anterior some do card automaticamente — nunca é preciso apagar nem marcar nada à
+// mão, o histórico antigo continua guardado, só não conta mais pro card.
+function cardLicencasAVencer(user: any, diasLimite = 30): any[] {
+  const escritorioId = user.escritorioId;
+  const visiveis = new Set(empresasVisiveis(user));
+  const limite = new Date(Date.now() + diasLimite * 86400000).toISOString().slice(0, 10);
+  const rows = sqlite
+    .prepare(
+      `SELECT a.empresa_id as empresaId, e.nome as empresaNome, e.ativo as empresaAtivo, a.tipo, a.ano, a.vencimento
+       FROM empresa_anexos a JOIN empresas e ON e.id = a.empresa_id
+       WHERE a.categoria = 'licenca' AND e.escritorio_id = ?
+       ORDER BY a.ano DESC, a.criado_em DESC`
+    )
+    .all(escritorioId) as any[];
+  const maisRecentePorChave = new Map<string, any>();
+  for (const r of rows) {
+    const chave = `${r.empresaId}:${r.tipo}`;
+    if (!maisRecentePorChave.has(chave)) maisRecentePorChave.set(chave, r);
+  }
+  const itens: any[] = [];
+  for (const r of maisRecentePorChave.values()) {
+    if (!visiveis.has(r.empresaId) || !r.empresaAtivo) continue;
+    if (!r.vencimento || r.vencimento > limite) continue;
+    itens.push({
+      empresaId: r.empresaId,
+      empresaNome: r.empresaNome,
+      tipo: (EMPRESA_ANEXO_TIPOS[r.tipo] || {}).label || r.tipo,
+      ano: r.ano,
+      vencimento: r.vencimento,
+    });
+  }
+  itens.sort((a, b) => (a.vencimento < b.vencimento ? -1 : 1));
   return itens;
 }
 
@@ -8314,6 +8353,7 @@ function cardSolicitacoesPendentes(user: any): any[] {
 
 async function calcularCardComputado(tipo: string, user: any, parametro?: string | null): Promise<any[]> {
   if (tipo === "certificados_vencer") return cardCertificadosAVencer(user);
+  if (tipo === "licencas_vencer") return cardLicencasAVencer(user);
   if (tipo === "das_atraso") return cardDasEmAtraso(user);
   if (tipo === "situacao_fiscal") return cardSituacaoFiscal(user);
   if (tipo === "checklist_atraso") return cardChecklistAtraso(user);

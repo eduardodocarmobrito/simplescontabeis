@@ -946,6 +946,7 @@ async function pageDashboard(){
 }
 const CARD_TIPOS_INFO = {
   certificados_vencer: { label:'Certificados a Vencer', subtitulo:'Vencidos ou vencendo nos próximos 30 dias' },
+  licencas_vencer: { label:'Licenças a Vencer', subtitulo:'Vencidas ou vencendo nos próximos 30 dias' },
   das_atraso: { label:'DAS em Atraso', subtitulo:'Competências não entregues' },
   situacao_fiscal: { label:'Situação Fiscal', subtitulo:'Empresas com pendência' },
   checklist_atraso: { label:'Documentos Pendentes', subtitulo:'Competência anterior, após o prazo, sem envio do cliente' },
@@ -1088,6 +1089,14 @@ function cardDetalheModal(c){
           ${items.map(i=>{
             const vencido = String(i.validadeAte) < hoje;
             return `<tr><td>${esc(i.empresaNome)}</td><td>${esc(i.tipo)}</td><td>${fmtDateIso(String(i.validadeAte).slice(0,10))}</td><td><span class="tag ${vencido?'bad':'warn'}">${vencido?'Vencido':'Vence em breve'}</span></td></tr>`;
+          }).join('')}
+        </tbody></table>`;
+      } else if(tipo==='licencas_vencer'){
+        const hoje = new Date().toISOString().slice(0,10);
+        box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Licença</th><th>Ano</th><th>Vencimento</th><th></th></tr></thead><tbody>
+          ${items.map(i=>{
+            const vencido = String(i.vencimento) < hoje;
+            return `<tr><td>${esc(i.empresaNome)}</td><td>${esc(i.tipo)}</td><td>${i.ano}</td><td>${fmtDateIso(String(i.vencimento))}</td><td><span class="tag ${vencido?'bad':'warn'}">${vencido?'Vencida':'Vence em breve'}</span></td></tr>`;
           }).join('')}
         </tbody></table>`;
       } else if(tipo==='das_atraso'){
