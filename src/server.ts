@@ -1024,6 +1024,15 @@ sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_envio_documentos_periodo ON envio_do
       .run();
     console.log("Migração aplicada: envio_templates.considera_mes_atual (desligado para DRE/Balancete/Razão Contábil já existentes).");
   }
+  // Achado ao vivo: "DAS - Mensal" e "Consultar Situação Fiscal - RFB" (criados automaticamente
+  // pelo Integra Contador, ver integraContadorObterOuCriarAtribuicaoModelo) nasceram com o default
+  // da coluna (considera_mes_atual=1) antes desse parâmetro existir na função — mostrava a
+  // competência do mês corrente como "em atraso" mesmo o mês ainda nem ter fechado (não existe DAS
+  // nem Situação Fiscal do mês corrente, só depois que ele acaba). Idempotente — roda toda vez, só
+  // corrige quem ainda estiver com o valor errado.
+  sqlite
+    .prepare(`UPDATE envio_templates SET considera_mes_atual = 0 WHERE nome IN ('DAS - Mensal', 'Consultar Situação Fiscal - RFB') AND considera_mes_atual = 1`)
+    .run();
 }
 
 // Migração leve: menu "Solicitar Documentos" do cliente — modelos ganham a opção de aparecer lá,
@@ -4687,10 +4696,15 @@ function integraContadorObterOuCriarAtribuicaoModelo(
 ): number {
   let template = sqlite.prepare(`SELECT id FROM envio_templates WHERE escritorio_id = ? AND nome = ?`).get(escritorioId, nomeTemplate) as any;
   if (!template) {
+    // considera_mes_atual=0: todo modelo criado por aqui (DAS - Mensal, Situação Fiscal,
+    // Parcelamento de DAS) só existe DEPOIS que o mês fecha (é resultado de uma declaração/consulta
+    // que só faz sentido pro mês anterior já encerrado) — o mês corrente nunca pode estar "em
+    // atraso" nesses modelos, diferente de Nota Fiscal (que pode ser emitida a qualquer momento do
+    // mês corrente, aí sim considera_mes_atual=1 faz sentido).
     const info = sqlite
       .prepare(
-        `INSERT INTO envio_templates (nome, descricao, periodicidade, accept_json, detectar_vencimento, visivel_cliente, escritorio_id)
-         VALUES (?, ?, ?, '["pdf"]', 0, ?, ?)`
+        `INSERT INTO envio_templates (nome, descricao, periodicidade, accept_json, detectar_vencimento, visivel_cliente, escritorio_id, considera_mes_atual)
+         VALUES (?, ?, ?, '["pdf"]', 0, ?, ?, 0)`
       )
       .run(nomeTemplate, descricaoTemplate, periodicidade, visivelCliente ? 1 : 0, escritorioId);
     template = { id: Number(info.lastInsertRowid) };
