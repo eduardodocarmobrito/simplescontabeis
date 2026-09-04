@@ -6,7 +6,6 @@
 // depender de baixar nada da internet em tempo de execução).
 import * as fs from "fs";
 import * as path from "path";
-import * as http from "http";
 
 const TESSDATA_DIR = path.join(__dirname, "tessdata");
 
@@ -19,9 +18,13 @@ function carregarAssetsPdfjs() {
   pdfWorkerMjs = fs.readFileSync(path.join(base, "build", "pdf.worker.min.mjs"));
 }
 
-// Página mínima que carrega o pdfjs-dist (ES module — precisa vir de um servidor http de verdade,
-// carregar via file:// dá erro de CORS no import/worker) e expõe uma função global pra renderizar
-// uma página do PDF (recebido em base64) num <canvas>.
+// Página mínima que carrega o pdfjs-dist (ES module) e expõe uma função global pra renderizar uma
+// página do PDF (recebido em base64) num <canvas>. Servida via page.route() interceptando um
+// domínio inexistente (nunca sai da máquina, o Chromium nem chega a tentar DNS/TCP de verdade) —
+// evitado de propósito um http.createServer()+page.goto("http://127.0.0.1:...") real: em teste ao
+// vivo isso travou indefinidamente dentro do container de produção (sem erro nenhum no log),
+// enquanto essa interceptação por rota resolveu na hora, local e em produção.
+const ORIGEM_FALSA = "https://ocr.local";
 const RENDER_HTML = `<!doctype html><html><body><canvas id="c"></canvas>
 <script type="module">
   import * as pdfjsLib from '/pdf.mjs';
@@ -39,52 +42,32 @@ const RENDER_HTML = `<!doctype html><html><body><canvas id="c"></canvas>
     await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
     return true;
   };
+  window.__pdfjsPronto = true;
 </script></body></html>`;
 
-let servidorPromise: Promise<{ server: http.Server; port: number }> | null = null;
-function garantirServidor(): Promise<{ server: http.Server; port: number }> {
-  if (!servidorPromise) {
-    carregarAssetsPdfjs();
-    servidorPromise = new Promise((resolve) => {
-      const server = http.createServer((req, res) => {
-        const url = req.url || "";
-        if (url === "/pdf.mjs") {
-          res.writeHead(200, { "Content-Type": "text/javascript" });
-          res.end(pdfMjs!);
-          return;
-        }
-        if (url === "/pdf.worker.min.mjs") {
-          res.writeHead(200, { "Content-Type": "text/javascript" });
-          res.end(pdfWorkerMjs!);
-          return;
-        }
-        if (url === "/render.html") {
-          res.writeHead(200, { "Content-Type": "text/html" });
-          res.end(RENDER_HTML);
-          return;
-        }
-        res.writeHead(404);
-        res.end();
-      });
-      server.listen(0, "127.0.0.1", () => resolve({ server, port: (server.address() as any).port }));
-    });
-  }
-  return servidorPromise;
-}
-
 async function renderizarPrimeiraPaginaPng(buf: Buffer): Promise<Buffer> {
-  const { port } = await garantirServidor();
+  carregarAssetsPdfjs();
   const { chromium } = require("playwright");
   const browser = await chromium.launch();
   try {
     const page = await browser.newPage();
-    await page.goto(`http://127.0.0.1:${port}/render.html`, { waitUntil: "load" });
-    await page.waitForFunction("!!window.__renderPdfPagina");
+    const erros: string[] = [];
+    page.on("pageerror", (err: Error) => erros.push(err.message));
+    await page.route(`${ORIGEM_FALSA}/**`, (route: any) => {
+      const url = route.request().url();
+      if (url.endsWith("/pdf.mjs")) return route.fulfill({ status: 200, contentType: "text/javascript", body: pdfMjs! });
+      if (url.endsWith("/pdf.worker.min.mjs")) return route.fulfill({ status: 200, contentType: "text/javascript", body: pdfWorkerMjs! });
+      if (url.endsWith("/render.html")) return route.fulfill({ status: 200, contentType: "text/html", body: RENDER_HTML });
+      return route.abort();
+    });
+    await page.goto(`${ORIGEM_FALSA}/render.html`, { waitUntil: "load", timeout: 20000 });
+    await page.waitForFunction("!!window.__pdfjsPronto", { timeout: 20000 });
+    if (erros.length) throw new Error(`Falha carregando o renderizador de PDF: ${erros.join("; ")}`);
     await page.evaluate(
       ([b64, pagina, escala]: [string, number, number]) => (window as any).__renderPdfPagina(b64, pagina, escala),
       [buf.toString("base64"), 1, 3]
     );
-    return (await page.locator("#c").screenshot()) as Buffer;
+    return (await page.locator("#c").screenshot({ timeout: 20000 })) as Buffer;
   } finally {
     await browser.close();
   }
