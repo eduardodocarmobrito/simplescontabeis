@@ -676,6 +676,16 @@ sqlite.exec(`
     criado_por INTEGER REFERENCES app_users(id),
     criado_em TEXT DEFAULT (datetime('now'))
   );
+  -- Anos disponíveis na aba Licenças — compartilhado pelo escritório inteiro (o layout de
+  -- ano/tipo é o mesmo pra toda empresa), não por empresa. Adicionar um ano novo (ex.: 2027) libera
+  -- ele pra TODAS as empresas de uma vez, em vez de precisar repetir empresa por empresa.
+  CREATE TABLE IF NOT EXISTS empresa_licenca_anos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    escritorio_id INTEGER NOT NULL REFERENCES escritorios(id),
+    ano INTEGER NOT NULL,
+    criado_em TEXT DEFAULT (datetime('now')),
+    UNIQUE(escritorio_id, ano)
+  );
 
   CREATE TABLE IF NOT EXISTS emails_enviados (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2514,6 +2524,20 @@ async function extrairVencimentoDeAnexo(buf: Buffer, mime: string | undefined): 
     return null; // PDF ilegível/protegido/escaneado sem texto — segue sem vencimento automático
   }
 }
+// Anos disponíveis na aba Licenças — um só lugar, compartilhado por todas as empresas do escritório
+// (o layout ano→tipo é o mesmo pra qualquer uma), não precisa cadastrar ano por empresa.
+app.get("/api/empresas/licenca-anos", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const rows = sqlite.prepare(`SELECT ano FROM empresa_licenca_anos WHERE escritorio_id = ? ORDER BY ano DESC`).all(user.escritorioId) as any[];
+  res.json({ anos: rows.map((r) => r.ano) });
+});
+app.post("/api/empresas/licenca-anos", blockCliente, requirePermissao("empresas", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const ano = Number(req.body?.ano);
+  if (!Number.isInteger(ano) || ano < 2000 || ano > 2100) return res.status(400).json({ error: "Ano inválido." });
+  sqlite.prepare(`INSERT OR IGNORE INTO empresa_licenca_anos (escritorio_id, ano) VALUES (?, ?)`).run(user.escritorioId, ano);
+  res.json({ ok: true });
+});
 app.get("/api/empresas/:id/anexos", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
   const empresaId = Number(req.params.id);
   if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });

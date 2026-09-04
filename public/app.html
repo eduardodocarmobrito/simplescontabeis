@@ -1493,11 +1493,14 @@ function ligarAbaLicencasEmpresa(empresaId){
   let ano = anoAtual;
   let tipoAberto = null;
   let todosAnexos = [];
+  // Anos disponíveis são do escritório inteiro, não por empresa (o layout ano→tipo é o mesmo pra
+  // qualquer uma) — adicionar um ano novo em "+ Ano" já libera ele pra todas de uma vez.
+  let anosCompartilhados = [];
 
   function anosParaMostrar(){
-    const anosComDados = todosAnexos.map(a=>a.ano).filter(Boolean);
-    const base = [anoAtual-2, anoAtual-1, anoAtual, anoAtual+1];
-    return [...new Set([...base, ...anosComDados, ano])].sort((x,y)=>y-x);
+    const anosComDados = todosAnexos.map(a=>a.ano).filter(Boolean); // nunca esconde ano que essa empresa já tem anexo, mesmo antigo
+    const base = [anoAtual, anoAtual+1]; // a partir do ano atual — anos anteriores só aparecem se já tiverem anexo ou forem adicionados em "+ Ano"
+    return [...new Set([...base, ...anosCompartilhados, ...anosComDados, ano])].sort((x,y)=>y-x);
   }
   function renderAnos(){
     const wrap = document.getElementById('empLicencasAnos');
@@ -1510,13 +1513,17 @@ function ligarAbaLicencasEmpresa(empresaId){
       renderTipos();
     }));
     const btnOutro = wrap.querySelector('[data-act="outro-ano"]');
-    if(btnOutro) btnOutro.addEventListener('click', ()=>{
-      const digitado = prompt('Ver/adicionar qual ano?', String(anoAtual));
+    if(btnOutro) btnOutro.addEventListener('click', async ()=>{
+      const digitado = prompt('Adicionar/ver qual ano? (fica disponível pra todas as empresas)', String(anoAtual));
       if(!digitado) return;
       const n = Number(digitado);
       if(!Number.isInteger(n) || n<2000 || n>2100){ toast('Ano inválido.','err'); return; }
-      ano = n; tipoAberto = null;
-      renderAnos(); renderTipos();
+      try{
+        await api('/empresas/licenca-anos', { method:'POST', body:{ ano:n } });
+        if(!anosCompartilhados.includes(n)) anosCompartilhados.push(n);
+        ano = n; tipoAberto = null;
+        renderAnos(); renderTipos();
+      }catch(err){ toast(err.message,'err'); }
     });
   }
   function anexosDoTipo(tipo){ return todosAnexos.filter(a=>a.tipo===tipo && a.ano===ano); }
@@ -1589,8 +1596,12 @@ function ligarAbaLicencasEmpresa(empresaId){
     });
   }
   async function carregarTudo(){
-    const { items } = await api('/empresas/'+empresaId+'/anexos?categoria=licenca');
-    todosAnexos = items;
+    const [anexosResp, anosResp] = await Promise.all([
+      api('/empresas/'+empresaId+'/anexos?categoria=licenca'),
+      api('/empresas/licenca-anos'),
+    ]);
+    todosAnexos = anexosResp.items;
+    anosCompartilhados = anosResp.anos;
     renderAnos();
     renderTipos();
   }
