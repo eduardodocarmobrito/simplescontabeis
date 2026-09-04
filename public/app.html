@@ -1300,16 +1300,6 @@ function empresaModal(e){
         <div class="field grow"><label>Nome do representante legal</label><input id="empNomeRepresentante" value="${e&&e.nomeRepresentanteLegal?esc(e.nomeRepresentanteLegal):''}"></div>
         <div class="field" style="width:160px;"><label>CPF do representante legal</label><input id="empCpfRepresentante" value="${e&&e.cpfRepresentanteLegal?esc(e.cpfRepresentanteLegal):''}"></div>
       </div>
-      ${e? `
-      <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Certificado digital (Busca de XML — NF-e/NFC-e/NFS-e)</div>
-      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Certificado próprio desta empresa, usado só pra buscar os documentos fiscais dela na Sefaz e no Sistema Nacional NFS-e — não é o mesmo certificado usado pra emitir NFS-e.</p>
-      <div id="empCertBuscaXml"><div class="empty-state">Carregando…</div></div>
-      <div style="margin:14px 0 8px; border-top:1px solid var(--rule); padding-top:12px;"></div>
-      <div class="checkbox-row"><input type="checkbox" id="empAtivo" ${e.ativo?'checked':''}> <label for="empAtivo">Empresa ativa</label></div>
-      <div class="checkbox-row"><input type="checkbox" id="empVisivel" ${e.visivelRelatorios?'checked':''}> <label for="empVisivel">Aparece no filtro de Relatórios</label></div>
-      <div class="checkbox-row"><input type="checkbox" id="empIsento" ${e.isentoAssinatura?'checked':''}> <label for="empIsento">Conta cortesia — isenta de cobrança de NFS-e/Financeiro</label></div>
-      <p style="font-size:12px; color:var(--ink-soft); margin-top:-4px;">Libera acesso completo aos módulos NFS-e e Financeiro pra esta empresa sem exigir teste grátis nem assinatura paga.</p>
-      `:''}
     </div>
     ${e? `
     <div id="empTabConstituicao" class="hidden">
@@ -1326,7 +1316,14 @@ function empresaModal(e){
       <div id="empLicencasTipos" style="margin-top:12px;"></div>
     </div>
     <div id="empTabConfiguracoes" class="hidden">
-      <div class="empty-state">Em breve.</div>
+      <div style="font-weight:600; font-size:13px; color:var(--ink-soft); padding-top:2px;">Certificado digital (Busca de XML — NF-e/NFC-e/NFS-e)</div>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Certificado próprio desta empresa, usado só pra buscar os documentos fiscais dela na Sefaz e no Sistema Nacional NFS-e — não é o mesmo certificado usado pra emitir NFS-e.</p>
+      <div id="empCertBuscaXml"><div class="empty-state">Carregando…</div></div>
+      <div style="margin:14px 0 8px; border-top:1px solid var(--rule); padding-top:12px;"></div>
+      <div class="checkbox-row"><input type="checkbox" id="empAtivo" ${e.ativo?'checked':''}> <label for="empAtivo">Empresa ativa</label></div>
+      <div class="checkbox-row"><input type="checkbox" id="empVisivel" ${e.visivelRelatorios?'checked':''}> <label for="empVisivel">Aparece no filtro de Relatórios</label></div>
+      <div class="checkbox-row"><input type="checkbox" id="empIsento" ${e.isentoAssinatura?'checked':''}> <label for="empIsento">Conta cortesia — isenta de cobrança de NFS-e/Financeiro</label></div>
+      <p style="font-size:12px; color:var(--ink-soft); margin-top:-4px;">Libera acesso completo aos módulos NFS-e e Financeiro pra esta empresa sem exigir teste grátis nem assinatura paga.</p>
     </div>
     ` : ''}
     <div class="modal-actions">
