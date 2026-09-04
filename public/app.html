@@ -1257,16 +1257,14 @@ function empresaModal(e){
     <div class="row">
       <div class="field grow"><label>E-mail</label><input id="empEmail" type="email" value="${e&&e.email?esc(e.email):''}"></div>
       <div class="field" style="width:200px;"><label>Telefone</label><input id="empTelefone" value="${e&&e.telefone?esc(e.telefone):''}"></div>
+      <div class="field grow"><label>Inscrição municipal</label><input id="empInscricaoMunicipal" value="${e&&e.inscricaoMunicipal?esc(e.inscricaoMunicipal):''}"></div>
+      <div class="field grow"><label>Inscrição estadual</label><input id="empInscricaoEstadual" value="${e&&e.inscricaoEstadual?esc(e.inscricaoEstadual):''}"></div>
     </div>
     <div class="row">
       <div class="field grow"><label>Endereço</label><input id="empEndereco" value="${e&&e.endereco?esc(e.endereco):''}"></div>
       <div class="field grow"><label>Cidade</label><input id="empCidade" value="${e&&e.cidade?esc(e.cidade):''}"></div>
       <div class="field" style="width:70px;"><label>UF</label><input id="empUf" maxlength="2" value="${e&&e.uf?esc(e.uf):''}"></div>
       <div class="field" style="width:120px;"><label>CEP</label><input id="empCep" value="${e&&e.cep?esc(e.cep):''}"></div>
-    </div>
-    <div class="row">
-      <div class="field grow"><label>Inscrição municipal</label><input id="empInscricaoMunicipal" value="${e&&e.inscricaoMunicipal?esc(e.inscricaoMunicipal):''}"></div>
-      <div class="field grow"><label>Inscrição estadual</label><input id="empInscricaoEstadual" value="${e&&e.inscricaoEstadual?esc(e.inscricaoEstadual):''}"></div>
     </div>
     <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Representante legal (usado em contratos/distratos)</div>
     <div class="row">
