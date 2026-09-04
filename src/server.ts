@@ -2700,24 +2700,24 @@ app.post("/api/empresas/anexos/licencas-bulk", blockCliente, requirePermissao("l
       naoIdentificados.push({ nomeArquivo: file.originalname, motivo: "Não consegui ler o PDF (protegido ou escaneado sem texto)." });
       continue;
     }
-    const candidatosCnpj = [...texto.matchAll(REGEX_CNPJ_BUSCA)].map((m) => m[0].replace(/\D/g, ""));
-    const candidatosCpf = [...texto.matchAll(REGEX_CPF_BUSCA)].map((m) => m[0].replace(/\D/g, ""));
+    // PDFs em layout de "caixinhas"/tabela (ex.: Alvará Digital de prefeitura) costumam vir sem
+    // espaço nenhum entre colunas depois do pdf-parse — a inscrição municipal, o CNPJ e a data de
+    // abertura saem grudados num único bloco de dígitos (ex.: "32584603.868.448/0001-1026/05/2000").
+    // Um regex com \b não acha fronteira de palavra no meio desse bloco (dígito colado em dígito),
+    // então casar direto contra o CNPJ/CPF já cadastrado da empresa (sem exigir \b) é o que
+    // realmente funciona aqui — em vez de extrair um "candidato" solto do texto, procura se o
+    // documento de alguma empresa conhecida aparece em algum lugar do fluxo de dígitos do PDF.
+    const fluxoDigitos = texto.replace(/\D/g, "");
     let empresa: any = null;
-    for (const c of candidatosCnpj) {
-      if (porDocumento.has(c)) {
-        empresa = porDocumento.get(c);
+    for (const [digitos, emp] of porDocumento) {
+      if (fluxoDigitos.includes(digitos)) {
+        empresa = emp;
         break;
       }
     }
     if (!empresa) {
-      for (const c of candidatosCpf) {
-        if (porDocumento.has(c)) {
-          empresa = porDocumento.get(c);
-          break;
-        }
-      }
-    }
-    if (!empresa) {
+      const candidatosCnpj = [...texto.matchAll(REGEX_CNPJ_BUSCA)].map((m) => m[0].replace(/\D/g, ""));
+      const candidatosCpf = [...texto.matchAll(REGEX_CPF_BUSCA)].map((m) => m[0].replace(/\D/g, ""));
       const achado = candidatosCnpj[0] || candidatosCpf[0];
       naoIdentificados.push({
         nomeArquivo: file.originalname,
