@@ -1093,6 +1093,7 @@ sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_envio_documentos_periodo ON envio_do
     ["cpf_representante_legal", "cpf_representante_legal TEXT"],
     ["codigo_municipio_ibge", "codigo_municipio_ibge TEXT"], // código IBGE (7 dígitos) do município — usado na emissão de NFS-e (DPS exige a Tabela do IBGE), centralizado aqui pra não pedir de novo por módulo
     ["nome_municipio_ibge", "nome_municipio_ibge TEXT"], // só exibição do código acima
+    ["regime_tributario", "regime_tributario TEXT NOT NULL DEFAULT 'simples_nacional'"], // 'simples_nacional' | 'lucro_presumido' | 'lucro_real' — mutuamente exclusivos; opcao_simples_nacional (nfse_empresa_config) é sempre derivado deste campo, nunca editado à parte
   ]) {
     if (!nomes.has(coluna)) sqlite.exec(`ALTER TABLE empresas ADD COLUMN ${ddl}`);
   }
@@ -2382,7 +2383,7 @@ app.get("/api/empresas", blockCliente, requirePermissao("empresas", "visualizar"
       cpfRepresentanteLegal: r.cpf_representante_legal,
       codigoMunicipioIbge: r.codigo_municipio_ibge,
       nomeMunicipioIbge: r.nome_municipio_ibge,
-      opcaoSimplesNacional: r.opcao_simples_nacional_nfse == null ? true : !!r.opcao_simples_nacional_nfse,
+      regimeTributario: r.regime_tributario || "simples_nacional",
       regimeApuracaoSn: r.regime_apuracao_sn_nfse || "1",
       percentualTotalTributosSn: r.percentual_total_tributos_sn_nfse,
       ativo: !!r.ativo,
@@ -2408,14 +2409,15 @@ app.get("/api/empresas/cnpj/:cnpj", blockCliente, requirePermissao("empresas", "
     res.status(502).json({ error: `Não consegui consultar o CNPJ: ${e.message}` });
   }
 });
+const REGIMES_TRIBUTARIOS = ["simples_nacional", "lucro_presumido", "lucro_real"] as const;
 app.post("/api/empresas", blockCliente, requirePermissao("empresas", "postar"), (req, res) => {
   const user = (req as any).user;
-  const { nome, cnpj, codigoDominio, email, telefone, endereco, cidade, uf, cep, inscricaoMunicipal, inscricaoEstadual, nomeRepresentanteLegal, cpfRepresentanteLegal, codigoMunicipioIbge, nomeMunicipioIbge } = req.body || {};
+  const { nome, cnpj, codigoDominio, email, telefone, endereco, cidade, uf, cep, inscricaoMunicipal, inscricaoEstadual, nomeRepresentanteLegal, cpfRepresentanteLegal, codigoMunicipioIbge, nomeMunicipioIbge, regimeTributario } = req.body || {};
   if (!nome) return res.status(400).json({ error: "Informe o nome da empresa." });
   const info = sqlite
     .prepare(
-      `INSERT INTO empresas (nome, cnpj, codigo_dominio, email, telefone, endereco, cidade, uf, cep, inscricao_municipal, inscricao_estadual, nome_representante_legal, cpf_representante_legal, codigo_municipio_ibge, nome_municipio_ibge, origem, escritorio_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?)`
+      `INSERT INTO empresas (nome, cnpj, codigo_dominio, email, telefone, endereco, cidade, uf, cep, inscricao_municipal, inscricao_estadual, nome_representante_legal, cpf_representante_legal, codigo_municipio_ibge, nome_municipio_ibge, regime_tributario, origem, escritorio_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?)`
     )
     .run(
       nome,
@@ -2433,19 +2435,22 @@ app.post("/api/empresas", blockCliente, requirePermissao("empresas", "postar"), 
       cpfRepresentanteLegal || null,
       codigoMunicipioIbge || null,
       nomeMunicipioIbge || null,
+      (REGIMES_TRIBUTARIOS as readonly string[]).includes(regimeTributario) ? regimeTributario : "simples_nacional",
       user.escritorioId
     );
   res.json({ id: Number(info.lastInsertRowid) });
 });
-// Optante pelo Simples Nacional / regime de apuração / % total de tributos são fiscais mas vivem
-// na aba Configurações do cadastro de empresa (junto do resto), não no módulo NFS-e — evita pedir
-// a mesma informação em dois lugares. Upsert parcial: nunca mexe em habilitado/metodo_assinatura
-// (que continuam só na config do NFS-e), então funciona tanto pra empresa que já tem linha em
-// nfse_empresa_config quanto pra uma que nunca configurou NFS-e ainda (fica com os defaults da
-// tabela até habilitar por lá).
-function empresaSalvarDadosFiscaisNfse(empresaId: number, body: any) {
-  const { opcaoSimplesNacional, regimeApuracaoSn, percentualTotalTributosSn } = body || {};
-  if (opcaoSimplesNacional === undefined && regimeApuracaoSn === undefined && percentualTotalTributosSn === undefined) return;
+// Regime de apuração / % total de tributos são fiscais mas vivem na aba Configurações do cadastro
+// de empresa (junto do resto), não no módulo NFS-e — evita pedir a mesma informação em dois
+// lugares. opcaoSimplesNacional nunca é editado à parte — é sempre derivado do regime_tributario
+// que acabou de ser salvo em `empresas` (Simples Nacional/Lucro Presumido/Lucro Real são
+// mutuamente exclusivos, então não faz sentido guardar os dois fatos separados e arriscar
+// divergência). Upsert parcial: nunca mexe em habilitado/metodo_assinatura (que continuam só na
+// config do NFS-e), então funciona tanto pra empresa que já tem linha em nfse_empresa_config
+// quanto pra uma que nunca configurou NFS-e ainda (fica com os defaults da tabela até habilitar
+// por lá).
+function empresaSalvarDadosFiscaisNfse(empresaId: number, opcaoSimplesNacional: boolean, body: any) {
+  const { regimeApuracaoSn, percentualTotalTributosSn } = body || {};
   sqlite
     .prepare(
       `INSERT INTO nfse_empresa_config (empresa_id, opcao_simples_nacional, regime_apuracao_sn, percentual_total_tributos_sn, updated_at)
@@ -2455,7 +2460,7 @@ function empresaSalvarDadosFiscaisNfse(empresaId: number, body: any) {
     )
     .run(
       empresaId,
-      opcaoSimplesNacional === false ? 0 : 1,
+      opcaoSimplesNacional ? 1 : 0,
       ["1", "2", "3"].includes(regimeApuracaoSn) ? regimeApuracaoSn : "1",
       percentualTotalTributosSn != null && percentualTotalTributosSn !== "" ? Number(percentualTotalTributosSn) : null
     );
@@ -2464,11 +2469,15 @@ app.put("/api/empresas/:id", blockCliente, requirePermissao("empresas", "editar"
   const id = Number(req.params.id);
   const existing = sqlite.prepare(`SELECT * FROM empresas WHERE id = ?`).get(id) as any;
   if (!existing || !podeAcessarEmpresa((req as any).user, id)) return res.status(404).json({ error: "Empresa não encontrada." });
-  const { nome, cnpj, codigoDominio, email, telefone, endereco, cidade, uf, cep, inscricaoMunicipal, inscricaoEstadual, nomeRepresentanteLegal, cpfRepresentanteLegal, codigoMunicipioIbge, nomeMunicipioIbge, ativo, visivelRelatorios, isentoAssinatura } = req.body || {};
+  const { nome, cnpj, codigoDominio, email, telefone, endereco, cidade, uf, cep, inscricaoMunicipal, inscricaoEstadual, nomeRepresentanteLegal, cpfRepresentanteLegal, codigoMunicipioIbge, nomeMunicipioIbge, regimeTributario, ativo, visivelRelatorios, isentoAssinatura } = req.body || {};
+  const regimeTributarioFinal =
+    regimeTributario !== undefined
+      ? ((REGIMES_TRIBUTARIOS as readonly string[]).includes(regimeTributario) ? regimeTributario : "simples_nacional")
+      : existing.regime_tributario;
   sqlite
     .prepare(
       `UPDATE empresas SET nome=?, cnpj=?, codigo_dominio=?, email=?, telefone=?, endereco=?, cidade=?, uf=?, cep=?, inscricao_municipal=?, inscricao_estadual=?,
-         nome_representante_legal=?, cpf_representante_legal=?, codigo_municipio_ibge=?, nome_municipio_ibge=?, ativo=?, visivel_relatorios=?, isento_assinatura=?, updated_at=datetime('now') WHERE id=?`
+         nome_representante_legal=?, cpf_representante_legal=?, codigo_municipio_ibge=?, nome_municipio_ibge=?, regime_tributario=?, ativo=?, visivel_relatorios=?, isento_assinatura=?, updated_at=datetime('now') WHERE id=?`
     )
     .run(
       nome ?? existing.nome,
@@ -2486,12 +2495,15 @@ app.put("/api/empresas/:id", blockCliente, requirePermissao("empresas", "editar"
       cpfRepresentanteLegal !== undefined ? cpfRepresentanteLegal : existing.cpf_representante_legal,
       codigoMunicipioIbge !== undefined ? codigoMunicipioIbge : existing.codigo_municipio_ibge,
       nomeMunicipioIbge !== undefined ? nomeMunicipioIbge : existing.nome_municipio_ibge,
+      regimeTributarioFinal,
       ativo === undefined ? existing.ativo : ativo ? 1 : 0,
       visivelRelatorios === undefined ? existing.visivel_relatorios : visivelRelatorios ? 1 : 0,
       isentoAssinatura === undefined ? existing.isento_assinatura : isentoAssinatura ? 1 : 0,
       id
     );
-  empresaSalvarDadosFiscaisNfse(id, req.body);
+  if (regimeTributario !== undefined || req.body.regimeApuracaoSn !== undefined || req.body.percentualTotalTributosSn !== undefined) {
+    empresaSalvarDadosFiscaisNfse(id, regimeTributarioFinal === "simples_nacional", req.body);
+  }
   res.json({ ok: true });
 });
 app.delete("/api/empresas/:id", requireAdmin, (req, res) => {

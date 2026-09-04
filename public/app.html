@@ -1338,8 +1338,10 @@ function empresaModal(e){
       <div class="checkbox-row"><input type="checkbox" id="empVisivel" ${e.visivelRelatorios?'checked':''}> <label for="empVisivel">Aparece no filtro de Relatórios</label></div>
       <div class="checkbox-row"><input type="checkbox" id="empIsento" ${e.isentoAssinatura?'checked':''}> <label for="empIsento">Conta cortesia — isenta de cobrança de NFS-e/Financeiro</label></div>
       <p style="font-size:12px; color:var(--ink-soft); margin-top:-4px;">Libera acesso completo aos módulos NFS-e e Financeiro pra esta empresa sem exigir teste grátis nem assinatura paga.</p>
-      <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Tributação (NFS-e)</div>
-      <label class="checkbox-row"><input type="checkbox" id="empSimples" ${e.opcaoSimplesNacional!==false?'checked':''}> Optante pelo Simples Nacional</label>
+      <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Regime tributário</div>
+      <label class="checkbox-row"><input type="radio" name="empRegimeTributario" value="simples_nacional" ${(e.regimeTributario||'simples_nacional')==='simples_nacional'?'checked':''}> Optante pelo Simples Nacional</label>
+      <label class="checkbox-row"><input type="radio" name="empRegimeTributario" value="lucro_presumido" ${e.regimeTributario==='lucro_presumido'?'checked':''}> Lucro Presumido</label>
+      <label class="checkbox-row"><input type="radio" name="empRegimeTributario" value="lucro_real" ${e.regimeTributario==='lucro_real'?'checked':''}> Lucro Real</label>
       <div id="empRegApuracaoWrap"></div>
     </div>
     ` : ''}
@@ -1366,7 +1368,8 @@ function empresaModal(e){
     ligarAbaLicencasEmpresa(e.id);
     function desenhaEmpRegApuracaoWrap(){
       const wrap = document.getElementById('empRegApuracaoWrap');
-      if(!document.getElementById('empSimples').checked){ wrap.innerHTML=''; return; }
+      const marcado = document.querySelector('input[name="empRegimeTributario"]:checked');
+      if(!marcado || marcado.value!=='simples_nacional'){ wrap.innerHTML=''; return; }
       const atual = e.regimeApuracaoSn || '1';
       wrap.innerHTML = `
         <div class="field"><label>Regime de apuração dos tributos do Simples Nacional</label>
@@ -1382,7 +1385,7 @@ function empresaModal(e){
       `;
     }
     desenhaEmpRegApuracaoWrap();
-    document.getElementById('empSimples').addEventListener('change', desenhaEmpRegApuracaoWrap);
+    document.querySelectorAll('input[name="empRegimeTributario"]').forEach(r=>r.addEventListener('change', desenhaEmpRegApuracaoWrap));
   }
   // Município (IBGE) — auto-busca pela cidade/UF cadastradas; "Buscar cidade manualmente" cobre o
   // caso de não bater (abreviação, acento etc.) ou de a empresa ainda não ter cidade/UF preenchida.
@@ -1471,7 +1474,7 @@ function empresaModal(e){
         body.ativo = document.getElementById('empAtivo').checked;
         body.visivelRelatorios = document.getElementById('empVisivel').checked;
         body.isentoAssinatura = document.getElementById('empIsento').checked;
-        body.opcaoSimplesNacional = document.getElementById('empSimples').checked;
+        body.regimeTributario = document.querySelector('input[name="empRegimeTributario"]:checked')?.value || 'simples_nacional';
         body.regimeApuracaoSn = document.getElementById('empRegApuracao')?.value || '1';
         body.percentualTotalTributosSn = document.getElementById('empTotTribSN')?.value || null;
         await api('/empresas/'+e.id, { method:'PUT', body });
