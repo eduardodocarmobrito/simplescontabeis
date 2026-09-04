@@ -2568,18 +2568,30 @@ async function extrairVencimentoDeAnexo(buf: Buffer, mime: string | undefined): 
     const data = await pdfParseLib(new Uint8Array(buf));
     const texto: string = data.text || "";
     const regexPalavraChave = /(validade|vencimento|v[aá]lid[ao]\s+at[eé]|vence\s+em|data\s+de\s+validade)/gi;
-    const regexData = /(\d{2})[\/\-.](\d{2})[\/\-.](\d{4})/;
+    const regexData = /(\d{2})[\/\-.](\d{2})[\/\-.](\d{4})/g;
+    const JANELA = 60;
     let m: RegExpExecArray | null;
     while ((m = regexPalavraChave.exec(texto))) {
-      const trecho = texto.slice(m.index, m.index + 60);
-      const dm = regexData.exec(trecho);
-      if (dm) {
+      // A ordem do texto extraído do PDF segue o fluxo interno do arquivo, não necessariamente a
+      // posição visual — em vários modelos (ex.: Alvará Digital de prefeitura) a data sai ANTES do
+      // rótulo "VALIDADE", não depois. Por isso a janela olha os dois lados e fica com a data mais
+      // próxima da palavra-chave, em vez de só procurar pra frente.
+      const inicioJanela = Math.max(0, m.index - JANELA);
+      const fimJanela = m.index + m[0].length + JANELA;
+      const trecho = texto.slice(inicioJanela, fimJanela);
+      regexData.lastIndex = 0;
+      let dm: RegExpExecArray | null;
+      let melhor: { iso: string; distancia: number } | null = null;
+      while ((dm = regexData.exec(trecho))) {
         const [, dia, mes, ano] = dm;
         const diaN = Number(dia), mesN = Number(mes), anoN = Number(ano);
         if (diaN >= 1 && diaN <= 31 && mesN >= 1 && mesN <= 12 && anoN >= 2000 && anoN <= 2100) {
-          return `${ano}-${mes}-${dia}`;
+          const posAbsoluta = inicioJanela + dm.index;
+          const distancia = Math.abs(posAbsoluta - m.index);
+          if (!melhor || distancia < melhor.distancia) melhor = { iso: `${ano}-${mes}-${dia}`, distancia };
         }
       }
+      if (melhor) return melhor.iso;
     }
     return null;
   } catch {
