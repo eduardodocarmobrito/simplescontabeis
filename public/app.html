@@ -1423,22 +1423,22 @@ function ligarAbaAnexosEmpresa(empresaId, categoria, listId, formId, btnId){
           <button class="btn small danger" data-act="rm" data-id="${a.id}">Excluir</button>
         </div>
         ${categoria==='licenca'? `
-          <div class="row" style="align-items:center; gap:8px; margin-top:8px;">
-            <label style="font-size:12px; color:var(--ink-soft);">Vencimento</label>
-            <input type="date" class="anexoVencimento" data-id="${a.id}" value="${a.vencimento||''}" style="width:160px;">
+          <div class="row" style="align-items:flex-end; gap:8px; margin-top:8px;">
+            ${dateFieldHtml('vencAnexo'+a.id, 'Vencimento', a.vencimento||'')}
             <button class="btn small" data-act="salvar-venc" data-id="${a.id}">Salvar</button>
             ${vencTag}
           </div>
         `:''}
       </div>`;
     }).join('');
+    if(categoria==='licenca') items.forEach(a=>setupDatePicker('vencAnexo'+a.id, 'vencAnexo'+a.id+'_text'));
     wrap.querySelectorAll('[data-act="rm"]').forEach(b=>b.addEventListener('click', async ()=>{
       if(!confirmar('Excluir este anexo?')) return;
       try{ await api('/empresas/anexos/'+b.dataset.id, { method:'DELETE' }); carregar(); }
       catch(err){ toast(err.message,'err'); }
     }));
     wrap.querySelectorAll('[data-act="salvar-venc"]').forEach(b=>b.addEventListener('click', async ()=>{
-      const input = wrap.querySelector('.anexoVencimento[data-id="'+b.dataset.id+'"]');
+      const input = document.getElementById('vencAnexo'+b.dataset.id);
       try{
         await api('/empresas/anexos/'+b.dataset.id+'/vencimento', { method:'PUT', body:{ vencimento: input.value || null } });
         toast('Vencimento atualizado.','ok');
