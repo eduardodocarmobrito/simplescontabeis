@@ -3815,6 +3815,9 @@ async function renderNfseNotasDetalhe(empresaId){
 // ===================== Busca de XML (NF-e/NFC-e/NFS-e — Sefaz + Sistema Nacional NFS-e) =====================
 // Bloco de certificado por empresa — reaproveitado tanto na página "Busca de XML" quanto direto no
 // cadastro da empresa (um só lugar pra configurar, em vez de precisar ir numa tela separada).
+// Gerencia o certificado (upload/remover/ativar) — usado só no cadastro da empresa (Empresas →
+// Configurações). Na tela de Busca de XML fica só o resumo somente-leitura (ver
+// renderBuscaXmlResumoCertificado abaixo) pra não ter dois lugares pra subir o mesmo .pfx.
 async function renderCertificadoBuscaXml(containerEl, empresaId, empresaUfPadrao, opts){
   opts = opts || {};
   const podePostar = can('nfe-busca','postar');
@@ -3830,7 +3833,7 @@ async function renderCertificadoBuscaXml(containerEl, empresaId, empresaUfPadrao
         <br>NF-e/NFC-e — última busca: ${cfg.ultimaBuscaEm?fmtDateHora(cfg.ultimaBuscaEm):'nunca'}${cfg.ultimoErro?` — <span style="color:var(--debit);">${esc(cfg.ultimoErro)}</span>`:''}
         <br>NFS-e — última busca: ${cfg.ultimaBuscaNfseEm?fmtDateHora(cfg.ultimaBuscaNfseEm):'nunca'}${cfg.ultimoErroNfse?` — <span style="color:var(--debit);">${esc(cfg.ultimoErroNfse)}</span>`:''}
       </div>
-      <label class="checkbox-row"><input type="checkbox" id="nfeCfgAtivo_${empresaId}" ${cfg.ativo?'checked':''} ${podeEditar?'':'disabled'}> Busca ativa para esta empresa</label>
+      <label class="checkbox-row"><input type="checkbox" id="nfeCfgAtivo_${empresaId}" ${cfg.ativo?'checked':''} ${podeEditar?'':'disabled'}> Ativar Busca de XML</label>
       <div class="row" style="margin-top:6px;">
         ${podePostar?`<button class="btn primary" id="btnNfeBuscarAgora_${empresaId}" ${moduloAtivo?'':'disabled'}>Buscar agora</button>`:''}
         ${podeEditar?`<button class="btn danger" id="btnNfeRemoverCert_${empresaId}">Remover certificado</button>`:''}
@@ -3912,6 +3915,53 @@ async function renderCertificadoBuscaXml(containerEl, empresaId, empresaUfPadrao
       }catch(e){ toast(e.message,'err'); btnEnviar.disabled = false; btnEnviar.textContent = 'Enviar certificado'; }
     });
   }
+  return cfg;
+}
+// Resumo somente-leitura pra tela de Busca de XML — sem upload/remover/ativar (isso agora só em
+// Empresas → Configurações); mantém só o status e o botão "Buscar agora", que é uma ação do dia a
+// dia de quem está olhando os documentos, não de gerenciamento do certificado.
+async function renderBuscaXmlResumoCertificado(containerEl, empresaId, empresaNome, opts){
+  opts = opts || {};
+  const podePostar = can('nfe-busca','postar');
+  const { items, moduloAtivo } = await api('/nfe/config');
+  if(opts.onModuloStatus) opts.onModuloStatus(moduloAtivo);
+  const cfg = items.find(c=>c.empresaId===Number(empresaId));
+  if(!cfg){
+    containerEl.innerHTML = `<div class="empty-state">Nenhum certificado configurado ainda — envie em Empresas → ${esc(empresaNome||'')} → Configurações.</div>`;
+    return cfg;
+  }
+  containerEl.innerHTML = `
+    <div class="slot-locked" style="background:var(--paper);">
+      <span class="fname">${esc(cfg.titular||'Certificado configurado')}</span>
+      CNPJ do certificado: ${esc(cfg.cnpjCertificado||'—')} · Válido até ${fmtValidade(cfg.validadeAte)} · UF autora: ${esc(cfg.ufAutor)} · Ambiente: ${cfg.ambiente==='homologacao'?'Homologação':'Produção'}
+      <br>NF-e/NFC-e — última busca: ${cfg.ultimaBuscaEm?fmtDateHora(cfg.ultimaBuscaEm):'nunca'}${cfg.ultimoErro?` — <span style="color:var(--debit);">${esc(cfg.ultimoErro)}</span>`:''}
+      <br>NFS-e — última busca: ${cfg.ultimaBuscaNfseEm?fmtDateHora(cfg.ultimaBuscaNfseEm):'nunca'}${cfg.ultimoErroNfse?` — <span style="color:var(--debit);">${esc(cfg.ultimoErroNfse)}</span>`:''}
+      ${!cfg.ativo?`<br><span class="tag muted" style="margin-top:6px;">Busca desativada — ative em Empresas → Configurações.</span>`:''}
+    </div>
+    <div class="row" style="margin-top:6px; align-items:center;">
+      ${podePostar?`<button class="btn primary" id="btnNfeBuscarAgora_${empresaId}" ${(moduloAtivo&&cfg.ativo)?'':'disabled'}>Buscar agora</button>`:''}
+      <span style="font-size:12px; color:var(--ink-soft);">Certificado gerenciado em Empresas → Configurações.</span>
+    </div>
+    <div id="nfeBuscaResultado_${empresaId}" style="margin-top:10px;"></div>
+  `;
+  if(podePostar) containerEl.querySelector(`#btnNfeBuscarAgora_${empresaId}`).addEventListener('click', async ()=>{
+    const btn = containerEl.querySelector(`#btnNfeBuscarAgora_${empresaId}`);
+    const resultado = containerEl.querySelector(`#nfeBuscaResultado_${empresaId}`);
+    btn.disabled = true; btn.textContent = 'Buscando…';
+    resultado.innerHTML = `<div class="empty-state">Consultando a Sefaz e o Sistema Nacional NFS-e…</div>`;
+    try{
+      const r = await api('/nfe/config/'+empresaId+'/buscar', { method:'POST' });
+      const partes = [`${r.novosNfe} NF-e/NFC-e`, `${r.novosNfse} NFS-e`];
+      resultado.innerHTML = `<div class="tag ${(r.erroNfe||r.erroNfse)?'bad':'ok'}">${(r.erroNfe||r.erroNfse)?'Concluído com falhas':'Concluído'}</div> <span style="font-size:12.5px;">${partes.join(' · ')} novo(s).</span>
+        ${r.erroNfe?`<div style="font-size:12px; color:var(--debit); margin-top:4px;">NF-e/NFC-e: ${esc(r.erroNfe)}</div>`:''}
+        ${r.erroNfse?`<div style="font-size:12px; color:var(--debit); margin-top:4px;">NFS-e: ${esc(r.erroNfse)}</div>`:''}`;
+      if(opts.onDocumentosMudou) opts.onDocumentosMudou();
+    }catch(e){
+      resultado.innerHTML = `<div class="tag bad">Falhou</div> <span style="font-size:12.5px;">${esc(e.message)}</span>`;
+    }finally{
+      btn.disabled = false; btn.textContent = 'Buscar agora';
+    }
+  });
   return cfg;
 }
 // Duas telas: lista de empresas (o que já tem certificado configurado ou algum documento) e, ao
@@ -4010,7 +4060,7 @@ async function pageNfeBusca(){
     box.innerHTML = `
       <div class="card">
         <h3>Adicionar empresa</h3>
-        <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Busque uma empresa pra cadastrar o certificado dela e começar a buscar os documentos.</p>
+        <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Busque uma empresa pra ver os documentos e a situação do certificado dela (configurado em Empresas → Configurações).</p>
         <div class="field" style="max-width:420px; margin-bottom:0;"><label>Empresa</label>${comboSelectHtml('nfeAddEmpresaCombo', 'Digite para buscar a empresa…')}</div>
       </div>
       <div class="card">
@@ -4093,7 +4143,7 @@ async function pageNfeBusca(){
 
     async function carregarConfig(){
       const cbody = document.getElementById('nfeConfigBody');
-      await renderCertificadoBuscaXml(cbody, empresaId, empresa&&empresa.uf, {
+      await renderBuscaXmlResumoCertificado(cbody, empresaId, empresa&&empresa.nome, {
         onDocumentosMudou: carregarDocumentos,
         onModuloStatus: avisoModulo,
       });
