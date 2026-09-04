@@ -18,6 +18,7 @@ import * as nfe from "./nfe";
 import * as nfePdf from "./nfe-pdf";
 import * as onedrive from "./onedrive";
 import * as integracontador from "./integracontador";
+import * as ocr from "./ocr";
 import { buscarViaOnvio } from "./onvio-sync";
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
@@ -2557,46 +2558,62 @@ const EMPRESA_ANEXO_TIPOS: Record<string, { categoria: string; label: string }> 
   ambiental_semma: { categoria: "licenca", label: "Licença Ambiental - SEMMA" },
 };
 // Tenta achar a data de validade dentro do PDF (só funciona pra licença — contrato social/cartão
-// CNPJ não têm vencimento). Heurística, não mágica: procura um padrão de data (DD/MM/AAAA) logo
-// depois de uma palavra-chave típica de licença ("validade", "vencimento", "válido até" etc.) — não
-// tenta OCR de imagem, só texto real do PDF. Sempre fica editável na hora — se errar ou não achar,
-// o usuário corrige na mão, nunca trava o upload por causa disso.
-async function extrairVencimentoDeAnexo(buf: Buffer, mime: string | undefined): Promise<string | null> {
-  if (mime !== "application/pdf") return null;
+// CNPJ não têm vencimento). Heurística, não mágica: procura um padrão de data (DD/MM/AAAA) perto de
+// uma palavra-chave típica de licença ("validade", "vencimento", "válido até" etc.). Sempre fica
+// editável na hora — se errar ou não achar, o usuário corrige na mão, nunca trava o upload por
+// causa disso.
+// Texto de um PDF: tenta a camada de texto embutida primeiro (rápido, cobre a grande maioria dos
+// casos — PDFs gerados digitalmente por prefeitura/corpo de bombeiros/vigilância sanitária etc.).
+// Quando não tem texto nenhum (PDF escaneado num scanner de mesa, sem camada de texto — visto na
+// prática com licenças da SEMMA), cai pro OCR (ver src/ocr.ts) como fallback antes de desistir.
+async function obterTextoDoPdf(buf: Buffer): Promise<string> {
   try {
     const pdfParseLib = require("pdf-parse");
     const data = await pdfParseLib(new Uint8Array(buf));
     const texto: string = data.text || "";
-    const regexPalavraChave = /(validade|vencimento|v[aá]lid[ao]\s+at[eé]|vence\s+em|data\s+de\s+validade)/gi;
-    const regexData = /(\d{2})[\/\-.](\d{2})[\/\-.](\d{4})/g;
-    const JANELA = 60;
-    let m: RegExpExecArray | null;
-    while ((m = regexPalavraChave.exec(texto))) {
-      // A ordem do texto extraído do PDF segue o fluxo interno do arquivo, não necessariamente a
-      // posição visual — em vários modelos (ex.: Alvará Digital de prefeitura) a data sai ANTES do
-      // rótulo "VALIDADE", não depois. Por isso a janela olha os dois lados e fica com a data mais
-      // próxima da palavra-chave, em vez de só procurar pra frente.
-      const inicioJanela = Math.max(0, m.index - JANELA);
-      const fimJanela = m.index + m[0].length + JANELA;
-      const trecho = texto.slice(inicioJanela, fimJanela);
-      regexData.lastIndex = 0;
-      let dm: RegExpExecArray | null;
-      let melhor: { iso: string; distancia: number } | null = null;
-      while ((dm = regexData.exec(trecho))) {
-        const [, dia, mes, ano] = dm;
-        const diaN = Number(dia), mesN = Number(mes), anoN = Number(ano);
-        if (diaN >= 1 && diaN <= 31 && mesN >= 1 && mesN <= 12 && anoN >= 2000 && anoN <= 2100) {
-          const posAbsoluta = inicioJanela + dm.index;
-          const distancia = Math.abs(posAbsoluta - m.index);
-          if (!melhor || distancia < melhor.distancia) melhor = { iso: `${ano}-${mes}-${dia}`, distancia };
-        }
-      }
-      if (melhor) return melhor.iso;
-    }
-    return null;
+    if (texto.trim().length >= 20) return texto;
   } catch {
-    return null; // PDF ilegível/protegido/escaneado sem texto — segue sem vencimento automático
+    // segue pro fallback de OCR
   }
+  try {
+    return await ocr.ocrPrimeiraPagina(buf);
+  } catch {
+    return "";
+  }
+}
+function extrairVencimentoDoTexto(texto: string): string | null {
+  const regexPalavraChave = /(validade|vencimento|v[aá]lid[ao]\s+at[eé]|vence\s+em|data\s+de\s+validade)/gi;
+  const regexData = /(\d{2})[\/\-.](\d{2})[\/\-.](\d{4})/g;
+  const JANELA = 60;
+  let m: RegExpExecArray | null;
+  while ((m = regexPalavraChave.exec(texto))) {
+    // A ordem do texto extraído do PDF (ou do OCR) segue o fluxo interno do arquivo, não
+    // necessariamente a posição visual — em vários modelos (ex.: Alvará Digital de prefeitura) a
+    // data sai ANTES do rótulo "VALIDADE", não depois. Por isso a janela olha os dois lados e fica
+    // com a data mais próxima da palavra-chave, em vez de só procurar pra frente.
+    const inicioJanela = Math.max(0, m.index - JANELA);
+    const fimJanela = m.index + m[0].length + JANELA;
+    const trecho = texto.slice(inicioJanela, fimJanela);
+    regexData.lastIndex = 0;
+    let dm: RegExpExecArray | null;
+    let melhor: { iso: string; distancia: number } | null = null;
+    while ((dm = regexData.exec(trecho))) {
+      const [, dia, mes, ano] = dm;
+      const diaN = Number(dia), mesN = Number(mes), anoN = Number(ano);
+      if (diaN >= 1 && diaN <= 31 && mesN >= 1 && mesN <= 12 && anoN >= 2000 && anoN <= 2100) {
+        const posAbsoluta = inicioJanela + dm.index;
+        const distancia = Math.abs(posAbsoluta - m.index);
+        if (!melhor || distancia < melhor.distancia) melhor = { iso: `${ano}-${mes}-${dia}`, distancia };
+      }
+    }
+    if (melhor) return melhor.iso;
+  }
+  return null;
+}
+async function extrairVencimentoDeAnexo(buf: Buffer, mime: string | undefined): Promise<string | null> {
+  if (mime !== "application/pdf") return null;
+  const texto = await obterTextoDoPdf(buf);
+  return extrairVencimentoDoTexto(texto);
 }
 // Anos disponíveis na aba Licenças — um só lugar, compartilhado por todas as empresas do escritório
 // (o layout ano→tipo é o mesmo pra qualquer uma), não precisa cadastrar ano por empresa.
@@ -2703,13 +2720,11 @@ app.post("/api/empresas/anexos/licencas-bulk", blockCliente, requirePermissao("l
       naoIdentificados.push({ nomeArquivo: file.originalname, motivo: "Não é um PDF." });
       continue;
     }
-    let texto = "";
-    try {
-      const pdfParseLib = require("pdf-parse");
-      const data = await pdfParseLib(new Uint8Array(file.buffer));
-      texto = data.text || "";
-    } catch {
-      naoIdentificados.push({ nomeArquivo: file.originalname, motivo: "Não consegui ler o PDF (protegido ou escaneado sem texto)." });
+    // obterTextoDoPdf já cai pro OCR sozinho quando o PDF não tem camada de texto (scan de mesa) —
+    // reaproveita o mesmo texto abaixo pro CNPJ e pro vencimento, sem rodar OCR duas vezes.
+    const texto = await obterTextoDoPdf(file.buffer);
+    if (!texto.trim()) {
+      naoIdentificados.push({ nomeArquivo: file.originalname, motivo: "Não consegui ler o PDF (protegido, corrompido ou sem texto legível nem por OCR)." });
       continue;
     }
     // PDFs em layout de "caixinhas"/tabela (ex.: Alvará Digital de prefeitura) costumam vir sem
@@ -2745,7 +2760,7 @@ app.post("/api/empresas/anexos/licencas-bulk", blockCliente, requirePermissao("l
     fs.mkdirSync(dir, { recursive: true });
     const destino = path.join(dir, `${Date.now()}-${file.originalname}`);
     fs.writeFileSync(destino, file.buffer);
-    const vencimento = await extrairVencimentoDeAnexo(file.buffer, file.mimetype);
+    const vencimento = extrairVencimentoDoTexto(texto);
     const vencimentoOrigem = vencimento ? "automatico" : null;
     const result = sqlite
       .prepare(

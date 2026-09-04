@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx src/server.ts",
     "build": "tsc && npm run copy-assets",
-    "copy-assets": "mkdir -p dist/nfse-tabelas && cp src/nfse-tabelas/*.json dist/nfse-tabelas/",
+    "copy-assets": "mkdir -p dist/nfse-tabelas dist/tessdata && cp src/nfse-tabelas/*.json dist/nfse-tabelas/ && cp src/tessdata/* dist/tessdata/",
     "start": "node dist/server.js",
     "dominio-agent:dev": "tsx src/dominio-agent.ts",
     "dominio-agent": "node dist/dominio-agent.js",
@@ -35,8 +35,10 @@
     "node-forge": "^1.4.0",
     "nodemailer": "^9.0.5",
     "pdf-parse": "^1.1.1",
+    "pdfjs-dist": "^6.3.289",
     "playwright": "1.62.1",
     "qrcode": "^1.5.4",
+    "tesseract.js": "^7.0.0",
     "xml-crypto": "^6.1.2"
   },
   "devDependencies": {
