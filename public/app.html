@@ -1295,6 +1295,20 @@ function empresaModal(e){
         <div class="field" style="width:70px;"><label>UF</label><input id="empUf" maxlength="2" value="${e&&e.uf?esc(e.uf):''}"></div>
         <div class="field" style="width:120px;"><label>CEP</label><input id="empCep" value="${e&&e.cep?esc(e.cep):''}"></div>
       </div>
+      <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Município (IBGE) — obrigatório pra emitir NFS-e</div>
+      <div class="row">
+        <div class="field" style="width:140px;"><label>Código do município</label><input id="empCodigoMunicipio" value="${e&&e.codigoMunicipioIbge?esc(e.codigoMunicipioIbge):''}" maxlength="7"></div>
+        <div class="field grow"><label>Descrição</label><input id="empNomeMunicipio" value="${e&&e.nomeMunicipioIbge?esc(e.nomeMunicipioIbge):''}" readonly style="background:var(--paper);"></div>
+      </div>
+      <div class="card" style="margin:6px 0 14px; background:var(--paper);">
+        <div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">Buscar cidade manualmente — use se a cidade/UF acima não bater com a tabela do IBGE, ou pra corrigir</div>
+        <div class="row">
+          <div class="field" style="width:90px;"><label>UF</label>
+            <select id="empMunicipioUf"><option value="">—</option>${UFS_BR.map(u=>`<option value="${u}" ${e&&e.uf===u?'selected':''}>${u}</option>`).join('')}</select>
+          </div>
+          <div class="field grow"><label>Cidade</label>${comboSelectHtml('empMunicipioCidadeCombo','Selecione a UF primeiro…')}</div>
+        </div>
+      </div>
       <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Representante legal (usado em contratos/distratos)</div>
       <div class="row">
         <div class="field grow"><label>Nome do representante legal</label><input id="empNomeRepresentante" value="${e&&e.nomeRepresentanteLegal?esc(e.nomeRepresentanteLegal):''}"></div>
@@ -1316,14 +1330,17 @@ function empresaModal(e){
       <div id="empLicencasTipos" style="margin-top:12px;"></div>
     </div>
     <div id="empTabConfiguracoes" class="hidden">
-      <div style="font-weight:600; font-size:13px; color:var(--ink-soft); padding-top:2px; margin-bottom:6px;">Certificado digital (Busca de XML — NF-e/NFC-e/NFS-e)</div>
-      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:0;">Certificado próprio desta empresa, usado só pra buscar os documentos fiscais dela na Sefaz e no Sistema Nacional NFS-e — não é o mesmo certificado usado pra emitir NFS-e.</p>
+      <div style="font-weight:600; font-size:13px; color:var(--ink-soft); padding-top:2px; margin-bottom:6px;">Certificado digital</div>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:0;">Certificado próprio desta empresa — usado pra buscar os documentos fiscais dela na Sefaz e no Sistema Nacional NFS-e, e também pra assinar a emissão de NFS-e quando o método de assinatura for "Certificado próprio desta empresa" (em NFS-e › Configurar).</p>
       <div id="empCertBuscaXml"><div class="empty-state">Carregando…</div></div>
       <div style="margin:14px 0 8px; border-top:1px solid var(--rule); padding-top:12px;"></div>
       <div class="checkbox-row"><input type="checkbox" id="empAtivo" ${e.ativo?'checked':''}> <label for="empAtivo">Empresa ativa</label></div>
       <div class="checkbox-row"><input type="checkbox" id="empVisivel" ${e.visivelRelatorios?'checked':''}> <label for="empVisivel">Aparece no filtro de Relatórios</label></div>
       <div class="checkbox-row"><input type="checkbox" id="empIsento" ${e.isentoAssinatura?'checked':''}> <label for="empIsento">Conta cortesia — isenta de cobrança de NFS-e/Financeiro</label></div>
       <p style="font-size:12px; color:var(--ink-soft); margin-top:-4px;">Libera acesso completo aos módulos NFS-e e Financeiro pra esta empresa sem exigir teste grátis nem assinatura paga.</p>
+      <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Tributação (NFS-e)</div>
+      <label class="checkbox-row"><input type="checkbox" id="empSimples" ${e.opcaoSimplesNacional!==false?'checked':''}> Optante pelo Simples Nacional</label>
+      <div id="empRegApuracaoWrap"></div>
     </div>
     ` : ''}
     <div class="modal-actions">
@@ -1347,7 +1364,59 @@ function empresaModal(e){
     document.getElementById('empTabEmpresa').classList.remove('hidden');
     ligarAbaAnexosEmpresa(e.id, 'constituicao', 'empAnexosConstituicao', 'empAddAnexoFormConstituicao', 'btnAddAnexoConstituicao');
     ligarAbaLicencasEmpresa(e.id);
+    function desenhaEmpRegApuracaoWrap(){
+      const wrap = document.getElementById('empRegApuracaoWrap');
+      if(!document.getElementById('empSimples').checked){ wrap.innerHTML=''; return; }
+      const atual = e.regimeApuracaoSn || '1';
+      wrap.innerHTML = `
+        <div class="field"><label>Regime de apuração dos tributos do Simples Nacional</label>
+          <select id="empRegApuracao">
+            <option value="1" ${atual==='1'?'selected':''}>Tributos federais e municipal apurados pelo Simples Nacional (padrão)</option>
+            <option value="2" ${atual==='2'?'selected':''}>Tributos federais pelo Simples Nacional, ISSQN por fora (legislação municipal)</option>
+            <option value="3" ${atual==='3'?'selected':''}>Tributos federais e municipal apurados por fora do Simples Nacional</option>
+          </select>
+          <div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">Só muda de "padrão" se a empresa tiver ultrapassado algum sublimite do Simples Nacional — exigido pelo governo pra optante ME/EPP.</div>
+        </div>
+        <div class="field"><label>% total de tributos (Simples Nacional)</label><input id="empTotTribSN" type="number" step="0.01" min="0" max="99.99" value="${e.percentualTotalTributosSn!=null?e.percentualTotalTributosSn:''}" placeholder="Ex.: 6.00"></div>
+        <div style="font-size:11.5px; color:var(--ink-soft); margin-top:-6px; margin-bottom:14px;">Percentual aproximado do total de tributos embutido no preço (Lei 12.741/2012), conforme a alíquota efetiva do Simples Nacional da empresa (do DAS/faixa atual) — obrigatório pra emitir NFS-e.</div>
+      `;
+    }
+    desenhaEmpRegApuracaoWrap();
+    document.getElementById('empSimples').addEventListener('change', desenhaEmpRegApuracaoWrap);
   }
+  // Município (IBGE) — auto-busca pela cidade/UF cadastradas; "Buscar cidade manualmente" cobre o
+  // caso de não bater (abreviação, acento etc.) ou de a empresa ainda não ter cidade/UF preenchida.
+  async function carregarCidadesMunicipio(uf, tentaPreencherDe){
+    const combo = document.getElementById('empMunicipioCidadeCombo');
+    if(!uf){ setupComboSelect('empMunicipioCidadeCombo', [], ()=>{}); return; }
+    combo.querySelector('.combo-input').placeholder = 'Carregando cidades…';
+    try{
+      const { items } = await api('/nfse/municipios-ibge?uf='+encodeURIComponent(uf));
+      setupComboSelect('empMunicipioCidadeCombo', items, (id)=>{
+        const item = items.find(it=>String(it.id)===String(id));
+        document.getElementById('empCodigoMunicipio').value = item? item.id : '';
+        document.getElementById('empNomeMunicipio').value = item? item.label : '';
+      });
+      combo.querySelector('.combo-input').placeholder = 'Digite para buscar a cidade…';
+      if(tentaPreencherDe){
+        const alvo = normalizaTxt(tentaPreencherDe);
+        const achado = items.find(it=>normalizaTxt(it.label)===alvo);
+        if(achado){
+          combo.querySelector('.combo-input').value = achado.label;
+          combo.querySelector('.combo-value').value = achado.id;
+          document.getElementById('empCodigoMunicipio').value = achado.id;
+          document.getElementById('empNomeMunicipio').value = achado.label;
+        }
+      }
+    }catch(err){
+      combo.querySelector('.combo-input').placeholder = 'Não consegui carregar as cidades.';
+      toast(err.message,'err');
+    }
+  }
+  document.getElementById('empMunicipioUf').addEventListener('change', ev=>carregarCidadesMunicipio(ev.target.value, null));
+  const empMunicipioUfInicial = document.getElementById('empMunicipioUf').value;
+  if(empMunicipioUfInicial) carregarCidadesMunicipio(empMunicipioUfInicial, (e&&e.codigoMunicipioIbge)? null : (e&&e.cidade));
+  else setupComboSelect('empMunicipioCidadeCombo', [], ()=>{});
   // Ao sair do campo CNPJ (com 14 dígitos — CPF de produtor rural não tem consulta pública), busca
   // os dados na Receita Federal e preenche só os campos que ainda estão vazios — nunca sobrescreve
   // algo que já foi digitado/cadastrado antes, pra não perder dado real corrigido na mão.
@@ -1366,6 +1435,11 @@ function empresaModal(e){
       preencher('empCep', r.cep);
       const endereco = [r.logradouro, r.numero].filter(Boolean).join(', ') + (r.bairro? ' - '+r.bairro : '') + (r.complemento? ' ('+r.complemento+')' : '');
       preencher('empEndereco', endereco.trim().replace(/^,\s*/,''));
+      const ufMunicipio = document.getElementById('empMunicipioUf');
+      if(r.uf && r.municipio && !ufMunicipio.value){
+        ufMunicipio.value = r.uf;
+        carregarCidadesMunicipio(r.uf, r.municipio);
+      }
       status.textContent = 'Dados preenchidos a partir do CNPJ (campos já preenchidos não foram alterados).';
     }catch(err){
       status.textContent = err.message;
@@ -1389,12 +1463,17 @@ function empresaModal(e){
       inscricaoEstadual: document.getElementById('empInscricaoEstadual').value.trim(),
       nomeRepresentanteLegal: document.getElementById('empNomeRepresentante').value.trim(),
       cpfRepresentanteLegal: document.getElementById('empCpfRepresentante').value.trim(),
+      codigoMunicipioIbge: document.getElementById('empCodigoMunicipio').value.trim(),
+      nomeMunicipioIbge: document.getElementById('empNomeMunicipio').value.trim(),
     };
     try{
       if(e){
         body.ativo = document.getElementById('empAtivo').checked;
         body.visivelRelatorios = document.getElementById('empVisivel').checked;
         body.isentoAssinatura = document.getElementById('empIsento').checked;
+        body.opcaoSimplesNacional = document.getElementById('empSimples').checked;
+        body.regimeApuracaoSn = document.getElementById('empRegApuracao')?.value || '1';
+        body.percentualTotalTributosSn = document.getElementById('empTotTribSN')?.value || null;
         await api('/empresas/'+e.id, { method:'PUT', body });
       } else {
         await api('/empresas', { method:'POST', body });
@@ -2998,22 +3077,7 @@ function nfseEmpresaConfigModal(e){
       </select>
     </div>
     <div id="nfseEmpCertWrap"></div>
-    <div class="row">
-      <div class="field" style="width:140px;"><label>Código do município</label><input id="nfseEmpMunicipio" value="${esc(e.codigoMunicipio||'')}" maxlength="7"></div>
-      <div class="field grow"><label>Descrição</label><input id="nfseEmpMunicipioDesc" value="${esc(e.nomeMunicipio||'')}" readonly style="background:var(--paper);"></div>
-    </div>
-    <div class="card" style="margin:6px 0 14px; background:var(--paper);">
-      <div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">Buscar cidade manualmente — use se a empresa não tiver cidade/UF cadastrada, ou pra corrigir</div>
-      <div class="row">
-        <div class="field" style="width:90px;"><label>UF</label>
-          <select id="nfseEmpUf"><option value="">—</option>${UFS_BR.map(u=>`<option value="${u}" ${e.uf===u?'selected':''}>${u}</option>`).join('')}</select>
-        </div>
-        <div class="field grow"><label>Cidade</label>${comboSelectHtml('nfseEmpCidadeCombo','Selecione a UF primeiro…')}</div>
-      </div>
-    </div>
-    <div class="field"><label>Inscrição municipal</label><input id="nfseEmpIM" value="${esc(e.inscricaoMunicipal||e.inscricaoMunicipalCadastro||'')}"></div>
-    <label class="checkbox-row"><input type="checkbox" id="nfseEmpSimples" ${e.opcaoSimplesNacional!==false?'checked':''}> Optante pelo Simples Nacional</label>
-    <div id="nfseEmpRegApuracaoWrap"></div>
+    <p style="font-size:11.5px; color:var(--ink-soft); margin:2px 0 14px;">Código do município, inscrição municipal e tributação (Simples Nacional) agora ficam no cadastro da empresa — em Empresas, abas Empresa e Configurações.</p>
     <div class="card" style="margin:6px 0 14px; background:var(--paper);">
       <div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">Módulos contratados — preço definido em Configurações &gt; Módulos</div>
       <div id="nfseEmpModulosWrap"><div class="empty-state">Carregando…</div></div>
@@ -3070,94 +3134,26 @@ function nfseEmpresaConfigModal(e){
       wrap.innerHTML = `<div class="empty-state">Não consegui carregar os modelos: ${esc(err.message)}</div>`;
     }
   })();
-  async function carregarCidadesDaUf(uf, tentaPreencherDe){
-    const combo = document.getElementById('nfseEmpCidadeCombo');
-    if(!uf){ setupComboSelect('nfseEmpCidadeCombo', [], ()=>{}); return; }
-    combo.querySelector('.combo-input').placeholder = 'Carregando cidades…';
-    try{
-      const { items } = await api('/nfse/municipios-ibge?uf='+encodeURIComponent(uf));
-      setupComboSelect('nfseEmpCidadeCombo', items, (id)=>{
-        const item = items.find(it=>String(it.id)===String(id));
-        document.getElementById('nfseEmpMunicipio').value = item? item.id : '';
-        document.getElementById('nfseEmpMunicipioDesc').value = item? item.label : '';
-      });
-      combo.querySelector('.combo-input').placeholder = 'Digite para buscar a cidade…';
-      if(tentaPreencherDe){
-        const alvo = normalizaTxt(tentaPreencherDe);
-        const achado = items.find(it=>normalizaTxt(it.label)===alvo);
-        if(achado){
-          combo.querySelector('.combo-input').value = achado.label;
-          combo.querySelector('.combo-value').value = achado.id;
-          document.getElementById('nfseEmpMunicipio').value = achado.id;
-          document.getElementById('nfseEmpMunicipioDesc').value = achado.label;
-        }
-      }
-    }catch(err){
-      combo.querySelector('.combo-input').placeholder = 'Não consegui carregar as cidades.';
-      toast(err.message,'err');
-    }
-  }
-  document.getElementById('nfseEmpUf').addEventListener('change', ev=>carregarCidadesDaUf(ev.target.value, null));
-  if(e.uf) carregarCidadesDaUf(e.uf, e.codigoMunicipio? null : e.cidade);
-  else setupComboSelect('nfseEmpCidadeCombo', [], ()=>{});
   function desenhaCertWrap(){
     const metodo = document.getElementById('nfseEmpMetodo').value;
     const wrap = document.getElementById('nfseEmpCertWrap');
     if(metodo!=='certificado_proprio'){ wrap.innerHTML=''; return; }
-    wrap.innerHTML = `
-      <div class="card" style="margin:10px 0; background:var(--paper);">
-        ${e.temCertificadoProprio? `<p style="font-size:12.5px; color:var(--ink-soft); margin:0;">Certificado próprio já enviado. Envie outro arquivo abaixo só se quiser substituir.</p>`:''}
-        <div class="field" style="margin-top:6px;"><label>Arquivo do certificado (.pfx)</label><input type="file" id="nfseEmpCertArquivo" accept=".pfx,.p12"></div>
-        <div class="field"><label>Senha do certificado</label><input type="password" id="nfseEmpCertSenha"></div>
-      </div>
-    `;
+    wrap.innerHTML = e.temCertificadoProprio
+      ? `<p class="tag ok" style="margin:8px 0;">Usando o certificado cadastrado em Empresas → Configurações.</p>`
+      : `<p class="tag bad" style="margin:8px 0;">Nenhum certificado cadastrado ainda — envie um em Empresas → ${esc(e.nome)} → Configurações antes de habilitar este método.</p>`;
   }
   desenhaCertWrap();
   document.getElementById('nfseEmpMetodo').addEventListener('change', desenhaCertWrap);
-  function desenhaRegApuracaoWrap(){
-    const wrap = document.getElementById('nfseEmpRegApuracaoWrap');
-    if(!document.getElementById('nfseEmpSimples').checked){ wrap.innerHTML=''; return; }
-    const atual = e.regimeApuracaoSn || '1';
-    wrap.innerHTML = `
-      <div class="field"><label>Regime de apuração dos tributos do Simples Nacional</label>
-        <select id="nfseEmpRegApuracao">
-          <option value="1" ${atual==='1'?'selected':''}>Tributos federais e municipal apurados pelo Simples Nacional (padrão)</option>
-          <option value="2" ${atual==='2'?'selected':''}>Tributos federais pelo Simples Nacional, ISSQN por fora (legislação municipal)</option>
-          <option value="3" ${atual==='3'?'selected':''}>Tributos federais e municipal apurados por fora do Simples Nacional</option>
-        </select>
-        <div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">Só muda de "padrão" se a empresa tiver ultrapassado algum sublimite do Simples Nacional — exigido pelo governo pra optante ME/EPP.</div>
-      </div>
-      <div class="field"><label>% total de tributos (Simples Nacional)</label><input id="nfseEmpTotTribSN" type="number" step="0.01" min="0" max="99.99" value="${e.percentualTotalTributosSn!=null?e.percentualTotalTributosSn:''}" placeholder="Ex.: 6.00"></div>
-      <div style="font-size:11.5px; color:var(--ink-soft); margin-top:-6px; margin-bottom:14px;">Percentual aproximado do total de tributos embutido no preço (Lei 12.741/2012), conforme a alíquota efetiva do Simples Nacional da empresa (do DAS/faixa atual) — obrigatório pra emitir.</div>
-    `;
-  }
-  desenhaRegApuracaoWrap();
-  document.getElementById('nfseEmpSimples').addEventListener('change', desenhaRegApuracaoWrap);
   document.getElementById('nfseEmpCancel').addEventListener('click', closeModal);
   document.getElementById('nfseEmpSalvar').addEventListener('click', async ()=>{
     const metodo = document.getElementById('nfseEmpMetodo').value;
     const body = {
       habilitado: document.getElementById('nfseEmpHabilitado').checked,
       metodoAssinatura: metodo,
-      codigoMunicipio: document.getElementById('nfseEmpMunicipio').value.trim(),
-      nomeMunicipio: document.getElementById('nfseEmpMunicipioDesc').value.trim(),
-      inscricaoMunicipal: document.getElementById('nfseEmpIM').value.trim(),
-      opcaoSimplesNacional: document.getElementById('nfseEmpSimples').checked,
-      regimeApuracaoSn: document.getElementById('nfseEmpRegApuracao')?.value || '1',
-      percentualTotalTributosSn: document.getElementById('nfseEmpTotTribSN')?.value || null,
     };
     try{
-      if(metodo==='certificado_proprio'){
-        const arquivoEl = document.getElementById('nfseEmpCertArquivo');
-        const arquivo = arquivoEl && arquivoEl.files[0];
-        if(arquivo){
-          const senha = document.getElementById('nfseEmpCertSenha').value;
-          if(!senha){ toast('Informe a senha do certificado.','err'); return; }
-          const fd = new FormData(); fd.append('arquivo', arquivo); fd.append('senha', senha); fd.append('empresaId', e.id);
-          await api('/nfse/certificados', { method:'POST', body:fd });
-        } else if(!e.temCertificadoProprio){
-          toast('Envie o certificado desta empresa (.pfx) ou escolha "Procuração eletrônica".','err'); return;
-        }
+      if(metodo==='certificado_proprio' && !e.temCertificadoProprio){
+        toast('Envie o certificado desta empresa em Empresas → Configurações, ou escolha "Procuração eletrônica".','err'); return;
       }
       await api('/nfse/empresas/'+e.id, { method:'PUT', body });
       const modeloIds = Array.from(document.querySelectorAll('.nfseEmpModeloChk:checked')).map(el=>Number(el.value));

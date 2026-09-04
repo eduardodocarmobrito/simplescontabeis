@@ -1091,6 +1091,8 @@ sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_envio_documentos_periodo ON envio_do
     ["inscricao_estadual", "inscricao_estadual TEXT"],
     ["nome_representante_legal", "nome_representante_legal TEXT"],
     ["cpf_representante_legal", "cpf_representante_legal TEXT"],
+    ["codigo_municipio_ibge", "codigo_municipio_ibge TEXT"], // código IBGE (7 dígitos) do município — usado na emissão de NFS-e (DPS exige a Tabela do IBGE), centralizado aqui pra não pedir de novo por módulo
+    ["nome_municipio_ibge", "nome_municipio_ibge TEXT"], // só exibição do código acima
   ]) {
     if (!nomes.has(coluna)) sqlite.exec(`ALTER TABLE empresas ADD COLUMN ${ddl}`);
   }
@@ -2356,7 +2358,10 @@ app.get("/api/empresas", blockCliente, requirePermissao("empresas", "visualizar"
   const user = (req as any).user;
   const visiveis = empresasVisiveis(user);
   let rows = sqlite
-    .prepare(`SELECT * FROM empresas ORDER BY nome`)
+    .prepare(
+      `SELECT e.*, c.opcao_simples_nacional as opcao_simples_nacional_nfse, c.regime_apuracao_sn as regime_apuracao_sn_nfse, c.percentual_total_tributos_sn as percentual_total_tributos_sn_nfse
+       FROM empresas e LEFT JOIN nfse_empresa_config c ON c.empresa_id = e.id ORDER BY e.nome`
+    )
     .all() as any[];
   if (visiveis !== null) rows = rows.filter((r) => visiveis.includes(r.id));
   res.json({
@@ -2375,6 +2380,11 @@ app.get("/api/empresas", blockCliente, requirePermissao("empresas", "visualizar"
       inscricaoEstadual: r.inscricao_estadual,
       nomeRepresentanteLegal: r.nome_representante_legal,
       cpfRepresentanteLegal: r.cpf_representante_legal,
+      codigoMunicipioIbge: r.codigo_municipio_ibge,
+      nomeMunicipioIbge: r.nome_municipio_ibge,
+      opcaoSimplesNacional: r.opcao_simples_nacional_nfse == null ? true : !!r.opcao_simples_nacional_nfse,
+      regimeApuracaoSn: r.regime_apuracao_sn_nfse || "1",
+      percentualTotalTributosSn: r.percentual_total_tributos_sn_nfse,
       ativo: !!r.ativo,
       visivelRelatorios: !!r.visivel_relatorios,
       isentoAssinatura: !!r.isento_assinatura,
@@ -2400,12 +2410,12 @@ app.get("/api/empresas/cnpj/:cnpj", blockCliente, requirePermissao("empresas", "
 });
 app.post("/api/empresas", blockCliente, requirePermissao("empresas", "postar"), (req, res) => {
   const user = (req as any).user;
-  const { nome, cnpj, codigoDominio, email, telefone, endereco, cidade, uf, cep, inscricaoMunicipal, inscricaoEstadual, nomeRepresentanteLegal, cpfRepresentanteLegal } = req.body || {};
+  const { nome, cnpj, codigoDominio, email, telefone, endereco, cidade, uf, cep, inscricaoMunicipal, inscricaoEstadual, nomeRepresentanteLegal, cpfRepresentanteLegal, codigoMunicipioIbge, nomeMunicipioIbge } = req.body || {};
   if (!nome) return res.status(400).json({ error: "Informe o nome da empresa." });
   const info = sqlite
     .prepare(
-      `INSERT INTO empresas (nome, cnpj, codigo_dominio, email, telefone, endereco, cidade, uf, cep, inscricao_municipal, inscricao_estadual, nome_representante_legal, cpf_representante_legal, origem, escritorio_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?)`
+      `INSERT INTO empresas (nome, cnpj, codigo_dominio, email, telefone, endereco, cidade, uf, cep, inscricao_municipal, inscricao_estadual, nome_representante_legal, cpf_representante_legal, codigo_municipio_ibge, nome_municipio_ibge, origem, escritorio_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?)`
     )
     .run(
       nome,
@@ -2421,19 +2431,44 @@ app.post("/api/empresas", blockCliente, requirePermissao("empresas", "postar"), 
       inscricaoEstadual || null,
       nomeRepresentanteLegal || null,
       cpfRepresentanteLegal || null,
+      codigoMunicipioIbge || null,
+      nomeMunicipioIbge || null,
       user.escritorioId
     );
   res.json({ id: Number(info.lastInsertRowid) });
 });
+// Optante pelo Simples Nacional / regime de apuração / % total de tributos são fiscais mas vivem
+// na aba Configurações do cadastro de empresa (junto do resto), não no módulo NFS-e — evita pedir
+// a mesma informação em dois lugares. Upsert parcial: nunca mexe em habilitado/metodo_assinatura
+// (que continuam só na config do NFS-e), então funciona tanto pra empresa que já tem linha em
+// nfse_empresa_config quanto pra uma que nunca configurou NFS-e ainda (fica com os defaults da
+// tabela até habilitar por lá).
+function empresaSalvarDadosFiscaisNfse(empresaId: number, body: any) {
+  const { opcaoSimplesNacional, regimeApuracaoSn, percentualTotalTributosSn } = body || {};
+  if (opcaoSimplesNacional === undefined && regimeApuracaoSn === undefined && percentualTotalTributosSn === undefined) return;
+  sqlite
+    .prepare(
+      `INSERT INTO nfse_empresa_config (empresa_id, opcao_simples_nacional, regime_apuracao_sn, percentual_total_tributos_sn, updated_at)
+       VALUES (?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(empresa_id) DO UPDATE SET opcao_simples_nacional=excluded.opcao_simples_nacional,
+         regime_apuracao_sn=excluded.regime_apuracao_sn, percentual_total_tributos_sn=excluded.percentual_total_tributos_sn, updated_at=datetime('now')`
+    )
+    .run(
+      empresaId,
+      opcaoSimplesNacional === false ? 0 : 1,
+      ["1", "2", "3"].includes(regimeApuracaoSn) ? regimeApuracaoSn : "1",
+      percentualTotalTributosSn != null && percentualTotalTributosSn !== "" ? Number(percentualTotalTributosSn) : null
+    );
+}
 app.put("/api/empresas/:id", blockCliente, requirePermissao("empresas", "editar"), (req, res) => {
   const id = Number(req.params.id);
   const existing = sqlite.prepare(`SELECT * FROM empresas WHERE id = ?`).get(id) as any;
   if (!existing || !podeAcessarEmpresa((req as any).user, id)) return res.status(404).json({ error: "Empresa não encontrada." });
-  const { nome, cnpj, codigoDominio, email, telefone, endereco, cidade, uf, cep, inscricaoMunicipal, inscricaoEstadual, nomeRepresentanteLegal, cpfRepresentanteLegal, ativo, visivelRelatorios, isentoAssinatura } = req.body || {};
+  const { nome, cnpj, codigoDominio, email, telefone, endereco, cidade, uf, cep, inscricaoMunicipal, inscricaoEstadual, nomeRepresentanteLegal, cpfRepresentanteLegal, codigoMunicipioIbge, nomeMunicipioIbge, ativo, visivelRelatorios, isentoAssinatura } = req.body || {};
   sqlite
     .prepare(
       `UPDATE empresas SET nome=?, cnpj=?, codigo_dominio=?, email=?, telefone=?, endereco=?, cidade=?, uf=?, cep=?, inscricao_municipal=?, inscricao_estadual=?,
-         nome_representante_legal=?, cpf_representante_legal=?, ativo=?, visivel_relatorios=?, isento_assinatura=?, updated_at=datetime('now') WHERE id=?`
+         nome_representante_legal=?, cpf_representante_legal=?, codigo_municipio_ibge=?, nome_municipio_ibge=?, ativo=?, visivel_relatorios=?, isento_assinatura=?, updated_at=datetime('now') WHERE id=?`
     )
     .run(
       nome ?? existing.nome,
@@ -2449,11 +2484,14 @@ app.put("/api/empresas/:id", blockCliente, requirePermissao("empresas", "editar"
       inscricaoEstadual !== undefined ? inscricaoEstadual : existing.inscricao_estadual,
       nomeRepresentanteLegal !== undefined ? nomeRepresentanteLegal : existing.nome_representante_legal,
       cpfRepresentanteLegal !== undefined ? cpfRepresentanteLegal : existing.cpf_representante_legal,
+      codigoMunicipioIbge !== undefined ? codigoMunicipioIbge : existing.codigo_municipio_ibge,
+      nomeMunicipioIbge !== undefined ? nomeMunicipioIbge : existing.nome_municipio_ibge,
       ativo === undefined ? existing.ativo : ativo ? 1 : 0,
       visivelRelatorios === undefined ? existing.visivel_relatorios : visivelRelatorios ? 1 : 0,
       isentoAssinatura === undefined ? existing.isento_assinatura : isentoAssinatura ? 1 : 0,
       id
     );
+  empresaSalvarDadosFiscaisNfse(id, req.body);
   res.json({ ok: true });
 });
 app.delete("/api/empresas/:id", requireAdmin, (req, res) => {
@@ -4040,8 +4078,13 @@ function nfseCarregarCertificado(row: any): nfse.CertificadoInfo {
 function nfseCertificadoParaEmpresa(empresaId: number, metodo: string): { cert: nfse.CertificadoInfo; cnpjPrestador: string } {
   const empresa = sqlite.prepare(`SELECT cnpj, escritorio_id FROM empresas WHERE id = ?`).get(empresaId) as any;
   if (metodo === "certificado_proprio") {
+    // Certificado próprio agora é o mesmo já cadastrado em Empresas › Configurações (nfe_busca_config,
+    // reaproveitado — evita pedir o mesmo .pfx duas vezes pro admin); nfse_certificados fica só como
+    // fallback pro autoatendimento do Cliente (que não tem acesso à Busca de XML pra configurar lá).
+    const rowBusca = sqlite.prepare(`SELECT * FROM nfe_busca_config WHERE empresa_id = ?`).get(empresaId) as any;
+    if (rowBusca) return { cert: nfseCarregarCertificado(rowBusca), cnpjPrestador: (empresa?.cnpj || "").replace(/\D/g, "") };
     const row = sqlite.prepare(`SELECT * FROM nfse_certificados WHERE empresa_id = ?`).get(empresaId) as any;
-    if (!row) throw new Error("Esta empresa está configurada para usar certificado próprio, mas nenhum certificado foi enviado ainda.");
+    if (!row) throw new Error("Esta empresa está configurada para usar certificado próprio, mas nenhum certificado foi enviado ainda — envie em Empresas › Configurações.");
     return { cert: nfseCarregarCertificado(row), cnpjPrestador: (empresa?.cnpj || "").replace(/\D/g, "") };
   }
   const row = sqlite.prepare(`SELECT * FROM nfse_certificados WHERE empresa_id IS NULL AND escritorio_id = ?`).get(empresa?.escritorio_id) as any;
@@ -5589,13 +5632,16 @@ app.delete("/api/nfse/modelos/:id", blockCliente, requireAdmin, (req, res) => {
 app.get("/api/nfse/empresas", blockCliente, requirePermissao("nfse", "visualizar"), (_req, res) => {
   const rows = sqlite
     .prepare(
-      `SELECT e.id, e.nome, e.cnpj, e.cidade, e.uf, e.inscricao_municipal as inscricaoMunicipalCadastro,
-              c.habilitado, c.metodo_assinatura as metodoAssinatura, c.codigo_municipio as codigoMunicipio,
-              c.nome_municipio as nomeMunicipio,
-              c.inscricao_municipal as inscricaoMunicipal, c.opcao_simples_nacional as opcaoSimplesNacional,
+      `SELECT e.id, e.nome, e.cnpj, e.cidade, e.uf,
+              c.habilitado, c.metodo_assinatura as metodoAssinatura,
+              COALESCE(c.codigo_municipio, e.codigo_municipio_ibge) as codigoMunicipio,
+              COALESCE(c.nome_municipio, e.nome_municipio_ibge) as nomeMunicipio,
+              COALESCE(c.inscricao_municipal, e.inscricao_municipal) as inscricaoMunicipal,
+              c.opcao_simples_nacional as opcaoSimplesNacional,
               c.regime_especial_trib as regimeEspecialTrib, c.regime_apuracao_sn as regimeApuracaoSn,
               c.percentual_total_tributos_sn as percentualTotalTributosSn,
-              (SELECT 1 FROM nfse_certificados nc WHERE nc.empresa_id = e.id) as temCertificadoProprio
+              ((SELECT 1 FROM nfe_busca_config nb WHERE nb.empresa_id = e.id) IS NOT NULL
+                OR (SELECT 1 FROM nfse_certificados nc WHERE nc.empresa_id = e.id) IS NOT NULL) as temCertificadoProprio
        FROM empresas e LEFT JOIN nfse_empresa_config c ON c.empresa_id = e.id
        WHERE e.ativo = 1 ORDER BY e.nome`
     )
@@ -5653,7 +5699,9 @@ async function nfseResolverCep(cep: string): Promise<{
 }
 // Lista completa de municípios de uma UF — usado pelo combobox de busca manual (o admin digita
 // pra filtrar, ver setupComboSelect no frontend).
-app.get("/api/nfse/municipios-ibge", blockCliente, requirePermissao("nfse", "visualizar"), async (req, res) => {
+// Compartilhado com a aba Empresa (código do município agora é preenchido no cadastro, não só na
+// config de NFS-e) — requirePermissaoOr em vez de exigir a permissão de NFS-e de quem só cadastra empresa.
+app.get("/api/nfse/municipios-ibge", blockCliente, requirePermissaoOr("empresas", "nfse", "visualizar"), async (req, res) => {
   const uf = String(req.query.uf || "").toUpperCase().trim();
   if (!uf) return res.status(400).json({ error: "Informe a UF." });
   try {
@@ -5664,7 +5712,7 @@ app.get("/api/nfse/municipios-ibge", blockCliente, requirePermissao("nfse", "vis
   }
 });
 // Busca exata por cidade+UF (usado no auto-preenchimento a partir do cadastro da empresa).
-app.get("/api/nfse/municipio-ibge", blockCliente, requirePermissao("nfse", "visualizar"), async (req, res) => {
+app.get("/api/nfse/municipio-ibge", blockCliente, requirePermissaoOr("empresas", "nfse", "visualizar"), async (req, res) => {
   const uf = String(req.query.uf || "").toUpperCase().trim();
   const cidade = String(req.query.cidade || "").trim();
   if (!uf || !cidade) return res.status(400).json({ error: "Informe cidade e UF." });
@@ -5721,31 +5769,20 @@ app.get("/api/nfse/cep/:cep", blockCliente, requirePermissao("nfse", "visualizar
     res.status(502).json({ error: `Não consegui consultar o CEP: ${e.message}` });
   }
 });
+// Código do município/inscrição municipal (agora só no cadastro da empresa) e Optante Simples
+// Nacional/regime/% tributos (agora na aba Configurações do cadastro, ver empresaSalvarDadosFiscaisNfse)
+// não são mais escritos por aqui — o upsert parcial preserva o que já estiver salvo nessas colunas.
 app.put("/api/nfse/empresas/:id", blockCliente, requirePermissao("nfse", "editar"), (req, res) => {
   const empresaId = Number(req.params.id);
   if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
-  const { habilitado, metodoAssinatura, codigoMunicipio, nomeMunicipio, inscricaoMunicipal, opcaoSimplesNacional, regimeEspecialTrib, regimeApuracaoSn, percentualTotalTributosSn } = req.body || {};
+  const { habilitado, metodoAssinatura } = req.body || {};
   sqlite
     .prepare(
-      `INSERT INTO nfse_empresa_config (empresa_id, habilitado, metodo_assinatura, codigo_municipio, nome_municipio, inscricao_municipal, opcao_simples_nacional, regime_especial_trib, regime_apuracao_sn, percentual_total_tributos_sn, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-       ON CONFLICT(empresa_id) DO UPDATE SET habilitado=excluded.habilitado, metodo_assinatura=excluded.metodo_assinatura,
-         codigo_municipio=excluded.codigo_municipio, nome_municipio=excluded.nome_municipio, inscricao_municipal=excluded.inscricao_municipal,
-         opcao_simples_nacional=excluded.opcao_simples_nacional, regime_especial_trib=excluded.regime_especial_trib,
-         regime_apuracao_sn=excluded.regime_apuracao_sn, percentual_total_tributos_sn=excluded.percentual_total_tributos_sn, updated_at=datetime('now')`
+      `INSERT INTO nfse_empresa_config (empresa_id, habilitado, metodo_assinatura, updated_at)
+       VALUES (?, ?, ?, datetime('now'))
+       ON CONFLICT(empresa_id) DO UPDATE SET habilitado=excluded.habilitado, metodo_assinatura=excluded.metodo_assinatura, updated_at=datetime('now')`
     )
-    .run(
-      empresaId,
-      habilitado ? 1 : 0,
-      metodoAssinatura === "certificado_proprio" ? "certificado_proprio" : "procuracao_escritorio",
-      codigoMunicipio || null,
-      nomeMunicipio || null,
-      inscricaoMunicipal || null,
-      opcaoSimplesNacional === false ? 0 : 1,
-      Number(regimeEspecialTrib) || 0,
-      ["1", "2", "3"].includes(regimeApuracaoSn) ? regimeApuracaoSn : "1",
-      percentualTotalTributosSn != null && percentualTotalTributosSn !== "" ? Number(percentualTotalTributosSn) : null
-    );
+    .run(empresaId, habilitado ? 1 : 0, metodoAssinatura === "certificado_proprio" ? "certificado_proprio" : "procuracao_escritorio");
   res.json({ ok: true });
 });
 
@@ -6222,11 +6259,21 @@ async function nfseTransmitirEmissao(emissaoId: number, empresaId: number, model
     sqlite.prepare(`UPDATE nfse_emissoes SET status='erro', erro=? WHERE id=?`).run(msg, emissaoId);
     return res.status(400).json({ error: msg, emissaoId });
   };
-  const config = sqlite.prepare(`SELECT * FROM nfse_empresa_config WHERE empresa_id = ?`).get(empresaId) as any;
+  // Código do município e inscrição municipal vêm preferencialmente do próprio cadastro da empresa
+  // (código_municipio_ibge/inscricao_municipal em `empresas`) — nfse_empresa_config só ainda tem
+  // valor próprio pra empresa que configurou via autoatendimento (perfil Cliente, minha-empresa).
+  const config = sqlite
+    .prepare(
+      `SELECT c.*, e.codigo_municipio_ibge as emp_codigo_municipio, e.nome_municipio_ibge as emp_nome_municipio, e.inscricao_municipal as emp_inscricao_municipal
+       FROM nfse_empresa_config c JOIN empresas e ON e.id = c.empresa_id WHERE c.empresa_id = ?`
+    )
+    .get(empresaId) as any;
   if (!config || !config.habilitado) return falhaValidacao("Módulo NFS-e não está habilitado para esta empresa.");
-  if (!config.codigo_municipio) return falhaValidacao("Preencha o código do município (IBGE) da empresa antes de emitir.");
+  const codigoMunicipioPrestador = config.codigo_municipio || config.emp_codigo_municipio;
+  const inscricaoMunicipalPrestador = config.inscricao_municipal || config.emp_inscricao_municipal;
+  if (!codigoMunicipioPrestador) return falhaValidacao("Preencha o código do município (IBGE) da empresa antes de emitir.");
   if (config.opcao_simples_nacional && config.percentual_total_tributos_sn == null) {
-    return falhaValidacao('Preencha o "% total de tributos (Simples Nacional)" da empresa em NFS-e › Empresas antes de emitir — obrigatório pra optante ME/EPP.');
+    return falhaValidacao('Preencha o "% total de tributos (Simples Nacional)" da empresa em Empresas › Configurações antes de emitir — obrigatório pra optante ME/EPP.');
   }
 
   let cert: nfse.CertificadoInfo, cnpjPrestador: string;
@@ -6257,8 +6304,8 @@ async function nfseTransmitirEmissao(emissaoId: number, empresaId: number, model
         numeroDps,
         prestador: {
           cnpj: cnpjPrestador,
-          inscricaoMunicipal: config.inscricao_municipal || null,
-          codigoMunicipio: config.codigo_municipio,
+          inscricaoMunicipal: inscricaoMunicipalPrestador || null,
+          codigoMunicipio: codigoMunicipioPrestador,
           opcaoSimplesNacional: !!config.opcao_simples_nacional,
           regimeEspecialTrib: config.regime_especial_trib || 0,
           regimeApuracaoSn: config.regime_apuracao_sn || "1",
@@ -6415,7 +6462,8 @@ app.get("/api/nfse/minha-empresa", requireCliente, requireModuloAtivo('nfse'), (
       `SELECT c.habilitado, c.metodo_assinatura as metodoAssinatura, c.codigo_municipio as codigoMunicipio, c.nome_municipio as nomeMunicipio,
               c.inscricao_municipal as inscricaoMunicipal, c.opcao_simples_nacional as opcaoSimplesNacional,
               c.regime_especial_trib as regimeEspecialTrib, c.regime_apuracao_sn as regimeApuracaoSn, c.percentual_total_tributos_sn as percentualTotalTributosSn,
-              (SELECT 1 FROM nfse_certificados nc WHERE nc.empresa_id = e.id) as temCertificadoProprio,
+              ((SELECT 1 FROM nfe_busca_config nb WHERE nb.empresa_id = e.id) IS NOT NULL
+                OR (SELECT 1 FROM nfse_certificados nc WHERE nc.empresa_id = e.id) IS NOT NULL) as temCertificadoProprio,
               e.nome as empresaNome, e.cnpj
        FROM empresas e LEFT JOIN nfse_empresa_config c ON c.empresa_id = e.id WHERE e.id = ?`
     )
