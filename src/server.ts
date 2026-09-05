@@ -45,6 +45,7 @@ sqlite.exec(`
     empresa_id INTEGER REFERENCES empresas(id), -- a empresa que representa o próprio escritório (prestador de honorários, "Contratada" nos contratos, certificado próprio)
     agent_token TEXT UNIQUE, -- token do agente do Domínio Web deste escritório
     ativo INTEGER NOT NULL DEFAULT 1,
+    envio_rollover_ultimo_ano INTEGER, -- último ano em que a virada automática de grade de Envio de Documentos já rodou pra este escritório (ver envioRolloverGerarAno) — evita rodar 2x no mesmo ano
     criado_em TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
   );
@@ -1192,6 +1193,20 @@ sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_envio_documentos_periodo ON envio_do
   }
 }
 
+// Migração leve: escritorios.envio_rollover_ultimo_ano — trava da virada automática de ano da grade
+// de Envio de Documentos (ver envioRolloverGerarAno). Escritório já existente é inicializado com o
+// ano atual (não com NULL): sem isso, no 1º tick depois de instalada a migração, TODO escritório
+// pareceria "atrasado" e a rotina rodaria fora de hora (ex.: em setembro), gerando a grade de 2026
+// de novo pra quem já tinha. Só passa a valer de verdade quando o ano civil realmente virar.
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(escritorios)`).all() as any[];
+  if (!cols.some((c) => c.name === "envio_rollover_ultimo_ano")) {
+    sqlite.exec(`ALTER TABLE escritorios ADD COLUMN envio_rollover_ultimo_ano INTEGER`);
+    sqlite.prepare(`UPDATE escritorios SET envio_rollover_ultimo_ano = ? WHERE envio_rollover_ultimo_ano IS NULL`).run(agoraBrasilia().ano);
+    console.log("Migração aplicada: escritorios.envio_rollover_ultimo_ano.");
+  }
+}
+
 // Migração leve: cadastro de empresa ganhou os campos que o Domínio Web também tem
 // (e-mail, telefone, endereço) — adiciona nos bancos criados antes dessas colunas existirem.
 {
@@ -1630,7 +1645,7 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
 {
   const jaTemEscritorio = sqlite.prepare(`SELECT COUNT(*) as n FROM escritorios`).get() as any;
   if (jaTemEscritorio.n === 0) {
-    sqlite.prepare(`INSERT INTO escritorios (id, nome, ativo) VALUES (1, 'Simples Contábeis', 1)`).run();
+    sqlite.prepare(`INSERT INTO escritorios (id, nome, ativo, envio_rollover_ultimo_ano) VALUES (1, 'Simples Contábeis', 1, ?)`).run(agoraBrasilia().ano);
   }
   const colsEmpresas = sqlite.prepare(`PRAGMA table_info(empresas)`).all() as any[];
   if (!colsEmpresas.some((c) => c.name === "escritorio_id")) {
@@ -2233,8 +2248,8 @@ app.post("/api/super/escritorios", requireSuperAdmin, (req, res) => {
   if (!nome) return res.status(400).json({ error: "Informe o nome do escritório." });
   const agentToken = crypto.randomBytes(24).toString("hex");
   const info = sqlite
-    .prepare(`INSERT INTO escritorios (nome, cnpj, email, telefone, agent_token) VALUES (?, ?, ?, ?, ?)`)
-    .run(nome, cnpj || null, email || null, telefone || null, agentToken);
+    .prepare(`INSERT INTO escritorios (nome, cnpj, email, telefone, agent_token, envio_rollover_ultimo_ano) VALUES (?, ?, ?, ?, ?, ?)`)
+    .run(nome, cnpj || null, email || null, telefone || null, agentToken, agoraBrasilia().ano);
   const escritorioId = Number(info.lastInsertRowid);
   // Empresa que representa o próprio escritório — "Contratada" nos contratos, prestador nas NFS-e.
   const empresaInfo = sqlite
@@ -4033,34 +4048,93 @@ app.delete("/api/envio/atribuicoes/:id", blockCliente, requirePermissao("envio",
   res.json({ ok: true });
 });
 
+// Compartilhada entre o botão manual "Gerar ano na grade" e a virada automática de ano
+// (envioRolloverGerarAno) — mesma lógica de sempre, só extraída pra não duplicar os 4 ramos.
+// Checa existência por fora (não confia no UNIQUE(atribuicao_id,ano,mes,rotulo) + INSERT OR IGNORE
+// pra evitar duplicata): achado ao vivo que o SQLite trata NULL como diferente de NULL num UNIQUE,
+// então "Gerar ano" chamado 2x pro mesmo ano/atribuição criaria período repetido pro mesmo mês (todo
+// período mensal/trimestral/anual tem rotulo=NULL) — clicar o botão 2x sem querer, ou a virada
+// automática coincidir com um "Gerar ano" manual, duplicava silenciosamente.
+function envioGerarPeriodosAno(atribuicaoId: number, periodicidade: string, ano: number, rotulo?: string | null): number {
+  const existe = sqlite.prepare(`SELECT 1 FROM envio_periodos WHERE atribuicao_id = ? AND ano = ? AND mes IS ?`);
+  const insert = sqlite.prepare(`INSERT INTO envio_periodos (atribuicao_id, ano, mes, rotulo) VALUES (?, ?, ?, ?)`);
+  let criados = 0;
+  const inserirSeNovo = (mes: number | null) => {
+    if (existe.get(atribuicaoId, ano, mes)) return;
+    insert.run(atribuicaoId, ano, mes, null);
+    criados++;
+  };
+  if (periodicidade === "mensal") {
+    for (let mes = 1; mes <= 12; mes++) inserirSeNovo(mes);
+  } else if (periodicidade === "trimestral") {
+    // Um período por trimestre, representado pelo mês de fechamento (Mar/Jun/Set/Dez) — é o padrão
+    // de apuração trimestral do IRPJ/CSLL no Lucro Real (o DARF vence no mês seguinte ao fechamento).
+    for (const mes of [3, 6, 9, 12]) inserirSeNovo(mes);
+  } else if (periodicidade === "anual") {
+    inserirSeNovo(null);
+  } else {
+    // Avulso sempre cria um novo (é literalmente "+ Novo envio avulso") — o rótulo (com timestamp)
+    // já garante unicidade na prática, sem precisar checar existência antes.
+    insert.run(atribuicaoId, ano || new Date().getFullYear(), null, rotulo || `Envio avulso ${Date.now()}`);
+    criados++;
+  }
+  return criados;
+}
 app.post("/api/envio/periodos/gerar", blockCliente, requirePermissao("envio", "postar"), (req, res) => {
   const { atribuicaoId, ano, rotulo } = req.body || {};
   const atrib = sqlite
     .prepare(`SELECT a.*, t.periodicidade FROM envio_atribuicoes a JOIN envio_templates t ON t.id = a.template_id WHERE a.id = ?`)
     .get(Number(atribuicaoId)) as any;
   if (!atrib || !podeAcessarEmpresa((req as any).user, atrib.empresa_id)) return res.status(404).json({ error: "Atribuição não encontrada." });
-  const insert = sqlite.prepare(`INSERT OR IGNORE INTO envio_periodos (atribuicao_id, ano, mes, rotulo) VALUES (?, ?, ?, ?)`);
-  let criados = 0;
-  if (atrib.periodicidade === "mensal") {
-    for (let mes = 1; mes <= 12; mes++) {
-      const info = insert.run(atrib.id, Number(ano), mes, null);
-      if (info.changes) criados++;
-    }
-  } else if (atrib.periodicidade === "trimestral") {
-    // Um período por trimestre, representado pelo mês de fechamento (Mar/Jun/Set/Dez) — é o padrão
-    // de apuração trimestral do IRPJ/CSLL no Lucro Real (o DARF vence no mês seguinte ao fechamento).
-    for (const mes of [3, 6, 9, 12]) {
-      const info = insert.run(atrib.id, Number(ano), mes, null);
-      if (info.changes) criados++;
-    }
-  } else if (atrib.periodicidade === "anual") {
-    const info = insert.run(atrib.id, Number(ano), null, null);
-    if (info.changes) criados++;
-  } else {
-    const info = insert.run(atrib.id, Number(ano) || new Date().getFullYear(), null, rotulo || `Envio avulso ${Date.now()}`);
-    if (info.changes) criados++;
-  }
+  const criados = envioGerarPeriodosAno(atrib.id, atrib.periodicidade, Number(ano), rotulo);
   res.json({ ok: true, criados });
+});
+// Virada de ano automática: toda 1ª de janeiro (checado 1x por dia, ver setInterval abaixo), gera
+// sozinha a grade do ano novo pra toda atribuição mensal/trimestral/anual que JÁ tinha grade no ano
+// anterior — não recria do zero quem nunca usou, só renova quem já vinha usando (decisão explícita:
+// atribuição nova/recém-criada sem nada no ano anterior fica de fora até alguém gerar na mão pela
+// 1ª vez). "escritorios.envio_rollover_ultimo_ano" é a trava que evita rodar 2x no mesmo ano e
+// sobrevive a reinício do processo (fica no banco, não em memória).
+function envioRolloverGerarAno(escritorioId: number, ano: number): { atribuicoesRenovadas: number; periodosCriados: number } {
+  const anoAnterior = ano - 1;
+  const atribs = sqlite
+    .prepare(
+      `SELECT a.id as atribuicaoId, t.periodicidade
+       FROM envio_atribuicoes a
+       JOIN envio_templates t ON t.id = a.template_id AND t.escritorio_id = ? AND t.periodicidade IN ('mensal','trimestral','anual')
+       JOIN empresas e ON e.id = a.empresa_id AND e.escritorio_id = ? AND e.ativo = 1
+       WHERE a.ativo = 1 AND EXISTS (SELECT 1 FROM envio_periodos p WHERE p.atribuicao_id = a.id AND p.ano = ?)`
+    )
+    .all(escritorioId, escritorioId, anoAnterior) as any[];
+  let periodosCriados = 0;
+  for (const a of atribs) periodosCriados += envioGerarPeriodosAno(a.atribuicaoId, a.periodicidade, ano);
+  return { atribuicoesRenovadas: atribs.length, periodosCriados };
+}
+setInterval(() => {
+  const agora = agoraBrasilia();
+  if (agora.hora !== 3 || agora.minuto !== 10) return;
+  const escritorios = sqlite.prepare(`SELECT id FROM escritorios WHERE ativo = 1 AND (envio_rollover_ultimo_ano IS NULL OR envio_rollover_ultimo_ano < ?)`).all(agora.ano) as any[];
+  for (const e of escritorios) {
+    try {
+      const r = envioRolloverGerarAno(e.id, agora.ano);
+      sqlite.prepare(`UPDATE escritorios SET envio_rollover_ultimo_ano = ? WHERE id = ?`).run(agora.ano, e.id);
+      console.log(`Virada de ano da grade de Envio de Documentos — escritório ${e.id}: ${r.atribuicoesRenovadas} atribuição(ões) renovada(s), ${r.periodosCriados} período(s) criado(s) pra ${agora.ano}.`);
+    } catch (err: any) {
+      console.error(`Falha na virada de ano da grade de Envio de Documentos (escritório ${e.id}):`, err.message);
+    }
+  }
+}, 60_000);
+// Botão manual em Configurações — dispara a mesma rotina na hora, sem esperar 1º de janeiro às
+// 3h10. Útil tanto de "escape hatch" (se o servidor ficou fora do ar bem naquela hora) quanto pra
+// testar o comportamento sem esperar o ano virar de verdade. De propósito NÃO mexe em
+// envio_rollover_ultimo_ano (a trava da rotina automática) — só gera; se o admin usar isso pra
+// "adiantar" um ano bem à frente por engano, isso não pode fazer a virada automática pular anos
+// intermediários depois.
+app.post("/api/envio/rollover-ano", requireAdmin, (req, res) => {
+  const user = (req as any).user;
+  const ano = Number(req.body?.ano) || agoraBrasilia().ano;
+  const r = envioRolloverGerarAno(user.escritorioId, ano);
+  res.json({ ok: true, ano, ...r });
 });
 
 // Só pra período avulso (rótulo próprio, ex.: "CND - Receita Federal") e só quando não tem nenhum

@@ -2958,9 +2958,13 @@ async function renderEnvioAtribuicoes(){
   const [{ items: atribs }, empresas, { items: templates }] = await Promise.all([
     api('/envio/atribuicoes'), empresasAtivas(), api('/envio/templates'),
   ]);
+  const ehAdmin = STATE.user.perfil==='Administrador';
   const box = document.getElementById('envioContent');
   box.innerHTML = `
-    <div class="row" style="margin-bottom:14px;">${podePostar?`<button class="btn primary" id="btnNovaEnvioAtrib">+ Atribuir modelo a uma empresa</button>`:''}</div>
+    <div class="row" style="margin-bottom:14px; gap:8px;">
+      ${podePostar?`<button class="btn primary" id="btnNovaEnvioAtrib">+ Atribuir modelo a uma empresa</button>`:''}
+      ${ehAdmin?`<button class="btn" id="btnRolloverAno" title="Toda virada de ano (1º de janeiro) isso já roda sozinho — use aqui só se quiser adiantar ou como reforço.">Gerar grade do ano novo pra todo mundo</button>`:''}
+    </div>
     <div class="field" style="max-width:360px; margin-bottom:10px;"><input type="text" id="envioAtribFiltro" placeholder="Buscar por empresa…" autocomplete="off"></div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
@@ -3002,6 +3006,17 @@ async function renderEnvioAtribuicoes(){
   desenhaEnvioAtribs('');
   document.getElementById('envioAtribFiltro').addEventListener('input', e=>desenhaEnvioAtribs(e.target.value));
   if(podePostar) document.getElementById('btnNovaEnvioAtrib').addEventListener('click', ()=>novaEnvioAtribModal(empresas, templates));
+  if(ehAdmin) document.getElementById('btnRolloverAno').addEventListener('click', async ()=>{
+    const ano = prompt('Gerar a grade de qual ano pra todas as empresas? (só renova quem já tinha grade no ano anterior)', new Date().getFullYear()+1);
+    if(!ano) return;
+    const btn = document.getElementById('btnRolloverAno');
+    btn.disabled = true; btn.textContent = 'Gerando…';
+    try{
+      const r = await api('/envio/rollover-ano', { method:'POST', body:{ ano:Number(ano) } });
+      toast(`${r.atribuicoesRenovadas} atribuição(ões) renovada(s), ${r.periodosCriados} período(s) criado(s) pra ${r.ano}.`, 'ok');
+    }catch(e){ toast(e.message,'err'); }
+    finally{ btn.disabled = false; btn.textContent = 'Gerar grade do ano novo pra todo mundo'; }
+  });
 }
 function novaEnvioAtribModal(empresas, templates){
   openModal(`
