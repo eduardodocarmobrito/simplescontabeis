@@ -1142,6 +1142,20 @@ sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_envio_documentos_periodo ON envio_do
   }
 }
 
+// Migração leve: suspenso_desde — modelo que vai deixar de existir numa data conhecida (ex.: DARF
+// PIS/COFINS extintos pela reforma tributária, substituídos pela CBS a partir de 01/2027). Guarda a
+// 1ª competência (formato "AAAA-MM") em que o modelo já NÃO deve mais gerar pendência — competências
+// anteriores a essa data continuam cobradas normalmente; a partir dela, cardEnvioAtraso para de
+// flagar falta de envio. Não mexe em nada já gerado na grade, só no cálculo de pendência daqui pra
+// frente (ver cardEnvioAtraso).
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(envio_templates)`).all() as any[];
+  if (!cols.some((c) => c.name === "suspenso_desde")) {
+    sqlite.exec(`ALTER TABLE envio_templates ADD COLUMN suspenso_desde TEXT`);
+    console.log("Migração aplicada: envio_templates.suspenso_desde.");
+  }
+}
+
 // Migração leve: cadastro de empresa ganhou os campos que o Domínio Web também tem
 // (e-mail, telefone, endereço) — adiciona nos bancos criados antes dessas colunas existirem.
 {
@@ -3713,18 +3727,20 @@ app.get("/api/envio/templates", blockCliente, requirePermissao("envio", "visuali
       detectarVencimento: !!r.detectar_vencimento,
       considerarMesAtual: !!r.considera_mes_atual,
       visivelCliente: !!r.visivel_cliente,
+      suspensoDesde: r.suspenso_desde,
       protegido: ENVIO_TEMPLATES_PROTEGIDOS.includes(r.nome),
     })),
   });
 });
 app.post("/api/envio/templates", blockCliente, requirePermissao("envio", "postar"), (req, res) => {
   const user = (req as any).user;
-  const { nome, descricao, periodicidade, accept, detectarVencimento, considerarMesAtual, visivelCliente } = req.body || {};
+  const { nome, descricao, periodicidade, accept, detectarVencimento, considerarMesAtual, visivelCliente, suspensoDesde } = req.body || {};
   if (!nome) return res.status(400).json({ error: "Informe o nome (ex.: \"DARF PIS\")." });
+  if (suspensoDesde && !/^\d{4}-\d{2}$/.test(suspensoDesde)) return res.status(400).json({ error: "Competência de suspensão inválida." });
   const acceptFinal = Array.isArray(accept) && accept.length ? accept : ["pdf"];
   const info = sqlite
-    .prepare(`INSERT INTO envio_templates (nome, descricao, periodicidade, accept_json, detectar_vencimento, considera_mes_atual, visivel_cliente, created_by, escritorio_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(nome, descricao || null, periodicidade || "mensal", JSON.stringify(acceptFinal), detectarVencimento === false ? 0 : 1, considerarMesAtual === false ? 0 : 1, visivelCliente ? 1 : 0, user.id, user.escritorioId);
+    .prepare(`INSERT INTO envio_templates (nome, descricao, periodicidade, accept_json, detectar_vencimento, considera_mes_atual, visivel_cliente, suspenso_desde, created_by, escritorio_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(nome, descricao || null, periodicidade || "mensal", JSON.stringify(acceptFinal), detectarVencimento === false ? 0 : 1, considerarMesAtual === false ? 0 : 1, visivelCliente ? 1 : 0, suspensoDesde || null, user.id, user.escritorioId);
   res.json({ id: Number(info.lastInsertRowid) });
 });
 app.put("/api/envio/templates/:id", blockCliente, requirePermissao("envio", "editar"), (req, res) => {
@@ -3732,18 +3748,19 @@ app.put("/api/envio/templates/:id", blockCliente, requirePermissao("envio", "edi
   const existing = sqlite.prepare(`SELECT * FROM envio_templates WHERE id = ? AND escritorio_id = ?`).get(id, (req as any).user.escritorioId) as any;
   if (!existing) return res.status(404).json({ error: "Modelo não encontrado." });
   const protegido = ENVIO_TEMPLATES_PROTEGIDOS.includes(existing.nome);
-  const { nome, descricao, periodicidade, accept, ativo, detectarVencimento, considerarMesAtual, visivelCliente } = req.body || {};
+  const { nome, descricao, periodicidade, accept, ativo, detectarVencimento, considerarMesAtual, visivelCliente, suspensoDesde } = req.body || {};
   if (protegido && nome !== undefined && nome !== existing.nome) {
     return res.status(409).json({ error: `"${existing.nome}" é usado automaticamente pelo Integra Contador — renomear quebraria o anexo automático de DAS/Situação Fiscal.` });
   }
   if (periodicidade !== undefined && !["mensal", "anual", "avulso"].includes(periodicidade)) {
     return res.status(400).json({ error: "Periodicidade inválida." });
   }
+  if (suspensoDesde && !/^\d{4}-\d{2}$/.test(suspensoDesde)) return res.status(400).json({ error: "Competência de suspensão inválida." });
   // Trocar a periodicidade não migra os períodos já gerados (ficam como estavam, com o formato
   // antigo) — só passa a valer pra próxima vez que "Gerar ano na grade" (ou "+ Nova solicitação
   // avulsa") for usado em cada atribuição desse modelo.
   sqlite
-    .prepare(`UPDATE envio_templates SET nome=?, descricao=?, periodicidade=?, accept_json=?, detectar_vencimento=?, considera_mes_atual=?, visivel_cliente=?, ativo=? WHERE id=?`)
+    .prepare(`UPDATE envio_templates SET nome=?, descricao=?, periodicidade=?, accept_json=?, detectar_vencimento=?, considera_mes_atual=?, visivel_cliente=?, ativo=?, suspenso_desde=? WHERE id=?`)
     .run(
       nome ?? existing.nome,
       descricao !== undefined ? descricao : existing.descricao,
@@ -3753,6 +3770,7 @@ app.put("/api/envio/templates/:id", blockCliente, requirePermissao("envio", "edi
       considerarMesAtual === undefined ? existing.considera_mes_atual : considerarMesAtual ? 1 : 0,
       visivelCliente === undefined ? existing.visivel_cliente : visivelCliente ? 1 : 0,
       ativo === undefined ? existing.ativo : ativo ? 1 : 0,
+      suspensoDesde === undefined ? existing.suspenso_desde : suspensoDesde || null,
       id
     );
   res.json({ ok: true });
@@ -8510,7 +8528,7 @@ function cardEnvioAtraso(user: any, templateIds: number[]): any[] {
   const placeholders = templateIds.map(() => "?").join(",");
   const atribuicoes = sqlite
     .prepare(
-      `SELECT a.id as atribuicaoId, a.empresa_id as empresaId, e.nome as empresaNome, t.id as templateId, t.nome as templateNome, t.considera_mes_atual as considerarMesAtual
+      `SELECT a.id as atribuicaoId, a.empresa_id as empresaId, e.nome as empresaNome, t.id as templateId, t.nome as templateNome, t.considera_mes_atual as considerarMesAtual, t.suspenso_desde as suspensoDesde
        FROM envio_atribuicoes a
        JOIN envio_templates t ON t.id = a.template_id AND t.id IN (${placeholders}) AND t.escritorio_id = ?
        JOIN empresas e ON e.id = a.empresa_id AND e.escritorio_id = ? AND e.ativo = 1
@@ -8528,6 +8546,10 @@ function cardEnvioAtraso(user: any, templateIds: number[]): any[] {
     const maisAntigo = periodos.reduce((min, p) => (p.ano * 100 + p.mes < min.ano * 100 + min.mes ? p : min));
     let anoMesInicio = maisAntigo.ano * 100 + maisAntigo.mes;
     if (corte && corte > anoMesInicio) anoMesInicio = corte;
+    // Modelo extinto numa data conhecida (ex.: DARF PIS/COFINS substituídos pela CBS a partir de
+    // 01/2027, ver suspenso_desde) — a partir dessa competência (inclusive) o card para de cobrar,
+    // mesmo que a empresa nunca tenha enviado o mês anterior.
+    const suspensoAnoMes = atrib.suspensoDesde ? Number(atrib.suspensoDesde.slice(0, 4)) * 100 + Number(atrib.suspensoDesde.slice(5, 7)) : null;
     const competenciasFaltando: string[] = [];
     let ano = Math.floor(anoMesInicio / 100), mes = anoMesInicio % 100, iteracoes = 0;
     // Por modelo: Nota Fiscal (considera_mes_atual=1) cobra até o mês corrente, porque pode ser
@@ -8536,6 +8558,7 @@ function cardEnvioAtraso(user: any, templateIds: number[]): any[] {
     const incluirMesAtual = !!atrib.considerarMesAtual;
     while ((ano < agora.ano || (ano === agora.ano && (incluirMesAtual ? mes <= agora.mes : mes < agora.mes))) && iteracoes < 60) {
       iteracoes++;
+      if (suspensoAnoMes !== null && ano * 100 + mes >= suspensoAnoMes) break;
       const chave = `${ano}${String(mes).padStart(2, "0")}`;
       const periodo = porCompetencia.get(chave);
       const temDocumento = periodo ? sqlite.prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id = ?`).get(periodo.id) : null;

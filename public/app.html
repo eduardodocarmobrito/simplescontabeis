@@ -2411,6 +2411,8 @@ function novaAtribModal(empresas, templates){
 const MESES=['','Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
 const UFS_BR=['AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG','PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO'];
 function rotuloPeriodo(p){ return p.mes? `${MESES[p.mes]}/${p.ano}` : (p.rotulo || String(p.ano)); }
+// Competência no formato "AAAA-MM" (o mesmo do <input type="month">) pro rótulo "Jan/2027" de tela.
+function mesAnoRotulo(competencia){ const [ano,mes]=String(competencia).split('-'); return `${MESES[Number(mes)]}/${ano}`; }
 
 // Conteúdo de um slot (anexar/baixar/reabrir), sem wrapper — usado tanto na grade completa
 // (dentro de um <td>) quanto no card compacto de "Meus Documentos" (dentro de uma div solta).
@@ -2861,7 +2863,7 @@ async function renderEnvioModelos(){
   `;
   document.getElementById('envioModelosBody').innerHTML = items.length? items.map(t=>`
     <tr data-id="${t.id}">
-      <td><b>${esc(t.nome)}</b>${t.protegido?` <span title="Usado automaticamente pelo Integra Contador — não pode ser renomeado nem excluído">*</span>`:''}${t.descricao?`<br><span style="color:var(--ink-soft); font-size:12px;">${esc(t.descricao)}</span>`:''}</td>
+      <td><b>${esc(t.nome)}</b>${t.protegido?` <span title="Usado automaticamente pelo Integra Contador — não pode ser renomeado nem excluído">*</span>`:''}${t.descricao?`<br><span style="color:var(--ink-soft); font-size:12px;">${esc(t.descricao)}</span>`:''}${t.suspensoDesde?`<br><span class="tag bad" style="margin-top:3px;">Suspenso a partir de ${esc(mesAnoRotulo(t.suspensoDesde))}</span>`:''}</td>
       <td>${({mensal:'Mensal',anual:'Anual',avulso:'Avulso'})[t.periodicidade]||t.periodicidade}</td>
       <td>${t.accept.map(a=>`<span class="tag muted">${esc(a)}</span>`).join(' ')}</td>
       <td><span class="tag ${t.detectarVencimento?'ok':'muted'}">${t.detectarVencimento?'Detecta':'Não se aplica'}</span></td>
@@ -2899,6 +2901,11 @@ function envioModeloModal(t){
     <p style="font-size:11.5px; color:var(--ink-soft); margin:2px 0 0;">Desmarque para modelos que só existem depois que o mês fecha (DRE, Balancete, Razão Contábil) — aí o card só cobra a partir do mês anterior, igual o DAS.</p>
     <label class="checkbox-row" style="margin-top:10px;"><input type="checkbox" id="evVisivelCliente" ${(t&&t.visivelCliente)?'checked':''}> Cliente pode solicitar este documento</label>
     <p style="font-size:11.5px; color:var(--ink-soft); margin:2px 0 0;">Marque para este modelo aparecer no menu "Solicitar Documentos" do cliente.</p>
+    <div class="field" style="margin-top:10px;">
+      <label>Suspender a partir de (opcional)</label>
+      <input type="month" id="evSuspensoDesde" value="${t&&t.suspensoDesde?esc(t.suspensoDesde):''}" style="max-width:180px;">
+    </div>
+    <p style="font-size:11.5px; color:var(--ink-soft); margin:2px 0 0;">Pra modelo que vai deixar de existir numa data conhecida (ex.: DARF PIS/COFINS extintos pela reforma tributária, substituídos pela CBS). A partir dessa competência (inclusive) o card "Modelo de Envio em Atraso" para de cobrar — competências anteriores continuam normais. Deixe em branco pra nunca suspender.</p>
     <div class="modal-actions">
       <button class="btn" id="evCancel">Cancelar</button>
       <button class="btn primary" id="evSalvar">Salvar</button>
@@ -2911,7 +2918,7 @@ function envioModeloModal(t){
     if(!nome){ toast('Informe o nome.','err'); return; }
     const accept=[...document.querySelectorAll('.evAccept:checked')].map(c=>c.value);
     if(!accept.length){ toast('Selecione ao menos um tipo de arquivo.','err'); return; }
-    const body = { nome, descricao: document.getElementById('evDesc').value.trim(), periodicidade: document.getElementById('evPeriodicidade').value, accept, detectarVencimento: document.getElementById('evDetectarVenc').checked, considerarMesAtual: document.getElementById('evConsiderarMesAtual').checked, visivelCliente: document.getElementById('evVisivelCliente').checked };
+    const body = { nome, descricao: document.getElementById('evDesc').value.trim(), periodicidade: document.getElementById('evPeriodicidade').value, accept, detectarVencimento: document.getElementById('evDetectarVenc').checked, considerarMesAtual: document.getElementById('evConsiderarMesAtual').checked, visivelCliente: document.getElementById('evVisivelCliente').checked, suspensoDesde: document.getElementById('evSuspensoDesde').value || null };
     try{
       if(t) await api('/envio/templates/'+t.id, { method:'PUT', body });
       else await api('/envio/templates', { method:'POST', body });
