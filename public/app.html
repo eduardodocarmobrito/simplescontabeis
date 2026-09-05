@@ -815,12 +815,19 @@ async function render(){
   }
 }
 
-// ===================== Chat (balãozinho flutuante, escritório <-> cliente) =====================
+// ===================== Chat (balãozinho flutuante) =====================
 // Disponível pra qualquer Administrador/Colaborador/Cliente autenticado (não pra SuperAdmin, que
 // não pertence a nenhum escritório, nem pra conta de Painel de TV, que nem monta o shell). Lado do
-// escritório vê uma lista de conversas (uma por empresa) com busca; lado do cliente vê direto a
-// conversa única com "Simples Contábeis" (a empresa ativa dele, se tiver mais de uma).
-let CHAT = { aberto:false, tela:'lista', empresaId:null, empresaNome:null, presencaTimer:null, resumoTimer:null, mensagensTimer:null, conversas:[], filtro:'' };
+// cliente vê direto a conversa única com "Simples Contábeis" (a empresa ativa dele). Lado do
+// escritório é "universal": uma lista com 3 tipos de conversa — a conversa de cada empresa-cliente,
+// uma sala única "Equipe interna" (avisos pra todo mundo do escritório) e conversas individuais
+// (1 a 1) com outros colaboradores/admin — tudo buscável pelo mesmo campo de busca.
+let CHAT = {
+  aberto:false, tela:'lista', tipo:null, alvoId:null, titulo:null,
+  presencaTimer:null, resumoTimer:null, mensagensTimer:null,
+  conversas:[], equipe:{naoLidas:0,ultimaMensagem:null,ultimaMensagemEm:null}, dms:[],
+  dirEmpresas:null, dirColegas:null, dirCarregado:false, filtro:'',
+};
 function chatEhStaff(){ return STATE.user && (STATE.user.perfil==='Administrador' || STATE.user.perfil==='Colaborador'); }
 function chatDisponivel(){ return STATE.user && STATE.user.perfil!=='SuperAdmin' && !STATE.user.painelTv; }
 function iniciarChat(){
@@ -834,7 +841,12 @@ function iniciarChat(){
 }
 function pararChat(){
   [CHAT.presencaTimer, CHAT.resumoTimer, CHAT.mensagensTimer].forEach(t=>{ if(t) clearInterval(t); });
-  CHAT = { aberto:false, tela:'lista', empresaId:null, empresaNome:null, presencaTimer:null, resumoTimer:null, mensagensTimer:null, conversas:[], filtro:'' };
+  CHAT = {
+    aberto:false, tela:'lista', tipo:null, alvoId:null, titulo:null,
+    presencaTimer:null, resumoTimer:null, mensagensTimer:null,
+    conversas:[], equipe:{naoLidas:0,ultimaMensagem:null,ultimaMensagemEm:null}, dms:[],
+    dirEmpresas:null, dirColegas:null, dirCarregado:false, filtro:'',
+  };
   const bubble = document.getElementById('chatBubble'), panel = document.getElementById('chatPanel');
   if(bubble){ bubble.classList.add('hidden'); bubble.classList.remove('chat-piscando'); }
   if(panel){ panel.classList.add('hidden'); panel.innerHTML=''; }
@@ -858,10 +870,22 @@ async function atualizarResumoChat(){
     }
     if(chatEhStaff()){
       CHAT.conversas = data.conversas||[];
-      if(CHAT.aberto && CHAT.tela==='lista') renderChatLista();
+      CHAT.equipe = data.equipe || CHAT.equipe;
+      CHAT.dms = data.dms||[];
+      if(CHAT.aberto && CHAT.tela==='lista') renderChatConvLista();
     }else if(CHAT.aberto && CHAT.tela==='conversa'){
       atualizarChatStatusHeader(data.online);
     }
+  }catch(e){}
+}
+// Diretório completo pra busca "universal" — carregado uma vez, sob demanda, na 1ª vez que o
+// escritório abre a lista. Sem isso a busca só acharia empresa/colega que já teve mensagem antes.
+async function carregarDiretorioChat(){
+  try{
+    const [empresas, colegas] = await Promise.all([ empresasAtivas(), api('/chat/colegas') ]);
+    CHAT.dirEmpresas = empresas.map(e=>({ id:e.id, nome:e.nome }));
+    CHAT.dirColegas = colegas.items;
+    if(CHAT.aberto && CHAT.tela==='lista') renderChatConvLista();
   }catch(e){}
 }
 function toggleChatPanel(){
@@ -876,49 +900,87 @@ function toggleChatPanel(){
   document.getElementById('chatBubble').classList.remove('chat-piscando');
   panel.classList.remove('hidden');
   if(chatEhStaff()) renderChatLista();
-  else abrirChatThread(null, 'Simples Contábeis');
+  else abrirChatThread('empresa', null, 'Simples Contábeis');
 }
 function renderChatLista(){
   CHAT.tela = 'lista';
   const panel = document.getElementById('chatPanel');
-  const termo = CHAT.filtro.toLowerCase();
-  const lista = CHAT.conversas.filter(c=>!termo || c.empresaNome.toLowerCase().includes(termo));
   panel.innerHTML = `
     <div class="chat-panel-header">
       <span class="titulo">Conversas</span>
       <button class="chat-panel-close" id="chatFechar" title="Fechar">✕</button>
     </div>
-    <div class="chat-conv-busca"><input type="text" id="chatBusca" placeholder="Buscar empresa…" value="${esc(CHAT.filtro)}"></div>
-    <div class="chat-conv-lista" id="chatConvLista">
-      ${lista.length ? lista.map(c=>`
-        <div class="chat-conv-item" data-empresa-id="${c.empresaId}" data-empresa-nome="${esc(c.empresaNome)}">
-          <span class="chat-conv-dot ${c.online?'online':''}"></span>
-          <div class="chat-conv-mid">
-            <div class="chat-conv-nome">${esc(c.empresaNome)}</div>
-            <div class="chat-conv-preview">${esc(c.ultimaMensagem||'')}</div>
-          </div>
-          ${c.naoLidas>0?`<span class="chat-conv-badge">${c.naoLidas>99?'99+':c.naoLidas}</span>`:''}
-        </div>
-      `).join('') : `<div class="empty-state" style="padding:22px 14px; font-size:12px;">${CHAT.filtro?'Nenhuma empresa encontrada.':'Nenhuma conversa ainda.'}</div>`}
-    </div>
+    <div class="chat-conv-busca"><input type="text" id="chatBusca" placeholder="Buscar empresa ou colaborador…" value="${esc(CHAT.filtro)}"></div>
+    <div class="chat-conv-lista" id="chatConvLista"></div>
   `;
   document.getElementById('chatFechar').addEventListener('click', toggleChatPanel);
-  document.getElementById('chatBusca').addEventListener('input', (ev)=>{ CHAT.filtro = ev.target.value; renderChatLista(); document.getElementById('chatBusca').focus(); });
-  panel.querySelectorAll('.chat-conv-item').forEach(el=>{
-    el.addEventListener('click', ()=> abrirChatThread(Number(el.dataset.empresaId), el.dataset.empresaNome));
+  // Atualiza só a lista de baixo a cada tecla, nunca o próprio <input> — recriar o input dentro do
+  // seu próprio evento 'input' (como era antes) travava a digitação no Safari depois da 1ª letra.
+  document.getElementById('chatBusca').addEventListener('input', (ev)=>{ CHAT.filtro = ev.target.value; renderChatConvLista(); });
+  renderChatConvLista();
+  if(!CHAT.dirCarregado){ CHAT.dirCarregado = true; carregarDiretorioChat(); }
+}
+function renderChatConvLista(){
+  const wrap = document.getElementById('chatConvLista');
+  if(!wrap) return;
+  const termo = CHAT.filtro.trim().toLowerCase();
+  let empresas, colegas;
+  if(termo){
+    const empresaInfo = new Map(CHAT.conversas.map(c=>[c.empresaId, c]));
+    const dmInfo = new Map(CHAT.dms.map(d=>[d.userId, d]));
+    empresas = (CHAT.dirEmpresas||[]).filter(e=>e.nome.toLowerCase().includes(termo)).map(e=>{
+      const info = empresaInfo.get(e.id);
+      return { tipo:'empresa', id:e.id, nome:e.nome, naoLidas:info?info.naoLidas:0, ultimaMensagem:info?info.ultimaMensagem:null, ultimaMensagemEm:info?info.ultimaMensagemEm:null, online:info?info.online:false };
+    });
+    colegas = (CHAT.dirColegas||[]).filter(c=>c.nome.toLowerCase().includes(termo)).map(c=>{
+      const info = dmInfo.get(c.id);
+      return { tipo:'dm', id:c.id, nome:c.nome, naoLidas:info?info.naoLidas:0, ultimaMensagem:info?info.ultimaMensagem:null, ultimaMensagemEm:info?info.ultimaMensagemEm:null, online:c.online };
+    });
+  }else{
+    empresas = CHAT.conversas.map(c=>({ tipo:'empresa', id:c.empresaId, nome:c.empresaNome, naoLidas:c.naoLidas, ultimaMensagem:c.ultimaMensagem, ultimaMensagemEm:c.ultimaMensagemEm, online:c.online }));
+    colegas = CHAT.dms.map(d=>({ tipo:'dm', id:d.userId, nome:d.nome, naoLidas:d.naoLidas, ultimaMensagem:d.ultimaMensagem, ultimaMensagemEm:d.ultimaMensagemEm, online:d.online }));
+  }
+  const recentes = [...empresas, ...colegas].sort((a,b)=> (b.ultimaMensagemEm||'').localeCompare(a.ultimaMensagemEm||''));
+  const equipeCasa = !termo || 'equipe interna avisos'.includes(termo);
+
+  const linhaEquipe = equipeCasa ? `
+    <div class="chat-conv-item" data-tipo="equipe" data-nome="Equipe interna">
+      <span class="chat-conv-dot"></span>
+      <div class="chat-conv-mid">
+        <div class="chat-conv-nome">👥 Equipe interna</div>
+        <div class="chat-conv-preview">${esc(CHAT.equipe.ultimaMensagem || 'Avisos entre a equipe')}</div>
+      </div>
+      ${CHAT.equipe.naoLidas>0?`<span class="chat-conv-badge">${CHAT.equipe.naoLidas>99?'99+':CHAT.equipe.naoLidas}</span>`:''}
+    </div>` : '';
+  const linhasRecentes = recentes.map(item=>`
+    <div class="chat-conv-item" data-tipo="${item.tipo}" data-id="${item.id}" data-nome="${esc(item.nome)}">
+      <span class="chat-conv-dot ${item.online?'online':''}"></span>
+      <div class="chat-conv-mid">
+        <div class="chat-conv-nome">${item.tipo==='dm'?'👤 ':''}${esc(item.nome)}</div>
+        <div class="chat-conv-preview">${esc(item.ultimaMensagem || 'Iniciar conversa')}</div>
+      </div>
+      ${item.naoLidas>0?`<span class="chat-conv-badge">${item.naoLidas>99?'99+':item.naoLidas}</span>`:''}
+    </div>
+  `).join('');
+
+  wrap.innerHTML = (linhaEquipe + linhasRecentes) || `<div class="empty-state" style="padding:22px 14px; font-size:12px;">Nenhum resultado pra "${esc(CHAT.filtro)}".</div>`;
+  wrap.querySelectorAll('.chat-conv-item').forEach(el=>{
+    el.addEventListener('click', ()=> abrirChatThread(el.dataset.tipo, el.dataset.id?Number(el.dataset.id):null, el.dataset.nome));
   });
 }
-async function abrirChatThread(empresaId, empresaNome){
+async function abrirChatThread(tipo, alvoId, titulo){
   CHAT.tela = 'conversa';
-  CHAT.empresaId = empresaId;
-  CHAT.empresaNome = empresaNome;
+  CHAT.tipo = tipo;
+  CHAT.alvoId = alvoId;
+  CHAT.titulo = titulo;
   const panel = document.getElementById('chatPanel');
+  const temStatus = tipo!=='equipe';
   panel.innerHTML = `
     <div class="chat-panel-header">
       ${chatEhStaff()?'<button class="chat-panel-back" id="chatVoltar" title="Voltar">←</button>':''}
       <div style="min-width:0; flex:1;">
-        <div class="titulo">${esc(empresaNome)}</div>
-        <div class="chat-status" id="chatStatusHeader"><span class="dot"></span><span class="txt">…</span></div>
+        <div class="titulo">${tipo==='dm'?'👤 ':tipo==='equipe'?'👥 ':''}${esc(titulo)}</div>
+        ${temStatus?`<div class="chat-status" id="chatStatusHeader"><span class="dot"></span><span class="txt">…</span></div>`:''}
       </div>
       <button class="chat-panel-close" id="chatFechar" title="Fechar">✕</button>
     </div>
@@ -940,7 +1002,11 @@ async function abrirChatThread(empresaId, empresaNome){
     if(!texto) return;
     enviarBtn.disabled = true;
     try{
-      const body = chatEhStaff() ? { texto, empresaId: CHAT.empresaId } : { texto };
+      let body;
+      if(!chatEhStaff()) body = { texto };
+      else if(CHAT.tipo==='equipe') body = { texto, tipo:'equipe' };
+      else if(CHAT.tipo==='dm') body = { texto, tipo:'dm', userId: CHAT.alvoId };
+      else body = { texto, tipo:'empresa', empresaId: CHAT.alvoId };
       await api('/chat/mensagens', { method:'POST', body });
       input.value = '';
       await carregarChatMensagens();
@@ -956,17 +1022,22 @@ async function abrirChatThread(empresaId, empresaNome){
 async function carregarChatMensagens(){
   if(!CHAT.aberto || CHAT.tela!=='conversa') return;
   try{
-    const qs = chatEhStaff() ? `?empresaId=${CHAT.empresaId}` : '';
+    let qs = '';
+    if(chatEhStaff()){
+      if(CHAT.tipo==='equipe') qs = '?tipo=equipe';
+      else if(CHAT.tipo==='dm') qs = `?tipo=dm&userId=${CHAT.alvoId}`;
+      else qs = `?tipo=empresa&empresaId=${CHAT.alvoId}`;
+    }
     const data = await api('/chat/mensagens'+qs);
     const lista = document.getElementById('chatLista');
     if(!lista) return;
     const pertoDoFim = lista.scrollTop + lista.clientHeight >= lista.scrollHeight - 30;
-    lista.innerHTML = data.items.map(m=>{
-      const minha = (chatEhStaff() && m.autorLado==='escritorio') || (!chatEhStaff() && m.autorLado==='cliente');
-      return `<div class="chat-msg ${minha?'mine':'theirs'}">${esc(m.texto)}<span class="hora">${esc(m.autorNome)} · ${fmtDateHora(m.criadoEm)}</span></div>`;
-    }).join('') || `<div class="empty-state" style="padding:20px; font-size:12px;">Nenhuma mensagem ainda. Escreva a primeira!</div>`;
+    lista.innerHTML = data.items.map(m=>
+      `<div class="chat-msg ${m.mine?'mine':'theirs'}">${esc(m.texto)}<span class="hora">${esc(m.autorNome)} · ${fmtDateHora(m.criadoEm)}</span></div>`
+    ).join('') || `<div class="empty-state" style="padding:20px; font-size:12px;">Nenhuma mensagem ainda. Escreva a primeira!</div>`;
     if(pertoDoFim) lista.scrollTop = lista.scrollHeight;
-    if(chatEhStaff()) atualizarChatStatusHeader(data.empresaOnline);
+    if(chatEhStaff() && CHAT.tipo==='empresa') atualizarChatStatusHeader(data.empresaOnline);
+    else if(chatEhStaff() && CHAT.tipo==='dm') atualizarChatStatusHeader(data.colegaOnline);
     atualizarResumoChat();
   }catch(e){}
 }

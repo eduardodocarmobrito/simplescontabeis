@@ -713,6 +713,47 @@ sqlite.exec(`
     ultimo_ping TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  -- Sala única de avisos internos por escritório — todo Administrador/Colaborador do mesmo
+  -- escritório vê e escreve nela. Leitura é por usuário (cada um marca até onde já leu), diferente
+  -- da conversa por empresa acima (que é uma caixa de entrada compartilhada só com 2 lados).
+  CREATE TABLE IF NOT EXISTS chat_equipe_mensagens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    escritorio_id INTEGER NOT NULL REFERENCES escritorios(id),
+    autor_user_id INTEGER NOT NULL REFERENCES app_users(id),
+    autor_nome TEXT NOT NULL,
+    texto TEXT NOT NULL,
+    criado_em TEXT DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_chat_equipe_mensagens_escritorio ON chat_equipe_mensagens(escritorio_id, id);
+  CREATE TABLE IF NOT EXISTS chat_equipe_leitura (
+    escritorio_id INTEGER NOT NULL REFERENCES escritorios(id),
+    user_id INTEGER NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+    ultima_msg_lida_id INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (escritorio_id, user_id)
+  );
+
+  -- Conversa individual (1 a 1) entre dois colaboradores/administradores do mesmo escritório.
+  -- user_a_id/user_b_id sempre guardados com o menor id primeiro, pra ter um par único por dupla
+  -- independente de quem escreveu primeiro.
+  CREATE TABLE IF NOT EXISTS chat_dm_mensagens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    escritorio_id INTEGER NOT NULL REFERENCES escritorios(id),
+    user_a_id INTEGER NOT NULL REFERENCES app_users(id),
+    user_b_id INTEGER NOT NULL REFERENCES app_users(id),
+    autor_user_id INTEGER NOT NULL REFERENCES app_users(id),
+    autor_nome TEXT NOT NULL,
+    texto TEXT NOT NULL,
+    criado_em TEXT DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_chat_dm_mensagens_par ON chat_dm_mensagens(user_a_id, user_b_id, id);
+  CREATE TABLE IF NOT EXISTS chat_dm_leitura (
+    user_a_id INTEGER NOT NULL,
+    user_b_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+    ultima_msg_lida_id INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_a_id, user_b_id, user_id)
+  );
+
   CREATE TABLE IF NOT EXISTS emails_enviados (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     empresa_id INTEGER REFERENCES empresas(id) ON DELETE SET NULL,
@@ -2680,6 +2721,26 @@ function chatEmpresaOnline(empresaId: number): boolean {
     .get(empresaId);
   return !!row;
 }
+function chatUserOnline(userId: number): boolean {
+  const row = sqlite
+    .prepare(`SELECT 1 FROM chat_presenca WHERE user_id = ? AND ultimo_ping >= datetime('now', '-${CHAT_ONLINE_JANELA_SEGUNDOS} seconds')`)
+    .get(userId);
+  return !!row;
+}
+// user_a_id sempre o menor id — mesma dupla dá sempre o mesmo par, não importa quem escreveu 1º.
+function chatDmPar(x: number, y: number): [number, number] {
+  return x < y ? [x, y] : [y, x];
+}
+// Lista de colaboradores/admin do mesmo escritório pra abrir uma conversa individual nova — inclui
+// quem nunca trocou mensagem ainda (diferente da lista de "conversas recentes" de /chat/resumo).
+app.get("/api/chat/colegas", (req, res) => {
+  const user = (req as any).user;
+  if (!user || (user.perfil !== "Administrador" && user.perfil !== "Colaborador")) return res.status(403).json({ error: "Sem acesso." });
+  const rows = sqlite
+    .prepare(`SELECT id, nome FROM app_users WHERE escritorio_id = ? AND id != ? AND perfil IN ('Administrador','Colaborador') ORDER BY nome`)
+    .all(user.escritorioId, user.id) as any[];
+  res.json({ items: rows.map((r) => ({ id: r.id, nome: r.nome, online: chatUserOnline(r.id) })) });
+});
 app.post("/api/chat/presenca", (req, res) => {
   const user = (req as any).user;
   if (!user || user.perfil === "SuperAdmin") return res.json({ ok: true });
@@ -2704,26 +2765,96 @@ app.get("/api/chat/resumo", (req, res) => {
     return res.json({ naoLidas: row.qtd, online: chatEscritorioOnline(user.escritorioId) });
   }
   const empresaIds = empresasVisiveis(user);
-  if (!empresaIds.length) return res.json({ naoLidas: 0, conversas: [] });
-  const placeholders = empresaIds.map(() => "?").join(",");
-  const rows = sqlite
-    .prepare(
-      `SELECT e.id as empresaId, e.nome as empresaNome,
+  const empresaRows = empresaIds.length
+    ? (sqlite
+        .prepare(
+          `SELECT e.id as empresaId, e.nome as empresaNome,
               (SELECT COUNT(*) FROM chat_mensagens m WHERE m.empresa_id = e.id AND m.autor_lado='cliente' AND m.lido_pelo_escritorio=0) as naoLidas,
               (SELECT texto FROM chat_mensagens m WHERE m.empresa_id = e.id ORDER BY m.id DESC LIMIT 1) as ultimaMensagem,
               (SELECT criado_em FROM chat_mensagens m WHERE m.empresa_id = e.id ORDER BY m.id DESC LIMIT 1) as ultimaMensagemEm
-       FROM empresas e WHERE e.id IN (${placeholders}) AND e.ativo = 1`
-    )
-    .all(...empresaIds) as any[];
-  const comMensagem = rows.filter((r) => r.ultimaMensagemEm);
+           FROM empresas e WHERE e.id IN (${empresaIds.map(() => "?").join(",")}) AND e.ativo = 1`
+        )
+        .all(...empresaIds) as any[])
+    : [];
+  const comMensagem = empresaRows.filter((r) => r.ultimaMensagemEm);
   comMensagem.sort((a, b) => (a.ultimaMensagemEm < b.ultimaMensagemEm ? 1 : -1));
-  const totalNaoLidas = rows.reduce((s, r) => s + r.naoLidas, 0);
+  const empresaNaoLidas = empresaRows.reduce((s, r) => s + r.naoLidas, 0);
   const conversas = comMensagem.map((r) => ({ ...r, online: chatEmpresaOnline(r.empresaId) }));
-  res.json({ naoLidas: totalNaoLidas, conversas });
+
+  const equipeLeitura = sqlite.prepare(`SELECT ultima_msg_lida_id FROM chat_equipe_leitura WHERE escritorio_id = ? AND user_id = ?`).get(user.escritorioId, user.id) as any;
+  const ultimaLidaEquipe = equipeLeitura ? equipeLeitura.ultima_msg_lida_id : 0;
+  const equipeNaoLidas = (sqlite.prepare(`SELECT COUNT(*) as qtd FROM chat_equipe_mensagens WHERE escritorio_id = ? AND id > ? AND autor_user_id != ?`).get(user.escritorioId, ultimaLidaEquipe, user.id) as any).qtd;
+  const equipeUltima = sqlite.prepare(`SELECT texto, criado_em as em FROM chat_equipe_mensagens WHERE escritorio_id = ? ORDER BY id DESC LIMIT 1`).get(user.escritorioId) as any;
+
+  const dmPares = sqlite
+    .prepare(
+      `SELECT CASE WHEN user_a_id = ? THEN user_b_id ELSE user_a_id END as colegaId, MAX(id) as ultimoId
+       FROM chat_dm_mensagens WHERE user_a_id = ? OR user_b_id = ? GROUP BY colegaId`
+    )
+    .all(user.id, user.id, user.id) as any[];
+  const dms = dmPares
+    .map((r) => {
+      const [a, b] = chatDmPar(user.id, r.colegaId);
+      const leitura = sqlite.prepare(`SELECT ultima_msg_lida_id FROM chat_dm_leitura WHERE user_a_id = ? AND user_b_id = ? AND user_id = ?`).get(a, b, user.id) as any;
+      const ultimaLida = leitura ? leitura.ultima_msg_lida_id : 0;
+      const naoLidas = (sqlite.prepare(`SELECT COUNT(*) as qtd FROM chat_dm_mensagens WHERE user_a_id = ? AND user_b_id = ? AND id > ? AND autor_user_id != ?`).get(a, b, ultimaLida, user.id) as any).qtd;
+      const ultima = sqlite.prepare(`SELECT texto, criado_em as em FROM chat_dm_mensagens WHERE user_a_id = ? AND user_b_id = ? ORDER BY id DESC LIMIT 1`).get(a, b) as any;
+      const colega = sqlite.prepare(`SELECT nome FROM app_users WHERE id = ?`).get(r.colegaId) as any;
+      return {
+        userId: r.colegaId,
+        nome: colega ? colega.nome : "?",
+        naoLidas,
+        ultimaMensagem: ultima ? ultima.texto : null,
+        ultimaMensagemEm: ultima ? ultima.em : null,
+        online: chatUserOnline(r.colegaId),
+      };
+    })
+    .sort((a, b) => (a.ultimaMensagemEm < b.ultimaMensagemEm ? 1 : -1));
+  const dmNaoLidas = dms.reduce((s, r) => s + r.naoLidas, 0);
+
+  res.json({
+    naoLidas: empresaNaoLidas + equipeNaoLidas + dmNaoLidas,
+    conversas,
+    equipe: { naoLidas: equipeNaoLidas, ultimaMensagem: equipeUltima ? equipeUltima.texto : null, ultimaMensagemEm: equipeUltima ? equipeUltima.em : null },
+    dms,
+  });
 });
 app.get("/api/chat/mensagens", (req, res) => {
   const user = (req as any).user;
   if (!user || user.perfil === "SuperAdmin") return res.status(403).json({ error: "Sem acesso." });
+  const tipo = user.perfil === "Cliente" ? "empresa" : typeof req.query.tipo === "string" ? req.query.tipo : "empresa";
+
+  if (tipo === "equipe") {
+    const rows = sqlite
+      .prepare(`SELECT id, autor_nome as autorNome, autor_user_id as autorUserId, texto, criado_em as criadoEm FROM chat_equipe_mensagens WHERE escritorio_id = ? ORDER BY id ASC LIMIT 300`)
+      .all(user.escritorioId) as any[];
+    const maxId = rows.length ? Math.max(...rows.map((r) => r.id)) : 0;
+    sqlite
+      .prepare(
+        `INSERT INTO chat_equipe_leitura (escritorio_id, user_id, ultima_msg_lida_id) VALUES (?, ?, ?)
+         ON CONFLICT(escritorio_id, user_id) DO UPDATE SET ultima_msg_lida_id = MAX(ultima_msg_lida_id, excluded.ultima_msg_lida_id)`
+      )
+      .run(user.escritorioId, user.id, maxId);
+    return res.json({ items: rows.map((r) => ({ ...r, mine: r.autorUserId === user.id })) });
+  }
+  if (tipo === "dm") {
+    const colegaId = Number(req.query.userId);
+    const colega = sqlite.prepare(`SELECT id, nome FROM app_users WHERE id = ? AND escritorio_id = ? AND perfil IN ('Administrador','Colaborador')`).get(colegaId, user.escritorioId) as any;
+    if (!colega) return res.status(404).json({ error: "Colaborador não encontrado." });
+    const [a, b] = chatDmPar(user.id, colegaId);
+    const rows = sqlite
+      .prepare(`SELECT id, autor_nome as autorNome, autor_user_id as autorUserId, texto, criado_em as criadoEm FROM chat_dm_mensagens WHERE user_a_id = ? AND user_b_id = ? ORDER BY id ASC LIMIT 300`)
+      .all(a, b) as any[];
+    const maxId = rows.length ? Math.max(...rows.map((r) => r.id)) : 0;
+    sqlite
+      .prepare(
+        `INSERT INTO chat_dm_leitura (user_a_id, user_b_id, user_id, ultima_msg_lida_id) VALUES (?, ?, ?, ?)
+         ON CONFLICT(user_a_id, user_b_id, user_id) DO UPDATE SET ultima_msg_lida_id = MAX(ultima_msg_lida_id, excluded.ultima_msg_lida_id)`
+      )
+      .run(a, b, user.id, maxId);
+    return res.json({ items: rows.map((r) => ({ ...r, mine: r.autorUserId === user.id })), colegaNome: colega.nome, colegaOnline: chatUserOnline(colegaId) });
+  }
+
   let empresaId: number;
   if (user.perfil === "Cliente") {
     if (!user.empresaId) return res.status(400).json({ error: "Nenhuma empresa vinculada." });
@@ -2734,13 +2865,18 @@ app.get("/api/chat/mensagens", (req, res) => {
   }
   const rows = sqlite
     .prepare(`SELECT id, autor_nome as autorNome, autor_lado as autorLado, texto, criado_em as criadoEm FROM chat_mensagens WHERE empresa_id = ? ORDER BY id ASC LIMIT 300`)
-    .all(empresaId);
+    .all(empresaId) as any[];
   if (user.perfil === "Cliente") {
     sqlite.prepare(`UPDATE chat_mensagens SET lido_pelo_cliente = 1 WHERE empresa_id = ? AND autor_lado = 'escritorio' AND lido_pelo_cliente = 0`).run(empresaId);
   } else {
     sqlite.prepare(`UPDATE chat_mensagens SET lido_pelo_escritorio = 1 WHERE empresa_id = ? AND autor_lado = 'cliente' AND lido_pelo_escritorio = 0`).run(empresaId);
   }
-  res.json({ items: rows, empresaId, empresaOnline: user.perfil === "Cliente" ? undefined : chatEmpresaOnline(empresaId) });
+  const mineLado = user.perfil === "Cliente" ? "cliente" : "escritorio";
+  res.json({
+    items: rows.map((r) => ({ ...r, mine: r.autorLado === mineLado })),
+    empresaId,
+    empresaOnline: user.perfil === "Cliente" ? undefined : chatEmpresaOnline(empresaId),
+  });
 });
 app.post("/api/chat/mensagens", (req, res) => {
   const user = (req as any).user;
@@ -2748,6 +2884,35 @@ app.post("/api/chat/mensagens", (req, res) => {
   const texto = String(req.body?.texto || "").trim();
   if (!texto) return res.status(400).json({ error: "Mensagem vazia." });
   if (texto.length > 2000) return res.status(400).json({ error: "Mensagem muito longa (máximo 2000 caracteres)." });
+  const tipo = user.perfil === "Cliente" ? "empresa" : typeof req.body?.tipo === "string" ? req.body.tipo : "empresa";
+
+  if (tipo === "equipe") {
+    const info = sqlite.prepare(`INSERT INTO chat_equipe_mensagens (escritorio_id, autor_user_id, autor_nome, texto) VALUES (?, ?, ?, ?)`).run(user.escritorioId, user.id, user.nome, texto);
+    sqlite
+      .prepare(
+        `INSERT INTO chat_equipe_leitura (escritorio_id, user_id, ultima_msg_lida_id) VALUES (?, ?, ?)
+         ON CONFLICT(escritorio_id, user_id) DO UPDATE SET ultima_msg_lida_id = excluded.ultima_msg_lida_id`
+      )
+      .run(user.escritorioId, user.id, Number(info.lastInsertRowid));
+    return res.json({ id: Number(info.lastInsertRowid) });
+  }
+  if (tipo === "dm") {
+    const colegaId = Number(req.body?.userId);
+    const colega = sqlite.prepare(`SELECT id FROM app_users WHERE id = ? AND escritorio_id = ? AND perfil IN ('Administrador','Colaborador')`).get(colegaId, user.escritorioId);
+    if (!colega) return res.status(404).json({ error: "Colaborador não encontrado." });
+    const [a, b] = chatDmPar(user.id, colegaId);
+    const info = sqlite
+      .prepare(`INSERT INTO chat_dm_mensagens (escritorio_id, user_a_id, user_b_id, autor_user_id, autor_nome, texto) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(user.escritorioId, a, b, user.id, user.nome, texto);
+    sqlite
+      .prepare(
+        `INSERT INTO chat_dm_leitura (user_a_id, user_b_id, user_id, ultima_msg_lida_id) VALUES (?, ?, ?, ?)
+         ON CONFLICT(user_a_id, user_b_id, user_id) DO UPDATE SET ultima_msg_lida_id = excluded.ultima_msg_lida_id`
+      )
+      .run(a, b, user.id, Number(info.lastInsertRowid));
+    return res.json({ id: Number(info.lastInsertRowid) });
+  }
+
   let empresaId: number;
   let escritorioId: number;
   let autorLado: "escritorio" | "cliente";
