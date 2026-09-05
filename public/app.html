@@ -352,6 +352,16 @@ function ligarMascaraCep(el){
 function temFusoExplicito(iso){ return /(Z|[+-]\d{2}:\d{2})$/.test(String(iso)); }
 function fmtDate(iso){ if(!iso) return '—'; const s=String(iso).replace(' ','T'); const d=new Date(temFusoExplicito(s)?s:s+'Z'); if(isNaN(d)) return iso; return d.toLocaleDateString('pt-BR'); }
 function fmtDateHora(iso){ if(!iso) return '—'; const s=String(iso).replace(' ','T'); const d=new Date(temFusoExplicito(s)?s:s+'Z'); if(isNaN(d)) return iso; return d.toLocaleDateString('pt-BR')+' às '+d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}); }
+// Texto de status do WhatsApp pra exibir ao lado de "Enviado" — usa o status agregado por
+// whatsapp_mensagens (via webhook) quando disponível; "lido" só aparece quando TODO mundo que
+// recebeu já abriu a mensagem (visão conservadora, evita mostrar "lido" com alguém ainda sem ver).
+function whatsappStatusTexto(d){
+  const quando = d.whatsappStatusEm ? ' em '+fmtDateHora(d.whatsappStatusEm) : (d.whatsappEnviadoEm? ' em '+fmtDateHora(d.whatsappEnviadoEm) : '');
+  if(d.whatsappStatus==='lido') return `✓✓ Lido pelo cliente${quando}`;
+  if(d.whatsappStatus==='entregue') return `✓✓ Entregue ao cliente${quando}`;
+  if(d.whatsappStatus==='falhou') return `⚠ Falha na entrega por WhatsApp${quando}`;
+  return `✓ Enviado por WhatsApp ao cliente${quando}`;
+}
 // Datas cruas da Receita (Integra Contador) vêm no formato AAAAMMDD, sem separador — diferente do
 // resto do sistema (ISO). Usado só pros campos de parcelamento (dataDoPedido, dataDaSituacao).
 function fmtDataReceita(aaaammdd){ if(!aaaammdd || String(aaaammdd).length!==8) return '—'; const s=String(aaaammdd); return `${s.slice(6,8)}/${s.slice(4,6)}/${s.slice(0,4)}`; }
@@ -2718,7 +2728,7 @@ function envioDocBlocoHtml(d, podeEditar, podePostar, souCliente, mostrarVencime
       ${d.observacao? `<div class="slot-reopen-note" style="background:var(--accent-pale); color:var(--accent-deep);">${esc(d.observacao)}</div>`:''}
       ${vencHtml}
       ${!souCliente ? `<div style="font-size:11px; color:var(--ink-soft);">${d.emailEnviado? `✓ Enviado por e-mail ao cliente${d.emailEnviadoEm?' em '+fmtDateHora(d.emailEnviadoEm):''}` : (d.emailErro? '⚠ E-mail não enviado: '+esc(d.emailErro) : '')}</div>` : ''}
-      ${!souCliente ? `<div style="font-size:11px; color:var(--ink-soft);">${d.whatsappEnviado? `✓ Enviado por WhatsApp ao cliente${d.whatsappEnviadoEm?' em '+fmtDateHora(d.whatsappEnviadoEm):''}` : (d.whatsappErro? '⚠ WhatsApp não enviado: '+esc(d.whatsappErro) : '')}</div>` : ''}
+      ${!souCliente ? `<div style="font-size:11px; color:var(--ink-soft);">${d.whatsappEnviado? whatsappStatusTexto(d) : (d.whatsappErro? '⚠ WhatsApp não enviado: '+esc(d.whatsappErro) : '')}</div>` : ''}
     </div>
     <div style="display:flex; gap:6px; flex-wrap:wrap; flex-shrink:0;">
       <button class="btn small" data-act="baixar-envio" data-doc="${d.id}">Baixar</button>
@@ -3721,6 +3731,9 @@ async function renderNfseNotasDetalhe(empresaId){
                 ${n.status==='rascunho'?`<button class="btn small" data-id="${n.id}" data-act="continuar">Continuar</button> <button class="btn small" data-id="${n.id}" data-act="excluir">Excluir</button>`:''}
                 ${n.status!=='rascunho'?`<button class="btn small" data-id="${n.id}" data-act="duplicar">Duplicar</button>`:''}
                 ${n.status==='emitida'||n.status==='cancelada'?`<button class="btn small" data-id="${n.id}" data-act="baixar-xml">XML</button> <button class="btn small" data-id="${n.id}" data-act="baixar-pdf">PDF</button>`:''}
+                ${n.status==='emitida'&&n.whatsappStatus==='lido'?`<span class="tag ok" title="Lido pelo cliente${n.whatsappStatusEm?' em '+fmtDateHora(n.whatsappStatusEm):''}">✓✓ Lido</span>`:''}
+                ${n.status==='emitida'&&n.whatsappStatus==='entregue'?`<span class="tag ok" title="Entregue ao cliente">✓✓ Entregue</span>`:''}
+                ${n.status==='emitida'&&n.whatsappStatus==='falhou'?`<span class="tag bad" title="Falha na entrega por WhatsApp">⚠ Falhou</span>`:''}
                 ${n.status==='emitida'?`<button class="btn small" data-id="${n.id}" data-act="enviar-whatsapp-nfse">${n.whatsappEnviado?'Reenviar WhatsApp':'Enviar WhatsApp'}</button>`:''}
                 ${n.status==='emitida'?`<button class="btn small" data-id="${n.id}" data-act="cancelar" style="color:var(--debit);">Cancelar</button>`:''}
               </td>

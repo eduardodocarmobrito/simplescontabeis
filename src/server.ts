@@ -3723,9 +3723,11 @@ app.get("/api/envio/grade/:atribuicaoId", (req, res) => {
         .prepare(`SELECT * FROM envio_documentos WHERE periodo_id IN (${periodoIds.map(() => "?").join(",")}) ORDER BY enviado_em ASC, id ASC`)
         .all(...periodoIds) as any[])
     : [];
+  const statusWhatsappPorDoc = statusWhatsappPorOrigem("envio_documentos", docs.map((d) => d.id));
   const docsPorPeriodo = new Map<number, any[]>();
   for (const d of docs) {
     if (!docsPorPeriodo.has(d.periodo_id)) docsPorPeriodo.set(d.periodo_id, []);
+    const statusWhatsapp = statusWhatsappPorDoc.get(d.id);
     docsPorPeriodo.get(d.periodo_id)!.push({
       id: d.id,
       fileName: d.file_name,
@@ -3740,6 +3742,8 @@ app.get("/api/envio/grade/:atribuicaoId", (req, res) => {
       whatsappEnviado: !!d.whatsapp_enviado,
       whatsappEnviadoEm: d.whatsapp_enviado_em,
       whatsappErro: d.whatsapp_erro,
+      whatsappStatus: statusWhatsapp?.status || (d.whatsapp_enviado ? "enviado" : null),
+      whatsappStatusEm: statusWhatsapp?.em || null,
     });
   }
 
@@ -5899,7 +5903,13 @@ app.get("/api/nfse/emissoes", blockCliente, requirePermissao("nfse", "visualizar
   let rows = sqlite.prepare(sql).all(...params) as any[];
   const visiveis = empresasVisiveis(user);
   if (visiveis !== null) rows = rows.filter((r) => visiveis.includes(r.empresaId));
-  res.json({ items: rows });
+  const statusWhatsappPorNfse = statusWhatsappPorOrigem("nfse_emissoes", rows.map((r) => r.id));
+  res.json({
+    items: rows.map((r) => {
+      const statusWhatsapp = statusWhatsappPorNfse.get(r.id);
+      return { ...r, whatsappStatus: statusWhatsapp?.status || (r.whatsappEnviado ? "enviado" : null), whatsappStatusEm: statusWhatsapp?.em || null };
+    }),
+  });
 });
 // Nome de exibição pro arquivo baixado: "Tomador - NFS-e Nº <número>" — usa o número da NFS-e (do
 // município) quando já emitida, senão o id interno como fallback (rascunho/rejeitada).
@@ -9122,6 +9132,43 @@ app.post("/api/whatsapp/webhook", (req, res) => {
     console.error("[WhatsApp webhook] erro processando payload:", e.message);
   }
 });
+// Um documento pode ter ido pra mais de um contato (ex.: dois telefones do escritório) — cada envio
+// tem sua própria linha em whatsapp_mensagens. Aqui agrega isso num status único pra exibir na tela:
+// só mostra "lido" quando TODO mundo já leu (visão conservadora — "o cliente viu de verdade"), "falhou"
+// se qualquer um falhou (precisa de atenção), "entregue" assim que qualquer um recebeu.
+function agregarStatusWhatsapp(mensagens: { status: string; atualizado_em: string }[]): { status: "falhou" | "lido" | "entregue" | "enviado"; em: string | null } {
+  const falhas = mensagens.filter((m) => m.status === "failed");
+  if (falhas.length) {
+    const maisRecente = falhas.reduce((max, m) => (m.atualizado_em > max.atualizado_em ? m : max));
+    return { status: "falhou", em: maisRecente.atualizado_em };
+  }
+  if (mensagens.every((m) => m.status === "read")) {
+    const maisRecente = mensagens.reduce((max, m) => (m.atualizado_em > max.atualizado_em ? m : max));
+    return { status: "lido", em: maisRecente.atualizado_em };
+  }
+  if (mensagens.some((m) => m.status === "delivered" || m.status === "read")) {
+    return { status: "entregue", em: null };
+  }
+  return { status: "enviado", em: null };
+}
+// Busca e agrega o status de WhatsApp de vários documentos de uma vez (evita 1 query por linha numa
+// lista) — devolve um Map de origem_id pro status agregado.
+function statusWhatsappPorOrigem(origemTabela: "envio_documentos" | "nfse_emissoes", origemIds: number[]): Map<number, { status: string; em: string | null }> {
+  const resultado = new Map<number, { status: string; em: string | null }>();
+  if (!origemIds.length) return resultado;
+  const msgs = sqlite
+    .prepare(
+      `SELECT origem_id, status, atualizado_em FROM whatsapp_mensagens WHERE origem_tabela = ? AND origem_id IN (${origemIds.map(() => "?").join(",")})`
+    )
+    .all(origemTabela, ...origemIds) as any[];
+  const porOrigem = new Map<number, { status: string; atualizado_em: string }[]>();
+  for (const m of msgs) {
+    if (!porOrigem.has(m.origem_id)) porOrigem.set(m.origem_id, []);
+    porOrigem.get(m.origem_id)!.push(m);
+  }
+  for (const [origemId, lista] of porOrigem) resultado.set(origemId, agregarStatusWhatsapp(lista));
+  return resultado;
+}
 app.post("/api/whatsapp/testar", blockCliente, requirePermissao("configuracoes", "postar"), async (req, res) => {
   const c = getWhatsappConfig((req as any).user.escritorioId);
   if (!c.phone_number_id || !c.access_token_cifrado) return res.status(400).json({ error: "Preencha e salve o Phone Number ID e o Access Token primeiro." });
