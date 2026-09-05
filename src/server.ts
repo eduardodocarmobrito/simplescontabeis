@@ -8670,14 +8670,30 @@ function cardEnvioAtraso(user: any, templateIds: number[]): any[] {
     const maisAntigo = periodosAncora.reduce((min, p) => (p.ano * 100 + p.mes < min.ano * 100 + min.mes ? p : min));
     let anoMesInicio = maisAntigo.ano * 100 + maisAntigo.mes;
     if (corte && corte > anoMesInicio) anoMesInicio = corte;
+    // Trimestral anda de 3 em 3 meses (Mar/Jun/Set/Dez, ver "Gerar ano na grade") — mensal, mês a mês.
+    const passoMes = atrib.periodicidade === "trimestral" ? 3 : 1;
+    // O "corte" (monitoramento a partir de tal competência, configurável à parte) é pensado pro caso
+    // mensal, onde qualquer mês é uma competência válida — pra trimestral pode cair num mês que nunca
+    // é fechamento de trimestre (ex.: corte em Jul/2026), o que faria o laço abaixo "cobrar" uma
+    // competência que nunca existiu (07/2026) e pular a de verdade (09/2026). Avança pro próximo
+    // Mar/Jun/Set/Dez nesse caso — achado ao vivo testando com um corte real de Jul/2026.
+    if (passoMes === 3) {
+      let anoSnap = Math.floor(anoMesInicio / 100), mesSnap = anoMesInicio % 100;
+      while (![3, 6, 9, 12].includes(mesSnap)) {
+        mesSnap++;
+        if (mesSnap > 12) {
+          mesSnap = 1;
+          anoSnap++;
+        }
+      }
+      anoMesInicio = anoSnap * 100 + mesSnap;
+    }
     // Modelo extinto numa data conhecida (ex.: DARF PIS/COFINS substituídos pela CBS a partir de
     // 01/2027, ver suspenso_desde) — a partir dessa competência (inclusive) o card para de cobrar,
     // mesmo que a empresa nunca tenha enviado o mês anterior.
     const suspensoAnoMes = atrib.suspensoDesde ? Number(atrib.suspensoDesde.slice(0, 4)) * 100 + Number(atrib.suspensoDesde.slice(5, 7)) : null;
     const competenciasFaltando: string[] = [];
     let ano = Math.floor(anoMesInicio / 100), mes = anoMesInicio % 100, iteracoes = 0;
-    // Trimestral anda de 3 em 3 meses (Mar/Jun/Set/Dez, ver "Gerar ano na grade") — mensal, mês a mês.
-    const passoMes = atrib.periodicidade === "trimestral" ? 3 : 1;
     // Por modelo: Nota Fiscal (considera_mes_atual=1) cobra até o mês corrente, porque pode ser
     // emitida a qualquer momento do mês — já DRE/Balancete/Razão Contábil (considera_mes_atual=0)
     // só existem depois que o mês fecha, então param no mês anterior, igual DAS e Solicitações.
