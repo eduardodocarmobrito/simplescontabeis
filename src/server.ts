@@ -1156,6 +1156,42 @@ sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_envio_documentos_periodo ON envio_do
   }
 }
 
+// Migração leve: auto_regime_tributario — modelo que nasce sozinho pra empresa quando ela é
+// classificada num regime tributário específico (ex.: DARF IRPJ/CSLL trimestral só se aplica a
+// Lucro Real — marcar a empresa como Lucro Real já cria a atribuição, sem precisar lembrar de
+// atribuir na mão). Ver envioAutoAtribuirPorRegime, chamado ao salvar o regime da empresa.
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(envio_templates)`).all() as any[];
+  if (!cols.some((c) => c.name === "auto_regime_tributario")) {
+    sqlite.exec(`ALTER TABLE envio_templates ADD COLUMN auto_regime_tributario TEXT`);
+    console.log("Migração aplicada: envio_templates.auto_regime_tributario.");
+  }
+}
+
+// Migração leve: envio_periodos ganha (1) "sem_movimento" — marca que não houve imposto a recolher
+// naquela competência, sem precisar anexar nenhum arquivo, só pra sumir a pendência do card — e (2)
+// o parcelamento em quotas (ex.: IRPJ/CSLL Lucro Real trimestral pago em até 3 quotas mensais): ao
+// postar a 1ª quota já marcando "3 quotas", o sistema cria sozinho os 2 períodos seguintes
+// (parcela_periodo_id aponta pra 1ª quota, pra saber que são a mesma obrigação parcelada).
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(envio_periodos)`).all() as any[];
+  const nomes = new Set(cols.map((c) => c.name));
+  for (const [coluna, ddl] of [
+    ["sem_movimento", "sem_movimento INTEGER NOT NULL DEFAULT 0"],
+    ["sem_movimento_observacao", "sem_movimento_observacao TEXT"],
+    ["sem_movimento_por", "sem_movimento_por INTEGER REFERENCES app_users(id)"],
+    ["sem_movimento_em", "sem_movimento_em TEXT"],
+    ["parcela_numero", "parcela_numero INTEGER"],
+    ["parcela_total", "parcela_total INTEGER"],
+    ["parcela_periodo_id", "parcela_periodo_id INTEGER REFERENCES envio_periodos(id)"],
+  ] as const) {
+    if (!nomes.has(coluna)) {
+      sqlite.exec(`ALTER TABLE envio_periodos ADD COLUMN ${ddl}`);
+      console.log(`Migração aplicada: envio_periodos.${coluna}.`);
+    }
+  }
+}
+
 // Migração leve: cadastro de empresa ganhou os campos que o Domínio Web também tem
 // (e-mail, telefone, endereço) — adiciona nos bancos criados antes dessas colunas existirem.
 {
@@ -2491,6 +2527,16 @@ app.get("/api/empresas/cnpj/:cnpj", blockCliente, requirePermissao("empresas", "
   }
 });
 const REGIMES_TRIBUTARIOS = ["simples_nacional", "lucro_presumido", "lucro_real"] as const;
+// Modelo de Envio de Documentos com "auto_regime_tributario" configurado (ex.: DARF IRPJ/CSLL só
+// se aplica a Lucro Real) ganha atribuição sozinho assim que a empresa é classificada nesse regime
+// — chamado toda vez que o regime é salvo (cadastro novo ou edição), idempotente via UNIQUE(template_id,
+// empresa_id) do INSERT OR IGNORE, então não recria nem duplica se já existir.
+function envioAutoAtribuirPorRegime(empresaId: number, escritorioId: number, regimeTributario: string) {
+  const templates = sqlite.prepare(`SELECT id FROM envio_templates WHERE escritorio_id = ? AND auto_regime_tributario = ?`).all(escritorioId, regimeTributario) as any[];
+  for (const t of templates) {
+    sqlite.prepare(`INSERT OR IGNORE INTO envio_atribuicoes (template_id, empresa_id) VALUES (?, ?)`).run(t.id, empresaId);
+  }
+}
 app.post("/api/empresas", blockCliente, requirePermissao("empresas", "postar"), (req, res) => {
   const user = (req as any).user;
   const { nome, cnpj, codigoDominio, email, telefone, endereco, cidade, uf, cep, inscricaoMunicipal, inscricaoEstadual, nomeRepresentanteLegal, cpfRepresentanteLegal, codigoMunicipioIbge, nomeMunicipioIbge, regimeTributario } = req.body || {};
@@ -2519,7 +2565,9 @@ app.post("/api/empresas", blockCliente, requirePermissao("empresas", "postar"), 
       (REGIMES_TRIBUTARIOS as readonly string[]).includes(regimeTributario) ? regimeTributario : "simples_nacional",
       user.escritorioId
     );
-  res.json({ id: Number(info.lastInsertRowid) });
+  const novaEmpresaId = Number(info.lastInsertRowid);
+  envioAutoAtribuirPorRegime(novaEmpresaId, user.escritorioId, (REGIMES_TRIBUTARIOS as readonly string[]).includes(regimeTributario) ? regimeTributario : "simples_nacional");
+  res.json({ id: novaEmpresaId });
 });
 // Regime de apuração / % total de tributos são fiscais mas vivem na aba Configurações do cadastro
 // de empresa (junto do resto), não no módulo NFS-e — evita pedir a mesma informação em dois
@@ -2585,6 +2633,7 @@ app.put("/api/empresas/:id", blockCliente, requirePermissao("empresas", "editar"
   if (regimeTributario !== undefined || req.body.regimeApuracaoSn !== undefined || req.body.percentualTotalTributosSn !== undefined) {
     empresaSalvarDadosFiscaisNfse(id, regimeTributarioFinal === "simples_nacional", req.body);
   }
+  if (regimeTributario !== undefined) envioAutoAtribuirPorRegime(id, (req as any).user.escritorioId, regimeTributarioFinal);
   res.json({ ok: true });
 });
 app.delete("/api/empresas/:id", requireAdmin, (req, res) => {
@@ -3728,19 +3777,22 @@ app.get("/api/envio/templates", blockCliente, requirePermissao("envio", "visuali
       considerarMesAtual: !!r.considera_mes_atual,
       visivelCliente: !!r.visivel_cliente,
       suspensoDesde: r.suspenso_desde,
+      autoRegimeTributario: r.auto_regime_tributario,
       protegido: ENVIO_TEMPLATES_PROTEGIDOS.includes(r.nome),
     })),
   });
 });
+const ENVIO_PERIODICIDADES = ["mensal", "trimestral", "anual", "avulso"];
 app.post("/api/envio/templates", blockCliente, requirePermissao("envio", "postar"), (req, res) => {
   const user = (req as any).user;
-  const { nome, descricao, periodicidade, accept, detectarVencimento, considerarMesAtual, visivelCliente, suspensoDesde } = req.body || {};
+  const { nome, descricao, periodicidade, accept, detectarVencimento, considerarMesAtual, visivelCliente, suspensoDesde, autoRegimeTributario } = req.body || {};
   if (!nome) return res.status(400).json({ error: "Informe o nome (ex.: \"DARF PIS\")." });
   if (suspensoDesde && !/^\d{4}-\d{2}$/.test(suspensoDesde)) return res.status(400).json({ error: "Competência de suspensão inválida." });
+  if (autoRegimeTributario && !(REGIMES_TRIBUTARIOS as readonly string[]).includes(autoRegimeTributario)) return res.status(400).json({ error: "Regime tributário inválido." });
   const acceptFinal = Array.isArray(accept) && accept.length ? accept : ["pdf"];
   const info = sqlite
-    .prepare(`INSERT INTO envio_templates (nome, descricao, periodicidade, accept_json, detectar_vencimento, considera_mes_atual, visivel_cliente, suspenso_desde, created_by, escritorio_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(nome, descricao || null, periodicidade || "mensal", JSON.stringify(acceptFinal), detectarVencimento === false ? 0 : 1, considerarMesAtual === false ? 0 : 1, visivelCliente ? 1 : 0, suspensoDesde || null, user.id, user.escritorioId);
+    .prepare(`INSERT INTO envio_templates (nome, descricao, periodicidade, accept_json, detectar_vencimento, considera_mes_atual, visivel_cliente, suspenso_desde, auto_regime_tributario, created_by, escritorio_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(nome, descricao || null, ENVIO_PERIODICIDADES.includes(periodicidade) ? periodicidade : "mensal", JSON.stringify(acceptFinal), detectarVencimento === false ? 0 : 1, considerarMesAtual === false ? 0 : 1, visivelCliente ? 1 : 0, suspensoDesde || null, autoRegimeTributario || null, user.id, user.escritorioId);
   res.json({ id: Number(info.lastInsertRowid) });
 });
 app.put("/api/envio/templates/:id", blockCliente, requirePermissao("envio", "editar"), (req, res) => {
@@ -3748,19 +3800,20 @@ app.put("/api/envio/templates/:id", blockCliente, requirePermissao("envio", "edi
   const existing = sqlite.prepare(`SELECT * FROM envio_templates WHERE id = ? AND escritorio_id = ?`).get(id, (req as any).user.escritorioId) as any;
   if (!existing) return res.status(404).json({ error: "Modelo não encontrado." });
   const protegido = ENVIO_TEMPLATES_PROTEGIDOS.includes(existing.nome);
-  const { nome, descricao, periodicidade, accept, ativo, detectarVencimento, considerarMesAtual, visivelCliente, suspensoDesde } = req.body || {};
+  const { nome, descricao, periodicidade, accept, ativo, detectarVencimento, considerarMesAtual, visivelCliente, suspensoDesde, autoRegimeTributario } = req.body || {};
   if (protegido && nome !== undefined && nome !== existing.nome) {
     return res.status(409).json({ error: `"${existing.nome}" é usado automaticamente pelo Integra Contador — renomear quebraria o anexo automático de DAS/Situação Fiscal.` });
   }
-  if (periodicidade !== undefined && !["mensal", "anual", "avulso"].includes(periodicidade)) {
+  if (periodicidade !== undefined && !ENVIO_PERIODICIDADES.includes(periodicidade)) {
     return res.status(400).json({ error: "Periodicidade inválida." });
   }
   if (suspensoDesde && !/^\d{4}-\d{2}$/.test(suspensoDesde)) return res.status(400).json({ error: "Competência de suspensão inválida." });
+  if (autoRegimeTributario && !(REGIMES_TRIBUTARIOS as readonly string[]).includes(autoRegimeTributario)) return res.status(400).json({ error: "Regime tributário inválido." });
   // Trocar a periodicidade não migra os períodos já gerados (ficam como estavam, com o formato
   // antigo) — só passa a valer pra próxima vez que "Gerar ano na grade" (ou "+ Nova solicitação
   // avulsa") for usado em cada atribuição desse modelo.
   sqlite
-    .prepare(`UPDATE envio_templates SET nome=?, descricao=?, periodicidade=?, accept_json=?, detectar_vencimento=?, considera_mes_atual=?, visivel_cliente=?, ativo=?, suspenso_desde=? WHERE id=?`)
+    .prepare(`UPDATE envio_templates SET nome=?, descricao=?, periodicidade=?, accept_json=?, detectar_vencimento=?, considera_mes_atual=?, visivel_cliente=?, ativo=?, suspenso_desde=?, auto_regime_tributario=? WHERE id=?`)
     .run(
       nome ?? existing.nome,
       descricao !== undefined ? descricao : existing.descricao,
@@ -3771,6 +3824,7 @@ app.put("/api/envio/templates/:id", blockCliente, requirePermissao("envio", "edi
       visivelCliente === undefined ? existing.visivel_cliente : visivelCliente ? 1 : 0,
       ativo === undefined ? existing.ativo : ativo ? 1 : 0,
       suspensoDesde === undefined ? existing.suspenso_desde : suspensoDesde || null,
+      autoRegimeTributario === undefined ? existing.auto_regime_tributario : autoRegimeTributario || null,
       id
     );
   res.json({ ok: true });
@@ -3992,6 +4046,13 @@ app.post("/api/envio/periodos/gerar", blockCliente, requirePermissao("envio", "p
       const info = insert.run(atrib.id, Number(ano), mes, null);
       if (info.changes) criados++;
     }
+  } else if (atrib.periodicidade === "trimestral") {
+    // Um período por trimestre, representado pelo mês de fechamento (Mar/Jun/Set/Dez) — é o padrão
+    // de apuração trimestral do IRPJ/CSLL no Lucro Real (o DARF vence no mês seguinte ao fechamento).
+    for (const mes of [3, 6, 9, 12]) {
+      const info = insert.run(atrib.id, Number(ano), mes, null);
+      if (info.changes) criados++;
+    }
   } else if (atrib.periodicidade === "anual") {
     const info = insert.run(atrib.id, Number(ano), null, null);
     if (info.changes) criados++;
@@ -4080,6 +4141,10 @@ app.get("/api/envio/grade/:atribuicaoId", (req, res) => {
     rotulo: p.rotulo,
     solicitadoEm: p.solicitado_em,
     documentos: docsPorPeriodo.get(p.id) || [],
+    semMovimento: !!p.sem_movimento,
+    semMovimentoObservacao: p.sem_movimento_observacao,
+    parcelaNumero: p.parcela_numero,
+    parcelaTotal: p.parcela_total,
   }));
 
   res.json({
@@ -4221,7 +4286,7 @@ app.post("/api/envio/periodos/:periodoId/enviar", blockCliente, requirePermissao
 
   const periodo = sqlite
     .prepare(
-      `SELECT p.*, a.empresa_id as empresaId, t.accept_json as acceptJson, t.nome as templateNome, t.detectar_vencimento as detectarVencimento
+      `SELECT p.*, a.empresa_id as empresaId, t.accept_json as acceptJson, t.nome as templateNome, t.detectar_vencimento as detectarVencimento, t.periodicidade as templatePeriodicidade
        FROM envio_periodos p JOIN envio_atribuicoes a ON a.id = p.atribuicao_id JOIN envio_templates t ON t.id = a.template_id WHERE p.id = ?`
     )
     .get(periodoId) as any;
@@ -4293,9 +4358,59 @@ app.post("/api/envio/periodos/:periodoId/enviar", blockCliente, requirePermissao
     .prepare(`UPDATE envio_documentos SET email_enviado = ?, email_enviado_em = ?, email_erro = ? WHERE id = ?`)
     .run(emailEnviado ? 1 : 0, emailEnviado ? new Date().toISOString().replace("T", " ").slice(0, 19) : null, emailErro, docId);
 
-  res.json({ id: docId, vencimento, vencimentoOrigem, emailEnviado, emailErro });
+  // Imposto pago em 3 quotas (ex.: IRPJ/CSLL do Lucro Real trimestral) — ao postar a 1ª quota já
+  // marcando "parcelas=3", cria sozinho os 2 períodos seguintes (mês+1, mês+2) já vinculados a essa
+  // guia (parcela_periodo_id), pra aparecerem na grade e entrarem na pendência dos meses certos sem
+  // precisar "Gerar ano" de novo nem lembrar manualmente. Restrito a modelo trimestral: no SQLite,
+  // NULL não colide com NULL num UNIQUE — um modelo mensal já tem período em TODOS os meses (rotulo
+  // sempre NULL), então o INSERT do mês seguinte não seria ignorado por conflito e criaria um período
+  // DUPLICADO pro mesmo mês. No trimestral, os meses "+1"/"+2" nunca são meses de fechamento (só
+  // Mar/Jun/Set/Dez existem na grade normal), então nunca colidem de verdade — mas ainda checa a
+  // existência antes de inserir, por segurança.
+  let parcelasGeradas = 0;
+  if (Number(req.body?.parcelas) === 3 && periodo.mes && !periodo.parcela_numero && periodo.templatePeriodicidade === "trimestral") {
+    sqlite.prepare(`UPDATE envio_periodos SET parcela_numero = 1, parcela_total = 3 WHERE id = ?`).run(periodoId);
+    let anoQuota = periodo.ano, mesQuota = periodo.mes;
+    for (const numero of [2, 3]) {
+      mesQuota++;
+      if (mesQuota > 12) {
+        mesQuota = 1;
+        anoQuota++;
+      }
+      const jaExiste = sqlite.prepare(`SELECT 1 FROM envio_periodos WHERE atribuicao_id = ? AND ano = ? AND mes = ?`).get(periodo.atribuicao_id, anoQuota, mesQuota);
+      if (jaExiste) continue;
+      const infoQuota = sqlite
+        .prepare(`INSERT INTO envio_periodos (atribuicao_id, ano, mes, parcela_numero, parcela_total, parcela_periodo_id) VALUES (?, ?, ?, ?, ?, ?)`)
+        .run(periodo.atribuicao_id, anoQuota, mesQuota, numero, 3, periodoId);
+      if (infoQuota.changes) parcelasGeradas++;
+    }
+  }
+
+  res.json({ id: docId, vencimento, vencimentoOrigem, emailEnviado, emailErro, parcelasGeradas });
 });
 
+// "Sem imposto devido" — pra competência (mensal/trimestral) em que não houve imposto a recolher
+// (ex.: IRPJ/CSLL trimestral com prejuízo fiscal no período), não existe guia nenhuma pra anexar,
+// mas a pendência do card "Modelo de Envio em Atraso" continuaria acesa pra sempre sem isso. Marca
+// o período como satisfeito sem precisar de documento — desmarcável (por engano) enquanto não tiver
+// nenhum documento anexado de verdade.
+app.post("/api/envio/periodos/:periodoId/sem-movimento", blockCliente, requirePermissao("envio", "postar"), (req, res) => {
+  const user = (req as any).user;
+  const periodoId = Number(req.params.periodoId);
+  const semMovimento = !!req.body?.semMovimento;
+  const observacao = req.body?.observacao ? String(req.body.observacao).trim() : null;
+  const periodo = sqlite
+    .prepare(`SELECT p.*, a.empresa_id as empresaId FROM envio_periodos p JOIN envio_atribuicoes a ON a.id = p.atribuicao_id WHERE p.id = ?`)
+    .get(periodoId) as any;
+  if (!periodo) return res.status(404).json({ error: "Período não encontrado." });
+  if (!podeAcessarEmpresa(user, periodo.empresaId)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  const temDocumento = sqlite.prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id = ?`).get(periodoId);
+  if (semMovimento && temDocumento) return res.status(409).json({ error: "Este período já tem documento anexado." });
+  sqlite
+    .prepare(`UPDATE envio_periodos SET sem_movimento = ?, sem_movimento_observacao = ?, sem_movimento_por = ?, sem_movimento_em = ? WHERE id = ?`)
+    .run(semMovimento ? 1 : 0, semMovimento ? observacao : null, semMovimento ? user.id : null, semMovimento ? new Date().toISOString().replace("T", " ").slice(0, 19) : null, periodoId);
+  res.json({ ok: true });
+});
 function envioDocumentoEmpresaId(docId: number): number | null {
   const row = sqlite
     .prepare(
@@ -8528,7 +8643,7 @@ function cardEnvioAtraso(user: any, templateIds: number[]): any[] {
   const placeholders = templateIds.map(() => "?").join(",");
   const atribuicoes = sqlite
     .prepare(
-      `SELECT a.id as atribuicaoId, a.empresa_id as empresaId, e.nome as empresaNome, t.id as templateId, t.nome as templateNome, t.considera_mes_atual as considerarMesAtual, t.suspenso_desde as suspensoDesde
+      `SELECT a.id as atribuicaoId, a.empresa_id as empresaId, e.nome as empresaNome, t.id as templateId, t.nome as templateNome, t.considera_mes_atual as considerarMesAtual, t.suspenso_desde as suspensoDesde, t.periodicidade as periodicidade
        FROM envio_atribuicoes a
        JOIN envio_templates t ON t.id = a.template_id AND t.id IN (${placeholders}) AND t.escritorio_id = ?
        JOIN empresas e ON e.id = a.empresa_id AND e.escritorio_id = ? AND e.ativo = 1
@@ -8540,10 +8655,19 @@ function cardEnvioAtraso(user: any, templateIds: number[]): any[] {
   const resultado: any[] = [];
   for (const atrib of atribuicoes) {
     if (!visiveis.has(atrib.empresaId)) continue;
-    const periodos = sqlite.prepare(`SELECT p.id, p.ano, p.mes FROM envio_periodos p WHERE p.atribuicao_id = ? AND p.mes IS NOT NULL`).all(atrib.atribuicaoId) as any[];
-    if (!periodos.length) continue;
-    const porCompetencia = new Map<string, any>(periodos.map((p) => [`${p.ano}${String(p.mes).padStart(2, "0")}`, p]));
-    const maisAntigo = periodos.reduce((min, p) => (p.ano * 100 + p.mes < min.ano * 100 + min.mes ? p : min));
+    const todosPeriodos = sqlite
+      .prepare(`SELECT p.id, p.ano, p.mes, p.sem_movimento as semMovimento, p.parcela_numero as parcelaNumero, p.parcela_total as parcelaTotal FROM envio_periodos p WHERE p.atribuicao_id = ? AND p.mes IS NOT NULL`)
+      .all(atrib.atribuicaoId) as any[];
+    if (!todosPeriodos.length) continue;
+    // 2ª/3ª quota de um parcelamento (ver POST /envio/periodos/:id/enviar, campo "parcelas") não faz
+    // parte do calendário normal do modelo (mensal ou trimestral) — vive num mês avulso, criado só
+    // porque a 1ª quota foi postada como parcelada. Entra no calendário principal (porCompetencia)
+    // só a "âncora" (1ª quota ou período sem parcelamento nenhum); as extras são checadas à parte.
+    const periodosAncora = todosPeriodos.filter((p) => !p.parcelaNumero || p.parcelaNumero === 1);
+    const periodosQuota = todosPeriodos.filter((p) => p.parcelaNumero && p.parcelaNumero >= 2);
+    if (!periodosAncora.length) continue;
+    const porCompetencia = new Map<string, any>(periodosAncora.map((p) => [`${p.ano}${String(p.mes).padStart(2, "0")}`, p]));
+    const maisAntigo = periodosAncora.reduce((min, p) => (p.ano * 100 + p.mes < min.ano * 100 + min.mes ? p : min));
     let anoMesInicio = maisAntigo.ano * 100 + maisAntigo.mes;
     if (corte && corte > anoMesInicio) anoMesInicio = corte;
     // Modelo extinto numa data conhecida (ex.: DARF PIS/COFINS substituídos pela CBS a partir de
@@ -8552,6 +8676,8 @@ function cardEnvioAtraso(user: any, templateIds: number[]): any[] {
     const suspensoAnoMes = atrib.suspensoDesde ? Number(atrib.suspensoDesde.slice(0, 4)) * 100 + Number(atrib.suspensoDesde.slice(5, 7)) : null;
     const competenciasFaltando: string[] = [];
     let ano = Math.floor(anoMesInicio / 100), mes = anoMesInicio % 100, iteracoes = 0;
+    // Trimestral anda de 3 em 3 meses (Mar/Jun/Set/Dez, ver "Gerar ano na grade") — mensal, mês a mês.
+    const passoMes = atrib.periodicidade === "trimestral" ? 3 : 1;
     // Por modelo: Nota Fiscal (considera_mes_atual=1) cobra até o mês corrente, porque pode ser
     // emitida a qualquer momento do mês — já DRE/Balancete/Razão Contábil (considera_mes_atual=0)
     // só existem depois que o mês fecha, então param no mês anterior, igual DAS e Solicitações.
@@ -8562,12 +8688,21 @@ function cardEnvioAtraso(user: any, templateIds: number[]): any[] {
       const chave = `${ano}${String(mes).padStart(2, "0")}`;
       const periodo = porCompetencia.get(chave);
       const temDocumento = periodo ? sqlite.prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id = ?`).get(periodo.id) : null;
-      if (!temDocumento) competenciasFaltando.push(`${String(mes).padStart(2, "0")}/${ano}`);
-      mes++;
-      if (mes > 12) {
-        mes = 1;
+      if (!temDocumento && !(periodo && periodo.semMovimento)) competenciasFaltando.push(`${String(mes).padStart(2, "0")}/${ano}`);
+      mes += passoMes;
+      while (mes > 12) {
+        mes -= 12;
         ano++;
       }
+    }
+    // Quotas 2/3 checadas fora do calendário principal, com o mesmo critério de "já passou do mês" —
+    // sempre exige o mês fechado (nunca cobra a quota no mês corrente, ela tipicamente só é gerada
+    // pela busca automática do mês seguinte, ver Fase 2/SICALC).
+    for (const pq of periodosQuota) {
+      if (pq.ano > agora.ano || (pq.ano === agora.ano && pq.mes >= agora.mes)) continue;
+      if (suspensoAnoMes !== null && pq.ano * 100 + pq.mes >= suspensoAnoMes) continue;
+      const temDocumento = sqlite.prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id = ?`).get(pq.id);
+      if (!temDocumento && !pq.semMovimento) competenciasFaltando.push(`${String(pq.mes).padStart(2, "0")}/${pq.ano} (${pq.parcelaNumero}ª de ${pq.parcelaTotal} quotas)`);
     }
     if (competenciasFaltando.length) resultado.push({ empresaId: atrib.empresaId, empresaNome: atrib.empresaNome, templateNome: atrib.templateNome, competencias: competenciasFaltando });
   }
@@ -8868,9 +9003,9 @@ function dashboardCardParametroErro(tipo: string | null, parametro: string | nul
     if (!templateIds.length) return "Selecione ao menos um modelo de Envio de Documentos que este card vai validar.";
     const placeholders = templateIds.map(() => "?").join(",");
     const validos = sqlite
-      .prepare(`SELECT id FROM envio_templates WHERE escritorio_id = ? AND periodicidade = 'mensal' AND ativo = 1 AND id IN (${placeholders})`)
+      .prepare(`SELECT id FROM envio_templates WHERE escritorio_id = ? AND periodicidade IN ('mensal','trimestral') AND ativo = 1 AND id IN (${placeholders})`)
       .all(escritorioId, ...templateIds) as any[];
-    if (validos.length !== templateIds.length) return "Modelo de envio inválido — todos precisam ser modelos mensais ativos.";
+    if (validos.length !== templateIds.length) return "Modelo de envio inválido — todos precisam ser modelos mensais ou trimestrais ativos.";
     return null;
   }
   if (tipo === "solicitacao_atraso") {

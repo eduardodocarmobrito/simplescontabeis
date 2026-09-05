@@ -2409,10 +2409,23 @@ function novaAtribModal(empresas, templates){
 
 // Grade compartilhada (admin abre de dentro de Solicitações; cliente abre de Meus Documentos)
 const MESES=['','Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+// Só o módulo Envio de Documentos tem periodicidade "trimestral" (Solicitações/checklist continua
+// só com mensal/anual/avulso) — mapa próprio pra não confundir os dois.
+const PERIODICIDADE_LABELS = { mensal:'Mensal', trimestral:'Trimestral', anual:'Anual', avulso:'Avulso' };
+const REGIME_TRIBUTARIO_LABELS = { simples_nacional:'Simples Nacional', lucro_presumido:'Lucro Presumido', lucro_real:'Lucro Real' };
 const UFS_BR=['AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG','PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO'];
 function rotuloPeriodo(p){ return p.mes? `${MESES[p.mes]}/${p.ano}` : (p.rotulo || String(p.ano)); }
 // Competência no formato "AAAA-MM" (o mesmo do <input type="month">) pro rótulo "Jan/2027" de tela.
 function mesAnoRotulo(competencia){ const [ano,mes]=String(competencia).split('-'); return `${MESES[Number(mes)]}/${ano}`; }
+const TRIMESTRE_ORDINAL = {3:'1º',6:'2º',9:'3º',12:'4º'};
+// Só usado em Envio de Documentos (Solicitações continua no rotuloPeriodo simples) — mostra
+// "1º Trimestre/2027" pro modelo trimestral, e "2ª de 3 quotas" pro período extra criado quando a
+// 1ª quota é postada como parcelada (ver POST /envio/periodos/:id/enviar).
+function rotuloPeriodoEnvio(p, periodicidade){
+  if(p.parcelaNumero) return `${MESES[p.mes]}/${p.ano} — ${p.parcelaNumero}ª de ${p.parcelaTotal} quotas`;
+  if(periodicidade==='trimestral' && p.mes) return `${TRIMESTRE_ORDINAL[p.mes]||''} Trimestre/${p.ano}`.trim();
+  return rotuloPeriodo(p);
+}
 
 // Conteúdo de um slot (anexar/baixar/reabrir), sem wrapper — usado tanto na grade completa
 // (dentro de um <td>) quanto no card compacto de "Meus Documentos" (dentro de uma div solta).
@@ -2863,8 +2876,8 @@ async function renderEnvioModelos(){
   `;
   document.getElementById('envioModelosBody').innerHTML = items.length? items.map(t=>`
     <tr data-id="${t.id}">
-      <td><b>${esc(t.nome)}</b>${t.protegido?` <span title="Usado automaticamente pelo Integra Contador — não pode ser renomeado nem excluído">*</span>`:''}${t.descricao?`<br><span style="color:var(--ink-soft); font-size:12px;">${esc(t.descricao)}</span>`:''}${t.suspensoDesde?`<br><span class="tag bad" style="margin-top:3px;">Suspenso a partir de ${esc(mesAnoRotulo(t.suspensoDesde))}</span>`:''}</td>
-      <td>${({mensal:'Mensal',anual:'Anual',avulso:'Avulso'})[t.periodicidade]||t.periodicidade}</td>
+      <td><b>${esc(t.nome)}</b>${t.protegido?` <span title="Usado automaticamente pelo Integra Contador — não pode ser renomeado nem excluído">*</span>`:''}${t.descricao?`<br><span style="color:var(--ink-soft); font-size:12px;">${esc(t.descricao)}</span>`:''}${t.suspensoDesde?`<br><span class="tag bad" style="margin-top:3px;">Suspenso a partir de ${esc(mesAnoRotulo(t.suspensoDesde))}</span>`:''}${t.autoRegimeTributario?`<br><span class="tag ok" style="margin-top:3px;">Automático para ${esc(REGIME_TRIBUTARIO_LABELS[t.autoRegimeTributario]||t.autoRegimeTributario)}</span>`:''}</td>
+      <td>${PERIODICIDADE_LABELS[t.periodicidade]||t.periodicidade}</td>
       <td>${t.accept.map(a=>`<span class="tag muted">${esc(a)}</span>`).join(' ')}</td>
       <td><span class="tag ${t.detectarVencimento?'ok':'muted'}">${t.detectarVencimento?'Detecta':'Não se aplica'}</span></td>
       <td><span class="tag ${t.visivelCliente?'ok':'muted'}">${t.visivelCliente?'Sim':'Não'}</span></td>
@@ -2886,11 +2899,22 @@ function envioModeloModal(t){
     <div class="field"><label>Periodicidade</label>
       <select id="evPeriodicidade">
         <option value="mensal">Mensal (grade com os 12 meses do ano)</option>
+        <option value="trimestral">Trimestral (grade com os 4 trimestres do ano — ex.: IRPJ/CSLL do Lucro Real)</option>
         <option value="anual">Anual (um envio por ano)</option>
         <option value="avulso">Avulso (envios pontuais, com rótulo próprio — ex.: "IRPF 2026")</option>
       </select>
       ${t? `<p style="font-size:11.5px; color:var(--ink-soft); margin:4px 0 0;">Mudar aqui não altera o que já foi gerado na grade de cada empresa — vale a partir da próxima vez que "Gerar ano na grade" (ou "Nova solicitação avulsa") for usado.</p>`:''}
     </div>
+    <div class="field">
+      <label>Criar automaticamente para empresa com regime tributário (opcional)</label>
+      <select id="evAutoRegime">
+        <option value="">Nenhum — atribuir manualmente</option>
+        <option value="simples_nacional">Optante pelo Simples Nacional</option>
+        <option value="lucro_presumido">Lucro Presumido</option>
+        <option value="lucro_real">Lucro Real</option>
+      </select>
+    </div>
+    <p style="font-size:11.5px; color:var(--ink-soft); margin:2px 0 0;">Ao classificar (ou reclassificar) uma empresa nesse regime em Empresas, este modelo já vira uma obrigação atribuída a ela automaticamente — não precisa lembrar de atribuir na mão. Ex.: DARF IRPJ/CSLL trimestral → Lucro Real.</p>
     <div style="margin:10px 0 6px; font-size:12px; color:var(--ink-soft);">Tipo de arquivo aceito para a guia:</div>
     <div class="row" style="gap:14px;">
       ${TIPOS_ACEITE.map(ac=>`<label class="checkbox-row"><input type="checkbox" class="evAccept" value="${ac.v}" ${(t? t.accept.includes(ac.v) : ac.v==='pdf')?'checked':''}> ${ac.l}</label>`).join('')}
@@ -2912,13 +2936,14 @@ function envioModeloModal(t){
     </div>
   `);
   if(t) document.getElementById('evPeriodicidade').value = t.periodicidade;
+  if(t&&t.autoRegimeTributario) document.getElementById('evAutoRegime').value = t.autoRegimeTributario;
   document.getElementById('evCancel').addEventListener('click', closeModal);
   document.getElementById('evSalvar').addEventListener('click', async ()=>{
     const nome=document.getElementById('evNome').value.trim();
     if(!nome){ toast('Informe o nome.','err'); return; }
     const accept=[...document.querySelectorAll('.evAccept:checked')].map(c=>c.value);
     if(!accept.length){ toast('Selecione ao menos um tipo de arquivo.','err'); return; }
-    const body = { nome, descricao: document.getElementById('evDesc').value.trim(), periodicidade: document.getElementById('evPeriodicidade').value, accept, detectarVencimento: document.getElementById('evDetectarVenc').checked, considerarMesAtual: document.getElementById('evConsiderarMesAtual').checked, visivelCliente: document.getElementById('evVisivelCliente').checked, suspensoDesde: document.getElementById('evSuspensoDesde').value || null };
+    const body = { nome, descricao: document.getElementById('evDesc').value.trim(), periodicidade: document.getElementById('evPeriodicidade').value, accept, detectarVencimento: document.getElementById('evDetectarVenc').checked, considerarMesAtual: document.getElementById('evConsiderarMesAtual').checked, visivelCliente: document.getElementById('evVisivelCliente').checked, suspensoDesde: document.getElementById('evSuspensoDesde').value || null, autoRegimeTributario: document.getElementById('evAutoRegime').value || null };
     try{
       if(t) await api('/envio/templates/'+t.id, { method:'PUT', body });
       else await api('/envio/templates', { method:'POST', body });
@@ -2952,7 +2977,7 @@ async function renderEnvioAtribuicoes(){
       <tr data-id="${a.id}" ${a.pendentesCliente? 'style="background:var(--accent-pale);"':''}>
         <td>${esc(a.empresaNome)}</td>
         <td>${esc(a.templateNome)}${a.pendentesCliente? ` <span class="tag warn" title="Pedido feito pelo cliente, ainda sem documento enviado">${a.pendentesCliente} pedido${a.pendentesCliente>1?'s':''} do cliente</span>`:''}</td>
-        <td>${({mensal:'Mensal',anual:'Anual',avulso:'Avulso'})[a.periodicidade]||a.periodicidade}</td>
+        <td>${PERIODICIDADE_LABELS[a.periodicidade]||a.periodicidade}</td>
         <td style="text-align:right; display:flex; gap:6px; justify-content:flex-end;">
           <button class="btn small" data-act="abrir">Abrir grade</button>
           ${podeEditar? (a.temDocumentos
@@ -3039,9 +3064,11 @@ function envioDocBlocoHtml(d, podeEditar, podePostar, souCliente, mostrarVencime
     </div>
   </div>`;
 }
-function envioCelulaHtml(p, accept, podePostar, podeEditar, souCliente, mostrarVencimento, ehDas, ehAvulso){
+function envioCelulaHtml(p, accept, podePostar, podeEditar, souCliente, mostrarVencimento, ehDas, ehAvulso, periodicidade){
   const inputId = `ef_${p.periodoId}`;
   const docs = p.documentos || [];
+  const quotaBadge = p.parcelaNumero
+    ? `<span class="tag muted" style="margin-bottom:6px; display:inline-block;">${p.parcelaNumero}ª de ${p.parcelaTotal} quotas</span><br>` : '';
   // Período avulso criado por engano (ou que não é mais necessário) sem nada anexado ainda — só
   // remove a linha inteira nesse caso; com documento já anexado, o jeito é excluir os documentos um
   // a um (histórico já enviado ao cliente não some sozinho). Pedido feito pelo cliente (p.solicitadoEm)
@@ -3065,18 +3092,38 @@ function envioCelulaHtml(p, accept, podePostar, podeEditar, souCliente, mostrarV
   // nessa grade também recalcula direto daqui, sem sair da tela.
   const btnRecalculo = (souCliente || podePostar) && ehDas && docs.length
     ? `<button class="btn small" data-act="recalcular-das" data-periodo="${p.periodoId}" style="margin-top:6px;">Solicitar recálculo do DAS</button>` : '';
+  // "Sem imposto devido" — pra competência (ex.: IRPJ/CSLL trimestral com prejuízo fiscal) em que
+  // não existe guia nenhuma pra anexar, mas a pendência do card continuaria acesa pra sempre sem
+  // isso. Só faz sentido pra período com mês (mensal/trimestral) e ainda sem documento nenhum.
+  if(p.semMovimento && !docs.length){
+    return `<div class="slot">
+      ${quotaBadge}
+      <span class="tag ok">Sem imposto devido${p.semMovimentoObservacao?` — ${esc(p.semMovimentoObservacao)}`:''}</span>
+      ${podePostar? `<div style="margin-top:6px;"><button class="btn small" data-act="desmarcar-sem-movimento" data-periodo="${p.periodoId}">Desmarcar</button></div>`:''}
+    </div>`;
+  }
   if(souCliente || !podePostar){
-    return docs.length? `<div class="slot">${blocos}${btnRecalculo}</div>` : `<span class="slot-label">Nada enviado ainda</span>`;
+    return docs.length? `<div class="slot">${quotaBadge}${blocos}${btnRecalculo}</div>` : `${quotaBadge}<span class="slot-label">Nada enviado ainda</span>`;
   }
   const obsId = docs.length? inputId+'_obs' : '';
+  // "Dividir em quotas" só faz sentido antes de postar a 1ª guia (docs.length===0) de um período que
+  // ainda não é, ele mesmo, uma quota 2ª/3ª — hoje só oferecido pro modelo trimestral (IRPJ/CSLL do
+  // Lucro Real é o caso concreto que motivou isso).
+  const chkParcelas = periodicidade==='trimestral' && !docs.length && !p.parcelaNumero
+    ? `<label class="checkbox-row" style="margin:4px 0; font-size:12px;"><input type="checkbox" id="${inputId}_parc"> Pago em 3 quotas mensais (cria os 2 meses seguintes automaticamente)</label>` : '';
+  const btnSemMovimento = !docs.length
+    ? `<button class="btn small" data-act="marcar-sem-movimento" data-periodo="${p.periodoId}">Sem imposto devido</button>` : '';
   return `<div class="slot">
+    ${quotaBadge}
     ${pedidoPendente}
     ${blocos}
     ${btnRecalculo}
     <input type="file" id="${inputId}" ${accept?`accept="${accept}"`:''}>
     ${docs.length? `<input type="text" id="${obsId}" placeholder="Observação (ex.: guia recalculada — cliente não pagou no prazo)" style="font-size:12.5px; border:1px solid var(--rule); border-radius:8px; padding:7px 9px;">`:''}
-    <div style="display:flex; align-items:center; gap:8px;">
-      <button class="btn small primary" data-act="enviar-doc" data-periodo="${p.periodoId}" data-input="${inputId}" data-obs="${obsId}">${docs.length?'Incluir outro documento':'Enviar'}</button>
+    ${chkParcelas}
+    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+      <button class="btn small primary" data-act="enviar-doc" data-periodo="${p.periodoId}" data-input="${inputId}" data-obs="${obsId}" data-parc="${inputId}_parc">${docs.length?'Incluir outro documento':'Enviar'}</button>
+      ${btnSemMovimento}
       ${btnExcluirPeriodo}
     </div>
   </div>`;
@@ -3098,10 +3145,28 @@ function wireEnvioGradeEvents(container, atribuicaoId, souCliente){
       const obsEl = document.getElementById(b.dataset.obs);
       if(obsEl && obsEl.value.trim()) fd.append('observacao', obsEl.value.trim());
     }
+    if(b.dataset.parc){
+      const parcEl = document.getElementById(b.dataset.parc);
+      if(parcEl && parcEl.checked) fd.append('parcelas', '3');
+    }
     try{
       const r = await api('/envio/periodos/'+b.dataset.periodo+'/enviar', { method:'POST', body:fd });
-      if(r.emailEnviado) toast('Documento enviado e e-mail disparado ao cliente.','ok');
-      else toast('Documento salvo, mas o e-mail não foi enviado'+(r.emailErro?': '+r.emailErro:'')+'.', 'err');
+      const msg = r.emailEnviado ? 'Documento enviado e e-mail disparado ao cliente.' : 'Documento salvo, mas o e-mail não foi enviado'+(r.emailErro?': '+r.emailErro:'')+'.';
+      toast(msg + (r.parcelasGeradas? ` Criados os próximos ${r.parcelasGeradas} mês(es) pra 2ª/3ª quota.`:''), r.emailEnviado?'ok':'err');
+      abrirEnvioGrade(atribuicaoId, souCliente);
+    }catch(e){ toast(e.message,'err'); }
+  }));
+  container.querySelectorAll('[data-act="marcar-sem-movimento"]').forEach(b=>b.addEventListener('click', async ()=>{
+    const observacao = prompt('Observação (opcional) — ex.: "Prejuízo fiscal no trimestre":') || '';
+    try{
+      await api('/envio/periodos/'+b.dataset.periodo+'/sem-movimento', { method:'POST', body:{ semMovimento:true, observacao } });
+      toast('Marcado como sem imposto devido.','ok');
+      abrirEnvioGrade(atribuicaoId, souCliente);
+    }catch(e){ toast(e.message,'err'); }
+  }));
+  container.querySelectorAll('[data-act="desmarcar-sem-movimento"]').forEach(b=>b.addEventListener('click', async ()=>{
+    try{
+      await api('/envio/periodos/'+b.dataset.periodo+'/sem-movimento', { method:'POST', body:{ semMovimento:false } });
       abrirEnvioGrade(atribuicaoId, souCliente);
     }catch(e){ toast(e.message,'err'); }
   }));
@@ -3147,7 +3212,7 @@ async function abrirEnvioGrade(atribuicaoId, souCliente){
 
   main().innerHTML = `
     <h1>${esc(atribuicao.templateNome)}</h1>
-    <p class="subtitle">${esc(atribuicao.empresaNome)} — ${({mensal:'Mensal',anual:'Anual',avulso:'Avulso'})[atribuicao.periodicidade]||atribuicao.periodicidade}</p>
+    <p class="subtitle">${esc(atribuicao.empresaNome)} — ${PERIODICIDADE_LABELS[atribuicao.periodicidade]||atribuicao.periodicidade}</p>
     <div class="row" style="margin-bottom:14px;">
       <button class="btn" id="btnVoltarEnvioGrade">← Voltar</button>
       ${podePostar && atribuicao.periodicidade!=='avulso' ? `<button class="btn" id="btnGerarEnvioPeriodo">Gerar ano na grade</button>`:''}
@@ -3164,7 +3229,7 @@ async function abrirEnvioGrade(atribuicaoId, souCliente){
     const tbody = document.getElementById('envioGradeBody');
     const ehAvulso = atribuicao.periodicidade==='avulso';
     tbody.innerHTML = grade.map(p=>
-      `<tr data-periodo="${p.periodoId}"><td><b>${esc(rotuloPeriodo(p))}</b></td><td>${envioCelulaHtml(p, accept, podePostar, podeEditar, souCliente, atribuicao.detectarVencimento, ehDas, ehAvulso)}</td></tr>`
+      `<tr data-periodo="${p.periodoId}"><td><b>${esc(rotuloPeriodoEnvio(p, atribuicao.periodicidade))}</b></td><td>${envioCelulaHtml(p, accept, podePostar, podeEditar, souCliente, atribuicao.detectarVencimento, ehDas, ehAvulso, atribuicao.periodicidade)}</td></tr>`
     ).join('');
     wireEnvioGradeEvents(tbody, atribuicaoId, souCliente);
   }
@@ -3216,7 +3281,7 @@ async function pageDocumentosRecebidos(){
     <div class="doc-row" data-id="${a.id}">
       <div class="doc-card" data-id="${a.id}">
         <h3>${esc(a.templateNome)}</h3>
-        <div class="doc-card-sub">${({mensal:'Mensal',anual:'Anual',avulso:'Avulso'})[a.periodicidade]||a.periodicidade}</div>
+        <div class="doc-card-sub">${PERIODICIDADE_LABELS[a.periodicidade]||a.periodicidade}</div>
         <div class="doc-card-link">Ver histórico completo →</div>
       </div>
       <div class="doc-inline" id="drInline${a.id}"><div class="empty-state" style="padding:10px;">Carregando…</div></div>
@@ -3242,7 +3307,7 @@ async function pageDocumentosRecebidos(){
       }
       if(!d){
         painel.innerHTML = `
-          <div class="doc-inline-periodo">${esc(rotuloPeriodo(p))}</div>
+          <div class="doc-inline-periodo">${esc(rotuloPeriodoEnvio(p, a.periodicidade))}</div>
           <div class="doc-inline-empty">Nenhum documento recebido ainda para essa competência.</div>
         `;
         continue;
@@ -3250,7 +3315,7 @@ async function pageDocumentosRecebidos(){
       const vencHtml = d.vencimento? `<span class="tag warn" style="font-weight:700;">Vencimento ${esc(fmtDateIso(d.vencimento))}</span>` : '';
       const outros = (p.documentos||[]).length - 1;
       painel.innerHTML = `
-        <div class="doc-inline-periodo">${esc(rotuloPeriodo(p))}</div>
+        <div class="doc-inline-periodo">${esc(rotuloPeriodoEnvio(p, a.periodicidade))}</div>
         <div class="slot">
           <div class="slot-label" style="font-weight:600; color:var(--ink);">${esc(d.fileName)}</div>
           ${d.observacao? `<div class="slot-reopen-note" style="background:var(--accent-pale); color:var(--accent-deep);">${esc(d.observacao)}</div>`:''}
