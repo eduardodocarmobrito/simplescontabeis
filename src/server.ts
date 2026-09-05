@@ -9134,16 +9134,20 @@ app.post("/api/whatsapp/webhook", (req, res) => {
 });
 // Um documento pode ter ido pra mais de um contato (ex.: dois telefones do escritório) — cada envio
 // tem sua própria linha em whatsapp_mensagens. Aqui agrega isso num status único pra exibir na tela:
-// só mostra "lido" quando TODO mundo já leu (visão conservadora — "o cliente viu de verdade"), "falhou"
-// se qualquer um falhou (precisa de atenção), "entregue" assim que qualquer um recebeu.
+// "lido" assim que QUALQUER contato já leu, "falhou" se qualquer um falhou (precisa de atenção),
+// "entregue" assim que qualquer um recebeu. Testado ao vivo: exigir que TODOS tenham lido nunca
+// mostrava "lido" quando um dos contatos tinha "confirmação de leitura" desativada no WhatsApp
+// (configuração de privacidade do próprio destinatário — nesse caso a Meta nunca avisa "read" pra
+// aquele número, mesmo a pessoa lendo de verdade), então a regra ficou "qualquer um" em vez de "todos".
 function agregarStatusWhatsapp(mensagens: { status: string; atualizado_em: string }[]): { status: "falhou" | "lido" | "entregue" | "enviado"; em: string | null } {
   const falhas = mensagens.filter((m) => m.status === "failed");
   if (falhas.length) {
     const maisRecente = falhas.reduce((max, m) => (m.atualizado_em > max.atualizado_em ? m : max));
     return { status: "falhou", em: maisRecente.atualizado_em };
   }
-  if (mensagens.every((m) => m.status === "read")) {
-    const maisRecente = mensagens.reduce((max, m) => (m.atualizado_em > max.atualizado_em ? m : max));
+  const lidas = mensagens.filter((m) => m.status === "read");
+  if (lidas.length) {
+    const maisRecente = lidas.reduce((max, m) => (m.atualizado_em > max.atualizado_em ? m : max));
     return { status: "lido", em: maisRecente.atualizado_em };
   }
   if (mensagens.some((m) => m.status === "delivered" || m.status === "read")) {
