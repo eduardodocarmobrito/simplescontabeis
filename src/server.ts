@@ -2552,6 +2552,7 @@ app.delete("/api/empresas/contatos/:contatoId", blockCliente, requirePermissao("
 const EMPRESA_ANEXO_TIPOS: Record<string, { categoria: string; label: string }> = {
   contrato_social: { categoria: "constituicao", label: "Contrato Social / Alteração" },
   cartao_cnpj: { categoria: "constituicao", label: "Cartão CNPJ" },
+  outros_documentos: { categoria: "constituicao", label: "Outros Documentos" },
   alvara: { categoria: "licenca", label: "Licença de Alvará" },
   vigilancia_sanitaria: { categoria: "licenca", label: "Licença Vigilância Sanitária" },
   corpo_bombeiros: { categoria: "licenca", label: "Licença Corpo de Bombeiros" },
