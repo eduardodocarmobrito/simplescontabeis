@@ -855,10 +855,21 @@ async function pagePainelTv(){
       });
     }
   }
-  function montarTicker(items){
+  // Em vez de "Título: 8", busca o detalhe de cada card com pendência e mostra os nomes das
+  // empresas ali (ex.: "DAS que Falta Entregar: Empresa A, Empresa B") — cards sem pendência
+  // (valor 0) ou sem detalhe cadastrável (manual, sem `tipo`) continuam só com o número.
+  async function montarTicker(items){
     const track = document.getElementById('tvpTicker');
     if(!track) return;
-    const partes = items.map(c=>`${c.titulo}: ${c.valor}`);
+    const nomesPorCard = await Promise.all(items.map(async (c)=>{
+      if(!c.tipo || Number(c.valor) <= 0) return null;
+      try{
+        const { items: lista } = await api('/dashboard/cards/'+c.id+'/detalhe');
+        const nomes = [...new Set(lista.map(d=>d.empresaNome).filter(Boolean))];
+        return nomes.length ? nomes.join(', ') : null;
+      }catch(e){ return null; }
+    }));
+    const partes = items.map((c,i)=>`${c.titulo}: ${nomesPorCard[i] || c.valor}`);
     if(!partes.length){ track.textContent=''; return; }
     const texto = partes.join('   ·   ') + '   ·   ';
     track.style.animation = 'none';
@@ -871,7 +882,7 @@ async function pagePainelTv(){
     try{
       const { items } = await api('/dashboard/cards');
       renderCards(items, animar);
-      montarTicker(items);
+      await montarTicker(items);
       const syncEl = document.getElementById('tvpSync');
       if(syncEl) syncEl.textContent = 'Atualizado às ' + new Date().toLocaleTimeString('pt-BR');
     }catch(e){
