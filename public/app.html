@@ -231,6 +231,46 @@
   @keyframes tvpDotPulse{0%{box-shadow:0 0 0 0 rgba(95,224,160,.55);}70%{box-shadow:0 0 0 11px rgba(95,224,160,0);}100%{box-shadow:0 0 0 0 rgba(95,224,160,0);}}
   @keyframes tvpFlash{0%{opacity:1;}30%{opacity:.25;}100%{opacity:1;}}
   @keyframes tvpTicker{from{transform:translateX(0);}to{transform:translateX(-50%);}}
+
+  /* ===== Chat ao vivo (balãozinho) ===== */
+  .chat-bubble{position:fixed; right:22px; bottom:22px; z-index:700; width:54px; height:54px; border-radius:50%; background:var(--accent-deep); color:#fff; display:flex; align-items:center; justify-content:center; cursor:pointer; box-shadow:0 6px 18px rgba(20,40,32,.28); transition:transform .15s ease;}
+  .chat-bubble:hover{transform:scale(1.06);}
+  .chat-bubble svg{width:24px; height:24px;}
+  .chat-bubble.chat-piscando{animation:chatPulse 1.1s ease-in-out infinite;}
+  .chat-badge{position:absolute; top:-3px; right:-3px; background:var(--debit); color:#fff; font-size:10.5px; font-weight:700; min-width:18px; height:18px; border-radius:9px; display:flex; align-items:center; justify-content:center; padding:0 4px; font-family:'IBM Plex Sans',sans-serif; border:2px solid var(--paper);}
+  @keyframes chatPulse{0%,100%{box-shadow:0 6px 18px rgba(20,40,32,.28), 0 0 0 0 rgba(184,67,58,.55);}50%{box-shadow:0 6px 18px rgba(20,40,32,.28), 0 0 0 9px rgba(184,67,58,0);}}
+  .chat-panel{position:fixed; right:22px; bottom:86px; z-index:700; width:320px; max-width:calc(100vw - 32px); height:min(460px, calc(100vh - 130px)); background:var(--surface); border-radius:14px; box-shadow:0 14px 44px rgba(20,40,32,.3); display:flex; flex-direction:column; overflow:hidden; border:1px solid var(--rule);}
+  .chat-panel-header{display:flex; align-items:center; gap:8px; padding:12px 14px; background:var(--ink); color:#fff; flex:none;}
+  .chat-panel-header .titulo{font-weight:600; font-size:13.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .chat-panel-back{background:none; border:none; color:#fff; opacity:.75; cursor:pointer; font-size:15px; padding:0 2px 0 0; line-height:1;}
+  .chat-panel-back:hover{opacity:1;}
+  .chat-status{font-size:10.5px; font-weight:400; opacity:.8; display:flex; align-items:center; gap:4px; white-space:nowrap;}
+  .chat-status .dot{width:7px; height:7px; border-radius:50%; background:#8a99a8; flex:none;}
+  .chat-status.online .dot{background:#5FE0A0;}
+  .chat-panel-close{margin-left:auto; background:none; border:none; color:#fff; opacity:.7; cursor:pointer; font-size:15px; padding:2px 2px; line-height:1;}
+  .chat-panel-close:hover{opacity:1;}
+  .chat-panel-body{flex:1; display:flex; flex-direction:column; min-height:0;}
+  .chat-lista{flex:1; overflow-y:auto; padding:10px 12px; display:flex; flex-direction:column; gap:7px;}
+  .chat-msg{max-width:82%; padding:7px 10px; border-radius:11px; font-size:12.5px; line-height:1.4; word-wrap:break-word; white-space:pre-wrap;}
+  .chat-msg.mine{align-self:flex-end; background:var(--accent); color:#fff; border-bottom-right-radius:3px;}
+  .chat-msg.theirs{align-self:flex-start; background:var(--paper-deep); color:var(--ink); border-bottom-left-radius:3px;}
+  .chat-msg .hora{display:block; font-size:9.5px; opacity:.65; margin-top:3px;}
+  .chat-input-row{display:flex; gap:6px; padding:8px; border-top:1px solid var(--rule); flex:none;}
+  .chat-input-row textarea{flex:1; resize:none; border:1px solid var(--rule); border-radius:8px; padding:7px 9px; font-size:12.5px; font-family:inherit; max-height:70px; background:var(--paper);}
+  .chat-input-row textarea:focus{outline:none; border-color:var(--accent);}
+  .chat-input-row button{border:none; background:var(--accent-deep); color:#fff; border-radius:8px; width:36px; cursor:pointer; font-size:15px; flex:none;}
+  .chat-input-row button:disabled{opacity:.5; cursor:default;}
+  .chat-conv-lista{flex:1; overflow-y:auto;}
+  .chat-conv-item{display:flex; align-items:center; gap:8px; padding:10px 12px; border-bottom:1px solid var(--rule-soft); cursor:pointer;}
+  .chat-conv-item:hover{background:var(--paper);}
+  .chat-conv-dot{width:8px; height:8px; border-radius:50%; background:#c7cfca; flex:none;}
+  .chat-conv-dot.online{background:var(--accent);}
+  .chat-conv-mid{flex:1; min-width:0;}
+  .chat-conv-nome{font-weight:600; font-size:12.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .chat-conv-preview{font-size:11px; color:var(--ink-soft); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .chat-conv-badge{background:var(--debit); color:#fff; font-size:10px; font-weight:700; min-width:17px; height:17px; border-radius:9px; display:flex; align-items:center; justify-content:center; padding:0 4px; flex:none;}
+  .chat-conv-busca{padding:8px 10px; border-bottom:1px solid var(--rule); flex:none;}
+  .chat-conv-busca input{width:100%; font-size:12.5px; padding:6px 8px; border:1px solid var(--rule); border-radius:7px; background:var(--paper);}
 </style>
 </head>
 <body>
@@ -262,6 +302,12 @@
 </div>
 
 <div id="painelTv" class="tvp hidden"></div>
+
+<div id="chatBubble" class="chat-bubble hidden" title="Chat">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+  <span id="chatBadge" class="chat-badge hidden">0</span>
+</div>
+<div id="chatPanel" class="chat-panel hidden"></div>
 
 <div class="modal-bg" id="modalBg"><div class="modal" id="modalBody"></div></div>
 <div class="drawer-bg" id="drawerBg"><div class="drawer" id="drawerBody"></div></div>
@@ -579,6 +625,7 @@ function showLogin(){
   document.getElementById('shell').classList.add('hidden');
   document.getElementById('painelTv').classList.add('hidden');
   pararPainelTv();
+  pararChat();
 }
 document.getElementById('btnLogin').addEventListener('click', doLogin);
 document.getElementById('loginPassword').addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
@@ -700,6 +747,7 @@ async function boot(){
   }
   renderNav();
   render();
+  iniciarChat();
 }
 // Só aparece pro Cliente com mais de uma empresa atribuída — trocar recarrega a página inteira,
 // pra todas as telas de autoatendimento (NFS-e, Financeiro, Assinatura) já virem escopadas na
@@ -765,6 +813,168 @@ async function render(){
     if(meuSeq !== RENDER_SEQ) return; // usuário já navegou pra outra tela — essa resposta chegou atrasada, não sobrescreve
     m.innerHTML = `<div class="empty-state">Não foi possível carregar esta página.<br><span style="color:var(--debit)">${esc(e.message)}</span></div>`;
   }
+}
+
+// ===================== Chat (balãozinho flutuante, escritório <-> cliente) =====================
+// Disponível pra qualquer Administrador/Colaborador/Cliente autenticado (não pra SuperAdmin, que
+// não pertence a nenhum escritório, nem pra conta de Painel de TV, que nem monta o shell). Lado do
+// escritório vê uma lista de conversas (uma por empresa) com busca; lado do cliente vê direto a
+// conversa única com "Simples Contábeis" (a empresa ativa dele, se tiver mais de uma).
+let CHAT = { aberto:false, tela:'lista', empresaId:null, empresaNome:null, presencaTimer:null, resumoTimer:null, mensagensTimer:null, conversas:[], filtro:'' };
+function chatEhStaff(){ return STATE.user && (STATE.user.perfil==='Administrador' || STATE.user.perfil==='Colaborador'); }
+function chatDisponivel(){ return STATE.user && STATE.user.perfil!=='SuperAdmin' && !STATE.user.painelTv; }
+function iniciarChat(){
+  if(!chatDisponivel()) return;
+  document.getElementById('chatBubble').classList.remove('hidden');
+  enviarPresencaChat();
+  CHAT.presencaTimer = setInterval(enviarPresencaChat, 25000);
+  atualizarResumoChat();
+  CHAT.resumoTimer = setInterval(atualizarResumoChat, 8000);
+  document.getElementById('chatBubble').addEventListener('click', toggleChatPanel);
+}
+function pararChat(){
+  [CHAT.presencaTimer, CHAT.resumoTimer, CHAT.mensagensTimer].forEach(t=>{ if(t) clearInterval(t); });
+  CHAT = { aberto:false, tela:'lista', empresaId:null, empresaNome:null, presencaTimer:null, resumoTimer:null, mensagensTimer:null, conversas:[], filtro:'' };
+  const bubble = document.getElementById('chatBubble'), panel = document.getElementById('chatPanel');
+  if(bubble){ bubble.classList.add('hidden'); bubble.classList.remove('chat-piscando'); }
+  if(panel){ panel.classList.add('hidden'); panel.innerHTML=''; }
+}
+async function enviarPresencaChat(){
+  try{ await api('/chat/presenca', { method:'POST' }); }catch(e){}
+}
+async function atualizarResumoChat(){
+  try{
+    const data = await api('/chat/resumo');
+    const badge = document.getElementById('chatBadge');
+    const bubble = document.getElementById('chatBubble');
+    const total = data.naoLidas||0;
+    if(total>0){
+      badge.textContent = total>99?'99+':String(total);
+      badge.classList.remove('hidden');
+      if(!CHAT.aberto) bubble.classList.add('chat-piscando');
+    }else{
+      badge.classList.add('hidden');
+      bubble.classList.remove('chat-piscando');
+    }
+    if(chatEhStaff()){
+      CHAT.conversas = data.conversas||[];
+      if(CHAT.aberto && CHAT.tela==='lista') renderChatLista();
+    }else if(CHAT.aberto && CHAT.tela==='conversa'){
+      atualizarChatStatusHeader(data.online);
+    }
+  }catch(e){}
+}
+function toggleChatPanel(){
+  const panel = document.getElementById('chatPanel');
+  if(CHAT.aberto){
+    CHAT.aberto = false;
+    panel.classList.add('hidden');
+    if(CHAT.mensagensTimer){ clearInterval(CHAT.mensagensTimer); CHAT.mensagensTimer=null; }
+    return;
+  }
+  CHAT.aberto = true;
+  document.getElementById('chatBubble').classList.remove('chat-piscando');
+  panel.classList.remove('hidden');
+  if(chatEhStaff()) renderChatLista();
+  else abrirChatThread(null, 'Simples Contábeis');
+}
+function renderChatLista(){
+  CHAT.tela = 'lista';
+  const panel = document.getElementById('chatPanel');
+  const termo = CHAT.filtro.toLowerCase();
+  const lista = CHAT.conversas.filter(c=>!termo || c.empresaNome.toLowerCase().includes(termo));
+  panel.innerHTML = `
+    <div class="chat-panel-header">
+      <span class="titulo">Conversas</span>
+      <button class="chat-panel-close" id="chatFechar" title="Fechar">✕</button>
+    </div>
+    <div class="chat-conv-busca"><input type="text" id="chatBusca" placeholder="Buscar empresa…" value="${esc(CHAT.filtro)}"></div>
+    <div class="chat-conv-lista" id="chatConvLista">
+      ${lista.length ? lista.map(c=>`
+        <div class="chat-conv-item" data-empresa-id="${c.empresaId}" data-empresa-nome="${esc(c.empresaNome)}">
+          <span class="chat-conv-dot ${c.online?'online':''}"></span>
+          <div class="chat-conv-mid">
+            <div class="chat-conv-nome">${esc(c.empresaNome)}</div>
+            <div class="chat-conv-preview">${esc(c.ultimaMensagem||'')}</div>
+          </div>
+          ${c.naoLidas>0?`<span class="chat-conv-badge">${c.naoLidas>99?'99+':c.naoLidas}</span>`:''}
+        </div>
+      `).join('') : `<div class="empty-state" style="padding:22px 14px; font-size:12px;">${CHAT.filtro?'Nenhuma empresa encontrada.':'Nenhuma conversa ainda.'}</div>`}
+    </div>
+  `;
+  document.getElementById('chatFechar').addEventListener('click', toggleChatPanel);
+  document.getElementById('chatBusca').addEventListener('input', (ev)=>{ CHAT.filtro = ev.target.value; renderChatLista(); document.getElementById('chatBusca').focus(); });
+  panel.querySelectorAll('.chat-conv-item').forEach(el=>{
+    el.addEventListener('click', ()=> abrirChatThread(Number(el.dataset.empresaId), el.dataset.empresaNome));
+  });
+}
+async function abrirChatThread(empresaId, empresaNome){
+  CHAT.tela = 'conversa';
+  CHAT.empresaId = empresaId;
+  CHAT.empresaNome = empresaNome;
+  const panel = document.getElementById('chatPanel');
+  panel.innerHTML = `
+    <div class="chat-panel-header">
+      ${chatEhStaff()?'<button class="chat-panel-back" id="chatVoltar" title="Voltar">←</button>':''}
+      <div style="min-width:0; flex:1;">
+        <div class="titulo">${esc(empresaNome)}</div>
+        <div class="chat-status" id="chatStatusHeader"><span class="dot"></span><span class="txt">…</span></div>
+      </div>
+      <button class="chat-panel-close" id="chatFechar" title="Fechar">✕</button>
+    </div>
+    <div class="chat-panel-body">
+      <div class="chat-lista" id="chatLista"><div class="empty-state" style="padding:20px; font-size:12px;">Carregando…</div></div>
+      <div class="chat-input-row">
+        <textarea id="chatInput" rows="1" placeholder="Escreva uma mensagem…" maxlength="2000"></textarea>
+        <button id="chatEnviar" title="Enviar">➤</button>
+      </div>
+    </div>
+  `;
+  document.getElementById('chatFechar').addEventListener('click', toggleChatPanel);
+  const voltar = document.getElementById('chatVoltar');
+  if(voltar) voltar.addEventListener('click', ()=>{ if(CHAT.mensagensTimer){ clearInterval(CHAT.mensagensTimer); CHAT.mensagensTimer=null; } renderChatLista(); });
+  const input = document.getElementById('chatInput');
+  const enviarBtn = document.getElementById('chatEnviar');
+  async function enviar(){
+    const texto = input.value.trim();
+    if(!texto) return;
+    enviarBtn.disabled = true;
+    try{
+      const body = chatEhStaff() ? { texto, empresaId: CHAT.empresaId } : { texto };
+      await api('/chat/mensagens', { method:'POST', body });
+      input.value = '';
+      await carregarChatMensagens();
+    }catch(e){ toast(e.message,'err'); }
+    finally{ enviarBtn.disabled = false; input.focus(); }
+  }
+  enviarBtn.addEventListener('click', enviar);
+  input.addEventListener('keydown', (ev)=>{ if(ev.key==='Enter' && !ev.shiftKey){ ev.preventDefault(); enviar(); } });
+  await carregarChatMensagens();
+  if(CHAT.mensagensTimer) clearInterval(CHAT.mensagensTimer);
+  CHAT.mensagensTimer = setInterval(carregarChatMensagens, 4000);
+}
+async function carregarChatMensagens(){
+  if(!CHAT.aberto || CHAT.tela!=='conversa') return;
+  try{
+    const qs = chatEhStaff() ? `?empresaId=${CHAT.empresaId}` : '';
+    const data = await api('/chat/mensagens'+qs);
+    const lista = document.getElementById('chatLista');
+    if(!lista) return;
+    const pertoDoFim = lista.scrollTop + lista.clientHeight >= lista.scrollHeight - 30;
+    lista.innerHTML = data.items.map(m=>{
+      const minha = (chatEhStaff() && m.autorLado==='escritorio') || (!chatEhStaff() && m.autorLado==='cliente');
+      return `<div class="chat-msg ${minha?'mine':'theirs'}">${esc(m.texto)}<span class="hora">${esc(m.autorNome)} · ${fmtDateHora(m.criadoEm)}</span></div>`;
+    }).join('') || `<div class="empty-state" style="padding:20px; font-size:12px;">Nenhuma mensagem ainda. Escreva a primeira!</div>`;
+    if(pertoDoFim) lista.scrollTop = lista.scrollHeight;
+    if(chatEhStaff()) atualizarChatStatusHeader(data.empresaOnline);
+    atualizarResumoChat();
+  }catch(e){}
+}
+function atualizarChatStatusHeader(online){
+  const el = document.getElementById('chatStatusHeader');
+  if(!el) return;
+  el.classList.toggle('online', !!online);
+  el.querySelector('.txt').textContent = online ? 'online agora' : 'offline';
 }
 
 // ===================== Painel de TV (Início em tela cheia, sem menu) =====================

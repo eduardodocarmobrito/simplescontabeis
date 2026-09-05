@@ -688,6 +688,31 @@ sqlite.exec(`
     UNIQUE(escritorio_id, ano)
   );
 
+  -- Chat ao vivo (balãozinho no canto da tela) — uma conversa por empresa-cliente, compartilhada
+  -- entre todos os colaboradores/admin do escritório (caixa de entrada única, tipo suporte) de um
+  -- lado, e todos os usuários da empresa-cliente do outro. "lido_pelo_escritorio"/"lido_pelo_cliente"
+  -- marcam o lado que ainda não visualizou aquela mensagem — não é por usuário individual.
+  CREATE TABLE IF NOT EXISTS chat_mensagens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    escritorio_id INTEGER NOT NULL REFERENCES escritorios(id),
+    empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+    autor_user_id INTEGER NOT NULL REFERENCES app_users(id),
+    autor_nome TEXT NOT NULL, -- snapshot do nome de quem mandou, pra não sumir se o usuário for excluído depois
+    autor_lado TEXT NOT NULL, -- 'escritorio' | 'cliente'
+    texto TEXT NOT NULL,
+    criado_em TEXT DEFAULT (datetime('now')),
+    lido_pelo_escritorio INTEGER NOT NULL DEFAULT 0,
+    lido_pelo_cliente INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE INDEX IF NOT EXISTS idx_chat_mensagens_empresa ON chat_mensagens(empresa_id, id);
+
+  -- "Está online" — heartbeat simples (ping a cada X segundos enquanto a aba tá aberta e logada).
+  -- Considerado online quem deu ping nos últimos ~40s (ver CHAT_ONLINE_JANELA_SEGUNDOS).
+  CREATE TABLE IF NOT EXISTS chat_presenca (
+    user_id INTEGER PRIMARY KEY REFERENCES app_users(id) ON DELETE CASCADE,
+    ultimo_ping TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
   CREATE TABLE IF NOT EXISTS emails_enviados (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     empresa_id INTEGER REFERENCES empresas(id) ON DELETE SET NULL,
@@ -2629,6 +2654,123 @@ app.post("/api/empresas/licenca-anos", blockCliente, requirePermissaoOr("empresa
   if (!Number.isInteger(ano) || ano < 2000 || ano > 2100) return res.status(400).json({ error: "Ano inválido." });
   sqlite.prepare(`INSERT OR IGNORE INTO empresa_licenca_anos (escritorio_id, ano) VALUES (?, ?)`).run(user.escritorioId, ano);
   res.json({ ok: true });
+});
+
+// ---------- Chat ao vivo (balãozinho) — uma conversa por empresa-cliente, caixa de entrada única
+// compartilhada por todos os colaboradores/admin do escritório de um lado, todos os usuários da
+// empresa-cliente do outro. Disponível pra qualquer Colaborador/Administrador/Cliente autenticado,
+// sem gate de permissão de módulo — é um utilitário de comunicação preso ao shell, não uma página.
+const CHAT_ONLINE_JANELA_SEGUNDOS = 40;
+function chatEscritorioOnline(escritorioId: number): boolean {
+  const row = sqlite
+    .prepare(
+      `SELECT 1 FROM chat_presenca p JOIN app_users u ON u.id = p.user_id
+       WHERE u.escritorio_id = ? AND u.perfil IN ('Administrador','Colaborador')
+         AND p.ultimo_ping >= datetime('now', '-${CHAT_ONLINE_JANELA_SEGUNDOS} seconds')`
+    )
+    .get(escritorioId);
+  return !!row;
+}
+function chatEmpresaOnline(empresaId: number): boolean {
+  const row = sqlite
+    .prepare(
+      `SELECT 1 FROM chat_presenca p JOIN cliente_empresas ce ON ce.user_id = p.user_id
+       WHERE ce.empresa_id = ? AND p.ultimo_ping >= datetime('now', '-${CHAT_ONLINE_JANELA_SEGUNDOS} seconds')`
+    )
+    .get(empresaId);
+  return !!row;
+}
+app.post("/api/chat/presenca", (req, res) => {
+  const user = (req as any).user;
+  if (!user || user.perfil === "SuperAdmin") return res.json({ ok: true });
+  sqlite
+    .prepare(
+      `INSERT INTO chat_presenca (user_id, ultimo_ping) VALUES (?, datetime('now'))
+       ON CONFLICT(user_id) DO UPDATE SET ultimo_ping = datetime('now')`
+    )
+    .run(user.id);
+  res.json({ ok: true });
+});
+// Poll leve (a cada poucos segundos) — cobre tanto o número de não lidas pro balãozinho piscar
+// quanto, pro lado do escritório, a lista de conversas recentes (evita duas rotas/dois pollings).
+app.get("/api/chat/resumo", (req, res) => {
+  const user = (req as any).user;
+  if (!user || user.perfil === "SuperAdmin") return res.json({ naoLidas: 0 });
+  if (user.perfil === "Cliente") {
+    if (!user.empresaId) return res.json({ naoLidas: 0, online: false });
+    const row = sqlite
+      .prepare(`SELECT COUNT(*) as qtd FROM chat_mensagens WHERE empresa_id = ? AND autor_lado = 'escritorio' AND lido_pelo_cliente = 0`)
+      .get(user.empresaId) as any;
+    return res.json({ naoLidas: row.qtd, online: chatEscritorioOnline(user.escritorioId) });
+  }
+  const empresaIds = empresasVisiveis(user);
+  if (!empresaIds.length) return res.json({ naoLidas: 0, conversas: [] });
+  const placeholders = empresaIds.map(() => "?").join(",");
+  const rows = sqlite
+    .prepare(
+      `SELECT e.id as empresaId, e.nome as empresaNome,
+              (SELECT COUNT(*) FROM chat_mensagens m WHERE m.empresa_id = e.id AND m.autor_lado='cliente' AND m.lido_pelo_escritorio=0) as naoLidas,
+              (SELECT texto FROM chat_mensagens m WHERE m.empresa_id = e.id ORDER BY m.id DESC LIMIT 1) as ultimaMensagem,
+              (SELECT criado_em FROM chat_mensagens m WHERE m.empresa_id = e.id ORDER BY m.id DESC LIMIT 1) as ultimaMensagemEm
+       FROM empresas e WHERE e.id IN (${placeholders}) AND e.ativo = 1`
+    )
+    .all(...empresaIds) as any[];
+  const comMensagem = rows.filter((r) => r.ultimaMensagemEm);
+  comMensagem.sort((a, b) => (a.ultimaMensagemEm < b.ultimaMensagemEm ? 1 : -1));
+  const totalNaoLidas = rows.reduce((s, r) => s + r.naoLidas, 0);
+  const conversas = comMensagem.map((r) => ({ ...r, online: chatEmpresaOnline(r.empresaId) }));
+  res.json({ naoLidas: totalNaoLidas, conversas });
+});
+app.get("/api/chat/mensagens", (req, res) => {
+  const user = (req as any).user;
+  if (!user || user.perfil === "SuperAdmin") return res.status(403).json({ error: "Sem acesso." });
+  let empresaId: number;
+  if (user.perfil === "Cliente") {
+    if (!user.empresaId) return res.status(400).json({ error: "Nenhuma empresa vinculada." });
+    empresaId = user.empresaId;
+  } else {
+    empresaId = Number(req.query.empresaId);
+    if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  }
+  const rows = sqlite
+    .prepare(`SELECT id, autor_nome as autorNome, autor_lado as autorLado, texto, criado_em as criadoEm FROM chat_mensagens WHERE empresa_id = ? ORDER BY id ASC LIMIT 300`)
+    .all(empresaId);
+  if (user.perfil === "Cliente") {
+    sqlite.prepare(`UPDATE chat_mensagens SET lido_pelo_cliente = 1 WHERE empresa_id = ? AND autor_lado = 'escritorio' AND lido_pelo_cliente = 0`).run(empresaId);
+  } else {
+    sqlite.prepare(`UPDATE chat_mensagens SET lido_pelo_escritorio = 1 WHERE empresa_id = ? AND autor_lado = 'cliente' AND lido_pelo_escritorio = 0`).run(empresaId);
+  }
+  res.json({ items: rows, empresaId, empresaOnline: user.perfil === "Cliente" ? undefined : chatEmpresaOnline(empresaId) });
+});
+app.post("/api/chat/mensagens", (req, res) => {
+  const user = (req as any).user;
+  if (!user || user.perfil === "SuperAdmin") return res.status(403).json({ error: "Sem acesso." });
+  const texto = String(req.body?.texto || "").trim();
+  if (!texto) return res.status(400).json({ error: "Mensagem vazia." });
+  if (texto.length > 2000) return res.status(400).json({ error: "Mensagem muito longa (máximo 2000 caracteres)." });
+  let empresaId: number;
+  let escritorioId: number;
+  let autorLado: "escritorio" | "cliente";
+  if (user.perfil === "Cliente") {
+    if (!user.empresaId) return res.status(400).json({ error: "Nenhuma empresa vinculada." });
+    empresaId = user.empresaId;
+    autorLado = "cliente";
+    const empresa = sqlite.prepare(`SELECT escritorio_id FROM empresas WHERE id = ?`).get(empresaId) as any;
+    if (!empresa) return res.status(404).json({ error: "Empresa não encontrada." });
+    escritorioId = empresa.escritorio_id;
+  } else {
+    empresaId = Number(req.body?.empresaId);
+    if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+    autorLado = "escritorio";
+    escritorioId = user.escritorioId;
+  }
+  const info = sqlite
+    .prepare(
+      `INSERT INTO chat_mensagens (escritorio_id, empresa_id, autor_user_id, autor_nome, autor_lado, texto, lido_pelo_escritorio, lido_pelo_cliente)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(escritorioId, empresaId, user.id, user.nome, autorLado, texto, autorLado === "escritorio" ? 1 : 0, autorLado === "cliente" ? 1 : 0);
+  res.json({ id: Number(info.lastInsertRowid) });
 });
 app.get("/api/empresas/:id/anexos", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
   const empresaId = Number(req.params.id);
