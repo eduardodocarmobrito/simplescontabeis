@@ -1054,10 +1054,50 @@ function atualizarChatStatusHeader(online){
 // valores sozinho a cada minuto, e recarrega a página inteira a cada 30min pra pegar card
 // novo/editado/removido (ou uma atualização do próprio site) sem precisar mexer na TV manualmente.
 let TVP_TIMERS = { refresh:null, reload:null, clock:null, scan:null };
+let TVP_WAKE_LOCK = null;
 function pararPainelTv(){
   Object.values(TVP_TIMERS).forEach(t=>{ if(t) clearInterval(t); });
   TVP_TIMERS = { refresh:null, reload:null, clock:null, scan:null };
+  if(TVP_WAKE_LOCK){ TVP_WAKE_LOCK.release().catch(()=>{}); TVP_WAKE_LOCK = null; }
+  document.getElementById('tvpKeepAwakeVideo')?.remove();
 }
+// Ligada o dia todo numa TV, essa conta nunca tem ninguém mexendo — vários navegadores/sistemas de
+// TV entendem isso como "tela ociosa" e apagam a tela sozinhos. Duas frentes, sem mudar nada visível
+// do painel: (1) Wake Lock API, o jeito oficial de pedir pro sistema não dormir a tela enquanto a
+// aba estiver aberta (suportado no Chrome/Edge modernos, inclusive Android TV); (2) reforço pra
+// navegador mais antigo sem Wake Lock — um vídeo mudo "tocando" pra sempre (gerado na hora via
+// canvas, sem depender de nenhum arquivo externo), já que muito sistema de TV só evita economia de
+// energia enquanto alguma mídia está em reprodução. As duas rodam juntas — não custa nada ter as
+// duas, e cobrem sistemas diferentes.
+async function tvpManterTelaLigada(){
+  try{
+    if('wakeLock' in navigator){
+      TVP_WAKE_LOCK = await navigator.wakeLock.request('screen');
+      TVP_WAKE_LOCK.addEventListener('release', ()=>{ TVP_WAKE_LOCK = null; });
+    }
+  }catch(e){
+    // Alguns navegadores recusam se a aba não estiver em foco no momento do pedido — sem problema,
+    // o listener de visibilitychange abaixo tenta de novo, e o vídeo de reforço já cobre o buraco.
+  }
+  if(!document.getElementById('tvpKeepAwakeVideo')){
+    try{
+      const canvas = document.createElement('canvas');
+      canvas.width = 2; canvas.height = 2;
+      const video = document.createElement('video');
+      video.id = 'tvpKeepAwakeVideo';
+      video.muted = true; video.autoplay = true; video.loop = true; video.playsInline = true;
+      video.style.cssText = 'position:fixed; top:0; left:0; width:1px; height:1px; opacity:0; pointer-events:none;';
+      video.srcObject = canvas.captureStream(1);
+      document.body.appendChild(video);
+      video.play().catch(()=>{});
+    }catch(e){ /* captureStream indisponível — só o Wake Lock cobre, nada quebra por isso */ }
+  }
+}
+document.addEventListener('visibilitychange', async ()=>{
+  if(document.visibilityState==='visible' && !TVP_WAKE_LOCK && document.getElementById('painelTv') && !document.getElementById('painelTv').classList.contains('hidden') && 'wakeLock' in navigator){
+    try{ TVP_WAKE_LOCK = await navigator.wakeLock.request('screen'); }catch(e){}
+  }
+});
 const TVP_CORES = ['#5FE0A0','#61B8E8','#E8C15F','#E88F61','#B98CE8','#5FE0C7','#E85F8F','#8CE85F'];
 const TVP_DIAS = ['domingo','segunda-feira','terça-feira','quarta-feira','quinta-feira','sexta-feira','sábado'];
 async function pagePainelTv(){
@@ -1172,6 +1212,7 @@ async function pagePainelTv(){
     }
   }
 
+  tvpManterTelaLigada();
   await carregar(false);
   // Valores atualizam sozinhos a cada 1min (com uma "piscada" rápida, sensação de painel ao vivo) —
   // bem mais frequente que os 30min pedidos, que são só o teto máximo pra pegar mudança estrutural
