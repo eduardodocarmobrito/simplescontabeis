@@ -4160,6 +4160,7 @@ async function renderNfseNotasDetalhe(empresaId){
                 ${n.status==='emitida'&&n.whatsappStatus==='falhou'?`<span class="tag bad" title="Falha na entrega por WhatsApp">⚠ Falhou</span>`:''}
                 ${n.status==='emitida'?`<button class="btn small" data-id="${n.id}" data-act="enviar-whatsapp-nfse">${n.whatsappEnviado?'Reenviar WhatsApp':'Enviar WhatsApp'}</button>`:''}
                 ${n.status==='emitida'?`<button class="btn small" data-id="${n.id}" data-act="cancelar" style="color:var(--debit);">Cancelar</button>`:''}
+                ${n.status==='cancelada'?`<button class="btn small" data-id="${n.id}" data-act="reenviar-cancelamento" title="Reenvia o aviso de cancelamento por e-mail e WhatsApp pro tomador">Reenviar aviso de cancelamento</button>`:''}
               </td>
             </tr>
           `).join('') : `<tr><td colspan="9"><div class="empty-state">Nenhuma emissão neste período.</div></td></tr>`}
@@ -4225,6 +4226,14 @@ async function renderNfseNotasDetalhe(empresaId){
       toast('Enviado por WhatsApp'+(r.falhas?' (algum contato falhou)':'')+'.','ok');
       renderNfseNotas();
     }catch(e){ toast(e.message,'err'); b.disabled = false; b.textContent = 'Enviar WhatsApp'; }
+  }));
+  box.querySelectorAll('[data-act="reenviar-cancelamento"]').forEach(b=>b.addEventListener('click', async ()=>{
+    b.disabled = true; b.textContent = 'Reenviando…';
+    try{
+      await api('/nfse/emissoes/'+b.dataset.id+'/reenviar-cancelamento', { method:'POST' });
+      toast('Aviso de cancelamento reenviado por e-mail e WhatsApp.','ok');
+    }catch(e){ toast(e.message,'err'); }
+    finally{ b.disabled = false; b.textContent = 'Reenviar aviso de cancelamento'; }
   }));
   box.querySelectorAll('[data-act="cancelar"]').forEach(b=>b.addEventListener('click', ()=>{
     const n = items.find(i=>i.id===Number(b.dataset.id));

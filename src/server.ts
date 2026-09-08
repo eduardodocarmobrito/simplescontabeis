@@ -6786,6 +6786,22 @@ app.post("/api/nfse/emissoes/:id/cancelar", blockCliente, requirePermissao("nfse
     res.status(500).json({ error: e.message });
   }
 });
+// Reenvia o aviso de cancelamento (e-mail + WhatsApp) sem cancelar de novo — útil pra quando o aviso
+// não chegou na hora (ex.: bug corrigido depois do fato, contato cadastrado depois) ou o usuário só
+// quer garantir que o cliente foi avisado. Só faz sentido pra quem já está cancelada de verdade.
+app.post("/api/nfse/emissoes/:id/reenviar-cancelamento", blockCliente, requirePermissao("nfse", "editar"), async (req, res) => {
+  const row = sqlite.prepare(`SELECT * FROM nfse_emissoes WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!row) return res.status(404).json({ error: "Emissão não encontrada." });
+  const user = (req as any).user;
+  if (!podeAcessarEmpresa(user, row.empresa_id)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  if (row.status !== "cancelada") return res.status(400).json({ error: "Só é possível reenviar o aviso de uma NFS-e já cancelada." });
+  try {
+    await nfseNotificarCancelamento(row.id);
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // Faixa 80.000-89.999 é reservada ao Emissor Web do próprio governo (confirmado no manual oficial,
 // guia-emissorpubliconacionalweb); quem emite via API/webservice com certificado próprio (nosso
