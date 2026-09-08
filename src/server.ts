@@ -6542,18 +6542,26 @@ app.post("/api/nfse/emissoes/:id/enviar-whatsapp", blockCliente, requirePermissa
   const user = (req as any).user;
   if (!podeAcessarEmpresa(user, row.empresa_id)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
   if (row.status !== "emitida") return res.status(400).json({ error: "Só é possível enviar uma NFS-e já emitida." });
-  // Decisão explícita do usuário: o aviso de NFS-e emitida por WhatsApp vai sempre pros contatos do
-  // PRÓPRIO escritório, nunca pro tomador — usa escritorios.empresa_id (não o prestador desta nota
-  // específica), pra sempre acertar o time interno mesmo quando a nota é emitida em nome de outra
-  // empresa da carteira do escritório.
-  const escritorioEmpresa = sqlite.prepare(`SELECT empresa_id FROM escritorios WHERE id = ?`).get(user.escritorioId) as any;
-  const contatos = escritorioEmpresa?.empresa_id
+  // Antes mandava sempre pros contatos do PRÓPRIO escritório (nunca pro tomador) — decisão de uma
+  // sessão anterior. Revertido a pedido do usuário: descobriu ao vivo que o botão mandava pro
+  // contato interno do escritório (ex.: "Load") em vez do cliente de verdade (ex.: Zatta), e pediu
+  // pra sempre puxar do cadastro de contatos DA EMPRESA TOMADORA — mesmo cadastro de "Contatos e
+  // documentos por cliente" em Configurações › E-mail corporativo, e mesma resolução por CNPJ já
+  // usada no aviso de cancelamento (ver nfseNotificarCancelamento). Sem empresa-cliente cadastrada
+  // pra esse CNPJ, cai pro telefone avulso digitado na hora da emissão (tomador_telefone).
+  const tomadorCnpjLimpo = String(row.tomador_documento || "").replace(/\D/g, "");
+  const tomadorEmpresa = tomadorCnpjLimpo
+    ? (sqlite.prepare(`SELECT id FROM empresas WHERE REPLACE(REPLACE(REPLACE(cnpj,'.',''),'/',''),'-','') = ?`).get(tomadorCnpjLimpo) as any)
+    : null;
+  const contatos = tomadorEmpresa
     ? (sqlite
         .prepare(`SELECT telefone FROM empresa_contatos WHERE empresa_id = ? AND receber_whatsapp = 1 AND telefone IS NOT NULL AND telefone != ''`)
-        .all(escritorioEmpresa.empresa_id) as any[])
-    : [];
+        .all(tomadorEmpresa.id) as any[])
+    : row.tomador_telefone
+      ? [{ telefone: row.tomador_telefone }]
+      : [];
   if (!contatos.length) {
-    return res.status(400).json({ error: 'O escritório não tem contato de WhatsApp cadastrado (marque "Receber WhatsApp" no contato, em Configurações › E-mail corporativo).' });
+    return res.status(400).json({ error: 'O tomador desta nota não tem contato de WhatsApp cadastrado (marque "Receber WhatsApp" no contato dele, em Configurações › E-mail corporativo, ou cadastre a empresa em Empresas).' });
   }
   const { pdf, erro: erroPdf } = await nfseObterDanfsePdf(row);
   if (!pdf) return res.status(502).json({ error: erroPdf });
@@ -6713,10 +6721,9 @@ async function nfseNotificarCancelamento(emissaoId: number) {
   }
 
   // Achado ao vivo: cancelamento só mandava e-mail — WhatsApp nunca foi implementado aqui (só na
-  // emissão normal, ver /api/nfse/emissoes/:id/enviar-whatsapp). Diferente da emissão (que sempre
-  // avisa o time interno do escritório, nunca o tomador — decisão já documentada), cancelamento
-  // avisa o TOMADOR de verdade, mesmo público do e-mail acima, já que é ele quem recebeu a nota
-  // original e precisa saber que ela não vale mais.
+  // emissão normal, ver /api/nfse/emissoes/:id/enviar-whatsapp). Mesmo público do e-mail acima (o
+  // tomador de verdade, não o escritório) — desde que o botão de "Enviar WhatsApp" da emissão normal
+  // também passou a mandar pro tomador (mudança pedida pelo usuário, antes ia sempre pro escritório).
   if (tomadorEmpresa && pdf) {
     const contatosWhatsapp = sqlite
       .prepare(`SELECT telefone FROM empresa_contatos WHERE empresa_id = ? AND receber_whatsapp = 1 AND telefone IS NOT NULL AND telefone != ''`)
