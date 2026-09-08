@@ -282,7 +282,14 @@ async function exportarDocumentosNovos(cfg: Config) {
     if (!items || !items.length) break;
     for (const doc of items) {
       const competencia = doc.dataEmissao ? String(doc.dataEmissao).slice(0, 7) : "sem-data"; // AAAA-MM
-      const pastaEmpresa = sanitizarNomeArquivo(doc.empresaNome || "Sem empresa");
+      // Mesma convenção que a própria pasta de importação do Domínio já usa ("125-AGR" — código do
+      // cliente no Domínio + apelido curto): com os dois preenchidos, o contador acha a pasta certa
+      // olhando pra ela igual já está acostumado a fazer dentro do próprio Domínio. Sem apelido
+      // cadastrado (empresa ainda não configurada com um), cai pro nome completo de sempre.
+      const pastaEmpresa =
+        doc.empresaCodigo && doc.empresaApelido
+          ? sanitizarNomeArquivo(`${doc.empresaCodigo}-${doc.empresaApelido}`)
+          : sanitizarNomeArquivo(doc.empresaNome || "Sem empresa");
       const destino = path.join(cfg.xmlExportDir, pastaEmpresa, competencia);
       fs.mkdirSync(destino, { recursive: true });
       const nomeArquivo = sanitizarNomeArquivo(doc.chaveAcesso || `doc-${doc.id}`) + ".xml";

@@ -55,6 +55,7 @@ sqlite.exec(`
     nome TEXT NOT NULL,
     cnpj TEXT,
     codigo_dominio TEXT,
+    apelido TEXT, -- apelido curto (vem do Domínio Web quando disponível, ou preenchido na mão) — usado no nome da pasta de exportação de XML (ver dominio-agent.ts): "código-apelido", igual à convenção que o próprio Domínio já usa na pasta de importação dele
     email TEXT,
     telefone TEXT,
     endereco TEXT,
@@ -1226,6 +1227,7 @@ sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_envio_documentos_periodo ON envio_do
     ["codigo_municipio_ibge", "codigo_municipio_ibge TEXT"], // código IBGE (7 dígitos) do município — usado na emissão de NFS-e (DPS exige a Tabela do IBGE), centralizado aqui pra não pedir de novo por módulo
     ["nome_municipio_ibge", "nome_municipio_ibge TEXT"], // só exibição do código acima
     ["regime_tributario", "regime_tributario TEXT NOT NULL DEFAULT 'simples_nacional'"], // 'simples_nacional' | 'lucro_presumido' | 'lucro_real' — mutuamente exclusivos; opcao_simples_nacional (nfse_empresa_config) é sempre derivado deste campo, nunca editado à parte
+    ["apelido", "apelido TEXT"], // apelido curto do Domínio Web — usado no nome da pasta de exportação de XML ("código-apelido")
   ]) {
     if (!nomes.has(coluna)) sqlite.exec(`ALTER TABLE empresas ADD COLUMN ${ddl}`);
   }
@@ -2503,6 +2505,7 @@ app.get("/api/empresas", blockCliente, requirePermissao("empresas", "visualizar"
       nome: r.nome,
       cnpj: r.cnpj,
       codigoDominio: r.codigo_dominio,
+      apelido: r.apelido,
       email: r.email,
       telefone: r.telefone,
       endereco: r.endereco,
@@ -2554,17 +2557,18 @@ function envioAutoAtribuirPorRegime(empresaId: number, escritorioId: number, reg
 }
 app.post("/api/empresas", blockCliente, requirePermissao("empresas", "postar"), (req, res) => {
   const user = (req as any).user;
-  const { nome, cnpj, codigoDominio, email, telefone, endereco, cidade, uf, cep, inscricaoMunicipal, inscricaoEstadual, nomeRepresentanteLegal, cpfRepresentanteLegal, codigoMunicipioIbge, nomeMunicipioIbge, regimeTributario } = req.body || {};
+  const { nome, cnpj, codigoDominio, apelido, email, telefone, endereco, cidade, uf, cep, inscricaoMunicipal, inscricaoEstadual, nomeRepresentanteLegal, cpfRepresentanteLegal, codigoMunicipioIbge, nomeMunicipioIbge, regimeTributario } = req.body || {};
   if (!nome) return res.status(400).json({ error: "Informe o nome da empresa." });
   const info = sqlite
     .prepare(
-      `INSERT INTO empresas (nome, cnpj, codigo_dominio, email, telefone, endereco, cidade, uf, cep, inscricao_municipal, inscricao_estadual, nome_representante_legal, cpf_representante_legal, codigo_municipio_ibge, nome_municipio_ibge, regime_tributario, origem, escritorio_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?)`
+      `INSERT INTO empresas (nome, cnpj, codigo_dominio, apelido, email, telefone, endereco, cidade, uf, cep, inscricao_municipal, inscricao_estadual, nome_representante_legal, cpf_representante_legal, codigo_municipio_ibge, nome_municipio_ibge, regime_tributario, origem, escritorio_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?)`
     )
     .run(
       nome,
       cnpj || null,
       codigoDominio || null,
+      apelido || null,
       email || null,
       telefone || null,
       endereco || null,
@@ -2613,20 +2617,21 @@ app.put("/api/empresas/:id", blockCliente, requirePermissao("empresas", "editar"
   const id = Number(req.params.id);
   const existing = sqlite.prepare(`SELECT * FROM empresas WHERE id = ?`).get(id) as any;
   if (!existing || !podeAcessarEmpresa((req as any).user, id)) return res.status(404).json({ error: "Empresa não encontrada." });
-  const { nome, cnpj, codigoDominio, email, telefone, endereco, cidade, uf, cep, inscricaoMunicipal, inscricaoEstadual, nomeRepresentanteLegal, cpfRepresentanteLegal, codigoMunicipioIbge, nomeMunicipioIbge, regimeTributario, ativo, visivelRelatorios, isentoAssinatura } = req.body || {};
+  const { nome, cnpj, codigoDominio, apelido, email, telefone, endereco, cidade, uf, cep, inscricaoMunicipal, inscricaoEstadual, nomeRepresentanteLegal, cpfRepresentanteLegal, codigoMunicipioIbge, nomeMunicipioIbge, regimeTributario, ativo, visivelRelatorios, isentoAssinatura } = req.body || {};
   const regimeTributarioFinal =
     regimeTributario !== undefined
       ? ((REGIMES_TRIBUTARIOS as readonly string[]).includes(regimeTributario) ? regimeTributario : "simples_nacional")
       : existing.regime_tributario;
   sqlite
     .prepare(
-      `UPDATE empresas SET nome=?, cnpj=?, codigo_dominio=?, email=?, telefone=?, endereco=?, cidade=?, uf=?, cep=?, inscricao_municipal=?, inscricao_estadual=?,
+      `UPDATE empresas SET nome=?, cnpj=?, codigo_dominio=?, apelido=?, email=?, telefone=?, endereco=?, cidade=?, uf=?, cep=?, inscricao_municipal=?, inscricao_estadual=?,
          nome_representante_legal=?, cpf_representante_legal=?, codigo_municipio_ibge=?, nome_municipio_ibge=?, regime_tributario=?, ativo=?, visivel_relatorios=?, isento_assinatura=?, updated_at=datetime('now') WHERE id=?`
     )
     .run(
       nome ?? existing.nome,
       cnpj !== undefined ? cnpj : existing.cnpj,
       codigoDominio !== undefined ? codigoDominio : existing.codigo_dominio,
+      apelido !== undefined ? apelido : existing.apelido,
       email !== undefined ? email : existing.email,
       telefone !== undefined ? telefone : existing.telefone,
       endereco !== undefined ? endereco : existing.endereco,
@@ -3232,15 +3237,19 @@ app.post("/api/dominio/importar-clientes", blockCliente, requirePermissao("confi
   const idxCpf = header.findIndex((h) => h.includes("cpf"));
   const idxIe = header.findIndex((h) => h.includes("inscricao estadual") || h.includes("inscrição estadual") || h === "ie" || h.includes(" ie") || h.startsWith("ie "));
   const idxStatus = header.findIndex((h) => h.includes("status") || h.includes("situacao") || h.includes("situação") || h.includes("ativo"));
+  // "Apelido" (ou "Nome fantasia"/"Nickname", dependendo de como o Domínio Web nomeia a coluna no
+  // export) — usado no nome da pasta de exportação de XML (ver dominio-agent.ts), pra ficar igual à
+  // convenção que o próprio Domínio já usa ("código-apelido") na pasta de importação dele.
+  const idxApelido = header.findIndex((h) => h.includes("apelido") || h.includes("fantasia") || h.includes("nickname"));
   if (idxNome === -1) return res.status(400).json({ error: "Não encontrei a coluna de nome/razão social no CSV." });
 
   let novas = 0, atualizadas = 0;
   const escritorioId = (req as any).user.escritorioId;
   const getByCodigo = sqlite.prepare(`SELECT id FROM empresas WHERE codigo_dominio = ? AND escritorio_id = ?`);
   const getByNome = sqlite.prepare(`SELECT id FROM empresas WHERE LOWER(nome) = LOWER(?) AND escritorio_id = ?`);
-  const insert = sqlite.prepare(`INSERT INTO empresas (nome, cnpj, codigo_dominio, inscricao_estadual, ativo, origem, escritorio_id) VALUES (?, ?, ?, ?, ?, 'dominio', ?)`);
+  const insert = sqlite.prepare(`INSERT INTO empresas (nome, cnpj, codigo_dominio, apelido, inscricao_estadual, ativo, origem, escritorio_id) VALUES (?, ?, ?, ?, ?, ?, 'dominio', ?)`);
   const update = sqlite.prepare(
-    `UPDATE empresas SET nome=?, cnpj=COALESCE(?, cnpj), codigo_dominio=COALESCE(?, codigo_dominio), inscricao_estadual=COALESCE(?, inscricao_estadual), ativo=?, updated_at=datetime('now') WHERE id=?`
+    `UPDATE empresas SET nome=?, cnpj=COALESCE(?, cnpj), codigo_dominio=COALESCE(?, codigo_dominio), apelido=COALESCE(?, apelido), inscricao_estadual=COALESCE(?, inscricao_estadual), ativo=?, updated_at=datetime('now') WHERE id=?`
   );
 
   for (let i = 1; i < linhas.length; i++) {
@@ -3249,16 +3258,17 @@ app.post("/api/dominio/importar-clientes", blockCliente, requirePermissao("confi
     if (!nome) continue;
     const codigo = idxCodigo >= 0 ? cols[idxCodigo] : null;
     const cnpj = (idxCnpj >= 0 && cols[idxCnpj]) || (idxCpf >= 0 && cols[idxCpf]) || null;
+    const apelido = idxApelido >= 0 ? cols[idxApelido] : null;
     const inscricaoEstadual = idxIe >= 0 ? cols[idxIe] : null;
     const statusTxt = (idxStatus >= 0 ? cols[idxStatus] : "").toLowerCase();
     const ativo = statusTxt ? (statusTxt.includes("inativ") || statusTxt.includes("encerrad") || statusTxt === "0" || statusTxt === "n" ? 0 : 1) : 1;
 
     const existente = (codigo ? getByCodigo.get(codigo, escritorioId) : undefined) || getByNome.get(nome, escritorioId);
     if (existente) {
-      update.run(nome, cnpj || null, codigo || null, inscricaoEstadual || null, ativo, (existente as any).id);
+      update.run(nome, cnpj || null, codigo || null, apelido || null, inscricaoEstadual || null, ativo, (existente as any).id);
       atualizadas++;
     } else {
-      insert.run(nome, cnpj || null, codigo || null, inscricaoEstadual || null, ativo, escritorioId);
+      insert.run(nome, cnpj || null, codigo || null, apelido || null, inscricaoEstadual || null, ativo, escritorioId);
       novas++;
     }
   }
@@ -9997,7 +10007,7 @@ app.get("/api/dominio-agent/documentos-novos", requireDominioAgent, (req, res) =
   const limite = Math.min(Number(req.query.limite) || 200, 500);
   const rows = sqlite
     .prepare(
-      `SELECT d.id, e.nome as empresaNome, d.tipo, d.chave_acesso as chaveAcesso, d.data_emissao as dataEmissao, d.xml
+      `SELECT d.id, e.nome as empresaNome, e.codigo_dominio as empresaCodigo, e.apelido as empresaApelido, d.tipo, d.chave_acesso as chaveAcesso, d.data_emissao as dataEmissao, d.xml
        FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id
        WHERE d.escritorio_id = 1 AND d.id > ? ORDER BY d.id ASC LIMIT ?`
     )
