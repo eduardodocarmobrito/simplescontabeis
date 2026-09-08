@@ -4829,6 +4829,27 @@ function nfeResolverCnpjBusca(cfg: any, empresaId: number): string {
   }
   return cnpjEmpresa;
 }
+// Captura de nota emitida por um CLIENTE via tag autXML (investigação registrada em memory.md):
+// quando o cliente configura o CNPJ do escritório como "autorizado a acessar o XML" no software
+// emissor dele, a Distribuição DFe passa a devolver essa nota também pra quem está consultando com
+// ESSE CNPJ (tipicamente o próprio escritório, buscando pela sua própria empresa) — mesmo sem ser
+// nem emitente nem destinatário. Sem isso, a nota cairia dentro de nfe_documentos atribuída à
+// empresa que fez a busca (o escritório), misturada com os documentos dele mesmo, em vez de
+// aparecer pro cliente de verdade que a emitiu. Acha a empresa-cliente certa pelo CNPJ do emitente
+// (mesmo escritório, cadastrada) e devolve ela; se não achar (emitente não é cliente cadastrado, ou
+// é a própria empresa buscada), devolve a empresa original — comportamento de sempre.
+function nfeResolverEmpresaDestino(escritorioId: number, empresaBuscada: number, cnpjBusca: string, emitenteCnpj: string | null): number {
+  if (!emitenteCnpj) return empresaBuscada;
+  const emitenteLimpo = emitenteCnpj.replace(/\D/g, "");
+  const cnpjBuscaLimpo = String(cnpjBusca || "").replace(/\D/g, "");
+  if (!emitenteLimpo || emitenteLimpo === cnpjBuscaLimpo) return empresaBuscada;
+  const outraEmpresa = sqlite
+    .prepare(
+      `SELECT id FROM empresas WHERE escritorio_id = ? AND id != ? AND REPLACE(REPLACE(REPLACE(cnpj,'.',''),'/',''),'-','') = ?`
+    )
+    .get(escritorioId, empresaBuscada, emitenteLimpo) as any;
+  return outraEmpresa ? outraEmpresa.id : empresaBuscada;
+}
 async function nfeBuscarDocumentosNovos(empresaId: number, cfg: any, cert: nfse.CertificadoInfo): Promise<{ novos: number }> {
   let novos = 0;
   let ultNsu = cfg.ultimo_nsu;
@@ -4846,11 +4867,25 @@ async function nfeBuscarDocumentosNovos(empresaId: number, cfg: any, cert: nfse.
       });
       for (const doc of resp.documentos) {
         const info = nfe.identificarDocumento(doc.xml, doc.schema);
+        const empresaDestino = nfeResolverEmpresaDestino(cfg.escritorio_id, empresaId, cnpjBusca, info.emitenteCnpj);
+        // O NSU só é sequencial/único dentro do fluxo do CNPJ que fez a busca — reatribuir pra outra
+        // empresa (autXML) usa um NSU "emprestado" que pode coincidir com um NSU real da própria
+        // busca dessa outra empresa (cada CNPJ tem sua sequência independente). Namespacing evita
+        // colidir com o UNIQUE(empresa_id, fonte, nsu); pelo mesmo motivo, também confere por chave
+        // de acesso antes de inserir (a chave é globalmente única, o NSU emprestado não é).
+        let nsuArmazenado = doc.nsu;
+        if (empresaDestino !== empresaId) {
+          if (info.chaveAcesso) {
+            const jaTem = sqlite.prepare(`SELECT 1 FROM nfe_documentos WHERE empresa_id = ? AND chave_acesso = ?`).get(empresaDestino, info.chaveAcesso);
+            if (jaTem) continue;
+          }
+          nsuArmazenado = `autxml_${cnpjBusca.replace(/\D/g, "")}_${doc.nsu}`;
+        }
         const r = nfeInserirDocumento.run(
-          empresaId,
+          empresaDestino,
           cfg.escritorio_id,
           "nfe",
-          doc.nsu,
+          nsuArmazenado,
           doc.schema,
           info.tipo,
           info.chaveAcesso,
