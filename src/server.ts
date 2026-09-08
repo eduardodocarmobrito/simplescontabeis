@@ -5306,7 +5306,7 @@ async function onedriveExportarDocumentosNovos(escritorioId: number): Promise<{ 
     for (;;) {
       const rows = sqlite
         .prepare(
-          `SELECT d.id, d.xml, d.chave_acesso as chaveAcesso, d.nsu, d.data_emissao as dataEmissao, e.nome as empresaNome
+          `SELECT d.id, d.xml, d.chave_acesso as chaveAcesso, d.nsu, d.data_emissao as dataEmissao, e.nome as empresaNome, e.codigo_dominio as empresaCodigo, e.apelido as empresaApelido
            FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id
            WHERE d.escritorio_id = ? AND d.id > ? ORDER BY d.id ASC LIMIT 200`
         )
@@ -5314,7 +5314,11 @@ async function onedriveExportarDocumentosNovos(escritorioId: number): Promise<{ 
       if (!rows.length) break;
       for (const doc of rows) {
         const competencia = doc.dataEmissao ? String(doc.dataEmissao).slice(0, 7) : "sem-data";
-        const pastaEmpresa = String(doc.empresaNome || "Sem empresa").replace(/[\\:*?"<>|]/g, "_");
+        // Mesma convenção da pasta de importação do próprio Domínio ("125-AGR" — código do cliente
+        // + apelido curto) — cai pro nome completo quando código ou apelido ainda não cadastrados.
+        const pastaEmpresa = (
+          doc.empresaCodigo && doc.empresaApelido ? `${doc.empresaCodigo}-${doc.empresaApelido}` : String(doc.empresaNome || "Sem empresa")
+        ).replace(/[\\:*?"<>|]/g, "_");
         const nomeArquivo = String(doc.chaveAcesso || `doc-${doc.id}`).replace(/[\\:*?"<>|]/g, "_") + ".xml";
         const caminho = `${cfg.pasta_destino || "Notas Fiscais - Clientes"}/${pastaEmpresa}/${competencia}/${nomeArquivo}`;
         await onedrive.enviarArquivo(token.accessToken, caminho, Buffer.from(doc.xml, "utf8"));
