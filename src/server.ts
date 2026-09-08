@@ -6711,6 +6711,34 @@ async function nfseNotificarCancelamento(emissaoId: number) {
         .run(tomadorEmpresa?.id ?? null, destinatarios.join(", "), assunto, corpo, e.message);
     }
   }
+
+  // Achado ao vivo: cancelamento só mandava e-mail — WhatsApp nunca foi implementado aqui (só na
+  // emissão normal, ver /api/nfse/emissoes/:id/enviar-whatsapp). Diferente da emissão (que sempre
+  // avisa o time interno do escritório, nunca o tomador — decisão já documentada), cancelamento
+  // avisa o TOMADOR de verdade, mesmo público do e-mail acima, já que é ele quem recebeu a nota
+  // original e precisa saber que ela não vale mais.
+  if (tomadorEmpresa && pdf) {
+    const contatosWhatsapp = sqlite
+      .prepare(`SELECT telefone FROM empresa_contatos WHERE empresa_id = ? AND receber_whatsapp = 1 AND telefone IS NOT NULL AND telefone != ''`)
+      .all(tomadorEmpresa.id) as any[];
+    const arquivo = { nome: nomeArquivo, tipo: "application/pdf", buffer: pdf };
+    for (const c of contatosWhatsapp) {
+      try {
+        await whatsappEnviarArquivo(
+          escritorioId,
+          c.telefone,
+          [
+            { nome: "empresa_nome", valor: row.tomador_nome || "" },
+            { nome: "descricao", valor: `NFS-e nº ${numero} CANCELADA` },
+          ],
+          arquivo,
+          { tabela: "nfse_emissoes", id: row.id }
+        );
+      } catch (e: any) {
+        console.error(`Não consegui avisar o cancelamento da NFS-e ${row.id} por WhatsApp (${c.telefone}):`, e.message);
+      }
+    }
+  }
 }
 // Cancelamento — evento e101101, só é possível pra NFS-e já emitida (status 'emitida'). É uma ação
 // real e definitiva no Sistema Nacional NFS-e, sem "desfazer" depois.

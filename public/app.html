@@ -4139,11 +4139,12 @@ async function renderNfseNotasDetalhe(empresaId){
     </div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
-        <thead><tr><th style="width:34px;"><input type="checkbox" id="nfseNotasSelAll"></th><th>Tomador</th><th>Modelo</th><th>Serviço</th><th>Valor</th><th>Status</th><th>Emitido em</th><th></th></tr></thead>
+        <thead><tr><th style="width:34px;"><input type="checkbox" id="nfseNotasSelAll"></th><th>Número</th><th>Tomador</th><th>Modelo</th><th>Serviço</th><th>Valor</th><th>Status</th><th>Emitido em</th><th></th></tr></thead>
         <tbody>
           ${items.length? items.map(n=>`
             <tr>
               <td><input type="checkbox" class="nfseNotaSel" data-id="${n.id}" ${NFSE_NOTAS_SELECIONADAS.has(n.id)?'checked':''}></td>
+              <td>${esc(n.numeroNfse||'—')}</td>
               <td>${esc(n.tomadorNome)}</td>
               <td>${esc(n.modeloNome||'—')}</td>
               <td>${esc(n.descricaoServico)}</td>
@@ -4161,7 +4162,7 @@ async function renderNfseNotasDetalhe(empresaId){
                 ${n.status==='emitida'?`<button class="btn small" data-id="${n.id}" data-act="cancelar" style="color:var(--debit);">Cancelar</button>`:''}
               </td>
             </tr>
-          `).join('') : `<tr><td colspan="8"><div class="empty-state">Nenhuma emissão neste período.</div></td></tr>`}
+          `).join('') : `<tr><td colspan="9"><div class="empty-state">Nenhuma emissão neste período.</div></td></tr>`}
         </tbody>
       </table>
     </div>
@@ -5338,11 +5339,12 @@ async function renderMinhaNfseNotas(){
     </div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
-        <thead><tr><th style="width:34px;"><input type="checkbox" id="mnfNotasSelAll"></th><th>Tomador</th><th>Modelo</th><th>Serviço</th><th>Valor</th><th>Status</th><th>Emitido em</th><th></th></tr></thead>
+        <thead><tr><th style="width:34px;"><input type="checkbox" id="mnfNotasSelAll"></th><th>Número</th><th>Tomador</th><th>Modelo</th><th>Serviço</th><th>Valor</th><th>Status</th><th>Emitido em</th><th></th></tr></thead>
         <tbody>
           ${items.length? items.map(n=>`
             <tr>
               <td><input type="checkbox" class="mnfNotaSel" data-id="${n.id}" ${MINHA_NFSE_SELECIONADAS.has(n.id)?'checked':''}></td>
+              <td>${esc(n.numeroNfse||'—')}</td>
               <td>${esc(n.tomadorNome)}</td>
               <td>${esc(n.modeloNome||'—')}</td>
               <td>${esc(n.descricaoServico)}</td>
@@ -5356,7 +5358,7 @@ async function renderMinhaNfseNotas(){
                 ${n.status==='emitida'?`<button class="btn small" data-id="${n.id}" data-act="cancelar" style="color:var(--debit);">Cancelar</button>`:''}
               </td>
             </tr>
-          `).join('') : `<tr><td colspan="8"><div class="empty-state">Nenhuma emissão neste período.</div></td></tr>`}
+          `).join('') : `<tr><td colspan="9"><div class="empty-state">Nenhuma emissão neste período.</div></td></tr>`}
         </tbody>
       </table>
     </div>
