@@ -3308,11 +3308,11 @@ async function executarSincronizacaoOnvio(escritorioId: number, jobId?: number):
     let novas = 0, atualizadas = 0;
     const getByCodigo = sqlite.prepare(`SELECT id FROM empresas WHERE codigo_dominio = ? AND escritorio_id = ?`);
     const insert = sqlite.prepare(
-      `INSERT INTO empresas (nome, cnpj, codigo_dominio, email, telefone, endereco, cidade, uf, cep, inscricao_municipal, inscricao_estadual, nome_representante_legal, cpf_representante_legal, origem, escritorio_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'dominio', ?)`
+      `INSERT INTO empresas (nome, cnpj, codigo_dominio, apelido, email, telefone, endereco, cidade, uf, cep, inscricao_municipal, inscricao_estadual, nome_representante_legal, cpf_representante_legal, origem, escritorio_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'dominio', ?)`
     );
     const update = sqlite.prepare(
-      `UPDATE empresas SET nome=?, cnpj=COALESCE(?, cnpj), email=COALESCE(?, email), telefone=COALESCE(?, telefone),
+      `UPDATE empresas SET nome=?, cnpj=COALESCE(?, cnpj), apelido=COALESCE(?, apelido), email=COALESCE(?, email), telefone=COALESCE(?, telefone),
          endereco=COALESCE(?, endereco), cidade=COALESCE(?, cidade), uf=COALESCE(?, uf), cep=COALESCE(?, cep),
          inscricao_municipal=COALESCE(?, inscricao_municipal), inscricao_estadual=COALESCE(?, inscricao_estadual),
          nome_representante_legal=COALESCE(?, nome_representante_legal), cpf_representante_legal=COALESCE(?, cpf_representante_legal),
@@ -3324,7 +3324,7 @@ async function executarSincronizacaoOnvio(escritorioId: number, jobId?: number):
       const existente = getByCodigo.get(String(it.codigo), escritorioId) as any;
       if (existente) {
         update.run(
-          it.nome, it.cnpj || null, it.email || null, it.telefone || null, it.endereco || null,
+          it.nome, it.cnpj || null, it.apelido || null, it.email || null, it.telefone || null, it.endereco || null,
           it.cidade || null, it.uf || null, it.cep || null, it.inscricaoMunicipal || null,
           it.inscricaoEstadual || null, it.nomeRepresentanteLegal || null, it.cpfRepresentanteLegal || null,
           existente.id
@@ -3332,7 +3332,7 @@ async function executarSincronizacaoOnvio(escritorioId: number, jobId?: number):
         atualizadas++;
       } else {
         insert.run(
-          it.nome, it.cnpj || null, String(it.codigo), it.email || null, it.telefone || null,
+          it.nome, it.cnpj || null, String(it.codigo), it.apelido || null, it.email || null, it.telefone || null,
           it.endereco || null, it.cidade || null, it.uf || null, it.cep || null,
           it.inscricaoMunicipal || null, it.inscricaoEstadual || null, it.nomeRepresentanteLegal || null,
           it.cpfRepresentanteLegal || null, escritorioId

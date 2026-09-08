@@ -15,6 +15,7 @@ export type EmpresaNormalizadaOnvio = {
   codigo: string;
   nome: string;
   cnpj: string | null;
+  apelido?: string | null;
   email?: string | null;
   telefone?: string | null;
   endereco?: string | null;
@@ -72,6 +73,14 @@ function extrairCpfRepresentante(item: any): string | null {
   const cpf = nats.find((n: any) => n.kind?.id === "BR-CPF" && n.identity);
   return cpf?.identity || null;
 }
+// "nickname" no Onvio é exatamente o campo "Apelido" que aparece no cadastro do cliente lá dentro
+// (confirmado inspecionando a resposta real da API) — usado no nome da pasta de exportação de XML
+// (ver dominio-agent.ts / onedriveExportarDocumentosNovos), pra bater com a mesma convenção
+// "código-apelido" que a própria pasta de importação do Domínio já usa.
+function extrairApelido(item: any): string | null {
+  const apelido = item?.primaryContactExpanded?.nickname;
+  return apelido ? String(apelido).trim() || null : null;
+}
 
 export async function buscarViaOnvio(sessionPath: string): Promise<EmpresaNormalizadaOnvio[]> {
   const fs = require("fs");
@@ -125,6 +134,7 @@ export async function buscarViaOnvio(sessionPath: string): Promise<EmpresaNormal
           codigo: String(it.code),
           nome: String(it.name || "").trim(),
           cnpj: extrairDocumento(it),
+          apelido: extrairApelido(it),
           inscricaoMunicipal: extrairInscricaoMunicipal(it),
           inscricaoEstadual: extrairInscricaoEstadual(it),
           nomeRepresentanteLegal: extrairNomeRepresentante(it),
