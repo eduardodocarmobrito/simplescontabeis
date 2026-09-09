@@ -9746,16 +9746,19 @@ app.get("/api/relatorios/retencoes/pdf", blockCliente, requirePermissao("relator
           .join("")
       : `<tr><td colspan="11" style="text-align:center; padding:16px;">Nenhuma nota com retenção encontrada no período.</td></tr>`;
     const html = `<style>
-      body { font-family: 'Helvetica Neue', Arial, sans-serif !important; font-size: 11px; color:#222; }
-      h1 { font-size: 16px; text-align:left; margin: 0 0 2px; }
-      .cab p { margin: 1px 0; text-align:left; color:#444; }
-      h2 { font-size: 13px; margin: 18px 0 8px; }
-      table.rep { border-collapse: collapse; width: 100%; margin-top: 6px; }
-      table.rep th, table.rep td { border: 1px solid #ccc; padding: 5px 7px; }
-      table.rep th { background:#f0f0f0; text-align:left; font-size: 10.5px; }
+      body { font-family: 'Helvetica Neue', Arial, sans-serif !important; font-size: 9px; color:#222; }
+      h1 { font-size: 15px; text-align:left; margin: 0 0 2px; }
+      .cab p { margin: 1px 0; text-align:left; color:#444; font-size: 10px; }
+      h2 { font-size: 12px; margin: 14px 0 6px; }
+      table.rep { border-collapse: collapse; width: 100%; margin-top: 4px; }
+      table.rep th, table.rep td { border: 1px solid #ccc; padding: 3px 5px; }
+      table.rep th { background:#f0f0f0; text-align:left; font-size: 8.5px; white-space: nowrap; }
       table.rep td.num, table.rep th.num { text-align:right; }
+      /* Data/Número/CNPJ/valores são sempre curtos — nowrap neles evita que a linha inteira fique
+         alta só por causa desses, deixando a quebra acontecer só no nome do emitente quando precisar. */
+      table.rep td:nth-child(1), table.rep td:nth-child(2), table.rep td:nth-child(4), table.rep td.num { white-space: nowrap; }
       tr.total-row td { font-weight:bold; background:#f5f5f5; }
-      .tag-total { display:inline-block; background:#1a7f4b; color:#fff; padding:8px 16px; border-radius:6px; font-weight:bold; font-size:13px; margin-top:16px; }
+      .tag-total { display:inline-block; background:#1a7f4b; color:#fff; padding:6px 14px; border-radius:6px; font-weight:bold; font-size:11px; margin-top:12px; }
     </style>
     <div class="cab">
       <h1>${escHtmlRelatorio(empresa.nome)}</h1>
@@ -9780,7 +9783,7 @@ app.get("/api/relatorios/retencoes/pdf", blockCliente, requirePermissao("relator
       </tbody>
     </table>
     <div><span class="tag-total">Total geral de retenções: R$ ${fmtMoedaRelatorio(somas.totalGeral)}</span></div>`;
-    const pdf = await contratos.gerarPdfDeHtml(html, `Retenções de Impostos - ${empresa.nome}`);
+    const pdf = await contratos.gerarPdfDeHtml(html, `Retenções de Impostos - ${empresa.nome}`, { landscape: true });
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `inline; filename="Retencoes - ${empresa.nome.replace(/[\\/:*?"<>|]/g, "_")}.pdf"`);
     res.send(pdf);

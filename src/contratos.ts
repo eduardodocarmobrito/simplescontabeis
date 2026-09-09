@@ -260,7 +260,7 @@ const TIRA_TOPO_MM = 45;
 const TIRA_RODAPE_MM = 32;
 const A4_ALTURA_MM = 297;
 
-export async function gerarPdfDeHtml(conteudoHtml: string, titulo: string): Promise<Buffer> {
+export async function gerarPdfDeHtml(conteudoHtml: string, titulo: string, opts: { landscape?: boolean } = {}): Promise<Buffer> {
   const { corpo, imagemCabecalho } = separarCabecalhoRepetido(conteudoHtml);
   const { chromium } = require("playwright");
   const browser = await chromium.launch();
@@ -275,6 +275,7 @@ export async function gerarPdfDeHtml(conteudoHtml: string, titulo: string): Prom
     await page.setContent(html, { waitUntil: "networkidle" });
     const pdf = await page.pdf({
       format: "A4",
+      landscape: !!opts.landscape,
       printBackground: true,
       displayHeaderFooter: !!imagemCabecalho,
       headerTemplate: imagemCabecalho
