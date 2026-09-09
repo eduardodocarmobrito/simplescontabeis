@@ -9595,22 +9595,6 @@ app.get("/api/relatorios/empresas", blockCliente, requirePermissao("relatorios",
   res.json({ items: rows });
 });
 const TIPOS_RELATORIO = ["balanco", "balancete", "dre", "faturamento", "folha"];
-app.get("/api/relatorios/:tipo", blockCliente, requirePermissao("relatorios", "visualizar"), (req, res) => {
-  const tipo = String(req.params.tipo);
-  if (!TIPOS_RELATORIO.includes(tipo)) return res.status(400).json({ error: "Relatório inválido." });
-  const empresaId = req.query.empresaId ? Number(req.query.empresaId) : null;
-  if (!empresaId) return res.json({ conectado: false, items: [] });
-  const user = (req as any).user;
-  if (!podeAcessarEmpresa(user, empresaId)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
-  const rows = sqlite
-    .prepare(`SELECT competencia, dados_json as dadosJson, sincronizado_em as sincronizadoEm FROM dominio_dados WHERE empresa_id = ? AND tipo = ? ORDER BY competencia DESC`)
-    .all(empresaId, tipo) as any[];
-  res.json({
-    conectado: rows.length > 0,
-    items: rows.map((r) => ({ competencia: r.competencia, dados: JSON.parse(r.dadosJson), sincronizadoEm: r.sincronizadoEm })),
-  });
-});
-
 // ---------- Relatório de Retenções de Impostos (a partir da Busca de XML, não do Domínio Web) ----------
 // Notas de SERVIÇO (NFS-e) em que a empresa é a TOMADORA (quem recebeu o serviço e reteve o
 // imposto na fonte, ao pagar o prestador) — igual ao "Acompanhamento de Entradas" que o Domínio Web
@@ -9788,6 +9772,23 @@ app.get("/api/relatorios/retencoes/pdf", blockCliente, requirePermissao("relator
     res.status(e.status || 500).json({ error: e.message });
   }
 });
+
+app.get("/api/relatorios/:tipo", blockCliente, requirePermissao("relatorios", "visualizar"), (req, res) => {
+  const tipo = String(req.params.tipo);
+  if (!TIPOS_RELATORIO.includes(tipo)) return res.status(400).json({ error: "Relatório inválido." });
+  const empresaId = req.query.empresaId ? Number(req.query.empresaId) : null;
+  if (!empresaId) return res.json({ conectado: false, items: [] });
+  const user = (req as any).user;
+  if (!podeAcessarEmpresa(user, empresaId)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  const rows = sqlite
+    .prepare(`SELECT competencia, dados_json as dadosJson, sincronizado_em as sincronizadoEm FROM dominio_dados WHERE empresa_id = ? AND tipo = ? ORDER BY competencia DESC`)
+    .all(empresaId, tipo) as any[];
+  res.json({
+    conectado: rows.length > 0,
+    items: rows.map((r) => ({ competencia: r.competencia, dados: JSON.parse(r.dadosJson), sincronizadoEm: r.sincronizadoEm })),
+  });
+});
+
 
 // ---------- E-mail corporativo ----------
 app.get("/api/email/status", blockCliente, (req, res) => {
