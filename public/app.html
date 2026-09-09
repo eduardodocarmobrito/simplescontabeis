@@ -6588,6 +6588,7 @@ async function pageUsuarios(){
     <h1>Usuários</h1>
     <p class="subtitle">Equipe do escritório e acessos dos clientes</p>
     <div class="row" style="margin-bottom:14px;"><button class="btn primary" id="btnNovoUsuario">+ Novo usuário</button></div>
+    <div class="field" style="max-width:360px; margin-bottom:10px;"><input type="text" id="usFiltro" placeholder="Buscar por nome, e-mail ou empresa…" autocomplete="off"></div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
         <thead><tr><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Empresa</th><th>Ativo</th><th></th></tr></thead>
@@ -6595,21 +6596,28 @@ async function pageUsuarios(){
       </table>
     </div>
   `;
-  document.getElementById('usersBody').innerHTML = items.map(u=>`
-    <tr data-id="${u.id}">
-      <td>${esc(u.nome)}</td>
-      <td>${esc(u.email)}</td>
-      <td><span class="tag muted">${u.perfil}</span>${u.painelTv?' <span class="tag ok">Painel de TV</span>':''}</td>
-      <td>${u.totalEmpresas>1?`${u.totalEmpresas} empresas`:esc(u.empresaNome||'—')}</td>
-      <td><span class="tag ${u.ativo?'ok':'bad'}">${u.ativo?'Ativo':'Inativo'}</span></td>
-      <td style="text-align:right;"><button class="btn small" data-act="edit">Editar</button></td>
-    </tr>
-  `).join('');
+  const usersBody = document.getElementById('usersBody');
+  function desenhaUsuarios(filtro){
+    const termo = normalizaTxt(filtro).trim();
+    const visiveis = termo ? items.filter(u=> normalizaTxt(u.nome).includes(termo) || normalizaTxt(u.email).includes(termo) || normalizaTxt(u.empresaNome||'').includes(termo)) : items;
+    usersBody.innerHTML = visiveis.length ? visiveis.map(u=>`
+      <tr data-id="${u.id}">
+        <td>${esc(u.nome)}</td>
+        <td>${esc(u.email)}</td>
+        <td><span class="tag muted">${u.perfil}</span>${u.painelTv?' <span class="tag ok">Painel de TV</span>':''}</td>
+        <td>${u.totalEmpresas>1?`${u.totalEmpresas} empresas`:esc(u.empresaNome||'—')}</td>
+        <td><span class="tag ${u.ativo?'ok':'bad'}">${u.ativo?'Ativo':'Inativo'}</span></td>
+        <td style="text-align:right;"><button class="btn small" data-act="edit">Editar</button></td>
+      </tr>
+    `).join('') : `<tr><td colspan="6"><div class="empty-state">Nenhum usuário encontrado.</div></td></tr>`;
+    usersBody.querySelectorAll('[data-act="edit"]').forEach(b=>b.addEventListener('click', e=>{
+      const id=Number(e.target.closest('tr').dataset.id);
+      usuarioModal(items.find(x=>x.id===id));
+    }));
+  }
+  desenhaUsuarios('');
+  document.getElementById('usFiltro').addEventListener('input', e=>desenhaUsuarios(e.target.value));
   document.getElementById('btnNovoUsuario').addEventListener('click', ()=>usuarioModal());
-  document.getElementById('usersBody').querySelectorAll('[data-act="edit"]').forEach(b=>b.addEventListener('click', e=>{
-    const id=Number(e.target.closest('tr').dataset.id);
-    usuarioModal(items.find(x=>x.id===id));
-  }));
 }
 const MODS = [['dashboard','Início'],['empresas','Empresas'],['solicitacoes','Solicitações de Documentos'],['envio','Envio de Documentos'],['nfse','NFS-e'],['nfe-busca','Busca de XML'],['integracontador','Integra Contador'],['licencas','Licenças'],['financeiro','Financeiro'],['contratos','Contratos'],['relatorios','Relatórios'],['usuarios','Usuários'],['configuracoes','Configurações']];
 // Lista de empresas com busca por texto — usada nos dois pickers de empresa do modal de usuário
