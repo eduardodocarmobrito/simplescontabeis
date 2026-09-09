@@ -270,7 +270,12 @@ export async function gerarPdfDeHtml(conteudoHtml: string, titulo: string, opts:
     // valor aqui faz o Chromium ignorar o "margin" passado pro page.pdf() abaixo (testado: com
     // "margin:0" no @page o texto ignora a margem do page.pdf() e escreve por baixo do cabeçalho).
     // Omitindo a propriedade, o "margin" do page.pdf() é quem manda, do jeito que precisa ser aqui.
-    const css = imagemCabecalho ? `${CONTRATO_PDF_CSS_BASE} @page { size: A4; }` : `${CONTRATO_PDF_CSS_BASE} @page { size: A4; margin: 20mm 18mm; }`;
+    // Mesma lógica vale pra orientação: "@page { size: A4; }" sozinho trava a página em retrato e
+    // ignora o "landscape" passado pro page.pdf() abaixo (achado ao vivo gerando o relatório de
+    // Retenções em paisagem — saiu em pé mesmo com landscape:true) — precisa do "landscape" também
+    // dentro do @page, não só na chamada do Playwright.
+    const tamanhoPagina = opts.landscape ? "A4 landscape" : "A4";
+    const css = imagemCabecalho ? `${CONTRATO_PDF_CSS_BASE} @page { size: ${tamanhoPagina}; }` : `${CONTRATO_PDF_CSS_BASE} @page { size: ${tamanhoPagina}; margin: 20mm 18mm; }`;
     const html = `<!doctype html><html><head><meta charset="utf-8"><title>${titulo}</title><style>${css}</style></head><body>${corpo}</body></html>`;
     await page.setContent(html, { waitUntil: "networkidle" });
     const pdf = await page.pdf({
