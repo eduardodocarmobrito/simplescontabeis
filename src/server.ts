@@ -5072,7 +5072,7 @@ app.get("/api/nfe/documentos", blockCliente, requirePermissao("nfe-busca", "visu
   // nenhuma pro escritório (achado ao vivo: "Registro de Passagem", "MDF-e Autorizado" etc. — mais
   // de 3900 eventos capturados, nenhum era cancelamento de verdade) — só evento com "Cancelamento"
   // na descrição (xEvento) tem valor de ficar na listagem; o resto fica só escondido, sem apagar.
-  const condicoes: string[] = [`d.escritorio_id = ?`, `d.empresa_id IN (${placeholders})`, `(d.tipo != 'evento' OR d.evento_descricao LIKE '%ancelad%')`];
+  const condicoes: string[] = [`d.escritorio_id = ?`, `d.empresa_id IN (${placeholders})`, `(d.tipo != 'evento' OR d.evento_descricao LIKE '%ancela%')`];
   const params: any[] = [user.escritorioId, ...empresasIds];
   if (tipo) {
     condicoes.push(`d.tipo = ?`);
@@ -5106,7 +5106,7 @@ app.get("/api/nfe/documentos", blockCliente, requirePermissao("nfe-busca", "visu
   const notaCanceladaExpr = `EXISTS (
     SELECT 1 FROM nfe_documentos ev
     WHERE ev.escritorio_id = d.escritorio_id AND ev.tipo = 'evento' AND ev.chave_acesso = d.chave_acesso
-      AND ev.evento_descricao LIKE '%ancelad%' AND ev.evento_descricao NOT LIKE '%CT-e%' AND ev.evento_descricao NOT LIKE '%MDF-e%'
+      AND ev.evento_descricao LIKE '%ancela%' AND ev.evento_descricao NOT LIKE '%CT-e%' AND ev.evento_descricao NOT LIKE '%MDF-e%'
   )`;
   const rows = sqlite
     .prepare(
