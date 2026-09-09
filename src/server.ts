@@ -9607,6 +9607,7 @@ function escHtmlRelatorio(s: string | null | undefined): string {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 }
 interface RetencaoNfseItem {
+  numeroNfse: string | null;
   emitenteNome: string;
   emitenteCnpj: string;
   dataEmissao: string | null;
@@ -9650,6 +9651,7 @@ function calcularRetencoesNfse(user: any, empresaId: number, dataDe: string | nu
     const issRetido = ret.tpRetISSQN === 2 || ret.tpRetISSQN === 3;
     if (!(ret.vRetCP > 0 || ret.vRetIRRF > 0 || ret.vPis > 0 || ret.vCofins > 0 || ret.vRetCSLL > 0 || issRetido)) continue;
     itens.push({
+      numeroNfse: ret.numeroNfse,
       emitenteNome: r.emitenteNome,
       emitenteCnpj: r.emitenteCnpj,
       dataEmissao: r.dataEmissao,
@@ -9712,10 +9714,18 @@ app.get("/api/relatorios/retencoes/pdf", blockCliente, requirePermissao("relator
       dataDe || dataAte
         ? `Período: ${dataDe ? fmtDataBrRelatorio(dataDe) : "…"} até ${dataAte ? fmtDataBrRelatorio(dataAte) : "…"}`
         : "Período: todas as competências";
+    const fmtDataEmissaoRelatorio = (iso: string | null) => {
+      if (!iso) return "-";
+      const s = String(iso).replace(" ", "T");
+      const d = new Date(/(Z|[+-]\d{2}:\d{2})$/.test(s) ? s : s + "Z");
+      return Number.isNaN(d.getTime()) ? "-" : d.toLocaleDateString("pt-BR");
+    };
     const linhas = itens.length
       ? itens
           .map(
             (it) => `<tr>
+        <td>${fmtDataEmissaoRelatorio(it.dataEmissao)}</td>
+        <td>${escHtmlRelatorio(it.numeroNfse || "-")}</td>
         <td>${escHtmlRelatorio(it.emitenteNome || "-")}</td>
         <td>${escHtmlRelatorio(fmtCnpjRelatorio(it.emitenteCnpj))}</td>
         <td class="num">${fmtMoedaRelatorio(it.valorServico)}</td>
@@ -9728,7 +9738,7 @@ app.get("/api/relatorios/retencoes/pdf", blockCliente, requirePermissao("relator
       </tr>`
           )
           .join("")
-      : `<tr><td colspan="9" style="text-align:center; padding:16px;">Nenhuma nota com retenção encontrada no período.</td></tr>`;
+      : `<tr><td colspan="11" style="text-align:center; padding:16px;">Nenhuma nota com retenção encontrada no período.</td></tr>`;
     const html = `<style>
       body { font-family: 'Helvetica Neue', Arial, sans-serif !important; font-size: 11px; color:#222; }
       h1 { font-size: 16px; text-align:left; margin: 0 0 2px; }
@@ -9748,11 +9758,11 @@ app.get("/api/relatorios/retencoes/pdf", blockCliente, requirePermissao("relator
     </div>
     <h2>Retenções de Impostos</h2>
     <table class="rep">
-      <thead><tr><th>Emitente</th><th>CNPJ</th><th class="num">Valor Bruto</th><th class="num">INSS</th><th class="num">IRRF</th><th class="num">PIS</th><th class="num">COFINS</th><th class="num">CSLL</th><th class="num">ISS</th></tr></thead>
+      <thead><tr><th>Data Emissão</th><th>Número</th><th>Emitente</th><th>CNPJ</th><th class="num">Valor Bruto</th><th class="num">INSS</th><th class="num">IRRF</th><th class="num">PIS</th><th class="num">COFINS</th><th class="num">CSLL</th><th class="num">ISS</th></tr></thead>
       <tbody>
         ${linhas}
         <tr class="total-row">
-          <td colspan="2">TOTAL</td>
+          <td colspan="4">TOTAL</td>
           <td class="num">${fmtMoedaRelatorio(somas.valorServico)}</td>
           <td class="num">${fmtMoedaRelatorio(somas.inss)}</td>
           <td class="num">${fmtMoedaRelatorio(somas.irrf)}</td>

@@ -294,6 +294,7 @@ export function extrairDadosDanfse(xmlNfse: string) {
 // texto formatado pra exibição. Mesma navegação de XML (NFSe/infNFSe/DPS/infDPS/valores/trib/...) —
 // já confirmada contra XML real capturado via Busca de XML, não só contra o que este sistema emite.
 export interface RetencoesNfse {
+  numeroNfse: string | null;
   valorServico: number;
   tpRetISSQN: number; // 1=Não retido 2=Retido pelo tomador 3=Retido pelo intermediário
   vISSQN: number;
@@ -320,6 +321,7 @@ export function extrairRetencoesNfse(xmlNfse: string): RetencoesNfse {
   const piscofins = path(tribFed, "piscofins");
   const valoresNfse = path(infNFSe, "valores");
   return {
+    numeroNfse: text(infNFSe, "nNFSe"),
     valorServico: numTexto(text(valoresDps, "vServPrest", "vServ")),
     tpRetISSQN: numTexto(text(tribMun, "tpRetISSQN")) || 1,
     vISSQN: numTexto(text(valoresNfse, "vISSQN")),
