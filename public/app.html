@@ -6549,10 +6549,10 @@ function renderRelRetencoes(box, empresas){
       resultBox.innerHTML = `
         <div style="overflow-x:auto;">
         <table class="data-table">
-          <thead><tr><th>Data Emissão</th><th>Número</th><th>Emitente</th><th>CNPJ</th><th>Valor Bruto</th><th>INSS</th><th>IRRF</th><th>PIS</th><th>COFINS</th><th>CSLL</th><th>ISS</th></tr></thead>
+          <thead><tr><th>Data Emissão</th><th>Número</th><th>Emitente</th><th>CNPJ</th><th>Valor Bruto</th><th>INSS</th><th>IRRF</th><th>PIS</th><th>COFINS</th><th>CSLL</th><th>ISS</th><th></th></tr></thead>
           <tbody>
-            ${itens.map(it=>`<tr><td>${fmtDate(it.dataEmissao)}</td><td>${esc(it.numeroNfse||'-')}</td><td>${esc(it.emitenteNome||'-')}</td><td>${esc(it.emitenteCnpj||'-')}</td><td>${fmtMoney(it.valorServico)}</td><td>${fmtMoney(it.inss)}</td><td>${fmtMoney(it.irrf)}</td><td>${fmtMoney(it.pis)}</td><td>${fmtMoney(it.cofins)}</td><td>${fmtMoney(it.csll)}</td><td>${fmtMoney(it.iss)}</td></tr>`).join('')}
-            <tr style="font-weight:700; background:var(--paper);"><td colspan="4">TOTAL</td><td>${fmtMoney(somas.valorServico)}</td><td>${fmtMoney(somas.inss)}</td><td>${fmtMoney(somas.irrf)}</td><td>${fmtMoney(somas.pis)}</td><td>${fmtMoney(somas.cofins)}</td><td>${fmtMoney(somas.csll)}</td><td>${fmtMoney(somas.iss)}</td></tr>
+            ${itens.map(it=>`<tr><td>${fmtDate(it.dataEmissao)}</td><td>${esc(it.numeroNfse||'-')}</td><td>${esc(it.emitenteNome||'-')}</td><td>${esc(it.emitenteCnpj||'-')}</td><td>${fmtMoney(it.valorServico)}</td><td>${fmtMoney(it.inss)}</td><td>${fmtMoney(it.irrf)}</td><td>${fmtMoney(it.pis)}</td><td>${fmtMoney(it.cofins)}</td><td>${fmtMoney(it.csll)}</td><td>${fmtMoney(it.iss)}</td><td><a class="btn small" href="/api/nfe/documentos/${it.docId}/pdf" target="_blank" rel="noopener">Ver PDF</a></td></tr>`).join('')}
+            <tr style="font-weight:700; background:var(--paper);"><td colspan="4">TOTAL</td><td>${fmtMoney(somas.valorServico)}</td><td>${fmtMoney(somas.inss)}</td><td>${fmtMoney(somas.irrf)}</td><td>${fmtMoney(somas.pis)}</td><td>${fmtMoney(somas.cofins)}</td><td>${fmtMoney(somas.csll)}</td><td>${fmtMoney(somas.iss)}</td><td></td></tr>
           </tbody>
         </table>
         </div>

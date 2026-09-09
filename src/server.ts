@@ -9607,6 +9607,7 @@ function escHtmlRelatorio(s: string | null | undefined): string {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 }
 interface RetencaoNfseItem {
+  docId: number;
   numeroNfse: string | null;
   emitenteNome: string;
   emitenteCnpj: string;
@@ -9627,7 +9628,7 @@ function calcularRetencoesNfse(user: any, empresaId: number, dataDe: string | nu
     throw err;
   }
   const cnpjLimpo = String(empresa.cnpj || "").replace(/\D/g, "");
-  let sql = `SELECT emitente_nome as emitenteNome, emitente_cnpj as emitenteCnpj, data_emissao as dataEmissao, xml
+  let sql = `SELECT id as docId, emitente_nome as emitenteNome, emitente_cnpj as emitenteCnpj, data_emissao as dataEmissao, xml
              FROM nfe_documentos WHERE escritorio_id = ? AND empresa_id = ? AND fonte = 'nfse' AND destinatario_cnpj = ?`;
   const params: any[] = [user.escritorioId, empresaId, cnpjLimpo];
   if (dataDe) {
@@ -9651,6 +9652,7 @@ function calcularRetencoesNfse(user: any, empresaId: number, dataDe: string | nu
     const issRetido = ret.tpRetISSQN === 2 || ret.tpRetISSQN === 3;
     if (!(ret.vRetCP > 0 || ret.vRetIRRF > 0 || ret.vPis > 0 || ret.vCofins > 0 || ret.vRetCSLL > 0 || issRetido)) continue;
     itens.push({
+      docId: r.docId,
       numeroNfse: ret.numeroNfse,
       emitenteNome: r.emitenteNome,
       emitenteCnpj: r.emitenteCnpj,
