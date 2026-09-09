@@ -288,6 +288,49 @@ export function extrairDadosDanfse(xmlNfse: string) {
   };
 }
 
+// ---------------- Retenções (relatório) ----------------
+// Versão enxuta de extrairDadosDanfse, só com os valores de retenção — usada pelo relatório
+// "Retenções de Impostos" (Relatórios), que precisa disso como número pra somar/filtrar, não como
+// texto formatado pra exibição. Mesma navegação de XML (NFSe/infNFSe/DPS/infDPS/valores/trib/...) —
+// já confirmada contra XML real capturado via Busca de XML, não só contra o que este sistema emite.
+export interface RetencoesNfse {
+  valorServico: number;
+  tpRetISSQN: number; // 1=Não retido 2=Retido pelo tomador 3=Retido pelo intermediário
+  vISSQN: number;
+  vRetCP: number; // INSS / contribuição previdenciária
+  vRetIRRF: number;
+  vRetCSLL: number;
+  vPis: number;
+  vCofins: number;
+}
+function numTexto(v: string | null): number {
+  const n = v != null ? Number(v) : NaN;
+  return Number.isFinite(n) ? n : 0;
+}
+export function extrairRetencoesNfse(xmlNfse: string): RetencoesNfse {
+  const doc = new DOMParser({ errorHandler: () => {} } as any).parseFromString(xmlNfse, "text/xml");
+  const nfse = doc.documentElement;
+  const infNFSe = firstChildByTag(nfse, "infNFSe");
+  const dps = path(infNFSe, "DPS");
+  const infDPS = path(dps, "infDPS");
+  const valoresDps = path(infDPS, "valores");
+  const trib = path(valoresDps, "trib");
+  const tribMun = path(trib, "tribMun");
+  const tribFed = path(trib, "tribFed");
+  const piscofins = path(tribFed, "piscofins");
+  const valoresNfse = path(infNFSe, "valores");
+  return {
+    valorServico: numTexto(text(valoresDps, "vServPrest", "vServ")),
+    tpRetISSQN: numTexto(text(tribMun, "tpRetISSQN")) || 1,
+    vISSQN: numTexto(text(valoresNfse, "vISSQN")),
+    vRetCP: numTexto(text(tribFed, "vRetCP")),
+    vRetIRRF: numTexto(text(tribFed, "vRetIRRF")),
+    vRetCSLL: numTexto(text(tribFed, "vRetCSLL")),
+    vPis: numTexto(text(piscofins, "vPis")),
+    vCofins: numTexto(text(piscofins, "vCofins")),
+  };
+}
+
 // ---------------- QR Code ----------------
 async function gerarQrCodeDataUri(chaveAcesso: string): Promise<string> {
   const url = `https://www.nfse.gov.br/ConsultaPublica/?tpc=1&chave=${chaveAcesso}`;

@@ -6483,7 +6483,7 @@ function distratoModeloDrawer(config){
 }
 
 // ===================== Relatórios =====================
-const TIPOS_REL = [ {v:'balanco', l:'Balanço'}, {v:'balancete', l:'Balancete'}, {v:'dre', l:'DRE'}, {v:'faturamento', l:'Relação de Faturamento'}, {v:'folha', l:'Folha'} ];
+const TIPOS_REL = [ {v:'balanco', l:'Balanço'}, {v:'balancete', l:'Balancete'}, {v:'dre', l:'DRE'}, {v:'faturamento', l:'Relação de Faturamento'}, {v:'folha', l:'Folha'}, {v:'retencoes', l:'Retenções de Impostos'} ];
 let REL_TAB='balanco';
 async function pageRelatorios(){
   main().innerHTML = `
@@ -6499,6 +6499,7 @@ async function renderRelTab(){
   main().querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===REL_TAB));
   const { items: empresas } = await api('/relatorios/empresas');
   const box = document.getElementById('relContent');
+  if(REL_TAB==='retencoes'){ renderRelRetencoes(box, empresas); return; }
   box.innerHTML = `
     <div class="row" style="margin-bottom:16px;">
       <div class="field" style="margin-bottom:0; min-width:280px;"><label>Cliente</label>
@@ -6508,6 +6509,60 @@ async function renderRelTab(){
     <div id="relResultado" class="card"><div class="empty-state">Selecione um cliente para ver o relatório.</div></div>
   `;
   setupComboSelect('relEmpresaCombo', empresas.map(e=>({id:e.id, label:empresaComboLabel(e)})), carregarRelatorio);
+}
+// "Retenções de Impostos" — diferente dos outros relatórios da aba (que dependem de sincronização
+// com o Domínio Web, ainda não conectada), este é alimentado pelos documentos que a Busca de XML já
+// captura sozinha: identifica NFS-e em que o cliente foi o TOMADOR e reteve imposto do prestador
+// (INSS, IRRF, PIS, COFINS, CSLL — valor > 0 — e ISS, quando o indicador de retenção está marcado).
+function renderRelRetencoes(box, empresas){
+  box.innerHTML = `
+    <div class="row" style="margin-bottom:16px; align-items:flex-end; gap:12px; flex-wrap:wrap;">
+      <div class="field" style="margin-bottom:0; min-width:280px;"><label>Cliente</label>${comboSelectHtml('relRetEmpresaCombo', 'Selecione um cliente…')}</div>
+      ${dateFieldHtml('relRetDataDe','De','')}
+      ${dateFieldHtml('relRetDataAte','Até','')}
+      <button class="btn primary" id="btnRelRetGerar">Gerar</button>
+      <a class="btn" id="btnRelRetPdf" href="#" target="_blank" rel="noopener" style="pointer-events:none; opacity:.5;">Exportar PDF</a>
+    </div>
+    <div id="relRetResultado" class="card"><div class="empty-state">Selecione um cliente e clique em Gerar.</div></div>
+  `;
+  setupComboSelect('relRetEmpresaCombo', empresas.map(e=>({id:e.id, label:empresaComboLabel(e)})));
+  setupDatePicker('relRetDataDe','relRetDataDe_text');
+  setupDatePicker('relRetDataAte','relRetDataAte_text');
+  async function gerar(){
+    const empresaId = document.querySelector('#relRetEmpresaCombo .combo-value').value;
+    const resultBox = document.getElementById('relRetResultado');
+    const btnPdf = document.getElementById('btnRelRetPdf');
+    if(!empresaId){ toast('Selecione um cliente.','err'); return; }
+    resultBox.innerHTML = '<div class="empty-state">Carregando…</div>';
+    btnPdf.style.pointerEvents='none'; btnPdf.style.opacity='.5';
+    const dataDe = document.getElementById('relRetDataDe').value;
+    const dataAte = document.getElementById('relRetDataAte').value;
+    const params = new URLSearchParams({ empresaId });
+    if(dataDe) params.set('dataDe', dataDe);
+    if(dataAte) params.set('dataAte', dataAte);
+    try{
+      const { itens, somas } = await api('/relatorios/retencoes?'+params.toString());
+      if(!itens.length){
+        resultBox.innerHTML = '<div class="empty-state">Nenhuma nota com retenção encontrada no período.</div>';
+        return;
+      }
+      resultBox.innerHTML = `
+        <div style="overflow-x:auto;">
+        <table class="data-table">
+          <thead><tr><th>Emitente</th><th>CNPJ</th><th>Valor Bruto</th><th>INSS</th><th>IRRF</th><th>PIS</th><th>COFINS</th><th>CSLL</th><th>ISS</th></tr></thead>
+          <tbody>
+            ${itens.map(it=>`<tr><td>${esc(it.emitenteNome||'-')}</td><td>${esc(it.emitenteCnpj||'-')}</td><td>${fmtMoney(it.valorServico)}</td><td>${fmtMoney(it.inss)}</td><td>${fmtMoney(it.irrf)}</td><td>${fmtMoney(it.pis)}</td><td>${fmtMoney(it.cofins)}</td><td>${fmtMoney(it.csll)}</td><td>${fmtMoney(it.iss)}</td></tr>`).join('')}
+            <tr style="font-weight:700; background:var(--paper);"><td colspan="2">TOTAL</td><td>${fmtMoney(somas.valorServico)}</td><td>${fmtMoney(somas.inss)}</td><td>${fmtMoney(somas.irrf)}</td><td>${fmtMoney(somas.pis)}</td><td>${fmtMoney(somas.cofins)}</td><td>${fmtMoney(somas.csll)}</td><td>${fmtMoney(somas.iss)}</td></tr>
+          </tbody>
+        </table>
+        </div>
+        <div style="margin-top:14px;"><span class="tag ok" style="font-size:13px; padding:8px 14px;">Total geral de retenções: ${fmtMoney(somas.totalGeral)}</span></div>
+      `;
+      btnPdf.href = '/api/relatorios/retencoes/pdf?'+params.toString();
+      btnPdf.style.pointerEvents=''; btnPdf.style.opacity='1';
+    }catch(e){ resultBox.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; }
+  }
+  document.getElementById('btnRelRetGerar').addEventListener('click', gerar);
 }
 async function carregarRelatorio(){
   const empresaId = document.querySelector('#relEmpresaCombo .combo-value').value;

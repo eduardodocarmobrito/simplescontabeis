@@ -9611,6 +9611,184 @@ app.get("/api/relatorios/:tipo", blockCliente, requirePermissao("relatorios", "v
   });
 });
 
+// ---------- Relatório de Retenções de Impostos (a partir da Busca de XML, não do Domínio Web) ----------
+// Notas de SERVIÇO (NFS-e) em que a empresa é a TOMADORA (quem recebeu o serviço e reteve o
+// imposto na fonte, ao pagar o prestador) — igual ao "Acompanhamento de Entradas" que o Domínio Web
+// já gera, só que alimentado pelos documentos que este sistema já busca sozinho via Distribuição
+// DFe. Retenções federais (INSS/contribuição previdenciária, IRRF, PIS, COFINS, CSLL) contam quando
+// o valor retido é > 0; ISS conta pelo indicador tpRetISSQN (2=retido pelo tomador, 3=pelo
+// intermediário) — o valor do ISS pode existir mesmo sem ter sido retido, então só o indicador diz
+// a verdade.
+function escHtmlRelatorio(s: string | null | undefined): string {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
+}
+interface RetencaoNfseItem {
+  emitenteNome: string;
+  emitenteCnpj: string;
+  dataEmissao: string | null;
+  valorServico: number;
+  inss: number;
+  irrf: number;
+  pis: number;
+  cofins: number;
+  csll: number;
+  iss: number;
+}
+function calcularRetencoesNfse(user: any, empresaId: number, dataDe: string | null, dataAte: string | null): { empresa: any; itens: RetencaoNfseItem[]; somas: Record<string, number> } {
+  const empresa = sqlite.prepare(`SELECT id, nome, cnpj, endereco, cidade, uf, cep FROM empresas WHERE id = ?`).get(empresaId) as any;
+  if (!empresa || !podeAcessarEmpresa(user, empresaId)) {
+    const err: any = new Error("Empresa não encontrada.");
+    err.status = 404;
+    throw err;
+  }
+  const cnpjLimpo = String(empresa.cnpj || "").replace(/\D/g, "");
+  let sql = `SELECT emitente_nome as emitenteNome, emitente_cnpj as emitenteCnpj, data_emissao as dataEmissao, xml
+             FROM nfe_documentos WHERE escritorio_id = ? AND empresa_id = ? AND fonte = 'nfse' AND destinatario_cnpj = ?`;
+  const params: any[] = [user.escritorioId, empresaId, cnpjLimpo];
+  if (dataDe) {
+    sql += ` AND substr(data_emissao,1,10) >= ?`;
+    params.push(dataDe);
+  }
+  if (dataAte) {
+    sql += ` AND substr(data_emissao,1,10) <= ?`;
+    params.push(dataAte);
+  }
+  sql += ` ORDER BY data_emissao ASC`;
+  const rows = sqlite.prepare(sql).all(...params) as any[];
+  const itens: RetencaoNfseItem[] = [];
+  for (const r of rows) {
+    let ret;
+    try {
+      ret = danfse.extrairRetencoesNfse(r.xml);
+    } catch {
+      continue; // XML fora do padrão esperado — pula em vez de derrubar o relatório inteiro
+    }
+    const issRetido = ret.tpRetISSQN === 2 || ret.tpRetISSQN === 3;
+    if (!(ret.vRetCP > 0 || ret.vRetIRRF > 0 || ret.vPis > 0 || ret.vCofins > 0 || ret.vRetCSLL > 0 || issRetido)) continue;
+    itens.push({
+      emitenteNome: r.emitenteNome,
+      emitenteCnpj: r.emitenteCnpj,
+      dataEmissao: r.dataEmissao,
+      valorServico: ret.valorServico,
+      inss: ret.vRetCP,
+      irrf: ret.vRetIRRF,
+      pis: ret.vPis,
+      cofins: ret.vCofins,
+      csll: ret.vRetCSLL,
+      iss: issRetido ? ret.vISSQN : 0,
+    });
+  }
+  const somas: Record<string, number> = itens.reduce(
+    (acc, it) => {
+      acc.valorServico += it.valorServico;
+      acc.inss += it.inss;
+      acc.irrf += it.irrf;
+      acc.pis += it.pis;
+      acc.cofins += it.cofins;
+      acc.csll += it.csll;
+      acc.iss += it.iss;
+      return acc;
+    },
+    { valorServico: 0, inss: 0, irrf: 0, pis: 0, cofins: 0, csll: 0, iss: 0 } as Record<string, number>
+  );
+  somas.totalGeral = somas.inss + somas.irrf + somas.pis + somas.cofins + somas.csll + somas.iss;
+  return { empresa, itens, somas };
+}
+app.get("/api/relatorios/retencoes", blockCliente, requirePermissao("relatorios", "visualizar"), (req, res) => {
+  const empresaId = req.query.empresaId ? Number(req.query.empresaId) : null;
+  if (!empresaId) return res.json({ itens: [], somas: null });
+  const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
+  const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
+  try {
+    const { itens, somas } = calcularRetencoesNfse((req as any).user, empresaId, dataDe, dataAte);
+    res.json({ itens, somas });
+  } catch (e: any) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
+function fmtCnpjRelatorio(doc: string | null): string {
+  const d = String(doc || "").replace(/\D/g, "");
+  if (d.length === 14) return d.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/, "$1.$2.$3/$4-$5");
+  if (d.length === 11) return d.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, "$1.$2.$3-$4");
+  return doc || "-";
+}
+function fmtMoedaRelatorio(v: number): string {
+  return (v || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+app.get("/api/relatorios/retencoes/pdf", blockCliente, requirePermissao("relatorios", "visualizar"), async (req, res) => {
+  const empresaId = req.query.empresaId ? Number(req.query.empresaId) : null;
+  if (!empresaId) return res.status(400).json({ error: "Informe a empresa." });
+  const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
+  const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
+  try {
+    const { empresa, itens, somas } = calcularRetencoesNfse((req as any).user, empresaId, dataDe, dataAte);
+    const enderecoLinha = [empresa.endereco, empresa.cidade, empresa.uf, empresa.cep].filter(Boolean).join(" — ");
+    const fmtDataBrRelatorio = (iso: string) => iso.split("-").reverse().join("/");
+    const periodoLinha =
+      dataDe || dataAte
+        ? `Período: ${dataDe ? fmtDataBrRelatorio(dataDe) : "…"} até ${dataAte ? fmtDataBrRelatorio(dataAte) : "…"}`
+        : "Período: todas as competências";
+    const linhas = itens.length
+      ? itens
+          .map(
+            (it) => `<tr>
+        <td>${escHtmlRelatorio(it.emitenteNome || "-")}</td>
+        <td>${escHtmlRelatorio(fmtCnpjRelatorio(it.emitenteCnpj))}</td>
+        <td class="num">${fmtMoedaRelatorio(it.valorServico)}</td>
+        <td class="num">${fmtMoedaRelatorio(it.inss)}</td>
+        <td class="num">${fmtMoedaRelatorio(it.irrf)}</td>
+        <td class="num">${fmtMoedaRelatorio(it.pis)}</td>
+        <td class="num">${fmtMoedaRelatorio(it.cofins)}</td>
+        <td class="num">${fmtMoedaRelatorio(it.csll)}</td>
+        <td class="num">${fmtMoedaRelatorio(it.iss)}</td>
+      </tr>`
+          )
+          .join("")
+      : `<tr><td colspan="9" style="text-align:center; padding:16px;">Nenhuma nota com retenção encontrada no período.</td></tr>`;
+    const html = `<style>
+      body { font-family: 'Helvetica Neue', Arial, sans-serif !important; font-size: 11px; color:#222; }
+      h1 { font-size: 16px; text-align:left; margin: 0 0 2px; }
+      .cab p { margin: 1px 0; text-align:left; color:#444; }
+      h2 { font-size: 13px; margin: 18px 0 8px; }
+      table.rep { border-collapse: collapse; width: 100%; margin-top: 6px; }
+      table.rep th, table.rep td { border: 1px solid #ccc; padding: 5px 7px; }
+      table.rep th { background:#f0f0f0; text-align:left; font-size: 10.5px; }
+      table.rep td.num, table.rep th.num { text-align:right; }
+      tr.total-row td { font-weight:bold; background:#f5f5f5; }
+      .tag-total { display:inline-block; background:#1a7f4b; color:#fff; padding:8px 16px; border-radius:6px; font-weight:bold; font-size:13px; margin-top:16px; }
+    </style>
+    <div class="cab">
+      <h1>${escHtmlRelatorio(empresa.nome)}</h1>
+      <p>CNPJ: ${escHtmlRelatorio(fmtCnpjRelatorio(empresa.cnpj))}${enderecoLinha ? " — " + escHtmlRelatorio(enderecoLinha) : ""}</p>
+      <p>${escHtmlRelatorio(periodoLinha)}</p>
+    </div>
+    <h2>Retenções de Impostos</h2>
+    <table class="rep">
+      <thead><tr><th>Emitente</th><th>CNPJ</th><th class="num">Valor Bruto</th><th class="num">INSS</th><th class="num">IRRF</th><th class="num">PIS</th><th class="num">COFINS</th><th class="num">CSLL</th><th class="num">ISS</th></tr></thead>
+      <tbody>
+        ${linhas}
+        <tr class="total-row">
+          <td colspan="2">TOTAL</td>
+          <td class="num">${fmtMoedaRelatorio(somas.valorServico)}</td>
+          <td class="num">${fmtMoedaRelatorio(somas.inss)}</td>
+          <td class="num">${fmtMoedaRelatorio(somas.irrf)}</td>
+          <td class="num">${fmtMoedaRelatorio(somas.pis)}</td>
+          <td class="num">${fmtMoedaRelatorio(somas.cofins)}</td>
+          <td class="num">${fmtMoedaRelatorio(somas.csll)}</td>
+          <td class="num">${fmtMoedaRelatorio(somas.iss)}</td>
+        </tr>
+      </tbody>
+    </table>
+    <div><span class="tag-total">Total geral de retenções: R$ ${fmtMoedaRelatorio(somas.totalGeral)}</span></div>`;
+    const pdf = await contratos.gerarPdfDeHtml(html, `Retenções de Impostos - ${empresa.nome}`);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="Retencoes - ${empresa.nome.replace(/[\\/:*?"<>|]/g, "_")}.pdf"`);
+    res.send(pdf);
+  } catch (e: any) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
 // ---------- E-mail corporativo ----------
 app.get("/api/email/status", blockCliente, (req, res) => {
   const escritorioId = (req as any).user.escritorioId;
