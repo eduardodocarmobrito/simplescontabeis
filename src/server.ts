@@ -9714,11 +9714,15 @@ app.get("/api/relatorios/retencoes/pdf", blockCliente, requirePermissao("relator
       dataDe || dataAte
         ? `Período: ${dataDe ? fmtDataBrRelatorio(dataDe) : "…"} até ${dataAte ? fmtDataBrRelatorio(dataAte) : "…"}`
         : "Período: todas as competências";
+    // Não usa Date/toLocaleDateString aqui de propósito: o Chromium do PDF roda em UTC no servidor
+    // (achado ao vivo — testando com uma nota real de "22:07 -03:00", o dia virava o seguinte),
+    // então reinterpretar a data por um objeto Date troca o dia perto da virada da meia-noite. Os 10
+    // primeiros caracteres (AAAA-MM-DD) já são o dia local certo — o próprio timestamp já vem com o
+    // fuso -03:00 aplicado, só precisa reformatar o texto, não recalcular.
     const fmtDataEmissaoRelatorio = (iso: string | null) => {
       if (!iso) return "-";
-      const s = String(iso).replace(" ", "T");
-      const d = new Date(/(Z|[+-]\d{2}:\d{2})$/.test(s) ? s : s + "Z");
-      return Number.isNaN(d.getTime()) ? "-" : d.toLocaleDateString("pt-BR");
+      const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso));
+      return m ? `${m[3]}/${m[2]}/${m[1]}` : "-";
     };
     const linhas = itens.length
       ? itens
