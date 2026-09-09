@@ -9649,13 +9649,19 @@ function calcularRetencoesNfse(user: any, empresaId: number, dataDe: string | nu
     } catch {
       continue; // XML fora do padrão esperado — pula em vez de derrubar o relatório inteiro
     }
-    // Filtro: entra no relatório quem tem alguma retenção FEDERAL (IRRF/CSLL/PIS/COFINS/INSS com
-    // valor > 0 no XML) OU o ISS retido pelo tomador/intermediário (tpRetISSQN 2/3) — qualquer um
-    // desses já é motivo suficiente pra aparecer.
+    // Filtro: entra no relatório quem tem alguma retenção FEDERAL (IRRF/CSLL/INSS com valor > 0 no
+    // XML, PIS/COFINS com retenção indicada) OU o ISS retido pelo tomador/intermediário (tpRetISSQN
+    // 2/3) — qualquer um desses já é motivo suficiente pra aparecer.
+    // PIS/COFINS: `vPis`/`vCofins` NÃO são retenção — são "Débito Apuração Própria" (o que o próprio
+    // prestador recolhe no regime normal, sempre preenchido nas notas dele, retenção ou não). Quem
+    // diz se houve retenção é `tpRetPisCofins`. Confirmado empiricamente em >500 notas reais de
+    // produção: valores 1 e 3 sempre vêm acompanhados de outra retenção federal (IRRF/CSLL) na mesma
+    // nota; valores 0 e 2 nunca vêm — mesmo quando vPis/vCofins estão preenchidos com valor > 0.
     const temIrrf = ret.vRetIRRF > 0;
     const temCsll = ret.vRetCSLL > 0;
-    const temPis = ret.vPis > 0;
-    const temCofins = ret.vCofins > 0;
+    const pisCofinsRetido = ret.tpRetPisCofins === 1 || ret.tpRetPisCofins === 3;
+    const temPis = pisCofinsRetido;
+    const temCofins = pisCofinsRetido;
     const temInss = ret.vRetCP > 0;
     const issRetido = ret.tpRetISSQN === 2 || ret.tpRetISSQN === 3;
     if (!(temIrrf || temCsll || temPis || temCofins || temInss || issRetido)) continue;

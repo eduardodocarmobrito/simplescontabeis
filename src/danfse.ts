@@ -301,8 +301,9 @@ export interface RetencoesNfse {
   vRetCP: number; // INSS / contribuição previdenciária
   vRetIRRF: number;
   vRetCSLL: number;
-  vPis: number;
-  vCofins: number;
+  vPis: number; // "PIS - Débito Apuração Própria" — NÃO é retenção, é o PIS que o prestador recolhe normalmente
+  vCofins: number; // idem, "COFINS - Débito Apuração Própria"
+  tpRetPisCofins: number | null; // indicador de retenção de PIS/COFINS (confirmado empiricamente: 1 e 3 = retido, 0 e 2 = não retido; null = tag ausente no XML)
 }
 function numTexto(v: string | null): number {
   const n = v != null ? Number(v) : NaN;
@@ -330,6 +331,10 @@ export function extrairRetencoesNfse(xmlNfse: string): RetencoesNfse {
     vRetCSLL: numTexto(text(tribFed, "vRetCSLL")),
     vPis: numTexto(text(piscofins, "vPis")),
     vCofins: numTexto(text(piscofins, "vCofins")),
+    tpRetPisCofins: (() => {
+      const t = text(piscofins, "tpRetPisCofins");
+      return t != null && t !== "" ? numTexto(t) : null;
+    })(),
   };
 }
 
