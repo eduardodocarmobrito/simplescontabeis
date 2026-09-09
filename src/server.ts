@@ -9657,9 +9657,16 @@ function calcularRetencoesNfse(user: any, empresaId: number, dataDe: string | nu
     // diz se houve retenção é `tpRetPisCofins`. Confirmado empiricamente em >500 notas reais de
     // produção: valores 1 e 3 sempre vêm acompanhados de outra retenção federal (IRRF/CSLL) na mesma
     // nota; valores 0 e 2 nunca vêm — mesmo quando vPis/vCofins estão preenchidos com valor > 0.
+    // Mas essa tag é opcional e alguns emissores (ex.: Cambridge) nunca a preenchem, mesmo em notas
+    // com retenção federal real (IRRF/CSLL retidos). Pela IN 1234/2012, a retenção federal combinada
+    // (DARF 1708) é sempre IRRF+CSLL+PIS+COFINS juntos — não existe retenção "parcial" desses 4. Por
+    // isso, além de `tpRetPisCofins`, também consideramos retido quando a nota já tem IRRF ou CSLL
+    // retidos (mesmo sem a tag), e só confiamos em "não retido" (tpRetPisCofins 0/2, sem IRRF/CSLL)
+    // quando não há nenhum outro indício de retenção federal — foi exatamente esse o caso da nota da
+    // ELECTRIA que motivou a correção anterior.
     const temIrrf = ret.vRetIRRF > 0;
     const temCsll = ret.vRetCSLL > 0;
-    const pisCofinsRetido = ret.tpRetPisCofins === 1 || ret.tpRetPisCofins === 3;
+    const pisCofinsRetido = ret.tpRetPisCofins === 1 || ret.tpRetPisCofins === 3 || temIrrf || temCsll;
     const temPis = pisCofinsRetido;
     const temCofins = pisCofinsRetido;
     const temInss = ret.vRetCP > 0;
