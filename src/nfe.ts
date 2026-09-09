@@ -178,6 +178,7 @@ export interface DocumentoIdentificado {
   destinatarioNome: string | null;
   valorTotal: number | null;
   dataEmissao: string | null; // ISO
+  eventoDescricao: string | null; // xEvento (só preenchido quando tipo === "evento") — ex.: "Cancelamento", "Registro de Passagem Autorização"
 }
 // O "schema" que a Sefaz devolve em cada docZip diz o tipo de conteúdo — resNFe/resNFCe são só um
 // resumo (sem todos os campos, ex. sem itens), procNFe/procCTe já vêm com o XML completo assinado.
@@ -192,11 +193,12 @@ export function identificarDocumento(xml: string, schema: string): DocumentoIden
     destinatarioNome: null,
     valorTotal: null,
     dataEmissao: null,
+    eventoDescricao: null,
   };
   if (schema.startsWith("resEvento")) {
     const r = json?.resEvento;
     if (!r) return base;
-    return { ...base, tipo: "evento", chaveAcesso: r.chNFe || null, dataEmissao: r.dhEvento || null };
+    return { ...base, tipo: "evento", chaveAcesso: r.chNFe || null, dataEmissao: r.dhEvento || null, eventoDescricao: r.xEvento || null };
   }
   if (schema.startsWith("resNFe")) {
     const r = json?.resNFe;
@@ -262,6 +264,7 @@ export function identificarDocumento(xml: string, schema: string): DocumentoIden
     const total = infNFe.total?.ICMSTot || {};
     const modelo = infNFe.ide?.mod; // 55 = NF-e, 65 = NFC-e
     return {
+      ...base,
       tipo: modelo === "65" ? "nfce" : "nfe",
       chaveAcesso: (infNFe["@_Id"] || "").replace(/^NFe/, "") || null,
       emitenteCnpj: emit.CNPJ || null,

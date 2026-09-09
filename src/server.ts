@@ -1331,6 +1331,14 @@ sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_envio_documentos_periodo ON envio_do
   const cols = sqlite.prepare(`PRAGMA table_info(nfe_documentos)`).all() as any[];
   if (!cols.some((c) => c.name === "pdf_path")) sqlite.exec(`ALTER TABLE nfe_documentos ADD COLUMN pdf_path TEXT`);
 }
+// Migração leve: descrição do evento (xEvento) — só preenchida pra tipo='evento'. Usada pra filtrar
+// a listagem (a Distribuição DFe devolve MUITO evento de logística de transporte sem relevância
+// contábil nenhuma — "Registro de Passagem", "MDF-e Autorizado" etc. — só cancelamento importa) e
+// pra marcar a NF-e/NFC-e original como cancelada quando o evento de cancelamento dela aparecer.
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(nfe_documentos)`).all() as any[];
+  if (!cols.some((c) => c.name === "evento_descricao")) sqlite.exec(`ALTER TABLE nfe_documentos ADD COLUMN evento_descricao TEXT`);
+}
 
 // Migração leve: NFS-e ganhou o nome do município (só exibição) ao lado do código IBGE.
 {
@@ -4819,8 +4827,8 @@ app.delete("/api/nfe/config/:empresaId", blockCliente, requirePermissao("nfe-bus
 // de segurança, salva os documentos novos e atualiza o cursor. Mesma função é reaproveitada pela
 // rotina automática futura (nfeExecutarBuscaAutomatica), assim como nfseAnexarEEnviarDocumento hoje.
 const nfeInserirDocumento = sqlite.prepare(
-  `INSERT OR IGNORE INTO nfe_documentos (empresa_id, escritorio_id, fonte, nsu, doc_schema, tipo, chave_acesso, emitente_cnpj, emitente_nome, destinatario_cnpj, destinatario_nome, valor_total, data_emissao, xml)
-   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  `INSERT OR IGNORE INTO nfe_documentos (empresa_id, escritorio_id, fonte, nsu, doc_schema, tipo, chave_acesso, emitente_cnpj, emitente_nome, destinatario_cnpj, destinatario_nome, valor_total, data_emissao, xml, evento_descricao)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 );
 // Achado ao vivo (LUCELIO MARTINS DE OLIVEIRA): nfe_busca_config.cnpj é uma cópia de empresas.cnpj
 // tirada só no momento em que o certificado é cadastrado — se o CPF/CNPJ da empresa ainda estava em
@@ -4905,7 +4913,8 @@ async function nfeBuscarDocumentosNovos(empresaId: number, cfg: any, cert: nfse.
           info.destinatarioNome,
           info.valorTotal,
           info.dataEmissao,
-          doc.xml
+          doc.xml,
+          info.eventoDescricao
         );
         if (r.changes > 0) novos++;
       }
@@ -4944,7 +4953,8 @@ async function nfseBuscarDocumentosNovos(empresaId: number, cfg: any, cert: nfse
           info.tomadorNome,
           info.valorTotal,
           info.dataEmissao,
-          doc.xml
+          doc.xml,
+          null
         );
         if (r.changes > 0) novos++;
       }
@@ -5058,7 +5068,11 @@ app.get("/api/nfe/documentos", blockCliente, requirePermissao("nfe-busca", "visu
   // "recebida" — cobre tanto NF-e de compra (destinatário é a empresa) quanto casos em que a
   // Distribuição DFe devolve o documento sem o destinatário preenchido (comum no schema resumido).
   const direcaoExpr = `(CASE WHEN d.emitente_cnpj = REPLACE(REPLACE(REPLACE(e.cnpj,'.',''),'/',''),'-','') THEN 'emitida' ELSE 'recebida' END)`;
-  const condicoes: string[] = [`d.escritorio_id = ?`, `d.empresa_id IN (${placeholders})`];
+  // A Distribuição DFe devolve muito evento de logística de transporte sem relevância contábil
+  // nenhuma pro escritório (achado ao vivo: "Registro de Passagem", "MDF-e Autorizado" etc. — mais
+  // de 3900 eventos capturados, nenhum era cancelamento de verdade) — só evento com "Cancelamento"
+  // na descrição (xEvento) tem valor de ficar na listagem; o resto fica só escondido, sem apagar.
+  const condicoes: string[] = [`d.escritorio_id = ?`, `d.empresa_id IN (${placeholders})`, `(d.tipo != 'evento' OR d.evento_descricao LIKE '%ancelad%')`];
   const params: any[] = [user.escritorioId, ...empresasIds];
   if (tipo) {
     condicoes.push(`d.tipo = ?`);
@@ -5086,18 +5100,26 @@ app.get("/api/nfe/documentos", blockCliente, requirePermissao("nfe-busca", "visu
     const likeDigits = `%${digits || busca}%`;
     params.push(likeTexto, likeTexto, likeTexto, likeDigits, likeDigits, `%${valorNorm}%`);
   }
+  // "Cancelada de verdade" (pra riscar/destacar em vermelho na tela) é só o evento de cancelamento
+  // da PRÓPRIA NF-e/NFC-e — exclui explicitamente "Cancelamento de CT-e"/"Cancelamento de MDF-e"
+  // (ambos têm "Cancelamento" na descrição mas são sobre o transporte, não sobre a nota em si).
+  const notaCanceladaExpr = `EXISTS (
+    SELECT 1 FROM nfe_documentos ev
+    WHERE ev.escritorio_id = d.escritorio_id AND ev.tipo = 'evento' AND ev.chave_acesso = d.chave_acesso
+      AND ev.evento_descricao LIKE '%ancelad%' AND ev.evento_descricao NOT LIKE '%CT-e%' AND ev.evento_descricao NOT LIKE '%MDF-e%'
+  )`;
   const rows = sqlite
     .prepare(
       `SELECT d.id, d.empresa_id as empresaId, e.nome as empresaNome, d.tipo, d.chave_acesso as chaveAcesso,
               d.emitente_cnpj as emitenteCnpj, d.emitente_nome as emitenteNome, d.destinatario_cnpj as destinatarioCnpj,
               d.destinatario_nome as destinatarioNome, d.valor_total as valorTotal, d.data_emissao as dataEmissao, d.criado_em as criadoEm,
-              ${direcaoExpr} as direcao
+              ${direcaoExpr} as direcao, (CASE WHEN d.tipo = 'evento' THEN 0 ELSE ${notaCanceladaExpr} END) as notaCancelada
        FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id
        WHERE ${condicoes.join(" AND ")}
        ORDER BY d.data_emissao DESC, d.id DESC LIMIT 500`
     )
-    .all(...params);
-  res.json({ items: rows });
+    .all(...params) as any[];
+  res.json({ items: rows.map((r) => ({ ...r, notaCancelada: !!r.notaCancelada })) });
 });
 // Contagem de verdade por empresa, sem o LIMIT 500 da listagem acima — a listagem só serve pra
 // mostrar as últimas notas na tela de detalhe, não é confiável pra somar quantos documentos cada

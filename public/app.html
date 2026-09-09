@@ -4627,21 +4627,23 @@ async function pageNfeBusca(){
       if(dataDe) params.set('dataDe', dataDe);
       if(dataAte) params.set('dataAte', dataAte);
       const { items } = await api('/nfe/documentos?'+params.toString());
-      tbody.innerHTML = items.length ? items.map(d=>`
+      tbody.innerHTML = items.length ? items.map(d=>{
+        const canceladaStyle = d.notaCancelada ? 'text-decoration:line-through; color:var(--debit);' : '';
+        return `
         <tr>
           <td><input type="checkbox" class="nfeDocCheck" data-id="${d.id}"></td>
-          <td>${d.dataEmissao?fmtDateHora(d.dataEmissao):'—'}</td>
-          <td><span class="tag ${d.tipo==='evento'?'muted':'ok'}">${d.tipo.toUpperCase()}</span></td>
-          <td>${esc(d.emitenteNome||'—')}</td>
-          <td>${esc(d.destinatarioNome||'—')}</td>
-          <td style="font-family:'IBM Plex Mono',monospace; font-size:11px;">${esc(d.chaveAcesso||'—')}</td>
-          <td>${d.valorTotal!=null?fmtMoney(d.valorTotal):'—'}</td>
+          <td style="${canceladaStyle}">${d.dataEmissao?fmtDateHora(d.dataEmissao):'—'}</td>
+          <td><span class="tag ${d.tipo==='evento'?'muted':'ok'}">${d.tipo.toUpperCase()}</span>${d.notaCancelada?' <span class="tag bad">CANCELADA</span>':''}</td>
+          <td style="${canceladaStyle}">${esc(d.emitenteNome||'—')}</td>
+          <td style="${canceladaStyle}">${esc(d.destinatarioNome||'—')}</td>
+          <td style="font-family:'IBM Plex Mono',monospace; font-size:11px; ${canceladaStyle}">${esc(d.chaveAcesso||'—')}</td>
+          <td style="${canceladaStyle}">${d.valorTotal!=null?fmtMoney(d.valorTotal):'—'}</td>
           <td style="text-align:right; white-space:nowrap;">
             <a class="btn small" href="/api/nfe/documentos/${d.id}/xml" target="_blank" rel="noopener">XML</a>
             ${(d.tipo!=='evento'&&d.tipo!=='cte')?`<a class="btn small" href="/api/nfe/documentos/${d.id}/pdf" target="_blank" rel="noopener">PDF</a>`:''}
           </td>
         </tr>
-      `).join('') : '<tr><td colspan="8"><div class="empty-state">Nenhum documento encontrado.</div></td></tr>';
+      `;}).join('') : '<tr><td colspan="8"><div class="empty-state">Nenhum documento encontrado.</div></td></tr>';
       document.querySelectorAll('.nfeDocCheck').forEach(c=>c.addEventListener('change', atualizarBarraSelecao));
       atualizarBarraSelecao();
     }
