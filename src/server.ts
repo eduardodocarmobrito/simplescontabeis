@@ -9649,8 +9649,23 @@ function calcularRetencoesNfse(user: any, empresaId: number, dataDe: string | nu
     } catch {
       continue; // XML fora do padrão esperado — pula em vez de derrubar o relatório inteiro
     }
+    // Filtro: só entra no relatório quem tem alguma retenção FEDERAL de verdade (IRRF/CSLL/PIS/
+    // COFINS/INSS com valor > 0 no XML) — ISS não entra como gatilho aqui (é imposto municipal,
+    // tratado à parte na coluna, a pedido do usuário).
+    const temIrrf = ret.vRetIRRF > 0;
+    const temCsll = ret.vRetCSLL > 0;
+    const temPis = ret.vPis > 0;
+    const temCofins = ret.vCofins > 0;
+    const temInss = ret.vRetCP > 0;
+    if (!(temIrrf || temCsll || temPis || temCofins || temInss)) continue;
+    // Valor da coluna é RECALCULADO pela alíquota padrão sobre o valor bruto do serviço, não o valor
+    // que veio no XML — a pedido do usuário (o emissor pode ter calculado errado; a coluna deve
+    // mostrar o que É DEVIDO, não o que o prestador declarou). Só calcula quando o XML já indicava
+    // alguma retenção daquele imposto (> 0); senão fica 0, mesmo que a nota tenha entrado no
+    // relatório por causa de outro imposto retido. ISS é o único que continua trazendo o valor cru
+    // do XML (vISSQN), quando o indicador de retenção está marcado — não tem alíquota fixa única
+    // pra recalcular (varia por município).
     const issRetido = ret.tpRetISSQN === 2 || ret.tpRetISSQN === 3;
-    if (!(ret.vRetCP > 0 || ret.vRetIRRF > 0 || ret.vPis > 0 || ret.vCofins > 0 || ret.vRetCSLL > 0 || issRetido)) continue;
     itens.push({
       docId: r.docId,
       numeroNfse: ret.numeroNfse,
@@ -9658,11 +9673,11 @@ function calcularRetencoesNfse(user: any, empresaId: number, dataDe: string | nu
       emitenteCnpj: r.emitenteCnpj,
       dataEmissao: r.dataEmissao,
       valorServico: ret.valorServico,
-      inss: ret.vRetCP,
-      irrf: ret.vRetIRRF,
-      pis: ret.vPis,
-      cofins: ret.vCofins,
-      csll: ret.vRetCSLL,
+      inss: temInss ? ret.valorServico * 0.11 : 0,
+      irrf: temIrrf ? ret.valorServico * 0.015 : 0,
+      pis: temPis ? ret.valorServico * 0.0065 : 0,
+      cofins: temCofins ? ret.valorServico * 0.03 : 0,
+      csll: temCsll ? ret.valorServico * 0.01 : 0,
       iss: issRetido ? ret.vISSQN : 0,
     });
   }
