@@ -690,6 +690,19 @@ sqlite.exec(`
     UNIQUE(escritorio_id, ano)
   );
 
+  -- Tipos de licença adicionais, além dos 4 fixos (Alvará, Vigilância Sanitária, Corpo de Bombeiros,
+  -- Ambiental-SEMMA) — compartilhados pelo escritório inteiro, igual empresa_licenca_anos. "chave" é
+  -- o slug estável gravado em empresa_anexos.tipo; sempre com prefixo "lic_" pra nunca colidir com
+  -- os tipos fixos. A categoria desses é sempre 'licenca'.
+  CREATE TABLE IF NOT EXISTS empresa_licenca_tipos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    escritorio_id INTEGER NOT NULL REFERENCES escritorios(id),
+    chave TEXT NOT NULL,
+    label TEXT NOT NULL,
+    criado_em TEXT DEFAULT (datetime('now')),
+    UNIQUE(escritorio_id, chave)
+  );
+
   -- Chat ao vivo (balãozinho no canto da tela) — uma conversa por empresa-cliente, compartilhada
   -- entre todos os colaboradores/admin do escritório (caixa de entrada única, tipo suporte) de um
   -- lado, e todos os usuários da empresa-cliente do outro. "lido_pelo_escritorio"/"lido_pelo_cliente"
@@ -2715,6 +2728,23 @@ const EMPRESA_ANEXO_TIPOS: Record<string, { categoria: string; label: string }> 
   corpo_bombeiros: { categoria: "licenca", label: "Licença Corpo de Bombeiros" },
   ambiental_semma: { categoria: "licenca", label: "Licença Ambiental - SEMMA" },
 };
+// Tipos de licença cadastrados à mão pelo escritório (tabela empresa_licenca_tipos), além dos fixos
+// acima. Sempre categoria 'licenca'.
+function licencaTiposCustom(escritorioId: number): { chave: string; label: string }[] {
+  return sqlite
+    .prepare(`SELECT chave, label FROM empresa_licenca_tipos WHERE escritorio_id = ? ORDER BY label COLLATE NOCASE`)
+    .all(escritorioId) as any[];
+}
+// Resolve um tipo de anexo (fixo ou licença custom do escritório) — mesma forma de EMPRESA_ANEXO_TIPOS,
+// devolve null quando não existe.
+function resolverTipoAnexo(escritorioId: number, tipo: string): { categoria: string; label: string } | null {
+  if (EMPRESA_ANEXO_TIPOS[tipo]) return EMPRESA_ANEXO_TIPOS[tipo];
+  const custom = sqlite.prepare(`SELECT label FROM empresa_licenca_tipos WHERE escritorio_id = ? AND chave = ?`).get(escritorioId, tipo) as any;
+  return custom ? { categoria: "licenca", label: custom.label } : null;
+}
+function rotuloTipoAnexo(escritorioId: number, tipo: string): string {
+  return resolverTipoAnexo(escritorioId, tipo)?.label || tipo;
+}
 // Tenta achar a data de validade dentro do PDF (só funciona pra licença — contrato social/cartão
 // CNPJ não têm vencimento). Heurística, não mágica: procura um padrão de data (DD/MM/AAAA) perto de
 // uma palavra-chave típica de licença ("validade", "vencimento", "válido até" etc.). Sempre fica
@@ -2785,6 +2815,56 @@ app.post("/api/empresas/licenca-anos", blockCliente, requirePermissaoOr("empresa
   const ano = Number(req.body?.ano);
   if (!Number.isInteger(ano) || ano < 2000 || ano > 2100) return res.status(400).json({ error: "Ano inválido." });
   sqlite.prepare(`INSERT OR IGNORE INTO empresa_licenca_anos (escritorio_id, ano) VALUES (?, ?)`).run(user.escritorioId, ano);
+  res.json({ ok: true });
+});
+
+// Tipos de licença da aba Licenças — os 4 fixos + os que o escritório cadastrar aqui. Mesma ideia
+// de licenca-anos: cadastrou uma vez, vale pra todas as empresas.
+const LICENCA_TIPOS_FIXOS = Object.entries(EMPRESA_ANEXO_TIPOS)
+  .filter(([, info]) => info.categoria === "licenca")
+  .map(([chave, info]) => ({ chave, label: info.label, fixo: true }));
+app.get("/api/empresas/licenca-tipos", blockCliente, requirePermissaoOr("empresas", "licencas", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const custom = licencaTiposCustom(user.escritorioId).map((t) => ({ ...t, fixo: false }));
+  res.json({ tipos: [...LICENCA_TIPOS_FIXOS, ...custom] });
+});
+app.post("/api/empresas/licenca-tipos", blockCliente, requirePermissaoOr("empresas", "licencas", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const label = String(req.body?.label || "").trim().replace(/\s+/g, " ");
+  if (label.length < 2 || label.length > 60) return res.status(400).json({ error: "Informe um nome de 2 a 60 caracteres." });
+  const slug = label
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 40) || "licenca";
+  // "lic_" na frente garante que nunca bate com um tipo fixo (alvara, corpo_bombeiros, etc.)
+  const jaExistentes = new Set(
+    (sqlite.prepare(`SELECT chave FROM empresa_licenca_tipos WHERE escritorio_id = ?`).all(user.escritorioId) as any[]).map((r) => r.chave)
+  );
+  let chave = `lic_${slug}`;
+  let n = 2;
+  while (jaExistentes.has(chave)) chave = `lic_${slug}_${n++}`;
+  // Rótulo repetido (fixo ou custom) — não deixa criar duplicado só pra evitar confusão na lista
+  const rotulosAtuais = [
+    ...LICENCA_TIPOS_FIXOS.map((t) => t.label),
+    ...licencaTiposCustom(user.escritorioId).map((t) => t.label),
+  ].map((l) => l.toLowerCase());
+  if (rotulosAtuais.includes(label.toLowerCase())) return res.status(400).json({ error: "Já existe uma licença com esse nome." });
+  sqlite.prepare(`INSERT INTO empresa_licenca_tipos (escritorio_id, chave, label) VALUES (?, ?, ?)`).run(user.escritorioId, chave, label);
+  res.json({ chave, label });
+});
+app.delete("/api/empresas/licenca-tipos/:chave", blockCliente, requirePermissaoOr("empresas", "licencas", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const chave = String(req.params.chave);
+  const row = sqlite.prepare(`SELECT id FROM empresa_licenca_tipos WHERE escritorio_id = ? AND chave = ?`).get(user.escritorioId, chave) as any;
+  if (!row) return res.status(404).json({ error: "Tipo de licença não encontrado." });
+  const emUso = sqlite
+    .prepare(`SELECT COUNT(*) n FROM empresa_anexos a JOIN empresas e ON e.id = a.empresa_id WHERE e.escritorio_id = ? AND a.tipo = ?`)
+    .get(user.escritorioId, chave) as any;
+  if (emUso.n > 0) return res.status(400).json({ error: `Não dá pra excluir: ${emUso.n} anexo(s) usam esse tipo. Remova os anexos antes.` });
+  sqlite.prepare(`DELETE FROM empresa_licenca_tipos WHERE id = ?`).run(row.id);
   res.json({ ok: true });
 });
 
@@ -3050,7 +3130,7 @@ app.post("/api/empresas/:id/anexos", blockCliente, requirePermissao("empresas", 
   if (!podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
   if (!req.file) return res.status(400).json({ error: "Selecione o arquivo." });
   const tipo = String(req.body?.tipo || "");
-  const info = EMPRESA_ANEXO_TIPOS[tipo];
+  const info = resolverTipoAnexo(user.escritorioId, tipo);
   if (!info) return res.status(400).json({ error: "Tipo de anexo inválido." });
   let ano: number | null = null;
   if (info.categoria === "licenca") {
@@ -3093,7 +3173,7 @@ const REGEX_CPF_BUSCA = /\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b/g;
 app.post("/api/empresas/anexos/licencas-bulk", blockCliente, requirePermissao("licencas", "postar"), upload.array("arquivos", 300), async (req, res) => {
   const user = (req as any).user;
   const tipo = String(req.body?.tipo || "");
-  const info = EMPRESA_ANEXO_TIPOS[tipo];
+  const info = resolverTipoAnexo(user.escritorioId, tipo);
   if (!info || info.categoria !== "licenca") return res.status(400).json({ error: "Tipo de licença inválido." });
   const ano = Number(req.body?.ano);
   if (!Number.isInteger(ano) || ano < 2000 || ano > 2100) return res.status(400).json({ error: "Informe o ano da licença." });
@@ -8701,7 +8781,7 @@ function cardLicencasAVencer(user: any, diasLimite = 30): any[] {
     itens.push({
       empresaId: r.empresaId,
       empresaNome: r.empresaNome,
-      tipo: (EMPRESA_ANEXO_TIPOS[r.tipo] || {}).label || r.tipo,
+      tipo: rotuloTipoAnexo(escritorioId, r.tipo),
       ano: r.ano,
       vencimento: r.vencimento,
     });

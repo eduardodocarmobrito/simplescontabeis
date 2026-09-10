@@ -1609,6 +1609,24 @@ const EMPRESA_ANEXO_TIPOS = {
   corpo_bombeiros: { categoria:'licenca', label:'Licença Corpo de Bombeiros' },
   ambiental_semma: { categoria:'licenca', label:'Licença Ambiental - SEMMA' },
 };
+// Tipos de licença cadastrados pelo escritório (além dos 4 fixos) — carregados de /empresas/licenca-tipos
+// quando abre a aba/módulo Licenças. Guardado aqui só pra resolver rótulo em anexoCardHtml e nas listagens.
+let LICENCA_TIPOS_CUSTOM = [];
+function rotuloTipoLicenca(chave){
+  return (EMPRESA_ANEXO_TIPOS[chave]||{}).label
+    || (LICENCA_TIPOS_CUSTOM.find(t=>t.chave===chave)||{}).label
+    || chave;
+}
+// Lista completa (fixos + custom) no formato [chave, {categoria,label}] — mesma forma de Object.entries(EMPRESA_ANEXO_TIPOS)
+function tiposLicencaEntries(){
+  const fixos = Object.entries(EMPRESA_ANEXO_TIPOS).filter(([,info])=>info.categoria==='licenca');
+  const custom = LICENCA_TIPOS_CUSTOM.filter(t=>!EMPRESA_ANEXO_TIPOS[t.chave]).map(t=>[t.chave, { categoria:'licenca', label:t.label }]);
+  return [...fixos, ...custom];
+}
+async function carregarLicencaTiposCustom(){
+  try{ const { tipos } = await api('/empresas/licenca-tipos'); LICENCA_TIPOS_CUSTOM = tipos.filter(t=>!t.fixo); }
+  catch(e){ LICENCA_TIPOS_CUSTOM = []; }
+}
 function empresaModal(e){
   let empTabAtual = 'empresa';
   openModal(`
@@ -1670,7 +1688,7 @@ function empresaModal(e){
       <div id="empAnexosConstituicao"><div class="empty-state">Carregando…</div></div>
     </div>
     <div id="empTabLicencas" class="hidden">
-      <p style="font-size:12.5px; color:var(--ink-soft); margin:0 0 10px; max-width:760px;">Alvará, Vigilância Sanitária, Corpo de Bombeiros e Ambiental (SEMMA), organizados por ano — escolha o ano, depois a licença, pra ver o histórico e anexar. O vencimento é sempre lido do anexo em si (PDF), nunca herdado de outro ano.</p>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin:0 0 10px; max-width:760px;">Alvará, Vigilância Sanitária, Corpo de Bombeiros, Ambiental (SEMMA) e outras licenças que você cadastrar, organizadas por ano — escolha o ano, depois a licença, pra ver o histórico e anexar. Use "+ Outra licença" pra criar um tipo novo (vale pra todas as empresas). O vencimento é sempre lido do anexo em si (PDF), nunca herdado de outro ano.</p>
       <div class="tabs" id="empLicencasAnos"></div>
       <div id="empLicencasTipos" style="margin-top:12px;"></div>
     </div>
@@ -1834,7 +1852,7 @@ function empresaModal(e){
 // Card de UM anexo — reaproveitado pela lista simples (Constituição) e pelo histórico por ano/tipo
 // (Licenças). Só licença ganha o campo de vencimento (contrato social/cartão CNPJ não vencem).
 function anexoCardHtml(a){
-  const tipoLabel = (EMPRESA_ANEXO_TIPOS[a.tipo]||{}).label || a.tipo;
+  const tipoLabel = rotuloTipoLicenca(a.tipo);
   const vencTag = a.vencimentoOrigem==='automatico' ? `<span class="tag ok" style="font-size:10px;">lido automaticamente do PDF</span>`
     : a.vencimentoOrigem==='manual' ? `<span class="tag muted" style="font-size:10px;">informado manualmente</span>`
     : `<span class="tag bad" style="font-size:10px;">não identificado — informe a data</span>`;
@@ -1924,7 +1942,6 @@ function ligarAbaAnexosEmpresa(empresaId, categoria, listId, formId, btnId){
 // ou sem anexo ainda); clica num tipo, expande o histórico + botão pra anexar mais um daquele
 // mesmo tipo/ano — cada anexo mantém o próprio vencimento, lido dele mesmo, nunca herdado.
 function ligarAbaLicencasEmpresa(empresaId){
-  const tiposLicenca = Object.entries(EMPRESA_ANEXO_TIPOS).filter(([,info])=>info.categoria==='licenca');
   const anoAtual = new Date().getFullYear();
   let ano = anoAtual;
   let tipoAberto = null;
@@ -1965,9 +1982,13 @@ function ligarAbaLicencasEmpresa(empresaId){
   function anexosDoTipo(tipo){ return todosAnexos.filter(a=>a.tipo===tipo && a.ano===ano); }
   function renderTipos(){
     const wrap = document.getElementById('empLicencasTipos');
-    wrap.innerHTML = tiposLicenca.map(([tipo,info])=>{
+    const entries = tiposLicencaEntries();
+    const podeEditarTipos = can('empresas','editar') || can('licencas','editar');
+    const totalAnexosDoTipo = (tipo)=> todosAnexos.filter(a=>a.tipo===tipo).length;
+    wrap.innerHTML = entries.map(([tipo,info])=>{
       const lista = anexosDoTipo(tipo);
       const maisRecente = lista[0]; // /anexos já vem ordenado desc por criado_em
+      const custom = !EMPRESA_ANEXO_TIPOS[tipo];
       let vencTag = '';
       if(maisRecente && maisRecente.vencimento){
         const hoje = new Date().toISOString().slice(0,10);
@@ -1975,24 +1996,52 @@ function ligarAbaLicencasEmpresa(empresaId){
         vencTag = `<span class="tag ${vencida?'bad':'ok'}" style="margin-left:8px;">${vencida?'Vencida em':'Vence em'} ${fmtDateIso(maisRecente.vencimento)}</span>`;
       }
       const aberto = tipoAberto===tipo;
+      const podeExcluirTipo = custom && podeEditarTipos && totalAnexosDoTipo(tipo)===0;
       return `
       <div class="card" style="padding:0; margin-bottom:8px; overflow:hidden;">
         <div class="row" data-act="toggle-tipo" data-tipo="${tipo}" style="justify-content:space-between; align-items:center; padding:12px 14px; cursor:pointer;">
           <div>
             <b>${esc(info.label)}</b>
+            ${custom?'<span class="tag muted" style="margin-left:8px;">personalizada</span>':''}
             <span class="tag muted" style="margin-left:8px;">${lista.length} anexo${lista.length===1?'':'s'}</span>
             ${vencTag}
           </div>
-          <span style="color:var(--ink-soft);">${aberto?'▲':'▼'}</span>
+          <div class="row" style="gap:10px; align-items:center;">
+            ${podeExcluirTipo?`<span class="link-discreto" data-act="rm-tipo-lic" data-tipo="${tipo}" data-label="${esc(info.label)}">Excluir tipo</span>`:''}
+            <span style="color:var(--ink-soft);">${aberto?'▲':'▼'}</span>
+          </div>
         </div>
         <div id="empLicTipoCorpo_${tipo}" class="${aberto?'':'hidden'}" style="padding:0 14px 14px; border-top:1px solid var(--rule);"></div>
       </div>`;
-    }).join('');
+    }).join('') + (podeEditarTipos? `<button class="btn small" id="empLicAddTipo" style="margin-top:2px;">+ Outra licença</button>` : '');
     wrap.querySelectorAll('[data-act="toggle-tipo"]').forEach(el=>el.addEventListener('click', ()=>{
       const tipo = el.dataset.tipo;
       tipoAberto = tipoAberto===tipo? null : tipo;
       renderTipos();
     }));
+    wrap.querySelectorAll('[data-act="rm-tipo-lic"]').forEach(el=>el.addEventListener('click', async ev=>{
+      ev.stopPropagation();
+      if(!confirmar(`Excluir o tipo de licença "${el.dataset.label}"? Isso não apaga nenhum anexo — só some da lista.`)) return;
+      try{
+        await api('/empresas/licenca-tipos/'+encodeURIComponent(el.dataset.tipo), { method:'DELETE' });
+        if(tipoAberto===el.dataset.tipo) tipoAberto = null;
+        await carregarLicencaTiposCustom();
+        renderTipos();
+        toast('Tipo de licença removido.','ok');
+      }catch(err){ toast(err.message,'err'); }
+    }));
+    const btnAddTipo = document.getElementById('empLicAddTipo');
+    if(btnAddTipo) btnAddTipo.addEventListener('click', async ()=>{
+      const nome = prompt('Nome da nova licença (ex.: "Licença Ambiental - IBAMA"). Fica disponível pra todas as empresas.');
+      if(!nome || !nome.trim()) return;
+      try{
+        const { chave } = await api('/empresas/licenca-tipos', { method:'POST', body:{ label: nome.trim() } });
+        await carregarLicencaTiposCustom();
+        tipoAberto = chave;
+        renderTipos();
+        toast('Licença adicionada.','ok');
+      }catch(err){ toast(err.message,'err'); }
+    });
     if(tipoAberto) renderCorpoTipo(tipoAberto);
   }
   function renderCorpoTipo(tipo){
@@ -2035,6 +2084,7 @@ function ligarAbaLicencasEmpresa(empresaId){
     const [anexosResp, anosResp] = await Promise.all([
       api('/empresas/'+empresaId+'/anexos?categoria=licenca'),
       api('/empresas/licenca-anos'),
+      carregarLicencaTiposCustom(),
     ]);
     todosAnexos = anexosResp.items;
     anosCompartilhados = anosResp.anos;
@@ -2051,7 +2101,8 @@ function ligarAbaLicencasEmpresa(empresaId){
 async function pageLicencasBulk(){
   const podePostar = can('licencas','postar');
   const podeEditar = can('licencas','editar');
-  const tiposLicenca = Object.entries(EMPRESA_ANEXO_TIPOS).filter(([,info])=>info.categoria==='licenca');
+  await carregarLicencaTiposCustom();
+  const tiposLicenca = tiposLicencaEntries();
   main().innerHTML = `
     <h1>Licenças</h1>
     <p class="subtitle">Carregue de uma vez todos os PDFs de um tipo de licença — o sistema lê o CNPJ/CPF de dentro de cada arquivo e anexa sozinho na empresa certa (mesmo lugar da aba Licenças de cada empresa).</p>
@@ -2089,7 +2140,7 @@ async function pageLicencasBulk(){
       </div>
       <div class="card">
         <h3>3. Pasta com os PDFs</h3>
-        <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Escolha a pasta no computador com todas as licenças de "${esc(EMPRESA_ANEXO_TIPOS[tipoEscolhido].label)}" em PDF — cada arquivo precisa ter o CNPJ ou CPF da empresa em algum lugar do texto. Se o navegador não deixar escolher a pasta inteira, selecione todos os PDFs dela na mão (Cmd/Ctrl+A dentro da pasta).</p>
+        <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Escolha a pasta no computador com todas as licenças de "${esc(rotuloTipoLicenca(tipoEscolhido))}" em PDF — cada arquivo precisa ter o CNPJ ou CPF da empresa em algum lugar do texto. Se o navegador não deixar escolher a pasta inteira, selecione todos os PDFs dela na mão (Cmd/Ctrl+A dentro da pasta).</p>
         <input type="file" id="lbPasta" webkitdirectory multiple accept="application/pdf" ${podePostar? '' : 'disabled'}>
         <div id="lbPastaResumo" style="font-size:12.5px; color:var(--ink-soft); margin-top:6px;"></div>
         ${podePostar? `<button class="btn primary" id="lbCarregar" style="margin-top:10px;" disabled>Carregar Licenças</button>` : ''}
