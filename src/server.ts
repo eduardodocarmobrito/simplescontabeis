@@ -6680,6 +6680,44 @@ function nfseContentDisposition(tipo: "attachment" | "inline", nomeArquivo: stri
   const asciiFallback = nomeArquivo.replace(/[^\x20-\x7E]/g, "_");
   return `${tipo}; filename="${asciiFallback}"; filename*=UTF-8''${encodeURIComponent(nomeArquivo)}`;
 }
+// Empresas-cliente cadastradas com este CNPJ/CPF. Pode ser MAIS DE UMA: produtor rural costuma ter
+// várias inscrições (uma por fazenda) no mesmo CPF, cada uma como uma "empresa" separada aqui — e os
+// contatos de WhatsApp/e-mail podem estar cadastrados só em algumas delas. Achado ao vivo: o "Enviar
+// WhatsApp" da NFS-e resolvia o tomador com .get() (pegava só a primeira), e quando essa primeira não
+// tinha contato marcado, dava "tomador não tem contato" mesmo com o telefone cadastrado numa das
+// outras. Por isso agora sempre olha TODAS.
+function empresasClientePorDocumento(documento: string | null | undefined): any[] {
+  const limpo = String(documento || "").replace(/\D/g, "");
+  if (!limpo) return [];
+  return sqlite.prepare(`SELECT * FROM empresas WHERE REPLACE(REPLACE(REPLACE(cnpj,'.',''),'/',''),'-','') = ?`).all(limpo) as any[];
+}
+// Junta os telefones de WhatsApp (contatos "Receber WhatsApp") de todas as empresas passadas,
+// deduplicando por dígitos. Ignora valores obviamente inválidos (menos de 10 dígitos).
+function whatsappContatosDeEmpresas(empresaIds: number[]): { telefone: string }[] {
+  const porDigitos = new Map<string, string>();
+  for (const id of empresaIds) {
+    const rows = sqlite
+      .prepare(`SELECT telefone FROM empresa_contatos WHERE empresa_id = ? AND receber_whatsapp = 1 AND telefone IS NOT NULL AND telefone != ''`)
+      .all(id) as any[];
+    for (const r of rows) {
+      const digs = String(r.telefone).replace(/\D/g, "");
+      if (digs.length >= 10 && !porDigitos.has(digs)) porDigitos.set(digs, r.telefone);
+    }
+  }
+  return [...porDigitos.values()].map((telefone) => ({ telefone }));
+}
+// Idem pros e-mails ("Receber e-mails"), deduplicando (case-insensitive).
+function emailContatosDeEmpresas(empresaIds: number[]): string[] {
+  const vistos = new Map<string, string>();
+  for (const id of empresaIds) {
+    const rows = sqlite.prepare(`SELECT email FROM empresa_contatos WHERE empresa_id = ? AND receber_emails = 1 AND email IS NOT NULL AND email != ''`).all(id) as any[];
+    for (const r of rows) {
+      const chave = String(r.email).trim().toLowerCase();
+      if (chave && !vistos.has(chave)) vistos.set(chave, String(r.email).trim());
+    }
+  }
+  return [...vistos.values()];
+}
 app.get("/api/nfse/emissoes/:id/xml", blockCliente, requirePermissao("nfse", "visualizar"), (req, res) => {
   const row = sqlite.prepare(`SELECT * FROM nfse_emissoes WHERE id = ?`).get(Number(req.params.id)) as any;
   if (!row) return res.status(404).json({ error: "Emissão não encontrada." });
@@ -6741,20 +6779,13 @@ app.post("/api/nfse/emissoes/:id/enviar-whatsapp", blockCliente, requirePermissa
   // sessão anterior. Revertido a pedido do usuário: descobriu ao vivo que o botão mandava pro
   // contato interno do escritório (ex.: "Load") em vez do cliente de verdade (ex.: Zatta), e pediu
   // pra sempre puxar do cadastro de contatos DA EMPRESA TOMADORA — mesmo cadastro de "Contatos e
-  // documentos por cliente" em Configurações › E-mail corporativo, e mesma resolução por CNPJ já
-  // usada no aviso de cancelamento (ver nfseNotificarCancelamento). Sem empresa-cliente cadastrada
-  // pra esse CNPJ, cai pro telefone avulso digitado na hora da emissão (tomador_telefone).
-  const tomadorCnpjLimpo = String(row.tomador_documento || "").replace(/\D/g, "");
-  const tomadorEmpresa = tomadorCnpjLimpo
-    ? (sqlite.prepare(`SELECT id FROM empresas WHERE REPLACE(REPLACE(REPLACE(cnpj,'.',''),'/',''),'-','') = ?`).get(tomadorCnpjLimpo) as any)
-    : null;
-  const contatos = tomadorEmpresa
-    ? (sqlite
-        .prepare(`SELECT telefone FROM empresa_contatos WHERE empresa_id = ? AND receber_whatsapp = 1 AND telefone IS NOT NULL AND telefone != ''`)
-        .all(tomadorEmpresa.id) as any[])
-    : row.tomador_telefone
-      ? [{ telefone: row.tomador_telefone }]
-      : [];
+  // documentos por cliente" em Configurações › E-mail corporativo. Junta os contatos de TODAS as
+  // empresas com esse CNPJ/CPF (produtor rural tem uma inscrição por fazenda, mesmo CPF — o telefone
+  // pode estar cadastrado só em uma delas). Sem nenhuma empresa-cliente com esse documento, cai pro
+  // telefone avulso digitado na hora da emissão (tomador_telefone).
+  const tomadorEmpresas = empresasClientePorDocumento(row.tomador_documento);
+  let contatos = whatsappContatosDeEmpresas(tomadorEmpresas.map((e) => e.id));
+  if (!contatos.length && row.tomador_telefone) contatos = [{ telefone: row.tomador_telefone }];
   if (!contatos.length) {
     return res.status(400).json({ error: 'O tomador desta nota não tem contato de WhatsApp cadastrado (marque "Receber WhatsApp" no contato dele, em Configurações › E-mail corporativo, ou cadastre a empresa em Empresas).' });
   }
@@ -6847,10 +6878,10 @@ async function nfseNotificarCancelamento(emissaoId: number) {
   // Acha a empresa-cliente (tomador) cadastrada internamente pelo CNPJ, pra saber onde anexar o
   // aviso e pra quem mandar o e-mail — nem toda NFS-e emitida tem isso (o tomador pode não ser uma
   // empresa-cliente cadastrada no sistema).
-  const tomadorCnpj = String(row.tomador_documento || "").replace(/\D/g, "");
-  const tomadorEmpresa = tomadorCnpj
-    ? (sqlite.prepare(`SELECT * FROM empresas WHERE REPLACE(REPLACE(REPLACE(cnpj,'.',''),'/',''),'-','') = ?`).get(tomadorCnpj) as any)
-    : null;
+  const tomadorEmpresas = empresasClientePorDocumento(row.tomador_documento);
+  // "tomadorEmpresa" (singular) só pra onde precisa de UMA: anexar o DANFSe cancelado na grade e
+  // registrar o empresa_id no log de e-mail. Contatos (e-mail/WhatsApp) vêm de TODAS (ver helpers).
+  const tomadorEmpresa = tomadorEmpresas[0] || null;
 
   const numero = row.numero_nfse || row.id;
   const dataCancelamento = row.cancelado_em ? String(row.cancelado_em).replace("T", " ").slice(0, 16) : "";
@@ -6867,22 +6898,29 @@ async function nfseNotificarCancelamento(emissaoId: number) {
   }
   const nomeArquivo = `NFS-e ${numero} CANCELADA.pdf`;
 
-  if (tomadorEmpresa && pdf) {
+  if (tomadorEmpresas.length && pdf) {
     try {
       const config = sqlite.prepare(`SELECT envio_template_id FROM nfse_agendamento_config WHERE escritorio_id = ?`).get(escritorioId) as any;
-      const atribuicao = config?.envio_template_id
-        ? (sqlite.prepare(`SELECT * FROM envio_atribuicoes WHERE template_id = ? AND empresa_id = ? AND ativo = 1`).get(config.envio_template_id, tomadorEmpresa.id) as any)
+      // Com o mesmo CPF em várias empresas (fazendas), anexa na primeira que tiver a atribuição
+      // ativa do modelo de NFS-e — normalmente só uma delas está na rotina de Envio de Documentos.
+      const alvo = config?.envio_template_id
+        ? tomadorEmpresas
+            .map((emp) => ({
+              emp,
+              atribuicao: sqlite.prepare(`SELECT * FROM envio_atribuicoes WHERE template_id = ? AND empresa_id = ? AND ativo = 1`).get(config.envio_template_id, emp.id) as any,
+            }))
+            .find((x) => x.atribuicao)
         : null;
-      if (atribuicao) {
+      if (alvo) {
         const [anoStr, mesStr] = String(row.competencia).split("-");
         const ano = Number(anoStr);
         const mes = Number(mesStr);
-        let periodo = sqlite.prepare(`SELECT * FROM envio_periodos WHERE atribuicao_id = ? AND ano = ? AND mes = ?`).get(atribuicao.id, ano, mes) as any;
+        let periodo = sqlite.prepare(`SELECT * FROM envio_periodos WHERE atribuicao_id = ? AND ano = ? AND mes = ?`).get(alvo.atribuicao.id, ano, mes) as any;
         if (!periodo) {
-          const info = sqlite.prepare(`INSERT INTO envio_periodos (atribuicao_id, ano, mes) VALUES (?, ?, ?)`).run(atribuicao.id, ano, mes);
+          const info = sqlite.prepare(`INSERT INTO envio_periodos (atribuicao_id, ano, mes) VALUES (?, ?, ?)`).run(alvo.atribuicao.id, ano, mes);
           periodo = { id: Number(info.lastInsertRowid) };
         }
-        const dir = path.join(UPLOADS_DIR, "envio", String(tomadorEmpresa.id), String(periodo.id));
+        const dir = path.join(UPLOADS_DIR, "envio", String(alvo.emp.id), String(periodo.id));
         fs.mkdirSync(dir, { recursive: true });
         const destino = path.join(dir, `${Date.now()}-${nomeArquivo}`);
         fs.writeFileSync(destino, pdf);
@@ -6895,11 +6933,8 @@ async function nfseNotificarCancelamento(emissaoId: number) {
     }
   }
 
-  const destinatarios = tomadorEmpresa
-    ? (sqlite.prepare(`SELECT email FROM empresa_contatos WHERE empresa_id = ? AND receber_emails = 1`).all(tomadorEmpresa.id) as any[]).map((c) => c.email)
-    : row.tomador_email
-      ? [row.tomador_email]
-      : [];
+  let destinatarios = emailContatosDeEmpresas(tomadorEmpresas.map((e) => e.id));
+  if (!destinatarios.length && row.tomador_email) destinatarios = [row.tomador_email];
   if (destinatarios.length) {
     const assunto = `NFS-e nº ${numero} CANCELADA`;
     const corpo = `A Nota Fiscal de Serviço nº ${numero}, referente a "${row.descricao_servico || ""}", foi cancelada em ${dataCancelamento}.\n\nMotivo: ${motivoLabel}\nJustificativa: ${row.justificativa_cancelamento || ""}`;
@@ -6919,10 +6954,8 @@ async function nfseNotificarCancelamento(emissaoId: number) {
   // emissão normal, ver /api/nfse/emissoes/:id/enviar-whatsapp). Mesmo público do e-mail acima (o
   // tomador de verdade, não o escritório) — desde que o botão de "Enviar WhatsApp" da emissão normal
   // também passou a mandar pro tomador (mudança pedida pelo usuário, antes ia sempre pro escritório).
-  if (tomadorEmpresa && pdf) {
-    const contatosWhatsapp = sqlite
-      .prepare(`SELECT telefone FROM empresa_contatos WHERE empresa_id = ? AND receber_whatsapp = 1 AND telefone IS NOT NULL AND telefone != ''`)
-      .all(tomadorEmpresa.id) as any[];
+  if (pdf) {
+    const contatosWhatsapp = whatsappContatosDeEmpresas(tomadorEmpresas.map((e) => e.id));
     const arquivo = { nome: nomeArquivo, tipo: "application/pdf", buffer: pdf };
     for (const c of contatosWhatsapp) {
       try {
