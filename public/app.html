@@ -361,8 +361,15 @@ async function empresasAtivas(){
 // Nome sozinho não basta pra escolher a empresa certa em nenhum combobox — nomes duplicados (mesmo
 // grupo econômico com várias empresas de nome igual, cadastro repetido, etc.) são comuns na base
 // real. Todo combobox de empresa usa isso como label, tanto na lista de opções quanto depois de
-// selecionado, pra deixar sempre claro qual CNPJ foi escolhido.
-function empresaComboLabel(e){ return e.cnpj? `${e.nome} - ${e.cnpj}` : e.nome; }
+// selecionado. Inclui o código do Domínio quando tem (produtor rural com várias fazendas no MESMO
+// CPF só dá pra distinguir pelo código — ex.: as 3 "ELOI ZATTA" com CPF 177.129.989-49), e dá pra
+// buscar digitando o código direto no combo.
+function empresaComboLabel(e){
+  const partes = [e.nome];
+  if(e.codigoDominio) partes.push('cód. '+e.codigoDominio);
+  if(e.cnpj) partes.push(e.cnpj);
+  return partes.join(' · ');
+}
 function fmtMoney(v){ return (Number(v)||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'}); }
 // Máscara de campo de valor em R$ — digita só números, formata milhar/centavos ao vivo (ex.: digitar
 // "1798604" mostra "17.986,04"). moedaInputParaNumero() faz o caminho inverso na leitura do form.
