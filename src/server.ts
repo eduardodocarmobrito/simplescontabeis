@@ -5607,6 +5607,7 @@ function integraContadorFormatarVencimento(vencAAAAMMDD: string | null): string 
 // Cria o período (se ainda não existir) e insere o documento em Envio de Documentos — usado tanto
 // pelo DAS quanto pela Situação Fiscal. Cada chamada INSERE um documento novo, nunca substitui um
 // já existente, então o histórico completo fica registrado (ex.: DAS original + cada recálculo).
+// Devolve o id do envio_documentos criado, pra quem quiser disparar o envio automático pro cliente.
 function integraContadorAnexarPdfEmEnvio(
   atribuicaoId: number,
   empresaId: number,
@@ -5616,7 +5617,7 @@ function integraContadorAnexarPdfEmEnvio(
   pdfBase64: string,
   observacao: string,
   vencimentoIso: string | null
-): void {
+): number {
   let periodo = sqlite.prepare(`SELECT id FROM envio_periodos WHERE atribuicao_id = ? AND ano = ? AND mes = ?`).get(atribuicaoId, ano, mes) as any;
   if (!periodo) {
     const info = sqlite.prepare(`INSERT INTO envio_periodos (atribuicao_id, ano, mes) VALUES (?, ?, ?)`).run(atribuicaoId, ano, mes);
@@ -5627,11 +5628,76 @@ function integraContadorAnexarPdfEmEnvio(
   const destino = path.join(dir, `${Date.now()}-${nomeArquivo}`);
   const buf = Buffer.from(pdfBase64, "base64");
   fs.writeFileSync(destino, buf);
-  sqlite
+  const info = sqlite
     .prepare(
       `INSERT INTO envio_documentos (periodo_id, file_name, file_path, mime, size_bytes, observacao, vencimento, vencimento_origem) VALUES (?, ?, ?, 'application/pdf', ?, ?, ?, 'automatico')`
     )
     .run(periodo.id, nomeArquivo, destino, buf.length, observacao, vencimentoIso);
+  return Number(info.lastInsertRowid);
+}
+// Envia pro cliente (e-mail + WhatsApp) um documento recém-anexado em Envio de Documentos, com o
+// mesmo gating de módulo e os mesmos contatos que o botão manual usa. Best-effort: nunca lança —
+// grava o resultado (ok/erro) na própria linha do envio_documentos, igual à rotina de NFS-e.
+// Hoje só os documentos que a busca do Integra Contador anexa sozinha usam isto (DAS e guia de
+// parcela do parcelamento); a Situação Fiscal fica de fora de propósito.
+async function envioEnviarDocumentoAutomatico(opts: {
+  escritorioId: number;
+  empresaId: number;
+  docId: number;
+  fileName: string;
+  pdf: Buffer;
+  assunto: string;
+  corpoEmail: string;
+  descricaoWhatsapp: string;
+}): Promise<void> {
+  const { escritorioId, empresaId, docId, fileName, pdf, assunto, corpoEmail, descricaoWhatsapp } = opts;
+  if (escritorioTemModulo(escritorioId, "envio_email_automatico")) {
+    const contatos = sqlite.prepare(`SELECT email FROM empresa_contatos WHERE empresa_id = ? AND receber_emails = 1`).all(empresaId) as any[];
+    if (contatos.length) {
+      const lista = contatos.map((c) => c.email);
+      try {
+        await enviarEmail(escritorioId, { to: lista, subject: assunto, text: corpoEmail, attachments: [{ filename: fileName, content: pdf }] });
+        sqlite.prepare(`UPDATE envio_documentos SET email_enviado = 1, email_enviado_em = datetime('now'), email_erro = NULL WHERE id = ?`).run(docId);
+        sqlite
+          .prepare(`INSERT INTO emails_enviados (empresa_id, destinatarios, assunto, corpo, anexos_json, status) VALUES (?, ?, ?, ?, ?, 'ok')`)
+          .run(empresaId, lista.join(", "), assunto, corpoEmail, JSON.stringify([fileName]));
+      } catch (e: any) {
+        sqlite.prepare(`UPDATE envio_documentos SET email_enviado = 0, email_erro = ? WHERE id = ?`).run(e.message, docId);
+        sqlite
+          .prepare(`INSERT INTO emails_enviados (empresa_id, destinatarios, assunto, corpo, status, erro) VALUES (?, ?, ?, ?, 'erro', ?)`)
+          .run(empresaId, lista.join(", "), assunto, corpoEmail, e.message);
+      }
+    }
+  }
+  if (escritorioTemModulo(escritorioId, "envio_whatsapp")) {
+    const contatos = sqlite
+      .prepare(`SELECT telefone FROM empresa_contatos WHERE empresa_id = ? AND receber_whatsapp = 1 AND telefone IS NOT NULL AND telefone != ''`)
+      .all(empresaId) as any[];
+    if (contatos.length) {
+      const empresaNome = (sqlite.prepare(`SELECT nome FROM empresas WHERE id = ?`).get(empresaId) as any)?.nome || "";
+      let algum = false;
+      let ultimoErro = "";
+      for (const c of contatos) {
+        try {
+          await whatsappEnviarArquivo(
+            escritorioId,
+            c.telefone,
+            [
+              { nome: "empresa_nome", valor: empresaNome },
+              { nome: "descricao", valor: descricaoWhatsapp },
+            ],
+            { nome: fileName, tipo: "application/pdf", buffer: pdf },
+            { tabela: "envio_documentos", id: docId }
+          );
+          algum = true;
+        } catch (e: any) {
+          ultimoErro = e.message;
+        }
+      }
+      if (algum) sqlite.prepare(`UPDATE envio_documentos SET whatsapp_enviado = 1, whatsapp_enviado_em = datetime('now'), whatsapp_erro = NULL WHERE id = ?`).run(docId);
+      else sqlite.prepare(`UPDATE envio_documentos SET whatsapp_erro = ? WHERE id = ?`).run(ultimoErro || "Falha desconhecida.", docId);
+    }
+  }
 }
 // forcarNovoDocumento: só vem true no fluxo de recálculo explicitamente solicitado (usuário clicou
 // em "Solicitar recálculo do DAS"). A busca automática (1x/dia) e o botão manual "Buscar" reprocessam
@@ -5664,7 +5730,20 @@ function integraContadorAnexarDasEmEnvio(
     }
   }
   const nomeArquivo = `DAS ${MESES_PT_EXTENSO[mes - 1]} ${ano}${das.numeroDocumento ? " - " + das.numeroDocumento : ""}.pdf`;
-  integraContadorAnexarPdfEmEnvio(atribuicaoId, empresaId, ano, mes, nomeArquivo, das.pdfBase64, observacao, integraContadorFormatarVencimento(das.dataVencimento));
+  const vencIso = integraContadorFormatarVencimento(das.dataVencimento);
+  const docId = integraContadorAnexarPdfEmEnvio(atribuicaoId, empresaId, ano, mes, nomeArquivo, das.pdfBase64, observacao, vencIso);
+  const rotulo = `${String(mes).padStart(2, "0")}/${ano}`;
+  const vencTxt = vencIso ? `\n\nVencimento: ${vencIso.split("-").reverse().join("/")}` : "";
+  void envioEnviarDocumentoAutomatico({
+    escritorioId,
+    empresaId,
+    docId,
+    fileName: nomeArquivo,
+    pdf: Buffer.from(das.pdfBase64, "base64"),
+    assunto: `DAS — ${rotulo}`,
+    corpoEmail: `Segue em anexo a guia do DAS (Simples Nacional) referente a ${rotulo}.${vencTxt}`,
+    descricaoWhatsapp: `Guia do DAS — ${rotulo}`,
+  }).catch((e) => console.error(`[Integra Contador] envio automático do DAS (empresa ${empresaId}) falhou:`, e.message));
 }
 // Mesmo mecanismo do DAS, mas pra Situação Fiscal — não tem "competência" de verdade (é uma foto do
 // momento, não atrelada a um período de apuração), então usa o mês/ano de quando a consulta rodou
@@ -5692,7 +5771,21 @@ function integraContadorAnexarParcelaEmEnvio(atribuicaoId: number, empresaId: nu
   if (periodo && sqlite.prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id = ? LIMIT 1`).get(periodo.id)) return false;
   const nomeArquivo = `Parcelamento DAS - parcela ${MESES_PT_EXTENSO[mes - 1]} ${ano}.pdf`;
   const observacao = `Guia da parcela — gerada automaticamente pela busca do Integra Contador em ${new Date().toLocaleDateString("pt-BR")}.`;
-  integraContadorAnexarPdfEmEnvio(atribuicaoId, empresaId, ano, mes, nomeArquivo, pdfBase64, observacao, null);
+  const docId = integraContadorAnexarPdfEmEnvio(atribuicaoId, empresaId, ano, mes, nomeArquivo, pdfBase64, observacao, null);
+  const rotulo = `${String(mes).padStart(2, "0")}/${ano}`;
+  const escritorioId = (sqlite.prepare(`SELECT escritorio_id FROM empresas WHERE id = ?`).get(empresaId) as any)?.escritorio_id;
+  if (escritorioId) {
+    void envioEnviarDocumentoAutomatico({
+      escritorioId,
+      empresaId,
+      docId,
+      fileName: nomeArquivo,
+      pdf: Buffer.from(pdfBase64, "base64"),
+      assunto: `Parcelamento do DAS — parcela ${rotulo}`,
+      corpoEmail: `Segue em anexo a guia da parcela do parcelamento do DAS (Simples Nacional) referente a ${rotulo}.`,
+      descricaoWhatsapp: `Guia do parcelamento do DAS — parcela ${rotulo}`,
+    }).catch((e) => console.error(`[Integra Contador] envio automático da parcela (empresa ${empresaId}) falhou:`, e.message));
+  }
   return true;
 }
 // Teto de tempo pra busca inteira — sem isso, uma chamada à Receita/SERPRO que trava (sem dar
