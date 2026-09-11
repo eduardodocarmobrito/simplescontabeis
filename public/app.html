@@ -1713,6 +1713,9 @@ function empresaModal(e){
       <label class="checkbox-row"><input type="radio" name="empRegimeTributario" value="lucro_presumido" ${e.regimeTributario==='lucro_presumido'?'checked':''}> Lucro Presumido</label>
       <label class="checkbox-row"><input type="radio" name="empRegimeTributario" value="lucro_real" ${e.regimeTributario==='lucro_real'?'checked':''}> Lucro Real</label>
       <div id="empRegApuracaoWrap"></div>
+      <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">O que esta empresa pode solicitar</div>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:0;">Nenhuma marcada = pode solicitar tudo. Marque só o que essa empresa pode pedir em "Solicitar Documentos".</p>
+      <div id="empSolicTipos"><div class="empty-state">Carregando…</div></div>
     </div>
     ` : ''}
     <div class="modal-actions">
@@ -1722,6 +1725,7 @@ function empresaModal(e){
   `, '1100px');
   if(e){
     renderCertificadoBuscaXml(document.getElementById('empCertBuscaXml'), e.id, e.uf);
+    renderSolicitacaoTiposEmpresa(document.getElementById('empSolicTipos'), e.id);
     document.getElementById('empModalTabs').querySelectorAll('.tab').forEach(t=>{
       t.classList.toggle('active', t.dataset.tab===empTabAtual);
       t.addEventListener('click', ()=>{
@@ -1849,6 +1853,8 @@ function empresaModal(e){
         body.regimeApuracaoSn = document.getElementById('empRegApuracao')?.value || '1';
         body.percentualTotalTributosSn = document.getElementById('empTotTribSN')?.value || null;
         await api('/empresas/'+e.id, { method:'PUT', body });
+        const chavesSolic = [...document.querySelectorAll('.empSolicTipoCheck:checked')].map(c=>c.value);
+        await api('/empresas/'+e.id+'/solicitacao-tipos', { method:'PUT', body:{ chaves: chavesSolic } });
       } else {
         await api('/empresas', { method:'POST', body });
       }
@@ -2709,7 +2715,7 @@ async function pageMeusDocumentos(){
 
 // ===================== Solicitar Documentos (cliente pede ao escritório) =====================
 async function pageSolicitarDocumentos(){
-  const [{ items: disponiveis }, { items: minhas }] = await Promise.all([
+  const [{ items: disponiveis, recalculoDasDisponivel, parcelamentoDasDisponivel }, { items: minhas }] = await Promise.all([
     api('/envio/templates-disponiveis'),
     api('/envio/minhas-solicitacoes'),
   ]);
@@ -2742,7 +2748,13 @@ async function pageSolicitarDocumentos(){
   box.querySelectorAll('[data-act="baixar"]').forEach(b=>b.addEventListener('click', ()=>{
     window.open('/api/envio/documentos/'+b.dataset.doc+'/download', '_blank');
   }));
-  document.getElementById('btnNovaSolicitacao').addEventListener('click', ()=>novaSolicitacaoModal(disponiveis));
+  document.getElementById('btnNovaSolicitacao').addEventListener('click', ()=>{
+    if(!disponiveis.length && !recalculoDasDisponivel && !parcelamentoDasDisponivel){
+      toast('Nenhum documento disponível para solicitação — fale com o escritório.','err');
+      return;
+    }
+    novaSolicitacaoModal(disponiveis, recalculoDasDisponivel, parcelamentoDasDisponivel);
+  });
 }
 // "Recalcular DAS" não é um template do banco — dispara direto a busca no Integra Contador pra
 // competência escolhida, achando sozinho o DAS original já entregue pela rotina mensal e devolvendo
@@ -2752,15 +2764,15 @@ const RECALCULO_DAS_ID = '__recalculo_das';
 // Receita não deixa simular nem aderir a um parcelamento novo por API, só avisa o escritório, que
 // negocia no e-CAC (fora do sistema) e depois vincula o parcelamento concedido em Solicitações.
 const PARCELAMENTO_DAS_ID = '__parcelamento_das';
-function novaSolicitacaoModal(disponiveis){
+function novaSolicitacaoModal(disponiveis, recalculoDasDisponivel, parcelamentoDasDisponivel){
   const porId = new Map(disponiveis.map(t=>[String(t.id), t]));
   const hoje = new Date();
   openModal(`
     <h3>Nova solicitação</h3>
     <div class="field"><label>O que você precisa?</label>
       <select id="solTemplate">
-        <option value="${RECALCULO_DAS_ID}">Recalcular DAS</option>
-        <option value="${PARCELAMENTO_DAS_ID}">Solicitar parcelamento de DAS</option>
+        ${recalculoDasDisponivel? `<option value="${RECALCULO_DAS_ID}">Recalcular DAS</option>` : ''}
+        ${parcelamentoDasDisponivel? `<option value="${PARCELAMENTO_DAS_ID}">Solicitar parcelamento de DAS</option>` : ''}
         ${disponiveis.map(t=>`<option value="${t.id}">${esc(t.nome)}</option>`).join('')}
       </select>
     </div>
@@ -4319,6 +4331,30 @@ async function renderNfseNotasDetalhe(empresaId){
   }));
 }
 
+// "O que esta empresa pode solicitar" (aba Configurações do cadastro de Empresa) — junta os 2 tipos
+// fixos de "Solicitar Documentos" (Recalcular DAS / Parcelamento de DAS, que não são envio_templates)
+// com os modelos de Envio de Documentos marcados como "visível ao cliente" (Balancete, DRE etc.),
+// e marca os que já estão liberados pra essa empresa. Nenhuma marcada = sem restrição, pode tudo.
+const SOLIC_TIPOS_FIXOS = [
+  { chave: 'recalculo_das', label: 'Recalcular DAS' },
+  { chave: 'parcelamento_das', label: 'Solicitar parcelamento de DAS' },
+];
+async function renderSolicitacaoTiposEmpresa(containerEl, empresaId){
+  containerEl.innerHTML = '<div class="empty-state">Carregando…</div>';
+  try{
+    const [{ items: templates }, { chaves: selecionadas }] = await Promise.all([
+      api('/envio/templates'),
+      api('/empresas/'+empresaId+'/solicitacao-tipos'),
+    ]);
+    const dinamicos = templates.filter(t=>t.visivelCliente && t.ativo).map(t=>({ chave: 'template:'+t.id, label: t.nome }));
+    const todos = [...SOLIC_TIPOS_FIXOS, ...dinamicos];
+    containerEl.innerHTML = todos.length
+      ? `<div class="checkbox-grid">${todos.map(o=>`<label class="checkbox-row"><input type="checkbox" class="empSolicTipoCheck" value="${esc(o.chave)}" ${selecionadas.includes(o.chave)?'checked':''}> ${esc(o.label)}</label>`).join('')}</div>`
+      : `<div class="empty-state">Nenhum tipo de documento configurado como "visível ao cliente" ainda.</div>`;
+  }catch(err){
+    containerEl.innerHTML = `<div class="empty-state">Não consegui carregar: ${esc(err.message)}</div>`;
+  }
+}
 // ===================== Busca de XML (NF-e/NFC-e/NFS-e — Sefaz + Sistema Nacional NFS-e) =====================
 // Bloco de certificado por empresa — reaproveitado tanto na página "Busca de XML" quanto direto no
 // cadastro da empresa (um só lugar pra configurar, em vez de precisar ir numa tela separada).

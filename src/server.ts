@@ -142,6 +142,17 @@ sqlite.exec(`
     pagina TEXT NOT NULL, -- 'minha-nfse' | 'meus-documentos' | 'solicitar-documentos' | 'documentos-recebidos' | 'minha-financeiro' | 'minha-assinatura'
     PRIMARY KEY (user_id, pagina)
   );
+  -- Controla, POR EMPRESA-CLIENTE (não por usuário/login), o que pode ser pedido no módulo "Solicitar
+  -- Documentos" — ex.: uma empresa Lucro Real não tem porque pedir "Recalcular DAS" (isso é coisa de
+  -- Simples Nacional). chave é 'recalculo_das' | 'parcelamento_das' (as duas opções fixas do módulo,
+  -- que não são registros de envio_templates) ou 'template:<id>' apontando pra um envio_templates
+  -- (visivel_cliente=1) do mesmo escritório da empresa. Sem nenhuma linha aqui pra uma empresa = sem
+  -- restrição (pode solicitar tudo) — mesmo default seguro de cliente_paginas_visiveis, acima.
+  CREATE TABLE IF NOT EXISTS empresa_solicitacao_tipos (
+    empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+    chave TEXT NOT NULL,
+    PRIMARY KEY (empresa_id, chave)
+  );
 
   -- ---- Solicitações de documentos (checklist) ----
   CREATE TABLE IF NOT EXISTS checklist_templates (
@@ -2718,6 +2729,43 @@ app.delete("/api/empresas/contatos/:contatoId", blockCliente, requirePermissao("
   res.json({ ok: true });
 });
 
+// ---- O que cada empresa pode pedir em "Solicitar Documentos" ----
+const EMPRESA_SOLICITACAO_TIPOS_FIXOS = ["recalculo_das", "parcelamento_das"];
+// Sem NENHUMA linha pra essa empresa = sem restrição (pode solicitar tudo) — mesmo default seguro de
+// cliente_paginas_visiveis. Só passa a restringir quando o admin marca algo de propósito.
+function empresaPodeSolicitar(empresaId: number, chave: string): boolean {
+  const alguma = sqlite.prepare(`SELECT 1 FROM empresa_solicitacao_tipos WHERE empresa_id = ? LIMIT 1`).get(empresaId);
+  if (!alguma) return true;
+  const marcado = sqlite.prepare(`SELECT 1 FROM empresa_solicitacao_tipos WHERE empresa_id = ? AND chave = ?`).get(empresaId, chave);
+  return !!marcado;
+}
+app.get("/api/empresas/:id/solicitacao-tipos", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
+  const empresaId = Number(req.params.id);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const rows = sqlite.prepare(`SELECT chave FROM empresa_solicitacao_tipos WHERE empresa_id = ?`).all(empresaId) as any[];
+  res.json({ chaves: rows.map((r) => r.chave) });
+});
+// Body { chaves: [...] } vazio/omitido = sem restrição. 'recalculo_das'/'parcelamento_das' são sempre
+// válidos; 'template:<id>' só é aceito se apontar pra um envio_templates ATIVO, VISÍVEL AO CLIENTE e
+// DO MESMO ESCRITÓRIO da empresa — nunca aceita template de outro escritório.
+app.put("/api/empresas/:id/solicitacao-tipos", blockCliente, requirePermissao("empresas", "editar"), (req, res) => {
+  const empresaId = Number(req.params.id);
+  const user = (req as any).user;
+  const empresa = sqlite.prepare(`SELECT id, escritorio_id FROM empresas WHERE id = ?`).get(empresaId) as any;
+  if (!empresa || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const recebidas: string[] = Array.isArray(req.body?.chaves) ? req.body.chaves : [];
+  const chavesValidas = recebidas.filter((chave) => {
+    if (EMPRESA_SOLICITACAO_TIPOS_FIXOS.includes(chave)) return true;
+    const m = /^template:(\d+)$/.exec(chave);
+    if (!m) return false;
+    return !!sqlite.prepare(`SELECT 1 FROM envio_templates WHERE id = ? AND escritorio_id = ? AND ativo = 1 AND visivel_cliente = 1`).get(Number(m[1]), empresa.escritorio_id);
+  });
+  sqlite.prepare(`DELETE FROM empresa_solicitacao_tipos WHERE empresa_id = ?`).run(empresaId);
+  const stmt = sqlite.prepare(`INSERT INTO empresa_solicitacao_tipos (empresa_id, chave) VALUES (?, ?)`);
+  for (const chave of chavesValidas) stmt.run(empresaId, chave);
+  res.json({ ok: true });
+});
+
 // ---- Anexos do cadastro (Constituição/Licenças) ----
 const EMPRESA_ANEXO_TIPOS: Record<string, { categoria: string; label: string }> = {
   contrato_social: { categoria: "constituicao", label: "Contrato Social / Alteração" },
@@ -3949,6 +3997,8 @@ app.delete("/api/envio/templates/:id", requireAdmin, (req, res) => {
     return res.status(409).json({ error: `"${existing.nome}" é usado automaticamente pelo Integra Contador e não pode ser excluído.` });
   }
   sqlite.prepare(`DELETE FROM envio_templates WHERE id = ? AND escritorio_id = ?`).run(Number(req.params.id), (req as any).user.escritorioId);
+  // Limpa referências órfãs em empresa_solicitacao_tipos (chave 'template:<id>' desse modelo excluído).
+  sqlite.prepare(`DELETE FROM empresa_solicitacao_tipos WHERE chave = ?`).run("template:" + req.params.id);
   res.json({ ok: true });
 });
 
@@ -4028,8 +4078,15 @@ app.get("/api/envio/templates-disponiveis", (req, res) => {
   if (user.perfil !== "Cliente") return res.status(403).json({ error: "Rota exclusiva para clientes." });
   const rows = sqlite
     .prepare(`SELECT id, nome, descricao, periodicidade FROM envio_templates WHERE ativo = 1 AND visivel_cliente = 1 AND escritorio_id = ? ORDER BY nome`)
-    .all(user.escritorioId);
-  res.json({ items: rows });
+    .all(user.escritorioId) as any[];
+  // Filtra pelo que essa empresa específica pode solicitar (ver empresaPodeSolicitar) — sem nenhuma
+  // linha configurada pra ela, não filtra nada (mesmo catálogo de sempre).
+  const items = user.empresaId ? rows.filter((t) => empresaPodeSolicitar(user.empresaId, "template:" + t.id)) : rows;
+  res.json({
+    items,
+    recalculoDasDisponivel: user.empresaId ? empresaPodeSolicitar(user.empresaId, "recalculo_das") : true,
+    parcelamentoDasDisponivel: user.empresaId ? empresaPodeSolicitar(user.empresaId, "parcelamento_das") : true,
+  });
 });
 app.post("/api/envio/solicitar", (req, res) => {
   const user = (req as any).user;
@@ -4039,7 +4096,11 @@ app.post("/api/envio/solicitar", (req, res) => {
   const template = sqlite
     .prepare(`SELECT * FROM envio_templates WHERE id = ? AND ativo = 1 AND visivel_cliente = 1 AND escritorio_id = ?`)
     .get(Number(templateId), user.escritorioId) as any;
-  if (!template) return res.status(404).json({ error: "Documento não disponível para solicitação." });
+  // Mesma mensagem de "não existe" pros dois casos — não vaza pro cliente que o template existe mas
+  // essa empresa dele não está liberada a pedir.
+  if (!template || !empresaPodeSolicitar(user.empresaId, "template:" + template.id)) {
+    return res.status(404).json({ error: "Documento não disponível para solicitação." });
+  }
 
   let anoFinal: number, mesFinal: number | null, rotuloFinal: string | null;
   if (template.periodicidade === "mensal") {
@@ -4406,6 +4467,9 @@ app.post("/api/envio/periodos/:periodoId/solicitar-recalculo-das", async (req, r
 // (mês/ano) em vez de já estar na grade de Envio de Documentos com o periodoId em mãos.
 app.post("/api/envio/solicitar-recalculo-das", requireCliente, async (req, res) => {
   const user = (req as any).user;
+  if (!empresaPodeSolicitar(user.empresaId, "recalculo_das")) {
+    return res.status(403).json({ error: "Sua empresa não está habilitada a solicitar recálculo de DAS." });
+  }
   const mes = Number(req.body?.mes);
   const ano = Number(req.body?.ano);
   if (!mes || !ano) return res.status(400).json({ error: "Informe o mês e o ano da competência." });
@@ -4427,6 +4491,9 @@ app.post("/api/envio/solicitar-recalculo-das", requireCliente, async (req, res) 
 app.post("/api/envio/solicitar-parcelamento-das", requireCliente, (req, res) => {
   const user = (req as any).user;
   if (!user.empresaId) return res.status(400).json({ error: "Seu usuário não está vinculado a uma empresa." });
+  if (!empresaPodeSolicitar(user.empresaId, "parcelamento_das")) {
+    return res.status(403).json({ error: "Sua empresa não está habilitada a solicitar parcelamento de DAS." });
+  }
   const atribuicaoId = integraContadorObterOuCriarAtribuicaoModelo(
     user.escritorioId,
     user.empresaId,
