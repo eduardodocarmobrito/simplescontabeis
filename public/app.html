@@ -669,6 +669,7 @@ const NAV = [
   { id:'meus-documentos', label:'Meus Documentos', modulo:null, roles:['Cliente'] },
   { id:'solicitar-documentos', label:'Solicitar Documentos', modulo:null, roles:['Cliente'] },
   { id:'documentos-recebidos', label:'Documentos Recebidos', modulo:null, roles:['Cliente'] },
+  { id:'notas-entrada', label:'Notas de Entrada', modulo:null, roles:['Cliente'] },
   { id:'minha-financeiro', label:'Financeiro', modulo:null, roles:['Cliente'] },
   { id:'minha-assinatura', label:'Assinatura', modulo:null, roles:['Cliente'] },
   { id:'financeiro', label:'Financeiro', modulo:'financeiro', roles:['Administrador','Colaborador'] },
@@ -680,12 +681,13 @@ const NAV = [
   { id:'escritorios', label:'Escritórios', modulo:null, roles:['SuperAdmin'] },
   { id:'modulos-plataforma', label:'Módulos da plataforma', modulo:null, roles:['SuperAdmin'] },
 ];
-const PAGINAS_CLIENTE_RESTRINGIVEIS = ['minha-nfse','meus-documentos','solicitar-documentos','documentos-recebidos','minha-financeiro','minha-assinatura'];
+const PAGINAS_CLIENTE_RESTRINGIVEIS = ['minha-nfse','meus-documentos','solicitar-documentos','documentos-recebidos','notas-entrada','minha-financeiro','minha-assinatura'];
 const PAGINAS_CLIENTE_TODAS = [
   { id:'minha-nfse', label:'NFS-e' },
   { id:'meus-documentos', label:'Meus Documentos' },
   { id:'solicitar-documentos', label:'Solicitar Documentos' },
   { id:'documentos-recebidos', label:'Documentos Recebidos' },
+  { id:'notas-entrada', label:'Notas de Entrada (XML)' },
   { id:'minha-financeiro', label:'Financeiro' },
   { id:'minha-assinatura', label:'Assinatura' },
 ];
@@ -804,6 +806,7 @@ async function render(){
     else if(STATE.page==='meus-documentos') await pageMeusDocumentos();
     else if(STATE.page==='solicitar-documentos') await pageSolicitarDocumentos();
     else if(STATE.page==='documentos-recebidos') await pageDocumentosRecebidos();
+    else if(STATE.page==='notas-entrada') await pageNotasEntrada();
     else if(STATE.page==='minha-nfse') await pageMinhaNfse();
     else if(STATE.page==='minha-financeiro') await pageMinhaFinanceiro();
     else if(STATE.page==='minha-assinatura') await pageMinhaAssinatura();
@@ -3459,6 +3462,83 @@ async function pageDocumentosRecebidos(){
       painel.innerHTML = `<div class="doc-inline-empty">Não consegui carregar — abra o card.</div>`;
     }
   }
+}
+
+// ===================== Notas de Entrada (cliente vê só as próprias, só leitura) =====================
+// Aba opcional (liga/desliga em Usuários → "Abas visíveis pro cliente") — mostra as notas que a
+// própria empresa RECEBEU (é a destinatária), já capturadas pela busca automática do escritório
+// (Busca de XML). Sem "Buscar agora" nem certificado aqui — é só consulta.
+async function pageNotasEntrada(){
+  main().innerHTML = `
+    <h1>Notas de Entrada</h1>
+    <p class="subtitle">Notas fiscais recebidas pela sua empresa, capturadas automaticamente pelo escritório</p>
+    <div id="neBox"><div class="empty-state">Carregando…</div></div>
+  `;
+  const box = document.getElementById('neBox');
+  async function carregar(){
+    const busca = document.getElementById('neBusca')?.value.trim() || '';
+    const dataDe = document.getElementById('neDataDe')?.value || '';
+    const dataAte = document.getElementById('neDataAte')?.value || '';
+    const params = new URLSearchParams();
+    if(busca) params.set('busca', busca);
+    if(dataDe) params.set('dataDe', dataDe);
+    if(dataAte) params.set('dataAte', dataAte);
+    const { items, moduloAtivo } = await api('/nfe/minha-empresa/documentos?'+params.toString());
+    if(!moduloAtivo){
+      box.innerHTML = `<div class="empty-state">Este recurso ainda não está disponível — fale com seu escritório de contabilidade.</div>`;
+      return;
+    }
+    const tbody = document.getElementById('neBody');
+    if(!tbody){
+      box.innerHTML = `
+        <div class="row" style="margin-bottom:8px; align-items:flex-end; flex-wrap:wrap;">
+          <div class="field grow" style="margin-bottom:0; min-width:260px;"><label>Buscar</label>
+            <input id="neBusca" placeholder="Número da nota, nome, CNPJ ou valor…">
+          </div>
+          ${dateFieldHtml('neDataDe','Data de','')}
+          ${dateFieldHtml('neDataAte','Data até','')}
+        </div>
+        <div class="card" style="padding:0; overflow-x:auto;">
+          <table class="data-table" style="white-space:nowrap;">
+            <thead><tr><th>Data</th><th>Tipo</th><th>Emitente</th><th>CNPJ</th><th>Chave de acesso</th><th>Valor</th><th></th></tr></thead>
+            <tbody id="neBody"></tbody>
+          </table>
+        </div>
+      `;
+      setupDatePicker('neDataDe','neDataDe_text');
+      setupDatePicker('neDataAte','neDataAte_text');
+      document.getElementById('neDataDe').addEventListener('change', carregar);
+      document.getElementById('neDataAte').addEventListener('change', carregar);
+      let neBuscaTimer = null;
+      document.getElementById('neBusca').addEventListener('input', ()=>{
+        clearTimeout(neBuscaTimer);
+        neBuscaTimer = setTimeout(carregar, 350);
+      });
+      renderLinhas(items);
+      return;
+    }
+    renderLinhas(items);
+  }
+  function renderLinhas(items){
+    const tbody = document.getElementById('neBody');
+    tbody.innerHTML = items.length ? items.map(d=>{
+      const canceladaStyle = d.notaCancelada ? 'text-decoration:line-through; color:var(--debit);' : '';
+      return `
+      <tr>
+        <td style="${canceladaStyle}">${d.dataEmissao?fmtDateHora(d.dataEmissao):'—'}</td>
+        <td><span class="tag ${d.tipo==='evento'?'muted':'ok'}">${d.tipo.toUpperCase()}</span>${d.notaCancelada?' <span class="tag bad">CANCELADA</span>':''}</td>
+        <td style="${canceladaStyle}">${esc(d.emitenteNome||'—')}</td>
+        <td style="${canceladaStyle}">${esc(d.emitenteCnpj||'—')}</td>
+        <td style="font-family:'IBM Plex Mono',monospace; font-size:11px; ${canceladaStyle}">${esc(d.chaveAcesso||'—')}</td>
+        <td style="${canceladaStyle}">${d.valorTotal!=null?fmtMoney(d.valorTotal):'—'}</td>
+        <td style="text-align:right; white-space:nowrap;">
+          <a class="btn small" href="/api/nfe/minha-empresa/documentos/${d.id}/xml" target="_blank" rel="noopener">XML</a>
+          ${(d.tipo!=='evento'&&d.tipo!=='cte')?`<a class="btn small" href="/api/nfe/minha-empresa/documentos/${d.id}/pdf" target="_blank" rel="noopener">PDF</a>`:''}
+        </td>
+      </tr>
+    `;}).join('') : '<tr><td colspan="7"><div class="empty-state">Nenhuma nota recebida ainda.</div></td></tr>';
+  }
+  await carregar();
 }
 
 // ===================== NFS-e (Sistema Nacional NFS-e) =====================

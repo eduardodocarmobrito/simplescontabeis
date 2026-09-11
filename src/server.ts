@@ -2471,7 +2471,7 @@ app.put("/api/users/:id/config-abas", requireAdmin, (req, res) => {
   for (const aba of abas) stmt.run(userId, aba);
   res.json({ ok: true });
 });
-const PAGINAS_CLIENTE_VALIDAS = ["minha-nfse", "meus-documentos", "solicitar-documentos", "documentos-recebidos", "minha-financeiro", "minha-assinatura"];
+const PAGINAS_CLIENTE_VALIDAS = ["minha-nfse", "meus-documentos", "solicitar-documentos", "documentos-recebidos", "minha-financeiro", "minha-assinatura", "notas-entrada"];
 app.get("/api/users/:id/paginas-cliente", requireAdmin, (req, res) => {
   if (!pertenceAoEscritorio(req, Number(req.params.id))) return res.status(404).json({ error: "Usuário não encontrado." });
   const rows = sqlite.prepare(`SELECT pagina FROM cliente_paginas_visiveis WHERE user_id = ?`).all(Number(req.params.id)) as any[];
@@ -5323,6 +5323,83 @@ app.get("/api/nfe/documentos/:id/pdf", blockCliente, requirePermissao("nfe-busca
   const user = (req as any).user;
   const row = sqlite.prepare(`SELECT * FROM nfe_documentos WHERE id = ?`).get(Number(req.params.id)) as any;
   if (!row || row.escritorio_id !== user.escritorioId || !podeAcessarEmpresa(user, row.empresa_id)) {
+    return res.status(404).json({ error: "Documento não encontrado." });
+  }
+  const { pdf, erro } = await nfeDocumentoObterPdf(row);
+  if (!pdf) return res.status(502).json({ error: erro });
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", nfseContentDisposition("inline", nfeDocNomeArquivo(row, "pdf")));
+  res.send(pdf);
+});
+// ---- Notas de Entrada (cliente vê só as notas recebidas da PRÓPRIA empresa, somente leitura) ----
+// Aba opcional (ver PAGINAS_CLIENTE_VALIDAS/cliente_paginas_visiveis) — o admin decide, por usuário
+// cliente, se ela aparece no menu dele. Sem "Buscar agora"/certificado aqui — é só consulta do que
+// a busca automática do escritório (módulo busca_xml_nfe) já capturou.
+app.get("/api/nfe/minha-empresa/documentos", requireCliente, (req, res) => {
+  const user = (req as any).user;
+  if (!user.empresaId) return res.json({ items: [], moduloAtivo: false });
+  const moduloAtivo = escritorioTemModulo(user.escritorioId, "busca_xml_nfe");
+  if (!moduloAtivo) return res.json({ items: [], moduloAtivo: false });
+  const busca = typeof req.query.busca === "string" ? req.query.busca.trim() : "";
+  const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
+  const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
+  // Mesmo critério de "emitida"/"recebida" de /api/nfe/documentos, mas aqui só interessa "recebida"
+  // (a empresa é a destinatária) — é pra isso que este acesso do cliente foi pensado.
+  const direcaoExpr = `(CASE WHEN d.emitente_cnpj = REPLACE(REPLACE(REPLACE(e.cnpj,'.',''),'/',''),'-','') THEN 'emitida' ELSE 'recebida' END)`;
+  const condicoes: string[] = [
+    `d.escritorio_id = ?`,
+    `d.empresa_id = ?`,
+    `(d.tipo != 'evento' OR d.evento_descricao LIKE '%ancela%')`,
+    `${direcaoExpr} = 'recebida'`,
+  ];
+  const params: any[] = [user.escritorioId, user.empresaId];
+  if (dataDe) {
+    condicoes.push(`substr(d.data_emissao,1,10) >= ?`);
+    params.push(dataDe);
+  }
+  if (dataAte) {
+    condicoes.push(`substr(d.data_emissao,1,10) <= ?`);
+    params.push(dataAte);
+  }
+  if (busca) {
+    const digits = busca.replace(/\D/g, "");
+    const valorNorm = busca.replace(",", ".");
+    condicoes.push(`(d.emitente_nome LIKE ? OR d.chave_acesso LIKE ? OR d.emitente_cnpj LIKE ? OR CAST(d.valor_total AS TEXT) LIKE ?)`);
+    const likeTexto = `%${busca}%`;
+    const likeDigits = `%${digits || busca}%`;
+    params.push(likeTexto, likeTexto, likeDigits, `%${valorNorm}%`);
+  }
+  const notaCanceladaExpr = `EXISTS (
+    SELECT 1 FROM nfe_documentos ev
+    WHERE ev.escritorio_id = d.escritorio_id AND ev.tipo = 'evento' AND ev.chave_acesso = d.chave_acesso
+      AND ev.evento_descricao LIKE '%ancela%' AND ev.evento_descricao NOT LIKE '%CT-e%' AND ev.evento_descricao NOT LIKE '%MDF-e%'
+  )`;
+  const rows = sqlite
+    .prepare(
+      `SELECT d.id, d.tipo, d.chave_acesso as chaveAcesso, d.emitente_cnpj as emitenteCnpj, d.emitente_nome as emitenteNome,
+              d.valor_total as valorTotal, d.data_emissao as dataEmissao,
+              (CASE WHEN d.tipo = 'evento' THEN 0 ELSE ${notaCanceladaExpr} END) as notaCancelada
+       FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id
+       WHERE ${condicoes.join(" AND ")}
+       ORDER BY d.data_emissao DESC, d.id DESC LIMIT 500`
+    )
+    .all(...params) as any[];
+  res.json({ items: rows.map((r) => ({ ...r, notaCancelada: !!r.notaCancelada })), moduloAtivo: true });
+});
+app.get("/api/nfe/minha-empresa/documentos/:id/xml", requireCliente, (req, res) => {
+  const user = (req as any).user;
+  const row = sqlite.prepare(`SELECT * FROM nfe_documentos WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!row || row.escritorio_id !== user.escritorioId || row.empresa_id !== user.empresaId) {
+    return res.status(404).json({ error: "Documento não encontrado." });
+  }
+  res.setHeader("Content-Type", "application/xml; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${row.chave_acesso || row.nsu}.xml"`);
+  res.send(row.xml);
+});
+app.get("/api/nfe/minha-empresa/documentos/:id/pdf", requireCliente, async (req, res) => {
+  const user = (req as any).user;
+  const row = sqlite.prepare(`SELECT * FROM nfe_documentos WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!row || row.escritorio_id !== user.escritorioId || row.empresa_id !== user.empresaId) {
     return res.status(404).json({ error: "Documento não encontrado." });
   }
   const { pdf, erro } = await nfeDocumentoObterPdf(row);
