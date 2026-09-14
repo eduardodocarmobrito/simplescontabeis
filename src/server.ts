@@ -9970,6 +9970,49 @@ interface RetencaoNfseItem {
   csll: number;
   iss: number;
 }
+// Regra de qualificação + cálculo das colunas, extraída pra ser reaproveitada tanto pelo relatório de
+// UMA empresa (calcularRetencoesNfse) quanto pela grade de "quais empresas têm retenção nesse
+// período" (listarEmpresasComRetencoes) — mesma lógica, um lugar só.
+function retencaoCalcularColunas(ret: danfse.RetencoesNfse): { qualifica: boolean; inss: number; irrf: number; pis: number; cofins: number; csll: number; iss: number } {
+  // Filtro: entra no relatório quem tem alguma retenção FEDERAL (IRRF/CSLL/INSS com valor > 0 no
+  // XML, PIS/COFINS com retenção indicada) OU o ISS retido pelo tomador/intermediário (tpRetISSQN
+  // 2/3) — qualquer um desses já é motivo suficiente pra aparecer.
+  // PIS/COFINS: `vPis`/`vCofins` NÃO são retenção — são "Débito Apuração Própria" (o que o próprio
+  // prestador recolhe no regime normal, sempre preenchido nas notas dele, retenção ou não). Quem
+  // diz se houve retenção é `tpRetPisCofins`. Confirmado empiricamente em >500 notas reais de
+  // produção: valores 1 e 3 sempre vêm acompanhados de outra retenção federal (IRRF/CSLL) na mesma
+  // nota; valores 0 e 2 nunca vêm — mesmo quando vPis/vCofins estão preenchidos com valor > 0.
+  // Mas essa tag é opcional e alguns emissores (ex.: Cambridge) nunca a preenchem, mesmo em notas
+  // com retenção federal real (IRRF/CSLL retidos). Pela IN 1234/2012, a retenção federal combinada
+  // (DARF 1708) é sempre IRRF+CSLL+PIS+COFINS juntos — não existe retenção "parcial" desses 4. Por
+  // isso, além de `tpRetPisCofins`, também consideramos retido quando a nota já tem IRRF ou CSLL
+  // retidos (mesmo sem a tag), e só confiamos em "não retido" (tpRetPisCofins 0/2, sem IRRF/CSLL)
+  // quando não há nenhum outro indício de retenção federal — foi exatamente esse o caso da nota da
+  // ELECTRIA que motivou a correção anterior.
+  const temIrrf = ret.vRetIRRF > 0;
+  const temCsll = ret.vRetCSLL > 0;
+  const pisCofinsRetido = ret.tpRetPisCofins === 1 || ret.tpRetPisCofins === 3 || temIrrf || temCsll;
+  const temPis = pisCofinsRetido;
+  const temCofins = pisCofinsRetido;
+  const temInss = ret.vRetCP > 0;
+  const issRetido = ret.tpRetISSQN === 2 || ret.tpRetISSQN === 3;
+  // Valor da coluna é RECALCULADO pela alíquota padrão sobre o valor bruto do serviço, não o valor
+  // que veio no XML — a pedido do usuário (o emissor pode ter calculado errado; a coluna deve
+  // mostrar o que É DEVIDO, não o que o prestador declarou). Só calcula quando o XML já indicava
+  // alguma retenção daquele imposto (> 0); senão fica 0, mesmo que a nota tenha entrado no
+  // relatório por causa de outro imposto retido. ISS é o único que continua trazendo o valor cru
+  // do XML (vISSQN), quando o indicador de retenção está marcado — não tem alíquota fixa única
+  // pra recalcular (varia por município).
+  return {
+    qualifica: temIrrf || temCsll || temPis || temCofins || temInss || issRetido,
+    inss: temInss ? ret.valorServico * 0.11 : 0,
+    irrf: temIrrf ? ret.valorServico * 0.015 : 0,
+    pis: temPis ? ret.valorServico * 0.0065 : 0,
+    cofins: temCofins ? ret.valorServico * 0.03 : 0,
+    csll: temCsll ? ret.valorServico * 0.01 : 0,
+    iss: issRetido ? ret.vISSQN : 0,
+  };
+}
 function calcularRetencoesNfse(user: any, empresaId: number, dataDe: string | null, dataAte: string | null): { empresa: any; itens: RetencaoNfseItem[]; somas: Record<string, number> } {
   const empresa = sqlite.prepare(`SELECT id, nome, cnpj, endereco, cidade, uf, cep FROM empresas WHERE id = ?`).get(empresaId) as any;
   if (!empresa || !podeAcessarEmpresa(user, empresaId)) {
@@ -9999,36 +10042,8 @@ function calcularRetencoesNfse(user: any, empresaId: number, dataDe: string | nu
     } catch {
       continue; // XML fora do padrão esperado — pula em vez de derrubar o relatório inteiro
     }
-    // Filtro: entra no relatório quem tem alguma retenção FEDERAL (IRRF/CSLL/INSS com valor > 0 no
-    // XML, PIS/COFINS com retenção indicada) OU o ISS retido pelo tomador/intermediário (tpRetISSQN
-    // 2/3) — qualquer um desses já é motivo suficiente pra aparecer.
-    // PIS/COFINS: `vPis`/`vCofins` NÃO são retenção — são "Débito Apuração Própria" (o que o próprio
-    // prestador recolhe no regime normal, sempre preenchido nas notas dele, retenção ou não). Quem
-    // diz se houve retenção é `tpRetPisCofins`. Confirmado empiricamente em >500 notas reais de
-    // produção: valores 1 e 3 sempre vêm acompanhados de outra retenção federal (IRRF/CSLL) na mesma
-    // nota; valores 0 e 2 nunca vêm — mesmo quando vPis/vCofins estão preenchidos com valor > 0.
-    // Mas essa tag é opcional e alguns emissores (ex.: Cambridge) nunca a preenchem, mesmo em notas
-    // com retenção federal real (IRRF/CSLL retidos). Pela IN 1234/2012, a retenção federal combinada
-    // (DARF 1708) é sempre IRRF+CSLL+PIS+COFINS juntos — não existe retenção "parcial" desses 4. Por
-    // isso, além de `tpRetPisCofins`, também consideramos retido quando a nota já tem IRRF ou CSLL
-    // retidos (mesmo sem a tag), e só confiamos em "não retido" (tpRetPisCofins 0/2, sem IRRF/CSLL)
-    // quando não há nenhum outro indício de retenção federal — foi exatamente esse o caso da nota da
-    // ELECTRIA que motivou a correção anterior.
-    const temIrrf = ret.vRetIRRF > 0;
-    const temCsll = ret.vRetCSLL > 0;
-    const pisCofinsRetido = ret.tpRetPisCofins === 1 || ret.tpRetPisCofins === 3 || temIrrf || temCsll;
-    const temPis = pisCofinsRetido;
-    const temCofins = pisCofinsRetido;
-    const temInss = ret.vRetCP > 0;
-    const issRetido = ret.tpRetISSQN === 2 || ret.tpRetISSQN === 3;
-    if (!(temIrrf || temCsll || temPis || temCofins || temInss || issRetido)) continue;
-    // Valor da coluna é RECALCULADO pela alíquota padrão sobre o valor bruto do serviço, não o valor
-    // que veio no XML — a pedido do usuário (o emissor pode ter calculado errado; a coluna deve
-    // mostrar o que É DEVIDO, não o que o prestador declarou). Só calcula quando o XML já indicava
-    // alguma retenção daquele imposto (> 0); senão fica 0, mesmo que a nota tenha entrado no
-    // relatório por causa de outro imposto retido. ISS é o único que continua trazendo o valor cru
-    // do XML (vISSQN), quando o indicador de retenção está marcado — não tem alíquota fixa única
-    // pra recalcular (varia por município).
+    const calc = retencaoCalcularColunas(ret);
+    if (!calc.qualifica) continue;
     itens.push({
       docId: r.docId,
       numeroNfse: ret.numeroNfse,
@@ -10036,12 +10051,12 @@ function calcularRetencoesNfse(user: any, empresaId: number, dataDe: string | nu
       emitenteCnpj: r.emitenteCnpj,
       dataEmissao: r.dataEmissao,
       valorServico: ret.valorServico,
-      inss: temInss ? ret.valorServico * 0.11 : 0,
-      irrf: temIrrf ? ret.valorServico * 0.015 : 0,
-      pis: temPis ? ret.valorServico * 0.0065 : 0,
-      cofins: temCofins ? ret.valorServico * 0.03 : 0,
-      csll: temCsll ? ret.valorServico * 0.01 : 0,
-      iss: issRetido ? ret.vISSQN : 0,
+      inss: calc.inss,
+      irrf: calc.irrf,
+      pis: calc.pis,
+      cofins: calc.cofins,
+      csll: calc.csll,
+      iss: calc.iss,
     });
   }
   const somas: Record<string, number> = itens.reduce(
@@ -10071,6 +10086,57 @@ app.get("/api/relatorios/retencoes", blockCliente, requirePermissao("relatorios"
   } catch (e: any) {
     res.status(e.status || 500).json({ error: e.message });
   }
+});
+// Grade "quais empresas têm nota com retenção nesse período" — mostrada de cara na aba (competência
+// anterior por padrão, calculado no frontend), sem precisar escolher um cliente primeiro. Varre os
+// documentos de TODAS as empresas visíveis ao usuário de uma vez (uma query só, não uma por
+// empresa) e agrupa por empresa quem passa na mesma regra de qualificação do relatório individual.
+function listarEmpresasComRetencoes(user: any, dataDe: string, dataAte: string) {
+  const visiveis = empresasVisiveis(user);
+  if (visiveis !== null && visiveis.length === 0) return [];
+  let sql = `SELECT d.empresa_id as empresaId, e.nome as empresaNome, d.xml
+             FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id
+             WHERE d.escritorio_id = ? AND d.fonte = 'nfse' AND e.ativo = 1
+               AND substr(d.data_emissao,1,10) >= ? AND substr(d.data_emissao,1,10) <= ?`;
+  const params: any[] = [user.escritorioId, dataDe, dataAte];
+  if (visiveis !== null) {
+    sql += ` AND d.empresa_id IN (${visiveis.map(() => "?").join(",")})`;
+    params.push(...visiveis);
+  }
+  const rows = sqlite.prepare(sql).all(...params) as any[];
+  const porEmpresa = new Map<number, { empresaId: number; empresaNome: string; qtdNotas: number; somas: Record<string, number> }>();
+  for (const r of rows) {
+    let ret;
+    try {
+      ret = danfse.extrairRetencoesNfse(r.xml);
+    } catch {
+      continue;
+    }
+    const calc = retencaoCalcularColunas(ret);
+    if (!calc.qualifica) continue;
+    let acc = porEmpresa.get(r.empresaId);
+    if (!acc) {
+      acc = { empresaId: r.empresaId, empresaNome: r.empresaNome, qtdNotas: 0, somas: { valorServico: 0, inss: 0, irrf: 0, pis: 0, cofins: 0, csll: 0, iss: 0, totalGeral: 0 } };
+      porEmpresa.set(r.empresaId, acc);
+    }
+    acc.qtdNotas++;
+    acc.somas.valorServico += ret.valorServico;
+    acc.somas.inss += calc.inss;
+    acc.somas.irrf += calc.irrf;
+    acc.somas.pis += calc.pis;
+    acc.somas.cofins += calc.cofins;
+    acc.somas.csll += calc.csll;
+    acc.somas.iss += calc.iss;
+    acc.somas.totalGeral += calc.inss + calc.irrf + calc.pis + calc.cofins + calc.csll + calc.iss;
+  }
+  return [...porEmpresa.values()].sort((a, b) => a.empresaNome.localeCompare(b.empresaNome, "pt-BR"));
+}
+app.get("/api/relatorios/retencoes/empresas", blockCliente, requirePermissao("relatorios", "visualizar"), (req, res) => {
+  const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
+  const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
+  if (!dataDe || !dataAte) return res.status(400).json({ error: "Informe o período (de/até)." });
+  const items = listarEmpresasComRetencoes((req as any).user, dataDe, dataAte);
+  res.json({ items });
 });
 function fmtCnpjRelatorio(doc: string | null): string {
   const d = String(doc || "").replace(/\D/g, "");
