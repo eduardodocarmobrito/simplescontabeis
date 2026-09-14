@@ -7364,7 +7364,7 @@ async function renderCfgDominio(box){
         <div class="field"><label>Token ${cfg.temTokenApi?'(já configurado — deixe em branco para manter)':''}</label><input id="domApiToken" type="password" placeholder="${cfg.temTokenApi?'••••••••':''}"></div>
       </div>
       <div class="row" style="margin-top:6px;">
-        <button class="btn primary" id="btnSalvarDomCfg">Salvar</button>
+        <button class="btn primary" id="btnSalvarDomCfg" disabled>Salvar</button>
         <button class="btn" id="btnTestarDomCfg">Testar conexão</button>
       </div>
       <div id="domTestResult" style="margin-top:12px;"></div>
@@ -7380,7 +7380,7 @@ async function renderCfgDominio(box){
       </p>
       <label class="checkbox-row"><input type="checkbox" id="domXmlExportAtivo" ${cfg.xmlExportAtivo?'checked':''}> Manter a pasta sincronizada automaticamente</label>
       <div class="field"><label>Pasta local (na máquina onde o agente roda)</label><input id="domXmlExportDir" value="${esc(cfg.xmlExportDir)}" placeholder="ex.: C:\\NFe-para-Dominio ou /Users/voce/NFe-para-Dominio"></div>
-      <button class="btn primary" id="btnSalvarDomXmlExport">Salvar</button>
+      <button class="btn primary" id="btnSalvarDomXmlExport" disabled>Salvar</button>
     </div>
     <div class="card">
       <h3>OneDrive (direto da nuvem, sem depender do computador ligado)</h3>
@@ -7400,7 +7400,7 @@ async function renderCfgDominio(box){
       <label class="checkbox-row"><input type="checkbox" id="odAtivo" ${oneDriveCfg.ativo?'checked':''}> Manter o OneDrive sincronizado automaticamente</label>
       ${oneDriveCfg.ultimaExportacaoEm?`<p style="font-size:12px; color:var(--ink-soft);">Última exportação: ${fmtDateHora(oneDriveCfg.ultimaExportacaoEm)}${oneDriveCfg.ultimoErro?` — <span style="color:var(--debit);">${esc(oneDriveCfg.ultimoErro)}</span>`:''}</p>`:''}
       <div class="row" style="margin-top:6px;">
-        <button class="btn primary" id="btnSalvarOneDrive">Salvar</button>
+        <button class="btn primary" id="btnSalvarOneDrive" disabled>Salvar</button>
         <a class="btn" href="/api/onedrive/conectar">${oneDriveCfg.conectado?'Reconectar':'Conectar com o OneDrive'}</a>
         ${oneDriveCfg.conectado?'<button class="btn danger" id="btnDesconectarOneDrive">Desconectar</button><button class="btn" id="btnExportarOneDriveAgora">Exportar agora</button>':''}
       </div>
@@ -7442,6 +7442,24 @@ async function renderCfgDominio(box){
   }
   document.getElementById('domSource').addEventListener('change', syncSourceUI);
   syncSourceUI();
+
+  // Cada "Salvar" desta aba nasce desabilitado (nada novo pra salvar ainda) e só liga de volta quando
+  // o usuário mexe em algum campo do próprio formulário — evita clique em "Salvar" sem ter mudado
+  // nada. Depois de salvar com sucesso a aba inteira é re-renderizada (renderCfgDominio(box)), o que
+  // já nasce com os botões desabilitados de novo sozinho; não precisa desabilitar de novo na mão.
+  function habilitarSalvarAoMudar(btnId, fieldIds){
+    const btn = document.getElementById(btnId);
+    if(!btn) return;
+    fieldIds.forEach(id=>{
+      const el = document.getElementById(id);
+      if(!el) return;
+      el.addEventListener('input', ()=>{ btn.disabled = false; });
+      el.addEventListener('change', ()=>{ btn.disabled = false; });
+    });
+  }
+  habilitarSalvarAoMudar('btnSalvarDomCfg', ['domSource','domDbDriver','domDbHost','domDbPort','domDbName','domDbUser','domDbPassword','domDbConnectString','domQuery','domColCodigo','domColNome','domColCnpj','domColStatus','domApiUrl','domApiToken']);
+  habilitarSalvarAoMudar('btnSalvarDomXmlExport', ['domXmlExportAtivo','domXmlExportDir']);
+  habilitarSalvarAoMudar('btnSalvarOneDrive', ['odClientId','odClientSecret','odPastaDestino','odAtivo']);
 
   document.getElementById('btnSalvarDomCfg').addEventListener('click', async ()=>{
     const body = {
