@@ -6685,6 +6685,7 @@ async function renderRelTab(){
   const { items: empresas } = await api('/relatorios/empresas');
   const box = document.getElementById('relContent');
   if(REL_TAB==='retencoes'){ renderRelRetencoes(box, empresas); return; }
+  if(REL_TAB==='balanco'||REL_TAB==='balancete'||REL_TAB==='dre'){ renderRelDominio(box, empresas, REL_TAB); return; }
   box.innerHTML = `
     <div class="row" style="margin-bottom:16px;">
       <div class="field" style="margin-bottom:0; min-width:280px;"><label>Cliente</label>
@@ -6821,6 +6822,119 @@ function renderRelRetencoes(box, empresas){
   document.getElementById('relRetDataDe').addEventListener('change', gerar);
   document.getElementById('relRetDataAte').addEventListener('change', gerar);
   gerar(); // carga automática ao abrir a aba — já vem com a grade da competência anterior
+}
+// Balanço/DRE/Balancete — alimentados pela importação automática de PDF do OneDrive (Configurações ›
+// Domínio Web). Os documentos já são envio_documentos de verdade, então baixar/reenviar e-mail/
+// WhatsApp reaproveita exatamente as mesmas rotas que a grade de Envio de Documentos já usa. Mesmo
+// esqueleto grade→detalhe de renderRelRetencoes acima: sem empresa selecionada, mostra quais
+// empresas já têm relatório desse tipo; com empresa selecionada, mostra os documentos.
+function renderRelDominio(box, empresas, tipo){
+  box.innerHTML = `
+    <div class="row" style="margin-bottom:16px; align-items:flex-end; gap:12px; flex-wrap:wrap;">
+      <div class="field" style="margin-bottom:0; min-width:280px;"><label>Cliente (opcional)</label>${comboSelectHtml('relDomEmpresaCombo', 'Todas as empresas…')}</div>
+      <button class="btn primary" id="btnRelDomGerar">Gerar</button>
+    </div>
+    <div id="relDomResultado" class="card"><div class="empty-state">Carregando…</div></div>
+  `;
+  setupComboSelect('relDomEmpresaCombo', empresas.map(e=>({id:e.id, label:empresaComboLabel(e)})));
+  function ligarBotoesEnvio(resultBox){
+    resultBox.querySelectorAll('[data-act="email"]').forEach(b=>b.addEventListener('click', async ()=>{
+      b.disabled = true;
+      try{ await api('/envio/documentos/'+b.dataset.id+'/reenviar-email', { method:'POST' }); toast('E-mail enviado.','ok'); }
+      catch(e){ toast(e.message,'err'); }
+      finally{ b.disabled=false; }
+    }));
+    resultBox.querySelectorAll('[data-act="whatsapp"]').forEach(b=>b.addEventListener('click', async ()=>{
+      b.disabled = true;
+      try{ await api('/envio/documentos/'+b.dataset.id+'/enviar-whatsapp', { method:'POST' }); toast('WhatsApp enviado.','ok'); }
+      catch(e){ toast(e.message,'err'); }
+      finally{ b.disabled=false; }
+    }));
+  }
+  async function gerarDetalhe(empresaId){
+    const resultBox = document.getElementById('relDomResultado');
+    resultBox.innerHTML = '<div class="empty-state">Carregando…</div>';
+    try{
+      const { grupos } = await api('/relatorios/documentos?tipo='+tipo+'&empresaId='+empresaId);
+      if(!grupos.length){
+        resultBox.innerHTML = '<div class="empty-state">Nenhum documento importado ainda pra essa empresa. <span class="link-discreto" id="btnRelDomVoltarGrade">← Ver todas as empresas</span></div>';
+        document.getElementById('btnRelDomVoltarGrade').addEventListener('click', limparSelecao);
+        return;
+      }
+      resultBox.innerHTML = `
+        <div style="margin-bottom:10px;"><span class="link-discreto" id="btnRelDomVoltarGrade">← Ver todas as empresas</span></div>
+        ${grupos.map(g=>`
+          <div style="margin-bottom:18px;">
+            <div style="font-weight:600; font-size:13px; margin-bottom:8px;">${esc(g.templateNome)}</div>
+            ${g.periodos.map(p=>`
+              <div class="card" style="background:var(--paper); margin-bottom:8px;">
+                <div style="font-weight:600; margin-bottom:6px;">${p.mes?MESES[p.mes]+'/'+p.ano:p.ano}</div>
+                ${p.documentos.map(d=>`
+                  <div class="row" style="justify-content:space-between; align-items:center; padding:6px 0; border-top:1px dashed var(--rule);">
+                    <div>
+                      <div>${esc(d.fileName)}</div>
+                      <div style="font-size:11px; color:var(--ink-soft);">Enviado em ${fmtDateHora(d.enviadoEm)}</div>
+                    </div>
+                    <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                      <a class="btn small" href="/api/envio/documentos/${d.id}/download" target="_blank" rel="noopener">Baixar</a>
+                      <button class="btn small" data-act="email" data-id="${d.id}">${d.emailEnviado?'Reenviar e-mail':'Enviar e-mail'}</button>
+                      <button class="btn small" data-act="whatsapp" data-id="${d.id}">${d.whatsappEnviado?'Reenviar WhatsApp':'Enviar WhatsApp'}</button>
+                    </div>
+                  </div>
+                `).join('')}
+              </div>
+            `).join('')}
+          </div>
+        `).join('')}
+      `;
+      document.getElementById('btnRelDomVoltarGrade').addEventListener('click', limparSelecao);
+      ligarBotoesEnvio(resultBox);
+    }catch(e){ resultBox.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; }
+  }
+  async function gerarGrade(){
+    const resultBox = document.getElementById('relDomResultado');
+    resultBox.innerHTML = '<div class="empty-state">Carregando…</div>';
+    try{
+      const { items } = await api('/relatorios/documentos/empresas?tipo='+tipo);
+      if(!items.length){ resultBox.innerHTML = '<div class="empty-state">Nenhum relatório importado ainda — configure a importação em Configurações › Domínio Web.</div>'; return; }
+      resultBox.innerHTML = `
+        <div style="overflow-x:auto;">
+        <table class="data-table">
+          <thead><tr><th>Empresa</th><th>Documentos</th><th>Último em</th><th></th></tr></thead>
+          <tbody>
+            ${items.map(it=>`<tr>
+              <td>${esc(it.empresaNome)}</td>
+              <td>${it.qtdDocumentos}</td>
+              <td>${fmtDateHora(it.ultimoEm)}</td>
+              <td><button class="btn small" data-act="ver-empresa" data-id="${it.empresaId}">Ver detalhes</button></td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+        </div>
+      `;
+      resultBox.querySelectorAll('[data-act="ver-empresa"]').forEach(b=>b.addEventListener('click', ()=>selecionarEmpresa(Number(b.dataset.id))));
+    }catch(e){ resultBox.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; }
+  }
+  function selecionarEmpresa(empresaId){
+    const combo = document.getElementById('relDomEmpresaCombo');
+    const item = empresas.find(e=>e.id===empresaId);
+    combo.querySelector('.combo-value').value = String(empresaId);
+    combo.querySelector('.combo-input').value = item ? empresaComboLabel(item) : '';
+    gerarDetalhe(String(empresaId));
+  }
+  function limparSelecao(){
+    const combo = document.getElementById('relDomEmpresaCombo');
+    combo.querySelector('.combo-value').value = '';
+    combo.querySelector('.combo-input').value = '';
+    gerarGrade();
+  }
+  async function gerar(){
+    const empresaId = document.querySelector('#relDomEmpresaCombo .combo-value').value;
+    if(empresaId) await gerarDetalhe(empresaId);
+    else await gerarGrade();
+  }
+  document.getElementById('btnRelDomGerar').addEventListener('click', gerar);
+  gerar();
 }
 async function carregarRelatorio(){
   const empresaId = document.querySelector('#relEmpresaCombo .combo-value').value;
@@ -7394,6 +7508,23 @@ async function renderCfgDominio(box){
       <button class="btn primary" id="btnSalvarDomXmlExport" disabled>Salvar</button>
     </div>
     <div class="card">
+      <h3>Importar Relatórios do Domínio Web</h3>
+      <p style="font-size:12px; color:var(--ink-soft); margin-top:-6px;">
+        Lê periodicamente uma pasta do seu OneDrive com os PDFs de Balanço, DRE e Balancete do Domínio,
+        e já disponibiliza cada um em Relatórios e Envio de Documentos.
+      </p>
+      <div class="field"><label>Pasta no OneDrive</label><input id="odRelPasta" value="${esc(oneDriveCfg.relatoriosPastaOrigem)}"></div>
+      <label class="checkbox-row"><input type="checkbox" id="odRelAtivo" ${oneDriveCfg.relatoriosAtivo?'checked':''}> Manter a importação automática ligada</label>
+      ${oneDriveCfg.relatoriosUltimaImportacaoEm?`<p style="font-size:12px; color:var(--ink-soft);">Última importação: ${fmtDateHora(oneDriveCfg.relatoriosUltimaImportacaoEm)}${oneDriveCfg.relatoriosUltimoErro?` — <span style="color:var(--debit);">${esc(oneDriveCfg.relatoriosUltimoErro)}</span>`:''}</p>`:''}
+      <div class="row" style="margin-top:6px;">
+        <button class="btn primary" id="btnSalvarOdRel" disabled>Salvar</button>
+        <button class="btn" id="btnOdRelDryRun">Testar (não grava nada)</button>
+        ${oneDriveCfg.conectado?'<button class="btn" id="btnOdRelImportarAgora">Importar agora</button>':''}
+        <button class="btn" id="btnOdRelPendencias">Pendências</button>
+      </div>
+      <div id="odRelResultado" style="margin-top:10px;"></div>
+    </div>
+    <div class="card">
       <h3>OneDrive (direto da nuvem, sem depender do computador ligado)</h3>
       <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">
         Alternativa à pasta local acima: o próprio servidor sobe os XMLs direto pro seu OneDrive,
@@ -7471,6 +7602,7 @@ async function renderCfgDominio(box){
   habilitarSalvarAoMudar('btnSalvarDomCfg', ['domSource','domDbDriver','domDbHost','domDbPort','domDbName','domDbUser','domDbPassword','domDbConnectString','domQuery','domColCodigo','domColNome','domColCnpj','domColStatus','domApiUrl','domApiToken']);
   habilitarSalvarAoMudar('btnSalvarDomXmlExport', ['domXmlExportAtivo','domXmlExportDir']);
   habilitarSalvarAoMudar('btnSalvarOneDrive', ['odClientId','odClientSecret','odPastaDestino','odAtivo']);
+  habilitarSalvarAoMudar('btnSalvarOdRel', ['odRelPasta','odRelAtivo']);
 
   document.getElementById('btnSalvarDomCfg').addEventListener('click', async ()=>{
     const body = {
@@ -7516,10 +7648,56 @@ async function renderCfgDominio(box){
       clientSecret: document.getElementById('odClientSecret').value,
       pastaDestino: document.getElementById('odPastaDestino').value.trim(),
       ativo: document.getElementById('odAtivo').checked,
+      // Mesmo cuidado do XML Export acima — esse PUT reescreve o registro inteiro, então reenvia o
+      // que já estava salvo pro card de "Importar Relatórios" pra não apagar sem querer.
+      relatoriosPastaOrigem: oneDriveCfg.relatoriosPastaOrigem,
+      relatoriosAtivo: oneDriveCfg.relatoriosAtivo,
     };
     try{ await api('/onedrive/config', { method:'PUT', body }); toast('Configuração salva.','ok'); renderCfgDominio(box); }
     catch(e){ toast(e.message,'err'); }
   });
+
+  document.getElementById('btnSalvarOdRel').addEventListener('click', async ()=>{
+    const body = {
+      clientId: oneDriveCfg.clientId, pastaDestino: oneDriveCfg.pastaDestino, ativo: oneDriveCfg.ativo,
+      relatoriosPastaOrigem: document.getElementById('odRelPasta').value.trim(),
+      relatoriosAtivo: document.getElementById('odRelAtivo').checked,
+    };
+    try{ await api('/onedrive/config', { method:'PUT', body }); toast('Configuração salva.','ok'); renderCfgDominio(box); }
+    catch(e){ toast(e.message,'err'); }
+  });
+  document.getElementById('btnOdRelDryRun').addEventListener('click', async (ev)=>{
+    const btn = ev.target; btn.disabled = true; btn.textContent = 'Testando…';
+    const resultado = document.getElementById('odRelResultado');
+    resultado.innerHTML = '<div class="empty-state">Lendo a pasta do OneDrive…</div>';
+    try{
+      const r = await api('/onedrive/relatorios/dry-run', { method:'POST', body:{ limite:5 } });
+      resultado.innerHTML = !r.previews.length ? '<div class="empty-state">Nenhum PDF novo encontrado na pasta.</div>' : r.previews.map(p=>`
+        <div class="card" style="background:var(--paper); margin-bottom:8px;">
+          <b>${esc(p.nomeArquivo)}</b>
+          <div style="font-size:12px; color:var(--ink-soft); margin-top:4px;">
+            Tipo: ${p.tiposDetectados.length?esc(p.tiposDetectados.join(', ')):'não identificado'} ·
+            Período: ${p.periodoInicio?fmtDateIso(p.periodoInicio)+' a '+fmtDateIso(p.periodoFim):'não identificado'} ·
+            CNPJ: ${esc(p.cnpjDetectado||'não encontrado')} ·
+            Empresa: ${p.empresaEncontrada?esc(p.empresaEncontrada.nome):'não encontrada'}
+          </div>
+        </div>
+      `).join('');
+    }catch(e){ resultado.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; }
+    finally{ btn.disabled = false; btn.textContent = 'Testar (não grava nada)'; }
+  });
+  const btnOdRelImportarAgora = document.getElementById('btnOdRelImportarAgora');
+  if(btnOdRelImportarAgora) btnOdRelImportarAgora.addEventListener('click', async (ev)=>{
+    const btn = ev.target; btn.disabled = true; btn.textContent = 'Importando…';
+    const resultado = document.getElementById('odRelResultado');
+    resultado.innerHTML = '<div class="empty-state">Importando…</div>';
+    try{
+      const r = await api('/onedrive/relatorios/importar-agora', { method:'POST' });
+      resultado.innerHTML = `<div class="tag ok">Concluído</div> <span style="font-size:12.5px;">${r.ok} importado(s), ${r.pendentes} pendência(s), ${r.erros} erro(s).</span>`;
+    }catch(e){ resultado.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; }
+    finally{ btn.disabled = false; btn.textContent = 'Importar agora'; }
+  });
+  document.getElementById('btnOdRelPendencias').addEventListener('click', abrirOdRelPendenciasModal);
   const btnDesconectarOneDrive = document.getElementById('btnDesconectarOneDrive');
   if(btnDesconectarOneDrive) btnDesconectarOneDrive.addEventListener('click', async ()=>{
     if(!confirmar('Desconectar o OneDrive? A exportação automática para de funcionar até você conectar de novo.')) return;
@@ -7574,6 +7752,56 @@ async function renderCfgDominio(box){
       resultEl.innerHTML = `<div class="tag bad">Falhou</div> <span style="font-size:12.5px;">${esc(e.message)}</span>`;
     }
   });
+}
+// Relatórios (Balanço/DRE/Balancete) que a importação do OneDrive não conseguiu casar sozinha com
+// nenhuma empresa/tipo/período — o PDF já está salvo em disco, só falta o admin escolher na mão.
+async function abrirOdRelPendenciasModal(){
+  const { items } = await api('/onedrive/relatorios/pendentes');
+  if(!items.length){ toast('Nenhuma pendência agora.','ok'); return; }
+  const empresas = await empresasAtivas();
+  openModal(`
+    <h3>Relatórios não identificados (${items.length})</h3>
+    <p style="font-size:12.5px; color:var(--ink-soft);">Escolha a empresa e o tipo certos pra cada um — o PDF já está salvo, não precisa reenviar.</p>
+    <div id="odRelPendList"></div>
+    <div class="modal-actions"><button class="btn" id="odRelPendFechar">Fechar</button></div>
+  `, '760px');
+  const listEl = document.getElementById('odRelPendList');
+  listEl.innerHTML = items.map(i=>`
+    <div class="card" style="margin-bottom:10px;" data-pend="${i.id}">
+      <b>${esc(i.nomeArquivo)}</b>
+      <div style="font-size:11.5px; color:var(--ink-soft); margin:4px 0 8px;">${esc(i.erro||'')}${i.cnpjDetectado?' — CNPJ visto: '+esc(i.cnpjDetectado):''}${i.codigoDominioArquivo?' — código no nome do arquivo: '+esc(i.codigoDominioArquivo):''}</div>
+      <div class="row" style="align-items:flex-end; gap:8px; flex-wrap:wrap;">
+        <div class="field grow" style="margin-bottom:0; min-width:220px;"><label>Empresa</label>${comboSelectHtml('odRelPendEmp'+i.id, 'Selecione…')}</div>
+        <div class="field" style="margin-bottom:0; width:150px;"><label>Tipo</label>
+          <select id="odRelPendTipo${i.id}">
+            <option value="balanco">Balanço</option>
+            <option value="balancete">Balancete</option>
+            <option value="dre_mensal">DRE Mensal</option>
+            <option value="dre_anual">DRE Anual</option>
+          </select>
+        </div>
+        <div class="field" style="margin-bottom:0; width:90px;"><label>Ano</label><input type="number" id="odRelPendAno${i.id}" value="${i.periodoFim?i.periodoFim.slice(0,4):new Date().getFullYear()}"></div>
+        <div class="field" style="margin-bottom:0; width:80px;"><label>Mês</label><input type="number" min="1" max="12" id="odRelPendMes${i.id}" value="${i.periodoFim?Number(i.periodoFim.slice(5,7)):''}"></div>
+        <button class="btn small primary" data-act="atribuir" data-id="${i.id}">Atribuir</button>
+      </div>
+    </div>
+  `).join('');
+  items.forEach(i=>setupComboSelect('odRelPendEmp'+i.id, empresas.map(e=>({id:e.id, label:empresaComboLabel(e)}))));
+  listEl.querySelectorAll('[data-act="atribuir"]').forEach(b=>b.addEventListener('click', async ()=>{
+    const id = b.dataset.id;
+    const empresaId = document.querySelector('#odRelPendEmp'+id+' .combo-value').value;
+    const tipo = document.getElementById('odRelPendTipo'+id).value;
+    const ano = document.getElementById('odRelPendAno'+id).value;
+    const mes = document.getElementById('odRelPendMes'+id).value;
+    if(!empresaId){ toast('Selecione a empresa.','err'); return; }
+    b.disabled = true;
+    try{
+      await api('/onedrive/relatorios/pendentes/'+id+'/atribuir', { method:'POST', body:{ empresaId, tipo, ano, mes } });
+      toast('Atribuído.','ok');
+      document.querySelector(`[data-pend="${id}"]`).remove();
+    }catch(e){ toast(e.message,'err'); b.disabled=false; }
+  }));
+  document.getElementById('odRelPendFechar').addEventListener('click', closeModal);
 }
 
 let CFG_ASSINATURA_POLL = null;

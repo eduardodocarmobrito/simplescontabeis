@@ -134,3 +134,74 @@ export async function enviarArquivo(accessToken: string, caminhoCompleto: string
     throw new Error(json?.error?.message || `HTTP ${status}`);
   }
 }
+
+// ---------------- Leitura (importação de relatórios de uma pasta) ----------------
+// Baixa uma URL absoluta já pronta (usada tanto pro redirect de download quanto pro @odata.nextLink
+// da paginação — nos dois casos a URL já vem completa, não precisa prefixar com GRAPH_BASE de novo).
+function baixarUrlAbsoluta(urlCompleta: string, headers: Record<string, string> = {}): Promise<{ status: number; corpo: Buffer; headers: Record<string, string | string[] | undefined> }> {
+  return new Promise((resolve, reject) => {
+    const url = new URL(urlCompleta);
+    const req = https.request({ hostname: url.hostname, path: url.pathname + url.search, method: "GET", headers, timeout: 30000 }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("end", () => resolve({ status: res.statusCode || 0, corpo: Buffer.concat(chunks), headers: res.headers as any }));
+    });
+    req.on("timeout", () => req.destroy(new Error("Tempo esgotado ao conectar no OneDrive.")));
+    req.on("error", reject);
+    req.end();
+  });
+}
+// Baixa o CONTEÚDO BRUTO de um arquivo (PDF etc.) — não pode passar por chamarGraph, que sempre
+// decodifica a resposta como UTF-8 e tenta JSON.parse (corromperia um binário). O endpoint
+// .../content responde com um 302 pra uma URL de download assinada (sem Authorization) — o cliente
+// https padrão do Node não segue redirect sozinho, então trata isso aqui.
+export async function baixarConteudoArquivo(accessToken: string, itemId: string): Promise<Buffer> {
+  const primeira = await baixarUrlAbsoluta(`${GRAPH_BASE}/me/drive/items/${encodeURIComponent(itemId)}/content`, { Authorization: `Bearer ${accessToken}` });
+  if (primeira.status === 302 || primeira.status === 301) {
+    const location = primeira.headers.location as string | undefined;
+    if (!location) throw new Error("OneDrive não devolveu o endereço de download do arquivo.");
+    const segunda = await baixarUrlAbsoluta(location);
+    if (segunda.status < 200 || segunda.status >= 300) throw new Error(`Falha ao baixar arquivo do OneDrive (HTTP ${segunda.status}).`);
+    return segunda.corpo;
+  }
+  if (primeira.status < 200 || primeira.status >= 300) {
+    let mensagem = `HTTP ${primeira.status}`;
+    try {
+      mensagem = JSON.parse(primeira.corpo.toString("utf8"))?.error?.message || mensagem;
+    } catch {
+      /* corpo não era JSON — mantém a mensagem genérica */
+    }
+    throw new Error(`Falha ao baixar arquivo do OneDrive: ${mensagem}`);
+  }
+  return primeira.corpo;
+}
+
+export interface ItemPastaOneDrive {
+  id: string;
+  nome: string;
+  ehPasta: boolean;
+}
+// Lista todos os arquivos de uma pasta (por caminho, ex. "Relatorios_Dominio") — pagina sozinho via
+// @odata.nextLink (o Graph corta a listagem em páginas; nunca existia tratamento de paginação neste
+// arquivo até agora porque só se fazia upload, nunca listagem).
+export async function listarArquivosPasta(accessToken: string, caminhoPasta: string): Promise<ItemPastaOneDrive[]> {
+  const caminhoCodificado = caminhoPasta
+    .split("/")
+    .map((parte) => encodeURIComponent(parte))
+    .join("/");
+  const itens: ItemPastaOneDrive[] = [];
+  let proximaUrl: string | null = `${GRAPH_BASE}/me/drive/root:/${caminhoCodificado}:/children?$top=200&$select=id,name,folder`;
+  while (proximaUrl) {
+    const { status, corpo } = await baixarUrlAbsoluta(proximaUrl, { Authorization: `Bearer ${accessToken}` });
+    let json: any;
+    try {
+      json = JSON.parse(corpo.toString("utf8"));
+    } catch {
+      throw new Error(`Resposta inesperada do OneDrive ao listar a pasta "${caminhoPasta}" (HTTP ${status}).`);
+    }
+    if (status !== 200) throw new Error(json?.error?.message || `HTTP ${status} ao listar a pasta "${caminhoPasta}".`);
+    for (const it of json.value || []) itens.push({ id: it.id, nome: it.name, ehPasta: !!it.folder });
+    proximaUrl = json["@odata.nextLink"] || null;
+  }
+  return itens;
+}

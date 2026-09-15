@@ -516,6 +516,31 @@ sqlite.exec(`
     detalhe TEXT
   );
 
+  -- Controle/auditoria da importação de PDFs de Balanço/DRE/Balancete de uma pasta do OneDrive (ver
+  -- dominioRelatoriosSincronizar) — não é o documento final (esse vira envio_documentos de verdade,
+  -- sob um dos 4 templates protegidos "Balanço"/"Balancete"/"DRE Mensal"/"DRE Anual"), só o registro
+  -- de QUAL arquivo do OneDrive já foi processado (dedupe por onedrive_item_id, que não é sequencial
+  -- como o cursor usado na exportação de XML) e o que aconteceu com ele (sucesso ou motivo da falha).
+  CREATE TABLE IF NOT EXISTS dominio_relatorios_importados (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    escritorio_id INTEGER NOT NULL REFERENCES escritorios(id) ON DELETE CASCADE,
+    onedrive_item_id TEXT NOT NULL,
+    nome_arquivo TEXT NOT NULL,
+    tipo_detectado TEXT, -- 'balanco' | 'balancete' | 'dre_mensal' | 'dre_anual' | NULL
+    periodo_inicio TEXT, -- 'AAAA-MM-DD'
+    periodo_fim TEXT,
+    cnpj_detectado TEXT,
+    codigo_dominio_arquivo TEXT, -- pista extraída do NOME do arquivo — só sugestão, nunca confirma empresa sozinha
+    empresa_id INTEGER REFERENCES empresas(id),
+    envio_documento_id INTEGER REFERENCES envio_documentos(id),
+    status TEXT NOT NULL, -- 'ok' | 'sem_cnpj' | 'empresa_nao_encontrada' | 'tipo_nao_identificado' | 'erro'
+    erro TEXT,
+    arquivo_pendente_path TEXT, -- só quando status != 'ok': PDF salvo em disco pra resolução manual sem rebaixar do OneDrive
+    texto_preview TEXT, -- ~2000 primeiros caracteres extraídos, pra auditoria/depuração sem reabrir o PDF
+    importado_em TEXT DEFAULT (datetime('now')),
+    UNIQUE(escritorio_id, onedrive_item_id)
+  );
+
   CREATE TABLE IF NOT EXISTS agent_heartbeat (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     last_seen_at TEXT,
@@ -1067,6 +1092,7 @@ sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_envio_periodos_atrib ON envio_period
 sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_honorarios_lanc_competencia ON honorarios_lancamentos(competencia);`);
 sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_dominio_dados_empresa ON dominio_dados(empresa_id, tipo, competencia);`);
 sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_envio_documentos_periodo ON envio_documentos(periodo_id);`);
+sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_dominio_rel_import_status ON dominio_relatorios_importados(escritorio_id, status);`);
 
 // Migração: bancos criados antes de 2026-08-18 têm envio_documentos com UNIQUE(periodo_id) e sem
 // a coluna observacao — reconstrói a tabela preservando os documentos já enviados, sem essa trava
@@ -1136,6 +1162,18 @@ sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_envio_documentos_periodo ON envio_do
   sqlite
     .prepare(`UPDATE envio_templates SET considera_mes_atual = 0 WHERE nome IN ('DAS - Mensal', 'Consultar Situação Fiscal - RFB') AND considera_mes_atual = 1`)
     .run();
+}
+
+// Migração leve: onedrive_config ganha os campos da importação de relatórios (Balanço/DRE/Balancete)
+// — pasta de ORIGEM separada da pasta de DESTINO já usada pela exportação de XML, mas reaproveitando
+// a mesma conexão OAuth (client_id/client_secret/refresh_token) já salva nessa mesma linha.
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(onedrive_config)`).all() as any[];
+  const nomes = new Set(cols.map((c) => c.name));
+  if (!nomes.has("relatorios_pasta_origem")) sqlite.exec(`ALTER TABLE onedrive_config ADD COLUMN relatorios_pasta_origem TEXT NOT NULL DEFAULT 'Relatorios_Dominio'`);
+  if (!nomes.has("relatorios_ativo")) sqlite.exec(`ALTER TABLE onedrive_config ADD COLUMN relatorios_ativo INTEGER NOT NULL DEFAULT 0`);
+  if (!nomes.has("relatorios_ultima_importacao_em")) sqlite.exec(`ALTER TABLE onedrive_config ADD COLUMN relatorios_ultima_importacao_em TEXT`);
+  if (!nomes.has("relatorios_ultimo_erro")) sqlite.exec(`ALTER TABLE onedrive_config ADD COLUMN relatorios_ultimo_erro TEXT`);
 }
 
 // Migração leve: menu "Solicitar Documentos" do cliente — modelos ganham a opção de aparecer lá,
@@ -3937,7 +3975,7 @@ app.get("/api/checklist/uploads/:uploadId/download", blockCliente, requirePermis
 // qualquer um deles quebra silenciosamente o anexo automático de DAS/Situação Fiscal (a próxima
 // busca automática cria um modelo NOVO em vez de reaproveitar, perdendo a ligação com o histórico
 // já entregue ao cliente).
-const ENVIO_TEMPLATES_PROTEGIDOS = ["DAS - Mensal", "Consultar Situação Fiscal - RFB"];
+const ENVIO_TEMPLATES_PROTEGIDOS = ["DAS - Mensal", "Consultar Situação Fiscal - RFB", "Balanço", "Balancete", "DRE Mensal", "DRE Anual"];
 app.get("/api/envio/templates", blockCliente, requirePermissao("envio", "visualizar"), (req, res) => {
   const rows = sqlite.prepare(`SELECT * FROM envio_templates WHERE escritorio_id = ? ORDER BY nome`).all((req as any).user.escritorioId) as any[];
   res.json({
@@ -5475,6 +5513,10 @@ app.get("/api/onedrive/config", blockCliente, requirePermissao("configuracoes", 
     ativo: !!c.ativo,
     ultimaExportacaoEm: c.ultima_exportacao_em || null,
     ultimoErro: c.ultimo_erro || null,
+    relatoriosPastaOrigem: c.relatorios_pasta_origem || "Relatorios_Dominio",
+    relatoriosAtivo: !!c.relatorios_ativo,
+    relatoriosUltimaImportacaoEm: c.relatorios_ultima_importacao_em || null,
+    relatoriosUltimoErro: c.relatorios_ultimo_erro || null,
   });
 });
 app.put("/api/onedrive/config", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
@@ -5483,17 +5525,20 @@ app.put("/api/onedrive/config", blockCliente, requirePermissao("configuracoes", 
   const atual = getOnedriveConfig(escritorioId);
   sqlite
     .prepare(
-      `INSERT INTO onedrive_config (escritorio_id, client_id, client_secret_cifrado, pasta_destino, ativo, updated_at)
-       VALUES (?, ?, ?, ?, ?, datetime('now'))
+      `INSERT INTO onedrive_config (escritorio_id, client_id, client_secret_cifrado, pasta_destino, ativo, relatorios_pasta_origem, relatorios_ativo, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
        ON CONFLICT(escritorio_id) DO UPDATE SET client_id=excluded.client_id, client_secret_cifrado=excluded.client_secret_cifrado,
-         pasta_destino=excluded.pasta_destino, ativo=excluded.ativo, updated_at=datetime('now')`
+         pasta_destino=excluded.pasta_destino, ativo=excluded.ativo,
+         relatorios_pasta_origem=excluded.relatorios_pasta_origem, relatorios_ativo=excluded.relatorios_ativo, updated_at=datetime('now')`
     )
     .run(
       escritorioId,
       b.clientId || null,
       b.clientSecret ? nfse.cifrarTexto(String(b.clientSecret)) : atual.client_secret_cifrado || null,
       b.pastaDestino || "Notas Fiscais - Clientes",
-      b.ativo ? 1 : 0
+      b.ativo ? 1 : 0,
+      b.relatoriosPastaOrigem || atual.relatorios_pasta_origem || "Relatorios_Dominio",
+      b.relatoriosAtivo ? 1 : 0
     );
   res.json({ ok: true });
 });
@@ -5604,6 +5649,372 @@ setInterval(() => {
   const configs = sqlite.prepare(`SELECT escritorio_id FROM onedrive_config WHERE ativo = 1 AND refresh_token_cifrado IS NOT NULL`).all() as any[];
   for (const c of configs) {
     onedriveExportarDocumentosNovos(c.escritorio_id).catch((e) => console.error("Erro na exportação automática pro OneDrive:", e.message));
+  }
+}, 5 * 60 * 1000);
+
+// ---------- Importação de Balanço/DRE/Balancete de uma pasta do OneDrive ----------
+// Direção CONTRÁRIA da exportação de XML acima: aqui o servidor LÊ periodicamente uma pasta do
+// mesmo OneDrive já conectado (uma rotina externa do Domínio Web deposita os PDFs lá). Os PDFs viram
+// envio_documentos DE VERDADE, sob 4 templates protegidos dedicados ("Balanço"/"Balancete"/
+// "DRE Mensal"/"DRE Anual"), reaproveitando o mesmo mecanismo que o Integra Contador já usa pra
+// anexar DAS/Situação Fiscal sozinho (integraContadorObterOuCriarAtribuicaoModelo +
+// integraContadorAnexarPdfEmEnvio, acima). Isso já dá de graça: aparecer na grade normal de Envio de
+// Documentos; "Solicitar Documentos" já funcionar (o template nasce visivel_cliente=1); e o
+// atendimento automático de solicitação — POST /api/envio/solicitar já calcula "jaConcluido" olhando
+// se o período já tem documento, sem filtrar por quem pediu, então importando ANTES de qualquer
+// solicitação (esta rotina é proativa/agendada), o pedido do cliente já chega atendido sem nenhum
+// código extra de "atendimento automático".
+type DomRelTipo = "balanco" | "balancete" | "dre";
+const DOM_REL_TEMPLATE_NOME: Record<string, string> = {
+  balanco: "Balanço",
+  balancete: "Balancete",
+  dre_mensal: "DRE Mensal",
+  dre_anual: "DRE Anual",
+};
+// Acha os tipos que o texto do PDF menciona — pode achar mais de um (ex.: um PDF que já vem com
+// Balanço + DRE juntos); nesse caso o pipeline anexa em CADA template que bateu.
+function domRelClassificarTipos(texto: string): DomRelTipo[] {
+  const tipos: DomRelTipo[] = [];
+  if (/balan[çc]o\s+patrimonial/i.test(texto)) tipos.push("balanco");
+  if (/balancete/i.test(texto)) tipos.push("balancete");
+  if (/demonstra[çc][ãa]o\s+do\s+resultado|\bdre\b/i.test(texto)) tipos.push("dre");
+  return tipos;
+}
+// Acha "período: dd/mm/aaaa a dd/mm/aaaa" no texto — mesma técnica de janela de
+// extrairVencimentoDoTexto (a ordem do texto extraído do PDF não necessariamente segue a ordem
+// visual), só que aqui procura DUAS datas dentro da mesma janela em vez de uma. Heurística de
+// primeira passada — ajustar depois de ver o texto real via o dry-run (ver rota abaixo).
+function domRelExtrairPeriodo(texto: string): { inicio: string; fim: string } | null {
+  const regexPalavra = /per[ií]odo/gi;
+  const regexData = /(\d{2})[\/\-.](\d{2})[\/\-.](\d{4})/g;
+  const JANELA = 80;
+  let m: RegExpExecArray | null;
+  while ((m = regexPalavra.exec(texto))) {
+    const inicioJanela = Math.max(0, m.index - JANELA);
+    const fimJanela = m.index + m[0].length + JANELA;
+    const trecho = texto.slice(inicioJanela, fimJanela);
+    regexData.lastIndex = 0;
+    const datas: string[] = [];
+    let dm: RegExpExecArray | null;
+    while ((dm = regexData.exec(trecho))) {
+      const [, dia, mes, ano] = dm;
+      const diaN = Number(dia), mesN = Number(mes), anoN = Number(ano);
+      if (diaN >= 1 && diaN <= 31 && mesN >= 1 && mesN <= 12 && anoN >= 2000 && anoN <= 2100) {
+        datas.push(`${ano}-${mes}-${dia}`);
+      }
+    }
+    if (datas.length >= 2) {
+      const ordenadas = datas.sort();
+      return { inicio: ordenadas[0], fim: ordenadas[ordenadas.length - 1] };
+    }
+  }
+  return null;
+}
+function domRelEhAnual(inicio: string, fim: string): boolean {
+  const dias = (new Date(fim + "T00:00:00").getTime() - new Date(inicio + "T00:00:00").getTime()) / 86400000;
+  return dias > 300; // período de ~1 ano inteiro (365/366 dias) — folga pra pequenas variações
+}
+// Mapa cnpj (só dígitos) → empresa, pra achar quem é o dono do relatório dentro do texto do PDF —
+// mesma técnica já usada e comprovada em /api/empresas/anexos/licencas-bulk (ver acima, "fluxoDigitos
+// sem \b"): PDF em layout de "caixinhas"/tabela (exatamente o formato de Balanço/DRE/Balancete)
+// costuma colar os dígitos sem espaço depois do pdf-parse — um regex com \b não acha nada nesse caso.
+// Inclui empresa_documentos (não só empresas.cnpj) pra cobrir empresa com mais de uma inscrição.
+function domRelMapaDocumentos(escritorioId: number): Map<string, any> {
+  const mapa = new Map<string, any>();
+  const empresas = sqlite.prepare(`SELECT id, nome, cnpj FROM empresas WHERE escritorio_id = ?`).all(escritorioId) as any[];
+  for (const e of empresas) {
+    if (!e.cnpj) continue;
+    const digitos = String(e.cnpj).replace(/\D/g, "");
+    if (digitos.length === 14) mapa.set(digitos, e);
+  }
+  const docs = sqlite
+    .prepare(`SELECT ed.documento, e.id, e.nome FROM empresa_documentos ed JOIN empresas e ON e.id = ed.empresa_id WHERE e.escritorio_id = ? AND ed.tipo = 'cnpj'`)
+    .all(escritorioId) as any[];
+  for (const d of docs) {
+    if (!mapa.has(d.documento)) mapa.set(d.documento, { id: d.id, nome: d.nome });
+  }
+  return mapa;
+}
+function domRelIdentificarEmpresa(mapaDocumentos: Map<string, any>, texto: string, nomeArquivo: string): { empresa: any | null; cnpjDetectado: string | null; codigoArquivo: string | null } {
+  const fluxoDigitos = texto.replace(/\D/g, "");
+  let empresa: any = null;
+  let cnpjDetectado: string | null = null;
+  for (const [digitos, emp] of mapaDocumentos) {
+    if (fluxoDigitos.includes(digitos)) {
+      empresa = emp;
+      cnpjDetectado = digitos;
+      break;
+    }
+  }
+  if (!cnpjDetectado) {
+    const candidatos = [...texto.matchAll(REGEX_CNPJ_BUSCA)].map((m) => m[0].replace(/\D/g, ""));
+    cnpjDetectado = candidatos.find((d) => d.length === 14) || null;
+  }
+  // Só pista de desempate pro admin resolver "não identificados" na mão — nunca confirma sozinha.
+  // Padrão visto nos nomes de arquivo reais: "Balancete_125_01082026 a 31082026.pdf" → "125".
+  const codigoArquivo = /_([0-9]+)_/.exec(nomeArquivo)?.[1] || null;
+  return { empresa, cnpjDetectado, codigoArquivo };
+}
+function domRelSalvarPendente(escritorioId: number, buf: Buffer, nomeArquivo: string): string {
+  const dir = path.join(UPLOADS_DIR, "dominio-relatorios-pendentes", String(escritorioId));
+  fs.mkdirSync(dir, { recursive: true });
+  const destino = path.join(dir, `${Date.now()}-${nomeArquivo.replace(/[\\/:*?"<>|]/g, "_")}`);
+  fs.writeFileSync(destino, buf);
+  return destino;
+}
+function domRelGravarControle(row: {
+  escritorioId: number;
+  itemId: string;
+  nomeArquivo: string;
+  tipoDetectado: string | null;
+  periodoInicio: string | null;
+  periodoFim: string | null;
+  cnpjDetectado: string | null;
+  codigoArquivo: string | null;
+  empresaId: number | null;
+  envioDocumentoId: number | null;
+  status: string;
+  erro: string | null;
+  arquivoPendentePath: string | null;
+  textoPreview: string | null;
+}): void {
+  sqlite
+    .prepare(
+      `INSERT INTO dominio_relatorios_importados
+         (escritorio_id, onedrive_item_id, nome_arquivo, tipo_detectado, periodo_inicio, periodo_fim, cnpj_detectado, codigo_dominio_arquivo, empresa_id, envio_documento_id, status, erro, arquivo_pendente_path, texto_preview)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(escritorio_id, onedrive_item_id) DO UPDATE SET
+         nome_arquivo=excluded.nome_arquivo, tipo_detectado=excluded.tipo_detectado, periodo_inicio=excluded.periodo_inicio,
+         periodo_fim=excluded.periodo_fim, cnpj_detectado=excluded.cnpj_detectado, codigo_dominio_arquivo=excluded.codigo_dominio_arquivo,
+         empresa_id=excluded.empresa_id, envio_documento_id=excluded.envio_documento_id, status=excluded.status, erro=excluded.erro,
+         arquivo_pendente_path=excluded.arquivo_pendente_path, texto_preview=excluded.texto_preview, importado_em=datetime('now')`
+    )
+    .run(
+      row.escritorioId,
+      row.itemId,
+      row.nomeArquivo,
+      row.tipoDetectado,
+      row.periodoInicio,
+      row.periodoFim,
+      row.cnpjDetectado,
+      row.codigoArquivo,
+      row.empresaId,
+      row.envioDocumentoId,
+      row.status,
+      row.erro,
+      row.arquivoPendentePath,
+      row.textoPreview
+    );
+}
+async function dominioRelatoriosSincronizar(
+  escritorioId: number,
+  opts: { dryRun: boolean; limite?: number }
+): Promise<{ processados: number; ok: number; pendentes: number; erros: number; previews?: any[] }> {
+  const cfg = getOnedriveConfig(escritorioId);
+  if (!cfg.client_id || !cfg.client_secret_cifrado || !cfg.refresh_token_cifrado) {
+    throw new Error("Conecte o OneDrive antes (mesma conexão usada pra exportar XML, em Configurações › Domínio Web).");
+  }
+  const pasta = cfg.relatorios_pasta_origem || "Relatorios_Dominio";
+  const clientSecret = nfse.decifrarTexto(cfg.client_secret_cifrado);
+  const refreshToken = nfse.decifrarTexto(cfg.refresh_token_cifrado);
+  const token = await onedrive.renovarAccessToken(cfg.client_id, clientSecret, refreshToken);
+  if (token.refreshToken) sqlite.prepare(`UPDATE onedrive_config SET refresh_token_cifrado = ? WHERE escritorio_id = ?`).run(nfse.cifrarTexto(token.refreshToken), escritorioId);
+
+  let itens = (await onedrive.listarArquivosPasta(token.accessToken, pasta)).filter((it) => !it.ehPasta && it.nome.toLowerCase().endsWith(".pdf"));
+  if (opts.dryRun && opts.limite) itens = itens.slice(0, opts.limite);
+
+  const mapaDocumentos = domRelMapaDocumentos(escritorioId);
+  let ok = 0,
+    pendentes = 0,
+    erros = 0,
+    processados = 0;
+  const previews: any[] = [];
+
+  for (const item of itens) {
+    if (!opts.dryRun) {
+      // Não reprocessa o que já deu certo OU já falhou com um motivo conhecido — só tenta de novo o
+      // que deu erro técnico ('erro', ex.: falha de rede) ou nunca foi visto. "Não identificado" é
+      // resolvido na mão (ver rota /pendentes/:id/atribuir), não tentando nos mesmos moldes de novo
+      // a cada 5 minutos.
+      const existente = sqlite.prepare(`SELECT status FROM dominio_relatorios_importados WHERE escritorio_id = ? AND onedrive_item_id = ?`).get(escritorioId, item.id) as any;
+      if (existente && existente.status !== "erro") continue;
+    }
+    processados++;
+    try {
+      const buf = await onedrive.baixarConteudoArquivo(token.accessToken, item.id);
+      const texto = await obterTextoDoPdf(buf);
+      const tipos = domRelClassificarTipos(texto);
+      const periodo = domRelExtrairPeriodo(texto);
+      const { empresa, cnpjDetectado, codigoArquivo } = domRelIdentificarEmpresa(mapaDocumentos, texto, item.nome);
+
+      if (opts.dryRun) {
+        previews.push({
+          nomeArquivo: item.nome,
+          tiposDetectados: tipos,
+          periodoInicio: periodo?.inicio || null,
+          periodoFim: periodo?.fim || null,
+          cnpjDetectado,
+          codigoArquivoDominio: codigoArquivo,
+          empresaEncontrada: empresa ? { id: empresa.id, nome: empresa.nome } : null,
+          textoPreview: texto.slice(0, 2000),
+        });
+        continue;
+      }
+
+      const base = {
+        escritorioId,
+        itemId: item.id,
+        nomeArquivo: item.nome,
+        periodoInicio: periodo?.inicio || null,
+        periodoFim: periodo?.fim || null,
+        cnpjDetectado,
+        codigoArquivo,
+        textoPreview: texto.slice(0, 2000),
+      };
+      if (!periodo || !tipos.length || !empresa) {
+        const status = !periodo || !tipos.length ? "tipo_nao_identificado" : cnpjDetectado ? "empresa_nao_encontrada" : "sem_cnpj";
+        const erro = !periodo
+          ? 'Não achei o período ("período: dd/mm/aaaa a dd/mm/aaaa") no texto do PDF.'
+          : !tipos.length
+            ? "Não identifiquei o tipo (Balanço/Balancete/DRE) no texto do PDF."
+            : cnpjDetectado
+              ? `CNPJ ${cnpjDetectado} não bate com nenhuma empresa cadastrada.`
+              : "Não encontrei CNPJ no texto do PDF.";
+        domRelGravarControle({
+          ...base,
+          tipoDetectado: tipos.join(",") || null,
+          empresaId: empresa?.id || null,
+          envioDocumentoId: null,
+          status,
+          erro,
+          arquivoPendentePath: domRelSalvarPendente(escritorioId, buf, item.nome),
+        });
+        pendentes++;
+        continue;
+      }
+
+      let primeiroDocId: number | null = null;
+      const anual = domRelEhAnual(periodo.inicio, periodo.fim);
+      for (const tipo of tipos) {
+        const chaveTemplate = tipo === "dre" ? (anual ? "dre_anual" : "dre_mensal") : tipo;
+        const nomeTemplate = DOM_REL_TEMPLATE_NOME[chaveTemplate];
+        const periodicidade: "mensal" | "anual" = chaveTemplate === "balanco" || chaveTemplate === "dre_anual" ? "anual" : "mensal";
+        const fimData = new Date(periodo.fim + "T00:00:00");
+        const ano = fimData.getFullYear();
+        const mes = periodicidade === "anual" ? null : fimData.getMonth() + 1;
+        const atribuicaoId = integraContadorObterOuCriarAtribuicaoModelo(
+          escritorioId,
+          empresa.id,
+          nomeTemplate,
+          `${nomeTemplate} gerado pelo Domínio Web, importado automaticamente de uma pasta do OneDrive`,
+          periodicidade,
+          true
+        );
+        const observacao = `Importado automaticamente da pasta "${pasta}" do OneDrive em ${new Date().toLocaleDateString("pt-BR")}.`;
+        const docId = integraContadorAnexarPdfEmEnvio(atribuicaoId, empresa.id, ano, mes, item.nome, buf.toString("base64"), observacao, null);
+        if (primeiroDocId === null) primeiroDocId = docId;
+      }
+      domRelGravarControle({ ...base, tipoDetectado: tipos.join(","), empresaId: empresa.id, envioDocumentoId: primeiroDocId, status: "ok", erro: null, arquivoPendentePath: null });
+      ok++;
+    } catch (e: any) {
+      erros++;
+      if (!opts.dryRun) {
+        domRelGravarControle({
+          escritorioId,
+          itemId: item.id,
+          nomeArquivo: item.nome,
+          tipoDetectado: null,
+          periodoInicio: null,
+          periodoFim: null,
+          cnpjDetectado: null,
+          codigoArquivo: null,
+          empresaId: null,
+          envioDocumentoId: null,
+          status: "erro",
+          erro: e.message || String(e),
+          arquivoPendentePath: null,
+          textoPreview: null,
+        });
+      }
+    }
+  }
+
+  if (!opts.dryRun) {
+    sqlite.prepare(`UPDATE onedrive_config SET relatorios_ultima_importacao_em = datetime('now'), relatorios_ultimo_erro = NULL WHERE escritorio_id = ?`).run(escritorioId);
+  }
+  return opts.dryRun ? { processados, ok, pendentes, erros, previews } : { processados, ok, pendentes, erros };
+}
+app.get("/api/onedrive/relatorios/pendentes", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
+  const rows = sqlite
+    .prepare(
+      `SELECT id, nome_arquivo as nomeArquivo, tipo_detectado as tipoDetectado, periodo_inicio as periodoInicio, periodo_fim as periodoFim,
+              cnpj_detectado as cnpjDetectado, codigo_dominio_arquivo as codigoDominioArquivo, status, erro, importado_em as importadoEm
+       FROM dominio_relatorios_importados WHERE escritorio_id = ? AND status != 'ok' ORDER BY importado_em DESC`
+    )
+    .all((req as any).user.escritorioId);
+  res.json({ items: rows });
+});
+// Roda a classificação sem gravar NADA (nem envio_documentos, nem a tabela de controle) — usada pra
+// validar a leitura contra os PDFs reais da pasta antes de confiar no pipeline de verdade.
+app.post("/api/onedrive/relatorios/dry-run", blockCliente, requirePermissao("configuracoes", "postar"), async (req, res) => {
+  try {
+    const r = await dominioRelatoriosSincronizar((req as any).user.escritorioId, { dryRun: true, limite: Number(req.body?.limite) || 10 });
+    res.json(r);
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+app.post("/api/onedrive/relatorios/importar-agora", blockCliente, requirePermissao("configuracoes", "postar"), async (req, res) => {
+  try {
+    const r = await dominioRelatoriosSincronizar((req as any).user.escritorioId, { dryRun: false });
+    res.json(r);
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+// Resolve um "não identificado" na mão — o admin escolhe a empresa/tipo/período certos, sem precisar
+// baixar o arquivo de novo do OneDrive (já está salvo em arquivo_pendente_path).
+app.post("/api/onedrive/relatorios/pendentes/:id/atribuir", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
+  const escritorioId = (req as any).user.escritorioId;
+  const row = sqlite.prepare(`SELECT * FROM dominio_relatorios_importados WHERE id = ? AND escritorio_id = ?`).get(Number(req.params.id), escritorioId) as any;
+  if (!row) return res.status(404).json({ error: "Registro não encontrado." });
+  if (!row.arquivo_pendente_path || !fs.existsSync(row.arquivo_pendente_path)) {
+    return res.status(400).json({ error: "O PDF original não está mais disponível — rode a importação de novo." });
+  }
+  const { empresaId, tipo, ano, mes } = req.body || {};
+  const empresa = sqlite.prepare(`SELECT id, nome FROM empresas WHERE id = ? AND escritorio_id = ?`).get(Number(empresaId), escritorioId) as any;
+  if (!empresa) return res.status(400).json({ error: "Selecione uma empresa válida." });
+  if (!DOM_REL_TEMPLATE_NOME[tipo]) return res.status(400).json({ error: "Tipo de relatório inválido." });
+  if (!Number.isInteger(Number(ano))) return res.status(400).json({ error: "Informe o ano." });
+  const periodicidade: "mensal" | "anual" = tipo === "balanco" || tipo === "dre_anual" ? "anual" : "mensal";
+  const mesFinal = periodicidade === "anual" ? null : Number(mes) || null;
+  if (periodicidade === "mensal" && !mesFinal) return res.status(400).json({ error: "Informe o mês." });
+  const buf = fs.readFileSync(row.arquivo_pendente_path);
+  const nomeTemplate = DOM_REL_TEMPLATE_NOME[tipo];
+  const atribuicaoId = integraContadorObterOuCriarAtribuicaoModelo(
+    escritorioId,
+    empresa.id,
+    nomeTemplate,
+    `${nomeTemplate} gerado pelo Domínio Web, importado automaticamente de uma pasta do OneDrive`,
+    periodicidade,
+    true
+  );
+  const observacao = `Atribuído manualmente a partir de um relatório não identificado automaticamente (${row.nome_arquivo}).`;
+  const docId = integraContadorAnexarPdfEmEnvio(atribuicaoId, empresa.id, Number(ano), mesFinal, row.nome_arquivo, buf.toString("base64"), observacao, null);
+  sqlite.prepare(`UPDATE dominio_relatorios_importados SET status='ok', erro=NULL, empresa_id=?, tipo_detectado=?, envio_documento_id=?, arquivo_pendente_path=NULL WHERE id=?`).run(empresa.id, tipo, docId, row.id);
+  try {
+    fs.unlinkSync(row.arquivo_pendente_path);
+  } catch {
+    /* segue mesmo se não conseguir apagar o arquivo temporário */
+  }
+  res.json({ ok: true, docId });
+});
+// Confere a cada 5 minutos se algum escritório com importação de relatórios ativa tem PDF novo —
+// setInterval SEPARADO do de exportação de XML acima (direção contrária: aqui é leitura).
+setInterval(() => {
+  const configs = sqlite.prepare(`SELECT escritorio_id FROM onedrive_config WHERE relatorios_ativo = 1 AND refresh_token_cifrado IS NOT NULL`).all() as any[];
+  for (const c of configs) {
+    dominioRelatoriosSincronizar(c.escritorio_id, { dryRun: false }).catch((e) => console.error("Erro na importação automática de relatórios do OneDrive:", e.message));
   }
 }, 5 * 60 * 1000);
 
@@ -5727,7 +6138,7 @@ function integraContadorObterOuCriarAtribuicaoModelo(
   empresaId: number,
   nomeTemplate: string,
   descricaoTemplate: string,
-  periodicidade: "mensal" | "avulso" = "mensal",
+  periodicidade: "mensal" | "anual" | "avulso" = "mensal",
   visivelCliente = true
 ): number {
   let template = sqlite.prepare(`SELECT id FROM envio_templates WHERE escritorio_id = ? AND nome = ?`).get(escritorioId, nomeTemplate) as any;
@@ -5766,13 +6177,18 @@ function integraContadorAnexarPdfEmEnvio(
   atribuicaoId: number,
   empresaId: number,
   ano: number,
-  mes: number,
+  mes: number | null,
   nomeArquivo: string,
   pdfBase64: string,
   observacao: string,
   vencimentoIso: string | null
 ): number {
-  let periodo = sqlite.prepare(`SELECT id FROM envio_periodos WHERE atribuicao_id = ? AND ano = ? AND mes = ?`).get(atribuicaoId, ano, mes) as any;
+  // "mes IS ?" (não "mes = ?"): pra template ANUAL, mes vem null — em SQLite "coluna = NULL" nunca é
+  // verdadeiro, então com "=" isso nunca acharia o período já existente e duplicaria envio_periodos a
+  // cada chamada (achado ao vivo, antes de acontecer de verdade — nenhum chamador desta função tinha
+  // usado mes=null até a importação de Balanço/DRE Anual). Mesmo padrão já usado em
+  // POST /api/envio/solicitar ("mes IS ? AND rotulo IS ?").
+  let periodo = sqlite.prepare(`SELECT id FROM envio_periodos WHERE atribuicao_id = ? AND ano = ? AND mes IS ?`).get(atribuicaoId, ano, mes) as any;
   if (!periodo) {
     const info = sqlite.prepare(`INSERT INTO envio_periodos (atribuicao_id, ano, mes) VALUES (?, ?, ?)`).run(atribuicaoId, ano, mes);
     periodo = { id: Number(info.lastInsertRowid) };
@@ -10147,6 +10563,74 @@ app.get("/api/relatorios/retencoes/empresas", blockCliente, requirePermissao("re
   if (!dataDe || !dataAte) return res.status(400).json({ error: "Informe o período (de/até)." });
   const items = listarEmpresasComRetencoes((req as any).user, dataDe, dataAte);
   res.json({ items });
+});
+// ---------- Balanço/DRE/Balancete (alimentados pela importação de PDF do OneDrive, ver
+// dominioRelatoriosSincronizar) — os documentos são envio_documentos de verdade, então essas rotas só
+// consultam envio_atribuicoes/envio_periodos/envio_documentos pelos templates dedicados.
+function domRelTemplateNomesParaTipo(tipo: string): string[] {
+  if (tipo === "balanco") return ["Balanço"];
+  if (tipo === "balancete") return ["Balancete"];
+  if (tipo === "dre") return ["DRE Mensal", "DRE Anual"];
+  return [];
+}
+app.get("/api/relatorios/documentos/empresas", blockCliente, requirePermissao("relatorios", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const nomes = domRelTemplateNomesParaTipo(String(req.query.tipo || ""));
+  if (!nomes.length) return res.status(400).json({ error: "Tipo de relatório inválido." });
+  const visiveis = empresasVisiveis(user);
+  if (visiveis !== null && visiveis.length === 0) return res.json({ items: [] });
+  let sql = `SELECT a.empresa_id as empresaId, e.nome as empresaNome, COUNT(d.id) as qtdDocumentos, MAX(d.enviado_em) as ultimoEm
+             FROM envio_atribuicoes a
+             JOIN envio_templates t ON t.id = a.template_id
+             JOIN empresas e ON e.id = a.empresa_id
+             JOIN envio_periodos p ON p.atribuicao_id = a.id
+             JOIN envio_documentos d ON d.periodo_id = p.id
+             WHERE t.escritorio_id = ? AND t.nome IN (${nomes.map(() => "?").join(",")}) AND e.ativo = 1`;
+  const params: any[] = [user.escritorioId, ...nomes];
+  if (visiveis !== null) {
+    sql += ` AND a.empresa_id IN (${visiveis.map(() => "?").join(",")})`;
+    params.push(...visiveis);
+  }
+  sql += ` GROUP BY a.empresa_id ORDER BY e.nome COLLATE NOCASE`;
+  res.json({ items: sqlite.prepare(sql).all(...params) });
+});
+app.get("/api/relatorios/documentos", blockCliente, requirePermissao("relatorios", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const nomes = domRelTemplateNomesParaTipo(String(req.query.tipo || ""));
+  if (!nomes.length) return res.status(400).json({ error: "Tipo de relatório inválido." });
+  const empresaId = req.query.empresaId ? Number(req.query.empresaId) : null;
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const atribuicoes = sqlite
+    .prepare(
+      `SELECT a.id as atribuicaoId, t.nome as templateNome FROM envio_atribuicoes a JOIN envio_templates t ON t.id = a.template_id
+       WHERE t.escritorio_id = ? AND a.empresa_id = ? AND t.nome IN (${nomes.map(() => "?").join(",")})`
+    )
+    .all(user.escritorioId, empresaId, ...nomes) as any[];
+  const grupos = atribuicoes
+    .map((a) => {
+      const periodos = sqlite.prepare(`SELECT id, ano, mes, rotulo FROM envio_periodos WHERE atribuicao_id = ? ORDER BY ano DESC, mes DESC`).all(a.atribuicaoId) as any[];
+      const periodoIds = periodos.map((p) => p.id);
+      const docs = periodoIds.length
+        ? (sqlite
+            .prepare(
+              `SELECT id, periodo_id as periodoId, file_name as fileName, enviado_em as enviadoEm, observacao,
+                      email_enviado as emailEnviado, whatsapp_enviado as whatsappEnviado
+               FROM envio_documentos WHERE periodo_id IN (${periodoIds.map(() => "?").join(",")}) ORDER BY enviado_em DESC`
+            )
+            .all(...periodoIds) as any[])
+        : [];
+      const docsPorPeriodo = new Map<number, any[]>();
+      for (const d of docs) {
+        if (!docsPorPeriodo.has(d.periodoId)) docsPorPeriodo.set(d.periodoId, []);
+        docsPorPeriodo.get(d.periodoId)!.push({ ...d, emailEnviado: !!d.emailEnviado, whatsappEnviado: !!d.whatsappEnviado });
+      }
+      return {
+        templateNome: a.templateNome,
+        periodos: periodos.filter((p) => docsPorPeriodo.has(p.id)).map((p) => ({ ...p, documentos: docsPorPeriodo.get(p.id) || [] })),
+      };
+    })
+    .filter((g) => g.periodos.length);
+  res.json({ grupos });
 });
 function fmtCnpjRelatorio(doc: string | null): string {
   const d = String(doc || "").replace(/\D/g, "");
