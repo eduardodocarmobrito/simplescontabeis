@@ -4176,24 +4176,27 @@ app.post("/api/envio/solicitar", (req, res) => {
     sqlite.prepare(`UPDATE envio_atribuicoes SET ativo = 1 WHERE id = ?`).run(atrib.id);
   }
 
-  const insertPeriodo = sqlite.prepare(
-    `INSERT OR IGNORE INTO envio_periodos (atribuicao_id, ano, mes, rotulo, solicitado_por, solicitado_em, solicitacao_tipo) VALUES (?, ?, ?, ?, ?, datetime('now'), 'documento')`
-  );
-  const info = insertPeriodo.run(atrib.id, anoFinal, mesFinal, rotuloFinal, user.id);
+  // Checa existência por fora em vez de confiar em UNIQUE(atribuicao_id,ano,mes,rotulo) + INSERT OR
+  // IGNORE: SQLite trata NULL como diferente de NULL num UNIQUE, e todo período mensal/anual tem
+  // rotulo=NULL (mesmo problema já corrigido em envioGerarPeriodosAno, server.ts:4260) — sem isso,
+  // um período já existente (ex.: criado pela importação automática de relatórios antes do cliente
+  // pedir) não é encontrado e um período duplicado nasce a cada solicitação.
   let periodoId: number;
   let jaExistia = false;
-  if (info.changes) {
-    periodoId = Number(info.lastInsertRowid);
-  } else {
-    // já existia (ex.: o escritório tinha gerado a grade do ano antes) — marca como solicitado agora, se ainda não tinha sido
-    const existente = sqlite
-      .prepare(`SELECT * FROM envio_periodos WHERE atribuicao_id = ? AND ano = ? AND mes IS ? AND rotulo IS ?`)
-      .get(atrib.id, anoFinal, mesFinal, rotuloFinal) as any;
+  const existente = sqlite
+    .prepare(`SELECT * FROM envio_periodos WHERE atribuicao_id = ? AND ano = ? AND mes IS ? AND rotulo IS ?`)
+    .get(atrib.id, anoFinal, mesFinal, rotuloFinal) as any;
+  if (existente) {
     periodoId = existente.id;
     jaExistia = true;
     if (!existente.solicitado_em) {
       sqlite.prepare(`UPDATE envio_periodos SET solicitado_por = ?, solicitado_em = datetime('now'), solicitacao_tipo = 'documento' WHERE id = ?`).run(user.id, periodoId);
     }
+  } else {
+    const info = sqlite
+      .prepare(`INSERT INTO envio_periodos (atribuicao_id, ano, mes, rotulo, solicitado_por, solicitado_em, solicitacao_tipo) VALUES (?, ?, ?, ?, ?, datetime('now'), 'documento')`)
+      .run(atrib.id, anoFinal, mesFinal, rotuloFinal, user.id);
+    periodoId = Number(info.lastInsertRowid);
   }
   const jaConcluido = !!sqlite.prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id = ?`).get(periodoId);
   res.json({ ok: true, atribuicaoId: atrib.id, periodoId, jaExistia, jaConcluido });
