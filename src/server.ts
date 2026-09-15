@@ -5680,11 +5680,19 @@ function domRelClassificarTipos(texto: string): DomRelTipo[] {
   if (/demonstra[çc][ãa]o\s+do\s+resultado|\bdre\b/i.test(texto)) tipos.push("dre");
   return tipos;
 }
-// Acha "período: dd/mm/aaaa a dd/mm/aaaa" no texto — mesma técnica de janela de
-// extrairVencimentoDoTexto (a ordem do texto extraído do PDF não necessariamente segue a ordem
-// visual), só que aqui procura DUAS datas dentro da mesma janela em vez de uma. Heurística de
-// primeira passada — ajustar depois de ver o texto real via o dry-run (ver rota abaixo).
-function domRelExtrairPeriodo(texto: string): { inicio: string; fim: string } | null {
+// Achado ao vivo (dry-run contra a pasta real): o TEXTO do PDF varia de layout conforme a empresa —
+// algumas trazem uma linha "Período: dd/mm/aaaa - dd/mm/aaaa" explícita, outras (a maioria, no teste
+// real) só mostram "...EM dd/mm/aaaa" no título (só a data final, sem a inicial, sem a palavra
+// "período" em lugar nenhum). O NOME do arquivo, por outro lado, já traz o período de forma 100%
+// consistente em todos os arquivos testados: "TIPO_CODIGO_ddmmaaaa a ddmmaaaa.pdf". Por isso tenta o
+// nome do arquivo PRIMEIRO (mais confiável aqui), e só cai pro texto se o nome não bater com o padrão
+// esperado (ex.: alguém subiu um PDF renomeado na mão).
+function domRelExtrairPeriodo(texto: string, nomeArquivo: string): { inicio: string; fim: string } | null {
+  const doNome = /(\d{2})(\d{2})(\d{4})\s*a\s*(\d{2})(\d{2})(\d{4})/i.exec(nomeArquivo);
+  if (doNome) {
+    const [, d1, m1, a1, d2, m2, a2] = doNome;
+    return { inicio: `${a1}-${m1}-${d1}`, fim: `${a2}-${m2}-${d2}` };
+  }
   const regexPalavra = /per[ií]odo/gi;
   const regexData = /(\d{2})[\/\-.](\d{2})[\/\-.](\d{4})/g;
   const JANELA = 80;
@@ -5844,7 +5852,7 @@ async function dominioRelatoriosSincronizar(
       const buf = await onedrive.baixarConteudoArquivo(token.accessToken, item.id);
       const texto = await obterTextoDoPdf(buf);
       const tipos = domRelClassificarTipos(texto);
-      const periodo = domRelExtrairPeriodo(texto);
+      const periodo = domRelExtrairPeriodo(texto, item.nome);
       const { empresa, cnpjDetectado, codigoArquivo } = domRelIdentificarEmpresa(mapaDocumentos, texto, item.nome);
 
       if (opts.dryRun) {
