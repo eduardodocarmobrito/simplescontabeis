@@ -10587,18 +10587,20 @@ function extrairDocumentos(texto: string): { documento: string; tipo: "cnpj" | "
   }
   return encontrados;
 }
-// Procura a data de vencimento no texto de uma guia (DARF, FGTS etc.) — primeiro tenta perto da
-// palavra "vencimento", senão cai pra primeira data no formato dd/mm/aaaa encontrada no documento.
+// Procura a data de vencimento no texto de uma guia (DARF, FGTS etc.) — só perto da palavra
+// "vencimento" mesmo. Achado ao vivo: o fallback antigo ("senão, primeira data dd/mm/aaaa do
+// documento inteiro") pegava qualquer data que aparecesse primeiro no arquivo — num relatório sem
+// vencimento de verdade (ex.: Relatório de Retenções, que só tem "Período: dd/mm/aaaa até
+// dd/mm/aaaa" no cabeçalho), isso marcava o início do período como se fosse vencimento. Documento
+// sem a palavra "vencimento" por perto agora fica genuinamente "não identificado" — o front cai pro
+// rótulo de competência nesse caso (ver competenciaFallbackLabel em app.html).
 function extrairVencimento(texto: string): string | null {
   const brParaIso = (d: string) => {
     const [dd, mm, yyyy] = d.split("/");
     return `${yyyy}-${mm}-${dd}`;
   };
   const pertoDaPalavra = texto.match(/venc[a-zçã.]*[^0-9]{0,25}(\d{2}\/\d{2}\/\d{4})/i);
-  if (pertoDaPalavra) return brParaIso(pertoDaPalavra[1]);
-  const qualquerData = texto.match(/\d{2}\/\d{2}\/\d{4}/);
-  if (qualquerData) return brParaIso(qualquerData[0]);
-  return null;
+  return pertoDaPalavra ? brParaIso(pertoDaPalavra[1]) : null;
 }
 app.post("/api/email/identificar", blockCliente, requirePermissao("configuracoes", "visualizar"), upload.single("arquivo"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "Envie um arquivo." });
