@@ -2728,6 +2728,16 @@ app.delete("/api/empresas/contatos/:contatoId", blockCliente, requirePermissao("
   sqlite.prepare(`DELETE FROM empresa_contatos WHERE id = ?`).run(Number(req.params.contatoId));
   res.json({ ok: true });
 });
+// Lista os IDs de empresa que já têm pelo menos 1 contato cadastrado (e-mail ou WhatsApp) — usado
+// pela tela "Contatos e documentos por cliente" pra separar em abas "Configuradas" x "Faltam
+// configurar" sem precisar de 1 chamada por empresa (uma única consulta agregada).
+app.get("/api/empresas/contatos-resumo", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const visiveis = empresasVisiveis(user);
+  let ids = (sqlite.prepare(`SELECT DISTINCT empresa_id FROM empresa_contatos`).all() as any[]).map((r) => r.empresa_id);
+  if (visiveis !== null) ids = ids.filter((id) => visiveis.includes(id));
+  res.json({ comContato: ids });
+});
 
 // ---- O que cada empresa pode pedir em "Solicitar Documentos" ----
 const EMPRESA_SOLICITACAO_TIPOS_FIXOS = ["recalculo_das", "parcelamento_das"];

@@ -8098,11 +8098,16 @@ function linhaContatoHtml(c, editando){
     <td style="text-align:right; white-space:nowrap;"><button class="btn small primary" data-act="salvarContato">Salvar</button> <button class="btn small" data-act="cancelEditContato">Cancelar</button></td>
   </tr>`;
 }
+let CC_TAB='faltam';
 async function renderCfgEmailSmtp(box){
   const status = await api('/email/status');
   const cfg = await api('/email/config');
   const { items } = await api('/email/log');
   const empresas = await empresasAtivas();
+  const { comContato } = await api('/empresas/contatos-resumo');
+  let comContatoSet = new Set(comContato);
+  let empresasConfiguradas = empresas.filter(e=>comContatoSet.has(e.id)).sort((a,b)=>a.nome.localeCompare(b.nome,'pt-BR'));
+  let empresasFaltam = empresas.filter(e=>!comContatoSet.has(e.id)).sort((a,b)=>a.nome.localeCompare(b.nome,'pt-BR'));
   const isAdmin = STATE.user.perfil==='Administrador';
   box.innerHTML = `
     <div class="card">
@@ -8133,6 +8138,11 @@ async function renderCfgEmailSmtp(box){
       <h3>Contatos e documentos por cliente</h3>
       <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Cadastre aqui os e-mails (pode ser mais de um) e os CNPJ/CPF de cada cliente, uma vez só — ficam salvos para o envio e para a identificação automática.</p>
       <div class="field"><label>Empresa</label>${comboSelectHtml('ccEmpresaCombo', 'Digite para buscar a empresa…')}</div>
+      <div class="tabs" style="margin-top:14px;">
+        <div class="tab ${CC_TAB==='faltam'?'active':''}" data-cctab="faltam">Faltam configurar (${empresasFaltam.length})</div>
+        <div class="tab ${CC_TAB==='configuradas'?'active':''}" data-cctab="configuradas">Configuradas (${empresasConfiguradas.length})</div>
+      </div>
+      <div id="ccListaEmpresas" style="margin-top:10px; max-height:260px; overflow-y:auto;"></div>
       <div id="ccBody"></div>
     </div>
     <div class="card">
@@ -8173,6 +8183,46 @@ async function renderCfgEmailSmtp(box){
     });
   }
 
+  // Reflete na hora a empresa mudando de aba quando o 1º contato é adicionado (ou o último, removido)
+  // — sem isso o usuário precisaria trocar de tela e voltar pra ver a empresa "sair" de Faltam
+  // configurar. Não mexe em ccBody nem na seleção atual do combo, só nas duas listas/contagens.
+  async function atualizarListasCc(){
+    const { comContato: novo } = await api('/empresas/contatos-resumo');
+    comContatoSet = new Set(novo);
+    empresasConfiguradas = empresas.filter(e=>comContatoSet.has(e.id)).sort((a,b)=>a.nome.localeCompare(b.nome,'pt-BR'));
+    empresasFaltam = empresas.filter(e=>!comContatoSet.has(e.id)).sort((a,b)=>a.nome.localeCompare(b.nome,'pt-BR'));
+    const tFaltam = box.querySelector('.tab[data-cctab="faltam"]');
+    const tConfig = box.querySelector('.tab[data-cctab="configuradas"]');
+    if(tFaltam) tFaltam.textContent = `Faltam configurar (${empresasFaltam.length})`;
+    if(tConfig) tConfig.textContent = `Configuradas (${empresasConfiguradas.length})`;
+    renderCcLista();
+  }
+  function renderCcLista(){
+    const lista = CC_TAB==='configuradas' ? empresasConfiguradas : empresasFaltam;
+    const listaBox = document.getElementById('ccListaEmpresas');
+    listaBox.innerHTML = lista.length ? `
+      <table class="data-table"><tbody>
+        ${lista.map(e=>`<tr data-cc-empresa="${e.id}" style="cursor:pointer;"><td>${esc(empresaComboLabel(e))}</td></tr>`).join('')}
+      </tbody></table>
+    ` : `<div class="empty-state">${CC_TAB==='configuradas'?'Nenhuma empresa configurada ainda.':'Nenhuma empresa pendente — tudo configurado.'}</div>`;
+    listaBox.querySelectorAll('[data-cc-empresa]').forEach(tr=>tr.addEventListener('click', ()=>selecionarEmpresaCc(tr.dataset.ccEmpresa)));
+  }
+  function selecionarEmpresaCc(empresaId){
+    const empresa = empresas.find(e=>String(e.id)===String(empresaId));
+    if(!empresa) return;
+    const combo = document.getElementById('ccEmpresaCombo');
+    combo.querySelector('.combo-value').value = String(empresaId);
+    combo.querySelector('.combo-input').value = empresaComboLabel(empresa);
+    carregarContatosEDocs();
+    document.getElementById('ccBody').scrollIntoView({behavior:'smooth', block:'nearest'});
+  }
+  box.querySelectorAll('.tab[data-cctab]').forEach(t=>t.addEventListener('click', ()=>{
+    CC_TAB = t.dataset.cctab;
+    box.querySelectorAll('.tab[data-cctab]').forEach(x=>x.classList.toggle('active', x.dataset.cctab===CC_TAB));
+    renderCcLista();
+  }));
+  renderCcLista();
+
   async function carregarContatosEDocs(){
     const empresaId = document.querySelector('#ccEmpresaCombo .combo-value').value;
     const ccBody = document.getElementById('ccBody');
@@ -8207,7 +8257,7 @@ async function renderCfgEmailSmtp(box){
       const telefone = document.getElementById('ccTelefone').value.trim();
       const receberWhatsapp = document.getElementById('ccReceberWhatsapp').checked;
       if(!nome||!email){ toast('Preencha nome e e-mail.','err'); return; }
-      try{ await api('/empresas/'+empresaId+'/contatos', { method:'POST', body:{ nome, email, telefone, receberWhatsapp } }); carregarContatosEDocs(); }
+      try{ await api('/empresas/'+empresaId+'/contatos', { method:'POST', body:{ nome, email, telefone, receberWhatsapp } }); carregarContatosEDocs(); atualizarListasCc(); }
       catch(e){ toast(e.message,'err'); }
     });
     // Delegação num único listener no tbody — sobrevive às trocas de outerHTML ao entrar/sair do
@@ -8221,6 +8271,7 @@ async function renderCfgEmailSmtp(box){
       if(btn.dataset.act==='rmContato'){
         await api('/empresas/contatos/'+contatoId, { method:'DELETE' });
         carregarContatosEDocs();
+        atualizarListasCc();
       } else if(btn.dataset.act==='editContato'){
         tr.outerHTML = linhaContatoHtml(c, true);
       } else if(btn.dataset.act==='cancelEditContato'){
