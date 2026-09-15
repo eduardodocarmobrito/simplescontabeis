@@ -5922,7 +5922,7 @@ async function dominioRelatoriosSincronizar(
           true
         );
         const observacao = `Importado automaticamente da pasta "${pasta}" do OneDrive em ${new Date().toLocaleDateString("pt-BR")}.`;
-        const docId = integraContadorAnexarPdfEmEnvio(atribuicaoId, empresa.id, ano, mes, item.nome, buf.toString("base64"), observacao, null);
+        const docId = integraContadorAnexarPdfEmEnvio(atribuicaoId, empresa.id, ano, mes, item.nome, buf.toString("base64"), observacao, null, true);
         if (primeiroDocId === null) primeiroDocId = docId;
       }
       domRelGravarControle({ ...base, tipoDetectado: tipos.join(","), empresaId: empresa.id, envioDocumentoId: primeiroDocId, status: "ok", erro: null, arquivoPendentePath: null });
@@ -6011,7 +6011,7 @@ app.post("/api/onedrive/relatorios/pendentes/:id/atribuir", blockCliente, requir
     true
   );
   const observacao = `Atribuído manualmente a partir de um relatório não identificado automaticamente (${row.nome_arquivo}).`;
-  const docId = integraContadorAnexarPdfEmEnvio(atribuicaoId, empresa.id, Number(ano), mesFinal, row.nome_arquivo, buf.toString("base64"), observacao, null);
+  const docId = integraContadorAnexarPdfEmEnvio(atribuicaoId, empresa.id, Number(ano), mesFinal, row.nome_arquivo, buf.toString("base64"), observacao, null, true);
   sqlite.prepare(`UPDATE dominio_relatorios_importados SET status='ok', erro=NULL, empresa_id=?, tipo_detectado=?, envio_documento_id=?, arquivo_pendente_path=NULL WHERE id=?`).run(empresa.id, tipo, docId, row.id);
   try {
     fs.unlinkSync(row.arquivo_pendente_path);
@@ -6181,8 +6181,12 @@ function integraContadorFormatarVencimento(vencAAAAMMDD: string | null): string 
   return `${vencAAAAMMDD.slice(0, 4)}-${vencAAAAMMDD.slice(4, 6)}-${vencAAAAMMDD.slice(6, 8)}`;
 }
 // Cria o período (se ainda não existir) e insere o documento em Envio de Documentos — usado tanto
-// pelo DAS quanto pela Situação Fiscal. Cada chamada INSERE um documento novo, nunca substitui um
-// já existente, então o histórico completo fica registrado (ex.: DAS original + cada recálculo).
+// pelo DAS/Situação Fiscal quanto pela importação de Balanço/DRE/Balancete do OneDrive. Por padrão
+// cada chamada INSERE um documento novo, nunca substitui um já existente, pra manter o histórico
+// completo (ex.: DAS original + cada recálculo). Com substituirExistente=true (usado só pela
+// importação de relatórios do OneDrive, a pedido do usuário: um relatório reenviado pro mesmo
+// período deve TROCAR o anterior, não empilhar os dois), qualquer documento já anexado nesse período
+// é apagado (registro + arquivo em disco) antes de inserir o novo.
 // Devolve o id do envio_documentos criado, pra quem quiser disparar o envio automático pro cliente.
 function integraContadorAnexarPdfEmEnvio(
   atribuicaoId: number,
@@ -6192,7 +6196,8 @@ function integraContadorAnexarPdfEmEnvio(
   nomeArquivo: string,
   pdfBase64: string,
   observacao: string,
-  vencimentoIso: string | null
+  vencimentoIso: string | null,
+  substituirExistente = false
 ): number {
   // "mes IS ?" (não "mes = ?"): pra template ANUAL, mes vem null — em SQLite "coluna = NULL" nunca é
   // verdadeiro, então com "=" isso nunca acharia o período já existente e duplicaria envio_periodos a
@@ -6203,6 +6208,22 @@ function integraContadorAnexarPdfEmEnvio(
   if (!periodo) {
     const info = sqlite.prepare(`INSERT INTO envio_periodos (atribuicao_id, ano, mes) VALUES (?, ?, ?)`).run(atribuicaoId, ano, mes);
     periodo = { id: Number(info.lastInsertRowid) };
+  } else if (substituirExistente) {
+    const antigos = sqlite.prepare(`SELECT id, file_path FROM envio_documentos WHERE periodo_id = ?`).all(periodo.id) as any[];
+    if (antigos.length) {
+      const idsAntigos = antigos.map((d) => d.id);
+      sqlite
+        .prepare(`UPDATE dominio_relatorios_importados SET envio_documento_id = NULL WHERE envio_documento_id IN (${idsAntigos.map(() => "?").join(",")})`)
+        .run(...idsAntigos);
+      sqlite.prepare(`DELETE FROM envio_documentos WHERE periodo_id = ?`).run(periodo.id);
+      for (const antigo of antigos) {
+        try {
+          fs.unlinkSync(antigo.file_path);
+        } catch {
+          /* segue mesmo se o arquivo antigo já não existir em disco */
+        }
+      }
+    }
   }
   const dir = path.join(UPLOADS_DIR, "envio", String(empresaId), String(periodo.id));
   fs.mkdirSync(dir, { recursive: true });
