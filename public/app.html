@@ -2909,7 +2909,7 @@ function novaSolicitacaoModal(disponiveis, recalculoDasDisponivel, parcelamentoD
     try{
       const r = await api('/envio/solicitar', { method:'POST', body });
       closeModal();
-      toast(r.jaConcluido? 'Esse documento já tinha sido enviado — confira na lista.' : (r.jaExistia? 'Você já tinha solicitado isso — seguimos aguardando o escritório.' : 'Solicitação enviada ao escritório.'), 'ok');
+      toast(r.jaConcluido? (r.atualizado? 'Tem uma versão mais recente já disponível — confira na lista.' : 'Esse documento já tinha sido enviado — confira na lista.') : (r.jaExistia? 'Você já tinha solicitado isso — seguimos aguardando o escritório.' : 'Solicitação enviada ao escritório.'), 'ok');
       pageSolicitarDocumentos();
     }catch(e){ toast(e.message,'err'); }
   });

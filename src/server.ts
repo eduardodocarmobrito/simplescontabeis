@@ -4187,6 +4187,12 @@ app.post("/api/envio/solicitar", (req, res) => {
   // pedir) não é encontrado e um período duplicado nasce a cada solicitação.
   let periodoId: number;
   let jaExistia = false;
+  // Quando o cliente já tinha pedido esse período antes, verifica se o arquivo no servidor é mais
+  // novo do que quando ele pediu da última vez — ex.: a importação do OneDrive substituiu o
+  // documento por uma versão corrigida depois desse pedido. Se for mais novo, marca como
+  // "atualizado" (bumping solicitado_em) pro cliente ver que tem versão nova; se for exatamente o
+  // mesmo arquivo de antes (mesma data/hora), não mexe em nada.
+  let atualizado = false;
   const existente = sqlite
     .prepare(`SELECT * FROM envio_periodos WHERE atribuicao_id = ? AND ano = ? AND mes IS ? AND rotulo IS ?`)
     .get(atrib.id, anoFinal, mesFinal, rotuloFinal) as any;
@@ -4195,6 +4201,12 @@ app.post("/api/envio/solicitar", (req, res) => {
     jaExistia = true;
     if (!existente.solicitado_em) {
       sqlite.prepare(`UPDATE envio_periodos SET solicitado_por = ?, solicitado_em = datetime('now'), solicitacao_tipo = 'documento' WHERE id = ?`).run(user.id, periodoId);
+    } else {
+      const maisRecente = sqlite.prepare(`SELECT enviado_em FROM envio_documentos WHERE periodo_id = ? ORDER BY enviado_em DESC LIMIT 1`).get(periodoId) as any;
+      if (maisRecente && maisRecente.enviado_em > existente.solicitado_em) {
+        atualizado = true;
+        sqlite.prepare(`UPDATE envio_periodos SET solicitado_em = datetime('now') WHERE id = ?`).run(periodoId);
+      }
     }
   } else {
     const info = sqlite
@@ -4203,7 +4215,7 @@ app.post("/api/envio/solicitar", (req, res) => {
     periodoId = Number(info.lastInsertRowid);
   }
   const jaConcluido = !!sqlite.prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id = ?`).get(periodoId);
-  res.json({ ok: true, atribuicaoId: atrib.id, periodoId, jaExistia, jaConcluido });
+  res.json({ ok: true, atribuicaoId: atrib.id, periodoId, jaExistia, jaConcluido, atualizado });
 });
 // Só pros templates alimentados pela importação automática do OneDrive (Balanço/Balancete/DRE/
 // Relação de Faturamento — ver TEMPLATES_RELATORIOS_DOMINIO): em vez de deixar o cliente digitar
