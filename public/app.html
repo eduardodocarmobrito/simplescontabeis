@@ -3474,11 +3474,60 @@ function documentoEnvioMaisRecente(grade){
 function periodoEnvioDaVez(ano, mes, grade){
   return grade.find(p=>p.ano===ano && p.mes===mes) || { periodoId:null, ano, mes, rotulo:null, documentos:[] };
 }
+// Índice em memória { atribuicaoId: grade } — preenchido enquanto os cards carregam, pra "Buscar"
+// poder achar um documento mesmo que ele esteja num período mais antigo (não o que o card mostra
+// por padrão) sem precisar buscar de novo no servidor a cada letra digitada.
+let DR_GRADES = {};
+function drDocumentoBate(termo, d, p, periodicidade){
+  return normalizaTxt(d.fileName).includes(termo) || normalizaTxt(rotuloPeriodoEnvio(p, periodicidade)).includes(termo);
+}
+function drFiltrar(items){
+  const termo = normalizaTxt(document.getElementById('drBusca')?.value.trim() || '');
+  let algumVisivel = false;
+  document.querySelectorAll('.doc-row').forEach(row=>{
+    const id = Number(row.dataset.id);
+    const a = items.find(x=>x.id===id);
+    const hint = row.querySelector('.doc-inline-busca-hint');
+    if(hint) hint.remove();
+    if(!termo){ row.classList.remove('hidden'); return; }
+    const bateNome = normalizaTxt(a.templateNome).includes(termo);
+    const grade = DR_GRADES[id] || [];
+    let achadoFora = null;
+    for(const p of grade){
+      for(const d of (p.documentos||[])){
+        if(drDocumentoBate(termo, d, p, a.periodicidade)){
+          const mostradoAgora = row.querySelector('[data-act="baixar-envio"]')?.dataset.doc === String(d.id);
+          if(!mostradoAgora){ achadoFora = { p, d }; }
+          else { achadoFora = achadoFora || 'atual'; }
+        }
+      }
+    }
+    const bate = bateNome || achadoFora;
+    row.classList.toggle('hidden', !bate);
+    if(bate) algumVisivel = true;
+    if(bate && achadoFora && achadoFora!=='atual'){
+      const painel = document.getElementById('drInline'+id);
+      const div = document.createElement('div');
+      div.className = 'doc-inline-busca-hint';
+      div.style.cssText = 'font-size:11.5px; color:var(--accent-deep); margin-top:6px;';
+      div.innerHTML = `Encontrado no histórico: <b>${esc(achadoFora.d.fileName)}</b> (${esc(rotuloPeriodoEnvio(achadoFora.p, a.periodicidade))}) — <span class="link-discreto" style="cursor:pointer; text-decoration:underline;">ver histórico completo</span>`;
+      div.querySelector('.link-discreto').addEventListener('click', ()=>abrirEnvioGrade(id, true));
+      painel.appendChild(div);
+    }
+  });
+  const semResultado = document.getElementById('drSemResultado');
+  if(semResultado) semResultado.classList.toggle('hidden', !termo || algumVisivel);
+}
 async function pageDocumentosRecebidos(){
+  DR_GRADES = {};
   const { items } = await api('/envio/minhas-atribuicoes');
   main().innerHTML = `
     <h1>Documentos Recebidos</h1>
     <p class="subtitle">Guias e documentos enviados pelo seu escritório de contabilidade</p>
+    <div class="field" style="max-width:360px; margin-bottom:16px;"><label>Buscar</label>
+      <input id="drBusca" placeholder="Nome do documento, tipo ou competência…">
+    </div>
+    <div id="drSemResultado" class="empty-state hidden">Nenhum documento encontrado.</div>
     <div id="drList"></div>
   `;
   const box = document.getElementById('drList');
@@ -3494,6 +3543,11 @@ async function pageDocumentosRecebidos(){
     </div>
   `).join('');
   box.querySelectorAll('.doc-card').forEach(c=>c.addEventListener('click', ()=>abrirEnvioGrade(Number(c.dataset.id), true)));
+  let drBuscaTimer = null;
+  document.getElementById('drBusca').addEventListener('input', ()=>{
+    clearTimeout(drBuscaTimer);
+    drBuscaTimer = setTimeout(()=>drFiltrar(items), 200);
+  });
 
   const hoje = new Date();
   const mesAnterior = new Date(hoje.getFullYear(), hoje.getMonth()-1, 1);
@@ -3501,6 +3555,7 @@ async function pageDocumentosRecebidos(){
     const painel = document.getElementById('drInline'+a.id);
     try{
       const { grade } = await api('/envio/grade/'+a.id);
+      DR_GRADES[a.id] = grade;
       let p, d;
       if(a.periodicidade==='mensal'){
         p = periodoEnvioDaVez(mesAnterior.getFullYear(), mesAnterior.getMonth()+1, grade);
@@ -3538,6 +3593,7 @@ async function pageDocumentosRecebidos(){
     }catch(e){
       painel.innerHTML = `<div class="doc-inline-empty">Não consegui carregar — abra o card.</div>`;
     }
+    drFiltrar(items);
   }
 }
 
