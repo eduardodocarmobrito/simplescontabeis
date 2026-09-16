@@ -3235,7 +3235,7 @@ function envioDocBlocoHtml(d, podeEditar, podePostar, souCliente, mostrarVencime
   return `<div class="slot" style="flex-direction:row; align-items:flex-start; justify-content:space-between; flex-wrap:wrap; gap:10px; padding-bottom:8px; margin-bottom:2px; border-bottom:1px dashed var(--rule);">
     <div style="flex:1; min-width:220px; display:flex; flex-direction:column; gap:6px;">
       <div class="slot-locked" style="background:var(--paper);"><span class="fname">${esc(d.fileName)}</span>Enviado em ${fmtDateHora(d.enviadoEm)}</div>
-      ${d.observacao? `<div class="slot-reopen-note" style="background:var(--accent-pale); color:var(--accent-deep);">${esc(d.observacao)}</div>`:''}
+      ${!souCliente && d.observacao? `<div class="slot-reopen-note" style="background:var(--accent-pale); color:var(--accent-deep);">${esc(d.observacao)}</div>`:''}
       ${vencHtml}
       ${!souCliente ? `<div style="font-size:11px; color:var(--ink-soft);">${d.emailEnviado? `✓ Enviado por e-mail ao cliente${d.emailEnviadoEm?' em '+fmtDateHora(d.emailEnviadoEm):''}` : (d.emailErro? '⚠ E-mail não enviado: '+esc(d.emailErro) : '')}</div>` : ''}
       ${!souCliente ? `<div style="font-size:11px; color:var(--ink-soft);">${d.whatsappEnviado? whatsappStatusTexto(d) : (d.whatsappErro? '⚠ WhatsApp não enviado: '+esc(d.whatsappErro) : '')}</div>` : ''}
@@ -3506,7 +3506,7 @@ async function pageDocumentosRecebidos(){
         <div class="doc-inline-periodo">${esc(rotuloPeriodoEnvio(p, a.periodicidade))}</div>
         <div class="slot">
           <div class="slot-label" style="font-weight:600; color:var(--ink);">${esc(d.fileName)}</div>
-          ${d.observacao? `<div class="slot-reopen-note" style="background:var(--accent-pale); color:var(--accent-deep);">${esc(d.observacao)}</div>`:''}
+          <div style="font-size:11.5px; color:var(--ink-soft);">Recebido em ${fmtDateHora(d.enviadoEm)}</div>
           ${vencHtml}
           ${outros>0? `<div style="font-size:11px; color:var(--ink-soft);">+ ${outros} documento(s) anterior(es) nesse período</div>`:''}
           <button class="btn small" data-act="baixar-envio" data-doc="${d.id}">Baixar</button>
