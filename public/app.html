@@ -2728,7 +2728,7 @@ async function pageMeusDocumentos(){
 
 // ===================== Solicitar Documentos (cliente pede ao escritório) =====================
 async function pageSolicitarDocumentos(){
-  const [{ items: disponiveis, recalculoDasDisponivel, parcelamentoDasDisponivel }, { items: minhas }] = await Promise.all([
+  const [{ items: disponiveis, recalculoDasDisponivel, parcelamentoDasDisponivel, retencoesDisponivel }, { items: minhas }] = await Promise.all([
     api('/envio/templates-disponiveis'),
     api('/envio/minhas-solicitacoes'),
   ]);
@@ -2762,11 +2762,11 @@ async function pageSolicitarDocumentos(){
     window.open('/api/envio/documentos/'+b.dataset.doc+'/download', '_blank');
   }));
   document.getElementById('btnNovaSolicitacao').addEventListener('click', ()=>{
-    if(!disponiveis.length && !recalculoDasDisponivel && !parcelamentoDasDisponivel){
+    if(!disponiveis.length && !recalculoDasDisponivel && !parcelamentoDasDisponivel && !retencoesDisponivel){
       toast('Nenhum documento disponível para solicitação — fale com o escritório.','err');
       return;
     }
-    novaSolicitacaoModal(disponiveis, recalculoDasDisponivel, parcelamentoDasDisponivel);
+    novaSolicitacaoModal(disponiveis, recalculoDasDisponivel, parcelamentoDasDisponivel, retencoesDisponivel);
   });
 }
 // "Recalcular DAS" não é um template do banco — dispara direto a busca no Integra Contador pra
@@ -2777,7 +2777,12 @@ const RECALCULO_DAS_ID = '__recalculo_das';
 // Receita não deixa simular nem aderir a um parcelamento novo por API, só avisa o escritório, que
 // negocia no e-CAC (fora do sistema) e depois vincula o parcelamento concedido em Solicitações.
 const PARCELAMENTO_DAS_ID = '__parcelamento_das';
-function novaSolicitacaoModal(disponiveis, recalculoDasDisponivel, parcelamentoDasDisponivel){
+// Também não é um template do banco — diferente de Balanço/Balancete/DRE/Faturamento (que só existem
+// depois que o OneDrive importa um PDF pronto), o relatório de Retenções é calculado na hora a partir
+// das notas fiscais já recebidas: o cliente escolhe qualquer competência já lançada e recebe o PDF
+// de imediato, sem esperar o escritório gerar nada.
+const RETENCOES_ID = '__retencoes';
+function novaSolicitacaoModal(disponiveis, recalculoDasDisponivel, parcelamentoDasDisponivel, retencoesDisponivel){
   const porId = new Map(disponiveis.map(t=>[String(t.id), t]));
   const hoje = new Date();
   openModal(`
@@ -2786,6 +2791,7 @@ function novaSolicitacaoModal(disponiveis, recalculoDasDisponivel, parcelamentoD
       <select id="solTemplate">
         ${recalculoDasDisponivel? `<option value="${RECALCULO_DAS_ID}">Recalcular DAS</option>` : ''}
         ${parcelamentoDasDisponivel? `<option value="${PARCELAMENTO_DAS_ID}">Solicitar parcelamento de DAS</option>` : ''}
+        ${retencoesDisponivel? `<option value="${RETENCOES_ID}">Retenções de Impostos</option>` : ''}
         ${disponiveis.map(t=>`<option value="${t.id}">${esc(t.nome)}</option>`).join('')}
       </select>
     </div>
@@ -2812,6 +2818,10 @@ function novaSolicitacaoModal(disponiveis, recalculoDasDisponivel, parcelamentoD
     }
     if(valor===PARCELAMENTO_DAS_ID){
       wrap.innerHTML = `<p style="font-size:12px; color:var(--ink-soft); margin:-4px 0 10px;">Avisamos o escritório do seu pedido — a negociação do parcelamento (entrada, número de parcelas) é feita direto com a Receita. Depois que o parcelamento for concedido, as guias de cada parcela aparecem aqui todo mês pra você acompanhar e pagar.</p>`;
+      return;
+    }
+    if(valor===RETENCOES_ID){
+      wrap.innerHTML = `<p style="font-size:12px; color:var(--ink-soft); margin:-4px 0 10px;">Geramos o relatório na hora, com as notas recebidas nessa competência.</p>` + desenhaMesAno('solMes','solAno');
       return;
     }
     const t = porId.get(valor);
@@ -2863,6 +2873,18 @@ function novaSolicitacaoModal(disponiveis, recalculoDasDisponivel, parcelamentoD
         const r = await api('/envio/solicitar-parcelamento-das', { method:'POST' });
         closeModal();
         toast(r.jaExistia? 'Você já tinha pedido isso — seguimos aguardando o escritório negociar com a Receita.' : 'Pedido enviado ao escritório.', 'ok');
+        pageSolicitarDocumentos();
+      }catch(e){ toast(e.message,'err'); btn.disabled=false; btn.textContent='Solicitar'; }
+      return;
+    }
+    if(valor===RETENCOES_ID){
+      const body = { mes: Number(document.getElementById('solMes').value), ano: Number(document.getElementById('solAno').value) };
+      const btn = document.getElementById('solEnviar');
+      btn.disabled = true; btn.textContent = 'Gerando…';
+      try{
+        await api('/envio/solicitar-retencoes', { method:'POST', body });
+        closeModal();
+        toast('Relatório gerado! Já está disponível pra baixar.','ok');
         pageSolicitarDocumentos();
       }catch(e){ toast(e.message,'err'); btn.disabled=false; btn.textContent='Solicitar'; }
       return;
@@ -4453,6 +4475,7 @@ async function renderNfseNotasDetalhe(empresaId){
 const SOLIC_TIPOS_FIXOS = [
   { chave: 'recalculo_das', label: 'Recalcular DAS' },
   { chave: 'parcelamento_das', label: 'Solicitar parcelamento de DAS' },
+  { chave: 'retencoes', label: 'Retenções de Impostos' },
 ];
 async function renderSolicitacaoTiposEmpresa(containerEl, empresaId){
   containerEl.innerHTML = '<div class="empty-state">Carregando…</div>';

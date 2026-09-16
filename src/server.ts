@@ -2778,7 +2778,7 @@ app.get("/api/empresas/contatos-resumo", blockCliente, requirePermissao("empresa
 });
 
 // ---- O que cada empresa pode pedir em "Solicitar Documentos" ----
-const EMPRESA_SOLICITACAO_TIPOS_FIXOS = ["recalculo_das", "parcelamento_das"];
+const EMPRESA_SOLICITACAO_TIPOS_FIXOS = ["recalculo_das", "parcelamento_das", "retencoes"];
 // Sem NENHUMA linha pra essa empresa = sem restrição (pode solicitar tudo) — mesmo default seguro de
 // cliente_paginas_visiveis. Só passa a restringir quando o admin marca algo de propósito.
 function empresaPodeSolicitar(empresaId: number, chave: string): boolean {
@@ -3975,7 +3975,7 @@ app.get("/api/checklist/uploads/:uploadId/download", blockCliente, requirePermis
 // qualquer um deles quebra silenciosamente o anexo automático de DAS/Situação Fiscal (a próxima
 // busca automática cria um modelo NOVO em vez de reaproveitar, perdendo a ligação com o histórico
 // já entregue ao cliente).
-const ENVIO_TEMPLATES_PROTEGIDOS = ["DAS - Mensal", "Consultar Situação Fiscal - RFB", "Balanço", "Balancete", "DRE Mensal", "DRE Anual", "Relação de Faturamento"];
+const ENVIO_TEMPLATES_PROTEGIDOS = ["DAS - Mensal", "Consultar Situação Fiscal - RFB", "Balanço", "Balancete", "DRE Mensal", "DRE Anual", "Relação de Faturamento", "Retenções de Impostos"];
 app.get("/api/envio/templates", blockCliente, requirePermissao("envio", "visualizar"), (req, res) => {
   const rows = sqlite.prepare(`SELECT * FROM envio_templates WHERE escritorio_id = ? ORDER BY nome`).all((req as any).user.escritorioId) as any[];
   res.json({
@@ -4137,6 +4137,7 @@ app.get("/api/envio/templates-disponiveis", (req, res) => {
     items,
     recalculoDasDisponivel: user.empresaId ? empresaPodeSolicitar(user.empresaId, "recalculo_das") : true,
     parcelamentoDasDisponivel: user.empresaId ? empresaPodeSolicitar(user.empresaId, "parcelamento_das") : true,
+    retencoesDisponivel: user.empresaId ? empresaPodeSolicitar(user.empresaId, "retencoes") : true,
   });
 });
 app.post("/api/envio/solicitar", (req, res) => {
@@ -10712,14 +10713,12 @@ function fmtCnpjRelatorio(doc: string | null): string {
 function fmtMoedaRelatorio(v: number): string {
   return (v || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
-app.get("/api/relatorios/retencoes/pdf", blockCliente, requirePermissao("relatorios", "visualizar"), async (req, res) => {
-  const empresaId = req.query.empresaId ? Number(req.query.empresaId) : null;
-  if (!empresaId) return res.status(400).json({ error: "Informe a empresa." });
-  const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
-  const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
-  try {
-    const { empresa, itens, somas } = calcularRetencoesNfse((req as any).user, empresaId, dataDe, dataAte);
-    const enderecoLinha = [empresa.endereco, empresa.cidade, empresa.uf, empresa.cep].filter(Boolean).join(" — ");
+// Extraído de GET /api/relatorios/retencoes/pdf (rota do escritório) pra ser reaproveitado também por
+// POST /api/envio/solicitar-retencoes (o cliente pede a própria competência em "Solicitar
+// Documentos" e recebe o PDF gerado na hora, sem esperar o escritório).
+async function gerarPdfRetencoes(user: any, empresaId: number, dataDe: string | null, dataAte: string | null): Promise<{ pdf: Buffer; empresa: any }> {
+  const { empresa, itens, somas } = calcularRetencoesNfse(user, empresaId, dataDe, dataAte);
+  const enderecoLinha = [empresa.endereco, empresa.cidade, empresa.uf, empresa.cep].filter(Boolean).join(" — ");
     const fmtDataBrRelatorio = (iso: string) => iso.split("-").reverse().join("/");
     const periodoLinha =
       dataDe || dataAte
@@ -10792,10 +10791,56 @@ app.get("/api/relatorios/retencoes/pdf", blockCliente, requirePermissao("relator
       </tbody>
     </table>
     <div><span class="tag-total">Total geral de retenções: R$ ${fmtMoedaRelatorio(somas.totalGeral)}</span></div>`;
-    const pdf = await contratos.gerarPdfDeHtml(html, `Retenções de Impostos - ${empresa.nome}`, { landscape: true });
+  const pdf = await contratos.gerarPdfDeHtml(html, `Retenções de Impostos - ${empresa.nome}`, { landscape: true });
+  return { pdf, empresa };
+}
+app.get("/api/relatorios/retencoes/pdf", blockCliente, requirePermissao("relatorios", "visualizar"), async (req, res) => {
+  const empresaId = req.query.empresaId ? Number(req.query.empresaId) : null;
+  if (!empresaId) return res.status(400).json({ error: "Informe a empresa." });
+  const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
+  const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
+  try {
+    const { pdf, empresa } = await gerarPdfRetencoes((req as any).user, empresaId, dataDe, dataAte);
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `inline; filename="Retencoes - ${empresa.nome.replace(/[\\/:*?"<>|]/g, "_")}.pdf"`);
     res.send(pdf);
+  } catch (e: any) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
+// Cliente pede o relatório de retenções da própria empresa direto em "Solicitar Documentos" — não é
+// um envio_template comum (nunca fica "aguardando o escritório"): gera o PDF na hora a partir das
+// notas já recebidas e anexa em Envio de Documentos sob um template interno dedicado, igual ao
+// recálculo de DAS (ver executarRecalculoDas acima). substituirExistente:true porque, se o cliente
+// pedir a mesma competência de novo, o certo é regenerar com as notas mais recentes, não empilhar.
+app.post("/api/envio/solicitar-retencoes", requireCliente, async (req, res) => {
+  const user = (req as any).user;
+  if (!user.empresaId) return res.status(400).json({ error: "Seu usuário não está vinculado a uma empresa." });
+  if (!empresaPodeSolicitar(user.empresaId, "retencoes")) {
+    return res.status(403).json({ error: "Sua empresa não está habilitada a solicitar o relatório de retenções." });
+  }
+  const mes = Number(req.body?.mes);
+  const ano = Number(req.body?.ano);
+  if (!ano || !mes || mes < 1 || mes > 12) return res.status(400).json({ error: "Informe o mês e o ano." });
+  try {
+    const dataDe = `${ano}-${String(mes).padStart(2, "0")}-01`;
+    const ultimoDia = new Date(ano, mes, 0).getDate();
+    const dataAte = `${ano}-${String(mes).padStart(2, "0")}-${String(ultimoDia).padStart(2, "0")}`;
+    const { pdf } = await gerarPdfRetencoes(user, user.empresaId, dataDe, dataAte);
+    const atribuicaoId = integraContadorObterOuCriarAtribuicaoModelo(
+      user.escritorioId,
+      user.empresaId,
+      "Retenções de Impostos",
+      "Relatório de retenções de impostos, gerado na hora a partir das notas fiscais recebidas — o cliente pode pedir qualquer competência já lançada.",
+      "mensal",
+      false
+    );
+    const observacao = `Gerado na hora a pedido do cliente em ${new Date().toLocaleDateString("pt-BR")}.`;
+    const nomeArquivo = `Retencoes ${String(mes).padStart(2, "0")}-${ano}.pdf`;
+    const docId = integraContadorAnexarPdfEmEnvio(atribuicaoId, user.empresaId, ano, mes, nomeArquivo, pdf.toString("base64"), observacao, null, true);
+    const doc = sqlite.prepare(`SELECT periodo_id FROM envio_documentos WHERE id = ?`).get(docId) as any;
+    sqlite.prepare(`UPDATE envio_periodos SET solicitado_em = datetime('now'), solicitado_por = ?, solicitacao_tipo = 'documento' WHERE id = ?`).run(user.id, doc.periodo_id);
+    res.json({ ok: true });
   } catch (e: any) {
     res.status(e.status || 500).json({ error: e.message });
   }
