@@ -2221,9 +2221,17 @@ async function pageLicencasBulk(){
       try{
         const r = await api('/empresas/anexos/licencas-bulk', { method:'POST', body: fd });
         renderRelatorio(r);
-        toast(`Concluído: ${r.identificados.length + r.semVencimento.length} anexados, ${r.naoIdentificados.length} não identificados.`, 'ok');
-      }catch(e){ toast(e.message,'err'); }
-      finally{ btnCarregar.disabled = false; btnCarregar.textContent = 'Carregar Licenças'; }
+        toast(`Licença carregada — confira em Empresa → Licenças (${r.identificados.length + r.semVencimento.length} anexado(s), ${r.naoIdentificados.length} não identificado(s)).`, 'ok');
+        // "Consome" o(s) PDF(s) já enviado(s) — limpa a seleção pra não deixar o mesmo arquivo
+        // pronto pra ser enviado de novo sem querer; só libera o botão de novo ao escolher outro.
+        inputPasta.value = '';
+        document.getElementById('lbPastaResumo').textContent = 'Nenhum PDF selecionado.';
+        btnCarregar.textContent = 'Carregar Licenças';
+        btnCarregar.disabled = true;
+      }catch(e){
+        toast(e.message,'err');
+        btnCarregar.disabled = false; btnCarregar.textContent = 'Carregar Licenças';
+      }
     });
   }
 
