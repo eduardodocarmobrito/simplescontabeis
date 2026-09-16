@@ -7542,6 +7542,8 @@ async function renderCfgDominio(box){
           <button class="btn primary" id="btnEnviarOnvioSessao">Enviar sessão</button>
           <div id="onvioSessaoResultado" style="margin-top:8px;"></div>
         </div>
+        <button class="btn" id="btnTestarOnvioAgora">Testar sincronização agora</button>
+        <div id="onvioTestarResultado" style="margin-top:8px;"></div>
       </div>
       <div id="domDbFields" class="hidden">
         <div class="row">
@@ -7573,7 +7575,7 @@ async function renderCfgDominio(box){
       </div>
       <div class="row" style="margin-top:6px;">
         <button class="btn primary" id="btnSalvarDomCfg" disabled>Salvar</button>
-        <button class="btn" id="btnTestarDomCfg">Testar conexão</button>
+        <button class="btn hidden" id="btnTestarDomCfg">Testar conexão</button>
       </div>
       <div id="domTestResult" style="margin-top:12px;"></div>
     </div>
@@ -7657,6 +7659,42 @@ async function renderCfgDominio(box){
       btn.disabled = false; btn.textContent = 'Enviar sessão';
     }
   });
+  // Testa a sessão do Onvio direto (sem precisar do agente local — roda no próprio servidor, mesmo
+  // caminho do botão "Atualizar Empresas" da tela Empresas): pede uma sincronização de verdade e
+  // mostra o resultado real (empresas atualizadas, ou o erro exato se a sessão não for válida).
+  document.getElementById('btnTestarOnvioAgora').addEventListener('click', async ()=>{
+    const btn = document.getElementById('btnTestarOnvioAgora');
+    const resultado = document.getElementById('onvioTestarResultado');
+    btn.disabled = true; btn.textContent = 'Testando…';
+    resultado.innerHTML = `<div class="empty-state">Sincronizando com o Onvio…</div>`;
+    try{
+      const { id } = await api('/dominio/sincronizar-empresas', { method:'POST' });
+      let tentativas = 0;
+      const poll = async ()=>{
+        tentativas++;
+        const r = await api('/dominio/sincronizar-empresas/'+id);
+        if(r.status==='pending'){
+          if(tentativas>30){
+            resultado.innerHTML = `<div class="tag bad">Sem resposta</div> <span style="font-size:12.5px;">Demorou demais — tente de novo.</span>`;
+            btn.disabled = false; btn.textContent = 'Testar sincronização agora';
+            return;
+          }
+          setTimeout(poll, 2000);
+          return;
+        }
+        btn.disabled = false; btn.textContent = 'Testar sincronização agora';
+        if(r.status==='ok'){
+          resultado.innerHTML = `<div class="tag ok">Funcionou</div> <span style="font-size:12.5px;">${r.novas} empresa(s) nova(s), ${r.atualizadas} atualizada(s).</span>`;
+        }else{
+          resultado.innerHTML = `<div class="tag bad">Falhou</div> <span style="font-size:12.5px;">${esc(r.erro||'Erro desconhecido.')}</span>`;
+        }
+      };
+      poll();
+    }catch(e){
+      resultado.innerHTML = `<div class="tag bad">Falhou</div> <span style="font-size:12.5px;">${esc(e.message)}</span>`;
+      btn.disabled = false; btn.textContent = 'Testar sincronização agora';
+    }
+  });
   document.getElementById('domSource').value = cfg.source || '';
   document.getElementById('domDbDriver').value = cfg.dbDriver || 'mssql';
   function syncSourceUI(){
@@ -7664,6 +7702,10 @@ async function renderCfgDominio(box){
     document.getElementById('domOnvioFields').classList.toggle('hidden', v!=='onvio');
     document.getElementById('domDbFields').classList.toggle('hidden', v!=='db');
     document.getElementById('domHttpFields').classList.toggle('hidden', v!=='http');
+    // "Testar conexão" testa o agente local (dominio-agent.ts) — só faz sentido nos modos que
+    // dependem dele (db/http). No modo Onvio o teste certo é "Testar sincronização agora", que fica
+    // dentro do próprio card do Onvio (ver btnTestarOnvioAgora), porque roda direto no servidor.
+    document.getElementById('btnTestarDomCfg').classList.toggle('hidden', v!=='db' && v!=='http');
   }
   document.getElementById('domSource').addEventListener('change', syncSourceUI);
   syncSourceUI();
