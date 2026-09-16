@@ -159,6 +159,8 @@
   .tabs{display:flex; gap:4px; border-bottom:1px solid var(--rule); margin-bottom:18px; flex-wrap:wrap;}
   .tab{padding:9px 14px; font-size:13px; cursor:pointer; color:var(--ink-soft); border-bottom:2px solid transparent; font-weight:500;}
   .tab.active{color:var(--accent-deep); border-color:var(--accent); font-weight:700;}
+  .cc-tabs .tab{border-radius:8px 8px 0 0;}
+  .cc-tabs .tab.active{background:var(--accent-pale); border-bottom-width:3px;}
 
   .grade-table{width:100%; border-collapse:collapse; font-size:13px;}
   .grade-table th{font-family:'IBM Plex Mono',monospace; font-size:10.5px; text-transform:uppercase; color:var(--ink-soft); padding:8px; border-bottom:1px solid var(--rule); text-align:left;}
@@ -8376,7 +8378,7 @@ async function renderCfgEmailSmtp(box){
     <div class="card">
       <h3>Contatos e documentos por cliente</h3>
       <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Cadastre aqui os e-mails (pode ser mais de um) e os CNPJ/CPF de cada cliente, uma vez só — ficam salvos para o envio e para a identificação automática.</p>
-      <div class="tabs" style="margin-top:14px;">
+      <div class="tabs cc-tabs" style="margin-top:14px;">
         <div class="tab ${CC_TAB==='faltam'?'active':''}" data-cctab="faltam">Faltam configurar (${empresasFaltam.length})</div>
         <div class="tab ${CC_TAB==='configuradas'?'active':''}" data-cctab="configuradas" style="border-left:1px solid var(--rule); margin-left:6px; padding-left:16px;">Configuradas (${empresasConfiguradas.length})</div>
       </div>
@@ -8386,10 +8388,12 @@ async function renderCfgEmailSmtp(box){
     </div>
     <div class="card">
       <h3>Histórico de envios</h3>
-      <table class="data-table">
-        <thead><tr><th>Quando</th><th>Empresa</th><th>Assunto</th><th>Status</th></tr></thead>
-        <tbody>${items.length? items.map(e=>`<tr><td>${fmtDate(e.enviado_em)}</td><td>${esc(e.empresaNome||'—')}</td><td>${esc(e.assunto)}</td><td><span class="tag ${e.status==='ok'?'ok':'bad'}">${e.status}</span></td></tr>`).join(''):'<tr><td colspan="4"><div class="empty-state">Nenhum envio ainda.</div></td></tr>'}</tbody>
-      </table>
+      <div style="max-height:460px; overflow-y:auto;">
+        <table class="data-table">
+          <thead><tr><th style="position:sticky; top:0; background:var(--surface);">Quando</th><th style="position:sticky; top:0; background:var(--surface);">Empresa</th><th style="position:sticky; top:0; background:var(--surface);">Assunto</th><th style="position:sticky; top:0; background:var(--surface);">Status</th></tr></thead>
+          <tbody>${items.length? items.map(e=>`<tr><td>${fmtDate(e.enviado_em)}</td><td>${esc(e.empresaNome||'—')}</td><td>${esc(e.assunto)}</td><td><span class="tag ${e.status==='ok'?'ok':'bad'}">${e.status}</span></td></tr>`).join(''):'<tr><td colspan="4"><div class="empty-state">Nenhum envio ainda.</div></td></tr>'}</tbody>
+        </table>
+      </div>
     </div>
   `;
 
