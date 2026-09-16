@@ -8332,10 +8332,15 @@ function linhaContatoHtml(c, editando){
   if(!editando){
     return `<tr data-id="${c.id}"><td>${esc(c.nome)}</td><td>${esc(c.email)}</td><td>${c.telefone?esc(c.telefone):'—'}${c.receber_whatsapp?' <span class="tag ok">WhatsApp</span>':''}</td><td style="text-align:right; white-space:nowrap;"><button class="btn small" data-act="editContato">Editar</button> <button class="btn small danger" data-act="rmContato">Remover</button></td></tr>`;
   }
-  return `<tr data-id="${c.id}">
-    <td><input data-f="nome" value="${esc(c.nome)}"></td>
-    <td><input data-f="email" type="email" value="${esc(c.email)}"></td>
-    <td><input data-f="telefone" value="${esc(c.telefone||'')}" placeholder="WhatsApp (DDD + número)" style="margin-bottom:4px;"><label class="checkbox-row" style="margin:0;"><input type="checkbox" data-f="receberWhatsapp" ${c.receber_whatsapp?'checked':''}> Receber por WhatsApp</label></td>
+  return `<tr data-id="${c.id}" style="background:var(--accent-pale);">
+    <td><div class="field" style="margin-bottom:0;"><input data-f="nome" value="${esc(c.nome)}" placeholder="Nome do contato"></div></td>
+    <td><div class="field" style="margin-bottom:0;"><input data-f="email" type="email" value="${esc(c.email)}" placeholder="e-mail@cliente.com"></div></td>
+    <td>
+      <div class="row" style="gap:10px; align-items:center; flex-wrap:nowrap;">
+        <div class="field" style="margin-bottom:0; flex:1; min-width:140px;"><input data-f="telefone" value="${esc(c.telefone||'')}" placeholder="WhatsApp (DDD + número)"></div>
+        <label class="checkbox-row" style="margin:0; white-space:nowrap;"><input type="checkbox" data-f="receberWhatsapp" ${c.receber_whatsapp?'checked':''}> Receber por WhatsApp</label>
+      </div>
+    </td>
     <td style="text-align:right; white-space:nowrap;"><button class="btn small primary" data-act="salvarContato">Salvar</button> <button class="btn small" data-act="cancelEditContato">Cancelar</button></td>
   </tr>`;
 }
@@ -8538,6 +8543,7 @@ async function renderCfgEmailSmtp(box){
         atualizarListasCc();
       } else if(btn.dataset.act==='editContato'){
         tr.outerHTML = linhaContatoHtml(c, true);
+        document.querySelector(`#ccContatosBody tr[data-id="${contatoId}"] [data-f="nome"]`)?.focus();
       } else if(btn.dataset.act==='cancelEditContato'){
         tr.outerHTML = linhaContatoHtml(c);
       } else if(btn.dataset.act==='salvarContato'){
