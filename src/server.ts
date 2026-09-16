@@ -4129,7 +4129,10 @@ app.get("/api/envio/templates-disponiveis", (req, res) => {
     .all(user.escritorioId) as any[];
   // Filtra pelo que essa empresa específica pode solicitar (ver empresaPodeSolicitar) — sem nenhuma
   // linha configurada pra ela, não filtra nada (mesmo catálogo de sempre).
-  const items = user.empresaId ? rows.filter((t) => empresaPodeSolicitar(user.empresaId, "template:" + t.id)) : rows;
+  const items = (user.empresaId ? rows.filter((t) => empresaPodeSolicitar(user.empresaId, "template:" + t.id)) : rows).map((t) => ({
+    ...t,
+    somenteDisponiveis: TEMPLATES_RELATORIOS_DOMINIO.has(t.nome),
+  }));
   res.json({
     items,
     recalculoDasDisponivel: user.empresaId ? empresaPodeSolicitar(user.empresaId, "recalculo_das") : true,
@@ -4200,6 +4203,33 @@ app.post("/api/envio/solicitar", (req, res) => {
   }
   const jaConcluido = !!sqlite.prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id = ?`).get(periodoId);
   res.json({ ok: true, atribuicaoId: atrib.id, periodoId, jaExistia, jaConcluido });
+});
+// Só pros templates alimentados pela importação automática do OneDrive (Balanço/Balancete/DRE/
+// Relação de Faturamento — ver TEMPLATES_RELATORIOS_DOMINIO): em vez de deixar o cliente digitar
+// qualquer mês/ano em "Solicitar Documentos" (não existe ninguém pra gerar aquilo sob demanda), a
+// tela usa esta rota pra listar só os períodos que JÁ têm documento importado pra empresa dele —
+// pedir um desses sempre volta jaConcluido:true na hora.
+app.get("/api/envio/periodos-disponiveis", (req, res) => {
+  const user = (req as any).user;
+  if (user.perfil !== "Cliente") return res.status(403).json({ error: "Rota exclusiva para clientes." });
+  if (!user.empresaId) return res.json({ items: [] });
+  const template = sqlite
+    .prepare(`SELECT * FROM envio_templates WHERE id = ? AND ativo = 1 AND visivel_cliente = 1 AND escritorio_id = ?`)
+    .get(Number(req.query.templateId), user.escritorioId) as any;
+  if (!template || !empresaPodeSolicitar(user.empresaId, "template:" + template.id)) {
+    return res.status(404).json({ error: "Documento não disponível para solicitação." });
+  }
+  const items = sqlite
+    .prepare(
+      `SELECT DISTINCT p.ano, p.mes, p.rotulo
+       FROM envio_periodos p
+       JOIN envio_atribuicoes a ON a.id = p.atribuicao_id
+       JOIN envio_documentos d ON d.periodo_id = p.id
+       WHERE a.template_id = ? AND a.empresa_id = ?
+       ORDER BY p.ano DESC, p.mes DESC`
+    )
+    .all(template.id, user.empresaId);
+  res.json({ items });
 });
 app.get("/api/envio/minhas-solicitacoes", (req, res) => {
   const user = (req as any).user;
@@ -5675,6 +5705,12 @@ const DOM_REL_TEMPLATE_NOME: Record<string, string> = {
   dre_anual: "DRE Anual",
   faturamento: "Relação de Faturamento",
 };
+// Nomes dos templates alimentados pela importação automática do OneDrive — pra esses, "Solicitar
+// Documentos" não deixa o cliente digitar qualquer mês/ano (não existe ninguém pra gerar sob
+// demanda): só pode escolher entre os períodos que JÁ têm documento importado (ver
+// GET /api/envio/periodos-disponiveis). Os outros templates (DAS, Situação Fiscal etc.) continuam
+// deixando digitar livre, porque o escritório gera aquilo quando o cliente pede.
+const TEMPLATES_RELATORIOS_DOMINIO = new Set(Object.values(DOM_REL_TEMPLATE_NOME));
 // Acha os tipos que o texto do PDF menciona — pode achar mais de um (ex.: um PDF que já vem com
 // Balanço + DRE juntos); nesse caso o pipeline anexa em CADA template que bateu.
 function domRelClassificarTipos(texto: string): DomRelTipo[] {

@@ -2803,7 +2803,7 @@ function novaSolicitacaoModal(disponiveis, recalculoDasDisponivel, parcelamentoD
       <div class="field" style="width:110px;"><label>Ano</label><input id="${idAno}" type="number" value="${anoDefault}"></div>
     </div>`;
   }
-  function desenhaPeriodo(){
+  async function desenhaPeriodo(){
     const valor = document.getElementById('solTemplate').value;
     const wrap = document.getElementById('solPeriodoWrap');
     if(valor===RECALCULO_DAS_ID){
@@ -2815,6 +2815,22 @@ function novaSolicitacaoModal(disponiveis, recalculoDasDisponivel, parcelamentoD
       return;
     }
     const t = porId.get(valor);
+    if(t.somenteDisponiveis && (t.periodicidade==='mensal'||t.periodicidade==='anual')){
+      // Balanço/Balancete/DRE/Relação de Faturamento vêm só da importação automática do OneDrive —
+      // não tem ninguém pra gerar sob demanda, então só deixa escolher entre o que já existe.
+      wrap.innerHTML = `<div class="empty-state">Carregando períodos disponíveis…</div>`;
+      const { items } = await api('/envio/periodos-disponiveis?templateId='+t.id);
+      if(!items.length){
+        wrap.innerHTML = `<div class="empty-state">Ainda não tem nenhum ${esc(t.nome)} disponível pra sua empresa.</div>`;
+        return;
+      }
+      wrap.innerHTML = `<div class="field"><label>Período</label>
+        <select id="solPeriodoDisponivel">
+          ${items.map(p=>`<option value="${p.ano}|${p.mes||''}">${p.mes?MESES[p.mes]+'/'+p.ano:p.ano}</option>`).join('')}
+        </select>
+      </div>`;
+      return;
+    }
     if(t.periodicidade==='mensal'){
       wrap.innerHTML = desenhaMesAno('solMes','solAno');
     } else if(t.periodicidade==='anual'){
@@ -2853,7 +2869,13 @@ function novaSolicitacaoModal(disponiveis, recalculoDasDisponivel, parcelamentoD
     }
     const t = porId.get(valor);
     const body = { templateId: Number(t.id) };
-    if(t.periodicidade==='mensal'){
+    if(t.somenteDisponiveis && (t.periodicidade==='mensal'||t.periodicidade==='anual')){
+      const sel = document.getElementById('solPeriodoDisponivel');
+      if(!sel){ toast('Nenhum período disponível pra solicitar.','err'); return; }
+      const [ano, mes] = sel.value.split('|');
+      body.ano = Number(ano);
+      if(mes) body.mes = Number(mes);
+    } else if(t.periodicidade==='mensal'){
       body.mes = Number(document.getElementById('solMes').value);
       body.ano = Number(document.getElementById('solAno').value);
     } else if(t.periodicidade==='anual'){
