@@ -727,9 +727,10 @@ sqlite.exec(`
   );
 
   -- Tipos de licença adicionais, além dos 4 fixos (Alvará, Vigilância Sanitária, Corpo de Bombeiros,
-  -- Ambiental-SEMMA) — compartilhados pelo escritório inteiro, igual empresa_licenca_anos. "chave" é
-  -- o slug estável gravado em empresa_anexos.tipo; sempre com prefixo "lic_" pra nunca colidir com
-  -- os tipos fixos. A categoria desses é sempre 'licenca'.
+  -- Ambiental-SEMMA). "chave" é o slug estável gravado em empresa_anexos.tipo; sempre com prefixo
+  -- "lic_" pra nunca colidir com os tipos fixos. A categoria desses é sempre 'licenca'. empresa_id
+  -- (ver migração abaixo) escopa o tipo a UMA empresa quando criado pela aba Licenças dela; NULL =
+  -- compartilhado pelo escritório inteiro (usado pela carga em lote, que não parte de uma empresa).
   CREATE TABLE IF NOT EXISTS empresa_licenca_tipos (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     escritorio_id INTEGER NOT NULL REFERENCES escritorios(id),
@@ -1797,6 +1798,18 @@ migrarSingletonParaEscritorio(
   if (!nomes.has("xml_export_ativo")) sqlite.exec(`ALTER TABLE dominio_config ADD COLUMN xml_export_ativo INTEGER NOT NULL DEFAULT 0`);
   if (!nomes.has("xml_export_dir")) sqlite.exec(`ALTER TABLE dominio_config ADD COLUMN xml_export_dir TEXT`);
 }
+// Migração leve: tipo de licença personalizado ganha empresa_id (nullable) — achado ao vivo: um tipo
+// criado dentro de uma empresa específica ("+ Outra licença") aparecia em TODAS as empresas do
+// escritório, porque o tipo era compartilhado só por escritorio_id. NULL continua = compartilhado
+// (tipos já existentes antes desta migração não mudam de comportamento); um valor aqui = só aparece
+// na empresa que criou.
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(empresa_licenca_tipos)`).all() as any[];
+  if (!cols.some((c) => c.name === "empresa_id")) {
+    sqlite.exec(`ALTER TABLE empresa_licenca_tipos ADD COLUMN empresa_id INTEGER REFERENCES empresas(id)`);
+    console.log("Migração aplicada: empresa_licenca_tipos.empresa_id (tipos já existentes seguem compartilhados, sem empresa_id).");
+  }
+}
 migrarSingletonParaEscritorio(
   "email_config",
   `smtp_host TEXT, smtp_port INTEGER DEFAULT 587, smtp_secure INTEGER DEFAULT 0, smtp_user TEXT, smtp_password TEXT,
@@ -2824,9 +2837,17 @@ const EMPRESA_ANEXO_TIPOS: Record<string, { categoria: string; label: string }> 
   corpo_bombeiros: { categoria: "licenca", label: "Licença Corpo de Bombeiros" },
   ambiental_semma: { categoria: "licenca", label: "Licença Ambiental - SEMMA" },
 };
-// Tipos de licença cadastrados à mão pelo escritório (tabela empresa_licenca_tipos), além dos fixos
-// acima. Sempre categoria 'licenca'.
-function licencaTiposCustom(escritorioId: number): { chave: string; label: string }[] {
+// Tipos de licença cadastrados à mão (tabela empresa_licenca_tipos), além dos fixos acima. Sempre
+// categoria 'licenca'. Com empresaId: só os compartilhados (empresa_id NULL) + os dessa empresa
+// específica — é o que a aba Licenças de UMA empresa deve enxergar. Sem empresaId: todos do
+// escritório (usado pela carga em lote, que precisa ver tipo de qualquer empresa pra classificar
+// os PDFs antes de saber a quem pertencem).
+function licencaTiposCustom(escritorioId: number, empresaId?: number | null): { chave: string; label: string }[] {
+  if (empresaId != null) {
+    return sqlite
+      .prepare(`SELECT chave, label FROM empresa_licenca_tipos WHERE escritorio_id = ? AND (empresa_id IS NULL OR empresa_id = ?) ORDER BY label COLLATE NOCASE`)
+      .all(escritorioId, empresaId) as any[];
+  }
   return sqlite
     .prepare(`SELECT chave, label FROM empresa_licenca_tipos WHERE escritorio_id = ? ORDER BY label COLLATE NOCASE`)
     .all(escritorioId) as any[];
@@ -2919,13 +2940,23 @@ app.post("/api/empresas/licenca-anos", blockCliente, requirePermissaoOr("empresa
 const LICENCA_TIPOS_FIXOS = Object.entries(EMPRESA_ANEXO_TIPOS)
   .filter(([, info]) => info.categoria === "licenca")
   .map(([chave, info]) => ({ chave, label: info.label, fixo: true }));
+// ?empresaId=: só os tipos que ESSA empresa enxerga (compartilhados + dela). Sem empresaId: todos do
+// escritório (carga em lote — ver licencaTiposCustom).
 app.get("/api/empresas/licenca-tipos", blockCliente, requirePermissaoOr("empresas", "licencas", "visualizar"), (req, res) => {
   const user = (req as any).user;
-  const custom = licencaTiposCustom(user.escritorioId).map((t) => ({ ...t, fixo: false }));
+  const empresaId = req.query.empresaId ? Number(req.query.empresaId) : null;
+  if (empresaId != null && !podeAcessarEmpresa(user, empresaId)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  const custom = licencaTiposCustom(user.escritorioId, empresaId).map((t) => ({ ...t, fixo: false }));
   res.json({ tipos: [...LICENCA_TIPOS_FIXOS, ...custom] });
 });
+// Criado sempre a partir da aba Licenças de UMA empresa (a carga em lote não cria tipo, só usa os
+// que já existem) — por isso empresaId é obrigatório, e o tipo nasce escopado só a ela (achado ao
+// vivo: antes nascia compartilhado com o escritório inteiro sem a pessoa pedir isso, e um tipo criado
+// pra uma empresa específica aparecia em todas as outras).
 app.post("/api/empresas/licenca-tipos", blockCliente, requirePermissaoOr("empresas", "licencas", "editar"), (req, res) => {
   const user = (req as any).user;
+  const empresaId = Number(req.body?.empresaId);
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
   const label = String(req.body?.label || "").trim().replace(/\s+/g, " ");
   if (label.length < 2 || label.length > 60) return res.status(400).json({ error: "Informe um nome de 2 a 60 caracteres." });
   const slug = label
@@ -2942,20 +2973,23 @@ app.post("/api/empresas/licenca-tipos", blockCliente, requirePermissaoOr("empres
   let chave = `lic_${slug}`;
   let n = 2;
   while (jaExistentes.has(chave)) chave = `lic_${slug}_${n++}`;
-  // Rótulo repetido (fixo ou custom) — não deixa criar duplicado só pra evitar confusão na lista
+  // Rótulo repetido — só entre o que ESSA empresa enxerga (fixo + compartilhado + dela mesma); duas
+  // empresas diferentes podem ter cada uma o seu próprio tipo com o mesmo nome (ex.: "IBAMA").
   const rotulosAtuais = [
     ...LICENCA_TIPOS_FIXOS.map((t) => t.label),
-    ...licencaTiposCustom(user.escritorioId).map((t) => t.label),
+    ...licencaTiposCustom(user.escritorioId, empresaId).map((t) => t.label),
   ].map((l) => l.toLowerCase());
   if (rotulosAtuais.includes(label.toLowerCase())) return res.status(400).json({ error: "Já existe uma licença com esse nome." });
-  sqlite.prepare(`INSERT INTO empresa_licenca_tipos (escritorio_id, chave, label) VALUES (?, ?, ?)`).run(user.escritorioId, chave, label);
+  sqlite.prepare(`INSERT INTO empresa_licenca_tipos (escritorio_id, chave, label, empresa_id) VALUES (?, ?, ?, ?)`).run(user.escritorioId, chave, label, empresaId);
   res.json({ chave, label });
 });
 app.delete("/api/empresas/licenca-tipos/:chave", blockCliente, requirePermissaoOr("empresas", "licencas", "editar"), (req, res) => {
   const user = (req as any).user;
   const chave = String(req.params.chave);
-  const row = sqlite.prepare(`SELECT id FROM empresa_licenca_tipos WHERE escritorio_id = ? AND chave = ?`).get(user.escritorioId, chave) as any;
+  const row = sqlite.prepare(`SELECT id, empresa_id FROM empresa_licenca_tipos WHERE escritorio_id = ? AND chave = ?`).get(user.escritorioId, chave) as any;
   if (!row) return res.status(404).json({ error: "Tipo de licença não encontrado." });
+  // Tipo escopado a uma empresa específica: só quem tem acesso a ela pode excluir.
+  if (row.empresa_id != null && !podeAcessarEmpresa(user, row.empresa_id)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
   const emUso = sqlite
     .prepare(`SELECT COUNT(*) n FROM empresa_anexos a JOIN empresas e ON e.id = a.empresa_id WHERE e.escritorio_id = ? AND a.tipo = ?`)
     .get(user.escritorioId, chave) as any;

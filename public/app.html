@@ -1655,8 +1655,11 @@ function tiposLicencaEntries(){
   const custom = LICENCA_TIPOS_CUSTOM.filter(t=>!EMPRESA_ANEXO_TIPOS[t.chave]).map(t=>[t.chave, { categoria:'licenca', label:t.label }]);
   return [...fixos, ...custom];
 }
-async function carregarLicencaTiposCustom(){
-  try{ const { tipos } = await api('/empresas/licenca-tipos'); LICENCA_TIPOS_CUSTOM = tipos.filter(t=>!t.fixo); }
+// Com empresaId: só os tipos que ESSA empresa enxerga (compartilhados + dela mesma) — usado na aba
+// Licenças do cadastro. Sem empresaId: todos do escritório — usado na carga em lote, que precisa ver
+// tipo de qualquer empresa antes de saber a quem cada PDF pertence.
+async function carregarLicencaTiposCustom(empresaId){
+  try{ const { tipos } = await api('/empresas/licenca-tipos'+(empresaId?'?empresaId='+empresaId:'')); LICENCA_TIPOS_CUSTOM = tipos.filter(t=>!t.fixo); }
   catch(e){ LICENCA_TIPOS_CUSTOM = []; }
 }
 function empresaModal(e){
@@ -1720,7 +1723,7 @@ function empresaModal(e){
       <div id="empAnexosConstituicao"><div class="empty-state">Carregando…</div></div>
     </div>
     <div id="empTabLicencas" class="hidden">
-      <p style="font-size:12.5px; color:var(--ink-soft); margin:0 0 10px; max-width:760px;">Alvará, Vigilância Sanitária, Corpo de Bombeiros, Ambiental (SEMMA) e outras licenças que você cadastrar, organizadas por ano — escolha o ano, depois a licença, pra ver o histórico e anexar. Use "+ Outra licença" pra criar um tipo novo (vale pra todas as empresas). O vencimento é sempre lido do anexo em si (PDF), nunca herdado de outro ano.</p>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin:0 0 10px; max-width:760px;">Alvará, Vigilância Sanitária, Corpo de Bombeiros, Ambiental (SEMMA) e outras licenças que você cadastrar, organizadas por ano — escolha o ano, depois a licença, pra ver o histórico e anexar. Use "+ Outra licença" pra criar um tipo novo (fica disponível só pra esta empresa). O vencimento é sempre lido do anexo em si (PDF), nunca herdado de outro ano.</p>
       <div class="tabs" id="empLicencasAnos"></div>
       <div id="empLicencasTipos" style="margin-top:12px;"></div>
     </div>
@@ -2063,18 +2066,18 @@ function ligarAbaLicencasEmpresa(empresaId){
       try{
         await api('/empresas/licenca-tipos/'+encodeURIComponent(el.dataset.tipo), { method:'DELETE' });
         if(tipoAberto===el.dataset.tipo) tipoAberto = null;
-        await carregarLicencaTiposCustom();
+        await carregarLicencaTiposCustom(empresaId);
         renderTipos();
         toast('Tipo de licença removido.','ok');
       }catch(err){ toast(err.message,'err'); }
     }));
     const btnAddTipo = document.getElementById('empLicAddTipo');
     if(btnAddTipo) btnAddTipo.addEventListener('click', async ()=>{
-      const nome = prompt('Nome da nova licença (ex.: "Licença Ambiental - IBAMA"). Fica disponível pra todas as empresas.');
+      const nome = prompt('Nome da nova licença (ex.: "Licença Ambiental - IBAMA"). Fica disponível só pra esta empresa.');
       if(!nome || !nome.trim()) return;
       try{
-        const { chave } = await api('/empresas/licenca-tipos', { method:'POST', body:{ label: nome.trim() } });
-        await carregarLicencaTiposCustom();
+        const { chave } = await api('/empresas/licenca-tipos', { method:'POST', body:{ label: nome.trim(), empresaId } });
+        await carregarLicencaTiposCustom(empresaId);
         tipoAberto = chave;
         renderTipos();
         toast('Licença adicionada.','ok');
@@ -2122,7 +2125,7 @@ function ligarAbaLicencasEmpresa(empresaId){
     const [anexosResp, anosResp] = await Promise.all([
       api('/empresas/'+empresaId+'/anexos?categoria=licenca'),
       api('/empresas/licenca-anos'),
-      carregarLicencaTiposCustom(),
+      carregarLicencaTiposCustom(empresaId),
     ]);
     todosAnexos = anexosResp.items;
     anosCompartilhados = anosResp.anos;
