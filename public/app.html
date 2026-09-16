@@ -1269,30 +1269,20 @@ async function pagePainelTv(){
 async function pageDashboard(){
   const meuSeq = RENDER_SEQ;
   const podeEditar = can('dashboard','editar');
-  const mostrarAlertaOnvio = STATE.user.perfil !== 'Cliente'; // defensivo — podeVerModulo já bloqueia Cliente antes de chegar aqui
-  const [{ items }, { competenciaInicio }, saudeOnvio] = await Promise.all([
+  const [{ items }, { competenciaInicio }] = await Promise.all([
     api('/dashboard/cards'),
     podeEditar ? api('/dashboard/monitoramento-config') : Promise.resolve({ competenciaInicio: null }),
-    mostrarAlertaOnvio ? api('/dashboard/onvio-saude') : Promise.resolve(null),
   ]);
   if(meuSeq !== RENDER_SEQ) return; // usuário já navegou pra outra tela enquanto isso carregava
   main().innerHTML = `
     <h1>Área de Trabalho</h1>
     <p class="subtitle">Indicadores do escritório — ${esc(STATE.user.nome)}</p>
-    ${saudeOnvio && saudeOnvio.quebrado ? `
-      <div class="alerta-critico">
-        <span>⚠ A sincronização automática de empresas com o Onvio está falhando há <b>${saudeOnvio.horasQuebrado}h</b> —
-          refaça o login e envie a sessão de novo.</span>
-        <button class="btn" id="btnIrConfigOnvio">Ir para Configurações</button>
-      </div>
-    ` : ''}
     ${podeEditar? `<p style="font-size:12.5px; color:var(--ink-soft); margin:-10px 0 16px;">
       Monitorando pendências ${competenciaInicio? `a partir de <b>${MESES[competenciaInicio.mes]}/${competenciaInicio.ano}</b>` : 'desde o período mais antigo gerado na grade de cada empresa'} —
       <span class="link-discreto" id="btnMonitoramentoConfig" style="cursor:pointer; text-decoration:underline;">${competenciaInicio?'alterar':'configurar um início'}</span>
     </p>` : ''}
     <div class="kpi-grid" id="kpiGrid"></div>
   `;
-  if(saudeOnvio && saudeOnvio.quebrado) document.getElementById('btnIrConfigOnvio').addEventListener('click', ()=>goPage('configuracoes'));
   if(podeEditar) document.getElementById('btnMonitoramentoConfig').addEventListener('click', ()=>monitoramentoConfigModal(competenciaInicio));
   const grid = document.getElementById('kpiGrid');
   grid.innerHTML = items.map(c=>`
