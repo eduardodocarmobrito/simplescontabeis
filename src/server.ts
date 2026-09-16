@@ -509,7 +509,7 @@ sqlite.exec(`
   CREATE TABLE IF NOT EXISTS dominio_sync_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     executado_em TEXT DEFAULT (datetime('now')),
-    origem TEXT NOT NULL, -- 'importacao-csv' | 'agente'
+    origem TEXT NOT NULL, -- 'importacao-csv' | 'agente' | 'nuvem'
     empresas_novas INTEGER DEFAULT 0,
     empresas_atualizadas INTEGER DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'ok',
@@ -3466,7 +3466,7 @@ app.get("/api/dominio/sync-log", blockCliente, requirePermissao("configuracoes",
   // token único/global — ver requireDominioAgent) — fica pra quando um segundo agente real existir.
   const rows = sqlite.prepare(`SELECT * FROM dominio_sync_log ORDER BY id DESC LIMIT 30`).all();
   const heartbeat = sqlite.prepare(`SELECT last_seen_at as lastSeenAt, version FROM agent_heartbeat WHERE escritorio_id = ?`).get((req as any).user.escritorioId) as any;
-  res.json({ items: rows, agente: heartbeat || null });
+  res.json({ items: rows, agente: heartbeat || null, saudeOnvio: calcularSaudeOnvio() });
 });
 
 // ---------- Configuração de acesso do src/dominio-agent.ts (editável pela tela, sem mexer no .env) ----------
@@ -3485,6 +3485,49 @@ function onvioSessionPath(escritorioId: number): string {
   // escritório 1 mantém o caminho antigo (compatível com o arquivo já usado pelo agente local via
   // DOMINIO_ONVIO_SESSION_PATH) — outros escritórios ganham um arquivo próprio.
   return escritorioId === 1 ? path.join(dir, "onvio-session.json") : path.join(dir, `onvio-session-${escritorioId}.json`);
+}
+interface SaudeOnvio {
+  nuncaConfigurado: boolean;
+  quebrado: boolean;
+  falhasConsecutivas: number;
+  quebradoDesde: string | null;
+  horasQuebrado: number | null;
+  ultimoErro: string | null;
+}
+// Calcula se a sincronização automática com o Onvio está quebrada há tempo suficiente pra avisar —
+// olha só origem='nuvem' (só essa função grava esse valor; sucesso/erro em executarSincronizacaoOnvio
+// abaixo), contando quantas falhas seguidas tem no topo do log (sem nenhum sucesso no meio) e desde
+// quando a mais antiga dessa sequência aconteceu. 3+ falhas seguidas E 3h+ de quebra evita alarme por
+// um blip isolado, mas pega rápido um problema real (achado ao vivo: uma sessão morreu ~1h depois de
+// enviada e ficou 36h falhando de hora em hora sem ninguém notar). Sem nenhuma linha ainda
+// (nuncaConfigurado), nunca é "quebrado" — não é a mesma coisa que "nunca configurado".
+function calcularSaudeOnvio(): SaudeOnvio {
+  const rows = sqlite
+    .prepare(`SELECT status, executado_em, detalhe FROM dominio_sync_log WHERE origem = 'nuvem' ORDER BY id DESC LIMIT 50`)
+    .all() as { status: string; executado_em: string; detalhe: string | null }[];
+  if (rows.length === 0) {
+    return { nuncaConfigurado: true, quebrado: false, falhasConsecutivas: 0, quebradoDesde: null, horasQuebrado: null, ultimoErro: null };
+  }
+  let falhasConsecutivas = 0;
+  let quebradoDesde: string | null = null;
+  let ultimoErro: string | null = null;
+  for (const r of rows) {
+    if (r.status !== "erro") break;
+    falhasConsecutivas++;
+    quebradoDesde = r.executado_em; // sobrescrito a cada volta — termina com a falha mais antiga do streak
+    if (ultimoErro === null) ultimoErro = r.detalhe;
+  }
+  // executado_em vem de datetime('now') do SQLite — "AAAA-MM-DD HH:MM:SS" em UTC, sem "Z". Mesma
+  // conversão já usada no front (fmtDate/fmtDateHora, app.html).
+  const horasQuebrado = quebradoDesde ? (Date.now() - new Date(quebradoDesde.replace(" ", "T") + "Z").getTime()) / 3600000 : null;
+  return {
+    nuncaConfigurado: false,
+    quebrado: falhasConsecutivas >= 3 && horasQuebrado !== null && horasQuebrado >= 3,
+    falhasConsecutivas,
+    quebradoDesde,
+    horasQuebrado: horasQuebrado !== null ? Math.floor(horasQuebrado) : null,
+    ultimoErro,
+  };
 }
 async function executarSincronizacaoOnvio(escritorioId: number, jobId?: number): Promise<void> {
   try {
@@ -10057,6 +10100,15 @@ app.get("/api/dashboard/cards", requirePermissao("dashboard", "visualizar"), asy
     })
   );
   res.json({ items });
+});
+// Alerta do Início quando a sincronização automática de empresas com o Onvio está quebrada há
+// tempo — mesmo cálculo usado em GET /api/dominio/sync-log, exposto aqui sem exigir a permissão
+// granular de "configuracoes" (um Colaborador pode não ter acesso a Configurações mas ainda deve
+// ver esse alerta no Início). Sem blockCliente de propósito: requirePermissao já nega Cliente
+// incondicionalmente (hasPermissao retorna false pra esse perfil antes de checar qualquer coisa),
+// mesmo padrão de GET /api/dashboard/cards acima.
+app.get("/api/dashboard/onvio-saude", requirePermissao("dashboard", "visualizar"), (req, res) => {
+  res.json(calcularSaudeOnvio());
 });
 app.get("/api/dashboard/cards/:id/detalhe", requirePermissao("dashboard", "visualizar"), async (req, res) => {
   const user = (req as any).user;

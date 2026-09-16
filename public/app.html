@@ -172,6 +172,8 @@
   .slot-locked{background:var(--accent-pale); border-radius:8px; padding:8px 10px; font-size:12px; color:var(--accent-deep);}
   .slot-locked .fname{font-weight:600; display:block; word-break:break-all;}
   .slot-reopen-note{background:#F5E7D0; color:var(--amber); border-radius:8px; padding:6px 9px; font-size:11.5px; margin-bottom:4px;}
+  .alerta-critico{background:#F6E6E3; color:var(--debit); border-radius:8px; padding:10px 14px; font-size:12.5px; margin-bottom:14px; display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;}
+  .alerta-critico b{font-weight:700;}
 
   .doc-row{display:flex; gap:14px; align-items:stretch; margin-bottom:14px;}
   .doc-card{width:340px; flex-shrink:0; background:var(--surface); border:1px solid var(--rule); border-radius:var(--radius); box-shadow:var(--shadow); padding:14px 16px; cursor:pointer; display:flex; flex-direction:column; justify-content:center; transition:border-color .15s;}
@@ -1249,20 +1251,30 @@ async function pagePainelTv(){
 async function pageDashboard(){
   const meuSeq = RENDER_SEQ;
   const podeEditar = can('dashboard','editar');
-  const [{ items }, { competenciaInicio }] = await Promise.all([
+  const mostrarAlertaOnvio = STATE.user.perfil !== 'Cliente'; // defensivo — podeVerModulo já bloqueia Cliente antes de chegar aqui
+  const [{ items }, { competenciaInicio }, saudeOnvio] = await Promise.all([
     api('/dashboard/cards'),
     podeEditar ? api('/dashboard/monitoramento-config') : Promise.resolve({ competenciaInicio: null }),
+    mostrarAlertaOnvio ? api('/dashboard/onvio-saude') : Promise.resolve(null),
   ]);
   if(meuSeq !== RENDER_SEQ) return; // usuário já navegou pra outra tela enquanto isso carregava
   main().innerHTML = `
     <h1>Área de Trabalho</h1>
     <p class="subtitle">Indicadores do escritório — ${esc(STATE.user.nome)}</p>
+    ${saudeOnvio && saudeOnvio.quebrado ? `
+      <div class="alerta-critico">
+        <span>⚠ A sincronização automática de empresas com o Onvio está falhando há <b>${saudeOnvio.horasQuebrado}h</b> —
+          refaça o login e envie a sessão de novo.</span>
+        <button class="btn" id="btnIrConfigOnvio">Ir para Configurações</button>
+      </div>
+    ` : ''}
     ${podeEditar? `<p style="font-size:12.5px; color:var(--ink-soft); margin:-10px 0 16px;">
       Monitorando pendências ${competenciaInicio? `a partir de <b>${MESES[competenciaInicio.mes]}/${competenciaInicio.ano}</b>` : 'desde o período mais antigo gerado na grade de cada empresa'} —
       <span class="link-discreto" id="btnMonitoramentoConfig" style="cursor:pointer; text-decoration:underline;">${competenciaInicio?'alterar':'configurar um início'}</span>
     </p>` : ''}
     <div class="kpi-grid" id="kpiGrid"></div>
   `;
+  if(saudeOnvio && saudeOnvio.quebrado) document.getElementById('btnIrConfigOnvio').addEventListener('click', ()=>goPage('configuracoes'));
   if(podeEditar) document.getElementById('btnMonitoramentoConfig').addEventListener('click', ()=>monitoramentoConfigModal(competenciaInicio));
   const grid = document.getElementById('kpiGrid');
   grid.innerHTML = items.map(c=>`
@@ -7464,8 +7476,14 @@ async function renderCfgTab(){
 }
 
 async function renderCfgDominio(box){
-  const [{ items, agente }, cfg, oneDriveCfg, onvioSessao] = await Promise.all([ api('/dominio/sync-log'), api('/dominio/config'), api('/onedrive/config'), api('/dominio/onvio-sessao') ]);
+  const [{ items, agente, saudeOnvio }, cfg, oneDriveCfg, onvioSessao] = await Promise.all([ api('/dominio/sync-log'), api('/dominio/config'), api('/onedrive/config'), api('/dominio/onvio-sessao') ]);
   box.innerHTML = `
+    ${saudeOnvio && saudeOnvio.quebrado ? `
+      <div class="alerta-critico">
+        <span>⚠ A sincronização automática de empresas com o Onvio está falhando há <b>${saudeOnvio.horasQuebrado}h</b>
+          (${saudeOnvio.falhasConsecutivas} tentativas seguidas). ${esc(saudeOnvio.ultimoErro || '')}</span>
+      </div>
+    ` : ''}
     <div class="card">
       <h3>Status do agente automático</h3>
       <p style="font-size:13px; color:var(--ink-soft);">
