@@ -8388,7 +8388,7 @@ async function renderCfgEmailSmtp(box){
         <div class="tab ${CC_TAB==='configuradas'?'active':''}" data-cctab="configuradas" style="border-left:1px solid var(--rule); margin-left:6px; padding-left:16px;">Configuradas (${empresasConfiguradas.length})</div>
       </div>
       <div class="field" style="margin-top:12px;"><label>Empresa (busca só dentro da aba selecionada acima)</label>${comboSelectHtml('ccEmpresaCombo', 'Digite para buscar a empresa…')}</div>
-      <div id="ccListaEmpresas" style="margin-top:10px; max-height:260px; overflow-y:auto;"></div>
+      <div id="ccListaEmpresas" style="margin-top:10px; max-height:260px; overflow-y:auto; border:2px solid var(--accent); border-radius:10px; padding:4px 10px;"></div>
       <div id="ccBody" style="margin-top:22px;"></div>
     </div>
     <div class="card">
