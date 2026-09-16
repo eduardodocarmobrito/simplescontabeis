@@ -8376,11 +8376,11 @@ async function renderCfgEmailSmtp(box){
     <div class="card">
       <h3>Contatos e documentos por cliente</h3>
       <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Cadastre aqui os e-mails (pode ser mais de um) e os CNPJ/CPF de cada cliente, uma vez só — ficam salvos para o envio e para a identificação automática.</p>
-      <div class="field"><label>Empresa</label>${comboSelectHtml('ccEmpresaCombo', 'Digite para buscar a empresa…')}</div>
       <div class="tabs" style="margin-top:14px;">
         <div class="tab ${CC_TAB==='faltam'?'active':''}" data-cctab="faltam">Faltam configurar (${empresasFaltam.length})</div>
-        <div class="tab ${CC_TAB==='configuradas'?'active':''}" data-cctab="configuradas">Configuradas (${empresasConfiguradas.length})</div>
+        <div class="tab ${CC_TAB==='configuradas'?'active':''}" data-cctab="configuradas" style="border-left:1px solid var(--rule); margin-left:6px; padding-left:16px;">Configuradas (${empresasConfiguradas.length})</div>
       </div>
+      <div class="field" style="margin-top:12px;"><label>Empresa (busca só dentro da aba selecionada acima)</label>${comboSelectHtml('ccEmpresaCombo', 'Digite para buscar a empresa…')}</div>
       <div id="ccListaEmpresas" style="margin-top:10px; max-height:260px; overflow-y:auto;"></div>
       <div id="ccBody"></div>
     </div>
@@ -8435,6 +8435,10 @@ async function renderCfgEmailSmtp(box){
     if(tFaltam) tFaltam.textContent = `Faltam configurar (${empresasFaltam.length})`;
     if(tConfig) tConfig.textContent = `Configuradas (${empresasConfiguradas.length})`;
     renderCcLista();
+    // Atualiza a lista do combo sem limpar o que a pessoa já digitou (ela ainda está no meio da
+    // edição da empresa selecionada) — só passa a refletir a mudança de aba na próxima busca.
+    ccComboItems.length = 0;
+    ccComboItems.push(...ccComboItensAtuais());
   }
   function renderCcLista(){
     const lista = CC_TAB==='configuradas' ? empresasConfiguradas : empresasFaltam;
@@ -8455,10 +8459,23 @@ async function renderCfgEmailSmtp(box){
     carregarContatosEDocs();
     document.getElementById('ccBody').scrollIntoView({behavior:'smooth', block:'nearest'});
   }
+  function ccComboItensAtuais(){
+    return (CC_TAB==='configuradas'?empresasConfiguradas:empresasFaltam).map(e=>({id:e.id, label:empresaComboLabel(e)}));
+  }
+  function atualizarComboCc(){
+    // Muta o array em vez de trocar a referência — setupComboSelect guarda essa mesma lista no
+    // closure, então dá pra filtrar por aba sem precisar reinicializar o combo (e duplicar listeners).
+    ccComboItems.length = 0;
+    ccComboItems.push(...ccComboItensAtuais());
+    const combo = document.getElementById('ccEmpresaCombo');
+    combo.querySelector('.combo-value').value = '';
+    combo.querySelector('.combo-input').value = '';
+  }
   box.querySelectorAll('.tab[data-cctab]').forEach(t=>t.addEventListener('click', ()=>{
     CC_TAB = t.dataset.cctab;
     box.querySelectorAll('.tab[data-cctab]').forEach(x=>x.classList.toggle('active', x.dataset.cctab===CC_TAB));
     renderCcLista();
+    atualizarComboCc();
   }));
   renderCcLista();
 
@@ -8539,7 +8556,8 @@ async function renderCfgEmailSmtp(box){
       carregarContatosEDocs();
     }));
   }
-  setupComboSelect('ccEmpresaCombo', empresas.map(e=>({id:e.id, label:empresaComboLabel(e)})), carregarContatosEDocs);
+  const ccComboItems = ccComboItensAtuais();
+  setupComboSelect('ccEmpresaCombo', ccComboItems, carregarContatosEDocs);
 }
 
 // ===================== start =====================
