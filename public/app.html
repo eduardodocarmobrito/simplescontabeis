@@ -6912,9 +6912,9 @@ function renderRelRetencoes(box, empresas){
       resultBox.innerHTML = `
         <div style="overflow-x:auto;">
         <table class="data-table">
-          <thead><tr><th>Empresa</th><th>Notas</th><th>Valor Bruto</th><th>INSS</th><th>IRRF</th><th>PIS</th><th>COFINS</th><th>CSLL</th><th>ISS</th><th>Total Retido</th><th></th></tr></thead>
+          <thead><tr><th>Empresa</th><th>Notas</th><th>Valor Bruto</th><th>INSS</th><th>IRRF</th><th>PIS</th><th>COFINS</th><th>CSLL</th><th>ISS</th><th>Total Retido</th></tr></thead>
           <tbody>
-            ${items.map(it=>`<tr>
+            ${items.map(it=>`<tr class="nfeEmpresaRow" data-id="${it.empresaId}" style="cursor:pointer;">
               <td>${esc(it.empresaNome)}</td>
               <td>${it.qtdNotas}</td>
               <td>${fmtMoney(it.somas.valorServico)}</td>
@@ -6925,13 +6925,12 @@ function renderRelRetencoes(box, empresas){
               <td>${fmtMoney(it.somas.csll)}</td>
               <td>${fmtMoney(it.somas.iss)}</td>
               <td style="font-weight:700;">${fmtMoney(it.somas.totalGeral)}</td>
-              <td><button class="btn small" data-act="ver-empresa" data-id="${it.empresaId}">Ver detalhes</button></td>
             </tr>`).join('')}
           </tbody>
         </table>
         </div>
       `;
-      resultBox.querySelectorAll('[data-act="ver-empresa"]').forEach(b=>b.addEventListener('click', ()=>selecionarEmpresa(Number(b.dataset.id))));
+      resultBox.querySelectorAll('tr[data-id]').forEach(tr=>tr.addEventListener('click', ()=>selecionarEmpresa(Number(tr.dataset.id))));
     }catch(e){ resultBox.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; }
   }
   function selecionarEmpresa(empresaId){
@@ -7034,19 +7033,18 @@ function renderRelDominio(box, empresas, tipo){
       resultBox.innerHTML = `
         <div style="overflow-x:auto;">
         <table class="data-table">
-          <thead><tr><th>Empresa</th><th>Documentos</th><th>Último em</th><th></th></tr></thead>
+          <thead><tr><th>Empresa</th><th>Documentos</th><th>Último em</th></tr></thead>
           <tbody>
-            ${items.map(it=>`<tr>
+            ${items.map(it=>`<tr class="nfeEmpresaRow" data-id="${it.empresaId}" style="cursor:pointer;">
               <td>${esc(it.empresaNome)}</td>
               <td>${it.qtdDocumentos}</td>
               <td>${fmtDateHora(it.ultimoEm)}</td>
-              <td><button class="btn small" data-act="ver-empresa" data-id="${it.empresaId}">Ver detalhes</button></td>
             </tr>`).join('')}
           </tbody>
         </table>
         </div>
       `;
-      resultBox.querySelectorAll('[data-act="ver-empresa"]').forEach(b=>b.addEventListener('click', ()=>selecionarEmpresa(Number(b.dataset.id))));
+      resultBox.querySelectorAll('tr[data-id]').forEach(tr=>tr.addEventListener('click', ()=>selecionarEmpresa(Number(tr.dataset.id))));
     }catch(e){ resultBox.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; }
   }
   function selecionarEmpresa(empresaId){
