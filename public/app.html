@@ -4831,7 +4831,7 @@ async function pageNfeBusca(){
           <div class="tab" data-tab="configuradas">Empresas Configuradas <span class="tag muted">${configuradas.length}</span></div>
           <div class="tab" data-tab="naoConfiguradas">Empresas Não Configuradas <span class="tag muted">${naoConfiguradas.length}</span></div>
         </div>
-        <input type="text" id="nfeListaFiltro" placeholder="Buscar empresa…" style="margin:10px 0 6px;">
+        <div class="field" style="margin:10px 0 6px;"><label>Buscar</label><input type="text" id="nfeListaFiltro" placeholder="Buscar empresa…"></div>
         <div style="max-height:420px; overflow-y:auto; overflow-x:hidden; border:1px solid var(--rule); border-radius:8px; padding:4px 10px;">
           ${visiveis.length ? visiveis.map(l=>`
             <div class="nfeEmpresaRow" data-id="${l.id}" data-nome="${esc(normalizaTxt(l.nome))}" style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:6px 8px; font-size:13px; cursor:pointer; border-bottom:1px solid var(--rule);">
