@@ -6767,6 +6767,9 @@ function integraContadorAnexarPdfEmEnvio(
       sqlite
         .prepare(`UPDATE dominio_relatorios_importados SET envio_documento_id = NULL WHERE envio_documento_id IN (${idsAntigos.map(() => "?").join(",")})`)
         .run(...idsAntigos);
+      sqlite
+        .prepare(`UPDATE email_extratos_importados SET envio_documento_id = NULL WHERE envio_documento_id IN (${idsAntigos.map(() => "?").join(",")})`)
+        .run(...idsAntigos);
       sqlite.prepare(`DELETE FROM envio_documentos WHERE periodo_id = ?`).run(periodo.id);
       for (const antigo of antigos) {
         try {
