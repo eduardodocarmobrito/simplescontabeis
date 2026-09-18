@@ -1280,6 +1280,18 @@ for (const tabela of ["chat_mensagens", "chat_equipe_mensagens", "chat_dm_mensag
   }
 }
 
+// Migração leve: dominio_relatorios_importados.onedrive_modificado_em — achado ao vivo: o dedupe por
+// onedrive_item_id sozinho nunca detectava quando o Domínio Web sobrescrevia o MESMO arquivo (mesmo
+// item_id) com uma versão corrigida/mais nova — o sync via pra sempre pulando ele por já ter
+// status='ok'. Guarda o lastModifiedDateTime visto na última importação pra comparar depois.
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(dominio_relatorios_importados)`).all() as any[];
+  if (!cols.some((c) => c.name === "onedrive_modificado_em")) {
+    sqlite.exec(`ALTER TABLE dominio_relatorios_importados ADD COLUMN onedrive_modificado_em TEXT`);
+    console.log("Migração aplicada: dominio_relatorios_importados.onedrive_modificado_em.");
+  }
+}
+
 // Migração leve: onedrive_config ganha os campos da importação de relatórios (Balanço/DRE/Balancete)
 // — pasta de ORIGEM separada da pasta de DESTINO já usada pela exportação de XML, mas reaproveitando
 // a mesma conexão OAuth (client_id/client_secret/refresh_token) já salva nessa mesma linha.
@@ -6224,17 +6236,19 @@ function domRelGravarControle(row: {
   erro: string | null;
   arquivoPendentePath: string | null;
   textoPreview: string | null;
+  modificadoEm: string | null;
 }): void {
   sqlite
     .prepare(
       `INSERT INTO dominio_relatorios_importados
-         (escritorio_id, onedrive_item_id, nome_arquivo, tipo_detectado, periodo_inicio, periodo_fim, cnpj_detectado, codigo_dominio_arquivo, empresa_id, envio_documento_id, status, erro, arquivo_pendente_path, texto_preview)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         (escritorio_id, onedrive_item_id, nome_arquivo, tipo_detectado, periodo_inicio, periodo_fim, cnpj_detectado, codigo_dominio_arquivo, empresa_id, envio_documento_id, status, erro, arquivo_pendente_path, texto_preview, onedrive_modificado_em)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(escritorio_id, onedrive_item_id) DO UPDATE SET
          nome_arquivo=excluded.nome_arquivo, tipo_detectado=excluded.tipo_detectado, periodo_inicio=excluded.periodo_inicio,
          periodo_fim=excluded.periodo_fim, cnpj_detectado=excluded.cnpj_detectado, codigo_dominio_arquivo=excluded.codigo_dominio_arquivo,
          empresa_id=excluded.empresa_id, envio_documento_id=excluded.envio_documento_id, status=excluded.status, erro=excluded.erro,
-         arquivo_pendente_path=excluded.arquivo_pendente_path, texto_preview=excluded.texto_preview, importado_em=datetime('now')`
+         arquivo_pendente_path=excluded.arquivo_pendente_path, texto_preview=excluded.texto_preview, onedrive_modificado_em=excluded.onedrive_modificado_em,
+         importado_em=datetime('now')`
     )
     .run(
       row.escritorioId,
@@ -6250,7 +6264,8 @@ function domRelGravarControle(row: {
       row.status,
       row.erro,
       row.arquivoPendentePath,
-      row.textoPreview
+      row.textoPreview,
+      row.modificadoEm
     );
 }
 async function dominioRelatoriosSincronizar(
@@ -6280,11 +6295,22 @@ async function dominioRelatoriosSincronizar(
   for (const item of itens) {
     if (!opts.dryRun) {
       // Não reprocessa o que já deu certo OU já falhou com um motivo conhecido — só tenta de novo o
-      // que deu erro técnico ('erro', ex.: falha de rede) ou nunca foi visto. "Não identificado" é
-      // resolvido na mão (ver rota /pendentes/:id/atribuir), não tentando nos mesmos moldes de novo
-      // a cada 5 minutos.
-      const existente = sqlite.prepare(`SELECT status FROM dominio_relatorios_importados WHERE escritorio_id = ? AND onedrive_item_id = ?`).get(escritorioId, item.id) as any;
-      if (existente && existente.status !== "erro") continue;
+      // que deu erro técnico ('erro', ex.: falha de rede), nunca foi visto, OU o arquivo no OneDrive
+      // foi modificado desde a última vez (mesmo onedrive_item_id — o Domínio Web sobrescreve o
+      // arquivo em vez de criar um novo quando reexporta um relatório corrigido; achado ao vivo:
+      // sem isso, uma versão corrigida do mesmo relatório nunca era pega, ficava pra sempre com a
+      // primeira versão importada). Linha sem onedrive_modificado_em salvo ainda (de antes dessa
+      // checagem existir) também reprocessa uma vez, só pra preencher a data — repescagem única e
+      // barata (só download + leitura de PDF, sem API paga envolvida).
+      const existente = sqlite.prepare(`SELECT status, onedrive_modificado_em FROM dominio_relatorios_importados WHERE escritorio_id = ? AND onedrive_item_id = ?`).get(escritorioId, item.id) as any;
+      if (
+        existente &&
+        existente.status !== "erro" &&
+        existente.onedrive_modificado_em &&
+        item.modificadoEm &&
+        item.modificadoEm <= existente.onedrive_modificado_em
+      )
+        continue;
     }
     processados++;
     try {
@@ -6317,6 +6343,7 @@ async function dominioRelatoriosSincronizar(
         cnpjDetectado,
         codigoArquivo,
         textoPreview: texto.slice(0, 2000),
+        modificadoEm: item.modificadoEm,
       };
       if (!periodo || !tipos.length || !empresa) {
         const status = !periodo || !tipos.length ? "tipo_nao_identificado" : cnpjDetectado ? "empresa_nao_encontrada" : "sem_cnpj";
@@ -6381,6 +6408,7 @@ async function dominioRelatoriosSincronizar(
           erro: e.message || String(e),
           arquivoPendentePath: null,
           textoPreview: null,
+          modificadoEm: item.modificadoEm,
         });
       }
     }

@@ -180,17 +180,20 @@ export interface ItemPastaOneDrive {
   id: string;
   nome: string;
   ehPasta: boolean;
+  modificadoEm: string | null;
 }
 // Lista todos os arquivos de uma pasta (por caminho, ex. "Relatorios_Dominio") — pagina sozinho via
 // @odata.nextLink (o Graph corta a listagem em páginas; nunca existia tratamento de paginação neste
-// arquivo até agora porque só se fazia upload, nunca listagem).
+// arquivo até agora porque só se fazia upload, nunca listagem). "lastModifiedDateTime" é o que
+// permite detectar quando o Domínio Web sobrescreve um arquivo já existente com uma versão nova
+// (mesmo item_id, conteúdo diferente) — ver dominioRelatoriosSincronizar em server.ts.
 export async function listarArquivosPasta(accessToken: string, caminhoPasta: string): Promise<ItemPastaOneDrive[]> {
   const caminhoCodificado = caminhoPasta
     .split("/")
     .map((parte) => encodeURIComponent(parte))
     .join("/");
   const itens: ItemPastaOneDrive[] = [];
-  let proximaUrl: string | null = `${GRAPH_BASE}/me/drive/root:/${caminhoCodificado}:/children?$top=200&$select=id,name,folder`;
+  let proximaUrl: string | null = `${GRAPH_BASE}/me/drive/root:/${caminhoCodificado}:/children?$top=200&$select=id,name,folder,lastModifiedDateTime`;
   while (proximaUrl) {
     const { status, corpo } = await baixarUrlAbsoluta(proximaUrl, { Authorization: `Bearer ${accessToken}` });
     let json: any;
@@ -200,7 +203,7 @@ export async function listarArquivosPasta(accessToken: string, caminhoPasta: str
       throw new Error(`Resposta inesperada do OneDrive ao listar a pasta "${caminhoPasta}" (HTTP ${status}).`);
     }
     if (status !== 200) throw new Error(json?.error?.message || `HTTP ${status} ao listar a pasta "${caminhoPasta}".`);
-    for (const it of json.value || []) itens.push({ id: it.id, nome: it.name, ehPasta: !!it.folder });
+    for (const it of json.value || []) itens.push({ id: it.id, nome: it.name, ehPasta: !!it.folder, modificadoEm: it.lastModifiedDateTime || null });
     proximaUrl = json["@odata.nextLink"] || null;
   }
   return itens;
