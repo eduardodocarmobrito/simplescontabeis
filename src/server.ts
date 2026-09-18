@@ -1219,6 +1219,19 @@ sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_email_extratos_status ON email_extra
   }
 }
 
+// Migração leve: email_extratos_importados.checklist_upload_id — a importação por e-mail passou a
+// gravar em Solicitações de Documentos (checklist_uploads) em vez de Envio de Documentos
+// (envio_documentos é o que o escritório manda PRO cliente; um extrato recebido por e-mail do
+// cliente é o oposto). A coluna antiga envio_documento_id fica no schema (não usada mais por este
+// fluxo, sem necessidade de dropar).
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(email_extratos_importados)`).all() as any[];
+  if (!cols.some((c) => c.name === "checklist_upload_id")) {
+    sqlite.exec(`ALTER TABLE email_extratos_importados ADD COLUMN checklist_upload_id INTEGER REFERENCES checklist_uploads(id)`);
+    console.log("Migração aplicada: email_extratos_importados.checklist_upload_id.");
+  }
+}
+
 // Migração leve: onedrive_config ganha os campos da importação de relatórios (Balanço/DRE/Balancete)
 // — pasta de ORIGEM separada da pasta de DESTINO já usada pela exportação de XML, mas reaproveitando
 // a mesma conexão OAuth (client_id/client_secret/refresh_token) já salva nessa mesma linha.
@@ -6304,6 +6317,21 @@ function emailEhExtrato(nomeArquivo: string, ext: string): boolean {
   if (ext === "ofx") return true;
   return ext === "pdf" && /extrato/i.test(nomeArquivo);
 }
+// Itens fixos do checklist_templates "Outros Documentos Financeiros" — checklist_templates.itens
+// precisa ser uma lista pequena e fixa (colunas da grade em Solicitações de Documentos), diferente
+// de envio_documentos (sem conceito de item, qualquer nome de arquivo cabe solto no período). Achado
+// ao vivo, com o e-mail real de teste: os "outros" documentos seguem só 2 padrões de nome (Fluxo de
+// Caixa, Razão Financeira) — qualquer coisa fora disso cai no "Outros" genérico.
+const CHECKLIST_OUTROS_ITENS = [
+  { chave: "fluxo_caixa", label: "Fluxo de Caixa", accept: ["qualquer"], obrigatorio: false },
+  { chave: "razao_financeira", label: "Razão Financeira", accept: ["qualquer"], obrigatorio: false },
+  { chave: "outros", label: "Outros", accept: ["qualquer"], obrigatorio: false },
+];
+function emailClassificarItemOutro(nomeArquivo: string): { chave: string; label: string } {
+  if (/fluxo\s*de\s*caixa/i.test(nomeArquivo)) return CHECKLIST_OUTROS_ITENS[0];
+  if (/raz[ãa]o\s*financeir[ao]/i.test(nomeArquivo)) return CHECKLIST_OUTROS_ITENS[1];
+  return CHECKLIST_OUTROS_ITENS[2];
+}
 // Extensões aceitas no balaio "Outros Documentos Financeiros" — formatos de documento/planilha
 // comuns; ignora imagem/zip/executável etc., que não costuma ser um documento financeiro de verdade.
 const EMAIL_EXTENSOES_OUTROS = new Set(["pdf", "xlsx", "xls", "csv", "doc", "docx"]);
@@ -6337,7 +6365,7 @@ function emailGravarControle(row: {
   bancoDetectado: string | null;
   cnpjDetectado: string | null;
   empresaId: number | null;
-  envioDocumentoId: number | null;
+  checklistUploadId: number | null;
   status: string;
   erro: string | null;
   arquivoPendentePath: string | null;
@@ -6345,12 +6373,12 @@ function emailGravarControle(row: {
   sqlite
     .prepare(
       `INSERT INTO email_extratos_importados
-         (escritorio_id, message_id, email_assunto, email_remetente, email_recebido_em, nome_arquivo, tipo_detectado, banco_detectado, cnpj_detectado, empresa_id, envio_documento_id, status, erro, arquivo_pendente_path)
+         (escritorio_id, message_id, email_assunto, email_remetente, email_recebido_em, nome_arquivo, tipo_detectado, banco_detectado, cnpj_detectado, empresa_id, checklist_upload_id, status, erro, arquivo_pendente_path)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(escritorio_id, message_id, nome_arquivo) DO UPDATE SET
          email_assunto=excluded.email_assunto, email_remetente=excluded.email_remetente, email_recebido_em=excluded.email_recebido_em,
          tipo_detectado=excluded.tipo_detectado, banco_detectado=excluded.banco_detectado, cnpj_detectado=excluded.cnpj_detectado,
-         empresa_id=excluded.empresa_id, envio_documento_id=excluded.envio_documento_id, status=excluded.status, erro=excluded.erro,
+         empresa_id=excluded.empresa_id, checklist_upload_id=excluded.checklist_upload_id, status=excluded.status, erro=excluded.erro,
          arquivo_pendente_path=excluded.arquivo_pendente_path, importado_em=datetime('now')`
     )
     .run(
@@ -6364,7 +6392,7 @@ function emailGravarControle(row: {
       row.bancoDetectado,
       row.cnpjDetectado,
       row.empresaId,
-      row.envioDocumentoId,
+      row.checklistUploadId,
       row.status,
       row.erro,
       row.arquivoPendentePath
@@ -6456,7 +6484,7 @@ async function emailExtratosSincronizar(
               emailGravarControle({
                 ...base,
                 empresaId: null,
-                envioDocumentoId: null,
+                checklistUploadId: null,
                 status: "empresa_nao_encontrada",
                 erro: "Não identifiquei a empresa (nem pelo CNPJ no anexo, nem pelo nome no assunto do e-mail).",
                 arquivoPendentePath: emailSalvarPendente(escritorioId, buf, nomeArquivo),
@@ -6465,28 +6493,18 @@ async function emailExtratosSincronizar(
               continue;
             }
             const nomeTemplate = ehExtrato ? `Extrato ${banco || "Bancário"}` : "Outros Documentos Financeiros";
-            const atribuicaoId = integraContadorObterOuCriarAtribuicaoModelo(
+            const itens = ehExtrato ? [{ chave: "arquivo", label: nomeTemplate, accept: ["pdf", "ofx"], obrigatorio: false }] : CHECKLIST_OUTROS_ITENS;
+            const atribuicaoId = checklistObterOuCriarAtribuicaoModelo(
               escritorioId,
               empresa.id,
               nomeTemplate,
               `${nomeTemplate} — importado automaticamente do e-mail.`,
-              "mensal",
-              true
+              itens
             );
-            const observacao = `Importado automaticamente do e-mail "${assunto}" em ${new Date().toLocaleDateString("pt-BR")}.`;
-            const docId = integraContadorAnexarPdfEmEnvio(
-              atribuicaoId,
-              empresa.id,
-              ano,
-              mes,
-              nomeArquivo,
-              buf.toString("base64"),
-              observacao,
-              null,
-              true,
-              !ehExtrato
-            );
-            emailGravarControle({ ...base, empresaId: empresa.id, envioDocumentoId: docId, status: "ok", erro: null, arquivoPendentePath: null });
+            const periodoId = checklistObterOuCriarPeriodo(atribuicaoId, ano, mes);
+            const itemChave = ehExtrato ? "arquivo" : emailClassificarItemOutro(nomeArquivo).chave;
+            const uploadId = checklistSalvarUpload(periodoId, empresa.id, itemChave, nomeArquivo, buf, anexo.contentType || null);
+            emailGravarControle({ ...base, empresaId: empresa.id, checklistUploadId: uploadId, status: "ok", erro: null, arquivoPendentePath: null });
             ok++;
           }
           if (!opts.dryRun) {
@@ -6582,31 +6600,33 @@ app.post("/api/email-extratos/pendentes/:id/atribuir", blockCliente, requirePerm
   if (!row.arquivo_pendente_path || !fs.existsSync(row.arquivo_pendente_path)) {
     return res.status(400).json({ error: "O arquivo original não está mais disponível — rode a importação de novo." });
   }
-  const { empresaId, tipo, banco, ano, mes } = req.body || {};
+  const { empresaId, tipo, banco, item, ano, mes } = req.body || {};
   const empresa = sqlite.prepare(`SELECT id, nome FROM empresas WHERE id = ? AND escritorio_id = ?`).get(Number(empresaId), escritorioId) as any;
   if (!empresa) return res.status(400).json({ error: "Selecione uma empresa válida." });
   if (!Number.isInteger(Number(ano)) || !Number.isInteger(Number(mes))) return res.status(400).json({ error: "Informe o mês e o ano." });
   const buf = fs.readFileSync(row.arquivo_pendente_path);
-  const nomeTemplate = tipo === "extrato" ? `Extrato ${String(banco || "Bancário").trim() || "Bancário"}` : "Outros Documentos Financeiros";
-  const atribuicaoId = integraContadorObterOuCriarAtribuicaoModelo(
+  const ehExtrato = tipo === "extrato";
+  const nomeTemplate = ehExtrato ? `Extrato ${String(banco || "Bancário").trim() || "Bancário"}` : "Outros Documentos Financeiros";
+  const itens = ehExtrato ? [{ chave: "arquivo", label: nomeTemplate, accept: ["pdf", "ofx"], obrigatorio: false }] : CHECKLIST_OUTROS_ITENS;
+  const atribuicaoId = checklistObterOuCriarAtribuicaoModelo(
     escritorioId,
     empresa.id,
     nomeTemplate,
     `${nomeTemplate} — atribuído manualmente a partir de um anexo de e-mail não identificado automaticamente (${row.nome_arquivo}).`,
-    "mensal",
-    true
+    itens
   );
-  const observacao = `Atribuído manualmente a partir de um anexo de e-mail não identificado (${row.nome_arquivo}).`;
-  const docId = integraContadorAnexarPdfEmEnvio(atribuicaoId, empresa.id, Number(ano), Number(mes), row.nome_arquivo, buf.toString("base64"), observacao, null, true);
+  const periodoId = checklistObterOuCriarPeriodo(atribuicaoId, Number(ano), Number(mes));
+  const itemChave = ehExtrato ? "arquivo" : CHECKLIST_OUTROS_ITENS.some((it) => it.chave === item) ? item : emailClassificarItemOutro(row.nome_arquivo).chave;
+  const uploadId = checklistSalvarUpload(periodoId, empresa.id, itemChave, row.nome_arquivo, buf, null);
   sqlite
-    .prepare(`UPDATE email_extratos_importados SET status='ok', erro=NULL, empresa_id=?, tipo_detectado=?, banco_detectado=?, envio_documento_id=?, arquivo_pendente_path=NULL WHERE id=?`)
-    .run(empresa.id, tipo, tipo === "extrato" ? banco || null : null, docId, row.id);
+    .prepare(`UPDATE email_extratos_importados SET status='ok', erro=NULL, empresa_id=?, tipo_detectado=?, banco_detectado=?, checklist_upload_id=?, arquivo_pendente_path=NULL WHERE id=?`)
+    .run(empresa.id, tipo, ehExtrato ? banco || null : null, uploadId, row.id);
   try {
     fs.unlinkSync(row.arquivo_pendente_path);
   } catch {
     /* segue mesmo se não conseguir apagar o arquivo temporário */
   }
-  res.json({ ok: true, docId });
+  res.json({ ok: true, uploadId });
 });
 // Varredura automática de 15 em 15 minutos — só escritórios com a importação ligada e senha salva.
 setInterval(() => {
@@ -6727,6 +6747,69 @@ app.get("/api/integracontador/empresas", blockCliente, requirePermissao("integra
     .all(...ids);
   res.json({ items: rows });
 });
+// Mesma ideia de integraContadorObterOuCriarAtribuicaoModelo (logo abaixo), mas gravando em
+// checklist_* (Solicitações de Documentos — o que o CLIENTE manda PRO escritório) em vez de
+// envio_* (o que o escritório manda PRO cliente). Usado pela importação de extratos por e-mail:
+// um extrato/documento financeiro que chega do cliente por e-mail é conceitualmente um documento
+// RECEBIDO, não um documento enviado — mesmo que o escritório é quem opera o anexo (o cliente não
+// precisa fazer nada, o e-mail já chegou). Diferente de envio_templates, checklist_templates tem
+// uma lista de "itens" fixa (colunas da grade) — por isso recebe "itens" pronto em vez de inferir
+// um "accept" único.
+function checklistObterOuCriarAtribuicaoModelo(
+  escritorioId: number,
+  empresaId: number,
+  nomeTemplate: string,
+  descricaoTemplate: string,
+  itens: { chave: string; label: string; accept: string[]; obrigatorio: boolean }[],
+  periodicidade: "mensal" | "anual" | "avulso" = "mensal"
+): number {
+  let template = sqlite.prepare(`SELECT id FROM checklist_templates WHERE escritorio_id = ? AND nome = ?`).get(escritorioId, nomeTemplate) as any;
+  if (!template) {
+    const info = sqlite
+      .prepare(`INSERT INTO checklist_templates (nome, descricao, periodicidade, itens_json, notificar_email, escritorio_id) VALUES (?, ?, ?, ?, 0, ?)`)
+      .run(nomeTemplate, descricaoTemplate, periodicidade, JSON.stringify(itens), escritorioId);
+    template = { id: Number(info.lastInsertRowid) };
+  }
+  let atribuicao = sqlite.prepare(`SELECT id FROM checklist_atribuicoes WHERE template_id = ? AND empresa_id = ?`).get(template.id, empresaId) as any;
+  if (!atribuicao) {
+    const info = sqlite.prepare(`INSERT INTO checklist_atribuicoes (template_id, empresa_id, ativo) VALUES (?, ?, 1)`).run(template.id, empresaId);
+    atribuicao = { id: Number(info.lastInsertRowid) };
+  } else {
+    sqlite.prepare(`UPDATE checklist_atribuicoes SET ativo = 1 WHERE id = ?`).run(atribuicao.id);
+  }
+  return atribuicao.id;
+}
+// "mes IS ?" (não "="), mesmo motivo já documentado em integraContadorAnexarPdfEmEnvio — em SQLite
+// "coluna = NULL" nunca é verdadeiro, precisaria pra periodicidade 'anual'.
+function checklistObterOuCriarPeriodo(atribuicaoId: number, ano: number, mes: number | null): number {
+  let periodo = sqlite.prepare(`SELECT id FROM checklist_periodos WHERE atribuicao_id = ? AND ano = ? AND mes IS ?`).get(atribuicaoId, ano, mes) as any;
+  if (!periodo) {
+    const info = sqlite.prepare(`INSERT INTO checklist_periodos (atribuicao_id, ano, mes) VALUES (?, ?, ?)`).run(atribuicaoId, ano, mes);
+    periodo = { id: Number(info.lastInsertRowid) };
+  }
+  return periodo.id;
+}
+// Só substitui um upload 'salvo' já existente nesse item se for o MESMO nome de arquivo (reenvio de
+// verdade — igual substituirApenasMesmoNome do lado envio); nome diferente insere do lado, sem
+// mexer no que já tinha, mesmo efeito do botão "Incluir outro documento" (ver slotInner/
+// blocosUploads em app.html, que já rendeirza múltiplos uploads 'salvo' por item). uploaded_by fica
+// NULL — não é um humano que enviou, é a importação automática.
+function checklistSalvarUpload(periodoId: number, empresaId: number, itemChave: string, nomeArquivo: string, buf: Buffer, mime: string | null): number {
+  const jaSalvo = sqlite
+    .prepare(`SELECT * FROM checklist_uploads WHERE periodo_id = ? AND item_chave = ? AND status = 'salvo' AND file_name = ? ORDER BY id DESC LIMIT 1`)
+    .get(periodoId, itemChave, nomeArquivo) as any;
+  const versao = jaSalvo ? jaSalvo.versao + 1 : 1;
+  const dir = empresaSlotDir(empresaId, periodoId);
+  fs.mkdirSync(dir, { recursive: true });
+  const nomeSeguro = `${itemChave}_v${versao}_${Date.now()}${path.extname(nomeArquivo)}`;
+  const destino = path.join(dir, nomeSeguro);
+  fs.writeFileSync(destino, buf);
+  if (jaSalvo) sqlite.prepare(`UPDATE checklist_uploads SET status = 'substituido' WHERE id = ?`).run(jaSalvo.id);
+  const info = sqlite
+    .prepare(`INSERT INTO checklist_uploads (periodo_id, item_chave, versao, file_name, file_path, mime, size_bytes, status, uploaded_by) VALUES (?, ?, ?, ?, ?, ?, ?, 'salvo', NULL)`)
+    .run(periodoId, itemChave, versao, nomeArquivo, destino, mime, buf.length);
+  return Number(info.lastInsertRowid);
+}
 // Template "DAS - Mensal" (cria uma vez por escritório, reaproveita depois) e a atribuição pra
 // empresa — assim toda empresa que tiver DAS habilitado no Integra Contador já ganha, sozinha, o
 // mesmo mecanismo de Envio de Documentos que qualquer outro modelo usa, e o cliente já enxerga o

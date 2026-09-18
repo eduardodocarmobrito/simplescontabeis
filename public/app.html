@@ -8004,6 +8004,13 @@ async function abrirEmailExtratosPendenciasModal(){
           </select>
         </div>
         <div class="field" style="margin-bottom:0; width:160px;"><label>Banco (se for extrato)</label><input id="emailExtPendBanco${i.id}" value="${esc(i.bancoDetectado||'')}" placeholder="Ex.: Itaú"></div>
+        <div class="field" style="margin-bottom:0; width:160px;"><label>Item (se for outro)</label>
+          <select id="emailExtPendItem${i.id}">
+            <option value="fluxo_caixa">Fluxo de Caixa</option>
+            <option value="razao_financeira">Razão Financeira</option>
+            <option value="outros">Outros</option>
+          </select>
+        </div>
         <div class="field" style="margin-bottom:0; width:90px;"><label>Ano</label><input type="number" id="emailExtPendAno${i.id}" value="${hoje.getFullYear()}"></div>
         <div class="field" style="margin-bottom:0; width:80px;"><label>Mês</label><input type="number" min="1" max="12" id="emailExtPendMes${i.id}" value="${hoje.getMonth()+1}"></div>
         <button class="btn small primary" data-act="atribuir" data-id="${i.id}">Atribuir</button>
@@ -8016,12 +8023,13 @@ async function abrirEmailExtratosPendenciasModal(){
     const empresaId = document.querySelector('#emailExtPendEmp'+id+' .combo-value').value;
     const tipo = document.getElementById('emailExtPendTipo'+id).value;
     const banco = document.getElementById('emailExtPendBanco'+id).value.trim();
+    const item = document.getElementById('emailExtPendItem'+id).value;
     const ano = document.getElementById('emailExtPendAno'+id).value;
     const mes = document.getElementById('emailExtPendMes'+id).value;
     if(!empresaId){ toast('Selecione a empresa.','err'); return; }
     b.disabled = true;
     try{
-      await api('/email-extratos/pendentes/'+id+'/atribuir', { method:'POST', body:{ empresaId, tipo, banco, ano, mes } });
+      await api('/email-extratos/pendentes/'+id+'/atribuir', { method:'POST', body:{ empresaId, tipo, banco, item, ano, mes } });
       toast('Atribuído.','ok');
       document.querySelector(`[data-pend="${id}"]`).remove();
     }catch(e){ toast(e.message,'err'); b.disabled=false; }
