@@ -8256,7 +8256,7 @@ async function renderCfgNfseAgendamento(box){
     <div class="row" style="align-items:flex-start; gap:16px; flex-wrap:wrap;">
       <div class="card" style="flex:1; min-width:260px;">
         <h3>Empresas disponíveis</h3>
-        <input type="text" id="agFiltroDisponiveis" placeholder="Buscar empresa…" style="margin-bottom:8px;" value="${esc(NFSE_AG_FILTRO_DISPONIVEIS)}">
+        <div class="field" style="margin-bottom:8px;"><input type="text" id="agFiltroDisponiveis" placeholder="Buscar empresa…" autocomplete="off" value="${esc(NFSE_AG_FILTRO_DISPONIVEIS)}"></div>
         <div id="agListaDisponiveis" style="max-height:420px; overflow-y:auto;"><div class="empty-state">Carregando…</div></div>
       </div>
       <div class="card" style="flex:1; min-width:260px;">
