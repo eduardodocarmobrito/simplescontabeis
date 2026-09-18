@@ -273,6 +273,13 @@
   .chat-input-row textarea:focus{outline:none; border-color:var(--accent);}
   .chat-input-row button{border:none; background:var(--accent-deep); color:#fff; border-radius:8px; width:36px; cursor:pointer; font-size:15px; flex:none;}
   .chat-input-row button:disabled{opacity:.5; cursor:default;}
+  #chatClipe{background:transparent; color:var(--ink-soft); font-size:16px;}
+  .chat-anexo-chip{margin:0 8px; padding:5px 8px; background:var(--paper-deep); border-radius:7px; font-size:11.5px; display:flex; align-items:center; justify-content:space-between; gap:8px; flex:none;}
+  .chat-anexo-chip #chatAnexoRemover{cursor:pointer; opacity:.7;}
+  .chat-anexo-chip #chatAnexoRemover:hover{opacity:1;}
+  .chat-anexo-link{display:block; font-size:11.5px; text-decoration:underline; opacity:.9;}
+  .chat-msg.mine .chat-anexo-link{color:#fff;}
+  .chat-msg.theirs .chat-anexo-link{color:var(--accent-deep);}
   .chat-conv-lista{flex:1; overflow-y:auto;}
   .chat-conv-item{display:flex; align-items:center; gap:8px; padding:10px 12px; border-bottom:1px solid var(--rule-soft); cursor:pointer;}
   .chat-conv-item:hover{background:var(--paper);}
@@ -1018,7 +1025,10 @@ async function abrirChatThread(tipo, alvoId, titulo){
     </div>
     <div class="chat-panel-body">
       <div class="chat-lista" id="chatLista"><div class="empty-state" style="padding:20px; font-size:12px;">Carregando…</div></div>
+      <div id="chatAnexoChip" class="chat-anexo-chip hidden"></div>
       <div class="chat-input-row">
+        <button id="chatClipe" title="Anexar arquivo" type="button">📎</button>
+        <input type="file" id="chatArquivo" class="hidden">
         <textarea id="chatInput" rows="1" placeholder="Escreva uma mensagem…" maxlength="2000"></textarea>
         <button id="chatEnviar" title="Enviar">➤</button>
       </div>
@@ -1029,18 +1039,38 @@ async function abrirChatThread(tipo, alvoId, titulo){
   if(voltar) voltar.addEventListener('click', ()=>{ if(CHAT.mensagensTimer){ clearInterval(CHAT.mensagensTimer); CHAT.mensagensTimer=null; } renderChatLista(); });
   const input = document.getElementById('chatInput');
   const enviarBtn = document.getElementById('chatEnviar');
+  const arquivoInput = document.getElementById('chatArquivo');
+  const anexoChip = document.getElementById('chatAnexoChip');
+  function atualizarAnexoChip(){
+    const f = arquivoInput.files[0];
+    if(!f){ anexoChip.classList.add('hidden'); anexoChip.innerHTML=''; return; }
+    anexoChip.classList.remove('hidden');
+    anexoChip.innerHTML = `📎 ${esc(f.name)} <span id="chatAnexoRemover" title="Remover">✕</span>`;
+    document.getElementById('chatAnexoRemover').addEventListener('click', ()=>{ arquivoInput.value=''; atualizarAnexoChip(); });
+  }
+  document.getElementById('chatClipe').addEventListener('click', ()=> arquivoInput.click());
+  arquivoInput.addEventListener('change', atualizarAnexoChip);
   async function enviar(){
     const texto = input.value.trim();
-    if(!texto) return;
+    const arquivo = arquivoInput.files[0] || null;
+    if(!texto && !arquivo) return;
     enviarBtn.disabled = true;
     try{
+      let campos;
+      if(!chatEhStaff()) campos = { texto };
+      else if(CHAT.tipo==='equipe') campos = { texto, tipo:'equipe' };
+      else if(CHAT.tipo==='dm') campos = { texto, tipo:'dm', userId: CHAT.alvoId };
+      else campos = { texto, tipo:'empresa', empresaId: CHAT.alvoId };
       let body;
-      if(!chatEhStaff()) body = { texto };
-      else if(CHAT.tipo==='equipe') body = { texto, tipo:'equipe' };
-      else if(CHAT.tipo==='dm') body = { texto, tipo:'dm', userId: CHAT.alvoId };
-      else body = { texto, tipo:'empresa', empresaId: CHAT.alvoId };
+      if(arquivo){
+        body = new FormData();
+        Object.entries(campos).forEach(([k,v])=> body.append(k, v));
+        body.append('arquivo', arquivo);
+      } else body = campos;
       await api('/chat/mensagens', { method:'POST', body });
       input.value = '';
+      arquivoInput.value = '';
+      atualizarAnexoChip();
       await carregarChatMensagens();
     }catch(e){ toast(e.message,'err'); }
     finally{ enviarBtn.disabled = false; input.focus(); }
@@ -1064,9 +1094,12 @@ async function carregarChatMensagens(){
     const lista = document.getElementById('chatLista');
     if(!lista) return;
     const pertoDoFim = lista.scrollTop + lista.clientHeight >= lista.scrollHeight - 30;
-    lista.innerHTML = data.items.map(m=>
-      `<div class="chat-msg ${m.mine?'mine':'theirs'}">${esc(m.texto)}<span class="hora">${esc(m.autorNome)} · ${fmtDateHora(m.criadoEm)}</span></div>`
-    ).join('') || `<div class="empty-state" style="padding:20px; font-size:12px;">Nenhuma mensagem ainda. Escreva a primeira!</div>`;
+    lista.innerHTML = data.items.map(m=>{
+      const anexoHtml = m.anexoNome
+        ? `<a class="chat-anexo-link" href="/api/chat/mensagens/${CHAT.tipo}/${m.id}/anexo" target="_blank" rel="noopener">📎 ${esc(m.anexoNome)}</a>`
+        : '';
+      return `<div class="chat-msg ${m.mine?'mine':'theirs'}">${m.texto?esc(m.texto):''}${anexoHtml}<span class="hora">${esc(m.autorNome)} · ${fmtDateHora(m.criadoEm)}</span></div>`;
+    }).join('') || `<div class="empty-state" style="padding:20px; font-size:12px;">Nenhuma mensagem ainda. Escreva a primeira!</div>`;
     if(pertoDoFim) lista.scrollTop = lista.scrollHeight;
     if(chatEhStaff() && CHAT.tipo==='empresa') atualizarChatStatusHeader(data.empresaOnline);
     else if(chatEhStaff() && CHAT.tipo==='dm') atualizarChatStatusHeader(data.colegaOnline);
@@ -7154,6 +7187,8 @@ async function usuarioModal(u){
     <div class="field"><label>Nome</label><input id="usNome" value="${u?esc(u.nome):''}"></div>
     <div class="field"><label>E-mail</label><input id="usEmail" type="email" value="${u?esc(u.email):''}"></div>
     <div class="field"><label>Senha ${u?'(deixe em branco para manter)':''}</label><input id="usSenha" type="password"></div>
+    <div class="field"><label>WhatsApp</label><input id="usTelefone" value="${u&&u.telefone?esc(u.telefone):''}" placeholder="DDD + número"></div>
+    <p style="font-size:11.5px; color:var(--ink-soft); margin:-8px 0 4px;">Usado só pra avisar por WhatsApp quando chegar uma mensagem no chat interno e a pessoa estiver offline.</p>
     ${!u? `<div class="field"><label>Perfil</label><select id="usPerfil"><option value="Colaborador">Colaborador (escritório)</option><option value="Administrador">Administrador</option><option value="Cliente">Cliente</option></select></div>`
         : `<div class="field"><label>Perfil</label><input value="${esc(u.perfil)}" disabled></div>`}
     <div id="usEmpresaWrap" class="field hidden">
@@ -7255,9 +7290,10 @@ async function usuarioModal(u){
       toast('Marque ao menos uma empresa para o cliente.','err'); return;
     }
     try{
+      const telefone = document.getElementById('usTelefone').value.trim();
       let userId;
       if(u){
-        const body = { nome, email, ativo: document.getElementById('usAtivo').checked };
+        const body = { nome, email, ativo: document.getElementById('usAtivo').checked, telefone };
         if(senha) body.password = senha;
         if(perfil==='Colaborador'){
           body.acessoTodasEmpresas = document.getElementById('usAcessoTodas').checked;
@@ -7268,7 +7304,7 @@ async function usuarioModal(u){
         userId = u.id;
       } else {
         if(!senha){ toast('Defina uma senha.','err'); return; }
-        const body = { nome, email, perfil, password: senha };
+        const body = { nome, email, perfil, password: senha, telefone };
         if(perfil==='Colaborador'){
           body.acessoTodasEmpresas = document.getElementById('usAcessoTodas').checked;
           body.painelTv = document.getElementById('usPainelTv').checked;
@@ -8174,6 +8210,15 @@ async function renderCfgWhatsapp(box){
         <div class="field grow"><label>Nome do template aprovado</label><input id="wppTemplate" value="${esc(cfg.templateDocumento)}" placeholder="documento_disponivel"></div>
         <div class="field" style="width:120px;"><label>Idioma do template</label><input id="wppIdioma" value="${esc(cfg.templateIdioma)}" placeholder="pt_BR"></div>
       </div>
+      <div class="field"><label>Modelo de aviso de mensagem (opcional)</label><input id="wppTemplateTexto" value="${esc(cfg.templateTextoNotificacao)}" placeholder="ex.: nova_mensagem_chat"></div>
+      <p style="font-size:11.5px; color:var(--ink-soft); margin:-6px 0 4px;">
+        Modelo SÓ TEXTO (sem anexo), separado do modelo de documento acima — usado só pra avisar um
+        colaborador por WhatsApp quando chega uma mensagem direta no chat interno e ele está offline.
+        Precisa cadastrar e esperar aprovação desse modelo à parte no WhatsApp Manager da Meta antes
+        de preencher aqui; sugestão de corpo: "Você tem uma nova mensagem de {{remetente}} no Simples
+        Contábeis. Entre no sistema pra responder." (categoria Utility, variável nomeada "remetente").
+        Vazio = esse aviso fica desligado, sem afetar o envio normal de documentos acima.
+      </p>
       <label class="checkbox-row"><input type="checkbox" id="wppAtivo" ${cfg.ativo?'checked':''}> Envio por WhatsApp ativo (rotina automática de NFS-e e envio manual de documentos)</label>
       <div class="row">
         <button class="btn primary" id="wppSalvar">Salvar</button>
@@ -8205,6 +8250,7 @@ async function renderCfgWhatsapp(box){
       accessToken: document.getElementById('wppToken').value,
       templateDocumento: document.getElementById('wppTemplate').value.trim(),
       templateIdioma: document.getElementById('wppIdioma').value.trim(),
+      templateTextoNotificacao: document.getElementById('wppTemplateTexto').value.trim(),
       ativo: document.getElementById('wppAtivo').checked,
       appSecret: document.getElementById('wppAppSecret').value,
     };

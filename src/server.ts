@@ -1232,6 +1232,41 @@ sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_email_extratos_status ON email_extra
   }
 }
 
+// Migração leve: anexo de arquivo nas 3 tabelas de mensagem do chat interno (equipe/dm/empresa) —
+// até aqui só texto. Mensagem "só arquivo" grava texto='' (a coluna continua NOT NULL).
+for (const tabela of ["chat_mensagens", "chat_equipe_mensagens", "chat_dm_mensagens"]) {
+  const cols = sqlite.prepare(`PRAGMA table_info(${tabela})`).all() as any[];
+  const nomes = new Set(cols.map((c) => c.name));
+  if (!nomes.has("anexo_nome")) {
+    sqlite.exec(`ALTER TABLE ${tabela} ADD COLUMN anexo_nome TEXT`);
+    sqlite.exec(`ALTER TABLE ${tabela} ADD COLUMN anexo_path TEXT`);
+    sqlite.exec(`ALTER TABLE ${tabela} ADD COLUMN anexo_mime TEXT`);
+    sqlite.exec(`ALTER TABLE ${tabela} ADD COLUMN anexo_size INTEGER`);
+    console.log(`Migração aplicada: ${tabela}.anexo_*.`);
+  }
+}
+
+// Migração leve: telefone do usuário (colaborador/administrador) — usado pra avisar por WhatsApp
+// quando chega uma DM no chat interno e o destinatário está offline (ver POST /api/chat/mensagens).
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(app_users)`).all() as any[];
+  if (!cols.some((c) => c.name === "telefone")) {
+    sqlite.exec(`ALTER TABLE app_users ADD COLUMN telefone TEXT`);
+    console.log("Migração aplicada: app_users.telefone.");
+  }
+}
+
+// Migração leve: modelo de mensagem (Meta) só-texto, sem anexo — pro aviso de DM não lida do chat
+// interno. Diferente de template_documento (exige componente "header" de documento), esse modelo
+// precisa ser cadastrado à parte na Meta pelo usuário; vazio = aviso desligado, sem erro nenhum.
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(whatsapp_config)`).all() as any[];
+  if (!cols.some((c) => c.name === "template_texto_notificacao")) {
+    sqlite.exec(`ALTER TABLE whatsapp_config ADD COLUMN template_texto_notificacao TEXT`);
+    console.log("Migração aplicada: whatsapp_config.template_texto_notificacao.");
+  }
+}
+
 // Migração leve: onedrive_config ganha os campos da importação de relatórios (Balanço/DRE/Balancete)
 // — pasta de ORIGEM separada da pasta de DESTINO já usada pela exportação de XML, mas reaproveitando
 // a mesma conexão OAuth (client_id/client_secret/refresh_token) já salva nessa mesma linha.
@@ -2464,7 +2499,7 @@ app.get("/api/users", requireAdmin, (req, res) => {
   const user = (req as any).user;
   const rows = sqlite
     .prepare(
-      `SELECT u.id, u.nome, u.email, u.perfil, u.empresa_id as empresaId, e.nome as empresaNome,
+      `SELECT u.id, u.nome, u.email, u.perfil, u.empresa_id as empresaId, e.nome as empresaNome, u.telefone,
               u.acesso_todas_empresas as acessoTodasEmpresas, u.ativo, u.isento_assinatura as isentoAssinatura, u.painel_tv as painelTv, u.created_at as createdAt,
               (SELECT COUNT(*) FROM cliente_empresas ce WHERE ce.user_id = u.id) as totalEmpresas
        FROM app_users u LEFT JOIN empresas e ON e.id = u.empresa_id
@@ -2476,14 +2511,14 @@ app.get("/api/users", requireAdmin, (req, res) => {
 });
 app.post("/api/users", requireAdmin, (req, res) => {
   const user = (req as any).user;
-  const { nome, email, perfil, password, acessoTodasEmpresas, painelTv } = req.body || {};
+  const { nome, email, perfil, password, acessoTodasEmpresas, painelTv, telefone } = req.body || {};
   if (!nome || !email || !perfil || !password) return res.status(400).json({ error: "Preencha nome, e-mail, perfil e senha." });
   if (!["Administrador", "Colaborador", "Cliente"].includes(perfil)) return res.status(400).json({ error: "Perfil inválido." });
   const pwError = passwordPolicyError(password);
   if (pwError) return res.status(400).json({ error: pwError });
   try {
     const info = sqlite
-      .prepare(`INSERT INTO app_users (nome, email, perfil, acesso_todas_empresas, password_hash, escritorio_id, painel_tv) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .prepare(`INSERT INTO app_users (nome, email, perfil, acesso_todas_empresas, password_hash, escritorio_id, painel_tv, telefone) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(
         nome,
         String(email).trim().toLowerCase(),
@@ -2491,7 +2526,8 @@ app.post("/api/users", requireAdmin, (req, res) => {
         perfil === "Colaborador" ? (acessoTodasEmpresas === false ? 0 : 1) : 1,
         hashPassword(password),
         user.escritorioId,
-        perfil === "Colaborador" && painelTv ? 1 : 0 // só faz sentido pra Colaborador — dono do Painel de TV não deve ser Administrador nem Cliente
+        perfil === "Colaborador" && painelTv ? 1 : 0, // só faz sentido pra Colaborador — dono do Painel de TV não deve ser Administrador nem Cliente
+        telefone ? String(telefone).trim() : null
       );
     const userId = Number(info.lastInsertRowid);
     if (perfil === "Colaborador") {
@@ -2511,7 +2547,7 @@ app.put("/api/users/:id", requireAdmin, (req, res) => {
   const id = Number(req.params.id);
   const existing = sqlite.prepare(`SELECT * FROM app_users WHERE id = ?`).get(id) as any;
   if (!existing || existing.escritorio_id !== (req as any).user.escritorioId) return res.status(404).json({ error: "Usuário não encontrado." });
-  const { nome, email, password, ativo, acessoTodasEmpresas, isentoAssinatura, painelTv } = req.body || {};
+  const { nome, email, password, ativo, acessoTodasEmpresas, isentoAssinatura, painelTv, telefone } = req.body || {};
   if (password) {
     const pwError = passwordPolicyError(password);
     if (pwError) return res.status(400).json({ error: pwError });
@@ -2521,7 +2557,7 @@ app.put("/api/users/:id", requireAdmin, (req, res) => {
   const novoPainelTv = existing.perfil === "Colaborador" && painelTv !== undefined ? (painelTv ? 1 : 0) : existing.painel_tv;
   try {
     sqlite
-      .prepare(`UPDATE app_users SET nome=?, email=?, password_hash=?, ativo=?, acesso_todas_empresas=?, isento_assinatura=?, painel_tv=? WHERE id=?`)
+      .prepare(`UPDATE app_users SET nome=?, email=?, password_hash=?, ativo=?, acesso_todas_empresas=?, isento_assinatura=?, painel_tv=?, telefone=? WHERE id=?`)
       .run(
         nome ?? existing.nome,
         email ? String(email).trim().toLowerCase() : existing.email,
@@ -2530,6 +2566,7 @@ app.put("/api/users/:id", requireAdmin, (req, res) => {
         acessoTodasEmpresas !== undefined ? (acessoTodasEmpresas ? 1 : 0) : existing.acesso_todas_empresas,
         isentoAssinatura !== undefined ? (isentoAssinatura ? 1 : 0) : existing.isento_assinatura,
         novoPainelTv,
+        telefone !== undefined ? (telefone ? String(telefone).trim() : null) : existing.telefone,
         id
       );
     // Painel de TV usa sessão de vida longa — se acabou de virar (ou deixar de ser) painel_tv, ou se
@@ -3099,6 +3136,25 @@ function chatUserOnline(userId: number): boolean {
 function chatDmPar(x: number, y: number): [number, number] {
   return x < y ? [x, y] : [y, x];
 }
+// Aviso por WhatsApp de uma DM não lida — dispara com 45s de atraso (não na hora) pra não incomodar
+// quem só teve um intervalo curto sem pingar (heartbeat de presença a cada 25s, janela de "online"
+// de 40s — ver CHAT_ONLINE_JANELA_SEGUNDOS acima). Ao disparar, confere de novo se continua offline
+// E se ainda não leu (pode ter aberto o chat por outro motivo nesse meio tempo) antes de gastar um
+// envio de WhatsApp. Sem telefone cadastrado ou sem o modelo de texto configurado, nem agenda —
+// evita timer fadado a falhar (e log de erro) em toda DM enquanto o recurso não estiver configurado.
+function agendarAvisoWhatsappChatDm(escritorioId: number, colegaId: number, colegaTelefone: string | null, userAId: number, userBId: number, mensagemId: number, remetenteNome: string): void {
+  if (!colegaTelefone) return;
+  const c = getWhatsappConfig(escritorioId);
+  if (!c.ativo || !c.phone_number_id || !c.access_token_cifrado || !c.template_texto_notificacao) return;
+  setTimeout(() => {
+    (async () => {
+      if (chatUserOnline(colegaId)) return;
+      const leitura = sqlite.prepare(`SELECT ultima_msg_lida_id FROM chat_dm_leitura WHERE user_a_id = ? AND user_b_id = ? AND user_id = ?`).get(userAId, userBId, colegaId) as any;
+      if (leitura && leitura.ultima_msg_lida_id >= mensagemId) return;
+      await whatsappEnviarTexto(escritorioId, colegaTelefone, [{ nome: "remetente", valor: remetenteNome }], { tabela: "chat_dm_mensagens", id: mensagemId });
+    })().catch((e: any) => console.error(`[Chat] aviso de WhatsApp pra usuário ${colegaId} falhou:`, e.message));
+  }, 45_000);
+}
 // Lista de colaboradores/admin do mesmo escritório pra abrir uma conversa individual nova — inclui
 // quem nunca trocou mensagem ainda (diferente da lista de "conversas recentes" de /chat/resumo).
 app.get("/api/chat/colegas", (req, res) => {
@@ -3194,7 +3250,10 @@ app.get("/api/chat/mensagens", (req, res) => {
 
   if (tipo === "equipe") {
     const rows = sqlite
-      .prepare(`SELECT id, autor_nome as autorNome, autor_user_id as autorUserId, texto, criado_em as criadoEm FROM chat_equipe_mensagens WHERE escritorio_id = ? ORDER BY id ASC LIMIT 300`)
+      .prepare(
+        `SELECT id, autor_nome as autorNome, autor_user_id as autorUserId, texto, criado_em as criadoEm, anexo_nome as anexoNome, anexo_size as anexoSize
+         FROM chat_equipe_mensagens WHERE escritorio_id = ? ORDER BY id ASC LIMIT 300`
+      )
       .all(user.escritorioId) as any[];
     const maxId = rows.length ? Math.max(...rows.map((r) => r.id)) : 0;
     sqlite
@@ -3211,7 +3270,10 @@ app.get("/api/chat/mensagens", (req, res) => {
     if (!colega) return res.status(404).json({ error: "Colaborador não encontrado." });
     const [a, b] = chatDmPar(user.id, colegaId);
     const rows = sqlite
-      .prepare(`SELECT id, autor_nome as autorNome, autor_user_id as autorUserId, texto, criado_em as criadoEm FROM chat_dm_mensagens WHERE user_a_id = ? AND user_b_id = ? ORDER BY id ASC LIMIT 300`)
+      .prepare(
+        `SELECT id, autor_nome as autorNome, autor_user_id as autorUserId, texto, criado_em as criadoEm, anexo_nome as anexoNome, anexo_size as anexoSize
+         FROM chat_dm_mensagens WHERE user_a_id = ? AND user_b_id = ? ORDER BY id ASC LIMIT 300`
+      )
       .all(a, b) as any[];
     const maxId = rows.length ? Math.max(...rows.map((r) => r.id)) : 0;
     sqlite
@@ -3232,7 +3294,10 @@ app.get("/api/chat/mensagens", (req, res) => {
     if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
   }
   const rows = sqlite
-    .prepare(`SELECT id, autor_nome as autorNome, autor_lado as autorLado, texto, criado_em as criadoEm FROM chat_mensagens WHERE empresa_id = ? ORDER BY id ASC LIMIT 300`)
+    .prepare(
+      `SELECT id, autor_nome as autorNome, autor_lado as autorLado, texto, criado_em as criadoEm, anexo_nome as anexoNome, anexo_size as anexoSize
+       FROM chat_mensagens WHERE empresa_id = ? ORDER BY id ASC LIMIT 300`
+    )
     .all(empresaId) as any[];
   if (user.perfil === "Cliente") {
     sqlite.prepare(`UPDATE chat_mensagens SET lido_pelo_cliente = 1 WHERE empresa_id = ? AND autor_lado = 'escritorio' AND lido_pelo_cliente = 0`).run(empresaId);
@@ -3246,16 +3311,33 @@ app.get("/api/chat/mensagens", (req, res) => {
     empresaOnline: user.perfil === "Cliente" ? undefined : chatEmpresaOnline(empresaId),
   });
 });
-app.post("/api/chat/mensagens", (req, res) => {
+app.post("/api/chat/mensagens", upload.single("arquivo"), (req, res) => {
   const user = (req as any).user;
   if (!user || user.perfil === "SuperAdmin") return res.status(403).json({ error: "Sem acesso." });
   const texto = String(req.body?.texto || "").trim();
-  if (!texto) return res.status(400).json({ error: "Mensagem vazia." });
+  if (!texto && !req.file) return res.status(400).json({ error: "Mensagem vazia." });
   if (texto.length > 2000) return res.status(400).json({ error: "Mensagem muito longa (máximo 2000 caracteres)." });
   const tipo = user.perfil === "Cliente" ? "empresa" : typeof req.body?.tipo === "string" ? req.body.tipo : "empresa";
 
+  // Anexo é opcional e vale pros 3 tipos — salva uma vez aqui, cada branch só grava os 4 campos.
+  let anexoNome: string | null = null,
+    anexoPath: string | null = null,
+    anexoMime: string | null = null,
+    anexoSize: number | null = null;
+  if (req.file) {
+    anexoNome = corrigirNomeArquivo(req.file.originalname);
+    const dir = path.join(UPLOADS_DIR, "chat-anexos");
+    fs.mkdirSync(dir, { recursive: true });
+    anexoPath = path.join(dir, `${Date.now()}-${anexoNome}`);
+    fs.writeFileSync(anexoPath, req.file.buffer);
+    anexoMime = req.file.mimetype;
+    anexoSize = req.file.size;
+  }
+
   if (tipo === "equipe") {
-    const info = sqlite.prepare(`INSERT INTO chat_equipe_mensagens (escritorio_id, autor_user_id, autor_nome, texto) VALUES (?, ?, ?, ?)`).run(user.escritorioId, user.id, user.nome, texto);
+    const info = sqlite
+      .prepare(`INSERT INTO chat_equipe_mensagens (escritorio_id, autor_user_id, autor_nome, texto, anexo_nome, anexo_path, anexo_mime, anexo_size) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(user.escritorioId, user.id, user.nome, texto, anexoNome, anexoPath, anexoMime, anexoSize);
     sqlite
       .prepare(
         `INSERT INTO chat_equipe_leitura (escritorio_id, user_id, ultima_msg_lida_id) VALUES (?, ?, ?)
@@ -3266,19 +3348,21 @@ app.post("/api/chat/mensagens", (req, res) => {
   }
   if (tipo === "dm") {
     const colegaId = Number(req.body?.userId);
-    const colega = sqlite.prepare(`SELECT id FROM app_users WHERE id = ? AND escritorio_id = ? AND perfil IN ('Administrador','Colaborador')`).get(colegaId, user.escritorioId);
+    const colega = sqlite.prepare(`SELECT id, telefone FROM app_users WHERE id = ? AND escritorio_id = ? AND perfil IN ('Administrador','Colaborador')`).get(colegaId, user.escritorioId) as any;
     if (!colega) return res.status(404).json({ error: "Colaborador não encontrado." });
     const [a, b] = chatDmPar(user.id, colegaId);
     const info = sqlite
-      .prepare(`INSERT INTO chat_dm_mensagens (escritorio_id, user_a_id, user_b_id, autor_user_id, autor_nome, texto) VALUES (?, ?, ?, ?, ?, ?)`)
-      .run(user.escritorioId, a, b, user.id, user.nome, texto);
+      .prepare(`INSERT INTO chat_dm_mensagens (escritorio_id, user_a_id, user_b_id, autor_user_id, autor_nome, texto, anexo_nome, anexo_path, anexo_mime, anexo_size) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(user.escritorioId, a, b, user.id, user.nome, texto, anexoNome, anexoPath, anexoMime, anexoSize);
+    const mensagemId = Number(info.lastInsertRowid);
     sqlite
       .prepare(
         `INSERT INTO chat_dm_leitura (user_a_id, user_b_id, user_id, ultima_msg_lida_id) VALUES (?, ?, ?, ?)
          ON CONFLICT(user_a_id, user_b_id, user_id) DO UPDATE SET ultima_msg_lida_id = excluded.ultima_msg_lida_id`
       )
-      .run(a, b, user.id, Number(info.lastInsertRowid));
-    return res.json({ id: Number(info.lastInsertRowid) });
+      .run(a, b, user.id, mensagemId);
+    agendarAvisoWhatsappChatDm(user.escritorioId, colegaId, colega.telefone, a, b, mensagemId, user.nome);
+    return res.json({ id: mensagemId });
   }
 
   let empresaId: number;
@@ -3299,11 +3383,34 @@ app.post("/api/chat/mensagens", (req, res) => {
   }
   const info = sqlite
     .prepare(
-      `INSERT INTO chat_mensagens (escritorio_id, empresa_id, autor_user_id, autor_nome, autor_lado, texto, lido_pelo_escritorio, lido_pelo_cliente)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO chat_mensagens (escritorio_id, empresa_id, autor_user_id, autor_nome, autor_lado, texto, lido_pelo_escritorio, lido_pelo_cliente, anexo_nome, anexo_path, anexo_mime, anexo_size)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(escritorioId, empresaId, user.id, user.nome, autorLado, texto, autorLado === "escritorio" ? 1 : 0, autorLado === "cliente" ? 1 : 0);
+    .run(escritorioId, empresaId, user.id, user.nome, autorLado, texto, autorLado === "escritorio" ? 1 : 0, autorLado === "cliente" ? 1 : 0, anexoNome, anexoPath, anexoMime, anexoSize);
   res.json({ id: Number(info.lastInsertRowid) });
+});
+// Baixa o anexo de uma mensagem do chat (qualquer um dos 3 tipos) — mesma checagem de acesso da
+// leitura de mensagens (Cliente só da própria empresa; equipe/dm só pra staff do escritório).
+app.get("/api/chat/mensagens/:tipo/:id/anexo", (req, res) => {
+  const user = (req as any).user;
+  if (!user || user.perfil === "SuperAdmin") return res.status(404).json({ error: "Arquivo não encontrado." });
+  const tipo = req.params.tipo;
+  const id = Number(req.params.id);
+  let row: any;
+  if (tipo === "equipe") {
+    if (user.perfil === "Cliente") return res.status(404).json({ error: "Arquivo não encontrado." });
+    row = sqlite.prepare(`SELECT anexo_nome, anexo_path, anexo_mime FROM chat_equipe_mensagens WHERE id = ? AND escritorio_id = ?`).get(id, user.escritorioId);
+  } else if (tipo === "dm") {
+    if (user.perfil === "Cliente") return res.status(404).json({ error: "Arquivo não encontrado." });
+    row = sqlite
+      .prepare(`SELECT anexo_nome, anexo_path, anexo_mime FROM chat_dm_mensagens WHERE id = ? AND escritorio_id = ? AND (user_a_id = ? OR user_b_id = ?)`)
+      .get(id, user.escritorioId, user.id, user.id);
+  } else if (tipo === "empresa") {
+    const msg = sqlite.prepare(`SELECT anexo_nome, anexo_path, anexo_mime, empresa_id FROM chat_mensagens WHERE id = ?`).get(id) as any;
+    if (msg && (user.perfil === "Cliente" ? user.empresaId === msg.empresa_id : podeAcessarEmpresa(user, msg.empresa_id))) row = msg;
+  }
+  if (!row || !row.anexo_path || !fs.existsSync(row.anexo_path)) return res.status(404).json({ error: "Arquivo não encontrado." });
+  res.download(row.anexo_path, row.anexo_nome);
 });
 app.get("/api/empresas/:id/anexos", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
   const empresaId = Number(req.params.id);
@@ -11750,6 +11857,7 @@ app.get("/api/whatsapp/config", blockCliente, requirePermissao("configuracoes", 
     numeroExibicao: c.numero_exibicao || "",
     templateDocumento: c.template_documento || "documento_disponivel",
     templateIdioma: c.template_idioma || "pt_BR",
+    templateTextoNotificacao: c.template_texto_notificacao || "",
     ativo: !!c.ativo,
     updatedAt: c.updated_at || null,
     webhookUrl: `${req.protocol}://${req.get("host")}/api/whatsapp/webhook`,
@@ -11762,11 +11870,12 @@ app.put("/api/whatsapp/config", blockCliente, requirePermissao("configuracoes", 
   const atual = getWhatsappConfig(escritorioId);
   sqlite
     .prepare(
-      `INSERT INTO whatsapp_config (escritorio_id, phone_number_id, business_account_id, access_token_cifrado, template_documento, template_idioma, ativo, app_secret_cifrado, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      `INSERT INTO whatsapp_config (escritorio_id, phone_number_id, business_account_id, access_token_cifrado, template_documento, template_idioma, template_texto_notificacao, ativo, app_secret_cifrado, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
        ON CONFLICT(escritorio_id) DO UPDATE SET phone_number_id=excluded.phone_number_id, business_account_id=excluded.business_account_id,
          access_token_cifrado=excluded.access_token_cifrado, template_documento=excluded.template_documento,
-         template_idioma=excluded.template_idioma, ativo=excluded.ativo, app_secret_cifrado=excluded.app_secret_cifrado, updated_at=datetime('now')`
+         template_idioma=excluded.template_idioma, template_texto_notificacao=excluded.template_texto_notificacao,
+         ativo=excluded.ativo, app_secret_cifrado=excluded.app_secret_cifrado, updated_at=datetime('now')`
     )
     .run(
       escritorioId,
@@ -11775,6 +11884,7 @@ app.put("/api/whatsapp/config", blockCliente, requirePermissao("configuracoes", 
       b.accessToken ? nfse.cifrarTexto(String(b.accessToken).trim()) : atual.access_token_cifrado || null,
       b.templateDocumento !== undefined ? (String(b.templateDocumento).trim() || "documento_disponivel") : atual.template_documento || "documento_disponivel",
       b.templateIdioma !== undefined ? (String(b.templateIdioma).trim() || "pt_BR") : atual.template_idioma || "pt_BR",
+      b.templateTextoNotificacao !== undefined ? (String(b.templateTextoNotificacao).trim() || null) : atual.template_texto_notificacao || null,
       b.ativo !== undefined ? (b.ativo ? 1 : 0) : atual.ativo || 0,
       b.appSecret ? nfse.cifrarTexto(String(b.appSecret).trim()) : atual.app_secret_cifrado || null
     );
@@ -11806,9 +11916,11 @@ app.post("/api/whatsapp/webhook", (req, res) => {
             .run(s.status || "desconhecido", s.errors?.[0]?.code != null ? String(s.errors[0].code) : null, erroTexto, s.id);
           if (s.status === "failed") {
             const msg = sqlite.prepare(`SELECT origem_tabela, origem_id FROM whatsapp_mensagens WHERE wamid = ?`).get(s.id) as any;
-            if (msg) {
-              const tabela = msg.origem_tabela === "nfse_emissoes" ? "nfse_emissoes" : "envio_documentos";
-              sqlite.prepare(`UPDATE ${tabela} SET whatsapp_erro = ? WHERE id = ?`).run(erroTexto || "Falha na entrega — ver detalhes no webhook.", msg.origem_id);
+            // Só envio_documentos/nfse_emissoes têm coluna whatsapp_erro pra registrar a falha — o
+            // aviso de chat (chat_dm_mensagens) não tem esse campo (a falha só fica no log/tabela
+            // whatsapp_mensagens mesmo, já atualizada pelo UPDATE genérico logo acima).
+            if (msg && (msg.origem_tabela === "envio_documentos" || msg.origem_tabela === "nfse_emissoes")) {
+              sqlite.prepare(`UPDATE ${msg.origem_tabela} SET whatsapp_erro = ? WHERE id = ?`).run(erroTexto || "Falha na entrega — ver detalhes no webhook.", msg.origem_id);
             }
           }
         }
@@ -11896,6 +12008,37 @@ async function whatsappEnviarArquivo(
   });
   // Guarda o wamid pra casar com o status real de entrega que chegar depois pelo webhook — sem
   // isso, "enviado com sucesso" só significa que a Meta aceitou, não que chegou no celular.
+  if (wamid) {
+    sqlite
+      .prepare(`INSERT OR IGNORE INTO whatsapp_mensagens (escritorio_id, wamid, origem_tabela, origem_id, telefone) VALUES (?, ?, ?, ?, ?)`)
+      .run(escritorioId, wamid, origem.tabela, origem.id, numeroNormalizado);
+  }
+}
+// Aviso de "você tem uma mensagem nova" (chat interno, DM não lida com o destinatário offline) —
+// mesmo mecanismo do whatsappEnviarArquivo acima, mas sem documento nenhum, com o template
+// separado template_texto_notificacao (precisa existir e estar aprovado na Meta; vazio = desligado
+// de propósito, quem chama trata o erro como best-effort e não deixa nada quebrar por causa disso).
+async function whatsappEnviarTexto(
+  escritorioId: number,
+  paraNumero: string,
+  variaveisCorpo: { nome: string; valor: string }[],
+  origem: { tabela: "chat_dm_mensagens"; id: number }
+): Promise<void> {
+  const c = getWhatsappConfig(escritorioId);
+  if (!c.ativo || !c.phone_number_id || !c.access_token_cifrado) {
+    throw new Error("WhatsApp não configurado ou desativado — configure em Configurações > WhatsApp.");
+  }
+  if (!c.template_texto_notificacao) {
+    throw new Error("Modelo de aviso de mensagem não configurado — cadastre em Configurações > WhatsApp.");
+  }
+  const { wamid, numeroNormalizado } = await whatsapp.enviarTexto({
+    phoneNumberId: c.phone_number_id,
+    accessToken: nfse.decifrarTexto(c.access_token_cifrado),
+    templateName: c.template_texto_notificacao,
+    templateIdioma: c.template_idioma || "pt_BR",
+    paraNumero,
+    variaveisCorpo,
+  });
   if (wamid) {
     sqlite
       .prepare(`INSERT OR IGNORE INTO whatsapp_mensagens (escritorio_id, wamid, origem_tabela, origem_id, telefone) VALUES (?, ?, ?, ?, ?)`)

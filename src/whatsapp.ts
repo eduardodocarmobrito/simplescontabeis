@@ -142,6 +142,40 @@ export async function enviarDocumento(params: EnvioDocumentoParams): Promise<{ w
   return { wamid, numeroNormalizado: numero };
 }
 
+export interface EnvioTextoParams {
+  phoneNumberId: string;
+  accessToken: string;
+  templateName: string;
+  templateIdioma: string;
+  paraNumero: string;
+  variaveisCorpo: { nome: string; valor: string }[];
+}
+// Mesma ideia de enviarDocumento, mas pra um template SEM cabeçalho de documento (só corpo de
+// texto) — usado pro aviso de "você tem uma mensagem nova" do chat interno (server.ts,
+// whatsappEnviarTexto), onde não faz sentido nenhum anexo nem subirMidia.
+export async function enviarTexto(params: EnvioTextoParams): Promise<{ wamid: string | null; numeroNormalizado: string }> {
+  const digitos = params.paraNumero.replace(/\D/g, "");
+  if (digitos.length < 10) throw new Error("Número de WhatsApp inválido — informe DDD + número.");
+  const numero = digitos.length <= 11 ? `55${digitos}` : digitos;
+  const r = await chamarGraph(`/${params.phoneNumberId}/messages`, params.accessToken, {
+    jsonBody: {
+      messaging_product: "whatsapp",
+      to: numero,
+      type: "template",
+      template: {
+        name: params.templateName,
+        language: { code: params.templateIdioma },
+        ...(params.variaveisCorpo.length
+          ? { components: [{ type: "body", parameters: params.variaveisCorpo.map((v) => ({ type: "text", parameter_name: v.nome, text: v.valor })) }] }
+          : {}),
+      },
+    },
+  });
+  if (!r.ok) throw new Error(`Não consegui enviar a mensagem no WhatsApp: ${mensagemErro(r)}`);
+  const wamid = r.corpo?.messages?.[0]?.id || null;
+  return { wamid, numeroNormalizado: numero };
+}
+
 // Testa a conexão/credenciais sem gastar um envio de template real — só confere se o número
 // configurado (phone_number_id) responde e o token é válido.
 export async function testarConexao(phoneNumberId: string, accessToken: string): Promise<{ numeroExibicao: string | null }> {
