@@ -6965,11 +6965,10 @@ function renderRelDominio(box, empresas, tipo){
   box.innerHTML = `
     <div class="row" style="margin-bottom:16px; align-items:flex-end; gap:12px; flex-wrap:wrap;">
       <div class="field" style="margin-bottom:0; min-width:280px;"><label>Cliente (opcional)</label>${comboSelectHtml('relDomEmpresaCombo', 'Todas as empresas…')}</div>
-      <button class="btn primary" id="btnRelDomGerar">Gerar</button>
     </div>
     <div id="relDomResultado" class="card"><div class="empty-state">Carregando…</div></div>
   `;
-  setupComboSelect('relDomEmpresaCombo', empresas.map(e=>({id:e.id, label:empresaComboLabel(e)})));
+  setupComboSelect('relDomEmpresaCombo', empresas.map(e=>({id:e.id, label:empresaComboLabel(e)})), (id)=>{ if(id) gerarDetalhe(id); else gerarGrade(); });
   function ligarBotoesEnvio(resultBox){
     resultBox.querySelectorAll('[data-act="email"]').forEach(b=>b.addEventListener('click', async ()=>{
       b.disabled = true;
@@ -7060,13 +7059,7 @@ function renderRelDominio(box, empresas, tipo){
     combo.querySelector('.combo-input').value = '';
     gerarGrade();
   }
-  async function gerar(){
-    const empresaId = document.querySelector('#relDomEmpresaCombo .combo-value').value;
-    if(empresaId) await gerarDetalhe(empresaId);
-    else await gerarGrade();
-  }
-  document.getElementById('btnRelDomGerar').addEventListener('click', gerar);
-  gerar();
+  gerarGrade();
 }
 async function carregarRelatorio(){
   const empresaId = document.querySelector('#relEmpresaCombo .combo-value').value;
