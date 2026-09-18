@@ -6335,9 +6335,6 @@ function emailClassificarItemOutro(nomeArquivo: string): { chave: string; label:
 // Extensões aceitas no balaio "Outros Documentos Financeiros" — formatos de documento/planilha
 // comuns; ignora imagem/zip/executável etc., que não costuma ser um documento financeiro de verdade.
 const EMAIL_EXTENSOES_OUTROS = new Set(["pdf", "xlsx", "xls", "csv", "doc", "docx"]);
-// Competência sempre vem do ASSUNTO do e-mail quando possível ("...MENSAL 08/2026 DA...") — mesmo
-// mês/ano vale pra TODOS os anexos daquele e-mail, extrato ou não. Sem o padrão no assunto, cai pra
-// mês/ano da própria data de recebimento.
 function emailExtrairCompetencia(assunto: string, dataRecebimento: Date): { ano: number; mes: number } {
   const m = /(\d{2})\s*\/\s*(\d{4})/.exec(assunto || "");
   if (m) {
@@ -6346,6 +6343,40 @@ function emailExtrairCompetencia(assunto: string, dataRecebimento: Date): { ano:
     if (mes >= 1 && mes <= 12 && ano >= 2000 && ano <= 2100) return { ano, mes };
   }
   return { ano: dataRecebimento.getFullYear(), mes: dataRecebimento.getMonth() + 1 };
+}
+// Achado ao vivo: um cliente manda, num e-mail só, um atrasado de vários meses ("...Itau-Março.pdf",
+// "...Itau-Julho.pdf" etc.) — aplicar a competência do ASSUNTO (ex. "08/2026") pra todos esses
+// anexos os arquiva todos errado, no mesmo mês. Por isso cada anexo tenta primeiro achar um NOME DE
+// MÊS no próprio nome do arquivo antes de cair pro assunto/data de recebimento.
+const MESES_PT_REGEX: [RegExp, number][] = [
+  [/janeiro/i, 1],
+  [/fevereiro/i, 2],
+  [/mar[çc]o/i, 3],
+  [/abril/i, 4],
+  [/\bmaio\b/i, 5],
+  [/junho/i, 6],
+  [/julho/i, 7],
+  [/agosto/i, 8],
+  [/setembro/i, 9],
+  [/outubro/i, 10],
+  [/novembro/i, 11],
+  [/dezembro/i, 12],
+];
+function emailExtrairMesPorNomeArquivo(nomeArquivo: string): number | null {
+  for (const [re, mes] of MESES_PT_REGEX) if (re.test(nomeArquivo)) return mes;
+  return null;
+}
+// Nome de arquivo nunca traz o ANO, só o mês — usa o ano da data de recebimento do e-mail, exceto
+// quando o mês do arquivo é "no futuro" em relação a essa data (ex.: e-mail recebido em agosto/2026
+// com um anexo "...Dezembro.pdf" só pode ser dezembro/2025, nunca um dezembro que ainda não chegou).
+function emailCompetenciaDoAnexo(nomeArquivo: string, assunto: string, dataRecebimento: Date): { ano: number; mes: number } {
+  const mesArquivo = emailExtrairMesPorNomeArquivo(nomeArquivo);
+  if (mesArquivo) {
+    const mesRecebimento = dataRecebimento.getMonth() + 1;
+    const anoRecebimento = dataRecebimento.getFullYear();
+    return { ano: mesArquivo > mesRecebimento ? anoRecebimento - 1 : anoRecebimento, mes: mesArquivo };
+  }
+  return emailExtrairCompetencia(assunto, dataRecebimento);
 }
 function emailSalvarPendente(escritorioId: number, buf: Buffer, nomeArquivo: string): string {
   const dir = path.join(UPLOADS_DIR, "email-extratos-pendentes", String(escritorioId));
@@ -6438,7 +6469,6 @@ async function emailExtratosSincronizar(
           const remetente = parsed.from?.text || "";
           const dataRecebimento = parsed.date || new Date();
           const messageId = parsed.messageId || `uid-${escritorioId}-${uid}`;
-          const { ano, mes } = emailExtrairCompetencia(assunto, dataRecebimento);
           const empresaPorAssunto = emailIdentificarEmpresaPorAssunto(escritorioId, assunto);
           const anexos = (parsed.attachments || []).filter((a) => {
             if (!a.content || !a.filename || a.related) return false;
@@ -6449,6 +6479,7 @@ async function emailExtratosSincronizar(
             const nomeArquivo = anexo.filename as string;
             const ext = (nomeArquivo.split(".").pop() || "").toLowerCase();
             const buf = anexo.content as Buffer;
+            const { ano, mes } = emailCompetenciaDoAnexo(nomeArquivo, assunto, dataRecebimento);
             const ehExtrato = emailEhExtrato(nomeArquivo, ext);
             let texto = "";
             if (ext === "pdf") texto = await obterTextoDoPdf(buf);
