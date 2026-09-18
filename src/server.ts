@@ -6450,7 +6450,18 @@ async function emailExtratosSincronizar(
               true
             );
             const observacao = `Importado automaticamente do e-mail "${assunto}" em ${new Date().toLocaleDateString("pt-BR")}.`;
-            const docId = integraContadorAnexarPdfEmEnvio(atribuicaoId, empresa.id, ano, mes, nomeArquivo, buf.toString("base64"), observacao, null, true);
+            const docId = integraContadorAnexarPdfEmEnvio(
+              atribuicaoId,
+              empresa.id,
+              ano,
+              mes,
+              nomeArquivo,
+              buf.toString("base64"),
+              observacao,
+              null,
+              true,
+              !ehExtrato
+            );
             emailGravarControle({ ...base, empresaId: empresa.id, envioDocumentoId: docId, status: "ok", erro: null, arquivoPendentePath: null });
             ok++;
           }
@@ -6749,7 +6760,14 @@ function integraContadorAnexarPdfEmEnvio(
   pdfBase64: string,
   observacao: string,
   vencimentoIso: string | null,
-  substituirExistente = false
+  substituirExistente = false,
+  // Por padrão o substituirExistente apaga TODOS os documentos do período (1 arquivo por
+  // template/período — correto pra Balanço/Balancete/DRE/Razão/Extrato por banco, sempre 1 arquivo
+  // canônico por mês). Com true, só substitui um documento de MESMO nome de arquivo, preservando os
+  // demais — necessário pro balaio genérico "Outros Documentos Financeiros" do e-mail, onde vários
+  // arquivos DIFERENTES (Fluxo de Caixa, Razão Financeira de bancos distintos etc.) coexistem no
+  // mesmo período (achado ao vivo: o 2º arquivo "outro" do mesmo e-mail estava apagando o 1º).
+  substituirApenasMesmoNome = false
 ): number {
   // "mes IS ?" (não "mes = ?"): pra template ANUAL, mes vem null — em SQLite "coluna = NULL" nunca é
   // verdadeiro, então com "=" isso nunca acharia o período já existente e duplicaria envio_periodos a
@@ -6761,7 +6779,11 @@ function integraContadorAnexarPdfEmEnvio(
     const info = sqlite.prepare(`INSERT INTO envio_periodos (atribuicao_id, ano, mes) VALUES (?, ?, ?)`).run(atribuicaoId, ano, mes);
     periodo = { id: Number(info.lastInsertRowid) };
   } else if (substituirExistente) {
-    const antigos = sqlite.prepare(`SELECT id, file_path FROM envio_documentos WHERE periodo_id = ?`).all(periodo.id) as any[];
+    const antigos = (
+      substituirApenasMesmoNome
+        ? sqlite.prepare(`SELECT id, file_path FROM envio_documentos WHERE periodo_id = ? AND file_name = ?`).all(periodo.id, nomeArquivo)
+        : sqlite.prepare(`SELECT id, file_path FROM envio_documentos WHERE periodo_id = ?`).all(periodo.id)
+    ) as any[];
     if (antigos.length) {
       const idsAntigos = antigos.map((d) => d.id);
       sqlite
@@ -6770,7 +6792,9 @@ function integraContadorAnexarPdfEmEnvio(
       sqlite
         .prepare(`UPDATE email_extratos_importados SET envio_documento_id = NULL WHERE envio_documento_id IN (${idsAntigos.map(() => "?").join(",")})`)
         .run(...idsAntigos);
-      sqlite.prepare(`DELETE FROM envio_documentos WHERE periodo_id = ?`).run(periodo.id);
+      sqlite
+        .prepare(`DELETE FROM envio_documentos WHERE id IN (${idsAntigos.map(() => "?").join(",")})`)
+        .run(...idsAntigos);
       for (const antigo of antigos) {
         try {
           fs.unlinkSync(antigo.file_path);
