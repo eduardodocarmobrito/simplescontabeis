@@ -3210,7 +3210,15 @@ async function renderEnvioAtribuicoes(){
       ${podePostar?`<button class="btn primary" id="btnNovaEnvioAtrib">+ Atribuir modelo a uma empresa</button>`:''}
       ${ehAdmin?`<button class="btn" id="btnRolloverAno" title="Toda virada de ano (1º de janeiro) isso já roda sozinho — use aqui só se quiser adiantar ou como reforço.">Gerar grade do ano novo pra todo mundo</button>`:''}
     </div>
-    <div class="field" style="max-width:360px; margin-bottom:10px;"><input type="text" id="envioAtribFiltro" placeholder="Buscar por empresa…" autocomplete="off"></div>
+    <div class="row" style="gap:8px; margin-bottom:10px;">
+      <div class="field" style="max-width:360px; margin-bottom:0;"><input type="text" id="envioAtribFiltro" placeholder="Buscar por empresa…" autocomplete="off"></div>
+      <div class="field" style="max-width:260px; margin-bottom:0;">
+        <select id="envioAtribModeloFiltro">
+          <option value="">Todos os modelos</option>
+          ${[...templates].sort((a,b)=>a.nome.localeCompare(b.nome)).map(t=>`<option value="${t.id}">${esc(t.nome)}</option>`).join('')}
+        </select>
+      </div>
+    </div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
         <thead><tr><th>Empresa</th><th>Modelo</th><th>Periodicidade</th><th></th></tr></thead>
@@ -3219,9 +3227,12 @@ async function renderEnvioAtribuicoes(){
     </div>
   `;
   const envioAtribBody = document.getElementById('envioAtribBody');
-  function desenhaEnvioAtribs(filtro){
+  function desenhaEnvioAtribs(filtro, modeloId){
     const termo = normalizaTxt(filtro).trim();
-    const visiveis = termo ? atribs.filter(a=> normalizaTxt(a.empresaNome).includes(termo)) : atribs;
+    const visiveis = atribs.filter(a=>
+      (!termo || normalizaTxt(a.empresaNome).includes(termo)) &&
+      (!modeloId || String(a.template_id)===String(modeloId))
+    );
     envioAtribBody.innerHTML = visiveis.length? visiveis.map(a=>`
       <tr data-id="${a.id}" ${a.pendentesCliente? 'style="background:var(--accent-pale);"':''}>
         <td>${esc(a.empresaNome)}</td>
@@ -3235,7 +3246,7 @@ async function renderEnvioAtribuicoes(){
             : ''}
         </td>
       </tr>
-    `).join('') : `<tr><td colspan="4"><div class="empty-state">${termo?'Nenhuma empresa encontrada.':'Nenhum envio atribuído ainda.'}</div></td></tr>`;
+    `).join('') : `<tr><td colspan="4"><div class="empty-state">${termo||modeloId?'Nenhum resultado com esse filtro.':'Nenhum envio atribuído ainda.'}</div></td></tr>`;
     envioAtribBody.querySelectorAll('[data-act="abrir"]').forEach(b=>b.addEventListener('click', e=>{
       abrirEnvioGrade(Number(e.target.closest('tr').dataset.id), false);
     }));
@@ -3248,8 +3259,10 @@ async function renderEnvioAtribuicoes(){
       catch(err){ toast(err.message,'err'); }
     }));
   }
-  desenhaEnvioAtribs('');
-  document.getElementById('envioAtribFiltro').addEventListener('input', e=>desenhaEnvioAtribs(e.target.value));
+  desenhaEnvioAtribs('', '');
+  const atualizaFiltroEnvio = ()=> desenhaEnvioAtribs(document.getElementById('envioAtribFiltro').value, document.getElementById('envioAtribModeloFiltro').value);
+  document.getElementById('envioAtribFiltro').addEventListener('input', atualizaFiltroEnvio);
+  document.getElementById('envioAtribModeloFiltro').addEventListener('change', atualizaFiltroEnvio);
   if(podePostar) document.getElementById('btnNovaEnvioAtrib').addEventListener('click', ()=>novaEnvioAtribModal(empresas, templates));
   if(ehAdmin) document.getElementById('btnRolloverAno').addEventListener('click', async ()=>{
     const ano = prompt('Gerar a grade de qual ano pra todas as empresas? (só renova quem já tinha grade no ano anterior)', new Date().getFullYear()+1);
