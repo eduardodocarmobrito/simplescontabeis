@@ -20,6 +20,8 @@ import * as onedrive from "./onedrive";
 import * as integracontador from "./integracontador";
 import * as ocr from "./ocr";
 import { buscarViaOnvio } from "./onvio-sync";
+import { ImapFlow } from "imapflow";
+import { simpleParser } from "mailparser";
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 
@@ -539,6 +541,44 @@ sqlite.exec(`
     texto_preview TEXT, -- ~2000 primeiros caracteres extraídos, pra auditoria/depuração sem reabrir o PDF
     importado_em TEXT DEFAULT (datetime('now')),
     UNIQUE(escritorio_id, onedrive_item_id)
+  );
+
+  -- Configuração de acesso IMAP a uma caixa de e-mail (ex.: simplescontabeis@gmail.com) pra
+  -- importar automaticamente extratos bancários e outros documentos financeiros que os clientes
+  -- mandam por e-mail (ver emailExtratosSincronizar) — mesma ideia da importação de relatórios do
+  -- OneDrive, só que a fonte é uma caixa de e-mail em vez de uma pasta. Senha de app (não a senha
+  -- normal da conta) cifrada em repouso, mesmo padrão AES-256-GCM já usado pra certificado/OneDrive.
+  CREATE TABLE IF NOT EXISTS email_extratos_config (
+    escritorio_id INTEGER PRIMARY KEY REFERENCES escritorios(id),
+    email TEXT,
+    senha_app_cifrada TEXT,
+    ativo INTEGER NOT NULL DEFAULT 0,
+    ultimo_uid_processado INTEGER NOT NULL DEFAULT 0, -- cursor IMAP (UID é sequencial dentro da caixa)
+    ultima_varredura_em TEXT,
+    ultimo_erro TEXT,
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+  -- Controle/auditoria por ANEXO (não por e-mail — uma mensagem pode ter vários extratos + outros
+  -- documentos, cada um vira uma linha) — mesma função da dominio_relatorios_importados acima, só
+  -- que a chave de dedupe é (message_id, nome_arquivo) em vez de onedrive_item_id.
+  CREATE TABLE IF NOT EXISTS email_extratos_importados (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    escritorio_id INTEGER NOT NULL REFERENCES escritorios(id) ON DELETE CASCADE,
+    message_id TEXT NOT NULL,
+    email_assunto TEXT,
+    email_remetente TEXT,
+    email_recebido_em TEXT,
+    nome_arquivo TEXT NOT NULL,
+    tipo_detectado TEXT, -- 'extrato' | 'outro'
+    banco_detectado TEXT, -- só quando tipo_detectado='extrato'
+    cnpj_detectado TEXT,
+    empresa_id INTEGER REFERENCES empresas(id),
+    envio_documento_id INTEGER REFERENCES envio_documentos(id),
+    status TEXT NOT NULL, -- 'ok' | 'empresa_nao_encontrada' | 'erro'
+    erro TEXT,
+    arquivo_pendente_path TEXT,
+    importado_em TEXT DEFAULT (datetime('now')),
+    UNIQUE(escritorio_id, message_id, nome_arquivo)
   );
 
   CREATE TABLE IF NOT EXISTS agent_heartbeat (
@@ -1094,6 +1134,7 @@ sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_honorarios_lanc_competencia ON honor
 sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_dominio_dados_empresa ON dominio_dados(empresa_id, tipo, competencia);`);
 sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_envio_documentos_periodo ON envio_documentos(periodo_id);`);
 sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_dominio_rel_import_status ON dominio_relatorios_importados(escritorio_id, status);`);
+sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_email_extratos_status ON email_extratos_importados(escritorio_id, status);`);
 
 // Migração: bancos criados antes de 2026-08-18 têm envio_documentos com UNIQUE(periodo_id) e sem
 // a coluna observacao — reconstrói a tabela preservando os documentos já enviados, sem essa trava
@@ -6161,6 +6202,378 @@ setInterval(() => {
     dominioRelatoriosSincronizar(c.escritorio_id, { dryRun: false }).catch((e) => console.error("Erro na importação automática de relatórios do OneDrive:", e.message));
   }
 }, 5 * 60 * 1000);
+
+// ---------- Importar extratos bancários (e outros documentos financeiros) de uma caixa de e-mail
+// (ex.: simplescontabeis@gmail.com, via IMAP + senha de app do Gmail) — o escritório recebe todo mês
+// um e-mail por cliente tipo "FECHAMENTO MENSAL 08/2026 DA RAIZES AGRO" com vários anexos (extratos
+// em PDF/OFX, um por banco, + outros arquivos financeiros do próprio cliente). Mesma estratégia já
+// usada e comprovada na importação de relatórios do OneDrive: os anexos viram envio_documentos de
+// verdade (integraContadorObterOuCriarAtribuicaoModelo + integraContadorAnexarPdfEmEnvio), com uma
+// tabela de controle só pra auditoria/dedupe/pendências. ----------
+function getEmailExtratosConfig(escritorioId: number): any {
+  return sqlite.prepare(`SELECT * FROM email_extratos_config WHERE escritorio_id = ?`).get(escritorioId) || {};
+}
+function emailNormalizaTxt(s: string): string {
+  return String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").trim();
+}
+// Tira sufixo de razão social (LTDA, ME, S/A etc.) antes de comparar — o assunto do e-mail
+// ("...DA RAIZES AGRO") nunca traz o sufixo, só o nome "comercial".
+function emailNomeEmpresaSemSufixo(nome: string): string {
+  return emailNormalizaTxt(nome)
+    .replace(/\b(ltda|me|epp|eireli|s\/?a|sa|mei)\b\.?/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+// Fallback quando o CNPJ não aparece no texto do anexo (ex.: anexo "outro", sem extração de
+// conteúdo) — usa o nome da empresa mencionado no ASSUNTO do e-mail. Prioriza o nome mais longo que
+// bater, pra não confundir uma empresa cujo nome é prefixo de outra (ex.: "Raízes Agro" vs "Raízes
+// Agro Transportes"). Exige pelo menos 5 caracteres pra não deixar um nome curto demais (ex. "AB")
+// gerar falso-positivo contra qualquer assunto.
+function emailIdentificarEmpresaPorAssunto(escritorioId: number, assunto: string): any | null {
+  const assuntoNorm = emailNormalizaTxt(assunto);
+  if (!assuntoNorm) return null;
+  const empresas = sqlite.prepare(`SELECT id, nome, apelido FROM empresas WHERE escritorio_id = ? AND ativo = 1`).all(escritorioId) as any[];
+  let melhor: any = null;
+  let melhorTamanho = 0;
+  for (const e of empresas) {
+    for (const candidato of [e.nome, e.apelido]) {
+      if (!candidato) continue;
+      const semSufixo = emailNomeEmpresaSemSufixo(candidato);
+      if (semSufixo.length >= 5 && assuntoNorm.includes(semSufixo) && semSufixo.length > melhorTamanho) {
+        melhor = e;
+        melhorTamanho = semSufixo.length;
+      }
+    }
+  }
+  return melhor;
+}
+// Bancos comuns — checa primeiro o NOME DO ARQUIVO (mais confiável, mesma lição já aprendida com
+// período do Balancete/DRE), só depois o texto do anexo.
+const EMAIL_BANCOS_CONHECIDOS: [RegExp, string][] = [
+  [/banco\s+do\s+brasil/i, "Banco do Brasil"],
+  [/ita[úu]/i, "Itaú"],
+  [/santander/i, "Santander"],
+  [/bradesco/i, "Bradesco"],
+  [/caixa\s+econ[ôo]mica|caixa\s+federal/i, "Caixa Econômica Federal"],
+  [/sicoob/i, "Sicoob"],
+  [/sicredi/i, "Sicredi"],
+  [/banco\s+inter\b/i, "Banco Inter"],
+  [/nubank|nu\s+pagamentos/i, "Nubank"],
+  [/banrisul/i, "Banrisul"],
+  [/\bsafra\b/i, "Safra"],
+  [/btg/i, "BTG Pactual"],
+];
+function emailIdentificarBanco(nomeArquivo: string, texto: string): string | null {
+  for (const [re, nome] of EMAIL_BANCOS_CONHECIDOS) if (re.test(nomeArquivo)) return nome;
+  for (const [re, nome] of EMAIL_BANCOS_CONHECIDOS) if (re.test(texto)) return nome;
+  return null; // ainda assim é extrato — cai no template genérico "Extrato Bancário"
+}
+// OFX é sempre extrato bancário, por definição do formato. PDF só conta como extrato se o próprio
+// nome do arquivo disser isso — qualquer outro PDF (ou xlsx, doc etc.) vai pro balaio genérico.
+function emailEhExtrato(nomeArquivo: string, ext: string): boolean {
+  if (ext === "ofx") return true;
+  return ext === "pdf" && /extrato/i.test(nomeArquivo);
+}
+// Extensões aceitas no balaio "Outros Documentos Financeiros" — formatos de documento/planilha
+// comuns; ignora imagem/zip/executável etc., que não costuma ser um documento financeiro de verdade.
+const EMAIL_EXTENSOES_OUTROS = new Set(["pdf", "xlsx", "xls", "csv", "doc", "docx"]);
+// Competência sempre vem do ASSUNTO do e-mail quando possível ("...MENSAL 08/2026 DA...") — mesmo
+// mês/ano vale pra TODOS os anexos daquele e-mail, extrato ou não. Sem o padrão no assunto, cai pra
+// mês/ano da própria data de recebimento.
+function emailExtrairCompetencia(assunto: string, dataRecebimento: Date): { ano: number; mes: number } {
+  const m = /(\d{2})\s*\/\s*(\d{4})/.exec(assunto || "");
+  if (m) {
+    const mes = Number(m[1]);
+    const ano = Number(m[2]);
+    if (mes >= 1 && mes <= 12 && ano >= 2000 && ano <= 2100) return { ano, mes };
+  }
+  return { ano: dataRecebimento.getFullYear(), mes: dataRecebimento.getMonth() + 1 };
+}
+function emailSalvarPendente(escritorioId: number, buf: Buffer, nomeArquivo: string): string {
+  const dir = path.join(UPLOADS_DIR, "email-extratos-pendentes", String(escritorioId));
+  fs.mkdirSync(dir, { recursive: true });
+  const destino = path.join(dir, `${Date.now()}-${nomeArquivo.replace(/[\\/:*?"<>|]/g, "_")}`);
+  fs.writeFileSync(destino, buf);
+  return destino;
+}
+function emailGravarControle(row: {
+  escritorioId: number;
+  messageId: string;
+  emailAssunto: string | null;
+  emailRemetente: string | null;
+  emailRecebidoEm: string | null;
+  nomeArquivo: string;
+  tipoDetectado: string | null;
+  bancoDetectado: string | null;
+  cnpjDetectado: string | null;
+  empresaId: number | null;
+  envioDocumentoId: number | null;
+  status: string;
+  erro: string | null;
+  arquivoPendentePath: string | null;
+}): void {
+  sqlite
+    .prepare(
+      `INSERT INTO email_extratos_importados
+         (escritorio_id, message_id, email_assunto, email_remetente, email_recebido_em, nome_arquivo, tipo_detectado, banco_detectado, cnpj_detectado, empresa_id, envio_documento_id, status, erro, arquivo_pendente_path)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(escritorio_id, message_id, nome_arquivo) DO UPDATE SET
+         email_assunto=excluded.email_assunto, email_remetente=excluded.email_remetente, email_recebido_em=excluded.email_recebido_em,
+         tipo_detectado=excluded.tipo_detectado, banco_detectado=excluded.banco_detectado, cnpj_detectado=excluded.cnpj_detectado,
+         empresa_id=excluded.empresa_id, envio_documento_id=excluded.envio_documento_id, status=excluded.status, erro=excluded.erro,
+         arquivo_pendente_path=excluded.arquivo_pendente_path, importado_em=datetime('now')`
+    )
+    .run(
+      row.escritorioId,
+      row.messageId,
+      row.emailAssunto,
+      row.emailRemetente,
+      row.emailRecebidoEm,
+      row.nomeArquivo,
+      row.tipoDetectado,
+      row.bancoDetectado,
+      row.cnpjDetectado,
+      row.empresaId,
+      row.envioDocumentoId,
+      row.status,
+      row.erro,
+      row.arquivoPendentePath
+    );
+}
+async function emailExtratosSincronizar(
+  escritorioId: number,
+  opts: { dryRun: boolean; limite?: number }
+): Promise<{ processados: number; ok: number; pendentes: number; erros: number; previews?: any[] }> {
+  const cfg = getEmailExtratosConfig(escritorioId);
+  if (!cfg.email || !cfg.senha_app_cifrada) {
+    throw new Error('Configure o e-mail e a senha de app em Configurações › E-mail corporativo antes de importar.');
+  }
+  const senha = nfse.decifrarTexto(cfg.senha_app_cifrada);
+  const client = new ImapFlow({ host: "imap.gmail.com", port: 993, secure: true, auth: { user: cfg.email, pass: senha }, logger: false });
+  let processados = 0,
+    ok = 0,
+    pendentes = 0,
+    erros = 0;
+  const previews: any[] = [];
+  const mapaDocumentos = domRelMapaDocumentos(escritorioId);
+  try {
+    await client.connect();
+    const lock = await client.getMailboxLock("INBOX");
+    try {
+      const limiteMsgs = opts.limite || 30;
+      const desde = Number(cfg.ultimo_uid_processado) || 0;
+      // Primeira execução (cursor=0): não varre o histórico inteiro da caixa — começa só de hoje em
+      // diante. Depois disso, sempre incremental por UID (que é sequencial dentro da caixa).
+      const criterio: any = desde > 0 ? { uid: `${desde + 1}:*` } : { since: new Date() };
+      const uids = ((await client.search(criterio, { uid: true })) || []) as number[];
+      const uidsOrdenados = [...uids].sort((a, b) => a - b).slice(0, limiteMsgs);
+      for (const uid of uidsOrdenados) {
+        processados++;
+        try {
+          const msg = await client.fetchOne(String(uid), { source: true }, { uid: true });
+          if (!msg || !msg.source) {
+            if (!opts.dryRun) sqlite.prepare(`UPDATE email_extratos_config SET ultimo_uid_processado = ? WHERE escritorio_id = ?`).run(uid, escritorioId);
+            continue;
+          }
+          const parsed = await simpleParser(msg.source);
+          const assunto = parsed.subject || "";
+          const remetente = parsed.from?.text || "";
+          const dataRecebimento = parsed.date || new Date();
+          const messageId = parsed.messageId || `uid-${escritorioId}-${uid}`;
+          const { ano, mes } = emailExtrairCompetencia(assunto, dataRecebimento);
+          const empresaPorAssunto = emailIdentificarEmpresaPorAssunto(escritorioId, assunto);
+          const anexos = (parsed.attachments || []).filter((a) => {
+            if (!a.content || !a.filename || a.related) return false;
+            const ext = (a.filename.split(".").pop() || "").toLowerCase();
+            return ext === "ofx" || EMAIL_EXTENSOES_OUTROS.has(ext);
+          });
+          for (const anexo of anexos) {
+            const nomeArquivo = anexo.filename as string;
+            const ext = (nomeArquivo.split(".").pop() || "").toLowerCase();
+            const buf = anexo.content as Buffer;
+            const ehExtrato = emailEhExtrato(nomeArquivo, ext);
+            let texto = "";
+            if (ext === "pdf") texto = await obterTextoDoPdf(buf);
+            else if (ext === "ofx") texto = buf.toString("utf8");
+            const { empresa: empresaPorCnpj, cnpjDetectado } = domRelIdentificarEmpresa(mapaDocumentos, texto, nomeArquivo);
+            const empresa = empresaPorCnpj || empresaPorAssunto;
+            const banco = ehExtrato ? emailIdentificarBanco(nomeArquivo, texto) : null;
+            if (opts.dryRun) {
+              previews.push({
+                emailAssunto: assunto,
+                nomeArquivo,
+                tipoDetectado: ehExtrato ? "extrato" : "outro",
+                bancoDetectado: banco,
+                cnpjDetectado,
+                ano,
+                mes,
+                empresaEncontrada: empresa ? { id: empresa.id, nome: empresa.nome } : null,
+              });
+              continue;
+            }
+            const base = {
+              escritorioId,
+              messageId,
+              emailAssunto: assunto,
+              emailRemetente: remetente,
+              emailRecebidoEm: dataRecebimento.toISOString(),
+              nomeArquivo,
+              tipoDetectado: ehExtrato ? "extrato" : "outro",
+              bancoDetectado: banco,
+              cnpjDetectado,
+            };
+            if (!empresa) {
+              emailGravarControle({
+                ...base,
+                empresaId: null,
+                envioDocumentoId: null,
+                status: "empresa_nao_encontrada",
+                erro: "Não identifiquei a empresa (nem pelo CNPJ no anexo, nem pelo nome no assunto do e-mail).",
+                arquivoPendentePath: emailSalvarPendente(escritorioId, buf, nomeArquivo),
+              });
+              pendentes++;
+              continue;
+            }
+            const nomeTemplate = ehExtrato ? `Extrato ${banco || "Bancário"}` : "Outros Documentos Financeiros";
+            const atribuicaoId = integraContadorObterOuCriarAtribuicaoModelo(
+              escritorioId,
+              empresa.id,
+              nomeTemplate,
+              `${nomeTemplate} — importado automaticamente do e-mail.`,
+              "mensal",
+              true
+            );
+            const observacao = `Importado automaticamente do e-mail "${assunto}" em ${new Date().toLocaleDateString("pt-BR")}.`;
+            const docId = integraContadorAnexarPdfEmEnvio(atribuicaoId, empresa.id, ano, mes, nomeArquivo, buf.toString("base64"), observacao, null, true);
+            emailGravarControle({ ...base, empresaId: empresa.id, envioDocumentoId: docId, status: "ok", erro: null, arquivoPendentePath: null });
+            ok++;
+          }
+          if (!opts.dryRun) {
+            sqlite
+              .prepare(`UPDATE email_extratos_config SET ultimo_uid_processado = ?, ultima_varredura_em = datetime('now'), ultimo_erro = NULL WHERE escritorio_id = ?`)
+              .run(uid, escritorioId);
+          }
+        } catch (e: any) {
+          erros++;
+          console.error(`[E-mail Extratos] falha processando mensagem UID ${uid} (escritório ${escritorioId}):`, e.message);
+          // Avança o cursor mesmo em erro — uma mensagem malformada travaria a fila pra sempre se
+          // ficasse tentando de novo a cada ciclo.
+          if (!opts.dryRun) sqlite.prepare(`UPDATE email_extratos_config SET ultimo_uid_processado = ? WHERE escritorio_id = ?`).run(uid, escritorioId);
+        }
+      }
+    } finally {
+      lock.release();
+    }
+  } catch (e: any) {
+    if (!opts.dryRun) sqlite.prepare(`UPDATE email_extratos_config SET ultimo_erro = ?, ultima_varredura_em = datetime('now') WHERE escritorio_id = ?`).run(e.message, escritorioId);
+    throw e;
+  } finally {
+    await client.logout().catch(() => {});
+  }
+  return { processados, ok, pendentes, erros, ...(opts.dryRun ? { previews } : {}) };
+}
+app.get("/api/email-extratos/config", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
+  const cfg = getEmailExtratosConfig((req as any).user.escritorioId);
+  res.json({
+    email: cfg.email || "",
+    temSenha: !!cfg.senha_app_cifrada,
+    ativo: !!cfg.ativo,
+    ultimaVarreduraEm: cfg.ultima_varredura_em || null,
+    ultimoErro: cfg.ultimo_erro || null,
+  });
+});
+app.put("/api/email-extratos/config", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
+  const escritorioId = (req as any).user.escritorioId;
+  const email = String(req.body?.email || "").trim();
+  const senhaApp = String(req.body?.senhaApp || "").trim();
+  const ativo = req.body?.ativo ? 1 : 0;
+  if (!email) return res.status(400).json({ error: "Informe o e-mail." });
+  const existente = getEmailExtratosConfig(escritorioId);
+  const senhaCifrada = senhaApp ? nfse.cifrarTexto(senhaApp) : existente.senha_app_cifrada || null;
+  sqlite
+    .prepare(
+      `INSERT INTO email_extratos_config (escritorio_id, email, senha_app_cifrada, ativo, updated_at) VALUES (?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(escritorio_id) DO UPDATE SET email=excluded.email, senha_app_cifrada=excluded.senha_app_cifrada, ativo=excluded.ativo, updated_at=datetime('now')`
+    )
+    .run(escritorioId, email, senhaCifrada, ativo);
+  res.json({ ok: true });
+});
+app.post("/api/email-extratos/dry-run", blockCliente, requirePermissao("configuracoes", "postar"), async (req, res) => {
+  try {
+    const r = await emailExtratosSincronizar((req as any).user.escritorioId, { dryRun: true, limite: Number(req.body?.limite) || 10 });
+    res.json(r);
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+app.post("/api/email-extratos/importar-agora", blockCliente, requirePermissao("configuracoes", "postar"), async (req, res) => {
+  try {
+    const r = await emailExtratosSincronizar((req as any).user.escritorioId, { dryRun: false });
+    res.json(r);
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+app.get("/api/email-extratos/pendentes", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
+  const rows = sqlite
+    .prepare(`SELECT * FROM email_extratos_importados WHERE escritorio_id = ? AND status != 'ok' ORDER BY id DESC`)
+    .all((req as any).user.escritorioId) as any[];
+  res.json({
+    items: rows.map((r) => ({
+      id: r.id,
+      emailAssunto: r.email_assunto,
+      emailRemetente: r.email_remetente,
+      nomeArquivo: r.nome_arquivo,
+      tipoDetectado: r.tipo_detectado,
+      bancoDetectado: r.banco_detectado,
+      cnpjDetectado: r.cnpj_detectado,
+      erro: r.erro,
+      importadoEm: r.importado_em,
+    })),
+  });
+});
+// Resolve um "não identificado" na mão — o admin escolhe a empresa (e o banco, se for extrato) certos,
+// sem precisar baixar o anexo de novo do e-mail (já está salvo em arquivo_pendente_path).
+app.post("/api/email-extratos/pendentes/:id/atribuir", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
+  const escritorioId = (req as any).user.escritorioId;
+  const row = sqlite.prepare(`SELECT * FROM email_extratos_importados WHERE id = ? AND escritorio_id = ?`).get(Number(req.params.id), escritorioId) as any;
+  if (!row) return res.status(404).json({ error: "Registro não encontrado." });
+  if (!row.arquivo_pendente_path || !fs.existsSync(row.arquivo_pendente_path)) {
+    return res.status(400).json({ error: "O arquivo original não está mais disponível — rode a importação de novo." });
+  }
+  const { empresaId, tipo, banco, ano, mes } = req.body || {};
+  const empresa = sqlite.prepare(`SELECT id, nome FROM empresas WHERE id = ? AND escritorio_id = ?`).get(Number(empresaId), escritorioId) as any;
+  if (!empresa) return res.status(400).json({ error: "Selecione uma empresa válida." });
+  if (!Number.isInteger(Number(ano)) || !Number.isInteger(Number(mes))) return res.status(400).json({ error: "Informe o mês e o ano." });
+  const buf = fs.readFileSync(row.arquivo_pendente_path);
+  const nomeTemplate = tipo === "extrato" ? `Extrato ${String(banco || "Bancário").trim() || "Bancário"}` : "Outros Documentos Financeiros";
+  const atribuicaoId = integraContadorObterOuCriarAtribuicaoModelo(
+    escritorioId,
+    empresa.id,
+    nomeTemplate,
+    `${nomeTemplate} — atribuído manualmente a partir de um anexo de e-mail não identificado automaticamente (${row.nome_arquivo}).`,
+    "mensal",
+    true
+  );
+  const observacao = `Atribuído manualmente a partir de um anexo de e-mail não identificado (${row.nome_arquivo}).`;
+  const docId = integraContadorAnexarPdfEmEnvio(atribuicaoId, empresa.id, Number(ano), Number(mes), row.nome_arquivo, buf.toString("base64"), observacao, null, true);
+  sqlite
+    .prepare(`UPDATE email_extratos_importados SET status='ok', erro=NULL, empresa_id=?, tipo_detectado=?, banco_detectado=?, envio_documento_id=?, arquivo_pendente_path=NULL WHERE id=?`)
+    .run(empresa.id, tipo, tipo === "extrato" ? banco || null : null, docId, row.id);
+  try {
+    fs.unlinkSync(row.arquivo_pendente_path);
+  } catch {
+    /* segue mesmo se não conseguir apagar o arquivo temporário */
+  }
+  res.json({ ok: true, docId });
+});
+// Varredura automática de 15 em 15 minutos — só escritórios com a importação ligada e senha salva.
+setInterval(() => {
+  const configs = sqlite.prepare(`SELECT escritorio_id FROM email_extratos_config WHERE ativo = 1 AND senha_app_cifrada IS NOT NULL`).all() as any[];
+  for (const c of configs) {
+    emailExtratosSincronizar(c.escritorio_id, { dryRun: false }).catch((e) => console.error("Erro na importação automática de extratos por e-mail:", e.message));
+  }
+}, 15 * 60 * 1000);
 
 // ---------- Integra Contador (Receita Federal + SERPRO) — DAS, Declaração, Situação Fiscal ----------
 function getIntegraContadorConfig(escritorioId: number): any {

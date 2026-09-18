@@ -7978,6 +7978,55 @@ async function abrirOdRelPendenciasModal(){
   }));
   document.getElementById('odRelPendFechar').addEventListener('click', closeModal);
 }
+async function abrirEmailExtratosPendenciasModal(){
+  const { items } = await api('/email-extratos/pendentes');
+  if(!items.length){ toast('Nenhuma pendência agora.','ok'); return; }
+  const empresas = await empresasAtivas();
+  openModal(`
+    <h3>Anexos de e-mail não identificados (${items.length})</h3>
+    <p style="font-size:12.5px; color:var(--ink-soft);">Escolha a empresa certa pra cada um — o arquivo já está salvo, não precisa reenviar.</p>
+    <div id="emailExtPendList"></div>
+    <div class="modal-actions"><button class="btn" id="emailExtPendFechar">Fechar</button></div>
+  `, '760px');
+  const hoje = new Date();
+  const listEl = document.getElementById('emailExtPendList');
+  listEl.innerHTML = items.map(i=>`
+    <div class="card" style="margin-bottom:10px;" data-pend="${i.id}">
+      <b>${esc(i.nomeArquivo)}</b>
+      <div style="font-size:11.5px; color:var(--ink-soft); margin:4px 0 8px;">E-mail: ${esc(i.emailAssunto||'—')}${i.emailRemetente?' — de '+esc(i.emailRemetente):''}${i.cnpjDetectado?' — CNPJ visto: '+esc(i.cnpjDetectado):''}</div>
+      <div class="row" style="align-items:flex-end; gap:8px; flex-wrap:wrap;">
+        <div class="field grow" style="margin-bottom:0; min-width:220px;"><label>Empresa</label>${comboSelectHtml('emailExtPendEmp'+i.id, 'Selecione…')}</div>
+        <div class="field" style="margin-bottom:0; width:150px;"><label>Tipo</label>
+          <select id="emailExtPendTipo${i.id}">
+            <option value="extrato" ${i.tipoDetectado==='extrato'?'selected':''}>Extrato bancário</option>
+            <option value="outro" ${i.tipoDetectado==='outro'?'selected':''}>Outro documento</option>
+          </select>
+        </div>
+        <div class="field" style="margin-bottom:0; width:160px;"><label>Banco (se for extrato)</label><input id="emailExtPendBanco${i.id}" value="${esc(i.bancoDetectado||'')}" placeholder="Ex.: Itaú"></div>
+        <div class="field" style="margin-bottom:0; width:90px;"><label>Ano</label><input type="number" id="emailExtPendAno${i.id}" value="${hoje.getFullYear()}"></div>
+        <div class="field" style="margin-bottom:0; width:80px;"><label>Mês</label><input type="number" min="1" max="12" id="emailExtPendMes${i.id}" value="${hoje.getMonth()+1}"></div>
+        <button class="btn small primary" data-act="atribuir" data-id="${i.id}">Atribuir</button>
+      </div>
+    </div>
+  `).join('');
+  items.forEach(i=>setupComboSelect('emailExtPendEmp'+i.id, empresas.map(e=>({id:e.id, label:empresaComboLabel(e)}))));
+  listEl.querySelectorAll('[data-act="atribuir"]').forEach(b=>b.addEventListener('click', async ()=>{
+    const id = b.dataset.id;
+    const empresaId = document.querySelector('#emailExtPendEmp'+id+' .combo-value').value;
+    const tipo = document.getElementById('emailExtPendTipo'+id).value;
+    const banco = document.getElementById('emailExtPendBanco'+id).value.trim();
+    const ano = document.getElementById('emailExtPendAno'+id).value;
+    const mes = document.getElementById('emailExtPendMes'+id).value;
+    if(!empresaId){ toast('Selecione a empresa.','err'); return; }
+    b.disabled = true;
+    try{
+      await api('/email-extratos/pendentes/'+id+'/atribuir', { method:'POST', body:{ empresaId, tipo, banco, ano, mes } });
+      toast('Atribuído.','ok');
+      document.querySelector(`[data-pend="${id}"]`).remove();
+    }catch(e){ toast(e.message,'err'); b.disabled=false; }
+  }));
+  document.getElementById('emailExtPendFechar').addEventListener('click', closeModal);
+}
 
 let CFG_ASSINATURA_POLL = null;
 async function renderCfgAssinaturaPlataforma(box){
@@ -8521,6 +8570,7 @@ let CC_TAB='faltam';
 async function renderCfgEmailSmtp(box){
   const status = await api('/email/status');
   const cfg = await api('/email/config');
+  const extratosCfg = await api('/email-extratos/config');
   const { items } = await api('/email/log');
   const empresas = await empresasAtivas();
   const { comContato } = await api('/empresas/contatos-resumo');
@@ -8552,6 +8602,23 @@ async function renderCfgEmailSmtp(box){
         <button class="btn" id="cfgSmtpTestar">Testar conexão</button>
       </div>
       <div id="cfgSmtpResultado" style="margin-top:10px;"></div>
+    </div>` : ''}
+    ${isAdmin? `<div class="card">
+      <h3>Importar Extratos Bancários por E-mail</h3>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Lê periodicamente uma caixa de e-mail (ex.: quando um cliente manda o fechamento mensal com extratos em anexo) e já disponibiliza cada extrato na grade de Envio de Documentos da empresa certa — um tipo de documento por banco, criado sozinho conforme aparecer. Outros anexos do mesmo e-mail (planilhas etc.) caem em "Outros Documentos Financeiros". Use uma <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener" class="link-discreto">senha de app</a> do Gmail, não a senha normal.</p>
+      <div class="row">
+        <div class="field grow"><label>E-mail</label><input id="cfgExtratosEmail" value="${esc(extratosCfg.email)}" placeholder="simplescontabeis@gmail.com"></div>
+        <div class="field grow"><label>Senha de app${extratosCfg.temSenha?' (já salva — preencha só se quiser trocar)':''}</label><input id="cfgExtratosSenha" type="password" placeholder="${extratosCfg.temSenha?'••••••••••••••••':'senha de app'}"></div>
+      </div>
+      <label class="checkbox-row"><input type="checkbox" id="cfgExtratosAtivo" ${extratosCfg.ativo?'checked':''}> Manter a importação automática ligada</label>
+      ${extratosCfg.ultimaVarreduraEm?`<p style="font-size:12px; color:var(--ink-soft);">Última varredura: ${fmtDateHora(extratosCfg.ultimaVarreduraEm)}${extratosCfg.ultimoErro?` — <span style="color:var(--debit);">${esc(extratosCfg.ultimoErro)}</span>`:''}</p>`:''}
+      <div class="row" style="margin-top:6px;">
+        <button class="btn primary" id="cfgExtratosSalvar">Salvar</button>
+        <button class="btn" id="cfgExtratosTestar">Testar (não grava nada)</button>
+        <button class="btn" id="cfgExtratosImportar">Importar agora</button>
+        <button class="btn" id="cfgExtratosPendencias">Pendências</button>
+      </div>
+      <div id="cfgExtratosResultado" style="margin-top:10px;"></div>
     </div>` : ''}
     <div class="card">
       <h3>Contatos e documentos por cliente</h3>
@@ -8602,6 +8669,52 @@ async function renderCfgEmailSmtp(box){
         resEl.innerHTML = `<div class="tag bad">Falhou</div> <span style="font-size:12.5px;">${esc(e.message)}</span>`;
       }
     });
+    document.getElementById('cfgExtratosSalvar').addEventListener('click', async ()=>{
+      const body = {
+        email: document.getElementById('cfgExtratosEmail').value.trim(),
+        senhaApp: document.getElementById('cfgExtratosSenha').value,
+        ativo: document.getElementById('cfgExtratosAtivo').checked,
+      };
+      try{
+        await api('/email-extratos/config', { method:'PUT', body });
+        toast('Configuração salva.','ok');
+        renderCfgTab();
+      }catch(e){ toast(e.message,'err'); }
+    });
+    document.getElementById('cfgExtratosTestar').addEventListener('click', async ()=>{
+      const btn = document.getElementById('cfgExtratosTestar');
+      const resEl = document.getElementById('cfgExtratosResultado');
+      btn.disabled = true; btn.textContent = 'Testando…';
+      resEl.innerHTML = `<div class="empty-state">Lendo a caixa de e-mail…</div>`;
+      try{
+        const r = await api('/email-extratos/dry-run', { method:'POST', body:{ limite:5 } });
+        resEl.innerHTML = !r.previews.length ? '<div class="empty-state">Nenhum e-mail novo com anexo relevante encontrado.</div>' : r.previews.map(p=>`
+          <div class="card" style="background:var(--paper); margin-bottom:8px;">
+            <b>${esc(p.nomeArquivo)}</b>
+            <div style="font-size:12px; color:var(--ink-soft); margin-top:4px;">
+              E-mail: ${esc(p.emailAssunto)} ·
+              Tipo: ${p.tipoDetectado==='extrato'?'Extrato bancário':'Outro documento'}${p.bancoDetectado?' ('+esc(p.bancoDetectado)+')':''} ·
+              Competência: ${String(p.mes).padStart(2,'0')}/${p.ano} ·
+              CNPJ: ${esc(p.cnpjDetectado||'não encontrado')} ·
+              Empresa: ${p.empresaEncontrada?esc(p.empresaEncontrada.nome):'não encontrada'}
+            </div>
+          </div>
+        `).join('');
+      }catch(e){ resEl.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; }
+      finally{ btn.disabled = false; btn.textContent = 'Testar (não grava nada)'; }
+    });
+    document.getElementById('cfgExtratosImportar').addEventListener('click', async ()=>{
+      const btn = document.getElementById('cfgExtratosImportar');
+      const resEl = document.getElementById('cfgExtratosResultado');
+      btn.disabled = true; btn.textContent = 'Importando…';
+      resEl.innerHTML = `<div class="empty-state">Importando…</div>`;
+      try{
+        const r = await api('/email-extratos/importar-agora', { method:'POST' });
+        resEl.innerHTML = `<div class="tag ok">Concluído</div> <span style="font-size:12.5px;">${r.ok} anexado(s), ${r.pendentes} pendência(s), ${r.erros} erro(s).</span>`;
+      }catch(e){ resEl.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; }
+      finally{ btn.disabled = false; btn.textContent = 'Importar agora'; }
+    });
+    document.getElementById('cfgExtratosPendencias').addEventListener('click', abrirEmailExtratosPendenciasModal);
   }
 
   // Reflete na hora a empresa mudando de aba quando o 1º contato é adicionado (ou o último, removido)
