@@ -6228,24 +6228,30 @@ function emailNomeEmpresaSemSufixo(nome: string): string {
 // conteúdo) — usa o nome da empresa mencionado no ASSUNTO do e-mail. Prioriza o nome mais longo que
 // bater, pra não confundir uma empresa cujo nome é prefixo de outra (ex.: "Raízes Agro" vs "Raízes
 // Agro Transportes"). Exige pelo menos 5 caracteres pra não deixar um nome curto demais (ex. "AB")
-// gerar falso-positivo contra qualquer assunto.
+// gerar falso-positivo contra qualquer assunto. Achado ao vivo: matriz + filiais costumam ter o
+// MESMO nome cadastrado (ex. 4 empresas "RAIZES AGRO LTDA", uma por CNPJ de filial) — nesse caso o
+// nome sozinho nunca desempata quem é quem, então EMPATE entre empresas diferentes no mesmo tamanho
+// de match devolve null (pendência pra resolver na mão) em vez de chutar uma delas.
 function emailIdentificarEmpresaPorAssunto(escritorioId: number, assunto: string): any | null {
   const assuntoNorm = emailNormalizaTxt(assunto);
   if (!assuntoNorm) return null;
   const empresas = sqlite.prepare(`SELECT id, nome, apelido FROM empresas WHERE escritorio_id = ? AND ativo = 1`).all(escritorioId) as any[];
-  let melhor: any = null;
   let melhorTamanho = 0;
+  let candidatas: any[] = [];
   for (const e of empresas) {
     for (const candidato of [e.nome, e.apelido]) {
       if (!candidato) continue;
       const semSufixo = emailNomeEmpresaSemSufixo(candidato);
-      if (semSufixo.length >= 5 && assuntoNorm.includes(semSufixo) && semSufixo.length > melhorTamanho) {
-        melhor = e;
+      if (semSufixo.length < 5 || !assuntoNorm.includes(semSufixo)) continue;
+      if (semSufixo.length > melhorTamanho) {
         melhorTamanho = semSufixo.length;
+        candidatas = [e];
+      } else if (semSufixo.length === melhorTamanho && !candidatas.some((c) => c.id === e.id)) {
+        candidatas.push(e);
       }
     }
   }
-  return melhor;
+  return candidatas.length === 1 ? candidatas[0] : null;
 }
 // Bancos comuns — checa primeiro o NOME DO ARQUIVO (mais confiável, mesma lição já aprendida com
 // período do Balancete/DRE), só depois o texto do anexo.
