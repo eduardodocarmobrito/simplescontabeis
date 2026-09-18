@@ -7589,6 +7589,27 @@ async function renderCfgTab(){
   }
 }
 
+const CFG_DOM_SUBABAS = [
+  { id:'acesso', label:'Acesso' },
+  { id:'exportar-xml', label:'Exportar XML' },
+  { id:'relatorios', label:'Relatórios' },
+  { id:'onedrive', label:'OneDrive' },
+  { id:'historico', label:'Histórico' },
+];
+let CFG_DOM_SUBTAB = 'acesso';
+// Cada "Salvar" das sub-abas de Domínio Web nasce desabilitado (nada novo pra salvar ainda) e só
+// liga de volta quando o usuário mexe em algum campo do próprio formulário. Compartilhado pelas 4
+// sub-abas que têm Salvar (Acesso, Exportar XML, Relatórios, OneDrive).
+function habilitarSalvarAoMudar(btnId, fieldIds){
+  const btn = document.getElementById(btnId);
+  if(!btn) return;
+  fieldIds.forEach(id=>{
+    const el = document.getElementById(id);
+    if(!el) return;
+    el.addEventListener('input', ()=>{ btn.disabled = false; });
+    el.addEventListener('change', ()=>{ btn.disabled = false; });
+  });
+}
 async function renderCfgDominio(box){
   const [{ items, agente, saudeOnvio }, cfg, oneDriveCfg, onvioSessao] = await Promise.all([ api('/dominio/sync-log'), api('/dominio/config'), api('/onedrive/config'), api('/dominio/onvio-sessao') ]);
   box.innerHTML = `
@@ -7598,6 +7619,27 @@ async function renderCfgDominio(box){
           (${saudeOnvio.falhasConsecutivas} tentativas seguidas). ${esc(saudeOnvio.ultimoErro || '')}</span>
       </div>
     ` : ''}
+    <div class="tabs" style="margin-bottom:0;">
+      ${CFG_DOM_SUBABAS.map(a=>`<div class="tab" data-domsubtab="${a.id}">${esc(a.label)}</div>`).join('')}
+    </div>
+    <div id="cfgDomSubContent"></div>
+  `;
+  const dados = { items, agente, saudeOnvio, cfg, oneDriveCfg, onvioSessao };
+  box.querySelectorAll('[data-domsubtab]').forEach(t=>t.addEventListener('click', ()=>{ CFG_DOM_SUBTAB=t.dataset.domsubtab; renderCfgDomSubTab(box, dados); }));
+  renderCfgDomSubTab(box, dados);
+}
+function renderCfgDomSubTab(box, dados){
+  document.querySelectorAll('[data-domsubtab]').forEach(t=>t.classList.toggle('active', t.dataset.domsubtab===CFG_DOM_SUBTAB));
+  const sub = document.getElementById('cfgDomSubContent');
+  if(CFG_DOM_SUBTAB==='exportar-xml') renderCfgDomXmlExport(box, sub, dados);
+  else if(CFG_DOM_SUBTAB==='relatorios') renderCfgDomRelatorios(box, sub, dados);
+  else if(CFG_DOM_SUBTAB==='onedrive') renderCfgDomOneDrive(box, sub, dados);
+  else if(CFG_DOM_SUBTAB==='historico') renderCfgDomHistorico(sub, dados);
+  else renderCfgDomAcesso(box, sub, dados);
+}
+function renderCfgDomAcesso(box, sub, dados){
+  const { agente, cfg, onvioSessao } = dados;
+  sub.innerHTML = `
     <div class="card">
       <h3>Status do agente automático</h3>
       <p style="font-size:13px; color:var(--ink-soft);">
@@ -7675,67 +7717,6 @@ async function renderCfgDominio(box){
       </div>
       <div id="domTestResult" style="margin-top:12px;"></div>
     </div>
-    <div class="card">
-      <h3>Exportar XML pro Domínio Web</h3>
-      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">
-        O agente mantém uma pasta na sua máquina sempre atualizada com os documentos fiscais buscados
-        em "Busca de XML" (NF-e, NFC-e, NFS-e), organizados por empresa e competência — prontos pra
-        selecionar de uma vez na tela nativa de importação de XML em lote do Domínio ("NF-e Arquivo
-        XML", "NFS-e Arquivo XML - ABRASF" etc.). Não empurra pra dentro do Domínio sozinho — isso
-        exigiria um acordo de integração formal com a Thomson Reuters/Onvio (é assim que o SIEG faz).
-      </p>
-      <label class="checkbox-row"><input type="checkbox" id="domXmlExportAtivo" ${cfg.xmlExportAtivo?'checked':''}> Manter a pasta sincronizada automaticamente</label>
-      <div class="field"><label>Pasta local (na máquina onde o agente roda)</label><input id="domXmlExportDir" value="${esc(cfg.xmlExportDir)}" placeholder="ex.: C:\\NFe-para-Dominio ou /Users/voce/NFe-para-Dominio"></div>
-      <button class="btn primary" id="btnSalvarDomXmlExport" disabled>Salvar</button>
-    </div>
-    <div class="card">
-      <h3>Importar Relatórios do Domínio Web</h3>
-      <p style="font-size:12px; color:var(--ink-soft); margin-top:-6px;">
-        Lê periodicamente uma pasta do seu OneDrive com os PDFs de Balanço, DRE e Balancete do Domínio,
-        e já disponibiliza cada um em Relatórios e Envio de Documentos.
-      </p>
-      <div class="field"><label>Pasta no OneDrive</label><input id="odRelPasta" value="${esc(oneDriveCfg.relatoriosPastaOrigem)}"></div>
-      <label class="checkbox-row"><input type="checkbox" id="odRelAtivo" ${oneDriveCfg.relatoriosAtivo?'checked':''}> Manter a importação automática ligada</label>
-      ${oneDriveCfg.relatoriosUltimaImportacaoEm?`<p style="font-size:12px; color:var(--ink-soft);">Última importação: ${fmtDateHora(oneDriveCfg.relatoriosUltimaImportacaoEm)}${oneDriveCfg.relatoriosUltimoErro?` — <span style="color:var(--debit);">${esc(oneDriveCfg.relatoriosUltimoErro)}</span>`:''}</p>`:''}
-      <div class="row" style="margin-top:6px;">
-        <button class="btn primary" id="btnSalvarOdRel" disabled>Salvar</button>
-        <button class="btn" id="btnOdRelDryRun">Testar (não grava nada)</button>
-        ${oneDriveCfg.conectado?'<button class="btn" id="btnOdRelImportarAgora">Importar agora</button>':''}
-        <button class="btn" id="btnOdRelPendencias">Pendências</button>
-      </div>
-      <div id="odRelResultado" style="margin-top:10px;"></div>
-    </div>
-    <div class="card">
-      <h3>OneDrive (direto da nuvem, sem depender do computador ligado)</h3>
-      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">
-        Alternativa à pasta local acima: o próprio servidor sobe os XMLs direto pro seu OneDrive,
-        organizados por empresa e competência — funciona mesmo com o computador desligado, não
-        depende de nenhum agente rodando. Precisa de um app registrado no
-        <a href="https://portal.azure.com" target="_blank" rel="noopener" class="link-discreto">portal Azure</a>
-        (Microsoft) pra autorizar o acesso — passo único.
-      </p>
-      <p style="font-size:13px;">${oneDriveCfg.conectado ? `<span class="tag ok">Conectado</span> ${esc(oneDriveCfg.contaNome||oneDriveCfg.contaEmail||'')}` : `<span class="tag bad">Não conectado</span>`}</p>
-      <div class="row">
-        <div class="field grow"><label>Client ID (do app registrado no Azure)</label><input id="odClientId" value="${esc(oneDriveCfg.clientId)}"></div>
-        <div class="field grow"><label>Client Secret ${oneDriveCfg.temClientSecret?'(já salvo — preencha só se quiser trocar)':''}</label><input id="odClientSecret" type="password" placeholder="${oneDriveCfg.temClientSecret?'••••••••':''}"></div>
-      </div>
-      <div class="field"><label>Pasta de destino no OneDrive</label><input id="odPastaDestino" value="${esc(oneDriveCfg.pastaDestino)}"></div>
-      <label class="checkbox-row"><input type="checkbox" id="odAtivo" ${oneDriveCfg.ativo?'checked':''}> Manter o OneDrive sincronizado automaticamente</label>
-      ${oneDriveCfg.ultimaExportacaoEm?`<p style="font-size:12px; color:var(--ink-soft);">Última exportação: ${fmtDateHora(oneDriveCfg.ultimaExportacaoEm)}${oneDriveCfg.ultimoErro?` — <span style="color:var(--debit);">${esc(oneDriveCfg.ultimoErro)}</span>`:''}</p>`:''}
-      <div class="row" style="margin-top:6px;">
-        <button class="btn primary" id="btnSalvarOneDrive" disabled>Salvar</button>
-        <a class="btn" href="/api/onedrive/conectar">${oneDriveCfg.conectado?'Reconectar':'Conectar com o OneDrive'}</a>
-        ${oneDriveCfg.conectado?'<button class="btn danger" id="btnDesconectarOneDrive">Desconectar</button><button class="btn" id="btnExportarOneDriveAgora">Exportar agora</button>':''}
-      </div>
-      <div id="odResultado" style="margin-top:10px;"></div>
-    </div>
-    <div class="card">
-      <h3>Histórico de sincronizações</h3>
-      <table class="data-table">
-        <thead><tr><th>Quando</th><th>Origem</th><th>Novas</th><th>Atualizadas</th><th>Status</th></tr></thead>
-        <tbody>${items.length? items.map(l=>`<tr><td>${fmtDate(l.executado_em)}</td><td>${esc(l.origem)}</td><td>${l.empresas_novas}</td><td>${l.empresas_atualizadas}</td><td><span class="tag ${l.status==='ok'?'ok':'bad'}">${l.status}</span></td></tr>`).join(''):'<tr><td colspan="5"><div class="empty-state">Nenhuma sincronização ainda.</div></td></tr>'}</tbody>
-      </table>
-    </div>
     <button class="btn primary" id="btnImportarCfg">Importar clientes do Domínio Web (CSV)</button>
   `;
   document.getElementById('btnImportarCfg').addEventListener('click', importarDominioModal);
@@ -7805,26 +7786,7 @@ async function renderCfgDominio(box){
   }
   document.getElementById('domSource').addEventListener('change', syncSourceUI);
   syncSourceUI();
-
-  // Cada "Salvar" desta aba nasce desabilitado (nada novo pra salvar ainda) e só liga de volta quando
-  // o usuário mexe em algum campo do próprio formulário — evita clique em "Salvar" sem ter mudado
-  // nada. Depois de salvar com sucesso a aba inteira é re-renderizada (renderCfgDominio(box)), o que
-  // já nasce com os botões desabilitados de novo sozinho; não precisa desabilitar de novo na mão.
-  function habilitarSalvarAoMudar(btnId, fieldIds){
-    const btn = document.getElementById(btnId);
-    if(!btn) return;
-    fieldIds.forEach(id=>{
-      const el = document.getElementById(id);
-      if(!el) return;
-      el.addEventListener('input', ()=>{ btn.disabled = false; });
-      el.addEventListener('change', ()=>{ btn.disabled = false; });
-    });
-  }
   habilitarSalvarAoMudar('btnSalvarDomCfg', ['domSource','domDbDriver','domDbHost','domDbPort','domDbName','domDbUser','domDbPassword','domDbConnectString','domQuery','domColCodigo','domColNome','domColCnpj','domColStatus','domApiUrl','domApiToken']);
-  habilitarSalvarAoMudar('btnSalvarDomXmlExport', ['domXmlExportAtivo','domXmlExportDir']);
-  habilitarSalvarAoMudar('btnSalvarOneDrive', ['odClientId','odClientSecret','odPastaDestino','odAtivo']);
-  habilitarSalvarAoMudar('btnSalvarOdRel', ['odRelPasta','odRelAtivo']);
-
   document.getElementById('btnSalvarDomCfg').addEventListener('click', async ()=>{
     const body = {
       source: document.getElementById('domSource').value,
@@ -7846,11 +7808,62 @@ async function renderCfgDominio(box){
     try{ await api('/dominio/config', { method:'PUT', body }); toast('Configuração salva.','ok'); renderCfgDominio(box); }
     catch(e){ toast(e.message,'err'); }
   });
-
-  // Botão próprio, separado do form de acesso acima — mas reaproveita os valores já carregados em
-  // "cfg" pros outros campos, pra não sobrescrever a configuração de acesso ao salvar só isto aqui
-  // (o PUT /api/dominio/config espera o objeto inteiro; senha/token já tratam campo vazio = mantém,
-  // os demais campos não, por isso preciso reenviar o valor atual deles também).
+  document.getElementById('btnTestarDomCfg').addEventListener('click', async ()=>{
+    const resultEl = document.getElementById('domTestResult');
+    const btn = document.getElementById('btnTestarDomCfg');
+    btn.disabled = true; btn.textContent = 'Testando…';
+    resultEl.innerHTML = `<p style="font-size:12.5px; color:var(--ink-soft);">Aguardando o agente responder (ele precisa estar rodando e configurado)…</p>`;
+    try{
+      const { id } = await api('/dominio/testar-conexao', { method:'POST' });
+      domTestPolling = true;
+      let tentativas = 0;
+      const poll = async ()=>{
+        if(!domTestPolling) return;
+        tentativas++;
+        const r = await api('/dominio/testar-conexao/'+id);
+        if(r.status==='pending'){
+          if(tentativas>30){ resultEl.innerHTML = `<div class="tag bad">Sem resposta</div> <span style="font-size:12.5px;">O agente não respondeu em tempo — confira se ele está rodando (npm run dominio-agent:dev) e apontando para este site.</span>`; btn.disabled=false; btn.textContent='Testar conexão'; return; }
+          setTimeout(poll, 2000);
+          return;
+        }
+        btn.disabled = false; btn.textContent = 'Testar conexão';
+        if(r.status==='ok'){
+          const res_ = r.resultado || {};
+          resultEl.innerHTML = `<div class="tag ok">Conexão OK</div> <span style="font-size:12.5px;">${res_.totalLinhas||0} linha(s) retornada(s).</span>
+            ${res_.amostra&&res_.amostra.length? `<pre style="white-space:pre-wrap; font-size:11.5px; background:var(--paper); padding:8px; border-radius:6px; margin-top:8px;">${esc(JSON.stringify(res_.amostra, null, 2))}</pre>`:''}`;
+        } else {
+          resultEl.innerHTML = `<div class="tag bad">Falhou</div> <span style="font-size:12.5px;">${esc(r.erro||'Erro desconhecido.')}</span>`;
+        }
+      };
+      poll();
+    }catch(e){
+      btn.disabled = false; btn.textContent = 'Testar conexão';
+      resultEl.innerHTML = `<div class="tag bad">Falhou</div> <span style="font-size:12.5px;">${esc(e.message)}</span>`;
+    }
+  });
+}
+function renderCfgDomXmlExport(box, sub, dados){
+  const { cfg } = dados;
+  sub.innerHTML = `
+    <div class="card">
+      <h3>Exportar XML pro Domínio Web</h3>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">
+        O agente mantém uma pasta na sua máquina sempre atualizada com os documentos fiscais buscados
+        em "Busca de XML" (NF-e, NFC-e, NFS-e), organizados por empresa e competência — prontos pra
+        selecionar de uma vez na tela nativa de importação de XML em lote do Domínio ("NF-e Arquivo
+        XML", "NFS-e Arquivo XML - ABRASF" etc.). Não empurra pra dentro do Domínio sozinho — isso
+        exigiria um acordo de integração formal com a Thomson Reuters/Onvio (é assim que o SIEG faz).
+      </p>
+      <label class="checkbox-row"><input type="checkbox" id="domXmlExportAtivo" ${cfg.xmlExportAtivo?'checked':''}> Manter a pasta sincronizada automaticamente</label>
+      <div class="field"><label>Pasta local (na máquina onde o agente roda)</label><input id="domXmlExportDir" value="${esc(cfg.xmlExportDir)}" placeholder="ex.: C:\\NFe-para-Dominio ou /Users/voce/NFe-para-Dominio"></div>
+      <button class="btn primary" id="btnSalvarDomXmlExport" disabled>Salvar</button>
+    </div>
+  `;
+  habilitarSalvarAoMudar('btnSalvarDomXmlExport', ['domXmlExportAtivo','domXmlExportDir']);
+  // Botão próprio, separado do form de acesso — mas reaproveita os valores já carregados em "cfg"
+  // pros outros campos, pra não sobrescrever a configuração de acesso ao salvar só isto aqui (o PUT
+  // /api/dominio/config espera o objeto inteiro; senha/token já tratam campo vazio = mantém, os
+  // demais campos não, por isso precisa reenviar o valor atual deles também).
   document.getElementById('btnSalvarDomXmlExport').addEventListener('click', async ()=>{
     const body = {
       source: cfg.source, dbDriver: cfg.dbDriver, dbHost: cfg.dbHost, dbPort: cfg.dbPort, dbName: cfg.dbName, dbUser: cfg.dbUser,
@@ -7862,22 +7875,29 @@ async function renderCfgDominio(box){
     try{ await api('/dominio/config', { method:'PUT', body }); toast('Configuração salva.','ok'); renderCfgDominio(box); }
     catch(e){ toast(e.message,'err'); }
   });
-
-  document.getElementById('btnSalvarOneDrive').addEventListener('click', async ()=>{
-    const body = {
-      clientId: document.getElementById('odClientId').value.trim(),
-      clientSecret: document.getElementById('odClientSecret').value,
-      pastaDestino: document.getElementById('odPastaDestino').value.trim(),
-      ativo: document.getElementById('odAtivo').checked,
-      // Mesmo cuidado do XML Export acima — esse PUT reescreve o registro inteiro, então reenvia o
-      // que já estava salvo pro card de "Importar Relatórios" pra não apagar sem querer.
-      relatoriosPastaOrigem: oneDriveCfg.relatoriosPastaOrigem,
-      relatoriosAtivo: oneDriveCfg.relatoriosAtivo,
-    };
-    try{ await api('/onedrive/config', { method:'PUT', body }); toast('Configuração salva.','ok'); renderCfgDominio(box); }
-    catch(e){ toast(e.message,'err'); }
-  });
-
+}
+function renderCfgDomRelatorios(box, sub, dados){
+  const { oneDriveCfg } = dados;
+  sub.innerHTML = `
+    <div class="card">
+      <h3>Importar Relatórios do Domínio Web</h3>
+      <p style="font-size:12px; color:var(--ink-soft); margin-top:-6px;">
+        Lê periodicamente uma pasta do seu OneDrive com os PDFs de Balanço, DRE e Balancete do Domínio,
+        e já disponibiliza cada um em Relatórios e Envio de Documentos.
+      </p>
+      <div class="field"><label>Pasta no OneDrive</label><input id="odRelPasta" value="${esc(oneDriveCfg.relatoriosPastaOrigem)}"></div>
+      <label class="checkbox-row"><input type="checkbox" id="odRelAtivo" ${oneDriveCfg.relatoriosAtivo?'checked':''}> Manter a importação automática ligada</label>
+      ${oneDriveCfg.relatoriosUltimaImportacaoEm?`<p style="font-size:12px; color:var(--ink-soft);">Última importação: ${fmtDateHora(oneDriveCfg.relatoriosUltimaImportacaoEm)}${oneDriveCfg.relatoriosUltimoErro?` — <span style="color:var(--debit);">${esc(oneDriveCfg.relatoriosUltimoErro)}</span>`:''}</p>`:''}
+      <div class="row" style="margin-top:6px;">
+        <button class="btn primary" id="btnSalvarOdRel" disabled>Salvar</button>
+        <button class="btn" id="btnOdRelDryRun">Testar (não grava nada)</button>
+        ${oneDriveCfg.conectado?'<button class="btn" id="btnOdRelImportarAgora">Importar agora</button>':''}
+        <button class="btn" id="btnOdRelPendencias">Pendências</button>
+      </div>
+      <div id="odRelResultado" style="margin-top:10px;"></div>
+    </div>
+  `;
+  habilitarSalvarAoMudar('btnSalvarOdRel', ['odRelPasta','odRelAtivo']);
   document.getElementById('btnSalvarOdRel').addEventListener('click', async ()=>{
     const body = {
       clientId: oneDriveCfg.clientId, pastaDestino: oneDriveCfg.pastaDestino, ativo: oneDriveCfg.ativo,
@@ -7919,6 +7939,50 @@ async function renderCfgDominio(box){
     finally{ btn.disabled = false; btn.textContent = 'Importar agora'; }
   });
   document.getElementById('btnOdRelPendencias').addEventListener('click', abrirOdRelPendenciasModal);
+}
+function renderCfgDomOneDrive(box, sub, dados){
+  const { oneDriveCfg } = dados;
+  sub.innerHTML = `
+    <div class="card">
+      <h3>OneDrive (direto da nuvem, sem depender do computador ligado)</h3>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">
+        Alternativa à pasta local (aba Exportar XML): o próprio servidor sobe os XMLs direto pro seu
+        OneDrive, organizados por empresa e competência — funciona mesmo com o computador desligado,
+        não depende de nenhum agente rodando. Precisa de um app registrado no
+        <a href="https://portal.azure.com" target="_blank" rel="noopener" class="link-discreto">portal Azure</a>
+        (Microsoft) pra autorizar o acesso — passo único.
+      </p>
+      <p style="font-size:13px;">${oneDriveCfg.conectado ? `<span class="tag ok">Conectado</span> ${esc(oneDriveCfg.contaNome||oneDriveCfg.contaEmail||'')}` : `<span class="tag bad">Não conectado</span>`}</p>
+      <div class="row">
+        <div class="field grow"><label>Client ID (do app registrado no Azure)</label><input id="odClientId" value="${esc(oneDriveCfg.clientId)}"></div>
+        <div class="field grow"><label>Client Secret ${oneDriveCfg.temClientSecret?'(já salvo — preencha só se quiser trocar)':''}</label><input id="odClientSecret" type="password" placeholder="${oneDriveCfg.temClientSecret?'••••••••':''}"></div>
+      </div>
+      <div class="field"><label>Pasta de destino no OneDrive</label><input id="odPastaDestino" value="${esc(oneDriveCfg.pastaDestino)}"></div>
+      <label class="checkbox-row"><input type="checkbox" id="odAtivo" ${oneDriveCfg.ativo?'checked':''}> Manter o OneDrive sincronizado automaticamente</label>
+      ${oneDriveCfg.ultimaExportacaoEm?`<p style="font-size:12px; color:var(--ink-soft);">Última exportação: ${fmtDateHora(oneDriveCfg.ultimaExportacaoEm)}${oneDriveCfg.ultimoErro?` — <span style="color:var(--debit);">${esc(oneDriveCfg.ultimoErro)}</span>`:''}</p>`:''}
+      <div class="row" style="margin-top:6px;">
+        <button class="btn primary" id="btnSalvarOneDrive" disabled>Salvar</button>
+        <a class="btn" href="/api/onedrive/conectar">${oneDriveCfg.conectado?'Reconectar':'Conectar com o OneDrive'}</a>
+        ${oneDriveCfg.conectado?'<button class="btn danger" id="btnDesconectarOneDrive">Desconectar</button><button class="btn" id="btnExportarOneDriveAgora">Exportar agora</button>':''}
+      </div>
+      <div id="odResultado" style="margin-top:10px;"></div>
+    </div>
+  `;
+  habilitarSalvarAoMudar('btnSalvarOneDrive', ['odClientId','odClientSecret','odPastaDestino','odAtivo']);
+  document.getElementById('btnSalvarOneDrive').addEventListener('click', async ()=>{
+    const body = {
+      clientId: document.getElementById('odClientId').value.trim(),
+      clientSecret: document.getElementById('odClientSecret').value,
+      pastaDestino: document.getElementById('odPastaDestino').value.trim(),
+      ativo: document.getElementById('odAtivo').checked,
+      // Esse PUT reescreve o registro inteiro, então reenvia o que já estava salvo pro card de
+      // "Importar Relatórios" (outra aba) pra não apagar sem querer.
+      relatoriosPastaOrigem: oneDriveCfg.relatoriosPastaOrigem,
+      relatoriosAtivo: oneDriveCfg.relatoriosAtivo,
+    };
+    try{ await api('/onedrive/config', { method:'PUT', body }); toast('Configuração salva.','ok'); renderCfgDominio(box); }
+    catch(e){ toast(e.message,'err'); }
+  });
   const btnDesconectarOneDrive = document.getElementById('btnDesconectarOneDrive');
   if(btnDesconectarOneDrive) btnDesconectarOneDrive.addEventListener('click', async ()=>{
     if(!confirmar('Desconectar o OneDrive? A exportação automática para de funcionar até você conectar de novo.')) return;
@@ -7939,40 +8003,18 @@ async function renderCfgDominio(box){
       btnExportarOneDriveAgora.disabled = false; btnExportarOneDriveAgora.textContent = 'Exportar agora';
     }
   });
-
-  document.getElementById('btnTestarDomCfg').addEventListener('click', async ()=>{
-    const resultEl = document.getElementById('domTestResult');
-    const btn = document.getElementById('btnTestarDomCfg');
-    btn.disabled = true; btn.textContent = 'Testando…';
-    resultEl.innerHTML = `<p style="font-size:12.5px; color:var(--ink-soft);">Aguardando o agente responder (ele precisa estar rodando e configurado)…</p>`;
-    try{
-      const { id } = await api('/dominio/testar-conexao', { method:'POST' });
-      domTestPolling = true;
-      let tentativas = 0;
-      const poll = async ()=>{
-        if(!domTestPolling) return;
-        tentativas++;
-        const r = await api('/dominio/testar-conexao/'+id);
-        if(r.status==='pending'){
-          if(tentativas>30){ resultEl.innerHTML = `<div class="tag bad">Sem resposta</div> <span style="font-size:12.5px;">O agente não respondeu em tempo — confira se ele está rodando (npm run dominio-agent:dev) e apontando para este site.</span>`; btn.disabled=false; btn.textContent='Testar conexão'; return; }
-          setTimeout(poll, 2000);
-          return;
-        }
-        btn.disabled = false; btn.textContent = 'Testar conexão';
-        if(r.status==='ok'){
-          const res_ = r.resultado || {};
-          resultEl.innerHTML = `<div class="tag ok">Conexão OK</div> <span style="font-size:12.5px;">${res_.totalLinhas||0} linha(s) retornada(s).</span>
-            ${res_.amostra&&res_.amostra.length? `<pre style="white-space:pre-wrap; font-size:11.5px; background:var(--paper); padding:8px; border-radius:6px; margin-top:8px;">${esc(JSON.stringify(res_.amostra, null, 2))}</pre>`:''}`;
-        } else {
-          resultEl.innerHTML = `<div class="tag bad">Falhou</div> <span style="font-size:12.5px;">${esc(r.erro||'Erro desconhecido.')}</span>`;
-        }
-      };
-      poll();
-    }catch(e){
-      btn.disabled = false; btn.textContent = 'Testar conexão';
-      resultEl.innerHTML = `<div class="tag bad">Falhou</div> <span style="font-size:12.5px;">${esc(e.message)}</span>`;
-    }
-  });
+}
+function renderCfgDomHistorico(sub, dados){
+  const { items } = dados;
+  sub.innerHTML = `
+    <div class="card">
+      <h3>Histórico de sincronizações</h3>
+      <table class="data-table">
+        <thead><tr><th>Quando</th><th>Origem</th><th>Novas</th><th>Atualizadas</th><th>Status</th></tr></thead>
+        <tbody>${items.length? items.map(l=>`<tr><td>${fmtDate(l.executado_em)}</td><td>${esc(l.origem)}</td><td>${l.empresas_novas}</td><td>${l.empresas_atualizadas}</td><td><span class="tag ${l.status==='ok'?'ok':'bad'}">${l.status}</span></td></tr>`).join(''):'<tr><td colspan="5"><div class="empty-state">Nenhuma sincronização ainda.</div></td></tr>'}</tbody>
+      </table>
+    </div>
+  `;
 }
 // Relatórios (Balanço/DRE/Balancete) que a importação do OneDrive não conseguiu casar sozinha com
 // nenhuma empresa/tipo/período — o PDF já está salvo em disco, só falta o admin escolher na mão.
