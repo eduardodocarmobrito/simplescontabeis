@@ -4052,7 +4052,7 @@ app.get("/api/checklist/uploads/:uploadId/download", blockCliente, requirePermis
 // qualquer um deles quebra silenciosamente o anexo automático de DAS/Situação Fiscal (a próxima
 // busca automática cria um modelo NOVO em vez de reaproveitar, perdendo a ligação com o histórico
 // já entregue ao cliente).
-const ENVIO_TEMPLATES_PROTEGIDOS = ["DAS - Mensal", "Consultar Situação Fiscal - RFB", "Balanço", "Balancete", "DRE Mensal", "DRE Anual", "Relação de Faturamento", "Retenções de Impostos"];
+const ENVIO_TEMPLATES_PROTEGIDOS = ["DAS - Mensal", "Consultar Situação Fiscal - RFB", "Balanço", "Balancete", "DRE Mensal", "DRE Anual", "Relação de Faturamento", "Retenções de Impostos", "Razão"];
 app.get("/api/envio/templates", blockCliente, requirePermissao("envio", "visualizar"), (req, res) => {
   const rows = sqlite.prepare(`SELECT * FROM envio_templates WHERE escritorio_id = ? ORDER BY nome`).all((req as any).user.escritorioId) as any[];
   res.json({
@@ -5787,13 +5787,14 @@ setInterval(() => {
 // se o período já tem documento, sem filtrar por quem pediu, então importando ANTES de qualquer
 // solicitação (esta rotina é proativa/agendada), o pedido do cliente já chega atendido sem nenhum
 // código extra de "atendimento automático".
-type DomRelTipo = "balanco" | "balancete" | "dre" | "faturamento";
+type DomRelTipo = "balanco" | "balancete" | "dre" | "faturamento" | "razao";
 const DOM_REL_TEMPLATE_NOME: Record<string, string> = {
   balanco: "Balanço",
   balancete: "Balancete",
   dre_mensal: "DRE Mensal",
   dre_anual: "DRE Anual",
   faturamento: "Relação de Faturamento",
+  razao: "Razão",
 };
 // Nomes dos templates alimentados pela importação automática do OneDrive — pra esses, "Solicitar
 // Documentos" não deixa o cliente digitar qualquer mês/ano (não existe ninguém pra gerar sob
@@ -5809,6 +5810,10 @@ function domRelClassificarTipos(texto: string): DomRelTipo[] {
   if (/balancete/i.test(texto)) tipos.push("balancete");
   if (/demonstra[çc][ãa]o\s+do\s+resultado|\bdre\b/i.test(texto)) tipos.push("dre");
   if (/relat[óo]rio\s+de\s+faturamento|rela[çc][ãa]o\s+de\s+faturamento/i.test(texto)) tipos.push("faturamento");
+  // Negative lookahead exclui "Razão Social" (campo padrão de cabeçalho em praticamente todo
+  // relatório do Domínio) — o Razão de verdade tem "RAZÃO" sozinho como título, seguido de
+  // "Período:"/"C.N.P.J.:", nunca da palavra "social" logo depois.
+  if (/raz[ãa]o(?!\s*social)/i.test(texto)) tipos.push("razao");
   return tipos;
 }
 // Achado ao vivo (dry-run contra a pasta real): o TEXTO do PDF varia de layout conforme a empresa —
@@ -10741,6 +10746,7 @@ function domRelTemplateNomesParaTipo(tipo: string): string[] {
   if (tipo === "balancete") return ["Balancete"];
   if (tipo === "dre") return ["DRE Mensal", "DRE Anual"];
   if (tipo === "faturamento") return ["Relação de Faturamento"];
+  if (tipo === "razao") return ["Razão"];
   return [];
 }
 app.get("/api/relatorios/documentos/empresas", blockCliente, requirePermissao("relatorios", "visualizar"), (req, res) => {
