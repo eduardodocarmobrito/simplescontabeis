@@ -866,25 +866,29 @@ let CHAT = {
   presencaTimer:null, resumoTimer:null, mensagensTimer:null,
   conversas:[], equipe:{naoLidas:0,ultimaMensagem:null,ultimaMensagemEm:null}, dms:[],
   dirEmpresas:null, dirColegas:null, dirCarregado:false, filtro:'',
+  config:{ presencaSegundos:25, resumoSegundos:8, mensagensSegundos:4 },
 };
 function chatEhStaff(){ return STATE.user && (STATE.user.perfil==='Administrador' || STATE.user.perfil==='Colaborador'); }
 function chatDisponivel(){ return STATE.user && STATE.user.perfil!=='SuperAdmin' && !STATE.user.painelTv; }
-function iniciarChat(){
+async function iniciarChat(){
   if(!chatDisponivel()) return;
   document.getElementById('chatBubble').classList.remove('hidden');
+  try{ CHAT.config = await api('/chat/config'); }catch(e){}
   enviarPresencaChat();
-  CHAT.presencaTimer = setInterval(enviarPresencaChat, 25000);
+  CHAT.presencaTimer = setInterval(enviarPresencaChat, CHAT.config.presencaSegundos*1000);
   atualizarResumoChat();
-  CHAT.resumoTimer = setInterval(atualizarResumoChat, 8000);
+  CHAT.resumoTimer = setInterval(atualizarResumoChat, CHAT.config.resumoSegundos*1000);
   document.getElementById('chatBubble').addEventListener('click', toggleChatPanel);
 }
 function pararChat(){
   [CHAT.presencaTimer, CHAT.resumoTimer, CHAT.mensagensTimer].forEach(t=>{ if(t) clearInterval(t); });
+  const config = CHAT.config;
   CHAT = {
     aberto:false, tela:'lista', tipo:null, alvoId:null, titulo:null,
     presencaTimer:null, resumoTimer:null, mensagensTimer:null,
     conversas:[], equipe:{naoLidas:0,ultimaMensagem:null,ultimaMensagemEm:null}, dms:[],
     dirEmpresas:null, dirColegas:null, dirCarregado:false, filtro:'',
+    config,
   };
   const bubble = document.getElementById('chatBubble'), panel = document.getElementById('chatPanel');
   if(bubble){ bubble.classList.add('hidden'); bubble.classList.remove('chat-piscando'); }
@@ -1079,7 +1083,7 @@ async function abrirChatThread(tipo, alvoId, titulo){
   input.addEventListener('keydown', (ev)=>{ if(ev.key==='Enter' && !ev.shiftKey){ ev.preventDefault(); enviar(); } });
   await carregarChatMensagens();
   if(CHAT.mensagensTimer) clearInterval(CHAT.mensagensTimer);
-  CHAT.mensagensTimer = setInterval(carregarChatMensagens, 4000);
+  CHAT.mensagensTimer = setInterval(carregarChatMensagens, CHAT.config.mensagensSegundos*1000);
 }
 async function carregarChatMensagens(){
   if(!CHAT.aberto || CHAT.tela!=='conversa') return;
@@ -8189,27 +8193,83 @@ async function renderCfgAssinaturaPlataforma(box){
 }
 
 // ===================== WhatsApp (Cloud API da Meta) =====================
+const CFG_WPP_SUBABAS = [
+  { id:'conexao', label:'Conexão' },
+  { id:'templates', label:'Templates' },
+  { id:'webhook', label:'Webhook' },
+  { id:'temporizadores', label:'Temporizadores' },
+];
+let CFG_WPP_SUBTAB = 'conexao';
 async function renderCfgWhatsapp(box){
   const cfg = await api('/whatsapp/config');
   box.innerHTML = `
     <div class="card">
       <h3>Status</h3>
-      <p style="font-size:13px;">${cfg.ativo && cfg.temAccessToken ? `<span class="tag ok">Ativo</span> ${cfg.numeroExibicao?('Número: '+esc(cfg.numeroExibicao)):''}` : `<span class="tag bad">Não configurado</span> Preencha e salve os dados abaixo.`}</p>
+      <p style="font-size:13px;">${cfg.ativo && cfg.temAccessToken ? `<span class="tag ok">Ativo</span> ${cfg.numeroExibicao?('Número: '+esc(cfg.numeroExibicao)):''}` : `<span class="tag bad">Não configurado</span> Preencha e salve os dados na aba Conexão.`}</p>
     </div>
+    <div class="tabs" style="margin-bottom:0;">
+      ${CFG_WPP_SUBABAS.map(a=>`<div class="tab" data-subtab="${a.id}">${esc(a.label)}</div>`).join('')}
+    </div>
+    <div id="cfgWppSubContent"></div>
+  `;
+  box.querySelectorAll('[data-subtab]').forEach(t=>t.addEventListener('click', ()=>{ CFG_WPP_SUBTAB=t.dataset.subtab; renderCfgWhatsappSubTab(cfg); }));
+  renderCfgWhatsappSubTab(cfg);
+}
+function renderCfgWhatsappSubTab(cfg){
+  document.querySelectorAll('[data-subtab]').forEach(t=>t.classList.toggle('active', t.dataset.subtab===CFG_WPP_SUBTAB));
+  const sub = document.getElementById('cfgWppSubContent');
+  if(CFG_WPP_SUBTAB==='conexao') renderCfgWppConexao(sub, cfg);
+  else if(CFG_WPP_SUBTAB==='templates') renderCfgWppTemplates(sub, cfg);
+  else if(CFG_WPP_SUBTAB==='webhook') renderCfgWppWebhook(sub, cfg);
+  else renderCfgWppTemporizadores(sub);
+}
+function renderCfgWppConexao(sub, cfg){
+  sub.innerHTML = `
     <div class="card">
       <h3>WhatsApp Business Platform (Cloud API)</h3>
       <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">
         Precisa de uma conta na WhatsApp Business Platform da Meta (developers.facebook.com), com um
-        número verificado e um modelo de mensagem (template) aprovado com anexo de documento — não é
-        o mesmo cadastro do aplicativo comum do WhatsApp Business.
+        número verificado — não é o mesmo cadastro do aplicativo comum do WhatsApp Business.
       </p>
       <div class="field"><label>Phone Number ID</label><input id="wppPhoneId" value="${esc(cfg.phoneNumberId)}" placeholder="ex.: 109876543210987"></div>
       <div class="field"><label>WhatsApp Business Account ID (opcional)</label><input id="wppWabaId" value="${esc(cfg.businessAccountId)}"></div>
       <div class="field"><label>Access Token${cfg.temAccessToken?' (já salvo — preencha só se quiser trocar)':''}</label><input id="wppToken" type="password" placeholder="${cfg.temAccessToken?'••••••••••••••••':'token permanente do System User'}"></div>
+      <label class="checkbox-row"><input type="checkbox" id="wppAtivo" ${cfg.ativo?'checked':''}> Envio por WhatsApp ativo (rotina automática de NFS-e, envio manual de documentos e aviso de chat)</label>
       <div class="row">
-        <div class="field grow"><label>Nome do template aprovado</label><input id="wppTemplate" value="${esc(cfg.templateDocumento)}" placeholder="documento_disponivel"></div>
-        <div class="field" style="width:120px;"><label>Idioma do template</label><input id="wppIdioma" value="${esc(cfg.templateIdioma)}" placeholder="pt_BR"></div>
+        <button class="btn primary" id="wppSalvar">Salvar</button>
+        <button class="btn" id="wppTestar">Testar conexão</button>
       </div>
+      <div id="wppResultado" style="margin-top:10px;"></div>
+    </div>
+  `;
+  document.getElementById('wppSalvar').addEventListener('click', async ()=>{
+    const body = {
+      phoneNumberId: document.getElementById('wppPhoneId').value.trim(),
+      businessAccountId: document.getElementById('wppWabaId').value.trim(),
+      accessToken: document.getElementById('wppToken').value,
+      ativo: document.getElementById('wppAtivo').checked,
+    };
+    try{ await api('/whatsapp/config', { method:'PUT', body }); toast('Configuração salva.','ok'); renderCfgTab(); }
+    catch(e){ toast(e.message,'err'); }
+  });
+  document.getElementById('wppTestar').addEventListener('click', async ()=>{
+    const resEl = document.getElementById('wppResultado');
+    resEl.innerHTML = 'Testando…';
+    try{
+      const r = await api('/whatsapp/testar', { method:'POST' });
+      resEl.innerHTML = `<span class="tag ok">Conectado</span> ${r.numeroExibicao?('Número: '+esc(r.numeroExibicao)):''}`;
+    }catch(e){ resEl.innerHTML = `<div class="tag bad">Falhou</div> <span style="font-size:12.5px;">${esc(e.message)}</span>`; }
+  });
+}
+function renderCfgWppTemplates(sub, cfg){
+  sub.innerHTML = `
+    <div class="card">
+      <h3>Templates aprovados na Meta</h3>
+      <div class="row">
+        <div class="field grow"><label>Nome do template de documento</label><input id="wppTemplate" value="${esc(cfg.templateDocumento)}" placeholder="documento_disponivel"></div>
+        <div class="field" style="width:120px;"><label>Idioma</label><input id="wppIdioma" value="${esc(cfg.templateIdioma)}" placeholder="pt_BR"></div>
+      </div>
+      <p style="font-size:11.5px; color:var(--ink-soft); margin:-6px 0 10px;">Usado pela rotina automática de NFS-e e pelo envio manual de documentos — precisa ter cabeçalho tipo documento aprovado na Meta.</p>
       <div class="field"><label>Modelo de aviso de mensagem (opcional)</label><input id="wppTemplateTexto" value="${esc(cfg.templateTextoNotificacao)}" placeholder="ex.: nova_mensagem_chat"></div>
       <p style="font-size:11.5px; color:var(--ink-soft); margin:-6px 0 4px;">
         Modelo SÓ TEXTO (sem anexo), separado do modelo de documento acima — usado só pra avisar um
@@ -8219,13 +8279,21 @@ async function renderCfgWhatsapp(box){
         Contábeis. Entre no sistema pra responder." (categoria Utility, variável nomeada "remetente").
         Vazio = esse aviso fica desligado, sem afetar o envio normal de documentos acima.
       </p>
-      <label class="checkbox-row"><input type="checkbox" id="wppAtivo" ${cfg.ativo?'checked':''}> Envio por WhatsApp ativo (rotina automática de NFS-e e envio manual de documentos)</label>
-      <div class="row">
-        <button class="btn primary" id="wppSalvar">Salvar</button>
-        <button class="btn" id="wppTestar">Testar conexão</button>
-      </div>
-      <div id="wppResultado" style="margin-top:10px;"></div>
+      <button class="btn primary" id="wppSalvarTemplates">Salvar</button>
     </div>
+  `;
+  document.getElementById('wppSalvarTemplates').addEventListener('click', async ()=>{
+    const body = {
+      templateDocumento: document.getElementById('wppTemplate').value.trim(),
+      templateIdioma: document.getElementById('wppIdioma').value.trim(),
+      templateTextoNotificacao: document.getElementById('wppTemplateTexto').value.trim(),
+    };
+    try{ await api('/whatsapp/config', { method:'PUT', body }); toast('Configuração salva.','ok'); }
+    catch(e){ toast(e.message,'err'); }
+  });
+}
+function renderCfgWppWebhook(sub, cfg){
+  sub.innerHTML = `
     <div class="card">
       <h3>Status real de entrega (webhook)</h3>
       <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">
@@ -8241,29 +8309,13 @@ async function renderCfgWhatsapp(box){
         <div class="row" style="gap:6px;"><input id="wppWebhookToken" value="${esc(cfg.webhookVerifyToken)}" readonly style="flex:1;"><button class="btn" id="wppCopiarToken" type="button">Copiar</button></div>
       </div>
       <div class="field"><label>App Secret${cfg.temAppSecret?' (já salvo — preencha só se quiser trocar)':' (opcional — valida a assinatura das chamadas do webhook)'}</label><input id="wppAppSecret" type="password" placeholder="${cfg.temAppSecret?'••••••••••••••••':'em Configurações do App, no Meta for Developers'}"></div>
+      <button class="btn primary" id="wppSalvarWebhook">Salvar</button>
     </div>
   `;
-  document.getElementById('wppSalvar').addEventListener('click', async ()=>{
-    const body = {
-      phoneNumberId: document.getElementById('wppPhoneId').value.trim(),
-      businessAccountId: document.getElementById('wppWabaId').value.trim(),
-      accessToken: document.getElementById('wppToken').value,
-      templateDocumento: document.getElementById('wppTemplate').value.trim(),
-      templateIdioma: document.getElementById('wppIdioma').value.trim(),
-      templateTextoNotificacao: document.getElementById('wppTemplateTexto').value.trim(),
-      ativo: document.getElementById('wppAtivo').checked,
-      appSecret: document.getElementById('wppAppSecret').value,
-    };
-    try{ await api('/whatsapp/config', { method:'PUT', body }); toast('Configuração salva.','ok'); renderCfgTab(); }
+  document.getElementById('wppSalvarWebhook').addEventListener('click', async ()=>{
+    const body = { appSecret: document.getElementById('wppAppSecret').value };
+    try{ await api('/whatsapp/config', { method:'PUT', body }); toast('Configuração salva.','ok'); }
     catch(e){ toast(e.message,'err'); }
-  });
-  document.getElementById('wppTestar').addEventListener('click', async ()=>{
-    const resEl = document.getElementById('wppResultado');
-    resEl.innerHTML = 'Testando…';
-    try{
-      const r = await api('/whatsapp/testar', { method:'POST' });
-      resEl.innerHTML = `<span class="tag ok">Conectado</span> ${r.numeroExibicao?('Número: '+esc(r.numeroExibicao)):''}`;
-    }catch(e){ resEl.innerHTML = `<div class="tag bad">Falhou</div> <span style="font-size:12.5px;">${esc(e.message)}</span>`; }
   });
   const copiar = async (id, rotulo)=>{
     const val = document.getElementById(id).value;
@@ -8272,6 +8324,45 @@ async function renderCfgWhatsapp(box){
   };
   document.getElementById('wppCopiarUrl').addEventListener('click', ()=>copiar('wppWebhookUrl','URL'));
   document.getElementById('wppCopiarToken').addEventListener('click', ()=>copiar('wppWebhookToken','Verify Token'));
+}
+async function renderCfgWppTemporizadores(sub){
+  sub.innerHTML = `<div class="card"><div class="empty-state">Carregando…</div></div>`;
+  const t = await api('/chat/config/completo');
+  sub.innerHTML = `
+    <div class="card">
+      <h3>Temporizadores do chat interno</h3>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">
+        Controla a frequência de tudo que atualiza sozinho no chat (balãozinho de conversa) e o
+        atraso do aviso por WhatsApp de DM não lida. Valores baixos deixam tudo mais "ao vivo", mas
+        sobrecarregam o servidor com mais requisições; valores altos aliviam o servidor, mas demoram
+        mais pra atualizar na tela.
+      </p>
+      <div class="row">
+        <div class="field" style="width:180px;"><label>Presença (heartbeat)</label><input type="number" id="tmpPresenca" value="${t.presencaSegundos}" min="10" max="120"></div>
+        <div class="field" style="width:180px;"><label>Janela de "online"</label><input type="number" id="tmpJanela" value="${t.onlineJanelaSegundos}" min="15" max="300"></div>
+      </div>
+      <p style="font-size:11.5px; color:var(--ink-soft); margin:-6px 0 10px;">Presença: de quanto em quanto tempo (segundos) a aba avisa "ainda estou aqui" enquanto o chat está aberto. Janela: depois de quantos segundos sem avisar a pessoa passa a aparecer offline — precisa ser maior ou igual à presença.</p>
+      <div class="row">
+        <div class="field" style="width:180px;"><label>Resumo/contador</label><input type="number" id="tmpResumo" value="${t.resumoSegundos}" min="3" max="60"></div>
+        <div class="field" style="width:180px;"><label>Mensagens (conversa aberta)</label><input type="number" id="tmpMensagens" value="${t.mensagensSegundos}" min="2" max="30"></div>
+      </div>
+      <p style="font-size:11.5px; color:var(--ink-soft); margin:-6px 0 10px;">Resumo: de quanto em quanto tempo (segundos) o balãozinho confere não lidas/lista de conversas. Mensagens: de quanto em quanto tempo (segundos) uma conversa aberta busca mensagem nova.</p>
+      <div class="field" style="width:220px;"><label>Atraso do aviso por WhatsApp</label><input type="number" id="tmpAviso" value="${t.avisoWhatsappAtrasoSegundos}" min="10" max="600"></div>
+      <p style="font-size:11.5px; color:var(--ink-soft); margin:-6px 0 10px;">Quanto tempo (segundos) esperar depois de uma DM não lida antes de avisar por WhatsApp — dá tempo da pessoa ler no próprio app sem levar um aviso à toa.</p>
+      <button class="btn primary" id="tmpSalvar">Salvar</button>
+    </div>
+  `;
+  document.getElementById('tmpSalvar').addEventListener('click', async ()=>{
+    const body = {
+      presencaSegundos: Number(document.getElementById('tmpPresenca').value),
+      onlineJanelaSegundos: Number(document.getElementById('tmpJanela').value),
+      resumoSegundos: Number(document.getElementById('tmpResumo').value),
+      mensagensSegundos: Number(document.getElementById('tmpMensagens').value),
+      avisoWhatsappAtrasoSegundos: Number(document.getElementById('tmpAviso').value),
+    };
+    try{ await api('/chat/config/completo', { method:'PUT', body }); toast('Temporizadores salvos.','ok'); }
+    catch(e){ toast(e.message,'err'); }
+  });
 }
 
 // ===================== Emissão de NFS-e (rotina automática de honorários) =====================

@@ -805,6 +805,19 @@ sqlite.exec(`
     ultimo_ping TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  -- Temporizadores do chat/aviso por WhatsApp, personalizáveis por escritório (ver getChatConfig) —
+  -- sem linha aqui pra um escritório, valem os defaults (os mesmos valores fixos que o sistema
+  -- sempre usou antes disso virar configurável).
+  CREATE TABLE IF NOT EXISTS chat_config (
+    escritorio_id INTEGER PRIMARY KEY REFERENCES escritorios(id),
+    presenca_intervalo_segundos INTEGER NOT NULL DEFAULT 25,
+    online_janela_segundos INTEGER NOT NULL DEFAULT 40,
+    resumo_intervalo_segundos INTEGER NOT NULL DEFAULT 8,
+    mensagens_intervalo_segundos INTEGER NOT NULL DEFAULT 4,
+    aviso_whatsapp_atraso_segundos INTEGER NOT NULL DEFAULT 45,
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+
   -- Sala única de avisos internos por escritório — todo Administrador/Colaborador do mesmo
   -- escritório vê e escreve nela. Leitura é por usuário (cada um marca até onde já leu), diferente
   -- da conversa por empresa acima (que é uma caixa de entrada compartilhada só com 2 lados).
@@ -3106,54 +3119,159 @@ app.delete("/api/empresas/licenca-tipos/:chave", blockCliente, requirePermissaoO
 // compartilhada por todos os colaboradores/admin do escritório de um lado, todos os usuários da
 // empresa-cliente do outro. Disponível pra qualquer Colaborador/Administrador/Cliente autenticado,
 // sem gate de permissão de módulo — é um utilitário de comunicação preso ao shell, não uma página.
-const CHAT_ONLINE_JANELA_SEGUNDOS = 40;
+// Defaults usados quando o escritório nunca personalizou (sem linha em chat_config) — os mesmos
+// valores fixos que o sistema sempre usou antes disso virar configurável (ver Configurações ›
+// WhatsApp › Temporizadores).
+const CHAT_CONFIG_DEFAULTS = {
+  presenca_intervalo_segundos: 25,
+  online_janela_segundos: 40,
+  resumo_intervalo_segundos: 8,
+  mensagens_intervalo_segundos: 4,
+  aviso_whatsapp_atraso_segundos: 45,
+};
+function getChatConfig(escritorioId: number): typeof CHAT_CONFIG_DEFAULTS {
+  const row = sqlite.prepare(`SELECT * FROM chat_config WHERE escritorio_id = ?`).get(escritorioId) as any;
+  if (!row) return CHAT_CONFIG_DEFAULTS;
+  return {
+    presenca_intervalo_segundos: row.presenca_intervalo_segundos,
+    online_janela_segundos: row.online_janela_segundos,
+    resumo_intervalo_segundos: row.resumo_intervalo_segundos,
+    mensagens_intervalo_segundos: row.mensagens_intervalo_segundos,
+    aviso_whatsapp_atraso_segundos: row.aviso_whatsapp_atraso_segundos,
+  };
+}
 function chatEscritorioOnline(escritorioId: number): boolean {
+  const janela = getChatConfig(escritorioId).online_janela_segundos;
   const row = sqlite
     .prepare(
       `SELECT 1 FROM chat_presenca p JOIN app_users u ON u.id = p.user_id
        WHERE u.escritorio_id = ? AND u.perfil IN ('Administrador','Colaborador')
-         AND p.ultimo_ping >= datetime('now', '-${CHAT_ONLINE_JANELA_SEGUNDOS} seconds')`
+         AND p.ultimo_ping >= datetime('now', '-' || ? || ' seconds')`
     )
-    .get(escritorioId);
+    .get(escritorioId, janela);
   return !!row;
 }
-function chatEmpresaOnline(empresaId: number): boolean {
+function chatEmpresaOnline(empresaId: number, escritorioId: number): boolean {
+  const janela = getChatConfig(escritorioId).online_janela_segundos;
   const row = sqlite
     .prepare(
       `SELECT 1 FROM chat_presenca p JOIN cliente_empresas ce ON ce.user_id = p.user_id
-       WHERE ce.empresa_id = ? AND p.ultimo_ping >= datetime('now', '-${CHAT_ONLINE_JANELA_SEGUNDOS} seconds')`
+       WHERE ce.empresa_id = ? AND p.ultimo_ping >= datetime('now', '-' || ? || ' seconds')`
     )
-    .get(empresaId);
+    .get(empresaId, janela);
   return !!row;
 }
-function chatUserOnline(userId: number): boolean {
+function chatUserOnline(userId: number, escritorioId: number): boolean {
+  const janela = getChatConfig(escritorioId).online_janela_segundos;
   const row = sqlite
-    .prepare(`SELECT 1 FROM chat_presenca WHERE user_id = ? AND ultimo_ping >= datetime('now', '-${CHAT_ONLINE_JANELA_SEGUNDOS} seconds')`)
-    .get(userId);
+    .prepare(`SELECT 1 FROM chat_presenca WHERE user_id = ? AND ultimo_ping >= datetime('now', '-' || ? || ' seconds')`)
+    .get(userId, janela);
   return !!row;
 }
 // user_a_id sempre o menor id — mesma dupla dá sempre o mesmo par, não importa quem escreveu 1º.
 function chatDmPar(x: number, y: number): [number, number] {
   return x < y ? [x, y] : [y, x];
 }
-// Aviso por WhatsApp de uma DM não lida — dispara com 45s de atraso (não na hora) pra não incomodar
-// quem só teve um intervalo curto sem pingar (heartbeat de presença a cada 25s, janela de "online"
-// de 40s — ver CHAT_ONLINE_JANELA_SEGUNDOS acima). Ao disparar, confere de novo se continua offline
-// E se ainda não leu (pode ter aberto o chat por outro motivo nesse meio tempo) antes de gastar um
-// envio de WhatsApp. Sem telefone cadastrado ou sem o modelo de texto configurado, nem agenda —
-// evita timer fadado a falhar (e log de erro) em toda DM enquanto o recurso não estiver configurado.
+// Só os 3 intervalos que o FRONT usa pra decidir a frequência do próprio polling — qualquer
+// usuário autenticado (inclusive Cliente) precisa disso pra configurar os próprios timers do chat.
+// A janela de "online" e o atraso do aviso de WhatsApp são só do backend, não vão aqui.
+app.get("/api/chat/config", (req, res) => {
+  const user = (req as any).user;
+  if (!user || user.perfil === "SuperAdmin") return res.status(403).json({ error: "Sem acesso." });
+  const c = getChatConfig(user.escritorioId);
+  res.json({
+    presencaSegundos: c.presenca_intervalo_segundos,
+    resumoSegundos: c.resumo_intervalo_segundos,
+    mensagensSegundos: c.mensagens_intervalo_segundos,
+  });
+});
+// Configuração completa (os 3 acima + janela de "online" e atraso do aviso de WhatsApp) — só pra
+// tela de administração, em Configurações › WhatsApp › Temporizadores.
+app.get("/api/chat/config/completo", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
+  const c = getChatConfig((req as any).user.escritorioId);
+  res.json({
+    presencaSegundos: c.presenca_intervalo_segundos,
+    onlineJanelaSegundos: c.online_janela_segundos,
+    resumoSegundos: c.resumo_intervalo_segundos,
+    mensagensSegundos: c.mensagens_intervalo_segundos,
+    avisoWhatsappAtrasoSegundos: c.aviso_whatsapp_atraso_segundos,
+  });
+});
+// Limites sensatos pra cada temporizador — evita um valor digitado errado (ex.: "0" ou "1") virar
+// um polling agressivo martelando o servidor, ou uma janela de "online" menor que o próprio
+// heartbeat (a pessoa nunca apareceria online, mesmo com a aba aberta).
+const CHAT_CONFIG_LIMITES = {
+  presencaSegundos: { min: 10, max: 120 },
+  onlineJanelaSegundos: { min: 15, max: 300 },
+  resumoSegundos: { min: 3, max: 60 },
+  mensagensSegundos: { min: 2, max: 30 },
+  avisoWhatsappAtrasoSegundos: { min: 10, max: 600 },
+};
+app.put("/api/chat/config/completo", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
+  const escritorioId = (req as any).user.escritorioId;
+  const b = req.body || {};
+  const atual = getChatConfig(escritorioId);
+  const campos = {
+    presenca_intervalo_segundos: [b.presencaSegundos, "presencaSegundos", atual.presenca_intervalo_segundos],
+    online_janela_segundos: [b.onlineJanelaSegundos, "onlineJanelaSegundos", atual.online_janela_segundos],
+    resumo_intervalo_segundos: [b.resumoSegundos, "resumoSegundos", atual.resumo_intervalo_segundos],
+    mensagens_intervalo_segundos: [b.mensagensSegundos, "mensagensSegundos", atual.mensagens_intervalo_segundos],
+    aviso_whatsapp_atraso_segundos: [b.avisoWhatsappAtrasoSegundos, "avisoWhatsappAtrasoSegundos", atual.aviso_whatsapp_atraso_segundos],
+  } as const;
+  const valores: Record<string, number> = {};
+  for (const [coluna, [valor, chaveLimite, atualValor]] of Object.entries(campos)) {
+    if (valor === undefined) {
+      valores[coluna] = atualValor;
+      continue;
+    }
+    const n = Number(valor);
+    const limite = CHAT_CONFIG_LIMITES[chaveLimite as keyof typeof CHAT_CONFIG_LIMITES];
+    if (!Number.isInteger(n) || n < limite.min || n > limite.max) {
+      return res.status(400).json({ error: `${chaveLimite}: informe um valor entre ${limite.min} e ${limite.max} segundos.` });
+    }
+    valores[coluna] = n;
+  }
+  if (valores.online_janela_segundos < valores.presenca_intervalo_segundos) {
+    return res.status(400).json({ error: "A janela de \"online\" precisa ser maior ou igual ao intervalo de presença — senão a pessoa nunca aparece online." });
+  }
+  sqlite
+    .prepare(
+      `INSERT INTO chat_config (escritorio_id, presenca_intervalo_segundos, online_janela_segundos, resumo_intervalo_segundos, mensagens_intervalo_segundos, aviso_whatsapp_atraso_segundos, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(escritorio_id) DO UPDATE SET presenca_intervalo_segundos=excluded.presenca_intervalo_segundos, online_janela_segundos=excluded.online_janela_segundos,
+         resumo_intervalo_segundos=excluded.resumo_intervalo_segundos, mensagens_intervalo_segundos=excluded.mensagens_intervalo_segundos,
+         aviso_whatsapp_atraso_segundos=excluded.aviso_whatsapp_atraso_segundos, updated_at=datetime('now')`
+    )
+    .run(
+      escritorioId,
+      valores.presenca_intervalo_segundos,
+      valores.online_janela_segundos,
+      valores.resumo_intervalo_segundos,
+      valores.mensagens_intervalo_segundos,
+      valores.aviso_whatsapp_atraso_segundos
+    );
+  res.json({ ok: true });
+});
+// Aviso por WhatsApp de uma DM não lida — dispara com atraso (não na hora, ver
+// chat_config.aviso_whatsapp_atraso_segundos) pra não incomodar quem só teve um intervalo curto sem
+// pingar (heartbeat de presença + janela de "online", mesma tabela de config). Ao disparar, confere
+// de novo se continua offline E se ainda não leu (pode ter aberto o chat por outro motivo nesse meio
+// tempo) antes de gastar um envio de WhatsApp. Sem telefone cadastrado ou sem o modelo de texto
+// configurado, nem agenda — evita timer fadado a falhar (e log de erro) em toda DM enquanto o
+// recurso não estiver configurado.
 function agendarAvisoWhatsappChatDm(escritorioId: number, colegaId: number, colegaTelefone: string | null, userAId: number, userBId: number, mensagemId: number, remetenteNome: string): void {
   if (!colegaTelefone) return;
   const c = getWhatsappConfig(escritorioId);
   if (!c.ativo || !c.phone_number_id || !c.access_token_cifrado || !c.template_texto_notificacao) return;
+  const atrasoSegundos = getChatConfig(escritorioId).aviso_whatsapp_atraso_segundos;
   setTimeout(() => {
     (async () => {
-      if (chatUserOnline(colegaId)) return;
+      if (chatUserOnline(colegaId, escritorioId)) return;
       const leitura = sqlite.prepare(`SELECT ultima_msg_lida_id FROM chat_dm_leitura WHERE user_a_id = ? AND user_b_id = ? AND user_id = ?`).get(userAId, userBId, colegaId) as any;
       if (leitura && leitura.ultima_msg_lida_id >= mensagemId) return;
       await whatsappEnviarTexto(escritorioId, colegaTelefone, [{ nome: "remetente", valor: remetenteNome }], { tabela: "chat_dm_mensagens", id: mensagemId });
     })().catch((e: any) => console.error(`[Chat] aviso de WhatsApp pra usuário ${colegaId} falhou:`, e.message));
-  }, 45_000);
+  }, atrasoSegundos * 1000);
 }
 // Lista de colaboradores/admin do mesmo escritório pra abrir uma conversa individual nova — inclui
 // quem nunca trocou mensagem ainda (diferente da lista de "conversas recentes" de /chat/resumo).
@@ -3163,7 +3281,7 @@ app.get("/api/chat/colegas", (req, res) => {
   const rows = sqlite
     .prepare(`SELECT id, nome FROM app_users WHERE escritorio_id = ? AND id != ? AND perfil IN ('Administrador','Colaborador') ORDER BY nome`)
     .all(user.escritorioId, user.id) as any[];
-  res.json({ items: rows.map((r) => ({ id: r.id, nome: r.nome, online: chatUserOnline(r.id) })) });
+  res.json({ items: rows.map((r) => ({ id: r.id, nome: r.nome, online: chatUserOnline(r.id, user.escritorioId) })) });
 });
 app.post("/api/chat/presenca", (req, res) => {
   const user = (req as any).user;
@@ -3203,7 +3321,7 @@ app.get("/api/chat/resumo", (req, res) => {
   const comMensagem = empresaRows.filter((r) => r.ultimaMensagemEm);
   comMensagem.sort((a, b) => (a.ultimaMensagemEm < b.ultimaMensagemEm ? 1 : -1));
   const empresaNaoLidas = empresaRows.reduce((s, r) => s + r.naoLidas, 0);
-  const conversas = comMensagem.map((r) => ({ ...r, online: chatEmpresaOnline(r.empresaId) }));
+  const conversas = comMensagem.map((r) => ({ ...r, online: chatEmpresaOnline(r.empresaId, user.escritorioId) }));
 
   const equipeLeitura = sqlite.prepare(`SELECT ultima_msg_lida_id FROM chat_equipe_leitura WHERE escritorio_id = ? AND user_id = ?`).get(user.escritorioId, user.id) as any;
   const ultimaLidaEquipe = equipeLeitura ? equipeLeitura.ultima_msg_lida_id : 0;
@@ -3230,7 +3348,7 @@ app.get("/api/chat/resumo", (req, res) => {
         naoLidas,
         ultimaMensagem: ultima ? ultima.texto : null,
         ultimaMensagemEm: ultima ? ultima.em : null,
-        online: chatUserOnline(r.colegaId),
+        online: chatUserOnline(r.colegaId, user.escritorioId),
       };
     })
     .sort((a, b) => (a.ultimaMensagemEm < b.ultimaMensagemEm ? 1 : -1));
@@ -3282,7 +3400,7 @@ app.get("/api/chat/mensagens", (req, res) => {
          ON CONFLICT(user_a_id, user_b_id, user_id) DO UPDATE SET ultima_msg_lida_id = MAX(ultima_msg_lida_id, excluded.ultima_msg_lida_id)`
       )
       .run(a, b, user.id, maxId);
-    return res.json({ items: rows.map((r) => ({ ...r, mine: r.autorUserId === user.id })), colegaNome: colega.nome, colegaOnline: chatUserOnline(colegaId) });
+    return res.json({ items: rows.map((r) => ({ ...r, mine: r.autorUserId === user.id })), colegaNome: colega.nome, colegaOnline: chatUserOnline(colegaId, user.escritorioId) });
   }
 
   let empresaId: number;
@@ -3308,7 +3426,7 @@ app.get("/api/chat/mensagens", (req, res) => {
   res.json({
     items: rows.map((r) => ({ ...r, mine: r.autorLado === mineLado })),
     empresaId,
-    empresaOnline: user.perfil === "Cliente" ? undefined : chatEmpresaOnline(empresaId),
+    empresaOnline: user.perfil === "Cliente" ? undefined : chatEmpresaOnline(empresaId, user.escritorioId),
   });
 });
 app.post("/api/chat/mensagens", upload.single("arquivo"), (req, res) => {
