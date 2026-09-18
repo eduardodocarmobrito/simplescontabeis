@@ -10719,7 +10719,7 @@ function cardSolicitacoesPendentes(user: any): any[] {
   const visiveis = new Set(empresasVisiveis(user));
   const rows = sqlite
     .prepare(
-      `SELECT p.id as periodoId, a.empresa_id as empresaId, e.nome as empresaNome, t.nome as templateNome, p.ano, p.mes, p.rotulo, p.solicitado_em as solicitadoEm
+      `SELECT p.id as periodoId, a.id as atribuicaoId, a.empresa_id as empresaId, e.nome as empresaNome, t.nome as templateNome, p.ano, p.mes, p.rotulo, p.solicitado_em as solicitadoEm
        FROM envio_periodos p
        JOIN envio_atribuicoes a ON a.id = p.atribuicao_id
        JOIN envio_templates t ON t.id = a.template_id AND t.escritorio_id = ?

@@ -1488,8 +1488,15 @@ function cardDetalheModal(c){
         </tbody></table>`;
       } else if(tipo==='solicitacoes_pendentes'){
         box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Modelo</th><th>Competência</th><th>Solicitado em</th></tr></thead><tbody>
-          ${items.map(i=>`<tr><td>${esc(i.empresaNome)}</td><td>${esc(i.templateNome)}</td><td>${i.mes?String(i.mes).padStart(2,'0')+'/'+i.ano:esc(i.rotulo||String(i.ano))}</td><td>${fmtDateHora(i.solicitadoEm)}</td></tr>`).join('')}
+          ${items.map(i=>`<tr class="linha-clicavel" data-atribuicao="${i.atribuicaoId}" data-periodo="${i.periodoId}" style="cursor:pointer;"><td>${esc(i.empresaNome)}</td><td>${esc(i.templateNome)}</td><td>${i.mes?String(i.mes).padStart(2,'0')+'/'+i.ano:esc(i.rotulo||String(i.ano))}</td><td>${fmtDateHora(i.solicitadoEm)}</td></tr>`).join('')}
         </tbody></table>`;
+        box.querySelectorAll('.linha-clicavel').forEach(tr=>tr.addEventListener('click', async ()=>{
+          closeModal();
+          STATE.page = 'envio'; renderNav();
+          await abrirEnvioGrade(Number(tr.dataset.atribuicao), false);
+          const alvo = document.querySelector(`#envioGradeBody tr[data-periodo="${tr.dataset.periodo}"]`);
+          if(alvo){ alvo.scrollIntoView({behavior:'smooth', block:'center'}); alvo.style.outline = '2px solid var(--accent)'; setTimeout(()=>{ alvo.style.outline=''; }, 2500); }
+        }));
       } else if(tipo==='envio_atraso'){
         box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Modelo</th><th>Competências em aberto</th></tr></thead><tbody>
           ${items.map(i=>`<tr><td>${esc(i.empresaNome)}</td><td>${esc(i.templateNome)}</td><td>${i.competencias.map(esc).join(', ')}</td></tr>`).join('')}
