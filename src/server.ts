@@ -6567,7 +6567,7 @@ app.post("/api/email-extratos/dry-run", blockCliente, requirePermissao("configur
 });
 app.post("/api/email-extratos/importar-agora", blockCliente, requirePermissao("configuracoes", "postar"), async (req, res) => {
   try {
-    const r = await emailExtratosSincronizar((req as any).user.escritorioId, { dryRun: false });
+    const r = await emailExtratosSincronizar((req as any).user.escritorioId, { dryRun: false, limite: Number(req.body?.limite) || undefined });
     res.json(r);
   } catch (e: any) {
     res.status(400).json({ error: e.message });
