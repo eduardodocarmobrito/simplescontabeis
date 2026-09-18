@@ -385,20 +385,43 @@ export async function obterRelatorioSitfisCompleto(token: TokenIntegraContador, 
   throw new Error("O relatório de situação fiscal não ficou pronto a tempo — tente de novo em alguns minutos.");
 }
 
-// ===================== DCTFWeb — estrutura pronta, idServico NÃO confirmado ainda =====================
-// Diferente do PGDASD/SITFIS acima, não consegui confirmar os idServico exatos do DCTFWeb contra a
-// documentação oficial (só o nome do módulo — "DCTFWEB" — e que existem operações de consulta de
-// declaração/débito). Os valores abaixo são um palpite razoável baseado no padrão dos outros
-// serviços (Consultar + sufixo numérico), mas PRECISAM ser confirmados contra o Swagger real antes
-// de usar — só é possível acessá-lo com uma conta já contratada. Não chamar em produção sem
-// confirmar antes.
+// ===================== DCTFWeb — GERARGUIA31 confirmado contra o catálogo oficial de serviços =====================
+// Confirmado em apicenter.estaleiro.serpro.gov.br/documentacao/api-integra-contador/pt/catalogo_de_servicos/
+// (a árvore pt/sistemas/... do site estava fora do ar — 500 — no momento da checagem; a árvore
+// espelhada pt/solucoes/integra-dctfweb/dctfweb/servicos/gerar_guia/ confirmou o exemplo de
+// request/response abaixo). idServico "Emitir Guia do DARF da MAED" e variações de reclamatória
+// trabalhista/aferição de obra existem mas não são usadas aqui — cobre só o caso comum (guia mensal
+// de PJ a partir de uma declaração já transmitida).
+export interface GuiaDctfWeb {
+  periodoApuracao: string; // AAAAMM
+  pdfBase64: string | null;
+}
+// Gera a guia (DARF) a partir de uma declaração DCTFWeb já transmitida pro período — não transmite
+// declaração nenhuma (isso é feito por fora, no Domínio Sistemas ou e-CAC). Se não houver declaração
+// transmitida pro período pedido, a Receita devolve erro (propagado por chamarServico), tratado como
+// falha não-fatal por quem chama — igual já acontece com gerarDas.
+export async function gerarGuiaDctfWeb(token: TokenIntegraContador, contratanteCnpj: string, cnpjEmpresa: string, anoPA: string, mesPA: string): Promise<GuiaDctfWeb> {
+  const r = await chamarServico(token, {
+    base: "Emitir",
+    contratanteCnpj,
+    contribuinteDocumento: cnpjEmpresa,
+    idSistema: "DCTFWEB",
+    idServico: "GERARGUIA31",
+    versaoSistema: "1.0",
+    dados: { categoria: "GERAL_MENSAL", anoPA, mesPA },
+  });
+  return { periodoApuracao: `${anoPA}${mesPA}`, pdfBase64: r.dados?.PDFByteArrayBase64 || null };
+}
+// idServico "CONSRECIBO32" ("Consultar o Recibo da Declaração") também confirmado contra o catálogo
+// oficial (Produção), mas o formato exato de "dados" não foi verificado contra um exemplo real —
+// mantido como estava (não usado pela busca automática; gerarGuiaDctfWeb acima não depende dele).
 export async function consultarDctfWeb(token: TokenIntegraContador, contratanteCnpj: string, cnpjEmpresa: string, periodoApuracao: string): Promise<any> {
   const r = await chamarServico(token, {
     base: "Consultar",
     contratanteCnpj,
     contribuinteDocumento: cnpjEmpresa,
     idSistema: "DCTFWEB",
-    idServico: "CONSRECIBO32", // não confirmado — ver comentário acima
+    idServico: "CONSRECIBO32",
     versaoSistema: "1.0",
     dados: { periodoApuracao },
   });

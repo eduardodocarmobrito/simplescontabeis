@@ -978,14 +978,15 @@ sqlite.exec(`
     escritorio_id INTEGER NOT NULL REFERENCES escritorios(id),
     ativo INTEGER NOT NULL DEFAULT 0,
     optante_simples_nacional INTEGER NOT NULL DEFAULT 0,
+    busca_dctfweb INTEGER NOT NULL DEFAULT 0, -- independente de optante_simples_nacional — ver migração abaixo
     ultima_busca_em TEXT,
     ultimo_erro TEXT,
     alerta_declaracao TEXT, -- preenchido quando a declaração/DAS do mês anterior ainda não foi localizada (monitoramento de atraso, não é erro técnico)
     updated_at TEXT DEFAULT (datetime('now'))
   );
-  -- Documentos obtidos (DAS, declaração consultada, relatório de situação fiscal). "detalhes_json"
-  -- guarda o resto dos campos específicos de cada tipo — não vale a pena normalizar em colunas
-  -- próprias pra três formatos tão diferentes entre si.
+  -- Documentos obtidos (DAS, declaração consultada, relatório de situação fiscal, DARF da DCTFWeb).
+  -- "detalhes_json" guarda o resto dos campos específicos de cada tipo — não vale a pena normalizar
+  -- em colunas próprias pra formatos tão diferentes entre si.
   CREATE TABLE IF NOT EXISTS integracontador_documentos (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
@@ -1204,6 +1205,18 @@ sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_email_extratos_status ON email_extra
   sqlite
     .prepare(`UPDATE envio_templates SET considera_mes_atual = 0 WHERE nome IN ('DAS - Mensal', 'Consultar Situação Fiscal - RFB') AND considera_mes_atual = 1`)
     .run();
+}
+
+// Migração leve: integracontador_empresa_config.busca_dctfweb — habilita, por empresa, a busca do
+// DARF gerado pela DCTFWeb (idServico GERARGUIA31), independente de optante_simples_nacional (ver
+// comentário no CREATE TABLE acima). Desligado por padrão pra não sair gerando guia paga sem o
+// escritório marcar explicitamente quais empresas precisam.
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(integracontador_empresa_config)`).all() as any[];
+  if (!cols.some((c) => c.name === "busca_dctfweb")) {
+    sqlite.exec(`ALTER TABLE integracontador_empresa_config ADD COLUMN busca_dctfweb INTEGER NOT NULL DEFAULT 0`);
+    console.log("Migração aplicada: integracontador_empresa_config.busca_dctfweb.");
+  }
 }
 
 // Migração leve: onedrive_config ganha os campos da importação de relatórios (Balanço/DRE/Balancete)
@@ -4093,7 +4106,18 @@ app.get("/api/checklist/uploads/:uploadId/download", blockCliente, requirePermis
 // qualquer um deles quebra silenciosamente o anexo automático de DAS/Situação Fiscal (a próxima
 // busca automática cria um modelo NOVO em vez de reaproveitar, perdendo a ligação com o histórico
 // já entregue ao cliente).
-const ENVIO_TEMPLATES_PROTEGIDOS = ["DAS - Mensal", "Consultar Situação Fiscal - RFB", "Balanço", "Balancete", "DRE Mensal", "DRE Anual", "Relação de Faturamento", "Retenções de Impostos", "Razão"];
+const ENVIO_TEMPLATES_PROTEGIDOS = [
+  "DAS - Mensal",
+  "Consultar Situação Fiscal - RFB",
+  "DARF - DCTF-Web",
+  "Balanço",
+  "Balancete",
+  "DRE Mensal",
+  "DRE Anual",
+  "Relação de Faturamento",
+  "Retenções de Impostos",
+  "Razão",
+];
 app.get("/api/envio/templates", blockCliente, requirePermissao("envio", "visualizar"), (req, res) => {
   const rows = sqlite.prepare(`SELECT * FROM envio_templates WHERE escritorio_id = ? ORDER BY nome`).all((req as any).user.escritorioId) as any[];
   res.json({
@@ -6694,7 +6718,7 @@ app.get("/api/integracontador/empresas", blockCliente, requirePermissao("integra
   const placeholders = ids.map(() => "?").join(",");
   const rows = sqlite
     .prepare(
-      `SELECT e.id, e.nome, e.cnpj, c.ativo, c.optante_simples_nacional as optanteSimplesNacional, c.ultima_busca_em as ultimaBuscaEm, c.ultimo_erro as ultimoErro,
+      `SELECT e.id, e.nome, e.cnpj, c.ativo, c.optante_simples_nacional as optanteSimplesNacional, c.busca_dctfweb as buscaDctfweb, c.ultima_busca_em as ultimaBuscaEm, c.ultimo_erro as ultimoErro,
               c.alerta_declaracao as alertaDeclaracao,
               (SELECT COUNT(*) FROM integracontador_documentos d WHERE d.empresa_id = e.id) as qtdDocumentos
        FROM empresas e LEFT JOIN integracontador_empresa_config c ON c.empresa_id = e.id
@@ -6926,6 +6950,46 @@ function integraContadorAnexarDasEmEnvio(
     descricaoWhatsapp: `Guia do DAS — ${rotulo}`,
   }).catch((e) => console.error(`[Integra Contador] envio automático do DAS (empresa ${empresaId}) falhou:`, e.message));
 }
+// Mesmo mecanismo do DAS acima, mas pro DARF gerado pela DCTFWeb (GERARGUIA31) — a Receita não
+// devolve número de documento nem vencimento estruturado nesse serviço (diferente do DAS), então o
+// nome do arquivo e o corpo do e-mail ficam mais simples.
+function integraContadorAnexarDarfDctfwebEmEnvio(
+  escritorioId: number,
+  empresaId: number,
+  guia: integracontador.GuiaDctfWeb,
+  observacao: string,
+  forcarNovoDocumento = false
+): void {
+  if (!guia.pdfBase64) return;
+  const atribuicaoId = integraContadorObterOuCriarAtribuicaoModelo(
+    escritorioId,
+    empresaId,
+    "DARF - DCTF-Web",
+    "Guia de arrecadação (DARF) gerada automaticamente a partir da declaração DCTFWeb já transmitida"
+  );
+  const ano = Number(guia.periodoApuracao.slice(0, 4));
+  const mes = Number(guia.periodoApuracao.slice(4, 6));
+  if (!forcarNovoDocumento) {
+    const periodo = sqlite.prepare(`SELECT id FROM envio_periodos WHERE atribuicao_id = ? AND ano = ? AND mes = ?`).get(atribuicaoId, ano, mes) as any;
+    if (periodo) {
+      const jaTemDocumento = sqlite.prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id = ? LIMIT 1`).get(periodo.id);
+      if (jaTemDocumento) return;
+    }
+  }
+  const nomeArquivo = `DARF DCTF-Web ${MESES_PT_EXTENSO[mes - 1]} ${ano}.pdf`;
+  const docId = integraContadorAnexarPdfEmEnvio(atribuicaoId, empresaId, ano, mes, nomeArquivo, guia.pdfBase64, observacao, null);
+  const rotulo = `${String(mes).padStart(2, "0")}/${ano}`;
+  void envioEnviarDocumentoAutomatico({
+    escritorioId,
+    empresaId,
+    docId,
+    fileName: nomeArquivo,
+    pdf: Buffer.from(guia.pdfBase64, "base64"),
+    assunto: `DARF DCTF-Web — ${rotulo}`,
+    corpoEmail: `Segue em anexo a guia do DARF (DCTF-Web) referente a ${rotulo}.`,
+    descricaoWhatsapp: `Guia do DARF DCTF-Web — ${rotulo}`,
+  }).catch((e) => console.error(`[Integra Contador] envio automático do DARF DCTF-Web (empresa ${empresaId}) falhou:`, e.message));
+}
 // Mesmo mecanismo do DAS, mas pra Situação Fiscal — não tem "competência" de verdade (é uma foto do
 // momento, não atrelada a um período de apuração), então usa o mês/ano de quando a consulta rodou
 // como período na grade. Reaproveita a mesma pasta/documento a cada busca (semanal ou manual),
@@ -6977,9 +7041,9 @@ function integraContadorAnexarParcelaEmEnvio(atribuicaoId: number, empresaId: nu
 // 5 minutos (não 3): o SITFIS tem dois polls de até 10 tentativas cada, de verdade assíncronos do
 // lado da Receita — em dia ruim, esperar mais é melhor que cortar uma busca que ia dar certo.
 const INTEGRACONTADOR_TIMEOUT_BUSCA_MS = 5 * 60 * 1000;
-async function integraContadorBuscarEmpresa(empresaId: number, empresaCnpj: string, optante: boolean): Promise<{ novos: number; erro: string | null }> {
+async function integraContadorBuscarEmpresa(empresaId: number, empresaCnpj: string, optante: boolean, buscaDctfweb: boolean): Promise<{ novos: number; erro: string | null }> {
   return Promise.race([
-    integraContadorBuscarEmpresaInterno(empresaId, empresaCnpj, optante),
+    integraContadorBuscarEmpresaInterno(empresaId, empresaCnpj, optante, buscaDctfweb),
     new Promise<{ novos: number; erro: string | null }>((resolve) =>
       setTimeout(() => {
         const msg = "A busca não respondeu em 5 minutos (Receita/SERPRO travado ou muito lento) — tente de novo mais tarde.";
@@ -6993,6 +7057,7 @@ async function integraContadorBuscarEmpresaInterno(
   empresaId: number,
   empresaCnpj: string,
   optante: boolean,
+  buscaDctfweb: boolean,
   tentandoComTokenNovo = false
 ): Promise<{ novos: number; erro: string | null }> {
   const empConfig = getIntegraContadorEmpresaConfig(empresaId);
@@ -7077,6 +7142,33 @@ async function integraContadorBuscarEmpresaInterno(
         }
       }
     }
+    // DARF da DCTFWeb — só pra quem foi marcado explicitamente (independente de optante do Simples,
+    // ver checkbox "Precisa de DARF da DCTF-Web"). Sempre a competência do mês anterior (igual DAS
+    // e o ajuste recente do Darf Pis/Cofins no card "envio_atraso" — não existe guia do mês corrente
+    // antes dele fechar). Sem passo de "consultar declaração" antes de gerar (diferente do DAS
+    // acima): se a declaração daquele período ainda não foi transmitida, a Receita só devolve erro,
+    // tratado como falha não-fatal abaixo — mesmo comportamento de gerarDas quando não há nada pra
+    // gerar ainda.
+    if (buscaDctfweb) {
+      const hoje = new Date();
+      const mesAnterior = new Date(hoje.getFullYear(), hoje.getMonth() - 1, 1);
+      const anoPA = String(mesAnterior.getFullYear());
+      const mesPA = String(mesAnterior.getMonth() + 1).padStart(2, "0");
+      try {
+        const guia = await integracontador.gerarGuiaDctfWeb(token, cnpjEscritorio, empresaCnpj, anoPA, mesPA);
+        if (guia.pdfBase64) {
+          const caminho = salvarPdfBase64EmCache(`darf_dctfweb_${empresaId}_${anoPA}${mesPA}_${Date.now()}`, guia.pdfBase64);
+          sqlite
+            .prepare(`INSERT INTO integracontador_documentos (empresa_id, escritorio_id, tipo, periodo_apuracao, pdf_path) VALUES (?, ?, 'darf_dctfweb', ?, ?)`)
+            .run(empresaId, empConfig.escritorio_id, guia.periodoApuracao, caminho);
+          integraContadorAnexarDarfDctfwebEmEnvio(empConfig.escritorio_id, empresaId, guia, "DARF (DCTF-Web) — gerado automaticamente pela busca do Integra Contador.");
+          novos++;
+        }
+      } catch (e: any) {
+        console.error(`[Integra Contador] DARF DCTF-Web da empresa ${empresaId} falhou:`, e.message);
+        falhas.push(`DARF DCTF-Web: ${e.message}`);
+      }
+    }
     // Parcelamento de DAS (PARCSN) — só entra aqui depois que o escritório já vinculou um
     // parcelamento concedido (ver POST /api/integracontador/parcelamentos); tenta emitir a guia da
     // parcela do mês corrente, igual já faz pro DAS normal. Uma empresa raramente tem mais de um
@@ -7112,7 +7204,7 @@ async function integraContadorBuscarEmpresaInterno(
     // também falhar).
     if (!tentandoComTokenNovo && falhas.some((f) => f.includes("TOKEN_EXPIRADO"))) {
       integraContadorTokens.delete(empConfig.escritorio_id);
-      return integraContadorBuscarEmpresaInterno(empresaId, empresaCnpj, optante, true);
+      return integraContadorBuscarEmpresaInterno(empresaId, empresaCnpj, optante, buscaDctfweb, true);
     }
     const erroResumo = falhas.length ? falhas.join(" | ") : null;
     sqlite.prepare(`UPDATE integracontador_empresa_config SET ultima_busca_em = datetime('now'), ultimo_erro = ? WHERE empresa_id = ?`).run(erroResumo, empresaId);
@@ -7144,11 +7236,11 @@ app.put("/api/integracontador/empresas/:id", blockCliente, requirePermissao("int
   const ativando = !!b.ativo && !atual.ativo;
   sqlite
     .prepare(
-      `INSERT INTO integracontador_empresa_config (empresa_id, escritorio_id, ativo, optante_simples_nacional, updated_at)
-       VALUES (?, ?, ?, ?, datetime('now'))
-       ON CONFLICT(empresa_id) DO UPDATE SET ativo=excluded.ativo, optante_simples_nacional=excluded.optante_simples_nacional, updated_at=datetime('now')`
+      `INSERT INTO integracontador_empresa_config (empresa_id, escritorio_id, ativo, optante_simples_nacional, busca_dctfweb, updated_at)
+       VALUES (?, ?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(empresa_id) DO UPDATE SET ativo=excluded.ativo, optante_simples_nacional=excluded.optante_simples_nacional, busca_dctfweb=excluded.busca_dctfweb, updated_at=datetime('now')`
     )
-    .run(empId, user.escritorioId, b.ativo ? 1 : 0, b.optanteSimplesNacional ? 1 : 0);
+    .run(empId, user.escritorioId, b.ativo ? 1 : 0, b.optanteSimplesNacional ? 1 : 0, b.buscaDctfweb ? 1 : 0);
   const cfg = getIntegraContadorConfig(user.escritorioId);
   let buscaIniciada = false;
   if (ativando && cfg.ativo && !integraContadorBuscasEmAndamento.has(empId)) {
@@ -7158,7 +7250,7 @@ app.put("/api/integracontador/empresas/:id", blockCliente, requirePermissao("int
     // Receita), tempo suficiente pro proxy do Railway devolver 502 pro navegador mesmo com a busca
     // tendo dado certo do lado do servidor. Roda em segundo plano; a tela confere o resultado
     // reconsultando a lista (ultimaBuscaEm muda quando termina).
-    integraContadorBuscarEmpresa(empId, empresa?.cnpj || "", !!b.optanteSimplesNacional).finally(() => {
+    integraContadorBuscarEmpresa(empId, empresa?.cnpj || "", !!b.optanteSimplesNacional, !!b.buscaDctfweb).finally(() => {
       integraContadorBuscasEmAndamento.delete(empId);
     });
   }
@@ -7177,7 +7269,7 @@ app.post("/api/integracontador/empresas/:id/buscar", blockCliente, requirePermis
   const empresa = sqlite.prepare(`SELECT cnpj FROM empresas WHERE id = ?`).get(empId) as any;
   // Mesma lógica do PUT acima: dispara e não espera, pra não bater no timeout do proxy numa busca
   // de Situação Fiscal que demora — o front confere o resultado consultando de novo em alguns segundos.
-  integraContadorBuscarEmpresa(empId, empresa?.cnpj || "", !!empConfig.optante_simples_nacional).finally(() => {
+  integraContadorBuscarEmpresa(empId, empresa?.cnpj || "", !!empConfig.optante_simples_nacional, !!empConfig.busca_dctfweb).finally(() => {
     integraContadorBuscasEmAndamento.delete(empId);
   });
   res.json({ ok: true, buscaIniciada: true });
@@ -7343,7 +7435,7 @@ const INTEGRACONTADOR_AUTO_PAUSA_ENTRE_EMPRESAS_MS = 5000;
 async function integraContadorExecutarBuscaAutomatica() {
   const configs = sqlite
     .prepare(
-      `SELECT c.empresa_id as empresaId, c.optante_simples_nacional as optante, e.cnpj as cnpj
+      `SELECT c.empresa_id as empresaId, c.optante_simples_nacional as optante, c.busca_dctfweb as buscaDctfweb, e.cnpj as cnpj
        FROM integracontador_empresa_config c
        JOIN empresas e ON e.id = c.empresa_id
        JOIN integracontador_config ic ON ic.escritorio_id = c.escritorio_id
@@ -7354,7 +7446,7 @@ async function integraContadorExecutarBuscaAutomatica() {
     if (integraContadorBuscasEmAndamento.has(cfg.empresaId)) continue;
     integraContadorBuscasEmAndamento.add(cfg.empresaId);
     try {
-      const r = await integraContadorBuscarEmpresa(cfg.empresaId, cfg.cnpj || "", !!cfg.optante);
+      const r = await integraContadorBuscarEmpresa(cfg.empresaId, cfg.cnpj || "", !!cfg.optante, !!cfg.buscaDctfweb);
       if (r.erro) console.error(`[Integra Contador] busca automática da empresa ${cfg.empresaId} falhou:`, r.erro);
     } catch (e: any) {
       console.error(`[Integra Contador] busca automática da empresa ${cfg.empresaId} falhou:`, e.message);

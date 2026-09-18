@@ -4991,7 +4991,7 @@ async function pageNfeBusca(){
 }
 
 // ===================== Integra Contador (DAS, Declaração, Situação Fiscal) =====================
-const IC_TIPO_LABEL = { das:'DAS', declaracao:'Declaração do Simples', situacao_fiscal:'Situação Fiscal' };
+const IC_TIPO_LABEL = { das:'DAS', declaracao:'Declaração do Simples', situacao_fiscal:'Situação Fiscal', darf_dctfweb:'DARF (DCTF-Web)' };
 let IC_TAB = 'configuradas';
 async function pageIntegraContador(){
   const podePostar = can('integracontador','postar');
@@ -5087,13 +5087,13 @@ async function pageIntegraContador(){
       </div>
       <div class="card" style="padding:0; overflow-x:auto;">
         <table class="data-table">
-          <thead><tr><th>Empresa</th><th>Status</th><th>Optante Simples</th><th>Documentos</th><th>Última busca</th><th>Alerta</th><th></th></tr></thead>
+          <thead><tr><th>Empresa</th><th>Status</th><th>Regime</th><th>Documentos</th><th>Última busca</th><th>Alerta</th><th></th></tr></thead>
           <tbody>
             ${visiveis.length ? visiveis.map(e=>`
               <tr class="icEmpresaRow" data-id="${e.id}" style="cursor:pointer;">
                 <td><b>${esc(e.nome)}</b></td>
                 <td><span class="tag ${e.ativo?'ok':'muted'}">${e.ativo?'Ativo':'Inativo'}</span></td>
-                <td>${e.optanteSimplesNacional?'<span class="tag ok">Optante</span>':'—'}</td>
+                <td>${[e.optanteSimplesNacional?'<span class="tag ok">Optante</span>':'', e.buscaDctfweb?'<span class="tag ok">DCTF-Web</span>':''].filter(Boolean).join(' ') || '—'}</td>
                 <td>${e.qtdDocumentos}</td>
                 <td>${e.ultimaBuscaEm?fmtDateHora(e.ultimaBuscaEm):'—'}</td>
                 <td>${e.alertaDeclaracao?`<span class="tag bad" title="${esc(e.alertaDeclaracao)}">Não declarado</span>`:''}</td>
@@ -5122,6 +5122,7 @@ async function pageIntegraContador(){
         <h3>${esc(emp?emp.nome:'Empresa')}</h3>
         <label class="checkbox-row"><input type="checkbox" id="icEmpAtivo" ${emp?.ativo?'checked':''} ${podeEditar?'':'disabled'}> Buscar dados desta empresa</label>
         <label class="checkbox-row"><input type="checkbox" id="icEmpOptante" ${emp?.optanteSimplesNacional?'checked':''} ${podeEditar?'':'disabled'}> Optante do Simples Nacional (habilita DAS e Declaração — Situação Fiscal vale pra qualquer regime)</label>
+        <label class="checkbox-row"><input type="checkbox" id="icEmpDctfweb" ${emp?.buscaDctfweb?'checked':''} ${podeEditar?'':'disabled'}> Precisa de DARF da DCTF-Web (gera a guia mensal a partir da declaração já transmitida)</label>
         <p style="font-size:12.5px; color:var(--ink-soft); margin:6px 0 0;">Última busca: <span id="icUltimaBusca">${emp?.ultimaBuscaEm?fmtDateHora(emp.ultimaBuscaEm):'nunca buscado'}</span></p>
         ${emp?.alertaDeclaracao?`<div class="card" style="background:var(--paper); border-color:var(--warn, #c9a227); margin:8px 0;"><span style="font-size:12.5px;">⚠ ${esc(emp.alertaDeclaracao)}</span></div>`:''}
         ${emp?.ultimoErro?`<p style="color:var(--debit); font-size:12.5px;">Último erro: ${esc(emp.ultimoErro)}</p>`:''}
@@ -5220,7 +5221,7 @@ async function pageIntegraContador(){
       const btn = ev.target; btn.disabled = true; btn.textContent = 'Salvando…';
       try{
         const ultimaBuscaAntes = emp?.ultimaBuscaEm || null;
-        const body = { ativo: document.getElementById('icEmpAtivo').checked, optanteSimplesNacional: document.getElementById('icEmpOptante').checked };
+        const body = { ativo: document.getElementById('icEmpAtivo').checked, optanteSimplesNacional: document.getElementById('icEmpOptante').checked, buscaDctfweb: document.getElementById('icEmpDctfweb').checked };
         const r = await api('/integracontador/empresas/'+empresaId, { method:'PUT', body });
         if(r.buscaIniciada){
           toast('Salvo — buscando dados em segundo plano…','ok');
