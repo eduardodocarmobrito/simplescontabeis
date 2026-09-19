@@ -65,9 +65,16 @@ async function main() {
 
   await perguntar("Pressione ENTER depois de concluir o login no navegador... ");
 
-  console.log("\nAgora entre com seu login do Simples Contábeis (pra eu saber quais empresas buscar e onde enviar as guias).");
-  const email = await perguntar("E-mail: ");
-  const senha = await perguntar("Senha: ");
+  // Se FGTS_LOGIN_EMAIL/FGTS_LOGIN_SENHA estiverem no .env, usa direto sem perguntar de novo.
+  let email = process.env.FGTS_LOGIN_EMAIL || "";
+  let senha = process.env.FGTS_LOGIN_SENHA || "";
+  if (!email || !senha) {
+    console.log("\nAgora entre com seu login do Simples Contábeis (pra eu saber quais empresas buscar e onde enviar as guias).");
+    email = await perguntar("E-mail: ");
+    senha = await perguntar("Senha: ");
+  } else {
+    console.log("\nUsando o login salvo no .env (FGTS_LOGIN_EMAIL/FGTS_LOGIN_SENHA).");
+  }
 
   console.log("\nEntrando no sistema...");
   let cookieHeader: string;

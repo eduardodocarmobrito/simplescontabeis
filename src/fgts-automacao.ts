@@ -31,46 +31,90 @@ export interface ResultadoFgtsEmpresa {
   erro?: string;
 }
 
+const PORTAL_URL = "https://fgtsdigital.sistema.gov.br/portal/servicos";
 const EMISSAO_GUIA_RAPIDA_URL = "https://fgtsdigital.sistema.gov.br/cobranca/#/gestao-guias/emissao-guia-rapida";
 
 function soDigitos(s: string): string {
   return String(s || "").replace(/\D/g, "");
 }
 
-// O seletor de troca de empresa (visível no cabeçalho "Empregador: <CNPJ> | <nome>", confirmado
-// pelo usuário que existe um menu pra trocar sem logar de novo) ainda não foi visto num print real
-// — tenta um caminho razoável a partir do texto "Empregador" e lança um erro claro e específico se
-// não achar, pra ajustar depois de ver esse erro numa busca real (não adivinha o DOM às cegas).
+// Confirmado num print real: no cabeçalho do portal, ao lado de "Empregador: <CNPJ> | <nome>",
+// existe um botão "Trocar Perfil" que abre o mesmo modal "Definir Perfil" do fim do login — um
+// combo "Perfil" (escolher "Procurador") e, ao escolher, aparece um campo de texto solto "Empregador
+// a ser representado" pra digitar o CNPJ direto (não é uma lista pra clicar).
 async function trocarEmpresa(page: any, cnpjDigits: string, nomeEmpresa: string) {
-  const gatilho = page.getByText("Empregador:", { exact: false }).first();
+  // "Trocar Perfil" só existe no cabeçalho do portal principal (/portal/servicos) — depois de buscar
+  // a guia de uma empresa, a página fica em /cobranca/#/... (outro sub-app), sem esse cabeçalho.
+  // Achado ao vivo: a 2ª empresa de uma busca em lote falhava justamente por isso.
+  if (!page.url().startsWith(PORTAL_URL)) {
+    await page.goto(PORTAL_URL, { waitUntil: "domcontentloaded", timeout: 30000 });
+    await page.waitForTimeout(1500);
+  }
+  const gatilho = page.getByRole("button", { name: "Trocar Perfil", exact: false }).first();
   const visivel = await gatilho.isVisible().catch(() => false);
   if (!visivel) {
-    throw new Error(
-      `Não encontrei o seletor de troca de empresa (texto "Empregador:") na tela do portal. ` +
-        `O layout pode ter mudado ou não é isso que abre o menu de troca.`
-    );
+    throw new Error(`Não encontrei o botão "Trocar Perfil" no cabeçalho do portal. O layout pode ter mudado.`);
   }
   await gatilho.click();
   await page.waitForTimeout(800);
 
-  // Tenta achar a empresa pelo CNPJ (com e sem formatação) e, se não achar, pelo nome.
-  const porCnpjFormatado = cnpjDigits.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/, "$1.$2.$3/$4-$5");
-  let opcao = page.getByText(porCnpjFormatado, { exact: false }).first();
-  if (!(await opcao.isVisible().catch(() => false))) {
-    opcao = page.getByText(cnpjDigits, { exact: false }).first();
+  const comboPerfil = page.getByLabel("Perfil", { exact: false }).first();
+  const perfilVisivel = await comboPerfil.isVisible({ timeout: 8000 }).catch(() => false);
+  if (!perfilVisivel) {
+    throw new Error(`Cliquei em "Trocar Perfil" mas não achei o modal "Definir Perfil" (campo "Perfil").`);
   }
-  if (!(await opcao.isVisible().catch(() => false))) {
-    opcao = page.getByText(nomeEmpresa, { exact: false }).first();
+  const valorAtual = await comboPerfil.inputValue().catch(() => "");
+  if (!/procurador/i.test(valorAtual)) {
+    await comboPerfil.click();
+    await comboPerfil.fill("Procurador").catch(() => {});
+    await page.waitForTimeout(500);
+    const opcaoProcurador = page.getByText("Procurador", { exact: false }).last();
+    if (await opcaoProcurador.isVisible({ timeout: 3000 }).catch(() => false)) await opcaoProcurador.click();
   }
-  if (!(await opcao.isVisible().catch(() => false))) {
-    throw new Error(
-      `Abri o menu de troca de empresa, mas não achei a opção pro CNPJ ${porCnpjFormatado} (nem pelo nome "${nomeEmpresa}") ` +
-        `— confirme se o Procurador tem procuração ativa pra essa empresa no FGTS Digital.`
-    );
+
+  const campoEmpregador = page.getByLabel("Empregador a ser representado", { exact: false }).first();
+  const campoVisivel = await campoEmpregador.isVisible({ timeout: 8000 }).catch(() => false);
+  if (!campoVisivel) {
+    throw new Error(`Escolhi "Procurador" mas não apareceu o campo "Empregador a ser representado" pra digitar o CNPJ.`);
   }
-  await opcao.click();
+  await campoEmpregador.click();
+  await campoEmpregador.fill("");
+  await campoEmpregador.pressSequentially(cnpjDigits, { delay: 40 });
+  await page.waitForTimeout(500);
+
+  // O modal aberto via "Trocar Perfil" usa o botão "Selecionar" (confirmado num print real) —
+  // diferente do "Definir" do primeiro login (aquele é feito manualmente, uma vez só).
+  const btnConfirmar = page.getByRole("button", { name: "Selecionar", exact: false }).first();
+  await btnConfirmar.click();
   await page.waitForLoadState("networkidle", { timeout: 20000 }).catch(() => {});
-  await page.waitForTimeout(1000);
+  await page.waitForTimeout(1500);
+
+  const aindaComModal = await comboPerfil.isVisible({ timeout: 3000 }).catch(() => false);
+  if (aindaComModal) {
+    // Achado ao vivo: quando o Procurador não tem procuração ativa pro CNPJ digitado, o site mostra
+    // um banner de erro DENTRO do mesmo modal ("Erro na operação — Não existe procuração para o
+    // Número de Inscrição selecionado."), sem fechar nada sozinho — captura essa mensagem real pra
+    // um erro mais claro, e sempre fecha o modal antes de sair, senão a próxima empresa da lista
+    // esbarra nesse mesmo modal ainda aberto e nem acha o botão "Trocar Perfil".
+    const bannerErro = await page.getByText("Erro na operação", { exact: false }).first().isVisible({ timeout: 1000 }).catch(() => false);
+    let mensagemErro = `o modal continuou aberto — provavelmente o CNPJ não foi aceito (sem procuração ativa pra "${nomeEmpresa}" no FGTS Digital, ou formato errado).`;
+    if (bannerErro) {
+      const textoErro = await page
+        .locator("text=Não existe procuração para o Número de Inscrição selecionado.")
+        .first()
+        .textContent()
+        .catch(() => null);
+      mensagemErro = textoErro
+        ? `sem procuração ativa pra "${nomeEmpresa}" (${cnpjDigits}) no FGTS Digital — regularize a procuração no site antes de tentar de novo.`
+        : mensagemErro;
+    }
+    const btnCancelar = page.getByRole("button", { name: "Cancelar", exact: false }).first();
+    await btnCancelar.click({ timeout: 5000 }).catch(async () => {
+      await page.getByRole("button", { name: "Fechar", exact: false }).first().click({ timeout: 5000 }).catch(() => {});
+    });
+    await page.waitForTimeout(800);
+    throw new Error(`Preenchi o CNPJ ${cnpjDigits} e cliquei em "Selecionar", mas ${mensagemErro}`);
+  }
 }
 
 async function buscarGuiaDaEmpresaAtual(page: any, ano: number, mes: number): Promise<{ guiaGerada: boolean; pdfBuffer?: Buffer; nomeArquivo?: string }> {

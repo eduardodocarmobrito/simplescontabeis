@@ -8154,10 +8154,16 @@ async function abrirEmailExtratosPendenciasModal(){
 async function renderCfgFgtsDigital(box){
   const { items } = await api('/empresas');
   const marcadas = items.filter(e=>e.buscaFgts);
+  // "Sem procuração ativa" é um resultado esperado (a empresa nunca autorizou o escritório no FGTS
+  // Digital), não um bug — separa isso de erro de verdade pra ficar claro o que precisa de ação sua
+  // (regularizar a procuração no site) e o que pode ser um problema no script.
+  const semProcuracao = marcadas.filter(e=>e.fgtsUltimoErro && /procuração/i.test(e.fgtsUltimoErro));
   const linhas = marcadas.map(e=>{
-    const situacao = e.fgtsUltimoErro
-      ? `<span class="tag bad">Erro</span> ${esc(e.fgtsUltimoErro)}`
-      : e.fgtsUltimaBuscaEm ? `<span class="tag ok">OK</span>` : `<span class="tag">Ainda não buscada</span>`;
+    const situacao = !e.fgtsUltimoErro
+      ? (e.fgtsUltimaBuscaEm ? `<span class="tag ok">OK</span>` : `<span class="tag">Ainda não buscada</span>`)
+      : /procuração/i.test(e.fgtsUltimoErro)
+        ? `<span class="tag" style="background:#fff3cd; color:#7a5b00;">Sem procuração</span>`
+        : `<span class="tag bad">Erro</span> ${esc(e.fgtsUltimoErro)}`;
     return `<tr><td>${esc(e.nome)}</td><td>${e.fgtsUltimaBuscaEm?fmtDateHora(e.fgtsUltimaBuscaEm):'—'}</td><td>${situacao}</td></tr>`;
   }).join('');
   box.innerHTML = `
@@ -8175,10 +8181,20 @@ async function renderCfgFgtsDigital(box){
           <code>npm run fgts-login</code>. Vai abrir um navegador pra você logar normalmente no
           FGTS Digital: Entrar com GOV.BR &gt; Outras opções de identificação &gt; Seu certificado
           digital &gt; escolha o certificado &gt; perfil "Procurador". Depois de apertar ENTER no
-          terminal, ele pede seu e-mail/senha do sistema e já busca sozinho a guia de todas as
-          empresas marcadas abaixo, enviando os PDFs pra Envio de Documentos.
+          terminal, ele pede seu e-mail/senha do sistema (ou usa o que estiver salvo no .env) e já
+          busca sozinho a guia de todas as empresas marcadas abaixo, enviando os PDFs pra Envio de
+          Documentos. Se faltar procuração ativa pra alguma empresa, ele pula ela e segue pras
+          próximas — o resultado de cada uma fica aqui embaixo.
         </p>
       </div>
+      ${semProcuracao.length ? `
+        <div class="card" style="background:#fff3cd; margin:10px 0;">
+          <p style="font-size:13px; margin:0; color:#7a5b00;">
+            <strong>${semProcuracao.length} empresa(s) sem procuração ativa pro escritório no FGTS Digital</strong> —
+            regularize a procuração no site do FGTS Digital pra essas empresas: ${semProcuracao.map(e=>esc(e.nome)).join(', ')}.
+          </p>
+        </div>
+      ` : ''}
       <div style="font-weight:600; font-size:13px; color:var(--ink-soft); margin:14px 0 6px;">Empresas marcadas ("Buscar Guia FGTS Digital" no cadastro)</div>
       ${marcadas.length
         ? `<table class="data-table"><thead><tr><th>Empresa</th><th>Última busca</th><th>Situação</th></tr></thead><tbody>${linhas}</tbody></table>`
