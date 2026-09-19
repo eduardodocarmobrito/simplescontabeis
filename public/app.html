@@ -3215,12 +3215,7 @@ async function renderEnvioAtribuicoes(){
     </div>
     <div class="row" style="gap:8px; margin-bottom:10px;">
       <div class="field" style="max-width:360px; margin-bottom:0;"><input type="text" id="envioAtribFiltro" placeholder="Buscar por empresa…" autocomplete="off"></div>
-      <div class="field" style="max-width:260px; margin-bottom:0;">
-        <select id="envioAtribModeloFiltro">
-          <option value="">Todos os modelos</option>
-          ${[...templates].sort((a,b)=>a.nome.localeCompare(b.nome)).map(t=>`<option value="${t.id}">${esc(t.nome)}</option>`).join('')}
-        </select>
-      </div>
+      <div class="field" style="max-width:260px; margin-bottom:0;">${comboSelectHtml('envioAtribModeloFiltro', 'Todos os modelos')}</div>
     </div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
@@ -3263,9 +3258,13 @@ async function renderEnvioAtribuicoes(){
     }));
   }
   desenhaEnvioAtribs('', '');
-  const atualizaFiltroEnvio = ()=> desenhaEnvioAtribs(document.getElementById('envioAtribFiltro').value, document.getElementById('envioAtribModeloFiltro').value);
+  let envioModeloFiltroAtual = '';
+  const atualizaFiltroEnvio = ()=> desenhaEnvioAtribs(document.getElementById('envioAtribFiltro').value, envioModeloFiltroAtual);
   document.getElementById('envioAtribFiltro').addEventListener('input', atualizaFiltroEnvio);
-  document.getElementById('envioAtribModeloFiltro').addEventListener('change', atualizaFiltroEnvio);
+  setupComboSelect('envioAtribModeloFiltro', [...templates].sort((a,b)=>a.nome.localeCompare(b.nome)).map(t=>({id:t.id, label:t.nome})), (id)=>{
+    envioModeloFiltroAtual = id || '';
+    atualizaFiltroEnvio();
+  });
   if(podePostar) document.getElementById('btnNovaEnvioAtrib').addEventListener('click', ()=>novaEnvioAtribModal(empresas, templates));
   if(ehAdmin) document.getElementById('btnRolloverAno').addEventListener('click', async ()=>{
     const ano = prompt('Gerar a grade de qual ano pra todas as empresas? (só renova quem já tinha grade no ano anterior)', new Date().getFullYear()+1);
