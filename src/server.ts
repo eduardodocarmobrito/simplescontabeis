@@ -20,7 +20,6 @@ import * as onedrive from "./onedrive";
 import * as integracontador from "./integracontador";
 import * as ocr from "./ocr";
 import { buscarViaOnvio } from "./onvio-sync";
-import { buscarGuiasFgts } from "./fgts-automacao";
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 
@@ -718,21 +717,6 @@ sqlite.exec(`
     atualizadas INTEGER,
     erro TEXT,
     criado_por INTEGER REFERENCES app_users(id),
-    criado_em TEXT DEFAULT (datetime('now')),
-    resolvido_em TEXT
-  );
-
-  -- Job de busca em lote da Guia FGTS Digital (ver fgts-automacao.ts) — disparado manualmente pelo
-  -- usuário logo depois de fazer o login local (npm run fgts-login), já que a sessão só existe
-  -- "fresca" por um tempo. resultado_json guarda um array por empresa: {empresaId, nome, ok,
-  -- guiaGerada, erro}.
-  CREATE TABLE IF NOT EXISTS fgts_sync_jobs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    status TEXT NOT NULL DEFAULT 'pending', -- 'pending' | 'ok' | 'erro'
-    resultado_json TEXT,
-    erro TEXT,
-    criado_por INTEGER REFERENCES app_users(id),
-    escritorio_id INTEGER NOT NULL REFERENCES escritorios(id),
     criado_em TEXT DEFAULT (datetime('now')),
     resolvido_em TEXT
   );
@@ -1779,6 +1763,11 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
     sqlite.exec(`ALTER TABLE empresas ADD COLUMN fgts_ultimo_erro TEXT`);
   }
 }
+// Limpeza: fgts_sync_jobs foi criada numa primeira versão que salvava a sessão do FGTS Digital no
+// servidor pra reaproveitar depois — testando ao vivo, confirmamos que essa sessão não sobrevive
+// fora do navegador que fez o login (o próprio site trata como "Erro de Login"), então a busca
+// passou a rodar inteira em fgts-login-setup.ts (local) e essa tabela ficou sem uso.
+sqlite.exec(`DROP TABLE IF EXISTS fgts_sync_jobs`);
 // Migração leve: cards do Painel podem virar "computados" (tipo preenchido) em vez de só texto
 // digitado à mão — o valor passa a ser calculado na hora em GET /api/dashboard/cards.
 {
@@ -3980,16 +3969,14 @@ setInterval(() => {
   }
 }, 60 * 60 * 1000);
 
-// ---- FGTS Digital: busca da Guia (GFD) via sessão de navegador salva localmente (ver
-// fgts-login-setup.ts) — o login do gov.br é protegido por hCaptcha, então não dá pra automatizar
-// esse passo (confirmado testando ao vivo contra o site de produção). A sessão captura o login
-// manual feito uma vez (npm run fgts-login) e é reaproveitada aqui pra buscar a guia de várias
-// empresas de uma vez — disparado manualmente pelo usuário logo depois de logar (não é um job
-// automático por horário, já que a sessão só é confiável "fresca").
-function fgtsSessionPath(escritorioId: number): string {
-  const dir = path.join(__dirname, "..", "data");
-  return path.join(dir, escritorioId === 1 ? "fgts-session.json" : `fgts-session-${escritorioId}.json`);
-}
+// ---- FGTS Digital: busca da Guia (GFD) ----
+// Confirmado em teste real que a sessão autenticada do FGTS Digital NÃO sobrevive fora do
+// navegador/conexão que fez o login (mesmo reapresentando o mesmo certificado depois, o próprio
+// site detecta "Erro de Login" e devolve a tela pública) — proteção do próprio gov.br contra sessão
+// "vazada" pra outro processo, não um bug daqui. Por isso, diferente do padrão da Onvio, o servidor
+// NUNCA roda o Playwright do FGTS Digital sozinho: quem faz login E busca as guias, numa tacada só,
+// é o próprio usuário rodando `npm run fgts-login` no computador dele (ver fgts-login-setup.ts) — o
+// servidor só entra depois, recebendo cada guia já pronta via POST /api/fgts/guia.
 function fgtsAnexarGuiaEmEnvio(escritorioId: number, empresaId: number, ano: number, mes: number, pdfBase64: string): number {
   const atribuicaoId = integraContadorObterOuCriarAtribuicaoModelo(
     escritorioId,
@@ -4015,84 +4002,30 @@ function fgtsAnexarGuiaEmEnvio(escritorioId: number, empresaId: number, ano: num
   }).catch((e) => console.error(`[FGTS Digital] envio automático da guia (empresa ${empresaId}) falhou:`, e.message));
   return docId;
 }
-async function executarBuscaFgts(escritorioId: number, jobId: number): Promise<void> {
-  try {
-    const empresas = sqlite
-      .prepare(`SELECT id as empresaId, cnpj, nome FROM empresas WHERE escritorio_id = ? AND ativo = 1 AND busca_fgts = 1`)
-      .all(escritorioId) as any[];
-    if (!empresas.length) {
-      sqlite.prepare(`UPDATE fgts_sync_jobs SET status='ok', resultado_json='[]', resolvido_em=datetime('now') WHERE id=?`).run(jobId);
-      return;
-    }
-    const hoje = new Date();
-    const mesAnterior = new Date(hoje.getFullYear(), hoje.getMonth() - 1, 1);
-    const ano = mesAnterior.getFullYear();
-    const mes = mesAnterior.getMonth() + 1;
-
-    const resultados = await buscarGuiasFgts(
-      fgtsSessionPath(escritorioId),
-      empresas.map((e) => ({ empresaId: e.empresaId, cnpj: e.cnpj || "", nome: e.nome })),
-      { ano, mes }
-    );
-
-    for (const r of resultados) {
-      if (r.ok && r.guiaGerada && r.pdfBase64) {
-        try {
-          fgtsAnexarGuiaEmEnvio(escritorioId, r.empresaId, ano, mes, r.pdfBase64);
-        } catch (e: any) {
-          r.ok = false;
-          r.erro = `Guia gerada, mas falhou ao anexar em Envio de Documentos: ${e.message}`;
-        }
-      }
-      sqlite
-        .prepare(`UPDATE empresas SET fgts_ultima_busca_em = datetime('now'), fgts_ultimo_erro = ? WHERE id = ?`)
-        .run(r.ok ? null : r.erro || "Falha desconhecida.", r.empresaId);
-    }
-
-    sqlite.prepare(`UPDATE fgts_sync_jobs SET status='ok', resultado_json=?, resolvido_em=datetime('now') WHERE id=?`).run(JSON.stringify(resultados), jobId);
-  } catch (e: any) {
-    sqlite.prepare(`UPDATE fgts_sync_jobs SET status='erro', erro=?, resolvido_em=datetime('now') WHERE id=?`).run(e.message, jobId);
-  }
-}
-app.get("/api/fgts/sessao", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
-  const p = fgtsSessionPath((req as any).user.escritorioId);
-  const existe = fs.existsSync(p);
-  res.json({ existe, atualizadaEm: existe ? fs.statSync(p).mtime.toISOString() : null });
+// Lida por fgts-login-setup.ts logo depois de logar, pra saber quais empresas buscar.
+app.get("/api/fgts/empresas-marcadas", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
+  const rows = sqlite
+    .prepare(`SELECT id as empresaId, cnpj, nome FROM empresas WHERE escritorio_id = ? AND ativo = 1 AND busca_fgts = 1 ORDER BY nome`)
+    .all((req as any).user.escritorioId) as any[];
+  res.json({ items: rows });
 });
-app.post("/api/fgts/sessao", blockCliente, requirePermissao("configuracoes", "editar"), upload.single("arquivo"), (req, res) => {
-  const file = (req as any).file;
-  if (!file) return res.status(400).json({ error: 'Envie o arquivo "fgts-session.json" gerado por "npm run fgts-login".' });
-  let parsed: any;
-  try {
-    parsed = JSON.parse(file.buffer.toString("utf8"));
-  } catch {
-    return res.status(400).json({ error: 'Arquivo inválido — precisa ser o "fgts-session.json" gerado pelo login (JSON), não outro tipo de arquivo.' });
-  }
-  if (!parsed || !Array.isArray(parsed.cookies)) {
-    return res.status(400).json({ error: 'O arquivo enviado não parece ser uma sessão salva pelo Playwright (esperava a chave "cookies").' });
-  }
-  const p = fgtsSessionPath((req as any).user.escritorioId);
-  fs.mkdirSync(path.dirname(p), { recursive: true });
-  fs.writeFileSync(p, file.buffer);
-  res.json({ ok: true });
-});
-// Botão "Buscar Guias FGTS" — disparado manualmente pelo usuário logo depois de logar
-// (npm run fgts-login + upload da sessão), varre de uma vez todas as empresas com o checkbox
-// "Buscar Guia FGTS Digital" marcado (ver empresaModal em app.html).
-app.post("/api/fgts/buscar-guias", blockCliente, requirePermissao("empresas", "postar"), (req, res) => {
+// Recebe o resultado de UMA empresa, enviado por fgts-login-setup.ts ao vivo, logo depois de buscar
+// a guia dela no mesmo navegador logado (ver buscarGuiaFgtsEmpresa em fgts-automacao.ts).
+app.post("/api/fgts/guia", blockCliente, requirePermissao("empresas", "postar"), (req, res) => {
   const user = (req as any).user;
-  if (!fs.existsSync(fgtsSessionPath(user.escritorioId))) {
-    return res.status(400).json({ error: 'Nenhuma sessão do FGTS Digital enviada ainda. Rode "npm run fgts-login" e envie o arquivo em Configurações › FGTS Digital.' });
+  const { empresaId, ano, mes, ok, guiaGerada, pdfBase64, erro } = req.body || {};
+  const idNum = Number(empresaId);
+  if (!idNum || !podeAcessarEmpresa(user, idNum)) return res.status(404).json({ error: "Empresa não encontrada." });
+  let erroFinal: string | null = ok ? null : String(erro || "Falha desconhecida.");
+  if (ok && guiaGerada && pdfBase64) {
+    try {
+      fgtsAnexarGuiaEmEnvio(user.escritorioId, idNum, Number(ano), Number(mes), pdfBase64);
+    } catch (e: any) {
+      erroFinal = `Guia gerada, mas falhou ao anexar em Envio de Documentos: ${e.message}`;
+    }
   }
-  const info = sqlite.prepare(`INSERT INTO fgts_sync_jobs (status, criado_por, escritorio_id) VALUES ('pending', ?, ?)`).run(user.id, user.escritorioId);
-  const jobId = Number(info.lastInsertRowid);
-  executarBuscaFgts(user.escritorioId, jobId);
-  res.json({ id: jobId });
-});
-app.get("/api/fgts/buscar-guias/:id", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
-  const row = sqlite.prepare(`SELECT * FROM fgts_sync_jobs WHERE id = ?`).get(Number(req.params.id)) as any;
-  if (!row) return res.status(404).json({ error: "Busca não encontrada." });
-  res.json({ status: row.status, resultado: row.resultado_json ? JSON.parse(row.resultado_json) : null, erro: row.erro });
+  sqlite.prepare(`UPDATE empresas SET fgts_ultima_busca_em = datetime('now'), fgts_ultimo_erro = ? WHERE id = ?`).run(erroFinal, idNum);
+  res.json({ ok: true });
 });
 
 app.get("/api/dominio/config", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {

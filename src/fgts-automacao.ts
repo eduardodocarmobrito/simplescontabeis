@@ -1,19 +1,19 @@
 /**
- * Busca automática da Guia FGTS Digital (GFD) — reaproveita uma sessão de navegador já autenticada
- * (ver `npm run fgts-login`), porque o login do gov.br é protegido por hCaptcha e não dá pra
- * automatizar (confirmado em teste real contra o site de produção).
+ * Busca da Guia FGTS Digital (GFD) — confirmado em teste real que a sessão autenticada do FGTS
+ * Digital NÃO sobrevive fora do navegador/conexão que fez o login (mesmo reapresentando o mesmo
+ * certificado depois, o próprio app detecta "Erro de Login" e volta pra tela pública) — é uma
+ * proteção de segurança do próprio gov.br, amarrando a sessão à conexão original, não um bug daqui.
+ * Por isso, diferente do padrão da Onvio, NÃO dá pra salvar uma sessão e reaproveitar depois num
+ * processo headless separado: a busca inteira (login manual + guia de cada empresa) precisa
+ * acontecer numa tacada só, no mesmo navegador, dentro de `fgts-login-setup.ts`.
+ *
+ * Este arquivo só expõe a lógica por-empresa (trocar empresa + buscar/baixar a guia), reaproveitada
+ * pelo fgts-login-setup.ts logo depois do login manual, com o navegador ainda aberto e autenticado.
  *
  * Fluxo mapeado com prints reais do usuário: portal/servicos > "GESTÃO DE GUIAS" >
  * "EMISSÃO DE GUIA RÁPIDA" > preencher Competência de Apuração > "Pesquisar" > card "Mensal" >
  * "Emitir guia" > (se já existir guia não paga) confirmar no modal "Gerar guia" > PDF baixa
  * automaticamente pelo navegador.
- *
- * O seletor de troca de empresa (visível no cabeçalho "Empregador: <CNPJ> | <nome>", confirmado
- * pelo usuário que existe um menu pra trocar sem logar de novo) ainda não foi visto num print real
- * — a implementação abaixo tenta um caminho razoável a partir do texto "Empregador" e lança um erro
- * claro e específico se não achar, pra facilitar confirmar/ajustar rodando ao vivo contra a sessão
- * real assim que o primeiro login for feito (ver plano — "não adivinhar o DOM" é a mesma disciplina
- * usada no resto do projeto).
  */
 
 export interface EmpresaParaBuscaFgts {
@@ -31,20 +31,23 @@ export interface ResultadoFgtsEmpresa {
   erro?: string;
 }
 
-const PORTAL_URL = "https://fgtsdigital.sistema.gov.br/portal/servicos";
 const EMISSAO_GUIA_RAPIDA_URL = "https://fgtsdigital.sistema.gov.br/cobranca/#/gestao-guias/emissao-guia-rapida";
 
 function soDigitos(s: string): string {
   return String(s || "").replace(/\D/g, "");
 }
 
+// O seletor de troca de empresa (visível no cabeçalho "Empregador: <CNPJ> | <nome>", confirmado
+// pelo usuário que existe um menu pra trocar sem logar de novo) ainda não foi visto num print real
+// — tenta um caminho razoável a partir do texto "Empregador" e lança um erro claro e específico se
+// não achar, pra ajustar depois de ver esse erro numa busca real (não adivinha o DOM às cegas).
 async function trocarEmpresa(page: any, cnpjDigits: string, nomeEmpresa: string) {
   const gatilho = page.getByText("Empregador:", { exact: false }).first();
   const visivel = await gatilho.isVisible().catch(() => false);
   if (!visivel) {
     throw new Error(
       `Não encontrei o seletor de troca de empresa (texto "Empregador:") na tela do portal. ` +
-        `O layout pode ter mudado ou não é isso que abre o menu de troca — precisa confirmar rodando o diagnóstico ao vivo contra a sessão real.`
+        `O layout pode ter mudado ou não é isso que abre o menu de troca.`
     );
   }
   await gatilho.click();
@@ -103,7 +106,7 @@ async function buscarGuiaDaEmpresaAtual(page: any, ano: number, mes: number): Pr
 
   const download = await downloadPromise;
   if (!download) {
-    throw new Error("Cliquei em \"Emitir guia\" mas o download do PDF não começou — pode ter aparecido um aviso/erro diferente do esperado na tela.");
+    throw new Error('Cliquei em "Emitir guia" mas o download do PDF não começou — pode ter aparecido um aviso/erro diferente do esperado na tela.');
   }
   const nomeArquivo = download.suggestedFilename() || `guia-fgts-${competenciaTexto.replace("/", "-")}.pdf`;
   const caminho = await download.path();
@@ -113,51 +116,30 @@ async function buscarGuiaDaEmpresaAtual(page: any, ano: number, mes: number): Pr
   return { guiaGerada: true, pdfBuffer, nomeArquivo };
 }
 
-export async function buscarGuiasFgts(
-  sessionPath: string,
-  empresas: EmpresaParaBuscaFgts[],
+// Busca a guia de UMA empresa, dentro de uma página/sessão já autenticada e ainda viva (chamado em
+// loop por fgts-login-setup.ts, logo após o login manual, no mesmo navegador) — nunca abre nem
+// fecha navegador/contexto, e nunca deixa uma exceção escapar (vira {ok:false, erro} pro chamador
+// seguir pra próxima empresa mesmo se uma falhar).
+export async function buscarGuiaFgtsEmpresa(
+  page: any,
+  empresa: EmpresaParaBuscaFgts,
   competencia: { ano: number; mes: number }
-): Promise<ResultadoFgtsEmpresa[]> {
-  const fs = require("fs");
-  if (!fs.existsSync(sessionPath)) {
-    throw new Error(`Sessão do FGTS Digital não encontrada em "${sessionPath}". Faça o login (npm run fgts-login) e envie o arquivo em Configurações › FGTS Digital.`);
-  }
-  const { chromium } = require("playwright");
-
-  const browser = await chromium.launch();
-  const resultados: ResultadoFgtsEmpresa[] = [];
+): Promise<ResultadoFgtsEmpresa> {
   try {
-    const context = await browser.newContext({ storageState: sessionPath, acceptDownloads: true });
-    const page = await context.newPage();
-
-    await page.goto(PORTAL_URL, { waitUntil: "domcontentloaded", timeout: 30000 });
-    await page.waitForTimeout(2000);
-    if (/sso\.acesso\.gov\.br\/login|certificado\.sso\.acesso\.gov\.br/.test(page.url())) {
-      throw new Error('A sessão do FGTS Digital expirou ou foi desconectada. Faça o login de novo (npm run fgts-login) e envie o novo arquivo em Configurações › FGTS Digital.');
+    await trocarEmpresa(page, soDigitos(empresa.cnpj), empresa.nome);
+    const r = await buscarGuiaDaEmpresaAtual(page, competencia.ano, competencia.mes);
+    if (!r.guiaGerada) {
+      return { empresaId: empresa.empresaId, nome: empresa.nome, ok: true, guiaGerada: false };
     }
-
-    for (const empresa of empresas) {
-      try {
-        await trocarEmpresa(page, soDigitos(empresa.cnpj), empresa.nome);
-        const r = await buscarGuiaDaEmpresaAtual(page, competencia.ano, competencia.mes);
-        if (!r.guiaGerada) {
-          resultados.push({ empresaId: empresa.empresaId, nome: empresa.nome, ok: true, guiaGerada: false });
-        } else {
-          resultados.push({
-            empresaId: empresa.empresaId,
-            nome: empresa.nome,
-            ok: true,
-            guiaGerada: true,
-            pdfBase64: r.pdfBuffer!.toString("base64"),
-            nomeArquivo: r.nomeArquivo,
-          });
-        }
-      } catch (e: any) {
-        resultados.push({ empresaId: empresa.empresaId, nome: empresa.nome, ok: false, guiaGerada: false, erro: e.message });
-      }
-    }
-    return resultados;
-  } finally {
-    await browser.close();
+    return {
+      empresaId: empresa.empresaId,
+      nome: empresa.nome,
+      ok: true,
+      guiaGerada: true,
+      pdfBase64: r.pdfBuffer!.toString("base64"),
+      nomeArquivo: r.nomeArquivo,
+    };
+  } catch (e: any) {
+    return { empresaId: empresa.empresaId, nome: empresa.nome, ok: false, guiaGerada: false, erro: e.message };
   }
 }

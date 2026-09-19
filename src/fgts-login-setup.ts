@@ -1,22 +1,23 @@
 import "dotenv/config";
-import path from "path";
-import fs from "fs";
 import readline from "readline";
+import { buscarGuiaFgtsEmpresa } from "./fgts-automacao";
 
 /**
- * Login único no FGTS Digital pra criar a sessão que fgts-automacao.ts reaproveita depois.
+ * Login + busca da Guia FGTS Digital, tudo numa rodada só.
  *
- * O login do gov.br é protegido por hCaptcha (confirmado em teste real — não dá pra automatizar
- * esse passo). Por isso, igual o onvio-login-setup.ts, este script roda um navegador de verdade
- * (não escondido) — você faz o login manualmente (gov.br, capitcha, certificado digital escolhido
- * no seletor nativo do navegador, perfil "Procurador") e o script salva a sessão autenticada em
- * data/fgts-session.json. A busca de guias depois usa esse arquivo sem precisar de você de novo,
- * até a sessão expirar (aí é só rodar isso outra vez).
+ * Confirmado em teste real: a sessão do FGTS Digital NÃO sobrevive fora do navegador/conexão que fez
+ * o login (mesmo reapresentando o mesmo certificado depois, o próprio site detecta "Erro de Login" e
+ * devolve a tela pública) — é uma proteção do próprio gov.br contra sessão "vazada" pra outro
+ * processo, não um bug daqui. Por isso, diferente da Onvio, não dá pra salvar uma sessão e reusar
+ * depois num job separado: você loga manualmente aqui (resolve o captcha, escolhe o certificado,
+ * perfil "Procurador") e, no mesmo navegador ainda aberto, o script já busca a guia de todas as
+ * empresas marcadas (checkbox "Buscar Guia FGTS Digital" no cadastro de cada empresa) e envia os
+ * PDFs pro sistema sozinho.
  *
  * Uso: npm run fgts-login
  */
 
-const FGTS_SESSION_PATH = process.env.FGTS_SESSION_PATH || path.join(__dirname, "..", "data", "fgts-session.json");
+const APP_BASE_URL = (process.env.FGTS_APP_URL || "https://simplescontabeis-production.up.railway.app").replace(/\/$/, "");
 
 function perguntar(pergunta: string): Promise<string> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -37,19 +38,89 @@ async function main() {
   console.log('Seu certificado digital (escolha o certificado no seletor do navegador) > perfil "Procurador".');
   console.log("Quando terminar de logar e ver a tela do portal (Gestão de Guias etc.), volte aqui e aperte ENTER.\n");
 
-  const browser = await chromium.launch({ headless: false });
-  const context = await browser.newContext({ viewport: { width: 1400, height: 900 } });
+  // O gov.br usa hCaptcha com detecção de automação — mesmo com você mesmo resolvendo o login,
+  // um Chromium recém-aberto pelo Playwright tem "sinais" de robô (navigator.webdriver, ausência de
+  // histórico/plugins etc.) que fazem o captcha falhar sozinho antes de você conseguir fazer nada.
+  // Estes ajustes (confirmados reduzindo o bloqueio em teste real) deixam o navegador mais parecido
+  // com um uso normal, pra você conseguir passar pelo captcha manualmente.
+  const browser = await chromium.launch({
+    headless: false,
+    args: ["--disable-blink-features=AutomationControlled"],
+  });
+  const context = await browser.newContext({
+    viewport: { width: 1400, height: 900 },
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    locale: "pt-BR",
+    timezoneId: "America/Sao_Paulo",
+    acceptDownloads: true,
+  });
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+    (window as any).chrome = { runtime: {} };
+    Object.defineProperty(navigator, "languages", { get: () => ["pt-BR", "pt"] });
+    Object.defineProperty(navigator, "plugins", { get: () => [1, 2, 3, 4, 5] });
+  });
   const page = await context.newPage();
   await page.goto("https://fgtsdigital.sistema.gov.br/");
 
   await perguntar("Pressione ENTER depois de concluir o login no navegador... ");
 
-  fs.mkdirSync(path.dirname(FGTS_SESSION_PATH), { recursive: true });
-  await context.storageState({ path: FGTS_SESSION_PATH });
-  console.log(`\nSessão salva em: ${FGTS_SESSION_PATH}`);
-  console.log('Pronto — envie esse arquivo em Configurações › FGTS Digital pra ativar a busca de guias.');
+  console.log("\nAgora entre com seu login do Simples Contábeis (pra eu saber quais empresas buscar e onde enviar as guias).");
+  const email = await perguntar("E-mail: ");
+  const senha = await perguntar("Senha: ");
+
+  console.log("\nEntrando no sistema...");
+  let cookieHeader: string;
+  try {
+    const resp = await fetch(`${APP_BASE_URL}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password: senha }),
+    });
+    if (!resp.ok) {
+      const j = await resp.json().catch(() => ({}) as any);
+      throw new Error(j.error || `HTTP ${resp.status}`);
+    }
+    const setCookie = resp.headers.get("set-cookie") || "";
+    const sid = (setCookie.match(/sid=([^;]+)/) || [])[1];
+    if (!sid) throw new Error("não recebi o cookie de sessão do sistema.");
+    cookieHeader = `sid=${sid}`;
+  } catch (e: any) {
+    console.error("Falha ao entrar no sistema:", e.message);
+    await browser.close();
+    process.exit(1);
+  }
+
+  console.log("Buscando a lista de empresas marcadas para busca do FGTS Digital...");
+  const listaResp = await fetch(`${APP_BASE_URL}/api/fgts/empresas-marcadas`, { headers: { Cookie: cookieHeader } });
+  const { items: empresas } = (await listaResp.json()) as { items: { empresaId: number; cnpj: string; nome: string }[] };
+
+  if (!empresas || !empresas.length) {
+    console.log('Nenhuma empresa marcada com "Buscar Guia FGTS Digital" (marque no cadastro de cada empresa, aba Configurações).');
+  } else {
+    const hoje = new Date();
+    const mesAnterior = new Date(hoje.getFullYear(), hoje.getMonth() - 1, 1);
+    const competencia = { ano: mesAnterior.getFullYear(), mes: mesAnterior.getMonth() + 1 };
+    console.log(`${empresas.length} empresa(s) marcada(s) — competência ${String(competencia.mes).padStart(2, "0")}/${competencia.ano}.\n`);
+
+    for (const empresa of empresas) {
+      process.stdout.write(`  ${empresa.nome}... `);
+      const resultado = await buscarGuiaFgtsEmpresa(page, empresa, competencia);
+      console.log(!resultado.ok ? `ERRO: ${resultado.erro}` : resultado.guiaGerada ? "guia gerada." : "sem débito nessa competência.");
+      try {
+        await fetch(`${APP_BASE_URL}/api/fgts/guia`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Cookie: cookieHeader },
+          body: JSON.stringify({ ano: competencia.ano, mes: competencia.mes, ...resultado }),
+        });
+      } catch (e: any) {
+        console.error(`    (não consegui avisar o sistema sobre essa empresa: ${e.message})`);
+      }
+    }
+  }
 
   await browser.close();
+  console.log("\nConcluído.");
 }
 
 main().catch((e) => {
