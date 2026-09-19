@@ -10,7 +10,8 @@
     "start": "node dist/server.js",
     "dominio-agent:dev": "tsx src/dominio-agent.ts",
     "dominio-agent": "node dist/dominio-agent.js",
-    "onvio-login": "tsx src/onvio-login-setup.ts"
+    "onvio-login": "tsx src/onvio-login-setup.ts",
+    "fgts-login": "tsx src/fgts-login-setup.ts"
   },
   "keywords": [],
   "author": "",

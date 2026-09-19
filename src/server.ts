@@ -20,6 +20,7 @@ import * as onedrive from "./onedrive";
 import * as integracontador from "./integracontador";
 import * as ocr from "./ocr";
 import { buscarViaOnvio } from "./onvio-sync";
+import { buscarGuiasFgts } from "./fgts-automacao";
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 
@@ -717,6 +718,21 @@ sqlite.exec(`
     atualizadas INTEGER,
     erro TEXT,
     criado_por INTEGER REFERENCES app_users(id),
+    criado_em TEXT DEFAULT (datetime('now')),
+    resolvido_em TEXT
+  );
+
+  -- Job de busca em lote da Guia FGTS Digital (ver fgts-automacao.ts) — disparado manualmente pelo
+  -- usuário logo depois de fazer o login local (npm run fgts-login), já que a sessão só existe
+  -- "fresca" por um tempo. resultado_json guarda um array por empresa: {empresaId, nome, ok,
+  -- guiaGerada, erro}.
+  CREATE TABLE IF NOT EXISTS fgts_sync_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    status TEXT NOT NULL DEFAULT 'pending', -- 'pending' | 'ok' | 'erro'
+    resultado_json TEXT,
+    erro TEXT,
+    criado_por INTEGER REFERENCES app_users(id),
+    escritorio_id INTEGER NOT NULL REFERENCES escritorios(id),
     criado_em TEXT DEFAULT (datetime('now')),
     resolvido_em TEXT
   );
@@ -1749,6 +1765,20 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
     sqlite.exec(`ALTER TABLE empresas ADD COLUMN isento_assinatura INTEGER NOT NULL DEFAULT 0`);
   }
 }
+// Migração leve: opt-in por empresa pra busca automática da Guia FGTS Digital (nem toda empresa tem
+// FGTS, ex. MEI sem funcionário) + rastro da última busca em lote (ver fgts-automacao.ts).
+{
+  const colsEmpresas = sqlite.prepare(`PRAGMA table_info(empresas)`).all() as any[];
+  if (!colsEmpresas.some((c) => c.name === "busca_fgts")) {
+    sqlite.exec(`ALTER TABLE empresas ADD COLUMN busca_fgts INTEGER NOT NULL DEFAULT 0`);
+  }
+  if (!colsEmpresas.some((c) => c.name === "fgts_ultima_busca_em")) {
+    sqlite.exec(`ALTER TABLE empresas ADD COLUMN fgts_ultima_busca_em TEXT`);
+  }
+  if (!colsEmpresas.some((c) => c.name === "fgts_ultimo_erro")) {
+    sqlite.exec(`ALTER TABLE empresas ADD COLUMN fgts_ultimo_erro TEXT`);
+  }
+}
 // Migração leve: cards do Painel podem virar "computados" (tipo preenchido) em vez de só texto
 // digitado à mão — o valor passa a ser calculado na hora em GET /api/dashboard/cards.
 {
@@ -2634,7 +2664,7 @@ app.put("/api/users/:id/permissoes", requireAdmin, (req, res) => {
   }
   res.json({ ok: true });
 });
-const CONFIG_ABAS_VALIDAS = ["dominio", "email", "whatsapp", "nfse-agendamento", "assinatura-plataforma"];
+const CONFIG_ABAS_VALIDAS = ["dominio", "email", "whatsapp", "fgts-digital", "nfse-agendamento", "assinatura-plataforma"];
 app.get("/api/users/:id/config-abas", requireAdmin, (req, res) => {
   if (!pertenceAoEscritorio(req, Number(req.params.id))) return res.status(404).json({ error: "Usuário não encontrado." });
   const rows = sqlite.prepare(`SELECT aba FROM colaborador_config_abas WHERE user_id = ?`).all(Number(req.params.id)) as any[];
@@ -2736,6 +2766,9 @@ app.get("/api/empresas", blockCliente, requirePermissao("empresas", "visualizar"
       ativo: !!r.ativo,
       visivelRelatorios: !!r.visivel_relatorios,
       isentoAssinatura: !!r.isento_assinatura,
+      buscaFgts: !!r.busca_fgts,
+      fgtsUltimaBuscaEm: r.fgts_ultima_busca_em,
+      fgtsUltimoErro: r.fgts_ultimo_erro,
       origem: r.origem,
       createdAt: r.created_at,
       temAnexos: empresaTemAnexos(r.id),
@@ -2829,7 +2862,7 @@ app.put("/api/empresas/:id", blockCliente, requirePermissao("empresas", "editar"
   const id = Number(req.params.id);
   const existing = sqlite.prepare(`SELECT * FROM empresas WHERE id = ?`).get(id) as any;
   if (!existing || !podeAcessarEmpresa((req as any).user, id)) return res.status(404).json({ error: "Empresa não encontrada." });
-  const { nome, cnpj, codigoDominio, apelido, email, telefone, endereco, cidade, uf, cep, inscricaoMunicipal, inscricaoEstadual, nomeRepresentanteLegal, cpfRepresentanteLegal, codigoMunicipioIbge, nomeMunicipioIbge, regimeTributario, ativo, visivelRelatorios, isentoAssinatura } = req.body || {};
+  const { nome, cnpj, codigoDominio, apelido, email, telefone, endereco, cidade, uf, cep, inscricaoMunicipal, inscricaoEstadual, nomeRepresentanteLegal, cpfRepresentanteLegal, codigoMunicipioIbge, nomeMunicipioIbge, regimeTributario, ativo, visivelRelatorios, isentoAssinatura, buscaFgts } = req.body || {};
   const regimeTributarioFinal =
     regimeTributario !== undefined
       ? ((REGIMES_TRIBUTARIOS as readonly string[]).includes(regimeTributario) ? regimeTributario : "simples_nacional")
@@ -2837,7 +2870,7 @@ app.put("/api/empresas/:id", blockCliente, requirePermissao("empresas", "editar"
   sqlite
     .prepare(
       `UPDATE empresas SET nome=?, cnpj=?, codigo_dominio=?, apelido=?, email=?, telefone=?, endereco=?, cidade=?, uf=?, cep=?, inscricao_municipal=?, inscricao_estadual=?,
-         nome_representante_legal=?, cpf_representante_legal=?, codigo_municipio_ibge=?, nome_municipio_ibge=?, regime_tributario=?, ativo=?, visivel_relatorios=?, isento_assinatura=?, updated_at=datetime('now') WHERE id=?`
+         nome_representante_legal=?, cpf_representante_legal=?, codigo_municipio_ibge=?, nome_municipio_ibge=?, regime_tributario=?, ativo=?, visivel_relatorios=?, isento_assinatura=?, busca_fgts=?, updated_at=datetime('now') WHERE id=?`
     )
     .run(
       nome ?? existing.nome,
@@ -2860,6 +2893,7 @@ app.put("/api/empresas/:id", blockCliente, requirePermissao("empresas", "editar"
       ativo === undefined ? existing.ativo : ativo ? 1 : 0,
       visivelRelatorios === undefined ? existing.visivel_relatorios : visivelRelatorios ? 1 : 0,
       isentoAssinatura === undefined ? existing.isento_assinatura : isentoAssinatura ? 1 : 0,
+      buscaFgts === undefined ? existing.busca_fgts : buscaFgts ? 1 : 0,
       id
     );
   if (regimeTributario !== undefined || req.body.regimeApuracaoSn !== undefined || req.body.percentualTotalTributosSn !== undefined) {
@@ -3945,6 +3979,122 @@ setInterval(() => {
     if (fs.existsSync(onvioSessionPath(escritorio_id))) executarSincronizacaoOnvio(escritorio_id);
   }
 }, 60 * 60 * 1000);
+
+// ---- FGTS Digital: busca da Guia (GFD) via sessão de navegador salva localmente (ver
+// fgts-login-setup.ts) — o login do gov.br é protegido por hCaptcha, então não dá pra automatizar
+// esse passo (confirmado testando ao vivo contra o site de produção). A sessão captura o login
+// manual feito uma vez (npm run fgts-login) e é reaproveitada aqui pra buscar a guia de várias
+// empresas de uma vez — disparado manualmente pelo usuário logo depois de logar (não é um job
+// automático por horário, já que a sessão só é confiável "fresca").
+function fgtsSessionPath(escritorioId: number): string {
+  const dir = path.join(__dirname, "..", "data");
+  return path.join(dir, escritorioId === 1 ? "fgts-session.json" : `fgts-session-${escritorioId}.json`);
+}
+function fgtsAnexarGuiaEmEnvio(escritorioId: number, empresaId: number, ano: number, mes: number, pdfBase64: string): number {
+  const atribuicaoId = integraContadorObterOuCriarAtribuicaoModelo(
+    escritorioId,
+    empresaId,
+    "Guia FGTS Digital",
+    "Guia do FGTS (GFD) gerada automaticamente a partir do FGTS Digital"
+  );
+  const nomeArquivo = `Guia FGTS ${MESES_PT_EXTENSO[mes - 1]} ${ano}.pdf`;
+  const rotulo = `${String(mes).padStart(2, "0")}/${ano}`;
+  // substituirExistente=true: buscar a mesma competência de novo (ex. reenvio manual depois de um
+  // erro) troca a guia anterior, não duplica — mesma regra já usada pra Balanço/DRE/Balancete.
+  const docId = integraContadorAnexarPdfEmEnvio(
+    atribuicaoId, empresaId, ano, mes, nomeArquivo, pdfBase64,
+    `Guia FGTS Digital referente a ${rotulo}, gerada automaticamente.`, null, true
+  );
+  void envioEnviarDocumentoAutomatico({
+    escritorioId, empresaId, docId,
+    fileName: nomeArquivo,
+    pdf: Buffer.from(pdfBase64, "base64"),
+    assunto: `Guia FGTS — ${rotulo}`,
+    corpoEmail: `Segue em anexo a guia do FGTS (GFD) referente a ${rotulo}.`,
+    descricaoWhatsapp: `Guia do FGTS — ${rotulo}`,
+  }).catch((e) => console.error(`[FGTS Digital] envio automático da guia (empresa ${empresaId}) falhou:`, e.message));
+  return docId;
+}
+async function executarBuscaFgts(escritorioId: number, jobId: number): Promise<void> {
+  try {
+    const empresas = sqlite
+      .prepare(`SELECT id as empresaId, cnpj, nome FROM empresas WHERE escritorio_id = ? AND ativo = 1 AND busca_fgts = 1`)
+      .all(escritorioId) as any[];
+    if (!empresas.length) {
+      sqlite.prepare(`UPDATE fgts_sync_jobs SET status='ok', resultado_json='[]', resolvido_em=datetime('now') WHERE id=?`).run(jobId);
+      return;
+    }
+    const hoje = new Date();
+    const mesAnterior = new Date(hoje.getFullYear(), hoje.getMonth() - 1, 1);
+    const ano = mesAnterior.getFullYear();
+    const mes = mesAnterior.getMonth() + 1;
+
+    const resultados = await buscarGuiasFgts(
+      fgtsSessionPath(escritorioId),
+      empresas.map((e) => ({ empresaId: e.empresaId, cnpj: e.cnpj || "", nome: e.nome })),
+      { ano, mes }
+    );
+
+    for (const r of resultados) {
+      if (r.ok && r.guiaGerada && r.pdfBase64) {
+        try {
+          fgtsAnexarGuiaEmEnvio(escritorioId, r.empresaId, ano, mes, r.pdfBase64);
+        } catch (e: any) {
+          r.ok = false;
+          r.erro = `Guia gerada, mas falhou ao anexar em Envio de Documentos: ${e.message}`;
+        }
+      }
+      sqlite
+        .prepare(`UPDATE empresas SET fgts_ultima_busca_em = datetime('now'), fgts_ultimo_erro = ? WHERE id = ?`)
+        .run(r.ok ? null : r.erro || "Falha desconhecida.", r.empresaId);
+    }
+
+    sqlite.prepare(`UPDATE fgts_sync_jobs SET status='ok', resultado_json=?, resolvido_em=datetime('now') WHERE id=?`).run(JSON.stringify(resultados), jobId);
+  } catch (e: any) {
+    sqlite.prepare(`UPDATE fgts_sync_jobs SET status='erro', erro=?, resolvido_em=datetime('now') WHERE id=?`).run(e.message, jobId);
+  }
+}
+app.get("/api/fgts/sessao", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
+  const p = fgtsSessionPath((req as any).user.escritorioId);
+  const existe = fs.existsSync(p);
+  res.json({ existe, atualizadaEm: existe ? fs.statSync(p).mtime.toISOString() : null });
+});
+app.post("/api/fgts/sessao", blockCliente, requirePermissao("configuracoes", "editar"), upload.single("arquivo"), (req, res) => {
+  const file = (req as any).file;
+  if (!file) return res.status(400).json({ error: 'Envie o arquivo "fgts-session.json" gerado por "npm run fgts-login".' });
+  let parsed: any;
+  try {
+    parsed = JSON.parse(file.buffer.toString("utf8"));
+  } catch {
+    return res.status(400).json({ error: 'Arquivo inválido — precisa ser o "fgts-session.json" gerado pelo login (JSON), não outro tipo de arquivo.' });
+  }
+  if (!parsed || !Array.isArray(parsed.cookies)) {
+    return res.status(400).json({ error: 'O arquivo enviado não parece ser uma sessão salva pelo Playwright (esperava a chave "cookies").' });
+  }
+  const p = fgtsSessionPath((req as any).user.escritorioId);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, file.buffer);
+  res.json({ ok: true });
+});
+// Botão "Buscar Guias FGTS" — disparado manualmente pelo usuário logo depois de logar
+// (npm run fgts-login + upload da sessão), varre de uma vez todas as empresas com o checkbox
+// "Buscar Guia FGTS Digital" marcado (ver empresaModal em app.html).
+app.post("/api/fgts/buscar-guias", blockCliente, requirePermissao("empresas", "postar"), (req, res) => {
+  const user = (req as any).user;
+  if (!fs.existsSync(fgtsSessionPath(user.escritorioId))) {
+    return res.status(400).json({ error: 'Nenhuma sessão do FGTS Digital enviada ainda. Rode "npm run fgts-login" e envie o arquivo em Configurações › FGTS Digital.' });
+  }
+  const info = sqlite.prepare(`INSERT INTO fgts_sync_jobs (status, criado_por, escritorio_id) VALUES ('pending', ?, ?)`).run(user.id, user.escritorioId);
+  const jobId = Number(info.lastInsertRowid);
+  executarBuscaFgts(user.escritorioId, jobId);
+  res.json({ id: jobId });
+});
+app.get("/api/fgts/buscar-guias/:id", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
+  const row = sqlite.prepare(`SELECT * FROM fgts_sync_jobs WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!row) return res.status(404).json({ error: "Busca não encontrada." });
+  res.json({ status: row.status, resultado: row.resultado_json ? JSON.parse(row.resultado_json) : null, erro: row.erro });
+});
+
 app.get("/api/dominio/config", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
   const c = getDominioConfig((req as any).user.escritorioId);
   res.json({
@@ -4367,6 +4517,7 @@ const ENVIO_TEMPLATES_PROTEGIDOS = [
   "Relação de Faturamento",
   "Retenções de Impostos",
   "Razão",
+  "Guia FGTS Digital",
 ];
 app.get("/api/envio/templates", blockCliente, requirePermissao("envio", "visualizar"), (req, res) => {
   const rows = sqlite.prepare(`SELECT * FROM envio_templates WHERE escritorio_id = ? ORDER BY nome`).all((req as any).user.escritorioId) as any[];

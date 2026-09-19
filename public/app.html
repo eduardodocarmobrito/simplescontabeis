@@ -1780,6 +1780,8 @@ function empresaModal(e){
       <div class="checkbox-row"><input type="checkbox" id="empVisivel" ${e.visivelRelatorios?'checked':''}> <label for="empVisivel">Aparece no filtro de Relatórios</label></div>
       <div class="checkbox-row"><input type="checkbox" id="empIsento" ${e.isentoAssinatura?'checked':''}> <label for="empIsento">Conta cortesia — isenta de cobrança de NFS-e/Financeiro</label></div>
       <p style="font-size:12px; color:var(--ink-soft); margin-top:-4px;">Libera acesso completo aos módulos NFS-e e Financeiro pra esta empresa sem exigir teste grátis nem assinatura paga.</p>
+      <div class="checkbox-row"><input type="checkbox" id="empBuscaFgts" ${e.buscaFgts?'checked':''}> <label for="empBuscaFgts">Buscar Guia FGTS Digital</label></div>
+      <p style="font-size:12px; color:var(--ink-soft); margin-top:-4px;">Entra na busca em lote de Configurações › FGTS Digital. Deixe desmarcado se a empresa não tem funcionário/FGTS.${e?(e.fgtsUltimaBuscaEm?` Última busca: ${fmtDateHora(e.fgtsUltimaBuscaEm)}.`:'')+(e.fgtsUltimoErro?` <span style="color:var(--danger,#c0392b)">Erro: ${esc(e.fgtsUltimoErro)}</span>`:''):''}</p>
       <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Regime tributário</div>
       <label class="checkbox-row"><input type="radio" name="empRegimeTributario" value="simples_nacional" ${(e.regimeTributario||'simples_nacional')==='simples_nacional'?'checked':''}> Optante pelo Simples Nacional</label>
       <label class="checkbox-row"><input type="radio" name="empRegimeTributario" value="lucro_presumido" ${e.regimeTributario==='lucro_presumido'?'checked':''}> Lucro Presumido</label>
@@ -1921,6 +1923,7 @@ function empresaModal(e){
         body.ativo = document.getElementById('empAtivo').checked;
         body.visivelRelatorios = document.getElementById('empVisivel').checked;
         body.isentoAssinatura = document.getElementById('empIsento').checked;
+        body.buscaFgts = document.getElementById('empBuscaFgts').checked;
         body.regimeTributario = document.querySelector('input[name="empRegimeTributario"]:checked')?.value || 'simples_nacional';
         body.regimeApuracaoSn = document.getElementById('empRegApuracao')?.value || '1';
         body.percentualTotalTributosSn = document.getElementById('empTotTribSN')?.value || null;
@@ -7564,6 +7567,7 @@ const CFG_ABAS_TODAS = [
   { id:'dominio', label:'Domínio Web' },
   { id:'email', label:'E-mail corporativo' },
   { id:'whatsapp', label:'WhatsApp' },
+  { id:'fgts-digital', label:'FGTS Digital' },
   { id:'nfse-agendamento', label:'Emissão de NFS-e' },
   { id:'assinatura-plataforma', label:'Assinatura da plataforma' },
 ];
@@ -7596,6 +7600,7 @@ async function renderCfgTab(){
     else if(CFG_TAB==='dominio') await renderCfgDominio(box);
     else if(CFG_TAB==='nfse-agendamento') await renderCfgNfseAgendamento(box);
     else if(CFG_TAB==='whatsapp') await renderCfgWhatsapp(box);
+    else if(CFG_TAB==='fgts-digital') await renderCfgFgtsDigital(box);
     else await renderCfgEmail(box);
   }catch(e){
     box.innerHTML = `<div class="empty-state">Não foi possível carregar esta aba: ${esc(e.message||'erro desconhecido')}</div>`;
@@ -8137,6 +8142,109 @@ async function abrirEmailExtratosPendenciasModal(){
     }catch(e){ toast(e.message,'err'); b.disabled=false; }
   }));
   document.getElementById('emailExtPendFechar').addEventListener('click', closeModal);
+}
+
+// ===================== Configurações > FGTS Digital =====================
+// O login do gov.br (fgtsdigital.sistema.gov.br) é protegido por hCaptcha — não dá pra automatizar
+// esse passo. Por isso, igual o Onvio, o fluxo é: login manual local (npm run fgts-login, uma vez)
+// > envia a sessão aqui > clica "Buscar Guias FGTS" logo em seguida (enquanto a sessão está
+// "fresca") > o servidor varre todas as empresas com o checkbox "Buscar Guia FGTS Digital" marcado
+// (ver empresaModal) numa tacada só, reaproveitando essa sessão.
+async function renderCfgFgtsDigital(box){
+  const sessao = await api('/fgts/sessao');
+  box.innerHTML = `
+    <div class="card">
+      <h3>Sessão do FGTS Digital</h3>
+      <p style="font-size:13px; color:var(--ink-soft);">
+        O login do gov.br pede a resolução de um captcha, então não dá pra automatizar — funciona
+        igual a conexão com a Onvio: você loga uma vez no seu computador, envia a sessão aqui, e
+        depois clica em "Buscar Guias FGTS" logo em seguida pra buscar a guia de todas as empresas
+        marcadas de uma vez, sem precisar logar de novo (até a sessão expirar).
+      </p>
+      <div class="card" style="background:var(--paper); margin:10px 0;">
+        <p style="font-size:13px; margin:0 0 8px;">
+          ${sessao.existe
+            ? `<span class="tag ok">Sessão enviada</span> salva em ${fmtDateHora(sessao.atualizadaEm)}`
+            : `<span class="tag bad">Nenhuma sessão enviada ainda</span>`}
+        </p>
+        <p style="font-size:12.5px; color:var(--ink-soft); margin:0 0 8px;">
+          Passo 1 — em qualquer computador com Node instalado, na pasta do projeto, rode:
+          <code>npm run fgts-login</code>. Vai abrir um navegador pra você logar normalmente no
+          FGTS Digital: Entrar com GOV.BR &gt; Outras opções de identificação &gt; Seu certificado
+          digital &gt; escolha o certificado &gt; perfil "Procurador". Ao terminar, vai gerar o
+          arquivo <code>data/fgts-session.json</code>.<br>
+          Passo 2 — envie esse arquivo aqui embaixo e clique em "Buscar Guias FGTS" na sequência.
+          Repita os dois passos quando a busca começar a falhar avisando que a sessão expirou.
+        </p>
+        <div class="field"><label>Arquivo da sessão (fgts-session.json)</label><input type="file" id="fgtsSessaoArquivo" accept=".json"></div>
+        <button class="btn primary" id="btnEnviarFgtsSessao">Enviar sessão</button>
+        <div id="fgtsSessaoResultado" style="margin-top:8px;"></div>
+      </div>
+      <button class="btn primary" id="btnBuscarGuiasFgts" ${sessao.existe?'':'disabled'}>Buscar Guias FGTS</button>
+      ${sessao.existe?'':'<p style="font-size:12.5px; color:var(--ink-soft); margin-top:4px;">Envie a sessão primeiro pra habilitar a busca.</p>'}
+      <div id="fgtsBuscaResultado" style="margin-top:12px;"></div>
+    </div>
+  `;
+  document.getElementById('btnEnviarFgtsSessao').addEventListener('click', async ()=>{
+    const arquivo = document.getElementById('fgtsSessaoArquivo').files[0];
+    const resultado = document.getElementById('fgtsSessaoResultado');
+    if(!arquivo){ toast('Selecione o arquivo fgts-session.json.','err'); return; }
+    const fd = new FormData(); fd.append('arquivo', arquivo);
+    const btn = document.getElementById('btnEnviarFgtsSessao');
+    btn.disabled = true; btn.textContent = 'Enviando…';
+    try{
+      await api('/fgts/sessao', { method:'POST', body:fd });
+      toast('Sessão enviada — já pode clicar em "Buscar Guias FGTS".','ok');
+      renderCfgFgtsDigital(box);
+    }catch(e){
+      resultado.innerHTML = `<div class="tag bad">Falhou</div> <span style="font-size:12.5px;">${esc(e.message)}</span>`;
+      btn.disabled = false; btn.textContent = 'Enviar sessão';
+    }
+  });
+  const btnBuscar = document.getElementById('btnBuscarGuiasFgts');
+  if(btnBuscar) btnBuscar.addEventListener('click', async ()=>{
+    const resultado = document.getElementById('fgtsBuscaResultado');
+    btnBuscar.disabled = true; btnBuscar.textContent = 'Buscando…';
+    resultado.innerHTML = `<div class="empty-state">Buscando guias no FGTS Digital — pode levar alguns minutos, uma empresa de cada vez…</div>`;
+    try{
+      const { id } = await api('/fgts/buscar-guias', { method:'POST' });
+      let tentativas = 0;
+      const poll = async ()=>{
+        tentativas++;
+        const r = await api('/fgts/buscar-guias/'+id);
+        if(r.status==='pending'){
+          if(tentativas>90){
+            resultado.innerHTML = `<div class="tag bad">Sem resposta</div> <span style="font-size:12.5px;">Demorou demais — tente de novo.</span>`;
+            btnBuscar.disabled = false; btnBuscar.textContent = 'Buscar Guias FGTS';
+            return;
+          }
+          setTimeout(poll, 2000);
+          return;
+        }
+        btnBuscar.disabled = false; btnBuscar.textContent = 'Buscar Guias FGTS';
+        if(r.status!=='ok'){
+          resultado.innerHTML = `<div class="tag bad">Falhou</div> <span style="font-size:12.5px;">${esc(r.erro||'Erro desconhecido.')}</span>`;
+          return;
+        }
+        const itens = r.resultado || [];
+        if(!itens.length){
+          resultado.innerHTML = `<div class="empty-state">Nenhuma empresa marcada com "Buscar Guia FGTS Digital" (ver cadastro de cada empresa, aba Configurações).</div>`;
+          return;
+        }
+        const linhas = itens.map(it=>{
+          const situacao = !it.ok
+            ? `<span class="tag bad">Erro</span> ${esc(it.erro||'')}`
+            : it.guiaGerada ? `<span class="tag ok">Guia gerada</span>` : `<span class="tag">Sem débito nessa competência</span>`;
+          return `<tr><td>${esc(it.nome)}</td><td>${situacao}</td></tr>`;
+        }).join('');
+        resultado.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Resultado</th></tr></thead><tbody>${linhas}</tbody></table>`;
+      };
+      poll();
+    }catch(e){
+      resultado.innerHTML = `<div class="tag bad">Falhou</div> <span style="font-size:12.5px;">${esc(e.message)}</span>`;
+      btnBuscar.disabled = false; btnBuscar.textContent = 'Buscar Guias FGTS';
+    }
+  });
 }
 
 let CFG_ASSINATURA_POLL = null;
