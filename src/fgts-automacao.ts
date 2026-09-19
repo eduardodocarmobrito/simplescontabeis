@@ -31,7 +31,7 @@ export interface ResultadoFgtsEmpresa {
   erro?: string;
 }
 
-const PORTAL_URL = "https://fgtsdigital.sistema.gov.br/portal/servicos";
+export const PORTAL_URL = "https://fgtsdigital.sistema.gov.br/portal/servicos";
 const EMISSAO_GUIA_RAPIDA_URL = "https://fgtsdigital.sistema.gov.br/cobranca/#/gestao-guias/emissao-guia-rapida";
 
 function soDigitos(s: string): string {

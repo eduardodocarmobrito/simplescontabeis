@@ -1,6 +1,6 @@
 import "dotenv/config";
 import readline from "readline";
-import { buscarGuiaFgtsEmpresa } from "./fgts-automacao";
+import { buscarGuiaFgtsEmpresa, PORTAL_URL } from "./fgts-automacao";
 
 /**
  * Login + busca da Guia FGTS Digital, tudo numa rodada só.
@@ -35,8 +35,11 @@ async function main() {
 
   console.log("Abrindo o navegador pra você fazer login no FGTS Digital...");
   console.log("Faça o login normalmente: Entrar com GOV.BR > Outras opções de identificação >");
-  console.log('Seu certificado digital (escolha o certificado no seletor do navegador) > perfil "Procurador".');
-  console.log("Quando terminar de logar e ver a tela do portal (Gestão de Guias etc.), volte aqui e aperte ENTER.\n");
+  console.log('Seu certificado digital (escolha o certificado no seletor do navegador) > perfil "Procurador"');
+  console.log('> digite o CNPJ de QUALQUER uma das empresas marcadas > clique em "Definir".');
+  console.log('IMPORTANTE: só aperte ENTER depois de ver de verdade a tela com os quadradinhos');
+  console.log('"GESTÃO DE GUIAS", "CALAMIDADE RS" etc. — se apertar antes, com algum modal ainda');
+  console.log("aberto na tela, a busca das empresas trava.\n");
 
   // O gov.br usa hCaptcha com detecção de automação — mesmo com você mesmo resolvendo o login,
   // um Chromium recém-aberto pelo Playwright tem "sinais" de robô (navigator.webdriver, ausência de
@@ -63,7 +66,17 @@ async function main() {
   const page = await context.newPage();
   await page.goto("https://fgtsdigital.sistema.gov.br/");
 
-  await perguntar("Pressione ENTER depois de concluir o login no navegador... ");
+  // Confere de verdade se o login terminou (chegou no portal, sem nenhum modal de perfil ainda
+  // aberto) antes de seguir — evita repetir o problema real já visto: apertar ENTER cedo demais
+  // deixa um modal "Definir Perfil" pela metade, que trava todo mundo depois.
+  for (;;) {
+    await perguntar("Pressione ENTER depois de concluir o login no navegador... ");
+    const urlAtual = page.url();
+    const modalAberto = await page.getByLabel("Perfil", { exact: false }).first().isVisible({ timeout: 2000 }).catch(() => false);
+    if (urlAtual.startsWith(PORTAL_URL) && !modalAberto) break;
+    console.log(`\nAinda não parece que o login terminou (url atual: ${urlAtual}${modalAberto ? ", com o modal \"Definir Perfil\" aberto" : ""}).`);
+    console.log('Termine de escolher o perfil "Procurador" + o CNPJ + "Definir" até ver a tela com os quadradinhos, depois aperte ENTER de novo.\n');
+  }
 
   // Se FGTS_LOGIN_EMAIL/FGTS_LOGIN_SENHA estiverem no .env, usa direto sem perguntar de novo.
   let email = process.env.FGTS_LOGIN_EMAIL || "";
