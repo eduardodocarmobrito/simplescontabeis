@@ -7401,9 +7401,28 @@ function integraContadorAnexarDasEmEnvio(
     descricaoWhatsapp: `Guia do DAS — ${rotulo}`,
   }).catch((e) => console.error(`[Integra Contador] envio automático do DAS (empresa ${empresaId}) falhou:`, e.message));
 }
-// Mesmo mecanismo do DAS acima, mas pro DARF gerado pela DCTFWeb (GERARGUIA31) — a Receita não
-// devolve número de documento nem vencimento estruturado nesse serviço (diferente do DAS), então o
-// nome do arquivo e o corpo do e-mail ficam mais simples.
+// A Receita não devolve número de documento nem nenhum campo estruturado nesse serviço (diferente
+// do DAS) que sirva pra saber se o DARF mudou — o único jeito de saber é comparar o PDF em si. Hash
+// SHA-256 do conteúdo: idêntico ao último já enviado = não manda de novo (a busca automática roda
+// todo dia, então sem isso reenviaria o mesmo DARF pro cliente diariamente); diferente = a
+// declaração foi retificada depois do envio anterior, então é uma atualização de verdade.
+function darfDctfwebFoiRetificado(periodoId: number, pdfBase64Novo: string): boolean {
+  const ultimo = sqlite.prepare(`SELECT file_path FROM envio_documentos WHERE periodo_id = ? ORDER BY id DESC LIMIT 1`).get(periodoId) as any;
+  if (!ultimo) return false; // nunca teve documento nesse período — é o primeiro envio, não uma retificação
+  let bufAntigo: Buffer;
+  try {
+    bufAntigo = fs.readFileSync(ultimo.file_path);
+  } catch {
+    return true; // arquivo antigo sumiu do disco — trata como mudou, pra não perder a atualização
+  }
+  const hashAntigo = crypto.createHash("sha256").update(bufAntigo).digest("hex");
+  const hashNovo = crypto.createHash("sha256").update(Buffer.from(pdfBase64Novo, "base64")).digest("hex");
+  return hashAntigo !== hashNovo;
+}
+// Mesmo mecanismo do DAS acima, mas pro DARF gerado pela DCTFWeb (GERARGUIA31). Achado o DARF uma
+// vez e enviado ao cliente, a busca automática (1x/dia) segue gerando a guia de novo todo dia — mas
+// só reanexa/reenvia se o conteúdo mudou de verdade (retificação); do contrário só confirma que
+// continua igual e não dispara nada, evitando reenviar o mesmo DARF ao cliente diariamente.
 function integraContadorAnexarDarfDctfwebEmEnvio(
   escritorioId: number,
   empresaId: number,
@@ -7420,15 +7439,24 @@ function integraContadorAnexarDarfDctfwebEmEnvio(
   );
   const ano = Number(guia.periodoApuracao.slice(0, 4));
   const mes = Number(guia.periodoApuracao.slice(4, 6));
-  if (!forcarNovoDocumento) {
-    const periodo = sqlite.prepare(`SELECT id FROM envio_periodos WHERE atribuicao_id = ? AND ano = ? AND mes = ?`).get(atribuicaoId, ano, mes) as any;
-    if (periodo) {
-      const jaTemDocumento = sqlite.prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id = ? LIMIT 1`).get(periodo.id);
-      if (jaTemDocumento) return;
+  const periodo = sqlite.prepare(`SELECT id FROM envio_periodos WHERE atribuicao_id = ? AND ano = ? AND mes = ?`).get(atribuicaoId, ano, mes) as any;
+  let retificado = false;
+  if (!forcarNovoDocumento && periodo) {
+    const jaTemDocumento = sqlite.prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id = ? LIMIT 1`).get(periodo.id);
+    if (jaTemDocumento) {
+      if (!darfDctfwebFoiRetificado(periodo.id, guia.pdfBase64)) return; // igual ao já enviado — só monitora, não reenvia
+      retificado = true;
     }
   }
   const nomeArquivo = `DARF DCTF-Web ${MESES_PT_EXTENSO[mes - 1]} ${ano}.pdf`;
-  const docId = integraContadorAnexarPdfEmEnvio(atribuicaoId, empresaId, ano, mes, nomeArquivo, guia.pdfBase64, observacao, null);
+  // substituirExistente só quando é retificação de verdade: troca a guia errada pela corrigida, pra
+  // o cliente nunca ver/pagar duas versões (diferente do "recálculo de DAS", que acumula histórico —
+  // aqui a guia anterior à retificação deixa de valer).
+  const docId = integraContadorAnexarPdfEmEnvio(
+    atribuicaoId, empresaId, ano, mes, nomeArquivo, guia.pdfBase64,
+    retificado ? `${observacao} DARF retificado — substitui a guia anterior.` : observacao,
+    null, retificado
+  );
   const rotulo = `${String(mes).padStart(2, "0")}/${ano}`;
   void envioEnviarDocumentoAutomatico({
     escritorioId,
@@ -7436,9 +7464,11 @@ function integraContadorAnexarDarfDctfwebEmEnvio(
     docId,
     fileName: nomeArquivo,
     pdf: Buffer.from(guia.pdfBase64, "base64"),
-    assunto: `DARF DCTF-Web — ${rotulo}`,
-    corpoEmail: `Segue em anexo a guia do DARF (DCTF-Web) referente a ${rotulo}.`,
-    descricaoWhatsapp: `Guia do DARF DCTF-Web — ${rotulo}`,
+    assunto: retificado ? `DARF DCTF-Web retificado — ${rotulo}` : `DARF DCTF-Web — ${rotulo}`,
+    corpoEmail: retificado
+      ? `A guia do DARF (DCTF-Web) referente a ${rotulo} foi retificada — segue em anexo a versão atualizada, que substitui a anterior.`
+      : `Segue em anexo a guia do DARF (DCTF-Web) referente a ${rotulo}.`,
+    descricaoWhatsapp: retificado ? `DARF DCTF-Web retificado — ${rotulo}` : `Guia do DARF DCTF-Web — ${rotulo}`,
   }).catch((e) => console.error(`[Integra Contador] envio automático do DARF DCTF-Web (empresa ${empresaId}) falhou:`, e.message));
 }
 // Mesmo mecanismo do DAS, mas pra Situação Fiscal — não tem "competência" de verdade (é uma foto do
