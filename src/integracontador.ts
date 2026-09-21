@@ -426,6 +426,11 @@ export interface MensagemCaixaPostal {
 // statusLeitura: "0"=não se aplica (todas), "1"=lida, "2"=não lida (o que interessa aqui).
 // indicadorPagina: "0"=primeira página (até 50 mensagens, as mais recentes) — não pagina além
 // disso; mais de 50 mensagens não lidas numa empresa só seria um caso bem fora do comum.
+// Achado ao vivo (testado contra 4 empresas reais): a doc mostra "listaMensagens" direto em
+// "dados", mas a resposta real vem aninhada em "dados.conteudo[0].listaMensagens" — sem esse ajuste
+// a função sempre devolveria lista vazia, mesmo com mensagens reais não lidas. "dataEnvio" também
+// vem como "AAAAMMDD" sem separador (ex. "20260624"), convertido aqui pra "AAAA-MM-DD" pra ficar
+// utilizável direto (armazenamento e exibição) sem cada consumidor ter que saber desse formato.
 export async function consultarMensagensCaixaPostalNaoLidas(token: TokenIntegraContador, contratanteCnpj: string, cnpjEmpresa: string): Promise<MensagemCaixaPostal[]> {
   const r = await chamarServico(token, {
     base: "Consultar",
@@ -436,14 +441,18 @@ export async function consultarMensagensCaixaPostalNaoLidas(token: TokenIntegraC
     versaoSistema: "1.0",
     dados: { statusLeitura: "2", indicadorPagina: "0" },
   });
-  const lista = Array.isArray(r.dados?.listaMensagens) ? r.dados.listaMensagens : [];
-  return lista.map((m: any) => ({
-    numeroControle: m.numeroControle != null ? String(m.numeroControle) : null,
-    assunto: m.assuntoModelo || null,
-    dataEnvio: m.dataEnvio || null,
-    horaEnvio: m.horaEnvio || null,
-    relevancia: m.relevancia || null,
-  }));
+  const lista = Array.isArray(r.dados?.conteudo?.[0]?.listaMensagens) ? r.dados.conteudo[0].listaMensagens : [];
+  return lista.map((m: any) => {
+    const d = String(m.dataEnvio || "");
+    const dataEnvioIso = /^\d{8}$/.test(d) ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` : m.dataEnvio || null;
+    return {
+      numeroControle: m.numeroControle != null ? String(m.numeroControle).trim() || null : null,
+      assunto: m.assuntoModelo || null,
+      dataEnvio: dataEnvioIso,
+      horaEnvio: m.horaEnvio || null,
+      relevancia: m.relevancia || null,
+    };
+  });
 }
 // idServico "CONSRECIBO32" ("Consultar o Recibo da Declaração") também confirmado contra o catálogo
 // oficial (Produção), mas o formato exato de "dados" não foi verificado contra um exemplo real —
