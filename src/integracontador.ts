@@ -412,6 +412,39 @@ export async function gerarGuiaDctfWeb(token: TokenIntegraContador, contratanteC
   });
   return { periodoApuracao: `${anoPA}${mesPA}`, pdfBase64: r.dados?.PDFByteArrayBase64 || null };
 }
+export interface MensagemCaixaPostal {
+  numeroControle: string | null;
+  assunto: string | null;
+  dataEnvio: string | null;
+  horaEnvio: string | null;
+  relevancia: string | null;
+}
+// Caixa Postal do e-CAC (comunicados da Receita Federal) — idSistema/idServico e o parâmetro
+// statusLeitura confirmados contra a documentação oficial (a árvore pt/sistemas/... do site estava
+// fora do ar — HTTP 500 — no momento da checagem; a árvore espelhada
+// pt/solucoes/integra-caixapostal/caixapostal/servicos/... confirmou o exemplo de request/response).
+// statusLeitura: "0"=não se aplica (todas), "1"=lida, "2"=não lida (o que interessa aqui).
+// indicadorPagina: "0"=primeira página (até 50 mensagens, as mais recentes) — não pagina além
+// disso; mais de 50 mensagens não lidas numa empresa só seria um caso bem fora do comum.
+export async function consultarMensagensCaixaPostalNaoLidas(token: TokenIntegraContador, contratanteCnpj: string, cnpjEmpresa: string): Promise<MensagemCaixaPostal[]> {
+  const r = await chamarServico(token, {
+    base: "Consultar",
+    contratanteCnpj,
+    contribuinteDocumento: cnpjEmpresa,
+    idSistema: "CAIXAPOSTAL",
+    idServico: "MSGCONTRIBUINTE61",
+    versaoSistema: "1.0",
+    dados: { statusLeitura: "2", indicadorPagina: "0" },
+  });
+  const lista = Array.isArray(r.dados?.listaMensagens) ? r.dados.listaMensagens : [];
+  return lista.map((m: any) => ({
+    numeroControle: m.numeroControle != null ? String(m.numeroControle) : null,
+    assunto: m.assuntoModelo || null,
+    dataEnvio: m.dataEnvio || null,
+    horaEnvio: m.horaEnvio || null,
+    relevancia: m.relevancia || null,
+  }));
+}
 // idServico "CONSRECIBO32" ("Consultar o Recibo da Declaração") também confirmado contra o catálogo
 // oficial (Produção), mas o formato exato de "dados" não foi verificado contra um exemplo real —
 // mantido como estava (não usado pela busca automática; gerarGuiaDctfWeb acima não depende dele).

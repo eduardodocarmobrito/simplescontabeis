@@ -1012,6 +1012,20 @@ sqlite.exec(`
     pdf_path TEXT, -- cache em disco do PDF já decodificado (evita rebaixar/redecodificar à toa — cada chamada é paga)
     criado_em TEXT DEFAULT (datetime('now'))
   );
+  -- Retrato das mensagens NÃO LIDAS na Caixa Postal do e-CAC de cada empresa (comunicados da
+  -- Receita Federal) — apagada e recriada inteira a cada busca automática (ver
+  -- integraContadorBuscarEmpresaInterno em server.ts), não é um histórico acumulado: reflete sempre
+  -- o estado atual de "não lida" segundo a própria Receita (uma vez lida no e-CAC de verdade, some
+  -- daqui sozinha na próxima busca).
+  CREATE TABLE IF NOT EXISTS integracontador_caixapostal_mensagens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+    numero_controle TEXT,
+    assunto TEXT,
+    data_envio TEXT,
+    relevancia TEXT,
+    atualizado_em TEXT DEFAULT (datetime('now'))
+  );
   -- Parcelamento de DAS (PARCSN) vinculado por empresa — a adesão em si é feita pelo escritório no
   -- e-CAC (a API não permite simular nem aderir), aqui só guardamos o parcelamento JÁ CONCEDIDO que o
   -- escritório escolheu vincular, pra rotina automática buscar e anexar a guia de cada parcela todo
@@ -7108,11 +7122,20 @@ app.get("/api/integracontador/empresas", blockCliente, requirePermissao("integra
     .prepare(
       `SELECT e.id, e.nome, e.cnpj, c.ativo, c.optante_simples_nacional as optanteSimplesNacional, c.busca_dctfweb as buscaDctfweb, c.ultima_busca_em as ultimaBuscaEm, c.ultimo_erro as ultimoErro,
               c.alerta_declaracao as alertaDeclaracao,
-              (SELECT COUNT(*) FROM integracontador_documentos d WHERE d.empresa_id = e.id) as qtdDocumentos
+              (SELECT COUNT(*) FROM integracontador_documentos d WHERE d.empresa_id = e.id) as qtdDocumentos,
+              (SELECT COUNT(*) FROM integracontador_caixapostal_mensagens m WHERE m.empresa_id = e.id) as qtdCaixaPostal
        FROM empresas e LEFT JOIN integracontador_empresa_config c ON c.empresa_id = e.id
        WHERE e.id IN (${placeholders}) AND e.ativo = 1 ORDER BY e.nome`
     )
     .all(...ids);
+  res.json({ items: rows });
+});
+app.get("/api/integracontador/empresas/:id/caixa-postal", blockCliente, requirePermissao("integracontador", "visualizar"), (req, res) => {
+  const empresaId = Number(req.params.id);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const rows = sqlite
+    .prepare(`SELECT assunto, data_envio as dataEnvio FROM integracontador_caixapostal_mensagens WHERE empresa_id = ? ORDER BY data_envio DESC`)
+    .all(empresaId);
   res.json({ items: rows });
 });
 // Mesma ideia de integraContadorObterOuCriarAtribuicaoModelo (logo abaixo), mas gravando em
@@ -7560,6 +7583,21 @@ async function integraContadorBuscarEmpresaInterno(
     } catch (e: any) {
       console.error(`[Integra Contador] situação fiscal da empresa ${empresaId} falhou:`, e.message);
       falhas.push(`Situação Fiscal: ${e.message}`);
+    }
+    // Caixa Postal do e-CAC (mensagens não lidas da Receita Federal) — vale pra qualquer empresa,
+    // igual Situação Fiscal, sem opt-in. Apaga e recria o retrato inteiro a cada busca: reflete
+    // sempre o estado atual de "não lida" segundo a Receita (não é um alerta que a gente "resolve"
+    // aqui — uma vez lida de verdade no e-CAC, some sozinha na próxima busca).
+    try {
+      const mensagens = await integracontador.consultarMensagensCaixaPostalNaoLidas(token, cnpjEscritorio, empresaCnpj);
+      sqlite.prepare(`DELETE FROM integracontador_caixapostal_mensagens WHERE empresa_id = ?`).run(empresaId);
+      const inserirMsg = sqlite.prepare(
+        `INSERT INTO integracontador_caixapostal_mensagens (empresa_id, numero_controle, assunto, data_envio, relevancia) VALUES (?, ?, ?, ?, ?)`
+      );
+      for (const m of mensagens) inserirMsg.run(empresaId, m.numeroControle, m.assunto, m.dataEnvio, m.relevancia);
+    } catch (e: any) {
+      console.error(`[Integra Contador] caixa postal da empresa ${empresaId} falhou:`, e.message);
+      falhas.push(`Caixa Postal: ${e.message}`);
     }
     // DAS + Declaração — só pra quem é optante do Simples Nacional.
     // "alertaDeclaracao" fica undefined se a consulta de declarações falhar (não sabemos de verdade
@@ -10578,7 +10616,7 @@ app.get("/api/financeiro/resumo", blockCliente, requirePermissao("financeiro", "
 // função abaixo devolve a lista (o card mostra só items.length); todas já filtram pelas empresas
 // que o usuário logado pode ver (empresasVisiveis), pro caso de um Colaborador restrito abrir o
 // Painel.
-const CARD_TIPOS: string[] = ["certificados_vencer", "das_atraso", "situacao_fiscal", "checklist_atraso", "solicitacoes_pendentes", "envio_atraso", "solicitacao_atraso", "licencas_vencer"];
+const CARD_TIPOS: string[] = ["certificados_vencer", "das_atraso", "situacao_fiscal", "caixapostal_nao_lida", "checklist_atraso", "solicitacoes_pendentes", "envio_atraso", "solicitacao_atraso", "licencas_vencer"];
 
 // Piso de competência (aaaamm, ex.: 202607) configurado em painel_monitoramento_config — null
 // quando não há corte definido (comportamento de sempre: cada card usa o período mais antigo já
@@ -10966,6 +11004,33 @@ async function cardSituacaoFiscal(user: any): Promise<any[]> {
   }
   return resultado;
 }
+// Mesmo molde do card de Situação Fiscal acima, mas pra mensagens não lidas na Caixa Postal do
+// e-CAC (tabela integracontador_caixapostal_mensagens, populada pela busca automática — ver
+// integraContadorBuscarEmpresaInterno). "mensagens" vem limitado às mais recentes só pra não deixar
+// o card pesado se alguma empresa acumular muitas não lidas.
+async function cardCaixaPostalNaoLida(user: any): Promise<any[]> {
+  const escritorioId = user.escritorioId;
+  const visiveis = new Set(empresasVisiveis(user));
+  const rows = sqlite
+    .prepare(
+      `SELECT c.empresa_id as empresaId, e.nome as empresaNome
+       FROM integracontador_empresa_config c JOIN empresas e ON e.id = c.empresa_id
+       WHERE c.escritorio_id = ? AND c.ativo = 1 AND e.ativo = 1
+       ORDER BY e.nome`
+    )
+    .all(escritorioId) as any[];
+  const resultado: any[] = [];
+  for (const r of rows) {
+    if (!visiveis.has(r.empresaId)) continue;
+    const mensagens = sqlite
+      .prepare(`SELECT assunto, data_envio as dataEnvio FROM integracontador_caixapostal_mensagens WHERE empresa_id = ? ORDER BY data_envio DESC LIMIT 5`)
+      .all(r.empresaId) as any[];
+    if (!mensagens.length) continue;
+    const quantidade = (sqlite.prepare(`SELECT COUNT(*) as n FROM integracontador_caixapostal_mensagens WHERE empresa_id = ?`).get(r.empresaId) as any).n;
+    resultado.push({ empresaId: r.empresaId, empresaNome: r.empresaNome, quantidade, mensagens });
+  }
+  return resultado;
+}
 
 // Empresas que já passaram do prazo (dia do mês) de um modelo de Solicitação de Documentos e ainda
 // têm ao menos um item obrigatório sem upload salvo na competência ANTERIOR (ex.: hoje é 08/2026 e
@@ -11103,6 +11168,7 @@ async function calcularCardComputado(tipo: string, user: any, parametro?: string
   if (tipo === "licencas_vencer") return cardLicencasAVencer(user);
   if (tipo === "das_atraso") return cardDasEmAtraso(user);
   if (tipo === "situacao_fiscal") return cardSituacaoFiscal(user);
+  if (tipo === "caixapostal_nao_lida") return cardCaixaPostalNaoLida(user);
   if (tipo === "checklist_atraso") return cardChecklistAtraso(user);
   if (tipo === "solicitacoes_pendentes") return cardSolicitacoesPendentes(user);
   if (tipo === "envio_atraso") {

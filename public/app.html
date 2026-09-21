@@ -1361,6 +1361,7 @@ const CARD_TIPOS_INFO = {
   licencas_vencer: { label:'Licenças a Vencer', subtitulo:'Vencidas ou vencendo nos próximos 30 dias' },
   das_atraso: { label:'DAS em Atraso', subtitulo:'Competências não entregues' },
   situacao_fiscal: { label:'Situação Fiscal', subtitulo:'Empresas com pendência' },
+  caixapostal_nao_lida: { label:'Mensagens no e-CAC', subtitulo:'Empresas com mensagem não lida na Caixa Postal' },
   checklist_atraso: { label:'Documentos Pendentes', subtitulo:'Competência anterior, após o prazo, sem envio do cliente' },
   solicitacoes_pendentes: { label:'Solicitações dos Clientes', subtitulo:'Aguardando retorno do escritório' },
   envio_atraso: { label:'Modelo de Envio em Atraso', subtitulo:'Competências não entregues', multi:true,
@@ -1519,6 +1520,15 @@ function cardDetalheModal(c){
         box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Alerta</th><th></th></tr></thead><tbody>
           ${items.map(i=>`<tr><td>${esc(i.empresaNome)}</td><td>${esc(i.alerta)}</td><td style="text-align:right;">${i.docId?`<a class="btn small" href="/api/integracontador/documentos/${i.docId}/pdf" target="_blank" rel="noopener">Baixar Situação Fiscal</a>`:''}</td></tr>`).join('')}
         </tbody></table>`;
+      } else if(tipo==='caixapostal_nao_lida'){
+        box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Não lidas</th><th>Assuntos recentes</th></tr></thead><tbody>
+          ${items.map(i=>`<tr class="linha-clicavel" data-empresa="${i.empresaId}" style="cursor:pointer;"><td>${esc(i.empresaNome)}</td><td>${i.quantidade}</td><td>${i.mensagens.map(m=>esc(m.assunto||'(sem assunto)')).join(', ')}</td></tr>`).join('')}
+        </tbody></table>`;
+        box.querySelectorAll('.linha-clicavel').forEach(tr=>tr.addEventListener('click', ()=>{
+          closeModal();
+          STATE.page = 'integracontador'; renderNav();
+          pageIntegraContador(Number(tr.dataset.empresa));
+        }));
       } else if(tipo==='checklist_atraso' || tipo==='solicitacao_atraso'){
         box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Modelo</th><th>Competência</th><th>Prazo</th><th>Itens faltando</th></tr></thead><tbody>
           ${items.map(i=>`<tr><td>${esc(i.empresaNome)}</td><td>${esc(i.templateNome)}</td><td>${esc(i.competencia)}</td><td>Dia ${i.prazoDia}</td><td>${i.itensFaltando.map(esc).join(', ')}</td></tr>`).join('')}
@@ -5052,7 +5062,7 @@ async function pageNfeBusca(){
 // ===================== Integra Contador (DAS, Declaração, Situação Fiscal) =====================
 const IC_TIPO_LABEL = { das:'DAS', declaracao:'Declaração do Simples', situacao_fiscal:'Situação Fiscal', darf_dctfweb:'DARF (DCTF-Web)' };
 let IC_TAB = 'configuradas';
-async function pageIntegraContador(){
+async function pageIntegraContador(deepLinkEmpresaId){
   const podePostar = can('integracontador','postar');
   const podeEditar = can('integracontador','editar');
   main().innerHTML = `
@@ -5068,7 +5078,8 @@ async function pageIntegraContador(){
   await renderIcConfig();
   const cfgAtual = await api('/integracontador/config');
   avisoIc(cfgAtual.ativo);
-  mostrarIcLista();
+  await mostrarIcLista();
+  if(deepLinkEmpresaId) mostrarIcDetalhe(deepLinkEmpresaId);
 
   function avisoIc(ativo){
     document.getElementById('icAviso').innerHTML = ativo ? '' : `
@@ -5155,7 +5166,7 @@ async function pageIntegraContador(){
                 <td>${[e.optanteSimplesNacional?'<span class="tag ok">Optante</span>':'', e.buscaDctfweb?'<span class="tag ok">DCTF-Web</span>':''].filter(Boolean).join(' ') || '—'}</td>
                 <td>${e.qtdDocumentos}</td>
                 <td>${e.ultimaBuscaEm?fmtDateHora(e.ultimaBuscaEm):'—'}</td>
-                <td>${e.alertaDeclaracao?`<span class="tag bad" title="${esc(e.alertaDeclaracao)}">Não declarado</span>`:''}</td>
+                <td>${[e.alertaDeclaracao?`<span class="tag bad" title="${esc(e.alertaDeclaracao)}">Não declarado</span>`:'', e.qtdCaixaPostal?`<span class="tag warn" title="Mensagem não lida na Caixa Postal do e-CAC">${e.qtdCaixaPostal} msg e-CAC</span>`:''].filter(Boolean).join(' ')}</td>
                 <td style="text-align:right;"><button class="btn small">Ver</button></td>
               </tr>
             `).join('') : `<tr><td colspan="7"><div class="empty-state">${IC_TAB==='configuradas'?'Nenhuma empresa configurada ainda.':'Todas as empresas já estão configuradas.'}</div></td></tr>`}
@@ -5189,6 +5200,11 @@ async function pageIntegraContador(){
           ${podeEditar?`<button class="btn primary" id="btnIcSalvarEmpresa">Salvar</button>`:''}
           ${podePostar?`<button class="btn" id="btnIcBuscarAgora" ${emp?.ativo?'':'disabled'}>Buscar agora</button>`:''}
         </div>
+      </div>
+      <div class="card">
+        <h3>Mensagens no e-CAC (Caixa Postal)</h3>
+        <p style="font-size:12.5px; color:var(--ink-soft); margin:4px 0 8px;">Comunicados não lidos da Receita Federal, buscados automaticamente todo dia — some sozinho daqui assim que for lido de verdade no e-CAC.</p>
+        <div id="icCaixaPostalBody"><div class="empty-state">Carregando…</div></div>
       </div>
       <div class="card">
         <div class="row" style="justify-content:space-between; align-items:center;">
@@ -5258,6 +5274,16 @@ async function pageIntegraContador(){
       }));
     }
     carregarIcParcelamentos();
+    async function carregarIcCaixaPostal(){
+      const wrap = document.getElementById('icCaixaPostalBody');
+      const { items: msgs } = await api('/integracontador/empresas/'+empresaId+'/caixa-postal');
+      wrap.innerHTML = msgs.length
+        ? `<table class="data-table"><thead><tr><th>Assunto</th><th>Data</th></tr></thead><tbody>
+            ${msgs.map(m=>`<tr><td>${esc(m.assunto||'(sem assunto)')}</td><td>${m.dataEnvio?fmtDateIso(String(m.dataEnvio)):'—'}</td></tr>`).join('')}
+          </tbody></table>`
+        : `<div class="empty-state">Nenhuma mensagem não lida.</div>`;
+    }
+    carregarIcCaixaPostal();
     // A busca de Situação Fiscal sozinha já pode passar de 1 minuto (fica reconsultando a Receita
     // até o relatório ficar pronto) — tempo suficiente pro proxy do Railway devolver um erro 502 pro
     // navegador mesmo quando a busca deu certo do lado do servidor. Por isso o backend não segura a
