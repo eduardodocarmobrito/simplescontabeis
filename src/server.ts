@@ -3991,28 +3991,45 @@ setInterval(() => {
 // NUNCA roda o Playwright do FGTS Digital sozinho: quem faz login E busca as guias, numa tacada só,
 // é o próprio usuário rodando `npm run fgts-login` no computador dele (ver fgts-login-setup.ts) — o
 // servidor só entra depois, recebendo cada guia já pronta via POST /api/fgts/guia.
-function fgtsAnexarGuiaEmEnvio(escritorioId: number, empresaId: number, ano: number, mes: number, pdfBase64: string): number {
+// Mesma lógica do DAS/DARF DCTF-Web: a primeira vez que acha a guia de uma competência, anexa e
+// envia. Nas buscas seguintes (você roda "npm run fgts-login" de novo, ou reenvia depois de um erro),
+// só reanexa/reenvia se a guia baixada for diferente da última já enviada — do contrário nem chega a
+// tocar em Envio de Documentos, evitando reenviar a mesma guia ao cliente toda vez que você rodar a
+// busca. Devolve null quando não reenviou nada (nada mudou), ou o id do documento quando enviou.
+function fgtsAnexarGuiaEmEnvio(escritorioId: number, empresaId: number, ano: number, mes: number, pdfBase64: string): number | null {
   const atribuicaoId = integraContadorObterOuCriarAtribuicaoModelo(
     escritorioId,
     empresaId,
     "Guia FGTS Digital",
     "Guia do FGTS (GFD) gerada automaticamente a partir do FGTS Digital"
   );
+  const periodo = sqlite.prepare(`SELECT id FROM envio_periodos WHERE atribuicao_id = ? AND ano = ? AND mes = ?`).get(atribuicaoId, ano, mes) as any;
+  let retificada = false;
+  if (periodo) {
+    const jaTemDocumento = sqlite.prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id = ? LIMIT 1`).get(periodo.id);
+    if (jaTemDocumento) {
+      if (!envioPdfMudou(periodo.id, pdfBase64)) return null; // guia idêntica à já enviada — não reenvia
+      retificada = true;
+    }
+  }
   const nomeArquivo = `Guia FGTS ${MESES_PT_EXTENSO[mes - 1]} ${ano}.pdf`;
   const rotulo = `${String(mes).padStart(2, "0")}/${ano}`;
-  // substituirExistente=true: buscar a mesma competência de novo (ex. reenvio manual depois de um
-  // erro) troca a guia anterior, não duplica — mesma regra já usada pra Balanço/DRE/Balancete.
+  // substituirExistente=true sempre: só existe 1 guia canônica por competência, atualizada ou não —
+  // diferente do DAS, aqui não existe "recálculo manual" preservando histórico à parte.
   const docId = integraContadorAnexarPdfEmEnvio(
     atribuicaoId, empresaId, ano, mes, nomeArquivo, pdfBase64,
-    `Guia FGTS Digital referente a ${rotulo}, gerada automaticamente.`, null, true
+    retificada ? `Guia FGTS Digital referente a ${rotulo} — atualizada, substitui a guia anterior.` : `Guia FGTS Digital referente a ${rotulo}, gerada automaticamente.`,
+    null, true
   );
   void envioEnviarDocumentoAutomatico({
     escritorioId, empresaId, docId,
     fileName: nomeArquivo,
     pdf: Buffer.from(pdfBase64, "base64"),
-    assunto: `Guia FGTS — ${rotulo}`,
-    corpoEmail: `Segue em anexo a guia do FGTS (GFD) referente a ${rotulo}.`,
-    descricaoWhatsapp: `Guia do FGTS — ${rotulo}`,
+    assunto: retificada ? `Guia FGTS atualizada — ${rotulo}` : `Guia FGTS — ${rotulo}`,
+    corpoEmail: retificada
+      ? `A guia do FGTS (GFD) referente a ${rotulo} foi atualizada — segue em anexo a versão nova, que substitui a anterior.`
+      : `Segue em anexo a guia do FGTS (GFD) referente a ${rotulo}.`,
+    descricaoWhatsapp: retificada ? `Guia FGTS atualizada — ${rotulo}` : `Guia do FGTS — ${rotulo}`,
   }).catch((e) => console.error(`[FGTS Digital] envio automático da guia (empresa ${empresaId}) falhou:`, e.message));
   return docId;
 }
@@ -7379,11 +7396,13 @@ async function envioEnviarDocumentoAutomatico(opts: {
   }
 }
 // forcarNovoDocumento: só vem true no fluxo de recálculo explicitamente solicitado (usuário clicou
-// em "Solicitar recálculo do DAS"). A busca automática (1x/dia) e o botão manual "Buscar" reprocessam
-// a mesma competência todo dia até a próxima declarar — sem essa trava, cada execução que encontra o
-// DAS de novo (sem nada ter mudado) anexava outro PDF duplicado em Envio de Documentos. Achado ao
-// vivo: DU CALLO SERVICOS LTDA acumulou 4 cópias do DAS de julho/2026, uma por dia de busca, sem
-// nenhum recálculo real ter sido pedido.
+// em "Solicitar recálculo do DAS") — nesse caso insere e envia incondicionalmente, mesmo que idêntico,
+// preservando o histórico completo (DAS original + cada recálculo pedido). A busca automática
+// (1x/dia) e o botão manual "Buscar" reprocessam a mesma competência todo dia até a próxima declarar
+// — nesse caminho (forcarNovoDocumento=false), só reanexa/reenvia se o PDF realmente mudou desde o
+// último envio (retificação de verdade). Achado ao vivo (antes desse ajuste): DU CALLO SERVICOS LTDA
+// acumulou 4 cópias do DAS de julho/2026, uma por dia de busca, sem nenhum recálculo real ter sido
+// pedido — a trava original só evitava duplicar, mas não detectava recálculo genuíno pra atualizar.
 function integraContadorAnexarDasEmEnvio(
   escritorioId: number,
   empresaId: number,
@@ -7401,16 +7420,25 @@ function integraContadorAnexarDasEmEnvio(
   );
   const ano = Number(periodoApuracao.slice(0, 4));
   const mes = Number(periodoApuracao.slice(4, 6));
-  if (!forcarNovoDocumento) {
-    const periodo = sqlite.prepare(`SELECT id FROM envio_periodos WHERE atribuicao_id = ? AND ano = ? AND mes = ?`).get(atribuicaoId, ano, mes) as any;
-    if (periodo) {
-      const jaTemDocumento = sqlite.prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id = ? LIMIT 1`).get(periodo.id);
-      if (jaTemDocumento) return; // já tem o DAS dessa competência — só anexa outro se for recálculo pedido de verdade
+  const periodo = sqlite.prepare(`SELECT id FROM envio_periodos WHERE atribuicao_id = ? AND ano = ? AND mes = ?`).get(atribuicaoId, ano, mes) as any;
+  let retificado = false;
+  if (!forcarNovoDocumento && periodo) {
+    const jaTemDocumento = sqlite.prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id = ? LIMIT 1`).get(periodo.id);
+    if (jaTemDocumento) {
+      if (!envioPdfMudou(periodo.id, das.pdfBase64)) return; // DAS idêntico ao já enviado — só confirma, não reenvia
+      retificado = true;
     }
   }
   const nomeArquivo = `DAS ${MESES_PT_EXTENSO[mes - 1]} ${ano}${das.numeroDocumento ? " - " + das.numeroDocumento : ""}.pdf`;
   const vencIso = integraContadorFormatarVencimento(das.dataVencimento);
-  const docId = integraContadorAnexarPdfEmEnvio(atribuicaoId, empresaId, ano, mes, nomeArquivo, das.pdfBase64, observacao, vencIso);
+  // substituirExistente só quando é recálculo automático detectado de verdade: troca o DAS anterior
+  // pelo recalculado, pro cliente nunca ver/pagar duas versões (diferente do recálculo MANUAL, que
+  // continua acumulando histórico via forcarNovoDocumento acima).
+  const docId = integraContadorAnexarPdfEmEnvio(
+    atribuicaoId, empresaId, ano, mes, nomeArquivo, das.pdfBase64,
+    retificado ? `${observacao} DAS recalculado — substitui a guia anterior.` : observacao,
+    vencIso, retificado
+  );
   const rotulo = `${String(mes).padStart(2, "0")}/${ano}`;
   const vencTxt = vencIso ? `\n\nVencimento: ${vencIso.split("-").reverse().join("/")}` : "";
   void envioEnviarDocumentoAutomatico({
@@ -7419,17 +7447,19 @@ function integraContadorAnexarDasEmEnvio(
     docId,
     fileName: nomeArquivo,
     pdf: Buffer.from(das.pdfBase64, "base64"),
-    assunto: `DAS — ${rotulo}`,
-    corpoEmail: `Segue em anexo a guia do DAS (Simples Nacional) referente a ${rotulo}.${vencTxt}`,
-    descricaoWhatsapp: `Guia do DAS — ${rotulo}`,
+    assunto: retificado ? `DAS recalculado — ${rotulo}` : `DAS — ${rotulo}`,
+    corpoEmail: retificado
+      ? `O DAS referente a ${rotulo} foi recalculado — segue em anexo a versão atualizada, que substitui a anterior.${vencTxt}`
+      : `Segue em anexo a guia do DAS (Simples Nacional) referente a ${rotulo}.${vencTxt}`,
+    descricaoWhatsapp: retificado ? `DAS recalculado — ${rotulo}` : `Guia do DAS — ${rotulo}`,
   }).catch((e) => console.error(`[Integra Contador] envio automático do DAS (empresa ${empresaId}) falhou:`, e.message));
 }
-// A Receita não devolve número de documento nem nenhum campo estruturado nesse serviço (diferente
-// do DAS) que sirva pra saber se o DARF mudou — o único jeito de saber é comparar o PDF em si. Hash
-// SHA-256 do conteúdo: idêntico ao último já enviado = não manda de novo (a busca automática roda
-// todo dia, então sem isso reenviaria o mesmo DARF pro cliente diariamente); diferente = a
-// declaração foi retificada depois do envio anterior, então é uma atualização de verdade.
-function darfDctfwebFoiRetificado(periodoId: number, pdfBase64Novo: string): boolean {
+// Usado por DAS/DARF DCTF-Web/Guia FGTS: a Receita (e o FGTS Digital) não devolvem nenhum campo
+// estruturado confiável pra saber se a guia mudou desde o último envio — o único jeito de saber é
+// comparar o PDF em si. Hash SHA-256 do conteúdo: idêntico ao último já enviado = não manda de novo
+// (a busca automática roda todo dia/toda vez, então sem isso reenviaria a mesma guia repetidamente);
+// diferente = a guia foi recalculada/retificada depois do envio anterior, uma atualização de verdade.
+function envioPdfMudou(periodoId: number, pdfBase64Novo: string): boolean {
   const ultimo = sqlite.prepare(`SELECT file_path FROM envio_documentos WHERE periodo_id = ? ORDER BY id DESC LIMIT 1`).get(periodoId) as any;
   if (!ultimo) return false; // nunca teve documento nesse período — é o primeiro envio, não uma retificação
   let bufAntigo: Buffer;
@@ -7467,7 +7497,7 @@ function integraContadorAnexarDarfDctfwebEmEnvio(
   if (!forcarNovoDocumento && periodo) {
     const jaTemDocumento = sqlite.prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id = ? LIMIT 1`).get(periodo.id);
     if (jaTemDocumento) {
-      if (!darfDctfwebFoiRetificado(periodo.id, guia.pdfBase64)) return; // igual ao já enviado — só monitora, não reenvia
+      if (!envioPdfMudou(periodo.id, guia.pdfBase64)) return; // igual ao já enviado — só monitora, não reenvia
       retificado = true;
     }
   }
