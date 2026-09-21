@@ -183,3 +183,49 @@ export async function testarConexao(phoneNumberId: string, accessToken: string):
   if (!r.ok) throw new Error(mensagemErro(r));
   return { numeroExibicao: r.corpo.display_phone_number || null };
 }
+
+// Texto LIVRE (não é template) — só é aceito pela Meta dentro da janela de 24h desde a última
+// mensagem recebida do cliente (fora disso a API rejeita, e só resta usar um template aprovado).
+// Usado pelo CRM: resposta humana a uma conversa em andamento e o menu automático de departamento
+// (o próprio cliente ter acabado de escrever é o que abre a janela pra esse envio).
+export async function enviarTextoLivre(phoneNumberId: string, accessToken: string, paraNumero: string, texto: string): Promise<{ wamid: string | null; numeroNormalizado: string }> {
+  const digitos = paraNumero.replace(/\D/g, "");
+  if (digitos.length < 10) throw new Error("Número de WhatsApp inválido.");
+  const numero = digitos.length <= 11 ? `55${digitos}` : digitos;
+  const r = await chamarGraph(`/${phoneNumberId}/messages`, accessToken, {
+    jsonBody: { messaging_product: "whatsapp", to: numero, type: "text", text: { body: texto } },
+  });
+  if (!r.ok) throw new Error(`Não consegui enviar a mensagem no WhatsApp: ${mensagemErro(r)}`);
+  return { wamid: r.corpo?.messages?.[0]?.id || null, numeroNormalizado: numero };
+}
+
+// Baixa o conteúdo de uma URL absoluta qualquer (não necessariamente GRAPH_BASE) com o Bearer token
+// — não pode passar por chamarGraph, que sempre tenta decodificar a resposta como JSON/UTF-8 e
+// corromperia um binário (mesmo cuidado já tomado em onedrive.ts pra baixar arquivo).
+function baixarBinario(urlCompleta: string, accessToken: string): Promise<{ status: number; buffer: Buffer }> {
+  return new Promise((resolve, reject) => {
+    const url = new URL(urlCompleta);
+    const req = https.request(
+      { hostname: url.hostname, path: url.pathname + url.search, method: "GET", headers: { Authorization: `Bearer ${accessToken}` }, timeout: 30000 },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () => resolve({ status: res.statusCode || 0, buffer: Buffer.concat(chunks) }));
+      }
+    );
+    req.on("timeout", () => req.destroy(new Error("Tempo esgotado ao baixar mídia do WhatsApp.")));
+    req.on("error", reject);
+    req.end();
+  });
+}
+// Baixar mídia recebida (foto/áudio/documento que o cliente mandou) é em 2 passos, confirmado
+// contra a documentação oficial da Meta: 1) GET /{media-id} devolve uma URL temporária (expira em
+// 5 minutos) + o mime_type; 2) GET nessa URL, com o mesmo Bearer token, devolve os bytes do
+// arquivo. Sem o token no passo 2 a Meta recusa o download mesmo a URL sendo "secreta".
+export async function baixarMidiaRecebida(mediaId: string, phoneNumberId: string, accessToken: string): Promise<{ buffer: Buffer; mimeType: string | null }> {
+  const meta = await chamarGraph(`/${mediaId}?phone_number_id=${phoneNumberId}`, accessToken, { metodo: "GET" });
+  if (!meta.ok || !meta.corpo?.url) throw new Error(`Não consegui obter a URL da mídia: ${mensagemErro(meta)}`);
+  const { status, buffer } = await baixarBinario(meta.corpo.url, accessToken);
+  if (status < 200 || status >= 300) throw new Error(`Falha ao baixar mídia do WhatsApp (HTTP ${status}).`);
+  return { buffer, mimeType: meta.corpo.mime_type || null };
+}

@@ -664,6 +664,63 @@ sqlite.exec(`
     atualizado_em TEXT DEFAULT (datetime('now'))
   );
 
+  -- ---- CRM (caixa de entrada de conversas do WhatsApp, cliente iniciando contato) ----
+  -- Diferente de whatsapp_mensagens acima (só rastreia ENTREGA de envio nosso), aqui é conversa de
+  -- duas mãos de verdade: cliente manda mensagem, cai num menu de departamento, e um colaborador
+  -- responsável por aquele departamento assume e responde.
+  CREATE TABLE IF NOT EXISTS crm_departamentos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    escritorio_id INTEGER NOT NULL REFERENCES escritorios(id),
+    nome TEXT NOT NULL,
+    ordem INTEGER NOT NULL DEFAULT 0, -- define o número do menu (1, 2, 3...), na ordem crescente
+    ativo INTEGER NOT NULL DEFAULT 1
+  );
+  -- Quem é responsável por cada departamento — espelha colaborador_empresas (mesma ideia, "quais
+  -- registros esse colaborador pode ver/atender").
+  CREATE TABLE IF NOT EXISTS crm_departamento_colaboradores (
+    user_id INTEGER NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+    departamento_id INTEGER NOT NULL REFERENCES crm_departamentos(id) ON DELETE CASCADE,
+    PRIMARY KEY (user_id, departamento_id)
+  );
+  CREATE TABLE IF NOT EXISTS crm_conversas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    escritorio_id INTEGER NOT NULL REFERENCES escritorios(id),
+    telefone TEXT NOT NULL, -- normalizado (55+DDD+número, só dígitos) — mesma regra de whatsapp.ts
+    contato_nome TEXT, -- profile.name que a Meta manda junto da mensagem (não é cadastro nosso)
+    empresa_id INTEGER REFERENCES empresas(id), -- preenchido se achar por telefone, senão fica NULL
+    departamento_id INTEGER REFERENCES crm_departamentos(id),
+    atribuido_user_id INTEGER REFERENCES app_users(id),
+    status TEXT NOT NULL DEFAULT 'menu', -- 'menu' (aguardando escolher depto) | 'aberta' | 'encerrada'
+    ultima_mensagem_cliente_em TEXT, -- controla a janela de 24h da Meta pra saber se dá pra responder com texto livre
+    ultima_mensagem_em TEXT,
+    nao_lida INTEGER NOT NULL DEFAULT 1, -- fila compartilhada: qualquer um do departamento que abrir marca como lida pra todos
+    criado_em TEXT DEFAULT (datetime('now')),
+    UNIQUE(escritorio_id, telefone)
+  );
+  CREATE TABLE IF NOT EXISTS crm_mensagens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversa_id INTEGER NOT NULL REFERENCES crm_conversas(id) ON DELETE CASCADE,
+    direcao TEXT NOT NULL, -- 'entrada' (cliente) | 'saida' (escritório/bot)
+    wamid TEXT,
+    tipo TEXT NOT NULL DEFAULT 'texto', -- 'texto' | 'imagem' | 'documento' | 'audio' | 'outro'
+    texto TEXT,
+    midia_path TEXT,
+    midia_mime TEXT,
+    midia_nome TEXT,
+    autor_user_id INTEGER REFERENCES app_users(id), -- NULL quando é o próprio menu automático
+    criado_em TEXT DEFAULT (datetime('now')),
+    status TEXT -- só relevante pra direcao='saida': 'accepted'|'sent'|'delivered'|'read'|'failed'
+  );
+  CREATE TABLE IF NOT EXISTS crm_transferencias (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversa_id INTEGER NOT NULL REFERENCES crm_conversas(id) ON DELETE CASCADE,
+    de_departamento_id INTEGER REFERENCES crm_departamentos(id),
+    para_departamento_id INTEGER REFERENCES crm_departamentos(id),
+    user_id INTEGER REFERENCES app_users(id),
+    motivo TEXT,
+    criado_em TEXT DEFAULT (datetime('now'))
+  );
+
   -- ---- Rotina automática de emissão de NFS-e (honorários do próprio escritório) ----
   CREATE TABLE IF NOT EXISTS nfse_agendamento_config (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -2033,7 +2090,7 @@ sqlite.exec(`INSERT OR IGNORE INTO whatsapp_config (escritorio_id) SELECT id FRO
   }
 }
 
-const MODULOS = ["dashboard", "empresas", "solicitacoes", "envio", "nfse", "nfe-busca", "integracontador", "licencas", "financeiro", "contratos", "relatorios", "usuarios", "configuracoes"] as const;
+const MODULOS = ["dashboard", "empresas", "solicitacoes", "envio", "nfse", "nfe-busca", "integracontador", "licencas", "financeiro", "contratos", "relatorios", "crm", "usuarios", "configuracoes"] as const;
 type Modulo = (typeof MODULOS)[number];
 
 // ========================= LOGIN (senha com hash + sessão via cookie) =========================
@@ -2392,7 +2449,10 @@ async function enviarEmail(escritorioId: number, opts: { to: string[]; subject: 
 // ========================= APP =========================
 const app = express();
 app.set("trust proxy", 1);
-app.use(express.json({ limit: "20mb" }));
+// verify: guarda o corpo cru (antes do parse) em req.rawBody — necessário pra conferir a assinatura
+// HMAC (X-Hub-Signature-256) do webhook do WhatsApp, que é calculada sobre os bytes exatos que a
+// Meta mandou, não sobre o JSON re-serializado (que pode diferir em espaço/ordem das chaves).
+app.use(express.json({ limit: "20mb", verify: (req: any, _res, buf) => { req.rawBody = buf; } }));
 app.use(cookieParser());
 // cacheControl:false — o site é uma página só, ainda em ajuste frequente; sem isso o navegador
 // segura uma cópia velha do app.html em cache e mudanças de UI não aparecem sem hard refresh.
@@ -12246,6 +12306,146 @@ app.put("/api/whatsapp/config", blockCliente, requirePermissao("configuracoes", 
     );
   res.json({ ok: true });
 });
+// ---- CRM: caixa de entrada de conversas do WhatsApp (cliente iniciando contato) ----
+function crmSoDigitos(s: any): string {
+  return String(s || "").replace(/\D/g, "");
+}
+function crmNormalizaTxt(s: string): string {
+  return String(s || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .trim();
+}
+function crmExtensaoPorMime(mime: string | null): string {
+  const mapa: Record<string, string> = {
+    "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif",
+    "audio/ogg": ".ogg", "audio/opus": ".ogg", "audio/mpeg": ".mp3", "audio/aac": ".aac", "audio/amr": ".amr",
+    "video/mp4": ".mp4", "video/3gpp": ".3gp",
+    "application/pdf": ".pdf",
+  };
+  return (mime && mapa[mime]) || "";
+}
+// Compara só os últimos 11 dígitos (DDD+número, sem o 55) pra achar uma empresa/contato conhecido
+// por telefone — empresas.telefone/empresa_contatos.telefone são texto livre, sem máscara, então
+// não dá pra confiar em bater a string inteira.
+function crmAcharEmpresaPorTelefone(escritorioId: number, telefoneDigits: string): number | null {
+  const sufixo = telefoneDigits.slice(-11);
+  if (!sufixo) return null;
+  const rows = sqlite
+    .prepare(
+      `SELECT id, telefone FROM empresas WHERE escritorio_id = ? AND telefone IS NOT NULL AND telefone != ''
+       UNION ALL
+       SELECT e.id, ec.telefone FROM empresa_contatos ec JOIN empresas e ON e.id = ec.empresa_id WHERE e.escritorio_id = ? AND ec.telefone IS NOT NULL AND ec.telefone != ''`
+    )
+    .all(escritorioId, escritorioId) as any[];
+  for (const r of rows) {
+    const digitos = crmSoDigitos(r.telefone);
+    if (digitos && digitos.slice(-11) === sufixo) return r.id;
+  }
+  return null;
+}
+function crmObterOuCriarConversa(escritorioId: number, telefone: string, contatoNome: string | null): any {
+  let conversa = sqlite.prepare(`SELECT * FROM crm_conversas WHERE escritorio_id = ? AND telefone = ?`).get(escritorioId, telefone) as any;
+  if (!conversa) {
+    const empresaId = crmAcharEmpresaPorTelefone(escritorioId, telefone);
+    const info = sqlite
+      .prepare(`INSERT INTO crm_conversas (escritorio_id, telefone, contato_nome, empresa_id, status) VALUES (?, ?, ?, ?, 'menu')`)
+      .run(escritorioId, telefone, contatoNome, empresaId);
+    conversa = sqlite.prepare(`SELECT * FROM crm_conversas WHERE id = ?`).get(Number(info.lastInsertRowid));
+  } else if (contatoNome && !conversa.contato_nome) {
+    sqlite.prepare(`UPDATE crm_conversas SET contato_nome = ? WHERE id = ?`).run(contatoNome, conversa.id);
+  }
+  return conversa;
+}
+function crmExtrairTextoMensagem(m: any): string | null {
+  if (m.type === "text") return m.text?.body || null;
+  if (m.type === "button") return m.button?.text || null;
+  if (m.type === "interactive") return m.interactive?.button_reply?.title || m.interactive?.list_reply?.title || null;
+  return m?.[m.type]?.caption || null;
+}
+function crmMontarMenu(departamentos: { nome: string }[]): string {
+  const linhas = departamentos.map((d, i) => `${i + 1} - ${d.nome}`).join("\n");
+  return `Olá! Em qual departamento você quer falar?\n${linhas}\n\nResponda só com o número da opção.`;
+}
+// Envia texto livre (não-template) e já grava a mensagem de saída — usado tanto pelo menu
+// automático quanto pela resposta manual de um colaborador (POST /api/crm/conversas/:id/mensagens).
+async function crmEnviarTextoLivre(cfg: any, paraNumero: string, texto: string, conversaId: number, autorUserId: number | null = null): Promise<void> {
+  if (!cfg.ativo || !cfg.phone_number_id || !cfg.access_token_cifrado) throw new Error("WhatsApp não configurado ou desativado — configure em Configurações > WhatsApp.");
+  const { wamid } = await whatsapp.enviarTextoLivre(cfg.phone_number_id, nfse.decifrarTexto(cfg.access_token_cifrado), paraNumero, texto);
+  sqlite
+    .prepare(`INSERT INTO crm_mensagens (conversa_id, direcao, wamid, tipo, texto, autor_user_id, status) VALUES (?, 'saida', ?, 'texto', ?, ?, 'accepted')`)
+    .run(conversaId, wamid, texto, autorUserId);
+  sqlite.prepare(`UPDATE crm_conversas SET ultima_mensagem_em = datetime('now') WHERE id = ?`).run(conversaId);
+}
+// A máquina de estados do menu de departamento. 'encerrada' reabre no MESMO departamento sem
+// mostrar o menu de novo (só telefone nunca visto passa pelo menu); 'aberta' não mexe em nada, fica
+// pro humano responder; só 'menu' de fato processa a escolha.
+async function crmProcessarRoteamento(escritorioId: number, cfg: any, conversaId: number, telefone: string, textoRecebido: string | null): Promise<void> {
+  const atual = sqlite.prepare(`SELECT * FROM crm_conversas WHERE id = ?`).get(conversaId) as any;
+  if (!atual) return;
+  if (atual.status === "encerrada") {
+    sqlite.prepare(`UPDATE crm_conversas SET status = 'aberta' WHERE id = ?`).run(conversaId);
+    return;
+  }
+  if (atual.status === "aberta") return;
+  const departamentos = sqlite.prepare(`SELECT id, nome FROM crm_departamentos WHERE escritorio_id = ? AND ativo = 1 ORDER BY ordem`).all(escritorioId) as any[];
+  if (!departamentos.length) return; // nenhum departamento cadastrado ainda — não tem como rotear
+  const escolha = crmNormalizaTxt(textoRecebido || "");
+  const numero = parseInt(escolha, 10);
+  let escolhido: any = null;
+  if (!isNaN(numero) && numero >= 1 && numero <= departamentos.length) escolhido = departamentos[numero - 1];
+  else escolhido = departamentos.find((d) => crmNormalizaTxt(d.nome) === escolha);
+  try {
+    if (escolhido) {
+      sqlite.prepare(`UPDATE crm_conversas SET departamento_id = ?, status = 'aberta' WHERE id = ?`).run(escolhido.id, conversaId);
+      await crmEnviarTextoLivre(cfg, telefone, `Você está falando com o setor ${escolhido.nome}. Já vamos te atender — aguarde um momento.`, conversaId);
+    } else {
+      await crmEnviarTextoLivre(cfg, telefone, crmMontarMenu(departamentos), conversaId);
+    }
+  } catch (e: any) {
+    console.error(`[CRM] falha ao enviar o menu/confirmação (conversa ${conversaId}):`, e.message);
+  }
+}
+async function crmProcessarMensagemRecebida(escritorioId: number, cfg: any, value: any, m: any): Promise<void> {
+  const telefone = crmSoDigitos(m.from);
+  if (!telefone) return;
+  const contatoNome = value?.contacts?.[0]?.profile?.name || null;
+  const conversa = crmObterOuCriarConversa(escritorioId, telefone, contatoNome);
+
+  const tiposMidia = ["image", "document", "audio", "video", "sticker"];
+  const ehMidia = tiposMidia.includes(m.type);
+  const tipo = !ehMidia ? "texto" : m.type === "document" ? "documento" : m.type === "audio" ? "audio" : m.type === "video" ? "outro" : "imagem";
+  let midiaPath: string | null = null, midiaMime: string | null = null, midiaNome: string | null = null;
+  const midiaObj = ehMidia ? m[m.type] : null;
+  if (midiaObj?.id && cfg.phone_number_id && cfg.access_token_cifrado) {
+    try {
+      const { buffer, mimeType } = await whatsapp.baixarMidiaRecebida(midiaObj.id, cfg.phone_number_id, nfse.decifrarTexto(cfg.access_token_cifrado));
+      const dir = path.join(UPLOADS_DIR, "crm", String(conversa.id));
+      fs.mkdirSync(dir, { recursive: true });
+      midiaMime = mimeType || midiaObj.mime_type || null;
+      const nomeArquivo: string = midiaObj.filename || `${m.type}-${Date.now()}${crmExtensaoPorMime(midiaMime)}`;
+      midiaNome = nomeArquivo;
+      midiaPath = path.join(dir, nomeArquivo);
+      fs.writeFileSync(midiaPath, buffer);
+    } catch (e: any) {
+      console.error(`[CRM] falha ao baixar mídia recebida (conversa ${conversa.id}):`, e.message);
+    }
+  }
+  const texto = crmExtrairTextoMensagem(m);
+  sqlite
+    .prepare(`INSERT INTO crm_mensagens (conversa_id, direcao, wamid, tipo, texto, midia_path, midia_mime, midia_nome) VALUES (?, 'entrada', ?, ?, ?, ?, ?, ?)`)
+    .run(conversa.id, m.id || null, tipo, texto, midiaPath, midiaMime, midiaNome);
+  sqlite.prepare(`UPDATE crm_conversas SET ultima_mensagem_cliente_em = datetime('now'), ultima_mensagem_em = datetime('now'), nao_lida = 1 WHERE id = ?`).run(conversa.id);
+
+  await crmProcessarRoteamento(escritorioId, cfg, conversa.id, telefone, texto);
+}
+function conferirAssinaturaWebhookWhatsapp(rawBody: Buffer, headerAssinatura: string, appSecret: string): boolean {
+  const esperado = "sha256=" + crypto.createHmac("sha256", appSecret).update(rawBody).digest("hex");
+  const a = Buffer.from(esperado);
+  const b = Buffer.from(headerAssinatura);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
 // Webhook do WhatsApp — a Meta chama isso direto (sem sessão nossa), por isso fica de fora do
 // requireAuth (ver exceção no início do arquivo). GET é a verificação inicial (challenge/response,
 // feita uma vez ao salvar o webhook no Meta for Developers); POST é onde chegam os status reais de
@@ -12265,6 +12465,22 @@ app.post("/api/whatsapp/webhook", (req, res) => {
   try {
     for (const entrada of req.body?.entry || []) {
       for (const mudanca of entrada.changes || []) {
+        // Descobre de qual escritório é esse número ANTES de confiar em qualquer outro dado do
+        // payload — usado tanto pra achar o app_secret certo (assinatura) quanto pro escritorio_id
+        // de qualquer coisa nova que a gente gravar (mensagem recebida).
+        const phoneNumberId = mudanca.value?.metadata?.phone_number_id;
+        const cfg = phoneNumberId ? (sqlite.prepare(`SELECT * FROM whatsapp_config WHERE phone_number_id = ?`).get(phoneNumberId) as any) : null;
+        if (cfg?.app_secret_cifrado) {
+          const assinatura = req.headers["x-hub-signature-256"];
+          const raw = (req as any).rawBody as Buffer | undefined;
+          const valida = typeof assinatura === "string" && raw && conferirAssinaturaWebhookWhatsapp(raw, assinatura, nfse.decifrarTexto(cfg.app_secret_cifrado));
+          if (!valida) {
+            console.error("[WhatsApp webhook] assinatura inválida — payload descartado.");
+            continue;
+          }
+        } else if (phoneNumberId) {
+          console.warn(`[WhatsApp webhook] app_secret não configurado pro número ${phoneNumberId} — assinatura não conferida.`);
+        }
         for (const s of mudanca.value?.statuses || []) {
           const erroTexto = Array.isArray(s.errors) && s.errors.length ? s.errors.map((e: any) => `${e.code}: ${e.title || e.message || ""}`).join(" | ") : null;
           sqlite
@@ -12280,12 +12496,211 @@ app.post("/api/whatsapp/webhook", (req, res) => {
             }
           }
         }
+        // Mensagens recebidas de cliente (CRM) — cada uma processada de forma independente
+        // (fire-and-forget: a resposta HTTP já foi mandada acima) pra uma falhar não travar as outras.
+        if (cfg) {
+          for (const m of mudanca.value?.messages || []) {
+            crmProcessarMensagemRecebida(cfg.escritorio_id, cfg, mudanca.value, m).catch((e: any) =>
+              console.error(`[CRM] falha ao processar mensagem recebida (${m.id || "?"}):`, e.message)
+            );
+          }
+        }
       }
     }
   } catch (e: any) {
     console.error("[WhatsApp webhook] erro processando payload:", e.message);
   }
 });
+
+// ---- Rotas do CRM ----
+// Mesma convenção de empresasVisiveis: Administrador vê todos os departamentos do escritório;
+// colaborador só os que está em crm_departamento_colaboradores.
+function crmDepartamentosVisiveis(user: any): number[] {
+  if (user.perfil === "Administrador") {
+    const rows = sqlite.prepare(`SELECT id FROM crm_departamentos WHERE escritorio_id = ?`).all(user.escritorioId) as any[];
+    return rows.map((r) => r.id);
+  }
+  const rows = sqlite
+    .prepare(
+      `SELECT dc.departamento_id FROM crm_departamento_colaboradores dc JOIN crm_departamentos d ON d.id = dc.departamento_id WHERE dc.user_id = ? AND d.escritorio_id = ?`
+    )
+    .all(user.id, user.escritorioId) as any[];
+  return rows.map((r) => r.departamento_id);
+}
+function crmPodeAcessarConversa(user: any, conversaId: number): any {
+  const c = sqlite.prepare(`SELECT * FROM crm_conversas WHERE id = ?`).get(conversaId) as any;
+  if (!c || c.escritorio_id !== user.escritorioId) return null;
+  if (user.perfil === "Administrador") return c;
+  // Conversa ainda no menu (sem departamento definido) — qualquer colaborador com acesso ao CRM
+  // pode ver enquanto aguarda o cliente escolher; depois de roteada, só quem é do departamento.
+  if (c.departamento_id === null) return c;
+  return crmDepartamentosVisiveis(user).includes(c.departamento_id) ? c : null;
+}
+app.get("/api/crm/departamentos", blockCliente, requirePermissao("crm", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const rows = sqlite
+    .prepare(
+      `SELECT d.*, (SELECT COUNT(*) FROM crm_conversas c WHERE c.departamento_id = d.id AND c.status != 'encerrada') as conversasAbertas
+       FROM crm_departamentos d WHERE d.escritorio_id = ? ORDER BY d.ordem`
+    )
+    .all(user.escritorioId) as any[];
+  const visiveis = new Set(crmDepartamentosVisiveis(user));
+  res.json({ items: rows.filter((d) => visiveis.has(d.id)).map((d) => ({ id: d.id, nome: d.nome, ordem: d.ordem, ativo: !!d.ativo, conversasAbertas: d.conversasAbertas })) });
+});
+app.post("/api/crm/departamentos", blockCliente, requirePermissao("crm", "postar"), (req, res) => {
+  const user = (req as any).user;
+  const nome = String(req.body?.nome || "").trim();
+  if (!nome) return res.status(400).json({ error: "Informe o nome do departamento." });
+  const maxOrdem = (sqlite.prepare(`SELECT COALESCE(MAX(ordem), 0) as m FROM crm_departamentos WHERE escritorio_id = ?`).get(user.escritorioId) as any).m;
+  const info = sqlite.prepare(`INSERT INTO crm_departamentos (escritorio_id, nome, ordem) VALUES (?, ?, ?)`).run(user.escritorioId, nome, maxOrdem + 1);
+  res.json({ id: Number(info.lastInsertRowid) });
+});
+app.put("/api/crm/departamentos/:id", blockCliente, requirePermissao("crm", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const d = sqlite.prepare(`SELECT * FROM crm_departamentos WHERE id = ? AND escritorio_id = ?`).get(Number(req.params.id), user.escritorioId) as any;
+  if (!d) return res.status(404).json({ error: "Departamento não encontrado." });
+  const b = req.body || {};
+  sqlite
+    .prepare(`UPDATE crm_departamentos SET nome = ?, ordem = ?, ativo = ? WHERE id = ?`)
+    .run(b.nome !== undefined ? String(b.nome).trim() || d.nome : d.nome, b.ordem !== undefined ? Number(b.ordem) : d.ordem, b.ativo !== undefined ? (b.ativo ? 1 : 0) : d.ativo, d.id);
+  res.json({ ok: true });
+});
+app.delete("/api/crm/departamentos/:id", blockCliente, requirePermissao("crm", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const d = sqlite.prepare(`SELECT * FROM crm_departamentos WHERE id = ? AND escritorio_id = ?`).get(Number(req.params.id), user.escritorioId) as any;
+  if (!d) return res.status(404).json({ error: "Departamento não encontrado." });
+  const temConversa = sqlite.prepare(`SELECT 1 FROM crm_conversas WHERE departamento_id = ? LIMIT 1`).get(d.id);
+  if (temConversa) return res.status(409).json({ error: "Este departamento já tem conversas — inative em vez de excluir." });
+  sqlite.prepare(`DELETE FROM crm_departamentos WHERE id = ?`).run(d.id);
+  res.json({ ok: true });
+});
+app.get("/api/crm/departamentos/:id/colaboradores", blockCliente, requirePermissao("crm", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const d = sqlite.prepare(`SELECT id FROM crm_departamentos WHERE id = ? AND escritorio_id = ?`).get(Number(req.params.id), user.escritorioId);
+  if (!d) return res.status(404).json({ error: "Departamento não encontrado." });
+  const rows = sqlite.prepare(`SELECT user_id FROM crm_departamento_colaboradores WHERE departamento_id = ?`).all(Number(req.params.id)) as any[];
+  res.json({ userIds: rows.map((r) => r.user_id) });
+});
+app.put("/api/crm/departamentos/:id/colaboradores", blockCliente, requirePermissao("crm", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const departamentoId = Number(req.params.id);
+  const d = sqlite.prepare(`SELECT id FROM crm_departamentos WHERE id = ? AND escritorio_id = ?`).get(departamentoId, user.escritorioId);
+  if (!d) return res.status(404).json({ error: "Departamento não encontrado." });
+  const doEscritorio = new Set((sqlite.prepare(`SELECT id FROM app_users WHERE escritorio_id = ?`).all(user.escritorioId) as any[]).map((r) => r.id));
+  const userIds: number[] = Array.isArray(req.body?.userIds) ? req.body.userIds.map(Number).filter((id: number) => doEscritorio.has(id)) : [];
+  sqlite.prepare(`DELETE FROM crm_departamento_colaboradores WHERE departamento_id = ?`).run(departamentoId);
+  const ins = sqlite.prepare(`INSERT INTO crm_departamento_colaboradores (user_id, departamento_id) VALUES (?, ?)`);
+  for (const uid of userIds) ins.run(uid, departamentoId);
+  res.json({ ok: true });
+});
+// status: por padrão só 'menu'+'aberta' (conversas ativas); status=encerrada pra ver o histórico.
+app.get("/api/crm/conversas", blockCliente, requirePermissao("crm", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const visiveis = crmDepartamentosVisiveis(user);
+  const departamentoId = req.query.departamentoId ? Number(req.query.departamentoId) : null;
+  const status = String(req.query.status || "ativas");
+  if (departamentoId && !visiveis.includes(departamentoId)) return res.json({ items: [] });
+  const condStatus = status === "encerrada" ? `c.status = 'encerrada'` : `c.status != 'encerrada'`;
+  const condDepto = departamentoId
+    ? `c.departamento_id = ${departamentoId}`
+    : visiveis.length
+      ? `(c.departamento_id IS NULL OR c.departamento_id IN (${visiveis.join(",")}))`
+      : `c.departamento_id IS NULL`;
+  const rows = sqlite
+    .prepare(
+      `SELECT c.id, c.telefone, c.contato_nome as contatoNome, c.empresa_id as empresaId, e.nome as empresaNome,
+              c.departamento_id as departamentoId, d.nome as departamentoNome, c.atribuido_user_id as atribuidoUserId, u.nome as atribuidoNome,
+              c.status, c.nao_lida as naoLida, c.ultima_mensagem_em as ultimaMensagemEm,
+              (SELECT texto FROM crm_mensagens m WHERE m.conversa_id = c.id ORDER BY m.id DESC LIMIT 1) as ultimaMensagemTexto
+       FROM crm_conversas c
+       LEFT JOIN empresas e ON e.id = c.empresa_id
+       LEFT JOIN crm_departamentos d ON d.id = c.departamento_id
+       LEFT JOIN app_users u ON u.id = c.atribuido_user_id
+       WHERE c.escritorio_id = ? AND ${condStatus} AND ${condDepto}
+       ORDER BY c.ultima_mensagem_em DESC`
+    )
+    .all(user.escritorioId);
+  res.json({ items: rows });
+});
+app.get("/api/crm/conversas/:id/mensagens", blockCliente, requirePermissao("crm", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const conversa = crmPodeAcessarConversa(user, Number(req.params.id));
+  if (!conversa) return res.status(404).json({ error: "Conversa não encontrada." });
+  sqlite.prepare(`UPDATE crm_conversas SET nao_lida = 0 WHERE id = ?`).run(conversa.id);
+  const rows = sqlite
+    .prepare(
+      `SELECT m.id, m.direcao, m.tipo, m.texto, m.midia_mime as midiaMime, m.midia_nome as midiaNome, (m.midia_path IS NOT NULL) as temMidia,
+              m.autor_user_id as autorUserId, u.nome as autorNome, m.criado_em as criadoEm, m.status
+       FROM crm_mensagens m LEFT JOIN app_users u ON u.id = m.autor_user_id
+       WHERE m.conversa_id = ? ORDER BY m.id ASC LIMIT 500`
+    )
+    .all(conversa.id);
+  res.json({
+    conversa: {
+      id: conversa.id, telefone: conversa.telefone, contatoNome: conversa.contato_nome, empresaId: conversa.empresa_id,
+      departamentoId: conversa.departamento_id, atribuidoUserId: conversa.atribuido_user_id, status: conversa.status,
+      ultimaMensagemClienteEm: conversa.ultima_mensagem_cliente_em,
+    },
+    items: rows,
+  });
+});
+app.get("/api/crm/conversas/:id/mensagens/:msgId/midia", blockCliente, requirePermissao("crm", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const conversa = crmPodeAcessarConversa(user, Number(req.params.id));
+  if (!conversa) return res.status(404).json({ error: "Conversa não encontrada." });
+  const msg = sqlite.prepare(`SELECT * FROM crm_mensagens WHERE id = ? AND conversa_id = ?`).get(Number(req.params.msgId), conversa.id) as any;
+  if (!msg?.midia_path || !fs.existsSync(msg.midia_path)) return res.status(404).json({ error: "Arquivo não encontrado." });
+  res.download(msg.midia_path, msg.midia_nome || "arquivo");
+});
+// Só texto livre por ora (envio de mídia pelo agente fica pra depois) — confere a janela de 24h
+// antes de tentar mandar, pra dar um erro claro em vez do genérico que a Meta devolveria.
+app.post("/api/crm/conversas/:id/mensagens", blockCliente, requirePermissao("crm", "postar"), async (req, res) => {
+  const user = (req as any).user;
+  const conversa = crmPodeAcessarConversa(user, Number(req.params.id));
+  if (!conversa) return res.status(404).json({ error: "Conversa não encontrada." });
+  const texto = String(req.body?.texto || "").trim();
+  if (!texto) return res.status(400).json({ error: "Digite uma mensagem." });
+  if (!conversa.ultima_mensagem_cliente_em || Date.now() - new Date(conversa.ultima_mensagem_cliente_em.replace(" ", "T") + "Z").getTime() > 24 * 60 * 60 * 1000) {
+    return res.status(400).json({ error: "Já se passaram mais de 24h desde a última mensagem do cliente — o WhatsApp só permite reabrir com um template aprovado, não com texto livre." });
+  }
+  const cfg = getWhatsappConfig(user.escritorioId);
+  try {
+    await crmEnviarTextoLivre(cfg, conversa.telefone, texto, conversa.id, user.id);
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(502).json({ error: e.message });
+  }
+});
+app.post("/api/crm/conversas/:id/atribuir", blockCliente, requirePermissao("crm", "postar"), (req, res) => {
+  const user = (req as any).user;
+  const conversa = crmPodeAcessarConversa(user, Number(req.params.id));
+  if (!conversa) return res.status(404).json({ error: "Conversa não encontrada." });
+  if (!conversa.departamento_id) return res.status(400).json({ error: "Essa conversa ainda não tem departamento definido." });
+  sqlite.prepare(`UPDATE crm_conversas SET atribuido_user_id = ? WHERE id = ?`).run(user.id, conversa.id);
+  res.json({ ok: true });
+});
+app.post("/api/crm/conversas/:id/transferir", blockCliente, requirePermissao("crm", "postar"), (req, res) => {
+  const user = (req as any).user;
+  const conversa = crmPodeAcessarConversa(user, Number(req.params.id));
+  if (!conversa) return res.status(404).json({ error: "Conversa não encontrada." });
+  const paraDepartamentoId = Number(req.body?.departamentoId);
+  const destino = sqlite.prepare(`SELECT id FROM crm_departamentos WHERE id = ? AND escritorio_id = ?`).get(paraDepartamentoId, user.escritorioId);
+  if (!destino) return res.status(400).json({ error: "Departamento de destino inválido." });
+  const motivo = String(req.body?.motivo || "").trim() || null;
+  sqlite
+    .prepare(`INSERT INTO crm_transferencias (conversa_id, de_departamento_id, para_departamento_id, user_id, motivo) VALUES (?, ?, ?, ?, ?)`)
+    .run(conversa.id, conversa.departamento_id, paraDepartamentoId, user.id, motivo);
+  sqlite.prepare(`UPDATE crm_conversas SET departamento_id = ?, atribuido_user_id = NULL, status = 'aberta' WHERE id = ?`).run(paraDepartamentoId, conversa.id);
+  res.json({ ok: true });
+});
+app.post("/api/crm/conversas/:id/encerrar", blockCliente, requirePermissao("crm", "postar"), (req, res) => {
+  const user = (req as any).user;
+  const conversa = crmPodeAcessarConversa(user, Number(req.params.id));
+  if (!conversa) return res.status(404).json({ error: "Conversa não encontrada." });
+  sqlite.prepare(`UPDATE crm_conversas SET status = 'encerrada' WHERE id = ?`).run(conversa.id);
+  res.json({ ok: true });
+});
+
 // Um documento pode ter ido pra mais de um contato (ex.: dois telefones do escritório) — cada envio
 // tem sua própria linha em whatsapp_mensagens. Aqui agrega isso num status único pra exibir na tela:
 // "lido" assim que QUALQUER contato já leu, "falhou" se qualquer um falhou (precisa de atenção),

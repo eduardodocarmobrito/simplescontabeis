@@ -704,6 +704,7 @@ const NAV = [
   { id:'financeiro', label:'Financeiro', modulo:'financeiro', roles:['Administrador','Colaborador'] },
   { id:'contratos', label:'Contratos', modulo:'contratos', roles:['Administrador','Colaborador'] },
   { id:'relatorios', label:'Relatórios', modulo:'relatorios', roles:['Administrador','Colaborador'] },
+  { id:'crm', label:'CRM', modulo:'crm', roles:['Administrador','Colaborador'] },
   { id:'usuarios', label:'Usuários', modulo:'usuarios', roles:['Administrador'] },
   { id:'configuracoes', label:'Configurações', modulo:'configuracoes', roles:['Administrador','Colaborador'] },
   { id:'minha-assinatura-colaborador', label:'Assinatura', modulo:null, roles:['Colaborador'] },
@@ -823,6 +824,10 @@ async function render(){
   const meuSeq = ++RENDER_SEQ;
   const m = main();
   m.innerHTML = '<div class="empty-state">Carregando…</div>';
+  // Sai da tela do CRM sem passar pelo botão "Voltar" nenhum (ela é uma página normal, não um
+  // painel flutuante como o chat) — para o polling dela aqui, senão continuaria rodando em segundo
+  // plano depois de navegar pra outro lugar.
+  if(STATE.page!=='crm') pararCrmTimers();
   try{
     if(STATE.page==='dashboard') await pageDashboard();
     else if(STATE.page==='empresas') await pageEmpresas();
@@ -842,6 +847,7 @@ async function render(){
     else if(STATE.page==='financeiro') await pageFinanceiro();
     else if(STATE.page==='contratos') await pageContratos();
     else if(STATE.page==='relatorios') await pageRelatorios();
+    else if(STATE.page==='crm') await pageCrm();
     else if(STATE.page==='usuarios') await pageUsuarios();
     else if(STATE.page==='configuracoes') await pageConfiguracoes();
     else if(STATE.page==='minha-assinatura-colaborador') await pageMinhaAssinaturaColaborador();
@@ -7164,6 +7170,222 @@ async function carregarRelatorio(){
   `).join('');
 }
 
+// ===================== CRM (conversas do WhatsApp) =====================
+let CRM = { departamentos:[], departamentoAtivo:'todas', conversaAtiva:null, listaTimer:null, mensagensTimer:null };
+function pararCrmTimers(){
+  if(CRM.listaTimer){ clearInterval(CRM.listaTimer); CRM.listaTimer=null; }
+  if(CRM.mensagensTimer){ clearInterval(CRM.mensagensTimer); CRM.mensagensTimer=null; }
+}
+async function pageCrm(){
+  pararCrmTimers();
+  CRM.conversaAtiva = null;
+  const { items: departamentos } = await api('/crm/departamentos');
+  CRM.departamentos = departamentos;
+  if(CRM.departamentoAtivo!=='todas' && !departamentos.some(d=>d.id===CRM.departamentoAtivo)) CRM.departamentoAtivo = 'todas';
+  main().innerHTML = `
+    <div class="row" style="justify-content:space-between; align-items:flex-start;">
+      <div><h1>CRM</h1><p class="subtitle">Conversas do WhatsApp com clientes, organizadas por departamento.</p></div>
+      ${can('crm','editar')?`<button class="btn" id="btnCrmDepartamentos">Departamentos</button>`:''}
+    </div>
+    <div class="tabs" id="crmTabs"></div>
+    <div style="display:flex; gap:14px; margin-top:12px; align-items:flex-start;">
+      <div class="card" style="width:360px; flex-shrink:0; padding:0; display:flex; flex-direction:column; max-height:72vh;">
+        <div style="padding:10px; border-bottom:1px solid var(--rule);">
+          <input type="text" id="crmBusca" placeholder="Buscar por nome/telefone…" style="width:100%;">
+          <label style="font-size:12px; display:flex; align-items:center; gap:4px; margin-top:8px;"><input type="checkbox" id="crmVerEncerradas"> Ver encerradas</label>
+        </div>
+        <div id="crmListaConversas" style="overflow-y:auto; flex:1;"><div class="empty-state">Carregando…</div></div>
+      </div>
+      <div class="card" id="crmThreadCard" style="flex:1; padding:0; display:flex; flex-direction:column; max-height:72vh; min-height:72vh;">
+        <div class="empty-state" style="margin:auto;">Selecione uma conversa à esquerda.</div>
+      </div>
+    </div>
+  `;
+  crmRenderTabs();
+  document.getElementById('crmBusca').addEventListener('input', crmCarregarLista);
+  document.getElementById('crmVerEncerradas').addEventListener('change', crmCarregarLista);
+  const btnDep = document.getElementById('btnCrmDepartamentos');
+  if(btnDep) btnDep.addEventListener('click', crmDepartamentosModal);
+  await crmCarregarLista();
+  CRM.listaTimer = setInterval(crmCarregarLista, 15000);
+}
+function crmRenderTabs(){
+  const tabs = document.getElementById('crmTabs');
+  if(!tabs) return;
+  const itens = [{id:'todas', label:'Todas'}, ...CRM.departamentos.map(d=>({id:d.id, label:d.conversasAbertas?`${d.nome} (${d.conversasAbertas})`:d.nome}))];
+  tabs.innerHTML = itens.map(it=>`<div class="tab ${CRM.departamentoAtivo===it.id?'active':''}" data-id="${it.id}">${esc(it.label)}</div>`).join('');
+  tabs.querySelectorAll('.tab').forEach(t=>t.addEventListener('click', ()=>{
+    CRM.departamentoAtivo = t.dataset.id==='todas' ? 'todas' : Number(t.dataset.id);
+    crmRenderTabs();
+    crmCarregarLista();
+  }));
+}
+async function crmCarregarLista(){
+  const box = document.getElementById('crmListaConversas');
+  if(!box) return;
+  const encerradas = document.getElementById('crmVerEncerradas')?.checked;
+  const busca = normalizaTxt(document.getElementById('crmBusca')?.value || '');
+  let qs = `?status=${encerradas?'encerrada':'ativas'}`;
+  if(CRM.departamentoAtivo!=='todas') qs += `&departamentoId=${CRM.departamentoAtivo}`;
+  let items;
+  try{ ({ items } = await api('/crm/conversas'+qs)); }catch(e){ return; }
+  if(busca) items = items.filter(c=>normalizaTxt(c.contatoNome||'').includes(busca) || normalizaTxt(c.empresaNome||'').includes(busca) || c.telefone.includes(busca));
+  box.innerHTML = items.length ? items.map(c=>`
+    <div class="crm-conv-row" data-id="${c.id}" style="padding:10px; border-bottom:1px solid var(--rule); cursor:pointer; ${CRM.conversaAtiva===c.id?'background:var(--paper);':''} ${c.naoLida?'font-weight:600;':''}">
+      <div class="row" style="justify-content:space-between; align-items:center; gap:6px;">
+        <div style="min-width:0; flex:1;">
+          <div style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${esc(c.empresaNome || c.contatoNome || c.telefone)}</div>
+          <div style="font-size:11.5px; color:var(--ink-soft); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${esc((c.ultimaMensagemTexto||'').slice(0,60))}</div>
+        </div>
+        ${c.naoLida?'<span class="tag warn" style="flex-shrink:0;">novo</span>':''}
+      </div>
+      <div style="font-size:11px; color:var(--ink-soft); margin-top:2px;">${c.departamentoNome?esc(c.departamentoNome):'Aguardando escolha no menu'}${c.atribuidoNome?' · '+esc(c.atribuidoNome):''}</div>
+    </div>
+  `).join('') : `<div class="empty-state">Nenhuma conversa.</div>`;
+  box.querySelectorAll('.crm-conv-row').forEach(el=>el.addEventListener('click', ()=>crmAbrirConversa(Number(el.dataset.id))));
+}
+async function crmAbrirConversa(id){
+  CRM.conversaAtiva = id;
+  crmCarregarLista();
+  if(CRM.mensagensTimer){ clearInterval(CRM.mensagensTimer); CRM.mensagensTimer=null; }
+  await crmRenderThread();
+  CRM.mensagensTimer = setInterval(crmRenderThread, 8000);
+}
+async function crmRenderThread(){
+  if(!CRM.conversaAtiva) return;
+  const card = document.getElementById('crmThreadCard');
+  if(!card) return;
+  let data;
+  try{ data = await api('/crm/conversas/'+CRM.conversaAtiva+'/mensagens'); }catch(e){ card.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; return; }
+  const { conversa, items } = data;
+  const dentroDaJanela = conversa.ultimaMensagemClienteEm && (Date.now() - new Date(String(conversa.ultimaMensagemClienteEm).replace(' ','T')+'Z').getTime()) < 24*60*60*1000;
+  card.innerHTML = `
+    <div style="padding:10px 14px; border-bottom:1px solid var(--rule); display:flex; justify-content:space-between; align-items:center; gap:8px;">
+      <div style="min-width:0;">
+        <div style="font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${esc(conversa.contatoNome || conversa.telefone)}</div>
+        <div style="font-size:11.5px; color:var(--ink-soft);">${esc(conversa.telefone)}${conversa.status==='encerrada'?' · <span class="tag muted">Encerrada</span>':''}</div>
+      </div>
+      <div class="row" style="gap:6px; flex-shrink:0;">
+        ${(conversa.departamentoId && !conversa.atribuidoUserId && conversa.status!=='encerrada')?`<button class="btn small" id="crmBtnAtribuir">Atribuir a mim</button>`:''}
+        ${conversa.status!=='encerrada'?`<button class="btn small" id="crmBtnTransferir">Transferir</button>`:''}
+        ${conversa.status!=='encerrada'?`<button class="btn small danger" id="crmBtnEncerrar">Encerrar</button>`:''}
+      </div>
+    </div>
+    <div class="chat-lista" id="crmMsgLista" style="flex:1; overflow-y:auto; padding:12px;"></div>
+    <div class="chat-input-row" id="crmComposer">
+      ${dentroDaJanela && conversa.status!=='encerrada'
+        ? `<textarea id="crmInput" rows="1" placeholder="Escreva uma mensagem…" maxlength="4000"></textarea><button id="crmEnviar" title="Enviar">➤</button>`
+        : `<div style="font-size:12px; color:var(--ink-soft); padding:8px;">${conversa.status==='encerrada'?'Conversa encerrada — não dá pra responder aqui.':'Já se passaram mais de 24h desde a última mensagem do cliente — o WhatsApp só permite reabrir com um template aprovado.'}</div>`}
+    </div>
+  `;
+  const lista = document.getElementById('crmMsgLista');
+  lista.innerHTML = items.map(m=>{
+    const midiaHtml = m.temMidia ? `<a class="chat-anexo-link" href="/api/crm/conversas/${conversa.id}/mensagens/${m.id}/midia" target="_blank" rel="noopener">📎 ${esc(m.midiaNome||'arquivo')}</a>` : '';
+    return `<div class="chat-msg ${m.direcao==='saida'?'mine':'theirs'}">${m.texto?esc(m.texto):''}${midiaHtml}<span class="hora">${m.direcao==='saida'?esc(m.autorNome||'Sistema'):esc(conversa.contatoNome||conversa.telefone)} · ${fmtDateHora(m.criadoEm)}</span></div>`;
+  }).join('') || `<div class="empty-state">Nenhuma mensagem ainda.</div>`;
+  lista.scrollTop = lista.scrollHeight;
+  const btnAtribuir = document.getElementById('crmBtnAtribuir');
+  if(btnAtribuir) btnAtribuir.addEventListener('click', async ()=>{
+    try{ await api('/crm/conversas/'+conversa.id+'/atribuir', { method:'POST' }); toast('Conversa atribuída a você.','ok'); crmRenderThread(); crmCarregarLista(); }catch(e){ toast(e.message,'err'); }
+  });
+  const btnTransferir = document.getElementById('crmBtnTransferir');
+  if(btnTransferir) btnTransferir.addEventListener('click', ()=>crmTransferirModal(conversa));
+  const btnEncerrar = document.getElementById('crmBtnEncerrar');
+  if(btnEncerrar) btnEncerrar.addEventListener('click', async ()=>{
+    if(!confirmar('Encerrar esta conversa?')) return;
+    try{ await api('/crm/conversas/'+conversa.id+'/encerrar', { method:'POST' }); toast('Conversa encerrada.','ok'); crmRenderThread(); crmCarregarLista(); }catch(e){ toast(e.message,'err'); }
+  });
+  const input = document.getElementById('crmInput');
+  const enviarBtn = document.getElementById('crmEnviar');
+  if(input && enviarBtn){
+    async function enviar(){
+      const texto = input.value.trim();
+      if(!texto) return;
+      enviarBtn.disabled = true;
+      try{ await api('/crm/conversas/'+conversa.id+'/mensagens', { method:'POST', body:{ texto } }); input.value=''; await crmRenderThread(); }
+      catch(e){ toast(e.message,'err'); }
+      finally{ enviarBtn.disabled=false; input.focus(); }
+    }
+    enviarBtn.addEventListener('click', enviar);
+    input.addEventListener('keydown', ev=>{ if(ev.key==='Enter' && !ev.shiftKey){ ev.preventDefault(); enviar(); } });
+  }
+}
+function crmTransferirModal(conversa){
+  openModal(`
+    <h3>Transferir conversa</h3>
+    <div class="field"><label>Departamento de destino</label>
+      <select id="crmTransfDepto">${CRM.departamentos.filter(d=>d.id!==conversa.departamentoId).map(d=>`<option value="${d.id}">${esc(d.nome)}</option>`).join('')}</select>
+    </div>
+    <div class="field"><label>Motivo (opcional)</label><input type="text" id="crmTransfMotivo"></div>
+    <div class="modal-actions"><button class="btn" id="crmTransfCancel">Cancelar</button><button class="btn primary" id="crmTransfSalvar">Transferir</button></div>
+  `);
+  document.getElementById('crmTransfCancel').addEventListener('click', closeModal);
+  document.getElementById('crmTransfSalvar').addEventListener('click', async ()=>{
+    try{
+      await api('/crm/conversas/'+conversa.id+'/transferir', { method:'POST', body:{ departamentoId: Number(document.getElementById('crmTransfDepto').value), motivo: document.getElementById('crmTransfMotivo').value.trim() } });
+      closeModal(); toast('Conversa transferida.','ok'); pageCrm();
+    }catch(e){ toast(e.message,'err'); }
+  });
+}
+async function crmDepartamentosModal(){
+  const { items } = await api('/crm/departamentos');
+  const { items: usuarios } = await api('/users');
+  const colabsAtivos = usuarios.filter(u=>u.perfil!=='Cliente' && u.ativo);
+  openModal(`
+    <h3>Departamentos do CRM</h3>
+    <div class="row" style="gap:8px; margin-bottom:10px;">
+      <input type="text" id="crmDeptoNovoNome" placeholder="Nome do novo departamento" style="flex:1;">
+      <button class="btn primary" id="crmDeptoNovoSalvar">+ Adicionar</button>
+    </div>
+    <div id="crmDeptoLista"></div>
+    <div class="modal-actions"><button class="btn" id="crmDeptoFechar">Fechar</button></div>
+  `, '640px');
+  document.getElementById('crmDeptoFechar').addEventListener('click', ()=>{ closeModal(); pageCrm(); });
+  function desenhaLista(itens){
+    document.getElementById('crmDeptoLista').innerHTML = itens.map(d=>`
+      <div class="card" style="margin-bottom:8px;">
+        <div class="row" style="justify-content:space-between; align-items:center; gap:8px;">
+          <input type="text" class="crmDeptoNome" data-id="${d.id}" value="${esc(d.nome)}" style="flex:1;">
+          <label style="font-size:12px; display:flex; align-items:center; gap:4px; white-space:nowrap;"><input type="checkbox" class="crmDeptoAtivo" data-id="${d.id}" ${d.ativo?'checked':''}> Ativo</label>
+          <button class="btn small" data-act="colabs" data-id="${d.id}">Responsáveis</button>
+          <button class="btn small danger" data-act="excluir" data-id="${d.id}">Excluir</button>
+        </div>
+      </div>
+    `).join('') || `<div class="empty-state">Nenhum departamento cadastrado ainda.</div>`;
+    document.querySelectorAll('.crmDeptoNome').forEach(el=>el.addEventListener('blur', async ()=>{
+      try{ await api('/crm/departamentos/'+el.dataset.id, { method:'PUT', body:{ nome: el.value.trim() } }); }catch(e){ toast(e.message,'err'); }
+    }));
+    document.querySelectorAll('.crmDeptoAtivo').forEach(el=>el.addEventListener('change', async ()=>{
+      try{ await api('/crm/departamentos/'+el.dataset.id, { method:'PUT', body:{ ativo: el.checked } }); }catch(e){ toast(e.message,'err'); }
+    }));
+    document.querySelectorAll('[data-act="excluir"]').forEach(b=>b.addEventListener('click', async ()=>{
+      if(!confirmar('Excluir este departamento?')) return;
+      try{ await api('/crm/departamentos/'+b.dataset.id, { method:'DELETE' }); crmDepartamentosModal(); }catch(e){ toast(e.message,'err'); }
+    }));
+    document.querySelectorAll('[data-act="colabs"]').forEach(b=>b.addEventListener('click', ()=>crmColaboradoresModal(Number(b.dataset.id), itens.find(d=>d.id===Number(b.dataset.id)).nome, colabsAtivos)));
+  }
+  desenhaLista(items);
+  document.getElementById('crmDeptoNovoSalvar').addEventListener('click', async ()=>{
+    const nome = document.getElementById('crmDeptoNovoNome').value.trim();
+    if(!nome){ toast('Informe o nome.','err'); return; }
+    try{ await api('/crm/departamentos', { method:'POST', body:{ nome } }); crmDepartamentosModal(); }catch(e){ toast(e.message,'err'); }
+  });
+}
+async function crmColaboradoresModal(departamentoId, nome, colaboradores){
+  const { userIds } = await api('/crm/departamentos/'+departamentoId+'/colaboradores');
+  openModal(`
+    <h3>Responsáveis — ${esc(nome)}</h3>
+    <p style="font-size:12.5px; color:var(--ink-soft);">Quem for marcado aqui vê e atende as conversas deste departamento.</p>
+    <div class="checkbox-grid">${colaboradores.map(u=>`<label class="checkbox-row"><input type="checkbox" class="crmColabCheck" value="${u.id}" ${userIds.includes(u.id)?'checked':''}> ${esc(u.nome)}</label>`).join('')}</div>
+    <div class="modal-actions"><button class="btn" id="crmColabCancel">Cancelar</button><button class="btn primary" id="crmColabSalvar">Salvar</button></div>
+  `);
+  document.getElementById('crmColabCancel').addEventListener('click', crmDepartamentosModal);
+  document.getElementById('crmColabSalvar').addEventListener('click', async ()=>{
+    const ids = [...document.querySelectorAll('.crmColabCheck:checked')].map(c=>Number(c.value));
+    try{ await api('/crm/departamentos/'+departamentoId+'/colaboradores', { method:'PUT', body:{ userIds: ids } }); toast('Salvo.','ok'); crmDepartamentosModal(); }catch(e){ toast(e.message,'err'); }
+  });
+}
+
 // ===================== Usuários =====================
 async function pageUsuarios(){
   const { items } = await api('/users');
@@ -7202,7 +7424,7 @@ async function pageUsuarios(){
   document.getElementById('usFiltro').addEventListener('input', e=>desenhaUsuarios(e.target.value));
   document.getElementById('btnNovoUsuario').addEventListener('click', ()=>usuarioModal());
 }
-const MODS = [['dashboard','Início'],['empresas','Empresas'],['solicitacoes','Solicitações de Documentos'],['envio','Envio de Documentos'],['nfse','NFS-e'],['nfe-busca','Busca de XML'],['integracontador','Integra Contador'],['licencas','Licenças'],['financeiro','Financeiro'],['contratos','Contratos'],['relatorios','Relatórios'],['usuarios','Usuários'],['configuracoes','Configurações']];
+const MODS = [['dashboard','Início'],['empresas','Empresas'],['solicitacoes','Solicitações de Documentos'],['envio','Envio de Documentos'],['nfse','NFS-e'],['nfe-busca','Busca de XML'],['integracontador','Integra Contador'],['licencas','Licenças'],['financeiro','Financeiro'],['contratos','Contratos'],['relatorios','Relatórios'],['crm','CRM'],['usuarios','Usuários'],['configuracoes','Configurações']];
 // Lista de empresas com busca por texto — usada nos dois pickers de empresa do modal de usuário
 // (Cliente com múltiplas empresas, Colaborador com acesso restrito), já que a base de empresas
 // pode ter centenas de linhas (import do Domínio Web).
