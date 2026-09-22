@@ -2543,10 +2543,20 @@ function reescreverCorpoNoProxy(proxyReq: any, req: express.Request) {
 // navegador→Railway→VPS→Supabase, e um proxy que corta cedo demais é pior que um lento — melhor
 // deixar quem sabe o orçamento certo (o próprio cliente do deskcomm) decidir quando desistir.
 const deskcommHttpsAgent = new https.Agent({ keepAlive: true, maxSockets: 50 });
+// requireAuth/blockCliente devolvem JSON (certo pra /api/*, chamado por fetch) — mas /deskcomm serve
+// NAVEGAÇÃO DE PÁGINA (o navegador carrega isto direto, com F5/atualizar incluso). Sessão vencida
+// nessa rota mostrando `{"error":"Sessão expirada..."}` cru na tela é uma péssima experiência —
+// medido ao vivo — o certo é voltar pra tela inicial do site, de onde o login normal assume.
+function requireAuthPagina(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const user = getSessionUser(req.cookies?.sid);
+  if (!user) return res.redirect("/");
+  if (user.perfil === "Cliente") return res.redirect("/");
+  (req as any).user = user;
+  next();
+}
 app.use(
   "/deskcomm",
-  requireAuth,
-  blockCliente,
+  requireAuthPagina,
   createProxyMiddleware({
     target: DESKCOMM_URL,
     // changeOrigin:true é obrigatório aqui — testado ao vivo sem ele: o TLS quebra com EPROTO na
