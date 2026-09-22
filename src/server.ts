@@ -7687,19 +7687,18 @@ function integraContadorAnexarDasEmEnvio(
 // vêm prontos da API, sem precisar reler o PDF). Documento antigo sem chave salva (gravado antes
 // dessa migração) cai no hash do PDF, igual ao comportamento anterior — mais seguro reenviar à toa
 // uma vez do que nunca mais detectar uma retificação de verdade.
-function envioDocumentoMudouDeVerdade(periodoId: number, chaveEstavelNova: string | null, pdfBase64Novo: string): boolean {
-  const ultimo = sqlite.prepare(`SELECT file_path, chave_estavel FROM envio_documentos WHERE periodo_id = ? ORDER BY id DESC LIMIT 1`).get(periodoId) as any;
-  if (!ultimo) return false; // nunca teve documento nesse período — é o primeiro envio, não uma retificação
-  if (chaveEstavelNova && ultimo.chave_estavel) return ultimo.chave_estavel !== chaveEstavelNova;
-  let bufAntigo: Buffer;
-  try {
-    bufAntigo = fs.readFileSync(ultimo.file_path);
-  } catch {
-    return true; // arquivo antigo sumiu do disco — trata como mudou, pra não perder a atualização
-  }
-  const hashAntigo = crypto.createHash("sha256").update(bufAntigo).digest("hex");
-  const hashNovo = crypto.createHash("sha256").update(Buffer.from(pdfBase64Novo, "base64")).digest("hex");
-  return hashAntigo !== hashNovo;
+// FREIO DE EMERGÊNCIA (2026-09-22) — pedido explícito do usuário: a busca automática voltou a
+// reenviar guia pro cliente várias vezes no MESMO DIA sem nenhuma retificação real (conferido por
+// ele no e-CAC/FGTS), mesmo já com a chave estável abaixo. Suspeita mais forte, ainda não confirmada
+// contra produção: pra guia VENCIDA, `das.valores` inclui multa/juros que crescem só pelo tempo
+// passando (ou até por hora, dependendo de como a Receita calcula) — isso não é retificação, mas
+// entra na chave estável do DAS e faz ela "mudar" a cada consulta. Até investigar e corrigir a chave
+// de verdade, a busca automática NUNCA reenvia (só o primeiro envio de um período passa) — reenviar
+// à toa pro cliente é pior que atrasar uma atualização legítima, que o "Solicitar recálculo" manual
+// (forcarNovoDocumento=true) ainda cobre sem depender desta função.
+function envioDocumentoMudouDeVerdade(periodoId: number, _chaveEstavelNova: string | null, _pdfBase64Novo: string): boolean {
+  const ultimo = sqlite.prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id = ? LIMIT 1`).get(periodoId);
+  return !ultimo; // sem documento anterior = primeiro envio (não é retificação); com documento anterior = nunca reenvia sozinho
 }
 // Extrai o Nº Recibo Declaração impresso no DARF gerado pela DCTFWeb (GERARGUIA31) — é o único
 // identificador que só muda numa retificação de verdade (a declaração transmitida de novo, com um
