@@ -2515,11 +2515,23 @@ const deskcommAdmin =
   DESKCOMM_SUPABASE_URL && DESKCOMM_SUPABASE_SERVICE_ROLE_KEY
     ? createSupabaseClient(DESKCOMM_SUPABASE_URL, DESKCOMM_SUPABASE_SERVICE_ROLE_KEY, { auth: { autoRefreshToken: false, persistSession: false } })
     : null;
+// `express.json()` (registrado lá em cima, global) já CONSOME o corpo da requisição antes de chegar
+// aqui — sem isso, todo PUT/POST/PATCH proxeado chegava vazio no deskcomm (medido ao vivo: salvar
+// membros de Roteador dava "Failed to load response data" no DevTools, sem status nenhum — o corpo
+// nunca saía). Reescreve o corpo já parseado (`req.body`) de volta na requisição de saída antes do
+// proxy encaminhar.
+function reescreverCorpoNoProxy(proxyReq: any, req: express.Request) {
+  if (!req.body || !Object.keys(req.body).length) return;
+  const corpo = Buffer.from(JSON.stringify(req.body));
+  proxyReq.setHeader("Content-Type", "application/json");
+  proxyReq.setHeader("Content-Length", corpo.length);
+  proxyReq.write(corpo);
+}
 app.use(
   "/deskcomm",
   requireAuth,
   blockCliente,
-  createProxyMiddleware({ target: DESKCOMM_URL, changeOrigin: true, ws: false })
+  createProxyMiddleware({ target: DESKCOMM_URL, changeOrigin: true, ws: false, onProxyReq: reescreverCorpoNoProxy })
 );
 // O front-end do deskcomm chama a própria API sempre por caminho absoluto (ex.: fetch("/api/v1/...")),
 // sem levar o basePath em conta — fetch() cru não é reescrito pelo Next como a navegação é. Medido ao
@@ -2532,7 +2544,7 @@ app.use(
   "/api/v1",
   requireAuth,
   blockCliente,
-  createProxyMiddleware({ target: DESKCOMM_URL, changeOrigin: true, ws: false, pathRewrite: { "^/api/v1": "/deskcomm/api/v1" } })
+  createProxyMiddleware({ target: DESKCOMM_URL, changeOrigin: true, ws: false, pathRewrite: { "^/api/v1": "/deskcomm/api/v1" }, onProxyReq: reescreverCorpoNoProxy })
 );
 app.get("/deskcomm-login", requireAuth, blockCliente, async (req, res) => {
   const user = (req as any).user;
