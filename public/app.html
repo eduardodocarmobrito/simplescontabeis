@@ -83,7 +83,7 @@
   .sidebar-brand{padding:2px 20px 16px; border-bottom:1px solid var(--rule); margin-bottom:8px;}
   .sidebar-brand .eyebrow{font-family:'IBM Plex Mono',monospace; font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--accent);}
   .sidebar-brand h2{font-size:18px; margin:3px 0 0; font-weight:700;}
-  .nav-item{display:flex; align-items:center; gap:10px; padding:10px 20px; font-size:13.5px; color:var(--sidebar-ink); cursor:pointer; border-left:2px solid transparent;}
+  .nav-item{display:flex; align-items:center; gap:10px; padding:10px 20px; font-size:13.5px; color:var(--sidebar-ink); cursor:pointer; border-left:2px solid transparent; text-decoration:none;}
   .nav-item:hover{background:var(--paper);}
   .nav-item.active{background:var(--sidebar-active); border-left-color:var(--accent); color:var(--accent-deep); font-weight:600;}
   .nav-sub{padding:8px 20px 8px 40px; font-size:13px; color:var(--sidebar-ink); cursor:pointer; border-left:2px solid transparent;}
@@ -745,6 +745,11 @@ function renderNav(){
     `<div class="nav-item ${STATE.page===it.id?'active':''}" data-page="${it.id}">${esc(it.label)}</div>`
   ).join('');
   wrap.querySelectorAll('.nav-item').forEach(el=>el.addEventListener('click', ()=>goPage(el.dataset.page)));
+  // Ponte pro deskcomm: navegação de verdade (não SPA — é login único por fora, via /deskcomm-login),
+  // por isso é um <a> à parte, não um item do NAV/goPage. Cliente não usa o deskcomm.
+  if(STATE.user.perfil==='Administrador' || STATE.user.perfil==='Colaborador'){
+    wrap.insertAdjacentHTML('beforeend', `<a class="nav-item" href="/deskcomm-login">CRM (deskcomm)</a>`);
+  }
 }
 function goPage(id){
   STATE.page=id;

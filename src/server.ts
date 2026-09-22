@@ -22,6 +22,8 @@ import * as ocr from "./ocr";
 import { buscarViaOnvio } from "./onvio-sync";
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
+import { createProxyMiddleware } from "http-proxy-middleware";
+import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 
@@ -1533,6 +1535,14 @@ for (const tabela of ["chat_mensagens", "chat_equipe_mensagens", "chat_dm_mensag
     sqlite.exec(`ALTER TABLE crm_departamentos ADD COLUMN rodizio_ultimo_user_id INTEGER REFERENCES app_users(id)`);
   }
 }
+// Migração leve: app_users ganha o id espelhado no Supabase Auth do deskcomm (ponte de login
+// único — ver deskcommObterOuCriarUsuarioEspelhado) — evita relookup por e-mail a cada acesso.
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(app_users)`).all() as any[];
+  if (!cols.some((c) => c.name === "deskcomm_user_id")) {
+    sqlite.exec(`ALTER TABLE app_users ADD COLUMN deskcomm_user_id TEXT`);
+  }
+}
 // Migração leve: mesmo controle de status do WhatsApp, agora direto na NFS-e emitida (não precisa
 // passar por Envio de Documentos pra mandar a nota pro cliente).
 {
@@ -2485,6 +2495,70 @@ app.get("/", (_req, res) => {
   res.sendFile(path.join(__dirname, "..", "public", "app.html"));
 });
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
+
+// ---------- Ponte com o deskcomm (CRM de terceiros, rodando numa VPS separada) ----------
+// O proxy deixa o deskcomm acessível dentro do mesmo domínio (`/deskcomm/*`), protegido pela MESMA
+// sessão `sid` de sempre — ninguém sem login aqui alcança o que está atrás dele. O login único
+// funciona gerando um magic-link do Supabase Auth do deskcomm (API Admin, com a service-role key) e
+// mandando o navegador pro `/auth/confirm` de lá — como essa chamada passa PELO PROXY (mesma
+// origem), o cookie de sessão do deskcomm (`sb-deskcomm-auth`) fica gravado neste mesmo domínio, sem
+// precisar sair pra `srv1998403.hstgr.cloud`. O deskcomm em si já foi reconstruído com
+// `basePath: "/deskcomm"`, então os caminhos batem sem nenhuma reescrita aqui.
+const DESKCOMM_URL = "https://srv1998403.hstgr.cloud";
+const DESKCOMM_SUPABASE_URL = process.env.DESKCOMM_SUPABASE_URL || "";
+const DESKCOMM_SUPABASE_SERVICE_ROLE_KEY = process.env.DESKCOMM_SUPABASE_SERVICE_ROLE_KEY || "";
+const DESKCOMM_ORG_ID = process.env.DESKCOMM_ORG_ID || "";
+const deskcommAdmin =
+  DESKCOMM_SUPABASE_URL && DESKCOMM_SUPABASE_SERVICE_ROLE_KEY
+    ? createSupabaseClient(DESKCOMM_SUPABASE_URL, DESKCOMM_SUPABASE_SERVICE_ROLE_KEY, { auth: { autoRefreshToken: false, persistSession: false } })
+    : null;
+app.use(
+  "/deskcomm",
+  requireAuth,
+  blockCliente,
+  createProxyMiddleware({ target: DESKCOMM_URL, changeOrigin: true, ws: false })
+);
+app.get("/deskcomm-login", requireAuth, blockCliente, async (req, res) => {
+  const user = (req as any).user;
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID) {
+    return res.status(503).send("Integração com o deskcomm não configurada (faltam variáveis de ambiente no servidor).");
+  }
+  try {
+    let deskcommUserId: string | null = (sqlite.prepare(`SELECT deskcomm_user_id FROM app_users WHERE id = ?`).get(user.id) as any)?.deskcomm_user_id || null;
+    if (!deskcommUserId) {
+      // Busca por e-mail antes de criar — createUser falha se o e-mail já existir por lá (ex.:
+      // usuário provisionado manualmente antes desta ponte existir).
+      const { data: existentes, error: erroListar } = await deskcommAdmin.auth.admin.listUsers({ page: 1, perPage: 1000 });
+      if (erroListar) throw new Error(erroListar.message);
+      const existente = existentes.users.find((u) => (u.email || "").toLowerCase() === user.email.toLowerCase());
+      if (existente) {
+        deskcommUserId = existente.id;
+      } else {
+        const { data: criado, error: erroCriar } = await deskcommAdmin.auth.admin.createUser({
+          email: user.email,
+          email_confirm: true,
+          user_metadata: { nome: user.nome, origem: "simplescontabeis" },
+        });
+        if (erroCriar || !criado.user) throw new Error(erroCriar?.message || "Falha ao criar usuário espelhado no deskcomm.");
+        deskcommUserId = criado.user.id;
+      }
+      sqlite.prepare(`UPDATE app_users SET deskcomm_user_id = ? WHERE id = ?`).run(deskcommUserId, user.id);
+    }
+    const role = user.perfil === "Administrador" ? "admin" : "agent";
+    const { error: erroOrg } = await deskcommAdmin
+      .from("user_organizations")
+      .upsert({ organization_id: DESKCOMM_ORG_ID, user_id: deskcommUserId, role, accepted_at: new Date().toISOString() }, { onConflict: "organization_id,user_id" });
+    if (erroOrg) throw new Error(erroOrg.message);
+    const { data: linkData, error: erroLink } = await deskcommAdmin.auth.admin.generateLink({ type: "magiclink", email: user.email });
+    const tokenHash = (linkData as any)?.properties?.hashed_token;
+    if (erroLink || !tokenHash) throw new Error(erroLink?.message || "O Supabase não devolveu o token de acesso.");
+    const qs = new URLSearchParams({ token_hash: tokenHash, type: "magiclink", next: "/app/inbox" });
+    res.redirect(`/deskcomm/auth/confirm?${qs.toString()}`);
+  } catch (e: any) {
+    console.error("[deskcomm] falha na ponte de login:", e.message);
+    res.status(502).send(`Não foi possível entrar no deskcomm agora: ${e.message}`);
+  }
+});
 
 // ---------- Autenticação ----------
 app.post("/api/auth/login", loginRateLimiter, (req, res) => {
