@@ -22,6 +22,7 @@ import * as ocr from "./ocr";
 import { buscarViaOnvio } from "./onvio-sync";
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
+import https from "https";
 import { createProxyMiddleware } from "http-proxy-middleware";
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 
@@ -2527,11 +2528,26 @@ function reescreverCorpoNoProxy(proxyReq: any, req: express.Request) {
   proxyReq.setHeader("Content-Length", corpo.length);
   proxyReq.write(corpo);
 }
+// keepAlive: reaproveita a conexão TLS já aberta pra VPS entre requisições, em vez de renegociar TLS
+// do zero a cada chamada (achado investigando lentidão intermitente salvando dados do deskcomm — cada
+// handshake novo soma algumas centenas de ms, e o cliente dele desiste sozinho depois de pouco tempo).
+// timeout/proxyTimeout generosos: o padrão do Node é curto demais pra uma cadeia
+// navegador→Railway→VPS→Supabase, e um proxy que corta cedo demais é pior que um lento — melhor
+// deixar quem sabe o orçamento certo (o próprio cliente do deskcomm) decidir quando desistir.
+const deskcommHttpsAgent = new https.Agent({ keepAlive: true, maxSockets: 50 });
 app.use(
   "/deskcomm",
   requireAuth,
   blockCliente,
-  createProxyMiddleware({ target: DESKCOMM_URL, changeOrigin: true, ws: false, onProxyReq: reescreverCorpoNoProxy })
+  createProxyMiddleware({
+    target: DESKCOMM_URL,
+    changeOrigin: true,
+    ws: false,
+    agent: deskcommHttpsAgent,
+    proxyTimeout: 45_000,
+    timeout: 45_000,
+    onProxyReq: reescreverCorpoNoProxy,
+  })
 );
 // O front-end do deskcomm chama a própria API sempre por caminho absoluto (ex.: fetch("/api/v1/...")),
 // sem levar o basePath em conta — fetch() cru não é reescrito pelo Next como a navegação é. Medido ao
@@ -2544,7 +2560,16 @@ app.use(
   "/api/v1",
   requireAuth,
   blockCliente,
-  createProxyMiddleware({ target: DESKCOMM_URL, changeOrigin: true, ws: false, pathRewrite: { "^/api/v1": "/deskcomm/api/v1" }, onProxyReq: reescreverCorpoNoProxy })
+  createProxyMiddleware({
+    target: DESKCOMM_URL,
+    changeOrigin: true,
+    ws: false,
+    agent: deskcommHttpsAgent,
+    proxyTimeout: 45_000,
+    timeout: 45_000,
+    pathRewrite: { "^/api/v1": "/deskcomm/api/v1" },
+    onProxyReq: reescreverCorpoNoProxy,
+  })
 );
 app.get("/deskcomm-login", requireAuth, blockCliente, async (req, res) => {
   const user = (req as any).user;
