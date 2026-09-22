@@ -2505,9 +2505,12 @@ app.get("/api/health", (_req, res) => res.json({ ok: true }));
 // precisar sair pra `srv1998403.hstgr.cloud`. O deskcomm em si já foi reconstruído com
 // `basePath: "/deskcomm"`, então os caminhos batem sem nenhuma reescrita aqui.
 const DESKCOMM_URL = "https://srv1998403.hstgr.cloud";
-const DESKCOMM_SUPABASE_URL = process.env.DESKCOMM_SUPABASE_URL || "";
-const DESKCOMM_SUPABASE_SERVICE_ROLE_KEY = process.env.DESKCOMM_SUPABASE_SERVICE_ROLE_KEY || "";
-const DESKCOMM_ORG_ID = process.env.DESKCOMM_ORG_ID || "";
+// .trim(): variáveis de ambiente coladas por um painel web (Railway etc.) vêm sujeitas a espaço/quebra
+// de linha grudado sem querer — medido ao vivo com DESKCOMM_ORG_ID assim, e "invalid input syntax for
+// type uuid" não deixa óbvio que o problema é um espaço, não o valor em si.
+const DESKCOMM_SUPABASE_URL = (process.env.DESKCOMM_SUPABASE_URL || "").trim();
+const DESKCOMM_SUPABASE_SERVICE_ROLE_KEY = (process.env.DESKCOMM_SUPABASE_SERVICE_ROLE_KEY || "").trim();
+const DESKCOMM_ORG_ID = (process.env.DESKCOMM_ORG_ID || "").trim();
 const deskcommAdmin =
   DESKCOMM_SUPABASE_URL && DESKCOMM_SUPABASE_SERVICE_ROLE_KEY
     ? createSupabaseClient(DESKCOMM_SUPABASE_URL, DESKCOMM_SUPABASE_SERVICE_ROLE_KEY, { auth: { autoRefreshToken: false, persistSession: false } })
