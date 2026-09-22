@@ -673,7 +673,16 @@ sqlite.exec(`
     escritorio_id INTEGER NOT NULL REFERENCES escritorios(id),
     nome TEXT NOT NULL,
     ordem INTEGER NOT NULL DEFAULT 0, -- define o número do menu (1, 2, 3...), na ordem crescente
-    ativo INTEGER NOT NULL DEFAULT 1
+    ativo INTEGER NOT NULL DEFAULT 1,
+    rodizio_ultimo_user_id INTEGER REFERENCES app_users(id) -- só usado no modo_distribuicao='rodizio' (ver crm_config) — quem recebeu a última conversa deste departamento, pra saber quem é o próximo do ciclo
+  );
+  -- Regras de distribuição do CRM, configuráveis (ver tela "Distribuição" em pageCrm) — 1 linha por
+  -- escritório, criada sob demanda (crmObterConfig devolve os defaults abaixo se a linha não existir
+  -- ainda). Defaults preservam o comportamento de sempre: fila manual + visibilidade por departamento.
+  CREATE TABLE IF NOT EXISTS crm_config (
+    escritorio_id INTEGER PRIMARY KEY REFERENCES escritorios(id),
+    modo_distribuicao TEXT NOT NULL DEFAULT 'manual', -- 'manual' (fila compartilhada, "atribuir a mim") | 'rodizio' (automático, round-robin por departamento)
+    visibilidade TEXT NOT NULL DEFAULT 'departamento' -- 'tudo' | 'departamento' (só meus deptos + fila sem dono) | 'somente_meu' (só o que é meu, nem a fila)
   );
   -- Quem é responsável por cada departamento — espelha colaborador_empresas (mesma ideia, "quais
   -- registros esse colaborador pode ver/atender").
@@ -1510,6 +1519,19 @@ for (const tabela of ["chat_mensagens", "chat_equipe_mensagens", "chat_dm_mensag
   if (!nomes.has("whatsapp_erro")) sqlite.exec(`ALTER TABLE envio_documentos ADD COLUMN whatsapp_erro TEXT`);
   if (!nomes.has("email_enviado_em")) sqlite.exec(`ALTER TABLE envio_documentos ADD COLUMN email_enviado_em TEXT`);
   if (!nomes.has("whatsapp_enviado_em")) sqlite.exec(`ALTER TABLE envio_documentos ADD COLUMN whatsapp_enviado_em TEXT`);
+  // chave_estavel: identificador que NÃO muda a cada reimpressão da guia (Nº Recibo Declaração do
+  // DARF DCTF-Web, ou os valores/vencimento estruturados do DAS) — ver comentário de
+  // envioDocumentoMudouDeVerdade(). Documentos antigos ficam sem essa coluna (NULL) e continuam
+  // comparando por hash do PDF até o próximo envio recalcular a chave.
+  if (!nomes.has("chave_estavel")) sqlite.exec(`ALTER TABLE envio_documentos ADD COLUMN chave_estavel TEXT`);
+}
+// Migração leve: crm_departamentos ganha o ponteiro do rodízio (feature de distribuição
+// configurável do CRM) — tabela já existia em produção sem essa coluna.
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(crm_departamentos)`).all() as any[];
+  if (!cols.some((c) => c.name === "rodizio_ultimo_user_id")) {
+    sqlite.exec(`ALTER TABLE crm_departamentos ADD COLUMN rodizio_ultimo_user_id INTEGER REFERENCES app_users(id)`);
+  }
 }
 // Migração leve: mesmo controle de status do WhatsApp, agora direto na NFS-e emitida (não precisa
 // passar por Envio de Documentos pra mandar a nota pro cliente).
@@ -4068,7 +4090,10 @@ function fgtsAnexarGuiaEmEnvio(escritorioId: number, empresaId: number, ano: num
   if (periodo) {
     const jaTemDocumento = sqlite.prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id = ? LIMIT 1`).get(periodo.id);
     if (jaTemDocumento) {
-      if (!envioPdfMudou(periodo.id, pdfBase64)) return null; // guia idêntica à já enviada — não reenvia
+      // TODO: FGTS ainda compara por hash do PDF inteiro (sem chave estável) — mesmo risco de falso
+      // positivo já confirmado no DARF DCTF-Web (ver envioDocumentoMudouDeVerdade), mas ainda não
+      // verificado contra uma guia real do FGTS Digital pra saber qual campo usar no lugar.
+      if (!envioDocumentoMudouDeVerdade(periodo.id, null, pdfBase64)) return null; // guia idêntica à já enviada — não reenvia
       retificada = true;
     }
   }
@@ -7342,7 +7367,11 @@ function integraContadorAnexarPdfEmEnvio(
   // demais — necessário pro balaio genérico "Outros Documentos Financeiros" do e-mail, onde vários
   // arquivos DIFERENTES (Fluxo de Caixa, Razão Financeira de bancos distintos etc.) coexistem no
   // mesmo período (achado ao vivo: o 2º arquivo "outro" do mesmo e-mail estava apagando o 1º).
-  substituirApenasMesmoNome = false
+  substituirApenasMesmoNome = false,
+  // Ver envioDocumentoMudouDeVerdade() — identificador estável do conteúdo (Nº Recibo Declaração,
+  // valores estruturados etc.), gravado junto pra comparação na próxima busca não depender de reler
+  // e re-extrair do PDF salvo em disco.
+  chaveEstavel: string | null = null
 ): number {
   // "mes IS ?" (não "mes = ?"): pra template ANUAL, mes vem null — em SQLite "coluna = NULL" nunca é
   // verdadeiro, então com "=" isso nunca acharia o período já existente e duplicaria envio_periodos a
@@ -7386,9 +7415,9 @@ function integraContadorAnexarPdfEmEnvio(
   fs.writeFileSync(destino, buf);
   const info = sqlite
     .prepare(
-      `INSERT INTO envio_documentos (periodo_id, file_name, file_path, mime, size_bytes, observacao, vencimento, vencimento_origem) VALUES (?, ?, ?, 'application/pdf', ?, ?, ?, 'automatico')`
+      `INSERT INTO envio_documentos (periodo_id, file_name, file_path, mime, size_bytes, observacao, vencimento, vencimento_origem, chave_estavel) VALUES (?, ?, ?, 'application/pdf', ?, ?, ?, 'automatico', ?)`
     )
-    .run(periodo.id, nomeArquivo, destino, buf.length, observacao, vencimentoIso);
+    .run(periodo.id, nomeArquivo, destino, buf.length, observacao, vencimentoIso, chaveEstavel);
   return Number(info.lastInsertRowid);
 }
 // Envia pro cliente (e-mail + WhatsApp) um documento recém-anexado em Envio de Documentos, com o
@@ -7481,11 +7510,16 @@ function integraContadorAnexarDasEmEnvio(
   const ano = Number(periodoApuracao.slice(0, 4));
   const mes = Number(periodoApuracao.slice(4, 6));
   const periodo = sqlite.prepare(`SELECT id FROM envio_periodos WHERE atribuicao_id = ? AND ano = ? AND mes = ?`).get(atribuicaoId, ano, mes) as any;
+  // Chave estável do DAS: os valores por tributo + vencimento, como a própria API devolve — não o
+  // "numeroDocumento" (esse é o número de arrecadação da via impressa, muda a cada reimpressão igual
+  // ao Número do Documento do DARF DCTF-Web, mesmo sem recálculo nenhum; ver
+  // envioDocumentoMudouDeVerdade). Vem pronta da API, sem precisar reler/reextrair PDF nenhum.
+  const chaveEstavel = JSON.stringify({ valores: das.valores || null, vencimento: das.dataVencimento || null });
   let retificado = false;
   if (!forcarNovoDocumento && periodo) {
     const jaTemDocumento = sqlite.prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id = ? LIMIT 1`).get(periodo.id);
     if (jaTemDocumento) {
-      if (!envioPdfMudou(periodo.id, das.pdfBase64)) return; // DAS idêntico ao já enviado — só confirma, não reenvia
+      if (!envioDocumentoMudouDeVerdade(periodo.id, chaveEstavel, das.pdfBase64)) return; // DAS idêntico ao já enviado — só confirma, não reenvia
       retificado = true;
     }
   }
@@ -7497,7 +7531,7 @@ function integraContadorAnexarDasEmEnvio(
   const docId = integraContadorAnexarPdfEmEnvio(
     atribuicaoId, empresaId, ano, mes, nomeArquivo, das.pdfBase64,
     retificado ? `${observacao} DAS recalculado — substitui a guia anterior.` : observacao,
-    vencIso, retificado
+    vencIso, retificado, false, chaveEstavel
   );
   const rotulo = `${String(mes).padStart(2, "0")}/${ano}`;
   const vencTxt = vencIso ? `\n\nVencimento: ${vencIso.split("-").reverse().join("/")}` : "";
@@ -7514,14 +7548,22 @@ function integraContadorAnexarDasEmEnvio(
     descricaoWhatsapp: retificado ? `DAS recalculado — ${rotulo}` : `Guia do DAS — ${rotulo}`,
   }).catch((e) => console.error(`[Integra Contador] envio automático do DAS (empresa ${empresaId}) falhou:`, e.message));
 }
-// Usado por DAS/DARF DCTF-Web/Guia FGTS: a Receita (e o FGTS Digital) não devolvem nenhum campo
-// estruturado confiável pra saber se a guia mudou desde o último envio — o único jeito de saber é
-// comparar o PDF em si. Hash SHA-256 do conteúdo: idêntico ao último já enviado = não manda de novo
-// (a busca automática roda todo dia/toda vez, então sem isso reenviaria a mesma guia repetidamente);
-// diferente = a guia foi recalculada/retificada depois do envio anterior, uma atualização de verdade.
-function envioPdfMudou(periodoId: number, pdfBase64Novo: string): boolean {
-  const ultimo = sqlite.prepare(`SELECT file_path FROM envio_documentos WHERE periodo_id = ? ORDER BY id DESC LIMIT 1`).get(periodoId) as any;
+// Usado por DAS/DARF DCTF-Web/Guia FGTS: comparar o PDF por hash (bytes) achava "mudou" mesmo sem
+// nenhuma retificação real. Medido ao vivo em 2026-09-21 com duas guias reais da MSM AGROPECUARIA
+// (DARF DCTF-Web, mesma competência, sem retificação nenhuma conferida no e-CAC): CNPJ, período,
+// vencimento, Nº Recibo Declaração e TODOS os valores (principal/multa/juros) idênticos — só o
+// "Número do Documento" e o código de barras mudam a cada reimpressão, porque o SENDA emite um
+// número de arrecadação novo por impressão, não por retificação. Comparar o PDF inteiro pega essa
+// diferença cosmética e manda uma 2ª via como se fosse retificação de verdade pro cliente.
+// `chaveEstavelNova`, quando disponível, é a coisa que SÓ muda numa retificação real: o Nº Recibo
+// Declaração (extraído do PDF pro DARF DCTF-Web) ou os valores/vencimento estruturados (pro DAS, que
+// vêm prontos da API, sem precisar reler o PDF). Documento antigo sem chave salva (gravado antes
+// dessa migração) cai no hash do PDF, igual ao comportamento anterior — mais seguro reenviar à toa
+// uma vez do que nunca mais detectar uma retificação de verdade.
+function envioDocumentoMudouDeVerdade(periodoId: number, chaveEstavelNova: string | null, pdfBase64Novo: string): boolean {
+  const ultimo = sqlite.prepare(`SELECT file_path, chave_estavel FROM envio_documentos WHERE periodo_id = ? ORDER BY id DESC LIMIT 1`).get(periodoId) as any;
   if (!ultimo) return false; // nunca teve documento nesse período — é o primeiro envio, não uma retificação
+  if (chaveEstavelNova && ultimo.chave_estavel) return ultimo.chave_estavel !== chaveEstavelNova;
   let bufAntigo: Buffer;
   try {
     bufAntigo = fs.readFileSync(ultimo.file_path);
@@ -7532,17 +7574,32 @@ function envioPdfMudou(periodoId: number, pdfBase64Novo: string): boolean {
   const hashNovo = crypto.createHash("sha256").update(Buffer.from(pdfBase64Novo, "base64")).digest("hex");
   return hashAntigo !== hashNovo;
 }
+// Extrai o Nº Recibo Declaração impresso no DARF gerado pela DCTFWeb (GERARGUIA31) — é o único
+// identificador que só muda numa retificação de verdade (a declaração transmitida de novo, com um
+// recibo novo da Receita); "Número do Documento"/código de barras mudam a cada reimpressão, mesmo
+// sem retificação nenhuma (ver comentário de envioDocumentoMudouDeVerdade). A API do Integra Contador
+// não devolve esse campo estruturado — só o PDF pronto — por isso o extrai do texto.
+async function extrairReciboDeclaracaoDarfDctfweb(pdfBase64: string): Promise<string | null> {
+  try {
+    const pdfParseLib = require("pdf-parse");
+    const data = await pdfParseLib(new Uint8Array(Buffer.from(pdfBase64, "base64")));
+    const m = /N[ºo°]\s*Recibo\s*Declara[çc][ãa]o\s*:?\s*(\d+)/i.exec(data.text || "");
+    return m ? m[1] : null;
+  } catch {
+    return null; // não conseguiu extrair — cai no hash do PDF como antes (ver envioDocumentoMudouDeVerdade)
+  }
+}
 // Mesmo mecanismo do DAS acima, mas pro DARF gerado pela DCTFWeb (GERARGUIA31). Achado o DARF uma
 // vez e enviado ao cliente, a busca automática (1x/dia) segue gerando a guia de novo todo dia — mas
 // só reanexa/reenvia se o conteúdo mudou de verdade (retificação); do contrário só confirma que
 // continua igual e não dispara nada, evitando reenviar o mesmo DARF ao cliente diariamente.
-function integraContadorAnexarDarfDctfwebEmEnvio(
+async function integraContadorAnexarDarfDctfwebEmEnvio(
   escritorioId: number,
   empresaId: number,
   guia: integracontador.GuiaDctfWeb,
   observacao: string,
   forcarNovoDocumento = false
-): void {
+): Promise<void> {
   if (!guia.pdfBase64) return;
   const atribuicaoId = integraContadorObterOuCriarAtribuicaoModelo(
     escritorioId,
@@ -7553,11 +7610,12 @@ function integraContadorAnexarDarfDctfwebEmEnvio(
   const ano = Number(guia.periodoApuracao.slice(0, 4));
   const mes = Number(guia.periodoApuracao.slice(4, 6));
   const periodo = sqlite.prepare(`SELECT id FROM envio_periodos WHERE atribuicao_id = ? AND ano = ? AND mes = ?`).get(atribuicaoId, ano, mes) as any;
+  const chaveEstavel = await extrairReciboDeclaracaoDarfDctfweb(guia.pdfBase64);
   let retificado = false;
   if (!forcarNovoDocumento && periodo) {
     const jaTemDocumento = sqlite.prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id = ? LIMIT 1`).get(periodo.id);
     if (jaTemDocumento) {
-      if (!envioPdfMudou(periodo.id, guia.pdfBase64)) return; // igual ao já enviado — só monitora, não reenvia
+      if (!envioDocumentoMudouDeVerdade(periodo.id, chaveEstavel, guia.pdfBase64)) return; // igual ao já enviado — só monitora, não reenvia
       retificado = true;
     }
   }
@@ -7568,7 +7626,7 @@ function integraContadorAnexarDarfDctfwebEmEnvio(
   const docId = integraContadorAnexarPdfEmEnvio(
     atribuicaoId, empresaId, ano, mes, nomeArquivo, guia.pdfBase64,
     retificado ? `${observacao} DARF retificado — substitui a guia anterior.` : observacao,
-    null, retificado
+    null, retificado, false, chaveEstavel
   );
   const rotulo = `${String(mes).padStart(2, "0")}/${ano}`;
   void envioEnviarDocumentoAutomatico({
@@ -7770,7 +7828,7 @@ async function integraContadorBuscarEmpresaInterno(
           sqlite
             .prepare(`INSERT INTO integracontador_documentos (empresa_id, escritorio_id, tipo, periodo_apuracao, pdf_path) VALUES (?, ?, 'darf_dctfweb', ?, ?)`)
             .run(empresaId, empConfig.escritorio_id, guia.periodoApuracao, caminho);
-          integraContadorAnexarDarfDctfwebEmEnvio(empConfig.escritorio_id, empresaId, guia, "DARF (DCTF-Web) — gerado automaticamente pela busca do Integra Contador.");
+          await integraContadorAnexarDarfDctfwebEmEnvio(empConfig.escritorio_id, empresaId, guia, "DARF (DCTF-Web) — gerado automaticamente pela busca do Integra Contador.");
           novos++;
         }
       } catch (e: any) {
@@ -12364,6 +12422,22 @@ function crmExtrairTextoMensagem(m: any): string | null {
   if (m.type === "interactive") return m.interactive?.button_reply?.title || m.interactive?.list_reply?.title || null;
   return m?.[m.type]?.caption || null;
 }
+// Round-robin do modo_distribuicao='rodizio': escolhe o próximo colaborador do departamento numa
+// ordem estável (nome), cíclico a partir de quem recebeu a última conversa
+// (crm_departamentos.rodizio_ultimo_user_id). Departamento sem colaborador nenhum devolve null —
+// quem chama trata isso caindo no comportamento manual (fila sem dono), sem erro.
+function crmProximoRodizio(departamentoId: number): number | null {
+  const colaboradores = sqlite
+    .prepare(`SELECT dc.user_id FROM crm_departamento_colaboradores dc JOIN app_users u ON u.id = dc.user_id WHERE dc.departamento_id = ? ORDER BY u.nome`)
+    .all(departamentoId) as any[];
+  if (!colaboradores.length) return null;
+  const ids = colaboradores.map((c) => c.user_id);
+  const dep = sqlite.prepare(`SELECT rodizio_ultimo_user_id FROM crm_departamentos WHERE id = ?`).get(departamentoId) as any;
+  const idxAnterior = dep?.rodizio_ultimo_user_id ? ids.indexOf(dep.rodizio_ultimo_user_id) : -1;
+  const proximo = ids[(idxAnterior + 1) % ids.length];
+  sqlite.prepare(`UPDATE crm_departamentos SET rodizio_ultimo_user_id = ? WHERE id = ?`).run(proximo, departamentoId);
+  return proximo;
+}
 function crmMontarMenu(departamentos: { nome: string }[]): string {
   const linhas = departamentos.map((d, i) => `${i + 1} - ${d.nome}`).join("\n");
   return `Olá! Em qual departamento você quer falar?\n${linhas}\n\nResponda só com o número da opção.`;
@@ -12399,6 +12473,12 @@ async function crmProcessarRoteamento(escritorioId: number, cfg: any, conversaId
   try {
     if (escolhido) {
       sqlite.prepare(`UPDATE crm_conversas SET departamento_id = ?, status = 'aberta' WHERE id = ?`).run(escolhido.id, conversaId);
+      // Modo rodízio: já entra atribuída a alguém do departamento, sem esperar "atribuir a mim"
+      // manual — departamento sem colaborador nenhum cai no comportamento de sempre (fila sem dono).
+      if (crmObterConfig(escritorioId).modoDistribuicao === "rodizio") {
+        const proximo = crmProximoRodizio(escolhido.id);
+        if (proximo) sqlite.prepare(`UPDATE crm_conversas SET atribuido_user_id = ? WHERE id = ?`).run(proximo, conversaId);
+      }
       await crmEnviarTextoLivre(cfg, telefone, `Você está falando com o setor ${escolhido.nome}. Já vamos te atender — aguarde um momento.`, conversaId);
     } else {
       await crmEnviarTextoLivre(cfg, telefone, crmMontarMenu(departamentos), conversaId);
@@ -12513,13 +12593,20 @@ app.post("/api/whatsapp/webhook", (req, res) => {
 });
 
 // ---- Rotas do CRM ----
+// Regras de distribuição configuráveis (tela "Distribuição" em pageCrm) — 1 linha por escritório,
+// criada sob demanda; devolve os defaults de sempre (fila manual + visibilidade por departamento)
+// se o escritório nunca configurou.
+function crmObterConfig(escritorioId: number): { modoDistribuicao: "manual" | "rodizio"; visibilidade: "tudo" | "departamento" | "somente_meu" } {
+  const row = sqlite.prepare(`SELECT modo_distribuicao, visibilidade FROM crm_config WHERE escritorio_id = ?`).get(escritorioId) as any;
+  return { modoDistribuicao: row?.modo_distribuicao || "manual", visibilidade: row?.visibilidade || "departamento" };
+}
 // Mesma convenção de empresasVisiveis: Administrador vê todos os departamentos do escritório;
-// colaborador só os que está em crm_departamento_colaboradores.
+// colaborador só os que está em crm_departamento_colaboradores — a não ser que a configuração de
+// visibilidade esteja em "tudo", aí vale pra qualquer um com acesso ao CRM.
 function crmDepartamentosVisiveis(user: any): number[] {
-  if (user.perfil === "Administrador") {
-    const rows = sqlite.prepare(`SELECT id FROM crm_departamentos WHERE escritorio_id = ?`).all(user.escritorioId) as any[];
-    return rows.map((r) => r.id);
-  }
+  const todos = (sqlite.prepare(`SELECT id FROM crm_departamentos WHERE escritorio_id = ?`).all(user.escritorioId) as any[]).map((r) => r.id);
+  if (user.perfil === "Administrador") return todos;
+  if (crmObterConfig(user.escritorioId).visibilidade === "tudo") return todos;
   const rows = sqlite
     .prepare(
       `SELECT dc.departamento_id FROM crm_departamento_colaboradores dc JOIN crm_departamentos d ON d.id = dc.departamento_id WHERE dc.user_id = ? AND d.escritorio_id = ?`
@@ -12531,6 +12618,9 @@ function crmPodeAcessarConversa(user: any, conversaId: number): any {
   const c = sqlite.prepare(`SELECT * FROM crm_conversas WHERE id = ?`).get(conversaId) as any;
   if (!c || c.escritorio_id !== user.escritorioId) return null;
   if (user.perfil === "Administrador") return c;
+  // "Só o que é meu": nem a fila de não atribuídas aparece (mesmo conceito do "só os seus" que a
+  // tela de Distribuição explica) — só a conversa atribuída a este usuário mesmo.
+  if (crmObterConfig(user.escritorioId).visibilidade === "somente_meu") return c.atribuido_user_id === user.id ? c : null;
   // Conversa ainda no menu (sem departamento definido) — qualquer colaborador com acesso ao CRM
   // pode ver enquanto aguarda o cliente escolher; depois de roteada, só quem é do departamento.
   if (c.departamento_id === null) return c;
@@ -12593,6 +12683,23 @@ app.put("/api/crm/departamentos/:id/colaboradores", blockCliente, requirePermiss
   for (const uid of userIds) ins.run(uid, departamentoId);
   res.json({ ok: true });
 });
+app.get("/api/crm/config", blockCliente, requirePermissao("crm", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const cfg = crmObterConfig(user.escritorioId);
+  res.json({ modoDistribuicao: cfg.modoDistribuicao, visibilidade: cfg.visibilidade });
+});
+app.put("/api/crm/config", blockCliente, requirePermissao("crm", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const modoDistribuicao = req.body?.modoDistribuicao === "rodizio" ? "rodizio" : "manual";
+  const visibilidade = ["tudo", "departamento", "somente_meu"].includes(req.body?.visibilidade) ? req.body.visibilidade : "departamento";
+  sqlite
+    .prepare(
+      `INSERT INTO crm_config (escritorio_id, modo_distribuicao, visibilidade) VALUES (?, ?, ?)
+       ON CONFLICT(escritorio_id) DO UPDATE SET modo_distribuicao = excluded.modo_distribuicao, visibilidade = excluded.visibilidade`
+    )
+    .run(user.escritorioId, modoDistribuicao, visibilidade);
+  res.json({ ok: true });
+});
 // status: por padrão só 'menu'+'aberta' (conversas ativas); status=encerrada pra ver o histórico.
 app.get("/api/crm/conversas", blockCliente, requirePermissao("crm", "visualizar"), (req, res) => {
   const user = (req as any).user;
@@ -12600,12 +12707,17 @@ app.get("/api/crm/conversas", blockCliente, requirePermissao("crm", "visualizar"
   const departamentoId = req.query.departamentoId ? Number(req.query.departamentoId) : null;
   const status = String(req.query.status || "ativas");
   if (departamentoId && !visiveis.includes(departamentoId)) return res.json({ items: [] });
+  // "Só o que é meu": some tanto a fila de não atribuídas quanto as dos colegas, mesmo dentro dos
+  // departamentos visíveis — Administrador nunca entra aqui (crmObterConfig só se aplica a ele
+  // indiretamente via crmDepartamentosVisiveis, mas o filtro por dono fica só pra não-admin).
+  const soMeu = user.perfil !== "Administrador" && crmObterConfig(user.escritorioId).visibilidade === "somente_meu";
   const condStatus = status === "encerrada" ? `c.status = 'encerrada'` : `c.status != 'encerrada'`;
   const condDepto = departamentoId
     ? `c.departamento_id = ${departamentoId}`
     : visiveis.length
       ? `(c.departamento_id IS NULL OR c.departamento_id IN (${visiveis.join(",")}))`
       : `c.departamento_id IS NULL`;
+  const condDono = soMeu ? `AND c.atribuido_user_id = ${Number(user.id)}` : "";
   const rows = sqlite
     .prepare(
       `SELECT c.id, c.telefone, c.contato_nome as contatoNome, c.empresa_id as empresaId, e.nome as empresaNome,
@@ -12616,7 +12728,7 @@ app.get("/api/crm/conversas", blockCliente, requirePermissao("crm", "visualizar"
        LEFT JOIN empresas e ON e.id = c.empresa_id
        LEFT JOIN crm_departamentos d ON d.id = c.departamento_id
        LEFT JOIN app_users u ON u.id = c.atribuido_user_id
-       WHERE c.escritorio_id = ? AND ${condStatus} AND ${condDepto}
+       WHERE c.escritorio_id = ? AND ${condStatus} AND ${condDepto} ${condDono}
        ORDER BY c.ultima_mensagem_em DESC`
     )
     .all(user.escritorioId);
@@ -12676,7 +12788,14 @@ app.post("/api/crm/conversas/:id/atribuir", blockCliente, requirePermissao("crm"
   const conversa = crmPodeAcessarConversa(user, Number(req.params.id));
   if (!conversa) return res.status(404).json({ error: "Conversa não encontrada." });
   if (!conversa.departamento_id) return res.status(400).json({ error: "Essa conversa ainda não tem departamento definido." });
-  sqlite.prepare(`UPDATE crm_conversas SET atribuido_user_id = ? WHERE id = ?`).run(user.id, conversa.id);
+  // WHERE atribuido_user_id IS NULL: garante o "primeiro que clicar assume" de verdade — sem isso,
+  // dois atendentes clicando quase juntos faziam o segundo roubar a conversa do primeiro em
+  // silêncio (last-write-wins, sem erro nenhum). 0 linhas alteradas = alguém já pegou antes.
+  const resultado = sqlite.prepare(`UPDATE crm_conversas SET atribuido_user_id = ? WHERE id = ? AND atribuido_user_id IS NULL`).run(user.id, conversa.id);
+  if (resultado.changes === 0) {
+    const atual = sqlite.prepare(`SELECT u.nome FROM crm_conversas c LEFT JOIN app_users u ON u.id = c.atribuido_user_id WHERE c.id = ?`).get(conversa.id) as any;
+    return res.status(409).json({ error: atual?.nome ? `Essa conversa já foi atribuída a ${atual.nome}.` : "Essa conversa já foi atribuída a outra pessoa." });
+  }
   res.json({ ok: true });
 });
 app.post("/api/crm/conversas/:id/transferir", blockCliente, requirePermissao("crm", "postar"), (req, res) => {
@@ -12691,6 +12810,12 @@ app.post("/api/crm/conversas/:id/transferir", blockCliente, requirePermissao("cr
     .prepare(`INSERT INTO crm_transferencias (conversa_id, de_departamento_id, para_departamento_id, user_id, motivo) VALUES (?, ?, ?, ?, ?)`)
     .run(conversa.id, conversa.departamento_id, paraDepartamentoId, user.id, motivo);
   sqlite.prepare(`UPDATE crm_conversas SET departamento_id = ?, atribuido_user_id = NULL, status = 'aberta' WHERE id = ?`).run(paraDepartamentoId, conversa.id);
+  // Modo rodízio: a conversa transferida já sai atribuída a alguém do departamento novo, em vez de
+  // cair na fila sem dono — mesma regra de crmProcessarRoteamento na entrada.
+  if (crmObterConfig(user.escritorioId).modoDistribuicao === "rodizio") {
+    const proximo = crmProximoRodizio(paraDepartamentoId);
+    if (proximo) sqlite.prepare(`UPDATE crm_conversas SET atribuido_user_id = ? WHERE id = ?`).run(proximo, conversa.id);
+  }
   res.json({ ok: true });
 });
 app.post("/api/crm/conversas/:id/encerrar", blockCliente, requirePermissao("crm", "postar"), (req, res) => {

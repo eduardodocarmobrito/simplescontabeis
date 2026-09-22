@@ -203,6 +203,12 @@
   .checkbox-row input{width:auto; flex:none;}
   .checkbox-grid{display:grid; grid-template-columns:repeat(auto-fill, minmax(190px,1fr)); column-gap:10px;}
   .checkbox-grid .checkbox-row{margin:2px 0;}
+  .opcao-card{display:flex; align-items:flex-start; gap:8px; border:1px solid var(--rule); border-radius:var(--radius); padding:10px 12px; margin-bottom:8px; cursor:pointer; transition:border-color .15s, background .15s;}
+  .opcao-card:hover{border-color:var(--accent);}
+  .opcao-card input{width:auto; flex:none; margin-top:2px;}
+  .opcao-card.selected{border-color:var(--accent); background:var(--accent-pale);}
+  .opcao-card .opcao-titulo{font-weight:600; font-size:13.5px;}
+  .opcao-card .opcao-desc{font-size:12px; color:var(--ink-soft); margin-top:2px;}
   .checklist-item{display:grid; grid-template-columns:16px 1fr; align-items:start; gap:8px; font-size:13px; margin:4px 0; cursor:pointer;}
   .checklist-item input{margin:2px 0 0;}
   .perm-grid{display:grid; grid-template-columns:1.4fr repeat(3,0.7fr); gap:6px; align-items:center; font-size:12.5px;}
@@ -7185,7 +7191,7 @@ async function pageCrm(){
   main().innerHTML = `
     <div class="row" style="justify-content:space-between; align-items:flex-start;">
       <div><h1>CRM</h1><p class="subtitle">Conversas do WhatsApp com clientes, organizadas por departamento.</p></div>
-      ${can('crm','editar')?`<button class="btn" id="btnCrmDepartamentos">Departamentos</button>`:''}
+      ${can('crm','editar')?`<div class="row" style="gap:8px;"><button class="btn" id="btnCrmDistribuicao">Distribuição</button><button class="btn" id="btnCrmDepartamentos">Departamentos</button></div>`:''}
     </div>
     <div class="tabs" id="crmTabs"></div>
     <div style="display:flex; gap:14px; margin-top:12px; align-items:flex-start;">
@@ -7206,6 +7212,8 @@ async function pageCrm(){
   document.getElementById('crmVerEncerradas').addEventListener('change', crmCarregarLista);
   const btnDep = document.getElementById('btnCrmDepartamentos');
   if(btnDep) btnDep.addEventListener('click', crmDepartamentosModal);
+  const btnDist = document.getElementById('btnCrmDistribuicao');
+  if(btnDist) btnDist.addEventListener('click', crmDistribuicaoModal);
   await crmCarregarLista();
   CRM.listaTimer = setInterval(crmCarregarLista, 15000);
 }
@@ -7325,6 +7333,45 @@ function crmTransferirModal(conversa){
       await api('/crm/conversas/'+conversa.id+'/transferir', { method:'POST', body:{ departamentoId: Number(document.getElementById('crmTransfDepto').value), motivo: document.getElementById('crmTransfMotivo').value.trim() } });
       closeModal(); toast('Conversa transferida.','ok'); pageCrm();
     }catch(e){ toast(e.message,'err'); }
+  });
+}
+async function crmDistribuicaoModal(){
+  const cfg = await api('/crm/config');
+  const opcoesModo = [
+    { valor:'manual', titulo:'Fila compartilhada', desc:'Toda conversa nova cai numa fila aberta e o primeiro atendente que clicar "Atribuir a mim" assume. Simples, mas depende de alguém prestar atenção na fila.' },
+    { valor:'rodizio', titulo:'Rodízio automático', desc:'A conversa já entra atribuída a alguém do departamento, alternando entre os responsáveis um por vez. Departamento sem responsável cadastrado cai na fila compartilhada normalmente.' },
+  ];
+  const opcoesVis = [
+    { valor:'tudo', titulo:'Todos veem tudo', desc:'Qualquer colaborador com acesso ao CRM enxerga as conversas de todos os departamentos.' },
+    { valor:'departamento', titulo:'Os seus, mais os que ainda não têm dono', desc:'O colaborador vê as conversas dos departamentos aos quais foi vinculado, incluindo as que ainda aguardam alguém assumir.' },
+    { valor:'somente_meu', titulo:'Só os seus', desc:'O colaborador vê apenas as conversas atribuídas a ele mesmo — nem a fila de espera aparece. Combine com o rodízio automático, senão ninguém recebe nada.' },
+  ];
+  const cartao = (grupo, opcoes, valorAtual) => opcoes.map(o=>`
+    <label class="opcao-card ${valorAtual===o.valor?'selected':''}" data-grupo="${grupo}">
+      <input type="radio" name="crmDist_${grupo}" value="${o.valor}" ${valorAtual===o.valor?'checked':''}>
+      <div><div class="opcao-titulo">${esc(o.titulo)}</div><div class="opcao-desc">${esc(o.desc)}</div></div>
+    </label>
+  `).join('');
+  openModal(`
+    <h3>Distribuição de atendimento</h3>
+    <p style="font-size:12.5px; color:var(--ink-soft); margin-bottom:14px;">Quem recebe cada conversa nova, e o que cada atendente enxerga. Administrador sempre vê tudo, independente da opção escolhida abaixo.</p>
+    <div style="font-weight:600; font-size:13px; margin-bottom:6px;">Quem recebe o cliente novo</div>
+    <div id="crmDistModo">${cartao('modo', opcoesModo, cfg.modoDistribuicao)}</div>
+    <div style="font-weight:600; font-size:13px; margin:14px 0 6px;">O que cada atendente enxerga</div>
+    <div id="crmDistVis">${cartao('vis', opcoesVis, cfg.visibilidade)}</div>
+    <div class="modal-actions"><button class="btn" id="crmDistCancel">Cancelar</button><button class="btn primary" id="crmDistSalvar">Salvar</button></div>
+  `, '640px');
+  function marcarSelecionado(grupo){
+    document.querySelectorAll(`.opcao-card[data-grupo="${grupo}"]`).forEach(card=>{
+      card.classList.toggle('selected', card.querySelector('input').checked);
+    });
+  }
+  document.querySelectorAll('.opcao-card input').forEach(inp=>inp.addEventListener('change', ()=>marcarSelecionado(inp.closest('.opcao-card').dataset.grupo)));
+  document.getElementById('crmDistCancel').addEventListener('click', closeModal);
+  document.getElementById('crmDistSalvar').addEventListener('click', async ()=>{
+    const modoDistribuicao = document.querySelector('input[name="crmDist_modo"]:checked').value;
+    const visibilidade = document.querySelector('input[name="crmDist_vis"]:checked').value;
+    try{ await api('/crm/config', { method:'PUT', body:{ modoDistribuicao, visibilidade } }); closeModal(); toast('Salvo.','ok'); pageCrm(); }catch(e){ toast(e.message,'err'); }
   });
 }
 async function crmDepartamentosModal(){
