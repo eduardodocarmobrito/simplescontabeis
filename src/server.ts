@@ -2521,6 +2521,19 @@ app.use(
   blockCliente,
   createProxyMiddleware({ target: DESKCOMM_URL, changeOrigin: true, ws: false })
 );
+// O front-end do deskcomm chama a própria API sempre por caminho absoluto (ex.: fetch("/api/v1/...")),
+// sem levar o basePath em conta — fetch() cru não é reescrito pelo Next como a navegação é. Medido ao
+// vivo: com só o proxy acima, toda tela que busca dado (Conexões, Inbox etc.) dava "não foi possível
+// carregar" (a chamada ia pra cá, num caminho que não existe neste servidor, 404). Como o deskcomm em
+// si usa exclusivamente o prefixo "/api/v1" (conferido: nenhuma rota própria deste site usa esse
+// prefixo, então não colide com nada), proxear esse prefixo direto resolve pra TODA chamada de uma
+// vez, sem precisar caçar cada `fetch(...)` espalhado pelo código dele nem reconstruir a imagem.
+app.use(
+  "/api/v1",
+  requireAuth,
+  blockCliente,
+  createProxyMiddleware({ target: DESKCOMM_URL, changeOrigin: true, ws: false, pathRewrite: { "^/api/v1": "/deskcomm/api/v1" } })
+);
 app.get("/deskcomm-login", requireAuth, blockCliente, async (req, res) => {
   const user = (req as any).user;
   if (!deskcommAdmin || !DESKCOMM_ORG_ID) {
