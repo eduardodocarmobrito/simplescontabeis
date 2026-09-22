@@ -2522,6 +2522,14 @@ const deskcommAdmin =
 // nunca saía). Reescreve o corpo já parseado (`req.body`) de volta na requisição de saída antes do
 // proxy encaminhar.
 function reescreverCorpoNoProxy(proxyReq: any, req: express.Request) {
+  // x-forwarded-host precisa ser o domínio que o NAVEGADOR vê (este site), não o da VPS —
+  // changeOrigin:true (necessário: sem ele o TLS quebra com EPROTO na negociação com o Caddy da VPS,
+  // testado ao vivo) reescreve o Host pro domínio de destino, mas o Next.js do deskcomm tem uma
+  // proteção de CSRF pras Server Actions que exige x-forwarded-host bater com o Origin que o
+  // navegador manda — sem essa linha, toda Server Action (ex.: "Duplicar" agente) morria com
+  // "Invalid Server Actions request" (confirmado ao vivo nos logs do deskcomm). req.headers.host é
+  // sempre o domínio original de quem chamou este servidor, então é o valor certo aqui.
+  if (req.headers.host) proxyReq.setHeader("x-forwarded-host", req.headers.host);
   if (!req.body || !Object.keys(req.body).length) return;
   const corpo = Buffer.from(JSON.stringify(req.body));
   proxyReq.setHeader("Content-Type", "application/json");
@@ -2541,6 +2549,10 @@ app.use(
   blockCliente,
   createProxyMiddleware({
     target: DESKCOMM_URL,
+    // changeOrigin:true é obrigatório aqui — testado ao vivo sem ele: o TLS quebra com EPROTO na
+    // negociação com o Caddy da VPS (o SNI acompanha essa opção). O ajuste do x-forwarded-host pra
+    // Server Actions (ver reescreverCorpoNoProxy) resolve o problema de origem sem precisar desligar
+    // isto.
     changeOrigin: true,
     ws: false,
     agent: deskcommHttpsAgent,
@@ -2562,7 +2574,7 @@ app.use(
   blockCliente,
   createProxyMiddleware({
     target: DESKCOMM_URL,
-    changeOrigin: true,
+    changeOrigin: true, // ver comentário do proxy /deskcomm acima — obrigatório pro TLS não quebrar
     ws: false,
     agent: deskcommHttpsAgent,
     proxyTimeout: 45_000,
