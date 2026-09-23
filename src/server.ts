@@ -2122,7 +2122,7 @@ sqlite.exec(`INSERT OR IGNORE INTO whatsapp_config (escritorio_id) SELECT id FRO
   }
 }
 
-const MODULOS = ["dashboard", "empresas", "solicitacoes", "envio", "nfse", "nfe-busca", "integracontador", "licencas", "financeiro", "contratos", "relatorios", "crm", "usuarios", "configuracoes"] as const;
+const MODULOS = ["dashboard", "empresas", "solicitacoes", "envio", "nfse", "nfe-busca", "integracontador", "licencas", "financeiro", "contratos", "relatorios", "crm", "dprh", "usuarios", "configuracoes"] as const;
 type Modulo = (typeof MODULOS)[number];
 
 // ========================= LOGIN (senha com hash + sessão via cookie) =========================
@@ -2615,41 +2615,53 @@ app.use(
     onProxyReq: reescreverCorpoNoProxy,
   })
 );
+// Garante que o usuário daqui tem um espelho no Supabase Auth do deskcomm, vinculado à organização
+// com o papel certo, e devolve o id de lá. Usado pela ponte de login abaixo e pelo módulo DP/RH (que
+// precisa saber o id do deskcomm de cada atendente pra "Minhas" e "Transferir").
+async function deskcommGarantirUsuario(user: { id: number; email: string; nome: string; perfil: string }): Promise<string> {
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID) throw new Error("Integração com o deskcomm não configurada (faltam variáveis de ambiente no servidor).");
+  let deskcommUserId: string | null = (sqlite.prepare(`SELECT deskcomm_user_id FROM app_users WHERE id = ?`).get(user.id) as any)?.deskcomm_user_id || null;
+  if (!deskcommUserId) {
+    // Busca por e-mail antes de criar — createUser falha se o e-mail já existir por lá (ex.:
+    // usuário provisionado manualmente antes desta ponte existir).
+    const { data: existentes, error: erroListar } = await deskcommAdmin.auth.admin.listUsers({ page: 1, perPage: 1000 });
+    if (erroListar) throw new Error(erroListar.message);
+    const existente = existentes.users.find((u) => (u.email || "").toLowerCase() === user.email.toLowerCase());
+    if (existente) {
+      deskcommUserId = existente.id;
+    } else {
+      const { data: criado, error: erroCriar } = await deskcommAdmin.auth.admin.createUser({
+        email: user.email,
+        email_confirm: true,
+        user_metadata: { nome: user.nome, full_name: user.nome, origem: "simplescontabeis" },
+      });
+      if (erroCriar || !criado.user) throw new Error(erroCriar?.message || "Falha ao criar usuário espelhado no deskcomm.");
+      deskcommUserId = criado.user.id;
+    }
+    sqlite.prepare(`UPDATE app_users SET deskcomm_user_id = ? WHERE id = ?`).run(deskcommUserId, user.id);
+  }
+  const role = user.perfil === "Administrador" ? "admin" : "agent";
+  const { error: erroOrg } = await deskcommAdmin
+    .from("user_organizations")
+    .upsert({ organization_id: DESKCOMM_ORG_ID, user_id: deskcommUserId, role, accepted_at: new Date().toISOString() }, { onConflict: "organization_id,user_id" });
+  if (erroOrg) throw new Error(erroOrg.message);
+  return deskcommUserId;
+}
+// ?silencioso=1: usado pelo módulo DP/RH via fetch() — mesma ponte, mas termina num arquivo leve do
+// deskcomm (o manifest) em vez de carregar o Inbox inteiro. O que importa ali é só o Set-Cookie
+// `sb-deskcomm-auth` gravado no caminho, pra tela do DP/RH poder chamar /api/v1/* como esse usuário.
 app.get("/deskcomm-login", requireAuth, blockCliente, async (req, res) => {
   const user = (req as any).user;
   if (!deskcommAdmin || !DESKCOMM_ORG_ID) {
     return res.status(503).send("Integração com o deskcomm não configurada (faltam variáveis de ambiente no servidor).");
   }
   try {
-    let deskcommUserId: string | null = (sqlite.prepare(`SELECT deskcomm_user_id FROM app_users WHERE id = ?`).get(user.id) as any)?.deskcomm_user_id || null;
-    if (!deskcommUserId) {
-      // Busca por e-mail antes de criar — createUser falha se o e-mail já existir por lá (ex.:
-      // usuário provisionado manualmente antes desta ponte existir).
-      const { data: existentes, error: erroListar } = await deskcommAdmin.auth.admin.listUsers({ page: 1, perPage: 1000 });
-      if (erroListar) throw new Error(erroListar.message);
-      const existente = existentes.users.find((u) => (u.email || "").toLowerCase() === user.email.toLowerCase());
-      if (existente) {
-        deskcommUserId = existente.id;
-      } else {
-        const { data: criado, error: erroCriar } = await deskcommAdmin.auth.admin.createUser({
-          email: user.email,
-          email_confirm: true,
-          user_metadata: { nome: user.nome, origem: "simplescontabeis" },
-        });
-        if (erroCriar || !criado.user) throw new Error(erroCriar?.message || "Falha ao criar usuário espelhado no deskcomm.");
-        deskcommUserId = criado.user.id;
-      }
-      sqlite.prepare(`UPDATE app_users SET deskcomm_user_id = ? WHERE id = ?`).run(deskcommUserId, user.id);
-    }
-    const role = user.perfil === "Administrador" ? "admin" : "agent";
-    const { error: erroOrg } = await deskcommAdmin
-      .from("user_organizations")
-      .upsert({ organization_id: DESKCOMM_ORG_ID, user_id: deskcommUserId, role, accepted_at: new Date().toISOString() }, { onConflict: "organization_id,user_id" });
-    if (erroOrg) throw new Error(erroOrg.message);
+    await deskcommGarantirUsuario(user);
     const { data: linkData, error: erroLink } = await deskcommAdmin.auth.admin.generateLink({ type: "magiclink", email: user.email });
     const tokenHash = (linkData as any)?.properties?.hashed_token;
     if (erroLink || !tokenHash) throw new Error(erroLink?.message || "O Supabase não devolveu o token de acesso.");
-    const qs = new URLSearchParams({ token_hash: tokenHash, type: "magiclink", next: "/app/inbox" });
+    const next = req.query.silencioso === "1" ? "/manifest.webmanifest" : "/app/inbox";
+    const qs = new URLSearchParams({ token_hash: tokenHash, type: "magiclink", next });
     res.redirect(`/deskcomm/auth/confirm?${qs.toString()}`);
   } catch (e: any) {
     console.error("[deskcomm] falha na ponte de login:", e.message);
@@ -12697,6 +12709,157 @@ app.post("/api/whatsapp/webhook", (req, res) => {
   } catch (e: any) {
     console.error("[WhatsApp webhook] erro processando payload:", e.message);
   }
+});
+
+// ---- DP/RH › WhatsApp ----
+// Tela própria (feita aqui, não o Inbox do deskcomm embutido) pras conversas que o Roteador de IA do
+// deskcomm mandou pra intenção "Folha de Pagamento". O WhatsApp em si continua sendo o do deskcomm
+// (WAHA, mesma conexão/número) — a conversa só existe lá. Divisão de trabalho:
+//   - LEITURA da lista (quais conversas são do DP/RH + contagem das abas): aqui no servidor, direto no
+//     Supabase do deskcomm com a service-role, porque a API dele não tem filtro por intenção.
+//   - MENSAGENS e AÇÕES (assumir, liberar, devolver ao automático, transferir, adiar, fechar,
+//     responder, anexo): o navegador chama /api/v1/* do deskcomm pelo proxy, com a sessão do próprio
+//     usuário (`sb-deskcomm-auth`, criada por /deskcomm-login?silencioso=1). Assim toda a regra de
+//     negócio de lá vale igual (silenciar o robô ao assumir, auditoria, envio pelo WAHA) e o histórico
+//     fica no nome de quem fez, não de uma conta técnica.
+// O nome da intenção é o `intent_name` do membro do Roteador (Configurações › IA › Roteadores no
+// deskcomm) — se renomearem a intenção lá, basta ajustar DPRH_INTENCAO no Railway.
+const DPRH_INTENCAO = (process.env.DPRH_INTENCAO || "Folha de Pagamento").trim();
+const DPRH_ABAS = ["fila", "minhas", "todas", "fechadas", "automatico"] as const;
+
+// Uma conversa é do DP/RH se a decisão MAIS RECENTE do roteador sobre ela (com intenção escolhida)
+// foi a do DP/RH — se o cliente depois pediu Contabilidade na mesma conversa, ela sai daqui. Também
+// entra quem está com active_intent = DP/RH agora, caso a decisão ainda não tenha sido gravada.
+async function dprhIdsDasConversas(): Promise<string[]> {
+  const { data: decisoes, error } = await deskcommAdmin!
+    .from("ai_router_decisions")
+    .select("conversation_id, intent_name, created_at")
+    .eq("organization_id", DESKCOMM_ORG_ID)
+    .not("intent_name", "is", null)
+    .order("created_at", { ascending: false })
+    .limit(10000);
+  if (error) throw new Error(error.message);
+  const ultimaIntencao = new Map<string, string>();
+  for (const d of decisoes || []) if (!ultimaIntencao.has(d.conversation_id)) ultimaIntencao.set(d.conversation_id, d.intent_name);
+  const ids = new Set<string>();
+  for (const [convId, intencao] of ultimaIntencao) if (intencao === DPRH_INTENCAO) ids.add(convId);
+  const { data: ativas, error: erroAtivas } = await deskcommAdmin!
+    .from("conversations")
+    .select("id")
+    .eq("organization_id", DESKCOMM_ORG_ID)
+    .eq("active_intent", DPRH_INTENCAO);
+  if (erroAtivas) throw new Error(erroAtivas.message);
+  for (const c of ativas || []) ids.add(c.id);
+  return [...ids];
+}
+// Mapa sufixo-de-11-dígitos → empresa, montado 1× por requisição (crmAcharEmpresaPorTelefone faz a
+// mesma comparação, mas relendo todos os telefones a cada chamada — aqui são N conversas de uma vez).
+function dprhMapaEmpresasPorTelefone(escritorioId: number): Map<string, { id: number; nome: string }> {
+  const rows = sqlite
+    .prepare(
+      `SELECT id, nome, telefone FROM empresas WHERE escritorio_id = ? AND telefone IS NOT NULL AND telefone != ''
+       UNION ALL
+       SELECT e.id, e.nome, ec.telefone FROM empresa_contatos ec JOIN empresas e ON e.id = ec.empresa_id WHERE e.escritorio_id = ? AND ec.telefone IS NOT NULL AND ec.telefone != ''`
+    )
+    .all(escritorioId, escritorioId) as any[];
+  const mapa = new Map<string, { id: number; nome: string }>();
+  for (const r of rows) {
+    const sufixo = crmSoDigitos(r.telefone).slice(-11);
+    if (sufixo.length >= 10 && !mapa.has(sufixo)) mapa.set(sufixo, { id: r.id, nome: r.nome });
+  }
+  return mapa;
+}
+
+app.get("/api/dprh/whatsapp/conversas", blockCliente, requirePermissao("dprh", "visualizar"), async (req, res) => {
+  const user = (req as any).user;
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  const aba = (DPRH_ABAS as readonly string[]).includes(String(req.query.aba)) ? String(req.query.aba) : "fila";
+  const busca = crmNormalizaTxt(String(req.query.busca || ""));
+  try {
+    const meuDeskcommId = await deskcommGarantirUsuario(user);
+    const ids = await dprhIdsDasConversas();
+    const conversas: any[] = [];
+    // .in() vira query string — em lotes pra não estourar o tamanho da URL.
+    for (let i = 0; i < ids.length; i += 100) {
+      const { data, error } = await deskcommAdmin
+        .from("conversations")
+        .select(
+          "id, status, comando_da_conversa, assigned_to_user_id, assigned_to_user_name, last_message_at, last_message_preview, last_inbound_at, unread_count_for_assignee, snooze_until, bot_silenced_until, service_revision, contact:contacts(display_name, name, phone_number)"
+        )
+        .eq("organization_id", DESKCOMM_ORG_ID)
+        .in("id", ids.slice(i, i + 100));
+      if (error) throw new Error(error.message);
+      conversas.push(...(data || []));
+    }
+    const nomesAtendentes = new Map<string, string>();
+    for (const r of sqlite.prepare(`SELECT deskcomm_user_id, nome FROM app_users WHERE escritorio_id = ? AND deskcomm_user_id IS NOT NULL`).all(user.escritorioId) as any[]) {
+      nomesAtendentes.set(r.deskcomm_user_id, r.nome);
+    }
+    const empresas = dprhMapaEmpresasPorTelefone(user.escritorioId);
+    const fechada = (c: any) => c.status === "closed" || c.status === "archived";
+    // Mesmas regras das abas do Inbox do deskcomm (tabToFilter em components/inbox/InboxLayout.tsx):
+    // Fila = comando "aguardando" (esperando uma pessoa); Automático = comando "automatico"; Minhas =
+    // atribuídas a mim e não encerradas; Fechadas = status closed; Todas = tudo.
+    const filtros: Record<string, (c: any) => boolean> = {
+      fila: (c) => c.comando_da_conversa === "aguardando",
+      minhas: (c) => c.assigned_to_user_id === meuDeskcommId && !fechada(c),
+      todas: () => true,
+      fechadas: (c) => c.status === "closed",
+      automatico: (c) => c.comando_da_conversa === "automatico",
+    };
+    const contagens: Record<string, number> = {};
+    for (const a of DPRH_ABAS) contagens[a] = conversas.filter(filtros[a]).length;
+    const items = conversas
+      .filter(filtros[aba])
+      .map((c) => {
+        const telefone = c.contact?.phone_number || "";
+        const empresa = empresas.get(crmSoDigitos(telefone).slice(-11)) || null;
+        return {
+          id: c.id,
+          contatoNome: c.contact?.display_name || c.contact?.name || null,
+          telefone,
+          empresaId: empresa?.id ?? null,
+          empresaNome: empresa?.nome ?? null,
+          status: c.status,
+          comando: c.comando_da_conversa,
+          atribuidoDeskcommId: c.assigned_to_user_id,
+          atribuidoNome: c.assigned_to_user_id ? nomesAtendentes.get(c.assigned_to_user_id) || c.assigned_to_user_name || "Outro atendente" : null,
+          ultimaMensagemEm: c.last_message_at,
+          ultimaMensagemTexto: c.last_message_preview,
+          ultimaMensagemClienteEm: c.last_inbound_at,
+          naoLidas: c.unread_count_for_assignee || 0,
+          adiadaAte: c.snooze_until && new Date(c.snooze_until).getTime() > Date.now() ? c.snooze_until : null,
+          revisao: c.service_revision,
+        };
+      })
+      .filter((c) => !busca || crmNormalizaTxt(c.contatoNome || "").includes(busca) || crmNormalizaTxt(c.empresaNome || "").includes(busca) || crmSoDigitos(c.telefone).includes(crmSoDigitos(busca) || "\u0000"))
+      .sort((a, b) => String(b.ultimaMensagemEm || "").localeCompare(String(a.ultimaMensagemEm || "")));
+    res.json({ items, contagens, meuDeskcommId, intencao: DPRH_INTENCAO });
+  } catch (e: any) {
+    console.error("[dprh] falha ao listar conversas:", e.message);
+    res.status(502).json({ error: `Não foi possível ler as conversas do deskcomm: ${e.message}` });
+  }
+});
+// Pra quem dá pra transferir: Administradores + Colaboradores com acesso ao DP/RH, já espelhados no
+// deskcomm (quem ainda não tem espelho ganha um aqui — senão não teria como receber a conversa).
+app.get("/api/dprh/whatsapp/atendentes", blockCliente, requirePermissao("dprh", "postar"), async (req, res) => {
+  const user = (req as any).user;
+  const candidatos = (
+    sqlite
+      .prepare(`SELECT id, nome, email, perfil FROM app_users WHERE escritorio_id = ? AND ativo = 1 AND painel_tv = 0 AND perfil IN ('Administrador','Colaborador') ORDER BY nome`)
+      .all(user.escritorioId) as any[]
+  ).filter((u) => hasPermissao(u, "dprh", "visualizar"));
+  const items: { deskcommUserId: string; nome: string }[] = [];
+  const falhas: string[] = [];
+  for (const u of candidatos) {
+    try {
+      items.push({ deskcommUserId: await deskcommGarantirUsuario(u), nome: u.nome });
+    } catch (e: any) {
+      falhas.push(`${u.nome}: ${e.message}`);
+    }
+  }
+  if (falhas.length) console.error("[dprh] atendentes sem espelho no deskcomm:", falhas.join(" | "));
+  res.json({ items });
 });
 
 // ---- Rotas do CRM ----
