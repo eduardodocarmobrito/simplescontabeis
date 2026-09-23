@@ -2539,6 +2539,14 @@ function reescreverCorpoNoProxy(proxyReq: any, req: express.Request) {
 // navegador→Railway→VPS→Supabase, e um proxy que corta cedo demais é pior que um lento — melhor
 // deixar quem sabe o orçamento certo (o próprio cliente do deskcomm) decidir quando desistir.
 //
+// 90s (não mais 45s): medido ao vivo em 2026-09-23 — o Caddy da VPS registrava "unexpected EOF"
+// lendo do app do deskcomm em EXATAMENTE 45.000s, toda vez, pra chamadas que às vezes demoravam mais
+// que isso pra responder de verdade. A suspeita, ainda não fechada: ESTE timeout (o mais próximo do
+// navegador na cadeia) estoura primeiro, derruba o socket, e o Caddy — ao perceber que quem pediu
+// sumiu — cancela a requisição pendente pro app, e É ISSO que aparece nos logs dele como "unexpected
+// EOF", não uma trava de verdade do lado do deskcomm. Alargar aqui é o teste mais barato pra
+// confirmar ou descartar essa teoria sem mexer em nada dentro do deskcomm.
+//
 // SEM keepAlive de propósito — tentado uma vez (agent com keepAlive:true) pra evitar renegociar TLS
 // a cada chamada, mas isso encheu o log do Railway de "ECONNRESET: soquete desligado" a cada ~30s: o
 // Caddy da VPS fecha conexão ociosa antes do pool do Node perceber que ela morreu, e a próxima
@@ -2577,8 +2585,8 @@ app.use(
     // isto.
     changeOrigin: true,
     ws: false,
-    proxyTimeout: 45_000,
-    timeout: 45_000,
+    proxyTimeout: 90_000,
+    timeout: 90_000,
     onProxyReq: reescreverCorpoNoProxy,
   })
 );
@@ -2597,8 +2605,8 @@ app.use(
     target: DESKCOMM_URL,
     changeOrigin: true, // ver comentário do proxy /deskcomm acima — obrigatório pro TLS não quebrar
     ws: false,
-    proxyTimeout: 45_000,
-    timeout: 45_000,
+    proxyTimeout: 90_000,
+    timeout: 90_000,
     pathRewrite: { "^/api/v1": "/deskcomm/api/v1" },
     onProxyReq: reescreverCorpoNoProxy,
   })
