@@ -12875,8 +12875,8 @@ app.get("/api/dprh/whatsapp/conversas", blockCliente, requirePermissao("dprh", "
 // is null then bot_silenced_until:=null`) — como quase toda conversa do DP/RH teve (alguém assumiu,
 // ou respondeu pelo celular), ela reabria silenciada e o cliente caía direto em "Aguardando
 // atendente", sem o menu de setores. Regra do escritório: fechou, o próximo contato começa do zero
-// pela Recepção. Zera o silêncio e a aderência ao agente (os mesmos 3 campos que o próprio deskcomm
-// zera no handoff — lib/ai/handoff/orchestrator.ts), só em conversa JÁ fechada.
+// pela Recepção. Zera o silêncio, o último handoff e a aderência ao agente (o mesmo que o "Devolver
+// ao automático" do deskcomm zera — lib/escalacao/retomada.ts), só em conversa JÁ fechada.
 app.post("/api/dprh/whatsapp/conversas/:id/recomecar-apos-fechar", blockCliente, requirePermissao("dprh", "postar"), async (req, res) => {
   if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
   const id = String(req.params.id);
@@ -12885,13 +12885,24 @@ app.post("/api/dprh/whatsapp/conversas/:id/recomecar-apos-fechar", blockCliente,
     if (!historico.has(id)) return res.status(404).json({ error: "Conversa não encontrada no DP/RH." });
     const { data, error } = await deskcommAdmin
       .from("conversations")
-      .update({ bot_silenced_until: null, active_ai_agent_id: null, active_intent: null, active_agent_set_at: null })
+      .update({ bot_silenced_until: null, last_handoff_at: null, last_handoff_reason: null, active_ai_agent_id: null, active_intent: null, active_agent_set_at: null })
       .eq("organization_id", DESKCOMM_ORG_ID)
       .eq("id", id)
       .eq("status", "closed")
-      .select("id");
+      .select("id, contact_id");
     if (error) throw new Error(error.message);
     if (!data?.length) return res.status(409).json({ error: "A conversa não está fechada." });
+    // Quando o agente de IA pede atendimento humano (ex.: "encaminhando pra equipe do DP"), o deskcomm
+    // trava o CONTATO em `force_human = true` (lib/agent-engine/agent/human-handoff.ts) — e essa trava
+    // sobrevive ao fechar/reabrir, então o próximo "Oi" do cliente era pulado ("turno pulado —
+    // force_human") e caía direto em Aguardando. O único lugar do deskcomm que destrava é o "Devolver
+    // ao automático" (lib/escalacao/retomada.ts, mesmo update abaixo) — fechar pelo DP/RH faz o mesmo.
+    const { error: erroContato } = await deskcommAdmin
+      .from("contacts")
+      .update({ force_human: false })
+      .eq("organization_id", DESKCOMM_ORG_ID)
+      .eq("id", data[0].contact_id);
+    if (erroContato) throw new Error(erroContato.message);
     res.json({ ok: true });
   } catch (e: any) {
     console.error("[dprh] falha ao religar o robô após fechar:", e.message);
