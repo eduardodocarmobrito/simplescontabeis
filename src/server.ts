@@ -2122,7 +2122,7 @@ sqlite.exec(`INSERT OR IGNORE INTO whatsapp_config (escritorio_id) SELECT id FRO
   }
 }
 
-const MODULOS = ["dashboard", "empresas", "solicitacoes", "envio", "nfse", "nfe-busca", "integracontador", "licencas", "financeiro", "contratos", "relatorios", "crm", "dprh", "usuarios", "configuracoes"] as const;
+const MODULOS = ["dashboard", "empresas", "solicitacoes", "envio", "nfse", "nfe-busca", "integracontador", "licencas", "financeiro", "contratos", "relatorios", "crm", "dprh", "contabil", "fiscal", "usuarios", "configuracoes"] as const;
 type Modulo = (typeof MODULOS)[number];
 
 // ========================= LOGIN (senha com hash + sessão via cookie) =========================
@@ -12731,22 +12731,37 @@ app.post("/api/whatsapp/webhook", (req, res) => {
 //     toda a regra de negócio de lá vale igual e o histórico fica no nome de quem fez.
 //   - TRANSFERIR PRA UM SETOR: aqui no servidor (/api/atendimento/conversas/:id/setor) — o deskcomm
 //     não tem "setor", só as intenções do Roteador de IA.
-// Dois escopos: `crm` = atendente geral, vê TODAS as conversas; `dprh` = só as do setor
-// DPRH_INTENCAO (o `intent_name` do membro do Roteador — Configurações › IA › Roteadores no deskcomm).
+// Escopos: `crm` = atendente geral, vê TODAS as conversas; `dprh` / `contabil` / `fiscal` = só as do
+// setor (o `intent_name` do membro do Roteador — Configurações › IA › Roteadores no deskcomm), cada um
+// com o seu módulo de permissão.
 // Fechar uma conversa (em qualquer tela) já recomeça o atendimento pelo menu: isso é o trigger
 // trg_zz_simplescontabeis_recomeca_ao_fechar no banco do deskcomm (/opt/deskcomm/simplescontabeis-sql).
-const DPRH_INTENCAO = (process.env.DPRH_INTENCAO || "Folha de Pagamento").trim();
-type AtendimentoEscopo = "crm" | "dprh";
+const ATENDIMENTO_SETORES = {
+  dprh: (process.env.DPRH_INTENCAO || "Folha de Pagamento").trim(),
+  contabil: (process.env.CONTABIL_INTENCAO || "Contabilidade").trim(),
+  fiscal: (process.env.FISCAL_INTENCAO || "Fiscal").trim(),
+} as const;
+type AtendimentoSetorEscopo = keyof typeof ATENDIMENTO_SETORES;
+type AtendimentoEscopo = "crm" | AtendimentoSetorEscopo;
+const ATENDIMENTO_ESCOPOS_SETOR = Object.keys(ATENDIMENTO_SETORES) as AtendimentoSetorEscopo[];
+// Sem "todas" nos setores: não precisam ver as conversas dos outros — o histórico fica em Fechadas.
+const ATENDIMENTO_ABAS_SETOR = ["fila", "minhas", "automatico", "fechadas"] as const;
 const ATENDIMENTO_ABAS: Record<AtendimentoEscopo, readonly string[]> = {
   crm: ["fila", "minhas", "todas", "fechadas", "automatico"],
-  // Sem "todas": o DP/RH não precisa ver as conversas dos outros setores — o histórico dele fica em Fechadas.
-  dprh: ["fila", "minhas", "automatico", "fechadas"],
+  dprh: ATENDIMENTO_ABAS_SETOR,
+  contabil: ATENDIMENTO_ABAS_SETOR,
+  fiscal: ATENDIMENTO_ABAS_SETOR,
 };
 function atendimentoEscopo(v: any): AtendimentoEscopo | null {
-  return v === "crm" || v === "dprh" ? v : null;
+  return v === "crm" || ATENDIMENTO_ESCOPOS_SETOR.includes(v) ? v : null;
 }
+// O módulo de permissão tem o mesmo nome do escopo (crm, dprh, contabil, fiscal).
 function atendimentoModulo(escopo: AtendimentoEscopo): Modulo {
-  return escopo === "crm" ? "crm" : "dprh";
+  return escopo;
+}
+// Pode ver/agir em ALGUMA tela de atendimento (rotas compartilhadas: setores, transferir, marcar lida).
+function atendimentoAlgumaPermissao(user: any, acao: "visualizar" | "postar"): boolean {
+  return (["crm", ...ATENDIMENTO_ESCOPOS_SETOR] as AtendimentoEscopo[]).some((e) => hasPermissao(user, atendimentoModulo(e), acao));
 }
 // Transferência manual de setor — o deskcomm não guarda isso (não tem setor), então fica aqui, com
 // quem transferiu. `intencao` NULL = devolvido pro atendimento geral (sem setor).
@@ -12962,8 +12977,9 @@ app.get("/api/atendimento/conversas", blockCliente, async (req, res) => {
       if (error) throw new Error(error.message);
       brutas.push(...(data || []));
     } else {
-      const ids = new Set(historico.get(DPRH_INTENCAO) || []);
-      const { data: ativas, error: erroAtivas } = await deskcommAdmin.from("conversations").select("id").eq("organization_id", DESKCOMM_ORG_ID).eq("active_intent", DPRH_INTENCAO);
+      const intencao = ATENDIMENTO_SETORES[escopo];
+      const ids = new Set(historico.get(intencao) || []);
+      const { data: ativas, error: erroAtivas } = await deskcommAdmin.from("conversations").select("id").eq("organization_id", DESKCOMM_ORG_ID).eq("active_intent", intencao);
       if (erroAtivas) throw new Error(erroAtivas.message);
       for (const c of ativas || []) ids.add(c.id);
       const lista = [...ids];
@@ -12976,7 +12992,7 @@ app.get("/api/atendimento/conversas", blockCliente, async (req, res) => {
     }
     const conversas = brutas.map((c) => {
       const setor = atendimentoSetorAtual(c, ultima.get(c.id));
-      return { ...c, setor, atual: escopo === "crm" ? true : setor === DPRH_INTENCAO };
+      return { ...c, setor, atual: escopo === "crm" ? true : setor === ATENDIMENTO_SETORES[escopo] };
     });
     const nomesAtendentes = new Map<string, string>();
     for (const r of sqlite.prepare(`SELECT deskcomm_user_id, nome FROM app_users WHERE escritorio_id = ? AND deskcomm_user_id IS NOT NULL`).all(user.escritorioId) as any[]) {
@@ -12989,10 +13005,10 @@ app.get("/api/atendimento/conversas", blockCliente, async (req, res) => {
     // atribuídas a mim e não encerradas; Todas = tudo; Fechadas = fechadas. No DP/RH, Fila/Minhas/
     // Automático só com quem é do setor NO ATENDIMENTO ATUAL (c.atual), e Fechadas também inclui quem
     // já saiu do setor (voltou pro menu / foi pra outro setor) — continua consultável ali.
-    // No DP/RH a Fila mostra TODA conversa do setor ainda sem dono — inclusive a que o agente de IA da
-    // Folha está atendendo (pedido do escritório: alguém do DP pode assumir desde o primeiro minuto; ao
-    // assumir, o robô silencia). No CRM a Fila segue a regra do deskcomm: só quem espera uma pessoa.
-    const filaInclui = escopo === "dprh" ? ["aguardando", "automatico"] : ["aguardando"];
+    // Nos setores a Fila mostra TODA conversa do setor ainda sem dono — inclusive a que o agente de IA
+    // do setor está atendendo (pedido do escritório: alguém do setor pode assumir desde o primeiro minuto;
+    // ao assumir, o robô silencia). No CRM a Fila segue a regra do deskcomm: só quem espera uma pessoa.
+    const filaInclui = escopo !== "crm" ? ["aguardando", "automatico"] : ["aguardando"];
     const filtros: Record<string, (c: any) => boolean> = {
       fila: (c) => c.atual && !fechada(c) && !c.assigned_to_user_id && filaInclui.includes(c.comando_da_conversa),
       minhas: (c) => c.atual && c.assigned_to_user_id === meuDeskcommId && !fechada(c),
@@ -13042,7 +13058,7 @@ app.get("/api/atendimento/conversas", blockCliente, async (req, res) => {
 
 app.get("/api/atendimento/setores", blockCliente, async (req, res) => {
   const user = (req as any).user;
-  if (!hasPermissao(user, "crm", "visualizar") && !hasPermissao(user, "dprh", "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
+  if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
   try {
     res.json({ items: (await atendimentoSetores()).map((s) => s.intencao) });
@@ -13059,7 +13075,7 @@ app.get("/api/atendimento/setores", blockCliente, async (req, res) => {
 // `intencao: null` = devolver pro atendimento geral (sem setor) — cai na Fila do CRM.
 app.post("/api/atendimento/conversas/:id/setor", blockCliente, async (req, res) => {
   const user = (req as any).user;
-  if (!hasPermissao(user, "crm", "postar") && !hasPermissao(user, "dprh", "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
+  if (!atendimentoAlgumaPermissao(user, "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
   const id = String(req.params.id);
   const intencao: string | null = req.body?.intencao ? String(req.body.intencao) : null;
@@ -13110,7 +13126,7 @@ const ATENDIMENTO_WAHA_SEEN_TOKEN = DESKCOMM_SUPABASE_SERVICE_ROLE_KEY
   : "";
 app.post("/api/atendimento/conversas/:id/lida", blockCliente, async (req, res) => {
   const user = (req as any).user;
-  if (!hasPermissao(user, "crm", "visualizar") && !hasPermissao(user, "dprh", "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
+  if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   if (!deskcommAdmin || !DESKCOMM_ORG_ID || !ATENDIMENTO_WAHA_SEEN_TOKEN) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
   const id = String(req.params.id);
   try {
@@ -13165,7 +13181,7 @@ app.get("/api/atendimento/atendentes", blockCliente, async (req, res) => {
     sqlite
       .prepare(`SELECT id, nome, email, perfil FROM app_users WHERE escritorio_id = ? AND ativo = 1 AND painel_tv = 0 AND perfil IN ('Administrador','Colaborador') ORDER BY nome`)
       .all(user.escritorioId) as any[]
-  ).filter((u) => (escopo === "crm" ? hasPermissao(u, "crm", "visualizar") || hasPermissao(u, "dprh", "visualizar") : hasPermissao(u, "dprh", "visualizar")));
+  ).filter((u) => (escopo === "crm" ? atendimentoAlgumaPermissao(u, "visualizar") : hasPermissao(u, atendimentoModulo(escopo), "visualizar")));
   const items: { deskcommUserId: string; nome: string }[] = [];
   const falhas: string[] = [];
   for (const u of candidatos) {

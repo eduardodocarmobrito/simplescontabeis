@@ -750,6 +750,8 @@ const NAV = [
   { id:'relatorios', label:'Relatórios', modulo:'relatorios', roles:['Administrador','Colaborador'] },
   { id:'crm', label:'CRM', modulo:'crm', roles:['Administrador','Colaborador'] },
   { id:'dprh', label:'DP/RH', modulo:'dprh', roles:['Administrador','Colaborador'] },
+  { id:'contabil', label:'Contabilidade', modulo:'contabil', roles:['Administrador','Colaborador'] },
+  { id:'fiscal', label:'Fiscal', modulo:'fiscal', roles:['Administrador','Colaborador'] },
   { id:'usuarios', label:'Usuários', modulo:'usuarios', roles:['Administrador'] },
   { id:'configuracoes', label:'Configurações', modulo:'configuracoes', roles:['Administrador','Colaborador'] },
   { id:'minha-assinatura-colaborador', label:'Assinatura', modulo:null, roles:['Colaborador'] },
@@ -878,8 +880,7 @@ async function render(){
   // painel flutuante como o chat) — para o polling dela aqui, senão continuaria rodando em segundo
   // plano depois de navegar pra outro lugar.
   if(STATE.page!=='crm') pararCrmTimers();
-  if(STATE.page!=='dprh') pararAtendimentoTimers('dprh');
-  if(STATE.page!=='crm') pararAtendimentoTimers('crm');
+  Object.keys(ATEND).forEach(e=>{ if(STATE.page!==e) pararAtendimentoTimers(e); });
   try{
     if(STATE.page==='dashboard') await pageDashboard();
     else if(STATE.page==='empresas') await pageEmpresas();
@@ -901,7 +902,7 @@ async function render(){
     else if(STATE.page==='relatorios') await pageRelatorios();
     // Abrir o CRM pelo menu sempre cai no WhatsApp (deskcomm) → Fila; a aba Meta recarrega por pageCrm() direto.
     else if(STATE.page==='crm'){ CRM.aba='whatsapp'; await pageCrm(); }
-    else if(STATE.page==='dprh') await pageDprh();
+    else if(SETOR_PAGINAS[STATE.page]) await pageSetor(STATE.page);
     else if(STATE.page==='usuarios') await pageUsuarios();
     else if(STATE.page==='configuracoes') await pageConfiguracoes();
     else if(STATE.page==='minha-assinatura-colaborador') await pageMinhaAssinaturaColaborador();
@@ -7511,23 +7512,25 @@ async function crmColaboradoresModal(departamentoId, nome, colaboradores){
 // ===================== Atendimento WhatsApp (CRM e DP/RH) =====================
 // Caixa de entrada própria sobre as conversas do deskcomm, usada em dois escopos (ver
 // /api/atendimento/* em server.ts): `crm` = atendente geral, vê TODAS as conversas e transfere pra um
-// setor; `dprh` = só as do setor Folha de Pagamento. A LISTA vem do nosso servidor (que sabe o setor
+// setor; `dprh` / `contabil` / `fiscal` = só as do setor (Folha de Pagamento, Contabilidade, Fiscal). A LISTA vem do nosso servidor (que sabe o setor
 // de cada conversa); MENSAGENS e AÇÕES vão direto pra API do deskcomm (/api/v1/*, pelo proxy) com a
 // sessão do próprio usuário — dcApi() abaixo. Transferir pra SETOR é no nosso servidor (o deskcomm
 // não tem setor).
 const ATEND_CFG = {
   crm:  { modulo:'crm',  abas:['fila','minhas','todas','fechadas','automatico'], vazioFila:'Nenhuma conversa aguardando atendente.', mostraSetor:true },
   dprh: { modulo:'dprh', abas:['fila','minhas','automatico','fechadas'], vazioFila:'Nenhuma demanda de folha aguardando atendente.', mostraSetor:false },
+  contabil: { modulo:'contabil', abas:['fila','minhas','automatico','fechadas'], vazioFila:'Nenhuma demanda de contabilidade aguardando atendente.', mostraSetor:false },
+  fiscal: { modulo:'fiscal', abas:['fila','minhas','automatico','fechadas'], vazioFila:'Nenhuma demanda fiscal aguardando atendente.', mostraSetor:false },
 };
 const ATEND_ROTULOS = { fila:'Fila', minhas:'Minhas', todas:'Todas', fechadas:'Fechadas', automatico:'Automático' };
 function novoAtendimento(escopo){
   return { escopo, cfg:ATEND_CFG[escopo], filtro:'fila', conversaAtiva:null, conversaDados:null, itens:[], contagens:{}, meuDeskcommId:null, atendentes:null, setores:null, listaTimer:null, mensagensTimer:null, ultimaMsgId:null, gravador:null };
 }
-const ATEND = { crm: novoAtendimento('crm'), dprh: novoAtendimento('dprh') };
+const ATEND = Object.fromEntries(Object.keys(ATEND_CFG).map(e=>[e, novoAtendimento(e)]));
 // Voltou pra aba com uma conversa aberta: o que chegou enquanto a aba estava escondida agora foi visto.
 document.addEventListener('visibilitychange', ()=>{
   if(document.hidden) return;
-  const S = STATE.page==='crm' ? ATEND.crm : STATE.page==='dprh' ? ATEND.dprh : null;
+  const S = ATEND[STATE.page] || null;
   if(S && S.conversaAtiva && document.getElementById('atdMsgs')) atdMarcarLida(S, S.conversaAtiva);
 });
 let ATEND_SESSAO_USER = null;
@@ -8107,21 +8110,27 @@ function atdLigarComposer(S){
   });
 }
 
-// ===================== DP/RH =====================
-// Módulo do Departamento Pessoal. Aba "WhatsApp": as conversas do setor Folha de Pagamento (escopo
-// `dprh` do atendimento acima).
-let DPRH = { aba:'whatsapp' };
-async function pageDprh(){
-  pararAtendimentoTimers('dprh');
+// ===================== Setores: DP/RH, Contabilidade, Fiscal =====================
+// Um módulo por departamento, mesma tela. Aba "WhatsApp": as conversas do setor (escopo de mesmo
+// nome do atendimento acima). Novas abas do setor entram aqui.
+const SETOR_PAGINAS = {
+  dprh:     { titulo:'DP/RH', subtitulo:'Departamento Pessoal — demandas de folha de pagamento.' },
+  contabil: { titulo:'Contabilidade', subtitulo:'Departamento Contábil — demandas de contabilidade.' },
+  fiscal:   { titulo:'Fiscal', subtitulo:'Departamento Fiscal — demandas fiscais e tributárias.' },
+};
+const SETOR_ABA = { dprh:'whatsapp', contabil:'whatsapp', fiscal:'whatsapp' };
+async function pageSetor(escopo){
+  const pg = SETOR_PAGINAS[escopo];
+  pararAtendimentoTimers(escopo);
   main().innerHTML = `
-    <div><h1>DP/RH</h1><p class="subtitle">Departamento Pessoal — demandas de folha de pagamento.</p></div>
-    <div class="tabs" id="dprhAbas">
-      <div class="tab ${DPRH.aba==='whatsapp'?'active':''}" data-aba="whatsapp">WhatsApp</div>
+    <div><h1>${esc(pg.titulo)}</h1><p class="subtitle">${esc(pg.subtitulo)}</p></div>
+    <div class="tabs" id="setorAbas">
+      <div class="tab ${SETOR_ABA[escopo]==='whatsapp'?'active':''}" data-aba="whatsapp">WhatsApp</div>
     </div>
-    <div id="dprhConteudo"></div>
+    <div id="setorConteudo"></div>
   `;
-  document.querySelectorAll('#dprhAbas .tab').forEach(t=>t.addEventListener('click', ()=>{ DPRH.aba=t.dataset.aba; pageDprh(); }));
-  if(DPRH.aba==='whatsapp') await atendimentoMontar('dprh', document.getElementById('dprhConteudo'));
+  document.querySelectorAll('#setorAbas .tab').forEach(t=>t.addEventListener('click', ()=>{ SETOR_ABA[escopo]=t.dataset.aba; pageSetor(escopo); }));
+  if(SETOR_ABA[escopo]==='whatsapp') await atendimentoMontar(escopo, document.getElementById('setorConteudo'));
 }
 
 // ===================== Usuários =====================
@@ -8162,7 +8171,7 @@ async function pageUsuarios(){
   document.getElementById('usFiltro').addEventListener('input', e=>desenhaUsuarios(e.target.value));
   document.getElementById('btnNovoUsuario').addEventListener('click', ()=>usuarioModal());
 }
-const MODS = [['dashboard','Início'],['empresas','Empresas'],['solicitacoes','Solicitações de Documentos'],['envio','Envio de Documentos'],['nfse','NFS-e'],['nfe-busca','Busca de XML'],['integracontador','Integra Contador'],['licencas','Licenças'],['financeiro','Financeiro'],['contratos','Contratos'],['relatorios','Relatórios'],['crm','CRM'],['dprh','DP/RH'],['usuarios','Usuários'],['configuracoes','Configurações']];
+const MODS = [['dashboard','Início'],['empresas','Empresas'],['solicitacoes','Solicitações de Documentos'],['envio','Envio de Documentos'],['nfse','NFS-e'],['nfe-busca','Busca de XML'],['integracontador','Integra Contador'],['licencas','Licenças'],['financeiro','Financeiro'],['contratos','Contratos'],['relatorios','Relatórios'],['crm','CRM'],['dprh','DP/RH'],['contabil','Contabilidade'],['fiscal','Fiscal'],['usuarios','Usuários'],['configuracoes','Configurações']];
 // Lista de empresas com busca por texto — usada nos dois pickers de empresa do modal de usuário
 // (Cliente com múltiplas empresas, Colaborador com acesso restrito), já que a base de empresas
 // pode ter centenas de linhas (import do Domínio Web).
