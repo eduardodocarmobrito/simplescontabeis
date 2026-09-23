@@ -12727,19 +12727,21 @@ app.post("/api/whatsapp/webhook", (req, res) => {
 const DPRH_INTENCAO = (process.env.DPRH_INTENCAO || "Folha de Pagamento").trim();
 const DPRH_ABAS = ["fila", "minhas", "todas", "fechadas", "automatico"] as const;
 
-// Uma conversa é do DP/RH se a decisão MAIS RECENTE do roteador sobre ela (com intenção escolhida)
-// foi a do DP/RH — se o cliente depois pediu Contabilidade na mesma conversa, ela sai daqui. Também
-// entra quem está com active_intent = DP/RH agora, caso a decisão ainda não tenha sido gravada.
+// Uma conversa é do DP/RH se a decisão MAIS RECENTE do roteador sobre ela foi a do DP/RH — contando
+// também as decisões SEM intenção (fallback pra Recepção): cliente que voltou depois de a conversa
+// ser fechada e só mandou "Oi" está de novo no menu, sem setor, e não é demanda do DP/RH até
+// escolher. Decisão "sticky" (agente mantido) grava a intenção mantida, então continua contando.
+// Depois que alguém assume, o robô silencia e não há decisão nova — a última segue sendo a do DP/RH.
+// Também entra quem está com active_intent = DP/RH agora, caso a decisão ainda não tenha sido gravada.
 async function dprhIdsDasConversas(): Promise<string[]> {
   const { data: decisoes, error } = await deskcommAdmin!
     .from("ai_router_decisions")
     .select("conversation_id, intent_name, created_at")
     .eq("organization_id", DESKCOMM_ORG_ID)
-    .not("intent_name", "is", null)
     .order("created_at", { ascending: false })
     .limit(10000);
   if (error) throw new Error(error.message);
-  const ultimaIntencao = new Map<string, string>();
+  const ultimaIntencao = new Map<string, string | null>();
   for (const d of decisoes || []) if (!ultimaIntencao.has(d.conversation_id)) ultimaIntencao.set(d.conversation_id, d.intent_name);
   const ids = new Set<string>();
   for (const [convId, intencao] of ultimaIntencao) if (intencao === DPRH_INTENCAO) ids.add(convId);
