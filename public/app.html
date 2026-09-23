@@ -7574,6 +7574,7 @@ function dprhIniciais(nome){
 }
 function dprhRotuloComando(c){
   if(c.status==='closed' || c.status==='archived') return ['muted','Fechada'];
+  if(!c.atual) return ['muted','Atendimento do DP/RH encerrado — cliente voltou pro menu / outro setor'];
   if(c.adiadaAte) return ['muted','Adiada até '+fmtDateHora(c.adiadaAte)];
   if(c.comando==='automatico') return ['ok','Automático atendendo'];
   if(c.comando==='aguardando') return ['warn','Aguardando atendente'];
@@ -7643,7 +7644,15 @@ function dprhRenderCabecalho(){
   const meu = c.atribuidoDeskcommId && c.atribuidoDeskcommId===DPRH.meuDeskcommId;
   const [cls, rotulo] = dprhRotuloComando(c);
   const botoes = [];
-  if(podePostar && !fechada){
+  // Conversa que já saiu do DP/RH fica só pra consulta: agir nela aqui (assumir, responder) puxaria
+  // pra cá um atendimento que agora é da Recepção ou de outro setor.
+  const input = document.getElementById('dprhInput');
+  if(input && podePostar){
+    const bloqueado = !c.atual && !fechada;
+    input.disabled = document.getElementById('dprhEnviar').disabled = document.getElementById('dprhAnexar').disabled = bloqueado;
+    input.placeholder = bloqueado ? 'Só consulta — este atendimento não é mais do DP/RH.' : 'Escreva uma mensagem… (Enter envia, Shift+Enter quebra linha)';
+  }
+  if(podePostar && !fechada && c.atual){
     if(!c.atribuidoDeskcommId) botoes.push(`<button class="btn small primary" data-acao="assumir">Assumir</button>`);
     else if(!meu) botoes.push(`<button class="btn small" data-acao="assumir">Assumir no lugar</button>`);
     if(meu) botoes.push(`<button class="btn small" data-acao="liberar">Liberar</button>`);

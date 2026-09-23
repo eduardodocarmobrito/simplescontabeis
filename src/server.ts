@@ -12733,9 +12733,11 @@ const DPRH_ABAS = ["fila", "minhas", "todas", "fechadas", "automatico"] as const
 // escolher. Decisão "sticky" (agente mantido) grava a intenção mantida, então continua contando.
 // Depois que alguém assume, o robô silencia e não há decisão nova — a última segue sendo a do DP/RH.
 // Também entra quem está com active_intent = DP/RH agora, caso a decisão ainda não tenha sido gravada.
-// Devolve id → quando essa escolha foi feita: quem chama descarta a escolha que é de um atendimento
-// ANTERIOR (conversa fechada e reaberta — ver o filtro por service_started_at na rota da lista).
-async function dprhIdsDasConversas(): Promise<Map<string, string>> {
+// `atuais`: id → quando essa escolha foi feita; quem chama ainda descarta a escolha que é de um
+// atendimento ANTERIOR (conversa fechada e reaberta — ver dprhEscolhaValeNoAtendimentoAtual).
+// `historico`: toda conversa que JÁ passou pelo DP/RH alguma vez — nunca some da tela (abas Todas e
+// Fechadas), mesmo depois que o cliente volta pro menu ou escolhe outro setor.
+async function dprhIdsDasConversas(): Promise<{ atuais: Map<string, string>; historico: Set<string> }> {
   const { data: decisoes, error } = await deskcommAdmin!
     .from("ai_router_decisions")
     .select("conversation_id, intent_name, created_at")
@@ -12744,17 +12746,24 @@ async function dprhIdsDasConversas(): Promise<Map<string, string>> {
     .limit(10000);
   if (error) throw new Error(error.message);
   const ultima = new Map<string, { intencao: string | null; em: string }>();
-  for (const d of decisoes || []) if (!ultima.has(d.conversation_id)) ultima.set(d.conversation_id, { intencao: d.intent_name, em: d.created_at });
-  const ids = new Map<string, string>();
-  for (const [convId, u] of ultima) if (u.intencao === DPRH_INTENCAO) ids.set(convId, u.em);
+  const historico = new Set<string>();
+  for (const d of decisoes || []) {
+    if (!ultima.has(d.conversation_id)) ultima.set(d.conversation_id, { intencao: d.intent_name, em: d.created_at });
+    if (d.intent_name === DPRH_INTENCAO) historico.add(d.conversation_id);
+  }
+  const atuais = new Map<string, string>();
+  for (const [convId, u] of ultima) if (u.intencao === DPRH_INTENCAO) atuais.set(convId, u.em);
   const { data: ativas, error: erroAtivas } = await deskcommAdmin!
     .from("conversations")
     .select("id, active_agent_set_at")
     .eq("organization_id", DESKCOMM_ORG_ID)
     .eq("active_intent", DPRH_INTENCAO);
   if (erroAtivas) throw new Error(erroAtivas.message);
-  for (const c of ativas || []) if (!ids.has(c.id) && c.active_agent_set_at) ids.set(c.id, c.active_agent_set_at);
-  return ids;
+  for (const c of ativas || []) {
+    historico.add(c.id);
+    if (!atuais.has(c.id) && c.active_agent_set_at) atuais.set(c.id, c.active_agent_set_at);
+  }
+  return { atuais, historico };
 }
 // Um conjunto de ids convertido em conversa do DP/RH, já filtrando quem foi escolhido pro DP/RH num
 // atendimento anterior. service_started_at só muda quando a conversa é fechada e reabre (trigger
@@ -12789,8 +12798,8 @@ app.get("/api/dprh/whatsapp/conversas", blockCliente, requirePermissao("dprh", "
   const busca = crmNormalizaTxt(String(req.query.busca || ""));
   try {
     const meuDeskcommId = await deskcommGarantirUsuario(user);
-    const escolhas = await dprhIdsDasConversas();
-    const ids = [...escolhas.keys()];
+    const { atuais, historico } = await dprhIdsDasConversas();
+    const ids = [...historico];
     const conversas: any[] = [];
     // .in() vira query string — em lotes pra não estourar o tamanho da URL.
     for (let i = 0; i < ids.length; i += 100) {
@@ -12802,7 +12811,7 @@ app.get("/api/dprh/whatsapp/conversas", blockCliente, requirePermissao("dprh", "
         .eq("organization_id", DESKCOMM_ORG_ID)
         .in("id", ids.slice(i, i + 100));
       if (error) throw new Error(error.message);
-      conversas.push(...(data || []).filter((c: any) => dprhEscolhaValeNoAtendimentoAtual(c, escolhas.get(c.id))));
+      for (const c of data || []) conversas.push({ ...c, atual: dprhEscolhaValeNoAtendimentoAtual(c, atuais.get(c.id)) });
     }
     const nomesAtendentes = new Map<string, string>();
     for (const r of sqlite.prepare(`SELECT deskcomm_user_id, nome FROM app_users WHERE escritorio_id = ? AND deskcomm_user_id IS NOT NULL`).all(user.escritorioId) as any[]) {
@@ -12810,15 +12819,18 @@ app.get("/api/dprh/whatsapp/conversas", blockCliente, requirePermissao("dprh", "
     }
     const empresas = dprhMapaEmpresasPorTelefone(user.escritorioId);
     const fechada = (c: any) => c.status === "closed" || c.status === "archived";
-    // Mesmas regras das abas do Inbox do deskcomm (tabToFilter em components/inbox/InboxLayout.tsx):
-    // Fila = comando "aguardando" (esperando uma pessoa); Automático = comando "automatico"; Minhas =
-    // atribuídas a mim e não encerradas; Fechadas = status closed; Todas = tudo.
+    // Mesmas regras das abas do Inbox do deskcomm (tabToFilter em components/inbox/InboxLayout.tsx),
+    // mas Fila/Minhas/Automático só com quem é do DP/RH NO ATENDIMENTO ATUAL (c.atual): Fila = comando
+    // "aguardando" (esperando uma pessoa); Automático = comando "automatico"; Minhas = atribuídas a
+    // mim e não encerradas. Todas = histórico inteiro (tudo que já passou pelo DP/RH); Fechadas =
+    // fechada, ou que já saiu do DP/RH (cliente voltou pro menu/outro setor) — o atendimento do DP/RH
+    // acabou, mas a conversa continua consultável.
     const filtros: Record<string, (c: any) => boolean> = {
-      fila: (c) => c.comando_da_conversa === "aguardando",
-      minhas: (c) => c.assigned_to_user_id === meuDeskcommId && !fechada(c),
+      fila: (c) => c.atual && c.comando_da_conversa === "aguardando",
+      minhas: (c) => c.atual && c.assigned_to_user_id === meuDeskcommId && !fechada(c),
       todas: () => true,
-      fechadas: (c) => c.status === "closed",
-      automatico: (c) => c.comando_da_conversa === "automatico",
+      fechadas: (c) => fechada(c) || !c.atual,
+      automatico: (c) => c.atual && c.comando_da_conversa === "automatico",
     };
     const contagens: Record<string, number> = {};
     for (const a of DPRH_ABAS) contagens[a] = conversas.filter(filtros[a]).length;
@@ -12841,6 +12853,7 @@ app.get("/api/dprh/whatsapp/conversas", blockCliente, requirePermissao("dprh", "
           naoLidas: c.unread_count_for_assignee || 0,
           adiadaAte: c.snooze_until && new Date(c.snooze_until).getTime() > Date.now() ? c.snooze_until : null,
           revisao: c.service_revision,
+          atual: !!c.atual,
         };
       };
     const items = conversas
@@ -12868,8 +12881,8 @@ app.post("/api/dprh/whatsapp/conversas/:id/recomecar-apos-fechar", blockCliente,
   if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
   const id = String(req.params.id);
   try {
-    const escolhas = await dprhIdsDasConversas();
-    if (!escolhas.has(id)) return res.status(404).json({ error: "Conversa não encontrada no DP/RH." });
+    const { historico } = await dprhIdsDasConversas();
+    if (!historico.has(id)) return res.status(404).json({ error: "Conversa não encontrada no DP/RH." });
     const { data, error } = await deskcommAdmin
       .from("conversations")
       .update({ bot_silenced_until: null, active_ai_agent_id: null, active_intent: null, active_agent_set_at: null })
