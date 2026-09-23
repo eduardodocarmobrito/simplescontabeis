@@ -939,6 +939,8 @@ async function iniciarChat(){
   atualizarResumoChat();
   CHAT.resumoTimer = setInterval(atualizarResumoChat, CHAT.config.resumoSegundos*1000);
   document.getElementById('chatBubble').addEventListener('click', toggleChatPanel);
+  // Ao entrar no sistema (login ou F5) o chat já abre; fechar continua valendo até a próxima entrada.
+  if(!CHAT.aberto) toggleChatPanel();
 }
 function pararChat(){
   [CHAT.presencaTimer, CHAT.resumoTimer, CHAT.mensagensTimer].forEach(t=>{ if(t) clearInterval(t); });
