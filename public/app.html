@@ -7559,6 +7559,7 @@ async function atendimentoMontar(escopo, box){
     <div class="dprh-wa">
       <div class="card dprh-col-lista">
         <div style="padding:10px; border-bottom:1px solid var(--rule);">
+          ${S.escopo==='crm' && can('crm','postar') ? `<button class="btn small primary" id="atdNovaConversa" style="width:100%; margin-bottom:8px;">+ Nova conversa</button>` : ''}
           <div class="field" style="margin-bottom:0;"><input type="text" id="atdBusca" placeholder="Buscar por nome, empresa ou telefone…" autocomplete="off"></div>
           <div class="dprh-filtros" id="atdFiltros"></div>
         </div>
@@ -7572,6 +7573,8 @@ async function atendimentoMontar(escopo, box){
   if(!S.cfg.abas.includes(S.filtro)) S.filtro = 'fila';
   let t=null;
   document.getElementById('atdBusca').addEventListener('input', ()=>{ clearTimeout(t); t=setTimeout(()=>atdCarregarLista(S), 300); });
+  const btnNova = document.getElementById('atdNovaConversa');
+  if(btnNova) btnNova.addEventListener('click', ()=>atdNovaConversaModal(S));
   atdRenderFiltros(S);
   try{ await dcGarantirSessao(); }
   catch(e){ document.getElementById('atdLista').innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
@@ -7802,6 +7805,71 @@ async function atdTransferirModal(S, c, executar){
       closeModal();
       executar(()=>dcApi(`/conversations/${c.id}/transfer`, { method:'POST', body: motivo ? { to_user_id: para, reason: motivo } : { to_user_id: para } }), 'Conversa transferida.');
     }
+  });
+}
+// Nova conversa (atendente geral): escolhe um contato da agenda do deskcomm (inclui os importados do
+// celular) ou digita um número, e o deskcomm abre — ou reaproveita — a conversa daquele contato
+// (/conversations/open-with-contact, a mesma rota do "abrir conversa" de um cartão de contato lá).
+function atdTelefoneDigitado(txt){
+  let d = String(txt||'').replace(/\D/g,'');
+  if(d.length===10 || d.length===11) d = '55'+d;
+  return (d.length>=12 && d.length<=13 && d.startsWith('55')) ? '+'+d : null;
+}
+function atdNovaConversaModal(S){
+  openModal(`
+    <h3>Nova conversa</h3>
+    <div class="field"><label>Buscar na agenda</label><input type="text" id="atdNovaBusca" placeholder="Nome ou telefone…" autocomplete="off"></div>
+    <div id="atdNovaResultados" style="max-height:220px; overflow-y:auto; border:1px solid var(--rule); border-radius:10px; margin:-6px 0 14px;"><div class="empty-state" style="padding:14px;">Digite pra procurar um contato.</div></div>
+    <div class="field"><label>Ou digite o número (com DDD)</label><input type="text" id="atdNovaTelefone" placeholder="Ex.: 94 99999-8888" autocomplete="off"></div>
+    <div class="field"><label>Nome (opcional, pra número novo)</label><input type="text" id="atdNovaNome" maxlength="200"></div>
+    <div class="modal-actions"><button class="btn" id="atdNovaCancel">Cancelar</button><button class="btn primary" id="atdNovaAbrir">Abrir conversa</button></div>
+  `);
+  let contatoId = null, t = null;
+  const resultados = document.getElementById('atdNovaResultados');
+  document.getElementById('atdNovaBusca').addEventListener('input', ev=>{
+    clearTimeout(t);
+    const termo = ev.target.value.trim();
+    contatoId = null;
+    if(termo.length < 2){ resultados.innerHTML = `<div class="empty-state" style="padding:14px;">Digite pra procurar um contato.</div>`; return; }
+    t = setTimeout(async ()=>{
+      let lista;
+      try{ lista = await dcApi('/contacts?limit=15&search='+encodeURIComponent(termo)); }
+      catch(e){ resultados.innerHTML = `<div class="empty-state" style="padding:14px; color:var(--debit)">${esc(e.message)}</div>`; return; }
+      lista = (lista||[]).filter(ct=>ct.phone_number && !ct.is_blocked && !ct.is_anonymized);
+      resultados.innerHTML = lista.length ? lista.map(ct=>`
+        <div class="dprh-conv" data-id="${esc(ct.id)}" style="padding:8px 10px;">
+          <div class="dprh-avatar">${esc(atdIniciais(ct.display_name||ct.name||ct.phone_number))}</div>
+          <div style="min-width:0;"><div class="dprh-conv-nome">${esc(ct.display_name||ct.name||ct.phone_number)}</div><div class="dprh-conv-sub">${esc(ct.phone_number)}</div></div>
+        </div>`).join('') : `<div class="empty-state" style="padding:14px;">Nenhum contato encontrado — digite o número abaixo.</div>`;
+      resultados.querySelectorAll('.dprh-conv').forEach(el=>el.addEventListener('click', ()=>{
+        contatoId = el.dataset.id;
+        resultados.querySelectorAll('.dprh-conv').forEach(x=>x.classList.toggle('active', x===el));
+        document.getElementById('atdNovaTelefone').value = '';
+      }));
+    }, 300);
+  });
+  document.getElementById('atdNovaTelefone').addEventListener('input', ()=>{ contatoId = null; resultados.querySelectorAll('.dprh-conv').forEach(x=>x.classList.remove('active')); });
+  document.getElementById('atdNovaCancel').addEventListener('click', closeModal);
+  document.getElementById('atdNovaAbrir').addEventListener('click', async ()=>{
+    let corpo;
+    if(contatoId) corpo = { contact_id: contatoId };
+    else{
+      const tel = atdTelefoneDigitado(document.getElementById('atdNovaTelefone').value);
+      if(!tel){ toast('Escolha um contato ou digite um número com DDD.','err'); return; }
+      const nome = document.getElementById('atdNovaNome').value.trim();
+      corpo = nome ? { phone_number: tel, name: nome } : { phone_number: tel };
+    }
+    const botao = document.getElementById('atdNovaAbrir');
+    botao.disabled = true;
+    try{
+      const r = await dcApi('/conversations/open-with-contact', { method:'POST', body: corpo });
+      closeModal();
+      S.filtro = 'todas';
+      S.conversaAtiva = r.conversation_id;
+      await atdCarregarLista(S);
+      await atdAbrirConversa(S, r.conversation_id);
+      document.getElementById('atdInput')?.focus();
+    }catch(e){ toast(e.message,'err'); botao.disabled = false; }
   });
 }
 function atdAutorMsg(S, m, c){
