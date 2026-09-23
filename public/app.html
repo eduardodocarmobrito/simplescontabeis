@@ -7839,7 +7839,16 @@ async function atdTransferirModal(S, c, executar){
       if(!valor){ toast('Nenhum outro setor disponível.','err'); return; }
       const intencao = valor===GERAL ? null : valor;
       closeModal();
-      executar(()=>api('/atendimento/conversas/'+encodeURIComponent(c.id)+'/setor', { method:'POST', body:{ intencao, motivo } }),
+      executar(async ()=>{
+        // Avisa o cliente ANTES de transferir: enviar depois, com a conversa já sem responsável, poderia
+        // devolvê-la pra quem enviou. Se o aviso falhar, a transferência segue mesmo assim.
+        const aviso = intencao
+          ? `Sua conversa está sendo transferida para o setor de ${intencao}. Em instantes alguém do setor dará continuidade ao seu atendimento.`
+          : 'Sua conversa está sendo transferida para o nosso atendimento geral. Em instantes alguém dará continuidade ao seu atendimento.';
+        try{ await dcApi('/messages', { method:'POST', body:{ conversation_id: c.id, type:'text', body: aviso } }); }
+        catch(e){ toast('O aviso de transferência não foi enviado ao cliente: '+e.message,'err'); }
+        await api('/atendimento/conversas/'+encodeURIComponent(c.id)+'/setor', { method:'POST', body:{ intencao, motivo } });
+      },
         intencao ? `Conversa transferida para ${intencao} — está na Fila do setor.` : 'Conversa devolvida ao atendimento geral.');
     }else{
       const para = document.querySelector('#atdTransfPara .combo-value').value;
