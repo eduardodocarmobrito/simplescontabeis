@@ -12809,9 +12809,7 @@ app.get("/api/dprh/whatsapp/conversas", blockCliente, requirePermissao("dprh", "
     };
     const contagens: Record<string, number> = {};
     for (const a of DPRH_ABAS) contagens[a] = conversas.filter(filtros[a]).length;
-    const items = conversas
-      .filter(filtros[aba])
-      .map((c) => {
+    const mapear = (c: any) => {
         const telefone = c.contact?.phone_number || "";
         const empresa = empresas.get(crmSoDigitos(telefone).slice(-11)) || null;
         return {
@@ -12831,10 +12829,16 @@ app.get("/api/dprh/whatsapp/conversas", blockCliente, requirePermissao("dprh", "
           adiadaAte: c.snooze_until && new Date(c.snooze_until).getTime() > Date.now() ? c.snooze_until : null,
           revisao: c.service_revision,
         };
-      })
+      };
+    const items = conversas
+      .filter(filtros[aba])
+      .map(mapear)
       .filter((c) => !busca || crmNormalizaTxt(c.contatoNome || "").includes(busca) || crmNormalizaTxt(c.empresaNome || "").includes(busca) || crmSoDigitos(c.telefone).includes(crmSoDigitos(busca) || "\u0000"))
       .sort((a, b) => String(b.ultimaMensagemEm || "").localeCompare(String(a.ultimaMensagemEm || "")));
-    res.json({ items, contagens, meuDeskcommId, intencao: DPRH_INTENCAO });
+    // A conversa aberta na tela, independente da aba — ao "Assumir" na aba Automático ela sai da
+    // lista, mas o cabeçalho (quem assumiu, botões) precisa continuar em dia.
+    const ativaBruta = req.query.ativa ? conversas.find((c) => c.id === String(req.query.ativa)) : null;
+    res.json({ items, contagens, meuDeskcommId, intencao: DPRH_INTENCAO, ativa: ativaBruta ? mapear(ativaBruta) : null });
   } catch (e: any) {
     console.error("[dprh] falha ao listar conversas:", e.message);
     res.status(502).json({ error: `Não foi possível ler as conversas do deskcomm: ${e.message}` });

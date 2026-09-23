@@ -7585,7 +7585,7 @@ async function dprhCarregarLista(){
   if(!box) return;
   const busca = document.getElementById('dprhBusca')?.value || '';
   let data;
-  try{ data = await api(`/dprh/whatsapp/conversas?aba=${DPRH.filtro}&busca=${encodeURIComponent(busca)}`); }
+  try{ data = await api(`/dprh/whatsapp/conversas?aba=${DPRH.filtro}&busca=${encodeURIComponent(busca)}${DPRH.conversaAtiva?'&ativa='+encodeURIComponent(DPRH.conversaAtiva):''}`); }
   catch(e){ box.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
   if(!document.getElementById('dprhLista')) return; // saiu da tela enquanto carregava
   DPRH.itens = data.items; DPRH.contagens = data.contagens; DPRH.meuDeskcommId = data.meuDeskcommId;
@@ -7608,10 +7608,7 @@ async function dprhCarregarLista(){
   }).join('') : `<div class="empty-state">${DPRH.filtro==='fila'?'Nenhuma demanda de folha aguardando atendente.':'Nenhuma conversa aqui.'}</div>`;
   box.querySelectorAll('.dprh-conv').forEach(el=>el.addEventListener('click', ()=>dprhAbrirConversa(el.dataset.id)));
   // Mantém o cabeçalho da conversa aberta em dia (quem assumiu, estado do automático) sem recarregar as mensagens.
-  if(DPRH.conversaAtiva){
-    const atual = data.items.find(c=>c.id===DPRH.conversaAtiva);
-    if(atual){ DPRH.conversaDados = atual; dprhRenderCabecalho(); }
-  }
+  if(DPRH.conversaAtiva && data.ativa && data.ativa.id===DPRH.conversaAtiva){ DPRH.conversaDados = data.ativa; dprhRenderCabecalho(); }
 }
 async function dprhAbrirConversa(id){
   DPRH.conversaAtiva = id;
