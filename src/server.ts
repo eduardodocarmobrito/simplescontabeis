@@ -4203,16 +4203,13 @@ app.post("/api/dominio/onvio-sessao", blockCliente, requirePermissao("configurac
   fs.writeFileSync(p, file.buffer);
   res.json({ ok: true });
 });
-// Sincronia automática de clientes via Onvio, direto no servidor — substitui, pra quem já enviou a
-// sessão pela tela, o ciclo de 60 em 60 minutos que antes só o agente local fazia. Roda pra todo
-// escritório configurado em modo "onvio" com sessão salva; os demais continuam dependendo do
-// agente local (modos banco de dados/API HTTP).
-setInterval(() => {
-  const escritorios = sqlite.prepare(`SELECT escritorio_id FROM dominio_config WHERE source = 'onvio'`).all() as any[];
-  for (const { escritorio_id } of escritorios) {
-    if (fs.existsSync(onvioSessionPath(escritorio_id))) executarSincronizacaoOnvio(escritorio_id);
-  }
-}, 60 * 60 * 1000);
+// Sincronização via Onvio: SÓ manual, por pedido explícito do usuário (2026-09-23) — a automática de
+// hora em hora (setInterval, removida) ficava tentando sozinha mesmo com a sessão já morta, empilhando
+// falha atrás de falha sem ninguém perceber na hora (o comentário de calcularSaudeOnvio documenta um
+// caso real: sessão morreu ~1h depois de enviada e ficou 36h falhando de hora em hora). Sem
+// sincronização automática nenhuma agora — só o botão "Atualizar Empresas"
+// (POST /api/dominio/sincronizar-empresas, acima) chama executarSincronizacaoOnvio, na hora que o
+// usuário souber que a sessão está fresca.
 
 // ---- FGTS Digital: busca da Guia (GFD) ----
 // Confirmado em teste real que a sessão autenticada do FGTS Digital NÃO sobrevive fora do
