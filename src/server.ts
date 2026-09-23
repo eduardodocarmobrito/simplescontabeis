@@ -12711,33 +12711,77 @@ app.post("/api/whatsapp/webhook", (req, res) => {
   }
 });
 
-// ---- DP/RH › WhatsApp ----
-// Tela própria (feita aqui, não o Inbox do deskcomm embutido) pras conversas que o Roteador de IA do
-// deskcomm mandou pra intenção "Folha de Pagamento". O WhatsApp em si continua sendo o do deskcomm
-// (WAHA, mesma conexão/número) — a conversa só existe lá. Divisão de trabalho:
-//   - LEITURA da lista (quais conversas são do DP/RH + contagem das abas): aqui no servidor, direto no
-//     Supabase do deskcomm com a service-role, porque a API dele não tem filtro por intenção.
-//   - MENSAGENS e AÇÕES (assumir, liberar, devolver ao automático, transferir, adiar, fechar,
-//     responder, anexo): o navegador chama /api/v1/* do deskcomm pelo proxy, com a sessão do próprio
-//     usuário (`sb-deskcomm-auth`, criada por /deskcomm-login?silencioso=1). Assim toda a regra de
-//     negócio de lá vale igual (silenciar o robô ao assumir, auditoria, envio pelo WAHA) e o histórico
-//     fica no nome de quem fez, não de uma conta técnica.
-// O nome da intenção é o `intent_name` do membro do Roteador (Configurações › IA › Roteadores no
-// deskcomm) — se renomearem a intenção lá, basta ajustar DPRH_INTENCAO no Railway.
+// ---- Atendimento WhatsApp (deskcomm): CRM (atendente geral) e DP/RH ----
+// Telas próprias (feitas aqui, não o Inbox do deskcomm embutido) sobre as conversas do deskcomm. O
+// WhatsApp em si continua sendo o do deskcomm (WAHA) — a conversa só existe lá. Divisão de trabalho:
+//   - LEITURA da lista (quais conversas + setor de cada uma + contagem das abas): aqui no servidor,
+//     direto no Supabase do deskcomm com a service-role, porque a API dele não tem setor/intenção.
+//   - MENSAGENS e AÇÕES (assumir, liberar, devolver ao automático, transferir pra pessoa, adiar,
+//     fechar, responder, anexo, áudio): o navegador chama /api/v1/* do deskcomm pelo proxy, com a
+//     sessão do próprio usuário (`sb-deskcomm-auth`, criada por /deskcomm-login?silencioso=1). Assim
+//     toda a regra de negócio de lá vale igual e o histórico fica no nome de quem fez.
+//   - TRANSFERIR PRA UM SETOR: aqui no servidor (/api/atendimento/conversas/:id/setor) — o deskcomm
+//     não tem "setor", só as intenções do Roteador de IA.
+// Dois escopos: `crm` = atendente geral, vê TODAS as conversas; `dprh` = só as do setor
+// DPRH_INTENCAO (o `intent_name` do membro do Roteador — Configurações › IA › Roteadores no deskcomm).
+// Fechar uma conversa (em qualquer tela) já recomeça o atendimento pelo menu: isso é o trigger
+// trg_zz_simplescontabeis_recomeca_ao_fechar no banco do deskcomm (/opt/deskcomm/simplescontabeis-sql).
 const DPRH_INTENCAO = (process.env.DPRH_INTENCAO || "Folha de Pagamento").trim();
-const DPRH_ABAS = ["fila", "minhas", "todas", "fechadas", "automatico"] as const;
+type AtendimentoEscopo = "crm" | "dprh";
+const ATENDIMENTO_ABAS: Record<AtendimentoEscopo, readonly string[]> = {
+  crm: ["fila", "minhas", "todas", "fechadas", "automatico"],
+  // Sem "todas": o DP/RH não precisa ver as conversas dos outros setores — o histórico dele fica em Fechadas.
+  dprh: ["fila", "minhas", "automatico", "fechadas"],
+};
+function atendimentoEscopo(v: any): AtendimentoEscopo | null {
+  return v === "crm" || v === "dprh" ? v : null;
+}
+function atendimentoModulo(escopo: AtendimentoEscopo): Modulo {
+  return escopo === "crm" ? "crm" : "dprh";
+}
+// Transferência manual de setor — o deskcomm não guarda isso (não tem setor), então fica aqui, com
+// quem transferiu. `intencao` NULL = devolvido pro atendimento geral (sem setor).
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS atendimento_transferencias_setor (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    intencao TEXT,
+    user_id INTEGER REFERENCES app_users(id),
+    motivo TEXT,
+    criado_em TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_atend_transf_conv ON atendimento_transferencias_setor(conversation_id, criado_em);
+`);
 
-// Uma conversa é do DP/RH se a decisão MAIS RECENTE do roteador sobre ela foi a do DP/RH — contando
-// também as decisões SEM intenção (fallback pra Recepção): cliente que voltou depois de a conversa
-// ser fechada e só mandou "Oi" está de novo no menu, sem setor, e não é demanda do DP/RH até
-// escolher. Decisão "sticky" (agente mantido) grava a intenção mantida, então continua contando.
-// Depois que alguém assume, o robô silencia e não há decisão nova — a última segue sendo a do DP/RH.
-// Também entra quem está com active_intent = DP/RH agora, caso a decisão ainda não tenha sido gravada.
-// `atuais`: id → quando essa escolha foi feita; quem chama ainda descarta a escolha que é de um
-// atendimento ANTERIOR (conversa fechada e reaberta — ver dprhEscolhaValeNoAtendimentoAtual).
-// `historico`: toda conversa que JÁ passou pelo DP/RH alguma vez — nunca some da tela (abas Todas e
-// Fechadas), mesmo depois que o cliente volta pro menu ou escolhe outro setor.
-async function dprhIdsDasConversas(): Promise<{ atuais: Map<string, string>; historico: Set<string> }> {
+// Setores = membros do Roteador de IA ativo (intenção → agente). Cache curto: a lista muda raramente.
+let atendimentoSetoresCache: { em: number; itens: { intencao: string; agentId: string }[] } | null = null;
+async function atendimentoSetores(): Promise<{ intencao: string; agentId: string }[]> {
+  if (atendimentoSetoresCache && Date.now() - atendimentoSetoresCache.em < 60_000) return atendimentoSetoresCache.itens;
+  const { data: roteadores, error } = await deskcommAdmin!.from("ai_routers").select("id").eq("organization_id", DESKCOMM_ORG_ID).eq("is_active", true);
+  if (error) throw new Error(error.message);
+  const ids = (roteadores || []).map((r: any) => r.id);
+  let itens: { intencao: string; agentId: string }[] = [];
+  if (ids.length) {
+    const { data: membros, error: erroMembros } = await deskcommAdmin!
+      .from("ai_router_members")
+      .select("intent_name, agent_id, position")
+      .eq("organization_id", DESKCOMM_ORG_ID)
+      .in("router_id", ids)
+      .order("position");
+    if (erroMembros) throw new Error(erroMembros.message);
+    const vistos = new Set<string>();
+    for (const m of membros || []) if (!vistos.has(m.intent_name)) { vistos.add(m.intent_name); itens.push({ intencao: m.intent_name, agentId: m.agent_id }); }
+  }
+  atendimentoSetoresCache = { em: Date.now(), itens };
+  return itens;
+}
+
+// Setor de cada conversa = a escolha MAIS RECENTE entre (a) as decisões do roteador — contando as
+// SEM intenção (fallback pra Recepção: cliente que voltou e só mandou "Oi" está no menu, sem setor);
+// decisão "sticky" grava a intenção mantida — e (b) as transferências manuais feitas aqui. `historico`
+// guarda toda conversa que JÁ passou por cada setor (nunca some da aba Fechadas daquele setor).
+// Depois que alguém assume, o robô silencia e não há decisão nova — a última segue valendo.
+async function atendimentoEscolhas(): Promise<{ ultima: Map<string, { setor: string | null; em: string }>; historico: Map<string, Set<string>> }> {
   const { data: decisoes, error } = await deskcommAdmin!
     .from("ai_router_decisions")
     .select("conversation_id, intent_name, created_at")
@@ -12745,37 +12789,37 @@ async function dprhIdsDasConversas(): Promise<{ atuais: Map<string, string>; his
     .order("created_at", { ascending: false })
     .limit(10000);
   if (error) throw new Error(error.message);
-  const ultima = new Map<string, { intencao: string | null; em: string }>();
-  const historico = new Set<string>();
-  for (const d of decisoes || []) {
-    if (!ultima.has(d.conversation_id)) ultima.set(d.conversation_id, { intencao: d.intent_name, em: d.created_at });
-    if (d.intent_name === DPRH_INTENCAO) historico.add(d.conversation_id);
+  const ultima = new Map<string, { setor: string | null; em: string }>();
+  const historico = new Map<string, Set<string>>();
+  const considerar = (convId: string, setor: string | null, em: string) => {
+    const atual = ultima.get(convId);
+    if (!atual || new Date(em).getTime() > new Date(atual.em).getTime()) ultima.set(convId, { setor, em });
+    if (setor) {
+      if (!historico.has(setor)) historico.set(setor, new Set());
+      historico.get(setor)!.add(convId);
+    }
+  };
+  for (const d of decisoes || []) considerar(d.conversation_id, d.intent_name, d.created_at);
+  for (const t of sqlite.prepare(`SELECT conversation_id, intencao, criado_em FROM atendimento_transferencias_setor`).all() as any[]) {
+    considerar(t.conversation_id, t.intencao, t.criado_em);
   }
-  const atuais = new Map<string, string>();
-  for (const [convId, u] of ultima) if (u.intencao === DPRH_INTENCAO) atuais.set(convId, u.em);
-  const { data: ativas, error: erroAtivas } = await deskcommAdmin!
-    .from("conversations")
-    .select("id, active_agent_set_at")
-    .eq("organization_id", DESKCOMM_ORG_ID)
-    .eq("active_intent", DPRH_INTENCAO);
-  if (erroAtivas) throw new Error(erroAtivas.message);
-  for (const c of ativas || []) {
-    historico.add(c.id);
-    if (!atuais.has(c.id) && c.active_agent_set_at) atuais.set(c.id, c.active_agent_set_at);
-  }
-  return { atuais, historico };
+  return { ultima, historico };
 }
-// Um conjunto de ids convertido em conversa do DP/RH, já filtrando quem foi escolhido pro DP/RH num
-// atendimento anterior. service_started_at só muda quando a conversa é fechada e reabre (trigger
-// trg_service_stamp_status do deskcomm) — assumir/liberar não mexem nele.
-function dprhEscolhaValeNoAtendimentoAtual(c: any, escolhidaEm: string | undefined): boolean {
-  if (!escolhidaEm) return false;
-  if (!c.service_started_at) return true;
-  return new Date(escolhidaEm).getTime() >= new Date(c.service_started_at).getTime();
+// Setor que vale NO ATENDIMENTO ATUAL: a escolha mais recente entre `ultima` e o active_intent da
+// própria conversa, descartando a que é de um atendimento ANTERIOR (conversa fechada e reaberta —
+// service_started_at só muda nesse caso, trigger trg_service_stamp_status do deskcomm).
+function atendimentoSetorAtual(c: any, ultima: { setor: string | null; em: string } | undefined): string | null {
+  let escolha = ultima;
+  if (c.active_agent_set_at && (!escolha || new Date(c.active_agent_set_at).getTime() > new Date(escolha.em).getTime())) {
+    escolha = { setor: c.active_intent || null, em: c.active_agent_set_at };
+  }
+  if (!escolha || !escolha.setor) return null;
+  if (c.service_started_at && new Date(escolha.em).getTime() < new Date(c.service_started_at).getTime()) return null;
+  return escolha.setor;
 }
 // Mapa sufixo-de-11-dígitos → empresa, montado 1× por requisição (crmAcharEmpresaPorTelefone faz a
 // mesma comparação, mas relendo todos os telefones a cada chamada — aqui são N conversas de uma vez).
-function dprhMapaEmpresasPorTelefone(escritorioId: number): Map<string, { id: number; nome: string }> {
+function atendimentoMapaEmpresasPorTelefone(escritorioId: number): Map<string, { id: number; nome: string }> {
   const rows = sqlite
     .prepare(
       `SELECT id, nome, telefone FROM empresas WHERE escritorio_id = ? AND telefone IS NOT NULL AND telefone != ''
@@ -12790,41 +12834,62 @@ function dprhMapaEmpresasPorTelefone(escritorioId: number): Map<string, { id: nu
   }
   return mapa;
 }
+const ATENDIMENTO_COLUNAS =
+  "id, status, comando_da_conversa, assigned_to_user_id, assigned_to_user_name, last_message_at, last_message_preview, last_inbound_at, unread_count_for_assignee, snooze_until, bot_silenced_until, service_revision, service_started_at, active_intent, active_agent_set_at, contact:contacts(display_name, name, phone_number)";
+// Atendente geral (CRM) lê as conversas mais recentes da organização; um volume maior que isso pede
+// paginação no servidor, que ainda não existe.
+const ATENDIMENTO_CRM_LIMITE = 500;
 
-app.get("/api/dprh/whatsapp/conversas", blockCliente, requirePermissao("dprh", "visualizar"), async (req, res) => {
+app.get("/api/atendimento/conversas", blockCliente, async (req, res) => {
   const user = (req as any).user;
+  const escopo = atendimentoEscopo(req.query.escopo);
+  if (!escopo) return res.status(400).json({ error: "Escopo inválido." });
+  if (!hasPermissao(user, atendimentoModulo(escopo), "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
-  const aba = (DPRH_ABAS as readonly string[]).includes(String(req.query.aba)) ? String(req.query.aba) : "fila";
+  const abas = ATENDIMENTO_ABAS[escopo];
+  const aba = abas.includes(String(req.query.aba)) ? String(req.query.aba) : "fila";
   const busca = crmNormalizaTxt(String(req.query.busca || ""));
   try {
     const meuDeskcommId = await deskcommGarantirUsuario(user);
-    const { atuais, historico } = await dprhIdsDasConversas();
-    const ids = [...historico];
-    const conversas: any[] = [];
-    // .in() vira query string — em lotes pra não estourar o tamanho da URL.
-    for (let i = 0; i < ids.length; i += 100) {
+    const { ultima, historico } = await atendimentoEscolhas();
+    const brutas: any[] = [];
+    if (escopo === "crm") {
       const { data, error } = await deskcommAdmin
         .from("conversations")
-        .select(
-          "id, status, comando_da_conversa, assigned_to_user_id, assigned_to_user_name, last_message_at, last_message_preview, last_inbound_at, unread_count_for_assignee, snooze_until, bot_silenced_until, service_revision, service_started_at, contact:contacts(display_name, name, phone_number)"
-        )
+        .select(ATENDIMENTO_COLUNAS)
         .eq("organization_id", DESKCOMM_ORG_ID)
-        .in("id", ids.slice(i, i + 100));
+        .order("last_message_at", { ascending: false, nullsFirst: false })
+        .limit(ATENDIMENTO_CRM_LIMITE);
       if (error) throw new Error(error.message);
-      for (const c of data || []) conversas.push({ ...c, atual: dprhEscolhaValeNoAtendimentoAtual(c, atuais.get(c.id)) });
+      brutas.push(...(data || []));
+    } else {
+      const ids = new Set(historico.get(DPRH_INTENCAO) || []);
+      const { data: ativas, error: erroAtivas } = await deskcommAdmin.from("conversations").select("id").eq("organization_id", DESKCOMM_ORG_ID).eq("active_intent", DPRH_INTENCAO);
+      if (erroAtivas) throw new Error(erroAtivas.message);
+      for (const c of ativas || []) ids.add(c.id);
+      const lista = [...ids];
+      // .in() vira query string — em lotes pra não estourar o tamanho da URL.
+      for (let i = 0; i < lista.length; i += 100) {
+        const { data, error } = await deskcommAdmin.from("conversations").select(ATENDIMENTO_COLUNAS).eq("organization_id", DESKCOMM_ORG_ID).in("id", lista.slice(i, i + 100));
+        if (error) throw new Error(error.message);
+        brutas.push(...(data || []));
+      }
     }
+    const conversas = brutas.map((c) => {
+      const setor = atendimentoSetorAtual(c, ultima.get(c.id));
+      return { ...c, setor, atual: escopo === "crm" ? true : setor === DPRH_INTENCAO };
+    });
     const nomesAtendentes = new Map<string, string>();
     for (const r of sqlite.prepare(`SELECT deskcomm_user_id, nome FROM app_users WHERE escritorio_id = ? AND deskcomm_user_id IS NOT NULL`).all(user.escritorioId) as any[]) {
       nomesAtendentes.set(r.deskcomm_user_id, r.nome);
     }
-    const empresas = dprhMapaEmpresasPorTelefone(user.escritorioId);
+    const empresas = atendimentoMapaEmpresasPorTelefone(user.escritorioId);
     const fechada = (c: any) => c.status === "closed" || c.status === "archived";
-    // Mesmas regras das abas do Inbox do deskcomm (tabToFilter em components/inbox/InboxLayout.tsx),
-    // mas Fila/Minhas/Automático só com quem é do DP/RH NO ATENDIMENTO ATUAL (c.atual): Fila = comando
-    // "aguardando" (esperando uma pessoa); Automático = comando "automatico"; Minhas = atribuídas a
-    // mim e não encerradas. Todas = histórico inteiro (tudo que já passou pelo DP/RH); Fechadas =
-    // fechada, ou que já saiu do DP/RH (cliente voltou pro menu/outro setor) — o atendimento do DP/RH
-    // acabou, mas a conversa continua consultável.
+    // Mesmas regras das abas do Inbox do deskcomm (tabToFilter em components/inbox/InboxLayout.tsx):
+    // Fila = comando "aguardando" (esperando uma pessoa); Automático = comando "automatico"; Minhas =
+    // atribuídas a mim e não encerradas; Todas = tudo; Fechadas = fechadas. No DP/RH, Fila/Minhas/
+    // Automático só com quem é do setor NO ATENDIMENTO ATUAL (c.atual), e Fechadas também inclui quem
+    // já saiu do setor (voltou pro menu / foi pra outro setor) — continua consultável ali.
     const filtros: Record<string, (c: any) => boolean> = {
       fila: (c) => c.atual && c.comando_da_conversa === "aguardando",
       minhas: (c) => c.atual && c.assigned_to_user_id === meuDeskcommId && !fechada(c),
@@ -12833,29 +12898,30 @@ app.get("/api/dprh/whatsapp/conversas", blockCliente, requirePermissao("dprh", "
       automatico: (c) => c.atual && c.comando_da_conversa === "automatico",
     };
     const contagens: Record<string, number> = {};
-    for (const a of DPRH_ABAS) contagens[a] = conversas.filter(filtros[a]).length;
+    for (const a of abas) contagens[a] = conversas.filter(filtros[a]).length;
     const mapear = (c: any) => {
-        const telefone = c.contact?.phone_number || "";
-        const empresa = empresas.get(crmSoDigitos(telefone).slice(-11)) || null;
-        return {
-          id: c.id,
-          contatoNome: c.contact?.display_name || c.contact?.name || null,
-          telefone,
-          empresaId: empresa?.id ?? null,
-          empresaNome: empresa?.nome ?? null,
-          status: c.status,
-          comando: c.comando_da_conversa,
-          atribuidoDeskcommId: c.assigned_to_user_id,
-          atribuidoNome: c.assigned_to_user_id ? nomesAtendentes.get(c.assigned_to_user_id) || c.assigned_to_user_name || "Outro atendente" : null,
-          ultimaMensagemEm: c.last_message_at,
-          ultimaMensagemTexto: c.last_message_preview,
-          ultimaMensagemClienteEm: c.last_inbound_at,
-          naoLidas: c.unread_count_for_assignee || 0,
-          adiadaAte: c.snooze_until && new Date(c.snooze_until).getTime() > Date.now() ? c.snooze_until : null,
-          revisao: c.service_revision,
-          atual: !!c.atual,
-        };
+      const telefone = c.contact?.phone_number || "";
+      const empresa = empresas.get(crmSoDigitos(telefone).slice(-11)) || null;
+      return {
+        id: c.id,
+        contatoNome: c.contact?.display_name || c.contact?.name || null,
+        telefone,
+        empresaId: empresa?.id ?? null,
+        empresaNome: empresa?.nome ?? null,
+        status: c.status,
+        comando: c.comando_da_conversa,
+        setor: c.setor,
+        atribuidoDeskcommId: c.assigned_to_user_id,
+        atribuidoNome: c.assigned_to_user_id ? nomesAtendentes.get(c.assigned_to_user_id) || c.assigned_to_user_name || "Outro atendente" : null,
+        ultimaMensagemEm: c.last_message_at,
+        ultimaMensagemTexto: c.last_message_preview,
+        ultimaMensagemClienteEm: c.last_inbound_at,
+        naoLidas: c.unread_count_for_assignee || 0,
+        adiadaAte: c.snooze_until && new Date(c.snooze_until).getTime() > Date.now() ? c.snooze_until : null,
+        revisao: c.service_revision,
+        atual: !!c.atual,
       };
+    };
     const items = conversas
       .filter(filtros[aba])
       .map(mapear)
@@ -12864,60 +12930,86 @@ app.get("/api/dprh/whatsapp/conversas", blockCliente, requirePermissao("dprh", "
     // A conversa aberta na tela, independente da aba — ao "Assumir" na aba Automático ela sai da
     // lista, mas o cabeçalho (quem assumiu, botões) precisa continuar em dia.
     const ativaBruta = req.query.ativa ? conversas.find((c) => c.id === String(req.query.ativa)) : null;
-    res.json({ items, contagens, meuDeskcommId, intencao: DPRH_INTENCAO, ativa: ativaBruta ? mapear(ativaBruta) : null });
+    res.json({ items, contagens, abas, meuDeskcommId, ativa: ativaBruta ? mapear(ativaBruta) : null });
   } catch (e: any) {
-    console.error("[dprh] falha ao listar conversas:", e.message);
+    console.error(`[atendimento/${escopo}] falha ao listar conversas:`, e.message);
     res.status(502).json({ error: `Não foi possível ler as conversas do deskcomm: ${e.message}` });
   }
 });
-// Chamado pela tela logo depois do "Fechar" (que vai pela API do deskcomm). Fechar lá só religa o
-// robô se a conversa NUNCA teve atendimento humano (trg_service_stamp_status: `if old.last_handoff_at
-// is null then bot_silenced_until:=null`) — como quase toda conversa do DP/RH teve (alguém assumiu,
-// ou respondeu pelo celular), ela reabria silenciada e o cliente caía direto em "Aguardando
-// atendente", sem o menu de setores. Regra do escritório: fechou, o próximo contato começa do zero
-// pela Recepção. Zera o silêncio, o último handoff e a aderência ao agente (o mesmo que o "Devolver
-// ao automático" do deskcomm zera — lib/escalacao/retomada.ts), só em conversa JÁ fechada.
-app.post("/api/dprh/whatsapp/conversas/:id/recomecar-apos-fechar", blockCliente, requirePermissao("dprh", "postar"), async (req, res) => {
+
+app.get("/api/atendimento/setores", blockCliente, async (req, res) => {
+  const user = (req as any).user;
+  if (!hasPermissao(user, "crm", "visualizar") && !hasPermissao(user, "dprh", "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
-  const id = String(req.params.id);
   try {
-    const { historico } = await dprhIdsDasConversas();
-    if (!historico.has(id)) return res.status(404).json({ error: "Conversa não encontrada no DP/RH." });
-    const { data, error } = await deskcommAdmin
-      .from("conversations")
-      .update({ bot_silenced_until: null, last_handoff_at: null, last_handoff_reason: null, active_ai_agent_id: null, active_intent: null, active_agent_set_at: null })
-      .eq("organization_id", DESKCOMM_ORG_ID)
-      .eq("id", id)
-      .eq("status", "closed")
-      .select("id, contact_id");
-    if (error) throw new Error(error.message);
-    if (!data?.length) return res.status(409).json({ error: "A conversa não está fechada." });
-    // Quando o agente de IA pede atendimento humano (ex.: "encaminhando pra equipe do DP"), o deskcomm
-    // trava o CONTATO em `force_human = true` (lib/agent-engine/agent/human-handoff.ts) — e essa trava
-    // sobrevive ao fechar/reabrir, então o próximo "Oi" do cliente era pulado ("turno pulado —
-    // force_human") e caía direto em Aguardando. O único lugar do deskcomm que destrava é o "Devolver
-    // ao automático" (lib/escalacao/retomada.ts, mesmo update abaixo) — fechar pelo DP/RH faz o mesmo.
-    const { error: erroContato } = await deskcommAdmin
-      .from("contacts")
-      .update({ force_human: false })
-      .eq("organization_id", DESKCOMM_ORG_ID)
-      .eq("id", data[0].contact_id);
-    if (erroContato) throw new Error(erroContato.message);
-    res.json({ ok: true });
+    res.json({ items: (await atendimentoSetores()).map((s) => s.intencao) });
   } catch (e: any) {
-    console.error("[dprh] falha ao religar o robô após fechar:", e.message);
-    res.status(502).json({ error: `Conversa fechada, mas não foi possível religar o atendimento automático: ${e.message}` });
+    res.status(502).json({ error: `Não foi possível ler os setores do deskcomm: ${e.message}` });
   }
 });
-// Pra quem dá pra transferir: Administradores + Colaboradores com acesso ao DP/RH, já espelhados no
-// deskcomm (quem ainda não tem espelho ganha um aqui — senão não teria como receber a conversa).
-app.get("/api/dprh/whatsapp/atendentes", blockCliente, requirePermissao("dprh", "postar"), async (req, res) => {
+
+// Transferir pra um SETOR (ex.: o atendente geral conversou com o cliente, ele quer a Folha):
+// solta quem estiver com a conversa (mesma função do "Liberar" do deskcomm — fn_conversation_assign —,
+// chamada pela service-role porque o Liberar de lá só aceita o próprio dono), marca o setor como
+// intenção ativa (aderência ao agente daquele setor, como o roteador faria) e SILENCIA o robô: a
+// conversa cai na Fila do setor esperando uma pessoa, não volta pro atendimento automático.
+// `intencao: null` = devolver pro atendimento geral (sem setor) — cai na Fila do CRM.
+app.post("/api/atendimento/conversas/:id/setor", blockCliente, async (req, res) => {
   const user = (req as any).user;
+  if (!hasPermissao(user, "crm", "postar") && !hasPermissao(user, "dprh", "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  const id = String(req.params.id);
+  const intencao: string | null = req.body?.intencao ? String(req.body.intencao) : null;
+  const motivo = req.body?.motivo ? String(req.body.motivo).trim().slice(0, 500) : null;
+  try {
+    let agentId: string | null = null;
+    if (intencao) {
+      const setor = (await atendimentoSetores()).find((s) => s.intencao === intencao);
+      if (!setor) return res.status(400).json({ error: "Setor desconhecido." });
+      agentId = setor.agentId;
+    }
+    const { data: atual, error: erroLer } = await deskcommAdmin.from("conversations").select("id, status").eq("organization_id", DESKCOMM_ORG_ID).eq("id", id).maybeSingle();
+    if (erroLer) throw new Error(erroLer.message);
+    if (!atual) return res.status(404).json({ error: "Conversa não encontrada." });
+    if (atual.status === "closed" || atual.status === "archived") return res.status(409).json({ error: "Conversa fechada — não dá pra transferir." });
+    const { error: erroSoltar } = await deskcommAdmin.rpc("fn_conversation_assign", {
+      p_organization_id: DESKCOMM_ORG_ID,
+      p_conversation_id: id,
+      p_to_user_id: null,
+      p_reason: "transfer",
+      p_enforce_expected: false,
+    });
+    if (erroSoltar) throw new Error(erroSoltar.message);
+    const agora = new Date().toISOString();
+    const { error: erroSetor } = await deskcommAdmin
+      .from("conversations")
+      .update({ bot_silenced_until: "infinity", active_intent: intencao, active_ai_agent_id: agentId, active_agent_set_at: agora })
+      .eq("organization_id", DESKCOMM_ORG_ID)
+      .eq("id", id);
+    if (erroSetor) throw new Error(erroSetor.message);
+    sqlite
+      .prepare(`INSERT INTO atendimento_transferencias_setor (conversation_id, intencao, user_id, motivo, criado_em) VALUES (?, ?, ?, ?, ?)`)
+      .run(id, intencao, user.id, motivo, agora);
+    res.json({ ok: true });
+  } catch (e: any) {
+    console.error("[atendimento] falha ao transferir de setor:", e.message);
+    res.status(502).json({ error: `Não foi possível transferir: ${e.message}` });
+  }
+});
+
+// Pra quem dá pra transferir: Administradores + Colaboradores com acesso ao módulo (no CRM, a quem tem
+// CRM ou DP/RH — o atendente geral pode passar direto pra alguém do setor), já espelhados no deskcomm
+// (quem ainda não tem espelho ganha um aqui — senão não teria como receber a conversa).
+app.get("/api/atendimento/atendentes", blockCliente, async (req, res) => {
+  const user = (req as any).user;
+  const escopo = atendimentoEscopo(req.query.escopo);
+  if (!escopo) return res.status(400).json({ error: "Escopo inválido." });
+  if (!hasPermissao(user, atendimentoModulo(escopo), "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   const candidatos = (
     sqlite
       .prepare(`SELECT id, nome, email, perfil FROM app_users WHERE escritorio_id = ? AND ativo = 1 AND painel_tv = 0 AND perfil IN ('Administrador','Colaborador') ORDER BY nome`)
       .all(user.escritorioId) as any[]
-  ).filter((u) => hasPermissao(u, "dprh", "visualizar"));
+  ).filter((u) => (escopo === "crm" ? hasPermissao(u, "crm", "visualizar") || hasPermissao(u, "dprh", "visualizar") : hasPermissao(u, "dprh", "visualizar")));
   const items: { deskcommUserId: string; nome: string }[] = [];
   const falhas: string[] = [];
   for (const u of candidatos) {
@@ -12927,7 +13019,7 @@ app.get("/api/dprh/whatsapp/atendentes", blockCliente, requirePermissao("dprh", 
       falhas.push(`${u.nome}: ${e.message}`);
     }
   }
-  if (falhas.length) console.error("[dprh] atendentes sem espelho no deskcomm:", falhas.join(" | "));
+  if (falhas.length) console.error("[atendimento] atendentes sem espelho no deskcomm:", falhas.join(" | "));
   res.json({ items });
 });
 
