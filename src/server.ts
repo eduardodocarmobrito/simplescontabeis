@@ -22,7 +22,6 @@ import * as ocr from "./ocr";
 import { buscarViaOnvio } from "./onvio-sync";
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
-import https from "https";
 import { createProxyMiddleware } from "http-proxy-middleware";
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 
@@ -2536,13 +2535,15 @@ function reescreverCorpoNoProxy(proxyReq: any, req: express.Request) {
   proxyReq.setHeader("Content-Length", corpo.length);
   proxyReq.write(corpo);
 }
-// keepAlive: reaproveita a conexão TLS já aberta pra VPS entre requisições, em vez de renegociar TLS
-// do zero a cada chamada (achado investigando lentidão intermitente salvando dados do deskcomm — cada
-// handshake novo soma algumas centenas de ms, e o cliente dele desiste sozinho depois de pouco tempo).
 // timeout/proxyTimeout generosos: o padrão do Node é curto demais pra uma cadeia
 // navegador→Railway→VPS→Supabase, e um proxy que corta cedo demais é pior que um lento — melhor
 // deixar quem sabe o orçamento certo (o próprio cliente do deskcomm) decidir quando desistir.
-const deskcommHttpsAgent = new https.Agent({ keepAlive: true, maxSockets: 50 });
+//
+// SEM keepAlive de propósito — tentado uma vez (agent com keepAlive:true) pra evitar renegociar TLS
+// a cada chamada, mas isso encheu o log do Railway de "ECONNRESET: soquete desligado" a cada ~30s: o
+// Caddy da VPS fecha conexão ociosa antes do pool do Node perceber que ela morreu, e a próxima
+// chamada tenta reaproveitar um socket já fechado do outro lado. O custo de renegociar TLS a cada
+// chamada é pequeno perto do risco de request real falhando por causa de conexão zumbi no pool.
 // requireAuth/blockCliente devolvem JSON (certo pra /api/*, chamado por fetch) — mas /deskcomm serve
 // NAVEGAÇÃO DE PÁGINA (o navegador carrega isto direto, com F5/atualizar incluso). Sessão vencida
 // nessa rota mostrando `{"error":"Sessão expirada..."}` cru na tela é uma péssima experiência —
@@ -2565,7 +2566,6 @@ app.use(
     // isto.
     changeOrigin: true,
     ws: false,
-    agent: deskcommHttpsAgent,
     proxyTimeout: 45_000,
     timeout: 45_000,
     onProxyReq: reescreverCorpoNoProxy,
@@ -2586,7 +2586,6 @@ app.use(
     target: DESKCOMM_URL,
     changeOrigin: true, // ver comentário do proxy /deskcomm acima — obrigatório pro TLS não quebrar
     ws: false,
-    agent: deskcommHttpsAgent,
     proxyTimeout: 45_000,
     timeout: 45_000,
     pathRewrite: { "^/api/v1": "/deskcomm/api/v1" },
