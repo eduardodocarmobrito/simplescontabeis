@@ -12890,8 +12890,12 @@ app.get("/api/atendimento/conversas", blockCliente, async (req, res) => {
     // atribuídas a mim e não encerradas; Todas = tudo; Fechadas = fechadas. No DP/RH, Fila/Minhas/
     // Automático só com quem é do setor NO ATENDIMENTO ATUAL (c.atual), e Fechadas também inclui quem
     // já saiu do setor (voltou pro menu / foi pra outro setor) — continua consultável ali.
+    // No DP/RH a Fila mostra TODA conversa do setor ainda sem dono — inclusive a que o agente de IA da
+    // Folha está atendendo (pedido do escritório: alguém do DP pode assumir desde o primeiro minuto; ao
+    // assumir, o robô silencia). No CRM a Fila segue a regra do deskcomm: só quem espera uma pessoa.
+    const filaInclui = escopo === "dprh" ? ["aguardando", "automatico"] : ["aguardando"];
     const filtros: Record<string, (c: any) => boolean> = {
-      fila: (c) => c.atual && c.comando_da_conversa === "aguardando",
+      fila: (c) => c.atual && !fechada(c) && !c.assigned_to_user_id && filaInclui.includes(c.comando_da_conversa),
       minhas: (c) => c.atual && c.assigned_to_user_id === meuDeskcommId && !fechada(c),
       todas: () => true,
       fechadas: (c) => fechada(c) || !c.atual,

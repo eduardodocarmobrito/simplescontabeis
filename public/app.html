@@ -7632,7 +7632,7 @@ async function atdCarregarLista(S){
           </div>
           ${c.empresaNome?`<div class="dprh-conv-sub">${esc(c.empresaNome)}</div>`:''}
           <div class="dprh-conv-sub">${esc((c.ultimaMensagemTexto||'').slice(0,70))}</div>
-          ${S.cfg.mostraSetor || c.atribuidoNome ? `<div class="dprh-conv-sub">${S.cfg.mostraSetor?`<span class="atd-setor">${esc(c.setor||'Sem setor')}</span>`:''}${c.atribuidoNome?` ↳ ${esc(c.atribuidoNome)}`:''}</div>` : ''}
+          ${S.cfg.mostraSetor || c.atribuidoNome || c.comando==='automatico' ? `<div class="dprh-conv-sub">${S.cfg.mostraSetor?`<span class="atd-setor">${esc(c.setor||'Sem setor')}</span> `:''}${c.comando==='automatico'?'🤖 IA atendendo':''}${c.atribuidoNome?` ↳ ${esc(c.atribuidoNome)}`:''}</div>` : ''}
         </div>
       </div>`;
   }).join('') : `<div class="empty-state">${S.filtro==='fila'?S.cfg.vazioFila:'Nenhuma conversa aqui.'}</div>`;
