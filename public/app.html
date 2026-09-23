@@ -899,7 +899,8 @@ async function render(){
     else if(STATE.page==='financeiro') await pageFinanceiro();
     else if(STATE.page==='contratos') await pageContratos();
     else if(STATE.page==='relatorios') await pageRelatorios();
-    else if(STATE.page==='crm') await pageCrm();
+    // Abrir o CRM pelo menu sempre cai no WhatsApp (deskcomm) → Fila; a aba Meta recarrega por pageCrm() direto.
+    else if(STATE.page==='crm'){ CRM.aba='whatsapp'; await pageCrm(); }
     else if(STATE.page==='dprh') await pageDprh();
     else if(STATE.page==='usuarios') await pageUsuarios();
     else if(STATE.page==='configuracoes') await pageConfiguracoes();
@@ -7577,7 +7578,8 @@ async function atendimentoMontar(escopo, box){
       </div>
     </div>
   `;
-  if(!S.cfg.abas.includes(S.filtro)) S.filtro = 'fila';
+  // Abrir o módulo sempre começa na Fila (o que está esperando atendimento), não na última aba usada.
+  S.filtro = 'fila';
   let t=null;
   document.getElementById('atdBusca').addEventListener('input', ()=>{ clearTimeout(t); t=setTimeout(()=>atdCarregarLista(S), 300); });
   const btnNova = document.getElementById('atdNovaConversa');
