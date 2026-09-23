@@ -12733,7 +12733,9 @@ const DPRH_ABAS = ["fila", "minhas", "todas", "fechadas", "automatico"] as const
 // escolher. Decisão "sticky" (agente mantido) grava a intenção mantida, então continua contando.
 // Depois que alguém assume, o robô silencia e não há decisão nova — a última segue sendo a do DP/RH.
 // Também entra quem está com active_intent = DP/RH agora, caso a decisão ainda não tenha sido gravada.
-async function dprhIdsDasConversas(): Promise<string[]> {
+// Devolve id → quando essa escolha foi feita: quem chama descarta a escolha que é de um atendimento
+// ANTERIOR (conversa fechada e reaberta — ver o filtro por service_started_at na rota da lista).
+async function dprhIdsDasConversas(): Promise<Map<string, string>> {
   const { data: decisoes, error } = await deskcommAdmin!
     .from("ai_router_decisions")
     .select("conversation_id, intent_name, created_at")
@@ -12741,18 +12743,26 @@ async function dprhIdsDasConversas(): Promise<string[]> {
     .order("created_at", { ascending: false })
     .limit(10000);
   if (error) throw new Error(error.message);
-  const ultimaIntencao = new Map<string, string | null>();
-  for (const d of decisoes || []) if (!ultimaIntencao.has(d.conversation_id)) ultimaIntencao.set(d.conversation_id, d.intent_name);
-  const ids = new Set<string>();
-  for (const [convId, intencao] of ultimaIntencao) if (intencao === DPRH_INTENCAO) ids.add(convId);
+  const ultima = new Map<string, { intencao: string | null; em: string }>();
+  for (const d of decisoes || []) if (!ultima.has(d.conversation_id)) ultima.set(d.conversation_id, { intencao: d.intent_name, em: d.created_at });
+  const ids = new Map<string, string>();
+  for (const [convId, u] of ultima) if (u.intencao === DPRH_INTENCAO) ids.set(convId, u.em);
   const { data: ativas, error: erroAtivas } = await deskcommAdmin!
     .from("conversations")
-    .select("id")
+    .select("id, active_agent_set_at")
     .eq("organization_id", DESKCOMM_ORG_ID)
     .eq("active_intent", DPRH_INTENCAO);
   if (erroAtivas) throw new Error(erroAtivas.message);
-  for (const c of ativas || []) ids.add(c.id);
-  return [...ids];
+  for (const c of ativas || []) if (!ids.has(c.id) && c.active_agent_set_at) ids.set(c.id, c.active_agent_set_at);
+  return ids;
+}
+// Um conjunto de ids convertido em conversa do DP/RH, já filtrando quem foi escolhido pro DP/RH num
+// atendimento anterior. service_started_at só muda quando a conversa é fechada e reabre (trigger
+// trg_service_stamp_status do deskcomm) — assumir/liberar não mexem nele.
+function dprhEscolhaValeNoAtendimentoAtual(c: any, escolhidaEm: string | undefined): boolean {
+  if (!escolhidaEm) return false;
+  if (!c.service_started_at) return true;
+  return new Date(escolhidaEm).getTime() >= new Date(c.service_started_at).getTime();
 }
 // Mapa sufixo-de-11-dígitos → empresa, montado 1× por requisição (crmAcharEmpresaPorTelefone faz a
 // mesma comparação, mas relendo todos os telefones a cada chamada — aqui são N conversas de uma vez).
@@ -12779,19 +12789,20 @@ app.get("/api/dprh/whatsapp/conversas", blockCliente, requirePermissao("dprh", "
   const busca = crmNormalizaTxt(String(req.query.busca || ""));
   try {
     const meuDeskcommId = await deskcommGarantirUsuario(user);
-    const ids = await dprhIdsDasConversas();
+    const escolhas = await dprhIdsDasConversas();
+    const ids = [...escolhas.keys()];
     const conversas: any[] = [];
     // .in() vira query string — em lotes pra não estourar o tamanho da URL.
     for (let i = 0; i < ids.length; i += 100) {
       const { data, error } = await deskcommAdmin
         .from("conversations")
         .select(
-          "id, status, comando_da_conversa, assigned_to_user_id, assigned_to_user_name, last_message_at, last_message_preview, last_inbound_at, unread_count_for_assignee, snooze_until, bot_silenced_until, service_revision, contact:contacts(display_name, name, phone_number)"
+          "id, status, comando_da_conversa, assigned_to_user_id, assigned_to_user_name, last_message_at, last_message_preview, last_inbound_at, unread_count_for_assignee, snooze_until, bot_silenced_until, service_revision, service_started_at, contact:contacts(display_name, name, phone_number)"
         )
         .eq("organization_id", DESKCOMM_ORG_ID)
         .in("id", ids.slice(i, i + 100));
       if (error) throw new Error(error.message);
-      conversas.push(...(data || []));
+      conversas.push(...(data || []).filter((c: any) => dprhEscolhaValeNoAtendimentoAtual(c, escolhas.get(c.id))));
     }
     const nomesAtendentes = new Map<string, string>();
     for (const r of sqlite.prepare(`SELECT deskcomm_user_id, nome FROM app_users WHERE escritorio_id = ? AND deskcomm_user_id IS NOT NULL`).all(user.escritorioId) as any[]) {
@@ -12844,6 +12855,34 @@ app.get("/api/dprh/whatsapp/conversas", blockCliente, requirePermissao("dprh", "
   } catch (e: any) {
     console.error("[dprh] falha ao listar conversas:", e.message);
     res.status(502).json({ error: `Não foi possível ler as conversas do deskcomm: ${e.message}` });
+  }
+});
+// Chamado pela tela logo depois do "Fechar" (que vai pela API do deskcomm). Fechar lá só religa o
+// robô se a conversa NUNCA teve atendimento humano (trg_service_stamp_status: `if old.last_handoff_at
+// is null then bot_silenced_until:=null`) — como quase toda conversa do DP/RH teve (alguém assumiu,
+// ou respondeu pelo celular), ela reabria silenciada e o cliente caía direto em "Aguardando
+// atendente", sem o menu de setores. Regra do escritório: fechou, o próximo contato começa do zero
+// pela Recepção. Zera o silêncio e a aderência ao agente (os mesmos 3 campos que o próprio deskcomm
+// zera no handoff — lib/ai/handoff/orchestrator.ts), só em conversa JÁ fechada.
+app.post("/api/dprh/whatsapp/conversas/:id/recomecar-apos-fechar", blockCliente, requirePermissao("dprh", "postar"), async (req, res) => {
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  const id = String(req.params.id);
+  try {
+    const escolhas = await dprhIdsDasConversas();
+    if (!escolhas.has(id)) return res.status(404).json({ error: "Conversa não encontrada no DP/RH." });
+    const { data, error } = await deskcommAdmin
+      .from("conversations")
+      .update({ bot_silenced_until: null, active_ai_agent_id: null, active_intent: null, active_agent_set_at: null })
+      .eq("organization_id", DESKCOMM_ORG_ID)
+      .eq("id", id)
+      .eq("status", "closed")
+      .select("id");
+    if (error) throw new Error(error.message);
+    if (!data?.length) return res.status(409).json({ error: "A conversa não está fechada." });
+    res.json({ ok: true });
+  } catch (e: any) {
+    console.error("[dprh] falha ao religar o robô após fechar:", e.message);
+    res.status(502).json({ error: `Conversa fechada, mas não foi possível religar o atendimento automático: ${e.message}` });
   }
 });
 // Pra quem dá pra transferir: Administradores + Colaboradores com acesso ao DP/RH, já espelhados no

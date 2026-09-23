@@ -7682,8 +7682,11 @@ async function dprhAcao(acao, botao){
     return executar(()=>dcApi(base+'/reactivate-bot', { method:'POST' }), 'Conversa devolvida ao automático.');
   }
   if(acao==='fechar'){
-    if(!confirmar('Fechar esta conversa?')) return;
-    return executar(()=>dcApi(base+'/close', { method:'POST', body:{ expected_revision: c.revisao || undefined } }), 'Conversa fechada.');
+    if(!confirmar('Fechar esta conversa? Se o cliente escrever de novo, o atendimento recomeça pelo menu de setores.')) return;
+    return executar(async ()=>{
+      await dcApi(base+'/close', { method:'POST', body:{ expected_revision: c.revisao || undefined } });
+      await api('/dprh/whatsapp/conversas/'+encodeURIComponent(c.id)+'/recomecar-apos-fechar', { method:'POST' });
+    }, 'Conversa fechada.');
   }
   if(acao==='desadiar') return executar(()=>dcApi(base+'/snooze', { method:'DELETE' }), 'Adiamento cancelado.');
   if(acao==='adiar'){
