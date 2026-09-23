@@ -302,6 +302,7 @@
   .dprh-midia-audio{display:block; width:240px; margin-top:4px;}
   .dprh-composer{display:flex; gap:8px; align-items:flex-end; padding:10px; border-top:1px solid var(--rule); flex:none;}
   .dprh-composer textarea{flex:1; resize:none; border:1px solid var(--rule); border-radius:8px; padding:8px 10px; font-size:13px; font-family:inherit; max-height:120px; background:var(--paper);}
+  .atd-soltar{outline:2px dashed var(--accent); outline-offset:-6px;}
   .atd-setor{display:inline-block; font-size:10.5px; padding:1px 7px; border-radius:8px; background:var(--accent-pale); color:var(--accent-deep); font-weight:600;}
   .atd-gravando{align-items:center; font-size:13px; color:var(--debit);}
   .atd-gravando-ponto{width:10px; height:10px; border-radius:50%; background:var(--debit); animation:chatPulse 1.1s ease-in-out infinite;}
@@ -7575,6 +7576,20 @@ async function atendimentoMontar(escopo, box){
   document.getElementById('atdBusca').addEventListener('input', ()=>{ clearTimeout(t); t=setTimeout(()=>atdCarregarLista(S), 300); });
   const btnNova = document.getElementById('atdNovaConversa');
   if(btnNova) btnNova.addEventListener('click', ()=>atdNovaConversaModal(S));
+  // Arrastar-e-soltar arquivo na conversa aberta. Registrado UMA vez aqui (o painel #atdThread é o
+  // mesmo elemento pra todas as conversas — só o conteúdo dele muda ao abrir outra).
+  const thread = document.getElementById('atdThread');
+  thread.addEventListener('dragover', ev=>{ if(S.conversaAtiva && [...(ev.dataTransfer?.types||[])].includes('Files')){ ev.preventDefault(); thread.classList.add('atd-soltar'); } });
+  thread.addEventListener('dragleave', ev=>{ if(ev.target===thread) thread.classList.remove('atd-soltar'); });
+  thread.addEventListener('drop', ev=>{
+    thread.classList.remove('atd-soltar');
+    const arquivos = [...(ev.dataTransfer?.files || [])];
+    if(!arquivos.length || !S.conversaAtiva) return;
+    ev.preventDefault();
+    const input = document.getElementById('atdInput');
+    if(!input || input.disabled){ toast('Não dá pra enviar nesta conversa.','err'); return; }
+    atdPreviaEnvio(S, arquivos);
+  });
   atdRenderFiltros(S);
   try{ await dcGarantirSessao(); }
   catch(e){ document.getElementById('atdLista').innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
@@ -7930,6 +7945,43 @@ async function atdEnviarArquivo(S, f, legenda){
   atdCarregarLista(S);
   return !!corpo.body;
 }
+function atdPreviaEnvio(S, arquivos){
+  const nomeado = arquivos.map((f, i)=>{
+    // Print colado vem como "image.png" — dá um nome que diga o que é.
+    if(/^image\.(png|jpe?g|gif|webp)$/i.test(f.name)){
+      const agora = new Date(); const ext = f.name.split('.').pop();
+      return new File([f], `print-${agora.toLocaleDateString('pt-BR').replace(/\//g,'-')}-${agora.getHours()}h${String(agora.getMinutes()).padStart(2,'0')}${arquivos.length>1?'-'+(i+1):''}.${ext}`, { type: f.type });
+    }
+    return f;
+  });
+  const urls = [];
+  const previas = nomeado.map(f=>{
+    if(f.type.startsWith('image/')){ const u = URL.createObjectURL(f); urls.push(u); return `<img src="${u}" alt="" style="max-width:100%; max-height:260px; border-radius:8px; display:block; margin:0 auto 6px;">`; }
+    return `<div class="tag muted" style="margin-bottom:6px;">📎 ${esc(f.name)} (${Math.ceil(f.size/1024)} KB)</div>`;
+  }).join('');
+  const input = document.getElementById('atdInput');
+  openModal(`
+    <h3>Enviar ${nomeado.length>1?nomeado.length+' arquivos':'arquivo'}</h3>
+    <div style="margin:10px 0;">${previas}</div>
+    <div class="field"><label>Legenda (opcional)</label><input type="text" id="atdPreviaLegenda" maxlength="1000" value="${esc(input?.value.trim()||'')}"></div>
+    <div class="modal-actions"><button class="btn" id="atdPreviaCancel">Cancelar</button><button class="btn primary" id="atdPreviaEnviar">Enviar</button></div>
+  `);
+  const liberar = ()=>urls.forEach(u=>URL.revokeObjectURL(u));
+  document.getElementById('atdPreviaCancel').addEventListener('click', ()=>{ liberar(); closeModal(); });
+  const campo = document.getElementById('atdPreviaLegenda');
+  campo.focus();
+  const enviar = async ()=>{
+    const legenda = campo.value.trim();
+    liberar(); closeModal();
+    toast(nomeado.length>1 ? `Enviando ${nomeado.length} arquivos…` : 'Enviando '+nomeado[0].name+'…');
+    try{
+      for(let i=0; i<nomeado.length; i++) await atdEnviarArquivo(S, nomeado[i], i===0 ? legenda : '');
+      if(legenda && input){ input.value=''; input.style.height=''; }
+    }catch(e){ toast(e.message,'err'); }
+  };
+  document.getElementById('atdPreviaEnviar').addEventListener('click', enviar);
+  campo.addEventListener('keydown', ev=>{ if(ev.key==='Enter'){ ev.preventDefault(); enviar(); } });
+}
 async function atdGravarAudio(S){
   if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || typeof MediaRecorder==='undefined'){ toast('Este navegador não grava áudio.','err'); return; }
   let stream;
@@ -7992,6 +8044,14 @@ function atdLigarComposer(S){
   input.addEventListener('keydown', ev=>{ if(ev.key==='Enter' && !ev.shiftKey){ ev.preventDefault(); enviar(); } });
   input.addEventListener('input', ()=>{ input.style.height='auto'; input.style.height=Math.min(input.scrollHeight,120)+'px'; });
   document.getElementById('atdAnexar').addEventListener('click', ()=>arquivo.click());
+  // Colar (Cmd/Ctrl+V um print ou arquivo copiado) e arrastar-e-soltar na conversa: abre uma prévia
+  // com legenda antes de enviar — igual ao 📎, sem precisar salvar o print num arquivo antes.
+  input.addEventListener('paste', ev=>{
+    const arquivos = [...(ev.clipboardData?.files || [])];
+    if(!arquivos.length) return; // colou texto — segue o comportamento normal
+    ev.preventDefault();
+    atdPreviaEnvio(S, arquivos);
+  });
   document.getElementById('atdMicrofone').addEventListener('click', ()=>atdGravarAudio(S));
   document.getElementById('atdGravCancelar').addEventListener('click', ()=>{ if(S.gravador){ S.gravador.cancelado = true; S.gravador.rec.stop(); } });
   document.getElementById('atdGravEnviar').addEventListener('click', ()=>{ if(S.gravador) S.gravador.rec.stop(); });
