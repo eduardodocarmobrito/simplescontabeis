@@ -2529,6 +2529,18 @@ function reescreverCorpoNoProxy(proxyReq: any, req: express.Request) {
   // "Invalid Server Actions request" (confirmado ao vivo nos logs do deskcomm). req.headers.host é
   // sempre o domínio original de quem chamou este servidor, então é o valor certo aqui.
   if (req.headers.host) proxyReq.setHeader("x-forwarded-host", req.headers.host);
+  // Reenvia os bytes ORIGINAIS (guardados pelo `verify` do express.json) e não só quando o objeto
+  // tem chaves: um POST com corpo `{}` (Content-Length: 2 — marcar como lida, devolver ao
+  // automático) caía no `return` antigo, o cabeçalho seguia e o corpo não, e o deskcomm ficava
+  // esperando 2 bytes pra sempre (travava até o timeout, sem NENHUM log do lado dele — medido ao
+  // vivo em 2026-09-23 depois de descartar banco, Caddy, cron e versão do Next.js).
+  const bruto: Buffer | undefined = (req as any).rawBody;
+  if (bruto && bruto.length) {
+    proxyReq.setHeader("Content-Type", req.headers["content-type"] || "application/json");
+    proxyReq.setHeader("Content-Length", bruto.length);
+    proxyReq.write(bruto);
+    return;
+  }
   if (!req.body || !Object.keys(req.body).length) return;
   const corpo = Buffer.from(JSON.stringify(req.body));
   proxyReq.setHeader("Content-Type", "application/json");
@@ -2538,14 +2550,6 @@ function reescreverCorpoNoProxy(proxyReq: any, req: express.Request) {
 // timeout/proxyTimeout generosos: o padrão do Node é curto demais pra uma cadeia
 // navegador→Railway→VPS→Supabase, e um proxy que corta cedo demais é pior que um lento — melhor
 // deixar quem sabe o orçamento certo (o próprio cliente do deskcomm) decidir quando desistir.
-//
-// 90s (não mais 45s): medido ao vivo em 2026-09-23 — o Caddy da VPS registrava "unexpected EOF"
-// lendo do app do deskcomm em EXATAMENTE 45.000s, toda vez, pra chamadas que às vezes demoravam mais
-// que isso pra responder de verdade. A suspeita, ainda não fechada: ESTE timeout (o mais próximo do
-// navegador na cadeia) estoura primeiro, derruba o socket, e o Caddy — ao perceber que quem pediu
-// sumiu — cancela a requisição pendente pro app, e É ISSO que aparece nos logs dele como "unexpected
-// EOF", não uma trava de verdade do lado do deskcomm. Alargar aqui é o teste mais barato pra
-// confirmar ou descartar essa teoria sem mexer em nada dentro do deskcomm.
 //
 // SEM keepAlive de propósito — tentado uma vez (agent com keepAlive:true) pra evitar renegociar TLS
 // a cada chamada, mas isso encheu o log do Railway de "ECONNRESET: soquete desligado" a cada ~30s: o
@@ -2585,8 +2589,8 @@ app.use(
     // isto.
     changeOrigin: true,
     ws: false,
-    proxyTimeout: 90_000,
-    timeout: 90_000,
+    proxyTimeout: 45_000,
+    timeout: 45_000,
     onProxyReq: reescreverCorpoNoProxy,
   })
 );
@@ -2605,8 +2609,8 @@ app.use(
     target: DESKCOMM_URL,
     changeOrigin: true, // ver comentário do proxy /deskcomm acima — obrigatório pro TLS não quebrar
     ws: false,
-    proxyTimeout: 90_000,
-    timeout: 90_000,
+    proxyTimeout: 45_000,
+    timeout: 45_000,
     pathRewrite: { "^/api/v1": "/deskcomm/api/v1" },
     onProxyReq: reescreverCorpoNoProxy,
   })
