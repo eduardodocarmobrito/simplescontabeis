@@ -7521,6 +7521,12 @@ function novoAtendimento(escopo){
   return { escopo, cfg:ATEND_CFG[escopo], filtro:'fila', conversaAtiva:null, conversaDados:null, itens:[], contagens:{}, meuDeskcommId:null, atendentes:null, setores:null, listaTimer:null, mensagensTimer:null, ultimaMsgId:null, gravador:null };
 }
 const ATEND = { crm: novoAtendimento('crm'), dprh: novoAtendimento('dprh') };
+// Voltou pra aba com uma conversa aberta: o que chegou enquanto a aba estava escondida agora foi visto.
+document.addEventListener('visibilitychange', ()=>{
+  if(document.hidden) return;
+  const S = STATE.page==='crm' ? ATEND.crm : STATE.page==='dprh' ? ATEND.dprh : null;
+  if(S && S.conversaAtiva && document.getElementById('atdMsgs')) atdMarcarLida(S, S.conversaAtiva);
+});
 let ATEND_SESSAO_USER = null;
 function pararAtendimentoTimers(escopo){
   const S = ATEND[escopo];
@@ -7618,7 +7624,9 @@ function atdIniciais(nome){
 }
 function atdRotuloComando(S, c){
   if(c.status==='closed' || c.status==='archived') return ['muted','Fechada'];
-  if(!c.atual) return ['muted','Atendimento do setor encerrado — cliente voltou pro menu / outro setor'];
+  // Saiu do setor sem ninguém fechar: o cliente voltou pro menu, o roteador passou pra outro setor ou
+  // alguém transferiu. Diz PRA ONDE foi — "encerrado" dava a entender que a conversa tinha sido fechada.
+  if(!c.atual) return ['warn', `Saiu deste setor — agora em ${c.setor || 'atendimento geral (sem setor)'}`];
   if(c.adiadaAte) return ['muted','Adiada até '+fmtDateHora(c.adiadaAte)];
   if(c.comando==='automatico') return ['ok','Automático atendendo'];
   if(c.comando==='aguardando') return ['warn','Aguardando atendente'];
@@ -7647,6 +7655,7 @@ async function atdCarregarLista(S){
           </div>
           ${c.empresaNome?`<div class="dprh-conv-sub">${esc(c.empresaNome)}</div>`:''}
           <div class="dprh-conv-sub">${esc((c.ultimaMensagemTexto||'').slice(0,70))}</div>
+          ${S.filtro==='fechadas' ? `<div class="dprh-conv-sub">${(c.status==='closed'||c.status==='archived') ? 'Fechada' : `↪ Saiu do setor — agora em ${esc(c.setor || 'atendimento geral')}`}</div>` : ''}
           ${S.cfg.mostraSetor || c.atribuidoNome || c.comando==='automatico' ? `<div class="dprh-conv-sub">${S.cfg.mostraSetor?`<span class="atd-setor">${esc(c.setor||'Sem setor')}</span> `:''}${c.comando==='automatico'?'🤖 IA atendendo':''}${c.atribuidoNome?` ↳ ${esc(c.atribuidoNome)}`:''}</div>` : ''}
         </div>
       </div>`;
@@ -7684,8 +7693,14 @@ async function atdAbrirConversa(S, id){
   atdRenderCabecalho(S);
   atdLigarComposer(S);
   await atdCarregarMensagens(S, true);
-  dcApi(`/conversations/${id}/mark-read`, { method:'POST' }).catch(()=>{});
+  atdMarcarLida(S, id);
   S.mensagensTimer = setInterval(()=>atdCarregarMensagens(S, false), 6000);
+}
+// Lida no deskcomm (contador) E no WhatsApp (celular + tiques azuis pro cliente — rota nossa,
+// /api/atendimento/conversas/:id/lida). Falha aqui não atrapalha o atendimento, então é silenciosa.
+function atdMarcarLida(S, id){
+  dcApi(`/conversations/${id}/mark-read`, { method:'POST' }).catch(()=>{});
+  api('/atendimento/conversas/'+encodeURIComponent(id)+'/lida', { method:'POST' }).catch(()=>{});
 }
 function atdComposerHabilitado(S, c){
   const fechada = c.status==='closed' || c.status==='archived';
@@ -7916,6 +7931,8 @@ async function atdCarregarMensagens(S, primeira){
   msgs = msgs || [];
   const ultima = msgs.length ? msgs[msgs.length-1].id+'|'+msgs[msgs.length-1].status : 'vazio';
   if(!primeira && ultima===S.ultimaMsgId) return; // nada mudou — não redesenha (preserva o áudio tocando)
+  // Chegou mensagem do cliente com a conversa aberta na tela: ela já foi vista — marca como lida.
+  if(!primeira && msgs.length && msgs[msgs.length-1].direction==='inbound' && !document.hidden) atdMarcarLida(S, id);
   S.ultimaMsgId = ultima;
   const c = S.conversaDados || {};
   const pertoDoFim = lista.scrollHeight - lista.scrollTop - lista.clientHeight < 80;

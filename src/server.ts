@@ -13001,6 +13001,59 @@ app.post("/api/atendimento/conversas/:id/setor", blockCliente, async (req, res) 
   }
 });
 
+// "Lida" no WhatsApp: o mark-read do deskcomm só zera o contador DELE — o celular continuava com a
+// conversa como não lida e o cliente sem os tiques azuis. Isto chama o sendSeen do WAHA pela rota
+// /simplescontabeis/waha-seen do Caddy da VPS (única rota do WAHA publicada; ver Caddyfile lá), com a
+// chave sha256("simplescontabeis-waha-seen:" + service-role do Supabase do deskcomm) — o mesmo
+// segredo que os dois lados já têm, sem variável nova no Railway.
+const ATENDIMENTO_WAHA_SEEN_TOKEN = DESKCOMM_SUPABASE_SERVICE_ROLE_KEY
+  ? crypto.createHash("sha256").update("simplescontabeis-waha-seen:" + DESKCOMM_SUPABASE_SERVICE_ROLE_KEY).digest("hex")
+  : "";
+app.post("/api/atendimento/conversas/:id/lida", blockCliente, async (req, res) => {
+  const user = (req as any).user;
+  if (!hasPermissao(user, "crm", "visualizar") && !hasPermissao(user, "dprh", "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID || !ATENDIMENTO_WAHA_SEEN_TOKEN) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  const id = String(req.params.id);
+  try {
+    const { data: conv, error } = await deskcommAdmin
+      .from("conversations")
+      .select("id, channel_session:channel_sessions(waha_session_name)")
+      .eq("organization_id", DESKCOMM_ORG_ID)
+      .eq("id", id)
+      .maybeSingle();
+    if (error) throw new Error(error.message);
+    const sessao = (conv as any)?.channel_session?.waha_session_name;
+    if (!conv || !sessao) return res.status(404).json({ error: "Conversa não encontrada." });
+    // O webhook grava o id do WhatsApp como `false_<chatId>_<id>` — é daí que sai o chatId EXATO que o
+    // WAHA conhece (LID ou telefone). Só mensagens que vieram do celular do cliente (não as importadas
+    // do histórico, que usam o chatId do store).
+    const { data: recebidas, error: erroMsgs } = await deskcommAdmin
+      .from("messages")
+      .select("external_id")
+      .eq("organization_id", DESKCOMM_ORG_ID)
+      .eq("conversation_id", id)
+      .eq("direction", "inbound")
+      .like("external_id", "false_%")
+      .is("metadata->importado_do_celular", null)
+      .order("sent_at", { ascending: false })
+      .limit(30);
+    if (erroMsgs) throw new Error(erroMsgs.message);
+    const ids = (recebidas || []).map((m: any) => String(m.external_id));
+    if (!ids.length) return res.json({ ok: true, nada: true });
+    const chatId = ids[0].split("_")[1];
+    const r = await fetch(`${DESKCOMM_URL}/simplescontabeis/waha-seen`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Simples-Token": ATENDIMENTO_WAHA_SEEN_TOKEN },
+      body: JSON.stringify({ session: sessao, chatId, messageIds: ids.filter((x) => x.split("_")[1] === chatId) }),
+    });
+    if (!r.ok) throw new Error(`WAHA ${r.status}: ${(await r.text().catch(() => "")).slice(0, 200)}`);
+    res.json({ ok: true });
+  } catch (e: any) {
+    console.error("[atendimento] falha ao marcar como lida no WhatsApp:", e.message);
+    res.status(502).json({ error: `Não foi possível marcar como lida no WhatsApp: ${e.message}` });
+  }
+});
+
 // Pra quem dá pra transferir: Administradores + Colaboradores com acesso ao módulo (no CRM, a quem tem
 // CRM ou DP/RH — o atendente geral pode passar direto pra alguém do setor), já espelhados no deskcomm
 // (quem ainda não tem espelho ganha um aqui — senão não teria como receber a conversa).
