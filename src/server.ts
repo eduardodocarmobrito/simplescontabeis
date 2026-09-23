@@ -2548,7 +2548,18 @@ function reescreverCorpoNoProxy(proxyReq: any, req: express.Request) {
 // NAVEGAÇÃO DE PÁGINA (o navegador carrega isto direto, com F5/atualizar incluso). Sessão vencida
 // nessa rota mostrando `{"error":"Sessão expirada..."}` cru na tela é uma péssima experiência —
 // medido ao vivo — o certo é voltar pra tela inicial do site, de onde o login normal assume.
+// Alguns recursos são buscados pelo navegador SEM enviar cookie de sessão nenhum (padrão do
+// navegador pro <link rel="manifest">, ícone da aba etc. — não é bug daqui). Exigir sessão pra eles
+// faz o navegador receber o REDIRECT (texto puro) no lugar do JSON/PNG esperado, e tentar interpretar
+// aquilo como se fosse o arquivo — daí o "Manifest: Syntax error" no console. São exatamente os
+// mesmos caminhos que o PRÓPRIO deskcomm já trata como públicos (PUBLIC_PATHS dele) — deixá-los
+// passar direto aqui não abre nada que ele já não deixasse passar sozinho.
+// req.path aqui já vem SEM o prefixo "/deskcomm" — o Express recorta o mountpath de app.use() antes
+// de chamar este middleware (confirmado direto, não suposto: req.path="/manifest.webmanifest" pra
+// uma chamada de "/deskcomm/manifest.webmanifest").
+const DESKCOMM_CAMINHOS_PUBLICOS = /^\/(manifest\.webmanifest|icon|favicon\.ico|robots\.txt|sitemap\.xml)$/;
 function requireAuthPagina(req: express.Request, res: express.Response, next: express.NextFunction) {
+  if (DESKCOMM_CAMINHOS_PUBLICOS.test(req.path)) return next();
   const user = getSessionUser(req.cookies?.sid);
   if (!user) return res.redirect("/");
   if (user.perfil === "Cliente") return res.redirect("/");
