@@ -4477,26 +4477,33 @@ async function renderNfseNotasLista(){
     return { id, nome: emp?emp.nome:'(empresa removida)', qtd: contagem[id]||0, ultima: ultimaPorEmpresa[id]||null };
   }).sort((a,b)=>a.nome.localeCompare(b.nome));
   box.innerHTML = `
+    <div class="field" style="max-width:360px; margin-bottom:10px;"><input type="text" id="nfseNotasEmpFiltro" placeholder="Buscar por empresa…" autocomplete="off"></div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
         <thead><tr><th>Empresa</th><th>Notas emitidas</th><th>Última emissão</th><th></th></tr></thead>
-        <tbody>
-          ${linhas.length? linhas.map(l=>`
-            <tr class="nfseEmpresaRow" data-id="${l.id}" style="cursor:pointer;">
-              <td><b>${esc(l.nome)}</b></td>
-              <td>${l.qtd}</td>
-              <td>${l.ultima?fmtDateHora(l.ultima):'—'}</td>
-              <td style="text-align:right;"><button class="btn small">Ver</button></td>
-            </tr>
-          `).join('') : '<tr><td colspan="4"><div class="empty-state">Nenhuma empresa habilitada pra NFS-e ainda.</div></td></tr>'}
-        </tbody>
+        <tbody id="nfseNotasEmpBody"></tbody>
       </table>
     </div>
   `;
-  box.querySelectorAll('.nfseEmpresaRow').forEach(tr=>tr.addEventListener('click', ()=>{
-    NFSE_NOTAS_EMPRESA_ATUAL = Number(tr.dataset.id);
-    renderNfseNotas();
-  }));
+  const tbody = document.getElementById('nfseNotasEmpBody');
+  function desenha(filtro){
+    const termo = normalizaTxt(filtro).trim();
+    const visiveis = termo? linhas.filter(l=>normalizaTxt(l.nome).includes(termo)) : linhas;
+    tbody.innerHTML = visiveis.length? visiveis.map(l=>`
+      <tr class="nfseEmpresaRow" data-id="${l.id}" style="cursor:pointer;">
+        <td><b>${esc(l.nome)}</b></td>
+        <td>${l.qtd}</td>
+        <td>${l.ultima?fmtDateHora(l.ultima):'—'}</td>
+        <td style="text-align:right;"><button class="btn small">Ver</button></td>
+      </tr>
+    `).join('') : `<tr><td colspan="4"><div class="empty-state">${termo?'Nenhuma empresa encontrada.':'Nenhuma empresa habilitada pra NFS-e ainda.'}</div></td></tr>`;
+    tbody.querySelectorAll('.nfseEmpresaRow').forEach(tr=>tr.addEventListener('click', ()=>{
+      NFSE_NOTAS_EMPRESA_ATUAL = Number(tr.dataset.id);
+      renderNfseNotas();
+    }));
+  }
+  desenha('');
+  document.getElementById('nfseNotasEmpFiltro').addEventListener('input', e=>desenha(e.target.value));
 }
 async function renderNfseNotasDetalhe(empresaId){
   const { dataDe, dataAte } = NFSE_NOTAS_FILTRO;
