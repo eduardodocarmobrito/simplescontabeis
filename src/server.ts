@@ -3099,6 +3099,7 @@ app.post("/api/empresas", blockCliente, requirePermissao("empresas", "postar"), 
     );
   const novaEmpresaId = Number(info.lastInsertRowid);
   envioAutoAtribuirPorRegime(novaEmpresaId, user.escritorioId, (REGIMES_TRIBUTARIOS as readonly string[]).includes(regimeTributario) ? regimeTributario : "simples_nacional");
+  if (telefone) deskcommAgendarSyncEmpresasClientes();
   res.json({ id: novaEmpresaId });
 });
 // Regime de apuração / % total de tributos são fiscais mas vivem na aba Configurações do cadastro
@@ -3168,6 +3169,7 @@ app.put("/api/empresas/:id", blockCliente, requirePermissao("empresas", "editar"
     empresaSalvarDadosFiscaisNfse(id, regimeTributarioFinal === "simples_nacional", req.body);
   }
   if (regimeTributario !== undefined) envioAutoAtribuirPorRegime(id, (req as any).user.escritorioId, regimeTributarioFinal);
+  deskcommAgendarSyncEmpresasClientes();
   res.json({ ok: true });
 });
 app.delete("/api/empresas/:id", requireAdmin, (req, res) => {
@@ -3177,6 +3179,7 @@ app.delete("/api/empresas/:id", requireAdmin, (req, res) => {
     return res.status(409).json({ error: "Esta empresa já tem documentos anexados e não pode ser excluída. Use \"Inativar\" em vez disso." });
   }
   sqlite.prepare(`DELETE FROM empresas WHERE id = ?`).run(id);
+  deskcommAgendarSyncEmpresasClientes();
   res.json({ id });
 });
 app.get("/api/empresas/:id/contatos", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
@@ -3188,26 +3191,32 @@ app.post("/api/empresas/:id/contatos", blockCliente, requirePermissao("empresas"
   const empresaId = Number(req.params.id);
   if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
   const { nome, email, receberEmails, telefone, receberWhatsapp } = req.body || {};
-  if (!nome || !email) return res.status(400).json({ error: "Informe nome e e-mail do contato." });
+  // Contato só de WhatsApp (sem e-mail) é válido: o telefone também é o que libera o cliente no
+  // atendimento do WhatsApp (tag "Empresa cliente" no deskcomm). Sem e-mail, grava "" e desliga o envio
+  // de e-mail — a coluna é NOT NULL desde a criação da tabela.
+  if (!nome || (!email && !telefone)) return res.status(400).json({ error: "Informe o nome e o e-mail ou o telefone do contato." });
   const info = sqlite
     .prepare(`INSERT INTO empresa_contatos (empresa_id, nome, email, receber_emails, telefone, receber_whatsapp) VALUES (?, ?, ?, ?, ?, ?)`)
-    .run(empresaId, nome, email, receberEmails === false ? 0 : 1, telefone || null, receberWhatsapp ? 1 : 0);
+    .run(empresaId, nome, email || "", email && receberEmails !== false ? 1 : 0, telefone || null, receberWhatsapp ? 1 : 0);
+  if (telefone) deskcommAgendarSyncEmpresasClientes();
   res.json({ id: Number(info.lastInsertRowid) });
 });
 app.put("/api/empresas/contatos/:contatoId", blockCliente, requirePermissao("empresas", "editar"), (req, res) => {
   const contato = sqlite.prepare(`SELECT empresa_id FROM empresa_contatos WHERE id = ?`).get(Number(req.params.contatoId)) as any;
   if (!contato || !podeAcessarEmpresa((req as any).user, contato.empresa_id)) return res.status(404).json({ error: "Contato não encontrado." });
   const { nome, email, receberEmails, telefone, receberWhatsapp } = req.body || {};
-  if (!nome || !email) return res.status(400).json({ error: "Informe nome e e-mail do contato." });
+  if (!nome || (!email && !telefone)) return res.status(400).json({ error: "Informe o nome e o e-mail ou o telefone do contato." });
   sqlite
     .prepare(`UPDATE empresa_contatos SET nome=?, email=?, receber_emails=?, telefone=?, receber_whatsapp=? WHERE id=?`)
-    .run(nome, email, receberEmails === false ? 0 : 1, telefone || null, receberWhatsapp ? 1 : 0, Number(req.params.contatoId));
+    .run(nome, email || "", email && receberEmails !== false ? 1 : 0, telefone || null, receberWhatsapp ? 1 : 0, Number(req.params.contatoId));
+  deskcommAgendarSyncEmpresasClientes();
   res.json({ ok: true });
 });
 app.delete("/api/empresas/contatos/:contatoId", blockCliente, requirePermissao("empresas", "editar"), (req, res) => {
   const contato = sqlite.prepare(`SELECT empresa_id FROM empresa_contatos WHERE id = ?`).get(Number(req.params.contatoId)) as any;
   if (!contato || !podeAcessarEmpresa((req as any).user, contato.empresa_id)) return res.status(404).json({ error: "Contato não encontrado." });
   sqlite.prepare(`DELETE FROM empresa_contatos WHERE id = ?`).run(Number(req.params.contatoId));
+  deskcommAgendarSyncEmpresasClientes();
   res.json({ ok: true });
 });
 // Lista os IDs de empresa que já têm pelo menos 1 contato cadastrado (e-mail ou WhatsApp) — usado
@@ -12834,6 +12843,96 @@ function atendimentoMapaEmpresasPorTelefone(escritorioId: number): Map<string, {
   }
   return mapa;
 }
+// ---------- Empresa cliente no contato do deskcomm ----------
+// Os agentes de IA (Folha, Contabilidade, Fiscal) confirmam "Empresa localizada!" só quando o nome que
+// o cliente digitou bate com a empresa cadastrada PARA AQUELE TELEFONE — nunca consultam a lista inteira,
+// senão qualquer um descobriria pelo WhatsApp quem é cliente do escritório (sigilo/LGPD). O vínculo
+// telefone → empresa (Empresas: telefone da empresa + contatos) vai pro contato do deskcomm como tag
+// "Empresa cliente: NOME"; o agente recebe as tags do contato no contexto de todo turno
+// (get-lead-context.ts do deskcomm), sem ferramenta nem mudança no código dele.
+// Uma organização do deskcomm = um escritório daqui.
+const DESKCOMM_ESCRITORIO_ID = Number(process.env.DESKCOMM_ESCRITORIO_ID || 1);
+const DESKCOMM_TAG_EMPRESA = "Empresa cliente: ";
+// Chave de comparação de telefone BR: DDD + 8 últimos dígitos. Ignora o 55 e o nono dígito — o WhatsApp
+// (e o deskcomm) às vezes guardam o celular sem o 9, e o cadastro daqui é texto livre.
+function telefoneChaveBr(s: any): string | null {
+  let d = crmSoDigitos(s);
+  if (d.length >= 12 && d.startsWith("55")) d = d.slice(2);
+  if (d.length === 11 && d[2] === "9") d = d.slice(0, 2) + d.slice(3);
+  return d.length === 10 ? d : null;
+}
+function deskcommEmpresasPorTelefone(): Map<string, string[]> {
+  const rows = sqlite
+    .prepare(
+      `SELECT nome, telefone FROM empresas WHERE escritorio_id = ? AND ativo = 1 AND telefone IS NOT NULL AND telefone != ''
+       UNION ALL
+       SELECT e.nome, ec.telefone FROM empresa_contatos ec JOIN empresas e ON e.id = ec.empresa_id
+        WHERE e.escritorio_id = ? AND e.ativo = 1 AND ec.telefone IS NOT NULL AND ec.telefone != ''`
+    )
+    .all(DESKCOMM_ESCRITORIO_ID, DESKCOMM_ESCRITORIO_ID) as any[];
+  const mapa = new Map<string, string[]>();
+  for (const r of rows) {
+    // Um campo de telefone às vezes traz mais de um número ("94 99999-0000 / 94 3322-1100").
+    for (const pedaco of String(r.telefone).split(/[\/;,]| e /)) {
+      const chave = telefoneChaveBr(pedaco);
+      if (!chave) continue;
+      const nomes = mapa.get(chave) || [];
+      if (!nomes.includes(r.nome)) nomes.push(r.nome);
+      mapa.set(chave, nomes);
+    }
+  }
+  return mapa;
+}
+// `desde`: só os contatos do deskcomm criados/alterados depois disso (rodada rápida pra pegar quem
+// acabou de mandar a 1ª mensagem); sem ele, confere todos.
+let deskcommSyncEmpresasRodando = false;
+async function deskcommSincronizarEmpresasClientes(desde?: Date): Promise<{ conferidos: number; alterados: number }> {
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID || deskcommSyncEmpresasRodando) return { conferidos: 0, alterados: 0 };
+  deskcommSyncEmpresasRodando = true;
+  try {
+    const empresasPorTelefone = deskcommEmpresasPorTelefone();
+    let conferidos = 0, alterados = 0;
+    for (let de = 0; ; de += 1000) {
+      let q = deskcommAdmin.from("contacts").select("id, phone_number, tags").eq("organization_id", DESKCOMM_ORG_ID).order("id").range(de, de + 999);
+      if (desde) q = q.gte("updated_at", desde.toISOString());
+      const { data, error } = await q;
+      if (error) throw new Error(error.message);
+      for (const c of data || []) {
+        conferidos++;
+        const atuais: string[] = c.tags || [];
+        const chave = telefoneChaveBr(c.phone_number);
+        const empresas = (chave && empresasPorTelefone.get(chave)) || [];
+        const desejadas = [...atuais.filter((t) => !t.startsWith(DESKCOMM_TAG_EMPRESA)), ...empresas.sort().map((n) => DESKCOMM_TAG_EMPRESA + n)];
+        if (JSON.stringify(desejadas) === JSON.stringify(atuais)) continue;
+        const { error: e2 } = await deskcommAdmin.from("contacts").update({ tags: desejadas }).eq("id", c.id).eq("organization_id", DESKCOMM_ORG_ID);
+        if (e2) console.error("Sync empresa cliente → deskcomm, contato", c.id, e2.message);
+        else alterados++;
+      }
+      if (!data || data.length < 1000) break;
+    }
+    if (alterados) console.log(`Sync empresa cliente → deskcomm: ${alterados} contato(s) atualizado(s) de ${conferidos}`);
+    return { conferidos, alterados };
+  } finally {
+    deskcommSyncEmpresasRodando = false;
+  }
+}
+// Salvou empresa/contato: roda a conferência completa alguns segundos depois (junta vários salvamentos
+// seguidos numa rodada só).
+let deskcommSyncEmpresasTimer: NodeJS.Timeout | null = null;
+function deskcommAgendarSyncEmpresasClientes() {
+  if (deskcommSyncEmpresasTimer) clearTimeout(deskcommSyncEmpresasTimer);
+  deskcommSyncEmpresasTimer = setTimeout(() => {
+    deskcommSyncEmpresasTimer = null;
+    deskcommSincronizarEmpresasClientes().catch((e) => console.error("Sync empresa cliente → deskcomm:", e.message));
+  }, 5_000);
+}
+// A cada minuto, os contatos novos/alterados nos últimos 10 min (quem acabou de escrever pela 1ª vez
+// ganha a tag antes de escolher o departamento); a cada 6 h e na subida, conferência completa.
+setInterval(() => {
+  deskcommSincronizarEmpresasClientes(new Date(Date.now() - 10 * 60_000)).catch((e) => console.error("Sync empresa cliente → deskcomm:", e.message));
+}, 60_000);
+setInterval(() => deskcommAgendarSyncEmpresasClientes(), 6 * 3600_000);
+setTimeout(() => deskcommAgendarSyncEmpresasClientes(), 30_000);
 const ATENDIMENTO_COLUNAS =
   "id, status, comando_da_conversa, assigned_to_user_id, assigned_to_user_name, last_message_at, last_message_preview, last_inbound_at, unread_count_for_assignee, snooze_until, bot_silenced_until, service_revision, service_started_at, active_intent, active_agent_set_at, contact:contacts(display_name, name, phone_number)";
 // Atendente geral (CRM) lê as conversas mais recentes da organização; um volume maior que isso pede

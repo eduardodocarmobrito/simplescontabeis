@@ -9786,7 +9786,7 @@ async function renderCfgEmailTextoNfse(box){
 }
 function linhaContatoHtml(c, editando){
   if(!editando){
-    return `<tr data-id="${c.id}"><td>${esc(c.nome)}</td><td>${esc(c.email)}</td><td>${c.telefone?esc(c.telefone):'—'}${c.receber_whatsapp?' <span class="tag ok">WhatsApp</span>':''}</td><td style="text-align:right; white-space:nowrap;"><button class="btn small" data-act="editContato">Editar</button> <button class="btn small danger" data-act="rmContato">Remover</button></td></tr>`;
+    return `<tr data-id="${c.id}"><td>${esc(c.nome)}</td><td>${c.email?esc(c.email):'—'}</td><td>${c.telefone?esc(c.telefone):'—'}${c.receber_whatsapp?' <span class="tag ok">WhatsApp</span>':''}</td><td style="text-align:right; white-space:nowrap;"><button class="btn small" data-act="editContato">Editar</button> <button class="btn small danger" data-act="rmContato">Remover</button></td></tr>`;
   }
   return `<tr data-id="${c.id}" style="background:var(--accent-pale);">
     <td><div class="field" style="margin-bottom:0;"><input data-f="nome" value="${esc(c.nome)}" placeholder="Nome do contato"></div></td>
@@ -10045,7 +10045,7 @@ async function renderCfgEmailSmtp(box){
       const email = document.getElementById('ccEmail').value.trim();
       const telefone = document.getElementById('ccTelefone').value.trim();
       const receberWhatsapp = document.getElementById('ccReceberWhatsapp').checked;
-      if(!nome||!email){ toast('Preencha nome e e-mail.','err'); return; }
+      if(!nome||(!email&&!telefone)){ toast('Preencha o nome e o e-mail ou o WhatsApp.','err'); return; }
       try{ await api('/empresas/'+empresaId+'/contatos', { method:'POST', body:{ nome, email, telefone, receberWhatsapp } }); carregarContatosEDocs(); atualizarListasCc(); }
       catch(e){ toast(e.message,'err'); }
     });
@@ -10071,7 +10071,7 @@ async function renderCfgEmailSmtp(box){
         const email = tr.querySelector('[data-f="email"]').value.trim();
         const telefone = tr.querySelector('[data-f="telefone"]').value.trim();
         const receberWhatsapp = tr.querySelector('[data-f="receberWhatsapp"]').checked;
-        if(!nome||!email){ toast('Preencha nome e e-mail.','err'); return; }
+        if(!nome||(!email&&!telefone)){ toast('Preencha o nome e o e-mail ou o WhatsApp.','err'); return; }
         try{
           await api('/empresas/contatos/'+contatoId, { method:'PUT', body:{ nome, email, telefone, receberWhatsapp } });
           toast('Contato atualizado.','ok');
