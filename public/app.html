@@ -7759,7 +7759,17 @@ async function atdAcao(S, acao, botao){
   };
   if(acao==='assumir'){
     if(c.atribuidoDeskcommId && !confirmar(`Esta conversa está com ${c.atribuidoNome||'outro atendente'}. Assumir no lugar?`)) return;
-    return executar(()=>dcApi(base+'/claim', { method:'POST', body: c.atribuidoDeskcommId ? { expected_assignee: c.atribuidoDeskcommId } : {} }), 'Conversa assumida — o automático foi pausado.');
+    const tomandoDeOutro = !!c.atribuidoDeskcommId;
+    return executar(async ()=>{
+      await dcApi(base+'/claim', { method:'POST', body: tomandoDeOutro ? { expected_assignee: c.atribuidoDeskcommId } : {} });
+      // Saindo da fila/automático, o cliente fica sabendo que uma pessoa pegou a conversa. Trocar de
+      // um atendente pro outro não avisa — pro cliente o atendimento humano já estava acontecendo.
+      if(tomandoDeOutro) return;
+      try{
+        await dcApi('/messages', { method:'POST', body:{ conversation_id: c.id, type:'text', body: 'Olá! 👋 A equipe da Simples Contábeis assumiu sua conversa e seu atendimento já vai começar.' } });
+        await atdCarregarMensagens(S, true);
+      }catch(e){ toast('Conversa assumida, mas o aviso ao cliente não foi enviado: '+e.message,'err'); }
+    }, tomandoDeOutro ? 'Conversa assumida.' : 'Conversa assumida — o automático foi pausado e o cliente foi avisado.');
   }
   if(acao==='liberar') return executar(()=>dcApi(base+'/release', { method:'POST' }), 'Conversa liberada.');
   if(acao==='automatico'){
