@@ -2549,7 +2549,6 @@ function reescreverCorpoNoProxy(proxyReq: any, req: express.Request) {
 // nessa rota mostrando `{"error":"Sessão expirada..."}` cru na tela é uma péssima experiência —
 // medido ao vivo — o certo é voltar pra tela inicial do site, de onde o login normal assume.
 function requireAuthPagina(req: express.Request, res: express.Response, next: express.NextFunction) {
-  res.set("X-Deploy-Teste", "diagnostico-20260923");
   const user = getSessionUser(req.cookies?.sid);
   if (!user) return res.redirect("/");
   if (user.perfil === "Cliente") return res.redirect("/");
