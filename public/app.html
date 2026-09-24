@@ -7962,6 +7962,7 @@ async function atdAbrirConversa(S, id){
       <input type="file" id="atdArquivo" style="display:none;">
       <button class="btn small" id="atdAnexar" title="Anexar arquivo">📎</button>
       <button class="btn small" id="atdMicrofone" title="Gravar áudio">🎤</button>
+      <button class="btn small" id="atdRapidas" title="Respostas rápidas (ou digite / + atalho e Tab)">⚡</button>
       <textarea id="atdInput" rows="1" placeholder="Escreva uma mensagem… (Enter envia, Shift+Enter quebra linha)" maxlength="4096"></textarea>
       <button class="btn primary small" id="atdEnviar">Enviar</button>
     </div>
@@ -8002,7 +8003,7 @@ function atdRenderCabecalho(S){
   const input = document.getElementById('atdInput');
   if(input && podePostar){
     const bloqueado = !atdComposerHabilitado(S, c);
-    ['atdInput','atdEnviar','atdAnexar','atdMicrofone'].forEach(id=>{ const el=document.getElementById(id); if(el) el.disabled = bloqueado; });
+    ['atdInput','atdEnviar','atdAnexar','atdMicrofone','atdRapidas'].forEach(id=>{ const el=document.getElementById(id); if(el) el.disabled = bloqueado; });
     input.placeholder = bloqueado ? 'Só consulta — este atendimento não é mais deste setor.' : 'Escreva uma mensagem… (Enter envia, Shift+Enter quebra linha)';
   }
   if(podePostar && !fechada && c.atual){
@@ -8110,6 +8111,89 @@ async function atdAcao(S, acao, botao){
 }
 // Transferir: pra um SETOR (cai na Fila daquele setor, esperando uma pessoa — ou volta pro
 // atendimento geral do CRM) ou pra uma PESSOA (deskcomm /transfer — ela vira a dona da conversa).
+// ---- Respostas rápidas ----
+// As mesmas "Respostas rápidas" do deskcomm (message_templates): pessoais + compartilhadas com a equipe.
+// Variáveis: {{nome}} (primeiro nome do cliente), {{empresa}}, {{atendente}} (quem está respondendo).
+let ATD_RAPIDAS = null;
+async function atdRapidasCarregar(forcar){
+  if(!ATD_RAPIDAS || forcar) ATD_RAPIDAS = (await dcApi('/message-templates')) || [];
+  return ATD_RAPIDAS;
+}
+function atdRapidaTexto(S, r){
+  const c = S.conversaDados || {};
+  const primeiro = String(c.contatoNome||'').trim().split(/\s+/)[0] || '';
+  return String(r.body||'')
+    .replace(/{{\s*nome\s*}}/gi, primeiro)
+    .replace(/{{\s*empresa\s*}}/gi, c.empresaNome||'')
+    .replace(/{{\s*atendente\s*}}/gi, (STATE.user?.nome||'').split(/\s+/)[0]);
+}
+function atdRapidaInserir(S, r){
+  const input = document.getElementById('atdInput');
+  if(!input) return;
+  const txt = atdRapidaTexto(S, r);
+  input.value = /^\/\S*$/.test(input.value.trim()) || !input.value.trim() ? txt : input.value.replace(/\s*$/,' ')+txt;
+  input.dispatchEvent(new Event('input'));
+  input.focus();
+}
+async function atdRapidasModal(S){
+  let lista;
+  try{ lista = await atdRapidasCarregar(true); }catch(e){ toast(e.message,'err'); return; }
+  let filtro = '';
+  const render = ()=>{
+    const f = filtro.toLowerCase();
+    const vis = lista.filter(r=>!f || (r.title+' '+r.body+' '+(r.shortcut||'')).toLowerCase().includes(f));
+    document.getElementById('atdRapLista').innerHTML = vis.length ? vis.map(r=>`
+      <div class="dprh-conv" data-id="${esc(r.id)}" style="align-items:flex-start;">
+        <div style="flex:1; min-width:0;">
+          <div class="dprh-conv-nome">${esc(r.title)} ${r.shortcut?`<span class="tag muted">/${esc(r.shortcut.replace(/^\//,''))}</span>`:''} ${r.owner_user_id?'':'<span class="tag">equipe</span>'}</div>
+          <div class="dprh-conv-sub" style="white-space:normal;">${esc(atdRapidaTexto(S, r)).slice(0,220)}</div>
+        </div>
+        <button class="btn small danger" data-rm="${esc(r.id)}" title="Apagar">×</button>
+      </div>`).join('') : '<div class="empty-state" style="padding:14px;">Nenhuma resposta rápida.</div>';
+    document.querySelectorAll('#atdRapLista .dprh-conv').forEach(el=>el.addEventListener('click', ev=>{
+      if(ev.target.closest('[data-rm]')) return;
+      closeModal(); atdRapidaInserir(S, lista.find(r=>r.id===el.dataset.id));
+    }));
+    document.querySelectorAll('#atdRapLista [data-rm]').forEach(b=>b.addEventListener('click', async ()=>{
+      if(!confirmar('Apagar esta resposta rápida?')) return;
+      try{ await dcApi('/message-templates/'+b.dataset.rm, { method:'DELETE' }); lista = await atdRapidasCarregar(true); render(); }
+      catch(e){ toast(e.message,'err'); }
+    }));
+  };
+  openModal(`
+    <h3>⚡ Respostas rápidas</h3>
+    <div class="field"><input type="text" id="atdRapBusca" placeholder="Buscar…" autocomplete="off"></div>
+    <div id="atdRapLista" style="max-height:300px; overflow-y:auto; border:1px solid var(--rule); border-radius:10px; margin:-6px 0 14px;"></div>
+    <details><summary style="cursor:pointer; font-weight:600; font-size:13px;">+ Nova resposta rápida</summary>
+      <div class="field" style="margin-top:8px;"><label>Título</label><input type="text" id="atdRapTitulo" maxlength="80" placeholder="Ex.: Guia do DAS"></div>
+      <div class="field"><label>Texto</label><textarea id="atdRapCorpo" rows="4" maxlength="4000" placeholder="Olá {{nome}}! Segue a guia do DAS da {{empresa}}…"></textarea>
+        <div style="font-size:11.5px; color:var(--ink-soft);">Variáveis: {{nome}} do cliente, {{empresa}}, {{atendente}}.</div></div>
+      <div class="row" style="gap:10px; align-items:flex-end;">
+        <div class="field" style="margin-bottom:0;"><label>Atalho (opcional)</label><input type="text" id="atdRapAtalho" maxlength="40" placeholder="das"></div>
+        <label class="checkbox-row" style="margin-bottom:8px;"><input type="checkbox" id="atdRapEquipe" checked> Compartilhar com a equipe</label>
+        <button class="btn primary" id="atdRapSalvar" style="margin-bottom:4px;">Salvar</button>
+      </div>
+    </details>
+    <div class="modal-actions"><button class="btn" id="atdRapFechar">Fechar</button></div>
+  `);
+  render();
+  document.getElementById('atdRapBusca').addEventListener('input', e=>{ filtro = e.target.value.trim(); render(); });
+  document.getElementById('atdRapBusca').focus();
+  document.getElementById('atdRapFechar').addEventListener('click', closeModal);
+  document.getElementById('atdRapSalvar').addEventListener('click', async ()=>{
+    const title = document.getElementById('atdRapTitulo').value.trim();
+    const body = document.getElementById('atdRapCorpo').value.trim();
+    const atalho = document.getElementById('atdRapAtalho').value.trim().replace(/^\//,'');
+    if(!title || !body){ toast('Preencha título e texto.','err'); return; }
+    try{
+      await dcApi('/message-templates', { method:'POST', body:Object.assign({ title, body, shared: document.getElementById('atdRapEquipe').checked }, atalho?{ shortcut: atalho }:{}) });
+      lista = await atdRapidasCarregar(true);
+      ['atdRapTitulo','atdRapCorpo','atdRapAtalho'].forEach(id=>document.getElementById(id).value='');
+      toast('Resposta rápida salva.','ok');
+      render();
+    }catch(e){ toast(e.message,'err'); }
+  });
+}
 // ---- Tag do contato ----
 // Mesmas tags do botão "Tag" do painel do deskcomm (contacts.tags). As "Empresa cliente: …" são
 // gravadas pela sincronização com Empresas (server.ts, deskcommSincronizarEmpresasClientes): aparecem
@@ -8516,7 +8600,7 @@ function atdLigarComposer(S){
   const enviarBtn = document.getElementById('atdEnviar');
   const arquivo = document.getElementById('atdArquivo');
   if(!can(S.cfg.modulo,'postar')){
-    ['atdInput','atdEnviar','atdAnexar','atdMicrofone'].forEach(id=>{ const el=document.getElementById(id); if(el) el.disabled = true; });
+    ['atdInput','atdEnviar','atdAnexar','atdMicrofone','atdRapidas'].forEach(id=>{ const el=document.getElementById(id); if(el) el.disabled = true; });
     input.placeholder='Você não tem permissão para responder aqui.';
     return;
   }
@@ -8533,7 +8617,17 @@ function atdLigarComposer(S){
     finally{ enviarBtn.disabled=false; input.focus(); }
   }
   enviarBtn.addEventListener('click', enviar);
-  input.addEventListener('keydown', ev=>{ if(ev.key==='Enter' && !ev.shiftKey){ ev.preventDefault(); enviar(); } });
+  document.getElementById('atdRapidas').addEventListener('click', ()=>atdRapidasModal(S));
+  input.addEventListener('keydown', async ev=>{
+    // "/atalho" + Tab troca pelo texto da resposta rápida com esse atalho.
+    if(ev.key==='Tab' && /^\/\S+$/.test(input.value.trim())){
+      ev.preventDefault();
+      const r = (await atdRapidasCarregar()).find(x=>x.shortcut && ('/'+x.shortcut.replace(/^\//,'')).toLowerCase()===input.value.trim().toLowerCase());
+      if(r) atdRapidaInserir(S, r); else toast('Nenhuma resposta rápida com esse atalho.','err');
+      return;
+    }
+    if(ev.key==='Enter' && !ev.shiftKey){ ev.preventDefault(); enviar(); }
+  });
   input.addEventListener('input', ()=>{ input.style.height='auto'; input.style.height=Math.min(input.scrollHeight,120)+'px'; });
   document.getElementById('atdAnexar').addEventListener('click', ()=>arquivo.click());
   // Colar (Cmd/Ctrl+V um print ou arquivo copiado) e arrastar-e-soltar na conversa: abre uma prévia
