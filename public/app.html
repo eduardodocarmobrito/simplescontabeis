@@ -387,6 +387,13 @@
   .dprh-col-lista{width:clamp(290px, 24vw, 380px);}
   .dprh-filtros.atd-abas-topo{width:clamp(290px, 24vw, 380px);}
   .dprh-acoes .btn.small{padding:5px 9px; font-size:12px;}
+  .atd-resp-bar{display:flex; align-items:center; gap:10px; padding:8px 12px; border-top:1px solid var(--rule); background:var(--paper); flex:none;}
+  .atd-resp-bar.hidden{display:none;}
+  .atd-resp-txt{flex:1; min-width:0; border-left:3px solid var(--accent-deep); padding-left:8px; display:flex; flex-direction:column; font-size:12px;}
+  .atd-resp-txt span{color:var(--ink-soft); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .atd-cita{border-left:3px solid rgba(0,0,0,.35); background:rgba(0,0,0,.08); border-radius:6px; padding:4px 8px; margin-bottom:5px; font-size:11.5px; display:flex; flex-direction:column;}
+  .atd-cita b{font-weight:700;}
+  .atd-cita span{opacity:.85; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:320px;}
   @media (max-width: 820px){
     .dprh-wa, .dprh-wa.atd-com-abas-topo{flex-direction:column; height:auto;}
     .dprh-filtros.atd-abas-topo{width:auto; flex-wrap:wrap; justify-content:flex-start;}
@@ -8358,9 +8365,11 @@ async function atdAbrirConversa(S, id){
   document.querySelectorAll('.dprh-conv').forEach(el=>el.classList.toggle('active', el.dataset.id===id));
   const card = document.getElementById('atdThread');
   if(!card) return;
+  S.respondendo = null;
   card.innerHTML = `
     <div id="atdCab" class="dprh-cab"></div>
     <div class="chat-lista dprh-msgs" id="atdMsgs"><div class="empty-state">Carregando mensagens…</div></div>
+    <div class="atd-resp-bar hidden" id="atdRespBar"></div>
     <div class="dprh-composer" id="atdComposer">
       <input type="file" id="atdArquivo" style="display:none;">
       <button class="btn small" id="atdAnexar" title="Anexar arquivo">📎</button>
@@ -9030,11 +9039,39 @@ async function atdCarregarMensagens(S, primeira){
     const apagada = m.revoked_at ? '<i>Mensagem apagada</i>' : '';
     const editada = m.metadata && m.metadata.editada_em ? ' · editada' : '';
     const menuBtn = (podePostarMsg && !apagada) || (podePostarMsg && m.revoked_at) ? `<button class="atd-msg-menu" data-msg="${esc(m.id)}" title="Editar / excluir">⋯</button>` : '';
-    return `${sep}<div class="chat-msg atd-msg ${m.direction==='inbound'?'theirs':'mine'} ${m.direction!=='inbound' && !m.sent_by_user_id && m.sent_via!=='external_device'?'dprh-bot':''}">${menuBtn}${apagada || ((m.body?esc(m.body):'') + atdMidiaHtml(m))}<span class="hora">${esc(atdAutorMsg(S,m,c))} · ${esc(new Date(quando).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}))}${editada}${falhou}${atdTiqueHtml(m)}</span></div>`;
+    return `${sep}<div class="chat-msg atd-msg ${m.direction==='inbound'?'theirs':'mine'} ${m.direction!=='inbound' && !m.sent_by_user_id && m.sent_via!=='external_device'?'dprh-bot':''}">${menuBtn}${atdCitaHtml(S, m)}${apagada || ((m.body?esc(m.body):'') + atdMidiaHtml(m))}<span class="hora">${esc(atdAutorMsg(S,m,c))} · ${esc(new Date(quando).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}))}${editada}${falhou}${atdTiqueHtml(m)}</span></div>`;
   }).join('') : `<div class="empty-state" id="atdVazio">Nenhuma mensagem ainda.</div>`;
   if(!msgs.length && primeira) atdExplicarVazio(S, id);
   lista.querySelectorAll('.atd-msg-menu').forEach(b=>b.addEventListener('click', ev=>{ ev.stopPropagation(); atdMenuMensagem(S, b.dataset.msg); }));
   if(primeira || pertoDoFim) lista.scrollTop = lista.scrollHeight;
+}
+// Responder em cima de uma mensagem (citação do WhatsApp): guarda a mensagem escolhida, mostra a barra acima do campo de
+// texto e manda `reply_to_message_id` junto com o texto.
+function atdResumoMsg(m){
+  if(m.revoked_at) return 'Mensagem apagada';
+  if(m.body) return m.body;
+  return {audio:'🎤 Áudio', image:'📷 Imagem', video:'🎬 Vídeo', document:'📄 Documento', sticker:'Figurinha'}[m.type] || '[mídia]';
+}
+function atdAutorCurto(S, m){
+  return m.direction==='inbound' ? ((S.conversaDados&&S.conversaDados.contatoNome)||'Cliente') : 'Você';
+}
+function atdResponderA(S, m){
+  S.respondendo = { id:m.id, autor: atdAutorCurto(S,m), resumo: atdResumoMsg(m) };
+  atdRenderRespBar(S);
+  const inp = document.getElementById('atdInput'); if(inp) inp.focus();
+}
+function atdRenderRespBar(S){
+  const bar = document.getElementById('atdRespBar');
+  if(!bar) return;
+  if(!S.respondendo){ bar.classList.add('hidden'); bar.innerHTML=''; return; }
+  bar.classList.remove('hidden');
+  bar.innerHTML = `<div class="atd-resp-txt"><b>↩️ Respondendo a ${esc(S.respondendo.autor)}</b><span>${esc(S.respondendo.resumo.slice(0,140))}</span></div><button class="btn small" id="atdRespCancelar" title="Cancelar">✕</button>`;
+  document.getElementById('atdRespCancelar').addEventListener('click', ()=>{ S.respondendo=null; atdRenderRespBar(S); });
+}
+function atdCitaHtml(S, m){
+  if(!m.reply_to_message_id) return '';
+  const o = S.msgsPorId && S.msgsPorId[m.reply_to_message_id];
+  return `<div class="atd-cita"><b>${o?esc(atdAutorCurto(S,o)):'Mensagem anterior'}</b><span>${o?esc(atdResumoMsg(o).slice(0,120)):'(fora das últimas 100 mensagens)'}</span></div>`;
 }
 // Editar / excluir uma mensagem. Editar e "excluir para todos" agem no WhatsApp do cliente (só mensagens nossas; editar
 // só até 15 min). "Excluir" só esconde da equipe — a mensagem continua guardada como prova.
@@ -9048,6 +9085,7 @@ function atdMenuMensagem(S, id){
     <h3>Mensagem</h3>
     <div style="background:var(--bg-soft,#f4f6f5); border-radius:8px; padding:10px; margin-bottom:12px; max-height:120px; overflow:auto; white-space:pre-wrap;">${esc(m.body||'['+(m.type||'mídia')+']')}</div>
     <div style="display:flex; flex-direction:column; gap:8px;">
+      ${!m.revoked_at?`<button class="btn primary" id="msgResponder">↩️ Responder esta mensagem</button>`:''}
       ${podeEditar?`<button class="btn" id="msgEditar">✏️ Editar mensagem</button>`:''}
       ${nossa && !m.revoked_at?`<button class="btn danger" id="msgParaTodos">🗑 Excluir para todos <span style="font-weight:400; font-size:12px;">(apaga no WhatsApp do cliente)</span></button>`:''}
       <button class="btn" id="msgExcluir">🙈 Excluir <span style="font-weight:400; font-size:12px;">(some daqui; o histórico continua guardado)</span></button>
@@ -9062,6 +9100,8 @@ function atdMenuMensagem(S, id){
     try{ await api('/atendimento/mensagens/'+id+'/'+acao, { method:'POST', body: corpo||{} }); closeModal(); toast(ok,'ok'); await recarregar(); }
     catch(e){ btn.disabled = false; toast(e.message,'err'); }
   };
+  const bResp = document.getElementById('msgResponder');
+  if(bResp) bResp.addEventListener('click', ()=>{ closeModal(); atdResponderA(S, m); });
   const bExc = document.getElementById('msgExcluir');
   bExc.addEventListener('click', ()=>{ if(confirmar('Esconder esta mensagem da conversa? (ela continua guardada no histórico)')) chamar('excluir', null, 'Mensagem escondida.', bExc); });
   const bTodos = document.getElementById('msgParaTodos');
@@ -9181,7 +9221,10 @@ function atdLigarComposer(S){
     if(!texto) return;
     enviarBtn.disabled = true;
     try{
-      await dcApi('/messages', { method:'POST', body:{ conversation_id: S.conversaAtiva, type:'text', body: texto } });
+      const corpoMsg = { conversation_id: S.conversaAtiva, type:'text', body: texto };
+      if(S.respondendo) corpoMsg.reply_to_message_id = S.respondendo.id;
+      await dcApi('/messages', { method:'POST', body: corpoMsg });
+      S.respondendo = null; atdRenderRespBar(S);
       input.value=''; input.style.height='';
       await atdCarregarMensagens(S, true);
       atdCarregarLista(S);
