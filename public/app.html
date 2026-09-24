@@ -276,6 +276,10 @@
   .chat-msg .hora{display:block; font-size:9.5px; opacity:.65; margin-top:3px;}
   .chat-input-row{display:flex; gap:6px; padding:8px; border-top:1px solid var(--rule); flex:none;}
   /* DP/RH › WhatsApp */
+  .atd-alerta-box{position:fixed; right:20px; bottom:92px; width:320px; background:var(--surface); border:1px solid var(--debit); border-radius:12px; box-shadow:0 8px 24px rgba(0,0,0,.15); z-index:1200; overflow:hidden;}
+  .atd-alerta-cab{display:flex; justify-content:space-between; align-items:center; padding:8px 10px; font-weight:700; font-size:13px; background:var(--paper);}
+  .atd-alerta-item{padding:8px 10px; font-size:12.5px; border-top:1px solid var(--rule-soft); cursor:pointer;}
+  .atd-alerta-item:hover{background:var(--accent-pale);}
   .painel-secao{display:flex; justify-content:space-between; align-items:center; margin:6px 0 10px;}
   .painel-secao h3{margin:0; font-size:15px;}
   .painel-hora{font-weight:400; font-size:12px; color:var(--ink-soft); margin-left:8px;}
@@ -283,6 +287,7 @@
   .painel-card{padding:12px 14px; border-left:4px solid var(--rule);}
   .painel-card.painel-alerta{border-left-color:var(--debit);}
   .painel-card.painel-atencao{border-left-color:#E0A526;}
+  .painel-card.painel-ok{border-left-color:var(--accent);}
   .painel-titulo{font-size:12px; color:var(--ink-soft);}
   .painel-valor{font-size:26px; font-weight:700; margin-top:2px;}
   .painel-sub{font-size:11.5px; color:var(--ink-soft); margin-top:2px;}
@@ -732,6 +737,7 @@ function showLogin(){
   document.getElementById('painelTv').classList.add('hidden');
   pararPainelTv();
   pararChat();
+  pararAlertasAtendimento();
 }
 document.getElementById('btnLogin').addEventListener('click', doLogin);
 document.getElementById('loginPassword').addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
@@ -865,6 +871,7 @@ async function boot(){
   renderNav();
   render();
   iniciarChat();
+  iniciarAlertasAtendimento();
 }
 // Só aparece pro Cliente com mais de uma empresa atribuída — trocar recarrega a página inteira,
 // pra todas as telas de autoatendimento (NFS-e, Financeiro, Assinatura) já virem escopadas na
@@ -957,6 +964,60 @@ let CHAT = {
 };
 function chatEhStaff(){ return STATE.user && (STATE.user.perfil==='Administrador' || STATE.user.perfil==='Colaborador'); }
 function chatDisponivel(){ return STATE.user && STATE.user.perfil!=='SuperAdmin' && !STATE.user.painelTv; }
+// ---- Alertas do atendimento ----
+// A cada minuto, no expediente: cliente na fila sem atendente (nos setores que a pessoa vê) ou esperando
+// resposta numa conversa dela há mais que o limite (Painel › Metas e alertas). Avisa 1× por conversa
+// (e de novo a cada 30 min de espera): notificação do navegador + som + aviso na tela; clicar abre a conversa.
+const ALERTAS = { timer:null, avisados:{} };
+function podeAtenderAlgo(){ return ['crm','dprh','contabil','fiscal'].some(m=>can(m,'visualizar')); }
+function iniciarAlertasAtendimento(){
+  if(ALERTAS.timer || !podeAtenderAlgo() || STATE.user?.perfil==='Cliente') return;
+  try{ if('Notification' in window && Notification.permission==='default') Notification.requestPermission(); }catch(e){}
+  ALERTAS.timer = setInterval(verificarAlertasAtendimento, 60000);
+  setTimeout(verificarAlertasAtendimento, 8000);
+}
+function pararAlertasAtendimento(){ if(ALERTAS.timer){ clearInterval(ALERTAS.timer); ALERTAS.timer=null; } ALERTAS.avisados={}; }
+function alertaSom(){
+  try{
+    const ctx = new (window.AudioContext||window.webkitAudioContext)();
+    [0,0.25].forEach(t0=>{ const o=ctx.createOscillator(), g=ctx.createGain(); o.frequency.value=880; o.connect(g); g.connect(ctx.destination);
+      g.gain.setValueAtTime(0.0001, ctx.currentTime+t0); g.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime+t0+0.02); g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime+t0+0.2);
+      o.start(ctx.currentTime+t0); o.stop(ctx.currentTime+t0+0.22); });
+  }catch(e){}
+}
+async function verificarAlertasAtendimento(){
+  let d;
+  try{ d = await api('/atendimento/alertas'); }catch(e){ return; }
+  const novos = (d.itens||[]).filter(i=>{
+    const faixa = Math.floor(i.esperaMin/30);
+    if(ALERTAS.avisados[i.id]===faixa) return false;
+    ALERTAS.avisados[i.id]=faixa; return true;
+  });
+  const vivos = new Set((d.itens||[]).map(i=>i.id));
+  Object.keys(ALERTAS.avisados).forEach(id=>{ if(!vivos.has(id)) delete ALERTAS.avisados[id]; });
+  if(!novos.length) return;
+  alertaSom();
+  const texto = i => `${i.tipo==='minha'?'Sua conversa':'Fila'}${i.setor?' · '+i.setor:''}: ${i.nome} esperando há ${i.esperaMin} min`;
+  const abrir = i => { window.focus(); STATE.page = i.escopo; renderNav(); atdIrParaConversa(i.escopo, i.id, false); };
+  novos.slice(0,3).forEach(i=>{
+    try{
+      if('Notification' in window && Notification.permission==='granted'){
+        const n = new Notification('⏰ Cliente esperando', { body: texto(i), tag: 'atd-'+i.id });
+        n.onclick = ()=>{ n.close(); abrir(i); };
+      }
+    }catch(e){}
+  });
+  mostrarAvisoAlertas(novos, texto, abrir);
+}
+function mostrarAvisoAlertas(itens, texto, abrir){
+  let box = document.getElementById('atdAlertaBox');
+  if(!box){ box = document.createElement('div'); box.id='atdAlertaBox'; box.className='atd-alerta-box'; document.body.appendChild(box); }
+  box.innerHTML = `<div class="atd-alerta-cab">⏰ Clientes esperando <button class="btn small" id="atdAlertaX">×</button></div>
+    ${itens.slice(0,5).map((i,k)=>`<div class="atd-alerta-item" data-k="${k}">${esc(texto(i))}</div>`).join('')}
+    ${itens.length>5?`<div style="font-size:11.5px; color:var(--ink-soft); padding:4px 10px;">e mais ${itens.length-5}…</div>`:''}`;
+  box.querySelector('#atdAlertaX').addEventListener('click', ()=>box.remove());
+  box.querySelectorAll('[data-k]').forEach(el=>el.addEventListener('click', ()=>{ box.remove(); abrir(itens[Number(el.dataset.k)]); }));
+}
 async function iniciarChat(){
   if(!chatDisponivel()) return;
   document.getElementById('chatBubble').classList.remove('hidden');
@@ -7325,6 +7386,32 @@ function painelListaModal(titulo, itens){
   document.getElementById('painelFechar').addEventListener('click', closeModal);
   document.querySelectorAll('#modalBody tr[data-conv]').forEach(tr=>tr.addEventListener('click', ()=>{ closeModal(); atdIrParaConversa('crm', tr.dataset.conv, false); }));
 }
+async function painelConfigModal(box){
+  let c;
+  try{ c = await api('/atendimento/config'); }catch(e){ toast(e.message,'err'); return; }
+  openModal(`
+    <h3>⚙ Metas e alertas do atendimento</h3>
+    <p class="subtitle">Expediente: ${esc(c.expediente)}. Esperas e metas só contam dentro dele.</p>
+    <div class="field"><label>Avisar a equipe quando um cliente esperar mais de (min)</label><input type="number" id="cfgAlerta" min="1" max="600" value="${c.alertaFilaMin}"></div>
+    <div class="field"><label>Meta de tempo de resposta da equipe (min)</label><input type="number" id="cfgMeta" min="1" max="1440" value="${c.metaRespostaMin}"></div>
+    <label class="checkbox-row"><input type="checkbox" id="cfgLembrete" ${c.lembreteAtivo?'checked':''}> Lembrar o cliente do compromisso pelo WhatsApp</label>
+    <div class="field" style="margin-left:24px;"><label>Quantas horas antes</label><input type="number" id="cfgLembreteHoras" min="1" max="72" value="${c.lembreteHoras}"></div>
+    <label class="checkbox-row"><input type="checkbox" id="cfgPesquisa" ${c.pesquisaAtiva?'checked':''}> Pesquisa de satisfação (1 a 5) ao fechar a conversa</label>
+    <div class="modal-actions"><button class="btn" id="cfgCancelar">Cancelar</button><button class="btn primary" id="cfgSalvar">Salvar</button></div>
+  `);
+  document.getElementById('cfgCancelar').addEventListener('click', closeModal);
+  document.getElementById('cfgSalvar').addEventListener('click', async ()=>{
+    try{
+      await api('/atendimento/config', { method:'PUT', body:{
+        alertaFilaMin: Number(document.getElementById('cfgAlerta').value),
+        metaRespostaMin: Number(document.getElementById('cfgMeta').value),
+        lembreteAtivo: document.getElementById('cfgLembrete').checked,
+        lembreteHoras: Number(document.getElementById('cfgLembreteHoras').value),
+        pesquisaAtiva: document.getElementById('cfgPesquisa').checked } });
+      closeModal(); toast('Configuração salva.','ok'); crmPainel(box);
+    }catch(e){ toast(e.message,'err'); }
+  });
+}
 async function crmPainel(box, silencioso){
   if(!silencioso) box.innerHTML = '<div class="empty-state">Montando o painel…</div>';
   let d;
@@ -7344,7 +7431,8 @@ async function crmPainel(box, silencioso){
   const sit = p.agenda.porSituacao;
   const comparecimento = (sit.completed||0)+(sit.no_show||0) ? Math.round(100*(sit.completed||0)/((sit.completed||0)+(sit.no_show||0)))+'%' : '—';
   box.innerHTML = `
-    <div class="painel-secao"><h3>Agora <span class="painel-hora">atualiza a cada minuto · ${esc(new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}))}</span></h3></div>
+    <div class="painel-secao"><h3>Agora <span class="painel-hora">atualiza a cada minuto · ${esc(new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}))} · esperas contadas só no expediente</span></h3>
+      ${can('crm','editar')?'<button class="btn small" id="painelConfig">⚙ Metas e alertas</button>':''}</div>
     <div class="painel-grade">
       ${painelCard('Na fila sem atendente', a.fila.length, a.fila.length?'espera média '+painelDurMin(a.esperaMediaFilaMin):'ninguém esperando', 'fila', a.fila.length?'painel-alerta':'')}
       ${painelCard('Clientes esperando resposta', a.aguardandoResposta.length, maiorEspera!=null?'maior espera '+painelDurMin(maiorEspera):'todos respondidos', 'aguardando', (maiorEspera||0)>=30?'painel-alerta':'')}
@@ -7375,12 +7463,13 @@ async function crmPainel(box, silencioso){
       ${painelCard('Mensagens enviadas', p.mensagens.ia+p.mensagens.humano, `🤖 ${p.mensagens.ia} IA · 👤 ${p.mensagens.humano} equipe`)}
       ${painelCard('Média de mensagens', p.mediaMensagensPorConversa ?? '—', 'por conversa (cliente + nós)')}
       ${painelCard('Tempo de resposta da IA', painelDur(p.tempoRespostaIASeg.media), 'mediana '+painelDur(p.tempoRespostaIASeg.mediana))}
-      ${painelCard('Tempo de resposta da equipe', painelDur(p.tempoRespostaHumanoSeg.media), 'mediana '+painelDur(p.tempoRespostaHumanoSeg.mediana), '', (p.tempoRespostaHumanoSeg.media||0)>=1800?'painel-atencao':'')}
+      ${painelCard('Tempo de resposta da equipe', painelDur(p.tempoRespostaHumanoSeg.media), 'mediana '+painelDur(p.tempoRespostaHumanoSeg.mediana)+' · no expediente', '', (p.tempoRespostaHumanoSeg.media||0)>p.meta.respostaMin*60?'painel-atencao':'')}
+      ${painelCard('Dentro da meta', p.meta.dentroPct==null?'—':p.meta.dentroPct+'%', `respostas da equipe em até ${p.meta.respostaMin} min (${p.meta.respostas})`, '', p.meta.dentroPct==null?'':p.meta.dentroPct>=80?'painel-ok':'painel-alerta')}
     </div>
     <div class="painel-duas">
       <div class="card" style="padding:0;"><div class="painel-cab">Desempenho por funcionário</div>
-        ${p.porFuncionario.length ? `<table class="data-table"><thead><tr><th>Quem</th><th>Mensagens</th><th>Conversas</th><th>Tempo médio de resposta</th><th>Com ele agora</th></tr></thead><tbody>
-        ${p.porFuncionario.map(f=>`<tr><td>${esc(f.nome)}</td><td>${f.mensagens}</td><td>${f.conversas}</td><td>${painelDur(f.tempoMedioRespostaSeg)}</td><td>${f.emAtendimentoAgora||0}</td></tr>`).join('')}
+        ${p.porFuncionario.length ? `<table class="data-table"><thead><tr><th>Quem</th><th>Mensagens</th><th>Conversas</th><th>Tempo médio de resposta</th><th>Dentro da meta</th><th>Com ele agora</th></tr></thead><tbody>
+        ${p.porFuncionario.map(f=>`<tr><td>${esc(f.nome)}</td><td>${f.mensagens}</td><td>${f.conversas}</td><td>${painelDur(f.tempoMedioRespostaSeg)}</td><td>${f.dentroMetaPct==null?'—':`<span class="tag ${f.dentroMetaPct>=80?'ok':'err'}">${f.dentroMetaPct}%</span>`}</td><td>${f.emAtendimentoAgora||0}</td></tr>`).join('')}
         </tbody></table>` : '<div class="empty-state" style="padding:16px;">Nenhuma mensagem da equipe no período.</div>'}
       </div>
       <div class="card" style="padding:0;"><div class="painel-cab">Mensagens por dia</div>
@@ -7399,7 +7488,13 @@ async function crmPainel(box, silencioso){
       <div class="card" style="padding:0;"><div class="painel-cab">Quem marcou os compromissos</div>
         ${p.agenda.porQuemMarcou.length ? `<table class="data-table"><tbody>${p.agenda.porQuemMarcou.map(x=>`<tr><td>${esc(x.nome)}</td><td style="text-align:right;"><b>${x.n}</b></td></tr>`).join('')}</tbody></table>` : '<div class="empty-state" style="padding:16px;">—</div>'}
       </div>
+    </div>
+    <div class="card" style="padding:0; margin-bottom:12px;"><div class="painel-cab">🏆 Empresas que mais demandaram no período</div>
+      ${p.rankingEmpresas.length ? `<table class="data-table"><thead><tr><th>#</th><th>Empresa</th><th>Mensagens do cliente</th><th>Conversas</th><th>Setores</th></tr></thead><tbody>
+      ${p.rankingEmpresas.map((r,i)=>`<tr><td>${i+1}</td><td>${esc(r.empresa)}</td><td><b>${r.recebidas}</b></td><td>${r.conversas}</td><td>${Object.entries(r.setores).map(([k,v])=>`<span class="tag muted">${esc(k)} ${v}</span>`).join(' ')}</td></tr>`).join('')}
+      </tbody></table>` : '<div class="empty-state" style="padding:16px;">Nenhuma empresa identificada nas conversas do período (o telefone precisa estar nos contatos da empresa).</div>'}
     </div>`;
+  document.getElementById('painelConfig')?.addEventListener('click', ()=>painelConfigModal(box));
   box.querySelectorAll('[data-lista]').forEach(el=>el.addEventListener('click', ()=>{ const [t,l]=listas[el.dataset.lista]; painelListaModal(t,l); }));
   box.querySelectorAll('[data-atendente]').forEach(el=>el.addEventListener('click', ()=>painelListaModal('Com '+el.dataset.atendente, a.emAtendimento.filter(i=>i.atendente===el.dataset.atendente))));
   box.querySelectorAll('[data-setor]').forEach(el=>el.addEventListener('click', ()=>painelListaModal('Setor: '+el.dataset.setor, listas.abertas[1].filter(i=>(i.setor||'Sem setor')===el.dataset.setor))));

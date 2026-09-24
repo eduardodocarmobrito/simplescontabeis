@@ -13135,6 +13135,124 @@ app.get("/api/atendimento/contatos-tags", blockCliente, async (req, res) => {
     res.status(502).json({ error: "Falha ao ler os contatos no deskcomm: " + e.message });
   }
 });
+// ---------- Configuração do atendimento: expediente, alertas, metas, lembrete, pesquisa ----------
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS atendimento_config (
+    escritorio_id INTEGER PRIMARY KEY,
+    alerta_fila_min INTEGER NOT NULL DEFAULT 10,
+    meta_resposta_min INTEGER NOT NULL DEFAULT 15,
+    lembrete_ativo INTEGER NOT NULL DEFAULT 1,
+    lembrete_horas INTEGER NOT NULL DEFAULT 24,
+    pesquisa_ativa INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT DEFAULT (datetime('now'))
+  )
+`);
+function atendimentoConfig(escritorioId: number) {
+  const r = sqlite.prepare(`SELECT * FROM atendimento_config WHERE escritorio_id = ?`).get(escritorioId) as any;
+  return {
+    alertaFilaMin: r?.alerta_fila_min ?? 10,
+    metaRespostaMin: r?.meta_resposta_min ?? 15,
+    lembreteAtivo: r ? !!r.lembrete_ativo : true,
+    lembreteHoras: r?.lembrete_horas ?? 24,
+    pesquisaAtiva: r ? !!r.pesquisa_ativa : true,
+  };
+}
+app.get("/api/atendimento/config", blockCliente, (req, res) => {
+  const user = (req as any).user;
+  if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
+  res.json({ ...atendimentoConfig(user.escritorioId), expediente: ATENDIMENTO_EXPEDIENTE_TEXTO });
+});
+app.put("/api/atendimento/config", blockCliente, requirePermissao("crm", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const b = req.body || {};
+  const int = (v: any, min: number, max: number, padrao: number) => {
+    const n = Math.round(Number(v));
+    return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : padrao;
+  };
+  const atual = atendimentoConfig(user.escritorioId);
+  sqlite
+    .prepare(
+      `INSERT INTO atendimento_config (escritorio_id, alerta_fila_min, meta_resposta_min, lembrete_ativo, lembrete_horas, pesquisa_ativa, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(escritorio_id) DO UPDATE SET alerta_fila_min=excluded.alerta_fila_min, meta_resposta_min=excluded.meta_resposta_min,
+         lembrete_ativo=excluded.lembrete_ativo, lembrete_horas=excluded.lembrete_horas, pesquisa_ativa=excluded.pesquisa_ativa, updated_at=datetime('now')`
+    )
+    .run(
+      user.escritorioId,
+      int(b.alertaFilaMin, 1, 600, atual.alertaFilaMin),
+      int(b.metaRespostaMin, 1, 1440, atual.metaRespostaMin),
+      b.lembreteAtivo === undefined ? (atual.lembreteAtivo ? 1 : 0) : b.lembreteAtivo ? 1 : 0,
+      int(b.lembreteHoras, 1, 72, atual.lembreteHoras),
+      b.pesquisaAtiva === undefined ? (atual.pesquisaAtiva ? 1 : 0) : b.pesquisaAtiva ? 1 : 0
+    );
+  res.json(atendimentoConfig(user.escritorioId));
+});
+// Expediente do escritório (o mesmo publicado nos agentes de IA e na jornada da Agenda do deskcomm):
+// seg–sex, 08:00–11:50 e 13:40–17:55, horário de Brasília. Tempo de espera "útil" desconta o que cai fora.
+const ATENDIMENTO_EXPEDIENTE = { dias: [1, 2, 3, 4, 5], janelas: [[8 * 60, 11 * 60 + 50], [13 * 60 + 40, 17 * 60 + 55]] as [number, number][] };
+const ATENDIMENTO_EXPEDIENTE_TEXTO = "segunda a sexta, 08:00–11:50 e 13:40–17:55";
+const BRT_MS = 3 * 3600_000; // Brasília sem horário de verão (UTC-3)
+function expedienteAberto(t: number = Date.now()): boolean {
+  const local = new Date(t - BRT_MS);
+  if (!ATENDIMENTO_EXPEDIENTE.dias.includes(local.getUTCDay())) return false;
+  const min = local.getUTCHours() * 60 + local.getUTCMinutes();
+  return ATENDIMENTO_EXPEDIENTE.janelas.some(([a, b]) => min >= a && min < b);
+}
+// Minutos de expediente entre dois instantes (quem escreveu às 22h e foi respondido às 8h05 esperou 5 min).
+function minutosUteisEntre(inicio: number, fim: number): number {
+  if (fim <= inicio) return 0;
+  let total = 0;
+  const diaMs = 86400_000;
+  let dia = Math.floor((inicio - BRT_MS) / diaMs) * diaMs + BRT_MS; // 00:00 de Brasília do dia do início
+  for (; dia < fim; dia += diaMs) {
+    if (!ATENDIMENTO_EXPEDIENTE.dias.includes(new Date(dia - BRT_MS + 12 * 3600_000).getUTCDay())) continue;
+    for (const [a, b] of ATENDIMENTO_EXPEDIENTE.janelas) {
+      const ini = Math.max(inicio, dia + a * 60_000), fi = Math.min(fim, dia + b * 60_000);
+      if (fi > ini) total += (fi - ini) / 60_000;
+    }
+  }
+  return total;
+}
+// Alertas pro navegador de quem atende: fila sem atendente passando do limite (nos setores que a pessoa
+// vê) e clientes esperando resposta nas conversas DELA. Só no expediente — fora dele ninguém é cobrado.
+app.get("/api/atendimento/alertas", blockCliente, async (req, res) => {
+  const user = (req as any).user;
+  if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.json({ itens: [], aberto: false });
+  const cfg = atendimentoConfig(user.escritorioId);
+  if (!expedienteAberto()) return res.json({ itens: [], aberto: false, limiteMin: cfg.alertaFilaMin });
+  try {
+    const meuId = await deskcommGarantirUsuario(user);
+    const veCrm = hasPermissao(user, "crm", "visualizar");
+    const setoresVisiveis = new Map(ATENDIMENTO_ESCOPOS_SETOR.filter((e) => hasPermissao(user, e, "visualizar")).map((e) => [ATENDIMENTO_SETORES[e], e]));
+    const { ultima } = await atendimentoEscolhas();
+    const abertas = await painelPaginado((de, ate) =>
+      deskcommAdmin!.from("conversations")
+        .select("id, comando_da_conversa, assigned_to_user_id, last_inbound_at, last_outbound_at, last_handoff_at, snooze_until, service_started_at, active_intent, active_agent_set_at, contact:contacts(display_name, name, phone_number)")
+        .eq("organization_id", DESKCOMM_ORG_ID).is("group_chat_id", null).not("status", "in", "(closed,archived)").order("id").range(de, ate));
+    const agora = Date.now();
+    const itens: any[] = [];
+    for (const c of abertas) {
+      if (c.snooze_until && new Date(c.snooze_until).getTime() > agora) continue;
+      const esperando = c.last_inbound_at && (!c.last_outbound_at || c.last_inbound_at > c.last_outbound_at);
+      if (!esperando) continue;
+      const esperaMin = Math.round(minutosUteisEntre(new Date(c.last_inbound_at).getTime(), agora));
+      if (esperaMin < cfg.alertaFilaMin) continue;
+      const setor = atendimentoSetorAtual(c, ultima.get(c.id));
+      const nome = c.contact?.display_name || c.contact?.name || c.contact?.phone_number || "Cliente";
+      if (c.assigned_to_user_id === meuId) {
+        itens.push({ id: c.id, tipo: "minha", nome, setor, esperaMin, escopo: veCrm ? "crm" : setoresVisiveis.get(setor || "") || "crm" });
+      } else if (!c.assigned_to_user_id && c.comando_da_conversa === "aguardando") {
+        const escopo = setor && setoresVisiveis.has(setor) ? setoresVisiveis.get(setor)! : veCrm ? "crm" : null;
+        if (escopo) itens.push({ id: c.id, tipo: "fila", nome, setor, esperaMin, escopo });
+      }
+    }
+    itens.sort((a, b) => b.esperaMin - a.esperaMin);
+    res.json({ itens, aberto: true, limiteMin: cfg.alertaFilaMin });
+  } catch (e: any) {
+    res.status(502).json({ error: "Falha ao ler as conversas no deskcomm: " + e.message });
+  }
+});
 // ---------- Painel do atendimento (CRM › Painel) ----------
 // Visão geral pro gestor: o que está acontecendo AGORA (fila, com quem está, quem espera resposta, conversa
 // parada) e como foi o PERÍODO (volume, tempos de resposta, desempenho por funcionário, agenda).
@@ -13196,7 +13314,8 @@ app.get("/api/atendimento/painel", blockCliente, async (req, res) => {
         ultimaMensagem: c.last_message_preview,
         ultimaMensagemEm: c.last_message_at,
         // Cliente esperando resposta: desde a última mensagem dele sem resposta nossa.
-        esperaMin: clienteEsperando ? Math.round((agora - new Date(c.last_inbound_at).getTime()) / 60000) : null,
+        // Em minutos de EXPEDIENTE — quem escreveu às 22h não conta a noite como espera.
+        esperaMin: clienteEsperando ? Math.round(minutosUteisEntre(new Date(c.last_inbound_at).getTime(), agora)) : null,
         paradaMin: c.last_message_at ? Math.round((agora - new Date(c.last_message_at).getTime()) / 60000) : null,
       };
     };
@@ -13240,6 +13359,8 @@ app.get("/api/atendimento/painel", blockCliente, async (req, res) => {
       porConversa.set(m.conversation_id, l);
     }
     const temposIA: number[] = [], temposHumano: number[] = [];
+    const cfg = atendimentoConfig(user.escritorioId);
+    const metaSeg = cfg.metaRespostaMin * 60;
     type Func = { id: string; nome: string; mensagens: number; conversas: Set<string>; tempos: number[] };
     const funcs = new Map<string, Func>();
     const func = (id: string, nome: string) => {
@@ -13262,7 +13383,8 @@ app.get("/api/atendimento/painel", blockCliente, async (req, res) => {
           continue;
         }
         const humano = m.sent_via !== "ai";
-        const delta = pendente != null ? (t - pendente) / 1000 : null;
+        // IA: tempo real. Equipe: só o tempo dentro do expediente (a meta vale pro horário de atendimento).
+        const delta = pendente == null ? null : humano ? minutosUteisEntre(pendente, t) * 60 : (t - pendente) / 1000;
         if (humano) {
           enviadasHumano++; d.humano++;
           const f = m.sent_by_user_id ? func(m.sent_by_user_id, nomeAtendente(m.sent_by_user_id)!) : func("celular", "Pelo celular (WhatsApp)");
@@ -13307,6 +13429,28 @@ app.get("/api/atendimento/painel", blockCliente, async (req, res) => {
       agendaPorQuemMarcou.set(quem, (agendaPorQuemMarcou.get(quem) || 0) + 1);
     }
     const conversasComMensagem = porConversa.size;
+    // Ranking de empresas que mais demandaram no período (pelo telefone do contato → Empresas).
+    const convIds = [...porConversa.keys()];
+    const convInfo: any[] = [];
+    for (let i = 0; i < convIds.length; i += 100) {
+      const { data, error } = await deskcommAdmin.from("conversations")
+        .select("id, service_started_at, active_intent, active_agent_set_at, contact:contacts(phone_number)")
+        .eq("organization_id", DESKCOMM_ORG_ID).in("id", convIds.slice(i, i + 100));
+      if (error) throw new Error(error.message);
+      convInfo.push(...(data || []));
+    }
+    const ranking = new Map<string, { empresa: string; conversas: number; recebidas: number; setores: Record<string, number> }>();
+    for (const c of convInfo) {
+      const emp = empresas.get(crmSoDigitos(c.contact?.phone_number).slice(-11));
+      if (!emp) continue;
+      const r = ranking.get(emp.nome) || { empresa: emp.nome, conversas: 0, recebidas: 0, setores: {} };
+      r.conversas++;
+      r.recebidas += (porConversa.get(c.id) || []).filter((m) => m.direction === "inbound").length;
+      const setor = atendimentoSetorAtual(c, ultima.get(c.id)) || "Sem setor";
+      r.setores[setor] = (r.setores[setor] || 0) + 1;
+      ranking.set(emp.nome, r);
+    }
+    const rankingEmpresas = [...ranking.values()].sort((a, b) => b.recebidas - a.recebidas || b.conversas - a.conversas).slice(0, 15);
     res.json({
       periodo,
       inicio: inicio.toISOString(),
@@ -13326,10 +13470,20 @@ app.get("/api/atendimento/painel", blockCliente, async (req, res) => {
         mediaMensagensPorConversa: conversasComMensagem ? Math.round(((recebidas + enviadasIA + enviadasHumano) / conversasComMensagem) * 10) / 10 : null,
         tempoRespostaIASeg: { media: painelMedia(temposIA), mediana: painelMediana(temposIA) },
         tempoRespostaHumanoSeg: { media: painelMedia(temposHumano), mediana: painelMediana(temposHumano) },
+        meta: {
+          respostaMin: cfg.metaRespostaMin,
+          dentroPct: temposHumano.length ? Math.round((100 * temposHumano.filter((x) => x <= metaSeg).length) / temposHumano.length) : null,
+          respostas: temposHumano.length,
+        },
         porFuncionario: [...funcs.values()]
-          .map((f) => ({ nome: f.nome, mensagens: f.mensagens, conversas: f.conversas.size, tempoMedioRespostaSeg: painelMedia(f.tempos), emAtendimentoAgora: porAtendenteAgora.get(f.nome) || 0 }))
+          .map((f) => ({
+            nome: f.nome, mensagens: f.mensagens, conversas: f.conversas.size, tempoMedioRespostaSeg: painelMedia(f.tempos),
+            dentroMetaPct: f.tempos.length ? Math.round((100 * f.tempos.filter((x) => x <= metaSeg).length) / f.tempos.length) : null,
+            emAtendimentoAgora: porAtendenteAgora.get(f.nome) || 0,
+          }))
           .sort((a, b) => b.mensagens - a.mensagens),
         porDia: [...porDia].map(([dia, v]) => ({ dia, ...v })).sort((a, b) => a.dia.localeCompare(b.dia)),
+        rankingEmpresas,
         agenda: {
           total: compromissos.length,
           porSituacao: agendaPorSituacao,
