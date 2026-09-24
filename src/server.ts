@@ -2696,7 +2696,14 @@ app.get("/api/atendimento/sessao-deskcomm", requireAuth, blockCliente, async (re
   try {
     const esperado = await deskcommGarantirUsuario(user);
     const noCookie = deskcommUsuarioDoCookie(req.cookies);
-    res.json({ ok: !!esperado && !!noCookie && esperado === noCookie });
+    // Papel de quem está logado LÁ (agente só enxerga as conversas atribuídas a ele; admin enxerga tudo).
+    let papel: string | null = null, emailLa: string | null = null;
+    if (noCookie) {
+      const { data: uo } = await deskcommAdmin!.from("user_organizations").select("role").eq("organization_id", DESKCOMM_ORG_ID).eq("user_id", noCookie).maybeSingle();
+      papel = uo?.role ?? null;
+      emailLa = (await deskcommAdmin!.auth.admin.getUserById(noCookie)).data.user?.email ?? null;
+    }
+    res.json({ ok: !!esperado && !!noCookie && esperado === noCookie, papel, emailLa, esperado: user.perfil === "Administrador" ? "admin" : "agent" });
   } catch (e: any) {
     res.status(502).json({ ok: false, error: e.message });
   }

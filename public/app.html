@@ -8913,6 +8913,20 @@ function atdMidiaHtml(m){
   if(m.type==='video') return `<video controls preload="none" src="${src}" class="dprh-midia-img"></video>`;
   return `<a class="chat-anexo-link" href="${src}" target="_blank" rel="noopener">📎 ${esc((m.metadata&&m.metadata.filename)||'Abrir arquivo')}</a>`;
 }
+// Conversa que tem mensagens mas veio vazia = quase sempre o deskcomm enxergando o navegador como OUTRA pessoa
+// (ou como agente, que só vê o que é dele). Confere quem está logado lá, refaz a ponte uma vez e explica.
+async function atdExplicarVazio(S, id){
+  const d = S.conversaDados || {};
+  if(!d.last_message_preview && !d.last_message_at) return;
+  try{
+    const v = await api('/atendimento/sessao-deskcomm');
+    if(!v.ok || (v.esperado==='admin' && v.papel!=='admin')){
+      if(!S.vazioRetentou){ S.vazioRetentou = true; ATEND_SESSAO_USER = null; await dcGarantirSessao(true); return atdCarregarMensagens(S, true); }
+    }
+    const el = document.getElementById('atdVazio');
+    if(el && S.conversaAtiva===id && v.papel!=='admin' && !(d.assigned_to_user_id)) el.innerHTML = 'Não foi possível carregar as mensagens: o deskcomm está logado como <b>'+esc(v.emailLa||'outro usuário')+'</b> ('+esc(v.papel||'sem papel')+'). Recarregue a página (Ctrl+F5).';
+  }catch(e){}
+}
 async function atdCarregarMensagens(S, primeira){
   const id = S.conversaAtiva;
   const lista = document.getElementById('atdMsgs');
@@ -8938,7 +8952,8 @@ async function atdCarregarMensagens(S, primeira){
     const falhou = m.status==='failed' ? ` <span style="color:var(--debit)">· falhou${m.error_message?': '+esc(m.error_message):''}</span>` : '';
     const apagada = m.revoked_at ? '<i>Mensagem apagada</i>' : '';
     return `${sep}<div class="chat-msg ${m.direction==='inbound'?'theirs':'mine'} ${m.direction!=='inbound' && !m.sent_by_user_id && m.sent_via!=='external_device'?'dprh-bot':''}">${apagada || ((m.body?esc(m.body):'') + atdMidiaHtml(m))}<span class="hora">${esc(atdAutorMsg(S,m,c))} · ${esc(new Date(quando).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}))}${falhou}</span></div>`;
-  }).join('') : `<div class="empty-state">Nenhuma mensagem ainda.</div>`;
+  }).join('') : `<div class="empty-state" id="atdVazio">Nenhuma mensagem ainda.</div>`;
+  if(!msgs.length && primeira) atdExplicarVazio(S, id);
   if(primeira || pertoDoFim) lista.scrollTop = lista.scrollHeight;
 }
 // Arquivo ou áudio: sobe pro storage do deskcomm (/media devolve o tipo — imagem, documento, áudio…)
