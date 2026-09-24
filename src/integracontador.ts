@@ -363,6 +363,30 @@ export async function consultarDeclaracaoERecibo(token: TokenIntegraContador, co
   return { declaracaoPdf, reciboPdf };
 }
 
+// Consulta de pagamentos (PAGTOWEB / PAGAMENTOS71) — doc oficial: dados aceita intervaloDataArrecadacao,
+// numeroDocumentoLista, codigoReceitaLista...; "dados" da resposta é uma lista de documentos pagos.
+export interface PagamentoArrecadado {
+  numeroDocumento: string | null;
+  dataArrecadacao: string | null;
+  periodoApuracao: string | null;
+  valorTotal: number | null;
+}
+export async function consultarPagamentos(
+  token: TokenIntegraContador, contratanteCnpj: string, cnpjEmpresa: string,
+  filtro: { dataInicial: string; dataFinal: string; numeroDocumentoLista?: string[] }
+): Promise<PagamentoArrecadado[]> {
+  const dados: any = { intervaloDataArrecadacao: { dataInicial: filtro.dataInicial, dataFinal: filtro.dataFinal }, primeiroDaPagina: 0, tamanhoDaPagina: 100 };
+  if (filtro.numeroDocumentoLista?.length) dados.numeroDocumentoLista = filtro.numeroDocumentoLista;
+  const r = await chamarServico(token, { base: "Consultar", contratanteCnpj, contribuinteDocumento: cnpjEmpresa, idSistema: "PAGTOWEB", idServico: "PAGAMENTOS71", versaoSistema: "1.0", dados });
+  const lista = Array.isArray(r.dados) ? r.dados : Array.isArray(r.dados?.pagamentos) ? r.dados.pagamentos : [];
+  return lista.map((p: any) => ({
+    numeroDocumento: p.numeroDocumento != null ? String(p.numeroDocumento) : null,
+    dataArrecadacao: p.dataArrecadacao || null,
+    periodoApuracao: p.periodoApuracao || null,
+    valorTotal: p.valorTotal ?? null,
+  }));
+}
+
 // ===================== SITFIS (Situação Fiscal) — confirmado na doc oficial, fluxo em 2 passos =====================
 // Passo 1: pede um "protocolo" (a Receita processa em segundo plano). Passo 2: usa o protocolo pra
 // pegar o relatório em PDF — pode vir "ainda processando" (202, espera X segundos) antes do PDF

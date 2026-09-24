@@ -5383,6 +5383,19 @@ async function executarRecalculoDas(periodoId: number, user: any): Promise<{ ok:
     } catch (e: any) {
       console.error(`[Integra Contador] checagem de DAS pago (empresa ${periodo.empresaId}) falhou:`, e.message);
     }
+    // Segunda conferência, direto na arrecadação (PAGTOWEB): algum dos DAS já gerados pra essa competência foi pago?
+    try {
+      const numeros = (sqlite.prepare(`SELECT DISTINCT numero_documento n FROM integracontador_documentos WHERE empresa_id = ? AND tipo = 'das' AND periodo_apuracao = ? AND numero_documento IS NOT NULL`).all(periodo.empresaId, periodoApuracao) as any[]).map((r) => String(r.n));
+      if (numeros.length) {
+        const fim = new Date(), ini = new Date(fim.getFullYear() - 1, fim.getMonth(), 1);
+        const pagos = await integracontador.consultarPagamentos(token, cfg.cnpj, empresa.cnpj, { dataInicial: ini.toISOString().slice(0, 10), dataFinal: fim.toISOString().slice(0, 10), numeroDocumentoLista: numeros });
+        if (pagos.some((p) => p.numeroDocumento && numeros.includes(p.numeroDocumento))) {
+          return { ok: false, status: 409, error: `O DAS de ${String(periodo.mes).padStart(2, "0")}/${periodo.ano} já está pago — não há o que recalcular.` };
+        }
+      }
+    } catch (e: any) {
+      console.error(`[Integra Contador] consulta de pagamentos (empresa ${periodo.empresaId}) falhou:`, e.message);
+    }
     const das = await integracontador.gerarDas(token, cfg.cnpj, empresa.cnpj, periodoApuracao);
     if (!das.pdfBase64) return { ok: false, status: 502, error: "A Receita não devolveu o DAS recalculado — tente de novo mais tarde." };
     const quem = user.perfil === "Cliente" ? "pelo cliente" : `pelo escritório (${user.nome})`;
@@ -8043,7 +8056,16 @@ async function integraContadorBuscarEmpresaInterno(
       const mesAnterior = new Date(hoje.getFullYear(), hoje.getMonth() - 1, 1);
       const anoPA = String(mesAnterior.getFullYear());
       const mesPA = String(mesAnterior.getMonth() + 1).padStart(2, "0");
+      // Guia dessa competência já entregue: não gera de novo (a rotina nunca reenvia sozinha, então gerar só gastava uma
+      // chamada paga e jogava o PDF fora — e ainda "recalculava" uma guia que pode já ter sido paga).
+      const jaEntregue = sqlite
+        .prepare(
+          `SELECT 1 FROM envio_periodos p JOIN envio_atribuicoes a ON a.id = p.atribuicao_id JOIN envio_templates t ON t.id = a.template_id
+           WHERE a.empresa_id = ? AND t.nome = 'DARF - DCTF-Web' AND p.ano = ? AND p.mes = ? AND EXISTS (SELECT 1 FROM envio_documentos d WHERE d.periodo_id = p.id)`
+        )
+        .get(empresaId, Number(anoPA), Number(mesPA));
       try {
+        if (jaEntregue) throw Object.assign(new Error("já entregue"), { pular: true });
         const guia = await integracontador.gerarGuiaDctfWeb(token, cnpjEscritorio, empresaCnpj, anoPA, mesPA);
         if (guia.pdfBase64) {
           const caminho = salvarPdfBase64EmCache(`darf_dctfweb_${empresaId}_${anoPA}${mesPA}_${Date.now()}`, guia.pdfBase64);
@@ -8054,8 +8076,10 @@ async function integraContadorBuscarEmpresaInterno(
           novos++;
         }
       } catch (e: any) {
+        if (e.pular) { /* guia já entregue — nada a fazer */ } else {
         console.error(`[Integra Contador] DARF DCTF-Web da empresa ${empresaId} falhou:`, e.message);
         falhas.push(`DARF DCTF-Web: ${e.message}`);
+        }
       }
     }
     // Parcelamento de DAS (PARCSN) — só entra aqui depois que o escritório já vinculou um
