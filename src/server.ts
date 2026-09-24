@@ -3498,6 +3498,47 @@ function chatDmPar(x: number, y: number): [number, number] {
 // Só os 3 intervalos que o FRONT usa pra decidir a frequência do próprio polling — qualquer
 // usuário autenticado (inclusive Cliente) precisa disso pra configurar os próprios timers do chat.
 // A janela de "online" e o atraso do aviso de WhatsApp são só do backend, não vão aqui.
+// Limpar TODAS as conversas do chat interno do escritório (clientes, equipe e diretas) — pedido pra
+// começar a produção "limpo". Só Administrador, com confirmação digitada na tela. Antes de apagar, grava
+// um backup em JSON em DATA_DIR/backups (dá pra recuperar se foi engano).
+app.post("/api/chat/limpar", requireAdmin, (req, res) => {
+  const user = (req as any).user;
+  if (String(req.body?.confirmacao || "").trim().toUpperCase() !== "LIMPAR") return res.status(400).json({ error: 'Digite LIMPAR para confirmar.' });
+  const esc = user.escritorioId;
+  const backup = {
+    geradoEm: new Date().toISOString(), escritorioId: esc, por: user.email,
+    chat_mensagens: sqlite.prepare(`SELECT * FROM chat_mensagens WHERE escritorio_id = ?`).all(esc),
+    chat_equipe_mensagens: sqlite.prepare(`SELECT * FROM chat_equipe_mensagens WHERE escritorio_id = ?`).all(esc),
+    chat_equipe_leitura: sqlite.prepare(`SELECT * FROM chat_equipe_leitura WHERE escritorio_id = ?`).all(esc),
+    chat_dm_mensagens: sqlite.prepare(`SELECT * FROM chat_dm_mensagens WHERE escritorio_id = ?`).all(esc),
+  };
+  const dir = path.join(DATA_DIR, "backups");
+  fs.mkdirSync(dir, { recursive: true });
+  const arquivo = path.join(dir, `chat-${esc}-${new Date().toISOString().replace(/[:.]/g, "-")}.json`);
+  fs.writeFileSync(arquivo, JSON.stringify(backup));
+  const dmUsuarios = sqlite.prepare(`SELECT id FROM app_users WHERE escritorio_id = ?`).all(esc).map((r: any) => r.id);
+  // node:sqlite não tem .transaction(): BEGIN/COMMIT na mão.
+  const apagar = () => {
+    sqlite.exec("BEGIN");
+    try {
+    const n = {
+      clientes: sqlite.prepare(`DELETE FROM chat_mensagens WHERE escritorio_id = ?`).run(esc).changes,
+      equipe: sqlite.prepare(`DELETE FROM chat_equipe_mensagens WHERE escritorio_id = ?`).run(esc).changes,
+      diretas: sqlite.prepare(`DELETE FROM chat_dm_mensagens WHERE escritorio_id = ?`).run(esc).changes,
+    };
+    sqlite.prepare(`DELETE FROM chat_equipe_leitura WHERE escritorio_id = ?`).run(esc);
+    for (const id of dmUsuarios) sqlite.prepare(`DELETE FROM chat_dm_leitura WHERE user_id = ?`).run(id);
+    sqlite.exec("COMMIT");
+    return n;
+    } catch (e) {
+      sqlite.exec("ROLLBACK");
+      throw e;
+    }
+  };
+  const n = apagar();
+  console.log(`[chat] conversas limpas por ${user.email}:`, n, "backup:", arquivo);
+  res.json({ ok: true, ...n, backup: path.basename(arquivo) });
+});
 app.get("/api/chat/config", (req, res) => {
   const user = (req as any).user;
   if (!user || user.perfil === "SuperAdmin") return res.status(403).json({ error: "Sem acesso." });

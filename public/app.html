@@ -1141,8 +1141,21 @@ function renderChatLista(){
     </div>
     <div class="chat-conv-busca"><input type="text" id="chatBusca" placeholder="Buscar empresa ou colaborador…" value="${esc(CHAT.filtro)}"></div>
     <div class="chat-conv-lista" id="chatConvLista"></div>
+    ${STATE.user?.perfil==='Administrador' ? '<div style="padding:6px 12px; border-top:1px solid var(--rule-soft); text-align:right;"><a href="#" id="chatLimpar" style="font-size:11.5px; color:var(--ink-soft);">🗑 Limpar todas as conversas</a></div>' : ''}
   `;
   document.getElementById('chatFechar').addEventListener('click', toggleChatPanel);
+  document.getElementById('chatLimpar')?.addEventListener('click', async ev=>{
+    ev.preventDefault();
+    const conf = prompt('Isto apaga TODAS as conversas do chat interno (clientes, equipe e diretas) de todo o escritório. Um backup é guardado no servidor.\n\nDigite LIMPAR para confirmar:');
+    if(conf===null) return;
+    try{
+      const r = await api('/chat/limpar', { method:'POST', body:{ confirmacao: conf } });
+      toast(`Chat limpo: ${r.clientes} mensagens de clientes, ${r.equipe} da equipe, ${r.diretas} diretas.`,'ok');
+      CHAT.conversas = []; CHAT.dms = []; CHAT.equipe = { naoLidas:0, ultimaMensagem:null, ultimaMensagemEm:null };
+      await atualizarResumoChat();
+      renderChatConvLista();
+    }catch(e){ toast(e.message,'err'); }
+  });
   // Atualiza só a lista de baixo a cada tecla, nunca o próprio <input> — recriar o input dentro do
   // seu próprio evento 'input' (como era antes) travava a digitação no Safari depois da 1ª letra.
   document.getElementById('chatBusca').addEventListener('input', (ev)=>{ CHAT.filtro = ev.target.value; renderChatConvLista(); });
