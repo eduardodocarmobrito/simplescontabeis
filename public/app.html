@@ -7354,9 +7354,18 @@ async function crmTags(box, escopo){
       ${tags.map(t=>`<button class="dprh-filtro ${CRM_TAGS.tag===t?'active':''}" data-tag="${esc(t)}">🏷 ${esc(t)} <span>${contagem[t]}</span></button>`).join('')}
     </div>
     <div class="card" style="padding:0;">${visiveis.length ? `<table class="data-table"><thead><tr><th>Cliente</th><th>Telefone</th><th>Empresa</th><th>Tags</th></tr></thead><tbody>
-      ${visiveis.map(c=>`<tr><td>${esc(c.nome||'—')}</td><td style="white-space:nowrap;">${esc(c.telefone)}</td><td>${esc(c.empresaNome||'—')}</td><td>${c.tags.map(t=>`<span class="tag">${esc(t)}</span>`).join(' ')}</td></tr>`).join('')}
+      ${visiveis.map(c=>`<tr data-contato="${esc(c.id)}" data-conv="${esc(c.conversaId||'')}" data-fechada="${c.conversaFechada?1:''}" style="cursor:pointer;" title="Abrir a conversa"><td>💬 ${esc(c.nome||'—')}</td><td style="white-space:nowrap;">${esc(c.telefone)}</td><td>${esc(c.empresaNome||'—')}</td><td>${c.tags.map(t=>`<span class="tag">${esc(t)}</span>`).join(' ')}</td></tr>`).join('')}
     </tbody></table>` : '<div class="empty-state">Nenhum cliente com tag ainda. Use o botão 🏷 Tag numa conversa.</div>'}</div>`;
   box.querySelectorAll('[data-tag]').forEach(b=>b.addEventListener('click', ()=>{ CRM_TAGS.tag=b.dataset.tag; crmTags(box, escopo); }));
+  box.querySelectorAll('tr[data-contato]').forEach(tr=>tr.addEventListener('click', async ()=>{
+    let conv = tr.dataset.conv, fechada = !!tr.dataset.fechada;
+    if(!conv){
+      // Contato com tag mas sem conversa ainda (só no CRM acontece): abre uma, como a Nova conversa.
+      try{ await dcGarantirSessao(); conv = (await dcApi('/conversations/open-with-contact', { method:'POST', body:{ contact_id:tr.dataset.contato } })).conversation_id; fechada = false; }
+      catch(e){ toast(e.message,'err'); return; }
+    }
+    atdIrParaConversa(escopo, conv, fechada);
+  }));
 }
 async function pageCrmMeta(box){
   CRM.conversaAtiva = null;
@@ -7686,8 +7695,10 @@ async function atendimentoMontar(escopo, box){
       </div>
     </div>
   `;
-  // Abrir o módulo sempre começa na Fila (o que está esperando atendimento), não na última aba usada.
-  S.filtro = 'fila';
+  // Abrir o módulo sempre começa na Fila (o que está esperando atendimento), não na última aba usada —
+  // a não ser que quem chamou já tenha pedido uma conversa específica (clique num cliente na aba Tags).
+  S.filtro = S.filtroAoMontar || 'fila';
+  S.filtroAoMontar = null;
   let t=null;
   document.getElementById('atdBusca').addEventListener('input', ()=>{ clearTimeout(t); t=setTimeout(()=>atdCarregarLista(S), 300); });
   const btnNova = document.getElementById('atdNovaConversa');
@@ -7711,7 +7722,20 @@ async function atendimentoMontar(escopo, box){
   catch(e){ document.getElementById('atdLista').innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
   await atdCarregarLista(S);
   S.listaTimer = setInterval(()=>atdCarregarLista(S), 10000);
-  if(S.conversaAtiva) atdAbrirConversa(S, S.conversaAtiva);
+  if(S.conversaAtiva){
+    const focar = S.focarAoAbrir; S.focarAoAbrir = false;
+    await atdAbrirConversa(S, S.conversaAtiva);
+    if(focar) document.getElementById('atdInput')?.focus();
+  }
+}
+// Leva pra aba WhatsApp do módulo com a conversa aberta e o campo de mensagem pronto.
+async function atdIrParaConversa(escopo, conversaId, fechada){
+  const S = ATEND[escopo];
+  S.conversaAtiva = conversaId;
+  S.filtroAoMontar = fechada ? 'fechadas' : (escopo==='crm' ? 'todas' : 'fila');
+  S.focarAoAbrir = true;
+  if(escopo==='crm'){ CRM.aba='whatsapp'; await pageCrm(); }
+  else{ SETOR_ABA[escopo]='whatsapp'; await pageSetor(escopo); }
 }
 function atdRenderFiltros(S){
   const box = document.getElementById('atdFiltros');

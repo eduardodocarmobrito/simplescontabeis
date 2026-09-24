@@ -12972,6 +12972,28 @@ async function atendimentoContatosDoSetor(escopo: AtendimentoSetorEscopo): Promi
   const { historico } = await atendimentoEscolhas();
   return new Set((await atendimentoConversasDoSetor(escopo, "contact_id", historico)).map((c) => c.contact_id));
 }
+// Conversa mais recente de cada contato — no setor, só entre as conversas do setor. Usado pra, ao clicar
+// num cliente (aba Tags), abrir direto a conversa dele.
+async function atendimentoUltimaConversaPorContato(escopo: AtendimentoEscopo, contatoIds: string[]): Promise<Map<string, { id: string; status: string }>> {
+  const mapa = new Map<string, { id: string; status: string }>();
+  if (!deskcommAdmin || !contatoIds.length) return mapa;
+  const colunas = "id, contact_id, status, last_message_at";
+  let linhas: any[] = [];
+  if (escopo === "crm") {
+    for (let i = 0; i < contatoIds.length; i += 100) {
+      const { data, error } = await deskcommAdmin.from("conversations").select(colunas).eq("organization_id", DESKCOMM_ORG_ID).is("group_chat_id", null).in("contact_id", contatoIds.slice(i, i + 100));
+      if (error) throw new Error(error.message);
+      linhas.push(...(data || []));
+    }
+  } else {
+    const { historico } = await atendimentoEscolhas();
+    const alvo = new Set(contatoIds);
+    linhas = (await atendimentoConversasDoSetor(escopo, colunas, historico)).filter((c) => alvo.has(c.contact_id));
+  }
+  linhas.sort((a, b) => String(b.last_message_at || "").localeCompare(String(a.last_message_at || "")));
+  for (const c of linhas) if (!mapa.has(c.contact_id)) mapa.set(c.contact_id, { id: c.id, status: c.status });
+  return mapa;
+}
 const ATENDIMENTO_COLUNAS =
   "id, status, comando_da_conversa, assigned_to_user_id, assigned_to_user_name, last_message_at, last_message_preview, last_inbound_at, unread_count_for_assignee, snooze_until, bot_silenced_until, service_revision, service_started_at, active_intent, active_agent_set_at, contact_id, tags, contact:contacts(display_name, name, phone_number, tags)";
 // Atendente geral (CRM) lê as conversas mais recentes da organização; um volume maior que isso pede
@@ -13102,6 +13124,12 @@ app.get("/api/atendimento/contatos-tags", blockCliente, async (req, res) => {
       if (!data || data.length < 1000) break;
     }
     itens.sort((a, b) => crmNormalizaTxt(a.nome || a.telefone).localeCompare(crmNormalizaTxt(b.nome || b.telefone)));
+    const conversas = await atendimentoUltimaConversaPorContato(escopo, itens.map((c) => c.id));
+    for (const c of itens) {
+      const cv = conversas.get(c.id);
+      c.conversaId = cv?.id || null;
+      c.conversaFechada = cv ? cv.status === "closed" || cv.status === "archived" : false;
+    }
     res.json({ items: itens });
   } catch (e: any) {
     res.status(502).json({ error: "Falha ao ler os contatos no deskcomm: " + e.message });
