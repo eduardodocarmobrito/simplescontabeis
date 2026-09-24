@@ -5373,6 +5373,16 @@ async function executarRecalculoDas(periodoId: number, user: any): Promise<{ ok:
   const periodoApuracao = `${periodo.ano}${String(periodo.mes).padStart(2, "0")}`;
   try {
     const token = await obterTokenIntegraContador(cfg);
+    // DAS já pago não tem o que recalcular (e cada geração é uma chamada paga). Consulta a situação atual na
+    // Receita; se essa consulta falhar não bloqueia — só não dá pra saber.
+    try {
+      const decls = await integracontador.consultarDeclaracoesPorAno(token, cfg.cnpj, empresa.cnpj, String(periodo.ano));
+      if (decls.find((d) => d.periodoApuracao === periodoApuracao)?.dasPago) {
+        return { ok: false, status: 409, error: `O DAS de ${String(periodo.mes).padStart(2, "0")}/${periodo.ano} já está pago — não há o que recalcular.` };
+      }
+    } catch (e: any) {
+      console.error(`[Integra Contador] checagem de DAS pago (empresa ${periodo.empresaId}) falhou:`, e.message);
+    }
     const das = await integracontador.gerarDas(token, cfg.cnpj, empresa.cnpj, periodoApuracao);
     if (!das.pdfBase64) return { ok: false, status: 502, error: "A Receita não devolveu o DAS recalculado — tente de novo mais tarde." };
     const quem = user.perfil === "Cliente" ? "pelo cliente" : `pelo escritório (${user.nome})`;
@@ -7964,6 +7974,7 @@ async function integraContadorBuscarEmpresaInterno(
     if (optante) {
       const anoAtual = new Date().getFullYear();
       let ultimoPeriodoDeclarado: string | null = null;
+      let ultimoDasPago = false;
       try {
         const declaracoes = await integracontador.consultarDeclaracoesPorAno(token, cnpjEscritorio, empresaCnpj, String(anoAtual));
         const inserirDecl = sqlite.prepare(
@@ -7974,6 +7985,7 @@ async function integraContadorBuscarEmpresaInterno(
           novos++;
           if (!ultimoPeriodoDeclarado || d.periodoApuracao > ultimoPeriodoDeclarado) ultimoPeriodoDeclarado = d.periodoApuracao;
         }
+        ultimoDasPago = !!declaracoes.find((d) => d.periodoApuracao === ultimoPeriodoDeclarado)?.dasPago;
         // Monitoramento de atraso: a competência do mês anterior já devia estar declarada a essa
         // altura (PGDAS-D vence dia 20 do mês seguinte) — se não achou nada pra ela (nem período
         // mais recente que ela), acende o alerta pra você conferir se o cliente esqueceu de mandar.
@@ -7993,7 +8005,8 @@ async function integraContadorBuscarEmpresaInterno(
       // DAS — da competência mais recente que já tem declaração transmitida (o mês corrente ainda
       // não tem declaração pra gerar DAS a partir dela). Rodar de novo pro mesmo período recalcula
       // o DAS (útil se a declaração foi retificada depois da última busca).
-      if (ultimoPeriodoDeclarado) {
+      // DAS da competência já pago: não gera de novo (nada a cobrar, e cada geração é uma chamada paga).
+      if (ultimoPeriodoDeclarado && !ultimoDasPago) {
         try {
           const das = await integracontador.gerarDas(token, cnpjEscritorio, empresaCnpj, ultimoPeriodoDeclarado);
           if (das.pdfBase64) {
