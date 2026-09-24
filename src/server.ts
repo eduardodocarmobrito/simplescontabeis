@@ -14319,6 +14319,53 @@ const ATENDIMENTO_WAHA_SEEN_TOKEN = DESKCOMM_SUPABASE_SERVICE_ROLE_KEY
   : "";
 // Renomear o contato (nome que aparece em toda a lista/painel). O deskcomm só preenche display_name quando está
 // vazio (coalesce), então o nome escolhido aqui não é sobrescrito pelo nome do WhatsApp nas próximas mensagens.
+// ---- Foto de perfil do cliente ----
+// O WAHA (pelo caminho fechado /simplescontabeis/waha-foto no Caddy da VPS) devolve a URL da foto no WhatsApp; este
+// servidor baixa a imagem e a entrega ao navegador, com cache em memória (a URL do WhatsApp expira). Sem foto
+// (cliente não tem ou não deixa ver) = 404, e a tela mostra as iniciais.
+const fotoCache = new Map<string, { buf: Buffer | null; mime: string; em: number }>();
+let fotosEmAndamento = 0;
+app.get("/api/atendimento/contatos/:id/foto", blockCliente, async (req, res) => {
+  const user = (req as any).user;
+  if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).end();
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID || !ATENDIMENTO_WAHA_SEEN_TOKEN) return res.status(404).end();
+  const id = String(req.params.id);
+  const enviar = (c: { buf: Buffer | null; mime: string }) => {
+    if (!c.buf) return res.status(404).end();
+    res.setHeader("Content-Type", c.mime);
+    res.setHeader("Cache-Control", "private, max-age=3600");
+    res.send(c.buf);
+  };
+  const c0 = fotoCache.get(id);
+  if (c0 && Date.now() - c0.em < (c0.buf ? 6 : 1) * 3600_000) return enviar(c0);
+  for (let i = 0; fotosEmAndamento >= 4 && i < 75; i++) await new Promise((r) => setTimeout(r, 200)); // fila simples
+  fotosEmAndamento++;
+  try {
+    const { data: ct } = await deskcommAdmin.from("contacts").select("id, phone_number, wa_lid, source_metadata").eq("organization_id", DESKCOMM_ORG_ID).eq("id", id).maybeSingle();
+    if (!ct) return res.status(404).end();
+    const { data: canal } = await deskcommAdmin.from("channel_sessions").select("waha_session_name").eq("organization_id", DESKCOMM_ORG_ID).eq("status", "WORKING").not("waha_session_name", "is", null).limit(1).maybeSingle();
+    const sessao = canal?.waha_session_name;
+    const meta: any = ct.source_metadata || {};
+    const chatId = meta.waha_chat_id || (ct.wa_lid ? `${ct.wa_lid}@lid` : ct.phone_number ? `${String(ct.phone_number).replace(/\D/g, "")}@c.us` : null);
+    if (!sessao || !chatId) { fotoCache.set(id, { buf: null, mime: "", em: Date.now() }); return res.status(404).end(); }
+    const r = await fetch(`${DESKCOMM_URL}/simplescontabeis/waha-foto/${encodeURIComponent(sessao)}/${encodeURIComponent(chatId).replace(/%40/g, "@")}`, { headers: { "X-Simples-Token": ATENDIMENTO_WAHA_SEEN_TOKEN } });
+    const j: any = r.ok ? await r.json().catch(() => null) : null;
+    const url = j?.profilePictureURL;
+    let entrada: { buf: Buffer | null; mime: string; em: number } = { buf: null, mime: "", em: Date.now() };
+    if (url && /^https:\/\//.test(url)) {
+      const img = await fetch(url);
+      if (img.ok) entrada = { buf: Buffer.from(await img.arrayBuffer()), mime: img.headers.get("content-type") || "image/jpeg", em: Date.now() };
+    }
+    fotoCache.set(id, entrada);
+    if (fotoCache.size > 3000) fotoCache.delete(fotoCache.keys().next().value as string);
+    enviar(entrada);
+  } catch (e: any) {
+    console.error("[atendimento] foto de perfil falhou:", e.message);
+    res.status(404).end();
+  } finally {
+    fotosEmAndamento--;
+  }
+});
 app.put("/api/atendimento/contatos/:id/nome", blockCliente, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });

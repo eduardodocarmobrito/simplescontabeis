@@ -373,6 +373,18 @@
   .atd-setor{display:inline-block; font-size:10.5px; padding:1px 7px; border-radius:8px; background:var(--accent-pale); color:var(--accent-deep); font-weight:600;}
   .atd-gravando{align-items:center; font-size:13px; color:var(--debit);}
   .atd-gravando-ponto{width:10px; height:10px; border-radius:50%; background:var(--debit); animation:chatPulse 1.1s ease-in-out infinite;}
+  .dprh-foto{position:absolute; inset:0; width:100%; height:100%; border-radius:50%; object-fit:cover; background:var(--paper-deep);}
+  .dprh-avatar-cab{width:44px; height:44px; font-size:14px;}
+  .atd-tique{margin-left:6px; font-size:12px; letter-spacing:-2px; color:rgba(255,255,255,.75);}
+  .atd-tique.lida{color:#53BDEB; text-shadow:0 0 1px rgba(0,0,0,.35);}
+  .chat-msg.theirs .atd-tique{display:none;}
+  /* Caixa de atendimento mais larga: usa a tela toda (o botão do chat flutuante pode ficar por cima). */
+  .main:has(.dprh-wa){padding:18px 18px 16px;}
+  .dprh-wa{height:calc(100vh - 200px);}
+  .dprh-wa.atd-com-abas-topo{height:calc(100vh - 262px);}
+  .dprh-col-lista{width:clamp(290px, 24vw, 380px);}
+  .dprh-filtros.atd-abas-topo{width:clamp(290px, 24vw, 380px);}
+  .dprh-acoes .btn.small{padding:5px 9px; font-size:12px;}
   @media (max-width: 820px){
     .dprh-wa, .dprh-wa.atd-com-abas-topo{flex-direction:column; height:auto;}
     .dprh-filtros.atd-abas-topo{width:auto; flex-wrap:wrap; justify-content:flex-start;}
@@ -8313,7 +8325,7 @@ async function atdCarregarLista(S){
     const nome = c.contatoNome || c.telefone;
     return `
       <div class="dprh-conv ${S.conversaAtiva===c.id?'active':''}" data-id="${c.id}">
-        <div class="dprh-avatar">${esc(atdIniciais(nome))}${c.naoLidas?'<i></i>':''}</div>
+        <div class="dprh-avatar">${esc(atdIniciais(nome))}${c.contatoId?atdFotoHtml(c.contatoId):''}${c.naoLidas?'<i></i>':''}</div>
         <div style="min-width:0; flex:1;">
           <div class="row" style="justify-content:space-between; gap:6px;">
             <div class="dprh-conv-nome ${c.naoLidas?'nao-lida':''}">${esc(nome)}</div>
@@ -8408,6 +8420,8 @@ function atdRenderCabecalho(S){
   }
   const tagsLivres = (c.contatoTags||[]).filter(t=>!t.startsWith(ATD_TAG_EMPRESA));
   cab.innerHTML = `
+    <div style="min-width:0; display:flex; gap:10px; align-items:center;">
+    <div class="dprh-avatar dprh-avatar-cab">${esc(atdIniciais(c.contatoNome||c.telefone))}${c.contatoId?atdFotoHtml(c.contatoId):''}</div>
     <div style="min-width:0;">
       <div style="font-weight:700; font-size:15px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${esc(c.contatoNome||c.telefone)}${podePostar&&c.contatoId?` <button class="btn small" data-acao="renomear" title="Renomear o cliente" style="padding:0 6px; font-size:12px;">✏️</button>`:''}</div>
       <div style="font-size:12px; color:var(--ink-soft); margin-top:2px;">${esc(c.telefone)}${c.empresaNome?' · '+esc(c.empresaNome):''}</div>
@@ -8416,6 +8430,7 @@ function atdRenderCabecalho(S){
         ${S.cfg.mostraSetor?`<span class="tag muted">Setor: ${esc(c.setor||'nenhum')}</span>`:''}
         ${tagsLivres.map(t=>`<span class="tag">🏷 ${esc(t)}</span>`).join('')}
       </div>
+    </div>
     </div>
     <div class="row dprh-acoes">${botoes.join('')}</div>
   `;
@@ -8952,6 +8967,20 @@ function atdMidiaHtml(m){
   if(m.type==='video') return `<video controls preload="none" src="${src}" class="dprh-midia-img"></video>`;
   return `<a class="chat-anexo-link" href="${src}" target="_blank" rel="noopener">📎 ${esc((m.metadata&&m.metadata.filename)||'Abrir arquivo')}</a>`;
 }
+// Foto de perfil do cliente por cima das iniciais; sem foto (404) a imagem some e ficam as iniciais.
+function atdFotoHtml(contatoId){
+  return `<img class="dprh-foto" loading="lazy" alt="" src="/api/atendimento/contatos/${encodeURIComponent(contatoId)}/foto" onerror="this.remove()">`;
+}
+// Tique da mensagem que enviamos: ✓ enviada · ✓✓ entregue · ✓✓ azul lida · relógio aguardando · ! falhou.
+function atdTiqueHtml(m){
+  if(m.direction!=='outbound' || m.revoked_at) return '';
+  const st = m.status;
+  if(st==='read') return '<span class="atd-tique lida" title="Lida pelo cliente">✓✓</span>';
+  if(st==='delivered') return '<span class="atd-tique" title="Entregue">✓✓</span>';
+  if(st==='sent') return '<span class="atd-tique" title="Enviada">✓</span>';
+  if(st==='failed') return '';
+  return '<span class="atd-tique" title="Enviando…">🕓</span>';
+}
 // Conversa que tem mensagens mas veio vazia = quase sempre o deskcomm enxergando o navegador como OUTRA pessoa
 // (ou como agente, que só vê o que é dele). Confere quem está logado lá, refaz a ponte uma vez e explica.
 async function atdExplicarVazio(S, id){
@@ -8994,7 +9023,7 @@ async function atdCarregarMensagens(S, primeira){
     const apagada = m.revoked_at ? '<i>Mensagem apagada</i>' : '';
     const editada = m.metadata && m.metadata.editada_em ? ' · editada' : '';
     const menuBtn = (podePostarMsg && !apagada) || (podePostarMsg && m.revoked_at) ? `<button class="atd-msg-menu" data-msg="${esc(m.id)}" title="Editar / excluir">⋯</button>` : '';
-    return `${sep}<div class="chat-msg atd-msg ${m.direction==='inbound'?'theirs':'mine'} ${m.direction!=='inbound' && !m.sent_by_user_id && m.sent_via!=='external_device'?'dprh-bot':''}">${menuBtn}${apagada || ((m.body?esc(m.body):'') + atdMidiaHtml(m))}<span class="hora">${esc(atdAutorMsg(S,m,c))} · ${esc(new Date(quando).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}))}${editada}${falhou}</span></div>`;
+    return `${sep}<div class="chat-msg atd-msg ${m.direction==='inbound'?'theirs':'mine'} ${m.direction!=='inbound' && !m.sent_by_user_id && m.sent_via!=='external_device'?'dprh-bot':''}">${menuBtn}${apagada || ((m.body?esc(m.body):'') + atdMidiaHtml(m))}<span class="hora">${esc(atdAutorMsg(S,m,c))} · ${esc(new Date(quando).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}))}${editada}${falhou}${atdTiqueHtml(m)}</span></div>`;
   }).join('') : `<div class="empty-state" id="atdVazio">Nenhuma mensagem ainda.</div>`;
   if(!msgs.length && primeira) atdExplicarVazio(S, id);
   lista.querySelectorAll('.atd-msg-menu').forEach(b=>b.addEventListener('click', ev=>{ ev.stopPropagation(); atdMenuMensagem(S, b.dataset.msg); }));
