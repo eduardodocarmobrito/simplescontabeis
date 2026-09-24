@@ -5343,6 +5343,28 @@ app.get("/api/envio/grade/:atribuicaoId", (req, res) => {
 // atraso continuar. Compartilhada pelas duas rotas que disparam isso: o botão na grade de Envio de
 // Documentos (já sabe o periodoId) e o pedido em Solicitar Documentos (resolve o periodoId pela
 // competência antes de chamar aqui).
+// Competências (AAAAMM) cujo débito já foi incluído num parcelamento ativo da empresa (PARCSN): pela consolidação
+// ("detalhesConsolidacao[].periodoApuracao") guardada ao vincular o parcelamento. Aceita AAAAMM, AAAA-MM e MM/AAAA.
+function competenciasEmParcelamento(empresaId: number): Map<string, number> {
+  const mapa = new Map<string, number>();
+  const rows = sqlite.prepare(`SELECT numero_parcelamento n, detalhes_json j FROM integracontador_parcelamentos WHERE empresa_id = ? AND ativo = 1 AND detalhes_json IS NOT NULL`).all(empresaId) as any[];
+  const norm = (v: any): string | null => {
+    const t = String(v ?? "").trim();
+    let m = t.match(/^(\d{4})\D?(\d{2})/);
+    if (m) return m[1] + m[2];
+    m = t.match(/^(\d{2})\D(\d{4})/);
+    return m ? m[2] + m[1] : null;
+  };
+  const varre = (o: any, n: number) => {
+    if (!o || typeof o !== "object") return;
+    if (Array.isArray(o.detalhesConsolidacao)) {
+      for (const it of o.detalhesConsolidacao) { const c = norm(it?.periodoApuracao); if (c) mapa.set(c, n); }
+    }
+    for (const v of Object.values(o)) varre(v, n);
+  };
+  for (const r of rows) { try { varre(JSON.parse(r.j), r.n); } catch {} }
+  return mapa;
+}
 async function executarRecalculoDas(periodoId: number, user: any): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
   const periodo = sqlite
     .prepare(
@@ -5360,6 +5382,12 @@ async function executarRecalculoDas(periodoId: number, user: any): Promise<{ ok:
     return { ok: false, status: 403, error: "Sem acesso a esta empresa." };
   }
   if (periodo.templateNome !== "DAS - Mensal") return { ok: false, status: 400, error: "Esse período não é de DAS." };
+  {
+    const emParcelamento = competenciasEmParcelamento(periodo.empresaId).get(`${periodo.ano}${String(periodo.mes).padStart(2, "0")}`);
+    if (emParcelamento) {
+      return { ok: false, status: 409, error: `O DAS de ${String(periodo.mes).padStart(2, "0")}/${periodo.ano} foi incluído no parcelamento nº ${emParcelamento} e não pode ser recalculado. Os pagamentos dele são feitos pelas guias das parcelas do parcelamento — fale com o escritório se precisar de ajuda.` };
+    }
+  }
   const temDocumento = sqlite.prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id = ?`).get(periodoId);
   if (!temDocumento) return { ok: false, status: 409, error: "O DAS original dessa competência ainda não foi disponibilizado — aguarde a rotina mensal antes de pedir recálculo." };
   const jaPediuHoje = sqlite
@@ -8019,7 +8047,7 @@ async function integraContadorBuscarEmpresaInterno(
       // não tem declaração pra gerar DAS a partir dela). Rodar de novo pro mesmo período recalcula
       // o DAS (útil se a declaração foi retificada depois da última busca).
       // DAS da competência já pago: não gera de novo (nada a cobrar, e cada geração é uma chamada paga).
-      if (ultimoPeriodoDeclarado && !ultimoDasPago) {
+      if (ultimoPeriodoDeclarado && !ultimoDasPago && !competenciasEmParcelamento(empresaId).has(ultimoPeriodoDeclarado)) {
         try {
           const das = await integracontador.gerarDas(token, cnpjEscritorio, empresaCnpj, ultimoPeriodoDeclarado);
           if (das.pdfBase64) {
