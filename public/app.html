@@ -1408,6 +1408,8 @@ const TVP_DIAS = ['domingo','segunda-feira','terça-feira','quarta-feira','quint
 // com faixa colorida e número grande, e tabelas no mesmo tema. Toda página nova da TV deve usar isto.
 //   blocos: [{ secao:'Agora', cards:[{titulo, valor, sub, cor}] } | { tabelas:[{titulo, colunas:[..], linhas:[[..]], numericas:[idx], vazio}] }]
 const TVP_COR_ALERTA = '#E85F5F', TVP_COR_ATENCAO = '#E8C15F';
+// Páginas do Painel de TV (id = posição na rotação). Ao criar uma página nova, acrescente aqui.
+const PAGINAS_TV = [ { id:1, label:'Página 1 — Cards do Início' }, { id:2, label:'Página 2 — Painel de atendimento' } ];
 function tvpPaginaHtml(blocos){
   let cor = 0;
   return blocos.map(b=>{
@@ -1601,10 +1603,16 @@ async function pagePainelTv(){
   // `segundosPorPagina` (Configurações › Painel de TV). Se a 2ª página não puder ser montada (ex.: a
   // integração com o deskcomm está fora), o painel fica só na 1ª em vez de girar pra uma tela vazia.
   const PAG = { atual:0, seg:30, pag2ok:false };
+  // Páginas que esta conta pode ver (Usuários › Painel de TV › Páginas); vazio = todas. Índices 0-based.
+  const PERMITIDAS = (STATE.user.painelTvPaginas||[]).map(n=>n-1);
+  const permitida = i => !PERMITIDAS.length || PERMITIDAS.includes(i);
+  // Páginas que entram na troca agora: permitidas e, no caso da 2ª, com dados.
+  function paginasAtivas(){ return [0,1].filter(i=>permitida(i) && (i!==1 || PAG.pag2ok)); }
   function desenharPontos(){
     const dots = document.getElementById('tvpDots');
     if(!dots) return;
-    dots.innerHTML = PAG.pag2ok ? [0,1].map(i=>`<i class="${PAG.atual===i?'on':''}"></i>`).join('') : '';
+    const l = paginasAtivas();
+    dots.innerHTML = l.length>1 ? l.map(i=>`<i class="${PAG.atual===i?'on':''}"></i>`).join('') : '';
   }
   function ajustarPagina2(){
     const box = document.getElementById('tvpPag2');
@@ -1634,15 +1642,16 @@ async function pagePainelTv(){
       if(!PAG.pag2ok) box.innerHTML = `<div class="tvp-empty">${esc(e.message)}</div>`;
       PAG.pag2ok = false;
     }
-    if(!PAG.pag2ok && PAG.atual===1) mostrarPagina(0);
+    if(!paginasAtivas().includes(PAG.atual)) mostrarPagina(paginasAtivas()[0] ?? 0);
     desenharPontos();
     ajustarPagina2();
   }
   function agendarTroca(){
     if(TVP_TIMERS.pagina) clearInterval(TVP_TIMERS.pagina);
     TVP_TIMERS.pagina = setInterval(()=>{
-      if(!PAG.pag2ok){ if(PAG.atual!==0) mostrarPagina(0); return; }
-      mostrarPagina(PAG.atual===0 ? 1 : 0);
+      const l = paginasAtivas();
+      if(l.length<2){ if(l.length && PAG.atual!==l[0]) mostrarPagina(l[0]); return; }
+      mostrarPagina(l[(Math.max(0,l.indexOf(PAG.atual))+1) % l.length]);
     }, PAG.seg*1000);
   }
   async function lerTempoDaTroca(){
@@ -1656,9 +1665,10 @@ async function pagePainelTv(){
   tvpManterTelaLigada();
   await carregar(false);
   await lerTempoDaTroca();
-  carregarPagina2();
+  if(!permitida(0)) mostrarPagina(1);
+  if(permitida(1)) carregarPagina2();
   // Dados do Painel de atendimento e o tempo de troca (se mudou em Configurações) renovam a cada minuto.
-  TVP_TIMERS.pag2 = setInterval(()=>{ carregarPagina2(); lerTempoDaTroca(); }, 60_000);
+  TVP_TIMERS.pag2 = setInterval(()=>{ if(permitida(1)) carregarPagina2(); lerTempoDaTroca(); }, 60_000);
   window.addEventListener('resize', ajustarPagina2);
   // Valores atualizam sozinhos a cada 1min (com uma "piscada" rápida, sensação de painel ao vivo) —
   // bem mais frequente que os 30min pedidos, que são só o teto máximo pra pegar mudança estrutural
@@ -9438,6 +9448,11 @@ async function usuarioModal(u){
       <p style="font-size:11.5px; color:var(--ink-soft); margin:-4px 0 10px;">Colaboradores isentos não entram na contagem de assentos cobrados do escritório.</p>` : ''}
       <label class="checkbox-row"><input type="checkbox" id="usPainelTv" ${u?.painelTv?'checked':''}> Painel de TV</label>
       <p style="font-size:11.5px; color:var(--ink-soft); margin:-4px 0 10px;">Ao logar com esse usuário, abre direto em tela cheia mostrando os cards do Início, sem menu — pensado pra ficar ligado numa TV do escritório. A sessão dura muito mais tempo (não cai sozinha).</p>
+      <div id="usTvPaginasWrap" class="hidden" style="margin:0 0 12px;">
+        <div style="font-size:12px; font-weight:600; margin-bottom:4px;">Páginas do painel</div>
+        <p style="font-size:11.5px; color:var(--ink-soft); margin:-2px 0 8px;">Nenhuma marcada = mostra todas, girando. Marque só as que essa TV deve exibir.</p>
+        <div class="checkbox-grid">${PAGINAS_TV.map(p=>`<label class="checkbox-row"><input type="checkbox" class="usTvPagina" value="${p.id}" ${(u?.painelTvPaginas||[]).includes(p.id)?'checked':''}> ${esc(p.label)}</label>`).join('')}</div>
+      </div>
       <div style="margin:16px 0 8px; padding-top:12px; border-top:1px solid var(--rule); font-weight:600; font-size:13.5px;">Permissões e acessos</div>
       <label class="checkbox-row"><input type="checkbox" id="usAcessoTodas" checked> Acesso a todas as empresas</label>
       <div id="usEmpresasRestritasWrap" class="hidden" style="margin:6px 0 10px;">
@@ -9462,9 +9477,11 @@ async function usuarioModal(u){
     const perfil = u? u.perfil : perfilSel.value;
     document.getElementById('usEmpresaWrap').classList.toggle('hidden', perfil!=='Cliente');
     document.getElementById('usColabWrap').classList.toggle('hidden', perfil!=='Colaborador');
+    document.getElementById('usTvPaginasWrap')?.classList.toggle('hidden', perfil!=='Colaborador' || !document.getElementById('usPainelTv')?.checked);
   }
   if(perfilSel) perfilSel.addEventListener('change', syncPerfilUI);
   syncPerfilUI();
+  document.getElementById('usPainelTv')?.addEventListener('change', syncPerfilUI);
 
   function renderPermGrid(perms){
     perms = perms || [];
@@ -9531,6 +9548,7 @@ async function usuarioModal(u){
           body.acessoTodasEmpresas = document.getElementById('usAcessoTodas').checked;
           body.isentoAssinatura = document.getElementById('usIsentoAssinatura').checked;
           body.painelTv = document.getElementById('usPainelTv').checked;
+          body.painelTvPaginas = [...document.querySelectorAll('.usTvPagina:checked')].map(c=>Number(c.value));
         }
         await api('/users/'+u.id, { method:'PUT', body });
         userId = u.id;
@@ -9540,6 +9558,7 @@ async function usuarioModal(u){
         if(perfil==='Colaborador'){
           body.acessoTodasEmpresas = document.getElementById('usAcessoTodas').checked;
           body.painelTv = document.getElementById('usPainelTv').checked;
+          body.painelTvPaginas = [...document.querySelectorAll('.usTvPagina:checked')].map(c=>Number(c.value));
         }
         const r = await api('/users', { method:'POST', body });
         userId = r.id;

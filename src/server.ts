@@ -1839,6 +1839,10 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
   if (!colsUsers.some((c) => c.name === "painel_tv")) {
     sqlite.exec(`ALTER TABLE app_users ADD COLUMN painel_tv INTEGER NOT NULL DEFAULT 0`);
   }
+  // Quais páginas do Painel de TV essa conta mostra ("1,2"); vazio = todas.
+  if (!colsUsers.some((c) => c.name === "painel_tv_paginas")) {
+    sqlite.exec(`ALTER TABLE app_users ADD COLUMN painel_tv_paginas TEXT`);
+  }
   const colsItens = sqlite.prepare(`PRAGMA table_info(escritorio_licenca_cobranca_itens)`).all() as any[];
   if (!colsItens.some((c) => c.name === "quantidade")) {
     sqlite.exec(`ALTER TABLE escritorio_licenca_cobranca_itens ADD COLUMN quantidade INTEGER NOT NULL DEFAULT 1`);
@@ -2172,12 +2176,20 @@ function resolverEmpresaAtivaCliente(token: string, userId: number, empresaAtiva
   sqlite.prepare(`UPDATE sessions SET empresa_ativa_id = ? WHERE token = ?`).run(primeira, token);
   return primeira;
 }
+// "1,2" -> [1,2]; vazio/ inválido -> [] (= todas as páginas)
+function paginasTvDeTexto(t: any): number[] {
+  return String(t || "").split(",").map((x) => Number(x)).filter((n) => Number.isInteger(n) && n >= 1 && n <= 50);
+}
+function paginasTvParaTexto(v: any): string | null {
+  const l = Array.isArray(v) ? Array.from(new Set(paginasTvDeTexto(v.join(",")))).sort((a, b) => a - b) : [];
+  return l.length ? l.join(",") : null;
+}
 function getSessionUser(token: string | undefined) {
   if (!token) return null;
   const row = sqlite
     .prepare(
       `SELECT s.expires_at as expiresAt, s.empresa_ativa_id as empresaAtivaId, u.id, u.nome, u.email, u.perfil,
-              u.acesso_todas_empresas as acessoTodasEmpresas, u.ativo, u.escritorio_id as escritorioId, u.painel_tv as painelTv
+              u.acesso_todas_empresas as acessoTodasEmpresas, u.ativo, u.escritorio_id as escritorioId, u.painel_tv as painelTv, u.painel_tv_paginas as painelTvPaginas
        FROM sessions s JOIN app_users u ON u.id = s.user_id
        WHERE s.token = ?`
     )
@@ -2204,6 +2216,7 @@ function getSessionUser(token: string | undefined) {
     acessoTodasEmpresas: !!row.acessoTodasEmpresas,
     escritorioId: row.escritorioId as number | null,
     painelTv: !!row.painelTv,
+    painelTvPaginas: paginasTvDeTexto(row.painelTvPaginas),
   };
 }
 function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
@@ -2863,7 +2876,7 @@ app.get("/api/users", requireAdmin, (req, res) => {
   const rows = sqlite
     .prepare(
       `SELECT u.id, u.nome, u.email, u.perfil, u.empresa_id as empresaId, e.nome as empresaNome, u.telefone,
-              u.acesso_todas_empresas as acessoTodasEmpresas, u.ativo, u.isento_assinatura as isentoAssinatura, u.painel_tv as painelTv, u.created_at as createdAt,
+              u.acesso_todas_empresas as acessoTodasEmpresas, u.ativo, u.isento_assinatura as isentoAssinatura, u.painel_tv as painelTv, u.painel_tv_paginas as painelTvPaginas, u.created_at as createdAt,
               (SELECT COUNT(*) FROM cliente_empresas ce WHERE ce.user_id = u.id) as totalEmpresas
        FROM app_users u LEFT JOIN empresas e ON e.id = u.empresa_id
        WHERE u.escritorio_id = ?
@@ -2874,14 +2887,14 @@ app.get("/api/users", requireAdmin, (req, res) => {
 });
 app.post("/api/users", requireAdmin, (req, res) => {
   const user = (req as any).user;
-  const { nome, email, perfil, password, acessoTodasEmpresas, painelTv, telefone } = req.body || {};
+  const { nome, email, perfil, password, acessoTodasEmpresas, painelTv, painelTvPaginas, telefone } = req.body || {};
   if (!nome || !email || !perfil || !password) return res.status(400).json({ error: "Preencha nome, e-mail, perfil e senha." });
   if (!["Administrador", "Colaborador", "Cliente"].includes(perfil)) return res.status(400).json({ error: "Perfil inválido." });
   const pwError = passwordPolicyError(password);
   if (pwError) return res.status(400).json({ error: pwError });
   try {
     const info = sqlite
-      .prepare(`INSERT INTO app_users (nome, email, perfil, acesso_todas_empresas, password_hash, escritorio_id, painel_tv, telefone) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .prepare(`INSERT INTO app_users (nome, email, perfil, acesso_todas_empresas, password_hash, escritorio_id, painel_tv, telefone, painel_tv_paginas) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(
         nome,
         String(email).trim().toLowerCase(),
@@ -2890,7 +2903,8 @@ app.post("/api/users", requireAdmin, (req, res) => {
         hashPassword(password),
         user.escritorioId,
         perfil === "Colaborador" && painelTv ? 1 : 0, // só faz sentido pra Colaborador — dono do Painel de TV não deve ser Administrador nem Cliente
-        telefone ? String(telefone).trim() : null
+        telefone ? String(telefone).trim() : null,
+        perfil === "Colaborador" && painelTv ? paginasTvParaTexto(painelTvPaginas) : null
       );
     const userId = Number(info.lastInsertRowid);
     if (perfil === "Colaborador") {
@@ -2910,7 +2924,7 @@ app.put("/api/users/:id", requireAdmin, (req, res) => {
   const id = Number(req.params.id);
   const existing = sqlite.prepare(`SELECT * FROM app_users WHERE id = ?`).get(id) as any;
   if (!existing || existing.escritorio_id !== (req as any).user.escritorioId) return res.status(404).json({ error: "Usuário não encontrado." });
-  const { nome, email, password, ativo, acessoTodasEmpresas, isentoAssinatura, painelTv, telefone } = req.body || {};
+  const { nome, email, password, ativo, acessoTodasEmpresas, isentoAssinatura, painelTv, painelTvPaginas, telefone } = req.body || {};
   if (password) {
     const pwError = passwordPolicyError(password);
     if (pwError) return res.status(400).json({ error: pwError });
@@ -2920,7 +2934,7 @@ app.put("/api/users/:id", requireAdmin, (req, res) => {
   const novoPainelTv = existing.perfil === "Colaborador" && painelTv !== undefined ? (painelTv ? 1 : 0) : existing.painel_tv;
   try {
     sqlite
-      .prepare(`UPDATE app_users SET nome=?, email=?, password_hash=?, ativo=?, acesso_todas_empresas=?, isento_assinatura=?, painel_tv=?, telefone=? WHERE id=?`)
+      .prepare(`UPDATE app_users SET nome=?, email=?, password_hash=?, ativo=?, acesso_todas_empresas=?, isento_assinatura=?, painel_tv=?, telefone=?, painel_tv_paginas=? WHERE id=?`)
       .run(
         nome ?? existing.nome,
         email ? String(email).trim().toLowerCase() : existing.email,
@@ -2930,6 +2944,7 @@ app.put("/api/users/:id", requireAdmin, (req, res) => {
         isentoAssinatura !== undefined ? (isentoAssinatura ? 1 : 0) : existing.isento_assinatura,
         novoPainelTv,
         telefone !== undefined ? (telefone ? String(telefone).trim() : null) : existing.telefone,
+        painelTvPaginas !== undefined ? paginasTvParaTexto(painelTvPaginas) : existing.painel_tv_paginas,
         id
       );
     // Painel de TV usa sessão de vida longa — se acabou de virar (ou deixar de ser) painel_tv, ou se
