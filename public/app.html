@@ -909,7 +909,7 @@ async function render(){
     else if(STATE.page==='relatorios') await pageRelatorios();
     // Abrir o CRM pelo menu sempre cai no WhatsApp (deskcomm) → Fila; a aba Meta recarrega por pageCrm() direto.
     else if(STATE.page==='crm'){ CRM.aba='whatsapp'; await pageCrm(); }
-    else if(SETOR_PAGINAS[STATE.page]) await pageSetor(STATE.page);
+    else if(SETOR_PAGINAS[STATE.page]){ SETOR_ABA[STATE.page]='whatsapp'; await pageSetor(STATE.page); }
     else if(STATE.page==='usuarios') await pageUsuarios();
     else if(STATE.page==='configuracoes') await pageConfiguracoes();
     else if(STATE.page==='minha-assinatura-colaborador') await pageMinhaAssinaturaColaborador();
@@ -7274,7 +7274,8 @@ async function pageCrm(){
 // lá ou pela IA). A situação muda aqui mesmo: concluído, não compareceu, cancelar.
 const CRM_AGENDA = { filtro:'proximos' };
 const AGENDA_SITUACAO = { pending:['warn','Aguardando confirmação'], confirmed:['ok','Confirmado'], completed:['ok','Concluído'], no_show:['err','Não compareceu'], cancelled:['muted','Cancelado'], rescheduled:['muted','Remarcado'] };
-async function crmAgenda(box){
+async function crmAgenda(box, modulo){
+  modulo = modulo || 'crm';
   const agora = Date.now(), dia = 86400000;
   const faixas = {
     proximos:   { rotulo:'Próximos', de:agora, ate:agora+120*dia, filtro:a=>['pending','confirmed'].includes(a.situacao) },
@@ -7288,7 +7289,7 @@ async function crmAgenda(box){
       ${Object.entries(faixas).map(([id,x])=>`<button class="dprh-filtro ${CRM_AGENDA.filtro===id?'active':''}" data-f="${id}">${x.rotulo}</button>`).join('')}
     </div>
     <div class="card" style="padding:0;"><div id="crmAgendaLista"><div class="empty-state">Carregando…</div></div></div>`;
-  box.querySelectorAll('[data-f]').forEach(b=>b.addEventListener('click', ()=>{ CRM_AGENDA.filtro=b.dataset.f; crmAgenda(box); }));
+  box.querySelectorAll('[data-f]').forEach(b=>b.addEventListener('click', ()=>{ CRM_AGENDA.filtro=b.dataset.f; crmAgenda(box, modulo); }));
   const lista = document.getElementById('crmAgendaLista');
   let itens;
   try{
@@ -7306,7 +7307,7 @@ async function crmAgenda(box){
         <td>${esc(a.titulo||'')}</td>
         <td>${esc(a.contatoNome||'—')}</td>
         <td><span class="tag ${cls}">${esc(rot)}</span></td>
-        <td style="text-align:right; white-space:nowrap;">${aberto && can('crm','postar') ? `
+        <td style="text-align:right; white-space:nowrap;">${aberto && can(modulo,'postar') ? `
           <button class="btn small" data-sit="completed">Concluído</button>
           <button class="btn small" data-sit="no_show">Não compareceu</button>
           <button class="btn small danger" data-sit="cancelar">Cancelar</button>` : ''}</td>
@@ -7324,7 +7325,7 @@ async function crmAgenda(box){
         await dcApi('/agenda/agendamentos', { method:'PATCH', body:{ id, status:b.dataset.sit } });
       }
       toast('Compromisso atualizado.','ok');
-      crmAgenda(box);
+      crmAgenda(box, modulo);
     }catch(e){ toast(e.message,'err'); }
   }));
 }
@@ -8395,11 +8396,17 @@ async function pageSetor(escopo){
     <div><h1>${esc(pg.titulo)}</h1><p class="subtitle">${esc(pg.subtitulo)}</p></div>
     <div class="tabs" id="setorAbas">
       <div class="tab ${SETOR_ABA[escopo]==='whatsapp'?'active':''}" data-aba="whatsapp">WhatsApp</div>
+      <div class="tab ${SETOR_ABA[escopo]==='agenda'?'active':''}" data-aba="agenda">Agenda</div>
+      <div class="tab ${SETOR_ABA[escopo]==='tags'?'active':''}" data-aba="tags">Tags</div>
     </div>
     <div id="setorConteudo"></div>
   `;
   document.querySelectorAll('#setorAbas .tab').forEach(t=>t.addEventListener('click', ()=>{ SETOR_ABA[escopo]=t.dataset.aba; pageSetor(escopo); }));
-  if(SETOR_ABA[escopo]==='whatsapp') await atendimentoMontar(escopo, document.getElementById('setorConteudo'));
+  const box = document.getElementById('setorConteudo');
+  // Agenda e Tags são do CONTATO (as mesmas do CRM); só o WhatsApp é filtrado pelo setor.
+  if(SETOR_ABA[escopo]==='agenda') await crmAgenda(box, escopo);
+  else if(SETOR_ABA[escopo]==='tags') await crmTags(box);
+  else await atendimentoMontar(escopo, box);
 }
 
 // ===================== Usuários =====================
