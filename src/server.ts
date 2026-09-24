@@ -13340,7 +13340,10 @@ async function atendimentoRodarLembretes() {
   try {
     const cfg = atendimentoConfig(DESKCOMM_ESCRITORIO_ID);
     const agora = Date.now();
-    if (cfg.lembreteAtivo) {
+    // Lembrete só em horário decente: segunda a sábado, 08:00–19:00 (Brasília) — nunca de madrugada.
+    const localAgora = new Date(agora - BRT_MS);
+    const horarioDecente = localAgora.getUTCDay() !== 0 && localAgora.getUTCHours() >= 8 && localAgora.getUTCHours() < 19;
+    if (cfg.lembreteAtivo && horarioDecente) {
       const { data: ags, error } = await deskcommAdmin.from("calendar_appointments")
         .select("id, title, starts_at, status, contact_id, conversation_id, created_at, event_type_id")
         .eq("organization_id", DESKCOMM_ORG_ID).in("status", ["pending", "confirmed"]).is("reminder_sent_at", null)
