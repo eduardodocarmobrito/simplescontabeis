@@ -7595,18 +7595,19 @@ function painelCard(titulo, valor, sub, chave, destaque){
     <div class="painel-titulo">${esc(titulo)}</div><div class="painel-valor">${valor}</div>${sub?`<div class="painel-sub">${sub}</div>`:''}</div>`;
 }
 function painelListaModal(titulo, itens, modo){
-  const enc = modo==='quando';
+  const enc = modo==='quando' || modo==='iniciado';
+  const rotulo = modo==='quando'?'Encerrado em':modo==='iniciado'?'Iniciado em':modo;
   const fmtQ = q=>q?new Date(q).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'—';
   openModal(`
     <h3>${esc(titulo)} <span style="font-weight:400; color:var(--ink-soft);">(${itens.length})</span></h3>
-    <div style="max-height:60vh; overflow-y:auto;">${itens.length ? `<table class="data-table"><thead><tr><th>Cliente</th><th>Setor</th><th>Com quem</th><th>${enc?'Encerrado em':'Esperando resposta'}</th><th>Última mensagem</th></tr></thead><tbody>
+    <div style="max-height:60vh; overflow-y:auto;">${itens.length ? `<table class="data-table"><thead><tr><th>Cliente</th><th>Setor</th><th>Com quem</th><th>${modo?rotulo:'Esperando resposta'}</th><th>Última mensagem</th></tr></thead><tbody>
       ${itens.map(i=>`<tr data-conv="${esc(i.id)}" style="cursor:pointer;" title="Abrir a conversa">
         <td>💬 ${esc(i.nome||i.telefone)}${i.empresa?`<div style="font-size:11.5px; color:var(--ink-soft);">${esc(i.empresa)}</div>`:''}</td>
         <td>${esc(i.setor||'Sem setor')}</td>
         <td>${i.atendente?esc(i.atendente):(i.comando==='automatico'?'🤖 IA':'<span class="tag warn">Ninguém</span>')}</td>
-        <td>${enc?esc(fmtQ(i.quandoEm)):i.esperaMin!=null?`<span class="tag ${i.esperaMin>=120?'err':i.esperaMin>=30?'warn':'ok'}">${painelDurMin(i.esperaMin)}</span>`:'—'}</td>
+        <td>${enc?esc(fmtQ(i.quandoEm)):modo?esc(i.detalhe||'—'):i.esperaMin!=null?`<span class="tag ${i.esperaMin>=120?'err':i.esperaMin>=30?'warn':'ok'}">${painelDurMin(i.esperaMin)}</span>`:'—'}</td>
         <td style="max-width:260px;"><div style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${esc(i.ultimaMensagem||'')}</div><div style="font-size:11.5px; color:var(--ink-soft);">há ${painelDurMin(i.paradaMin)}</div></td>
-      </tr>`).join('')}</tbody></table>` : (enc?'<div class="empty-state">Nenhum atendimento encerrado neste período.</div>':'<div class="empty-state">Ninguém aqui agora. 🎉</div>')}</div>
+      </tr>`).join('')}</tbody></table>` : (modo?'<div class="empty-state">Nada por aqui neste período.</div>':'<div class="empty-state">Ninguém aqui agora. 🎉</div>')}</div>
     <div class="modal-actions"><button class="btn" id="painelFechar">Fechar</button></div>
   `, '900px');
   document.getElementById('painelFechar').addEventListener('click', closeModal);
@@ -7652,6 +7653,14 @@ async function crmPainel(box, silencioso){
     ia: ['Com a IA agora', a.ia], atendimento: ['Em atendimento', a.emAtendimento],
     parada: ['Sem interação há mais de 2 horas', a.semInteracao2h], adiadas: ['Adiadas', a.adiadas],
     encerrados: ['Atendimentos encerrados no período', p.listaEncerrados||[], 'quando'],
+    iniciados: ['Atendimentos iniciados no período', p.listaIniciados||[], 'iniciado'],
+    recebidas: ['Mensagens recebidas', p.listaRecebidas||[], 'Recebidas'],
+    enviadas: ['Mensagens enviadas', p.listaEnviadas||[], 'Enviadas'],
+    movimento: ['Conversas com movimento (📥 recebidas · 🤖 IA · 👤 equipe)', p.listaMovimento||[], 'Mensagens'],
+    respIA: ['Tempo de resposta da IA por conversa', p.listaRespIA||[], 'Tempo médio'],
+    respEquipe: ['Tempo de resposta da equipe por conversa', p.listaRespEquipe||[], 'Tempo médio'],
+    meta: ['Respostas da equipe x meta (mais fora da meta primeiro)', p.listaMeta||[], 'Meta'],
+    satisf: ['Notas da pesquisa de satisfação', p.satisfacao.lista||[], 'Nota'],
     abertas: ['Todas as conversas abertas', [...a.fila, ...a.ia, ...a.emAtendimento].filter((x,i,arr)=>arr.findIndex(y=>y.id===x.id)===i)],
   };
   const maxDia = Math.max(1, ...p.porDia.map(x=>x.recebidas+x.ia+x.humano));
@@ -7684,15 +7693,15 @@ async function crmPainel(box, silencioso){
       <div class="row" style="gap:4px;">${[['hoje','Hoje'],['7d','7 dias'],['30d','30 dias']].map(([id,r])=>`<button class="dprh-filtro ${PAINEL.periodo===id?'active':''}" data-periodo="${id}">${r}</button>`).join('')}</div>
     </div>
     <div class="painel-grade">
-      ${painelCard('Atendimentos iniciados', p.atendimentosIniciados, '')}
+      ${painelCard('Atendimentos iniciados', p.atendimentosIniciados, '', 'iniciados')}
       ${painelCard('Atendimentos encerrados', p.atendimentosEncerrados, 'duração média '+painelDurMin(p.duracaoMediaAtendimentoMin), 'encerrados')}
-      ${painelCard('Mensagens recebidas', p.mensagens.recebidas, p.conversasComMensagem+' conversas com movimento')}
-      ${painelCard('Mensagens enviadas', p.mensagens.ia+p.mensagens.humano, `🤖 ${p.mensagens.ia} IA · 👤 ${p.mensagens.humano} equipe`)}
-      ${painelCard('Média de mensagens', p.mediaMensagensPorConversa ?? '—', 'por conversa (cliente + nós)')}
-      ${painelCard('Tempo de resposta da IA', painelDur(p.tempoRespostaIASeg.media), 'mediana '+painelDur(p.tempoRespostaIASeg.mediana))}
-      ${painelCard('Tempo de resposta da equipe', painelDur(p.tempoRespostaHumanoSeg.media), 'mediana '+painelDur(p.tempoRespostaHumanoSeg.mediana)+' · no expediente', '', (p.tempoRespostaHumanoSeg.media||0)>p.meta.respostaMin*60?'painel-atencao':'')}
-      ${painelCard('Satisfação dos clientes', p.satisfacao.media==null?'—':'⭐ '+p.satisfacao.media.toString().replace('.',','), `${p.satisfacao.respostas} nota${p.satisfacao.respostas===1?'':'s'} de ${p.satisfacao.enviadas} pesquisa${p.satisfacao.enviadas===1?'':'s'}`, '', p.satisfacao.media==null?'':p.satisfacao.media>=4?'painel-ok':p.satisfacao.media<3?'painel-alerta':'painel-atencao')}
-      ${painelCard('Dentro da meta', p.meta.dentroPct==null?'—':p.meta.dentroPct+'%', `respostas da equipe em até ${p.meta.respostaMin} min (${p.meta.respostas})`, '', p.meta.dentroPct==null?'':p.meta.dentroPct>=80?'painel-ok':'painel-alerta')}
+      ${painelCard('Mensagens recebidas', p.mensagens.recebidas, p.conversasComMensagem+' conversas com movimento', 'recebidas')}
+      ${painelCard('Mensagens enviadas', p.mensagens.ia+p.mensagens.humano, `🤖 ${p.mensagens.ia} IA · 👤 ${p.mensagens.humano} equipe`, 'enviadas')}
+      ${painelCard('Média de mensagens', p.mediaMensagensPorConversa ?? '—', 'por conversa (cliente + nós)', 'movimento')}
+      ${painelCard('Tempo de resposta da IA', painelDur(p.tempoRespostaIASeg.media), 'mediana '+painelDur(p.tempoRespostaIASeg.mediana), 'respIA')}
+      ${painelCard('Tempo de resposta da equipe', painelDur(p.tempoRespostaHumanoSeg.media), 'mediana '+painelDur(p.tempoRespostaHumanoSeg.mediana)+' · no expediente', 'respEquipe', (p.tempoRespostaHumanoSeg.media||0)>p.meta.respostaMin*60?'painel-atencao':'')}
+      ${painelCard('Satisfação dos clientes', p.satisfacao.media==null?'—':'⭐ '+p.satisfacao.media.toString().replace('.',','), `${p.satisfacao.respostas} nota${p.satisfacao.respostas===1?'':'s'} de ${p.satisfacao.enviadas} pesquisa${p.satisfacao.enviadas===1?'':'s'}`, 'satisf', p.satisfacao.media==null?'':p.satisfacao.media>=4?'painel-ok':p.satisfacao.media<3?'painel-alerta':'painel-atencao')}
+      ${painelCard('Dentro da meta', p.meta.dentroPct==null?'—':p.meta.dentroPct+'%', `respostas da equipe em até ${p.meta.respostaMin} min (${p.meta.respostas})`, 'meta', p.meta.dentroPct==null?'':p.meta.dentroPct>=80?'painel-ok':'painel-alerta')}
     </div>
     <div class="painel-duas">
       <div class="card" style="padding:0;"><div class="painel-cab">Desempenho por funcionário</div>

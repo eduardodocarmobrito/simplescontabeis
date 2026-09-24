@@ -13905,15 +13905,18 @@ app.get("/api/atendimento/painel", blockCliente, async (req, res) => {
     };
     let recebidas = 0, enviadasIA = 0, enviadasHumano = 0;
     const porDia = new Map<string, { recebidas: number; ia: number; humano: number }>();
+    const statConv = new Map<string, { rec: number; ia: number; hum: number; tIA: number[]; tHum: number[] }>();
     for (const [convId, l] of porConversa) {
       let pendente: number | null = null;
+      const sc = { rec: 0, ia: 0, hum: 0, tIA: [] as number[], tHum: [] as number[] };
+      statConv.set(convId, sc);
       for (const m of l) {
         const t = new Date(m.created_at).getTime();
         const dia = new Date(m.created_at).toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
         const d = porDia.get(dia) || { recebidas: 0, ia: 0, humano: 0 };
         porDia.set(dia, d);
         if (m.direction === "inbound") {
-          recebidas++; d.recebidas++;
+          recebidas++; d.recebidas++; sc.rec++;
           if (pendente == null) pendente = t;
           continue;
         }
@@ -13923,13 +13926,13 @@ app.get("/api/atendimento/painel", blockCliente, async (req, res) => {
         // IA: tempo real. Equipe: só o tempo dentro do expediente (a meta vale pro horário de atendimento).
         const delta = pendente == null ? null : humano ? minutosUteisEntre(pendente, t) * 60 : (t - pendente) / 1000;
         if (humano) {
-          enviadasHumano++; d.humano++;
+          enviadasHumano++; d.humano++; sc.hum++;
           const f = m.sent_by_user_id ? func(m.sent_by_user_id, nomeAtendente(m.sent_by_user_id)!) : func("celular", "Pelo celular (WhatsApp)");
           f.mensagens++; f.conversas.add(convId);
-          if (delta != null) { temposHumano.push(delta); f.tempos.push(delta); }
+          if (delta != null) { temposHumano.push(delta); f.tempos.push(delta); sc.tHum.push(delta); }
         } else {
-          enviadasIA++; d.ia++;
-          if (delta != null) temposIA.push(delta);
+          enviadasIA++; d.ia++; sc.ia++;
+          if (delta != null) { temposIA.push(delta); sc.tIA.push(delta); }
         }
         pendente = null;
       }
@@ -13968,6 +13971,31 @@ app.get("/api/atendimento/painel", blockCliente, async (req, res) => {
       agendaPorQuemMarcou.set(quem, (agendaPorQuemMarcou.get(quem) || 0) + 1);
     }
     const conversasComMensagem = porConversa.size;
+    // Detalhe por conversa para os cards do período serem clicáveis ("quem são").
+    const idsDetalhe = new Set<string>([...porConversa.keys(), ...(sqlite.prepare(`SELECT DISTINCT conversation_id FROM atendimento_pesquisas WHERE nota IS NOT NULL AND respondida_em >= ?`).all(inicio.toISOString()) as any[]).map((r) => r.conversation_id)]);
+    const jaTenho = new Map<string, any>();
+    for (const c of [...iniciados, ...encerrados, ...abertas]) jaTenho.set(c.id, c);
+    const faltam = [...idsDetalhe].filter((id) => !jaTenho.has(id));
+    for (let i = 0; i < faltam.length; i += 100) {
+      const { data } = await deskcommAdmin.from("conversations").select(colunas).in("id", faltam.slice(i, i + 100));
+      for (const c of data || []) jaTenho.set(c.id, c);
+    }
+    const dessa = (id: string, detalhe: string, ordem: number) => {
+      const c = jaTenho.get(id);
+      return c ? { ...item(c), detalhe, ordem } : null;
+    };
+    const fmtSeg = (x: number) => (x < 90 ? `${Math.round(x)} s` : `${Math.round(x / 60)} min`);
+    const ord = (l: any[]) => l.filter(Boolean).sort((a, b) => b.ordem - a.ordem);
+    const listaMovimento = ord([...statConv].map(([id, v]) => dessa(id, `📥 ${v.rec} · 🤖 ${v.ia} · 👤 ${v.hum}`, v.rec + v.ia + v.hum)));
+    const listaEnviadas = ord([...statConv].filter(([, v]) => v.ia + v.hum > 0).map(([id, v]) => dessa(id, `🤖 ${v.ia} IA · 👤 ${v.hum} equipe`, v.ia + v.hum)));
+    const listaRecebidas = ord([...statConv].filter(([, v]) => v.rec > 0).map(([id, v]) => dessa(id, `${v.rec} mensagem${v.rec === 1 ? "" : "s"}`, v.rec)));
+    const media = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
+    const listaRespIA = ord([...statConv].filter(([, v]) => v.tIA.length).map(([id, v]) => dessa(id, `${fmtSeg(media(v.tIA))} (${v.tIA.length} resposta${v.tIA.length === 1 ? "" : "s"})`, media(v.tIA))));
+    const listaRespEquipe = ord([...statConv].filter(([, v]) => v.tHum.length).map(([id, v]) => dessa(id, `${fmtSeg(media(v.tHum))} (${v.tHum.length} resposta${v.tHum.length === 1 ? "" : "s"})`, media(v.tHum))));
+    const listaMeta = ord([...statConv].filter(([, v]) => v.tHum.length).map(([id, v]) => {
+      const dentro = v.tHum.filter((x) => x <= metaSeg).length;
+      return dessa(id, `${dentro} de ${v.tHum.length} dentro da meta`, v.tHum.length - dentro);
+    }));
     // Satisfação (pesquisa ao fechar) no período.
     const notas = sqlite.prepare(`SELECT atendente_nome, setor, nota FROM atendimento_pesquisas WHERE nota IS NOT NULL AND respondida_em >= ?`).all(inicio.toISOString()) as any[];
     const enviadasPesquisa = (sqlite.prepare(`SELECT COUNT(*) n FROM atendimento_pesquisas WHERE enviada_em >= ?`).get(inicio.toISOString()) as any).n;
@@ -14039,7 +14067,12 @@ app.get("/api/atendimento/painel", blockCliente, async (req, res) => {
           .sort((a, b) => b.mensagens - a.mensagens),
         porDia: [...porDia].map(([dia, v]) => ({ dia, ...v })).sort((a, b) => a.dia.localeCompare(b.dia)),
         rankingEmpresas,
-        satisfacao,
+        satisfacao: {
+          ...satisfacao,
+          lista: (sqlite.prepare(`SELECT conversation_id, nota, atendente_nome, setor, respondida_em FROM atendimento_pesquisas WHERE nota IS NOT NULL AND respondida_em >= ? ORDER BY respondida_em DESC`).all(inicio.toISOString()) as any[])
+            .map((n) => { const c = jaTenho.get(n.conversation_id); return c ? { ...item(c), detalhe: `⭐ ${n.nota} · ${n.atendente_nome || "—"}`, ordem: 0 } : null; }).filter(Boolean),
+        },
+        listaMovimento, listaEnviadas, listaRecebidas, listaRespIA, listaRespEquipe, listaMeta,
         agenda: {
           total: compromissos.length,
           porSituacao: agendaPorSituacao,
