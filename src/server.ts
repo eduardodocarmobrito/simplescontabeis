@@ -14351,10 +14351,22 @@ async function atendimentoMensagemParaAcao(user: any, id: string) {
 }
 async function atendimentoChamarWahaMsg(m: any, metodo: "PUT" | "DELETE", corpo?: any) {
   const sessao = m.conversation?.channel_session?.waha_session_name;
-  const partes = String(m.external_id || "").split("_");
-  if (!sessao || partes.length < 3 || partes[0] !== "true") throw Object.assign(new Error("Só dá pra fazer isso em mensagens enviadas pelo WhatsApp (as do celular ou do sistema)."), { codigo: 400 });
-  const chatId = partes[1];
-  const url = `${DESKCOMM_URL}/simplescontabeis/waha-msg/${encodeURIComponent(sessao)}/${encodeURIComponent(chatId).replace(/%40/g, "@")}/${encodeURIComponent(m.external_id).replace(/%40/g, "@")}`;
+  if (!sessao || !m.external_id) throw Object.assign(new Error("Esta mensagem não tem vínculo com o WhatsApp."), { codigo: 400 });
+  const partes = String(m.external_id).split("_");
+  let chatId: string, idCompleto: string;
+  if (partes[0] === "true" && partes.length >= 3) {
+    chatId = partes[1];
+    idCompleto = String(m.external_id);
+  } else {
+    // Enviada pelo próprio sistema (usuário/IA): o id guardado é só o curto do WhatsApp. O chatId exato (LID ou
+    // telefone) sai de outra mensagem da mesma conversa, que guarda o id no formato `true_/false_<chatId>_<id>`.
+    const { data: outras } = await deskcommAdmin!.from("messages").select("external_id").eq("conversation_id", m.conversation_id).like("external_id", "%\\_%").order("created_at", { ascending: false }).limit(20);
+    const ref = (outras || []).map((o: any) => String(o.external_id).split("_")).find((x: string[]) => (x[0] === "true" || x[0] === "false") && x.length >= 3);
+    if (!ref) throw Object.assign(new Error("Não foi possível descobrir o chat do WhatsApp desta conversa."), { codigo: 400 });
+    chatId = ref[1];
+    idCompleto = `true_${chatId}_${m.external_id}`;
+  }
+  const url = `${DESKCOMM_URL}/simplescontabeis/waha-msg/${encodeURIComponent(sessao)}/${encodeURIComponent(chatId).replace(/%40/g, "@")}/${encodeURIComponent(idCompleto).replace(/%40/g, "@")}`;
   const r = await fetch(url, { method: metodo, headers: { "Content-Type": "application/json", "X-Simples-Token": ATENDIMENTO_WAHA_SEEN_TOKEN }, body: corpo ? JSON.stringify(corpo) : undefined });
   if (!r.ok) throw new Error(`WhatsApp ${r.status}: ${(await r.text().catch(() => "")).slice(0, 200)}`);
 }
