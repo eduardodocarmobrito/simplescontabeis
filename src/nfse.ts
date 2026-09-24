@@ -499,6 +499,33 @@ function interpretarRespostaEmissao(resposta: RespostaAdn): { chaveAcesso: strin
   return { chaveAcesso: null, xmlNfse: null, mensagemErro: extrairMensagemErro(json, resposta.corpo) };
 }
 
+// Consulta a NFS-e pela chave de acesso direto na Sefin Nacional (com o certificado do prestador).
+// Serve pra tirar a dúvida "essa nota existe mesmo no governo?" quando ela não aparece no portal.
+export interface ConsultaNfseGoverno {
+  existe: boolean;
+  status: number;
+  numero: string | null;
+  processadaEm: string | null;
+  valor: string | null;
+  cnpjEmitente: string | null;
+  mensagemErro: string | null;
+}
+export async function consultarNfsePorChave(ambiente: AmbienteNfse, chaveAcesso: string, cert: CertificadoInfo): Promise<ConsultaNfseGoverno> {
+  const resposta = await chamarAdn(ambiente, "GET", `/nfse/${encodeURIComponent(chaveAcesso)}`, cert);
+  if (!resposta.ok) {
+    let msg = resposta.corpo || `HTTP ${resposta.status}`;
+    try { msg = extrairMensagemErro(JSON.parse(resposta.corpo), resposta.corpo); } catch { /* corpo não-JSON: usa o texto cru */ }
+    return { existe: false, status: resposta.status, numero: null, processadaEm: null, valor: null, cnpjEmitente: null, mensagemErro: String(msg).slice(0, 500) };
+  }
+  let xml = "";
+  try {
+    const json = JSON.parse(resposta.corpo);
+    if (json.nfseXmlGZipB64) xml = zlib.gunzipSync(Buffer.from(json.nfseXmlGZipB64, "base64")).toString("utf8");
+  } catch { /* resposta 2xx sem o envelope esperado: ainda assim a nota existe */ }
+  const pega = (tag: string) => xml.match(new RegExp(`<${tag}>([^<]+)</${tag}>`))?.[1] ?? null;
+  return { existe: true, status: resposta.status, numero: pega("nNFSe"), processadaEm: pega("dhProc"), valor: pega("vLiq") || pega("vServ"), cnpjEmitente: xml.match(/<emit>\s*<CNPJ>(\d+)<\/CNPJ>/)?.[1] ?? null, mensagemErro: null };
+}
+
 // Fluxo completo: monta, assina e envia a DPS; devolve o XML assinado (pra guardar) e o resultado interpretado.
 export async function emitirDps(
   input: MontarDpsInput,

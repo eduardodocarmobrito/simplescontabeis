@@ -4627,6 +4627,32 @@ async function nfseModeloModal(m, opts){
   });
 }
 
+async function nfseConsultaGovernoModal(id, btn){
+  const rotulo = btn ? btn.textContent : '';
+  if(btn){ btn.disabled = true; btn.textContent = 'Consultando…'; }
+  try{
+    const r = await api('/nfse/emissoes/'+id+'/consulta-governo');
+    const cnpj = v=>String(v||'').replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/,'$1.$2.$3/$4-$5');
+    const linhas = r.existe ? `
+      <p style="margin:0 0 10px;"><span class="tag ok">✓ A nota EXISTE no Sistema Nacional NFS-e</span></p>
+      <table class="data-table"><tbody>
+        <tr><td>Número da NFS-e</td><td><b>${esc(r.numero||r.numeroNoSite||'—')}</b></td></tr>
+        <tr><td>Processada pelo governo em</td><td>${esc(r.processadaEm? new Date(r.processadaEm).toLocaleString('pt-BR') : '—')}</td></tr>
+        <tr><td>Prestador (CNPJ no governo)</td><td>${esc(cnpj(r.cnpjEmitente)||'—')}</td></tr>
+        <tr><td>Prestador (CNPJ no cadastro)</td><td>${esc(cnpj(r.cnpjPrestadorNoSite)||'—')}</td></tr>
+        <tr><td>Ambiente</td><td>${r.ambiente==='producao'?'Produção':'Homologação (testes — não vale)'}</td></tr>
+        <tr><td>Chave de acesso</td><td style="word-break:break-all; font-family:'IBM Plex Mono',monospace; font-size:12px;">${esc(r.chaveAcesso)}</td></tr>
+      </tbody></table>
+      <p style="font-size:12.5px; color:var(--ink-soft);">Se ela não aparece no portal do contribuinte, a nota é válida do mesmo jeito — é uma questão de exibição/atualização do portal. Dá pra conferir pela chave em nfse.gov.br › Consulta Pública.</p>`
+      : `
+      <p style="margin:0 0 10px;"><span class="tag bad">✗ O governo NÃO encontrou esta nota</span></p>
+      <p style="font-size:13px;">Resposta do Sistema Nacional (HTTP ${r.status}): <b>${esc(r.mensagemErro||'sem detalhe')}</b></p>
+      <p style="font-size:12.5px; color:var(--ink-soft);">Chave consultada: <span style="font-family:'IBM Plex Mono',monospace; word-break:break-all;">${esc(r.chaveAcesso)}</span></p>`;
+    openModal(`<h3>Consulta ao governo</h3>${linhas}<div class="modal-actions"><button class="btn primary" id="cgFechar">Fechar</button></div>`);
+    document.getElementById('cgFechar').addEventListener('click', closeModal);
+  }catch(e){ toast(e.message,'err'); }
+  finally{ if(btn){ btn.disabled = false; btn.textContent = rotulo; } }
+}
 function nfseCancelarModal(n){
   openModal(`
     <h3>Cancelar NFS-e</h3>
@@ -4750,6 +4776,7 @@ async function renderNfseNotasDetalhe(empresaId){
                 ${n.status==='emitida'&&n.whatsappStatus==='entregue'?`<span class="tag ok" title="Entregue ao cliente">✓✓ Entregue</span>`:''}
                 ${n.status==='emitida'&&n.whatsappStatus==='falhou'?`<span class="tag bad" title="Falha na entrega por WhatsApp">⚠ Falhou</span>`:''}
                 ${n.status==='emitida'?`<button class="btn small" data-id="${n.id}" data-act="enviar-whatsapp-nfse">${n.whatsappEnviado?'Reenviar WhatsApp':'Enviar WhatsApp'}</button>`:''}
+                ${n.status==='emitida'?`<button class="btn small" data-id="${n.id}" data-act="consulta-governo" title="Confere se esta nota existe no Sistema Nacional NFS-e (governo)">Consultar no governo</button>`:''}
                 ${n.status==='emitida'?`<button class="btn small" data-id="${n.id}" data-act="cancelar" style="color:var(--debit);">Cancelar</button>`:''}
                 ${n.status==='cancelada'?`<button class="btn small" data-id="${n.id}" data-act="reenviar-cancelamento" title="Reenvia o aviso de cancelamento por e-mail e WhatsApp pro tomador">Reenviar aviso de cancelamento</button>`:''}
               </td>
@@ -4826,6 +4853,7 @@ async function renderNfseNotasDetalhe(empresaId){
     }catch(e){ toast(e.message,'err'); }
     finally{ b.disabled = false; b.textContent = 'Reenviar aviso de cancelamento'; }
   }));
+  box.querySelectorAll('[data-act="consulta-governo"]').forEach(b=>b.addEventListener('click', ()=>nfseConsultaGovernoModal(Number(b.dataset.id), b)));
   box.querySelectorAll('[data-act="cancelar"]').forEach(b=>b.addEventListener('click', ()=>{
     const n = items.find(i=>i.id===Number(b.dataset.id));
     nfseCancelarModal(n);
@@ -5999,6 +6027,7 @@ async function renderMinhaNfseNotas(){
                 ${n.status==='rascunho'?`<button class="btn small" data-id="${n.id}" data-act="continuar">Continuar</button> <button class="btn small" data-id="${n.id}" data-act="excluir">Excluir</button>`:''}
                 ${n.status!=='rascunho'?`<button class="btn small" data-id="${n.id}" data-act="duplicar">Duplicar</button>`:''}
                 ${n.status==='emitida'||n.status==='cancelada'?`<button class="btn small" data-id="${n.id}" data-act="baixar-xml">XML</button> <button class="btn small" data-id="${n.id}" data-act="baixar-pdf">PDF</button>`:''}
+                ${n.status==='emitida'?`<button class="btn small" data-id="${n.id}" data-act="consulta-governo" title="Confere se esta nota existe no Sistema Nacional NFS-e (governo)">Consultar no governo</button>`:''}
                 ${n.status==='emitida'?`<button class="btn small" data-id="${n.id}" data-act="cancelar" style="color:var(--debit);">Cancelar</button>`:''}
               </td>
             </tr>
@@ -6054,6 +6083,7 @@ async function renderMinhaNfseNotas(){
   box.querySelectorAll('[data-act="baixar-pdf"]').forEach(b=>b.addEventListener('click', ()=>{
     window.open('/api/nfse/minha-empresa/emissoes/'+b.dataset.id+'/danfse', '_blank');
   }));
+  box.querySelectorAll('[data-act="consulta-governo"]').forEach(b=>b.addEventListener('click', ()=>nfseConsultaGovernoModal(Number(b.dataset.id), b)));
   box.querySelectorAll('[data-act="cancelar"]').forEach(b=>b.addEventListener('click', ()=>{
     const n = items.find(i=>i.id===Number(b.dataset.id));
     minhaNfseCancelarModal(n);
