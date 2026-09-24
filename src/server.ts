@@ -13378,6 +13378,13 @@ for (const coluna of ["aviso_assumir", "aviso_transferir"]) {
     sqlite.exec(`ALTER TABLE atendimento_config ADD COLUMN ${coluna} INTEGER NOT NULL DEFAULT 0`);
   }
 }
+// Pesquisa de satisfação automática ao fechar: DESLIGADA por enquanto (pedido do escritório em 24/09/2026). Roda uma
+// única vez; depois disso quem liga/desliga é o checkbox em "Metas e alertas".
+sqlite.exec(`CREATE TABLE IF NOT EXISTS migracoes_unicas (chave TEXT PRIMARY KEY, feita_em TEXT DEFAULT (datetime('now')))`);
+if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'pesquisa_satisfacao_off_20260924'`).get()) {
+  sqlite.exec(`UPDATE atendimento_config SET pesquisa_ativa = 0`);
+  sqlite.exec(`INSERT INTO migracoes_unicas (chave) VALUES ('pesquisa_satisfacao_off_20260924')`);
+}
 function atendimentoConfig(escritorioId: number) {
   const r = sqlite.prepare(`SELECT * FROM atendimento_config WHERE escritorio_id = ?`).get(escritorioId) as any;
   return {
@@ -13385,7 +13392,7 @@ function atendimentoConfig(escritorioId: number) {
     metaRespostaMin: r?.meta_resposta_min ?? 15,
     lembreteAtivo: r ? !!r.lembrete_ativo : true,
     lembreteHoras: r?.lembrete_horas ?? 24,
-    pesquisaAtiva: r ? !!r.pesquisa_ativa : true,
+    pesquisaAtiva: r ? !!r.pesquisa_ativa : false,
     avisoAssumir: !!r?.aviso_assumir,
     avisoTransferir: !!r?.aviso_transferir,
   };
