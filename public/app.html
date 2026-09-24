@@ -246,16 +246,26 @@
   /* Blocos das páginas 2+ da TV (tvpPaginaHtml): mesmo visual dos cards da 1ª página. */
   .tvp-secao{font-family:'IBM Plex Mono',monospace; font-size:clamp(11px,1vw,13px); letter-spacing:.16em; text-transform:uppercase; color:#7FA895; margin:clamp(10px,1.6vh,18px) 0 clamp(8px,1.1vh,12px);}
   .tvp-secao:first-child{margin-top:0;}
-  .tvp-grid.tvp-grid-compacta{grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:clamp(10px,1.2vw,18px);}
+  .tvp-grid-compacta + .tvp-secao, .tvp-tabelas + .tvp-secao{margin-top:clamp(16px,2.4vh,28px);}
+  .tvp-pagina-painel .tvp-grid, .tvp-pagina-painel .tvp-tabelas{position:relative;}
+  .tvp-grid.tvp-grid-compacta{grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:clamp(10px,1.2vw,18px);}
   .tvp-grid-compacta .tvp-card{padding:clamp(14px,1.5vw,20px) clamp(16px,1.6vw,22px); cursor:default;}
-  .tvp-grid-compacta .tvp-val{font-size:clamp(28px,3.4vw,46px); margin-top:8px;}
-  .tvp-tabelas{display:grid; grid-template-columns:repeat(auto-fit,minmax(380px,1fr)); gap:clamp(10px,1.2vw,18px);}
+  .tvp-grid-compacta .tvp-val{font-size:clamp(26px,2.9vw,44px); margin-top:8px; white-space:nowrap;}
+  .tvp-tabelas{display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:clamp(10px,1.2vw,18px);}
+  @media (max-width: 1100px){ .tvp-tabelas{grid-template-columns:repeat(2,minmax(0,1fr));} }
   .tvp-tabela{background:linear-gradient(160deg,rgba(255,255,255,.05),rgba(255,255,255,.015)); border:1px solid rgba(234,243,238,.09); border-radius:18px; overflow:hidden;}
   .tvp-tabela h4{margin:0; padding:12px 18px; font-family:'IBM Plex Mono',monospace; font-size:clamp(10px,.95vw,13px); letter-spacing:.12em; text-transform:uppercase; color:#8FB3A2; border-bottom:1px solid rgba(234,243,238,.09);}
   .tvp-tabela table{width:100%; border-collapse:collapse; font-size:clamp(13px,1.1vw,16px);}
   .tvp-tabela th{text-align:left; font-weight:500; font-family:'IBM Plex Mono',monospace; font-size:clamp(9px,.8vw,11px); letter-spacing:.1em; text-transform:uppercase; color:#6E9384; padding:8px 18px;}
   .tvp-tabela td{padding:8px 18px; border-top:1px solid rgba(234,243,238,.06); color:#EAF3EE; font-variant-numeric:tabular-nums;}
   .tvp-tabela td.num{text-align:right; font-weight:700;}
+  .tvp-barras{display:flex; align-items:flex-end; gap:10px; height:clamp(110px,16vh,170px); padding:12px 18px 4px;}
+  .tvp-barra{flex:1; height:100%; display:flex; flex-direction:column; justify-content:flex-end; align-items:center; gap:4px; font-family:'IBM Plex Mono',monospace; font-size:clamp(9px,.8vw,11px); color:#8FB3A2;}
+  .tvp-barra b{color:#EAF3EE; font-weight:600;}
+  .tvp-barra-col{width:100%; max-width:46px; display:flex; flex-direction:column-reverse; border-radius:5px 5px 0 0; overflow:hidden; min-height:2px;}
+  .tvp-barra-col i{display:block;}
+  .tvp-legenda{display:flex; gap:14px; padding:4px 18px 12px; font-size:clamp(10px,.85vw,12px); color:#8FB3A2;}
+  .tvp-legenda i{display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:5px;}
   .tvp-tabela .tvp-vazio{padding:14px 18px; color:#8FB3A2; font-size:clamp(12px,1vw,15px);}
   .tvp-dots{display:flex; gap:8px; align-items:center;}
   .tvp-dots i{width:9px; height:9px; border-radius:50%; background:rgba(234,243,238,.22); display:inline-block;}
@@ -1359,7 +1369,13 @@ function tvpPaginaHtml(blocos){
         <div class="tvp-val">${esc(String(c.valor))}</div>
         ${c.sub?`<div class="tvp-sub">${esc(c.sub)}</div>`:''}
       </div>`).join('')}</div>`;
-    if(b.tabelas) return titulo + `<div class="tvp-tabelas">${b.tabelas.map(t=>`
+    if(b.tabelas) return titulo + `<div class="tvp-tabelas">${b.tabelas.map(t=> t.barras ? `
+      <div class="tvp-tabela"><h4>${esc(t.titulo)}</h4>
+        ${t.barras.length ? `<div class="tvp-barras">${t.barras.map(x=>{ const tot=x.partes.reduce((a,p)=>a+p.v,0); const max=Math.max(1,...t.barras.map(y=>y.partes.reduce((a,p)=>a+p.v,0)));
+          return `<div class="tvp-barra"><b>${tot}</b><div class="tvp-barra-col" style="height:${Math.round(100*tot/max)}%;">${x.partes.map(p=>`<i style="flex:${p.v}; background:${p.cor};"></i>`).join('')}</div><span>${esc(x.rotulo)}</span></div>`; }).join('')}</div>
+          ${t.legenda?`<div class="tvp-legenda">${t.legenda.map(l=>`<span><i style="background:${l.cor}"></i>${esc(l.nome)}</span>`).join('')}</div>`:''}`
+          : `<div class="tvp-vazio">${esc(t.vazio||'—')}</div>`}
+      </div>` : `
       <div class="tvp-tabela"><h4>${esc(t.titulo)}</h4>
         ${t.linhas.length ? `<table>${t.colunas?`<thead><tr>${t.colunas.map((c,i)=>`<th${(t.numericas||[]).includes(i)?' style="text-align:right;"':''}>${esc(c)}</th>`).join('')}</tr></thead>`:''}
           <tbody>${t.linhas.map(l=>`<tr>${l.map((v,i)=>`<td${(t.numericas||[]).includes(i)?' class="num"':''}>${esc(String(v))}</td>`).join('')}</tr>`).join('')}</tbody></table>`
@@ -1369,7 +1385,7 @@ function tvpPaginaHtml(blocos){
   }).join('');
 }
 // 2ª página: Painel de atendimento do CRM (mesmos números da aba 📊 Painel, período "hoje").
-function tvpPaginaAtendimento(d){
+function tvpPaginaAtendimento(d, d7){
   const a = d.agora, p = d.periodoDados;
   const maior = a.aguardandoResposta[0]?.esperaMin;
   return tvpPaginaHtml([
@@ -1379,25 +1395,40 @@ function tvpPaginaAtendimento(d){
       { titulo:'Parados há +2h', valor:a.semInteracao2h.length, sub:'conversas abertas', cor:a.semInteracao2h.length?TVP_COR_ATENCAO:null },
       { titulo:'Em atendimento', valor:a.emAtendimento.length, sub:'com a equipe' },
       { titulo:'Com a IA', valor:a.ia.length, sub:'robô atendendo' },
+      { titulo:'Adiadas', valor:a.adiadas.length, sub:'voltam no prazo' },
       { titulo:'Abertas', valor:a.abertas, sub:'no total' },
     ]},
     { secao:'Hoje', cards:[
-      { titulo:'Atendimentos', valor:p.atendimentosIniciados, sub:p.atendimentosEncerrados+' encerrados' },
-      { titulo:'Mensagens', valor:p.mensagens.recebidas, sub:`recebidas · ${p.mensagens.ia+p.mensagens.humano} enviadas` },
+      { titulo:'Atendimentos iniciados', valor:p.atendimentosIniciados, sub:p.conversasComMensagem+' conversas com movimento' },
+      { titulo:'Atendimentos encerrados', valor:p.atendimentosEncerrados, sub:'duração média '+painelDurMin(p.duracaoMediaAtendimentoMin) },
+      { titulo:'Mensagens recebidas', valor:p.mensagens.recebidas, sub:'dos clientes' },
+      { titulo:'Mensagens enviadas', valor:p.mensagens.ia+p.mensagens.humano, sub:`🤖 ${p.mensagens.ia} IA · 👤 ${p.mensagens.humano} equipe` },
+      { titulo:'Média de mensagens', valor:p.mediaMensagensPorConversa==null?'—':String(p.mediaMensagensPorConversa).replace('.',','), sub:'por conversa' },
       { titulo:'Resposta da IA', valor:painelDur(p.tempoRespostaIASeg.media), sub:'mediana '+painelDur(p.tempoRespostaIASeg.mediana) },
       { titulo:'Resposta da equipe', valor:painelDur(p.tempoRespostaHumanoSeg.media), sub:'mediana '+painelDur(p.tempoRespostaHumanoSeg.mediana), cor:(p.tempoRespostaHumanoSeg.media||0)>p.meta.respostaMin*60?TVP_COR_ATENCAO:null },
       { titulo:'Dentro da meta', valor:p.meta.dentroPct==null?'—':p.meta.dentroPct+'%', sub:`até ${p.meta.respostaMin} min`, cor:p.meta.dentroPct==null?null:p.meta.dentroPct>=80?'#5FE0A0':TVP_COR_ALERTA },
-      { titulo:'Satisfação', valor:p.satisfacao.media==null?'—':'⭐ '+String(p.satisfacao.media).replace('.',','), sub:`${p.satisfacao.respostas} nota${p.satisfacao.respostas===1?'':'s'}` },
+      { titulo:'Satisfação', valor:p.satisfacao.media==null?'—':'⭐ '+String(p.satisfacao.media).replace('.',','), sub:`${p.satisfacao.respostas} nota${p.satisfacao.respostas===1?'':'s'} de ${p.satisfacao.enviadas}` },
+      { titulo:'Compromissos', valor:p.agenda.total, sub:`${p.agenda.porSituacao.confirmed||0} confirmados · ${p.agenda.porSituacao.completed||0} concluídos` },
     ]},
-    { tabelas:[
-      { titulo:'Desempenho por funcionário', colunas:['Quem','Mensagens','Conversas','Resposta média','Na meta'], numericas:[1,2,3,4],
-        linhas:p.porFuncionario.slice(0,6).map(f=>[f.nome, f.mensagens, f.conversas, painelDur(f.tempoMedioRespostaSeg), f.dentroMetaPct==null?'—':f.dentroMetaPct+'%']), vazio:'Nenhuma mensagem da equipe hoje.' },
+    { secao:'Detalhes de hoje', tabelas:[
+      { titulo:'Desempenho por funcionário', colunas:['Quem','Msgs','Conversas','Resposta média','Na meta','Agora'], numericas:[1,2,3,4,5],
+        linhas:p.porFuncionario.slice(0,6).map(f=>[f.nome, f.mensagens, f.conversas, painelDur(f.tempoMedioRespostaSeg), f.dentroMetaPct==null?'—':f.dentroMetaPct+'%', f.emAtendimentoAgora||0]), vazio:'Nenhuma mensagem da equipe hoje.' },
       { titulo:'Por setor agora', colunas:['Setor','Abertas','Fila','IA','Equipe'], numericas:[1,2,3,4],
         linhas:a.porSetor.map(x=>[x.setor, x.abertas, x.fila, x.ia, x.emAtendimento]), vazio:'Nenhuma conversa aberta.' },
       { titulo:'Com quem está o atendimento', numericas:[1],
         linhas:a.porAtendente.map(x=>[x.nome, x.n+' conversa'+(x.n>1?'s':'')]), vazio:'Nenhuma conversa atribuída agora.' },
-      { titulo:'Empresas que mais demandaram hoje', colunas:['Empresa','Mensagens'], numericas:[1],
-        linhas:p.rankingEmpresas.slice(0,5).map(r=>[r.empresa, r.recebidas]), vazio:'Nenhuma empresa identificada hoje.' },
+      { titulo:'Mensagens por dia · 7 dias', barras:(d7?d7.periodoDados.porDia:p.porDia).map(x=>({ rotulo:x.dia.slice(8,10)+'/'+x.dia.slice(5,7), partes:[{v:x.recebidas,cor:'#61B8E8'},{v:x.ia,cor:'#B98CE8'},{v:x.humano,cor:'#5FE0A0'}] })),
+        legenda:[{nome:'recebidas',cor:'#61B8E8'},{nome:'IA',cor:'#B98CE8'},{nome:'equipe',cor:'#5FE0A0'}], vazio:'Sem mensagens.' },
+      { titulo:'Empresas que mais demandaram hoje', colunas:['#','Empresa','Msgs','Conv.','Setores'], numericas:[2,3],
+        linhas:p.rankingEmpresas.slice(0,5).map((r,i)=>[i+1, r.empresa, r.recebidas, r.conversas, Object.entries(r.setores).map(([k,v])=>k+' '+v).join(', ')]), vazio:'Nenhuma empresa identificada hoje.' },
+      { titulo:'Agenda de hoje', colunas:['Tipo','Total','Confirm.','Concluídos','Faltas','Cancel.'], numericas:[1,2,3,4,5],
+        linhas:p.agenda.porTipo.map(t=>[t.tipo, t.total, t.confirmed||0, t.completed||0, t.no_show||0, t.cancelled||0]), vazio:'Nenhum compromisso hoje.' },
+      { titulo:'Quem marcou os compromissos', numericas:[1],
+        linhas:p.agenda.porQuemMarcou.map(x=>[x.nome, x.n]), vazio:'Nenhum compromisso marcado hoje.' },
+      { titulo:'Satisfação por funcionário', colunas:['Quem','Nota','Respostas'], numericas:[1,2],
+        linhas:p.satisfacao.porFuncionario.map(x=>[x.nome, '⭐ '+String(x.media).replace('.',','), x.respostas]), vazio:'Nenhuma nota hoje.' },
+      { titulo:'Satisfação por setor', colunas:['Setor','Nota','Respostas'], numericas:[1,2],
+        linhas:p.satisfacao.porSetor.map(x=>[x.nome, '⭐ '+String(x.media).replace('.',','), x.respostas]), vazio:'Nenhuma nota hoje.' },
     ]},
   ]);
 }
@@ -1546,8 +1577,8 @@ async function pagePainelTv(){
     const box = document.getElementById('tvpPag2');
     if(!box) return;
     try{
-      const d = await api('/atendimento/painel?periodo=hoje');
-      box.innerHTML = tvpPaginaAtendimento(d);
+      const [d, d7] = await Promise.all([api('/atendimento/painel?periodo=hoje'), api('/atendimento/painel?periodo=7d').catch(()=>null)]);
+      box.innerHTML = tvpPaginaAtendimento(d, d7);
       PAG.pag2ok = true;
     }catch(e){
       // Sem dados (ex.: deskcomm fora): a TV fica só na 1ª página em vez de girar pra uma tela vazia.
