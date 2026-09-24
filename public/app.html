@@ -8108,7 +8108,7 @@ const ATEND_CFG = {
 };
 const ATEND_ROTULOS = { fila:'Fila', minhas:'Minhas', todas:'Todas', fechadas:'Fechadas', automatico:'Automático' };
 function novoAtendimento(escopo){
-  return { escopo, cfg:ATEND_CFG[escopo], filtro:'fila', conversaAtiva:null, conversaDados:null, itens:[], contagens:{}, meuDeskcommId:null, atendentes:null, setores:null, listaTimer:null, mensagensTimer:null, ultimaMsgId:null, gravador:null };
+  return { escopo, geracao:0, cfg:ATEND_CFG[escopo], filtro:'fila', conversaAtiva:null, conversaDados:null, itens:[], contagens:{}, meuDeskcommId:null, atendentes:null, setores:null, listaTimer:null, mensagensTimer:null, ultimaMsgId:null, gravador:null };
 }
 const ATEND = Object.fromEntries(Object.keys(ATEND_CFG).map(e=>[e, novoAtendimento(e)]));
 // Voltou pra aba com uma conversa aberta: o que chegou enquanto a aba estava escondida agora foi visto.
@@ -8118,8 +8118,14 @@ document.addEventListener('visibilitychange', ()=>{
   if(S && S.conversaAtiva && document.getElementById('atdMsgs')) atdMarcarLida(S, S.conversaAtiva);
 });
 let ATEND_SESSAO_USER = null;
+// A "geração" sobe a cada parada/nova montagem: qualquer montagem ou resposta que ainda estava a caminho
+// (ex.: o CRM terminando de conectar depois de a pessoa já ter aberto o DP/RH) vê que ficou pra trás e
+// se descarta — antes ela ligava o temporizador do CRM POR CIMA da tela do DP/RH, que usa os mesmos
+// elementos (#atdLista/#atdFiltros), e a lista do setor ficava piscando com as conversas do CRM.
+function atdNaTela(S){ return document.querySelector('.dprh-wa')?.dataset.escopo === S.escopo; }
 function pararAtendimentoTimers(escopo){
   const S = ATEND[escopo];
+  S.geracao++;
   if(S.listaTimer){ clearInterval(S.listaTimer); S.listaTimer=null; }
   if(S.mensagensTimer){ clearInterval(S.mensagensTimer); S.mensagensTimer=null; }
   if(S.gravador){ S.gravador.cancelado = true; try{ S.gravador.rec.stop(); }catch(e){} }
@@ -8152,12 +8158,13 @@ async function dcApi(path, opts, jaRenovou){
 async function atendimentoMontar(escopo, box){
   const S = ATEND[escopo];
   pararAtendimentoTimers(escopo);
+  const minha = S.geracao;
   // No CRM as abas (Fila/Minhas/Todas/Fechadas/Automático) ficam numa faixa ACIMA dos dois painéis; nos
   // outros módulos que usam este mesmo componente (DP/RH, Contabilidade, Fiscal) seguem dentro da lista.
   const abasNoTopo = S.escopo==='crm';
   box.innerHTML = `
     ${abasNoTopo ? `<div class="dprh-filtros atd-abas-topo" id="atdFiltros"></div>` : ''}
-    <div class="dprh-wa ${abasNoTopo?'atd-com-abas-topo':''}">
+    <div class="dprh-wa ${abasNoTopo?'atd-com-abas-topo':''}" data-escopo="${escopo}">
       <div class="card dprh-col-lista">
         <div style="padding:10px; border-bottom:1px solid var(--rule);">
           ${can(S.cfg.modulo,'postar') ? `<button class="btn small primary" id="atdNovaConversa" style="width:100%; margin-bottom:8px;">+ Nova conversa</button>` : ''}
@@ -8195,8 +8202,11 @@ async function atendimentoMontar(escopo, box){
   });
   atdRenderFiltros(S);
   try{ await dcGarantirSessao(); }
-  catch(e){ document.getElementById('atdLista').innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
+  catch(e){ if(S.geracao===minha && atdNaTela(S)) document.getElementById('atdLista').innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
+  if(S.geracao!==minha) return; // a pessoa já foi pra outra tela
   await atdCarregarLista(S);
+  if(S.geracao!==minha) return;
+  if(S.listaTimer) clearInterval(S.listaTimer);
   S.listaTimer = setInterval(()=>atdCarregarLista(S), 10000);
   if(S.conversaAtiva){
     const focar = S.focarAoAbrir; S.focarAoAbrir = false;
@@ -8215,7 +8225,7 @@ async function atdIrParaConversa(escopo, conversaId, fechada){
 }
 function atdRenderFiltros(S){
   const box = document.getElementById('atdFiltros');
-  if(!box) return;
+  if(!box || !atdNaTela(S)) return;
   box.innerHTML = S.cfg.abas.map(id=>{
     const n = S.contagens[id];
     return `<button class="dprh-filtro ${S.filtro===id?'active':''}" data-f="${id}">${ATEND_ROTULOS[id]}${n!=null?` <span>${n}</span>`:''}</button>`;
@@ -8245,12 +8255,14 @@ function atdRotuloComando(S, c){
 }
 async function atdCarregarLista(S){
   const box = document.getElementById('atdLista');
-  if(!box) return;
+  if(!box || !atdNaTela(S)) return;
+  const geracao = S.geracao;
   const busca = document.getElementById('atdBusca')?.value || '';
   let data;
   try{ data = await api(`/atendimento/conversas?escopo=${S.escopo}&aba=${S.filtro}&busca=${encodeURIComponent(busca)}${S.conversaAtiva?'&ativa='+encodeURIComponent(S.conversaAtiva):''}`); }
   catch(e){ box.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
   if(!document.getElementById('atdLista')) return; // saiu da tela enquanto carregava
+  if(S.geracao!==geracao || !atdNaTela(S)) return; // a resposta é de OUTRA tela (ex.: CRM) — não pinta aqui
   S.itens = data.items; S.contagens = data.contagens; S.meuDeskcommId = data.meuDeskcommId;
   atdRenderFiltros(S);
   box.innerHTML = data.items.length ? data.items.map(c=>{
@@ -8877,11 +8889,11 @@ function atdMidiaHtml(m){
 async function atdCarregarMensagens(S, primeira){
   const id = S.conversaAtiva;
   const lista = document.getElementById('atdMsgs');
-  if(!id || !lista) return;
+  if(!id || !lista || !atdNaTela(S)) return;
   let msgs;
   try{ msgs = await dcApi(`/conversations/${id}/messages?limit=100`); }
   catch(e){ if(primeira) lista.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
-  if(S.conversaAtiva!==id || !document.getElementById('atdMsgs')) return;
+  if(S.conversaAtiva!==id || !document.getElementById('atdMsgs') || !atdNaTela(S)) return;
   msgs = msgs || [];
   const ultima = msgs.length ? msgs[msgs.length-1].id+'|'+msgs[msgs.length-1].status : 'vazio';
   if(!primeira && ultima===S.ultimaMsgId) return; // nada mudou — não redesenha (preserva o áudio tocando)
