@@ -242,7 +242,21 @@
   .tvp-body{position:relative; min-height:0;}
   .tvp-pagina{width:100%; animation:tvpPaginaEntra .6s ease;}
   .tvp-pagina.tvp-off{display:none;}
-  .tvp-pagina-painel{align-self:flex-start; background:#F4F8F6; color:#1b2a24; border-radius:18px; padding:14px 18px; overflow:hidden; margin:2px 0 6px;}
+  .tvp-pagina-painel{align-self:flex-start; overflow:hidden; margin:2px 0 6px;}
+  /* Blocos das páginas 2+ da TV (tvpPaginaHtml): mesmo visual dos cards da 1ª página. */
+  .tvp-secao{font-family:'IBM Plex Mono',monospace; font-size:clamp(11px,1vw,13px); letter-spacing:.16em; text-transform:uppercase; color:#7FA895; margin:clamp(10px,1.6vh,18px) 0 clamp(8px,1.1vh,12px);}
+  .tvp-secao:first-child{margin-top:0;}
+  .tvp-grid.tvp-grid-compacta{grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:clamp(10px,1.2vw,18px);}
+  .tvp-grid-compacta .tvp-card{padding:clamp(14px,1.5vw,20px) clamp(16px,1.6vw,22px); cursor:default;}
+  .tvp-grid-compacta .tvp-val{font-size:clamp(28px,3.4vw,46px); margin-top:8px;}
+  .tvp-tabelas{display:grid; grid-template-columns:repeat(auto-fit,minmax(380px,1fr)); gap:clamp(10px,1.2vw,18px);}
+  .tvp-tabela{background:linear-gradient(160deg,rgba(255,255,255,.05),rgba(255,255,255,.015)); border:1px solid rgba(234,243,238,.09); border-radius:18px; overflow:hidden;}
+  .tvp-tabela h4{margin:0; padding:12px 18px; font-family:'IBM Plex Mono',monospace; font-size:clamp(10px,.95vw,13px); letter-spacing:.12em; text-transform:uppercase; color:#8FB3A2; border-bottom:1px solid rgba(234,243,238,.09);}
+  .tvp-tabela table{width:100%; border-collapse:collapse; font-size:clamp(13px,1.1vw,16px);}
+  .tvp-tabela th{text-align:left; font-weight:500; font-family:'IBM Plex Mono',monospace; font-size:clamp(9px,.8vw,11px); letter-spacing:.1em; text-transform:uppercase; color:#6E9384; padding:8px 18px;}
+  .tvp-tabela td{padding:8px 18px; border-top:1px solid rgba(234,243,238,.06); color:#EAF3EE; font-variant-numeric:tabular-nums;}
+  .tvp-tabela td.num{text-align:right; font-weight:700;}
+  .tvp-tabela .tvp-vazio{padding:14px 18px; color:#8FB3A2; font-size:clamp(12px,1vw,15px);}
   .tvp-dots{display:flex; gap:8px; align-items:center;}
   .tvp-dots i{width:9px; height:9px; border-radius:50%; background:rgba(234,243,238,.22); display:inline-block;}
   .tvp-dots i.on{background:#5FE0A0; box-shadow:0 0 10px rgba(95,224,160,.7);}
@@ -1331,6 +1345,62 @@ document.addEventListener('visibilitychange', async ()=>{
 });
 const TVP_CORES = ['#5FE0A0','#61B8E8','#E8C15F','#E88F61','#B98CE8','#5FE0C7','#E85F8F','#8CE85F'];
 const TVP_DIAS = ['domingo','segunda-feira','terça-feira','quarta-feira','quinta-feira','sexta-feira','sábado'];
+// Monta uma página da TV (2ª em diante) no MESMO visual da 1ª: seções com título em mono, cards escuros
+// com faixa colorida e número grande, e tabelas no mesmo tema. Toda página nova da TV deve usar isto.
+//   blocos: [{ secao:'Agora', cards:[{titulo, valor, sub, cor}] } | { tabelas:[{titulo, colunas:[..], linhas:[[..]], numericas:[idx], vazio}] }]
+const TVP_COR_ALERTA = '#E85F5F', TVP_COR_ATENCAO = '#E8C15F';
+function tvpPaginaHtml(blocos){
+  let cor = 0;
+  return blocos.map(b=>{
+    const titulo = b.secao ? `<div class="tvp-secao">${esc(b.secao)}</div>` : '';
+    if(b.cards) return titulo + `<div class="tvp-grid tvp-grid-compacta">${b.cards.map(c=>`
+      <div class="tvp-card" style="--tvp-accent:${c.cor || TVP_CORES[(cor++) % TVP_CORES.length]}">
+        <div class="tvp-eyebrow"><span>${esc(c.titulo)}</span></div>
+        <div class="tvp-val">${esc(String(c.valor))}</div>
+        ${c.sub?`<div class="tvp-sub">${esc(c.sub)}</div>`:''}
+      </div>`).join('')}</div>`;
+    if(b.tabelas) return titulo + `<div class="tvp-tabelas">${b.tabelas.map(t=>`
+      <div class="tvp-tabela"><h4>${esc(t.titulo)}</h4>
+        ${t.linhas.length ? `<table>${t.colunas?`<thead><tr>${t.colunas.map((c,i)=>`<th${(t.numericas||[]).includes(i)?' style="text-align:right;"':''}>${esc(c)}</th>`).join('')}</tr></thead>`:''}
+          <tbody>${t.linhas.map(l=>`<tr>${l.map((v,i)=>`<td${(t.numericas||[]).includes(i)?' class="num"':''}>${esc(String(v))}</td>`).join('')}</tr>`).join('')}</tbody></table>`
+          : `<div class="tvp-vazio">${esc(t.vazio||'—')}</div>`}
+      </div>`).join('')}</div>`;
+    return '';
+  }).join('');
+}
+// 2ª página: Painel de atendimento do CRM (mesmos números da aba 📊 Painel, período "hoje").
+function tvpPaginaAtendimento(d){
+  const a = d.agora, p = d.periodoDados;
+  const maior = a.aguardandoResposta[0]?.esperaMin;
+  return tvpPaginaHtml([
+    { secao:'Atendimento WhatsApp · agora', cards:[
+      { titulo:'Fila sem atendente', valor:a.fila.length, sub:a.fila.length?'espera média '+painelDurMin(a.esperaMediaFilaMin):'ninguém esperando', cor:a.fila.length?TVP_COR_ALERTA:null },
+      { titulo:'Esperando resposta', valor:a.aguardandoResposta.length, sub:maior!=null?'maior espera '+painelDurMin(maior):'todos respondidos', cor:(maior||0)>=30?TVP_COR_ALERTA:null },
+      { titulo:'Parados há +2h', valor:a.semInteracao2h.length, sub:'conversas abertas', cor:a.semInteracao2h.length?TVP_COR_ATENCAO:null },
+      { titulo:'Em atendimento', valor:a.emAtendimento.length, sub:'com a equipe' },
+      { titulo:'Com a IA', valor:a.ia.length, sub:'robô atendendo' },
+      { titulo:'Abertas', valor:a.abertas, sub:'no total' },
+    ]},
+    { secao:'Hoje', cards:[
+      { titulo:'Atendimentos', valor:p.atendimentosIniciados, sub:p.atendimentosEncerrados+' encerrados' },
+      { titulo:'Mensagens', valor:p.mensagens.recebidas, sub:`recebidas · ${p.mensagens.ia+p.mensagens.humano} enviadas` },
+      { titulo:'Resposta da IA', valor:painelDur(p.tempoRespostaIASeg.media), sub:'mediana '+painelDur(p.tempoRespostaIASeg.mediana) },
+      { titulo:'Resposta da equipe', valor:painelDur(p.tempoRespostaHumanoSeg.media), sub:'mediana '+painelDur(p.tempoRespostaHumanoSeg.mediana), cor:(p.tempoRespostaHumanoSeg.media||0)>p.meta.respostaMin*60?TVP_COR_ATENCAO:null },
+      { titulo:'Dentro da meta', valor:p.meta.dentroPct==null?'—':p.meta.dentroPct+'%', sub:`até ${p.meta.respostaMin} min`, cor:p.meta.dentroPct==null?null:p.meta.dentroPct>=80?'#5FE0A0':TVP_COR_ALERTA },
+      { titulo:'Satisfação', valor:p.satisfacao.media==null?'—':'⭐ '+String(p.satisfacao.media).replace('.',','), sub:`${p.satisfacao.respostas} nota${p.satisfacao.respostas===1?'':'s'}` },
+    ]},
+    { tabelas:[
+      { titulo:'Desempenho por funcionário', colunas:['Quem','Mensagens','Conversas','Resposta média','Na meta'], numericas:[1,2,3,4],
+        linhas:p.porFuncionario.slice(0,6).map(f=>[f.nome, f.mensagens, f.conversas, painelDur(f.tempoMedioRespostaSeg), f.dentroMetaPct==null?'—':f.dentroMetaPct+'%']), vazio:'Nenhuma mensagem da equipe hoje.' },
+      { titulo:'Por setor agora', colunas:['Setor','Abertas','Fila','IA','Equipe'], numericas:[1,2,3,4],
+        linhas:a.porSetor.map(x=>[x.setor, x.abertas, x.fila, x.ia, x.emAtendimento]), vazio:'Nenhuma conversa aberta.' },
+      { titulo:'Com quem está o atendimento', numericas:[1],
+        linhas:a.porAtendente.map(x=>[x.nome, x.n+' conversa'+(x.n>1?'s':'')]), vazio:'Nenhuma conversa atribuída agora.' },
+      { titulo:'Empresas que mais demandaram hoje', colunas:['Empresa','Mensagens'], numericas:[1],
+        linhas:p.rankingEmpresas.slice(0,5).map(r=>[r.empresa, r.recebidas]), vazio:'Nenhuma empresa identificada hoje.' },
+    ]},
+  ]);
+}
 async function pagePainelTv(){
   pararPainelTv();
   const el = document.getElementById('painelTv');
@@ -1475,9 +1545,15 @@ async function pagePainelTv(){
   async function carregarPagina2(){
     const box = document.getElementById('tvpPag2');
     if(!box) return;
-    PAINEL.periodo = 'hoje';
-    await crmPainel(box, PAG.pag2ok); // 1ª vez sem "silencioso": mostra o motivo se falhar
-    PAG.pag2ok = !!box.querySelector('.painel-grade');
+    try{
+      const d = await api('/atendimento/painel?periodo=hoje');
+      box.innerHTML = tvpPaginaAtendimento(d);
+      PAG.pag2ok = true;
+    }catch(e){
+      // Sem dados (ex.: deskcomm fora): a TV fica só na 1ª página em vez de girar pra uma tela vazia.
+      if(!PAG.pag2ok) box.innerHTML = `<div class="tvp-empty">${esc(e.message)}</div>`;
+      PAG.pag2ok = false;
+    }
     if(!PAG.pag2ok && PAG.atual===1) mostrarPagina(0);
     desenharPontos();
     ajustarPagina2();
