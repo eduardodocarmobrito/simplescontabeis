@@ -375,8 +375,10 @@
   .atd-gravando-ponto{width:10px; height:10px; border-radius:50%; background:var(--debit); animation:chatPulse 1.1s ease-in-out infinite;}
   .dprh-foto{position:absolute; inset:0; width:100%; height:100%; border-radius:50%; object-fit:cover; background:var(--paper-deep);}
   .dprh-avatar-cab{width:44px; height:44px; font-size:14px;}
-  .atd-tique{margin-left:6px; font-size:12px; letter-spacing:-2px; color:rgba(255,255,255,.75);}
-  .atd-tique.lida{color:#53BDEB; text-shadow:0 0 1px rgba(0,0,0,.35);}
+  /* O horário tem opacity .65 no estilo base; nas conversas do atendimento o tique precisa ficar bem visível. */
+  .dprh-msgs .chat-msg.mine .hora{opacity:1; color:rgba(255,255,255,.85);}
+  .atd-tique{margin-left:6px; font-size:14px; font-weight:700; letter-spacing:-3px; color:#fff; white-space:nowrap;}
+  .atd-tique.lida{color:#0A63FF; text-shadow:0 0 2px #fff, 0 0 2px #fff;}
   .chat-msg.theirs .atd-tique{display:none;}
   /* Caixa de atendimento mais larga: usa a tela toda (o botão do chat flutuante pode ficar por cima). */
   .main:has(.dprh-wa){padding:18px 18px 16px;}
