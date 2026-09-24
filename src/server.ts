@@ -14319,6 +14319,59 @@ const ATENDIMENTO_WAHA_SEEN_TOKEN = DESKCOMM_SUPABASE_SERVICE_ROLE_KEY
   : "";
 // Renomear o contato (nome que aparece em toda a lista/painel). O deskcomm só preenche display_name quando está
 // vazio (coalesce), então o nome escolhido aqui não é sobrescrito pelo nome do WhatsApp nas próximas mensagens.
+// ---- Citações do cliente ("marcou uma mensagem e respondeu em cima") ----
+// O deskcomm não guarda qual mensagem o cliente citou. Aqui, uma vez por mensagem, lemos o WAHA (caminho fechado
+// /simplescontabeis/waha-get), gravamos o resultado na própria mensagem (metadata.citacao + reply_to_message_id quando a
+// citada existe no banco) e marcamos metadata.citacao_ok pra não perguntar de novo.
+function citacaoResumoWaha(rt: any): { resumo: string; tipo: string } {
+  const d = rt?._data || {};
+  const texto = rt?.body || d.conversation || d.extendedTextMessage?.text;
+  if (texto) return { resumo: String(texto), tipo: "text" };
+  if (d.documentMessage) return { resumo: `📄 ${d.documentMessage.fileName || d.documentMessage.title || "Documento"}`, tipo: "document" };
+  if (d.audioMessage) return { resumo: "🎤 Áudio", tipo: "audio" };
+  if (d.imageMessage) return { resumo: d.imageMessage.caption ? `📷 ${d.imageMessage.caption}` : "📷 Imagem", tipo: "image" };
+  if (d.videoMessage) return { resumo: d.videoMessage.caption ? `🎬 ${d.videoMessage.caption}` : "🎬 Vídeo", tipo: "video" };
+  if (d.stickerMessage) return { resumo: "Figurinha", tipo: "sticker" };
+  return { resumo: "[mensagem]", tipo: "outro" };
+}
+app.post("/api/atendimento/conversas/:id/citacoes", blockCliente, async (req, res) => {
+  const user = (req as any).user;
+  if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID || !ATENDIMENTO_WAHA_SEEN_TOKEN) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  const convId = String(req.params.id);
+  const ids: string[] = (Array.isArray(req.body?.ids) ? req.body.ids : []).map(String).slice(0, 25);
+  if (!ids.length) return res.json({ atualizadas: 0 });
+  try {
+    const { data: conv } = await deskcommAdmin.from("conversations").select("id, channel_session:channel_sessions(waha_session_name)").eq("organization_id", DESKCOMM_ORG_ID).eq("id", convId).maybeSingle();
+    const sessao = (conv as any)?.channel_session?.waha_session_name;
+    if (!conv || !sessao) return res.status(404).json({ error: "Conversa não encontrada." });
+    const { data: msgs } = await deskcommAdmin.from("messages").select("id, external_id, direction, metadata, reply_to_message_id").eq("conversation_id", convId).in("id", ids);
+    const pendentes = (msgs || []).filter((m: any) => m.direction === "inbound" && m.external_id && String(m.external_id).startsWith("false_") && !m.metadata?.citacao_ok && !m.metadata?.importado_do_celular);
+    let atualizadas = 0;
+    const trabalhar = async (m: any) => {
+      let citacao: any = null;
+      try {
+        const chatId = String(m.external_id).split("_")[1];
+        const r = await fetch(`${DESKCOMM_URL}/simplescontabeis/waha-get/${encodeURIComponent(sessao)}/${encodeURIComponent(chatId).replace(/%40/g, "@")}/${encodeURIComponent(m.external_id).replace(/%40/g, "@")}`, { headers: { "X-Simples-Token": ATENDIMENTO_WAHA_SEEN_TOKEN } });
+        if (!r.ok) return; // tenta de novo numa próxima abertura
+        const j: any = await r.json();
+        if (j?.replyTo?.id) {
+          const { resumo, tipo } = citacaoResumoWaha(j.replyTo);
+          const { data: local } = await deskcommAdmin!.from("messages").select("id").eq("conversation_id", convId).like("external_id", `%\\_${j.replyTo.id}`).limit(1).maybeSingle();
+          citacao = { resumo, tipo, waha_id: j.replyTo.id, local_id: local?.id ?? null };
+        }
+      } catch { return; }
+      const metadata = { ...(m.metadata || {}), citacao_ok: true, ...(citacao ? { citacao } : {}) };
+      await deskcommAdmin!.from("messages").update({ metadata, ...(citacao?.local_id ? { reply_to_message_id: citacao.local_id } : {}) }).eq("id", m.id);
+      if (citacao) atualizadas++;
+    };
+    const fila = [...pendentes];
+    await Promise.all(Array.from({ length: 4 }, async () => { for (let m = fila.shift(); m; m = fila.shift()) await trabalhar(m); }));
+    res.json({ atualizadas });
+  } catch (e: any) {
+    res.status(502).json({ error: e.message });
+  }
+});
 // ---- Foto de perfil do cliente ----
 // O WAHA (pelo caminho fechado /simplescontabeis/waha-foto no Caddy da VPS) devolve a URL da foto no WhatsApp; este
 // servidor baixa a imagem e a entrega ao navegador, com cache em memória (a URL do WhatsApp expira). Sem foto

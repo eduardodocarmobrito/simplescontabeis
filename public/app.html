@@ -9042,8 +9042,21 @@ async function atdCarregarMensagens(S, primeira){
     return `${sep}<div class="chat-msg atd-msg ${m.direction==='inbound'?'theirs':'mine'} ${m.direction!=='inbound' && !m.sent_by_user_id && m.sent_via!=='external_device'?'dprh-bot':''}">${menuBtn}${atdCitaHtml(S, m)}${apagada || ((m.body?esc(m.body):'') + atdMidiaHtml(m))}<span class="hora">${esc(atdAutorMsg(S,m,c))} · ${esc(new Date(quando).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}))}${editada}${falhou}${atdTiqueHtml(m)}</span></div>`;
   }).join('') : `<div class="empty-state" id="atdVazio">Nenhuma mensagem ainda.</div>`;
   if(!msgs.length && primeira) atdExplicarVazio(S, id);
+  atdVerificarCitacoes(S, id, msgs);
   lista.querySelectorAll('.atd-msg-menu').forEach(b=>b.addEventListener('click', ev=>{ ev.stopPropagation(); atdMenuMensagem(S, b.dataset.msg); }));
   if(primeira || pertoDoFim) lista.scrollTop = lista.scrollHeight;
+}
+// Mensagens do cliente que citaram (marcaram) outra: o deskcomm não guarda isso, então pergunta ao servidor (que lê o WhatsApp
+// uma vez por mensagem e grava). Só as mais recentes, uma vez por mensagem por sessão da tela.
+async function atdVerificarCitacoes(S, convId, msgs){
+  S.citVistas = S.citVistas || new Set();
+  const novas = msgs.filter(m=>m.direction==='inbound' && !m.reply_to_message_id && !(m.metadata && (m.metadata.citacao_ok || m.metadata.importado_do_celular)) && !S.citVistas.has(m.id)).slice(-25);
+  if(!novas.length) return;
+  novas.forEach(m=>S.citVistas.add(m.id));
+  try{
+    const r = await api('/atendimento/conversas/'+convId+'/citacoes', { method:'POST', body:{ ids: novas.map(m=>m.id) } });
+    if(r && r.atualizadas && S.conversaAtiva===convId){ S.ultimaMsgId = null; atdCarregarMensagens(S, false); }
+  }catch(e){}
 }
 // Responder em cima de uma mensagem (citação do WhatsApp): guarda a mensagem escolhida, mostra a barra acima do campo de
 // texto e manda `reply_to_message_id` junto com o texto.
@@ -9069,9 +9082,12 @@ function atdRenderRespBar(S){
   document.getElementById('atdRespCancelar').addEventListener('click', ()=>{ S.respondendo=null; atdRenderRespBar(S); });
 }
 function atdCitaHtml(S, m){
-  if(!m.reply_to_message_id) return '';
-  const o = S.msgsPorId && S.msgsPorId[m.reply_to_message_id];
-  return `<div class="atd-cita"><b>${o?esc(atdAutorCurto(S,o)):'Mensagem anterior'}</b><span>${o?esc(atdResumoMsg(o).slice(0,120)):'(fora das últimas 100 mensagens)'}</span></div>`;
+  const cit = m.metadata && m.metadata.citacao;
+  if(!m.reply_to_message_id && !cit) return '';
+  const o = m.reply_to_message_id && S.msgsPorId && S.msgsPorId[m.reply_to_message_id];
+  if(o) return `<div class="atd-cita"><b>${esc(atdAutorCurto(S,o))}</b><span>${esc(atdResumoMsg(o).slice(0,120))}</span></div>`;
+  if(cit) return `<div class="atd-cita"><b>Mensagem marcada</b><span>${esc(String(cit.resumo||'').slice(0,120))}</span></div>`;
+  return `<div class="atd-cita"><b>Mensagem anterior</b><span>(fora das últimas 100 mensagens)</span></div>`;
 }
 // Editar / excluir uma mensagem. Editar e "excluir para todos" agem no WhatsApp do cliente (só mensagens nossas; editar
 // só até 15 min). "Excluir" só esconde da equipe — a mensagem continua guardada como prova.
