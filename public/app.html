@@ -394,6 +394,8 @@
   .atd-cita{border-left:3px solid rgba(0,0,0,.35); background:rgba(0,0,0,.08); border-radius:6px; padding:4px 8px; margin-bottom:5px; font-size:11.5px; display:flex; flex-direction:column;}
   .atd-cita b{font-weight:700;}
   .atd-cita span{opacity:.85; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:320px;}
+  .atd-flash{animation:atdFlash 1.6s ease-out;}
+  @keyframes atdFlash{0%,30%{box-shadow:0 0 0 3px #F5B301; background-color:#FFF3C4;} 100%{box-shadow:0 0 0 0 transparent;}}
   @media (max-width: 820px){
     .dprh-wa, .dprh-wa.atd-com-abas-topo{flex-direction:column; height:auto;}
     .dprh-filtros.atd-abas-topo{width:auto; flex-wrap:wrap; justify-content:flex-start;}
@@ -8221,6 +8223,7 @@ async function dcApi(path, opts, jaRenovou){
   try{ json = await r.json(); }catch(e){}
   if(r.status===401 && !jaRenovou){ await dcGarantirSessao(true); return dcApi(path, opts, true); }
   if(!r.ok) throw new Error((json && json.error && (json.error.message || json.error.code)) || (json && typeof json.error==='string' && json.error) || ('Erro '+r.status));
+  if(opts.meta) return json || { data:null, meta:{} };
   return json ? json.data : null;
 }
 // Monta a caixa de entrada dentro de `box`. As ids dos elementos são fixas (atd*): só uma das duas
@@ -8365,7 +8368,7 @@ async function atdAbrirConversa(S, id){
   document.querySelectorAll('.dprh-conv').forEach(el=>el.classList.toggle('active', el.dataset.id===id));
   const card = document.getElementById('atdThread');
   if(!card) return;
-  S.respondendo = null;
+  S.respondendo = null; S.antigas = []; S.cursorAntigo = null; S.temMaisAntigas = true;
   card.innerHTML = `
     <div id="atdCab" class="dprh-cab"></div>
     <div class="chat-lista dprh-msgs" id="atdMsgs"><div class="empty-state">Carregando mensagens…</div></div>
@@ -9016,10 +9019,17 @@ async function atdCarregarMensagens(S, primeira){
   const lista = document.getElementById('atdMsgs');
   if(!id || !lista || !atdNaTela(S)) return;
   let msgs;
-  try{ msgs = await dcApi(`/conversations/${id}/messages?limit=100`); }
+  try{
+    const resp = await dcApi(`/conversations/${id}/messages?limit=100`, { meta:true });
+    msgs = resp.data;
+    // Cursor pra buscar as mensagens ANTERIORES às 100 mais recentes (usado ao clicar numa mensagem marcada antiga).
+    if(!(S.antigas && S.antigas.length)){ S.cursorAntigo = resp.meta && resp.meta.cursor || null; S.temMaisAntigas = !!(resp.meta && resp.meta.has_more); }
+  }
   catch(e){ if(primeira) lista.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
   if(S.conversaAtiva!==id || !document.getElementById('atdMsgs') || !atdNaTela(S)) return;
-  msgs = (msgs || []).filter(m=>!(m.metadata && m.metadata.oculta_da_equipe));
+  msgs = (msgs || []);
+  if(S.antigas && S.antigas.length){ const ja = new Set(msgs.map(m=>m.id)); msgs = [...S.antigas.filter(m=>!ja.has(m.id)), ...msgs]; }
+  msgs = msgs.filter(m=>!(m.metadata && m.metadata.oculta_da_equipe));
   S.msgsPorId = {}; msgs.forEach(m=>{ S.msgsPorId[m.id]=m; });
   const ultima = msgs.length ? msgs[msgs.length-1].id+'|'+msgs[msgs.length-1].status+'|'+(msgs[msgs.length-1].body||'').length+'|'+(msgs[msgs.length-1].revoked_at||'')+'|'+msgs.length : 'vazio';
   if(!primeira && ultima===S.ultimaMsgId) return; // nada mudou — não redesenha (preserva o áudio tocando)
@@ -9039,10 +9049,11 @@ async function atdCarregarMensagens(S, primeira){
     const apagada = m.revoked_at ? '<i>Mensagem apagada</i>' : '';
     const editada = m.metadata && m.metadata.editada_em ? ' · editada' : '';
     const menuBtn = (podePostarMsg && !apagada) || (podePostarMsg && m.revoked_at) ? `<button class="atd-msg-menu" data-msg="${esc(m.id)}" title="Editar / excluir">⋯</button>` : '';
-    return `${sep}<div class="chat-msg atd-msg ${m.direction==='inbound'?'theirs':'mine'} ${m.direction!=='inbound' && !m.sent_by_user_id && m.sent_via!=='external_device'?'dprh-bot':''}">${menuBtn}${atdCitaHtml(S, m)}${apagada || ((m.body?esc(m.body):'') + atdMidiaHtml(m))}<span class="hora">${esc(atdAutorMsg(S,m,c))} · ${esc(new Date(quando).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}))}${editada}${falhou}${atdTiqueHtml(m)}</span></div>`;
+    return `${sep}<div data-mid="${esc(m.id)}" class="chat-msg atd-msg ${m.direction==='inbound'?'theirs':'mine'} ${m.direction!=='inbound' && !m.sent_by_user_id && m.sent_via!=='external_device'?'dprh-bot':''}">${menuBtn}${atdCitaHtml(S, m)}${apagada || ((m.body?esc(m.body):'') + atdMidiaHtml(m))}<span class="hora">${esc(atdAutorMsg(S,m,c))} · ${esc(new Date(quando).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}))}${editada}${falhou}${atdTiqueHtml(m)}</span></div>`;
   }).join('') : `<div class="empty-state" id="atdVazio">Nenhuma mensagem ainda.</div>`;
   if(!msgs.length && primeira) atdExplicarVazio(S, id);
   atdVerificarCitacoes(S, id, msgs);
+  lista.querySelectorAll('.atd-cita[data-alvo]').forEach(c=>c.addEventListener('click', ev=>{ ev.stopPropagation(); atdIrParaMensagem(S, c.dataset.alvo); }));
   lista.querySelectorAll('.atd-msg-menu').forEach(b=>b.addEventListener('click', ev=>{ ev.stopPropagation(); atdMenuMensagem(S, b.dataset.msg); }));
   if(primeira || pertoDoFim) lista.scrollTop = lista.scrollHeight;
 }
@@ -9084,10 +9095,37 @@ function atdRenderRespBar(S){
 function atdCitaHtml(S, m){
   const cit = m.metadata && m.metadata.citacao;
   if(!m.reply_to_message_id && !cit) return '';
-  const o = m.reply_to_message_id && S.msgsPorId && S.msgsPorId[m.reply_to_message_id];
-  if(o) return `<div class="atd-cita"><b>${esc(atdAutorCurto(S,o))}</b><span>${esc(atdResumoMsg(o).slice(0,120))}</span></div>`;
-  if(cit) return `<div class="atd-cita"><b>Mensagem marcada</b><span>${esc(String(cit.resumo||'').slice(0,120))}</span></div>`;
-  return `<div class="atd-cita"><b>Mensagem anterior</b><span>(fora das últimas 100 mensagens)</span></div>`;
+  const alvo = m.reply_to_message_id || (cit && cit.local_id) || '';
+  const o = alvo && S.msgsPorId && S.msgsPorId[alvo];
+  const attr = alvo ? ` data-alvo="${esc(alvo)}" title="Ir até a mensagem" style="cursor:pointer;"` : '';
+  if(o) return `<div class="atd-cita"${attr}><b>${esc(atdAutorCurto(S,o))}</b><span>${esc(atdResumoMsg(o).slice(0,120))}</span></div>`;
+  if(cit) return `<div class="atd-cita"${attr}><b>Mensagem marcada</b><span>${esc(String(cit.resumo||'').slice(0,120))}</span></div>`;
+  return `<div class="atd-cita"${attr}><b>Mensagem anterior</b><span>(clique pra localizar)</span></div>`;
+}
+// Clicar na mensagem marcada leva até ela na conversa; se for antiga (fora das últimas 100), busca páginas anteriores.
+async function atdIrParaMensagem(S, id){
+  const lista = document.getElementById('atdMsgs');
+  if(!lista) return;
+  const achar = ()=>lista.querySelector('[data-mid="'+id+'"]');
+  const destacar = el=>{ el.scrollIntoView({ block:'center', behavior:'smooth' }); el.classList.remove('atd-flash'); void el.offsetWidth; el.classList.add('atd-flash'); };
+  let el = achar();
+  if(el) return destacar(el);
+  const conv = S.conversaAtiva;
+  toast('Procurando a mensagem…','ok');
+  for(let i=0; i<30 && S.temMaisAntigas && S.cursorAntigo; i++){
+    let resp;
+    try{ resp = await dcApi(`/conversations/${conv}/messages?limit=100&cursor=${encodeURIComponent(S.cursorAntigo)}`, { meta:true }); }
+    catch(e){ toast(e.message,'err'); return; }
+    if(S.conversaAtiva!==conv) return;
+    S.antigas = [...(resp.data||[]), ...(S.antigas||[])];
+    S.cursorAntigo = resp.meta && resp.meta.cursor || null;
+    S.temMaisAntigas = !!(resp.meta && resp.meta.has_more);
+    if((resp.data||[]).some(m=>m.id===id)) break;
+  }
+  S.ultimaMsgId = null;
+  await atdCarregarMensagens(S, false);
+  el = achar();
+  if(el) destacar(el); else toast('Não encontrei essa mensagem na conversa (pode ser de antes do histórico guardado).','err');
 }
 // Editar / excluir uma mensagem. Editar e "excluir para todos" agem no WhatsApp do cliente (só mensagens nossas; editar
 // só até 15 min). "Excluir" só esconde da equipe — a mensagem continua guardada como prova.
