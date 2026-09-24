@@ -13253,6 +13253,223 @@ app.get("/api/atendimento/alertas", blockCliente, async (req, res) => {
     res.status(502).json({ error: "Falha ao ler as conversas no deskcomm: " + e.message });
   }
 });
+// ---------- Usuário "Automações" no deskcomm (lembrete de compromisso, pesquisa de satisfação) ----------
+// O servidor precisa mandar mensagem sozinho, sem ninguém logado. Faz isso pela MESMA API do deskcomm que a
+// tela usa (fica no histórico da conversa e passa pelas regras de envio de lá), com um usuário técnico
+// próprio — assim essas mensagens não caem na conta de nenhum funcionário no Painel. A sessão é aberta por
+// magic link gerado pelo admin do Supabase (nenhum e-mail é enviado) e renovada a cada ~45 min ou no 401.
+const DESKCOMM_ROBO_EMAIL = (process.env.DESKCOMM_ROBO_EMAIL || "automacoes@simplescontabeis.deskcomm.local").trim().toLowerCase();
+const DESKCOMM_ROBO_NOME = "Automações Simples Contábeis";
+let deskcommRoboIdCache: string | null = null;
+async function deskcommRoboId(): Promise<string> {
+  if (deskcommRoboIdCache) return deskcommRoboIdCache;
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID) throw new Error("Integração com o deskcomm não configurada.");
+  const { data: lista, error } = await deskcommAdmin.auth.admin.listUsers({ page: 1, perPage: 1000 });
+  if (error) throw new Error(error.message);
+  let id = lista.users.find((u) => (u.email || "").toLowerCase() === DESKCOMM_ROBO_EMAIL)?.id || null;
+  if (!id) {
+    const { data: criado, error: e2 } = await deskcommAdmin.auth.admin.createUser({
+      email: DESKCOMM_ROBO_EMAIL, email_confirm: true,
+      user_metadata: { nome: DESKCOMM_ROBO_NOME, full_name: DESKCOMM_ROBO_NOME, origem: "simplescontabeis-automacoes" },
+    });
+    if (e2 || !criado.user) throw new Error(e2?.message || "Falha ao criar o usuário de automações no deskcomm.");
+    id = criado.user.id;
+  }
+  const { error: e3 } = await deskcommAdmin.from("user_organizations")
+    .upsert({ organization_id: DESKCOMM_ORG_ID, user_id: id, role: "agent", accepted_at: new Date().toISOString() }, { onConflict: "organization_id,user_id" });
+  if (e3) throw new Error(e3.message);
+  deskcommRoboIdCache = id;
+  return id;
+}
+let deskcommRoboSessao: { cookie: string; em: number } | null = null;
+async function deskcommRoboLogin(): Promise<string> {
+  await deskcommRoboId();
+  const { data, error } = await deskcommAdmin!.auth.admin.generateLink({ type: "magiclink", email: DESKCOMM_ROBO_EMAIL });
+  const tokenHash = (data as any)?.properties?.hashed_token;
+  if (error || !tokenHash) throw new Error(error?.message || "O Supabase não devolveu o token de acesso.");
+  const qs = new URLSearchParams({ token_hash: tokenHash, type: "magiclink", next: "/manifest.webmanifest" });
+  const r = await fetch(`${DESKCOMM_URL}/deskcomm/auth/confirm?${qs}`, { redirect: "manual" });
+  const setCookies: string[] = (r.headers as any).getSetCookie?.() || [];
+  const cookie = setCookies.map((c) => c.split(";")[0]).filter((c) => c.startsWith("sb-")).join("; ");
+  if (!cookie) throw new Error(`Login do usuário de automações no deskcomm falhou (HTTP ${r.status}).`);
+  deskcommRoboSessao = { cookie, em: Date.now() };
+  return cookie;
+}
+async function deskcommRoboApi(caminho: string, init: { method?: string; body?: any } = {}, jaRenovou = false): Promise<any> {
+  if (!deskcommRoboSessao || Date.now() - deskcommRoboSessao.em > 45 * 60_000) await deskcommRoboLogin();
+  const r = await fetch(`${DESKCOMM_URL}/deskcomm/api/v1${caminho}`, {
+    method: init.method || "GET",
+    headers: { cookie: deskcommRoboSessao!.cookie, origin: DESKCOMM_URL, ...(init.body ? { "content-type": "application/json" } : {}) },
+    body: init.body ? JSON.stringify(init.body) : undefined,
+  });
+  if (r.status === 401 && !jaRenovou) { deskcommRoboSessao = null; return deskcommRoboApi(caminho, init, true); }
+  const json: any = await r.json().catch(() => null);
+  if (!r.ok) throw new Error((json?.error?.message || json?.error?.code || json?.error) ?? `HTTP ${r.status}`);
+  return json?.data ?? null;
+}
+async function deskcommRoboEnviar(conversationId: string, texto: string): Promise<string | null> {
+  const m = await deskcommRoboApi("/messages", { method: "POST", body: { conversation_id: conversationId, type: "text", body: texto } });
+  return m?.id || null;
+}
+// Primeira mensagem do cliente depois de um instante, na conversa.
+async function deskcommPrimeiraRespostaDoCliente(conversationId: string, depoisDe: string): Promise<{ body: string; created_at: string } | null> {
+  const { data, error } = await deskcommAdmin!.from("messages").select("body, created_at")
+    .eq("organization_id", DESKCOMM_ORG_ID).eq("conversation_id", conversationId).eq("direction", "inbound")
+    .gt("created_at", depoisDe).order("created_at").limit(1);
+  if (error) throw new Error(error.message);
+  return data?.[0] || null;
+}
+
+// ---------- Lembrete de compromisso ----------
+// X horas antes (⚙ Metas e alertas), o cliente recebe um lembrete no WhatsApp. Respondendo "sim"/"1", o
+// compromisso vira Confirmado na Agenda. Não lembra quem marcou há pouco (já recebeu o aviso na hora).
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS atendimento_lembretes (
+    appointment_id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    enviado_em TEXT NOT NULL,
+    resposta TEXT,
+    confirmado INTEGER,
+    verificado_em TEXT
+  )
+`);
+let atendimentoLembretesRodando = false;
+async function atendimentoRodarLembretes() {
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID || atendimentoLembretesRodando) return;
+  atendimentoLembretesRodando = true;
+  try {
+    const cfg = atendimentoConfig(DESKCOMM_ESCRITORIO_ID);
+    const agora = Date.now();
+    if (cfg.lembreteAtivo) {
+      const { data: ags, error } = await deskcommAdmin.from("calendar_appointments")
+        .select("id, title, starts_at, status, contact_id, conversation_id, created_at, event_type_id")
+        .eq("organization_id", DESKCOMM_ORG_ID).in("status", ["pending", "confirmed"]).is("reminder_sent_at", null)
+        .gt("starts_at", new Date(agora + 30 * 60_000).toISOString())
+        .lte("starts_at", new Date(agora + cfg.lembreteHoras * 3600_000).toISOString());
+      if (error) throw new Error(error.message);
+      const { data: tipos } = await deskcommAdmin.from("calendar_event_types").select("id, name").eq("organization_id", DESKCOMM_ORG_ID);
+      for (const a of ags || []) {
+        if (agora - new Date(a.created_at).getTime() < 3 * 3600_000) continue;
+        if (sqlite.prepare(`SELECT 1 FROM atendimento_lembretes WHERE appointment_id = ?`).get(a.id)) continue;
+        let conv = a.conversation_id;
+        if (!conv && a.contact_id) conv = (await atendimentoUltimaConversaPorContato("crm", [a.contact_id])).get(a.contact_id)?.id || null;
+        if (!conv) continue;
+        const inicio = new Date(a.starts_at);
+        const hojeSp = new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+        const amanhaSp = new Date(agora + 86400_000).toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+        const diaSp = inicio.toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+        const quando = (diaSp === hojeSp ? "hoje" : diaSp === amanhaSp ? "amanhã" : inicio.toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo", weekday: "long", day: "2-digit", month: "2-digit" }))
+          + " às " + inicio.toLocaleTimeString("pt-BR", { timeZone: "America/Sao_Paulo", hour: "2-digit", minute: "2-digit" });
+        const tipo = (tipos || []).find((t: any) => t.id === a.event_type_id)?.name || "atendimento";
+        const texto = `⏰ Lembrete: seu horário com a Simples Contábeis (${tipo}) é ${quando}.\nPara confirmar, responda *SIM*. Se precisar remarcar, é só nos avisar por aqui.`;
+        try {
+          await deskcommRoboEnviar(conv, texto);
+          const agoraIso = new Date().toISOString();
+          sqlite.prepare(`INSERT INTO atendimento_lembretes (appointment_id, conversation_id, enviado_em) VALUES (?, ?, ?)`).run(a.id, conv, agoraIso);
+          await deskcommAdmin.from("calendar_appointments").update({ reminder_sent_at: agoraIso }).eq("id", a.id).eq("organization_id", DESKCOMM_ORG_ID);
+        } catch (e: any) {
+          console.error("[lembrete] falha ao enviar", a.id, e.message);
+        }
+      }
+    }
+    // Respostas aos lembretes enviados nas últimas 48 h: "sim" confirma o compromisso.
+    const pendentes = sqlite.prepare(`SELECT * FROM atendimento_lembretes WHERE verificado_em IS NULL AND enviado_em > ?`).all(new Date(agora - 48 * 3600_000).toISOString()) as any[];
+    for (const l of pendentes) {
+      const resp = await deskcommPrimeiraRespostaDoCliente(l.conversation_id, l.enviado_em);
+      if (!resp) continue;
+      const confirma = /^\s*(sim|s|1|confirm\w*|ok|ok[,!.]?\s*confirmado|pode confirmar|estarei (a[ií]|l[aá]))\b/i.test(resp.body || "");
+      if (confirma) {
+        try {
+          const { data: ag } = await deskcommAdmin.from("calendar_appointments").select("status").eq("id", l.appointment_id).maybeSingle();
+          if (ag?.status === "pending") await deskcommRoboApi("/agenda/agendamentos", { method: "PATCH", body: { id: l.appointment_id, status: "confirmed" } });
+        } catch (e: any) {
+          console.error("[lembrete] falha ao confirmar", l.appointment_id, e.message);
+        }
+      }
+      sqlite.prepare(`UPDATE atendimento_lembretes SET resposta = ?, confirmado = ?, verificado_em = datetime('now') WHERE appointment_id = ?`)
+        .run(String(resp.body || "").slice(0, 500), confirma ? 1 : 0, l.appointment_id);
+    }
+  } catch (e: any) {
+    console.error("[lembrete]", e.message);
+  } finally {
+    atendimentoLembretesRodando = false;
+  }
+}
+setInterval(() => atendimentoRodarLembretes(), 5 * 60_000);
+setTimeout(() => atendimentoRodarLembretes(), 60_000);
+
+// ---------- Pesquisa de satisfação ----------
+// Ao fechar pela tela (CRM/setores), o cliente recebe "de 1 a 5, como foi?". A nota é a 1ª resposta dele em
+// até 24 h que seja só um número de 1 a 5; recebida a nota, a conversa (que reabriu com a resposta) é
+// fechada de novo. A Recepção agradece a nota em vez de mandar o menu (regra no prompt dela).
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS atendimento_pesquisas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    atendente_deskcomm_id TEXT,
+    atendente_nome TEXT,
+    setor TEXT,
+    enviada_em TEXT NOT NULL,
+    nota INTEGER,
+    respondida_em TEXT,
+    encerrada INTEGER NOT NULL DEFAULT 0
+  )
+`);
+const PESQUISA_TEXTO = "Seu atendimento foi encerrado. 🙏 Para melhorarmos, de *1 a 5*, como você avalia o atendimento que recebeu?\n(1 = muito ruim, 5 = excelente). É só responder com o número.";
+app.post("/api/atendimento/conversas/:id/pesquisa", blockCliente, async (req, res) => {
+  const user = (req as any).user;
+  if (!atendimentoAlgumaPermissao(user, "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  if (!atendimentoConfig(user.escritorioId).pesquisaAtiva) return res.json({ enviada: false });
+  const id = String(req.params.id);
+  try {
+    // Não repete a pesquisa pra mesma conversa em menos de 24 h.
+    const recente = sqlite.prepare(`SELECT 1 FROM atendimento_pesquisas WHERE conversation_id = ? AND enviada_em > ?`).get(id, new Date(Date.now() - 86400_000).toISOString());
+    if (recente) return res.json({ enviada: false });
+    const { data: c } = await deskcommAdmin.from("conversations").select("id, assigned_to_user_id, service_started_at, active_intent, active_agent_set_at").eq("organization_id", DESKCOMM_ORG_ID).eq("id", id).maybeSingle();
+    if (!c) return res.status(404).json({ error: "Conversa não encontrada." });
+    const { ultima } = await atendimentoEscolhas();
+    const atendenteId = c.assigned_to_user_id || (await deskcommGarantirUsuario(user));
+    const nomeAt = (sqlite.prepare(`SELECT nome FROM app_users WHERE deskcomm_user_id = ?`).get(atendenteId) as any)?.nome || user.nome;
+    await deskcommRoboEnviar(id, PESQUISA_TEXTO);
+    sqlite.prepare(`INSERT INTO atendimento_pesquisas (conversation_id, atendente_deskcomm_id, atendente_nome, setor, enviada_em) VALUES (?, ?, ?, ?, ?)`)
+      .run(id, atendenteId, nomeAt, atendimentoSetorAtual(c, ultima.get(c.id)), new Date().toISOString());
+    res.json({ enviada: true });
+  } catch (e: any) {
+    res.status(502).json({ error: "Falha ao enviar a pesquisa: " + e.message });
+  }
+});
+async function atendimentoColetarPesquisas() {
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return;
+  try {
+    const abertas = sqlite.prepare(`SELECT * FROM atendimento_pesquisas WHERE nota IS NULL AND encerrada = 0`).all() as any[];
+    for (const p of abertas) {
+      const venceu = Date.now() - new Date(p.enviada_em).getTime() > 86400_000;
+      const resp = await deskcommPrimeiraRespostaDoCliente(p.conversation_id, p.enviada_em);
+      if (resp) {
+        const m = /^\s*([1-5])\s*(?:[.!]|estrelas?)?\s*$/i.exec(resp.body || "");
+        if (m) {
+          // Espera ~1 min pra Recepção agradecer antes de fechar de novo.
+          if (Date.now() - new Date(resp.created_at).getTime() < 60_000) continue;
+          sqlite.prepare(`UPDATE atendimento_pesquisas SET nota = ?, respondida_em = ?, encerrada = 1 WHERE id = ?`).run(Number(m[1]), resp.created_at, p.id);
+          const { data: c } = await deskcommAdmin.from("conversations").select("status, service_revision").eq("id", p.conversation_id).maybeSingle();
+          if (c && c.status !== "closed" && c.status !== "archived") {
+            await deskcommRoboApi(`/conversations/${p.conversation_id}/close`, { method: "POST", body: c.service_revision ? { expected_revision: c.service_revision } : {} })
+              .catch((e) => console.error("[pesquisa] falha ao fechar de novo", p.conversation_id, e.message));
+          }
+        } else {
+          // Respondeu outra coisa: é um atendimento novo, a pesquisa fica sem nota.
+          sqlite.prepare(`UPDATE atendimento_pesquisas SET encerrada = 1 WHERE id = ?`).run(p.id);
+        }
+      } else if (venceu) {
+        sqlite.prepare(`UPDATE atendimento_pesquisas SET encerrada = 1 WHERE id = ?`).run(p.id);
+      }
+    }
+  } catch (e: any) {
+    console.error("[pesquisa]", e.message);
+  }
+}
+setInterval(() => atendimentoColetarPesquisas(), 60_000);
 // ---------- Painel do atendimento (CRM › Painel) ----------
 // Visão geral pro gestor: o que está acontecendo AGORA (fila, com quem está, quem espera resposta, conversa
 // parada) e como foi o PERÍODO (volume, tempos de resposta, desempenho por funcionário, agenda).
@@ -13361,6 +13578,7 @@ app.get("/api/atendimento/painel", blockCliente, async (req, res) => {
     const temposIA: number[] = [], temposHumano: number[] = [];
     const cfg = atendimentoConfig(user.escritorioId);
     const metaSeg = cfg.metaRespostaMin * 60;
+    const roboId = await deskcommRoboId().catch(() => null);
     type Func = { id: string; nome: string; mensagens: number; conversas: Set<string>; tempos: number[] };
     const funcs = new Map<string, Func>();
     const func = (id: string, nome: string) => {
@@ -13382,6 +13600,8 @@ app.get("/api/atendimento/painel", blockCliente, async (req, res) => {
           if (pendente == null) pendente = t;
           continue;
         }
+        // Lembrete/pesquisa do usuário Automações não é resposta a ninguém: não conta nem zera a espera.
+        if (roboId && m.sent_by_user_id === roboId) continue;
         const humano = m.sent_via !== "ai";
         // IA: tempo real. Equipe: só o tempo dentro do expediente (a meta vale pro horário de atendimento).
         const delta = pendente == null ? null : humano ? minutosUteisEntre(pendente, t) * 60 : (t - pendente) / 1000;
@@ -13429,6 +13649,20 @@ app.get("/api/atendimento/painel", blockCliente, async (req, res) => {
       agendaPorQuemMarcou.set(quem, (agendaPorQuemMarcou.get(quem) || 0) + 1);
     }
     const conversasComMensagem = porConversa.size;
+    // Satisfação (pesquisa ao fechar) no período.
+    const notas = sqlite.prepare(`SELECT atendente_nome, setor, nota FROM atendimento_pesquisas WHERE nota IS NOT NULL AND respondida_em >= ?`).all(inicio.toISOString()) as any[];
+    const enviadasPesquisa = (sqlite.prepare(`SELECT COUNT(*) n FROM atendimento_pesquisas WHERE enviada_em >= ?`).get(inicio.toISOString()) as any).n;
+    const agrupaNota = (chave: (n: any) => string) => {
+      const g = new Map<string, number[]>();
+      for (const n of notas) { const k = chave(n); g.set(k, [...(g.get(k) || []), n.nota]); }
+      return [...g].map(([nome, xs]) => ({ nome, media: Math.round((xs.reduce((a, b) => a + b, 0) / xs.length) * 10) / 10, respostas: xs.length })).sort((a, b) => b.media - a.media);
+    };
+    const satisfacao = {
+      media: notas.length ? Math.round((notas.reduce((a, n) => a + n.nota, 0) / notas.length) * 10) / 10 : null,
+      respostas: notas.length, enviadas: enviadasPesquisa,
+      porFuncionario: agrupaNota((n) => n.atendente_nome || "—"),
+      porSetor: agrupaNota((n) => n.setor || "Sem setor"),
+    };
     // Ranking de empresas que mais demandaram no período (pelo telefone do contato → Empresas).
     const convIds = [...porConversa.keys()];
     const convInfo: any[] = [];
@@ -13484,6 +13718,7 @@ app.get("/api/atendimento/painel", blockCliente, async (req, res) => {
           .sort((a, b) => b.mensagens - a.mensagens),
         porDia: [...porDia].map(([dia, v]) => ({ dia, ...v })).sort((a, b) => a.dia.localeCompare(b.dia)),
         rankingEmpresas,
+        satisfacao,
         agenda: {
           total: compromissos.length,
           porSituacao: agendaPorSituacao,

@@ -7464,6 +7464,7 @@ async function crmPainel(box, silencioso){
       ${painelCard('Média de mensagens', p.mediaMensagensPorConversa ?? '—', 'por conversa (cliente + nós)')}
       ${painelCard('Tempo de resposta da IA', painelDur(p.tempoRespostaIASeg.media), 'mediana '+painelDur(p.tempoRespostaIASeg.mediana))}
       ${painelCard('Tempo de resposta da equipe', painelDur(p.tempoRespostaHumanoSeg.media), 'mediana '+painelDur(p.tempoRespostaHumanoSeg.mediana)+' · no expediente', '', (p.tempoRespostaHumanoSeg.media||0)>p.meta.respostaMin*60?'painel-atencao':'')}
+      ${painelCard('Satisfação dos clientes', p.satisfacao.media==null?'—':'⭐ '+p.satisfacao.media.toString().replace('.',','), `${p.satisfacao.respostas} nota${p.satisfacao.respostas===1?'':'s'} de ${p.satisfacao.enviadas} pesquisa${p.satisfacao.enviadas===1?'':'s'}`, '', p.satisfacao.media==null?'':p.satisfacao.media>=4?'painel-ok':p.satisfacao.media<3?'painel-alerta':'painel-atencao')}
       ${painelCard('Dentro da meta', p.meta.dentroPct==null?'—':p.meta.dentroPct+'%', `respostas da equipe em até ${p.meta.respostaMin} min (${p.meta.respostas})`, '', p.meta.dentroPct==null?'':p.meta.dentroPct>=80?'painel-ok':'painel-alerta')}
     </div>
     <div class="painel-duas">
@@ -7487,6 +7488,14 @@ async function crmPainel(box, silencioso){
       </div>
       <div class="card" style="padding:0;"><div class="painel-cab">Quem marcou os compromissos</div>
         ${p.agenda.porQuemMarcou.length ? `<table class="data-table"><tbody>${p.agenda.porQuemMarcou.map(x=>`<tr><td>${esc(x.nome)}</td><td style="text-align:right;"><b>${x.n}</b></td></tr>`).join('')}</tbody></table>` : '<div class="empty-state" style="padding:16px;">—</div>'}
+      </div>
+    </div>
+    <div class="painel-duas">
+      <div class="card" style="padding:0;"><div class="painel-cab">⭐ Satisfação por funcionário</div>
+        ${p.satisfacao.porFuncionario.length ? `<table class="data-table"><tbody>${p.satisfacao.porFuncionario.map(x=>`<tr><td>${esc(x.nome)}</td><td style="text-align:right;"><b>${x.media.toString().replace('.',',')}</b> <span style="color:var(--ink-soft);">(${x.respostas})</span></td></tr>`).join('')}</tbody></table>` : '<div class="empty-state" style="padding:16px;">Nenhuma nota no período.</div>'}
+      </div>
+      <div class="card" style="padding:0;"><div class="painel-cab">⭐ Satisfação por setor</div>
+        ${p.satisfacao.porSetor.length ? `<table class="data-table"><tbody>${p.satisfacao.porSetor.map(x=>`<tr><td>${esc(x.nome)}</td><td style="text-align:right;"><b>${x.media.toString().replace('.',',')}</b> <span style="color:var(--ink-soft);">(${x.respostas})</span></td></tr>`).join('')}</tbody></table>` : '<div class="empty-state" style="padding:16px;">Nenhuma nota no período.</div>'}
       </div>
     </div>
     <div class="card" style="padding:0; margin-bottom:12px;"><div class="painel-cab">🏆 Empresas que mais demandaram no período</div>
@@ -8164,7 +8173,12 @@ async function atdAcao(S, acao, botao){
     // Recomeçar pelo menu no próximo contato é garantido no banco do deskcomm (trigger de fechar) —
     // vale igual pra quem fechar por aqui, pelo CRM do deskcomm ou por rotina.
     if(!confirmar('Fechar esta conversa? Se o cliente escrever de novo, o atendimento recomeça pelo menu de setores.')) return;
-    return executar(()=>dcApi(base+'/close', { method:'POST', body:{ expected_revision: c.revisao || undefined } }), 'Conversa fechada.');
+    return executar(async ()=>{
+      // Pesquisa de satisfação (se ligada em ⚙ Metas e alertas): sai ANTES de fechar, pelo usuário Automações.
+      try{ await api('/atendimento/conversas/'+encodeURIComponent(c.id)+'/pesquisa', { method:'POST' }); }
+      catch(e){ toast('A pesquisa de satisfação não foi enviada: '+e.message,'err'); }
+      await dcApi(base+'/close', { method:'POST', body:{ expected_revision: c.revisao || undefined } });
+    }, 'Conversa fechada.');
   }
   if(acao==='tag') return atdTagsModal(S, c);
   if(acao==='reabrir'){
