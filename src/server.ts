@@ -8119,6 +8119,16 @@ async function integraContadorBuscarEmpresaInterno(
       .all(empresaId) as any[];
     for (const parc of parcelamentosAtivos) {
       if (!parc.atribuicaoId) continue;
+      // Atualiza a situação do parcelamento (ex.: "Aguardando Pagamento da 1ª Parcela" → "Em parcelamento") — antes ela
+      // só mudava se alguém clicasse em "Atualizar" e ficava desatualizada mesmo depois do pagamento.
+      try {
+        const d = await integracontador.consultarParcelamentoEspecifico(token, cnpjEscritorio, empresaCnpj, parc.numero);
+        sqlite.prepare(
+          `UPDATE integracontador_parcelamentos SET situacao = ?, valor_total_consolidado = ?, quantidade_parcelas = ?, valor_primeira_parcela = ?, valor_parcela_basica = ?, detalhes_json = ? WHERE id = ?`
+        ).run(d.situacao, d.valorTotalConsolidado, d.quantidadeParcelas, d.valorPrimeiraParcela, d.valorParcelaBasica, JSON.stringify(d.detalhesJson), parc.id);
+      } catch (e: any) {
+        console.error(`[Integra Contador] atualização do parcelamento ${parc.numero} (empresa ${empresaId}) falhou:`, e.message);
+      }
       try {
         const hoje = new Date();
         const anoMes = hoje.getFullYear() * 100 + (hoje.getMonth() + 1);
@@ -8437,9 +8447,16 @@ async function integraContadorExecutarBuscaAutomatica() {
 }
 // Confere a cada minuto se bateu 8h00 ou 12h00 (só no minuto exato, pra não disparar de novo a cada
 // tick dentro da mesma hora) — mesmo padrão de setInterval de 60 em 60s já usado na rotina do NFS-e.
+// Achado ao vivo: com "só no minuto exato", um deploy/reinício às 12:00 fazia a busca do dia inteira ser pulada
+// (a última busca de uma empresa ficou em 22/09). Agora registra o dia da última execução no banco e roda assim que
+// passar das 12h de um dia que ainda não rodou — inclusive se o servidor voltar depois do meio-dia.
+sqlite.exec(`CREATE TABLE IF NOT EXISTS integracontador_busca_automatica_dias (dia TEXT PRIMARY KEY, iniciada_em TEXT NOT NULL DEFAULT (datetime('now')))`);
 setInterval(() => {
   const agora = agoraBrasilia();
-  if (agora.minuto !== 0 || agora.hora !== 12) return;
+  if (agora.hora < 12) return;
+  const dia = `${agora.ano}-${String(agora.mes).padStart(2, "0")}-${String(agora.dia).padStart(2, "0")}`;
+  const marcou = sqlite.prepare(`INSERT OR IGNORE INTO integracontador_busca_automatica_dias (dia) VALUES (?)`).run(dia);
+  if (!marcou.changes) return; // já rodou (ou está rodando) hoje
   integraContadorExecutarBuscaAutomatica().catch((e) => console.error("Erro na rotina automática do Integra Contador:", e.message));
 }, 60_000);
 
