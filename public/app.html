@@ -8159,9 +8159,9 @@ async function crmColaboradoresModal(departamentoId, nome, colaboradores){
 // não tem setor).
 const ATEND_CFG = {
   crm:  { modulo:'crm',  abas:['fila','minhas','todas','fechadas','automatico'], vazioFila:'Nenhuma conversa aguardando atendente.', mostraSetor:true },
-  dprh: { modulo:'dprh', abas:['fila','minhas','automatico','fechadas'], vazioFila:'Nenhuma demanda de folha aguardando atendente.', mostraSetor:false },
-  contabil: { modulo:'contabil', abas:['fila','minhas','automatico','fechadas'], vazioFila:'Nenhuma demanda de contabilidade aguardando atendente.', mostraSetor:false },
-  fiscal: { modulo:'fiscal', abas:['fila','minhas','automatico','fechadas'], vazioFila:'Nenhuma demanda fiscal aguardando atendente.', mostraSetor:false },
+  dprh: { modulo:'dprh', abas:['fila','minhas','todas','automatico','fechadas'], vazioFila:'Nenhuma demanda de folha aguardando atendente.', mostraSetor:false },
+  contabil: { modulo:'contabil', abas:['fila','minhas','todas','automatico','fechadas'], vazioFila:'Nenhuma demanda de contabilidade aguardando atendente.', mostraSetor:false },
+  fiscal: { modulo:'fiscal', abas:['fila','minhas','todas','automatico','fechadas'], vazioFila:'Nenhuma demanda fiscal aguardando atendente.', mostraSetor:false },
 };
 const ATEND_ROTULOS = { fila:'Fila', minhas:'Minhas', todas:'Todas', fechadas:'Fechadas', automatico:'Automático' };
 function novoAtendimento(escopo){

@@ -12969,7 +12969,7 @@ type AtendimentoSetorEscopo = keyof typeof ATENDIMENTO_SETORES;
 type AtendimentoEscopo = "crm" | AtendimentoSetorEscopo;
 const ATENDIMENTO_ESCOPOS_SETOR = Object.keys(ATENDIMENTO_SETORES) as AtendimentoSetorEscopo[];
 // Sem "todas" nos setores: não precisam ver as conversas dos outros — o histórico fica em Fechadas.
-const ATENDIMENTO_ABAS_SETOR = ["fila", "minhas", "automatico", "fechadas"] as const;
+const ATENDIMENTO_ABAS_SETOR = ["fila", "minhas", "todas", "automatico", "fechadas"] as const;
 const ATENDIMENTO_ABAS: Record<AtendimentoEscopo, readonly string[]> = {
   crm: ["fila", "minhas", "todas", "fechadas", "automatico"],
   dprh: ATENDIMENTO_ABAS_SETOR,
@@ -13271,7 +13271,8 @@ app.get("/api/atendimento/conversas", blockCliente, async (req, res) => {
     const filtros: Record<string, (c: any) => boolean> = {
       fila: (c) => c.atual && !fechada(c) && !c.assigned_to_user_id && filaInclui.includes(c.comando_da_conversa),
       minhas: (c) => c.atual && c.assigned_to_user_id === meuDeskcommId && !fechada(c),
-      todas: () => true,
+      // CRM: tudo. Setor: todas as conversas ABERTAS que estão no setor agora (de qualquer atendente) — o Administrador enxerga o setor inteiro.
+      todas: (c) => escopo === "crm" || (c.atual && !fechada(c)),
       fechadas: (c) => fechada(c) || !c.atual,
       automatico: (c) => c.atual && c.comando_da_conversa === "automatico",
     };
