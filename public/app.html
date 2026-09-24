@@ -284,6 +284,10 @@
   .chat-msg .hora{display:block; font-size:9.5px; opacity:.65; margin-top:3px;}
   .chat-input-row{display:flex; gap:6px; padding:8px; border-top:1px solid var(--rule); flex:none;}
   /* DP/RH › WhatsApp */
+  .atd-ficha-sec{margin-top:16px;}
+  .atd-ficha-sec h4{margin:0 0 6px; font-size:13px;}
+  .atd-ficha-linha{font-size:12.5px; padding:6px 0; border-bottom:1px solid var(--rule-soft);}
+  .atd-ficha-vazio{font-size:12.5px; color:var(--ink-soft);}
   .atd-alerta-box{position:fixed; right:20px; bottom:92px; width:320px; background:var(--surface); border:1px solid var(--debit); border-radius:12px; box-shadow:0 8px 24px rgba(0,0,0,.15); z-index:1200; overflow:hidden;}
   .atd-alerta-cab{display:flex; justify-content:space-between; align-items:center; padding:8px 10px; font-weight:700; font-size:13px; background:var(--paper);}
   .atd-alerta-item{padding:8px 10px; font-size:12.5px; border-top:1px solid var(--rule-soft); cursor:pointer;}
@@ -8189,6 +8193,7 @@ function atdRenderCabecalho(S){
   if(podePostar && fechada && c.contatoId) botoes.push(`<button class="btn small primary" data-acao="reabrir">↺ Reabrir</button>`);
   // Compromisso e Tag valem em qualquer situação da conversa (inclusive fechada): são do CONTATO.
   if(podePostar && c.contatoId){
+    if(c.empresaId) botoes.push(`<button class="btn small" data-acao="empresa">🏢 Empresa</button>`);
     botoes.push(`<button class="btn small" data-acao="compromisso">📅 Compromisso</button>`);
     botoes.push(`<button class="btn small" data-acao="tag">🏷 Tag</button>`);
   }
@@ -8248,6 +8253,7 @@ async function atdAcao(S, acao, botao){
     }, 'Conversa fechada.');
   }
   if(acao==='tag') return atdTagsModal(S, c);
+  if(acao==='empresa') return atdFichaEmpresa(S, c);
   if(acao==='reabrir'){
     // Reabre pela mesma rota da Nova conversa (o deskcomm reabre a conversa fechada do contato), já com
     // quem clicou — cai em Minhas. Num setor, a conversa volta pro setor (robô pausado).
@@ -8287,6 +8293,62 @@ async function atdAcao(S, acao, botao){
 }
 // Transferir: pra um SETOR (cai na Fila daquele setor, esperando uma pessoa — ou volta pro
 // atendimento geral do CRM) ou pra uma PESSOA (deskcomm /transfer — ela vira a dona da conversa).
+// ---- Ficha da empresa + documentos do sistema ----
+// Painel lateral com o que o sistema sabe da empresa do cliente (pelo telefone): dados, o que o escritório
+// aguarda dele, guias/documentos já enviados, NFS-e e honorários em aberto (cada bloco só pra quem tem
+// permissão do módulo). Documento e NFS-e podem ser mandados na conversa com um clique (📤).
+const REGIMES_ROTULO = { simples_nacional:'Simples Nacional', lucro_presumido:'Lucro Presumido', lucro_real:'Lucro Real', mei:'MEI' };
+function atdBr(iso){ return iso ? String(iso).slice(8,10)+'/'+String(iso).slice(5,7)+'/'+String(iso).slice(0,4) : '—'; }
+function atdMoeda(v){ return v==null ? '—' : Number(v).toLocaleString('pt-BR',{style:'currency',currency:'BRL'}); }
+async function atdFichaEmpresa(S, c){
+  let f;
+  try{ f = await api('/atendimento/empresa/'+c.empresaId+'/ficha'); }catch(e){ toast(e.message,'err'); return; }
+  const e = f.empresa;
+  const podeEnviar = can(S.cfg.modulo,'postar') && atdComposerHabilitado(S, c) && S.conversaAtiva===c.id;
+  openDrawer(`
+    <div class="row" style="justify-content:space-between; align-items:flex-start;">
+      <div><h3 style="margin:0;">🏢 ${esc(e.nome)}</h3>
+        <div style="font-size:12.5px; color:var(--ink-soft); margin-top:4px;">${esc(e.cnpj||'sem CNPJ')} · ${esc(REGIMES_ROTULO[e.regime_tributario]||e.regime_tributario||'—')}${e.cidade?' · '+esc(e.cidade)+'/'+esc(e.uf||''):''}${e.ativo?'':' · <span class="tag err">inativa</span>'}</div></div>
+      <button class="btn small" id="atdFichaFechar">×</button>
+    </div>
+    <div class="atd-ficha-sec"><h4>📥 O escritório aguarda do cliente (${esc(f.competencia)})</h4>
+      ${f.pendencias.length ? f.pendencias.map(p=>`<div class="atd-ficha-linha"><b>${esc(p.modelo)}</b>${p.prazoVencido?' <span class="tag err">prazo vencido</span>':''}<div style="color:var(--ink-soft);">${p.itens.map(esc).join(' · ')}</div></div>`).join('') : '<div class="atd-ficha-vazio">Nada pendente. ✅</div>'}
+    </div>
+    ${f.documentos ? `<div class="atd-ficha-sec"><h4>📤 Documentos e guias enviados</h4>
+      ${f.documentos.length ? f.documentos.map(d=>`<div class="atd-ficha-linha row" style="justify-content:space-between; gap:8px; flex-wrap:nowrap;">
+        <div style="min-width:0;"><b>${esc(d.tipo)}</b> ${esc(d.competencia)}<div style="color:var(--ink-soft); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">enviado ${atdBr(d.enviadoEm)}${d.vencimento?' · venc. '+atdBr(d.vencimento):''} · ${esc(d.arquivo)}</div></div>
+        ${podeEnviar?`<button class="btn small" data-doc="${d.id}" data-nome="${esc(d.arquivo)}" data-legenda="${esc(d.tipo+' '+d.competencia+(d.vencimento?' — vencimento '+atdBr(d.vencimento):''))}" title="Enviar na conversa">📤</button>`:''}
+      </div>`).join('') : '<div class="atd-ficha-vazio">Nenhum documento enviado.</div>'}
+    </div>` : ''}
+    ${f.nfse ? `<div class="atd-ficha-sec"><h4>🧾 NFS-e emitidas</h4>
+      ${f.nfse.length ? f.nfse.map(n=>`<div class="atd-ficha-linha row" style="justify-content:space-between; gap:8px; flex-wrap:nowrap;">
+        <div style="min-width:0;"><b>Nº ${esc(n.numero||'—')}</b> · ${atdMoeda(n.valor)} <span class="tag muted">${esc(n.status)}</span><div style="color:var(--ink-soft); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${esc(n.tomador)} · ${esc(n.competencia||atdBr(n.criadoEm))}</div></div>
+        ${podeEnviar && n.numero?`<button class="btn small" data-nfse="${n.id}" data-nome="NFS-e ${esc(n.numero||n.id)}.pdf" data-legenda="NFS-e nº ${esc(n.numero||'')} — ${esc(n.tomador)}" title="Enviar o PDF na conversa">📤</button>`:''}
+      </div>`).join('') : '<div class="atd-ficha-vazio">Nenhuma NFS-e emitida.</div>'}
+    </div>` : ''}
+    ${f.honorarios ? `<div class="atd-ficha-sec"><h4>💰 Honorários em aberto</h4>
+      ${f.honorarios.length ? f.honorarios.map(h=>`<div class="atd-ficha-linha">${esc(h.competencia)} · ${atdMoeda(h.valor)} · venc. ${atdBr(h.vencimento)} <span class="tag ${h.status==='atrasado'?'err':'warn'}">${esc(h.status)}</span></div>`).join('') : '<div class="atd-ficha-vazio">Em dia. ✅</div>'}
+    </div>` : ''}
+    <div class="atd-ficha-sec"><h4>👥 Contatos da empresa</h4>
+      ${f.contatos.length ? f.contatos.map(k=>`<div class="atd-ficha-linha">${esc(k.nome)}<div style="color:var(--ink-soft);">${esc([k.telefone,k.email].filter(Boolean).join(' · '))}</div></div>`).join('') : '<div class="atd-ficha-vazio">Nenhum contato cadastrado.</div>'}
+    </div>
+  `);
+  document.getElementById('atdFichaFechar').addEventListener('click', closeDrawer);
+  const enviar = async (btn, url)=>{
+    btn.disabled = true;
+    try{
+      const r = await fetch(url, { credentials:'include' });
+      if(!r.ok){ let m='Erro '+r.status; try{ m=(await r.json()).error||m; }catch(_){} throw new Error(m); }
+      const blob = await r.blob();
+      const arquivo = new File([blob], btn.dataset.nome, { type: blob.type || 'application/pdf' });
+      await atdEnviarArquivo(S, arquivo, btn.dataset.legenda);
+      toast('Enviado na conversa.','ok');
+      btn.textContent = '✓';
+    }catch(err){ toast(err.message,'err'); btn.disabled = false; }
+  };
+  document.querySelectorAll('#drawerBody [data-doc]').forEach(b=>b.addEventListener('click', ()=>enviar(b, '/api/envio/documentos/'+b.dataset.doc+'/download')));
+  document.querySelectorAll('#drawerBody [data-nfse]').forEach(b=>b.addEventListener('click', ()=>enviar(b, '/api/nfse/emissoes/'+b.dataset.nfse+'/danfse')));
+}
 // ---- Respostas rápidas ----
 // As mesmas "Respostas rápidas" do deskcomm (message_templates): pessoais + compartilhadas com a equipe.
 // Variáveis: {{nome}} (primeiro nome do cliente), {{empresa}}, {{atendente}} (quem está respondendo).

@@ -13503,6 +13503,151 @@ async function atendimentoColetarPesquisas() {
   }
 }
 setInterval(() => atendimentoColetarPesquisas(), 60_000);
+// ---------- Situação da empresa (ficha no atendimento + nota pro robô) ----------
+// O que o escritório espera do cliente (Solicitações de Documentos da competência anterior), o que já
+// mandou pra ele (Envio de Documentos), NFS-e emitidas e honorários em aberto. A mesma leitura alimenta a
+// ficha lateral da conversa e a nota "[Sistema] Situação no escritório" que o robô do setor lê.
+function empresaSituacao(empresaId: number) {
+  const agora = agoraBrasilia();
+  const mesRef = agora.mes === 1 ? 12 : agora.mes - 1;
+  const anoRef = agora.mes === 1 ? agora.ano - 1 : agora.ano;
+  const competencia = `${String(mesRef).padStart(2, "0")}/${anoRef}`;
+  const pendencias: { modelo: string; itens: string[]; prazoVencido: boolean }[] = [];
+  const atribs = sqlite
+    .prepare(`SELECT a.id, t.nome, t.itens_json, t.prazo_dia FROM checklist_atribuicoes a JOIN checklist_templates t ON t.id = a.template_id
+              WHERE a.empresa_id = ? AND a.ativo = 1 AND t.ativo = 1 AND (t.periodicidade IS NULL OR t.periodicidade = 'mensal')`)
+    .all(empresaId) as any[];
+  for (const a of atribs) {
+    const obrig = (JSON.parse(a.itens_json || "[]") as any[]).filter((it) => it.obrigatorio);
+    if (!obrig.length) continue;
+    const periodo = sqlite.prepare(`SELECT id FROM checklist_periodos WHERE atribuicao_id = ? AND ano = ? AND mes = ?`).get(a.id, anoRef, mesRef) as any;
+    let faltando = obrig.map((it) => it.label as string);
+    if (periodo) {
+      const enviados = new Set((sqlite.prepare(`SELECT item_chave FROM checklist_uploads WHERE periodo_id = ? AND status = 'salvo'`).all(periodo.id) as any[]).map((u) => u.item_chave));
+      const reabertos = new Set((sqlite.prepare(`SELECT item_chave FROM checklist_reaberturas WHERE periodo_id = ? AND resolvido = 0`).all(periodo.id) as any[]).map((r) => r.item_chave));
+      faltando = obrig.filter((it) => !enviados.has(it.chave) || reabertos.has(it.chave)).map((it) => it.label);
+    }
+    if (faltando.length) pendencias.push({ modelo: a.nome, itens: faltando, prazoVencido: !!a.prazo_dia && agora.dia > a.prazo_dia });
+  }
+  const documentos = (sqlite
+    .prepare(`SELECT d.id, d.file_name, d.vencimento, d.enviado_em, d.observacao, d.email_enviado, d.whatsapp_enviado, t.nome AS tipo, p.ano, p.mes, p.rotulo
+              FROM envio_documentos d JOIN envio_periodos p ON p.id = d.periodo_id JOIN envio_atribuicoes a ON a.id = p.atribuicao_id JOIN envio_templates t ON t.id = a.template_id
+              WHERE a.empresa_id = ? ORDER BY d.enviado_em DESC, d.id DESC LIMIT 12`)
+    .all(empresaId) as any[]).map((d) => ({
+      id: d.id, tipo: d.tipo, arquivo: d.file_name, vencimento: d.vencimento, enviadoEm: d.enviado_em, observacao: d.observacao,
+      competencia: d.rotulo || (d.mes ? `${String(d.mes).padStart(2, "0")}/${d.ano}` : String(d.ano)),
+      avisado: !!(d.email_enviado || d.whatsapp_enviado),
+    }));
+  const nfse = (sqlite
+    .prepare(`SELECT id, numero_nfse, tomador_nome, valor_servico, competencia, status, criado_em, danfse_path FROM nfse_emissoes
+              WHERE empresa_id = ? AND numero_dps > 0 AND ambiente = 'producao' ORDER BY id DESC LIMIT 6`)
+    .all(empresaId) as any[]).map((n) => ({ id: n.id, numero: n.numero_nfse, tomador: n.tomador_nome, valor: n.valor_servico, competencia: n.competencia, status: n.status, criadoEm: n.criado_em, temPdf: !!n.danfse_path }));
+  const hojeIso = new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+  const honorarios = (sqlite
+    .prepare(`SELECT competencia, valor, vencimento, status FROM honorarios_lancamentos WHERE empresa_id = ? AND status IN ('pendente','atrasado') ORDER BY vencimento`)
+    .all(empresaId) as any[]).map((h) => ({ ...h, status: h.status === "pendente" && h.vencimento < hojeIso ? "atrasado" : h.status }));
+  return { competencia, pendencias, documentos, nfse, honorarios };
+}
+app.get("/api/atendimento/empresa/:id/ficha", blockCliente, (req, res) => {
+  const user = (req as any).user;
+  const id = Number(req.params.id);
+  if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
+  if (!podeAcessarEmpresa(user, id)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const e = sqlite.prepare(`SELECT id, nome, apelido, cnpj, regime_tributario, cidade, uf, email, telefone, ativo FROM empresas WHERE id = ?`).get(id) as any;
+  if (!e) return res.status(404).json({ error: "Empresa não encontrada." });
+  const sit = empresaSituacao(id);
+  const contatos = sqlite.prepare(`SELECT nome, email, telefone FROM empresa_contatos WHERE empresa_id = ? ORDER BY nome`).all(id);
+  res.json({
+    empresa: e, contatos, competencia: sit.competencia, pendencias: sit.pendencias,
+    documentos: hasPermissao(user, "envio", "visualizar") ? sit.documentos : null,
+    nfse: hasPermissao(user, "nfse", "visualizar") ? sit.nfse : null,
+    honorarios: hasPermissao(user, "financeiro", "visualizar") ? sit.honorarios : null,
+  });
+});
+// Nota "[Sistema] Situação no escritório" no contato do deskcomm (lead_notes). O TÍTULO da nota entra
+// em toda resposta do robô (índice de notas do get-lead-context), então os fatos principais vão nele
+// (≤300 caracteres); o corpo tem o detalhe. Só pra contato cujo telefone está cadastrado numa empresa —
+// é a mesma confiança de mandar guia por WhatsApp pra esse número. Honorários ficam FORA (cobrança não
+// é assunto do robô). Atualiza a cada 20 min; contato que deixou de ter empresa perde a nota.
+const NOTA_SISTEMA_PREFIXO = "[Sistema] Situação no escritório";
+function deskcommEmpresasIdsPorTelefone(): Map<string, { id: number; nome: string }[]> {
+  const rows = sqlite
+    .prepare(
+      `SELECT id, nome, telefone FROM empresas WHERE escritorio_id = ? AND ativo = 1 AND telefone IS NOT NULL AND telefone != ''
+       UNION ALL
+       SELECT e.id, e.nome, ec.telefone FROM empresa_contatos ec JOIN empresas e ON e.id = ec.empresa_id
+        WHERE e.escritorio_id = ? AND e.ativo = 1 AND ec.telefone IS NOT NULL AND ec.telefone != ''`
+    )
+    .all(DESKCOMM_ESCRITORIO_ID, DESKCOMM_ESCRITORIO_ID) as any[];
+  const mapa = new Map<string, { id: number; nome: string }[]>();
+  for (const r of rows) {
+    for (const pedaco of String(r.telefone).split(/[\/;,]| e /)) {
+      const chave = telefoneChaveBr(pedaco);
+      if (!chave) continue;
+      const l = mapa.get(chave) || [];
+      if (!l.some((x) => x.id === r.id)) l.push({ id: r.id, nome: r.nome });
+      mapa.set(chave, l);
+    }
+  }
+  return mapa;
+}
+function notaSituacaoTexto(empresas: { id: number; nome: string }[]): { headline: string; body: string } {
+  const hoje = new Date().toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" }).slice(0, 5);
+  const fmtData = (iso: string | null) => (iso ? iso.slice(8, 10) + "/" + iso.slice(5, 7) : "?");
+  const partesTitulo: string[] = [];
+  const corpo: string[] = [`Atualizado em ${new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" })} pelo sistema do escritório. Use só estes fatos; o que não estiver aqui, diga que vai verificar com a equipe.`];
+  for (const e of empresas.slice(0, 5)) {
+    const sit = empresaSituacao(e.id);
+    const pend = sit.pendencias.flatMap((p) => p.itens);
+    const guias = sit.documentos.slice(0, 4).map((d) => `${d.tipo} ${d.competencia} (enviada ${fmtData(d.enviadoEm)}${d.vencimento ? ", venc. " + fmtData(d.vencimento) : ""})`);
+    partesTitulo.push(`${e.nome.split(" ").slice(0, 3).join(" ")}: ${pend.length ? "aguardamos " + pend.slice(0, 3).join(", ") + (pend.length > 3 ? "…" : "") : "sem pendências"}${guias.length ? "; última guia " + guias[0] : ""}`);
+    corpo.push(`\n## ${e.nome}`);
+    corpo.push(sit.pendencias.length
+      ? `Documentos que o escritório AGUARDA do cliente (competência ${sit.competencia}):\n` + sit.pendencias.map((p) => `- ${p.modelo}: ${p.itens.join(", ")}${p.prazoVencido ? " (prazo vencido)" : ""}`).join("\n")
+      : `Nenhum documento pendente do cliente na competência ${sit.competencia}.`);
+    corpo.push(sit.documentos.length
+      ? "Documentos/guias que o escritório JÁ ENVIOU ao cliente (mais recentes):\n" + sit.documentos.slice(0, 8).map((d) => `- ${d.tipo} ${d.competencia}: enviado em ${fmtData(d.enviadoEm)}${d.vencimento ? ", vencimento " + fmtData(d.vencimento) : ""}${d.avisado ? " (cliente avisado por e-mail/WhatsApp)" : ""}`).join("\n")
+      : "Nenhuma guia/documento enviado registrado.");
+    if (sit.nfse.length) corpo.push("NFS-e emitidas pelo escritório (mais recentes):\n" + sit.nfse.slice(0, 5).map((n) => `- Nº ${n.numero || "?"} para ${n.tomador} (${n.competencia || fmtData(n.criadoEm)}) — ${n.status}`).join("\n"));
+  }
+  const headline = `${NOTA_SISTEMA_PREFIXO} (${hoje}) — ` + partesTitulo.join(" | ");
+  return { headline: headline.length > 300 ? headline.slice(0, 297) + "…" : headline, body: corpo.join("\n").slice(0, 3990) };
+}
+let notasSituacaoRodando = false;
+async function deskcommSincronizarNotasSituacao() {
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID || notasSituacaoRodando) return;
+  notasSituacaoRodando = true;
+  try {
+    const porTelefone = deskcommEmpresasIdsPorTelefone();
+    const contatos = await painelPaginado((de, ate) => deskcommAdmin!.from("contacts").select("id, phone_number").eq("organization_id", DESKCOMM_ORG_ID).not("phone_number", "is", null).order("id").range(de, ate));
+    const notas = await painelPaginado((de, ate) => deskcommAdmin!.from("lead_notes").select("id, contact_id, headline, body").eq("organization_id", DESKCOMM_ORG_ID).like("headline", `${NOTA_SISTEMA_PREFIXO}%`).order("id").range(de, ate));
+    const notaPorContato = new Map(notas.map((n) => [n.contact_id, n]));
+    let gravadas = 0, removidas = 0;
+    for (const c of contatos) {
+      const chave = telefoneChaveBr(c.phone_number);
+      const empresas = (chave && porTelefone.get(chave)) || [];
+      const atual = notaPorContato.get(c.id);
+      if (!empresas.length) {
+        if (atual) { await deskcommAdmin.from("lead_notes").delete().eq("id", atual.id).eq("organization_id", DESKCOMM_ORG_ID); removidas++; }
+        continue;
+      }
+      const { headline, body } = notaSituacaoTexto(empresas);
+      // Só grava se mudou algo além da data do título.
+      const semData = (h: string) => h.replace(/\(\d\d\/\d\d\)/, "");
+      if (atual && semData(atual.headline) === semData(headline) && atual.body.split("\n").slice(1).join("\n") === body.split("\n").slice(1).join("\n")) continue;
+      if (atual) await deskcommAdmin.from("lead_notes").update({ headline, body, embedding: null, updated_at: new Date().toISOString() }).eq("id", atual.id).eq("organization_id", DESKCOMM_ORG_ID);
+      else await deskcommAdmin.from("lead_notes").insert({ organization_id: DESKCOMM_ORG_ID, contact_id: c.id, headline, body });
+      gravadas++;
+    }
+    if (gravadas || removidas) console.log(`Notas de situação → deskcomm: ${gravadas} gravada(s), ${removidas} removida(s)`);
+  } catch (e: any) {
+    console.error("[notas situação]", e.message);
+  } finally {
+    notasSituacaoRodando = false;
+  }
+}
+setInterval(() => deskcommSincronizarNotasSituacao(), 20 * 60_000);
+setTimeout(() => deskcommSincronizarNotasSituacao(), 90_000);
 // ---------- Painel do atendimento (CRM › Painel) ----------
 // Visão geral pro gestor: o que está acontecendo AGORA (fila, com quem está, quem espera resposta, conversa
 // parada) e como foi o PERÍODO (volume, tempos de resposta, desempenho por funcionário, agenda).
