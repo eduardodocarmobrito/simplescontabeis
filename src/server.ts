@@ -13598,6 +13598,9 @@ function notaSituacaoTexto(empresas: { id: number; nome: string }[]): { headline
   const corpo: string[] = [`Atualizado em ${new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" })} pelo sistema do escritório. Use só estes fatos; o que não estiver aqui, diga que vai verificar com a equipe.`];
   for (const e of empresas.slice(0, 5)) {
     const sit = empresaSituacao(e.id);
+    // Um por tipo+competência (o mais recente): consulta reenviada todo dia não pode ocupar a lista toda.
+    const vistos = new Set<string>();
+    sit.documentos = sit.documentos.filter((d) => { const k = d.tipo + "|" + d.competencia; if (vistos.has(k)) return false; vistos.add(k); return true; });
     const pend = sit.pendencias.flatMap((p) => p.itens);
     const guias = sit.documentos.slice(0, 4).map((d) => `${d.tipo} ${d.competencia} (enviada ${fmtData(d.enviadoEm)}${d.vencimento ? ", venc. " + fmtData(d.vencimento) : ""})`);
     partesTitulo.push(`${e.nome.split(" ").slice(0, 3).join(" ")}: ${pend.length ? "aguardamos " + pend.slice(0, 3).join(", ") + (pend.length > 3 ? "…" : "") : "sem pendências"}${guias.length ? "; última guia " + guias[0] : ""}`);
