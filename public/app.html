@@ -402,6 +402,10 @@
   .chat-conv-badge{background:var(--debit); color:#fff; font-size:10px; font-weight:700; min-width:17px; height:17px; border-radius:9px; display:flex; align-items:center; justify-content:center; padding:0 4px; flex:none;}
   .chat-conv-busca{padding:8px 10px; border-bottom:1px solid var(--rule); flex:none;}
   .chat-conv-busca input{width:100%; font-size:12.5px; padding:6px 8px; border:1px solid var(--rule); border-radius:7px; background:var(--paper);}
+.atd-msg{ position:relative; }
+.atd-msg-menu{ position:absolute; top:2px; right:4px; border:0; background:rgba(0,0,0,.08); border-radius:6px; width:22px; height:20px; line-height:16px; cursor:pointer; opacity:0; transition:opacity .15s; font-weight:700; }
+.atd-msg:hover .atd-msg-menu{ opacity:1; }
+@media (hover:none){ .atd-msg-menu{ opacity:.7; } }
 </style>
 </head>
 <body>
@@ -8969,8 +8973,9 @@ async function atdCarregarMensagens(S, primeira){
   try{ msgs = await dcApi(`/conversations/${id}/messages?limit=100`); }
   catch(e){ if(primeira) lista.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
   if(S.conversaAtiva!==id || !document.getElementById('atdMsgs') || !atdNaTela(S)) return;
-  msgs = msgs || [];
-  const ultima = msgs.length ? msgs[msgs.length-1].id+'|'+msgs[msgs.length-1].status : 'vazio';
+  msgs = (msgs || []).filter(m=>!(m.metadata && m.metadata.oculta_da_equipe));
+  S.msgsPorId = {}; msgs.forEach(m=>{ S.msgsPorId[m.id]=m; });
+  const ultima = msgs.length ? msgs[msgs.length-1].id+'|'+msgs[msgs.length-1].status+'|'+(msgs[msgs.length-1].body||'').length+'|'+(msgs[msgs.length-1].revoked_at||'')+'|'+msgs.length : 'vazio';
   if(!primeira && ultima===S.ultimaMsgId) return; // nada mudou — não redesenha (preserva o áudio tocando)
   // Chegou mensagem do cliente com a conversa aberta na tela: ela já foi vista — marca como lida.
   if(!primeira && msgs.length && msgs[msgs.length-1].direction==='inbound' && !document.hidden) atdMarcarLida(S, id);
@@ -8978,6 +8983,7 @@ async function atdCarregarMensagens(S, primeira){
   const c = S.conversaDados || {};
   const pertoDoFim = lista.scrollHeight - lista.scrollTop - lista.clientHeight < 80;
   let diaAnterior = '';
+  const podePostarMsg = can(S.cfg.modulo,'postar');
   lista.innerHTML = msgs.length ? msgs.map(m=>{
     const quando = m.sent_at || m.created_at;
     const dia = new Date(quando).toLocaleDateString('pt-BR');
@@ -8985,10 +8991,56 @@ async function atdCarregarMensagens(S, primeira){
     diaAnterior = dia;
     const falhou = m.status==='failed' ? ` <span style="color:var(--debit)">· falhou${m.error_message?': '+esc(m.error_message):''}</span>` : '';
     const apagada = m.revoked_at ? '<i>Mensagem apagada</i>' : '';
-    return `${sep}<div class="chat-msg ${m.direction==='inbound'?'theirs':'mine'} ${m.direction!=='inbound' && !m.sent_by_user_id && m.sent_via!=='external_device'?'dprh-bot':''}">${apagada || ((m.body?esc(m.body):'') + atdMidiaHtml(m))}<span class="hora">${esc(atdAutorMsg(S,m,c))} · ${esc(new Date(quando).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}))}${falhou}</span></div>`;
+    const editada = m.metadata && m.metadata.editada_em ? ' · editada' : '';
+    const menuBtn = (podePostarMsg && !apagada) || (podePostarMsg && m.revoked_at) ? `<button class="atd-msg-menu" data-msg="${esc(m.id)}" title="Editar / excluir">⋯</button>` : '';
+    return `${sep}<div class="chat-msg atd-msg ${m.direction==='inbound'?'theirs':'mine'} ${m.direction!=='inbound' && !m.sent_by_user_id && m.sent_via!=='external_device'?'dprh-bot':''}">${menuBtn}${apagada || ((m.body?esc(m.body):'') + atdMidiaHtml(m))}<span class="hora">${esc(atdAutorMsg(S,m,c))} · ${esc(new Date(quando).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}))}${editada}${falhou}</span></div>`;
   }).join('') : `<div class="empty-state" id="atdVazio">Nenhuma mensagem ainda.</div>`;
   if(!msgs.length && primeira) atdExplicarVazio(S, id);
+  lista.querySelectorAll('.atd-msg-menu').forEach(b=>b.addEventListener('click', ev=>{ ev.stopPropagation(); atdMenuMensagem(S, b.dataset.msg); }));
   if(primeira || pertoDoFim) lista.scrollTop = lista.scrollHeight;
+}
+// Editar / excluir uma mensagem. Editar e "excluir para todos" agem no WhatsApp do cliente (só mensagens nossas; editar
+// só até 15 min). "Excluir" só esconde da equipe — a mensagem continua guardada como prova.
+function atdMenuMensagem(S, id){
+  const m = S.msgsPorId && S.msgsPorId[id];
+  if(!m) return;
+  const nossa = m.direction==='outbound';
+  const idadeMin = (Date.now() - new Date(m.sent_at||m.created_at).getTime())/60000;
+  const podeEditar = nossa && m.type==='text' && !m.revoked_at && idadeMin<=15;
+  openModal(`
+    <h3>Mensagem</h3>
+    <div style="background:var(--bg-soft,#f4f6f5); border-radius:8px; padding:10px; margin-bottom:12px; max-height:120px; overflow:auto; white-space:pre-wrap;">${esc(m.body||'['+(m.type||'mídia')+']')}</div>
+    <div style="display:flex; flex-direction:column; gap:8px;">
+      ${podeEditar?`<button class="btn" id="msgEditar">✏️ Editar mensagem</button>`:''}
+      ${nossa && !m.revoked_at?`<button class="btn danger" id="msgParaTodos">🗑 Excluir para todos <span style="font-weight:400; font-size:12px;">(apaga no WhatsApp do cliente)</span></button>`:''}
+      <button class="btn" id="msgExcluir">🙈 Excluir <span style="font-weight:400; font-size:12px;">(some daqui; o histórico continua guardado)</span></button>
+      ${nossa && !podeEditar && m.type==='text' && !m.revoked_at?`<div style="font-size:12px; color:var(--ink-soft);">Editar só é possível até 15 minutos depois do envio.</div>`:''}
+    </div>
+    <div class="modal-actions"><button class="btn" id="msgFechar">Fechar</button></div>
+  `);
+  const recarregar = async ()=>{ S.ultimaMsgId = null; await atdCarregarMensagens(S, true); atdCarregarLista(S); };
+  document.getElementById('msgFechar').addEventListener('click', closeModal);
+  const chamar = async (acao, corpo, ok, btn)=>{
+    btn.disabled = true;
+    try{ await api('/atendimento/mensagens/'+id+'/'+acao, { method:'POST', body: corpo||{} }); closeModal(); toast(ok,'ok'); await recarregar(); }
+    catch(e){ btn.disabled = false; toast(e.message,'err'); }
+  };
+  const bExc = document.getElementById('msgExcluir');
+  bExc.addEventListener('click', ()=>{ if(confirmar('Esconder esta mensagem da conversa? (ela continua guardada no histórico)')) chamar('excluir', null, 'Mensagem escondida.', bExc); });
+  const bTodos = document.getElementById('msgParaTodos');
+  if(bTodos) bTodos.addEventListener('click', ()=>{ if(confirmar('Apagar esta mensagem para todos? Ela some do WhatsApp do cliente.')) chamar('excluir-para-todos', null, 'Mensagem apagada para todos.', bTodos); });
+  const bEd = document.getElementById('msgEditar');
+  if(bEd) bEd.addEventListener('click', ()=>{
+    openModal(`
+      <h3>Editar mensagem</h3>
+      <div class="field"><textarea id="msgNovoTexto" rows="4" maxlength="4096" style="width:100%;">${esc(m.body||'')}</textarea></div>
+      <div class="modal-actions"><button class="btn" id="msgEdCancelar">Cancelar</button><button class="btn primary" id="msgEdSalvar">Salvar</button></div>
+    `);
+    const ta = document.getElementById('msgNovoTexto'); ta.focus();
+    document.getElementById('msgEdCancelar').addEventListener('click', closeModal);
+    const bs = document.getElementById('msgEdSalvar');
+    bs.addEventListener('click', ()=>{ const t=ta.value.trim(); if(!t){ toast('Escreva o novo texto.','err'); return; } chamar('editar', { texto:t }, 'Mensagem editada.', bs); });
+  });
 }
 // Arquivo ou áudio: sobe pro storage do deskcomm (/media devolve o tipo — imagem, documento, áudio…)
 // e depois manda a mensagem com ele. Nota de voz gravada no navegador sai em webm; o deskcomm converte

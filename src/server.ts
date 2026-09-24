@@ -14335,6 +14335,67 @@ app.put("/api/atendimento/contatos/:id/nome", blockCliente, async (req, res) => 
     res.status(502).json({ error: e.message });
   }
 });
+// ---- Editar / excluir mensagem ----
+// Editar e "excluir para todos" agem no WhatsApp do cliente (WAHA, pelo caminho fechado /simplescontabeis/waha-msg no
+// Caddy da VPS) e só valem pra mensagem NOSSA enviada pelo WhatsApp. "Excluir" só esconde da equipe: a mensagem
+// continua guardada (histórico de provas) e nada muda no WhatsApp. Nada é apagado do banco.
+async function atendimentoMensagemParaAcao(user: any, id: string) {
+  if (!atendimentoAlgumaPermissao(user, "postar")) throw Object.assign(new Error("Você não tem permissão para fazer isso."), { codigo: 403 });
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID || !ATENDIMENTO_WAHA_SEEN_TOKEN) throw Object.assign(new Error("Integração com o deskcomm não configurada no servidor."), { codigo: 503 });
+  const { data: m, error } = await deskcommAdmin.from("messages")
+    .select("id, conversation_id, external_id, direction, type, body, sent_at, created_at, revoked_at, metadata, conversation:conversations(channel_session:channel_sessions(waha_session_name))")
+    .eq("organization_id", DESKCOMM_ORG_ID).eq("id", id).maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!m) throw Object.assign(new Error("Mensagem não encontrada."), { codigo: 404 });
+  return m as any;
+}
+async function atendimentoChamarWahaMsg(m: any, metodo: "PUT" | "DELETE", corpo?: any) {
+  const sessao = m.conversation?.channel_session?.waha_session_name;
+  const partes = String(m.external_id || "").split("_");
+  if (!sessao || partes.length < 3 || partes[0] !== "true") throw Object.assign(new Error("Só dá pra fazer isso em mensagens enviadas pelo WhatsApp (as do celular ou do sistema)."), { codigo: 400 });
+  const chatId = partes[1];
+  const url = `${DESKCOMM_URL}/simplescontabeis/waha-msg/${encodeURIComponent(sessao)}/${encodeURIComponent(chatId).replace(/%40/g, "@")}/${encodeURIComponent(m.external_id).replace(/%40/g, "@")}`;
+  const r = await fetch(url, { method: metodo, headers: { "Content-Type": "application/json", "X-Simples-Token": ATENDIMENTO_WAHA_SEEN_TOKEN }, body: corpo ? JSON.stringify(corpo) : undefined });
+  if (!r.ok) throw new Error(`WhatsApp ${r.status}: ${(await r.text().catch(() => "")).slice(0, 200)}`);
+}
+function atendimentoRespErro(res: express.Response, e: any) {
+  res.status(e.codigo || 502).json({ error: e.message });
+}
+app.post("/api/atendimento/mensagens/:id/editar", blockCliente, async (req, res) => {
+  try {
+    const m = await atendimentoMensagemParaAcao((req as any).user, String(req.params.id));
+    const texto = String(req.body?.texto ?? "").trim();
+    if (!texto) return res.status(400).json({ error: "Escreva o novo texto." });
+    if (m.direction !== "outbound" || m.type !== "text" || m.revoked_at) return res.status(400).json({ error: "Só dá pra editar mensagens de texto que enviamos e que não foram apagadas." });
+    const idade = Date.now() - new Date(m.sent_at || m.created_at).getTime();
+    if (idade > 15 * 60 * 1000) return res.status(400).json({ error: "O WhatsApp só permite editar até 15 minutos depois do envio." });
+    await atendimentoChamarWahaMsg(m, "PUT", { text: texto });
+    const meta = { ...(m.metadata || {}), editada_em: new Date().toISOString(), texto_original: (m.metadata as any)?.texto_original ?? m.body };
+    const { error } = await deskcommAdmin!.from("messages").update({ body: texto, metadata: meta }).eq("id", m.id);
+    if (error) throw new Error(error.message);
+    res.json({ ok: true });
+  } catch (e: any) { atendimentoRespErro(res, e); }
+});
+app.post("/api/atendimento/mensagens/:id/excluir-para-todos", blockCliente, async (req, res) => {
+  try {
+    const m = await atendimentoMensagemParaAcao((req as any).user, String(req.params.id));
+    if (m.direction !== "outbound") return res.status(400).json({ error: "Só dá pra apagar pra todos as mensagens que nós enviamos." });
+    if (m.revoked_at) return res.json({ ok: true });
+    await atendimentoChamarWahaMsg(m, "DELETE");
+    // O texto original fica guardado (body intacto); a tela mostra "Mensagem apagada".
+    const { error } = await deskcommAdmin!.from("messages").update({ revoked_at: new Date().toISOString(), metadata: { ...(m.metadata || {}), apagada_por_nos: true } }).eq("id", m.id);
+    if (error) throw new Error(error.message);
+    res.json({ ok: true });
+  } catch (e: any) { atendimentoRespErro(res, e); }
+});
+app.post("/api/atendimento/mensagens/:id/excluir", blockCliente, async (req, res) => {
+  try {
+    const m = await atendimentoMensagemParaAcao((req as any).user, String(req.params.id));
+    const { error } = await deskcommAdmin!.from("messages").update({ metadata: { ...(m.metadata || {}), oculta_da_equipe: true } }).eq("id", m.id);
+    if (error) throw new Error(error.message);
+    res.json({ ok: true });
+  } catch (e: any) { atendimentoRespErro(res, e); }
+});
 app.post("/api/atendimento/conversas/:id/lida", blockCliente, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
