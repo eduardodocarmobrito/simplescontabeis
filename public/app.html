@@ -7594,17 +7594,19 @@ function painelCard(titulo, valor, sub, chave, destaque){
   return `<div class="card painel-card ${chave?'painel-clicavel':''} ${destaque||''}" ${chave?`data-lista="${chave}"`:''}>
     <div class="painel-titulo">${esc(titulo)}</div><div class="painel-valor">${valor}</div>${sub?`<div class="painel-sub">${sub}</div>`:''}</div>`;
 }
-function painelListaModal(titulo, itens){
+function painelListaModal(titulo, itens, modo){
+  const enc = modo==='quando';
+  const fmtQ = q=>q?new Date(q).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'—';
   openModal(`
     <h3>${esc(titulo)} <span style="font-weight:400; color:var(--ink-soft);">(${itens.length})</span></h3>
-    <div style="max-height:60vh; overflow-y:auto;">${itens.length ? `<table class="data-table"><thead><tr><th>Cliente</th><th>Setor</th><th>Com quem</th><th>Esperando resposta</th><th>Última mensagem</th></tr></thead><tbody>
+    <div style="max-height:60vh; overflow-y:auto;">${itens.length ? `<table class="data-table"><thead><tr><th>Cliente</th><th>Setor</th><th>Com quem</th><th>${enc?'Encerrado em':'Esperando resposta'}</th><th>Última mensagem</th></tr></thead><tbody>
       ${itens.map(i=>`<tr data-conv="${esc(i.id)}" style="cursor:pointer;" title="Abrir a conversa">
         <td>💬 ${esc(i.nome||i.telefone)}${i.empresa?`<div style="font-size:11.5px; color:var(--ink-soft);">${esc(i.empresa)}</div>`:''}</td>
         <td>${esc(i.setor||'Sem setor')}</td>
         <td>${i.atendente?esc(i.atendente):(i.comando==='automatico'?'🤖 IA':'<span class="tag warn">Ninguém</span>')}</td>
-        <td>${i.esperaMin!=null?`<span class="tag ${i.esperaMin>=120?'err':i.esperaMin>=30?'warn':'ok'}">${painelDurMin(i.esperaMin)}</span>`:'—'}</td>
+        <td>${enc?esc(fmtQ(i.quandoEm)):i.esperaMin!=null?`<span class="tag ${i.esperaMin>=120?'err':i.esperaMin>=30?'warn':'ok'}">${painelDurMin(i.esperaMin)}</span>`:'—'}</td>
         <td style="max-width:260px;"><div style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${esc(i.ultimaMensagem||'')}</div><div style="font-size:11.5px; color:var(--ink-soft);">há ${painelDurMin(i.paradaMin)}</div></td>
-      </tr>`).join('')}</tbody></table>` : '<div class="empty-state">Ninguém aqui agora. 🎉</div>'}</div>
+      </tr>`).join('')}</tbody></table>` : (enc?'<div class="empty-state">Nenhum atendimento encerrado neste período.</div>':'<div class="empty-state">Ninguém aqui agora. 🎉</div>')}</div>
     <div class="modal-actions"><button class="btn" id="painelFechar">Fechar</button></div>
   `, '900px');
   document.getElementById('painelFechar').addEventListener('click', closeModal);
@@ -7649,6 +7651,7 @@ async function crmPainel(box, silencioso){
     fila: ['Na fila, sem atendente', a.fila], aguardando: ['Clientes esperando resposta', a.aguardandoResposta],
     ia: ['Com a IA agora', a.ia], atendimento: ['Em atendimento', a.emAtendimento],
     parada: ['Sem interação há mais de 2 horas', a.semInteracao2h], adiadas: ['Adiadas', a.adiadas],
+    encerrados: ['Atendimentos encerrados no período', p.listaEncerrados||[], 'quando'],
     abertas: ['Todas as conversas abertas', [...a.fila, ...a.ia, ...a.emAtendimento].filter((x,i,arr)=>arr.findIndex(y=>y.id===x.id)===i)],
   };
   const maxDia = Math.max(1, ...p.porDia.map(x=>x.recebidas+x.ia+x.humano));
@@ -7682,7 +7685,7 @@ async function crmPainel(box, silencioso){
     </div>
     <div class="painel-grade">
       ${painelCard('Atendimentos iniciados', p.atendimentosIniciados, '')}
-      ${painelCard('Atendimentos encerrados', p.atendimentosEncerrados, 'duração média '+painelDurMin(p.duracaoMediaAtendimentoMin))}
+      ${painelCard('Atendimentos encerrados', p.atendimentosEncerrados, 'duração média '+painelDurMin(p.duracaoMediaAtendimentoMin), 'encerrados')}
       ${painelCard('Mensagens recebidas', p.mensagens.recebidas, p.conversasComMensagem+' conversas com movimento')}
       ${painelCard('Mensagens enviadas', p.mensagens.ia+p.mensagens.humano, `🤖 ${p.mensagens.ia} IA · 👤 ${p.mensagens.humano} equipe`)}
       ${painelCard('Média de mensagens', p.mediaMensagensPorConversa ?? '—', 'por conversa (cliente + nós)')}
@@ -7728,7 +7731,7 @@ async function crmPainel(box, silencioso){
       </tbody></table>` : '<div class="empty-state" style="padding:16px;">Nenhuma empresa identificada nas conversas do período (o telefone precisa estar nos contatos da empresa).</div>'}
     </div>`;
   document.getElementById('painelConfig')?.addEventListener('click', ()=>painelConfigModal(box));
-  box.querySelectorAll('[data-lista]').forEach(el=>el.addEventListener('click', ()=>{ const [t,l]=listas[el.dataset.lista]; painelListaModal(t,l); }));
+  box.querySelectorAll('[data-lista]').forEach(el=>el.addEventListener('click', ()=>{ const [t,l,m]=listas[el.dataset.lista]; painelListaModal(t,l,m); }));
   box.querySelectorAll('[data-atendente]').forEach(el=>el.addEventListener('click', ()=>painelListaModal('Com '+el.dataset.atendente, a.emAtendimento.filter(i=>i.atendente===el.dataset.atendente))));
   box.querySelectorAll('[data-setor]').forEach(el=>el.addEventListener('click', ()=>painelListaModal('Setor: '+el.dataset.setor, listas.abertas[1].filter(i=>(i.setor||'Sem setor')===el.dataset.setor))));
   box.querySelectorAll('[data-periodo]').forEach(b=>b.addEventListener('click', ()=>{ PAINEL.periodo=b.dataset.periodo; crmPainel(box); }));
