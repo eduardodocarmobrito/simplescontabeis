@@ -239,6 +239,14 @@
   .tvp-card.tvp-scan{border-color:var(--tvp-accent,#5FE0A0); box-shadow:0 0 0 1px var(--tvp-accent,#5FE0A0), 0 0 34px -6px var(--tvp-accent,#5FE0A0);}
   .tvp-card.tvp-flash .tvp-val{animation:tvpFlash .9s ease;}
   .tvp-empty{font-size:18px; color:#8FB3A2; text-align:center; width:100%;}
+  .tvp-body{position:relative; min-height:0;}
+  .tvp-pagina{width:100%; animation:tvpPaginaEntra .6s ease;}
+  .tvp-pagina.tvp-off{display:none;}
+  .tvp-pagina-painel{align-self:flex-start; background:#F4F8F6; color:#1b2a24; border-radius:18px; padding:14px 18px; overflow:hidden; margin:2px 0 6px;}
+  .tvp-dots{display:flex; gap:8px; align-items:center;}
+  .tvp-dots i{width:9px; height:9px; border-radius:50%; background:rgba(234,243,238,.22); display:inline-block;}
+  .tvp-dots i.on{background:#5FE0A0; box-shadow:0 0 10px rgba(95,224,160,.7);}
+  @keyframes tvpPaginaEntra{from{opacity:0; transform:translateY(8px);}to{opacity:1; transform:none;}}
   .tvp-footer{display:flex; align-items:center; justify-content:space-between; gap:16px; padding:clamp(10px,1.6vh,18px) clamp(20px,3vw,52px) clamp(14px,2vh,24px); font-family:'IBM Plex Mono',monospace; font-size:clamp(10px,.9vw,12.5px); color:#6E9384;}
   .tvp-ticker{flex:1; overflow:hidden; white-space:nowrap; position:relative; height:1.4em;}
   .tvp-ticker-track{position:absolute; white-space:nowrap; animation:tvpTicker linear infinite; will-change:transform;}
@@ -1272,11 +1280,11 @@ function atualizarChatStatusHeader(online){
 // quadro de embarque de aeroporto (giro de destaque + "piscada" a cada atualização), atualiza os
 // valores sozinho a cada minuto, e recarrega a página inteira a cada 30min pra pegar card
 // novo/editado/removido (ou uma atualização do próprio site) sem precisar mexer na TV manualmente.
-let TVP_TIMERS = { refresh:null, reload:null, clock:null, scan:null };
+let TVP_TIMERS = { refresh:null, reload:null, clock:null, scan:null, pagina:null, pag2:null };
 let TVP_WAKE_LOCK = null;
 function pararPainelTv(){
   Object.values(TVP_TIMERS).forEach(t=>{ if(t) clearInterval(t); });
-  TVP_TIMERS = { refresh:null, reload:null, clock:null, scan:null };
+  TVP_TIMERS = { refresh:null, reload:null, clock:null, scan:null, pagina:null, pag2:null };
   if(TVP_WAKE_LOCK){ TVP_WAKE_LOCK.release().catch(()=>{}); TVP_WAKE_LOCK = null; }
   document.getElementById('tvpKeepAwakeVideo')?.remove();
 }
@@ -1335,9 +1343,13 @@ async function pagePainelTv(){
       <div class="tvp-clockwrap">
         <div class="tvp-clock" id="tvpClock">--:--:--</div>
         <div class="tvp-date" id="tvpDate"></div>
+        <div class="tvp-dots" id="tvpDots" style="justify-content:flex-end; margin-top:8px;"></div>
       </div>
     </div>
-    <div class="tvp-body"><div class="tvp-grid" id="tvpGrid"><div class="tvp-empty">Carregando…</div></div></div>
+    <div class="tvp-body">
+      <div class="tvp-pagina" id="tvpPag1"><div class="tvp-grid" id="tvpGrid"><div class="tvp-empty">Carregando…</div></div></div>
+      <div class="tvp-pagina tvp-pagina-painel tvp-off" id="tvpPag2"><div class="tvp-empty">Carregando…</div></div>
+    </div>
     <div class="tvp-footer">
       <div class="tvp-sync" id="tvpSync">—</div>
       <div class="tvp-ticker"><div class="tvp-ticker-track" id="tvpTicker"></div></div>
@@ -1431,8 +1443,63 @@ async function pagePainelTv(){
     }
   }
 
+  // ---- Páginas: 1 = cards do Início · 2 = Painel de atendimento do CRM. Troca sozinha a cada
+  // `segundosPorPagina` (Configurações › Painel de TV). Se a 2ª página não puder ser montada (ex.: a
+  // integração com o deskcomm está fora), o painel fica só na 1ª em vez de girar pra uma tela vazia.
+  const PAG = { atual:0, seg:30, pag2ok:false };
+  function desenharPontos(){
+    const dots = document.getElementById('tvpDots');
+    if(!dots) return;
+    dots.innerHTML = PAG.pag2ok ? [0,1].map(i=>`<i class="${PAG.atual===i?'on':''}"></i>`).join('') : '';
+  }
+  function ajustarPagina2(){
+    const box = document.getElementById('tvpPag2');
+    const corpo = document.querySelector('#painelTv .tvp-body');
+    if(!box || !corpo || box.classList.contains('tvp-off')) return;
+    box.style.zoom = 1;
+    const disponivel = corpo.clientHeight - 8;
+    const alturaReal = box.scrollHeight;
+    if(alturaReal > disponivel) box.style.zoom = Math.max(0.4, disponivel/alturaReal).toFixed(3);
+  }
+  function mostrarPagina(i){
+    PAG.atual = i;
+    document.getElementById('tvpPag1')?.classList.toggle('tvp-off', i!==0);
+    document.getElementById('tvpPag2')?.classList.toggle('tvp-off', i!==1);
+    desenharPontos();
+    if(i===1) ajustarPagina2();
+  }
+  async function carregarPagina2(){
+    const box = document.getElementById('tvpPag2');
+    if(!box) return;
+    PAINEL.periodo = 'hoje';
+    await crmPainel(box, PAG.pag2ok); // 1ª vez sem "silencioso": mostra o motivo se falhar
+    PAG.pag2ok = !!box.querySelector('.painel-grade');
+    if(!PAG.pag2ok && PAG.atual===1) mostrarPagina(0);
+    desenharPontos();
+    ajustarPagina2();
+  }
+  function agendarTroca(){
+    if(TVP_TIMERS.pagina) clearInterval(TVP_TIMERS.pagina);
+    TVP_TIMERS.pagina = setInterval(()=>{
+      if(!PAG.pag2ok){ if(PAG.atual!==0) mostrarPagina(0); return; }
+      mostrarPagina(PAG.atual===0 ? 1 : 0);
+    }, PAG.seg*1000);
+  }
+  async function lerTempoDaTroca(){
+    try{
+      const { segundosPorPagina } = await api('/painel-tv/config');
+      const novo = Math.min(600, Math.max(5, Number(segundosPorPagina)||30));
+      if(novo !== PAG.seg || !TVP_TIMERS.pagina){ PAG.seg = novo; agendarTroca(); }
+    }catch(e){ if(!TVP_TIMERS.pagina) agendarTroca(); }
+  }
+
   tvpManterTelaLigada();
   await carregar(false);
+  await lerTempoDaTroca();
+  carregarPagina2();
+  // Dados do Painel de atendimento e o tempo de troca (se mudou em Configurações) renovam a cada minuto.
+  TVP_TIMERS.pag2 = setInterval(()=>{ carregarPagina2(); lerTempoDaTroca(); }, 60_000);
+  window.addEventListener('resize', ajustarPagina2);
   // Valores atualizam sozinhos a cada 1min (com uma "piscada" rápida, sensação de painel ao vivo) —
   // bem mais frequente que os 30min pedidos, que são só o teto máximo pra pegar mudança estrutural
   // (card novo, removido, editado). Mesma rota que a tela normal de Início já usa, sem custo extra.
@@ -9221,6 +9288,7 @@ const CFG_ABAS_TODAS = [
   { id:'whatsapp', label:'WhatsApp' },
   { id:'fgts-digital', label:'FGTS Digital' },
   { id:'nfse-agendamento', label:'Emissão de NFS-e' },
+  { id:'painel-tv', label:'Painel de TV' },
   { id:'assinatura-plataforma', label:'Assinatura da plataforma' },
 ];
 async function pageConfiguracoes(){
@@ -9253,12 +9321,35 @@ async function renderCfgTab(){
     else if(CFG_TAB==='nfse-agendamento') await renderCfgNfseAgendamento(box);
     else if(CFG_TAB==='whatsapp') await renderCfgWhatsapp(box);
     else if(CFG_TAB==='fgts-digital') await renderCfgFgtsDigital(box);
+    else if(CFG_TAB==='painel-tv') await renderCfgPainelTv(box);
     else await renderCfgEmail(box);
   }catch(e){
     box.innerHTML = `<div class="empty-state">Não foi possível carregar esta aba: ${esc(e.message||'erro desconhecido')}</div>`;
   }
 }
 
+async function renderCfgPainelTv(box){
+  const { segundosPorPagina, padrao } = await api('/painel-tv/config');
+  const podeEditar = STATE.user.perfil==='Administrador';
+  box.innerHTML = `
+    <div class="card" style="max-width:640px;">
+      <h3 style="margin-top:0;">Painel de TV</h3>
+      <p style="font-size:13px; color:var(--ink-soft); margin-top:-4px;">O painel da TV alterna sozinho entre duas páginas: os <b>cards do Início</b> e o <b>Painel de atendimento do CRM</b> (fila, quem está atendendo, tempos de espera e resposta). Defina aqui por quanto tempo cada página fica na tela.</p>
+      <div class="field" style="max-width:260px;"><label>Trocar de página a cada (segundos)</label>
+        <input type="number" id="cfgTvSeg" min="5" max="600" step="1" value="${segundosPorPagina}" ${podeEditar?'':'disabled'}></div>
+      <p style="font-size:12px; color:var(--ink-soft);">Entre 5 e 600 segundos (padrão: ${padrao}). A TV pega o novo valor em até 1 minuto, sem precisar mexer nela.</p>
+      ${podeEditar?'<div class="row" style="gap:8px;"><button class="btn primary" id="cfgTvSalvar" disabled>Salvar</button></div>':'<p style="font-size:12px; color:var(--ink-soft);">Só o Administrador altera este tempo.</p>'}
+    </div>`;
+  if(!podeEditar) return;
+  habilitarSalvarAoMudar('cfgTvSalvar', ['cfgTvSeg']);
+  document.getElementById('cfgTvSalvar').addEventListener('click', async ()=>{
+    try{
+      const r = await api('/painel-tv/config', { method:'PUT', body:{ segundosPorPagina: Number(document.getElementById('cfgTvSeg').value) } });
+      toast(`Salvo — o painel troca de página a cada ${r.segundosPorPagina}s.`,'ok');
+      document.getElementById('cfgTvSalvar').disabled = true;
+    }catch(e){ toast(e.message,'err'); }
+  });
+}
 const CFG_DOM_SUBABAS = [
   { id:'acesso', label:'Acesso' },
   { id:'exportar-xml', label:'Exportar XML' },

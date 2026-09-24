@@ -2932,7 +2932,7 @@ app.put("/api/users/:id/permissoes", requireAdmin, (req, res) => {
   }
   res.json({ ok: true });
 });
-const CONFIG_ABAS_VALIDAS = ["dominio", "email", "whatsapp", "fgts-digital", "nfse-agendamento", "assinatura-plataforma"];
+const CONFIG_ABAS_VALIDAS = ["dominio", "email", "whatsapp", "fgts-digital", "nfse-agendamento", "painel-tv", "assinatura-plataforma"];
 app.get("/api/users/:id/config-abas", requireAdmin, (req, res) => {
   if (!pertenceAoEscritorio(req, Number(req.params.id))) return res.status(404).json({ error: "Usuário não encontrado." });
   const rows = sqlite.prepare(`SELECT aba FROM colaborador_config_abas WHERE user_id = ?`).all(Number(req.params.id)) as any[];
@@ -13157,6 +13157,36 @@ function atendimentoConfig(escritorioId: number) {
     pesquisaAtiva: r ? !!r.pesquisa_ativa : true,
   };
 }
+// Painel de TV: de quanto em quanto tempo ele troca de página (cards do Início <-> Painel de
+// atendimento do CRM). Uma configuração por escritório, escolhida em Configurações › Painel de TV.
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS painel_tv_config (
+    escritorio_id INTEGER PRIMARY KEY,
+    segundos_por_pagina INTEGER NOT NULL DEFAULT 30,
+    updated_at TEXT
+  );
+`);
+const PAINEL_TV_SEGUNDOS_PADRAO = 30;
+function painelTvSegundos(escritorioId: number | null): number {
+  const r = escritorioId == null ? null : (sqlite.prepare(`SELECT segundos_por_pagina FROM painel_tv_config WHERE escritorio_id = ?`).get(escritorioId) as any);
+  return r?.segundos_por_pagina ?? PAINEL_TV_SEGUNDOS_PADRAO;
+}
+app.get("/api/painel-tv/config", blockCliente, (req, res) => {
+  const user = (req as any).user;
+  res.json({ segundosPorPagina: painelTvSegundos(user.escritorioId), padrao: PAINEL_TV_SEGUNDOS_PADRAO });
+});
+app.put("/api/painel-tv/config", blockCliente, requireAdmin, (req, res) => {
+  const user = (req as any).user;
+  const n = Math.round(Number(req.body?.segundosPorPagina));
+  if (!Number.isFinite(n) || n < 5 || n > 600) return res.status(400).json({ error: "Informe entre 5 e 600 segundos." });
+  sqlite
+    .prepare(
+      `INSERT INTO painel_tv_config (escritorio_id, segundos_por_pagina, updated_at) VALUES (?, ?, datetime('now'))
+       ON CONFLICT(escritorio_id) DO UPDATE SET segundos_por_pagina=excluded.segundos_por_pagina, updated_at=datetime('now')`
+    )
+    .run(user.escritorioId, n);
+  res.json({ segundosPorPagina: n });
+});
 app.get("/api/atendimento/config", blockCliente, (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
@@ -13504,7 +13534,8 @@ const painelMediana = (xs: number[]) => {
 };
 app.get("/api/atendimento/painel", blockCliente, async (req, res) => {
   const user = (req as any).user;
-  if (!hasPermissao(user, "crm", "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
+  // A conta dedicada do Painel de TV mostra esta visão na 2ª página, sem ter (nem precisar de) a aba CRM.
+  if (!user.painelTv && !hasPermissao(user, "crm", "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
   const periodo = String(req.query.periodo || "hoje") in PAINEL_PERIODOS ? String(req.query.periodo || "hoje") : "hoje";
   const inicio = painelInicioDoPeriodo(periodo);
