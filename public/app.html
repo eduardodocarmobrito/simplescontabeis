@@ -1131,9 +1131,11 @@ async function atualizarResumoChat(){
 // escritório abre a lista. Sem isso a busca só acharia empresa/colega que já teve mensagem antes.
 async function carregarDiretorioChat(){
   try{
-    const [empresas, colegas] = await Promise.all([ empresasAtivas(), api('/chat/colegas') ]);
-    CHAT.dirEmpresas = empresas.map(e=>({ id:e.id, nome:e.nome }));
-    CHAT.dirColegas = colegas.items;
+    // Cada lista carrega por si: quem não tem acesso ao módulo Empresas (ex.: colaborador só do DP/RH) recebe erro em
+    // /empresas — antes isso derrubava as duas juntas e a busca de colegas ficava vazia.
+    const [empresas, colegas] = await Promise.allSettled([ empresasAtivas(), api('/chat/colegas') ]);
+    CHAT.dirEmpresas = empresas.status==='fulfilled' ? empresas.value.map(e=>({ id:e.id, nome:e.nome })) : [];
+    CHAT.dirColegas = colegas.status==='fulfilled' ? colegas.value.items : [];
     if(CHAT.aberto && CHAT.tela==='lista') renderChatConvLista();
   }catch(e){}
 }
@@ -1201,6 +1203,9 @@ function renderChatConvLista(){
   }else{
     empresas = CHAT.conversas.map(c=>({ tipo:'empresa', id:c.empresaId, nome:c.empresaNome, naoLidas:c.naoLidas, ultimaMensagem:c.ultimaMensagem, ultimaMensagemEm:c.ultimaMensagemEm, online:c.online }));
     colegas = CHAT.dms.map(d=>({ tipo:'dm', id:d.userId, nome:d.nome, naoLidas:d.naoLidas, ultimaMensagem:d.ultimaMensagem, ultimaMensagemEm:d.ultimaMensagemEm, online:d.online }));
+    // Colegas com quem ainda não houve mensagem também aparecem (são poucos): dá pra iniciar conversa sem precisar buscar.
+    const jaTem = new Set(colegas.map(c=>c.id));
+    (CHAT.dirColegas||[]).filter(c=>!jaTem.has(c.id)).forEach(c=>colegas.push({ tipo:'dm', id:c.id, nome:c.nome, naoLidas:0, ultimaMensagem:null, ultimaMensagemEm:null, online:c.online }));
   }
   const recentes = [...empresas, ...colegas].sort((a,b)=> (b.ultimaMensagemEm||'').localeCompare(a.ultimaMensagemEm||''));
   const equipeCasa = !termo || 'equipe interna avisos'.includes(termo);
