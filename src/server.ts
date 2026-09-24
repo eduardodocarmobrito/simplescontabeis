@@ -8287,7 +8287,7 @@ app.get("/api/integracontador/documentos", blockCliente, requirePermissao("integ
        WHERE d.escritorio_id = ? AND d.empresa_id IN (${placeholders}) ORDER BY d.criado_em DESC LIMIT 300`
     )
     .all(user.escritorioId, ...ids);
-  res.json({ items: rows.map((r: any) => ({ ...r, detalhesJson: undefined, detalhes: r.detalhesJson ? JSON.parse(r.detalhesJson) : null, temPdf: !!r.temPdf })) });
+  res.json({ items: rows.map((r: any) => ({ ...r, detalhesJson: undefined, detalhes: r.detalhesJson ? (({ declaracaoPdfPath, reciboPdfPath, ...resto }) => resto)(JSON.parse(r.detalhesJson)) : null, temPdf: !!r.temPdf })) });
 });
 // Só blockCliente (não requireAdmin) — o link "Baixar Situação Fiscal" já aparece pra qualquer
 // Colaborador que enxergue o card no Início (card só exige "dashboard: visualizar"), então exigir
@@ -8301,6 +8301,44 @@ app.get("/api/integracontador/documentos/:id/pdf", blockCliente, (req, res) => {
   }
   res.setHeader("Content-Type", "application/pdf");
   res.send(fs.readFileSync(row.pdf_path));
+});
+
+// PDF da Declaração ou do Recibo de uma declaração do Simples (PGDAS-D). Busca na Receita só na 1ª vez
+// (cada chamada é paga) e guarda os dois arquivos em disco — depois serve do cache.
+app.get("/api/integracontador/documentos/:id/declaracao-pdf", blockCliente, async (req, res) => {
+  const user = (req as any).user;
+  const qual = req.query.tipo === "recibo" ? "recibo" : "declaracao";
+  const row = sqlite.prepare(`SELECT d.*, e.cnpj as empresa_cnpj FROM integracontador_documentos d JOIN empresas e ON e.id = d.empresa_id WHERE d.id = ?`).get(Number(req.params.id)) as any;
+  if (!row || row.tipo !== "declaracao" || row.escritorio_id !== user.escritorioId || !podeAcessarEmpresa(user, row.empresa_id) || !row.numero_documento) {
+    return res.status(404).json({ error: "Declaração não encontrada." });
+  }
+  try {
+    const detalhes = row.detalhes_json ? JSON.parse(row.detalhes_json) : {};
+    const chave = qual === "recibo" ? "reciboPdfPath" : "declaracaoPdfPath";
+    if (!detalhes[chave] || !fs.existsSync(detalhes[chave])) {
+      const cfg = getIntegraContadorConfig(row.escritorio_id);
+      let token = await obterTokenIntegraContador(cfg);
+      let r;
+      try {
+        r = await integracontador.consultarDeclaracaoERecibo(token, cfg.cnpj, row.empresa_cnpj || "", row.numero_documento);
+      } catch (e: any) {
+        if (e.message !== "TOKEN_EXPIRADO") throw e;
+        integraContadorTokens.delete(cfg.escritorio_id);
+        token = await obterTokenIntegraContador(cfg);
+        r = await integracontador.consultarDeclaracaoERecibo(token, cfg.cnpj, row.empresa_cnpj || "", row.numero_documento);
+      }
+      if (r.declaracaoPdf) detalhes.declaracaoPdfPath = salvarPdfBase64EmCache(`declaracao_${row.empresa_id}_${row.numero_documento}`, r.declaracaoPdf);
+      if (r.reciboPdf) detalhes.reciboPdfPath = salvarPdfBase64EmCache(`recibo_${row.empresa_id}_${row.numero_documento}`, r.reciboPdf);
+      sqlite.prepare(`UPDATE integracontador_documentos SET detalhes_json = ? WHERE id = ?`).run(JSON.stringify(detalhes), row.id);
+    }
+    if (!detalhes[chave]) return res.status(404).json({ error: `A Receita não devolveu o PDF do ${qual === "recibo" ? "recibo" : "da declaração"}.` });
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="${qual}_${row.numero_documento}.pdf"`);
+    res.send(fs.readFileSync(detalhes[chave]));
+  } catch (e: any) {
+    console.error(`[Integra Contador] PDF de ${qual} da declaração ${row.numero_documento} falhou:`, e.message);
+    res.status(502).json({ error: e.message });
+  }
 });
 
 // Rotina automática 1x ao dia, às 12h (horário de Brasília) — decisão explícita do usuário (antes

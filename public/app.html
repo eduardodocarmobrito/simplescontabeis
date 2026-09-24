@@ -5725,9 +5725,21 @@ async function pageIntegraContador(deepLinkEmpresaId){
           <td>${esc(d.numeroDocumento||'—')}</td>
           <td>${d.dataVencimento?fmtDate(d.dataVencimento):'—'}</td>
           <td>${fmtDateHora(d.criadoEm)}</td>
-          <td style="text-align:right;">${d.temPdf?`<a class="btn small" href="/api/integracontador/documentos/${d.id}/pdf" target="_blank" rel="noopener">PDF</a>`:'—'}</td>
+          <td style="text-align:right; white-space:nowrap;">${d.temPdf?`<a class="btn small" href="/api/integracontador/documentos/${d.id}/pdf" target="_blank" rel="noopener">PDF</a>`:d.tipo==='declaracao'&&d.numeroDocumento?`<button class="btn small" data-declpdf="${d.id}" data-qual="declaracao">PDF da declaração</button> <button class="btn small" data-declpdf="${d.id}" data-qual="recibo">PDF do recibo</button>`:'—'}</td>
         </tr>
       `).join('') : '<tr><td colspan="6"><div class="empty-state">Nenhum documento encontrado ainda.</div></td></tr>';
+      tbody.querySelectorAll('[data-declpdf]').forEach(btn=>btn.addEventListener('click', async ()=>{
+        // Abre a aba já (o navegador bloqueia janela aberta depois de uma espera) e preenche quando o PDF chegar.
+        const aba = window.open('', '_blank');
+        const antes = btn.textContent; btn.disabled = true; btn.textContent = 'Buscando na Receita…';
+        try{
+          const r = await fetch('/api/integracontador/documentos/'+btn.dataset.declpdf+'/declaracao-pdf?tipo='+btn.dataset.qual, { credentials:'include' });
+          if(!r.ok){ let m='Erro '+r.status; try{ m=(await r.json()).error||m; }catch(e){} throw new Error(m); }
+          const url = URL.createObjectURL(await r.blob());
+          if(aba) aba.location.href = url; else window.open(url, '_blank');
+        }catch(e){ if(aba) aba.close(); toast(e.message,'err'); }
+        finally{ btn.disabled = false; btn.textContent = antes; }
+      }));
     }
     carregarIcDocumentos();
   }

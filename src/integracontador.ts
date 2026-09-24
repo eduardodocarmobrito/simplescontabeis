@@ -334,6 +334,35 @@ export async function consultarDeclaracoesPorAno(token: TokenIntegraContador, co
   return resultado;
 }
 
+// Declaração e recibo (PDF) de uma declaração PGDAS-D já transmitida — serviço CONSDECREC15 (por número da
+// declaração). O formato exato do retorno não é garantido pela doc, então procura o PDF em base64 dentro de
+// "declaracao" e "recibo" com tolerância (string direta ou objeto com pdf/arquivo/conteudo/base64).
+function acharPdfBase64(v: any): string | null {
+  if (!v) return null;
+  if (typeof v === "string") return v.length > 200 ? v : null;
+  if (Array.isArray(v)) { for (const x of v) { const r = acharPdfBase64(x); if (r) return r; } return null; }
+  if (typeof v === "object") {
+    for (const k of ["pdf", "arquivo", "conteudo", "base64", "documento"]) { const r = acharPdfBase64(v[k]); if (r) return r; }
+  }
+  return null;
+}
+export async function consultarDeclaracaoERecibo(token: TokenIntegraContador, contratanteCnpj: string, cnpjEmpresa: string, numeroDeclaracao: string): Promise<{ declaracaoPdf: string | null; reciboPdf: string | null }> {
+  const r = await chamarServico(token, {
+    base: "Consultar",
+    contratanteCnpj,
+    contribuinteDocumento: cnpjEmpresa,
+    idSistema: "PGDASD",
+    idServico: "CONSDECREC15",
+    versaoSistema: "1.0",
+    dados: { numeroDeclaracao: String(numeroDeclaracao) },
+  });
+  const d: any = Array.isArray(r.dados) ? r.dados[0] : r.dados;
+  const declaracaoPdf = acharPdfBase64(d?.declaracao);
+  const reciboPdf = acharPdfBase64(d?.recibo);
+  if (!declaracaoPdf && !reciboPdf) throw new Error("A Receita não devolveu os PDFs desta declaração (campos recebidos: " + Object.keys(d || {}).join(", ") + ").");
+  return { declaracaoPdf, reciboPdf };
+}
+
 // ===================== SITFIS (Situação Fiscal) — confirmado na doc oficial, fluxo em 2 passos =====================
 // Passo 1: pede um "protocolo" (a Receita processa em segundo plano). Passo 2: usa o protocolo pra
 // pegar o relatório em PDF — pode vir "ainda processando" (202, espera X segundos) antes do PDF
