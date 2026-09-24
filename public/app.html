@@ -7308,10 +7308,10 @@ async function crmAgenda(box, modulo){
     ${itens.map(a=>{
       const [cls, rot] = AGENDA_SITUACAO[a.situacao] || ['muted', a.situacao];
       const aberto = ['pending','confirmed'].includes(a.situacao);
-      return `<tr data-id="${esc(a.id)}">
+      return `<tr data-id="${esc(a.id)}" data-contato="${esc(a.contatoId||'')}" ${a.contatoId?'style="cursor:pointer;" title="Abrir a conversa do cliente"':''}>
         <td style="white-space:nowrap;">${esc(atdDataHora(a.iniciaEm,{weekday:'short', day:'2-digit', month:'2-digit', year:'numeric'}))}<br><span style="color:var(--ink-soft);">${esc(atdDataHora(a.iniciaEm,{hour:'2-digit', minute:'2-digit'}))} – ${esc(atdDataHora(a.terminaEm,{hour:'2-digit', minute:'2-digit'}))}</span></td>
         <td>${esc(a.titulo||'')}</td>
-        <td>${esc(a.contatoNome||'—')}</td>
+        <td>${a.contatoId?'💬 ':''}${esc(a.contatoNome||'—')}</td>
         <td><span class="tag ${cls}">${esc(rot)}</span></td>
         <td style="text-align:right; white-space:nowrap;">${aberto && can(modulo,'postar') ? `
           <button class="btn small" data-sit="completed">Concluído</button>
@@ -7319,6 +7319,18 @@ async function crmAgenda(box, modulo){
           <button class="btn small danger" data-sit="cancelar">Cancelar</button>` : ''}</td>
       </tr>`;
     }).join('')}</tbody></table>`;
+  // Clicar na linha (fora dos botões) abre a conversa do cliente, pronta pra responder.
+  lista.querySelectorAll('tr[data-contato]').forEach(tr=>tr.addEventListener('click', async ev=>{
+    if(ev.target.closest('button') || !tr.dataset.contato) return;
+    try{
+      let { conversaId, fechada } = await api('/atendimento/conversa-do-contato?escopo='+modulo+'&contato='+encodeURIComponent(tr.dataset.contato));
+      if(!conversaId){
+        if(modulo!=='crm'){ toast('Este cliente não tem conversa neste setor.','err'); return; }
+        conversaId = (await dcApi('/conversations/open-with-contact', { method:'POST', body:{ contact_id:tr.dataset.contato } })).conversation_id; fechada = false;
+      }
+      atdIrParaConversa(modulo, conversaId, fechada);
+    }catch(e){ toast(e.message,'err'); }
+  }));
   lista.querySelectorAll('[data-sit]').forEach(b=>b.addEventListener('click', async ()=>{
     const id = b.closest('tr').dataset.id;
     try{

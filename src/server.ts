@@ -13135,6 +13135,21 @@ app.get("/api/atendimento/contatos-tags", blockCliente, async (req, res) => {
     res.status(502).json({ error: "Falha ao ler os contatos no deskcomm: " + e.message });
   }
 });
+// Conversa mais recente do contato (no setor: a do setor) — clicar num compromisso da Agenda abre ela.
+app.get("/api/atendimento/conversa-do-contato", blockCliente, async (req, res) => {
+  const user = (req as any).user;
+  const escopo = atendimentoEscopo(req.query.escopo) || "crm";
+  const contato = String(req.query.contato || "");
+  if (!contato) return res.status(400).json({ error: "Informe o contato." });
+  if (!hasPermissao(user, atendimentoModulo(escopo), "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  try {
+    const cv = (await atendimentoUltimaConversaPorContato(escopo, [contato])).get(contato);
+    res.json({ conversaId: cv?.id || null, fechada: cv ? cv.status === "closed" || cv.status === "archived" : false });
+  } catch (e: any) {
+    res.status(502).json({ error: "Falha ao ler as conversas no deskcomm: " + e.message });
+  }
+});
 app.get("/api/atendimento/contatos-do-setor", blockCliente, async (req, res) => {
   const user = (req as any).user;
   const escopo = atendimentoEscopo(req.query.escopo);
