@@ -2932,7 +2932,7 @@ app.put("/api/users/:id/permissoes", requireAdmin, (req, res) => {
   }
   res.json({ ok: true });
 });
-const CONFIG_ABAS_VALIDAS = ["dominio", "email", "whatsapp", "fgts-digital", "nfse-agendamento", "painel-tv", "assinatura-plataforma"];
+const CONFIG_ABAS_VALIDAS = ["dominio", "email", "whatsapp", "fgts-digital", "nfse-agendamento", "painel-tv", "atendimento", "assinatura-plataforma"];
 app.get("/api/users/:id/config-abas", requireAdmin, (req, res) => {
   if (!pertenceAoEscritorio(req, Number(req.params.id))) return res.status(404).json({ error: "Usuário não encontrado." });
   const rows = sqlite.prepare(`SELECT aba FROM colaborador_config_abas WHERE user_id = ?`).all(Number(req.params.id)) as any[];
@@ -13211,6 +13211,13 @@ sqlite.exec(`
     updated_at TEXT DEFAULT (datetime('now'))
   )
 `);
+// Avisos automáticos ao cliente nos botões Assumir e Transferir: DESLIGADOS por padrão (o escritório
+// liga em Configurações › Atendimento).
+for (const coluna of ["aviso_assumir", "aviso_transferir"]) {
+  if (!(sqlite.prepare(`PRAGMA table_info(atendimento_config)`).all() as any[]).some((c) => c.name === coluna)) {
+    sqlite.exec(`ALTER TABLE atendimento_config ADD COLUMN ${coluna} INTEGER NOT NULL DEFAULT 0`);
+  }
+}
 function atendimentoConfig(escritorioId: number) {
   const r = sqlite.prepare(`SELECT * FROM atendimento_config WHERE escritorio_id = ?`).get(escritorioId) as any;
   return {
@@ -13219,6 +13226,8 @@ function atendimentoConfig(escritorioId: number) {
     lembreteAtivo: r ? !!r.lembrete_ativo : true,
     lembreteHoras: r?.lembrete_horas ?? 24,
     pesquisaAtiva: r ? !!r.pesquisa_ativa : true,
+    avisoAssumir: !!r?.aviso_assumir,
+    avisoTransferir: !!r?.aviso_transferir,
   };
 }
 // Painel de TV: de quanto em quanto tempo ele troca de página (cards do Início <-> Painel de
@@ -13266,10 +13275,11 @@ app.put("/api/atendimento/config", blockCliente, requirePermissao("crm", "editar
   const atual = atendimentoConfig(user.escritorioId);
   sqlite
     .prepare(
-      `INSERT INTO atendimento_config (escritorio_id, alerta_fila_min, meta_resposta_min, lembrete_ativo, lembrete_horas, pesquisa_ativa, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+      `INSERT INTO atendimento_config (escritorio_id, alerta_fila_min, meta_resposta_min, lembrete_ativo, lembrete_horas, pesquisa_ativa, aviso_assumir, aviso_transferir, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
        ON CONFLICT(escritorio_id) DO UPDATE SET alerta_fila_min=excluded.alerta_fila_min, meta_resposta_min=excluded.meta_resposta_min,
-         lembrete_ativo=excluded.lembrete_ativo, lembrete_horas=excluded.lembrete_horas, pesquisa_ativa=excluded.pesquisa_ativa, updated_at=datetime('now')`
+         lembrete_ativo=excluded.lembrete_ativo, lembrete_horas=excluded.lembrete_horas, pesquisa_ativa=excluded.pesquisa_ativa,
+         aviso_assumir=excluded.aviso_assumir, aviso_transferir=excluded.aviso_transferir, updated_at=datetime('now')`
     )
     .run(
       user.escritorioId,
@@ -13277,7 +13287,9 @@ app.put("/api/atendimento/config", blockCliente, requirePermissao("crm", "editar
       int(b.metaRespostaMin, 1, 1440, atual.metaRespostaMin),
       b.lembreteAtivo === undefined ? (atual.lembreteAtivo ? 1 : 0) : b.lembreteAtivo ? 1 : 0,
       int(b.lembreteHoras, 1, 72, atual.lembreteHoras),
-      b.pesquisaAtiva === undefined ? (atual.pesquisaAtiva ? 1 : 0) : b.pesquisaAtiva ? 1 : 0
+      b.pesquisaAtiva === undefined ? (atual.pesquisaAtiva ? 1 : 0) : b.pesquisaAtiva ? 1 : 0,
+      b.avisoAssumir === undefined ? (atual.avisoAssumir ? 1 : 0) : b.avisoAssumir ? 1 : 0,
+      b.avisoTransferir === undefined ? (atual.avisoTransferir ? 1 : 0) : b.avisoTransferir ? 1 : 0
     );
   res.json(atendimentoConfig(user.escritorioId));
 });
@@ -13494,6 +13506,32 @@ async function atendimentoRodarLembretes() {
 }
 setInterval(() => atendimentoRodarLembretes(), 5 * 60_000);
 setTimeout(() => atendimentoRodarLembretes(), 60_000);
+
+// Limpeza: anotações internas (transferências de setor, pesquisas, lembretes) ligadas a conversas que já
+// não existem no deskcomm — ex.: as do número de teste, removidas. Sem isso as notas da pesquisa de
+// satisfação delas continuariam entrando nas médias do Painel. Só apaga o que tem mais de 1h (evita
+// pegar uma conversa criada agorinha) e NUNCA age se a leitura das conversas voltar vazia ou falhar.
+async function atendimentoLimparOrfas() {
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return;
+  try {
+    const linhas = await painelPaginado((de, ate) =>
+      deskcommAdmin!.from("conversations").select("id").eq("organization_id", DESKCOMM_ORG_ID).order("id").range(de, ate));
+    const existentes = new Set<string>(linhas.map((r: any) => r.id));
+    if (!existentes.size) return;
+    let apagadas = 0;
+    for (const [tabela, colunaData] of [["atendimento_transferencias_setor", "criado_em"], ["atendimento_pesquisas", "enviada_em"], ["atendimento_lembretes", "enviado_em"]]) {
+      const ids = (sqlite.prepare(`SELECT DISTINCT conversation_id FROM ${tabela} WHERE julianday(${colunaData}) < julianday('now','-1 hour')`).all() as any[])
+        .map((r) => r.conversation_id)
+        .filter((id) => !existentes.has(id));
+      for (const id of ids) apagadas += Number(sqlite.prepare(`DELETE FROM ${tabela} WHERE conversation_id = ?`).run(id).changes);
+    }
+    if (apagadas) console.log(`[atendimento] limpeza: ${apagadas} anotação(ões) de conversas que não existem mais foram removidas.`);
+  } catch (e: any) {
+    console.warn("[atendimento] limpeza de anotações órfãs falhou (tenta de novo depois):", e.message);
+  }
+}
+setTimeout(() => atendimentoLimparOrfas(), 90_000);
+setInterval(() => atendimentoLimparOrfas(), 6 * 3600_000);
 
 // ---------- Pesquisa de satisfação ----------
 // Ao fechar pela tela (CRM/setores), o cliente recebe "de 1 a 5, como foi?". A nota é a 1ª resposta dele em

@@ -8378,16 +8378,17 @@ async function atdAcao(S, acao, botao){
   if(acao==='assumir'){
     if(c.atribuidoDeskcommId && !confirmar(`Esta conversa está com ${c.atribuidoNome||'outro atendente'}. Assumir no lugar?`)) return;
     const tomandoDeOutro = !!c.atribuidoDeskcommId;
+    const avisar = !tomandoDeOutro && await atdAvisoAtivo('assumir');
     return executar(async ()=>{
       await dcApi(base+'/claim', { method:'POST', body: tomandoDeOutro ? { expected_assignee: c.atribuidoDeskcommId } : {} });
       // Saindo da fila/automático, o cliente fica sabendo que uma pessoa pegou a conversa. Trocar de
       // um atendente pro outro não avisa — pro cliente o atendimento humano já estava acontecendo.
-      if(tomandoDeOutro) return;
+      if(tomandoDeOutro || !avisar) return;
       try{
         await dcApi('/messages', { method:'POST', body:{ conversation_id: c.id, type:'text', body: 'Olá! 👋 A equipe da Simples Contábeis assumiu sua conversa e seu atendimento já vai começar.' } });
         await atdCarregarMensagens(S, true);
       }catch(e){ toast('Conversa assumida, mas o aviso ao cliente não foi enviado: '+e.message,'err'); }
-    }, tomandoDeOutro ? 'Conversa assumida.' : 'Conversa assumida — o automático foi pausado e o cliente foi avisado.');
+    }, !avisar ? (tomandoDeOutro ? 'Conversa assumida.' : 'Conversa assumida — o automático foi pausado.') : 'Conversa assumida — o automático foi pausado e o cliente foi avisado.');
   }
   if(acao==='liberar') return executar(()=>dcApi(base+'/release', { method:'POST' }), 'Conversa liberada.');
   if(acao==='automatico'){
@@ -8755,12 +8756,13 @@ async function atdTransferirModal(S, c, executar){
     document.getElementById('atdTransfCampoPessoa').classList.toggle('hidden', tipo()!=='pessoa');
   }));
   document.getElementById('atdTransfCancel').addEventListener('click', closeModal);
-  document.getElementById('atdTransfSalvar').addEventListener('click', ()=>{
+  document.getElementById('atdTransfSalvar').addEventListener('click', async ()=>{
     const motivo = document.getElementById('atdTransfMotivo').value.trim();
     if(tipo()==='setor'){
       const valor = document.getElementById('atdTransfSetor').value;
       if(!valor){ toast('Nenhum outro setor disponível.','err'); return; }
       const intencao = valor===GERAL ? null : valor;
+      const avisar = await atdAvisoAtivo('transferir');
       closeModal();
       executar(async ()=>{
         // Avisa o cliente ANTES de transferir: enviar depois, com a conversa já sem responsável, poderia
@@ -8768,8 +8770,10 @@ async function atdTransferirModal(S, c, executar){
         const aviso = intencao
           ? `Sua conversa está sendo transferida para o setor de ${intencao}. Em instantes alguém do setor dará continuidade ao seu atendimento.`
           : 'Sua conversa está sendo transferida para o nosso atendimento geral. Em instantes alguém dará continuidade ao seu atendimento.';
-        try{ await dcApi('/messages', { method:'POST', body:{ conversation_id: c.id, type:'text', body: aviso } }); }
-        catch(e){ toast('O aviso de transferência não foi enviado ao cliente: '+e.message,'err'); }
+        if(avisar){
+          try{ await dcApi('/messages', { method:'POST', body:{ conversation_id: c.id, type:'text', body: aviso } }); }
+          catch(e){ toast('O aviso de transferência não foi enviado ao cliente: '+e.message,'err'); }
+        }
         await api('/atendimento/conversas/'+encodeURIComponent(c.id)+'/setor', { method:'POST', body:{ intencao, motivo } });
       },
         intencao ? `Conversa transferida para ${intencao} — está na Fila do setor.` : 'Conversa devolvida ao atendimento geral.');
@@ -9504,6 +9508,7 @@ const CFG_ABAS_TODAS = [
   { id:'fgts-digital', label:'FGTS Digital' },
   { id:'nfse-agendamento', label:'Emissão de NFS-e' },
   { id:'painel-tv', label:'Painel de TV' },
+  { id:'atendimento', label:'Atendimento' },
   { id:'assinatura-plataforma', label:'Assinatura da plataforma' },
 ];
 async function pageConfiguracoes(){
@@ -9537,12 +9542,40 @@ async function renderCfgTab(){
     else if(CFG_TAB==='whatsapp') await renderCfgWhatsapp(box);
     else if(CFG_TAB==='fgts-digital') await renderCfgFgtsDigital(box);
     else if(CFG_TAB==='painel-tv') await renderCfgPainelTv(box);
+    else if(CFG_TAB==='atendimento') await renderCfgAtendimento(box);
     else await renderCfgEmail(box);
   }catch(e){
     box.innerHTML = `<div class="empty-state">Não foi possível carregar esta aba: ${esc(e.message||'erro desconhecido')}</div>`;
   }
 }
 
+async function renderCfgAtendimento(box){
+  const c = await api('/atendimento/config');
+  const podeEditar = STATE.user.perfil==='Administrador';
+  box.innerHTML = `
+    <div class="card" style="max-width:680px;">
+      <h3 style="margin-top:0;">Avisos automáticos ao cliente</h3>
+      <p style="font-size:13px; color:var(--ink-soft); margin-top:-4px;">Mensagens que o sistema envia sozinho pelo WhatsApp quando alguém clica em <b>Assumir</b> ou <b>Transferir</b>. Por enquanto ficam <b>desligadas</b>; ligue aqui quando quiser.</p>
+      <label class="checkbox-row"><input type="checkbox" id="cfgAvAssumir" ${c.avisoAssumir?'checked':''} ${podeEditar?'':'disabled'}>
+        Ao <b>assumir</b> uma conversa, avisar o cliente<br><span style="font-size:12px; color:var(--ink-soft);">"Olá! 👋 A equipe da Simples Contábeis assumiu sua conversa e seu atendimento já vai começar."</span></label>
+      <label class="checkbox-row" style="margin-top:10px;"><input type="checkbox" id="cfgAvTransferir" ${c.avisoTransferir?'checked':''} ${podeEditar?'':'disabled'}>
+        Ao <b>transferir para outro setor</b>, avisar o cliente<br><span style="font-size:12px; color:var(--ink-soft);">"Sua conversa está sendo transferida para o setor de … Em instantes alguém do setor dará continuidade ao seu atendimento."</span></label>
+      ${podeEditar?'<div class="row" style="gap:8px; margin-top:14px;"><button class="btn primary" id="cfgAvSalvar" disabled>Salvar</button></div>':'<p style="font-size:12px; color:var(--ink-soft);">Só o Administrador altera estas opções.</p>'}
+    </div>`;
+  if(!podeEditar) return;
+  habilitarSalvarAoMudar('cfgAvSalvar', ['cfgAvAssumir','cfgAvTransferir']);
+  document.getElementById('cfgAvSalvar').addEventListener('click', async ()=>{
+    try{
+      await api('/atendimento/config', { method:'PUT', body:{ avisoAssumir: document.getElementById('cfgAvAssumir').checked, avisoTransferir: document.getElementById('cfgAvTransferir').checked } });
+      toast('Salvo.','ok');
+      document.getElementById('cfgAvSalvar').disabled = true;
+    }catch(e){ toast(e.message,'err'); }
+  });
+}
+async function atdAvisoAtivo(qual){
+  try{ const c = await api('/atendimento/config'); return !!(qual==='assumir' ? c.avisoAssumir : c.avisoTransferir); }
+  catch(e){ return false; } // na dúvida, NÃO manda mensagem ao cliente
+}
 async function renderCfgPainelTv(box){
   const { segundosPorPagina, padrao } = await api('/painel-tv/config');
   const podeEditar = STATE.user.perfil==='Administrador';
