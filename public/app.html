@@ -8133,11 +8133,26 @@ function pararAtendimentoTimers(escopo){
 // Grava o cookie de sessão do deskcomm (sb-deskcomm-auth) pro usuário logado AQUI. Refeito a cada
 // troca de usuário no mesmo navegador — senão a sessão de lá poderia ser de quem usou antes, e
 // "Assumir" atribuiria a conversa à pessoa errada.
+let ATEND_SESSAO_PROMESSA = null;
 async function dcGarantirSessao(forcar){
   if(!forcar && ATEND_SESSAO_USER===STATE.user.id) return;
-  const r = await fetch('/deskcomm-login?silencioso=1', { credentials:'include' });
-  if(!r.ok) throw new Error('Não foi possível conectar ao WhatsApp (deskcomm): '+((await r.text().catch(()=>'')).slice(0,200) || ('erro '+r.status)));
-  ATEND_SESSAO_USER = STATE.user.id;
+  // Várias telas/requisições pedindo ao mesmo tempo: UMA ponte só. Duas pontes simultâneas do mesmo usuário
+  // invalidam o token uma da outra e o deskcomm recusa o login.
+  if(ATEND_SESSAO_PROMESSA) return ATEND_SESSAO_PROMESSA;
+  ATEND_SESSAO_PROMESSA = (async()=>{
+    let motivo = 'a sessão do deskcomm não confere com o seu usuário';
+    for(let tentativa=0; tentativa<3; tentativa++){
+      const r = await fetch('/deskcomm-login?silencioso=1', { credentials:'include' });
+      if(!r.ok) throw new Error('Não foi possível conectar ao WhatsApp (deskcomm): '+((await r.text().catch(()=>'')).slice(0,200) || ('erro '+r.status)));
+      // O login pode ser recusado sem erro visível (o navegador fica com o acesso de OUTRA pessoa e as ações
+      // saem no nome dela) — confere quem está logado lá antes de liberar.
+      try{ const v = await api('/atendimento/sessao-deskcomm'); if(v && v.ok){ ATEND_SESSAO_USER = STATE.user.id; return; } }
+      catch(e){ motivo = e.message; }
+      await new Promise(res=>setTimeout(res, 700*(tentativa+1)));
+    }
+    throw new Error('Não foi possível entrar no deskcomm como o seu usuário ('+motivo+'). Recarregue a página e tente de novo.');
+  })().finally(()=>{ ATEND_SESSAO_PROMESSA = null; });
+  return ATEND_SESSAO_PROMESSA;
 }
 // Chama a API do deskcomm. Respostas lá são { data, meta } / { error:{ code, message } }. 401 = sessão
 // de lá venceu — renova uma vez e tenta de novo.

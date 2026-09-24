@@ -2669,6 +2669,39 @@ app.get("/deskcomm-login", requireAuth, blockCliente, async (req, res) => {
   }
 });
 
+// Confere QUEM está logado no deskcomm neste navegador: o cookie `sb-deskcomm-auth` (gravado pela ponte
+// acima) tem o usuário do deskcomm dentro do token. O login silencioso pode ser recusado (o token de uso único
+// é invalidado se duas pontes do mesmo usuário rodam ao mesmo tempo) e o navegador fica com o cookie de OUTRA
+// pessoa — ações como "Assumir" saíam no nome dela. A tela chama isto depois da ponte e só segue se bater.
+function deskcommUsuarioDoCookie(cookies: Record<string, string> | undefined): string | null {
+  if (!cookies) return null;
+  let valor = cookies["sb-deskcomm-auth"];
+  if (!valor) {
+    const partes = Object.keys(cookies).filter((k) => /^sb-deskcomm-auth\.\d+$/.test(k)).sort((a, b) => Number(a.split(".").pop()) - Number(b.split(".").pop()));
+    if (partes.length) valor = partes.map((k) => cookies[k]).join("");
+  }
+  if (!valor) return null;
+  try {
+    if (valor.startsWith("base64-")) valor = Buffer.from(valor.slice(7), "base64url").toString("utf8");
+    const sessao = JSON.parse(valor);
+    const jwt = String(sessao.access_token || "").split(".")[1];
+    const sub = jwt ? JSON.parse(Buffer.from(jwt, "base64url").toString("utf8")).sub : null;
+    return sub || sessao.user?.id || null;
+  } catch {
+    return null;
+  }
+}
+app.get("/api/atendimento/sessao-deskcomm", requireAuth, blockCliente, async (req, res) => {
+  const user = (req as any).user;
+  try {
+    const esperado = await deskcommGarantirUsuario(user);
+    const noCookie = deskcommUsuarioDoCookie(req.cookies);
+    res.json({ ok: !!esperado && !!noCookie && esperado === noCookie });
+  } catch (e: any) {
+    res.status(502).json({ ok: false, error: e.message });
+  }
+});
+
 // ---------- Autenticação ----------
 app.post("/api/auth/login", loginRateLimiter, (req, res) => {
   const { email, password } = req.body || {};
