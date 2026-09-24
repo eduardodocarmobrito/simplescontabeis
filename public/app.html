@@ -7294,7 +7294,13 @@ async function crmAgenda(box, modulo){
   let itens;
   try{
     await dcGarantirSessao();
-    itens = await dcApi('/agenda/agendamentos?de='+encodeURIComponent(new Date(f.de).toISOString())+'&ate='+encodeURIComponent(new Date(f.ate).toISOString())+'&limite=500');
+    const [ags, doSetor] = await Promise.all([
+      dcApi('/agenda/agendamentos?de='+encodeURIComponent(new Date(f.de).toISOString())+'&ate='+encodeURIComponent(new Date(f.ate).toISOString())+'&limite=500'),
+      // Num setor, só os compromissos de clientes atendidos pelo setor; o CRM vê tudo.
+      modulo==='crm' ? null : api('/atendimento/contatos-do-setor?escopo='+modulo),
+    ]);
+    const permitidos = doSetor ? new Set(doSetor.contatoIds) : null;
+    itens = (ags||[]).filter(a=>!permitidos || permitidos.has(a.contatoId));
   }catch(e){ lista.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; return; }
   itens = (itens||[]).filter(a=>a.id && a.situacao && f.filtro(a)).sort((a,b)=> CRM_AGENDA.filtro==='proximos' ? a.iniciaEm.localeCompare(b.iniciaEm) : b.iniciaEm.localeCompare(a.iniciaEm));
   if(!itens.length){ lista.innerHTML = '<div class="empty-state">Nenhum compromisso aqui.</div>'; return; }
@@ -7331,10 +7337,11 @@ async function crmAgenda(box, modulo){
 }
 // Aba Tags: clientes com tag posta pela equipe (as "Empresa cliente" automáticas ficam de fora).
 const CRM_TAGS = { tag:'' };
-async function crmTags(box){
+async function crmTags(box, escopo){
+  escopo = escopo || 'crm';
   box.innerHTML = '<div class="empty-state">Carregando…</div>';
   let itens;
-  try{ itens = (await api('/atendimento/contatos-tags')).items; }
+  try{ itens = (await api('/atendimento/contatos-tags?escopo='+escopo)).items; }
   catch(e){ box.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; return; }
   const contagem = {};
   itens.forEach(c=>c.tags.forEach(t=>{ contagem[t]=(contagem[t]||0)+1; }));
@@ -7349,7 +7356,7 @@ async function crmTags(box){
     <div class="card" style="padding:0;">${visiveis.length ? `<table class="data-table"><thead><tr><th>Cliente</th><th>Telefone</th><th>Empresa</th><th>Tags</th></tr></thead><tbody>
       ${visiveis.map(c=>`<tr><td>${esc(c.nome||'—')}</td><td style="white-space:nowrap;">${esc(c.telefone)}</td><td>${esc(c.empresaNome||'—')}</td><td>${c.tags.map(t=>`<span class="tag">${esc(t)}</span>`).join(' ')}</td></tr>`).join('')}
     </tbody></table>` : '<div class="empty-state">Nenhum cliente com tag ainda. Use o botão 🏷 Tag numa conversa.</div>'}</div>`;
-  box.querySelectorAll('[data-tag]').forEach(b=>b.addEventListener('click', ()=>{ CRM_TAGS.tag=b.dataset.tag; crmTags(box); }));
+  box.querySelectorAll('[data-tag]').forEach(b=>b.addEventListener('click', ()=>{ CRM_TAGS.tag=b.dataset.tag; crmTags(box, escopo); }));
 }
 async function pageCrmMeta(box){
   CRM.conversaAtiva = null;
@@ -8403,9 +8410,9 @@ async function pageSetor(escopo){
   `;
   document.querySelectorAll('#setorAbas .tab').forEach(t=>t.addEventListener('click', ()=>{ SETOR_ABA[escopo]=t.dataset.aba; pageSetor(escopo); }));
   const box = document.getElementById('setorConteudo');
-  // Agenda e Tags são do CONTATO (as mesmas do CRM); só o WhatsApp é filtrado pelo setor.
+  // Agenda e Tags do setor: só dos clientes que o setor atendeu (o CRM tem a visão geral).
   if(SETOR_ABA[escopo]==='agenda') await crmAgenda(box, escopo);
-  else if(SETOR_ABA[escopo]==='tags') await crmTags(box);
+  else if(SETOR_ABA[escopo]==='tags') await crmTags(box, escopo);
   else await atendimentoMontar(escopo, box);
 }
 

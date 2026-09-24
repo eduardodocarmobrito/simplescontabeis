@@ -12948,6 +12948,30 @@ setInterval(() => {
 }, 60_000);
 setInterval(() => deskcommAgendarSyncEmpresasClientes(), 6 * 3600_000);
 setTimeout(() => deskcommAgendarSyncEmpresasClientes(), 30_000);
+// Toda conversa que passou pelo setor: as que o Roteador (ou uma transferência) já mandou pra ele
+// (`historico`) + as que estão com ele agora (active_intent).
+async function atendimentoConversasDoSetor(escopo: AtendimentoSetorEscopo, colunas: string, historico: Map<string, Set<string>>): Promise<any[]> {
+  if (!deskcommAdmin) return [];
+  const intencao = ATENDIMENTO_SETORES[escopo];
+  const ids = new Set(historico.get(intencao) || []);
+  const { data: ativas, error: erroAtivas } = await deskcommAdmin.from("conversations").select("id").eq("organization_id", DESKCOMM_ORG_ID).eq("active_intent", intencao);
+  if (erroAtivas) throw new Error(erroAtivas.message);
+  for (const c of ativas || []) ids.add(c.id);
+  const lista = [...ids];
+  const linhas: any[] = [];
+  // .in() vira query string — em lotes pra não estourar o tamanho da URL.
+  for (let i = 0; i < lista.length; i += 100) {
+    const { data, error } = await deskcommAdmin.from("conversations").select(colunas).eq("organization_id", DESKCOMM_ORG_ID).in("id", lista.slice(i, i + 100));
+    if (error) throw new Error(error.message);
+    linhas.push(...(data || []));
+  }
+  return linhas;
+}
+// Contatos atendidos por um setor (Agenda e Tags do setor mostram só os clientes deles; o CRM vê tudo).
+async function atendimentoContatosDoSetor(escopo: AtendimentoSetorEscopo): Promise<Set<string>> {
+  const { historico } = await atendimentoEscolhas();
+  return new Set((await atendimentoConversasDoSetor(escopo, "contact_id", historico)).map((c) => c.contact_id));
+}
 const ATENDIMENTO_COLUNAS =
   "id, status, comando_da_conversa, assigned_to_user_id, assigned_to_user_name, last_message_at, last_message_preview, last_inbound_at, unread_count_for_assignee, snooze_until, bot_silenced_until, service_revision, service_started_at, active_intent, active_agent_set_at, contact_id, tags, contact:contacts(display_name, name, phone_number, tags)";
 // Atendente geral (CRM) lê as conversas mais recentes da organização; um volume maior que isso pede
@@ -12977,18 +13001,7 @@ app.get("/api/atendimento/conversas", blockCliente, async (req, res) => {
       if (error) throw new Error(error.message);
       brutas.push(...(data || []));
     } else {
-      const intencao = ATENDIMENTO_SETORES[escopo];
-      const ids = new Set(historico.get(intencao) || []);
-      const { data: ativas, error: erroAtivas } = await deskcommAdmin.from("conversations").select("id").eq("organization_id", DESKCOMM_ORG_ID).eq("active_intent", intencao);
-      if (erroAtivas) throw new Error(erroAtivas.message);
-      for (const c of ativas || []) ids.add(c.id);
-      const lista = [...ids];
-      // .in() vira query string — em lotes pra não estourar o tamanho da URL.
-      for (let i = 0; i < lista.length; i += 100) {
-        const { data, error } = await deskcommAdmin.from("conversations").select(ATENDIMENTO_COLUNAS).eq("organization_id", DESKCOMM_ORG_ID).in("id", lista.slice(i, i + 100));
-        if (error) throw new Error(error.message);
-        brutas.push(...(data || []));
-      }
+      brutas.push(...(await atendimentoConversasDoSetor(escopo, ATENDIMENTO_COLUNAS, historico)));
     }
     const conversas = brutas.map((c) => {
       const setor = atendimentoSetorAtual(c, ultima.get(c.id));
@@ -13061,11 +13074,14 @@ app.get("/api/atendimento/conversas", blockCliente, async (req, res) => {
 
 // Contatos com tag posta pela equipe (botão "Tag" do atendimento ou do deskcomm). As "Empresa cliente: …"
 // ficam de fora — são automáticas (sincronização com Empresas) e estão em quase todo cliente.
+// ?escopo=dprh|contabil|fiscal: só os clientes atendidos por aquele setor; sem escopo (CRM): todos.
 app.get("/api/atendimento/contatos-tags", blockCliente, async (req, res) => {
   const user = (req as any).user;
-  if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
+  const escopo = atendimentoEscopo(req.query.escopo) || "crm";
+  if (!hasPermissao(user, atendimentoModulo(escopo), "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
   try {
+    const doSetor = escopo === "crm" ? null : await atendimentoContatosDoSetor(escopo);
     const itens: any[] = [];
     const empresas = atendimentoMapaEmpresasPorTelefone(user.escritorioId);
     for (let de = 0; ; de += 1000) {
@@ -13079,7 +13095,7 @@ app.get("/api/atendimento/contatos-tags", blockCliente, async (req, res) => {
       if (error) throw new Error(error.message);
       for (const c of data || []) {
         const tags = (c.tags || []).filter((t: string) => !t.startsWith(DESKCOMM_TAG_EMPRESA));
-        if (!tags.length) continue;
+        if (!tags.length || (doSetor && !doSetor.has(c.id))) continue;
         const empresa = empresas.get(crmSoDigitos(c.phone_number).slice(-11)) || null;
         itens.push({ id: c.id, nome: c.display_name || c.name || null, telefone: c.phone_number || "", empresaNome: empresa?.nome ?? null, tags });
       }
@@ -13089,6 +13105,18 @@ app.get("/api/atendimento/contatos-tags", blockCliente, async (req, res) => {
     res.json({ items: itens });
   } catch (e: any) {
     res.status(502).json({ error: "Falha ao ler os contatos no deskcomm: " + e.message });
+  }
+});
+app.get("/api/atendimento/contatos-do-setor", blockCliente, async (req, res) => {
+  const user = (req as any).user;
+  const escopo = atendimentoEscopo(req.query.escopo);
+  if (!escopo || escopo === "crm") return res.status(400).json({ error: "Escopo inválido." });
+  if (!hasPermissao(user, atendimentoModulo(escopo), "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  try {
+    res.json({ contatoIds: [...(await atendimentoContatosDoSetor(escopo))] });
+  } catch (e: any) {
+    res.status(502).json({ error: "Falha ao ler as conversas no deskcomm: " + e.message });
   }
 });
 app.get("/api/atendimento/setores", blockCliente, async (req, res) => {
