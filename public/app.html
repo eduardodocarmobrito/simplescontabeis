@@ -7747,6 +7747,12 @@ function atdRenderCabecalho(S){
     botoes.push(c.adiadaAte ? `<button class="btn small" data-acao="desadiar">Cancelar adiamento</button>` : `<button class="btn small" data-acao="adiar">🕒 Adiar</button>`);
     botoes.push(`<button class="btn small danger" data-acao="fechar">Fechar</button>`);
   }
+  // Compromisso e Tag valem em qualquer situação da conversa (inclusive fechada): são do CONTATO.
+  if(podePostar && c.contatoId){
+    botoes.push(`<button class="btn small" data-acao="compromisso">📅 Compromisso</button>`);
+    botoes.push(`<button class="btn small" data-acao="tag">🏷 Tag</button>`);
+  }
+  const tagsLivres = (c.contatoTags||[]).filter(t=>!t.startsWith(ATD_TAG_EMPRESA));
   cab.innerHTML = `
     <div style="min-width:0;">
       <div style="font-weight:700; font-size:15px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${esc(c.contatoNome||c.telefone)}</div>
@@ -7754,6 +7760,7 @@ function atdRenderCabecalho(S){
       <div class="row" style="margin-top:6px; gap:6px; flex-wrap:wrap;">
         <span class="tag ${cls}">${esc(rotulo)}</span>
         ${S.cfg.mostraSetor?`<span class="tag muted">Setor: ${esc(c.setor||'nenhum')}</span>`:''}
+        ${tagsLivres.map(t=>`<span class="tag">🏷 ${esc(t)}</span>`).join('')}
       </div>
     </div>
     <div class="row dprh-acoes">${botoes.join('')}</div>
@@ -7795,6 +7802,8 @@ async function atdAcao(S, acao, botao){
     if(!confirmar('Fechar esta conversa? Se o cliente escrever de novo, o atendimento recomeça pelo menu de setores.')) return;
     return executar(()=>dcApi(base+'/close', { method:'POST', body:{ expected_revision: c.revisao || undefined } }), 'Conversa fechada.');
   }
+  if(acao==='tag') return atdTagsModal(S, c);
+  if(acao==='compromisso') return atdCompromissoModal(S, c);
   if(acao==='desadiar') return executar(()=>dcApi(base+'/snooze', { method:'DELETE' }), 'Adiamento cancelado.');
   if(acao==='adiar'){
     openModal(`
@@ -7816,6 +7825,147 @@ async function atdAcao(S, acao, botao){
 }
 // Transferir: pra um SETOR (cai na Fila daquele setor, esperando uma pessoa — ou volta pro
 // atendimento geral do CRM) ou pra uma PESSOA (deskcomm /transfer — ela vira a dona da conversa).
+// ---- Tag do contato ----
+// Mesmas tags do botão "Tag" do painel do deskcomm (contacts.tags). As "Empresa cliente: …" são
+// gravadas pela sincronização com Empresas (server.ts, deskcommSincronizarEmpresasClientes): aparecem
+// fixas aqui — mexer nelas por aqui seria desfeito na próxima sincronização.
+const ATD_TAG_EMPRESA = 'Empresa cliente: ';
+function atdTagsModal(S, c){
+  const render = ()=>{
+    const tags = c.contatoTags||[];
+    const fixas = tags.filter(t=>t.startsWith(ATD_TAG_EMPRESA));
+    const livres = tags.filter(t=>!t.startsWith(ATD_TAG_EMPRESA));
+    openModal(`
+      <h3>Tags do contato</h3>
+      <p class="subtitle">${esc(c.contatoNome||c.telefone)} — as tags ficam no contato e aparecem em todos os setores.</p>
+      <div class="row" style="gap:6px; flex-wrap:wrap; margin:10px 0;">
+        ${livres.map(t=>`<span class="tag">${esc(t)} <a href="#" data-rm="${esc(t)}" title="Remover" style="margin-left:4px; text-decoration:none;">×</a></span>`).join('') || '<span style="font-size:12px; color:var(--ink-soft);">Nenhuma tag.</span>'}
+      </div>
+      ${fixas.length?`<div style="font-size:12px; color:var(--ink-soft); margin-bottom:10px;">Do cadastro de Empresas (automático): ${fixas.map(t=>esc(t.slice(ATD_TAG_EMPRESA.length))).join(' · ')}</div>`:''}
+      <div class="row" style="gap:8px; align-items:flex-end;">
+        <div class="field" style="flex:1; margin-bottom:0;"><input type="text" id="atdTagNova" maxlength="60" placeholder="Nova tag… (ex.: VIP, Inadimplente)"></div>
+        <button class="btn primary" id="atdTagAdd">Adicionar</button>
+      </div>
+      <div class="modal-actions"><button class="btn" id="atdTagFechar">Fechar</button></div>
+    `);
+    const salvar = async (novas)=>{
+      try{
+        await dcApi('/contacts/'+c.contatoId, { method:'PATCH', body:{ tags: novas } });
+        c.contatoTags = novas;
+        const item = S.itens.find(x=>x.contatoId===c.contatoId); if(item) item.contatoTags = novas;
+        atdRenderCabecalho(S);
+        render();
+      }catch(e){ toast(e.message,'err'); }
+    };
+    const adicionar = ()=>{
+      const t = document.getElementById('atdTagNova').value.trim();
+      if(!t) return;
+      if(t.startsWith(ATD_TAG_EMPRESA)){ toast('Essa tag é automática — vem do cadastro de Empresas.','err'); return; }
+      if(tags.includes(t)){ toast('O contato já tem essa tag.','err'); return; }
+      if(tags.length>=20){ toast('Limite de 20 tags por contato.','err'); return; }
+      salvar([...tags, t]);
+    };
+    document.getElementById('atdTagAdd').addEventListener('click', adicionar);
+    document.getElementById('atdTagNova').addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); adicionar(); } });
+    document.getElementById('atdTagFechar').addEventListener('click', closeModal);
+    document.querySelectorAll('#modalBody [data-rm]').forEach(a=>a.addEventListener('click', e=>{ e.preventDefault(); salvar(tags.filter(t=>t!==a.dataset.rm)); }));
+    document.getElementById('atdTagNova').focus();
+  };
+  render();
+}
+// ---- Compromisso (agenda do deskcomm) ----
+// Tipos, horários livres e marcação são os da Agenda do deskcomm (/api/v1/agenda/*): o horário livre
+// sai da jornada do responsável do tipo (Equipe › Atendimento lá) e o compromisso aparece na Agenda
+// de lá, ligado ao contato e à conversa — a IA também enxerga.
+const ATD_FUSO = 'America/Sao_Paulo';
+function atdDataHora(iso, opts){ return new Date(iso).toLocaleString('pt-BR', Object.assign({ timeZone:ATD_FUSO }, opts)); }
+function atdHojeISO(){ return new Date().toLocaleDateString('en-CA', { timeZone:ATD_FUSO }); }
+async function atdCompromissoModal(S, c){
+  let tipos, marcados;
+  try{
+    [tipos, marcados] = await Promise.all([
+      dcApi('/agenda/tipos'),
+      dcApi('/agenda/agendamentos?contact_id='+encodeURIComponent(c.contatoId)+'&de='+encodeURIComponent(new Date().toISOString())+'&ate='+encodeURIComponent(new Date(Date.now()+366*86400000).toISOString())),
+    ]);
+  }catch(e){ toast(e.message,'err'); return; }
+  tipos = (tipos||[]).filter(t=>t.is_active!==false);
+  if(!tipos.length){ toast('Nenhum tipo de agendamento ativo na Agenda do deskcomm.','err'); return; }
+  marcados = (marcados||[]).filter(a=>a.id && a.situacao!=='cancelled').sort((a,b)=>a.iniciaEm.localeCompare(b.iniciaEm));
+  let tipoId = tipos[0].id, slot = null;
+  openModal(`
+    <h3>Marcar compromisso</h3>
+    <p class="subtitle">${esc(c.contatoNome||c.telefone)}${c.empresaNome?' · '+esc(c.empresaNome):''}</p>
+    ${marcados.length?`<div style="margin:8px 0 12px;"><div style="font-weight:600; font-size:12.5px; margin-bottom:4px;">Já marcados</div>
+      ${marcados.map(a=>`<div class="row" style="justify-content:space-between; gap:8px; font-size:13px; padding:4px 0; border-bottom:1px solid var(--rule-soft);">
+        <span>📅 ${esc(atdDataHora(a.iniciaEm,{weekday:'short', day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit'}))} — ${esc(a.titulo||'')}</span>
+        <button class="btn small danger" data-cancelar="${esc(a.id)}">Cancelar</button></div>`).join('')}</div>`:''}
+    <div class="field"><label>Tipo</label>
+      <div class="row" style="gap:6px; flex-wrap:wrap;">${tipos.map((t,i)=>`<button class="btn small ${i===0?'primary':''}" data-tipo="${esc(t.id)}">${esc(t.name)} · ${t.duration_minutes}min</button>`).join('')}</div>
+    </div>
+    <div class="field"><label>Dia</label><input type="date" id="atdCompDia" min="${atdHojeISO()}" value="${atdHojeISO()}"></div>
+    <div class="field"><label>Horário</label><div id="atdCompSlots" class="row" style="gap:6px; flex-wrap:wrap;"></div></div>
+    <div class="field"><label>Observação (opcional)</label><input type="text" id="atdCompNota" maxlength="2000" placeholder="Ex.: trazer documentos da admissão"></div>
+    <label class="checkbox-row"><input type="checkbox" id="atdCompAvisar" checked> Avisar o cliente pelo WhatsApp</label>
+    <div class="modal-actions"><button class="btn" id="atdCompCancel">Cancelar</button><button class="btn primary" id="atdCompSalvar" disabled>Marcar</button></div>
+  `);
+  const box = document.getElementById('atdCompSlots');
+  const btnSalvar = document.getElementById('atdCompSalvar');
+  const carregarSlots = async ()=>{
+    slot = null; btnSalvar.disabled = true;
+    const dia = document.getElementById('atdCompDia').value;
+    if(!dia){ box.innerHTML = ''; return; }
+    box.innerHTML = '<span style="font-size:12px; color:var(--ink-soft);">Carregando horários…</span>';
+    try{
+      const r = await dcApi(`/agenda/horarios-livres?event_type_id=${encodeURIComponent(tipoId)}&de=${encodeURIComponent(dia+'T00:00:00-03:00')}&ate=${encodeURIComponent(dia+'T23:59:59-03:00')}`);
+      const slots = (r && r.slots) || [];
+      box.innerHTML = slots.length
+        ? slots.map(x=>`<button class="btn small" data-slot="${esc(x.inicio)}">${esc(atdDataHora(x.inicio,{hour:'2-digit', minute:'2-digit'}))}</button>`).join('')
+        : '<span style="font-size:12px; color:var(--ink-soft);">Nenhum horário livre neste dia.</span>';
+      box.querySelectorAll('[data-slot]').forEach(b=>b.addEventListener('click', ()=>{
+        slot = b.dataset.slot;
+        box.querySelectorAll('[data-slot]').forEach(x=>x.classList.toggle('primary', x===b));
+        btnSalvar.disabled = false;
+      }));
+    }catch(e){ box.innerHTML = `<span style="font-size:12px; color:var(--danger,#b00);">${esc(e.message)}</span>`; }
+  };
+  document.querySelectorAll('#modalBody [data-tipo]').forEach(b=>b.addEventListener('click', ()=>{
+    tipoId = b.dataset.tipo;
+    document.querySelectorAll('#modalBody [data-tipo]').forEach(x=>x.classList.toggle('primary', x===b));
+    carregarSlots();
+  }));
+  document.getElementById('atdCompDia').addEventListener('change', carregarSlots);
+  document.getElementById('atdCompCancel').addEventListener('click', closeModal);
+  document.querySelectorAll('#modalBody [data-cancelar]').forEach(b=>b.addEventListener('click', async ()=>{
+    const motivo = prompt('Motivo do cancelamento (a equipe vê isso na Agenda):');
+    if(motivo===null) return;
+    if(motivo.trim().length<3){ toast('Escreva um motivo (mínimo 3 letras).','err'); return; }
+    try{ await dcApi('/agenda/agendamentos', { method:'DELETE', body:{ id:b.dataset.cancelar, reason:motivo.trim() } }); toast('Compromisso cancelado.','ok'); atdCompromissoModal(S, c); }
+    catch(e){ toast(e.message,'err'); }
+  }));
+  btnSalvar.addEventListener('click', async ()=>{
+    if(!slot) return;
+    btnSalvar.disabled = true;
+    const tipo = tipos.find(t=>t.id===tipoId);
+    const nota = document.getElementById('atdCompNota').value.trim();
+    const avisar = document.getElementById('atdCompAvisar').checked;
+    try{
+      await dcApi('/agenda/agendamentos', { method:'POST', body:Object.assign(
+        { event_type_id:tipoId, starts_at:slot, contact_id:c.contatoId, conversation_id:c.id,
+          title:`${tipo.name} — ${c.contatoNome||c.telefone}` }, nota?{ notes:nota }:{}) });
+      const quando = atdDataHora(slot,{weekday:'long', day:'2-digit', month:'2-digit'})+' às '+atdDataHora(slot,{hour:'2-digit', minute:'2-digit'});
+      closeModal();
+      if(avisar){
+        try{
+          await dcApi('/messages', { method:'POST', body:{ conversation_id:c.id, type:'text',
+            body:`📅 Agendamos seu horário com a Simples Contábeis (${tipo.name}) para ${quando}.${nota?' Observação: '+nota:''} Qualquer imprevisto, é só nos avisar por aqui.` } });
+          if(S.conversaAtiva===c.id) await atdCarregarMensagens(S, true);
+        }catch(e){ toast('Compromisso marcado, mas o aviso ao cliente não foi enviado: '+e.message,'err'); return; }
+      }
+      toast(`Compromisso marcado para ${quando}.`,'ok');
+    }catch(e){ btnSalvar.disabled = false; toast(e.message,'err'); }
+  });
+  carregarSlots();
+}
 async function atdTransferirModal(S, c, executar){
   try{
     if(!S.atendentes) S.atendentes = (await api('/atendimento/atendentes?escopo='+S.escopo)).items;

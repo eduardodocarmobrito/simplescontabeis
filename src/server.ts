@@ -12949,7 +12949,7 @@ setInterval(() => {
 setInterval(() => deskcommAgendarSyncEmpresasClientes(), 6 * 3600_000);
 setTimeout(() => deskcommAgendarSyncEmpresasClientes(), 30_000);
 const ATENDIMENTO_COLUNAS =
-  "id, status, comando_da_conversa, assigned_to_user_id, assigned_to_user_name, last_message_at, last_message_preview, last_inbound_at, unread_count_for_assignee, snooze_until, bot_silenced_until, service_revision, service_started_at, active_intent, active_agent_set_at, contact:contacts(display_name, name, phone_number)";
+  "id, status, comando_da_conversa, assigned_to_user_id, assigned_to_user_name, last_message_at, last_message_preview, last_inbound_at, unread_count_for_assignee, snooze_until, bot_silenced_until, service_revision, service_started_at, active_intent, active_agent_set_at, contact_id, tags, contact:contacts(display_name, name, phone_number, tags)";
 // Atendente geral (CRM) lê as conversas mais recentes da organização; um volume maior que isso pede
 // paginação no servidor, que ainda não existe.
 const ATENDIMENTO_CRM_LIMITE = 500;
@@ -13023,6 +13023,9 @@ app.get("/api/atendimento/conversas", blockCliente, async (req, res) => {
       const empresa = empresas.get(crmSoDigitos(telefone).slice(-11)) || null;
       return {
         id: c.id,
+        contatoId: c.contact_id,
+        contatoTags: c.contact?.tags || [],
+        conversaTags: c.tags || [],
         contatoNome: c.contact?.display_name || c.contact?.name || null,
         telefone,
         empresaId: empresa?.id ?? null,
