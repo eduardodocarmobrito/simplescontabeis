@@ -13047,7 +13047,7 @@ app.get("/api/atendimento/conversas", blockCliente, async (req, res) => {
     const items = conversas
       .filter(filtros[aba])
       .map(mapear)
-      .filter((c) => !busca || crmNormalizaTxt(c.contatoNome || "").includes(busca) || crmNormalizaTxt(c.empresaNome || "").includes(busca) || crmSoDigitos(c.telefone).includes(crmSoDigitos(busca) || "\u0000"))
+      .filter((c) => !busca || crmNormalizaTxt(c.contatoNome || "").includes(busca) || crmNormalizaTxt(c.empresaNome || "").includes(busca) || c.contatoTags.some((t: string) => crmNormalizaTxt(t).includes(busca)) || crmSoDigitos(c.telefone).includes(crmSoDigitos(busca) || "\u0000"))
       .sort((a, b) => String(b.ultimaMensagemEm || "").localeCompare(String(a.ultimaMensagemEm || "")));
     // A conversa aberta na tela, independente da aba — ao "Assumir" na aba Automático ela sai da
     // lista, mas o cabeçalho (quem assumiu, botões) precisa continuar em dia.
@@ -13059,6 +13059,38 @@ app.get("/api/atendimento/conversas", blockCliente, async (req, res) => {
   }
 });
 
+// Contatos com tag posta pela equipe (botão "Tag" do atendimento ou do deskcomm). As "Empresa cliente: …"
+// ficam de fora — são automáticas (sincronização com Empresas) e estão em quase todo cliente.
+app.get("/api/atendimento/contatos-tags", blockCliente, async (req, res) => {
+  const user = (req as any).user;
+  if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  try {
+    const itens: any[] = [];
+    const empresas = atendimentoMapaEmpresasPorTelefone(user.escritorioId);
+    for (let de = 0; ; de += 1000) {
+      const { data, error } = await deskcommAdmin
+        .from("contacts")
+        .select("id, display_name, name, phone_number, tags")
+        .eq("organization_id", DESKCOMM_ORG_ID)
+        .neq("tags", "{}")
+        .order("id")
+        .range(de, de + 999);
+      if (error) throw new Error(error.message);
+      for (const c of data || []) {
+        const tags = (c.tags || []).filter((t: string) => !t.startsWith(DESKCOMM_TAG_EMPRESA));
+        if (!tags.length) continue;
+        const empresa = empresas.get(crmSoDigitos(c.phone_number).slice(-11)) || null;
+        itens.push({ id: c.id, nome: c.display_name || c.name || null, telefone: c.phone_number || "", empresaNome: empresa?.nome ?? null, tags });
+      }
+      if (!data || data.length < 1000) break;
+    }
+    itens.sort((a, b) => crmNormalizaTxt(a.nome || a.telefone).localeCompare(crmNormalizaTxt(b.nome || b.telefone)));
+    res.json({ items: itens });
+  } catch (e: any) {
+    res.status(502).json({ error: "Falha ao ler os contatos no deskcomm: " + e.message });
+  }
+});
 app.get("/api/atendimento/setores", blockCliente, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
@@ -13081,7 +13113,10 @@ app.post("/api/atendimento/conversas/:id/setor", blockCliente, async (req, res) 
   if (!atendimentoAlgumaPermissao(user, "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
   const id = String(req.params.id);
-  const intencao: string | null = req.body?.intencao ? String(req.body.intencao) : null;
+  // `escopo` (dprh/contabil/fiscal) = "para o setor deste módulo" — usado pela Nova conversa de um setor,
+  // que não precisa saber o nome da intenção no Roteador.
+  const escopoSetor = ATENDIMENTO_ESCOPOS_SETOR.find((e) => e === req.body?.escopo);
+  const intencao: string | null = escopoSetor ? ATENDIMENTO_SETORES[escopoSetor] : req.body?.intencao ? String(req.body.intencao) : null;
   const motivo = req.body?.motivo ? String(req.body.motivo).trim().slice(0, 500) : null;
   try {
     let agentId: string | null = null;

@@ -7257,6 +7257,8 @@ async function pageCrm(){
     <div><h1>CRM</h1><p class="subtitle">Atendimento geral do WhatsApp — todas as conversas, de todos os setores.</p></div>
     <div class="tabs" id="crmAbasPagina">
       <div class="tab ${CRM.aba==='whatsapp'?'active':''}" data-aba="whatsapp">WhatsApp</div>
+      <div class="tab ${CRM.aba==='agenda'?'active':''}" data-aba="agenda">Agenda</div>
+      <div class="tab ${CRM.aba==='tags'?'active':''}" data-aba="tags">Tags</div>
       <div class="tab ${CRM.aba==='meta'?'active':''}" data-aba="meta">WhatsApp oficial (Meta)</div>
     </div>
     <div id="crmConteudo"></div>
@@ -7264,7 +7266,89 @@ async function pageCrm(){
   document.querySelectorAll('#crmAbasPagina .tab').forEach(t=>t.addEventListener('click', ()=>{ CRM.aba=t.dataset.aba; pageCrm(); }));
   const box = document.getElementById('crmConteudo');
   if(CRM.aba==='meta') await pageCrmMeta(box);
+  else if(CRM.aba==='agenda') await crmAgenda(box);
+  else if(CRM.aba==='tags') await crmTags(box);
   else await atendimentoMontar('crm', box);
+}
+// Aba Agenda: os compromissos da Agenda do deskcomm (marcados pelo botão 📅 Compromisso, pela tela de
+// lá ou pela IA). A situação muda aqui mesmo: concluído, não compareceu, cancelar.
+const CRM_AGENDA = { filtro:'proximos' };
+const AGENDA_SITUACAO = { pending:['warn','Aguardando confirmação'], confirmed:['ok','Confirmado'], completed:['ok','Concluído'], no_show:['err','Não compareceu'], cancelled:['muted','Cancelado'], rescheduled:['muted','Remarcado'] };
+async function crmAgenda(box){
+  const agora = Date.now(), dia = 86400000;
+  const faixas = {
+    proximos:   { rotulo:'Próximos', de:agora, ate:agora+120*dia, filtro:a=>['pending','confirmed'].includes(a.situacao) },
+    passados:   { rotulo:'Passados', de:agora-120*dia, ate:agora, filtro:a=>a.situacao!=='cancelled' },
+    concluidos: { rotulo:'Concluídos', de:agora-365*dia, ate:agora+120*dia, filtro:a=>a.situacao==='completed' },
+    cancelados: { rotulo:'Cancelados', de:agora-120*dia, ate:agora+120*dia, filtro:a=>a.situacao==='cancelled' },
+  };
+  const f = faixas[CRM_AGENDA.filtro];
+  box.innerHTML = `
+    <div class="row" style="gap:6px; margin:4px 0 12px; flex-wrap:wrap;">
+      ${Object.entries(faixas).map(([id,x])=>`<button class="dprh-filtro ${CRM_AGENDA.filtro===id?'active':''}" data-f="${id}">${x.rotulo}</button>`).join('')}
+    </div>
+    <div class="card" style="padding:0;"><div id="crmAgendaLista"><div class="empty-state">Carregando…</div></div></div>`;
+  box.querySelectorAll('[data-f]').forEach(b=>b.addEventListener('click', ()=>{ CRM_AGENDA.filtro=b.dataset.f; crmAgenda(box); }));
+  const lista = document.getElementById('crmAgendaLista');
+  let itens;
+  try{
+    await dcGarantirSessao();
+    itens = await dcApi('/agenda/agendamentos?de='+encodeURIComponent(new Date(f.de).toISOString())+'&ate='+encodeURIComponent(new Date(f.ate).toISOString())+'&limite=500');
+  }catch(e){ lista.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; return; }
+  itens = (itens||[]).filter(a=>a.id && a.situacao && f.filtro(a)).sort((a,b)=> CRM_AGENDA.filtro==='proximos' ? a.iniciaEm.localeCompare(b.iniciaEm) : b.iniciaEm.localeCompare(a.iniciaEm));
+  if(!itens.length){ lista.innerHTML = '<div class="empty-state">Nenhum compromisso aqui.</div>'; return; }
+  lista.innerHTML = `<table class="data-table"><thead><tr><th>Quando</th><th>Compromisso</th><th>Cliente</th><th>Situação</th><th></th></tr></thead><tbody>
+    ${itens.map(a=>{
+      const [cls, rot] = AGENDA_SITUACAO[a.situacao] || ['muted', a.situacao];
+      const aberto = ['pending','confirmed'].includes(a.situacao);
+      return `<tr data-id="${esc(a.id)}">
+        <td style="white-space:nowrap;">${esc(atdDataHora(a.iniciaEm,{weekday:'short', day:'2-digit', month:'2-digit', year:'numeric'}))}<br><span style="color:var(--ink-soft);">${esc(atdDataHora(a.iniciaEm,{hour:'2-digit', minute:'2-digit'}))} – ${esc(atdDataHora(a.terminaEm,{hour:'2-digit', minute:'2-digit'}))}</span></td>
+        <td>${esc(a.titulo||'')}</td>
+        <td>${esc(a.contatoNome||'—')}</td>
+        <td><span class="tag ${cls}">${esc(rot)}</span></td>
+        <td style="text-align:right; white-space:nowrap;">${aberto && can('crm','postar') ? `
+          <button class="btn small" data-sit="completed">Concluído</button>
+          <button class="btn small" data-sit="no_show">Não compareceu</button>
+          <button class="btn small danger" data-sit="cancelar">Cancelar</button>` : ''}</td>
+      </tr>`;
+    }).join('')}</tbody></table>`;
+  lista.querySelectorAll('[data-sit]').forEach(b=>b.addEventListener('click', async ()=>{
+    const id = b.closest('tr').dataset.id;
+    try{
+      if(b.dataset.sit==='cancelar'){
+        const motivo = prompt('Motivo do cancelamento (a equipe vê isso na Agenda):');
+        if(motivo===null) return;
+        if(motivo.trim().length<3){ toast('Escreva um motivo (mínimo 3 letras).','err'); return; }
+        await dcApi('/agenda/agendamentos', { method:'DELETE', body:{ id, reason:motivo.trim() } });
+      }else{
+        await dcApi('/agenda/agendamentos', { method:'PATCH', body:{ id, status:b.dataset.sit } });
+      }
+      toast('Compromisso atualizado.','ok');
+      crmAgenda(box);
+    }catch(e){ toast(e.message,'err'); }
+  }));
+}
+// Aba Tags: clientes com tag posta pela equipe (as "Empresa cliente" automáticas ficam de fora).
+const CRM_TAGS = { tag:'' };
+async function crmTags(box){
+  box.innerHTML = '<div class="empty-state">Carregando…</div>';
+  let itens;
+  try{ itens = (await api('/atendimento/contatos-tags')).items; }
+  catch(e){ box.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; return; }
+  const contagem = {};
+  itens.forEach(c=>c.tags.forEach(t=>{ contagem[t]=(contagem[t]||0)+1; }));
+  const tags = Object.keys(contagem).sort((a,b)=>a.localeCompare(b,'pt-BR'));
+  if(CRM_TAGS.tag && !contagem[CRM_TAGS.tag]) CRM_TAGS.tag = '';
+  const visiveis = CRM_TAGS.tag ? itens.filter(c=>c.tags.includes(CRM_TAGS.tag)) : itens;
+  box.innerHTML = `
+    <div class="row" style="gap:6px; margin:4px 0 12px; flex-wrap:wrap;">
+      <button class="dprh-filtro ${!CRM_TAGS.tag?'active':''}" data-tag="">Todas <span>${itens.length}</span></button>
+      ${tags.map(t=>`<button class="dprh-filtro ${CRM_TAGS.tag===t?'active':''}" data-tag="${esc(t)}">🏷 ${esc(t)} <span>${contagem[t]}</span></button>`).join('')}
+    </div>
+    <div class="card" style="padding:0;">${visiveis.length ? `<table class="data-table"><thead><tr><th>Cliente</th><th>Telefone</th><th>Empresa</th><th>Tags</th></tr></thead><tbody>
+      ${visiveis.map(c=>`<tr><td>${esc(c.nome||'—')}</td><td style="white-space:nowrap;">${esc(c.telefone)}</td><td>${esc(c.empresaNome||'—')}</td><td>${c.tags.map(t=>`<span class="tag">${esc(t)}</span>`).join(' ')}</td></tr>`).join('')}
+    </tbody></table>` : '<div class="empty-state">Nenhum cliente com tag ainda. Use o botão 🏷 Tag numa conversa.</div>'}</div>`;
+  box.querySelectorAll('[data-tag]').forEach(b=>b.addEventListener('click', ()=>{ CRM_TAGS.tag=b.dataset.tag; crmTags(box); }));
 }
 async function pageCrmMeta(box){
   CRM.conversaAtiva = null;
@@ -7583,7 +7667,7 @@ async function atendimentoMontar(escopo, box){
     <div class="dprh-wa ${abasNoTopo?'atd-com-abas-topo':''}">
       <div class="card dprh-col-lista">
         <div style="padding:10px; border-bottom:1px solid var(--rule);">
-          ${S.escopo==='crm' && can('crm','postar') ? `<button class="btn small primary" id="atdNovaConversa" style="width:100%; margin-bottom:8px;">+ Nova conversa</button>` : ''}
+          ${can(S.cfg.modulo,'postar') ? `<button class="btn small primary" id="atdNovaConversa" style="width:100%; margin-bottom:8px;">+ Nova conversa</button>` : ''}
           <div class="field" style="margin-bottom:0;"><input type="text" id="atdBusca" placeholder="Buscar por nome, empresa ou telefone…" autocomplete="off"></div>
           ${abasNoTopo ? '' : `<div class="dprh-filtros" id="atdFiltros"></div>`}
         </div>
@@ -7750,6 +7834,7 @@ function atdRenderCabecalho(S){
     botoes.push(c.adiadaAte ? `<button class="btn small" data-acao="desadiar">Cancelar adiamento</button>` : `<button class="btn small" data-acao="adiar">🕒 Adiar</button>`);
     botoes.push(`<button class="btn small danger" data-acao="fechar">Fechar</button>`);
   }
+  if(podePostar && fechada && c.contatoId) botoes.push(`<button class="btn small primary" data-acao="reabrir">↺ Reabrir</button>`);
   // Compromisso e Tag valem em qualquer situação da conversa (inclusive fechada): são do CONTATO.
   if(podePostar && c.contatoId){
     botoes.push(`<button class="btn small" data-acao="compromisso">📅 Compromisso</button>`);
@@ -7806,6 +7891,23 @@ async function atdAcao(S, acao, botao){
     return executar(()=>dcApi(base+'/close', { method:'POST', body:{ expected_revision: c.revisao || undefined } }), 'Conversa fechada.');
   }
   if(acao==='tag') return atdTagsModal(S, c);
+  if(acao==='reabrir'){
+    // Reabre pela mesma rota da Nova conversa (o deskcomm reabre a conversa fechada do contato), já com
+    // quem clicou — cai em Minhas. Num setor, a conversa volta pro setor (robô pausado).
+    if(botao) botao.disabled = true;
+    try{
+      const r = await dcApi('/conversations/open-with-contact', { method:'POST', body:{ contact_id:c.contatoId } });
+      if(S.escopo!=='crm') await api('/atendimento/conversas/'+encodeURIComponent(r.conversation_id)+'/setor', { method:'POST', body:{ escopo:S.escopo, motivo:'Conversa reaberta pelo setor' } });
+      await dcApi('/conversations/'+r.conversation_id+'/claim', { method:'POST', body:{} });
+      toast('Conversa reaberta — está em Minhas.','ok');
+      S.filtro = 'minhas';
+      S.conversaAtiva = r.conversation_id;
+      await atdCarregarLista(S);
+      await atdAbrirConversa(S, r.conversation_id);
+      document.getElementById('atdInput')?.focus();
+    }catch(e){ toast(e.message,'err'); if(botao) botao.disabled = false; }
+    return;
+  }
   if(acao==='compromisso') return atdCompromissoModal(S, c);
   if(acao==='desadiar') return executar(()=>dcApi(base+'/snooze', { method:'DELETE' }), 'Adiamento cancelado.');
   if(acao==='adiar'){
@@ -8080,8 +8182,14 @@ function atdNovaConversaModal(S){
     botao.disabled = true;
     try{
       const r = await dcApi('/conversations/open-with-contact', { method:'POST', body: corpo });
+      // Aberta por um setor: a conversa já nasce do setor (robô pausado) e com quem abriu — cai em Minhas.
+      // Sem isso, a resposta do cliente iria pro menu da Recepção.
+      if(S.escopo!=='crm'){
+        await api('/atendimento/conversas/'+encodeURIComponent(r.conversation_id)+'/setor', { method:'POST', body:{ escopo:S.escopo, motivo:'Conversa iniciada pelo setor' } });
+        await dcApi('/conversations/'+r.conversation_id+'/claim', { method:'POST', body:{} });
+      }
       closeModal();
-      S.filtro = 'todas';
+      S.filtro = S.escopo==='crm' ? 'todas' : 'minhas';
       S.conversaAtiva = r.conversation_id;
       await atdCarregarLista(S);
       await atdAbrirConversa(S, r.conversation_id);
