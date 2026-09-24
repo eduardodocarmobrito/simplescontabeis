@@ -13135,6 +13135,213 @@ app.get("/api/atendimento/contatos-tags", blockCliente, async (req, res) => {
     res.status(502).json({ error: "Falha ao ler os contatos no deskcomm: " + e.message });
   }
 });
+// ---------- Painel do atendimento (CRM › Painel) ----------
+// Visão geral pro gestor: o que está acontecendo AGORA (fila, com quem está, quem espera resposta, conversa
+// parada) e como foi o PERÍODO (volume, tempos de resposta, desempenho por funcionário, agenda).
+// Tempos de resposta = para cada mensagem do cliente, quanto demorou a próxima mensagem nossa na mesma
+// conversa (robô ou pessoa — "pessoa" inclui quem respondeu pelo celular). Histórico importado do celular
+// fica de fora (metadata.importado_do_celular).
+const PAINEL_PERIODOS: Record<string, number> = { hoje: 0, "7d": 7, "30d": 30 };
+function painelInicioDoPeriodo(periodo: string): Date {
+  const hojeSp = new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+  const inicioHoje = new Date(`${hojeSp}T00:00:00-03:00`);
+  const dias = PAINEL_PERIODOS[periodo] ?? 0;
+  return dias ? new Date(Date.now() - dias * 86400000) : inicioHoje;
+}
+async function painelPaginado(montar: (de: number, ate: number) => any): Promise<any[]> {
+  const linhas: any[] = [];
+  for (let de = 0; ; de += 1000) {
+    const { data, error } = await montar(de, de + 999);
+    if (error) throw new Error(error.message);
+    linhas.push(...(data || []));
+    if (!data || data.length < 1000) break;
+  }
+  return linhas;
+}
+const painelMedia = (xs: number[]) => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.length) : null);
+const painelMediana = (xs: number[]) => {
+  if (!xs.length) return null;
+  const o = [...xs].sort((a, b) => a - b);
+  return Math.round(o[Math.floor(o.length / 2)]);
+};
+app.get("/api/atendimento/painel", blockCliente, async (req, res) => {
+  const user = (req as any).user;
+  if (!hasPermissao(user, "crm", "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  const periodo = String(req.query.periodo || "hoje") in PAINEL_PERIODOS ? String(req.query.periodo || "hoje") : "hoje";
+  const inicio = painelInicioDoPeriodo(periodo);
+  const agora = Date.now();
+  try {
+    const nomes = new Map<string, string>();
+    for (const r of sqlite.prepare(`SELECT deskcomm_user_id, nome FROM app_users WHERE escritorio_id = ? AND deskcomm_user_id IS NOT NULL`).all(user.escritorioId) as any[]) nomes.set(r.deskcomm_user_id, r.nome);
+    const empresas = atendimentoMapaEmpresasPorTelefone(user.escritorioId);
+    const { ultima } = await atendimentoEscolhas();
+    const colunas = "id, status, comando_da_conversa, assigned_to_user_id, assigned_to_user_name, assigned_at, last_message_at, last_message_preview, last_inbound_at, last_outbound_at, last_handoff_at, snooze_until, service_started_at, service_closed_at, active_intent, active_agent_set_at, contact_id, contact:contacts(display_name, name, phone_number)";
+    // Abertas agora
+    const abertas = await painelPaginado((de, ate) =>
+      deskcommAdmin!.from("conversations").select(colunas).eq("organization_id", DESKCOMM_ORG_ID).is("group_chat_id", null).not("status", "in", "(closed,archived)").order("id").range(de, ate));
+    const nomeAtendente = (id: string | null, fallback?: string | null) => (id ? nomes.get(id) || fallback || "Outro atendente" : null);
+    const item = (c: any) => {
+      const telefone = c.contact?.phone_number || "";
+      const empresa = empresas.get(crmSoDigitos(telefone).slice(-11)) || null;
+      const clienteEsperando = c.last_inbound_at && (!c.last_outbound_at || c.last_inbound_at > c.last_outbound_at);
+      return {
+        id: c.id,
+        nome: c.contact?.display_name || c.contact?.name || telefone,
+        telefone,
+        empresa: empresa?.nome ?? null,
+        setor: atendimentoSetorAtual(c, ultima.get(c.id)),
+        atendente: nomeAtendente(c.assigned_to_user_id, c.assigned_to_user_name),
+        comando: c.comando_da_conversa,
+        ultimaMensagem: c.last_message_preview,
+        ultimaMensagemEm: c.last_message_at,
+        // Cliente esperando resposta: desde a última mensagem dele sem resposta nossa.
+        esperaMin: clienteEsperando ? Math.round((agora - new Date(c.last_inbound_at).getTime()) / 60000) : null,
+        paradaMin: c.last_message_at ? Math.round((agora - new Date(c.last_message_at).getTime()) / 60000) : null,
+      };
+    };
+    const itens = abertas.map(item);
+    const porId = new Map(itens.map((i) => [i.id, i]));
+    const lista = (f: (c: any) => boolean, ordem?: (a: any, b: any) => number) => {
+      const l = abertas.filter(f).map((c) => porId.get(c.id)!);
+      return ordem ? l.sort(ordem) : l;
+    };
+    const maiorEspera = (a: any, b: any) => (b.esperaMin ?? -1) - (a.esperaMin ?? -1);
+    const fila = lista((c) => !c.assigned_to_user_id && c.comando_da_conversa === "aguardando", maiorEspera);
+    const ia = lista((c) => c.comando_da_conversa === "automatico");
+    const emAtendimento = lista((c) => !!c.assigned_to_user_id);
+    const aguardandoResposta = itens.filter((i) => i.esperaMin != null && i.comando !== "automatico").sort(maiorEspera);
+    const semInteracao2h = itens.filter((i) => (i.paradaMin ?? 0) >= 120).sort((a, b) => (b.paradaMin ?? 0) - (a.paradaMin ?? 0));
+    const adiadas = lista((c) => c.snooze_until && new Date(c.snooze_until).getTime() > agora);
+    const porAtendenteAgora = new Map<string, number>();
+    for (const i of emAtendimento) porAtendenteAgora.set(i.atendente!, (porAtendenteAgora.get(i.atendente!) || 0) + 1);
+    const porSetorAgora = new Map<string, { abertas: number; fila: number; ia: number; emAtendimento: number }>();
+    for (const c of abertas) {
+      const i = porId.get(c.id)!;
+      const k = i.setor || "Sem setor";
+      const s = porSetorAgora.get(k) || { abertas: 0, fila: 0, ia: 0, emAtendimento: 0 };
+      s.abertas++;
+      if (!c.assigned_to_user_id && c.comando_da_conversa === "aguardando") s.fila++;
+      if (c.comando_da_conversa === "automatico") s.ia++;
+      if (c.assigned_to_user_id) s.emAtendimento++;
+      porSetorAgora.set(k, s);
+    }
+
+    // Período: mensagens
+    const msgs = await painelPaginado((de, ate) =>
+      deskcommAdmin!.from("messages").select("conversation_id, direction, sent_via, sent_by_user_id, status, created_at")
+        .eq("organization_id", DESKCOMM_ORG_ID).gte("created_at", inicio.toISOString()).is("metadata->importado_do_celular", null)
+        .order("created_at").range(de, ate));
+    const porConversa = new Map<string, any[]>();
+    for (const m of msgs) {
+      if (m.direction === "outbound" && m.status === "failed") continue;
+      const l = porConversa.get(m.conversation_id) || [];
+      l.push(m);
+      porConversa.set(m.conversation_id, l);
+    }
+    const temposIA: number[] = [], temposHumano: number[] = [];
+    type Func = { id: string; nome: string; mensagens: number; conversas: Set<string>; tempos: number[] };
+    const funcs = new Map<string, Func>();
+    const func = (id: string, nome: string) => {
+      let f = funcs.get(id);
+      if (!f) { f = { id, nome, mensagens: 0, conversas: new Set(), tempos: [] }; funcs.set(id, f); }
+      return f;
+    };
+    let recebidas = 0, enviadasIA = 0, enviadasHumano = 0;
+    const porDia = new Map<string, { recebidas: number; ia: number; humano: number }>();
+    for (const [convId, l] of porConversa) {
+      let pendente: number | null = null;
+      for (const m of l) {
+        const t = new Date(m.created_at).getTime();
+        const dia = new Date(m.created_at).toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+        const d = porDia.get(dia) || { recebidas: 0, ia: 0, humano: 0 };
+        porDia.set(dia, d);
+        if (m.direction === "inbound") {
+          recebidas++; d.recebidas++;
+          if (pendente == null) pendente = t;
+          continue;
+        }
+        const humano = m.sent_via !== "ai";
+        const delta = pendente != null ? (t - pendente) / 1000 : null;
+        if (humano) {
+          enviadasHumano++; d.humano++;
+          const f = m.sent_by_user_id ? func(m.sent_by_user_id, nomeAtendente(m.sent_by_user_id)!) : func("celular", "Pelo celular (WhatsApp)");
+          f.mensagens++; f.conversas.add(convId);
+          if (delta != null) { temposHumano.push(delta); f.tempos.push(delta); }
+        } else {
+          enviadasIA++; d.ia++;
+          if (delta != null) temposIA.push(delta);
+        }
+        pendente = null;
+      }
+    }
+    // Período: atendimentos
+    const iniciados = await painelPaginado((de, ate) =>
+      deskcommAdmin!.from("conversations").select("id, service_started_at, service_closed_at, status").eq("organization_id", DESKCOMM_ORG_ID)
+        .is("group_chat_id", null).gte("service_started_at", inicio.toISOString()).is("metadata->importado_do_celular", null).order("id").range(de, ate));
+    const encerrados = await painelPaginado((de, ate) =>
+      deskcommAdmin!.from("conversations").select("id, service_started_at, service_closed_at").eq("organization_id", DESKCOMM_ORG_ID)
+        .is("group_chat_id", null).gte("service_closed_at", inicio.toISOString()).is("metadata->importado_do_celular", null).order("id").range(de, ate));
+    const duracoes = encerrados
+      .filter((c) => c.service_started_at && c.service_closed_at)
+      .map((c) => (new Date(c.service_closed_at).getTime() - new Date(c.service_started_at).getTime()) / 60000)
+      .filter((x) => x >= 0);
+
+    // Período: agenda (compromissos com início no período ou marcados no período)
+    const compromissos = await painelPaginado((de, ate) =>
+      deskcommAdmin!.from("calendar_appointments").select("id, title, starts_at, status, event_type_id, owner_user_id, created_by_user_id, contact_id, conversation_id, created_at")
+        .eq("organization_id", DESKCOMM_ORG_ID).or(`starts_at.gte.${inicio.toISOString()},created_at.gte.${inicio.toISOString()}`).order("id").range(de, ate));
+    const { data: tiposAgenda } = await deskcommAdmin.from("calendar_event_types").select("id, name").eq("organization_id", DESKCOMM_ORG_ID);
+    const nomeTipo = new Map((tiposAgenda || []).map((t: any) => [t.id, t.name]));
+    const agendaPorTipo = new Map<string, Record<string, number>>();
+    const agendaPorSituacao: Record<string, number> = {};
+    const agendaPorQuemMarcou = new Map<string, number>();
+    for (const a of compromissos) {
+      const tipo = nomeTipo.get(a.event_type_id) || "Outro";
+      const t = agendaPorTipo.get(tipo) || { total: 0 };
+      t.total++;
+      t[a.status] = (t[a.status] || 0) + 1;
+      agendaPorTipo.set(tipo, t);
+      agendaPorSituacao[a.status] = (agendaPorSituacao[a.status] || 0) + 1;
+      const quem = a.created_by_user_id ? nomeAtendente(a.created_by_user_id)! : "IA / sistema";
+      agendaPorQuemMarcou.set(quem, (agendaPorQuemMarcou.get(quem) || 0) + 1);
+    }
+    const conversasComMensagem = porConversa.size;
+    res.json({
+      periodo,
+      inicio: inicio.toISOString(),
+      agora: {
+        fila, ia, emAtendimento, aguardandoResposta, semInteracao2h, adiadas,
+        abertas: itens.length,
+        esperaMediaFilaMin: painelMedia(fila.map((i) => i.esperaMin).filter((x): x is number => x != null)),
+        porAtendente: [...porAtendenteAgora].map(([nome, n]) => ({ nome, n })).sort((a, b) => b.n - a.n),
+        porSetor: [...porSetorAgora].map(([setor, v]) => ({ setor, ...v })).sort((a, b) => b.abertas - a.abertas),
+      },
+      periodoDados: {
+        atendimentosIniciados: iniciados.length,
+        atendimentosEncerrados: encerrados.length,
+        duracaoMediaAtendimentoMin: painelMedia(duracoes),
+        conversasComMensagem,
+        mensagens: { recebidas, ia: enviadasIA, humano: enviadasHumano },
+        mediaMensagensPorConversa: conversasComMensagem ? Math.round(((recebidas + enviadasIA + enviadasHumano) / conversasComMensagem) * 10) / 10 : null,
+        tempoRespostaIASeg: { media: painelMedia(temposIA), mediana: painelMediana(temposIA) },
+        tempoRespostaHumanoSeg: { media: painelMedia(temposHumano), mediana: painelMediana(temposHumano) },
+        porFuncionario: [...funcs.values()]
+          .map((f) => ({ nome: f.nome, mensagens: f.mensagens, conversas: f.conversas.size, tempoMedioRespostaSeg: painelMedia(f.tempos), emAtendimentoAgora: porAtendenteAgora.get(f.nome) || 0 }))
+          .sort((a, b) => b.mensagens - a.mensagens),
+        porDia: [...porDia].map(([dia, v]) => ({ dia, ...v })).sort((a, b) => a.dia.localeCompare(b.dia)),
+        agenda: {
+          total: compromissos.length,
+          porSituacao: agendaPorSituacao,
+          porTipo: [...agendaPorTipo].map(([tipo, v]) => ({ tipo, ...v })),
+          porQuemMarcou: [...agendaPorQuemMarcou].map(([nome, n]) => ({ nome, n })).sort((a, b) => b.n - a.n),
+        },
+      },
+    });
+  } catch (e: any) {
+    res.status(502).json({ error: "Falha ao montar o painel: " + e.message });
+  }
+});
 // Conversa mais recente do contato (no setor: a do setor) — clicar num compromisso da Agenda abre ela.
 app.get("/api/atendimento/conversa-do-contato", blockCliente, async (req, res) => {
   const user = (req as any).user;
