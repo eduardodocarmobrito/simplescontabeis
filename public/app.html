@@ -822,7 +822,8 @@ const NAV = [
   { id:'fiscal', label:'Fiscal', modulo:'fiscal', roles:['Administrador','Colaborador'] },
   { id:'usuarios', label:'Usuários', modulo:'usuarios', roles:['Administrador'] },
   { id:'configuracoes', label:'Configurações', modulo:'configuracoes', roles:['Administrador','Colaborador'] },
-  { id:'minha-assinatura-colaborador', label:'Assinatura', modulo:null, roles:['Colaborador'] },
+  // Colaborador não vê mais o item Assinatura no menu (roles vazio = ninguém enxerga); a página segue existindo.
+  { id:'minha-assinatura-colaborador', label:'Assinatura', modulo:null, roles:[] },
   { id:'escritorios', label:'Escritórios', modulo:null, roles:['SuperAdmin'] },
   { id:'modulos-plataforma', label:'Módulos da plataforma', modulo:null, roles:['SuperAdmin'] },
 ];
@@ -856,7 +857,9 @@ function renderNav(){
   wrap.querySelectorAll('.nav-item').forEach(el=>el.addEventListener('click', ()=>goPage(el.dataset.page)));
   // Ponte pro deskcomm: navegação de verdade (não SPA — é login único por fora, via /deskcomm-login),
   // por isso é um <a> à parte, não um item do NAV/goPage. Cliente não usa o deskcomm.
-  if(STATE.user.perfil==='Administrador' || STATE.user.perfil==='Colaborador'){
+  // Só o Administrador vê o atalho pro deskcomm no menu. O Colaborador continua atendendo pelos módulos
+  // (CRM/DP/RH/…), que falam com o deskcomm por baixo dos panos via /deskcomm-login?silencioso=1.
+  if(STATE.user.perfil==='Administrador'){
     wrap.insertAdjacentHTML('beforeend', `<a class="nav-item" href="/deskcomm-login">CRM (deskcomm)</a>`);
   }
 }
