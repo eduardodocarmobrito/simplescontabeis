@@ -14293,6 +14293,24 @@ app.post("/api/atendimento/conversas/:id/setor", blockCliente, async (req, res) 
 const ATENDIMENTO_WAHA_SEEN_TOKEN = DESKCOMM_SUPABASE_SERVICE_ROLE_KEY
   ? crypto.createHash("sha256").update("simplescontabeis-waha-seen:" + DESKCOMM_SUPABASE_SERVICE_ROLE_KEY).digest("hex")
   : "";
+// Renomear o contato (nome que aparece em toda a lista/painel). O deskcomm só preenche display_name quando está
+// vazio (coalesce), então o nome escolhido aqui não é sobrescrito pelo nome do WhatsApp nas próximas mensagens.
+app.put("/api/atendimento/contatos/:id/nome", blockCliente, async (req, res) => {
+  const user = (req as any).user;
+  if (!atendimentoAlgumaPermissao(user, "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  const nome = String(req.body?.nome ?? "").replace(/\s+/g, " ").trim().slice(0, 120);
+  if (!nome) return res.status(400).json({ error: "Informe o nome." });
+  try {
+    const { data, error } = await deskcommAdmin.from("contacts").update({ display_name: nome, updated_at: new Date().toISOString() })
+      .eq("organization_id", DESKCOMM_ORG_ID).eq("id", String(req.params.id)).select("id").maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!data) return res.status(404).json({ error: "Contato não encontrado." });
+    res.json({ ok: true, nome });
+  } catch (e: any) {
+    res.status(502).json({ error: e.message });
+  }
+});
 app.post("/api/atendimento/conversas/:id/lida", blockCliente, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
