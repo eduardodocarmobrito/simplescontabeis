@@ -13938,9 +13938,11 @@ app.get("/api/atendimento/painel", blockCliente, async (req, res) => {
     const iniciados = await painelPaginado((de, ate) =>
       deskcommAdmin!.from("conversations").select(colunas).eq("organization_id", DESKCOMM_ORG_ID)
         .is("group_chat_id", null).gte("service_started_at", inicio.toISOString()).is("metadata->importado_do_celular", null).order("id").range(de, ate));
+    // Fechamentos feitos pela importação do histórico (até 11:50Z de 24/09/2026) não são atendimentos encerrados de verdade.
+    // Sem filtro de status: conversa fechada que o cliente reabriu depois continua contando o fechamento.
     const encerrados = await painelPaginado((de, ate) =>
       deskcommAdmin!.from("conversations").select(colunas).eq("organization_id", DESKCOMM_ORG_ID)
-        .is("group_chat_id", null).eq("status", "closed").gte("service_closed_at", inicio.toISOString()).is("metadata->importado_do_celular", null).order("id").range(de, ate));
+        .is("group_chat_id", null).gte("service_closed_at", new Date(Math.max(inicio.getTime(), Date.parse("2026-09-24T11:50:00Z"))).toISOString()).is("metadata->importado_do_celular", null).order("id").range(de, ate));
     const duracoes = encerrados
       .filter((c) => c.service_started_at && c.service_closed_at)
       .map((c) => (new Date(c.service_closed_at).getTime() - new Date(c.service_started_at).getTime()) / 60000)
