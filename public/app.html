@@ -1039,11 +1039,33 @@ const ALERTAS = { timer:null, avisados:{}, novasTimer:null, desde:null };
 function podeAtenderAlgo(){ return ['crm','dprh','contabil','fiscal'].some(m=>can(m,'visualizar')); }
 function iniciarAlertasAtendimento(){
   if(ALERTAS.timer || !podeAtenderAlgo() || STATE.user?.perfil==='Cliente') return;
-  try{ if('Notification' in window && Notification.permission==='default') Notification.requestPermission(); }catch(e){}
+  setTimeout(oferecerNotificacoesDoComputador, 3000);
   ALERTAS.timer = setInterval(verificarAlertasAtendimento, 60000);
   setTimeout(verificarAlertasAtendimento, 8000);
   ALERTAS.novasTimer = setInterval(verificarMensagensNovas, 8000);
   setTimeout(verificarMensagensNovas, 2000);
+}
+// O navegador só deixa pedir permissão de notificação a partir de um CLIQUE (pedir sozinho é ignorado em silêncio),
+// então aparece uma faixa com botão. Depois de permitido, o aviso sai como notificação do computador — aparece por
+// cima de qualquer outro programa/aba, com o navegador em segundo plano (não funciona com o navegador fechado).
+function oferecerNotificacoesDoComputador(){
+  try{
+    if(!('Notification' in window) || Notification.permission!=='default' || document.getElementById('atdNotifFaixa')) return;
+    const f = document.createElement('div');
+    f.id = 'atdNotifFaixa';
+    f.style.cssText = 'position:fixed; left:50%; transform:translateX(-50%); top:12px; z-index:1300; background:var(--surface); border:1px solid var(--accent); border-radius:10px; box-shadow:0 8px 24px rgba(0,0,0,.15); padding:10px 14px; display:flex; gap:12px; align-items:center; font-size:13px; max-width:92vw;';
+    f.innerHTML = '<span>🔔 Receber aviso de mensagem nova no computador, mesmo com outra tela aberta?</span><button class="btn small primary" id="atdNotifSim">Ativar avisos</button><button class="btn small" id="atdNotifNao">Agora não</button>';
+    document.body.appendChild(f);
+    document.getElementById('atdNotifNao').addEventListener('click', ()=>f.remove());
+    document.getElementById('atdNotifSim').addEventListener('click', async ()=>{
+      f.remove();
+      try{
+        const r = await Notification.requestPermission();
+        if(r==='granted'){ new Notification('✅ Avisos ativados', { body: 'Você será avisado aqui quando chegar mensagem ou transferência.' }); }
+        else toast('As notificações ficaram bloqueadas. Libere em Configurações do site (cadeado ao lado do endereço) → Notificações.','err');
+      }catch(e){}
+    });
+  }catch(e){}
 }
 function pararAlertasAtendimento(){
   if(ALERTAS.timer){ clearInterval(ALERTAS.timer); ALERTAS.timer=null; }
@@ -1108,8 +1130,9 @@ async function verificarMensagensNovas(){
   const abrir = i => { window.focus(); STATE.page = i.escopo; renderNav(); atdIrParaConversa(i.escopo, i.id, false); };
   itens.slice(0,3).forEach(i=>{
     try{
-      if('Notification' in window && Notification.permission==='granted'){
-        const n = new Notification('💬 Nova mensagem', { body: texto(i), tag: 'atd-nova-'+i.id });
+      // Com o site na frente e em foco, o quadro na tela já basta; a notificação do computador é pra quando a pessoa está em outro lugar.
+      if(!emFoco && 'Notification' in window && Notification.permission==='granted'){
+        const n = new Notification('💬 Nova mensagem', { body: texto(i), tag: 'atd-nova-'+i.id, renotify: true, requireInteraction: false });
         n.onclick = ()=>{ n.close(); abrir(i); };
       }
     }catch(e){}
