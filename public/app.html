@@ -1051,6 +1051,9 @@ function pararAlertasAtendimento(){
   ALERTAS.avisados={}; ALERTAS.desde=null;
 }
 // Som curto de "mensagem nova" (diferente do alerta de espera): duas notas subindo.
+// Preferência por navegador (localStorage): ligada por padrão. Desligada, só o som some — o aviso na tela continua.
+function somNovasLigado(){ try{ return localStorage.getItem('atdSomNovas')!=='0'; }catch(e){ return true; } }
+function definirSomNovas(on){ try{ localStorage.setItem('atdSomNovas', on?'1':'0'); }catch(e){} }
 function somMensagemNova(){
   try{
     const ctx = new (window.AudioContext||window.webkitAudioContext)();
@@ -1069,7 +1072,7 @@ async function verificarMensagensNovas(){
   // Conversa que a pessoa já está olhando agora não precisa avisar.
   const itens = (d.itens||[]).filter(i=>!(emFoco && S && S.conversaAtiva===i.id && document.getElementById('atdMsgs')));
   if(!itens.length) return;
-  somMensagemNova();
+  if(somNovasLigado()) somMensagemNova();
   const texto = i => `${i.nome}${i.setor?' · '+i.setor:''}: ${i.previa||'nova mensagem'}`;
   const abrir = i => { window.focus(); STATE.page = i.escopo; renderNav(); atdIrParaConversa(i.escopo, i.id, false); };
   itens.slice(0,3).forEach(i=>{
@@ -8317,7 +8320,10 @@ async function atendimentoMontar(escopo, box){
     <div class="dprh-wa ${abasNoTopo?'atd-com-abas-topo':''}" data-escopo="${escopo}">
       <div class="card dprh-col-lista">
         <div style="padding:10px; border-bottom:1px solid var(--rule);">
-          ${can(S.cfg.modulo,'postar') ? `<button class="btn small primary" id="atdNovaConversa" style="width:100%; margin-bottom:8px;">+ Nova conversa</button>` : ''}
+          <div style="display:flex; gap:6px; margin-bottom:8px;">
+            ${can(S.cfg.modulo,'postar') ? `<button class="btn small primary" id="atdNovaConversa" style="flex:1;">+ Nova conversa</button>` : '<span style="flex:1;"></span>'}
+            <button class="btn small" id="atdSomToggle" title="Som e aviso de mensagem nova (só neste navegador)"></button>
+          </div>
           <div class="field" style="margin-bottom:0;"><input type="text" id="atdBusca" placeholder="Buscar por nome, empresa ou telefone…" autocomplete="off"></div>
           ${abasNoTopo ? '' : `<div class="dprh-filtros" id="atdFiltros"></div>`}
         </div>
@@ -8334,6 +8340,12 @@ async function atendimentoMontar(escopo, box){
   S.filtroAoMontar = null;
   let t=null;
   document.getElementById('atdBusca').addEventListener('input', ()=>{ clearTimeout(t); t=setTimeout(()=>atdCarregarLista(S), 300); });
+  const btnSom = document.getElementById('atdSomToggle');
+  if(btnSom){
+    const pintar = ()=>{ const on = somNovasLigado(); btnSom.textContent = on ? '🔔 Som' : '🔕 Mudo'; btnSom.style.opacity = on ? '1' : '.6'; };
+    pintar();
+    btnSom.addEventListener('click', ()=>{ definirSomNovas(!somNovasLigado()); pintar(); if(somNovasLigado()) somMensagemNova(); });
+  }
   const btnNova = document.getElementById('atdNovaConversa');
   if(btnNova) btnNova.addEventListener('click', ()=>atdNovaConversaModal(S));
   // Arrastar-e-soltar arquivo na conversa aberta. Registrado UMA vez aqui (o painel #atdThread é o
