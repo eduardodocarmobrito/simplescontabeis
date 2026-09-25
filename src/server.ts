@@ -14524,6 +14524,22 @@ app.post("/api/atendimento/mensagens/:id/excluir", blockCliente, async (req, res
     res.json({ ok: true });
   } catch (e: any) { atendimentoRespErro(res, e); }
 });
+// Marcar como não lida: só no deskcomm (contador que a lista usa pro destaque em negrito + bolinha). O WhatsApp do
+// celular não é mexido — o cliente não fica sabendo.
+app.post("/api/atendimento/conversas/:id/nao-lida", blockCliente, async (req, res) => {
+  const user = (req as any).user;
+  if (!atendimentoAlgumaPermissao(user, "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  const { data, error } = await deskcommAdmin
+    .from("conversations")
+    .update({ unread_count_for_assignee: 1 })
+    .eq("organization_id", DESKCOMM_ORG_ID)
+    .eq("id", String(req.params.id))
+    .select("id");
+  if (error) return res.status(502).json({ error: error.message });
+  if (!data?.length) return res.status(404).json({ error: "Conversa não encontrada." });
+  res.json({ ok: true });
+});
 app.post("/api/atendimento/conversas/:id/lida", blockCliente, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });

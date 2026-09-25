@@ -8442,6 +8442,7 @@ function atdRenderCabecalho(S){
   }
   if(podePostar && fechada && c.contatoId) botoes.push(`<button class="btn small primary" data-acao="reabrir">↺ Reabrir</button>`);
   // Compromisso e Tag valem em qualquer situação da conversa (inclusive fechada): são do CONTATO.
+  if(podePostar) botoes.push(`<button class="btn small" data-acao="nao-lida" title="Volta a conversa para não lida (fica em destaque na lista)">Marcar como não lida</button>`);
   if(podePostar && c.contatoId){
     if(c.empresaId) botoes.push(`<button class="btn small" data-acao="empresa">🏢 Empresa</button>`);
     botoes.push(`<button class="btn small" data-acao="compromisso">📅 Compromisso</button>`);
@@ -8505,6 +8506,19 @@ async function atdAcao(S, acao, botao){
       catch(e){ toast('A pesquisa de satisfação não foi enviada: '+e.message,'err'); }
       await dcApi(base+'/close', { method:'POST', body:{ expected_revision: c.revisao || undefined } });
     }, 'Conversa fechada.');
+  }
+  if(acao==='nao-lida'){
+    try{
+      await api('/atendimento/conversas/'+encodeURIComponent(c.id)+'/nao-lida', { method:'POST' });
+    }catch(e){ toast(e.message,'err'); return; }
+    // Fecha a conversa na tela: aberta, ela seria marcada como lida de novo na próxima atualização.
+    if(S.mensagensTimer){ clearInterval(S.mensagensTimer); S.mensagensTimer=null; }
+    S.conversaAtiva = null; S.conversaDados = null;
+    const th = document.getElementById('atdThread');
+    if(th) th.innerHTML = '<div class="empty-state">Conversa marcada como não lida. Escolha outra conversa na lista.</div>';
+    toast('Marcada como não lida.','ok');
+    atdCarregarLista(S);
+    return;
   }
   if(acao==='renomear'){
     openModal(`
