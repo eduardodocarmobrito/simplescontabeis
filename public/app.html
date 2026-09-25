@@ -8369,6 +8369,16 @@ let ATEND_SESSAO_USER = null;
 // (ex.: o CRM terminando de conectar depois de a pessoa já ter aberto o DP/RH) vê que ficou pra trás e
 // se descarta — antes ela ligava o temporizador do CRM POR CIMA da tela do DP/RH, que usa os mesmos
 // elementos (#atdLista/#atdFiltros), e a lista do setor ficava piscando com as conversas do CRM.
+// Estica a caixa de atendimento até o pé da janela (a altura fixa em calc() deixava um vazio embaixo). Mede onde a caixa
+// começa e usa o resto da janela; refaz ao redimensionar e depois de cada desenho da tela.
+function atdAjustarAltura(){
+  const el = document.querySelector('.dprh-wa');
+  if(!el) return;
+  if(window.innerWidth<=820){ el.style.height=''; return; }
+  const topo = el.getBoundingClientRect().top + window.scrollY;
+  el.style.height = Math.max(420, window.innerHeight - topo - 12) + 'px';
+}
+window.addEventListener('resize', atdAjustarAltura);
 function atdNaTela(S){ return document.querySelector('.dprh-wa')?.dataset.escopo === S.escopo; }
 function pararAtendimentoTimers(escopo){
   const S = ATEND[escopo];
@@ -8523,6 +8533,7 @@ function atdRenderFiltros(S){
     return `<button class="dprh-filtro ${S.filtro===id?'active':''}" data-f="${id}">${ATEND_ROTULOS[id]}${n!=null?` <span>${n}</span>`:''}</button>`;
   }).join('');
   box.querySelectorAll('.dprh-filtro').forEach(b=>b.addEventListener('click', ()=>{ S.filtro=b.dataset.f; atdRenderFiltros(S); atdCarregarLista(S); }));
+  atdAjustarAltura();
 }
 function atdHora(iso){
   if(!iso) return '';
