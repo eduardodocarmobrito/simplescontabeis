@@ -13529,7 +13529,9 @@ app.get("/api/atendimento/novas", blockCliente, async (req, res) => {
       const setor = atendimentoSetorAtual(c, ultima.get(c.id));
       const escopo = veCrm ? "crm" : setor ? setoresVisiveis.get(setor) : null;
       if (!escopo) continue;
-      itens.push({ id: c.id, escopo, setor, nome: c.contact?.display_name || c.contact?.name || c.contact?.phone_number || "Cliente", previa: c.last_message_preview || "" });
+      // Em quais telas essa conversa aparece pra pessoa (o som é ligado/desligado por tela).
+      const escopos = [...(veCrm ? ["crm"] : []), ...(setor && setoresVisiveis.has(setor) ? [setoresVisiveis.get(setor)!] : [])];
+      itens.push({ id: c.id, escopo, escopos, setor, nome: c.contact?.display_name || c.contact?.name || c.contact?.phone_number || "Cliente", previa: c.last_message_preview || "" });
     }
     res.json({ agora, itens });
   } catch (e: any) {
