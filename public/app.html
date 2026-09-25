@@ -8378,6 +8378,7 @@ async function atendimentoMontar(escopo, box){
           <div style="display:flex; gap:6px; margin-bottom:8px;">
             ${can(S.cfg.modulo,'postar') ? `<button class="btn small primary" id="atdNovaConversa" style="flex:1;">+ Nova conversa</button>` : '<span style="flex:1;"></span>'}
             <button class="btn small" id="atdSomToggle" title="Som de mensagem nova nesta tela (só neste navegador; cada tela tem o seu)"></button>
+            <button class="btn small" id="atdNotifBtn" title="Avisos no computador (popup do sistema, mesmo com outra aba ou programa na frente)"></button>
           </div>
           <div class="field" style="margin-bottom:0;"><input type="text" id="atdBusca" placeholder="Buscar por nome, empresa ou telefone…" autocomplete="off"></div>
           ${abasNoTopo ? '' : `<div class="dprh-filtros" id="atdFiltros"></div>`}
@@ -8400,6 +8401,25 @@ async function atendimentoMontar(escopo, box){
     const pintar = ()=>{ const on = somNovasLigado(escopo); btnSom.textContent = on ? '🔔 Som' : '🔕 Mudo'; btnSom.style.opacity = on ? '1' : '.6'; };
     pintar();
     btnSom.addEventListener('click', ()=>{ definirSomNovas(escopo, !somNovasLigado(escopo)); pintar(); if(somNovasLigado(escopo)){ if(!somMensagemNova()) toast('O navegador está bloqueando o som. Clique de novo no botão.','err'); } });
+  }
+  const btnNotif = document.getElementById('atdNotifBtn');
+  if(btnNotif){
+    const est = ()=>('Notification' in window) ? Notification.permission : 'unsupported';
+    const pintarN = ()=>{ const e = est(); btnNotif.textContent = e==='granted' ? '🖥 Avisos ✓' : e==='denied' ? '🖥 Avisos ✕' : '🖥 Avisos'; btnNotif.style.opacity = e==='granted' ? '1' : '.75'; };
+    pintarN();
+    btnNotif.addEventListener('click', async ()=>{
+      const e = est();
+      if(e==='unsupported'){ toast('Este navegador não suporta notificações do computador.','err'); return; }
+      if(e==='default'){ try{ await Notification.requestPermission(); }catch(x){} }
+      if(est()==='granted'){ try{ new Notification('✅ Avisos ativados', { body: 'Assim vai aparecer quando chegar mensagem ou transferência.' }); }catch(x){} toast('Avisos no computador ativados. Se o popup não apareceu, veja o modo "Não perturbe/Foco" do sistema.','ok'); }
+      else if(est()==='denied'){
+        openModal(`<h3>Avisos bloqueados neste navegador</h3>
+          <p>O navegador está bloqueando as notificações deste site. Para liberar:</p>
+          <ol style="line-height:1.7;"><li>Clique no ícone à esquerda do endereço (cadeado ou ajustes) na barra de cima.</li><li>Abra <b>Configurações do site</b> (ou "Permissões").</li><li>Em <b>Notificações</b>, escolha <b>Permitir</b>.</li><li>Recarregue a página (Ctrl+Shift+R) e clique de novo em <b>🖥 Avisos</b>.</li></ol>
+          <div class="row" style="justify-content:flex-end; margin-top:10px;"><button class="btn primary" onclick="closeModal()">Entendi</button></div>`);
+      }
+      pintarN();
+    });
   }
   const btnNova = document.getElementById('atdNovaConversa');
   if(btnNova) btnNova.addEventListener('click', ()=>atdNovaConversaModal(S));
