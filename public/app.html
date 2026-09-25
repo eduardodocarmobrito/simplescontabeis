@@ -1611,7 +1611,8 @@ async function pagePainelTv(){
   const PERMITIDAS = (STATE.user.painelTvPaginas||[]).map(n=>n-1);
   const permitida = i => !PERMITIDAS.length || PERMITIDAS.includes(i);
   // Páginas que entram na troca agora: permitidas e, no caso da 2ª, com dados.
-  function paginasAtivas(){ return [0,1].filter(i=>permitida(i) && (i!==1 || PAG.pag2ok)); }
+  // Se a 2ª é a ÚNICA permitida, fica nela mesmo com erro (mostra o motivo e tenta de novo a cada minuto).
+  function paginasAtivas(){ return [0,1].filter(i=>permitida(i) && (i!==1 || PAG.pag2ok || !permitida(0))); }
   function desenharPontos(){
     const dots = document.getElementById('tvpDots');
     if(!dots) return;
@@ -1668,7 +1669,7 @@ async function pagePainelTv(){
   }
 
   tvpManterTelaLigada();
-  await carregar(false);
+  if(permitida(0)) await carregar(false);
   await lerTempoDaTroca();
   if(!permitida(0)) mostrarPagina(1);
   if(permitida(1)) carregarPagina2();
@@ -1678,7 +1679,7 @@ async function pagePainelTv(){
   // Valores atualizam sozinhos a cada 1min (com uma "piscada" rápida, sensação de painel ao vivo) —
   // bem mais frequente que os 30min pedidos, que são só o teto máximo pra pegar mudança estrutural
   // (card novo, removido, editado). Mesma rota que a tela normal de Início já usa, sem custo extra.
-  TVP_TIMERS.refresh = setInterval(()=>carregar(true), 60_000);
+  TVP_TIMERS.refresh = setInterval(()=>{ if(permitida(0)) carregar(true); }, 60_000);
   // Recarrega a página inteira periodicamente — garante que card novo/editado/removido (e qualquer
   // atualização de código do próprio site) apareça sem precisar mexer na TV manualmente.
   TVP_TIMERS.reload = setTimeout(()=>location.reload(), 30*60*1000);
