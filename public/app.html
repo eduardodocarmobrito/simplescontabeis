@@ -1068,9 +1068,10 @@ function somMensagemNova(){
   try{
     if(ctx.state==='suspended') ctx.resume().catch(()=>{});
     if(ctx.state!=='running') return false; // ainda travado pelo navegador
-    [[660,0],[990,0.14]].forEach(([f,t0])=>{ const o=ctx.createOscillator(), g=ctx.createGain(); o.type='sine'; o.frequency.value=f; o.connect(g); g.connect(ctx.destination);
-      g.gain.setValueAtTime(0.0001, ctx.currentTime+t0); g.gain.exponentialRampToValueAtTime(0.25, ctx.currentTime+t0+0.02); g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime+t0+0.25);
-      o.start(ctx.currentTime+t0); o.stop(ctx.currentTime+t0+0.27); });
+    // Três notas, mais altas e mais longas que antes (0.25 de ganho ficava quase inaudível em alguns computadores).
+    [[784,0],[988,0.18],[1319,0.36]].forEach(([f,t0])=>{ const o=ctx.createOscillator(), g=ctx.createGain(); o.type='triangle'; o.frequency.value=f; o.connect(g); g.connect(ctx.destination);
+      g.gain.setValueAtTime(0.0001, ctx.currentTime+t0); g.gain.exponentialRampToValueAtTime(0.7, ctx.currentTime+t0+0.02); g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime+t0+0.32);
+      o.start(ctx.currentTime+t0); o.stop(ctx.currentTime+t0+0.34); });
     return true;
   }catch(e){ return false; }
 }
@@ -8359,7 +8360,7 @@ async function atendimentoMontar(escopo, box){
   if(btnSom){
     const pintar = ()=>{ const on = somNovasLigado(escopo); btnSom.textContent = on ? '🔔 Som' : '🔕 Mudo'; btnSom.style.opacity = on ? '1' : '.6'; };
     pintar();
-    btnSom.addEventListener('click', ()=>{ definirSomNovas(escopo, !somNovasLigado(escopo)); pintar(); if(somNovasLigado(escopo)) somMensagemNova(); });
+    btnSom.addEventListener('click', ()=>{ definirSomNovas(escopo, !somNovasLigado(escopo)); pintar(); if(somNovasLigado(escopo)){ if(!somMensagemNova()) toast('O navegador está bloqueando o som. Clique de novo no botão.','err'); } });
   }
   const btnNova = document.getElementById('atdNovaConversa');
   if(btnNova) btnNova.addEventListener('click', ()=>atdNovaConversaModal(S));
