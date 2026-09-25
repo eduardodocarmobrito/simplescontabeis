@@ -2205,13 +2205,13 @@ async function renderEmpresasPendencias(){
   const ok = '<span class="tag ok">✓</span>', falta = '<span class="tag bad">Falta</span>';
   box.innerHTML = `
     <p class="subtitle" style="margin-top:-6px;">Empresas ativas que ainda não têm certificado digital anexado ou estão sem alguma das licenças mínimas (Alvará, Vigilância Sanitária, Corpo de Bombeiros e SEMMA). Vale ter ao menos um arquivo de cada licença, de qualquer ano.</p>
-    <div class="row" style="margin-bottom:10px; gap:8px; flex-wrap:wrap; align-items:center;">
-      <select id="pendFiltro" style="max-width:280px;">
+    <div class="row" style="margin-bottom:10px; gap:10px; flex-wrap:wrap; align-items:flex-end;">
+      <div class="field" style="width:280px; margin-bottom:0;"><select id="pendFiltro">
         <option value="todas">Todas as pendências (${pend.length})</option>
         <option value="cert">Sem certificado digital (${nCert})</option>
         <option value="lic">Sem alguma licença (${nLic})</option>
-      </select>
-      <input type="text" id="pendBusca" placeholder="Buscar por nome ou CNPJ…" autocomplete="off" style="max-width:280px;">
+      </select></div>
+      <div class="field" style="width:360px; margin-bottom:0;"><input type="text" id="pendBusca" placeholder="Buscar por nome ou CNPJ…" autocomplete="off"></div>
     </div>
     <div class="card" style="padding:0; overflow-x:auto;"><table class="data-table">
       <thead><tr><th>Empresa</th><th>CNPJ</th><th>Certificado</th>${lics.map(l=>`<th>${esc(l.label)}</th>`).join('')}<th></th></tr></thead>
