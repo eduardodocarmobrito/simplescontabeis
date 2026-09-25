@@ -1071,7 +1071,7 @@ async function verificarMensagensNovas(){
   const emFoco = document.visibilityState==='visible' && document.hasFocus();
   const S = ATEND[STATE.page];
   // Conversa que a pessoa já está olhando agora não precisa avisar.
-  const itens = (d.itens||[]).filter(i=>!(emFoco && S && S.conversaAtiva===i.id && document.getElementById('atdMsgs')));
+  const itens = (d.itens||[]).filter(i=>i.transferencia || !(emFoco && S && S.conversaAtiva===i.id && document.getElementById('atdMsgs')));
   if(!itens.length) return;
   // Toca se ao menos uma das telas em que a conversa aparece está com o som ligado.
   if(itens.some(i=>(i.escopos&&i.escopos.length?i.escopos:[i.escopo]).some(somNovasLigado))) somMensagemNova();

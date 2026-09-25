@@ -13523,15 +13523,30 @@ app.get("/api/atendimento/novas", blockCliente, async (req, res) => {
       .eq("organization_id", DESKCOMM_ORG_ID).is("group_chat_id", null)
       .gt("last_inbound_at", desde.toISOString()).order("last_inbound_at", { ascending: false }).limit(30);
     if (error) throw new Error(error.message);
+    // Conversa que ACABOU de cair num setor (transferida por alguém ou encaminhada pela IA): o setor também é avisado.
+    const { data: enviadas, error: erroEnv } = await deskcommAdmin
+      .from("conversations")
+      .select("id, last_inbound_at, last_message_preview, service_started_at, active_intent, active_agent_set_at, contact:contacts(display_name, name, phone_number)")
+      .eq("organization_id", DESKCOMM_ORG_ID).is("group_chat_id", null).not("status", "in", "(closed,archived)")
+      .gt("active_agent_set_at", desde.toISOString()).order("active_agent_set_at", { ascending: false }).limit(30);
+    if (erroEnv) throw new Error(erroEnv.message);
+    const idsInbound = new Set(((data || []) as any[]).map((c) => c.id));
+    const transferidas = new Set<string>();
+    const todas: any[] = [...((data || []) as any[])];
+    for (const c of (enviadas || []) as any[]) {
+      transferidas.add(c.id);
+      if (!idsInbound.has(c.id)) todas.push(c);
+    }
     const { ultima } = await atendimentoEscolhas();
     const itens: any[] = [];
-    for (const c of (data || []) as any[]) {
+    for (const c of todas) {
       const setor = atendimentoSetorAtual(c, ultima.get(c.id));
+      if (transferidas.has(c.id) && !idsInbound.has(c.id) && !setor) continue; // só interessa se caiu num setor
       const escopo = veCrm ? "crm" : setor ? setoresVisiveis.get(setor) : null;
       if (!escopo) continue;
       // Em quais telas essa conversa aparece pra pessoa (o som é ligado/desligado por tela).
       const escopos = [...(veCrm ? ["crm"] : []), ...(setor && setoresVisiveis.has(setor) ? [setoresVisiveis.get(setor)!] : [])];
-      itens.push({ id: c.id, escopo, escopos, setor, nome: c.contact?.display_name || c.contact?.name || c.contact?.phone_number || "Cliente", previa: c.last_message_preview || "" });
+      itens.push({ id: c.id, escopo, escopos, setor, transferencia: transferidas.has(c.id) && !!setor, nome: c.contact?.display_name || c.contact?.name || c.contact?.phone_number || "Cliente", previa: transferidas.has(c.id) && setor ? `Transferida para ${setor}${c.last_message_preview ? " — " + c.last_message_preview : ""}` : c.last_message_preview || "" });
     }
     res.json({ agora, itens });
   } catch (e: any) {
