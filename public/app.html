@@ -1436,7 +1436,7 @@ function tvpPaginaHtml(blocos){
   }).join('');
 }
 // 2ª página: Painel de atendimento do CRM (mesmos números da aba 📊 Painel, período "hoje").
-function tvpPaginaAtendimento(d, d7){
+function tvpPaginaAtendimento(d, d7, rankMes, rankAno){
   const a = d.agora, p = d.periodoDados;
   const maior = a.aguardandoResposta[0]?.esperaMin;
   return tvpPaginaHtml([
@@ -1472,6 +1472,10 @@ function tvpPaginaAtendimento(d, d7){
         legenda:[{nome:'recebidas',cor:'#61B8E8'},{nome:'IA',cor:'#B98CE8'},{nome:'equipe',cor:'#5FE0A0'}], vazio:'Sem mensagens.' },
       { titulo:'Empresas que mais demandaram hoje', colunas:['#','Empresa','Msgs','Conv.','Setores'], numericas:[2,3],
         linhas:p.rankingEmpresas.slice(0,5).map((r,i)=>[i+1, r.empresa, r.recebidas, r.conversas, Object.entries(r.setores).map(([k,v])=>k+' '+v).join(', ')]), vazio:'Nenhuma empresa identificada hoje.' },
+      { titulo:'Empresas que mais demandaram no mês', colunas:['#','Empresa','Msgs','Conv.'], numericas:[2,3],
+        linhas:(rankMes||[]).slice(0,5).map((r,i)=>[i+1, r.empresa, r.recebidas, r.conversas]), vazio:'Nenhuma empresa identificada no mês.' },
+      { titulo:'Empresas que mais demandaram no ano', colunas:['#','Empresa','Msgs','Conv.'], numericas:[2,3],
+        linhas:(rankAno||[]).slice(0,5).map((r,i)=>[i+1, r.empresa, r.recebidas, r.conversas]), vazio:'Nenhuma empresa identificada no ano.' },
       { titulo:'Agenda de hoje', colunas:['Tipo','Total','Confirm.','Concluídos','Faltas','Cancel.'], numericas:[1,2,3,4,5],
         linhas:p.agenda.porTipo.map(t=>[t.tipo, t.total, t.confirmed||0, t.completed||0, t.no_show||0, t.cancelled||0]), vazio:'Nenhum compromisso hoje.' },
       { titulo:'Quem marcou os compromissos', numericas:[1],
@@ -1634,8 +1638,9 @@ async function pagePainelTv(){
     const box = document.getElementById('tvpPag2');
     if(!box) return;
     try{
-      const [d, d7] = await Promise.all([api('/atendimento/painel?periodo=hoje'), api('/atendimento/painel?periodo=7d').catch(()=>null)]);
-      box.innerHTML = tvpPaginaAtendimento(d, d7);
+      const [d, d7, rm, ra] = await Promise.all([api('/atendimento/painel?periodo=hoje'), api('/atendimento/painel?periodo=7d').catch(()=>null),
+        api('/atendimento/painel/ranking-empresas?periodo=mes').catch(()=>null), api('/atendimento/painel/ranking-empresas?periodo=ano').catch(()=>null)]);
+      box.innerHTML = tvpPaginaAtendimento(d, d7, rm&&rm.ranking, ra&&ra.ranking);
       PAG.pag2ok = true;
     }catch(e){
       // Sem dados (ex.: deskcomm fora): a TV fica só na 1ª página em vez de girar pra uma tela vazia.
@@ -7793,7 +7798,17 @@ async function crmPainel(box, silencioso){
       ${p.rankingEmpresas.length ? `<table class="data-table"><thead><tr><th>#</th><th>Empresa</th><th>Mensagens do cliente</th><th>Conversas</th><th>Setores</th></tr></thead><tbody>
       ${p.rankingEmpresas.map((r,i)=>`<tr><td>${i+1}</td><td>${esc(r.empresa)}</td><td><b>${r.recebidas}</b></td><td>${r.conversas}</td><td>${Object.entries(r.setores).map(([k,v])=>`<span class="tag muted">${esc(k)} ${v}</span>`).join(' ')}</td></tr>`).join('')}
       </tbody></table>` : '<div class="empty-state" style="padding:16px;">Nenhuma empresa identificada nas conversas do período (o telefone precisa estar nos contatos da empresa).</div>'}
+    </div>
+    <div class="painel-duas">
+      <div class="card" style="padding:0;"><div class="painel-cab">🏆 Empresas que mais demandaram no mês</div><div id="painelRankMes"><div class="empty-state" style="padding:16px;">Carregando…</div></div></div>
+      <div class="card" style="padding:0;"><div class="painel-cab">🏆 Empresas que mais demandaram no ano</div><div id="painelRankAno"><div class="empty-state" style="padding:16px;">Carregando…</div></div></div>
     </div>`;
+  ['mes','ano'].forEach(per=>api('/atendimento/painel/ranking-empresas?periodo='+per).then(r=>{
+    const el = document.getElementById(per==='mes'?'painelRankMes':'painelRankAno');
+    if(!el) return;
+    el.innerHTML = r.ranking.length ? `<table class="data-table"><thead><tr><th>#</th><th>Empresa</th><th>Msgs do cliente</th><th>Conversas</th></tr></thead><tbody>
+      ${r.ranking.map((x,i)=>`<tr><td>${i+1}</td><td>${esc(x.empresa)}</td><td><b>${x.recebidas}</b></td><td>${x.conversas}</td></tr>`).join('')}</tbody></table>` : '<div class="empty-state" style="padding:16px;">Nenhuma empresa identificada.</div>';
+  }).catch(e=>{ const el = document.getElementById(per==='mes'?'painelRankMes':'painelRankAno'); if(el) el.innerHTML = `<div class="empty-state" style="padding:16px;">${esc(e.message)}</div>`; }));
   document.getElementById('painelConfig')?.addEventListener('click', ()=>painelConfigModal(box));
   box.querySelectorAll('[data-lista]').forEach(el=>el.addEventListener('click', ()=>{ const [t,l,m]=listas[el.dataset.lista]; painelListaModal(t,l,m); }));
   box.querySelectorAll('[data-atendente]').forEach(el=>el.addEventListener('click', ()=>painelListaModal('Com '+el.dataset.atendente, a.emAtendimento.filter(i=>i.atendente===el.dataset.atendente))));

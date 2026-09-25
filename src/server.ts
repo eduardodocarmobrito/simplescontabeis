@@ -13965,6 +13965,47 @@ const painelMediana = (xs: number[]) => {
   const o = [...xs].sort((a, b) => a - b);
   return Math.round(o[Math.floor(o.length / 2)]);
 };
+// Ranking de empresas que mais demandaram no MÊS e no ANO corrente (calendário, fuso de São Paulo) — fixos,
+// independentes do período escolhido no painel. Só conta mensagens recebidas (sem o histórico importado do celular).
+app.get("/api/atendimento/painel/ranking-empresas", blockCliente, async (req, res) => {
+  const user = (req as any).user;
+  if (!user.painelTv && !hasPermissao(user, "crm", "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  const tipo = req.query.periodo === "ano" ? "ano" : "mes";
+  const hojeSp = new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" }); // YYYY-MM-DD
+  const inicio = new Date(`${tipo === "ano" ? hojeSp.slice(0, 4) + "-01-01" : hojeSp.slice(0, 7) + "-01"}T00:00:00-03:00`);
+  try {
+    const empresas = atendimentoMapaEmpresasPorTelefone(user.escritorioId);
+    const { ultima } = await atendimentoEscolhas();
+    const msgs = await painelPaginado((de, ate) =>
+      deskcommAdmin!.from("messages").select("conversation_id").eq("organization_id", DESKCOMM_ORG_ID).eq("direction", "inbound")
+        .gte("created_at", inicio.toISOString()).is("metadata->importado_do_celular", null).order("created_at").range(de, ate));
+    const recPorConv = new Map<string, number>();
+    for (const m of msgs) recPorConv.set(m.conversation_id, (recPorConv.get(m.conversation_id) || 0) + 1);
+    const ids = [...recPorConv.keys()];
+    const ranking = new Map<string, { empresa: string; conversas: number; recebidas: number; setores: Record<string, number> }>();
+    for (let i = 0; i < ids.length; i += 100) {
+      const { data, error } = await deskcommAdmin.from("conversations")
+        .select("id, service_started_at, active_intent, active_agent_set_at, contact:contacts(phone_number)")
+        .eq("organization_id", DESKCOMM_ORG_ID).in("id", ids.slice(i, i + 100));
+      if (error) throw new Error(error.message);
+      for (const c of (data || []) as any[]) {
+        const emp = empresas.get(crmSoDigitos(c.contact?.phone_number).slice(-11));
+        if (!emp) continue;
+        const r = ranking.get(emp.nome) || { empresa: emp.nome, conversas: 0, recebidas: 0, setores: {} };
+        r.conversas++;
+        r.recebidas += recPorConv.get(c.id) || 0;
+        const setor = atendimentoSetorAtual(c, ultima.get(c.id)) || "Sem setor";
+        r.setores[setor] = (r.setores[setor] || 0) + 1;
+        ranking.set(emp.nome, r);
+      }
+    }
+    res.json({ periodo: tipo, inicio: inicio.toISOString(), ranking: [...ranking.values()].sort((a, b) => b.recebidas - a.recebidas || b.conversas - a.conversas).slice(0, 15) });
+  } catch (e: any) {
+    console.error("[atendimento] ranking de empresas:", e.message);
+    res.status(502).json({ error: e.message });
+  }
+});
 app.get("/api/atendimento/painel", blockCliente, async (req, res) => {
   const user = (req as any).user;
   // A conta dedicada do Painel de TV mostra esta visão na 2ª página, sem ter (nem precisar de) a aba CRM.
