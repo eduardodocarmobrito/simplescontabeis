@@ -1035,15 +1035,53 @@ function chatDisponivel(){ return STATE.user && STATE.user.perfil!=='SuperAdmin'
 // A cada minuto, no expediente: cliente na fila sem atendente (nos setores que a pessoa vê) ou esperando
 // resposta numa conversa dela há mais que o limite (Painel › Metas e alertas). Avisa 1× por conversa
 // (e de novo a cada 30 min de espera): notificação do navegador + som + aviso na tela; clicar abre a conversa.
-const ALERTAS = { timer:null, avisados:{} };
+const ALERTAS = { timer:null, avisados:{}, novasTimer:null, desde:null };
 function podeAtenderAlgo(){ return ['crm','dprh','contabil','fiscal'].some(m=>can(m,'visualizar')); }
 function iniciarAlertasAtendimento(){
   if(ALERTAS.timer || !podeAtenderAlgo() || STATE.user?.perfil==='Cliente') return;
   try{ if('Notification' in window && Notification.permission==='default') Notification.requestPermission(); }catch(e){}
   ALERTAS.timer = setInterval(verificarAlertasAtendimento, 60000);
   setTimeout(verificarAlertasAtendimento, 8000);
+  ALERTAS.novasTimer = setInterval(verificarMensagensNovas, 8000);
+  setTimeout(verificarMensagensNovas, 2000);
 }
-function pararAlertasAtendimento(){ if(ALERTAS.timer){ clearInterval(ALERTAS.timer); ALERTAS.timer=null; } ALERTAS.avisados={}; }
+function pararAlertasAtendimento(){
+  if(ALERTAS.timer){ clearInterval(ALERTAS.timer); ALERTAS.timer=null; }
+  if(ALERTAS.novasTimer){ clearInterval(ALERTAS.novasTimer); ALERTAS.novasTimer=null; }
+  ALERTAS.avisados={}; ALERTAS.desde=null;
+}
+// Som curto de "mensagem nova" (diferente do alerta de espera): duas notas subindo.
+function somMensagemNova(){
+  try{
+    const ctx = new (window.AudioContext||window.webkitAudioContext)();
+    [[660,0],[990,0.14]].forEach(([f,t0])=>{ const o=ctx.createOscillator(), g=ctx.createGain(); o.type='sine'; o.frequency.value=f; o.connect(g); g.connect(ctx.destination);
+      g.gain.setValueAtTime(0.0001, ctx.currentTime+t0); g.gain.exponentialRampToValueAtTime(0.25, ctx.currentTime+t0+0.02); g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime+t0+0.25);
+      o.start(ctx.currentTime+t0); o.stop(ctx.currentTime+t0+0.27); });
+  }catch(e){}
+}
+// Toda mensagem nova de cliente (em qualquer conversa que a pessoa enxerga): som + notificação + aviso na tela.
+async function verificarMensagensNovas(){
+  let d;
+  try{ d = await api('/atendimento/novas'+(ALERTAS.desde?'?desde='+encodeURIComponent(ALERTAS.desde):'')); }catch(e){ return; }
+  ALERTAS.desde = d.agora;
+  const emFoco = document.visibilityState==='visible' && document.hasFocus();
+  const S = ATEND[STATE.page];
+  // Conversa que a pessoa já está olhando agora não precisa avisar.
+  const itens = (d.itens||[]).filter(i=>!(emFoco && S && S.conversaAtiva===i.id && document.getElementById('atdMsgs')));
+  if(!itens.length) return;
+  somMensagemNova();
+  const texto = i => `${i.nome}${i.setor?' · '+i.setor:''}: ${i.previa||'nova mensagem'}`;
+  const abrir = i => { window.focus(); STATE.page = i.escopo; renderNav(); atdIrParaConversa(i.escopo, i.id, false); };
+  itens.slice(0,3).forEach(i=>{
+    try{
+      if('Notification' in window && Notification.permission==='granted'){
+        const n = new Notification('💬 Nova mensagem', { body: texto(i), tag: 'atd-nova-'+i.id });
+        n.onclick = ()=>{ n.close(); abrir(i); };
+      }
+    }catch(e){}
+  });
+  mostrarAvisoAlertas(itens, texto, abrir, '💬 Nova mensagem', 'atdNovaBox');
+}
 function alertaSom(){
   try{
     const ctx = new (window.AudioContext||window.webkitAudioContext)();
@@ -1076,13 +1114,15 @@ async function verificarAlertasAtendimento(){
   });
   mostrarAvisoAlertas(novos, texto, abrir);
 }
-function mostrarAvisoAlertas(itens, texto, abrir){
-  let box = document.getElementById('atdAlertaBox');
-  if(!box){ box = document.createElement('div'); box.id='atdAlertaBox'; box.className='atd-alerta-box'; document.body.appendChild(box); }
-  box.innerHTML = `<div class="atd-alerta-cab">⏰ Clientes esperando <button class="btn small" id="atdAlertaX">×</button></div>
+function mostrarAvisoAlertas(itens, texto, abrir, titulo, boxId){
+  boxId = boxId || 'atdAlertaBox'; titulo = titulo || '⏰ Clientes esperando';
+  let box = document.getElementById(boxId);
+  if(!box){ box = document.createElement('div'); box.id=boxId; box.className='atd-alerta-box'; if(boxId==='atdNovaBox'){ box.style.borderColor='var(--accent)'; box.style.bottom='250px'; } document.body.appendChild(box); }
+  box.innerHTML = `<div class="atd-alerta-cab">${titulo} <button class="btn small" id="atdAlertaX">×</button></div>
     ${itens.slice(0,5).map((i,k)=>`<div class="atd-alerta-item" data-k="${k}">${esc(texto(i))}</div>`).join('')}
     ${itens.length>5?`<div style="font-size:11.5px; color:var(--ink-soft); padding:4px 10px;">e mais ${itens.length-5}…</div>`:''}`;
   box.querySelector('#atdAlertaX').addEventListener('click', ()=>box.remove());
+  if(boxId==='atdNovaBox'){ clearTimeout(box._t); box._t = setTimeout(()=>box.remove(), 15000); }
   box.querySelectorAll('[data-k]').forEach(el=>el.addEventListener('click', ()=>{ box.remove(); abrir(itens[Number(el.dataset.k)]); }));
 }
 async function iniciarChat(){

@@ -13506,6 +13506,36 @@ function minutosUteisEntre(inicio: number, fim: number): number {
 }
 // Alertas pro navegador de quem atende: fila sem atendente passando do limite (nos setores que a pessoa
 // vê) e clientes esperando resposta nas conversas DELA. Só no expediente — fora dele ninguém é cobrado.
+// Mensagens NOVAS de cliente desde `desde` (qualquer conversa que a pessoa enxerga: CRM vê todas; setores só as do
+// setor). A tela chama de poucos em poucos segundos e toca som + avisa. Sem `desde` só devolve o "agora" do servidor.
+app.get("/api/atendimento/novas", blockCliente, async (req, res) => {
+  const user = (req as any).user;
+  if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
+  const agora = new Date().toISOString();
+  const desde = req.query.desde ? new Date(String(req.query.desde)) : null;
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID || !desde || isNaN(desde.getTime())) return res.json({ agora, itens: [] });
+  try {
+    const veCrm = hasPermissao(user, "crm", "visualizar");
+    const setoresVisiveis = new Map(ATENDIMENTO_ESCOPOS_SETOR.filter((e) => hasPermissao(user, e, "visualizar")).map((e) => [ATENDIMENTO_SETORES[e], e]));
+    const { data, error } = await deskcommAdmin
+      .from("conversations")
+      .select("id, last_inbound_at, last_message_preview, service_started_at, active_intent, active_agent_set_at, contact:contacts(display_name, name, phone_number)")
+      .eq("organization_id", DESKCOMM_ORG_ID).is("group_chat_id", null)
+      .gt("last_inbound_at", desde.toISOString()).order("last_inbound_at", { ascending: false }).limit(30);
+    if (error) throw new Error(error.message);
+    const { ultima } = await atendimentoEscolhas();
+    const itens: any[] = [];
+    for (const c of (data || []) as any[]) {
+      const setor = atendimentoSetorAtual(c, ultima.get(c.id));
+      const escopo = veCrm ? "crm" : setor ? setoresVisiveis.get(setor) : null;
+      if (!escopo) continue;
+      itens.push({ id: c.id, escopo, setor, nome: c.contact?.display_name || c.contact?.name || c.contact?.phone_number || "Cliente", previa: c.last_message_preview || "" });
+    }
+    res.json({ agora, itens });
+  } catch (e: any) {
+    res.status(502).json({ error: e.message });
+  }
+});
 app.get("/api/atendimento/alertas", blockCliente, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
