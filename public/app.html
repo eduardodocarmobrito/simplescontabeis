@@ -2102,6 +2102,7 @@ async function pageEmpresas(){
     <div class="tabs">
       <div class="tab" data-tab="ativas">Ativas</div>
       <div class="tab" data-tab="inativas">Empresas Inativadas</div>
+      <div class="tab" data-tab="pendencias">Pendências de documentos</div>
     </div>
     <div id="empresasContent"></div>
   `;
@@ -2110,6 +2111,7 @@ async function pageEmpresas(){
 }
 async function renderEmpresasTab(){
   main().querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===EMP_TAB));
+  if(EMP_TAB==='pendencias') return renderEmpresasPendencias();
   const { items: todas } = await api('/empresas');
   const podePostar = can('empresas','postar');
   const podeEditar = can('empresas','editar');
@@ -2185,6 +2187,59 @@ async function renderEmpresasTab(){
     document.getElementById('btnImportarDominio').addEventListener('click', importarDominioModal);
     document.getElementById('btnAtualizarEmpresas').addEventListener('click', atualizarEmpresasDoDominio);
   }
+}
+// Aba "Pendências de documentos": empresas ativas sem certificado digital e/ou sem as 4 licenças mínimas.
+let EMP_PEND_FILTRO = 'todas';
+async function renderEmpresasPendencias(){
+  const box = document.getElementById('empresasContent');
+  box.innerHTML = '<div class="empty-state">Carregando…</div>';
+  let d, lista;
+  try{ [d, lista] = await Promise.all([api('/empresas/pendencias-documentos'), api('/empresas')]); }
+  catch(e){ box.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
+  const podeEditar = can('empresas','editar');
+  const lics = d.licencasMinimas;
+  const semLic = i => lics.filter(l=>!i.licencas[l.chave]);
+  const pend = d.items.filter(i=>!i.temCertificado || semLic(i).length);
+  const nCert = d.items.filter(i=>!i.temCertificado).length;
+  const nLic = d.items.filter(i=>semLic(i).length).length;
+  const ok = '<span class="tag ok">✓</span>', falta = '<span class="tag bad">Falta</span>';
+  box.innerHTML = `
+    <p class="subtitle" style="margin-top:-6px;">Empresas ativas que ainda não têm certificado digital anexado ou estão sem alguma das licenças mínimas (Alvará, Vigilância Sanitária, Corpo de Bombeiros e SEMMA). Vale ter ao menos um arquivo de cada licença, de qualquer ano.</p>
+    <div class="row" style="margin-bottom:10px; gap:8px; flex-wrap:wrap; align-items:center;">
+      <select id="pendFiltro" style="max-width:280px;">
+        <option value="todas">Todas as pendências (${pend.length})</option>
+        <option value="cert">Sem certificado digital (${nCert})</option>
+        <option value="lic">Sem alguma licença (${nLic})</option>
+      </select>
+      <input type="text" id="pendBusca" placeholder="Buscar por nome ou CNPJ…" autocomplete="off" style="max-width:280px;">
+    </div>
+    <div class="card" style="padding:0; overflow-x:auto;"><table class="data-table">
+      <thead><tr><th>Empresa</th><th>CNPJ</th><th>Certificado</th>${lics.map(l=>`<th>${esc(l.label)}</th>`).join('')}<th></th></tr></thead>
+      <tbody id="pendBody"></tbody></table></div>`;
+  const sel = document.getElementById('pendFiltro'); sel.value = EMP_PEND_FILTRO;
+  function desenhar(){
+    const termo = normalizaTxt(document.getElementById('pendBusca').value).trim();
+    const f = EMP_PEND_FILTRO;
+    const itens = d.items.filter(i=>{
+      const pc = !i.temCertificado, pl = semLic(i).length>0;
+      if(f==='cert' ? !pc : f==='lic' ? !pl : !(pc||pl)) return false;
+      return !termo || normalizaTxt(i.nome).includes(termo) || normalizaTxt(i.cnpj||'').includes(termo);
+    });
+    document.getElementById('pendBody').innerHTML = itens.length ? itens.map(i=>`
+      <tr data-id="${i.id}"><td><b>${esc(i.nome)}</b></td><td>${esc(i.cnpj||'—')}</td>
+        <td>${i.temCertificado?ok:falta}</td>
+        ${lics.map(l=>`<td>${i.licencas[l.chave]?ok:falta}</td>`).join('')}
+        <td style="text-align:right;">${podeEditar?'<button class="btn small" data-act="abrir">Abrir empresa</button>':''}</td></tr>`).join('')
+      : `<tr><td colspan="${4+lics.length}"><div class="empty-state">${termo?'Nenhuma empresa encontrada.':'Nenhuma pendência. 🎉'}</div></td></tr>`;
+    document.querySelectorAll('#pendBody [data-act="abrir"]').forEach(b=>b.addEventListener('click', ev=>{
+      const id = Number(ev.target.closest('tr').dataset.id);
+      const emp = lista.items.find(x=>x.id===id);
+      if(emp) empresaModal(emp);
+    }));
+  }
+  sel.addEventListener('change', ()=>{ EMP_PEND_FILTRO = sel.value; desenhar(); });
+  document.getElementById('pendBusca').addEventListener('input', desenhar);
+  desenhar();
 }
 // Rótulos dos tipos de anexo — espelha EMPRESA_ANEXO_TIPOS do backend (server.ts), só pra montar os
 // selects e legendas aqui; a validação de verdade (categoria certa pro tipo) é sempre no backend.

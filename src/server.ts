@@ -3054,6 +3054,36 @@ app.put("/api/users/:id/empresas", requireAdmin, (req, res) => {
 });
 
 // ---------- Empresas (clientes do escritório) ----------
+// Pendências de documentos das empresas ATIVAS: quem ainda não tem certificado digital próprio (NFS-e ou Busca de XML)
+// e quem está sem alguma das 4 licenças mínimas (basta ter ao menos um arquivo do tipo, de qualquer ano).
+const LICENCAS_MINIMAS: { chave: string; label: string }[] = [
+  { chave: "alvara", label: "Alvará" },
+  { chave: "vigilancia_sanitaria", label: "Vigilância Sanitária" },
+  { chave: "corpo_bombeiros", label: "Corpo de Bombeiros" },
+  { chave: "ambiental_semma", label: "SEMMA" },
+];
+app.get("/api/empresas/pendencias-documentos", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const visiveis = empresasVisiveis(user);
+  let rows = sqlite
+    .prepare(
+      `SELECT e.id, e.nome, e.cnpj,
+              ((SELECT 1 FROM nfse_certificados nc WHERE nc.empresa_id = e.id) IS NOT NULL
+                OR (SELECT 1 FROM nfe_busca_config nb WHERE nb.empresa_id = e.id) IS NOT NULL) as temCertificado
+       FROM empresas e WHERE e.ativo = 1 ORDER BY e.nome COLLATE NOCASE`
+    )
+    .all() as any[];
+  if (visiveis !== null) rows = rows.filter((r) => visiveis.includes(r.id));
+  const tem = new Set<string>(
+    (sqlite.prepare(`SELECT DISTINCT empresa_id || ':' || tipo as k FROM empresa_anexos WHERE categoria = 'licenca'`).all() as any[]).map((r) => r.k)
+  );
+  const items = rows.map((r) => {
+    const licencas: Record<string, boolean> = {};
+    for (const l of LICENCAS_MINIMAS) licencas[l.chave] = tem.has(`${r.id}:${l.chave}`);
+    return { id: r.id, nome: r.nome, cnpj: r.cnpj, temCertificado: !!r.temCertificado, licencas };
+  });
+  res.json({ licencasMinimas: LICENCAS_MINIMAS, items });
+});
 app.get("/api/empresas", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
   const user = (req as any).user;
   const visiveis = empresasVisiveis(user);
