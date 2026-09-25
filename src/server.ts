@@ -3698,7 +3698,7 @@ app.get("/api/chat/colegas", (req, res) => {
   const user = (req as any).user;
   if (!user || (user.perfil !== "Administrador" && user.perfil !== "Colaborador")) return res.status(403).json({ error: "Sem acesso." });
   const rows = sqlite
-    .prepare(`SELECT id, nome FROM app_users WHERE escritorio_id = ? AND id != ? AND perfil IN ('Administrador','Colaborador') ORDER BY nome`)
+    .prepare(`SELECT id, nome FROM app_users WHERE escritorio_id = ? AND id != ? AND painel_tv = 0 AND perfil IN ('Administrador','Colaborador') ORDER BY nome`)
     .all(user.escritorioId, user.id) as any[];
   res.json({ items: rows.map((r) => ({ id: r.id, nome: r.nome, online: chatUserOnline(r.id, user.escritorioId) })) });
 });
@@ -3760,7 +3760,8 @@ app.get("/api/chat/resumo", (req, res) => {
       const ultimaLida = leitura ? leitura.ultima_msg_lida_id : 0;
       const naoLidas = (sqlite.prepare(`SELECT COUNT(*) as qtd FROM chat_dm_mensagens WHERE user_a_id = ? AND user_b_id = ? AND id > ? AND autor_user_id != ?`).get(a, b, ultimaLida, user.id) as any).qtd;
       const ultima = sqlite.prepare(`SELECT texto, criado_em as em FROM chat_dm_mensagens WHERE user_a_id = ? AND user_b_id = ? ORDER BY id DESC LIMIT 1`).get(a, b) as any;
-      const colega = sqlite.prepare(`SELECT nome FROM app_users WHERE id = ?`).get(r.colegaId) as any;
+      const colega = sqlite.prepare(`SELECT nome, painel_tv FROM app_users WHERE id = ?`).get(r.colegaId) as any;
+      if (colega?.painel_tv) return null; // conta de Painel de TV não conversa
       return {
         userId: r.colegaId,
         nome: colega ? colega.nome : "?",
@@ -3770,6 +3771,7 @@ app.get("/api/chat/resumo", (req, res) => {
         online: chatUserOnline(r.colegaId, user.escritorioId),
       };
     })
+    .filter((d): d is NonNullable<typeof d> => d !== null)
     .sort((a, b) => (a.ultimaMensagemEm < b.ultimaMensagemEm ? 1 : -1));
   const dmNaoLidas = dms.reduce((s, r) => s + r.naoLidas, 0);
 
@@ -3803,7 +3805,7 @@ app.get("/api/chat/mensagens", (req, res) => {
   }
   if (tipo === "dm") {
     const colegaId = Number(req.query.userId);
-    const colega = sqlite.prepare(`SELECT id, nome FROM app_users WHERE id = ? AND escritorio_id = ? AND perfil IN ('Administrador','Colaborador')`).get(colegaId, user.escritorioId) as any;
+    const colega = sqlite.prepare(`SELECT id, nome FROM app_users WHERE id = ? AND escritorio_id = ? AND painel_tv = 0 AND perfil IN ('Administrador','Colaborador')`).get(colegaId, user.escritorioId) as any;
     if (!colega) return res.status(404).json({ error: "Colaborador não encontrado." });
     const [a, b] = chatDmPar(user.id, colegaId);
     const rows = sqlite
@@ -3885,7 +3887,7 @@ app.post("/api/chat/mensagens", upload.single("arquivo"), (req, res) => {
   }
   if (tipo === "dm") {
     const colegaId = Number(req.body?.userId);
-    const colega = sqlite.prepare(`SELECT id, telefone FROM app_users WHERE id = ? AND escritorio_id = ? AND perfil IN ('Administrador','Colaborador')`).get(colegaId, user.escritorioId) as any;
+    const colega = sqlite.prepare(`SELECT id, telefone FROM app_users WHERE id = ? AND escritorio_id = ? AND painel_tv = 0 AND perfil IN ('Administrador','Colaborador')`).get(colegaId, user.escritorioId) as any;
     if (!colega) return res.status(404).json({ error: "Colaborador não encontrado." });
     const [a, b] = chatDmPar(user.id, colegaId);
     const info = sqlite
