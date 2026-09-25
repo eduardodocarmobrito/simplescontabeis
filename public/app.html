@@ -1055,13 +1055,24 @@ function pararAlertasAtendimento(){
 // Uma chave por tela (crm, dprh, contabil, fiscal): dá pra deixar o CRM mudo e só o DP/RH com som.
 function somNovasLigado(escopo){ try{ return localStorage.getItem('atdSomNovas_'+escopo)!=='0'; }catch(e){ return true; } }
 function definirSomNovas(escopo, on){ try{ localStorage.setItem('atdSomNovas_'+escopo, on?'1':'0'); }catch(e){} }
+// O Chrome só deixa tocar som depois que a pessoa mexeu na página (clique/tecla). Um único AudioContext
+// compartilhado é "destravado" no primeiro clique/tecla; sem isso o som fica mudo em quem só deixa a aba aberta.
+let AUDIO_CTX = null;
+function audioCtx(){
+  try{ if(!AUDIO_CTX) AUDIO_CTX = new (window.AudioContext||window.webkitAudioContext)(); return AUDIO_CTX; }catch(e){ return null; }
+}
+['pointerdown','keydown','touchstart'].forEach(ev=>document.addEventListener(ev, ()=>{ const c = audioCtx(); if(c && c.state==='suspended') c.resume().catch(()=>{}); }, { passive:true }));
 function somMensagemNova(){
+  const ctx = audioCtx();
+  if(!ctx) return false;
   try{
-    const ctx = new (window.AudioContext||window.webkitAudioContext)();
+    if(ctx.state==='suspended') ctx.resume().catch(()=>{});
+    if(ctx.state!=='running') return false; // ainda travado pelo navegador
     [[660,0],[990,0.14]].forEach(([f,t0])=>{ const o=ctx.createOscillator(), g=ctx.createGain(); o.type='sine'; o.frequency.value=f; o.connect(g); g.connect(ctx.destination);
       g.gain.setValueAtTime(0.0001, ctx.currentTime+t0); g.gain.exponentialRampToValueAtTime(0.25, ctx.currentTime+t0+0.02); g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime+t0+0.25);
       o.start(ctx.currentTime+t0); o.stop(ctx.currentTime+t0+0.27); });
-  }catch(e){}
+    return true;
+  }catch(e){ return false; }
 }
 // Toda mensagem nova de cliente (em qualquer conversa que a pessoa enxerga): som + notificação + aviso na tela.
 async function verificarMensagensNovas(){
@@ -1074,7 +1085,8 @@ async function verificarMensagensNovas(){
   const itens = (d.itens||[]).filter(i=>i.transferencia || !(emFoco && S && S.conversaAtiva===i.id && document.getElementById('atdMsgs')));
   if(!itens.length) return;
   // Toca se ao menos uma das telas em que a conversa aparece está com o som ligado.
-  if(itens.some(i=>(i.escopos&&i.escopos.length?i.escopos:[i.escopo]).some(somNovasLigado))) somMensagemNova();
+  let somBloqueado = false;
+  if(itens.some(i=>(i.escopos&&i.escopos.length?i.escopos:[i.escopo]).some(somNovasLigado))) somBloqueado = !somMensagemNova();
   const texto = i => `${i.nome}${i.setor?' · '+i.setor:''}: ${i.previa||'nova mensagem'}`;
   const abrir = i => { window.focus(); STATE.page = i.escopo; renderNav(); atdIrParaConversa(i.escopo, i.id, false); };
   itens.slice(0,3).forEach(i=>{
@@ -1086,6 +1098,7 @@ async function verificarMensagensNovas(){
     }catch(e){}
   });
   mostrarAvisoAlertas(itens, texto, abrir, '💬 Nova mensagem', 'atdNovaBox');
+  if(somBloqueado){ const b = document.getElementById('atdNovaBox'); if(b) b.insertAdjacentHTML('beforeend','<div style="font-size:11.5px; color:var(--ink-soft); padding:6px 10px; border-top:1px solid var(--rule-soft);">🔇 O navegador bloqueou o som. Clique em qualquer lugar da página uma vez para ativar.</div>'); }
 }
 function alertaSom(){
   try{
