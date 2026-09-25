@@ -1061,7 +1061,23 @@ let AUDIO_CTX = null;
 function audioCtx(){
   try{ if(!AUDIO_CTX) AUDIO_CTX = new (window.AudioContext||window.webkitAudioContext)(); return AUDIO_CTX; }catch(e){ return null; }
 }
-['pointerdown','keydown','touchstart'].forEach(ev=>document.addEventListener(ev, ()=>{ const c = audioCtx(); if(c && c.state==='suspended') c.resume().catch(()=>{}); }, { passive:true }));
+['pointerdown','keydown','touchstart'].forEach(ev=>document.addEventListener(ev, ()=>{ const c = audioCtx(); if(c && c.state==='suspended') c.resume().then(manterAbaViva).catch(()=>{}); else manterAbaViva(); }, { passive:true }));
+// Aba em segundo plano (outra aba na frente, janela minimizada) é "congelada" pelo Chrome: o relógio que busca
+// mensagens novas quase para, e o aviso só aparece quando a pessoa volta pra aba. Um tom contínuo e inaudível
+// (30 Hz, volume mínimo) faz o Chrome tratar a aba como "tocando áudio" e NÃO congelar. Liga no primeiro clique.
+let AUDIO_VIVO = null;
+function manterAbaViva(){
+  if(AUDIO_VIVO || !podeAtenderAlgo()) return;
+  const ctx = audioCtx();
+  if(!ctx || ctx.state!=='running') return;
+  try{
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.value = 30; g.gain.value = 0.003;
+    o.connect(g); g.connect(ctx.destination); o.start();
+    AUDIO_VIVO = o;
+  }catch(e){}
+}
+document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible' && ALERTAS.novasTimer) verificarMensagensNovas(); });
 function somMensagemNova(){
   const ctx = audioCtx();
   if(!ctx) return false;
