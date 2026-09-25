@@ -1289,6 +1289,17 @@ async function abrirChatThread(tipo, alvoId, titulo){
   }
   document.getElementById('chatClipe').addEventListener('click', ()=> arquivoInput.click());
   arquivoInput.addEventListener('change', atualizarAnexoChip);
+  // Colar um print (Cmd/Ctrl+V) anexa como se tivesse escolhido pelo clipe.
+  input.addEventListener('paste', ev=>{
+    const f = [...(ev.clipboardData?.files || [])][0];
+    if(!f) return; // colou texto — segue normal
+    ev.preventDefault();
+    const nome = f.name && f.name!=='image.png' ? f.name : 'print-'+new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')+'.'+((f.type.split('/')[1]||'png').replace('jpeg','jpg'));
+    const dt = new DataTransfer();
+    dt.items.add(new File([f], nome, { type:f.type }));
+    arquivoInput.files = dt.files;
+    atualizarAnexoChip();
+  });
   async function enviar(){
     const texto = input.value.trim();
     const arquivo = arquivoInput.files[0] || null;
