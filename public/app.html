@@ -410,6 +410,9 @@
   .eml-anexos{display:flex; flex-wrap:wrap; gap:6px; margin-top:8px;}
   .eml-aviso{margin-top:8px; padding:7px 10px; background:#FFF6DA; border-radius:8px; font-size:12.5px;}
   .eml-corpo{flex:1; width:100%; border:0; background:#fff; min-height:0;}
+  .eml-sug{position:absolute; left:0; right:0; top:100%; margin-top:2px; z-index:50; background:var(--surface); border:1px solid var(--rule); border-radius:10px; box-shadow:0 10px 28px rgba(0,0,0,.16); max-height:260px; overflow-y:auto;}
+  .eml-sug-item{display:flex; justify-content:space-between; align-items:center; gap:10px; padding:8px 12px; cursor:pointer; font-size:13px;}
+  .eml-sug-item.on, .eml-sug-item:hover{background:var(--accent-pale);}
   .eml-editor-tools{display:flex; gap:6px; margin-bottom:6px;}
   .eml-editor{min-height:240px; max-height:46vh; overflow-y:auto; border:1px solid var(--rule); border-radius:10px; padding:10px 12px; background:var(--paper); font-size:14px; line-height:1.5;}
   .eml-editor:focus{outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-pale); background:var(--surface);}
@@ -2312,6 +2315,43 @@ async function emlAcaoLeitor(a){
     emlDesenharLista(); emlCarregarPastas();
   }catch(e){ toast(e.message,'err'); }
 }
+// Sugestões de destinatário ao digitar (2+ letras): quem já recebeu e-mail daqui (memória + pasta Enviados do Gmail) e
+// os e-mails cadastrados nas empresas. Funciona por vírgula: sugere só o trecho que está sendo digitado.
+function emlAutocompletar(input){
+  const campo = input.closest('.field'); if(!campo) return;
+  campo.style.position = 'relative';
+  const box = document.createElement('div'); box.className = 'eml-sug hidden'; campo.appendChild(box);
+  let seq = 0, timer = null, itens = [], sel = -1;
+  const trecho = ()=>{ const v = input.value; const i = Math.max(v.lastIndexOf(','), v.lastIndexOf(';')); return { ini:i+1, texto:v.slice(i+1).trim() }; };
+  const fechar = ()=>{ box.classList.add('hidden'); itens = []; sel = -1; };
+  const marcar = ()=>box.querySelectorAll('.eml-sug-item').forEach((el,i)=>el.classList.toggle('on', i===sel));
+  function escolher(it){
+    const t = trecho();
+    input.value = input.value.slice(0, t.ini).replace(/\s*$/, t.ini? ' ' : '') + it.email + ', ';
+    fechar(); input.focus();
+  }
+  async function buscar(){
+    const t = trecho().texto; const meu = ++seq;
+    if(t.length<2){ fechar(); return; }
+    let d; try{ d = await api('/email/contatos?q='+encodeURIComponent(t)); }catch(e){ return; }
+    if(meu!==seq) return;
+    itens = d.itens; sel = itens.length ? 0 : -1;
+    if(!itens.length){ fechar(); return; }
+    box.innerHTML = itens.map((it,i)=>`<div class="eml-sug-item" data-i="${i}"><div><b>${esc(it.nome||it.email)}</b>${it.nome?` <span style="color:var(--ink-soft)">${esc(it.email)}</span>`:''}</div>
+      <span class="tag ${it.origem==='enviado'?'ok':'muted'}">${it.origem==='enviado'?'✓ já enviado':'cadastro'+(it.empresa?' · '+esc(it.empresa):'')}</span></div>`).join('');
+    box.classList.remove('hidden'); marcar();
+    box.querySelectorAll('.eml-sug-item').forEach(el=>el.addEventListener('mousedown', ev=>{ ev.preventDefault(); escolher(itens[Number(el.dataset.i)]); }));
+  }
+  input.addEventListener('input', ()=>{ clearTimeout(timer); timer = setTimeout(buscar, 250); });
+  input.addEventListener('blur', ()=>setTimeout(fechar, 120));
+  input.addEventListener('keydown', ev=>{
+    if(box.classList.contains('hidden') || !itens.length) return;
+    if(ev.key==='ArrowDown'){ ev.preventDefault(); sel = (sel+1)%itens.length; marcar(); }
+    else if(ev.key==='ArrowUp'){ ev.preventDefault(); sel = (sel-1+itens.length)%itens.length; marcar(); }
+    else if(ev.key==='Enter' || ev.key==='Tab'){ if(sel>=0){ ev.preventDefault(); escolher(itens[sel]); } }
+    else if(ev.key==='Escape'){ fechar(); }
+  });
+}
 // modo: novo | responder | todos | encaminhar. O texto citado entra ESCAPADO (nunca o HTML do e-mail recebido).
 function emlEscrever(modo, m){
   let para='', cc='', assunto='', citado='', inReplyTo='', refs='';
@@ -2351,6 +2391,7 @@ function emlEscrever(modo, m){
       <button class="btn" id="emlCancelar">Cancelar</button><button class="btn primary" id="emlEnviar">Enviar</button>
     </div>`, '780px');
   const ed = document.getElementById('emlEditor');
+  ['emlPara','emlCc','emlCco'].forEach(id=>emlAutocompletar(document.getElementById(id)));
   document.getElementById('emlMostraCc').addEventListener('click', ()=>document.getElementById('emlCcBox').classList.toggle('hidden'));
   document.getElementById('emlMostraCco').addEventListener('click', ()=>document.getElementById('emlCcoBox').classList.toggle('hidden'));
   document.querySelectorAll('.eml-editor-tools [data-cmd]').forEach(b=>b.addEventListener('mousedown', ev=>{

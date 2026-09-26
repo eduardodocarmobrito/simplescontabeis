@@ -7182,6 +7182,7 @@ registerWebmail(app, {
   },
   upload,
   corrigirNomeArquivo,
+  sqlite,
 });
 function emailNormalizaTxt(s: string): string {
   return String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").trim();

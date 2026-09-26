@@ -13,6 +13,7 @@ type Deps = {
   credenciais: (escritorioId: number) => { email: string; senha: string } | null;
   upload: any; // multer
   corrigirNomeArquivo: (n: string) => string;
+  sqlite: any; // node:sqlite (contatos já usados + cadastro das empresas)
 };
 
 type Conexao = { client: ImapFlow; fila: Promise<any>; timer: NodeJS.Timeout | null };
@@ -109,6 +110,71 @@ export function registerWebmail(app: express.Express, d: Deps) {
   app.get("/api/email/status", ...ler, (req, res) => {
     const c = d.credenciais((req as any).user.escritorioId);
     res.json({ configurado: !!c, email: c?.email || null });
+  });
+
+  // Contatos a quem já escrevemos (memória própria, alimentada a cada envio e a cada busca na pasta Enviados do Gmail)
+  // + e-mails dos cadastros das empresas. Ao digitar 2+ letras a tela sugere e marca quem "já recebeu e-mail daqui".
+  d.sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS email_contatos (
+      escritorio_id INTEGER NOT NULL,
+      email TEXT NOT NULL,
+      nome TEXT,
+      usos INTEGER NOT NULL DEFAULT 1,
+      ultimo_uso TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (escritorio_id, email)
+    );
+  `);
+  const guardarContato = (escritorioId: number, email: string, nome?: string) => {
+    const e = String(email || "").trim().toLowerCase();
+    if (!/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(e)) return;
+    d.sqlite
+      .prepare(`INSERT INTO email_contatos (escritorio_id, email, nome) VALUES (?, ?, ?)
+                ON CONFLICT(escritorio_id, email) DO UPDATE SET usos = usos + 1, ultimo_uso = datetime('now'), nome = COALESCE(NULLIF(excluded.nome, ''), nome)`)
+      .run(escritorioId, e, nome || null);
+  };
+  app.get("/api/email/contatos", ...ler, async (req, res) => {
+    const user = (req as any).user;
+    const q = String(req.query.q || "").trim().toLowerCase();
+    if (q.length < 2) return res.json({ itens: [] });
+    const like = `%${q.replace(/[%_]/g, "")}%`;
+    const achados = new Map<string, { email: string; nome: string; origem: "enviado" | "cadastro"; empresa?: string }>();
+    for (const r of d.sqlite.prepare(`SELECT email, nome FROM email_contatos WHERE escritorio_id = ? AND (email LIKE ? OR LOWER(COALESCE(nome,'')) LIKE ?) ORDER BY usos DESC, ultimo_uso DESC LIMIT 12`).all(user.escritorioId, like, like) as any[])
+      achados.set(r.email, { email: r.email, nome: r.nome || "", origem: "enviado" });
+    // Se ainda tem pouco, procura na pasta Enviados do Gmail (cobre o que foi enviado antes deste módulo existir).
+    const c = d.credenciais(user.escritorioId);
+    if (c && achados.size < 6 && q.length >= 3) {
+      try {
+        const encontrados = await Promise.race([
+          comImap(user.escritorioId, c, async (cl) => {
+            const pastas = await listarPastas(cl);
+            const enviados = achaPasta(pastas, "enviados");
+            if (!enviados) return [] as { email: string; nome: string }[];
+            const lock = await cl.getMailboxLock(enviados, { readOnly: true });
+            try {
+              const uids = (((await cl.search({ to: q }, { uid: true })) || []) as number[]).sort((a, b) => b - a).slice(0, 40);
+              const out: { email: string; nome: string }[] = [];
+              if (uids.length) for await (const m of cl.fetch(uids.join(","), { envelope: true }, { uid: true }))
+                for (const a of [...(m.envelope?.to || []), ...(m.envelope?.cc || [])])
+                  if (a.address && (a.address.toLowerCase().includes(q) || (a.name || "").toLowerCase().includes(q))) out.push({ email: a.address, nome: a.name || "" });
+              return out;
+            } finally { lock.release(); }
+          }),
+          new Promise<{ email: string; nome: string }[]>((r) => setTimeout(() => r([]), 6000)),
+        ]);
+        for (const e of encontrados) {
+          const k = e.email.toLowerCase();
+          if (!achados.has(k)) { achados.set(k, { email: k, nome: e.nome, origem: "enviado" }); guardarContato(user.escritorioId, k, e.nome); }
+        }
+      } catch { /* sem a busca no Gmail ainda devolve o que tem */ }
+    }
+    for (const r of d.sqlite.prepare(
+      `SELECT ec.email as email, ec.nome as nome, e.nome as empresa FROM empresa_contatos ec JOIN empresas e ON e.id = ec.empresa_id
+       WHERE e.escritorio_id = ? AND (LOWER(ec.email) LIKE ? OR LOWER(ec.nome) LIKE ? OR LOWER(e.nome) LIKE ?) LIMIT 10`
+    ).all(user.escritorioId, like, like, like) as any[]) {
+      const k = String(r.email || "").toLowerCase();
+      if (k && !achados.has(k)) achados.set(k, { email: k, nome: r.nome || "", origem: "cadastro", empresa: r.empresa });
+    }
+    res.json({ itens: [...achados.values()].slice(0, 12) });
   });
 
   app.get("/api/email/pastas", ...ler, async (req, res) => {
@@ -286,6 +352,10 @@ export function registerWebmail(app: express.Express, d: Deps) {
         ...(b.inReplyTo ? { inReplyTo: String(b.inReplyTo), references: [...refs, String(b.inReplyTo)] } : {}),
         attachments: arquivos.map((a) => ({ filename: d.corrigirNomeArquivo(a.originalname), content: a.buffer, contentType: a.mimetype })),
       });
+      for (const e of [...para, ...cc, ...cco]) {
+        const m = /^(.*?)\s*<([^>]+)>$/.exec(e);
+        guardarContato((req as any).user.escritorioId, m ? m[2] : e, m ? m[1].replace(/^"|"$/g, "") : undefined);
+      }
       res.json({ ok: true, messageId: info.messageId });
     } catch (e: any) { falha(res, e); }
   });
