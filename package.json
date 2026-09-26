@@ -5,13 +5,14 @@
   "main": "index.js",
   "scripts": {
     "dev": "tsx src/server.ts",
-    "build": "tsc && npm run copy-assets",
+    "build": "tsc && npm run copy-assets && npm run build:agente-fgts",
     "copy-assets": "mkdir -p dist/nfse-tabelas dist/tessdata && cp src/nfse-tabelas/*.json dist/nfse-tabelas/ && cp src/tessdata/* dist/tessdata/",
     "start": "node dist/server.js",
     "dominio-agent:dev": "tsx src/dominio-agent.ts",
     "dominio-agent": "node dist/dominio-agent.js",
     "onvio-login": "tsx src/onvio-login-setup.ts",
-    "fgts-login": "tsx src/fgts-login-setup.ts"
+    "fgts-login": "tsx src/fgts-login-setup.ts",
+    "build:agente-fgts": "esbuild src/fgts-login-setup.ts --bundle --platform=node --target=node22 --outfile=dist/agente-fgts/agente-fgts.js --external:playwright --external:playwright-core"
   },
   "keywords": [],
   "author": "",
@@ -53,6 +54,7 @@
     "@types/multer": "^1.4.12",
     "@types/node": "^22.10.0",
     "@types/nodemailer": "^6.4.17",
+    "esbuild": "^0.28.2",
     "tsx": "^4.23.12",
     "typescript": "^5.7.2"
   }

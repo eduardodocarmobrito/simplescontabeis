@@ -10986,16 +10986,16 @@ async function renderCfgFgtsDigital(box){
         seu computador:
       </p>
       <div class="card" style="background:var(--paper); margin:10px 0;">
-        <p style="font-size:12.5px; color:var(--ink-soft); margin:0;">
-          Em qualquer computador com Node instalado, na pasta do projeto, rode:
-          <code>npm run fgts-login</code>. Vai abrir um navegador pra você logar normalmente no
-          FGTS Digital: Entrar com GOV.BR &gt; Outras opções de identificação &gt; Seu certificado
-          digital &gt; escolha o certificado &gt; perfil "Procurador". Depois de apertar ENTER no
-          terminal, ele pede seu e-mail/senha do sistema (ou usa o que estiver salvo no .env) e já
-          busca sozinho a guia de todas as empresas marcadas abaixo, enviando os PDFs pra Envio de
-          Documentos. Se faltar procuração ativa pra alguma empresa, ele pula ela e segue pras
-          próximas — o resultado de cada uma fica aqui embaixo.
-        </p>
+        <div style="font-weight:700; margin-bottom:6px;">💻 Rodar em qualquer computador Windows (sem instalar nada)</div>
+        <ol style="font-size:12.5px; color:var(--ink-soft); margin:0 0 10px; padding-left:20px; line-height:1.7;">
+          <li>Baixe o pacote abaixo no computador que tem o certificado digital e extraia a pasta inteira (botão direito › Extrair tudo).</li>
+          <li>Dê dois cliques em <b>INICIAR-FGTS.bat</b>. Abre o Microsoft Edge (ou o Chrome) no FGTS Digital.</li>
+          <li>Faça o login: Entrar com GOV.BR › Outras opções de identificação › Seu certificado digital › escolha o certificado › perfil "Procurador" › CNPJ de qualquer empresa marcada › "Definir".</li>
+          <li>Só depois de ver a tela com os quadradinhos ("GESTÃO DE GUIAS" etc.), volte na janela preta e aperte <b>ENTER</b>.</li>
+          <li>Digite o e-mail e a senha do sistema quando pedir. Ele busca a guia de todas as empresas marcadas abaixo e envia os PDFs para Envio de Documentos. Se faltar procuração ativa para alguma empresa, ele pula e segue para as próximas — o resultado de cada uma fica aqui embaixo.</li>
+        </ol>
+        <a class="btn primary" href="/api/fgts/agente-windows" download>⬇ Baixar Agente FGTS para Windows</a>
+        <span style="font-size:11.5px; color:var(--ink-soft); margin-left:8px;">O primeiro download pode demorar um pouco (~50 MB).</span>
       </div>
       ${semProcuracao.length ? `
         <div class="card" style="background:#fff3cd; margin:10px 0;">

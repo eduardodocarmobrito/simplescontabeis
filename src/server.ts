@@ -4422,6 +4422,81 @@ function fgtsAnexarGuiaEmEnvio(escritorioId: number, empresaId: number, ano: num
   }).catch((e) => console.error(`[FGTS Digital] envio automático da guia (empresa ${empresaId}) falhou:`, e.message));
   return docId;
 }
+// Pacote portátil pra Windows do "npm run fgts-login": zip com node.exe + o agente já empacotado (esbuild) + playwright-core.
+// O navegador é o Edge/Chrome do próprio PC (o certificado digital do Windows aparece no seletor), então o colaborador
+// não instala nada: extrai o zip e dá dois cliques em INICIAR-FGTS.bat. O node.exe oficial é baixado do nodejs.org uma
+// vez e guardado em DATA_DIR (mesma versão do servidor).
+let nodeExeWinPromise: Promise<string> | null = null;
+function nodeExeWindows(): Promise<string> {
+  if (nodeExeWinPromise) return nodeExeWinPromise;
+  nodeExeWinPromise = (async () => {
+    const versao = process.versions.node;
+    const dir = path.join(DATA_DIR, "agente-fgts");
+    fs.mkdirSync(dir, { recursive: true });
+    const destino = path.join(dir, `node-v${versao}-win-x64.exe`);
+    if (fs.existsSync(destino) && fs.statSync(destino).size > 20_000_000) return destino;
+    const r = await fetch(`https://nodejs.org/dist/v${versao}/win-x64/node.exe`);
+    if (!r.ok) throw new Error(`nodejs.org respondeu ${r.status} para a versão ${versao}`);
+    const tmp = destino + ".tmp";
+    fs.writeFileSync(tmp, Buffer.from(await r.arrayBuffer()));
+    fs.renameSync(tmp, destino);
+    return destino;
+  })().catch((e) => { nodeExeWinPromise = null; throw e; });
+  return nodeExeWinPromise;
+}
+app.get("/api/fgts/agente-windows", blockCliente, requirePermissao("empresas", "visualizar"), async (req, res) => {
+  const bundle = [path.join(__dirname, "agente-fgts", "agente-fgts.js"), path.join(__dirname, "..", "dist", "agente-fgts", "agente-fgts.js")].find((f) => fs.existsSync(f));
+  const playwrightCore = path.join(__dirname, "..", "node_modules", "playwright-core");
+  if (!bundle || !fs.existsSync(playwrightCore)) return res.status(500).json({ error: "O pacote do agente não está disponível nesta versão do servidor." });
+  try {
+    const nodeExe = await nodeExeWindows();
+    const proto = String(req.headers["x-forwarded-proto"] || req.protocol || "https").split(",")[0];
+    const url = `${proto}://${req.get("host")}`;
+    const bat = [
+      "@echo off",
+      "chcp 65001 >nul",
+      "title Agente FGTS Digital - Simples Contabeis",
+      'cd /d "%~dp0"',
+      `set FGTS_APP_URL=${url}`,
+      "set FGTS_BROWSER_CHANNEL=msedge",
+      'set NODE_PATH=%~dp0node_modules',
+      '"%~dp0node.exe" "%~dp0agente-fgts.js"',
+      "echo.",
+      "pause",
+      "",
+    ].join("\r\n");
+    const leia = [
+      "AGENTE FGTS DIGITAL - Simples Contabeis",
+      "",
+      "1. Extraia esta pasta inteira (botao direito > Extrair tudo). Nao rode de dentro do zip.",
+      "2. De dois cliques em INICIAR-FGTS.bat. Nao precisa instalar nada.",
+      "3. Vai abrir o Microsoft Edge no FGTS Digital. Faca o login: Entrar com GOV.BR > Outras opcoes de",
+      '   identificacao > Seu certificado digital > escolha o certificado > perfil "Procurador" > CNPJ de',
+      '   qualquer empresa marcada > "Definir".',
+      '4. So depois de ver a tela com os quadradinhos ("GESTAO DE GUIAS" etc.), volte na janela preta e aperte ENTER.',
+      "5. Digite o e-mail e a senha do sistema Simples Contabeis quando pedir. Ele busca a guia de todas as",
+      "   empresas marcadas e envia os PDFs para o sistema sozinho.",
+      "",
+      "Endereco do sistema: " + url,
+      "Se o Edge nao abrir, ele tenta o Google Chrome. Um dos dois precisa estar instalado no computador.",
+      "",
+    ].join("\r\n");
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", 'attachment; filename="Agente-FGTS-Windows.zip"');
+    const zip: any = archiver("zip", { zlib: { level: 1 } });
+    zip.on("error", (e: any) => { console.error("[fgts] zip do agente:", e.message); res.destroy(); });
+    zip.pipe(res);
+    zip.append(bat, { name: "INICIAR-FGTS.bat" });
+    zip.append(leia, { name: "LEIA-ME.txt" });
+    zip.file(bundle, { name: "agente-fgts.js" });
+    zip.file(nodeExe, { name: "node.exe" });
+    zip.directory(playwrightCore, "node_modules/playwright-core");
+    await zip.finalize();
+  } catch (e: any) {
+    console.error("[fgts] agente windows:", e.message);
+    if (!res.headersSent) res.status(502).json({ error: "Não consegui montar o pacote: " + e.message });
+  }
+});
 // Lida por fgts-login-setup.ts logo depois de logar, pra saber quais empresas buscar.
 app.get("/api/fgts/empresas-marcadas", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
   const rows = sqlite

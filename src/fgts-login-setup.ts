@@ -29,8 +29,13 @@ async function main() {
   try {
     ({ chromium } = require("playwright"));
   } catch {
-    console.error('Pacote "playwright" não instalado. Rode primeiro: npm install');
-    process.exit(1);
+    try {
+      // Pacote portátil pra Windows (ver Configurações › FGTS Digital): só vem o playwright-core e o navegador é o Edge/Chrome do PC.
+      ({ chromium } = require("playwright-core"));
+    } catch {
+      console.error('Pacote "playwright" não instalado. Rode primeiro: npm install');
+      process.exit(1);
+    }
   }
 
   console.log("Abrindo o navegador pra você fazer login no FGTS Digital...");
@@ -46,10 +51,23 @@ async function main() {
   // histórico/plugins etc.) que fazem o captcha falhar sozinho antes de você conseguir fazer nada.
   // Estes ajustes (confirmados reduzindo o bloqueio em teste real) deixam o navegador mais parecido
   // com um uso normal, pra você conseguir passar pelo captcha manualmente.
-  const browser = await chromium.launch({
-    headless: false,
-    args: ["--disable-blink-features=AutomationControlled"],
-  });
+  // FGTS_BROWSER_CHANNEL=msedge|chrome usa o navegador já instalado no PC (o certificado digital do Windows aparece no
+  // seletor normalmente). Sem essa variável, usa o Chromium do próprio Playwright (uso de desenvolvimento).
+  const canais: (string | undefined)[] = process.env.FGTS_BROWSER_CHANNEL ? [process.env.FGTS_BROWSER_CHANNEL, ...["msedge", "chrome"].filter((c) => c !== process.env.FGTS_BROWSER_CHANNEL)] : [undefined];
+  let browser: any;
+  let ultimoErro: any;
+  for (const canal of canais) {
+    try {
+      browser = await chromium.launch({ headless: false, ...(canal ? { channel: canal } : {}), args: ["--disable-blink-features=AutomationControlled"] });
+      break;
+    } catch (e) {
+      ultimoErro = e;
+    }
+  }
+  if (!browser) {
+    console.error("Não consegui abrir o Microsoft Edge nem o Google Chrome neste computador:", ultimoErro?.message || ultimoErro);
+    process.exit(1);
+  }
   const context = await browser.newContext({
     viewport: { width: 1400, height: 900 },
     userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
