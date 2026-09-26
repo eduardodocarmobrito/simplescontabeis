@@ -182,6 +182,11 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
   for (const [col, ddl] of [["texto_amostra", "TEXT"], ["grupo_id", "INTEGER"], ["e_grupo", "INTEGER NOT NULL DEFAULT 0"], ["grupo_chave", "TEXT"], ["n_arquivos", "INTEGER NOT NULL DEFAULT 1"]] as const)
     if (!colsDocs.includes(col)) db.exec(`ALTER TABLE central_envio_docs ADD COLUMN ${col} ${ddl}`);
   if (!(db.prepare(`PRAGMA table_info(central_envio_tipos)`).all() as any[]).some((c) => c.name === "agrupar")) db.exec(`ALTER TABLE central_envio_tipos ADD COLUMN agrupar INTEGER NOT NULL DEFAULT 0`);
+  // Correção pontual de rótulo (pedida): um título do PDF ("PROVENTOS E DESCONTOSBASE PARA CÁLCULO") foi lido como nome de colaborador.
+  // Só o texto do título/nome nas listas é ajustado; datas, destinatários e status dos envios não mudam. Idempotente.
+  for (const tabela of ["central_envio_enviados", "central_envio_docs"]) {
+    db.prepare(`UPDATE ${tabela} SET titulo = REPLACE(titulo, ' - PROVENTOS E DESCONTOSBASE PARA CÁLCULO', ''), colaborador_nome = NULL WHERE colaborador_nome LIKE 'PROVENTOS E DESCONTOS%' OR titulo LIKE '%PROVENTOS E DESCONTOSBASE PARA CÁLCULO%'`).run();
+  }
   // ------------------------------------------------------------ configuração / credencial
   const credDe = (escId: number): Cred | null => {
     const c = db.prepare(`SELECT sa_json_cifrado FROM central_envio_config WHERE escritorio_id = ?`).get(escId) as any;
