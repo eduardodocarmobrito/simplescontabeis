@@ -380,6 +380,39 @@
   .atd-tique{margin-left:6px; font-size:14px; font-weight:700; letter-spacing:-3px; color:#fff; white-space:nowrap;}
   .atd-tique.lida{color:#0A63FF; text-shadow:0 0 2px #fff, 0 0 2px #fff;}
   .chat-msg.theirs .atd-tique{display:none;}
+  /* ===== E-mail (webmail) ===== */
+  .main:has(.eml-wrap){padding:18px 18px 16px;}
+  .eml-wrap{display:grid; grid-template-columns:200px clamp(300px,28vw,420px) 1fr; gap:12px; height:calc(100vh - 170px); min-height:440px;}
+  .eml-wrap > .card{padding:0; min-height:0; display:flex; flex-direction:column; overflow:hidden;}
+  .eml-pastas{padding:8px 0 !important; overflow-y:auto;}
+  .eml-pasta{display:flex; justify-content:space-between; align-items:center; gap:6px; padding:8px 14px; cursor:pointer; font-size:13.5px;}
+  .eml-pasta:hover{background:var(--paper);}
+  .eml-pasta.ativa{background:var(--accent-pale); font-weight:700; color:var(--accent-deep);}
+  .eml-pasta b{font-size:11.5px; background:var(--accent); color:#fff; border-radius:10px; padding:1px 7px;}
+  .eml-pasta-tit{padding:12px 14px 4px; font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-soft); font-family:'IBM Plex Mono',monospace;}
+  .eml-busca{display:flex; gap:8px; padding:10px; border-bottom:1px solid var(--rule);}
+  .eml-lista{flex:1; overflow-y:auto; min-height:0;}
+  .eml-item{padding:9px 12px; border-bottom:1px solid var(--rule-soft); cursor:pointer; font-size:13px;}
+  .eml-item:hover{background:var(--paper);}
+  .eml-item.ativa{background:var(--accent-pale);}
+  .eml-item-l1{display:flex; justify-content:space-between; gap:8px;}
+  .eml-quem{white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .eml-data{font-size:11.5px; color:var(--ink-soft); flex:none;}
+  .eml-item-l2{color:var(--ink-soft); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:2px;}
+  .eml-item.nova .eml-quem, .eml-item.nova .eml-item-l2{font-weight:700; color:var(--ink);}
+  .eml-pag{display:flex; justify-content:space-between; align-items:center; padding:8px 12px; border-top:1px solid var(--rule); font-size:12px; color:var(--ink-soft);}
+  .eml-leitor{min-width:0;}
+  .eml-tools{display:flex; flex-wrap:wrap; gap:6px; padding:10px 12px; border-bottom:1px solid var(--rule);}
+  .eml-cab{padding:12px 16px 8px; border-bottom:1px solid var(--rule-soft);}
+  .eml-assunto{font-size:17px; font-weight:700; margin-bottom:6px;}
+  .eml-meta{font-size:12.5px; color:var(--ink-soft); margin-top:2px; overflow-wrap:anywhere;}
+  .eml-anexos{display:flex; flex-wrap:wrap; gap:6px; margin-top:8px;}
+  .eml-aviso{margin-top:8px; padding:7px 10px; background:#FFF6DA; border-radius:8px; font-size:12.5px;}
+  .eml-corpo{flex:1; width:100%; border:0; background:#fff; min-height:0;}
+  .eml-editor-tools{display:flex; gap:6px; margin-bottom:6px;}
+  .eml-editor{min-height:240px; max-height:46vh; overflow-y:auto; border:1px solid var(--rule); border-radius:10px; padding:10px 12px; background:var(--paper); font-size:14px; line-height:1.5;}
+  .eml-editor:focus{outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-pale); background:var(--surface);}
+  @media (max-width: 900px){ .eml-wrap{grid-template-columns:1fr; height:auto;} .eml-lista{max-height:50vh;} .eml-corpo{min-height:60vh;} }
   /* Caixa de atendimento mais larga: usa a tela toda (o botão do chat flutuante pode ficar por cima). */
   .main:has(.dprh-wa){padding:18px 18px 16px;}
   .dprh-wa{height:calc(100vh - 200px);}
@@ -849,6 +882,7 @@ const NAV = [
   { id:'contabil', label:'Contabilidade', modulo:'contabil', roles:['Administrador','Colaborador'] },
   { id:'fiscal', label:'Fiscal', modulo:'fiscal', roles:['Administrador','Colaborador'] },
   { id:'usuarios', label:'Usuários', modulo:'usuarios', roles:['Administrador'] },
+  { id:'email', label:'E-mail', modulo:'email', roles:['Administrador','Colaborador'] },
   { id:'configuracoes', label:'Configurações', modulo:'configuracoes', roles:['Administrador','Colaborador'] },
   // Colaborador não vê mais o item Assinatura no menu (roles vazio = ninguém enxerga); a página segue existindo.
   { id:'minha-assinatura-colaborador', label:'Assinatura', modulo:null, roles:[] },
@@ -1003,6 +1037,7 @@ async function render(){
     // Abrir o CRM pelo menu sempre cai no WhatsApp (deskcomm) → Fila; a aba Meta recarrega por pageCrm() direto.
     else if(STATE.page==='crm'){ CRM.aba='whatsapp'; await pageCrm(); }
     else if(SETOR_PAGINAS[STATE.page]){ SETOR_ABA[STATE.page]='whatsapp'; await pageSetor(STATE.page); }
+    else if(STATE.page==='email') await pageEmail();
     else if(STATE.page==='usuarios') await pageUsuarios();
     else if(STATE.page==='configuracoes') await pageConfiguracoes();
     else if(STATE.page==='minha-assinatura-colaborador') await pageMinhaAssinaturaColaborador();
@@ -2090,6 +2125,262 @@ function monitoramentoConfigModal(cfg){
       await api('/dashboard/monitoramento-config', { method:'PUT', body:{ ano, mes } });
       closeModal(); toast('Início do monitoramento salvo.','ok'); pageDashboard();
     }catch(e){ toast(e.message,'err'); }
+  });
+}
+
+// ===================== E-mail (webmail do Gmail do escritório) =====================
+// Usa a conta de Configurações › E-mail corporativo. Lê/envia pelo servidor (IMAP/SMTP); o corpo do e-mail recebido
+// é mostrado num iframe SEM scripts (sandbox) e com imagens externas bloqueadas até o usuário permitir.
+const EML = { pasta:'INBOX', pagina:1, busca:'', filtro:'todas', pastas:[], itens:[], total:0, porPagina:50, uid:null, msg:null, timer:null, naoLidasInbox:null, ocupado:false };
+function emlEsp(chave){ return (EML.pastas.find(p=>p.especial===chave)||{}).caminho || null; }
+function emlIcone(p){ return ({inbox:'📥', estrela:'⭐', enviados:'📤', rascunhos:'📝', spam:'🚫', lixeira:'🗑', todos:'🗂'})[p.especial] || '🏷'; }
+function emlNome(a){ return a ? (a.nome || a.email || '—') : '—'; }
+function emlTextoHtml(t){
+  return esc(t||'').replace(/(https?:\/\/[^\s<]+)/g,'<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
+}
+async function pageEmail(){
+  const meuSeq = RENDER_SEQ;
+  const st = await api('/email/status');
+  if(meuSeq !== RENDER_SEQ) return;
+  if(!st.configurado){
+    main().innerHTML = `<h1>E-mail</h1><p class="subtitle">Caixa de e-mail do escritório</p>
+      <div class="card"><div class="empty-state">Ainda não há uma conta de e-mail configurada.<br>Vá em <b>Configurações › E-mail corporativo</b>, informe o e-mail e a <b>senha de app</b> do Gmail e volte aqui.</div></div>`;
+    return;
+  }
+  const podeEnviar = can('email','postar');
+  main().innerHTML = `
+    <div class="row" style="justify-content:space-between; align-items:flex-end; gap:10px; margin-bottom:10px;">
+      <div><h1 style="margin:0;">E-mail</h1><p class="subtitle" style="margin:0;">${esc(st.email)}</p></div>
+      <div class="row" style="gap:8px;">${podeEnviar?'<button class="btn primary" id="emlNovo">✉ Escrever</button>':''}<button class="btn" id="emlAtualizar">↻ Atualizar</button></div>
+    </div>
+    <div class="eml-wrap" id="emlWrap">
+      <div class="card eml-pastas" id="emlPastas"><div class="empty-state">Carregando…</div></div>
+      <div class="card eml-lista-col">
+        <div class="eml-busca">
+          <div class="field" style="margin:0;"><input type="text" id="emlBusca" placeholder="Buscar e-mails…" autocomplete="off" value="${esc(EML.busca)}"></div>
+          <div class="field" style="margin:0; width:120px;"><select id="emlFiltro"><option value="todas">Todos</option><option value="nao-lidas">Não lidos</option></select></div>
+        </div>
+        <div class="eml-lista" id="emlLista"></div>
+        <div class="eml-pag" id="emlPag"></div>
+      </div>
+      <div class="card eml-leitor" id="emlLeitor"><div class="empty-state" style="margin:auto;">Selecione um e-mail à esquerda.</div></div>
+    </div>`;
+  document.getElementById('emlFiltro').value = EML.filtro;
+  document.getElementById('emlAtualizar').addEventListener('click', ()=>emlAtualizarTudo());
+  if(podeEnviar) document.getElementById('emlNovo').addEventListener('click', ()=>emlEscrever('novo'));
+  const busca = document.getElementById('emlBusca');
+  busca.addEventListener('keydown', ev=>{ if(ev.key==='Enter'){ EML.busca = busca.value.trim(); EML.pagina = 1; emlCarregarLista(); } });
+  document.getElementById('emlFiltro').addEventListener('change', ev=>{ EML.filtro = ev.target.value; EML.pagina = 1; emlCarregarLista(); });
+  window.addEventListener('resize', emlAjustarAltura);
+  EML.uid = null; EML.msg = null;
+  await emlCarregarPastas();
+  emlAjustarAltura();
+  await emlCarregarLista();
+  if(EML.timer) clearInterval(EML.timer);
+  EML.timer = setInterval(()=>{
+    if(!document.getElementById('emlLista')){ clearInterval(EML.timer); EML.timer=null; return; }
+    if(EML.pagina===1 && !EML.busca && !EML.ocupado) emlAtualizarTudo(true);
+  }, 60000);
+}
+function emlAjustarAltura(){
+  const el = document.getElementById('emlWrap'); if(!el) return;
+  if(window.innerWidth<=900){ el.style.height=''; return; }
+  const topo = el.getBoundingClientRect().top + window.scrollY;
+  el.style.height = Math.max(440, window.innerHeight - topo - 14) + 'px';
+}
+async function emlAtualizarTudo(silencioso){
+  EML.ocupado = true;
+  try{
+    const antes = EML.naoLidasInbox;
+    await emlCarregarPastas();
+    await emlCarregarLista(silencioso);
+    if(silencioso && antes!=null && EML.naoLidasInbox>antes){
+      toast('📧 Novo e-mail na caixa de entrada.','ok');
+      if(typeof somNovasLigado==='function' && somNovasLigado('email')) somMensagemNova();
+    }
+  }finally{ EML.ocupado = false; }
+}
+async function emlCarregarPastas(){
+  const box = document.getElementById('emlPastas'); if(!box) return;
+  try{
+    const { itens } = await api('/email/pastas');
+    EML.pastas = itens;
+    const inbox = itens.find(p=>p.especial==='inbox');
+    EML.naoLidasInbox = inbox ? inbox.naoLidas : null;
+    if(!itens.some(p=>p.caminho===EML.pasta)) EML.pasta = (inbox||itens[0]||{caminho:'INBOX'}).caminho;
+    const principais = itens.filter(p=>p.especial), marcadores = itens.filter(p=>!p.especial);
+    const linha = p=>`<div class="eml-pasta ${p.caminho===EML.pasta?'ativa':''}" data-p="${esc(p.caminho)}"><span>${emlIcone(p)} ${esc(p.nome)}</span>${p.naoLidas?`<b>${p.naoLidas}</b>`:''}</div>`;
+    box.innerHTML = principais.map(linha).join('') + (marcadores.length?`<div class="eml-pasta-tit">Marcadores</div>${marcadores.map(linha).join('')}`:'');
+    box.querySelectorAll('.eml-pasta').forEach(el=>el.addEventListener('click', ()=>{
+      EML.pasta = el.dataset.p; EML.pagina = 1; EML.busca=''; const b=document.getElementById('emlBusca'); if(b) b.value='';
+      EML.uid = null; document.getElementById('emlLeitor').innerHTML = '<div class="empty-state" style="margin:auto;">Selecione um e-mail à esquerda.</div>';
+      box.querySelectorAll('.eml-pasta').forEach(x=>x.classList.toggle('ativa', x===el));
+      emlCarregarLista();
+    }));
+  }catch(e){ box.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; }
+}
+async function emlCarregarLista(silencioso){
+  const box = document.getElementById('emlLista'); if(!box) return;
+  const pasta = EML.pasta, pagina = EML.pagina;
+  if(!silencioso) box.innerHTML = '<div class="empty-state">Carregando…</div>';
+  try{
+    const d = await api(`/email/mensagens?pasta=${encodeURIComponent(pasta)}&pagina=${pagina}&busca=${encodeURIComponent(EML.busca)}&filtro=${EML.filtro==='nao-lidas'?'nao-lidas':''}`);
+    if(!document.getElementById('emlLista') || pasta!==EML.pasta || pagina!==EML.pagina) return;
+    EML.itens = d.itens; EML.total = d.total; EML.porPagina = d.porPagina;
+    emlDesenharLista();
+  }catch(e){ if(!silencioso) box.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; }
+}
+function emlDesenharLista(){
+  const box = document.getElementById('emlLista'); if(!box) return;
+  const ehEnv = ['enviados','rascunhos'].includes((EML.pastas.find(p=>p.caminho===EML.pasta)||{}).especial);
+  box.innerHTML = EML.itens.length ? EML.itens.map(m=>{
+    const quem = ehEnv ? ('Para: '+(m.para&&m.para[0]?emlNome(m.para[0]):'—')) : emlNome(m.de);
+    return `<div class="eml-item ${m.lida?'':'nova'} ${m.uid===EML.uid?'ativa':''}" data-uid="${m.uid}">
+      <div class="eml-item-l1"><span class="eml-quem">${esc(quem)}</span><span class="eml-data">${esc(atdHora(m.data))}</span></div>
+      <div class="eml-item-l2">${m.estrela?'<span title="Com estrela">⭐</span> ':''}${m.anexo?'<span title="Tem anexo">📎</span> ':''}${esc(m.assunto)}</div>
+    </div>`; }).join('') : `<div class="empty-state">${EML.busca||EML.filtro==='nao-lidas'?'Nenhum e-mail encontrado.':'Pasta vazia.'}</div>`;
+  box.querySelectorAll('.eml-item').forEach(el=>el.addEventListener('click', ()=>emlAbrir(Number(el.dataset.uid))));
+  const pag = document.getElementById('emlPag');
+  const ini = EML.total ? (EML.pagina-1)*EML.porPagina+1 : 0, fim = Math.min(EML.total, EML.pagina*EML.porPagina);
+  pag.innerHTML = `<span>${ini}–${fim} de ${EML.total}</span><span><button class="btn small" id="emlAnt" ${EML.pagina<=1?'disabled':''}>‹</button> <button class="btn small" id="emlProx" ${fim>=EML.total?'disabled':''}>›</button></span>`;
+  document.getElementById('emlAnt').addEventListener('click', ()=>{ EML.pagina--; emlCarregarLista(); });
+  document.getElementById('emlProx').addEventListener('click', ()=>{ EML.pagina++; emlCarregarLista(); });
+}
+async function emlAbrir(uid){
+  EML.uid = uid;
+  document.querySelectorAll('.eml-item').forEach(el=>el.classList.toggle('ativa', Number(el.dataset.uid)===uid));
+  const leitor = document.getElementById('emlLeitor');
+  leitor.innerHTML = '<div class="empty-state" style="margin:auto;">Abrindo…</div>';
+  let m;
+  try{ m = await api(`/email/mensagem?pasta=${encodeURIComponent(EML.pasta)}&uid=${uid}`); }
+  catch(e){ leitor.innerHTML = `<div class="empty-state" style="margin:auto; color:var(--debit)">${esc(e.message)}</div>`; return; }
+  if(EML.uid!==uid) return;
+  EML.msg = m;
+  const item = EML.itens.find(x=>x.uid===uid);
+  if(item && !item.lida){ item.lida = true; const p = EML.pastas.find(x=>x.caminho===EML.pasta); if(p && p.naoLidas>0) p.naoLidas--; emlDesenharLista(); emlCarregarPastas(); }
+  emlDesenharLeitor(false);
+}
+function emlDocumento(m, comImagens){
+  const corpo = m.temHtml ? m.html : `<div style="white-space:pre-wrap">${emlTextoHtml(m.texto)}</div>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: ${comImagens?'https: http:':''}; style-src 'unsafe-inline'; font-src data:"><base target="_blank"><style>body{font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;color:#222;margin:14px;word-wrap:break-word}img{max-width:100%;height:auto}blockquote{border-left:3px solid #ccc;margin:8px 0;padding-left:10px;color:#555}table{max-width:100%}</style></head><body>${corpo}</body></html>`;
+}
+function emlDesenharLeitor(comImagens){
+  const m = EML.msg; const leitor = document.getElementById('emlLeitor'); if(!m||!leitor) return;
+  const podeEditar = can('email','editar'), podeEnviar = can('email','postar');
+  const esp = (EML.pastas.find(p=>p.caminho===EML.pasta)||{}).especial;
+  const bloqueouImg = m.temHtml && !comImagens && /<img[^>]+src=["']https?:/i.test(m.html);
+  const pessoas = l=>(l||[]).map(a=>esc(a.nome?`${a.nome} <${a.email}>`:a.email)).join(', ');
+  const btn = (a,t,x)=>`<button class="btn small ${x||''}" data-a="${a}">${t}</button>`;
+  leitor.innerHTML = `
+    <div class="eml-tools">
+      ${podeEnviar?btn('responder','↩ Responder')+btn('todos','↩↩ Responder a todos')+btn('encaminhar','↪ Encaminhar'):''}
+      ${podeEditar?btn('estrela', m.estrela?'★ Tirar estrela':'☆ Estrela')+btn('nao-lida','Marcar como não lido')
+        +(esp==='todos'?'':btn('arquivar','🗂 Arquivar'))
+        +(esp==='spam'?btn('nao-spam','Não é spam'):btn('spam','🚫 Spam'))
+        +btn(esp==='lixeira'||esp==='spam'?'excluir':'lixeira', esp==='lixeira'||esp==='spam'?'Excluir de vez':'🗑 Lixeira', 'danger'):''}
+    </div>
+    <div class="eml-cab">
+      <div class="eml-assunto">${esc(m.assunto)}</div>
+      <div class="eml-meta"><b>${esc(emlNome(m.de))}</b> ${m.de&&m.de.nome?`&lt;${esc(m.de.email)}&gt;`:''} · ${m.data?esc(new Date(m.data).toLocaleString('pt-BR')):''}</div>
+      <div class="eml-meta">Para: ${pessoas(m.para)||'—'}${m.cc&&m.cc.length?` · Cc: ${pessoas(m.cc)}`:''}</div>
+      ${m.anexos.length?`<div class="eml-anexos">${m.anexos.map(a=>`<a class="btn small" href="/api/email/anexo?pasta=${encodeURIComponent(EML.pasta)}&uid=${m.uid}&idx=${a.idx}" download>📎 ${esc(a.nome)} <span style="opacity:.6">(${Math.max(1,Math.round(a.tamanho/1024))} KB)</span></a>`).join('')}</div>`:''}
+      ${bloqueouImg?'<div class="eml-aviso">Imagens externas bloqueadas por segurança. <button class="btn small" id="emlImgs">Mostrar imagens</button></div>':''}
+    </div>
+    <iframe class="eml-corpo" sandbox="allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer"></iframe>`;
+  leitor.querySelector('.eml-corpo').srcdoc = emlDocumento(m, comImagens);
+  const im = document.getElementById('emlImgs'); if(im) im.addEventListener('click', ()=>emlDesenharLeitor(true));
+  leitor.querySelectorAll('[data-a]').forEach(b=>b.addEventListener('click', ()=>emlAcaoLeitor(b.dataset.a)));
+}
+async function emlAcao(uids, acao, msgOk){
+  await api('/email/acao', { method:'POST', body:{ pasta:EML.pasta, uids, acao } });
+  if(msgOk) toast(msgOk,'ok');
+}
+async function emlAcaoLeitor(a){
+  const m = EML.msg; if(!m) return;
+  if(['responder','todos','encaminhar'].includes(a)){ emlEscrever(a, m); return; }
+  try{
+    if(a==='estrela'){ await emlAcao([m.uid], m.estrela?'tirar-estrela':'estrela'); m.estrela=!m.estrela; const i=EML.itens.find(x=>x.uid===m.uid); if(i) i.estrela=m.estrela; emlDesenharLeitor(false); emlDesenharLista(); return; }
+    if(a==='nao-lida'){ await emlAcao([m.uid], 'nao-lida', 'Marcado como não lido.'); const i=EML.itens.find(x=>x.uid===m.uid); if(i) i.lida=false; }
+    else{
+      if(a==='excluir' && !confirmar('Excluir esta mensagem de vez? Não dá pra desfazer.')) return;
+      await emlAcao([m.uid], a, {arquivar:'E-mail arquivado.', spam:'Movido para o Spam.', 'nao-spam':'Movido para a caixa de entrada.', lixeira:'Movido para a Lixeira.', excluir:'Mensagem excluída.'}[a]);
+      EML.itens = EML.itens.filter(x=>x.uid!==m.uid); EML.total--;
+    }
+    EML.uid = null; EML.msg = null;
+    document.getElementById('emlLeitor').innerHTML = '<div class="empty-state" style="margin:auto;">Selecione um e-mail à esquerda.</div>';
+    emlDesenharLista(); emlCarregarPastas();
+  }catch(e){ toast(e.message,'err'); }
+}
+// modo: novo | responder | todos | encaminhar. O texto citado entra ESCAPADO (nunca o HTML do e-mail recebido).
+function emlEscrever(modo, m){
+  let para='', cc='', assunto='', citado='', inReplyTo='', refs='';
+  const meu = (document.querySelector('.subtitle')||{}).textContent || '';
+  if(m){
+    const quando = m.data ? new Date(m.data).toLocaleString('pt-BR') : '';
+    const quem = m.de ? (m.de.nome?`${m.de.nome} <${m.de.email}>`:m.de.email) : '';
+    citado = `<br><br><div>Em ${esc(quando)}, ${esc(quem)} escreveu:</div><blockquote style="margin:0 0 0 8px;padding-left:10px;border-left:2px solid #ccc;white-space:pre-wrap;">${esc((m.texto||'').trim().slice(0,20000))}</blockquote>`;
+    if(modo==='encaminhar'){
+      assunto = /^(enc|fwd?):/i.test(m.assunto) ? m.assunto : 'Enc: '+m.assunto;
+      citado = `<br><br><div>---------- Mensagem encaminhada ----------<br>De: ${esc(quem)}<br>Data: ${esc(quando)}<br>Assunto: ${esc(m.assunto)}</div><div style="white-space:pre-wrap;">${esc((m.texto||'').trim().slice(0,20000))}</div>`;
+    }else{
+      assunto = /^re:/i.test(m.assunto) ? m.assunto : 'Re: '+m.assunto;
+      const alvo = (m.responderPara&&m.responderPara[0]) || m.de;
+      para = alvo ? alvo.email : '';
+      if(modo==='todos') cc = [...(m.para||[]), ...(m.cc||[])].map(a=>a.email).filter(e=>e && e!==para && !meu.includes(e)).join(', ');
+      inReplyTo = m.messageId || ''; refs = (m.references||[]).join(',');
+    }
+  }
+  openModal(`
+    <h3>${modo==='novo'?'Nova mensagem':modo==='encaminhar'?'Encaminhar':'Responder'}</h3>
+    <div class="field"><label>Para</label><input type="text" id="emlPara" placeholder="nome@empresa.com, outro@empresa.com" value="${esc(para)}" autocomplete="off"></div>
+    <div class="row" style="gap:12px; margin:-6px 0 8px;"><span class="link-discreto" id="emlMostraCc">Cc</span><span class="link-discreto" id="emlMostraCco">Cco</span></div>
+    <div class="field ${cc?'':'hidden'}" id="emlCcBox"><label>Cc</label><input type="text" id="emlCc" value="${esc(cc)}" autocomplete="off"></div>
+    <div class="field hidden" id="emlCcoBox"><label>Cco (cópia oculta)</label><input type="text" id="emlCco" autocomplete="off"></div>
+    <div class="field"><label>Assunto</label><input type="text" id="emlAssunto" value="${esc(assunto)}" autocomplete="off"></div>
+    <div class="eml-editor-tools">
+      <button class="btn small" type="button" data-cmd="bold"><b>B</b></button><button class="btn small" type="button" data-cmd="italic"><i>I</i></button><button class="btn small" type="button" data-cmd="underline"><u>U</u></button>
+      <button class="btn small" type="button" data-cmd="insertUnorderedList">• Lista</button><button class="btn small" type="button" data-cmd="createLink">🔗 Link</button>
+    </div>
+    <div id="emlEditor" class="eml-editor" contenteditable="true">${citado}</div>
+    <div class="row" style="margin-top:10px; gap:8px; align-items:center; flex-wrap:wrap;">
+      <button class="btn small" type="button" id="emlAnexar">📎 Anexar arquivos</button><input type="file" id="emlArquivos" multiple class="hidden">
+      <span id="emlArqLista" style="font-size:12px; color:var(--ink-soft);"></span>
+    </div>
+    <div class="row" style="justify-content:flex-end; gap:8px; margin-top:14px;">
+      <button class="btn" id="emlCancelar">Cancelar</button><button class="btn primary" id="emlEnviar">Enviar</button>
+    </div>`, '780px');
+  const ed = document.getElementById('emlEditor');
+  document.getElementById('emlMostraCc').addEventListener('click', ()=>document.getElementById('emlCcBox').classList.toggle('hidden'));
+  document.getElementById('emlMostraCco').addEventListener('click', ()=>document.getElementById('emlCcoBox').classList.toggle('hidden'));
+  document.querySelectorAll('.eml-editor-tools [data-cmd]').forEach(b=>b.addEventListener('mousedown', ev=>{
+    ev.preventDefault();
+    if(b.dataset.cmd==='createLink'){ const u = prompt('Endereço do link (https://…)'); if(u && /^https?:\/\//i.test(u)) document.execCommand('createLink', false, u); }
+    else document.execCommand(b.dataset.cmd, false, null);
+  }));
+  // Colar no editor entra SEMPRE como texto puro (nada de HTML/scripts de outro site).
+  ed.addEventListener('paste', ev=>{ ev.preventDefault(); document.execCommand('insertText', false, (ev.clipboardData||window.clipboardData).getData('text/plain')); });
+  const arq = document.getElementById('emlArquivos');
+  const listaArq = ()=>{ document.getElementById('emlArqLista').textContent = [...arq.files].map(f=>f.name).join(', '); };
+  document.getElementById('emlAnexar').addEventListener('click', ()=>arq.click());
+  arq.addEventListener('change', listaArq);
+  document.getElementById('emlCancelar').addEventListener('click', closeModal);
+  (para ? ed : document.getElementById('emlPara')).focus();
+  if(para){ const r=document.createRange(); r.setStart(ed,0); r.collapse(true); const s=window.getSelection(); s.removeAllRanges(); s.addRange(r); }
+  document.getElementById('emlEnviar').addEventListener('click', async ()=>{
+    const b = document.getElementById('emlEnviar');
+    const total = [...arq.files].reduce((s,f)=>s+f.size,0);
+    if(total > 24*1024*1024){ toast('Os anexos passam de 24 MB (limite do Gmail).','err'); return; }
+    const fd = new FormData();
+    fd.append('para', document.getElementById('emlPara').value);
+    fd.append('cc', document.getElementById('emlCc').value);
+    fd.append('cco', document.getElementById('emlCco').value);
+    fd.append('assunto', document.getElementById('emlAssunto').value);
+    fd.append('html', ed.innerHTML);
+    fd.append('inReplyTo', inReplyTo); fd.append('references', refs);
+    [...arq.files].forEach(f=>fd.append('anexos', f));
+    b.disabled = true; b.textContent = 'Enviando…';
+    try{ await api('/email/enviar', { method:'POST', body:fd }); toast('E-mail enviado.','ok'); closeModal(); if(EML.pasta && (EML.pastas.find(p=>p.caminho===EML.pasta)||{}).especial==='enviados') emlCarregarLista(true); }
+    catch(e){ toast(e.message,'err'); b.disabled=false; b.textContent='Enviar'; }
   });
 }
 
@@ -9633,7 +9924,7 @@ async function pageUsuarios(){
   document.getElementById('usFiltro').addEventListener('input', e=>desenhaUsuarios(e.target.value));
   document.getElementById('btnNovoUsuario').addEventListener('click', ()=>usuarioModal());
 }
-const MODS = [['dashboard','Início'],['empresas','Empresas'],['solicitacoes','Solicitações de Documentos'],['envio','Envio de Documentos'],['nfse','NFS-e'],['nfe-busca','Busca de XML'],['integracontador','Integra Contador'],['licencas','Licenças'],['financeiro','Financeiro'],['contratos','Contratos'],['relatorios','Relatórios'],['crm','CRM'],['dprh','DP/RH'],['contabil','Contabilidade'],['fiscal','Fiscal'],['usuarios','Usuários'],['configuracoes','Configurações']];
+const MODS = [['dashboard','Início'],['empresas','Empresas'],['solicitacoes','Solicitações de Documentos'],['envio','Envio de Documentos'],['nfse','NFS-e'],['nfe-busca','Busca de XML'],['integracontador','Integra Contador'],['licencas','Licenças'],['financeiro','Financeiro'],['contratos','Contratos'],['relatorios','Relatórios'],['crm','CRM'],['dprh','DP/RH'],['contabil','Contabilidade'],['fiscal','Fiscal'],['usuarios','Usuários'],['configuracoes','Configurações'],['email','E-mail']];
 // Lista de empresas com busca por texto — usada nos dois pickers de empresa do modal de usuário
 // (Cliente com múltiplas empresas, Colaborador com acesso restrito), já que a base de empresas
 // pode ter centenas de linhas (import do Domínio Web).

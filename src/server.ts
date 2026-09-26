@@ -22,6 +22,7 @@ import * as ocr from "./ocr";
 import { buscarViaOnvio } from "./onvio-sync";
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
+import { registerWebmail } from "./webmail";
 import { createProxyMiddleware } from "http-proxy-middleware";
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 
@@ -2126,7 +2127,7 @@ sqlite.exec(`INSERT OR IGNORE INTO whatsapp_config (escritorio_id) SELECT id FRO
   }
 }
 
-const MODULOS = ["dashboard", "empresas", "solicitacoes", "envio", "nfse", "nfe-busca", "integracontador", "licencas", "financeiro", "contratos", "relatorios", "crm", "dprh", "contabil", "fiscal", "usuarios", "configuracoes"] as const;
+const MODULOS = ["dashboard", "empresas", "solicitacoes", "envio", "nfse", "nfe-busca", "integracontador", "licencas", "financeiro", "contratos", "relatorios", "crm", "dprh", "contabil", "fiscal", "usuarios", "configuracoes", "email"] as const;
 type Modulo = (typeof MODULOS)[number];
 
 // ========================= LOGIN (senha com hash + sessão via cookie) =========================
@@ -7057,6 +7058,18 @@ setInterval(() => {
 function getEmailExtratosConfig(escritorioId: number): any {
   return sqlite.prepare(`SELECT * FROM email_extratos_config WHERE escritorio_id = ?`).get(escritorioId) || {};
 }
+// Módulo E-mail (webmail): reaproveita o e-mail + senha de app de Configurações › E-mail corporativo.
+registerWebmail(app, {
+  blockCliente,
+  requirePermissao,
+  credenciais: (escritorioId) => {
+    const cfg = getEmailExtratosConfig(escritorioId);
+    if (!cfg.email || !cfg.senha_app_cifrada) return null;
+    try { return { email: cfg.email, senha: nfse.decifrarTexto(cfg.senha_app_cifrada) }; } catch { return null; }
+  },
+  upload,
+  corrigirNomeArquivo,
+});
 function emailNormalizaTxt(s: string): string {
   return String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").trim();
 }
