@@ -68,12 +68,14 @@ async function driveBaixar(escId: number, cred: Cred, id: string): Promise<Buffe
 }
 
 // ---------------------------------------------------------------- leitura do PDF
+// Títulos e rótulos dos modelos (nunca são nome de pessoa): "PROVENTOS E DESCONTOS", "BASE PARA CÁLCULO", "RECIBO DE FÉRIAS"…
+const PALAVRAS_DE_TITULO = /PROVENTO|DESCONTO|\bBASE\b|CALCULO|\bTOTAL\b|LIQUIDO|PERIODO|NOTIFICACAO|FERIAS|RECIBO|AVISO|PREVIO|SALARIO|VENCIMENTO|REFERENCIA|DESCRICAO|CODIGO|FOLHA|MENSAL|TERMO|RESCISAO|CONTRATO|TRABALHO|EMPREGADOR|IDENTIFICACAO|DISCRIMINACAO|VERBAS|DEDUCOES|ADIANTAMENTO|HOLERITE|PAGAMENTO|ABONO|AQUISICAO|GOZO|CIENTE|\bDATA\b|VALOR|RUBRICA|CATEGORIA|TRABALHADOR|ASSINATURA|FUNCIONARIO|DEPARTAMENTO|ADMISSAO|CARGO|FILIAL|MATRICULA|DEPOSITO|SAQUE|BANCO/;
 const NOME_VALOR = "([A-ZÀ-Ú][A-ZÀ-Ú'.]*(?:[ ]+[A-ZÀ-Ú'.]+){1,8})";
 export function extrairColaboradorECpf(texto: string): { colaborador: string | null; cpf: string | null } {
   const cpfRot = /CPF[\s\S]{0,60}?(\d{3}\.\d{3}\.\d{3}-\d{2})/.exec(texto);
   const cpf = (cpfRot && cpfRot[1]) || (/\b\d{3}\.\d{3}\.\d{3}-\d{2}\b/.exec(texto) || [])[0] || null;
   // Nomes de pessoas vêm em MAIÚSCULAS nesses modelos; rótulos como "Número Carteira Profissional" (maiúscula/minúscula) não passam.
-  const ruim = (v: string) => !/^[A-ZÀ-Ú][A-ZÀ-Ú'. ]{4,70}$/.test(v) || v.trim().split(/\s+/).length < 2 || /LTDA|EMPRESA|CNPJ|EIRELI|\bME\b|ENDERE|BAIRRO|MUNIC|CARTEIRA|S[ÉE]RIE/.test(v);
+  const ruim = (v: string) => !/^[A-ZÀ-Ú][A-ZÀ-Ú'. ]{4,70}$/.test(v) || v.trim().split(/\s+/).length < 2 || /LTDA|EMPRESA|CNPJ|EIRELI|\bME\b|ENDERE|BAIRRO|MUNIC|CARTEIRA|S[ÉE]RIE/.test(v) || PALAVRAS_DE_TITULO.test(norm(v));
   // Junta TODOS os nomes de pessoa achados (PDF com vários recibos/holerites): mais de um nome diferente vira "Vários".
   const achados = new Map<string, string>();
   const guardar = (v: string) => { const t = v.replace(/\s+/g, " ").trim(); if (!ruim(t)) achados.set(norm(t), t); };
