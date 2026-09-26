@@ -2338,7 +2338,7 @@ function emlAutocompletar(input){
     itens = d.itens; sel = itens.length ? 0 : -1;
     if(!itens.length){ fechar(); return; }
     box.innerHTML = itens.map((it,i)=>`<div class="eml-sug-item" data-i="${i}"><div><b>${esc(it.nome||it.email)}</b>${it.nome?` <span style="color:var(--ink-soft)">${esc(it.email)}</span>`:''}</div>
-      <span class="tag ${it.origem==='enviado'?'ok':'muted'}">${it.origem==='enviado'?'✓ já enviado':'cadastro'+(it.empresa?' · '+esc(it.empresa):'')}</span></div>`).join('');
+      <span class="tag ${it.origem==='enviado'?'ok':'muted'}">${it.origem==='enviado'?'✓ já enviado':it.origem==='recebido'?'já escreveu pra você':'cadastro'+(it.empresa?' · '+esc(it.empresa):'')}</span></div>`).join('');
     box.classList.remove('hidden'); marcar();
     box.querySelectorAll('.eml-sug-item').forEach(el=>el.addEventListener('mousedown', ev=>{ ev.preventDefault(); escolher(itens[Number(el.dataset.i)]); }));
   }

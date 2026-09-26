@@ -137,33 +137,40 @@ export function registerWebmail(app: express.Express, d: Deps) {
     const q = String(req.query.q || "").trim().toLowerCase();
     if (q.length < 2) return res.json({ itens: [] });
     const like = `%${q.replace(/[%_]/g, "")}%`;
-    const achados = new Map<string, { email: string; nome: string; origem: "enviado" | "cadastro"; empresa?: string }>();
+    const achados = new Map<string, { email: string; nome: string; origem: "enviado" | "recebido" | "cadastro"; empresa?: string }>();
     for (const r of d.sqlite.prepare(`SELECT email, nome FROM email_contatos WHERE escritorio_id = ? AND (email LIKE ? OR LOWER(COALESCE(nome,'')) LIKE ?) ORDER BY usos DESC, ultimo_uso DESC LIMIT 12`).all(user.escritorioId, like, like) as any[])
       achados.set(r.email, { email: r.email, nome: r.nome || "", origem: "enviado" });
     // Se ainda tem pouco, procura na pasta Enviados do Gmail (cobre o que foi enviado antes deste módulo existir).
     const c = d.credenciais(user.escritorioId);
-    if (c && achados.size < 6 && q.length >= 3) {
+    if (c && achados.size < 6) {
       try {
         const encontrados = await Promise.race([
           comImap(user.escritorioId, c, async (cl) => {
             const pastas = await listarPastas(cl);
-            const enviados = achaPasta(pastas, "enviados");
-            if (!enviados) return [] as { email: string; nome: string }[];
-            const lock = await cl.getMailboxLock(enviados, { readOnly: true });
-            try {
-              const uids = (((await cl.search({ to: q }, { uid: true })) || []) as number[]).sort((a, b) => b - a).slice(0, 40);
-              const out: { email: string; nome: string }[] = [];
-              if (uids.length) for await (const m of cl.fetch(uids.join(","), { envelope: true }, { uid: true }))
-                for (const a of [...(m.envelope?.to || []), ...(m.envelope?.cc || [])])
-                  if (a.address && (a.address.toLowerCase().includes(q) || (a.name || "").toLowerCase().includes(q))) out.push({ email: a.address, nome: a.name || "" });
-              return out;
-            } finally { lock.release(); }
+            const out: { email: string; nome: string; origem: "enviado" | "recebido" }[] = [];
+            // Enviados (para quem já escrevemos) e Caixa de entrada (quem já nos escreveu).
+            for (const [pasta, campo, origem] of [[achaPasta(pastas, "enviados"), "to", "enviado"], [achaPasta(pastas, "inbox"), "from", "recebido"]] as const) {
+              if (!pasta) continue;
+              const lock = await cl.getMailboxLock(pasta, { readOnly: true });
+              try {
+                const uids = (((await cl.search({ [campo]: q }, { uid: true })) || []) as number[]).sort((a, b) => b - a).slice(0, 40);
+                if (uids.length) for await (const m of cl.fetch(uids.join(","), { envelope: true }, { uid: true })) {
+                  const lista = origem === "enviado" ? [...(m.envelope?.to || []), ...(m.envelope?.cc || [])] : m.envelope?.from || [];
+                  for (const a of lista)
+                    if (a.address && (a.address.toLowerCase().includes(q) || (a.name || "").toLowerCase().includes(q))) out.push({ email: a.address, nome: a.name || "", origem });
+                }
+              } finally { lock.release(); }
+            }
+            return out;
           }),
-          new Promise<{ email: string; nome: string }[]>((r) => setTimeout(() => r([]), 6000)),
+          new Promise<{ email: string; nome: string; origem: "enviado" | "recebido" }[]>((r) => setTimeout(() => r([]), 7000)),
         ]);
         for (const e of encontrados) {
           const k = e.email.toLowerCase();
-          if (!achados.has(k)) { achados.set(k, { email: k, nome: e.nome, origem: "enviado" }); guardarContato(user.escritorioId, k, e.nome); }
+          if (!achados.has(k)) {
+            achados.set(k, { email: k, nome: e.nome, origem: e.origem });
+            if (e.origem === "enviado") guardarContato(user.escritorioId, k, e.nome);
+          }
         }
       } catch { /* sem a busca no Gmail ainda devolve o que tem */ }
     }
