@@ -100,10 +100,11 @@ export function extrairDataAfastamento(texto: string): string | null {
   if (!primeira) return null;
   const entre = depois.slice(0, primeira.index);
   if (!/Cod\.?\s*Afastamento|Pens[ãa]o|Categoria|\d{2}\s+[A-Z]/i.test(entre)) return primeira[0]; // rótulo e valor juntos
-  // linha de rótulos primeiro: os valores vêm depois na ordem admissão, aviso prévio, afastamento
-  const ancora = /Remunera[çc][ãa]o\s*M[êe]s\s*Ant/i.exec(texto);
-  const datas = ((ancora ? texto.slice(ancora.index) : texto).match(dataRe) || []);
-  return datas.length >= 3 ? datas[2] : datas[datas.length - 1] || null;
+  // linha de rótulos primeiro: os valores vêm depois, em sequência (admissão, aviso prévio, afastamento), às vezes
+  // COLADOS ("20/03/202608/09/202608/09/2026") — a data de afastamento é a última da sequência.
+  const corrida = /((?:\d{2}\/\d{2}\/\d{4}\s*){2,4})/.exec(depois.slice(primeira.index));
+  if (corrida) { const ds = corrida[1].match(dataRe) || []; if (ds.length) return ds[ds.length - 1]; }
+  return primeira[0];
 }
 const rotuloCompetencia = (p: { inicio: string; fim: string } | null): string | null => {
   const f = p?.fim || p?.inicio;
