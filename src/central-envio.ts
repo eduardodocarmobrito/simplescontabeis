@@ -93,6 +93,21 @@ export function extrairColaboradorECpf(texto: string): { colaborador: string | n
       if (!ruim(v)) { guardar(v); break; }
     }
   }
+  // 3) Sem rótulo reconhecível: o nome do trabalhador costuma se repetir (campo do nome, "CIENTE", assinatura). Vale a linha em
+  //    MAIÚSCULAS que se repete 2+ vezes — nunca a da empresa nem títulos do modelo.
+  if (!achados.size) {
+    const cont = new Map<string, { nome: string; n: number }>();
+    for (const l of linhas) {
+      const v = l.replace(/\d.*$/, "").replace(/\s+/g, " ").trim();
+      if (ruim(v)) continue;
+      const c = cont.get(norm(v)) || { nome: v, n: 0 };
+      c.n++;
+      cont.set(norm(v), c);
+    }
+    // só o mais repetido (repetições de cidade/bairro não viram "Vários")
+    const top = [...cont.values()].sort((x, y) => y.n - x.n)[0];
+    if (top && top.n >= 2) achados.set(norm(top.nome), top.nome);
+  }
   const nomes = [...achados.values()];
   return { colaborador: nomes.length > 1 ? "Vários" : nomes[0] || null, cpf: nomes.length > 1 ? null : cpf };
 }
