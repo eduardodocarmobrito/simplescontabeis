@@ -74,10 +74,12 @@ export function extrairColaboradorECpf(texto: string): { colaborador: string | n
   const cpf = (cpfRot && cpfRot[1]) || (/\b\d{3}\.\d{3}\.\d{3}-\d{2}\b/.exec(texto) || [])[0] || null;
   // Nomes de pessoas vêm em MAIÚSCULAS nesses modelos; rótulos como "Número Carteira Profissional" (maiúscula/minúscula) não passam.
   const ruim = (v: string) => !/^[A-ZÀ-Ú][A-ZÀ-Ú'. ]{4,70}$/.test(v) || v.trim().split(/\s+/).length < 2 || /LTDA|EMPRESA|CNPJ|EIRELI|\bME\b|ENDERE|BAIRRO|MUNIC|CARTEIRA|S[ÉE]RIE/.test(v);
+  // Junta TODOS os nomes de pessoa achados (PDF com vários recibos/holerites): mais de um nome diferente vira "Vários".
+  const achados = new Map<string, string>();
+  const guardar = (v: string) => { const t = v.replace(/\s+/g, " ").trim(); if (!ruim(t)) achados.set(norm(t), t); };
   // 1) Modelos numerados (ex.: Termo de Rescisão: "11 Nome" seguido do nome, mesmo com a célula ao lado na mesma linha)
-  const numerado = new RegExp("(?<!\\d)\\d{1,2}\\s*Nome(?!\\s*d[ao]\\s*(?:M|P|Soc|Empr))\\s*[:\\-–]?\\s*" + NOME_VALOR).exec(texto);
-  if (numerado && !ruim(numerado[1].trim())) return { colaborador: numerado[1].replace(/\s+/g, " ").trim(), cpf };
-  // 2) Rótulo no começo da linha: "Nome do Funcionário: FULANO", "Empregado", "Colaborador"…
+  for (const m of texto.matchAll(new RegExp("(?<!\\d)\\d{1,2}\\s*Nome(?!\\s*d[ao]\\s*(?:M|P|Soc|Empr))\\s*[:\\-–]?\\s*" + NOME_VALOR, "g"))) guardar(m[1]);
+  // 2) Rótulo no começo da linha: "Nome do Funcionário: FULANO", "Nome do empregado", "Empregado", "Colaborador"…
   const linhas = texto.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   const rotulo = /^(?:\d{1,2}\s*)?(?:NOME(?:\s+DO)?(?:\s+(?:FUNCION[ÁA]RIO|EMPREGADO|COLABORADOR|TRABALHADOR))?(?!\s+D[AO]\s+(?:M[ÃA]E|PAI))|FUNCION[ÁA]RIO|EMPREGADO|COLABORADOR|TRABALHADOR)\s*[:\-–]?\s*(.*)$/i;
   const limpar = (v: string) => v.replace(/^[\d\s.\-–:]+/, "").replace(/\d.*$/, "").replace(/\s{2,}.*/, "").replace(/\s+(CPF|CTPS|PIS|CBO|ADMISS|CARGO|MATR).*$/i, "").trim();
@@ -86,10 +88,11 @@ export function extrairColaboradorECpf(texto: string): { colaborador: string | n
     if (!m) continue;
     for (const cand of [m[1], linhas[i + 1] || "", linhas[i + 2] || "", linhas[i + 3] || "", linhas[i + 4] || ""]) {
       const v = limpar(cand || "");
-      if (!ruim(v)) return { colaborador: v.replace(/\s+/g, " "), cpf };
+      if (!ruim(v)) { guardar(v); break; }
     }
   }
-  return { colaborador: null, cpf };
+  const nomes = [...achados.values()];
+  return { colaborador: nomes.length > 1 ? "Vários" : nomes[0] || null, cpf: nomes.length > 1 ? null : cpf };
 }
 // Data do fato gerador do documento: na rescisão é a "Data de Afastamento" (campo 26). O texto do PDF pode vir com cada
 // rótulo seguido do seu valor OU com a linha de rótulos e depois a linha de valores — os dois jeitos são tratados.
@@ -112,7 +115,10 @@ export function extrairDataAfastamento(texto: string): string | null {
 const MESES_NOME = ["janeiro", "fevereiro", "marco", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"];
 export function extrairCompetenciaMes(texto: string): string | null {
   // O período de gozo é o único que vem com "= N Dias" (o de aquisição não); funciona mesmo com as datas coladas.
-  const gozo = /(\d{2}\/\d{2}\/\d{4})\s*A\s*(\d{2}\/\d{2}\/\d{4})\s*=\s*\d+\s*Dias/i.exec(texto) || /Gozo\s+d[ao]s?\s+F[ée]rias\s*[:\-]?\s*(\d{2}\/\d{2}\/\d{4})\s*A\s*(\d{2}\/\d{2}\/\d{4})/i.exec(texto);
+  // Vários períodos diferentes no mesmo PDF (vários recibos) → "Vários".
+  const gozos = [...texto.matchAll(/(\d{2}\/\d{2}\/\d{4})\s*A\s*(\d{2}\/\d{2}\/\d{4})\s*=\s*\d+\s*Dias/gi)].map((g) => `${g[1]} a ${g[2]}`);
+  if (gozos.length) return new Set(gozos).size > 1 ? "Vários" : gozos[0];
+  const gozo = /Gozo\s+d[ao]s?\s+F[ée]rias\s*[:\-]?\s*(\d{2}\/\d{2}\/\d{4})\s*A\s*(\d{2}\/\d{2}\/\d{4})/i.exec(texto);
   if (gozo) return `${gozo[1]} a ${gozo[2]}`;
   const m = /(?:Compet[êe]ncia|M[êe]s\s*\/?\s*Ano|Refer[êe]ncia|Referente\s+a)\s*[:\-]?\s*(?:\d{2}\/)?(0[1-9]|1[0-2])\/(20\d{2})\b/i.exec(texto);
   if (m) return `${m[1]}/${m[2]}`;
@@ -170,6 +176,7 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
 
   // ------------------------------------------------------------ varredura
   const emVarredura = new Set<number>();
+  const varreduraManual = new Set<number>(); // leitura pedida pela pessoa (só ela mostra "Lendo…" na tela)
   // Descobre a qual pasta configurada (raiz) um PDF pertence subindo pelos "pais" — só das pastas dos arquivos que mudaram,
   // em vez de listar todas as subpastas do Drive (que podem ser milhares). O caminho de cada pasta fica em cache.
   const paisCache = new Map<string, { pai: string | null; em: number }>();
@@ -272,6 +279,7 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     if (!cred || emVarredura.has(escId)) return { novos: 0 };
     if (!db.prepare(`SELECT 1 FROM central_envio_pastas WHERE escritorio_id = ?`).get(escId)) return { novos: 0 };
     emVarredura.add(escId);
+    if (opts.dias) varreduraManual.add(escId);
     try {
       const cfg = db.prepare(`SELECT ultima_varredura, dias_inicial FROM central_envio_config WHERE escritorio_id = ?`).get(escId) as any;
       const inicioMs = opts.dias ? Date.now() - opts.dias * 86400000 : cfg?.ultima_varredura ? new Date(cfg.ultima_varredura).getTime() - 2 * 60_000 : Date.now() - (cfg?.dias_inicial || 30) * 86400000;
@@ -295,7 +303,7 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     } catch (e: any) {
       db.prepare(`UPDATE central_envio_config SET ultimo_erro = ? WHERE escritorio_id = ?`).run(String(e.message).slice(0, 300), escId);
       return { novos: 0 };
-    } finally { emVarredura.delete(escId); }
+    } finally { emVarredura.delete(escId); varreduraManual.delete(escId); }
   }
   setInterval(async () => {
     for (const r of db.prepare(`SELECT escritorio_id FROM central_envio_config WHERE sa_json_cifrado IS NOT NULL`).all() as any[]) await varrer(r.escritorio_id).catch(() => {});
@@ -450,7 +458,7 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     const n = (db.prepare(`SELECT COUNT(*) n FROM central_envio_docs WHERE escritorio_id = ? AND status = 'pendente' AND setor IN (${setores.map(() => "?").join(",")})`).get(user.escritorioId, ...setores) as any).n;
     const c = db.prepare(`SELECT ultima_varredura, ultimo_erro, sa_json_cifrado IS NOT NULL as ok FROM central_envio_config WHERE escritorio_id = ?`).get(user.escritorioId) as any;
     const pastas = (db.prepare(`SELECT id, setor, user_id, pasta_nome FROM central_envio_pastas WHERE escritorio_id = ? AND setor IN (${setores.map(() => "?").join(",")})`).all(user.escritorioId, ...setores) as any[]);
-    res.json({ lendo: emVarredura.has(user.escritorioId), pendentes: n, conectado: !!c?.ok, ultimaVarredura: c?.ultima_varredura || null, ultimoErro: c?.ultimo_erro || null, minhasPastas: pastas.filter((p) => p.user_id === user.id), pastasDoSetor: pastas.length });
+    res.json({ lendo: varreduraManual.has(user.escritorioId), pendentes: n, conectado: !!c?.ok, ultimaVarredura: c?.ultima_varredura || null, ultimoErro: c?.ultimo_erro || null, minhasPastas: pastas.filter((p) => p.user_id === user.id), pastasDoSetor: pastas.length });
   });
   const docDoUsuario = (req: express.Request, res: express.Response): any | null => {
     const user = (req as any).user;
