@@ -4452,14 +4452,15 @@ app.get("/api/fgts/agente-windows", blockCliente, requirePermissao("empresas", "
     const nodeExe = await nodeExeWindows();
     const proto = String(req.headers["x-forwarded-proto"] || req.protocol || "https").split(",")[0];
     const url = `${proto}://${req.get("host")}`;
-    const bat = [
+    // Um .bat por navegador: cada um tenta o escolhido primeiro e, se não estiver instalado, o outro.
+    const montarBat = (canal: "msedge" | "chrome", nome: string) => [
       "@echo off",
       "chcp 65001 >nul",
-      "title Agente FGTS Digital - Simples Contabeis",
+      `title Agente FGTS Digital - Simples Contabeis (${nome})`,
       'cd /d "%~dp0"',
       `set FGTS_APP_URL=${url}`,
-      "set FGTS_BROWSER_CHANNEL=msedge",
-      'set NODE_PATH=%~dp0node_modules',
+      `set FGTS_BROWSER_CHANNEL=${canal}`,
+      "set NODE_PATH=%~dp0node_modules",
       '"%~dp0node.exe" "%~dp0agente-fgts.js"',
       "echo.",
       "pause",
@@ -4469,8 +4470,9 @@ app.get("/api/fgts/agente-windows", blockCliente, requirePermissao("empresas", "
       "AGENTE FGTS DIGITAL - Simples Contabeis",
       "",
       "1. Extraia esta pasta inteira (botao direito > Extrair tudo). Nao rode de dentro do zip.",
-      "2. De dois cliques em INICIAR-FGTS.bat. Nao precisa instalar nada.",
-      "3. Vai abrir o Microsoft Edge no FGTS Digital. Faca o login: Entrar com GOV.BR > Outras opcoes de",
+      "2. De dois cliques em INICIAR-FGTS-CHROME.bat (Google Chrome) ou INICIAR-FGTS-EDGE.bat (Microsoft Edge).",
+      "   Use o navegador em que o certificado digital aparece. Se o escolhido nao estiver instalado, ele tenta o outro.",
+      "3. Vai abrir o navegador no FGTS Digital. Faca o login: Entrar com GOV.BR > Outras opcoes de",
       '   identificacao > Seu certificado digital > escolha o certificado > perfil "Procurador" > CNPJ de',
       '   qualquer empresa marcada > "Definir".',
       '4. So depois de ver a tela com os quadradinhos ("GESTAO DE GUIAS" etc.), volte na janela preta e aperte ENTER.',
@@ -4478,7 +4480,7 @@ app.get("/api/fgts/agente-windows", blockCliente, requirePermissao("empresas", "
       "   empresas marcadas e envia os PDFs para o sistema sozinho.",
       "",
       "Endereco do sistema: " + url,
-      "Se o Edge nao abrir, ele tenta o Google Chrome. Um dos dois precisa estar instalado no computador.",
+      "Um dos dois navegadores (Chrome ou Edge) precisa estar instalado no computador.",
       "",
     ].join("\r\n");
     res.setHeader("Content-Type", "application/zip");
@@ -4486,7 +4488,8 @@ app.get("/api/fgts/agente-windows", blockCliente, requirePermissao("empresas", "
     const zip: any = archiver("zip", { zlib: { level: 1 } });
     zip.on("error", (e: any) => { console.error("[fgts] zip do agente:", e.message); res.destroy(); });
     zip.pipe(res);
-    zip.append(bat, { name: "INICIAR-FGTS.bat" });
+    zip.append(montarBat("chrome", "Chrome"), { name: "INICIAR-FGTS-CHROME.bat" });
+    zip.append(montarBat("msedge", "Edge"), { name: "INICIAR-FGTS-EDGE.bat" });
     zip.append(leia, { name: "LEIA-ME.txt" });
     zip.file(bundle, { name: "agente-fgts.js" });
     zip.file(nodeExe, { name: "node.exe" });
