@@ -2209,7 +2209,7 @@ async function emlCarregarPastas(){
     EML.naoLidasInbox = inbox ? inbox.naoLidas : null;
     if(!itens.some(p=>p.caminho===EML.pasta)) EML.pasta = (inbox||itens[0]||{caminho:'INBOX'}).caminho;
     const principais = itens.filter(p=>p.especial), marcadores = itens.filter(p=>!p.especial);
-    const linha = p=>`<div class="eml-pasta ${p.caminho===EML.pasta?'ativa':''}" data-p="${esc(p.caminho)}"><span>${emlIcone(p)} ${esc(p.nome)}</span>${p.naoLidas?`<b>${p.naoLidas}</b>`:''}</div>`;
+    const linha = p=>`<div class="eml-pasta ${p.caminho===EML.pasta?'ativa':''}" data-p="${esc(p.caminho)}"><span>${emlIcone(p)} ${esc(p.nome)}</span>${p.naoLidas && !['enviados','rascunhos','lixeira','todos','estrela'].includes(p.especial)?`<b>${p.naoLidas}</b>`:''}</div>`;
     box.innerHTML = principais.map(linha).join('') + (marcadores.length?`<div class="eml-pasta-tit">Marcadores</div>${marcadores.map(linha).join('')}`:'');
     box.querySelectorAll('.eml-pasta').forEach(el=>el.addEventListener('click', ()=>{
       EML.pasta = el.dataset.p; EML.pagina = 1; EML.busca=''; const b=document.getElementById('emlBusca'); if(b) b.value='';

@@ -64,7 +64,7 @@ async function listarPastas(c: ImapFlow) {
     .filter((p) => !p.flags.has("\\Noselect") && !p.flags.has("\\NonExistent"))
     .map((p) => {
       const esp = (p.specialUse && ESPECIAIS[p.specialUse]) || (p.path.toUpperCase() === "INBOX" ? ESPECIAIS["\\Inbox"] : null);
-      return { caminho: p.path, nome: esp ? esp.nome : p.name, especial: esp ? esp.chave : null, ordem: esp ? esp.ordem : 100, naoLidas: p.status?.unseen || 0, total: p.status?.messages || 0 };
+      return { caminho: p.path, nome: esp ? esp.nome : p.path.split(p.delimiter || "/").join(" › "), especial: esp ? esp.chave : null, ordem: esp ? esp.ordem : 100, naoLidas: p.status?.unseen || 0, total: p.status?.messages || 0 };
     })
     // "Importante" e "Todos os e-mails" do Gmail duplicam a caixa de entrada — só o Todos fica (útil pra achar arquivados).
     .filter((p) => !/\[Gmail\]\/(Important|Importante)/i.test(p.caminho));
