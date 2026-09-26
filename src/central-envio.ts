@@ -282,14 +282,14 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     if (opts.dias) varreduraManual.add(escId);
     try {
       const cfg = db.prepare(`SELECT ultima_varredura, dias_inicial FROM central_envio_config WHERE escritorio_id = ?`).get(escId) as any;
-      const inicioMs = opts.dias ? Date.now() - opts.dias * 86400000 : cfg?.ultima_varredura ? new Date(cfg.ultima_varredura).getTime() - 2 * 60_000 : Date.now() - (cfg?.dias_inicial || 30) * 86400000;
+      const inicioMs = opts.dias ? Date.now() - opts.dias * 86400000 : cfg?.ultima_varredura ? new Date(cfg.ultima_varredura).getTime() - 10 * 60_000 : Date.now() - (cfg?.dias_inicial || 30) * 86400000;
       const desde = new Date(inicioMs).toISOString();
       const inicioVarredura = new Date().toISOString();
       const raizes = new Map<string, { pastaId: string; setor: string; userId: number | null }>();
       for (const r of db.prepare(`SELECT pasta_id, setor, user_id FROM central_envio_pastas WHERE escritorio_id = ?`).all(escId) as any[]) raizes.set(r.pasta_id, { pastaId: r.pasta_id, setor: r.setor, userId: r.user_id ?? null });
       let novos = 0, pagina: string | undefined;
       do {
-        const j = await driveGet(escId, cred, "files", { q: `mimeType='application/pdf' and trashed=false and modifiedTime > '${desde}'`, orderBy: "modifiedTime", pageSize: "100", fields: "nextPageToken,files(id,name,parents,modifiedTime,md5Checksum,size)", ...(pagina ? { pageToken: pagina } : {}) });
+        const j = await driveGet(escId, cred, "files", { q: `mimeType='application/pdf' and trashed=false and (modifiedTime > '${desde}' or createdTime > '${desde}')`, orderBy: "modifiedTime", pageSize: "100", fields: "nextPageToken,files(id,name,parents,modifiedTime,md5Checksum,size)", ...(pagina ? { pageToken: pagina } : {}) });
         for (const a of j.files || []) {
           let raiz: any = null;
           for (const p of a.parents || []) { raiz = await raizDaPasta(escId, cred, p, raizes); if (raiz) break; }

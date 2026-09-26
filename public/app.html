@@ -10414,7 +10414,7 @@ async function centralEnvioMontar(escopo, box){
     if(!document.getElementById('cenvLista')) return;
     const st = document.getElementById('cenvStatus');
     st.innerHTML = !resumo.conectado ? '⚠ O Google Drive ainda não foi conectado. O administrador configura em <b>Configurações › Envio de documentos</b>.'
-      : (resumo.ultimoErro ? `<span style="color:var(--debit)">⚠ ${esc(resumo.ultimoErro)}</span>` : `${resumo.lendo?'<b>⏳ Lendo a pasta agora…</b> · ':''}Última leitura das pastas: ${esc(cenvDataHora(resumo.ultimaVarredura))} · confere sozinho a cada 10 segundos${resumo.minhasPastas.length?` · sua pasta: <b>${esc(resumo.minhasPastas.map(p=>p.pasta_nome).join(', '))}</b>`:''}${resumo.pastasDoSetor?'':' · <b>nenhuma pasta configurada ainda</b>'}`);
+      : (resumo.ultimoErro ? `<span style="color:var(--debit)">⚠ ${esc(resumo.ultimoErro)}</span>` : `${resumo.lendo?'<b>⏳ Lendo a pasta agora…</b> · ':''}🟢 Leitura automática ligada — o site confere a pasta a cada 10 segundos · última conferência: ${esc(resumo.ultimaVarredura?new Date(resumo.ultimaVarredura).toLocaleTimeString('pt-BR'):'—')}${resumo.minhasPastas.length?` · sua pasta: <b>${esc(resumo.minhasPastas.map(p=>p.pasta_nome).join(', '))}</b>`:''}${resumo.pastasDoSetor?'':' · <b>nenhuma pasta configurada ainda</b>'}`);
     document.getElementById('cenvBadge').innerHTML = resumo.pendentes ? `<span class="tag ok">${resumo.pendentes}</span>` : '';
     document.getElementById('cenvAgruparBox').classList.toggle('hidden', CENV.sub!=='enviados');
     if(CENV.sub==='pendentes' || CENV.sub==='dispensados') cenvDesenharPendentes(lista, r.itens, escopo, podePostar, carregar, CENV.sub==='dispensados');
