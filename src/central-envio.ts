@@ -67,20 +67,43 @@ async function driveBaixar(escId: number, cred: Cred, id: string): Promise<Buffe
 }
 
 // ---------------------------------------------------------------- leitura do PDF
+const NOME_VALOR = "([A-ZÀ-Ú][A-ZÀ-Ú'.]*(?:[ ]+[A-ZÀ-Ú'.]+){1,8})";
 export function extrairColaboradorECpf(texto: string): { colaborador: string | null; cpf: string | null } {
-  const cpf = (/\b\d{3}\.\d{3}\.\d{3}-\d{2}\b/.exec(texto) || [])[0] || null;
+  const cpfRot = /CPF[\s\S]{0,60}?(\d{3}\.\d{3}\.\d{3}-\d{2})/.exec(texto);
+  const cpf = (cpfRot && cpfRot[1]) || (/\b\d{3}\.\d{3}\.\d{3}-\d{2}\b/.exec(texto) || [])[0] || null;
+  const ruim = (v: string) => !/^[A-ZÀ-Ú][A-ZÀ-Ú'. ]{4,70}$/i.test(v) || v.trim().split(/\s+/).length < 2 || /LTDA|EMPRESA|CNPJ|EIRELI|\bME\b|ENDERE|BAIRRO|MUNIC/i.test(v);
+  // 1) Modelos numerados (ex.: Termo de Rescisão: "11 Nome" seguido do nome, mesmo com a célula ao lado na mesma linha)
+  const numerado = new RegExp("(?<!\\d)\\d{1,2}\\s*Nome(?!\\s*d[ao]\\s*(?:M|P|Soc|Empr))\\s*[:\\-–]?\\s*" + NOME_VALOR).exec(texto);
+  if (numerado && !ruim(numerado[1].trim())) return { colaborador: numerado[1].replace(/\s+/g, " ").trim(), cpf };
+  // 2) Rótulo no começo da linha: "Nome do Funcionário: FULANO", "Empregado", "Colaborador"…
   const linhas = texto.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-  const rotulo = /^(?:NOME(?:\s+DO)?(?:\s+(?:FUNCION[ÁA]RIO|EMPREGADO|COLABORADOR|TRABALHADOR))?|FUNCION[ÁA]RIO|EMPREGADO|COLABORADOR|TRABALHADOR)\s*[:\-–]?\s*(.*)$/i;
+  const rotulo = /^(?:\d{1,2}\s*)?(?:NOME(?:\s+DO)?(?:\s+(?:FUNCION[ÁA]RIO|EMPREGADO|COLABORADOR|TRABALHADOR))?(?!\s+D[AO]\s+(?:M[ÃA]E|PAI))|FUNCION[ÁA]RIO|EMPREGADO|COLABORADOR|TRABALHADOR)\s*[:\-–]?\s*(.*)$/i;
   const limpar = (v: string) => v.replace(/^[\d\s.\-–:]+/, "").replace(/\s{2,}.*/, "").replace(/\s+(CPF|CTPS|PIS|CBO|ADMISS|CARGO|MATR).*$/i, "").trim();
   for (let i = 0; i < linhas.length; i++) {
     const m = rotulo.exec(linhas[i]);
     if (!m) continue;
     for (const cand of [m[1], linhas[i + 1] || ""]) {
       const v = limpar(cand || "");
-      if (/^[A-ZÀ-Ú][A-ZÀ-Ú'. ]{4,60}$/i.test(v) && v.trim().split(/\s+/).length >= 2 && !/LTDA|EMPRESA|CNPJ|EIRELI|\bME\b/i.test(v)) return { colaborador: v.replace(/\s+/g, " "), cpf };
+      if (!ruim(v)) return { colaborador: v.replace(/\s+/g, " "), cpf };
     }
   }
   return { colaborador: null, cpf };
+}
+// Data do fato gerador do documento: na rescisão é a "Data de Afastamento" (campo 26). O texto do PDF pode vir com cada
+// rótulo seguido do seu valor OU com a linha de rótulos e depois a linha de valores — os dois jeitos são tratados.
+export function extrairDataAfastamento(texto: string): string | null {
+  const dataRe = /\d{2}\/\d{2}\/\d{4}/g;
+  const rot = /Data\s+de\s+Afastamento/i.exec(texto);
+  if (!rot) return null;
+  const depois = texto.slice(rot.index + rot[0].length);
+  const primeira = dataRe.exec(depois);
+  if (!primeira) return null;
+  const entre = depois.slice(0, primeira.index);
+  if (!/Cod\.?\s*Afastamento|Pens[ãa]o|Categoria|\d{2}\s+[A-Z]/i.test(entre)) return primeira[0]; // rótulo e valor juntos
+  // linha de rótulos primeiro: os valores vêm depois na ordem admissão, aviso prévio, afastamento
+  const ancora = /Remunera[çc][ãa]o\s*M[êe]s\s*Ant/i.exec(texto);
+  const datas = ((ancora ? texto.slice(ancora.index) : texto).match(dataRe) || []);
+  return datas.length >= 3 ? datas[2] : datas[datas.length - 1] || null;
 }
 const rotuloCompetencia = (p: { inicio: string; fim: string } | null): string | null => {
   const f = p?.fim || p?.inicio;
@@ -116,6 +139,7 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     CREATE INDEX IF NOT EXISTS idx_central_env_empresa ON central_envio_enviados(escritorio_id, empresa_id, enviado_em);
   `);
 
+  if (!(db.prepare(`PRAGMA table_info(central_envio_docs)`).all() as any[]).some((c) => c.name === "texto_amostra")) db.exec(`ALTER TABLE central_envio_docs ADD COLUMN texto_amostra TEXT`);
   // ------------------------------------------------------------ configuração / credencial
   const credDe = (escId: number): Cred | null => {
     const c = db.prepare(`SELECT sa_json_cifrado FROM central_envio_config WHERE escritorio_id = ?`).get(escId) as any;
@@ -147,32 +171,36 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     return null;
   }
 
-  async function processarArquivo(escId: number, cred: Cred, arq: any, raiz: { pastaId: string; setor: string; userId: number | null }) {
-    const md5 = arq.md5Checksum || `${arq.modifiedTime}-${arq.size}`;
-    if (db.prepare(`SELECT 1 FROM central_envio_docs WHERE escritorio_id = ? AND drive_file_id = ? AND md5 = ?`).get(escId, arq.id, md5)) return false;
-    if (Number(arq.size) > 40 * 1024 * 1024) return false;
-    const buf = await driveBaixar(escId, cred, arq.id);
+  async function analisarPdf(escId: number, setor: string, buf: Buffer, nomeArquivo: string) {
     let texto = "";
     try { texto = (await d.pdfParse(buf)).text || ""; } catch { /* PDF de imagem/protegido: cai em "sem tipo" */ }
-    const tipos = db.prepare(`SELECT * FROM central_envio_tipos WHERE escritorio_id = ? AND ativo = 1 AND (setor = ? OR setor = 'crm') ORDER BY (setor = ?) DESC, ordem, id`).all(escId, raiz.setor, raiz.setor) as any[];
+    const tipos = db.prepare(`SELECT * FROM central_envio_tipos WHERE escritorio_id = ? AND ativo = 1 AND (setor = ? OR setor = 'crm') ORDER BY (setor = ?) DESC, ordem, id`).all(escId, setor, setor) as any[];
     const tn = norm(texto);
     const tipo = tipos.find((t) => {
       const ps: string[] = JSON.parse(t.palavras_json || "[]").map(norm).filter(Boolean);
       return ps.length && (t.exige_todas ? ps.every((p) => tn.includes(p)) : ps.some((p) => tn.includes(p)));
     });
-    const { empresa, cnpjDetectado } = d.identificarEmpresa(d.mapaDocumentos(escId), texto, arq.name);
+    const { empresa, cnpjDetectado } = d.identificarEmpresa(d.mapaDocumentos(escId), texto, nomeArquivo);
     const { colaborador, cpf } = extrairColaboradorECpf(texto);
-    const competencia = rotuloCompetencia(d.extrairPeriodo(texto, arq.name));
-    const partes = [tipo?.nome || String(arq.name).replace(/\.pdf$/i, ""), colaborador, empresa?.nome, competencia].filter(Boolean);
+    const competencia = extrairDataAfastamento(texto) || rotuloCompetencia(d.extrairPeriodo(texto, nomeArquivo));
+    const titulo = [tipo?.nome || String(nomeArquivo).replace(/\.pdf$/i, ""), colaborador, empresa?.nome, competencia].filter(Boolean).join(" - ");
+    return { texto, tipoId: tipo?.id ?? null, tipoNome: tipo?.nome ?? null, empresaId: empresa?.id ?? null, cnpj: cnpjDetectado, colaborador, cpf, competencia, titulo };
+  }
+  async function processarArquivo(escId: number, cred: Cred, arq: any, raiz: { pastaId: string; setor: string; userId: number | null }) {
+    const md5 = arq.md5Checksum || `${arq.modifiedTime}-${arq.size}`;
+    if (db.prepare(`SELECT 1 FROM central_envio_docs WHERE escritorio_id = ? AND drive_file_id = ? AND md5 = ?`).get(escId, arq.id, md5)) return false;
+    if (Number(arq.size) > 40 * 1024 * 1024) return false;
+    const buf = await driveBaixar(escId, cred, arq.id);
+    const a = await analisarPdf(escId, raiz.setor, buf, arq.name);
     const versao = ((db.prepare(`SELECT COUNT(*) n FROM central_envio_docs WHERE escritorio_id = ? AND drive_file_id = ?`).get(escId, arq.id) as any).n || 0) + 1;
     const dir = path.join(d.uploadsDir, "central-envio", String(escId));
     fs.mkdirSync(dir, { recursive: true });
     const destino = path.join(dir, `${Date.now()}-${md5.slice(0, 12)}.pdf`);
     fs.writeFileSync(destino, buf);
     db.prepare(
-      `INSERT INTO central_envio_docs (escritorio_id, setor, user_id, pasta_id, drive_file_id, nome_arquivo, modificado_em, md5, tamanho, tipo_id, tipo_nome, empresa_id, cnpj, colaborador_nome, cpf, competencia, titulo, arquivo_path, versao)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(escId, raiz.setor, raiz.userId, raiz.pastaId, arq.id, arq.name, arq.modifiedTime, md5, buf.length, tipo?.id ?? null, tipo?.nome ?? null, empresa?.id ?? null, cnpjDetectado, colaborador, cpf, competencia, partes.join(" - "), destino, versao);
+      `INSERT INTO central_envio_docs (escritorio_id, setor, user_id, pasta_id, drive_file_id, nome_arquivo, modificado_em, md5, tamanho, tipo_id, tipo_nome, empresa_id, cnpj, colaborador_nome, cpf, competencia, titulo, arquivo_path, versao, texto_amostra)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(escId, raiz.setor, raiz.userId, raiz.pastaId, arq.id, arq.name, arq.modifiedTime, md5, buf.length, a.tipoId, a.tipoNome, a.empresaId, a.cnpj, a.colaborador, a.cpf, a.competencia, a.titulo, destino, versao, a.texto.slice(0, 8000));
     return true;
   }
 
@@ -393,6 +421,21 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     const titulo = [tipoNome || String(doc.nome_arquivo).replace(/\.pdf$/i, ""), colab, empNome, comp].filter(Boolean).join(" - ");
     db.prepare(`UPDATE central_envio_docs SET tipo_id=?, tipo_nome=?, empresa_id=?, colaborador_nome=?, competencia=?, titulo=? WHERE id=?`).run(b.tipoId !== undefined ? tipo?.id ?? null : doc.tipo_id, tipoNome, empId, colab, comp, titulo, doc.id);
     res.json({ ok: true, titulo });
+  });
+  // O que o site leu do PDF (pra afinar tipos e regras) e releitura de um documento já lido com as regras atuais.
+  app.get("/api/central-envio/docs/:id/texto", d.blockCliente, (req, res) => {
+    const doc = docDoUsuario(req, res); if (!doc) return;
+    res.json({ texto: doc.texto_amostra || "(sem texto guardado — releia o PDF)" });
+  });
+  app.post("/api/central-envio/docs/:id/reler", d.blockCliente, async (req, res) => {
+    const doc = docDoUsuario(req, res); if (!doc) return;
+    if (!d.hasPermissao((req as any).user, doc.setor, "postar")) return semAcesso(res);
+    if (doc.status !== "pendente") return res.status(409).json({ error: "Só documentos pendentes podem ser relidos." });
+    if (!fs.existsSync(doc.arquivo_path)) return res.status(404).json({ error: "O arquivo não está mais no servidor." });
+    const a = await analisarPdf(doc.escritorio_id, doc.setor, fs.readFileSync(doc.arquivo_path), doc.nome_arquivo);
+    db.prepare(`UPDATE central_envio_docs SET tipo_id=?, tipo_nome=?, empresa_id=?, cnpj=?, colaborador_nome=?, cpf=?, competencia=?, titulo=?, texto_amostra=? WHERE id=?`)
+      .run(a.tipoId, a.tipoNome, a.empresaId, a.cnpj, a.colaborador, a.cpf, a.competencia, a.titulo, a.texto.slice(0, 8000), doc.id);
+    res.json({ ok: true, titulo: a.titulo });
   });
   app.post("/api/central-envio/docs/:id/ignorar", d.blockCliente, (req, res) => {
     const doc = docDoUsuario(req, res); if (!doc) return;

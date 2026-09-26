@@ -10472,7 +10472,17 @@ async function cenvEditarModal(doc, escopo, recarregar){
     <div class="field"><label>Empresa</label>${comboSelectHtml('cenvEmpCombo','Digite para buscar a empresa…')}</div>
     <div class="field"><label>Colaborador</label><input type="text" id="cenvColab" value="${esc(doc.colaborador||'')}"></div>
     <div class="field"><label>Competência (MM/AAAA)</label><input type="text" id="cenvComp" value="${esc(doc.competencia||'')}" placeholder="09/2026"></div>
-    <div class="row" style="justify-content:flex-end; gap:8px; margin-top:12px;"><button class="btn" onclick="closeModal()">Cancelar</button><button class="btn primary" id="cenvSalvar">Salvar</button></div>`, '520px');
+    <div class="row" style="gap:8px; margin-top:4px; flex-wrap:wrap;"><button class="btn small" id="cenvReler" title="Lê o PDF de novo com as regras de tipo e de leitura atuais">↻ Reler o PDF</button><button class="btn small" id="cenvVerTexto">Ver texto lido do PDF</button></div>
+    <pre id="cenvTexto" class="hidden" style="max-height:200px; overflow:auto; background:var(--paper); padding:8px; border-radius:8px; font-size:11px; white-space:pre-wrap; margin:8px 0 0;"></pre>
+    <div class="row" style="justify-content:flex-end; gap:8px; margin-top:12px;"><button class="btn" onclick="closeModal()">Cancelar</button><button class="btn primary" id="cenvSalvar">Salvar</button></div>`, '560px');
+  document.getElementById('cenvReler').addEventListener('click', async ()=>{
+    try{ await api(`/central-envio/docs/${doc.id}/reler`, { method:'POST' }); closeModal(); toast('PDF lido de novo.','ok'); recarregar(); }catch(e){ toast(e.message,'err'); }
+  });
+  document.getElementById('cenvVerTexto').addEventListener('click', async ()=>{
+    const pre = document.getElementById('cenvTexto');
+    if(!pre.classList.contains('hidden')){ pre.classList.add('hidden'); return; }
+    try{ const r = await api(`/central-envio/docs/${doc.id}/texto`); pre.textContent = r.texto; pre.classList.remove('hidden'); }catch(e){ toast(e.message,'err'); }
+  });
   let empId = doc.empresaId || null;
   setupComboSelect('cenvEmpCombo', empresas.filter(e=>e.ativo).map(e=>({ id:e.id, label:e.nome })), v=>{ empId = v ? Number(v) : null; });
   if(empId){ const e = empresas.find(x=>x.id===empId); const root = document.getElementById('cenvEmpCombo'); if(e){ root.querySelector('.combo-input').value = e.nome; root.querySelector('.combo-value').value = e.id; } }
