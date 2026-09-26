@@ -6,6 +6,7 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import type express from "express";
+import { PDFDocument } from "pdf-lib";
 
 export const SETORES_CENTRAL = ["crm", "dprh", "contabil", "fiscal"] as const;
 type Setor = (typeof SETORES_CENTRAL)[number];
@@ -106,6 +107,11 @@ export function extrairDataAfastamento(texto: string): string | null {
   if (corrida) { const ds = corrida[1].match(dataRe) || []; if (ds.length) return ds[ds.length - 1]; }
   return primeira[0];
 }
+// "Competência: 08/2026", "Mês/Ano: 08/2026", "Referente a 08/2026" (folha mensal e afins)
+export function extrairCompetenciaMes(texto: string): string | null {
+  const m = /(?:Compet[êe]ncia|M[êe]s\s*\/?\s*Ano|Refer[êe]ncia|Referente\s+a)\s*[:\-]?\s*(?:\d{2}\/)?(0[1-9]|1[0-2])\/(20\d{2})\b/i.exec(texto);
+  return m ? `${m[1]}/${m[2]}` : null;
+}
 const rotuloCompetencia = (p: { inicio: string; fim: string } | null): string | null => {
   const f = p?.fim || p?.inicio;
   return f && /^\d{4}-\d{2}/.test(f) ? `${f.slice(5, 7)}/${f.slice(0, 4)}` : null;
@@ -140,7 +146,10 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     CREATE INDEX IF NOT EXISTS idx_central_env_empresa ON central_envio_enviados(escritorio_id, empresa_id, enviado_em);
   `);
 
-  if (!(db.prepare(`PRAGMA table_info(central_envio_docs)`).all() as any[]).some((c) => c.name === "texto_amostra")) db.exec(`ALTER TABLE central_envio_docs ADD COLUMN texto_amostra TEXT`);
+  const colsDocs = (db.prepare(`PRAGMA table_info(central_envio_docs)`).all() as any[]).map((c) => c.name);
+  for (const [col, ddl] of [["texto_amostra", "TEXT"], ["grupo_id", "INTEGER"], ["e_grupo", "INTEGER NOT NULL DEFAULT 0"], ["grupo_chave", "TEXT"], ["n_arquivos", "INTEGER NOT NULL DEFAULT 1"]] as const)
+    if (!colsDocs.includes(col)) db.exec(`ALTER TABLE central_envio_docs ADD COLUMN ${col} ${ddl}`);
+  if (!(db.prepare(`PRAGMA table_info(central_envio_tipos)`).all() as any[]).some((c) => c.name === "agrupar")) db.exec(`ALTER TABLE central_envio_tipos ADD COLUMN agrupar INTEGER NOT NULL DEFAULT 0`);
   // ------------------------------------------------------------ configuração / credencial
   const credDe = (escId: number): Cred | null => {
     const c = db.prepare(`SELECT sa_json_cifrado FROM central_envio_config WHERE escritorio_id = ?`).get(escId) as any;
@@ -183,9 +192,41 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     });
     const { empresa, cnpjDetectado } = d.identificarEmpresa(d.mapaDocumentos(escId), texto, nomeArquivo);
     const { colaborador, cpf } = extrairColaboradorECpf(texto);
-    const competencia = extrairDataAfastamento(texto) || rotuloCompetencia(d.extrairPeriodo(texto, nomeArquivo));
+    const competencia = extrairDataAfastamento(texto) || extrairCompetenciaMes(texto) || rotuloCompetencia(d.extrairPeriodo(texto, nomeArquivo));
     const titulo = [tipo?.nome || String(nomeArquivo).replace(/\.pdf$/i, ""), colaborador, empresa?.nome, competencia].filter(Boolean).join(" - ");
-    return { texto, tipoId: tipo?.id ?? null, tipoNome: tipo?.nome ?? null, empresaId: empresa?.id ?? null, cnpj: cnpjDetectado, colaborador, cpf, competencia, titulo };
+    return { texto, agrupar: !!tipo?.agrupar, tipoId: tipo?.id ?? null, tipoNome: tipo?.nome ?? null, empresaId: empresa?.id ?? null, cnpj: cnpjDetectado, colaborador, cpf, competencia, titulo };
+  }
+  async function mesclarPdfs(caminhos: string[]): Promise<Buffer> {
+    const saida = await PDFDocument.create();
+    for (const c of caminhos) {
+      const origem = await PDFDocument.load(fs.readFileSync(c), { ignoreEncryption: true });
+      for (const pg of await saida.copyPages(origem, origem.getPageIndices())) saida.addPage(pg);
+    }
+    return Buffer.from(await saida.save());
+  }
+  async function agruparNoPendente(escId: number, filhoId: number, a: any, raiz: { setor: string; userId: number | null; pastaId: string }) {
+    const chave = `${a.tipoId}:${a.empresaId}:${a.competencia}`;
+    const filho = db.prepare(`SELECT * FROM central_envio_docs WHERE id = ?`).get(filhoId) as any;
+    let pai = db.prepare(`SELECT * FROM central_envio_docs WHERE escritorio_id = ? AND e_grupo = 1 AND grupo_chave = ? AND status = 'pendente'`).get(escId, chave) as any;
+    const jaEnviado = !pai && (db.prepare(`SELECT 1 FROM central_envio_docs WHERE escritorio_id = ? AND e_grupo = 1 AND grupo_chave = ? AND status = 'enviado'`).get(escId, chave) as any);
+    const empresa = db.prepare(`SELECT nome FROM empresas WHERE id = ?`).get(a.empresaId) as any;
+    const titulo = `${a.tipoNome} - ${empresa?.nome || ""} - ${a.competencia}${jaEnviado ? " (complemento)" : ""}`;
+    if (!pai) {
+      const dir = path.join(d.uploadsDir, "central-envio", String(escId));
+      const info = db.prepare(
+        `INSERT INTO central_envio_docs (escritorio_id, setor, user_id, pasta_id, drive_file_id, nome_arquivo, md5, tipo_id, tipo_nome, empresa_id, cnpj, competencia, titulo, arquivo_path, e_grupo, grupo_chave, n_arquivos)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 1)`
+      ).run(escId, raiz.setor, raiz.userId, raiz.pastaId, `grupo:${chave}:${Date.now()}`, `${a.tipoNome} ${a.competencia.replace("/", "-")}.pdf`, `g${Date.now()}`, a.tipoId, a.tipoNome, a.empresaId, a.cnpj, a.competencia, titulo, path.join(dir, `grupo-${Date.now()}.pdf`), chave);
+      pai = db.prepare(`SELECT * FROM central_envio_docs WHERE id = ?`).get(Number(info.lastInsertRowid));
+    }
+    // Se o MESMO arquivo do Drive foi alterado, a versão antiga sai do grupo (não entra duas vezes no PDF).
+    db.prepare(`UPDATE central_envio_docs SET status = 'substituido' WHERE grupo_id = ? AND drive_file_id = ? AND id != ?`).run(pai.id, filho.drive_file_id, filho.id);
+    db.prepare(`UPDATE central_envio_docs SET grupo_id = ?, status = 'agrupado' WHERE id = ?`).run(pai.id, filho.id);
+    const filhos = db.prepare(`SELECT arquivo_path, nome_arquivo FROM central_envio_docs WHERE grupo_id = ? AND status = 'agrupado' ORDER BY nome_arquivo COLLATE NOCASE, id`).all(pai.id) as any[];
+    const pdf = await mesclarPdfs(filhos.map((f) => f.arquivo_path));
+    fs.mkdirSync(path.dirname(pai.arquivo_path), { recursive: true });
+    fs.writeFileSync(pai.arquivo_path, pdf);
+    db.prepare(`UPDATE central_envio_docs SET n_arquivos = ?, tamanho = ?, titulo = ?, modificado_em = datetime('now') WHERE id = ?`).run(filhos.length, pdf.length, titulo, pai.id);
   }
   async function processarArquivo(escId: number, cred: Cred, arq: any, raiz: { pastaId: string; setor: string; userId: number | null }) {
     const md5 = arq.md5Checksum || `${arq.modifiedTime}-${arq.size}`;
@@ -198,10 +239,12 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     fs.mkdirSync(dir, { recursive: true });
     const destino = path.join(dir, `${Date.now()}-${md5.slice(0, 12)}.pdf`);
     fs.writeFileSync(destino, buf);
-    db.prepare(
+    const info = db.prepare(
       `INSERT INTO central_envio_docs (escritorio_id, setor, user_id, pasta_id, drive_file_id, nome_arquivo, modificado_em, md5, tamanho, tipo_id, tipo_nome, empresa_id, cnpj, colaborador_nome, cpf, competencia, titulo, arquivo_path, versao, texto_amostra)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(escId, raiz.setor, raiz.userId, raiz.pastaId, arq.id, arq.name, arq.modifiedTime, md5, buf.length, a.tipoId, a.tipoNome, a.empresaId, a.cnpj, a.colaborador, a.cpf, a.competencia, a.titulo, destino, versao, a.texto.slice(0, 8000));
+    // Tipos com "juntar num PDF só" (ex.: Folha Mensal): todos os arquivos da mesma empresa + competência viram UM pendente.
+    if (a.agrupar && a.empresaId && a.competencia && /^\d{2}\/\d{4}$/.test(a.competencia)) await agruparNoPendente(escId, Number(info.lastInsertRowid), a, raiz);
     return true;
   }
 
@@ -318,7 +361,12 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
         db.prepare(`INSERT INTO central_envio_tipos (escritorio_id, setor, nome, palavras_json, exige_todas, ordem) VALUES (?, ?, ?, ?, ?, ?)`).run(user.escritorioId, setor, nome, JSON.stringify(palavras), todas ? 1 : 0, o++);
       rows = db.prepare(`SELECT * FROM central_envio_tipos WHERE escritorio_id = ? ORDER BY setor, ordem, id`).all(user.escritorioId) as any[];
     }
-    res.json({ itens: rows.map((r) => ({ id: r.id, setor: r.setor, nome: r.nome, palavras: JSON.parse(r.palavras_json || "[]"), exigeTodas: !!r.exige_todas, textoWhatsapp: r.texto_whatsapp || "", ativo: !!r.ativo })) });
+    // Escritórios que já tinham os tipos iniciais: acrescenta "Folha Mensal" (junta todos os PDFs da empresa/mês num só).
+    if (user.perfil === "Administrador" && !rows.some((r) => r.setor === "dprh" && norm(r.nome) === "FOLHA MENSAL") && !(db.prepare(`SELECT 1 FROM central_envio_tipos WHERE escritorio_id = ? AND nome = 'Folha Mensal'`).get(user.escritorioId))) {
+      db.prepare(`INSERT INTO central_envio_tipos (escritorio_id, setor, nome, palavras_json, exige_todas, agrupar, ordem) VALUES (?, 'dprh', 'Folha Mensal', ?, 1, 1, -1)`).run(user.escritorioId, JSON.stringify(["FOLHA MENSAL"]));
+      rows = db.prepare(`SELECT * FROM central_envio_tipos WHERE escritorio_id = ? ORDER BY setor, ordem, id`).all(user.escritorioId) as any[];
+    }
+    res.json({ itens: rows.map((r) => ({ id: r.id, setor: r.setor, nome: r.nome, palavras: JSON.parse(r.palavras_json || "[]"), exigeTodas: !!r.exige_todas, agrupar: !!r.agrupar, textoWhatsapp: r.texto_whatsapp || "", ativo: !!r.ativo })) });
   });
   const salvarTipo = (req: express.Request, res: express.Response, id?: number) => {
     const user = (req as any).user;
@@ -327,8 +375,8 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     const nome = String(b.nome || "").trim();
     const palavras = (Array.isArray(b.palavras) ? b.palavras : String(b.palavras || "").split("\n")).map((p: any) => String(p).trim()).filter(Boolean);
     if (!setor || !nome || !palavras.length) return res.status(400).json({ error: "Informe o setor, o nome do tipo e pelo menos uma palavra que identifica o documento." });
-    if (id) db.prepare(`UPDATE central_envio_tipos SET setor=?, nome=?, palavras_json=?, exige_todas=?, texto_whatsapp=?, ativo=? WHERE id=? AND escritorio_id=?`).run(setor, nome, JSON.stringify(palavras), b.exigeTodas === false ? 0 : 1, String(b.textoWhatsapp || "").trim() || null, b.ativo === false ? 0 : 1, id, user.escritorioId);
-    else db.prepare(`INSERT INTO central_envio_tipos (escritorio_id, setor, nome, palavras_json, exige_todas, texto_whatsapp, ordem) VALUES (?, ?, ?, ?, ?, ?, ?)`).run(user.escritorioId, setor, nome, JSON.stringify(palavras), b.exigeTodas === false ? 0 : 1, String(b.textoWhatsapp || "").trim() || null, Date.now() % 100000);
+    if (id) db.prepare(`UPDATE central_envio_tipos SET setor=?, nome=?, palavras_json=?, exige_todas=?, texto_whatsapp=?, ativo=?, agrupar=? WHERE id=? AND escritorio_id=?`).run(setor, nome, JSON.stringify(palavras), b.exigeTodas === false ? 0 : 1, String(b.textoWhatsapp || "").trim() || null, b.ativo === false ? 0 : 1, b.agrupar ? 1 : 0, id, user.escritorioId);
+    else db.prepare(`INSERT INTO central_envio_tipos (escritorio_id, setor, nome, palavras_json, exige_todas, texto_whatsapp, agrupar, ordem) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(user.escritorioId, setor, nome, JSON.stringify(palavras), b.exigeTodas === false ? 0 : 1, String(b.textoWhatsapp || "").trim() || null, b.agrupar ? 1 : 0, Date.now() % 100000);
     res.json({ ok: true });
   };
   app.post("/api/central-envio/tipos", d.blockCliente, d.requireAdmin, (req, res) => salvarTipo(req, res));
@@ -368,12 +416,13 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
       const mapa = new Map(st.map((s) => [s.origem_id, s.status]));
       return res.json({ itens: rows.map((r) => ({ ...r, entrega: r.canal === "whatsapp" ? mapa.get(r.id) || null : null })) });
     }
+    const statusLista = req.query.aba === "dispensados" ? "ignorado" : "pendente";
     const rows = db.prepare(
       `SELECT x.*, e.nome as empresa_nome FROM central_envio_docs x LEFT JOIN empresas e ON e.id = x.empresa_id
-       WHERE x.escritorio_id = ? AND x.setor IN (${marcas}) AND x.status = 'pendente' AND (LOWER(x.titulo) LIKE ? OR LOWER(COALESCE(e.nome,'')) LIKE ?)
+       WHERE x.escritorio_id = ? AND x.setor IN (${marcas}) AND x.status = '${statusLista}' AND (LOWER(x.titulo) LIKE ? OR LOWER(COALESCE(e.nome,'')) LIKE ?)
        ORDER BY x.id DESC LIMIT 500`
     ).all(esc, ...setores, busca, busca) as any[];
-    res.json({ itens: rows.map((r) => ({ id: r.id, setor: r.setor, titulo: r.titulo, tipoId: r.tipo_id, tipoNome: r.tipo_nome, empresaId: r.empresa_id, empresaNome: r.empresa_nome, colaborador: r.colaborador_nome, cpf: r.cpf, competencia: r.competencia, arquivo: r.nome_arquivo, versao: r.versao, modificadoEm: r.modificado_em, criadoEm: r.criado_em })) });
+    res.json({ itens: rows.map((r) => ({ id: r.id, setor: r.setor, titulo: r.titulo, tipoId: r.tipo_id, tipoNome: r.tipo_nome, empresaId: r.empresa_id, empresaNome: r.empresa_nome, colaborador: r.colaborador_nome, cpf: r.cpf, competencia: r.competencia, arquivo: r.nome_arquivo, grupo: !!r.e_grupo, nArquivos: r.n_arquivos, versao: r.versao, modificadoEm: r.modificado_em, criadoEm: r.criado_em })) });
   });
   app.get("/api/central-envio/resumo", d.blockCliente, (req, res) => {
     const user = (req as any).user;
@@ -411,6 +460,7 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     const doc = docDoUsuario(req, res); if (!doc) return;
     const user = (req as any).user;
     if (!d.hasPermissao(user, doc.setor, "postar")) return semAcesso(res);
+    if (doc.e_grupo) return res.status(409).json({ error: "Este PDF junta vários arquivos da mesma empresa e não tem colaborador único — só dá para enviar ou dispensar." });
     const b = req.body || {};
     const tipo = b.tipoId ? (db.prepare(`SELECT id, nome FROM central_envio_tipos WHERE id = ? AND escritorio_id = ?`).get(Number(b.tipoId), user.escritorioId) as any) : null;
     const emp = b.empresaId ? (db.prepare(`SELECT id, nome FROM empresas WHERE id = ? AND escritorio_id = ?`).get(Number(b.empresaId), user.escritorioId) as any) : null;
@@ -432,6 +482,7 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     const doc = docDoUsuario(req, res); if (!doc) return;
     if (!d.hasPermissao((req as any).user, doc.setor, "postar")) return semAcesso(res);
     if (doc.status !== "pendente") return res.status(409).json({ error: "Só documentos pendentes podem ser relidos." });
+    if (doc.e_grupo) return res.status(409).json({ error: "Este PDF junta vários arquivos da mesma empresa. Solte de novo os arquivos na pasta se precisar reler algum." });
     if (!fs.existsSync(doc.arquivo_path)) return res.status(404).json({ error: "O arquivo não está mais no servidor." });
     const a = await analisarPdf(doc.escritorio_id, doc.setor, fs.readFileSync(doc.arquivo_path), doc.nome_arquivo);
     db.prepare(`UPDATE central_envio_docs SET tipo_id=?, tipo_nome=?, empresa_id=?, cnpj=?, colaborador_nome=?, cpf=?, competencia=?, titulo=?, texto_amostra=? WHERE id=?`)
@@ -442,6 +493,13 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     const doc = docDoUsuario(req, res); if (!doc) return;
     if (!d.hasPermissao((req as any).user, doc.setor, "postar")) return semAcesso(res);
     db.prepare(`UPDATE central_envio_docs SET status = 'ignorado' WHERE id = ?`).run(doc.id);
+    res.json({ ok: true });
+  });
+  app.post("/api/central-envio/docs/:id/restaurar", d.blockCliente, (req, res) => {
+    const doc = docDoUsuario(req, res); if (!doc) return;
+    if (!d.hasPermissao((req as any).user, doc.setor, "postar")) return semAcesso(res);
+    if (doc.status !== "ignorado") return res.status(409).json({ error: "Esse documento não está dispensado." });
+    db.prepare(`UPDATE central_envio_docs SET status = 'pendente' WHERE id = ?`).run(doc.id);
     res.json({ ok: true });
   });
   app.get("/api/central-envio/docs/:id/contatos", d.blockCliente, (req, res) => {

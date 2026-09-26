@@ -10385,6 +10385,7 @@ async function centralEnvioMontar(escopo, box){
       <div class="tabs" style="margin:0;" id="cenvSubs">
         <div class="tab ${CENV.sub==='pendentes'?'active':''}" data-s="pendentes">Pendentes de envio <span id="cenvBadge"></span></div>
         <div class="tab ${CENV.sub==='enviados'?'active':''}" data-s="enviados">Enviados</div>
+        <div class="tab ${CENV.sub==='dispensados'?'active':''}" data-s="dispensados">Dispensados</div>
       </div>
       <div class="field" style="width:280px; margin:0;"><input type="text" id="cenvBusca" placeholder="Buscar por empresa ou documento…" autocomplete="off"></div>
       <button class="btn" id="cenvMinhaPasta">📁 Minha pasta</button>
@@ -10416,18 +10417,19 @@ async function centralEnvioMontar(escopo, box){
       : (resumo.ultimoErro ? `<span style="color:var(--debit)">⚠ ${esc(resumo.ultimoErro)}</span>` : `${resumo.lendo?'<b>⏳ Lendo a pasta agora…</b> · ':''}Última leitura das pastas: ${esc(cenvDataHora(resumo.ultimaVarredura))} · confere sozinho a cada 10 segundos${resumo.minhasPastas.length?` · sua pasta: <b>${esc(resumo.minhasPastas.map(p=>p.pasta_nome).join(', '))}</b>`:''}${resumo.pastasDoSetor?'':' · <b>nenhuma pasta configurada ainda</b>'}`);
     document.getElementById('cenvBadge').innerHTML = resumo.pendentes ? `<span class="tag ok">${resumo.pendentes}</span>` : '';
     document.getElementById('cenvAgruparBox').classList.toggle('hidden', CENV.sub!=='enviados');
-    if(CENV.sub==='pendentes') cenvDesenharPendentes(lista, r.itens, escopo, podePostar, carregar);
+    if(CENV.sub==='pendentes' || CENV.sub==='dispensados') cenvDesenharPendentes(lista, r.itens, escopo, podePostar, carregar, CENV.sub==='dispensados');
     else cenvDesenharEnviados(lista, r.itens);
   }
   await carregar();
   CENV.timer = setInterval(()=>{ if(!document.hidden && !document.getElementById('modalBg')?.classList.contains('open')) carregar(); }, 10000);
 }
-function cenvDesenharPendentes(box, itens, escopo, podePostar, recarregar){
-  if(!itens.length){ box.innerHTML = '<div class="card"><div class="empty-state">Nenhum documento pendente de envio. Coloque os PDFs na pasta do Drive — o site confere sozinho a cada 10 segundos.</div></div>'; return; }
+function cenvDesenharPendentes(box, itens, escopo, podePostar, recarregar, dispensados){
+  if(!itens.length){ box.innerHTML = dispensados ? '<div class="card"><div class="empty-state">Nenhum documento dispensado.</div></div>' : '<div class="card"><div class="empty-state">Nenhum documento pendente de envio. Coloque os PDFs na pasta do Drive — o site confere sozinho a cada 10 segundos.</div></div>'; return; }
   box.innerHTML = `<div class="card" style="padding:0; overflow-x:auto;"><table class="data-table">
     <thead><tr><th>Documento</th><th>Empresa</th><th>Colaborador</th><th>Competência</th><th>Lido em</th><th></th></tr></thead><tbody>
     ${itens.map(i=>`<tr data-id="${i.id}">
       <td><b>${esc(i.titulo)}</b><div style="margin-top:3px;">${i.tipoNome?`<span class="tag ok">${esc(i.tipoNome)}</span>`:'<span class="tag warn">Tipo não identificado</span>'}
+        ${i.grupo?`<span class="tag ok" title="Todos os PDFs desta empresa e competência juntos num arquivo só">📚 ${i.nArquivos} arquivo(s) juntos num PDF</span>`:''}
         ${i.versao>1?'<span class="tag muted" title="O arquivo foi alterado no Drive depois de lido">versão nova</span>':''}
         ${escopo==='crm'?`<span class="tag muted">${esc(CENV_SETORES[i.setor]||i.setor)}</span>`:''}</div>
         <div style="font-size:11.5px; color:var(--ink-soft);">${esc(i.arquivo)}</div></td>
@@ -10436,13 +10438,14 @@ function cenvDesenharPendentes(box, itens, escopo, podePostar, recarregar){
       <td style="font-size:12px;">${esc(cenvDataHora(i.criadoEm))}</td>
       <td style="text-align:right; white-space:nowrap;">
         <a class="btn small" href="/api/central-envio/docs/${i.id}/pdf" target="_blank" rel="noopener">👁 Ver</a>
-        ${podePostar?`<button class="btn small" data-a="editar">✏ Corrigir</button><button class="btn small primary" data-a="enviar">Enviar</button><button class="btn small" data-a="ignorar" title="Não enviar este documento">Dispensar</button>`:''}
+        ${podePostar? (dispensados ? `<button class="btn small primary" data-a="restaurar">↩ Voltar para Pendentes</button>` : `${i.grupo?'':'<button class="btn small" data-a="editar">✏ Corrigir</button>'}<button class="btn small primary" data-a="enviar">Enviar</button><button class="btn small" data-a="ignorar" title="Não enviar este documento">Dispensar</button>`) : ''}
       </td></tr>`).join('')}
     </tbody></table></div>`;
   box.querySelectorAll('[data-a]').forEach(b=>b.addEventListener('click', ()=>{
     const id = Number(b.closest('tr').dataset.id); const doc = itens.find(x=>x.id===id);
     if(b.dataset.a==='editar') cenvEditarModal(doc, escopo, recarregar);
     else if(b.dataset.a==='enviar') cenvEnviarModal(doc, recarregar);
+    else if(b.dataset.a==='restaurar') api(`/central-envio/docs/${id}/restaurar`, { method:'POST' }).then(()=>{ toast('Voltou para Pendentes.','ok'); recarregar(); }).catch(e=>toast(e.message,'err'));
     else if(confirmar(`Dispensar "${doc.titulo}"? Ele sai de Pendentes e não será enviado (o arquivo continua guardado).`)) api(`/central-envio/docs/${id}/ignorar`, { method:'POST' }).then(()=>{ toast('Dispensado.','ok'); recarregar(); }).catch(e=>toast(e.message,'err'));
   }));
 }
@@ -10570,7 +10573,7 @@ async function renderCfgEnvioDocs(box){
       <div class="row" style="gap:8px; margin-top:10px;"><button class="btn primary" id="cenvAddPasta" ${cfg.conectado?'':'disabled'}>+ Adicionar pasta de um setor</button><button class="btn" id="cenvRelerTudo" ${cfg.conectado?'':'disabled'} title="Relê os PDFs modificados nos últimos 90 dias">↻ Reler últimos 90 dias</button></div></div>
     <div class="card" style="margin-top:12px;"><h3 style="margin-top:0;">Tipos de documento (como o site reconhece cada PDF)</h3>
       <p class="subtitle" style="margin:0 0 8px;">Para cada tipo, informe as palavras que aparecem no PDF (ex.: "TERMO DE RESCISÃO"). Acentos e maiúsculas não importam. Sem tipo reconhecido, o documento entra como "Tipo não identificado" e você corrige na mão.</p>
-      ${tipos.itens.length?`<table class="data-table"><thead><tr><th>Setor</th><th>Tipo</th><th>Palavras no PDF</th><th></th></tr></thead><tbody>${tipos.itens.map(t=>`<tr data-tid="${t.id}"><td>${esc(setorNome(t.setor))}</td><td><b>${esc(t.nome)}</b>${t.ativo?'':' <span class="tag muted">inativo</span>'}</td><td style="font-size:12.5px;">${esc(t.palavras.join(' · '))} <span style="color:var(--ink-soft)">(${t.exigeTodas?'todas':'qualquer uma'})</span></td><td style="text-align:right; white-space:nowrap;"><button class="btn small" data-a="edit">Editar</button> <button class="btn small danger" data-a="del">Excluir</button></td></tr>`).join('')}</tbody></table>`:'<div class="empty-state">Nenhum tipo cadastrado.</div>'}
+      ${tipos.itens.length?`<table class="data-table"><thead><tr><th>Setor</th><th>Tipo</th><th>Palavras no PDF</th><th></th></tr></thead><tbody>${tipos.itens.map(t=>`<tr data-tid="${t.id}"><td>${esc(setorNome(t.setor))}</td><td><b>${esc(t.nome)}</b>${t.ativo?'':' <span class="tag muted">inativo</span>'}</td><td style="font-size:12.5px;">${esc(t.palavras.join(' · '))} <span style="color:var(--ink-soft)">(${t.exigeTodas?'todas':'qualquer uma'})</span>${t.agrupar?' <span class="tag ok" title="Junta os arquivos da mesma empresa e competência num PDF só">📚 junta num PDF</span>':''}</td><td style="text-align:right; white-space:nowrap;"><button class="btn small" data-a="edit">Editar</button> <button class="btn small danger" data-a="del">Excluir</button></td></tr>`).join('')}</tbody></table>`:'<div class="empty-state">Nenhum tipo cadastrado.</div>'}
       <div style="margin-top:10px;"><button class="btn primary" id="cenvNovoTipo">+ Novo tipo</button></div></div>`;
   const recarregar = ()=>renderCfgEnvioDocs(box);
   const tc = document.getElementById('cenvTrocarChave'); if(tc) tc.addEventListener('click', ()=>document.getElementById('cenvChaveBox').classList.remove('hidden'));
@@ -10590,10 +10593,11 @@ async function renderCfgEnvioDocs(box){
       <div class="field"><label>Palavras que aparecem no PDF (uma por linha)</label><textarea id="tpPalavras" rows="4" placeholder="TERMO DE RESCISÃO">${esc(t?t.palavras.join('\n'):'')}</textarea></div>
       <label class="checkbox-row"><input type="checkbox" id="tpTodas" ${!t||t.exigeTodas?'checked':''}> Só reconhecer se aparecerem <b>todas</b> as palavras (desmarcado: basta uma)</label>
       <div class="field" style="margin-top:8px;"><label>Texto do WhatsApp (opcional — vai no lugar do título na mensagem)</label><input type="text" id="tpTexto" value="${esc(t?t.textoWhatsapp:'')}" placeholder="Termo de rescisão do contrato de trabalho"></div>
+      <label class="checkbox-row"><input type="checkbox" id="tpAgrupar" ${t&&t.agrupar?'checked':''}> Juntar num <b>PDF só</b> todos os arquivos deste tipo da mesma empresa e competência (ex.: Folha Mensal, holerites)</label>
       ${t?`<label class="checkbox-row"><input type="checkbox" id="tpAtivo" ${t.ativo?'checked':''}> Ativo</label>`:''}
       <div class="row" style="justify-content:flex-end; gap:8px; margin-top:12px;"><button class="btn" onclick="closeModal()">Cancelar</button><button class="btn primary" id="tpSalvar">Salvar</button></div>`, '560px');
     document.getElementById('tpSalvar').addEventListener('click', async ()=>{
-      const body = { setor:document.getElementById('tpSetor').value, nome:document.getElementById('tpNome').value, palavras:document.getElementById('tpPalavras').value.split('\n'), exigeTodas:document.getElementById('tpTodas').checked, textoWhatsapp:document.getElementById('tpTexto').value, ativo: t? document.getElementById('tpAtivo').checked : true };
+      const body = { setor:document.getElementById('tpSetor').value, nome:document.getElementById('tpNome').value, palavras:document.getElementById('tpPalavras').value.split('\n'), exigeTodas:document.getElementById('tpTodas').checked, agrupar:document.getElementById('tpAgrupar').checked, textoWhatsapp:document.getElementById('tpTexto').value, ativo: t? document.getElementById('tpAtivo').checked : true };
       try{ await api('/central-envio/tipos'+(t?'/'+t.id:''), { method:t?'PUT':'POST', body }); closeModal(); recarregar(); }catch(e){ toast(e.message,'err'); }
     });
   }
