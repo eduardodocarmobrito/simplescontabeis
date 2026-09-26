@@ -10992,10 +10992,11 @@ async function renderCfgFgtsDigital(box){
           <li>Dê dois cliques em <b>INICIAR-FGTS-CHROME.bat</b> (Google Chrome) ou <b>INICIAR-FGTS-EDGE.bat</b> (Microsoft Edge) — o navegador em que o certificado digital aparece. Se o escolhido não estiver instalado, ele tenta o outro.</li>
           <li>Faça o login: Entrar com GOV.BR › Outras opções de identificação › Seu certificado digital › escolha o certificado › perfil "Procurador" › CNPJ de qualquer empresa marcada › "Definir".</li>
           <li>Só depois de ver a tela com os quadradinhos ("GESTÃO DE GUIAS" etc.), volte na janela preta e aperte <b>ENTER</b>.</li>
-          <li>Digite o e-mail e a senha do sistema quando pedir. Ele busca a guia de todas as empresas marcadas abaixo e envia os PDFs para Envio de Documentos. Se faltar procuração ativa para alguma empresa, ele pula e segue para as próximas — o resultado de cada uma fica aqui embaixo.</li>
+          <li>Não precisa digitar login do sistema: o pacote já vem com a sua <b>chave de acesso</b>, que só serve para o agente do FGTS. Ele busca a guia de todas as empresas marcadas abaixo e envia os PDFs para Envio de Documentos. Se faltar procuração ativa para alguma empresa, ele pula e segue para as próximas — o resultado de cada uma fica aqui embaixo.</li>
         </ol>
         <a class="btn primary" href="/api/fgts/agente-windows" download>⬇ Baixar Agente FGTS para Windows</a>
         <span style="font-size:11.5px; color:var(--ink-soft); margin-left:8px;">O primeiro download pode demorar um pouco (~50 MB).</span>
+        <div style="font-size:11.5px; color:var(--ink-soft); margin-top:8px;">🔒 Cada download gera uma chave nova dentro do pacote. Não compartilhe a pasta. Se ela vazar ou o computador mudar de dono: <span class="link-discreto" id="fgtsRevogar">revogar todas as minhas chaves</span> (depois é só baixar de novo).</div>
       </div>
       ${semProcuracao.length ? `
         <div class="card" style="background:#fff3cd; margin:10px 0;">
@@ -11011,6 +11012,11 @@ async function renderCfgFgtsDigital(box){
         : `<div class="empty-state">Nenhuma empresa marcada ainda — marque o checkbox no cadastro de cada empresa, aba Configurações.</div>`}
     </div>
   `;
+  document.getElementById('fgtsRevogar')?.addEventListener('click', async ()=>{
+    if(!confirmar('Revogar todas as suas chaves do Agente FGTS? Os pacotes já baixados param de funcionar até você baixar de novo.')) return;
+    try{ const r = await api('/fgts/agente-tokens', { method:'DELETE' }); toast(r.revogadas ? 'Chaves revogadas.' : 'Você não tinha chaves ativas.','ok'); }
+    catch(e){ toast(e.message,'err'); }
+  });
 }
 
 let CFG_ASSINATURA_POLL = null;

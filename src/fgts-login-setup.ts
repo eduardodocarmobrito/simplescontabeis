@@ -96,41 +96,52 @@ async function main() {
     console.log('Termine de escolher o perfil "Procurador" + o CNPJ + "Definir" até ver a tela com os quadradinhos, depois aperte ENTER de novo.\n');
   }
 
-  // Se FGTS_LOGIN_EMAIL/FGTS_LOGIN_SENHA estiverem no .env, usa direto sem perguntar de novo.
-  let email = process.env.FGTS_LOGIN_EMAIL || "";
-  let senha = process.env.FGTS_LOGIN_SENHA || "";
-  if (!email || !senha) {
-    console.log("\nAgora entre com seu login do Simples Contábeis (pra eu saber quais empresas buscar e onde enviar as guias).");
-    email = await perguntar("E-mail: ");
-    senha = await perguntar("Senha: ");
+  // Pacote Windows: vem com FGTS_TOKEN (chave que só serve pro agente) — nada de digitar e-mail/senha.
+  // Sem ela, pede o login do sistema (ou usa FGTS_LOGIN_EMAIL/FGTS_LOGIN_SENHA do .env).
+  let autenticacao: Record<string, string>;
+  if (process.env.FGTS_TOKEN) {
+    console.log("\nUsando a chave de acesso deste pacote (não precisa digitar login).");
+    autenticacao = { Authorization: `Bearer ${process.env.FGTS_TOKEN}` };
   } else {
-    console.log("\nUsando o login salvo no .env (FGTS_LOGIN_EMAIL/FGTS_LOGIN_SENHA).");
-  }
-
-  console.log("\nEntrando no sistema...");
-  let cookieHeader: string;
-  try {
-    const resp = await fetch(`${APP_BASE_URL}/api/auth/login`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password: senha }),
-    });
-    if (!resp.ok) {
-      const j = await resp.json().catch(() => ({}) as any);
-      throw new Error(j.error || `HTTP ${resp.status}`);
+    let email = process.env.FGTS_LOGIN_EMAIL || "";
+    let senha = process.env.FGTS_LOGIN_SENHA || "";
+    if (!email || !senha) {
+      console.log("\nAgora entre com seu login do Simples Contábeis (pra eu saber quais empresas buscar e onde enviar as guias).");
+      email = await perguntar("E-mail: ");
+      senha = await perguntar("Senha: ");
+    } else {
+      console.log("\nUsando o login salvo no .env (FGTS_LOGIN_EMAIL/FGTS_LOGIN_SENHA).");
     }
-    const setCookie = resp.headers.get("set-cookie") || "";
-    const sid = (setCookie.match(/sid=([^;]+)/) || [])[1];
-    if (!sid) throw new Error("não recebi o cookie de sessão do sistema.");
-    cookieHeader = `sid=${sid}`;
-  } catch (e: any) {
-    console.error("Falha ao entrar no sistema:", e.message);
-    await browser.close();
-    process.exit(1);
+    console.log("\nEntrando no sistema...");
+    try {
+      const resp = await fetch(`${APP_BASE_URL}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password: senha }),
+      });
+      if (!resp.ok) {
+        const j = await resp.json().catch(() => ({}) as any);
+        throw new Error(j.error || `HTTP ${resp.status}`);
+      }
+      const setCookie = resp.headers.get("set-cookie") || "";
+      const sid = (setCookie.match(/sid=([^;]+)/) || [])[1];
+      if (!sid) throw new Error("não recebi o cookie de sessão do sistema.");
+      autenticacao = { Cookie: `sid=${sid}` };
+    } catch (e: any) {
+      console.error("Falha ao entrar no sistema:", e.message);
+      await browser.close();
+      process.exit(1);
+    }
   }
 
   console.log("Buscando a lista de empresas marcadas para busca do FGTS Digital...");
-  const listaResp = await fetch(`${APP_BASE_URL}/api/fgts/empresas-marcadas`, { headers: { Cookie: cookieHeader } });
+  const listaResp = await fetch(`${APP_BASE_URL}/api/fgts/empresas-marcadas`, { headers: autenticacao });
+  if (!listaResp.ok) {
+    const j = await listaResp.json().catch(() => ({}) as any);
+    console.error("Não consegui a lista de empresas:", j.error || `HTTP ${listaResp.status}`);
+    await browser.close();
+    process.exit(1);
+  }
   const { items: empresas } = (await listaResp.json()) as { items: { empresaId: number; cnpj: string; nome: string }[] };
 
   if (!empresas || !empresas.length) {
@@ -148,7 +159,7 @@ async function main() {
       try {
         await fetch(`${APP_BASE_URL}/api/fgts/guia`, {
           method: "POST",
-          headers: { "Content-Type": "application/json", Cookie: cookieHeader },
+          headers: { "Content-Type": "application/json", ...autenticacao },
           body: JSON.stringify({ ano: competencia.ano, mes: competencia.mes, ...resultado }),
         });
       } catch (e: any) {

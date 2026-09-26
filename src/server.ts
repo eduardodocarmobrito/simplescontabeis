@@ -2790,7 +2790,32 @@ app.post("/api/auth/change-password", requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+// Chave do Agente FGTS (pacote Windows): vale SÓ pras duas rotas que o agente usa, no lugar do e-mail/senha digitados.
+// Guardada só como hash; gerada a cada download (últimas 5 por usuário valem) e revogável em Configurações › FGTS Digital.
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS fgts_agente_tokens (
+    token_hash TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+    criado_em TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+`);
+const hashTokenAgente = (t: string) => crypto.createHash("sha256").update(t).digest("hex");
+function usuarioPorTokenAgente(token: string): any | null {
+  const t = sqlite.prepare(`SELECT user_id FROM fgts_agente_tokens WHERE token_hash = ?`).get(hashTokenAgente(token)) as any;
+  if (!t) return null;
+  const u = sqlite.prepare(`SELECT id, nome, email, perfil, acesso_todas_empresas, ativo, escritorio_id FROM app_users WHERE id = ?`).get(t.user_id) as any;
+  if (!u || !u.ativo || !["Administrador", "Colaborador"].includes(u.perfil)) return null;
+  return { id: u.id, nome: u.nome, email: u.email, perfil: u.perfil, empresaId: null, acessoTodasEmpresas: !!u.acesso_todas_empresas, escritorioId: u.escritorio_id, painelTv: false, painelTvPaginas: [] };
+}
 app.use("/api", (req, res, next) => {
+  const bearer = /^Bearer (fgtsag_[a-f0-9]{48})$/.exec(String(req.headers.authorization || ""));
+  const rotaAgente = (req.method === "GET" && req.path === "/fgts/empresas-marcadas") || (req.method === "POST" && req.path === "/fgts/guia");
+  if (bearer && rotaAgente) {
+    const u = usuarioPorTokenAgente(bearer[1]);
+    if (!u) return res.status(401).json({ error: "Chave do agente inválida ou revogada. Baixe o pacote de novo em Configurações › FGTS Digital." });
+    (req as any).user = u;
+    return next();
+  }
   if (req.path.startsWith("/auth/") || req.path === "/health" || req.path.startsWith("/dominio-agent/") || req.path === "/asaas/webhook" || req.path === "/whatsapp/webhook") return next();
   requireAuth(req, res, next);
 });
@@ -4450,6 +4475,10 @@ app.get("/api/fgts/agente-windows", blockCliente, requirePermissao("empresas", "
   if (!bundle || !fs.existsSync(playwrightCore)) return res.status(500).json({ error: "O pacote do agente não está disponível nesta versão do servidor." });
   try {
     const nodeExe = await nodeExeWindows();
+    const user = (req as any).user;
+    const chave = "fgtsag_" + crypto.randomBytes(24).toString("hex");
+    sqlite.prepare(`INSERT INTO fgts_agente_tokens (token_hash, user_id) VALUES (?, ?)`).run(hashTokenAgente(chave), user.id);
+    sqlite.prepare(`DELETE FROM fgts_agente_tokens WHERE user_id = ? AND token_hash NOT IN (SELECT token_hash FROM fgts_agente_tokens WHERE user_id = ? ORDER BY criado_em DESC, rowid DESC LIMIT 5)`).run(user.id, user.id);
     const proto = String(req.headers["x-forwarded-proto"] || req.protocol || "https").split(",")[0];
     const url = `${proto}://${req.get("host")}`;
     // Um .bat por navegador: cada um tenta o escolhido primeiro e, se não estiver instalado, o outro.
@@ -4460,6 +4489,7 @@ app.get("/api/fgts/agente-windows", blockCliente, requirePermissao("empresas", "
       'cd /d "%~dp0"',
       `set FGTS_APP_URL=${url}`,
       `set FGTS_BROWSER_CHANNEL=${canal}`,
+      `set FGTS_TOKEN=${chave}`,
       "set NODE_PATH=%~dp0node_modules",
       '"%~dp0node.exe" "%~dp0agente-fgts.js"',
       "echo.",
@@ -4476,8 +4506,9 @@ app.get("/api/fgts/agente-windows", blockCliente, requirePermissao("empresas", "
       '   identificacao > Seu certificado digital > escolha o certificado > perfil "Procurador" > CNPJ de',
       '   qualquer empresa marcada > "Definir".',
       '4. So depois de ver a tela com os quadradinhos ("GESTAO DE GUIAS" etc.), volte na janela preta e aperte ENTER.',
-      "5. Digite o e-mail e a senha do sistema Simples Contabeis quando pedir. Ele busca a guia de todas as",
-      "   empresas marcadas e envia os PDFs para o sistema sozinho.",
+      "5. Nao precisa digitar login do sistema: este pacote ja vem com a sua chave de acesso (so serve para o agente",
+      "   do FGTS). Ele busca a guia de todas as empresas marcadas e envia os PDFs para o sistema sozinho.",
+      "   ATENCAO: nao compartilhe esta pasta. Se ela vazar, revogue a chave em Configuracoes > FGTS Digital.",
       "",
       "Endereco do sistema: " + url,
       "Um dos dois navegadores (Chrome ou Edge) precisa estar instalado no computador.",
@@ -4499,6 +4530,10 @@ app.get("/api/fgts/agente-windows", blockCliente, requirePermissao("empresas", "
     console.error("[fgts] agente windows:", e.message);
     if (!res.headersSent) res.status(502).json({ error: "Não consegui montar o pacote: " + e.message });
   }
+});
+app.delete("/api/fgts/agente-tokens", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
+  const r = sqlite.prepare(`DELETE FROM fgts_agente_tokens WHERE user_id = ?`).run((req as any).user.id);
+  res.json({ ok: true, revogadas: Number(r.changes) });
 });
 // Lida por fgts-login-setup.ts logo depois de logar, pra saber quais empresas buscar.
 app.get("/api/fgts/empresas-marcadas", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
