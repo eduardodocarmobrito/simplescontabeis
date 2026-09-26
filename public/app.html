@@ -10400,9 +10400,9 @@ async function centralEnvioMontar(escopo, box){
   document.getElementById('cenvAgrupar').addEventListener('change', e=>{ CENV.agrupar = e.target.checked; carregar(); });
   document.getElementById('cenvLer').addEventListener('click', async ()=>{
     const b = document.getElementById('cenvLer'); b.disabled = true; b.textContent = 'Lendo…';
-    try{ const r = await api('/central-envio/varrer', { method:'POST', body:{ dias:30 } }); toast(r.novos ? `${r.novos} documento(s) novo(s).` : 'Nada de novo na pasta.','ok'); }
+    try{ await api('/central-envio/varrer', { method:'POST', body:{ dias:30 } }); toast('Lendo a pasta em segundo plano — os documentos vão aparecendo na lista.','ok'); }
     catch(e){ toast(e.message,'err'); }
-    b.disabled = false; b.textContent = '↻ Ler pasta agora'; carregar();
+    b.disabled = false; b.textContent = '↻ Ler pasta agora'; setTimeout(carregar, 1500);
   });
   document.getElementById('cenvMinhaPasta').addEventListener('click', ()=>cenvPastaModal(escopo, true, ()=>centralEnvioMontar(escopo, box)));
   async function carregar(){
@@ -10413,7 +10413,7 @@ async function centralEnvioMontar(escopo, box){
     if(!document.getElementById('cenvLista')) return;
     const st = document.getElementById('cenvStatus');
     st.innerHTML = !resumo.conectado ? '⚠ O Google Drive ainda não foi conectado. O administrador configura em <b>Configurações › Envio de documentos</b>.'
-      : (resumo.ultimoErro ? `<span style="color:var(--debit)">⚠ ${esc(resumo.ultimoErro)}</span>` : `Última leitura das pastas: ${esc(cenvDataHora(resumo.ultimaVarredura))} · confere sozinho a cada 10 segundos${resumo.minhasPastas.length?` · sua pasta: <b>${esc(resumo.minhasPastas.map(p=>p.pasta_nome).join(', '))}</b>`:''}${resumo.pastasDoSetor?'':' · <b>nenhuma pasta configurada ainda</b>'}`);
+      : (resumo.ultimoErro ? `<span style="color:var(--debit)">⚠ ${esc(resumo.ultimoErro)}</span>` : `${resumo.lendo?'<b>⏳ Lendo a pasta agora…</b> · ':''}Última leitura das pastas: ${esc(cenvDataHora(resumo.ultimaVarredura))} · confere sozinho a cada 10 segundos${resumo.minhasPastas.length?` · sua pasta: <b>${esc(resumo.minhasPastas.map(p=>p.pasta_nome).join(', '))}</b>`:''}${resumo.pastasDoSetor?'':' · <b>nenhuma pasta configurada ainda</b>'}`);
     document.getElementById('cenvBadge').innerHTML = resumo.pendentes ? `<span class="tag ok">${resumo.pendentes}</span>` : '';
     document.getElementById('cenvAgruparBox').classList.toggle('hidden', CENV.sub!=='enviados');
     if(CENV.sub==='pendentes') cenvDesenharPendentes(lista, r.itens, escopo, podePostar, carregar);
@@ -10572,7 +10572,7 @@ async function renderCfgEnvioDocs(box){
   });
   box.querySelectorAll('[data-rm-pasta]').forEach(b=>b.addEventListener('click', async ()=>{ if(!confirmar('Parar de ler essa pasta? Os documentos já lidos continuam guardados.')) return; await api('/central-envio/pastas/'+b.dataset.rmPasta,{method:'DELETE'}); recarregar(); }));
   document.getElementById('cenvAddPasta').addEventListener('click', ()=>cenvPastaModal('dprh', false, recarregar));
-  document.getElementById('cenvRelerTudo').addEventListener('click', async ()=>{ try{ const r = await api('/central-envio/varrer',{method:'POST',body:{dias:90}}); toast(`${r.novos} documento(s) novo(s).`,'ok'); }catch(e){ toast(e.message,'err'); } });
+  document.getElementById('cenvRelerTudo').addEventListener('click', async ()=>{ try{ const r = await api('/central-envio/varrer',{method:'POST',body:{dias:90}}); toast('Relendo em segundo plano. Veja os documentos na aba Envio de documentos do setor.','ok'); }catch(e){ toast(e.message,'err'); } });
   function tipoModal(t){
     openModal(`<h3>${t?'Editar tipo':'Novo tipo de documento'}</h3>
       <div class="field"><label>Setor</label><select id="tpSetor">${Object.keys(CENV_SETORES).filter(s=>s!=='crm').concat(['crm']).map(s=>`<option value="${s}" ${t&&t.setor===s?'selected':''}>${esc(CENV_SETORES[s].replace(' (todos os setores)',' — vale para qualquer setor'))}</option>`).join('')}</select></div>

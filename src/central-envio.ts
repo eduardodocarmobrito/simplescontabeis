@@ -44,6 +44,7 @@ async function tokenDrive(escId: number, cred: Cred): Promise<string> {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion: `${corpo}.${assinatura}` }),
+    signal: AbortSignal.timeout(30_000),
   });
   const j: any = await r.json().catch(() => ({}));
   if (!r.ok || !j.access_token) throw new Error(`Google recusou a chave da conta de serviço: ${j.error_description || j.error || r.status}`);
@@ -53,14 +54,14 @@ async function tokenDrive(escId: number, cred: Cred): Promise<string> {
 async function driveGet(escId: number, cred: Cred, caminho: string, params: Record<string, string> = {}): Promise<any> {
   const t = await tokenDrive(escId, cred);
   const qs = new URLSearchParams({ supportsAllDrives: "true", includeItemsFromAllDrives: "true", ...params });
-  const r = await fetch(`https://www.googleapis.com/drive/v3/${caminho}?${qs}`, { headers: { Authorization: `Bearer ${t}` } });
+  const r = await fetch(`https://www.googleapis.com/drive/v3/${caminho}?${qs}`, { headers: { Authorization: `Bearer ${t}` }, signal: AbortSignal.timeout(30_000) });
   const j: any = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(`Google Drive: ${j.error?.message || r.status}`);
   return j;
 }
 async function driveBaixar(escId: number, cred: Cred, id: string): Promise<Buffer> {
   const t = await tokenDrive(escId, cred);
-  const r = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?alt=media&supportsAllDrives=true`, { headers: { Authorization: `Bearer ${t}` } });
+  const r = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?alt=media&supportsAllDrives=true`, { headers: { Authorization: `Bearer ${t}` }, signal: AbortSignal.timeout(60_000) });
   if (!r.ok) throw new Error(`Google Drive: não consegui baixar o arquivo (${r.status}).`);
   return Buffer.from(await r.arrayBuffer());
 }
@@ -125,29 +126,25 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
   const setorValido = (v: any): Setor | null => ((SETORES_CENTRAL as readonly string[]).includes(String(v)) ? (String(v) as Setor) : null);
 
   // ------------------------------------------------------------ varredura
-  const arvores = new Map<number, { em: number; mapa: Map<string, { pastaId: string; setor: string; userId: number | null }> }>();
   const emVarredura = new Set<number>();
-  async function montarArvore(escId: number, cred: Cred, forcar = false) {
-    const c = arvores.get(escId);
-    if (!forcar && c && Date.now() - c.em < 5 * 60_000) return c.mapa;
-    const mapa = new Map<string, { pastaId: string; setor: string; userId: number | null }>();
-    const raizes = db.prepare(`SELECT pasta_id, setor, user_id FROM central_envio_pastas WHERE escritorio_id = ?`).all(escId) as any[];
-    for (const r of raizes) {
-      const info = { pastaId: r.pasta_id, setor: r.setor, userId: r.user_id ?? null };
-      const fila = [r.pasta_id];
-      mapa.set(r.pasta_id, info);
-      while (fila.length) {
-        const pai = fila.shift()!;
-        let pagina: string | undefined;
-        do {
-          const j = await driveGet(escId, cred, "files", { q: `'${pai}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`, fields: "nextPageToken,files(id)", pageSize: "200", ...(pagina ? { pageToken: pagina } : {}) });
-          for (const f of j.files || []) if (!mapa.has(f.id)) { mapa.set(f.id, info); fila.push(f.id); }
-          pagina = j.nextPageToken;
-        } while (pagina);
+  // Descobre a qual pasta configurada (raiz) um PDF pertence subindo pelos "pais" — só das pastas dos arquivos que mudaram,
+  // em vez de listar todas as subpastas do Drive (que podem ser milhares). O caminho de cada pasta fica em cache.
+  const paisCache = new Map<string, { pai: string | null; em: number }>();
+  async function raizDaPasta(escId: number, cred: Cred, pastaId: string, raizes: Map<string, { pastaId: string; setor: string; userId: number | null }>) {
+    let atual: string | null = pastaId;
+    for (let n = 0; atual && n < 15; n++) {
+      const r = raizes.get(atual);
+      if (r) return r;
+      const chave = `${escId}:${atual}`;
+      let c = paisCache.get(chave);
+      if (!c || Date.now() - c.em > 30 * 60_000) {
+        const f: any = await driveGet(escId, cred, `files/${encodeURIComponent(atual)}`, { fields: "id,parents" });
+        c = { pai: (f.parents && f.parents[0]) || null, em: Date.now() };
+        paisCache.set(chave, c);
       }
+      atual = c.pai;
     }
-    arvores.set(escId, { em: Date.now(), mapa });
-    return mapa;
+    return null;
   }
 
   async function processarArquivo(escId: number, cred: Cred, arq: any, raiz: { pastaId: string; setor: string; userId: number | null }) {
@@ -189,16 +186,14 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
       const inicioMs = opts.dias ? Date.now() - opts.dias * 86400000 : cfg?.ultima_varredura ? new Date(cfg.ultima_varredura).getTime() - 2 * 60_000 : Date.now() - (cfg?.dias_inicial || 30) * 86400000;
       const desde = new Date(inicioMs).toISOString();
       const inicioVarredura = new Date().toISOString();
-      const arvore = await montarArvore(escId, cred, !!opts.dias);
+      const raizes = new Map<string, { pastaId: string; setor: string; userId: number | null }>();
+      for (const r of db.prepare(`SELECT pasta_id, setor, user_id FROM central_envio_pastas WHERE escritorio_id = ?`).all(escId) as any[]) raizes.set(r.pasta_id, { pastaId: r.pasta_id, setor: r.setor, userId: r.user_id ?? null });
       let novos = 0, pagina: string | undefined;
       do {
         const j = await driveGet(escId, cred, "files", { q: `mimeType='application/pdf' and trashed=false and modifiedTime > '${desde}'`, orderBy: "modifiedTime", pageSize: "100", fields: "nextPageToken,files(id,name,parents,modifiedTime,md5Checksum,size)", ...(pagina ? { pageToken: pagina } : {}) });
         for (const a of j.files || []) {
-          let raiz = (a.parents || []).map((p: string) => arvore.get(p)).find(Boolean);
-          if (!raiz && (a.parents || []).length) { // pasta criada depois da última leitura da árvore
-            const nova = await montarArvore(escId, cred, true);
-            raiz = (a.parents || []).map((p: string) => nova.get(p)).find(Boolean);
-          }
+          let raiz: any = null;
+          for (const p of a.parents || []) { raiz = await raizDaPasta(escId, cred, p, raizes); if (raiz) break; }
           if (!raiz) continue;
           try { if (await processarArquivo(escId, cred, a, raiz)) novos++; } catch (e: any) { console.error(`[central-envio] ${a.name}:`, e.message); }
         }
@@ -266,7 +261,6 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     try {
       db.prepare(`INSERT INTO central_envio_pastas (escritorio_id, setor, user_id, pasta_id, pasta_nome) VALUES (?, ?, ?, ?, ?)`).run(user.escritorioId, setor, paraMim ? user.id : null, pastaId, String(req.body?.pastaNome || "").slice(0, 200));
     } catch { return res.status(409).json({ error: "Essa pasta já está cadastrada." }); }
-    arvores.delete(user.escritorioId);
     void varrer(user.escritorioId, { dias: Number(req.body?.dias) || 30 });
     res.json({ ok: true });
   });
@@ -276,7 +270,6 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     if (!p) return res.status(404).json({ error: "Pasta não encontrada." });
     if (user.perfil !== "Administrador" && p.user_id !== user.id) return semAcesso(res);
     db.prepare(`DELETE FROM central_envio_pastas WHERE id = ?`).run(p.id);
-    arvores.delete(user.escritorioId);
     res.json({ ok: true });
   });
 
@@ -319,8 +312,10 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
   app.post("/api/central-envio/varrer", d.blockCliente, async (req, res) => {
     const user = (req as any).user;
     if (!SETORES_CENTRAL.some((s) => d.hasPermissao(user, s, "visualizar"))) return semAcesso(res);
-    const r = await varrer(user.escritorioId, { dias: Math.min(365, Math.max(1, Number(req.body?.dias) || 30)) });
-    res.json({ ok: true, ...r });
+    // A leitura pode demorar (baixa e lê cada PDF): roda em segundo plano e a tela acompanha pela lista/status.
+    if (emVarredura.has(user.escritorioId)) return res.json({ ok: true, lendo: true });
+    void varrer(user.escritorioId, { dias: Math.min(365, Math.max(1, Number(req.body?.dias) || 30)) });
+    res.json({ ok: true, iniciado: true });
   });
 
   // ------------------------------------------------------------ rotas: pendentes / enviados / envio
@@ -358,7 +353,7 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     const n = (db.prepare(`SELECT COUNT(*) n FROM central_envio_docs WHERE escritorio_id = ? AND status = 'pendente' AND setor IN (${setores.map(() => "?").join(",")})`).get(user.escritorioId, ...setores) as any).n;
     const c = db.prepare(`SELECT ultima_varredura, ultimo_erro, sa_json_cifrado IS NOT NULL as ok FROM central_envio_config WHERE escritorio_id = ?`).get(user.escritorioId) as any;
     const pastas = (db.prepare(`SELECT id, setor, user_id, pasta_nome FROM central_envio_pastas WHERE escritorio_id = ? AND setor IN (${setores.map(() => "?").join(",")})`).all(user.escritorioId, ...setores) as any[]);
-    res.json({ pendentes: n, conectado: !!c?.ok, ultimaVarredura: c?.ultima_varredura || null, ultimoErro: c?.ultimo_erro || null, minhasPastas: pastas.filter((p) => p.user_id === user.id), pastasDoSetor: pastas.length });
+    res.json({ lendo: emVarredura.has(user.escritorioId), pendentes: n, conectado: !!c?.ok, ultimaVarredura: c?.ultima_varredura || null, ultimoErro: c?.ultimo_erro || null, minhasPastas: pastas.filter((p) => p.user_id === user.id), pastasDoSetor: pastas.length });
   });
   const docDoUsuario = (req: express.Request, res: express.Response): any | null => {
     const user = (req as any).user;
