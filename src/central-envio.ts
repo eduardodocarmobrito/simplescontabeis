@@ -1,0 +1,468 @@
+// Central de Envio de Documentos por setor (CRM, DP/RH, Contabilidade, Fiscal).
+// Lê PDFs de pastas do Google Drive do escritório (conta de serviço, só leitura), identifica o tipo (Rescisão, Holerite…)
+// pelas palavras-chave que o admin cadastra, acha a empresa pelo CNPJ dentro do PDF e coloca tudo em "Pendentes de envio".
+// O envio (WhatsApp/e-mail) é sempre por clique e cada envio vira uma linha nova em "Enviados" — nada é sobrescrito.
+import crypto from "crypto";
+import fs from "fs";
+import path from "path";
+import type express from "express";
+
+export const SETORES_CENTRAL = ["crm", "dprh", "contabil", "fiscal"] as const;
+type Setor = (typeof SETORES_CENTRAL)[number];
+
+type Deps = {
+  sqlite: any;
+  blockCliente: express.RequestHandler;
+  requireAdmin: express.RequestHandler;
+  hasPermissao: (user: any, modulo: any, acao: "visualizar" | "postar" | "editar") => boolean;
+  cifrar: (s: string) => string;
+  decifrar: (s: string) => string;
+  uploadsDir: string;
+  enviarEmail: (escritorioId: number, msg: any) => Promise<any>;
+  enviarWhatsapp: (escritorioId: number, telefone: string, vars: { nome: string; valor: string }[], arquivo: { nome: string; tipo: string; buffer: Buffer }, origem: { tabela: "central_envio_enviados"; id: number }) => Promise<void>;
+  mapaDocumentos: (escritorioId: number) => Map<string, any>;
+  identificarEmpresa: (mapa: Map<string, any>, texto: string, nomeArquivo: string) => { empresa: any | null; cnpjDetectado: string | null };
+  extrairPeriodo: (texto: string, nomeArquivo: string) => { inicio: string; fim: string } | null;
+  pdfParse: (buf: Buffer) => Promise<{ text: string }>;
+};
+
+const norm = (s: string) => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase();
+const nomeArquivoSeguro = (s: string) => String(s || "documento").replace(/[\\/:*?"<>|\r\n]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 150);
+
+// ---------------------------------------------------------------- Google Drive (conta de serviço, somente leitura)
+type Cred = { client_email: string; private_key: string };
+const tokens = new Map<number, { token: string; ate: number }>();
+
+async function tokenDrive(escId: number, cred: Cred): Promise<string> {
+  const c = tokens.get(escId);
+  if (c && c.ate > Date.now() + 60_000) return c.token;
+  const b64 = (o: any) => Buffer.from(JSON.stringify(o)).toString("base64url");
+  const agora = Math.floor(Date.now() / 1000);
+  const corpo = `${b64({ alg: "RS256", typ: "JWT" })}.${b64({ iss: cred.client_email, scope: "https://www.googleapis.com/auth/drive.readonly", aud: "https://oauth2.googleapis.com/token", iat: agora, exp: agora + 3600 })}`;
+  const assinatura = crypto.createSign("RSA-SHA256").update(corpo).sign(cred.private_key).toString("base64url");
+  const r = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion: `${corpo}.${assinatura}` }),
+  });
+  const j: any = await r.json().catch(() => ({}));
+  if (!r.ok || !j.access_token) throw new Error(`Google recusou a chave da conta de serviço: ${j.error_description || j.error || r.status}`);
+  tokens.set(escId, { token: j.access_token, ate: Date.now() + (j.expires_in || 3600) * 1000 });
+  return j.access_token;
+}
+async function driveGet(escId: number, cred: Cred, caminho: string, params: Record<string, string> = {}): Promise<any> {
+  const t = await tokenDrive(escId, cred);
+  const qs = new URLSearchParams({ supportsAllDrives: "true", includeItemsFromAllDrives: "true", ...params });
+  const r = await fetch(`https://www.googleapis.com/drive/v3/${caminho}?${qs}`, { headers: { Authorization: `Bearer ${t}` } });
+  const j: any = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(`Google Drive: ${j.error?.message || r.status}`);
+  return j;
+}
+async function driveBaixar(escId: number, cred: Cred, id: string): Promise<Buffer> {
+  const t = await tokenDrive(escId, cred);
+  const r = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?alt=media&supportsAllDrives=true`, { headers: { Authorization: `Bearer ${t}` } });
+  if (!r.ok) throw new Error(`Google Drive: não consegui baixar o arquivo (${r.status}).`);
+  return Buffer.from(await r.arrayBuffer());
+}
+
+// ---------------------------------------------------------------- leitura do PDF
+export function extrairColaboradorECpf(texto: string): { colaborador: string | null; cpf: string | null } {
+  const cpf = (/\b\d{3}\.\d{3}\.\d{3}-\d{2}\b/.exec(texto) || [])[0] || null;
+  const linhas = texto.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const rotulo = /^(?:NOME(?:\s+DO)?(?:\s+(?:FUNCION[ÁA]RIO|EMPREGADO|COLABORADOR|TRABALHADOR))?|FUNCION[ÁA]RIO|EMPREGADO|COLABORADOR|TRABALHADOR)\s*[:\-–]?\s*(.*)$/i;
+  const limpar = (v: string) => v.replace(/^[\d\s.\-–:]+/, "").replace(/\s{2,}.*/, "").replace(/\s+(CPF|CTPS|PIS|CBO|ADMISS|CARGO|MATR).*$/i, "").trim();
+  for (let i = 0; i < linhas.length; i++) {
+    const m = rotulo.exec(linhas[i]);
+    if (!m) continue;
+    for (const cand of [m[1], linhas[i + 1] || ""]) {
+      const v = limpar(cand || "");
+      if (/^[A-ZÀ-Ú][A-ZÀ-Ú'. ]{4,60}$/i.test(v) && v.trim().split(/\s+/).length >= 2 && !/LTDA|EMPRESA|CNPJ|EIRELI|\bME\b/i.test(v)) return { colaborador: v.replace(/\s+/g, " "), cpf };
+    }
+  }
+  return { colaborador: null, cpf };
+}
+const rotuloCompetencia = (p: { inicio: string; fim: string } | null): string | null => {
+  const f = p?.fim || p?.inicio;
+  return f && /^\d{4}-\d{2}/.test(f) ? `${f.slice(5, 7)}/${f.slice(0, 4)}` : null;
+};
+
+export function registerCentralEnvio(app: express.Express, d: Deps) {
+  const db = d.sqlite;
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS central_envio_config (
+      escritorio_id INTEGER PRIMARY KEY, sa_json_cifrado TEXT, sa_email TEXT, ultimo_erro TEXT, ultima_varredura TEXT, dias_inicial INTEGER NOT NULL DEFAULT 30
+    );
+    CREATE TABLE IF NOT EXISTS central_envio_pastas (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, escritorio_id INTEGER NOT NULL, setor TEXT NOT NULL, user_id INTEGER, pasta_id TEXT NOT NULL, pasta_nome TEXT,
+      criado_em TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE (escritorio_id, setor, user_id, pasta_id)
+    );
+    CREATE TABLE IF NOT EXISTS central_envio_tipos (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, escritorio_id INTEGER NOT NULL, setor TEXT NOT NULL, nome TEXT NOT NULL, palavras_json TEXT NOT NULL DEFAULT '[]',
+      exige_todas INTEGER NOT NULL DEFAULT 1, texto_whatsapp TEXT, ativo INTEGER NOT NULL DEFAULT 1, ordem INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS central_envio_docs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, escritorio_id INTEGER NOT NULL, setor TEXT NOT NULL, user_id INTEGER, pasta_id TEXT, drive_file_id TEXT NOT NULL,
+      nome_arquivo TEXT NOT NULL, modificado_em TEXT, md5 TEXT NOT NULL, tamanho INTEGER, tipo_id INTEGER, tipo_nome TEXT, empresa_id INTEGER, cnpj TEXT,
+      colaborador_nome TEXT, cpf TEXT, competencia TEXT, titulo TEXT NOT NULL, arquivo_path TEXT NOT NULL, versao INTEGER NOT NULL DEFAULT 1,
+      status TEXT NOT NULL DEFAULT 'pendente', criado_em TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE (escritorio_id, drive_file_id, md5)
+    );
+    CREATE INDEX IF NOT EXISTS idx_central_docs_status ON central_envio_docs(escritorio_id, setor, status);
+    CREATE TABLE IF NOT EXISTS central_envio_enviados (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, doc_id INTEGER, escritorio_id INTEGER NOT NULL, empresa_id INTEGER, empresa_nome TEXT, setor TEXT, tipo_nome TEXT, titulo TEXT,
+      colaborador_nome TEXT, competencia TEXT, canal TEXT NOT NULL, destino TEXT, enviado_por INTEGER, enviado_por_nome TEXT, enviado_em TEXT NOT NULL DEFAULT (datetime('now')),
+      status TEXT NOT NULL, erro TEXT, arquivo_path TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_central_env_empresa ON central_envio_enviados(escritorio_id, empresa_id, enviado_em);
+  `);
+
+  // ------------------------------------------------------------ configuração / credencial
+  const credDe = (escId: number): Cred | null => {
+    const c = db.prepare(`SELECT sa_json_cifrado FROM central_envio_config WHERE escritorio_id = ?`).get(escId) as any;
+    if (!c?.sa_json_cifrado) return null;
+    try { const j = JSON.parse(d.decifrar(c.sa_json_cifrado)); return j.client_email && j.private_key ? { client_email: j.client_email, private_key: j.private_key } : null; } catch { return null; }
+  };
+  const semAcesso = (res: express.Response) => res.status(403).json({ error: "Você não tem permissão para fazer isso." });
+  const setorValido = (v: any): Setor | null => ((SETORES_CENTRAL as readonly string[]).includes(String(v)) ? (String(v) as Setor) : null);
+
+  // ------------------------------------------------------------ varredura
+  const arvores = new Map<number, { em: number; mapa: Map<string, { pastaId: string; setor: string; userId: number | null }> }>();
+  const emVarredura = new Set<number>();
+  async function montarArvore(escId: number, cred: Cred, forcar = false) {
+    const c = arvores.get(escId);
+    if (!forcar && c && Date.now() - c.em < 5 * 60_000) return c.mapa;
+    const mapa = new Map<string, { pastaId: string; setor: string; userId: number | null }>();
+    const raizes = db.prepare(`SELECT pasta_id, setor, user_id FROM central_envio_pastas WHERE escritorio_id = ?`).all(escId) as any[];
+    for (const r of raizes) {
+      const info = { pastaId: r.pasta_id, setor: r.setor, userId: r.user_id ?? null };
+      const fila = [r.pasta_id];
+      mapa.set(r.pasta_id, info);
+      while (fila.length) {
+        const pai = fila.shift()!;
+        let pagina: string | undefined;
+        do {
+          const j = await driveGet(escId, cred, "files", { q: `'${pai}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`, fields: "nextPageToken,files(id)", pageSize: "200", ...(pagina ? { pageToken: pagina } : {}) });
+          for (const f of j.files || []) if (!mapa.has(f.id)) { mapa.set(f.id, info); fila.push(f.id); }
+          pagina = j.nextPageToken;
+        } while (pagina);
+      }
+    }
+    arvores.set(escId, { em: Date.now(), mapa });
+    return mapa;
+  }
+
+  async function processarArquivo(escId: number, cred: Cred, arq: any, raiz: { pastaId: string; setor: string; userId: number | null }) {
+    const md5 = arq.md5Checksum || `${arq.modifiedTime}-${arq.size}`;
+    if (db.prepare(`SELECT 1 FROM central_envio_docs WHERE escritorio_id = ? AND drive_file_id = ? AND md5 = ?`).get(escId, arq.id, md5)) return false;
+    if (Number(arq.size) > 40 * 1024 * 1024) return false;
+    const buf = await driveBaixar(escId, cred, arq.id);
+    let texto = "";
+    try { texto = (await d.pdfParse(buf)).text || ""; } catch { /* PDF de imagem/protegido: cai em "sem tipo" */ }
+    const tipos = db.prepare(`SELECT * FROM central_envio_tipos WHERE escritorio_id = ? AND ativo = 1 AND (setor = ? OR setor = 'crm') ORDER BY (setor = ?) DESC, ordem, id`).all(escId, raiz.setor, raiz.setor) as any[];
+    const tn = norm(texto);
+    const tipo = tipos.find((t) => {
+      const ps: string[] = JSON.parse(t.palavras_json || "[]").map(norm).filter(Boolean);
+      return ps.length && (t.exige_todas ? ps.every((p) => tn.includes(p)) : ps.some((p) => tn.includes(p)));
+    });
+    const { empresa, cnpjDetectado } = d.identificarEmpresa(d.mapaDocumentos(escId), texto, arq.name);
+    const { colaborador, cpf } = extrairColaboradorECpf(texto);
+    const competencia = rotuloCompetencia(d.extrairPeriodo(texto, arq.name));
+    const partes = [tipo?.nome || String(arq.name).replace(/\.pdf$/i, ""), colaborador, empresa?.nome, competencia].filter(Boolean);
+    const versao = ((db.prepare(`SELECT COUNT(*) n FROM central_envio_docs WHERE escritorio_id = ? AND drive_file_id = ?`).get(escId, arq.id) as any).n || 0) + 1;
+    const dir = path.join(d.uploadsDir, "central-envio", String(escId));
+    fs.mkdirSync(dir, { recursive: true });
+    const destino = path.join(dir, `${Date.now()}-${md5.slice(0, 12)}.pdf`);
+    fs.writeFileSync(destino, buf);
+    db.prepare(
+      `INSERT INTO central_envio_docs (escritorio_id, setor, user_id, pasta_id, drive_file_id, nome_arquivo, modificado_em, md5, tamanho, tipo_id, tipo_nome, empresa_id, cnpj, colaborador_nome, cpf, competencia, titulo, arquivo_path, versao)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(escId, raiz.setor, raiz.userId, raiz.pastaId, arq.id, arq.name, arq.modifiedTime, md5, buf.length, tipo?.id ?? null, tipo?.nome ?? null, empresa?.id ?? null, cnpjDetectado, colaborador, cpf, competencia, partes.join(" - "), destino, versao);
+    return true;
+  }
+
+  async function varrer(escId: number, opts: { dias?: number } = {}): Promise<{ novos: number }> {
+    const cred = credDe(escId);
+    if (!cred || emVarredura.has(escId)) return { novos: 0 };
+    if (!db.prepare(`SELECT 1 FROM central_envio_pastas WHERE escritorio_id = ?`).get(escId)) return { novos: 0 };
+    emVarredura.add(escId);
+    try {
+      const cfg = db.prepare(`SELECT ultima_varredura, dias_inicial FROM central_envio_config WHERE escritorio_id = ?`).get(escId) as any;
+      const inicioMs = opts.dias ? Date.now() - opts.dias * 86400000 : cfg?.ultima_varredura ? new Date(cfg.ultima_varredura).getTime() - 2 * 60_000 : Date.now() - (cfg?.dias_inicial || 30) * 86400000;
+      const desde = new Date(inicioMs).toISOString();
+      const inicioVarredura = new Date().toISOString();
+      const arvore = await montarArvore(escId, cred, !!opts.dias);
+      let novos = 0, pagina: string | undefined;
+      do {
+        const j = await driveGet(escId, cred, "files", { q: `mimeType='application/pdf' and trashed=false and modifiedTime > '${desde}'`, orderBy: "modifiedTime", pageSize: "100", fields: "nextPageToken,files(id,name,parents,modifiedTime,md5Checksum,size)", ...(pagina ? { pageToken: pagina } : {}) });
+        for (const a of j.files || []) {
+          let raiz = (a.parents || []).map((p: string) => arvore.get(p)).find(Boolean);
+          if (!raiz && (a.parents || []).length) { // pasta criada depois da última leitura da árvore
+            const nova = await montarArvore(escId, cred, true);
+            raiz = (a.parents || []).map((p: string) => nova.get(p)).find(Boolean);
+          }
+          if (!raiz) continue;
+          try { if (await processarArquivo(escId, cred, a, raiz)) novos++; } catch (e: any) { console.error(`[central-envio] ${a.name}:`, e.message); }
+        }
+        pagina = j.nextPageToken;
+      } while (pagina);
+      db.prepare(`UPDATE central_envio_config SET ultima_varredura = ?, ultimo_erro = NULL WHERE escritorio_id = ?`).run(inicioVarredura, escId);
+      return { novos };
+    } catch (e: any) {
+      db.prepare(`UPDATE central_envio_config SET ultimo_erro = ? WHERE escritorio_id = ?`).run(String(e.message).slice(0, 300), escId);
+      return { novos: 0 };
+    } finally { emVarredura.delete(escId); }
+  }
+  setInterval(async () => {
+    for (const r of db.prepare(`SELECT escritorio_id FROM central_envio_config WHERE sa_json_cifrado IS NOT NULL`).all() as any[]) await varrer(r.escritorio_id).catch(() => {});
+  }, 10_000).unref();
+
+  // ------------------------------------------------------------ rotas: conexão, pastas, tipos (admin)
+  app.get("/api/central-envio/config", d.blockCliente, d.requireAdmin, (req, res) => {
+    const c = db.prepare(`SELECT sa_email, ultimo_erro, ultima_varredura, dias_inicial, sa_json_cifrado IS NOT NULL as ok FROM central_envio_config WHERE escritorio_id = ?`).get((req as any).user.escritorioId) as any;
+    res.json({ conectado: !!c?.ok, email: c?.sa_email || null, ultimoErro: c?.ultimo_erro || null, ultimaVarredura: c?.ultima_varredura || null, diasInicial: c?.dias_inicial || 30 });
+  });
+  app.put("/api/central-envio/config", d.blockCliente, d.requireAdmin, async (req, res) => {
+    const esc = (req as any).user.escritorioId;
+    try {
+      let j: any;
+      try { j = JSON.parse(String(req.body?.json || "")); } catch { return res.status(400).json({ error: "O conteúdo colado não é um JSON válido. Cole o arquivo .json inteiro, do primeiro { ao último }." }); }
+      if (j.type !== "service_account" || !j.client_email || !j.private_key) return res.status(400).json({ error: "Esse JSON não é a chave de uma conta de serviço do Google (faltam client_email/private_key)." });
+      tokens.delete(esc);
+      await tokenDrive(esc, { client_email: j.client_email, private_key: j.private_key });
+      db.prepare(`INSERT INTO central_envio_config (escritorio_id, sa_json_cifrado, sa_email, ultimo_erro) VALUES (?, ?, ?, NULL)
+                  ON CONFLICT(escritorio_id) DO UPDATE SET sa_json_cifrado = excluded.sa_json_cifrado, sa_email = excluded.sa_email, ultimo_erro = NULL`).run(esc, d.cifrar(JSON.stringify(j)), j.client_email);
+      res.json({ ok: true, email: j.client_email });
+    } catch (e: any) { res.status(400).json({ error: e.message }); }
+  });
+  app.delete("/api/central-envio/config", d.blockCliente, d.requireAdmin, (req, res) => {
+    db.prepare(`UPDATE central_envio_config SET sa_json_cifrado = NULL, sa_email = NULL WHERE escritorio_id = ?`).run((req as any).user.escritorioId);
+    res.json({ ok: true });
+  });
+  // Seletor de pastas: sem `pai` lista as pastas compartilhadas com a conta de serviço; com `pai`, as subpastas dele.
+  app.get("/api/central-envio/drive/pastas", d.blockCliente, async (req, res) => {
+    const user = (req as any).user;
+    if (!SETORES_CENTRAL.some((s) => d.hasPermissao(user, s, "visualizar"))) return semAcesso(res);
+    const cred = credDe(user.escritorioId);
+    if (!cred) return res.status(400).json({ error: "A conexão com o Google Drive ainda não foi configurada (Configurações › Envio de documentos)." });
+    try {
+      const pai = String(req.query.pai || "");
+      const q = pai ? `'${pai.replace(/[^\w-]/g, "")}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false` : `sharedWithMe = true and mimeType='application/vnd.google-apps.folder' and trashed=false`;
+      const j = await driveGet(user.escritorioId, cred, "files", { q, orderBy: "name", pageSize: "200", fields: "files(id,name)" });
+      res.json({ itens: j.files || [] });
+    } catch (e: any) { res.status(502).json({ error: e.message }); }
+  });
+  app.get("/api/central-envio/pastas", d.blockCliente, (req, res) => {
+    const user = (req as any).user;
+    const rows = db.prepare(`SELECT p.*, u.nome as user_nome FROM central_envio_pastas p LEFT JOIN app_users u ON u.id = p.user_id WHERE p.escritorio_id = ? ORDER BY p.setor, u.nome`).all(user.escritorioId) as any[];
+    res.json({ itens: rows.filter((r) => d.hasPermissao(user, r.setor, "visualizar")) });
+  });
+  app.post("/api/central-envio/pastas", d.blockCliente, (req, res) => {
+    const user = (req as any).user;
+    const setor = setorValido(req.body?.setor);
+    const pastaId = String(req.body?.pastaId || "").replace(/[^\w-]/g, "");
+    if (!setor || !pastaId) return res.status(400).json({ error: "Escolha o setor e a pasta." });
+    // Cada um escolhe a SUA pasta (dentro do setor a que tem acesso); pasta geral do setor (sem colaborador) só o Administrador.
+    const paraMim = !!req.body?.minha;
+    if (paraMim ? !d.hasPermissao(user, setor, "visualizar") : user.perfil !== "Administrador") return semAcesso(res);
+    try {
+      db.prepare(`INSERT INTO central_envio_pastas (escritorio_id, setor, user_id, pasta_id, pasta_nome) VALUES (?, ?, ?, ?, ?)`).run(user.escritorioId, setor, paraMim ? user.id : null, pastaId, String(req.body?.pastaNome || "").slice(0, 200));
+    } catch { return res.status(409).json({ error: "Essa pasta já está cadastrada." }); }
+    arvores.delete(user.escritorioId);
+    void varrer(user.escritorioId, { dias: Number(req.body?.dias) || 30 });
+    res.json({ ok: true });
+  });
+  app.delete("/api/central-envio/pastas/:id", d.blockCliente, (req, res) => {
+    const user = (req as any).user;
+    const p = db.prepare(`SELECT * FROM central_envio_pastas WHERE id = ? AND escritorio_id = ?`).get(Number(req.params.id), user.escritorioId) as any;
+    if (!p) return res.status(404).json({ error: "Pasta não encontrada." });
+    if (user.perfil !== "Administrador" && p.user_id !== user.id) return semAcesso(res);
+    db.prepare(`DELETE FROM central_envio_pastas WHERE id = ?`).run(p.id);
+    arvores.delete(user.escritorioId);
+    res.json({ ok: true });
+  });
+
+  const TIPOS_PADRAO: Record<string, [string, string[], boolean][]> = {
+    dprh: [
+      ["Rescisão", ["TERMO DE RESCISÃO"], true], ["Recibo de Férias", ["RECIBO DE FÉRIAS"], true], ["Aviso de Férias", ["AVISO DE FÉRIAS"], true],
+      ["Adiantamento de Salário", ["ADIANTAMENTO"], true], ["Holerite", ["RECIBO DE PAGAMENTO DE SALÁRIO"], true],
+    ],
+  };
+  app.get("/api/central-envio/tipos", d.blockCliente, (req, res) => {
+    const user = (req as any).user;
+    if (!SETORES_CENTRAL.some((s) => d.hasPermissao(user, s, "visualizar"))) return semAcesso(res);
+    let rows = db.prepare(`SELECT * FROM central_envio_tipos WHERE escritorio_id = ? ORDER BY setor, ordem, id`).all(user.escritorioId) as any[];
+    if (!rows.length && user.perfil === "Administrador") { // primeira vez: sugestões iniciais (editáveis) pro DP/RH
+      let o = 0;
+      for (const [setor, lista] of Object.entries(TIPOS_PADRAO)) for (const [nome, palavras, todas] of lista)
+        db.prepare(`INSERT INTO central_envio_tipos (escritorio_id, setor, nome, palavras_json, exige_todas, ordem) VALUES (?, ?, ?, ?, ?, ?)`).run(user.escritorioId, setor, nome, JSON.stringify(palavras), todas ? 1 : 0, o++);
+      rows = db.prepare(`SELECT * FROM central_envio_tipos WHERE escritorio_id = ? ORDER BY setor, ordem, id`).all(user.escritorioId) as any[];
+    }
+    res.json({ itens: rows.map((r) => ({ id: r.id, setor: r.setor, nome: r.nome, palavras: JSON.parse(r.palavras_json || "[]"), exigeTodas: !!r.exige_todas, textoWhatsapp: r.texto_whatsapp || "", ativo: !!r.ativo })) });
+  });
+  const salvarTipo = (req: express.Request, res: express.Response, id?: number) => {
+    const user = (req as any).user;
+    const b = req.body || {};
+    const setor = setorValido(b.setor);
+    const nome = String(b.nome || "").trim();
+    const palavras = (Array.isArray(b.palavras) ? b.palavras : String(b.palavras || "").split("\n")).map((p: any) => String(p).trim()).filter(Boolean);
+    if (!setor || !nome || !palavras.length) return res.status(400).json({ error: "Informe o setor, o nome do tipo e pelo menos uma palavra que identifica o documento." });
+    if (id) db.prepare(`UPDATE central_envio_tipos SET setor=?, nome=?, palavras_json=?, exige_todas=?, texto_whatsapp=?, ativo=? WHERE id=? AND escritorio_id=?`).run(setor, nome, JSON.stringify(palavras), b.exigeTodas === false ? 0 : 1, String(b.textoWhatsapp || "").trim() || null, b.ativo === false ? 0 : 1, id, user.escritorioId);
+    else db.prepare(`INSERT INTO central_envio_tipos (escritorio_id, setor, nome, palavras_json, exige_todas, texto_whatsapp, ordem) VALUES (?, ?, ?, ?, ?, ?, ?)`).run(user.escritorioId, setor, nome, JSON.stringify(palavras), b.exigeTodas === false ? 0 : 1, String(b.textoWhatsapp || "").trim() || null, Date.now() % 100000);
+    res.json({ ok: true });
+  };
+  app.post("/api/central-envio/tipos", d.blockCliente, d.requireAdmin, (req, res) => salvarTipo(req, res));
+  app.put("/api/central-envio/tipos/:id", d.blockCliente, d.requireAdmin, (req, res) => salvarTipo(req, res, Number(req.params.id)));
+  app.delete("/api/central-envio/tipos/:id", d.blockCliente, d.requireAdmin, (req, res) => {
+    db.prepare(`DELETE FROM central_envio_tipos WHERE id = ? AND escritorio_id = ?`).run(Number(req.params.id), (req as any).user.escritorioId);
+    res.json({ ok: true });
+  });
+  // Testa uma amostra: vê que tipo/empresa/colaborador o site tiraria de um PDF enviado (sem gravar nada).
+  app.post("/api/central-envio/varrer", d.blockCliente, async (req, res) => {
+    const user = (req as any).user;
+    if (!SETORES_CENTRAL.some((s) => d.hasPermissao(user, s, "visualizar"))) return semAcesso(res);
+    const r = await varrer(user.escritorioId, { dias: Math.min(365, Math.max(1, Number(req.body?.dias) || 30)) });
+    res.json({ ok: true, ...r });
+  });
+
+  // ------------------------------------------------------------ rotas: pendentes / enviados / envio
+  const visiveis = (user: any, setor: any): string[] | null => {
+    if (setor && setorValido(setor)) return d.hasPermissao(user, setor, "visualizar") ? (setor === "crm" ? [...SETORES_CENTRAL] : [setor]) : null;
+    return null;
+  };
+  app.get("/api/central-envio/docs", d.blockCliente, (req, res) => {
+    const user = (req as any).user;
+    const setores = visiveis(user, req.query.setor);
+    if (!setores) return semAcesso(res);
+    const esc = user.escritorioId;
+    const busca = `%${String(req.query.busca || "").toLowerCase().replace(/[%_]/g, "")}%`;
+    const marcas = setores.map(() => "?").join(",");
+    if (req.query.aba === "enviados") {
+      const rows = db.prepare(
+        `SELECT * FROM central_envio_enviados WHERE escritorio_id = ? AND setor IN (${marcas}) AND (LOWER(COALESCE(empresa_nome,'')) LIKE ? OR LOWER(COALESCE(titulo,'')) LIKE ?)
+         ORDER BY id DESC LIMIT 300`
+      ).all(esc, ...setores, busca, busca) as any[];
+      const st = rows.length ? (db.prepare(`SELECT origem_id, status FROM whatsapp_mensagens WHERE origem_tabela = 'central_envio_enviados' AND origem_id IN (${rows.map(() => "?").join(",")})`).all(...rows.map((r) => r.id)) as any[]) : [];
+      const mapa = new Map(st.map((s) => [s.origem_id, s.status]));
+      return res.json({ itens: rows.map((r) => ({ ...r, entrega: r.canal === "whatsapp" ? mapa.get(r.id) || null : null })) });
+    }
+    const rows = db.prepare(
+      `SELECT x.*, e.nome as empresa_nome FROM central_envio_docs x LEFT JOIN empresas e ON e.id = x.empresa_id
+       WHERE x.escritorio_id = ? AND x.setor IN (${marcas}) AND x.status = 'pendente' AND (LOWER(x.titulo) LIKE ? OR LOWER(COALESCE(e.nome,'')) LIKE ?)
+       ORDER BY x.id DESC LIMIT 500`
+    ).all(esc, ...setores, busca, busca) as any[];
+    res.json({ itens: rows.map((r) => ({ id: r.id, setor: r.setor, titulo: r.titulo, tipoId: r.tipo_id, tipoNome: r.tipo_nome, empresaId: r.empresa_id, empresaNome: r.empresa_nome, colaborador: r.colaborador_nome, cpf: r.cpf, competencia: r.competencia, arquivo: r.nome_arquivo, versao: r.versao, modificadoEm: r.modificado_em, criadoEm: r.criado_em })) });
+  });
+  app.get("/api/central-envio/resumo", d.blockCliente, (req, res) => {
+    const user = (req as any).user;
+    const setores = visiveis(user, req.query.setor);
+    if (!setores) return semAcesso(res);
+    const n = (db.prepare(`SELECT COUNT(*) n FROM central_envio_docs WHERE escritorio_id = ? AND status = 'pendente' AND setor IN (${setores.map(() => "?").join(",")})`).get(user.escritorioId, ...setores) as any).n;
+    const c = db.prepare(`SELECT ultima_varredura, ultimo_erro, sa_json_cifrado IS NOT NULL as ok FROM central_envio_config WHERE escritorio_id = ?`).get(user.escritorioId) as any;
+    const pastas = (db.prepare(`SELECT id, setor, user_id, pasta_nome FROM central_envio_pastas WHERE escritorio_id = ? AND setor IN (${setores.map(() => "?").join(",")})`).all(user.escritorioId, ...setores) as any[]);
+    res.json({ pendentes: n, conectado: !!c?.ok, ultimaVarredura: c?.ultima_varredura || null, ultimoErro: c?.ultimo_erro || null, minhasPastas: pastas.filter((p) => p.user_id === user.id), pastasDoSetor: pastas.length });
+  });
+  const docDoUsuario = (req: express.Request, res: express.Response): any | null => {
+    const user = (req as any).user;
+    const doc = db.prepare(`SELECT * FROM central_envio_docs WHERE id = ? AND escritorio_id = ?`).get(Number(req.params.id), user.escritorioId) as any;
+    if (!doc || !(d.hasPermissao(user, doc.setor, "visualizar") || d.hasPermissao(user, "crm", "visualizar"))) { res.status(404).json({ error: "Documento não encontrado." }); return null; }
+    return doc;
+  };
+  app.get("/api/central-envio/docs/:id/pdf", d.blockCliente, (req, res) => {
+    const doc = docDoUsuario(req, res); if (!doc) return;
+    if (!fs.existsSync(doc.arquivo_path)) return res.status(404).json({ error: "Arquivo não encontrado no servidor." });
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename*=UTF-8''${encodeURIComponent(nomeArquivoSeguro(doc.titulo) + ".pdf")}`);
+    res.sendFile(path.resolve(doc.arquivo_path));
+  });
+  app.get("/api/central-envio/enviados/:id/pdf", d.blockCliente, (req, res) => {
+    const user = (req as any).user;
+    const e = db.prepare(`SELECT * FROM central_envio_enviados WHERE id = ? AND escritorio_id = ?`).get(Number(req.params.id), user.escritorioId) as any;
+    if (!e || !e.arquivo_path || !d.hasPermissao(user, e.setor, "visualizar")) return res.status(404).json({ error: "Arquivo não encontrado." });
+    if (!fs.existsSync(e.arquivo_path)) return res.status(404).json({ error: "Arquivo não encontrado no servidor." });
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename*=UTF-8''${encodeURIComponent(nomeArquivoSeguro(e.titulo) + ".pdf")}`);
+    res.sendFile(path.resolve(e.arquivo_path));
+  });
+  // Correção manual do que o site leu (tipo, empresa, colaborador, competência) — o título é refeito.
+  app.put("/api/central-envio/docs/:id", d.blockCliente, (req, res) => {
+    const doc = docDoUsuario(req, res); if (!doc) return;
+    const user = (req as any).user;
+    if (!d.hasPermissao(user, doc.setor, "postar")) return semAcesso(res);
+    const b = req.body || {};
+    const tipo = b.tipoId ? (db.prepare(`SELECT id, nome FROM central_envio_tipos WHERE id = ? AND escritorio_id = ?`).get(Number(b.tipoId), user.escritorioId) as any) : null;
+    const emp = b.empresaId ? (db.prepare(`SELECT id, nome FROM empresas WHERE id = ? AND escritorio_id = ?`).get(Number(b.empresaId), user.escritorioId) as any) : null;
+    const colab = b.colaborador !== undefined ? String(b.colaborador || "").trim() || null : doc.colaborador_nome;
+    const comp = b.competencia !== undefined ? String(b.competencia || "").trim() || null : doc.competencia;
+    const tipoNome = b.tipoId !== undefined ? tipo?.nome || null : doc.tipo_nome;
+    const empId = b.empresaId !== undefined ? emp?.id ?? null : doc.empresa_id;
+    const empNome = empId ? (emp?.nome || (db.prepare(`SELECT nome FROM empresas WHERE id = ?`).get(empId) as any)?.nome) : null;
+    const titulo = [tipoNome || String(doc.nome_arquivo).replace(/\.pdf$/i, ""), colab, empNome, comp].filter(Boolean).join(" - ");
+    db.prepare(`UPDATE central_envio_docs SET tipo_id=?, tipo_nome=?, empresa_id=?, colaborador_nome=?, competencia=?, titulo=? WHERE id=?`).run(b.tipoId !== undefined ? tipo?.id ?? null : doc.tipo_id, tipoNome, empId, colab, comp, titulo, doc.id);
+    res.json({ ok: true, titulo });
+  });
+  app.post("/api/central-envio/docs/:id/ignorar", d.blockCliente, (req, res) => {
+    const doc = docDoUsuario(req, res); if (!doc) return;
+    if (!d.hasPermissao((req as any).user, doc.setor, "postar")) return semAcesso(res);
+    db.prepare(`UPDATE central_envio_docs SET status = 'ignorado' WHERE id = ?`).run(doc.id);
+    res.json({ ok: true });
+  });
+  app.get("/api/central-envio/docs/:id/contatos", d.blockCliente, (req, res) => {
+    const doc = docDoUsuario(req, res); if (!doc) return;
+    if (!doc.empresa_id) return res.json({ whatsapp: [], email: [] });
+    const c = db.prepare(`SELECT nome, email, telefone, receber_emails, receber_whatsapp FROM empresa_contatos WHERE empresa_id = ?`).all(doc.empresa_id) as any[];
+    res.json({
+      whatsapp: c.filter((x) => x.telefone && x.receber_whatsapp).map((x) => ({ nome: x.nome, telefone: x.telefone })),
+      email: c.filter((x) => x.email && x.receber_emails).map((x) => ({ nome: x.nome, email: x.email })),
+    });
+  });
+  app.post("/api/central-envio/docs/:id/enviar", d.blockCliente, async (req, res) => {
+    const user = (req as any).user;
+    const doc = docDoUsuario(req, res); if (!doc) return;
+    if (!d.hasPermissao(user, doc.setor, "postar")) return semAcesso(res);
+    if (doc.status !== "pendente") return res.status(409).json({ error: "Esse documento já foi enviado ou dispensado." });
+    if (!doc.empresa_id) return res.status(400).json({ error: "Escolha a empresa deste documento antes de enviar." });
+    if (!fs.existsSync(doc.arquivo_path)) return res.status(404).json({ error: "O arquivo não está mais no servidor." });
+    const canais: string[] = Array.isArray(req.body?.canais) ? req.body.canais : [];
+    const telefones: string[] = (Array.isArray(req.body?.telefones) ? req.body.telefones : []).map(String);
+    const emails: string[] = (Array.isArray(req.body?.emails) ? req.body.emails : []).map(String);
+    if (!canais.length) return res.status(400).json({ error: "Escolha WhatsApp e/ou e-mail." });
+    const empresa = db.prepare(`SELECT nome FROM empresas WHERE id = ?`).get(doc.empresa_id) as any;
+    const permitidos = db.prepare(`SELECT email, telefone FROM empresa_contatos WHERE empresa_id = ?`).all(doc.empresa_id) as any[];
+    const pdf = fs.readFileSync(doc.arquivo_path);
+    const nomePdf = `${nomeArquivoSeguro(doc.titulo)}.pdf`;
+    const tipo = doc.tipo_id ? (db.prepare(`SELECT texto_whatsapp FROM central_envio_tipos WHERE id = ?`).get(doc.tipo_id) as any) : null;
+    const resultados: { canal: string; destino: string; ok: boolean; erro?: string }[] = [];
+    const registrar = (canal: string, destino: string, ok: boolean, erro?: string) => {
+      const info = db.prepare(
+        `INSERT INTO central_envio_enviados (doc_id, escritorio_id, empresa_id, empresa_nome, setor, tipo_nome, titulo, colaborador_nome, competencia, canal, destino, enviado_por, enviado_por_nome, status, erro, arquivo_path)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(doc.id, doc.escritorio_id, doc.empresa_id, empresa?.nome || null, doc.setor, doc.tipo_nome, doc.titulo, doc.colaborador_nome, doc.competencia, canal, destino, user.id, user.nome, ok ? "ok" : "erro", erro || null, doc.arquivo_path);
+      resultados.push({ canal, destino, ok, erro });
+      return Number(info.lastInsertRowid);
+    };
+    if (canais.includes("whatsapp")) {
+      for (const tel of telefones.filter((t) => permitidos.some((p) => p.telefone === t))) {
+        try {
+          const enviadoId = registrar("whatsapp", tel, true);
+          try {
+            await d.enviarWhatsapp(doc.escritorio_id, tel, [{ nome: "empresa_nome", valor: empresa?.nome || "" }, { nome: "descricao", valor: tipo?.texto_whatsapp || doc.titulo }], { nome: nomePdf, tipo: "application/pdf", buffer: pdf }, { tabela: "central_envio_enviados", id: enviadoId });
+          } catch (e: any) {
+            db.prepare(`UPDATE central_envio_enviados SET status = 'erro', erro = ? WHERE id = ?`).run(String(e.message).slice(0, 300), enviadoId);
+            resultados[resultados.length - 1] = { canal: "whatsapp", destino: tel, ok: false, erro: e.message };
+          }
+        } catch (e: any) { resultados.push({ canal: "whatsapp", destino: tel, ok: false, erro: e.message }); }
+      }
+    }
+    if (canais.includes("email")) {
+      const lista = emails.filter((e) => permitidos.some((p) => p.email === e));
+      if (lista.length) {
+        try {
+          await d.enviarEmail(doc.escritorio_id, { to: lista, subject: doc.titulo, text: `Olá!\n\nSegue em anexo: ${doc.titulo}.\n\nQualquer dúvida, é só responder este e-mail.\n\nSimples Contábeis`, attachments: [{ filename: nomePdf, content: pdf }] });
+          for (const e of lista) registrar("email", e, true);
+        } catch (e: any) { for (const x of lista) registrar("email", x, false, String(e.message).slice(0, 300)); }
+      }
+    }
+    if (!resultados.length) return res.status(400).json({ error: "Nenhum destinatário válido selecionado (só valem contatos cadastrados na empresa)." });
+    if (resultados.some((r) => r.ok)) db.prepare(`UPDATE central_envio_docs SET status = 'enviado' WHERE id = ?`).run(doc.id);
+    res.json({ ok: resultados.some((r) => r.ok), resultados });
+  });
+}

@@ -23,6 +23,7 @@ import { buscarViaOnvio } from "./onvio-sync";
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 import { registerWebmail } from "./webmail";
+import { registerCentralEnvio } from "./central-envio";
 import { createProxyMiddleware } from "http-proxy-middleware";
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 
@@ -3013,7 +3014,7 @@ app.put("/api/users/:id/permissoes", requireAdmin, (req, res) => {
   }
   res.json({ ok: true });
 });
-const CONFIG_ABAS_VALIDAS = ["dominio", "email", "whatsapp", "fgts-digital", "nfse-agendamento", "painel-tv", "atendimento", "assinatura-plataforma"];
+const CONFIG_ABAS_VALIDAS = ["dominio", "email", "whatsapp", "fgts-digital", "nfse-agendamento", "painel-tv", "envio-docs", "atendimento", "assinatura-plataforma"];
 app.get("/api/users/:id/config-abas", requireAdmin, (req, res) => {
   if (!pertenceAoEscritorio(req, Number(req.params.id))) return res.status(404).json({ error: "Usuário não encontrado." });
   const rows = sqlite.prepare(`SELECT aba FROM colaborador_config_abas WHERE user_id = ?`).all(Number(req.params.id)) as any[];
@@ -7171,6 +7172,22 @@ setInterval(() => {
 function getEmailExtratosConfig(escritorioId: number): any {
   return sqlite.prepare(`SELECT * FROM email_extratos_config WHERE escritorio_id = ?`).get(escritorioId) || {};
 }
+// Central de Envio de Documentos por setor (Google Drive → Pendentes → WhatsApp/e-mail → Enviados).
+registerCentralEnvio(app, {
+  sqlite,
+  blockCliente,
+  requireAdmin,
+  hasPermissao,
+  cifrar: nfse.cifrarTexto,
+  decifrar: nfse.decifrarTexto,
+  uploadsDir: UPLOADS_DIR,
+  enviarEmail,
+  enviarWhatsapp: whatsappEnviarArquivo,
+  mapaDocumentos: domRelMapaDocumentos,
+  identificarEmpresa: domRelIdentificarEmpresa,
+  extrairPeriodo: domRelExtrairPeriodo,
+  pdfParse: (buf) => require("pdf-parse")(buf),
+});
 // Módulo E-mail (webmail): reaproveita o e-mail + senha de app de Configurações › E-mail corporativo.
 registerWebmail(app, {
   blockCliente,
@@ -15153,7 +15170,7 @@ async function whatsappEnviarArquivo(
   paraNumero: string,
   variaveisCorpo: { nome: string; valor: string }[],
   arquivo: { nome: string; tipo: string; buffer: Buffer },
-  origem: { tabela: "envio_documentos" | "nfse_emissoes"; id: number }
+  origem: { tabela: "envio_documentos" | "nfse_emissoes" | "central_envio_enviados"; id: number }
 ): Promise<void> {
   const c = getWhatsappConfig(escritorioId);
   if (!c.ativo || !c.phone_number_id || !c.access_token_cifrado) {

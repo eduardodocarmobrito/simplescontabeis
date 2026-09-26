@@ -8116,6 +8116,7 @@ function pararCrmTimers(){
 async function pageCrm(){
   pararCrmTimers();
   pararAtendimentoTimers('crm');
+  centralEnvioParar();
   main().innerHTML = `
     <div><h1>CRM</h1><p class="subtitle">Atendimento geral do WhatsApp — todas as conversas, de todos os setores.</p></div>
     <div class="tabs" id="crmAbasPagina">
@@ -8123,6 +8124,7 @@ async function pageCrm(){
       <div class="tab ${CRM.aba==='whatsapp'?'active':''}" data-aba="whatsapp">WhatsApp</div>
       <div class="tab ${CRM.aba==='agenda'?'active':''}" data-aba="agenda">Agenda</div>
       <div class="tab ${CRM.aba==='tags'?'active':''}" data-aba="tags">Tags</div>
+      <div class="tab ${CRM.aba==='envio'?'active':''}" data-aba="envio">📤 Envio de documentos</div>
       <div class="tab ${CRM.aba==='meta'?'active':''}" data-aba="meta">WhatsApp oficial (Meta)</div>
     </div>
     <div id="crmConteudo"></div>
@@ -8133,6 +8135,7 @@ async function pageCrm(){
   else if(CRM.aba==='painel') await crmPainel(box);
   else if(CRM.aba==='agenda') await crmAgenda(box);
   else if(CRM.aba==='tags') await crmTags(box);
+  else if(CRM.aba==='envio') await centralEnvioMontar('crm', box);
   else await atendimentoMontar('crm', box);
 }
 // Aba Painel: visão geral do atendimento pro gestor (GET /api/atendimento/painel). Todo número com
@@ -9911,19 +9914,22 @@ const SETOR_ABA = { dprh:'whatsapp', contabil:'whatsapp', fiscal:'whatsapp' };
 async function pageSetor(escopo){
   const pg = SETOR_PAGINAS[escopo];
   pararAtendimentoTimers(escopo);
+  centralEnvioParar();
   main().innerHTML = `
     <div><h1>${esc(pg.titulo)}</h1><p class="subtitle">${esc(pg.subtitulo)}</p></div>
     <div class="tabs" id="setorAbas">
       <div class="tab ${SETOR_ABA[escopo]==='whatsapp'?'active':''}" data-aba="whatsapp">WhatsApp</div>
       <div class="tab ${SETOR_ABA[escopo]==='agenda'?'active':''}" data-aba="agenda">Agenda</div>
       <div class="tab ${SETOR_ABA[escopo]==='tags'?'active':''}" data-aba="tags">Tags</div>
+      <div class="tab ${SETOR_ABA[escopo]==='envio'?'active':''}" data-aba="envio">📤 Envio de documentos</div>
     </div>
     <div id="setorConteudo"></div>
   `;
   document.querySelectorAll('#setorAbas .tab').forEach(t=>t.addEventListener('click', ()=>{ SETOR_ABA[escopo]=t.dataset.aba; pageSetor(escopo); }));
   const box = document.getElementById('setorConteudo');
   // Agenda e Tags do setor: só dos clientes que o setor atendeu (o CRM tem a visão geral).
-  if(SETOR_ABA[escopo]==='agenda') await crmAgenda(box, escopo);
+  if(SETOR_ABA[escopo]==='envio') await centralEnvioMontar(escopo, box);
+  else if(SETOR_ABA[escopo]==='agenda') await crmAgenda(box, escopo);
   else if(SETOR_ABA[escopo]==='tags') await crmTags(box, escopo);
   else await atendimentoMontar(escopo, box);
 }
@@ -10359,6 +10365,236 @@ async function pageModulosPlataforma(){
   ligarSalvarModulos(main(), 'mc', '/super/modulos-clientes');
 }
 
+// ===================== Central de Envio de Documentos (por setor) =====================
+// Lê PDFs de pastas do Google Drive (conta de serviço, só leitura) → "Pendentes de envio" → clique manda por WhatsApp e/ou
+// e-mail → "Enviados" guarda o histórico por empresa, sem sobrescrever nada. Configuração em Configurações › Envio de documentos.
+const CENV = { sub:'pendentes', timer:null, agrupar:false };
+const CENV_SETORES = { crm:'CRM (todos os setores)', dprh:'DP/RH', contabil:'Contabilidade', fiscal:'Fiscal' };
+function centralEnvioParar(){ if(CENV.timer){ clearInterval(CENV.timer); CENV.timer=null; } }
+function cenvDataHora(iso){
+  if(!iso) return '—';
+  const dt = new Date(String(iso).includes('T')||String(iso).includes('Z') ? iso : String(iso).replace(' ','T')+'Z');
+  return isNaN(dt) ? '—' : dt.toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'});
+}
+async function centralEnvioMontar(escopo, box){
+  centralEnvioParar();
+  const podePostar = can(escopo,'postar');
+  box.innerHTML = `
+    <div id="cenvStatus" class="subtitle" style="margin:-4px 0 10px;"></div>
+    <div class="row" style="gap:8px; flex-wrap:wrap; align-items:flex-end; margin-bottom:10px;">
+      <div class="tabs" style="margin:0;" id="cenvSubs">
+        <div class="tab ${CENV.sub==='pendentes'?'active':''}" data-s="pendentes">Pendentes de envio <span id="cenvBadge"></span></div>
+        <div class="tab ${CENV.sub==='enviados'?'active':''}" data-s="enviados">Enviados</div>
+      </div>
+      <div class="field" style="width:280px; margin:0;"><input type="text" id="cenvBusca" placeholder="Buscar por empresa ou documento…" autocomplete="off"></div>
+      <button class="btn" id="cenvMinhaPasta">📁 Minha pasta</button>
+      <button class="btn" id="cenvLer" title="Lê a pasta agora (o site já confere sozinho a cada 10 segundos)">↻ Ler pasta agora</button>
+      <label class="checkbox-row hidden" id="cenvAgruparBox" style="margin:0;"><input type="checkbox" id="cenvAgrupar"> Agrupar por empresa</label>
+    </div>
+    <div id="cenvLista"></div>`;
+  const lista = document.getElementById('cenvLista');
+  const busca = document.getElementById('cenvBusca');
+  let tBusca = null;
+  document.querySelectorAll('#cenvSubs .tab').forEach(t=>t.addEventListener('click', ()=>{ CENV.sub=t.dataset.s; centralEnvioMontar(escopo, box); }));
+  busca.addEventListener('input', ()=>{ clearTimeout(tBusca); tBusca = setTimeout(carregar, 300); });
+  document.getElementById('cenvAgrupar').addEventListener('change', e=>{ CENV.agrupar = e.target.checked; carregar(); });
+  document.getElementById('cenvLer').addEventListener('click', async ()=>{
+    const b = document.getElementById('cenvLer'); b.disabled = true; b.textContent = 'Lendo…';
+    try{ const r = await api('/central-envio/varrer', { method:'POST', body:{ dias:30 } }); toast(r.novos ? `${r.novos} documento(s) novo(s).` : 'Nada de novo na pasta.','ok'); }
+    catch(e){ toast(e.message,'err'); }
+    b.disabled = false; b.textContent = '↻ Ler pasta agora'; carregar();
+  });
+  document.getElementById('cenvMinhaPasta').addEventListener('click', ()=>cenvPastaModal(escopo, true, ()=>centralEnvioMontar(escopo, box)));
+  async function carregar(){
+    if(!document.getElementById('cenvLista')){ centralEnvioParar(); return; }
+    let r, resumo;
+    try{ [resumo, r] = await Promise.all([api('/central-envio/resumo?setor='+escopo), api(`/central-envio/docs?setor=${escopo}&aba=${CENV.sub}&busca=${encodeURIComponent(busca.value)}`)]); }
+    catch(e){ lista.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
+    if(!document.getElementById('cenvLista')) return;
+    const st = document.getElementById('cenvStatus');
+    st.innerHTML = !resumo.conectado ? '⚠ O Google Drive ainda não foi conectado. O administrador configura em <b>Configurações › Envio de documentos</b>.'
+      : (resumo.ultimoErro ? `<span style="color:var(--debit)">⚠ ${esc(resumo.ultimoErro)}</span>` : `Última leitura das pastas: ${esc(cenvDataHora(resumo.ultimaVarredura))} · confere sozinho a cada 10 segundos${resumo.minhasPastas.length?` · sua pasta: <b>${esc(resumo.minhasPastas.map(p=>p.pasta_nome).join(', '))}</b>`:''}${resumo.pastasDoSetor?'':' · <b>nenhuma pasta configurada ainda</b>'}`);
+    document.getElementById('cenvBadge').innerHTML = resumo.pendentes ? `<span class="tag ok">${resumo.pendentes}</span>` : '';
+    document.getElementById('cenvAgruparBox').classList.toggle('hidden', CENV.sub!=='enviados');
+    if(CENV.sub==='pendentes') cenvDesenharPendentes(lista, r.itens, escopo, podePostar, carregar);
+    else cenvDesenharEnviados(lista, r.itens);
+  }
+  await carregar();
+  CENV.timer = setInterval(()=>{ if(!document.hidden && !document.getElementById('modalBg')?.classList.contains('open')) carregar(); }, 10000);
+}
+function cenvDesenharPendentes(box, itens, escopo, podePostar, recarregar){
+  if(!itens.length){ box.innerHTML = '<div class="card"><div class="empty-state">Nenhum documento pendente de envio. Coloque os PDFs na pasta do Drive — o site confere sozinho a cada 10 segundos.</div></div>'; return; }
+  box.innerHTML = `<div class="card" style="padding:0; overflow-x:auto;"><table class="data-table">
+    <thead><tr><th>Documento</th><th>Empresa</th><th>Colaborador</th><th>Competência</th><th>Lido em</th><th></th></tr></thead><tbody>
+    ${itens.map(i=>`<tr data-id="${i.id}">
+      <td><b>${esc(i.titulo)}</b><div style="margin-top:3px;">${i.tipoNome?`<span class="tag ok">${esc(i.tipoNome)}</span>`:'<span class="tag warn">Tipo não identificado</span>'}
+        ${i.versao>1?'<span class="tag muted" title="O arquivo foi alterado no Drive depois de lido">versão nova</span>':''}
+        ${escopo==='crm'?`<span class="tag muted">${esc(CENV_SETORES[i.setor]||i.setor)}</span>`:''}</div>
+        <div style="font-size:11.5px; color:var(--ink-soft);">${esc(i.arquivo)}</div></td>
+      <td>${i.empresaNome?esc(i.empresaNome):'<span class="tag bad">Sem empresa</span>'}</td>
+      <td>${esc(i.colaborador||'—')}</td><td>${esc(i.competencia||'—')}</td>
+      <td style="font-size:12px;">${esc(cenvDataHora(i.criadoEm))}</td>
+      <td style="text-align:right; white-space:nowrap;">
+        <a class="btn small" href="/api/central-envio/docs/${i.id}/pdf" target="_blank" rel="noopener">👁 Ver</a>
+        ${podePostar?`<button class="btn small" data-a="editar">✏ Corrigir</button><button class="btn small primary" data-a="enviar">Enviar</button><button class="btn small" data-a="ignorar" title="Não enviar este documento">Dispensar</button>`:''}
+      </td></tr>`).join('')}
+    </tbody></table></div>`;
+  box.querySelectorAll('[data-a]').forEach(b=>b.addEventListener('click', ()=>{
+    const id = Number(b.closest('tr').dataset.id); const doc = itens.find(x=>x.id===id);
+    if(b.dataset.a==='editar') cenvEditarModal(doc, escopo, recarregar);
+    else if(b.dataset.a==='enviar') cenvEnviarModal(doc, recarregar);
+    else if(confirmar(`Dispensar "${doc.titulo}"? Ele sai de Pendentes e não será enviado (o arquivo continua guardado).`)) api(`/central-envio/docs/${id}/ignorar`, { method:'POST' }).then(()=>{ toast('Dispensado.','ok'); recarregar(); }).catch(e=>toast(e.message,'err'));
+  }));
+}
+function cenvDesenharEnviados(box, itens){
+  if(!itens.length){ box.innerHTML = '<div class="card"><div class="empty-state">Nada enviado ainda. Tudo o que for enviado fica aqui, por empresa, para sempre.</div></div>'; return; }
+  const entrega = e => !e ? '' : ({ delivered:' · entregue', read:' · lido ✓✓', sent:' · enviado', failed:' · falhou na entrega' })[e] || '';
+  const linha = i=>`<tr><td style="font-size:12px; white-space:nowrap;">${esc(cenvDataHora(i.enviado_em))}</td>
+    <td>${esc(i.empresa_nome||'—')}</td><td><b>${esc(i.titulo||'')}</b>${i.tipo_nome?` <span class="tag muted">${esc(i.tipo_nome)}</span>`:''}</td>
+    <td>${i.canal==='whatsapp'?'WhatsApp':'E-mail'}<div style="font-size:11.5px; color:var(--ink-soft);">${esc(i.destino||'')}</div></td>
+    <td>${esc(i.enviado_por_nome||'—')}</td>
+    <td>${i.status==='ok'?`<span class="tag ok">Enviado${esc(entrega(i.entrega))}</span>`:`<span class="tag bad" title="${esc(i.erro||'')}">Erro</span>`}</td>
+    <td>${i.arquivo_path?`<a class="btn small" href="/api/central-envio/enviados/${i.id}/pdf" target="_blank" rel="noopener">👁</a>`:''}</td></tr>`;
+  let corpo;
+  if(CENV.agrupar){
+    const g = new Map();
+    itens.forEach(i=>{ const k = i.empresa_nome||'Sem empresa'; if(!g.has(k)) g.set(k,[]); g.get(k).push(i); });
+    corpo = [...g.entries()].sort((a,b)=>a[0].localeCompare(b[0],'pt-BR')).map(([k,l])=>`<tr><td colspan="7" style="background:var(--paper); font-weight:700;">${esc(k)} <span style="color:var(--ink-soft); font-weight:400;">· ${l.length} envio(s)</span></td></tr>${l.map(linha).join('')}`).join('');
+  } else corpo = itens.map(linha).join('');
+  box.innerHTML = `<div class="card" style="padding:0; overflow-x:auto;"><table class="data-table"><thead><tr><th>Quando</th><th>Empresa</th><th>Documento</th><th>Canal / destino</th><th>Enviado por</th><th>Situação</th><th></th></tr></thead><tbody>${corpo}</tbody></table></div>`;
+}
+async function cenvEditarModal(doc, escopo, recarregar){
+  let tipos = [], empresas = [];
+  try{ [{ itens:tipos }, { items:empresas }] = await Promise.all([api('/central-envio/tipos'), api('/empresas')]); }catch(e){ toast(e.message,'err'); return; }
+  tipos = tipos.filter(t=>t.ativo && (t.setor===doc.setor || t.setor==='crm'));
+  openModal(`<h3>Corrigir documento</h3><p class="subtitle">${esc(doc.arquivo)}</p>
+    <div class="field"><label>Tipo do documento</label><select id="cenvTipo"><option value="">— sem tipo —</option>${tipos.map(t=>`<option value="${t.id}" ${t.id===doc.tipoId?'selected':''}>${esc(t.nome)}</option>`).join('')}</select></div>
+    <div class="field"><label>Empresa</label>${comboSelectHtml('cenvEmpCombo','Digite para buscar a empresa…')}</div>
+    <div class="field"><label>Colaborador</label><input type="text" id="cenvColab" value="${esc(doc.colaborador||'')}"></div>
+    <div class="field"><label>Competência (MM/AAAA)</label><input type="text" id="cenvComp" value="${esc(doc.competencia||'')}" placeholder="09/2026"></div>
+    <div class="row" style="justify-content:flex-end; gap:8px; margin-top:12px;"><button class="btn" onclick="closeModal()">Cancelar</button><button class="btn primary" id="cenvSalvar">Salvar</button></div>`, '520px');
+  let empId = doc.empresaId || null;
+  setupComboSelect('cenvEmpCombo', empresas.filter(e=>e.ativo).map(e=>({ id:e.id, label:e.nome })), v=>{ empId = v ? Number(v) : null; });
+  if(empId){ const e = empresas.find(x=>x.id===empId); const root = document.getElementById('cenvEmpCombo'); if(e){ root.querySelector('.combo-input').value = e.nome; root.querySelector('.combo-value').value = e.id; } }
+  document.getElementById('cenvSalvar').addEventListener('click', async ()=>{
+    try{
+      await api('/central-envio/docs/'+doc.id, { method:'PUT', body:{ tipoId: document.getElementById('cenvTipo').value || null, empresaId: empId, colaborador: document.getElementById('cenvColab').value, competencia: document.getElementById('cenvComp').value } });
+      closeModal(); toast('Corrigido.','ok'); recarregar();
+    }catch(e){ toast(e.message,'err'); }
+  });
+}
+async function cenvEnviarModal(doc, recarregar){
+  if(!doc.empresaId){ toast('Escolha a empresa antes (botão Corrigir).','err'); return; }
+  let c;
+  try{ c = await api(`/central-envio/docs/${doc.id}/contatos`); }catch(e){ toast(e.message,'err'); return; }
+  openModal(`<h3>Enviar documento</h3>
+    <p style="margin:0 0 6px;"><b>${esc(doc.titulo)}</b></p><p class="subtitle" style="margin:0 0 10px;">Para: ${esc(doc.empresaNome||'')}</p>
+    <div style="font-weight:600; font-size:13px; margin:8px 0 4px;">WhatsApp</div>
+    ${c.whatsapp.length ? c.whatsapp.map((w,i)=>`<label class="checkbox-row"><input type="checkbox" class="cenvTel" value="${esc(w.telefone)}" checked> ${esc(w.nome||'')} — ${esc(w.telefone)}</label>`).join('') : '<div style="font-size:12.5px; color:var(--ink-soft);">Nenhum contato com WhatsApp ativo cadastrado nessa empresa.</div>'}
+    <div style="font-weight:600; font-size:13px; margin:12px 0 4px;">E-mail</div>
+    ${c.email.length ? c.email.map(w=>`<label class="checkbox-row"><input type="checkbox" class="cenvMail" value="${esc(w.email)}" checked> ${esc(w.nome||'')} — ${esc(w.email)}</label>`).join('') : '<div style="font-size:12.5px; color:var(--ink-soft);">Nenhum contato com e-mail ativo cadastrado nessa empresa.</div>'}
+    <p style="font-size:11.5px; color:var(--ink-soft); margin:12px 0 0;">Confira os destinatários antes de enviar. O envio fica registrado em <b>Enviados</b>.</p>
+    <div class="row" style="justify-content:flex-end; gap:8px; margin-top:12px;"><button class="btn" onclick="closeModal()">Cancelar</button><button class="btn primary" id="cenvEnviarOk">Enviar</button></div>`, '560px');
+  document.getElementById('cenvEnviarOk').addEventListener('click', async ()=>{
+    const telefones = [...document.querySelectorAll('.cenvTel:checked')].map(x=>x.value);
+    const emails = [...document.querySelectorAll('.cenvMail:checked')].map(x=>x.value);
+    const canais = [telefones.length?'whatsapp':null, emails.length?'email':null].filter(Boolean);
+    if(!canais.length){ toast('Marque pelo menos um destinatário.','err'); return; }
+    const b = document.getElementById('cenvEnviarOk'); b.disabled = true; b.textContent = 'Enviando…';
+    try{
+      const r = await api(`/central-envio/docs/${doc.id}/enviar`, { method:'POST', body:{ canais, telefones, emails } });
+      const falhas = r.resultados.filter(x=>!x.ok);
+      closeModal();
+      toast(falhas.length ? `Enviado, mas ${falhas.length} falhou: ${falhas[0].erro||''}` : 'Documento enviado.', falhas.length?'err':'ok');
+      recarregar();
+    }catch(e){ toast(e.message,'err'); b.disabled=false; b.textContent='Enviar'; }
+  });
+}
+// Seletor de pasta do Drive: começa nas pastas compartilhadas com a conta de serviço e desce nas subpastas.
+async function cenvPastaModal(setorInicial, minha, depois){
+  const pilha = [];
+  const setores = minha ? [setorInicial] : Object.keys(CENV_SETORES);
+  openModal(`<h3>${minha?'Minha pasta de documentos':'Adicionar pasta do Drive'}</h3>
+    ${minha?'':`<div class="field"><label>Setor</label><select id="cenvPastaSetor">${setores.map(s=>`<option value="${s}" ${s===setorInicial?'selected':''}>${esc(CENV_SETORES[s])}</option>`).join('')}</select></div>`}
+    <p class="subtitle" style="margin:0 0 6px;">Navegue até a pasta onde os PDFs são salvos e clique em <b>Escolher</b>. As subpastas dela também são lidas.</p>
+    <div id="cenvCaminho" style="font-size:12.5px; margin-bottom:6px;"></div>
+    <div id="cenvPastasLista" class="card" style="padding:0; max-height:320px; overflow-y:auto;"></div>
+    <div class="row" style="justify-content:flex-end; gap:8px; margin-top:12px;"><button class="btn" onclick="closeModal()">Fechar</button></div>`, '600px');
+  async function abrir(){
+    const atual = pilha[pilha.length-1];
+    document.getElementById('cenvCaminho').innerHTML = `<span class="link-discreto" id="cenvRaiz">Compartilhadas com o sistema</span>${pilha.map((p,i)=>` › <span class="link-discreto" data-i="${i}">${esc(p.name)}</span>`).join('')}`;
+    document.getElementById('cenvRaiz').addEventListener('click', ()=>{ pilha.length=0; abrir(); });
+    document.querySelectorAll('#cenvCaminho [data-i]').forEach(el=>el.addEventListener('click', ()=>{ pilha.length = Number(el.dataset.i)+1; abrir(); }));
+    const box = document.getElementById('cenvPastasLista'); box.innerHTML = '<div class="empty-state">Carregando…</div>';
+    let itens; try{ ({ itens } = await api('/central-envio/drive/pastas'+(atual?'?pai='+encodeURIComponent(atual.id):''))); }
+    catch(e){ box.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
+    box.innerHTML = (atual?`<div class="row" style="padding:8px 12px; justify-content:space-between; border-bottom:1px solid var(--rule); background:var(--accent-pale);"><span>📁 <b>${esc(atual.name)}</b></span><button class="btn small primary" data-escolher="${atual.id}">Escolher esta pasta</button></div>`:'')
+      + (itens.length ? itens.map(f=>`<div class="row" style="padding:8px 12px; justify-content:space-between; border-bottom:1px solid var(--rule-soft);"><span class="link-discreto" data-abrir="${f.id}" data-nome="${esc(f.name)}" style="text-decoration:none; cursor:pointer;">📁 ${esc(f.name)} ›</span><button class="btn small" data-escolher="${f.id}" data-nome="${esc(f.name)}">Escolher</button></div>`).join('') : '<div class="empty-state">Nenhuma subpasta aqui.</div>');
+    box.querySelectorAll('[data-abrir]').forEach(el=>el.addEventListener('click', ()=>{ pilha.push({ id:el.dataset.abrir, name:el.dataset.nome }); abrir(); }));
+    box.querySelectorAll('[data-escolher]').forEach(b=>b.addEventListener('click', async ()=>{
+      const nome = b.dataset.nome || (atual&&atual.name) || '';
+      try{
+        await api('/central-envio/pastas', { method:'POST', body:{ setor: minha ? setorInicial : document.getElementById('cenvPastaSetor').value, pastaId:b.dataset.escolher, pastaNome:nome, minha } });
+        closeModal(); toast('Pasta salva. Lendo os documentos…','ok'); if(depois) depois();
+      }catch(e){ toast(e.message,'err'); }
+    }));
+  }
+  abrir();
+}
+// ---- Configurações › Envio de documentos (administrador)
+async function renderCfgEnvioDocs(box){
+  const [cfg, pastas, tipos] = await Promise.all([api('/central-envio/config'), api('/central-envio/pastas'), api('/central-envio/tipos')]);
+  const setorNome = s=>CENV_SETORES[s]||s;
+  box.innerHTML = `
+    <div class="card"><h3 style="margin-top:0;">Conexão com o Google Drive</h3>
+      ${cfg.conectado?`<p>✅ Conectado como <b>${esc(cfg.email)}</b>${cfg.ultimaVarredura?` · última leitura ${esc(cenvDataHora(cfg.ultimaVarredura))}`:''}.${cfg.ultimoErro?`<br><span style="color:var(--debit)">⚠ ${esc(cfg.ultimoErro)}</span>`:''}</p>
+        <div class="row" style="gap:8px;"><button class="btn" id="cenvTrocarChave">Trocar a chave</button><button class="btn danger" id="cenvRemoverChave">Desconectar</button></div>`:''}
+      <div id="cenvChaveBox" class="${cfg.conectado?'hidden':''}">
+        <p class="subtitle" style="margin:0 0 6px;">Cole aqui o conteúdo do arquivo <b>.json</b> da conta de serviço do Google (baixado no Google Cloud). A pasta do Drive precisa estar compartilhada com o e-mail dela, como Leitor.</p>
+        <div class="field"><textarea id="cenvChave" rows="6" placeholder='{ "type": "service_account", ... }' style="font-family:monospace; font-size:12px;"></textarea></div>
+        <button class="btn primary" id="cenvSalvarChave">Salvar e testar</button>
+      </div></div>
+    <div class="card" style="margin-top:12px;"><h3 style="margin-top:0;">Pastas lidas</h3>
+      <p class="subtitle" style="margin:0 0 8px;">Cada setor lê a sua pasta (e as subpastas dela). Cada colaborador também pode escolher a sua em <b>📁 Minha pasta</b>, na aba Envio de documentos do setor.</p>
+      ${pastas.itens.length?`<table class="data-table"><thead><tr><th>Setor</th><th>Pasta</th><th>De quem</th><th></th></tr></thead><tbody>${pastas.itens.map(p=>`<tr><td>${esc(setorNome(p.setor))}</td><td>📁 ${esc(p.pasta_nome||p.pasta_id)}</td><td>${p.user_nome?esc(p.user_nome):'Setor inteiro'}</td><td style="text-align:right;"><button class="btn small danger" data-rm-pasta="${p.id}">Remover</button></td></tr>`).join('')}</tbody></table>`:'<div class="empty-state">Nenhuma pasta configurada.</div>'}
+      <div class="row" style="gap:8px; margin-top:10px;"><button class="btn primary" id="cenvAddPasta" ${cfg.conectado?'':'disabled'}>+ Adicionar pasta de um setor</button><button class="btn" id="cenvRelerTudo" ${cfg.conectado?'':'disabled'} title="Relê os PDFs modificados nos últimos 90 dias">↻ Reler últimos 90 dias</button></div></div>
+    <div class="card" style="margin-top:12px;"><h3 style="margin-top:0;">Tipos de documento (como o site reconhece cada PDF)</h3>
+      <p class="subtitle" style="margin:0 0 8px;">Para cada tipo, informe as palavras que aparecem no PDF (ex.: "TERMO DE RESCISÃO"). Acentos e maiúsculas não importam. Sem tipo reconhecido, o documento entra como "Tipo não identificado" e você corrige na mão.</p>
+      ${tipos.itens.length?`<table class="data-table"><thead><tr><th>Setor</th><th>Tipo</th><th>Palavras no PDF</th><th></th></tr></thead><tbody>${tipos.itens.map(t=>`<tr data-tid="${t.id}"><td>${esc(setorNome(t.setor))}</td><td><b>${esc(t.nome)}</b>${t.ativo?'':' <span class="tag muted">inativo</span>'}</td><td style="font-size:12.5px;">${esc(t.palavras.join(' · '))} <span style="color:var(--ink-soft)">(${t.exigeTodas?'todas':'qualquer uma'})</span></td><td style="text-align:right; white-space:nowrap;"><button class="btn small" data-a="edit">Editar</button> <button class="btn small danger" data-a="del">Excluir</button></td></tr>`).join('')}</tbody></table>`:'<div class="empty-state">Nenhum tipo cadastrado.</div>'}
+      <div style="margin-top:10px;"><button class="btn primary" id="cenvNovoTipo">+ Novo tipo</button></div></div>`;
+  const recarregar = ()=>renderCfgEnvioDocs(box);
+  const tc = document.getElementById('cenvTrocarChave'); if(tc) tc.addEventListener('click', ()=>document.getElementById('cenvChaveBox').classList.remove('hidden'));
+  const rc = document.getElementById('cenvRemoverChave'); if(rc) rc.addEventListener('click', async ()=>{ if(!confirmar('Desconectar do Google Drive? O site para de ler as pastas (o que já foi lido continua guardado).')) return; await api('/central-envio/config',{method:'DELETE'}); recarregar(); });
+  document.getElementById('cenvSalvarChave').addEventListener('click', async ()=>{
+    const b = document.getElementById('cenvSalvarChave'); b.disabled = true; b.textContent = 'Testando…';
+    try{ const r = await api('/central-envio/config', { method:'PUT', body:{ json: document.getElementById('cenvChave').value } }); toast('Conectado como '+r.email+'.','ok'); recarregar(); }
+    catch(e){ toast(e.message,'err'); b.disabled=false; b.textContent='Salvar e testar'; }
+  });
+  box.querySelectorAll('[data-rm-pasta]').forEach(b=>b.addEventListener('click', async ()=>{ if(!confirmar('Parar de ler essa pasta? Os documentos já lidos continuam guardados.')) return; await api('/central-envio/pastas/'+b.dataset.rmPasta,{method:'DELETE'}); recarregar(); }));
+  document.getElementById('cenvAddPasta').addEventListener('click', ()=>cenvPastaModal('dprh', false, recarregar));
+  document.getElementById('cenvRelerTudo').addEventListener('click', async ()=>{ try{ const r = await api('/central-envio/varrer',{method:'POST',body:{dias:90}}); toast(`${r.novos} documento(s) novo(s).`,'ok'); }catch(e){ toast(e.message,'err'); } });
+  function tipoModal(t){
+    openModal(`<h3>${t?'Editar tipo':'Novo tipo de documento'}</h3>
+      <div class="field"><label>Setor</label><select id="tpSetor">${Object.keys(CENV_SETORES).filter(s=>s!=='crm').concat(['crm']).map(s=>`<option value="${s}" ${t&&t.setor===s?'selected':''}>${esc(CENV_SETORES[s].replace(' (todos os setores)',' — vale para qualquer setor'))}</option>`).join('')}</select></div>
+      <div class="field"><label>Nome do tipo</label><input type="text" id="tpNome" value="${esc(t?t.nome:'')}" placeholder="Rescisão"></div>
+      <div class="field"><label>Palavras que aparecem no PDF (uma por linha)</label><textarea id="tpPalavras" rows="4" placeholder="TERMO DE RESCISÃO">${esc(t?t.palavras.join('\n'):'')}</textarea></div>
+      <label class="checkbox-row"><input type="checkbox" id="tpTodas" ${!t||t.exigeTodas?'checked':''}> Só reconhecer se aparecerem <b>todas</b> as palavras (desmarcado: basta uma)</label>
+      <div class="field" style="margin-top:8px;"><label>Texto do WhatsApp (opcional — vai no lugar do título na mensagem)</label><input type="text" id="tpTexto" value="${esc(t?t.textoWhatsapp:'')}" placeholder="Termo de rescisão do contrato de trabalho"></div>
+      ${t?`<label class="checkbox-row"><input type="checkbox" id="tpAtivo" ${t.ativo?'checked':''}> Ativo</label>`:''}
+      <div class="row" style="justify-content:flex-end; gap:8px; margin-top:12px;"><button class="btn" onclick="closeModal()">Cancelar</button><button class="btn primary" id="tpSalvar">Salvar</button></div>`, '560px');
+    document.getElementById('tpSalvar').addEventListener('click', async ()=>{
+      const body = { setor:document.getElementById('tpSetor').value, nome:document.getElementById('tpNome').value, palavras:document.getElementById('tpPalavras').value.split('\n'), exigeTodas:document.getElementById('tpTodas').checked, textoWhatsapp:document.getElementById('tpTexto').value, ativo: t? document.getElementById('tpAtivo').checked : true };
+      try{ await api('/central-envio/tipos'+(t?'/'+t.id:''), { method:t?'PUT':'POST', body }); closeModal(); recarregar(); }catch(e){ toast(e.message,'err'); }
+    });
+  }
+  document.getElementById('cenvNovoTipo').addEventListener('click', ()=>tipoModal(null));
+  box.querySelectorAll('[data-tid] [data-a]').forEach(b=>b.addEventListener('click', async ()=>{
+    const id = Number(b.closest('tr').dataset.tid); const t = tipos.itens.find(x=>x.id===id);
+    if(b.dataset.a==='edit') tipoModal(t);
+    else if(confirmar(`Excluir o tipo "${t.nome}"? Documentos já lidos não mudam.`)){ await api('/central-envio/tipos/'+id,{method:'DELETE'}); recarregar(); }
+  }));
+}
+
 // ===================== Configurações =====================
 let CFG_TAB='dominio';
 const CFG_ABAS_TODAS = [
@@ -10368,6 +10604,7 @@ const CFG_ABAS_TODAS = [
   { id:'fgts-digital', label:'FGTS Digital' },
   { id:'nfse-agendamento', label:'Emissão de NFS-e' },
   { id:'painel-tv', label:'Painel de TV' },
+  { id:'envio-docs', label:'Envio de documentos' },
   { id:'atendimento', label:'Atendimento' },
   { id:'assinatura-plataforma', label:'Assinatura da plataforma' },
 ];
@@ -10402,6 +10639,7 @@ async function renderCfgTab(){
     else if(CFG_TAB==='whatsapp') await renderCfgWhatsapp(box);
     else if(CFG_TAB==='fgts-digital') await renderCfgFgtsDigital(box);
     else if(CFG_TAB==='painel-tv') await renderCfgPainelTv(box);
+    else if(CFG_TAB==='envio-docs') await renderCfgEnvioDocs(box);
     else if(CFG_TAB==='atendimento') await renderCfgAtendimento(box);
     else await renderCfgEmail(box);
   }catch(e){
