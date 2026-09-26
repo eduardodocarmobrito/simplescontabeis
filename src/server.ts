@@ -15430,9 +15430,20 @@ app.post("/api/dominio-agent/sincronizar-resultado", requireDominioAgent, (req, 
   res.json({ ok: true });
 });
 
-app.listen(PORT, () => {
+// Erro solto (ex.: conexão IMAP/SMTP caindo no meio de uma chamada) não pode derrubar o servidor inteiro: registra e segue.
+process.on("unhandledRejection", (motivo: any) => console.error("[erro não tratado] promessa rejeitada:", motivo?.stack || motivo));
+process.on("uncaughtException", (e: any) => console.error("[erro não tratado] exceção:", e?.stack || e));
+const servidorHttp = app.listen(PORT, () => {
   console.log(`Simples Contábeis no ar na porta ${PORT}`);
   console.log(`Banco do site: ${path.join(DATA_DIR, "simplescontabeis.db")}`);
   console.log(emailConfigurado(1) ? "E-mail corporativo configurado (escritório 1)." : "AVISO: e-mail corporativo não configurado (Configurações > E-mail corporativo).");
   console.log(DOMINIO_AGENT_TOKEN ? "Token do agente do Domínio Web configurado." : "AVISO: DOMINIO_AGENT_TOKEN não definido — o agente do Domínio Web não vai conseguir se conectar.");
 });
+// Numa nova publicação o Railway manda SIGTERM pro container antigo: encerra limpo (código 0) em vez de ser morto no meio.
+for (const sinal of ["SIGTERM", "SIGINT"] as const) {
+  process.on(sinal, () => {
+    console.log(`[${sinal}] encerrando…`);
+    servidorHttp.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 8000).unref();
+  });
+}
