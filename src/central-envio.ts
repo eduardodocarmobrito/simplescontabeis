@@ -72,18 +72,19 @@ const NOME_VALOR = "([A-ZÀ-Ú][A-ZÀ-Ú'.]*(?:[ ]+[A-ZÀ-Ú'.]+){1,8})";
 export function extrairColaboradorECpf(texto: string): { colaborador: string | null; cpf: string | null } {
   const cpfRot = /CPF[\s\S]{0,60}?(\d{3}\.\d{3}\.\d{3}-\d{2})/.exec(texto);
   const cpf = (cpfRot && cpfRot[1]) || (/\b\d{3}\.\d{3}\.\d{3}-\d{2}\b/.exec(texto) || [])[0] || null;
-  const ruim = (v: string) => !/^[A-ZÀ-Ú][A-ZÀ-Ú'. ]{4,70}$/i.test(v) || v.trim().split(/\s+/).length < 2 || /LTDA|EMPRESA|CNPJ|EIRELI|\bME\b|ENDERE|BAIRRO|MUNIC/i.test(v);
+  // Nomes de pessoas vêm em MAIÚSCULAS nesses modelos; rótulos como "Número Carteira Profissional" (maiúscula/minúscula) não passam.
+  const ruim = (v: string) => !/^[A-ZÀ-Ú][A-ZÀ-Ú'. ]{4,70}$/.test(v) || v.trim().split(/\s+/).length < 2 || /LTDA|EMPRESA|CNPJ|EIRELI|\bME\b|ENDERE|BAIRRO|MUNIC|CARTEIRA|S[ÉE]RIE/.test(v);
   // 1) Modelos numerados (ex.: Termo de Rescisão: "11 Nome" seguido do nome, mesmo com a célula ao lado na mesma linha)
   const numerado = new RegExp("(?<!\\d)\\d{1,2}\\s*Nome(?!\\s*d[ao]\\s*(?:M|P|Soc|Empr))\\s*[:\\-–]?\\s*" + NOME_VALOR).exec(texto);
   if (numerado && !ruim(numerado[1].trim())) return { colaborador: numerado[1].replace(/\s+/g, " ").trim(), cpf };
   // 2) Rótulo no começo da linha: "Nome do Funcionário: FULANO", "Empregado", "Colaborador"…
   const linhas = texto.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   const rotulo = /^(?:\d{1,2}\s*)?(?:NOME(?:\s+DO)?(?:\s+(?:FUNCION[ÁA]RIO|EMPREGADO|COLABORADOR|TRABALHADOR))?(?!\s+D[AO]\s+(?:M[ÃA]E|PAI))|FUNCION[ÁA]RIO|EMPREGADO|COLABORADOR|TRABALHADOR)\s*[:\-–]?\s*(.*)$/i;
-  const limpar = (v: string) => v.replace(/^[\d\s.\-–:]+/, "").replace(/\s{2,}.*/, "").replace(/\s+(CPF|CTPS|PIS|CBO|ADMISS|CARGO|MATR).*$/i, "").trim();
+  const limpar = (v: string) => v.replace(/^[\d\s.\-–:]+/, "").replace(/\d.*$/, "").replace(/\s{2,}.*/, "").replace(/\s+(CPF|CTPS|PIS|CBO|ADMISS|CARGO|MATR).*$/i, "").trim();
   for (let i = 0; i < linhas.length; i++) {
     const m = rotulo.exec(linhas[i]);
     if (!m) continue;
-    for (const cand of [m[1], linhas[i + 1] || ""]) {
+    for (const cand of [m[1], linhas[i + 1] || "", linhas[i + 2] || "", linhas[i + 3] || "", linhas[i + 4] || ""]) {
       const v = limpar(cand || "");
       if (!ruim(v)) return { colaborador: v.replace(/\s+/g, " "), cpf };
     }
@@ -107,10 +108,18 @@ export function extrairDataAfastamento(texto: string): string | null {
   if (corrida) { const ds = corrida[1].match(dataRe) || []; if (ds.length) return ds[ds.length - 1]; }
   return primeira[0];
 }
-// "Competência: 08/2026", "Mês/Ano: 08/2026", "Referente a 08/2026" (folha mensal e afins)
+// "Competência: 08/2026", "Mês/Ano: 08/2026", "Referente a 08/2026" e "Agosto de 2026" (folha mensal); nas férias, o período de gozo.
+const MESES_NOME = ["janeiro", "fevereiro", "marco", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"];
 export function extrairCompetenciaMes(texto: string): string | null {
+  // O período de gozo é o único que vem com "= N Dias" (o de aquisição não); funciona mesmo com as datas coladas.
+  const gozo = /(\d{2}\/\d{2}\/\d{4})\s*A\s*(\d{2}\/\d{2}\/\d{4})\s*=\s*\d+\s*Dias/i.exec(texto) || /Gozo\s+d[ao]s?\s+F[ée]rias\s*[:\-]?\s*(\d{2}\/\d{2}\/\d{4})\s*A\s*(\d{2}\/\d{2}\/\d{4})/i.exec(texto);
+  if (gozo) return `${gozo[1]} a ${gozo[2]}`;
   const m = /(?:Compet[êe]ncia|M[êe]s\s*\/?\s*Ano|Refer[êe]ncia|Referente\s+a)\s*[:\-]?\s*(?:\d{2}\/)?(0[1-9]|1[0-2])\/(20\d{2})\b/i.exec(texto);
-  return m ? `${m[1]}/${m[2]}` : null;
+  if (m) return `${m[1]}/${m[2]}`;
+  // "Agosto de 2026" — mas não "08 de setembro de 2026" (data por extenso de um documento qualquer)
+  const nomes = /(?<!\d\s{0,3}de\s{0,3})(janeiro|fevereiro|mar[çc]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\s+de\s+(20\d{2})/i.exec(texto);
+  if (nomes) { const i = MESES_NOME.indexOf(nomes[1].toLowerCase().replace("ç", "c")); if (i >= 0) return `${String(i + 1).padStart(2, "0")}/${nomes[2]}`; }
+  return null;
 }
 const rotuloCompetencia = (p: { inicio: string; fim: string } | null): string | null => {
   const f = p?.fim || p?.inicio;
@@ -190,7 +199,17 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
       const ps: string[] = JSON.parse(t.palavras_json || "[]").map(norm).filter(Boolean);
       return ps.length && (t.exige_todas ? ps.every((p) => tn.includes(p)) : ps.some((p) => tn.includes(p)));
     });
-    const { empresa, cnpjDetectado } = d.identificarEmpresa(d.mapaDocumentos(escId), texto, nomeArquivo);
+    let { empresa, cnpjDetectado } = d.identificarEmpresa(d.mapaDocumentos(escId), texto, nomeArquivo);
+    // Documentos sem CNPJ (aviso/recibo de férias): acha a empresa pelo NOME dentro do texto (o mais longo que aparecer).
+    if (!empresa) {
+      const flat = norm(texto).replace(/\s+/g, " ");
+      let melhor: any = null;
+      for (const e of db.prepare(`SELECT id, nome FROM empresas WHERE escritorio_id = ? AND ativo = 1`).all(escId) as any[]) {
+        const n = norm(e.nome).replace(/\s+/g, " ").trim();
+        if (n.length >= 8 && flat.includes(n) && (!melhor || n.length > melhor.len)) melhor = { id: e.id, nome: e.nome, len: n.length };
+      }
+      if (melhor) empresa = { id: melhor.id, nome: melhor.nome };
+    }
     const { colaborador, cpf } = extrairColaboradorECpf(texto);
     const competencia = extrairDataAfastamento(texto) || extrairCompetenciaMes(texto) || rotuloCompetencia(d.extrairPeriodo(texto, nomeArquivo));
     const titulo = [tipo?.nome || String(nomeArquivo).replace(/\.pdf$/i, ""), colaborador, empresa?.nome, competencia].filter(Boolean).join(" - ");
@@ -487,6 +506,8 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     const a = await analisarPdf(doc.escritorio_id, doc.setor, fs.readFileSync(doc.arquivo_path), doc.nome_arquivo);
     db.prepare(`UPDATE central_envio_docs SET tipo_id=?, tipo_nome=?, empresa_id=?, cnpj=?, colaborador_nome=?, cpf=?, competencia=?, titulo=?, texto_amostra=? WHERE id=?`)
       .run(a.tipoId, a.tipoNome, a.empresaId, a.cnpj, a.colaborador, a.cpf, a.competencia, a.titulo, a.texto.slice(0, 8000), doc.id);
+    // Tipo que junta arquivos (Folha Mensal): ao reler, se agora dá pra saber empresa e competência, entra no PDF único.
+    if (a.agrupar && a.empresaId && a.competencia && /^\d{2}\/\d{4}$/.test(a.competencia)) await agruparNoPendente(doc.escritorio_id, doc.id, a, { setor: doc.setor, userId: doc.user_id, pastaId: doc.pasta_id });
     res.json({ ok: true, titulo: a.titulo });
   });
   app.post("/api/central-envio/docs/:id/ignorar", d.blockCliente, (req, res) => {
