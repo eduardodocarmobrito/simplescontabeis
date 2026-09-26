@@ -15430,9 +15430,35 @@ app.post("/api/dominio-agent/sincronizar-resultado", requireDominioAgent, (req, 
   res.json({ ok: true });
 });
 
+// Diagnóstico de quedas: a cada 15 s grava (em DATA_DIR) memória, uptime e os últimos erros soltos; no encerramento limpo marca
+// o motivo. Na próxima subida, se o registro anterior NÃO tem "encerramentoLimpo", o processo foi morto à força (falta de
+// memória, kill, crash) — e a última memória medida mostra se foi estouro. Consultável em /api/admin/diagnostico-servidor.
+const ARQ_VIDA = path.join(DATA_DIR, "processo-vida.json");
+let vidaAnterior: any = null;
+try { vidaAnterior = JSON.parse(fs.readFileSync(ARQ_VIDA, "utf8")); } catch { /* primeira subida */ }
+const vidaIniciouEm = new Date().toISOString();
+const ultimosErros: { em: string; tipo: string; msg: string }[] = [];
+function anotarErro(tipo: string, e: any) {
+  console.error(`[erro não tratado] ${tipo}:`, e?.stack || e);
+  ultimosErros.push({ em: new Date().toISOString(), tipo, msg: String(e?.stack || e).slice(0, 600) });
+  if (ultimosErros.length > 15) ultimosErros.shift();
+}
+function gravarVida(extra: Record<string, any> = {}) {
+  const m = process.memoryUsage();
+  try {
+    fs.writeFileSync(ARQ_VIDA, JSON.stringify({ pid: process.pid, iniciouEm: vidaIniciouEm, em: new Date().toISOString(), uptimeS: Math.round(process.uptime()), rssMB: Math.round(m.rss / 1048576), heapMB: Math.round(m.heapUsed / 1048576), erros: ultimosErros, encerramentoLimpo: false, ...extra }));
+  } catch { /* disco indisponível: só perde o diagnóstico */ }
+}
+console.log("[vida] processo anterior:", vidaAnterior ? JSON.stringify({ ...vidaAnterior, erros: (vidaAnterior.erros || []).length }) : "nenhum registro");
+gravarVida();
+setInterval(gravarVida, 15_000).unref();
+app.get("/api/admin/diagnostico-servidor", requireAdmin, (_req, res) => {
+  const m = process.memoryUsage();
+  res.json({ node: process.version, iniciouEm: vidaIniciouEm, uptimeS: Math.round(process.uptime()), rssMB: Math.round(m.rss / 1048576), heapMB: Math.round(m.heapUsed / 1048576), errosDesdeAsubida: ultimosErros, processoAnterior: vidaAnterior, leitura: vidaAnterior ? (vidaAnterior.encerramentoLimpo ? "O processo anterior encerrou limpo (ex.: nova publicação)." : "O processo anterior foi MORTO sem encerrar limpo (falta de memória, kill ou crash). Veja rssMB/erros dele.") : "sem registro anterior" });
+});
 // Erro solto (ex.: conexão IMAP/SMTP caindo no meio de uma chamada) não pode derrubar o servidor inteiro: registra e segue.
-process.on("unhandledRejection", (motivo: any) => console.error("[erro não tratado] promessa rejeitada:", motivo?.stack || motivo));
-process.on("uncaughtException", (e: any) => console.error("[erro não tratado] exceção:", e?.stack || e));
+process.on("unhandledRejection", (motivo: any) => anotarErro("promessa rejeitada", motivo));
+process.on("uncaughtException", (e: any) => anotarErro("exceção", e));
 const servidorHttp = app.listen(PORT, () => {
   console.log(`Simples Contábeis no ar na porta ${PORT}`);
   console.log(`Banco do site: ${path.join(DATA_DIR, "simplescontabeis.db")}`);
@@ -15443,6 +15469,7 @@ const servidorHttp = app.listen(PORT, () => {
 for (const sinal of ["SIGTERM", "SIGINT"] as const) {
   process.on(sinal, () => {
     console.log(`[${sinal}] encerrando…`);
+    gravarVida({ encerramentoLimpo: true, sinal });
     servidorHttp.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 8000).unref();
   });
