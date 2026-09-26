@@ -16,30 +16,48 @@ type Deps = {
   sqlite: any; // node:sqlite (contatos já usados + cadastro das empresas)
 };
 
-type Conexao = { client: ImapFlow; fila: Promise<any>; timer: NodeJS.Timeout | null };
-const conexoes = new Map<number, Conexao>();
+type Conexao = { client: ImapFlow; fila: Promise<any>; timer: NodeJS.Timeout | null; ultimo: number };
+const conexoes = new Map<string, Conexao>();
 
-async function comImap<T>(escritorioId: number, cred: { email: string; senha: string }, fn: (c: ImapFlow) => Promise<T>): Promise<T> {
-  let con = conexoes.get(escritorioId);
+// `canal`: 'principal' (lista/leitura/ações) e 'contatos' (sugestão de destinatário) usam conexões separadas — uma busca
+// pesada de sugestões nunca segura a lista de e-mails. Cada operação tem prazo (`limiteMs`): estourou, a conexão é
+// derrubada e a fila segue com uma conexão nova, em vez de ficar travada pra sempre.
+async function comImap<T>(escritorioId: number, cred: { email: string; senha: string }, fn: (c: ImapFlow) => Promise<T>, canal: "principal" | "contatos" = "principal", limiteMs = 30_000): Promise<T> {
+  const chave = `${escritorioId}:${canal}`;
+  let con = conexoes.get(chave);
   if (!con) {
-    con = { client: null as any, fila: Promise.resolve(), timer: null };
-    conexoes.set(escritorioId, con);
+    con = { client: null as any, fila: Promise.resolve(), timer: null, ultimo: 0 };
+    conexoes.set(chave, con);
   }
   const c = con;
   const rodar = async (): Promise<T> => {
     if (c.timer) { clearTimeout(c.timer); c.timer = null; }
+    // Conexão parada há um tempo: o Gmail pode ter fechado o socket sem avisar (fica "usable" mas não responde). Testa antes de usar.
+    if (c.client?.usable && Date.now() - c.ultimo > 20_000) {
+      const viva = await Promise.race([c.client.noop().then(() => true, () => false), new Promise<boolean>((r) => setTimeout(() => r(false), 5000))]);
+      if (!viva) { try { c.client.close(); } catch { /* ignora */ } }
+    }
     if (!c.client || !c.client.usable) {
       try { c.client?.close(); } catch { /* já fechada */ }
       c.client = new ImapFlow({ host: "imap.gmail.com", port: 993, secure: true, auth: { user: cred.email, pass: cred.senha }, logger: false });
       c.client.on("error", () => { /* erro de socket: a próxima chamada reconecta */ });
       await c.client.connect();
     }
+    const cli = c.client;
+    let prazo: NodeJS.Timeout | null = null;
     try {
-      return await fn(c.client);
+      return await Promise.race([
+        fn(cli),
+        new Promise<never>((_, rej) => {
+          prazo = setTimeout(() => { try { cli.close(); } catch { /* ignora */ } rej(new Error("O Gmail demorou demais para responder. Tente de novo.")); }, limiteMs);
+        }),
+      ]);
     } catch (e) {
       try { c.client.close(); } catch { /* ignora */ }
       throw e;
     } finally {
+      if (prazo) clearTimeout(prazo);
+      c.ultimo = Date.now();
       c.timer = setTimeout(() => { try { c.client?.logout().catch(() => {}); } catch { /* ignora */ } }, 90_000);
     }
   };
@@ -162,8 +180,8 @@ export function registerWebmail(app: express.Express, d: Deps) {
               } finally { lock.release(); }
             }
             return out;
-          }),
-          new Promise<{ email: string; nome: string; origem: "enviado" | "recebido" }[]>((r) => setTimeout(() => r([]), 7000)),
+          }, "contatos", 8000),
+          new Promise<{ email: string; nome: string; origem: "enviado" | "recebido" }[]>((r) => setTimeout(() => r([]), 9000)),
         ]);
         for (const e of encontrados) {
           const k = e.email.toLowerCase();
