@@ -2518,6 +2518,7 @@ async function renderEmpresasTab(){
       ${podePostar? `<button class="btn primary" id="btnNovaEmpresa">+ Nova empresa</button>`:''}
       ${podePostar? `<button class="btn" id="btnImportarDominio">Importar do Domínio Web (CSV)</button>`:''}
       ${podePostar? `<button class="btn" id="btnAtualizarEmpresas">↻ Atualizar Empresas</button>`:''}
+      ${STATE.user.perfil==='Administrador'? `<button class="btn" id="btnImportarCertificados">📥 Importar certificados (Drive)</button>`:''}
       <span id="atualizarEmpresasStatus" style="font-size:12px; color:var(--ink-soft);"></span>
     </div>` : `<p class="subtitle" style="margin-top:-6px;">Empresas inativadas não aparecem em Relatórios nem podem receber novos anexos — mas nada foi apagado.</p>`}
     <div class="field" style="max-width:360px; margin-bottom:10px;"><input type="text" id="empFiltro" placeholder="Buscar por nome ou CNPJ…" autocomplete="off"></div>
@@ -2579,6 +2580,108 @@ async function renderEmpresasTab(){
     document.getElementById('btnImportarDominio').addEventListener('click', importarDominioModal);
     document.getElementById('btnAtualizarEmpresas').addEventListener('click', atualizarEmpresasDoDominio);
   }
+  if(ativasTab && STATE.user.perfil==='Administrador') document.getElementById('btnImportarCertificados')?.addEventListener('click', importarCertificadosDriveModal);
+}
+// ---- Importação em lote de certificados digitais (.pfx/.p12) de uma pasta do Google Drive ----
+// Reaproveita a mesma conexão do Drive de Configurações › Envio de documentos. Senha vem do nome do arquivo,
+// entre parênteses; a empresa só é escolhida sozinha quando o CPF/CNPJ do nome bate com o cadastro.
+let CERT_DRIVE = { pastaId:null, pastaNome:null, itens:[] };
+function certImportPastaModal(depois){
+  const pilha = [];
+  openModal(`<h3>Escolher a pasta dos certificados</h3>
+    <p class="subtitle" style="margin:0 0 6px;">A pasta precisa estar compartilhada (Leitor) com <b>agente-drive@simples-contabeis.iam.gserviceaccount.com</b> — a mesma conta já usada no Envio de Documentos.</p>
+    <div id="cdCaminho" style="font-size:12.5px; margin-bottom:6px;"></div>
+    <div id="cdPastasLista" class="card" style="padding:0; max-height:340px; overflow-y:auto;"></div>
+    <div class="row" style="justify-content:flex-end; gap:8px; margin-top:12px;"><button class="btn" onclick="closeModal()">Fechar</button></div>`, '600px');
+  async function abrir(){
+    const atual = pilha[pilha.length-1];
+    document.getElementById('cdCaminho').innerHTML = `<span class="link-discreto" id="cdRaiz">Compartilhadas com o sistema</span>${pilha.map((p,i)=>` › <span class="link-discreto" data-i="${i}">${esc(p.name)}</span>`).join('')}`;
+    document.getElementById('cdRaiz').addEventListener('click', ()=>{ pilha.length=0; abrir(); });
+    document.querySelectorAll('#cdCaminho [data-i]').forEach(el=>el.addEventListener('click', ()=>{ pilha.length = Number(el.dataset.i)+1; abrir(); }));
+    const box = document.getElementById('cdPastasLista'); box.innerHTML = '<div class="empty-state">Carregando…</div>';
+    let itens; try{ ({ itens } = await api('/central-envio/drive/pastas'+(atual?'?pai='+encodeURIComponent(atual.id):''))); }
+    catch(e){ box.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
+    box.innerHTML = (atual?`<div class="row" style="padding:8px 12px; justify-content:space-between; border-bottom:1px solid var(--rule); background:var(--accent-pale);"><span>📁 <b>${esc(atual.name)}</b></span><button class="btn small primary" data-escolher="${atual.id}" data-nome="${esc(atual.name)}">Escolher esta pasta</button></div>`:'')
+      + (itens.length ? itens.map(f=>`<div class="row" style="padding:8px 12px; justify-content:space-between; border-bottom:1px solid var(--rule-soft);"><span class="link-discreto" data-abrir="${f.id}" data-nome="${esc(f.name)}" style="text-decoration:none; cursor:pointer;">📁 ${esc(f.name)} ›</span><button class="btn small" data-escolher="${f.id}" data-nome="${esc(f.name)}">Escolher</button></div>`).join('') : '<div class="empty-state">Nenhuma subpasta aqui.</div>');
+    box.querySelectorAll('[data-abrir]').forEach(el=>el.addEventListener('click', ()=>{ pilha.push({ id:el.dataset.abrir, name:el.dataset.nome }); abrir(); }));
+    box.querySelectorAll('[data-escolher]').forEach(b=>b.addEventListener('click', ()=>{ closeModal(); depois(b.dataset.escolher, b.dataset.nome); }));
+  }
+  abrir();
+}
+async function importarCertificadosDriveModal(){
+  certImportPastaModal(async (pastaId, pastaNome)=>{
+    openModal(`<h3>📥 Importar certificados — ${esc(pastaNome)}</h3><div class="empty-state">Lendo a pasta…</div>`, '1000px');
+    let r; try{ r = await api('/empresas/certificados-drive/candidatos?pastaId='+encodeURIComponent(pastaId)); }
+    catch(e){ openModal(`<h3>📥 Importar certificados</h3><div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div><div class="modal-actions"><button class="btn" onclick="closeModal()">Fechar</button></div>`); return; }
+    CERT_DRIVE = { pastaId, pastaNome, itens:r.itens };
+    certImportRenderizar();
+  });
+}
+function certImportRenderizar(){
+  const { pastaNome, itens } = CERT_DRIVE;
+  const auto = itens.filter(i=>i.automatico);
+  const pend = itens.filter(i=>!i.automatico);
+  openModal(`<h3>📥 Importar certificados — ${esc(pastaNome)}</h3>
+    <p class="subtitle" style="margin:0 0 8px;">${itens.length} arquivo(s) .pfx/.p12 encontrado(s) · <b>${auto.length}</b> reconhecido(s) com certeza (CNPJ/CPF do nome bate com o cadastro) · ${pend.length} precisam de conferência.</p>
+    <div class="tabs" id="cdTabs" style="margin-bottom:8px;">
+      <div class="tab active" data-t="auto">Prontos para importar (${auto.length})</div>
+      <div class="tab" data-t="pend">Precisam de conferência (${pend.length})</div>
+    </div>
+    <div id="cdCorpo"></div>
+    <div class="row" style="justify-content:flex-end; gap:8px; margin-top:12px;"><button class="btn" onclick="closeModal()">Fechar</button><button class="btn primary" id="cdImportar">Importar selecionados</button></div>`, '1080px');
+  let aba = 'auto';
+  document.querySelectorAll('#cdTabs .tab').forEach(t=>t.addEventListener('click', ()=>{ aba = t.dataset.t; document.querySelectorAll('#cdTabs .tab').forEach(x=>x.classList.toggle('active', x===t)); desenhar(); }));
+  function linha(i, idx){
+    const semSugestao = !i.automatico && !i.sugestoes.length;
+    return `<tr data-idx="${idx}">
+      <td><input type="checkbox" class="cdSel" ${i.automatico?'checked':''} ${i.jaTemCertificado?'':''}></td>
+      <td><b>${esc(i.fileName)}</b>${i.jaTemCertificado?' <span class="tag warn" title="Essa empresa já tem certificado cadastrado — importar substitui.">substitui</span>':''}</td>
+      <td>${i.automatico?`<span class="tag ok">${esc(i.empresaNome)}</span>`:`<div class="field" style="margin:0; min-width:220px;">${comboSelectHtml('cdEmp'+idx,'Escolher empresa…')}</div>`}</td>
+      <td><div class="field" style="margin:0; width:150px;"><input class="cdSenha" data-idx="${idx}" value="${esc(i.senha||'')}" placeholder="senha"></div></td>
+    </tr>`;
+  }
+  async function desenhar(){
+    const lista = aba==='auto' ? auto : pend;
+    const box = document.getElementById('cdCorpo');
+    if(!lista.length){ box.innerHTML = `<div class="empty-state">${aba==='auto'?'Nenhum reconhecido com certeza.':'Nenhum pendente — tudo já foi reconhecido. 🎉'}</div>`; return; }
+    box.innerHTML = `<div class="row" style="margin-bottom:6px;"><label class="checkbox-row" style="margin:0;"><input type="checkbox" id="cdSelTodos" checked> Selecionar todos desta aba</label></div>
+      <div class="card" style="padding:0; max-height:420px; overflow-y:auto;"><table class="data-table"><thead><tr><th style="width:26px;"></th><th>Arquivo</th><th>Empresa</th><th>Senha</th></tr></thead><tbody>
+      ${lista.map((i,k)=>linha(i, itens.indexOf(i))).join('')}</tbody></table></div>`;
+    document.getElementById('cdSelTodos').addEventListener('change', e=>box.querySelectorAll('.cdSel').forEach(cb=>cb.checked=e.target.checked));
+    if(aba==='pend'){
+      let empresas; try{ empresas = (await api('/empresas')).items.filter(e=>e.ativo).map(e=>({ id:e.id, label:e.nome+(e.cnpj?' · '+e.cnpj:'') })); }catch(e){ empresas = []; }
+      lista.forEach((i,k)=>{
+        const idx = itens.indexOf(i);
+        const el = document.getElementById('cdEmp'+idx); if(!el) return;
+        setupComboSelect('cdEmp'+idx, empresas, v=>{ i._empresaEscolhida = v?Number(v):null; });
+        if(i.sugestoes.length===1){ const s=i.sugestoes[0]; el.querySelector('.combo-input').value=s.nome; el.querySelector('.combo-value').value=s.id; i._empresaEscolhida=s.id; }
+      });
+    }
+  }
+  desenhar();
+  document.getElementById('cdImportar').addEventListener('click', async ()=>{
+    const b = document.getElementById('cdImportar');
+    const linhasSel = [...document.querySelectorAll('#cdCorpo tr[data-idx]')].filter(tr=>tr.querySelector('.cdSel').checked);
+    const payload = linhasSel.map(tr=>{
+      const idx = Number(tr.dataset.idx); const i = itens[idx];
+      const empresaId = i.automatico ? i.empresaId : i._empresaEscolhida;
+      const senha = tr.querySelector('.cdSenha').value;
+      return empresaId ? { fileId:i.fileId, fileName:i.fileName, empresaId, senha } : null;
+    }).filter(Boolean);
+    if(!payload.length){ toast('Marque pelo menos um arquivo com empresa escolhida.','err'); return; }
+    b.disabled = true; b.textContent = 'Importando…';
+    try{
+      const r = await api('/empresas/certificados-drive/importar', { method:'POST', body:{ pastaId:CERT_DRIVE.pastaId, itens:payload } });
+      const falhas = r.resultados.filter(x=>!x.ok);
+      toast(`${r.importados} certificado(s) importado(s)${falhas.length?` · ${falhas.length} falharam`:''}.`, falhas.length?'err':'ok');
+      if(falhas.length){
+        openModal(`<h3>Resultado da importação</h3><div class="card" style="padding:0; max-height:420px; overflow-y:auto;"><table class="data-table"><thead><tr><th>Arquivo</th><th>Empresa</th><th>Situação</th></tr></thead><tbody>
+          ${r.resultados.map(x=>`<tr><td>${esc(x.fileName)}</td><td>${esc(x.empresaNome||'—')}</td><td>${x.ok?'<span class="tag ok">Importado</span>':`<span class="tag bad" title="${esc(x.erro||'')}">${esc(x.erro||'Erro')}</span>`}</td></tr>`).join('')}
+          </tbody></table></div><div class="modal-actions"><button class="btn primary" onclick="closeModal()">Fechar</button></div>`, '900px');
+      } else closeModal();
+      renderEmpresasTab();
+    }catch(e){ toast(e.message,'err'); b.disabled=false; b.textContent='Importar selecionados'; }
+  });
 }
 // Aba "Pendências de documentos": empresas ativas sem certificado digital e/ou sem as 4 licenças mínimas.
 let EMP_PEND_FILTRO = 'todas';

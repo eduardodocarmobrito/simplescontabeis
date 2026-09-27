@@ -23,7 +23,7 @@ import { buscarViaOnvio } from "./onvio-sync";
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 import { registerWebmail } from "./webmail";
-import { registerCentralEnvio } from "./central-envio";
+import { registerCentralEnvio, credencialDriveDoEscritorio, driveGet, driveBaixar } from "./central-envio";
 import { createProxyMiddleware } from "http-proxy-middleware";
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 
@@ -6101,6 +6101,130 @@ app.post("/api/nfe/config", blockCliente, requirePermissao("nfe-busca", "postar"
     }
   }
   res.json({ ok: true, titular: info.titular, cnpjCertificado: info.cnpjCertificado, validadeAte: validadeIso, sync: resultadoSync });
+});
+// ---------- Importação em lote de certificados digitais (pasta do Google Drive) ----------
+// Reaproveita a MESMA conexão do Drive já configurada em Configurações › Envio de documentos — o admin só
+// precisa compartilhar mais essa pasta com a conta de serviço (agente-drive@...), sem configurar nada de novo.
+// Cada arquivo .pfx/.p12 vem nomeado "EMPRESA ... (senha) ... .pfx" (padrão visto nos certificados reais). O nome
+// costuma trazer o CNPJ/CPF colado; quando bate com o cadastro E a senha abre o arquivo, importa sozinho. Sem
+// bater com certeza, fica pendente pra conferência manual — nunca grava certificado em empresa "no chute".
+const normCert = (s: string) => String(s || "").toUpperCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^A-Z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+function certParseNomeArquivo(nomeArquivo: string): { senha: string | null; digitos: string | null; nomeBase: string } {
+  const semExt = nomeArquivo.replace(/\.(pfx|p12)$/i, "");
+  const parenteses = [...semExt.matchAll(/\(([^()]+)\)/g)];
+  const senha = parenteses.length ? parenteses[parenteses.length - 1][1].trim() : null;
+  const semSenha = parenteses.length ? semExt.slice(0, parenteses[parenteses.length - 1].index) : semExt;
+  const digitosAchados = [...semSenha.matchAll(/\d{11,14}/g)].map((m) => m[0]);
+  const digitos = digitosAchados.sort((a, b) => b.length - a.length)[0] || null;
+  const nomeBase = normCert(
+    semSenha
+      .replace(digitos || "", "")
+      .replace(/\bvence\b.*$/i, "")
+      .replace(/\d{1,2}[-/]\d{1,2}[-/]\d{2,4}/g, "")
+      .replace(/^\d+\.\s*/, "")
+  );
+  return { senha, digitos, nomeBase };
+}
+function certAchaEmpresa(escritorioId: number, digitos: string | null, nomeBase: string): { certo: any | null; sugestoes: any[] } {
+  const empresas = sqlite.prepare(`SELECT id, nome, cnpj, uf, ativo FROM empresas WHERE escritorio_id = ?`).all(escritorioId) as any[];
+  if (digitos) {
+    const bater = empresas.filter((e) => String(e.cnpj || "").replace(/\D/g, "") && String(e.cnpj || "").replace(/\D/g, "") === digitos);
+    if (bater.length === 1) return { certo: bater[0], sugestoes: bater };
+    if (bater.length > 1) return { certo: null, sugestoes: bater }; // duplicidade real na base — não decide sozinho
+  }
+  if (nomeBase.length >= 6) {
+    const candidatos = empresas
+      .map((e) => ({ e, n: normCert(e.nome) }))
+      .filter((x) => x.n.includes(nomeBase) || nomeBase.includes(x.n))
+      .sort((a, b) => Math.abs(a.n.length - nomeBase.length) - Math.abs(b.n.length - nomeBase.length));
+    if (candidatos.length) return { certo: null, sugestoes: candidatos.slice(0, 5).map((c) => c.e) }; // nome nunca decide sozinho, só sugere
+  }
+  return { certo: null, sugestoes: [] };
+}
+app.get("/api/empresas/certificados-drive/candidatos", blockCliente, requireAdmin, async (req, res) => {
+  const user = (req as any).user;
+  const cred = credencialDriveDoEscritorio(sqlite, nfse.decifrarTexto, user.escritorioId);
+  if (!cred) return res.status(400).json({ error: "Conecte o Google Drive primeiro em Configurações › Envio de documentos (mesma conexão é reaproveitada aqui)." });
+  const pastaId = String(req.query.pastaId || "").replace(/[^\w-]/g, "");
+  if (!pastaId) return res.status(400).json({ error: "Escolha a pasta." });
+  try {
+    const itens: any[] = [];
+    let pagina: string | undefined;
+    do {
+      const j: any = await driveGet(user.escritorioId, cred, "files", { q: `'${pastaId}' in parents and trashed=false`, orderBy: "name", pageSize: "200", fields: "nextPageToken,files(id,name,modifiedTime,size)", ...(pagina ? { pageToken: pagina } : {}) });
+      for (const f of j.files || []) if (/\.(pfx|p12)$/i.test(f.name)) itens.push(f);
+      pagina = j.nextPageToken;
+    } while (pagina);
+    const jaConfigurados = new Set((sqlite.prepare(`SELECT empresa_id FROM nfe_busca_config WHERE escritorio_id = ?`).all(user.escritorioId) as any[]).map((r) => r.empresa_id));
+    const resultado = itens.map((f) => {
+      const { senha, digitos, nomeBase } = certParseNomeArquivo(f.name);
+      const { certo, sugestoes } = certAchaEmpresa(user.escritorioId, digitos, nomeBase);
+      return {
+        fileId: f.id, fileName: f.name, modificadoEm: f.modifiedTime,
+        senha, digitos, automatico: !!certo,
+        empresaId: certo?.id ?? null, empresaNome: certo?.nome ?? null, empresaUf: certo?.uf ?? null,
+        sugestoes: sugestoes.map((e: any) => ({ id: e.id, nome: e.nome, cnpj: e.cnpj, uf: e.uf })),
+        jaTemCertificado: certo ? jaConfigurados.has(certo.id) : false,
+      };
+    });
+    res.json({ itens: resultado, automaticos: resultado.filter((r) => r.automatico).length, pendentes: resultado.filter((r) => !r.automatico).length });
+  } catch (e: any) {
+    res.status(502).json({ error: e.message });
+  }
+});
+function certSalvarNasDuasTelas(empId: number, user: any, buf: Buffer, senha: string, uf: string): { titular: string | null; cnpjCertificado: string | null; validadeAte: string | null } {
+  const info = nfse.lerCertificadoPfx(buf, senha);
+  const validadeIso = info.validadeAte ? info.validadeAte.toISOString() : null;
+  const senhaCifrada = nfse.cifrarTexto(senha);
+  const empresa = sqlite.prepare(`SELECT cnpj FROM empresas WHERE id = ?`).get(empId) as any;
+  // Busca de XML (nfe_busca_config) — é a que a tela Empresas › Configurações mostra.
+  const existenteBusca = sqlite.prepare(`SELECT * FROM nfe_busca_config WHERE empresa_id = ?`).get(empId) as any;
+  const caminhoBusca = nfse.salvarCertificadoCifrado(buf, `${empId}-busca.pfx`);
+  if (existenteBusca) {
+    nfse.excluirCertificadoDoDisco(existenteBusca.arquivo_path);
+    sqlite.prepare(`UPDATE nfe_busca_config SET cnpj=?, uf_autor=?, arquivo_path=?, senha_cifrada=?, titular=?, cnpj_certificado=?, validade_ate=?, criado_por=?, updated_at=datetime('now'), ultimo_erro=NULL WHERE empresa_id=?`)
+      .run(empresa?.cnpj || "", uf, caminhoBusca, senhaCifrada, info.titular, info.cnpjCertificado, validadeIso, user.id, empId);
+  } else {
+    sqlite.prepare(`INSERT INTO nfe_busca_config (empresa_id, escritorio_id, cnpj, uf_autor, ambiente, arquivo_path, senha_cifrada, titular, cnpj_certificado, validade_ate, criado_por) VALUES (?, ?, ?, ?, 'producao', ?, ?, ?, ?, ?, ?)`)
+      .run(empId, user.escritorioId, empresa?.cnpj || "", uf, caminhoBusca, senhaCifrada, info.titular, info.cnpjCertificado, validadeIso, user.id);
+  }
+  // NFS-e › Certificados — clone separado (arquivo próprio), pra bater com o pedido de gravar nas duas telas.
+  const existenteNfse = sqlite.prepare(`SELECT * FROM nfse_certificados WHERE empresa_id = ? AND escritorio_id = ?`).get(empId, user.escritorioId) as any;
+  const caminhoNfse = nfse.salvarCertificadoCifrado(buf, `${empId}-nfse.pfx`);
+  if (existenteNfse) {
+    nfse.excluirCertificadoDoDisco(existenteNfse.arquivo_path);
+    sqlite.prepare(`UPDATE nfse_certificados SET arquivo_path=?, senha_cifrada=?, titular=?, cnpj_certificado=?, validade_ate=?, criado_por=?, criado_em=datetime('now') WHERE id=?`)
+      .run(caminhoNfse, senhaCifrada, info.titular, info.cnpjCertificado, validadeIso, user.id, existenteNfse.id);
+  } else {
+    sqlite.prepare(`INSERT INTO nfse_certificados (empresa_id, arquivo_path, senha_cifrada, titular, cnpj_certificado, validade_ate, criado_por, escritorio_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(empId, caminhoNfse, senhaCifrada, info.titular, info.cnpjCertificado, validadeIso, user.id, user.escritorioId);
+  }
+  return { titular: info.titular, cnpjCertificado: info.cnpjCertificado, validadeAte: validadeIso };
+}
+app.post("/api/empresas/certificados-drive/importar", blockCliente, requireAdmin, async (req, res) => {
+  const user = (req as any).user;
+  const cred = credencialDriveDoEscritorio(sqlite, nfse.decifrarTexto, user.escritorioId);
+  if (!cred) return res.status(400).json({ error: "Conecte o Google Drive primeiro em Configurações › Envio de documentos." });
+  const itens: { fileId: string; fileName: string; empresaId: number; senha: string }[] = Array.isArray(req.body?.itens) ? req.body.itens.slice(0, 40) : [];
+  if (!itens.length) return res.status(400).json({ error: "Nada selecionado para importar." });
+  const resultados: any[] = [];
+  for (const it of itens) {
+    const empId = Number(it.empresaId);
+    const empresa = sqlite.prepare(`SELECT id, nome, uf FROM empresas WHERE id = ? AND escritorio_id = ?`).get(empId, user.escritorioId) as any;
+    if (!empresa) { resultados.push({ fileId: it.fileId, fileName: it.fileName, ok: false, erro: "Empresa não encontrada." }); continue; }
+    const uf = String(empresa.uf || "").toUpperCase().trim();
+    if (!nfe.UF_CODIGO_IBGE[uf]) { resultados.push({ fileId: it.fileId, fileName: it.fileName, ok: false, erro: `A empresa "${empresa.nome}" não tem UF cadastrada (ou é inválida) — preencha o UF dela antes.` }); continue; }
+    try {
+      const buf = await driveBaixar(user.escritorioId, cred, it.fileId);
+      const info = certSalvarNasDuasTelas(empId, user, buf, String(it.senha || ""), uf);
+      resultados.push({ fileId: it.fileId, fileName: it.fileName, ok: true, empresaNome: empresa.nome, ...info });
+    } catch (e: any) {
+      resultados.push({ fileId: it.fileId, fileName: it.fileName, ok: false, empresaNome: empresa.nome, erro: e.message });
+    }
+  }
+  // Importação em lote não dispara busca na Sefaz na hora (evita sobrecarregar com dezenas de chamadas de uma vez) —
+  // a rotina automática diária (busca_xml_nfe) pega essas empresas sozinha a partir de agora.
+  res.json({ ok: true, importados: resultados.filter((r) => r.ok).length, resultados });
 });
 // Reativar a busca de uma empresa que estava desligada também já sincroniza na hora, pelo mesmo
 // motivo do upload de certificado — senão ela só voltaria a ser buscada até 65min depois (rotina

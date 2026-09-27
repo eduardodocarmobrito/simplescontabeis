@@ -32,10 +32,10 @@ const norm = (s: string) => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g,
 const nomeArquivoSeguro = (s: string) => String(s || "documento").replace(/[\\/:*?"<>|\r\n]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 150);
 
 // ---------------------------------------------------------------- Google Drive (conta de serviço, somente leitura)
-type Cred = { client_email: string; private_key: string };
+export type Cred = { client_email: string; private_key: string };
 const tokens = new Map<number, { token: string; ate: number }>();
 
-async function tokenDrive(escId: number, cred: Cred): Promise<string> {
+export async function tokenDrive(escId: number, cred: Cred): Promise<string> {
   const c = tokens.get(escId);
   if (c && c.ate > Date.now() + 60_000) return c.token;
   const b64 = (o: any) => Buffer.from(JSON.stringify(o)).toString("base64url");
@@ -53,7 +53,7 @@ async function tokenDrive(escId: number, cred: Cred): Promise<string> {
   tokens.set(escId, { token: j.access_token, ate: Date.now() + (j.expires_in || 3600) * 1000 });
   return j.access_token;
 }
-async function driveGet(escId: number, cred: Cred, caminho: string, params: Record<string, string> = {}): Promise<any> {
+export async function driveGet(escId: number, cred: Cred, caminho: string, params: Record<string, string> = {}): Promise<any> {
   const t = await tokenDrive(escId, cred);
   const qs = new URLSearchParams({ supportsAllDrives: "true", includeItemsFromAllDrives: "true", ...params });
   const r = await fetch(`https://www.googleapis.com/drive/v3/${caminho}?${qs}`, { headers: { Authorization: `Bearer ${t}` }, signal: AbortSignal.timeout(30_000) });
@@ -61,7 +61,7 @@ async function driveGet(escId: number, cred: Cred, caminho: string, params: Reco
   if (!r.ok) throw new Error(`Google Drive: ${j.error?.message || r.status}`);
   return j;
 }
-async function driveBaixar(escId: number, cred: Cred, id: string): Promise<Buffer> {
+export async function driveBaixar(escId: number, cred: Cred, id: string): Promise<Buffer> {
   const t = await tokenDrive(escId, cred);
   const r = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?alt=media&supportsAllDrives=true`, { headers: { Authorization: `Bearer ${t}` }, signal: AbortSignal.timeout(60_000) });
   if (!r.ok) throw new Error(`Google Drive: não consegui baixar o arquivo (${r.status}).`);
@@ -160,6 +160,18 @@ const rotuloCompetencia = (p: { inicio: string; fim: string } | null): string | 
   return f && /^\d{4}-\d{2}/.test(f) ? `${f.slice(5, 7)}/${f.slice(0, 4)}` : null;
 };
 
+// Credencial do Drive já configurada em Configurações › Envio de documentos — reaproveitada por outras
+// ferramentas do sistema (ex.: importação de certificados digitais) pra não pedir uma segunda conexão.
+export function credencialDriveDoEscritorio(sqlite: any, decifrar: (s: string) => string, escritorioId: number): Cred | null {
+  const c = sqlite.prepare(`SELECT sa_json_cifrado FROM central_envio_config WHERE escritorio_id = ?`).get(escritorioId) as any;
+  if (!c?.sa_json_cifrado) return null;
+  try {
+    const j = JSON.parse(decifrar(c.sa_json_cifrado));
+    return j.client_email && j.private_key ? { client_email: j.client_email, private_key: j.private_key } : null;
+  } catch {
+    return null;
+  }
+}
 export function registerCentralEnvio(app: express.Express, d: Deps) {
   const db = d.sqlite;
   db.exec(`
