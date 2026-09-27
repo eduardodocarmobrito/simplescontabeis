@@ -1625,25 +1625,26 @@ function tvpPaginaHtml(blocos){
 // 2ª página: Painel de atendimento do CRM (mesmos números da aba 📊 Painel, período "hoje").
 // Envio de documentos por setor (TV e painel do CRM): monta os blocos a partir de /central-envio/painel
 const CENV_NOMES_SETOR = { dprh:'DP/RH', contabil:'Contabilidade', fiscal:'Fiscal' };
-function cenvBlocosPainel(ed){
+function cenvBlocosPainelTopo(ed){
   if(!ed) return [];
   const tot = k=>ed.setores.reduce((n,x)=>n+x[k],0);
-  return [
-    { secao:'Envio de documentos', cards:[
-      { titulo:'Pendentes de envio', valor:tot('pendentes'), sub:'aguardando você', cor:tot('pendentes')?TVP_COR_ATENCAO:null },
-      { titulo:'Agendados', valor:tot('agendados'), sub:'saem no horário programado' },
-      { titulo:'Enviados hoje', valor:tot('enviadosHoje'), sub:'documentos' },
-      { titulo:'Enviados no mês', valor:tot('enviadosMes'), sub:'documentos' },
-    ]},
-    { tabelas:[{ titulo:'Documentos por setor', colunas:['Setor','Pendentes','Agendados','Enviados hoje','Enviados no mês'], numericas:[1,2,3,4],
-      linhas: ed.setores.map(x=>[CENV_NOMES_SETOR[x.setor]||x.setor, x.pendentes, x.agendados, x.enviadosHoje, x.enviadosMes]), vazio:'Sem setores.' }] },
-  ];
+  return [{ secao:'Envio de documentos', cards:[
+    { titulo:'Pendentes de envio', valor:tot('pendentes'), sub:'aguardando você', cor:tot('pendentes')?TVP_COR_ATENCAO:null },
+    { titulo:'Agendados', valor:tot('agendados'), sub:'saem no horário programado' },
+    { titulo:'Enviados hoje', valor:tot('enviadosHoje'), sub:'documentos' },
+    { titulo:'Enviados no mês', valor:tot('enviadosMes'), sub:'documentos' },
+  ]}];
+}
+function cenvBlocoPainelRodape(ed){
+  if(!ed) return [];
+  return [{ secao:'Documentos por setor', tabelas:[{ titulo:'Documentos por setor', colunas:['Setor','Pendentes','Agendados','Enviados hoje','Enviados no mês'], numericas:[1,2,3,4],
+    linhas: ed.setores.map(x=>[CENV_NOMES_SETOR[x.setor]||x.setor, x.pendentes, x.agendados, x.enviadosHoje, x.enviadosMes]), vazio:'Sem setores.' }] }];
 }
 function tvpPaginaAtendimento(d, d7, rankMes, rankAno, envioDocs){
   const a = d.agora, p = d.periodoDados;
   const maior = a.aguardandoResposta[0]?.esperaMin;
   return tvpPaginaHtml([
-    ...cenvBlocosPainel(envioDocs),
+    ...cenvBlocosPainelTopo(envioDocs),
     { secao:'Atendimento WhatsApp · agora', cards:[
       { titulo:'Fila sem atendente', valor:a.fila.length, sub:a.fila.length?'espera média '+painelDurMin(a.esperaMediaFilaMin):'ninguém esperando', cor:a.fila.length?TVP_COR_ALERTA:null },
       { titulo:'Esperando resposta', valor:a.aguardandoResposta.length, sub:maior!=null?'maior espera '+painelDurMin(maior):'todos respondidos', cor:(maior||0)>=30?TVP_COR_ALERTA:null },
@@ -1689,6 +1690,7 @@ function tvpPaginaAtendimento(d, d7, rankMes, rankAno, envioDocs){
       { titulo:'Satisfação por setor', colunas:['Setor','Nota','Respostas'], numericas:[1,2],
         linhas:p.satisfacao.porSetor.map(x=>[x.nome, '⭐ '+String(x.media).replace('.',','), x.respostas]), vazio:'Nenhuma nota hoje.' },
     ]},
+    ...cenvBlocoPainelRodape(envioDocs),
   ]);
 }
 async function pagePainelTv(){
