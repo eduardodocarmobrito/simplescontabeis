@@ -10368,7 +10368,7 @@ async function pageModulosPlataforma(){
 // ===================== Central de Envio de Documentos (por setor) =====================
 // Lê PDFs de pastas do Google Drive (conta de serviço, só leitura) → "Pendentes de envio" → clique manda por WhatsApp e/ou
 // e-mail → "Enviados" guarda o histórico por empresa, sem sobrescrever nada. Configuração em Configurações › Envio de documentos.
-const CENV = { sub:'pendentes', timer:null, agrupar:false };
+const CENV = { sub:'pendentes', timer:null, agrupar:false, sel:new Set() };
 const CENV_SETORES = { crm:'CRM (todos os setores)', dprh:'DP/RH', contabil:'Contabilidade', fiscal:'Fiscal' };
 function centralEnvioParar(){ if(CENV.timer){ clearInterval(CENV.timer); CENV.timer=null; } }
 function cenvDataHora(iso){
@@ -10440,9 +10440,15 @@ async function centralEnvioMontar(escopo, box){
 }
 function cenvDesenharPendentes(box, itens, escopo, podePostar, recarregar, dispensados){
   if(!itens.length){ box.innerHTML = dispensados ? '<div class="card"><div class="empty-state">Nenhum documento dispensado.</div></div>' : '<div class="card"><div class="empty-state">Nenhum documento pendente de envio. Coloque os PDFs na pasta do Drive — o site confere sozinho a cada 10 segundos.</div></div>'; return; }
-  box.innerHTML = `<div class="card" style="padding:0; overflow-x:auto;"><table class="data-table">
-    <thead><tr><th>Documento</th><th>Empresa</th><th>Colaborador</th><th>Competência</th><th>Lido em</th><th></th></tr></thead><tbody>
-    ${itens.map(i=>`<tr data-id="${i.id}">
+  const selecionaveis = !dispensados && podePostar;
+  const nSel = itens.filter(i=>CENV.sel.has(i.id)).length;
+  box.innerHTML = `${selecionaveis?`<div class="row" style="gap:8px; align-items:center; margin-bottom:8px; flex-wrap:wrap;">
+      <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="cenvSelTodos" ${nSel && nSel===itens.length?'checked':''}> Selecionar todos (${itens.length})</label>
+      <button class="btn primary" id="cenvLote" ${nSel?'':'disabled'}>📨 Enviar / agendar selecionados${nSel?` (${nSel})`:''}</button>
+      <span style="font-size:12px; color:var(--ink-soft);">Cada documento vai para os contatos da sua própria empresa.</span></div>`:''}
+    <div class="card" style="padding:0; overflow-x:auto;"><table class="data-table">
+    <thead><tr>${selecionaveis?'<th style="width:28px;"></th>':''}<th>Documento</th><th>Empresa</th><th>Colaborador</th><th>Competência</th><th>Lido em</th><th></th></tr></thead><tbody>
+    ${itens.map(i=>`<tr data-id="${i.id}">${selecionaveis?`<td><input type="checkbox" class="cenvSel" ${CENV.sel.has(i.id)?'checked':''}></td>`:''}
       <td><b>${esc(i.titulo)}</b><div style="margin-top:3px;">${i.tipoNome?`<span class="tag ok">${esc(i.tipoNome)}</span>`:'<span class="tag warn">Tipo não identificado</span>'}
         ${i.grupo?`<span class="tag ok" title="Todos os PDFs desta empresa e competência juntos num arquivo só">📚 ${i.nArquivos} arquivo(s) juntos num PDF</span>`:''}
         ${i.versao>1?'<span class="tag muted" title="O arquivo foi alterado no Drive depois de lido">versão nova</span>':''}
@@ -10456,6 +10462,16 @@ function cenvDesenharPendentes(box, itens, escopo, podePostar, recarregar, dispe
         ${podePostar? (dispensados ? `<button class="btn small primary" data-a="restaurar">↩ Voltar para Pendentes</button>` : `${i.grupo?'':'<button class="btn small" data-a="editar">✏ Corrigir</button>'}<button class="btn small primary" data-a="enviar">Enviar</button><button class="btn small" data-a="ignorar" title="Não enviar este documento">Dispensar</button>`) : ''}
       </td></tr>`).join('')}
     </tbody></table></div>`;
+  if(selecionaveis){
+    const atualizarBotao = ()=>{
+      const n = itens.filter(i=>CENV.sel.has(i.id)).length; const btn = document.getElementById('cenvLote');
+      btn.disabled = !n; btn.textContent = '📨 Enviar / agendar selecionados'+(n?` (${n})`:'');
+      document.getElementById('cenvSelTodos').checked = n>0 && n===itens.length;
+    };
+    box.querySelectorAll('.cenvSel').forEach(cb=>cb.addEventListener('change', ()=>{ const id = Number(cb.closest('tr').dataset.id); if(cb.checked) CENV.sel.add(id); else CENV.sel.delete(id); atualizarBotao(); }));
+    document.getElementById('cenvSelTodos').addEventListener('change', e=>{ itens.forEach(i=>{ if(e.target.checked) CENV.sel.add(i.id); else CENV.sel.delete(i.id); }); box.querySelectorAll('.cenvSel').forEach(cb=>cb.checked = e.target.checked); atualizarBotao(); });
+    document.getElementById('cenvLote').addEventListener('click', ()=>cenvLoteModal(itens.filter(i=>CENV.sel.has(i.id)).map(i=>i.id), recarregar));
+  }
   box.querySelectorAll('[data-a]').forEach(b=>b.addEventListener('click', ()=>{
     const id = Number(b.closest('tr').dataset.id); const doc = itens.find(x=>x.id===id);
     if(b.dataset.a==='editar') cenvEditarModal(doc, escopo, recarregar);
@@ -10550,6 +10566,47 @@ async function cenvEditarModal(doc, escopo, recarregar){
       await api('/central-envio/docs/'+doc.id, { method:'PUT', body:{ tipoId: document.getElementById('cenvTipo').value || null, empresaId: empId, colaborador: document.getElementById('cenvColab').value, competencia: document.getElementById('cenvComp').value } });
       closeModal(); toast('Corrigido.','ok'); recarregar();
     }catch(e){ toast(e.message,'err'); }
+  });
+}
+// Envio/agendamento em lote: cada documento vai para os contatos ativos da PRÓPRIA empresa (WhatsApp e/ou e-mail).
+async function cenvLoteModal(ids, recarregar){
+  if(!ids.length) return;
+  let previa; try{ previa = (await api('/central-envio/lote/previa?ids='+ids.join(','))).itens; }catch(e){ toast(e.message,'err'); return; }
+  const validos = previa.filter(p=>!p.problema);
+  openModal(`<h3>Enviar ou agendar ${previa.length} documento(s)</h3>
+    <p class="subtitle" style="margin:0 0 8px;">Cada documento é enviado para os contatos cadastrados na <b>própria empresa</b>. Desmarque o que não deve sair.</p>
+    <div class="row" style="gap:16px; margin-bottom:6px;"><b style="font-size:13px;">Enviar por:</b>
+      <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="cenvLoteWa" checked> WhatsApp</label>
+      <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="cenvLoteMail" checked> E-mail</label></div>
+    <div class="card" style="padding:0; max-height:280px; overflow-y:auto;"><table class="data-table"><thead><tr><th style="width:28px;"></th><th>Documento</th><th>Empresa</th><th>Destinatários</th></tr></thead><tbody>
+    ${previa.map(p=>`<tr data-id="${p.id}"><td><input type="checkbox" class="cenvLoteDoc" ${p.problema?'disabled':'checked'}></td>
+      <td><b>${esc(p.titulo)}</b>${p.problema?`<div><span class="tag bad">${esc(p.problema)}</span></div>`:''}</td><td>${esc(p.empresaNome||'—')}</td>
+      <td style="font-size:12px;">${p.whatsapp.length?`WhatsApp: ${esc(p.whatsapp.map(w=>(w.nome?w.nome+' ':'')+w.telefone).join(', '))}<br>`:''}${p.email.length?`E-mail: ${esc(p.email.map(m=>m.email).join(', '))}`:''}</td></tr>`).join('')}
+    </tbody></table></div>
+    <div style="margin-top:12px; padding:10px 12px; border:1px solid var(--rule); border-radius:10px; background:var(--paper);">
+      <label class="checkbox-row" style="margin:0;"><input type="radio" name="cenvLoteQuando" value="agora"> Enviar <b>agora</b> (dispara em segundos, em segundo plano)</label>
+      <label class="checkbox-row" style="margin:4px 0 0;"><input type="radio" name="cenvLoteQuando" value="agendar" checked> <b>Agendar</b> tudo para:</label>
+      <div class="row" style="gap:8px; align-items:center; margin:6px 0 0 24px; flex-wrap:wrap;"><input type="datetime-local" id="cenvLoteDt" value="${cenvParaInputDt(cenvProximas8h())}" style="max-width:230px;"><button class="btn small" type="button" id="cenvLote8h">🕗 08:00 (próximo dia útil)</button></div></div>
+    <div class="row" style="justify-content:flex-end; gap:8px; margin-top:12px;"><button class="btn" onclick="closeModal()">Cancelar</button><button class="btn primary" id="cenvLoteOk" ${validos.length?'':'disabled'}>Confirmar</button></div>`, '760px');
+  document.getElementById('cenvLote8h').addEventListener('click', ()=>{ document.getElementById('cenvLoteDt').value = cenvParaInputDt(cenvProximas8h()); document.querySelector('input[name="cenvLoteQuando"][value="agendar"]').checked = true; });
+  document.getElementById('cenvLoteDt').addEventListener('focus', ()=>{ document.querySelector('input[name="cenvLoteQuando"][value="agendar"]').checked = true; });
+  document.getElementById('cenvLoteOk').addEventListener('click', async ()=>{
+    const canais = [document.getElementById('cenvLoteWa').checked?'whatsapp':null, document.getElementById('cenvLoteMail').checked?'email':null].filter(Boolean);
+    const marcados = [...document.querySelectorAll('.cenvLoteDoc:checked')].map(cb=>Number(cb.closest('tr').dataset.id));
+    if(!canais.length){ toast('Escolha WhatsApp e/ou e-mail.','err'); return; }
+    if(!marcados.length){ toast('Marque pelo menos um documento.','err'); return; }
+    const agendar = document.querySelector('input[name="cenvLoteQuando"]:checked').value==='agendar';
+    const quando = agendar ? new Date(document.getElementById('cenvLoteDt').value) : null;
+    if(agendar && isNaN(quando)){ toast('Escolha o dia e o horário.','err'); return; }
+    if(!agendar && !confirmar(`Enviar AGORA ${marcados.length} documento(s) para os clientes? (Fora do horário comercial, prefira agendar.)`)) return;
+    const b = document.getElementById('cenvLoteOk'); b.disabled = true; b.textContent = 'Processando…';
+    try{
+      const r = await api('/central-envio/lote', { method:'POST', body:{ ids:marcados, canais, quando: quando?quando.toISOString():null } });
+      marcados.forEach(id=>CENV.sel.delete(id));
+      closeModal();
+      toast(`${r.agendados} documento(s) ${r.imediato?'saindo agora':'agendados para '+quando.toLocaleString('pt-BR',{weekday:'short',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}${r.ignorados.length?` · ${r.ignorados.length} ignorado(s): ${r.ignorados[0].motivo}`:''}.`, r.ignorados.length?'err':'ok');
+      recarregar();
+    }catch(e){ toast(e.message,'err'); b.disabled=false; b.textContent='Confirmar'; }
   });
 }
 async function cenvEnviarModal(doc, recarregar, opc){

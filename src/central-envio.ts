@@ -692,9 +692,51 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     }
   }
   setInterval(async () => {
-    const vencidos = db.prepare(`SELECT * FROM central_envio_agendados WHERE status = 'agendado' AND agendado_para <= ? ORDER BY agendado_para, id LIMIT 20`).all(new Date().toISOString()) as any[];
-    for (const a of vencidos) await rodarAgendado(a).catch((e) => console.error("[central-envio] agendado:", e.message));
+    const vencidos = db.prepare(`SELECT * FROM central_envio_agendados WHERE status = 'agendado' AND agendado_para <= ? ORDER BY agendado_para, id LIMIT 40`).all(new Date().toISOString()) as any[];
+    for (const a of vencidos) { await rodarAgendado(a).catch((e) => console.error("[central-envio] agendado:", e.message)); await new Promise((r) => setTimeout(r, 300)); } // pausa curta: envio em massa sem estourar o limite do WhatsApp
   }, 15_000).unref();
+  // ------------------------------------------------------------ EM LOTE: vários documentos (de várias empresas) de uma vez
+  // Cada documento vai para os contatos ativos DA PRÓPRIA empresa. "Agora" também passa pelo agendador (dispara em segundos, em segundo plano).
+  const idsDoLote = (v: any): number[] => (Array.isArray(v) ? v : String(v || "").split(",")).map(Number).filter((n) => Number.isInteger(n) && n > 0).slice(0, 300);
+  app.get("/api/central-envio/lote/previa", d.blockCliente, (req, res) => {
+    const user = (req as any).user;
+    const ids = idsDoLote(req.query.ids);
+    if (!ids.length) return res.json({ itens: [] });
+    const rows = db.prepare(`SELECT x.*, e.nome as empresa_nome FROM central_envio_docs x LEFT JOIN empresas e ON e.id = x.empresa_id WHERE x.escritorio_id = ? AND x.id IN (${ids.map(() => "?").join(",")})`).all(user.escritorioId, ...ids) as any[];
+    res.json({ itens: rows.map((r) => {
+      const c = contatosDaEmpresa(r.empresa_id);
+      const problema = r.status !== "pendente" ? "Já foi enviado, agendado ou dispensado" : !d.hasPermissao(user, r.setor, "postar") ? "Sem permissão neste setor" : !r.empresa_id ? "Sem empresa — corrija antes" : !fs.existsSync(r.arquivo_path) ? "Arquivo não está no servidor" : !c.whatsapp.length && !c.email.length ? "Empresa sem contato de WhatsApp/e-mail ativo" : null;
+      return { id: r.id, titulo: r.titulo, empresaNome: r.empresa_nome, whatsapp: c.whatsapp, email: c.email, problema };
+    }) });
+  });
+  app.post("/api/central-envio/lote", d.blockCliente, (req, res) => {
+    const user = (req as any).user;
+    const ids = idsDoLote(req.body?.ids);
+    const canais: string[] = (Array.isArray(req.body?.canais) ? req.body.canais : []).filter((c: string) => c === "whatsapp" || c === "email");
+    if (!ids.length || !canais.length) return res.status(400).json({ error: "Escolha os documentos e pelo menos um canal (WhatsApp ou e-mail)." });
+    let quando = new Date(Date.now() - 1000); // agora
+    if (req.body?.quando) {
+      quando = new Date(String(req.body.quando));
+      if (isNaN(quando.getTime()) || quando.getTime() < Date.now() + 30_000) return res.status(400).json({ error: "Escolha um dia e horário no futuro." });
+    }
+    const ok: number[] = [];
+    const ignorados: { id: number; titulo: string; motivo: string }[] = [];
+    for (const id of ids) {
+      const doc = db.prepare(`SELECT * FROM central_envio_docs WHERE id = ? AND escritorio_id = ?`).get(id, user.escritorioId) as any;
+      if (!doc) continue;
+      const motivo = doc.status !== "pendente" ? "já foi enviado, agendado ou dispensado" : !d.hasPermissao(user, doc.setor, "postar") ? "sem permissão neste setor" : !doc.empresa_id ? "sem empresa" : !fs.existsSync(doc.arquivo_path) ? "arquivo não está no servidor" : null;
+      const c = contatosDaEmpresa(doc.empresa_id);
+      const telefones = canais.includes("whatsapp") ? c.whatsapp.map((w: any) => w.telefone) : [];
+      const emails = canais.includes("email") ? c.email.map((m: any) => m.email) : [];
+      const m2 = motivo || (!telefones.length && !emails.length ? "empresa sem contato ativo nos canais escolhidos" : null);
+      if (m2) { ignorados.push({ id, titulo: doc.titulo, motivo: m2 }); continue; }
+      db.prepare(`INSERT INTO central_envio_agendados (escritorio_id, doc_id, agendado_para, canais_json, telefones_json, emails_json, criado_por, criado_por_nome) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(doc.escritorio_id, doc.id, quando.toISOString(), JSON.stringify(canais), JSON.stringify(telefones), JSON.stringify(emails), user.id, user.nome);
+      db.prepare(`UPDATE central_envio_docs SET status = 'agendado' WHERE id = ?`).run(doc.id);
+      ok.push(id);
+    }
+    res.json({ ok: true, agendados: ok.length, ignorados, imediato: !req.body?.quando });
+  });
   app.post("/api/central-envio/docs/:id/agendar", d.blockCliente, (req, res) => {
     const user = (req as any).user;
     const doc = docDoUsuario(req, res); if (!doc) return;
