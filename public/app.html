@@ -10033,6 +10033,18 @@ async function atdAgendadasModal(S, conversaId){
   document.querySelectorAll('#modalBody [data-a]').forEach(b=>b.addEventListener('click', async ()=>{
     const id = Number(b.closest('tr').dataset.id); const it = r.itens.find(x=>x.id===id);
     try{
+      if(b.dataset.a==='editar'){
+        openModal(`<h3>Editar mensagem agendada</h3><p class="subtitle" style="margin:0 0 8px;">Para ${esc(it.cliente)} · envio em ${esc(cenvDataHora(it.quando))}</p>
+          <div class="field"><textarea id="agEditTexto" rows="5" maxlength="4000">${esc(it.texto)}</textarea></div>
+          <div class="row" style="justify-content:flex-end; gap:8px; margin-top:12px;"><button class="btn" onclick="closeModal()">Cancelar</button><button class="btn primary" id="agEditOk">Salvar</button></div>`, '520px');
+        document.getElementById('agEditOk').addEventListener('click', async ()=>{
+          const texto = document.getElementById('agEditTexto').value.trim();
+          if(!texto){ toast('A mensagem não pode ficar vazia.','err'); return; }
+          try{ await api(`/atendimento/agendadas/${id}`, { method:'PUT', body:{ texto } }); closeModal(); toast('Mensagem alterada.','ok'); atdAgendadasModal(S, conversaId); }
+          catch(e){ toast(e.message,'err'); }
+        });
+        return;
+      }
       if(b.dataset.a==='cancelar'){ if(!confirmar('Cancelar esta mensagem agendada?')) return; await api(`/atendimento/agendadas/${id}/cancelar`,{method:'POST'}); toast('Cancelada.','ok'); }
       else if(b.dataset.a==='agora'){ if(!confirmar('Enviar esta mensagem agora para '+it.cliente+'?')) return; await api(`/atendimento/agendadas/${id}/enviar-agora`,{method:'POST'}); toast('Enviada.','ok'); }
       else {
