@@ -13405,6 +13405,30 @@ function atendimentoSetorAtual(c: any, ultima: { setor: string | null; em: strin
 }
 // Mapa sufixo-de-11-dígitos → empresa, montado 1× por requisição (crmAcharEmpresaPorTelefone faz a
 // mesma comparação, mas relendo todos os telefones a cada chamada — aqui são N conversas de uma vez).
+// Todas as empresas cujo telefone (o da própria empresa ou de algum contato dela) bate com um número — uma
+// pessoa pode ser sócia/responsável por mais de uma empresa-cliente, então o mesmo telefone pode aparecer
+// em mais de um cadastro. Usada onde é preciso ESCOLHER entre elas (ficha, vincular); os lugares que só
+// precisam de UMA (estatísticas do painel, tag da IA) continuam usando atendimentoMapaEmpresasPorTelefone.
+function atendimentoEmpresasPorTelefoneTodas(escritorioId: number, telefone: string): { id: number; nome: string }[] {
+  const sufixo = crmSoDigitos(telefone).slice(-11);
+  if (sufixo.length < 10) return [];
+  const rows = sqlite
+    .prepare(
+      `SELECT DISTINCT e.id, e.nome FROM empresas e WHERE e.escritorio_id = ? AND e.telefone IS NOT NULL AND e.telefone != '' AND substr(replace(replace(replace(replace(e.telefone,'-',''),' ',''),'(',''),')',''), -11) = ?
+       UNION
+       SELECT DISTINCT e.id, e.nome FROM empresa_contatos ec JOIN empresas e ON e.id = ec.empresa_id WHERE e.escritorio_id = ? AND ec.telefone IS NOT NULL AND ec.telefone != '' AND substr(ec.telefone, -11) = ?
+       ORDER BY nome`
+    )
+    .all(escritorioId, sufixo, escritorioId, sufixo) as any[];
+  return rows;
+}
+app.get("/api/atendimento/telefone-empresas", blockCliente, (req, res) => {
+  const user = (req as any).user;
+  if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
+  const telefone = String(req.query.telefone || "");
+  if (!telefone) return res.json({ itens: [] });
+  res.json({ itens: atendimentoEmpresasPorTelefoneTodas(user.escritorioId, telefone) });
+});
 function atendimentoMapaEmpresasPorTelefone(escritorioId: number): Map<string, { id: number; nome: string }> {
   const rows = sqlite
     .prepare(

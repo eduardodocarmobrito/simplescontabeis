@@ -9200,7 +9200,9 @@ function atdRenderCabecalho(S){
   if(podePostar) botoes.push(`<button class="btn small" data-acao="nao-lida" title="Volta a conversa para não lida (fica em destaque na lista)">Marcar como não lida</button>`);
   if(podePostar && c.contatoId){
     if(c.empresaId) botoes.push(`<button class="btn small" data-acao="empresa">🏢 Empresa</button>`);
-    else if(can('empresas','editar')) botoes.push(`<button class="btn small primary" data-acao="vincular-empresa" title="Escolher a empresa deste contato e cadastrar o número nos contatos dela">🔗 Vincular empresa</button>`);
+    if(can('empresas','editar')) botoes.push(c.empresaId
+      ? `<button class="btn small" data-acao="vincular-empresa" title="Este número também pode ser sócio/responsável de outra empresa — vincula sem tirar da atual">🔗 Vincular a outra empresa</button>`
+      : `<button class="btn small primary" data-acao="vincular-empresa" title="Escolher a empresa deste contato e cadastrar o número nos contatos dela">🔗 Vincular empresa</button>`);
     botoes.push(`<button class="btn small" data-acao="compromisso">📅 Compromisso</button>`);
     botoes.push(`<button class="btn small" data-acao="tag">🏷 Tag</button>`);
   }
@@ -9299,7 +9301,7 @@ async function atdAcao(S, acao, botao){
     return;
   }
   if(acao==='tag') return atdTagsModal(S, c);
-  if(acao==='empresa') return atdFichaEmpresa(S, c);
+  if(acao==='empresa') return atdEscolherEmpresaModal(S, c);
   if(acao==='vincular-empresa') return atdVincularEmpresaModal(S, c);
   if(acao==='reabrir'){
     // Reabre pela mesma rota da Nova conversa (o deskcomm reabre a conversa fechada do contato), já com
@@ -9405,9 +9407,21 @@ async function atdVincularEmpresaModal(S, c){
     }catch(e){ toast(e.message,'err'); b.disabled=false; b.textContent='Vincular'; }
   });
 }
-async function atdFichaEmpresa(S, c){
+// O mesmo telefone pode estar em mais de uma empresa (sócio/responsável de vários clientes). Se houver
+// mais de uma, pergunta qual ficha abrir; com uma só (o caso comum), abre direto.
+async function atdEscolherEmpresaModal(S, c){
+  let itens;
+  try{ itens = (await api('/atendimento/telefone-empresas?telefone='+encodeURIComponent(c.telefone))).itens; }catch(e){ itens = []; }
+  if(itens.length<=1) return atdFichaEmpresa(S, c, c.empresaId);
+  openModal(`<h3>🏢 Este número está em ${itens.length} empresas</h3>
+    <div class="card" style="padding:0;">${itens.map(e=>`<div class="row" style="padding:10px 14px; justify-content:space-between; border-bottom:1px solid var(--rule-soft);"><b>${esc(e.nome)}</b><button class="btn small primary" data-emp="${e.id}">Ver ficha</button></div>`).join('')}</div>
+    <div class="row" style="justify-content:flex-end; margin-top:12px;"><button class="btn" onclick="closeModal()">Fechar</button></div>`, '520px');
+  document.querySelectorAll('#modalBody [data-emp]').forEach(b=>b.addEventListener('click', ()=>{ closeModal(); atdFichaEmpresa(S, c, Number(b.dataset.emp)); }));
+}
+async function atdFichaEmpresa(S, c, empresaId){
+  empresaId = empresaId || c.empresaId;
   let f;
-  try{ f = await api('/atendimento/empresa/'+c.empresaId+'/ficha'); }catch(e){ toast(e.message,'err'); return; }
+  try{ f = await api('/atendimento/empresa/'+empresaId+'/ficha'); }catch(e){ toast(e.message,'err'); return; }
   const e = f.empresa;
   const podeEnviar = can(S.cfg.modulo,'postar') && atdComposerHabilitado(S, c) && S.conversaAtiva===c.id;
   openDrawer(`
