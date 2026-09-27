@@ -10493,7 +10493,7 @@ function cenvDesenharAgendados(box, itens, podePostar, recarregar){
   box.innerHTML = `<div class="card" style="padding:0; overflow-x:auto;"><table class="data-table"><thead><tr><th>Envio programado para</th><th>Documento</th><th>Empresa</th><th>Destinatários</th><th>Programado por</th><th></th></tr></thead><tbody>
     ${itens.map(i=>`<tr data-id="${i.id}">
       <td style="white-space:nowrap;"><b>${esc(cenvDataHora(i.quando))}</b>${i.status==='erro'?`<div><span class="tag bad" title="${esc(i.erro||'')}">Falhou — voltou para Pendentes</span></div>`:''}</td>
-      <td><b>${esc(i.titulo)}</b>${i.tipoNome?` <span class="tag muted">${esc(i.tipoNome)}</span>`:''}</td>
+      <td><b>${esc(i.titulo)}</b>${i.tipoNome?` <span class="tag muted">${esc(i.tipoNome)}</span>`:''}${i.extras?` <span class="tag ok" title="Sai numa mensagem só, com todos os documentos desta empresa">📚 +${i.extras} documento(s) juntos</span>`:''}</td>
       <td>${esc(i.empresaNome||'—')}</td>
       <td style="font-size:12.5px;">${i.telefones.length?`WhatsApp: ${esc(i.telefones.join(', '))}<br>`:''}${i.emails.length?`E-mail: ${esc(i.emails.join(', '))}`:''}</td>
       <td>${esc(i.por||'—')}</td>
@@ -10583,6 +10583,7 @@ async function cenvLoteModal(ids, recarregar){
       <td><b>${esc(p.titulo)}</b>${p.problema?`<div><span class="tag bad">${esc(p.problema)}</span></div>`:''}</td><td>${esc(p.empresaNome||'—')}</td>
       <td style="font-size:12px;">${p.whatsapp.length?`WhatsApp: ${esc(p.whatsapp.map(w=>(w.nome?w.nome+' ':'')+w.telefone).join(', '))}<br>`:''}${p.email.length?`E-mail: ${esc(p.email.map(m=>m.email).join(', '))}`:''}</td></tr>`).join('')}
     </tbody></table></div>
+    <label class="checkbox-row" style="margin:10px 0 0;"><input type="checkbox" id="cenvPorEmpresa" checked> <span><b>Uma mensagem por empresa</b> — os documentos da mesma empresa saem juntos (e-mail único com todos os anexos; no WhatsApp, um PDF só com todos os arquivos)</span></label>
     <div style="margin-top:12px; padding:10px 12px; border:1px solid var(--rule); border-radius:10px; background:var(--paper);">
       <label class="checkbox-row" style="margin:0;"><input type="radio" name="cenvLoteQuando" value="agora"> Enviar <b>agora</b> (dispara em segundos, em segundo plano)</label>
       <label class="checkbox-row" style="margin:4px 0 0;"><input type="radio" name="cenvLoteQuando" value="agendar" checked> <b>Agendar</b> tudo para:</label>
@@ -10601,10 +10602,10 @@ async function cenvLoteModal(ids, recarregar){
     if(!agendar && !confirmar(`Enviar AGORA ${marcados.length} documento(s) para os clientes? (Fora do horário comercial, prefira agendar.)`)) return;
     const b = document.getElementById('cenvLoteOk'); b.disabled = true; b.textContent = 'Processando…';
     try{
-      const r = await api('/central-envio/lote', { method:'POST', body:{ ids:marcados, canais, quando: quando?quando.toISOString():null } });
+      const r = await api('/central-envio/lote', { method:'POST', body:{ ids:marcados, canais, porEmpresa: document.getElementById('cenvPorEmpresa').checked, quando: quando?quando.toISOString():null } });
       marcados.forEach(id=>CENV.sel.delete(id));
       closeModal();
-      toast(`${r.agendados} documento(s) ${r.imediato?'saindo agora':'agendados para '+quando.toLocaleString('pt-BR',{weekday:'short',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}${r.ignorados.length?` · ${r.ignorados.length} ignorado(s): ${r.ignorados[0].motivo}`:''}.`, r.ignorados.length?'err':'ok');
+      toast(`${r.agendados} documento(s) em ${r.envios} envio(s) ${r.imediato?'saindo agora':'agendados para '+quando.toLocaleString('pt-BR',{weekday:'short',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}${r.ignorados.length?` · ${r.ignorados.length} ignorado(s): ${r.ignorados[0].motivo}`:''}.`, r.ignorados.length?'err':'ok');
       recarregar();
     }catch(e){ toast(e.message,'err'); b.disabled=false; b.textContent='Confirmar'; }
   });
