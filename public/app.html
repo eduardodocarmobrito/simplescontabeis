@@ -1623,10 +1623,27 @@ function tvpPaginaHtml(blocos){
   }).join('');
 }
 // 2ª página: Painel de atendimento do CRM (mesmos números da aba 📊 Painel, período "hoje").
-function tvpPaginaAtendimento(d, d7, rankMes, rankAno){
+// Envio de documentos por setor (TV e painel do CRM): monta os blocos a partir de /central-envio/painel
+const CENV_NOMES_SETOR = { dprh:'DP/RH', contabil:'Contabilidade', fiscal:'Fiscal' };
+function cenvBlocosPainel(ed){
+  if(!ed) return [];
+  const tot = k=>ed.setores.reduce((n,x)=>n+x[k],0);
+  return [
+    { secao:'Envio de documentos', cards:[
+      { titulo:'Pendentes de envio', valor:tot('pendentes'), sub:'aguardando você', cor:tot('pendentes')?TVP_COR_ATENCAO:null },
+      { titulo:'Agendados', valor:tot('agendados'), sub:'saem no horário programado' },
+      { titulo:'Enviados hoje', valor:tot('enviadosHoje'), sub:'documentos' },
+      { titulo:'Enviados no mês', valor:tot('enviadosMes'), sub:'documentos' },
+    ]},
+    { tabelas:[{ titulo:'Documentos por setor', colunas:['Setor','Pendentes','Agendados','Enviados hoje','Enviados no mês'], numericas:[1,2,3,4],
+      linhas: ed.setores.map(x=>[CENV_NOMES_SETOR[x.setor]||x.setor, x.pendentes, x.agendados, x.enviadosHoje, x.enviadosMes]), vazio:'Sem setores.' }] },
+  ];
+}
+function tvpPaginaAtendimento(d, d7, rankMes, rankAno, envioDocs){
   const a = d.agora, p = d.periodoDados;
   const maior = a.aguardandoResposta[0]?.esperaMin;
   return tvpPaginaHtml([
+    ...cenvBlocosPainel(envioDocs),
     { secao:'Atendimento WhatsApp · agora', cards:[
       { titulo:'Fila sem atendente', valor:a.fila.length, sub:a.fila.length?'espera média '+painelDurMin(a.esperaMediaFilaMin):'ninguém esperando', cor:a.fila.length?TVP_COR_ALERTA:null },
       { titulo:'Esperando resposta', valor:a.aguardandoResposta.length, sub:maior!=null?'maior espera '+painelDurMin(maior):'todos respondidos', cor:(maior||0)>=30?TVP_COR_ALERTA:null },
@@ -1813,7 +1830,7 @@ async function pagePainelTv(){
     box.style.zoom = 1;
     const disponivel = corpo.clientHeight - 8;
     const alturaReal = box.scrollHeight;
-    if(alturaReal > disponivel) box.style.zoom = Math.max(0.4, disponivel/alturaReal).toFixed(3);
+    if(alturaReal > disponivel) box.style.zoom = Math.max(0.22, disponivel/alturaReal).toFixed(3);
   }
   function mostrarPagina(i){
     PAG.atual = i;
@@ -1826,9 +1843,10 @@ async function pagePainelTv(){
     const box = document.getElementById('tvpPag2');
     if(!box) return;
     try{
-      const [d, d7, rm, ra] = await Promise.all([api('/atendimento/painel?periodo=hoje'), api('/atendimento/painel?periodo=7d').catch(()=>null),
-        api('/atendimento/painel/ranking-empresas?periodo=mes').catch(()=>null), api('/atendimento/painel/ranking-empresas?periodo=ano').catch(()=>null)]);
-      box.innerHTML = tvpPaginaAtendimento(d, d7, rm&&rm.ranking, ra&&ra.ranking);
+      const [d, d7, rm, ra, ed] = await Promise.all([api('/atendimento/painel?periodo=hoje'), api('/atendimento/painel?periodo=7d').catch(()=>null),
+        api('/atendimento/painel/ranking-empresas?periodo=mes').catch(()=>null), api('/atendimento/painel/ranking-empresas?periodo=ano').catch(()=>null),
+        api('/central-envio/painel').catch(()=>null)]);
+      box.innerHTML = tvpPaginaAtendimento(d, d7, rm&&rm.ranking, ra&&ra.ranking, ed);
       PAG.pag2ok = true;
     }catch(e){
       // Sem dados (ex.: deskcomm fora): a TV fica só na 1ª página em vez de girar pra uma tela vazia.
@@ -8239,6 +8257,31 @@ async function painelConfigModal(box){
     }catch(e){ toast(e.message,'err'); }
   });
 }
+// Bloco "Envio de documentos" do Painel do CRM: números por setor; clicar no número abre a lista de quem são.
+async function cenvPainelMonitor(box){
+  let ed; try{ ed = await api('/central-envio/painel'); }catch(e){ return; }
+  if(!document.body.contains(box)) return;
+  let el = document.getElementById('painelEnvioDocs');
+  if(!el){ el = document.createElement('div'); el.id = 'painelEnvioDocs'; box.appendChild(el); }
+  const soma = k=>ed.setores.reduce((n,x)=>n+x[k],0);
+  const cel = (n, lista, setor, cor)=>`<td class="num" style="text-align:right;">${n?`<a href="#" class="link-discreto" data-cenv="${lista}" data-setor="${setor}" style="font-weight:700; ${cor?'color:'+cor:''}">${n}</a>`:'<span style="color:var(--ink-soft);">0</span>'}</td>`;
+  el.innerHTML = `<div class="card" style="padding:0; margin:12px 0;"><div class="painel-cab">📤 Envio de documentos por setor <span style="font-weight:400; font-size:12px; color:var(--ink-soft);">· clique no número para ver quem são</span></div>
+    <table class="data-table"><thead><tr><th>Setor</th><th style="text-align:right;">Pendentes de envio</th><th style="text-align:right;">Agendados</th><th style="text-align:right;">Enviados hoje</th><th style="text-align:right;">Enviados no mês</th></tr></thead><tbody>
+    ${ed.setores.map(x=>`<tr><td><b>${esc(CENV_NOMES_SETOR[x.setor]||x.setor)}</b></td>${cel(x.pendentes,'pendentes',x.setor,'#c98a00')}${cel(x.agendados,'agendados',x.setor)}${cel(x.enviadosHoje,'hoje',x.setor)}${cel(x.enviadosMes,'mes',x.setor)}</tr>`).join('')}
+    <tr style="background:var(--paper);"><td><b>Total</b></td>${cel(soma('pendentes'),'pendentes','','#c98a00')}${cel(soma('agendados'),'agendados','')}${cel(soma('enviadosHoje'),'hoje','')}${cel(soma('enviadosMes'),'mes','')}</tr></tbody></table></div>`;
+  el.querySelectorAll('[data-cenv]').forEach(a=>a.addEventListener('click', ev=>{
+    ev.preventDefault();
+    const l = a.dataset.cenv, st = a.dataset.setor;
+    const f = x=>!st || x.setor===st;
+    const dados = l==='pendentes' ? ed.pendentes : l==='agendados' ? ed.agendados : ed.enviados.filter(x=>l==='mes'||x.hoje);
+    const nomeL = { pendentes:'Pendentes de envio', agendados:'Agendados', hoje:'Enviados hoje', mes:'Enviados no mês' }[l];
+    const itens = dados.filter(f);
+    openModal(`<h3>${esc(nomeL)}${st?' · '+esc(CENV_NOMES_SETOR[st]||st):''} <span style="font-weight:400; color:var(--ink-soft);">(${itens.length})</span></h3>
+      <div style="max-height:60vh; overflow-y:auto;"><table class="data-table"><thead><tr><th>Documento</th><th>Empresa</th><th>Setor</th><th>${l==='agendados'?'Envio em':l==='pendentes'?'Lido em':'Enviado em'}</th>${l==='hoje'||l==='mes'?'<th>Canal</th>':''}</tr></thead><tbody>
+      ${itens.map(i=>`<tr><td><b>${esc(i.titulo)}</b>${i.tipo_nome?` <span class="tag muted">${esc(i.tipo_nome)}</span>`:''}</td><td>${esc(i.empresa||'—')}</td><td>${esc(CENV_NOMES_SETOR[i.setor]||i.setor)}</td><td style="white-space:nowrap; font-size:12.5px;">${esc(cenvDataHora(i.quando))}</td>${i.canais!==undefined?`<td>${esc(String(i.canais||'').replace('whatsapp','WhatsApp').replace('email','E-mail').replace(',',' + '))}</td>`:''}</tr>`).join('')||'<tr><td colspan="5"><div class="empty-state">Nada por aqui.</div></td></tr>'}
+      </tbody></table></div><div class="modal-actions"><button class="btn" onclick="closeModal()">Fechar</button></div>`, '900px');
+  }));
+}
 async function crmPainel(box, silencioso){
   if(!silencioso) box.innerHTML = '<div class="empty-state">Montando o painel…</div>';
   let d;
@@ -8349,6 +8392,7 @@ async function crmPainel(box, silencioso){
     el.innerHTML = r.ranking.length ? `<table class="data-table"><thead><tr><th>#</th><th>Empresa</th><th>Msgs do cliente</th><th>Conversas</th></tr></thead><tbody>
       ${r.ranking.map((x,i)=>`<tr><td>${i+1}</td><td>${esc(x.empresa)}</td><td><b>${x.recebidas}</b></td><td>${x.conversas}</td></tr>`).join('')}</tbody></table>` : '<div class="empty-state" style="padding:16px;">Nenhuma empresa identificada.</div>';
   }).catch(e=>{ const el = document.getElementById(per==='mes'?'painelRankMes':'painelRankAno'); if(el) el.innerHTML = `<div class="empty-state" style="padding:16px;">${esc(e.message)}</div>`; }));
+  cenvPainelMonitor(box);
   document.getElementById('painelConfig')?.addEventListener('click', ()=>painelConfigModal(box));
   box.querySelectorAll('[data-lista]').forEach(el=>el.addEventListener('click', ()=>{ const [t,l,m]=listas[el.dataset.lista]; painelListaModal(t,l,m); }));
   box.querySelectorAll('[data-atendente]').forEach(el=>el.addEventListener('click', ()=>painelListaModal('Com '+el.dataset.atendente, a.emAtendimento.filter(i=>i.atendente===el.dataset.atendente))));

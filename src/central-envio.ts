@@ -545,6 +545,26 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     ).all(esc, ...setores, busca, busca) as any[];
     res.json({ itens: rows.map((r) => ({ id: r.id, setor: r.setor, titulo: r.titulo, tipoId: r.tipo_id, tipoNome: r.tipo_nome, empresaId: r.empresa_id, empresaNome: r.empresa_nome, colaborador: r.colaborador_nome, cpf: r.cpf, competencia: r.competencia, arquivo: r.nome_arquivo, grupo: !!r.e_grupo, nArquivos: r.n_arquivos, versao: r.versao, modificadoEm: r.modificado_em, criadoEm: r.criado_em })) });
   });
+  // Monitor (painel do CRM e página 2 da TV): por setor, pendentes / agendados / enviados (hoje, mês) e as listas por trás de cada número.
+  app.get("/api/central-envio/painel", d.blockCliente, (req, res) => {
+    const user = (req as any).user;
+    const setores = SETORES_CENTRAL.filter((st) => st !== "crm" && (user.painelTv || d.hasPermissao(user, "crm", "visualizar") || d.hasPermissao(user, st, "visualizar")));
+    if (!user.painelTv && !setores.length) return semAcesso(res);
+    const esc = user.escritorioId;
+    const hojeIni = new Date(new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" }) + "T00:00:00-03:00").toISOString().replace("T", " ").slice(0, 19);
+    const mesIni = new Date(new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" }).slice(0, 7) + "-01T00:00:00-03:00").toISOString().replace("T", " ").slice(0, 19);
+    const marcas = setores.map(() => "?").join(",");
+    const pend = db.prepare(`SELECT x.id, x.setor, x.titulo, x.tipo_nome, x.criado_em as quando, e.nome as empresa FROM central_envio_docs x LEFT JOIN empresas e ON e.id = x.empresa_id WHERE x.escritorio_id = ? AND x.status = 'pendente' AND x.setor IN (${marcas}) ORDER BY x.id DESC LIMIT 300`).all(esc, ...setores) as any[];
+    const agend = db.prepare(`SELECT a.id, x.setor, x.titulo, x.tipo_nome, a.agendado_para as quando, e.nome as empresa FROM central_envio_agendados a JOIN central_envio_docs x ON x.id = a.doc_id LEFT JOIN empresas e ON e.id = x.empresa_id WHERE a.escritorio_id = ? AND a.status = 'agendado' AND x.setor IN (${marcas}) ORDER BY a.agendado_para LIMIT 300`).all(esc, ...setores) as any[];
+    // "Documentos enviados" = documentos distintos com pelo menos um envio ok (um documento pode ter vários destinatários/canais)
+    const env = db.prepare(`SELECT MIN(id) as id, setor, titulo, tipo_nome, empresa_nome as empresa, MIN(enviado_em) as quando, GROUP_CONCAT(DISTINCT canal) as canais FROM central_envio_enviados WHERE escritorio_id = ? AND status = 'ok' AND enviado_em >= ? AND setor IN (${marcas}) GROUP BY COALESCE(doc_id, -id), date(enviado_em) ORDER BY MIN(id) DESC LIMIT 500`).all(esc, mesIni, ...setores) as any[];
+    const porSetor = setores.map((st) => ({
+      setor: st,
+      pendentes: pend.filter((x) => x.setor === st).length, agendados: agend.filter((x) => x.setor === st).length,
+      enviadosHoje: env.filter((x) => x.setor === st && x.quando >= hojeIni).length, enviadosMes: env.filter((x) => x.setor === st).length,
+    }));
+    res.json({ setores: porSetor, pendentes: pend, agendados: agend, enviados: env.map((x) => ({ ...x, hoje: x.quando >= hojeIni })) });
+  });
   app.get("/api/central-envio/resumo", d.blockCliente, (req, res) => {
     const user = (req as any).user;
     const setores = visiveis(user, req.query.setor);
