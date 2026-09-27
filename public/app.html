@@ -10390,6 +10390,7 @@ async function centralEnvioMontar(escopo, box){
       <div class="field" style="width:280px; margin:0;"><input type="text" id="cenvBusca" placeholder="Buscar por empresa ou documento…" autocomplete="off"></div>
       <button class="btn" id="cenvMinhaPasta">📁 Minha pasta</button>
       <button class="btn" id="cenvLer" title="Lê a pasta agora (o site já confere sozinho a cada 10 segundos)">↻ Ler pasta agora</button>
+      <button class="btn" id="cenvDiag" title="Explica por que um arquivo do Drive não apareceu na lista">🔎 Não apareceu?</button>
       <label class="checkbox-row hidden" id="cenvAgruparBox" style="margin:0;"><input type="checkbox" id="cenvAgrupar"> Agrupar por empresa</label>
     </div>
     <div id="cenvLista"></div>`;
@@ -10404,6 +10405,14 @@ async function centralEnvioMontar(escopo, box){
     try{ await api('/central-envio/varrer', { method:'POST', body:{ dias:30 } }); toast('Lendo a pasta em segundo plano — os documentos vão aparecendo na lista.','ok'); }
     catch(e){ toast(e.message,'err'); }
     b.disabled = false; b.textContent = '↻ Ler pasta agora'; setTimeout(carregar, 1500);
+  });
+  document.getElementById('cenvDiag').addEventListener('click', async ()=>{
+    let r; try{ r = await api('/central-envio/diagnostico'); }catch(e){ toast(e.message,'err'); return; }
+    openModal(`<h3>Por que o arquivo não apareceu?</h3>
+      <p class="subtitle" style="margin:0 0 8px;">${r.conectado?'Google Drive conectado.':'⚠ O Google Drive não está conectado.'} Pastas lidas: <b>${esc(r.pastasLidas.join(', ')||'nenhuma')}</b>${r.ultimoErro?`<br><span style="color:var(--debit)">⚠ ${esc(r.ultimoErro)}</span>`:''}</p>
+      ${r.itens.length?`<div class="card" style="padding:0; max-height:300px; overflow-y:auto;"><table class="data-table"><thead><tr><th>Arquivo</th><th>Pasta</th><th>O que aconteceu</th></tr></thead><tbody>${r.itens.map(i=>`<tr><td><b>${esc(i.nome||'')}</b></td><td>${esc(i.pasta||'—')}</td><td style="font-size:12.5px;">${esc(i.motivo)}<div style="color:var(--ink-soft); font-size:11px;">${esc(cenvDataHora(i.criado_em))}</div></td></tr>`).join('')}</tbody></table></div>`
+        :'<div class="empty-state">Nenhum arquivo foi ignorado recentemente. Se o seu PDF não está em Pendentes, confira: (1) ele está dentro de uma pasta lida, listada acima? (2) o arquivo é PDF de verdade? (3) a pasta foi compartilhada com <b>agente-drive@simples-contabeis.iam.gserviceaccount.com</b> como Leitor? Depois clique em <b>↻ Ler pasta agora</b>.</div>'}
+      <div class="row" style="justify-content:flex-end; margin-top:12px;"><button class="btn primary" onclick="closeModal()">Fechar</button></div>`, '760px');
   });
   document.getElementById('cenvMinhaPasta').addEventListener('click', ()=>cenvPastaModal(escopo, true, ()=>centralEnvioMontar(escopo, box)));
   async function carregar(){

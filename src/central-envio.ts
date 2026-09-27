@@ -176,6 +176,10 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
       colaborador_nome TEXT, competencia TEXT, canal TEXT NOT NULL, destino TEXT, enviado_por INTEGER, enviado_por_nome TEXT, enviado_em TEXT NOT NULL DEFAULT (datetime('now')),
       status TEXT NOT NULL, erro TEXT, arquivo_path TEXT
     );
+    CREATE TABLE IF NOT EXISTS central_envio_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, escritorio_id INTEGER NOT NULL, drive_file_id TEXT NOT NULL, nome TEXT, pasta TEXT, motivo TEXT NOT NULL,
+      criado_em TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE (escritorio_id, drive_file_id, motivo)
+    );
     CREATE INDEX IF NOT EXISTS idx_central_env_empresa ON central_envio_enviados(escritorio_id, empresa_id, enviado_em);
   `);
 
@@ -202,7 +206,9 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
   const varreduraManual = new Set<number>(); // leitura pedida pela pessoa (só ela mostra "Lendo…" na tela)
   // Descobre a qual pasta configurada (raiz) um PDF pertence subindo pelos "pais" — só das pastas dos arquivos que mudaram,
   // em vez de listar todas as subpastas do Drive (que podem ser milhares). O caminho de cada pasta fica em cache.
-  const paisCache = new Map<string, { pai: string | null; em: number }>();
+  const paisCache = new Map<string, { pai: string | null; nome: string; em: number }>();
+  const registrarLog = (escId: number, fileId: string, nome: string, pasta: string, motivo: string) =>
+    db.prepare(`INSERT OR IGNORE INTO central_envio_log (escritorio_id, drive_file_id, nome, pasta, motivo) VALUES (?, ?, ?, ?, ?)`).run(escId, fileId, nome, pasta, motivo.slice(0, 300));
   async function raizDaPasta(escId: number, cred: Cred, pastaId: string, raizes: Map<string, { pastaId: string; setor: string; userId: number | null }>) {
     let atual: string | null = pastaId;
     for (let n = 0; atual && n < 15; n++) {
@@ -211,8 +217,8 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
       const chave = `${escId}:${atual}`;
       let c = paisCache.get(chave);
       if (!c || Date.now() - c.em > 30 * 60_000) {
-        const f: any = await driveGet(escId, cred, `files/${encodeURIComponent(atual)}`, { fields: "id,parents" });
-        c = { pai: (f.parents && f.parents[0]) || null, em: Date.now() };
+        const f: any = await driveGet(escId, cred, `files/${encodeURIComponent(atual)}`, { fields: "id,name,parents" });
+        c = { pai: (f.parents && f.parents[0]) || null, nome: f.name || "", em: Date.now() };
         paisCache.set(chave, c);
       }
       atual = c.pai;
@@ -280,7 +286,7 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
   async function processarArquivo(escId: number, cred: Cred, arq: any, raiz: { pastaId: string; setor: string; userId: number | null }) {
     const md5 = arq.md5Checksum || `${arq.modifiedTime}-${arq.size}`;
     if (db.prepare(`SELECT 1 FROM central_envio_docs WHERE escritorio_id = ? AND drive_file_id = ? AND md5 = ?`).get(escId, arq.id, md5)) return false;
-    if (Number(arq.size) > 40 * 1024 * 1024) return false;
+    if (Number(arq.size) > 40 * 1024 * 1024) { registrarLog(escId, arq.id, arq.name, "", "Arquivo maior que 40 MB — não é lido."); return false; }
     const buf = await driveBaixar(escId, cred, arq.id);
     const a = await analisarPdf(escId, raiz.setor, buf, arq.name);
     const versao = ((db.prepare(`SELECT COUNT(*) n FROM central_envio_docs WHERE escritorio_id = ? AND drive_file_id = ?`).get(escId, arq.id) as any).n || 0) + 1;
@@ -312,12 +318,19 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
       for (const r of db.prepare(`SELECT pasta_id, setor, user_id FROM central_envio_pastas WHERE escritorio_id = ?`).all(escId) as any[]) raizes.set(r.pasta_id, { pastaId: r.pasta_id, setor: r.setor, userId: r.user_id ?? null });
       let novos = 0, pagina: string | undefined;
       do {
-        const j = await driveGet(escId, cred, "files", { q: `mimeType='application/pdf' and trashed=false and (modifiedTime > '${desde}' or createdTime > '${desde}')`, orderBy: "modifiedTime", pageSize: "100", fields: "nextPageToken,files(id,name,parents,modifiedTime,md5Checksum,size)", ...(pagina ? { pageToken: pagina } : {}) });
+        const j = await driveGet(escId, cred, "files", { q: `mimeType='application/pdf' and trashed=false and (modifiedTime > '${desde}' or createdTime > '${desde}')`, orderBy: "modifiedTime", pageSize: "100", fields: "nextPageToken,files(id,name,parents,modifiedTime,createdTime,md5Checksum,size)", ...(pagina ? { pageToken: pagina } : {}) });
         for (const a of j.files || []) {
           let raiz: any = null;
           for (const p of a.parents || []) { raiz = await raizDaPasta(escId, cred, p, raizes); if (raiz) break; }
-          if (!raiz) continue;
-          try { if (await processarArquivo(escId, cred, a, raiz)) novos++; } catch (e: any) { console.error(`[central-envio] ${a.name}:`, e.message); }
+          if (!raiz) {
+            // Só registra arquivos recentes (o Drive da conta de serviço enxerga tudo que foi compartilhado com ela)
+            if (Date.now() - new Date(a.createdTime || a.modifiedTime).getTime() < 3 * 86400000) {
+              const paiNome = (a.parents || []).map((p: string) => paisCache.get(`${escId}:${p}`)?.nome).find(Boolean) || "";
+              registrarLog(escId, a.id, a.name, paiNome, "Está numa pasta que NÃO é uma das pastas lidas. Escolha essa pasta (ou a pasta de cima) em Minha pasta / Configurações › Envio de documentos.");
+            }
+            continue;
+          }
+          try { if (await processarArquivo(escId, cred, a, raiz)) novos++; } catch (e: any) { console.error(`[central-envio] ${a.name}:`, e.message); registrarLog(escId, a.id, a.name, "", `Erro ao ler o arquivo: ${e.message}`); }
         }
         pagina = j.nextPageToken;
       } while (pagina);
@@ -441,6 +454,16 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     res.json({ ok: true });
   });
   // Testa uma amostra: vê que tipo/empresa/colaborador o site tiraria de um PDF enviado (sem gravar nada).
+  // "Por que meu arquivo não apareceu?": arquivos que a leitura viu e não pôde usar (pasta não lida, erro, grande demais).
+  app.get("/api/central-envio/diagnostico", d.blockCliente, (req, res) => {
+    const user = (req as any).user;
+    if (!SETORES_CENTRAL.some((s) => d.hasPermissao(user, s, "visualizar"))) return semAcesso(res);
+    const cred = credDe(user.escritorioId);
+    const c = db.prepare(`SELECT ultima_varredura, ultimo_erro FROM central_envio_config WHERE escritorio_id = ?`).get(user.escritorioId) as any;
+    const pastas = db.prepare(`SELECT setor, pasta_nome FROM central_envio_pastas WHERE escritorio_id = ?`).all(user.escritorioId) as any[];
+    const itens = db.prepare(`SELECT nome, pasta, motivo, criado_em FROM central_envio_log WHERE escritorio_id = ? ORDER BY id DESC LIMIT 40`).all(user.escritorioId) as any[];
+    res.json({ conectado: !!cred, ultimaVarredura: c?.ultima_varredura || null, ultimoErro: c?.ultimo_erro || null, pastasLidas: pastas.map((p) => `${p.pasta_nome} (${p.setor})`), itens });
+  });
   app.post("/api/central-envio/varrer", d.blockCliente, async (req, res) => {
     const user = (req as any).user;
     if (!SETORES_CENTRAL.some((s) => d.hasPermissao(user, s, "visualizar"))) return semAcesso(res);
