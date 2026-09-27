@@ -9044,6 +9044,7 @@ function atdRenderCabecalho(S){
   if(podePostar) botoes.push(`<button class="btn small" data-acao="nao-lida" title="Volta a conversa para não lida (fica em destaque na lista)">Marcar como não lida</button>`);
   if(podePostar && c.contatoId){
     if(c.empresaId) botoes.push(`<button class="btn small" data-acao="empresa">🏢 Empresa</button>`);
+    else if(can('empresas','editar')) botoes.push(`<button class="btn small primary" data-acao="vincular-empresa" title="Escolher a empresa deste contato e cadastrar o número nos contatos dela">🔗 Vincular empresa</button>`);
     botoes.push(`<button class="btn small" data-acao="compromisso">📅 Compromisso</button>`);
     botoes.push(`<button class="btn small" data-acao="tag">🏷 Tag</button>`);
   }
@@ -9143,6 +9144,7 @@ async function atdAcao(S, acao, botao){
   }
   if(acao==='tag') return atdTagsModal(S, c);
   if(acao==='empresa') return atdFichaEmpresa(S, c);
+  if(acao==='vincular-empresa') return atdVincularEmpresaModal(S, c);
   if(acao==='reabrir'){
     // Reabre pela mesma rota da Nova conversa (o deskcomm reabre a conversa fechada do contato), já com
     // quem clicou — cai em Minhas. Num setor, a conversa volta pro setor (robô pausado).
@@ -9189,6 +9191,64 @@ async function atdAcao(S, acao, botao){
 const REGIMES_ROTULO = { simples_nacional:'Simples Nacional', lucro_presumido:'Lucro Presumido', lucro_real:'Lucro Real', mei:'MEI' };
 function atdBr(iso){ return iso ? String(iso).slice(8,10)+'/'+String(iso).slice(5,7)+'/'+String(iso).slice(0,4) : '—'; }
 function atdMoeda(v){ return v==null ? '—' : Number(v).toLocaleString('pt-BR',{style:'currency',currency:'BRL'}); }
+// DDD + 9 + últimos 8 dígitos do número do WhatsApp (ex.: +5594991296138 ou 559491296138 → 94991296138)
+function telefoneDdd9(bruto){
+  let d = String(bruto||'').replace(/\D/g,'');
+  if(d.length<10) return d;
+  const ult8 = d.slice(-8);
+  let resto = d.slice(0,-8);              // DDI + DDD (+ o 9)
+  if(resto.endsWith('9') && resto.length>2) resto = resto.slice(0,-1);
+  const ddd = resto.slice(-2);
+  return ddd + '9' + ult8;
+}
+// Atalho no atendimento: contato sem empresa → escolhe a empresa e cadastra o número nos contatos dela (mesmos campos de Configurações › E-mail corporativo)
+async function atdVincularEmpresaModal(S, c){
+  let empresas;
+  try{ empresas = await empresasAtivas(); }catch(e){ toast(e.message,'err'); return; }
+  const tel = telefoneDdd9(c.telefone);
+  let empId = null, contatos = [];
+  openModal(`<h3>🔗 Vincular contato a uma empresa</h3>
+    <p class="subtitle" style="margin:0 0 8px;">Contato: <b>${esc(c.contatoNome||c.telefone)}</b> · ${esc(c.telefone||'')} → será cadastrado como <b>${esc(tel)}</b></p>
+    <div class="field"><label>Empresa (pesquise pelo nome ou CNPJ)</label>${comboSelectHtml('vcEmpCombo','Digite para buscar a empresa…')}</div>
+    <div id="vcCorpo" class="hidden">
+      <div style="font-weight:600; font-size:13px; margin:6px 0 4px;">Contatos já cadastrados nessa empresa</div>
+      <div id="vcLista" class="card" style="padding:0; margin-bottom:10px;"></div>
+      <div style="font-weight:600; font-size:13px; margin:6px 0 4px;">Novo contato (este número)</div>
+      <div class="row" style="gap:8px; flex-wrap:wrap;">
+        <div class="field grow" style="min-width:160px;"><label>Nome do contato</label><input id="vcNome" value="${esc(c.contatoNome&&c.contatoNome!==c.telefone?c.contatoNome:'')}" placeholder="Nome do contato"></div>
+        <div class="field grow" style="min-width:180px;"><label>E-mail (opcional)</label><input id="vcEmail" type="email" placeholder="e-mail@cliente.com"></div>
+        <div class="field" style="width:170px;"><label>WhatsApp (DDD + número)</label><input id="vcTel" value="${esc(tel)}"></div>
+      </div>
+      <label class="checkbox-row"><input type="checkbox" id="vcRecWa" checked> Receber por WhatsApp</label>
+      <label class="checkbox-row"><input type="checkbox" id="vcRecMail" checked> Receber e-mails (se tiver e-mail)</label>
+    </div>
+    <div class="row" style="justify-content:flex-end; gap:8px; margin-top:12px;"><button class="btn" onclick="closeModal()">Cancelar</button><button class="btn primary" id="vcSalvar" disabled>Vincular</button></div>`, '720px');
+  const desenharLista = ()=>{
+    document.getElementById('vcLista').innerHTML = contatos.length ? `<table class="data-table"><tbody>${contatos.map(k=>`<tr><td>${esc(k.nome)}</td><td>${esc(k.email||'—')}</td><td>${esc(k.telefone||'—')}${k.receber_whatsapp?' <span class="tag ok">WhatsApp</span>':''}</td></tr>`).join('')}</tbody></table>` : '<div class="empty-state" style="padding:12px;">Nenhum contato cadastrado ainda.</div>';
+  };
+  setupComboSelect('vcEmpCombo', empresas.map(e=>({ id:e.id, label:e.nome+(e.cnpj?' · '+e.cnpj:'') })), async v=>{
+    empId = v ? Number(v) : null;
+    document.getElementById('vcCorpo').classList.toggle('hidden', !empId);
+    document.getElementById('vcSalvar').disabled = !empId;
+    if(!empId) return;
+    try{ contatos = (await api(`/empresas/${empId}/contatos`)).items; }catch(e){ contatos = []; }
+    desenharLista();
+    const jaTem = contatos.find(k=>String(k.telefone||'').replace(/\D/g,'').slice(-8)===tel.slice(-8));
+    if(jaTem) toast('Esse número já está cadastrado nessa empresa ('+jaTem.nome+').','err');
+  });
+  document.getElementById('vcSalvar').addEventListener('click', async ()=>{
+    const nome = document.getElementById('vcNome').value.trim(), email = document.getElementById('vcEmail').value.trim(), telefone = document.getElementById('vcTel').value.replace(/\D/g,'');
+    if(!empId){ toast('Escolha a empresa.','err'); return; }
+    if(!nome){ toast('Informe o nome do contato.','err'); return; }
+    if(telefone.length<10){ toast('Confira o número do WhatsApp (DDD + número).','err'); return; }
+    const b = document.getElementById('vcSalvar'); b.disabled = true; b.textContent = 'Vinculando…';
+    try{
+      await api(`/empresas/${empId}/contatos`, { method:'POST', body:{ nome, email, telefone, receberWhatsapp: document.getElementById('vcRecWa').checked, receberEmails: document.getElementById('vcRecMail').checked } });
+      closeModal(); toast('Contato vinculado à empresa. A conversa passa a mostrar a empresa em instantes.','ok');
+      setTimeout(()=>{ if(typeof atdCarregarLista==='function') atdCarregarLista(S).then(()=>{ if(S.conversaAtiva) atdAbrirConversa(S, S.conversaAtiva); }).catch(()=>{}); }, 4000);
+    }catch(e){ toast(e.message,'err'); b.disabled=false; b.textContent='Vincular'; }
+  });
+}
 async function atdFichaEmpresa(S, c){
   let f;
   try{ f = await api('/atendimento/empresa/'+c.empresaId+'/ficha'); }catch(e){ toast(e.message,'err'); return; }
