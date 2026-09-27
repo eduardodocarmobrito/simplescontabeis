@@ -2586,9 +2586,9 @@ async function renderEmpresasTab(){
 // Reaproveita a mesma conexão do Drive de Configurações › Envio de documentos. Senha vem do nome do arquivo,
 // entre parênteses; a empresa só é escolhida sozinha quando o CPF/CNPJ do nome bate com o cadastro.
 let CERT_DRIVE = { pastaId:null, pastaNome:null, itens:[] };
-function certImportPastaModal(depois){
+function certImportPastaModal(depois, titulo){
   const pilha = [];
-  openModal(`<h3>Escolher a pasta dos certificados</h3>
+  openModal(`<h3>Escolher a pasta ${esc(titulo||'dos certificados')}</h3>
     <p class="subtitle" style="margin:0 0 6px;">A pasta precisa estar compartilhada (Leitor) com <b>agente-drive@simples-contabeis.iam.gserviceaccount.com</b> — a mesma conta já usada no Envio de Documentos.</p>
     <div id="cdCaminho" style="font-size:12.5px; margin-bottom:6px;"></div>
     <div id="cdPastasLista" class="card" style="padding:0; max-height:340px; overflow-y:auto;"></div>
@@ -11485,17 +11485,36 @@ function renderCfgDomRelatorios(box, sub, dados){
         e já disponibiliza cada um em Relatórios e Envio de Documentos.
       </p>
       <div class="field"><label>Pasta no OneDrive</label><input id="odRelPasta" value="${esc(oneDriveCfg.relatoriosPastaOrigem)}"></div>
+      <div style="margin:14px 0 10px; border-top:1px solid var(--rule); padding-top:12px;">
+        <div style="font-weight:600; font-size:13px;">Pasta no Google Drive (opcional — as duas origens funcionam juntas)</div>
+        <p style="font-size:12px; color:var(--ink-soft); margin:2px 0 8px;">Reaproveita a conexão do Google já feita em <b>Envio de documentos</b> — não precisa autorizar de novo, só compartilhar mais essa pasta com <b>agente-drive@simples-contabeis.iam.gserviceaccount.com</b> como Leitor.</p>
+        ${oneDriveCfg.driveConectado
+          ? `<p style="font-size:13px;">📁 ${oneDriveCfg.relatoriosDrivePastaId?`<b>${esc(oneDriveCfg.relatoriosDrivePastaNome||'pasta escolhida')}</b> <span class="link-discreto" id="btnDomRelTrocarPasta">trocar</span> <span class="link-discreto" id="btnDomRelRemoverPasta" style="color:var(--debit); margin-left:8px;">remover</span>` : `<span style="color:var(--ink-soft);">Nenhuma pasta escolhida ainda.</span> <button class="btn small" id="btnDomRelEscolherPasta">Escolher pasta do Drive</button>`}</p>`
+          : `<p style="font-size:12.5px; color:var(--ink-soft);">Conecte o Google Drive primeiro em <span class="link-discreto" id="irEnvioDocs">Configurações › Envio de documentos</span>.</p>`}
+      </div>
       <label class="checkbox-row"><input type="checkbox" id="odRelAtivo" ${oneDriveCfg.relatoriosAtivo?'checked':''}> Manter a importação automática ligada</label>
       ${oneDriveCfg.relatoriosUltimaImportacaoEm?`<p style="font-size:12px; color:var(--ink-soft);">Última importação: ${fmtDateHora(oneDriveCfg.relatoriosUltimaImportacaoEm)}${oneDriveCfg.relatoriosUltimoErro?` — <span style="color:var(--debit);">${esc(oneDriveCfg.relatoriosUltimoErro)}</span>`:''}</p>`:''}
       <div class="row" style="margin-top:6px;">
         <button class="btn primary" id="btnSalvarOdRel" disabled>Salvar</button>
         <button class="btn" id="btnOdRelDryRun">Testar (não grava nada)</button>
-        ${oneDriveCfg.conectado?'<button class="btn" id="btnOdRelImportarAgora">Importar agora</button>':''}
+        ${(oneDriveCfg.conectado || oneDriveCfg.relatoriosDrivePastaId)?'<button class="btn" id="btnOdRelImportarAgora">Importar agora</button>':''}
         <button class="btn" id="btnOdRelPendencias">Pendências</button>
       </div>
       <div id="odRelResultado" style="margin-top:10px;"></div>
     </div>
   `;
+  document.getElementById('irEnvioDocs')?.addEventListener('click', ()=>{ STATE.page='configuracoes'; CFG_TAB='envio-docs'; render(); });
+  const escolherPastaDrive = ()=>certImportPastaModal(async (pastaId, pastaNome)=>{
+    try{ await api('/onedrive/relatorios/config-drive', { method:'PUT', body:{ pastaId, pastaNome } }); toast('Pasta do Google Drive salva.','ok'); renderCfgDominio(box); }
+    catch(e){ toast(e.message,'err'); }
+  }, 'dos relatórios');
+  document.getElementById('btnDomRelEscolherPasta')?.addEventListener('click', escolherPastaDrive);
+  document.getElementById('btnDomRelTrocarPasta')?.addEventListener('click', escolherPastaDrive);
+  document.getElementById('btnDomRelRemoverPasta')?.addEventListener('click', async ()=>{
+    if(!confirmar('Parar de ler essa pasta do Google Drive? O que já foi importado continua no sistema.')) return;
+    try{ await api('/onedrive/relatorios/config-drive', { method:'PUT', body:{ pastaId:null, pastaNome:null } }); toast('Pasta removida.','ok'); renderCfgDominio(box); }
+    catch(e){ toast(e.message,'err'); }
+  });
   habilitarSalvarAoMudar('btnSalvarOdRel', ['odRelPasta','odRelAtivo']);
   document.getElementById('btnSalvarOdRel').addEventListener('click', async ()=>{
     const body = {

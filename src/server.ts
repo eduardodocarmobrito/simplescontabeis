@@ -1386,6 +1386,10 @@ for (const tabela of ["chat_mensagens", "chat_equipe_mensagens", "chat_dm_mensag
   if (!nomes.has("relatorios_ativo")) sqlite.exec(`ALTER TABLE onedrive_config ADD COLUMN relatorios_ativo INTEGER NOT NULL DEFAULT 0`);
   if (!nomes.has("relatorios_ultima_importacao_em")) sqlite.exec(`ALTER TABLE onedrive_config ADD COLUMN relatorios_ultima_importacao_em TEXT`);
   if (!nomes.has("relatorios_ultimo_erro")) sqlite.exec(`ALTER TABLE onedrive_config ADD COLUMN relatorios_ultimo_erro TEXT`);
+  // Mesma importação de relatórios (Balanço/DRE/Balancete), agora também de uma pasta do Google Drive — reaproveita
+  // a conexão já feita em Configurações › Envio de documentos (conta de serviço), sem pedir uma nova autorização.
+  if (!nomes.has("relatorios_drive_pasta_id")) sqlite.exec(`ALTER TABLE onedrive_config ADD COLUMN relatorios_drive_pasta_id TEXT`);
+  if (!nomes.has("relatorios_drive_pasta_nome")) sqlite.exec(`ALTER TABLE onedrive_config ADD COLUMN relatorios_drive_pasta_nome TEXT`);
 }
 
 // Migração leve: menu "Solicitar Documentos" do cliente — modelos ganham a opção de aparecer lá,
@@ -6765,7 +6769,20 @@ app.get("/api/onedrive/config", blockCliente, requirePermissao("configuracoes", 
     relatoriosAtivo: !!c.relatorios_ativo,
     relatoriosUltimaImportacaoEm: c.relatorios_ultima_importacao_em || null,
     relatoriosUltimoErro: c.relatorios_ultimo_erro || null,
+    relatoriosDrivePastaId: c.relatorios_drive_pasta_id || null,
+    relatoriosDrivePastaNome: c.relatorios_drive_pasta_nome || null,
+    driveConectado: !!credencialDriveDoEscritorio(sqlite, nfse.decifrarTexto, (req as any).user.escritorioId),
   });
+});
+// Pasta do Google Drive de onde vêm os relatórios (separado do PUT geral acima, que mexe também no OAuth do
+// OneDrive — aqui não precisa de nenhuma conexão nova, só aponta a pasta já compartilhada com a conta de serviço).
+app.put("/api/onedrive/relatorios/config-drive", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
+  const escritorioId = (req as any).user.escritorioId;
+  const b = req.body || {};
+  sqlite.prepare(`INSERT INTO onedrive_config (escritorio_id, relatorios_drive_pasta_id, relatorios_drive_pasta_nome) VALUES (?, ?, ?)
+                  ON CONFLICT(escritorio_id) DO UPDATE SET relatorios_drive_pasta_id=excluded.relatorios_drive_pasta_id, relatorios_drive_pasta_nome=excluded.relatorios_drive_pasta_nome`)
+    .run(escritorioId, b.pastaId || null, b.pastaNome || null);
+  res.json({ ok: true });
 });
 app.put("/api/onedrive/config", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
   const escritorioId = (req as any).user.escritorioId;
@@ -7078,21 +7095,37 @@ function domRelGravarControle(row: {
       row.modificadoEm
     );
 }
+type DomRelItem = { id: string; nome: string; modificadoEm: string | null; origem: "onedrive" | "gdrive"; baixar: () => Promise<Buffer> };
 async function dominioRelatoriosSincronizar(
   escritorioId: number,
   opts: { dryRun: boolean; limite?: number }
 ): Promise<{ processados: number; ok: number; pendentes: number; erros: number; previews?: any[] }> {
   const cfg = getOnedriveConfig(escritorioId);
-  if (!cfg.client_id || !cfg.client_secret_cifrado || !cfg.refresh_token_cifrado) {
-    throw new Error("Conecte o OneDrive antes (mesma conexão usada pra exportar XML, em Configurações › Domínio Web).");
+  const temOnedrive = !!(cfg.client_id && cfg.client_secret_cifrado && cfg.refresh_token_cifrado);
+  const credDrive = cfg.relatorios_drive_pasta_id ? credencialDriveDoEscritorio(sqlite, nfse.decifrarTexto, escritorioId) : null;
+  if (!temOnedrive && !credDrive) {
+    throw new Error(
+      "Nenhuma origem configurada — conecte o OneDrive (mesma conexão do XML, em Configurações › Domínio Web) ou escolha uma pasta do Google Drive (mesma conexão do Envio de Documentos)."
+    );
   }
-  const pasta = cfg.relatorios_pasta_origem || "Relatorios_Dominio";
-  const clientSecret = nfse.decifrarTexto(cfg.client_secret_cifrado);
-  const refreshToken = nfse.decifrarTexto(cfg.refresh_token_cifrado);
-  const token = await onedrive.renovarAccessToken(cfg.client_id, clientSecret, refreshToken);
-  if (token.refreshToken) sqlite.prepare(`UPDATE onedrive_config SET refresh_token_cifrado = ? WHERE escritorio_id = ?`).run(nfse.cifrarTexto(token.refreshToken), escritorioId);
-
-  let itens = (await onedrive.listarArquivosPasta(token.accessToken, pasta)).filter((it) => !it.ehPasta && it.nome.toLowerCase().endsWith(".pdf"));
+  const pasta = cfg.relatorios_pasta_origem || "Relatorios_Dominio"; // só aparece nos textos de log/observação
+  let itens: DomRelItem[] = [];
+  if (temOnedrive) {
+    const clientSecret = nfse.decifrarTexto(cfg.client_secret_cifrado);
+    const refreshToken = nfse.decifrarTexto(cfg.refresh_token_cifrado);
+    const token = await onedrive.renovarAccessToken(cfg.client_id, clientSecret, refreshToken);
+    if (token.refreshToken) sqlite.prepare(`UPDATE onedrive_config SET refresh_token_cifrado = ? WHERE escritorio_id = ?`).run(nfse.cifrarTexto(token.refreshToken), escritorioId);
+    const brutos = (await onedrive.listarArquivosPasta(token.accessToken, pasta)).filter((it) => !it.ehPasta && it.nome.toLowerCase().endsWith(".pdf"));
+    itens.push(...brutos.map((it) => ({ id: `onedrive:${it.id}`, nome: it.nome, modificadoEm: it.modificadoEm, origem: "onedrive" as const, baixar: () => onedrive.baixarConteudoArquivo(token.accessToken, it.id) })));
+  }
+  if (credDrive) {
+    let pagina: string | undefined;
+    do {
+      const j: any = await driveGet(escritorioId, credDrive, "files", { q: `'${cfg.relatorios_drive_pasta_id}' in parents and trashed=false`, orderBy: "modifiedTime", pageSize: "200", fields: "nextPageToken,files(id,name,modifiedTime)", ...(pagina ? { pageToken: pagina } : {}) });
+      for (const f of j.files || []) if (/\.pdf$/i.test(f.name)) itens.push({ id: `gdrive:${f.id}`, nome: f.name, modificadoEm: f.modifiedTime, origem: "gdrive", baixar: () => driveBaixar(escritorioId, credDrive, f.id) });
+      pagina = j.nextPageToken;
+    } while (pagina);
+  }
   if (opts.dryRun && opts.limite) itens = itens.slice(0, opts.limite);
 
   const mapaDocumentos = domRelMapaDocumentos(escritorioId);
@@ -7124,7 +7157,7 @@ async function dominioRelatoriosSincronizar(
     }
     processados++;
     try {
-      const buf = await onedrive.baixarConteudoArquivo(token.accessToken, item.id);
+      const buf = await item.baixar();
       const texto = await obterTextoDoPdf(buf);
       const tipos = domRelClassificarTipos(texto);
       const periodo = domRelExtrairPeriodo(texto, item.nome);
@@ -7194,7 +7227,8 @@ async function dominioRelatoriosSincronizar(
           periodicidade,
           true
         );
-        const observacao = `Importado automaticamente da pasta "${pasta}" do OneDrive em ${new Date().toLocaleDateString("pt-BR")}.`;
+        const origemTxt = item.origem === "gdrive" ? "do Google Drive" : "do OneDrive";
+        const observacao = `Importado automaticamente da pasta "${item.origem === "gdrive" ? cfg.relatorios_drive_pasta_nome || "" : pasta}" ${origemTxt} em ${new Date().toLocaleDateString("pt-BR")}.`;
         const docId = integraContadorAnexarPdfEmEnvio(atribuicaoId, empresa.id, ano, mes, item.nome, buf.toString("base64"), observacao, null, true);
         if (primeiroDocId === null) primeiroDocId = docId;
       }
@@ -7297,7 +7331,7 @@ app.post("/api/onedrive/relatorios/pendentes/:id/atribuir", blockCliente, requir
 // Confere a cada 5 minutos se algum escritório com importação de relatórios ativa tem PDF novo —
 // setInterval SEPARADO do de exportação de XML acima (direção contrária: aqui é leitura).
 setInterval(() => {
-  const configs = sqlite.prepare(`SELECT escritorio_id FROM onedrive_config WHERE relatorios_ativo = 1 AND refresh_token_cifrado IS NOT NULL`).all() as any[];
+  const configs = sqlite.prepare(`SELECT escritorio_id FROM onedrive_config WHERE relatorios_ativo = 1 AND (refresh_token_cifrado IS NOT NULL OR relatorios_drive_pasta_id IS NOT NULL)`).all() as any[];
   for (const c of configs) {
     dominioRelatoriosSincronizar(c.escritorio_id, { dryRun: false }).catch((e) => console.error("Erro na importação automática de relatórios do OneDrive:", e.message));
   }
