@@ -117,19 +117,27 @@ export function extrairColaboradorECpf(texto: string, ehEmpresa: (nomeNormalizad
 // Data do fato gerador do documento: na rescisão é a "Data de Afastamento" (campo 26). O texto do PDF pode vir com cada
 // rótulo seguido do seu valor OU com a linha de rótulos e depois a linha de valores — os dois jeitos são tratados.
 export function extrairDataAfastamento(texto: string): string | null {
-  const dataRe = /\d{2}\/\d{2}\/\d{4}/g;
+  const D = "\\d{2}\\s*\\/\\s*\\d{2}\\s*\\/\\s*\\d{4}";
+  const limpaData = (x: string) => x.replace(/\s+/g, "");
+  // Sequências de 1 a 4 datas coladas ou separadas por espaço/linha ("20/03/202608/09/202608/09/2026")
+  const corridas = [...texto.matchAll(new RegExp(`${D}(?:\\s*${D}){0,3}`, "g"))].map((m) => ({ pos: m.index || 0, datas: (m[0].match(new RegExp(D, "g")) || []).map(limpaData) }));
+  const doGrupo = (datas: string[]) => (datas.length >= 3 ? datas[2] : datas[datas.length - 1]); // ordem do modelo: admissão, aviso prévio, afastamento
+  // A) campo 24 "Data de Admissão": os valores dos campos 24, 25 e 26 vêm em sequência — a 3ª é a data de afastamento
+  const adm = /Data\s+de\s+Admiss[ãa]o/i.exec(texto);
+  if (adm) {
+    const depois = corridas.find((c) => c.pos > adm.index && c.datas.length >= 2);
+    if (depois) return doGrupo(depois.datas);
+    const antes = [...corridas].reverse().find((c) => c.pos < adm.index && c.datas.length >= 3);
+    if (antes) return doGrupo(antes.datas);
+  }
+  // B) rótulo "Data de Afastamento": valor logo depois dele, ou (rótulos em linha e valores na seguinte) a última data da sequência
   const rot = /Data\s+de\s+Afastamento/i.exec(texto);
   if (!rot) return null;
-  const depois = texto.slice(rot.index + rot[0].length);
-  const primeira = dataRe.exec(depois);
-  if (!primeira) return null;
-  const entre = depois.slice(0, primeira.index);
-  if (!/Cod\.?\s*Afastamento|Pens[ãa]o|Categoria|\d{2}\s+[A-Z]/i.test(entre)) return primeira[0]; // rótulo e valor juntos
-  // linha de rótulos primeiro: os valores vêm depois, em sequência (admissão, aviso prévio, afastamento), às vezes
-  // COLADOS ("20/03/202608/09/202608/09/2026") — a data de afastamento é a última da sequência.
-  const corrida = /((?:\d{2}\/\d{2}\/\d{4}\s*){2,4})/.exec(depois.slice(primeira.index));
-  if (corrida) { const ds = corrida[1].match(dataRe) || []; if (ds.length) return ds[ds.length - 1]; }
-  return primeira[0];
+  const depois = corridas.find((c) => c.pos > rot.index);
+  if (!depois) return null;
+  const entre = texto.slice(rot.index + rot[0].length, depois.pos);
+  if (!/Cod\.?\s*Afastamento|Pens[ãa]o|Categoria|\d{2}\s+[A-Z]/i.test(entre)) return depois.datas[0]; // rótulo e valor juntos
+  return depois.datas[depois.datas.length - 1];
 }
 // "Competência: 08/2026", "Mês/Ano: 08/2026", "Referente a 08/2026" e "Agosto de 2026" (folha mensal); nas férias, o período de gozo.
 const MESES_NOME = ["janeiro", "fevereiro", "marco", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"];
