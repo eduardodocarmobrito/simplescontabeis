@@ -1390,6 +1390,9 @@ for (const tabela of ["chat_mensagens", "chat_equipe_mensagens", "chat_dm_mensag
   // a conexão já feita em Configurações › Envio de documentos (conta de serviço), sem pedir uma nova autorização.
   if (!nomes.has("relatorios_drive_pasta_id")) sqlite.exec(`ALTER TABLE onedrive_config ADD COLUMN relatorios_drive_pasta_id TEXT`);
   if (!nomes.has("relatorios_drive_pasta_nome")) sqlite.exec(`ALTER TABLE onedrive_config ADD COLUMN relatorios_drive_pasta_nome TEXT`);
+  // Marca d'água SÓ da varredura rápida do Drive (poll de 10 em 10s) — separada de relatorios_ultima_importacao_em
+  // (que é a "última importação" mostrada na tela, atualizada por QUALQUER origem/rodada).
+  if (!nomes.has("relatorios_drive_ultima_varredura")) sqlite.exec(`ALTER TABLE onedrive_config ADD COLUMN relatorios_drive_ultima_varredura TEXT`);
 }
 
 // Migração leve: menu "Solicitar Documentos" do cliente — modelos ganham a opção de aparecer lá,
@@ -7098,12 +7101,16 @@ function domRelGravarControle(row: {
 type DomRelItem = { id: string; nome: string; modificadoEm: string | null; origem: "onedrive" | "gdrive"; baixar: () => Promise<Buffer> };
 async function dominioRelatoriosSincronizar(
   escritorioId: number,
-  opts: { dryRun: boolean; limite?: number }
+  // somenteOrigens: usado pelo poll rápido do Drive (10s) pra não mexer no OneDrive a cada rodada — sem isso,
+  // considera as duas origens configuradas (usado por "Testar"/"Importar agora" e pelo poll do OneDrive, 5 min).
+  opts: { dryRun: boolean; limite?: number; somenteOrigens?: ("onedrive" | "gdrive")[] }
 ): Promise<{ processados: number; ok: number; pendentes: number; erros: number; previews?: any[] }> {
   const cfg = getOnedriveConfig(escritorioId);
-  const temOnedrive = !!(cfg.client_id && cfg.client_secret_cifrado && cfg.refresh_token_cifrado);
-  const credDrive = cfg.relatorios_drive_pasta_id ? credencialDriveDoEscritorio(sqlite, nfse.decifrarTexto, escritorioId) : null;
+  const usa = (o: "onedrive" | "gdrive") => !opts.somenteOrigens || opts.somenteOrigens.includes(o);
+  const temOnedrive = usa("onedrive") && !!(cfg.client_id && cfg.client_secret_cifrado && cfg.refresh_token_cifrado);
+  const credDrive = usa("gdrive") && cfg.relatorios_drive_pasta_id ? credencialDriveDoEscritorio(sqlite, nfse.decifrarTexto, escritorioId) : null;
   if (!temOnedrive && !credDrive) {
+    if (opts.somenteOrigens) return { processados: 0, ok: 0, pendentes: 0, erros: 0 }; // poll rápido do Drive: escritório sem pasta configurada, nada a fazer
     throw new Error(
       "Nenhuma origem configurada — conecte o OneDrive (mesma conexão do XML, em Configurações › Domínio Web) ou escolha uma pasta do Google Drive (mesma conexão do Envio de Documentos)."
     );
@@ -7118,10 +7125,16 @@ async function dominioRelatoriosSincronizar(
     const brutos = (await onedrive.listarArquivosPasta(token.accessToken, pasta)).filter((it) => !it.ehPasta && it.nome.toLowerCase().endsWith(".pdf"));
     itens.push(...brutos.map((it) => ({ id: `onedrive:${it.id}`, nome: it.nome, modificadoEm: it.modificadoEm, origem: "onedrive" as const, baixar: () => onedrive.baixarConteudoArquivo(token.accessToken, it.id) })));
   }
+  let inicioVarreduraDrive: string | null = null;
   if (credDrive) {
+    inicioVarreduraDrive = new Date().toISOString();
+    // No poll rápido (10s), só pergunta ao Drive o que mudou DESDE a última varredura (com 2min de folga) — a
+    // listagem completa (sem esse filtro, usada por "Testar"/"Importar agora") seria cara de repetir a cada 10s.
+    const desde = opts.somenteOrigens && cfg.relatorios_drive_ultima_varredura ? new Date(new Date(cfg.relatorios_drive_ultima_varredura).getTime() - 2 * 60_000).toISOString() : null;
     let pagina: string | undefined;
     do {
-      const j: any = await driveGet(escritorioId, credDrive, "files", { q: `'${cfg.relatorios_drive_pasta_id}' in parents and trashed=false`, orderBy: "modifiedTime", pageSize: "200", fields: "nextPageToken,files(id,name,modifiedTime)", ...(pagina ? { pageToken: pagina } : {}) });
+      const q = `'${cfg.relatorios_drive_pasta_id}' in parents and trashed=false` + (desde ? ` and modifiedTime > '${desde}'` : "");
+      const j: any = await driveGet(escritorioId, credDrive, "files", { q, orderBy: "modifiedTime", pageSize: "200", fields: "nextPageToken,files(id,name,modifiedTime)", ...(pagina ? { pageToken: pagina } : {}) });
       for (const f of j.files || []) if (/\.pdf$/i.test(f.name)) itens.push({ id: `gdrive:${f.id}`, nome: f.name, modificadoEm: f.modifiedTime, origem: "gdrive", baixar: () => driveBaixar(escritorioId, credDrive, f.id) });
       pagina = j.nextPageToken;
     } while (pagina);
@@ -7259,7 +7272,8 @@ async function dominioRelatoriosSincronizar(
   }
 
   if (!opts.dryRun) {
-    sqlite.prepare(`UPDATE onedrive_config SET relatorios_ultima_importacao_em = datetime('now'), relatorios_ultimo_erro = NULL WHERE escritorio_id = ?`).run(escritorioId);
+    sqlite.prepare(`UPDATE onedrive_config SET relatorios_ultima_importacao_em = datetime('now'), relatorios_ultimo_erro = NULL${inicioVarreduraDrive ? ", relatorios_drive_ultima_varredura = ?" : ""} WHERE escritorio_id = ?`)
+      .run(...(inicioVarreduraDrive ? [inicioVarreduraDrive, escritorioId] : [escritorioId]));
   }
   return opts.dryRun ? { processados, ok, pendentes, erros, previews } : { processados, ok, pendentes, erros };
 }
@@ -7328,14 +7342,23 @@ app.post("/api/onedrive/relatorios/pendentes/:id/atribuir", blockCliente, requir
   }
   res.json({ ok: true, docId });
 });
-// Confere a cada 5 minutos se algum escritório com importação de relatórios ativa tem PDF novo —
+// OneDrive: confere a cada 5 minutos (a API da Microsoft não pede menos que isso pra listagem completa de pasta) —
 // setInterval SEPARADO do de exportação de XML acima (direção contrária: aqui é leitura).
 setInterval(() => {
-  const configs = sqlite.prepare(`SELECT escritorio_id FROM onedrive_config WHERE relatorios_ativo = 1 AND (refresh_token_cifrado IS NOT NULL OR relatorios_drive_pasta_id IS NOT NULL)`).all() as any[];
+  const configs = sqlite.prepare(`SELECT escritorio_id FROM onedrive_config WHERE relatorios_ativo = 1 AND refresh_token_cifrado IS NOT NULL`).all() as any[];
   for (const c of configs) {
-    dominioRelatoriosSincronizar(c.escritorio_id, { dryRun: false }).catch((e) => console.error("Erro na importação automática de relatórios do OneDrive:", e.message));
+    dominioRelatoriosSincronizar(c.escritorio_id, { dryRun: false, somenteOrigens: ["onedrive"] }).catch((e) => console.error("Erro na importação automática de relatórios do OneDrive:", e.message));
   }
 }, 5 * 60 * 1000);
+// Google Drive: confere a cada 10s (igual à Central de Envio) — o Domínio Web pode ficar "descarregando" os
+// relatórios nessa pasta em rodadas automáticas, sobrescrevendo o mesmo arquivo; a data de modificação muda a
+// cada vez, e isso pega a versão fresca quase na hora, sem esperar os 5 minutos do OneDrive.
+setInterval(() => {
+  const configs = sqlite.prepare(`SELECT escritorio_id FROM onedrive_config WHERE relatorios_ativo = 1 AND relatorios_drive_pasta_id IS NOT NULL`).all() as any[];
+  for (const c of configs) {
+    dominioRelatoriosSincronizar(c.escritorio_id, { dryRun: false, somenteOrigens: ["gdrive"] }).catch((e) => console.error("Erro na importação automática de relatórios do Google Drive:", e.message));
+  }
+}, 10_000);
 
 // ---------- Importar extratos bancários (e outros documentos financeiros) de uma caixa de e-mail
 // (ex.: simplescontabeis@gmail.com, via IMAP + senha de app do Gmail) — o escritório recebe todo mês
