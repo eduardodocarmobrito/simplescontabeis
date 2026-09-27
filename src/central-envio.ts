@@ -597,35 +597,28 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
   });
   app.get("/api/central-envio/docs/:id/contatos", d.blockCliente, (req, res) => {
     const doc = docDoUsuario(req, res); if (!doc) return;
-    if (!doc.empresa_id) return res.json({ whatsapp: [], email: [] });
-    const c = db.prepare(`SELECT nome, email, telefone, receber_emails, receber_whatsapp FROM empresa_contatos WHERE empresa_id = ?`).all(doc.empresa_id) as any[];
-    res.json({
-      whatsapp: c.filter((x) => x.telefone && x.receber_whatsapp).map((x) => ({ nome: x.nome, telefone: x.telefone })),
-      email: c.filter((x) => x.email && x.receber_emails).map((x) => ({ nome: x.nome, email: x.email })),
-    });
+    res.json(contatosDaEmpresa(doc.empresa_id));
   });
-  app.post("/api/central-envio/docs/:id/enviar", d.blockCliente, async (req, res) => {
-    const user = (req as any).user;
-    const doc = docDoUsuario(req, res); if (!doc) return;
-    if (!d.hasPermissao(user, doc.setor, "postar")) return semAcesso(res);
-    if (doc.status !== "pendente") return res.status(409).json({ error: "Esse documento já foi enviado ou dispensado." });
-    if (!doc.empresa_id) return res.status(400).json({ error: "Escolha a empresa deste documento antes de enviar." });
-    if (!fs.existsSync(doc.arquivo_path)) return res.status(404).json({ error: "O arquivo não está mais no servidor." });
-    const canais: string[] = Array.isArray(req.body?.canais) ? req.body.canais : [];
-    const telefones: string[] = (Array.isArray(req.body?.telefones) ? req.body.telefones : []).map(String);
-    const emails: string[] = (Array.isArray(req.body?.emails) ? req.body.emails : []).map(String);
-    if (!canais.length) return res.status(400).json({ error: "Escolha WhatsApp e/ou e-mail." });
+  // Envio (usado pelo "Enviar" dos pendentes e pelo "Reenviar" do histórico): manda o PDF guardado aos contatos marcados da empresa
+  // e grava UMA LINHA NOVA em Enviados por destinatário — nada do que já foi enviado é alterado.
+  async function executarEnvio(user: any, doc: any, body: any): Promise<{ status?: number; erro?: string; resultados?: { canal: string; destino: string; ok: boolean; erro?: string }[] }> {
+    if (!doc.empresa_id) return { status: 400, erro: "Escolha a empresa deste documento antes de enviar." };
+    if (!doc.arquivo_path || !fs.existsSync(doc.arquivo_path)) return { status: 404, erro: "O arquivo não está mais no servidor." };
+    const canais: string[] = Array.isArray(body?.canais) ? body.canais : [];
+    const telefones: string[] = (Array.isArray(body?.telefones) ? body.telefones : []).map(String);
+    const emails: string[] = (Array.isArray(body?.emails) ? body.emails : []).map(String);
+    if (!canais.length) return { status: 400, erro: "Escolha WhatsApp e/ou e-mail." };
     const empresa = db.prepare(`SELECT nome FROM empresas WHERE id = ?`).get(doc.empresa_id) as any;
     const permitidos = db.prepare(`SELECT email, telefone FROM empresa_contatos WHERE empresa_id = ?`).all(doc.empresa_id) as any[];
     const pdf = fs.readFileSync(doc.arquivo_path);
     const nomePdf = `${nomeArquivoSeguro(doc.titulo)}.pdf`;
-    const tipo = doc.tipo_id ? (db.prepare(`SELECT texto_whatsapp FROM central_envio_tipos WHERE id = ?`).get(doc.tipo_id) as any) : null;
+    const tipo = (doc.tipo_id ? db.prepare(`SELECT texto_whatsapp FROM central_envio_tipos WHERE id = ?`).get(doc.tipo_id) : doc.tipo_nome ? db.prepare(`SELECT texto_whatsapp FROM central_envio_tipos WHERE escritorio_id = ? AND nome = ? LIMIT 1`).get(doc.escritorio_id, doc.tipo_nome) : null) as any;
     const resultados: { canal: string; destino: string; ok: boolean; erro?: string }[] = [];
     const registrar = (canal: string, destino: string, ok: boolean, erro?: string) => {
       const info = db.prepare(
         `INSERT INTO central_envio_enviados (doc_id, escritorio_id, empresa_id, empresa_nome, setor, tipo_nome, titulo, colaborador_nome, competencia, canal, destino, enviado_por, enviado_por_nome, status, erro, arquivo_path)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      ).run(doc.id, doc.escritorio_id, doc.empresa_id, empresa?.nome || null, doc.setor, doc.tipo_nome, doc.titulo, doc.colaborador_nome, doc.competencia, canal, destino, user.id, user.nome, ok ? "ok" : "erro", erro || null, doc.arquivo_path);
+      ).run(doc.id ?? doc.doc_id ?? null, doc.escritorio_id, doc.empresa_id, empresa?.nome || null, doc.setor, doc.tipo_nome, doc.titulo, doc.colaborador_nome, doc.competencia, canal, destino, user.id, user.nome, ok ? "ok" : "erro", erro || null, doc.arquivo_path);
       resultados.push({ canal, destino, ok, erro });
       return Number(info.lastInsertRowid);
     };
@@ -651,8 +644,44 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
         } catch (e: any) { for (const x of lista) registrar("email", x, false, String(e.message).slice(0, 300)); }
       }
     }
-    if (!resultados.length) return res.status(400).json({ error: "Nenhum destinatário válido selecionado (só valem contatos cadastrados na empresa)." });
-    if (resultados.some((r) => r.ok)) db.prepare(`UPDATE central_envio_docs SET status = 'enviado' WHERE id = ?`).run(doc.id);
-    res.json({ ok: resultados.some((r) => r.ok), resultados });
+    if (!resultados.length) return { status: 400, erro: "Nenhum destinatário válido selecionado (só valem contatos cadastrados na empresa)." };
+    return { resultados };
+  }
+  const contatosDaEmpresa = (empresaId: number | null) => {
+    if (!empresaId) return { whatsapp: [], email: [] };
+    const c = db.prepare(`SELECT nome, email, telefone, receber_emails, receber_whatsapp FROM empresa_contatos WHERE empresa_id = ?`).all(empresaId) as any[];
+    return {
+      whatsapp: c.filter((x) => x.telefone && x.receber_whatsapp).map((x) => ({ nome: x.nome, telefone: x.telefone })),
+      email: c.filter((x) => x.email && x.receber_emails).map((x) => ({ nome: x.nome, email: x.email })),
+    };
+  };
+  app.post("/api/central-envio/docs/:id/enviar", d.blockCliente, async (req, res) => {
+    const user = (req as any).user;
+    const doc = docDoUsuario(req, res); if (!doc) return;
+    if (!d.hasPermissao(user, doc.setor, "postar")) return semAcesso(res);
+    if (doc.status !== "pendente") return res.status(409).json({ error: "Esse documento já foi enviado ou dispensado." });
+    const r = await executarEnvio(user, doc, req.body);
+    if (r.erro) return res.status(r.status || 400).json({ error: r.erro });
+    if (r.resultados!.some((x) => x.ok)) db.prepare(`UPDATE central_envio_docs SET status = 'enviado' WHERE id = ?`).run(doc.id);
+    res.json({ ok: r.resultados!.some((x) => x.ok), resultados: r.resultados });
+  });
+  // Reenviar um documento do histórico (mesmo PDF guardado): escolhe de novo os contatos e grava novos registros em Enviados.
+  const envioDoHistorico = (req: express.Request, res: express.Response): any | null => {
+    const user = (req as any).user;
+    const e = db.prepare(`SELECT * FROM central_envio_enviados WHERE id = ? AND escritorio_id = ?`).get(Number(req.params.id), user.escritorioId) as any;
+    if (!e || !(d.hasPermissao(user, e.setor, "visualizar") || d.hasPermissao(user, "crm", "visualizar"))) { res.status(404).json({ error: "Envio não encontrado." }); return null; }
+    return e;
+  };
+  app.get("/api/central-envio/enviados/:id/contatos", d.blockCliente, (req, res) => {
+    const e = envioDoHistorico(req, res); if (!e) return;
+    res.json({ ...contatosDaEmpresa(e.empresa_id), titulo: e.titulo, empresaNome: e.empresa_nome });
+  });
+  app.post("/api/central-envio/enviados/:id/reenviar", d.blockCliente, async (req, res) => {
+    const user = (req as any).user;
+    const e = envioDoHistorico(req, res); if (!e) return;
+    if (!d.hasPermissao(user, e.setor, "postar")) return semAcesso(res);
+    const r = await executarEnvio(user, { ...e, id: e.doc_id }, req.body);
+    if (r.erro) return res.status(r.status || 400).json({ error: r.erro });
+    res.json({ ok: r.resultados!.some((x) => x.ok), resultados: r.resultados });
   });
 }

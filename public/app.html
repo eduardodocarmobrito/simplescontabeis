@@ -10430,7 +10430,7 @@ async function centralEnvioMontar(escopo, box){
     document.getElementById('cenvBadge').innerHTML = resumo.pendentes ? `<span class="tag ok">${resumo.pendentes}</span>` : '';
     document.getElementById('cenvAgruparBox').classList.toggle('hidden', CENV.sub!=='enviados');
     if(CENV.sub==='pendentes' || CENV.sub==='dispensados') cenvDesenharPendentes(lista, r.itens, escopo, podePostar, carregar, CENV.sub==='dispensados');
-    else cenvDesenharEnviados(lista, r.itens);
+    else cenvDesenharEnviados(lista, r.itens, podePostar, carregar);
   }
   await carregar();
   CENV.timer = setInterval(()=>{ if(!document.hidden && !document.getElementById('modalBg')?.classList.contains('open')) carregar(); }, 10000);
@@ -10461,7 +10461,7 @@ function cenvDesenharPendentes(box, itens, escopo, podePostar, recarregar, dispe
     else if(confirmar(`Dispensar "${doc.titulo}"? Ele sai de Pendentes e não será enviado (o arquivo continua guardado).`)) api(`/central-envio/docs/${id}/ignorar`, { method:'POST' }).then(()=>{ toast('Dispensado.','ok'); recarregar(); }).catch(e=>toast(e.message,'err'));
   }));
 }
-function cenvDesenharEnviados(box, itens){
+function cenvDesenharEnviados(box, itens, podePostarEnv, recarregar){
   if(!itens.length){ box.innerHTML = '<div class="card"><div class="empty-state">Nada enviado ainda. Tudo o que for enviado fica aqui, por empresa, para sempre.</div></div>'; return; }
   const entrega = e => !e ? '' : ({ delivered:' · entregue', read:' · lido ✓✓', sent:' · enviado', failed:' · falhou na entrega' })[e] || '';
   const linha = i=>`<tr><td style="font-size:12px; white-space:nowrap;">${esc(cenvDataHora(i.enviado_em))}</td>
@@ -10469,7 +10469,7 @@ function cenvDesenharEnviados(box, itens){
     <td>${i.canal==='whatsapp'?'WhatsApp':'E-mail'}<div style="font-size:11.5px; color:var(--ink-soft);">${esc(i.destino||'')}</div></td>
     <td>${esc(i.enviado_por_nome||'—')}</td>
     <td>${i.status==='ok'?`<span class="tag ok">Enviado${esc(entrega(i.entrega))}</span>`:`<span class="tag bad" title="${esc(i.erro||'')}">Erro</span>`}</td>
-    <td>${i.arquivo_path?`<a class="btn small" href="/api/central-envio/enviados/${i.id}/pdf" target="_blank" rel="noopener">👁</a>`:''}</td></tr>`;
+    <td style="white-space:nowrap;">${i.arquivo_path?`<a class="btn small" href="/api/central-envio/enviados/${i.id}/pdf" target="_blank" rel="noopener" title="Ver o PDF enviado">👁</a>`:''}${podePostarEnv&&i.empresa_id&&i.arquivo_path?` <button class="btn small" data-reenviar="${i.id}" title="Enviar de novo, escolhendo os contatos">↻ Reenviar</button>`:''}</td></tr>`;
   let corpo;
   if(CENV.agrupar){
     const g = new Map();
@@ -10477,6 +10477,10 @@ function cenvDesenharEnviados(box, itens){
     corpo = [...g.entries()].sort((a,b)=>a[0].localeCompare(b[0],'pt-BR')).map(([k,l])=>`<tr><td colspan="7" style="background:var(--paper); font-weight:700;">${esc(k)} <span style="color:var(--ink-soft); font-weight:400;">· ${l.length} envio(s)</span></td></tr>${l.map(linha).join('')}`).join('');
   } else corpo = itens.map(linha).join('');
   box.innerHTML = `<div class="card" style="padding:0; overflow-x:auto;"><table class="data-table"><thead><tr><th>Quando</th><th>Empresa</th><th>Documento</th><th>Canal / destino</th><th>Enviado por</th><th>Situação</th><th></th></tr></thead><tbody>${corpo}</tbody></table></div>`;
+  box.querySelectorAll('[data-reenviar]').forEach(b=>b.addEventListener('click', ()=>{
+    const it = itens.find(x=>x.id===Number(b.dataset.reenviar)); if(!it) return;
+    cenvEnviarModal({ id:it.id, titulo:it.titulo, empresaId:it.empresa_id, empresaNome:it.empresa_nome }, recarregar, { reenvio:true, destino:it.destino });
+  }));
 }
 async function cenvEditarModal(doc, escopo, recarregar){
   let tipos = [], empresas = [];
@@ -10508,18 +10512,23 @@ async function cenvEditarModal(doc, escopo, recarregar){
     }catch(e){ toast(e.message,'err'); }
   });
 }
-async function cenvEnviarModal(doc, recarregar){
+async function cenvEnviarModal(doc, recarregar, opc){
+  opc = opc || {};
+  const reenvio = !!opc.reenvio;
+  const base = reenvio ? `/central-envio/enviados/${doc.id}` : `/central-envio/docs/${doc.id}`;
   if(!doc.empresaId){ toast('Escolha a empresa antes (botão Corrigir).','err'); return; }
   let c;
-  try{ c = await api(`/central-envio/docs/${doc.id}/contatos`); }catch(e){ toast(e.message,'err'); return; }
-  openModal(`<h3>Enviar documento</h3>
-    <p style="margin:0 0 6px;"><b>${esc(doc.titulo)}</b></p><p class="subtitle" style="margin:0 0 10px;">Para: ${esc(doc.empresaNome||'')}</p>
+  try{ c = await api(`${base}/contatos`); }catch(e){ toast(e.message,'err'); return; }
+  // Reenvio: já vem marcado só quem recebeu daquela linha; o resto é escolha sua. Envio novo: todos marcados.
+  const marcado = v => !reenvio || String(v)===String(opc.destino||'') ? 'checked' : '';
+  openModal(`<h3>${reenvio?'Reenviar documento':'Enviar documento'}</h3>
+    <p style="margin:0 0 6px;"><b>${esc(doc.titulo)}</b></p><p class="subtitle" style="margin:0 0 10px;">Para: ${esc(doc.empresaNome||'')}${reenvio?' · será enviado de novo o mesmo PDF já guardado':''}</p>
     <div style="font-weight:600; font-size:13px; margin:8px 0 4px;">WhatsApp</div>
-    ${c.whatsapp.length ? c.whatsapp.map((w,i)=>`<label class="checkbox-row"><input type="checkbox" class="cenvTel" value="${esc(w.telefone)}" checked> ${esc(w.nome||'')} — ${esc(w.telefone)}</label>`).join('') : '<div style="font-size:12.5px; color:var(--ink-soft);">Nenhum contato com WhatsApp ativo cadastrado nessa empresa.</div>'}
+    ${c.whatsapp.length ? c.whatsapp.map(w=>`<label class="checkbox-row"><input type="checkbox" class="cenvTel" value="${esc(w.telefone)}" ${marcado(w.telefone)}> ${esc(w.nome||'')} — ${esc(w.telefone)}</label>`).join('') : '<div style="font-size:12.5px; color:var(--ink-soft);">Nenhum contato com WhatsApp ativo cadastrado nessa empresa.</div>'}
     <div style="font-weight:600; font-size:13px; margin:12px 0 4px;">E-mail</div>
-    ${c.email.length ? c.email.map(w=>`<label class="checkbox-row"><input type="checkbox" class="cenvMail" value="${esc(w.email)}" checked> ${esc(w.nome||'')} — ${esc(w.email)}</label>`).join('') : '<div style="font-size:12.5px; color:var(--ink-soft);">Nenhum contato com e-mail ativo cadastrado nessa empresa.</div>'}
-    <p style="font-size:11.5px; color:var(--ink-soft); margin:12px 0 0;">Confira os destinatários antes de enviar. O envio fica registrado em <b>Enviados</b>.</p>
-    <div class="row" style="justify-content:flex-end; gap:8px; margin-top:12px;"><button class="btn" onclick="closeModal()">Cancelar</button><button class="btn primary" id="cenvEnviarOk">Enviar</button></div>`, '560px');
+    ${c.email.length ? c.email.map(w=>`<label class="checkbox-row"><input type="checkbox" class="cenvMail" value="${esc(w.email)}" ${marcado(w.email)}> ${esc(w.nome||'')} — ${esc(w.email)}</label>`).join('') : '<div style="font-size:12.5px; color:var(--ink-soft);">Nenhum contato com e-mail ativo cadastrado nessa empresa.</div>'}
+    <p style="font-size:11.5px; color:var(--ink-soft); margin:12px 0 0;">Confira os destinatários antes de enviar. Cada envio fica registrado em <b>Enviados</b> — o que já foi enviado não é alterado.</p>
+    <div class="row" style="justify-content:flex-end; gap:8px; margin-top:12px;"><button class="btn" onclick="closeModal()">Cancelar</button><button class="btn primary" id="cenvEnviarOk">${reenvio?'Reenviar':'Enviar'}</button></div>`, '560px');
   document.getElementById('cenvEnviarOk').addEventListener('click', async ()=>{
     const telefones = [...document.querySelectorAll('.cenvTel:checked')].map(x=>x.value);
     const emails = [...document.querySelectorAll('.cenvMail:checked')].map(x=>x.value);
@@ -10527,12 +10536,12 @@ async function cenvEnviarModal(doc, recarregar){
     if(!canais.length){ toast('Marque pelo menos um destinatário.','err'); return; }
     const b = document.getElementById('cenvEnviarOk'); b.disabled = true; b.textContent = 'Enviando…';
     try{
-      const r = await api(`/central-envio/docs/${doc.id}/enviar`, { method:'POST', body:{ canais, telefones, emails } });
+      const r = await api(`${base}/${reenvio?'reenviar':'enviar'}`, { method:'POST', body:{ canais, telefones, emails } });
       const falhas = r.resultados.filter(x=>!x.ok);
       closeModal();
-      toast(falhas.length ? `Enviado, mas ${falhas.length} falhou: ${falhas[0].erro||''}` : 'Documento enviado.', falhas.length?'err':'ok');
+      toast(falhas.length ? `Enviado, mas ${falhas.length} falhou: ${falhas[0].erro||''}` : (reenvio?'Documento reenviado.':'Documento enviado.'), falhas.length?'err':'ok');
       recarregar();
-    }catch(e){ toast(e.message,'err'); b.disabled=false; b.textContent='Enviar'; }
+    }catch(e){ toast(e.message,'err'); b.disabled=false; b.textContent=reenvio?'Reenviar':'Enviar'; }
   });
 }
 // Seletor de pasta do Drive: começa nas pastas compartilhadas com a conta de serviço e desce nas subpastas.
