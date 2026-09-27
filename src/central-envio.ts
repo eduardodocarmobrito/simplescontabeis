@@ -180,6 +180,13 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
       id INTEGER PRIMARY KEY AUTOINCREMENT, escritorio_id INTEGER NOT NULL, drive_file_id TEXT NOT NULL, nome TEXT, pasta TEXT, motivo TEXT NOT NULL,
       criado_em TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE (escritorio_id, drive_file_id, motivo)
     );
+    CREATE TABLE IF NOT EXISTS central_envio_agendados (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, escritorio_id INTEGER NOT NULL, doc_id INTEGER NOT NULL, agendado_para TEXT NOT NULL,
+      canais_json TEXT NOT NULL, telefones_json TEXT NOT NULL DEFAULT '[]', emails_json TEXT NOT NULL DEFAULT '[]',
+      criado_por INTEGER, criado_por_nome TEXT, status TEXT NOT NULL DEFAULT 'agendado', erro TEXT,
+      criado_em TEXT NOT NULL DEFAULT (datetime('now')), executado_em TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_central_agend ON central_envio_agendados(status, agendado_para);
     CREATE INDEX IF NOT EXISTS idx_central_env_empresa ON central_envio_enviados(escritorio_id, empresa_id, enviado_em);
   `);
 
@@ -507,6 +514,14 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
       const mapa = new Map(st.map((s) => [s.origem_id, s.status]));
       return res.json({ itens: rows.map((r) => ({ ...r, entrega: r.canal === "whatsapp" ? mapa.get(r.id) || null : null })) });
     }
+    if (req.query.aba === "agendados") {
+      const rows = db.prepare(
+        `SELECT a.*, x.titulo, x.setor, x.tipo_nome, e.nome as empresa_nome FROM central_envio_agendados a JOIN central_envio_docs x ON x.id = a.doc_id LEFT JOIN empresas e ON e.id = x.empresa_id
+         WHERE a.escritorio_id = ? AND x.setor IN (${marcas}) AND (a.status = 'agendado' OR (a.status = 'erro' AND a.executado_em > datetime('now', '-7 days')))
+           AND (LOWER(x.titulo) LIKE ? OR LOWER(COALESCE(e.nome,'')) LIKE ?) ORDER BY a.agendado_para, a.id LIMIT 300`
+      ).all(esc, ...setores, busca, busca) as any[];
+      return res.json({ itens: rows.map((r) => ({ id: r.id, titulo: r.titulo, tipoNome: r.tipo_nome, empresaNome: r.empresa_nome, setor: r.setor, quando: r.agendado_para, status: r.status, erro: r.erro, telefones: JSON.parse(r.telefones_json || "[]"), emails: JSON.parse(r.emails_json || "[]"), por: r.criado_por_nome })) });
+    }
     const statusLista = req.query.aba === "dispensados" ? "ignorado" : "pendente";
     const rows = db.prepare(
       `SELECT x.*, e.nome as empresa_nome FROM central_envio_docs x LEFT JOIN empresas e ON e.id = x.empresa_id
@@ -522,7 +537,8 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     const n = (db.prepare(`SELECT COUNT(*) n FROM central_envio_docs WHERE escritorio_id = ? AND status = 'pendente' AND setor IN (${setores.map(() => "?").join(",")})`).get(user.escritorioId, ...setores) as any).n;
     const c = db.prepare(`SELECT ultima_varredura, ultimo_erro, sa_json_cifrado IS NOT NULL as ok FROM central_envio_config WHERE escritorio_id = ?`).get(user.escritorioId) as any;
     const pastas = (db.prepare(`SELECT id, setor, user_id, pasta_nome FROM central_envio_pastas WHERE escritorio_id = ? AND setor IN (${setores.map(() => "?").join(",")})`).all(user.escritorioId, ...setores) as any[]);
-    res.json({ lendo: varreduraManual.has(user.escritorioId), pendentes: n, conectado: !!c?.ok, ultimaVarredura: c?.ultima_varredura || null, ultimoErro: c?.ultimo_erro || null, minhasPastas: pastas.filter((p) => p.user_id === user.id), pastasDoSetor: pastas.length });
+    const nAg = (db.prepare(`SELECT COUNT(*) n FROM central_envio_agendados a JOIN central_envio_docs x ON x.id = a.doc_id WHERE a.escritorio_id = ? AND a.status = 'agendado' AND x.setor IN (${setores.map(() => "?").join(",")})`).get(user.escritorioId, ...setores) as any).n;
+    res.json({ lendo: varreduraManual.has(user.escritorioId), agendados: nAg, pendentes: n, conectado: !!c?.ok, ultimaVarredura: c?.ultima_varredura || null, ultimoErro: c?.ultimo_erro || null, minhasPastas: pastas.filter((p) => p.user_id === user.id), pastasDoSetor: pastas.length });
   });
   const docDoUsuario = (req: express.Request, res: express.Response): any | null => {
     const user = (req as any).user;
@@ -655,6 +671,77 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
       email: c.filter((x) => x.email && x.receber_emails).map((x) => ({ nome: x.nome, email: x.email })),
     };
   };
+  // ------------------------------------------------------------ envio AGENDADO (ex.: preparar à noite, disparar às 08:00)
+  async function rodarAgendado(a: any) {
+    // "enviando" evita disparo duplo se duas voltas do relógio se cruzarem
+    if (!Number(db.prepare(`UPDATE central_envio_agendados SET status = 'enviando' WHERE id = ? AND status = 'agendado'`).run(a.id).changes)) return;
+    const doc = db.prepare(`SELECT * FROM central_envio_docs WHERE id = ?`).get(a.doc_id) as any;
+    if (!doc || doc.status !== "agendado") { db.prepare(`UPDATE central_envio_agendados SET status = 'cancelado', executado_em = datetime('now') WHERE id = ?`).run(a.id); return; }
+    try {
+      const r = await executarEnvio({ id: a.criado_por, nome: a.criado_por_nome }, doc, { canais: JSON.parse(a.canais_json), telefones: JSON.parse(a.telefones_json), emails: JSON.parse(a.emails_json) });
+      if (r.erro || !r.resultados!.some((x) => x.ok)) {
+        db.prepare(`UPDATE central_envio_agendados SET status = 'erro', erro = ?, executado_em = datetime('now') WHERE id = ?`).run((r.erro || r.resultados!.map((x) => x.erro).filter(Boolean)[0] || "Falha no envio").slice(0, 300), a.id);
+        db.prepare(`UPDATE central_envio_docs SET status = 'pendente' WHERE id = ?`).run(doc.id); // volta pra Pendentes pra você ver e decidir
+      } else {
+        db.prepare(`UPDATE central_envio_agendados SET status = 'enviado', executado_em = datetime('now') WHERE id = ?`).run(a.id);
+        db.prepare(`UPDATE central_envio_docs SET status = 'enviado' WHERE id = ?`).run(doc.id);
+      }
+    } catch (e: any) {
+      db.prepare(`UPDATE central_envio_agendados SET status = 'erro', erro = ?, executado_em = datetime('now') WHERE id = ?`).run(String(e.message).slice(0, 300), a.id);
+      db.prepare(`UPDATE central_envio_docs SET status = 'pendente' WHERE id = ?`).run(doc.id);
+    }
+  }
+  setInterval(async () => {
+    const vencidos = db.prepare(`SELECT * FROM central_envio_agendados WHERE status = 'agendado' AND agendado_para <= ? ORDER BY agendado_para, id LIMIT 20`).all(new Date().toISOString()) as any[];
+    for (const a of vencidos) await rodarAgendado(a).catch((e) => console.error("[central-envio] agendado:", e.message));
+  }, 15_000).unref();
+  app.post("/api/central-envio/docs/:id/agendar", d.blockCliente, (req, res) => {
+    const user = (req as any).user;
+    const doc = docDoUsuario(req, res); if (!doc) return;
+    if (!d.hasPermissao(user, doc.setor, "postar")) return semAcesso(res);
+    if (doc.status !== "pendente") return res.status(409).json({ error: "Esse documento já foi enviado, agendado ou dispensado." });
+    if (!doc.empresa_id) return res.status(400).json({ error: "Escolha a empresa deste documento antes de agendar." });
+    const quando = new Date(String(req.body?.quando || ""));
+    if (isNaN(quando.getTime()) || quando.getTime() < Date.now() + 30_000) return res.status(400).json({ error: "Escolha um dia e horário no futuro." });
+    const canais: string[] = (Array.isArray(req.body?.canais) ? req.body.canais : []).filter((c: string) => c === "whatsapp" || c === "email");
+    const c = contatosDaEmpresa(doc.empresa_id);
+    const telefones = (Array.isArray(req.body?.telefones) ? req.body.telefones : []).map(String).filter((t: string) => c.whatsapp.some((w: any) => w.telefone === t));
+    const emails = (Array.isArray(req.body?.emails) ? req.body.emails : []).map(String).filter((e: string) => c.email.some((m: any) => m.email === e));
+    if (!canais.length || (!telefones.length && !emails.length)) return res.status(400).json({ error: "Marque pelo menos um destinatário (contatos cadastrados na empresa)." });
+    db.prepare(`INSERT INTO central_envio_agendados (escritorio_id, doc_id, agendado_para, canais_json, telefones_json, emails_json, criado_por, criado_por_nome) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(doc.escritorio_id, doc.id, quando.toISOString(), JSON.stringify(canais), JSON.stringify(telefones), JSON.stringify(emails), user.id, user.nome);
+    db.prepare(`UPDATE central_envio_docs SET status = 'agendado' WHERE id = ?`).run(doc.id);
+    res.json({ ok: true, quando: quando.toISOString() });
+  });
+  const agendadoDoUsuario = (req: express.Request, res: express.Response): any | null => {
+    const user = (req as any).user;
+    const a = db.prepare(`SELECT a.*, x.setor as setor FROM central_envio_agendados a JOIN central_envio_docs x ON x.id = a.doc_id WHERE a.id = ? AND a.escritorio_id = ?`).get(Number(req.params.id), user.escritorioId) as any;
+    if (!a || !d.hasPermissao(user, a.setor, "postar")) { res.status(404).json({ error: "Agendamento não encontrado." }); return null; }
+    return a;
+  };
+  app.post("/api/central-envio/agendados/:id/cancelar", d.blockCliente, (req, res) => {
+    const a = agendadoDoUsuario(req, res); if (!a) return;
+    if (a.status !== "agendado" && a.status !== "erro") return res.status(409).json({ error: "Esse agendamento já foi executado." });
+    db.prepare(`UPDATE central_envio_agendados SET status = 'cancelado', executado_em = datetime('now') WHERE id = ?`).run(a.id);
+    db.prepare(`UPDATE central_envio_docs SET status = 'pendente' WHERE id = ? AND status = 'agendado'`).run(a.doc_id);
+    res.json({ ok: true });
+  });
+  app.put("/api/central-envio/agendados/:id", d.blockCliente, (req, res) => {
+    const a = agendadoDoUsuario(req, res); if (!a) return;
+    const quando = new Date(String(req.body?.quando || ""));
+    if (a.status !== "agendado") return res.status(409).json({ error: "Só dá para mudar o horário de um agendamento pendente." });
+    if (isNaN(quando.getTime()) || quando.getTime() < Date.now() + 30_000) return res.status(400).json({ error: "Escolha um dia e horário no futuro." });
+    db.prepare(`UPDATE central_envio_agendados SET agendado_para = ? WHERE id = ?`).run(quando.toISOString(), a.id);
+    res.json({ ok: true });
+  });
+  app.post("/api/central-envio/agendados/:id/enviar-agora", d.blockCliente, async (req, res) => {
+    const a = agendadoDoUsuario(req, res); if (!a) return;
+    if (a.status !== "agendado") return res.status(409).json({ error: "Esse agendamento não está mais aguardando." });
+    await rodarAgendado(a);
+    const depois = db.prepare(`SELECT status, erro FROM central_envio_agendados WHERE id = ?`).get(a.id) as any;
+    if (depois.status === "erro") return res.status(502).json({ error: depois.erro || "Falha no envio." });
+    res.json({ ok: true });
+  });
   app.post("/api/central-envio/docs/:id/enviar", d.blockCliente, async (req, res) => {
     const user = (req as any).user;
     const doc = docDoUsuario(req, res); if (!doc) return;
