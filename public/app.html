@@ -9855,6 +9855,7 @@ function atdAgendarModal(S, input){
     <div class="field"><label>Enviar em</label>
       <div class="row" style="gap:8px; align-items:center; flex-wrap:wrap;"><input type="datetime-local" id="agQuando" value="${cenvParaInputDt(cenvProximas8h())}" style="max-width:230px;">
         <button class="btn small" type="button" id="ag8h">🕗 08:00 (próximo dia útil)</button><button class="btn small" type="button" id="ag1h">+1 hora</button></div></div>
+    <label class="checkbox-row" style="margin:0 0 6px;"><input type="checkbox" id="agCancelaResp" checked> <span>Cancelar sozinha se o <b>cliente responder</b> antes do horário</span></label>
     <p style="font-size:11.5px; color:var(--ink-soft); margin:0;">A mensagem sai no histórico da conversa como enviada por <b>Automações</b>; o registro de quem agendou fica em Agendadas.</p>
     <div class="row" style="justify-content:space-between; gap:8px; margin-top:12px;"><button class="btn" id="agVer">Ver agendadas desta conversa</button>
       <span class="row" style="gap:8px;"><button class="btn" onclick="closeModal()">Cancelar</button><button class="btn primary" id="agOk">Agendar</button></span></div>`, '560px');
@@ -9868,7 +9869,7 @@ function atdAgendarModal(S, input){
     if(isNaN(quando)){ toast('Escolha o dia e o horário.','err'); return; }
     const b = document.getElementById('agOk'); b.disabled = true; b.textContent = 'Agendando…';
     try{
-      await api(`/atendimento/conversas/${encodeURIComponent(S.conversaAtiva)}/agendar`, { method:'POST', body:{ texto, quando:quando.toISOString(), escopo:S.escopo } });
+      await api(`/atendimento/conversas/${encodeURIComponent(S.conversaAtiva)}/agendar`, { method:'POST', body:{ texto, quando:quando.toISOString(), escopo:S.escopo, cancelarSeResponder: document.getElementById('agCancelaResp').checked } });
       if(input && input.value.trim()===texto){ input.value=''; input.style.height=''; }
       closeModal(); toast('Mensagem agendada para '+quando.toLocaleString('pt-BR',{weekday:'short',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})+'.','ok');
     }catch(e){ toast(e.message,'err'); b.disabled=false; b.textContent='Agendar'; }
@@ -9879,9 +9880,9 @@ async function atdAgendadasModal(S, conversaId){
   const podePostar = can(S.cfg.modulo,'postar');
   openModal(`<h3>🕗 Mensagens agendadas${conversaId?' desta conversa':''}</h3>
     ${r.itens.length?`<div class="card" style="padding:0; max-height:380px; overflow-y:auto;"><table class="data-table"><thead><tr><th>Envio em</th><th>Cliente</th><th>Mensagem</th><th></th></tr></thead><tbody>
-      ${r.itens.map(i=>`<tr data-id="${i.id}"><td style="white-space:nowrap;"><b>${esc(cenvDataHora(i.quando))}</b>${i.status==='erro'?`<div><span class="tag bad" title="${esc(i.erro||'')}">Falhou</span></div>`:''}<div style="font-size:11px; color:var(--ink-soft);">por ${esc(i.por||'—')}</div></td>
+      ${r.itens.map(i=>`<tr data-id="${i.id}"><td style="white-space:nowrap;"><b>${esc(cenvDataHora(i.quando))}</b>${i.status==='erro'?`<div><span class="tag bad" title="${esc(i.erro||'')}">Falhou</span></div>`:''}${i.status==='cancelada'?`<div><span class="tag warn">Cancelada: cliente respondeu</span></div>`:''}${i.status==='agendada'&&i.cancelaSeResponder?'<div style="font-size:11px; color:var(--ink-soft);">cancela se o cliente responder</div>':''}<div style="font-size:11px; color:var(--ink-soft);">por ${esc(i.por||'—')}</div></td>
         <td>${esc(i.cliente)}</td><td style="max-width:280px; white-space:pre-wrap; font-size:12.5px;">${esc(i.texto)}</td>
-        <td style="text-align:right; white-space:nowrap;">${podePostar&&i.status==='agendada'?`<button class="btn small" data-a="hora">🕗</button> <button class="btn small primary" data-a="agora">Agora</button> `:''}${podePostar?`<button class="btn small danger" data-a="cancelar">Cancelar</button>`:''}</td></tr>`).join('')}
+        <td style="text-align:right; white-space:nowrap;">${podePostar&&i.status==='agendada'?`<button class="btn small" data-a="hora">🕗</button> <button class="btn small primary" data-a="agora">Agora</button> `:''}${podePostar&&i.status!=='cancelada'?`<button class="btn small danger" data-a="cancelar">Cancelar</button>`:''}</td></tr>`).join('')}
       </tbody></table></div>`:'<div class="empty-state">Nenhuma mensagem agendada. Escreva a mensagem, clique em 🕗 ao lado do envio e escolha o horário.</div>'}
     <div class="row" style="justify-content:flex-end; margin-top:12px;"><button class="btn primary" onclick="closeModal()">Fechar</button></div>`, '760px');
   document.querySelectorAll('#modalBody [data-a]').forEach(b=>b.addEventListener('click', async ()=>{

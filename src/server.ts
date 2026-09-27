@@ -13847,9 +13847,22 @@ sqlite.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_atd_msgs_ag ON atendimento_msgs_agendadas(status, agendado_para);
 `);
-async function atendimentoRodarMsgAgendada(m: any): Promise<void> {
+if (!(sqlite.prepare(`PRAGMA table_info(atendimento_msgs_agendadas)`).all() as any[]).some((c) => c.name === "cancelar_se_responder")) {
+  sqlite.exec(`ALTER TABLE atendimento_msgs_agendadas ADD COLUMN cancelar_se_responder INTEGER NOT NULL DEFAULT 1`);
+}
+async function atendimentoRodarMsgAgendada(m: any, forcar = false): Promise<void> {
   if (!Number(sqlite.prepare(`UPDATE atendimento_msgs_agendadas SET status = 'enviando' WHERE id = ? AND status = 'agendada'`).run(m.id).changes)) return;
   try {
+    // "Cancelar se o cliente responder": se chegou mensagem DO CLIENTE depois de agendar, o texto pode não fazer mais sentido — não envia.
+    // (Enviar agora, pedido de propósito pela pessoa, ignora essa checagem.)
+    if (!forcar && m.cancelar_se_responder && deskcommAdmin) {
+      const { data: conv } = await deskcommAdmin.from("conversations").select("last_inbound_at").eq("organization_id", DESKCOMM_ORG_ID).eq("id", m.conversation_id).maybeSingle();
+      const agendadaEm = new Date(String(m.criado_em).replace(" ", "T") + "Z").getTime();
+      if (conv?.last_inbound_at && new Date(conv.last_inbound_at).getTime() > agendadaEm) {
+        sqlite.prepare(`UPDATE atendimento_msgs_agendadas SET status = 'cancelada', erro = 'O cliente respondeu antes do horário — não enviada.', enviado_em = datetime('now') WHERE id = ?`).run(m.id);
+        return;
+      }
+    }
     await deskcommRoboEnviar(m.conversation_id, m.texto);
     sqlite.prepare(`UPDATE atendimento_msgs_agendadas SET status = 'enviada', enviado_em = datetime('now'), erro = NULL WHERE id = ?`).run(m.id);
   } catch (e: any) {
@@ -13879,8 +13892,8 @@ app.post("/api/atendimento/conversas/:id/agendar", blockCliente, async (req, res
   const { data: conv } = await deskcommAdmin.from("conversations").select("id").eq("organization_id", DESKCOMM_ORG_ID).eq("id", String(req.params.id)).maybeSingle();
   if (!conv) return res.status(404).json({ error: "Conversa não encontrada." });
   const escopo = ["crm", "dprh", "contabil", "fiscal"].includes(String(req.body?.escopo)) ? String(req.body.escopo) : "crm";
-  const info = sqlite.prepare(`INSERT INTO atendimento_msgs_agendadas (escritorio_id, conversation_id, escopo, texto, agendado_para, criado_por, criado_por_nome) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .run(user.escritorioId, String(req.params.id), escopo, texto, quando.toISOString(), user.id, user.nome);
+  const info = sqlite.prepare(`INSERT INTO atendimento_msgs_agendadas (escritorio_id, conversation_id, escopo, texto, agendado_para, criado_por, criado_por_nome, cancelar_se_responder) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(user.escritorioId, String(req.params.id), escopo, texto, quando.toISOString(), user.id, user.nome, req.body?.cancelarSeResponder === false ? 0 : 1);
   res.json({ ok: true, id: Number(info.lastInsertRowid), quando: quando.toISOString() });
 });
 // Lista as agendadas (de uma conversa ou do escopo inteiro: o CRM enxerga todas; cada setor, as criadas nele).
@@ -13889,7 +13902,7 @@ app.get("/api/atendimento/agendadas", blockCliente, async (req, res) => {
   if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   const escopo = String(req.query.escopo || "crm");
   const conversa = req.query.conversa ? String(req.query.conversa) : null;
-  const cond = [`escritorio_id = ?`, `(status = 'agendada' OR (status = 'erro' AND enviado_em > datetime('now', '-7 days')))`];
+  const cond = [`escritorio_id = ?`, `(status = 'agendada' OR (status = 'erro' AND enviado_em > datetime('now', '-7 days')) OR (status = 'cancelada' AND erro IS NOT NULL AND enviado_em > datetime('now', '-7 days')))`];
   const args: any[] = [user.escritorioId];
   if (conversa) { cond.push(`conversation_id = ?`); args.push(conversa); }
   else if (escopo !== "crm") { cond.push(`escopo = ?`); args.push(escopo); }
@@ -13900,7 +13913,7 @@ app.get("/api/atendimento/agendadas", blockCliente, async (req, res) => {
     const { data } = await deskcommAdmin.from("conversations").select("id, contact:contacts(display_name, name, phone_number)").eq("organization_id", DESKCOMM_ORG_ID).in("id", ids.slice(0, 100));
     for (const c of (data || []) as any[]) nomes.set(c.id, c.contact?.display_name || c.contact?.name || c.contact?.phone_number || "Cliente");
   }
-  res.json({ itens: rows.map((r) => ({ id: r.id, conversa: r.conversation_id, cliente: nomes.get(r.conversation_id) || "Cliente", escopo: r.escopo, texto: r.texto, quando: r.agendado_para, status: r.status, erro: r.erro, por: r.criado_por_nome })) });
+  res.json({ itens: rows.map((r) => ({ id: r.id, conversa: r.conversation_id, cliente: nomes.get(r.conversation_id) || "Cliente", escopo: r.escopo, texto: r.texto, quando: r.agendado_para, status: r.status, erro: r.erro, por: r.criado_por_nome, cancelaSeResponder: !!r.cancelar_se_responder })) });
 });
 app.post("/api/atendimento/agendadas/:id/cancelar", blockCliente, (req, res) => {
   const m = atendimentoMsgAgendadaDoUsuario(req, res); if (!m) return;
@@ -13921,7 +13934,7 @@ app.put("/api/atendimento/agendadas/:id", blockCliente, (req, res) => {
 app.post("/api/atendimento/agendadas/:id/enviar-agora", blockCliente, async (req, res) => {
   const m = atendimentoMsgAgendadaDoUsuario(req, res); if (!m) return;
   if (m.status !== "agendada") return res.status(409).json({ error: "Essa mensagem não está mais aguardando." });
-  await atendimentoRodarMsgAgendada(m);
+  await atendimentoRodarMsgAgendada(m, true);
   const depois = sqlite.prepare(`SELECT status, erro FROM atendimento_msgs_agendadas WHERE id = ?`).get(m.id) as any;
   if (depois.status === "erro") return res.status(502).json({ error: depois.erro || "Falha no envio." });
   res.json({ ok: true });
