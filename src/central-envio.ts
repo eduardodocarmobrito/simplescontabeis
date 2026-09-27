@@ -455,14 +455,27 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
   });
   // Testa uma amostra: vê que tipo/empresa/colaborador o site tiraria de um PDF enviado (sem gravar nada).
   // "Por que meu arquivo não apareceu?": arquivos que a leitura viu e não pôde usar (pasta não lida, erro, grande demais).
-  app.get("/api/central-envio/diagnostico", d.blockCliente, (req, res) => {
+  app.get("/api/central-envio/diagnostico", d.blockCliente, async (req, res) => {
     const user = (req as any).user;
     if (!SETORES_CENTRAL.some((s) => d.hasPermissao(user, s, "visualizar"))) return semAcesso(res);
     const cred = credDe(user.escritorioId);
     const c = db.prepare(`SELECT ultima_varredura, ultimo_erro FROM central_envio_config WHERE escritorio_id = ?`).get(user.escritorioId) as any;
     const pastas = db.prepare(`SELECT setor, pasta_nome FROM central_envio_pastas WHERE escritorio_id = ?`).all(user.escritorioId) as any[];
     const itens = db.prepare(`SELECT nome, pasta, motivo, criado_em FROM central_envio_log WHERE escritorio_id = ? ORDER BY id DESC LIMIT 40`).all(user.escritorioId) as any[];
-    res.json({ conectado: !!cred, ultimaVarredura: c?.ultima_varredura || null, ultimoErro: c?.ultimo_erro || null, pastasLidas: pastas.map((p) => `${p.pasta_nome} (${p.setor})`), itens });
+    // O que a conta de serviço realmente enxerga DENTRO de cada pasta lida (os 12 arquivos mais recentes) e o que foi feito com cada um.
+    const visao: any[] = [];
+    if (cred) {
+      for (const r of db.prepare(`SELECT pasta_id, pasta_nome, setor FROM central_envio_pastas WHERE escritorio_id = ?`).all(user.escritorioId) as any[]) {
+        try {
+          const j = await driveGet(user.escritorioId, cred, "files", { q: `'${r.pasta_id}' in parents and trashed=false`, orderBy: "createdTime desc", pageSize: "12", fields: "files(id,name,mimeType,createdTime,modifiedTime)" });
+          for (const f of j.files || []) {
+            const docs = db.prepare(`SELECT status, titulo FROM central_envio_docs WHERE escritorio_id = ? AND drive_file_id = ? ORDER BY id DESC`).all(user.escritorioId, f.id) as any[];
+            visao.push({ pasta: r.pasta_nome, nome: f.name, tipo: f.mimeType, criadoEm: f.createdTime, situacao: !/pdf|folder/.test(f.mimeType) ? "Não é PDF — ignorado" : /folder/.test(f.mimeType) ? "Subpasta" : docs.length ? `Lido: ${docs.map((x) => x.status).join(", ")}` : "PDF visível, AINDA NÃO lido" });
+          }
+        } catch (e: any) { visao.push({ pasta: r.pasta_nome, nome: "—", tipo: "", criadoEm: null, situacao: `Erro ao listar a pasta: ${e.message}` }); }
+      }
+    }
+    res.json({ conectado: !!cred, ultimaVarredura: c?.ultima_varredura || null, ultimoErro: c?.ultimo_erro || null, pastasLidas: pastas.map((p) => `${p.pasta_nome} (${p.setor})`), itens, visao });
   });
   app.post("/api/central-envio/varrer", d.blockCliente, async (req, res) => {
     const user = (req as any).user;
