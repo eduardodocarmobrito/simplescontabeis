@@ -7177,6 +7177,12 @@ registerCentralEnvio(app, {
   sqlite,
   blockCliente,
   requireAdmin,
+  abaConfigPermitida: (user: any) => {
+    if (user.perfil === "Administrador") return true;
+    if (user.perfil !== "Colaborador" || !hasPermissao(user, "configuracoes", "visualizar")) return false;
+    const abas = sqlite.prepare(`SELECT aba FROM colaborador_config_abas WHERE user_id = ?`).all(user.id) as any[];
+    return !abas.length || abas.some((a) => a.aba === "envio-docs");
+  },
   hasPermissao,
   cifrar: nfse.cifrarTexto,
   decifrar: nfse.decifrarTexto,

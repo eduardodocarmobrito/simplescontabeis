@@ -10526,7 +10526,8 @@ async function cenvEnviarModal(doc, recarregar){
 // Seletor de pasta do Drive: começa nas pastas compartilhadas com a conta de serviço e desce nas subpastas.
 async function cenvPastaModal(setorInicial, minha, depois){
   const pilha = [];
-  const setores = minha ? [setorInicial] : Object.keys(CENV_SETORES);
+  const setores = minha ? [setorInicial] : Object.keys(CENV_SETORES).filter(s=>can(s,'visualizar'));
+  if(!minha && !setores.includes(setorInicial)) setorInicial = setores[0] || setorInicial;
   openModal(`<h3>${minha?'Minha pasta de documentos':'Adicionar pasta do Drive'}</h3>
     ${minha?'':`<div class="field"><label>Setor</label><select id="cenvPastaSetor">${setores.map(s=>`<option value="${s}" ${s===setorInicial?'selected':''}>${esc(CENV_SETORES[s])}</option>`).join('')}</select></div>`}
     <p class="subtitle" style="margin:0 0 6px;">Navegue até a pasta onde os PDFs são salvos e clique em <b>Escolher</b>. As subpastas dela também são lidas.</p>
@@ -10558,11 +10559,12 @@ async function cenvPastaModal(setorInicial, minha, depois){
 async function renderCfgEnvioDocs(box){
   const [cfg, pastas, tipos] = await Promise.all([api('/central-envio/config'), api('/central-envio/pastas'), api('/central-envio/tipos')]);
   const setorNome = s=>CENV_SETORES[s]||s;
+  const ehAdminCenv = STATE.user.perfil==='Administrador';
   box.innerHTML = `
     <div class="card"><h3 style="margin-top:0;">Conexão com o Google Drive</h3>
       ${cfg.conectado?`<p>✅ Conectado como <b>${esc(cfg.email)}</b>${cfg.ultimaVarredura?` · última leitura ${esc(cenvDataHora(cfg.ultimaVarredura))}`:''}.${cfg.ultimoErro?`<br><span style="color:var(--debit)">⚠ ${esc(cfg.ultimoErro)}</span>`:''}</p>
-        <div class="row" style="gap:8px;"><button class="btn" id="cenvTrocarChave">Trocar a chave</button><button class="btn danger" id="cenvRemoverChave">Desconectar</button></div>`:''}
-      <div id="cenvChaveBox" class="${cfg.conectado?'hidden':''}">
+        ${ehAdminCenv?`<div class="row" style="gap:8px;"><button class="btn" id="cenvTrocarChave">Trocar a chave</button><button class="btn danger" id="cenvRemoverChave">Desconectar</button></div>`:''}`:(ehAdminCenv?'':'<p>O Google Drive ainda não foi conectado. Só o Administrador conecta.</p>')}
+      <div id="cenvChaveBox" class="${cfg.conectado||!ehAdminCenv?'hidden':''}">
         <p class="subtitle" style="margin:0 0 6px;">Cole aqui o conteúdo do arquivo <b>.json</b> da conta de serviço do Google (baixado no Google Cloud). A pasta do Drive precisa estar compartilhada com o e-mail dela, como Leitor.</p>
         <div class="field"><textarea id="cenvChave" rows="6" placeholder='{ "type": "service_account", ... }' style="font-family:monospace; font-size:12px;"></textarea></div>
         <button class="btn primary" id="cenvSalvarChave">Salvar e testar</button>
@@ -10578,7 +10580,8 @@ async function renderCfgEnvioDocs(box){
   const recarregar = ()=>renderCfgEnvioDocs(box);
   const tc = document.getElementById('cenvTrocarChave'); if(tc) tc.addEventListener('click', ()=>document.getElementById('cenvChaveBox').classList.remove('hidden'));
   const rc = document.getElementById('cenvRemoverChave'); if(rc) rc.addEventListener('click', async ()=>{ if(!confirmar('Desconectar do Google Drive? O site para de ler as pastas (o que já foi lido continua guardado).')) return; await api('/central-envio/config',{method:'DELETE'}); recarregar(); });
-  document.getElementById('cenvSalvarChave').addEventListener('click', async ()=>{
+  const salvarChave = document.getElementById('cenvSalvarChave');
+  if(salvarChave) salvarChave.addEventListener('click', async ()=>{
     const b = document.getElementById('cenvSalvarChave'); b.disabled = true; b.textContent = 'Testando…';
     try{ const r = await api('/central-envio/config', { method:'PUT', body:{ json: document.getElementById('cenvChave').value } }); toast('Conectado como '+r.email+'.','ok'); recarregar(); }
     catch(e){ toast(e.message,'err'); b.disabled=false; b.textContent='Salvar e testar'; }
@@ -10588,7 +10591,7 @@ async function renderCfgEnvioDocs(box){
   document.getElementById('cenvRelerTudo').addEventListener('click', async ()=>{ try{ const r = await api('/central-envio/varrer',{method:'POST',body:{dias:90}}); toast('Relendo em segundo plano. Veja os documentos na aba Envio de documentos do setor.','ok'); }catch(e){ toast(e.message,'err'); } });
   function tipoModal(t){
     openModal(`<h3>${t?'Editar tipo':'Novo tipo de documento'}</h3>
-      <div class="field"><label>Setor</label><select id="tpSetor">${Object.keys(CENV_SETORES).filter(s=>s!=='crm').concat(['crm']).map(s=>`<option value="${s}" ${t&&t.setor===s?'selected':''}>${esc(CENV_SETORES[s].replace(' (todos os setores)',' — vale para qualquer setor'))}</option>`).join('')}</select></div>
+      <div class="field"><label>Setor</label><select id="tpSetor">${Object.keys(CENV_SETORES).filter(s=>s!=='crm').concat(['crm']).filter(s=>can(s,'visualizar')).map(s=>`<option value="${s}" ${t&&t.setor===s?'selected':''}>${esc(CENV_SETORES[s].replace(' (todos os setores)',' — vale para qualquer setor'))}</option>`).join('')}</select></div>
       <div class="field"><label>Nome do tipo</label><input type="text" id="tpNome" value="${esc(t?t.nome:'')}" placeholder="Rescisão"></div>
       <div class="field"><label>Palavras que aparecem no PDF (uma por linha)</label><textarea id="tpPalavras" rows="4" placeholder="TERMO DE RESCISÃO">${esc(t?t.palavras.join('\n'):'')}</textarea></div>
       <label class="checkbox-row"><input type="checkbox" id="tpTodas" ${!t||t.exigeTodas?'checked':''}> Só reconhecer se aparecerem <b>todas</b> as palavras (desmarcado: basta uma)</label>

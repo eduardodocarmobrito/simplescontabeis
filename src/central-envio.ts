@@ -15,6 +15,7 @@ type Deps = {
   sqlite: any;
   blockCliente: express.RequestHandler;
   requireAdmin: express.RequestHandler;
+  abaConfigPermitida: (user: any) => boolean; // Administrador, ou Colaborador com a aba "Envio de documentos" liberada em Usuários
   hasPermissao: (user: any, modulo: any, acao: "visualizar" | "postar" | "editar") => boolean;
   cifrar: (s: string) => string;
   decifrar: (s: string) => string;
@@ -331,8 +332,12 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     for (const r of db.prepare(`SELECT escritorio_id FROM central_envio_config WHERE sa_json_cifrado IS NOT NULL`).all() as any[]) await varrer(r.escritorio_id).catch(() => {});
   }, 10_000).unref();
 
-  // ------------------------------------------------------------ rotas: conexão, pastas, tipos (admin)
-  app.get("/api/central-envio/config", d.blockCliente, d.requireAdmin, (req, res) => {
+  // Quem recebe a aba "Envio de documentos" em Configurações (Usuários › Abas de Configurações) pode montar os modelos (tipos) e as
+  // pastas dos setores a que tem acesso. A chave do Google (conexão) continua só do Administrador.
+  const gerir: express.RequestHandler = (req, res, next) => ((req as any).user && d.abaConfigPermitida((req as any).user) ? next() : void res.status(403).json({ error: "Você não tem acesso a esta aba de Configurações." }));
+  const setorDoUsuario = (user: any, setor: string) => user.perfil === "Administrador" || d.hasPermissao(user, setor, "visualizar");
+  // ------------------------------------------------------------ rotas: conexão, pastas, tipos
+  app.get("/api/central-envio/config", d.blockCliente, gerir, (req, res) => {
     const c = db.prepare(`SELECT sa_email, ultimo_erro, ultima_varredura, dias_inicial, sa_json_cifrado IS NOT NULL as ok FROM central_envio_config WHERE escritorio_id = ?`).get((req as any).user.escritorioId) as any;
     res.json({ conectado: !!c?.ok, email: c?.sa_email || null, ultimoErro: c?.ultimo_erro || null, ultimaVarredura: c?.ultima_varredura || null, diasInicial: c?.dias_inicial || 30 });
   });
@@ -378,7 +383,7 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     if (!setor || !pastaId) return res.status(400).json({ error: "Escolha o setor e a pasta." });
     // Cada um escolhe a SUA pasta (dentro do setor a que tem acesso); pasta geral do setor (sem colaborador) só o Administrador.
     const paraMim = !!req.body?.minha;
-    if (paraMim ? !d.hasPermissao(user, setor, "visualizar") : user.perfil !== "Administrador") return semAcesso(res);
+    if (paraMim ? !d.hasPermissao(user, setor, "visualizar") : !(d.abaConfigPermitida(user) && setorDoUsuario(user, setor))) return semAcesso(res);
     try {
       db.prepare(`INSERT INTO central_envio_pastas (escritorio_id, setor, user_id, pasta_id, pasta_nome) VALUES (?, ?, ?, ?, ?)`).run(user.escritorioId, setor, paraMim ? user.id : null, pastaId, String(req.body?.pastaNome || "").slice(0, 200));
     } catch { return res.status(409).json({ error: "Essa pasta já está cadastrada." }); }
@@ -389,7 +394,7 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     const user = (req as any).user;
     const p = db.prepare(`SELECT * FROM central_envio_pastas WHERE id = ? AND escritorio_id = ?`).get(Number(req.params.id), user.escritorioId) as any;
     if (!p) return res.status(404).json({ error: "Pasta não encontrada." });
-    if (user.perfil !== "Administrador" && p.user_id !== user.id) return semAcesso(res);
+    if (user.perfil !== "Administrador" && p.user_id !== user.id && !(d.abaConfigPermitida(user) && setorDoUsuario(user, p.setor))) return semAcesso(res);
     db.prepare(`DELETE FROM central_envio_pastas WHERE id = ?`).run(p.id);
     res.json({ ok: true });
   });
@@ -424,13 +429,14 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     const nome = String(b.nome || "").trim();
     const palavras = (Array.isArray(b.palavras) ? b.palavras : String(b.palavras || "").split("\n")).map((p: any) => String(p).trim()).filter(Boolean);
     if (!setor || !nome || !palavras.length) return res.status(400).json({ error: "Informe o setor, o nome do tipo e pelo menos uma palavra que identifica o documento." });
+    if (!setorDoUsuario(user, setor)) return semAcesso(res);
     if (id) db.prepare(`UPDATE central_envio_tipos SET setor=?, nome=?, palavras_json=?, exige_todas=?, texto_whatsapp=?, ativo=?, agrupar=? WHERE id=? AND escritorio_id=?`).run(setor, nome, JSON.stringify(palavras), b.exigeTodas === false ? 0 : 1, String(b.textoWhatsapp || "").trim() || null, b.ativo === false ? 0 : 1, b.agrupar ? 1 : 0, id, user.escritorioId);
     else db.prepare(`INSERT INTO central_envio_tipos (escritorio_id, setor, nome, palavras_json, exige_todas, texto_whatsapp, agrupar, ordem) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(user.escritorioId, setor, nome, JSON.stringify(palavras), b.exigeTodas === false ? 0 : 1, String(b.textoWhatsapp || "").trim() || null, b.agrupar ? 1 : 0, Date.now() % 100000);
     res.json({ ok: true });
   };
-  app.post("/api/central-envio/tipos", d.blockCliente, d.requireAdmin, (req, res) => salvarTipo(req, res));
-  app.put("/api/central-envio/tipos/:id", d.blockCliente, d.requireAdmin, (req, res) => salvarTipo(req, res, Number(req.params.id)));
-  app.delete("/api/central-envio/tipos/:id", d.blockCliente, d.requireAdmin, (req, res) => {
+  app.post("/api/central-envio/tipos", d.blockCliente, gerir, (req, res) => salvarTipo(req, res));
+  app.put("/api/central-envio/tipos/:id", d.blockCliente, gerir, (req, res) => salvarTipo(req, res, Number(req.params.id)));
+  app.delete("/api/central-envio/tipos/:id", d.blockCliente, gerir, (req, res) => {
     db.prepare(`DELETE FROM central_envio_tipos WHERE id = ? AND escritorio_id = ?`).run(Number(req.params.id), (req as any).user.escritorioId);
     res.json({ ok: true });
   });
