@@ -2619,13 +2619,15 @@ async function importarCertificadosDriveModal(){
 }
 function certImportRenderizar(){
   const { pastaNome, itens } = CERT_DRIVE;
-  const auto = itens.filter(i=>i.automatico);
-  const pend = itens.filter(i=>!i.automatico);
+  const auto = itens.filter(i=>!i.importado && i.automatico);
+  const pend = itens.filter(i=>!i.importado && !i.automatico);
+  const feitos = itens.filter(i=>i.importado);
   openModal(`<h3>📥 Importar certificados — ${esc(pastaNome)}</h3>
-    <p class="subtitle" style="margin:0 0 8px;">${itens.length} arquivo(s) .pfx/.p12 encontrado(s) · <b>${auto.length}</b> reconhecido(s) com certeza (CNPJ/CPF do nome bate com o cadastro) · ${pend.length} precisam de conferência.</p>
+    <p class="subtitle" style="margin:0 0 8px;">${itens.length} arquivo(s) .pfx/.p12 encontrado(s) · <b>${auto.length}</b> reconhecido(s) com certeza · ${pend.length} precisam de conferência · <b>${feitos.length}</b> já importados.</p>
     <div class="tabs" id="cdTabs" style="margin-bottom:8px;">
       <div class="tab active" data-t="auto">Prontos para importar (${auto.length})</div>
       <div class="tab" data-t="pend">Precisam de conferência (${pend.length})</div>
+      <div class="tab" data-t="feitos">Importados (${feitos.length})</div>
     </div>
     <div id="cdCorpo"></div>
     <div class="row" style="justify-content:flex-end; gap:8px; margin-top:12px;"><button class="btn" onclick="closeModal()">Fechar</button><button class="btn primary" id="cdImportar">Importar selecionados</button></div>`, '1080px');
@@ -2641,8 +2643,13 @@ function certImportRenderizar(){
     </tr>`;
   }
   async function desenhar(){
-    const lista = aba==='auto' ? auto : pend;
+    const lista = aba==='auto' ? auto : aba==='pend' ? pend : feitos;
     const box = document.getElementById('cdCorpo');
+    if(aba==='feitos'){
+      box.innerHTML = lista.length ? `<div class="card" style="padding:0; max-height:420px; overflow-y:auto;"><table class="data-table"><thead><tr><th>Arquivo</th><th>Empresa</th></tr></thead><tbody>
+        ${lista.map(i=>`<tr><td>${esc(i.fileName)}</td><td><span class="tag ok">${esc(i.empresaNome||'—')}</span></td></tr>`).join('')}</tbody></table></div>` : '<div class="empty-state">Nada importado ainda por aqui.</div>';
+      return;
+    }
     if(!lista.length){ box.innerHTML = `<div class="empty-state">${aba==='auto'?'Nenhum reconhecido com certeza.':'Nenhum pendente — tudo já foi reconhecido. 🎉'}</div>`; return; }
     box.innerHTML = `<div class="row" style="margin-bottom:6px;"><label class="checkbox-row" style="margin:0;"><input type="checkbox" id="cdSelTodos" checked> Selecionar todos desta aba</label></div>
       <div class="card" style="padding:0; max-height:420px; overflow-y:auto;"><table class="data-table"><thead><tr><th style="width:26px;"></th><th>Arquivo</th><th>Empresa</th><th>Senha</th></tr></thead><tbody>

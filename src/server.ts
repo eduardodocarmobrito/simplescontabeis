@@ -6143,6 +6143,9 @@ function certAchaEmpresa(escritorioId: number, digitos: string | null, nomeBase:
 }
 app.get("/api/empresas/certificados-drive/candidatos", blockCliente, requireAdmin, async (req, res) => {
   const user = (req as any).user;
+  if (!(sqlite.prepare(`PRAGMA table_info(nfe_busca_config)`).all() as any[]).some((c) => c.name === "origem_drive_file_id")) {
+    sqlite.exec(`ALTER TABLE nfe_busca_config ADD COLUMN origem_drive_file_id TEXT`);
+  }
   const cred = credencialDriveDoEscritorio(sqlite, nfse.decifrarTexto, user.escritorioId);
   if (!cred) return res.status(400).json({ error: "Conecte o Google Drive primeiro em Configurações › Envio de documentos (mesma conexão é reaproveitada aqui)." });
   const pastaId = String(req.query.pastaId || "").replace(/[^\w-]/g, "");
@@ -6155,24 +6158,28 @@ app.get("/api/empresas/certificados-drive/candidatos", blockCliente, requireAdmi
       for (const f of j.files || []) if (/\.(pfx|p12)$/i.test(f.name)) itens.push(f);
       pagina = j.nextPageToken;
     } while (pagina);
-    const jaConfigurados = new Set((sqlite.prepare(`SELECT empresa_id FROM nfe_busca_config WHERE escritorio_id = ?`).all(user.escritorioId) as any[]).map((r) => r.empresa_id));
+    const jaConfigurados = new Map((sqlite.prepare(`SELECT empresa_id, origem_drive_file_id FROM nfe_busca_config WHERE escritorio_id = ?`).all(user.escritorioId) as any[]).map((r) => [r.empresa_id, r.origem_drive_file_id]));
+    const importadosPorArquivo = new Set([...jaConfigurados.values()].filter(Boolean));
     const resultado = itens.map((f) => {
       const { senha, digitos, nomeBase } = certParseNomeArquivo(f.name);
       const { certo, sugestoes } = certAchaEmpresa(user.escritorioId, digitos, nomeBase);
+      // "Importado" é ESTE arquivo específico (rastreado pelo id no Drive) — não confundir com "a empresa já tinha
+      // algum certificado antes" (aí ele continua pendente/pronto normalmente, só avisa que vai substituir).
+      const importado = importadosPorArquivo.has(f.id);
       return {
         fileId: f.id, fileName: f.name, modificadoEm: f.modifiedTime,
-        senha, digitos, automatico: !!certo,
+        senha, digitos, automatico: !!certo, importado,
         empresaId: certo?.id ?? null, empresaNome: certo?.nome ?? null, empresaUf: certo?.uf ?? null,
         sugestoes: sugestoes.map((e: any) => ({ id: e.id, nome: e.nome, cnpj: e.cnpj, uf: e.uf })),
         jaTemCertificado: certo ? jaConfigurados.has(certo.id) : false,
       };
     });
-    res.json({ itens: resultado, automaticos: resultado.filter((r) => r.automatico).length, pendentes: resultado.filter((r) => !r.automatico).length });
+    res.json({ itens: resultado, automaticos: resultado.filter((r) => !r.importado && r.automatico).length, pendentes: resultado.filter((r) => !r.importado && !r.automatico).length, importados: resultado.filter((r) => r.importado).length });
   } catch (e: any) {
     res.status(502).json({ error: e.message });
   }
 });
-function certSalvarNasDuasTelas(empId: number, user: any, buf: Buffer, senha: string, uf: string): { titular: string | null; cnpjCertificado: string | null; validadeAte: string | null } {
+function certSalvarNasDuasTelas(empId: number, user: any, buf: Buffer, senha: string, uf: string, origemFileId: string | null): { titular: string | null; cnpjCertificado: string | null; validadeAte: string | null } {
   const info = nfse.lerCertificadoPfx(buf, senha);
   const validadeIso = info.validadeAte ? info.validadeAte.toISOString() : null;
   const senhaCifrada = nfse.cifrarTexto(senha);
@@ -6182,11 +6189,11 @@ function certSalvarNasDuasTelas(empId: number, user: any, buf: Buffer, senha: st
   const caminhoBusca = nfse.salvarCertificadoCifrado(buf, `${empId}-busca.pfx`);
   if (existenteBusca) {
     nfse.excluirCertificadoDoDisco(existenteBusca.arquivo_path);
-    sqlite.prepare(`UPDATE nfe_busca_config SET cnpj=?, uf_autor=?, arquivo_path=?, senha_cifrada=?, titular=?, cnpj_certificado=?, validade_ate=?, criado_por=?, updated_at=datetime('now'), ultimo_erro=NULL WHERE empresa_id=?`)
-      .run(empresa?.cnpj || "", uf, caminhoBusca, senhaCifrada, info.titular, info.cnpjCertificado, validadeIso, user.id, empId);
+    sqlite.prepare(`UPDATE nfe_busca_config SET cnpj=?, uf_autor=?, arquivo_path=?, senha_cifrada=?, titular=?, cnpj_certificado=?, validade_ate=?, criado_por=?, updated_at=datetime('now'), ultimo_erro=NULL, origem_drive_file_id=? WHERE empresa_id=?`)
+      .run(empresa?.cnpj || "", uf, caminhoBusca, senhaCifrada, info.titular, info.cnpjCertificado, validadeIso, user.id, origemFileId, empId);
   } else {
-    sqlite.prepare(`INSERT INTO nfe_busca_config (empresa_id, escritorio_id, cnpj, uf_autor, ambiente, arquivo_path, senha_cifrada, titular, cnpj_certificado, validade_ate, criado_por) VALUES (?, ?, ?, ?, 'producao', ?, ?, ?, ?, ?, ?)`)
-      .run(empId, user.escritorioId, empresa?.cnpj || "", uf, caminhoBusca, senhaCifrada, info.titular, info.cnpjCertificado, validadeIso, user.id);
+    sqlite.prepare(`INSERT INTO nfe_busca_config (empresa_id, escritorio_id, cnpj, uf_autor, ambiente, arquivo_path, senha_cifrada, titular, cnpj_certificado, validade_ate, criado_por, origem_drive_file_id) VALUES (?, ?, ?, ?, 'producao', ?, ?, ?, ?, ?, ?, ?)`)
+      .run(empId, user.escritorioId, empresa?.cnpj || "", uf, caminhoBusca, senhaCifrada, info.titular, info.cnpjCertificado, validadeIso, user.id, origemFileId);
   }
   // NFS-e › Certificados — clone separado (arquivo próprio), pra bater com o pedido de gravar nas duas telas.
   const existenteNfse = sqlite.prepare(`SELECT * FROM nfse_certificados WHERE empresa_id = ? AND escritorio_id = ?`).get(empId, user.escritorioId) as any;
@@ -6216,7 +6223,7 @@ app.post("/api/empresas/certificados-drive/importar", blockCliente, requireAdmin
     if (!nfe.UF_CODIGO_IBGE[uf]) { resultados.push({ fileId: it.fileId, fileName: it.fileName, ok: false, erro: `A empresa "${empresa.nome}" não tem UF cadastrada (ou é inválida) — preencha o UF dela antes.` }); continue; }
     try {
       const buf = await driveBaixar(user.escritorioId, cred, it.fileId);
-      const info = certSalvarNasDuasTelas(empId, user, buf, String(it.senha || ""), uf);
+      const info = certSalvarNasDuasTelas(empId, user, buf, String(it.senha || ""), uf, it.fileId);
       resultados.push({ fileId: it.fileId, fileName: it.fileName, ok: true, empresaNome: empresa.nome, ...info });
     } catch (e: any) {
       resultados.push({ fileId: it.fileId, fileName: it.fileName, ok: false, empresaNome: empresa.nome, erro: e.message });
