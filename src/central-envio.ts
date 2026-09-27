@@ -72,16 +72,18 @@ async function driveBaixar(escId: number, cred: Cred, id: string): Promise<Buffe
 // Títulos e rótulos dos modelos (nunca são nome de pessoa): "PROVENTOS E DESCONTOS", "BASE PARA CÁLCULO", "RECIBO DE FÉRIAS"…
 const PALAVRAS_DE_TITULO = /PROVENTO|DESCONTO|\bBASE\b|CALCULO|\bTOTAL\b|LIQUIDO|PERIODO|NOTIFICACAO|FERIAS|RECIBO|AVISO|PREVIO|SALARIO|VENCIMENTO|REFERENCIA|DESCRICAO|CODIGO|FOLHA|MENSAL|TERMO|RESCISAO|CONTRATO|TRABALHO|EMPREGADOR|IDENTIFICACAO|DISCRIMINACAO|VERBAS|DEDUCOES|ADIANTAMENTO|HOLERITE|PAGAMENTO|ABONO|AQUISICAO|GOZO|CIENTE|\bDATA\b|VALOR|RUBRICA|CATEGORIA|TRABALHADOR|ASSINATURA|FUNCIONARIO|DEPARTAMENTO|ADMISSAO|CARGO|FILIAL|MATRICULA|DEPOSITO|SAQUE|BANCO/;
 const NOME_VALOR = "([A-ZÀ-Ú][A-ZÀ-Ú'.]*(?:[ ]+[A-ZÀ-Ú'.]+){1,8})";
-export function extrairColaboradorECpf(texto: string): { colaborador: string | null; cpf: string | null } {
+export function extrairColaboradorECpf(texto: string, ehEmpresa: (nomeNormalizado: string) => boolean = () => false): { colaborador: string | null; cpf: string | null } {
   const cpfRot = /CPF[\s\S]{0,60}?(\d{3}\.\d{3}\.\d{3}-\d{2})/.exec(texto);
   const cpf = (cpfRot && cpfRot[1]) || (/\b\d{3}\.\d{3}\.\d{3}-\d{2}\b/.exec(texto) || [])[0] || null;
   // Nomes de pessoas vêm em MAIÚSCULAS nesses modelos; rótulos como "Número Carteira Profissional" (maiúscula/minúscula) não passam.
   const ruim = (v: string) => !/^[A-ZÀ-Ú][A-ZÀ-Ú'. ]{4,70}$/.test(v) || v.trim().split(/\s+/).length < 2 || /LTDA|EMPRESA|CNPJ|EIRELI|\bME\b|ENDERE|BAIRRO|MUNIC|CARTEIRA|S[ÉE]RIE/.test(v) || PALAVRAS_DE_TITULO.test(norm(v));
   // Junta TODOS os nomes de pessoa achados (PDF com vários recibos/holerites): mais de um nome diferente vira "Vários".
   const achados = new Map<string, string>();
-  const guardar = (v: string) => { const t = v.replace(/\s+/g, " ").trim(); if (!ruim(t)) achados.set(norm(t), t); };
+  const guardar = (v: string) => { const t = v.replace(/\s+/g, " ").trim(); if (!ruim(t) && !ehEmpresa(norm(t))) achados.set(norm(t), t); }; // nome de empresa cadastrada nunca é nome de trabalhador
   // 1) Modelos numerados (ex.: Termo de Rescisão: "11 Nome" seguido do nome, mesmo com a célula ao lado na mesma linha)
   for (const m of texto.matchAll(new RegExp("(?<!\\d)\\d{1,2}\\s*Nome(?!\\s*d[ao]\\s*(?:M|P|Soc|Empr))\\s*[:\\-–]?\\s*" + NOME_VALOR, "g"))) guardar(m[1]);
+  // Campo numerado "11 Nome" achado: é ele (modelos TRCT/Termo de Quitação) — não mistura com o resto do texto.
+  if (achados.size) { const n = [...achados.values()]; return { colaborador: n.length > 1 ? "Vários" : n[0], cpf: n.length > 1 ? null : cpf }; }
   // 2) Rótulo no começo da linha: "Nome do Funcionário: FULANO", "Nome do empregado", "Empregado", "Colaborador"…
   const linhas = texto.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   const rotulo = /^(?:\d{1,2}\s*)?(?:NOME(?:\s+DO)?(?:\s+(?:FUNCION[ÁA]RIO|EMPREGADO|COLABORADOR|TRABALHADOR))?(?!\s+D[AO]\s+(?:M[ÃA]E|PAI))|FUNCION[ÁA]RIO|EMPREGADO|COLABORADOR|TRABALHADOR)\s*[:\-–]?\s*(.*)$/i;
@@ -256,7 +258,8 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
       }
       if (melhor) empresa = { id: melhor.id, nome: melhor.nome };
     }
-    const { colaborador, cpf } = extrairColaboradorECpf(texto);
+    const nomesEmpresas = (db.prepare(`SELECT nome FROM empresas WHERE escritorio_id = ?`).all(escId) as any[]).map((e) => norm(e.nome).replace(/\s+/g, " ").trim()).filter((n) => n.length >= 6);
+    const { colaborador, cpf } = extrairColaboradorECpf(texto, (n) => nomesEmpresas.some((e) => e === n || (n.length >= 8 && e.includes(n)) || n.includes(e)));
     const competencia = extrairDataAfastamento(texto) || extrairCompetenciaMes(texto) || rotuloCompetencia(d.extrairPeriodo(texto, nomeArquivo));
     const titulo = [tipo?.nome || String(nomeArquivo).replace(/\.pdf$/i, ""), colaborador, empresa?.nome, competencia].filter(Boolean).join(" - ");
     return { texto, agrupar: !!tipo?.agrupar, tipoId: tipo?.id ?? null, tipoNome: tipo?.nome ?? null, empresaId: empresa?.id ?? null, cnpj: cnpjDetectado, colaborador, cpf, competencia, titulo };
