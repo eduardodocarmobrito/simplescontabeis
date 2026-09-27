@@ -93,6 +93,11 @@
   .sidebar-foot{padding:14px 20px 0; margin-top:14px; border-top:1px solid var(--rule);}
   .sidebar-foot .who{font-family:'IBM Plex Mono',monospace; font-size:10.5px; color:var(--sidebar-soft); line-height:1.5;}
   .sidebar-foot .who b{color:var(--ink); display:block; font-size:12.5px; font-family:'Inter',sans-serif;}
+  .pw-wrap{position:relative; display:flex;}
+  .pw-wrap input{padding-right:42px;}
+  .pw-olho{position:absolute; right:6px; top:50%; transform:translateY(-50%); border:0; background:transparent; cursor:pointer; font-size:17px; opacity:.55; padding:4px 6px; line-height:1;}
+  .pw-olho:hover{opacity:1;}
+  .pw-olho.on{opacity:1; text-decoration:line-through;}
   .sidebar-foot .logout{margin-top:8px; cursor:pointer; color:var(--debit); font-size:11.5px; font-family:'IBM Plex Mono',monospace; text-transform:uppercase;}
 
   .main{flex:1; min-width:0; padding:30px 34px 80px;}
@@ -476,7 +481,7 @@
     <div class="eyebrow">Escritório contábil</div>
     <h1>Simples Contábeis</h1>
     <div class="field"><label>E-mail</label><input id="loginEmail" type="email" autocomplete="username"></div>
-    <div class="field"><label>Senha</label><input id="loginPassword" type="password" autocomplete="current-password"></div>
+    <div class="field"><label>Senha</label><div class="pw-wrap"><input id="loginPassword" type="password" autocomplete="current-password"><button type="button" class="pw-olho" data-alvo="loginPassword" tabindex="-1" title="Mostrar/ocultar a senha" aria-label="Mostrar ou ocultar a senha">👁</button></div></div>
     <button class="btn primary" style="width:100%; justify-content:center;" id="btnLogin">Entrar</button>
     <div id="loginError" class="login-error hidden"></div>
   </div>
@@ -491,6 +496,7 @@
     <div id="navList"></div>
     <div class="sidebar-foot">
       <div class="who">Conectado como<b id="whoName"></b><span id="whoProfile"></span></div>
+      <div class="logout" id="btnTrocarSenha" style="color:var(--ink-soft);">Trocar minha senha</div>
       <div class="logout" id="btnLogout">Sair</div>
     </div>
   </div>
@@ -527,6 +533,39 @@ function toast(msg, kind){
   setTimeout(()=>el.remove(),4200);
 }
 
+// Olhinho de mostrar/ocultar senha (qualquer botão .pw-olho com data-alvo="id do input"; funciona também em conteúdo criado depois)
+document.addEventListener('click', ev=>{
+  const b = ev.target.closest && ev.target.closest('.pw-olho'); if(!b) return;
+  const inp = document.getElementById(b.dataset.alvo); if(!inp) return;
+  const mostrar = inp.type==='password';
+  inp.type = mostrar ? 'text' : 'password';
+  b.classList.toggle('on', mostrar);
+});
+function campoSenhaHtml(id, rotulo, autocomplete){
+  return `<div class="field"><label>${rotulo}</label><div class="pw-wrap"><input id="${id}" type="password" autocomplete="${autocomplete||'off'}"><button type="button" class="pw-olho" data-alvo="${id}" tabindex="-1" title="Mostrar/ocultar a senha" aria-label="Mostrar ou ocultar a senha">👁</button></div></div>`;
+}
+// Trocar a própria senha (Administrador, Colaborador e Cliente)
+function trocarMinhaSenhaModal(){
+  openModal(`<h3>Trocar minha senha</h3>
+    <p class="subtitle" style="margin:0 0 8px;">Use pelo menos 10 caracteres, com letras e números. Ao trocar, você continua aqui e sai dos outros aparelhos.</p>
+    ${campoSenhaHtml('tsAtual','Senha atual','current-password')}
+    ${campoSenhaHtml('tsNova','Nova senha','new-password')}
+    ${campoSenhaHtml('tsConf','Repita a nova senha','new-password')}
+    <div class="row" style="justify-content:flex-end; gap:8px; margin-top:12px;"><button class="btn" onclick="closeModal()">Cancelar</button><button class="btn primary" id="tsSalvar">Trocar senha</button></div>`, '440px');
+  document.getElementById('tsAtual').focus();
+  const salvar = async ()=>{
+    const atual = document.getElementById('tsAtual').value, nova = document.getElementById('tsNova').value, conf = document.getElementById('tsConf').value;
+    if(!atual||!nova){ toast('Preencha a senha atual e a nova.','err'); return; }
+    if(nova!==conf){ toast('As duas senhas novas não são iguais.','err'); return; }
+    if(nova.length<10 || !/[a-zA-Z]/.test(nova) || !/[0-9]/.test(nova)){ toast('A nova senha precisa ter pelo menos 10 caracteres, com letras e números.','err'); return; }
+    const b = document.getElementById('tsSalvar'); b.disabled = true; b.textContent = 'Salvando…';
+    try{ await api('/auth/change-password', { method:'POST', body:{ senhaAtual:atual, novaSenha:nova } }); closeModal(); toast('Senha alterada.','ok'); }
+    catch(e){ toast(e.message,'err'); b.disabled=false; b.textContent='Trocar senha'; }
+  };
+  document.getElementById('tsSalvar').addEventListener('click', salvar);
+  ['tsAtual','tsNova','tsConf'].forEach(id=>document.getElementById(id).addEventListener('keydown', e=>{ if(e.key==='Enter') salvar(); }));
+}
+document.getElementById('btnTrocarSenha').addEventListener('click', trocarMinhaSenhaModal);
 async function api(path, opts){
   opts = opts || {};
   const headers = opts.headers || {};
@@ -10060,7 +10099,7 @@ async function usuarioModal(u){
     <h3>${u?'Editar':'Novo'} usuário</h3>
     <div class="field"><label>Nome</label><input id="usNome" value="${u?esc(u.nome):''}"></div>
     <div class="field"><label>E-mail</label><input id="usEmail" type="email" value="${u?esc(u.email):''}"></div>
-    <div class="field"><label>Senha ${u?'(deixe em branco para manter)':''}</label><input id="usSenha" type="password"></div>
+    <div class="field"><label>Senha ${u?'(deixe em branco para manter)':''}</label><div class="pw-wrap"><input id="usSenha" type="password" autocomplete="new-password"><button type="button" class="pw-olho" data-alvo="usSenha" tabindex="-1" title="Mostrar/ocultar a senha">👁</button></div></div>
     <div class="field"><label>WhatsApp</label><input id="usTelefone" value="${u&&u.telefone?esc(u.telefone):''}" placeholder="DDD + número"></div>
     <p style="font-size:11.5px; color:var(--ink-soft); margin:-8px 0 4px;">Usado só pra avisar por WhatsApp quando chegar uma mensagem no chat interno e a pessoa estiver offline.</p>
     ${!u? `<div class="field"><label>Perfil</label><select id="usPerfil"><option value="Colaborador">Colaborador (escritório)</option><option value="Administrador">Administrador</option><option value="Cliente">Cliente</option></select></div>`

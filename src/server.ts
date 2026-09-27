@@ -2778,16 +2778,26 @@ app.post("/api/auth/empresa-ativa", requireAuth, (req, res) => {
   sqlite.prepare(`UPDATE sessions SET empresa_ativa_id = ? WHERE token = ?`).run(empresaId, req.cookies?.sid);
   res.json({ ok: true });
 });
+// Troca da PRÓPRIA senha (Administrador, Colaborador e Cliente): pede a senha atual; no máximo 8 tentativas erradas por 15 min por usuário.
+const trocaSenhaErros = new Map<number, { n: number; ate: number }>();
 app.post("/api/auth/change-password", requireAuth, (req, res) => {
   const { senhaAtual, novaSenha } = req.body || {};
   const uid = (req as any).user.id;
+  const trava = trocaSenhaErros.get(uid);
+  if (trava && trava.ate > Date.now() && trava.n >= 8) return res.status(429).json({ error: "Muitas tentativas com a senha atual errada. Aguarde alguns minutos." });
   const row = sqlite.prepare(`SELECT * FROM app_users WHERE id = ?`).get(uid) as any;
   if (!row || !verifyPassword(senhaAtual || "", row.password_hash)) {
+    const t = trava && trava.ate > Date.now() ? trava : { n: 0, ate: Date.now() + 15 * 60_000 };
+    t.n++; trocaSenhaErros.set(uid, t);
     return res.status(401).json({ error: "Senha atual incorreta." });
   }
   const pwError = passwordPolicyError(novaSenha);
   if (pwError) return res.status(400).json({ error: pwError });
+  if (String(novaSenha) === String(senhaAtual)) return res.status(400).json({ error: "A nova senha precisa ser diferente da atual." });
   sqlite.prepare(`UPDATE app_users SET password_hash = ? WHERE id = ?`).run(hashPassword(novaSenha), uid);
+  // Sai dos outros aparelhos/navegadores (só a sessão atual continua)
+  sqlite.prepare(`DELETE FROM sessions WHERE user_id = ? AND token != ?`).run(uid, req.cookies?.sid || "");
+  trocaSenhaErros.delete(uid);
   res.json({ ok: true });
 });
 
