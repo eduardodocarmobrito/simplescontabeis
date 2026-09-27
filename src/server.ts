@@ -13829,6 +13829,103 @@ async function deskcommRoboEnviar(conversationId: string, texto: string): Promis
   const m = await deskcommRoboApi("/messages", { method: "POST", body: { conversation_id: conversationId, type: "text", body: texto } });
   return m?.id || null;
 }
+// ---------- Mensagens AGENDADAS do atendimento (CRM e setores): escreve agora, o site envia no horário escolhido ----------
+// Sai pelo usuário "Automações" (o site não guarda a sessão de quem agendou); quem agendou fica registrado aqui na tabela.
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS atendimento_msgs_agendadas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    escritorio_id INTEGER NOT NULL,
+    conversation_id TEXT NOT NULL,
+    escopo TEXT NOT NULL,
+    texto TEXT NOT NULL,
+    agendado_para TEXT NOT NULL,
+    criado_por INTEGER, criado_por_nome TEXT,
+    status TEXT NOT NULL DEFAULT 'agendada', -- agendada | enviando | enviada | erro | cancelada
+    erro TEXT,
+    criado_em TEXT NOT NULL DEFAULT (datetime('now')),
+    enviado_em TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_atd_msgs_ag ON atendimento_msgs_agendadas(status, agendado_para);
+`);
+async function atendimentoRodarMsgAgendada(m: any): Promise<void> {
+  if (!Number(sqlite.prepare(`UPDATE atendimento_msgs_agendadas SET status = 'enviando' WHERE id = ? AND status = 'agendada'`).run(m.id).changes)) return;
+  try {
+    await deskcommRoboEnviar(m.conversation_id, m.texto);
+    sqlite.prepare(`UPDATE atendimento_msgs_agendadas SET status = 'enviada', enviado_em = datetime('now'), erro = NULL WHERE id = ?`).run(m.id);
+  } catch (e: any) {
+    sqlite.prepare(`UPDATE atendimento_msgs_agendadas SET status = 'erro', erro = ?, enviado_em = datetime('now') WHERE id = ?`).run(String(e.message).slice(0, 300), m.id);
+  }
+}
+setInterval(async () => {
+  if (!deskcommAdmin) return;
+  const vencidas = sqlite.prepare(`SELECT * FROM atendimento_msgs_agendadas WHERE status = 'agendada' AND agendado_para <= ? ORDER BY agendado_para, id LIMIT 30`).all(new Date().toISOString()) as any[];
+  for (const m of vencidas) { await atendimentoRodarMsgAgendada(m).catch(() => {}); await new Promise((r) => setTimeout(r, 300)); }
+}, 15_000).unref();
+function atendimentoMsgAgendadaDoUsuario(req: express.Request, res: express.Response): any | null {
+  const user = (req as any).user;
+  const m = sqlite.prepare(`SELECT * FROM atendimento_msgs_agendadas WHERE id = ? AND escritorio_id = ?`).get(Number(req.params.id), user.escritorioId) as any;
+  if (!m || !atendimentoAlgumaPermissao(user, "postar")) { res.status(404).json({ error: "Agendamento não encontrado." }); return null; }
+  return m;
+}
+app.post("/api/atendimento/conversas/:id/agendar", blockCliente, async (req, res) => {
+  const user = (req as any).user;
+  if (!atendimentoAlgumaPermissao(user, "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  const texto = String(req.body?.texto || "").trim();
+  const quando = new Date(String(req.body?.quando || ""));
+  if (!texto) return res.status(400).json({ error: "Escreva a mensagem." });
+  if (texto.length > 4000) return res.status(400).json({ error: "A mensagem passa de 4000 caracteres." });
+  if (isNaN(quando.getTime()) || quando.getTime() < Date.now() + 30_000) return res.status(400).json({ error: "Escolha um dia e horário no futuro." });
+  const { data: conv } = await deskcommAdmin.from("conversations").select("id").eq("organization_id", DESKCOMM_ORG_ID).eq("id", String(req.params.id)).maybeSingle();
+  if (!conv) return res.status(404).json({ error: "Conversa não encontrada." });
+  const escopo = ["crm", "dprh", "contabil", "fiscal"].includes(String(req.body?.escopo)) ? String(req.body.escopo) : "crm";
+  const info = sqlite.prepare(`INSERT INTO atendimento_msgs_agendadas (escritorio_id, conversation_id, escopo, texto, agendado_para, criado_por, criado_por_nome) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run(user.escritorioId, String(req.params.id), escopo, texto, quando.toISOString(), user.id, user.nome);
+  res.json({ ok: true, id: Number(info.lastInsertRowid), quando: quando.toISOString() });
+});
+// Lista as agendadas (de uma conversa ou do escopo inteiro: o CRM enxerga todas; cada setor, as criadas nele).
+app.get("/api/atendimento/agendadas", blockCliente, async (req, res) => {
+  const user = (req as any).user;
+  if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
+  const escopo = String(req.query.escopo || "crm");
+  const conversa = req.query.conversa ? String(req.query.conversa) : null;
+  const cond = [`escritorio_id = ?`, `(status = 'agendada' OR (status = 'erro' AND enviado_em > datetime('now', '-7 days')))`];
+  const args: any[] = [user.escritorioId];
+  if (conversa) { cond.push(`conversation_id = ?`); args.push(conversa); }
+  else if (escopo !== "crm") { cond.push(`escopo = ?`); args.push(escopo); }
+  const rows = sqlite.prepare(`SELECT * FROM atendimento_msgs_agendadas WHERE ${cond.join(" AND ")} ORDER BY agendado_para, id LIMIT 200`).all(...args) as any[];
+  const nomes = new Map<string, string>();
+  const ids = [...new Set(rows.map((r) => r.conversation_id))];
+  if (ids.length && deskcommAdmin) {
+    const { data } = await deskcommAdmin.from("conversations").select("id, contact:contacts(display_name, name, phone_number)").eq("organization_id", DESKCOMM_ORG_ID).in("id", ids.slice(0, 100));
+    for (const c of (data || []) as any[]) nomes.set(c.id, c.contact?.display_name || c.contact?.name || c.contact?.phone_number || "Cliente");
+  }
+  res.json({ itens: rows.map((r) => ({ id: r.id, conversa: r.conversation_id, cliente: nomes.get(r.conversation_id) || "Cliente", escopo: r.escopo, texto: r.texto, quando: r.agendado_para, status: r.status, erro: r.erro, por: r.criado_por_nome })) });
+});
+app.post("/api/atendimento/agendadas/:id/cancelar", blockCliente, (req, res) => {
+  const m = atendimentoMsgAgendadaDoUsuario(req, res); if (!m) return;
+  if (m.status !== "agendada" && m.status !== "erro") return res.status(409).json({ error: "Essa mensagem já foi enviada." });
+  sqlite.prepare(`UPDATE atendimento_msgs_agendadas SET status = 'cancelada' WHERE id = ?`).run(m.id);
+  res.json({ ok: true });
+});
+app.put("/api/atendimento/agendadas/:id", blockCliente, (req, res) => {
+  const m = atendimentoMsgAgendadaDoUsuario(req, res); if (!m) return;
+  if (m.status !== "agendada") return res.status(409).json({ error: "Só dá para alterar uma mensagem que ainda não foi enviada." });
+  const texto = req.body?.texto !== undefined ? String(req.body.texto).trim() : m.texto;
+  const quando = req.body?.quando ? new Date(String(req.body.quando)) : new Date(m.agendado_para);
+  if (!texto) return res.status(400).json({ error: "A mensagem não pode ficar vazia." });
+  if (isNaN(quando.getTime()) || quando.getTime() < Date.now() + 30_000) return res.status(400).json({ error: "Escolha um dia e horário no futuro." });
+  sqlite.prepare(`UPDATE atendimento_msgs_agendadas SET texto = ?, agendado_para = ? WHERE id = ?`).run(texto, quando.toISOString(), m.id);
+  res.json({ ok: true });
+});
+app.post("/api/atendimento/agendadas/:id/enviar-agora", blockCliente, async (req, res) => {
+  const m = atendimentoMsgAgendadaDoUsuario(req, res); if (!m) return;
+  if (m.status !== "agendada") return res.status(409).json({ error: "Essa mensagem não está mais aguardando." });
+  await atendimentoRodarMsgAgendada(m);
+  const depois = sqlite.prepare(`SELECT status, erro FROM atendimento_msgs_agendadas WHERE id = ?`).get(m.id) as any;
+  if (depois.status === "erro") return res.status(502).json({ error: depois.erro || "Falha no envio." });
+  res.json({ ok: true });
+});
 // Primeira mensagem do cliente depois de um instante, na conversa.
 async function deskcommPrimeiraRespostaDoCliente(conversationId: string, depoisDe: string): Promise<{ body: string; created_at: string } | null> {
   const { data, error } = await deskcommAdmin!.from("messages").select("body, created_at")
