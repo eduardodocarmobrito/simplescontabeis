@@ -13273,28 +13273,16 @@ async function crmProcessarRoteamento(escritorioId: number, cfg: any, conversaId
     return;
   }
   if (atual.status === "aberta") return;
-  const departamentos = sqlite.prepare(`SELECT id, nome FROM crm_departamentos WHERE escritorio_id = ? AND ativo = 1 ORDER BY ordem`).all(escritorioId) as any[];
-  if (!departamentos.length) return; // nenhum departamento cadastrado ainda — não tem como rotear
-  const escolha = crmNormalizaTxt(textoRecebido || "");
-  const numero = parseInt(escolha, 10);
-  let escolhido: any = null;
-  if (!isNaN(numero) && numero >= 1 && numero <= departamentos.length) escolhido = departamentos[numero - 1];
-  else escolhido = departamentos.find((d) => crmNormalizaTxt(d.nome) === escolha);
+  // Este número (API oficial da Meta) é só de ENVIO de documentos — não atende mais por menu de
+  // departamento aqui; quem faz isso é o WhatsApp do escritório (deskcomm). Toda vez que o cliente
+  // escrever algo pra este número, sozinho, o aviso abaixo é a única resposta (fica sempre em
+  // 'menu', nunca cria departamento nem fila — se um dia isto precisar voltar a rotear de verdade,
+  // é só reaproveitar `departamentos`/`crmMontarMenu`, que continuam intactos mais abaixo no arquivo).
+  const AVISO_SO_ENVIO = "Em caso de dúvidas do documento recebido, entre em contato com o número 94 99222-1064. Este número é só para envio de documentos.";
   try {
-    if (escolhido) {
-      sqlite.prepare(`UPDATE crm_conversas SET departamento_id = ?, status = 'aberta' WHERE id = ?`).run(escolhido.id, conversaId);
-      // Modo rodízio: já entra atribuída a alguém do departamento, sem esperar "atribuir a mim"
-      // manual — departamento sem colaborador nenhum cai no comportamento de sempre (fila sem dono).
-      if (crmObterConfig(escritorioId).modoDistribuicao === "rodizio") {
-        const proximo = crmProximoRodizio(escolhido.id);
-        if (proximo) sqlite.prepare(`UPDATE crm_conversas SET atribuido_user_id = ? WHERE id = ?`).run(proximo, conversaId);
-      }
-      await crmEnviarTextoLivre(cfg, telefone, `Você está falando com o setor ${escolhido.nome}. Já vamos te atender — aguarde um momento.`, conversaId);
-    } else {
-      await crmEnviarTextoLivre(cfg, telefone, crmMontarMenu(departamentos), conversaId);
-    }
+    await crmEnviarTextoLivre(cfg, telefone, AVISO_SO_ENVIO, conversaId);
   } catch (e: any) {
-    console.error(`[CRM] falha ao enviar o menu/confirmação (conversa ${conversaId}):`, e.message);
+    console.error(`[CRM] falha ao enviar o aviso "só envio" (conversa ${conversaId}):`, e.message);
   }
 }
 async function crmProcessarMensagemRecebida(escritorioId: number, cfg: any, value: any, m: any): Promise<void> {
