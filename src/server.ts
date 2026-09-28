@@ -6549,7 +6549,22 @@ app.post("/api/nfe/config/:empresaId/ancorar-saida", blockCliente, requirePermis
   try {
     const cert = nfeCarregarCertificado(cfg);
     const cnpjBusca = nfeResolverCnpjBusca(cfg, empId);
-    const achado = await nfe.consultarPorChave({ ambiente: cfg.ambiente as nfe.AmbienteNfe, cnpj: cnpjBusca, cUFAutor: nfe.UF_CODIGO_IBGE[cfg.uf_autor], cert, chave });
+    let achado: nfe.RespostaDistribuicao;
+    try {
+      achado = await nfe.consultarPorChave({ ambiente: cfg.ambiente as nfe.AmbienteNfe, cnpj: cnpjBusca, cUFAutor: nfe.UF_CODIGO_IBGE[cfg.uf_autor], cert, chave });
+    } catch (e: any) {
+      // cStat 641 é regra da PRÓPRIA Sefaz, não falta de ancoragem: o emitente nunca recebe de volta, por
+      // este serviço, as notas que ele mesmo emitiu — só o destinatário ou um terceiro autorizado (autXML)
+      // conseguem. Confirmado oficialmente (rejeição documentada da NF-e). Ancorar por chave não resolve
+      // esse caso; a única saída real é o cliente autorizar o CNPJ do escritório (autXML) no emissor dele.
+      if (/641/.test(e.message)) {
+        return res.status(400).json({
+          error:
+            'A Sefaz recusou (rejeição 641: "NF-e indisponível para o emitente") — regra dela, não é problema desta chave: o próprio emitente NUNCA recebe de volta, por este serviço, as notas que ele mesmo emitiu. Só quem compra (destinatário) ou um terceiro autorizado (autXML) consegue buscar. Pra pegar as vendas desta empresa, ela precisa autorizar o CNPJ do escritório como "autXML" no sistema em que ela emite — fale com o Administrador.',
+        });
+      }
+      throw e;
+    }
     if (!achado.documentos.length) {
       return res.status(404).json({ error: "Não encontrei essa nota na Distribuição DFe da Sefaz. Confira a chave, ou aguarde — pode levar algumas horas depois de emitida pra aparecer lá." });
     }
