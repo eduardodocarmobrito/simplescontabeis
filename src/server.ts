@@ -6608,6 +6608,30 @@ app.post("/api/nfe/config/:empresaId/buscar", blockCliente, requirePermissao("nf
     nfeBuscasEmAndamento.delete(empId);
   }
 });
+// Teste/diagnóstico: zera o cursor (ultNSU) e busca desde o início, sem passar pela consulta avulsa por
+// chave (consChNFe) — que dá cStat 641 pro emitente. A busca SEQUENCIAL normal (distNSU) pode não ter essa
+// mesma trava; se ela trouxer as vendas sozinha, o problema nunca foi "ancoragem", foi o cursor não ter
+// sido zerado desde o começo (ou nunca ter rodado uma varredura completa antes).
+app.post("/api/nfe/config/:empresaId/reiniciar-busca", blockCliente, requirePermissao("nfe-busca", "postar"), async (req, res) => {
+  const user = (req as any).user;
+  const empId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa(user, empId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  if (nfeBuscasEmAndamento.has(empId)) return res.status(409).json({ error: "Já tem uma busca em andamento pra esta empresa — aguarde terminar e tente de novo." });
+  const cfg = sqlite.prepare(`SELECT * FROM nfe_busca_config WHERE empresa_id = ?`).get(empId) as any;
+  if (!cfg) return res.status(400).json({ error: "Nenhum certificado configurado para esta empresa." });
+  sqlite.prepare(`UPDATE nfe_busca_config SET ultimo_nsu = '0' WHERE empresa_id = ?`).run(empId);
+  nfeBuscasEmAndamento.add(empId);
+  try {
+    const cert = nfeCarregarCertificado(cfg);
+    const cfgAtualizado = sqlite.prepare(`SELECT * FROM nfe_busca_config WHERE empresa_id = ?`).get(empId) as any;
+    const resultado = await nfeBuscarDocumentosNovos(empId, cfgAtualizado, cert);
+    res.json({ ok: true, novos: resultado.novos });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  } finally {
+    nfeBuscasEmAndamento.delete(empId);
+  }
+});
 // A Distribuição DFe, pro EMITENTE (empresa que vende), muitas vezes só passa a listar as notas a partir
 // de um certo ponto na sequência de NSU — sem uma referência, buscar desde o começo (ultNSU=0) pode nunca
 // trazer o histórico de vendas, só as compras (achado confirmado num caso real: só chegava entrada). Aqui

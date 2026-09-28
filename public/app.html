@@ -5781,6 +5781,9 @@ async function renderCertificadoBuscaXml(containerEl, empresaId, empresaUfPadrao
           <button class="btn" id="btnNfeAncorarSaida_${empresaId}">Buscar a partir dessa nota</button>
         </div>
         <div id="nfeAncorarResultado_${empresaId}" style="margin-top:8px;"></div>
+        <p style="font-size:11.5px; color:var(--ink-soft); margin:10px 0 4px;">Teste (investigação em andamento): zera o cursor e relê tudo desde o começo, sem consultar aquela chave específica — só pra descobrir se a busca sequencial normal já traz as vendas sozinha.</p>
+        <button class="btn small" id="btnNfeReiniciar_${empresaId}">🔄 Reiniciar e buscar tudo de novo</button>
+        <div id="nfeReiniciarResultado_${empresaId}" style="margin-top:8px;"></div>
       </div>`:''}
     `;
     if(podeEditar) containerEl.querySelector(`#nfeCfgAtivo_${empresaId}`).addEventListener('change', async (ev)=>{
@@ -5816,6 +5819,22 @@ async function renderCertificadoBuscaXml(containerEl, empresaId, empresaUfPadrao
         resultado.innerHTML = `<div class="tag bad">Falhou</div> <span style="font-size:12.5px;">${esc(e.message)}</span>`;
       }finally{
         btn.disabled = false; btn.textContent = 'Buscar a partir dessa nota';
+      }
+    });
+    if(podePostar) containerEl.querySelector(`#btnNfeReiniciar_${empresaId}`).addEventListener('click', async ()=>{
+      if(!confirmar('Isso relê TODO o histórico de novo pra esta empresa (pode demorar mais que o normal). Confirma?')) return;
+      const btn = containerEl.querySelector(`#btnNfeReiniciar_${empresaId}`);
+      const resultado = containerEl.querySelector(`#nfeReiniciarResultado_${empresaId}`);
+      btn.disabled = true; btn.textContent = 'Relendo tudo…';
+      resultado.innerHTML = `<div class="empty-state">Isso pode levar mais tempo que o normal…</div>`;
+      try{
+        const r = await api('/nfe/config/'+empresaId+'/reiniciar-busca', { method:'POST' });
+        resultado.innerHTML = `<div class="tag ok">Concluído</div> <span style="font-size:12.5px;">${r.novos} documento(s) novo(s) desde o início.</span>`;
+        if(opts.onDocumentosMudou) opts.onDocumentosMudou();
+      }catch(e){
+        resultado.innerHTML = `<div class="tag bad">Falhou</div> <span style="font-size:12.5px;">${esc(e.message)}</span>`;
+      }finally{
+        btn.disabled = false; btn.textContent = '🔄 Reiniciar e buscar tudo de novo';
       }
     });
     if(podePostar) containerEl.querySelector(`#btnNfeBuscarAgora_${empresaId}`).addEventListener('click', async ()=>{
