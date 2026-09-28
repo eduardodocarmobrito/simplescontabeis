@@ -13445,6 +13445,10 @@ const ATENDIMENTO_SETORES = {
 type AtendimentoSetorEscopo = keyof typeof ATENDIMENTO_SETORES;
 type AtendimentoEscopo = "crm" | AtendimentoSetorEscopo;
 const ATENDIMENTO_ESCOPOS_SETOR = Object.keys(ATENDIMENTO_SETORES) as AtendimentoSetorEscopo[];
+// Setor "de etiqueta", sem módulo/aba própria nem agente de IA — só pra marcar conversa interna (entre
+// colaboradores) como "tem setor" (sai da Fila do CRM, que trata "sem setor" como cliente novo esperando
+// direcionamento). Só existe aqui, não precisa existir no Roteador de IA do deskcomm.
+const ATENDIMENTO_SETOR_INTERNO = "Interno";
 // Sem "todas" nos setores: não precisam ver as conversas dos outros — o histórico fica em Fechadas.
 const ATENDIMENTO_ABAS_SETOR = ["fila", "minhas", "todas", "automatico", "fechadas"] as const;
 const ATENDIMENTO_ABAS: Record<AtendimentoEscopo, readonly string[]> = {
@@ -14964,7 +14968,8 @@ app.get("/api/atendimento/setores", blockCliente, async (req, res) => {
   if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
   try {
-    res.json({ items: (await atendimentoSetores()).map((s) => s.intencao) });
+    const doRoteador = (await atendimentoSetores()).map((s) => s.intencao);
+    res.json({ items: [...doRoteador, ATENDIMENTO_SETOR_INTERNO] });
   } catch (e: any) {
     res.status(502).json({ error: `Não foi possível ler os setores do deskcomm: ${e.message}` });
   }
@@ -14988,7 +14993,7 @@ app.post("/api/atendimento/conversas/:id/setor", blockCliente, async (req, res) 
   const motivo = req.body?.motivo ? String(req.body.motivo).trim().slice(0, 500) : null;
   try {
     let agentId: string | null = null;
-    if (intencao) {
+    if (intencao && intencao !== ATENDIMENTO_SETOR_INTERNO) {
       const setor = (await atendimentoSetores()).find((s) => s.intencao === intencao);
       if (!setor) return res.status(400).json({ error: "Setor desconhecido." });
       agentId = setor.agentId;
