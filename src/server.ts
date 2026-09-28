@@ -7362,27 +7362,35 @@ function domRelEhAnual(inicio: string, fim: string): boolean {
 // sem \b"): PDF em layout de "caixinhas"/tabela (exatamente o formato de Balanço/DRE/Balancete)
 // costuma colar os dígitos sem espaço depois do pdf-parse — um regex com \b não acha nada nesse caso.
 // Inclui empresa_documentos (não só empresas.cnpj) pra cobrir empresa com mais de uma inscrição.
-function domRelMapaDocumentos(escritorioId: number): Map<string, any> {
-  const mapa = new Map<string, any>();
-  const empresas = sqlite.prepare(`SELECT id, nome, cnpj FROM empresas WHERE escritorio_id = ?`).all(escritorioId) as any[];
+function domRelMapaDocumentos(escritorioId: number): { porCnpj: Map<string, any>; porCodigo: Map<string, any> } {
+  const porCnpj = new Map<string, any>();
+  const porCodigo = new Map<string, any>();
+  const empresas = sqlite.prepare(`SELECT id, nome, cnpj, codigo_dominio FROM empresas WHERE escritorio_id = ?`).all(escritorioId) as any[];
   for (const e of empresas) {
-    if (!e.cnpj) continue;
-    const digitos = String(e.cnpj).replace(/\D/g, "");
-    if (digitos.length === 14) mapa.set(digitos, e);
+    if (e.cnpj) {
+      const digitos = String(e.cnpj).replace(/\D/g, "");
+      if (digitos.length === 14) porCnpj.set(digitos, e);
+    }
+    if (e.codigo_dominio) {
+      const cod = String(e.codigo_dominio).trim();
+      // Código duplicado entre empresas (não deveria acontecer, mas não custa checar) não decide
+      // sozinho — marca como ambíguo (null) em vez de arriscar atribuir pra empresa errada.
+      if (cod) porCodigo.set(cod, porCodigo.has(cod) ? null : e);
+    }
   }
   const docs = sqlite
     .prepare(`SELECT ed.documento, e.id, e.nome FROM empresa_documentos ed JOIN empresas e ON e.id = ed.empresa_id WHERE e.escritorio_id = ? AND ed.tipo = 'cnpj'`)
     .all(escritorioId) as any[];
   for (const d of docs) {
-    if (!mapa.has(d.documento)) mapa.set(d.documento, { id: d.id, nome: d.nome });
+    if (!porCnpj.has(d.documento)) porCnpj.set(d.documento, { id: d.id, nome: d.nome });
   }
-  return mapa;
+  return { porCnpj, porCodigo };
 }
-function domRelIdentificarEmpresa(mapaDocumentos: Map<string, any>, texto: string, nomeArquivo: string): { empresa: any | null; cnpjDetectado: string | null; codigoArquivo: string | null } {
+function domRelIdentificarEmpresa(mapa: { porCnpj: Map<string, any>; porCodigo: Map<string, any> }, texto: string, nomeArquivo: string): { empresa: any | null; cnpjDetectado: string | null; codigoArquivo: string | null } {
   const fluxoDigitos = texto.replace(/\D/g, "");
   let empresa: any = null;
   let cnpjDetectado: string | null = null;
-  for (const [digitos, emp] of mapaDocumentos) {
+  for (const [digitos, emp] of mapa.porCnpj) {
     if (fluxoDigitos.includes(digitos)) {
       empresa = emp;
       cnpjDetectado = digitos;
@@ -7393,9 +7401,18 @@ function domRelIdentificarEmpresa(mapaDocumentos: Map<string, any>, texto: strin
     const candidatos = [...texto.matchAll(REGEX_CNPJ_BUSCA)].map((m) => m[0].replace(/\D/g, ""));
     cnpjDetectado = candidatos.find((d) => d.length === 14) || null;
   }
-  // Só pista de desempate pro admin resolver "não identificados" na mão — nunca confirma sozinha.
   // Padrão visto nos nomes de arquivo reais: "Balancete_125_01082026 a 31082026.pdf" → "125".
   const codigoArquivo = /_([0-9]+)_/.exec(nomeArquivo)?.[1] || null;
+  // Fallback: alguns relatórios do Domínio (achado ao vivo: DRE e Comparativo de Movimento de certas
+  // empresas) não imprimem o CNPJ em lugar nenhum do corpo do PDF, só o código interno no nome do
+  // arquivo — usa o MESMO código já cadastrado em empresas.codigo_dominio (o robô do Comparativo já
+  // confia nele pra escolher a empresa certa no Domínio) pra identificar sozinho, sem precisar de
+  // conferência manual. Só decide se o código bater com exatamente uma empresa (nunca em caso de
+  // ambiguidade) e só entra em jogo quando o CNPJ no texto não resolveu.
+  if (!empresa && codigoArquivo) {
+    const porCod = mapa.porCodigo.get(codigoArquivo);
+    if (porCod) empresa = porCod;
+  }
   return { empresa, cnpjDetectado, codigoArquivo };
 }
 function domRelSalvarPendente(escritorioId: number, buf: Buffer, nomeArquivo: string): string {
