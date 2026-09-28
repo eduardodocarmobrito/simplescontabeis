@@ -1,73 +1,57 @@
-ROBÔ "COMPARATIVO DE MOVIMENTO" — DOMÍNIO WEB
-================================================
+ROBO "COMPARATIVO DE MOVIMENTO" - DOMINIO WEB (modo AGENTE)
+============================================================
 
-O QUE JÁ ESTÁ PRONTO
----------------------
-- O site já sabe reconhecer o tipo "Comparativo de Movimento" quando o PDF
-  cair na pasta do Google Drive (igual já faz com Balancete/DRE/Balanço).
-- Em Empresas > Editar > Configurações, tem um novo checkbox:
-  "Exportar Comparativo de Movimento diariamente" — marque nas empresas que
-  precisam desse relatório todo dia (precisa ter o "Código do Domínio"
-  preenchido na aba Empresa, senão o robô não sabe qual código usar).
-- O site expõe essa lista para o robô buscar:
-  GET  https://simplescontabeis-production.up.railway.app/api/dominio-agent/empresas-comparativo
-  (cabeçalho X-Agent-Token: mesmo token do agente do Domínio Web)
-- E recebe o resultado de cada empresa:
-  POST .../api/dominio-agent/comparativo-status
+O QUE ELE FAZ
+-------------
+Fica rodando no servidor Windows onde o Dominio esta instalado e, sozinho,
+PERGUNTA AO SITE a cada 10 segundos se deve rodar. Ele roda quando:
+  - Voce clica "Executar agora" em Configuracoes > Relatorios > Robo do
+    Comparativo de Movimento; ou
+  - O modo automatico esta ligado e passou o intervalo configurado (ex.: 15 min).
 
-O QUE FALTA (só dá pra fazer olhando a tela de verdade)
----------------------------------------------------------
-O arquivo robo-comparativo.ahk tem 5 partes marcadas "TODO" — são os cliques
-de verdade dentro do Domínio Web (selecionar a empresa, abrir o relatório,
-exportar em PDF). Sem ver a tela, eu não tenho como adivinhar o nome dos
-botões. Siga os passos abaixo NO SERVIDOR WINDOWS onde o Domínio roda:
+Ao rodar, ele puxa do site as empresas marcadas (Empresas > Editar > "Exportar
+Comparativo de Movimento diariamente", com o Codigo do Dominio preenchido),
+gera o Comparativo de cada uma no Dominio, salva o PDF na pasta do Google Drive
+(Relatorios Dominio) e REPORTA O PROGRESSO pro site (barra empresa a empresa).
+A Importacao de Relatorios do site le esses PDFs automaticamente.
 
-1. Baixe e instale o AutoHotkey v2 (gratuito): https://www.autohotkey.com
-   A instalação já traz uma ferramenta chamada "Window Spy".
+INSTALACAO (1x)
+---------------
+1) Instale o AutoHotkey v2 (gratis): https://www.autohotkey.com
+2) Abra o arquivo robo-comparativo.ahk num editor de texto e cole, na linha
+   AGENTE_TOKEN, o token do agente do Dominio (o mesmo usado pelo agente do
+   Dominio Web / variavel DOMINIO_AGENT_TOKEN do site).
+3) Deixe estes PRE-REQUISITOS prontos no Dominio, 1x na mao:
+   - Dominio ABERTO e LOGADO.
+   - Tela de troca de empresa (F8) deixada no modo "Codigo" (ele lembra).
+   - "Comparativo de Movimento" adicionado ao menu FAVORITOS do Dominio.
+   - A janela "Salvar em PDF" configurada 1x pra pasta certa nao e necessario:
+     o robo navega sozinho ate Client G (N:) > Meu Drive > Relatorios Dominio.
+4) IMPORTANTE: enquanto o robo trabalha, NAO pode ter outra janela (Explorer,
+   navegador) cobrindo o canto SUPERIOR ESQUERDO da tela - e onde a janela
+   "Salvar em PDF" abre. Deixe so o Dominio na frente.
 
-2. Abra o Domínio Web e deixe ele na tela inicial. Abra o Window Spy (vem no
-   menu Iniciar, dentro da pasta AutoHotkey). Ele mostra, em tempo real, o
-   nome de qualquer campo/botão embaixo do mouse.
-
-3. Faça o processo manual UMA VEZ, anotando (ou tirando print) o que o
-   Window Spy mostra em cada passo:
-   a) Ao passar o mouse sobre o campo onde você digita/escolhe a empresa.
-   b) Ao passar o mouse sobre o menu/botão que abre o relatório.
-   c) Ao passar o mouse sobre os campos de período (data início/fim), se
-      houver.
-   d) Ao passar o mouse sobre o botão de exportar/imprimir em PDF.
-   e) Se abrir uma janela "Salvar como" do Windows, o Window Spy também
-      funciona nela.
-
-4. Me mande esses prints (ou o texto que o Window Spy mostrou em cada um) —
-   eu termino o script com os comandos certos no lugar de cada "TODO".
-
-5. Preencha também, no topo do arquivo .ahk:
-   - AGENTE_TOKEN: o mesmo token usado pelo agente do Domínio Web.
-   - PASTA_SAIDA: a pasta sincronizada pelo Google Drive Desktop neste
-     computador (instale o app do Google Drive aqui, se ainda não tiver, e
-     compartilhe essa pasta com agente-drive@simples-contabeis.iam.gserviceaccount.com
-     como Leitor — a mesma pasta que você escolher em Configurações >
-     Domínio Web > Relatórios > "Pasta no Google Drive" no site).
-   - DOMINIO_EXE: o caminho do executável do Domínio Web neste servidor.
-
-COMO RODAR TODO DIA SOZINHO
------------------------------
-Depois de pronto e testado na mão uma vez (rodando o robo-comparativo.ahk e
-conferindo se o PDF de cada empresa saiu certo na pasta), agende no
-Agendador de Tarefas do Windows para rodar todo dia, no horário que preferir:
-
-1. Abra o "Agendador de Tarefas" do Windows.
-2. Criar Tarefa Básica > escolha o horário diário.
-3. Ação: "Iniciar um programa" > selecione o AutoHotkey64.exe (instalado
-   junto com o AutoHotkey) e, em "Argumentos", coloque o caminho completo do
-   robo-comparativo.ahk entre aspas.
-4. Marque "Executar estando o usuário conectado ou não" se quiser que rode
-   mesmo com a tela bloqueada (pode pedir a senha do Windows uma vez).
-
-SEGURANÇA
+COMO RODAR
 ----------
-- O AGENTE_TOKEN dá acesso só a listar as empresas marcadas e avisar o
-  resultado — não abre nada além disso no site.
-- Não compartilhe o arquivo .ahk depois de preencher o token com mais
-  ninguém fora da equipe.
+- Manual: de duplo-clique no robo-comparativo.ahk. Ele fica em segundo plano
+  perguntando ao site. Controle tudo pela tela do site.
+- Para SAIR: Ctrl+Alt+Q.
+
+INICIAR SOZINHO NO LOGIN (Agendador de Tarefas do Windows)
+----------------------------------------------------------
+1) Abra o "Agendador de Tarefas".
+2) Criar Tarefa (nao "basica").
+   - Geral: marque "Executar somente quando o usuario estiver conectado".
+   - Disparadores: Novo > "Ao fazer logon".
+   - Acoes: Novo > "Iniciar um programa":
+       Programa:  C:\Program Files\AutoHotkey\v2\AutoHotkey64.exe
+       Argumentos: "C:\caminho\para\robo-comparativo.ahk"   (com aspas)
+   - Condicoes: desmarque "Iniciar a tarefa somente se o computador estiver
+     usando energia CA" (se for notebook).
+3) OK. No proximo login o robo sobe sozinho.
+   (Ou rode o instalar-agendador.bat que acompanha, ajustando os caminhos.)
+
+SEGURANCA
+---------
+- O token da acesso so pra listar as empresas marcadas, reportar progresso e
+  status. Nao compartilhe o .ahk depois de colar o token.

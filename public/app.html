@@ -11536,9 +11536,25 @@ function renderCfgDomRelatorios(box, sub, dados){
         <button class="btn" id="btnOdRelDryRun">Testar (não grava nada)</button>
         ${(oneDriveCfg.conectado || oneDriveCfg.relatoriosDrivePastaId)?'<button class="btn" id="btnOdRelImportarAgora">Importar agora</button>':''}
         <button class="btn" id="btnOdRelPendencias">Pendências</button>
-        ${STATE.user.perfil==='Administrador'?'<a class="btn" href="/api/empresas/comparativo-movimento/robo" download>⬇ Robô Comparativo de Movimento (Domínio Web)</a>':''}
       </div>
       <div id="odRelResultado" style="margin-top:10px;"></div>
+    </div>
+    <div class="card" id="cardRoboComp">
+      <h3>Robô do Comparativo de Movimento</h3>
+      <p style="font-size:12px; color:var(--ink-soft); margin-top:-6px;">
+        Gera o Comparativo de Movimento de cada empresa marcada (em <b>Empresas › Editar</b> → "Exportar Comparativo
+        de Movimento diariamente", com o Código do Domínio preenchido) direto no Domínio e salva na pasta do Google
+        Drive acima. Controle o robô aqui.
+      </p>
+      <div id="roboCompStatus" style="font-size:13px; margin-bottom:8px;">Carregando…</div>
+      <label class="checkbox-row"><input type="checkbox" id="roboCompLigado"> Rodar automaticamente a cada
+        <input id="roboCompIntervalo" type="number" min="1" max="1440" style="width:64px; margin:0 4px;"> minutos</label>
+      <div class="row" style="margin-top:8px;">
+        <button class="btn primary" id="btnRoboCompSalvar" disabled>Salvar</button>
+        <button class="btn" id="btnRoboCompExecutar">Executar agora</button>
+        ${STATE.user.perfil==='Administrador'?'<a class="btn" href="/api/empresas/comparativo-movimento/robo" download>⬇ Baixar robô (instalar em outro servidor)</a>':''}
+      </div>
+      <div id="roboCompProgresso" style="margin-top:12px;"></div>
     </div>
   `;
   document.getElementById('irEnvioDocs')?.addEventListener('click', ()=>{ STATE.page='configuracoes'; CFG_TAB='envio-docs'; render(); });
@@ -11595,6 +11611,47 @@ function renderCfgDomRelatorios(box, sub, dados){
     finally{ btn.disabled = false; btn.textContent = 'Importar agora'; }
   });
   document.getElementById('btnOdRelPendencias').addEventListener('click', abrirOdRelPendenciasModal);
+  // ---- Robô do Comparativo de Movimento (controle + progresso ao vivo) ----
+  (function(){
+    const $ = id => document.getElementById(id);
+    function pintar(e){
+      const st = $('roboCompStatus');
+      if(st){
+        const on = e.agenteOnline ? '<span class="tag ok">Robô online</span>' : '<span class="tag bad">Robô offline</span>';
+        const ult = e.ultimaExecEm ? ' · Última execução: '+fmtDateHora(e.ultimaExecEm) : '';
+        st.innerHTML = on + (e.rodando?' <span class="tag">Rodando…</span>':'') + ult;
+      }
+      const prog = $('roboCompProgresso');
+      if(prog){
+        if(e.rodando && e.total>0){
+          const pct = Math.round((e.feitas/e.total)*100);
+          prog.innerHTML = '<div style="font-size:12.5px; margin-bottom:4px;">Empresa '+e.feitas+' de '+e.total+(e.atual?' — '+esc(e.atual):'')+'</div>'+
+            '<div style="background:var(--rule); border-radius:6px; height:12px; overflow:hidden;"><div style="width:'+pct+'%; height:100%; background:var(--accent); transition:width .4s;"></div></div>';
+        } else if(e.runNowPendente){
+          prog.innerHTML = '<div style="font-size:12.5px; color:var(--ink-soft);">Pedido enviado — aguardando o robô pegar…</div>';
+        } else { prog.innerHTML = ''; }
+      }
+    }
+    async function carregar(){ try{ pintar(await api('/comparativo-robo/estado')); }catch(e){} }
+    api('/comparativo-robo/estado').then(e=>{
+      if($('roboCompLigado')) $('roboCompLigado').checked = e.ligado;
+      if($('roboCompIntervalo')) $('roboCompIntervalo').value = e.intervaloMin;
+      pintar(e);
+    }).catch(()=>{});
+    habilitarSalvarAoMudar('btnRoboCompSalvar', ['roboCompLigado','roboCompIntervalo']);
+    $('btnRoboCompSalvar')?.addEventListener('click', async ()=>{
+      try{ await api('/comparativo-robo/config', { method:'POST', body:{ ligado:$('roboCompLigado').checked, intervaloMin:Number($('roboCompIntervalo').value)||15 } }); toast('Configuração do robô salva.','ok'); $('btnRoboCompSalvar').disabled = true; }
+      catch(e){ toast(e.message,'err'); }
+    });
+    $('btnRoboCompExecutar')?.addEventListener('click', async (ev)=>{
+      const b = ev.target; b.disabled = true;
+      try{ const r = await api('/comparativo-robo/executar', { method:'POST' }); toast(r.agenteOnline?'Rodando agora…':'Pedido enviado — o robô vai pegar quando estiver online.','ok'); }
+      catch(e){ toast(e.message,'err'); }
+      finally{ setTimeout(()=>{ b.disabled = false; }, 1500); carregar(); }
+    });
+    try{ clearInterval(window.__roboCompPoll); }catch(e){}
+    window.__roboCompPoll = setInterval(()=>{ if(document.getElementById('roboCompStatus')) carregar(); else { try{ clearInterval(window.__roboCompPoll); }catch(e){} } }, 3000);
+  })();
 }
 function renderCfgDomOneDrive(box, sub, dados){
   const { oneDriveCfg } = dados;
