@@ -6028,6 +6028,13 @@ app.delete("/api/envio/documentos/:id", blockCliente, requirePermissao("envio", 
     fs.unlinkSync(doc.file_path);
   } catch {}
   sqlite.prepare(`DELETE FROM envio_documentos WHERE id = ?`).run(doc.id);
+  // Se este documento veio da importação automática de Relatórios do Domínio (Balanço/DRE/
+  // Comparativo etc.), apaga também o controle correspondente — senão o arquivo original fica
+  // "marcado como já processado" (mesma data de modificação de sempre) e a próxima varredura do
+  // Drive/OneDrive pula ele pra sempre, mesmo tendo sido atribuído errado antes. Sem esse controle,
+  // a próxima leitura automática (Drive: a cada 10s) trata o arquivo como novo e reclassifica do
+  // zero com as regras atuais.
+  sqlite.prepare(`DELETE FROM dominio_relatorios_importados WHERE envio_documento_id = ?`).run(doc.id);
   res.json({ ok: true });
 });
 app.post("/api/envio/documentos/:id/reenviar-email", blockCliente, requirePermissao("envio", "postar"), async (req, res) => {

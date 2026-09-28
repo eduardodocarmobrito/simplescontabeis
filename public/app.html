@@ -8306,6 +8306,16 @@ function renderRelDominio(box, empresas, tipo){
       catch(e){ toast(e.message,'err'); }
       finally{ b.disabled=false; }
     }));
+    resultBox.querySelectorAll('[data-act="excluir"]').forEach(b=>b.addEventListener('click', async ()=>{
+      if(!confirmar('Excluir este documento? Se ele veio da importação automática do Domínio, o arquivo original fica livre pra ser lido de novo (clique "Importar agora" em Configurações › Domínio Web depois).')) return;
+      b.disabled = true;
+      try{
+        await api('/envio/documentos/'+b.dataset.id, { method:'DELETE' });
+        toast('Excluído.','ok');
+        b.closest('.row').remove();
+      }
+      catch(e){ toast(e.message,'err'); b.disabled=false; }
+    }));
   }
   async function gerarDetalhe(empresaId){
     const resultBox = document.getElementById('relDomResultado');
@@ -8335,6 +8345,7 @@ function renderRelDominio(box, empresas, tipo){
                       <a class="btn small" href="/api/envio/documentos/${d.id}/download" target="_blank" rel="noopener">Baixar</a>
                       <button class="btn small" data-act="email" data-id="${d.id}">${d.emailEnviado?'Reenviar e-mail':'Enviar e-mail'}</button>
                       <button class="btn small" data-act="whatsapp" data-id="${d.id}">${d.whatsappEnviado?'Reenviar WhatsApp':'Enviar WhatsApp'}</button>
+                      <button class="btn small" style="color:var(--debit);" data-act="excluir" data-id="${d.id}">Excluir</button>
                     </div>
                   </div>
                 `).join('')}
