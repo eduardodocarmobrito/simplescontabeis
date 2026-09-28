@@ -5784,6 +5784,13 @@ async function renderCertificadoBuscaXml(containerEl, empresaId, empresaUfPadrao
         <p style="font-size:11.5px; color:var(--ink-soft); margin:10px 0 4px;">Teste (investigação em andamento): zera o cursor e relê tudo desde o começo, sem consultar aquela chave específica — só pra descobrir se a busca sequencial normal já traz as vendas sozinha.</p>
         <button class="btn small" id="btnNfeReiniciar_${empresaId}">🔄 Reiniciar e buscar tudo de novo</button>
         <div id="nfeReiniciarResultado_${empresaId}" style="margin-top:8px;"></div>
+        <div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--rule);">
+          <div style="font-weight:600; font-size:13px;">Testar chaves conhecidas (não altera nada)</div>
+          <p style="font-size:11.5px; color:var(--ink-soft); margin:4px 0 8px;">Cola aqui embaixo chaves de acesso (NF-e ou CT-e) que você sabe que existem pra esta empresa — uma por linha. O sistema pergunta pra Sefaz, uma por uma, o que ela diz sobre cada uma (achou? deu erro?) e, se achar, já traz o documento pro sistema. Não mexe no cursor da busca automática.</p>
+          <textarea id="nfeChavesTeste_${empresaId}" rows="4" style="width:100%; font-family:monospace; font-size:12px;" placeholder="44 números por linha, uma chave em cada"></textarea>
+          <button class="btn small" id="btnNfeTestarChaves_${empresaId}" style="margin-top:6px;">Testar chaves</button>
+          <div id="nfeTestarChavesResultado_${empresaId}" style="margin-top:8px;"></div>
+        </div>
       </div>`:''}
     `;
     if(podeEditar) containerEl.querySelector(`#nfeCfgAtivo_${empresaId}`).addEventListener('change', async (ev)=>{
@@ -5837,6 +5844,33 @@ async function renderCertificadoBuscaXml(containerEl, empresaId, empresaUfPadrao
         resultado.innerHTML = `<div class="tag bad">Falhou</div> <span style="font-size:12.5px;">${esc(e.message)}</span>`;
       }finally{
         btn.disabled = false; btn.textContent = '🔄 Reiniciar e buscar tudo de novo';
+      }
+    });
+    if(podePostar) containerEl.querySelector(`#btnNfeTestarChaves_${empresaId}`).addEventListener('click', async ()=>{
+      const campo = containerEl.querySelector(`#nfeChavesTeste_${empresaId}`);
+      const chaves = campo.value.split(/\n/).map(l=>l.replace(/\D/g,'')).filter(c=>c.length===44);
+      const resultado = containerEl.querySelector(`#nfeTestarChavesResultado_${empresaId}`);
+      if(!chaves.length){ resultado.innerHTML = `<div class="tag bad">Nenhuma chave válida — cada linha precisa ter 44 números.</div>`; return; }
+      const btn = containerEl.querySelector(`#btnNfeTestarChaves_${empresaId}`);
+      btn.disabled = true; btn.textContent = 'Testando…';
+      resultado.innerHTML = `<div class="empty-state">Consultando ${chaves.length} chave(s) na Sefaz, uma por vez (pode demorar)…</div>`;
+      try{
+        const r = await api('/nfe/config/'+empresaId+'/testar-chaves', { method:'POST', body:{ chaves } });
+        resultado.innerHTML = `<table style="width:100%; border-collapse:collapse; font-size:12px; margin-top:4px;">
+          <thead><tr style="text-align:left; border-bottom:1px solid var(--rule);"><th style="padding:3px 6px;">Chave</th><th>Resultado</th></tr></thead>
+          <tbody>${r.resultados.map(x=>{
+            if(x.aviso) return `<tr><td colspan="2" style="padding:3px 6px; color:var(--debit);">${esc(x.aviso)}</td></tr>`;
+            const fim = x.encontrado
+              ? `<span class="tag ok">Achou</span> tipo: ${esc(x.tipo)} · ${esc(x.emitenteNome||'—')}${x.jaExistia?' (já estava no sistema)':x.inserido?' (novo, já importado)':''}`
+              : `<span class="tag bad">Não achou</span> ${esc(x.mensagem||x.erro||'')}`;
+            return `<tr><td style="padding:3px 6px; font-family:monospace;">${esc(x.chave.slice(-8))}</td><td>${fim}</td></tr>`;
+          }).join('')}</tbody>
+        </table>`;
+        if(opts.onDocumentosMudou) opts.onDocumentosMudou();
+      }catch(e){
+        resultado.innerHTML = `<div class="tag bad">Falhou</div> <span style="font-size:12.5px;">${esc(e.message)}</span>`;
+      }finally{
+        btn.disabled = false; btn.textContent = 'Testar chaves';
       }
     });
     if(podePostar) containerEl.querySelector(`#btnNfeBuscarAgora_${empresaId}`).addEventListener('click', async ()=>{

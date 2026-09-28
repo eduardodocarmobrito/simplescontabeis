@@ -6730,6 +6730,65 @@ app.post("/api/nfe/config/:empresaId/ancorar-saida", blockCliente, requirePermis
     nfeBuscasEmAndamento.delete(empId);
   }
 });
+// Teste pontual: recebe uma lista de chaves de acesso QUE O USUÁRIO JÁ SABE que existem (NF-e ou
+// CT-e — a tag consChNFe da Sefaz é compartilhada pelos dois, mesmo schema nacional de Distribuição
+// DFe) e consulta cada uma direto na Sefaz, sem mexer no cursor da busca incremental. Só diagnóstico
+// puro: mostra o que a Sefaz responde de verdade (achou? cStat de erro?) pra cada chave específica —
+// se achar o documento, aproveita e já insere (chave garante que não duplica, mesmo se a varredura
+// normal também trouxer o mesmo documento depois). Pausa entre chamadas e para na hora se bater rate
+// limit (656) — não adianta insistir nas próximas, é bloqueio da Sefaz, não da chave.
+app.post("/api/nfe/config/:empresaId/testar-chaves", blockCliente, requirePermissao("nfe-busca", "postar"), async (req, res) => {
+  const user = (req as any).user;
+  const empId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa(user, empId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  if (!escritorioTemModulo(user.escritorioId, "busca_xml_nfe")) return res.status(403).json({ error: "Módulo de busca de XML não contratado para este escritório." });
+  const chavesBrutas: string[] = Array.isArray(req.body?.chaves) ? req.body.chaves : [];
+  const chaves = [...new Set(chavesBrutas.map((c) => String(c || "").replace(/\D/g, "")).filter((c) => c.length === 44))].slice(0, 40);
+  if (!chaves.length) return res.status(400).json({ error: "Nenhuma chave válida (cada uma precisa ter 44 números)." });
+  if (nfeBuscasEmAndamento.has(empId)) return res.status(409).json({ error: "Já tem uma busca em andamento pra esta empresa — aguarde terminar e tente de novo." });
+  const cfg = sqlite.prepare(`SELECT * FROM nfe_busca_config WHERE empresa_id = ?`).get(empId) as any;
+  if (!cfg) return res.status(400).json({ error: "Nenhum certificado configurado para esta empresa." });
+  nfeBuscasEmAndamento.add(empId);
+  try {
+    const cert = nfeCarregarCertificado(cfg);
+    const cnpjBusca = nfeResolverCnpjBusca(cfg, empId);
+    const resultados: any[] = [];
+    for (const chave of chaves) {
+      try {
+        const resp = await nfe.consultarPorChave({ ambiente: cfg.ambiente as nfe.AmbienteNfe, cnpj: cnpjBusca, cUFAutor: nfe.UF_CODIGO_IBGE[cfg.uf_autor], cert, chave });
+        if (!resp.documentos.length) {
+          resultados.push({ chave, encontrado: false, mensagem: resp.xMotivo || `cStat ${resp.cStat} — nada devolvido pra esta chave.` });
+          continue;
+        }
+        const doc = resp.documentos[0];
+        const info = nfe.identificarDocumento(doc.xml, doc.schema);
+        const jaTem = sqlite.prepare(`SELECT 1 FROM nfe_documentos WHERE empresa_id = ? AND chave_acesso = ?`).get(empId, chave);
+        let inserido = false;
+        if (!jaTem) {
+          const r = nfeInserirDocumento.run(
+            empId, cfg.escritorio_id, "nfe", `porchave_${chave}`, doc.schema, info.tipo,
+            info.chaveAcesso, info.emitenteCnpj, info.emitenteNome, info.destinatarioCnpj, info.destinatarioNome,
+            info.valorTotal, info.dataEmissao, doc.xml, info.eventoDescricao
+          );
+          inserido = r.changes > 0;
+        }
+        resultados.push({ chave, encontrado: true, tipo: info.tipo, schema: doc.schema, emitenteNome: info.emitenteNome, jaExistia: !!jaTem, inserido });
+      } catch (e: any) {
+        resultados.push({ chave, encontrado: false, erro: e.message });
+        if (/656/.test(e.message)) {
+          resultados.push({ chave: null, aviso: "Bloqueio de rate limit (656) da Sefaz — parei aqui, as chaves restantes nem foram tentadas. Espere a Sefaz liberar (ela mesma pede 1h) antes de testar de novo." });
+          break;
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 700));
+    }
+    res.json({ ok: true, resultados });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  } finally {
+    nfeBuscasEmAndamento.delete(empId);
+  }
+});
 // Diagnóstico: compara, empresa por empresa, há quanto tempo a busca está ativa e o que já foi
 // recebido (por tipo e por direção emitida/recebida) — pra entender, com números reais, por que uma
 // empresa já traz saída/CT-e sozinha e outra não (idade do cursor? volume de documentos? nunca
