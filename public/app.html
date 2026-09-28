@@ -11568,6 +11568,11 @@ function renderCfgDomRelatorios(box, sub, dados){
       <div id="roboCompStatus" style="font-size:13px; margin-bottom:8px;">Carregando…</div>
       <label class="checkbox-row"><input type="checkbox" id="roboCompLigado"> Rodar automaticamente a cada
         <input id="roboCompIntervalo" type="number" min="1" max="1440" style="width:64px; margin:0 4px;"> minutos</label>
+      <div class="row" style="margin-top:8px; align-items:flex-end;">
+        <div class="field"><label>Período — início (MM/AAAA)</label><input id="roboCompPerIni" style="width:120px;"></div>
+        <div class="field"><label>Período — fim (MM/AAAA)</label><input id="roboCompPerFim" style="width:120px;"></div>
+        <span style="font-size:11.5px; color:var(--ink-soft); padding-bottom:8px;">Em branco = padrão (01/ano vigente até a competência anterior).</span>
+      </div>
       <div class="row" style="margin-top:8px;">
         <button class="btn primary" id="btnRoboCompSalvar" disabled>Salvar</button>
         <button class="btn" id="btnRoboCompExecutar">Executar agora</button>
@@ -11655,16 +11660,18 @@ function renderCfgDomRelatorios(box, sub, dados){
     api('/comparativo-robo/estado').then(e=>{
       if($('roboCompLigado')) $('roboCompLigado').checked = e.ligado;
       if($('roboCompIntervalo')) $('roboCompIntervalo').value = e.intervaloMin;
+      if($('roboCompPerIni')){ $('roboCompPerIni').value = e.periodoIni||''; $('roboCompPerIni').placeholder = e.periodoPadraoIni||'01/2026'; }
+      if($('roboCompPerFim')){ $('roboCompPerFim').value = e.periodoFim||''; $('roboCompPerFim').placeholder = e.periodoPadraoFim||'08/2026'; }
       pintar(e);
     }).catch(()=>{});
-    habilitarSalvarAoMudar('btnRoboCompSalvar', ['roboCompLigado','roboCompIntervalo']);
+    habilitarSalvarAoMudar('btnRoboCompSalvar', ['roboCompLigado','roboCompIntervalo','roboCompPerIni','roboCompPerFim']);
     $('btnRoboCompSalvar')?.addEventListener('click', async ()=>{
-      try{ await api('/comparativo-robo/config', { method:'POST', body:{ ligado:$('roboCompLigado').checked, intervaloMin:Number($('roboCompIntervalo').value)||15 } }); toast('Configuração do robô salva.','ok'); $('btnRoboCompSalvar').disabled = true; }
+      try{ await api('/comparativo-robo/config', { method:'POST', body:{ ligado:$('roboCompLigado').checked, intervaloMin:Number($('roboCompIntervalo').value)||15, periodoIni:$('roboCompPerIni').value.trim(), periodoFim:$('roboCompPerFim').value.trim() } }); toast('Configuração do robô salva.','ok'); $('btnRoboCompSalvar').disabled = true; }
       catch(e){ toast(e.message,'err'); }
     });
     $('btnRoboCompExecutar')?.addEventListener('click', async (ev)=>{
       const b = ev.target; b.disabled = true;
-      try{ const r = await api('/comparativo-robo/executar', { method:'POST' }); toast(r.agenteOnline?'Rodando agora…':'Pedido enviado — o robô vai pegar quando estiver online.','ok'); }
+      try{ const r = await api('/comparativo-robo/executar', { method:'POST', body:{ periodoIni:$('roboCompPerIni').value.trim(), periodoFim:$('roboCompPerFim').value.trim() } }); toast(r.agenteOnline?'Rodando agora…':'Pedido enviado — o robô vai pegar quando estiver online.','ok'); }
       catch(e){ toast(e.message,'err'); }
       finally{ setTimeout(()=>{ b.disabled = false; }, 1500); carregar(); }
     });

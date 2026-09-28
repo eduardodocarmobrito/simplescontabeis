@@ -25,7 +25,7 @@ AGENTE_TOKEN := "COLE_AQUI_O_TOKEN_DO_AGENTE"
 
 POLL_SEGUNDOS := 10       ; de quanto em quanto tempo pergunta ao site
 
-DIGITAR_PERIODO := false  ; usa o periodo padrao do Dominio (01/ano-atual a mes anterior)
+DIGITAR_PERIODO := true   ; digita o periodo que o site mandar (padrao ou customizado)
 FAV_KEY      := "f"       ; letra do menu FAVORITOS
 DOMINIO_WIN  := "ahk_exe AppController.exe"
 
@@ -133,15 +133,28 @@ AbrirComparativo() {
 PreencherEGerar(compIni, compFim) {
     global DIGITAR_PERIODO, T_CURTO
     if (DIGITAR_PERIODO) {
-        DigitarCampo(StrReplace(compIni, "/", ""))
+        DigitarPeriodo(compIni)   ; Inicial (focado ao abrir o dialogo)
         Sleep T_CURTO
         Send "{Tab}"
         Sleep T_CURTO
-        DigitarCampo(StrReplace(compFim, "/", ""))
+        DigitarPeriodo(compFim)   ; Final
         Sleep T_CURTO
     }
     Send "!o"
     EsperarRender()
+}
+
+; Campo mascarado MM/AAAA: seleciona todo o conteudo (Home + Shift+End) e digita os
+; 6 digitos devagar, deixando a mascara formatar. Evita grudar no valor antigo.
+DigitarPeriodo(mmAAAA) {
+    Send "{Home}"
+    Sleep 150
+    Send "+{End}"
+    Sleep 150
+    for ch in StrSplit(StrReplace(mmAAAA, "/", "")) {
+        SendText ch
+        Sleep 160
+    }
 }
 
 EsperarRender() {
@@ -274,9 +287,11 @@ ProcessarEmpresa(codigo, compIni, compFim) {
 }
 
 ; ------------------------------------------------------------- SITE (comandos)
-DeveRodar() {
-    body := HttpReq("GET", "/api/dominio-agent/comparativo-comando")
-    return InStr(body, '"deveRodar":true') > 0
+; Extrai o valor string de uma chave do JSON: "chave":"valor"
+ExtrairStr(body, chave) {
+    if RegExMatch(body, '"' . chave . '":"([^"]*)"', &m)
+        return m[1]
+    return ""
 }
 
 ReportarProgresso(rodando, total, feitas, atual, iniciando) {
@@ -312,9 +327,8 @@ ReportarStatus(itens) {
     HttpReq("POST", "/api/dominio-agent/comparativo-status", '{"itens":[' . s . "]}")
 }
 
-RodarCiclo() {
+RodarCiclo(compIni, compFim) {
     global DOMINIO_WIN, T_ENTRE_EMPRESAS
-    CalcularPeriodo(&compIni, &compFim)
     empresas := PegarEmpresas()
     total := empresas.Length
     Logar("=== EXECUCAO: " . total . " empresa(s), periodo " . compIni . " a " . compFim . " ===")
@@ -356,7 +370,13 @@ Logar("=== Agente iniciado ===")
 SetTimer(FecharErroSistema, 400)     ; vigia do erro do chatbot, sempre ativo
 
 Loop {
-    if (DeveRodar())
-        RodarCiclo()
+    body := HttpReq("GET", "/api/dominio-agent/comparativo-comando")
+    if (InStr(body, '"deveRodar":true')) {
+        compIni := ExtrairStr(body, "periodoIni")
+        compFim := ExtrairStr(body, "periodoFim")
+        if (compIni = "" || compFim = "")
+            CalcularPeriodo(&compIni, &compFim)   ; fallback se o site nao mandou
+        RodarCiclo(compIni, compFim)
+    }
     Sleep POLL_SEGUNDOS * 1000
 }
