@@ -1878,6 +1878,13 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
   if (!colsEmpresas.some((c) => c.name === "fgts_ultimo_erro")) {
     sqlite.exec(`ALTER TABLE empresas ADD COLUMN fgts_ultimo_erro TEXT`);
   }
+  // Comparativo de Movimento: o Domínio Web não tem rotina automática pra esse relatório — um robô de UI
+  // externo (rodando no Windows, fora deste sistema) exporta empresa por empresa e deixa o PDF numa pasta do
+  // Google Drive (a mesma lida pela importação de Relatórios). Essa marcação diz PRA QUAIS empresas o robô
+  // deve rodar; ele pega a lista pelo código do Domínio já cadastrado (empresas.codigo_dominio).
+  if (!colsEmpresas.some((c) => c.name === "comparativo_movimento_diario")) {
+    sqlite.exec(`ALTER TABLE empresas ADD COLUMN comparativo_movimento_diario INTEGER NOT NULL DEFAULT 0`);
+  }
 }
 // Limpeza: fgts_sync_jobs foi criada numa primeira versão que salvava a sessão do FGTS Digital no
 // servidor pra reaproveitar depois — testando ao vivo, confirmamos que essa sessão não sobrevive
@@ -3166,6 +3173,7 @@ app.get("/api/empresas", blockCliente, requirePermissao("empresas", "visualizar"
       buscaFgts: !!r.busca_fgts,
       fgtsUltimaBuscaEm: r.fgts_ultima_busca_em,
       fgtsUltimoErro: r.fgts_ultimo_erro,
+      comparativoMovimentoDiario: !!r.comparativo_movimento_diario,
       origem: r.origem,
       createdAt: r.created_at,
       temAnexos: empresaTemAnexos(r.id),
@@ -3260,7 +3268,7 @@ app.put("/api/empresas/:id", blockCliente, requirePermissao("empresas", "editar"
   const id = Number(req.params.id);
   const existing = sqlite.prepare(`SELECT * FROM empresas WHERE id = ?`).get(id) as any;
   if (!existing || !podeAcessarEmpresa((req as any).user, id)) return res.status(404).json({ error: "Empresa não encontrada." });
-  const { nome, cnpj, codigoDominio, apelido, email, telefone, endereco, cidade, uf, cep, inscricaoMunicipal, inscricaoEstadual, nomeRepresentanteLegal, cpfRepresentanteLegal, codigoMunicipioIbge, nomeMunicipioIbge, regimeTributario, ativo, visivelRelatorios, isentoAssinatura, buscaFgts } = req.body || {};
+  const { nome, cnpj, codigoDominio, apelido, email, telefone, endereco, cidade, uf, cep, inscricaoMunicipal, inscricaoEstadual, nomeRepresentanteLegal, cpfRepresentanteLegal, codigoMunicipioIbge, nomeMunicipioIbge, regimeTributario, ativo, visivelRelatorios, isentoAssinatura, buscaFgts, comparativoMovimentoDiario } = req.body || {};
   const regimeTributarioFinal =
     regimeTributario !== undefined
       ? ((REGIMES_TRIBUTARIOS as readonly string[]).includes(regimeTributario) ? regimeTributario : "simples_nacional")
@@ -3268,7 +3276,7 @@ app.put("/api/empresas/:id", blockCliente, requirePermissao("empresas", "editar"
   sqlite
     .prepare(
       `UPDATE empresas SET nome=?, cnpj=?, codigo_dominio=?, apelido=?, email=?, telefone=?, endereco=?, cidade=?, uf=?, cep=?, inscricao_municipal=?, inscricao_estadual=?,
-         nome_representante_legal=?, cpf_representante_legal=?, codigo_municipio_ibge=?, nome_municipio_ibge=?, regime_tributario=?, ativo=?, visivel_relatorios=?, isento_assinatura=?, busca_fgts=?, updated_at=datetime('now') WHERE id=?`
+         nome_representante_legal=?, cpf_representante_legal=?, codigo_municipio_ibge=?, nome_municipio_ibge=?, regime_tributario=?, ativo=?, visivel_relatorios=?, isento_assinatura=?, busca_fgts=?, comparativo_movimento_diario=?, updated_at=datetime('now') WHERE id=?`
     )
     .run(
       nome ?? existing.nome,
@@ -3292,6 +3300,7 @@ app.put("/api/empresas/:id", blockCliente, requirePermissao("empresas", "editar"
       visivelRelatorios === undefined ? existing.visivel_relatorios : visivelRelatorios ? 1 : 0,
       isentoAssinatura === undefined ? existing.isento_assinatura : isentoAssinatura ? 1 : 0,
       buscaFgts === undefined ? existing.busca_fgts : buscaFgts ? 1 : 0,
+      comparativoMovimentoDiario === undefined ? existing.comparativo_movimento_diario : comparativoMovimentoDiario ? 1 : 0,
       id
     );
   if (regimeTributario !== undefined || req.body.regimeApuracaoSn !== undefined || req.body.percentualTotalTributosSn !== undefined) {
@@ -4548,6 +4557,45 @@ app.get("/api/fgts/agente-windows", blockCliente, requirePermissao("empresas", "
     console.error("[fgts] agente windows:", e.message);
     if (!res.headersSent) res.status(502).json({ error: "Não consegui montar o pacote: " + e.message });
   }
+});
+// ---------- Robô de Comparativo de Movimento (roda FORA deste sistema, no Windows onde o Domínio Web está
+// instalado) — o Domínio não tem exportação automática desse relatório; um script (AutoHotkey) abre o Domínio,
+// passa empresa por empresa e salva o PDF numa pasta do Google Drive, que a Importação de Relatórios já lê.
+// Este sistema só entra pra dizer QUAIS empresas rodar (pelo código do Domínio) e receber o resultado de cada uma.
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS comparativo_movimento_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    empresa_id INTEGER REFERENCES empresas(id),
+    codigo_dominio TEXT,
+    status TEXT NOT NULL, -- 'ok' | 'erro'
+    erro TEXT,
+    quando TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+`);
+app.get("/api/dominio-agent/empresas-comparativo", requireDominioAgent, (_req, res) => {
+  const rows = sqlite
+    .prepare(`SELECT id, codigo_dominio as codigoDominio, nome FROM empresas WHERE escritorio_id = 1 AND ativo = 1 AND comparativo_movimento_diario = 1 AND codigo_dominio IS NOT NULL AND codigo_dominio != '' ORDER BY codigo_dominio`)
+    .all();
+  res.json({ items: rows });
+});
+app.post("/api/dominio-agent/comparativo-status", requireDominioAgent, (req, res) => {
+  const itens: { codigoDominio: string; ok: boolean; erro?: string }[] = Array.isArray(req.body?.itens) ? req.body.itens : [];
+  for (const it of itens) {
+    const empresa = sqlite.prepare(`SELECT id FROM empresas WHERE escritorio_id = 1 AND codigo_dominio = ?`).get(String(it.codigoDominio)) as any;
+    sqlite.prepare(`INSERT INTO comparativo_movimento_log (empresa_id, codigo_dominio, status, erro) VALUES (?, ?, ?, ?)`)
+      .run(empresa?.id ?? null, String(it.codigoDominio), it.ok ? "ok" : "erro", it.erro || null);
+  }
+  res.json({ ok: true, registrados: itens.length });
+});
+app.get("/api/empresas/comparativo-movimento/log", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
+  const rows = sqlite
+    .prepare(
+      `SELECT l.id, l.codigo_dominio as codigoDominio, e.nome as empresaNome, l.status, l.erro, l.quando
+       FROM comparativo_movimento_log l LEFT JOIN empresas e ON e.id = l.empresa_id
+       WHERE l.quando >= datetime('now', '-3 days') ORDER BY l.id DESC LIMIT 300`
+    )
+    .all();
+  res.json({ items: rows });
 });
 app.delete("/api/fgts/agente-tokens", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
   const r = sqlite.prepare(`DELETE FROM fgts_agente_tokens WHERE user_id = ?`).run((req as any).user.id);
@@ -6932,7 +6980,7 @@ setInterval(() => {
 // se o período já tem documento, sem filtrar por quem pediu, então importando ANTES de qualquer
 // solicitação (esta rotina é proativa/agendada), o pedido do cliente já chega atendido sem nenhum
 // código extra de "atendimento automático".
-type DomRelTipo = "balanco" | "balancete" | "dre" | "faturamento" | "razao";
+type DomRelTipo = "balanco" | "balancete" | "dre" | "faturamento" | "razao" | "comparativo";
 const DOM_REL_TEMPLATE_NOME: Record<string, string> = {
   balanco: "Balanço",
   balancete: "Balancete",
@@ -6940,6 +6988,7 @@ const DOM_REL_TEMPLATE_NOME: Record<string, string> = {
   dre_anual: "DRE Anual",
   faturamento: "Relação de Faturamento",
   razao: "Razão",
+  comparativo: "Comparativo de Movimento",
 };
 // Nomes dos templates alimentados pela importação automática do OneDrive — pra esses, "Solicitar
 // Documentos" não deixa o cliente digitar qualquer mês/ano (não existe ninguém pra gerar sob
@@ -6959,6 +7008,7 @@ function domRelClassificarTipos(texto: string): DomRelTipo[] {
   // relatório do Domínio) — o Razão de verdade tem "RAZÃO" sozinho como título, seguido de
   // "Período:"/"C.N.P.J.:", nunca da palavra "social" logo depois.
   if (/raz[ãa]o(?!\s*social)/i.test(texto)) tipos.push("razao");
+  if (/comparativo\s+(de\s+)?movimento|movimento\s+comparativo/i.test(texto)) tipos.push("comparativo");
   return tipos;
 }
 // Achado ao vivo (dry-run contra a pasta real): o TEXTO do PDF varia de layout conforme a empresa —
