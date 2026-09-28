@@ -7357,19 +7357,22 @@ function domRelEhAnual(inicio: string, fim: string): boolean {
   const dias = (new Date(fim + "T00:00:00").getTime() - new Date(inicio + "T00:00:00").getTime()) / 86400000;
   return dias > 300; // período de ~1 ano inteiro (365/366 dias) — folga pra pequenas variações
 }
-// Mapa cnpj (só dígitos) → empresa, pra achar quem é o dono do relatório dentro do texto do PDF —
-// mesma técnica já usada e comprovada em /api/empresas/anexos/licencas-bulk (ver acima, "fluxoDigitos
-// sem \b"): PDF em layout de "caixinhas"/tabela (exatamente o formato de Balanço/DRE/Balancete)
-// costuma colar os dígitos sem espaço depois do pdf-parse — um regex com \b não acha nada nesse caso.
-// Inclui empresa_documentos (não só empresas.cnpj) pra cobrir empresa com mais de uma inscrição.
-function domRelMapaDocumentos(escritorioId: number): { porCnpj: Map<string, any>; porCodigo: Map<string, any> } {
-  const porCnpj = new Map<string, any>();
+// Mapa cnpj-ou-cpf (só dígitos) → empresa, pra achar quem é o dono do relatório dentro do texto do
+// PDF — mesma técnica já usada e comprovada em /api/empresas/anexos/licencas-bulk (ver acima,
+// "fluxoDigitos sem \b"): PDF em layout de "caixinhas"/tabela (exatamente o formato de
+// Balanço/DRE/Balancete/Comparativo) costuma colar os dígitos sem espaço depois do pdf-parse — um
+// regex com \b não acha nada nesse caso. Aceita 14 dígitos (CNPJ) OU 11 (CPF — produtor rural/pessoa
+// física, achado ao vivo: o Comparativo de Movimento de alguns clientes identifica só por CPF, sem
+// CNPJ nenhum no documento). Inclui empresa_documentos (não só empresas.cnpj) pra cobrir empresa com
+// mais de uma inscrição.
+function domRelMapaDocumentos(escritorioId: number): { porDocumento: Map<string, any>; porCodigo: Map<string, any> } {
+  const porDocumento = new Map<string, any>();
   const porCodigo = new Map<string, any>();
   const empresas = sqlite.prepare(`SELECT id, nome, cnpj, codigo_dominio FROM empresas WHERE escritorio_id = ?`).all(escritorioId) as any[];
   for (const e of empresas) {
     if (e.cnpj) {
       const digitos = String(e.cnpj).replace(/\D/g, "");
-      if (digitos.length === 14) porCnpj.set(digitos, e);
+      if (digitos.length === 14 || digitos.length === 11) porDocumento.set(digitos, e);
     }
     if (e.codigo_dominio) {
       const cod = String(e.codigo_dominio).trim();
@@ -7382,15 +7385,15 @@ function domRelMapaDocumentos(escritorioId: number): { porCnpj: Map<string, any>
     .prepare(`SELECT ed.documento, e.id, e.nome FROM empresa_documentos ed JOIN empresas e ON e.id = ed.empresa_id WHERE e.escritorio_id = ? AND ed.tipo = 'cnpj'`)
     .all(escritorioId) as any[];
   for (const d of docs) {
-    if (!porCnpj.has(d.documento)) porCnpj.set(d.documento, { id: d.id, nome: d.nome });
+    if (!porDocumento.has(d.documento)) porDocumento.set(d.documento, { id: d.id, nome: d.nome });
   }
-  return { porCnpj, porCodigo };
+  return { porDocumento, porCodigo };
 }
-function domRelIdentificarEmpresa(mapa: { porCnpj: Map<string, any>; porCodigo: Map<string, any> }, texto: string, nomeArquivo: string): { empresa: any | null; cnpjDetectado: string | null; codigoArquivo: string | null } {
+function domRelIdentificarEmpresa(mapa: { porDocumento: Map<string, any>; porCodigo: Map<string, any> }, texto: string, nomeArquivo: string): { empresa: any | null; cnpjDetectado: string | null; codigoArquivo: string | null } {
   const fluxoDigitos = texto.replace(/\D/g, "");
   let empresa: any = null;
   let cnpjDetectado: string | null = null;
-  for (const [digitos, emp] of mapa.porCnpj) {
+  for (const [digitos, emp] of mapa.porDocumento) {
     if (fluxoDigitos.includes(digitos)) {
       empresa = emp;
       cnpjDetectado = digitos;
@@ -7398,8 +7401,9 @@ function domRelIdentificarEmpresa(mapa: { porCnpj: Map<string, any>; porCodigo: 
     }
   }
   if (!cnpjDetectado) {
-    const candidatos = [...texto.matchAll(REGEX_CNPJ_BUSCA)].map((m) => m[0].replace(/\D/g, ""));
-    cnpjDetectado = candidatos.find((d) => d.length === 14) || null;
+    const candidatosCnpj = [...texto.matchAll(REGEX_CNPJ_BUSCA)].map((m) => m[0].replace(/\D/g, ""));
+    const candidatosCpf = [...texto.matchAll(REGEX_CPF_BUSCA)].map((m) => m[0].replace(/\D/g, ""));
+    cnpjDetectado = candidatosCnpj.find((d) => d.length === 14) || candidatosCpf.find((d) => d.length === 11) || null;
   }
   // Padrão visto nos nomes de arquivo reais: "Balancete_125_01082026 a 31082026.pdf" → "125".
   const codigoArquivo = /_([0-9]+)_/.exec(nomeArquivo)?.[1] || null;

@@ -22,8 +22,8 @@ type Deps = {
   uploadsDir: string;
   enviarEmail: (escritorioId: number, msg: any) => Promise<any>;
   enviarWhatsapp: (escritorioId: number, telefone: string, vars: { nome: string; valor: string }[], arquivo: { nome: string; tipo: string; buffer: Buffer }, origem: { tabela: "central_envio_enviados"; id: number }) => Promise<void>;
-  mapaDocumentos: (escritorioId: number) => { porCnpj: Map<string, any>; porCodigo: Map<string, any> };
-  identificarEmpresa: (mapa: { porCnpj: Map<string, any>; porCodigo: Map<string, any> }, texto: string, nomeArquivo: string) => { empresa: any | null; cnpjDetectado: string | null };
+  mapaDocumentos: (escritorioId: number) => { porDocumento: Map<string, any>; porCodigo: Map<string, any> };
+  identificarEmpresa: (mapa: { porDocumento: Map<string, any>; porCodigo: Map<string, any> }, texto: string, nomeArquivo: string) => { empresa: any | null; cnpjDetectado: string | null };
   extrairPeriodo: (texto: string, nomeArquivo: string) => { inicio: string; fim: string } | null;
   pdfParse: (buf: Buffer) => Promise<{ text: string }>;
 };
