@@ -7125,6 +7125,7 @@ app.get("/api/onedrive/config", blockCliente, requirePermissao("configuracoes", 
     relatoriosUltimoErro: c.relatorios_ultimo_erro || null,
     relatoriosDrivePastaId: c.relatorios_drive_pasta_id || null,
     relatoriosDrivePastaNome: c.relatorios_drive_pasta_nome || null,
+    relatoriosDriveUltimaVarredura: c.relatorios_drive_ultima_varredura || null,
     driveConectado: !!credencialDriveDoEscritorio(sqlite, nfse.decifrarTexto, (req as any).user.escritorioId),
   });
 });

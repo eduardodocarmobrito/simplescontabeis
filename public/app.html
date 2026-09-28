@@ -11621,20 +11621,22 @@ function renderCfgDomRelatorios(box, sub, dados){
         e já disponibiliza cada um em Relatórios e Envio de Documentos.
       </p>
       <div class="field"><label>Pasta no OneDrive</label><input id="odRelPasta" value="${esc(oneDriveCfg.relatoriosPastaOrigem)}"></div>
+      <p style="font-size:11.5px; color:var(--ink-soft); margin:-6px 0 10px;">🔁 Essa pasta é lida a cada <b>5 minutos</b>.</p>
       <div style="margin:14px 0 10px; border-top:1px solid var(--rule); padding-top:12px;">
         <div style="font-weight:600; font-size:13px;">Pasta no Google Drive (opcional — as duas origens funcionam juntas)</div>
         <p style="font-size:12px; color:var(--ink-soft); margin:2px 0 8px;">Reaproveita a conexão do Google já feita em <b>Envio de documentos</b> — não precisa autorizar de novo, só compartilhar mais essa pasta com <b>agente-drive@simples-contabeis.iam.gserviceaccount.com</b> como Leitor.</p>
         ${oneDriveCfg.driveConectado
-          ? `<p style="font-size:13px;">📁 ${oneDriveCfg.relatoriosDrivePastaId?`<b>${esc(oneDriveCfg.relatoriosDrivePastaNome||'pasta escolhida')}</b> <span class="link-discreto" id="btnDomRelTrocarPasta">trocar</span> <span class="link-discreto" id="btnDomRelRemoverPasta" style="color:var(--debit); margin-left:8px;">remover</span>` : `<span style="color:var(--ink-soft);">Nenhuma pasta escolhida ainda.</span> <button class="btn small" id="btnDomRelEscolherPasta">Escolher pasta do Drive</button>`}</p>`
+          ? `<p style="font-size:13px;">📁 ${oneDriveCfg.relatoriosDrivePastaId?`<b>${esc(oneDriveCfg.relatoriosDrivePastaNome||'pasta escolhida')}</b> <span class="link-discreto" id="btnDomRelTrocarPasta">trocar</span> <span class="link-discreto" id="btnDomRelRemoverPasta" style="color:var(--debit); margin-left:8px;">remover</span>` : `<span style="color:var(--ink-soft);">Nenhuma pasta escolhida ainda.</span> <button class="btn small" id="btnDomRelEscolherPasta">Escolher pasta do Drive</button>`}</p>
+             ${oneDriveCfg.relatoriosDrivePastaId?`<p style="font-size:11.5px; color:var(--ink-soft); margin:2px 0 0;">🔁 Essa pasta é lida a cada <b>10 segundos</b> — última leitura: <b id="odRelDriveTimer">${oneDriveCfg.relatoriosDriveUltimaVarredura?'agora há pouco':'ainda não rodou'}</b></p>`:''}`
           : `<p style="font-size:12.5px; color:var(--ink-soft);">Conecte o Google Drive primeiro em <span class="link-discreto" id="irEnvioDocs">Configurações › Envio de documentos</span>.</p>`}
       </div>
       <label class="checkbox-row"><input type="checkbox" id="odRelAtivo" ${oneDriveCfg.relatoriosAtivo?'checked':''}> Manter a importação automática ligada</label>
-      ${oneDriveCfg.relatoriosUltimaImportacaoEm?`<p style="font-size:12px; color:var(--ink-soft);">Última importação: ${fmtDateHora(oneDriveCfg.relatoriosUltimaImportacaoEm)}${oneDriveCfg.relatoriosUltimoErro?` — <span style="color:var(--debit);">${esc(oneDriveCfg.relatoriosUltimoErro)}</span>`:''}</p>`:''}
+      ${oneDriveCfg.relatoriosUltimaImportacaoEm?`<p style="font-size:12px; color:var(--ink-soft);">Última importação (qualquer origem): ${fmtDateHora(oneDriveCfg.relatoriosUltimaImportacaoEm)}${oneDriveCfg.relatoriosUltimoErro?` — <span style="color:var(--debit);">${esc(oneDriveCfg.relatoriosUltimoErro)}</span>`:''}</p>`:''}
       <div class="row" style="margin-top:6px;">
         <button class="btn primary" id="btnSalvarOdRel" disabled>Salvar</button>
         <button class="btn" id="btnOdRelDryRun">Testar (não grava nada)</button>
         ${(oneDriveCfg.conectado || oneDriveCfg.relatoriosDrivePastaId)?'<button class="btn" id="btnOdRelImportarAgora">Importar agora</button>':''}
-        <button class="btn" id="btnOdRelPendencias">Pendências</button>
+        <button class="btn" id="btnOdRelPendencias">Pendências de relatórios</button>
       </div>
       <div id="odRelResultado" style="margin-top:10px;"></div>
     </div>
@@ -11715,6 +11717,33 @@ function renderCfgDomRelatorios(box, sub, dados){
     finally{ btn.disabled = false; btn.textContent = 'Importar agora'; }
   });
   document.getElementById('btnOdRelPendencias').addEventListener('click', abrirOdRelPendenciasModal);
+  // ---- Timer ao vivo da leitura do Drive (10s) — mostra "há Xs" pra confirmar que está rodando,
+  // sem precisar recarregar a página. Refaz a leitura do config a cada 5s (bem mais barato que redesenhar
+  // a tela toda) e para sozinho quando o elemento some (troca de aba, navegação etc.), igual o padrão
+  // já usado noutros pollers da tela (EML.timer, ESC_PAYWALL_POLL).
+  if(document.getElementById('odRelDriveTimer')){
+    let ultimaMs = oneDriveCfg.relatoriosDriveUltimaVarredura ? new Date(temFusoExplicito(oneDriveCfg.relatoriosDriveUltimaVarredura)?oneDriveCfg.relatoriosDriveUltimaVarredura:oneDriveCfg.relatoriosDriveUltimaVarredura+'Z').getTime() : null;
+    function pintarTimer(){
+      const el = document.getElementById('odRelDriveTimer');
+      if(!el) return false;
+      if(!ultimaMs){ el.textContent = 'ainda não rodou'; return true; }
+      const s = Math.max(0, Math.round((Date.now()-ultimaMs)/1000));
+      el.textContent = s<60 ? `há ${s}s` : `há ${Math.floor(s/60)}min`;
+      return true;
+    }
+    pintarTimer();
+    const tickTimer = setInterval(()=>{ if(!pintarTimer()) clearInterval(tickTimer); }, 1000);
+    const refreshTimer = setInterval(async ()=>{
+      if(!document.getElementById('odRelDriveTimer')){ clearInterval(refreshTimer); return; }
+      try{
+        const c = await api('/onedrive/config');
+        if(c.relatoriosDriveUltimaVarredura){
+          const s = temFusoExplicito(c.relatoriosDriveUltimaVarredura)?c.relatoriosDriveUltimaVarredura:c.relatoriosDriveUltimaVarredura+'Z';
+          ultimaMs = new Date(s).getTime();
+        }
+      }catch(e){ /* ignora falha pontual, mantém o último valor conhecido */ }
+    }, 5000);
+  }
   // ---- Robô do Comparativo de Movimento (controle + progresso ao vivo) ----
   (function(){
     const $ = id => document.getElementById(id);
@@ -12695,7 +12724,7 @@ async function renderCfgEmailSmtp(box){
         <button class="btn primary" id="cfgExtratosSalvar">Salvar</button>
         <button class="btn" id="cfgExtratosTestar">Testar (não grava nada)</button>
         <button class="btn" id="cfgExtratosImportar">Importar agora</button>
-        <button class="btn" id="cfgExtratosPendencias">Pendências</button>
+        <button class="btn" id="cfgExtratosPendencias">Pendências de extratos</button>
       </div>
       <div id="cfgExtratosResultado" style="margin-top:10px;"></div>
     </div>` : ''}
