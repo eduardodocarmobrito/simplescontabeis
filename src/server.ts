@@ -4572,6 +4572,27 @@ sqlite.exec(`
     quando TEXT NOT NULL DEFAULT (datetime('now'))
   );
 `);
+// Estado/controle do robô do Comparativo (uma linha por escritório). O SITE define ligado/intervalo/
+// "executar agora"; o ROBÔ (agente) faz poll em /api/dominio-agent/comparativo-comando e reporta o
+// progresso em /api/dominio-agent/comparativo-progresso, que a tela mostra numa barra empresa a empresa.
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS comparativo_robo_estado (
+    escritorio_id INTEGER PRIMARY KEY,
+    ligado INTEGER NOT NULL DEFAULT 0,          -- automático (rodar a cada intervalo) ligado
+    intervalo_min INTEGER NOT NULL DEFAULT 15,  -- a cada X minutos
+    run_now_em TEXT,                            -- setado ao clicar "Executar agora" (pendente até o robô pegar)
+    ultima_exec_em TEXT,                        -- início da última execução
+    prog_rodando INTEGER NOT NULL DEFAULT 0,    -- 1 enquanto o robô processa
+    prog_total INTEGER NOT NULL DEFAULT 0,
+    prog_feitas INTEGER NOT NULL DEFAULT 0,
+    prog_atual TEXT,                            -- "código - nome" da empresa atual
+    prog_em TEXT,                               -- último update de progresso
+    agente_visto_em TEXT                        -- último poll do robô (pra saber se está online)
+  );
+`);
+function garantirRoboEstado(escritorioId: number) {
+  sqlite.prepare(`INSERT OR IGNORE INTO comparativo_robo_estado (escritorio_id) VALUES (?)`).run(escritorioId);
+}
 // Download do pacote do robô (script AutoHotkey + instruções) pra quem for instalar no servidor Windows do
 // Domínio Web — pelo Administrador logado no site (diferente das rotas acima, que são pro ROBÔ chamar).
 app.get("/api/empresas/comparativo-movimento/robo", blockCliente, requireAdmin, (req, res) => {
@@ -4599,6 +4620,65 @@ app.post("/api/dominio-agent/comparativo-status", requireDominioAgent, (req, res
       .run(empresa?.id ?? null, String(it.codigoDominio), it.ok ? "ok" : "erro", it.erro || null);
   }
   res.json({ ok: true, registrados: itens.length });
+});
+// ---- Controle do robô pelo site (agente faz poll aqui) ----
+// O robô pergunta a cada ~10s: "devo rodar agora?" (por clique manual ou por intervalo automático).
+app.get("/api/dominio-agent/comparativo-comando", requireDominioAgent, (_req, res) => {
+  garantirRoboEstado(1);
+  sqlite.prepare(`UPDATE comparativo_robo_estado SET agente_visto_em = datetime('now') WHERE escritorio_id = 1`).run();
+  const c = sqlite.prepare(`
+    SELECT ligado, intervalo_min AS intervaloMin, run_now_em, ultima_exec_em,
+      (run_now_em IS NOT NULL) AS runNow,
+      (ligado = 1 AND (ultima_exec_em IS NULL OR datetime(ultima_exec_em, '+' || intervalo_min || ' minutes') <= datetime('now'))) AS devePorTempo
+    FROM comparativo_robo_estado WHERE escritorio_id = 1
+  `).get() as any;
+  const deveRodar = !!c.runNow || !!c.devePorTempo;
+  res.json({ deveRodar, motivo: c.runNow ? "manual" : (c.devePorTempo ? "automatico" : null), ligado: !!c.ligado, intervaloMin: c.intervaloMin });
+});
+// O robô reporta o progresso (empresa a empresa). Ao INICIAR, limpa o "executar agora" e marca a última execução.
+app.post("/api/dominio-agent/comparativo-progresso", requireDominioAgent, (req, res) => {
+  garantirRoboEstado(1);
+  const b = req.body || {};
+  if (b.iniciando) {
+    sqlite.prepare(`UPDATE comparativo_robo_estado SET run_now_em = NULL, ultima_exec_em = datetime('now') WHERE escritorio_id = 1`).run();
+  }
+  sqlite.prepare(`
+    UPDATE comparativo_robo_estado
+       SET prog_rodando = ?, prog_total = ?, prog_feitas = ?, prog_atual = ?, prog_em = datetime('now')
+     WHERE escritorio_id = 1
+  `).run(b.rodando ? 1 : 0, Number(b.total) || 0, Number(b.feitas) || 0, b.atual ? String(b.atual) : null);
+  res.json({ ok: true });
+});
+// ---- Controle do robô pela tela (Configurações › Relatórios) ----
+app.get("/api/comparativo-robo/estado", blockCliente, requirePermissao("configuracoes", "visualizar"), (_req, res) => {
+  garantirRoboEstado(1);
+  const c = sqlite.prepare(`
+    SELECT ligado, intervalo_min AS intervaloMin, run_now_em AS runNowEm, ultima_exec_em AS ultimaExecEm,
+      prog_rodando AS rodando, prog_total AS total, prog_feitas AS feitas, prog_atual AS atual, prog_em AS progEm,
+      agente_visto_em AS agenteVistoEm,
+      (agente_visto_em IS NOT NULL AND datetime(agente_visto_em, '+40 seconds') >= datetime('now')) AS agenteOnline
+    FROM comparativo_robo_estado WHERE escritorio_id = 1
+  `).get() as any;
+  res.json({
+    ligado: !!c.ligado, intervaloMin: c.intervaloMin, ultimaExecEm: c.ultimaExecEm,
+    rodando: !!c.rodando, total: c.total, feitas: c.feitas, atual: c.atual, progEm: c.progEm,
+    runNowPendente: !!c.runNowEm, agenteOnline: !!c.agenteOnline, agenteVistoEm: c.agenteVistoEm,
+  });
+});
+app.post("/api/comparativo-robo/config", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
+  garantirRoboEstado(1);
+  const ligado = req.body?.ligado ? 1 : 0;
+  let intervalo = Number(req.body?.intervaloMin);
+  if (!Number.isFinite(intervalo) || intervalo < 1) intervalo = 15;
+  intervalo = Math.min(Math.max(Math.round(intervalo), 1), 1440);
+  sqlite.prepare(`UPDATE comparativo_robo_estado SET ligado = ?, intervalo_min = ? WHERE escritorio_id = 1`).run(ligado, intervalo);
+  res.json({ ok: true, ligado: !!ligado, intervaloMin: intervalo });
+});
+app.post("/api/comparativo-robo/executar", blockCliente, requirePermissao("configuracoes", "editar"), (_req, res) => {
+  garantirRoboEstado(1);
+  const online = sqlite.prepare(`SELECT (agente_visto_em IS NOT NULL AND datetime(agente_visto_em, '+40 seconds') >= datetime('now')) AS agenteOn FROM comparativo_robo_estado WHERE escritorio_id = 1`).get() as any;
+  sqlite.prepare(`UPDATE comparativo_robo_estado SET run_now_em = datetime('now') WHERE escritorio_id = 1`).run();
+  res.json({ ok: true, agenteOnline: !!online.agenteOn });
 });
 app.get("/api/empresas/comparativo-movimento/log", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
   const rows = sqlite

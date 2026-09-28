@@ -1,147 +1,362 @@
-; ============================================================================
-; Robô "Comparativo de Movimento" — roda no servidor Windows onde o Domínio
-; Web está instalado. Todo dia, pega a lista de empresas marcadas no site
-; (Empresas > Editar > Configurações > "Exportar Comparativo de Movimento
-; diariamente"), abre cada uma no Domínio, exporta o relatório em PDF e salva
-; numa pasta sincronizada pelo Google Drive Desktop — o site já lê essa pasta
-; sozinho a cada 10 segundos (Configurações > Domínio Web > Relatórios).
-;
-; ESTE ARQUIVO AINDA TEM PARTES INCOMPLETAS (marcadas com "TODO" abaixo).
-; Elas dependem de ver a tela real do Domínio Web — não dá pra adivinhar o
-; nome exato dos menus/botões sem isso. Veja o LEIA-ME.txt desta mesma pasta
-; para o passo a passo de como descobrir e preencher essas partes.
-; ============================================================================
-
 #Requires AutoHotkey v2.0
 #SingleInstance Force
-SetWorkingDir A_ScriptDir
+SetTitleMatchMode 2
+SetKeyDelay 60, 60
+CoordMode "Pixel", "Screen"
+CoordMode "Mouse", "Screen"
 
-; ---------------------------------------------------------------- CONFIGURAÇÃO
-; URL do site e a MESMA chave já usada pelo agente do Domínio Web (a mesma que
-; fica em DOMINIO_AGENT_TOKEN no servidor do site) — pergunte ao administrador
-; se não souber onde pegar; ela também aparece em Configurações > Domínio Web.
-SITE_URL := "https://simplescontabeis-production.up.railway.app"
+; ============================================================================
+;  AGENTE "COMPARATIVO DE MOVIMENTO" - Dominio Contabilidade Fiscal (streaming)
+;
+;  Fica rodando sozinho e PERGUNTA AO SITE a cada 10s se deve rodar (manual ou
+;  automatico por intervalo). Ao rodar, puxa as empresas marcadas no site,
+;  processa uma a uma e REPORTA O PROGRESSO (barra na tela do site).
+;
+;  PRE-REQUISITOS: Dominio ABERTO e LOGADO; F8 em modo "Codigo"; "Comparativo de
+;  Movimento" no menu FAVORITOS; nenhuma janela cobrindo o canto sup. esquerdo.
+;
+;  Iniciar automatico no login: Agendador de Tarefas (ver LEIA-ME).
+;  SAIR: Ctrl+Alt+Q.
+; ============================================================================
+
+; ---------------------------------------------------------------- CONFIGURACAO
+SITE_URL     := "https://simplescontabeis-production.up.railway.app"
 AGENTE_TOKEN := "COLE_AQUI_O_TOKEN_DO_AGENTE"
 
-; Pasta sincronizada pelo Google Drive Desktop neste computador — a MESMA pasta
-; que você compartilhou com agente-drive@simples-contabeis.iam.gserviceaccount.com
-; e escolheu em Configurações > Domínio Web > Relatórios > "Pasta no Google Drive".
-PASTA_SAIDA := "C:\Users\SEU_USUARIO\Google Drive\Relatorios Dominio"
+POLL_SEGUNDOS := 10       ; de quanto em quanto tempo pergunta ao site
 
-; Caminho do executável do Domínio Web neste servidor.
-DOMINIO_EXE := "C:\Caminho\Para\DominioWeb.exe"   ; TODO: ajuste pro caminho real
+DIGITAR_PERIODO := false  ; usa o periodo padrao do Dominio (01/ano-atual a mes anterior)
+FAV_KEY      := "f"       ; letra do menu FAVORITOS
+DOMINIO_WIN  := "ahk_exe AppController.exe"
 
-; ---------------------------------------------------------------- BUSCA A LISTA DE EMPRESAS
-BuscarEmpresas() {
+; Coordenadas de TELA da janela "Salvar em PDF" (abre em 0,23)
+THISPC_X    := 52,   THISPC_Y    := 265
+CAMPO_NOME_X:= 250,  CAMPO_NOME_Y:= 388
+
+T_CURTO  := 700
+T_MEDIO  := 2000
+T_LONGO  := 4000
+T_GERAR_PDF      := 15000
+T_ENTRE_EMPRESAS := 15000
+T_RENDER_TIMEOUT := 120000
+
+LOGFILE := A_ScriptDir "\robo-comparativo.log"
+
+^!q::ExitApp
+
+; ------------------------------------------------------------------- HTTP
+HttpReq(metodo, rota, corpo := "") {
     global SITE_URL, AGENTE_TOKEN
-    http := ComObject("WinHttp.WinHttpRequest.5.1")
-    http.Open("GET", SITE_URL . "/api/dominio-agent/empresas-comparativo", false)
-    http.SetRequestHeader("X-Agent-Token", AGENTE_TOKEN)
-    http.Send()
-    if (http.Status != 200) {
-        MsgBox("Não consegui buscar a lista de empresas no site (HTTP " . http.Status . "). Confira o token e a internet.")
-        return []
+    try {
+        req := ComObject("WinHttp.WinHttpRequest.5.1")
+        req.Open(metodo, SITE_URL . rota, false)
+        req.SetTimeouts(10000, 10000, 10000, 15000)
+        req.SetRequestHeader("X-Agent-Token", AGENTE_TOKEN)
+        if (metodo = "POST")
+            req.SetRequestHeader("Content-Type", "application/json")
+        req.Send(corpo)
+        return req.ResponseText
+    } catch as e {
+        return ""
     }
-    ; Resposta: {"items":[{"id":1,"codigoDominio":"125","nome":"ARMAZENS..."}]}
-    return ParseJsonItems(http.ResponseText)
 }
 
-; Analisador de JSON bem simples, só pro formato fixo acima (evita depender de
-; biblioteca externa). Se preferir mais robustez, dá pra trocar por uma lib de
-; JSON pra AutoHotkey v2 (ex.: "Cjson.ahk", fácil de achar pronta).
-ParseJsonItems(texto) {
-    itens := []
+JsonEscape(s) {
+    s := StrReplace(s, "\", "\\")
+    s := StrReplace(s, '"', '\"')
+    s := StrReplace(s, "`r", " ")
+    s := StrReplace(s, "`n", " ")
+    return s
+}
+
+; ------------------------------------------------------------------- FUNCOES
+CalcularPeriodo(&compIni, &compFim) {
+    anoAtual := Integer(A_YYYY)
+    mes := Integer(A_MM)
+    anoFim := anoAtual
+    mesFim := mes - 1
+    if (mesFim = 0) {
+        mesFim := 12
+        anoFim := anoAtual - 1
+    }
+    compIni := "01/" . anoAtual
+    compFim := Format("{:02}/{}", mesFim, anoFim)
+}
+
+Logar(txt) {
+    global LOGFILE
+    try FileAppend(FormatTime(A_Now, "yyyy-MM-dd HH:mm:ss") . "  " . txt . "`n", LOGFILE)
+}
+
+; VIGIA: fecha erros do Dominio (bug do chatbot) / Windows pelo X, nunca "Finalizar".
+FecharErroSistema() {
+    static ativo := false
+    achou := false
+    for titulo in ["Erro de sistema", "Location is not available"] {
+        if WinExist(titulo) {
+            WinClose(titulo)
+            achou := true
+        }
+    }
+    if (achou && !ativo) {
+        Logar("AVISO: janela de erro (Dominio/Windows) apareceu - fechando pelo vigia.")
+        ativo := true
+    } else if (!achou) {
+        ativo := false
+    }
+    if (achou)
+        Sleep 300
+}
+
+TrocarEmpresa(codigo) {
+    global T_CURTO, T_MEDIO, T_LONGO
+    Send "{F8}"
+    Sleep T_MEDIO
+    Send "^a"
+    Sleep 200
+    SendText codigo
+    Sleep T_MEDIO
+    Send "{Enter}"
+    Sleep T_LONGO
+}
+
+AbrirComparativo() {
+    global FAV_KEY, T_CURTO, T_MEDIO
+    Send "!" . FAV_KEY
+    Sleep T_MEDIO
+    Send "{Down}"
+    Sleep T_CURTO
+    Send "{Enter}"
+    Sleep T_MEDIO
+}
+
+PreencherEGerar(compIni, compFim) {
+    global DIGITAR_PERIODO, T_CURTO
+    if (DIGITAR_PERIODO) {
+        DigitarCampo(StrReplace(compIni, "/", ""))
+        Sleep T_CURTO
+        Send "{Tab}"
+        Sleep T_CURTO
+        DigitarCampo(StrReplace(compFim, "/", ""))
+        Sleep T_CURTO
+    }
+    Send "!o"
+    EsperarRender()
+}
+
+EsperarRender() {
+    global T_RENDER_TIMEOUT
+    inicio := A_TickCount
+    while (A_TickCount - inicio < T_RENDER_TIMEOUT) {
+        if (PixelSearch(&px, &py, 130, 150, 1600, 520, 0x000000, 70)) {
+            Sleep 1500
+            return true
+        }
+        Sleep 1000
+    }
+    return false
+}
+
+DigitarCampo(digitos) {
+    Send "{Home}"
+    Sleep 150
+    for ch in StrSplit(digitos) {
+        SendText ch
+        Sleep 130
+    }
+}
+
+DigitarTexto(txt) {
+    for ch in StrSplit(txt) {
+        SendText ch
+        Sleep 80
+    }
+}
+
+LimparCampoNome() {
+    Send "{Home}"
+    Sleep 150
+    Send "+{End}"
+    Sleep 150
+    Send "{Del}"
+    Sleep 250
+}
+
+NavegarAtePasta() {
+    global THISPC_X, THISPC_Y
+    Click(THISPC_X . " " . THISPC_Y)
+    Sleep 3000
+    Send "+{Tab}"
+    Sleep 2500
+    SelecionarPastaPorNome("client g")
+    SelecionarPastaPorNome("meu drive")
+    SelecionarPastaPorNome("relatorios dominio")
+}
+
+SelecionarPastaPorNome(nome) {
+    Sleep 800
+    for ch in StrSplit(nome) {
+        SendText ch
+        Sleep 70
+    }
+    Sleep 900
+    Send "{Enter}"
+    Sleep 3000
+}
+
+FecharPrevia() {
+    global T_CURTO
+    Loop 2 {
+        Send "{Esc}"
+        Sleep T_CURTO
+    }
+}
+
+MontarNome(codigo, compIni, compFim) {
+    bruto := "Comparativo_" . codigo . "_" . StrReplace(compIni, "/", "") . "_" . StrReplace(compFim, "/", "")
+    limpo := RegExReplace(bruto, "[^A-Za-z0-9_]", "")
+    return limpo . ".pdf"
+}
+
+LimparTelas() {
+    global T_CURTO
+    FecharErroSistema()
+    Loop 2 {
+        Send "^{F4}"
+        Sleep T_CURTO
+        FecharErroSistema()
+    }
+    Loop 4 {
+        Send "{Esc}"
+        Sleep T_CURTO
+        FecharErroSistema()
+    }
+}
+
+ProcessarEmpresa(codigo, compIni, compFim) {
+    global T_CURTO, T_MEDIO, T_LONGO, T_GERAR_PDF, CAMPO_NOME_X, CAMPO_NOME_Y
+    Logar("Empresa " . codigo . ": iniciando")
+    FecharErroSistema()
+    Sleep 500
+    LimparTelas()
+    TrocarEmpresa(codigo)
+    AbrirComparativo()
+    PreencherEGerar(compIni, compFim)
+    ; --- Salvar em PDF ---
+    Sleep T_MEDIO
+    Click("700 260")
+    Sleep T_CURTO
+    Send "^d"
+    Sleep T_LONGO
+    if !WinExist("Salvar em PDF") {   ; so manda Enter (OK no erro) se houve erro de caminho
+        Send "{Enter}"
+        Sleep T_LONGO
+    }
+    NavegarAtePasta()
+    Sleep T_MEDIO
+    try WinActivate("Salvar em PDF")
+    Sleep 500
+    MouseMove(CAMPO_NOME_X, CAMPO_NOME_Y)
+    Sleep 400
+    Click(CAMPO_NOME_X . " " . CAMPO_NOME_Y)
+    Sleep 500
+    Click(CAMPO_NOME_X . " " . CAMPO_NOME_Y)
+    Sleep 500
+    LimparCampoNome()
+    DigitarTexto(MontarNome(codigo, compIni, compFim))
+    Sleep T_CURTO
+    Send "{Enter}"
+    Sleep T_CURTO
+    Send "{Enter}"
+    Sleep T_GERAR_PDF
+    FecharPrevia()
+    Logar("Empresa " . codigo . ": PDF salvo")
+}
+
+; ------------------------------------------------------------- SITE (comandos)
+DeveRodar() {
+    body := HttpReq("GET", "/api/dominio-agent/comparativo-comando")
+    return InStr(body, '"deveRodar":true') > 0
+}
+
+ReportarProgresso(rodando, total, feitas, atual, iniciando) {
+    atualJson := atual != "" ? '"' . JsonEscape(atual) . '"' : "null"
+    json := '{"rodando":' . (rodando ? "true" : "false") . ',"total":' . total . ',"feitas":' . feitas
+          . ',"atual":' . atualJson . ',"iniciando":' . (iniciando ? "true" : "false") . "}"
+    HttpReq("POST", "/api/dominio-agent/comparativo-progresso", json)
+}
+
+PegarEmpresas() {
+    body := HttpReq("GET", "/api/dominio-agent/empresas-comparativo")
+    lista := []
     pos := 1
-    while (pos := RegExMatch(texto, '"codigoDominio":"(.*?)".*?"nome":"(.*?)"', &m, pos)) {
-        itens.Push({codigo: m[1], nome: m[2]})
+    pat := '"codigoDominio":"([^"]*)","nome":"([^"]*)"'
+    while (pos := RegExMatch(body, pat, &m, pos)) {
+        lista.Push({ codigo: m[1], nome: m[2] })
         pos += StrLen(m[0])
     }
-    return itens
+    return lista
 }
 
-; ---------------------------------------------------------------- AVISA O SITE DO RESULTADO
-AvisarResultado(codigo, ok, erro := "") {
-    global SITE_URL, AGENTE_TOKEN
-    corpo := '{"itens":[{"codigoDominio":"' . codigo . '","ok":' . (ok ? "true" : "false") . (erro ? ',"erro":"' . StrReplace(erro, '"', "'") . '"' : "") . '}]}'
-    try {
-        http := ComObject("WinHttp.WinHttpRequest.5.1")
-        http.Open("POST", SITE_URL . "/api/dominio-agent/comparativo-status", false)
-        http.SetRequestHeader("X-Agent-Token", AGENTE_TOKEN)
-        http.SetRequestHeader("Content-Type", "application/json")
-        http.Send(corpo)
+ReportarStatus(itens) {
+    if (itens.Length = 0)
+        return
+    partes := []
+    for it in itens {
+        erroJson := it.HasOwnProp("erro") && it.erro != "" ? ',"erro":"' . JsonEscape(it.erro) . '"' : ""
+        partes.Push('{"codigoDominio":"' . it.codigo . '","ok":' . (it.ok ? "true" : "false") . erroJson . "}")
     }
+    s := ""
+    for i, v in partes
+        s .= (i > 1 ? "," : "") . v
+    HttpReq("POST", "/api/dominio-agent/comparativo-status", '{"itens":[' . s . "]}")
 }
 
-; ---------------------------------------------------------------- ABRE O DOMÍNIO (se não estiver aberto)
-GarantirDominioAberto() {
-    global DOMINIO_EXE
-    ; TODO: troque "DominioWeb.exe" pelo nome de processo real (Gerenciador de Tarefas > Detalhes)
-    if !ProcessExist("DominioWeb.exe") {
-        Run(DOMINIO_EXE)
-        WinWaitActive("ahk_exe DominioWeb.exe", , 60)
-        Sleep(3000)  ; tempo pro sistema terminar de carregar a tela inicial
-    }
-}
-
-; ---------------------------------------------------------------- POR EMPRESA: exporta o relatório
-; TODO — esta é a parte que precisa dos seus prints/Window Spy pra ficar certa.
-; O esqueleto abaixo mostra ONDE cada ação entra; troque os comentários "TODO"
-; pelos comandos reais (ControlClick, Send, etc.) — veja o LEIA-ME.txt.
-ExportarComparativo(codigo, nome, pasta) {
-    ; 1) Selecionar a empresa pelo código
-    ;    TODO: normalmente é um campo de busca/combo no topo do Domínio.
-    ;    Exemplo (ajustar o nome do controle depois do Window Spy):
-    ;    ControlFocus("Edit1", "ahk_exe DominioWeb.exe")
-    ;    ControlSetText("Edit1", codigo, "ahk_exe DominioWeb.exe")
-    ;    Send("{Enter}")
-    ;    Sleep(1500)
-
-    ; 2) Abrir o menu/relatório "Comparativo de Movimento"
-    ;    TODO: pode ser um menu (Send("!r") pra Alt+R, por exemplo) ou um
-    ;    duplo-clique numa árvore de relatórios. Descubra com Window Spy.
-
-    ; 3) Preencher o período do relatório (se pedir)
-    ;    TODO: normalmente as datas do mês atual — dá pra calcular com
-    ;    FormatTime(A_Now, "01/MM/yyyy") pro primeiro dia do mês, etc.
-
-    ; 4) Exportar/Salvar como PDF
-    ;    TODO: o Domínio costuma ter um botão "Exportar" ou "Imprimir para
-    ;    PDF" que abre um "Salvar como" do Windows — nesse caso:
-    ;    WinWaitActive("Salvar como")
-    ;    caminho := pasta . "\ComparativoMovimento_" . codigo . "_" . FormatTime(A_Now, "yyyyMMdd") . ".pdf"
-    ;    ControlSetText("Edit1", caminho, "Salvar como")
-    ;    Send("{Enter}")
-    ;    WinWaitClose("Salvar como", , 30)
-
-    ; 5) Fechar a tela do relatório pra voltar pro estado inicial
-    ;    TODO: Send("{Escape}") ou fechar a janela do relatório, conforme o caso.
-
-    return true  ; troque por false + mensagem de erro se algo falhar
-}
-
-; ---------------------------------------------------------------- ROTINA PRINCIPAL
-Main() {
-    global PASTA_SAIDA
-    DirCreate(PASTA_SAIDA)
-    empresas := BuscarEmpresas()
-    if (empresas.Length = 0) {
-        MsgBox("Nenhuma empresa marcada para o Comparativo de Movimento (ou falha ao buscar a lista).")
+RodarCiclo() {
+    global DOMINIO_WIN, T_ENTRE_EMPRESAS
+    CalcularPeriodo(&compIni, &compFim)
+    empresas := PegarEmpresas()
+    total := empresas.Length
+    Logar("=== EXECUCAO: " . total . " empresa(s), periodo " . compIni . " a " . compFim . " ===")
+    ReportarProgresso(true, total, 0, "", true)      ; iniciando (limpa "executar agora" no site)
+    if (total = 0) {
+        ReportarProgresso(false, 0, 0, "", false)
         return
     }
-    GarantirDominioAberto()
-    for empresa in empresas {
-        ok := true
-        erro := ""
-        try {
-            ok := ExportarComparativo(empresa.codigo, empresa.nome, PASTA_SAIDA)
-        } catch as e {
-            ok := false
-            erro := e.Message
-        }
-        AvisarResultado(empresa.codigo, ok, erro)
-        Sleep(1000)  ; respiro entre uma empresa e outra
+    if !WinExist(DOMINIO_WIN) {
+        Logar("ERRO: Dominio nao esta aberto - execucao cancelada.")
+        ReportarProgresso(false, total, 0, "", false)
+        return
     }
-    MsgBox("Concluído: " . empresas.Length . " empresa(s) processada(s).")
+    WinActivate(DOMINIO_WIN)
+    Sleep 1000
+    resultados := []
+    feitas := 0
+    for e in empresas {
+        if (feitas > 0)
+            Sleep T_ENTRE_EMPRESAS
+        ReportarProgresso(true, total, feitas, e.codigo . " - " . e.nome, false)
+        try {
+            ProcessarEmpresa(e.codigo, compIni, compFim)
+            resultados.Push({ codigo: e.codigo, ok: true })
+        } catch as err {
+            Logar("Empresa " . e.codigo . ": ERRO " . err.Message)
+            resultados.Push({ codigo: e.codigo, ok: false, erro: err.Message })
+        }
+        feitas++
+        ReportarProgresso(true, total, feitas, "", false)
+    }
+    ReportarStatus(resultados)
+    ReportarProgresso(false, total, feitas, "", false)
+    Logar("=== EXECUCAO concluida (" . feitas . "/" . total . ") ===")
 }
 
-Main()
+; ==================================================================== MAIN
+Logar("=== Agente iniciado ===")
+SetTimer(FecharErroSistema, 400)     ; vigia do erro do chatbot, sempre ativo
+
+Loop {
+    if (DeveRodar())
+        RodarCiclo()
+    Sleep POLL_SEGUNDOS * 1000
+}
