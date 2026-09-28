@@ -14151,7 +14151,17 @@ async function atendimentoRodarMsgAgendada(m: any, forcar = false): Promise<void
         return;
       }
     }
-    await deskcommRoboEnviar(m.conversation_id, m.texto);
+    // Mesmo prefixo "*Setor*" do envio manual — pra o cliente ver de qual departamento veio, mesmo agendada.
+    let texto = m.texto;
+    try {
+      const { data: conv } = await deskcommAdmin!.from("conversations").select("active_intent, active_agent_set_at, service_started_at").eq("organization_id", DESKCOMM_ORG_ID).eq("id", m.conversation_id).maybeSingle();
+      if (conv) {
+        const { ultima } = await atendimentoEscolhas();
+        const setor = atendimentoSetorAtual(conv, ultima.get(m.conversation_id));
+        if (setor) texto = `*${setor}*\n${texto}`;
+      }
+    } catch { /* sem o setor, envia sem prefixo mesmo — não trava o agendamento por isso */ }
+    await deskcommRoboEnviar(m.conversation_id, texto);
     sqlite.prepare(`UPDATE atendimento_msgs_agendadas SET status = 'enviada', enviado_em = datetime('now'), erro = NULL WHERE id = ?`).run(m.id);
   } catch (e: any) {
     sqlite.prepare(`UPDATE atendimento_msgs_agendadas SET status = 'erro', erro = ?, enviado_em = datetime('now') WHERE id = ?`).run(String(e.message).slice(0, 300), m.id);

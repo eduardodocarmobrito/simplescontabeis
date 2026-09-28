@@ -10037,7 +10037,7 @@ async function atdEnviarArquivo(S, f, legenda){
   const fd = new FormData(); fd.append('file', f);
   const up = await dcApi(`/conversations/${S.conversaAtiva}/media`, { method:'POST', body: fd });
   const corpo = { conversation_id: S.conversaAtiva, type: up.kind, media_storage_path: up.storage_path, media_mime: up.media_mime, media_size_bytes: up.media_size_bytes, metadata:{ filename: f.name } };
-  if(legenda && up.kind!=='audio') corpo.body = legenda;
+  if(legenda && up.kind!=='audio') corpo.body = atdPrefixoSetor(S) + legenda;
   await dcApi('/messages', { method:'POST', body: corpo });
   await atdCarregarMensagens(S, true);
   atdCarregarLista(S);
@@ -10183,6 +10183,12 @@ async function atdAgendadasModal(S, conversaId){
     }catch(e){ toast(e.message,'err'); }
   }));
 }
+// Prefixo "*Setor*" no topo do texto — só quando a conversa já está atribuída a um departamento
+// (DP/RH, Contabilidade, Fiscal); sem setor (ex.: recém-chegada, ainda no menu), não prefixa nada.
+function atdPrefixoSetor(S){
+  const setor = S.conversaDados?.setor;
+  return setor ? `*${setor}*\n` : '';
+}
 function atdLigarComposer(S){
   const input = document.getElementById('atdInput');
   const enviarBtn = document.getElementById('atdEnviar');
@@ -10197,7 +10203,7 @@ function atdLigarComposer(S){
     if(!texto) return;
     enviarBtn.disabled = true;
     try{
-      const corpoMsg = { conversation_id: S.conversaAtiva, type:'text', body: texto };
+      const corpoMsg = { conversation_id: S.conversaAtiva, type:'text', body: atdPrefixoSetor(S) + texto };
       if(S.respondendo) corpoMsg.reply_to_message_id = S.respondendo.id;
       await dcApi('/messages', { method:'POST', body: corpoMsg });
       S.respondendo = null; atdRenderRespBar(S);
