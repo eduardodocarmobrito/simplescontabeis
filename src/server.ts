@@ -13750,8 +13750,11 @@ app.get("/api/atendimento/conversas", blockCliente, async (req, res) => {
     // do setor está atendendo (pedido do escritório: alguém do setor pode assumir desde o primeiro minuto;
     // ao assumir, o robô silencia). No CRM a Fila segue a regra do deskcomm: só quem espera uma pessoa.
     const filaInclui = escopo !== "crm" ? ["aguardando", "automatico"] : ["aguardando"];
+    // No CRM, cai na Fila TAMBÉM qualquer conversa aberta sem setor decidido ainda (não importa o
+    // comando_da_conversa) — pedido do escritório: nova mensagem sem departamento direcionado nunca
+    // fica "perdida" fora da fila, mesmo que o roteador de IA não tenha marcado "aguardando".
     const filtros: Record<string, (c: any) => boolean> = {
-      fila: (c) => c.atual && !fechada(c) && !c.assigned_to_user_id && filaInclui.includes(c.comando_da_conversa),
+      fila: (c) => c.atual && !fechada(c) && !c.assigned_to_user_id && (filaInclui.includes(c.comando_da_conversa) || (escopo === "crm" && !c.setor)),
       minhas: (c) => c.atual && c.assigned_to_user_id === meuDeskcommId && !fechada(c),
       // CRM: tudo. Setor: todas as conversas ABERTAS que estão no setor agora (de qualquer atendente) — o Administrador enxerga o setor inteiro.
       todas: (c) => escopo === "crm" || (c.atual && !fechada(c)),
