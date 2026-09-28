@@ -41,6 +41,13 @@ CAMPO_NOME_X:= 250,  CAMPO_NOME_Y:= 388
 PER_INI_X   := 1090, PER_INI_Y   := 721    ; campo Inicial
 PER_FIM_X   := 1333, PER_FIM_Y   := 724    ; campo Final
 
+; SELECAO DE MODULO (garante 100% que esta no modulo certo antes de rodar).
+; 1) clica o logo DOMINIO (abre o menu de modulos); 2) clica o item do modulo.
+; Pros PROXIMOS robos, so trocar MODULO_X/MODULO_Y pro item do modulo dele (Fiscal, Folha...).
+LOGO_X      := 40,   LOGO_Y      := 74     ; logo "DOMINIO" (abre menu de modulos)
+MODULO_X    := 75,   MODULO_Y    := 308    ; item "Contabilidade" no menu
+T_MODULO_CARGA := 10000                    ; espera o modulo carregar (~10s)
+
 T_CURTO  := 700
 T_MEDIO  := 2000
 T_LONGO  := 4000
@@ -256,6 +263,17 @@ LimparTelas() {
     }
 }
 
+; Seleciona o modulo no Dominio: clica o logo (abre menu), clica o item, espera carregar.
+SelecionarModulo() {
+    global LOGO_X, LOGO_Y, MODULO_X, MODULO_Y, T_MODULO_CARGA, T_MEDIO
+    FecharErroSistema()
+    Click(LOGO_X . " " . LOGO_Y)      ; logo DOMINIO -> abre o menu de modulos
+    Sleep T_MEDIO
+    Click(MODULO_X . " " . MODULO_Y)  ; clica no modulo (Contabilidade)
+    Sleep T_MODULO_CARGA              ; espera carregar (~10s)
+    FecharErroSistema()
+}
+
 ProcessarEmpresa(codigo, compIni, compFim) {
     global T_CURTO, T_MEDIO, T_LONGO, T_GERAR_PDF, CAMPO_NOME_X, CAMPO_NOME_Y
     Logar("Empresa " . codigo . ": iniciando")
@@ -378,6 +396,8 @@ RodarCiclo(compIni, compFim) {
     }
     WinActivate(DOMINIO_WIN)
     Sleep 1000
+    Logar("Selecionando modulo Contabilidade...")
+    SelecionarModulo()               ; garante 100% que esta no modulo certo
     resultados := []
     feitas := 0
     for e in empresas {
