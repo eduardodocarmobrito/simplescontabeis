@@ -7284,7 +7284,7 @@ setInterval(() => {
 // se o período já tem documento, sem filtrar por quem pediu, então importando ANTES de qualquer
 // solicitação (esta rotina é proativa/agendada), o pedido do cliente já chega atendido sem nenhum
 // código extra de "atendimento automático".
-type DomRelTipo = "balanco" | "balancete" | "dre" | "faturamento" | "razao" | "comparativo";
+type DomRelTipo = "balanco" | "balancete" | "dre" | "faturamento" | "razao" | "comparativo" | "aviso_ferias";
 const DOM_REL_TEMPLATE_NOME: Record<string, string> = {
   balanco: "Balanço",
   balancete: "Balancete",
@@ -7293,6 +7293,7 @@ const DOM_REL_TEMPLATE_NOME: Record<string, string> = {
   faturamento: "Relação de Faturamento",
   razao: "Razão",
   comparativo: "Comparativo de Movimento",
+  aviso_ferias: "Aviso de Férias",
 };
 // Nomes dos templates alimentados pela importação automática do OneDrive — pra esses, "Solicitar
 // Documentos" não deixa o cliente digitar qualquer mês/ano (não existe ninguém pra gerar sob
@@ -7313,6 +7314,7 @@ function domRelClassificarTipos(texto: string): DomRelTipo[] {
   // "Período:"/"C.N.P.J.:", nunca da palavra "social" logo depois.
   if (/raz[ãa]o(?!\s*social)/i.test(texto)) tipos.push("razao");
   if (/comparativo\s+(de\s+)?movimento|movimento\s+comparativo/i.test(texto)) tipos.push("comparativo");
+  if (/aviso\s+de\s+f[ée]rias/i.test(texto)) tipos.push("aviso_ferias");
   return tipos;
 }
 // Achado ao vivo (dry-run contra a pasta real): o TEXTO do PDF varia de layout conforme a empresa —
@@ -13116,6 +13118,7 @@ function domRelTemplateNomesParaTipo(tipo: string): string[] {
   if (tipo === "faturamento") return ["Relação de Faturamento"];
   if (tipo === "razao") return ["Razão"];
   if (tipo === "comparativo") return ["Comparativo de Movimento"];
+  if (tipo === "aviso_ferias") return ["Aviso de Férias"];
   return [];
 }
 app.get("/api/relatorios/documentos/empresas", blockCliente, requirePermissao("relatorios", "visualizar"), (req, res) => {
