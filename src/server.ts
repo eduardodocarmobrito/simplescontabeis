@@ -4590,8 +4590,30 @@ sqlite.exec(`
     agente_visto_em TEXT                        -- último poll do robô (pra saber se está online)
   );
 `);
+{
+  const colsRobo = sqlite.prepare(`PRAGMA table_info(comparativo_robo_estado)`).all() as any[];
+  if (!colsRobo.some((c) => c.name === "periodo_ini")) sqlite.exec(`ALTER TABLE comparativo_robo_estado ADD COLUMN periodo_ini TEXT`);
+  if (!colsRobo.some((c) => c.name === "periodo_fim")) sqlite.exec(`ALTER TABLE comparativo_robo_estado ADD COLUMN periodo_fim TEXT`);
+}
 function garantirRoboEstado(escritorioId: number) {
   sqlite.prepare(`INSERT OR IGNORE INTO comparativo_robo_estado (escritorio_id) VALUES (?)`).run(escritorioId);
+}
+// Período padrão do Comparativo: 01/ano-vigente até a competência anterior à data atual (Brasília ~UTC-3).
+function comparativoPeriodoPadrao(): { ini: string; fim: string } {
+  const d = new Date(Date.now() - 3 * 3600 * 1000);
+  const ano = d.getUTCFullYear();
+  const mesAtual = d.getUTCMonth() + 1;
+  let mesFim = mesAtual - 1, anoFim = ano;
+  if (mesFim === 0) { mesFim = 12; anoFim = ano - 1; }
+  return { ini: "01/" + ano, fim: String(mesFim).padStart(2, "0") + "/" + anoFim };
+}
+// Valida "MM/AAAA" (mês 01-12, ano 4 dígitos). Retorna normalizado ou null.
+function comparativoValidaPeriodo(v: any): string | null {
+  const m = String(v || "").trim().match(/^(\d{1,2})\/(\d{4})$/);
+  if (!m) return null;
+  const mes = Number(m[1]);
+  if (mes < 1 || mes > 12) return null;
+  return String(mes).padStart(2, "0") + "/" + m[2];
 }
 // Download do pacote do robô (script AutoHotkey + instruções) pra quem for instalar no servidor Windows do
 // Domínio Web — pelo Administrador logado no site (diferente das rotas acima, que são pro ROBÔ chamar).
@@ -4627,13 +4649,18 @@ app.get("/api/dominio-agent/comparativo-comando", requireDominioAgent, (_req, re
   garantirRoboEstado(1);
   sqlite.prepare(`UPDATE comparativo_robo_estado SET agente_visto_em = datetime('now') WHERE escritorio_id = 1`).run();
   const c = sqlite.prepare(`
-    SELECT ligado, intervalo_min AS intervaloMin, run_now_em, ultima_exec_em,
+    SELECT ligado, intervalo_min AS intervaloMin, run_now_em, ultima_exec_em, periodo_ini AS periodoIni, periodo_fim AS periodoFim,
       (run_now_em IS NOT NULL) AS runNow,
       (ligado = 1 AND (ultima_exec_em IS NULL OR datetime(ultima_exec_em, '+' || intervalo_min || ' minutes') <= datetime('now'))) AS devePorTempo
     FROM comparativo_robo_estado WHERE escritorio_id = 1
   `).get() as any;
+  const pad = comparativoPeriodoPadrao();
   const deveRodar = !!c.runNow || !!c.devePorTempo;
-  res.json({ deveRodar, motivo: c.runNow ? "manual" : (c.devePorTempo ? "automatico" : null), ligado: !!c.ligado, intervaloMin: c.intervaloMin });
+  res.json({
+    deveRodar, motivo: c.runNow ? "manual" : (c.devePorTempo ? "automatico" : null),
+    ligado: !!c.ligado, intervaloMin: c.intervaloMin,
+    periodoIni: c.periodoIni || pad.ini, periodoFim: c.periodoFim || pad.fim,
+  });
 });
 // O robô reporta o progresso (empresa a empresa). Ao INICIAR, limpa o "executar agora" e marca a última execução.
 app.post("/api/dominio-agent/comparativo-progresso", requireDominioAgent, (req, res) => {
@@ -4654,13 +4681,16 @@ app.get("/api/comparativo-robo/estado", blockCliente, requirePermissao("configur
   garantirRoboEstado(1);
   const c = sqlite.prepare(`
     SELECT ligado, intervalo_min AS intervaloMin, run_now_em AS runNowEm, ultima_exec_em AS ultimaExecEm,
+      periodo_ini AS periodoIni, periodo_fim AS periodoFim,
       prog_rodando AS rodando, prog_total AS total, prog_feitas AS feitas, prog_atual AS atual, prog_em AS progEm,
       agente_visto_em AS agenteVistoEm,
       (agente_visto_em IS NOT NULL AND datetime(agente_visto_em, '+40 seconds') >= datetime('now')) AS agenteOnline
     FROM comparativo_robo_estado WHERE escritorio_id = 1
   `).get() as any;
+  const pad = comparativoPeriodoPadrao();
   res.json({
     ligado: !!c.ligado, intervaloMin: c.intervaloMin, ultimaExecEm: c.ultimaExecEm,
+    periodoIni: c.periodoIni, periodoFim: c.periodoFim, periodoPadraoIni: pad.ini, periodoPadraoFim: pad.fim,
     rodando: !!c.rodando, total: c.total, feitas: c.feitas, atual: c.atual, progEm: c.progEm,
     runNowPendente: !!c.runNowEm, agenteOnline: !!c.agenteOnline, agenteVistoEm: c.agenteVistoEm,
   });
@@ -4671,11 +4701,17 @@ app.post("/api/comparativo-robo/config", blockCliente, requirePermissao("configu
   let intervalo = Number(req.body?.intervaloMin);
   if (!Number.isFinite(intervalo) || intervalo < 1) intervalo = 15;
   intervalo = Math.min(Math.max(Math.round(intervalo), 1), 1440);
-  sqlite.prepare(`UPDATE comparativo_robo_estado SET ligado = ?, intervalo_min = ? WHERE escritorio_id = 1`).run(ligado, intervalo);
-  res.json({ ok: true, ligado: !!ligado, intervaloMin: intervalo });
+  const pIni = comparativoValidaPeriodo(req.body?.periodoIni);
+  const pFim = comparativoValidaPeriodo(req.body?.periodoFim);
+  sqlite.prepare(`UPDATE comparativo_robo_estado SET ligado = ?, intervalo_min = ?, periodo_ini = ?, periodo_fim = ? WHERE escritorio_id = 1`).run(ligado, intervalo, pIni, pFim);
+  res.json({ ok: true, ligado: !!ligado, intervaloMin: intervalo, periodoIni: pIni, periodoFim: pFim });
 });
-app.post("/api/comparativo-robo/executar", blockCliente, requirePermissao("configuracoes", "editar"), (_req, res) => {
+app.post("/api/comparativo-robo/executar", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
   garantirRoboEstado(1);
+  // Se a tela mandou um período válido, guarda antes de disparar (vale pra esta execução e as próximas).
+  const pIni = comparativoValidaPeriodo(req.body?.periodoIni);
+  const pFim = comparativoValidaPeriodo(req.body?.periodoFim);
+  if (pIni && pFim) sqlite.prepare(`UPDATE comparativo_robo_estado SET periodo_ini = ?, periodo_fim = ? WHERE escritorio_id = 1`).run(pIni, pFim);
   const online = sqlite.prepare(`SELECT (agente_visto_em IS NOT NULL AND datetime(agente_visto_em, '+40 seconds') >= datetime('now')) AS agenteOn FROM comparativo_robo_estado WHERE escritorio_id = 1`).get() as any;
   sqlite.prepare(`UPDATE comparativo_robo_estado SET run_now_em = datetime('now') WHERE escritorio_id = 1`).run();
   res.json({ ok: true, agenteOnline: !!online.agenteOn });
