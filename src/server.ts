@@ -13262,22 +13262,10 @@ async function crmEnviarTextoLivre(cfg: any, paraNumero: string, texto: string, 
     .run(conversaId, wamid, texto, autorUserId);
   sqlite.prepare(`UPDATE crm_conversas SET ultima_mensagem_em = datetime('now') WHERE id = ?`).run(conversaId);
 }
-// A máquina de estados do menu de departamento. 'encerrada' reabre no MESMO departamento sem
-// mostrar o menu de novo (só telefone nunca visto passa pelo menu); 'aberta' não mexe em nada, fica
-// pro humano responder; só 'menu' de fato processa a escolha.
+// Este número (API oficial da Meta) é só de ENVIO de documentos — nunca mais atende por aqui, então
+// SEMPRE que o cliente escrever algo, a única resposta é o aviso abaixo, sem olhar status nenhum de
+// conversa (nem "aberta" de um atendimento antigo, de antes desse número virar só-envio, trava mais).
 async function crmProcessarRoteamento(escritorioId: number, cfg: any, conversaId: number, telefone: string, textoRecebido: string | null): Promise<void> {
-  const atual = sqlite.prepare(`SELECT * FROM crm_conversas WHERE id = ?`).get(conversaId) as any;
-  if (!atual) return;
-  if (atual.status === "encerrada") {
-    sqlite.prepare(`UPDATE crm_conversas SET status = 'aberta' WHERE id = ?`).run(conversaId);
-    return;
-  }
-  if (atual.status === "aberta") return;
-  // Este número (API oficial da Meta) é só de ENVIO de documentos — não atende mais por menu de
-  // departamento aqui; quem faz isso é o WhatsApp do escritório (deskcomm). Toda vez que o cliente
-  // escrever algo pra este número, sozinho, o aviso abaixo é a única resposta (fica sempre em
-  // 'menu', nunca cria departamento nem fila — se um dia isto precisar voltar a rotear de verdade,
-  // é só reaproveitar `departamentos`/`crmMontarMenu`, que continuam intactos mais abaixo no arquivo).
   const AVISO_SO_ENVIO = "Em caso de dúvidas do documento recebido, entre em contato com o número 94 99222-1064. Este número é só para envio de documentos.";
   try {
     await crmEnviarTextoLivre(cfg, telefone, AVISO_SO_ENVIO, conversaId, null, false); // sai mesmo com "ativo" desligado (não depende do toggle)
