@@ -7659,6 +7659,19 @@ app.post("/api/onedrive/relatorios/importar-agora", blockCliente, requirePermiss
     res.status(400).json({ error: e.message });
   }
 });
+// Mostra o PDF pendente (já salvo em arquivo_pendente_path) pra o admin ver o conteúdo antes de
+// escolher a empresa certa — sem isso só dava pra adivinhar pelo nome do arquivo/código.
+app.get("/api/onedrive/relatorios/pendentes/:id/pdf", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
+  const escritorioId = (req as any).user.escritorioId;
+  const row = sqlite.prepare(`SELECT * FROM dominio_relatorios_importados WHERE id = ? AND escritorio_id = ?`).get(Number(req.params.id), escritorioId) as any;
+  if (!row) return res.status(404).json({ error: "Registro não encontrado." });
+  if (!row.arquivo_pendente_path || !fs.existsSync(row.arquivo_pendente_path)) {
+    return res.status(400).json({ error: "O PDF original não está mais disponível — rode a importação de novo." });
+  }
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", nfseContentDisposition("inline", row.nome_arquivo || "relatorio.pdf"));
+  res.send(fs.readFileSync(row.arquivo_pendente_path));
+});
 // Resolve um "não identificado" na mão — o admin escolhe a empresa/tipo/período certos, sem precisar
 // baixar o arquivo de novo do OneDrive (já está salvo em arquivo_pendente_path).
 app.post("/api/onedrive/relatorios/pendentes/:id/atribuir", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {

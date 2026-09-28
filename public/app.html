@@ -11895,6 +11895,7 @@ async function abrirOdRelPendenciasModal(){
         </div>
         <div class="field" style="margin-bottom:0; width:90px;"><label>Ano</label><input type="number" id="odRelPendAno${i.id}" value="${i.periodoFim?i.periodoFim.slice(0,4):new Date().getFullYear()}"></div>
         <div class="field" style="margin-bottom:0; width:80px;"><label>Mês</label><input type="number" min="1" max="12" id="odRelPendMes${i.id}" value="${i.periodoFim?Number(i.periodoFim.slice(5,7)):''}"></div>
+        <a class="btn small" href="/api/onedrive/relatorios/pendentes/${i.id}/pdf" target="_blank" rel="noopener">Ver PDF</a>
         <button class="btn small primary" data-act="atribuir" data-id="${i.id}">Atribuir</button>
       </div>
     </div>
