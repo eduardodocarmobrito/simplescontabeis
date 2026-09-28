@@ -13094,6 +13094,7 @@ function domRelTemplateNomesParaTipo(tipo: string): string[] {
   if (tipo === "dre") return ["DRE Mensal", "DRE Anual"];
   if (tipo === "faturamento") return ["Relação de Faturamento"];
   if (tipo === "razao") return ["Razão"];
+  if (tipo === "comparativo") return ["Comparativo de Movimento"];
   return [];
 }
 app.get("/api/relatorios/documentos/empresas", blockCliente, requirePermissao("relatorios", "visualizar"), (req, res) => {
