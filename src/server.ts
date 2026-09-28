@@ -6459,8 +6459,12 @@ function nfeResolverEmpresaDestino(escritorioId: number, empresaBuscada: number,
     .get(escritorioId, empresaBuscada, emitenteLimpo) as any;
   return outraEmpresa ? outraEmpresa.id : empresaBuscada;
 }
-async function nfeBuscarDocumentosNovos(empresaId: number, cfg: any, cert: nfse.CertificadoInfo): Promise<{ novos: number }> {
+async function nfeBuscarDocumentosNovos(empresaId: number, cfg: any, cert: nfse.CertificadoInfo): Promise<{ novos: number; porSchema: Record<string, number> }> {
   let novos = 0;
+  // Conta pelo schema que a Sefaz DEVOLVEU de fato (antes de qualquer filtro/insert) — diagnóstico
+  // pra diferenciar "a Sefaz não manda CT-e/saída nenhuma pra essa empresa" de "manda mas o código
+  // descarta em algum lugar". Ver /api/nfe/diagnostico.
+  const porSchema: Record<string, number> = {};
   let ultNsu = cfg.ultimo_nsu;
   const cnpjBusca = nfeResolverCnpjBusca(cfg, empresaId);
   try {
@@ -6475,6 +6479,7 @@ async function nfeBuscarDocumentosNovos(empresaId: number, cfg: any, cert: nfse.
         ultimoNsuConhecido: ultNsu,
       });
       for (const doc of resp.documentos) {
+        porSchema[doc.schema] = (porSchema[doc.schema] || 0) + 1;
         const info = nfe.identificarDocumento(doc.xml, doc.schema);
         const empresaDestino = nfeResolverEmpresaDestino(cfg.escritorio_id, empresaId, cnpjBusca, info.emitenteCnpj);
         // O NSU só é sequencial/único dentro do fluxo do CNPJ que fez a busca — reatribuir pra outra
@@ -6517,7 +6522,7 @@ async function nfeBuscarDocumentosNovos(empresaId: number, cfg: any, cert: nfse.
     sqlite.prepare(`UPDATE nfe_busca_config SET ultima_busca_em = datetime('now'), ultimo_erro = ? WHERE empresa_id = ?`).run(e.message || String(e), empresaId);
     throw e;
   }
-  return { novos };
+  return { novos, porSchema };
 }
 // Mesma ideia, mas pra NFS-e via Distribuição DF-e do ADN (Sistema Nacional NFS-e) — sequência de
 // NSU própria, host diferente (adn.nfse.gov.br), reaproveita o mesmo certificado da empresa.
@@ -6568,9 +6573,11 @@ const nfeBuscasEmAndamento = new Set<number>();
 // Roda as duas fontes (NF-e/NFC-e e NFS-e) — usado pelo clique manual, pelo cadastro de certificado
 // e pela rotina automática, sempre do mesmo jeito (falha numa fonte não trava a outra).
 async function nfeENfseBuscarTudo(empresaId: number, cfg: any, cert: nfse.CertificadoInfo) {
-  const resultado = { novosNfe: 0, novosNfse: 0, erroNfe: null as string | null, erroNfse: null as string | null };
+  const resultado = { novosNfe: 0, novosNfse: 0, erroNfe: null as string | null, erroNfse: null as string | null, porSchema: {} as Record<string, number> };
   try {
-    resultado.novosNfe = (await nfeBuscarDocumentosNovos(empresaId, cfg, cert)).novos;
+    const r = await nfeBuscarDocumentosNovos(empresaId, cfg, cert);
+    resultado.novosNfe = r.novos;
+    resultado.porSchema = r.porSchema;
   } catch (e: any) {
     resultado.erroNfe = e.message || "Falha ao consultar a Sefaz (NF-e/NFC-e).";
   }
@@ -6625,7 +6632,7 @@ app.post("/api/nfe/config/:empresaId/reiniciar-busca", blockCliente, requirePerm
     const cert = nfeCarregarCertificado(cfg);
     const cfgAtualizado = sqlite.prepare(`SELECT * FROM nfe_busca_config WHERE empresa_id = ?`).get(empId) as any;
     const resultado = await nfeBuscarDocumentosNovos(empId, cfgAtualizado, cert);
-    res.json({ ok: true, novos: resultado.novos });
+    res.json({ ok: true, novos: resultado.novos, porSchema: resultado.porSchema });
   } catch (e: any) {
     res.status(400).json({ error: e.message });
   } finally {
@@ -6680,12 +6687,41 @@ app.post("/api/nfe/config/:empresaId/ancorar-saida", blockCliente, requirePermis
     }
     const cfgAtualizado = sqlite.prepare(`SELECT * FROM nfe_busca_config WHERE empresa_id = ?`).get(empId) as any;
     const resultado = await nfeBuscarDocumentosNovos(empId, cfgAtualizado, cert);
-    res.json({ ok: true, novos: resultado.novos });
+    res.json({ ok: true, novos: resultado.novos, porSchema: resultado.porSchema });
   } catch (e: any) {
     res.status(400).json({ error: e.message });
   } finally {
     nfeBuscasEmAndamento.delete(empId);
   }
+});
+// Diagnóstico: compara, empresa por empresa, há quanto tempo a busca está ativa e o que já foi
+// recebido (por tipo e por direção emitida/recebida) — pra entender, com números reais, por que uma
+// empresa já traz saída/CT-e sozinha e outra não (idade do cursor? volume de documentos? nunca
+// recebeu nenhum CT-e ainda?), em vez de adivinhar.
+app.get("/api/nfe/diagnostico", blockCliente, requirePermissao("nfe-busca", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const visiveis = empresasVisiveis(user);
+  if (visiveis.length === 0) return res.json({ items: [] });
+  const placeholders = visiveis.map(() => "?").join(",");
+  const rows = sqlite
+    .prepare(
+      `SELECT
+        e.id AS empresa_id, e.nome AS empresa_nome, e.cnpj AS empresa_cnpj,
+        c.ativo, c.criado_em, c.ultimo_nsu, c.ultima_busca_em, c.ultimo_erro,
+        (SELECT COUNT(*) FROM nfe_documentos d WHERE d.empresa_id = e.id AND d.tipo IN ('nfe','nfce')
+          AND d.emitente_cnpj = REPLACE(REPLACE(REPLACE(e.cnpj,'.',''),'/',''),'-','')) AS nfe_emitidas,
+        (SELECT COUNT(*) FROM nfe_documentos d WHERE d.empresa_id = e.id AND d.tipo IN ('nfe','nfce')
+          AND (d.emitente_cnpj IS NULL OR d.emitente_cnpj != REPLACE(REPLACE(REPLACE(e.cnpj,'.',''),'/',''),'-',''))) AS nfe_recebidas,
+        (SELECT COUNT(*) FROM nfe_documentos d WHERE d.empresa_id = e.id AND d.tipo = 'cte') AS cte_total,
+        (SELECT COUNT(*) FROM nfe_documentos d WHERE d.empresa_id = e.id AND d.tipo = 'evento') AS eventos_total,
+        (SELECT COUNT(*) FROM nfe_documentos d WHERE d.empresa_id = e.id) AS total_docs
+      FROM nfe_busca_config c
+      JOIN empresas e ON e.id = c.empresa_id
+      WHERE c.escritorio_id = ? AND e.id IN (${placeholders})
+      ORDER BY c.criado_em ASC`
+    )
+    .all(user.escritorioId, ...visiveis);
+  res.json({ items: rows });
 });
 // Rotina automática — roda sozinha a cada ~65min (a própria Sefaz pede pra esperar 1h entre
 // consultas de NF-e quando dá "Consumo Indevido", então não faz sentido rodar mais rápido que isso).

@@ -5775,7 +5775,7 @@ async function renderCertificadoBuscaXml(containerEl, empresaId, empresaUfPadrao
       <div id="nfeBuscaResultado_${empresaId}" style="margin-top:10px;"></div>
       ${podePostar?`<div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--rule);">
         <div style="font-weight:600; font-size:13px;">Notas de saída (vendas) não estão aparecendo?</div>
-        <p style="font-size:12px; color:var(--ink-soft); margin:4px 0 8px;"><b>Importante:</b> a Sefaz nunca entrega, por este serviço, as vendas de uma empresa pra ela mesma — isso pode até chegar sozinho quando um terceiro (fornecedor, comprador) autorizou este CNPJ, mas o botão abaixo não força isso e vai falhar com "NF-e indisponível para o emitente" se a empresa for a própria emitente da nota testada. Pra receber as vendas de verdade, é preciso outro caminho: a empresa autorizar o <b>CNPJ do escritório</b> como acesso ao XML ("autXML") no sistema em que ela emite — fale com o Administrador. Este campo aqui serve pra ancorar quando o documento é de um terceiro que já autorizou.</p>
+        <p style="font-size:12px; color:var(--ink-soft); margin:4px 0 8px;"><b>Importante:</b> colar a chave de UMA venda conhecida aqui embaixo <b>não funciona</b> se a própria empresa for a emitente dela — a Sefaz recusa essa consulta específica com "NF-e indisponível para o emitente" (regra dela, documentada). Mas isso não quer dizer que a venda nunca chega: na busca sequencial normal (sem apontar chave nenhuma), várias empresas já trazem as próprias vendas sozinhas depois de rodar por um tempo — o cursor só precisa avançar o bastante pra alcançar aquele ponto na sequência. Se uma empresa específica só mostra compras, use o botão "Reiniciar e buscar tudo de novo" abaixo pra relê tudo desde o começo. Este campo de chave serve só pro outro caso: ancorar o documento de um terceiro que já autorizou o CNPJ do escritório ("autXML").</p>
         <div class="row" style="gap:8px;">
           <div class="field grow" style="margin:0;"><input id="nfeChaveSaida_${empresaId}" maxlength="44" placeholder="44 números da chave de acesso"></div>
           <button class="btn" id="btnNfeAncorarSaida_${empresaId}">Buscar a partir dessa nota</button>
@@ -5829,7 +5829,9 @@ async function renderCertificadoBuscaXml(containerEl, empresaId, empresaUfPadrao
       resultado.innerHTML = `<div class="empty-state">Isso pode levar mais tempo que o normal…</div>`;
       try{
         const r = await api('/nfe/config/'+empresaId+'/reiniciar-busca', { method:'POST' });
-        resultado.innerHTML = `<div class="tag ok">Concluído</div> <span style="font-size:12.5px;">${r.novos} documento(s) novo(s) desde o início.</span>`;
+        const schemas = r.porSchema && Object.keys(r.porSchema).length ? Object.entries(r.porSchema).map(([s,n])=>`${esc(s)}: ${n}`).join(' · ') : 'nenhum documento devolvido pela Sefaz nesta consulta';
+        resultado.innerHTML = `<div class="tag ok">Concluído</div> <span style="font-size:12.5px;">${r.novos} documento(s) novo(s) desde o início.</span>
+          <div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">Schemas recebidos da Sefaz: ${schemas}</div>`;
         if(opts.onDocumentosMudou) opts.onDocumentosMudou();
       }catch(e){
         resultado.innerHTML = `<div class="tag bad">Falhou</div> <span style="font-size:12.5px;">${esc(e.message)}</span>`;
@@ -6016,7 +6018,49 @@ async function pageNfeBusca(){
   const box = document.getElementById('nfeBuscaMain');
   const empresas = await empresasAtivas();
 
+  async function mostrarDiagnostico(){
+    box.innerHTML = `<div class="empty-state">Carregando…</div>`;
+    const { items } = await api('/nfe/diagnostico');
+    const linhas = items.map(it=>{
+      const idade = it.criado_em ? Math.floor((Date.now() - new Date(String(it.criado_em).replace(' ','T')+'Z').getTime())/86400000) : null;
+      return `<tr>
+        <td>${esc(it.empresa_nome)}</td>
+        <td>${it.ativo? 'sim':'não'}</td>
+        <td>${idade!=null? idade+'d' : '—'}</td>
+        <td>${it.ultimo_nsu||'—'}</td>
+        <td>${it.ultima_busca_em? fmtDateHora(it.ultima_busca_em) : 'nunca'}</td>
+        <td>${it.nfe_emitidas}</td>
+        <td>${it.nfe_recebidas}</td>
+        <td>${it.cte_total}</td>
+        <td>${it.total_docs}</td>
+        <td style="color:var(--debit); font-size:11.5px;">${it.ultimo_erro?esc(it.ultimo_erro):''}</td>
+      </tr>`;
+    }).join('');
+    box.innerHTML = `
+      <div class="card">
+        <div class="tabs">
+          <div class="tab" data-tab="configuradas">Empresas Configuradas</div>
+          <div class="tab" data-tab="naoConfiguradas">Empresas Não Configuradas</div>
+          <div class="tab active" data-tab="diagnostico">🔍 Diagnóstico</div>
+        </div>
+        <p class="subtitle" style="margin-top:10px;">Comparação empresa a empresa — pra entender por que uma já traz vendas/CT-e sozinha e outra não. "Emitidas" = notas em que o CNPJ da própria empresa é o emitente (vendas); "Recebidas" = compras.</p>
+        <div style="overflow-x:auto;">
+        <table style="width:100%; border-collapse:collapse; font-size:12.5px;">
+          <thead><tr style="text-align:left; border-bottom:1px solid var(--rule);">
+            <th style="padding:4px 6px;">Empresa</th><th>Ativa</th><th>Idade</th><th>Último NSU</th><th>Última busca</th>
+            <th>Vendas</th><th>Compras</th><th>CT-e</th><th>Total</th><th>Erro</th>
+          </tr></thead>
+          <tbody>${linhas || `<tr><td colspan="10" style="padding:10px;">Nenhuma empresa com Busca de XML configurada ainda.</td></tr>`}</tbody>
+        </table>
+        </div>
+      </div>
+    `;
+    box.querySelectorAll('.tab').forEach(t=>{
+      t.addEventListener('click', ()=>{ NFE_TAB = t.dataset.tab; mostrarLista(); });
+    });
+  }
   async function mostrarLista(){
+    if(NFE_TAB==='diagnostico') return mostrarDiagnostico();
     box.innerHTML = `<div class="empty-state">Carregando…</div>`;
     const [{ items: configs, moduloAtivo }, { items: contagens }] = await Promise.all([ api('/nfe/config'), api('/nfe/documentos/contagem') ]);
     if(!moduloAtivo){
@@ -6043,6 +6087,7 @@ async function pageNfeBusca(){
         <div class="tabs">
           <div class="tab" data-tab="configuradas">Empresas Configuradas <span class="tag muted">${configuradas.length}</span></div>
           <div class="tab" data-tab="naoConfiguradas">Empresas Não Configuradas <span class="tag muted">${naoConfiguradas.length}</span></div>
+          <div class="tab" data-tab="diagnostico">🔍 Diagnóstico</div>
         </div>
         <div class="field" style="margin:10px 0 6px;"><label>Buscar</label><input type="text" id="nfeListaFiltro" placeholder="Buscar empresa…"></div>
         <div style="max-height:420px; overflow-y:auto; overflow-x:hidden; border:1px solid var(--rule); border-radius:8px; padding:4px 10px;">
