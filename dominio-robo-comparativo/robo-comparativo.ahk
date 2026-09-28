@@ -29,6 +29,10 @@ DIGITAR_PERIODO := true   ; digita o periodo que o site mandar (padrao ou custom
 FAV_KEY      := "f"       ; letra do menu FAVORITOS
 DOMINIO_WIN  := "ahk_exe AppController.exe"
 
+; Pasta LOCAL do Google Drive (pra CONFERIR se o PDF salvou e repetir se falhar)
+PASTA_LOCAL  := "G:\Meu Drive\Relatorios Dominio"
+MAX_TENTATIVAS := 3       ; quantas vezes tenta cada empresa se o PDF nao aparecer
+
 ; Coordenadas de TELA da janela "Salvar em PDF" (abre em 0,23)
 THISPC_X    := 52,   THISPC_Y    := 265
 CAMPO_NOME_X:= 250,  CAMPO_NOME_Y:= 388
@@ -289,7 +293,31 @@ ProcessarEmpresa(codigo, compIni, compFim) {
     Send "{Enter}"
     Sleep T_GERAR_PDF
     FecharPrevia()
-    Logar("Empresa " . codigo . ": PDF salvo")
+    Logar("Empresa " . codigo . ": fluxo concluido")
+}
+
+; Roda a empresa e CONFIRMA que o PDF apareceu no Google Drive local. Se nao aparecer
+; (navegacao/periodo/nome falhou por causa do streaming), reseta e REPETE ate MAX_TENTATIVAS.
+ProcessarEmpresaVerificado(codigo, compIni, compFim) {
+    global PASTA_LOCAL, MAX_TENTATIVAS, T_MEDIO
+    caminho := PASTA_LOCAL . "\" . MontarNome(codigo, compIni, compFim)
+    Loop MAX_TENTATIVAS {
+        try FileDelete(caminho)          ; remove a versao anterior (vamos regerar)
+        ProcessarEmpresa(codigo, compIni, compFim)
+        inicio := A_TickCount
+        while (A_TickCount - inicio < 60000) {   ; espera o PDF aparecer no Drive (ate 60s)
+            if (FileExist(caminho)) {
+                Logar("Empresa " . codigo . ": PDF confirmado (tentativa " . A_Index . ")")
+                return true
+            }
+            Sleep 2000
+        }
+        Logar("Empresa " . codigo . ": PDF NAO apareceu (tentativa " . A_Index . "/" . MAX_TENTATIVAS . ") - resetando e repetindo")
+        LimparTelas()
+        Sleep T_MEDIO
+    }
+    Logar("Empresa " . codigo . ": FALHOU apos " . MAX_TENTATIVAS . " tentativas")
+    return false
 }
 
 ; ------------------------------------------------------------- SITE (comandos)
@@ -356,13 +384,16 @@ RodarCiclo(compIni, compFim) {
         if (feitas > 0)
             Sleep T_ENTRE_EMPRESAS
         ReportarProgresso(true, total, feitas, e.codigo . " - " . e.nome, false)
+        ok := false
         try {
-            ProcessarEmpresa(e.codigo, compIni, compFim)
-            resultados.Push({ codigo: e.codigo, ok: true })
+            ok := ProcessarEmpresaVerificado(e.codigo, compIni, compFim)
         } catch as err {
             Logar("Empresa " . e.codigo . ": ERRO " . err.Message)
-            resultados.Push({ codigo: e.codigo, ok: false, erro: err.Message })
         }
+        if (ok)
+            resultados.Push({ codigo: e.codigo, ok: true })
+        else
+            resultados.Push({ codigo: e.codigo, ok: false, erro: "PDF nao confirmado apos as tentativas" })
         feitas++
         ReportarProgresso(true, total, feitas, "", false)
     }
