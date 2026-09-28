@@ -13254,8 +13254,8 @@ function crmMontarMenu(departamentos: { nome: string }[]): string {
 }
 // Envia texto livre (não-template) e já grava a mensagem de saída — usado tanto pelo menu
 // automático quanto pela resposta manual de um colaborador (POST /api/crm/conversas/:id/mensagens).
-async function crmEnviarTextoLivre(cfg: any, paraNumero: string, texto: string, conversaId: number, autorUserId: number | null = null): Promise<void> {
-  if (!cfg.ativo || !cfg.phone_number_id || !cfg.access_token_cifrado) throw new Error("WhatsApp não configurado ou desativado — configure em Configurações > WhatsApp.");
+async function crmEnviarTextoLivre(cfg: any, paraNumero: string, texto: string, conversaId: number, autorUserId: number | null = null, exigirAtivo = true): Promise<void> {
+  if ((exigirAtivo && !cfg.ativo) || !cfg.phone_number_id || !cfg.access_token_cifrado) throw new Error("WhatsApp não configurado ou desativado — configure em Configurações > WhatsApp.");
   const { wamid } = await whatsapp.enviarTextoLivre(cfg.phone_number_id, nfse.decifrarTexto(cfg.access_token_cifrado), paraNumero, texto);
   sqlite
     .prepare(`INSERT INTO crm_mensagens (conversa_id, direcao, wamid, tipo, texto, autor_user_id, status) VALUES (?, 'saida', ?, 'texto', ?, ?, 'accepted')`)
@@ -13280,7 +13280,7 @@ async function crmProcessarRoteamento(escritorioId: number, cfg: any, conversaId
   // é só reaproveitar `departamentos`/`crmMontarMenu`, que continuam intactos mais abaixo no arquivo).
   const AVISO_SO_ENVIO = "Em caso de dúvidas do documento recebido, entre em contato com o número 94 99222-1064. Este número é só para envio de documentos.";
   try {
-    await crmEnviarTextoLivre(cfg, telefone, AVISO_SO_ENVIO, conversaId);
+    await crmEnviarTextoLivre(cfg, telefone, AVISO_SO_ENVIO, conversaId, null, false); // sai mesmo com "ativo" desligado (não depende do toggle)
   } catch (e: any) {
     console.error(`[CRM] falha ao enviar o aviso "só envio" (conversa ${conversaId}):`, e.message);
   }
@@ -13376,10 +13376,10 @@ app.post("/api/whatsapp/webhook", (req, res) => {
         }
         // Mensagens recebidas de cliente (CRM) — cada uma processada de forma independente
         // (fire-and-forget: a resposta HTTP já foi mandada acima) pra uma falhar não travar as outras.
-        // "ativo" desligado em Configurações > WhatsApp = esse número deve ficar mudo (usado só pra ENVIAR,
-        // pela Central de Envio de Documentos) — não roda o menu de departamento nem grava conversa nova.
-        // Achado ao vivo: antes disso, mesmo desligado, ele respondia igual — o toggle não tinha efeito real.
-        if (cfg?.ativo) {
+        // "ativo" em Configurações > WhatsApp controla só o ENVIO de documentos (whatsappEnviarArquivo já
+        // confere isso) — o aviso abaixo ("esse número é só envio") sai sempre que alguém escrever aqui,
+        // independente do toggle, porque não depende de nenhuma credencial extra pra ser mandado.
+        if (cfg) {
           for (const m of mudanca.value?.messages || []) {
             crmProcessarMensagemRecebida(cfg.escritorio_id, cfg, mudanca.value, m).catch((e: any) =>
               console.error(`[CRM] falha ao processar mensagem recebida (${m.id || "?"}):`, e.message)
