@@ -33,6 +33,10 @@ DOMINIO_WIN  := "ahk_exe AppController.exe"
 THISPC_X    := 52,   THISPC_Y    := 265
 CAMPO_NOME_X:= 250,  CAMPO_NOME_Y:= 388
 
+; Coordenadas de TELA dos campos de periodo no dialogo "Comparativo de Movimento"
+PER_INI_X   := 1090, PER_INI_Y   := 721    ; campo Inicial
+PER_FIM_X   := 1333, PER_FIM_Y   := 724    ; campo Final
+
 T_CURTO  := 700
 T_MEDIO  := 2000
 T_LONGO  := 4000
@@ -131,26 +135,28 @@ AbrirComparativo() {
 }
 
 PreencherEGerar(compIni, compFim) {
-    global DIGITAR_PERIODO, T_CURTO
+    global DIGITAR_PERIODO, T_CURTO, PER_INI_X, PER_INI_Y, PER_FIM_X, PER_FIM_Y
     if (DIGITAR_PERIODO) {
-        DigitarPeriodo(compIni)   ; Inicial (focado ao abrir o dialogo)
+        ; Clica DIRETO em cada campo (sem Tab, que pulava pra aba Contas) e digita.
+        ClicarEDigitarPeriodo(PER_INI_X, PER_INI_Y, compIni)   ; Inicial
         Sleep T_CURTO
-        Send "{Tab}"
-        Sleep T_CURTO
-        DigitarPeriodo(compFim)   ; Final
+        ClicarEDigitarPeriodo(PER_FIM_X, PER_FIM_Y, compFim)   ; Final
         Sleep T_CURTO
     }
     Send "!o"
     EsperarRender()
 }
 
-; Campo mascarado MM/AAAA: seleciona todo o conteudo (Home + Shift+End) e digita os
-; 6 digitos devagar, deixando a mascara formatar. Evita grudar no valor antigo.
-DigitarPeriodo(mmAAAA) {
+; Campo mascarado MM/AAAA: clica pra focar, seleciona tudo e digita os 6 digitos devagar.
+ClicarEDigitarPeriodo(x, y, mmAAAA) {
+    Click(x . " " . y)
+    Sleep 400
+    Click(x . " " . y)           ; 2o clique garante o foco no campo (streaming)
+    Sleep 400
     Send "{Home}"
-    Sleep 150
-    Send "+{End}"
-    Sleep 150
+    Sleep 120
+    Send "+{End}"                ; seleciona todo o conteudo
+    Sleep 120
     for ch in StrSplit(StrReplace(mmAAAA, "/", "")) {
         SendText ch
         Sleep 160
