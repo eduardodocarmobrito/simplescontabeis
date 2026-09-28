@@ -4726,6 +4726,37 @@ app.get("/api/empresas/comparativo-movimento/log", blockCliente, requirePermissa
     .all();
   res.json({ items: rows });
 });
+// Diagnóstico de cadastro pras empresas marcadas pro robô do Comparativo — sem CPF/CNPJ ou sem
+// Código do Domínio preenchido (ou com código repetido entre duas empresas, achado ao vivo: 3
+// empresas com nome parecido, "LUCELIO ..."), a leitura automática dos relatórios do Domínio nunca
+// consegue casar sozinha (nem por CNPJ/CPF no texto, nem pelo código no nome do arquivo) — fica
+// sempre pendente até o admin corrigir o cadastro. Lista de uma vez só, sem precisar descobrir
+// pendência por pendência.
+app.get("/api/empresas/comparativo-movimento/diagnostico-cadastro", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
+  const escritorioId = (req as any).user.escritorioId;
+  const empresas = sqlite
+    .prepare(`SELECT id, nome, cnpj, codigo_dominio as codigoDominio FROM empresas WHERE escritorio_id = ? AND ativo = 1 AND comparativo_movimento_diario = 1 ORDER BY nome COLLATE NOCASE`)
+    .all(escritorioId) as any[];
+  const contagemCodigo = new Map<string, number>();
+  for (const e of empresas) {
+    const cod = String(e.codigoDominio || "").trim();
+    if (cod) contagemCodigo.set(cod, (contagemCodigo.get(cod) || 0) + 1);
+  }
+  const items = empresas.map((e) => {
+    const digitos = String(e.cnpj || "").replace(/\D/g, "");
+    const cod = String(e.codigoDominio || "").trim();
+    return {
+      id: e.id,
+      nome: e.nome,
+      cnpj: e.cnpj || null,
+      codigoDominio: e.codigoDominio || null,
+      semCpfCnpj: digitos.length !== 11 && digitos.length !== 14,
+      semCodigo: !cod,
+      codigoDuplicado: cod ? (contagemCodigo.get(cod) || 0) > 1 : false,
+    };
+  });
+  res.json({ items: items.filter((i) => i.semCpfCnpj || i.semCodigo || i.codigoDuplicado) });
+});
 app.delete("/api/fgts/agente-tokens", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
   const r = sqlite.prepare(`DELETE FROM fgts_agente_tokens WHERE user_id = ?`).run((req as any).user.id);
   res.json({ ok: true, revogadas: Number(r.changes) });

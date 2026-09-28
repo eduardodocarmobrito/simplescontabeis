@@ -11672,6 +11672,7 @@ function renderCfgDomRelatorios(box, sub, dados){
         ${STATE.user.perfil==='Administrador'?'<a class="btn" href="/api/empresas/comparativo-movimento/robo" download>⬇ Baixar robô (instalar em outro servidor)</a>':''}
       </div>
       <div id="roboCompProgresso" style="margin-top:12px;"></div>
+      <div id="roboCompCadastroDiag" style="margin-top:12px;"></div>
     </div>
   `;
   document.getElementById('irEnvioDocs')?.addEventListener('click', ()=>{ STATE.page='configuracoes'; CFG_TAB='envio-docs'; render(); });
@@ -11797,6 +11798,23 @@ function renderCfgDomRelatorios(box, sub, dados){
     });
     try{ clearInterval(window.__roboCompPoll); }catch(e){}
     window.__roboCompPoll = setInterval(()=>{ if(document.getElementById('roboCompStatus')) carregar(); else { try{ clearInterval(window.__roboCompPoll); }catch(e){} } }, 3000);
+    // Cadastro incompleto (sem CPF/CNPJ, sem Código do Domínio, ou código repetido entre empresas)
+    // é a causa mais comum de relatório ficar preso em "Pendências" pra sempre — mostra de cara,
+    // sem precisar descobrir pendência por pendência.
+    api('/empresas/comparativo-movimento/diagnostico-cadastro').then(({ items })=>{
+      const diag = $('roboCompCadastroDiag');
+      if(!diag || !items.length) return;
+      diag.innerHTML = `
+        <div style="background:var(--paper); border:1px solid var(--debit); border-radius:8px; padding:10px 12px;">
+          <div style="font-weight:600; font-size:12.5px; color:var(--debit); margin-bottom:6px;">⚠ ${items.length} empresa(s) com cadastro incompleto — relatórios delas nunca vão ser reconhecidos sozinhos até corrigir:</div>
+          ${items.map(i=>`<div style="font-size:12.5px; padding:3px 0; border-top:1px dashed var(--rule);">
+            <b>${esc(i.nome)}</b> —
+            ${i.semCpfCnpj?'sem CPF/CNPJ cadastrado':''}${i.semCpfCnpj&&(i.semCodigo||i.codigoDuplicado)?' · ':''}${i.semCodigo?'sem Código do Domínio':''}${i.codigoDuplicado?`código "${esc(i.codigoDominio)}" repetido em outra empresa`:''}
+          </div>`).join('')}
+          <p style="font-size:11.5px; color:var(--ink-soft); margin:8px 0 0;">Corrige em Empresas › Editar (CNPJ/CPF e Código do Domínio).</p>
+        </div>
+      `;
+    }).catch(()=>{});
   })();
 }
 function renderCfgDomOneDrive(box, sub, dados){
