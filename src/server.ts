@@ -7521,7 +7521,7 @@ async function dominioRelatoriosSincronizar(
   // somenteOrigens: usado pelo poll rápido do Drive (10s) pra não mexer no OneDrive a cada rodada — sem isso,
   // considera as duas origens configuradas (usado por "Testar"/"Importar agora" e pelo poll do OneDrive, 5 min).
   opts: { dryRun: boolean; limite?: number; somenteOrigens?: ("onedrive" | "gdrive")[] }
-): Promise<{ processados: number; ok: number; pendentes: number; erros: number; previews?: any[] }> {
+): Promise<{ processados: number; ok: number; pendentes: number; erros: number; previews?: any[]; limpas?: number }> {
   const cfg = getOnedriveConfig(escritorioId);
   const usa = (o: "onedrive" | "gdrive") => !opts.somenteOrigens || opts.somenteOrigens.includes(o);
   const temOnedrive = usa("onedrive") && !!(cfg.client_id && cfg.client_secret_cifrado && cfg.refresh_token_cifrado);
@@ -7557,6 +7557,31 @@ async function dominioRelatoriosSincronizar(
     } while (pagina);
   }
   if (opts.dryRun && opts.limite) itens = itens.slice(0, opts.limite);
+
+  // Reconciliação: SÓ numa leitura completa (não no poll rápido do Drive, que só olha o que mudou nos
+  // últimos minutos — comparar contra ele apagaria pendência válida por engano). Se um arquivo que
+  // gerou pendência foi apagado/renomeado na pasta de origem (achado ao vivo: "D. R. E._84..." virou
+  // "D. R. E._149..." depois que o Domínio reexportou — o item antigo não existe mais, id nenhum bate),
+  // a pendência antiga nunca ia sumir sozinha. Limpa aqui, só a origem que está sendo lida de verdade
+  // nesta chamada (não mexe em pendência de uma origem que nem está configurada agora).
+  let limpas = 0;
+  if (!opts.dryRun && !opts.somenteOrigens) {
+    const idsAtuais = new Set(itens.map((i) => i.id));
+    const candidatas = sqlite.prepare(`SELECT id, onedrive_item_id, arquivo_pendente_path FROM dominio_relatorios_importados WHERE escritorio_id = ? AND status != 'ok'`).all(escritorioId) as any[];
+    for (const c of candidatas) {
+      const origemItem = c.onedrive_item_id.startsWith("onedrive:") ? "onedrive" : c.onedrive_item_id.startsWith("gdrive:") ? "gdrive" : null;
+      const origemAtiva = origemItem === "onedrive" ? temOnedrive : origemItem === "gdrive" ? !!credDrive : false;
+      if (origemAtiva && !idsAtuais.has(c.onedrive_item_id)) {
+        if (c.arquivo_pendente_path) {
+          try {
+            fs.unlinkSync(c.arquivo_pendente_path);
+          } catch {}
+        }
+        sqlite.prepare(`DELETE FROM dominio_relatorios_importados WHERE id = ?`).run(c.id);
+        limpas++;
+      }
+    }
+  }
 
   const mapaDocumentos = domRelMapaDocumentos(escritorioId);
   let ok = 0,
@@ -7692,7 +7717,7 @@ async function dominioRelatoriosSincronizar(
     sqlite.prepare(`UPDATE onedrive_config SET relatorios_ultima_importacao_em = datetime('now'), relatorios_ultimo_erro = NULL${inicioVarreduraDrive ? ", relatorios_drive_ultima_varredura = ?" : ""} WHERE escritorio_id = ?`)
       .run(...(inicioVarreduraDrive ? [inicioVarreduraDrive, escritorioId] : [escritorioId]));
   }
-  return opts.dryRun ? { processados, ok, pendentes, erros, previews } : { processados, ok, pendentes, erros };
+  return opts.dryRun ? { processados, ok, pendentes, erros, previews } : { processados, ok, pendentes, erros, limpas };
 }
 app.get("/api/onedrive/relatorios/pendentes", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
   const rows = sqlite

@@ -11646,7 +11646,7 @@ function renderCfgDomRelatorios(box, sub, dados){
       <div class="row" style="margin-top:6px;">
         <button class="btn primary" id="btnSalvarOdRel" disabled>Salvar</button>
         <button class="btn" id="btnOdRelDryRun">Testar (não grava nada)</button>
-        ${(oneDriveCfg.conectado || oneDriveCfg.relatoriosDrivePastaId)?'<button class="btn" id="btnOdRelImportarAgora">Importar agora</button>':''}
+        ${(oneDriveCfg.conectado || oneDriveCfg.relatoriosDrivePastaId)?'<button class="btn" id="btnOdRelImportarAgora">🔄 Ler pasta agora</button>':''}
         <button class="btn" id="btnOdRelPendencias">Pendências de relatórios</button>
       </div>
       <div id="odRelResultado" style="margin-top:10px;"></div>
@@ -11719,14 +11719,14 @@ function renderCfgDomRelatorios(box, sub, dados){
   });
   const btnOdRelImportarAgora = document.getElementById('btnOdRelImportarAgora');
   if(btnOdRelImportarAgora) btnOdRelImportarAgora.addEventListener('click', async (ev)=>{
-    const btn = ev.target; btn.disabled = true; btn.textContent = 'Importando…';
+    const btn = ev.target; btn.disabled = true; btn.textContent = 'Lendo a pasta agora…';
     const resultado = document.getElementById('odRelResultado');
-    resultado.innerHTML = '<div class="empty-state">Importando…</div>';
+    resultado.innerHTML = '<div class="empty-state">Indo direto no OneDrive/Google Drive conferir o que tem lá agora…</div>';
     try{
       const r = await api('/onedrive/relatorios/importar-agora', { method:'POST' });
-      resultado.innerHTML = `<div class="tag ok">Concluído</div> <span style="font-size:12.5px;">${r.ok} importado(s), ${r.pendentes} pendência(s), ${r.erros} erro(s).</span>`;
+      resultado.innerHTML = `<div class="tag ok">Concluído</div> <span style="font-size:12.5px;">${r.ok} importado(s), ${r.pendentes} pendência(s), ${r.erros} erro(s)${r.limpas?`, ${r.limpas} pendência(s) antiga(s) removida(s) (arquivo não existe mais na pasta)`:''}.</span>`;
     }catch(e){ resultado.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; }
-    finally{ btn.disabled = false; btn.textContent = 'Importar agora'; }
+    finally{ btn.disabled = false; btn.textContent = '🔄 Ler pasta agora'; }
   });
   document.getElementById('btnOdRelPendencias').addEventListener('click', abrirOdRelPendenciasModal);
   // ---- Timer ao vivo da leitura do Drive (10s) — mostra "há Xs" pra confirmar que está rodando,
