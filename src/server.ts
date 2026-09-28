@@ -4572,6 +4572,19 @@ sqlite.exec(`
     quando TEXT NOT NULL DEFAULT (datetime('now'))
   );
 `);
+// Download do pacote do robô (script AutoHotkey + instruções) pra quem for instalar no servidor Windows do
+// Domínio Web — pelo Administrador logado no site (diferente das rotas acima, que são pro ROBÔ chamar).
+app.get("/api/empresas/comparativo-movimento/robo", blockCliente, requireAdmin, (req, res) => {
+  const pasta = [path.join(__dirname, "..", "dominio-robo-comparativo"), path.join(__dirname, "dominio-robo-comparativo")].find((p) => fs.existsSync(p));
+  if (!pasta) return res.status(500).json({ error: "Pacote do robô não está disponível nesta versão do servidor." });
+  res.setHeader("Content-Type", "application/zip");
+  res.setHeader("Content-Disposition", 'attachment; filename="Robo-Comparativo-Movimento.zip"');
+  const zip: any = archiver("zip", { zlib: { level: 9 } });
+  zip.on("error", (e: any) => { console.error("[comparativo-movimento] zip do robô:", e.message); res.destroy(); });
+  zip.pipe(res);
+  zip.directory(pasta, false);
+  zip.finalize();
+});
 app.get("/api/dominio-agent/empresas-comparativo", requireDominioAgent, (_req, res) => {
   const rows = sqlite
     .prepare(`SELECT id, codigo_dominio as codigoDominio, nome FROM empresas WHERE escritorio_id = 1 AND ativo = 1 AND comparativo_movimento_diario = 1 AND codigo_dominio IS NOT NULL AND codigo_dominio != '' ORDER BY codigo_dominio`)

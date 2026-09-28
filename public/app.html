@@ -11502,6 +11502,7 @@ function renderCfgDomRelatorios(box, sub, dados){
         <button class="btn" id="btnOdRelDryRun">Testar (não grava nada)</button>
         ${(oneDriveCfg.conectado || oneDriveCfg.relatoriosDrivePastaId)?'<button class="btn" id="btnOdRelImportarAgora">Importar agora</button>':''}
         <button class="btn" id="btnOdRelPendencias">Pendências</button>
+        ${STATE.user.perfil==='Administrador'?'<a class="btn" href="/api/empresas/comparativo-movimento/robo" download>⬇ Robô Comparativo de Movimento (Domínio Web)</a>':''}
       </div>
       <div id="odRelResultado" style="margin-top:10px;"></div>
     </div>
