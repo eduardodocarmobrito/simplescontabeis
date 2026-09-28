@@ -13388,7 +13388,10 @@ app.post("/api/whatsapp/webhook", (req, res) => {
         }
         // Mensagens recebidas de cliente (CRM) — cada uma processada de forma independente
         // (fire-and-forget: a resposta HTTP já foi mandada acima) pra uma falhar não travar as outras.
-        if (cfg) {
+        // "ativo" desligado em Configurações > WhatsApp = esse número deve ficar mudo (usado só pra ENVIAR,
+        // pela Central de Envio de Documentos) — não roda o menu de departamento nem grava conversa nova.
+        // Achado ao vivo: antes disso, mesmo desligado, ele respondia igual — o toggle não tinha efeito real.
+        if (cfg?.ativo) {
           for (const m of mudanca.value?.messages || []) {
             crmProcessarMensagemRecebida(cfg.escritorio_id, cfg, mudanca.value, m).catch((e: any) =>
               console.error(`[CRM] falha ao processar mensagem recebida (${m.id || "?"}):`, e.message)
