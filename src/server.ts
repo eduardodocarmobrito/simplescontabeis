@@ -6528,6 +6528,46 @@ app.post("/api/nfe/config/:empresaId/buscar", blockCliente, requirePermissao("nf
     nfeBuscasEmAndamento.delete(empId);
   }
 });
+// A Distribuição DFe, pro EMITENTE (empresa que vende), muitas vezes só passa a listar as notas a partir
+// de um certo ponto na sequência de NSU — sem uma referência, buscar desde o começo (ultNSU=0) pode nunca
+// trazer o histórico de vendas, só as compras (achado confirmado num caso real: só chegava entrada). Aqui
+// o admin informa a chave de acesso de UMA venda conhecida (até uns 90 dias, janela normal da Sefaz); o
+// sistema acha o NSU dela e "recua" o cursor até ali — dali em diante a busca incremental de sempre passa
+// a trazer entrada E saída juntas. Mesma lógica que a Conta Azul usa (confirmado na central de ajuda dela:
+// pede o XML/chave de uma nota emitida recente como ponto de partida pra buscar as de saída).
+app.post("/api/nfe/config/:empresaId/ancorar-saida", blockCliente, requirePermissao("nfe-busca", "postar"), async (req, res) => {
+  const user = (req as any).user;
+  const empId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa(user, empId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  if (!escritorioTemModulo(user.escritorioId, "busca_xml_nfe")) return res.status(403).json({ error: "Módulo de busca de XML não contratado para este escritório." });
+  const chave = String(req.body?.chaveAcesso || "").replace(/\D/g, "");
+  if (chave.length !== 44) return res.status(400).json({ error: "A chave de acesso tem 44 números (o número comprido embaixo do código de barras/QR da nota)." });
+  if (nfeBuscasEmAndamento.has(empId)) return res.status(409).json({ error: "Já tem uma busca em andamento pra esta empresa — aguarde terminar e tente de novo." });
+  const cfg = sqlite.prepare(`SELECT * FROM nfe_busca_config WHERE empresa_id = ?`).get(empId) as any;
+  if (!cfg) return res.status(400).json({ error: "Nenhum certificado configurado para esta empresa." });
+  nfeBuscasEmAndamento.add(empId);
+  try {
+    const cert = nfeCarregarCertificado(cfg);
+    const cnpjBusca = nfeResolverCnpjBusca(cfg, empId);
+    const achado = await nfe.consultarPorChave({ ambiente: cfg.ambiente as nfe.AmbienteNfe, cnpj: cnpjBusca, cUFAutor: nfe.UF_CODIGO_IBGE[cfg.uf_autor], cert, chave });
+    if (!achado.documentos.length) {
+      return res.status(404).json({ error: "Não encontrei essa nota na Distribuição DFe da Sefaz. Confira a chave, ou aguarde — pode levar algumas horas depois de emitida pra aparecer lá." });
+    }
+    const nsuAchado = achado.documentos[0].nsu;
+    const recuarPara = String(Math.max(0, Number(nsuAchado) - 1)).padStart(15, "0");
+    // Só recua (nunca avança) — se o cursor atual já é mais antigo que isso, não faz sentido pular pra frente.
+    if (Number(recuarPara) < Number(cfg.ultimo_nsu || "0")) {
+      sqlite.prepare(`UPDATE nfe_busca_config SET ultimo_nsu = ? WHERE empresa_id = ?`).run(recuarPara, empId);
+    }
+    const cfgAtualizado = sqlite.prepare(`SELECT * FROM nfe_busca_config WHERE empresa_id = ?`).get(empId) as any;
+    const resultado = await nfeBuscarDocumentosNovos(empId, cfgAtualizado, cert);
+    res.json({ ok: true, novos: resultado.novos });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  } finally {
+    nfeBuscasEmAndamento.delete(empId);
+  }
+});
 // Rotina automática — roda sozinha a cada ~65min (a própria Sefaz pede pra esperar 1h entre
 // consultas de NF-e quando dá "Consumo Indevido", então não faz sentido rodar mais rápido que isso).
 // Processa uma empresa de cada vez, com uma pausa entre elas — o limite de requisição da Sefaz

@@ -164,6 +164,12 @@ async function consultarDistribuicao(params: {
 export function consultarNovosDocumentos(params: { ambiente: AmbienteNfe; cnpj: string; cUFAutor: string; cert: nfse.CertificadoInfo; ultimoNsuConhecido: string }): Promise<RespostaDistribuicao> {
   return consultarDistribuicao({ ...params, modo: { tipo: "ultNSU", valor: params.ultimoNsuConhecido } });
 }
+// Consulta por chave de acesso (consChNFe) — já existia (usada pra buscar UM documento específico). "Ancora"
+// onde uma nota conhecida está na sequência de NSU do CNPJ. É o mecanismo que reaproveito pra pegar notas
+// EMITIDAS (saída): a Distribuição DFe, pro emitente, muitas vezes só passa a listar a partir de um ponto —
+// sem uma referência, um ultNSU=0 nem sempre traz o histórico de vendas inteiro. Achando o NSU de uma venda
+// conhecida, dá pra "recuar" o cursor até ali e seguir dali pra frente pela busca incremental normal (que
+// passa a trazer entrada E saída, tudo junto, dali em diante).
 export function consultarPorChave(params: { ambiente: AmbienteNfe; cnpj: string; cUFAutor: string; cert: nfse.CertificadoInfo; chave: string }): Promise<RespostaDistribuicao> {
   return consultarDistribuicao({ ...params, modo: { tipo: "chNFe", valor: params.chave } });
 }
