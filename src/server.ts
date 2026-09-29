@@ -6646,6 +6646,20 @@ async function nfseBuscarDocumentosNovos(empresaId: number, cfg: any, cert: nfse
 // automática pegando bem na hora que alguém clica "Buscar agora"), o que faria requisição em
 // duplicidade pra Sefaz/ADN e escrita concorrente no mesmo registro de nfe_busca_config.
 const nfeBuscasEmAndamento = new Set<number>();
+// Achado ao vivo: depois de um bloqueio "Consumo Indevido" (cStat 656), a própria Sefaz pede 1h de
+// espera — mas nada impedia clicar de novo na hora nos botões manuais (Buscar agora/Reiniciar/Ancorar/
+// Testar chaves), disparando outra tentativa que bate no MESMO bloqueio de novo, sem nunca deixar a
+// busca avançar um passo sequer. Numa empresa de teste isso rolou várias vezes seguidas no mesmo dia.
+// A rotina automática já tem sua própria pausa (NFE_AUTO_INTERVALO_MS, 65min) e não passa por aqui —
+// essa checagem é só pros cliques manuais, que não tinham proteção nenhuma.
+function nfeChecarCooldown656(cfg: any): string | null {
+  if (!cfg.ultimo_erro || !/656/.test(cfg.ultimo_erro) || !cfg.ultima_busca_em) return null;
+  const ultimaMs = new Date(String(cfg.ultima_busca_em).replace(" ", "T") + "Z").getTime();
+  const faltamMs = ultimaMs + 60 * 60 * 1000 - Date.now();
+  if (faltamMs <= 0) return null;
+  const faltamMin = Math.ceil(faltamMs / 60000);
+  return `A Sefaz bloqueou esta empresa por "Consumo Indevido" (cStat 656) — ela mesma pede 1h de espera antes de tentar de novo. Faltam ~${faltamMin} min. Clicar agora só reinicia essa espera sem avançar nada — aguarde, a rotina automática (a cada ~65min) já tenta sozinha assim que liberar.`;
+}
 // Roda as duas fontes (NF-e/NFC-e e NFS-e) — usado pelo clique manual, pelo cadastro de certificado
 // e pela rotina automática, sempre do mesmo jeito (falha numa fonte não trava a outra).
 async function nfeENfseBuscarTudo(empresaId: number, cfg: any, cert: nfse.CertificadoInfo) {
@@ -6679,6 +6693,8 @@ app.post("/api/nfe/config/:empresaId/buscar", blockCliente, requirePermissao("nf
   const cfg = sqlite.prepare(`SELECT * FROM nfe_busca_config WHERE empresa_id = ?`).get(empId) as any;
   if (!cfg) return res.status(400).json({ error: "Nenhum certificado configurado para esta empresa." });
   if (!cfg.ativo) return res.status(400).json({ error: "A busca automática está desativada para esta empresa." });
+  const cooldown = nfeChecarCooldown656(cfg);
+  if (cooldown) return res.status(429).json({ error: cooldown });
   nfeBuscasEmAndamento.add(empId);
   try {
     const cert = nfeCarregarCertificado(cfg);
@@ -6702,6 +6718,8 @@ app.post("/api/nfe/config/:empresaId/reiniciar-busca", blockCliente, requirePerm
   if (nfeBuscasEmAndamento.has(empId)) return res.status(409).json({ error: "Já tem uma busca em andamento pra esta empresa — aguarde terminar e tente de novo." });
   const cfg = sqlite.prepare(`SELECT * FROM nfe_busca_config WHERE empresa_id = ?`).get(empId) as any;
   if (!cfg) return res.status(400).json({ error: "Nenhum certificado configurado para esta empresa." });
+  const cooldown = nfeChecarCooldown656(cfg);
+  if (cooldown) return res.status(429).json({ error: cooldown });
   sqlite.prepare(`UPDATE nfe_busca_config SET ultimo_nsu = '0' WHERE empresa_id = ?`).run(empId);
   nfeBuscasEmAndamento.add(empId);
   try {
@@ -6732,6 +6750,8 @@ app.post("/api/nfe/config/:empresaId/ancorar-saida", blockCliente, requirePermis
   if (nfeBuscasEmAndamento.has(empId)) return res.status(409).json({ error: "Já tem uma busca em andamento pra esta empresa — aguarde terminar e tente de novo." });
   const cfg = sqlite.prepare(`SELECT * FROM nfe_busca_config WHERE empresa_id = ?`).get(empId) as any;
   if (!cfg) return res.status(400).json({ error: "Nenhum certificado configurado para esta empresa." });
+  const cooldown = nfeChecarCooldown656(cfg);
+  if (cooldown) return res.status(429).json({ error: cooldown });
   nfeBuscasEmAndamento.add(empId);
   try {
     const cert = nfeCarregarCertificado(cfg);
@@ -6788,6 +6808,8 @@ app.post("/api/nfe/config/:empresaId/testar-chaves", blockCliente, requirePermis
   if (nfeBuscasEmAndamento.has(empId)) return res.status(409).json({ error: "Já tem uma busca em andamento pra esta empresa — aguarde terminar e tente de novo." });
   const cfg = sqlite.prepare(`SELECT * FROM nfe_busca_config WHERE empresa_id = ?`).get(empId) as any;
   if (!cfg) return res.status(400).json({ error: "Nenhum certificado configurado para esta empresa." });
+  const cooldown = nfeChecarCooldown656(cfg);
+  if (cooldown) return res.status(429).json({ error: cooldown });
   nfeBuscasEmAndamento.add(empId);
   try {
     const cert = nfeCarregarCertificado(cfg);
