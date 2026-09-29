@@ -1856,7 +1856,10 @@ async function pagePainelTv(){
     box.style.zoom = 1;
     const disponivel = corpo.clientHeight - 8;
     const alturaReal = box.scrollHeight;
-    if(alturaReal > disponivel) box.style.zoom = Math.max(0.22, disponivel/alturaReal).toFixed(3);
+    // Antes só encolhia quando não cabia (nunca passava de 100%) — sobrando espaço embaixo, ficava
+    // parado em 100% mesmo tendo folga. Agora também aumenta até preencher a altura disponível
+    // (limite de 1.6x pra não ficar gigante/serrilhado se o conteúdo for bem curto).
+    box.style.zoom = Math.min(1.6, Math.max(0.22, disponivel/alturaReal)).toFixed(3);
   }
   function mostrarPagina(i){
     PAG.atual = i;
