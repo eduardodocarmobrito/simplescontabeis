@@ -44,6 +44,9 @@ CAMPO_NOME_X:= 250,  CAMPO_NOME_Y:= 388
 PER_INI_X   := 1090, PER_INI_Y   := 721    ; campo Inicial
 PER_FIM_X   := 1333, PER_FIM_Y   := 724    ; campo Final
 
+; Centro do dialogo "Sem dados para emitir !" (clique pra dar FOCO de teclado antes do Enter/OK)
+SEMDADOS_X  := 1286, SEMDADOS_Y  := 796
+
 ; SELECAO DE MODULO (garante 100% que esta no modulo certo antes de rodar).
 ; 1) clica o logo DOMINIO (abre o menu de modulos); 2) clica o item do modulo.
 ; Pros PROXIMOS robos, so trocar MODULO_X/MODULO_Y pro item do modulo dele (Fiscal, Folha...).
@@ -61,7 +64,7 @@ T_MEDIO  := 2000
 T_LONGO  := 4000
 T_GERAR_PDF      := 15000
 T_ENTRE_EMPRESAS := 15000
-T_RENDER_TIMEOUT := 120000
+T_RENDER_TIMEOUT := 30000                  ; se nao renderizar em 30s, trata como sem dados / tela nao abriu
 
 LOGFILE := A_ScriptDir "\robo-comparativo.log"
 
@@ -200,7 +203,7 @@ PreencherEGerar(compIni, compFim) {
         Sleep T_CURTO
     }
     Send "!o"
-    EsperarRender()
+    return EsperarRender()
 }
 
 ; Campo mascarado MM/AAAA: clica pra focar, seleciona tudo e digita os 6 digitos devagar.
@@ -219,17 +222,25 @@ ClicarEDigitarPeriodo(x, y, mmAAAA) {
     }
 }
 
+; Retorna "ok" se o relatorio renderizou (texto escuro na area). Se nao renderizar dentro
+; do tempo, retorna "sem_dados" (cobre "Sem dados para emitir" E Favoritos nao abrir a tela)
+; -> nos dois casos o robo da OK/Esc e pula pra proxima. Detecta o dialogo cinza cedo (atalho).
 EsperarRender() {
     global T_RENDER_TIMEOUT
     inicio := A_TickCount
     while (A_TickCount - inicio < T_RENDER_TIMEOUT) {
+        ; relatorio renderizou? (texto escuro na area do relatorio)
         if (PixelSearch(&px, &py, 130, 150, 1600, 520, 0x000000, 70)) {
             Sleep 1500
-            return true
+            return "ok"
         }
-        Sleep 1000
+        ; atalho: faixa cinza (rodape do botao) do dialogo "Sem dados para emitir"
+        if (PixelSearch(&dx, &dy, 1180, 835, 1395, 872, 0xF0F0F0, 10)) {
+            return "sem_dados"
+        }
+        Sleep 800
     }
-    return false
+    return "sem_dados"
 }
 
 DigitarCampo(digitos) {
@@ -293,15 +304,12 @@ MontarNome(codigo, compIni, compFim) {
     return limpo . ".pdf"
 }
 
+; Fecha janelas/previas abertas SO com Esc. NAO usa Ctrl+F4: quando nao ha janela
+; interna aberta (ex.: logo apos abrir o modulo), o Ctrl+F4 fecha o Dominio inteiro.
 LimparTelas() {
     global T_CURTO
     FecharErroSistema()
-    Loop 2 {
-        Send "^{F4}"
-        Sleep T_CURTO
-        FecharErroSistema()
-    }
-    Loop 4 {
+    Loop 6 {
         Send "{Esc}"
         Sleep T_CURTO
         FecharErroSistema()
@@ -321,7 +329,7 @@ SelecionarModulo() {
 }
 
 ProcessarEmpresa(codigo, compIni, compFim) {
-    global T_CURTO, T_MEDIO, T_LONGO, T_GERAR_PDF, CAMPO_NOME_X, CAMPO_NOME_Y
+    global T_CURTO, T_MEDIO, T_LONGO, T_GERAR_PDF, CAMPO_NOME_X, CAMPO_NOME_Y, SEMDADOS_X, SEMDADOS_Y
     Logar("Empresa " . codigo . ": iniciando")
     FecharErroSistema()
     Sleep 500
@@ -333,8 +341,24 @@ ProcessarEmpresa(codigo, compIni, compFim) {
     Logar("  [2] apos F8/troca empresa: " . ListarJanelasDominio())
     AbrirComparativo()
     Logar("  [3] apos Favoritos/Comparativo: " . ListarJanelasDominio())
-    PreencherEGerar(compIni, compFim)
-    Logar("  [4] apos gerar (previa)")
+    st := PreencherEGerar(compIni, compFim)
+    Logar("  [4] apos gerar: " . st)
+    if (st != "ok") {
+        ; "Sem dados para emitir" OU Favoritos nao abriu a tela do Comparativo.
+        ; Streaming: a tecla so pega com FOCO -> clica no dialogo antes do Enter (OK).
+        ; Sequencia: clica+OK -> 5s -> Esc, Esc (volta pra tela zerada) -> proxima empresa.
+        Logar("Empresa " . codigo . ": sem relatorio (" . st . ") - OK/Esc e proxima")
+        Click(SEMDADOS_X . " " . SEMDADOS_Y)   ; foca o dialogo "Sem dados para emitir"
+        Sleep 600
+        Send "{Enter}"                          ; OK
+        Sleep 5000                              ; espera 5s
+        Send "{Esc}"
+        Sleep T_CURTO
+        Send "{Esc}"                            ; Esc x2 -> tela zerada
+        Sleep 2000
+        LimparTelas()                           ; garante tela limpa antes da proxima empresa
+        return "pular"
+    }
     ; --- Salvar em PDF ---
     Sleep T_MEDIO
     Click("700 260")
@@ -364,6 +388,7 @@ ProcessarEmpresa(codigo, compIni, compFim) {
     Sleep T_GERAR_PDF
     FecharPrevia()
     Logar("Empresa " . codigo . ": fluxo concluido")
+    return "ok"
 }
 
 ; Roda a empresa e CONFIRMA que o PDF apareceu no Google Drive local. Se nao aparecer
@@ -373,12 +398,16 @@ ProcessarEmpresaVerificado(codigo, compIni, compFim) {
     caminho := PASTA_LOCAL . "\" . MontarNome(codigo, compIni, compFim)
     Loop MAX_TENTATIVAS {
         try FileDelete(caminho)          ; remove a versao anterior (vamos regerar)
-        ProcessarEmpresa(codigo, compIni, compFim)
+        st := ProcessarEmpresa(codigo, compIni, compFim)
+        if (st = "pular") {              ; sem dados / tela nao abriu -> NAO repete, segue pra proxima
+            Logar("Empresa " . codigo . ": pulada (sem dados / tela nao abriu)")
+            return "pular"
+        }
         inicio := A_TickCount
         while (A_TickCount - inicio < 60000) {   ; espera o PDF aparecer no Drive (ate 60s)
             if (FileExist(caminho)) {
                 Logar("Empresa " . codigo . ": PDF confirmado (tentativa " . A_Index . ")")
-                return true
+                return "ok"
             }
             Sleep 2000
         }
@@ -387,7 +416,7 @@ ProcessarEmpresaVerificado(codigo, compIni, compFim) {
         Sleep T_MEDIO
     }
     Logar("Empresa " . codigo . ": FALHOU apos " . MAX_TENTATIVAS . " tentativas")
-    return false
+    return "falhou"
 }
 
 ; ------------------------------------------------------------- SITE (comandos)
@@ -396,6 +425,12 @@ ExtrairStr(body, chave) {
     if RegExMatch(body, '"' . chave . '":"([^"]*)"', &m)
         return m[1]
     return ""
+}
+
+; Pergunta ao site se o usuario clicou "Parar robo" (freio de emergencia).
+DevePararSite() {
+    body := HttpReq("GET", "/api/dominio-agent/comparativo-comando")
+    return InStr(body, '"parar":true') ? true : false
 }
 
 ReportarProgresso(rodando, total, feitas, atual, iniciando) {
@@ -463,17 +498,23 @@ RodarCiclo(compIni, compFim) {
     resultados := []
     feitas := 0
     for e in empresas {
+        if (DevePararSite()) {           ; FREIO: usuario clicou "Parar robo" no site
+            Logar("=== PARADO pelo site (freio de emergencia) apos " . feitas . "/" . total . " ===")
+            break
+        }
         if (feitas > 0)
             Sleep T_ENTRE_EMPRESAS
         ReportarProgresso(true, total, feitas, e.codigo . " - " . e.nome, false)
-        ok := false
+        res := "falhou"
         try {
-            ok := ProcessarEmpresaVerificado(e.codigo, compIni, compFim)
+            res := ProcessarEmpresaVerificado(e.codigo, compIni, compFim)
         } catch as err {
             Logar("Empresa " . e.codigo . ": ERRO " . err.Message)
         }
-        if (ok)
+        if (res = "ok")
             resultados.Push({ codigo: e.codigo, ok: true })
+        else if (res = "pular")
+            resultados.Push({ codigo: e.codigo, ok: false, erro: "Sem dados / tela nao abriu - pulada" })
         else
             resultados.Push({ codigo: e.codigo, ok: false, erro: "PDF nao confirmado apos as tentativas" })
         feitas++
