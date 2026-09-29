@@ -271,10 +271,15 @@ LimparTelas() {
     }
 }
 
-; Seleciona o modulo no Dominio: clica o logo (abre menu), clica o item, espera carregar.
+; Garante o modulo Contabilidade. Se JA estiver nele, NAO mexe (o clique no logo/item
+; as vezes derruba pro launcher). So seleciona se estiver noutro modulo/launcher.
 SelecionarModulo() {
     global LOGO_X, LOGO_Y, MODULO_X, MODULO_Y, T_MODULO_CARGA, T_MEDIO
     FecharErroSistema()
+    if InStr(ListarJanelasDominio(), "Contabilidade") {
+        Logar("Ja esta na Contabilidade - nao mexe no modulo.")
+        return
+    }
     Click(LOGO_X . " " . LOGO_Y)      ; logo DOMINIO -> abre o menu de modulos
     Sleep T_MEDIO
     Click(MODULO_X . " " . MODULO_Y)  ; clica no modulo (Contabilidade)
