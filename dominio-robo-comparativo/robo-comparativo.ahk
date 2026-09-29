@@ -318,7 +318,9 @@ ProcessarEmpresa(codigo, compIni, compFim) {
     FecharErroSistema()
     Sleep 500
     LimparTelas()
-    Logar("  [1] apos LimparTelas: " . ListarJanelasDominio())
+    Click("700 400")                 ; clica no app (canvas vazio) pra dar FOCO DE TECLADO (streaming)
+    Sleep 500
+    Logar("  [1] apos LimparTelas+foco: " . ListarJanelasDominio())
     TrocarEmpresa(codigo)
     Logar("  [2] apos F8/troca empresa: " . ListarJanelasDominio())
     AbrirComparativo()
