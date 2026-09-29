@@ -10078,7 +10078,7 @@ async function atdCarregarMensagens(S, primeira){
   }).join('') : `<div class="empty-state" id="atdVazio">Nenhuma mensagem ainda.</div>`;
   if(!msgs.length && primeira) atdExplicarVazio(S, id);
   atdVerificarCitacoes(S, id, msgs);
-  lista.querySelectorAll('.atd-cita[data-alvo]').forEach(c=>c.addEventListener('click', ev=>{ ev.stopPropagation(); atdIrParaMensagem(S, c.dataset.alvo); }));
+  lista.querySelectorAll('.atd-cita[data-alvo]').forEach(c=>c.addEventListener('click', ev=>{ ev.stopPropagation(); atdIrParaMensagem(S, c.dataset.alvo, c.dataset.chave); }));
   lista.querySelectorAll('.atd-msg-menu').forEach(b=>b.addEventListener('click', ev=>{ ev.stopPropagation(); atdMenuMensagem(S, b.dataset.msg); }));
   if(primeira || pertoDoFim) lista.scrollTop = lista.scrollHeight;
 }
@@ -10117,21 +10117,36 @@ function atdRenderRespBar(S){
   bar.innerHTML = `<div class="atd-resp-txt"><b>↩️ Respondendo a ${esc(S.respondendo.autor)}</b><span>${esc(S.respondendo.resumo.slice(0,140))}</span></div><button class="btn small" id="atdRespCancelar" title="Cancelar">✕</button>`;
   document.getElementById('atdRespCancelar').addEventListener('click', ()=>{ S.respondendo=null; atdRenderRespBar(S); });
 }
+// Chave da mensagem no WhatsApp (o trecho depois do último "_" do external_id) — mesma comparação
+// usada na recuperação do lado do servidor: a mesma mensagem pode ter external_id como LID
+// (…@lid_CHAVE) ou telefone (…@c.us_CHAVE), então nunca compara o id inteiro.
+function atdChaveWa(externalId){ return externalId ? String(externalId).replace(/^.*_/,'') : ''; }
 function atdCitaHtml(S, m){
   const cit = m.metadata && m.metadata.citacao;
   if(!m.reply_to_message_id && !cit) return '';
-  const alvo = m.reply_to_message_id || (cit && cit.local_id) || '';
-  const o = alvo && S.msgsPorId && S.msgsPorId[alvo];
-  const attr = alvo ? ` data-alvo="${esc(alvo)}" title="Ir até a mensagem" style="cursor:pointer;"` : '';
+  let alvo = m.reply_to_message_id || (cit && cit.local_id) || '';
+  const chaveAlvo = cit && cit.waha_id ? atdChaveWa(cit.waha_id) : '';
+  let o = alvo && S.msgsPorId && S.msgsPorId[alvo];
+  // local_id pode ter ficado vazio pra sempre: a mensagem original não estava gravada ainda quando
+  // essa resposta chegou (achado ao vivo 2026-09-29 — recuperada depois pelo guarda-tudo da VPS, mas
+  // a citação já tinha sido salva sem o link). Procura de novo pela chave da mensagem no WhatsApp
+  // entre as já carregadas antes de desistir — se achar, o link passa a funcionar.
+  if(!o && chaveAlvo && S.msgsPorId){
+    const achada = Object.values(S.msgsPorId).find(x=>atdChaveWa(x.external_id)===chaveAlvo);
+    if(achada){ o = achada; alvo = achada.id; }
+  }
+  const attr = (alvo || chaveAlvo) ? ` data-alvo="${esc(alvo)}" data-chave="${esc(chaveAlvo)}" title="Ir até a mensagem" style="cursor:pointer;"` : '';
   if(o) return `<div class="atd-cita"${attr}><b>${esc(atdAutorCurto(S,o))}</b><span>${esc(atdResumoMsg(o).slice(0,120))}</span></div>`;
   if(cit) return `<div class="atd-cita"${attr}><b>Mensagem marcada</b><span>${esc(String(cit.resumo||'').slice(0,120))}</span></div>`;
   return `<div class="atd-cita"${attr}><b>Mensagem anterior</b><span>(clique pra localizar)</span></div>`;
 }
-// Clicar na mensagem marcada leva até ela na conversa; se for antiga (fora das últimas 100), busca páginas anteriores.
-async function atdIrParaMensagem(S, id){
+// Clicar na mensagem marcada leva até ela na conversa; se for antiga (fora das últimas 100), busca páginas
+// anteriores. `chave` é o reforço (chave da mensagem no WhatsApp) pra quando ainda não se sabe o id local —
+// sem isso, uma citação sem local_id salvo nunca acha a mensagem mesmo estando ali, só mais pra trás no histórico.
+async function atdIrParaMensagem(S, id, chave){
   const lista = document.getElementById('atdMsgs');
   if(!lista) return;
-  const achar = ()=>lista.querySelector('[data-mid="'+id+'"]');
+  const achar = ()=>id && lista.querySelector('[data-mid="'+id+'"]');
   const destacar = el=>{ el.scrollIntoView({ block:'center', behavior:'smooth' }); el.classList.remove('atd-flash'); void el.offsetWidth; el.classList.add('atd-flash'); };
   let el = achar();
   if(el) return destacar(el);
@@ -10145,7 +10160,8 @@ async function atdIrParaMensagem(S, id){
     S.antigas = [...(resp.data||[]), ...(S.antigas||[])];
     S.cursorAntigo = resp.meta && resp.meta.cursor || null;
     S.temMaisAntigas = !!(resp.meta && resp.meta.has_more);
-    if((resp.data||[]).some(m=>m.id===id)) break;
+    const achada = (resp.data||[]).find(m=> id ? m.id===id : (chave && atdChaveWa(m.external_id)===chave));
+    if(achada){ id = achada.id; break; }
   }
   S.ultimaMsgId = null;
   await atdCarregarMensagens(S, false);
