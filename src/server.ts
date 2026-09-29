@@ -7553,9 +7553,11 @@ async function dominioRelatoriosSincronizar(
 ): Promise<{ processados: number; ok: number; pendentes: number; erros: number; previews?: any[]; limpas?: number }> {
   const cfg = getOnedriveConfig(escritorioId);
   const usa = (o: "onedrive" | "gdrive") => !opts.somenteOrigens || opts.somenteOrigens.includes(o);
-  // relatorios_pasta_origem vazio de propósito = admin desligou só a origem OneDrive de Relatórios,
-  // sem desconectar a conta (que também é usada pela Exportação de XML, ver PUT /onedrive/config).
-  const temOnedrive = usa("onedrive") && !!(cfg.client_id && cfg.client_secret_cifrado && cfg.refresh_token_cifrado && cfg.relatorios_pasta_origem);
+  // Pedido explícito do usuário: OneDrive não é mais origem de Relatórios, só Google Drive (a conexão
+  // OneDrive em si continua ativa pra Exportação de XML, que é outra função — não mexe nela). Desligado
+  // direto no código (não só limpando relatorios_pasta_origem) pra valer na hora, sem depender de
+  // ninguém salvar a tela de novo — o valor antigo pode continuar no banco sem efeito nenhum.
+  const temOnedrive = false && usa("onedrive") && !!(cfg.client_id && cfg.client_secret_cifrado && cfg.refresh_token_cifrado && cfg.relatorios_pasta_origem);
   const credDrive = usa("gdrive") && cfg.relatorios_drive_pasta_id ? credencialDriveDoEscritorio(sqlite, nfse.decifrarTexto, escritorioId) : null;
   if (!temOnedrive && !credDrive) {
     if (opts.somenteOrigens) return { processados: 0, ok: 0, pendentes: 0, erros: 0 }; // poll rápido do Drive: escritório sem pasta configurada, nada a fazer
