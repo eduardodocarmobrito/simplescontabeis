@@ -7159,7 +7159,9 @@ app.get("/api/onedrive/config", blockCliente, requirePermissao("configuracoes", 
     ativo: !!c.ativo,
     ultimaExportacaoEm: c.ultima_exportacao_em || null,
     ultimoErro: c.ultimo_erro || null,
-    relatoriosPastaOrigem: c.relatorios_pasta_origem || "Relatorios_Dominio",
+    // Sem fallback pra "Relatorios_Dominio" aqui — vazio de verdade precisa aparecer vazio no campo,
+    // senão o admin nunca sabe que já desligou essa origem (o texto padrão reaparecia sozinho).
+    relatoriosPastaOrigem: c.relatorios_pasta_origem || "",
     relatoriosAtivo: !!c.relatorios_ativo,
     relatoriosUltimaImportacaoEm: c.relatorios_ultima_importacao_em || null,
     relatoriosUltimoErro: c.relatorios_ultimo_erro || null,
@@ -7197,7 +7199,12 @@ app.put("/api/onedrive/config", blockCliente, requirePermissao("configuracoes", 
       b.clientSecret ? nfse.cifrarTexto(String(b.clientSecret)) : atual.client_secret_cifrado || null,
       b.pastaDestino || "Notas Fiscais - Clientes",
       b.ativo ? 1 : 0,
-      b.relatoriosPastaOrigem || atual.relatorios_pasta_origem || "Relatorios_Dominio",
+      // Diferente dos outros campos: aqui um valor VAZIO enviado de propósito (o admin apagou o campo
+      // e salvou) precisa ser respeitado como "não usar OneDrive como origem de Relatórios" — não pode
+      // cair no fallback de sempre, senão limpar o campo nunca tem efeito nenhum (achado ao vivo: era
+      // impossível desativar só o OneDrive de Relatórios sem desconectar a conta toda, que também
+      // desliga a Exportação de XML — conexão compartilhada entre as duas funções).
+      b.relatoriosPastaOrigem !== undefined ? b.relatoriosPastaOrigem : atual.relatorios_pasta_origem || "Relatorios_Dominio",
       b.relatoriosAtivo ? 1 : 0
     );
   res.json({ ok: true });
@@ -7524,7 +7531,9 @@ async function dominioRelatoriosSincronizar(
 ): Promise<{ processados: number; ok: number; pendentes: number; erros: number; previews?: any[]; limpas?: number }> {
   const cfg = getOnedriveConfig(escritorioId);
   const usa = (o: "onedrive" | "gdrive") => !opts.somenteOrigens || opts.somenteOrigens.includes(o);
-  const temOnedrive = usa("onedrive") && !!(cfg.client_id && cfg.client_secret_cifrado && cfg.refresh_token_cifrado);
+  // relatorios_pasta_origem vazio de propósito = admin desligou só a origem OneDrive de Relatórios,
+  // sem desconectar a conta (que também é usada pela Exportação de XML, ver PUT /onedrive/config).
+  const temOnedrive = usa("onedrive") && !!(cfg.client_id && cfg.client_secret_cifrado && cfg.refresh_token_cifrado && cfg.relatorios_pasta_origem);
   const credDrive = usa("gdrive") && cfg.relatorios_drive_pasta_id ? credencialDriveDoEscritorio(sqlite, nfse.decifrarTexto, escritorioId) : null;
   if (!temOnedrive && !credDrive) {
     if (opts.somenteOrigens) return { processados: 0, ok: 0, pendentes: 0, erros: 0 }; // poll rápido do Drive: escritório sem pasta configurada, nada a fazer
