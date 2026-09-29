@@ -61,7 +61,7 @@ T_MEDIO  := 2000
 T_LONGO  := 4000
 T_GERAR_PDF      := 15000
 T_ENTRE_EMPRESAS := 15000
-T_RENDER_TIMEOUT := 120000
+T_RENDER_TIMEOUT := 60000
 
 LOGFILE := A_ScriptDir "\robo-comparativo.log"
 
@@ -200,7 +200,7 @@ PreencherEGerar(compIni, compFim) {
         Sleep T_CURTO
     }
     Send "!o"
-    EsperarRender()
+    return EsperarRender()
 }
 
 ; Campo mascarado MM/AAAA: clica pra focar, seleciona tudo e digita os 6 digitos devagar.
@@ -219,17 +219,25 @@ ClicarEDigitarPeriodo(x, y, mmAAAA) {
     }
 }
 
+; Retorna: "ok" (relatorio renderizou), "sem_dados" (dialogo "Sem dados para emitir")
+; ou "timeout" (nada abriu - ex.: Favoritos nao abriu a tela do Comparativo).
 EsperarRender() {
     global T_RENDER_TIMEOUT
     inicio := A_TickCount
     while (A_TickCount - inicio < T_RENDER_TIMEOUT) {
+        ; relatorio renderizou? (texto escuro na area do relatorio)
         if (PixelSearch(&px, &py, 130, 150, 1600, 520, 0x000000, 70)) {
             Sleep 1500
-            return true
+            return "ok"
         }
-        Sleep 1000
+        ; dialogo "Sem dados para emitir" (modal cinza claro no centro, area do relatorio em branco)?
+        if (PixelSearch(&dx, &dy, 1150, 720, 1420, 880, 0xF0F0F0, 12)) {
+            Sleep 400
+            return "sem_dados"
+        }
+        Sleep 800
     }
-    return false
+    return "timeout"
 }
 
 DigitarCampo(digitos) {
@@ -333,8 +341,21 @@ ProcessarEmpresa(codigo, compIni, compFim) {
     Logar("  [2] apos F8/troca empresa: " . ListarJanelasDominio())
     AbrirComparativo()
     Logar("  [3] apos Favoritos/Comparativo: " . ListarJanelasDominio())
-    PreencherEGerar(compIni, compFim)
-    Logar("  [4] apos gerar (previa)")
+    st := PreencherEGerar(compIni, compFim)
+    Logar("  [4] apos gerar: " . st)
+    if (st != "ok") {
+        ; "Sem dados para emitir" OU Favoritos nao abriu a tela do Comparativo.
+        ; Da OK (Enter), fecha (Esc x2), espera 5s e PULA pra proxima empresa (sem salvar/repetir).
+        Logar("Empresa " . codigo . ": sem relatorio (" . st . ") - OK/Esc e proxima")
+        Send "{Enter}"                ; OK no "Sem dados para emitir!"
+        Sleep T_CURTO
+        Send "{Esc}"
+        Sleep T_CURTO
+        Send "{Esc}"
+        Sleep 5000                    ; espera 5s antes de seguir
+        LimparTelas()
+        return "pular"
+    }
     ; --- Salvar em PDF ---
     Sleep T_MEDIO
     Click("700 260")
@@ -364,6 +385,7 @@ ProcessarEmpresa(codigo, compIni, compFim) {
     Sleep T_GERAR_PDF
     FecharPrevia()
     Logar("Empresa " . codigo . ": fluxo concluido")
+    return "ok"
 }
 
 ; Roda a empresa e CONFIRMA que o PDF apareceu no Google Drive local. Se nao aparecer
@@ -373,12 +395,16 @@ ProcessarEmpresaVerificado(codigo, compIni, compFim) {
     caminho := PASTA_LOCAL . "\" . MontarNome(codigo, compIni, compFim)
     Loop MAX_TENTATIVAS {
         try FileDelete(caminho)          ; remove a versao anterior (vamos regerar)
-        ProcessarEmpresa(codigo, compIni, compFim)
+        st := ProcessarEmpresa(codigo, compIni, compFim)
+        if (st = "pular") {              ; sem dados / tela nao abriu -> NAO repete, segue pra proxima
+            Logar("Empresa " . codigo . ": pulada (sem dados / tela nao abriu)")
+            return "pular"
+        }
         inicio := A_TickCount
         while (A_TickCount - inicio < 60000) {   ; espera o PDF aparecer no Drive (ate 60s)
             if (FileExist(caminho)) {
                 Logar("Empresa " . codigo . ": PDF confirmado (tentativa " . A_Index . ")")
-                return true
+                return "ok"
             }
             Sleep 2000
         }
@@ -387,7 +413,7 @@ ProcessarEmpresaVerificado(codigo, compIni, compFim) {
         Sleep T_MEDIO
     }
     Logar("Empresa " . codigo . ": FALHOU apos " . MAX_TENTATIVAS . " tentativas")
-    return false
+    return "falhou"
 }
 
 ; ------------------------------------------------------------- SITE (comandos)
@@ -466,14 +492,16 @@ RodarCiclo(compIni, compFim) {
         if (feitas > 0)
             Sleep T_ENTRE_EMPRESAS
         ReportarProgresso(true, total, feitas, e.codigo . " - " . e.nome, false)
-        ok := false
+        res := "falhou"
         try {
-            ok := ProcessarEmpresaVerificado(e.codigo, compIni, compFim)
+            res := ProcessarEmpresaVerificado(e.codigo, compIni, compFim)
         } catch as err {
             Logar("Empresa " . e.codigo . ": ERRO " . err.Message)
         }
-        if (ok)
+        if (res = "ok")
             resultados.Push({ codigo: e.codigo, ok: true })
+        else if (res = "pular")
+            resultados.Push({ codigo: e.codigo, ok: false, erro: "Sem dados / tela nao abriu - pulada" })
         else
             resultados.Push({ codigo: e.codigo, ok: false, erro: "PDF nao confirmado apos as tentativas" })
         feitas++
