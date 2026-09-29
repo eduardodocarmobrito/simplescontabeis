@@ -254,10 +254,13 @@
   .tvp-secao:first-child{margin-top:0;}
   .tvp-grid-compacta + .tvp-secao, .tvp-tabelas + .tvp-secao{margin-top:clamp(10px,1.5vh,16px);}
   .tvp-pagina-painel .tvp-grid, .tvp-pagina-painel .tvp-tabelas{position:relative;}
-  .tvp-grid.tvp-grid-compacta{grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:clamp(8px,.9vw,14px);}
-  .tvp-grid-compacta .tvp-card{padding:clamp(9px,1vw,13px) clamp(12px,1.2vw,16px); cursor:default;}
-  .tvp-grid-compacta .tvp-val{font-size:clamp(19px,2vw,30px); margin-top:5px; white-space:nowrap;}
-  .tvp-grid-compacta .tvp-sub{margin-top:4px;}
+  /* max no minmax (não só 1fr) — sem isso uma linha com poucos cards (ex.: só 4) estica cada um pra
+     preencher a largura inteira; com o teto, sobra espaço vazio em vez de inflar os cards. */
+  .tvp-grid.tvp-grid-compacta{grid-template-columns:repeat(auto-fit,minmax(130px,170px)); gap:clamp(6px,.7vw,10px);}
+  .tvp-grid-compacta .tvp-card{padding:clamp(6px,.6vw,9px) clamp(8px,.9vw,12px); cursor:default;}
+  .tvp-grid-compacta .tvp-eyebrow{font-size:clamp(9px,.8vw,11px);}
+  .tvp-grid-compacta .tvp-val{font-size:clamp(15px,1.4vw,20px); margin-top:3px; white-space:nowrap;}
+  .tvp-grid-compacta .tvp-sub{font-size:clamp(10px,.85vw,12px); margin-top:2px;}
   .tvp-tabelas{display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:clamp(8px,.9vw,14px);}
   @media (max-width: 1100px){ .tvp-tabelas{grid-template-columns:repeat(2,minmax(0,1fr));} }
   .tvp-tabela{background:linear-gradient(160deg,rgba(255,255,255,.05),rgba(255,255,255,.015)); border:1px solid rgba(234,243,238,.09); border-radius:18px; overflow:hidden;}
