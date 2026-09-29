@@ -256,7 +256,7 @@
   .tvp-pagina-painel .tvp-grid, .tvp-pagina-painel .tvp-tabelas{position:relative;}
   /* max no minmax (não só 1fr) — sem isso uma linha com poucos cards (ex.: só 4) estica cada um pra
      preencher a largura inteira; com o teto, sobra espaço vazio em vez de inflar os cards. */
-  .tvp-grid.tvp-grid-compacta{grid-template-columns:repeat(auto-fit,minmax(130px,170px)); gap:clamp(6px,.7vw,10px);}
+  .tvp-grid.tvp-grid-compacta{grid-template-columns:repeat(auto-fit,minmax(130px,170px)); gap:clamp(6px,.7vw,10px); justify-content:start;}
   .tvp-grid-compacta .tvp-card{padding:clamp(6px,.6vw,9px) clamp(8px,.9vw,12px); cursor:default;}
   .tvp-grid-compacta .tvp-eyebrow{font-size:clamp(9px,.8vw,11px);}
   .tvp-grid-compacta .tvp-val{font-size:clamp(15px,1.4vw,20px); margin-top:3px; white-space:nowrap;}
