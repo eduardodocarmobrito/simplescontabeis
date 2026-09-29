@@ -64,7 +64,7 @@ T_MEDIO  := 2000
 T_LONGO  := 4000
 T_GERAR_PDF      := 15000
 T_ENTRE_EMPRESAS := 15000
-T_RENDER_TIMEOUT := 30000                  ; se nao renderizar em 30s, trata como sem dados / tela nao abriu
+T_RENDER_TIMEOUT := 45000                  ; espera o relatorio renderizar ate 45s; senao trata como sem dados
 
 LOGFILE := A_ScriptDir "\robo-comparativo.log"
 
@@ -222,24 +222,21 @@ ClicarEDigitarPeriodo(x, y, mmAAAA) {
     }
 }
 
-; Retorna "ok" se o relatorio renderizou (texto escuro na area). Se nao renderizar dentro
-; do tempo, retorna "sem_dados" (cobre "Sem dados para emitir" E Favoritos nao abrir a tela)
-; -> nos dois casos o robo da OK/Esc e pula pra proxima. Detecta o dialogo cinza cedo (atalho).
+; Espera o relatorio RENDERIZAR (texto escuro na area). Retorna "ok" quando renderiza.
+; Se NAO renderizar dentro do tempo, retorna "sem_dados" (cobre "Sem dados para emitir" real
+; E Favoritos nao abrir a tela) -> o robo da OK/Esc e pula. NADA de detectar pixel cinza:
+; o cinza casa com o proprio formulario do Comparativo e dava falso "sem dados" em TODAS.
 EsperarRender() {
     global T_RENDER_TIMEOUT
     inicio := A_TickCount
     while (A_TickCount - inicio < T_RENDER_TIMEOUT) {
-        ; relatorio renderizou? (texto escuro na area do relatorio)
         if (PixelSearch(&px, &py, 130, 150, 1600, 520, 0x000000, 70)) {
             Sleep 1500
             return "ok"
         }
-        ; atalho: faixa cinza (rodape do botao) do dialogo "Sem dados para emitir"
-        if (PixelSearch(&dx, &dy, 1180, 835, 1395, 872, 0xF0F0F0, 10)) {
-            return "sem_dados"
-        }
         Sleep 800
     }
+    Logar("  render TIMEOUT (nao renderizou em " . (T_RENDER_TIMEOUT // 1000) . "s) - janelas: " . ListarJanelasDominio())
     return "sem_dados"
 }
 
