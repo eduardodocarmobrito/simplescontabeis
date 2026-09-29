@@ -318,9 +318,13 @@ ProcessarEmpresa(codigo, compIni, compFim) {
     FecharErroSistema()
     Sleep 500
     LimparTelas()
+    Logar("  [1] apos LimparTelas: " . ListarJanelasDominio())
     TrocarEmpresa(codigo)
+    Logar("  [2] apos F8/troca empresa: " . ListarJanelasDominio())
     AbrirComparativo()
+    Logar("  [3] apos Favoritos/Comparativo: " . ListarJanelasDominio())
     PreencherEGerar(compIni, compFim)
+    Logar("  [4] apos gerar (previa)")
     ; --- Salvar em PDF ---
     Sleep T_MEDIO
     Click("700 260")
