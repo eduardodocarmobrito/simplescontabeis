@@ -398,6 +398,13 @@ RodarCiclo(compIni, compFim) {
     Sleep 1000
     Logar("Selecionando modulo Contabilidade...")
     SelecionarModulo()               ; garante 100% que esta no modulo certo
+    ; TRAVA: so continua se o Dominio estiver REALMENTE aberto na Contabilidade.
+    ; (Se a sessao caiu/expirou, aparece o launcher "Dominio Web" e NAO tem esse titulo.)
+    if !WinExist("Contabilidade Fiscal ahk_exe AppController.exe") {
+        Logar("ERRO: Dominio nao esta na Contabilidade (sessao caiu / launcher aberto?) - execucao cancelada.")
+        ReportarProgresso(false, total, 0, "", false)
+        return
+    }
     resultados := []
     feitas := 0
     for e in empresas {
