@@ -2885,6 +2885,8 @@ function empresaModal(e){
       <p style="font-size:12px; color:var(--ink-soft); margin-top:-4px;">Entra na busca em lote de Configurações › FGTS Digital. Deixe desmarcado se a empresa não tem funcionário/FGTS.${e?(e.fgtsUltimaBuscaEm?` Última busca: ${fmtDateHora(e.fgtsUltimaBuscaEm)}.`:'')+(e.fgtsUltimoErro?` <span style="color:var(--danger,#c0392b)">Erro: ${esc(e.fgtsUltimoErro)}</span>`:''):''}</p>
       <div class="checkbox-row"><input type="checkbox" id="empCompMov" ${e.comparativoMovimentoDiario?'checked':''}> <label for="empCompMov">Exportar Comparativo de Movimento diariamente</label></div>
       <p style="font-size:12px; color:var(--ink-soft); margin-top:-4px;">Entra na lista que o robô do Domínio Web (rodando no servidor Windows) percorre todo dia — precisa do <b>código do Domínio</b> preenchido acima, na aba Empresa.</p>
+      <div class="checkbox-row"><input type="checkbox" id="empProgFerias" ${e.programacaoFerias?'checked':''}> <label for="empProgFerias">Exportar Programação de Férias</label></div>
+      <p style="font-size:12px; color:var(--ink-soft); margin-top:-4px;">Entra na lista do robô da <b>Programação de Férias</b> (módulo Folha) — também precisa do <b>código do Domínio</b> preenchido.</p>
       <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Regime tributário</div>
       <label class="checkbox-row"><input type="radio" name="empRegimeTributario" value="simples_nacional" ${(e.regimeTributario||'simples_nacional')==='simples_nacional'?'checked':''}> Optante pelo Simples Nacional</label>
       <label class="checkbox-row"><input type="radio" name="empRegimeTributario" value="lucro_presumido" ${e.regimeTributario==='lucro_presumido'?'checked':''}> Lucro Presumido</label>
@@ -3028,6 +3030,7 @@ function empresaModal(e){
         body.isentoAssinatura = document.getElementById('empIsento').checked;
         body.buscaFgts = document.getElementById('empBuscaFgts').checked;
         body.comparativoMovimentoDiario = document.getElementById('empCompMov').checked;
+        body.programacaoFerias = document.getElementById('empProgFerias').checked;
         body.regimeTributario = document.querySelector('input[name="empRegimeTributario"]:checked')?.value || 'simples_nacional';
         body.regimeApuracaoSn = document.getElementById('empRegApuracao')?.value || '1';
         body.percentualTotalTributosSn = document.getElementById('empTotTribSN')?.value || null;
@@ -11732,6 +11735,24 @@ function renderCfgDomRelatorios(box, sub, dados){
       <div id="roboCompProgresso" style="margin-top:12px;"></div>
       <div id="roboCompCadastroDiag" style="margin-top:12px;"></div>
     </div>
+    <div class="card" id="cardRoboFerias">
+      <h3>Robô da Programação de Férias</h3>
+      <p style="font-size:12px; color:var(--ink-soft); margin-top:-6px;">
+        Gera a Programação de Férias (módulo Folha) de cada empresa marcada (em <b>Empresas › Editar</b> →
+        "Exportar Programação de Férias", com o Código do Domínio preenchido) e salva na pasta do Google Drive acima.
+        Usa sempre a <b>data de hoje</b> como data-base do cálculo.
+      </p>
+      <div id="roboFeriasStatus" style="font-size:13px; margin-bottom:8px;">Carregando…</div>
+      <label class="checkbox-row"><input type="checkbox" id="roboFeriasLigado"> Rodar automaticamente a cada
+        <input id="roboFeriasIntervalo" type="number" min="1" max="1440" style="width:64px; margin:0 4px;"> minutos</label>
+      <div class="row" style="margin-top:8px;">
+        <button class="btn primary" id="btnRoboFeriasSalvar" disabled>Salvar</button>
+        <button class="btn" id="btnRoboFeriasExecutar">Executar agora</button>
+        <button class="btn" id="btnRoboFeriasParar" style="background:#c0392b; border-color:#c0392b; color:#fff;" title="Freia o robô imediatamente (aborta a execução em andamento e desliga o automático)">⛔ Parar robô</button>
+        ${STATE.user.perfil==='Administrador'?'<a class="btn" href="/api/empresas/programacao-ferias/robo" download>⬇ Baixar robô (instalar em outro servidor)</a>':''}
+      </div>
+      <div id="roboFeriasProgresso" style="margin-top:12px;"></div>
+    </div>
   `;
   document.getElementById('irEnvioDocs')?.addEventListener('click', ()=>{ STATE.page='configuracoes'; CFG_TAB='envio-docs'; render(); });
   const escolherPastaDrive = ()=>certImportPastaModal(async (pastaId, pastaNome)=>{
@@ -11881,6 +11902,55 @@ function renderCfgDomRelatorios(box, sub, dados){
         </div>
       `;
     }).catch(()=>{});
+  })();
+  // ---- Robô da Programação de Férias (controle + progresso ao vivo) ----
+  (function(){
+    const $ = id => document.getElementById(id);
+    function pintar(e){
+      const st = $('roboFeriasStatus');
+      if(st){
+        const on = e.agenteOnline ? '<span class="tag ok">Robô online</span>' : '<span class="tag bad">Robô offline</span>';
+        const ult = e.ultimaExecEm ? ' · Última execução: '+fmtDateHora(e.ultimaExecEm) : '';
+        const parando = e.pararPendente ? ' <span class="tag bad">Parando…</span>' : '';
+        st.innerHTML = on + (e.rodando?' <span class="tag">Rodando…</span>':'') + parando + ult;
+      }
+      const prog = $('roboFeriasProgresso');
+      if(prog){
+        if(e.rodando && e.total>0){
+          const pct = Math.round((e.feitas/e.total)*100);
+          prog.innerHTML = '<div style="font-size:12.5px; margin-bottom:4px;">Empresa '+e.feitas+' de '+e.total+(e.atual?' — '+esc(e.atual):'')+'</div>'+
+            '<div style="background:var(--rule); border-radius:6px; height:12px; overflow:hidden;"><div style="width:'+pct+'%; height:100%; background:var(--accent); transition:width .4s;"></div></div>';
+        } else if(e.runNowPendente){
+          prog.innerHTML = '<div style="font-size:12.5px; color:var(--ink-soft);">Pedido enviado — aguardando o robô pegar…</div>';
+        } else { prog.innerHTML = ''; }
+      }
+    }
+    async function carregar(){ try{ pintar(await api('/ferias-robo/estado')); }catch(e){} }
+    api('/ferias-robo/estado').then(e=>{
+      if($('roboFeriasLigado')) $('roboFeriasLigado').checked = e.ligado;
+      if($('roboFeriasIntervalo')) $('roboFeriasIntervalo').value = e.intervaloMin;
+      pintar(e);
+    }).catch(()=>{});
+    habilitarSalvarAoMudar('btnRoboFeriasSalvar', ['roboFeriasLigado','roboFeriasIntervalo']);
+    $('btnRoboFeriasSalvar')?.addEventListener('click', async ()=>{
+      try{ await api('/ferias-robo/config', { method:'POST', body:{ ligado:$('roboFeriasLigado').checked, intervaloMin:Number($('roboFeriasIntervalo').value)||15 } }); toast('Configuração do robô salva.','ok'); $('btnRoboFeriasSalvar').disabled = true; }
+      catch(e){ toast(e.message,'err'); }
+    });
+    $('btnRoboFeriasExecutar')?.addEventListener('click', async (ev)=>{
+      const b = ev.target; b.disabled = true;
+      try{ const r = await api('/ferias-robo/executar', { method:'POST' }); toast(r.agenteOnline?'Rodando agora…':'Pedido enviado — o robô vai pegar quando estiver online.','ok'); }
+      catch(e){ toast(e.message,'err'); }
+      finally{ setTimeout(()=>{ b.disabled = false; }, 1500); carregar(); }
+    });
+    $('btnRoboFeriasParar')?.addEventListener('click', async (ev)=>{
+      if(!confirmar('Parar o robô agora? Ele aborta a execução atual (após terminar a empresa em andamento) e desliga o automático.')) return;
+      const b = ev.target; b.disabled = true;
+      try{ await api('/ferias-robo/parar', { method:'POST' }); toast('Freio acionado — o robô vai parar na próxima empresa.','ok'); }
+      catch(e){ toast(e.message,'err'); }
+      finally{ setTimeout(()=>{ b.disabled = false; }, 1500); if($('roboFeriasLigado')) $('roboFeriasLigado').checked = false; carregar(); }
+    });
+    try{ clearInterval(window.__roboFeriasPoll); }catch(e){}
+    window.__roboFeriasPoll = setInterval(()=>{ if(document.getElementById('roboFeriasStatus')) carregar(); else { try{ clearInterval(window.__roboFeriasPoll); }catch(e){} } }, 3000);
   })();
 }
 function renderCfgDomOneDrive(box, sub, dados){

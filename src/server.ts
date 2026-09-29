@@ -1907,6 +1907,11 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
   if (!colsEmpresas.some((c) => c.name === "comparativo_movimento_diario")) {
     sqlite.exec(`ALTER TABLE empresas ADD COLUMN comparativo_movimento_diario INTEGER NOT NULL DEFAULT 0`);
   }
+  // Programação de Férias: mesmo esquema do Comparativo, mas no módulo Folha. Marca as empresas
+  // que o robô da Programação de Férias deve exportar (pega a lista pelo código do Domínio).
+  if (!colsEmpresas.some((c) => c.name === "programacao_ferias")) {
+    sqlite.exec(`ALTER TABLE empresas ADD COLUMN programacao_ferias INTEGER NOT NULL DEFAULT 0`);
+  }
 }
 // Limpeza: fgts_sync_jobs foi criada numa primeira versão que salvava a sessão do FGTS Digital no
 // servidor pra reaproveitar depois — testando ao vivo, confirmamos que essa sessão não sobrevive
@@ -3198,6 +3203,7 @@ app.get("/api/empresas", blockCliente, requirePermissao("empresas", "visualizar"
       fgtsUltimaBuscaEm: r.fgts_ultima_busca_em,
       fgtsUltimoErro: r.fgts_ultimo_erro,
       comparativoMovimentoDiario: !!r.comparativo_movimento_diario,
+      programacaoFerias: !!r.programacao_ferias,
       origem: r.origem,
       createdAt: r.created_at,
       temAnexos: empresaTemAnexos(r.id),
@@ -3292,7 +3298,7 @@ app.put("/api/empresas/:id", blockCliente, requirePermissao("empresas", "editar"
   const id = Number(req.params.id);
   const existing = sqlite.prepare(`SELECT * FROM empresas WHERE id = ?`).get(id) as any;
   if (!existing || !podeAcessarEmpresa((req as any).user, id)) return res.status(404).json({ error: "Empresa não encontrada." });
-  const { nome, cnpj, codigoDominio, apelido, email, telefone, endereco, cidade, uf, cep, inscricaoMunicipal, inscricaoEstadual, nomeRepresentanteLegal, cpfRepresentanteLegal, codigoMunicipioIbge, nomeMunicipioIbge, regimeTributario, ativo, visivelRelatorios, isentoAssinatura, buscaFgts, comparativoMovimentoDiario } = req.body || {};
+  const { nome, cnpj, codigoDominio, apelido, email, telefone, endereco, cidade, uf, cep, inscricaoMunicipal, inscricaoEstadual, nomeRepresentanteLegal, cpfRepresentanteLegal, codigoMunicipioIbge, nomeMunicipioIbge, regimeTributario, ativo, visivelRelatorios, isentoAssinatura, buscaFgts, comparativoMovimentoDiario, programacaoFerias } = req.body || {};
   const regimeTributarioFinal =
     regimeTributario !== undefined
       ? ((REGIMES_TRIBUTARIOS as readonly string[]).includes(regimeTributario) ? regimeTributario : "simples_nacional")
@@ -3300,7 +3306,7 @@ app.put("/api/empresas/:id", blockCliente, requirePermissao("empresas", "editar"
   sqlite
     .prepare(
       `UPDATE empresas SET nome=?, cnpj=?, codigo_dominio=?, apelido=?, email=?, telefone=?, endereco=?, cidade=?, uf=?, cep=?, inscricao_municipal=?, inscricao_estadual=?,
-         nome_representante_legal=?, cpf_representante_legal=?, codigo_municipio_ibge=?, nome_municipio_ibge=?, regime_tributario=?, ativo=?, visivel_relatorios=?, isento_assinatura=?, busca_fgts=?, comparativo_movimento_diario=?, updated_at=datetime('now') WHERE id=?`
+         nome_representante_legal=?, cpf_representante_legal=?, codigo_municipio_ibge=?, nome_municipio_ibge=?, regime_tributario=?, ativo=?, visivel_relatorios=?, isento_assinatura=?, busca_fgts=?, comparativo_movimento_diario=?, programacao_ferias=?, updated_at=datetime('now') WHERE id=?`
     )
     .run(
       nome ?? existing.nome,
@@ -3325,6 +3331,7 @@ app.put("/api/empresas/:id", blockCliente, requirePermissao("empresas", "editar"
       isentoAssinatura === undefined ? existing.isento_assinatura : isentoAssinatura ? 1 : 0,
       buscaFgts === undefined ? existing.busca_fgts : buscaFgts ? 1 : 0,
       comparativoMovimentoDiario === undefined ? existing.comparativo_movimento_diario : comparativoMovimentoDiario ? 1 : 0,
+      programacaoFerias === undefined ? existing.programacao_ferias : programacaoFerias ? 1 : 0,
       id
     );
   if (regimeTributario !== undefined || req.body.regimeApuracaoSn !== undefined || req.body.percentualTotalTributosSn !== undefined) {
@@ -4757,6 +4764,132 @@ app.post("/api/comparativo-robo/executar", blockCliente, requirePermissao("confi
 app.post("/api/comparativo-robo/parar", blockCliente, requirePermissao("configuracoes", "editar"), (_req, res) => {
   garantirRoboEstado(1);
   sqlite.prepare(`UPDATE comparativo_robo_estado SET parar_em = datetime('now'), ligado = 0, run_now_em = NULL WHERE escritorio_id = 1`).run();
+  res.json({ ok: true });
+});
+
+// ================== ROBÔ "PROGRAMAÇÃO DE FÉRIAS" (módulo Folha) ==================
+// Mesmo esquema do Comparativo, porém SEM período (o relatório usa "Data base" = hoje).
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS ferias_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    empresa_id INTEGER REFERENCES empresas(id),
+    codigo_dominio TEXT,
+    status TEXT NOT NULL, -- 'ok' | 'erro'
+    erro TEXT,
+    quando TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+`);
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS ferias_robo_estado (
+    escritorio_id INTEGER PRIMARY KEY,
+    ligado INTEGER NOT NULL DEFAULT 0,
+    intervalo_min INTEGER NOT NULL DEFAULT 15,
+    run_now_em TEXT,
+    ultima_exec_em TEXT,
+    prog_rodando INTEGER NOT NULL DEFAULT 0,
+    prog_total INTEGER NOT NULL DEFAULT 0,
+    prog_feitas INTEGER NOT NULL DEFAULT 0,
+    prog_atual TEXT,
+    prog_em TEXT,
+    agente_visto_em TEXT,
+    parar_em TEXT
+  );
+`);
+function garantirFeriasEstado(escritorioId: number) {
+  sqlite.prepare(`INSERT OR IGNORE INTO ferias_robo_estado (escritorio_id) VALUES (?)`).run(escritorioId);
+}
+// Download do pacote do robô da Programação de Férias (Admin logado no site).
+app.get("/api/empresas/programacao-ferias/robo", blockCliente, requireAdmin, (req, res) => {
+  const pasta = [path.join(__dirname, "..", "dominio-robo-programacao-ferias"), path.join(__dirname, "dominio-robo-programacao-ferias")].find((p) => fs.existsSync(p));
+  if (!pasta) return res.status(500).json({ error: "Pacote do robô não está disponível nesta versão do servidor." });
+  res.setHeader("Content-Type", "application/zip");
+  res.setHeader("Content-Disposition", 'attachment; filename="Robo-Programacao-Ferias.zip"');
+  const zip: any = archiver("zip", { zlib: { level: 9 } });
+  zip.on("error", (e: any) => { console.error("[programacao-ferias] zip do robô:", e.message); res.destroy(); });
+  zip.pipe(res);
+  zip.directory(pasta, false);
+  zip.finalize();
+});
+app.get("/api/dominio-agent/empresas-ferias", requireDominioAgent, (_req, res) => {
+  const rows = sqlite
+    .prepare(`SELECT id, codigo_dominio as codigoDominio, nome FROM empresas WHERE escritorio_id = 1 AND ativo = 1 AND programacao_ferias = 1 AND codigo_dominio IS NOT NULL AND codigo_dominio != '' ORDER BY codigo_dominio`)
+    .all();
+  res.json({ items: rows });
+});
+app.post("/api/dominio-agent/ferias-status", requireDominioAgent, (req, res) => {
+  const itens: { codigoDominio: string; ok: boolean; erro?: string }[] = Array.isArray(req.body?.itens) ? req.body.itens : [];
+  for (const it of itens) {
+    const empresa = sqlite.prepare(`SELECT id FROM empresas WHERE escritorio_id = 1 AND codigo_dominio = ?`).get(String(it.codigoDominio)) as any;
+    sqlite.prepare(`INSERT INTO ferias_log (empresa_id, codigo_dominio, status, erro) VALUES (?, ?, ?, ?)`)
+      .run(empresa?.id ?? null, String(it.codigoDominio), it.ok ? "ok" : "erro", it.erro || null);
+  }
+  res.json({ ok: true, registrados: itens.length });
+});
+app.get("/api/dominio-agent/ferias-comando", requireDominioAgent, (_req, res) => {
+  garantirFeriasEstado(1);
+  sqlite.prepare(`UPDATE ferias_robo_estado SET agente_visto_em = datetime('now') WHERE escritorio_id = 1`).run();
+  const c = sqlite.prepare(`
+    SELECT ligado, intervalo_min AS intervaloMin, run_now_em, ultima_exec_em,
+      (run_now_em IS NOT NULL) AS runNow,
+      (parar_em IS NOT NULL) AS parar,
+      (ligado = 1 AND (ultima_exec_em IS NULL OR datetime(ultima_exec_em, '+' || intervalo_min || ' minutes') <= datetime('now'))) AS devePorTempo
+    FROM ferias_robo_estado WHERE escritorio_id = 1
+  `).get() as any;
+  const deveRodar = !!c.runNow || !!c.devePorTempo;
+  res.json({
+    deveRodar, motivo: c.runNow ? "manual" : (c.devePorTempo ? "automatico" : null),
+    parar: !!c.parar, ligado: !!c.ligado, intervaloMin: c.intervaloMin,
+  });
+});
+app.post("/api/dominio-agent/ferias-progresso", requireDominioAgent, (req, res) => {
+  garantirFeriasEstado(1);
+  const b = req.body || {};
+  if (b.iniciando) {
+    sqlite.prepare(`UPDATE ferias_robo_estado SET run_now_em = NULL, parar_em = NULL, ultima_exec_em = datetime('now') WHERE escritorio_id = 1`).run();
+  }
+  sqlite.prepare(`
+    UPDATE ferias_robo_estado
+       SET prog_rodando = ?, prog_total = ?, prog_feitas = ?, prog_atual = ?, prog_em = datetime('now')
+     WHERE escritorio_id = 1
+  `).run(b.rodando ? 1 : 0, Number(b.total) || 0, Number(b.feitas) || 0, b.atual ? String(b.atual) : null);
+  if (!b.rodando) sqlite.prepare(`UPDATE ferias_robo_estado SET parar_em = NULL WHERE escritorio_id = 1`).run();
+  res.json({ ok: true });
+});
+app.get("/api/ferias-robo/estado", blockCliente, requirePermissao("configuracoes", "visualizar"), (_req, res) => {
+  garantirFeriasEstado(1);
+  const c = sqlite.prepare(`
+    SELECT ligado, intervalo_min AS intervaloMin, run_now_em AS runNowEm, ultima_exec_em AS ultimaExecEm,
+      prog_total AS total, prog_feitas AS feitas, prog_atual AS atual, prog_em AS progEm,
+      (prog_rodando = 1 AND prog_em IS NOT NULL AND datetime(prog_em, '+5 minutes') >= datetime('now')) AS rodando,
+      agente_visto_em AS agenteVistoEm,
+      (parar_em IS NOT NULL) AS pararPendente,
+      (agente_visto_em IS NOT NULL AND datetime(agente_visto_em, '+40 seconds') >= datetime('now')) AS agenteOnline
+    FROM ferias_robo_estado WHERE escritorio_id = 1
+  `).get() as any;
+  res.json({
+    ligado: !!c.ligado, intervaloMin: c.intervaloMin, ultimaExecEm: c.ultimaExecEm,
+    rodando: !!c.rodando, total: c.total, feitas: c.feitas, atual: c.atual, progEm: c.progEm,
+    runNowPendente: !!c.runNowEm, pararPendente: !!c.pararPendente, agenteOnline: !!c.agenteOnline, agenteVistoEm: c.agenteVistoEm,
+  });
+});
+app.post("/api/ferias-robo/config", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
+  garantirFeriasEstado(1);
+  const ligado = req.body?.ligado ? 1 : 0;
+  let intervalo = Number(req.body?.intervaloMin);
+  if (!Number.isFinite(intervalo) || intervalo < 1) intervalo = 15;
+  intervalo = Math.min(Math.max(Math.round(intervalo), 1), 1440);
+  sqlite.prepare(`UPDATE ferias_robo_estado SET ligado = ?, intervalo_min = ? WHERE escritorio_id = 1`).run(ligado, intervalo);
+  res.json({ ok: true, ligado: !!ligado, intervaloMin: intervalo });
+});
+app.post("/api/ferias-robo/executar", blockCliente, requirePermissao("configuracoes", "editar"), (_req, res) => {
+  garantirFeriasEstado(1);
+  const online = sqlite.prepare(`SELECT (agente_visto_em IS NOT NULL AND datetime(agente_visto_em, '+40 seconds') >= datetime('now')) AS agenteOn FROM ferias_robo_estado WHERE escritorio_id = 1`).get() as any;
+  sqlite.prepare(`UPDATE ferias_robo_estado SET run_now_em = datetime('now'), parar_em = NULL WHERE escritorio_id = 1`).run();
+  res.json({ ok: true, agenteOnline: !!online.agenteOn });
+});
+app.post("/api/ferias-robo/parar", blockCliente, requirePermissao("configuracoes", "editar"), (_req, res) => {
+  garantirFeriasEstado(1);
+  sqlite.prepare(`UPDATE ferias_robo_estado SET parar_em = datetime('now'), ligado = 0, run_now_em = NULL WHERE escritorio_id = 1`).run();
   res.json({ ok: true });
 });
 app.get("/api/empresas/comparativo-movimento/log", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
