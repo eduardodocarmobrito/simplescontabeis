@@ -398,6 +398,22 @@ RodarCiclo(compIni, compFim) {
     Sleep 1000
     Logar("Selecionando modulo Contabilidade...")
     SelecionarModulo()               ; garante 100% que esta no modulo certo
+    ; TRAVA: so continua se o Dominio estiver REALMENTE aberto na Contabilidade.
+    ; (Se a sessao caiu/expirou, aparece o launcher "Dominio Web" e NAO tem esse titulo.)
+    naContab := false
+    titulos := ""
+    for hwnd in WinGetList("ahk_exe AppController.exe") {
+        t := WinGetTitle("ahk_id " . hwnd)
+        titulos .= "[" . t . "] "
+        if InStr(t, "Contabilidade")
+            naContab := true
+    }
+    Logar("Janelas Dominio: " . titulos)
+    if !naContab {
+        Logar("ERRO: nao esta na Contabilidade (sessao caiu / launcher / Explorer cobrindo?) - execucao cancelada.")
+        ReportarProgresso(false, total, 0, "", false)
+        return
+    }
     resultados := []
     feitas := 0
     for e in empresas {
