@@ -4713,7 +4713,10 @@ app.get("/api/comparativo-robo/estado", blockCliente, requirePermissao("configur
   const c = sqlite.prepare(`
     SELECT ligado, intervalo_min AS intervaloMin, run_now_em AS runNowEm, ultima_exec_em AS ultimaExecEm,
       periodo_ini AS periodoIni, periodo_fim AS periodoFim,
-      prog_rodando AS rodando, prog_total AS total, prog_feitas AS feitas, prog_atual AS atual, prog_em AS progEm,
+      prog_total AS total, prog_feitas AS feitas, prog_atual AS atual, prog_em AS progEm,
+      -- "rodando" só vale se o progresso for recente; se o agente morreu/foi fechado sem avisar
+      -- (progresso velho > 5min), considera parado pra a barra do site NÃO ficar congelada.
+      (prog_rodando = 1 AND prog_em IS NOT NULL AND datetime(prog_em, '+5 minutes') >= datetime('now')) AS rodando,
       agente_visto_em AS agenteVistoEm,
       (parar_em IS NOT NULL) AS pararPendente,
       (agente_visto_em IS NOT NULL AND datetime(agente_visto_em, '+40 seconds') >= datetime('now')) AS agenteOnline

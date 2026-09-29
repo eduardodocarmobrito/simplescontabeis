@@ -126,6 +126,22 @@ ListarJanelasDominio() {
     return s
 }
 
+; Ha uma JANELINHA de dialogo (tipo "Sem dados para emitir" / MsgBox) aberta?
+; O app/relatorio e a janela grande (~2576x1568) e o launcher e 1024x768; os dialogos
+; do Dominio sao janelas pequenas (ex.: 218x149, 167x103). Serve pra pular rapido as
+; empresas sem dados sem esperar o timeout do render.
+DialogoPequenoAtivo() {
+    for hwnd in WinGetList("ahk_exe AppController.exe") {
+        if InStr(WinGetTitle("ahk_id " . hwnd), "Lista de Programas")
+            continue
+        w := 0, h := 0
+        try WinGetPos(, , &w, &h, "ahk_id " . hwnd)
+        if (w > 60 && h > 60 && w <= 900 && h <= 600)
+            return true
+    }
+    return false
+}
+
 ; Ativa a janela do APP do Dominio (a que NAO e o launcher "Lista de Programas").
 AtivarApp() {
     global DOMINIO_WIN
@@ -233,6 +249,15 @@ EsperarRender() {
         if (PixelSearch(&px, &py, 130, 150, 1600, 520, 0x000000, 70)) {
             Sleep 1500
             return "ok"
+        }
+        ; Pulo rapido: janelinha de dialogo ("Sem dados para emitir") aberta e SEM render.
+        ; Confirma que persiste ~1.2s (nao era transitorio) e que o relatorio nao apareceu.
+        if (DialogoPequenoAtivo()) {
+            Sleep 1200
+            if (DialogoPequenoAtivo() && !PixelSearch(&px2, &py2, 130, 150, 1600, 520, 0x000000, 70)) {
+                Logar("  dialogo 'sem dados' detectado (pulo rapido)")
+                return "sem_dados"
+            }
         }
         Sleep 800
     }
@@ -525,6 +550,11 @@ RodarCiclo(compIni, compFim) {
 ; ==================================================================== MAIN
 Logar("=== Agente iniciado ===")
 SetTimer(FecharErroSistema, 400)     ; vigia do erro do chatbot, sempre ativo
+; Ao sair (Ctrl+Alt+Q, Reload, fechar): avisa o site que parou -> a barra do site reseta.
+OnExit(AoSair)
+AoSair(*) {
+    try ReportarProgresso(false, 0, 0, "", false)
+}
 
 Loop {
     body := HttpReq("GET", "/api/dominio-agent/comparativo-comando")
