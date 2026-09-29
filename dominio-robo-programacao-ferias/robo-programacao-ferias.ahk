@@ -248,24 +248,24 @@ LimparCampoNome() {
 
 NavegarAtePasta() {
     global THISPC_X, THISPC_Y
-    Click(THISPC_X . " " . THISPC_Y)
-    Sleep 3000
-    Send "+{Tab}"
-    Sleep 2500
+    Click(THISPC_X . " " . THISPC_Y)   ; "This PC" (barra esquerda)
+    Sleep 4000                         ; deixa as pastas/drives carregarem
+    Send "+{Tab}"                      ; foca a lista
+    Sleep 4000
     SelecionarPastaPorNome("client g")
     SelecionarPastaPorNome("meu drive")
     SelecionarPastaPorNome("relatorios dominio")
 }
 
 SelecionarPastaPorNome(nome) {
-    Sleep 800
+    Sleep 1200
     for ch in StrSplit(nome) {
         SendText ch
-        Sleep 70
+        Sleep 80
     }
-    Sleep 900
+    Sleep 1200
     Send "{Enter}"
-    Sleep 3000
+    Sleep 4000                         ; a pasta pode demorar a abrir
 }
 
 FecharPrevia() {
@@ -341,10 +341,10 @@ ProcessarEmpresa(codigo) {
     Click("700 260")
     Sleep T_CURTO
     Send "^d"
-    Sleep T_LONGO
+    Sleep 5000                        ; espera a tela "Salvar em PDF" carregar antes de mexer
     if !WinExist("Salvar em PDF") {   ; so manda Enter (OK no erro) se houve erro de caminho
         Send "{Enter}"
-        Sleep T_LONGO
+        Sleep 5000
     }
     NavegarAtePasta()
     Sleep T_MEDIO
