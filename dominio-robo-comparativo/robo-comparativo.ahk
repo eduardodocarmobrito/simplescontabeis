@@ -125,10 +125,11 @@ AtivarApp() {
             break
         }
     }
-    if alvo
+    if (alvo) {
         try WinActivate("ahk_id " . alvo)
-    else if WinExist(DOMINIO_WIN)
+    } else if WinExist(DOMINIO_WIN) {
         WinActivate(DOMINIO_WIN)
+    }
 }
 
 ; Launcher (app fechado / sessao caiu) esta na frente?
