@@ -103,12 +103,37 @@ Logar(txt) {
     try FileAppend(FormatTime(A_Now, "yyyy-MM-dd HH:mm:ss") . "  " . txt . "`n", LOGFILE)
 }
 
-; Lista os titulos das janelas do Dominio (pra diagnostico do modulo/launcher).
+; Lista as janelas do Dominio com titulo/classe/tamanho/ativa (diagnostico).
 ListarJanelasDominio() {
     s := ""
-    for hwnd in WinGetList("ahk_exe AppController.exe")
-        s .= "[" . WinGetTitle("ahk_id " . hwnd) . "] "
+    a := WinExist("A")
+    for hwnd in WinGetList("ahk_exe AppController.exe") {
+        w := 0, h := 0
+        try WinGetPos(, , &w, &h, "ahk_id " . hwnd)
+        s .= "{'" . WinGetTitle("ahk_id " . hwnd) . "' " . w . "x" . h . (hwnd = a ? " ATIVO" : "") . "} "
+    }
     return s
+}
+
+; Ativa a janela do APP do Dominio (a que NAO e o launcher "Lista de Programas").
+AtivarApp() {
+    global DOMINIO_WIN
+    alvo := 0
+    for hwnd in WinGetList("ahk_exe AppController.exe") {
+        if !InStr(WinGetTitle("ahk_id " . hwnd), "Lista de Programas") {
+            alvo := hwnd
+            break
+        }
+    }
+    if alvo
+        try WinActivate("ahk_id " . alvo)
+    else if WinExist(DOMINIO_WIN)
+        WinActivate(DOMINIO_WIN)
+}
+
+; Launcher (app fechado / sessao caiu) esta na frente?
+NoLauncher() {
+    return InStr(WinGetTitle("A"), "Lista de Programas") || InStr(WinGetTitle("A"), "Dominio Web")
 }
 
 ; VIGIA: fecha erros do Dominio (bug do chatbot) / Windows pelo X, nunca "Finalizar".
@@ -276,10 +301,6 @@ LimparTelas() {
 SelecionarModulo() {
     global LOGO_X, LOGO_Y, MODULO_X, MODULO_Y, T_MODULO_CARGA, T_MEDIO
     FecharErroSistema()
-    if InStr(ListarJanelasDominio(), "Contabilidade") {
-        Logar("Ja esta na Contabilidade - nao mexe no modulo.")
-        return
-    }
     Click(LOGO_X . " " . LOGO_Y)      ; logo DOMINIO -> abre o menu de modulos
     Sleep T_MEDIO
     Click(MODULO_X . " " . MODULO_Y)  ; clica no modulo (Contabilidade)
@@ -407,19 +428,18 @@ RodarCiclo(compIni, compFim) {
         ReportarProgresso(false, total, 0, "", false)
         return
     }
-    WinActivate(DOMINIO_WIN)
-    Sleep 1000
-    Logar("Janelas ANTES do modulo: " . ListarJanelasDominio())
-    Logar("Selecionando modulo Contabilidade...")
-    SelecionarModulo()               ; garante 100% que esta no modulo certo
-    ; TRAVA: so continua se o Dominio estiver REALMENTE aberto na Contabilidade.
-    titulos := ListarJanelasDominio()
-    Logar("Janelas DEPOIS do modulo: " . titulos)
-    if !InStr(titulos, "Contabilidade") {
-        Logar("ERRO: nao esta na Contabilidade (sessao caiu / launcher / Explorer cobrindo?) - execucao cancelada.")
+    AtivarApp()                      ; traz o APP pra frente (nao o launcher)
+    Sleep 1500
+    Logar("Janelas: " . ListarJanelasDominio())
+    ; TRAVA: se o launcher (app fechado/sessao caiu) estiver na frente, cancela.
+    if NoLauncher() {
+        Logar("ERRO: Dominio no launcher (Lista de Programas) - app nao esta aberto. Cancelado.")
         ReportarProgresso(false, total, 0, "", false)
         return
     }
+    Logar("Selecionando modulo Contabilidade...")
+    SelecionarModulo()
+    FecharErroSistema()
     resultados := []
     feitas := 0
     for e in empresas {
