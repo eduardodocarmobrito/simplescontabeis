@@ -103,6 +103,14 @@ Logar(txt) {
     try FileAppend(FormatTime(A_Now, "yyyy-MM-dd HH:mm:ss") . "  " . txt . "`n", LOGFILE)
 }
 
+; Lista os titulos das janelas do Dominio (pra diagnostico do modulo/launcher).
+ListarJanelasDominio() {
+    s := ""
+    for hwnd in WinGetList("ahk_exe AppController.exe")
+        s .= "[" . WinGetTitle("ahk_id " . hwnd) . "] "
+    return s
+}
+
 ; VIGIA: fecha erros do Dominio (bug do chatbot) / Windows pelo X, nunca "Finalizar".
 FecharErroSistema() {
     static ativo := false
@@ -396,20 +404,13 @@ RodarCiclo(compIni, compFim) {
     }
     WinActivate(DOMINIO_WIN)
     Sleep 1000
+    Logar("Janelas ANTES do modulo: " . ListarJanelasDominio())
     Logar("Selecionando modulo Contabilidade...")
     SelecionarModulo()               ; garante 100% que esta no modulo certo
     ; TRAVA: so continua se o Dominio estiver REALMENTE aberto na Contabilidade.
-    ; (Se a sessao caiu/expirou, aparece o launcher "Dominio Web" e NAO tem esse titulo.)
-    naContab := false
-    titulos := ""
-    for hwnd in WinGetList("ahk_exe AppController.exe") {
-        t := WinGetTitle("ahk_id " . hwnd)
-        titulos .= "[" . t . "] "
-        if InStr(t, "Contabilidade")
-            naContab := true
-    }
-    Logar("Janelas Dominio: " . titulos)
-    if !naContab {
+    titulos := ListarJanelasDominio()
+    Logar("Janelas DEPOIS do modulo: " . titulos)
+    if !InStr(titulos, "Contabilidade") {
         Logar("ERRO: nao esta na Contabilidade (sessao caiu / launcher / Explorer cobrindo?) - execucao cancelada.")
         ReportarProgresso(false, total, 0, "", false)
         return
