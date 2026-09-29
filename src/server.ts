@@ -7908,7 +7908,7 @@ registerCentralEnvio(app, {
   decifrar: nfse.decifrarTexto,
   uploadsDir: UPLOADS_DIR,
   enviarEmail,
-  enviarWhatsapp: whatsappEnviarArquivo,
+  enviarWhatsapp: deskcommRoboEnviarArquivoAdaptado,
   mapaDocumentos: domRelMapaDocumentos,
   identificarEmpresa: domRelIdentificarEmpresa,
   extrairPeriodo: domRelExtrairPeriodo,
@@ -14555,6 +14555,20 @@ async function deskcommRoboEnviarArquivo(telefone: string, nomeContato: string, 
     method: "POST",
     body: { conversation_id: conversationId, type: up.kind, media_storage_path: up.storage_path, media_mime: up.media_mime, media_size_bytes: up.media_size_bytes, metadata: { filename: arquivo.nome }, ...(texto ? { body: texto } : {}) },
   });
+}
+// Adapta pra assinatura antiga (escritorioId + vars[] + origem) esperada pelo central-envio.ts —
+// achado ao vivo 2026-09-29: era o 6º chamador de whatsappEnviarArquivo, passado por injeção de
+// dependência (não uma chamada direta), por isso a varredura por texto de hoje de manhã não achou.
+async function deskcommRoboEnviarArquivoAdaptado(
+  _escritorioId: number,
+  telefone: string,
+  vars: { nome: string; valor: string }[],
+  arquivo: { nome: string; tipo: string; buffer: Buffer },
+  _origem: { tabela: string; id: number }
+): Promise<void> {
+  const nomeContato = vars.find((v) => v.nome === "empresa_nome")?.valor || "";
+  const descricao = vars.find((v) => v.nome === "descricao")?.valor || "";
+  await deskcommRoboEnviarArquivo(telefone, nomeContato, arquivo, descricao);
 }
 // ---------- Mensagens AGENDADAS do atendimento (CRM e setores): escreve agora, o site envia no horário escolhido ----------
 // Sai pelo usuário "Automações" (o site não guarda a sessão de quem agendou); quem agendou fica registrado aqui na tabela.
