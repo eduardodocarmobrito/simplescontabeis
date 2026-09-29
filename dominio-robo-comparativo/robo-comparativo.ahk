@@ -301,15 +301,12 @@ MontarNome(codigo, compIni, compFim) {
     return limpo . ".pdf"
 }
 
+; Fecha janelas/previas abertas SO com Esc. NAO usa Ctrl+F4: quando nao ha janela
+; interna aberta (ex.: logo apos abrir o modulo), o Ctrl+F4 fecha o Dominio inteiro.
 LimparTelas() {
     global T_CURTO
     FecharErroSistema()
-    Loop 2 {
-        Send "^{F4}"
-        Sleep T_CURTO
-        FecharErroSistema()
-    }
-    Loop 4 {
+    Loop 6 {
         Send "{Esc}"
         Sleep T_CURTO
         FecharErroSistema()
