@@ -174,7 +174,11 @@ TrocarEmpresa(codigo) {
 
 AbrirComparativo() {
     global FAV_KEY, T_CURTO, T_MEDIO
-    Send "!" . FAV_KEY
+    Click("700 400")             ; foco de teclado (o F8 pode ter tirado o foco)
+    Sleep 400
+    Send "{Alt}"                 ; ativa a barra de menus (mais confiavel que Alt+F junto)
+    Sleep 500
+    Send FAV_KEY                 ; abre Favoritos (mnemonico F)
     Sleep T_MEDIO
     Send "{Down}"
     Sleep T_CURTO
