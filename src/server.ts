@@ -6138,16 +6138,7 @@ app.post("/api/envio/documentos/:id/enviar-whatsapp", blockCliente, requirePermi
   const erros: string[] = [];
   for (const c of contatos) {
     try {
-      await whatsappEnviarArquivo(
-        user.escritorioId,
-        c.telefone,
-        [
-          { nome: "empresa_nome", valor: empresa?.nome || "" },
-          { nome: "descricao", valor: descricao },
-        ],
-        arquivo,
-        { tabela: "envio_documentos", id: doc.id }
-      );
+      await deskcommRoboEnviarArquivo(c.telefone, empresa?.nome || "", arquivo, descricao);
       enviados++;
     } catch (e: any) {
       erros.push(e.message);
@@ -8650,16 +8641,7 @@ async function envioEnviarDocumentoAutomatico(opts: {
       let ultimoErro = "";
       for (const c of contatos) {
         try {
-          await whatsappEnviarArquivo(
-            escritorioId,
-            c.telefone,
-            [
-              { nome: "empresa_nome", valor: empresaNome },
-              { nome: "descricao", valor: descricaoWhatsapp },
-            ],
-            { nome: fileName, tipo: "application/pdf", buffer: pdf },
-            { tabela: "envio_documentos", id: docId }
-          );
+          await deskcommRoboEnviarArquivo(c.telefone, empresaNome, { nome: fileName, tipo: "application/pdf", buffer: pdf }, descricaoWhatsapp);
           algum = true;
         } catch (e: any) {
           ultimoErro = e.message;
@@ -9972,16 +9954,7 @@ app.post("/api/nfse/emissoes/:id/enviar-whatsapp", blockCliente, requirePermissa
   const erros: string[] = [];
   for (const c of contatos) {
     try {
-      await whatsappEnviarArquivo(
-        user.escritorioId,
-        c.telefone,
-        [
-          { nome: "empresa_nome", valor: row.tomador_nome || "" },
-          { nome: "descricao", valor: descricao },
-        ],
-        arquivo,
-        { tabela: "nfse_emissoes", id: row.id }
-      );
+      await deskcommRoboEnviarArquivo(c.telefone, row.tomador_nome || "", arquivo, descricao);
       enviados++;
     } catch (e: any) {
       erros.push(e.message);
@@ -10134,16 +10107,7 @@ async function nfseNotificarCancelamento(emissaoId: number) {
     const arquivo = { nome: nomeArquivo, tipo: "application/pdf", buffer: pdf };
     for (const c of contatosWhatsapp) {
       try {
-        await whatsappEnviarArquivo(
-          escritorioId,
-          c.telefone,
-          [
-            { nome: "empresa_nome", valor: row.tomador_nome || "" },
-            { nome: "descricao", valor: `NFS-e nº ${numero} CANCELADA` },
-          ],
-          arquivo,
-          { tabela: "nfse_emissoes", id: row.id }
-        );
+        await deskcommRoboEnviarArquivo(c.telefone, row.tomador_nome || "", arquivo, `NFS-e nº ${numero} CANCELADA`);
       } catch (e: any) {
         console.error(`Não consegui avisar o cancelamento da NFS-e ${row.id} por WhatsApp (${c.telefone}):`, e.message);
       }
@@ -10962,16 +10926,7 @@ async function nfseAnexarEEnviarDocumento(escritorioId: number, emissaoId: numbe
     let ultimoErro = "";
     for (const c of contatosWhatsapp) {
       try {
-        await whatsappEnviarArquivo(
-          escritorioId,
-          c.telefone,
-          [
-            { nome: "empresa_nome", valor: empresaNome },
-            { nome: "descricao", valor: `Nota Fiscal de Serviço — ${emissao.descricao_servico}` },
-          ],
-          { nome: nomeArquivo, tipo: "application/pdf", buffer: pdf },
-          { tabela: "envio_documentos", id: docId }
-        );
+        await deskcommRoboEnviarArquivo(c.telefone, empresaNome, { nome: nomeArquivo, tipo: "application/pdf", buffer: pdf }, `Nota Fiscal de Serviço — ${emissao.descricao_servico}`);
         algumEnviado = true;
       } catch (e: any) {
         ultimoErro = e.message;
@@ -14513,10 +14468,13 @@ async function deskcommRoboLogin(): Promise<string> {
 }
 async function deskcommRoboApi(caminho: string, init: { method?: string; body?: any } = {}, jaRenovou = false): Promise<any> {
   if (!deskcommRoboSessao || Date.now() - deskcommRoboSessao.em > 45 * 60_000) await deskcommRoboLogin();
+  // FormData (upload de mídia) precisa ir sem content-type manual — o fetch preenche o boundary
+  // sozinho — e sem JSON.stringify, diferente do corpo normal (mesma distinção do dcApi do front).
+  const isForm = init.body instanceof FormData;
   const r = await fetch(`${DESKCOMM_URL}/deskcomm/api/v1${caminho}`, {
     method: init.method || "GET",
-    headers: { cookie: deskcommRoboSessao!.cookie, origin: DESKCOMM_URL, ...(init.body ? { "content-type": "application/json" } : {}) },
-    body: init.body ? JSON.stringify(init.body) : undefined,
+    headers: { cookie: deskcommRoboSessao!.cookie, origin: DESKCOMM_URL, ...(init.body && !isForm ? { "content-type": "application/json" } : {}) },
+    body: isForm ? init.body : init.body ? JSON.stringify(init.body) : undefined,
   });
   if (r.status === 401 && !jaRenovou) { deskcommRoboSessao = null; return deskcommRoboApi(caminho, init, true); }
   const json: any = await r.json().catch(() => null);
@@ -14526,6 +14484,34 @@ async function deskcommRoboApi(caminho: string, init: { method?: string; body?: 
 async function deskcommRoboEnviar(conversationId: string, texto: string): Promise<string | null> {
   const m = await deskcommRoboApi("/messages", { method: "POST", body: { conversation_id: conversationId, type: "text", body: texto } });
   return m?.id || null;
+}
+// Manda um documento (PDF, etc.) pela MESMA conversa de WhatsApp que o cliente já usa com o
+// escritório — em vez do número separado da API oficial da Meta (whatsappEnviarArquivo). Acha ou
+// cria a conversa do contato pelo telefone, sobe o arquivo pro storage do deskcomm e manda a
+// mensagem com ele — os mesmos dois passos que a tela de Atendimento já faz de verdade
+// (atdEnviarArquivo, em app.html) quando alguém anexa um arquivo na mão.
+async function deskcommRoboEnviarArquivo(telefone: string, nomeContato: string, arquivo: { nome: string; tipo: string; buffer: Buffer }, legenda: string): Promise<void> {
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID) throw new Error("Integração com o deskcomm não configurada.");
+  let digitos = String(telefone).replace(/\D/g, "");
+  if (digitos.length <= 11) digitos = "55" + digitos;
+  const phoneNumber = "+" + digitos;
+  const { conversation_id: conversationId } = await deskcommRoboApi("/conversations/open-with-contact", { method: "POST", body: { phone_number: phoneNumber, name: nomeContato } });
+  const fd = new FormData();
+  fd.append("file", new Blob([new Uint8Array(arquivo.buffer)], { type: arquivo.tipo }), arquivo.nome);
+  const up = await deskcommRoboApi(`/conversations/${conversationId}/media`, { method: "POST", body: fd });
+  let texto = legenda;
+  try {
+    const { data: conv } = await deskcommAdmin.from("conversations").select("active_intent, active_agent_set_at, service_started_at").eq("organization_id", DESKCOMM_ORG_ID).eq("id", conversationId).maybeSingle();
+    if (conv) {
+      const { ultima } = await atendimentoEscolhas();
+      const setor = atendimentoSetorAtual(conv, ultima.get(conversationId));
+      if (setor) texto = `*${setor}*\n${texto}`;
+    }
+  } catch { /* sem o setor, manda sem prefixo mesmo — mesmo comportamento da mensagem agendada */ }
+  await deskcommRoboApi("/messages", {
+    method: "POST",
+    body: { conversation_id: conversationId, type: up.kind, media_storage_path: up.storage_path, media_mime: up.media_mime, media_size_bytes: up.media_size_bytes, metadata: { filename: arquivo.nome }, ...(texto ? { body: texto } : {}) },
+  });
 }
 // ---------- Mensagens AGENDADAS do atendimento (CRM e setores): escreve agora, o site envia no horário escolhido ----------
 // Sai pelo usuário "Automações" (o site não guarda a sessão de quem agendou); quem agendou fica registrado aqui na tabela.
