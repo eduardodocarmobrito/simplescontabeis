@@ -41,7 +41,8 @@ THISPC_X    := 52,   THISPC_Y    := 265
 CAMPO_NOME_X:= 250,  CAMPO_NOME_Y:= 388
 
 ; Botao OK da tela "Programacao de Ferias" (gera o relatorio). Data base = hoje (padrao).
-FERIAS_OK_X := 1320, FERIAS_OK_Y := 597
+; (Fica na COLUNA DIREITA da janela; nao confundir com o campo de data, que fica ao centro.)
+FERIAS_OK_X := 1475, FERIAS_OK_Y := 583
 
 ; Centro do dialogo "Sem dados para emitir !" (clique pra dar FOCO de teclado antes do Enter/OK)
 SEMDADOS_X  := 1286, SEMDADOS_Y  := 796
@@ -198,6 +199,8 @@ GerarRelatorio() {
     global FERIAS_OK_X, FERIAS_OK_Y, T_MEDIO, T_LONGO
     Sleep T_MEDIO                              ; espera a tela de parametros abrir
     Click(FERIAS_OK_X . " " . FERIAS_OK_Y)     ; OK -> gera o relatorio
+    Sleep 500
+    Send "{Enter}"                             ; reforco: Enter = botao padrao (OK) caso o clique erre
     Sleep T_LONGO                              ; deixa a tela de parametros fechar / relatorio comecar
     return EsperarRender()
 }
