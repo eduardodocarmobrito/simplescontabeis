@@ -28,7 +28,7 @@ POLL_SEGUNDOS := 10       ; de quanto em quanto tempo pergunta ao site
 DIGITAR_PERIODO := true   ; digita o periodo que o site mandar (padrao ou customizado)
 ; Re-selecionar o modulo Contabilidade a cada execucao? false = NAO (o app ja fica na
 ; Contabilidade; re-selecionar recarrega o modulo e quebrava o F8/Favoritos logo depois).
-SELECIONAR_MODULO := false
+SELECIONAR_MODULO := true
 FAV_KEY      := "f"       ; letra do menu FAVORITOS
 DOMINIO_WIN  := "ahk_exe AppController.exe"
 
@@ -50,6 +50,11 @@ PER_FIM_X   := 1333, PER_FIM_Y   := 724    ; campo Final
 LOGO_X      := 40,   LOGO_Y      := 74     ; logo "DOMINIO" (abre menu de modulos)
 MODULO_X    := 75,   MODULO_Y    := 308    ; item "Contabilidade" no menu
 T_MODULO_CARGA := 10000                    ; espera o modulo carregar (~10s)
+
+; Menu FAVORITOS (barra de cima) e o item "Comparativo de Movimentos" no submenu.
+; >>> AJUSTAR com o Window Spy (Screen X,Y): <<<
+FAVORITOS_X := 576,  FAVORITOS_Y := 52     ; menu "Favoritos"
+COMPMOV_X   := 620,  COMPMOV_Y   := 90     ; item "Comparativo de Movimentos"
 
 T_CURTO  := 700
 T_MEDIO  := 2000
@@ -172,13 +177,12 @@ TrocarEmpresa(codigo) {
     Sleep T_LONGO
 }
 
+; Abre Favoritos > Comparativo de Movimento (Alt+F -> Down -> Enter), com foco antes.
 AbrirComparativo() {
     global FAV_KEY, T_CURTO, T_MEDIO
-    Click("700 400")             ; foco de teclado (o F8 pode ter tirado o foco)
+    Click("700 400")             ; foco de teclado (streaming)
     Sleep 400
-    Send "{Alt}"                 ; ativa a barra de menus (mais confiavel que Alt+F junto)
-    Sleep 500
-    Send FAV_KEY                 ; abre Favoritos (mnemonico F)
+    Send "!" . FAV_KEY           ; Alt+F -> abre Favoritos
     Sleep T_MEDIO
     Send "{Down}"
     Sleep T_CURTO
