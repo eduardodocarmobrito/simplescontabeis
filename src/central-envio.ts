@@ -21,7 +21,9 @@ type Deps = {
   decifrar: (s: string) => string;
   uploadsDir: string;
   enviarEmail: (escritorioId: number, msg: any) => Promise<any>;
-  enviarWhatsapp: (escritorioId: number, telefone: string, vars: { nome: string; valor: string }[], arquivo: { nome: string; tipo: string; buffer: Buffer }, origem: { tabela: "central_envio_enviados"; id: number }) => Promise<void>;
+  // canal: "conversa" (número de atendimento, deskcomm) ou "meta" (API oficial da Meta, número separado) —
+  // veio direto do body do pedido de envio (o usuário escolhe na hora, dois botões na tela).
+  enviarWhatsapp: (escritorioId: number, telefone: string, vars: { nome: string; valor: string }[], arquivo: { nome: string; tipo: string; buffer: Buffer }, origem: { tabela: "central_envio_enviados"; id: number }, canal: string) => Promise<void>;
   mapaDocumentos: (escritorioId: number) => { porDocumento: Map<string, any>; porCodigo: Map<string, any> };
   identificarEmpresa: (mapa: { porDocumento: Map<string, any>; porCodigo: Map<string, any> }, texto: string, nomeArquivo: string) => { empresa: any | null; cnpjDetectado: string | null };
   extrairPeriodo: (texto: string, nomeArquivo: string) => { inicio: string; fim: string } | null;
@@ -218,6 +220,7 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
   if (!(db.prepare(`PRAGMA table_info(central_envio_tipos)`).all() as any[]).some((c) => c.name === "agrupar")) db.exec(`ALTER TABLE central_envio_tipos ADD COLUMN agrupar INTEGER NOT NULL DEFAULT 0`);
   for (const [tab, col, ddl] of [
     ["central_envio_enviados", "entrega_ref", "INTEGER"], ["central_envio_agendados", "extras_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ["central_envio_agendados", "canal_whatsapp", "TEXT NOT NULL DEFAULT 'conversa'"],
   ] as const) if (!(db.prepare(`PRAGMA table_info(${tab})`).all() as any[]).some((c) => c.name === col)) db.exec(`ALTER TABLE ${tab} ADD COLUMN ${col} ${ddl}`);
   // Correção pontual de rótulo (pedida): um título do PDF ("PROVENTOS E DESCONTOSBASE PARA CÁLCULO") foi lido como nome de colaborador.
   // Só o texto do título/nome nas listas é ajustado; datas, destinatários e status dos envios não mudam. Idempotente.
@@ -690,7 +693,7 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
         try {
           const enviadoId = registrar("whatsapp", tel, true);
           try {
-            await d.enviarWhatsapp(doc.escritorio_id, tel, [{ nome: "empresa_nome", valor: empresa?.nome || "" }, { nome: "descricao", valor: tipo?.texto_whatsapp || doc.titulo }], { nome: nomePdf, tipo: "application/pdf", buffer: pdf }, { tabela: "central_envio_enviados", id: enviadoId });
+            await d.enviarWhatsapp(doc.escritorio_id, tel, [{ nome: "empresa_nome", valor: empresa?.nome || "" }, { nome: "descricao", valor: tipo?.texto_whatsapp || doc.titulo }], { nome: nomePdf, tipo: "application/pdf", buffer: pdf }, { tabela: "central_envio_enviados", id: enviadoId }, body?.canalWhatsapp);
           } catch (e: any) {
             db.prepare(`UPDATE central_envio_enviados SET status = 'erro', erro = ? WHERE id = ?`).run(String(e.message).slice(0, 300), enviadoId);
             resultados[resultados.length - 1] = { canal: "whatsapp", destino: tel, ok: false, erro: e.message };
@@ -743,7 +746,7 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
         try {
           const refId = registrarTodos("whatsapp", tel, true, undefined, true);
           try {
-            await d.enviarWhatsapp(base.escritorio_id, tel, [{ nome: "empresa_nome", valor: empresa?.nome || "" }, { nome: "descricao", valor: `${docs.length} documentos em um só arquivo` }], { nome: nomePdf, tipo: "application/pdf", buffer: juntar }, { tabela: "central_envio_enviados", id: refId });
+            await d.enviarWhatsapp(base.escritorio_id, tel, [{ nome: "empresa_nome", valor: empresa?.nome || "" }, { nome: "descricao", valor: `${docs.length} documentos em um só arquivo` }], { nome: nomePdf, tipo: "application/pdf", buffer: juntar }, { tabela: "central_envio_enviados", id: refId }, body?.canalWhatsapp);
           } catch (e: any) {
             db.prepare(`UPDATE central_envio_enviados SET status = 'erro', erro = ? WHERE id = ? OR entrega_ref = ?`).run(String(e.message).slice(0, 300), refId, refId);
             resultados[resultados.length - 1] = { canal: "whatsapp", destino: tel, ok: false, erro: e.message };
@@ -781,7 +784,7 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     const voltar = () => { for (const x of docs) db.prepare(`UPDATE central_envio_docs SET status = 'pendente' WHERE id = ?`).run(x.id); };
     if (!docs.length) { db.prepare(`UPDATE central_envio_agendados SET status = 'cancelado', executado_em = datetime('now') WHERE id = ?`).run(a.id); return; }
     try {
-      const r = await executarEnvioConsolidado({ id: a.criado_por, nome: a.criado_por_nome }, docs, { canais: JSON.parse(a.canais_json), telefones: JSON.parse(a.telefones_json), emails: JSON.parse(a.emails_json) });
+      const r = await executarEnvioConsolidado({ id: a.criado_por, nome: a.criado_por_nome }, docs, { canais: JSON.parse(a.canais_json), telefones: JSON.parse(a.telefones_json), emails: JSON.parse(a.emails_json), canalWhatsapp: a.canal_whatsapp });
       if (r.erro || !r.resultados!.some((x) => x.ok)) {
         db.prepare(`UPDATE central_envio_agendados SET status = 'erro', erro = ?, executado_em = datetime('now') WHERE id = ?`).run((r.erro || r.resultados!.map((x) => x.erro).filter(Boolean)[0] || "Falha no envio").slice(0, 300), a.id);
         voltar(); // volta pra Pendentes pra você ver e decidir
@@ -844,9 +847,10 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
       const g = grupos.get(chave);
       if (g) g.extras.push(v.doc.id); else grupos.set(chave, { ...v, extras: [] });
     }
+    const canalWhatsapp = req.body?.canalWhatsapp === "meta" ? "meta" : "conversa";
     for (const g of grupos.values()) {
-      db.prepare(`INSERT INTO central_envio_agendados (escritorio_id, doc_id, agendado_para, canais_json, telefones_json, emails_json, criado_por, criado_por_nome, extras_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(g.doc.escritorio_id, g.doc.id, quando.toISOString(), JSON.stringify(canais), JSON.stringify(g.telefones), JSON.stringify(g.emails), user.id, user.nome, JSON.stringify(g.extras));
+      db.prepare(`INSERT INTO central_envio_agendados (escritorio_id, doc_id, agendado_para, canais_json, telefones_json, emails_json, criado_por, criado_por_nome, extras_json, canal_whatsapp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(g.doc.escritorio_id, g.doc.id, quando.toISOString(), JSON.stringify(canais), JSON.stringify(g.telefones), JSON.stringify(g.emails), user.id, user.nome, JSON.stringify(g.extras), canalWhatsapp);
       for (const id of [g.doc.id, ...g.extras]) db.prepare(`UPDATE central_envio_docs SET status = 'agendado' WHERE id = ?`).run(id);
     }
     res.json({ ok: true, agendados: ok.length, envios: grupos.size, ignorados, imediato: !req.body?.quando });
@@ -864,8 +868,9 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     const telefones = (Array.isArray(req.body?.telefones) ? req.body.telefones : []).map(String).filter((t: string) => c.whatsapp.some((w: any) => w.telefone === t));
     const emails = (Array.isArray(req.body?.emails) ? req.body.emails : []).map(String).filter((e: string) => c.email.some((m: any) => m.email === e));
     if (!canais.length || (!telefones.length && !emails.length)) return res.status(400).json({ error: "Marque pelo menos um destinatário (contatos cadastrados na empresa)." });
-    db.prepare(`INSERT INTO central_envio_agendados (escritorio_id, doc_id, agendado_para, canais_json, telefones_json, emails_json, criado_por, criado_por_nome) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(doc.escritorio_id, doc.id, quando.toISOString(), JSON.stringify(canais), JSON.stringify(telefones), JSON.stringify(emails), user.id, user.nome);
+    const canalWhatsapp = req.body?.canalWhatsapp === "meta" ? "meta" : "conversa";
+    db.prepare(`INSERT INTO central_envio_agendados (escritorio_id, doc_id, agendado_para, canais_json, telefones_json, emails_json, criado_por, criado_por_nome, canal_whatsapp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(doc.escritorio_id, doc.id, quando.toISOString(), JSON.stringify(canais), JSON.stringify(telefones), JSON.stringify(emails), user.id, user.nome, canalWhatsapp);
     db.prepare(`UPDATE central_envio_docs SET status = 'agendado' WHERE id = ?`).run(doc.id);
     res.json({ ok: true, quando: quando.toISOString() });
   });

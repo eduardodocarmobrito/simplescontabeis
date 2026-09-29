@@ -6177,11 +6177,12 @@ app.post("/api/envio/documentos/:id/enviar-whatsapp", blockCliente, requirePermi
   const rotulo = doc.mes ? `${doc.mes}/${doc.ano}` : doc.rotulo || String(doc.ano);
   const descricao = `${atrib.templateNome} — ${rotulo}`;
   const arquivo = { nome: doc.file_name, tipo: doc.mime || "application/pdf", buffer: fs.readFileSync(doc.file_path) };
+  const canal = canalWhatsappDoBody(req.body?.canal);
   let enviados = 0;
   const erros: string[] = [];
   for (const c of contatos) {
     try {
-      await deskcommRoboEnviarArquivo(c.telefone, empresa?.nome || "", arquivo, descricao);
+      await enviarDocumentoWhatsapp(canal, user.escritorioId, c.telefone, empresa?.nome || "", descricao, arquivo, { tabela: "envio_documentos", id: doc.id });
       enviados++;
     } catch (e: any) {
       erros.push(e.message);
@@ -9993,11 +9994,12 @@ app.post("/api/nfse/emissoes/:id/enviar-whatsapp", blockCliente, requirePermissa
   if (!pdf) return res.status(502).json({ error: erroPdf });
   const arquivo = { nome: nfseNomeArquivo(row, "pdf"), tipo: "application/pdf", buffer: pdf };
   const descricao = `NFS-e ${row.numero_nfse || row.numero_dps} — competência ${row.competencia?.slice(0, 7) || ""}`;
+  const canal = canalWhatsappDoBody(req.body?.canal);
   let enviados = 0;
   const erros: string[] = [];
   for (const c of contatos) {
     try {
-      await deskcommRoboEnviarArquivo(c.telefone, row.tomador_nome || "", arquivo, descricao);
+      await enviarDocumentoWhatsapp(canal, user.escritorioId, c.telefone, row.tomador_nome || "", descricao, arquivo, { tabela: "nfse_emissoes", id: row.id });
       enviados++;
     } catch (e: any) {
       erros.push(e.message);
@@ -14560,15 +14562,39 @@ async function deskcommRoboEnviarArquivo(telefone: string, nomeContato: string, 
 // achado ao vivo 2026-09-29: era o 6º chamador de whatsappEnviarArquivo, passado por injeção de
 // dependência (não uma chamada direta), por isso a varredura por texto de hoje de manhã não achou.
 async function deskcommRoboEnviarArquivoAdaptado(
-  _escritorioId: number,
+  escritorioId: number,
   telefone: string,
   vars: { nome: string; valor: string }[],
   arquivo: { nome: string; tipo: string; buffer: Buffer },
-  _origem: { tabela: string; id: number }
+  origem: { tabela: string; id: number },
+  canal?: any
 ): Promise<void> {
   const nomeContato = vars.find((v) => v.nome === "empresa_nome")?.valor || "";
   const descricao = vars.find((v) => v.nome === "descricao")?.valor || "";
-  await deskcommRoboEnviarArquivo(telefone, nomeContato, arquivo, descricao);
+  await enviarDocumentoWhatsapp(canalWhatsappDoBody(canal), escritorioId, telefone, nomeContato, descricao, arquivo, origem as any);
+}
+// Escolha de canal (pedida pelo usuário 2026-09-29, depois de migrar tudo pra conversa por padrão):
+// "conversa" = número de atendimento de sempre (deskcomm); "meta" = número separado da API oficial
+// da Meta (o que existia antes). Um só ponto de entrada pros lugares que dão a escolha na hora do
+// envio manual — evita duplicar o if/else em cada rota.
+type CanalWhatsapp = "conversa" | "meta";
+function canalWhatsappDoBody(v: any): CanalWhatsapp {
+  return v === "meta" ? "meta" : "conversa";
+}
+async function enviarDocumentoWhatsapp(
+  canal: CanalWhatsapp,
+  escritorioId: number,
+  telefone: string,
+  nomeContato: string,
+  descricao: string,
+  arquivo: { nome: string; tipo: string; buffer: Buffer },
+  origem: { tabela: "envio_documentos" | "nfse_emissoes" | "central_envio_enviados"; id: number }
+): Promise<void> {
+  if (canal === "meta") {
+    await whatsappEnviarArquivo(escritorioId, telefone, [{ nome: "empresa_nome", valor: nomeContato }, { nome: "descricao", valor: descricao }], arquivo, origem);
+  } else {
+    await deskcommRoboEnviarArquivo(telefone, nomeContato, arquivo, descricao);
+  }
 }
 // ---------- Mensagens AGENDADAS do atendimento (CRM e setores): escreve agora, o site envia no horário escolhido ----------
 // Sai pelo usuário "Automações" (o site não guarda a sessão de quem agendou); quem agendou fica registrado aqui na tabela.
