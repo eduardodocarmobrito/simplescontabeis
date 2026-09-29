@@ -345,15 +345,15 @@ ProcessarEmpresa(codigo, compIni, compFim) {
     Logar("  [4] apos gerar: " . st)
     if (st != "ok") {
         ; "Sem dados para emitir" OU Favoritos nao abriu a tela do Comparativo.
-        ; Da OK (Enter), fecha (Esc x2), espera 5s e PULA pra proxima empresa (sem salvar/repetir).
+        ; Sequencia: OK -> 5s -> Esc (fecha a tela) -> 5s -> confirma "Deseja cancelar?" (Yes) -> proxima.
         Logar("Empresa " . codigo . ": sem relatorio (" . st . ") - OK/Esc e proxima")
         Send "{Enter}"                ; OK no "Sem dados para emitir!"
-        Sleep T_CURTO
-        Send "{Esc}"
-        Sleep T_CURTO
-        Send "{Esc}"
-        Sleep 5000                    ; espera 5s antes de seguir
-        LimparTelas()
+        Sleep 5000                    ; espera 5s
+        Send "{Esc}"                  ; fecha a tela do Comparativo (abre "Deseja cancelar?")
+        Sleep 5000                    ; espera mais 5s
+        Send "{Enter}"                ; Yes no "Deseja cancelar?" (botao em foco) -> volta pra tela principal
+        Sleep 2000
+        LimparTelas()                 ; garante tela limpa antes da proxima empresa
         return "pular"
     }
     ; --- Salvar em PDF ---
