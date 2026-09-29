@@ -1854,17 +1854,17 @@ async function pagePainelTv(){
     const corpo = document.querySelector('#painelTv .tvp-body');
     if(!box || !corpo || box.classList.contains('tvp-off')) return;
     const disponivel = corpo.clientHeight - 8;
-    // O conteúdo usa flex-wrap em dois níveis, então a altura NÃO cresce de forma linear com o
-    // zoom (mais zoom = menos cards cabem por linha = quebra em mais linhas, em degraus). Por isso
-    // uma conta única (disponivel/altura-em-zoom-1) ficava sempre conservadora demais. Busca
-    // binária mede a altura real a cada tentativa até achar o maior zoom que ainda cabe.
-    let lo = 0.22, hi = 2.2, melhor = lo;
-    for(let i=0;i<12;i++){
-      const meio = (lo+hi)/2;
-      box.style.zoom = meio.toFixed(3);
-      if(box.scrollHeight <= disponivel){ melhor = meio; lo = meio; } else { hi = meio; }
+    // O conteúdo usa flex-wrap em dois níveis, então a altura NÃO cresce de forma linear (nem
+    // sempre crescente) com o zoom: dependendo de como as seções se reagrupam lado a lado, um
+    // zoom maior às vezes resulta numa altura MENOR (reflow em degraus, não monotônico). Por isso
+    // busca binária não funciona aqui (ela assume "mais zoom = mais alto" e pode travar num zoom
+    // baixo à toa). Em vez disso, varre de cima pra baixo e usa o primeiro (maior) zoom que couber.
+    let zoom = 0.22;
+    for(let z=2.2; z>=0.22; z-=0.02){
+      box.style.zoom = z.toFixed(3);
+      if(box.scrollHeight <= disponivel){ zoom = z; break; }
     }
-    box.style.zoom = melhor.toFixed(3);
+    box.style.zoom = zoom.toFixed(3);
   }
   function mostrarPagina(i){
     PAG.atual = i;
