@@ -26,6 +26,9 @@ AGENTE_TOKEN := "COLE_AQUI_O_TOKEN_DO_AGENTE"
 POLL_SEGUNDOS := 10       ; de quanto em quanto tempo pergunta ao site
 
 DIGITAR_PERIODO := true   ; digita o periodo que o site mandar (padrao ou customizado)
+; Re-selecionar o modulo Contabilidade a cada execucao? false = NAO (o app ja fica na
+; Contabilidade; re-selecionar recarrega o modulo e quebrava o F8/Favoritos logo depois).
+SELECIONAR_MODULO := false
 FAV_KEY      := "f"       ; letra do menu FAVORITOS
 DOMINIO_WIN  := "ahk_exe AppController.exe"
 
@@ -415,7 +418,7 @@ ReportarStatus(itens) {
 }
 
 RodarCiclo(compIni, compFim) {
-    global DOMINIO_WIN, T_ENTRE_EMPRESAS
+    global DOMINIO_WIN, T_ENTRE_EMPRESAS, SELECIONAR_MODULO
     empresas := PegarEmpresas()
     total := empresas.Length
     Logar("=== EXECUCAO: " . total . " empresa(s), periodo " . compIni . " a " . compFim . " ===")
@@ -438,8 +441,10 @@ RodarCiclo(compIni, compFim) {
         ReportarProgresso(false, total, 0, "", false)
         return
     }
-    Logar("Selecionando modulo Contabilidade...")
-    SelecionarModulo()
+    if (SELECIONAR_MODULO) {
+        Logar("Selecionando modulo Contabilidade...")
+        SelecionarModulo()
+    }
     FecharErroSistema()
     resultados := []
     feitas := 0
