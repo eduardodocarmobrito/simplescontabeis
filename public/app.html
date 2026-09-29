@@ -252,15 +252,8 @@
   /* Blocos das páginas 2+ da TV (tvpPaginaHtml): mesmo visual dos cards da 1ª página. */
   .tvp-secao{font-family:'IBM Plex Mono',monospace; font-size:clamp(11px,1vw,13px); letter-spacing:.16em; text-transform:uppercase; color:#7FA895; margin:clamp(6px,1vh,10px) 0 clamp(5px,.7vh,8px);}
   .tvp-secao:first-child{margin-top:0;}
-  .tvp-secoes-wrap + .tvp-secao, .tvp-secoes-wrap + .tvp-tabelas, .tvp-tabelas + .tvp-secao, .tvp-tabelas + .tvp-secoes-wrap{margin-top:clamp(10px,1.5vh,16px);}
+  .tvp-grid-compacta + .tvp-secao, .tvp-tabelas + .tvp-secao{margin-top:clamp(10px,1.5vh,16px);}
   .tvp-pagina-painel .tvp-grid, .tvp-pagina-painel .tvp-tabelas{position:relative;}
-  /* Várias seções de cards lado a lado (cada uma do tamanho do próprio conteúdo, não da largura
-     inteira) — usa o espaço que sobrava vazio depois do teto de largura dos cards, em vez de cada
-     seção ocupar uma linha inteira sozinha. */
-  .tvp-secoes-wrap{display:flex; flex-wrap:wrap; column-gap:clamp(18px,2.2vw,32px); row-gap:clamp(10px,1.5vh,16px); align-items:flex-start;}
-  .tvp-secoes-wrap:first-child .tvp-secao-bloco:first-child .tvp-secao{margin-top:0;}
-  .tvp-secao-bloco{flex:0 0 auto;}
-  .tvp-secao-bloco .tvp-secao{margin-top:0;}
   /* max no minmax (não só 1fr) — sem isso uma linha com poucos cards (ex.: só 4) estica cada um pra
      preencher a largura inteira; com o teto, sobra espaço vazio em vez de inflar os cards. */
   .tvp-grid.tvp-grid-compacta{grid-template-columns:repeat(auto-fit,minmax(130px,170px)); gap:clamp(6px,.7vw,10px); justify-content:start;}
@@ -1610,27 +1603,15 @@ const TVP_COR_ALERTA = '#E85F5F', TVP_COR_ATENCAO = '#E8C15F';
 const PAGINAS_TV = [ { id:1, label:'Página 1 — Cards do Início' }, { id:2, label:'Página 2 — Painel de atendimento' } ];
 function tvpPaginaHtml(blocos){
   let cor = 0;
-  const cardsBlocoHtml = b => `<div class="tvp-secao-bloco">${b.secao?`<div class="tvp-secao">${esc(b.secao)}</div>`:''}<div class="tvp-grid tvp-grid-compacta">${b.cards.map(c=>`
+  return blocos.map(b=>{
+    const titulo = b.secao ? `<div class="tvp-secao">${esc(b.secao)}</div>` : '';
+    if(b.cards) return titulo + `<div class="tvp-grid tvp-grid-compacta">${b.cards.map(c=>`
       <div class="tvp-card" style="--tvp-accent:${c.cor || TVP_CORES[(cor++) % TVP_CORES.length]}">
         <div class="tvp-eyebrow"><span>${esc(c.titulo)}</span></div>
         <div class="tvp-val">${esc(String(c.valor))}</div>
         ${c.sub?`<div class="tvp-sub">${esc(c.sub)}</div>`:''}
-      </div>`).join('')}</div></div>`;
-  let html = '', i = 0;
-  while(i < blocos.length){
-    const b = blocos[i];
-    // Agrupa seções de cards consecutivas numa linha flex-wrap — cada seção fica compacta (largura
-    // do próprio conteúdo) e a próxima entra do lado, em vez de cada uma ocupar a largura inteira
-    // sozinha e sobrar um vão vazio depois de poucos cards.
-    if(b.cards){
-      let grupo = [];
-      while(i < blocos.length && blocos[i].cards){ grupo.push(blocos[i]); i++; }
-      html += `<div class="tvp-secoes-wrap">${grupo.map(cardsBlocoHtml).join('')}</div>`;
-      continue;
-    }
-    i++;
-    const titulo = b.secao ? `<div class="tvp-secao">${esc(b.secao)}</div>` : '';
-    if(b.tabelas) html += titulo + `<div class="tvp-tabelas">${b.tabelas.map(t=> t.barras ? `
+      </div>`).join('')}</div>`;
+    if(b.tabelas) return titulo + `<div class="tvp-tabelas">${b.tabelas.map(t=> t.barras ? `
       <div class="tvp-tabela"><h4>${esc(t.titulo)}</h4>
         ${t.barras.length ? `<div class="tvp-barras">${t.barras.map(x=>{ const tot=x.partes.reduce((a,p)=>a+p.v,0); const max=Math.max(1,...t.barras.map(y=>y.partes.reduce((a,p)=>a+p.v,0)));
           return `<div class="tvp-barra"><b>${tot}</b><div class="tvp-barra-col" style="height:${Math.round(100*tot/max)}%;">${x.partes.map(p=>`<i style="flex:${p.v}; background:${p.cor};"></i>`).join('')}</div><span>${esc(x.rotulo)}</span></div>`; }).join('')}</div>
@@ -1642,8 +1623,8 @@ function tvpPaginaHtml(blocos){
           <tbody>${t.linhas.map(l=>`<tr>${l.map((v,i)=>`<td${(t.numericas||[]).includes(i)?' class="num"':''}>${esc(String(v))}</td>`).join('')}</tr>`).join('')}</tbody></table>`
           : `<div class="tvp-vazio">${esc(t.vazio||'—')}</div>`}
       </div>`).join('')}</div>`;
-  }
-  return html;
+    return '';
+  }).join('');
 }
 // 2ª página: Painel de atendimento do CRM (mesmos números da aba 📊 Painel, período "hoje").
 // Envio de documentos por setor (TV e painel do CRM): monta os blocos a partir de /central-envio/painel
