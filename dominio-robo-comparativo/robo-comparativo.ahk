@@ -44,6 +44,9 @@ CAMPO_NOME_X:= 250,  CAMPO_NOME_Y:= 388
 PER_INI_X   := 1090, PER_INI_Y   := 721    ; campo Inicial
 PER_FIM_X   := 1333, PER_FIM_Y   := 724    ; campo Final
 
+; Centro do dialogo "Sem dados para emitir !" (clique pra dar FOCO de teclado antes do Enter/OK)
+SEMDADOS_X  := 1286, SEMDADOS_Y  := 796
+
 ; SELECAO DE MODULO (garante 100% que esta no modulo certo antes de rodar).
 ; 1) clica o logo DOMINIO (abre o menu de modulos); 2) clica o item do modulo.
 ; Pros PROXIMOS robos, so trocar MODULO_X/MODULO_Y pro item do modulo dele (Fiscal, Folha...).
@@ -61,7 +64,7 @@ T_MEDIO  := 2000
 T_LONGO  := 4000
 T_GERAR_PDF      := 15000
 T_ENTRE_EMPRESAS := 15000
-T_RENDER_TIMEOUT := 60000
+T_RENDER_TIMEOUT := 30000                  ; se nao renderizar em 30s, trata como sem dados / tela nao abriu
 
 LOGFILE := A_ScriptDir "\robo-comparativo.log"
 
@@ -219,8 +222,9 @@ ClicarEDigitarPeriodo(x, y, mmAAAA) {
     }
 }
 
-; Retorna: "ok" (relatorio renderizou), "sem_dados" (dialogo "Sem dados para emitir")
-; ou "timeout" (nada abriu - ex.: Favoritos nao abriu a tela do Comparativo).
+; Retorna "ok" se o relatorio renderizou (texto escuro na area). Se nao renderizar dentro
+; do tempo, retorna "sem_dados" (cobre "Sem dados para emitir" E Favoritos nao abrir a tela)
+; -> nos dois casos o robo da OK/Esc e pula pra proxima. Detecta o dialogo cinza cedo (atalho).
 EsperarRender() {
     global T_RENDER_TIMEOUT
     inicio := A_TickCount
@@ -230,14 +234,13 @@ EsperarRender() {
             Sleep 1500
             return "ok"
         }
-        ; dialogo "Sem dados para emitir" (modal cinza claro no centro, area do relatorio em branco)?
-        if (PixelSearch(&dx, &dy, 1150, 720, 1420, 880, 0xF0F0F0, 12)) {
-            Sleep 400
+        ; atalho: faixa cinza (rodape do botao) do dialogo "Sem dados para emitir"
+        if (PixelSearch(&dx, &dy, 1180, 835, 1395, 872, 0xF0F0F0, 10)) {
             return "sem_dados"
         }
         Sleep 800
     }
-    return "timeout"
+    return "sem_dados"
 }
 
 DigitarCampo(digitos) {
@@ -326,7 +329,7 @@ SelecionarModulo() {
 }
 
 ProcessarEmpresa(codigo, compIni, compFim) {
-    global T_CURTO, T_MEDIO, T_LONGO, T_GERAR_PDF, CAMPO_NOME_X, CAMPO_NOME_Y
+    global T_CURTO, T_MEDIO, T_LONGO, T_GERAR_PDF, CAMPO_NOME_X, CAMPO_NOME_Y, SEMDADOS_X, SEMDADOS_Y
     Logar("Empresa " . codigo . ": iniciando")
     FecharErroSistema()
     Sleep 500
@@ -342,15 +345,18 @@ ProcessarEmpresa(codigo, compIni, compFim) {
     Logar("  [4] apos gerar: " . st)
     if (st != "ok") {
         ; "Sem dados para emitir" OU Favoritos nao abriu a tela do Comparativo.
-        ; Sequencia: OK -> 5s -> Esc (fecha a tela) -> 5s -> confirma "Deseja cancelar?" (Yes) -> proxima.
+        ; Streaming: a tecla so pega com FOCO -> clica no dialogo antes do Enter (OK).
+        ; Sequencia: clica+OK -> 5s -> Esc, Esc (volta pra tela zerada) -> proxima empresa.
         Logar("Empresa " . codigo . ": sem relatorio (" . st . ") - OK/Esc e proxima")
-        Send "{Enter}"                ; OK no "Sem dados para emitir!"
-        Sleep 5000                    ; espera 5s
-        Send "{Esc}"                  ; fecha a tela do Comparativo (abre "Deseja cancelar?")
-        Sleep 5000                    ; espera mais 5s
-        Send "{Enter}"                ; Yes no "Deseja cancelar?" (botao em foco) -> volta pra tela principal
+        Click(SEMDADOS_X . " " . SEMDADOS_Y)   ; foca o dialogo "Sem dados para emitir"
+        Sleep 600
+        Send "{Enter}"                          ; OK
+        Sleep 5000                              ; espera 5s
+        Send "{Esc}"
+        Sleep T_CURTO
+        Send "{Esc}"                            ; Esc x2 -> tela zerada
         Sleep 2000
-        LimparTelas()                 ; garante tela limpa antes da proxima empresa
+        LimparTelas()                           ; garante tela limpa antes da proxima empresa
         return "pular"
     }
     ; --- Salvar em PDF ---
