@@ -1246,6 +1246,16 @@ sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_whatsapp_mensagens_origem ON whatsap
 // (MAX/MIN numero_dps por empresa+série, no caminho crítico de CADA emissão) escaneava a tabela inteira.
 sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_nfse_emissoes_empresa_serie ON nfse_emissoes(empresa_id, serie);`);
 sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_nfse_emissoes_agendamento_competencia ON nfse_emissoes(agendamento_item_id, competencia);`);
+// Continuação da varredura (Financeiro, Checklist, Integra Contador): mesmo padrão — empresa_id é o
+// filtro de toda listagem desses módulos e não tinha nenhum índice de apoio.
+sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_financeiro_pagar_empresa ON financeiro_pagar(empresa_id);`);
+sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_financeiro_receber_empresa ON financeiro_receber(empresa_id);`);
+sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_integracontador_documentos_empresa ON integracontador_documentos(empresa_id, tipo, periodo_apuracao);`);
+sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_integracontador_caixapostal_empresa ON integracontador_caixapostal_mensagens(empresa_id);`);
+// checklist_reaberturas: consultada por periodo_id toda vez que um checklist é renderizado (na tela e
+// na rotina automática de cobrança), sem índice nenhum.
+sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_checklist_reaberturas_periodo ON checklist_reaberturas(periodo_id, resolvido);`);
+sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_contratos_empresa ON contratos(empresa_id);`);
 
 // Migração: bancos criados antes de 2026-08-18 têm envio_documentos com UNIQUE(periodo_id) e sem
 // a coluna observacao — reconstrói a tabela preservando os documentos já enviados, sem essa trava
