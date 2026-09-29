@@ -1233,6 +1233,19 @@ sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_dominio_dados_empresa ON dominio_dad
 sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_envio_documentos_periodo ON envio_documentos(periodo_id);`);
 sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_dominio_rel_import_status ON dominio_relatorios_importados(escritorio_id, status);`);
 sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_email_extratos_status ON email_extratos_importados(escritorio_id, status);`);
+// Achado numa varredura de performance (2026-09-29): a Busca de XML roda uma sub-consulta "essa nota
+// foi cancelada?" (por chave_acesso) PRA CADA linha da listagem, até 500 vezes por busca — sem
+// índice, cada uma escaneava a tabela inteira. empresa_id sozinho já é rápido (cobre o UNIQUE(empresa_id,
+// fonte, nsu)), mas escritorio_id/chave_acesso não tinham apoio nenhum.
+sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_nfe_documentos_escritorio_chave ON nfe_documentos(escritorio_id, chave_acesso);`);
+sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_nfe_documentos_empresa_chave ON nfe_documentos(empresa_id, chave_acesso);`);
+// Mesma varredura: status de WhatsApp por documento (usado nas listas de Envio de Documentos e NFS-e)
+// busca vários ids de uma vez em origem_tabela+origem_id, sem índice.
+sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_whatsapp_mensagens_origem ON whatsapp_mensagens(origem_tabela, origem_id);`);
+// nfse_emissoes não tinha NENHUM índice além do id — toda listagem por empresa e toda numeração
+// (MAX/MIN numero_dps por empresa+série, no caminho crítico de CADA emissão) escaneava a tabela inteira.
+sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_nfse_emissoes_empresa_serie ON nfse_emissoes(empresa_id, serie);`);
+sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_nfse_emissoes_agendamento_competencia ON nfse_emissoes(agendamento_item_id, competencia);`);
 
 // Migração: bancos criados antes de 2026-08-18 têm envio_documentos com UNIQUE(periodo_id) e sem
 // a coluna observacao — reconstrói a tabela preservando os documentos já enviados, sem essa trava
