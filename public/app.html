@@ -11698,6 +11698,7 @@ function renderCfgDomRelatorios(box, sub, dados){
       <div class="row" style="margin-top:8px;">
         <button class="btn primary" id="btnRoboCompSalvar" disabled>Salvar</button>
         <button class="btn" id="btnRoboCompExecutar">Executar agora</button>
+        <button class="btn" id="btnRoboCompParar" style="background:#c0392b; border-color:#c0392b; color:#fff;" title="Freia o robô imediatamente (aborta a execução em andamento e desliga o automático)">⛔ Parar robô</button>
         ${STATE.user.perfil==='Administrador'?'<a class="btn" href="/api/empresas/comparativo-movimento/robo" download>⬇ Baixar robô (instalar em outro servidor)</a>':''}
       </div>
       <div id="roboCompProgresso" style="margin-top:12px;"></div>
@@ -11793,7 +11794,8 @@ function renderCfgDomRelatorios(box, sub, dados){
       if(st){
         const on = e.agenteOnline ? '<span class="tag ok">Robô online</span>' : '<span class="tag bad">Robô offline</span>';
         const ult = e.ultimaExecEm ? ' · Última execução: '+fmtDateHora(e.ultimaExecEm) : '';
-        st.innerHTML = on + (e.rodando?' <span class="tag">Rodando…</span>':'') + ult;
+        const parando = e.pararPendente ? ' <span class="tag bad">Parando…</span>' : '';
+        st.innerHTML = on + (e.rodando?' <span class="tag">Rodando…</span>':'') + parando + ult;
       }
       const prog = $('roboCompProgresso');
       if(prog){
@@ -11824,6 +11826,13 @@ function renderCfgDomRelatorios(box, sub, dados){
       try{ const r = await api('/comparativo-robo/executar', { method:'POST', body:{ periodoIni:$('roboCompPerIni').value.trim(), periodoFim:$('roboCompPerFim').value.trim() } }); toast(r.agenteOnline?'Rodando agora…':'Pedido enviado — o robô vai pegar quando estiver online.','ok'); }
       catch(e){ toast(e.message,'err'); }
       finally{ setTimeout(()=>{ b.disabled = false; }, 1500); carregar(); }
+    });
+    $('btnRoboCompParar')?.addEventListener('click', async (ev)=>{
+      if(!confirmar('Parar o robô agora? Ele aborta a execução atual (após terminar a empresa em andamento) e desliga o automático.')) return;
+      const b = ev.target; b.disabled = true;
+      try{ await api('/comparativo-robo/parar', { method:'POST' }); toast('Freio acionado — o robô vai parar na próxima empresa.','ok'); }
+      catch(e){ toast(e.message,'err'); }
+      finally{ setTimeout(()=>{ b.disabled = false; }, 1500); if($('roboCompLigado')) $('roboCompLigado').checked = false; carregar(); }
     });
     try{ clearInterval(window.__roboCompPoll); }catch(e){}
     window.__roboCompPoll = setInterval(()=>{ if(document.getElementById('roboCompStatus')) carregar(); else { try{ clearInterval(window.__roboCompPoll); }catch(e){} } }, 3000);

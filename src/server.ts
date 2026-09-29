@@ -4594,6 +4594,8 @@ sqlite.exec(`
   const colsRobo = sqlite.prepare(`PRAGMA table_info(comparativo_robo_estado)`).all() as any[];
   if (!colsRobo.some((c) => c.name === "periodo_ini")) sqlite.exec(`ALTER TABLE comparativo_robo_estado ADD COLUMN periodo_ini TEXT`);
   if (!colsRobo.some((c) => c.name === "periodo_fim")) sqlite.exec(`ALTER TABLE comparativo_robo_estado ADD COLUMN periodo_fim TEXT`);
+  // Freio de emergência: setado ao clicar "Parar robô"; o agente lê no comando e aborta entre as empresas.
+  if (!colsRobo.some((c) => c.name === "parar_em")) sqlite.exec(`ALTER TABLE comparativo_robo_estado ADD COLUMN parar_em TEXT`);
 }
 function garantirRoboEstado(escritorioId: number) {
   sqlite.prepare(`INSERT OR IGNORE INTO comparativo_robo_estado (escritorio_id) VALUES (?)`).run(escritorioId);
@@ -4651,6 +4653,7 @@ app.get("/api/dominio-agent/comparativo-comando", requireDominioAgent, (_req, re
   const c = sqlite.prepare(`
     SELECT ligado, intervalo_min AS intervaloMin, run_now_em, ultima_exec_em, periodo_ini AS periodoIni, periodo_fim AS periodoFim,
       (run_now_em IS NOT NULL) AS runNow,
+      (parar_em IS NOT NULL) AS parar,
       (ligado = 1 AND (ultima_exec_em IS NULL OR datetime(ultima_exec_em, '+' || intervalo_min || ' minutes') <= datetime('now'))) AS devePorTempo
     FROM comparativo_robo_estado WHERE escritorio_id = 1
   `).get() as any;
@@ -4658,6 +4661,7 @@ app.get("/api/dominio-agent/comparativo-comando", requireDominioAgent, (_req, re
   const deveRodar = !!c.runNow || !!c.devePorTempo;
   res.json({
     deveRodar, motivo: c.runNow ? "manual" : (c.devePorTempo ? "automatico" : null),
+    parar: !!c.parar,
     ligado: !!c.ligado, intervaloMin: c.intervaloMin,
     periodoIni: c.periodoIni || pad.ini, periodoFim: c.periodoFim || pad.fim,
   });
@@ -4667,13 +4671,16 @@ app.post("/api/dominio-agent/comparativo-progresso", requireDominioAgent, (req, 
   garantirRoboEstado(1);
   const b = req.body || {};
   if (b.iniciando) {
-    sqlite.prepare(`UPDATE comparativo_robo_estado SET run_now_em = NULL, ultima_exec_em = datetime('now') WHERE escritorio_id = 1`).run();
+    // Começou uma execução nova: limpa o "executar agora" e um eventual freio pendente (não mata a nova run).
+    sqlite.prepare(`UPDATE comparativo_robo_estado SET run_now_em = NULL, parar_em = NULL, ultima_exec_em = datetime('now') WHERE escritorio_id = 1`).run();
   }
   sqlite.prepare(`
     UPDATE comparativo_robo_estado
        SET prog_rodando = ?, prog_total = ?, prog_feitas = ?, prog_atual = ?, prog_em = datetime('now')
      WHERE escritorio_id = 1
   `).run(b.rodando ? 1 : 0, Number(b.total) || 0, Number(b.feitas) || 0, b.atual ? String(b.atual) : null);
+  // Terminou/parou (rodando=false): reseta o freio pra não afetar a próxima execução.
+  if (!b.rodando) sqlite.prepare(`UPDATE comparativo_robo_estado SET parar_em = NULL WHERE escritorio_id = 1`).run();
   res.json({ ok: true });
 });
 // ---- Controle do robô pela tela (Configurações › Relatórios) ----
@@ -4684,6 +4691,7 @@ app.get("/api/comparativo-robo/estado", blockCliente, requirePermissao("configur
       periodo_ini AS periodoIni, periodo_fim AS periodoFim,
       prog_rodando AS rodando, prog_total AS total, prog_feitas AS feitas, prog_atual AS atual, prog_em AS progEm,
       agente_visto_em AS agenteVistoEm,
+      (parar_em IS NOT NULL) AS pararPendente,
       (agente_visto_em IS NOT NULL AND datetime(agente_visto_em, '+40 seconds') >= datetime('now')) AS agenteOnline
     FROM comparativo_robo_estado WHERE escritorio_id = 1
   `).get() as any;
@@ -4692,7 +4700,7 @@ app.get("/api/comparativo-robo/estado", blockCliente, requirePermissao("configur
     ligado: !!c.ligado, intervaloMin: c.intervaloMin, ultimaExecEm: c.ultimaExecEm,
     periodoIni: c.periodoIni, periodoFim: c.periodoFim, periodoPadraoIni: pad.ini, periodoPadraoFim: pad.fim,
     rodando: !!c.rodando, total: c.total, feitas: c.feitas, atual: c.atual, progEm: c.progEm,
-    runNowPendente: !!c.runNowEm, agenteOnline: !!c.agenteOnline, agenteVistoEm: c.agenteVistoEm,
+    runNowPendente: !!c.runNowEm, pararPendente: !!c.pararPendente, agenteOnline: !!c.agenteOnline, agenteVistoEm: c.agenteVistoEm,
   });
 });
 app.post("/api/comparativo-robo/config", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
@@ -4713,8 +4721,16 @@ app.post("/api/comparativo-robo/executar", blockCliente, requirePermissao("confi
   const pFim = comparativoValidaPeriodo(req.body?.periodoFim);
   if (pIni && pFim) sqlite.prepare(`UPDATE comparativo_robo_estado SET periodo_ini = ?, periodo_fim = ? WHERE escritorio_id = 1`).run(pIni, pFim);
   const online = sqlite.prepare(`SELECT (agente_visto_em IS NOT NULL AND datetime(agente_visto_em, '+40 seconds') >= datetime('now')) AS agenteOn FROM comparativo_robo_estado WHERE escritorio_id = 1`).get() as any;
-  sqlite.prepare(`UPDATE comparativo_robo_estado SET run_now_em = datetime('now') WHERE escritorio_id = 1`).run();
+  // Dispara e limpa um eventual freio pendente (senão a nova execução já nasceria "parada").
+  sqlite.prepare(`UPDATE comparativo_robo_estado SET run_now_em = datetime('now'), parar_em = NULL WHERE escritorio_id = 1`).run();
   res.json({ ok: true, agenteOnline: !!online.agenteOn });
+});
+// FREIO DE EMERGÊNCIA: marca "parar". O agente lê no /comparativo-comando e aborta ENTRE as empresas.
+// Também desliga o automático e cancela um "executar agora" pendente, pra não reiniciar sozinho.
+app.post("/api/comparativo-robo/parar", blockCliente, requirePermissao("configuracoes", "editar"), (_req, res) => {
+  garantirRoboEstado(1);
+  sqlite.prepare(`UPDATE comparativo_robo_estado SET parar_em = datetime('now'), ligado = 0, run_now_em = NULL WHERE escritorio_id = 1`).run();
+  res.json({ ok: true });
 });
 app.get("/api/empresas/comparativo-movimento/log", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
   const rows = sqlite

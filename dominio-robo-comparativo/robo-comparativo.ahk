@@ -424,6 +424,12 @@ ExtrairStr(body, chave) {
     return ""
 }
 
+; Pergunta ao site se o usuario clicou "Parar robo" (freio de emergencia).
+DevePararSite() {
+    body := HttpReq("GET", "/api/dominio-agent/comparativo-comando")
+    return InStr(body, '"parar":true') ? true : false
+}
+
 ReportarProgresso(rodando, total, feitas, atual, iniciando) {
     atualJson := atual != "" ? '"' . JsonEscape(atual) . '"' : "null"
     json := '{"rodando":' . (rodando ? "true" : "false") . ',"total":' . total . ',"feitas":' . feitas
@@ -489,6 +495,10 @@ RodarCiclo(compIni, compFim) {
     resultados := []
     feitas := 0
     for e in empresas {
+        if (DevePararSite()) {           ; FREIO: usuario clicou "Parar robo" no site
+            Logar("=== PARADO pelo site (freio de emergencia) apos " . feitas . "/" . total . " ===")
+            break
+        }
         if (feitas > 0)
             Sleep T_ENTRE_EMPRESAS
         ReportarProgresso(true, total, feitas, e.codigo . " - " . e.nome, false)
