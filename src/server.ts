@@ -1245,7 +1245,6 @@ sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_whatsapp_mensagens_origem ON whatsap
 // nfse_emissoes não tinha NENHUM índice além do id — toda listagem por empresa e toda numeração
 // (MAX/MIN numero_dps por empresa+série, no caminho crítico de CADA emissão) escaneava a tabela inteira.
 sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_nfse_emissoes_empresa_serie ON nfse_emissoes(empresa_id, serie);`);
-sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_nfse_emissoes_agendamento_competencia ON nfse_emissoes(agendamento_item_id, competencia);`);
 // Continuação da varredura (Financeiro, Checklist, Integra Contador): mesmo padrão — empresa_id é o
 // filtro de toda listagem desses módulos e não tinha nenhum índice de apoio.
 sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_financeiro_pagar_empresa ON financeiro_pagar(empresa_id);`);
@@ -1978,6 +1977,8 @@ sqlite.exec(`DROP TABLE IF EXISTS fgts_sync_jobs`);
   if (!colsEmissoes.some((c) => c.name === "agendamento_item_id")) {
     sqlite.exec(`ALTER TABLE nfse_emissoes ADD COLUMN agendamento_item_id INTEGER REFERENCES nfse_agendamento_itens(id)`);
   }
+  // (a coluna acima só existe a partir daqui — o índice tem que vir depois do ALTER TABLE, não antes)
+  sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_nfse_emissoes_agendamento_competencia ON nfse_emissoes(agendamento_item_id, competencia);`);
   const colsLog = sqlite.prepare(`PRAGMA table_info(nfse_agendamento_log)`).all() as any[];
   if (!colsLog.some((c) => c.name === "item_id")) {
     sqlite.exec(`ALTER TABLE nfse_agendamento_log ADD COLUMN item_id INTEGER REFERENCES nfse_agendamento_itens(id)`);
