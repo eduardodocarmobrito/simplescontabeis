@@ -318,9 +318,15 @@ ProcessarEmpresa(codigo, compIni, compFim) {
     FecharErroSistema()
     Sleep 500
     LimparTelas()
+    Click("700 400")                 ; clica no app (canvas vazio) pra dar FOCO DE TECLADO (streaming)
+    Sleep 500
+    Logar("  [1] apos LimparTelas+foco: " . ListarJanelasDominio())
     TrocarEmpresa(codigo)
+    Logar("  [2] apos F8/troca empresa: " . ListarJanelasDominio())
     AbrirComparativo()
+    Logar("  [3] apos Favoritos/Comparativo: " . ListarJanelasDominio())
     PreencherEGerar(compIni, compFim)
+    Logar("  [4] apos gerar (previa)")
     ; --- Salvar em PDF ---
     Sleep T_MEDIO
     Click("700 260")
