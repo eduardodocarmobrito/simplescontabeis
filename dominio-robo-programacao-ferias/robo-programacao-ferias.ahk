@@ -61,7 +61,7 @@ T_MEDIO  := 2000
 T_LONGO  := 4000
 T_GERAR_PDF      := 15000
 T_ENTRE_EMPRESAS := 15000
-T_RENDER_TIMEOUT := 45000                  ; espera o relatorio renderizar ate 45s; senao trata como sem dados
+T_RENDER_TIMEOUT := 90000                  ; espera o relatorio renderizar ate 90s; senao trata como sem dados
 
 LOGFILE := A_ScriptDir "\robo-programacao-ferias.log"
 
@@ -232,7 +232,7 @@ EsperarRender() {
     global T_RENDER_TIMEOUT
     inicio := A_TickCount
     while (A_TickCount - inicio < T_RENDER_TIMEOUT) {
-        if (PixelSearch(&px, &py, 130, 150, 1600, 520, 0x000000, 70)) {
+        if (PixelSearch(&px, &py, 130, 150, 1600, 900, 0x000000, 70)) {
             Sleep 1500
             return "ok"
         }
@@ -240,7 +240,7 @@ EsperarRender() {
         ; e so se persistir ~1.2s e o relatorio continuar sem render.
         if (DialogoSemDados()) {
             Sleep 1200
-            if (DialogoSemDados() && !PixelSearch(&px2, &py2, 130, 150, 1600, 520, 0x000000, 70)) {
+            if (DialogoSemDados() && !PixelSearch(&px2, &py2, 130, 150, 1600, 900, 0x000000, 70)) {
                 Logar("  'Sem dados' (Aviso) detectado (pulo rapido)")
                 return "sem_dados"
             }
@@ -408,7 +408,13 @@ ProcessarEmpresaVerificado(codigo) {
             }
             Sleep 2000
         }
-        Logar("Empresa " . codigo . ": PDF NAO apareceu (tentativa " . A_Index . "/" . MAX_TENTATIVAS . ") - resetando e repetindo")
+        ; Diagnostico: lista o que TEM na pasta com esse codigo (nome/pasta errado ou nao salvou?).
+        naPasta := ""
+        try {
+            Loop Files, PASTA_LOCAL . "\*" . codigo . "*.pdf"
+                naPasta .= A_LoopFileName . "; "
+        }
+        Logar("Empresa " . codigo . ": PDF NAO apareceu (tentativa " . A_Index . "/" . MAX_TENTATIVAS . ") - esperava '" . MontarNome(codigo) . "' - na pasta c/ codigo: " . (naPasta != "" ? naPasta : "(nenhum)"))
         LimparTelas()
         Sleep T_MEDIO
     }

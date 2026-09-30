@@ -64,7 +64,7 @@ T_MEDIO  := 2000
 T_LONGO  := 4000
 T_GERAR_PDF      := 15000
 T_ENTRE_EMPRESAS := 15000
-T_RENDER_TIMEOUT := 45000                  ; espera o relatorio renderizar ate 45s; senao trata como sem dados
+T_RENDER_TIMEOUT := 90000                  ; espera o relatorio renderizar ate 90s; senao trata como sem dados
 
 LOGFILE := A_ScriptDir "\robo-comparativo.log"
 
@@ -247,7 +247,7 @@ EsperarRender() {
     global T_RENDER_TIMEOUT
     inicio := A_TickCount
     while (A_TickCount - inicio < T_RENDER_TIMEOUT) {
-        if (PixelSearch(&px, &py, 130, 150, 1600, 520, 0x000000, 70)) {
+        if (PixelSearch(&px, &py, 130, 150, 1600, 900, 0x000000, 70)) {
             Sleep 1500
             return "ok"
         }
@@ -255,7 +255,7 @@ EsperarRender() {
         ; e so se persistir ~1.2s e o relatorio continuar sem render.
         if (DialogoSemDados()) {
             Sleep 1200
-            if (DialogoSemDados() && !PixelSearch(&px2, &py2, 130, 150, 1600, 520, 0x000000, 70)) {
+            if (DialogoSemDados() && !PixelSearch(&px2, &py2, 130, 150, 1600, 900, 0x000000, 70)) {
                 Logar("  'Sem dados' (Aviso) detectado (pulo rapido)")
                 return "sem_dados"
             }
@@ -293,24 +293,24 @@ LimparCampoNome() {
 
 NavegarAtePasta() {
     global THISPC_X, THISPC_Y
-    Click(THISPC_X . " " . THISPC_Y)
-    Sleep 3000
-    Send "+{Tab}"
-    Sleep 2500
+    Click(THISPC_X . " " . THISPC_Y)   ; "This PC" (barra esquerda)
+    Sleep 4000                         ; deixa as pastas/drives carregarem
+    Send "+{Tab}"                      ; foca a lista
+    Sleep 4000
     SelecionarPastaPorNome("client g")
     SelecionarPastaPorNome("meu drive")
     SelecionarPastaPorNome("relatorios dominio")
 }
 
 SelecionarPastaPorNome(nome) {
-    Sleep 800
+    Sleep 1200
     for ch in StrSplit(nome) {
         SendText ch
-        Sleep 70
+        Sleep 80
     }
-    Sleep 900
+    Sleep 1200
     Send "{Enter}"
-    Sleep 3000
+    Sleep 4000                         ; a pasta pode demorar a abrir
 }
 
 FecharPrevia() {
@@ -387,10 +387,10 @@ ProcessarEmpresa(codigo, compIni, compFim) {
     Click("700 260")
     Sleep T_CURTO
     Send "^d"
-    Sleep T_LONGO
+    Sleep 5000                        ; espera a tela "Salvar em PDF" carregar antes de mexer
     if !WinExist("Salvar em PDF") {   ; so manda Enter (OK no erro) se houve erro de caminho
         Send "{Enter}"
-        Sleep T_LONGO
+        Sleep 5000
     }
     NavegarAtePasta()
     Sleep T_MEDIO
