@@ -1,0 +1,51 @@
+ROBO "PROGRAMACAO DE FERIAS" - DOMINIO FOLHA (modo AGENTE)
+==========================================================
+
+O QUE ELE FAZ
+-------------
+Fica rodando no servidor Windows onde o Dominio esta instalado e, sozinho,
+PERGUNTA AO SITE a cada 10 segundos se deve rodar. Ele roda quando:
+  - Voce clica "Executar agora" em Configuracoes > Relatorios > Robo da
+    Programacao de Ferias; ou
+  - O modo automatico esta ligado e passou o intervalo configurado (ex.: 15 min).
+
+Ao rodar, ele puxa do site as empresas marcadas (Empresas > Editar > "Exportar
+Programacao de Ferias", com o Codigo do Dominio preenchido), gera a Programacao
+de Ferias de cada uma no modulo FOLHA do Dominio, salva o PDF na pasta do Google
+Drive (Relatorios Dominio) e REPORTA O PROGRESSO pro site (barra empresa a
+empresa). A tela "Programacao de Ferias" em Relatorios le esses PDFs.
+
+DIFERENCAS PRO ROBO DO COMPARATIVO
+----------------------------------
+- Modulo: FOLHA (nao Contabilidade).
+- Favoritos: "Programacao de Ferias" (2o item do submenu).
+- Tela de parametros: so clica OK (a "Data base para o calculo" ja vem com a
+  data de hoje por padrao). Sem periodo MM/AAAA.
+- Nome do arquivo: Programacao_de_Ferias_<codigo>_<DDMMAAAA de hoje>.pdf
+
+INSTALACAO (1x)
+---------------
+1) Instale o AutoHotkey v2 (gratis): https://www.autohotkey.com
+2) Abra o robo-programacao-ferias.ahk num editor e cole, na linha AGENTE_TOKEN,
+   o token do agente do Dominio (mesmo do site / variavel DOMINIO_AGENT_TOKEN).
+3) Deixe estes PRE-REQUISITOS prontos no Dominio, 1x na mao:
+   - Dominio ABERTO e LOGADO.
+   - Tela de troca de empresa (F8) no modo "Codigo".
+   - "Programacao de Ferias" adicionado ao menu FAVORITOS (modulo Folha).
+4) IMPORTANTE: enquanto o robo trabalha, NAO pode ter outra janela cobrindo o
+   canto SUPERIOR ESQUERDO da tela - e onde a janela "Salvar em PDF" abre.
+
+COMO RODAR
+----------
+- Manual: duplo-clique no robo-programacao-ferias.ahk. Controle tudo pelo site.
+- Para SAIR: Ctrl+Alt+Q.
+
+INICIAR SOZINHO NO LOGIN
+------------------------
+Rode o instalar-agendador.bat (como Administrador) ou crie a tarefa no
+Agendador apontando pra:
+    C:\Program Files\AutoHotkey\v2\AutoHotkey64.exe
+    "C:\caminho\para\robo-programacao-ferias.ahk"
+
+OBS: pode rodar junto com o robo do Comparativo (sao dois agentes, cada um
+pergunta ao site pela sua propria fila).

@@ -6,16 +6,18 @@ CoordMode "Pixel", "Screen"
 CoordMode "Mouse", "Screen"
 
 ; ============================================================================
-;  AGENTE "COMPARATIVO DE MOVIMENTO" - Dominio Contabilidade Fiscal (streaming)
+;  AGENTE "PROGRAMACAO DE FERIAS" - Dominio Folha (streaming)
 ;
 ;  Fica rodando sozinho e PERGUNTA AO SITE a cada 10s se deve rodar (manual ou
 ;  automatico por intervalo). Ao rodar, puxa as empresas marcadas no site,
 ;  processa uma a uma e REPORTA O PROGRESSO (barra na tela do site).
 ;
-;  PRE-REQUISITOS: Dominio ABERTO e LOGADO; F8 em modo "Codigo"; "Comparativo de
-;  Movimento" no menu FAVORITOS; nenhuma janela cobrindo o canto sup. esquerdo.
+;  PRE-REQUISITOS: Dominio ABERTO e LOGADO; F8 em modo "Codigo"; "Programacao de
+;  Ferias" no menu FAVORITOS (modulo Folha); nada cobrindo o canto sup. esquerdo.
 ;
-;  Iniciar automatico no login: Agendador de Tarefas (ver LEIA-ME).
+;  Diferencas vs. o robo do Comparativo: modulo FOLHA; Favoritos = 2o item;
+;  tela de parametros so precisa clicar OK (Data base = hoje, padrao); sem periodo.
+;
 ;  SAIR: Ctrl+Alt+Q.
 ; ============================================================================
 
@@ -25,9 +27,7 @@ AGENTE_TOKEN := "COLE_AQUI_O_TOKEN_DO_AGENTE"
 
 POLL_SEGUNDOS := 10       ; de quanto em quanto tempo pergunta ao site
 
-DIGITAR_PERIODO := true   ; digita o periodo que o site mandar (padrao ou customizado)
-; Re-selecionar o modulo Contabilidade a cada execucao? false = NAO (o app ja fica na
-; Contabilidade; re-selecionar recarrega o modulo e quebrava o F8/Favoritos logo depois).
+; Re-selecionar o modulo Folha a cada execucao? true = garante que esta no modulo certo.
 SELECIONAR_MODULO := true
 FAV_KEY      := "f"       ; letra do menu FAVORITOS
 DOMINIO_WIN  := "ahk_exe AppController.exe"
@@ -40,24 +40,21 @@ MAX_TENTATIVAS := 3       ; quantas vezes tenta cada empresa se o PDF nao aparec
 THISPC_X    := 52,   THISPC_Y    := 265
 CAMPO_NOME_X:= 250,  CAMPO_NOME_Y:= 388
 
-; Coordenadas de TELA dos campos de periodo no dialogo "Comparativo de Movimento"
-PER_INI_X   := 1090, PER_INI_Y   := 721    ; campo Inicial
-PER_FIM_X   := 1333, PER_FIM_Y   := 724    ; campo Final
+; Botao OK da tela "Programacao de Ferias" (gera o relatorio). Data base = hoje (padrao).
+; (Fica na COLUNA DIREITA da janela; nao confundir com o campo de data, que fica ao centro.)
+FERIAS_OK_X := 1475, FERIAS_OK_Y := 583
 
 ; Centro do dialogo "Sem dados para emitir !" (clique pra dar FOCO de teclado antes do Enter/OK)
 SEMDADOS_X  := 1286, SEMDADOS_Y  := 796
 
 ; SELECAO DE MODULO (garante 100% que esta no modulo certo antes de rodar).
-; 1) clica o logo DOMINIO (abre o menu de modulos); 2) clica o item do modulo.
-; Pros PROXIMOS robos, so trocar MODULO_X/MODULO_Y pro item do modulo dele (Fiscal, Folha...).
+; 1) clica o logo DOMINIO (abre o menu de modulos); 2) clica o item do modulo FOLHA.
 LOGO_X      := 40,   LOGO_Y      := 74     ; logo "DOMINIO" (abre menu de modulos)
-MODULO_X    := 75,   MODULO_Y    := 308    ; item "Contabilidade" no menu
+MODULO_X    := 75,   MODULO_Y    := 192    ; item "Folha" no menu de modulos
 T_MODULO_CARGA := 10000                    ; espera o modulo carregar (~10s)
 
-; Menu FAVORITOS (barra de cima) e o item "Comparativo de Movimentos" no submenu.
-; >>> AJUSTAR com o Window Spy (Screen X,Y): <<<
-FAVORITOS_X := 576,  FAVORITOS_Y := 52     ; menu "Favoritos"
-COMPMOV_X   := 620,  COMPMOV_Y   := 90     ; item "Comparativo de Movimentos"
+; Favoritos: "Programacao de Ferias" e o 2o item do submenu (Down x2 -> Enter).
+FAV_DOWNS   := 2
 
 T_CURTO  := 700
 T_MEDIO  := 2000
@@ -66,7 +63,7 @@ T_GERAR_PDF      := 15000
 T_ENTRE_EMPRESAS := 15000
 T_RENDER_TIMEOUT := 45000                  ; espera o relatorio renderizar ate 45s; senao trata como sem dados
 
-LOGFILE := A_ScriptDir "\robo-comparativo.log"
+LOGFILE := A_ScriptDir "\robo-programacao-ferias.log"
 
 ^!q::ExitApp
 
@@ -96,25 +93,12 @@ JsonEscape(s) {
 }
 
 ; ------------------------------------------------------------------- FUNCOES
-CalcularPeriodo(&compIni, &compFim) {
-    anoAtual := Integer(A_YYYY)
-    mes := Integer(A_MM)
-    anoFim := anoAtual
-    mesFim := mes - 1
-    if (mesFim = 0) {
-        mesFim := 12
-        anoFim := anoAtual - 1
-    }
-    compIni := "01/" . anoAtual
-    compFim := Format("{:02}/{}", mesFim, anoFim)
-}
-
 Logar(txt) {
     global LOGFILE
     try FileAppend(FormatTime(A_Now, "yyyy-MM-dd HH:mm:ss") . "  " . txt . "`n", LOGFILE)
 }
 
-; Lista as janelas do Dominio com titulo/classe/tamanho/ativa (diagnostico).
+; Lista as janelas do Dominio com titulo/tamanho/ativa (diagnostico).
 ListarJanelasDominio() {
     s := ""
     a := WinExist("A")
@@ -128,8 +112,8 @@ ListarJanelasDominio() {
 
 ; O dialogo "Sem dados para emitir!" (MsgBox de info, titulo "Aviso") esta aberto?
 ; ANTES pegava QUALQUER janelinha pequena e confundia com "Erro de sistema"/janelas
-; transitorias da GERACAO do relatorio -> pulava empresa COM dados (falso positivo).
-; Agora exige o titulo do aviso; se o titulo for outro, cai no timeout do render (seguro).
+; transitorias da GERACAO -> pulava empresa COM dados. Agora exige o titulo do aviso;
+; se o titulo for outro, cai no timeout do render (seguro).
 DialogoSemDados() {
     for hwnd in WinGetList("ahk_exe AppController.exe") {
         t := WinGetTitle("ahk_id " . hwnd)
@@ -138,6 +122,20 @@ DialogoSemDados() {
         w := 0, h := 0
         try WinGetPos(, , &w, &h, "ahk_id " . hwnd)
         if (w > 60 && h > 60 && w <= 900 && h <= 600)
+            return true
+    }
+    return false
+}
+
+; A tela de parametros "Programacao de Ferias" (janela PEQUENA com esse titulo) ainda esta aberta?
+; A janela principal tambem tem "Programa" no titulo quando o relatorio abre, mas e GRANDE (filtro por tamanho).
+TelaParamAberta() {
+    for hwnd in WinGetList("ahk_exe AppController.exe") {
+        if !InStr(WinGetTitle("ahk_id " . hwnd), "Programa")
+            continue
+        w := 0, h := 0
+        try WinGetPos(, , &w, &h, "ahk_id " . hwnd)
+        if (w > 60 && h > 60 && w <= 900 && h <= 700)
             return true
     }
     return false
@@ -197,52 +195,39 @@ TrocarEmpresa(codigo) {
     Sleep T_LONGO
 }
 
-; Abre Favoritos > Comparativo de Movimento (Alt+F -> Down -> Enter), com foco antes.
-AbrirComparativo() {
-    global FAV_KEY, T_CURTO, T_MEDIO
+; Abre Favoritos > Programacao de Ferias (Alt+F -> Down x FAV_DOWNS -> Enter), com foco antes.
+AbrirRelatorio() {
+    global FAV_KEY, FAV_DOWNS, T_CURTO, T_MEDIO
     Click("700 400")             ; foco de teclado (streaming)
     Sleep 400
     Send "!" . FAV_KEY           ; Alt+F -> abre Favoritos
     Sleep T_MEDIO
-    Send "{Down}"
-    Sleep T_CURTO
+    Loop FAV_DOWNS {
+        Send "{Down}"
+        Sleep T_CURTO
+    }
     Send "{Enter}"
     Sleep T_MEDIO
 }
 
-PreencherEGerar(compIni, compFim) {
-    global DIGITAR_PERIODO, T_CURTO, PER_INI_X, PER_INI_Y, PER_FIM_X, PER_FIM_Y
-    if (DIGITAR_PERIODO) {
-        ; Clica DIRETO em cada campo (sem Tab, que pulava pra aba Contas) e digita.
-        ClicarEDigitarPeriodo(PER_INI_X, PER_INI_Y, compIni)   ; Inicial
-        Sleep T_CURTO
-        ClicarEDigitarPeriodo(PER_FIM_X, PER_FIM_Y, compFim)   ; Final
-        Sleep T_CURTO
+; Tela "Programacao de Ferias": Data base ja vem com a data de HOJE (padrao). So clicar OK.
+GerarRelatorio() {
+    global FERIAS_OK_X, FERIAS_OK_Y
+    Sleep 3000                                 ; espera a tela de parametros abrir/renderizar
+    ; Clica OK ate a tela de parametros FECHAR de verdade (o streaming derruba clique de vez em quando).
+    Loop 5 {
+        Click(FERIAS_OK_X . " " . FERIAS_OK_Y) ; OK -> gera o relatorio
+        Sleep 1800
+        if (!TelaParamAberta())                ; fechou -> o OK pegou
+            break
     }
-    Send "!o"
+    Sleep 5000                                 ; espera 5s a tela carregar (relatorio ou "Sem dados")
     return EsperarRender()
-}
-
-; Campo mascarado MM/AAAA: clica pra focar, seleciona tudo e digita os 6 digitos devagar.
-ClicarEDigitarPeriodo(x, y, mmAAAA) {
-    Click(x . " " . y)
-    Sleep 400
-    Click(x . " " . y)           ; 2o clique garante o foco no campo (streaming)
-    Sleep 400
-    Send "{Home}"
-    Sleep 120
-    Send "+{End}"                ; seleciona todo o conteudo
-    Sleep 120
-    for ch in StrSplit(StrReplace(mmAAAA, "/", "")) {
-        SendText ch
-        Sleep 160
-    }
 }
 
 ; Espera o relatorio RENDERIZAR (texto escuro na area). Retorna "ok" quando renderiza.
 ; Se NAO renderizar dentro do tempo, retorna "sem_dados" (cobre "Sem dados para emitir" real
-; E Favoritos nao abrir a tela) -> o robo da OK/Esc e pula. NADA de detectar pixel cinza:
-; o cinza casa com o proprio formulario do Comparativo e dava falso "sem dados" em TODAS.
+; E Favoritos nao abrir a tela) -> o robo da OK/Esc e pula.
 EsperarRender() {
     global T_RENDER_TIMEOUT
     inicio := A_TickCount
@@ -266,15 +251,6 @@ EsperarRender() {
     return "sem_dados"
 }
 
-DigitarCampo(digitos) {
-    Send "{Home}"
-    Sleep 150
-    for ch in StrSplit(digitos) {
-        SendText ch
-        Sleep 130
-    }
-}
-
 DigitarTexto(txt) {
     for ch in StrSplit(txt) {
         SendText ch
@@ -293,24 +269,24 @@ LimparCampoNome() {
 
 NavegarAtePasta() {
     global THISPC_X, THISPC_Y
-    Click(THISPC_X . " " . THISPC_Y)
-    Sleep 3000
-    Send "+{Tab}"
-    Sleep 2500
+    Click(THISPC_X . " " . THISPC_Y)   ; "This PC" (barra esquerda)
+    Sleep 4000                         ; deixa as pastas/drives carregarem
+    Send "+{Tab}"                      ; foca a lista
+    Sleep 4000
     SelecionarPastaPorNome("client g")
     SelecionarPastaPorNome("meu drive")
     SelecionarPastaPorNome("relatorios dominio")
 }
 
 SelecionarPastaPorNome(nome) {
-    Sleep 800
+    Sleep 1200
     for ch in StrSplit(nome) {
         SendText ch
-        Sleep 70
+        Sleep 80
     }
-    Sleep 900
+    Sleep 1200
     Send "{Enter}"
-    Sleep 3000
+    Sleep 4000                         ; a pasta pode demorar a abrir
 }
 
 FecharPrevia() {
@@ -321,10 +297,11 @@ FecharPrevia() {
     }
 }
 
-MontarNome(codigo, compIni, compFim) {
-    bruto := "Comparativo_" . codigo . "_" . StrReplace(compIni, "/", "") . "_" . StrReplace(compFim, "/", "")
-    limpo := RegExReplace(bruto, "[^A-Za-z0-9_]", "")
-    return limpo . ".pdf"
+; Nome do arquivo: Programacao_de_Ferias_<codigo>_<DDMMAAAA de hoje>.pdf
+MontarNome(codigo) {
+    dataHoje := FormatTime(A_Now, "ddMMyyyy")
+    bruto := "Programacao_de_Ferias_" . codigo . "_" . dataHoje
+    return RegExReplace(bruto, "[^A-Za-z0-9_]", "") . ".pdf"
 }
 
 ; Fecha janelas/previas abertas SO com Esc. NAO usa Ctrl+F4: quando nao ha janela
@@ -339,47 +316,44 @@ LimparTelas() {
     }
 }
 
-; Garante o modulo Contabilidade. Se JA estiver nele, NAO mexe (o clique no logo/item
-; as vezes derruba pro launcher). So seleciona se estiver noutro modulo/launcher.
+; Garante o modulo Folha. Clica o logo DOMINIO (abre o menu) e o item Folha.
 SelecionarModulo() {
     global LOGO_X, LOGO_Y, MODULO_X, MODULO_Y, T_MODULO_CARGA, T_MEDIO
     FecharErroSistema()
     Click(LOGO_X . " " . LOGO_Y)      ; logo DOMINIO -> abre o menu de modulos
     Sleep T_MEDIO
-    Click(MODULO_X . " " . MODULO_Y)  ; clica no modulo (Contabilidade)
+    Click(MODULO_X . " " . MODULO_Y)  ; clica no modulo (Folha)
     Sleep T_MODULO_CARGA              ; espera carregar (~10s)
     FecharErroSistema()
 }
 
-ProcessarEmpresa(codigo, compIni, compFim) {
+ProcessarEmpresa(codigo) {
     global T_CURTO, T_MEDIO, T_LONGO, T_GERAR_PDF, CAMPO_NOME_X, CAMPO_NOME_Y, SEMDADOS_X, SEMDADOS_Y
     Logar("Empresa " . codigo . ": iniciando")
     FecharErroSistema()
     Sleep 500
     LimparTelas()
-    Click("700 400")                 ; clica no app (canvas vazio) pra dar FOCO DE TECLADO (streaming)
+    Click("700 400")                 ; foco de teclado (streaming)
     Sleep 500
     Logar("  [1] apos LimparTelas+foco: " . ListarJanelasDominio())
     TrocarEmpresa(codigo)
     Logar("  [2] apos F8/troca empresa: " . ListarJanelasDominio())
-    AbrirComparativo()
-    Logar("  [3] apos Favoritos/Comparativo: " . ListarJanelasDominio())
-    st := PreencherEGerar(compIni, compFim)
+    AbrirRelatorio()
+    Logar("  [3] apos Favoritos/Programacao de Ferias: " . ListarJanelasDominio())
+    st := GerarRelatorio()
     Logar("  [4] apos gerar: " . st)
     if (st != "ok") {
-        ; "Sem dados para emitir" OU Favoritos nao abriu a tela do Comparativo.
+        ; "Sem dados para emitir" OU Favoritos nao abriu a tela.
         ; Streaming: a tecla so pega com FOCO -> clica no dialogo antes do Enter (OK).
-        ; Sequencia: clica+OK -> 5s -> Esc, Esc (volta pra tela zerada) -> proxima empresa.
         Logar("Empresa " . codigo . ": sem relatorio (" . st . ") - OK/Esc e proxima")
-        Click(SEMDADOS_X . " " . SEMDADOS_Y)   ; foca o dialogo "Sem dados para emitir"
+        Click(SEMDADOS_X . " " . SEMDADOS_Y)   ; foca o dialogo (streaming: tecla so pega com foco)
         Sleep 600
-        Send "{Enter}"                          ; OK
+        Send "{Enter}"                          ; OK no "Sem dados para emitir!"
         Sleep 5000                              ; espera 5s
         Send "{Esc}"
         Sleep T_CURTO
-        Send "{Esc}"                            ; Esc x2 -> tela zerada
-        Sleep 2000
-        LimparTelas()                           ; garante tela limpa antes da proxima empresa
+        Send "{Esc}"                            ; Esc x2
+        Sleep 3000                              ; segue pra proxima empresa
         return "pular"
     }
     ; --- Salvar em PDF ---
@@ -387,10 +361,10 @@ ProcessarEmpresa(codigo, compIni, compFim) {
     Click("700 260")
     Sleep T_CURTO
     Send "^d"
-    Sleep T_LONGO
+    Sleep 5000                        ; espera a tela "Salvar em PDF" carregar antes de mexer
     if !WinExist("Salvar em PDF") {   ; so manda Enter (OK no erro) se houve erro de caminho
         Send "{Enter}"
-        Sleep T_LONGO
+        Sleep 5000
     }
     NavegarAtePasta()
     Sleep T_MEDIO
@@ -403,7 +377,7 @@ ProcessarEmpresa(codigo, compIni, compFim) {
     Click(CAMPO_NOME_X . " " . CAMPO_NOME_Y)
     Sleep 500
     LimparCampoNome()
-    DigitarTexto(MontarNome(codigo, compIni, compFim))
+    DigitarTexto(MontarNome(codigo))
     Sleep T_CURTO
     Send "{Enter}"
     Sleep T_CURTO
@@ -414,34 +388,27 @@ ProcessarEmpresa(codigo, compIni, compFim) {
     return "ok"
 }
 
-; Roda a empresa e CONFIRMA que o PDF apareceu no Google Drive local. Se nao aparecer
-; (navegacao/periodo/nome falhou por causa do streaming), reseta e REPETE ate MAX_TENTATIVAS.
-ProcessarEmpresaVerificado(codigo, compIni, compFim) {
+; Roda a empresa e CONFIRMA que o PDF apareceu no Google Drive local. Se nao aparecer,
+; reseta e REPETE ate MAX_TENTATIVAS. "pular" (sem dados) nao repete.
+ProcessarEmpresaVerificado(codigo) {
     global PASTA_LOCAL, MAX_TENTATIVAS, T_MEDIO
-    caminho := PASTA_LOCAL . "\" . MontarNome(codigo, compIni, compFim)
+    caminho := PASTA_LOCAL . "\" . MontarNome(codigo)
     Loop MAX_TENTATIVAS {
-        try FileDelete(caminho)          ; remove a versao anterior (vamos regerar)
-        st := ProcessarEmpresa(codigo, compIni, compFim)
-        if (st = "pular") {              ; sem dados / tela nao abriu -> NAO repete, segue pra proxima
+        try FileDelete(caminho)
+        st := ProcessarEmpresa(codigo)
+        if (st = "pular") {
             Logar("Empresa " . codigo . ": pulada (sem dados / tela nao abriu)")
             return "pular"
         }
         inicio := A_TickCount
-        while (A_TickCount - inicio < 60000) {   ; espera o PDF aparecer no Drive (ate 60s)
+        while (A_TickCount - inicio < 60000) {
             if (FileExist(caminho)) {
                 Logar("Empresa " . codigo . ": PDF confirmado (tentativa " . A_Index . ")")
                 return "ok"
             }
             Sleep 2000
         }
-        ; Diagnostico do Bug 1 (1a empresa as vezes nao confirma): lista o que TEM na pasta com esse codigo,
-        ; pra ver se salvou com nome/pasta errado ou nao salvou.
-        naPasta := ""
-        try {
-            Loop Files, PASTA_LOCAL . "\*" . codigo . "*.pdf"
-                naPasta .= A_LoopFileName . "; "
-        }
-        Logar("Empresa " . codigo . ": PDF NAO apareceu (tentativa " . A_Index . "/" . MAX_TENTATIVAS . ") - esperava '" . MontarNome(codigo, compIni, compFim) . "' - na pasta c/ codigo: " . (naPasta != "" ? naPasta : "(nenhum)"))
+        Logar("Empresa " . codigo . ": PDF NAO apareceu (tentativa " . A_Index . "/" . MAX_TENTATIVAS . ") - resetando e repetindo")
         LimparTelas()
         Sleep T_MEDIO
     }
@@ -450,16 +417,8 @@ ProcessarEmpresaVerificado(codigo, compIni, compFim) {
 }
 
 ; ------------------------------------------------------------- SITE (comandos)
-; Extrai o valor string de uma chave do JSON: "chave":"valor"
-ExtrairStr(body, chave) {
-    if RegExMatch(body, '"' . chave . '":"([^"]*)"', &m)
-        return m[1]
-    return ""
-}
-
-; Pergunta ao site se o usuario clicou "Parar robo" (freio de emergencia).
 DevePararSite() {
-    body := HttpReq("GET", "/api/dominio-agent/comparativo-comando")
+    body := HttpReq("GET", "/api/dominio-agent/ferias-comando")
     return InStr(body, '"parar":true') ? true : false
 }
 
@@ -467,11 +426,11 @@ ReportarProgresso(rodando, total, feitas, atual, iniciando) {
     atualJson := atual != "" ? '"' . JsonEscape(atual) . '"' : "null"
     json := '{"rodando":' . (rodando ? "true" : "false") . ',"total":' . total . ',"feitas":' . feitas
           . ',"atual":' . atualJson . ',"iniciando":' . (iniciando ? "true" : "false") . "}"
-    HttpReq("POST", "/api/dominio-agent/comparativo-progresso", json)
+    HttpReq("POST", "/api/dominio-agent/ferias-progresso", json)
 }
 
 PegarEmpresas() {
-    body := HttpReq("GET", "/api/dominio-agent/empresas-comparativo")
+    body := HttpReq("GET", "/api/dominio-agent/empresas-ferias")
     lista := []
     pos := 1
     pat := '"codigoDominio":"([^"]*)","nome":"([^"]*)"'
@@ -493,15 +452,15 @@ ReportarStatus(itens) {
     s := ""
     for i, v in partes
         s .= (i > 1 ? "," : "") . v
-    HttpReq("POST", "/api/dominio-agent/comparativo-status", '{"itens":[' . s . "]}")
+    HttpReq("POST", "/api/dominio-agent/ferias-status", '{"itens":[' . s . "]}")
 }
 
-RodarCiclo(compIni, compFim) {
+RodarCiclo() {
     global DOMINIO_WIN, T_ENTRE_EMPRESAS, SELECIONAR_MODULO
     empresas := PegarEmpresas()
     total := empresas.Length
-    Logar("=== EXECUCAO: " . total . " empresa(s), periodo " . compIni . " a " . compFim . " ===")
-    ReportarProgresso(true, total, 0, "", true)      ; iniciando (limpa "executar agora" no site)
+    Logar("=== EXECUCAO: " . total . " empresa(s) (Programacao de Ferias) ===")
+    ReportarProgresso(true, total, 0, "", true)
     if (total = 0) {
         ReportarProgresso(false, 0, 0, "", false)
         return
@@ -511,24 +470,23 @@ RodarCiclo(compIni, compFim) {
         ReportarProgresso(false, total, 0, "", false)
         return
     }
-    AtivarApp()                      ; traz o APP pra frente (nao o launcher)
+    AtivarApp()
     Sleep 1500
     Logar("Janelas: " . ListarJanelasDominio())
-    ; TRAVA: se o launcher (app fechado/sessao caiu) estiver na frente, cancela.
     if NoLauncher() {
         Logar("ERRO: Dominio no launcher (Lista de Programas) - app nao esta aberto. Cancelado.")
         ReportarProgresso(false, total, 0, "", false)
         return
     }
     if (SELECIONAR_MODULO) {
-        Logar("Selecionando modulo Contabilidade...")
+        Logar("Selecionando modulo Folha...")
         SelecionarModulo()
     }
     FecharErroSistema()
     resultados := []
     feitas := 0
     for e in empresas {
-        if (DevePararSite()) {           ; FREIO: usuario clicou "Parar robo" no site
+        if (DevePararSite()) {
             Logar("=== PARADO pelo site (freio de emergencia) apos " . feitas . "/" . total . " ===")
             break
         }
@@ -537,7 +495,7 @@ RodarCiclo(compIni, compFim) {
         ReportarProgresso(true, total, feitas, e.codigo . " - " . e.nome, false)
         res := "falhou"
         try {
-            res := ProcessarEmpresaVerificado(e.codigo, compIni, compFim)
+            res := ProcessarEmpresaVerificado(e.codigo)
         } catch as err {
             Logar("Empresa " . e.codigo . ": ERRO " . err.Message)
         }
@@ -557,21 +515,16 @@ RodarCiclo(compIni, compFim) {
 
 ; ==================================================================== MAIN
 Logar("=== Agente iniciado ===")
-SetTimer(FecharErroSistema, 400)     ; vigia do erro do chatbot, sempre ativo
-; Ao sair (Ctrl+Alt+Q, Reload, fechar): avisa o site que parou -> a barra do site reseta.
+SetTimer(FecharErroSistema, 400)
 OnExit(AoSair)
 AoSair(*) {
     try ReportarProgresso(false, 0, 0, "", false)
 }
 
 Loop {
-    body := HttpReq("GET", "/api/dominio-agent/comparativo-comando")
+    body := HttpReq("GET", "/api/dominio-agent/ferias-comando")
     if (InStr(body, '"deveRodar":true')) {
-        compIni := ExtrairStr(body, "periodoIni")
-        compFim := ExtrairStr(body, "periodoFim")
-        if (compIni = "" || compFim = "")
-            CalcularPeriodo(&compIni, &compFim)   ; fallback se o site nao mandou
-        RodarCiclo(compIni, compFim)
+        RodarCiclo()
     }
     Sleep POLL_SEGUNDOS * 1000
 }
