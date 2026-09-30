@@ -152,6 +152,13 @@ export function extrairCompetenciaMes(texto: string): string | null {
   if (gozo) return `${gozo[1]} a ${gozo[2]}`;
   const m = /(?:Compet[êe]ncia|M[êe]s\s*\/?\s*Ano|Refer[êe]ncia|Referente\s+a)\s*[:\-]?\s*(?:\d{2}\/)?(0[1-9]|1[0-2])\/(20\d{2})\b/i.exec(texto);
   if (m) return `${m[1]}/${m[2]}`;
+  // Cabeçalho do "EXTRATO MENSAL" (Folha Mensal e Complementar): o pdf-parse embaralha rótulo e valor
+  // do cabeçalho — "09/2026" aparece ANTES do próprio rótulo "Competência:", logo antes de "Empresa:"
+  // ("...EXTRATO MENSAL\nTodos\n09/2026\nEmpresa:\nCompetência:..."). O regex acima (rótulo seguido do
+  // valor) nunca bate nesse formato — sem isso caía pra data de afastamento de outro funcionário no
+  // resto do documento (achado ao vivo: extrato de 09/2026 saindo com competência 12/2027).
+  const cabecalhoExtrato = /^[\s\S]{0,250}?\b(0[1-9]|1[0-2])\/(20\d{2})\b[\s\S]{0,120}?Empresa\s*:/i.exec(texto);
+  if (cabecalhoExtrato) return `${cabecalhoExtrato[1]}/${cabecalhoExtrato[2]}`;
   // "Agosto de 2026" — mas não "08 de setembro de 2026" (data por extenso de um documento qualquer)
   const nomes = /(?<!\d\s{0,3}de\s{0,3})(janeiro|fevereiro|mar[çc]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\s+de\s+(20\d{2})/i.exec(texto);
   if (nomes) { const i = MESES_NOME.indexOf(nomes[1].toLowerCase().replace("ç", "c")); if (i >= 0) return `${String(i + 1).padStart(2, "0")}/${nomes[2]}`; }
