@@ -190,6 +190,56 @@ export async function gerarPdfFeriasVencidas(escritorioNome: string, empresaNome
   }
 }
 
+// Exportação pro controle interno do escritório: UMA tabela só com todas as empresas juntas (não é
+// pra mandar pro cliente — é denso/completo de propósito, pra escanear rápido).
+export async function gerarPdfControleInterno(escritorioNome: string, empresas: { nome: string; funcionarios: any[] }[]): Promise<Buffer> {
+  const totalVencidas = empresas.reduce((s, e) => s + e.funcionarios.filter((f) => f.status === "vencida").length, 0);
+  const totalProximas = empresas.reduce((s, e) => s + e.funcionarios.filter((f) => f.status === "proxima").length, 0);
+  const linhas = empresas
+    .flatMap((emp) => emp.funcionarios.map((f) => ({ ...f, empresaNome: emp.nome })))
+    .map(
+      (f) => `<tr>
+        <td>${f.empresaNome}</td>
+        <td>${f.codigo || "—"}</td>
+        <td>${f.nome}</td>
+        <td class="${f.status}">${f.status === "vencida" ? "Vencida" : "Último mês"}</td>
+        <td>${isoParaBr(f.data_admissao)}</td>
+        <td>${isoParaBr(f.inicio_aquisitivo)} a ${isoParaBr(f.fim_aquisitivo)}</td>
+        <td>${isoParaBr(f.limite_gozo)}</td>
+        <td>${f.dias_restantes ?? "—"}</td>
+      </tr>`
+    )
+    .join("");
+  const html = `<!doctype html><html><head><meta charset="utf-8"><style>
+    body{font-family:'Helvetica Neue',Arial,sans-serif; color:#1c2b24; margin:0; padding:26px 30px;}
+    h1{font-size:17px; margin:0 0 2px;}
+    .sub{font-size:11.5px; color:#5b6b63; margin:0 0 14px;}
+    .resumo{font-size:12px; margin-bottom:14px;}
+    .resumo b.vencida{color:#b23b3b;} .resumo b.proxima{color:#a5730a;}
+    table{width:100%; border-collapse:collapse; font-size:10.5px;}
+    th{text-align:left; background:#eef5f1; padding:6px 8px; border-bottom:2px solid #cfe0d8; font-size:9.5px; letter-spacing:.03em; text-transform:uppercase; color:#3c584a;}
+    td{padding:6px 8px; border-bottom:1px solid #e5eae7;}
+    td.vencida{color:#b23b3b; font-weight:600;}
+    td.proxima{color:#a5730a; font-weight:600;}
+  </style></head><body>
+    <h1>Programação de Férias — Controle interno</h1>
+    <p class="sub">${escritorioNome} · gerado em ${new Date().toLocaleDateString("pt-BR")} às ${new Date().toLocaleTimeString("pt-BR")}</p>
+    <p class="resumo"><b class="vencida">${totalVencidas} vencida(s)</b> · <b class="proxima">${totalProximas} próxima(s) do limite</b> · ${empresas.length} empresa(s)</p>
+    <table><thead><tr><th>Empresa</th><th>Código</th><th>Funcionário</th><th>Situação</th><th>Admissão</th><th>Período aquisitivo</th><th>Limite p/ gozo</th><th>Dias em aberto</th></tr></thead>
+    <tbody>${linhas}</tbody></table>
+  </body></html>`;
+  const { chromium } = require("playwright");
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage();
+    await page.setContent(html, { waitUntil: "networkidle" });
+    const pdf = await page.pdf({ format: "A4", landscape: true, printBackground: true, margin: { top: "10px", bottom: "10px", left: "10px", right: "10px" } });
+    return pdf as Buffer;
+  } finally {
+    await browser.close();
+  }
+}
+
 function funcionariosPendentes(sqlite: any, empresaId: number): any[] {
   return sqlite
     .prepare(`SELECT * FROM ferias_funcionarios WHERE empresa_id = ? AND status IN ('vencida','proxima') ORDER BY status, limite_gozo`)
@@ -312,6 +362,30 @@ export function registerFerias(app: express.Express, d: Deps) {
     const empresas = sqlite.prepare(sql).all(...params) as any[];
     for (const emp of empresas) emp.funcionarios = funcionariosPendentes(sqlite, emp.id);
     res.json({ empresas, ...base });
+  });
+  app.get("/api/ferias/exportar-pdf", d.blockCliente, d.requirePermissao("dprh", "visualizar"), async (req, res) => {
+    const user = (req as any).user;
+    const visiveis = d.empresasVisiveis(user);
+    let sql = `SELECT DISTINCT e.id, e.nome FROM ferias_funcionarios f JOIN empresas e ON e.id = f.empresa_id WHERE f.status IN ('vencida','proxima')`;
+    const params: any[] = [];
+    if (visiveis !== null) {
+      if (!visiveis.length) return res.status(400).json({ error: "Nenhuma pendência de férias pra exportar." });
+      sql += ` AND e.id IN (${visiveis.map(() => "?").join(",")})`;
+      params.push(...visiveis);
+    }
+    sql += ` ORDER BY e.nome`;
+    const empresasRows = sqlite.prepare(sql).all(...params) as any[];
+    if (!empresasRows.length) return res.status(400).json({ error: "Nenhuma pendência de férias pra exportar." });
+    const empresas = empresasRows.map((e) => ({ nome: e.nome, funcionarios: funcionariosPendentes(sqlite, e.id) }));
+    const escritorio = sqlite.prepare(`SELECT nome FROM escritorios WHERE id = ?`).get(user.escritorioId) as any;
+    try {
+      const pdf = await gerarPdfControleInterno(escritorio?.nome || "Escritório Contábil", empresas);
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `attachment; filename="Programacao de Ferias - Controle Interno.pdf"`);
+      res.send(pdf);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
   });
   app.post("/api/ferias/config", d.blockCliente, d.requirePermissao("dprh", "editar"), (req, res) => {
     const b = req.body || {};

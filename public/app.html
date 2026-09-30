@@ -10519,7 +10519,10 @@ async function feriasMontar(box){
         <div class="row" style="margin-top:10px;"><button class="btn primary" id="feriasSalvarCfg">Salvar</button></div>
       </div>
     </div>
-    ${r.empresas.length?`<p class="subtitle" style="margin:0 0 10px;"><b>${totalVencidas}</b> vencida(s) e <b>${totalProximas}</b> próxima(s) do limite, em ${r.empresas.length} empresa(s).</p>`:''}
+    ${r.empresas.length?`<div class="row" style="justify-content:space-between; align-items:center; margin:0 0 10px;">
+      <p class="subtitle" style="margin:0;"><b>${totalVencidas}</b> vencida(s) e <b>${totalProximas}</b> próxima(s) do limite, em ${r.empresas.length} empresa(s).</p>
+      <button class="btn" id="feriasExportarPdf">📄 Exportar PDF (controle interno)</button>
+    </div>`:''}
     ${r.empresas.length ? r.empresas.map(emp=>`
       <div class="card" style="margin-bottom:10px;">
         <div class="row" style="justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:8px;">
@@ -10572,6 +10575,7 @@ async function feriasMontar(box){
     }catch(e){ toast(e.message,'err'); }
     b.disabled = false; b.textContent = '↻ Verificar agora';
   });
+  document.getElementById('feriasExportarPdf')?.addEventListener('click', ()=>{ window.open('/api/ferias/exportar-pdf', '_blank'); });
   box.querySelectorAll('[data-act="ferias-enviar"]').forEach(b=>b.addEventListener('click', async ()=>{
     b.disabled = true; const original = b.textContent; b.textContent = 'Enviando…';
     try{
