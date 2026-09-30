@@ -10532,14 +10532,14 @@ async function feriasMontar(box){
             <button class="btn small" data-empresa="${emp.id}" data-canal="meta" data-act="ferias-enviar" title="Pelo número separado da API oficial (Meta)">📱 Enviar (Meta)</button>
           </div>
         </div>
-        <table class="data-table" style="margin-top:10px;"><thead><tr><th>Código</th><th>Funcionário</th><th>Situação</th><th>Admissão</th><th>Período aquisitivo</th><th>Vencto./Limite</th><th>Dias em aberto</th></tr></thead><tbody>
+        <table class="data-table" style="margin-top:10px;"><thead><tr><th>Código</th><th>Funcionário</th><th>Situação</th><th>Admissão</th><th>Período aquisitivo</th><th>Limite p/ gozo</th><th>Dias em aberto</th></tr></thead><tbody>
           ${emp.funcionarios.map(f=>`<tr>
             <td>${esc(f.codigo||'—')}</td>
             <td>${esc(f.nome)}</td>
             <td>${f.status==='vencida'?'<span class="tag bad">Vencida</span>':'<span class="tag warn">Último mês</span>'}</td>
             <td style="font-size:12px;">${feriasBr(f.data_admissao)}</td>
             <td style="font-size:12px;">${feriasBr(f.inicio_aquisitivo)} a ${feriasBr(f.fim_aquisitivo)}</td>
-            <td style="font-size:12px;">${f.status==='vencida'?feriasBr(f.vencto_ferias):feriasBr(f.limite_gozo)}</td>
+            <td style="font-size:12px;">${feriasBr(f.limite_gozo)}</td>
             <td style="font-size:12px;">${f.dias_restantes??'—'}</td>
           </tr>`).join('')}
         </tbody></table>

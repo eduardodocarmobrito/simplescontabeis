@@ -38,50 +38,44 @@ function isoParaBr(dataIso: string | null): string {
   return `${d}/${m}/${a}`;
 }
 
-// Lê o texto do PDF linha a linha: uma linha de funcionário começa com o código (número) seguido do
-// nome e, na sequência, 16 campos separados por espaço (mesma ordem de colunas do relatório real):
-// Data admissão | Vencto. férias | Fer. venc. | Fer. pro. | Início aquisitivo | Fim aquisitivo |
-// Início gozo férias | Dias | Abono | 13º | Dias dir. | Dias goz. | Dias rest. | Limite p/ gozo |
-// Dias afast. | Dias faltas.
+// [2026-09-29] Conferido contra o texto REAL extraído por pdf-parse (não o layout visual do PDF): as
+// colunas vêm grudadas sem separador confiável — o pdf-parse não preserva os espaços visuais da
+// tabela. Ordem real observada por linha: NOME (maiúsculo) + CÓDIGO (1-4 dígitos, colado, sem espaço
+// antes da data) + Data admissão + Fer. venc. (colado, sem espaço) + Fer. pro. (NN/NN) + Início
+// aquisitivo (colado) + Fim aquisitivo (colado) + [miolo sem uso confiável: início gozo/dias/abono/
+// 13º, tudo pontinhos ou números sem separador claro] + Limite p/ gozo (1ª data depois do miolo).
+// "Vencto. férias" e Dias dir./goz. não têm posição confiável o bastante pra extrair — ficam de fora
+// (feriasCalcularStatus não depende deles: usa só Fer. venc. + Limite p/ gozo, ambos confiáveis).
 export function feriasExtrairFuncionarios(texto: string): {
   codigo: string; nome: string;
-  dataAdmissaoBr: string | null; venctoFeriasBr: string | null; ferVenc: number;
+  dataAdmissaoBr: string | null; ferVenc: number;
   inicioAquisitivoBr: string | null; fimAquisitivoBr: string | null;
-  diasDireito: number | null; diasGozados: number | null; diasRestantes: number | null;
-  limiteGozoBr: string | null;
+  diasRestantes: number | null; limiteGozoBr: string | null;
 }[] {
   const funcionarios: ReturnType<typeof feriasExtrairFuncionarios> = [];
   const linhas = texto.split(/\r?\n/);
-  const dataRe = /\d{2}\/\d{2}\/\d{4}/g;
-  const dataOuNull = (s: string | undefined) => (s && /^\d{2}\/\d{2}\/\d{4}$/.test(s) ? s : null);
-  const numOuNull = (s: string | undefined) => {
-    const n = parseInt(String(s), 10);
-    return Number.isFinite(n) ? n : null;
-  };
+  // grupos: 1 nome | 2 código | 3 admissão | 4 fer.venc | 5 fer.pro (descartado) | 6 início aquis. | 7 fim aquis. | 8 resto da linha
+  const linhaRe = /^([A-ZÀ-Ý][A-ZÀ-Ýa-zà-ÿ'.\- ]{3,60}?)\s{0,3}(\d{1,4})(\d{2}\/\d{2}\/\d{4})(\d{1,2})\s{0,3}(\d{1,2}\/\d{1,2})(\d{2}\/\d{2}\/\d{4})(\d{2}\/\d{2}\/\d{4})(.*)$/;
   for (const linhaOriginal of linhas) {
     const linha = linhaOriginal.trim();
     if (!linha) continue;
-    const datas = [...linha.matchAll(dataRe)];
-    if (datas.length < 2) continue; // toda linha de funcionário tem pelo menos admissão + vencto
-    const antesDaData = linha.slice(0, datas[0].index).trim();
-    const codigoMatch = /^(\d{1,10})\s+/.exec(antesDaData);
-    if (!codigoMatch) continue; // não começa com código — é cabeçalho/rodapé, não funcionário
-    const nome = antesDaData.slice(codigoMatch[0].length).trim();
-    const palavras = nome.split(/\s+/).filter(Boolean);
-    if (palavras.length < 2 || !/^[A-ZÀ-Ý][A-ZÀ-Ýa-zà-ÿ'.\- ]+$/.test(nome)) continue;
-    const resto = linha.slice(datas[0].index).trim().split(/\s+/);
+    const m = linhaRe.exec(linha);
+    if (!m) continue;
+    const nome = m[1].trim();
+    if (nome.split(/\s+/).filter(Boolean).length < 2) continue; // nome de verdade tem 2+ palavras
+    const resto = m[8];
+    const restoDatas = [...resto.matchAll(/\d{2}\/\d{2}\/\d{4}/g)];
+    const limiteGozoBr = restoDatas[0]?.[0] || null;
+    let diasRestantes: number | null = null;
+    if (restoDatas[0]) {
+      const numeros = [...resto.slice(0, restoDatas[0].index).matchAll(/\d{1,3}/g)];
+      if (numeros.length) diasRestantes = parseInt(numeros[numeros.length - 1][0], 10);
+    }
     funcionarios.push({
-      codigo: codigoMatch[1],
-      nome,
-      dataAdmissaoBr: dataOuNull(resto[0]),
-      venctoFeriasBr: dataOuNull(resto[1]),
-      ferVenc: numOuNull(resto[2]) || 0,
-      inicioAquisitivoBr: dataOuNull(resto[4]),
-      fimAquisitivoBr: dataOuNull(resto[5]),
-      diasDireito: numOuNull(resto[10]),
-      diasGozados: numOuNull(resto[11]),
-      diasRestantes: numOuNull(resto[12]),
-      limiteGozoBr: dataOuNull(resto[13]),
+      codigo: m[2], nome,
+      dataAdmissaoBr: m[3], ferVenc: parseInt(m[4], 10) || 0,
+      inicioAquisitivoBr: m[6], fimAquisitivoBr: m[7],
+      diasRestantes, limiteGozoBr,
     });
   }
   return funcionarios;
@@ -105,8 +99,8 @@ export function feriasProcessarPdf(escritorioId: number, empresaId: number, text
   const hoje = hojeIso();
   deps.sqlite.prepare(`DELETE FROM ferias_funcionarios WHERE empresa_id = ?`).run(empresaId);
   const ins = deps.sqlite.prepare(
-    `INSERT INTO ferias_funcionarios (escritorio_id, empresa_id, codigo, nome, data_admissao, vencto_ferias, fer_venc, inicio_aquisitivo, fim_aquisitivo, dias_direito, dias_gozados, dias_restantes, limite_gozo, status, origem_doc_id)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    `INSERT INTO ferias_funcionarios (escritorio_id, empresa_id, codigo, nome, data_admissao, fer_venc, inicio_aquisitivo, fim_aquisitivo, dias_restantes, limite_gozo, status, origem_doc_id)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
   );
   let gravados = 0;
   for (const f of funcionarios) {
@@ -114,9 +108,9 @@ export function feriasProcessarPdf(escritorioId: number, empresaId: number, text
     if (status === "ok") continue; // só guarda quem interessa (vencida/próxima) — igual foi pedido
     ins.run(
       escritorioId, empresaId, f.codigo, f.nome,
-      brParaIso(f.dataAdmissaoBr || ""), brParaIso(f.venctoFeriasBr || ""), f.ferVenc,
+      brParaIso(f.dataAdmissaoBr || ""), f.ferVenc,
       brParaIso(f.inicioAquisitivoBr || ""), brParaIso(f.fimAquisitivoBr || ""),
-      f.diasDireito, f.diasGozados, f.diasRestantes, brParaIso(f.limiteGozoBr || ""),
+      f.diasRestantes, brParaIso(f.limiteGozoBr || ""),
       status, origemDocId
     );
     gravados++;
@@ -143,7 +137,7 @@ function gerarHtmlRelatorio(escritorioNome: string, empresaNome: string, funcion
       <div class="linhas">
         <span>Admissão: <b>${isoParaBr(f.data_admissao)}</b></span>
         <span>Período aquisitivo: <b>${isoParaBr(f.inicio_aquisitivo)} a ${isoParaBr(f.fim_aquisitivo)}</b></span>
-        ${f.status === "vencida" ? `<span>Venceu em: <b>${isoParaBr(f.vencto_ferias)}</b></span>` : `<span>Prazo para conceder: <b>${isoParaBr(f.limite_gozo)}</b></span>`}
+        <span>Prazo para conceder: <b>${isoParaBr(f.limite_gozo)}</b></span>
         ${f.dias_restantes != null ? `<span>Dias de férias em aberto: <b>${f.dias_restantes}</b></span>` : ""}
       </div>
       <div class="msg">${MENSAGEM_STATUS[f.status] || ""}</div>
@@ -241,7 +235,7 @@ export function registerFerias(app: express.Express, d: Deps) {
   // velho (detectado pela coluna "periodo_aquisitivo_fim", que não existe mais) — depois desta vez,
   // a tabela já nasce certa e este bloco não encontra mais essa coluna, não roda de novo.
   const colsAntigas = (sqlite.prepare(`PRAGMA table_info(ferias_funcionarios)`).all() as any[]).map((c) => c.name);
-  if (colsAntigas.includes("periodo_aquisitivo_fim")) sqlite.exec(`DROP TABLE ferias_funcionarios;`);
+  if (colsAntigas.includes("periodo_aquisitivo_fim") || colsAntigas.includes("vencto_ferias")) sqlite.exec(`DROP TABLE ferias_funcionarios;`);
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS ferias_funcionarios (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -250,12 +244,9 @@ export function registerFerias(app: express.Express, d: Deps) {
       codigo TEXT,
       nome TEXT NOT NULL,
       data_admissao TEXT,
-      vencto_ferias TEXT,
       fer_venc INTEGER NOT NULL DEFAULT 0,
       inicio_aquisitivo TEXT,
       fim_aquisitivo TEXT,
-      dias_direito INTEGER,
-      dias_gozados INTEGER,
       dias_restantes INTEGER,
       limite_gozo TEXT,
       status TEXT NOT NULL, -- 'vencida' | 'proxima'
