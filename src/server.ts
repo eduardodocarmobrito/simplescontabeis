@@ -8052,7 +8052,13 @@ async function dominioRelatoriosSincronizar(
     sqlite.prepare(`UPDATE onedrive_config SET relatorios_ultima_importacao_em = datetime('now'), relatorios_ultimo_erro = NULL${inicioVarreduraDrive ? ", relatorios_drive_ultima_varredura = ?" : ""} WHERE escritorio_id = ?`)
       .run(...(inicioVarreduraDrive ? [inicioVarreduraDrive, escritorioId] : [escritorioId]));
   }
-  return opts.dryRun ? { processados, ok, pendentes, erros, previews } : { processados, ok, pendentes, erros, limpas };
+  // "pendentes" no retorno é o TOTAL em aberto agora (não só as que viraram pendência NESTA leitura) —
+  // achado ao vivo: com o contador do loop, um arquivo que já estava pendente de uma leitura anterior e
+  // nem foi reprocessado agora (nada mudou nele) some da conta, e o resumo mostra "0 pendência(s)" com
+  // pendência de verdade parada no modal de "Pendências de relatórios". Só se aplica à leitura de
+  // verdade — no dry-run não há nada gravado no banco pra contar.
+  const pendentesTotal = opts.dryRun ? pendentes : (sqlite.prepare(`SELECT COUNT(*) n FROM dominio_relatorios_importados WHERE escritorio_id = ? AND status != 'ok'`).get(escritorioId) as any).n;
+  return opts.dryRun ? { processados, ok, pendentes: pendentesTotal, erros, previews } : { processados, ok, pendentes: pendentesTotal, erros, limpas };
 }
 app.get("/api/onedrive/relatorios/pendentes", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
   const rows = sqlite
