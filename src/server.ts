@@ -7521,7 +7521,7 @@ setInterval(() => {
 // se o período já tem documento, sem filtrar por quem pediu, então importando ANTES de qualquer
 // solicitação (esta rotina é proativa/agendada), o pedido do cliente já chega atendido sem nenhum
 // código extra de "atendimento automático".
-type DomRelTipo = "balanco" | "balancete" | "dre" | "faturamento" | "razao" | "comparativo" | "aviso_ferias";
+type DomRelTipo = "balanco" | "balancete" | "dre" | "faturamento" | "razao" | "comparativo" | "aviso_ferias" | "programacao_ferias";
 const DOM_REL_TEMPLATE_NOME: Record<string, string> = {
   balanco: "Balanço",
   balancete: "Balancete",
@@ -7531,6 +7531,7 @@ const DOM_REL_TEMPLATE_NOME: Record<string, string> = {
   razao: "Razão",
   comparativo: "Comparativo de Movimento",
   aviso_ferias: "Aviso de Férias",
+  programacao_ferias: "Programação de Férias",
 };
 // Nomes dos templates alimentados pela importação automática do OneDrive — pra esses, "Solicitar
 // Documentos" não deixa o cliente digitar qualquer mês/ano (não existe ninguém pra gerar sob
@@ -7552,6 +7553,7 @@ function domRelClassificarTipos(texto: string): DomRelTipo[] {
   if (/raz[ãa]o(?!\s*social)/i.test(texto)) tipos.push("razao");
   if (/comparativo\s+(de\s+)?movimento|movimento\s+comparativo/i.test(texto)) tipos.push("comparativo");
   if (/aviso\s+de\s+f[ée]rias/i.test(texto)) tipos.push("aviso_ferias");
+  if (/programa[çc][ãa]o\s+de\s+f[ée]rias/i.test(texto)) tipos.push("programacao_ferias");
   return tipos;
 }
 // Achado ao vivo (dry-run contra a pasta real): o TEXTO do PDF varia de layout conforme a empresa —
@@ -7816,7 +7818,13 @@ async function dominioRelatoriosSincronizar(
       const buf = await item.baixar();
       const texto = await obterTextoDoPdf(buf);
       const tipos = domRelClassificarTipos(texto);
-      const periodo = domRelExtrairPeriodo(texto, item.nome);
+      let periodo = domRelExtrairPeriodo(texto, item.nome);
+      // Programação de Férias não tem range de período: usa uma data única ("Data base: dd/mm/aaaa"
+      // no texto, ou o _ddmmaaaa no fim do nome do arquivo). Fica sob o mês/ano dessa data.
+      if (!periodo && tipos.includes("programacao_ferias")) {
+        const md = /data\s*base[^0-9]{0,25}(\d{2})[\/\-.](\d{2})[\/\-.](\d{4})/i.exec(texto) || /_(\d{2})(\d{2})(\d{4})\.pdf$/i.exec(item.nome);
+        if (md) periodo = { inicio: `${md[3]}-${md[2]}-${md[1]}`, fim: `${md[3]}-${md[2]}-${md[1]}` };
+      }
       const { empresa, cnpjDetectado, codigoArquivo } = domRelIdentificarEmpresa(mapaDocumentos, texto, item.nome);
 
       if (opts.dryRun) {
@@ -13350,6 +13358,7 @@ function domRelTemplateNomesParaTipo(tipo: string): string[] {
   if (tipo === "razao") return ["Razão"];
   if (tipo === "comparativo") return ["Comparativo de Movimento"];
   if (tipo === "aviso_ferias") return ["Aviso de Férias"];
+  if (tipo === "programacao_ferias") return ["Programação de Férias"];
   return [];
 }
 app.get("/api/relatorios/documentos/empresas", blockCliente, requirePermissao("relatorios", "visualizar"), (req, res) => {

@@ -8162,7 +8162,7 @@ function distratoModeloDrawer(config){
 }
 
 // ===================== Relatórios =====================
-const TIPOS_REL = [ {v:'balanco', l:'Balanço'}, {v:'balancete', l:'Balancete'}, {v:'dre', l:'DRE'}, {v:'faturamento', l:'Relação de Faturamento'}, {v:'razao', l:'Razão'}, {v:'comparativo', l:'Comparativo de Movimento'}, {v:'aviso_ferias', l:'Aviso de Férias'}, {v:'folha', l:'Folha'}, {v:'retencoes', l:'Retenções de Impostos'} ];
+const TIPOS_REL = [ {v:'balanco', l:'Balanço'}, {v:'balancete', l:'Balancete'}, {v:'dre', l:'DRE'}, {v:'faturamento', l:'Relação de Faturamento'}, {v:'razao', l:'Razão'}, {v:'comparativo', l:'Comparativo de Movimento'}, {v:'aviso_ferias', l:'Aviso de Férias'}, {v:'programacao_ferias', l:'Programação de Férias'}, {v:'folha', l:'Folha'}, {v:'retencoes', l:'Retenções de Impostos'} ];
 let REL_TAB='balanco';
 async function pageRelatorios(){
   main().innerHTML = `
@@ -8179,7 +8179,7 @@ async function renderRelTab(){
   const { items: empresas } = await api('/relatorios/empresas');
   const box = document.getElementById('relContent');
   if(REL_TAB==='retencoes'){ renderRelRetencoes(box, empresas); return; }
-  if(REL_TAB==='balanco'||REL_TAB==='balancete'||REL_TAB==='dre'||REL_TAB==='faturamento'||REL_TAB==='razao'||REL_TAB==='comparativo'||REL_TAB==='aviso_ferias'){ renderRelDominio(box, empresas, REL_TAB); return; }
+  if(REL_TAB==='balanco'||REL_TAB==='balancete'||REL_TAB==='dre'||REL_TAB==='faturamento'||REL_TAB==='razao'||REL_TAB==='comparativo'||REL_TAB==='aviso_ferias'||REL_TAB==='programacao_ferias'){ renderRelDominio(box, empresas, REL_TAB); return; }
   box.innerHTML = `
     <div class="row" style="margin-bottom:16px;">
       <div class="field" style="margin-bottom:0; min-width:280px;"><label>Cliente</label>
@@ -12058,6 +12058,7 @@ async function abrirOdRelPendenciasModal(){
             <option value="razao">Razão</option>
             <option value="comparativo">Comparativo de Movimento</option>
             <option value="aviso_ferias">Aviso de Férias</option>
+            <option value="programacao_ferias">Programação de Férias</option>
           </select>
         </div>
         <div class="field" style="margin-bottom:0; width:90px;"><label>Ano</label><input type="number" id="odRelPendAno${i.id}" value="${i.periodoFim?i.periodoFim.slice(0,4):new Date().getFullYear()}"></div>
