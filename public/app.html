@@ -8159,7 +8159,7 @@ function distratoModeloDrawer(config){
 }
 
 // ===================== Relatórios =====================
-const TIPOS_REL = [ {v:'balanco', l:'Balanço'}, {v:'balancete', l:'Balancete'}, {v:'dre', l:'DRE'}, {v:'faturamento', l:'Relação de Faturamento'}, {v:'razao', l:'Razão'}, {v:'comparativo', l:'Comparativo de Movimento'}, {v:'aviso_ferias', l:'Aviso de Férias'}, {v:'folha', l:'Folha'}, {v:'retencoes', l:'Retenções de Impostos'} ];
+const TIPOS_REL = [ {v:'balanco', l:'Balanço'}, {v:'balancete', l:'Balancete'}, {v:'dre', l:'DRE'}, {v:'faturamento', l:'Relação de Faturamento'}, {v:'razao', l:'Razão'}, {v:'comparativo', l:'Comparativo de Movimento'}, {v:'aviso_ferias', l:'Aviso de Férias'}, {v:'programacao_ferias', l:'Programação de Férias'}, {v:'folha', l:'Folha'}, {v:'retencoes', l:'Retenções de Impostos'} ];
 let REL_TAB='balanco';
 async function pageRelatorios(){
   main().innerHTML = `
@@ -8176,7 +8176,7 @@ async function renderRelTab(){
   const { items: empresas } = await api('/relatorios/empresas');
   const box = document.getElementById('relContent');
   if(REL_TAB==='retencoes'){ renderRelRetencoes(box, empresas); return; }
-  if(REL_TAB==='balanco'||REL_TAB==='balancete'||REL_TAB==='dre'||REL_TAB==='faturamento'||REL_TAB==='razao'||REL_TAB==='comparativo'||REL_TAB==='aviso_ferias'){ renderRelDominio(box, empresas, REL_TAB); return; }
+  if(REL_TAB==='balanco'||REL_TAB==='balancete'||REL_TAB==='dre'||REL_TAB==='faturamento'||REL_TAB==='razao'||REL_TAB==='comparativo'||REL_TAB==='aviso_ferias'||REL_TAB==='programacao_ferias'){ renderRelDominio(box, empresas, REL_TAB); return; }
   box.innerHTML = `
     <div class="row" style="margin-bottom:16px;">
       <div class="field" style="margin-bottom:0; min-width:280px;"><label>Cliente</label>
@@ -10459,6 +10459,7 @@ async function pageSetor(escopo){
       <div class="tab ${SETOR_ABA[escopo]==='agenda'?'active':''}" data-aba="agenda">Agenda</div>
       <div class="tab ${SETOR_ABA[escopo]==='tags'?'active':''}" data-aba="tags">Tags</div>
       <div class="tab ${SETOR_ABA[escopo]==='envio'?'active':''}" data-aba="envio">📤 Envio de documentos</div>
+      ${escopo==='dprh'?`<div class="tab ${SETOR_ABA[escopo]==='ferias'?'active':''}" data-aba="ferias">🏖️ Programação de Férias</div>`:''}
     </div>
     <div id="setorConteudo"></div>
   `;
@@ -10466,11 +10467,71 @@ async function pageSetor(escopo){
   const box = document.getElementById('setorConteudo');
   // Agenda e Tags do setor: só dos clientes que o setor atendeu (o CRM tem a visão geral).
   if(SETOR_ABA[escopo]==='envio') await centralEnvioMontar(escopo, box);
+  else if(SETOR_ABA[escopo]==='ferias') await feriasMontar(box);
   else if(SETOR_ABA[escopo]==='agenda') await crmAgenda(box, escopo);
   else if(SETOR_ABA[escopo]==='tags') await crmTags(box, escopo);
   else await atendimentoMontar(escopo, box);
 }
 
+// ===================== Programação de Férias (DP/RH) =====================
+// Lê o relatório "Programação de Férias" do Domínio (mesma esteira de Relatórios › Domínio Web) e
+// mostra só quem está com férias vencidas ou a 30 dias do limite — com botão pra mandar pro cliente
+// na hora, e um agendador mensal (config nesta mesma tela, sem precisar ir em Configurações).
+async function feriasMontar(box){
+  box.innerHTML = `<div class="empty-state">Carregando…</div>`;
+  let r; try{ r = await api('/ferias/estado'); }catch(e){ box.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
+  const totalVencidas = r.empresas.reduce((s,e)=>s+e.vencidas, 0);
+  const totalProximas = r.empresas.reduce((s,e)=>s+e.proximas, 0);
+  box.innerHTML = `
+    <div class="card" style="margin-bottom:14px;">
+      <h3 style="margin-top:0;">Envio automático mensal</h3>
+      <p class="subtitle" style="margin:0 0 10px;">Uma vez por mês, manda pra cada cliente (com pelo menos 1 funcionário vencido ou perto do limite) um relatório só com essas pendências.</p>
+      <div class="row" style="gap:10px; align-items:center; flex-wrap:wrap;">
+        <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="feriasAtivo" ${r.ativo?'checked':''}> Ligado</label>
+        <span style="font-size:12.5px; color:var(--ink-soft);">Todo dia</span>
+        <input type="number" id="feriasDiaMes" min="1" max="28" value="${r.diaMes}" style="width:60px;">
+        <span style="font-size:12.5px; color:var(--ink-soft);">às</span>
+        <input type="number" id="feriasHora" min="0" max="23" value="${r.hora}" style="width:55px;"> :
+        <input type="number" id="feriasMinuto" min="0" max="59" value="${String(r.minuto).padStart(2,'0')}" style="width:55px;">
+        <button class="btn primary" id="feriasSalvarCfg">Salvar</button>
+      </div>
+    </div>
+    ${r.empresas.length?`<p class="subtitle" style="margin:0 0 10px;"><b>${totalVencidas}</b> vencida(s) e <b>${totalProximas}</b> próxima(s) do limite, em ${r.empresas.length} empresa(s).</p>`:''}
+    ${r.empresas.length ? r.empresas.map(emp=>`
+      <div class="card" style="margin-bottom:10px;">
+        <div class="row" style="justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:8px;">
+          <div>
+            <div style="font-weight:600;">${esc(emp.nome)}</div>
+            <div style="font-size:11.5px; color:var(--ink-soft);">${emp.vencidas?`<span style="color:var(--debit); font-weight:600;">${emp.vencidas} vencida(s)</span>`:''}${emp.vencidas&&emp.proximas?' · ':''}${emp.proximas?`${emp.proximas} próxima(s) do limite`:''}${emp.atualizadoEm?` · atualizado em ${fmtDateHora(emp.atualizadoEm)}`:''}</div>
+          </div>
+          <div style="display:flex; gap:6px; flex-wrap:wrap;">
+            <button class="btn small" data-empresa="${emp.id}" data-canal="conversa" data-act="ferias-enviar" title="Pelo número de atendimento (conversa com o cliente)">💬 Enviar agora</button>
+            <button class="btn small" data-empresa="${emp.id}" data-canal="meta" data-act="ferias-enviar" title="Pelo número separado da API oficial (Meta)">📱 Enviar (Meta)</button>
+          </div>
+        </div>
+        <table class="data-table" style="margin-top:10px;"><thead><tr><th>Funcionário</th><th>Situação</th><th>Limite</th><th>Observação</th></tr></thead><tbody>
+          ${emp.funcionarios.map(f=>`<tr><td>${esc(f.nome)}</td><td>${f.status==='vencida'?'<span class="tag bad">Vencida</span>':'<span class="tag warn">Próxima do limite</span>'}</td><td>${esc(f.limiteConcessao.split('-').reverse().join('/'))}</td><td style="font-size:12px;">${esc(f.mensagem)}</td></tr>`).join('')}
+        </tbody></table>
+      </div>
+    `).join('') : '<div class="empty-state">Nenhuma pendência de férias no momento — ou ainda não chegou nenhum relatório de Programação de Férias pela leitura automática do Domínio (Relatórios › Domínio Web).</div>'}
+  `;
+  document.getElementById('feriasSalvarCfg').addEventListener('click', async ()=>{
+    const b = document.getElementById('feriasSalvarCfg'); b.disabled = true;
+    try{
+      await api('/ferias/config', { method:'POST', body:{ ativo: document.getElementById('feriasAtivo').checked, diaMes: document.getElementById('feriasDiaMes').value, hora: document.getElementById('feriasHora').value, minuto: document.getElementById('feriasMinuto').value } });
+      toast('Salvo.','ok');
+    }catch(e){ toast(e.message,'err'); }
+    b.disabled = false;
+  });
+  box.querySelectorAll('[data-act="ferias-enviar"]').forEach(b=>b.addEventListener('click', async ()=>{
+    b.disabled = true; const original = b.textContent; b.textContent = 'Enviando…';
+    try{
+      const resp = await api('/ferias/empresas/'+b.dataset.empresa+'/enviar-agora', { method:'POST', body:{ canal:b.dataset.canal } });
+      toast('Relatório enviado ('+resp.qtd+' funcionário(s)).','ok');
+    }catch(e){ toast(e.message,'err'); }
+    b.disabled = false; b.textContent = original;
+  }));
+}
 // ===================== Usuários =====================
 async function pageUsuarios(){
   const { items } = await api('/users');
@@ -11988,6 +12049,7 @@ async function abrirOdRelPendenciasModal(){
             <option value="razao">Razão</option>
             <option value="comparativo">Comparativo de Movimento</option>
             <option value="aviso_ferias">Aviso de Férias</option>
+            <option value="programacao_ferias">Programação de Férias</option>
           </select>
         </div>
         <div class="field" style="margin-bottom:0; width:90px;"><label>Ano</label><input type="number" id="odRelPendAno${i.id}" value="${i.periodoFim?i.periodoFim.slice(0,4):new Date().getFullYear()}"></div>

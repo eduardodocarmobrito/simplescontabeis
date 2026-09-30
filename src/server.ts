@@ -24,6 +24,7 @@ import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 import { registerWebmail } from "./webmail";
 import { registerCentralEnvio, credencialDriveDoEscritorio, driveGet, driveBaixar } from "./central-envio";
+import { registerFerias, feriasProcessarPdf } from "./ferias";
 import { createProxyMiddleware } from "http-proxy-middleware";
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 
@@ -7388,7 +7389,7 @@ setInterval(() => {
 // se o período já tem documento, sem filtrar por quem pediu, então importando ANTES de qualquer
 // solicitação (esta rotina é proativa/agendada), o pedido do cliente já chega atendido sem nenhum
 // código extra de "atendimento automático".
-type DomRelTipo = "balanco" | "balancete" | "dre" | "faturamento" | "razao" | "comparativo" | "aviso_ferias";
+type DomRelTipo = "balanco" | "balancete" | "dre" | "faturamento" | "razao" | "comparativo" | "aviso_ferias" | "programacao_ferias";
 const DOM_REL_TEMPLATE_NOME: Record<string, string> = {
   balanco: "Balanço",
   balancete: "Balancete",
@@ -7398,6 +7399,7 @@ const DOM_REL_TEMPLATE_NOME: Record<string, string> = {
   razao: "Razão",
   comparativo: "Comparativo de Movimento",
   aviso_ferias: "Aviso de Férias",
+  programacao_ferias: "Programação de Férias",
 };
 // Nomes dos templates alimentados pela importação automática do OneDrive — pra esses, "Solicitar
 // Documentos" não deixa o cliente digitar qualquer mês/ano (não existe ninguém pra gerar sob
@@ -7419,6 +7421,8 @@ function domRelClassificarTipos(texto: string): DomRelTipo[] {
   if (/raz[ãa]o(?!\s*social)/i.test(texto)) tipos.push("razao");
   if (/comparativo\s+(de\s+)?movimento|movimento\s+comparativo/i.test(texto)) tipos.push("comparativo");
   if (/aviso\s+de\s+f[ée]rias/i.test(texto)) tipos.push("aviso_ferias");
+  // Negative lookahead exclui "Aviso de Férias" (contém "férias" mas não é a listagem por empresa).
+  if (/programa[çc][ãa]o\s+de\s+f[ée]rias|controle\s+de\s+f[ée]rias/i.test(texto) && !/aviso\s+de\s+f[ée]rias/i.test(texto)) tipos.push("programacao_ferias");
   return tipos;
 }
 // Achado ao vivo (dry-run contra a pasta real): o TEXTO do PDF varia de layout conforme a empresa —
@@ -7754,6 +7758,9 @@ async function dominioRelatoriosSincronizar(
         const observacao = `Importado automaticamente da pasta "${item.origem === "gdrive" ? cfg.relatorios_drive_pasta_nome || "" : pasta}" ${origemTxt} em ${new Date().toLocaleDateString("pt-BR")}.`;
         const docId = integraContadorAnexarPdfEmEnvio(atribuicaoId, empresa.id, ano, mes, item.nome, buf.toString("base64"), observacao, null, true);
         if (primeiroDocId === null) primeiroDocId = docId;
+        // Além de arquivar o PDF (igual todo tipo aqui), extrai os funcionários e recalcula
+        // vencida/próxima pra essa empresa (ver src/ferias.ts) — só pra este tipo específico.
+        if (tipo === "programacao_ferias") feriasProcessarPdf(escritorioId, empresa.id, texto, docId);
       }
       domRelGravarControle({ ...base, tipoDetectado: tipos.join(","), empresaId: empresa.id, envioDocumentoId: primeiroDocId, status: "ok", erro: null, arquivoPendentePath: null });
       ok++;
@@ -7914,6 +7921,18 @@ registerCentralEnvio(app, {
   identificarEmpresa: domRelIdentificarEmpresa,
   extrairPeriodo: domRelExtrairPeriodo,
   pdfParse: (buf) => require("pdf-parse")(buf),
+});
+// Programação de Férias (DP/RH): lê o relatório da mesma esteira do Domínio acima, identifica quem
+// está com férias vencidas/perto de vencer e manda um relatório curado por empresa (uma vez por mês
+// ou pelo botão "Enviar agora").
+registerFerias(app, {
+  sqlite,
+  blockCliente,
+  requirePermissao,
+  podeAcessarEmpresa,
+  empresasVisiveis,
+  enviarEmail,
+  enviarWhatsapp: enviarDocumentoWhatsapp as any,
 });
 // Módulo E-mail (webmail): reaproveita o e-mail + senha de app de Configurações › E-mail corporativo.
 registerWebmail(app, {
@@ -13217,6 +13236,7 @@ function domRelTemplateNomesParaTipo(tipo: string): string[] {
   if (tipo === "razao") return ["Razão"];
   if (tipo === "comparativo") return ["Comparativo de Movimento"];
   if (tipo === "aviso_ferias") return ["Aviso de Férias"];
+  if (tipo === "programacao_ferias") return ["Programação de Férias"];
   return [];
 }
 app.get("/api/relatorios/documentos/empresas", blockCliente, requirePermissao("relatorios", "visualizar"), (req, res) => {
