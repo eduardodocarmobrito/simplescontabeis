@@ -4631,6 +4631,23 @@ sqlite.exec(`
   // Intervalo (segundos) entre os dois robôs (Comparativo + Programação de Férias): eles controlam o
   // MESMO Domínio, então nunca rodam juntos. Valor compartilhado (fica aqui, no estado do Comparativo).
   if (!colsRobo.some((c) => c.name === "gap_agentes_seg")) sqlite.exec(`ALTER TABLE comparativo_robo_estado ADD COLUMN gap_agentes_seg INTEGER NOT NULL DEFAULT 30`);
+  // Agendamento por horário fixo diário (alternativa/complemento ao "a cada X minutos") — mesmo padrão
+  // dia/hora/minuto já usado no agendamento de Programação de Férias (ferias.ts), mas diário (sem dia do
+  // mês: esses robôs mantêm dado fresco todo dia útil, não é um envio mensal). agenda_ultimo_dia trava
+  // pra não disparar de novo dentro do mesmo minuto (o agente faz poll a cada ~10s).
+  if (!colsRobo.some((c) => c.name === "agenda_ativo")) sqlite.exec(`ALTER TABLE comparativo_robo_estado ADD COLUMN agenda_ativo INTEGER NOT NULL DEFAULT 0`);
+  if (!colsRobo.some((c) => c.name === "agenda_hora")) sqlite.exec(`ALTER TABLE comparativo_robo_estado ADD COLUMN agenda_hora INTEGER NOT NULL DEFAULT 6`);
+  if (!colsRobo.some((c) => c.name === "agenda_minuto")) sqlite.exec(`ALTER TABLE comparativo_robo_estado ADD COLUMN agenda_minuto INTEGER NOT NULL DEFAULT 0`);
+  if (!colsRobo.some((c) => c.name === "agenda_ultimo_dia")) sqlite.exec(`ALTER TABLE comparativo_robo_estado ADD COLUMN agenda_ultimo_dia TEXT`);
+}
+// true se o robô deve disparar AGORA pelo horário fixo diário configurado (hora/minuto batendo com o
+// horário de Brasília e ainda não disparado hoje). Mesma conta de fuso (-3h) já usada em outros
+// agendamentos deste arquivo (ex.: comparativoPeriodoPadrao).
+function agendaDeveRodarAgora(cfg: { agendaAtivo: any; agendaHora: number; agendaMinuto: number; agendaUltimoDia: string | null }): { deve: boolean; hojeSp: string } {
+  const agora = new Date(Date.now() - 3 * 3600 * 1000);
+  const hojeSp = agora.toISOString().slice(0, 10);
+  const deve = !!cfg.agendaAtivo && agora.getHours() === cfg.agendaHora && agora.getMinutes() === cfg.agendaMinuto && cfg.agendaUltimoDia !== hojeSp;
+  return { deve, hojeSp };
 }
 function garantirRoboEstado(escritorioId: number) {
   sqlite.prepare(`INSERT OR IGNORE INTO comparativo_robo_estado (escritorio_id) VALUES (?)`).run(escritorioId);
@@ -4712,18 +4729,21 @@ app.get("/api/dominio-agent/comparativo-comando", requireDominioAgent, (_req, re
   sqlite.prepare(`UPDATE comparativo_robo_estado SET agente_visto_em = datetime('now') WHERE escritorio_id = 1`).run();
   const c = sqlite.prepare(`
     SELECT ligado, intervalo_min AS intervaloMin, run_now_em, ultima_exec_em, periodo_ini AS periodoIni, periodo_fim AS periodoFim,
+      agenda_ativo AS agendaAtivo, agenda_hora AS agendaHora, agenda_minuto AS agendaMinuto, agenda_ultimo_dia AS agendaUltimoDia,
       (run_now_em IS NOT NULL) AS runNow,
       (parar_em IS NOT NULL) AS parar,
       (ligado = 1 AND (ultima_exec_em IS NULL OR datetime(ultima_exec_em, '+' || intervalo_min || ' minutes') <= datetime('now'))) AS devePorTempo
     FROM comparativo_robo_estado WHERE escritorio_id = 1
   `).get() as any;
   const pad = comparativoPeriodoPadrao();
+  const { deve: devePorAgenda, hojeSp } = agendaDeveRodarAgora(c);
+  if (devePorAgenda) sqlite.prepare(`UPDATE comparativo_robo_estado SET agenda_ultimo_dia = ? WHERE escritorio_id = 1`).run(hojeSp);
   // Só um robô por vez: segura se o Férias estiver rodando ou tiver terminado há menos que o intervalo.
   // (Comparativo tem prioridade: NÃO cede a um Férias só "pendente".)
   const segurar = outroRoboOcupado("ferias_robo_estado", false);
-  const deveRodar = (!!c.runNow || !!c.devePorTempo) && !segurar;
+  const deveRodar = (!!c.runNow || !!c.devePorTempo || devePorAgenda) && !segurar;
   res.json({
-    deveRodar, motivo: segurar ? "aguardando_outro_robo" : (c.runNow ? "manual" : (c.devePorTempo ? "automatico" : null)),
+    deveRodar, motivo: segurar ? "aguardando_outro_robo" : (c.runNow ? "manual" : (devePorAgenda ? "agenda" : (c.devePorTempo ? "automatico" : null))),
     parar: !!c.parar,
     ligado: !!c.ligado, intervaloMin: c.intervaloMin,
     periodoIni: c.periodoIni || pad.ini, periodoFim: c.periodoFim || pad.fim,
@@ -4752,6 +4772,7 @@ app.get("/api/comparativo-robo/estado", blockCliente, requirePermissao("configur
   const c = sqlite.prepare(`
     SELECT ligado, intervalo_min AS intervaloMin, run_now_em AS runNowEm, ultima_exec_em AS ultimaExecEm,
       periodo_ini AS periodoIni, periodo_fim AS periodoFim, gap_agentes_seg AS gapAgentesSeg,
+      agenda_ativo AS agendaAtivo, agenda_hora AS agendaHora, agenda_minuto AS agendaMinuto,
       prog_total AS total, prog_feitas AS feitas, prog_atual AS atual, prog_em AS progEm,
       -- "rodando" só vale se o progresso for recente; se o agente morreu/foi fechado sem avisar
       -- (progresso velho > 5min), considera parado pra a barra do site NÃO ficar congelada.
@@ -4766,6 +4787,7 @@ app.get("/api/comparativo-robo/estado", blockCliente, requirePermissao("configur
     ligado: !!c.ligado, intervaloMin: c.intervaloMin, ultimaExecEm: c.ultimaExecEm,
     periodoIni: c.periodoIni, periodoFim: c.periodoFim, periodoPadraoIni: pad.ini, periodoPadraoFim: pad.fim,
     gapAgentesSeg: c.gapAgentesSeg ?? 30,
+    agendaAtivo: !!c.agendaAtivo, agendaHora: c.agendaHora, agendaMinuto: c.agendaMinuto,
     rodando: !!c.rodando, total: c.total, feitas: c.feitas, atual: c.atual, progEm: c.progEm,
     runNowPendente: !!c.runNowEm, pararPendente: !!c.pararPendente, agenteOnline: !!c.agenteOnline, agenteVistoEm: c.agenteVistoEm,
   });
@@ -4778,6 +4800,9 @@ app.post("/api/comparativo-robo/config", blockCliente, requirePermissao("configu
   intervalo = Math.min(Math.max(Math.round(intervalo), 1), 1440);
   const pIni = comparativoValidaPeriodo(req.body?.periodoIni);
   const pFim = comparativoValidaPeriodo(req.body?.periodoFim);
+  const agendaAtivo = req.body?.agendaAtivo ? 1 : 0;
+  const agendaHora = Math.min(Math.max(Math.round(Number(req.body?.agendaHora)) || 6, 0), 23);
+  const agendaMinuto = Math.min(Math.max(Math.round(Number(req.body?.agendaMinuto)) || 0, 0), 59);
   // Intervalo (segundos) entre os dois robôs — compartilhado. Só grava se veio no body (0..3600).
   let gap: number | null = null;
   if (req.body?.gapAgentesSeg !== undefined) {
@@ -4785,7 +4810,7 @@ app.post("/api/comparativo-robo/config", blockCliente, requirePermissao("configu
     gap = Number.isFinite(g) ? Math.min(Math.max(Math.round(g), 0), 3600) : 30;
     sqlite.prepare(`UPDATE comparativo_robo_estado SET gap_agentes_seg = ? WHERE escritorio_id = 1`).run(gap);
   }
-  sqlite.prepare(`UPDATE comparativo_robo_estado SET ligado = ?, intervalo_min = ?, periodo_ini = ?, periodo_fim = ? WHERE escritorio_id = 1`).run(ligado, intervalo, pIni, pFim);
+  sqlite.prepare(`UPDATE comparativo_robo_estado SET ligado = ?, intervalo_min = ?, periodo_ini = ?, periodo_fim = ?, agenda_ativo = ?, agenda_hora = ?, agenda_minuto = ? WHERE escritorio_id = 1`).run(ligado, intervalo, pIni, pFim, agendaAtivo, agendaHora, agendaMinuto);
   res.json({ ok: true, ligado: !!ligado, intervaloMin: intervalo, periodoIni: pIni, periodoFim: pFim, gapAgentesSeg: gap ?? undefined });
 });
 app.post("/api/comparativo-robo/executar", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
@@ -4835,6 +4860,13 @@ sqlite.exec(`
     parar_em TEXT
   );
 `);
+{
+  const colsFeriasRobo = sqlite.prepare(`PRAGMA table_info(ferias_robo_estado)`).all() as any[];
+  if (!colsFeriasRobo.some((c) => c.name === "agenda_ativo")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN agenda_ativo INTEGER NOT NULL DEFAULT 0`);
+  if (!colsFeriasRobo.some((c) => c.name === "agenda_hora")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN agenda_hora INTEGER NOT NULL DEFAULT 6`);
+  if (!colsFeriasRobo.some((c) => c.name === "agenda_minuto")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN agenda_minuto INTEGER NOT NULL DEFAULT 0`);
+  if (!colsFeriasRobo.some((c) => c.name === "agenda_ultimo_dia")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN agenda_ultimo_dia TEXT`);
+}
 function garantirFeriasEstado(escritorioId: number) {
   sqlite.prepare(`INSERT OR IGNORE INTO ferias_robo_estado (escritorio_id) VALUES (?)`).run(escritorioId);
 }
@@ -4870,16 +4902,19 @@ app.get("/api/dominio-agent/ferias-comando", requireDominioAgent, (_req, res) =>
   sqlite.prepare(`UPDATE ferias_robo_estado SET agente_visto_em = datetime('now') WHERE escritorio_id = 1`).run();
   const c = sqlite.prepare(`
     SELECT ligado, intervalo_min AS intervaloMin, run_now_em, ultima_exec_em,
+      agenda_ativo AS agendaAtivo, agenda_hora AS agendaHora, agenda_minuto AS agendaMinuto, agenda_ultimo_dia AS agendaUltimoDia,
       (run_now_em IS NOT NULL) AS runNow,
       (parar_em IS NOT NULL) AS parar,
       (ligado = 1 AND (ultima_exec_em IS NULL OR datetime(ultima_exec_em, '+' || intervalo_min || ' minutes') <= datetime('now'))) AS devePorTempo
     FROM ferias_robo_estado WHERE escritorio_id = 1
   `).get() as any;
+  const { deve: devePorAgenda, hojeSp } = agendaDeveRodarAgora(c);
+  if (devePorAgenda) sqlite.prepare(`UPDATE ferias_robo_estado SET agenda_ultimo_dia = ? WHERE escritorio_id = 1`).run(hojeSp);
   // Só um robô por vez: o Férias CEDE ao Comparativo rodando, pendente (run/por-tempo) OU recém-terminado.
   const segurar = outroRoboOcupado("comparativo_robo_estado", true);
-  const deveRodar = (!!c.runNow || !!c.devePorTempo) && !segurar;
+  const deveRodar = (!!c.runNow || !!c.devePorTempo || devePorAgenda) && !segurar;
   res.json({
-    deveRodar, motivo: segurar ? "aguardando_outro_robo" : (c.runNow ? "manual" : (c.devePorTempo ? "automatico" : null)),
+    deveRodar, motivo: segurar ? "aguardando_outro_robo" : (c.runNow ? "manual" : (devePorAgenda ? "agenda" : (c.devePorTempo ? "automatico" : null))),
     parar: !!c.parar, ligado: !!c.ligado, intervaloMin: c.intervaloMin,
   });
 });
@@ -4901,6 +4936,7 @@ app.get("/api/ferias-robo/estado", blockCliente, requirePermissao("configuracoes
   garantirFeriasEstado(1);
   const c = sqlite.prepare(`
     SELECT ligado, intervalo_min AS intervaloMin, run_now_em AS runNowEm, ultima_exec_em AS ultimaExecEm,
+      agenda_ativo AS agendaAtivo, agenda_hora AS agendaHora, agenda_minuto AS agendaMinuto,
       prog_total AS total, prog_feitas AS feitas, prog_atual AS atual, prog_em AS progEm,
       (prog_rodando = 1 AND prog_em IS NOT NULL AND datetime(prog_em, '+5 minutes') >= datetime('now')) AS rodando,
       agente_visto_em AS agenteVistoEm,
@@ -4910,6 +4946,7 @@ app.get("/api/ferias-robo/estado", blockCliente, requirePermissao("configuracoes
   `).get() as any;
   res.json({
     ligado: !!c.ligado, intervaloMin: c.intervaloMin, ultimaExecEm: c.ultimaExecEm,
+    agendaAtivo: !!c.agendaAtivo, agendaHora: c.agendaHora, agendaMinuto: c.agendaMinuto,
     rodando: !!c.rodando, total: c.total, feitas: c.feitas, atual: c.atual, progEm: c.progEm,
     runNowPendente: !!c.runNowEm, pararPendente: !!c.pararPendente, agenteOnline: !!c.agenteOnline, agenteVistoEm: c.agenteVistoEm,
   });
@@ -4920,7 +4957,10 @@ app.post("/api/ferias-robo/config", blockCliente, requirePermissao("configuracoe
   let intervalo = Number(req.body?.intervaloMin);
   if (!Number.isFinite(intervalo) || intervalo < 1) intervalo = 15;
   intervalo = Math.min(Math.max(Math.round(intervalo), 1), 1440);
-  sqlite.prepare(`UPDATE ferias_robo_estado SET ligado = ?, intervalo_min = ? WHERE escritorio_id = 1`).run(ligado, intervalo);
+  const agendaAtivo = req.body?.agendaAtivo ? 1 : 0;
+  const agendaHora = Math.min(Math.max(Math.round(Number(req.body?.agendaHora)) || 6, 0), 23);
+  const agendaMinuto = Math.min(Math.max(Math.round(Number(req.body?.agendaMinuto)) || 0, 0), 59);
+  sqlite.prepare(`UPDATE ferias_robo_estado SET ligado = ?, intervalo_min = ?, agenda_ativo = ?, agenda_hora = ?, agenda_minuto = ? WHERE escritorio_id = 1`).run(ligado, intervalo, agendaAtivo, agendaHora, agendaMinuto);
   res.json({ ok: true, ligado: !!ligado, intervaloMin: intervalo });
 });
 app.post("/api/ferias-robo/executar", blockCliente, requirePermissao("configuracoes", "editar"), (_req, res) => {
@@ -4974,6 +5014,47 @@ app.get("/api/empresas/comparativo-movimento/diagnostico-cadastro", blockCliente
     };
   });
   res.json({ items: items.filter((i) => i.semCpfCnpj || i.semCodigo || i.codigoDuplicado) });
+});
+// Empresas marcadas pra um dos dois robôs do Domínio (campoFlag: comparativo_movimento_diario |
+// programacao_ferias) + o resultado da ÚLTIMA leitura de cada uma (tabelaLog: comparativo_movimento_log
+// | ferias_log) — pra tela mostrar, lado a lado, "quem está marcado" e "quem deu certo/errado da
+// última vez". Uma empresa marcada mas sem nenhuma linha em tabelaLog ainda é "nunca rodou" (não é erro).
+function roboMarcadasEResultado(escritorioId: number, campoFlag: "comparativo_movimento_diario" | "programacao_ferias", tabelaLog: "comparativo_movimento_log" | "ferias_log") {
+  const empresas = sqlite
+    .prepare(`SELECT id, nome, cnpj, codigo_dominio as codigoDominio FROM empresas WHERE escritorio_id = ? AND ativo = 1 AND ${campoFlag} = 1 ORDER BY nome COLLATE NOCASE`)
+    .all(escritorioId) as any[];
+  const contagemCodigo = new Map<string, number>();
+  for (const e of empresas) {
+    const cod = String(e.codigoDominio || "").trim();
+    if (cod) contagemCodigo.set(cod, (contagemCodigo.get(cod) || 0) + 1);
+  }
+  const ultimos = sqlite
+    .prepare(`SELECT empresa_id AS empresaId, status, erro, quando FROM ${tabelaLog} l WHERE l.id = (SELECT id FROM ${tabelaLog} WHERE empresa_id = l.empresa_id ORDER BY id DESC LIMIT 1)`)
+    .all() as any[];
+  const ultimoPorEmpresa = new Map(ultimos.filter((u) => u.empresaId != null).map((u) => [u.empresaId, u]));
+  return empresas.map((e) => {
+    const digitos = String(e.cnpj || "").replace(/\D/g, "");
+    const cod = String(e.codigoDominio || "").trim();
+    const ult = ultimoPorEmpresa.get(e.id);
+    return {
+      id: e.id,
+      nome: e.nome,
+      cnpj: e.cnpj || null,
+      codigoDominio: e.codigoDominio || null,
+      semCpfCnpj: digitos.length !== 11 && digitos.length !== 14,
+      semCodigo: !cod,
+      codigoDuplicado: cod ? (contagemCodigo.get(cod) || 0) > 1 : false,
+      ultimoStatus: ult ? ult.status : null, // 'ok' | 'erro' | null (nunca rodou)
+      ultimoErro: ult ? ult.erro : null,
+      ultimoQuando: ult ? ult.quando : null,
+    };
+  });
+}
+app.get("/api/empresas/comparativo-movimento/marcadas", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
+  res.json({ items: roboMarcadasEResultado((req as any).user.escritorioId, "comparativo_movimento_diario", "comparativo_movimento_log") });
+});
+app.get("/api/empresas/programacao-ferias/marcadas", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
+  res.json({ items: roboMarcadasEResultado((req as any).user.escritorioId, "programacao_ferias", "ferias_log") });
 });
 app.delete("/api/fgts/agente-tokens", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
   const r = sqlite.prepare(`DELETE FROM fgts_agente_tokens WHERE user_id = ?`).run((req as any).user.id);
@@ -8050,6 +8131,24 @@ app.post("/api/onedrive/relatorios/pendentes/:id/atribuir", blockCliente, requir
     /* segue mesmo se não conseguir apagar o arquivo temporário */
   }
   res.json({ ok: true, docId });
+});
+// Descarta um "não identificado" sem atribuir a ninguém — pro caso do arquivo ter sido apagado da
+// pasta de origem (Drive/OneDrive) e a pendência ficar presa aqui pra sempre, já que nada mais vai
+// reprocessar esse arquivo específico. Só remove o registro de controle e o PDF temporário salvo;
+// nunca existiu em envio_documentos (senão já estaria status='ok', não pendente).
+app.delete("/api/onedrive/relatorios/pendentes/:id", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
+  const escritorioId = (req as any).user.escritorioId;
+  const row = sqlite.prepare(`SELECT * FROM dominio_relatorios_importados WHERE id = ? AND escritorio_id = ?`).get(Number(req.params.id), escritorioId) as any;
+  if (!row) return res.status(404).json({ error: "Registro não encontrado." });
+  if (row.arquivo_pendente_path) {
+    try {
+      fs.unlinkSync(row.arquivo_pendente_path);
+    } catch {
+      /* segue mesmo se o arquivo já não existir */
+    }
+  }
+  sqlite.prepare(`DELETE FROM dominio_relatorios_importados WHERE id = ?`).run(row.id);
+  res.json({ ok: true });
 });
 // OneDrive: confere a cada 5 minutos (a API da Microsoft não pede menos que isso pra listagem completa de pasta) —
 // setInterval SEPARADO do de exportação de XML acima (direção contrária: aqui é leitura).

@@ -11853,8 +11853,16 @@ function renderCfgDomRelatorios(box, sub, dados){
         Drive acima. Controle o robô aqui.
       </p>
       <div id="roboCompStatus" style="font-size:13px; margin-bottom:8px;">Carregando…</div>
-      <label class="checkbox-row"><input type="checkbox" id="roboCompLigado"> Rodar automaticamente a cada
-        <input id="roboCompIntervalo" type="number" min="1" max="1440" style="width:64px; margin:0 4px;"> minutos</label>
+      <div class="row" style="align-items:flex-end; gap:14px; flex-wrap:wrap;">
+        <label class="checkbox-row" style="margin:0 0 8px;"><input type="checkbox" id="roboCompLigado"> Rodar automaticamente</label>
+        <div class="field"><label>A cada (minutos)</label><input id="roboCompIntervalo" type="number" min="1" max="1440" style="width:90px;"></div>
+      </div>
+      <div class="row" style="margin-top:4px; align-items:center; gap:10px; flex-wrap:wrap;">
+        <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="roboCompAgendaAtivo"> Rodar automaticamente todo dia às</label>
+        <input type="number" id="roboCompAgendaHora" min="0" max="23" style="width:55px;"> :
+        <input type="number" id="roboCompAgendaMinuto" min="0" max="59" style="width:55px;">
+        <span style="font-size:11.5px; color:var(--ink-soft);">(horário de Brasília — independe do "a cada X minutos" acima, os dois podem ficar ligados juntos)</span>
+      </div>
       <div class="row" style="margin-top:8px; align-items:flex-end;">
         <div class="field"><label>Período — início (MM/AAAA)</label><input id="roboCompPerIni" style="width:120px;"></div>
         <div class="field"><label>Período — fim (MM/AAAA)</label><input id="roboCompPerFim" style="width:120px;"></div>
@@ -11868,6 +11876,7 @@ function renderCfgDomRelatorios(box, sub, dados){
         <button class="btn primary" id="btnRoboCompSalvar" disabled>Salvar</button>
         <button class="btn" id="btnRoboCompExecutar">Executar agora</button>
         <button class="btn" id="btnRoboCompParar" style="background:#c0392b; border-color:#c0392b; color:#fff;" title="Freia o robô imediatamente (aborta a execução em andamento e desliga o automático)">⛔ Parar robô</button>
+        <button class="btn" id="btnRoboCompMarcadas">📋 Empresas marcadas / resultado</button>
         ${STATE.user.perfil==='Administrador'?'<a class="btn" href="/api/empresas/comparativo-movimento/robo" download>⬇ Baixar robô (instalar em outro servidor)</a>':''}
       </div>
       <div id="roboCompProgresso" style="margin-top:12px;"></div>
@@ -11881,12 +11890,21 @@ function renderCfgDomRelatorios(box, sub, dados){
         Usa sempre a <b>data de hoje</b> como data-base do cálculo.
       </p>
       <div id="roboFeriasStatus" style="font-size:13px; margin-bottom:8px;">Carregando…</div>
-      <label class="checkbox-row"><input type="checkbox" id="roboFeriasLigado"> Rodar automaticamente a cada
-        <input id="roboFeriasIntervalo" type="number" min="1" max="1440" style="width:64px; margin:0 4px;"> minutos</label>
+      <div class="row" style="align-items:flex-end; gap:14px; flex-wrap:wrap;">
+        <label class="checkbox-row" style="margin:0 0 8px;"><input type="checkbox" id="roboFeriasLigado"> Rodar automaticamente</label>
+        <div class="field"><label>A cada (minutos)</label><input id="roboFeriasIntervalo" type="number" min="1" max="1440" style="width:90px;"></div>
+      </div>
+      <div class="row" style="margin-top:4px; align-items:center; gap:10px; flex-wrap:wrap;">
+        <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="roboFeriasAgendaAtivo"> Rodar automaticamente todo dia às</label>
+        <input type="number" id="roboFeriasAgendaHora" min="0" max="23" style="width:55px;"> :
+        <input type="number" id="roboFeriasAgendaMinuto" min="0" max="59" style="width:55px;">
+        <span style="font-size:11.5px; color:var(--ink-soft);">(horário de Brasília — independe do "a cada X minutos" acima, os dois podem ficar ligados juntos)</span>
+      </div>
       <div class="row" style="margin-top:8px;">
         <button class="btn primary" id="btnRoboFeriasSalvar" disabled>Salvar</button>
         <button class="btn" id="btnRoboFeriasExecutar">Executar agora</button>
         <button class="btn" id="btnRoboFeriasParar" style="background:#c0392b; border-color:#c0392b; color:#fff;" title="Freia o robô imediatamente (aborta a execução em andamento e desliga o automático)">⛔ Parar robô</button>
+        <button class="btn" id="btnRoboFeriasMarcadas">📋 Empresas marcadas / resultado</button>
         ${STATE.user.perfil==='Administrador'?'<a class="btn" href="/api/empresas/programacao-ferias/robo" download>⬇ Baixar robô (instalar em outro servidor)</a>':''}
       </div>
       <div id="roboFeriasProgresso" style="margin-top:12px;"></div>
@@ -11999,14 +12017,17 @@ function renderCfgDomRelatorios(box, sub, dados){
     api('/comparativo-robo/estado').then(e=>{
       if($('roboCompLigado')) $('roboCompLigado').checked = e.ligado;
       if($('roboCompIntervalo')) $('roboCompIntervalo').value = e.intervaloMin;
+      if($('roboCompAgendaAtivo')) $('roboCompAgendaAtivo').checked = e.agendaAtivo;
+      if($('roboCompAgendaHora')) $('roboCompAgendaHora').value = e.agendaHora;
+      if($('roboCompAgendaMinuto')) $('roboCompAgendaMinuto').value = String(e.agendaMinuto).padStart(2,'0');
       if($('roboCompPerIni')){ $('roboCompPerIni').value = e.periodoIni||''; $('roboCompPerIni').placeholder = e.periodoPadraoIni||'01/2026'; }
       if($('roboCompPerFim')){ $('roboCompPerFim').value = e.periodoFim||''; $('roboCompPerFim').placeholder = e.periodoPadraoFim||'08/2026'; }
       if($('roboGapAgentes')) $('roboGapAgentes').value = (e.gapAgentesSeg ?? 30);
       pintar(e);
     }).catch(()=>{});
-    habilitarSalvarAoMudar('btnRoboCompSalvar', ['roboCompLigado','roboCompIntervalo','roboCompPerIni','roboCompPerFim','roboGapAgentes']);
+    habilitarSalvarAoMudar('btnRoboCompSalvar', ['roboCompLigado','roboCompIntervalo','roboCompAgendaAtivo','roboCompAgendaHora','roboCompAgendaMinuto','roboCompPerIni','roboCompPerFim','roboGapAgentes']);
     $('btnRoboCompSalvar')?.addEventListener('click', async ()=>{
-      try{ await api('/comparativo-robo/config', { method:'POST', body:{ ligado:$('roboCompLigado').checked, intervaloMin:Number($('roboCompIntervalo').value)||15, periodoIni:$('roboCompPerIni').value.trim(), periodoFim:$('roboCompPerFim').value.trim(), gapAgentesSeg:Number($('roboGapAgentes').value) } }); toast('Configuração do robô salva.','ok'); $('btnRoboCompSalvar').disabled = true; }
+      try{ await api('/comparativo-robo/config', { method:'POST', body:{ ligado:$('roboCompLigado').checked, intervaloMin:Number($('roboCompIntervalo').value)||15, agendaAtivo:$('roboCompAgendaAtivo').checked, agendaHora:Number($('roboCompAgendaHora').value), agendaMinuto:Number($('roboCompAgendaMinuto').value), periodoIni:$('roboCompPerIni').value.trim(), periodoFim:$('roboCompPerFim').value.trim(), gapAgentesSeg:Number($('roboGapAgentes').value) } }); toast('Configuração do robô salva.','ok'); $('btnRoboCompSalvar').disabled = true; }
       catch(e){ toast(e.message,'err'); }
     });
     $('btnRoboCompExecutar')?.addEventListener('click', async (ev)=>{
@@ -12022,6 +12043,7 @@ function renderCfgDomRelatorios(box, sub, dados){
       catch(e){ toast(e.message,'err'); }
       finally{ setTimeout(()=>{ b.disabled = false; }, 1500); if($('roboCompLigado')) $('roboCompLigado').checked = false; carregar(); }
     });
+    $('btnRoboCompMarcadas')?.addEventListener('click', ()=>abrirRoboMarcadasModal('comparativo-movimento', 'Comparativo de Movimento'));
     try{ clearInterval(window.__roboCompPoll); }catch(e){}
     window.__roboCompPoll = setInterval(()=>{ if(document.getElementById('roboCompStatus')) carregar(); else { try{ clearInterval(window.__roboCompPoll); }catch(e){} } }, 3000);
     // Cadastro incompleto (sem CPF/CNPJ, sem Código do Domínio, ou código repetido entre empresas)
@@ -12068,11 +12090,14 @@ function renderCfgDomRelatorios(box, sub, dados){
     api('/ferias-robo/estado').then(e=>{
       if($('roboFeriasLigado')) $('roboFeriasLigado').checked = e.ligado;
       if($('roboFeriasIntervalo')) $('roboFeriasIntervalo').value = e.intervaloMin;
+      if($('roboFeriasAgendaAtivo')) $('roboFeriasAgendaAtivo').checked = e.agendaAtivo;
+      if($('roboFeriasAgendaHora')) $('roboFeriasAgendaHora').value = e.agendaHora;
+      if($('roboFeriasAgendaMinuto')) $('roboFeriasAgendaMinuto').value = String(e.agendaMinuto).padStart(2,'0');
       pintar(e);
     }).catch(()=>{});
-    habilitarSalvarAoMudar('btnRoboFeriasSalvar', ['roboFeriasLigado','roboFeriasIntervalo']);
+    habilitarSalvarAoMudar('btnRoboFeriasSalvar', ['roboFeriasLigado','roboFeriasIntervalo','roboFeriasAgendaAtivo','roboFeriasAgendaHora','roboFeriasAgendaMinuto']);
     $('btnRoboFeriasSalvar')?.addEventListener('click', async ()=>{
-      try{ await api('/ferias-robo/config', { method:'POST', body:{ ligado:$('roboFeriasLigado').checked, intervaloMin:Number($('roboFeriasIntervalo').value)||15 } }); toast('Configuração do robô salva.','ok'); $('btnRoboFeriasSalvar').disabled = true; }
+      try{ await api('/ferias-robo/config', { method:'POST', body:{ ligado:$('roboFeriasLigado').checked, intervaloMin:Number($('roboFeriasIntervalo').value)||15, agendaAtivo:$('roboFeriasAgendaAtivo').checked, agendaHora:Number($('roboFeriasAgendaHora').value), agendaMinuto:Number($('roboFeriasAgendaMinuto').value) } }); toast('Configuração do robô salva.','ok'); $('btnRoboFeriasSalvar').disabled = true; }
       catch(e){ toast(e.message,'err'); }
     });
     $('btnRoboFeriasExecutar')?.addEventListener('click', async (ev)=>{
@@ -12088,9 +12113,49 @@ function renderCfgDomRelatorios(box, sub, dados){
       catch(e){ toast(e.message,'err'); }
       finally{ setTimeout(()=>{ b.disabled = false; }, 1500); if($('roboFeriasLigado')) $('roboFeriasLigado').checked = false; carregar(); }
     });
+    $('btnRoboFeriasMarcadas')?.addEventListener('click', ()=>abrirRoboMarcadasModal('programacao-ferias', 'Programação de Férias'));
     try{ clearInterval(window.__roboFeriasPoll); }catch(e){}
     window.__roboFeriasPoll = setInterval(()=>{ if(document.getElementById('roboFeriasStatus')) carregar(); else { try{ clearInterval(window.__roboFeriasPoll); }catch(e){} } }, 3000);
   })();
+}
+// Modal com duas listas lado a lado, pros robôs do Domínio (Comparativo de Movimento / Programação de
+// Férias): à esquerda TODAS as empresas marcadas pra esse robô gerar (em Empresas › Editar), à direita
+// o resultado da ÚLTIMA leitura de cada uma (ok / erro / nunca rodou ainda) — pra achar rápido quem
+// está devendo sem precisar abrir empresa por empresa. tipo: 'comparativo-movimento' | 'programacao-ferias'.
+async function abrirRoboMarcadasModal(tipo, titulo){
+  openModal(`<h3>Empresas marcadas — ${esc(titulo)}</h3><div id="roboMarcModalBody"><div class="empty-state">Carregando…</div></div><div class="modal-actions"><button class="btn" id="roboMarcFechar">Fechar</button></div>`, '820px');
+  document.getElementById('roboMarcFechar').addEventListener('click', closeModal);
+  let items;
+  try{ ({ items } = await api('/empresas/'+tipo+'/marcadas')); }
+  catch(e){ document.getElementById('roboMarcModalBody').innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; return; }
+  const body = document.getElementById('roboMarcModalBody');
+  if(!body) return;
+  if(!items.length){ body.innerHTML = '<div class="empty-state">Nenhuma empresa marcada pra esse robô ainda — marque em Empresas › Editar.</div>'; return; }
+  const ok = items.filter(i=>i.ultimoStatus==='ok');
+  const erro = items.filter(i=>i.ultimoStatus==='erro');
+  const nuncaRodou = items.filter(i=>!i.ultimoStatus);
+  const linhaMarcada = i => `<div style="font-size:12.5px; padding:4px 0; border-top:1px dashed var(--rule); display:flex; justify-content:space-between; gap:8px;">
+    <span>${esc(i.nome)}${i.codigoDominio?` <span style="color:var(--ink-soft);">(${esc(i.codigoDominio)})</span>`:''}</span>
+    ${(i.semCpfCnpj||i.semCodigo||i.codigoDuplicado)?'<span class="tag bad" title="Cadastro incompleto — corrija em Empresas › Editar">cadastro</span>':''}
+  </div>`;
+  const linhaResultado = i => `<div style="font-size:12.5px; padding:4px 0; border-top:1px dashed var(--rule);">
+    <div style="display:flex; justify-content:space-between; gap:8px;"><b>${esc(i.nome)}</b> ${i.ultimoQuando?`<span style="color:var(--ink-soft); white-space:nowrap;">${fmtDateHora(i.ultimoQuando)}</span>`:''}</div>
+    ${i.ultimoErro?`<div style="color:var(--debit);">${esc(i.ultimoErro)}</div>`:''}
+  </div>`;
+  body.innerHTML = `
+    <div class="row" style="gap:14px; align-items:stretch; flex-wrap:wrap;">
+      <div class="card" style="flex:1; min-width:320px; margin-bottom:0; max-height:420px; overflow:auto;">
+        <h3 style="margin-top:0;">Marcadas para gerar (${items.length})</h3>
+        ${items.map(linhaMarcada).join('')}
+      </div>
+      <div class="card" style="flex:1; min-width:320px; margin-bottom:0; max-height:420px; overflow:auto;">
+        <h3 style="margin-top:0;">Resultado da última leitura</h3>
+        ${ok.length?`<div style="font-weight:600; font-size:12.5px; color:var(--credit); margin-top:6px;">✔ Deu certo (${ok.length})</div>${ok.map(linhaResultado).join('')}`:''}
+        ${erro.length?`<div style="font-weight:600; font-size:12.5px; color:var(--debit); margin-top:10px;">✘ Deu erro (${erro.length})</div>${erro.map(linhaResultado).join('')}`:''}
+        ${nuncaRodou.length?`<div style="font-weight:600; font-size:12.5px; color:var(--ink-soft); margin-top:10px;">— Nunca rodou ainda (${nuncaRodou.length})</div>${nuncaRodou.map(linhaResultado).join('')}`:''}
+      </div>
+    </div>
+  `;
 }
 function renderCfgDomOneDrive(box, sub, dados){
   const { oneDriveCfg } = dados;
@@ -12204,6 +12269,7 @@ async function abrirOdRelPendenciasModal(){
         <div class="field" style="margin-bottom:0; width:80px;"><label>Mês</label><input type="number" min="1" max="12" id="odRelPendMes${i.id}" value="${i.periodoFim?Number(i.periodoFim.slice(5,7)):''}"></div>
         <a class="btn small" href="/api/onedrive/relatorios/pendentes/${i.id}/pdf" target="_blank" rel="noopener">Ver PDF</a>
         <button class="btn small primary" data-act="atribuir" data-id="${i.id}">Atribuir</button>
+        <button class="btn small danger" data-act="excluir" data-id="${i.id}" title="Use se o arquivo já foi apagado da pasta de origem e essa pendência não vai mais se resolver sozinha">🗑 Excluir</button>
       </div>
     </div>
   `).join('');
@@ -12219,6 +12285,16 @@ async function abrirOdRelPendenciasModal(){
     try{
       await api('/onedrive/relatorios/pendentes/'+id+'/atribuir', { method:'POST', body:{ empresaId, tipo, ano, mes } });
       toast('Atribuído.','ok');
+      document.querySelector(`[data-pend="${id}"]`).remove();
+    }catch(e){ toast(e.message,'err'); b.disabled=false; }
+  }));
+  listEl.querySelectorAll('[data-act="excluir"]').forEach(b=>b.addEventListener('click', async ()=>{
+    const id = b.dataset.id;
+    if(!confirmar('Excluir essa pendência? Use só se o arquivo já não existe mais na pasta de origem — isso não some com nada em Envio de Documentos, só tira essa pendência da lista.')) return;
+    b.disabled = true;
+    try{
+      await api('/onedrive/relatorios/pendentes/'+id, { method:'DELETE' });
+      toast('Excluído.','ok');
       document.querySelector(`[data-pend="${id}"]`).remove();
     }catch(e){ toast(e.message,'err'); b.disabled=false; }
   }));
