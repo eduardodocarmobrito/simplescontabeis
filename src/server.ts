@@ -10050,25 +10050,50 @@ app.get("/api/nfse/municipio-ibge", blockCliente, requirePermissaoOr("empresas",
 // Consulta de CNPJ (dados públicos da Receita Federal) — usado pra pré-preencher formulários com
 // CNPJ (tomador do serviço na emissão de NFS-e, cadastro de empresa etc.). BrasilAPI é um espelho
 // gratuito e sem autenticação dos mesmos dados públicos do CNPJ; não expõe nenhum dado sigiloso.
-async function consultarCnpjBrasilApi(cnpj: string) {
-  // BrasilAPI bloqueia (403) requisições sem User-Agent — o fetch nativo do Node não manda um por padrão.
-  const resp = await fetch(`https://brasilapi.com.br/api/cnpj/v1/${cnpj}`, { headers: { "User-Agent": "SimplesContabeis/1.0" } });
+async function consultarCnpjPublicaWs(cnpj: string) {
+  const resp = await fetch(`https://publica.cnpj.ws/cnpj/${cnpj}`);
   if (resp.status === 404) return { notFound: true as const };
   if (!resp.ok) throw new Error(`API retornou HTTP ${resp.status}.`);
   const j = (await resp.json()) as any;
+  const est = j.estabelecimento || {};
   return {
     notFound: false as const,
     razaoSocial: j.razao_social || null,
-    nomeFantasia: j.nome_fantasia || null,
-    email: j.email || null,
-    logradouro: j.logradouro || null,
-    numero: j.numero || null,
-    complemento: j.complemento || null,
-    bairro: j.bairro || null,
-    cep: j.cep || null,
-    municipio: j.municipio || null,
-    uf: j.uf || null,
+    nomeFantasia: est.nome_fantasia || null,
+    email: est.email || null,
+    logradouro: [est.tipo_logradouro, est.logradouro].filter(Boolean).join(" ") || null,
+    numero: est.numero || null,
+    complemento: est.complemento || null,
+    bairro: est.bairro || null,
+    cep: est.cep || null,
+    municipio: est.cidade?.nome || null,
+    uf: est.estado?.sigla || null,
   };
+}
+async function consultarCnpjBrasilApi(cnpj: string) {
+  // BrasilAPI bloqueia (403) requisições sem User-Agent — o fetch nativo do Node não manda um por padrão.
+  try {
+    const resp = await fetch(`https://brasilapi.com.br/api/cnpj/v1/${cnpj}`, { headers: { "User-Agent": "SimplesContabeis/1.0" } });
+    if (resp.status === 404) return { notFound: true as const };
+    if (!resp.ok) throw new Error(`API retornou HTTP ${resp.status}.`);
+    const j = (await resp.json()) as any;
+    return {
+      notFound: false as const,
+      razaoSocial: j.razao_social || null,
+      nomeFantasia: j.nome_fantasia || null,
+      email: j.email || null,
+      logradouro: j.logradouro || null,
+      numero: j.numero || null,
+      complemento: j.complemento || null,
+      bairro: j.bairro || null,
+      cep: j.cep || null,
+      municipio: j.municipio || null,
+      uf: j.uf || null,
+    };
+  } catch (e) {
+    // BrasilAPI às vezes trava (504/500) num CNPJ específico mesmo com outros CNPJs passando normalmente — usa uma segunda fonte antes de desistir.
+    return await consultarCnpjPublicaWs(cnpj);
+  }
 }
 app.get("/api/nfse/cnpj/:cnpj", blockCliente, requirePermissao("nfse", "visualizar"), async (req, res) => {
   const cnpj = String(req.params.cnpj).replace(/\D/g, "");
