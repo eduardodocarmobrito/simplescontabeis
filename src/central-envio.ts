@@ -786,12 +786,15 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     if (!resultados.length) return { status: 400, erro: "Nenhum destinatário válido (só valem contatos cadastrados na empresa)." };
     return { resultados };
   }
+  // Se a empresa tiver dois contatos cadastrados com o mesmo telefone/e-mail (cadastro duplicado por engano),
+  // sem isso o mesmo documento sairia repetido pra mesma pessoa — 1 envio por telefone/e-mail, nunca mais.
+  const semRepetido = <T,>(lista: T[], chave: (x: T) => string) => { const vistos = new Set<string>(); return lista.filter((x) => { const k = chave(x); if (vistos.has(k)) return false; vistos.add(k); return true; }); };
   const contatosDaEmpresa = (empresaId: number | null) => {
     if (!empresaId) return { whatsapp: [], email: [] };
     const c = db.prepare(`SELECT nome, email, telefone, receber_emails, receber_whatsapp FROM empresa_contatos WHERE empresa_id = ?`).all(empresaId) as any[];
     return {
-      whatsapp: c.filter((x) => x.telefone && x.receber_whatsapp).map((x) => ({ nome: x.nome, telefone: x.telefone })),
-      email: c.filter((x) => x.email && x.receber_emails).map((x) => ({ nome: x.nome, email: x.email })),
+      whatsapp: semRepetido(c.filter((x) => x.telefone && x.receber_whatsapp).map((x) => ({ nome: x.nome, telefone: x.telefone })), (x) => x.telefone.replace(/\D/g, "")),
+      email: semRepetido(c.filter((x) => x.email && x.receber_emails).map((x) => ({ nome: x.nome, email: x.email })), (x) => x.email.trim().toLowerCase()),
     };
   };
   // ------------------------------------------------------------ envio AGENDADO (ex.: preparar à noite, disparar às 08:00)
