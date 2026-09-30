@@ -126,13 +126,14 @@ ListarJanelasDominio() {
     return s
 }
 
-; Ha uma JANELINHA de dialogo (tipo "Sem dados para emitir" / MsgBox) aberta?
-; O app/relatorio e a janela grande (~2576x1568) e o launcher e 1024x768; os dialogos
-; do Dominio sao janelas pequenas (ex.: 218x149, 167x103). Serve pra pular rapido as
-; empresas sem dados sem esperar o timeout do render.
-DialogoPequenoAtivo() {
+; O dialogo "Sem dados para emitir!" (MsgBox de info, titulo "Aviso") esta aberto?
+; ANTES pegava QUALQUER janelinha pequena e confundia com "Erro de sistema"/janelas
+; transitorias da GERACAO do relatorio -> pulava empresa COM dados (falso positivo).
+; Agora exige o titulo do aviso; se o titulo for outro, cai no timeout do render (seguro).
+DialogoSemDados() {
     for hwnd in WinGetList("ahk_exe AppController.exe") {
-        if InStr(WinGetTitle("ahk_id " . hwnd), "Lista de Programas")
+        t := WinGetTitle("ahk_id " . hwnd)
+        if !(InStr(t, "Aviso") || InStr(t, "Sem dados"))
             continue
         w := 0, h := 0
         try WinGetPos(, , &w, &h, "ahk_id " . hwnd)
@@ -250,12 +251,12 @@ EsperarRender() {
             Sleep 1500
             return "ok"
         }
-        ; Pulo rapido: janelinha de dialogo ("Sem dados para emitir") aberta e SEM render.
-        ; Confirma que persiste ~1.2s (nao era transitorio) e que o relatorio nao apareceu.
-        if (DialogoPequenoAtivo()) {
+        ; Pulo rapido: SO o dialogo "Aviso: Sem dados para emitir" (nao qualquer janelinha),
+        ; e so se persistir ~1.2s e o relatorio continuar sem render.
+        if (DialogoSemDados()) {
             Sleep 1200
-            if (DialogoPequenoAtivo() && !PixelSearch(&px2, &py2, 130, 150, 1600, 520, 0x000000, 70)) {
-                Logar("  dialogo 'sem dados' detectado (pulo rapido)")
+            if (DialogoSemDados() && !PixelSearch(&px2, &py2, 130, 150, 1600, 520, 0x000000, 70)) {
+                Logar("  'Sem dados' (Aviso) detectado (pulo rapido)")
                 return "sem_dados"
             }
         }
@@ -433,7 +434,14 @@ ProcessarEmpresaVerificado(codigo, compIni, compFim) {
             }
             Sleep 2000
         }
-        Logar("Empresa " . codigo . ": PDF NAO apareceu (tentativa " . A_Index . "/" . MAX_TENTATIVAS . ") - resetando e repetindo")
+        ; Diagnostico do Bug 1 (1a empresa as vezes nao confirma): lista o que TEM na pasta com esse codigo,
+        ; pra ver se salvou com nome/pasta errado ou nao salvou.
+        naPasta := ""
+        try {
+            Loop Files, PASTA_LOCAL . "\*" . codigo . "*.pdf"
+                naPasta .= A_LoopFileName . "; "
+        }
+        Logar("Empresa " . codigo . ": PDF NAO apareceu (tentativa " . A_Index . "/" . MAX_TENTATIVAS . ") - esperava '" . MontarNome(codigo, compIni, compFim) . "' - na pasta c/ codigo: " . (naPasta != "" ? naPasta : "(nenhum)"))
         LimparTelas()
         Sleep T_MEDIO
     }
