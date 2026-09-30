@@ -69,7 +69,15 @@ export function feriasExtrairFuncionarios(texto: string): {
     let diasRestantes: number | null = null;
     if (restoDatas[0]) {
       const numeros = [...resto.slice(0, restoDatas[0].index).matchAll(/\d{1,3}/g)];
-      if (numeros.length) diasRestantes = parseInt(numeros[numeros.length - 1][0], 10);
+      if (numeros.length) {
+        // "Dias dir./Dias goz./Dias rest." vêm grudados sem separador (ex.: "301515" = 30+15+15) — um
+        // \d{1,3} guloso corta em blocos de 3 a partir da ESQUERDA ("301","515"), não nas colunas reais
+        // (2 dígitos cada). Achado ao vivo: "Dias rest." 15 saindo como 515. "Dias rest." nunca passa de
+        // 30 (máximo legal de dias de férias) — pega só os 2 últimos dígitos do bloco final, que é o
+        // corte que bate com a coluna de verdade nesse formato de 2 dígitos por campo.
+        const ultimo = numeros[numeros.length - 1][0];
+        diasRestantes = parseInt(ultimo.length > 2 ? ultimo.slice(-2) : ultimo, 10);
+      }
     }
     funcionarios.push({
       codigo: m[2], nome,
