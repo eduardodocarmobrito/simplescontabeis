@@ -1862,12 +1862,12 @@ async function pagePainelTv(){
     // zoom maior às vezes resulta numa altura MENOR (reflow em degraus, não monotônico). Por isso
     // busca binária não funciona aqui (ela assume "mais zoom = mais alto" e pode travar num zoom
     // baixo à toa). Em vez disso, varre de cima pra baixo e usa o primeiro (maior) zoom que couber.
-    // Piso de 0.55 — abaixo disso os cards ficam ilegíveis numa TV (achado ao vivo: com muito conteúdo
+    // Piso de 0.70 — abaixo disso os cards ficam ilegíveis numa TV (achado ao vivo: com muito conteúdo
     // marcado pra essa página, o piso antigo de 0.22 deixava tudo minúsculo). Se nem no piso couber tudo,
     // corta o que sobrar embaixo (.tvp-pagina-painel já tem overflow:hidden) — prefere mostrar menos
     // coisa de forma legível a mostrar tudo ilegível.
-    let zoom = 0.55;
-    for(let z=2.2; z>=0.55; z-=0.02){
+    let zoom = 0.70;
+    for(let z=2.2; z>=0.70; z-=0.02){
       box.style.zoom = z.toFixed(3);
       if(box.scrollHeight <= disponivel){ zoom = z; break; }
     }
