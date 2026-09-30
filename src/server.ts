@@ -24,7 +24,7 @@ import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 import { registerWebmail } from "./webmail";
 import { registerCentralEnvio, credencialDriveDoEscritorio, driveGet, driveBaixar } from "./central-envio";
-import { registerFerias, feriasProcessarPdf } from "./ferias";
+import { registerFerias, feriasProcessarPdf, feriasExtrairFuncionarios } from "./ferias";
 import { createProxyMiddleware } from "http-proxy-middleware";
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 
@@ -8120,10 +8120,19 @@ async function feriasReprocessarExistentes(escritorioId: number): Promise<number
     )
     .all(escritorioId, DOM_REL_TEMPLATE_NOME.programacao_ferias) as any[];
   let processados = 0;
+  let logado = false;
   for (const row of rows) {
     if (!fs.existsSync(row.file_path)) continue;
     try {
       const texto = await obterTextoDoPdf(fs.readFileSync(row.file_path));
+      // Diagnóstico temporário (achado ao vivo 2026-09-29: "Verificar agora" achou os PDFs mas
+      // extraiu 0 funcionários) — loga a extração bruta de só o 1º doc, pra comparar o texto real
+      // do pdf-parse com o que o parser espera, sem precisar pedir print de cada relatório.
+      if (!logado) {
+        const brutos = feriasExtrairFuncionarios(texto);
+        console.log(`[ferias][diagnostico] doc ${row.id}: ${brutos.length} linha(s) de funcionário reconhecida(s). Texto (primeiros 1500 chars):\n${texto.slice(0, 1500)}`);
+        logado = true;
+      }
       feriasProcessarPdf(escritorioId, row.empresaId, texto, row.id);
       processados++;
     } catch (e: any) {
