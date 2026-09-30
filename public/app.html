@@ -11856,9 +11856,10 @@ function renderCfgDomRelatorios(box, sub, dados){
         Drive acima. Controle o robô aqui.
       </p>
       <div id="roboCompStatus" style="font-size:13px; margin-bottom:8px;">Carregando…</div>
-      <div class="row" style="align-items:flex-end; gap:14px; flex-wrap:wrap;">
-        <label class="checkbox-row" style="margin:0 0 8px;"><input type="checkbox" id="roboCompLigado"> Rodar automaticamente</label>
-        <div class="field"><label>A cada (minutos)</label><input id="roboCompIntervalo" type="number" min="1" max="1440" style="width:90px;"></div>
+      <div class="row" style="align-items:center; gap:10px; flex-wrap:wrap;">
+        <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="roboCompLigado"> Rodar automaticamente a cada</label>
+        <input id="roboCompIntervalo" type="number" class="inp" min="1" max="1440" style="width:70px;">
+        <span style="font-size:12.5px; color:var(--ink-soft);">minutos</span>
       </div>
       <div class="row" style="margin-top:4px; align-items:center; gap:10px; flex-wrap:wrap;">
         <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="roboCompAgendaAtivo"> Rodar automaticamente todo dia às</label>
@@ -11893,9 +11894,10 @@ function renderCfgDomRelatorios(box, sub, dados){
         Usa sempre a <b>data de hoje</b> como data-base do cálculo.
       </p>
       <div id="roboFeriasStatus" style="font-size:13px; margin-bottom:8px;">Carregando…</div>
-      <div class="row" style="align-items:flex-end; gap:14px; flex-wrap:wrap;">
-        <label class="checkbox-row" style="margin:0 0 8px;"><input type="checkbox" id="roboFeriasLigado"> Rodar automaticamente</label>
-        <div class="field"><label>A cada (minutos)</label><input id="roboFeriasIntervalo" type="number" min="1" max="1440" style="width:90px;"></div>
+      <div class="row" style="align-items:center; gap:10px; flex-wrap:wrap;">
+        <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="roboFeriasLigado"> Rodar automaticamente a cada</label>
+        <input id="roboFeriasIntervalo" type="number" class="inp" min="1" max="1440" style="width:70px;">
+        <span style="font-size:12.5px; color:var(--ink-soft);">minutos</span>
       </div>
       <div class="row" style="margin-top:4px; align-items:center; gap:10px; flex-wrap:wrap;">
         <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="roboFeriasAgendaAtivo"> Rodar automaticamente todo dia às</label>
