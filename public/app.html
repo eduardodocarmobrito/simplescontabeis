@@ -12137,10 +12137,13 @@ async function abrirRoboMarcadasModal(tipo, titulo){
   const ok = items.filter(i=>i.ultimoStatus==='ok');
   const erro = items.filter(i=>i.ultimoStatus==='erro');
   const nuncaRodou = items.filter(i=>!i.ultimoStatus);
-  const linhaMarcada = i => `<div style="font-size:12.5px; padding:4px 0; border-top:1px dashed var(--rule); display:flex; justify-content:space-between; gap:8px;">
+  const linhaMarcada = i => {
+    const problemas = [i.semCpfCnpj?'sem CPF/CNPJ cadastrado':'', i.semCodigo?'sem Código do Domínio':'', i.codigoDuplicado?`código "${i.codigoDominio}" repetido em outra empresa`:''].filter(Boolean);
+    return `<div style="font-size:12.5px; padding:4px 0; border-top:1px dashed var(--rule); display:flex; justify-content:space-between; gap:8px;">
     <span>${esc(i.nome)}${i.codigoDominio?` <span style="color:var(--ink-soft);">(${esc(i.codigoDominio)})</span>`:''}</span>
-    ${(i.semCpfCnpj||i.semCodigo||i.codigoDuplicado)?'<span class="tag bad" title="Cadastro incompleto — corrija em Empresas › Editar">cadastro</span>':''}
+    ${problemas.length?`<span class="tag bad" title="${esc(problemas.join(' · '))} — corrija em Empresas › Editar">cadastro</span>`:''}
   </div>`;
+  };
   const linhaResultado = i => `<div style="font-size:12.5px; padding:4px 0; border-top:1px dashed var(--rule);">
     <div style="display:flex; justify-content:space-between; gap:8px;"><b>${esc(i.nome)}</b> ${i.ultimoQuando?`<span style="color:var(--ink-soft); white-space:nowrap;">${fmtDateHora(i.ultimoQuando)}</span>`:''}</div>
     ${i.ultimoErro?`<div style="color:var(--debit);">${esc(i.ultimoErro)}</div>`:''}
