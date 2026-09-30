@@ -84,7 +84,12 @@ export function extrairColaboradorECpf(texto: string, ehEmpresa: (nomeNormalizad
   const guardar = (v: string) => { const t = v.replace(/\s+/g, " ").trim(); if (!ruim(t) && !ehEmpresa(norm(t))) achados.set(norm(t), t); }; // nome de empresa cadastrada nunca é nome de trabalhador
   // 1) Modelos numerados (ex.: Termo de Rescisão: "11 Nome" seguido do nome, mesmo com a célula ao lado na mesma linha)
   for (const m of texto.matchAll(new RegExp("(?<!\\d)\\d{1,2}\\s*Nome(?!\\s*d[ao]\\s*(?:M|P|Soc|Empr))\\s*[:\\-–]?\\s*" + NOME_VALOR, "g"))) guardar(m[1]);
-  // Campo numerado "11 Nome" achado: é ele (modelos TRCT/Termo de Quitação) — não mistura com o resto do texto.
+  // Contrato de Experiência (texto corrido, sem rótulo "Nome"): "...designada EMPREGADORA e\nFULANO DA SILVA portador..."
+  // Sem esse regex específico, o rótulo "EMPREGADO" da etapa 2 casava colado em "EMPREGADORA" (PDF sem espaço entre as
+  // duas palavras na linha de assinatura) e devolvia o título "T E R M O DE PRORROGAÇÃO" em vez do nome do funcionário.
+  const contratoExp = new RegExp("EMPREGADORA\\s+e\\s+" + NOME_VALOR + "\\s+portador", "i").exec(texto);
+  if (contratoExp) guardar(contratoExp[1]);
+  // Campo numerado "11 Nome" ou o do Contrato de Experiência achado: é ele — não mistura com o resto do texto.
   if (achados.size) { const n = [...achados.values()]; return { colaborador: n.length > 1 ? "Vários" : n[0], cpf: n.length > 1 ? null : cpf }; }
   // 2) Rótulo no começo da linha: "Nome do Funcionário: FULANO", "Nome do empregado", "Empregado", "Colaborador"…
   const linhas = texto.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
