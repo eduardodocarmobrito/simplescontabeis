@@ -325,15 +325,12 @@ ProcessarEmpresa(codigo) {
         ; "Sem dados para emitir" OU Favoritos nao abriu a tela.
         ; Streaming: a tecla so pega com FOCO -> clica no dialogo antes do Enter (OK).
         Logar("Empresa " . codigo . ": sem relatorio (" . st . ") - OK/Esc e proxima")
-        Click(SEMDADOS_X . " " . SEMDADOS_Y)   ; foca o dialogo "Sem dados para emitir"
+        Click(SEMDADOS_X . " " . SEMDADOS_Y)   ; foca o dialogo (streaming: tecla so pega com foco)
         Sleep 600
-        Send "{Enter}"                          ; OK
+        Send "{Enter}"                          ; OK no "Sem dados para emitir!"
         Sleep 5000                              ; espera 5s
-        Send "{Esc}"
-        Sleep T_CURTO
-        Send "{Esc}"                            ; Esc x2 -> tela zerada
-        Sleep 2000
-        LimparTelas()
+        Send "{Esc}"                            ; Esc (fecha a tela vazia)
+        Sleep 3000                              ; espera 3s e segue pra proxima empresa
         return "pular"
     }
     ; --- Salvar em PDF ---
