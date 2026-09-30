@@ -357,15 +357,23 @@ ProcessarEmpresa(codigo) {
         return "pular"
     }
     ; --- Salvar em PDF ---
-    Sleep T_MEDIO
+    ; Relatorios GRANDES demoram pra terminar de desenhar: espera antes de mandar o Ctrl+D.
+    Sleep 8000
     Click("700 260")
     Sleep T_CURTO
     Send "^d"
-    Sleep 5000                        ; espera a tela "Salvar em PDF" carregar antes de mexer
-    if !WinExist("Salvar em PDF") {   ; so manda Enter (OK no erro) se houve erro de caminho
+    ; ESPERA a janela "Salvar em PDF" abrir DE VERDADE (relatorio grande gera o PDF e demora ate ~30s).
+    ini := A_TickCount
+    while (!WinExist("Salvar em PDF") && (A_TickCount - ini) < 30000)
+        Sleep 500
+    if !WinExist("Salvar em PDF") {   ; nao abriu -> pode ser erro de caminho: OK e espera de novo
         Send "{Enter}"
         Sleep 5000
+        ini := A_TickCount
+        while (!WinExist("Salvar em PDF") && (A_TickCount - ini) < 20000)
+            Sleep 500
     }
+    Sleep 4000                        ; folga pra a lista de "This PC" carregar antes de navegar
     NavegarAtePasta()
     Sleep T_MEDIO
     try WinActivate("Salvar em PDF")
