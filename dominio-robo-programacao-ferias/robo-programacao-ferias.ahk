@@ -232,7 +232,7 @@ EsperarRender() {
     global T_RENDER_TIMEOUT
     inicio := A_TickCount
     while (A_TickCount - inicio < T_RENDER_TIMEOUT) {
-        if (PixelSearch(&px, &py, 130, 150, 1600, 900, 0x000000, 70)) {
+        if (PixelSearch(&px, &py, 130, 150, 1600, 520, 0x000000, 70)) {
             Sleep 1500
             return "ok"
         }
@@ -240,7 +240,7 @@ EsperarRender() {
         ; e so se persistir ~1.2s e o relatorio continuar sem render.
         if (DialogoSemDados()) {
             Sleep 1200
-            if (DialogoSemDados() && !PixelSearch(&px2, &py2, 130, 150, 1600, 900, 0x000000, 70)) {
+            if (DialogoSemDados() && !PixelSearch(&px2, &py2, 130, 150, 1600, 520, 0x000000, 70)) {
                 Logar("  'Sem dados' (Aviso) detectado (pulo rapido)")
                 return "sem_dados"
             }
@@ -411,7 +411,7 @@ ProcessarEmpresaVerificado(codigo) {
         ; Diagnostico: lista o que TEM na pasta com esse codigo (nome/pasta errado ou nao salvou?).
         naPasta := ""
         try {
-            Loop Files, PASTA_LOCAL . "\*" . codigo . "*.pdf"
+            Loop Files, PASTA_LOCAL . "\*_" . codigo . "_*.pdf"
                 naPasta .= A_LoopFileName . "; "
         }
         Logar("Empresa " . codigo . ": PDF NAO apareceu (tentativa " . A_Index . "/" . MAX_TENTATIVAS . ") - esperava '" . MontarNome(codigo) . "' - na pasta c/ codigo: " . (naPasta != "" ? naPasta : "(nenhum)"))
