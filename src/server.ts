@@ -15497,8 +15497,10 @@ app.get("/api/atendimento/painel", blockCliente, async (req, res) => {
           if (pendente == null) pendente = t;
           continue;
         }
-        // Lembrete/pesquisa do usuário Automações não é resposta a ninguém: não conta nem zera a espera.
-        if (roboId && m.sent_by_user_id === roboId) continue;
+        // Lembrete/pesquisa/documento automático do usuário Automações não é resposta a ninguém: não zera a
+        // espera nem entra no tempo de resposta, mas ainda é um envio — conta como IA (é isso, não uma pessoa
+        // da equipe, que mandou), só não passa pelo cálculo de "quanto tempo até responder".
+        if (roboId && m.sent_by_user_id === roboId) { enviadasIA++; d.ia++; sc.ia++; continue; }
         const humano = m.sent_via !== "ai";
         // IA: tempo real. Equipe: só o tempo dentro do expediente (a meta vale pro horário de atendimento).
         const delta = pendente == null ? null : humano ? minutosUteisEntre(pendente, t) * 60 : (t - pendente) / 1000;
