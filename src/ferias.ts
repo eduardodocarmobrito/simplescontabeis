@@ -190,16 +190,12 @@ export async function gerarPdfFeriasVencidas(escritorioNome: string, empresaNome
   }
 }
 
-// Exportação pro controle interno do escritório: UMA tabela só com todas as empresas juntas (não é
-// pra mandar pro cliente — é denso/completo de propósito, pra escanear rápido).
+// Exportação pro controle interno do escritório: separado por empresa (um bloco + tabela por
+// empresa, igual os cards da tela) em vez de uma tabela só com a empresa repetida em toda linha.
 export async function gerarPdfControleInterno(escritorioNome: string, empresas: { nome: string; funcionarios: any[] }[]): Promise<Buffer> {
   const totalVencidas = empresas.reduce((s, e) => s + e.funcionarios.filter((f) => f.status === "vencida").length, 0);
   const totalProximas = empresas.reduce((s, e) => s + e.funcionarios.filter((f) => f.status === "proxima").length, 0);
-  const linhas = empresas
-    .flatMap((emp) => emp.funcionarios.map((f) => ({ ...f, empresaNome: emp.nome })))
-    .map(
-      (f) => `<tr>
-        <td>${f.empresaNome}</td>
+  const linhaFunc = (f: any) => `<tr>
         <td>${f.codigo || "—"}</td>
         <td>${f.nome}</td>
         <td class="${f.status}">${f.status === "vencida" ? "Vencida" : "Último mês"}</td>
@@ -207,26 +203,38 @@ export async function gerarPdfControleInterno(escritorioNome: string, empresas: 
         <td>${isoParaBr(f.inicio_aquisitivo)} a ${isoParaBr(f.fim_aquisitivo)}</td>
         <td>${isoParaBr(f.limite_gozo)}</td>
         <td>${f.dias_restantes ?? "—"}</td>
-      </tr>`
-    )
-    .join("");
+      </tr>`;
+  const blocoEmpresa = (emp: { nome: string; funcionarios: any[] }) => {
+    const v = emp.funcionarios.filter((f) => f.status === "vencida").length;
+    const p = emp.funcionarios.filter((f) => f.status === "proxima").length;
+    return `<div class="empresa">
+      <div class="empresa-topo"><span class="empresa-nome">${emp.nome}</span>
+        <span class="empresa-cont">${v ? `<b class="vencida">${v} vencida(s)</b>` : ""}${v && p ? " · " : ""}${p ? `<b class="proxima">${p} próxima(s)</b>` : ""}</span></div>
+      <table><thead><tr><th>Código</th><th>Funcionário</th><th>Situação</th><th>Admissão</th><th>Período aquisitivo</th><th>Limite p/ gozo</th><th>Dias em aberto</th></tr></thead>
+      <tbody>${emp.funcionarios.map(linhaFunc).join("")}</tbody></table>
+    </div>`;
+  };
   const html = `<!doctype html><html><head><meta charset="utf-8"><style>
     body{font-family:'Helvetica Neue',Arial,sans-serif; color:#1c2b24; margin:0; padding:26px 30px;}
     h1{font-size:17px; margin:0 0 2px;}
     .sub{font-size:11.5px; color:#5b6b63; margin:0 0 14px;}
-    .resumo{font-size:12px; margin-bottom:14px;}
+    .resumo{font-size:12px; margin-bottom:18px;}
     .resumo b.vencida{color:#b23b3b;} .resumo b.proxima{color:#a5730a;}
-    table{width:100%; border-collapse:collapse; font-size:10.5px;}
-    th{text-align:left; background:#eef5f1; padding:6px 8px; border-bottom:2px solid #cfe0d8; font-size:9.5px; letter-spacing:.03em; text-transform:uppercase; color:#3c584a;}
-    td{padding:6px 8px; border-bottom:1px solid #e5eae7;}
+    .empresa{margin-bottom:16px; break-inside:avoid;}
+    .empresa-topo{background:#eef5f1; border-radius:8px 8px 0 0; padding:7px 10px; display:flex; justify-content:space-between; align-items:baseline;}
+    .empresa-nome{font-weight:700; font-size:12.5px;}
+    .empresa-cont{font-size:10.5px;}
+    .empresa-cont b.vencida{color:#b23b3b;} .empresa-cont b.proxima{color:#a5730a;}
+    table{width:100%; border-collapse:collapse; font-size:10.5px; border:1px solid #e5eae7; border-top:none;}
+    th{text-align:left; background:#f7faf9; padding:5px 8px; border-bottom:1px solid #e5eae7; font-size:9.5px; letter-spacing:.03em; text-transform:uppercase; color:#3c584a;}
+    td{padding:5px 8px; border-bottom:1px solid #eef2f0;}
     td.vencida{color:#b23b3b; font-weight:600;}
     td.proxima{color:#a5730a; font-weight:600;}
   </style></head><body>
     <h1>Programação de Férias — Controle interno</h1>
     <p class="sub">${escritorioNome} · gerado em ${new Date().toLocaleDateString("pt-BR")} às ${new Date().toLocaleTimeString("pt-BR")}</p>
     <p class="resumo"><b class="vencida">${totalVencidas} vencida(s)</b> · <b class="proxima">${totalProximas} próxima(s) do limite</b> · ${empresas.length} empresa(s)</p>
-    <table><thead><tr><th>Empresa</th><th>Código</th><th>Funcionário</th><th>Situação</th><th>Admissão</th><th>Período aquisitivo</th><th>Limite p/ gozo</th><th>Dias em aberto</th></tr></thead>
-    <tbody>${linhas}</tbody></table>
+    ${empresas.map(blocoEmpresa).join("")}
   </body></html>`;
   const { chromium } = require("playwright");
   const browser = await chromium.launch();
