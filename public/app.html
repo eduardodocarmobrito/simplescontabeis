@@ -10312,9 +10312,15 @@ async function atdGravarAudio(S){
 function atdAgendarModal(S, input){
   const c = S.conversaDados;
   if(!S.conversaAtiva || !c){ toast('Abra uma conversa primeiro.','err'); return; }
+  let anexo = null; // { kind, storagePath, mime, sizeBytes, filename } — já sobe pro storage assim que escolhe o arquivo
   openModal(`<h3>Agendar mensagem</h3>
     <p class="subtitle" style="margin:0 0 8px;">Para <b>${esc(c.contatoNome||c.telefone)}</b>. O site envia sozinho no horário escolhido — você pode conferir, mudar ou cancelar em <b>🕗 Agendadas</b>.</p>
-    <div class="field"><label>Mensagem</label><textarea id="agTexto" rows="5" maxlength="4000" placeholder="Bom dia! …">${esc(input?input.value:'')}</textarea></div>
+    <div class="field"><label>Mensagem${''/* legenda quando tem anexo */}</label><textarea id="agTexto" rows="5" maxlength="4000" placeholder="Bom dia! …">${esc(input?input.value:'')}</textarea></div>
+    <div class="field">
+      <input type="file" id="agArquivo" class="hidden">
+      <button class="btn small" type="button" id="agAnexarBtn">📎 Anexar arquivo</button>
+      <span id="agAnexoNome" style="font-size:12.5px; color:var(--ink-soft); margin-left:8px;"></span>
+    </div>
     <div class="field"><label>Enviar em</label>
       <div class="row" style="gap:8px; align-items:center; flex-wrap:wrap;"><input type="datetime-local" id="agQuando" value="${cenvParaInputDt(cenvProximas8h())}" style="max-width:230px;">
         <button class="btn small" type="button" id="ag8h">🕗 08:00 (próximo dia útil)</button><button class="btn small" type="button" id="ag1h">+1 hora</button></div></div>
@@ -10325,14 +10331,28 @@ function atdAgendarModal(S, input){
   document.getElementById('ag8h').addEventListener('click', ()=>{ document.getElementById('agQuando').value = cenvParaInputDt(cenvProximas8h()); });
   document.getElementById('ag1h').addEventListener('click', ()=>{ document.getElementById('agQuando').value = cenvParaInputDt(new Date(Date.now()+3600000)); });
   document.getElementById('agVer').addEventListener('click', ()=>atdAgendadasModal(S, S.conversaAtiva));
+  const nomeEl = document.getElementById('agAnexoNome');
+  document.getElementById('agAnexarBtn').addEventListener('click', ()=>document.getElementById('agArquivo').click());
+  document.getElementById('agArquivo').addEventListener('change', async (ev)=>{
+    const f = ev.target.files[0]; if(!f) return;
+    const btn = document.getElementById('agAnexarBtn'); btn.disabled = true; nomeEl.textContent = 'Enviando '+f.name+'…';
+    try{
+      const fd = new FormData(); fd.append('file', f);
+      const up = await dcApi(`/conversations/${S.conversaAtiva}/media`, { method:'POST', body: fd });
+      anexo = { kind: up.kind, storagePath: up.storage_path, mime: up.media_mime, sizeBytes: up.media_size_bytes, filename: f.name };
+      nomeEl.innerHTML = `📎 ${esc(f.name)} <span class="link-discreto" id="agAnexoRemover">remover</span>`;
+      document.getElementById('agAnexoRemover').addEventListener('click', ()=>{ anexo = null; nomeEl.textContent=''; document.getElementById('agArquivo').value=''; });
+    }catch(e){ toast(e.message,'err'); nomeEl.textContent=''; }
+    btn.disabled = false;
+  });
   document.getElementById('agOk').addEventListener('click', async ()=>{
     const texto = document.getElementById('agTexto').value.trim();
     const quando = new Date(document.getElementById('agQuando').value);
-    if(!texto){ toast('Escreva a mensagem.','err'); return; }
+    if(!texto && !anexo){ toast('Escreva a mensagem ou anexe um arquivo.','err'); return; }
     if(isNaN(quando)){ toast('Escolha o dia e o horário.','err'); return; }
     const b = document.getElementById('agOk'); b.disabled = true; b.textContent = 'Agendando…';
     try{
-      await api(`/atendimento/conversas/${encodeURIComponent(S.conversaAtiva)}/agendar`, { method:'POST', body:{ texto, quando:quando.toISOString(), escopo:S.escopo, cancelarSeResponder: document.getElementById('agCancelaResp').checked } });
+      await api(`/atendimento/conversas/${encodeURIComponent(S.conversaAtiva)}/agendar`, { method:'POST', body:{ texto, quando:quando.toISOString(), escopo:S.escopo, cancelarSeResponder: document.getElementById('agCancelaResp').checked, anexo } });
       if(input && input.value.trim()===texto){ input.value=''; input.style.height=''; }
       closeModal(); toast('Mensagem agendada para '+quando.toLocaleString('pt-BR',{weekday:'short',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})+'.','ok');
     }catch(e){ toast(e.message,'err'); b.disabled=false; b.textContent='Agendar'; }
@@ -10344,7 +10364,7 @@ async function atdAgendadasModal(S, conversaId){
   openModal(`<h3>🕗 Mensagens agendadas${conversaId?' desta conversa':''}</h3>
     ${r.itens.length?`<div class="card" style="padding:0; max-height:380px; overflow-y:auto;"><table class="data-table"><thead><tr><th>Envio em</th><th>Cliente</th><th>Mensagem</th><th></th></tr></thead><tbody>
       ${r.itens.map(i=>`<tr data-id="${i.id}"><td style="white-space:nowrap;"><b>${esc(cenvDataHora(i.quando))}</b>${i.status==='erro'?`<div><span class="tag bad" title="${esc(i.erro||'')}">Falhou</span></div>`:''}${i.status==='cancelada'?`<div><span class="tag warn">Cancelada: cliente respondeu</span></div>`:''}${i.status==='agendada'&&i.cancelaSeResponder?'<div style="font-size:11px; color:var(--ink-soft);">cancela se o cliente responder</div>':''}<div style="font-size:11px; color:var(--ink-soft);">por ${esc(i.por||'—')}</div></td>
-        <td>${esc(i.cliente)}</td><td style="max-width:280px; white-space:pre-wrap; font-size:12.5px;">${esc(i.texto)}</td>
+        <td>${esc(i.cliente)}</td><td style="max-width:280px; white-space:pre-wrap; font-size:12.5px;">${esc(i.texto)}${i.anexoNome?`<div style="color:var(--ink-soft);">📎 ${esc(i.anexoNome)}</div>`:''}</td>
         <td style="text-align:right; white-space:nowrap;">${podePostar&&i.status==='agendada'?`<button class="btn small" data-a="hora">🕗</button> <button class="btn small primary" data-a="agora">Agora</button> `:''}${podePostar&&i.status!=='cancelada'?`<button class="btn small danger" data-a="cancelar">Cancelar</button>`:''}</td></tr>`).join('')}
       </tbody></table></div>`:'<div class="empty-state">Nenhuma mensagem agendada. Escreva a mensagem, clique em 🕗 ao lado do envio e escolha o horário.</div>'}
     <div class="row" style="justify-content:flex-end; margin-top:12px;"><button class="btn primary" onclick="closeModal()">Fechar</button></div>`, '760px');

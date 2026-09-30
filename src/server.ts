@@ -14854,6 +14854,18 @@ sqlite.exec(`
 if (!(sqlite.prepare(`PRAGMA table_info(atendimento_msgs_agendadas)`).all() as any[]).some((c) => c.name === "cancelar_se_responder")) {
   sqlite.exec(`ALTER TABLE atendimento_msgs_agendadas ADD COLUMN cancelar_se_responder INTEGER NOT NULL DEFAULT 1`);
 }
+// Anexo opcional na mensagem agendada: o upload pro storage do deskcomm já acontece NA HORA de
+// agendar (mesma rota /conversations/:id/media que o anexo ao vivo usa, pela sessão da própria
+// pessoa) — só guarda a referência aqui. Na hora de enviar, o robô só posta a mensagem apontando pra
+// esse anexo já existente, sem precisar subir arquivo de novo.
+{
+  const colsAg = (sqlite.prepare(`PRAGMA table_info(atendimento_msgs_agendadas)`).all() as any[]).map((c) => c.name);
+  for (const [col, ddl] of [
+    ["anexo_kind", "TEXT"], ["anexo_storage_path", "TEXT"], ["anexo_mime", "TEXT"], ["anexo_size_bytes", "INTEGER"], ["anexo_filename", "TEXT"],
+  ] as const) {
+    if (!colsAg.includes(col)) sqlite.exec(`ALTER TABLE atendimento_msgs_agendadas ADD COLUMN ${col} ${ddl}`);
+  }
+}
 async function atendimentoRodarMsgAgendada(m: any, forcar = false): Promise<void> {
   if (!Number(sqlite.prepare(`UPDATE atendimento_msgs_agendadas SET status = 'enviando' WHERE id = ? AND status = 'agendada'`).run(m.id).changes)) return;
   try {
@@ -14877,7 +14889,20 @@ async function atendimentoRodarMsgAgendada(m: any, forcar = false): Promise<void
         if (setor) texto = `*${setor}*\n${texto}`;
       }
     } catch { /* sem o setor, envia sem prefixo mesmo — não trava o agendamento por isso */ }
-    await deskcommRoboEnviar(m.conversation_id, texto);
+    if (m.anexo_storage_path) {
+      // Anexo já foi enviado pro storage do deskcomm na hora de agendar — só posta a mensagem
+      // apontando pra ele (mesmo formato do envio ao vivo, ver atdEnviarArquivo em app.html).
+      await deskcommRoboApi("/messages", {
+        method: "POST",
+        body: {
+          conversation_id: m.conversation_id, type: m.anexo_kind,
+          media_storage_path: m.anexo_storage_path, media_mime: m.anexo_mime, media_size_bytes: m.anexo_size_bytes,
+          metadata: { filename: m.anexo_filename }, ...(texto ? { body: texto } : {}),
+        },
+      });
+    } else {
+      await deskcommRoboEnviar(m.conversation_id, texto);
+    }
     sqlite.prepare(`UPDATE atendimento_msgs_agendadas SET status = 'enviada', enviado_em = datetime('now'), erro = NULL WHERE id = ?`).run(m.id);
   } catch (e: any) {
     sqlite.prepare(`UPDATE atendimento_msgs_agendadas SET status = 'erro', erro = ?, enviado_em = datetime('now') WHERE id = ?`).run(String(e.message).slice(0, 300), m.id);
@@ -14899,15 +14924,23 @@ app.post("/api/atendimento/conversas/:id/agendar", blockCliente, async (req, res
   if (!atendimentoAlgumaPermissao(user, "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
   const texto = String(req.body?.texto || "").trim();
+  const anexo = req.body?.anexo && req.body.anexo.storagePath ? req.body.anexo : null;
   const quando = new Date(String(req.body?.quando || ""));
-  if (!texto) return res.status(400).json({ error: "Escreva a mensagem." });
+  if (!texto && !anexo) return res.status(400).json({ error: "Escreva a mensagem ou anexe um arquivo." });
   if (texto.length > 4000) return res.status(400).json({ error: "A mensagem passa de 4000 caracteres." });
   if (isNaN(quando.getTime()) || quando.getTime() < Date.now() + 30_000) return res.status(400).json({ error: "Escolha um dia e horário no futuro." });
   const { data: conv } = await deskcommAdmin.from("conversations").select("id").eq("organization_id", DESKCOMM_ORG_ID).eq("id", String(req.params.id)).maybeSingle();
   if (!conv) return res.status(404).json({ error: "Conversa não encontrada." });
   const escopo = ["crm", "dprh", "contabil", "fiscal"].includes(String(req.body?.escopo)) ? String(req.body.escopo) : "crm";
-  const info = sqlite.prepare(`INSERT INTO atendimento_msgs_agendadas (escritorio_id, conversation_id, escopo, texto, agendado_para, criado_por, criado_por_nome, cancelar_se_responder) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(user.escritorioId, String(req.params.id), escopo, texto, quando.toISOString(), user.id, user.nome, req.body?.cancelarSeResponder === false ? 0 : 1);
+  const info = sqlite
+    .prepare(
+      `INSERT INTO atendimento_msgs_agendadas (escritorio_id, conversation_id, escopo, texto, agendado_para, criado_por, criado_por_nome, cancelar_se_responder, anexo_kind, anexo_storage_path, anexo_mime, anexo_size_bytes, anexo_filename)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      user.escritorioId, String(req.params.id), escopo, texto, quando.toISOString(), user.id, user.nome, req.body?.cancelarSeResponder === false ? 0 : 1,
+      anexo?.kind || null, anexo?.storagePath || null, anexo?.mime || null, anexo?.sizeBytes || null, anexo?.filename || null
+    );
   res.json({ ok: true, id: Number(info.lastInsertRowid), quando: quando.toISOString() });
 });
 // Lista as agendadas (de uma conversa ou do escopo inteiro: o CRM enxerga todas; cada setor, as criadas nele).
@@ -14927,7 +14960,7 @@ app.get("/api/atendimento/agendadas", blockCliente, async (req, res) => {
     const { data } = await deskcommAdmin.from("conversations").select("id, contact:contacts(display_name, name, phone_number)").eq("organization_id", DESKCOMM_ORG_ID).in("id", ids.slice(0, 100));
     for (const c of (data || []) as any[]) nomes.set(c.id, c.contact?.display_name || c.contact?.name || c.contact?.phone_number || "Cliente");
   }
-  res.json({ itens: rows.map((r) => ({ id: r.id, conversa: r.conversation_id, cliente: nomes.get(r.conversation_id) || "Cliente", escopo: r.escopo, texto: r.texto, quando: r.agendado_para, status: r.status, erro: r.erro, por: r.criado_por_nome, cancelaSeResponder: !!r.cancelar_se_responder })) });
+  res.json({ itens: rows.map((r) => ({ id: r.id, conversa: r.conversation_id, cliente: nomes.get(r.conversation_id) || "Cliente", escopo: r.escopo, texto: r.texto, quando: r.agendado_para, status: r.status, erro: r.erro, por: r.criado_por_nome, cancelaSeResponder: !!r.cancelar_se_responder, anexoNome: r.anexo_filename || null })) });
 });
 app.post("/api/atendimento/agendadas/:id/cancelar", blockCliente, (req, res) => {
   const m = atendimentoMsgAgendadaDoUsuario(req, res); if (!m) return;
@@ -14940,7 +14973,7 @@ app.put("/api/atendimento/agendadas/:id", blockCliente, (req, res) => {
   if (m.status !== "agendada") return res.status(409).json({ error: "Só dá para alterar uma mensagem que ainda não foi enviada." });
   const texto = req.body?.texto !== undefined ? String(req.body.texto).trim() : m.texto;
   const quando = req.body?.quando ? new Date(String(req.body.quando)) : new Date(m.agendado_para);
-  if (!texto) return res.status(400).json({ error: "A mensagem não pode ficar vazia." });
+  if (!texto && !m.anexo_storage_path) return res.status(400).json({ error: "A mensagem não pode ficar vazia." });
   if (isNaN(quando.getTime()) || quando.getTime() < Date.now() + 30_000) return res.status(400).json({ error: "Escolha um dia e horário no futuro." });
   sqlite.prepare(`UPDATE atendimento_msgs_agendadas SET texto = ?, agendado_para = ? WHERE id = ?`).run(texto, quando.toISOString(), m.id);
   res.json({ ok: true });
