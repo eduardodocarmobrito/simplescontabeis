@@ -10341,9 +10341,12 @@ function atdAgendarModal(S, input){
       const up = await dcApi(`/conversations/${S.conversaAtiva}/media`, { method:'POST', body: fd });
       anexo = { kind: up.kind, storagePath: up.storage_path, mime: up.media_mime, sizeBytes: up.media_size_bytes, filename: f.name };
       nomeEl.innerHTML = `📎 ${esc(f.name)} <span class="link-discreto" id="agAnexoRemover">remover</span>`;
-      document.getElementById('agAnexoRemover').addEventListener('click', ()=>{ anexo = null; nomeEl.textContent=''; document.getElementById('agArquivo').value=''; });
+      // Busca dentro do próprio nomeEl (não em document) — se a pessoa fechou o modal enquanto o
+      // upload rodava, nomeEl continua sendo uma referência válida mesmo já fora da tela, mas um
+      // document.getElementById não acharia mais nada e quebrava (achado ao vivo 2026-09-30).
+      nomeEl.querySelector('#agAnexoRemover')?.addEventListener('click', ()=>{ anexo = null; nomeEl.textContent=''; const inp=document.getElementById('agArquivo'); if(inp) inp.value=''; });
     }catch(e){ toast(e.message,'err'); nomeEl.textContent=''; }
-    btn.disabled = false;
+    if(btn) btn.disabled = false;
   });
   document.getElementById('agOk').addEventListener('click', async ()=>{
     const texto = document.getElementById('agTexto').value.trim();
