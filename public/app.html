@@ -31,6 +31,9 @@
   .field label{font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-soft); font-family:'IBM Plex Mono',monospace;}
   .field input, .field select, .field textarea{font-family:'Inter',sans-serif; font-size:14px; border:1px solid var(--rule); border-radius:10px; padding:9px 11px; background:var(--paper); color:var(--ink); width:100%;}
   .field input:focus, .field select:focus, .field textarea:focus{outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-pale); background:var(--surface);}
+  /* Input "solto" (fora de .field) com o mesmo visual do sistema — pros campinhos inline (hora/dia etc.) */
+  .inp{font-family:'Inter',sans-serif; font-size:14px; border:1px solid var(--rule); border-radius:10px; padding:8px 10px; background:var(--paper); color:var(--ink);}
+  .inp:focus{outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-pale); background:var(--surface);}
   .login-error{margin-top:12px; padding:10px 12px; background:#F6E6E3; color:var(--debit); border:1px solid #E3B8AC; border-radius:6px; font-size:12.5px;}
 
   .combo{position:relative;}
@@ -10517,10 +10520,10 @@ async function feriasMontar(box){
         <div class="row" style="gap:10px; align-items:center; flex-wrap:wrap;">
           <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="feriasVerifAtivo" ${r.verifAtivo?'checked':''}> Ligado</label>
           <span style="font-size:12.5px; color:var(--ink-soft);">Todo dia</span>
-          <input type="number" id="feriasVerifDiaMes" min="1" max="28" value="${r.verifDiaMes}" style="width:60px;">
+          <input type="number" class="inp" id="feriasVerifDiaMes" min="1" max="28" value="${r.verifDiaMes}" style="width:58px;">
           <span style="font-size:12.5px; color:var(--ink-soft);">às</span>
-          <input type="number" id="feriasVerifHora" min="0" max="23" value="${r.verifHora}" style="width:55px;"> :
-          <input type="number" id="feriasVerifMinuto" min="0" max="59" value="${String(r.verifMinuto).padStart(2,'0')}" style="width:55px;">
+          <input type="number" class="inp" id="feriasVerifHora" min="0" max="23" value="${r.verifHora}" style="width:54px;"> :
+          <input type="number" class="inp" id="feriasVerifMinuto" min="0" max="59" value="${String(r.verifMinuto).padStart(2,'0')}" style="width:54px;">
         </div>
         <div class="row" style="gap:8px; margin-top:10px; align-items:center;">
           <button class="btn primary" id="feriasVerifSalvarCfg">Salvar</button>
@@ -10534,10 +10537,10 @@ async function feriasMontar(box){
         <div class="row" style="gap:10px; align-items:center; flex-wrap:wrap;">
           <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="feriasAtivo" ${r.ativo?'checked':''}> Ligado</label>
           <span style="font-size:12.5px; color:var(--ink-soft);">Todo dia</span>
-          <input type="number" id="feriasDiaMes" min="1" max="28" value="${r.diaMes}" style="width:60px;">
+          <input type="number" class="inp" id="feriasDiaMes" min="1" max="28" value="${r.diaMes}" style="width:58px;">
           <span style="font-size:12.5px; color:var(--ink-soft);">às</span>
-          <input type="number" id="feriasHora" min="0" max="23" value="${r.hora}" style="width:55px;"> :
-          <input type="number" id="feriasMinuto" min="0" max="59" value="${String(r.minuto).padStart(2,'0')}" style="width:55px;">
+          <input type="number" class="inp" id="feriasHora" min="0" max="23" value="${r.hora}" style="width:54px;"> :
+          <input type="number" class="inp" id="feriasMinuto" min="0" max="59" value="${String(r.minuto).padStart(2,'0')}" style="width:54px;">
         </div>
         <div class="row" style="margin-top:10px;"><button class="btn primary" id="feriasSalvarCfg">Salvar</button></div>
       </div>
