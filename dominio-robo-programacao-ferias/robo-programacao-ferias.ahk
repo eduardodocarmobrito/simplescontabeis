@@ -125,6 +125,20 @@ DialogoPequenoAtivo() {
     return false
 }
 
+; A tela de parametros "Programacao de Ferias" (janela PEQUENA com esse titulo) ainda esta aberta?
+; A janela principal tambem tem "Programa" no titulo quando o relatorio abre, mas e GRANDE (filtro por tamanho).
+TelaParamAberta() {
+    for hwnd in WinGetList("ahk_exe AppController.exe") {
+        if !InStr(WinGetTitle("ahk_id " . hwnd), "Programa")
+            continue
+        w := 0, h := 0
+        try WinGetPos(, , &w, &h, "ahk_id " . hwnd)
+        if (w > 60 && h > 60 && w <= 900 && h <= 700)
+            return true
+    }
+    return false
+}
+
 ; Ativa a janela do APP do Dominio (a que NAO e o launcher "Lista de Programas").
 AtivarApp() {
     global DOMINIO_WIN
@@ -196,12 +210,16 @@ AbrirRelatorio() {
 
 ; Tela "Programacao de Ferias": Data base ja vem com a data de HOJE (padrao). So clicar OK.
 GerarRelatorio() {
-    global FERIAS_OK_X, FERIAS_OK_Y, T_MEDIO, T_LONGO
-    Sleep T_MEDIO                              ; espera a tela de parametros abrir
-    Click(FERIAS_OK_X . " " . FERIAS_OK_Y)     ; OK -> gera o relatorio
-    Sleep 500
-    Send "{Enter}"                             ; reforco: Enter = botao padrao (OK) caso o clique erre
-    Sleep T_LONGO                              ; deixa a tela de parametros fechar / relatorio comecar
+    global FERIAS_OK_X, FERIAS_OK_Y
+    Sleep 3000                                 ; espera a tela de parametros abrir/renderizar
+    ; Clica OK ate a tela de parametros FECHAR de verdade (o streaming derruba clique de vez em quando).
+    Loop 5 {
+        Click(FERIAS_OK_X . " " . FERIAS_OK_Y) ; OK -> gera o relatorio
+        Sleep 1800
+        if (!TelaParamAberta())                ; fechou -> o OK pegou
+            break
+    }
+    Sleep 5000                                 ; espera 5s a tela carregar (relatorio ou "Sem dados")
     return EsperarRender()
 }
 
@@ -329,8 +347,10 @@ ProcessarEmpresa(codigo) {
         Sleep 600
         Send "{Enter}"                          ; OK no "Sem dados para emitir!"
         Sleep 5000                              ; espera 5s
-        Send "{Esc}"                            ; Esc (fecha a tela vazia)
-        Sleep 3000                              ; espera 3s e segue pra proxima empresa
+        Send "{Esc}"
+        Sleep T_CURTO
+        Send "{Esc}"                            ; Esc x2
+        Sleep 3000                              ; segue pra proxima empresa
         return "pular"
     }
     ; --- Salvar em PDF ---
