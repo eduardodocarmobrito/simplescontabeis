@@ -8104,6 +8104,34 @@ registerCentralEnvio(app, {
 // Programação de Férias (DP/RH): lê o relatório da mesma esteira do Domínio acima, identifica quem
 // está com férias vencidas/perto de vencer e manda um relatório curado por empresa (uma vez por mês
 // ou pelo botão "Enviar agora").
+// Relê do disco todo PDF já importado como "Programação de Férias" (envio_documentos cujo template é
+// esse) e roda feriasProcessarPdf de novo em cada um — usado pelo botão "Verificar agora" e pelo
+// agendador de verificação (a esteira de 10s do Drive já pega arquivo NOVO sozinha; isso é pra
+// reconferir o que já foi importado, no dia/hora que o usuário escolher).
+async function feriasReprocessarExistentes(escritorioId: number): Promise<number> {
+  const rows = sqlite
+    .prepare(
+      `SELECT d.id, d.file_path, a.empresa_id as empresaId
+         FROM envio_documentos d
+         JOIN envio_periodos p ON p.id = d.periodo_id
+         JOIN envio_atribuicoes a ON a.id = p.atribuicao_id
+         JOIN envio_templates t ON t.id = a.template_id
+        WHERE t.escritorio_id = ? AND t.nome = ?`
+    )
+    .all(escritorioId, DOM_REL_TEMPLATE_NOME.programacao_ferias) as any[];
+  let processados = 0;
+  for (const row of rows) {
+    if (!fs.existsSync(row.file_path)) continue;
+    try {
+      const texto = await obterTextoDoPdf(fs.readFileSync(row.file_path));
+      feriasProcessarPdf(escritorioId, row.empresaId, texto, row.id);
+      processados++;
+    } catch (e: any) {
+      console.error(`[ferias] reprocessar documento ${row.id}:`, e.message);
+    }
+  }
+  return processados;
+}
 registerFerias(app, {
   sqlite,
   blockCliente,
@@ -8112,6 +8140,7 @@ registerFerias(app, {
   empresasVisiveis,
   enviarEmail,
   enviarWhatsapp: enviarDocumentoWhatsapp as any,
+  reprocessarExistentes: feriasReprocessarExistentes,
 });
 // Módulo E-mail (webmail): reaproveita o e-mail + senha de app de Configurações › E-mail corporativo.
 registerWebmail(app, {

@@ -10480,23 +10480,43 @@ async function pageSetor(escopo){
 // Lê o relatório "Programação de Férias" do Domínio (mesma esteira de Relatórios › Domínio Web) e
 // mostra só quem está com férias vencidas ou a 30 dias do limite — com botão pra mandar pro cliente
 // na hora, e um agendador mensal (config nesta mesma tela, sem precisar ir em Configurações).
+function feriasBr(iso){ return iso ? iso.split('-').reverse().join('/') : '—'; }
 async function feriasMontar(box){
   box.innerHTML = `<div class="empty-state">Carregando…</div>`;
   let r; try{ r = await api('/ferias/estado'); }catch(e){ box.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
   const totalVencidas = r.empresas.reduce((s,e)=>s+e.vencidas, 0);
   const totalProximas = r.empresas.reduce((s,e)=>s+e.proximas, 0);
   box.innerHTML = `
-    <div class="card" style="margin-bottom:14px;">
-      <h3 style="margin-top:0;">Envio automático mensal</h3>
-      <p class="subtitle" style="margin:0 0 10px;">Uma vez por mês, manda pra cada cliente (com pelo menos 1 funcionário vencido ou perto do limite) um relatório só com essas pendências.</p>
-      <div class="row" style="gap:10px; align-items:center; flex-wrap:wrap;">
-        <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="feriasAtivo" ${r.ativo?'checked':''}> Ligado</label>
-        <span style="font-size:12.5px; color:var(--ink-soft);">Todo dia</span>
-        <input type="number" id="feriasDiaMes" min="1" max="28" value="${r.diaMes}" style="width:60px;">
-        <span style="font-size:12.5px; color:var(--ink-soft);">às</span>
-        <input type="number" id="feriasHora" min="0" max="23" value="${r.hora}" style="width:55px;"> :
-        <input type="number" id="feriasMinuto" min="0" max="59" value="${String(r.minuto).padStart(2,'0')}" style="width:55px;">
-        <button class="btn primary" id="feriasSalvarCfg">Salvar</button>
+    <div class="row" style="gap:14px; align-items:stretch; flex-wrap:wrap; margin-bottom:14px;">
+      <div class="card" style="flex:1; min-width:300px; margin-bottom:0;">
+        <h3 style="margin-top:0;">🔎 Verificação automática</h3>
+        <p class="subtitle" style="margin:0 0 10px;">Relê os relatórios de Programação de Férias já importados (Relatórios › Domínio Web) e recalcula quem está vencido — a leitura de arquivo novo já é automática (10s); isso é pra reconferir o que já tem.</p>
+        <div class="row" style="gap:10px; align-items:center; flex-wrap:wrap;">
+          <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="feriasVerifAtivo" ${r.verifAtivo?'checked':''}> Ligado</label>
+          <span style="font-size:12.5px; color:var(--ink-soft);">Todo dia</span>
+          <input type="number" id="feriasVerifDiaMes" min="1" max="28" value="${r.verifDiaMes}" style="width:60px;">
+          <span style="font-size:12.5px; color:var(--ink-soft);">às</span>
+          <input type="number" id="feriasVerifHora" min="0" max="23" value="${r.verifHora}" style="width:55px;"> :
+          <input type="number" id="feriasVerifMinuto" min="0" max="59" value="${String(r.verifMinuto).padStart(2,'0')}" style="width:55px;">
+        </div>
+        <div class="row" style="gap:8px; margin-top:10px; align-items:center;">
+          <button class="btn primary" id="feriasVerifSalvarCfg">Salvar</button>
+          <button class="btn" id="feriasVerificarAgora">↻ Verificar agora</button>
+          ${r.verifUltimaEm?`<span style="font-size:11.5px; color:var(--ink-soft);">última verificação: ${fmtDateHora(r.verifUltimaEm)}</span>`:''}
+        </div>
+      </div>
+      <div class="card" style="flex:1; min-width:300px; margin-bottom:0;">
+        <h3 style="margin-top:0;">📤 Envio automático mensal</h3>
+        <p class="subtitle" style="margin:0 0 10px;">Uma vez por mês, manda pra cada cliente (com pelo menos 1 funcionário vencido ou perto do limite) um relatório só com essas pendências.</p>
+        <div class="row" style="gap:10px; align-items:center; flex-wrap:wrap;">
+          <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="feriasAtivo" ${r.ativo?'checked':''}> Ligado</label>
+          <span style="font-size:12.5px; color:var(--ink-soft);">Todo dia</span>
+          <input type="number" id="feriasDiaMes" min="1" max="28" value="${r.diaMes}" style="width:60px;">
+          <span style="font-size:12.5px; color:var(--ink-soft);">às</span>
+          <input type="number" id="feriasHora" min="0" max="23" value="${r.hora}" style="width:55px;"> :
+          <input type="number" id="feriasMinuto" min="0" max="59" value="${String(r.minuto).padStart(2,'0')}" style="width:55px;">
+        </div>
+        <div class="row" style="margin-top:10px;"><button class="btn primary" id="feriasSalvarCfg">Salvar</button></div>
       </div>
     </div>
     ${r.empresas.length?`<p class="subtitle" style="margin:0 0 10px;"><b>${totalVencidas}</b> vencida(s) e <b>${totalProximas}</b> próxima(s) do limite, em ${r.empresas.length} empresa(s).</p>`:''}
@@ -10512,8 +10532,16 @@ async function feriasMontar(box){
             <button class="btn small" data-empresa="${emp.id}" data-canal="meta" data-act="ferias-enviar" title="Pelo número separado da API oficial (Meta)">📱 Enviar (Meta)</button>
           </div>
         </div>
-        <table class="data-table" style="margin-top:10px;"><thead><tr><th>Funcionário</th><th>Situação</th><th>Limite</th><th>Observação</th></tr></thead><tbody>
-          ${emp.funcionarios.map(f=>`<tr><td>${esc(f.nome)}</td><td>${f.status==='vencida'?'<span class="tag bad">Vencida</span>':'<span class="tag warn">Próxima do limite</span>'}</td><td>${esc(f.limiteConcessao.split('-').reverse().join('/'))}</td><td style="font-size:12px;">${esc(f.mensagem)}</td></tr>`).join('')}
+        <table class="data-table" style="margin-top:10px;"><thead><tr><th>Código</th><th>Funcionário</th><th>Situação</th><th>Admissão</th><th>Período aquisitivo</th><th>Vencto./Limite</th><th>Dias em aberto</th></tr></thead><tbody>
+          ${emp.funcionarios.map(f=>`<tr>
+            <td>${esc(f.codigo||'—')}</td>
+            <td>${esc(f.nome)}</td>
+            <td>${f.status==='vencida'?'<span class="tag bad">Vencida</span>':'<span class="tag warn">Último mês</span>'}</td>
+            <td style="font-size:12px;">${feriasBr(f.data_admissao)}</td>
+            <td style="font-size:12px;">${feriasBr(f.inicio_aquisitivo)} a ${feriasBr(f.fim_aquisitivo)}</td>
+            <td style="font-size:12px;">${f.status==='vencida'?feriasBr(f.vencto_ferias):feriasBr(f.limite_gozo)}</td>
+            <td style="font-size:12px;">${f.dias_restantes??'—'}</td>
+          </tr>`).join('')}
         </tbody></table>
       </div>
     `).join('') : '<div class="empty-state">Nenhuma pendência de férias no momento — ou ainda não chegou nenhum relatório de Programação de Férias pela leitura automática do Domínio (Relatórios › Domínio Web).</div>'}
@@ -10525,6 +10553,24 @@ async function feriasMontar(box){
       toast('Salvo.','ok');
     }catch(e){ toast(e.message,'err'); }
     b.disabled = false;
+  });
+  document.getElementById('feriasVerifSalvarCfg').addEventListener('click', async ()=>{
+    const b = document.getElementById('feriasVerifSalvarCfg'); b.disabled = true;
+    try{
+      await api('/ferias/verificacao-config', { method:'POST', body:{ ativo: document.getElementById('feriasVerifAtivo').checked, diaMes: document.getElementById('feriasVerifDiaMes').value, hora: document.getElementById('feriasVerifHora').value, minuto: document.getElementById('feriasVerifMinuto').value } });
+      toast('Salvo.','ok');
+    }catch(e){ toast(e.message,'err'); }
+    b.disabled = false;
+  });
+  document.getElementById('feriasVerificarAgora').addEventListener('click', async ()=>{
+    const b = document.getElementById('feriasVerificarAgora'); b.disabled = true; b.textContent = 'Verificando…';
+    try{
+      const resp = await api('/ferias/verificar-agora', { method:'POST' });
+      toast('Verificado — '+resp.qtd+' relatório(s) reconferido(s).','ok');
+      feriasMontar(box);
+      return;
+    }catch(e){ toast(e.message,'err'); }
+    b.disabled = false; b.textContent = '↻ Verificar agora';
   });
   box.querySelectorAll('[data-act="ferias-enviar"]').forEach(b=>b.addEventListener('click', async ()=>{
     b.disabled = true; const original = b.textContent; b.textContent = 'Enviando…';

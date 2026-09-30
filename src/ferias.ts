@@ -3,11 +3,10 @@
 // funcionários com férias VENCIDAS (ou perto de vencer) e manda um relatório curado — só com quem
 // interessa — pra cada cliente, uma vez por mês (ou na hora, pelo botão "Enviar agora").
 //
-// [2026-09-29] Regra de vencimento usada aqui é a regra geral da CLT (período aquisitivo de 12 meses
-// + período concessivo de mais 12 meses = vence 24 meses após o fim do período aquisitivo). O layout
-// exato do PDF do Domínio (nomes de coluna, se tem período aquisitivo em duas datas "de/até" ou só
-// uma) AINDA NÃO foi conferido contra um relatório real — feriasExtrairFuncionarios é o único lugar
-// que precisa mudar quando isso for validado.
+// [2026-09-29] Layout conferido contra um relatório real do Domínio. A coluna "Fer. venc." já vem
+// PRONTA de lá (quantidade de períodos vencidos) — não precisa calcular pela CLT, só ler: >0 é
+// vencida, traz a linha inteira. Pra quem ainda não venceu, usa a própria coluna "Limite p/ gozo"
+// pra avisar quando faltar 30 dias ("Último mês pra conceder as férias").
 import type express from "express";
 
 type Deps = {
@@ -19,6 +18,10 @@ type Deps = {
   enviarEmail: (escritorioId: number, msg: { to: string[]; subject: string; text: string; attachments?: { filename: string; content: Buffer }[] }) => Promise<any>;
   // canal: "conversa" (deskcomm) ou "meta" (API oficial) — mesmo dispatcher de hoje mais cedo.
   enviarWhatsapp: (canal: string, escritorioId: number, telefone: string, nomeContato: string, descricao: string, arquivo: { nome: string; tipo: string; buffer: Buffer }, origem: { tabela: string; id: number }) => Promise<void>;
+  // Relê do disco todo PDF já importado como "Programação de Férias" e roda feriasProcessarPdf de
+  // novo em cada um — usado pelo agendador de verificação e pelo botão "Verificar agora" (a esteira
+  // de 10s do Drive já pega arquivo NOVO sozinha; isso aqui é pra reconferir o que já tem).
+  reprocessarExistentes: (escritorioId: number) => Promise<number>;
 };
 
 let deps: Deps;
@@ -29,44 +32,70 @@ function brParaIso(dataBr: string): string | null {
   if (!m) return null;
   return `${m[3]}-${m[2]}-${m[1]}`;
 }
-function isoParaBr(dataIso: string): string {
+function isoParaBr(dataIso: string | null): string {
+  if (!dataIso) return "—";
   const [a, m, d] = dataIso.split("-");
   return `${d}/${m}/${a}`;
 }
-function somarMeses(dataIso: string, meses: number): string {
-  const d = new Date(dataIso + "T00:00:00");
-  d.setMonth(d.getMonth() + meses);
-  return d.toISOString().slice(0, 10);
-}
 
-// Lê o texto do PDF linha a linha: uma linha "parece" um funcionário quando tem um nome (2+
-// palavras, maioria letras) seguido de pelo menos uma data dd/mm/aaaa. Se a linha tiver duas datas
-// (típico de "período aquisitivo: 01/01/2023 a 31/12/2023"), usa a SEGUNDA como fim do período
-// aquisitivo; com uma data só, usa essa mesma (suposição a confirmar com o relatório real).
-export function feriasExtrairFuncionarios(texto: string): { nome: string; matricula: string | null; periodoAquisitivoFimBr: string }[] {
-  const funcionarios: { nome: string; matricula: string | null; periodoAquisitivoFimBr: string }[] = [];
+// Lê o texto do PDF linha a linha: uma linha de funcionário começa com o código (número) seguido do
+// nome e, na sequência, 16 campos separados por espaço (mesma ordem de colunas do relatório real):
+// Data admissão | Vencto. férias | Fer. venc. | Fer. pro. | Início aquisitivo | Fim aquisitivo |
+// Início gozo férias | Dias | Abono | 13º | Dias dir. | Dias goz. | Dias rest. | Limite p/ gozo |
+// Dias afast. | Dias faltas.
+export function feriasExtrairFuncionarios(texto: string): {
+  codigo: string; nome: string;
+  dataAdmissaoBr: string | null; venctoFeriasBr: string | null; ferVenc: number;
+  inicioAquisitivoBr: string | null; fimAquisitivoBr: string | null;
+  diasDireito: number | null; diasGozados: number | null; diasRestantes: number | null;
+  limiteGozoBr: string | null;
+}[] {
+  const funcionarios: ReturnType<typeof feriasExtrairFuncionarios> = [];
   const linhas = texto.split(/\r?\n/);
   const dataRe = /\d{2}\/\d{2}\/\d{4}/g;
+  const dataOuNull = (s: string | undefined) => (s && /^\d{2}\/\d{2}\/\d{4}$/.test(s) ? s : null);
+  const numOuNull = (s: string | undefined) => {
+    const n = parseInt(String(s), 10);
+    return Number.isFinite(n) ? n : null;
+  };
   for (const linhaOriginal of linhas) {
     const linha = linhaOriginal.trim();
     if (!linha) continue;
     const datas = [...linha.matchAll(dataRe)];
-    if (!datas.length) continue;
+    if (datas.length < 2) continue; // toda linha de funcionário tem pelo menos admissão + vencto
     const antesDaData = linha.slice(0, datas[0].index).trim();
-    const matriculaMatch = /^(\d{1,10})\s*[-.]?\s*/.exec(antesDaData);
-    const nome = (matriculaMatch ? antesDaData.slice(matriculaMatch[0].length) : antesDaData).trim();
+    const codigoMatch = /^(\d{1,10})\s+/.exec(antesDaData);
+    if (!codigoMatch) continue; // não começa com código — é cabeçalho/rodapé, não funcionário
+    const nome = antesDaData.slice(codigoMatch[0].length).trim();
     const palavras = nome.split(/\s+/).filter(Boolean);
     if (palavras.length < 2 || !/^[A-ZÀ-Ý][A-ZÀ-Ýa-zà-ÿ'.\- ]+$/.test(nome)) continue;
-    const periodoAquisitivoFimBr = datas.length >= 2 ? datas[1][0] : datas[0][0];
-    funcionarios.push({ nome, matricula: matriculaMatch ? matriculaMatch[1] : null, periodoAquisitivoFimBr });
+    const resto = linha.slice(datas[0].index).trim().split(/\s+/);
+    funcionarios.push({
+      codigo: codigoMatch[1],
+      nome,
+      dataAdmissaoBr: dataOuNull(resto[0]),
+      venctoFeriasBr: dataOuNull(resto[1]),
+      ferVenc: numOuNull(resto[2]) || 0,
+      inicioAquisitivoBr: dataOuNull(resto[4]),
+      fimAquisitivoBr: dataOuNull(resto[5]),
+      diasDireito: numOuNull(resto[10]),
+      diasGozados: numOuNull(resto[11]),
+      diasRestantes: numOuNull(resto[12]),
+      limiteGozoBr: dataOuNull(resto[13]),
+    });
   }
   return funcionarios;
 }
-export function feriasCalcularStatus(periodoAquisitivoFimIso: string, hoje = hojeIso()): { status: "vencida" | "proxima" | "ok"; limiteConcessao: string } {
-  const limiteConcessao = somarMeses(periodoAquisitivoFimIso, 12);
-  const diffDias = Math.round((new Date(limiteConcessao + "T00:00:00").getTime() - new Date(hoje + "T00:00:00").getTime()) / 86400000);
-  const status = diffDias < 0 ? "vencida" : diffDias <= 30 ? "proxima" : "ok";
-  return { status, limiteConcessao };
+// "vencida" vem PRONTO da coluna Fer. venc. (>0). Sem vencida ainda, mas a 30 dias (ou menos) do
+// Limite p/ gozo: "proxima" (avisa "Último mês pra conceder"). O resto não entra no relatório.
+export function feriasCalcularStatus(ferVenc: number, limiteGozoBr: string | null, hoje = hojeIso()): "vencida" | "proxima" | "ok" {
+  if (ferVenc > 0) return "vencida";
+  const iso = limiteGozoBr ? brParaIso(limiteGozoBr) : null;
+  if (iso) {
+    const diffDias = Math.round((new Date(iso + "T00:00:00").getTime() - new Date(hoje + "T00:00:00").getTime()) / 86400000);
+    if (diffDias <= 30) return "proxima";
+  }
+  return "ok";
 }
 // Chamado pelo loop de dominioRelatoriosSincronizar (server.ts) quando um PDF é classificado como
 // "programacao_ferias" — substitui a foto anterior dessa empresa pela nova (o relatório do Domínio
@@ -76,14 +105,20 @@ export function feriasProcessarPdf(escritorioId: number, empresaId: number, text
   const hoje = hojeIso();
   deps.sqlite.prepare(`DELETE FROM ferias_funcionarios WHERE empresa_id = ?`).run(empresaId);
   const ins = deps.sqlite.prepare(
-    `INSERT INTO ferias_funcionarios (escritorio_id, empresa_id, nome, matricula, periodo_aquisitivo_fim, limite_concessao, status, origem_doc_id) VALUES (?,?,?,?,?,?,?,?)`
+    `INSERT INTO ferias_funcionarios (escritorio_id, empresa_id, codigo, nome, data_admissao, vencto_ferias, fer_venc, inicio_aquisitivo, fim_aquisitivo, dias_direito, dias_gozados, dias_restantes, limite_gozo, status, origem_doc_id)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   );
   let gravados = 0;
   for (const f of funcionarios) {
-    const iso = brParaIso(f.periodoAquisitivoFimBr);
-    if (!iso) continue;
-    const { status, limiteConcessao } = feriasCalcularStatus(iso, hoje);
-    ins.run(escritorioId, empresaId, f.nome, f.matricula, iso, limiteConcessao, status, origemDocId);
+    const status = feriasCalcularStatus(f.ferVenc, f.limiteGozoBr, hoje);
+    if (status === "ok") continue; // só guarda quem interessa (vencida/próxima) — igual foi pedido
+    ins.run(
+      escritorioId, empresaId, f.codigo, f.nome,
+      brParaIso(f.dataAdmissaoBr || ""), brParaIso(f.venctoFeriasBr || ""), f.ferVenc,
+      brParaIso(f.inicioAquisitivoBr || ""), brParaIso(f.fimAquisitivoBr || ""),
+      f.diasDireito, f.diasGozados, f.diasRestantes, brParaIso(f.limiteGozoBr || ""),
+      status, origemDocId
+    );
     gravados++;
   }
   return gravados;
@@ -94,33 +129,57 @@ const MENSAGEM_STATUS: Record<string, string> = {
   proxima: "Último mês para conceder as férias",
 };
 
+// Layout "empolgante" pra mandar pro cliente: faixa colorida no topo com o total de pendências,
+// cards por funcionário (não uma tabela seca) e uma chamada clara pra ação.
 function gerarHtmlRelatorio(escritorioNome: string, empresaNome: string, funcionarios: any[]): string {
-  const linhas = funcionarios
-    .map(
-      (f) => `<tr>
-        <td>${f.nome}</td>
-        <td class="${f.status === "vencida" ? "vencida" : "proxima"}">${f.status === "vencida" ? "Vencida" : "Próxima do limite"}</td>
-        <td>${isoParaBr(f.limite_concessao)}</td>
-        <td>${MENSAGEM_STATUS[f.status] || ""}</td>
-      </tr>`
-    )
-    .join("");
+  const vencidas = funcionarios.filter((f) => f.status === "vencida");
+  const proximas = funcionarios.filter((f) => f.status === "proxima");
+  const cardFuncionario = (f: any) => `
+    <div class="pessoa ${f.status}">
+      <div class="pessoa-topo">
+        <span class="selo ${f.status}">${f.status === "vencida" ? "⚠ VENCIDA" : "⏳ ÚLTIMO MÊS"}</span>
+        <span class="nome">${f.nome}</span>
+      </div>
+      <div class="linhas">
+        <span>Admissão: <b>${isoParaBr(f.data_admissao)}</b></span>
+        <span>Período aquisitivo: <b>${isoParaBr(f.inicio_aquisitivo)} a ${isoParaBr(f.fim_aquisitivo)}</b></span>
+        ${f.status === "vencida" ? `<span>Venceu em: <b>${isoParaBr(f.vencto_ferias)}</b></span>` : `<span>Prazo para conceder: <b>${isoParaBr(f.limite_gozo)}</b></span>`}
+        ${f.dias_restantes != null ? `<span>Dias de férias em aberto: <b>${f.dias_restantes}</b></span>` : ""}
+      </div>
+      <div class="msg">${MENSAGEM_STATUS[f.status] || ""}</div>
+    </div>`;
   return `<!doctype html><html><head><meta charset="utf-8"><style>
-    body{font-family:'Helvetica Neue',Arial,sans-serif; color:#1c2b24; margin:0; padding:28px 32px;}
-    h1{font-size:18px; margin:0 0 2px;}
-    .sub{font-size:12px; color:#5b6b63; margin:0 0 18px;}
-    table{width:100%; border-collapse:collapse; font-size:12px;}
-    th{text-align:left; background:#eef5f1; padding:8px 10px; border-bottom:2px solid #cfe0d8; font-size:10.5px; letter-spacing:.04em; text-transform:uppercase; color:#3c584a;}
-    td{padding:8px 10px; border-bottom:1px solid #e5eae7;}
-    td.vencida{color:#b23b3b; font-weight:600;}
-    td.proxima{color:#a5730a; font-weight:600;}
-    .rodape{margin-top:22px; font-size:10.5px; color:#8a938d;}
+    body{font-family:'Helvetica Neue',Arial,sans-serif; color:#1c2b24; margin:0; background:#f4f8f6;}
+    .topo{background:linear-gradient(135deg,#1f6f4d,#154d36); color:#fff; padding:30px 36px 26px;}
+    .topo h1{margin:0 0 4px; font-size:21px;}
+    .topo p{margin:0; opacity:.85; font-size:12.5px;}
+    .resumo{display:flex; gap:14px; margin-top:16px;}
+    .pill{background:rgba(255,255,255,.14); border-radius:10px; padding:10px 16px;}
+    .pill b{display:block; font-size:22px;}
+    .pill span{font-size:11px; opacity:.85; text-transform:uppercase; letter-spacing:.04em;}
+    .corpo{padding:22px 36px 30px;}
+    .pessoa{background:#fff; border-radius:12px; padding:14px 18px; margin-bottom:12px; border-left:5px solid #cfd8d3; box-shadow:0 1px 3px rgba(20,40,30,.06);}
+    .pessoa.vencida{border-left-color:#c0392b;}
+    .pessoa.proxima{border-left-color:#c9861a;}
+    .pessoa-topo{display:flex; align-items:center; gap:10px; margin-bottom:8px;}
+    .selo{font-size:10.5px; font-weight:700; letter-spacing:.03em; padding:3px 9px; border-radius:20px; color:#fff;}
+    .selo.vencida{background:#c0392b;}
+    .selo.proxima{background:#c9861a;}
+    .nome{font-weight:700; font-size:14px;}
+    .linhas{display:flex; flex-wrap:wrap; gap:4px 18px; font-size:12px; color:#4a5852; margin-bottom:6px;}
+    .msg{font-size:12px; font-weight:600; color:#3c584a;}
+    .rodape{padding:16px 36px 26px; font-size:10.5px; color:#8a938d;}
   </style></head><body>
-    <h1>Programação de Férias — pendências</h1>
-    <p class="sub"><b>${empresaNome}</b> · gerado em ${new Date().toLocaleDateString("pt-BR")} por ${escritorioNome}</p>
-    <table><thead><tr><th>Funcionário</th><th>Situação</th><th>Limite para conceder</th><th>Observação</th></tr></thead>
-    <tbody>${linhas}</tbody></table>
-    <p class="rodape">Relatório gerado automaticamente a partir da Programação de Férias do Domínio Web. Férias vencidas geram o pagamento em dobro previsto na CLT — recomendamos agendar o quanto antes.</p>
+    <div class="topo">
+      <h1>Programação de Férias — ${empresaNome}</h1>
+      <p>Relatório gerado em ${new Date().toLocaleDateString("pt-BR")} por ${escritorioNome}</p>
+      <div class="resumo">
+        ${vencidas.length ? `<div class="pill"><b>${vencidas.length}</b><span>Vencidas</span></div>` : ""}
+        ${proximas.length ? `<div class="pill"><b>${proximas.length}</b><span>Último mês</span></div>` : ""}
+      </div>
+    </div>
+    <div class="corpo">${funcionarios.map(cardFuncionario).join("")}</div>
+    <p class="rodape">Férias vencidas geram pagamento em dobro previsto na CLT — recomendamos agendar o quanto antes. Qualquer dúvida, estamos à disposição.</p>
   </body></html>`;
 }
 export async function gerarPdfFeriasVencidas(escritorioNome: string, empresaNome: string, funcionarios: any[]): Promise<Buffer> {
@@ -139,7 +198,7 @@ export async function gerarPdfFeriasVencidas(escritorioNome: string, empresaNome
 
 function funcionariosPendentes(sqlite: any, empresaId: number): any[] {
   return sqlite
-    .prepare(`SELECT * FROM ferias_funcionarios WHERE empresa_id = ? AND status IN ('vencida','proxima') ORDER BY status, limite_concessao`)
+    .prepare(`SELECT * FROM ferias_funcionarios WHERE empresa_id = ? AND status IN ('vencida','proxima') ORDER BY status, limite_gozo`)
     .all(empresaId) as any[];
 }
 async function enviarRelatorioEmpresa(escritorioId: number, empresa: any, canal: string): Promise<{ ok: boolean; erro?: string; qtd: number }> {
@@ -176,16 +235,30 @@ async function enviarRelatorioEmpresa(escritorioId: number, empresa: any, canal:
 export function registerFerias(app: express.Express, d: Deps) {
   deps = d;
   const { sqlite } = d;
+  // [2026-09-29] Esquema da tabela mudou (colunas antigas tinham NOT NULL que não existe mais no
+  // layout real do relatório) — criada hoje mais cedo, sem nenhum dado de produção ainda (nenhum PDF
+  // de verdade passou por ela até agora). Migração ÚNICA: só derruba se ainda estiver no esquema
+  // velho (detectado pela coluna "periodo_aquisitivo_fim", que não existe mais) — depois desta vez,
+  // a tabela já nasce certa e este bloco não encontra mais essa coluna, não roda de novo.
+  const colsAntigas = (sqlite.prepare(`PRAGMA table_info(ferias_funcionarios)`).all() as any[]).map((c) => c.name);
+  if (colsAntigas.includes("periodo_aquisitivo_fim")) sqlite.exec(`DROP TABLE ferias_funcionarios;`);
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS ferias_funcionarios (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       escritorio_id INTEGER NOT NULL,
       empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+      codigo TEXT,
       nome TEXT NOT NULL,
-      matricula TEXT,
-      periodo_aquisitivo_fim TEXT NOT NULL,
-      limite_concessao TEXT NOT NULL,
-      status TEXT NOT NULL, -- 'vencida' | 'proxima' | 'ok'
+      data_admissao TEXT,
+      vencto_ferias TEXT,
+      fer_venc INTEGER NOT NULL DEFAULT 0,
+      inicio_aquisitivo TEXT,
+      fim_aquisitivo TEXT,
+      dias_direito INTEGER,
+      dias_gozados INTEGER,
+      dias_restantes INTEGER,
+      limite_gozo TEXT,
+      status TEXT NOT NULL, -- 'vencida' | 'proxima'
       origem_doc_id INTEGER,
       atualizado_em TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -208,13 +281,31 @@ export function registerFerias(app: express.Express, d: Deps) {
       mensagem TEXT,
       executado_em TEXT DEFAULT (datetime('now'))
     );
+    -- Agendador SEPARADO do de envio acima: controla quando o site relê o que já foi importado em
+    -- Relatórios › Programação de Férias (a esteira do Drive já pega arquivo NOVO sozinha em 10s;
+    -- isso aqui é pra reconferir/recalcular o que já tem, no dia/hora que o usuário escolher).
+    CREATE TABLE IF NOT EXISTS ferias_verificacao_config (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      ativo INTEGER NOT NULL DEFAULT 0,
+      dia_mes INTEGER NOT NULL DEFAULT 15,
+      hora INTEGER NOT NULL DEFAULT 7,
+      minuto INTEGER NOT NULL DEFAULT 0,
+      ultima_execucao_em TEXT,
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
   `);
   sqlite.prepare(`INSERT OR IGNORE INTO ferias_agendamento_config (id) VALUES (1)`).run();
+  sqlite.prepare(`INSERT OR IGNORE INTO ferias_verificacao_config (id) VALUES (1)`).run();
 
   app.get("/api/ferias/estado", d.blockCliente, d.requirePermissao("dprh", "visualizar"), (req, res) => {
     const user = (req as any).user;
     const visiveis = d.empresasVisiveis(user);
-    const cfg = sqlite.prepare(`SELECT * FROM ferias_agendamento_config WHERE id = 1`).get() as any;
+    const cfgEnvio = sqlite.prepare(`SELECT * FROM ferias_agendamento_config WHERE id = 1`).get() as any;
+    const cfgVerif = sqlite.prepare(`SELECT * FROM ferias_verificacao_config WHERE id = 1`).get() as any;
+    const base = {
+      ativo: !!cfgEnvio.ativo, diaMes: cfgEnvio.dia_mes, hora: cfgEnvio.hora, minuto: cfgEnvio.minuto,
+      verifAtivo: !!cfgVerif.ativo, verifDiaMes: cfgVerif.dia_mes, verifHora: cfgVerif.hora, verifMinuto: cfgVerif.minuto, verifUltimaEm: cfgVerif.ultima_execucao_em,
+    };
     let sql = `SELECT e.id, e.nome, MAX(f.atualizado_em) as atualizadoEm,
         SUM(CASE WHEN f.status='vencida' THEN 1 ELSE 0 END) as vencidas,
         SUM(CASE WHEN f.status='proxima' THEN 1 ELSE 0 END) as proximas
@@ -222,18 +313,14 @@ export function registerFerias(app: express.Express, d: Deps) {
       WHERE f.status IN ('vencida','proxima')`;
     const params: any[] = [];
     if (visiveis !== null) {
-      if (!visiveis.length) return res.json({ empresas: [], ativo: !!cfg.ativo, diaMes: cfg.dia_mes, hora: cfg.hora, minuto: cfg.minuto });
+      if (!visiveis.length) return res.json({ empresas: [], ...base });
       sql += ` AND e.id IN (${visiveis.map(() => "?").join(",")})`;
       params.push(...visiveis);
     }
     sql += ` GROUP BY e.id ORDER BY vencidas DESC, proximas DESC, e.nome`;
     const empresas = sqlite.prepare(sql).all(...params) as any[];
-    for (const emp of empresas) {
-      emp.funcionarios = funcionariosPendentes(sqlite, emp.id).map((f) => ({
-        nome: f.nome, status: f.status, limiteConcessao: f.limite_concessao, mensagem: MENSAGEM_STATUS[f.status] || "",
-      }));
-    }
-    res.json({ empresas, ativo: !!cfg.ativo, diaMes: cfg.dia_mes, hora: cfg.hora, minuto: cfg.minuto });
+    for (const emp of empresas) emp.funcionarios = funcionariosPendentes(sqlite, emp.id);
+    res.json({ empresas, ...base });
   });
   app.post("/api/ferias/config", d.blockCliente, d.requirePermissao("dprh", "editar"), (req, res) => {
     const b = req.body || {};
@@ -242,6 +329,24 @@ export function registerFerias(app: express.Express, d: Deps) {
     const minuto = Math.min(59, Math.max(0, Number(b.minuto) || 0));
     sqlite.prepare(`UPDATE ferias_agendamento_config SET ativo = ?, dia_mes = ?, hora = ?, minuto = ?, updated_at = datetime('now') WHERE id = 1`).run(b.ativo ? 1 : 0, diaMes, hora, minuto);
     res.json({ ok: true });
+  });
+  app.post("/api/ferias/verificacao-config", d.blockCliente, d.requirePermissao("dprh", "editar"), (req, res) => {
+    const b = req.body || {};
+    const diaMes = Math.min(28, Math.max(1, Number(b.diaMes) || 15));
+    const hora = Math.min(23, Math.max(0, Number(b.hora) || 0));
+    const minuto = Math.min(59, Math.max(0, Number(b.minuto) || 0));
+    sqlite.prepare(`UPDATE ferias_verificacao_config SET ativo = ?, dia_mes = ?, hora = ?, minuto = ?, updated_at = datetime('now') WHERE id = 1`).run(b.ativo ? 1 : 0, diaMes, hora, minuto);
+    res.json({ ok: true });
+  });
+  app.post("/api/ferias/verificar-agora", d.blockCliente, d.requirePermissao("dprh", "postar"), async (req, res) => {
+    const user = (req as any).user;
+    try {
+      const qtd = await d.reprocessarExistentes(user.escritorioId);
+      sqlite.prepare(`UPDATE ferias_verificacao_config SET ultima_execucao_em = datetime('now') WHERE id = 1`).run();
+      res.json({ ok: true, qtd });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
   });
   app.post("/api/ferias/empresas/:id/enviar-agora", d.blockCliente, d.requirePermissao("dprh", "postar"), async (req, res) => {
     const user = (req as any).user;
@@ -260,6 +365,21 @@ export function registerFerias(app: express.Express, d: Deps) {
       res.status(500).json({ error: e.message });
     }
   });
+
+  // Verificação automática: no dia/hora escolhido, relê os "Programação de Férias" já importados
+  // (escritorio_id = 1, mesmo padrão de instalação única já usado pelo Robô do Comparativo/NFS-e).
+  setInterval(async () => {
+    const cfg = sqlite.prepare(`SELECT * FROM ferias_verificacao_config WHERE id = 1`).get() as any;
+    if (!cfg?.ativo) return;
+    const agora = new Date(Date.now() - 3 * 3600 * 1000);
+    if (agora.getDate() !== cfg.dia_mes || agora.getHours() !== cfg.hora || agora.getMinutes() !== cfg.minuto) return;
+    try {
+      await d.reprocessarExistentes(1);
+    } catch (e: any) {
+      console.error("[ferias] verificação automática:", e.message);
+    }
+    sqlite.prepare(`UPDATE ferias_verificacao_config SET ultima_execucao_em = datetime('now') WHERE id = 1`).run();
+  }, 60_000).unref();
 
   // Uma vez por mês (trava por competência, sobrevive a reinício — mesmo padrão do agendamento de
   // NFS-e): manda o relatório curado só pras empresas com pelo menos 1 funcionário vencida/próxima.
