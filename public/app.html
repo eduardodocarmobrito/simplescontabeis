@@ -12144,9 +12144,12 @@ async function abrirRoboMarcadasModal(tipo, titulo){
   const nuncaRodou = items.filter(i=>!i.ultimoStatus);
   const linhaMarcada = i => {
     const problemas = [i.semCpfCnpj?'sem CPF/CNPJ cadastrado':'', i.semCodigo?'sem Código do Domínio':'', i.codigoDuplicado?`código "${i.codigoDominio}" repetido em outra empresa`:''].filter(Boolean);
-    return `<div style="font-size:12.5px; padding:4px 0; border-top:1px dashed var(--rule); display:flex; justify-content:space-between; gap:8px;">
-    <span>${esc(i.nome)}${i.codigoDominio?` <span style="color:var(--ink-soft);">(${esc(i.codigoDominio)})</span>`:''}</span>
-    ${problemas.length?`<span class="tag bad" title="${esc(problemas.join(' · '))} — corrija em Empresas › Editar">cadastro</span>`:''}
+    return `<div style="font-size:12.5px; padding:4px 0; border-top:1px dashed var(--rule);">
+    <div style="display:flex; justify-content:space-between; gap:8px;">
+      <span>${esc(i.nome)}${i.codigoDominio?` <span style="color:var(--ink-soft);">(${esc(i.codigoDominio)})</span>`:''}</span>
+      ${problemas.length?'<span class="tag bad">cadastro</span>':''}
+    </div>
+    ${problemas.length?`<div style="color:var(--debit); margin-top:2px;">${esc(problemas.join(' · '))} — corrija em Empresas › Editar</div>`:''}
   </div>`;
   };
   const linhaResultado = i => `<div style="font-size:12.5px; padding:4px 0; border-top:1px dashed var(--rule);">
