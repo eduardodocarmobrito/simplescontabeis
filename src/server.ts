@@ -4627,9 +4627,37 @@ sqlite.exec(`
   if (!colsRobo.some((c) => c.name === "periodo_fim")) sqlite.exec(`ALTER TABLE comparativo_robo_estado ADD COLUMN periodo_fim TEXT`);
   // Freio de emergência: setado ao clicar "Parar robô"; o agente lê no comando e aborta entre as empresas.
   if (!colsRobo.some((c) => c.name === "parar_em")) sqlite.exec(`ALTER TABLE comparativo_robo_estado ADD COLUMN parar_em TEXT`);
+  // Intervalo (segundos) entre os dois robôs (Comparativo + Programação de Férias): eles controlam o
+  // MESMO Domínio, então nunca rodam juntos. Valor compartilhado (fica aqui, no estado do Comparativo).
+  if (!colsRobo.some((c) => c.name === "gap_agentes_seg")) sqlite.exec(`ALTER TABLE comparativo_robo_estado ADD COLUMN gap_agentes_seg INTEGER NOT NULL DEFAULT 30`);
 }
 function garantirRoboEstado(escritorioId: number) {
   sqlite.prepare(`INSERT OR IGNORE INTO comparativo_robo_estado (escritorio_id) VALUES (?)`).run(escritorioId);
+}
+// Coordenação entre os dois robôs (Comparativo + Programação de Férias): eles mexem no MESMO Domínio,
+// então só um roda por vez. Retorna se o "outro" agente está OCUPADO (rodando, com run pendente/por
+// tempo, ou terminou há menos que o intervalo configurado). O Comparativo tem PRIORIDADE: o Férias
+// cede a um Comparativo pendente; o Comparativo só cede a um Férias já rodando/recém-terminado.
+function robosGapSeg(): number {
+  const r = sqlite.prepare(`SELECT gap_agentes_seg AS g FROM comparativo_robo_estado WHERE escritorio_id = 1`).get() as any;
+  const g = Number(r?.g);
+  return Number.isFinite(g) && g >= 0 ? g : 30;
+}
+// tabela: 'comparativo_robo_estado' | 'ferias_robo_estado'. incluirPendente: conta run_now/por-tempo como ocupado.
+function outroRoboOcupado(tabela: string, incluirPendente: boolean): boolean {
+  const gap = robosGapSeg();
+  const c = sqlite.prepare(`
+    SELECT
+      (prog_rodando = 1 AND prog_em IS NOT NULL AND datetime(prog_em, '+5 minutes') >= datetime('now')) AS rodando,
+      (prog_rodando = 0 AND prog_em IS NOT NULL AND datetime(prog_em, '+' || ? || ' seconds') >= datetime('now')) AS recemTerminou,
+      (run_now_em IS NOT NULL) AS runNow,
+      (ligado = 1 AND (ultima_exec_em IS NULL OR datetime(ultima_exec_em, '+' || intervalo_min || ' minutes') <= datetime('now'))) AS devePorTempo
+    FROM ${tabela} WHERE escritorio_id = 1
+  `).get(gap) as any;
+  if (!c) return false;
+  if (c.rodando || c.recemTerminou) return true;
+  if (incluirPendente && (c.runNow || c.devePorTempo)) return true;
+  return false;
 }
 // Período padrão do Comparativo: 01/ano-vigente até a competência anterior à data atual (Brasília ~UTC-3).
 function comparativoPeriodoPadrao(): { ini: string; fim: string } {
@@ -4689,9 +4717,12 @@ app.get("/api/dominio-agent/comparativo-comando", requireDominioAgent, (_req, re
     FROM comparativo_robo_estado WHERE escritorio_id = 1
   `).get() as any;
   const pad = comparativoPeriodoPadrao();
-  const deveRodar = !!c.runNow || !!c.devePorTempo;
+  // Só um robô por vez: segura se o Férias estiver rodando ou tiver terminado há menos que o intervalo.
+  // (Comparativo tem prioridade: NÃO cede a um Férias só "pendente".)
+  const segurar = outroRoboOcupado("ferias_robo_estado", false);
+  const deveRodar = (!!c.runNow || !!c.devePorTempo) && !segurar;
   res.json({
-    deveRodar, motivo: c.runNow ? "manual" : (c.devePorTempo ? "automatico" : null),
+    deveRodar, motivo: segurar ? "aguardando_outro_robo" : (c.runNow ? "manual" : (c.devePorTempo ? "automatico" : null)),
     parar: !!c.parar,
     ligado: !!c.ligado, intervaloMin: c.intervaloMin,
     periodoIni: c.periodoIni || pad.ini, periodoFim: c.periodoFim || pad.fim,
@@ -4719,7 +4750,7 @@ app.get("/api/comparativo-robo/estado", blockCliente, requirePermissao("configur
   garantirRoboEstado(1);
   const c = sqlite.prepare(`
     SELECT ligado, intervalo_min AS intervaloMin, run_now_em AS runNowEm, ultima_exec_em AS ultimaExecEm,
-      periodo_ini AS periodoIni, periodo_fim AS periodoFim,
+      periodo_ini AS periodoIni, periodo_fim AS periodoFim, gap_agentes_seg AS gapAgentesSeg,
       prog_total AS total, prog_feitas AS feitas, prog_atual AS atual, prog_em AS progEm,
       -- "rodando" só vale se o progresso for recente; se o agente morreu/foi fechado sem avisar
       -- (progresso velho > 5min), considera parado pra a barra do site NÃO ficar congelada.
@@ -4733,6 +4764,7 @@ app.get("/api/comparativo-robo/estado", blockCliente, requirePermissao("configur
   res.json({
     ligado: !!c.ligado, intervaloMin: c.intervaloMin, ultimaExecEm: c.ultimaExecEm,
     periodoIni: c.periodoIni, periodoFim: c.periodoFim, periodoPadraoIni: pad.ini, periodoPadraoFim: pad.fim,
+    gapAgentesSeg: c.gapAgentesSeg ?? 30,
     rodando: !!c.rodando, total: c.total, feitas: c.feitas, atual: c.atual, progEm: c.progEm,
     runNowPendente: !!c.runNowEm, pararPendente: !!c.pararPendente, agenteOnline: !!c.agenteOnline, agenteVistoEm: c.agenteVistoEm,
   });
@@ -4745,8 +4777,15 @@ app.post("/api/comparativo-robo/config", blockCliente, requirePermissao("configu
   intervalo = Math.min(Math.max(Math.round(intervalo), 1), 1440);
   const pIni = comparativoValidaPeriodo(req.body?.periodoIni);
   const pFim = comparativoValidaPeriodo(req.body?.periodoFim);
+  // Intervalo (segundos) entre os dois robôs — compartilhado. Só grava se veio no body (0..3600).
+  let gap: number | null = null;
+  if (req.body?.gapAgentesSeg !== undefined) {
+    const g = Number(req.body.gapAgentesSeg);
+    gap = Number.isFinite(g) ? Math.min(Math.max(Math.round(g), 0), 3600) : 30;
+    sqlite.prepare(`UPDATE comparativo_robo_estado SET gap_agentes_seg = ? WHERE escritorio_id = 1`).run(gap);
+  }
   sqlite.prepare(`UPDATE comparativo_robo_estado SET ligado = ?, intervalo_min = ?, periodo_ini = ?, periodo_fim = ? WHERE escritorio_id = 1`).run(ligado, intervalo, pIni, pFim);
-  res.json({ ok: true, ligado: !!ligado, intervaloMin: intervalo, periodoIni: pIni, periodoFim: pFim });
+  res.json({ ok: true, ligado: !!ligado, intervaloMin: intervalo, periodoIni: pIni, periodoFim: pFim, gapAgentesSeg: gap ?? undefined });
 });
 app.post("/api/comparativo-robo/executar", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
   garantirRoboEstado(1);
@@ -4835,9 +4874,11 @@ app.get("/api/dominio-agent/ferias-comando", requireDominioAgent, (_req, res) =>
       (ligado = 1 AND (ultima_exec_em IS NULL OR datetime(ultima_exec_em, '+' || intervalo_min || ' minutes') <= datetime('now'))) AS devePorTempo
     FROM ferias_robo_estado WHERE escritorio_id = 1
   `).get() as any;
-  const deveRodar = !!c.runNow || !!c.devePorTempo;
+  // Só um robô por vez: o Férias CEDE ao Comparativo rodando, pendente (run/por-tempo) OU recém-terminado.
+  const segurar = outroRoboOcupado("comparativo_robo_estado", true);
+  const deveRodar = (!!c.runNow || !!c.devePorTempo) && !segurar;
   res.json({
-    deveRodar, motivo: c.runNow ? "manual" : (c.devePorTempo ? "automatico" : null),
+    deveRodar, motivo: segurar ? "aguardando_outro_robo" : (c.runNow ? "manual" : (c.devePorTempo ? "automatico" : null)),
     parar: !!c.parar, ligado: !!c.ligado, intervaloMin: c.intervaloMin,
   });
 });
