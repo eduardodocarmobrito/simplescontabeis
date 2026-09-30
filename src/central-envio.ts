@@ -283,7 +283,14 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     }
     const nomesEmpresas = (db.prepare(`SELECT nome FROM empresas WHERE escritorio_id = ?`).all(escId) as any[]).map((e) => norm(e.nome).replace(/\s+/g, " ").trim()).filter((n) => n.length >= 6);
     const { colaborador, cpf } = extrairColaboradorECpf(texto, (n) => nomesEmpresas.some((e) => e === n || (n.length >= 8 && e.includes(n)) || n.includes(e)));
-    const competencia = extrairDataAfastamento(texto) || extrairCompetenciaMes(texto) || rotuloCompetencia(d.extrairPeriodo(texto, nomeArquivo));
+    // extrairCompetenciaMes primeiro: quando o PDF tem um rótulo explícito "Competência: MM/AAAA" (caso do Extrato
+    // Mensal/Folha Mensal), ele é a fonte mais confiável e deve valer sempre. extrairDataAfastamento foi feita pra
+    // Rescisão (documento organizado por datas, sem rótulo de competência) — mas um Extrato Mensal "e Complementar"
+    // pode incluir a rescisão de um funcionário demitido no meio do texto, com "Data de Admissão"/"Data de
+    // Afastamento" dele; antes disso rodava primeiro e sequestrava a competência do documento inteiro (achado ao
+    // vivo: extrato de 09/2026 saindo com competência 12/2027, puxada de uma data de afastamento de outro
+    // funcionário nas páginas seguintes do mesmo PDF).
+    const competencia = extrairCompetenciaMes(texto) || extrairDataAfastamento(texto) || rotuloCompetencia(d.extrairPeriodo(texto, nomeArquivo));
     const titulo = [tipo?.nome || String(nomeArquivo).replace(/\.pdf$/i, ""), colaborador, empresa?.nome, competencia].filter(Boolean).join(" - ");
     return { texto, agrupar: !!tipo?.agrupar, tipoId: tipo?.id ?? null, tipoNome: tipo?.nome ?? null, empresaId: empresa?.id ?? null, cnpj: cnpjDetectado, colaborador, cpf, competencia, titulo };
   }
