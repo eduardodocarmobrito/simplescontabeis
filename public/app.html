@@ -11867,10 +11867,12 @@ function renderCfgDomRelatorios(box, sub, dados){
         <input type="number" class="inp" id="roboCompAgendaMinuto" min="0" max="59" style="width:54px;">
         <span style="font-size:11.5px; color:var(--ink-soft);">(horário de Brasília — independe do "a cada X minutos" acima, os dois podem ficar ligados juntos)</span>
       </div>
-      <div class="row" style="margin-top:8px; align-items:center; gap:6px;">
-        <div class="field" style="margin-bottom:0;"><label>Período — início (MM/AAAA)</label><input id="roboCompPerIni" style="width:120px;"></div>
-        <div class="field" style="margin-bottom:0;"><label>Período — fim (MM/AAAA)</label><input id="roboCompPerFim" style="width:120px;"></div>
-        <span style="font-size:11.5px; color:var(--ink-soft); margin-left:6px;">Em branco = padrão (01/ano vigente até a competência anterior).</span>
+      <div class="row" style="margin-top:8px; align-items:center; gap:8px; flex-wrap:wrap;">
+        <span style="font-size:12.5px; color:var(--ink-soft);">Período (mm/aaaa) de</span>
+        <input id="roboCompPerIni" class="inp" style="width:85px;">
+        <span style="font-size:12.5px; color:var(--ink-soft);">até</span>
+        <input id="roboCompPerFim" class="inp" style="width:85px;">
+        <span style="font-size:11.5px; color:var(--ink-soft);">— em branco = padrão (01/ano vigente até a competência anterior).</span>
       </div>
       <div class="row" style="margin-top:10px; align-items:center; gap:10px;">
         <span style="font-size:12.5px; color:var(--ink-soft);">Intervalo entre os robôs (s)</span>
