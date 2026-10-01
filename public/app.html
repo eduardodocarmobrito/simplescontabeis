@@ -10875,10 +10875,11 @@ async function pageEscritorios(){
       <td>${esc(e.email||'—')}</td>
       <td>${e.totalEmpresas}</td>
       <td>${e.totalUsuarios}</td>
-      <td><span class="tag ${e.ativo?'ok':'bad'}">${e.ativo?'Ativo':'Inativo'}</span></td>
+      <td><span class="tag ${e.ativo?'ok':'bad'}">${e.ativo?'Ativo':'Inativo'}</span>${e.isentoAssinatura?' <span class="tag ok" title="Isento da cobrança da plataforma — acesso liberado a todos os módulos sem pagar">Isento</span>':''}</td>
       <td style="text-align:right; white-space:nowrap;">
         <button class="btn small" data-act="editar">Editar</button>
         <button class="btn small" data-act="admin">+ Administrador</button>
+        <button class="btn small" data-act="isencao">${e.isentoAssinatura?'Voltar a cobrar':'Isentar cobrança'}</button>
         <button class="btn small" data-act="toggle">${e.ativo?'Desativar':'Ativar'}</button>
       </td>
     </tr>
@@ -10900,6 +10901,18 @@ async function pageEscritorios(){
     const item = items.find(x=>x.id===id);
     try{
       await api('/super/escritorios/'+id+'/ativo', { method:'PUT', body:{ ativo: !item.ativo } });
+      pageEscritorios();
+    }catch(err){ toast(err.message,'err'); }
+  }));
+  document.getElementById('escritoriosBody').querySelectorAll('[data-act="isencao"]').forEach(b=>b.addEventListener('click', async e=>{
+    const tr = e.target.closest('tr');
+    const id = Number(tr.dataset.id);
+    const item = items.find(x=>x.id===id);
+    const novo = !item.isentoAssinatura;
+    if(!confirmar(novo ? `Isentar "${item.nome}" da cobrança da plataforma? Ele passa a ter acesso a todos os módulos de escritório sem pagar.` : `Voltar a cobrar "${item.nome}"? Ele deixa de ser isento (volta a valer teste/assinatura dos módulos).`)) return;
+    try{
+      await api('/super/escritorios/'+id+'/isencao', { method:'PUT', body:{ isento: novo } });
+      toast(novo?'Escritório isento da cobrança.':'Isenção removida.','ok');
       pageEscritorios();
     }catch(err){ toast(err.message,'err'); }
   }));
@@ -10986,6 +10999,7 @@ function ligarSalvarModulos(container, prefixo, endpoint){
     const inputNome = tr.querySelector('.'+prefixo+'Nome');
     const inputValor = tr.querySelector('.'+prefixo+'Valor');
     const inputAtivo = tr.querySelector('.'+prefixo+'Ativo');
+    if(!inputNome || !inputValor || !inputAtivo) return;   // linha de OUTRA tabela (outro prefixo) — ignora
     const btnEditar = tr.querySelector('.'+prefixo+'Editar');
     const btnSalvar = tr.querySelector('.'+prefixo+'Salvar');
     const btnCancelar = tr.querySelector('.'+prefixo+'Cancelar');

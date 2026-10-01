@@ -1888,6 +1888,14 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
     sqlite.exec(`ALTER TABLE empresas ADD COLUMN isento_assinatura INTEGER NOT NULL DEFAULT 0`);
   }
 }
+// Migração leve: escritório ISENTO de cobrança da plataforma — o SuperAdmin libera acesso a TODOS os
+// módulos (escritório) sem teste/assinatura paga. Mesmo esquema do isento_assinatura da empresa.
+{
+  const colsEscr = sqlite.prepare(`PRAGMA table_info(escritorios)`).all() as any[];
+  if (!colsEscr.some((c) => c.name === "isento_assinatura")) {
+    sqlite.exec(`ALTER TABLE escritorios ADD COLUMN isento_assinatura INTEGER NOT NULL DEFAULT 0`);
+  }
+}
 // Migração leve: opt-in por empresa pra busca automática da Guia FGTS Digital (nem toda empresa tem
 // FGTS, ex. MEI sem funcionário) + rastro da última busca em lote (ver fgts-automacao.ts).
 {
@@ -2879,13 +2887,23 @@ app.use("/api", (req, res, next) => {
 app.get("/api/super/escritorios", requireSuperAdmin, (_req, res) => {
   const rows = sqlite
     .prepare(
-      `SELECT id, nome, cnpj, email, telefone, empresa_id as empresaId, ativo, criado_em as criadoEm,
+      `SELECT id, nome, cnpj, email, telefone, empresa_id as empresaId, ativo, isento_assinatura as isentoAssinatura, criado_em as criadoEm,
               (SELECT COUNT(*) FROM empresas e WHERE e.escritorio_id = escritorios.id) as totalEmpresas,
               (SELECT COUNT(*) FROM app_users u WHERE u.escritorio_id = escritorios.id) as totalUsuarios
        FROM escritorios ORDER BY nome`
     )
     .all() as any[];
-  res.json({ items: rows.map((r) => ({ ...r, ativo: !!r.ativo })) });
+  res.json({ items: rows.map((r) => ({ ...r, ativo: !!r.ativo, isentoAssinatura: !!r.isentoAssinatura })) });
+});
+// SuperAdmin: isenta (ou volta a cobrar) um escritório da assinatura da plataforma — isento = acesso
+// a todos os módulos de escritório sem teste/pagamento (ver modulosDoEscritorio/escritorioTemModulo).
+app.put("/api/super/escritorios/:id/isencao", requireSuperAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  const existe = sqlite.prepare(`SELECT 1 FROM escritorios WHERE id = ?`).get(id);
+  if (!existe) return res.status(404).json({ error: "Escritório não encontrado." });
+  const isento = req.body?.isento ? 1 : 0;
+  sqlite.prepare(`UPDATE escritorios SET isento_assinatura = ?, updated_at = datetime('now') WHERE id = ?`).run(isento, id);
+  res.json({ ok: true, isentoAssinatura: !!isento });
 });
 app.post("/api/super/escritorios", requireSuperAdmin, (req, res) => {
   const { nome, cnpj, email, telefone } = req.body || {};
@@ -12052,13 +12070,15 @@ function contarAssentosColaborador(escritorioId: number): number {
 // que precisam saber se um escritório tem direito a rodar a rotina automática de NFS-e / mandar por
 // e-mail ou WhatsApp automaticamente.
 function modulosDoEscritorio(escritorioId: number) {
+  const escr = sqlite.prepare(`SELECT isento_assinatura FROM escritorios WHERE id = ?`).get(escritorioId) as any;
+  const isento = !!escr?.isento_assinatura;
   const catalogo = sqlite.prepare(`SELECT * FROM modulos_escritorio_catalogo ORDER BY chave`).all() as any[];
   const contratados = sqlite.prepare(`SELECT * FROM escritorio_modulos WHERE escritorio_id = ?`).all(escritorioId) as any[];
   const porChave = new Map(contratados.map((c) => [c.modulo_chave, c]));
   const assentos = contarAssentosColaborador(escritorioId);
   return catalogo.map((m) => {
     const contratado = porChave.get(m.chave);
-    const { status, acesso } = moduloStatusParaEscritorio(m, contratado);
+    const { status, acesso } = isento ? { status: "isento", acesso: true } : moduloStatusParaEscritorio(m, contratado);
     const porAssento = m.chave === "assento_colaborador";
     return {
       chave: m.chave,
@@ -12078,6 +12098,8 @@ function modulosDoEscritorio(escritorioId: number) {
 // Confere se um escritório tem acesso ativo (teste ou pago) a um módulo específico — usado pelos
 // pontos do código que gatilham comportamento automático (rotina de NFS-e, envio automático).
 function escritorioTemModulo(escritorioId: number, chave: string): boolean {
+  const escr = sqlite.prepare(`SELECT isento_assinatura FROM escritorios WHERE id = ?`).get(escritorioId) as any;
+  if (escr?.isento_assinatura) return true; // escritório isento tem acesso a tudo
   const m = sqlite.prepare(`SELECT * FROM modulos_escritorio_catalogo WHERE chave = ?`).get(chave) as any;
   if (!m) return false;
   const contratado = sqlite.prepare(`SELECT * FROM escritorio_modulos WHERE escritorio_id = ? AND modulo_chave = ?`).get(escritorioId, chave) as any;
