@@ -5633,16 +5633,52 @@ async function renderNfseNotasDetalhe(empresaId){
   box.innerHTML = `
     <button class="btn small" id="btnNfseNotasVoltar">← Voltar pra lista de empresas</button>
     <h3 style="margin:12px 0 10px;">${esc(empresa?empresa.nome:'Empresa')}</h3>
-    <div class="row" style="margin-bottom:12px; align-items:flex-end;">
+    <div class="row" style="margin-bottom:12px; align-items:flex-end; flex-wrap:wrap;">
       ${dateFieldHtml('nfseNotasDe','De',dataDe)}
       ${dateFieldHtml('nfseNotasAte','Até',dataAte)}
+      <div class="field" style="margin-bottom:0; min-width:220px;"><label>Buscar</label><input id="nfseNotasBusca" placeholder="Número, tomador, modelo ou serviço…" value="${esc(NFSE_NOTAS_FILTRO.busca||'')}"></div>
       <div id="nfseNotasLoteBar" style="margin-bottom:2px;"></div>
     </div>
-    <div class="card" style="padding:0; overflow-x:auto;">
+    <div class="card" style="padding:0; overflow-x:auto;" id="nfseNotasTabelaWrap"></div>
+  `;
+  document.getElementById('btnNfseNotasVoltar').addEventListener('click', ()=>{
+    NFSE_NOTAS_EMPRESA_ATUAL = null;
+    renderNfseNotas();
+  });
+  setupDatePicker('nfseNotasDe','nfseNotasDe_text');
+  setupDatePicker('nfseNotasAte','nfseNotasAte_text');
+  document.getElementById('nfseNotasDe').addEventListener('change', e=>{ NFSE_NOTAS_FILTRO.dataDe = e.target.value; renderNfseNotas(); });
+  document.getElementById('nfseNotasAte').addEventListener('change', e=>{ NFSE_NOTAS_FILTRO.dataAte = e.target.value; renderNfseNotas(); });
+  function desenhaLoteBar(){
+    const bar = document.getElementById('nfseNotasLoteBar');
+    const qtd = NFSE_NOTAS_SELECIONADAS.size;
+    bar.innerHTML = qtd? `
+      <span style="font-size:12.5px; color:var(--ink-soft); margin-right:8px;">${qtd} selecionada${qtd>1?'s':''}</span>
+      <button class="btn small" data-lote="xml">Baixar XML</button>
+      <button class="btn small" data-lote="pdf">Baixar PDF</button>
+      <button class="btn small" data-lote="ambos">Baixar XML + PDF (.zip)</button>
+      <button class="btn small" id="nfseNotasResumoPdf">📄 Gerar PDF (resumo + total)</button>
+    ` : '';
+    bar.querySelectorAll('[data-lote]').forEach(b=>b.addEventListener('click', ()=>{
+      const ids = [...NFSE_NOTAS_SELECIONADAS].join(',');
+      window.open('/api/nfse/emissoes/baixar-lote?ids='+ids+'&formato='+b.dataset.lote, '_blank');
+    }));
+    document.getElementById('nfseNotasResumoPdf')?.addEventListener('click', ()=>{
+      const ids = [...NFSE_NOTAS_SELECIONADAS].join(',');
+      window.open('/api/nfse/emissoes/baixar-lote/resumo?ids='+ids, '_blank');
+    });
+  }
+  function itensFiltrados(){
+    const termo = normalizaTxt(NFSE_NOTAS_FILTRO.busca||'');
+    if(!termo) return items;
+    return items.filter(n=>normalizaTxt([n.numeroNfse,n.tomadorNome,n.modeloNome,n.descricaoServico].filter(Boolean).join(' ')).includes(termo));
+  }
+  function tabelaHtml(lista){
+    return `
       <table class="data-table">
         <thead><tr><th style="width:34px;"><input type="checkbox" id="nfseNotasSelAll"></th><th>Número</th><th>Tomador</th><th>Modelo</th><th>Serviço</th><th>Valor</th><th>Status</th><th>Emitido em</th><th></th></tr></thead>
         <tbody>
-          ${items.length? items.map(n=>`
+          ${lista.length? lista.map(n=>`
             <tr>
               <td><input type="checkbox" class="nfseNotaSel" data-id="${n.id}" ${NFSE_NOTAS_SELECIONADAS.has(n.id)?'checked':''}></td>
               <td>${esc(n.numeroNfse||'—')}</td>
@@ -5665,35 +5701,14 @@ async function renderNfseNotasDetalhe(empresaId){
                 ${n.status==='cancelada'?`<button class="btn small" data-id="${n.id}" data-act="reenviar-cancelamento" title="Reenvia o aviso de cancelamento por e-mail e WhatsApp pro tomador">Reenviar aviso de cancelamento</button>`:''}
               </td>
             </tr>
-          `).join('') : `<tr><td colspan="9"><div class="empty-state">Nenhuma emissão neste período.</div></td></tr>`}
+          `).join('') : `<tr><td colspan="9"><div class="empty-state">Nenhuma emissão encontrada.</div></td></tr>`}
         </tbody>
       </table>
-    </div>
-  `;
-  document.getElementById('btnNfseNotasVoltar').addEventListener('click', ()=>{
-    NFSE_NOTAS_EMPRESA_ATUAL = null;
-    renderNfseNotas();
-  });
-  setupDatePicker('nfseNotasDe','nfseNotasDe_text');
-  setupDatePicker('nfseNotasAte','nfseNotasAte_text');
-  document.getElementById('nfseNotasDe').addEventListener('change', e=>{ NFSE_NOTAS_FILTRO.dataDe = e.target.value; renderNfseNotas(); });
-  document.getElementById('nfseNotasAte').addEventListener('change', e=>{ NFSE_NOTAS_FILTRO.dataAte = e.target.value; renderNfseNotas(); });
-  function desenhaLoteBar(){
-    const bar = document.getElementById('nfseNotasLoteBar');
-    const qtd = NFSE_NOTAS_SELECIONADAS.size;
-    bar.innerHTML = qtd? `
-      <span style="font-size:12.5px; color:var(--ink-soft); margin-right:8px;">${qtd} selecionada${qtd>1?'s':''}</span>
-      <button class="btn small" data-lote="xml">Baixar XML</button>
-      <button class="btn small" data-lote="pdf">Baixar PDF</button>
-      <button class="btn small" data-lote="ambos">Baixar XML + PDF (.zip)</button>
-    ` : '';
-    bar.querySelectorAll('[data-lote]').forEach(b=>b.addEventListener('click', ()=>{
-      const ids = [...NFSE_NOTAS_SELECIONADAS].join(',');
-      window.open('/api/nfse/emissoes/baixar-lote?ids='+ids+'&formato='+b.dataset.lote, '_blank');
-    }));
+    `;
   }
-  desenhaLoteBar();
-  const selAll = document.getElementById('nfseNotasSelAll');
+  function ligarListenersTabela(){
+    desenhaLoteBar();
+    const selAll = document.getElementById('nfseNotasSelAll');
   function atualizaSelAll(){
     const boxes = [...box.querySelectorAll('.nfseNotaSel')];
     selAll.checked = boxes.length>0 && boxes.every(b=>b.checked);
@@ -5763,6 +5778,16 @@ async function renderNfseNotasDetalhe(empresaId){
       renderNfseNotas();
     }catch(e){ toast(e.message,'err'); }
   }));
+  }
+  function montarTabela(){
+    document.getElementById('nfseNotasTabelaWrap').innerHTML = tabelaHtml(itensFiltrados());
+    ligarListenersTabela();
+  }
+  montarTabela();
+  document.getElementById('nfseNotasBusca').addEventListener('input', e=>{
+    NFSE_NOTAS_FILTRO.busca = e.target.value;
+    montarTabela();
+  });
 }
 
 // "O que esta empresa pode solicitar" (aba Configurações do cadastro de Empresa) — junta os 2 tipos

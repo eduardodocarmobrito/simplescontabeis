@@ -10451,6 +10451,96 @@ app.get("/api/nfse/emissoes/baixar-lote", blockCliente, requirePermissao("nfse",
   }
   await zip.finalize();
 });
+// Resumo em PDF das notas selecionadas (não o DANFSe individual) — agrupado por modelo de serviço,
+// com subtotal por grupo e total geral no fim, pra saber rápido quanto foi emitido no período sem
+// abrir nota por nota. Mesmo motor de PDF (Chromium via contratos.gerarPdfDeHtml) do relatório de
+// Retenções de Impostos.
+app.get("/api/nfse/emissoes/baixar-lote/resumo", blockCliente, requirePermissao("nfse", "visualizar"), async (req, res) => {
+  const user = (req as any).user;
+  const ids = String(req.query.ids || "")
+    .split(",")
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isInteger(n) && n > 0);
+  if (!ids.length) return res.status(400).json({ error: "Selecione ao menos uma emissão." });
+  const placeholders = ids.map(() => "?").join(",");
+  const rows = sqlite
+    .prepare(
+      `SELECT n.id, n.empresa_id, e.nome as empresa_nome, n.modelo_nome, n.tomador_nome, n.numero_nfse, n.descricao_servico, n.valor_servico, n.status, n.criado_em
+       FROM nfse_emissoes n JOIN empresas e ON e.id = n.empresa_id WHERE n.id IN (${placeholders}) ORDER BY n.criado_em ASC, n.id ASC`
+    )
+    .all(...ids) as any[];
+  const visiveis = empresasVisiveis(user);
+  const permitidas = rows.filter((r) => podeAcessarEmpresa(user, r.empresa_id) && (visiveis === null || visiveis.includes(r.empresa_id)));
+  if (!permitidas.length) return res.status(403).json({ error: "Sem acesso às emissões selecionadas." });
+  const STATUS_LABEL_PDF: Record<string, string> = { emitida: "Emitida", pendente: "Pendente", rejeitada: "Rejeitada", erro: "Erro", rascunho: "Rascunho", cancelada: "Cancelada" };
+  const porModelo = new Map<string, any[]>();
+  for (const r of permitidas) {
+    const chave = r.modelo_nome || "Sem modelo";
+    (porModelo.get(chave) || porModelo.set(chave, []).get(chave)!).push(r);
+  }
+  const grupos = [...porModelo.entries()].sort((a, b) => a[0].localeCompare(b[0], "pt-BR"));
+  const fmtDataHoraRelatorio = (iso: string | null) => {
+    if (!iso) return "-";
+    const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(String(iso));
+    return m ? `${m[3]}/${m[2]}/${m[1]} ${m[4]}:${m[5]}` : "-";
+  };
+  const blocosHtml = grupos
+    .map(([modelo, itensGrupo]) => {
+      const subtotal = itensGrupo.reduce((s, r) => s + (r.valor_servico || 0), 0);
+      const linhas = itensGrupo
+        .map(
+          (r) => `<tr>
+        <td>${escHtmlRelatorio(r.numero_nfse || "-")}</td>
+        <td>${escHtmlRelatorio(r.empresa_nome)}</td>
+        <td>${escHtmlRelatorio(r.tomador_nome)}</td>
+        <td>${escHtmlRelatorio(r.descricao_servico)}</td>
+        <td><span class="tag-status">${escHtmlRelatorio(STATUS_LABEL_PDF[r.status] || r.status)}</span></td>
+        <td>${fmtDataHoraRelatorio(r.criado_em)}</td>
+        <td class="num">${fmtMoedaRelatorio(r.valor_servico)}</td>
+      </tr>`
+        )
+        .join("");
+      return `<h2>${escHtmlRelatorio(modelo)} <span class="qtd">(${itensGrupo.length} nota${itensGrupo.length === 1 ? "" : "s"})</span></h2>
+      <table class="rep">
+        <thead><tr><th>Número</th><th>Prestador</th><th>Tomador</th><th>Serviço</th><th>Status</th><th>Emitido em</th><th class="num">Valor</th></tr></thead>
+        <tbody>
+          ${linhas}
+          <tr class="total-row"><td colspan="6">Subtotal — ${escHtmlRelatorio(modelo)}</td><td class="num">${fmtMoedaRelatorio(subtotal)}</td></tr>
+        </tbody>
+      </table>`;
+    })
+    .join("");
+  const totalGeral = permitidas.reduce((s, r) => s + (r.valor_servico || 0), 0);
+  const html = `<style>
+    body { font-family: 'Helvetica Neue', Arial, sans-serif !important; font-size: 9px; color:#222; }
+    h1 { font-size: 15px; margin: 0 0 2px; }
+    .cab p { margin: 1px 0; color:#444; font-size: 10px; }
+    h2 { font-size: 12px; margin: 16px 0 6px; }
+    h2 .qtd { font-weight:normal; color:#666; font-size: 10.5px; }
+    table.rep { border-collapse: collapse; width: 100%; margin-top: 4px; }
+    table.rep th, table.rep td { border: 1px solid #ccc; padding: 3px 5px; }
+    table.rep th { background:#f0f0f0; text-align:left; font-size: 8.5px; white-space: nowrap; }
+    table.rep td.num, table.rep th.num { text-align:right; white-space: nowrap; }
+    table.rep td:nth-child(1), table.rep td:nth-child(6) { white-space: nowrap; }
+    .tag-status { font-size: 8px; padding: 1px 5px; border-radius: 4px; background:#e8e8e8; }
+    tr.total-row td { font-weight:bold; background:#f5f5f5; }
+    .tag-total { display:inline-block; background:#1a7f4b; color:#fff; padding:6px 14px; border-radius:6px; font-weight:bold; font-size:11px; margin-top:14px; }
+  </style>
+  <div class="cab">
+    <h1>Resumo de NFS-e emitidas</h1>
+    <p>${permitidas.length} nota${permitidas.length === 1 ? "" : "s"} selecionada${permitidas.length === 1 ? "" : "s"}, agrupadas por modelo de serviço</p>
+  </div>
+  ${blocosHtml}
+  <div><span class="tag-total">Total geral: R$ ${fmtMoedaRelatorio(totalGeral)}</span></div>`;
+  try {
+    const pdf = await contratos.gerarPdfDeHtml(html, "Resumo de NFS-e", { landscape: true });
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="Resumo de NFS-e - ${new Date().toISOString().slice(0, 10)}.pdf"`);
+    res.send(pdf);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
 const NFSE_MOTIVO_CANCELAMENTO_LABEL: Record<string, string> = { "1": "Erro na emissão", "2": "Serviço não prestado", "9": "Outros" };
 // Depois de cancelar de verdade no Sistema Nacional NFS-e: anexa um aviso de cancelamento em Envio
 // de Documentos, na MESMA competência da nota original — some ao lado dela, nunca a substitui, só
