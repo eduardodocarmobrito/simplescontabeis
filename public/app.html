@@ -6094,11 +6094,15 @@ async function pageNfeBusca(){
     <div id="nfeBuscaMain"></div>
   `;
   const box = document.getElementById('nfeBuscaMain');
-  const empresas = await empresasAtivas();
+  box.innerHTML = `<div class="empty-state">Carregando…</div>`;
+  let empresas;
+  try{ empresas = await empresasAtivas(); }
+  catch(e){ box.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)} <button class="btn small" id="nfeBuscaTentarDeNovo">Tentar de novo</button></div>`; document.getElementById('nfeBuscaTentarDeNovo')?.addEventListener('click', pageNfeBusca); return; }
 
   async function mostrarDiagnostico(){
     box.innerHTML = `<div class="empty-state">Carregando…</div>`;
-    const { items } = await api('/nfe/diagnostico');
+    let items; try{ ({ items } = await api('/nfe/diagnostico')); }
+    catch(e){ box.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)} <button class="btn small" id="nfeBuscaTentarDeNovo">Tentar de novo</button></div>`; document.getElementById('nfeBuscaTentarDeNovo')?.addEventListener('click', mostrarDiagnostico); return; }
     const linhas = items.map(it=>{
       const idade = it.criado_em ? Math.floor((Date.now() - new Date(String(it.criado_em).replace(' ','T')+'Z').getTime())/86400000) : null;
       return `<tr>
@@ -6140,7 +6144,11 @@ async function pageNfeBusca(){
   async function mostrarLista(){
     if(NFE_TAB==='diagnostico') return mostrarDiagnostico();
     box.innerHTML = `<div class="empty-state">Carregando…</div>`;
-    const [{ items: configs, moduloAtivo }, { items: contagens }] = await Promise.all([ api('/nfe/config'), api('/nfe/documentos/contagem') ]);
+    let configs, moduloAtivo, contagens;
+    try{
+      const r = await Promise.all([ api('/nfe/config'), api('/nfe/documentos/contagem') ]);
+      configs = r[0].items; moduloAtivo = r[0].moduloAtivo; contagens = r[1].items;
+    }catch(e){ box.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)} <button class="btn small" id="nfeBuscaTentarDeNovo">Tentar de novo</button></div>`; document.getElementById('nfeBuscaTentarDeNovo')?.addEventListener('click', mostrarLista); return; }
     if(!moduloAtivo){
       box.innerHTML = await escritorioModuloPaywallHtml('busca_xml_nfe');
       ligarEscritorioModuloPaywall(box, 'busca_xml_nfe', mostrarLista);
