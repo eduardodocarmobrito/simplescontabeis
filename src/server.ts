@@ -3395,9 +3395,13 @@ app.delete("/api/empresas/contatos/:contatoId", blockCliente, requirePermissao("
 app.get("/api/empresas/contatos-resumo", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
   const user = (req as any).user;
   const visiveis = empresasVisiveis(user);
-  let ids = (sqlite.prepare(`SELECT DISTINCT empresa_id FROM empresa_contatos`).all() as any[]).map((r) => r.empresa_id);
-  if (visiveis !== null) ids = ids.filter((id) => visiveis.includes(id));
-  res.json({ comContato: ids });
+  const rows = sqlite.prepare(`SELECT empresa_id, nome, email, telefone, receber_emails, receber_whatsapp FROM empresa_contatos ORDER BY nome`).all() as any[];
+  const porEmpresa: Record<number, any[]> = {};
+  for (const r of rows) {
+    if (visiveis !== null && !visiveis.includes(r.empresa_id)) continue;
+    (porEmpresa[r.empresa_id] ||= []).push({ nome: r.nome, email: r.email, telefone: r.telefone, receberEmails: !!r.receber_emails, receberWhatsapp: !!r.receber_whatsapp });
+  }
+  res.json({ comContato: Object.keys(porEmpresa).map(Number), porEmpresa });
 });
 
 // ---- O que cada empresa pode pedir em "Solicitar Documentos" ----

@@ -13091,8 +13091,8 @@ async function renderCfgEmailSmtp(box){
   const extratosCfg = await api('/email-extratos/config');
   const { items } = await api('/email/log');
   const empresas = await empresasAtivas();
-  const { comContato } = await api('/empresas/contatos-resumo');
-  let comContatoSet = new Set(comContato);
+  let { porEmpresa: ccContatosPorEmpresa } = await api('/empresas/contatos-resumo');
+  let comContatoSet = new Set(Object.keys(ccContatosPorEmpresa).map(Number));
   let empresasConfiguradas = empresas.filter(e=>comContatoSet.has(e.id)).sort((a,b)=>a.nome.localeCompare(b.nome,'pt-BR'));
   let empresasFaltam = empresas.filter(e=>!comContatoSet.has(e.id)).sort((a,b)=>a.nome.localeCompare(b.nome,'pt-BR'));
   const isAdmin = STATE.user.perfil==='Administrador';
@@ -13239,8 +13239,9 @@ async function renderCfgEmailSmtp(box){
   // — sem isso o usuário precisaria trocar de tela e voltar pra ver a empresa "sair" de Faltam
   // configurar. Não mexe em ccBody nem na seleção atual do combo, só nas duas listas/contagens.
   async function atualizarListasCc(){
-    const { comContato: novo } = await api('/empresas/contatos-resumo');
-    comContatoSet = new Set(novo);
+    const { porEmpresa: novo } = await api('/empresas/contatos-resumo');
+    ccContatosPorEmpresa = novo;
+    comContatoSet = new Set(Object.keys(novo).map(Number));
     empresasConfiguradas = empresas.filter(e=>comContatoSet.has(e.id)).sort((a,b)=>a.nome.localeCompare(b.nome,'pt-BR'));
     empresasFaltam = empresas.filter(e=>!comContatoSet.has(e.id)).sort((a,b)=>a.nome.localeCompare(b.nome,'pt-BR'));
     const tFaltam = box.querySelector('.tab[data-cctab="faltam"]');
@@ -13253,12 +13254,31 @@ async function renderCfgEmailSmtp(box){
     ccComboItems.length = 0;
     ccComboItems.push(...ccComboItensAtuais());
   }
+  // Uma linha por contato (nome · e-mail · telefone) dentro da MESMA célula — várias empresas com
+  // vários contatos cadastrados ficam visíveis sem precisar clicar em cada uma (pedido explícito:
+  // "ao lado da empresa", não abrindo embaixo).
+  function ccContatosResumoHtml(empresaId){
+    const lista = ccContatosPorEmpresa[empresaId] || [];
+    if(!lista.length) return '<span style="font-size:12px; color:var(--ink-soft);">Nenhum contato</span>';
+    return lista.map(c=>`<div style="display:flex; align-items:center; gap:6px; white-space:nowrap; font-size:12.5px; padding:2px 0;">
+      <b>${esc(c.nome||'—')}</b>
+      ${c.email?`<span style="color:var(--ink-soft);">${esc(c.email)}</span>`:''}
+      ${c.telefone?`<span style="color:var(--ink-soft);">${esc(c.telefone)}</span>`:''}
+      ${c.receberWhatsapp?'<span class="tag ok">WhatsApp</span>':''}
+    </div>`).join('');
+  }
   function renderCcLista(){
     const lista = CC_TAB==='configuradas' ? empresasConfiguradas : empresasFaltam;
     const listaBox = document.getElementById('ccListaEmpresas');
     listaBox.innerHTML = lista.length ? `
-      <table class="data-table"><tbody>
-        ${lista.map(e=>`<tr data-cc-empresa="${e.id}" style="cursor:pointer;"><td>${esc(empresaComboLabel(e))}</td></tr>`).join('')}
+      <table class="data-table"><thead><tr>
+        <th style="position:sticky; top:0; background:var(--surface);">Empresa</th>
+        ${CC_TAB==='configuradas'?'<th style="position:sticky; top:0; background:var(--surface);">Contatos</th>':''}
+      </tr></thead><tbody>
+        ${lista.map(e=>`<tr data-cc-empresa="${e.id}" style="cursor:pointer;">
+          <td style="vertical-align:top; white-space:nowrap;">${esc(empresaComboLabel(e))}</td>
+          ${CC_TAB==='configuradas'?`<td>${ccContatosResumoHtml(e.id)}</td>`:''}
+        </tr>`).join('')}
       </tbody></table>
     ` : `<div class="empty-state">${CC_TAB==='configuradas'?'Nenhuma empresa configurada ainda.':'Nenhuma empresa pendente — tudo configurado.'}</div>`;
     listaBox.querySelectorAll('[data-cc-empresa]').forEach(tr=>tr.addEventListener('click', ()=>selecionarEmpresaCc(tr.dataset.ccEmpresa)));
