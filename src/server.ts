@@ -4665,10 +4665,14 @@ sqlite.exec(`
 // true se o robô deve disparar AGORA pelo horário fixo diário configurado (hora/minuto batendo com o
 // horário de Brasília e ainda não disparado hoje). Mesma conta de fuso (-3h) já usada em outros
 // agendamentos deste arquivo (ex.: comparativoPeriodoPadrao).
+// "Já passou do horário hoje" em vez de "é exatamente este minuto" — um reinício do servidor (deploy)
+// bem na hora configurada pode derrubar o tick certo (mesmo achado ao vivo no agendamento de NFS-e,
+// ver o setInterval logo abaixo de nfseExecutarAgendamentoAutomatico); agendaUltimoDia já impede
+// rodar de novo no mesmo dia, então alargar a janela é seguro.
 function agendaDeveRodarAgora(cfg: { agendaAtivo: any; agendaHora: number; agendaMinuto: number; agendaUltimoDia: string | null }): { deve: boolean; hojeSp: string } {
   const agora = new Date(Date.now() - 3 * 3600 * 1000);
   const hojeSp = agora.toISOString().slice(0, 10);
-  const deve = !!cfg.agendaAtivo && agora.getHours() === cfg.agendaHora && agora.getMinutes() === cfg.agendaMinuto && cfg.agendaUltimoDia !== hojeSp;
+  const deve = !!cfg.agendaAtivo && (agora.getHours() * 60 + agora.getMinutes()) >= (cfg.agendaHora * 60 + cfg.agendaMinuto) && cfg.agendaUltimoDia !== hojeSp;
   return { deve, hojeSp };
 }
 function garantirRoboEstado(escritorioId: number) {
@@ -11377,12 +11381,19 @@ async function nfseAnexarEEnviarDocumento(escritorioId: number, emissaoId: numbe
   return `Anexado em Envio de Documentos; ${msgEmail}${msgWhatsapp ? ` E ${msgWhatsapp}` : ""}`;
 }
 // Confere a cada minuto se é hora de rodar a rotina — sobrevive a reinício porque a trava real
-// (ultima_execucao_competencia) fica no banco, não em memória.
+// (ultima_execucao_competencia) fica no banco, não em memória. Usa "já passou do horário hoje"
+// em vez de "é exatamente este minuto": um reinício do servidor (deploy) bem na hora configurada
+// podia derrubar o processo antigo antes do tick certo e o novo só ticka 60s depois de subir —
+// aí o minuto exato já tinha passado e a rotina ficava sem rodar até o mês seguinte (achado ao
+// vivo: config salva pras 11:50, deploy reiniciou o processo às 11:50, nunca rodou). Rodar de novo
+// no mesmo dia depois do primeiro disparo é inofensivo — nfseExecutarAgendamentoAutomatico já some
+// sozinho (ultima_execucao_competencia) assim que executa uma vez.
 setInterval(() => {
   const agora = agoraBrasilia();
+  const minutosAgora = agora.hora * 60 + agora.minuto;
   const configs = sqlite
-    .prepare(`SELECT escritorio_id FROM nfse_agendamento_config WHERE dia_mes = ? AND hora = ? AND minuto = ?`)
-    .all(agora.dia, agora.hora, agora.minuto) as any[];
+    .prepare(`SELECT escritorio_id FROM nfse_agendamento_config WHERE dia_mes = ? AND (hora * 60 + minuto) <= ?`)
+    .all(agora.dia, minutosAgora) as any[];
   for (const c of configs) {
     nfseExecutarAgendamentoAutomatico(false, c.escritorio_id).catch((e) => console.error("Erro na rotina automática de NFS-e:", e.message));
   }
