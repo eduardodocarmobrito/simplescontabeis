@@ -10677,8 +10677,17 @@ app.post("/api/nfse/emissoes/:id/cancelar", blockCliente, requirePermissao("nfse
     // O recebível gerado por essa nota fica marcado como cancelado, não é apagado — quem vê o
     // Financeiro continua tendo o histórico completo, só que sinalizado como não mais válido.
     sqlite.prepare(`UPDATE financeiro_receber SET status='cancelado' WHERE nfse_emissao_id = ?`).run(row.id);
-    await nfseNotificarCancelamento(row.id);
-    res.json({ ok: true });
+    // O cancelamento em si (governo + banco) já está feito e é IRREVERSÍVEL — a notificação por
+    // e-mail/WhatsApp é só um aviso best-effort, fora do try principal. Achado ao vivo: uma falha
+    // aqui (ex.: e-mail fora do ar) fazia a rota inteira responder 500, o modal não fechava e a tela
+    // não atualizava sozinha mesmo o cancelamento tendo dado certo — só um F5 revelava que funcionou.
+    let avisoErro: string | null = null;
+    try {
+      await nfseNotificarCancelamento(row.id);
+    } catch (e: any) {
+      avisoErro = e.message;
+    }
+    res.json({ ok: true, avisoErro });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -11834,8 +11843,16 @@ app.post("/api/nfse/minha-empresa/emissoes/:id/cancelar", requireCliente, requir
     // O recebível gerado por essa nota fica marcado como cancelado, não é apagado — quem vê o
     // Financeiro continua tendo o histórico completo, só que sinalizado como não mais válido.
     sqlite.prepare(`UPDATE financeiro_receber SET status='cancelado' WHERE nfse_emissao_id = ?`).run(row.id);
-    await nfseNotificarCancelamento(row.id);
-    res.json({ ok: true });
+    // O cancelamento em si (governo + banco) já está feito e é IRREVERSÍVEL — a notificação por
+    // e-mail/WhatsApp é só um aviso best-effort, fora do try principal. Mesmo motivo do bug achado
+    // na rota de admin: uma falha aqui respondia 500 mesmo com o cancelamento já concluído.
+    let avisoErro: string | null = null;
+    try {
+      await nfseNotificarCancelamento(row.id);
+    } catch (e: any) {
+      avisoErro = e.message;
+    }
+    res.json({ ok: true, avisoErro });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }

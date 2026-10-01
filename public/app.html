@@ -5558,9 +5558,9 @@ function nfseCancelarModal(n){
     if(justificativa.length<15){ toast('A justificativa precisa ter pelo menos 15 caracteres.','err'); return; }
     if(!confirm('Confirma o cancelamento desta NFS-e? Essa ação não pode ser desfeita.')) return;
     try{
-      await api('/nfse/emissoes/'+n.id+'/cancelar', { method:'POST', body:{ motivo, justificativa } });
+      const r = await api('/nfse/emissoes/'+n.id+'/cancelar', { method:'POST', body:{ motivo, justificativa } });
       closeModal();
-      toast('NFS-e cancelada.','ok');
+      toast(r.avisoErro ? `NFS-e cancelada — mas o aviso ao cliente falhou: ${r.avisoErro}` : 'NFS-e cancelada.', r.avisoErro?'err':'ok');
       renderNfseNotas();
     }catch(e){ toast(e.message,'err'); }
   });
@@ -5690,14 +5690,14 @@ async function renderNfseNotasDetalhe(empresaId){
               <td>${fmtDateHora(n.criadoEm)}</td>
               <td style="text-align:right; white-space:nowrap;">
                 ${n.status==='rascunho'?`<button class="btn small" data-id="${n.id}" data-act="continuar">Continuar</button> <button class="btn small" data-id="${n.id}" data-act="excluir">Excluir</button>`:''}
-                ${n.status!=='rascunho'?`<button class="btn small" data-id="${n.id}" data-act="duplicar">Duplicar</button>`:''}
+                ${n.status!=='rascunho'?`<button class="btn small" data-id="${n.id}" data-act="duplicar" title="Duplicar">🗐</button>`:''}
                 ${n.status==='emitida'||n.status==='cancelada'?`<button class="btn small" data-id="${n.id}" data-act="baixar-xml">XML</button> <button class="btn small" data-id="${n.id}" data-act="baixar-pdf">PDF</button>`:''}
                 ${n.status==='emitida'&&n.whatsappStatus==='lido'?`<span class="tag ok" title="Lido pelo cliente${n.whatsappStatusEm?' em '+fmtDateHora(n.whatsappStatusEm):''}">✓✓ Lido</span>`:''}
                 ${n.status==='emitida'&&n.whatsappStatus==='entregue'?`<span class="tag ok" title="Entregue ao cliente">✓✓ Entregue</span>`:''}
                 ${n.status==='emitida'&&n.whatsappStatus==='falhou'?`<span class="tag bad" title="Falha na entrega por WhatsApp">⚠ Falhou</span>`:''}
-                ${n.status==='emitida'?`<button class="btn small" data-id="${n.id}" data-canal="conversa" data-act="enviar-whatsapp-nfse" title="Pelo número de atendimento (conversa com o cliente)">💬 WhatsApp</button> <button class="btn small" data-id="${n.id}" data-canal="meta" data-act="enviar-whatsapp-nfse" title="Pelo número separado da API oficial (Meta)">📱 WhatsApp (Meta)</button>`:''}
-                ${n.status==='emitida'?`<button class="btn small" data-id="${n.id}" data-act="consulta-governo" title="Confere se esta nota existe no Sistema Nacional NFS-e (governo)">Consultar no governo</button>`:''}
-                ${n.status==='emitida'?`<button class="btn small" data-id="${n.id}" data-act="cancelar" style="color:var(--debit);">Cancelar</button>`:''}
+                ${n.status==='emitida'?`<button class="btn small" data-id="${n.id}" data-canal="conversa" data-act="enviar-whatsapp-nfse" title="WhatsApp — pelo número de atendimento (conversa com o cliente)">💬</button> <button class="btn small" data-id="${n.id}" data-canal="meta" data-act="enviar-whatsapp-nfse" title="WhatsApp — pelo número separado da API oficial (Meta)">📱 Meta</button>`:''}
+                ${n.status==='emitida'?`<button class="btn small" data-id="${n.id}" data-act="consulta-governo" title="Consultar no governo — confere se esta nota existe no Sistema Nacional NFS-e">✅</button>`:''}
+                ${n.status==='emitida'?`<button class="btn small" data-id="${n.id}" data-act="cancelar" style="color:var(--debit);" title="Cancelar">🚫</button>`:''}
                 ${n.status==='cancelada'?`<button class="btn small" data-id="${n.id}" data-act="reenviar-cancelamento" title="Reenvia o aviso de cancelamento por e-mail e WhatsApp pro tomador">Reenviar aviso de cancelamento</button>`:''}
               </td>
             </tr>
