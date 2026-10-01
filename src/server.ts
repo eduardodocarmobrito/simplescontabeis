@@ -11186,7 +11186,16 @@ async function nfseExecutarAgendamentoAutomatico(
   // filtrou "ativo" e "ainda não executou nesta competência" foi a query que gerou a lista de configs.
   if (!forcarMesmoSeJaExecutou && config) {
     if (!config.ativo) return { processados: 0, sucesso: 0, falha: 0, motivo: "Rotina desativada." };
-    if (config.ultima_execucao_competencia === competenciaAtual) return { processados: 0, sucesso: 0, falha: 0, motivo: "Já executou nesta competência." };
+    // Claim atômico (UPDATE...WHERE + changes, mesmo padrão do "status='enviando' WHERE
+    // status='agendado'" da Central de Envio) — achado ao vivo: um deploy reiniciando o servidor
+    // bem na hora configurada deixou DOIS processos rodando por um instante, os dois viram "ainda
+    // não rodei este mês" (checagem só de leitura) e processaram o mesmo cliente em paralelo, saindo
+    // 2 NFS-e reais pro mesmo serviço/competência. Com UPDATE...WHERE só o primeiro que chegar marca
+    // a competência; o outro recebe changes=0 e nunca entra no loop de itens.
+    const claim = sqlite
+      .prepare(`UPDATE nfse_agendamento_config SET ultima_execucao_competencia = ? WHERE escritorio_id = ? AND (ultima_execucao_competencia IS NULL OR ultima_execucao_competencia != ?)`)
+      .run(competenciaAtual, config.escritorio_id, competenciaAtual);
+    if (!claim.changes) return { processados: 0, sucesso: 0, falha: 0, motivo: "Já executou nesta competência." };
   }
   const configs = config
     ? [config]
