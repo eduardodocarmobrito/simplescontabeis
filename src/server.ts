@@ -10473,8 +10473,12 @@ app.get("/api/nfse/emissoes/baixar-lote/resumo", blockCliente, requirePermissao(
   const permitidas = rows.filter((r) => podeAcessarEmpresa(user, r.empresa_id) && (visiveis === null || visiveis.includes(r.empresa_id)));
   if (!permitidas.length) return res.status(403).json({ error: "Sem acesso às emissões selecionadas." });
   const STATUS_LABEL_PDF: Record<string, string> = { emitida: "Emitida", pendente: "Pendente", rejeitada: "Rejeitada", erro: "Erro", rascunho: "Rascunho", cancelada: "Cancelada" };
+  // Canceladas/rejeitadas não valem nota fiscal de verdade — ficam num quadro à parte, sem entrar
+  // nas somas, pra não inflar o total do que realmente foi faturado.
+  const validas = permitidas.filter((r) => r.status === "emitida");
+  const outras = permitidas.filter((r) => r.status !== "emitida");
   const porModelo = new Map<string, any[]>();
-  for (const r of permitidas) {
+  for (const r of validas) {
     const chave = r.modelo_nome || "Sem modelo";
     (porModelo.get(chave) || porModelo.set(chave, []).get(chave)!).push(r);
   }
@@ -10484,54 +10488,68 @@ app.get("/api/nfse/emissoes/baixar-lote/resumo", blockCliente, requirePermissao(
     const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(String(iso));
     return m ? `${m[3]}/${m[2]}/${m[1]} ${m[4]}:${m[5]}` : "-";
   };
-  const blocosHtml = grupos
-    .map(([modelo, itensGrupo]) => {
-      const subtotal = itensGrupo.reduce((s, r) => s + (r.valor_servico || 0), 0);
-      const linhas = itensGrupo
-        .map(
-          (r) => `<tr>
+  const linhaHtml = (r: any) => `<tr>
         <td>${escHtmlRelatorio(r.numero_nfse || "-")}</td>
         <td>${escHtmlRelatorio(r.empresa_nome)}</td>
         <td>${escHtmlRelatorio(r.tomador_nome)}</td>
         <td>${escHtmlRelatorio(r.descricao_servico)}</td>
-        <td><span class="tag-status">${escHtmlRelatorio(STATUS_LABEL_PDF[r.status] || r.status)}</span></td>
+        <td><span class="tag-status status-${r.status}">${escHtmlRelatorio(STATUS_LABEL_PDF[r.status] || r.status)}</span></td>
         <td>${fmtDataHoraRelatorio(r.criado_em)}</td>
         <td class="num">${fmtMoedaRelatorio(r.valor_servico)}</td>
-      </tr>`
-        )
-        .join("");
+      </tr>`;
+  const blocosHtml = grupos
+    .map(([modelo, itensGrupo]) => {
+      const subtotal = itensGrupo.reduce((s, r) => s + (r.valor_servico || 0), 0);
       return `<h2>${escHtmlRelatorio(modelo)} <span class="qtd">(${itensGrupo.length} nota${itensGrupo.length === 1 ? "" : "s"})</span></h2>
-      <table class="rep">
+      <div class="card-rep"><table class="rep">
         <thead><tr><th>Número</th><th>Prestador</th><th>Tomador</th><th>Serviço</th><th>Status</th><th>Emitido em</th><th class="num">Valor</th></tr></thead>
         <tbody>
-          ${linhas}
+          ${itensGrupo.map(linhaHtml).join("")}
           <tr class="total-row"><td colspan="6">Subtotal — ${escHtmlRelatorio(modelo)}</td><td class="num">${fmtMoedaRelatorio(subtotal)}</td></tr>
         </tbody>
-      </table>`;
+      </table></div>`;
     })
     .join("");
-  const totalGeral = permitidas.reduce((s, r) => s + (r.valor_servico || 0), 0);
+  const totalGeral = validas.reduce((s, r) => s + (r.valor_servico || 0), 0);
+  const outrasHtml = outras.length
+    ? `<h2 class="h2-outras">Canceladas / rejeitadas <span class="qtd">(${outras.length} nota${outras.length === 1 ? "" : "s"} — fora do total acima)</span></h2>
+      <div class="card-rep card-rep-outras"><table class="rep">
+        <thead><tr><th>Número</th><th>Prestador</th><th>Tomador</th><th>Serviço</th><th>Status</th><th>Emitido em</th><th class="num">Valor</th></tr></thead>
+        <tbody>${outras.map(linhaHtml).join("")}</tbody>
+      </table></div>`
+    : "";
   const html = `<style>
-    body { font-family: 'Helvetica Neue', Arial, sans-serif !important; font-size: 9px; color:#222; }
-    h1 { font-size: 15px; margin: 0 0 2px; }
-    .cab p { margin: 1px 0; color:#444; font-size: 10px; }
-    h2 { font-size: 12px; margin: 16px 0 6px; }
-    h2 .qtd { font-weight:normal; color:#666; font-size: 10.5px; }
-    table.rep { border-collapse: collapse; width: 100%; margin-top: 4px; }
-    table.rep th, table.rep td { border: 1px solid #ccc; padding: 3px 5px; }
-    table.rep th { background:#f0f0f0; text-align:left; font-size: 8.5px; white-space: nowrap; }
+    body { font-family: 'Helvetica Neue', Arial, sans-serif !important; font-size: 9px; color:#2a2a2a; }
+    h1 { font-size: 16px; margin: 0 0 3px; color:#16693f; letter-spacing:.2px; }
+    .cab { border-bottom: 2px solid #e4ede8; padding-bottom: 8px; margin-bottom: 14px; }
+    .cab p { margin: 1px 0; color:#666; font-size: 10px; }
+    h2 { font-size: 12px; margin: 18px 0 7px; color:#16693f; }
+    h2.h2-outras { color:#8a3b3b; }
+    h2 .qtd { font-weight:normal; color:#888; font-size: 10px; }
+    .card-rep { border: 1px solid #dfe6e2; border-radius: 10px; overflow: hidden; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+    .card-rep-outras { border-color: #ecdcdc; opacity: .92; }
+    table.rep { border-collapse: collapse; width: 100%; }
+    table.rep th, table.rep td { padding: 5px 7px; border-bottom: 1px solid #edf1ef; }
+    table.rep th { background:#f3f8f5; text-align:left; font-size: 8.5px; white-space: nowrap; color:#3c4a43; font-weight:600; }
+    .card-rep-outras table.rep th { background:#faf3f3; color:#5a3c3c; }
+    table.rep tbody tr:last-child td { border-bottom: none; }
+    table.rep tbody tr:nth-child(even) td { background: #fafcfb; }
     table.rep td.num, table.rep th.num { text-align:right; white-space: nowrap; }
     table.rep td:nth-child(1), table.rep td:nth-child(6) { white-space: nowrap; }
-    .tag-status { font-size: 8px; padding: 1px 5px; border-radius: 4px; background:#e8e8e8; }
-    tr.total-row td { font-weight:bold; background:#f5f5f5; }
-    .tag-total { display:inline-block; background:#1a7f4b; color:#fff; padding:6px 14px; border-radius:6px; font-weight:bold; font-size:11px; margin-top:14px; }
+    .tag-status { display:inline-block; font-size: 8px; padding: 2px 7px; border-radius: 20px; background:#e8e8e8; }
+    .tag-status.status-cancelada { background:#f6dede; color:#8a3b3b; }
+    .tag-status.status-rejeitada { background:#f6dede; color:#8a3b3b; }
+    .tag-status.status-emitida { background:#dcf0e4; color:#16693f; }
+    tr.total-row td { font-weight:bold; background:#eef6f1 !important; color:#16693f; }
+    .tag-total { display:inline-block; background:#1a7f4b; color:#fff; padding:8px 18px; border-radius:20px; font-weight:bold; font-size:12px; margin-top:16px; box-shadow: 0 2px 5px rgba(26,127,75,.25); }
   </style>
   <div class="cab">
     <h1>Resumo de NFS-e emitidas</h1>
-    <p>${permitidas.length} nota${permitidas.length === 1 ? "" : "s"} selecionada${permitidas.length === 1 ? "" : "s"}, agrupadas por modelo de serviço</p>
+    <p>${permitidas.length} nota${permitidas.length === 1 ? "" : "s"} selecionada${permitidas.length === 1 ? "" : "s"}</p>
   </div>
   ${blocosHtml}
-  <div><span class="tag-total">Total geral: R$ ${fmtMoedaRelatorio(totalGeral)}</span></div>`;
+  <div><span class="tag-total">Total geral (notas válidas): R$ ${fmtMoedaRelatorio(totalGeral)}</span></div>
+  ${outrasHtml}`;
   try {
     const pdf = await contratos.gerarPdfDeHtml(html, "Resumo de NFS-e", { landscape: true });
     res.setHeader("Content-Type", "application/pdf");
