@@ -449,17 +449,22 @@ export function registerFerias(app: express.Express, d: Deps) {
 
   // Verificação automática: no dia/hora escolhido, relê os "Programação de Férias" já importados
   // (escritorio_id = 1, mesmo padrão de instalação única já usado pelo Robô do Comparativo/NFS-e).
+  // "Já passou do horário hoje" em vez de "é exatamente este minuto" — um reinício do servidor bem
+  // na hora configurada podia derrubar o tick certo e nunca rodar até o mês seguinte (mesmo achado ao
+  // vivo no agendamento de NFS-e, ver setInterval em server.ts). ultimaExecDia evita rodar 2x no dia.
   setInterval(async () => {
     const cfg = sqlite.prepare(`SELECT * FROM ferias_verificacao_config WHERE id = 1`).get() as any;
     if (!cfg?.ativo) return;
     const agora = new Date(Date.now() - 3 * 3600 * 1000);
-    if (agora.getDate() !== cfg.dia_mes || agora.getHours() !== cfg.hora || agora.getMinutes() !== cfg.minuto) return;
+    const hojeSp = agora.toISOString().slice(0, 10);
+    if (cfg.ultima_execucao_em && String(cfg.ultima_execucao_em).slice(0, 10) === hojeSp) return;
+    if (agora.getDate() !== cfg.dia_mes || (agora.getHours() * 60 + agora.getMinutes()) < (cfg.hora * 60 + cfg.minuto)) return;
+    sqlite.prepare(`UPDATE ferias_verificacao_config SET ultima_execucao_em = datetime('now') WHERE id = 1`).run();
     try {
       await d.reprocessarExistentes(1);
     } catch (e: any) {
       console.error("[ferias] verificação automática:", e.message);
     }
-    sqlite.prepare(`UPDATE ferias_verificacao_config SET ultima_execucao_em = datetime('now') WHERE id = 1`).run();
   }, 60_000).unref();
 
   // Uma vez por mês (trava por competência, sobrevive a reinício — mesmo padrão do agendamento de
@@ -470,7 +475,7 @@ export function registerFerias(app: express.Express, d: Deps) {
     const agora = new Date(Date.now() - 3 * 3600 * 1000);
     const competencia = agora.toISOString().slice(0, 7);
     if (cfg.ultima_execucao_competencia === competencia) return;
-    if (agora.getDate() !== cfg.dia_mes || agora.getHours() !== cfg.hora || agora.getMinutes() !== cfg.minuto) return;
+    if (agora.getDate() !== cfg.dia_mes || (agora.getHours() * 60 + agora.getMinutes()) < (cfg.hora * 60 + cfg.minuto)) return;
     sqlite.prepare(`UPDATE ferias_agendamento_config SET ultima_execucao_competencia = ? WHERE id = 1`).run(competencia);
     const empresas = sqlite
       .prepare(`SELECT DISTINCT e.id, e.nome, e.escritorio_id FROM empresas e JOIN ferias_funcionarios f ON f.empresa_id = e.id WHERE f.status IN ('vencida','proxima') AND e.ativo = 1`)

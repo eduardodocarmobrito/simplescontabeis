@@ -5923,9 +5923,12 @@ function envioRolloverGerarAno(escritorioId: number, ano: number): { atribuicoes
   for (const a of atribs) periodosCriados += envioGerarPeriodosAno(a.atribuicaoId, a.periodicidade, ano);
   return { atribuicoesRenovadas: atribs.length, periodosCriados };
 }
+// "Já passou das 03:10 hoje" em vez de "é exatamente 03:10" — mesmo motivo do agendamento de NFS-e
+// (ver setInterval de nfseExecutarAgendamentoAutomatico): sobrevive a um deploy que caia bem nesse
+// minuto. envio_rollover_ultimo_ano (por ano, não por dia) já evita rodar 2x.
 setInterval(() => {
   const agora = agoraBrasilia();
-  if (agora.hora !== 3 || agora.minuto !== 10) return;
+  if (agora.hora * 60 + agora.minuto < 3 * 60 + 10) return;
   const escritorios = sqlite.prepare(`SELECT id FROM escritorios WHERE ativo = 1 AND (envio_rollover_ultimo_ano IS NULL OR envio_rollover_ultimo_ano < ?)`).all(agora.ano) as any[];
   for (const e of escritorios) {
     try {
