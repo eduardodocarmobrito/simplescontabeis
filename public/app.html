@@ -8707,7 +8707,7 @@ async function crmPainel(box, silencioso){
         ${p.satisfacao.porSetor.length ? `<table class="data-table"><tbody>${p.satisfacao.porSetor.map(x=>`<tr><td>${esc(x.nome)}</td><td style="text-align:right;"><b>${x.media.toString().replace('.',',')}</b> <span style="color:var(--ink-soft);">(${x.respostas})</span></td></tr>`).join('')}</tbody></table>` : '<div class="empty-state" style="padding:16px;">Nenhuma nota no período.</div>'}
       </div>
     </div>
-    <div class="card" style="padding:0; margin-bottom:12px;"><div class="painel-cab">🏆 Empresas que mais demandaram no período</div>
+    <div class="card" style="padding:0; margin-bottom:12px;"><div class="painel-cab">🏆 Empresas que mais demandaram ${({hoje:'hoje', '7d':'nos últimos 7 dias', '30d':'nos últimos 30 dias'})[PAINEL.periodo] || 'no período'}</div>
       ${p.rankingEmpresas.length ? `<table class="data-table"><thead><tr><th>#</th><th>Empresa</th><th>Mensagens do cliente</th><th>Conversas</th><th>Setores</th></tr></thead><tbody>
       ${p.rankingEmpresas.map((r,i)=>`<tr><td>${i+1}</td><td>${esc(r.empresa)}</td><td><b>${r.recebidas}</b></td><td>${r.conversas}</td><td>${Object.entries(r.setores).map(([k,v])=>`<span class="tag muted">${esc(k)} ${v}</span>`).join(' ')}</td></tr>`).join('')}
       </tbody></table>` : '<div class="empty-state" style="padding:16px;">Nenhuma empresa identificada nas conversas do período (o telefone precisa estar nos contatos da empresa).</div>'}
