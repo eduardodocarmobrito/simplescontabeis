@@ -11924,11 +11924,7 @@ function renderCfgDomRelatorios(box, sub, dados){
         <input id="roboCompPerFim" class="inp" style="width:85px;">
         <span style="font-size:11.5px; color:var(--ink-soft);">— em branco = padrão (01/ano vigente até a competência anterior).</span>
       </div>
-      <div class="row" style="margin-top:10px; align-items:center; gap:10px;">
-        <span style="font-size:12.5px; color:var(--ink-soft);">Intervalo entre os robôs (s)</span>
-        <input id="roboGapAgentes" type="number" class="inp" min="0" max="3600" style="width:80px;">
-      </div>
-      <p style="font-size:11.5px; color:var(--ink-soft); margin:4px 0 0;">Os dois robôs mexem no mesmo Domínio, então nunca rodam juntos: um só começa <b>esse tempo</b> depois que o outro terminar. O Comparativo tem prioridade.</p>
+      <p style="font-size:11.5px; color:var(--ink-soft); margin:8px 0 0;">Os dois robôs mexem no mesmo Domínio, então nunca rodam juntos: assim que um termina, o outro já pode começar — em sequência, sem espera. O Comparativo tem prioridade.</p>
       <div class="row" style="margin-top:8px;">
         <button class="btn primary" id="btnRoboCompSalvar" disabled>Salvar</button>
         <button class="btn" id="btnRoboCompExecutar">Executar agora</button>
@@ -12080,12 +12076,11 @@ function renderCfgDomRelatorios(box, sub, dados){
       if($('roboCompAgendaMinuto')) $('roboCompAgendaMinuto').value = String(e.agendaMinuto).padStart(2,'0');
       if($('roboCompPerIni')){ $('roboCompPerIni').value = e.periodoIni||''; $('roboCompPerIni').placeholder = e.periodoPadraoIni||'01/2026'; }
       if($('roboCompPerFim')){ $('roboCompPerFim').value = e.periodoFim||''; $('roboCompPerFim').placeholder = e.periodoPadraoFim||'08/2026'; }
-      if($('roboGapAgentes')) $('roboGapAgentes').value = (e.gapAgentesSeg ?? 30);
       pintar(e);
     }).catch(()=>{});
-    habilitarSalvarAoMudar('btnRoboCompSalvar', ['roboCompLigado','roboCompIntervalo','roboCompAgendaAtivo','roboCompAgendaHora','roboCompAgendaMinuto','roboCompPerIni','roboCompPerFim','roboGapAgentes']);
+    habilitarSalvarAoMudar('btnRoboCompSalvar', ['roboCompLigado','roboCompIntervalo','roboCompAgendaAtivo','roboCompAgendaHora','roboCompAgendaMinuto','roboCompPerIni','roboCompPerFim']);
     $('btnRoboCompSalvar')?.addEventListener('click', async ()=>{
-      try{ await api('/comparativo-robo/config', { method:'POST', body:{ ligado:$('roboCompLigado').checked, intervaloMin:Number($('roboCompIntervalo').value)||15, agendaAtivo:$('roboCompAgendaAtivo').checked, agendaHora:Number($('roboCompAgendaHora').value), agendaMinuto:Number($('roboCompAgendaMinuto').value), periodoIni:$('roboCompPerIni').value.trim(), periodoFim:$('roboCompPerFim').value.trim(), gapAgentesSeg:Number($('roboGapAgentes').value) } }); toast('Configuração do robô salva.','ok'); $('btnRoboCompSalvar').disabled = true; }
+      try{ await api('/comparativo-robo/config', { method:'POST', body:{ ligado:$('roboCompLigado').checked, intervaloMin:Number($('roboCompIntervalo').value)||15, agendaAtivo:$('roboCompAgendaAtivo').checked, agendaHora:Number($('roboCompAgendaHora').value), agendaMinuto:Number($('roboCompAgendaMinuto').value), periodoIni:$('roboCompPerIni').value.trim(), periodoFim:$('roboCompPerFim').value.trim() } }); toast('Configuração do robô salva.','ok'); $('btnRoboCompSalvar').disabled = true; }
       catch(e){ toast(e.message,'err'); }
     });
     $('btnRoboCompExecutar')?.addEventListener('click', async (ev)=>{
