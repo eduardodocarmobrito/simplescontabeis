@@ -5833,6 +5833,7 @@ async function renderCertificadoBuscaXml(containerEl, empresaId, empresaUfPadrao
         <span class="fname">${esc(cfg.titular||'Certificado configurado')}</span>
         CNPJ do certificado: ${esc(cfg.cnpjCertificado||'—')} · Válido até ${fmtValidade(cfg.validadeAte)} · UF autora: ${esc(cfg.ufAutor)} · Ambiente: ${cfg.ambiente==='homologacao'?'Homologação':'Produção'}
         <br>NF-e/NFC-e — última busca: ${cfg.ultimaBuscaEm?fmtDateHora(cfg.ultimaBuscaEm):'nunca'}${cfg.ultimoErro?` — <span style="color:var(--debit);">${esc(cfg.ultimoErro)}</span>`:''}
+        <br>CT-e — última busca: ${cfg.ultimaBuscaCteEm?fmtDateHora(cfg.ultimaBuscaCteEm):'nunca'}${cfg.ultimoErroCte?` — <span style="color:var(--debit);">${esc(cfg.ultimoErroCte)}</span>`:''}
         <br>NFS-e — última busca: ${cfg.ultimaBuscaNfseEm?fmtDateHora(cfg.ultimaBuscaNfseEm):'nunca'}${cfg.ultimoErroNfse?` — <span style="color:var(--debit);">${esc(cfg.ultimoErroNfse)}</span>`:''}
       </div>
       <label class="checkbox-row"><input type="checkbox" id="nfeCfgAtivo_${empresaId}" ${cfg.ativo?'checked':''} ${podeEditar?'':'disabled'}> Ativar Busca de XML</label>
@@ -5866,9 +5867,9 @@ async function renderCertificadoBuscaXml(containerEl, empresaId, empresaUfPadrao
       try{
         const r = await api('/nfe/config/'+empresaId+'/ativo', { method:'PUT', body:{ ativo: ligando } });
         const s = r.sync;
-        if(ligando && s && (s.novosNfe||s.novosNfse)) toast(`Ativado — trouxe ${s.novosNfe||0} NF-e/NFC-e e ${s.novosNfse||0} NFS-e do histórico.`,'ok');
+        if(ligando && s && (s.novosNfe||s.novosNfse||s.novosCte)) toast(`Ativado — trouxe ${s.novosNfe||0} NF-e/NFC-e, ${s.novosCte||0} CT-e e ${s.novosNfse||0} NFS-e do histórico.`,'ok');
         else toast('Atualizado.','ok');
-        if(ligando && (s?.novosNfe||s?.novosNfse) && opts.onDocumentosMudou) opts.onDocumentosMudou();
+        if(ligando && (s?.novosNfe||s?.novosNfse||s?.novosCte) && opts.onDocumentosMudou) opts.onDocumentosMudou();
       }
       catch(e){ toast(e.message,'err'); ev.target.checked=!ev.target.checked; }
     });
@@ -5948,9 +5949,10 @@ async function renderCertificadoBuscaXml(containerEl, empresaId, empresaUfPadrao
       resultado.innerHTML = `<div class="empty-state">Consultando a Sefaz e o Sistema Nacional NFS-e…</div>`;
       try{
         const r = await api('/nfe/config/'+empresaId+'/buscar', { method:'POST' });
-        const partes = [`${r.novosNfe} NF-e/NFC-e`, `${r.novosNfse} NFS-e`];
-        resultado.innerHTML = `<div class="tag ${(r.erroNfe||r.erroNfse)?'bad':'ok'}">${(r.erroNfe||r.erroNfse)?'Concluído com falhas':'Concluído'}</div> <span style="font-size:12.5px;">${partes.join(' · ')} novo(s).</span>
+        const partes = [`${r.novosNfe} NF-e/NFC-e`, `${r.novosCte} CT-e`, `${r.novosNfse} NFS-e`];
+        resultado.innerHTML = `<div class="tag ${(r.erroNfe||r.erroNfse||r.erroCte)?'bad':'ok'}">${(r.erroNfe||r.erroNfse||r.erroCte)?'Concluído com falhas':'Concluído'}</div> <span style="font-size:12.5px;">${partes.join(' · ')} novo(s).</span>
           ${r.erroNfe?`<div style="font-size:12px; color:var(--debit); margin-top:4px;">NF-e/NFC-e: ${esc(r.erroNfe)}</div>`:''}
+          ${r.erroCte?`<div style="font-size:12px; color:var(--debit); margin-top:4px;">CT-e: ${esc(r.erroCte)}</div>`:''}
           ${r.erroNfse?`<div style="font-size:12px; color:var(--debit); margin-top:4px;">NFS-e: ${esc(r.erroNfse)}</div>`:''}`;
         if(opts.onDocumentosMudou) opts.onDocumentosMudou();
       }catch(e){
@@ -5988,10 +5990,10 @@ async function renderCertificadoBuscaXml(containerEl, empresaId, empresaUfPadrao
       try{
         const r = await api('/nfe/config', { method:'POST', body:fd });
         const s = r.sync || {};
-        if(s.novosNfe || s.novosNfse){
-          toast(`Certificado enviado — trouxe ${s.novosNfe||0} NF-e/NFC-e e ${s.novosNfse||0} NFS-e do histórico.`,'ok');
-        } else if(s.erroNfe || s.erroNfse){
-          toast(`Certificado enviado, mas a busca do histórico falhou: ${s.erroNfe||s.erroNfse}`,'err');
+        if(s.novosNfe || s.novosNfse || s.novosCte){
+          toast(`Certificado enviado — trouxe ${s.novosNfe||0} NF-e/NFC-e, ${s.novosCte||0} CT-e e ${s.novosNfse||0} NFS-e do histórico.`,'ok');
+        } else if(s.erroNfe || s.erroNfse || s.erroCte){
+          toast(`Certificado enviado, mas a busca do histórico falhou: ${s.erroNfe||s.erroNfse||s.erroCte}`,'err');
         } else {
           toast('Certificado enviado.','ok');
         }
@@ -6020,6 +6022,7 @@ async function renderBuscaXmlResumoCertificado(containerEl, empresaId, empresaNo
       <span class="fname">${esc(cfg.titular||'Certificado configurado')}</span>
       CNPJ do certificado: ${esc(cfg.cnpjCertificado||'—')} · Válido até ${fmtValidade(cfg.validadeAte)} · UF autora: ${esc(cfg.ufAutor)} · Ambiente: ${cfg.ambiente==='homologacao'?'Homologação':'Produção'}
       <br>NF-e/NFC-e — última busca: ${cfg.ultimaBuscaEm?fmtDateHora(cfg.ultimaBuscaEm):'nunca'}${cfg.ultimoErro?` — <span style="color:var(--debit);">${esc(cfg.ultimoErro)}</span>`:''}
+      <br>CT-e — última busca: ${cfg.ultimaBuscaCteEm?fmtDateHora(cfg.ultimaBuscaCteEm):'nunca'}${cfg.ultimoErroCte?` — <span style="color:var(--debit);">${esc(cfg.ultimoErroCte)}</span>`:''}
       <br>NFS-e — última busca: ${cfg.ultimaBuscaNfseEm?fmtDateHora(cfg.ultimaBuscaNfseEm):'nunca'}${cfg.ultimoErroNfse?` — <span style="color:var(--debit);">${esc(cfg.ultimoErroNfse)}</span>`:''}
       ${!cfg.ativo?`<br><span class="tag muted" style="margin-top:6px;">Busca desativada — ative em Empresas → Configurações.</span>`:''}
     </div>
@@ -6036,9 +6039,10 @@ async function renderBuscaXmlResumoCertificado(containerEl, empresaId, empresaNo
     resultado.innerHTML = `<div class="empty-state">Consultando a Sefaz e o Sistema Nacional NFS-e…</div>`;
     try{
       const r = await api('/nfe/config/'+empresaId+'/buscar', { method:'POST' });
-      const partes = [`${r.novosNfe} NF-e/NFC-e`, `${r.novosNfse} NFS-e`];
-      resultado.innerHTML = `<div class="tag ${(r.erroNfe||r.erroNfse)?'bad':'ok'}">${(r.erroNfe||r.erroNfse)?'Concluído com falhas':'Concluído'}</div> <span style="font-size:12.5px;">${partes.join(' · ')} novo(s).</span>
+      const partes = [`${r.novosNfe} NF-e/NFC-e`, `${r.novosCte} CT-e`, `${r.novosNfse} NFS-e`];
+      resultado.innerHTML = `<div class="tag ${(r.erroNfe||r.erroNfse||r.erroCte)?'bad':'ok'}">${(r.erroNfe||r.erroNfse||r.erroCte)?'Concluído com falhas':'Concluído'}</div> <span style="font-size:12.5px;">${partes.join(' · ')} novo(s).</span>
         ${r.erroNfe?`<div style="font-size:12px; color:var(--debit); margin-top:4px;">NF-e/NFC-e: ${esc(r.erroNfe)}</div>`:''}
+        ${r.erroCte?`<div style="font-size:12px; color:var(--debit); margin-top:4px;">CT-e: ${esc(r.erroCte)}</div>`:''}
         ${r.erroNfse?`<div style="font-size:12px; color:var(--debit); margin-top:4px;">NFS-e: ${esc(r.erroNfse)}</div>`:''}`;
       if(opts.onDocumentosMudou) opts.onDocumentosMudou();
     }catch(e){

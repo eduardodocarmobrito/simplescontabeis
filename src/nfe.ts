@@ -22,6 +22,19 @@ const DISTRIBUICAO_URL = {
 } as const;
 export type AmbienteNfe = keyof typeof DISTRIBUICAO_URL;
 
+// CT-e tem um web service de Distribuição DFe PRÓPRIO, separado do de NF-e (Nota Técnica 2015.002,
+// CTeDistribuicaoDFe — host cte.fazenda.gov.br, não nfe.fazenda.gov.br). É a causa real de CT-e
+// tomado nunca aparecer: o sistema só chamava NFeDistribuicaoDFe, que NUNCA devolve CT-e — mesmo o
+// CNPJ sendo o tomador de verdade (confirmado na NT: tomador tem direito ao CT-e, evento de
+// cancelamento, carta de correção etc., igual destinatário). Mesma família de schema (distDFeInt/
+// retDistDFeInt, mesmos cStat 137/138/656), só muda a tag raiz do envelope (cteDistDFeInteresse/
+// cteDadosMsg em vez de nfeDistDFeInteresse/nfeDadosMsg), o host, e o xmlns+versao do distDFeInt
+// interno (cte em vez de nfe, versao 1.00).
+const CTE_DISTRIBUICAO_URL = {
+  producao: "https://www1.cte.fazenda.gov.br/CTeDistribuicaoDFe/CTeDistribuicaoDFe.asmx",
+  homologacao: "https://hom1.cte.fazenda.gov.br/CTeDistribuicaoDFe/CTeDistribuicaoDFe.asmx",
+} as const;
+
 // Código IBGE de 2 dígitos de cada UF — cUFAutor da requisição (Nota Técnica 2014.002, tabela do
 // Manual de Orientação ao Contribuinte). Referência estável, não muda.
 export const UF_CODIGO_IBGE: Record<string, string> = {
@@ -51,10 +64,10 @@ function unzipBase64(str: string): Promise<string> {
   });
 }
 
-function chamarDistribuicao(ambiente: AmbienteNfe, xmlBody: string, cert: nfse.CertificadoInfo): Promise<{ status: number; corpo: string }> {
+function chamarDistribuicao(servico: "nfe" | "cte", ambiente: AmbienteNfe, xmlBody: string, cert: nfse.CertificadoInfo): Promise<{ status: number; corpo: string }> {
   const envelope = `<?xml version="1.0" encoding="utf-8"?><soap12:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap12="http://www.w3.org/2003/05/soap-envelope"><soap12:Body>${xmlBody}</soap12:Body></soap12:Envelope>`;
   return new Promise((resolve, reject) => {
-    const url = new URL(DISTRIBUICAO_URL[ambiente]);
+    const url = new URL((servico === "cte" ? CTE_DISTRIBUICAO_URL : DISTRIBUICAO_URL)[ambiente]);
     const bodyBuffer = Buffer.from(envelope, "utf8");
     const req = https.request(
       {
@@ -95,7 +108,7 @@ export interface RespostaDistribuicao {
   maxNSU: string;
   documentos: DocumentoDistribuido[];
 }
-function montarConsultaDistDFeInt(params: {
+function montarConsultaDistDFeInt(servico: "nfe" | "cte", params: {
   ambiente: AmbienteNfe;
   cnpj: string;
   cUFAutor: string;
@@ -116,26 +129,35 @@ function montarConsultaDistDFeInt(params: {
   } else {
     consultaTag = `<consChNFe><chNFe>${params.modo.valor}</chNFe></consChNFe>`;
   }
+  // CT-e usa namespace e versão de schema PRÓPRIOS no distDFeInt (confirmado contra relato real de
+  // implementação — usar o namespace de NF-e aqui é rejeitado pela Sefaz do CT-e).
   const distDFeInt =
-    `<distDFeInt xmlns="http://www.portalfiscal.inf.br/nfe" versao="1.01">` +
-    `<tpAmb>${tpAmb}</tpAmb><cUFAutor>${params.cUFAutor}</cUFAutor>${tagDocumento}${consultaTag}</distDFeInt>`;
-  return `<nfeDistDFeInteresse xmlns="http://www.portalfiscal.inf.br/nfe/wsdl/NFeDistribuicaoDFe"><nfeDadosMsg>${distDFeInt}</nfeDadosMsg></nfeDistDFeInteresse>`;
+    servico === "cte"
+      ? `<distDFeInt xmlns="http://www.portalfiscal.inf.br/cte" versao="1.00">` +
+        `<tpAmb>${tpAmb}</tpAmb><cUFAutor>${params.cUFAutor}</cUFAutor>${tagDocumento}${consultaTag}</distDFeInt>`
+      : `<distDFeInt xmlns="http://www.portalfiscal.inf.br/nfe" versao="1.01">` +
+        `<tpAmb>${tpAmb}</tpAmb><cUFAutor>${params.cUFAutor}</cUFAutor>${tagDocumento}${consultaTag}</distDFeInt>`;
+  return servico === "cte"
+    ? `<cteDistDFeInteresse xmlns="http://www.portalfiscal.inf.br/cte/wsdl/CTeDistribuicaoDFe"><cteDadosMsg>${distDFeInt}</cteDadosMsg></cteDistDFeInteresse>`
+    : `<nfeDistDFeInteresse xmlns="http://www.portalfiscal.inf.br/nfe/wsdl/NFeDistribuicaoDFe"><nfeDadosMsg>${distDFeInt}</nfeDadosMsg></nfeDistDFeInteresse>`;
 }
-async function consultarDistribuicao(params: {
+async function consultarDistribuicao(servico: "nfe" | "cte", params: {
   ambiente: AmbienteNfe;
   cnpj: string;
   cUFAutor: string;
   cert: nfse.CertificadoInfo;
   modo: { tipo: "ultNSU"; valor: string } | { tipo: "NSU"; valor: string } | { tipo: "chNFe"; valor: string };
 }): Promise<RespostaDistribuicao> {
-  const xmlBody = montarConsultaDistDFeInt(params);
-  const { status, corpo } = await chamarDistribuicao(params.ambiente, xmlBody, params.cert);
+  const xmlBody = montarConsultaDistDFeInt(servico, params);
+  const { status, corpo } = await chamarDistribuicao(servico, params.ambiente, xmlBody, params.cert);
   if (status !== 200) {
     throw new Error(`A Sefaz recusou a conexão (HTTP ${status}) — confira se o certificado está correto e a UF autora bate com o CNPJ.`);
   }
   const json = xmlParser.parse(corpo) as any;
   const retDistDFeInt =
-    json?.["soap:Envelope"]?.["soap:Body"]?.nfeDistDFeInteresseResponse?.nfeDistDFeInteresseResult?.retDistDFeInt;
+    servico === "cte"
+      ? json?.["soap:Envelope"]?.["soap:Body"]?.cteDistDFeInteresseResponse?.cteDistDFeInteresseResult?.retDistDFeInt
+      : json?.["soap:Envelope"]?.["soap:Body"]?.nfeDistDFeInteresseResponse?.nfeDistDFeInteresseResult?.retDistDFeInt;
   if (!retDistDFeInt) {
     throw new Error("Resposta da Sefaz em formato inesperado — não encontrei o bloco retDistDFeInt.");
   }
@@ -162,7 +184,7 @@ async function consultarDistribuicao(params: {
 // Busca incremental — chamada mais comum: "me manda tudo que eu ainda não vi". A Sefaz devolve em
 // lotes de até 50 documentos; se maxNSU > ultNSU ainda tem mais, chame de novo com o novo ultNSU.
 export function consultarNovosDocumentos(params: { ambiente: AmbienteNfe; cnpj: string; cUFAutor: string; cert: nfse.CertificadoInfo; ultimoNsuConhecido: string }): Promise<RespostaDistribuicao> {
-  return consultarDistribuicao({ ...params, modo: { tipo: "ultNSU", valor: params.ultimoNsuConhecido } });
+  return consultarDistribuicao("nfe", { ...params, modo: { tipo: "ultNSU", valor: params.ultimoNsuConhecido } });
 }
 // Consulta por chave de acesso (consChNFe) — já existia (usada pra buscar UM documento específico). "Ancora"
 // onde uma nota conhecida está na sequência de NSU do CNPJ. É o mecanismo que reaproveito pra pegar notas
@@ -171,7 +193,16 @@ export function consultarNovosDocumentos(params: { ambiente: AmbienteNfe; cnpj: 
 // conhecida, dá pra "recuar" o cursor até ali e seguir dali pra frente pela busca incremental normal (que
 // passa a trazer entrada E saída, tudo junto, dali em diante).
 export function consultarPorChave(params: { ambiente: AmbienteNfe; cnpj: string; cUFAutor: string; cert: nfse.CertificadoInfo; chave: string }): Promise<RespostaDistribuicao> {
-  return consultarDistribuicao({ ...params, modo: { tipo: "chNFe", valor: params.chave } });
+  return consultarDistribuicao("nfe", { ...params, modo: { tipo: "chNFe", valor: params.chave } });
+}
+// CT-e tem NSU próprio, independente do de NF-e, no web service separado CTeDistribuicaoDFe (ver
+// comentário em CTE_DISTRIBUICAO_URL). Mesmas duas formas de consulta (incremental / por chave),
+// reaproveitando a mesma lógica interna — só muda o "servico" passado pra consultarDistribuicao.
+export function consultarNovosDocumentosCte(params: { ambiente: AmbienteNfe; cnpj: string; cUFAutor: string; cert: nfse.CertificadoInfo; ultimoNsuConhecido: string }): Promise<RespostaDistribuicao> {
+  return consultarDistribuicao("cte", { ...params, modo: { tipo: "ultNSU", valor: params.ultimoNsuConhecido } });
+}
+export function consultarPorChaveCte(params: { ambiente: AmbienteNfe; cnpj: string; cUFAutor: string; cert: nfse.CertificadoInfo; chave: string }): Promise<RespostaDistribuicao> {
+  return consultarDistribuicao("cte", { ...params, modo: { tipo: "chNFe", valor: params.chave } });
 }
 
 // ===================== Extração dos campos principais de cada documento retornado =====================

@@ -1610,6 +1610,13 @@ for (const tabela of ["chat_mensagens", "chat_equipe_mensagens", "chat_dm_mensag
   if (!nomes.has("ultimo_nsu_nfse")) sqlite.exec(`ALTER TABLE nfe_busca_config ADD COLUMN ultimo_nsu_nfse TEXT NOT NULL DEFAULT '0'`);
   if (!nomes.has("ultima_busca_nfse_em")) sqlite.exec(`ALTER TABLE nfe_busca_config ADD COLUMN ultima_busca_nfse_em TEXT`);
   if (!nomes.has("ultimo_erro_nfse")) sqlite.exec(`ALTER TABLE nfe_busca_config ADD COLUMN ultimo_erro_nfse TEXT`);
+  // CT-e tem um web service de Distribuição DFe PRÓPRIO (CTeDistribuicaoDFe, host cte.fazenda.gov.br),
+  // separado do de NF-e — é a causa real de CT-e tomado nunca aparecer (o sistema só chamava
+  // NFeDistribuicaoDFe, que nunca devolve CT-e, mesmo o CNPJ sendo o tomador de verdade). NSU próprio,
+  // mesmo padrão do cursor de NFS-e acima.
+  if (!nomes.has("ultimo_nsu_cte")) sqlite.exec(`ALTER TABLE nfe_busca_config ADD COLUMN ultimo_nsu_cte TEXT NOT NULL DEFAULT '0'`);
+  if (!nomes.has("ultima_busca_cte_em")) sqlite.exec(`ALTER TABLE nfe_busca_config ADD COLUMN ultima_busca_cte_em TEXT`);
+  if (!nomes.has("ultimo_erro_cte")) sqlite.exec(`ALTER TABLE nfe_busca_config ADD COLUMN ultimo_erro_cte TEXT`);
 }
 // Migração: nfe_documentos ganhou a coluna "fonte" (nfe | nfse) — cada uma tem sua própria
 // numeração de NSU, então precisa entrar na chave de unicidade junto com o NSU (antes só
@@ -6575,7 +6582,8 @@ app.get("/api/nfe/config", blockCliente, requirePermissao("nfe-busca", "visualiz
       `SELECT c.empresa_id as empresaId, e.nome as empresaNome, c.cnpj, c.uf_autor as ufAutor, c.ambiente,
               c.titular, c.cnpj_certificado as cnpjCertificado, c.validade_ate as validadeAte, c.ativo,
               c.ultimo_nsu as ultimoNsu, c.ultima_busca_em as ultimaBuscaEm, c.ultimo_erro as ultimoErro,
-              c.ultimo_nsu_nfse as ultimoNsuNfse, c.ultima_busca_nfse_em as ultimaBuscaNfseEm, c.ultimo_erro_nfse as ultimoErroNfse
+              c.ultimo_nsu_nfse as ultimoNsuNfse, c.ultima_busca_nfse_em as ultimaBuscaNfseEm, c.ultimo_erro_nfse as ultimoErroNfse,
+              c.ultimo_nsu_cte as ultimoNsuCte, c.ultima_busca_cte_em as ultimaBuscaCteEm, c.ultimo_erro_cte as ultimoErroCte
        FROM nfe_busca_config c JOIN empresas e ON e.id = c.empresa_id
        WHERE c.escritorio_id = ? AND e.ativo = 1 ORDER BY e.nome`
     )
@@ -6621,7 +6629,7 @@ app.post("/api/nfe/config", blockCliente, requirePermissao("nfe-busca", "postar"
   // usuário não deveria precisar cadastrar o certificado E DEPOIS lembrar de clicar em "Buscar
   // agora" separadamente. Cada busca é independente (uma falhando não trava a outra), igual à rota
   // manual /buscar.
-  let resultadoSync = { novosNfe: 0, novosNfse: 0, erroNfe: null as string | null, erroNfse: null as string | null };
+  let resultadoSync = { novosNfe: 0, novosNfse: 0, novosCte: 0, erroNfe: null as string | null, erroNfse: null as string | null, erroCte: null as string | null };
   if (escritorioTemModulo(user.escritorioId, "busca_xml_nfe") && !nfeBuscasEmAndamento.has(empId)) {
     const cfgAtualizado = sqlite.prepare(`SELECT * FROM nfe_busca_config WHERE empresa_id = ?`).get(empId) as any;
     nfeBuscasEmAndamento.add(empId);
@@ -6774,7 +6782,7 @@ app.put("/api/nfe/config/:empresaId/ativo", blockCliente, requirePermissao("nfe-
   if (!row || row.escritorio_id !== user.escritorioId) return res.status(404).json({ error: "Configuração não encontrada." });
   const ativando = !!req.body?.ativo && !row.ativo;
   sqlite.prepare(`UPDATE nfe_busca_config SET ativo = ?, updated_at = datetime('now') WHERE empresa_id = ?`).run(req.body?.ativo ? 1 : 0, empId);
-  let sync = { novosNfe: 0, novosNfse: 0, erroNfe: null as string | null, erroNfse: null as string | null };
+  let sync = { novosNfe: 0, novosNfse: 0, novosCte: 0, erroNfe: null as string | null, erroNfse: null as string | null, erroCte: null as string | null };
   if (ativando && escritorioTemModulo(user.escritorioId, "busca_xml_nfe") && !nfeBuscasEmAndamento.has(empId)) {
     nfeBuscasEmAndamento.add(empId);
     try {
@@ -6948,6 +6956,55 @@ async function nfseBuscarDocumentosNovos(empresaId: number, cfg: any, cert: nfse
   }
   return { novos };
 }
+// CT-e via o web service PRÓPRIO dele (CTeDistribuicaoDFe — ver comentário em nfe.ts/CTE_DISTRIBUICAO_URL).
+// Mesma estrutura de resposta do NF-e (distDFeInt/retDistDFeInt), NSU independente, fonte='cte' na tabela
+// (evita colidir com o NSU de 'nfe' na UNIQUE(empresa_id, fonte, nsu)). Documentos emitidos pela própria
+// empresa nunca aparecem aqui (regra oficial, igual NF-e) — só interessa pra quem é tomador/destinatário/
+// remetente/expedidor/recebedor do CT-e de outra empresa, que é exatamente o caso de "CT-e tomado".
+async function nfeCteBuscarDocumentosNovos(empresaId: number, cfg: any, cert: nfse.CertificadoInfo): Promise<{ novos: number }> {
+  let novos = 0;
+  let ultNsu = cfg.ultimo_nsu_cte || "0";
+  const cnpjBusca = nfeResolverCnpjBusca(cfg, empresaId);
+  try {
+    for (let pagina = 0; pagina < 20; pagina++) {
+      const resp = await nfe.consultarNovosDocumentosCte({
+        ambiente: cfg.ambiente as nfe.AmbienteNfe,
+        cnpj: cnpjBusca,
+        cUFAutor: nfe.UF_CODIGO_IBGE[cfg.uf_autor],
+        cert,
+        ultimoNsuConhecido: ultNsu,
+      });
+      for (const doc of resp.documentos) {
+        const info = nfe.identificarDocumento(doc.xml, doc.schema);
+        const r = nfeInserirDocumento.run(
+          empresaId,
+          cfg.escritorio_id,
+          "cte",
+          doc.nsu,
+          doc.schema,
+          info.tipo,
+          info.chaveAcesso,
+          info.emitenteCnpj,
+          info.emitenteNome,
+          info.destinatarioCnpj,
+          info.destinatarioNome,
+          info.valorTotal,
+          info.dataEmissao,
+          doc.xml,
+          info.eventoDescricao
+        );
+        if (r.changes > 0) novos++;
+      }
+      ultNsu = resp.ultNSU || ultNsu;
+      sqlite.prepare(`UPDATE nfe_busca_config SET ultimo_nsu_cte = ?, ultima_busca_cte_em = datetime('now'), ultimo_erro_cte = NULL WHERE empresa_id = ?`).run(ultNsu, empresaId);
+      if (!resp.maxNSU || !resp.ultNSU || Number(resp.maxNSU) <= Number(resp.ultNSU) || resp.documentos.length === 0) break;
+    }
+  } catch (e: any) {
+    sqlite.prepare(`UPDATE nfe_busca_config SET ultima_busca_cte_em = datetime('now'), ultimo_erro_cte = ? WHERE empresa_id = ?`).run(e.message || String(e), empresaId);
+    throw e;
+  }
+  return { novos };
+}
 // Empresas com uma busca em andamento agora (manual, automática, ou disparada ao cadastrar o
 // certificado) — evita duas buscas rodando ao mesmo tempo pra mesma empresa (ex.: a rotina
 // automática pegando bem na hora que alguém clica "Buscar agora"), o que faria requisição em
@@ -6970,7 +7027,11 @@ function nfeChecarCooldown656(cfg: any): string | null {
 // Roda as duas fontes (NF-e/NFC-e e NFS-e) — usado pelo clique manual, pelo cadastro de certificado
 // e pela rotina automática, sempre do mesmo jeito (falha numa fonte não trava a outra).
 async function nfeENfseBuscarTudo(empresaId: number, cfg: any, cert: nfse.CertificadoInfo) {
-  const resultado = { novosNfe: 0, novosNfse: 0, erroNfe: null as string | null, erroNfse: null as string | null, porSchema: {} as Record<string, number> };
+  const resultado = {
+    novosNfe: 0, novosNfse: 0, novosCte: 0,
+    erroNfe: null as string | null, erroNfse: null as string | null, erroCte: null as string | null,
+    porSchema: {} as Record<string, number>,
+  };
   try {
     const r = await nfeBuscarDocumentosNovos(empresaId, cfg, cert);
     resultado.novosNfe = r.novos;
@@ -6982,6 +7043,11 @@ async function nfeENfseBuscarTudo(empresaId: number, cfg: any, cert: nfse.Certif
     resultado.novosNfse = (await nfseBuscarDocumentosNovos(empresaId, cfg, cert)).novos;
   } catch (e: any) {
     resultado.erroNfse = e.message || "Falha ao consultar o ADN (NFS-e).";
+  }
+  try {
+    resultado.novosCte = (await nfeCteBuscarDocumentosNovos(empresaId, cfg, cert)).novos;
+  } catch (e: any) {
+    resultado.erroCte = e.message || "Falha ao consultar a Sefaz (CT-e).";
   }
   return resultado;
 }
@@ -7006,10 +7072,10 @@ app.post("/api/nfe/config/:empresaId/buscar", blockCliente, requirePermissao("nf
   try {
     const cert = nfeCarregarCertificado(cfg);
     const resultado = await nfeENfseBuscarTudo(empId, cfg, cert);
-    if (resultado.erroNfe && resultado.erroNfse) {
-      return res.status(400).json({ error: `NF-e/NFC-e: ${resultado.erroNfe} | NFS-e: ${resultado.erroNfse}` });
+    if (resultado.erroNfe && resultado.erroNfse && resultado.erroCte) {
+      return res.status(400).json({ error: `NF-e/NFC-e: ${resultado.erroNfe} | NFS-e: ${resultado.erroNfse} | CT-e: ${resultado.erroCte}` });
     }
-    res.json({ ok: true, ...resultado, novos: resultado.novosNfe + resultado.novosNfse });
+    res.json({ ok: true, ...resultado, novos: resultado.novosNfe + resultado.novosNfse + resultado.novosCte });
   } finally {
     nfeBuscasEmAndamento.delete(empId);
   }
@@ -7208,8 +7274,8 @@ async function nfeExecutarBuscaAutomatica() {
     try {
       const cert = nfeCarregarCertificado(cfg);
       const r = await nfeENfseBuscarTudo(cfg.empresa_id, cfg, cert);
-      if (r.novosNfe || r.novosNfse) {
-        console.log(`[busca automática de XML] empresa ${cfg.empresa_id}: ${r.novosNfe} NF-e/NFC-e, ${r.novosNfse} NFS-e novos.`);
+      if (r.novosNfe || r.novosNfse || r.novosCte) {
+        console.log(`[busca automática de XML] empresa ${cfg.empresa_id}: ${r.novosNfe} NF-e/NFC-e, ${r.novosNfse} NFS-e, ${r.novosCte} CT-e novos.`);
       }
     } catch (e: any) {
       console.error(`[busca automática de XML] empresa ${cfg.empresa_id} falhou:`, e.message);
