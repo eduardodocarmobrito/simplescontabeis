@@ -237,6 +237,23 @@ export function identificarDocumento(xml: string, schema: string): DocumentoIden
     if (!r) return base;
     return { ...base, tipo: "evento", chaveAcesso: r.chNFe || null, dataEmissao: r.dhEvento || null, eventoDescricao: r.xEvento || null };
   }
+  // procEventoCTe (cancelamento, carta de correção, comprovante/insucesso de entrega etc.) — evento já
+  // assinado e completo, estrutura PRÓPRIA do CT-e (sem resumo resEvento equivalente). A descrição do
+  // evento fica dentro de detEvento, mas sob uma tag que MUDA conforme o tipo (evCECTe, evCancCTe,
+  // evCCeCTe...) — em vez de listar cada uma, pega o primeiro "descEvento" que aparecer ali dentro.
+  if (schema.startsWith("procEventoCTe")) {
+    const infEvento = json?.procEventoCTe?.eventoCTe?.infEvento;
+    if (!infEvento) return base;
+    const detEvento = infEvento.detEvento || {};
+    const descEvento = Object.values(detEvento).find((v: any) => v && typeof v === "object" && "descEvento" in v) as any;
+    return {
+      ...base,
+      tipo: "evento",
+      chaveAcesso: infEvento.chCTe || null,
+      dataEmissao: infEvento.dhEvento || null,
+      eventoDescricao: descEvento?.descEvento || null,
+    };
+  }
   if (schema.startsWith("resNFe")) {
     const r = json?.resNFe;
     if (!r) return base;
