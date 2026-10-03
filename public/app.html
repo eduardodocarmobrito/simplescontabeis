@@ -10566,7 +10566,7 @@ async function feriasMontar(box){
           <input type="number" class="inp" id="feriasVerifMinuto" min="0" max="59" value="${String(r.verifMinuto).padStart(2,'0')}" style="width:54px;">
         </div>
         <div class="row" style="gap:8px; margin-top:10px; align-items:center;">
-          <button class="btn primary" id="feriasVerifSalvarCfg">Salvar</button>
+          <button class="btn primary" id="feriasVerifSalvarCfg" disabled>Salvar</button>
           <button class="btn" id="feriasVerificarAgora">↻ Verificar agora</button>
           ${r.verifUltimaEm?`<span style="font-size:11.5px; color:var(--ink-soft);">última verificação: ${fmtDateHora(r.verifUltimaEm)}</span>`:''}
         </div>
@@ -10582,7 +10582,7 @@ async function feriasMontar(box){
           <input type="number" class="inp" id="feriasHora" min="0" max="23" value="${r.hora}" style="width:54px;"> :
           <input type="number" class="inp" id="feriasMinuto" min="0" max="59" value="${String(r.minuto).padStart(2,'0')}" style="width:54px;">
         </div>
-        <div class="row" style="margin-top:10px;"><button class="btn primary" id="feriasSalvarCfg">Salvar</button></div>
+        <div class="row" style="margin-top:10px;"><button class="btn primary" id="feriasSalvarCfg" disabled>Salvar</button></div>
       </div>
     </div>
     ${r.empresas.length?`<div class="row" style="justify-content:space-between; align-items:center; margin:0 0 10px;">
@@ -10615,21 +10615,21 @@ async function feriasMontar(box){
       </div>
     `).join('') : '<div class="empty-state">Nenhuma pendência de férias no momento — ou ainda não chegou nenhum relatório de Programação de Férias pela leitura automática do Domínio (Relatórios › Domínio Web).</div>'}
   `;
+  habilitarSalvarAoMudar('feriasSalvarCfg', ['feriasAtivo','feriasDiaMes','feriasHora','feriasMinuto']);
   document.getElementById('feriasSalvarCfg').addEventListener('click', async ()=>{
     const b = document.getElementById('feriasSalvarCfg'); b.disabled = true;
     try{
       await api('/ferias/config', { method:'POST', body:{ ativo: document.getElementById('feriasAtivo').checked, diaMes: document.getElementById('feriasDiaMes').value, hora: document.getElementById('feriasHora').value, minuto: document.getElementById('feriasMinuto').value } });
       toast('Salvo.','ok');
-    }catch(e){ toast(e.message,'err'); }
-    b.disabled = false;
+    }catch(e){ toast(e.message,'err'); b.disabled = false; }
   });
+  habilitarSalvarAoMudar('feriasVerifSalvarCfg', ['feriasVerifAtivo','feriasVerifDiaMes','feriasVerifHora','feriasVerifMinuto']);
   document.getElementById('feriasVerifSalvarCfg').addEventListener('click', async ()=>{
     const b = document.getElementById('feriasVerifSalvarCfg'); b.disabled = true;
     try{
       await api('/ferias/verificacao-config', { method:'POST', body:{ ativo: document.getElementById('feriasVerifAtivo').checked, diaMes: document.getElementById('feriasVerifDiaMes').value, hora: document.getElementById('feriasVerifHora').value, minuto: document.getElementById('feriasVerifMinuto').value } });
       toast('Salvo.','ok');
-    }catch(e){ toast(e.message,'err'); }
-    b.disabled = false;
+    }catch(e){ toast(e.message,'err'); b.disabled = false; }
   });
   document.getElementById('feriasVerificarAgora').addEventListener('click', async ()=>{
     const b = document.getElementById('feriasVerificarAgora'); b.disabled = true; b.textContent = 'Verificando…';
@@ -11911,15 +11911,10 @@ function renderCfgDomRelatorios(box, sub, dados){
       </p>
       <div id="roboCompStatus" style="font-size:13px; margin-bottom:8px;">Carregando…</div>
       <div class="row" style="align-items:center; gap:10px; flex-wrap:wrap;">
-        <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="roboCompLigado"> Rodar automaticamente a cada</label>
-        <input id="roboCompIntervalo" type="number" class="inp" min="1" max="1440" style="width:70px;">
-        <span style="font-size:12.5px; color:var(--ink-soft);">minutos</span>
-      </div>
-      <div class="row" style="margin-top:4px; align-items:center; gap:10px; flex-wrap:wrap;">
         <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="roboCompAgendaAtivo"> Rodar automaticamente todo dia às</label>
         <input type="number" class="inp" id="roboCompAgendaHora" min="0" max="23" style="width:54px;"> :
         <input type="number" class="inp" id="roboCompAgendaMinuto" min="0" max="59" style="width:54px;">
-        <span style="font-size:11.5px; color:var(--ink-soft);">(horário de Brasília — independe do "a cada X minutos" acima, os dois podem ficar ligados juntos)</span>
+        <span style="font-size:11.5px; color:var(--ink-soft);">(horário de Brasília)</span>
       </div>
       <div class="row" style="margin-top:8px; align-items:center; gap:8px; flex-wrap:wrap;">
         <span style="font-size:12.5px; color:var(--ink-soft);">Período (mm/aaaa) de</span>
@@ -11929,6 +11924,18 @@ function renderCfgDomRelatorios(box, sub, dados){
         <span style="font-size:11.5px; color:var(--ink-soft);">— em branco = padrão (01/ano vigente até a competência anterior).</span>
       </div>
       <p style="font-size:11.5px; color:var(--ink-soft); margin:8px 0 0;">Os dois robôs mexem no mesmo Domínio, então nunca rodam juntos: assim que um termina, o outro já pode começar — em sequência, sem espera. O Comparativo tem prioridade.</p>
+      <div style="margin-top:10px; overflow-x:auto;">
+        <table class="data-table" style="font-size:12.5px;"><thead><tr><th>Tempo de cada passo do robô</th><th style="width:90px;">Segundos</th></tr></thead><tbody>
+          <tr><td>Entre uma empresa e outra</td><td><input type="number" class="inp" id="roboCompTEntreEmpresas" min="1" max="600" step="1" style="width:70px;"></td></tr>
+          <tr><td>Esperar o relatório renderizar (antes de desistir)</td><td><input type="number" class="inp" id="roboCompTRenderTimeout" min="5" max="300" step="1" style="width:70px;"></td></tr>
+          <tr><td>Esperar depois de mandar gerar o PDF</td><td><input type="number" class="inp" id="roboCompTGerarPdf" min="1" max="120" step="1" style="width:70px;"></td></tr>
+          <tr><td>Esperar o módulo carregar</td><td><input type="number" class="inp" id="roboCompTModuloCarga" min="1" max="60" step="1" style="width:70px;"></td></tr>
+          <tr><td>Passo curto (entre cliques)</td><td><input type="number" class="inp" id="roboCompTCurto" min="0.1" max="30" step="0.1" style="width:70px;"></td></tr>
+          <tr><td>Passo médio (entre cliques)</td><td><input type="number" class="inp" id="roboCompTMedio" min="0.1" max="30" step="0.1" style="width:70px;"></td></tr>
+          <tr><td>Passo longo (entre cliques)</td><td><input type="number" class="inp" id="roboCompTLongo" min="0.1" max="30" step="0.1" style="width:70px;"></td></tr>
+        </tbody></table>
+        <p style="font-size:11px; color:var(--ink-soft); margin:4px 0 0;">Mexe só se o Domínio estiver lento/rápido demais pro robô e ele começar a errar — o robô pega o valor novo no próximo ciclo (poll a cada ~10s), sem precisar baixar de novo.</p>
+      </div>
       <div class="row" style="margin-top:8px;">
         <button class="btn primary" id="btnRoboCompSalvar" disabled>Salvar</button>
         <button class="btn" id="btnRoboCompExecutar">Executar agora</button>
@@ -11948,15 +11955,22 @@ function renderCfgDomRelatorios(box, sub, dados){
       </p>
       <div id="roboFeriasStatus" style="font-size:13px; margin-bottom:8px;">Carregando…</div>
       <div class="row" style="align-items:center; gap:10px; flex-wrap:wrap;">
-        <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="roboFeriasLigado"> Rodar automaticamente a cada</label>
-        <input id="roboFeriasIntervalo" type="number" class="inp" min="1" max="1440" style="width:70px;">
-        <span style="font-size:12.5px; color:var(--ink-soft);">minutos</span>
-      </div>
-      <div class="row" style="margin-top:4px; align-items:center; gap:10px; flex-wrap:wrap;">
         <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="roboFeriasAgendaAtivo"> Rodar automaticamente todo dia às</label>
         <input type="number" class="inp" id="roboFeriasAgendaHora" min="0" max="23" style="width:54px;"> :
         <input type="number" class="inp" id="roboFeriasAgendaMinuto" min="0" max="59" style="width:54px;">
-        <span style="font-size:11.5px; color:var(--ink-soft);">(horário de Brasília — independe do "a cada X minutos" acima, os dois podem ficar ligados juntos)</span>
+        <span style="font-size:11.5px; color:var(--ink-soft);">(horário de Brasília)</span>
+      </div>
+      <div style="margin-top:10px; overflow-x:auto;">
+        <table class="data-table" style="font-size:12.5px;"><thead><tr><th>Tempo de cada passo do robô</th><th style="width:90px;">Segundos</th></tr></thead><tbody>
+          <tr><td>Entre uma empresa e outra</td><td><input type="number" class="inp" id="roboFeriasTEntreEmpresas" min="1" max="600" step="1" style="width:70px;"></td></tr>
+          <tr><td>Esperar o relatório renderizar (antes de desistir)</td><td><input type="number" class="inp" id="roboFeriasTRenderTimeout" min="5" max="300" step="1" style="width:70px;"></td></tr>
+          <tr><td>Esperar depois de mandar gerar o PDF</td><td><input type="number" class="inp" id="roboFeriasTGerarPdf" min="1" max="120" step="1" style="width:70px;"></td></tr>
+          <tr><td>Esperar o módulo carregar</td><td><input type="number" class="inp" id="roboFeriasTModuloCarga" min="1" max="60" step="1" style="width:70px;"></td></tr>
+          <tr><td>Passo curto (entre cliques)</td><td><input type="number" class="inp" id="roboFeriasTCurto" min="0.1" max="30" step="0.1" style="width:70px;"></td></tr>
+          <tr><td>Passo médio (entre cliques)</td><td><input type="number" class="inp" id="roboFeriasTMedio" min="0.1" max="30" step="0.1" style="width:70px;"></td></tr>
+          <tr><td>Passo longo (entre cliques)</td><td><input type="number" class="inp" id="roboFeriasTLongo" min="0.1" max="30" step="0.1" style="width:70px;"></td></tr>
+        </tbody></table>
+        <p style="font-size:11px; color:var(--ink-soft); margin:4px 0 0;">Mexe só se o Domínio estiver lento/rápido demais pro robô e ele começar a errar — o robô pega o valor novo no próximo ciclo (poll a cada ~10s), sem precisar baixar de novo.</p>
       </div>
       <div class="row" style="margin-top:8px;">
         <button class="btn primary" id="btnRoboFeriasSalvar" disabled>Salvar</button>
@@ -12073,18 +12087,36 @@ function renderCfgDomRelatorios(box, sub, dados){
     }
     async function carregar(){ try{ pintar(await api('/comparativo-robo/estado')); }catch(e){} }
     api('/comparativo-robo/estado').then(e=>{
-      if($('roboCompLigado')) $('roboCompLigado').checked = e.ligado;
-      if($('roboCompIntervalo')) $('roboCompIntervalo').value = e.intervaloMin;
       if($('roboCompAgendaAtivo')) $('roboCompAgendaAtivo').checked = e.agendaAtivo;
       if($('roboCompAgendaHora')) $('roboCompAgendaHora').value = e.agendaHora;
       if($('roboCompAgendaMinuto')) $('roboCompAgendaMinuto').value = String(e.agendaMinuto).padStart(2,'0');
       if($('roboCompPerIni')){ $('roboCompPerIni').value = e.periodoIni||''; $('roboCompPerIni').placeholder = e.periodoPadraoIni||'01/2026'; }
       if($('roboCompPerFim')){ $('roboCompPerFim').value = e.periodoFim||''; $('roboCompPerFim').placeholder = e.periodoPadraoFim||'08/2026'; }
+      if($('roboCompTEntreEmpresas')) $('roboCompTEntreEmpresas').value = Math.round(e.tEntreEmpresasMs/1000*10)/10;
+      if($('roboCompTRenderTimeout')) $('roboCompTRenderTimeout').value = Math.round(e.tRenderTimeoutMs/1000*10)/10;
+      if($('roboCompTGerarPdf')) $('roboCompTGerarPdf').value = Math.round(e.tGerarPdfMs/1000*10)/10;
+      if($('roboCompTModuloCarga')) $('roboCompTModuloCarga').value = Math.round(e.tModuloCargaMs/1000*10)/10;
+      if($('roboCompTCurto')) $('roboCompTCurto').value = Math.round(e.tCurtoMs/1000*10)/10;
+      if($('roboCompTMedio')) $('roboCompTMedio').value = Math.round(e.tMedioMs/1000*10)/10;
+      if($('roboCompTLongo')) $('roboCompTLongo').value = Math.round(e.tLongoMs/1000*10)/10;
       pintar(e);
     }).catch(()=>{});
-    habilitarSalvarAoMudar('btnRoboCompSalvar', ['roboCompLigado','roboCompIntervalo','roboCompAgendaAtivo','roboCompAgendaHora','roboCompAgendaMinuto','roboCompPerIni','roboCompPerFim']);
+    habilitarSalvarAoMudar('btnRoboCompSalvar', ['roboCompAgendaAtivo','roboCompAgendaHora','roboCompAgendaMinuto','roboCompPerIni','roboCompPerFim','roboCompTEntreEmpresas','roboCompTRenderTimeout','roboCompTGerarPdf','roboCompTModuloCarga','roboCompTCurto','roboCompTMedio','roboCompTLongo']);
     $('btnRoboCompSalvar')?.addEventListener('click', async ()=>{
-      try{ await api('/comparativo-robo/config', { method:'POST', body:{ ligado:$('roboCompLigado').checked, intervaloMin:Number($('roboCompIntervalo').value)||15, agendaAtivo:$('roboCompAgendaAtivo').checked, agendaHora:Number($('roboCompAgendaHora').value), agendaMinuto:Number($('roboCompAgendaMinuto').value), periodoIni:$('roboCompPerIni').value.trim(), periodoFim:$('roboCompPerFim').value.trim() } }); toast('Configuração do robô salva.','ok'); $('btnRoboCompSalvar').disabled = true; }
+      try{
+        await api('/comparativo-robo/config', { method:'POST', body:{
+          agendaAtivo:$('roboCompAgendaAtivo').checked, agendaHora:Number($('roboCompAgendaHora').value), agendaMinuto:Number($('roboCompAgendaMinuto').value),
+          periodoIni:$('roboCompPerIni').value.trim(), periodoFim:$('roboCompPerFim').value.trim(),
+          tEntreEmpresasMs:Math.round(Number($('roboCompTEntreEmpresas').value)*1000),
+          tRenderTimeoutMs:Math.round(Number($('roboCompTRenderTimeout').value)*1000),
+          tGerarPdfMs:Math.round(Number($('roboCompTGerarPdf').value)*1000),
+          tModuloCargaMs:Math.round(Number($('roboCompTModuloCarga').value)*1000),
+          tCurtoMs:Math.round(Number($('roboCompTCurto').value)*1000),
+          tMedioMs:Math.round(Number($('roboCompTMedio').value)*1000),
+          tLongoMs:Math.round(Number($('roboCompTLongo').value)*1000),
+        } });
+        toast('Configuração do robô salva.','ok'); $('btnRoboCompSalvar').disabled = true;
+      }
       catch(e){ toast(e.message,'err'); }
     });
     $('btnRoboCompExecutar')?.addEventListener('click', async (ev)=>{
@@ -12098,7 +12130,7 @@ function renderCfgDomRelatorios(box, sub, dados){
       const b = ev.target; b.disabled = true;
       try{ await api('/comparativo-robo/parar', { method:'POST' }); toast('Freio acionado — o robô vai parar na próxima empresa.','ok'); }
       catch(e){ toast(e.message,'err'); }
-      finally{ setTimeout(()=>{ b.disabled = false; }, 1500); if($('roboCompLigado')) $('roboCompLigado').checked = false; carregar(); }
+      finally{ setTimeout(()=>{ b.disabled = false; }, 1500); carregar(); }
     });
     $('btnRoboCompMarcadas')?.addEventListener('click', ()=>abrirRoboMarcadasModal('comparativo-movimento', 'Comparativo de Movimento'));
     try{ clearInterval(window.__roboCompPoll); }catch(e){}
@@ -12145,16 +12177,33 @@ function renderCfgDomRelatorios(box, sub, dados){
     }
     async function carregar(){ try{ pintar(await api('/ferias-robo/estado')); }catch(e){} }
     api('/ferias-robo/estado').then(e=>{
-      if($('roboFeriasLigado')) $('roboFeriasLigado').checked = e.ligado;
-      if($('roboFeriasIntervalo')) $('roboFeriasIntervalo').value = e.intervaloMin;
       if($('roboFeriasAgendaAtivo')) $('roboFeriasAgendaAtivo').checked = e.agendaAtivo;
       if($('roboFeriasAgendaHora')) $('roboFeriasAgendaHora').value = e.agendaHora;
       if($('roboFeriasAgendaMinuto')) $('roboFeriasAgendaMinuto').value = String(e.agendaMinuto).padStart(2,'0');
+      if($('roboFeriasTEntreEmpresas')) $('roboFeriasTEntreEmpresas').value = Math.round(e.tEntreEmpresasMs/1000*10)/10;
+      if($('roboFeriasTRenderTimeout')) $('roboFeriasTRenderTimeout').value = Math.round(e.tRenderTimeoutMs/1000*10)/10;
+      if($('roboFeriasTGerarPdf')) $('roboFeriasTGerarPdf').value = Math.round(e.tGerarPdfMs/1000*10)/10;
+      if($('roboFeriasTModuloCarga')) $('roboFeriasTModuloCarga').value = Math.round(e.tModuloCargaMs/1000*10)/10;
+      if($('roboFeriasTCurto')) $('roboFeriasTCurto').value = Math.round(e.tCurtoMs/1000*10)/10;
+      if($('roboFeriasTMedio')) $('roboFeriasTMedio').value = Math.round(e.tMedioMs/1000*10)/10;
+      if($('roboFeriasTLongo')) $('roboFeriasTLongo').value = Math.round(e.tLongoMs/1000*10)/10;
       pintar(e);
     }).catch(()=>{});
-    habilitarSalvarAoMudar('btnRoboFeriasSalvar', ['roboFeriasLigado','roboFeriasIntervalo','roboFeriasAgendaAtivo','roboFeriasAgendaHora','roboFeriasAgendaMinuto']);
+    habilitarSalvarAoMudar('btnRoboFeriasSalvar', ['roboFeriasAgendaAtivo','roboFeriasAgendaHora','roboFeriasAgendaMinuto','roboFeriasTEntreEmpresas','roboFeriasTRenderTimeout','roboFeriasTGerarPdf','roboFeriasTModuloCarga','roboFeriasTCurto','roboFeriasTMedio','roboFeriasTLongo']);
     $('btnRoboFeriasSalvar')?.addEventListener('click', async ()=>{
-      try{ await api('/ferias-robo/config', { method:'POST', body:{ ligado:$('roboFeriasLigado').checked, intervaloMin:Number($('roboFeriasIntervalo').value)||15, agendaAtivo:$('roboFeriasAgendaAtivo').checked, agendaHora:Number($('roboFeriasAgendaHora').value), agendaMinuto:Number($('roboFeriasAgendaMinuto').value) } }); toast('Configuração do robô salva.','ok'); $('btnRoboFeriasSalvar').disabled = true; }
+      try{
+        await api('/ferias-robo/config', { method:'POST', body:{
+          agendaAtivo:$('roboFeriasAgendaAtivo').checked, agendaHora:Number($('roboFeriasAgendaHora').value), agendaMinuto:Number($('roboFeriasAgendaMinuto').value),
+          tEntreEmpresasMs:Math.round(Number($('roboFeriasTEntreEmpresas').value)*1000),
+          tRenderTimeoutMs:Math.round(Number($('roboFeriasTRenderTimeout').value)*1000),
+          tGerarPdfMs:Math.round(Number($('roboFeriasTGerarPdf').value)*1000),
+          tModuloCargaMs:Math.round(Number($('roboFeriasTModuloCarga').value)*1000),
+          tCurtoMs:Math.round(Number($('roboFeriasTCurto').value)*1000),
+          tMedioMs:Math.round(Number($('roboFeriasTMedio').value)*1000),
+          tLongoMs:Math.round(Number($('roboFeriasTLongo').value)*1000),
+        } });
+        toast('Configuração do robô salva.','ok'); $('btnRoboFeriasSalvar').disabled = true;
+      }
       catch(e){ toast(e.message,'err'); }
     });
     $('btnRoboFeriasExecutar')?.addEventListener('click', async (ev)=>{
@@ -12168,7 +12217,7 @@ function renderCfgDomRelatorios(box, sub, dados){
       const b = ev.target; b.disabled = true;
       try{ await api('/ferias-robo/parar', { method:'POST' }); toast('Freio acionado — o robô vai parar na próxima empresa.','ok'); }
       catch(e){ toast(e.message,'err'); }
-      finally{ setTimeout(()=>{ b.disabled = false; }, 1500); if($('roboFeriasLigado')) $('roboFeriasLigado').checked = false; carregar(); }
+      finally{ setTimeout(()=>{ b.disabled = false; }, 1500); carregar(); }
     });
     $('btnRoboFeriasMarcadas')?.addEventListener('click', ()=>abrirRoboMarcadasModal('programacao-ferias', 'Programação de Férias'));
     try{ clearInterval(window.__roboFeriasPoll); }catch(e){}

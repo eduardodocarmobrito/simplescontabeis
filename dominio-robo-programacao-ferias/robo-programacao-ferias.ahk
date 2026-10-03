@@ -431,6 +431,41 @@ ProcessarEmpresaVerificado(codigo) {
 }
 
 ; ------------------------------------------------------------- SITE (comandos)
+; Extrai o valor numerico de uma chave do JSON: "chave":123
+ExtrairNum(body, chave) {
+    if RegExMatch(body, '"' . chave . '":(\d+)', &m)
+        return Integer(m[1])
+    return 0
+}
+
+; Atualiza os tempos (T_CURTO, T_MEDIO etc.) com o que a tela mandou no /ferias-comando — assim da pra
+; editar esses tempos no site (Configuracoes) sem precisar baixar o robo de novo. Se a chave nao vier
+; no JSON (robo antigo/site antigo), mantem o valor atual (fallback dos defaults la em cima).
+AtualizarTempos(body) {
+    global T_CURTO, T_MEDIO, T_LONGO, T_GERAR_PDF, T_ENTRE_EMPRESAS, T_RENDER_TIMEOUT, T_MODULO_CARGA
+    v := ExtrairNum(body, "tCurtoMs")
+    if (v > 0)
+        T_CURTO := v
+    v := ExtrairNum(body, "tMedioMs")
+    if (v > 0)
+        T_MEDIO := v
+    v := ExtrairNum(body, "tLongoMs")
+    if (v > 0)
+        T_LONGO := v
+    v := ExtrairNum(body, "tGerarPdfMs")
+    if (v > 0)
+        T_GERAR_PDF := v
+    v := ExtrairNum(body, "tEntreEmpresasMs")
+    if (v > 0)
+        T_ENTRE_EMPRESAS := v
+    v := ExtrairNum(body, "tRenderTimeoutMs")
+    if (v > 0)
+        T_RENDER_TIMEOUT := v
+    v := ExtrairNum(body, "tModuloCargaMs")
+    if (v > 0)
+        T_MODULO_CARGA := v
+}
+
 DevePararSite() {
     body := HttpReq("GET", "/api/dominio-agent/ferias-comando")
     return InStr(body, '"parar":true') ? true : false
@@ -537,6 +572,7 @@ AoSair(*) {
 
 Loop {
     body := HttpReq("GET", "/api/dominio-agent/ferias-comando")
+    AtualizarTempos(body)
     if (InStr(body, '"deveRodar":true')) {
         RodarCiclo()
     }

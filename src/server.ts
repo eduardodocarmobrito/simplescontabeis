@@ -4668,6 +4668,23 @@ sqlite.exec(`
   if (!colsRobo.some((c) => c.name === "agenda_hora")) sqlite.exec(`ALTER TABLE comparativo_robo_estado ADD COLUMN agenda_hora INTEGER NOT NULL DEFAULT 6`);
   if (!colsRobo.some((c) => c.name === "agenda_minuto")) sqlite.exec(`ALTER TABLE comparativo_robo_estado ADD COLUMN agenda_minuto INTEGER NOT NULL DEFAULT 0`);
   if (!colsRobo.some((c) => c.name === "agenda_ultimo_dia")) sqlite.exec(`ALTER TABLE comparativo_robo_estado ADD COLUMN agenda_ultimo_dia TEXT`);
+  // Tempos de cada passo do robô (AutoHotkey), editáveis pela tela em vez de fixos no .ahk — o agente
+  // lê esses valores a cada poll (~10s) via /comparativo-comando. Defaults = valores que já estavam
+  // hardcoded no script.
+  if (!colsRobo.some((c) => c.name === "t_entre_empresas_ms")) sqlite.exec(`ALTER TABLE comparativo_robo_estado ADD COLUMN t_entre_empresas_ms INTEGER NOT NULL DEFAULT 15000`);
+  if (!colsRobo.some((c) => c.name === "t_render_timeout_ms")) sqlite.exec(`ALTER TABLE comparativo_robo_estado ADD COLUMN t_render_timeout_ms INTEGER NOT NULL DEFAULT 90000`);
+  if (!colsRobo.some((c) => c.name === "t_gerar_pdf_ms")) sqlite.exec(`ALTER TABLE comparativo_robo_estado ADD COLUMN t_gerar_pdf_ms INTEGER NOT NULL DEFAULT 15000`);
+  if (!colsRobo.some((c) => c.name === "t_modulo_carga_ms")) sqlite.exec(`ALTER TABLE comparativo_robo_estado ADD COLUMN t_modulo_carga_ms INTEGER NOT NULL DEFAULT 10000`);
+  if (!colsRobo.some((c) => c.name === "t_curto_ms")) sqlite.exec(`ALTER TABLE comparativo_robo_estado ADD COLUMN t_curto_ms INTEGER NOT NULL DEFAULT 700`);
+  if (!colsRobo.some((c) => c.name === "t_medio_ms")) sqlite.exec(`ALTER TABLE comparativo_robo_estado ADD COLUMN t_medio_ms INTEGER NOT NULL DEFAULT 2000`);
+  if (!colsRobo.some((c) => c.name === "t_longo_ms")) sqlite.exec(`ALTER TABLE comparativo_robo_estado ADD COLUMN t_longo_ms INTEGER NOT NULL DEFAULT 4000`);
+}
+// Valida/limita um tempo (segundos ou ms) vindo da tela pros robôs AHK — evita salvar um valor absurdo
+// (0, negativo, texto) que travaria o agente numa espera infinita ou sem espera nenhuma.
+function clampTempoMs(v: any, def: number, min: number, max: number): number {
+  const n = Math.round(Number(v));
+  if (!Number.isFinite(n)) return def;
+  return Math.min(Math.max(n, min), max);
 }
 // true se o robô deve disparar AGORA pelo horário fixo diário configurado (hora/minuto batendo com o
 // horário de Brasília e ainda não disparado hoje). Mesma conta de fuso (-3h) já usada em outros
@@ -4758,6 +4775,8 @@ app.get("/api/dominio-agent/comparativo-comando", requireDominioAgent, (_req, re
   const c = sqlite.prepare(`
     SELECT ligado, intervalo_min AS intervaloMin, run_now_em, ultima_exec_em, periodo_ini AS periodoIni, periodo_fim AS periodoFim,
       agenda_ativo AS agendaAtivo, agenda_hora AS agendaHora, agenda_minuto AS agendaMinuto, agenda_ultimo_dia AS agendaUltimoDia,
+      t_entre_empresas_ms AS tEntreEmpresasMs, t_render_timeout_ms AS tRenderTimeoutMs, t_gerar_pdf_ms AS tGerarPdfMs,
+      t_modulo_carga_ms AS tModuloCargaMs, t_curto_ms AS tCurtoMs, t_medio_ms AS tMedioMs, t_longo_ms AS tLongoMs,
       (run_now_em IS NOT NULL) AS runNow,
       (parar_em IS NOT NULL) AS parar,
       (ligado = 1 AND (ultima_exec_em IS NULL OR datetime(ultima_exec_em, '+' || intervalo_min || ' minutes') <= datetime('now'))) AS devePorTempo
@@ -4775,6 +4794,8 @@ app.get("/api/dominio-agent/comparativo-comando", requireDominioAgent, (_req, re
     parar: !!c.parar,
     ligado: !!c.ligado, intervaloMin: c.intervaloMin,
     periodoIni: c.periodoIni || pad.ini, periodoFim: c.periodoFim || pad.fim,
+    tEntreEmpresasMs: c.tEntreEmpresasMs, tRenderTimeoutMs: c.tRenderTimeoutMs, tGerarPdfMs: c.tGerarPdfMs,
+    tModuloCargaMs: c.tModuloCargaMs, tCurtoMs: c.tCurtoMs, tMedioMs: c.tMedioMs, tLongoMs: c.tLongoMs,
   });
 });
 // O robô reporta o progresso (empresa a empresa). Ao INICIAR, limpa o "executar agora" e marca a última execução.
@@ -4801,6 +4822,8 @@ app.get("/api/comparativo-robo/estado", blockCliente, requirePermissao("configur
     SELECT ligado, intervalo_min AS intervaloMin, run_now_em AS runNowEm, ultima_exec_em AS ultimaExecEm,
       periodo_ini AS periodoIni, periodo_fim AS periodoFim,
       agenda_ativo AS agendaAtivo, agenda_hora AS agendaHora, agenda_minuto AS agendaMinuto,
+      t_entre_empresas_ms AS tEntreEmpresasMs, t_render_timeout_ms AS tRenderTimeoutMs, t_gerar_pdf_ms AS tGerarPdfMs,
+      t_modulo_carga_ms AS tModuloCargaMs, t_curto_ms AS tCurtoMs, t_medio_ms AS tMedioMs, t_longo_ms AS tLongoMs,
       prog_total AS total, prog_feitas AS feitas, prog_atual AS atual, prog_em AS progEm,
       -- "rodando" só vale se o progresso for recente; se o agente morreu/foi fechado sem avisar
       -- (progresso velho > 5min), considera parado pra a barra do site NÃO ficar congelada.
@@ -4815,23 +4838,32 @@ app.get("/api/comparativo-robo/estado", blockCliente, requirePermissao("configur
     ligado: !!c.ligado, intervaloMin: c.intervaloMin, ultimaExecEm: c.ultimaExecEm,
     periodoIni: c.periodoIni, periodoFim: c.periodoFim, periodoPadraoIni: pad.ini, periodoPadraoFim: pad.fim,
     agendaAtivo: !!c.agendaAtivo, agendaHora: c.agendaHora, agendaMinuto: c.agendaMinuto,
+    tEntreEmpresasMs: c.tEntreEmpresasMs, tRenderTimeoutMs: c.tRenderTimeoutMs, tGerarPdfMs: c.tGerarPdfMs,
+    tModuloCargaMs: c.tModuloCargaMs, tCurtoMs: c.tCurtoMs, tMedioMs: c.tMedioMs, tLongoMs: c.tLongoMs,
     rodando: !!c.rodando, total: c.total, feitas: c.feitas, atual: c.atual, progEm: c.progEm,
     runNowPendente: !!c.runNowEm, pararPendente: !!c.pararPendente, agenteOnline: !!c.agenteOnline, agenteVistoEm: c.agenteVistoEm,
   });
 });
 app.post("/api/comparativo-robo/config", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
   garantirRoboEstado(1);
-  const ligado = req.body?.ligado ? 1 : 0;
-  let intervalo = Number(req.body?.intervaloMin);
-  if (!Number.isFinite(intervalo) || intervalo < 1) intervalo = 15;
-  intervalo = Math.min(Math.max(Math.round(intervalo), 1), 1440);
   const pIni = comparativoValidaPeriodo(req.body?.periodoIni);
   const pFim = comparativoValidaPeriodo(req.body?.periodoFim);
   const agendaAtivo = req.body?.agendaAtivo ? 1 : 0;
   const agendaHora = Math.min(Math.max(Math.round(Number(req.body?.agendaHora)) || 6, 0), 23);
   const agendaMinuto = Math.min(Math.max(Math.round(Number(req.body?.agendaMinuto)) || 0, 0), 59);
-  sqlite.prepare(`UPDATE comparativo_robo_estado SET ligado = ?, intervalo_min = ?, periodo_ini = ?, periodo_fim = ?, agenda_ativo = ?, agenda_hora = ?, agenda_minuto = ? WHERE escritorio_id = 1`).run(ligado, intervalo, pIni, pFim, agendaAtivo, agendaHora, agendaMinuto);
-  res.json({ ok: true, ligado: !!ligado, intervaloMin: intervalo, periodoIni: pIni, periodoFim: pFim });
+  const tEntreEmpresasMs = clampTempoMs(req.body?.tEntreEmpresasMs, 15000, 1000, 600000);
+  const tRenderTimeoutMs = clampTempoMs(req.body?.tRenderTimeoutMs, 90000, 5000, 300000);
+  const tGerarPdfMs = clampTempoMs(req.body?.tGerarPdfMs, 15000, 1000, 120000);
+  const tModuloCargaMs = clampTempoMs(req.body?.tModuloCargaMs, 10000, 1000, 60000);
+  const tCurtoMs = clampTempoMs(req.body?.tCurtoMs, 700, 100, 30000);
+  const tMedioMs = clampTempoMs(req.body?.tMedioMs, 2000, 100, 30000);
+  const tLongoMs = clampTempoMs(req.body?.tLongoMs, 4000, 100, 30000);
+  sqlite.prepare(`
+    UPDATE comparativo_robo_estado SET periodo_ini = ?, periodo_fim = ?, agenda_ativo = ?, agenda_hora = ?, agenda_minuto = ?,
+      t_entre_empresas_ms = ?, t_render_timeout_ms = ?, t_gerar_pdf_ms = ?, t_modulo_carga_ms = ?, t_curto_ms = ?, t_medio_ms = ?, t_longo_ms = ?
+    WHERE escritorio_id = 1
+  `).run(pIni, pFim, agendaAtivo, agendaHora, agendaMinuto, tEntreEmpresasMs, tRenderTimeoutMs, tGerarPdfMs, tModuloCargaMs, tCurtoMs, tMedioMs, tLongoMs);
+  res.json({ ok: true, periodoIni: pIni, periodoFim: pFim });
 });
 app.post("/api/comparativo-robo/executar", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
   garantirRoboEstado(1);
@@ -4886,6 +4918,13 @@ sqlite.exec(`
   if (!colsFeriasRobo.some((c) => c.name === "agenda_hora")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN agenda_hora INTEGER NOT NULL DEFAULT 6`);
   if (!colsFeriasRobo.some((c) => c.name === "agenda_minuto")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN agenda_minuto INTEGER NOT NULL DEFAULT 0`);
   if (!colsFeriasRobo.some((c) => c.name === "agenda_ultimo_dia")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN agenda_ultimo_dia TEXT`);
+  if (!colsFeriasRobo.some((c) => c.name === "t_entre_empresas_ms")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN t_entre_empresas_ms INTEGER NOT NULL DEFAULT 15000`);
+  if (!colsFeriasRobo.some((c) => c.name === "t_render_timeout_ms")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN t_render_timeout_ms INTEGER NOT NULL DEFAULT 90000`);
+  if (!colsFeriasRobo.some((c) => c.name === "t_gerar_pdf_ms")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN t_gerar_pdf_ms INTEGER NOT NULL DEFAULT 15000`);
+  if (!colsFeriasRobo.some((c) => c.name === "t_modulo_carga_ms")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN t_modulo_carga_ms INTEGER NOT NULL DEFAULT 10000`);
+  if (!colsFeriasRobo.some((c) => c.name === "t_curto_ms")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN t_curto_ms INTEGER NOT NULL DEFAULT 700`);
+  if (!colsFeriasRobo.some((c) => c.name === "t_medio_ms")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN t_medio_ms INTEGER NOT NULL DEFAULT 2000`);
+  if (!colsFeriasRobo.some((c) => c.name === "t_longo_ms")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN t_longo_ms INTEGER NOT NULL DEFAULT 4000`);
 }
 function garantirFeriasEstado(escritorioId: number) {
   sqlite.prepare(`INSERT OR IGNORE INTO ferias_robo_estado (escritorio_id) VALUES (?)`).run(escritorioId);
@@ -4923,6 +4962,8 @@ app.get("/api/dominio-agent/ferias-comando", requireDominioAgent, (_req, res) =>
   const c = sqlite.prepare(`
     SELECT ligado, intervalo_min AS intervaloMin, run_now_em, ultima_exec_em,
       agenda_ativo AS agendaAtivo, agenda_hora AS agendaHora, agenda_minuto AS agendaMinuto, agenda_ultimo_dia AS agendaUltimoDia,
+      t_entre_empresas_ms AS tEntreEmpresasMs, t_render_timeout_ms AS tRenderTimeoutMs, t_gerar_pdf_ms AS tGerarPdfMs,
+      t_modulo_carga_ms AS tModuloCargaMs, t_curto_ms AS tCurtoMs, t_medio_ms AS tMedioMs, t_longo_ms AS tLongoMs,
       (run_now_em IS NOT NULL) AS runNow,
       (parar_em IS NOT NULL) AS parar,
       (ligado = 1 AND (ultima_exec_em IS NULL OR datetime(ultima_exec_em, '+' || intervalo_min || ' minutes') <= datetime('now'))) AS devePorTempo
@@ -4936,6 +4977,8 @@ app.get("/api/dominio-agent/ferias-comando", requireDominioAgent, (_req, res) =>
   res.json({
     deveRodar, motivo: segurar ? "aguardando_outro_robo" : (c.runNow ? "manual" : (devePorAgenda ? "agenda" : (c.devePorTempo ? "automatico" : null))),
     parar: !!c.parar, ligado: !!c.ligado, intervaloMin: c.intervaloMin,
+    tEntreEmpresasMs: c.tEntreEmpresasMs, tRenderTimeoutMs: c.tRenderTimeoutMs, tGerarPdfMs: c.tGerarPdfMs,
+    tModuloCargaMs: c.tModuloCargaMs, tCurtoMs: c.tCurtoMs, tMedioMs: c.tMedioMs, tLongoMs: c.tLongoMs,
   });
 });
 app.post("/api/dominio-agent/ferias-progresso", requireDominioAgent, (req, res) => {
@@ -4957,6 +5000,8 @@ app.get("/api/ferias-robo/estado", blockCliente, requirePermissao("configuracoes
   const c = sqlite.prepare(`
     SELECT ligado, intervalo_min AS intervaloMin, run_now_em AS runNowEm, ultima_exec_em AS ultimaExecEm,
       agenda_ativo AS agendaAtivo, agenda_hora AS agendaHora, agenda_minuto AS agendaMinuto,
+      t_entre_empresas_ms AS tEntreEmpresasMs, t_render_timeout_ms AS tRenderTimeoutMs, t_gerar_pdf_ms AS tGerarPdfMs,
+      t_modulo_carga_ms AS tModuloCargaMs, t_curto_ms AS tCurtoMs, t_medio_ms AS tMedioMs, t_longo_ms AS tLongoMs,
       prog_total AS total, prog_feitas AS feitas, prog_atual AS atual, prog_em AS progEm,
       (prog_rodando = 1 AND prog_em IS NOT NULL AND datetime(prog_em, '+5 minutes') >= datetime('now')) AS rodando,
       agente_visto_em AS agenteVistoEm,
@@ -4967,21 +5012,30 @@ app.get("/api/ferias-robo/estado", blockCliente, requirePermissao("configuracoes
   res.json({
     ligado: !!c.ligado, intervaloMin: c.intervaloMin, ultimaExecEm: c.ultimaExecEm,
     agendaAtivo: !!c.agendaAtivo, agendaHora: c.agendaHora, agendaMinuto: c.agendaMinuto,
+    tEntreEmpresasMs: c.tEntreEmpresasMs, tRenderTimeoutMs: c.tRenderTimeoutMs, tGerarPdfMs: c.tGerarPdfMs,
+    tModuloCargaMs: c.tModuloCargaMs, tCurtoMs: c.tCurtoMs, tMedioMs: c.tMedioMs, tLongoMs: c.tLongoMs,
     rodando: !!c.rodando, total: c.total, feitas: c.feitas, atual: c.atual, progEm: c.progEm,
     runNowPendente: !!c.runNowEm, pararPendente: !!c.pararPendente, agenteOnline: !!c.agenteOnline, agenteVistoEm: c.agenteVistoEm,
   });
 });
 app.post("/api/ferias-robo/config", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
   garantirFeriasEstado(1);
-  const ligado = req.body?.ligado ? 1 : 0;
-  let intervalo = Number(req.body?.intervaloMin);
-  if (!Number.isFinite(intervalo) || intervalo < 1) intervalo = 15;
-  intervalo = Math.min(Math.max(Math.round(intervalo), 1), 1440);
   const agendaAtivo = req.body?.agendaAtivo ? 1 : 0;
   const agendaHora = Math.min(Math.max(Math.round(Number(req.body?.agendaHora)) || 6, 0), 23);
   const agendaMinuto = Math.min(Math.max(Math.round(Number(req.body?.agendaMinuto)) || 0, 0), 59);
-  sqlite.prepare(`UPDATE ferias_robo_estado SET ligado = ?, intervalo_min = ?, agenda_ativo = ?, agenda_hora = ?, agenda_minuto = ? WHERE escritorio_id = 1`).run(ligado, intervalo, agendaAtivo, agendaHora, agendaMinuto);
-  res.json({ ok: true, ligado: !!ligado, intervaloMin: intervalo });
+  const tEntreEmpresasMs = clampTempoMs(req.body?.tEntreEmpresasMs, 15000, 1000, 600000);
+  const tRenderTimeoutMs = clampTempoMs(req.body?.tRenderTimeoutMs, 90000, 5000, 300000);
+  const tGerarPdfMs = clampTempoMs(req.body?.tGerarPdfMs, 15000, 1000, 120000);
+  const tModuloCargaMs = clampTempoMs(req.body?.tModuloCargaMs, 10000, 1000, 60000);
+  const tCurtoMs = clampTempoMs(req.body?.tCurtoMs, 700, 100, 30000);
+  const tMedioMs = clampTempoMs(req.body?.tMedioMs, 2000, 100, 30000);
+  const tLongoMs = clampTempoMs(req.body?.tLongoMs, 4000, 100, 30000);
+  sqlite.prepare(`
+    UPDATE ferias_robo_estado SET agenda_ativo = ?, agenda_hora = ?, agenda_minuto = ?,
+      t_entre_empresas_ms = ?, t_render_timeout_ms = ?, t_gerar_pdf_ms = ?, t_modulo_carga_ms = ?, t_curto_ms = ?, t_medio_ms = ?, t_longo_ms = ?
+    WHERE escritorio_id = 1
+  `).run(agendaAtivo, agendaHora, agendaMinuto, tEntreEmpresasMs, tRenderTimeoutMs, tGerarPdfMs, tModuloCargaMs, tCurtoMs, tMedioMs, tLongoMs);
+  res.json({ ok: true });
 });
 app.post("/api/ferias-robo/executar", blockCliente, requirePermissao("configuracoes", "editar"), (_req, res) => {
   garantirFeriasEstado(1);
