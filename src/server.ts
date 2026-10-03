@@ -4861,11 +4861,14 @@ app.post("/api/comparativo-robo/config", blockCliente, requirePermissao("configu
   const tCurtoMs = clampTempoMs(req.body?.tCurtoMs, 700, 100, 30000);
   const tMedioMs = clampTempoMs(req.body?.tMedioMs, 2000, 100, 30000);
   const tLongoMs = clampTempoMs(req.body?.tLongoMs, 4000, 100, 30000);
+  const antesAgenda = sqlite.prepare(`SELECT agenda_ativo, agenda_hora, agenda_minuto FROM comparativo_robo_estado WHERE escritorio_id = 1`).get() as any;
   sqlite.prepare(`
     UPDATE comparativo_robo_estado SET periodo_ini = ?, periodo_fim = ?, agenda_ativo = ?, agenda_hora = ?, agenda_minuto = ?,
       t_entre_empresas_ms = ?, t_render_timeout_ms = ?, t_gerar_pdf_ms = ?, t_modulo_carga_ms = ?, t_curto_ms = ?, t_medio_ms = ?, t_longo_ms = ?
     WHERE escritorio_id = 1
   `).run(pIni, pFim, agendaAtivo, agendaHora, agendaMinuto, tEntreEmpresasMs, tRenderTimeoutMs, tGerarPdfMs, tModuloCargaMs, tCurtoMs, tMedioMs, tLongoMs);
+  if (!antesAgenda || !!antesAgenda.agenda_ativo !== !!agendaAtivo || antesAgenda.agenda_hora !== agendaHora || antesAgenda.agenda_minuto !== agendaMinuto)
+    sqlite.prepare(`UPDATE comparativo_robo_estado SET agenda_ultimo_dia = NULL WHERE escritorio_id = 1`).run();
   res.json({ ok: true, periodoIni: pIni, periodoFim: pFim });
 });
 app.post("/api/comparativo-robo/executar", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
@@ -5033,11 +5036,14 @@ app.post("/api/ferias-robo/config", blockCliente, requirePermissao("configuracoe
   const tCurtoMs = clampTempoMs(req.body?.tCurtoMs, 700, 100, 30000);
   const tMedioMs = clampTempoMs(req.body?.tMedioMs, 2000, 100, 30000);
   const tLongoMs = clampTempoMs(req.body?.tLongoMs, 4000, 100, 30000);
+  const antesAgenda = sqlite.prepare(`SELECT agenda_ativo, agenda_hora, agenda_minuto FROM ferias_robo_estado WHERE escritorio_id = 1`).get() as any;
   sqlite.prepare(`
     UPDATE ferias_robo_estado SET agenda_ativo = ?, agenda_hora = ?, agenda_minuto = ?,
       t_entre_empresas_ms = ?, t_render_timeout_ms = ?, t_gerar_pdf_ms = ?, t_modulo_carga_ms = ?, t_curto_ms = ?, t_medio_ms = ?, t_longo_ms = ?
     WHERE escritorio_id = 1
   `).run(agendaAtivo, agendaHora, agendaMinuto, tEntreEmpresasMs, tRenderTimeoutMs, tGerarPdfMs, tModuloCargaMs, tCurtoMs, tMedioMs, tLongoMs);
+  if (!antesAgenda || !!antesAgenda.agenda_ativo !== !!agendaAtivo || antesAgenda.agenda_hora !== agendaHora || antesAgenda.agenda_minuto !== agendaMinuto)
+    sqlite.prepare(`UPDATE ferias_robo_estado SET agenda_ultimo_dia = NULL WHERE escritorio_id = 1`).run();
   res.json({ ok: true });
 });
 app.post("/api/ferias-robo/executar", blockCliente, requirePermissao("configuracoes", "editar"), (_req, res) => {
