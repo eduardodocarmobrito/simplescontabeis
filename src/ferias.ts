@@ -218,7 +218,7 @@ export async function gerarPdfControleInterno(escritorioNome: string, empresas: 
     return `<div class="empresa">
       <div class="empresa-topo"><span class="empresa-nome">${emp.nome}</span>
         <span class="empresa-cont">${v ? `<b class="vencida">${v} vencida(s)</b>` : ""}${v && p ? " · " : ""}${p ? `<b class="proxima">${p} próxima(s)</b>` : ""}</span></div>
-      <table><thead><tr><th>Código</th><th>Funcionário</th><th>Situação</th><th>Admissão</th><th>Período aquisitivo</th><th>Limite p/ gozo</th><th>Dias em aberto</th></tr></thead>
+      <table><colgroup><col style="width:8%"><col style="width:25%"><col style="width:11%"><col style="width:11%"><col style="width:21%"><col style="width:12%"><col style="width:12%"></colgroup><thead><tr><th>Código</th><th>Funcionário</th><th>Situação</th><th>Admissão</th><th>Período aquisitivo</th><th>Limite p/ gozo</th><th>Dias em aberto</th></tr></thead>
       <tbody>${emp.funcionarios.map(linhaFunc).join("")}</tbody></table>
     </div>`;
   };
@@ -233,7 +233,7 @@ export async function gerarPdfControleInterno(escritorioNome: string, empresas: 
     .empresa-nome{font-weight:700; font-size:12.5px;}
     .empresa-cont{font-size:10.5px;}
     .empresa-cont b.vencida{color:#b23b3b;} .empresa-cont b.proxima{color:#a5730a;}
-    table{width:100%; border-collapse:collapse; font-size:10.5px; border:1px solid #e5eae7; border-top:none;}
+    table{width:100%; table-layout:fixed; border-collapse:collapse; font-size:10.5px; border:1px solid #e5eae7; border-top:none;}
     th{text-align:left; background:#f7faf9; padding:5px 8px; border-bottom:1px solid #e5eae7; font-size:9.5px; letter-spacing:.03em; text-transform:uppercase; color:#3c584a;}
     td{padding:5px 8px; border-bottom:1px solid #eef2f0;}
     td.vencida{color:#b23b3b; font-weight:600;}
