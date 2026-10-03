@@ -4323,8 +4323,10 @@ app.post("/api/dominio/importar-clientes", blockCliente, requirePermissao("confi
   const getByCodigo = sqlite.prepare(`SELECT id FROM empresas WHERE codigo_dominio = ? AND escritorio_id = ?`);
   const getByNome = sqlite.prepare(`SELECT id FROM empresas WHERE LOWER(nome) = LOWER(?) AND escritorio_id = ?`);
   const insert = sqlite.prepare(`INSERT INTO empresas (nome, cnpj, codigo_dominio, apelido, inscricao_estadual, ativo, origem, escritorio_id) VALUES (?, ?, ?, ?, ?, ?, 'dominio', ?)`);
+  // Importação só preenche campo vazio: valor que já está na empresa (digitado à mão, inclusive) não é trocado,
+  // e a situação ativo/inativo não é mexida em empresa já cadastrada (senão reativa o que foi inativado à mão).
   const update = sqlite.prepare(
-    `UPDATE empresas SET nome=?, cnpj=COALESCE(?, cnpj), codigo_dominio=COALESCE(?, codigo_dominio), apelido=COALESCE(?, apelido), inscricao_estadual=COALESCE(?, inscricao_estadual), ativo=?, updated_at=datetime('now') WHERE id=?`
+    `UPDATE empresas SET nome=COALESCE(NULLIF(nome,''), ?), cnpj=COALESCE(NULLIF(cnpj,''), ?), codigo_dominio=COALESCE(NULLIF(codigo_dominio,''), ?), apelido=COALESCE(NULLIF(apelido,''), ?), inscricao_estadual=COALESCE(NULLIF(inscricao_estadual,''), ?), updated_at=datetime('now') WHERE id=?`
   );
 
   for (let i = 1; i < linhas.length; i++) {
@@ -4340,7 +4342,7 @@ app.post("/api/dominio/importar-clientes", blockCliente, requirePermissao("confi
 
     const existente = (codigo ? getByCodigo.get(codigo, escritorioId) : undefined) || getByNome.get(nome, escritorioId);
     if (existente) {
-      update.run(nome, cnpj || null, codigo || null, apelido || null, inscricaoEstadual || null, ativo, (existente as any).id);
+      update.run(nome, cnpj || null, codigo || null, apelido || null, inscricaoEstadual || null, (existente as any).id);
       atualizadas++;
     } else {
       insert.run(nome, cnpj || null, codigo || null, apelido || null, inscricaoEstadual || null, ativo, escritorioId);
@@ -4429,11 +4431,12 @@ async function executarSincronizacaoOnvio(escritorioId: number, jobId?: number):
       `INSERT INTO empresas (nome, cnpj, codigo_dominio, apelido, email, telefone, endereco, cidade, uf, cep, inscricao_municipal, inscricao_estadual, nome_representante_legal, cpf_representante_legal, origem, escritorio_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'dominio', ?)`
     );
+    // Só preenche campo vazio — nunca troca o que já está na empresa (ver importar-clientes).
     const update = sqlite.prepare(
-      `UPDATE empresas SET nome=?, cnpj=COALESCE(?, cnpj), apelido=COALESCE(?, apelido), email=COALESCE(?, email), telefone=COALESCE(?, telefone),
-         endereco=COALESCE(?, endereco), cidade=COALESCE(?, cidade), uf=COALESCE(?, uf), cep=COALESCE(?, cep),
-         inscricao_municipal=COALESCE(?, inscricao_municipal), inscricao_estadual=COALESCE(?, inscricao_estadual),
-         nome_representante_legal=COALESCE(?, nome_representante_legal), cpf_representante_legal=COALESCE(?, cpf_representante_legal),
+      `UPDATE empresas SET nome=COALESCE(NULLIF(nome,''), ?), cnpj=COALESCE(NULLIF(cnpj,''), ?), apelido=COALESCE(NULLIF(apelido,''), ?), email=COALESCE(NULLIF(email,''), ?), telefone=COALESCE(NULLIF(telefone,''), ?),
+         endereco=COALESCE(NULLIF(endereco,''), ?), cidade=COALESCE(NULLIF(cidade,''), ?), uf=COALESCE(NULLIF(uf,''), ?), cep=COALESCE(NULLIF(cep,''), ?),
+         inscricao_municipal=COALESCE(NULLIF(inscricao_municipal,''), ?), inscricao_estadual=COALESCE(NULLIF(inscricao_estadual,''), ?),
+         nome_representante_legal=COALESCE(NULLIF(nome_representante_legal,''), ?), cpf_representante_legal=COALESCE(NULLIF(cpf_representante_legal,''), ?),
          updated_at=datetime('now') WHERE id=?`
     );
     // situação (ativo/inativo) não vem na API do Onvio — não mexe nesse campo pra não
@@ -16903,20 +16906,19 @@ app.post("/api/dominio-agent/empresas", requireDominioAgent, (req, res) => {
     `INSERT INTO empresas (nome, cnpj, codigo_dominio, email, telefone, endereco, cidade, uf, cep, inscricao_municipal, inscricao_estadual, nome_representante_legal, cpf_representante_legal, ativo, origem)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'dominio')`
   );
+  // Só preenche campo vazio e nunca mexe em ativo numa empresa já cadastrada: o que foi digitado à mão
+  // (CPF, e-mail, inativação...) fica, e a sincronização não reativa/desativa empresa por conta própria.
   const update = sqlite.prepare(
-    `UPDATE empresas SET nome=?, cnpj=COALESCE(?, cnpj), email=COALESCE(?, email), telefone=COALESCE(?, telefone),
-       endereco=COALESCE(?, endereco), cidade=COALESCE(?, cidade), uf=COALESCE(?, uf), cep=COALESCE(?, cep),
-       inscricao_municipal=COALESCE(?, inscricao_municipal), inscricao_estadual=COALESCE(?, inscricao_estadual),
-       nome_representante_legal=COALESCE(?, nome_representante_legal), cpf_representante_legal=COALESCE(?, cpf_representante_legal),
-       ativo=COALESCE(?, ativo), updated_at=datetime('now') WHERE id=?`
+    `UPDATE empresas SET nome=COALESCE(NULLIF(nome,''), ?), cnpj=COALESCE(NULLIF(cnpj,''), ?), email=COALESCE(NULLIF(email,''), ?), telefone=COALESCE(NULLIF(telefone,''), ?),
+       endereco=COALESCE(NULLIF(endereco,''), ?), cidade=COALESCE(NULLIF(cidade,''), ?), uf=COALESCE(NULLIF(uf,''), ?), cep=COALESCE(NULLIF(cep,''), ?),
+       inscricao_municipal=COALESCE(NULLIF(inscricao_municipal,''), ?), inscricao_estadual=COALESCE(NULLIF(inscricao_estadual,''), ?),
+       nome_representante_legal=COALESCE(NULLIF(nome_representante_legal,''), ?), cpf_representante_legal=COALESCE(NULLIF(cpf_representante_legal,''), ?),
+       updated_at=datetime('now') WHERE id=?`
   );
   for (const it of items) {
     if (!it?.codigo || !it?.nome) continue;
     const existente = getByCodigo.get(String(it.codigo)) as any;
     if (existente) {
-      // ativo só é alterado se o item trouxer o campo explicitamente — a sincronização via Onvio
-      // não sabe a situação real (isso vem só do relatório do Domínio, feito à parte), então não
-      // deve reativar/desativar sozinha uma empresa já cadastrada.
       update.run(
         it.nome,
         it.cnpj || null,
@@ -16930,7 +16932,6 @@ app.post("/api/dominio-agent/empresas", requireDominioAgent, (req, res) => {
         it.inscricaoEstadual || null,
         it.nomeRepresentanteLegal || null,
         it.cpfRepresentanteLegal || null,
-        it.ativo === undefined ? null : it.ativo ? 1 : 0,
         existente.id
       );
       atualizadas++;
