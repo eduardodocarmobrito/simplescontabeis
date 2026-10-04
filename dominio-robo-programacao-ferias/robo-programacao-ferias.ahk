@@ -141,6 +141,15 @@ TelaParamAberta() {
     return false
 }
 
+; Existe uma janela do APP do Dominio aberta (o launcher "Lista de Programas" nao conta).
+DominioAberto() {
+    for hwnd in WinGetList("ahk_exe AppController.exe") {
+        if !InStr(WinGetTitle("ahk_id " . hwnd), "Lista de Programas")
+            return true
+    }
+    return false
+}
+
 ; Ativa a janela do APP do Dominio (a que NAO e o launcher "Lista de Programas").
 AtivarApp() {
     global DOMINIO_WIN
@@ -506,17 +515,19 @@ ReportarStatus(itens) {
 
 RodarCiclo() {
     global DOMINIO_WIN, T_ENTRE_EMPRESAS, SELECIONAR_MODULO
+    if !DominioAberto() {
+        Logar("ERRO: Dominio nao esta aberto - execucao cancelada.")
+        ReportarProgresso(true, 0, 0, "", true)
+        ReportarProgresso(false, 0, 0, "", false)
+        MsgBox("A Dominio nao esta aberta.`n`nAbra o Dominio Web, faca o login e tente de novo.", "Robo da Programacao de Ferias", "Icon! T60")
+        return
+    }
     empresas := PegarEmpresas()
     total := empresas.Length
     Logar("=== EXECUCAO: " . total . " empresa(s) (Programacao de Ferias) ===")
     ReportarProgresso(true, total, 0, "", true)
     if (total = 0) {
         ReportarProgresso(false, 0, 0, "", false)
-        return
-    }
-    if !WinExist(DOMINIO_WIN) {
-        Logar("ERRO: Dominio nao esta aberto - execucao cancelada.")
-        ReportarProgresso(false, total, 0, "", false)
         return
     }
     AtivarApp()
