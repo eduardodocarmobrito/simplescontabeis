@@ -7809,6 +7809,15 @@ const DOM_REL_TEMPLATE_NOME: Record<string, string> = {
 const TEMPLATES_RELATORIOS_DOMINIO = new Set(Object.values(DOM_REL_TEMPLATE_NOME));
 // Acha os tipos que o texto do PDF menciona — pode achar mais de um (ex.: um PDF que já vem com
 // Balanço + DRE juntos); nesse caso o pipeline anexa em CADA template que bateu.
+// O nome do arquivo que o Domínio gera já começa pelo tipo ("comparativo_17_...", "Balancete ...") e é mais
+// confiável que procurar palavras no corpo do PDF — um Comparativo pode citar "balancete" no texto e ser
+// arquivado também como Balancete. Sem prefixo reconhecível, cai pro texto.
+function domRelTipoPeloNome(nome: string): DomRelTipo | null {
+  const limpo = nome.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z_]/g, "");
+  const m = /^(balancete|balanco|dre|faturamento|razao|comparativo|aviso|programacao)/.exec(limpo);
+  if (!m) return null;
+  return m[1] === "aviso" ? "aviso_ferias" : m[1] === "programacao" ? "programacao_ferias" : (m[1] as DomRelTipo);
+}
 function domRelClassificarTipos(texto: string): DomRelTipo[] {
   const tipos: DomRelTipo[] = [];
   if (/balan[çc]o\s+patrimonial/i.test(texto)) tipos.push("balanco");
@@ -8085,7 +8094,8 @@ async function dominioRelatoriosSincronizar(
     try {
       const buf = await item.baixar();
       const texto = await obterTextoDoPdf(buf);
-      const tipos = domRelClassificarTipos(texto);
+      const tipoPeloNome = domRelTipoPeloNome(item.nome);
+      const tipos = tipoPeloNome ? [tipoPeloNome] : domRelClassificarTipos(texto);
       let periodo = domRelExtrairPeriodo(texto, item.nome);
       // Programação de Férias não tem range de período: usa uma data única ("Data base: dd/mm/aaaa"
       // no texto, ou o _ddmmaaaa no fim do nome do arquivo). Fica sob o mês/ano dessa data.
