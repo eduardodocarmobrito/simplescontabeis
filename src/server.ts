@@ -6899,6 +6899,51 @@ const nfeInserirDocumento = sqlite.prepare(
   `INSERT OR IGNORE INTO nfe_documentos (empresa_id, escritorio_id, fonte, nsu, doc_schema, tipo, chave_acesso, emitente_cnpj, emitente_nome, destinatario_cnpj, destinatario_nome, valor_total, data_emissao, xml, evento_descricao)
    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 );
+// Alguns schemas da Distribuição DFe (resNFe/resCTe/resEvento) são só RESUMO — sem produtos/impostos/CRT
+// — a Sefaz só libera o XML completo (nfeProc/cteProc) pro destinatário depois dele manifestar "Ciência
+// da Operação". Sem isso, as duas versões (resumo e completo) chegavam em NSUs diferentes e viravam DUAS
+// linhas pra mesma chave — duplicava a nota na tela e inflava os totais do dashboard (o resumo também traz
+// valor_total preenchido). Achado ao vivo: 58% das NF-e/NFC-e capturadas eram só resumo.
+function nfeEhResumo(xml: string | null | undefined): boolean {
+  return /^<res(NFe|CTe|Evento)\b/.test((xml || "").trimStart());
+}
+function nfeInserirDocumentoDedup(args: {
+  empresaId: number; escritorioId: number; fonte: string; nsu: string; schema: string; tipo: string;
+  chaveAcesso: string | null | undefined; emitenteCnpj: string | null | undefined; emitenteNome: string | null | undefined;
+  destinatarioCnpj: string | null | undefined; destinatarioNome: string | null | undefined; valorTotal: number | null | undefined;
+  dataEmissao: string | null | undefined; xml: string; eventoDescricao: string | null | undefined;
+}): { inserido: boolean; atualizado: boolean } {
+  if (args.chaveAcesso) {
+    const existente = sqlite
+      .prepare(`SELECT id, xml FROM nfe_documentos WHERE empresa_id = ? AND chave_acesso = ? AND tipo != 'evento'`)
+      .get(args.empresaId, args.chaveAcesso) as any;
+    if (existente) {
+      if (nfeEhResumo(existente.xml) && !nfeEhResumo(args.xml)) {
+        // Upgrade: a versão completa chegou agora — troca o resumo que já estava guardado, não duplica.
+        sqlite
+          .prepare(
+            `UPDATE nfe_documentos SET fonte=?, nsu=?, doc_schema=?, tipo=?, emitente_cnpj=?, emitente_nome=?, destinatario_cnpj=?, destinatario_nome=?,
+               valor_total=?, data_emissao=?, xml=?, evento_descricao=?, tributos_parseado=0, pdf_path=NULL
+             WHERE id=?`
+          )
+          .run(
+            args.fonte, args.nsu, args.schema, args.tipo, args.emitenteCnpj || null, args.emitenteNome || null,
+            args.destinatarioCnpj || null, args.destinatarioNome || null, args.valorTotal ?? null, args.dataEmissao || null,
+            args.xml, args.eventoDescricao || null, existente.id
+          );
+        return { inserido: false, atualizado: true };
+      }
+      // Já tem a versão completa (não rebaixa pra resumo), ou as duas são resumo: não duplica.
+      return { inserido: false, atualizado: false };
+    }
+  }
+  const r = nfeInserirDocumento.run(
+    args.empresaId, args.escritorioId, args.fonte, args.nsu, args.schema, args.tipo, args.chaveAcesso || null,
+    args.emitenteCnpj || null, args.emitenteNome || null, args.destinatarioCnpj || null, args.destinatarioNome || null,
+    args.valorTotal ?? null, args.dataEmissao || null, args.xml, args.eventoDescricao || null
+  );
+  return { inserido: r.changes > 0, atualizado: false };
+}
 // Achado ao vivo (LUCELIO MARTINS DE OLIVEIRA): nfe_busca_config.cnpj é uma cópia de empresas.cnpj
 // tirada só no momento em que o certificado é cadastrado — se o CPF/CNPJ da empresa ainda estava em
 // branco naquela hora (comum pra pessoa física recém-cadastrada), a cópia ficou vazia pra sempre,
@@ -6973,24 +7018,13 @@ async function nfeBuscarDocumentosNovos(empresaId: number, cfg: any, cert: nfse.
           }
           nsuArmazenado = `autxml_${cnpjBusca.replace(/\D/g, "")}_${doc.nsu}`;
         }
-        const r = nfeInserirDocumento.run(
-          empresaDestino,
-          cfg.escritorio_id,
-          "nfe",
-          nsuArmazenado,
-          doc.schema,
-          info.tipo,
-          info.chaveAcesso,
-          info.emitenteCnpj,
-          info.emitenteNome,
-          info.destinatarioCnpj,
-          info.destinatarioNome,
-          info.valorTotal,
-          info.dataEmissao,
-          doc.xml,
-          info.eventoDescricao
-        );
-        if (r.changes > 0) novos++;
+        const r = nfeInserirDocumentoDedup({
+          empresaId: empresaDestino, escritorioId: cfg.escritorio_id, fonte: "nfe", nsu: nsuArmazenado, schema: doc.schema, tipo: info.tipo,
+          chaveAcesso: info.chaveAcesso, emitenteCnpj: info.emitenteCnpj, emitenteNome: info.emitenteNome,
+          destinatarioCnpj: info.destinatarioCnpj, destinatarioNome: info.destinatarioNome, valorTotal: info.valorTotal,
+          dataEmissao: info.dataEmissao, xml: doc.xml, eventoDescricao: info.eventoDescricao,
+        });
+        if (r.inserido) novos++;
       }
       ultNsu = resp.ultNSU || ultNsu;
       sqlite.prepare(`UPDATE nfe_busca_config SET ultimo_nsu = ?, ultima_busca_em = datetime('now'), ultimo_erro = NULL WHERE empresa_id = ?`).run(ultNsu, empresaId);
@@ -7013,24 +7047,13 @@ async function nfseBuscarDocumentosNovos(empresaId: number, cfg: any, cert: nfse
       const resp = await nfse.consultarDistribuicaoNfse(cfg.ambiente as nfse.AmbienteNfse, ultNsu, cnpjBusca, cert);
       for (const doc of resp.documentos) {
         const info = nfse.identificarNfseDistribuida(doc.xml);
-        const r = nfeInserirDocumento.run(
-          empresaId,
-          cfg.escritorio_id,
-          "nfse",
-          doc.nsu,
-          "NFSe_v1.00",
-          "nfse",
-          info.chaveAcesso || doc.chaveAcesso,
-          info.emitenteDocumento,
-          info.emitenteNome,
-          info.tomadorDocumento,
-          info.tomadorNome,
-          info.valorTotal,
-          info.dataEmissao,
-          doc.xml,
-          null
-        );
-        if (r.changes > 0) novos++;
+        const r = nfeInserirDocumentoDedup({
+          empresaId, escritorioId: cfg.escritorio_id, fonte: "nfse", nsu: doc.nsu, schema: "NFSe_v1.00", tipo: "nfse",
+          chaveAcesso: info.chaveAcesso || doc.chaveAcesso, emitenteCnpj: info.emitenteDocumento, emitenteNome: info.emitenteNome,
+          destinatarioCnpj: info.tomadorDocumento, destinatarioNome: info.tomadorNome, valorTotal: info.valorTotal,
+          dataEmissao: info.dataEmissao, xml: doc.xml, eventoDescricao: null,
+        });
+        if (r.inserido) novos++;
       }
       const avancou = resp.ultimoNsu && resp.ultimoNsu !== ultNsu;
       ultNsu = resp.ultimoNsu || ultNsu;
@@ -7063,24 +7086,13 @@ async function nfeCteBuscarDocumentosNovos(empresaId: number, cfg: any, cert: nf
       });
       for (const doc of resp.documentos) {
         const info = nfe.identificarDocumento(doc.xml, doc.schema);
-        const r = nfeInserirDocumento.run(
-          empresaId,
-          cfg.escritorio_id,
-          "cte",
-          doc.nsu,
-          doc.schema,
-          info.tipo,
-          info.chaveAcesso,
-          info.emitenteCnpj,
-          info.emitenteNome,
-          info.destinatarioCnpj,
-          info.destinatarioNome,
-          info.valorTotal,
-          info.dataEmissao,
-          doc.xml,
-          info.eventoDescricao
-        );
-        if (r.changes > 0) novos++;
+        const r = nfeInserirDocumentoDedup({
+          empresaId, escritorioId: cfg.escritorio_id, fonte: "cte", nsu: doc.nsu, schema: doc.schema, tipo: info.tipo,
+          chaveAcesso: info.chaveAcesso, emitenteCnpj: info.emitenteCnpj, emitenteNome: info.emitenteNome,
+          destinatarioCnpj: info.destinatarioCnpj, destinatarioNome: info.destinatarioNome, valorTotal: info.valorTotal,
+          dataEmissao: info.dataEmissao, xml: doc.xml, eventoDescricao: info.eventoDescricao,
+        });
+        if (r.inserido) novos++;
       }
       ultNsu = resp.ultNSU || ultNsu;
       sqlite.prepare(`UPDATE nfe_busca_config SET ultimo_nsu_cte = ?, ultima_busca_cte_em = datetime('now'), ultimo_erro_cte = NULL WHERE empresa_id = ?`).run(ultNsu, empresaId);
@@ -7285,16 +7297,13 @@ app.post("/api/nfe/config/:empresaId/testar-chaves", blockCliente, requirePermis
         const doc = resp.documentos[0];
         const info = nfe.identificarDocumento(doc.xml, doc.schema);
         const jaTem = sqlite.prepare(`SELECT 1 FROM nfe_documentos WHERE empresa_id = ? AND chave_acesso = ?`).get(empId, chave);
-        let inserido = false;
-        if (!jaTem) {
-          const r = nfeInserirDocumento.run(
-            empId, cfg.escritorio_id, "nfe", `porchave_${chave}`, doc.schema, info.tipo,
-            info.chaveAcesso, info.emitenteCnpj, info.emitenteNome, info.destinatarioCnpj, info.destinatarioNome,
-            info.valorTotal, info.dataEmissao, doc.xml, info.eventoDescricao
-          );
-          inserido = r.changes > 0;
-        }
-        resultados.push({ chave, encontrado: true, tipo: info.tipo, schema: doc.schema, emitenteNome: info.emitenteNome, jaExistia: !!jaTem, inserido });
+        const r = nfeInserirDocumentoDedup({
+          empresaId: empId, escritorioId: cfg.escritorio_id, fonte: "nfe", nsu: `porchave_${chave}`, schema: doc.schema, tipo: info.tipo,
+          chaveAcesso: info.chaveAcesso, emitenteCnpj: info.emitenteCnpj, emitenteNome: info.emitenteNome,
+          destinatarioCnpj: info.destinatarioCnpj, destinatarioNome: info.destinatarioNome, valorTotal: info.valorTotal,
+          dataEmissao: info.dataEmissao, xml: doc.xml, eventoDescricao: info.eventoDescricao,
+        });
+        resultados.push({ chave, encontrado: true, tipo: info.tipo, schema: doc.schema, emitenteNome: info.emitenteNome, jaExistia: !!jaTem, inserido: r.inserido, atualizado: r.atualizado });
       } catch (e: any) {
         resultados.push({ chave, encontrado: false, erro: e.message });
         if (/656/.test(e.message)) {
