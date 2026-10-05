@@ -7003,7 +7003,7 @@ async function nfeManifestarBacklogResumos(empresaId: number, cfg: any, cert: nf
   let ok = 0, erros = 0;
   for (const p of pendentes) {
     try {
-      const manif = await nfe.enviarManifestacaoCiencia({ ambiente: cfg.ambiente as nfe.AmbienteNfe, cnpj: cnpjBusca, cert, chave: p.chaveAcesso });
+      const manif = await nfe.enviarManifestacaoCiencia({ ambiente: cfg.ambiente as nfe.AmbienteNfe, cnpj: cnpjBusca, cUF: nfe.UF_CODIGO_IBGE[cfg.uf_autor], cert, chave: p.chaveAcesso });
       nfeInserirDocumento.run(
         empresaId, cfg.escritorio_id, "nfe", `ciencia_${p.chaveAcesso}`, "eventoCienciaAutomatica", "evento",
         p.chaveAcesso, p.emitenteCnpj, p.emitenteNome, cnpjBusca.replace(/\D/g, ""), null, null, manif.dhEvento, manif.xmlEnviado,
@@ -7087,7 +7087,7 @@ async function nfeBuscarDocumentosNovos(empresaId: number, cfg: any, cert: nfse.
         // próxima tentativa.
         if (cfg.manifestacao_automatica && r.inserido && empresaDestino === empresaId && (info.tipo === "nfe" || info.tipo === "nfce") && info.chaveAcesso && nfeEhResumo(doc.xml)) {
           try {
-            const manif = await nfe.enviarManifestacaoCiencia({ ambiente: cfg.ambiente as nfe.AmbienteNfe, cnpj: cnpjBusca, cert, chave: info.chaveAcesso });
+            const manif = await nfe.enviarManifestacaoCiencia({ ambiente: cfg.ambiente as nfe.AmbienteNfe, cnpj: cnpjBusca, cUF: nfe.UF_CODIGO_IBGE[cfg.uf_autor], cert, chave: info.chaveAcesso });
             nfeInserirDocumento.run(
               empresaId, cfg.escritorio_id, "nfe", `ciencia_${info.chaveAcesso}`, "eventoCienciaAutomatica", "evento",
               info.chaveAcesso, info.emitenteCnpj, info.emitenteNome, cnpjBusca.replace(/\D/g, ""), null, null, manif.dhEvento, manif.xmlEnviado,

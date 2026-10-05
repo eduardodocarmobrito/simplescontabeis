@@ -255,7 +255,7 @@ export interface ResultadoManifestacao {
   xmlEnviado: string; // evento assinado que foi mandado — fica guardado como registro do que foi feito
   dhEvento: string;
 }
-export async function enviarManifestacaoCiencia(params: { ambiente: AmbienteNfe; cnpj: string; cert: nfse.CertificadoInfo; chave: string }): Promise<ResultadoManifestacao> {
+export async function enviarManifestacaoCiencia(params: { ambiente: AmbienteNfe; cnpj: string; cUF: string; cert: nfse.CertificadoInfo; chave: string }): Promise<ResultadoManifestacao> {
   const tpAmb = params.ambiente === "producao" ? "1" : "2";
   const cnpjLimpo = params.cnpj.replace(/\D/g, "");
   const dhEvento = dataHoraBrasiliaNfe(-60_000);
@@ -270,8 +270,16 @@ export async function enviarManifestacaoCiencia(params: { ambiente: AmbienteNfe;
   const eventoXml = `<evento xmlns="http://www.portalfiscal.inf.br/nfe" versao="1.00">${infEvento}</evento>`;
   const eventoAssinado = assinarXmlEventoNfe(eventoXml, idEvento, params.cert);
   const envEvento = `<envEvento xmlns="http://www.portalfiscal.inf.br/nfe" versao="1.00"><idLote>1</idLote>${eventoAssinado}</envEvento>`;
-  const corpoSoap = `<nfeRecepcaoEvento xmlns="http://www.portalfiscal.inf.br/nfe/wsdl/NFeRecepcaoEvento4"><nfeDadosMsg>${envEvento}</nfeDadosMsg></nfeRecepcaoEvento>`;
-  const envelope = `<?xml version="1.0" encoding="utf-8"?><soap12:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap12="http://www.w3.org/2003/05/soap-envelope"><soap12:Body>${corpoSoap}</soap12:Body></soap12:Envelope>`;
+  // Achado na pesquisa (2 fontes independentes, depois do primeiro teste real dar cStat 242 "Mensagem
+  // SOAP inválida"): RecepcaoEvento4, diferente da Distribuição DFe, NÃO usa wrapper de operação no Body
+  // (nfeDadosMsg vai direto) e EXIGE um SOAP Header nfeCabecMsg com cUF + versaoDados — padrão clássico
+  // dos web services de NF-e, mesmo em SOAP 1.2.
+  const nsWsdl = "http://www.portalfiscal.inf.br/nfe/wsdl/NFeRecepcaoEvento4";
+  const corpoSoap = `<nfeDadosMsg xmlns="${nsWsdl}">${envEvento}</nfeDadosMsg>`;
+  const cabecMsg = `<nfeCabecMsg xmlns="${nsWsdl}"><cUF>${params.cUF}</cUF><versaoDados>1.00</versaoDados></nfeCabecMsg>`;
+  const envelope =
+    `<?xml version="1.0" encoding="utf-8"?><soap12:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap12="http://www.w3.org/2003/05/soap-envelope">` +
+    `<soap12:Header>${cabecMsg}</soap12:Header><soap12:Body>${corpoSoap}</soap12:Body></soap12:Envelope>`;
   const url = new URL(MANIFESTACAO_URL[params.ambiente]);
   const bodyBuffer = Buffer.from(envelope, "utf8");
   const { status, corpo } = await new Promise<{ status: number; corpo: string }>((resolve, reject) => {
@@ -305,7 +313,10 @@ export async function enviarManifestacaoCiencia(params: { ambiente: AmbienteNfe;
   });
   if (status !== 200) throw new Error(`A Sefaz recusou a conexão (HTTP ${status}) ao mandar a manifestação: ${corpo.slice(0, 800)}`);
   const json = xmlParser.parse(corpo) as any;
-  const retEnvEvento = json?.["soap:Envelope"]?.["soap:Body"]?.nfeRecepcaoEventoResponse?.nfeRecepcaoEventoResult?.retEnvEvento;
+  // Confirmado ao vivo: a resposta vem embrulhada em <nfeResultMsg>, não em
+  // nfeRecepcaoEventoResponse/nfeRecepcaoEventoResult (esse é o padrão .NET genérico que eu tinha
+  // assumido por analogia com a Distribuição DFe — RecepcaoEvento4 usa outro).
+  const retEnvEvento = json?.["soap:Envelope"]?.["soap:Body"]?.nfeResultMsg?.retEnvEvento;
   if (!retEnvEvento) throw new Error(`Resposta da Sefaz em formato inesperado ao mandar a manifestação: ${corpo.slice(0, 1000)}`);
   const infEventoResp = retEnvEvento.retEvento?.infEvento;
   if (!infEventoResp) {
