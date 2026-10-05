@@ -995,8 +995,11 @@ function renderNav(){
   const wrap=document.getElementById('navList');
   let html='';
   NAV.filter(podeVerModulo).forEach(it=>{
-    html += `<div class="nav-item ${STATE.page===it.id?'active':''}" data-page="${it.id}">${esc(it.label)}</div>`;
-    if(it.subs){
+    // Sub-itens ficam recolhidos; só expandem quando o módulo está ativo (ou uma sub-página dele está).
+    const expandido = it.subs && (STATE.page===it.id || it.subs.some(s=>s.page && STATE.page===s.page));
+    const caret = it.subs ? `<span style="font-size:9px; opacity:.6; margin-right:-2px;">${expandido?'▾':'▸'}</span>` : '';
+    html += `<div class="nav-item ${STATE.page===it.id?'active':''}" data-page="${it.id}">${caret}${esc(it.label)}</div>`;
+    if(it.subs && expandido){
       it.subs.forEach((s,i)=>{
         const active = s.page ? STATE.page===s.page : (STATE.page===it.id && NFE_TIPO_SEL===s.tipo);
         html += `<div class="nav-sub ${active?'active':''}" data-sub="${it.id}:${i}">${esc(s.label)}</div>`;
