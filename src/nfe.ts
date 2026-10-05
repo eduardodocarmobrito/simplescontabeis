@@ -316,10 +316,13 @@ export async function enviarManifestacaoCiencia(params: { ambiente: AmbienteNfe;
   });
   if (status !== 200) throw new Error(`A Sefaz recusou a conexão (HTTP ${status}) ao mandar a manifestação: ${corpo.slice(0, 800)}`);
   const json = xmlParser.parse(corpo) as any;
-  // Confirmado ao vivo: a resposta vem embrulhada em <nfeResultMsg>, não em
-  // nfeRecepcaoEventoResponse/nfeRecepcaoEventoResult (esse é o padrão .NET genérico que eu tinha
-  // assumido por analogia com a Distribuição DFe — RecepcaoEvento4 usa outro).
-  const retEnvEvento = json?.["soap:Envelope"]?.["soap:Body"]?.nfeResultMsg?.retEnvEvento;
+  // O nome da tag que embrulha a resposta dentro do soap:Body MUDA dependendo do ambiente que atendeu
+  // (confirmado ao vivo: "nfeResultMsg" na contingência SVC-AN, "nfeRecepcaoEventoNFResult" no Ambiente
+  // Nacional normal) — em vez de apostar num nome fixo, pega o único filho que o Body tiver, seja
+  // qual for o nome.
+  const soapBody = json?.["soap:Envelope"]?.["soap:Body"];
+  const bodyContent: any = soapBody ? Object.values(soapBody)[0] : null;
+  const retEnvEvento = bodyContent?.retEnvEvento;
   if (!retEnvEvento) throw new Error(`Resposta da Sefaz em formato inesperado ao mandar a manifestação: ${corpo.slice(0, 1000)}`);
   const infEventoResp = retEnvEvento.retEvento?.infEvento;
   if (!infEventoResp) {
