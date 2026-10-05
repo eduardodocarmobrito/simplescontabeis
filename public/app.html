@@ -6451,7 +6451,12 @@ async function pageNfeBusca(){
         const ibsCbsCell = temReforma
           ? `<span style="color:var(--accent-deep); font-weight:600;" title="IBS / CBS lidos do XML (reforma)">${fmtMoney(d.valorIbs||0)} / ${fmtMoney(d.valorCbs||0)}</span>`
           : '<span style="color:var(--ink-soft);">—</span>';
-        const statusCell = d.notaCancelada ? '<span class="tag bad">✕ Cancelada</span>' : (d.tipo==='evento' ? '<span class="tag muted">📣 Evento</span>' : '<span class="tag ok">✓ Autorizada</span>');
+        let statusCell = d.notaCancelada ? '<span class="tag bad">✕ Cancelada</span>' : (d.tipo==='evento' ? '<span class="tag muted">📣 Evento</span>' : '<span class="tag ok">✓ Autorizada</span>');
+        // Manifestação do destinatário (registrada na Sefaz) + eventos encadeados (CC-e/EPEC).
+        const MANIF_INFO = { ciencia:['👁 Ciência','muted','Ciência da operação'], confirmada:['✅ Confirmada','ok','Confirmação da operação'], desconhecida:['❓ Desconhecida','bad','Desconhecimento da operação'], nao_realizada:['🚫 Não realizada','bad','Operação não realizada'] };
+        const EVENTO_INFO = { cce:['✏️ CC-e','Carta de correção'], epec:['📝 EPEC','EPEC — emissão prévia de contingência'] };
+        if(d.manifestacao && MANIF_INFO[d.manifestacao]){ const m=MANIF_INFO[d.manifestacao]; statusCell += ` <span class="tag ${m[1]}" title="${esc(m[2])}">${m[0]}</span>`; }
+        (d.eventos||[]).forEach(ev=>{ const e=EVENTO_INFO[ev]; if(e) statusCell += ` <span class="tag muted" title="${esc(e[1])}">${e[0]}</span>`; });
         const kp = chaveNum(d.chaveAcesso);
         const flagsArr = (d.flags||'').split(',').filter(Boolean);
         const chip = (ic, title, tab, extra='')=>`<span class="tag nfeFlagBtn" data-id="${d.id}" data-tab="${tab}" title="${esc(title)}" style="margin-right:3px; cursor:pointer;">${ic}${extra}</span>`;
@@ -6467,7 +6472,7 @@ async function pageNfeBusca(){
           <td style="white-space:nowrap;">${flagsCell}</td>
           <td style="${canceladaStyle}">${d.dataEmissao?fmtDateHora(d.dataEmissao):'—'}</td>
           <td><span class="tag ${d.tipo==='evento'?'muted':'ok'}">${d.tipo.toUpperCase()}</span></td>
-          <td>${statusCell}</td>
+          <td style="white-space:nowrap;">${statusCell}</td>
           <td style="${canceladaStyle}">${kp.numero||'—'}</td>
           <td style="${canceladaStyle}">${kp.serie||'—'}</td>
           <td style="${canceladaStyle}">${esc(d.emitenteNome||'—')}</td>

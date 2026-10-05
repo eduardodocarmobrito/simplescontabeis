@@ -7488,7 +7488,44 @@ app.get("/api/nfe/documentos", blockCliente, requirePermissao("nfe-busca", "visu
       }
     }
   }
-  res.json({ items: rows.map((r) => ({ ...r, notaCancelada: !!r.notaCancelada })) });
+  // Eventos encadeados por nota (manifestação do destinatário, carta de correção, EPEC…), além do
+  // cancelamento já detectado acima. Agrega as descrições dos eventos (tipo='evento') que batem com a
+  // chave de cada nota, pra enriquecer o Status na tela.
+  const chavesNota = [...new Set(rows.filter((r) => r.tipo !== "evento" && r.chaveAcesso).map((r) => r.chaveAcesso as string))];
+  const eventosPorChave = new Map<string, string[]>();
+  if (chavesNota.length) {
+    const ph = chavesNota.map(() => "?").join(",");
+    const evs = sqlite
+      .prepare(`SELECT chave_acesso as chave, evento_descricao as descricao FROM nfe_documentos WHERE escritorio_id = ? AND tipo = 'evento' AND chave_acesso IN (${ph})`)
+      .all(user.escritorioId, ...chavesNota) as any[];
+    for (const ev of evs) {
+      if (!ev.chave) continue;
+      const arr = eventosPorChave.get(ev.chave) || [];
+      if (ev.descricao) arr.push(ev.descricao);
+      eventosPorChave.set(ev.chave, arr);
+    }
+  }
+  const normEv = (s: string) => (s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+  const derivarEventos = (descricoes: string[]): { manifestacao: string | null; eventos: string[] } => {
+    const tem = (sub: string) => descricoes.some((d) => normEv(d).includes(sub));
+    // Manifestação do destinatário — fica com a mais "forte"/final do ciclo (confirmação/não realizada/
+    // desconhecimento vêm depois da ciência).
+    let manifestacao: string | null = null;
+    if (tem("confirmacao")) manifestacao = "confirmada";
+    else if (tem("nao realizada")) manifestacao = "nao_realizada";
+    else if (tem("desconhecimento")) manifestacao = "desconhecida";
+    else if (tem("ciencia")) manifestacao = "ciencia";
+    const eventos: string[] = [];
+    if (descricoes.some((d) => { const n = normEv(d); return n.includes("correcao") || n.includes("carta de") || n.includes("cc-e"); })) eventos.push("cce");
+    if (tem("epec")) eventos.push("epec");
+    return { manifestacao, eventos };
+  };
+  res.json({
+    items: rows.map((r) => {
+      const ev = r.tipo !== "evento" ? derivarEventos(eventosPorChave.get(r.chaveAcesso) || []) : { manifestacao: null, eventos: [] };
+      return { ...r, notaCancelada: !!r.notaCancelada, manifestacao: ev.manifestacao, eventos: ev.eventos };
+    }),
+  });
 });
 // Contagem de verdade por empresa, sem o LIMIT 500 da listagem acima — a listagem só serve pra
 // mostrar as últimas notas na tela de detalhe, não é confiável pra somar quantos documentos cada
