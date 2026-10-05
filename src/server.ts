@@ -1903,6 +1903,16 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
     sqlite.exec(`ALTER TABLE escritorios ADD COLUMN isento_assinatura INTEGER NOT NULL DEFAULT 0`);
   }
 }
+// Migração leve: monitor de IBS/CBS (reforma tributária, NT 2025.002) por nota — valores lidos do XML
+// (grupo total/IBSCBSTot). tributos_parseado=0 = ainda não lido; 1 = já lido (mesmo que a nota não
+// traga o grupo ainda, na transição da reforma). Backfill preguiçoso na listagem de documentos.
+{
+  const colsNfeDoc = sqlite.prepare(`PRAGMA table_info(nfe_documentos)`).all() as any[];
+  if (!colsNfeDoc.some((c) => c.name === "valor_ibs")) sqlite.exec(`ALTER TABLE nfe_documentos ADD COLUMN valor_ibs REAL`);
+  if (!colsNfeDoc.some((c) => c.name === "valor_cbs")) sqlite.exec(`ALTER TABLE nfe_documentos ADD COLUMN valor_cbs REAL`);
+  if (!colsNfeDoc.some((c) => c.name === "valor_bc_ibscbs")) sqlite.exec(`ALTER TABLE nfe_documentos ADD COLUMN valor_bc_ibscbs REAL`);
+  if (!colsNfeDoc.some((c) => c.name === "tributos_parseado")) sqlite.exec(`ALTER TABLE nfe_documentos ADD COLUMN tributos_parseado INTEGER NOT NULL DEFAULT 0`);
+}
 // Migração leve: opt-in por empresa pra busca automática da Guia FGTS Digital (nem toda empresa tem
 // FGTS, ex. MEI sem funcionário) + rastro da última busca em lote (ver fgts-automacao.ts).
 {
@@ -7412,12 +7422,36 @@ app.get("/api/nfe/documentos", blockCliente, requirePermissao("nfe-busca", "visu
       `SELECT d.id, d.empresa_id as empresaId, e.nome as empresaNome, d.tipo, d.chave_acesso as chaveAcesso,
               d.emitente_cnpj as emitenteCnpj, d.emitente_nome as emitenteNome, d.destinatario_cnpj as destinatarioCnpj,
               d.destinatario_nome as destinatarioNome, d.valor_total as valorTotal, d.data_emissao as dataEmissao, d.criado_em as criadoEm,
+              d.valor_ibs as valorIbs, d.valor_cbs as valorCbs, d.tributos_parseado as tributosParseado,
               ${direcaoExpr} as direcao, (CASE WHEN d.tipo = 'evento' THEN 0 ELSE ${notaCanceladaExpr} END) as notaCancelada
        FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id
        WHERE ${condicoes.join(" AND ")}
        ORDER BY d.data_emissao DESC, d.id DESC LIMIT 500`
     )
     .all(...params) as any[];
+  // Backfill preguiçoso do IBS/CBS (reforma): lê o grupo total/IBSCBSTot do XML das NF-e/NFC-e ainda
+  // não parseadas desta página e cacheia nas colunas, pra não reparsear nas próximas aberturas.
+  const naoParseados = rows.filter((r) => !r.tributosParseado && (r.tipo === "nfe" || r.tipo === "nfce"));
+  if (naoParseados.length) {
+    const ids = naoParseados.map((r) => r.id);
+    const xmls = sqlite.prepare(`SELECT id, xml FROM nfe_documentos WHERE id IN (${ids.map(() => "?").join(",")})`).all(...ids) as any[];
+    const porId = new Map(xmls.map((x) => [x.id, x.xml]));
+    const upd = sqlite.prepare(`UPDATE nfe_documentos SET valor_ibs = ?, valor_cbs = ?, valor_bc_ibscbs = ?, tributos_parseado = 1 WHERE id = ?`);
+    const tx = sqlite.transaction(() => {
+      for (const r of naoParseados) {
+        const xml = porId.get(r.id);
+        const t = xml ? nfe.extrairIbsCbs(xml) : null;
+        if (t) {
+          r.valorIbs = t.vIBS;
+          r.valorCbs = t.vCBS;
+          upd.run(t.vIBS, t.vCBS, t.vBC, r.id);
+        } else {
+          upd.run(null, null, null, r.id); // não é NF-e completa — marca parseado pra não repetir
+        }
+      }
+    });
+    tx();
+  }
   res.json({ items: rows.map((r) => ({ ...r, notaCancelada: !!r.notaCancelada })) });
 });
 // Contagem de verdade por empresa, sem o LIMIT 500 da listagem acima — a listagem só serve pra

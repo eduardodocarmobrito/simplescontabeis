@@ -331,3 +331,25 @@ export function identificarDocumento(xml: string, schema: string): DocumentoIden
   }
   return base;
 }
+
+// Lê os tributos da reforma (IBS/CBS) do TOTAL da NF-e/NFC-e completa — grupo <total><IBSCBSTot> da
+// NT 2025.002. Retorna os valores quando o XML já traz o grupo (fase de transição da reforma); se a
+// nota ainda não traz, retorna zeros (parseado, sem reforma). null só se não for uma NF-e completa
+// (ex.: resumo/resNFe, evento, CT-e) — aí não dá pra saber e fica "não parseado" pra não travar.
+export function extrairIbsCbs(xml: string): { vIBS: number; vCBS: number; vBC: number } | null {
+  let json: any;
+  try {
+    json = xmlParser.parse(xml);
+  } catch {
+    return null;
+  }
+  const infNFe = json?.nfeProc?.NFe?.infNFe || json?.NFe?.infNFe;
+  if (!infNFe) return null; // não é NF-e completa (resumo/evento/CT-e) — sem total detalhado
+  const num = (v: any) => (v != null && v !== "" ? Number(v) || 0 : 0);
+  const tot = infNFe.total?.IBSCBSTot;
+  if (!tot) return { vIBS: 0, vCBS: 0, vBC: 0 }; // NF-e sem o grupo da reforma ainda
+  const gIBS = tot.gIBS || {};
+  const vIBS = num(gIBS.vIBS) || num(gIBS.gIBSUF?.vIBSUF) + num(gIBS.gIBSMun?.vIBSMun);
+  const vCBS = num(tot.gCBS?.vCBS);
+  return { vIBS, vCBS, vBC: num(tot.vBCIBSCBS) };
+}

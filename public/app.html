@@ -6267,10 +6267,11 @@ async function pageNfeBusca(){
           <button class="btn small" id="btnNfeBaixarLotePdf" disabled>Baixar selecionados — PDF</button>
           <button class="btn small" id="btnNfeBaixarLoteAmbos" disabled>Baixar selecionados — XML + PDF</button>
         </div>
+        <div id="nfeReformaSumario" style="margin-bottom:8px;"></div>
         <div class="card" style="padding:0; overflow-x:auto;">
           <table class="data-table" style="white-space:nowrap;">
-            <thead><tr><th style="width:32px;"><input type="checkbox" id="nfeDocSelecionarTodos"></th><th>Data</th><th>Tipo</th><th>Emitente</th><th>Destinatário / Tomador</th><th>Chave de acesso</th><th>Valor</th><th></th></tr></thead>
-            <tbody id="nfeDocBody"><tr><td colspan="8"><div class="empty-state">Carregando…</div></td></tr></tbody>
+            <thead><tr><th style="width:32px;"><input type="checkbox" id="nfeDocSelecionarTodos"></th><th>Data</th><th>Tipo</th><th>Emitente</th><th>Destinatário / Tomador</th><th>Chave de acesso</th><th>Valor</th><th title="IBS e CBS da reforma tributária, lidos do XML da nota (quando a nota já traz o grupo)">IBS / CBS</th><th></th></tr></thead>
+            <tbody id="nfeDocBody"><tr><td colspan="9"><div class="empty-state">Carregando…</div></td></tr></tbody>
           </table>
         </div>
       </div>
@@ -6308,7 +6309,7 @@ async function pageNfeBusca(){
 
     async function carregarDocumentos(){
       const tbody = document.getElementById('nfeDocBody');
-      tbody.innerHTML = `<tr><td colspan="8"><div class="empty-state">Carregando…</div></td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="9"><div class="empty-state">Carregando…</div></td></tr>`;
       document.getElementById('nfeDocSelecionarTodos').checked = false;
       const tipo = document.getElementById('nfeDocTipo').value;
       const busca = document.getElementById('nfeDocBusca').value.trim();
@@ -6320,8 +6321,25 @@ async function pageNfeBusca(){
       if(dataDe) params.set('dataDe', dataDe);
       if(dataAte) params.set('dataAte', dataAte);
       const { items } = await api('/nfe/documentos?'+params.toString());
+      // Monitor da reforma (IBS/CBS): soma o que as notas desta lista já trazem no XML.
+      const comReforma = items.filter(d=>(d.valorIbs>0||d.valorCbs>0));
+      const totIbs = items.reduce((s,d)=>s+(d.valorIbs||0),0);
+      const totCbs = items.reduce((s,d)=>s+(d.valorCbs||0),0);
+      const sumario = document.getElementById('nfeReformaSumario');
+      if(sumario){
+        sumario.innerHTML = comReforma.length
+          ? `<div class="card" style="margin:0; padding:10px 14px; background:var(--accent-pale); border:1px solid var(--accent);">
+               <b style="color:var(--accent-deep);">🧾 Monitor reforma (IBS/CBS)</b> — <b>${comReforma.length}</b> de ${items.length} nota(s) já trazem IBS/CBS no XML ·
+               Total <b>IBS</b>: ${fmtMoney(totIbs)} · Total <b>CBS</b>: ${fmtMoney(totCbs)}
+             </div>`
+          : `<div style="font-size:12px; color:var(--ink-soft);">🧾 Monitor reforma (IBS/CBS): nenhuma nota desta lista traz IBS/CBS no XML ainda (reforma em transição).</div>`;
+      }
       tbody.innerHTML = items.length ? items.map(d=>{
         const canceladaStyle = d.notaCancelada ? 'text-decoration:line-through; color:var(--debit);' : '';
+        const temReforma = (d.valorIbs>0||d.valorCbs>0);
+        const ibsCbsCell = temReforma
+          ? `<span style="color:var(--accent-deep); font-weight:600;" title="IBS / CBS lidos do XML (reforma)">${fmtMoney(d.valorIbs||0)} / ${fmtMoney(d.valorCbs||0)}</span>`
+          : '<span style="color:var(--ink-soft);">—</span>';
         return `
         <tr>
           <td><input type="checkbox" class="nfeDocCheck" data-id="${d.id}"></td>
@@ -6331,12 +6349,13 @@ async function pageNfeBusca(){
           <td style="${canceladaStyle}">${esc(d.destinatarioNome||'—')}</td>
           <td style="font-family:'IBM Plex Mono',monospace; font-size:11px; ${canceladaStyle}">${esc(d.chaveAcesso||'—')}</td>
           <td style="${canceladaStyle}">${d.valorTotal!=null?fmtMoney(d.valorTotal):'—'}</td>
+          <td style="${canceladaStyle}">${ibsCbsCell}</td>
           <td style="text-align:right; white-space:nowrap;">
             <a class="btn small" href="/api/nfe/documentos/${d.id}/xml" target="_blank" rel="noopener">XML</a>
             ${(d.tipo!=='evento'&&d.tipo!=='cte')?`<a class="btn small" href="/api/nfe/documentos/${d.id}/pdf" target="_blank" rel="noopener">PDF</a>`:''}
           </td>
         </tr>
-      `;}).join('') : '<tr><td colspan="8"><div class="empty-state">Nenhum documento encontrado.</div></td></tr>';
+      `;}).join('') : '<tr><td colspan="9"><div class="empty-state">Nenhum documento encontrado.</div></td></tr>';
       document.querySelectorAll('.nfeDocCheck').forEach(c=>c.addEventListener('change', atualizarBarraSelecao));
       atualizarBarraSelecao();
     }
