@@ -6241,11 +6241,24 @@ async function pageNfeBusca(){
     function avisoModulo(moduloAtivo){
       if(!moduloAtivo) toast('O módulo de Busca de XML não está mais ativo pra este escritório.','err');
     }
+    const _hojeIso = new Date().toISOString().slice(0,10);
+    const _anoIni = new Date().getFullYear()+'-01-01';
     box.innerHTML = `
       <button class="btn small" id="btnNfeVoltarLista">← Voltar pra lista de empresas</button>
       <div class="card" style="margin-top:10px;">
         <h3>${esc(empresa?empresa.nome:'Empresa')}</h3>
         <div id="nfeConfigBody"></div>
+      </div>
+      <div class="card" id="nfeDashCard">
+        <div class="row" style="justify-content:space-between; align-items:flex-end; flex-wrap:wrap; gap:8px;">
+          <h3 style="margin:0;">📊 Resumo (NF-e / NFC-e)</h3>
+          <div class="row" style="align-items:flex-end; gap:8px; margin:0;">
+            ${dateFieldHtml('nfeDashDe','De',_anoIni)}
+            ${dateFieldHtml('nfeDashAte','Até',_hojeIso)}
+            <button class="btn small primary" id="btnNfeDashAtualizar">Atualizar</button>
+          </div>
+        </div>
+        <div id="nfeDashBody" style="margin-top:12px;"><div class="empty-state">Carregando…</div></div>
       </div>
       <div class="card">
         <h3>Documentos</h3>
@@ -6286,6 +6299,43 @@ async function pageNfeBusca(){
         onDocumentosMudou: carregarDocumentos,
         onModuloStatus: avisoModulo,
       });
+    }
+
+    async function carregarDashboard(){
+      const body = document.getElementById('nfeDashBody');
+      if(!body) return;
+      body.innerHTML = '<div class="empty-state">Carregando…</div>';
+      const de = document.getElementById('nfeDashDe').value;
+      const ate = document.getElementById('nfeDashAte').value;
+      const p = new URLSearchParams({ empresaId });
+      if(de) p.set('dataDe', de);
+      if(ate) p.set('dataAte', ate);
+      let d;
+      try{ d = await api('/nfe/documentos/dashboard?'+p.toString()); }
+      catch(e){ body.innerHTML = '<div class="empty-state" style="color:var(--debit)">'+esc(e.message)+'</div>'; return; }
+      const tile = (label, val, sub, cor)=>`<div class="kpi" style="min-width:130px; flex:1;"><div style="font-size:10.5px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.3px;">${label}</div><div style="font-size:22px; font-weight:700; ${cor?'color:'+cor+';':''}">${val}</div>${sub?`<div style="font-size:11.5px; color:var(--ink-soft);">${sub}</div>`:''}</div>`;
+      const imp = d.impostos;
+      const maxImp = Math.max(imp.icms,imp.pis,imp.cofins,imp.ipi,imp.ibs,imp.cbs,1);
+      const bar = (label, val, cor)=>{ const pct = Math.round((val/maxImp)*100); return `<div style="margin-bottom:7px;"><div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:2px;"><span>${label}</span><span style="font-weight:600;">${fmtMoney(val)}</span></div><div style="background:var(--rule); border-radius:5px; height:10px; overflow:hidden;"><div style="width:${pct}%; height:100%; background:${cor};"></div></div></div>`; };
+      const totalImp = imp.icms+imp.pis+imp.cofins+imp.ipi+imp.ibs+imp.cbs;
+      body.innerHTML = `
+        <div class="row" style="gap:10px; flex-wrap:wrap;">
+          ${tile('Total de notas', d.total, '')}
+          ${tile('Recebidas', d.recebidas.qtd, fmtMoney(d.recebidas.valor))}
+          ${tile('Emitidas', d.emitidas.qtd, fmtMoney(d.emitidas.valor))}
+          ${tile('Autorizadas', d.autorizadas, '', 'var(--accent-deep)')}
+          ${tile('Canceladas', d.canceladas, '', d.canceladas?'var(--debit)':'')}
+          ${tile('Com IBS/CBS', d.comReforma, 'reforma', 'var(--accent-deep)')}
+        </div>
+        <div class="card" style="margin:12px 0 0; background:var(--paper);">
+          <div style="font-weight:600; font-size:13px; margin-bottom:10px;">Impostos no período — total ${fmtMoney(totalImp)}</div>
+          ${bar('ICMS', imp.icms, '#3b82f6')}
+          ${bar('PIS', imp.pis, '#10b981')}
+          ${bar('COFINS', imp.cofins, '#8b5cf6')}
+          ${bar('IPI', imp.ipi, '#f59e0b')}
+          ${bar('IBS (reforma)', imp.ibs, 'var(--accent)')}
+          ${bar('CBS (reforma)', imp.cbs, 'var(--accent-deep)')}
+        </div>`;
     }
 
     function atualizarBarraSelecao(){
@@ -6392,7 +6442,11 @@ async function pageNfeBusca(){
       clearTimeout(nfeDocBuscaTimer);
       nfeDocBuscaTimer = setTimeout(carregarDocumentos, 350);
     });
+    setupDatePicker('nfeDashDe','nfeDashDe_text');
+    setupDatePicker('nfeDashAte','nfeDashAte_text');
+    document.getElementById('btnNfeDashAtualizar').addEventListener('click', carregarDashboard);
     carregarConfig();
+    carregarDashboard();
     carregarDocumentos();
   }
 

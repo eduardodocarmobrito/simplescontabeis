@@ -336,7 +336,9 @@ export function identificarDocumento(xml: string, schema: string): DocumentoIden
 // NT 2025.002. Retorna os valores quando o XML já traz o grupo (fase de transição da reforma); se a
 // nota ainda não traz, retorna zeros (parseado, sem reforma). null só se não for uma NF-e completa
 // (ex.: resumo/resNFe, evento, CT-e) — aí não dá pra saber e fica "não parseado" pra não travar.
-export function extrairIbsCbs(xml: string): { vIBS: number; vCBS: number; vBC: number; flags: string[] } | null {
+export function extrairIbsCbs(
+  xml: string
+): { vIBS: number; vCBS: number; vBC: number; vICMS: number; vPIS: number; vCOFINS: number; vIPI: number; flags: string[] } | null {
   let json: any;
   try {
     json = xmlParser.parse(xml);
@@ -354,12 +356,23 @@ export function extrairIbsCbs(xml: string): { vIBS: number; vCBS: number; vBC: n
   if (dets.some((d: any) => d?.prod?.rastro)) flags.push("rastro"); // rastreável (lote/validade)
   if (dets.some((d: any) => d?.prod?.veicProd)) flags.push("veiculo"); // veículo
   if (dets.some((d: any) => d?.prod?.DI)) flags.push("importado"); // tem Declaração de Importação
-  const tot = infNFe.total?.IBSCBSTot;
-  if (!tot) return { vIBS: 0, vCBS: 0, vBC: 0, flags }; // NF-e sem o grupo da reforma ainda
-  const gIBS = tot.gIBS || {};
-  const vIBS = num(gIBS.vIBS) || num(gIBS.gIBSUF?.vIBSUF) + num(gIBS.gIBSMun?.vIBSMun);
-  const vCBS = num(tot.gCBS?.vCBS);
-  return { vIBS, vCBS, vBC: num(tot.vBCIBSCBS), flags };
+  const tot = infNFe.total || {};
+  const icms = tot.ICMSTot || {};
+  const vICMS = num(icms.vICMS),
+    vPIS = num(icms.vPIS),
+    vCOFINS = num(icms.vCOFINS),
+    vIPI = num(icms.vIPI);
+  const ibscbs = tot.IBSCBSTot;
+  let vIBS = 0,
+    vCBS = 0,
+    vBC = 0;
+  if (ibscbs) {
+    const gIBS = ibscbs.gIBS || {};
+    vIBS = num(gIBS.vIBS) || num(gIBS.gIBSUF?.vIBSUF) + num(gIBS.gIBSMun?.vIBSMun);
+    vCBS = num(ibscbs.gCBS?.vCBS);
+    vBC = num(ibscbs.vBCIBSCBS);
+  }
+  return { vIBS, vCBS, vBC, vICMS, vPIS, vCOFINS, vIPI, flags };
 }
 
 // Detalhe completo da NF-e/NFC-e (pro painel de detalhe): cabeçalho, participantes, itens e totais

@@ -1916,6 +1916,12 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
   // flags; NULL = ainda não parseado (serve de gatilho do backfill, inclusive pros docs lidos antes
   // dessa coluna existir).
   if (!colsNfeDoc.some((c) => c.name === "flags")) sqlite.exec(`ALTER TABLE nfe_documentos ADD COLUMN flags TEXT`);
+  // Totais de impostos clássicos (ICMS/PIS/COFINS/IPI) lidos do XML — pro dashboard somar por SQL.
+  // valor_icms NULL vira o gatilho do backfill (reparseia os docs lidos antes dessas colunas).
+  if (!colsNfeDoc.some((c) => c.name === "valor_icms")) sqlite.exec(`ALTER TABLE nfe_documentos ADD COLUMN valor_icms REAL`);
+  if (!colsNfeDoc.some((c) => c.name === "valor_pis")) sqlite.exec(`ALTER TABLE nfe_documentos ADD COLUMN valor_pis REAL`);
+  if (!colsNfeDoc.some((c) => c.name === "valor_cofins")) sqlite.exec(`ALTER TABLE nfe_documentos ADD COLUMN valor_cofins REAL`);
+  if (!colsNfeDoc.some((c) => c.name === "valor_ipi")) sqlite.exec(`ALTER TABLE nfe_documentos ADD COLUMN valor_ipi REAL`);
 }
 // Migração leve: opt-in por empresa pra busca automática da Guia FGTS Digital (nem toda empresa tem
 // FGTS, ex. MEI sem funcionário) + rastro da última busca em lote (ver fgts-automacao.ts).
@@ -7365,6 +7371,33 @@ async function nfeExecutarBuscaAutomatica() {
 setInterval(() => {
   nfeExecutarBuscaAutomatica().catch((e) => console.error("Erro na busca automática de XML:", e.message));
 }, NFE_AUTO_INTERVALO_MS);
+// Versão do parser de tributos — ao subir (novas colunas/lógica), força reparsear os docs já lidos.
+const NFE_TRIB_VERSAO = 2;
+// Lê o XML das notas (ids) e cacheia IBS/CBS/ICMS/PIS/COFINS/IPI/flags nas colunas. Retorna, por id,
+// os valores de reforma pra quem precisar exibir na hora (listagem). Marca tributos_parseado = versão.
+function parsearECachearTributos(ids: number[]): Map<number, { vIBS: number; vCBS: number; flags: string }> {
+  const out = new Map<number, { vIBS: number; vCBS: number; flags: string }>();
+  if (!ids.length) return out;
+  const xmls = sqlite.prepare(`SELECT id, xml FROM nfe_documentos WHERE id IN (${ids.map(() => "?").join(",")})`).all(...ids) as any[];
+  const upd = sqlite.prepare(
+    `UPDATE nfe_documentos SET valor_ibs=?, valor_cbs=?, valor_bc_ibscbs=?, valor_icms=?, valor_pis=?, valor_cofins=?, valor_ipi=?, flags=?, tributos_parseado=? WHERE id=?`
+  );
+  const tx = sqlite.transaction(() => {
+    for (const x of xmls) {
+      const t = nfe.extrairIbsCbs(x.xml);
+      if (t) {
+        const flags = t.flags.join(",");
+        upd.run(t.vIBS, t.vCBS, t.vBC, t.vICMS, t.vPIS, t.vCOFINS, t.vIPI, flags, NFE_TRIB_VERSAO, x.id);
+        out.set(x.id, { vIBS: t.vIBS, vCBS: t.vCBS, flags });
+      } else {
+        upd.run(0, 0, 0, 0, 0, 0, 0, "", NFE_TRIB_VERSAO, x.id); // não é NF-e completa — zera e marca parseado
+        out.set(x.id, { vIBS: 0, vCBS: 0, flags: "" });
+      }
+    }
+  });
+  tx();
+  return out;
+}
 app.get("/api/nfe/documentos", blockCliente, requirePermissao("nfe-busca", "visualizar"), (req, res) => {
   const user = (req as any).user;
   const empresaId = req.query.empresaId ? Number(req.query.empresaId) : null;
@@ -7433,30 +7466,19 @@ app.get("/api/nfe/documentos", blockCliente, requirePermissao("nfe-busca", "visu
        ORDER BY d.data_emissao DESC, d.id DESC LIMIT 500`
     )
     .all(...params) as any[];
-  // Backfill preguiçoso (reforma IBS/CBS + flags): lê o XML das NF-e/NFC-e ainda não lidas desta página
-  // (flags NULL = nunca parseado, inclusive as lidas antes da coluna flags existir) e cacheia.
-  const naoParseados = rows.filter((r) => r.flags == null && (r.tipo === "nfe" || r.tipo === "nfce"));
+  // Backfill preguiçoso (IBS/CBS/ICMS/PIS/COFINS/IPI/flags): lê o XML das NF-e/NFC-e desta página ainda
+  // não parseadas na versão atual (inclusive as lidas antes das colunas novas) e cacheia nas colunas.
+  const naoParseados = rows.filter((r) => (r.tributosParseado || 0) < NFE_TRIB_VERSAO && (r.tipo === "nfe" || r.tipo === "nfce"));
   if (naoParseados.length) {
-    const ids = naoParseados.map((r) => r.id);
-    const xmls = sqlite.prepare(`SELECT id, xml FROM nfe_documentos WHERE id IN (${ids.map(() => "?").join(",")})`).all(...ids) as any[];
-    const porId = new Map(xmls.map((x) => [x.id, x.xml]));
-    const upd = sqlite.prepare(`UPDATE nfe_documentos SET valor_ibs = ?, valor_cbs = ?, valor_bc_ibscbs = ?, flags = ?, tributos_parseado = 1 WHERE id = ?`);
-    const tx = sqlite.transaction(() => {
-      for (const r of naoParseados) {
-        const xml = porId.get(r.id);
-        const t = xml ? nfe.extrairIbsCbs(xml) : null;
-        if (t) {
-          r.valorIbs = t.vIBS;
-          r.valorCbs = t.vCBS;
-          r.flags = t.flags.join(",");
-          upd.run(t.vIBS, t.vCBS, t.vBC, r.flags, r.id);
-        } else {
-          r.flags = ""; // não é NF-e completa — marca parseado (flags "") pra não repetir
-          upd.run(null, null, null, "", r.id);
-        }
+    const mapa = parsearECachearTributos(naoParseados.map((r) => r.id));
+    for (const r of rows) {
+      const v = mapa.get(r.id);
+      if (v) {
+        r.valorIbs = v.vIBS;
+        r.valorCbs = v.vCBS;
+        r.flags = v.flags;
       }
-    });
-    tx();
+    }
   }
   res.json({ items: rows.map((r) => ({ ...r, notaCancelada: !!r.notaCancelada })) });
 });
@@ -7464,6 +7486,57 @@ app.get("/api/nfe/documentos", blockCliente, requirePermissao("nfe-busca", "visu
 // mostrar as últimas notas na tela de detalhe, não é confiável pra somar quantos documentos cada
 // empresa tem (com volume grande, os 500 mais recentes do escritório inteiro ficam concentrados em
 // poucas empresas e a soma por empresa fica errada pras outras).
+// Dashboard de NF-e/NFC-e por empresa + período: KPIs (emitidas/recebidas/canceladas) + totais de
+// impostos (ICMS/PIS/COFINS/IPI + IBS/CBS). Backfilla os docs do escopo ainda não lidos antes de somar.
+app.get("/api/nfe/documentos/dashboard", blockCliente, requirePermissao("nfe-busca", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.query.empresaId);
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
+  const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
+  const cond: string[] = [`d.escritorio_id = ?`, `d.empresa_id = ?`, `d.tipo IN ('nfe','nfce')`];
+  const params: any[] = [user.escritorioId, empresaId];
+  if (dataDe) {
+    cond.push(`substr(d.data_emissao,1,10) >= ?`);
+    params.push(dataDe);
+  }
+  if (dataAte) {
+    cond.push(`substr(d.data_emissao,1,10) <= ?`);
+    params.push(dataAte);
+  }
+  const where = cond.join(" AND ");
+  // Backfill dos docs do escopo ainda não parseados na versão atual (até 3000 por chamada).
+  const pend = sqlite.prepare(`SELECT id FROM nfe_documentos d WHERE ${where} AND (tributos_parseado IS NULL OR tributos_parseado < ?) LIMIT 3000`).all(...params, NFE_TRIB_VERSAO) as any[];
+  if (pend.length) parsearECachearTributos(pend.map((p) => p.id));
+  const emitExpr = `d.emitente_cnpj = REPLACE(REPLACE(REPLACE(e.cnpj,'.',''),'/',''),'-','')`;
+  const canceladaExpr = `EXISTS (SELECT 1 FROM nfe_documentos ev WHERE ev.escritorio_id = d.escritorio_id AND ev.tipo='evento' AND ev.chave_acesso = d.chave_acesso AND ev.evento_descricao LIKE '%ancela%' AND ev.evento_descricao NOT LIKE '%CT-e%' AND ev.evento_descricao NOT LIKE '%MDF-e%')`;
+  const r = sqlite
+    .prepare(
+      `SELECT COUNT(*) as total,
+         SUM(CASE WHEN ${emitExpr} THEN 1 ELSE 0 END) as emitidasQtd,
+         SUM(CASE WHEN ${emitExpr} THEN COALESCE(d.valor_total,0) ELSE 0 END) as emitidasValor,
+         SUM(CASE WHEN NOT (${emitExpr}) THEN 1 ELSE 0 END) as recebidasQtd,
+         SUM(CASE WHEN NOT (${emitExpr}) THEN COALESCE(d.valor_total,0) ELSE 0 END) as recebidasValor,
+         SUM(CASE WHEN ${canceladaExpr} THEN 1 ELSE 0 END) as canceladasQtd,
+         SUM(COALESCE(d.valor_total,0)) as valorTotal,
+         SUM(COALESCE(d.valor_icms,0)) as icms, SUM(COALESCE(d.valor_pis,0)) as pis,
+         SUM(COALESCE(d.valor_cofins,0)) as cofins, SUM(COALESCE(d.valor_ipi,0)) as ipi,
+         SUM(COALESCE(d.valor_ibs,0)) as ibs, SUM(COALESCE(d.valor_cbs,0)) as cbs,
+         SUM(CASE WHEN COALESCE(d.valor_ibs,0)>0 OR COALESCE(d.valor_cbs,0)>0 THEN 1 ELSE 0 END) as comReforma
+       FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id WHERE ${where}`
+    )
+    .get(...params) as any;
+  res.json({
+    total: r.total || 0,
+    emitidas: { qtd: r.emitidasQtd || 0, valor: r.emitidasValor || 0 },
+    recebidas: { qtd: r.recebidasQtd || 0, valor: r.recebidasValor || 0 },
+    canceladas: r.canceladasQtd || 0,
+    autorizadas: (r.total || 0) - (r.canceladasQtd || 0),
+    valorTotal: r.valorTotal || 0,
+    comReforma: r.comReforma || 0,
+    impostos: { icms: r.icms || 0, pis: r.pis || 0, cofins: r.cofins || 0, ipi: r.ipi || 0, ibs: r.ibs || 0, cbs: r.cbs || 0 },
+  });
+});
 app.get("/api/nfe/documentos/contagem", blockCliente, requirePermissao("nfe-busca", "visualizar"), (req, res) => {
   const user = (req as any).user;
   const empresasIds = empresasVisiveis(user);
