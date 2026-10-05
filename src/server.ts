@@ -6900,9 +6900,12 @@ app.put("/api/nfe/config/:empresaId/manifestacao-automatica", blockCliente, requ
   sqlite.prepare(`UPDATE nfe_busca_config SET manifestacao_automatica = ? WHERE empresa_id = ?`).run(req.body?.ativo ? 1 : 0, empId);
   // Ao ligar, manda Ciência pro backlog de notas que já estavam em resumo — em segundo plano (pode
   // levar alguns minutos se tiver muita nota pendente), não trava a resposta desta tela.
+  console.log(`[manifestação] PUT empresa ${empId}: ativo=${req.body?.ativo} manifestacao_automatica_antes=${row.manifestacao_automatica} ligando=${ligando}`);
   if (ligando) {
     const cert = nfeCarregarCertificado(row);
-    nfeManifestarBacklogResumos(empId, row, cert).catch((e) => console.error(`Manifestação de backlog (empresa ${empId}):`, e.message));
+    nfeManifestarBacklogResumos(empId, row, cert)
+      .then((r) => console.log(`[manifestação] backlog empresa ${empId} concluído:`, JSON.stringify(r)))
+      .catch((e) => console.error(`[manifestação] backlog empresa ${empId} ERRO:`, e.message));
   }
   res.json({ ok: true });
 });
@@ -7000,6 +7003,7 @@ async function nfeManifestarBacklogResumos(empresaId: number, cfg: any, cert: nf
        LIMIT 200`
     )
     .all(empresaId) as any[];
+  console.log(`[manifestação] backlog empresa ${empresaId}: ${pendentes.length} pendente(s)`);
   let ok = 0, erros = 0;
   for (const p of pendentes) {
     try {
