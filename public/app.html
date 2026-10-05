@@ -6609,11 +6609,11 @@ async function abrirDetalheNota(id){
         <div class="card" style="margin:0; padding:10px 12px;"><div style="font-size:11px; color:var(--accent-deep); font-weight:600;">📥 Destinatário</div><div style="margin-top:3px;">${esc(det.dest.nome||'—')}</div><div style="color:var(--ink-soft); font-size:11.5px;">${esc(det.dest.doc||'')}${det.dest.uf?' · '+esc(det.dest.uf):''}</div></div>
       </div>
       <div class="tabs" id="detTabs">
-        <div class="tab active" data-t="geral">Geral</div>
-        <div class="tab" data-t="participantes">Participantes</div>
-        <div class="tab" data-t="produtos">Produtos <span class="tag muted">${det.itens.length}</span></div>
-        <div class="tab" data-t="impostos">Impostos${det.temReforma?' <span class="tag ok">IBS/CBS</span>':''}</div>
-        <div class="tab" data-t="xml">XML</div>
+        <div class="tab active" data-t="geral">📋 Geral</div>
+        <div class="tab" data-t="participantes">👥 Participantes</div>
+        <div class="tab" data-t="produtos">📦 Produtos <span class="tag muted">${det.itens.length}</span></div>
+        <div class="tab" data-t="impostos">💲 Impostos${det.temReforma?' <span class="tag ok">IBS/CBS</span>':''}</div>
+        <div class="tab" data-t="xml">📄 XML</div>
       </div>
       <div id="detConteudo" style="margin-top:12px;"></div>
     </div>
