@@ -162,8 +162,12 @@
   .drawer-x{border:0; background:transparent; font-size:22px; line-height:1; cursor:pointer; color:var(--ink-soft); padding:2px 6px;}
   .drawer-x:hover{color:var(--ink);}
   .drawer-body{padding:16px 18px; overflow-y:auto; flex:1;}
-  .xml-view{background:#0f1a16; color:#d6e4dd; border-radius:8px; padding:12px 14px; font-family:'IBM Plex Mono',monospace; font-size:11.5px; line-height:1.5; white-space:pre; overflow:auto; max-height:52vh; margin:0;}
-  :root:not([data-theme="dark"]) .xml-view{background:#0f1a16; color:#d6e4dd;}
+  .xml-view-wrap{background:var(--paper); border:1px solid var(--rule); border-radius:8px; overflow:auto; max-height:52vh;}
+  .xml-linha{display:flex;}
+  .xml-linha:hover{background:var(--sidebar-active);}
+  .xml-num{flex:0 0 42px; text-align:right; padding:0 8px 0 0; color:var(--ink-soft); background:var(--sidebar-bg, var(--paper)); border-right:1px solid var(--rule); user-select:none; position:sticky; left:0;}
+  .xml-conteudo{padding:0 0 0 10px; color:var(--ink); flex:1;}
+  .xml-num, .xml-conteudo{font-family:'IBM Plex Mono',monospace; font-size:11.5px; line-height:1.6; white-space:pre;}
 
   .drawer-bg{position:fixed; inset:0; background:rgba(20,30,26,.35); display:none; z-index:1000;}
   .drawer-bg.open{display:block;}
@@ -6615,17 +6619,30 @@ function openDrawer(innerHtml){
 }
 function closeDrawer(){ const bg=document.getElementById('nfeDrawerBg'); if(bg){ bg.classList.remove('open'); setTimeout(()=>{ const d=document.getElementById('nfeDrawer'); if(d) d.innerHTML=''; }, 220); } }
 
-// Carrega o XML cru da nota e mostra formatado dentro do container (lazy — só quando a aba abre).
+// Indenta o XML por profundidade (tag de abertura avança, fechamento recua; declaração <?xml...?> e
+// tag auto-fechada <x/> não mudam o nível) — mesmo efeito visual do Espião.
+function formatarXml(xml){
+  const PAD = '  ';
+  let formatado = '';
+  let pad = 0;
+  xml.replace(/>\s*</g, '>\n<').split('\n').forEach(linha=>{
+    if(/^<\//.test(linha)) pad = Math.max(pad - 1, 0);
+    formatado += PAD.repeat(pad) + linha + '\n';
+    if(/^<[^!?/][^>]*[^/?]>$/.test(linha)) pad++;
+  });
+  return formatado.trim();
+}
+// Carrega o XML cru da nota e mostra formatado, com numeração de linha (estilo Espião), dentro do
+// container (lazy — só quando a aba abre).
 async function carregarXmlInline(id, container){
   if(!container || container.dataset.loaded) return;
   container.dataset.loaded = '1';
   try{
     const r = await fetch('/api/nfe/documentos/'+id+'/xml', { credentials:'same-origin' });
-    let txt = await r.text();
-    // Indenta o XML pra leitura (quebra entre tags). Simples e suficiente pro visual.
-    txt = txt.replace(/>\s*</g, '>\n<');
-    container.querySelector('pre').textContent = txt;
-  }catch(e){ container.querySelector('pre').textContent = 'Não foi possível carregar o XML: '+e.message; }
+    const txt = await r.text();
+    const linhas = formatarXml(txt).split('\n');
+    container.innerHTML = linhas.map((l,i)=>`<div class="xml-linha"><span class="xml-num">${i+1}</span><span class="xml-conteudo">${esc(l)}</span></div>`).join('');
+  }catch(e){ container.innerHTML = `<div style="padding:10px;">Não foi possível carregar o XML: ${esc(e.message)}</div>`; }
 }
 // Menu flutuante genérico (estilo Espião): abre colado embaixo do botão clicado, fecha ao clicar fora
 // (ou ao clicar de novo no mesmo botão — fica guardado em MENU_FLUTUANTE_BOTAO pra saber se foi o mesmo).
@@ -6683,7 +6700,7 @@ async function abrirDetalheNota(id, tabInicial){
   const money = (v)=>fmtMoney(v||0);
   const statusTag = data.notaCancelada ? '<span class="tag bad">Cancelada</span>' : (data.tipo==='evento'?'<span class="tag muted">Evento</span>':'<span class="tag ok">Autorizada</span>');
   const xmlLink = `/api/nfe/documentos/${id}/xml`;
-  const xmlInlineHtml = `<div class="row" style="margin-bottom:8px;"><a class="btn small" href="${xmlLink}" target="_blank" rel="noopener">⬇ Baixar XML</a></div><div id="detXmlBox" class="xml-view-wrap"><pre class="xml-view">Carregando XML…</pre></div>`;
+  const xmlInlineHtml = `<div class="row" style="margin-bottom:8px;"><a class="btn small" href="${xmlLink}" target="_blank" rel="noopener">⬇ Baixar XML</a></div><div id="detXmlBox" class="xml-view-wrap"><div style="padding:10px; color:var(--ink-soft); font-size:12px;">Carregando XML…</div></div>`;
   if(!det){
     openDrawer(`
       <div class="drawer-head"><h3>Detalhes do documento ${statusTag}</h3><button class="drawer-x" id="detFechar" title="Fechar">×</button></div>
