@@ -7382,7 +7382,9 @@ function parsearECachearTributos(ids: number[]): Map<number, { vIBS: number; vCB
   const upd = sqlite.prepare(
     `UPDATE nfe_documentos SET valor_ibs=?, valor_cbs=?, valor_bc_ibscbs=?, valor_icms=?, valor_pis=?, valor_cofins=?, valor_ipi=?, flags=?, tributos_parseado=? WHERE id=?`
   );
-  const tx = sqlite.transaction(() => {
+  // node:sqlite não tem .transaction(): BEGIN/COMMIT na mão.
+  sqlite.exec("BEGIN");
+  try {
     for (const x of xmls) {
       const t = nfe.extrairIbsCbs(x.xml);
       if (t) {
@@ -7394,8 +7396,11 @@ function parsearECachearTributos(ids: number[]): Map<number, { vIBS: number; vCB
         out.set(x.id, { vIBS: 0, vCBS: 0, flags: "" });
       }
     }
-  });
-  tx();
+    sqlite.exec("COMMIT");
+  } catch (e) {
+    sqlite.exec("ROLLBACK");
+    throw e;
+  }
   return out;
 }
 app.get("/api/nfe/documentos", blockCliente, requirePermissao("nfe-busca", "visualizar"), (req, res) => {
