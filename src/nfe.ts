@@ -297,7 +297,7 @@ export async function enviarManifestacaoCiencia(params: { ambiente: AmbienteNfe;
     req.write(bodyBuffer);
     req.end();
   });
-  if (status !== 200) throw new Error(`A Sefaz recusou a conexão (HTTP ${status}) ao mandar a manifestação.`);
+  if (status !== 200) throw new Error(`A Sefaz recusou a conexão (HTTP ${status}) ao mandar a manifestação: ${corpo.slice(0, 800)}`);
   const json = xmlParser.parse(corpo) as any;
   const retEnvEvento = json?.["soap:Envelope"]?.["soap:Body"]?.nfeRecepcaoEventoResponse?.nfeRecepcaoEventoResult?.retEnvEvento;
   if (!retEnvEvento) throw new Error("Resposta da Sefaz em formato inesperado ao mandar a manifestação.");
