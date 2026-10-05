@@ -971,6 +971,10 @@ const NAV = [
 // Tipo escolhido no sub-menu da Busca de XML (NF-e/CT-e/NFC-e/NF3-e/SAT-CF-e) — pré-filtra a lista
 // quando o usuário abre uma empresa. '' = Todos.
 let NFE_TIPO_SEL = '';
+// Módulos de menu que o usuário recolheu manualmente (clicou de novo já estando na página) — sem isso,
+// o expandido/recolhido só seguia a página atual e clicar de novo no item não tinha efeito (sempre
+// reabria, porque "já estar na página" é justamente a condição que mantém expandido).
+let NAV_FECHADOS = new Set();
 const PAGINAS_CLIENTE_RESTRINGIVEIS = ['minha-nfse','meus-documentos','solicitar-documentos','documentos-recebidos','notas-entrada','minha-financeiro','minha-assinatura'];
 const PAGINAS_CLIENTE_TODAS = [
   { id:'minha-nfse', label:'NFS-e' },
@@ -997,8 +1001,9 @@ function renderNav(){
   const wrap=document.getElementById('navList');
   let html='';
   NAV.filter(podeVerModulo).forEach(it=>{
-    // Sub-itens ficam recolhidos; só expandem quando o módulo está ativo (ou uma sub-página dele está).
-    const expandido = it.subs && (STATE.page===it.id || it.subs.some(s=>s.page && STATE.page===s.page));
+    // Sub-itens ficam recolhidos; só expandem quando o módulo está ativo (ou uma sub-página dele está) —
+    // a menos que o usuário tenha recolhido manualmente (NAV_FECHADOS), aí fica fechado até ele clicar de novo.
+    const expandido = it.subs && !NAV_FECHADOS.has(it.id) && (STATE.page===it.id || it.subs.some(s=>s.page && STATE.page===s.page));
     const caret = it.subs ? `<span style="font-size:9px; opacity:.6; margin-right:-2px;">${expandido?'▾':'▸'}</span>` : '';
     html += `<div class="nav-item ${STATE.page===it.id?'active':''}" data-page="${it.id}">${caret}${esc(it.label)}</div>`;
     if(it.subs && expandido){
@@ -1009,7 +1014,18 @@ function renderNav(){
     }
   });
   wrap.innerHTML = html;
-  wrap.querySelectorAll('.nav-item').forEach(el=>el.addEventListener('click', ()=>goPage(el.dataset.page)));
+  wrap.querySelectorAll('.nav-item').forEach(el=>el.addEventListener('click', ()=>{
+    const id = el.dataset.page;
+    const it = NAV.find(n=>n.id===id);
+    if(it && it.subs && STATE.page===id){
+      // Já está no módulo: o clique no item pai alterna recolher/expandir o sub-menu (não navega de novo).
+      if(NAV_FECHADOS.has(id)) NAV_FECHADOS.delete(id); else NAV_FECHADOS.add(id);
+      renderNav();
+      return;
+    }
+    if(it && it.subs) NAV_FECHADOS.delete(id); // chegando de outra página: abre expandido por padrão
+    goPage(id);
+  }));
   wrap.querySelectorAll('.nav-sub').forEach(el=>el.addEventListener('click', ()=>{
     const [pid, idx] = el.dataset.sub.split(':');
     const sub = NAV.find(n=>n.id===pid).subs[Number(idx)];
@@ -5364,7 +5380,10 @@ async function renderNfseModelos(){
   const { items } = await api('/nfse/modelos');
   const box = document.getElementById('nfseContent');
   box.innerHTML = `
-    <div class="row" style="margin-bottom:14px;">${podePostar?`<button class="btn primary" id="btnNovoNfseModelo">+ Novo modelo</button>`:''}</div>
+    <div class="row" style="margin-bottom:14px; gap:10px; align-items:center; flex-wrap:wrap;">
+      ${podePostar?`<button class="btn primary" id="btnNovoNfseModelo">+ Novo modelo</button>`:''}
+      <div class="field" style="max-width:320px; margin-bottom:0;"><input type="text" id="nfseModelosBusca" placeholder="Buscar por nome ou código…" autocomplete="off"></div>
+    </div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
         <thead><tr><th>Nome</th><th>Cód. tributação nacional</th><th>ISSQN</th><th>Ativo</th><th></th></tr></thead>
@@ -5373,20 +5392,27 @@ async function renderNfseModelos(){
     </div>
   `;
   const TRIB_ISSQN_LABEL={1:'Operação tributável',2:'Imunidade',3:'Exportação de serviço',4:'Não incidência'};
-  document.getElementById('nfseModelosBody').innerHTML = items.length? items.map(m=>`
-    <tr data-id="${m.id}">
-      <td><b>${esc(m.nome)}</b></td>
-      <td>${esc(m.codigoTributacaoNacional)}</td>
-      <td>${TRIB_ISSQN_LABEL[m.tribIssqn]||m.tribIssqn}</td>
-      <td><span class="tag ${m.ativo?'ok':'muted'}">${m.ativo?'Sim':'Não'}</span></td>
-      <td style="text-align:right;">${podeEditar?`<button class="btn small" data-act="edit">Editar</button>`:''}</td>
-    </tr>
-  `).join('') : `<tr><td colspan="5"><div class="empty-state">Nenhum modelo cadastrado ainda.</div></td></tr>`;
+  function desenhar(lista){
+    document.getElementById('nfseModelosBody').innerHTML = lista.length? lista.map(m=>`
+      <tr data-id="${m.id}">
+        <td><b>${esc(m.nome)}</b></td>
+        <td>${esc(m.codigoTributacaoNacional)}</td>
+        <td>${TRIB_ISSQN_LABEL[m.tribIssqn]||m.tribIssqn}</td>
+        <td><span class="tag ${m.ativo?'ok':'muted'}">${m.ativo?'Sim':'Não'}</span></td>
+        <td style="text-align:right;">${podeEditar?`<button class="btn small" data-act="edit">Editar</button>`:''}</td>
+      </tr>
+    `).join('') : `<tr><td colspan="5"><div class="empty-state">Nenhum modelo encontrado.</div></td></tr>`;
+    if(podeEditar) document.getElementById('nfseModelosBody').querySelectorAll('[data-act="edit"]').forEach(b=>b.addEventListener('click', e=>{
+      const id=Number(e.target.closest('tr').dataset.id);
+      nfseModeloModal(items.find(x=>x.id===id));
+    }));
+  }
+  desenhar(items);
   if(podePostar) document.getElementById('btnNovoNfseModelo').addEventListener('click', ()=>nfseModeloModal());
-  if(podeEditar) document.getElementById('nfseModelosBody').querySelectorAll('[data-act="edit"]').forEach(b=>b.addEventListener('click', e=>{
-    const id=Number(e.target.closest('tr').dataset.id);
-    nfseModeloModal(items.find(x=>x.id===id));
-  }));
+  document.getElementById('nfseModelosBusca').addEventListener('input', e=>{
+    const q = e.target.value.trim().toLowerCase();
+    desenhar(!q ? items : items.filter(m=>m.nome.toLowerCase().includes(q) || String(m.codigoTributacaoNacional||'').toLowerCase().includes(q)));
+  });
 }
 async function nfseModeloModal(m, opts){
   opts = Object.assign({ basePath:'/nfse/modelos', ctribPath:'/nfse/ctribnac', nbsPath:'/nfse/nbs', cclasstribPath:'/nfse/cclasstrib', aoSalvar:renderNfseModelos }, opts||{});
