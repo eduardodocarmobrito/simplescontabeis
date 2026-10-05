@@ -6894,9 +6894,16 @@ app.put("/api/nfe/config/:empresaId/ativo", blockCliente, requirePermissao("nfe-
 app.put("/api/nfe/config/:empresaId/manifestacao-automatica", blockCliente, requirePermissao("nfe-busca", "editar"), (req, res) => {
   const user = (req as any).user;
   const empId = Number(req.params.empresaId);
-  const row = sqlite.prepare(`SELECT escritorio_id FROM nfe_busca_config WHERE empresa_id = ?`).get(empId) as any;
+  const row = sqlite.prepare(`SELECT * FROM nfe_busca_config WHERE empresa_id = ?`).get(empId) as any;
   if (!row || row.escritorio_id !== user.escritorioId) return res.status(404).json({ error: "Configuração não encontrada." });
+  const ligando = !!req.body?.ativo && !row.manifestacao_automatica;
   sqlite.prepare(`UPDATE nfe_busca_config SET manifestacao_automatica = ? WHERE empresa_id = ?`).run(req.body?.ativo ? 1 : 0, empId);
+  // Ao ligar, manda Ciência pro backlog de notas que já estavam em resumo — em segundo plano (pode
+  // levar alguns minutos se tiver muita nota pendente), não trava a resposta desta tela.
+  if (ligando) {
+    const cert = nfeCarregarCertificado(row);
+    nfeManifestarBacklogResumos(empId, row, cert).catch((e) => console.error(`Manifestação de backlog (empresa ${empId}):`, e.message));
+  }
   res.json({ ok: true });
 });
 app.delete("/api/nfe/config/:empresaId", blockCliente, requirePermissao("nfe-busca", "editar"), (req, res) => {
@@ -6976,6 +6983,39 @@ function nfeResolverCnpjBusca(cfg: any, empresaId: number): string {
     sqlite.prepare(`UPDATE nfe_busca_config SET cnpj = ? WHERE empresa_id = ?`).run(cnpjEmpresa, empresaId);
   }
   return cnpjEmpresa;
+}
+// Manda Ciência da Operação pro BACKLOG de notas que já estavam em resumo antes de ligar a
+// manifestação automática pra essa empresa (sem isso, só a nota NOVA a partir de agora seria
+// manifestada — a pendência de antes ficaria presa em resumo pra sempre). Rodada à parte do ciclo
+// normal de busca, disparada uma vez quando a opção é ligada (ver PUT .../manifestacao-automatica).
+// Teto de segurança (200) pra não travar numa empresa com milhares de notas em resumo de uma vez.
+async function nfeManifestarBacklogResumos(empresaId: number, cfg: any, cert: nfse.CertificadoInfo): Promise<{ tentadas: number; ok: number; erros: number }> {
+  const cnpjBusca = nfeResolverCnpjBusca(cfg, empresaId);
+  const pendentes = sqlite
+    .prepare(
+      `SELECT d.chave_acesso as chaveAcesso, d.emitente_cnpj as emitenteCnpj, d.emitente_nome as emitenteNome
+       FROM nfe_documentos d
+       WHERE d.empresa_id = ? AND d.tipo IN ('nfe','nfce') AND d.chave_acesso IS NOT NULL AND substr(d.xml,1,7) = '<resNFe'
+         AND NOT EXISTS (SELECT 1 FROM nfe_documentos ev WHERE ev.empresa_id = d.empresa_id AND ev.nsu = 'ciencia_' || d.chave_acesso)
+       LIMIT 200`
+    )
+    .all(empresaId) as any[];
+  let ok = 0, erros = 0;
+  for (const p of pendentes) {
+    try {
+      const manif = await nfe.enviarManifestacaoCiencia({ ambiente: cfg.ambiente as nfe.AmbienteNfe, cnpj: cnpjBusca, cert, chave: p.chaveAcesso });
+      nfeInserirDocumento.run(
+        empresaId, cfg.escritorio_id, "nfe", `ciencia_${p.chaveAcesso}`, "eventoCienciaAutomatica", "evento",
+        p.chaveAcesso, p.emitenteCnpj, p.emitenteNome, cnpjBusca.replace(/\D/g, ""), null, null, manif.dhEvento, manif.xmlEnviado,
+        manif.sucesso ? "Ciencia da Operacao (automatica)" : `Ciencia da Operacao (automatica) - rejeitada: ${manif.xMotivo}`
+      );
+      if (manif.sucesso) ok++; else erros++;
+    } catch (e: any) {
+      erros++;
+      console.error(`Manifestação de backlog falhou (empresa ${empresaId}, chave ${p.chaveAcesso}):`, e.message);
+    }
+  }
+  return { tentadas: pendentes.length, ok, erros };
 }
 // Captura de nota emitida por um CLIENTE via tag autXML (investigação registrada em memory.md):
 // quando o cliente configura o CNPJ do escritório como "autorizado a acessar o XML" no software
