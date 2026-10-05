@@ -7489,6 +7489,21 @@ app.get("/api/nfe/documentos/:id/xml", blockCliente, requirePermissao("nfe-busca
   res.setHeader("Content-Disposition", `attachment; filename="${row.chave_acesso || row.nsu}.xml"`);
   res.send(row.xml);
 });
+// Detalhe estruturado da nota (pro painel de abas Geral/Produtos/Impostos/Participantes). Parseia o
+// XML na hora (barato pra um doc só). Se não for NF-e completa, detalhe = null (a tela mostra só o XML).
+app.get("/api/nfe/documentos/:id/detalhe", blockCliente, requirePermissao("nfe-busca", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const row = sqlite.prepare(`SELECT * FROM nfe_documentos WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!row || row.escritorio_id !== user.escritorioId || !podeAcessarEmpresa(user, row.empresa_id)) {
+    return res.status(404).json({ error: "Documento não encontrado." });
+  }
+  const notaCancelada = !!(
+    sqlite
+      .prepare(`SELECT 1 FROM nfe_documentos WHERE escritorio_id = ? AND tipo = 'evento' AND chave_acesso = ? AND evento_descricao LIKE '%ancela%' AND evento_descricao NOT LIKE '%CT-e%' AND evento_descricao NOT LIKE '%MDF-e%' LIMIT 1`)
+      .get(row.escritorio_id, row.chave_acesso) as any
+  );
+  res.json({ tipo: row.tipo, chaveAcesso: row.chave_acesso, notaCancelada, detalhe: nfe.detalharNfe(row.xml) });
+});
 function nfeDocNomeArquivo(row: any, extensao: string): string {
   const quem = row.emitente_nome || row.destinatario_nome || String(row.tipo).toUpperCase();
   const base = `${quem} - ${String(row.tipo).toUpperCase()} ${row.chave_acesso || row.nsu}`.replace(/[\\/:*?"<>|]/g, "").trim();

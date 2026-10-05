@@ -6365,12 +6365,14 @@ async function pageNfeBusca(){
           <td style="${canceladaStyle}">${d.valorTotal!=null?fmtMoney(d.valorTotal):'—'}</td>
           <td style="${canceladaStyle}">${ibsCbsCell}</td>
           <td style="text-align:right; white-space:nowrap;">
+            ${d.tipo!=='evento'?`<button class="btn small primary nfeDetBtn" data-id="${d.id}">Detalhes</button>`:''}
             <a class="btn small" href="/api/nfe/documentos/${d.id}/xml" target="_blank" rel="noopener">XML</a>
             ${(d.tipo!=='evento'&&d.tipo!=='cte')?`<a class="btn small" href="/api/nfe/documentos/${d.id}/pdf" target="_blank" rel="noopener">PDF</a>`:''}
           </td>
         </tr>
       `;}).join('') : '<tr><td colspan="13"><div class="empty-state">Nenhum documento encontrado.</div></td></tr>';
       document.querySelectorAll('.nfeDocCheck').forEach(c=>c.addEventListener('change', atualizarBarraSelecao));
+      document.querySelectorAll('.nfeDetBtn').forEach(b=>b.addEventListener('click', ()=>abrirDetalheNota(b.dataset.id)));
       atualizarBarraSelecao();
     }
 
@@ -6395,6 +6397,75 @@ async function pageNfeBusca(){
   }
 
   mostrarLista();
+}
+
+// Painel de detalhe de uma nota (abas Geral / Produtos / Impostos / Participantes / XML).
+async function abrirDetalheNota(id){
+  let data;
+  try{ data = await api('/nfe/documentos/'+id+'/detalhe'); }
+  catch(e){ toast(e.message,'err'); return; }
+  const det = data.detalhe;
+  const money = (v)=>fmtMoney(v||0);
+  const statusTag = data.notaCancelada ? '<span class="tag bad">Cancelada</span>' : (data.tipo==='evento'?'<span class="tag muted">Evento</span>':'<span class="tag ok">Autorizada</span>');
+  const xmlLink = `/api/nfe/documentos/${id}/xml`;
+  if(!det){
+    openModal(`
+      <h3>Detalhes do documento ${statusTag}</h3>
+      <p class="subtitle">Tipo <b>${esc((data.tipo||'').toUpperCase())}</b> — este tipo não tem o detalhamento de NF-e. Veja o XML completo.</p>
+      <p style="font-family:'IBM Plex Mono',monospace; font-size:11px; word-break:break-all;">${esc(data.chaveAcesso||'')}</p>
+      <div class="modal-actions"><a class="btn" href="${xmlLink}" target="_blank" rel="noopener">⬇ Baixar XML</a><button class="btn primary" id="detFechar">Fechar</button></div>`);
+    document.getElementById('detFechar').addEventListener('click', closeModal);
+    return;
+  }
+  const t = det.totais;
+  const numero = det.chaveAcesso && det.chaveAcesso.length===44 ? String(Number(det.chaveAcesso.slice(25,34))) : '';
+  const linhaTot = (rot, val, destaque)=>`<tr${destaque?' style="background:var(--accent-pale);"':''}><td>${destaque?'<b>'+rot+'</b>':rot}</td><td style="text-align:right;">${destaque?'<b>'+money(val)+'</b>':money(val)}</td></tr>`;
+  const conteudos = {
+    geral: `<table class="data-table"><tbody>
+        <tr><td>Natureza da operação</td><td>${esc(det.natOp||'—')}</td></tr>
+        <tr><td>Tipo</td><td>${det.tpNF==='0'?'Entrada':det.tpNF==='1'?'Saída':'—'}</td></tr>
+        <tr><td>Emissão</td><td>${det.dataEmissao?fmtDateHora(det.dataEmissao):'—'}</td></tr>
+        <tr><td>Emitente</td><td>${esc(det.emit.nome||'—')}${det.emit.doc?' · '+esc(det.emit.doc):''}</td></tr>
+        <tr><td>Destinatário</td><td>${esc(det.dest.nome||'—')}${det.dest.doc?' · '+esc(det.dest.doc):''}</td></tr>
+        <tr><td>Total da nota</td><td><b>${money(t.vNF)}</b></td></tr>
+        <tr><td>Chave de acesso</td><td style="font-family:'IBM Plex Mono',monospace; font-size:11px; word-break:break-all;">${esc(det.chaveAcesso||'—')}</td></tr>
+      </tbody></table>`,
+    produtos: `<div style="max-height:360px; overflow:auto;"><table class="data-table" style="white-space:nowrap;">
+        <thead><tr><th>#</th><th>Código</th><th>Descrição</th><th>NCM</th><th>CFOP</th><th>Un</th><th>Qtd</th><th>V. Unit.</th><th>V. Total</th></tr></thead>
+        <tbody>${det.itens.length?det.itens.map(i=>`<tr><td>${esc(i.n)}</td><td>${esc(i.cProd||'')}</td><td>${esc(i.xProd||'')}</td><td>${esc(i.ncm||'')}</td><td>${esc(i.cfop||'')}</td><td>${esc(i.un||'')}</td><td style="text-align:right;">${i.qtd}</td><td style="text-align:right;">${money(i.vUnit)}</td><td style="text-align:right;">${money(i.vProd)}</td></tr>`).join(''):'<tr><td colspan="9"><div class="empty-state">Sem itens.</div></td></tr>'}</tbody>
+      </table></div>`,
+    impostos: `<table class="data-table"><tbody>
+        ${linhaTot('Produtos', t.vProd)}${linhaTot('Frete', t.vFrete)}${linhaTot('Desconto', t.vDesc)}
+        ${linhaTot('BC ICMS', t.vBCICMS)}${linhaTot('ICMS', t.vICMS)}${linhaTot('PIS', t.vPIS)}${linhaTot('COFINS', t.vCOFINS)}${linhaTot('IPI', t.vIPI)}
+        ${linhaTot('BC IBS/CBS', t.vBCIBSCBS, true)}${linhaTot('IBS (reforma)', t.vIBS, true)}${linhaTot('CBS (reforma)', t.vCBS, true)}
+        ${linhaTot('Total da nota', t.vNF)}
+      </tbody></table>${det.temReforma?'':'<p class="subtitle" style="margin-top:8px;">Esta nota ainda não traz IBS/CBS no XML (reforma em transição).</p>'}`,
+    participantes: `<div style="display:grid; gap:10px;">
+        <div class="card" style="margin:0; padding:12px 14px;"><b>Emitente</b><br>${esc(det.emit.nome||'—')}${det.emit.fantasia?' <span class="tag muted">'+esc(det.emit.fantasia)+'</span>':''}<br><span style="color:var(--ink-soft); font-size:12.5px;">${esc(det.emit.doc||'')}${det.emit.uf?' · '+esc(det.emit.uf):''}${det.emit.municipio?' · '+esc(det.emit.municipio):''}${det.emit.crt?' · CRT '+esc(det.emit.crt):''}</span></div>
+        <div class="card" style="margin:0; padding:12px 14px;"><b>Destinatário</b><br>${esc(det.dest.nome||'—')}<br><span style="color:var(--ink-soft); font-size:12.5px;">${esc(det.dest.doc||'')}${det.dest.uf?' · '+esc(det.dest.uf):''}</span></div>
+        ${(det.transp.nome||det.transp.doc)?`<div class="card" style="margin:0; padding:12px 14px;"><b>Transportadora</b><br>${esc(det.transp.nome||'—')}<br><span style="color:var(--ink-soft); font-size:12.5px;">${esc(det.transp.doc||'')}</span></div>`:''}
+      </div>`,
+    xml: `<p class="subtitle">XML completo da nota, direto da Sefaz.</p><div class="row"><a class="btn" href="${xmlLink}" target="_blank" rel="noopener">⬇ Baixar XML</a></div>`,
+  };
+  openModal(`
+    <h3 style="margin-bottom:6px;">${det.tipo.toUpperCase()}${numero?' nº '+numero:''} ${statusTag}</h3>
+    <div class="tabs" id="detTabs">
+      <div class="tab active" data-t="geral">Geral</div>
+      <div class="tab" data-t="produtos">Produtos <span class="tag muted">${det.itens.length}</span></div>
+      <div class="tab" data-t="impostos">Impostos${det.temReforma?' <span class="tag ok">IBS/CBS</span>':''}</div>
+      <div class="tab" data-t="participantes">Participantes</div>
+      <div class="tab" data-t="xml">XML</div>
+    </div>
+    <div id="detConteudo" style="margin-top:12px;"></div>
+    <div class="modal-actions"><button class="btn primary" id="detFechar">Fechar</button></div>
+  `);
+  const renderTab = (tab)=>{ document.getElementById('detConteudo').innerHTML = conteudos[tab]||''; };
+  renderTab('geral');
+  document.querySelectorAll('#detTabs .tab').forEach(tb=>tb.addEventListener('click', ()=>{
+    document.querySelectorAll('#detTabs .tab').forEach(x=>x.classList.toggle('active', x===tb));
+    renderTab(tb.dataset.t);
+  }));
+  document.getElementById('detFechar').addEventListener('click', closeModal);
 }
 
 // ===================== Integra Contador (DAS, Declaração, Situação Fiscal) =====================

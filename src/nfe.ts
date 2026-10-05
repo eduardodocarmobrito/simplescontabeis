@@ -361,3 +361,70 @@ export function extrairIbsCbs(xml: string): { vIBS: number; vCBS: number; vBC: n
   const vCBS = num(tot.gCBS?.vCBS);
   return { vIBS, vCBS, vBC: num(tot.vBCIBSCBS), flags };
 }
+
+// Detalhe completo da NF-e/NFC-e (pro painel de detalhe): cabeçalho, participantes, itens e totais
+// de impostos (ICMS/PIS/COFINS/IPI + IBS/CBS da reforma). null se não for NF-e completa (resumo/
+// evento/CT-e/NFS-e) — aí o painel mostra só a aba XML.
+export function detalharNfe(xml: string): any | null {
+  let json: any;
+  try {
+    json = xmlParser.parse(xml);
+  } catch {
+    return null;
+  }
+  const infNFe = json?.nfeProc?.NFe?.infNFe || json?.NFe?.infNFe;
+  if (!infNFe) return null;
+  const num = (v: any) => (v != null && v !== "" ? Number(v) || 0 : 0);
+  const ide = infNFe.ide || {};
+  const emit = infNFe.emit || {};
+  const dest = infNFe.dest || {};
+  const transp = infNFe.transp || {};
+  const transporta = transp.transporta || {};
+  const tot = infNFe.total || {};
+  const icms = tot.ICMSTot || {};
+  const ibscbs = tot.IBSCBSTot || {};
+  const gIBS = ibscbs.gIBS || {};
+  const dets = Array.isArray(infNFe.det) ? infNFe.det : infNFe.det ? [infNFe.det] : [];
+  const itens = dets.map((d: any) => {
+    const p = d.prod || {};
+    return {
+      n: String(d["@_nItem"] || ""),
+      cProd: p.cProd || null,
+      xProd: p.xProd || null,
+      ncm: p.NCM || null,
+      cfop: p.CFOP || null,
+      un: p.uCom || null,
+      qtd: num(p.qCom),
+      vUnit: num(p.vUnCom),
+      vProd: num(p.vProd),
+    };
+  });
+  const vIBS = num(gIBS.vIBS) || num(gIBS.gIBSUF?.vIBSUF) + num(gIBS.gIBSMun?.vIBSMun);
+  const vCBS = num(ibscbs.gCBS?.vCBS);
+  return {
+    tipo: ide.mod === "65" ? "nfce" : "nfe",
+    chaveAcesso: (infNFe["@_Id"] || "").replace(/^NFe/, "") || null,
+    natOp: ide.natOp || null,
+    tpNF: ide.tpNF || null, // 0 = entrada, 1 = saída
+    dataEmissao: ide.dhEmi || null,
+    emit: { doc: emit.CNPJ || emit.CPF || null, nome: emit.xNome || null, fantasia: emit.xFant || null, crt: emit.CRT || null, uf: emit.enderEmit?.UF || null, municipio: emit.enderEmit?.xMun || null },
+    dest: { doc: dest.CNPJ || dest.CPF || null, nome: dest.xNome || null, uf: dest.enderDest?.UF || null },
+    transp: { doc: transporta.CNPJ || transporta.CPF || null, nome: transporta.xNome || null, modFrete: transp.modFrete || null },
+    itens,
+    totais: {
+      vProd: num(icms.vProd),
+      vNF: num(icms.vNF),
+      vFrete: num(icms.vFrete),
+      vDesc: num(icms.vDesc),
+      vBCICMS: num(icms.vBC),
+      vICMS: num(icms.vICMS),
+      vPIS: num(icms.vPIS),
+      vCOFINS: num(icms.vCOFINS),
+      vIPI: num(icms.vIPI),
+      vIBS,
+      vCBS,
+      vBCIBSCBS: num(ibscbs.vBCIBSCBS),
+    },
+    temReforma: !!tot.IBSCBSTot || vIBS > 0 || vCBS > 0,
+  };
+}
