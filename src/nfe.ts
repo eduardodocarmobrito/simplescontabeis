@@ -283,7 +283,13 @@ export async function enviarManifestacaoCiencia(params: { ambiente: AmbienteNfe;
         cert: params.cert.certPem,
         key: params.cert.privateKeyPem,
         rejectUnauthorized: true,
-        headers: { "Content-Type": "application/soap+xml; charset=utf-8", "Content-Length": String(bodyBuffer.length) },
+        // Diferente da Distribuição DFe (que aceita sem), o RecepcaoEvento4 EXIGE o parâmetro "action" no
+        // Content-Type do SOAP 1.2 — confirmado ao vivo: sem isso a Sefaz responde HTTP 500 "Unable to
+        // handle request without a valid action parameter. Please supply a valid soap action."
+        headers: {
+          "Content-Type": 'application/soap+xml; charset=utf-8; action="http://www.portalfiscal.inf.br/nfe/wsdl/NFeRecepcaoEvento4/nfeRecepcaoEvento"',
+          "Content-Length": String(bodyBuffer.length),
+        },
         timeout: 30000,
       },
       (res) => {
