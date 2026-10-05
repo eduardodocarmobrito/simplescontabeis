@@ -925,7 +925,14 @@ const NAV = [
   { id:'solicitacoes', label:'Solicitações de Documentos', modulo:'solicitacoes', roles:['Administrador','Colaborador'] },
   { id:'envio', label:'Envio de Documentos', modulo:'envio', roles:['Administrador','Colaborador'] },
   { id:'nfse', label:'NFS-e', modulo:'nfse', roles:['Administrador','Colaborador'] },
-  { id:'nfe-busca', label:'Busca de XML', modulo:'nfe-busca', roles:['Administrador','Colaborador'] },
+  { id:'nfe-busca', label:'Busca de XML', modulo:'nfe-busca', roles:['Administrador','Colaborador'], subs:[
+    { label:'NF-e', tipo:'nfe' },
+    { label:'CT-e', tipo:'cte' },
+    { label:'NFS-e', page:'nfse' },
+    { label:'NFC-e', tipo:'nfce' },
+    { label:'NF3-e', tipo:'nf3e' },
+    { label:'SAT-CF-e', tipo:'satcfe' },
+  ] },
   { id:'integracontador', label:'Integra Contador', modulo:'integracontador', roles:['Administrador','Colaborador'] },
   { id:'minha-nfse', label:'NFS-e', modulo:null, roles:['Cliente'] },
   { id:'meus-documentos', label:'Meus Documentos', modulo:null, roles:['Cliente'] },
@@ -949,6 +956,9 @@ const NAV = [
   { id:'escritorios', label:'Escritórios', modulo:null, roles:['SuperAdmin'] },
   { id:'modulos-plataforma', label:'Módulos da plataforma', modulo:null, roles:['SuperAdmin'] },
 ];
+// Tipo escolhido no sub-menu da Busca de XML (NF-e/CT-e/NFC-e/NF3-e/SAT-CF-e) — pré-filtra a lista
+// quando o usuário abre uma empresa. '' = Todos.
+let NFE_TIPO_SEL = '';
 const PAGINAS_CLIENTE_RESTRINGIVEIS = ['minha-nfse','meus-documentos','solicitar-documentos','documentos-recebidos','notas-entrada','minha-financeiro','minha-assinatura'];
 const PAGINAS_CLIENTE_TODAS = [
   { id:'minha-nfse', label:'NFS-e' },
@@ -973,10 +983,28 @@ function podeVerModulo(item){
 }
 function renderNav(){
   const wrap=document.getElementById('navList');
-  wrap.innerHTML = NAV.filter(podeVerModulo).map(it=>
-    `<div class="nav-item ${STATE.page===it.id?'active':''}" data-page="${it.id}">${esc(it.label)}</div>`
-  ).join('');
+  let html='';
+  NAV.filter(podeVerModulo).forEach(it=>{
+    html += `<div class="nav-item ${STATE.page===it.id?'active':''}" data-page="${it.id}">${esc(it.label)}</div>`;
+    if(it.subs){
+      it.subs.forEach((s,i)=>{
+        const active = s.page ? STATE.page===s.page : (STATE.page===it.id && NFE_TIPO_SEL===s.tipo);
+        html += `<div class="nav-sub ${active?'active':''}" data-sub="${it.id}:${i}">${esc(s.label)}</div>`;
+      });
+    }
+  });
+  wrap.innerHTML = html;
   wrap.querySelectorAll('.nav-item').forEach(el=>el.addEventListener('click', ()=>goPage(el.dataset.page)));
+  wrap.querySelectorAll('.nav-sub').forEach(el=>el.addEventListener('click', ()=>{
+    const [pid, idx] = el.dataset.sub.split(':');
+    const sub = NAV.find(n=>n.id===pid).subs[Number(idx)];
+    if(sub.page){ NFE_TIPO_SEL=''; goPage(sub.page); return; }
+    NFE_TIPO_SEL = sub.tipo;
+    // Já está na Busca de XML com uma empresa aberta? Aplica o filtro na hora. Senão, navega
+    // (a lista de empresas aparece; o tipo entra quando o usuário abrir uma empresa).
+    if(STATE.page==='nfe-busca' && typeof window.__nfeAplicarTipo==='function'){ renderNav(); window.__nfeAplicarTipo(sub.tipo); }
+    else goPage('nfe-busca');
+  }));
   // Ponte pro deskcomm: navegação de verdade (não SPA — é login único por fora, via /deskcomm-login),
   // por isso é um <a> à parte, não um item do NAV/goPage. Cliente não usa o deskcomm.
   // Só o Administrador vê o atalho pro deskcomm no menu. O Colaborador continua atendendo pelos módulos
@@ -6174,6 +6202,7 @@ async function pageNfeBusca(){
     });
   }
   async function mostrarLista(){
+    window.__nfeAplicarTipo = null; // saiu do detalhe: zera o aplicador de tipo (closure antiga)
     if(NFE_TAB==='diagnostico') return mostrarDiagnostico();
     box.innerHTML = `<div class="empty-state">Carregando…</div>`;
     let configs, moduloAtivo, contagens;
@@ -6273,7 +6302,7 @@ async function pageNfeBusca(){
           ${dateFieldHtml('nfeDocDataDe','Data de','')}
           ${dateFieldHtml('nfeDocDataAte','Data até','')}
           <div class="field" style="margin-bottom:0; width:180px;"><label>Tipo</label>
-            <select id="nfeDocTipo"><option value="">Todos</option><option value="nfe">NF-e</option><option value="nfce">NFC-e</option><option value="nfse">NFS-e</option><option value="cte">CT-e</option><option value="evento">Evento</option><option value="outro">Outro</option></select>
+            <select id="nfeDocTipo"><option value="">Todos</option><option value="nfe">NF-e</option><option value="nfce">NFC-e</option><option value="nfse">NFS-e</option><option value="cte">CT-e</option><option value="nf3e">NF3-e</option><option value="satcfe">SAT-CF-e</option><option value="evento">Evento</option><option value="outro">Outro</option></select>
           </div>
         </div>
         <div class="row" style="margin-bottom:8px; align-items:center; gap:10px;">
@@ -6455,6 +6484,11 @@ async function pageNfeBusca(){
     }));
     box.querySelector('.tab[data-direcao="emitida"]').classList.add('active');
     document.getElementById('nfeDocTipo').addEventListener('change', carregarDocumentos);
+    // Tipo pré-selecionado pelo sub-menu (NF-e/CT-e/NFC-e/NF3-e/SAT-CF-e). Fica disponível pro menu
+    // aplicar o filtro na hora, sem sair da empresa aberta.
+    const _selTipoInit = document.getElementById('nfeDocTipo');
+    if(_selTipoInit && NFE_TIPO_SEL) _selTipoInit.value = NFE_TIPO_SEL;
+    window.__nfeAplicarTipo = (tp)=>{ const s=document.getElementById('nfeDocTipo'); if(s){ s.value = tp||''; carregarDocumentos(); } };
     setupDatePicker('nfeDocDataDe','nfeDocDataDe_text');
     setupDatePicker('nfeDocDataAte','nfeDocDataAte_text');
     document.getElementById('nfeDocDataDe').addEventListener('change', carregarDocumentos);
