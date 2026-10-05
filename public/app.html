@@ -152,6 +152,16 @@
   .modal{background:var(--surface); border-radius:var(--radius); box-shadow:0 10px 40px rgba(20,30,26,.25); padding:24px 26px; width:520px; max-width:100%; max-height:88vh; overflow-y:auto;}
   .modal h3{margin:0 0 16px; font-size:17px;}
   .modal-actions{display:flex; justify-content:flex-end; gap:8px; margin-top:18px;}
+  /* Drawer lateral (detalhe da nota, estilo Espião): desliza da direita */
+  .drawer-bg{position:fixed; inset:0; background:rgba(20,30,26,.30); display:none; z-index:1100;}
+  .drawer-bg.open{display:block;}
+  .drawer{position:fixed; top:0; right:0; height:100vh; width:620px; max-width:96vw; background:var(--surface); box-shadow:-10px 0 40px rgba(20,30,26,.22); transform:translateX(100%); transition:transform .22s ease; display:flex; flex-direction:column; z-index:1101;}
+  .drawer-bg.open .drawer{transform:translateX(0);}
+  .drawer-head{display:flex; align-items:center; justify-content:space-between; gap:10px; padding:14px 18px; border-bottom:1px solid var(--rule); flex:none;}
+  .drawer-head h3{margin:0; font-size:15px;}
+  .drawer-x{border:0; background:transparent; font-size:22px; line-height:1; cursor:pointer; color:var(--ink-soft); padding:2px 6px;}
+  .drawer-x:hover{color:var(--ink);}
+  .drawer-body{padding:16px 18px; overflow-y:auto; flex:1;}
 
   .drawer-bg{position:fixed; inset:0; background:rgba(20,30,26,.35); display:none; z-index:1000;}
   .drawer-bg.open{display:block;}
@@ -6432,6 +6442,7 @@ async function pageNfeBusca(){
         const flagsCell = flagsArr.length
           ? flagsArr.map(f=>{ const i=FLAG_INFO[f]||['🏷',f]; return `<span class="tag" title="${esc(i[1])}" style="margin-right:3px;">${i[0]}</span>`; }).join('')
           : '<span style="color:var(--ink-soft);">—</span>';
+        const flagClicavel = flagsArr.length && d.tipo!=='evento';
         return `
         <tr>
           <td><input type="checkbox" class="nfeDocCheck" data-id="${d.id}"></td>
@@ -6442,7 +6453,7 @@ async function pageNfeBusca(){
           <td style="${canceladaStyle}">${kp.serie||'—'}</td>
           <td style="${canceladaStyle}">${esc(d.emitenteNome||'—')}</td>
           <td style="${canceladaStyle}">${esc(d.destinatarioNome||'—')}</td>
-          <td>${flagsCell}</td>
+          <td class="${flagClicavel?'nfeFlagBtn':''}" ${flagClicavel?`data-id="${d.id}" title="Ver detalhes da nota" style="cursor:pointer;"`:''}>${flagsCell}</td>
           <td style="font-family:'IBM Plex Mono',monospace; font-size:11px; ${canceladaStyle}">${esc(d.chaveAcesso||'—')}</td>
           <td style="${canceladaStyle}">${d.valorTotal!=null?fmtMoney(d.valorTotal):'—'}</td>
           <td style="${canceladaStyle}">${ibsCbsCell}</td>
@@ -6455,6 +6466,7 @@ async function pageNfeBusca(){
       `;}).join('') : '<tr><td colspan="13"><div class="empty-state">Nenhum documento encontrado.</div></td></tr>';
       document.querySelectorAll('.nfeDocCheck').forEach(c=>c.addEventListener('change', atualizarBarraSelecao));
       document.querySelectorAll('.nfeDetBtn').forEach(b=>b.addEventListener('click', ()=>abrirDetalheNota(b.dataset.id)));
+      document.querySelectorAll('.nfeFlagBtn').forEach(el=>el.addEventListener('click', ()=>abrirDetalheNota(el.dataset.id)));
       atualizarBarraSelecao();
       sincronizarScrollNfe();
     }
@@ -6510,6 +6522,22 @@ async function pageNfeBusca(){
 }
 
 // Painel de detalhe de uma nota (abas Geral / Produtos / Impostos / Participantes / XML).
+// Drawer lateral (desliza da direita) — reutilizado pelo detalhe da nota.
+function openDrawer(innerHtml){
+  let bg = document.getElementById('nfeDrawerBg');
+  if(!bg){
+    bg = document.createElement('div');
+    bg.id = 'nfeDrawerBg'; bg.className = 'drawer-bg';
+    bg.innerHTML = `<div class="drawer" id="nfeDrawer"></div>`;
+    document.body.appendChild(bg);
+    bg.addEventListener('click', (e)=>{ if(e.target===bg) closeDrawer(); });
+    document.addEventListener('keydown', (e)=>{ if(e.key==='Escape') closeDrawer(); });
+  }
+  document.getElementById('nfeDrawer').innerHTML = innerHtml;
+  requestAnimationFrame(()=>bg.classList.add('open'));
+}
+function closeDrawer(){ const bg=document.getElementById('nfeDrawerBg'); if(bg){ bg.classList.remove('open'); setTimeout(()=>{ const d=document.getElementById('nfeDrawer'); if(d) d.innerHTML=''; }, 220); } }
+
 async function abrirDetalheNota(id){
   let data;
   try{ data = await api('/nfe/documentos/'+id+'/detalhe'); }
@@ -6519,12 +6547,14 @@ async function abrirDetalheNota(id){
   const statusTag = data.notaCancelada ? '<span class="tag bad">Cancelada</span>' : (data.tipo==='evento'?'<span class="tag muted">Evento</span>':'<span class="tag ok">Autorizada</span>');
   const xmlLink = `/api/nfe/documentos/${id}/xml`;
   if(!det){
-    openModal(`
-      <h3>Detalhes do documento ${statusTag}</h3>
-      <p class="subtitle">Tipo <b>${esc((data.tipo||'').toUpperCase())}</b> — este tipo não tem o detalhamento de NF-e. Veja o XML completo.</p>
-      <p style="font-family:'IBM Plex Mono',monospace; font-size:11px; word-break:break-all;">${esc(data.chaveAcesso||'')}</p>
-      <div class="modal-actions"><a class="btn" href="${xmlLink}" target="_blank" rel="noopener">⬇ Baixar XML</a><button class="btn primary" id="detFechar">Fechar</button></div>`);
-    document.getElementById('detFechar').addEventListener('click', closeModal);
+    openDrawer(`
+      <div class="drawer-head"><h3>Detalhes do documento ${statusTag}</h3><button class="drawer-x" id="detFechar" title="Fechar">×</button></div>
+      <div class="drawer-body">
+        <p class="subtitle">Tipo <b>${esc((data.tipo||'').toUpperCase())}</b> — este tipo não tem o detalhamento de NF-e. Veja o XML completo.</p>
+        <p style="font-family:'IBM Plex Mono',monospace; font-size:11px; word-break:break-all;">${esc(data.chaveAcesso||'')}</p>
+        <div class="row" style="margin-top:12px;"><a class="btn" href="${xmlLink}" target="_blank" rel="noopener">⬇ Baixar XML</a></div>
+      </div>`);
+    document.getElementById('detFechar').addEventListener('click', closeDrawer);
     return;
   }
   const t = det.totais;
@@ -6557,17 +6587,36 @@ async function abrirDetalheNota(id){
       </div>`,
     xml: `<p class="subtitle">XML completo da nota, direto da Sefaz.</p><div class="row"><a class="btn" href="${xmlLink}" target="_blank" rel="noopener">⬇ Baixar XML</a></div>`,
   };
-  openModal(`
-    <h3 style="margin-bottom:6px;">${det.tipo.toUpperCase()}${numero?' nº '+numero:''} ${statusTag}</h3>
-    <div class="tabs" id="detTabs">
-      <div class="tab active" data-t="geral">Geral</div>
-      <div class="tab" data-t="produtos">Produtos <span class="tag muted">${det.itens.length}</span></div>
-      <div class="tab" data-t="impostos">Impostos${det.temReforma?' <span class="tag ok">IBS/CBS</span>':''}</div>
-      <div class="tab" data-t="participantes">Participantes</div>
-      <div class="tab" data-t="xml">XML</div>
+  openDrawer(`
+    <div class="drawer-head">
+      <h3>Detalhes da ${esc(det.tipo.toUpperCase())}${numero?' nº '+numero:''}</h3>
+      <button class="drawer-x" id="detFechar" title="Fechar">×</button>
     </div>
-    <div id="detConteudo" style="margin-top:12px;"></div>
-    <div class="modal-actions"><button class="btn primary" id="detFechar">Fechar</button></div>
+    <div class="drawer-body">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; margin-bottom:12px;">
+        <div>${statusTag}</div>
+        <div style="text-align:right; font-size:12px; color:var(--ink-soft);">
+          Emissão <b style="color:var(--ink);">${det.dataEmissao?fmtDateHora(det.dataEmissao):'—'}</b>
+          &nbsp;·&nbsp; Total <b style="color:var(--ink);">${money(t.vNF)}</b>
+        </div>
+      </div>
+      <div style="margin-bottom:12px;">
+        <div style="font-size:11px; color:var(--ink-soft); margin-bottom:3px;">Chave de acesso</div>
+        <div style="font-family:'IBM Plex Mono',monospace; font-size:11.5px; word-break:break-all;">${esc(det.chaveAcesso||'—')}</div>
+      </div>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:14px;">
+        <div class="card" style="margin:0; padding:10px 12px;"><div style="font-size:11px; color:var(--accent-deep); font-weight:600;">📤 Emitente</div><div style="margin-top:3px;">${esc(det.emit.nome||'—')}</div><div style="color:var(--ink-soft); font-size:11.5px;">${esc(det.emit.doc||'')}${det.emit.uf?' · '+esc(det.emit.uf):''}</div></div>
+        <div class="card" style="margin:0; padding:10px 12px;"><div style="font-size:11px; color:var(--accent-deep); font-weight:600;">📥 Destinatário</div><div style="margin-top:3px;">${esc(det.dest.nome||'—')}</div><div style="color:var(--ink-soft); font-size:11.5px;">${esc(det.dest.doc||'')}${det.dest.uf?' · '+esc(det.dest.uf):''}</div></div>
+      </div>
+      <div class="tabs" id="detTabs">
+        <div class="tab active" data-t="geral">Geral</div>
+        <div class="tab" data-t="participantes">Participantes</div>
+        <div class="tab" data-t="produtos">Produtos <span class="tag muted">${det.itens.length}</span></div>
+        <div class="tab" data-t="impostos">Impostos${det.temReforma?' <span class="tag ok">IBS/CBS</span>':''}</div>
+        <div class="tab" data-t="xml">XML</div>
+      </div>
+      <div id="detConteudo" style="margin-top:12px;"></div>
+    </div>
   `);
   const renderTab = (tab)=>{ document.getElementById('detConteudo').innerHTML = conteudos[tab]||''; };
   renderTab('geral');
@@ -6575,7 +6624,7 @@ async function abrirDetalheNota(id){
     document.querySelectorAll('#detTabs .tab').forEach(x=>x.classList.toggle('active', x===tb));
     renderTab(tb.dataset.t);
   }));
-  document.getElementById('detFechar').addEventListener('click', closeModal);
+  document.getElementById('detFechar').addEventListener('click', closeDrawer);
 }
 
 // ===================== Integra Contador (DAS, Declaração, Situação Fiscal) =====================
