@@ -219,9 +219,12 @@ export function consultarPorChaveCte(params: { ambiente: AmbienteNfe; cnpj: stri
 // Distribuição DFe em si (centralizada). Confere com a Nota Técnica 2014.002 (Manifestação do
 // Destinatário). AINDA NÃO TESTADO contra o webservice real — mesma ressalva feita no topo do arquivo
 // pra Distribuição DFe antes do primeiro uso em produção confirmar o envelope.
+// Terceiro teste real: "www.sefazvirtual.fazenda.gov.br" é o ambiente de CONTINGÊNCIA (SVC-AN) — a
+// Sefaz rejeitou com cStat 582 "UF não atendida pela SVC-AN" (PA não está em contingência). O endereço
+// certo pro Ambiente Nacional "normal" (produção de verdade) é nfe.fazenda.gov.br, sem o "virtual".
 const MANIFESTACAO_URL = {
-  producao: "https://www.sefazvirtual.fazenda.gov.br/NFeRecepcaoEvento4/NFeRecepcaoEvento4.asmx",
-  homologacao: "https://hom.sefazvirtual.fazenda.gov.br/NFeRecepcaoEvento4/NFeRecepcaoEvento4.asmx",
+  producao: "https://www.nfe.fazenda.gov.br/NFeRecepcaoEvento4/NFeRecepcaoEvento4.asmx",
+  homologacao: "https://hom.nfe.fazenda.gov.br/NFeRecepcaoEvento4/NFeRecepcaoEvento4.asmx",
 } as const;
 const CORGAO_AMBIENTE_NACIONAL = "91"; // SVRS — código fixo de órgão pro Ambiente Nacional
 
