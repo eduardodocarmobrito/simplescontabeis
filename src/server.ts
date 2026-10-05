@@ -1924,6 +1924,8 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
   if (!colsNfeDoc.some((c) => c.name === "valor_ipi")) sqlite.exec(`ALTER TABLE nfe_documentos ADD COLUMN valor_ipi REAL`);
   // Qtd de itens da nota (pra flag "nº de itens" na listagem, estilo Espião).
   if (!colsNfeDoc.some((c) => c.name === "qtd_itens")) sqlite.exec(`ALTER TABLE nfe_documentos ADD COLUMN qtd_itens INTEGER`);
+  // Observação/comentário livre do escritório sobre o documento (botão 💬 na coluna Opções, estilo Espião).
+  if (!colsNfeDoc.some((c) => c.name === "observacao")) sqlite.exec(`ALTER TABLE nfe_documentos ADD COLUMN observacao TEXT`);
 }
 // Migração leve: opt-in por empresa pra busca automática da Guia FGTS Digital (nem toda empresa tem
 // FGTS, ex. MEI sem funcionário) + rastro da última busca em lote (ver fgts-automacao.ts).
@@ -7467,6 +7469,7 @@ app.get("/api/nfe/documentos", blockCliente, requirePermissao("nfe-busca", "visu
               d.emitente_cnpj as emitenteCnpj, d.emitente_nome as emitenteNome, d.destinatario_cnpj as destinatarioCnpj,
               d.destinatario_nome as destinatarioNome, d.valor_total as valorTotal, d.data_emissao as dataEmissao, d.criado_em as criadoEm,
               d.valor_ibs as valorIbs, d.valor_cbs as valorCbs, d.flags as flags, d.qtd_itens as qtdItens, d.tributos_parseado as tributosParseado,
+              d.observacao as observacao,
               ${direcaoExpr} as direcao, (CASE WHEN d.tipo = 'evento' THEN 0 ELSE ${notaCanceladaExpr} END) as notaCancelada
        FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id
        WHERE ${condicoes.join(" AND ")}
@@ -7653,8 +7656,20 @@ app.get("/api/nfe/documentos/:id/pdf", blockCliente, requirePermissao("nfe-busca
   const { pdf, erro } = await nfeDocumentoObterPdf(row);
   if (!pdf) return res.status(502).json({ error: erro });
   res.setHeader("Content-Type", "application/pdf");
-  res.setHeader("Content-Disposition", nfseContentDisposition("inline", nfeDocNomeArquivo(row, "pdf")));
+  res.setHeader("Content-Disposition", nfseContentDisposition(req.query.download ? "attachment" : "inline", nfeDocNomeArquivo(row, "pdf")));
   res.send(pdf);
+});
+// Observação/comentário livre sobre o documento (botão 💬 na coluna Opções) — fica só no escritório,
+// não sai em nenhum PDF/XML nem é mandado a ninguém.
+app.put("/api/nfe/documentos/:id/observacao", blockCliente, requirePermissao("nfe-busca", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const row = sqlite.prepare(`SELECT escritorio_id, empresa_id FROM nfe_documentos WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!row || row.escritorio_id !== user.escritorioId || !podeAcessarEmpresa(user, row.empresa_id)) {
+    return res.status(404).json({ error: "Documento não encontrado." });
+  }
+  const texto = String(req.body?.texto || "").trim().slice(0, 2000);
+  sqlite.prepare(`UPDATE nfe_documentos SET observacao = ? WHERE id = ?`).run(texto || null, Number(req.params.id));
+  res.json({ ok: true });
 });
 // ---- Notas de Entrada (cliente vê só as notas recebidas da PRÓPRIA empresa, somente leitura) ----
 // Aba opcional (ver PAGINAS_CLIENTE_VALIDAS/cliente_paginas_visiveis) — o admin decide, por usuário

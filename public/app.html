@@ -6358,7 +6358,7 @@ async function pageNfeBusca(){
         <div id="nfeDocScrollTop" style="overflow-x:auto; overflow-y:hidden; margin-bottom:4px;"><div id="nfeDocScrollTopInner" style="height:1px;"></div></div>
         <div id="nfeDocScrollBox" class="card nfeDocScroll" style="padding:0; overflow:auto; max-height:62vh;">
           <table class="data-table" style="white-space:nowrap;">
-            <thead><tr><th style="width:32px;"><input type="checkbox" id="nfeDocSelecionarTodos"></th><th title="Marcadores da nota — clique para abrir o detalhe">Flags</th><th>Data</th><th>Tipo</th><th>Status</th><th>Número</th><th>Série</th><th>Emitente</th><th>Destinatário / Tomador</th><th>Chave de acesso</th><th>Valor</th><th title="IBS e CBS da reforma tributária, lidos do XML da nota (quando a nota já traz o grupo)">IBS / CBS</th><th></th></tr></thead>
+            <thead><tr><th style="width:32px;"><input type="checkbox" id="nfeDocSelecionarTodos"></th><th>Opções</th><th title="Marcadores da nota — clique para abrir o detalhe">Flags</th><th>Status</th><th>Data</th><th>Tipo</th><th>Número</th><th>Série</th><th>Emitente</th><th>Destinatário / Tomador</th><th>Chave de acesso</th><th>Valor</th><th title="IBS e CBS da reforma tributária, lidos do XML da nota (quando a nota já traz o grupo)">IBS / CBS</th></tr></thead>
             <tbody id="nfeDocBody"><tr><td colspan="13"><div class="empty-state">Carregando…</div></td></tr></tbody>
           </table>
         </div>
@@ -6489,16 +6489,21 @@ async function pageNfeBusca(){
         let flagsHtml = '';
         if(d.tipo!=='evento' && d.qtdItens>0) flagsHtml += chip('📦', d.qtdItens+' item(ns) na nota', 'produtos', ' '+d.qtdItens);
         flagsArr.forEach(f=>{ const i=FLAG_INFO[f]; if(i) flagsHtml += chip(i[0], i[1], i[2]); });
-        // Nota completa (NF-e/NFC-e) sempre pode abrir o detalhe, mesmo sem marcador: ícone 🔎.
-        if(!flagsHtml && d.tipo!=='evento') flagsHtml = chip('🔎','Ver detalhes da nota','geral');
         const flagsCell = flagsHtml || '<span style="color:var(--ink-soft);">—</span>';
+        const temObs = !!(d.observacao && d.observacao.trim());
+        const opcoesCell = `
+          <button class="btn small nfeOpcBtn" data-act="print" data-id="${d.id}" title="Visualizar">🖨️</button>
+          <button class="btn small nfeOpcBtn" data-act="download" data-id="${d.id}" title="Baixar">⬇️</button>
+          <button class="btn small nfeOpcBtn ${temObs?'primary':''}" data-act="comentario" data-id="${d.id}" title="${temObs?esc(d.observacao):'Adicionar comentário'}">💬</button>
+        `;
         return `
         <tr>
           <td><input type="checkbox" class="nfeDocCheck" data-id="${d.id}"></td>
+          <td style="white-space:nowrap;">${opcoesCell}</td>
           <td style="white-space:nowrap;">${flagsCell}</td>
+          <td style="white-space:nowrap;">${statusCell}</td>
           <td style="${canceladaStyle}">${d.dataEmissao?fmtDateHora(d.dataEmissao):'—'}</td>
           <td><span class="tag ${d.tipo==='evento'?'muted':'ok'}">${d.tipo.toUpperCase()}</span></td>
-          <td style="white-space:nowrap;">${statusCell}</td>
           <td style="${canceladaStyle}">${kp.numero||'—'}</td>
           <td style="${canceladaStyle}">${kp.serie||'—'}</td>
           <td style="${canceladaStyle}">${esc(d.emitenteNome||'—')}</td>
@@ -6506,17 +6511,33 @@ async function pageNfeBusca(){
           <td style="font-family:'IBM Plex Mono',monospace; font-size:11px; ${canceladaStyle}">${esc(d.chaveAcesso||'—')}</td>
           <td style="${canceladaStyle}">${d.valorTotal!=null?fmtMoney(d.valorTotal):'—'}</td>
           <td style="${canceladaStyle}">${ibsCbsCell}</td>
-          <td style="text-align:right; white-space:nowrap;">
-            ${d.tipo!=='evento'?`<button class="btn small primary nfeDetBtn" data-id="${d.id}">Detalhes</button>`:''}
-            <button class="btn small nfeXmlBtn" data-id="${d.id}">XML</button>
-            ${(d.tipo!=='evento'&&d.tipo!=='cte')?`<a class="btn small" href="/api/nfe/documentos/${d.id}/pdf" target="_blank" rel="noopener">PDF</a>`:''}
-          </td>
         </tr>
       `;}).join('') : '<tr><td colspan="13"><div class="empty-state">Nenhum documento encontrado.</div></td></tr>';
       document.querySelectorAll('.nfeDocCheck').forEach(c=>c.addEventListener('change', atualizarBarraSelecao));
-      document.querySelectorAll('.nfeDetBtn').forEach(b=>b.addEventListener('click', ()=>abrirDetalheNota(b.dataset.id)));
       document.querySelectorAll('.nfeFlagBtn').forEach(el=>el.addEventListener('click', ()=>abrirDetalheNota(el.dataset.id, el.dataset.tab)));
-      document.querySelectorAll('.nfeXmlBtn').forEach(el=>el.addEventListener('click', ()=>abrirDetalheNota(el.dataset.id, 'xml')));
+      document.querySelectorAll('.nfeOpcBtn[data-act="print"]').forEach(b=>b.addEventListener('click', ()=>{
+        const id = b.dataset.id, d = items.find(x=>String(x.id)===id);
+        const itens = [];
+        if(d.tipo!=='evento'){
+          if(d.tipo!=='cte') itens.push({ label:'Visualizar DANFE', icon:'📄', onClick:()=>window.open('/api/nfe/documentos/'+id+'/pdf','_blank') });
+          itens.push({ label:'Produtos detalhados', icon:'🛒', onClick:()=>abrirDetalheNota(id,'produtos') });
+        }
+        itens.push({ label:'Visualizar XML', icon:'🗒️', onClick:()=>abrirDetalheNota(id,'xml') });
+        abrirMenuFlutuante(b, itens);
+      }));
+      document.querySelectorAll('.nfeOpcBtn[data-act="download"]').forEach(b=>b.addEventListener('click', ()=>{
+        const id = b.dataset.id, d = items.find(x=>String(x.id)===id);
+        const itens = [{ label:'Download do XML', icon:'⬇️', onClick:()=>window.open('/api/nfe/documentos/'+id+'/xml','_blank') }];
+        if(d.tipo!=='evento' && d.tipo!=='cte'){
+          itens.push({ label:'Download Danfe em PDF', icon:'⬇️', onClick:()=>window.open('/api/nfe/documentos/'+id+'/pdf?download=1','_blank') });
+          itens.push({ label:'Download XML e DANFe .zip', icon:'🗂️', onClick:()=>window.open('/api/nfe/documentos/baixar-lote?ids='+id+'&formato=ambos','_blank') });
+        }
+        abrirMenuFlutuante(b, itens);
+      }));
+      document.querySelectorAll('.nfeOpcBtn[data-act="comentario"]').forEach(b=>b.addEventListener('click', ()=>{
+        const id = b.dataset.id, d = items.find(x=>String(x.id)===id);
+        abrirComentarioNota(id, d.observacao||'');
+      }));
       atualizarBarraSelecao();
       sincronizarScrollNfe();
     }
@@ -6599,6 +6620,54 @@ async function carregarXmlInline(id, container){
     txt = txt.replace(/>\s*</g, '>\n<');
     container.querySelector('pre').textContent = txt;
   }catch(e){ container.querySelector('pre').textContent = 'Não foi possível carregar o XML: '+e.message; }
+}
+// Menu flutuante genérico (estilo Espião): abre colado embaixo do botão clicado, fecha ao clicar fora
+// (ou ao clicar de novo no mesmo botão — fica guardado em MENU_FLUTUANTE_BOTAO pra saber se foi o mesmo).
+let MENU_FLUTUANTE_BOTAO = null;
+function fecharMenuFlutuante(){
+  const m = document.getElementById('menuFlutuante');
+  if(m) m.remove();
+  MENU_FLUTUANTE_BOTAO = null;
+  document.removeEventListener('click', fecharMenuFlutuanteClique, true);
+}
+function fecharMenuFlutuanteClique(e){
+  const m = document.getElementById('menuFlutuante');
+  if(m && !m.contains(e.target)) fecharMenuFlutuante();
+}
+function abrirMenuFlutuante(botaoEl, itens){
+  const mesmoBotao = MENU_FLUTUANTE_BOTAO === botaoEl;
+  fecharMenuFlutuante();
+  if(mesmoBotao) return; // segundo clique no mesmo botão: só fecha
+  MENU_FLUTUANTE_BOTAO = botaoEl;
+  const rect = botaoEl.getBoundingClientRect();
+  const menu = document.createElement('div');
+  menu.id = 'menuFlutuante';
+  menu.style.cssText = `position:fixed; top:${rect.bottom+4}px; left:${rect.left}px; background:var(--paper); border:1px solid var(--rule); border-radius:10px; box-shadow:0 8px 24px rgba(0,0,0,.18); padding:6px; z-index:500; min-width:220px;`;
+  menu.innerHTML = itens.map((it,i)=>`<div class="menuFlutuanteItem" data-i="${i}" style="padding:8px 10px; border-radius:6px; cursor:pointer; font-size:13px; display:flex; align-items:center; gap:8px; white-space:nowrap;">${it.icon||''} ${esc(it.label)}</div>`).join('');
+  document.body.appendChild(menu);
+  menu.querySelectorAll('.menuFlutuanteItem').forEach(el=>{
+    el.addEventListener('mouseenter', ()=>el.style.background='var(--sidebar-active)');
+    el.addEventListener('mouseleave', ()=>el.style.background='');
+    el.addEventListener('click', ()=>{ fecharMenuFlutuante(); itens[Number(el.dataset.i)].onClick(); });
+  });
+  setTimeout(()=>document.addEventListener('click', fecharMenuFlutuanteClique, true), 0);
+}
+// Comentário/observação livre sobre um documento (botão 💬) — fica só no escritório.
+function abrirComentarioNota(id, textoAtual){
+  openModal(`
+    <h3>Comentário da nota</h3>
+    <p class="subtitle" style="margin-top:-6px;">Fica só aqui no escritório — não sai em PDF/XML nem é mandado a ninguém.</p>
+    <div class="field"><textarea id="nfeObsTexto" rows="5" placeholder="Anote algo sobre esta nota…">${esc(textoAtual||'')}</textarea></div>
+    <div class="modal-actions"><button class="btn" id="nfeObsCancelar">Cancelar</button><button class="btn primary" id="nfeObsSalvar">Salvar</button></div>
+  `, '480px');
+  document.getElementById('nfeObsCancelar').addEventListener('click', closeModal);
+  document.getElementById('nfeObsSalvar').addEventListener('click', async ()=>{
+    try{
+      await api('/nfe/documentos/'+id+'/observacao', { method:'PUT', body:{ texto: document.getElementById('nfeObsTexto').value } });
+      toast('Comentário salvo.','ok'); closeModal();
+      if(typeof carregarDocumentos==='function') carregarDocumentos();
+    }catch(e){ toast(e.message,'err'); }
+  });
 }
 async function abrirDetalheNota(id, tabInicial){
   let data;
