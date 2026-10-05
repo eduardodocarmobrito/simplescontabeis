@@ -5910,6 +5910,8 @@ async function renderCertificadoBuscaXml(containerEl, empresaId, empresaUfPadrao
         <br>NFS-e — última busca: ${cfg.ultimaBuscaNfseEm?fmtDateHora(cfg.ultimaBuscaNfseEm):'nunca'}${cfg.ultimoErroNfse?` — <span style="color:var(--debit);">${esc(cfg.ultimoErroNfse)}</span>`:''}
       </div>
       <label class="checkbox-row"><input type="checkbox" id="nfeCfgAtivo_${empresaId}" ${cfg.ativo?'checked':''} ${podeEditar?'':'disabled'}> Ativar Busca de XML</label>
+      <label class="checkbox-row" style="margin-top:4px;"><input type="checkbox" id="nfeCfgManifestacao_${empresaId}" ${cfg.manifestacaoAutomatica?'checked':''} ${podeEditar?'':'disabled'}> Mandar "Ciência da Operação" automática pras notas que chegam só como resumo</label>
+      <p style="font-size:11px; color:var(--ink-soft); margin:2px 0 0;">A Sefaz só libera o XML completo (produtos, impostos) depois que o destinatário reage à nota. "Ciência" é a reação mais leve — só reconhece que o CNPJ está ciente que a nota existe, não confirma recebimento nem nada sobre a operação. É uma ação fiscal de verdade, registrada na Sefaz em nome deste CNPJ.</p>
       <div class="row" style="margin-top:6px;">
         ${podePostar?`<button class="btn primary" id="btnNfeBuscarAgora_${empresaId}" ${moduloAtivo?'':'disabled'}>Buscar agora</button>`:''}
         ${podeEditar?`<button class="btn danger" id="btnNfeRemoverCert_${empresaId}">Remover certificado</button>`:''}
@@ -5944,6 +5946,10 @@ async function renderCertificadoBuscaXml(containerEl, empresaId, empresaUfPadrao
         else toast('Atualizado.','ok');
         if(ligando && (s?.novosNfe||s?.novosNfse||s?.novosCte) && opts.onDocumentosMudou) opts.onDocumentosMudou();
       }
+      catch(e){ toast(e.message,'err'); ev.target.checked=!ev.target.checked; }
+    });
+    if(podeEditar) containerEl.querySelector(`#nfeCfgManifestacao_${empresaId}`).addEventListener('change', async (ev)=>{
+      try{ await api('/nfe/config/'+empresaId+'/manifestacao-automatica', { method:'PUT', body:{ ativo: ev.target.checked } }); toast('Atualizado.','ok'); }
       catch(e){ toast(e.message,'err'); ev.target.checked=!ev.target.checked; }
     });
     if(podeEditar) containerEl.querySelector(`#btnNfeRemoverCert_${empresaId}`).addEventListener('click', async ()=>{

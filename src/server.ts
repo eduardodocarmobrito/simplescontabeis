@@ -1617,6 +1617,10 @@ for (const tabela of ["chat_mensagens", "chat_equipe_mensagens", "chat_dm_mensag
   if (!nomes.has("ultimo_nsu_cte")) sqlite.exec(`ALTER TABLE nfe_busca_config ADD COLUMN ultimo_nsu_cte TEXT NOT NULL DEFAULT '0'`);
   if (!nomes.has("ultima_busca_cte_em")) sqlite.exec(`ALTER TABLE nfe_busca_config ADD COLUMN ultima_busca_cte_em TEXT`);
   if (!nomes.has("ultimo_erro_cte")) sqlite.exec(`ALTER TABLE nfe_busca_config ADD COLUMN ultimo_erro_cte TEXT`);
+  // Opt-in por empresa: manda "Ciência da Operação" automaticamente pra NF-e que chegam só como resumo
+  // (resNFe) — é o evento que desbloqueia o XML completo (ver nfe.enviarManifestacaoCiencia). Desligado
+  // por padrão porque é uma ação fiscal de verdade, registrada na Sefaz em nome do CNPJ do cliente.
+  if (!nomes.has("manifestacao_automatica")) sqlite.exec(`ALTER TABLE nfe_busca_config ADD COLUMN manifestacao_automatica INTEGER NOT NULL DEFAULT 0`);
 }
 // Migração: nfe_documentos ganhou a coluna "fonte" (nfe | nfse) — cada uma tem sua própria
 // numeração de NSU, então precisa entrar na chave de unicidade junto com o NSU (antes só
@@ -6670,7 +6674,8 @@ app.get("/api/nfe/config", blockCliente, requirePermissao("nfe-busca", "visualiz
               c.titular, c.cnpj_certificado as cnpjCertificado, c.validade_ate as validadeAte, c.ativo,
               c.ultimo_nsu as ultimoNsu, c.ultima_busca_em as ultimaBuscaEm, c.ultimo_erro as ultimoErro,
               c.ultimo_nsu_nfse as ultimoNsuNfse, c.ultima_busca_nfse_em as ultimaBuscaNfseEm, c.ultimo_erro_nfse as ultimoErroNfse,
-              c.ultimo_nsu_cte as ultimoNsuCte, c.ultima_busca_cte_em as ultimaBuscaCteEm, c.ultimo_erro_cte as ultimoErroCte
+              c.ultimo_nsu_cte as ultimoNsuCte, c.ultima_busca_cte_em as ultimaBuscaCteEm, c.ultimo_erro_cte as ultimoErroCte,
+              c.manifestacao_automatica as manifestacaoAutomatica
        FROM nfe_busca_config c JOIN empresas e ON e.id = c.empresa_id
        WHERE c.escritorio_id = ? AND e.ativo = 1 ORDER BY e.nome`
     )
@@ -6883,6 +6888,17 @@ app.put("/api/nfe/config/:empresaId/ativo", blockCliente, requirePermissao("nfe-
   }
   res.json({ ok: true, sync });
 });
+// Ciência da Operação automática (desbloqueia o XML completo das NF-e que chegam só como resumo) —
+// opt-in por empresa, desligado por padrão: é uma ação fiscal de verdade na Sefaz (ver
+// nfe.enviarManifestacaoCiencia), não é só um ajuste de exibição.
+app.put("/api/nfe/config/:empresaId/manifestacao-automatica", blockCliente, requirePermissao("nfe-busca", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const empId = Number(req.params.empresaId);
+  const row = sqlite.prepare(`SELECT escritorio_id FROM nfe_busca_config WHERE empresa_id = ?`).get(empId) as any;
+  if (!row || row.escritorio_id !== user.escritorioId) return res.status(404).json({ error: "Configuração não encontrada." });
+  sqlite.prepare(`UPDATE nfe_busca_config SET manifestacao_automatica = ? WHERE empresa_id = ?`).run(req.body?.ativo ? 1 : 0, empId);
+  res.json({ ok: true });
+});
 app.delete("/api/nfe/config/:empresaId", blockCliente, requirePermissao("nfe-busca", "editar"), (req, res) => {
   const empId = Number(req.params.empresaId);
   const row = sqlite.prepare(`SELECT * FROM nfe_busca_config WHERE empresa_id = ?`).get(empId) as any;
@@ -7025,6 +7041,22 @@ async function nfeBuscarDocumentosNovos(empresaId: number, cfg: any, cert: nfse.
           dataEmissao: info.dataEmissao, xml: doc.xml, eventoDescricao: info.eventoDescricao,
         });
         if (r.inserido) novos++;
+        // Ciência da Operação automática (opt-in): só pra captura DIRETA (nunca autXML — o CNPJ que
+        // manifestaria não é o nosso cert nesse caso) de uma nota nova que chegou só como resumo. Uma
+        // manifestação que falhar não aborta a busca inteira — só essa nota continua em resumo até a
+        // próxima tentativa.
+        if (cfg.manifestacao_automatica && r.inserido && empresaDestino === empresaId && (info.tipo === "nfe" || info.tipo === "nfce") && info.chaveAcesso && nfeEhResumo(doc.xml)) {
+          try {
+            const manif = await nfe.enviarManifestacaoCiencia({ ambiente: cfg.ambiente as nfe.AmbienteNfe, cnpj: cnpjBusca, cert, chave: info.chaveAcesso });
+            nfeInserirDocumento.run(
+              empresaId, cfg.escritorio_id, "nfe", `ciencia_${info.chaveAcesso}`, "eventoCienciaAutomatica", "evento",
+              info.chaveAcesso, info.emitenteCnpj, info.emitenteNome, cnpjBusca.replace(/\D/g, ""), null, null, manif.dhEvento, manif.xmlEnviado,
+              manif.sucesso ? "Ciencia da Operacao (automatica)" : `Ciencia da Operacao (automatica) - rejeitada: ${manif.xMotivo}`
+            );
+          } catch (e: any) {
+            console.error(`Manifestação automática falhou (empresa ${empresaId}, chave ${info.chaveAcesso}):`, e.message);
+          }
+        }
       }
       ultNsu = resp.ultNSU || ultNsu;
       sqlite.prepare(`UPDATE nfe_busca_config SET ultimo_nsu = ?, ultima_busca_em = datetime('now'), ultimo_erro = NULL WHERE empresa_id = ?`).run(ultNsu, empresaId);

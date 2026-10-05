@@ -1,6 +1,7 @@
 import https from "https";
 import zlib from "zlib";
 import { XMLParser } from "fast-xml-parser";
+import { SignedXml } from "xml-crypto";
 import * as nfse from "./nfse";
 
 /**
@@ -203,6 +204,109 @@ export function consultarNovosDocumentosCte(params: { ambiente: AmbienteNfe; cnp
 }
 export function consultarPorChaveCte(params: { ambiente: AmbienteNfe; cnpj: string; cUFAutor: string; cert: nfse.CertificadoInfo; chave: string }): Promise<RespostaDistribuicao> {
   return consultarDistribuicao("cte", { ...params, modo: { tipo: "chNFe", valor: params.chave } });
+}
+
+// ===================== Manifestação do destinatário (Ciência da Operação) =====================
+// A Sefaz só libera o XML COMPLETO (nfeProc) pro destinatário depois dele reagir de alguma forma a
+// uma NF-e — até lá, a Distribuição DFe só devolve o resumo (resNFe). "Ciência da Operação" (tpEvento
+// 210210) é o evento desenhado justamente pra isso: não afirma que a mercadoria foi recebida nem
+// confirma nada sobre a operação em si, só reconhece que o CNPJ está ciente que a nota existe — é o
+// evento que ferramentas de captura de XML mandam automaticamente. NÃO é "Confirmação da Operação"
+// (210200), que é uma afirmação mais forte e não deve sair sozinha.
+//
+// Mesmo sendo um evento, usa um web service PRÓPRIO (RecepcaoEvento), diferente da Distribuição DFe —
+// mas sempre pelo Ambiente Nacional (SVRS, cOrgao 91), independente da UF de quem comprou, igual a
+// Distribuição DFe em si (centralizada). Confere com a Nota Técnica 2014.002 (Manifestação do
+// Destinatário). AINDA NÃO TESTADO contra o webservice real — mesma ressalva feita no topo do arquivo
+// pra Distribuição DFe antes do primeiro uso em produção confirmar o envelope.
+const MANIFESTACAO_URL = {
+  producao: "https://www.sefazvirtual.fazenda.gov.br/NFeRecepcaoEvento4/NFeRecepcaoEvento4.asmx",
+  homologacao: "https://hom.sefazvirtual.fazenda.gov.br/NFeRecepcaoEvento4/NFeRecepcaoEvento4.asmx",
+} as const;
+const CORGAO_AMBIENTE_NACIONAL = "91"; // SVRS — código fixo de órgão pro Ambiente Nacional
+
+function dataHoraBrasiliaNfe(deslocamentoMs = 0): string {
+  const d = new Date(Date.now() - 3 * 60 * 60 * 1000 + deslocamentoMs);
+  return d.toISOString().replace(/\.\d{3}Z$/, "-03:00");
+}
+
+// Evento de NF-e assina com SHA1/RSA-SHA1 (perfil clássico de NF-e) — diferente do SHA256 usado na
+// DPS do Sistema Nacional NFS-e (nfse.assinarXmlDps), que é um padrão mais novo.
+function assinarXmlEventoNfe(xml: string, id: string, cert: nfse.CertificadoInfo): string {
+  const sig = new SignedXml({ privateKey: cert.privateKeyPem, publicCert: cert.certPem, getKeyInfoContent: SignedXml.getKeyInfoContent });
+  sig.addReference({
+    xpath: "//*[local-name(.)='infEvento']",
+    transforms: ["http://www.w3.org/2000/09/xmldsig#enveloped-signature", "http://www.w3.org/TR/2001/REC-xml-c14n-20010315"],
+    digestAlgorithm: "http://www.w3.org/2000/09/xmldsig#sha1",
+    uri: `#${id}`,
+  });
+  sig.signatureAlgorithm = "http://www.w3.org/2000/09/xmldsig#rsa-sha1";
+  sig.canonicalizationAlgorithm = "http://www.w3.org/TR/2001/REC-xml-c14n-20010315";
+  sig.computeSignature(xml, { location: { reference: "//*[local-name(.)='infEvento']", action: "after" } });
+  return sig.getSignedXml();
+}
+
+export interface ResultadoManifestacao {
+  cStat: string;
+  xMotivo: string;
+  // 135 (vinculado à NF-e) e 136 (registrado, NF-e ainda não recepcionada pela Sefaz) e 573
+  // (duplicidade — já tinha sido mandado antes) contam como aceito; qualquer outro é erro de verdade.
+  sucesso: boolean;
+  xmlEnviado: string; // evento assinado que foi mandado — fica guardado como registro do que foi feito
+  dhEvento: string;
+}
+export async function enviarManifestacaoCiencia(params: { ambiente: AmbienteNfe; cnpj: string; cert: nfse.CertificadoInfo; chave: string }): Promise<ResultadoManifestacao> {
+  const tpAmb = params.ambiente === "producao" ? "1" : "2";
+  const cnpjLimpo = params.cnpj.replace(/\D/g, "");
+  const dhEvento = dataHoraBrasiliaNfe(-60_000);
+  const idEvento = `ID210210${params.chave}01`;
+  const infEvento =
+    `<infEvento Id="${idEvento}">` +
+    `<cOrgao>${CORGAO_AMBIENTE_NACIONAL}</cOrgao><tpAmb>${tpAmb}</tpAmb>` +
+    `<CNPJ>${cnpjLimpo}</CNPJ><chNFe>${params.chave}</chNFe><dhEvento>${dhEvento}</dhEvento>` +
+    `<tpEvento>210210</tpEvento><nSeqEvento>1</nSeqEvento><verEvento>1.00</verEvento>` +
+    `<detEvento versao="1.00"><descEvento>Ciencia da Operacao</descEvento></detEvento>` +
+    `</infEvento>`;
+  const eventoXml = `<evento xmlns="http://www.portalfiscal.inf.br/nfe" versao="1.00">${infEvento}</evento>`;
+  const eventoAssinado = assinarXmlEventoNfe(eventoXml, idEvento, params.cert);
+  const envEvento = `<envEvento xmlns="http://www.portalfiscal.inf.br/nfe" versao="1.00"><idLote>1</idLote>${eventoAssinado}</envEvento>`;
+  const corpoSoap = `<nfeRecepcaoEvento xmlns="http://www.portalfiscal.inf.br/nfe/wsdl/NFeRecepcaoEvento4"><nfeDadosMsg>${envEvento}</nfeDadosMsg></nfeRecepcaoEvento>`;
+  const envelope = `<?xml version="1.0" encoding="utf-8"?><soap12:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap12="http://www.w3.org/2003/05/soap-envelope"><soap12:Body>${corpoSoap}</soap12:Body></soap12:Envelope>`;
+  const url = new URL(MANIFESTACAO_URL[params.ambiente]);
+  const bodyBuffer = Buffer.from(envelope, "utf8");
+  const { status, corpo } = await new Promise<{ status: number; corpo: string }>((resolve, reject) => {
+    const req = https.request(
+      {
+        hostname: url.hostname,
+        path: url.pathname,
+        method: "POST",
+        cert: params.cert.certPem,
+        key: params.cert.privateKeyPem,
+        rejectUnauthorized: true,
+        headers: { "Content-Type": "application/soap+xml; charset=utf-8", "Content-Length": String(bodyBuffer.length) },
+        timeout: 30000,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () => resolve({ status: res.statusCode || 0, corpo: Buffer.concat(chunks).toString("utf8") }));
+      }
+    );
+    req.on("timeout", () => req.destroy(new Error("Tempo esgotado ao conectar na Sefaz.")));
+    req.on("error", (e) => reject(e));
+    req.write(bodyBuffer);
+    req.end();
+  });
+  if (status !== 200) throw new Error(`A Sefaz recusou a conexão (HTTP ${status}) ao mandar a manifestação.`);
+  const json = xmlParser.parse(corpo) as any;
+  const retEnvEvento = json?.["soap:Envelope"]?.["soap:Body"]?.nfeRecepcaoEventoResponse?.nfeRecepcaoEventoResult?.retEnvEvento;
+  if (!retEnvEvento) throw new Error("Resposta da Sefaz em formato inesperado ao mandar a manifestação.");
+  const infEventoResp = retEnvEvento.retEvento?.infEvento;
+  if (!infEventoResp) {
+    throw new Error(`Sefaz: ${retEnvEvento.xMotivo || "erro desconhecido"} (cStat ${retEnvEvento.cStat}).`);
+  }
+  const cStat = String(infEventoResp.cStat || "");
+  return { cStat, xMotivo: infEventoResp.xMotivo || "", sucesso: cStat === "135" || cStat === "136" || cStat === "573", xmlEnviado: eventoAssinado, dhEvento };
 }
 
 // ===================== Extração dos campos principais de cada documento retornado =====================
