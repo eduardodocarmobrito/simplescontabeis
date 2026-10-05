@@ -336,7 +336,7 @@ export function identificarDocumento(xml: string, schema: string): DocumentoIden
 // NT 2025.002. Retorna os valores quando o XML já traz o grupo (fase de transição da reforma); se a
 // nota ainda não traz, retorna zeros (parseado, sem reforma). null só se não for uma NF-e completa
 // (ex.: resumo/resNFe, evento, CT-e) — aí não dá pra saber e fica "não parseado" pra não travar.
-export function extrairIbsCbs(xml: string): { vIBS: number; vCBS: number; vBC: number } | null {
+export function extrairIbsCbs(xml: string): { vIBS: number; vCBS: number; vBC: number; flags: string[] } | null {
   let json: any;
   try {
     json = xmlParser.parse(xml);
@@ -346,10 +346,18 @@ export function extrairIbsCbs(xml: string): { vIBS: number; vCBS: number; vBC: n
   const infNFe = json?.nfeProc?.NFe?.infNFe || json?.NFe?.infNFe;
   if (!infNFe) return null; // não é NF-e completa (resumo/evento/CT-e) — sem total detalhado
   const num = (v: any) => (v != null && v !== "" ? Number(v) || 0 : 0);
+  // Flags (marcadores por produto) — mesmos grupos especiais da NF-e que o leiaute traz por item.
+  const dets = Array.isArray(infNFe.det) ? infNFe.det : infNFe.det ? [infNFe.det] : [];
+  const flags: string[] = [];
+  if (dets.some((d: any) => d?.prod?.comb)) flags.push("comb"); // combustível
+  if (dets.some((d: any) => d?.prod?.med)) flags.push("med"); // medicamento
+  if (dets.some((d: any) => d?.prod?.rastro)) flags.push("rastro"); // rastreável (lote/validade)
+  if (dets.some((d: any) => d?.prod?.veicProd)) flags.push("veiculo"); // veículo
+  if (dets.some((d: any) => d?.prod?.DI)) flags.push("importado"); // tem Declaração de Importação
   const tot = infNFe.total?.IBSCBSTot;
-  if (!tot) return { vIBS: 0, vCBS: 0, vBC: 0 }; // NF-e sem o grupo da reforma ainda
+  if (!tot) return { vIBS: 0, vCBS: 0, vBC: 0, flags }; // NF-e sem o grupo da reforma ainda
   const gIBS = tot.gIBS || {};
   const vIBS = num(gIBS.vIBS) || num(gIBS.gIBSUF?.vIBSUF) + num(gIBS.gIBSMun?.vIBSMun);
   const vCBS = num(tot.gCBS?.vCBS);
-  return { vIBS, vCBS, vBC: num(tot.vBCIBSCBS) };
+  return { vIBS, vCBS, vBC: num(tot.vBCIBSCBS), flags };
 }

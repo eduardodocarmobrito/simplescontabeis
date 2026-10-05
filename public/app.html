@@ -36,6 +36,8 @@
   input[type=number]{-moz-appearance:textfield; appearance:textfield;}
   input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none; margin:0;}
   .inp:focus{outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-pale); background:var(--surface);}
+  /* Tabela com rolagem (Busca de XML): cabeçalho fixo enquanto rola na vertical/horizontal */
+  .nfeDocScroll thead th{position:sticky; top:0; background:var(--surface); z-index:2;}
   .login-error{margin-top:12px; padding:10px 12px; background:#F6E6E3; color:var(--debit); border:1px solid #E3B8AC; border-radius:6px; font-size:12.5px;}
 
   .combo{position:relative;}
@@ -6268,10 +6270,10 @@ async function pageNfeBusca(){
           <button class="btn small" id="btnNfeBaixarLoteAmbos" disabled>Baixar selecionados — XML + PDF</button>
         </div>
         <div id="nfeReformaSumario" style="margin-bottom:8px;"></div>
-        <div class="card" style="padding:0; overflow-x:auto;">
+        <div class="card nfeDocScroll" style="padding:0; overflow:auto; max-height:62vh;">
           <table class="data-table" style="white-space:nowrap;">
-            <thead><tr><th style="width:32px;"><input type="checkbox" id="nfeDocSelecionarTodos"></th><th>Data</th><th>Tipo</th><th>Emitente</th><th>Destinatário / Tomador</th><th>Chave de acesso</th><th>Valor</th><th title="IBS e CBS da reforma tributária, lidos do XML da nota (quando a nota já traz o grupo)">IBS / CBS</th><th></th></tr></thead>
-            <tbody id="nfeDocBody"><tr><td colspan="9"><div class="empty-state">Carregando…</div></td></tr></tbody>
+            <thead><tr><th style="width:32px;"><input type="checkbox" id="nfeDocSelecionarTodos"></th><th>Data</th><th>Tipo</th><th>Status</th><th>Número</th><th>Série</th><th>Emitente</th><th>Destinatário / Tomador</th><th title="Marcadores por produto">Flags</th><th>Chave de acesso</th><th>Valor</th><th title="IBS e CBS da reforma tributária, lidos do XML da nota (quando a nota já traz o grupo)">IBS / CBS</th><th></th></tr></thead>
+            <tbody id="nfeDocBody"><tr><td colspan="13"><div class="empty-state">Carregando…</div></td></tr></tbody>
           </table>
         </div>
       </div>
@@ -6309,7 +6311,7 @@ async function pageNfeBusca(){
 
     async function carregarDocumentos(){
       const tbody = document.getElementById('nfeDocBody');
-      tbody.innerHTML = `<tr><td colspan="9"><div class="empty-state">Carregando…</div></td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="13"><div class="empty-state">Carregando…</div></td></tr>`;
       document.getElementById('nfeDocSelecionarTodos').checked = false;
       const tipo = document.getElementById('nfeDocTipo').value;
       const busca = document.getElementById('nfeDocBusca').value.trim();
@@ -6334,19 +6336,31 @@ async function pageNfeBusca(){
              </div>`
           : `<div style="font-size:12px; color:var(--ink-soft);">🧾 Monitor reforma (IBS/CBS): nenhuma nota desta lista traz IBS/CBS no XML ainda (reforma em transição).</div>`;
       }
+      const FLAG_INFO = { comb:['⛽','Combustível'], med:['💊','Medicamento'], rastro:['🔖','Rastreável'], veiculo:['🚗','Veículo'], importado:['🌎','Importado'] };
+      const chaveNum = (ch)=>{ if(!ch||ch.length!==44) return {serie:'',numero:''}; return { serie:String(Number(ch.slice(22,25))), numero:String(Number(ch.slice(25,34))) }; };
       tbody.innerHTML = items.length ? items.map(d=>{
         const canceladaStyle = d.notaCancelada ? 'text-decoration:line-through; color:var(--debit);' : '';
         const temReforma = (d.valorIbs>0||d.valorCbs>0);
         const ibsCbsCell = temReforma
           ? `<span style="color:var(--accent-deep); font-weight:600;" title="IBS / CBS lidos do XML (reforma)">${fmtMoney(d.valorIbs||0)} / ${fmtMoney(d.valorCbs||0)}</span>`
           : '<span style="color:var(--ink-soft);">—</span>';
+        const statusCell = d.notaCancelada ? '<span class="tag bad">Cancelada</span>' : (d.tipo==='evento' ? '<span class="tag muted">Evento</span>' : '<span class="tag ok">Autorizada</span>');
+        const kp = chaveNum(d.chaveAcesso);
+        const flagsArr = (d.flags||'').split(',').filter(Boolean);
+        const flagsCell = flagsArr.length
+          ? flagsArr.map(f=>{ const i=FLAG_INFO[f]||['🏷',f]; return `<span class="tag" title="${esc(i[1])}" style="margin-right:3px;">${i[0]}</span>`; }).join('')
+          : '<span style="color:var(--ink-soft);">—</span>';
         return `
         <tr>
           <td><input type="checkbox" class="nfeDocCheck" data-id="${d.id}"></td>
           <td style="${canceladaStyle}">${d.dataEmissao?fmtDateHora(d.dataEmissao):'—'}</td>
-          <td><span class="tag ${d.tipo==='evento'?'muted':'ok'}">${d.tipo.toUpperCase()}</span>${d.notaCancelada?' <span class="tag bad">CANCELADA</span>':''}</td>
+          <td><span class="tag ${d.tipo==='evento'?'muted':'ok'}">${d.tipo.toUpperCase()}</span></td>
+          <td>${statusCell}</td>
+          <td style="${canceladaStyle}">${kp.numero||'—'}</td>
+          <td style="${canceladaStyle}">${kp.serie||'—'}</td>
           <td style="${canceladaStyle}">${esc(d.emitenteNome||'—')}</td>
           <td style="${canceladaStyle}">${esc(d.destinatarioNome||'—')}</td>
+          <td>${flagsCell}</td>
           <td style="font-family:'IBM Plex Mono',monospace; font-size:11px; ${canceladaStyle}">${esc(d.chaveAcesso||'—')}</td>
           <td style="${canceladaStyle}">${d.valorTotal!=null?fmtMoney(d.valorTotal):'—'}</td>
           <td style="${canceladaStyle}">${ibsCbsCell}</td>
@@ -6355,7 +6369,7 @@ async function pageNfeBusca(){
             ${(d.tipo!=='evento'&&d.tipo!=='cte')?`<a class="btn small" href="/api/nfe/documentos/${d.id}/pdf" target="_blank" rel="noopener">PDF</a>`:''}
           </td>
         </tr>
-      `;}).join('') : '<tr><td colspan="9"><div class="empty-state">Nenhum documento encontrado.</div></td></tr>';
+      `;}).join('') : '<tr><td colspan="13"><div class="empty-state">Nenhum documento encontrado.</div></td></tr>';
       document.querySelectorAll('.nfeDocCheck').forEach(c=>c.addEventListener('change', atualizarBarraSelecao));
       atualizarBarraSelecao();
     }
