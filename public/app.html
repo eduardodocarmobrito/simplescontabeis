@@ -6283,7 +6283,10 @@ async function pageNfeBusca(){
           <button class="btn small" id="btnNfeBaixarLoteAmbos" disabled>Baixar selecionados — XML + PDF</button>
         </div>
         <div id="nfeReformaSumario" style="margin-bottom:8px;"></div>
-        <div class="card nfeDocScroll" style="padding:0; overflow:auto; max-height:62vh;">
+        <!-- Barra de rolagem horizontal fixa no topo da tabela (sincronizada): a barra nativa fica no
+             rodapé da caixa de 62vh, que cai abaixo da dobra; esta aqui fica sempre acessível. -->
+        <div id="nfeDocScrollTop" style="overflow-x:auto; overflow-y:hidden; margin-bottom:4px;"><div id="nfeDocScrollTopInner" style="height:1px;"></div></div>
+        <div id="nfeDocScrollBox" class="card nfeDocScroll" style="padding:0; overflow:auto; max-height:62vh;">
           <table class="data-table" style="white-space:nowrap;">
             <thead><tr><th style="width:32px;"><input type="checkbox" id="nfeDocSelecionarTodos"></th><th>Data</th><th>Tipo</th><th>Status</th><th>Número</th><th>Série</th><th>Emitente</th><th>Destinatário / Tomador</th><th title="Marcadores por produto">Flags</th><th>Chave de acesso</th><th>Valor</th><th title="IBS e CBS da reforma tributária, lidos do XML da nota (quando a nota já traz o grupo)">IBS / CBS</th><th></th></tr></thead>
             <tbody id="nfeDocBody"><tr><td colspan="13"><div class="empty-state">Carregando…</div></td></tr></tbody>
@@ -6424,6 +6427,25 @@ async function pageNfeBusca(){
       document.querySelectorAll('.nfeDocCheck').forEach(c=>c.addEventListener('change', atualizarBarraSelecao));
       document.querySelectorAll('.nfeDetBtn').forEach(b=>b.addEventListener('click', ()=>abrirDetalheNota(b.dataset.id)));
       atualizarBarraSelecao();
+      sincronizarScrollNfe();
+    }
+
+    // Mantém a barra de rolagem horizontal do topo em sincronia com a largura/scroll da tabela.
+    function sincronizarScrollNfe(){
+      const top = document.getElementById('nfeDocScrollTop');
+      const topInner = document.getElementById('nfeDocScrollTopInner');
+      const boxEl = document.getElementById('nfeDocScrollBox');
+      if(!top || !topInner || !boxEl) return;
+      const tabela = boxEl.querySelector('table');
+      if(!tabela) return;
+      topInner.style.width = tabela.scrollWidth + 'px';
+      if(!top.dataset.wired){
+        top.dataset.wired = '1';
+        let lock = false;
+        top.addEventListener('scroll', ()=>{ if(lock) return; lock=true; boxEl.scrollLeft = top.scrollLeft; lock=false; });
+        boxEl.addEventListener('scroll', ()=>{ if(lock) return; lock=true; top.scrollLeft = boxEl.scrollLeft; lock=false; });
+        window.addEventListener('resize', ()=>{ const t=boxEl.querySelector('table'); if(t) topInner.style.width = t.scrollWidth + 'px'; });
+      }
     }
 
     box.querySelectorAll('.tab[data-direcao]').forEach(t=>t.addEventListener('click', ()=>{
