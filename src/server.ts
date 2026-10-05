@@ -1922,6 +1922,8 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
   if (!colsNfeDoc.some((c) => c.name === "valor_pis")) sqlite.exec(`ALTER TABLE nfe_documentos ADD COLUMN valor_pis REAL`);
   if (!colsNfeDoc.some((c) => c.name === "valor_cofins")) sqlite.exec(`ALTER TABLE nfe_documentos ADD COLUMN valor_cofins REAL`);
   if (!colsNfeDoc.some((c) => c.name === "valor_ipi")) sqlite.exec(`ALTER TABLE nfe_documentos ADD COLUMN valor_ipi REAL`);
+  // Qtd de itens da nota (pra flag "nº de itens" na listagem, estilo Espião).
+  if (!colsNfeDoc.some((c) => c.name === "qtd_itens")) sqlite.exec(`ALTER TABLE nfe_documentos ADD COLUMN qtd_itens INTEGER`);
 }
 // Migração leve: opt-in por empresa pra busca automática da Guia FGTS Digital (nem toda empresa tem
 // FGTS, ex. MEI sem funcionário) + rastro da última busca em lote (ver fgts-automacao.ts).
@@ -7372,15 +7374,15 @@ setInterval(() => {
   nfeExecutarBuscaAutomatica().catch((e) => console.error("Erro na busca automática de XML:", e.message));
 }, NFE_AUTO_INTERVALO_MS);
 // Versão do parser de tributos — ao subir (novas colunas/lógica), força reparsear os docs já lidos.
-const NFE_TRIB_VERSAO = 2;
-// Lê o XML das notas (ids) e cacheia IBS/CBS/ICMS/PIS/COFINS/IPI/flags nas colunas. Retorna, por id,
-// os valores de reforma pra quem precisar exibir na hora (listagem). Marca tributos_parseado = versão.
-function parsearECachearTributos(ids: number[]): Map<number, { vIBS: number; vCBS: number; flags: string }> {
-  const out = new Map<number, { vIBS: number; vCBS: number; flags: string }>();
+const NFE_TRIB_VERSAO = 3;
+// Lê o XML das notas (ids) e cacheia IBS/CBS/ICMS/PIS/COFINS/IPI/flags/qtd_itens nas colunas. Retorna,
+// por id, o que a listagem exibe na hora. Marca tributos_parseado = versão.
+function parsearECachearTributos(ids: number[]): Map<number, { vIBS: number; vCBS: number; flags: string; qtdItens: number }> {
+  const out = new Map<number, { vIBS: number; vCBS: number; flags: string; qtdItens: number }>();
   if (!ids.length) return out;
   const xmls = sqlite.prepare(`SELECT id, xml FROM nfe_documentos WHERE id IN (${ids.map(() => "?").join(",")})`).all(...ids) as any[];
   const upd = sqlite.prepare(
-    `UPDATE nfe_documentos SET valor_ibs=?, valor_cbs=?, valor_bc_ibscbs=?, valor_icms=?, valor_pis=?, valor_cofins=?, valor_ipi=?, flags=?, tributos_parseado=? WHERE id=?`
+    `UPDATE nfe_documentos SET valor_ibs=?, valor_cbs=?, valor_bc_ibscbs=?, valor_icms=?, valor_pis=?, valor_cofins=?, valor_ipi=?, flags=?, qtd_itens=?, tributos_parseado=? WHERE id=?`
   );
   // node:sqlite não tem .transaction(): BEGIN/COMMIT na mão.
   sqlite.exec("BEGIN");
@@ -7389,11 +7391,11 @@ function parsearECachearTributos(ids: number[]): Map<number, { vIBS: number; vCB
       const t = nfe.extrairIbsCbs(x.xml);
       if (t) {
         const flags = t.flags.join(",");
-        upd.run(t.vIBS, t.vCBS, t.vBC, t.vICMS, t.vPIS, t.vCOFINS, t.vIPI, flags, NFE_TRIB_VERSAO, x.id);
-        out.set(x.id, { vIBS: t.vIBS, vCBS: t.vCBS, flags });
+        upd.run(t.vIBS, t.vCBS, t.vBC, t.vICMS, t.vPIS, t.vCOFINS, t.vIPI, flags, t.qtdItens, NFE_TRIB_VERSAO, x.id);
+        out.set(x.id, { vIBS: t.vIBS, vCBS: t.vCBS, flags, qtdItens: t.qtdItens });
       } else {
-        upd.run(0, 0, 0, 0, 0, 0, 0, "", NFE_TRIB_VERSAO, x.id); // não é NF-e completa — zera e marca parseado
-        out.set(x.id, { vIBS: 0, vCBS: 0, flags: "" });
+        upd.run(0, 0, 0, 0, 0, 0, 0, "", 0, NFE_TRIB_VERSAO, x.id); // não é NF-e completa — zera e marca parseado
+        out.set(x.id, { vIBS: 0, vCBS: 0, flags: "", qtdItens: 0 });
       }
     }
     sqlite.exec("COMMIT");
@@ -7464,7 +7466,7 @@ app.get("/api/nfe/documentos", blockCliente, requirePermissao("nfe-busca", "visu
       `SELECT d.id, d.empresa_id as empresaId, e.nome as empresaNome, d.tipo, d.chave_acesso as chaveAcesso,
               d.emitente_cnpj as emitenteCnpj, d.emitente_nome as emitenteNome, d.destinatario_cnpj as destinatarioCnpj,
               d.destinatario_nome as destinatarioNome, d.valor_total as valorTotal, d.data_emissao as dataEmissao, d.criado_em as criadoEm,
-              d.valor_ibs as valorIbs, d.valor_cbs as valorCbs, d.flags as flags, d.tributos_parseado as tributosParseado,
+              d.valor_ibs as valorIbs, d.valor_cbs as valorCbs, d.flags as flags, d.qtd_itens as qtdItens, d.tributos_parseado as tributosParseado,
               ${direcaoExpr} as direcao, (CASE WHEN d.tipo = 'evento' THEN 0 ELSE ${notaCanceladaExpr} END) as notaCancelada
        FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id
        WHERE ${condicoes.join(" AND ")}
@@ -7482,6 +7484,7 @@ app.get("/api/nfe/documentos", blockCliente, requirePermissao("nfe-busca", "visu
         r.valorIbs = v.vIBS;
         r.valorCbs = v.vCBS;
         r.flags = v.flags;
+        r.qtdItens = v.qtdItens;
       }
     }
   }

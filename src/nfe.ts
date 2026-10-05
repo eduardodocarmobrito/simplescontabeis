@@ -338,7 +338,7 @@ export function identificarDocumento(xml: string, schema: string): DocumentoIden
 // (ex.: resumo/resNFe, evento, CT-e) — aí não dá pra saber e fica "não parseado" pra não travar.
 export function extrairIbsCbs(
   xml: string
-): { vIBS: number; vCBS: number; vBC: number; vICMS: number; vPIS: number; vCOFINS: number; vIPI: number; flags: string[] } | null {
+): { vIBS: number; vCBS: number; vBC: number; vICMS: number; vPIS: number; vCOFINS: number; vIPI: number; flags: string[]; qtdItens: number } | null {
   let json: any;
   try {
     json = xmlParser.parse(xml);
@@ -348,14 +348,23 @@ export function extrairIbsCbs(
   const infNFe = json?.nfeProc?.NFe?.infNFe || json?.NFe?.infNFe;
   if (!infNFe) return null; // não é NF-e completa (resumo/evento/CT-e) — sem total detalhado
   const num = (v: any) => (v != null && v !== "" ? Number(v) || 0 : 0);
-  // Flags (marcadores por produto) — mesmos grupos especiais da NF-e que o leiaute traz por item.
+  // Flags (marcadores) — grupos especiais por item + blocos da própria nota (pagamento, duplicatas).
   const dets = Array.isArray(infNFe.det) ? infNFe.det : infNFe.det ? [infNFe.det] : [];
+  const qtdItens = dets.length;
   const flags: string[] = [];
   if (dets.some((d: any) => d?.prod?.comb)) flags.push("comb"); // combustível
   if (dets.some((d: any) => d?.prod?.med)) flags.push("med"); // medicamento
   if (dets.some((d: any) => d?.prod?.rastro)) flags.push("rastro"); // rastreável (lote/validade)
   if (dets.some((d: any) => d?.prod?.veicProd)) flags.push("veiculo"); // veículo
   if (dets.some((d: any) => d?.prod?.DI)) flags.push("importado"); // tem Declaração de Importação
+  // Pagamento: grupo <pag> com uma ou mais formas (<detPag>). NFC-e sempre tem; NF-e normalmente.
+  const pag = infNFe.pag || {};
+  const detPag = Array.isArray(pag.detPag) ? pag.detPag : pag.detPag ? [pag.detPag] : [];
+  if (detPag.length) flags.push("pag");
+  // Duplicatas (parcelas): grupo <cobr><dup>.
+  const dup = infNFe.cobr?.dup;
+  const dups = Array.isArray(dup) ? dup : dup ? [dup] : [];
+  if (dups.length) flags.push("dup");
   const tot = infNFe.total || {};
   const icms = tot.ICMSTot || {};
   const vICMS = num(icms.vICMS),
@@ -372,7 +381,7 @@ export function extrairIbsCbs(
     vCBS = num(ibscbs.gCBS?.vCBS);
     vBC = num(ibscbs.vBCIBSCBS);
   }
-  return { vIBS, vCBS, vBC, vICMS, vPIS, vCOFINS, vIPI, flags };
+  return { vIBS, vCBS, vBC, vICMS, vPIS, vCOFINS, vIPI, flags, qtdItens };
 }
 
 // Detalhe completo da NF-e/NFC-e (pro painel de detalhe): cabeçalho, participantes, itens e totais
