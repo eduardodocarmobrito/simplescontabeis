@@ -8009,6 +8009,12 @@ app.get("/api/nfe/documentos/baixar-lote", blockCliente, requirePermissao("nfe-b
 // a tabela de produtos lida do próprio XML — é o que embasa "bateu com o que foi comprado" nota a nota,
 // sem precisar abrir XML por XML na mão. Mesmos filtros da tela (empresaId/direcao/tipo/datas/busca),
 // pra exportar exatamente o que está sendo visto na hora.
+// Campos extraídos por regex direto do XML bruto (não via parser) vêm com as entidades XML ainda
+// codificadas (ex.: "&amp;" em vez de "&") — sem decodificar, escHtmlRelatorio escapa de novo em cima
+// e dá "&amp;amp;" na tela (achado ao vivo no xDescServ de NFS-e com "&" na descrição do serviço).
+function decodificarEntidadesXml(s: string): string {
+  return s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
+}
 function nfeChaveNumeroSerie(chave: string | null): { numero: string; serie: string } {
   if (!chave || chave.length !== 44) return { numero: "-", serie: "-" };
   return { serie: String(Number(chave.slice(22, 25))), numero: String(Number(chave.slice(25, 34))) };
@@ -8131,7 +8137,7 @@ app.get("/api/nfe/documentos/exportar-analitico-pdf", blockCliente, requirePermi
               : n.tipo === "nfe" || n.tipo === "nfce"
                 ? `<div style="color:#888; font-size:8.5px; margin:2px 0 8px;">XML resumido — produtos não disponíveis ainda (precisa da nota completa).</div>`
                 : n.tipo === "nfse"
-                  ? `<div style="color:#444; font-size:8.5px; margin:2px 0 8px;">Serviço: ${escHtmlRelatorio(String(n.xml).match(/<xDescServ>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/xDescServ>/)?.[1]?.trim() || "—")}</div>`
+                  ? `<div style="color:#444; font-size:8.5px; margin:2px 0 8px;">Serviço: ${escHtmlRelatorio(decodificarEntidadesXml(String(n.xml).match(/<xDescServ>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/xDescServ>/)?.[1]?.trim() || "—"))}</div>`
                   : `<div style="color:#888; font-size:8.5px; margin:2px 0 8px;">${escHtmlRelatorio((n.tipo || "").toUpperCase())} não tem lista de produtos (documento de serviço/transporte).</div>`;
           return `<div style="margin:4px 0 6px; page-break-inside:avoid;"><div style="font-size:9.5px; margin-bottom:2px;">${tituloNota}</div>${itensHtml}</div>`;
         })
