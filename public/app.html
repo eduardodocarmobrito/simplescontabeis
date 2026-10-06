@@ -11452,7 +11452,8 @@ function setupChecklistFiltro(idPrefix){
   });
 }
 async function usuarioModal(u){
-  const empresas = await empresasAtivas();
+  // Inclui as desativadas (marcadas) pra continuar liberando módulos de um cliente cuja empresa foi inativada.
+  const empresas = (await api('/empresas')).items.map(e=>e.ativo ? e : { ...e, nome: e.nome + ' (desativada)' });
   openModal(`
     <h3>${u?'Editar':'Novo'} usuário</h3>
     <div class="field"><label>Nome</label><input id="usNome" value="${u?esc(u.nome):''}"></div>
