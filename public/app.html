@@ -12064,10 +12064,16 @@ async function cenvLoteModal(ids, recarregar){
     <div class="row" style="gap:14px; margin-bottom:10px;"><span style="font-size:12.5px; color:var(--ink-soft);">Pelo WhatsApp:</span>
       <label class="checkbox-row" style="margin:0;"><input type="radio" name="cenvLoteCanalWpp" value="conversa" checked> 💬 Pela conversa (atendimento)</label>
       <label class="checkbox-row" style="margin:0;"><input type="radio" name="cenvLoteCanalWpp" value="meta"> 📱 Pelo WhatsApp oficial (Meta)</label></div>
-    <div class="card" style="padding:0; max-height:280px; overflow-y:auto;"><table class="data-table"><thead><tr><th style="width:28px;"></th><th>Documento</th><th>Empresa</th><th>Destinatários</th></tr></thead><tbody>
+    <div class="row" style="gap:8px; flex-wrap:wrap; margin-bottom:8px;">
+      <button class="btn small" type="button" data-marcar="tel" data-val="1">Marcar todos os WhatsApp</button>
+      <button class="btn small" type="button" data-marcar="tel" data-val="0">Desmarcar todos os WhatsApp</button>
+      <button class="btn small" type="button" data-marcar="mail" data-val="1">Marcar todos os e-mails</button>
+      <button class="btn small" type="button" data-marcar="mail" data-val="0">Desmarcar todos os e-mails</button>
+    </div>
+    <div class="card" style="padding:0; max-height:300px; overflow-y:auto;"><table class="data-table"><thead><tr><th style="width:28px;"></th><th>Documento</th><th>Empresa</th><th>Destinatários</th></tr></thead><tbody>
     ${previa.map(p=>`<tr data-id="${p.id}"><td><input type="checkbox" class="cenvLoteDoc" ${p.problema?'disabled':'checked'}></td>
       <td><b>${esc(p.titulo)}</b>${p.problema?`<div><span class="tag bad">${esc(p.problema)}</span></div>`:''}</td><td>${esc(p.empresaNome||'—')}</td>
-      <td style="font-size:12px;">${p.whatsapp.length?`WhatsApp: ${esc(p.whatsapp.map(w=>(w.nome?w.nome+' ':'')+w.telefone).join(', '))}<br>`:''}${p.email.length?`E-mail: ${esc(p.email.map(m=>m.email).join(', '))}`:''}</td></tr>`).join('')}
+      <td style="font-size:12px;">${p.whatsapp.map(w=>`<label class="checkbox-row" style="margin:0 0 2px;"><input type="checkbox" class="cenvLoteTelCk" data-doc="${p.id}" value="${esc(w.telefone)}" checked> WhatsApp: ${esc(w.nome?w.nome+' — ':'')}${esc(w.telefone)}</label>`).join('')}${p.email.map(m=>`<label class="checkbox-row" style="margin:0 0 2px;"><input type="checkbox" class="cenvLoteMailCk" data-doc="${p.id}" value="${esc(m.email)}" checked> E-mail: ${esc(m.nome?m.nome+' — ':'')}${esc(m.email)}</label>`).join('')}${(!p.whatsapp.length&&!p.email.length)?'<span style="color:var(--ink-soft);">Sem contato cadastrado</span>':''}</td></tr>`).join('')}
     </tbody></table></div>
     <label class="checkbox-row" style="margin:10px 0 0;"><input type="checkbox" id="cenvPorEmpresa" checked> <span><b>Uma mensagem por empresa</b> — os documentos da mesma empresa saem juntos (e-mail único com todos os anexos; no WhatsApp, um PDF só com todos os arquivos)</span></label>
     <div style="margin-top:12px; padding:10px 12px; border:1px solid var(--rule); border-radius:10px; background:var(--paper);">
@@ -12075,6 +12081,10 @@ async function cenvLoteModal(ids, recarregar){
       <label class="checkbox-row" style="margin:4px 0 0;"><input type="radio" name="cenvLoteQuando" value="agendar" checked> <b>Agendar</b> tudo para:</label>
       <div class="row" style="gap:8px; align-items:center; margin:6px 0 0 24px; flex-wrap:wrap;"><input type="datetime-local" id="cenvLoteDt" value="${cenvParaInputDt(cenvProximas8h())}" style="max-width:230px;"><button class="btn small" type="button" id="cenvLote8h">🕗 08:00 (próximo dia útil)</button></div></div>
     <div class="row" style="justify-content:flex-end; gap:8px; margin-top:12px;"><button class="btn" onclick="closeModal()">Cancelar</button><button class="btn primary" id="cenvLoteOk" ${validos.length?'':'disabled'}>Confirmar</button></div>`, '760px');
+  document.querySelectorAll('[data-marcar]').forEach(b=>b.addEventListener('click', ()=>{
+    const sel = b.dataset.marcar==='tel' ? '.cenvLoteTelCk' : '.cenvLoteMailCk';
+    document.querySelectorAll(sel).forEach(cb=>cb.checked = b.dataset.val==='1');
+  }));
   document.getElementById('cenvLote8h').addEventListener('click', ()=>{ document.getElementById('cenvLoteDt').value = cenvParaInputDt(cenvProximas8h()); document.querySelector('input[name="cenvLoteQuando"][value="agendar"]').checked = true; });
   document.getElementById('cenvLoteDt').addEventListener('focus', ()=>{ document.querySelector('input[name="cenvLoteQuando"][value="agendar"]').checked = true; });
   document.getElementById('cenvLoteOk').addEventListener('click', async ()=>{
@@ -12089,7 +12099,14 @@ async function cenvLoteModal(ids, recarregar){
     const b = document.getElementById('cenvLoteOk'); b.disabled = true; b.textContent = 'Processando…';
     try{
       const canalWhatsapp = document.querySelector('input[name="cenvLoteCanalWpp"]:checked')?.value || 'conversa';
-      const r = await api('/central-envio/lote', { method:'POST', body:{ ids:marcados, canais, porEmpresa: document.getElementById('cenvPorEmpresa').checked, quando: quando?quando.toISOString():null, canalWhatsapp } });
+      const destinatarios = {};
+      marcados.forEach(id=>{
+        destinatarios[id] = {
+          telefones: [...document.querySelectorAll(`.cenvLoteTelCk[data-doc="${id}"]:checked`)].map(x=>x.value),
+          emails: [...document.querySelectorAll(`.cenvLoteMailCk[data-doc="${id}"]:checked`)].map(x=>x.value),
+        };
+      });
+      const r = await api('/central-envio/lote', { method:'POST', body:{ ids:marcados, canais, destinatarios, porEmpresa: document.getElementById('cenvPorEmpresa').checked, quando: quando?quando.toISOString():null, canalWhatsapp } });
       marcados.forEach(id=>CENV.sel.delete(id));
       closeModal();
       toast(`${r.agendados} documento(s) em ${r.envios} envio(s) ${r.imediato?'saindo agora':'agendados para '+quando.toLocaleString('pt-BR',{weekday:'short',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}${r.ignorados.length?` · ${r.ignorados.length} ignorado(s): ${r.ignorados[0].motivo}`:''}.`, r.ignorados.length?'err':'ok');

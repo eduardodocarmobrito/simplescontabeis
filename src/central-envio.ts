@@ -942,14 +942,25 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     const ok: number[] = [];
     const validos: { doc: any; telefones: string[]; emails: string[] }[] = [];
     const ignorados: { id: number; titulo: string; motivo: string }[] = [];
+    // Destinatários escolhidos por documento (checkboxes do modal). Sem isso, vai para todos os contatos da empresa.
+    const escolhas: Record<string, { telefones?: string[]; emails?: string[] }> | null = req.body?.destinatarios && typeof req.body.destinatarios === "object" ? req.body.destinatarios : null;
     for (const id of ids) {
       const doc = db.prepare(`SELECT * FROM central_envio_docs WHERE id = ? AND escritorio_id = ?`).get(id, user.escritorioId) as any;
       if (!doc) continue;
       const motivo = doc.status !== "pendente" ? "já foi enviado, agendado ou dispensado" : !d.hasPermissao(user, doc.setor, "postar") ? "sem permissão neste setor" : !doc.empresa_id ? "sem empresa" : !fs.existsSync(doc.arquivo_path) ? "arquivo não está no servidor" : null;
       const c = contatosDaEmpresa(doc.empresa_id);
-      const telefones = canais.includes("whatsapp") ? c.whatsapp.map((w: any) => w.telefone) : [];
-      const emails = canais.includes("email") ? c.email.map((m: any) => m.email) : [];
-      const m2 = motivo || (!telefones.length && !emails.length ? "empresa sem contato ativo nos canais escolhidos" : null);
+      let telefones: string[], emails: string[];
+      if (escolhas) {
+        const esc = escolhas[String(id)] || {};
+        const telValidos = new Set(c.whatsapp.map((w: any) => w.telefone));
+        const mailValidos = new Set(c.email.map((m: any) => m.email));
+        telefones = canais.includes("whatsapp") ? (esc.telefones || []).filter((t) => telValidos.has(t)) : [];
+        emails = canais.includes("email") ? (esc.emails || []).filter((e) => mailValidos.has(e)) : [];
+      } else {
+        telefones = canais.includes("whatsapp") ? c.whatsapp.map((w: any) => w.telefone) : [];
+        emails = canais.includes("email") ? c.email.map((m: any) => m.email) : [];
+      }
+      const m2 = motivo || (!telefones.length && !emails.length ? "nenhum destinatário marcado" : null);
       if (m2) { ignorados.push({ id, titulo: doc.titulo, motivo: m2 }); continue; }
       validos.push({ doc, telefones, emails });
       ok.push(id);
@@ -957,7 +968,9 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     // "Uma mensagem por empresa": os documentos da mesma empresa saem juntos (e-mail com todos os anexos; WhatsApp com um PDF único).
     const grupos = new Map<string, { doc: any; telefones: string[]; emails: string[]; extras: number[] }>();
     for (const v of validos) {
-      const chave = req.body?.porEmpresa ? `e${v.doc.empresa_id}` : `d${v.doc.id}`;
+      // Mesma empresa e mesmos destinatários saem juntos; se os destinatários marcados forem diferentes, cada grupo sai separado.
+      const assinatura = [...v.telefones].sort().join(",") + "|" + [...v.emails].sort().join(",");
+      const chave = req.body?.porEmpresa ? `e${v.doc.empresa_id}|${assinatura}` : `d${v.doc.id}`;
       const g = grupos.get(chave);
       if (g) g.extras.push(v.doc.id); else grupos.set(chave, { ...v, extras: [] });
     }
