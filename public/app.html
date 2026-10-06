@@ -11471,9 +11471,9 @@ async function usuarioModal(u){
       </div>
       <div style="margin:16px 0 8px; padding-top:12px; border-top:1px solid var(--rule); font-weight:600; font-size:13.5px;">Permissões e acessos</div>
       <div id="usAcessoEmpresasWrap">
-        <label class="checkbox-row"><input type="checkbox" id="usAcessoTodas" checked> Acesso a todas as empresas</label>
-        <p style="font-size:11.5px; color:var(--ink-soft); margin:-2px 0 6px;">Desmarque para escolher só as empresas que este colaborador vai atender.</p>
-        <div id="usEmpresasRestritasWrap" class="hidden" style="margin:6px 0 10px;">
+        <label class="checkbox-row"><input type="checkbox" id="usAcessoTodas" checked> Acesso a todas as empresas (marca e desmarca a lista abaixo)</label>
+        <p style="font-size:11.5px; color:var(--ink-soft); margin:-2px 0 6px;">Marque abaixo só as empresas que este colaborador vai atender. Desmarcar alguma tira o "todas" sozinho; marcando "todas" de novo, libera tudo (inclusive empresas cadastradas depois).</p>
+        <div id="usEmpresasRestritasWrap" style="margin:6px 0 10px;">
           ${checklistComFiltroHtml('usColabEmp', empresas, [])}
         </div>
       </div>
@@ -11523,9 +11523,17 @@ async function usuarioModal(u){
     if(pvConfig){ pvConfig.addEventListener('change', syncConfigAbasVisibilidade); syncConfigAbasVisibilidade(); }
   }
   renderPermGrid([]);
+  // Acesso do colaborador: a lista é sempre editável. "Todas" marca/desmarca a lista inteira; desmarcar
+  // uma empresa tira o "todas" sozinho. O servidor só ignora a lista quando "todas" está ligado.
   const acessoTodasEl = document.getElementById('usAcessoTodas');
   const empresasRestritasWrap = document.getElementById('usEmpresasRestritasWrap');
-  acessoTodasEl.addEventListener('change', ()=> empresasRestritasWrap.classList.toggle('hidden', acessoTodasEl.checked));
+  const listaColabEmp = ()=> [...document.querySelectorAll('.usColabEmpCheck')];
+  acessoTodasEl.addEventListener('change', ()=> listaColabEmp().forEach(c=>{ c.checked = acessoTodasEl.checked; }));
+  empresasRestritasWrap.addEventListener('change', ev=>{
+    if(!ev.target.classList.contains('usColabEmpCheck')) return;
+    acessoTodasEl.checked = listaColabEmp().every(c=>c.checked);
+  });
+  if(!u) listaColabEmp().forEach(c=>{ c.checked = acessoTodasEl.checked; });
 
   if(u && u.perfil==='Colaborador'){
     const [{ items: perms }, { empresaIds }, { abas: configAbas }] = await Promise.all([
@@ -11535,8 +11543,7 @@ async function usuarioModal(u){
     ]);
     renderPermGrid(perms);
     acessoTodasEl.checked = !!u.acessoTodasEmpresas;
-    empresasRestritasWrap.classList.toggle('hidden', acessoTodasEl.checked);
-    empresasRestritasWrap.querySelectorAll('.usColabEmpCheck').forEach(c=>{ c.checked = empresaIds.includes(Number(c.value)); });
+    listaColabEmp().forEach(c=>{ c.checked = acessoTodasEl.checked || empresaIds.includes(Number(c.value)); });
     document.querySelectorAll('.usConfigAba').forEach(c=>{ c.checked = configAbas.includes(c.value); });
   }
   if(u && u.perfil==='Cliente'){
@@ -11593,8 +11600,7 @@ async function usuarioModal(u){
           };
         });
         await api('/users/'+userId+'/permissoes', { method:'PUT', body:{ permissoes } });
-        const empresaIds = document.getElementById('usAcessoTodas').checked ? [] :
-          [...document.querySelectorAll('.usColabEmpCheck:checked')].map(c=>Number(c.value));
+        const empresaIds = [...document.querySelectorAll('.usColabEmpCheck:checked')].map(c=>Number(c.value));
         await api('/users/'+userId+'/empresas', { method:'PUT', body:{ empresaIds } });
         const configAbas = [...document.querySelectorAll('.usConfigAba:checked')].map(c=>c.value);
         await api('/users/'+userId+'/config-abas', { method:'PUT', body:{ abas: configAbas } });
