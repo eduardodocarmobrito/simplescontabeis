@@ -11713,6 +11713,7 @@ async function centralEnvioMontar(escopo, box){
       </div>
       <div class="hidden" id="cenvDataDeBox">${dateFieldHtml('cenvDataDe','De',CENV.dataDe||'')}</div>
       <div class="hidden" id="cenvDataAteBox">${dateFieldHtml('cenvDataAte','Até',CENV.dataAte||'')}</div>
+      <button class="btn hidden" id="cenvExportarPdf" title="PDF dos envios com os filtros desta tela, pra conferência interna">📄 Exportar PDF</button>
       <label class="checkbox-row hidden" id="cenvAgruparBox" style="margin:0;"><input type="checkbox" id="cenvAgrupar" ${CENV.agrupar?'checked':''}> Agrupar por empresa</label>
     </div>
     <div id="cenvLista"></div>`;
@@ -11728,6 +11729,10 @@ async function centralEnvioMontar(escopo, box){
   setupDatePicker('cenvDataAte','cenvDataAte_text');
   document.getElementById('cenvDataDe').addEventListener('change', e=>{ CENV.dataDe = e.target.value; carregar(); });
   document.getElementById('cenvDataAte').addEventListener('change', e=>{ CENV.dataAte = e.target.value; carregar(); });
+  document.getElementById('cenvExportarPdf').addEventListener('click', ()=>{
+    const p = new URLSearchParams({ setor: escopo, busca: busca.value.trim(), situacao: CENV.situacao, dataDe: CENV.dataDe, dataAte: CENV.dataAte });
+    window.open('/api/central-envio/enviados/relatorio.pdf?'+p.toString(), '_blank');
+  });
   document.getElementById('cenvLer').addEventListener('click', async ()=>{
     const b = document.getElementById('cenvLer'); b.disabled = true; b.textContent = 'Lendo…';
     try{ await api('/central-envio/varrer', { method:'POST', body:{ dias:30 } }); toast('Lendo a pasta em segundo plano — os documentos vão aparecendo na lista.','ok'); }
@@ -11762,6 +11767,7 @@ async function centralEnvioMontar(escopo, box){
     document.getElementById('cenvSituacaoBox').classList.toggle('hidden', !ehEnviados);
     document.getElementById('cenvDataDeBox').classList.toggle('hidden', !ehEnviados);
     document.getElementById('cenvDataAteBox').classList.toggle('hidden', !ehEnviados);
+    document.getElementById('cenvExportarPdf').classList.toggle('hidden', !ehEnviados);
     if(CENV.sub==='pendentes' || CENV.sub==='dispensados') cenvDesenharPendentes(lista, r.itens, escopo, podePostar, carregar, CENV.sub==='dispensados');
     else if(CENV.sub==='agendados') cenvDesenharAgendados(lista, r.itens, podePostar, carregar);
     else {

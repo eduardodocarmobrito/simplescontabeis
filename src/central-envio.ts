@@ -7,6 +7,7 @@ import fs from "fs";
 import path from "path";
 import type express from "express";
 import { PDFDocument } from "pdf-lib";
+import { gerarPdfDeHtml } from "./contratos";
 
 export const SETORES_CENTRAL = ["crm", "dprh", "contabil", "fiscal"] as const;
 type Setor = (typeof SETORES_CENTRAL)[number];
@@ -615,6 +616,97 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     if (!doc || !(d.hasPermissao(user, doc.setor, "visualizar") || d.hasPermissao(user, "crm", "visualizar"))) { res.status(404).json({ error: "Documento não encontrado." }); return null; }
     return doc;
   };
+  // Relatório (PDF) da aba Enviados com os mesmos filtros da tela — pra conferência interna.
+  app.get("/api/central-envio/enviados/relatorio.pdf", d.blockCliente, async (req, res) => {
+    const user = (req as any).user;
+    const setores = visiveis(user, req.query.setor);
+    if (!setores) return semAcesso(res);
+    const esc = user.escritorioId;
+    const busca = `%${String(req.query.busca || "").toLowerCase().replace(/[%_]/g, "")}%`;
+    const marcas = setores.map(() => "?").join(",");
+    const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
+    const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
+    const situacao = typeof req.query.situacao === "string" ? req.query.situacao : "";
+    const rows = db.prepare(
+      `SELECT * FROM central_envio_enviados WHERE escritorio_id = ? AND setor IN (${marcas}) AND (LOWER(COALESCE(empresa_nome,'')) LIKE ? OR LOWER(COALESCE(titulo,'')) LIKE ?)
+       ORDER BY empresa_nome, enviado_em, id`
+    ).all(esc, ...setores, busca, busca) as any[];
+    const refs = [...new Set(rows.map((r) => r.entrega_ref || r.id))];
+    const st = refs.length ? (db.prepare(`SELECT origem_id, status FROM whatsapp_mensagens WHERE origem_tabela = 'central_envio_enviados' AND origem_id IN (${refs.map(() => "?").join(",")})`).all(...refs) as any[]) : [];
+    const mapa = new Map(st.map((s) => [s.origem_id, s.status]));
+    const classificar = (r: any): string => {
+      if (r.status !== "ok") return "erro";
+      const entrega = r.canal === "whatsapp" ? mapa.get(r.entrega_ref || r.id) : null;
+      if (entrega === "delivered") return "entregue";
+      if (entrega === "read") return "lido";
+      if (entrega === "failed") return "falhou_entrega";
+      return "enviado";
+    };
+    const filtrados = rows.filter((r) => {
+      const dia = String(r.enviado_em || "").slice(0, 10);
+      if (dataDe && dia < dataDe) return false;
+      if (dataAte && dia > dataAte) return false;
+      if (situacao && classificar(r) !== situacao) return false;
+      return true;
+    });
+    const rotuloSituacao: Record<string, string> = { enviado: "Enviado", entregue: "Enviado · entregue", lido: "Enviado · lido ✓✓", falhou_entrega: "Falhou na entrega", erro: "Erro" };
+    const cor: Record<string, string> = { enviado: "#DFF7EC", entregue: "#DFF7EC", lido: "#DFF7EC", falhou_entrega: "#fde2e2", erro: "#fde2e2" };
+    const fmtData = (iso: string | null) => {
+      if (!iso) return "—";
+      const dt = new Date(String(iso).includes("T") || String(iso).includes("Z") ? iso : String(iso).replace(" ", "T") + "Z");
+      return isNaN(dt.getTime()) ? "—" : dt.toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo", day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+    };
+    const h = (s: any) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    const grupos = new Map<string, any[]>();
+    for (const r of filtrados) {
+      const k = r.empresa_nome || "Sem empresa";
+      if (!grupos.has(k)) grupos.set(k, []);
+      grupos.get(k)!.push(r);
+    }
+    const contagem = (c: string) => filtrados.filter((r) => classificar(r) === c).length;
+    const periodo = dataDe || dataAte ? `${dataDe ? dataDe.split("-").reverse().join("/") : "…"} até ${dataAte ? dataAte.split("-").reverse().join("/") : "…"}` : "todo o período";
+    const blocos = [...grupos.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0], "pt-BR"))
+      .map(([nome, lista]) => `
+        <div class="forn-head"><span class="forn-nome">${h(nome)}</span><span class="forn-cnpj">${lista.length} envio(s)</span></div>
+        <table class="rep">
+          <colgroup><col style="width:15%"><col style="width:33%"><col style="width:15%"><col style="width:20%"><col style="width:17%"></colgroup>
+          <thead><tr><th>Quando</th><th>Documento</th><th>Canal</th><th>Destino</th><th>Situação</th></tr></thead>
+          <tbody>${lista
+            .map((r) => {
+              const c = classificar(r);
+              return `<tr><td>${h(fmtData(r.enviado_em))}</td><td><b>${h(r.titulo || "")}</b>${r.tipo_nome ? `<div class="sub">${h(r.tipo_nome)}</div>` : ""}</td><td>${r.canal === "whatsapp" ? "WhatsApp" : "E-mail"}</td><td>${h(r.destino || "—")}</td><td><span class="sit" style="background:${cor[c]}">${h(rotuloSituacao[c])}</span>${r.erro && c === "erro" ? `<div class="sub" style="color:#9b1c1c;">${h(r.erro)}</div>` : ""}</td></tr>`;
+            })
+            .join("")}</tbody>
+        </table>`)
+      .join("");
+    const html = `<style>
+      body { font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 9px; color:#2b2b2b; }
+      .cab { border-bottom: 2.5px solid #159873; padding-bottom: 7px; margin-bottom: 10px; }
+      h1 { font-size: 16px; margin: 0 0 3px; color:#0E6B52; }
+      .cab p { margin: 1px 0; color:#555; font-size: 9.5px; }
+      .resumo { display:inline-block; background:#DFF7EC; border-radius:6px; padding:5px 10px; margin-right:6px; font-weight:700; color:#0E6B52; font-size:9.5px; }
+      .forn-head { background:#DFF7EC; border-left:4px solid #159873; border-radius:3px; padding:5px 8px; margin:12px 0 4px; display:flex; justify-content:space-between; }
+      .forn-nome { font-size: 10.5px; font-weight:700; color:#0E6B52; }
+      .forn-cnpj { font-size: 8.5px; color:#3b8268; }
+      table.rep { border-collapse: collapse; width: 100%; table-layout: fixed; margin: 0 0 6px; }
+      table.rep th, table.rep td { border: 1px solid #cdeee1; padding: 3px 5px; overflow-wrap: break-word; vertical-align: top; }
+      table.rep th { background:#DFF7EC; color:#0E6B52; text-align:left; font-size: 7.8px; text-transform:uppercase; letter-spacing:.2px; }
+      table.rep tbody tr:nth-child(even) td { background:#F5FCFA; }
+      .sub { font-size: 8px; color:#666; margin-top:2px; }
+      .sit { display:inline-block; border-radius:4px; padding:1px 5px; font-size:8px; font-weight:700; color:#2b2b2b; }
+    </style>
+    <div class="cab">
+      <h1>Relatório de documentos enviados</h1>
+      <p><b>Período:</b> ${h(periodo)} · <b>Gerado em:</b> ${h(fmtData(new Date().toISOString().replace("T", " ").slice(0, 19)))}</p>
+      <p><span class="resumo">${filtrados.length} envio(s)</span><span class="resumo">${contagem("enviado") + contagem("entregue") + contagem("lido")} enviados</span><span class="resumo">${contagem("falhou_entrega") + contagem("erro")} com erro</span></p>
+    </div>
+    ${blocos || '<p style="color:#666;">Nenhum envio no filtro escolhido.</p>'}`;
+    const pdf = await gerarPdfDeHtml(html, "Relatório de documentos enviados", { landscape: true });
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="Documentos enviados.pdf"`);
+    res.send(pdf);
+  });
   app.get("/api/central-envio/docs/:id/pdf", d.blockCliente, (req, res) => {
     const doc = docDoUsuario(req, res); if (!doc) return;
     if (!fs.existsSync(doc.arquivo_path)) return res.status(404).json({ error: "Arquivo não encontrado no servidor." });
