@@ -6427,7 +6427,8 @@ async function pageNfeBusca(){
           ${tile('Canceladas', d.canceladas, '', d.canceladas?'var(--debit)':'')}
           ${tile('Com IBS/CBS', d.comReforma, 'reforma', 'var(--accent-deep)')}
         </div>
-        <div class="card" style="margin:12px 0 0; background:var(--paper);">
+        <div class="row" style="gap:12px; align-items:flex-start; flex-wrap:wrap; margin-top:12px;">
+        <div class="card" style="margin:0; background:var(--paper); flex:1 1 420px; min-width:420px;">
           <div style="font-weight:600; font-size:13px; margin-bottom:10px;">🏷️ Perfil das Notas</div>
           <div class="row" style="gap:10px; flex-wrap:wrap; margin-bottom:4px;">
             ${perfilTile('NF-e com flags', pf.comFlags||0)}
@@ -6454,7 +6455,7 @@ async function pageNfeBusca(){
             perfilItem('💬','Com comentário', pf.operacional?.comComentario||0, '#059669'),
           ].join(''))}
         </div>
-        <div class="card" style="margin:12px 0 0; background:var(--paper);">
+        <div class="card" style="margin:0; background:var(--paper); flex:1 1 320px; min-width:320px;">
           <div style="font-weight:600; font-size:13px; margin-bottom:10px;">Impostos no período — total ${fmtMoney(totalImp)}</div>
           ${bar('ICMS', imp.icms, '#3b82f6')}
           ${bar('PIS', imp.pis, '#10b981')}
@@ -6462,6 +6463,7 @@ async function pageNfeBusca(){
           ${bar('IPI', imp.ipi, '#f59e0b')}
           ${bar('IBS (reforma)', imp.ibs, 'var(--accent)')}
           ${bar('CBS (reforma)', imp.cbs, 'var(--accent-deep)')}
+        </div>
         </div>`;
     }
 
