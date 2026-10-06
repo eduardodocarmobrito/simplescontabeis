@@ -735,6 +735,27 @@ export function extrairIbsCbs(
   return { vIBS, vCBS, vBC, vICMS, vPIS, vCOFINS, vIPI, flags, qtdItens, crt };
 }
 
+// Resumo de um MDF-e completo (pro popup "Transportadora" — flag 🚚 estilo Espião, clicada a partir de
+// uma NF-e/CT-e vinculada). null se não for MDF-e completo (resumo/evento).
+export function resumoMdfe(xml: string): { numero: string | null; serie: string | null; uf: string | null; chave: string | null; emitenteNome: string | null; dataEmissao: string | null } | null {
+  let json: any;
+  try {
+    json = xmlParser.parse(xml);
+  } catch {
+    return null;
+  }
+  const infMDFe = json?.mdfeProc?.MDFe?.infMDFe;
+  if (!infMDFe) return null;
+  const ide = infMDFe.ide || {};
+  return {
+    numero: ide.nMDF || null,
+    serie: ide.serie || null,
+    uf: ide.UFIni && ide.UFFim ? `${ide.UFIni} → ${ide.UFFim}` : null,
+    chave: (infMDFe["@_Id"] || "").replace(/^MDFe/, "") || null,
+    emitenteNome: infMDFe.emit?.xNome || null,
+    dataEmissao: ide.dhEmi || null,
+  };
+}
 // Detalhe completo da NF-e/NFC-e (pro painel de detalhe): cabeçalho, participantes, itens e totais
 // de impostos (ICMS/PIS/COFINS/IPI + IBS/CBS da reforma). null se não for NF-e completa (resumo/
 // evento/CT-e/NFS-e) — aí o painel mostra só a aba XML.

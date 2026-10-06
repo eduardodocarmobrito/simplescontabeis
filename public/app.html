@@ -6503,6 +6503,7 @@ async function pageNfeBusca(){
         let flagsHtml = '';
         if(d.tipo!=='evento' && d.qtdItens>0) flagsHtml += chip('📦', d.qtdItens+' item(ns) na nota', 'produtos', ' '+d.qtdItens);
         flagsArr.forEach(f=>{ const i=FLAG_INFO[f]; if(i) flagsHtml += chip(i[0], i[1], i[2]); });
+        if(d.temMdfe) flagsHtml += `<span class="tag nfeMdfeBtn" data-id="${d.id}" title="Transportadora — tem MDF-e vinculado" style="margin-right:3px; cursor:pointer;">🚚</span>`;
         const flagsCell = flagsHtml || '<span style="color:var(--ink-soft);">—</span>';
         const crtInfo = CRT_INFO[d.crt];
         const crtTag = crtInfo ? ` <span class="tag muted" title="${esc(crtInfo[1])}">${crtInfo[0]}</span>` : '';
@@ -6554,6 +6555,7 @@ async function pageNfeBusca(){
         const id = b.dataset.id, d = items.find(x=>String(x.id)===id);
         abrirComentarioNota(id, d.observacao||'');
       }));
+      document.querySelectorAll('.nfeMdfeBtn').forEach(b=>b.addEventListener('click', ()=>abrirMdfeVinculadoModal(b.dataset.id)));
       atualizarBarraSelecao();
       sincronizarScrollNfe();
     }
@@ -6697,6 +6699,28 @@ function abrirComentarioNota(id, textoAtual){
       if(typeof carregarDocumentos==='function') carregarDocumentos();
     }catch(e){ toast(e.message,'err'); }
   });
+}
+// Popup "Transportadora" (flag 🚚, estilo Espião) — mostra o MDF-e que leva esta nota/CT-e.
+async function abrirMdfeVinculadoModal(id){
+  openModal(`<h3>🚚 Transportadora</h3><div id="mdfeVinculadoBody"><div class="empty-state">Carregando…</div></div><div class="modal-actions"><button class="btn" id="mdfeVinculadoFechar">Fechar</button></div>`, '440px');
+  document.getElementById('mdfeVinculadoFechar').addEventListener('click', closeModal);
+  const body = document.getElementById('mdfeVinculadoBody');
+  try{
+    const r = await api('/nfe/documentos/'+id+'/mdfe-vinculado');
+    if(!r.encontrado){ body.innerHTML = '<div class="empty-state">Não achei o MDF-e vinculado.</div>'; return; }
+    body.innerHTML = `
+      <div class="card" style="margin:0;">
+        <div style="font-weight:600;">${esc(r.emitenteNome||'—')}</div>
+        <div style="font-size:12.5px; color:var(--ink-soft); margin-top:6px;">
+          MDF-e nº ${esc(r.numero||'—')}${r.serie?' · série '+esc(r.serie):''}${r.uf?' · '+esc(r.uf):''}
+          ${r.dataEmissao?'<br>Emitido em '+fmtDateHora(r.dataEmissao):''}
+        </div>
+        <div style="font-family:'IBM Plex Mono',monospace; font-size:11px; word-break:break-all; margin-top:8px; color:var(--ink-soft);">${esc(r.chave||'—')}</div>
+      </div>
+      <div class="row" style="margin-top:10px;"><button class="btn small" id="mdfeVinculadoVer">Ver detalhes do MDF-e</button></div>
+    `;
+    document.getElementById('mdfeVinculadoVer')?.addEventListener('click', ()=>{ closeModal(); abrirDetalheNota(r.mdfeDocumentoId, 'xml'); });
+  }catch(e){ body.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; }
 }
 async function abrirDetalheNota(id, tabInicial){
   let data;

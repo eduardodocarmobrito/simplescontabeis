@@ -1016,6 +1016,17 @@ sqlite.exec(`
     UNIQUE(empresa_id, fonte, nsu)
   );
 
+  -- Vínculo MDF-e -> NF-e/CT-e transportados (grupo infDoc do MDF-e). Confirmado ao vivo que a chave
+  -- NÃO vem mascarada (apesar da NT 2015/002 prever mascaramento por sigilo fiscal em outros casos) —
+  -- usado pra mostrar "esta nota está neste MDF-e" (flag 🚚, estilo Espião) sem precisar baixar nada
+  -- a mais: indexado por chave_vinculada pra achar rápido o MDF-e de uma nota/CT-e específica.
+  CREATE TABLE IF NOT EXISTS mdfe_vinculos (
+    mdfe_documento_id INTEGER NOT NULL REFERENCES nfe_documentos(id) ON DELETE CASCADE,
+    chave_vinculada TEXT NOT NULL,
+    UNIQUE(mdfe_documento_id, chave_vinculada)
+  );
+  CREATE INDEX IF NOT EXISTS idx_mdfe_vinculos_chave ON mdfe_vinculos(chave_vinculada);
+
   -- Exportação de XML pro OneDrive direto da nuvem (sem depender de nenhum agente local rodando —
   -- diferente da exportação por pasta local do dominio-agent). OAuth2 com a Microsoft (conta
   -- pessoal), client_secret e refresh_token cifrados em repouso (mesmo padrão AES-256-GCM já usado
@@ -6947,7 +6958,7 @@ function nfeInserirDocumentoDedup(args: {
   chaveAcesso: string | null | undefined; emitenteCnpj: string | null | undefined; emitenteNome: string | null | undefined;
   destinatarioCnpj: string | null | undefined; destinatarioNome: string | null | undefined; valorTotal: number | null | undefined;
   dataEmissao: string | null | undefined; xml: string; eventoDescricao: string | null | undefined;
-}): { inserido: boolean; atualizado: boolean } {
+}): { inserido: boolean; atualizado: boolean; id: number | null } {
   if (args.chaveAcesso) {
     const existente = sqlite
       .prepare(`SELECT id, xml FROM nfe_documentos WHERE empresa_id = ? AND chave_acesso = ? AND tipo != 'evento'`)
@@ -6966,10 +6977,10 @@ function nfeInserirDocumentoDedup(args: {
             args.destinatarioCnpj || null, args.destinatarioNome || null, args.valorTotal ?? null, args.dataEmissao || null,
             args.xml, args.eventoDescricao || null, existente.id
           );
-        return { inserido: false, atualizado: true };
+        return { inserido: false, atualizado: true, id: existente.id };
       }
       // Já tem a versão completa (não rebaixa pra resumo), ou as duas são resumo: não duplica.
-      return { inserido: false, atualizado: false };
+      return { inserido: false, atualizado: false, id: existente.id };
     }
   }
   const r = nfeInserirDocumento.run(
@@ -6977,7 +6988,8 @@ function nfeInserirDocumentoDedup(args: {
     args.emitenteCnpj || null, args.emitenteNome || null, args.destinatarioCnpj || null, args.destinatarioNome || null,
     args.valorTotal ?? null, args.dataEmissao || null, args.xml, args.eventoDescricao || null
   );
-  return { inserido: r.changes > 0, atualizado: false };
+  const id = r.changes > 0 ? Number(r.lastInsertRowid) : (sqlite.prepare(`SELECT id FROM nfe_documentos WHERE empresa_id = ? AND fonte = ? AND nsu = ?`).get(args.empresaId, args.fonte, args.nsu) as any)?.id ?? null;
+  return { inserido: r.changes > 0, atualizado: false, id };
 }
 // Achado ao vivo (LUCELIO MARTINS DE OLIVEIRA): nfe_busca_config.cnpj é uma cópia de empresas.cnpj
 // tirada só no momento em que o certificado é cadastrado — se o CPF/CNPJ da empresa ainda estava em
@@ -7214,6 +7226,14 @@ async function nfeMdfeBuscarDocumentosNovos(empresaId: number, cfg: any, cert: n
           dataEmissao: info.dataEmissao, xml: doc.xml, eventoDescricao: info.eventoDescricao,
         });
         if (r.inserido) novos++;
+        // Grava o vínculo MDF-e -> NF-e/CT-e transportados (grupo infDoc), pra achar depois "esta nota
+        // está em qual MDF-e" sem reler XML nenhum. Refaz do zero a cada recaptura (delete+insert) —
+        // mais simples que tentar diffar, e o conjunto raramente muda depois de emitido.
+        if (r.id && info.docsVinculados?.length) {
+          sqlite.prepare(`DELETE FROM mdfe_vinculos WHERE mdfe_documento_id = ?`).run(r.id);
+          const insVinculo = sqlite.prepare(`INSERT OR IGNORE INTO mdfe_vinculos (mdfe_documento_id, chave_vinculada) VALUES (?, ?)`);
+          for (const chave of info.docsVinculados) insVinculo.run(r.id, chave);
+        }
       }
       ultNsu = resp.ultNSU || ultNsu;
       sqlite.prepare(`UPDATE nfe_busca_config SET ultimo_nsu_mdfe = ?, ultima_busca_mdfe_em = datetime('now'), ultimo_erro_mdfe = NULL WHERE empresa_id = ?`).run(ultNsu, empresaId);
@@ -7605,6 +7625,7 @@ app.get("/api/nfe/documentos", blockCliente, requirePermissao("nfe-busca", "visu
               d.destinatario_nome as destinatarioNome, d.valor_total as valorTotal, d.data_emissao as dataEmissao, d.criado_em as criadoEm,
               d.valor_ibs as valorIbs, d.valor_cbs as valorCbs, d.flags as flags, d.qtd_itens as qtdItens, d.tributos_parseado as tributosParseado,
               d.observacao as observacao, d.crt as crt,
+              (d.chave_acesso IS NOT NULL AND EXISTS (SELECT 1 FROM mdfe_vinculos mv WHERE mv.chave_vinculada = d.chave_acesso)) as temMdfe,
               ${direcaoExpr} as direcao, (CASE WHEN d.tipo = 'evento' THEN 0 ELSE ${notaCanceladaExpr} END) as notaCancelada
        FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id
        WHERE ${condicoes.join(" AND ")}
@@ -7760,6 +7781,26 @@ app.get("/api/nfe/documentos/:id/detalhe", blockCliente, requirePermissao("nfe-b
       .get(row.escritorio_id, row.chave_acesso) as any
   );
   res.json({ tipo: row.tipo, chaveAcesso: row.chave_acesso, notaCancelada, detalhe: nfe.detalharNfe(row.xml) });
+});
+// Popup "Transportadora" (flag 🚚, clicada a partir de uma NF-e/CT-e) — acha o MDF-e que carrega essa
+// chave (mdfe_vinculos) e devolve um resumo dele (número, série, UF ini/fim, emitente).
+app.get("/api/nfe/documentos/:id/mdfe-vinculado", blockCliente, requirePermissao("nfe-busca", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const row = sqlite.prepare(`SELECT escritorio_id, empresa_id, chave_acesso FROM nfe_documentos WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!row || row.escritorio_id !== user.escritorioId || !podeAcessarEmpresa(user, row.empresa_id)) {
+    return res.status(404).json({ error: "Documento não encontrado." });
+  }
+  if (!row.chave_acesso) return res.json({ encontrado: false });
+  const mdfeDoc = sqlite
+    .prepare(
+      `SELECT d.id, d.xml FROM mdfe_vinculos mv JOIN nfe_documentos d ON d.id = mv.mdfe_documento_id
+       WHERE mv.chave_vinculada = ? ORDER BY mv.mdfe_documento_id DESC LIMIT 1`
+    )
+    .get(row.chave_acesso) as any;
+  if (!mdfeDoc) return res.json({ encontrado: false });
+  const info = nfe.resumoMdfe(mdfeDoc.xml);
+  if (!info) return res.json({ encontrado: false });
+  res.json({ encontrado: true, mdfeDocumentoId: mdfeDoc.id, ...info });
 });
 function nfeDocNomeArquivo(row: any, extensao: string): string {
   const quem = row.emitente_nome || row.destinatario_nome || String(row.tipo).toUpperCase();
