@@ -5819,7 +5819,7 @@ async function renderNfseNotasDetalhe(empresaId){
               <td>${fmtDateHora(n.criadoEm)}</td>
               <td style="text-align:right; white-space:nowrap;">
                 ${n.status==='rascunho'?`<button class="btn small" data-id="${n.id}" data-act="continuar">Continuar</button> <button class="btn small" data-id="${n.id}" data-act="excluir">Excluir</button>`:''}
-                ${n.status!=='rascunho'?`<button class="btn small" data-id="${n.id}" data-act="duplicar" title="Duplicar">🗐</button>`:''}
+                ${n.status!=='rascunho'?`<button class="btn small" data-id="${n.id}" data-act="duplicar" title="Duplicar" aria-label="Duplicar" style="padding:4px 7px; line-height:0;"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M4 16V5a2 2 0 0 1 2-2h11"/><path d="M12 12h5M12 16h5"/></svg></button>`:''}
                 ${n.status==='emitida'||n.status==='cancelada'?`<button class="btn small" data-id="${n.id}" data-act="baixar-xml">XML</button> <button class="btn small" data-id="${n.id}" data-act="baixar-pdf">PDF</button>`:''}
                 ${n.status==='emitida'&&n.whatsappStatus==='lido'?`<span class="tag ok" title="Lido pelo cliente${n.whatsappStatusEm?' em '+fmtDateHora(n.whatsappStatusEm):''}">✓✓ Lido</span>`:''}
                 ${n.status==='emitida'&&n.whatsappStatus==='entregue'?`<span class="tag ok" title="Entregue ao cliente">✓✓ Entregue</span>`:''}
