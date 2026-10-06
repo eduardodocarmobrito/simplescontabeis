@@ -8058,7 +8058,10 @@ app.get("/api/nfe/documentos/exportar-analitico-pdf", blockCliente, requirePermi
   const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
   const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
   const direcaoExpr = `(CASE WHEN d.emitente_cnpj = REPLACE(REPLACE(REPLACE(e.cnpj,'.',''),'/',''),'-','') THEN 'emitida' ELSE 'recebida' END)`;
-  const condicoes: string[] = [`d.escritorio_id = ?`, `d.empresa_id = ?`, `d.tipo IN ('nfe','nfce')`];
+  // Sem travar em nfe/nfce: a tela também exporta com o filtro em CT-e/MDF-e/NFS-e — só evento fica de
+  // fora (não é documento pra listar por fornecedor). O "tipo" abaixo, quando vem da tela, já restringe
+  // mais ainda; sem ele, pega todos os tipos reais do período.
+  const condicoes: string[] = [`d.escritorio_id = ?`, `d.empresa_id = ?`, `d.tipo != 'evento'`];
   const params: any[] = [user.escritorioId, empresaId];
   if (tipo) { condicoes.push(`d.tipo = ?`); params.push(tipo); }
   if (direcao) { condicoes.push(`${direcaoExpr} = ?`); params.push(direcao); }
@@ -8074,7 +8077,7 @@ app.get("/api/nfe/documentos/exportar-analitico-pdf", blockCliente, requirePermi
   const notaCanceladaExpr = `EXISTS (SELECT 1 FROM nfe_documentos ev WHERE ev.escritorio_id = d.escritorio_id AND ev.tipo = 'evento' AND ev.chave_acesso = d.chave_acesso AND ev.evento_descricao LIKE '%ancela%' AND ev.evento_descricao NOT LIKE '%CT-e%' AND ev.evento_descricao NOT LIKE '%MDF-e%')`;
   const rows = sqlite
     .prepare(
-      `SELECT d.id, d.xml, d.chave_acesso as chaveAcesso, d.emitente_cnpj as emitenteCnpj, d.emitente_nome as emitenteNome,
+      `SELECT d.id, d.xml, d.tipo, d.chave_acesso as chaveAcesso, d.emitente_cnpj as emitenteCnpj, d.emitente_nome as emitenteNome,
               d.valor_total as valorTotal, d.data_emissao as dataEmissao, ${notaCanceladaExpr} as notaCancelada
        FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id
        WHERE ${condicoes.join(" AND ")}
@@ -8093,7 +8096,7 @@ app.get("/api/nfe/documentos/exportar-analitico-pdf", blockCliente, requirePermi
     if (!grupos.has(chave)) grupos.set(chave, { nome: r.emitenteNome || "(sem nome)", cnpj: r.emitenteCnpj || null, notas: [], subtotal: 0 });
     const g = grupos.get(chave)!;
     const detalhe = nfe.detalharNfe(r.xml);
-    g.notas.push({ ...r, itens: detalhe ? detalhe.itens : null });
+    g.notas.push({ ...r, tipo: r.tipo, itens: detalhe ? detalhe.itens : null });
     if (!r.notaCancelada) g.subtotal += r.valorTotal || 0;
   }
   const listaGrupos = [...grupos.values()].sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
@@ -8119,7 +8122,9 @@ app.get("/api/nfe/documentos/exportar-analitico-pdf", blockCliente, requirePermi
                       `<tr><td>${escHtmlRelatorio(it.cProd)}</td><td>${escHtmlRelatorio(it.xProd)}</td><td>${escHtmlRelatorio(it.ncm)}</td><td>${escHtmlRelatorio(it.cfop)}</td><td class="num">${it.qtd}</td><td class="num">${fmtMoedaRelatorio(it.vUnit)}</td><td class="num">${fmtMoedaRelatorio(it.vProd)}</td></tr>`
                   )
                   .join("")}</tbody></table>`
-              : `<div style="color:#888; font-size:8.5px; margin:2px 0 8px;">XML resumido — produtos não disponíveis ainda (precisa da nota completa).</div>`;
+              : n.tipo === "nfe" || n.tipo === "nfce"
+                ? `<div style="color:#888; font-size:8.5px; margin:2px 0 8px;">XML resumido — produtos não disponíveis ainda (precisa da nota completa).</div>`
+                : `<div style="color:#888; font-size:8.5px; margin:2px 0 8px;">${escHtmlRelatorio((n.tipo || "").toUpperCase())} não tem lista de produtos (documento de serviço/transporte).</div>`;
           return `<div style="margin:8px 0 12px;"><div style="font-size:9.5px; margin-bottom:3px;">${tituloNota}</div>${itensHtml}</div>`;
         })
         .join("");
