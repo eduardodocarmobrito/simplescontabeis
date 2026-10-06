@@ -1883,6 +1883,11 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
   if (!colsAnexos.some((c) => c.name === "ano")) {
     sqlite.exec(`ALTER TABLE empresa_anexos ADD COLUMN ano INTEGER`);
   }
+  // descricao: rótulo livre digitado pelo usuário — só usada na aba "Anexo" (categoria='anexo'), que é
+  // documento avulso sem um catálogo fixo de tipos como Constituição/Licenças têm.
+  if (!colsAnexos.some((c) => c.name === "descricao")) {
+    sqlite.exec(`ALTER TABLE empresa_anexos ADD COLUMN descricao TEXT`);
+  }
 }
 // Migração leve: isenção de cobrança por assento (app_users) e quantidade no item de fatura do
 // escritório (escritorio_licenca_cobranca_itens).
@@ -3513,7 +3518,7 @@ app.put("/api/empresas/:id/solicitacao-tipos", blockCliente, requirePermissao("e
   res.json({ ok: true });
 });
 
-// ---- Anexos do cadastro (Constituição/Licenças) ----
+// ---- Anexos do cadastro (Constituição/Licenças/Anexo) ----
 const EMPRESA_ANEXO_TIPOS: Record<string, { categoria: string; label: string }> = {
   contrato_social: { categoria: "constituicao", label: "Contrato Social / Alteração" },
   cartao_cnpj: { categoria: "constituicao", label: "Cartão CNPJ" },
@@ -3522,6 +3527,9 @@ const EMPRESA_ANEXO_TIPOS: Record<string, { categoria: string; label: string }> 
   vigilancia_sanitaria: { categoria: "licenca", label: "Licença Vigilância Sanitária" },
   corpo_bombeiros: { categoria: "licenca", label: "Licença Corpo de Bombeiros" },
   ambiental_semma: { categoria: "licenca", label: "Licença Ambiental - SEMMA" },
+  // Aba "Anexo": documento avulso qualquer, sem catálogo fixo de tipos — o rótulo vem do campo
+  // "descricao" (livre, digitado na hora do envio), não de um "tipo" escolhido numa lista.
+  documento_geral: { categoria: "anexo", label: "Documento" },
 };
 // Tipos de licença cadastrados à mão (tabela empresa_licenca_tipos), além dos fixos acima. Sempre
 // categoria 'licenca'. Com empresaId: só os compartilhados (empresa_id NULL) + os dessa empresa
@@ -4147,7 +4155,7 @@ app.get("/api/empresas/:id/anexos", blockCliente, requirePermissao("empresas", "
   if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
   const categoria = typeof req.query.categoria === "string" ? req.query.categoria : null;
   let sql = `SELECT a.id, a.categoria, a.tipo, a.ano, a.nome_arquivo as nomeArquivo, a.mime, a.size_bytes as sizeBytes,
-             a.vencimento, a.vencimento_origem as vencimentoOrigem, a.criado_em as criadoEm, u.nome as criadoPorNome
+             a.vencimento, a.vencimento_origem as vencimentoOrigem, a.descricao, a.criado_em as criadoEm, u.nome as criadoPorNome
              FROM empresa_anexos a LEFT JOIN app_users u ON u.id = a.criado_por WHERE a.empresa_id = ?`;
   const params: any[] = [empresaId];
   if (categoria) {
@@ -4188,13 +4196,14 @@ app.post("/api/empresas/:id/anexos", blockCliente, requirePermissao("empresas", 
       if (vencimento) vencimentoOrigem = "automatico";
     }
   }
+  const descricao = info.categoria === "anexo" && req.body?.descricao ? String(req.body.descricao).trim().slice(0, 300) : null;
   const result = sqlite
     .prepare(
-      `INSERT INTO empresa_anexos (empresa_id, categoria, tipo, ano, nome_arquivo, arquivo_path, mime, size_bytes, vencimento, vencimento_origem, criado_por)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO empresa_anexos (empresa_id, categoria, tipo, ano, nome_arquivo, arquivo_path, mime, size_bytes, vencimento, vencimento_origem, descricao, criado_por)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(empresaId, info.categoria, tipo, ano, req.file.originalname, destino, req.file.mimetype, req.file.buffer.length, vencimento, vencimentoOrigem, user.id);
-  res.json({ id: Number(result.lastInsertRowid), ano, vencimento, vencimentoOrigem });
+    .run(empresaId, info.categoria, tipo, ano, req.file.originalname, destino, req.file.mimetype, req.file.buffer.length, vencimento, vencimentoOrigem, descricao, user.id);
+  res.json({ id: Number(result.lastInsertRowid), ano, vencimento, vencimentoOrigem, descricao });
 });
 // Carrega uma pasta inteira de licenças de uma vez (o navegador junta os PDFs da pasta escolhida e
 // manda tudo num só POST) — lê o CNPJ/CPF de dentro de CADA PDF pra descobrir sozinho de qual

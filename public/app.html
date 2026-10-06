@@ -2858,6 +2858,7 @@ const EMPRESA_ANEXO_TIPOS = {
   vigilancia_sanitaria: { categoria:'licenca', label:'Licença Vigilância Sanitária' },
   corpo_bombeiros: { categoria:'licenca', label:'Licença Corpo de Bombeiros' },
   ambiental_semma: { categoria:'licenca', label:'Licença Ambiental - SEMMA' },
+  documento_geral: { categoria:'anexo', label:'Documento' },
 };
 // Tipos de licença cadastrados pelo escritório (além dos 4 fixos) — carregados de /empresas/licenca-tipos
 // quando abre a aba/módulo Licenças. Guardado aqui só pra resolver rótulo em anexoCardHtml e nas listagens.
@@ -2888,6 +2889,7 @@ function empresaModal(e){
       <div class="tab" data-tab="empresa">Empresa</div>
       <div class="tab" data-tab="constituicao">Constituição</div>
       <div class="tab" data-tab="licencas">Licenças</div>
+      <div class="tab" data-tab="anexo">Anexo</div>
       <div class="tab" data-tab="configuracoes">Configurações</div>
     </div>` : ''}
     <div id="empTabEmpresa">
@@ -2945,6 +2947,14 @@ function empresaModal(e){
       <div class="tabs" id="empLicencasAnos"></div>
       <div id="empLicencasTipos" style="margin-top:12px;"></div>
     </div>
+    <div id="empTabAnexo" class="hidden">
+      <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:10px;">
+        <p style="font-size:12.5px; color:var(--ink-soft); margin:0;">Outros documentos da empresa — procuração, RG, contratos, ou qualquer arquivo avulso que não se encaixe em Constituição/Licenças.</p>
+        <button class="btn small" id="btnAddAnexoGeral">+ Adicionar Anexo</button>
+      </div>
+      <div id="empAddAnexoFormGeral" class="hidden card" style="background:var(--paper); margin-bottom:12px;"></div>
+      <div id="empAnexosGeral"><div class="empty-state">Carregando…</div></div>
+    </div>
     <div id="empTabConfiguracoes" class="hidden">
       <div style="font-weight:600; font-size:13px; color:var(--ink-soft); padding-top:2px; margin-bottom:6px;">Certificado digital</div>
       <p style="font-size:12.5px; color:var(--ink-soft); margin-top:0;">Certificado próprio desta empresa — usado pra buscar os documentos fiscais dela na Sefaz e no Sistema Nacional NFS-e, e também pra assinar a emissão de NFS-e quando o método de assinatura for "Certificado próprio desta empresa" (em NFS-e › Configurar).</p>
@@ -2983,7 +2993,7 @@ function empresaModal(e){
       t.addEventListener('click', ()=>{
         empTabAtual = t.dataset.tab;
         document.getElementById('empModalTabs').querySelectorAll('.tab').forEach(x=>x.classList.toggle('active', x===t));
-        ['empresa','constituicao','licencas','configuracoes'].forEach(nome=>{
+        ['empresa','constituicao','licencas','anexo','configuracoes'].forEach(nome=>{
           document.getElementById('empTab'+nome[0].toUpperCase()+nome.slice(1)).classList.toggle('hidden', nome!==empTabAtual);
         });
       });
@@ -2992,6 +3002,7 @@ function empresaModal(e){
     document.getElementById('empTabEmpresa').classList.remove('hidden');
     ligarAbaAnexosEmpresa(e.id, 'constituicao', 'empAnexosConstituicao', 'empAddAnexoFormConstituicao', 'btnAddAnexoConstituicao');
     ligarAbaLicencasEmpresa(e.id);
+    ligarAbaAnexoGeralEmpresa(e.id, 'empAnexosGeral', 'empAddAnexoFormGeral', 'btnAddAnexoGeral');
     function desenhaEmpRegApuracaoWrap(){
       const wrap = document.getElementById('empRegApuracaoWrap');
       const marcado = document.querySelector('input[name="empRegimeTributario"]:checked');
@@ -3120,7 +3131,7 @@ function empresaModal(e){
 // Card de UM anexo — reaproveitado pela lista simples (Constituição) e pelo histórico por ano/tipo
 // (Licenças). Só licença ganha o campo de vencimento (contrato social/cartão CNPJ não vencem).
 function anexoCardHtml(a){
-  const tipoLabel = rotuloTipoLicenca(a.tipo);
+  const tipoLabel = a.categoria==='anexo' ? (a.descricao||'Documento') : rotuloTipoLicenca(a.tipo);
   const vencTag = a.vencimentoOrigem==='automatico' ? `<span class="tag ok" style="font-size:10px;">lido automaticamente do PDF</span>`
     : a.vencimentoOrigem==='manual' ? `<span class="tag muted" style="font-size:10px;">informado manualmente</span>`
     : `<span class="tag bad" style="font-size:10px;">não identificado — informe a data</span>`;
@@ -3194,6 +3205,48 @@ function ligarAbaAnexosEmpresa(empresaId, categoria, listId, formId, btnId){
       const btn = document.getElementById(formId+'Enviar');
       btn.disabled = true; btn.textContent = 'Enviando…';
       const fd = new FormData(); fd.append('tipo', tipo); fd.append('arquivo', arquivo);
+      try{
+        await api('/empresas/'+empresaId+'/anexos', { method:'POST', body: fd });
+        toast('Anexo enviado.','ok');
+        formWrap.classList.add('hidden');
+        carregar();
+      }catch(err){ toast(err.message,'err'); }
+      finally{ btn.disabled=false; btn.textContent='Enviar'; }
+    });
+  });
+  carregar();
+}
+// Aba "Anexo": documento avulso qualquer (não entra no catálogo fixo de Constituição/Licenças) — um
+// só tipo fixo por baixo (documento_geral), com descrição livre digitada na hora em vez de um select
+// de tipos (que não faria sentido pra "qualquer outro documento").
+function ligarAbaAnexoGeralEmpresa(empresaId, listId, formId, btnId){
+  async function carregar(){
+    const wrap = document.getElementById(listId);
+    wrap.innerHTML = `<div class="empty-state">Carregando…</div>`;
+    const { items } = await api('/empresas/'+empresaId+'/anexos?categoria=anexo');
+    if(!items.length){ wrap.innerHTML = `<div class="empty-state">Nenhum anexo enviado ainda.</div>`; return; }
+    wrap.innerHTML = items.map(anexoCardHtml).join('');
+    wireAnexoCardEvents(wrap, items, carregar);
+  }
+  document.getElementById(btnId).addEventListener('click', ()=>{
+    const formWrap = document.getElementById(formId);
+    const vaiAbrir = formWrap.classList.contains('hidden');
+    formWrap.classList.toggle('hidden', !vaiAbrir);
+    if(!vaiAbrir) return;
+    formWrap.innerHTML = `
+      <div class="row" style="align-items:flex-end; padding:12px;">
+        <div class="field grow" style="margin-bottom:0;"><label>Descrição</label><input type="text" id="${formId}Descricao" placeholder="Ex.: Procuração, RG do sócio, contrato de aluguel…"></div>
+        <div class="field grow" style="margin-bottom:0;"><label>Arquivo</label><input type="file" id="${formId}Arquivo"></div>
+        <button class="btn small primary" id="${formId}Enviar">Enviar</button>
+      </div>
+    `;
+    document.getElementById(formId+'Enviar').addEventListener('click', async ()=>{
+      const descricao = document.getElementById(formId+'Descricao').value.trim();
+      const arquivo = document.getElementById(formId+'Arquivo').files[0];
+      if(!arquivo){ toast('Selecione um arquivo.','err'); return; }
+      const btn = document.getElementById(formId+'Enviar');
+      btn.disabled = true; btn.textContent = 'Enviando…';
+      const fd = new FormData(); fd.append('tipo', 'documento_geral'); fd.append('descricao', descricao); fd.append('arquivo', arquivo);
       try{
         await api('/empresas/'+empresaId+'/anexos', { method:'POST', body: fd });
         toast('Anexo enviado.','ok');
