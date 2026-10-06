@@ -8125,13 +8125,18 @@ app.get("/api/nfe/documentos/exportar-analitico-pdf", blockCliente, requirePermi
               : n.tipo === "nfe" || n.tipo === "nfce"
                 ? `<div style="color:#888; font-size:8.5px; margin:2px 0 8px;">XML resumido — produtos não disponíveis ainda (precisa da nota completa).</div>`
                 : `<div style="color:#888; font-size:8.5px; margin:2px 0 8px;">${escHtmlRelatorio((n.tipo || "").toUpperCase())} não tem lista de produtos (documento de serviço/transporte).</div>`;
-          return `<div style="margin:8px 0 12px;"><div style="font-size:9.5px; margin-bottom:3px;">${tituloNota}</div>${itensHtml}</div>`;
+          return `<div style="margin:4px 0 6px; page-break-inside:avoid;"><div style="font-size:9.5px; margin-bottom:2px;">${tituloNota}</div>${itensHtml}</div>`;
         })
         .join("");
-      return `<div style="margin-top:18px; page-break-inside:avoid;">
-        <h2 style="border-bottom:1.5px solid #333; padding-bottom:3px;">${escHtmlRelatorio(g.nome)} — CNPJ: ${escHtmlRelatorio(fmtCnpjRelatorio(g.cnpj))}</h2>
+      // Sem page-break-inside:avoid aqui no bloco inteiro: travar o fornecedor inteiro numa página só
+      // deixava um vão enorme em branco toda vez que ele não cabia no resto da página (achado ao vivo,
+      // relatório de 46 páginas com metade de página em branco antes de cada fornecedor que não coube).
+      // Cada nota (acima) evita quebrar NO MEIO da tabela dela, o que já é suficiente — o fornecedor em
+      // si pode continuar normalmente na página seguinte, sem vão.
+      return `<div style="margin-top:8px;">
+        <h2 style="border-bottom:1.5px solid #333; padding-bottom:2px; margin-bottom:4px;">${escHtmlRelatorio(g.nome)} — CNPJ: ${escHtmlRelatorio(fmtCnpjRelatorio(g.cnpj))}</h2>
         ${notasHtml}
-        <div style="text-align:right; font-weight:bold; font-size:10px; border-top:1px solid #ccc; padding-top:4px;">Subtotal ${escHtmlRelatorio(g.nome)}: R$ ${fmtMoedaRelatorio(g.subtotal)}</div>
+        <div style="text-align:right; font-weight:bold; font-size:10px; border-top:1px solid #ccc; padding-top:3px;">Subtotal ${escHtmlRelatorio(g.nome)}: R$ ${fmtMoedaRelatorio(g.subtotal)}</div>
       </div>`;
     })
     .join("");
