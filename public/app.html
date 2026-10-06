@@ -490,6 +490,9 @@
   .chat-anexo-link{display:block; font-size:11.5px; text-decoration:underline; opacity:.9;}
   .chat-msg.mine .chat-anexo-link{color:#fff;}
   .chat-msg.theirs .chat-anexo-link{color:var(--accent-deep);}
+  /* Mídia que o deskcomm não baixou (ex.: enviada/recebida pelo celular conectado) — aviso claro. */
+  .atd-midia-indisp{display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--ink-soft); background:rgba(0,0,0,.05); border:1px dashed var(--rule); border-radius:8px; padding:5px 9px; margin-top:2px;}
+  .chat-msg.mine .atd-midia-indisp{color:#eafff6; background:rgba(255,255,255,.15); border-color:rgba(255,255,255,.4);}
   .chat-conv-lista{flex:1; overflow-y:auto;}
   .chat-conv-item{display:flex; align-items:center; gap:8px; padding:10px 12px; border-bottom:1px solid var(--rule-soft); cursor:pointer;}
   .chat-conv-item:hover{background:var(--paper);}
@@ -10630,6 +10633,26 @@ function atdAutorMsg(S, m, c){
   if(m.sent_via==='external_device') return 'Pelo celular';
   return 'Automático';
 }
+// Tipos de mídia do deskcomm → [ícone, rótulo].
+const ATD_MIDIA_TIPOS = { image:['📷','Imagem'], sticker:['🏷','Figurinha'], audio:['🎙','Áudio'], video:['🎬','Vídeo'], document:['📄','Documento'] };
+// Conteúdo da bolha: texto, mídia (quando há arquivo) ou um aviso claro quando a mídia não foi
+// baixada do WhatsApp (ex.: enviada/recebida pelo celular conectado). Antes mostrava só "[imagem]".
+function atdConteudoHtml(m){
+  const temMidia = !!(m.media_storage_path || m.media_url);
+  const ehPlaceholder = !!(m.body && /^\[[^\]]+\]$/.test(String(m.body).trim())); // "[imagem]", "[áudio]"…
+  if(temMidia){
+    const cap = (m.body && !ehPlaceholder) ? esc(m.body) : ''; // legenda real (não o placeholder)
+    return cap + atdMidiaHtml(m);
+  }
+  const info = ATD_MIDIA_TIPOS[m.type];
+  if(info || ehPlaceholder){
+    const ic = info ? info[0] : '📎';
+    const nome = info ? info[1] : 'Mídia';
+    const cap = (m.body && !ehPlaceholder) ? esc(m.body)+'<br>' : '';
+    return cap + `<span class="atd-midia-indisp" title="O arquivo não foi baixado do WhatsApp — normalmente quando a mídia passou pelo celular conectado, não pelo CRM.">${ic} ${esc(nome)} não disponível <span style="opacity:.65;">· não baixada do WhatsApp</span></span>`;
+  }
+  return m.body ? esc(m.body) : '';
+}
 function atdMidiaHtml(m){
   if(!m.media_storage_path && !m.media_url) return '';
   const src = `/api/v1/messages/${m.id}/media`;
@@ -10701,7 +10724,7 @@ async function atdCarregarMensagens(S, primeira){
     const apagada = m.revoked_at ? '<i>Mensagem apagada</i>' : '';
     const editada = m.metadata && m.metadata.editada_em ? ' · editada' : '';
     const menuBtn = (podePostarMsg && !apagada) || (podePostarMsg && m.revoked_at) ? `<button class="atd-msg-menu" data-msg="${esc(m.id)}" title="Editar / excluir">⋯</button>` : '';
-    return `${sep}<div data-mid="${esc(m.id)}" class="chat-msg atd-msg ${m.direction==='inbound'?'theirs':'mine'} ${m.direction!=='inbound' && !m.sent_by_user_id && m.sent_via!=='external_device'?'dprh-bot':''}">${menuBtn}${atdCitaHtml(S, m)}${apagada || ((m.body?esc(m.body):'') + atdMidiaHtml(m))}<span class="hora">${esc(atdAutorMsg(S,m,c))} · ${esc(new Date(quando).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}))}${editada}${falhou}${atdTiqueHtml(m)}</span></div>`;
+    return `${sep}<div data-mid="${esc(m.id)}" class="chat-msg atd-msg ${m.direction==='inbound'?'theirs':'mine'} ${m.direction!=='inbound' && !m.sent_by_user_id && m.sent_via!=='external_device'?'dprh-bot':''}">${menuBtn}${atdCitaHtml(S, m)}${apagada || atdConteudoHtml(m)}<span class="hora">${esc(atdAutorMsg(S,m,c))} · ${esc(new Date(quando).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}))}${editada}${falhou}${atdTiqueHtml(m)}</span></div>`;
   }).join('') : `<div class="empty-state" id="atdVazio">Nenhuma mensagem ainda.</div>`;
   if(!msgs.length && primeira) atdExplicarVazio(S, id);
   atdVerificarCitacoes(S, id, msgs);
