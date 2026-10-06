@@ -9984,9 +9984,10 @@ function atdRenderCabecalho(S){
   // pra cá um atendimento que agora é da Recepção ou de outro setor.
   const input = document.getElementById('atdInput');
   if(input && podePostar){
-    const bloqueado = !atdComposerHabilitado(S, c);
+    const falta = atdFaltaSetorOuAssumir(c);
+    const bloqueado = !falta && !atdComposerHabilitado(S, c);
     ['atdInput','atdEnviar','atdAnexar','atdMicrofone','atdRapidas','atdAgendar'].forEach(id=>{ const el=document.getElementById(id); if(el) el.disabled = bloqueado; });
-    input.placeholder = bloqueado ? 'Só consulta — este atendimento não é mais deste setor.' : 'Escreva uma mensagem… (Enter envia, Shift+Enter quebra linha)';
+    input.placeholder = falta ? 'Defina o setor e assuma o atendimento para responder.' : bloqueado ? 'Só consulta — este atendimento não é mais deste setor.' : 'Escreva uma mensagem… (Enter envia, Shift+Enter quebra linha)';
   }
   if(podePostar && !fechada && c.atual){
     if(!c.atribuidoDeskcommId) botoes.push(`<button class="btn small primary" data-acao="assumir">Assumir</button>`);
@@ -10493,6 +10494,48 @@ async function atdCompromissoModal(S, c){
     }catch(e){ btnSalvar.disabled = false; toast(e.message,'err'); }
   });
   carregarSlots();
+}
+// Conversa aberta sem setor ou sem ninguém assumindo: não se responde antes de definir o setor e assumir.
+function atdFaltaSetorOuAssumir(c){
+  const fechada = c.status==='closed' || c.status==='archived';
+  return !fechada && (!c.setor || !c.atribuidoDeskcommId);
+}
+async function atdDialogoSetorAssumir(S, c){
+  if(!S.setores){
+    try{ S.setores = (await api('/atendimento/setores')).items; }catch(e){ toast(e.message,'err'); return; }
+  }
+  openModal(`
+    <h3>Antes de responder</h3>
+    <p class="subtitle" style="margin:0 0 10px;">${c.setor ? `Esta conversa está em <b>${esc(c.setor)}</b>, mas ainda não tem ninguém atendendo.` : 'Esta conversa ainda não tem setor nem atendente.'} Escolha o setor e assuma para poder responder ao cliente.</p>
+    <div class="field"><label>Setor que vai atender</label>
+      <select id="atdSaSetor"><option value="">— escolha o setor —</option>${S.setores.map(s=>`<option value="${esc(s)}" ${s===c.setor?'selected':''}>${esc(s)}</option>`).join('')}</select>
+    </div>
+    <div class="row" style="justify-content:flex-end; gap:8px; margin-top:14px; flex-wrap:wrap;">
+      <button class="btn" id="atdSaCancelar">Cancelar</button>
+      <button class="btn" id="atdSaSoSetor" title="Define o setor, mas não assume — a resposta continua bloqueada">Só definir setor</button>
+      <button class="btn primary" id="atdSaAssumir">Assumir e responder</button>
+    </div>`, '480px');
+  const setorEscolhido = () => document.getElementById('atdSaSetor').value;
+  const aplicarSetor = async ()=>{
+    const s = setorEscolhido();
+    if(!s){ toast('Escolha o setor que vai atender.','err'); return false; }
+    if(s!==c.setor) await api('/atendimento/conversas/'+encodeURIComponent(c.id)+'/setor', { method:'POST', body:{ intencao: s, motivo: 'Setor definido antes de responder' } });
+    return true;
+  };
+  document.getElementById('atdSaCancelar').addEventListener('click', closeModal);
+  document.getElementById('atdSaSoSetor').addEventListener('click', async ()=>{
+    try{ if(!(await aplicarSetor())) return; closeModal(); toast('Setor definido. Assuma o atendimento para responder.','ok'); await atdCarregarLista(S); await atdAbrirConversa(S, c.id); }
+    catch(e){ toast(e.message,'err'); }
+  });
+  document.getElementById('atdSaAssumir').addEventListener('click', async ()=>{
+    try{
+      if(!(await aplicarSetor())) return;
+      await dcApi(`/conversations/${c.id}/claim`, { method:'POST', body:{} });
+      closeModal(); toast('Conversa assumida. Pode responder.','ok');
+      await atdCarregarLista(S);
+      await atdAbrirConversa(S, c.id);
+    }catch(e){ toast(e.message,'err'); }
+  });
 }
 async function atdTransferirModal(S, c, executar){
   try{
@@ -11072,6 +11115,19 @@ function atdLigarComposer(S){
     finally{ enviarBtn.disabled=false; input.focus(); }
   }
   enviarBtn.addEventListener('click', enviar);
+  // Sem setor ou sem ninguém assumindo: qualquer ação do composer (digitar, enviar, anexar, áudio,
+  // respostas rápidas, agendar, colar) abre primeiro o diálogo de setor/assumir.
+  const composer = document.getElementById('atdComposer');
+  const bloqueiaSeFaltaSetorOuAssumir = ev=>{
+    const c = S.conversaDados;
+    if(!c || !atdFaltaSetorOuAssumir(c)) return;
+    ev.preventDefault(); ev.stopPropagation();
+    atdDialogoSetorAssumir(S, c);
+  };
+  composer.addEventListener('focusin', ev=>{ if(ev.target===input) bloqueiaSeFaltaSetorOuAssumir(ev); }, true);
+  composer.addEventListener('keydown', ev=>{ if(ev.target===input && ev.key==='Enter' && !ev.shiftKey) bloqueiaSeFaltaSetorOuAssumir(ev); }, true);
+  composer.addEventListener('paste', ev=>{ if(ev.target===input) bloqueiaSeFaltaSetorOuAssumir(ev); }, true);
+  composer.addEventListener('click', ev=>{ if(ev.target.closest('button')) bloqueiaSeFaltaSetorOuAssumir(ev); }, true);
   document.getElementById('atdRapidas').addEventListener('click', ()=>atdRapidasModal(S));
   input.addEventListener('keydown', async ev=>{
     // "/atalho" + Tab troca pelo texto da resposta rápida com esse atalho.
