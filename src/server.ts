@@ -7693,12 +7693,9 @@ app.get("/api/nfe/documentos", blockCliente, requirePermissao("nfe-busca", "visu
 // poucas empresas e a soma por empresa fica errada pras outras).
 // Dashboard de NF-e/NFC-e por empresa + período: KPIs (emitidas/recebidas/canceladas) + totais de
 // impostos (ICMS/PIS/COFINS/IPI + IBS/CBS). Backfilla os docs do escopo ainda não lidos antes de somar.
-app.get("/api/nfe/documentos/dashboard", blockCliente, requirePermissao("nfe-busca", "visualizar"), (req, res) => {
-  const user = (req as any).user;
-  const empresaId = Number(req.query.empresaId);
-  if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
-  const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
-  const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
+// Reaproveitado pelo /dashboard (JSON pra tela) e pelo /exportar-analitico-pdf (cabeçalho do relatório
+// com os dois painéis — Perfil das Notas + Impostos no período — igual ao que a tela mostra).
+function nfeCalcularDashboard(user: any, empresaId: number, dataDe: string | null, dataAte: string | null) {
   const cond: string[] = [`d.escritorio_id = ?`, `d.empresa_id = ?`, `d.tipo IN ('nfe','nfce')`];
   const params: any[] = [user.escritorioId, empresaId];
   if (dataDe) {
@@ -7755,7 +7752,7 @@ app.get("/api/nfe/documentos/dashboard", blockCliente, requirePermissao("nfe-bus
        FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id WHERE ${where} AND d.tipo IN ('nfe','nfce')`
     )
     .get(...params) as any;
-  res.json({
+  return {
     total: r.total || 0,
     emitidas: { qtd: r.emitidasQtd || 0, valor: r.emitidasValor || 0 },
     recebidas: { qtd: r.recebidasQtd || 0, valor: r.recebidasValor || 0 },
@@ -7773,7 +7770,15 @@ app.get("/api/nfe/documentos/dashboard", blockCliente, requirePermissao("nfe-bus
       reforma: { comIbsCbs: r.comReforma || 0 },
       operacional: { comCarrinho: perfilRow.comCarrinho || 0, transportadora: perfilRow.transportadora || 0, duplicatas: perfilRow.duplicatas || 0, pagamento: perfilRow.pagamento || 0, comComentario: perfilRow.comComentario || 0 },
     },
-  });
+  };
+}
+app.get("/api/nfe/documentos/dashboard", blockCliente, requirePermissao("nfe-busca", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.query.empresaId);
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
+  const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
+  res.json(nfeCalcularDashboard(user, empresaId, dataDe, dataAte));
 });
 app.get("/api/nfe/documentos/contagem", blockCliente, requirePermissao("nfe-busca", "visualizar"), (req, res) => {
   const user = (req as any).user;
@@ -7997,6 +8002,165 @@ app.get("/api/nfe/documentos/baixar-lote", blockCliente, requirePermissao("nfe-b
     }
   }
   await zip.finalize();
+});
+
+// Relatório analítico (PDF) do período selecionado na tela de Busca de XML, agrupado por fornecedor
+// (emitente) pra conferência interna: dentro de cada fornecedor, uma nota depois da outra, cada uma com
+// a tabela de produtos lida do próprio XML — é o que embasa "bateu com o que foi comprado" nota a nota,
+// sem precisar abrir XML por XML na mão. Mesmos filtros da tela (empresaId/direcao/tipo/datas/busca),
+// pra exportar exatamente o que está sendo visto na hora.
+function nfeChaveNumeroSerie(chave: string | null): { numero: string; serie: string } {
+  if (!chave || chave.length !== 44) return { numero: "-", serie: "-" };
+  return { serie: String(Number(chave.slice(22, 25))), numero: String(Number(chave.slice(25, 34))) };
+}
+// HTML dos dois painéis do topo (Perfil das Notas + Impostos no período) pro cabeçalho do relatório
+// analítico em PDF — mesmos números/percentuais da tela, só que em markup estático (sem flex, pra
+// imprimir igual em qualquer motor de PDF): duas colunas via display:inline-block; width:48%.
+function nfePainelPerfilHtmlRelatorio(dash: ReturnType<typeof nfeCalcularDashboard>): string {
+  const pf = dash.perfil;
+  const pct = (n: number) => (pf.totalNotas ? Math.round((n / pf.totalNotas) * 100) : 0);
+  const item = (ic: string, label: string, val: number, cor: string) => {
+    const p = pct(val);
+    return `<div style="border:1px solid #ddd; border-radius:5px; padding:4px 6px; margin:3px 4px 3px 0; display:inline-block; width:31%; vertical-align:top;">
+      <div style="font-size:8px; display:flex;"><span style="flex:1;">${ic} ${escHtmlRelatorio(label)}</span><b>${val}</b>&nbsp;<span style="color:#888;">${p}%</span></div>
+      <div style="background:#eee; border-radius:3px; height:4px; overflow:hidden; margin-top:3px;"><div style="width:${p}%; height:100%; background:${cor};"></div></div>
+    </div>`;
+  };
+  const grupo = (titulo: string, cor: string, itens: string) => `<div style="margin-top:6px;"><div style="font-size:7.5px; font-weight:bold; color:${cor}; text-transform:uppercase;">${escHtmlRelatorio(titulo)}</div>${itens}</div>`;
+  return `<div style="font-weight:bold; font-size:10px; margin-bottom:6px;">🏷️ Perfil das Notas</div>
+    <div style="font-size:8.5px; margin-bottom:4px;"><b style="font-size:13px;">${pf.comFlags}</b> NF-e com flags &nbsp;·&nbsp; <b style="font-size:13px;">${pf.itensPorNota.toFixed(1).replace(".", ",")}</b> itens/nota</div>
+    ${grupo("Produtos especiais", "#dc2626", item("💊", "Medicamento", pf.produtos.medicamento, "#dc2626") + item("⛽", "Combustível", pf.produtos.combustivel, "#dc2626") + item("🔖", "Rastreável", pf.produtos.rastreavel, "#dc2626"))}
+    ${grupo("Tributário / fiscal", "#d97706", item("%", "ICMS-ST", pf.fiscal.icmsSt, "#d97706"))}
+    ${grupo("Reforma tributária", "#7c3aed", item("⚖️", "IBS/CBS", pf.reforma.comIbsCbs, "#7c3aed"))}
+    ${grupo("Operacional", "#059669", item("📦", "Carrinho", pf.operacional.comCarrinho, "#059669") + item("🚚", "Transportadora", pf.operacional.transportadora, "#059669") + item("🧾", "Duplicatas", pf.operacional.duplicatas, "#059669") + item("💰", "Pagamento", pf.operacional.pagamento, "#059669") + item("💬", "Comentário", pf.operacional.comComentario, "#059669"))}`;
+}
+function nfePainelImpostosHtmlRelatorio(dash: ReturnType<typeof nfeCalcularDashboard>): string {
+  const imp = dash.impostos;
+  const total = imp.icms + imp.pis + imp.cofins + imp.ipi + imp.ibs + imp.cbs;
+  const max = Math.max(imp.icms, imp.pis, imp.cofins, imp.ipi, imp.ibs, imp.cbs, 1);
+  const bar = (label: string, val: number, cor: string) => {
+    const p = Math.round((val / max) * 100);
+    return `<div style="margin-bottom:5px;"><div style="display:flex; justify-content:space-between; font-size:8.5px;"><span>${escHtmlRelatorio(label)}</span><b>R$ ${fmtMoedaRelatorio(val)}</b></div><div style="background:#eee; border-radius:3px; height:5px; overflow:hidden;"><div style="width:${p}%; height:100%; background:${cor};"></div></div></div>`;
+  };
+  return `<div style="font-weight:bold; font-size:10px; margin-bottom:6px;">Impostos no período — total R$ ${fmtMoedaRelatorio(total)}</div>
+    ${bar("ICMS", imp.icms, "#3b82f6")}${bar("PIS", imp.pis, "#10b981")}${bar("COFINS", imp.cofins, "#8b5cf6")}${bar("IPI", imp.ipi, "#f59e0b")}${bar("IBS (reforma)", imp.ibs, "#6366f1")}${bar("CBS (reforma)", imp.cbs, "#4338ca")}
+    <div style="font-size:8px; color:#666; margin-top:6px;">Total de notas: <b>${dash.total}</b> &nbsp;·&nbsp; Recebidas: <b>${dash.recebidas.qtd}</b> &nbsp;·&nbsp; Emitidas: <b>${dash.emitidas.qtd}</b> &nbsp;·&nbsp; Canceladas: <b>${dash.canceladas}</b> &nbsp;·&nbsp; Com IBS/CBS: <b>${dash.comReforma}</b></div>`;
+}
+app.get("/api/nfe/documentos/exportar-analitico-pdf", blockCliente, requirePermissao("nfe-busca", "visualizar"), async (req, res) => {
+  const user = (req as any).user;
+  const empresaId = req.query.empresaId ? Number(req.query.empresaId) : null;
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const empresa = sqlite.prepare(`SELECT * FROM empresas WHERE id = ?`).get(empresaId) as any;
+  if (!empresa) return res.status(404).json({ error: "Empresa não encontrada." });
+  const tipo = typeof req.query.tipo === "string" && req.query.tipo ? req.query.tipo : null;
+  const direcao = typeof req.query.direcao === "string" && ["emitida", "recebida"].includes(req.query.direcao) ? req.query.direcao : null;
+  const busca = typeof req.query.busca === "string" ? req.query.busca.trim() : "";
+  const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
+  const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
+  const direcaoExpr = `(CASE WHEN d.emitente_cnpj = REPLACE(REPLACE(REPLACE(e.cnpj,'.',''),'/',''),'-','') THEN 'emitida' ELSE 'recebida' END)`;
+  const condicoes: string[] = [`d.escritorio_id = ?`, `d.empresa_id = ?`, `d.tipo IN ('nfe','nfce')`];
+  const params: any[] = [user.escritorioId, empresaId];
+  if (tipo) { condicoes.push(`d.tipo = ?`); params.push(tipo); }
+  if (direcao) { condicoes.push(`${direcaoExpr} = ?`); params.push(direcao); }
+  if (dataDe) { condicoes.push(`substr(d.data_emissao,1,10) >= ?`); params.push(dataDe); }
+  if (dataAte) { condicoes.push(`substr(d.data_emissao,1,10) <= ?`); params.push(dataAte); }
+  if (busca) {
+    const digits = busca.replace(/\D/g, "");
+    condicoes.push(`(d.emitente_nome LIKE ? OR d.destinatario_nome LIKE ? OR d.chave_acesso LIKE ? OR d.emitente_cnpj LIKE ? OR d.destinatario_cnpj LIKE ?)`);
+    const likeTexto = `%${busca}%`;
+    const likeDigits = `%${digits || busca}%`;
+    params.push(likeTexto, likeTexto, likeTexto, likeDigits, likeDigits);
+  }
+  const notaCanceladaExpr = `EXISTS (SELECT 1 FROM nfe_documentos ev WHERE ev.escritorio_id = d.escritorio_id AND ev.tipo = 'evento' AND ev.chave_acesso = d.chave_acesso AND ev.evento_descricao LIKE '%ancela%' AND ev.evento_descricao NOT LIKE '%CT-e%' AND ev.evento_descricao NOT LIKE '%MDF-e%')`;
+  const rows = sqlite
+    .prepare(
+      `SELECT d.id, d.xml, d.chave_acesso as chaveAcesso, d.emitente_cnpj as emitenteCnpj, d.emitente_nome as emitenteNome,
+              d.valor_total as valorTotal, d.data_emissao as dataEmissao, ${notaCanceladaExpr} as notaCancelada
+       FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id
+       WHERE ${condicoes.join(" AND ")}
+       ORDER BY d.emitente_nome, d.data_emissao`
+    )
+    .all(...params) as any[];
+  if (!rows.length) return res.status(400).json({ error: "Nenhuma nota encontrada com esses filtros pra gerar o relatório." });
+  // Mesmos dois painéis do topo da tela (Perfil das Notas + Impostos no período), calculados com o
+  // mesmo escopo empresa+data desta exportação — direção/tipo/busca não entram aqui porque o painel na
+  // tela também não usa esses três (sempre nfe/nfce da empresa inteira no período).
+  const dash = nfeCalcularDashboard(user, empresaId, dataDe, dataAte);
+
+  const grupos = new Map<string, { nome: string; cnpj: string | null; notas: any[]; subtotal: number }>();
+  for (const r of rows) {
+    const chave = r.emitenteCnpj || `sem-cnpj-${r.emitenteNome || r.id}`;
+    if (!grupos.has(chave)) grupos.set(chave, { nome: r.emitenteNome || "(sem nome)", cnpj: r.emitenteCnpj || null, notas: [], subtotal: 0 });
+    const g = grupos.get(chave)!;
+    const detalhe = nfe.detalharNfe(r.xml);
+    g.notas.push({ ...r, itens: detalhe ? detalhe.itens : null });
+    if (!r.notaCancelada) g.subtotal += r.valorTotal || 0;
+  }
+  const listaGrupos = [...grupos.values()].sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
+  const totalGeral = listaGrupos.reduce((s, g) => s + g.subtotal, 0);
+  const fmtDataEmissaoRelatorio = (iso: string | null) => {
+    if (!iso) return "-";
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso));
+    return m ? `${m[3]}/${m[2]}/${m[1]}` : "-";
+  };
+  const fmtDataBrRelatorio = (iso: string) => iso.split("-").reverse().join("/");
+  const periodoLinha = dataDe || dataAte ? `Período: ${dataDe ? fmtDataBrRelatorio(dataDe) : "…"} até ${dataAte ? fmtDataBrRelatorio(dataAte) : "…"}` : "Período: todas as datas";
+  const blocosFornecedor = listaGrupos
+    .map((g) => {
+      const notasHtml = g.notas
+        .map((n) => {
+          const kn = nfeChaveNumeroSerie(n.chaveAcesso);
+          const tituloNota = `Nota ${escHtmlRelatorio(kn.numero)} · Série ${escHtmlRelatorio(kn.serie)} · ${fmtDataEmissaoRelatorio(n.dataEmissao)}${n.notaCancelada ? " · <span style=\"color:#b91c1c;\">CANCELADA</span>" : ""} · <b>R$ ${fmtMoedaRelatorio(n.valorTotal)}</b>`;
+          const itensHtml =
+            n.itens && n.itens.length
+              ? `<table class="rep"><thead><tr><th>Código</th><th>Descrição</th><th>NCM</th><th>CFOP</th><th class="num">Qtd</th><th class="num">Vl. Unit.</th><th class="num">Vl. Total</th></tr></thead><tbody>${n.itens
+                  .map(
+                    (it: any) =>
+                      `<tr><td>${escHtmlRelatorio(it.cProd)}</td><td>${escHtmlRelatorio(it.xProd)}</td><td>${escHtmlRelatorio(it.ncm)}</td><td>${escHtmlRelatorio(it.cfop)}</td><td class="num">${it.qtd}</td><td class="num">${fmtMoedaRelatorio(it.vUnit)}</td><td class="num">${fmtMoedaRelatorio(it.vProd)}</td></tr>`
+                  )
+                  .join("")}</tbody></table>`
+              : `<div style="color:#888; font-size:8.5px; margin:2px 0 8px;">XML resumido — produtos não disponíveis ainda (precisa da nota completa).</div>`;
+          return `<div style="margin:8px 0 12px;"><div style="font-size:9.5px; margin-bottom:3px;">${tituloNota}</div>${itensHtml}</div>`;
+        })
+        .join("");
+      return `<div style="margin-top:18px; page-break-inside:avoid;">
+        <h2 style="border-bottom:1.5px solid #333; padding-bottom:3px;">${escHtmlRelatorio(g.nome)} — CNPJ: ${escHtmlRelatorio(fmtCnpjRelatorio(g.cnpj))}</h2>
+        ${notasHtml}
+        <div style="text-align:right; font-weight:bold; font-size:10px; border-top:1px solid #ccc; padding-top:4px;">Subtotal ${escHtmlRelatorio(g.nome)}: R$ ${fmtMoedaRelatorio(g.subtotal)}</div>
+      </div>`;
+    })
+    .join("");
+  const html = `<style>
+      body { font-family: 'Helvetica Neue', Arial, sans-serif !important; font-size: 9px; color:#222; }
+      h1 { font-size: 15px; text-align:left; margin: 0 0 2px; }
+      .cab p { margin: 1px 0; text-align:left; color:#444; font-size: 10px; }
+      h2 { font-size: 11.5px; margin: 0 0 6px; }
+      table.rep { border-collapse: collapse; width: 100%; margin: 2px 0 4px; }
+      table.rep th, table.rep td { border: 1px solid #ccc; padding: 2px 5px; }
+      table.rep th { background:#f0f0f0; text-align:left; font-size: 8px; white-space: nowrap; }
+      table.rep td.num, table.rep th.num { text-align:right; white-space:nowrap; }
+      .tag-total { display:inline-block; background:#1a7f4b; color:#fff; padding:6px 14px; border-radius:6px; font-weight:bold; font-size:11px; margin-top:16px; }
+      .painel { display:inline-block; width:48%; vertical-align:top; background:#fafafa; border:1px solid #ddd; border-radius:6px; padding:8px 10px; box-sizing:border-box; }
+    </style>
+    <div class="cab">
+      <h1>${escHtmlRelatorio(empresa.nome)} — Relatório Analítico por Fornecedor</h1>
+      <p>CNPJ: ${escHtmlRelatorio(fmtCnpjRelatorio(empresa.cnpj))}</p>
+      <p>${escHtmlRelatorio(periodoLinha)} — conferência interna</p>
+    </div>
+    <div style="margin-top:10px;">
+      <div class="painel" style="margin-right:3%;">${nfePainelPerfilHtmlRelatorio(dash)}</div>
+      <div class="painel">${nfePainelImpostosHtmlRelatorio(dash)}</div>
+    </div>
+    ${blocosFornecedor}
+    <div><span class="tag-total">Total geral: R$ ${fmtMoedaRelatorio(totalGeral)}</span></div>`;
+  try {
+    const pdf = await contratos.gerarPdfDeHtml(html, `Relatório Analítico - ${empresa.nome}`, { landscape: true });
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="Relatorio Analitico - ${empresa.nome.replace(/[\\/:*?"<>|]/g, "_")}.pdf"`);
+    res.send(pdf);
+  } catch (e: any) {
+    res.status(500).json({ error: "Falha ao gerar o PDF: " + e.message });
+  }
 });
 
 // ---------- Exportação de XML pro OneDrive (direto da nuvem, sem agente local) ----------

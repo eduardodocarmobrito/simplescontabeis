@@ -6332,14 +6332,8 @@ async function pageNfeBusca(){
         <div id="nfeConfigBody"></div>
       </div>
       <div class="card" id="nfeDashCard">
-        <div class="row" style="justify-content:space-between; align-items:flex-end; flex-wrap:wrap; gap:8px;">
-          <h3 style="margin:0;">📊 Resumo (NF-e / NFC-e)</h3>
-          <div class="row" style="align-items:flex-end; gap:8px; margin:0;">
-            ${dateFieldHtml('nfeDashDe','De',_anoIni)}
-            ${dateFieldHtml('nfeDashAte','Até',_hojeIso)}
-            <button class="btn small primary" id="btnNfeDashAtualizar">Atualizar</button>
-          </div>
-        </div>
+        <h3 style="margin:0;">📊 Resumo (NF-e / NFC-e)</h3>
+        <div style="font-size:11.5px; color:var(--ink-soft); margin-top:2px;">Segue o filtro de data de "Documentos", logo abaixo.</div>
         <div id="nfeDashBody" style="margin-top:12px;"><div class="empty-state">Carregando…</div></div>
       </div>
       <div class="card">
@@ -6363,6 +6357,7 @@ async function pageNfeBusca(){
           <button class="btn small" id="btnNfeBaixarLoteXml" disabled>Baixar selecionados — XML</button>
           <button class="btn small" id="btnNfeBaixarLotePdf" disabled>Baixar selecionados — PDF</button>
           <button class="btn small" id="btnNfeBaixarLoteAmbos" disabled>Baixar selecionados — XML + PDF</button>
+          <button class="btn small" id="btnNfeExportarAnalitico" title="PDF por fornecedor (com produtos de cada nota), do período filtrado abaixo — pra conferência interna">📄 Exportar PDF analítico (por fornecedor)</button>
         </div>
         <div id="nfeReformaSumario" style="margin-bottom:8px;"></div>
         <!-- Barra de rolagem horizontal fixa no topo da tabela (sincronizada): a barra nativa fica no
@@ -6390,8 +6385,8 @@ async function pageNfeBusca(){
       const body = document.getElementById('nfeDashBody');
       if(!body) return;
       body.innerHTML = '<div class="empty-state">Carregando…</div>';
-      const de = document.getElementById('nfeDashDe').value;
-      const ate = document.getElementById('nfeDashAte').value;
+      const de = document.getElementById('nfeDocDataDe').value;
+      const ate = document.getElementById('nfeDocDataAte').value;
       const p = new URLSearchParams({ empresaId });
       if(de) p.set('dataDe', de);
       if(ate) p.set('dataAte', ate);
@@ -6483,6 +6478,18 @@ async function pageNfeBusca(){
     document.getElementById('btnNfeBaixarLoteXml').addEventListener('click', ()=>baixarLote('xml'));
     document.getElementById('btnNfeBaixarLotePdf').addEventListener('click', ()=>baixarLote('pdf'));
     document.getElementById('btnNfeBaixarLoteAmbos').addEventListener('click', ()=>baixarLote('ambos'));
+    document.getElementById('btnNfeExportarAnalitico').addEventListener('click', ()=>{
+      const tipo = document.getElementById('nfeDocTipo').value;
+      const busca = document.getElementById('nfeDocBusca').value.trim();
+      const dataDe = document.getElementById('nfeDocDataDe').value;
+      const dataAte = document.getElementById('nfeDocDataAte').value;
+      const params = new URLSearchParams({ empresaId, direcao: nfeDocDirecao });
+      if(tipo) params.set('tipo', tipo);
+      if(busca) params.set('busca', busca);
+      if(dataDe) params.set('dataDe', dataDe);
+      if(dataAte) params.set('dataAte', dataAte);
+      window.open('/api/nfe/documentos/exportar-analitico-pdf?'+params.toString(), '_blank');
+    });
     document.getElementById('nfeDocSelecionarTodos').addEventListener('change', (ev)=>{
       document.querySelectorAll('.nfeDocCheck').forEach(c=>c.checked=ev.target.checked);
       atualizarBarraSelecao();
@@ -6636,16 +6643,13 @@ async function pageNfeBusca(){
     window.__nfeAplicarTipo = (tp)=>{ const s=document.getElementById('nfeDocTipo'); if(s){ s.value = tp||''; carregarDocumentos(); } };
     setupDatePicker('nfeDocDataDe','nfeDocDataDe_text');
     setupDatePicker('nfeDocDataAte','nfeDocDataAte_text');
-    document.getElementById('nfeDocDataDe').addEventListener('change', carregarDocumentos);
-    document.getElementById('nfeDocDataAte').addEventListener('change', carregarDocumentos);
+    document.getElementById('nfeDocDataDe').addEventListener('change', ()=>{ carregarDocumentos(); carregarDashboard(); });
+    document.getElementById('nfeDocDataAte').addEventListener('change', ()=>{ carregarDocumentos(); carregarDashboard(); });
     let nfeDocBuscaTimer = null;
     document.getElementById('nfeDocBusca').addEventListener('input', ()=>{
       clearTimeout(nfeDocBuscaTimer);
       nfeDocBuscaTimer = setTimeout(carregarDocumentos, 350);
     });
-    setupDatePicker('nfeDashDe','nfeDashDe_text');
-    setupDatePicker('nfeDashAte','nfeDashAte_text');
-    document.getElementById('btnNfeDashAtualizar').addEventListener('click', carregarDashboard);
     carregarConfig();
     carregarDashboard();
     carregarDocumentos();
