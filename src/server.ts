@@ -16310,17 +16310,23 @@ function garantirContatosDeTelefoneCadastral(empresaId?: number): number {
     .all(...(empresaId ? [DESKCOMM_ESCRITORIO_ID, empresaId] : [DESKCOMM_ESCRITORIO_ID])) as any[];
   let criados = 0;
   for (const e of rows) {
-    const existentes = new Set(
-      (sqlite.prepare(`SELECT telefone FROM empresa_contatos WHERE empresa_id = ? AND telefone IS NOT NULL`).all(e.id) as any[])
-        .map((c) => telefoneChaveBr(c.telefone))
-        .filter(Boolean)
-    );
+    const contatos = sqlite.prepare(`SELECT id, telefone, nome FROM empresa_contatos WHERE empresa_id = ? AND telefone IS NOT NULL`).all(e.id) as any[];
+    const existentes = new Set(contatos.map((c) => telefoneChaveBr(c.telefone)).filter(Boolean));
     for (const pedaco of String(e.telefone).split(/[\/;,]| e /)) {
       const chave = telefoneChaveBr(pedaco);
-      if (!chave || existentes.has(chave)) continue;
+      if (!chave) continue;
+      const numero = crmSoDigitos(pedaco);
+      const jaExiste = contatos.find((c) => telefoneChaveBr(c.telefone) === chave);
+      if (jaExiste) {
+        if (jaExiste.nome.endsWith("(telefone do cadastro)")) {
+          sqlite.prepare(`UPDATE empresa_contatos SET telefone = ?, receber_whatsapp = 1 WHERE id = ?`).run(numero, jaExiste.id);
+        }
+        continue;
+      }
+      if (existentes.has(chave)) continue;
       sqlite
-        .prepare(`INSERT INTO empresa_contatos (empresa_id, nome, email, receber_emails, telefone, receber_whatsapp) VALUES (?, ?, '', 0, ?, 0)`)
-        .run(e.id, `${e.nome} (telefone do cadastro)`, pedaco.trim());
+        .prepare(`INSERT INTO empresa_contatos (empresa_id, nome, email, receber_emails, telefone, receber_whatsapp) VALUES (?, ?, '', 0, ?, 1)`)
+        .run(e.id, `${e.nome} (telefone do cadastro)`, numero);
       existentes.add(chave);
       criados++;
     }
