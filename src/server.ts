@@ -8128,7 +8128,7 @@ app.get("/api/nfe/documentos/exportar-analitico-pdf", blockCliente, requirePermi
           const tituloNota = `${numeroLabel} · ${fmtDataEmissaoRelatorio(n.dataEmissao)}${n.notaCancelada ? " · <span style=\"color:#b91c1c;\">CANCELADA</span>" : ""} · <b>R$ ${fmtMoedaRelatorio(n.valorTotal)}</b>`;
           const itensHtml =
             n.itens && n.itens.length
-              ? `<table class="rep"><thead><tr><th>Código</th><th>Descrição</th><th>NCM</th><th>CFOP</th><th class="num">Qtd</th><th class="num">Vl. Unit.</th><th class="num">Vl. Total</th></tr></thead><tbody>${n.itens
+              ? `<table class="rep"><colgroup><col style="width:9%"><col style="width:37%"><col style="width:10%"><col style="width:7%"><col style="width:8%"><col style="width:13%"><col style="width:16%"></colgroup><thead><tr><th>Código</th><th>Descrição</th><th>NCM</th><th>CFOP</th><th class="num">Qtd</th><th class="num">Vl. Unit.</th><th class="num">Vl. Total</th></tr></thead><tbody>${n.itens
                   .map(
                     (it: any) =>
                       `<tr><td>${escHtmlRelatorio(it.cProd)}</td><td>${escHtmlRelatorio(it.xProd)}</td><td>${escHtmlRelatorio(it.ncm)}</td><td>${escHtmlRelatorio(it.cfop)}</td><td class="num">${it.qtd}</td><td class="num">${fmtMoedaRelatorio(it.vUnit)}</td><td class="num">${fmtMoedaRelatorio(it.vProd)}</td></tr>`
@@ -8147,29 +8147,38 @@ app.get("/api/nfe/documentos/exportar-analitico-pdf", blockCliente, requirePermi
       // relatório de 46 páginas com metade de página em branco antes de cada fornecedor que não coube).
       // Cada nota (acima) evita quebrar NO MEIO da tabela dela, o que já é suficiente — o fornecedor em
       // si pode continuar normalmente na página seguinte, sem vão.
-      return `<div style="margin-top:8px;">
-        <h2 style="border-bottom:1.5px solid #333; padding-bottom:2px; margin-bottom:4px;">${escHtmlRelatorio(g.nome)} — CNPJ: ${escHtmlRelatorio(fmtCnpjRelatorio(g.cnpj))}</h2>
+      return `<div style="margin-top:10px;">
+        <div class="forn-head"><span class="forn-nome">${escHtmlRelatorio(g.nome)}</span><span class="forn-cnpj">CNPJ ${escHtmlRelatorio(fmtCnpjRelatorio(g.cnpj))}</span></div>
         ${notasHtml}
-        <div style="text-align:right; font-weight:bold; font-size:10px; border-top:1px solid #ccc; padding-top:3px;">Subtotal ${escHtmlRelatorio(g.nome)}: R$ ${fmtMoedaRelatorio(g.subtotal)}</div>
+        <div class="forn-subtotal">Subtotal ${escHtmlRelatorio(g.nome)} <b>R$ ${fmtMoedaRelatorio(g.subtotal)}</b></div>
       </div>`;
     })
     .join("");
+  // Paleta igual à do sistema (public/app.html :root): --accent #2ECC8F, --accent-deep #159873,
+  // --accent-pale #DFF7EC — pedido explícito do usuário ("fundo verde claro do sistema").
   const html = `<style>
-      body { font-family: 'Helvetica Neue', Arial, sans-serif !important; font-size: 9px; color:#222; }
-      h1 { font-size: 15px; text-align:left; margin: 0 0 2px; }
-      .cab p { margin: 1px 0; text-align:left; color:#444; font-size: 10px; }
-      h2 { font-size: 11.5px; margin: 0 0 6px; }
-      table.rep { border-collapse: collapse; width: 100%; margin: 2px 0 4px; }
-      table.rep th, table.rep td { border: 1px solid #ccc; padding: 2px 5px; }
-      table.rep th { background:#f0f0f0; text-align:left; font-size: 8px; white-space: nowrap; }
+      body { font-family: 'Helvetica Neue', Arial, sans-serif !important; font-size: 9px; color:#2b2b2b; }
+      .cab { border-bottom: 2.5px solid #159873; padding-bottom: 7px; margin-bottom: 4px; }
+      h1 { font-size: 16px; text-align:left; margin: 0 0 3px; color:#0E6B52; letter-spacing:.2px; }
+      .cab p { margin: 1px 0; text-align:left; color:#555; font-size: 9.5px; }
+      .cab p b { color:#222; }
+      table.rep { border-collapse: collapse; width: 100%; table-layout: fixed; margin: 2px 0 5px; }
+      table.rep th, table.rep td { border: 1px solid #cdeee1; padding: 3px 5px; overflow-wrap: break-word; }
+      table.rep th { background:#DFF7EC; color:#0E6B52; text-align:left; font-size: 7.8px; font-weight:700; text-transform:uppercase; letter-spacing:.2px; white-space: nowrap; }
       table.rep td.num, table.rep th.num { text-align:right; white-space:nowrap; }
-      .tag-total { display:inline-block; background:#1a7f4b; color:#fff; padding:6px 14px; border-radius:6px; font-weight:bold; font-size:11px; margin-top:16px; }
-      .painel { display:inline-block; width:48%; vertical-align:top; background:#fafafa; border:1px solid #ddd; border-radius:6px; padding:8px 10px; box-sizing:border-box; }
+      table.rep tbody tr:nth-child(even) td { background:#F5FCFA; }
+      .forn-head { background:#DFF7EC; border-left:4px solid #159873; border-radius:3px; padding:5px 8px; margin:0 0 5px; display:flex; justify-content:space-between; align-items:baseline; }
+      .forn-nome { font-size: 11px; font-weight:700; color:#0E6B52; }
+      .forn-cnpj { font-size: 8.5px; color:#3b8268; font-family:'Courier New',monospace; }
+      .forn-subtotal { text-align:right; font-weight:700; font-size:9.5px; background:#F5FCFA; border:1px solid #cdeee1; border-radius:3px; padding:4px 8px; color:#0E6B52; }
+      .forn-subtotal b { font-size:11px; }
+      .tag-total { display:inline-block; background:linear-gradient(135deg,#2ECC8F,#159873); color:#fff; padding:8px 18px; border-radius:7px; font-weight:700; font-size:12.5px; margin-top:16px; letter-spacing:.2px; }
+      .painel { display:inline-block; width:48%; vertical-align:top; background:#fbfffd; border:1px solid #cdeee1; border-radius:8px; padding:9px 11px; box-sizing:border-box; }
     </style>
     <div class="cab">
       <h1>${escHtmlRelatorio(empresa.nome)} — Relatório Analítico por Fornecedor</h1>
-      <p>CNPJ: ${escHtmlRelatorio(fmtCnpjRelatorio(empresa.cnpj))}</p>
-      <p>${escHtmlRelatorio(periodoLinha)} — conferência interna</p>
+      <p><b>CNPJ:</b> ${escHtmlRelatorio(fmtCnpjRelatorio(empresa.cnpj))}</p>
+      <p><b>${escHtmlRelatorio(periodoLinha)}</b> — conferência interna</p>
     </div>
     <div style="margin-top:10px;">
       <div class="painel" style="margin-right:3%;">${nfePainelPerfilHtmlRelatorio(dash)}</div>
