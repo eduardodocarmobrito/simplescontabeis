@@ -8112,8 +8112,14 @@ app.get("/api/nfe/documentos/exportar-analitico-pdf", blockCliente, requirePermi
     .map((g) => {
       const notasHtml = g.notas
         .map((n) => {
-          const kn = nfeChaveNumeroSerie(n.chaveAcesso);
-          const tituloNota = `Nota ${escHtmlRelatorio(kn.numero)} · Série ${escHtmlRelatorio(kn.serie)} · ${fmtDataEmissaoRelatorio(n.dataEmissao)}${n.notaCancelada ? " · <span style=\"color:#b91c1c;\">CANCELADA</span>" : ""} · <b>R$ ${fmtMoedaRelatorio(n.valorTotal)}</b>`;
+          // NFS-e não usa a numeração por chave (44 posições) do padrão NF-e/CT-e/MDF-e — a chave dela
+          // (ADN nacional) tem outro tamanho, e o número que importa é o <nNFSe> de dentro do XML, não
+          // uma posição fixa da chave.
+          const numeroLabel =
+            n.tipo === "nfse"
+              ? `NFS-e ${escHtmlRelatorio(String(n.xml).match(/<nNFSe>([^<]+)<\/nNFSe>/)?.[1] || "-")}`
+              : `Nota ${escHtmlRelatorio(nfeChaveNumeroSerie(n.chaveAcesso).numero)} · Série ${escHtmlRelatorio(nfeChaveNumeroSerie(n.chaveAcesso).serie)}`;
+          const tituloNota = `${numeroLabel} · ${fmtDataEmissaoRelatorio(n.dataEmissao)}${n.notaCancelada ? " · <span style=\"color:#b91c1c;\">CANCELADA</span>" : ""} · <b>R$ ${fmtMoedaRelatorio(n.valorTotal)}</b>`;
           const itensHtml =
             n.itens && n.itens.length
               ? `<table class="rep"><thead><tr><th>Código</th><th>Descrição</th><th>NCM</th><th>CFOP</th><th class="num">Qtd</th><th class="num">Vl. Unit.</th><th class="num">Vl. Total</th></tr></thead><tbody>${n.itens
@@ -8124,7 +8130,9 @@ app.get("/api/nfe/documentos/exportar-analitico-pdf", blockCliente, requirePermi
                   .join("")}</tbody></table>`
               : n.tipo === "nfe" || n.tipo === "nfce"
                 ? `<div style="color:#888; font-size:8.5px; margin:2px 0 8px;">XML resumido — produtos não disponíveis ainda (precisa da nota completa).</div>`
-                : `<div style="color:#888; font-size:8.5px; margin:2px 0 8px;">${escHtmlRelatorio((n.tipo || "").toUpperCase())} não tem lista de produtos (documento de serviço/transporte).</div>`;
+                : n.tipo === "nfse"
+                  ? `<div style="color:#444; font-size:8.5px; margin:2px 0 8px;">Serviço: ${escHtmlRelatorio(String(n.xml).match(/<xDescServ>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/xDescServ>/)?.[1]?.trim() || "—")}</div>`
+                  : `<div style="color:#888; font-size:8.5px; margin:2px 0 8px;">${escHtmlRelatorio((n.tipo || "").toUpperCase())} não tem lista de produtos (documento de serviço/transporte).</div>`;
           return `<div style="margin:4px 0 6px; page-break-inside:avoid;"><div style="font-size:9.5px; margin-bottom:2px;">${tituloNota}</div>${itensHtml}</div>`;
         })
         .join("");
