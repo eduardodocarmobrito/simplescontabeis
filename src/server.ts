@@ -7731,6 +7731,30 @@ app.get("/api/nfe/documentos/dashboard", blockCliente, requirePermissao("nfe-bus
        FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id WHERE ${where}`
     )
     .get(...params) as any;
+  // Perfil das Notas (estilo Espião): quantas notas têm cada marcador, dentro do mesmo período/escopo
+  // já filtrado acima — reaproveita as colunas já cacheadas por parsearECachearTributos (flags/qtd_itens)
+  // em vez de reabrir o XML. flags é um TEXT separado por vírgula ("comb,med,st"); ','||flags||',' LIKE
+  // '%,xxx,%' acha o marcador sem casar prefixo de outro (ex.: "comb" dentro de "combxyz").
+  const flagLike = (f: string) => `SUM(CASE WHEN ','||COALESCE(d.flags,'')||',' LIKE '%,${f},%' THEN 1 ELSE 0 END)`;
+  const perfilRow = sqlite
+    .prepare(
+      `SELECT COUNT(*) as totalNotas,
+         SUM(CASE WHEN COALESCE(d.flags,'')!='' OR COALESCE(d.qtd_itens,0)>0 THEN 1 ELSE 0 END) as comFlags,
+         SUM(COALESCE(d.qtd_itens,0)) as somaItens,
+         SUM(CASE WHEN COALESCE(d.qtd_itens,0)>0 THEN 1 ELSE 0 END) as comCarrinho,
+         ${flagLike("med")} as medicamento,
+         ${flagLike("comb")} as combustivel,
+         ${flagLike("rastro")} as rastreavel,
+         ${flagLike("veiculo")} as veiculo,
+         ${flagLike("importado")} as importado,
+         ${flagLike("st")} as icmsSt,
+         ${flagLike("dup")} as duplicatas,
+         ${flagLike("pag")} as pagamento,
+         SUM(CASE WHEN EXISTS (SELECT 1 FROM mdfe_vinculos mv WHERE mv.chave_vinculada = d.chave_acesso) THEN 1 ELSE 0 END) as transportadora,
+         SUM(CASE WHEN d.observacao IS NOT NULL AND TRIM(d.observacao)!='' THEN 1 ELSE 0 END) as comComentario
+       FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id WHERE ${where} AND d.tipo IN ('nfe','nfce')`
+    )
+    .get(...params) as any;
   res.json({
     total: r.total || 0,
     emitidas: { qtd: r.emitidasQtd || 0, valor: r.emitidasValor || 0 },
@@ -7740,6 +7764,15 @@ app.get("/api/nfe/documentos/dashboard", blockCliente, requirePermissao("nfe-bus
     valorTotal: r.valorTotal || 0,
     comReforma: r.comReforma || 0,
     impostos: { icms: r.icms || 0, pis: r.pis || 0, cofins: r.cofins || 0, ipi: r.ipi || 0, ibs: r.ibs || 0, cbs: r.cbs || 0 },
+    perfil: {
+      totalNotas: perfilRow.totalNotas || 0,
+      comFlags: perfilRow.comFlags || 0,
+      itensPorNota: perfilRow.totalNotas ? (perfilRow.somaItens || 0) / perfilRow.totalNotas : 0,
+      produtos: { medicamento: perfilRow.medicamento || 0, combustivel: perfilRow.combustivel || 0, rastreavel: perfilRow.rastreavel || 0, veiculo: perfilRow.veiculo || 0, importado: perfilRow.importado || 0 },
+      fiscal: { icmsSt: perfilRow.icmsSt || 0 },
+      reforma: { comIbsCbs: r.comReforma || 0 },
+      operacional: { comCarrinho: perfilRow.comCarrinho || 0, transportadora: perfilRow.transportadora || 0, duplicatas: perfilRow.duplicatas || 0, pagamento: perfilRow.pagamento || 0, comComentario: perfilRow.comComentario || 0 },
+    },
   });
 });
 app.get("/api/nfe/documentos/contagem", blockCliente, requirePermissao("nfe-busca", "visualizar"), (req, res) => {

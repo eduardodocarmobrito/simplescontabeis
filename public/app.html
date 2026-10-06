@@ -6403,6 +6403,21 @@ async function pageNfeBusca(){
       const maxImp = Math.max(imp.icms,imp.pis,imp.cofins,imp.ipi,imp.ibs,imp.cbs,1);
       const bar = (label, val, cor)=>{ const pct = Math.round((val/maxImp)*100); return `<div style="margin-bottom:7px;"><div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:2px;"><span>${label}</span><span style="font-weight:600;">${fmtMoney(val)}</span></div><div style="background:var(--rule); border-radius:5px; height:10px; overflow:hidden;"><div style="width:${pct}%; height:100%; background:${cor};"></div></div></div>`; };
       const totalImp = imp.icms+imp.pis+imp.cofins+imp.ipi+imp.ibs+imp.cbs;
+      const pf = d.perfil || {};
+      const pct = (n)=> pf.totalNotas ? Math.round((n/pf.totalNotas)*100) : 0;
+      const perfilTile = (label, val)=>`<div style="min-width:110px; flex:1;"><div style="font-size:19px; font-weight:700;">${val}</div><div style="font-size:11px; color:var(--ink-soft);">${label}</div></div>`;
+      const perfilItem = (ic, label, val, cor)=>{
+        const p = pct(val);
+        return `<div style="min-width:150px; flex:1; background:var(--paper); border:1px solid var(--rule); border-radius:8px; padding:8px 10px;">
+          <div style="display:flex; align-items:center; gap:6px; font-size:12.5px;"><span>${ic}</span><span style="flex:1;">${label}</span><b>${val}</b><span style="color:var(--ink-soft); font-size:11px;">${p}%</span></div>
+          <div style="background:var(--rule); border-radius:4px; height:5px; overflow:hidden; margin-top:5px;"><div style="width:${p}%; height:100%; background:${cor};"></div></div>
+        </div>`;
+      };
+      const grupo = (titulo, cor, itens)=>`
+        <div style="margin-top:10px;">
+          <div style="font-size:11px; font-weight:700; color:${cor}; text-transform:uppercase; letter-spacing:.3px; margin-bottom:6px;">● ${titulo}</div>
+          <div class="row" style="gap:8px; flex-wrap:wrap;">${itens}</div>
+        </div>`;
       body.innerHTML = `
         <div class="row" style="gap:10px; flex-wrap:wrap;">
           ${tile('Total de notas', d.total, '')}
@@ -6411,6 +6426,33 @@ async function pageNfeBusca(){
           ${tile('Autorizadas', d.autorizadas, '', 'var(--accent-deep)')}
           ${tile('Canceladas', d.canceladas, '', d.canceladas?'var(--debit)':'')}
           ${tile('Com IBS/CBS', d.comReforma, 'reforma', 'var(--accent-deep)')}
+        </div>
+        <div class="card" style="margin:12px 0 0; background:var(--paper);">
+          <div style="font-weight:600; font-size:13px; margin-bottom:10px;">🏷️ Perfil das Notas</div>
+          <div class="row" style="gap:10px; flex-wrap:wrap; margin-bottom:4px;">
+            ${perfilTile('NF-e com flags', pf.comFlags||0)}
+            ${perfilTile('Itens / nota', (pf.itensPorNota||0).toFixed(1).replace('.',','))}
+          </div>
+          ${grupo('Produtos especiais', '#dc2626', [
+            perfilItem('💊','Medicamento', pf.produtos?.medicamento||0, '#dc2626'),
+            perfilItem('⛽','Combustível', pf.produtos?.combustivel||0, '#dc2626'),
+            perfilItem('🔖','Rastreável', pf.produtos?.rastreavel||0, '#dc2626'),
+            perfilItem('🚗','Veículo', pf.produtos?.veiculo||0, '#dc2626'),
+            perfilItem('🌎','Importado', pf.produtos?.importado||0, '#dc2626'),
+          ].join(''))}
+          ${grupo('Tributário / fiscal', '#d97706', [
+            perfilItem('%','ICMS-ST', pf.fiscal?.icmsSt||0, '#d97706'),
+          ].join(''))}
+          ${grupo('Reforma tributária', '#7c3aed', [
+            perfilItem('⚖️','IBS/CBS', pf.reforma?.comIbsCbs||0, '#7c3aed'),
+          ].join(''))}
+          ${grupo('Operacional', '#059669', [
+            perfilItem('📦','Com itens (carrinho)', pf.operacional?.comCarrinho||0, '#059669'),
+            perfilItem('🚚','Transportadora (MDF-e)', pf.operacional?.transportadora||0, '#059669'),
+            perfilItem('🧾','Duplicatas', pf.operacional?.duplicatas||0, '#059669'),
+            perfilItem('💰','Pagamento informado', pf.operacional?.pagamento||0, '#059669'),
+            perfilItem('💬','Com comentário', pf.operacional?.comComentario||0, '#059669'),
+          ].join(''))}
         </div>
         <div class="card" style="margin:12px 0 0; background:var(--paper);">
           <div style="font-weight:600; font-size:13px; margin-bottom:10px;">Impostos no período — total ${fmtMoney(totalImp)}</div>
