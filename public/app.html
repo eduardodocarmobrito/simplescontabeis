@@ -11322,9 +11322,12 @@ async function usuarioModal(u){
         <div class="checkbox-grid">${PAGINAS_TV.map(p=>`<label class="checkbox-row"><input type="checkbox" class="usTvPagina" value="${p.id}" ${(u?.painelTvPaginas||[]).includes(p.id)?'checked':''}> ${esc(p.label)}</label>`).join('')}</div>
       </div>
       <div style="margin:16px 0 8px; padding-top:12px; border-top:1px solid var(--rule); font-weight:600; font-size:13.5px;">Permissões e acessos</div>
-      <label class="checkbox-row"><input type="checkbox" id="usAcessoTodas" checked> Acesso a todas as empresas</label>
-      <div id="usEmpresasRestritasWrap" class="hidden" style="margin:6px 0 10px;">
-        ${checklistComFiltroHtml('usColabEmp', empresas, [])}
+      <div id="usAcessoEmpresasWrap">
+        <label class="checkbox-row"><input type="checkbox" id="usAcessoTodas" checked> Acesso a todas as empresas</label>
+        <p style="font-size:11.5px; color:var(--ink-soft); margin:-2px 0 6px;">Desmarque para escolher só as empresas que este colaborador vai atender.</p>
+        <div id="usEmpresasRestritasWrap" class="hidden" style="margin:6px 0 10px;">
+          ${checklistComFiltroHtml('usColabEmp', empresas, [])}
+        </div>
       </div>
       <div id="usPermWrap"></div>
       <div id="usConfigAbasWrap" class="hidden" style="margin-top:14px;">
@@ -11345,6 +11348,7 @@ async function usuarioModal(u){
     const perfil = u? u.perfil : perfilSel.value;
     document.getElementById('usEmpresaWrap').classList.toggle('hidden', perfil!=='Cliente');
     document.getElementById('usColabWrap').classList.toggle('hidden', perfil!=='Colaborador');
+    document.getElementById('usAcessoEmpresasWrap').classList.toggle('hidden', perfil!=='Colaborador');
     document.getElementById('usTvPaginasWrap')?.classList.toggle('hidden', perfil!=='Colaborador' || !document.getElementById('usPainelTv')?.checked);
   }
   if(perfilSel) perfilSel.addEventListener('change', syncPerfilUI);
