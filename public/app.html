@@ -2982,7 +2982,10 @@ function empresaModal(e){
       <div id="empAnexosGeral"><div class="empty-state">Carregando…</div></div>
     </div>
     <div id="empTabConfiguracoes" class="hidden">
-      <div style="font-weight:600; font-size:13px; color:var(--ink-soft); padding-top:2px; margin-bottom:6px;">Certificado digital</div>
+      <div style="font-weight:600; font-size:13px; color:var(--ink-soft); padding-top:2px; margin-bottom:6px;">Setores que a empresa atende</div>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin:0 0 6px;">Os modelos de solicitação e envio só são atribuídos aos setores marcados aqui.</p>
+      <div class="checkbox-grid" id="empSetoresBox"><div class="empty-state">Carregando…</div></div>
+      <div style="font-weight:600; font-size:13px; color:var(--ink-soft); padding-top:2px; margin:14px 0 6px;">Certificado digital</div>
       <p style="font-size:12.5px; color:var(--ink-soft); margin-top:0;">Certificado próprio desta empresa — usado pra buscar os documentos fiscais dela na Sefaz e no Sistema Nacional NFS-e, e também pra assinar a emissão de NFS-e quando o método de assinatura for "Certificado próprio desta empresa" (em NFS-e › Configurar).</p>
       <div id="empCertBuscaXml"><div class="empty-state">Carregando…</div></div>
       <div style="margin:14px 0 8px; border-top:1px solid var(--rule); padding-top:12px;"></div>
@@ -3013,6 +3016,10 @@ function empresaModal(e){
   `, '1100px');
   if(e){
     renderCertificadoBuscaXml(document.getElementById('empCertBuscaXml'), e.id, e.uf);
+    api('/empresas/'+e.id+'/setores').then(r=>{
+      const box = document.getElementById('empSetoresBox');
+      if(box) box.innerHTML = SETORES_EMPRESA_UI.map(s=>`<label class="checkbox-row"><input type="checkbox" class="empSetorCk" value="${s.chave}" ${r.setores.includes(s.chave)?'checked':''}> ${esc(s.label)}</label>`).join('');
+    }).catch(()=>{});
     renderSolicitacaoTiposEmpresa(document.getElementById('empSolicTipos'), e.id);
     document.getElementById('empModalTabs').querySelectorAll('.tab').forEach(t=>{
       t.classList.toggle('active', t.dataset.tab===empTabAtual);
@@ -3145,6 +3152,9 @@ function empresaModal(e){
         body.regimeApuracaoSn = document.getElementById('empRegApuracao')?.value || '1';
         body.percentualTotalTributosSn = document.getElementById('empTotTribSN')?.value || null;
         await api('/empresas/'+e.id, { method:'PUT', body });
+        const setoresMarcados = [...document.querySelectorAll('.empSetorCk:checked')].map(c=>c.value);
+        if(setoresMarcados.length) await api('/empresas/'+e.id+'/setores', { method:'PUT', body:{ setores: setoresMarcados } });
+        else toast('Marque pelo menos um setor para a empresa.','err');
         const chavesSolic = [...document.querySelectorAll('.empSolicTipoCheck:checked')].map(c=>c.value);
         await api('/empresas/'+e.id+'/solicitacao-tipos', { method:'PUT', body:{ chaves: chavesSolic } });
       } else {
@@ -3682,7 +3692,7 @@ async function renderModelos(){
     <div class="row" style="margin-bottom:14px;">${podePostar?`<button class="btn primary" id="btnNovoModelo">+ Novo modelo</button>`:''}</div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
-        <thead><tr><th>Nome</th><th>Periodicidade</th><th>Itens</th><th>Notificar por e-mail</th><th></th></tr></thead>
+        <thead><tr><th>Nome</th><th>Setor</th><th>Periodicidade</th><th>Itens</th><th>Notificar por e-mail</th><th></th></tr></thead>
         <tbody id="modelosBody"></tbody>
       </table>
     </div>
@@ -3690,6 +3700,7 @@ async function renderModelos(){
   document.getElementById('modelosBody').innerHTML = items.length? items.map(t=>`
     <tr data-id="${t.id}">
       <td><b>${esc(t.nome)}</b>${t.descricao?`<br><span style="color:var(--ink-soft); font-size:12px;">${esc(t.descricao)}</span>`:''}</td>
+      <td>${t.setor?`<span class="tag ok">${esc((SETORES_EMPRESA_UI.find(x=>x.chave===t.setor)||{}).label||t.setor)}</span>`:'<span class="tag bad">sem setor</span>'}</td>
       <td>${({mensal:'Mensal',anual:'Anual',avulso:'Avulso'})[t.periodicidade]||t.periodicidade}</td>
       <td>${t.itens.map(i=>`<span class="tag muted">${esc(i.label)}</span>`).join(' ')}</td>
       <td>${t.notificar_email? 'Sim':'Não'}</td>
@@ -3720,12 +3731,17 @@ function itemRowHtml(it, i){
     <label class="checkbox-row" style="margin-top:6px;"><input type="checkbox" class="itObrig" ${it.obrigatorio?'checked':''}> Obrigatório</label>
   </div>`;
 }
+const SETORES_EMPRESA_UI = [{ chave:'contabilidade', label:'Contabilidade' }, { chave:'fiscal', label:'Fiscal' }, { chave:'dprh', label:'DP/RH' }];
 function modeloModal(t){
   const itens = t? t.itens : [{ chave:'item1', label:'', accept:['qualquer'], obrigatorio:true }];
   openModal(`
     <h3>${t?'Editar':'Novo'} modelo de solicitação</h3>
     <div class="field"><label>Nome</label><input id="mdNome" value="${t?esc(t.nome):''}" placeholder='Ex.: "Banco do Brasil" ou "Extrato de Financiamento"'></div>
     <div class="field"><label>Descrição (opcional)</label><input id="mdDesc" value="${t&&t.descricao?esc(t.descricao):''}"></div>
+    <div class="field"><label>Setor que atende este modelo</label>
+      <select id="mdSetor"><option value="">— escolha o setor —</option>${SETORES_EMPRESA_UI.map(s=>`<option value="${s.chave}" ${t&&t.setor===s.chave?'selected':''}>${esc(s.label)}</option>`).join('')}</select>
+      <div style="font-size:11.5px; color:var(--ink-soft); margin-top:3px;">Só dá para atribuir este modelo a empresas que atendem este setor.</div>
+    </div>
     ${!t? `<div class="field"><label>Periodicidade</label>
       <select id="mdPeriodicidade">
         <option value="mensal">Mensal (grade com os 12 meses do ano)</option>
@@ -3768,7 +3784,9 @@ function modeloModal(t){
       obrigatorio: el.querySelector('.itObrig').checked,
     }));
     if(!itensBody.length){ toast('Adicione ao menos um item.','err'); return; }
-    const body = { nome, descricao: document.getElementById('mdDesc').value.trim(), itens: itensBody, notificarEmail: document.getElementById('mdNotificar').checked, prazoDia: document.getElementById('mdPrazoDia').value.trim() || null };
+    const setor = document.getElementById('mdSetor').value;
+    if(!setor){ toast('Escolha o setor que atende este modelo.','err'); return; }
+    const body = { nome, descricao: document.getElementById('mdDesc').value.trim(), itens: itensBody, notificarEmail: document.getElementById('mdNotificar').checked, prazoDia: document.getElementById('mdPrazoDia').value.trim() || null, setor };
     if(!t) body.periodicidade = document.getElementById('mdPeriodicidade').value;
     try{
       if(t) await api('/checklist/templates/'+t.id, { method:'PUT', body });
@@ -3834,7 +3852,8 @@ function novaAtribModal(empresas, templates){
   openModal(`
     <h3>Atribuir modelo a uma empresa</h3>
     <div class="field"><label>Empresa</label>${comboSelectHtml('atEmpresaCombo', 'Selecione a empresa…')}</div>
-    <div class="field"><label>Modelo</label><select id="atTemplate">${templates.map(t=>`<option value="${t.id}">${esc(t.nome)}</option>`).join('')}</select></div>
+    <div class="field"><label>Modelo</label><select id="atTemplate">${templates.map(t=>`<option value="${t.id}">${esc(t.nome)}${t.setor?' — '+esc((SETORES_EMPRESA_UI.find(x=>x.chave===t.setor)||{}).label||''):''}</option>`).join('')}</select>
+      <div style="font-size:11.5px; color:var(--ink-soft); margin-top:3px;">Se a empresa não atender o setor do modelo, a atribuição é recusada.</div></div>
     <div class="modal-actions">
       <button class="btn" id="atCancel">Cancelar</button>
       <button class="btn primary" id="atSalvar">Atribuir</button>

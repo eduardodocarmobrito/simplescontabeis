@@ -1028,6 +1028,14 @@ sqlite.exec(`
   CREATE INDEX IF NOT EXISTS idx_mdfe_vinculos_chave ON mdfe_vinculos(chave_vinculada);
   -- Quais itens (certificado/licenças) contam como pendência pra PESSOA FÍSICA, por escritório. Pessoa jurídica
   -- exige tudo sempre; isto só ajusta o que o escritório quer cobrar de CPF.
+  -- Setores que cada empresa atende (Contabilidade, Fiscal, DP/RH). Sem nenhuma linha = atende todos
+  -- (empresas já cadastradas continuam como eram). Um modelo de solicitação só pode ser atribuído a uma
+  -- empresa que atende o setor dele.
+  CREATE TABLE IF NOT EXISTS empresa_setores (
+    empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+    setor TEXT NOT NULL,
+    PRIMARY KEY (empresa_id, setor)
+  );
   CREATE TABLE IF NOT EXISTS pendencias_config (
     escritorio_id INTEGER NOT NULL REFERENCES escritorios(id),
     chave TEXT NOT NULL,
@@ -1884,6 +1892,11 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
   if (!colsReceber.some((c) => c.name === "conta_id")) {
     sqlite.exec(`ALTER TABLE financeiro_receber ADD COLUMN conta_id INTEGER REFERENCES financeiro_contas(id) ON DELETE SET NULL`);
   }
+}
+// Migração leve: checklist_templates.setor (departamento que atende o modelo).
+{
+  const colsCl = sqlite.prepare(`PRAGMA table_info(checklist_templates)`).all() as any[];
+  if (!colsCl.some((c) => c.name === "setor")) sqlite.exec(`ALTER TABLE checklist_templates ADD COLUMN setor TEXT`);
 }
 // Migração leve: empresa_anexos.ano (organiza a aba Licenças por exercício/competência).
 {
@@ -3231,6 +3244,31 @@ const LICENCAS_MINIMAS: { chave: string; label: string }[] = [
 // Itens exigidos na aba Pendências: certificado + licenças. Pessoa jurídica exige tudo por padrão;
 // pessoa física (CPF, 11 dígitos) não exige licenças por padrão — dá pra ligar cada item por escritório.
 const PENDENCIA_ITENS: { chave: string; label: string }[] = [{ chave: "certificado", label: "Certificado digital" }, ...LICENCAS_MINIMAS];
+const SETORES_EMPRESA: { chave: string; label: string }[] = [
+  { chave: "contabilidade", label: "Contabilidade" },
+  { chave: "fiscal", label: "Fiscal" },
+  { chave: "dprh", label: "DP/RH" },
+];
+const SETOR_ROTULO: Record<string, string> = Object.fromEntries(SETORES_EMPRESA.map((s) => [s.chave, s.label]));
+function empresaSetores(empresaId: number): string[] {
+  const rows = sqlite.prepare(`SELECT setor FROM empresa_setores WHERE empresa_id = ?`).all(empresaId) as any[];
+  return rows.length ? rows.map((r) => r.setor) : SETORES_EMPRESA.map((s) => s.chave);
+}
+app.get("/api/empresas/:id/setores", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
+  const empresaId = Number(req.params.id);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  res.json({ setores: empresaSetores(empresaId), todos: SETORES_EMPRESA });
+});
+app.put("/api/empresas/:id/setores", blockCliente, requirePermissao("empresas", "editar"), (req, res) => {
+  const empresaId = Number(req.params.id);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const escolhidos: string[] = Array.isArray(req.body?.setores) ? req.body.setores : [];
+  const validos = escolhidos.filter((c) => SETOR_ROTULO[c]);
+  if (!validos.length) return res.status(400).json({ error: "Marque pelo menos um setor que a empresa atende." });
+  sqlite.prepare(`DELETE FROM empresa_setores WHERE empresa_id = ?`).run(empresaId);
+  for (const c of [...new Set(validos)]) sqlite.prepare(`INSERT INTO empresa_setores (empresa_id, setor) VALUES (?, ?)`).run(empresaId, c);
+  res.json({ ok: true, setores: validos });
+});
 function pendenciasExigidasPf(escritorioId: number): Record<string, boolean> {
   const padrao: Record<string, boolean> = { certificado: true, alvara: false, vigilancia_sanitaria: false, corpo_bombeiros: false, ambiental_semma: false };
   const salvos = sqlite.prepare(`SELECT chave, exigir_pf FROM pendencias_config WHERE escritorio_id = ?`).all(escritorioId) as any[];
@@ -5376,8 +5414,9 @@ app.get("/api/checklist/templates", blockCliente, requirePermissao("solicitacoes
 });
 app.post("/api/checklist/templates", blockCliente, requirePermissao("solicitacoes", "postar"), (req, res) => {
   const user = (req as any).user;
-  const { nome, descricao, periodicidade, itens, notificarEmail, prazoDia } = req.body || {};
+  const { nome, descricao, periodicidade, itens, notificarEmail, prazoDia, setor } = req.body || {};
   if (!nome || !Array.isArray(itens) || !itens.length) return res.status(400).json({ error: "Informe o nome e ao menos um item para anexar." });
+  if (!SETOR_ROTULO[setor]) return res.status(400).json({ error: "Escolha o setor que atende este modelo (Contabilidade, Fiscal ou DP/RH)." });
   const itensNormalizados = itens.map((it: any, i: number) => ({
     chave: it.chave || `item${i + 1}`,
     label: it.label || `Item ${i + 1}`,
@@ -5386,19 +5425,20 @@ app.post("/api/checklist/templates", blockCliente, requirePermissao("solicitacoe
   }));
   const prazoDiaNum = prazoDia ? Math.min(28, Math.max(1, Number(prazoDia))) : null;
   const info = sqlite
-    .prepare(`INSERT INTO checklist_templates (nome, descricao, periodicidade, itens_json, notificar_email, prazo_dia, created_by, escritorio_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(nome, descricao || null, periodicidade || "mensal", JSON.stringify(itensNormalizados), notificarEmail ? 1 : 0, prazoDiaNum, user.id, user.escritorioId);
+    .prepare(`INSERT INTO checklist_templates (nome, descricao, periodicidade, itens_json, notificar_email, prazo_dia, created_by, escritorio_id, setor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(nome, descricao || null, periodicidade || "mensal", JSON.stringify(itensNormalizados), notificarEmail ? 1 : 0, prazoDiaNum, user.id, user.escritorioId, setor);
   res.json({ id: Number(info.lastInsertRowid) });
 });
 app.put("/api/checklist/templates/:id", blockCliente, requirePermissao("solicitacoes", "editar"), (req, res) => {
   const id = Number(req.params.id);
   const existing = sqlite.prepare(`SELECT * FROM checklist_templates WHERE id = ? AND escritorio_id = ?`).get(id, (req as any).user.escritorioId) as any;
   if (!existing) return res.status(404).json({ error: "Modelo não encontrado." });
-  const { nome, descricao, itens, notificarEmail, ativo, prazoDia } = req.body || {};
+  const { nome, descricao, itens, notificarEmail, ativo, prazoDia, setor } = req.body || {};
+  if (setor !== undefined && !SETOR_ROTULO[setor]) return res.status(400).json({ error: "Setor inválido." });
   const itensJson = Array.isArray(itens) ? JSON.stringify(itens) : existing.itens_json;
   const prazoDiaNum = prazoDia === undefined ? existing.prazo_dia : prazoDia ? Math.min(28, Math.max(1, Number(prazoDia))) : null;
   sqlite
-    .prepare(`UPDATE checklist_templates SET nome=?, descricao=?, itens_json=?, notificar_email=?, ativo=?, prazo_dia=? WHERE id=?`)
+    .prepare(`UPDATE checklist_templates SET nome=?, descricao=?, itens_json=?, notificar_email=?, ativo=?, prazo_dia=?, setor=? WHERE id=?`)
     .run(
       nome ?? existing.nome,
       descricao !== undefined ? descricao : existing.descricao,
@@ -5406,6 +5446,7 @@ app.put("/api/checklist/templates/:id", blockCliente, requirePermissao("solicita
       notificarEmail === undefined ? existing.notificar_email : notificarEmail ? 1 : 0,
       ativo === undefined ? existing.ativo : ativo ? 1 : 0,
       prazoDiaNum,
+      setor !== undefined ? setor : existing.setor,
       id
     );
   res.json({ ok: true });
@@ -5457,8 +5498,11 @@ app.post("/api/checklist/atribuicoes", blockCliente, requirePermissao("solicitac
   const { templateId, empresaId } = req.body || {};
   if (!templateId || !empresaId) return res.status(400).json({ error: "Selecione o modelo e a empresa." });
   if (!podeAcessarEmpresa(user, Number(empresaId))) return res.status(403).json({ error: "Sem acesso a esta empresa." });
-  const template = sqlite.prepare(`SELECT id FROM checklist_templates WHERE id = ? AND escritorio_id = ?`).get(Number(templateId), user.escritorioId);
+  const template = sqlite.prepare(`SELECT id, setor FROM checklist_templates WHERE id = ? AND escritorio_id = ?`).get(Number(templateId), user.escritorioId) as any;
   if (!template) return res.status(404).json({ error: "Modelo não encontrado." });
+  if (template.setor && !empresaSetores(Number(empresaId)).includes(template.setor)) {
+    return res.status(400).json({ error: `Esta empresa não trabalha com o setor ${SETOR_ROTULO[template.setor]}. Marque o setor no cadastro dela para atribuir este modelo.` });
+  }
   try {
     const info = sqlite
       .prepare(`INSERT INTO checklist_atribuicoes (template_id, empresa_id, created_by) VALUES (?, ?, ?)`)
@@ -9634,7 +9678,7 @@ function checklistObterOuCriarAtribuicaoModelo(
   let template = sqlite.prepare(`SELECT id FROM checklist_templates WHERE escritorio_id = ? AND nome = ?`).get(escritorioId, nomeTemplate) as any;
   if (!template) {
     const info = sqlite
-      .prepare(`INSERT INTO checklist_templates (nome, descricao, periodicidade, itens_json, notificar_email, escritorio_id) VALUES (?, ?, ?, ?, 0, ?)`)
+      .prepare(`INSERT INTO checklist_templates (nome, descricao, periodicidade, itens_json, notificar_email, escritorio_id, setor) VALUES (?, ?, ?, ?, 0, ?, 'contabilidade')`)
       .run(nomeTemplate, descricaoTemplate, periodicidade, JSON.stringify(itens), escritorioId);
     template = { id: Number(info.lastInsertRowid) };
   }
