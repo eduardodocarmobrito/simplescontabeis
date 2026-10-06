@@ -646,8 +646,16 @@ async function empresasAtivas(){
 function empresaComboLabel(e){
   const partes = [e.nome];
   if(e.codigoDominio) partes.push('cód. '+e.codigoDominio);
-  if(e.cnpj) partes.push(e.cnpj);
+  if(e.cnpj) partes.push(fmtCnpjCpf(e.cnpj));
   return partes.join(' · ');
+}
+// CPF/CNPJ guardados só com dígitos (importação do Domínio) aparecem com máscara: 000.000.000-00 ou 00.000.000/0000-00.
+// Valor que não tem 11 nem 14 dígitos volta como estava digitado.
+function fmtCnpjCpf(v){
+  const d = String(v==null?'':v).replace(/\D/g,'');
+  if(d.length===11) return d.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/,'$1.$2.$3-$4');
+  if(d.length===14) return d.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/,'$1.$2.$3/$4-$5');
+  return v==null?'':String(v);
 }
 function fmtMoney(v){ return (Number(v)||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'}); }
 // Máscara de campo de valor em R$ — digita só números, formata milhar/centavos ao vivo (ex.: digitar
@@ -2648,11 +2656,11 @@ async function renderEmpresasTab(){
   const tbody = document.getElementById('empresasBody');
   function desenhaLinhas(filtro){
     const termo = normalizaTxt(filtro).trim();
-    const visiveis = termo ? items.filter(e=> normalizaTxt(e.nome).includes(termo) || normalizaTxt(e.cnpj).includes(termo)) : items;
+    const visiveis = termo ? items.filter(e=> normalizaTxt(e.nome).includes(termo) || normalizaTxt(e.cnpj).includes(termo) || (!!termo.replace(/\D/g,'') && String(e.cnpj||'').replace(/\D/g,'').includes(termo.replace(/\D/g,'')))) : items;
     tbody.innerHTML = visiveis.length ? visiveis.map(e=>`
       <tr data-id="${e.id}">
         <td><b>${esc(e.nome)}</b></td>
-        <td>${esc(e.cnpj||'—')}</td>
+        <td>${esc(fmtCnpjCpf(e.cnpj)||'—')}</td>
         <td><span class="tag muted">${e.origem==='dominio'?'Domínio Web':'Manual'}</span></td>
         ${ativasTab? `<td><span class="tag ${e.visivelRelatorios?'ok':'muted'}">${e.visivelRelatorios?'Sim':'Não'}</span></td>`:''}
         <td style="text-align:right;">
@@ -2772,7 +2780,7 @@ function certImportRenderizar(){
       ${lista.map((i,k)=>linha(i, itens.indexOf(i))).join('')}</tbody></table></div>`;
     document.getElementById('cdSelTodos').addEventListener('change', e=>box.querySelectorAll('.cdSel').forEach(cb=>cb.checked=e.target.checked));
     if(aba==='pend'){
-      let empresas; try{ empresas = (await api('/empresas')).items.filter(e=>e.ativo).map(e=>({ id:e.id, label:e.nome+(e.cnpj?' · '+e.cnpj:'') })); }catch(e){ empresas = []; }
+      let empresas; try{ empresas = (await api('/empresas')).items.filter(e=>e.ativo).map(e=>({ id:e.id, label:e.nome+(e.cnpj?' · '+fmtCnpjCpf(e.cnpj):'') })); }catch(e){ empresas = []; }
       lista.forEach((i,k)=>{
         const idx = itens.indexOf(i);
         const el = document.getElementById('cdEmp'+idx); if(!el) return;
@@ -10229,7 +10237,7 @@ async function atdVincularEmpresaModal(S, c){
   const desenharLista = ()=>{
     document.getElementById('vcLista').innerHTML = contatos.length ? `<table class="data-table"><tbody>${contatos.map(k=>`<tr><td>${esc(k.nome)}</td><td>${esc(k.email||'—')}</td><td>${esc(k.telefone||'—')}${k.receber_whatsapp?' <span class="tag ok">WhatsApp</span>':''}</td></tr>`).join('')}</tbody></table>` : '<div class="empty-state" style="padding:12px;">Nenhum contato cadastrado ainda.</div>';
   };
-  setupComboSelect('vcEmpCombo', empresas.map(e=>({ id:e.id, label:e.nome+(e.cnpj?' · '+e.cnpj:'') })), async v=>{
+  setupComboSelect('vcEmpCombo', empresas.map(e=>({ id:e.id, label:e.nome+(e.cnpj?' · '+fmtCnpjCpf(e.cnpj):'') })), async v=>{
     empId = v ? Number(v) : null;
     document.getElementById('vcCorpo').classList.toggle('hidden', !empId);
     document.getElementById('vcSalvar').disabled = !empId;
@@ -10272,7 +10280,7 @@ async function atdFichaEmpresa(S, c, empresaId){
   openDrawer(`
     <div class="row" style="justify-content:space-between; align-items:flex-start;">
       <div><h3 style="margin:0;">🏢 ${esc(e.nome)}</h3>
-        <div style="font-size:12.5px; color:var(--ink-soft); margin-top:4px;">${esc(e.cnpj||'sem CNPJ')} · ${esc(REGIMES_ROTULO[e.regime_tributario]||e.regime_tributario||'—')}${e.cidade?' · '+esc(e.cidade)+'/'+esc(e.uf||''):''}${e.ativo?'':' · <span class="tag err">inativa</span>'}</div></div>
+        <div style="font-size:12.5px; color:var(--ink-soft); margin-top:4px;">${esc(fmtCnpjCpf(e.cnpj)||'sem CNPJ')} · ${esc(REGIMES_ROTULO[e.regime_tributario]||e.regime_tributario||'—')}${e.cidade?' · '+esc(e.cidade)+'/'+esc(e.uf||''):''}${e.ativo?'':' · <span class="tag err">inativa</span>'}</div></div>
       <button class="btn small" id="atdFichaFechar">×</button>
     </div>
     <div class="atd-ficha-sec"><h4>📥 O escritório aguarda do cliente (${esc(f.competencia)})</h4>
@@ -11643,7 +11651,7 @@ async function pageEscritorios(){
   document.getElementById('escritoriosBody').innerHTML = items.map(e=>`
     <tr data-id="${e.id}">
       <td>${esc(e.nome)}</td>
-      <td>${esc(e.cnpj||'—')}</td>
+      <td>${esc(fmtCnpjCpf(e.cnpj)||'—')}</td>
       <td>${esc(e.email||'—')}</td>
       <td>${e.totalEmpresas}</td>
       <td>${e.totalUsuarios}</td>
