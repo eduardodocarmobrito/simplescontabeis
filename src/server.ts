@@ -1621,6 +1621,11 @@ for (const tabela of ["chat_mensagens", "chat_equipe_mensagens", "chat_dm_mensag
   // (resNFe) — é o evento que desbloqueia o XML completo (ver nfe.enviarManifestacaoCiencia). Desligado
   // por padrão porque é uma ação fiscal de verdade, registrada na Sefaz em nome do CNPJ do cliente.
   if (!nomes.has("manifestacao_automatica")) sqlite.exec(`ALTER TABLE nfe_busca_config ADD COLUMN manifestacao_automatica INTEGER NOT NULL DEFAULT 0`);
+  // MDF-e tem web service de Distribuição DFe próprio (MDFeDistribuicaoDFe, host svrs.rs.gov.br — NT
+  // 2015/002), NSU independente dos outros.
+  if (!nomes.has("ultimo_nsu_mdfe")) sqlite.exec(`ALTER TABLE nfe_busca_config ADD COLUMN ultimo_nsu_mdfe TEXT NOT NULL DEFAULT '0'`);
+  if (!nomes.has("ultima_busca_mdfe_em")) sqlite.exec(`ALTER TABLE nfe_busca_config ADD COLUMN ultima_busca_mdfe_em TEXT`);
+  if (!nomes.has("ultimo_erro_mdfe")) sqlite.exec(`ALTER TABLE nfe_busca_config ADD COLUMN ultimo_erro_mdfe TEXT`);
 }
 // Migração: nfe_documentos ganhou a coluna "fonte" (nfe | nfse) — cada uma tem sua própria
 // numeração de NSU, então precisa entrar na chave de unicidade junto com o NSU (antes só
@@ -6678,6 +6683,7 @@ app.get("/api/nfe/config", blockCliente, requirePermissao("nfe-busca", "visualiz
               c.ultimo_nsu as ultimoNsu, c.ultima_busca_em as ultimaBuscaEm, c.ultimo_erro as ultimoErro,
               c.ultimo_nsu_nfse as ultimoNsuNfse, c.ultima_busca_nfse_em as ultimaBuscaNfseEm, c.ultimo_erro_nfse as ultimoErroNfse,
               c.ultimo_nsu_cte as ultimoNsuCte, c.ultima_busca_cte_em as ultimaBuscaCteEm, c.ultimo_erro_cte as ultimoErroCte,
+              c.ultimo_nsu_mdfe as ultimoNsuMdfe, c.ultima_busca_mdfe_em as ultimaBuscaMdfeEm, c.ultimo_erro_mdfe as ultimoErroMdfe,
               c.manifestacao_automatica as manifestacaoAutomatica
        FROM nfe_busca_config c JOIN empresas e ON e.id = c.empresa_id
        WHERE c.escritorio_id = ? AND e.ativo = 1 ORDER BY e.nome`
@@ -7183,6 +7189,42 @@ async function nfeCteBuscarDocumentosNovos(empresaId: number, cfg: any, cert: nf
   }
   return { novos };
 }
+// MDF-e via o web service PRÓPRIO dele (MDFeDistribuicaoDFe — ver comentário em nfe.ts/
+// MDFE_DISTRIBUICAO_URL). Mesma estrutura de resposta (distDFeInt/retDistDFeInt), NSU independente,
+// fonte='mdfe' na tabela.
+async function nfeMdfeBuscarDocumentosNovos(empresaId: number, cfg: any, cert: nfse.CertificadoInfo): Promise<{ novos: number }> {
+  let novos = 0;
+  let ultNsu = cfg.ultimo_nsu_mdfe || "0";
+  const cnpjBusca = nfeResolverCnpjBusca(cfg, empresaId);
+  try {
+    for (let pagina = 0; pagina < 20; pagina++) {
+      const resp = await nfe.consultarNovosDocumentosMdfe({
+        ambiente: cfg.ambiente as nfe.AmbienteNfe,
+        cnpj: cnpjBusca,
+        cUF: nfe.UF_CODIGO_IBGE[cfg.uf_autor],
+        cert,
+        ultimoNsuConhecido: ultNsu,
+      });
+      for (const doc of resp.documentos) {
+        const info = nfe.identificarDocumento(doc.xml, doc.schema);
+        const r = nfeInserirDocumentoDedup({
+          empresaId, escritorioId: cfg.escritorio_id, fonte: "mdfe", nsu: doc.nsu, schema: doc.schema, tipo: info.tipo,
+          chaveAcesso: info.chaveAcesso, emitenteCnpj: info.emitenteCnpj, emitenteNome: info.emitenteNome,
+          destinatarioCnpj: info.destinatarioCnpj, destinatarioNome: info.destinatarioNome, valorTotal: info.valorTotal,
+          dataEmissao: info.dataEmissao, xml: doc.xml, eventoDescricao: info.eventoDescricao,
+        });
+        if (r.inserido) novos++;
+      }
+      ultNsu = resp.ultNSU || ultNsu;
+      sqlite.prepare(`UPDATE nfe_busca_config SET ultimo_nsu_mdfe = ?, ultima_busca_mdfe_em = datetime('now'), ultimo_erro_mdfe = NULL WHERE empresa_id = ?`).run(ultNsu, empresaId);
+      if (!resp.maxNSU || !resp.ultNSU || Number(resp.maxNSU) <= Number(resp.ultNSU) || resp.documentos.length === 0) break;
+    }
+  } catch (e: any) {
+    sqlite.prepare(`UPDATE nfe_busca_config SET ultima_busca_mdfe_em = datetime('now'), ultimo_erro_mdfe = ? WHERE empresa_id = ?`).run(e.message || String(e), empresaId);
+    throw e;
+  }
+  return { novos };
+}
 // Empresas com uma busca em andamento agora (manual, automática, ou disparada ao cadastrar o
 // certificado) — evita duas buscas rodando ao mesmo tempo pra mesma empresa (ex.: a rotina
 // automática pegando bem na hora que alguém clica "Buscar agora"), o que faria requisição em
@@ -7206,8 +7248,8 @@ function nfeChecarCooldown656(cfg: any): string | null {
 // e pela rotina automática, sempre do mesmo jeito (falha numa fonte não trava a outra).
 async function nfeENfseBuscarTudo(empresaId: number, cfg: any, cert: nfse.CertificadoInfo) {
   const resultado = {
-    novosNfe: 0, novosNfse: 0, novosCte: 0,
-    erroNfe: null as string | null, erroNfse: null as string | null, erroCte: null as string | null,
+    novosNfe: 0, novosNfse: 0, novosCte: 0, novosMdfe: 0,
+    erroNfe: null as string | null, erroNfse: null as string | null, erroCte: null as string | null, erroMdfe: null as string | null,
     porSchema: {} as Record<string, number>,
   };
   try {
@@ -7226,6 +7268,11 @@ async function nfeENfseBuscarTudo(empresaId: number, cfg: any, cert: nfse.Certif
     resultado.novosCte = (await nfeCteBuscarDocumentosNovos(empresaId, cfg, cert)).novos;
   } catch (e: any) {
     resultado.erroCte = e.message || "Falha ao consultar a Sefaz (CT-e).";
+  }
+  try {
+    resultado.novosMdfe = (await nfeMdfeBuscarDocumentosNovos(empresaId, cfg, cert)).novos;
+  } catch (e: any) {
+    resultado.erroMdfe = e.message || "Falha ao consultar a Sefaz (MDF-e).";
   }
   return resultado;
 }
@@ -7250,10 +7297,10 @@ app.post("/api/nfe/config/:empresaId/buscar", blockCliente, requirePermissao("nf
   try {
     const cert = nfeCarregarCertificado(cfg);
     const resultado = await nfeENfseBuscarTudo(empId, cfg, cert);
-    if (resultado.erroNfe && resultado.erroNfse && resultado.erroCte) {
-      return res.status(400).json({ error: `NF-e/NFC-e: ${resultado.erroNfe} | NFS-e: ${resultado.erroNfse} | CT-e: ${resultado.erroCte}` });
+    if (resultado.erroNfe && resultado.erroNfse && resultado.erroCte && resultado.erroMdfe) {
+      return res.status(400).json({ error: `NF-e/NFC-e: ${resultado.erroNfe} | NFS-e: ${resultado.erroNfse} | CT-e: ${resultado.erroCte} | MDF-e: ${resultado.erroMdfe}` });
     }
-    res.json({ ok: true, ...resultado, novos: resultado.novosNfe + resultado.novosNfse + resultado.novosCte });
+    res.json({ ok: true, ...resultado, novos: resultado.novosNfe + resultado.novosNfse + resultado.novosCte + resultado.novosMdfe });
   } finally {
     nfeBuscasEmAndamento.delete(empId);
   }
@@ -7449,8 +7496,8 @@ async function nfeExecutarBuscaAutomatica() {
     try {
       const cert = nfeCarregarCertificado(cfg);
       const r = await nfeENfseBuscarTudo(cfg.empresa_id, cfg, cert);
-      if (r.novosNfe || r.novosNfse || r.novosCte) {
-        console.log(`[busca automática de XML] empresa ${cfg.empresa_id}: ${r.novosNfe} NF-e/NFC-e, ${r.novosNfse} NFS-e, ${r.novosCte} CT-e novos.`);
+      if (r.novosNfe || r.novosNfse || r.novosCte || r.novosMdfe) {
+        console.log(`[busca automática de XML] empresa ${cfg.empresa_id}: ${r.novosNfe} NF-e/NFC-e, ${r.novosNfse} NFS-e, ${r.novosCte} CT-e, ${r.novosMdfe} MDF-e novos.`);
       }
     } catch (e: any) {
       console.error(`[busca automática de XML] empresa ${cfg.empresa_id} falhou:`, e.message);

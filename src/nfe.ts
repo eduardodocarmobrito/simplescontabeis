@@ -206,6 +206,108 @@ export function consultarPorChaveCte(params: { ambiente: AmbienteNfe; cnpj: stri
   return consultarDistribuicao("cte", { ...params, modo: { tipo: "chNFe", valor: params.chave } });
 }
 
+// ===================== MDF-e: Distribuição DFe (web service PRÓPRIO, NT 2015.002) =====================
+// MDF-e tem um web service de Distribuição DFe à parte (host svrs.rs.gov.br — ambiente nacional único,
+// não varia por UF como NF-e), com um envelope SOAP DIFERENTE dos dois acima: tem SOAP Header
+// (mdfeCabecMsg com cUF+versaoDados) e o Body NÃO tem wrapper de operação (mdfeDadosMsg vai direto) —
+// confirmado na Nota Técnica oficial (lida por completo antes de implementar, para não repetir o
+// tentativa-e-erro da manifestação de Ciência). Por isso não reaproveita chamarDistribuicao/
+// montarConsultaDistDFeInt (moldados pro formato nfe/cte) — tem as próprias funções, no mesmo espírito.
+//
+// Sigilo fiscal (ENCAT): a Sefaz mascara as chaves de NF-e/CT-e/MDF-e dentro do grupo de documentos
+// originários (infDoc) com 46 noves — então pode não dar pra cruzar automaticamente "esta nota está
+// neste MDF-e" por chave; só confirmando com uma captura real.
+const MDFE_DISTRIBUICAO_URL = {
+  producao: "https://mdfe.svrs.rs.gov.br/WS/MDFeDistribuicaoDFe/MDFeDistribuicaoDFe.asmx",
+  homologacao: "https://mdfe-homologacao.svrs.rs.gov.br/WS/MDFeDistribuicaoDFe/MDFeDistribuicaoDFe.asmx",
+} as const;
+function montarConsultaMdfe(params: {
+  ambiente: AmbienteNfe;
+  cnpj: string;
+  modo: { tipo: "ultNSU"; valor: string } | { tipo: "NSU"; valor: string } | { tipo: "chNFe"; valor: string };
+}): string {
+  const tpAmb = params.ambiente === "producao" ? "1" : "2";
+  const documentoLimpo = params.cnpj.replace(/\D/g, "");
+  const tagDocumento = documentoLimpo.length === 11 ? `<CPF>${documentoLimpo}</CPF>` : `<CNPJ>${documentoLimpo}</CNPJ>`;
+  const consultaTag =
+    params.modo.tipo === "ultNSU"
+      ? `<distNSU><ultNSU>${params.modo.valor.padStart(15, "0")}</ultNSU></distNSU>`
+      : params.modo.tipo === "NSU"
+        ? `<consNSU><NSU>${params.modo.valor.padStart(15, "0")}</NSU></consNSU>`
+        : `<consChMDFe><chMDFe>${params.modo.valor}</chMDFe></consChMDFe>`;
+  return `<distDFeInt xmlns="http://www.portalfiscal.inf.br/mdfe" versao="1.00"><tpAmb>${tpAmb}</tpAmb>${tagDocumento}${consultaTag}</distDFeInt>`;
+}
+function chamarMdfe(ambiente: AmbienteNfe, cUF: string, xmlBody: string, cert: nfse.CertificadoInfo): Promise<{ status: number; corpo: string }> {
+  const nsWsdl = "http://www.portalfiscal.inf.br/mdfe/wsdl/MDFeDistribuicaoDFe";
+  const corpoSoap = `<mdfeDadosMsg xmlns="${nsWsdl}">${xmlBody}</mdfeDadosMsg>`;
+  const cabecMsg = `<mdfeCabecMsg xmlns="${nsWsdl}"><cUF>${cUF}</cUF><versaoDados>1.00</versaoDados></mdfeCabecMsg>`;
+  const envelope =
+    `<?xml version="1.0" encoding="utf-8"?><soap12:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap12="http://www.w3.org/2003/05/soap-envelope">` +
+    `<soap12:Header>${cabecMsg}</soap12:Header><soap12:Body>${corpoSoap}</soap12:Body></soap12:Envelope>`;
+  return new Promise((resolve, reject) => {
+    const url = new URL(MDFE_DISTRIBUICAO_URL[ambiente]);
+    const bodyBuffer = Buffer.from(envelope, "utf8");
+    const req = https.request(
+      {
+        hostname: url.hostname,
+        path: url.pathname,
+        method: "POST",
+        cert: cert.certPem,
+        key: cert.privateKeyPem,
+        rejectUnauthorized: true,
+        headers: { "Content-Type": "application/soap+xml; charset=utf-8", "Content-Length": String(bodyBuffer.length) },
+        timeout: 30000,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () => resolve({ status: res.statusCode || 0, corpo: Buffer.concat(chunks).toString("utf8") }));
+      }
+    );
+    req.on("timeout", () => req.destroy(new Error("Tempo esgotado ao conectar na Sefaz (MDF-e).")));
+    req.on("error", (e) => reject(e));
+    req.write(bodyBuffer);
+    req.end();
+  });
+}
+async function consultarDistribuicaoMdfe(params: {
+  ambiente: AmbienteNfe;
+  cnpj: string;
+  cUF: string;
+  cert: nfse.CertificadoInfo;
+  modo: { tipo: "ultNSU"; valor: string } | { tipo: "NSU"; valor: string } | { tipo: "chNFe"; valor: string };
+}): Promise<RespostaDistribuicao> {
+  const xmlBody = montarConsultaMdfe(params);
+  const { status, corpo } = await chamarMdfe(params.ambiente, params.cUF, xmlBody, params.cert);
+  if (status !== 200) throw new Error(`A Sefaz recusou a conexão (HTTP ${status}) ao consultar MDF-e: ${corpo.slice(0, 800)}`);
+  const json = xmlParser.parse(corpo) as any;
+  // Mesma cautela da manifestação: o nome da tag que embrulha a resposta no Body pode variar por
+  // ambiente — pega o único filho que o Body tiver, em vez de fixar um nome.
+  const soapBody = json?.["soap:Envelope"]?.["soap:Body"];
+  const bodyContent: any = soapBody ? Object.values(soapBody)[0] : null;
+  const retDistDFeInt = bodyContent?.retDistDFeInt;
+  if (!retDistDFeInt) throw new Error(`Resposta da Sefaz em formato inesperado ao consultar MDF-e: ${corpo.slice(0, 1000)}`);
+  if (retDistDFeInt.cStat !== "138") {
+    if (retDistDFeInt.cStat === "137") {
+      return { cStat: retDistDFeInt.cStat, xMotivo: retDistDFeInt.xMotivo, ultNSU: retDistDFeInt.ultNSU || "", maxNSU: retDistDFeInt.maxNSU || "", documentos: [] };
+    }
+    throw new Error(`Sefaz: ${retDistDFeInt.xMotivo || "erro desconhecido"} (cStat ${retDistDFeInt.cStat}).`);
+  }
+  let docZipList = retDistDFeInt.loteDistDFeInt?.docZip;
+  if (!docZipList) docZipList = [];
+  else if (!Array.isArray(docZipList)) docZipList = [docZipList];
+  const documentos: DocumentoDistribuido[] = await Promise.all(
+    docZipList.map(async (doc: any) => ({ nsu: doc["@_NSU"], schema: doc["@_schema"], xml: await unzipBase64(doc.value) }))
+  );
+  return { cStat: retDistDFeInt.cStat, xMotivo: retDistDFeInt.xMotivo, ultNSU: retDistDFeInt.ultNSU || "", maxNSU: retDistDFeInt.maxNSU || "", documentos };
+}
+export function consultarNovosDocumentosMdfe(params: { ambiente: AmbienteNfe; cnpj: string; cUF: string; cert: nfse.CertificadoInfo; ultimoNsuConhecido: string }): Promise<RespostaDistribuicao> {
+  return consultarDistribuicaoMdfe({ ...params, modo: { tipo: "ultNSU", valor: params.ultimoNsuConhecido } });
+}
+export function consultarPorChaveMdfe(params: { ambiente: AmbienteNfe; cnpj: string; cUF: string; cert: nfse.CertificadoInfo; chave: string }): Promise<RespostaDistribuicao> {
+  return consultarDistribuicaoMdfe({ ...params, modo: { tipo: "chNFe", valor: params.chave } });
+}
+
 // ===================== Manifestação do destinatário (Ciência da Operação) =====================
 // A Sefaz só libera o XML COMPLETO (nfeProc) pro destinatário depois dele reagir de alguma forma a
 // uma NF-e — até lá, a Distribuição DFe só devolve o resumo (resNFe). "Ciência da Operação" (tpEvento
@@ -334,7 +436,7 @@ export async function enviarManifestacaoCiencia(params: { ambiente: AmbienteNfe;
 
 // ===================== Extração dos campos principais de cada documento retornado =====================
 export interface DocumentoIdentificado {
-  tipo: "nfe" | "nfce" | "cte" | "evento" | "outro";
+  tipo: "nfe" | "nfce" | "cte" | "mdfe" | "evento" | "outro";
   chaveAcesso: string | null;
   emitenteCnpj: string | null;
   emitenteNome: string | null;
@@ -343,6 +445,7 @@ export interface DocumentoIdentificado {
   valorTotal: number | null;
   dataEmissao: string | null; // ISO
   eventoDescricao: string | null; // xEvento (só preenchido quando tipo === "evento") — ex.: "Cancelamento", "Registro de Passagem Autorização"
+  docsVinculados?: string[] | null; // MDF-e: chaves de NF-e/CT-e no grupo infDoc — a Sefaz pode mascará-las (sigilo fiscal, NT 2015.002)
 }
 // O "schema" que a Sefaz devolve em cada docZip diz o tipo de conteúdo — resNFe/resNFCe são só um
 // resumo (sem todos os campos, ex. sem itens), procNFe/procCTe já vêm com o XML completo assinado.
@@ -379,6 +482,34 @@ export function identificarDocumento(xml: string, schema: string): DocumentoIden
       chaveAcesso: infEvento.chCTe || null,
       dataEmissao: infEvento.dhEvento || null,
       eventoDescricao: descEvento?.descEvento || null,
+    };
+  }
+  // procEventoMDFe (cancelamento, encerramento, inclusão de condutor) — mesma ideia do procEventoCTe:
+  // descEvento fica dentro de detEvento, sob uma tag que muda conforme o tipo.
+  if (schema.startsWith("procEventoMDFe")) {
+    const infEvento = json?.procEventoMDFe?.eventoMDFe?.infEvento;
+    if (!infEvento) return base;
+    const detEvento = infEvento.detEvento || {};
+    const descEvento = Object.values(detEvento).find((v: any) => v && typeof v === "object" && "descEvento" in v) as any;
+    return {
+      ...base,
+      tipo: "evento",
+      chaveAcesso: infEvento.chMDFe || null,
+      dataEmissao: infEvento.dhEvento || null,
+      eventoDescricao: descEvento?.descEvento || null,
+    };
+  }
+  // resMDFe (resumo, mesma família de schema do resNFe/resCTe).
+  if (schema.startsWith("resMDFe")) {
+    const r = json?.resMDFe;
+    if (!r) return base;
+    return {
+      ...base,
+      tipo: "mdfe",
+      chaveAcesso: r.chMDFe || null,
+      emitenteCnpj: r.CNPJ || r.CPF || null,
+      emitenteNome: r.xNome || null,
+      dataEmissao: r.dhEmi || null,
     };
   }
   if (schema.startsWith("resNFe")) {
@@ -435,6 +566,39 @@ export function identificarDocumento(xml: string, schema: string): DocumentoIden
       destinatarioNome: dest.xNome || null,
       valorTotal: vPrest.vTPrest != null ? Number(vPrest.vTPrest) : null,
       dataEmissao: infCte.ide?.dhEmi || null,
+    };
+  }
+  // procMDFe (completo, assinado) — vem envelopado em mdfeProc > MDFe > infMDFe. MDF-e não tem um único
+  // "destinatário" (é um manifesto de transporte referenciando várias NF-e/CT-e, uma por município de
+  // descarga em infDoc.infMunDescarga) — docsVinculados junta as chaves de NF-e/CT-e encontradas ali,
+  // mas a Sefaz pode mascará-las com 46 noves por sigilo fiscal (NT 2015.002) — quem usa esse campo
+  // precisa checar isso antes de confiar na chave.
+  const infMDFe = json?.mdfeProc?.MDFe?.infMDFe;
+  if (infMDFe) {
+    const emit = infMDFe.emit || {};
+    const tot = infMDFe.tot || {};
+    let descargas = infMDFe.infDoc?.infMunDescarga;
+    descargas = Array.isArray(descargas) ? descargas : descargas ? [descargas] : [];
+    const docsVinculados: string[] = [];
+    for (const d of descargas) {
+      for (const campo of ["infNFe", "infCTe", "infMDFeTransp"]) {
+        let itens = d?.[campo];
+        itens = Array.isArray(itens) ? itens : itens ? [itens] : [];
+        for (const it of itens) {
+          const chave = it?.chNFe || it?.chCTe || it?.chMDFe;
+          if (chave) docsVinculados.push(chave);
+        }
+      }
+    }
+    return {
+      ...base,
+      tipo: "mdfe",
+      chaveAcesso: (infMDFe["@_Id"] || "").replace(/^MDFe/, "") || null,
+      emitenteCnpj: emit.CNPJ || null,
+      emitenteNome: emit.xNome || null,
+      valorTotal: tot.vCarga != null ? Number(tot.vCarga) : null,
+      dataEmissao: infMDFe.ide?.dhEmi || null,
+      docsVinculados: docsVinculados.length ? docsVinculados : null,
     };
   }
   // procNFe (completo, assinado) — vem envelopado em nfeProc > NFe > infNFe.

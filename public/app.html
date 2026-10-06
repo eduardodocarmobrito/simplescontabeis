@@ -5911,6 +5911,7 @@ async function renderCertificadoBuscaXml(containerEl, empresaId, empresaUfPadrao
         CNPJ do certificado: ${esc(cfg.cnpjCertificado||'—')} · Válido até ${fmtValidade(cfg.validadeAte)} · UF autora: ${esc(cfg.ufAutor)} · Ambiente: ${cfg.ambiente==='homologacao'?'Homologação':'Produção'}
         <br>NF-e/NFC-e — última busca: ${cfg.ultimaBuscaEm?fmtDateHora(cfg.ultimaBuscaEm):'nunca'}${cfg.ultimoErro?` — <span style="color:var(--debit);">${esc(cfg.ultimoErro)}</span>`:''}
         <br>CT-e — última busca: ${cfg.ultimaBuscaCteEm?fmtDateHora(cfg.ultimaBuscaCteEm):'nunca'}${cfg.ultimoErroCte?` — <span style="color:var(--debit);">${esc(cfg.ultimoErroCte)}</span>`:''}
+        <br>MDF-e — última busca: ${cfg.ultimaBuscaMdfeEm?fmtDateHora(cfg.ultimaBuscaMdfeEm):'nunca'}${cfg.ultimoErroMdfe?` — <span style="color:var(--debit);">${esc(cfg.ultimoErroMdfe)}</span>`:''}
         <br>NFS-e — última busca: ${cfg.ultimaBuscaNfseEm?fmtDateHora(cfg.ultimaBuscaNfseEm):'nunca'}${cfg.ultimoErroNfse?` — <span style="color:var(--debit);">${esc(cfg.ultimoErroNfse)}</span>`:''}
       </div>
       <label class="checkbox-row"><input type="checkbox" id="nfeCfgAtivo_${empresaId}" ${cfg.ativo?'checked':''} ${podeEditar?'':'disabled'}> Ativar Busca de XML</label>
@@ -6032,7 +6033,7 @@ async function renderCertificadoBuscaXml(containerEl, empresaId, empresaUfPadrao
       resultado.innerHTML = `<div class="empty-state">Consultando a Sefaz e o Sistema Nacional NFS-e…</div>`;
       try{
         const r = await api('/nfe/config/'+empresaId+'/buscar', { method:'POST' });
-        const partes = [`${r.novosNfe} NF-e/NFC-e`, `${r.novosCte} CT-e`, `${r.novosNfse} NFS-e`];
+        const partes = [`${r.novosNfe} NF-e/NFC-e`, `${r.novosCte} CT-e`, `${r.novosNfse} NFS-e`, `${r.novosMdfe} MDF-e`];
         resultado.innerHTML = `<div class="tag ${(r.erroNfe||r.erroNfse||r.erroCte)?'bad':'ok'}">${(r.erroNfe||r.erroNfse||r.erroCte)?'Concluído com falhas':'Concluído'}</div> <span style="font-size:12.5px;">${partes.join(' · ')} novo(s).</span>
           ${r.erroNfe?`<div style="font-size:12px; color:var(--debit); margin-top:4px;">NF-e/NFC-e: ${esc(r.erroNfe)}</div>`:''}
           ${r.erroCte?`<div style="font-size:12px; color:var(--debit); margin-top:4px;">CT-e: ${esc(r.erroCte)}</div>`:''}
@@ -6106,6 +6107,7 @@ async function renderBuscaXmlResumoCertificado(containerEl, empresaId, empresaNo
       CNPJ do certificado: ${esc(cfg.cnpjCertificado||'—')} · Válido até ${fmtValidade(cfg.validadeAte)} · UF autora: ${esc(cfg.ufAutor)} · Ambiente: ${cfg.ambiente==='homologacao'?'Homologação':'Produção'}
       <br>NF-e/NFC-e — última busca: ${cfg.ultimaBuscaEm?fmtDateHora(cfg.ultimaBuscaEm):'nunca'}${cfg.ultimoErro?` — <span style="color:var(--debit);">${esc(cfg.ultimoErro)}</span>`:''}
       <br>CT-e — última busca: ${cfg.ultimaBuscaCteEm?fmtDateHora(cfg.ultimaBuscaCteEm):'nunca'}${cfg.ultimoErroCte?` — <span style="color:var(--debit);">${esc(cfg.ultimoErroCte)}</span>`:''}
+      <br>MDF-e — última busca: ${cfg.ultimaBuscaMdfeEm?fmtDateHora(cfg.ultimaBuscaMdfeEm):'nunca'}${cfg.ultimoErroMdfe?` — <span style="color:var(--debit);">${esc(cfg.ultimoErroMdfe)}</span>`:''}
       <br>NFS-e — última busca: ${cfg.ultimaBuscaNfseEm?fmtDateHora(cfg.ultimaBuscaNfseEm):'nunca'}${cfg.ultimoErroNfse?` — <span style="color:var(--debit);">${esc(cfg.ultimoErroNfse)}</span>`:''}
       ${!cfg.ativo?`<br><span class="tag muted" style="margin-top:6px;">Busca desativada — ative em Empresas → Configurações.</span>`:''}
     </div>
@@ -6122,7 +6124,7 @@ async function renderBuscaXmlResumoCertificado(containerEl, empresaId, empresaNo
     resultado.innerHTML = `<div class="empty-state">Consultando a Sefaz e o Sistema Nacional NFS-e…</div>`;
     try{
       const r = await api('/nfe/config/'+empresaId+'/buscar', { method:'POST' });
-      const partes = [`${r.novosNfe} NF-e/NFC-e`, `${r.novosCte} CT-e`, `${r.novosNfse} NFS-e`];
+      const partes = [`${r.novosNfe} NF-e/NFC-e`, `${r.novosCte} CT-e`, `${r.novosNfse} NFS-e`, `${r.novosMdfe} MDF-e`];
       resultado.innerHTML = `<div class="tag ${(r.erroNfe||r.erroNfse||r.erroCte)?'bad':'ok'}">${(r.erroNfe||r.erroNfse||r.erroCte)?'Concluído com falhas':'Concluído'}</div> <span style="font-size:12.5px;">${partes.join(' · ')} novo(s).</span>
         ${r.erroNfe?`<div style="font-size:12px; color:var(--debit); margin-top:4px;">NF-e/NFC-e: ${esc(r.erroNfe)}</div>`:''}
         ${r.erroCte?`<div style="font-size:12px; color:var(--debit); margin-top:4px;">CT-e: ${esc(r.erroCte)}</div>`:''}
@@ -6353,7 +6355,7 @@ async function pageNfeBusca(){
           ${dateFieldHtml('nfeDocDataDe','Data de','')}
           ${dateFieldHtml('nfeDocDataAte','Data até','')}
           <div class="field" style="margin-bottom:0; width:180px;"><label>Tipo</label>
-            <select id="nfeDocTipo"><option value="">Todos</option><option value="nfe">NF-e</option><option value="nfce">NFC-e</option><option value="nfse">NFS-e</option><option value="cte">CT-e</option><option value="nf3e">NF3-e</option><option value="satcfe">SAT-CF-e</option><option value="evento">Evento</option><option value="outro">Outro</option></select>
+            <select id="nfeDocTipo"><option value="">Todos</option><option value="nfe">NF-e</option><option value="nfce">NFC-e</option><option value="nfse">NFS-e</option><option value="cte">CT-e</option><option value="mdfe">MDF-e</option><option value="nf3e">NF3-e</option><option value="satcfe">SAT-CF-e</option><option value="evento">Evento</option><option value="outro">Outro</option></select>
           </div>
         </div>
         <div class="row" style="margin-bottom:8px; align-items:center; gap:10px;">
