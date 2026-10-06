@@ -11677,7 +11677,7 @@ async function pageModulosPlataforma(){
 // ===================== Central de Envio de Documentos (por setor) =====================
 // Lê PDFs de pastas do Google Drive (conta de serviço, só leitura) → "Pendentes de envio" → clique manda por WhatsApp e/ou
 // e-mail → "Enviados" guarda o histórico por empresa, sem sobrescrever nada. Configuração em Configurações › Envio de documentos.
-const CENV = { sub:'pendentes', timer:null, agrupar:false, sel:new Set() };
+const CENV = { sub:'pendentes', timer:null, agrupar:true, situacao:'', dataDe:'', dataAte:'', sel:new Set() };
 const CENV_SETORES = { crm:'CRM (todos os setores)', dprh:'DP/RH', contabil:'Contabilidade', fiscal:'Fiscal' };
 function centralEnvioParar(){ if(CENV.timer){ clearInterval(CENV.timer); CENV.timer=null; } }
 function cenvDataHora(iso){
@@ -11701,7 +11701,19 @@ async function centralEnvioMontar(escopo, box){
       <button class="btn" id="cenvMinhaPasta">📁 Minha pasta</button>
       <button class="btn" id="cenvLer" title="Lê a pasta agora (o site já confere sozinho a cada 10 segundos)">↻ Ler pasta agora</button>
       <button class="btn" id="cenvDiag" title="Explica por que um arquivo do Drive não apareceu na lista">🔎 Não apareceu?</button>
-      <label class="checkbox-row hidden" id="cenvAgruparBox" style="margin:0;"><input type="checkbox" id="cenvAgrupar"> Agrupar por empresa</label>
+      <div class="field hidden" id="cenvSituacaoBox" style="width:200px; margin:0;">
+        <select id="cenvSituacao">
+          <option value="">Todas as situações</option>
+          <option value="entregue">Enviado · entregue</option>
+          <option value="lido">Enviado · lido</option>
+          <option value="enviado">Enviado</option>
+          <option value="falhou_entrega">Falhou na entrega</option>
+          <option value="erro">Erro</option>
+        </select>
+      </div>
+      <div class="hidden" id="cenvDataDeBox">${dateFieldHtml('cenvDataDe','De',CENV.dataDe||'')}</div>
+      <div class="hidden" id="cenvDataAteBox">${dateFieldHtml('cenvDataAte','Até',CENV.dataAte||'')}</div>
+      <label class="checkbox-row hidden" id="cenvAgruparBox" style="margin:0;"><input type="checkbox" id="cenvAgrupar" ${CENV.agrupar?'checked':''}> Agrupar por empresa</label>
     </div>
     <div id="cenvLista"></div>`;
   const lista = document.getElementById('cenvLista');
@@ -11710,6 +11722,12 @@ async function centralEnvioMontar(escopo, box){
   document.querySelectorAll('#cenvSubs .tab').forEach(t=>t.addEventListener('click', ()=>{ CENV.sub=t.dataset.s; centralEnvioMontar(escopo, box); }));
   busca.addEventListener('input', ()=>{ clearTimeout(tBusca); tBusca = setTimeout(carregar, 300); });
   document.getElementById('cenvAgrupar').addEventListener('change', e=>{ CENV.agrupar = e.target.checked; carregar(); });
+  document.getElementById('cenvSituacao').value = CENV.situacao;
+  document.getElementById('cenvSituacao').addEventListener('change', e=>{ CENV.situacao = e.target.value; carregar(); });
+  setupDatePicker('cenvDataDe','cenvDataDe_text');
+  setupDatePicker('cenvDataAte','cenvDataAte_text');
+  document.getElementById('cenvDataDe').addEventListener('change', e=>{ CENV.dataDe = e.target.value; carregar(); });
+  document.getElementById('cenvDataAte').addEventListener('change', e=>{ CENV.dataAte = e.target.value; carregar(); });
   document.getElementById('cenvLer').addEventListener('click', async ()=>{
     const b = document.getElementById('cenvLer'); b.disabled = true; b.textContent = 'Lendo…';
     try{ await api('/central-envio/varrer', { method:'POST', body:{ dias:30 } }); toast('Lendo a pasta em segundo plano — os documentos vão aparecendo na lista.','ok'); }
@@ -11739,10 +11757,20 @@ async function centralEnvioMontar(escopo, box){
       : (resumo.ultimoErro ? `<span style="color:var(--debit)">⚠ ${esc(resumo.ultimoErro)}</span>` : `${resumo.lendo?'<b>⏳ Lendo a pasta agora…</b> · ':''}🟢 Leitura automática ligada — o site confere a pasta a cada 10 segundos · última conferência: ${esc(resumo.ultimaVarredura?new Date(resumo.ultimaVarredura).toLocaleTimeString('pt-BR'):'—')}${resumo.minhasPastas.length?` · sua pasta: <b>${esc(resumo.minhasPastas.map(p=>p.pasta_nome).join(', '))}</b>`:''}${resumo.pastasDoSetor?'':' · <b>nenhuma pasta configurada ainda</b>'}`);
     document.getElementById('cenvBadge').innerHTML = resumo.pendentes ? `<span class="tag ok">${resumo.pendentes}</span>` : '';
     document.getElementById('cenvBadgeAg').innerHTML = resumo.agendados ? `<span class="tag warn">${resumo.agendados}</span>` : '';
-    document.getElementById('cenvAgruparBox').classList.toggle('hidden', CENV.sub!=='enviados');
+    const ehEnviados = CENV.sub==='enviados';
+    document.getElementById('cenvAgruparBox').classList.toggle('hidden', !ehEnviados);
+    document.getElementById('cenvSituacaoBox').classList.toggle('hidden', !ehEnviados);
+    document.getElementById('cenvDataDeBox').classList.toggle('hidden', !ehEnviados);
+    document.getElementById('cenvDataAteBox').classList.toggle('hidden', !ehEnviados);
     if(CENV.sub==='pendentes' || CENV.sub==='dispensados') cenvDesenharPendentes(lista, r.itens, escopo, podePostar, carregar, CENV.sub==='dispensados');
     else if(CENV.sub==='agendados') cenvDesenharAgendados(lista, r.itens, podePostar, carregar);
-    else cenvDesenharEnviados(lista, r.itens, podePostar, carregar);
+    else {
+      let itens = r.itens;
+      if(CENV.situacao) itens = itens.filter(i=>cenvSituacaoDe(i)===CENV.situacao);
+      if(CENV.dataDe) itens = itens.filter(i=>String(i.enviado_em||'').slice(0,10) >= CENV.dataDe);
+      if(CENV.dataAte) itens = itens.filter(i=>String(i.enviado_em||'').slice(0,10) <= CENV.dataAte);
+      cenvDesenharEnviados(lista, itens, podePostar, carregar);
+    }
   }
   await carregar();
   CENV.timer = setInterval(()=>{ if(!document.hidden && !document.getElementById('modalBg')?.classList.contains('open')) carregar(); }, 10000);
@@ -11825,6 +11853,15 @@ function cenvDesenharAgendados(box, itens, podePostar, recarregar){
       recarregar();
     }catch(e){ toast(e.message,'err'); }
   }));
+}
+// Mesma classificação usada no filtro "Situação" e na coluna da tabela — valor bate com as options
+// de #cenvSituacao (entregue/lido/enviado/falhou_entrega/erro).
+function cenvSituacaoDe(i){
+  if(i.status!=='ok') return 'erro';
+  if(i.entrega==='delivered') return 'entregue';
+  if(i.entrega==='read') return 'lido';
+  if(i.entrega==='failed') return 'falhou_entrega';
+  return 'enviado';
 }
 function cenvDesenharEnviados(box, itens, podePostarEnv, recarregar){
   if(!itens.length){ box.innerHTML = '<div class="card"><div class="empty-state">Nada enviado ainda. Tudo o que for enviado fica aqui, por empresa, para sempre.</div></div>'; return; }
