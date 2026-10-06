@@ -2291,11 +2291,13 @@ function createSession(userId: number, painelTv = false): string {
   return token;
 }
 // Empresas atribuídas a um usuário Cliente, ordenadas por nome — pode ser mais de uma.
+// Empresa desativada no escritório continua vinculada ao login do cliente (ele pode ainda ter módulos
+// contratados, ex.: NFS-e). Só os envios de documentos são barrados — ver empresaInativaBloqueiaEnvio.
 function clienteEmpresasDoUsuario(userId: number): { id: number; nome: string }[] {
   return sqlite
     .prepare(
       `SELECT e.id, e.nome FROM cliente_empresas ce JOIN empresas e ON e.id = ce.empresa_id
-       WHERE ce.user_id = ? AND e.ativo = 1 ORDER BY e.nome`
+       WHERE ce.user_id = ? ORDER BY e.nome`
     )
     .all(userId) as any[];
 }
@@ -5619,7 +5621,7 @@ app.get("/api/checklist/grade/:atribuicaoId", (req, res) => {
 });
 
 // Cliente (ou colaborador com permissão) anexa e salva um arquivo num slot — trava automaticamente após salvar
-app.post("/api/checklist/periodos/:periodoId/upload", upload.single("arquivo"), (req, res) => {
+app.post("/api/checklist/periodos/:periodoId/upload", empresaInativaBloqueiaEnvio, upload.single("arquivo"), (req, res) => {
   const user = (req as any).user;
   const periodoId = Number(req.params.periodoId);
   const itemChave = String(req.body?.itemChave || "");
@@ -6380,7 +6382,7 @@ app.post("/api/envio/periodos/:periodoId/solicitar-recalculo-das", async (req, r
 });
 // Mesmo recurso, mas disparado a partir de Solicitar Documentos — o cliente escolhe a competência
 // (mês/ano) em vez de já estar na grade de Envio de Documentos com o periodoId em mãos.
-app.post("/api/envio/solicitar-recalculo-das", requireCliente, async (req, res) => {
+app.post("/api/envio/solicitar-recalculo-das", requireCliente, empresaInativaBloqueiaEnvio, async (req, res) => {
   const user = (req as any).user;
   if (!empresaPodeSolicitar(user.empresaId, "recalculo_das")) {
     return res.status(403).json({ error: "Sua empresa não está habilitada a solicitar recálculo de DAS." });
@@ -6403,7 +6405,7 @@ app.post("/api/envio/solicitar-recalculo-das", requireCliente, async (req, res) 
 // na hora: a Receita não expõe simulação nem adesão a parcelamento novo por API (só consulta de um
 // parcelamento que já existe), então esse pedido só avisa o escritório, que negocia no e-CAC como já
 // faz hoje e depois vincula o parcelamento concedido (ver POST /api/integracontador/parcelamentos).
-app.post("/api/envio/solicitar-parcelamento-das", requireCliente, (req, res) => {
+app.post("/api/envio/solicitar-parcelamento-das", requireCliente, empresaInativaBloqueiaEnvio, (req, res) => {
   const user = (req as any).user;
   if (!user.empresaId) return res.status(400).json({ error: "Seu usuário não está vinculado a uma empresa." });
   if (!empresaPodeSolicitar(user.empresaId, "parcelamento_das")) {
@@ -11841,6 +11843,15 @@ app.delete("/api/nfse/emissoes/:id", blockCliente, requirePermissao("nfse", "edi
 // isolamento entre empresas-cliente diferentes. Reaproveitam as funções puras já existentes
 // (nfseValidarEntrada, nfseInserirEmissao, nfseTransmitirEmissao, nfseObterDanfsePdf etc.), só
 // mudando a camada de autorização.
+function empresaInativaBloqueiaEnvio(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const user = (req as any).user;
+  if (user?.perfil !== "Cliente" || !user.empresaId) return next();
+  const e = sqlite.prepare(`SELECT ativo FROM empresas WHERE id = ?`).get(user.empresaId) as any;
+  if (e && !e.ativo) {
+    return res.status(403).json({ error: "Esta empresa está desativada no escritório — o envio de documentos está suspenso. Os demais módulos contratados continuam disponíveis." });
+  }
+  next();
+}
 function requireCliente(req: express.Request, res: express.Response, next: express.NextFunction) {
   const user = (req as any).user;
   if (user?.perfil !== "Cliente" || !user.empresaId) return res.status(403).json({ error: "Rota exclusiva para empresas-cliente." });
@@ -14752,7 +14763,7 @@ app.get("/api/relatorios/retencoes/pdf", blockCliente, requirePermissao("relator
 // notas já recebidas e anexa em Envio de Documentos sob um template interno dedicado, igual ao
 // recálculo de DAS (ver executarRecalculoDas acima). substituirExistente:true porque, se o cliente
 // pedir a mesma competência de novo, o certo é regenerar com as notas mais recentes, não empilhar.
-app.post("/api/envio/solicitar-retencoes", requireCliente, async (req, res) => {
+app.post("/api/envio/solicitar-retencoes", requireCliente, empresaInativaBloqueiaEnvio, async (req, res) => {
   const user = (req as any).user;
   if (!user.empresaId) return res.status(400).json({ error: "Seu usuário não está vinculado a uma empresa." });
   if (!empresaPodeSolicitar(user.empresaId, "retencoes")) {
