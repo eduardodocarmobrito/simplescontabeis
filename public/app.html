@@ -913,6 +913,39 @@ function setupComboSelect(id, items, onChange){
   function selectedLabel(){ const it = items.find(it=>String(it.id)===hidden.value); return it? it.label : ''; }
 }
 
+// Cidade pelo IBGE — uma busca só, pro Brasil inteiro: escolher a cidade já devolve UF e código do município.
+// Retorna selecionar({codigo, cidade, uf}) pra pré-selecionar (ex.: cadastro já salvo ou CNPJ consultado).
+const ibgeCidadesCache = {};
+function setupCidadeIbge(comboId, apiPath, onEscolha){
+  const combo = document.getElementById(comboId);
+  const input = combo.querySelector('.combo-input');
+  const hidden = combo.querySelector('.combo-value');
+  let opcoes = [];
+  const pronto = (async ()=>{
+    input.placeholder = 'Carregando cidades…';
+    try{
+      let items = ibgeCidadesCache[apiPath];
+      if(!items){ items = (await api(apiPath)).items; ibgeCidadesCache[apiPath] = items; }
+      opcoes = items.map(it=>({ id:String(it.id), label: it.label+' - '+it.uf, cidade: it.label, uf: it.uf }));
+      input.placeholder = 'Digite a cidade…';
+    }catch(err){
+      input.placeholder = 'Não consegui carregar as cidades.';
+      toast(err.message,'err');
+    }
+    setupComboSelect(comboId, opcoes, id=>onEscolha(opcoes.find(o=>o.id===String(id))||null));
+  })();
+  return async function selecionar(obj){
+    await pronto;
+    if(!obj) return;
+    let alvo = obj.codigo ? opcoes.find(o=>o.id===String(obj.codigo)) : null;
+    if(!alvo && obj.cidade){
+      const nome = normalizaTxt(obj.cidade);
+      alvo = opcoes.find(o=>normalizaTxt(o.cidade)===nome && (!obj.uf || o.uf===String(obj.uf).toUpperCase()));
+    }
+    if(alvo){ input.value = alvo.label; hidden.value = alvo.id; onEscolha(alvo); }
+  };
+}
+
 function openModal(html, larguraMax){ const m=document.getElementById('modalBody'); m.innerHTML=html; m.style.width = larguraMax || ''; document.getElementById('modalBg').classList.add('open'); }
 function closeModal(){ document.getElementById('modalBg').classList.remove('open'); document.getElementById('modalBody').innerHTML=''; }
 document.getElementById('modalBg').addEventListener('click', e=>{ if(e.target.id==='modalBg') closeModal(); });
@@ -2943,24 +2976,13 @@ function empresaModal(e){
       </div>
       <div class="row">
         <div class="field grow"><label>Endereço</label><input id="empEndereco" value="${e&&e.endereco?esc(e.endereco):''}"></div>
-        <div class="field grow"><label>Cidade</label><input id="empCidade" value="${e&&e.cidade?esc(e.cidade):''}"></div>
-        <div class="field" style="width:70px;"><label>UF</label><input id="empUf" maxlength="2" value="${e&&e.uf?esc(e.uf):''}"></div>
+        <div class="field" style="width:240px;"><label>Cidade (IBGE) — obrigatória pra emitir NFS-e</label>${comboSelectHtml('empCidadeIbge','Digite a cidade…')}</div>
+        <div class="field" style="width:110px;"><label>Código do município</label><input id="empCodigoMunicipio" readonly style="background:var(--paper);" value="${e&&e.codigoMunicipioIbge?esc(e.codigoMunicipioIbge):''}" maxlength="7"></div>
+        <div class="field" style="width:70px;"><label>UF</label><input id="empUf" readonly style="background:var(--paper);" value="${e&&e.uf?esc(e.uf):''}"></div>
         <div class="field" style="width:120px;"><label>CEP</label><input id="empCep" value="${e&&e.cep?esc(e.cep):''}"></div>
       </div>
-      <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Município (IBGE) — obrigatório pra emitir NFS-e</div>
-      <div class="row">
-        <div class="field" style="width:140px;"><label>Código do município</label><input id="empCodigoMunicipio" value="${e&&e.codigoMunicipioIbge?esc(e.codigoMunicipioIbge):''}" maxlength="7"></div>
-        <div class="field grow"><label>Descrição</label><input id="empNomeMunicipio" value="${e&&e.nomeMunicipioIbge?esc(e.nomeMunicipioIbge):''}" readonly style="background:var(--paper);"></div>
-      </div>
-      <div class="card" style="margin:6px 0 14px; background:var(--paper);">
-        <div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">Buscar cidade manualmente — use se a cidade/UF acima não bater com a tabela do IBGE, ou pra corrigir</div>
-        <div class="row">
-          <div class="field" style="width:90px;"><label>UF</label>
-            <select id="empMunicipioUf"><option value="">—</option>${UFS_BR.map(u=>`<option value="${u}" ${e&&e.uf===u?'selected':''}>${u}</option>`).join('')}</select>
-          </div>
-          <div class="field grow"><label>Cidade</label>${comboSelectHtml('empMunicipioCidadeCombo','Selecione a UF primeiro…')}</div>
-        </div>
-      </div>
+      <input type="hidden" id="empCidade" value="${e&&e.cidade?esc(e.cidade):''}">
+      <input type="hidden" id="empNomeMunicipio" value="${e&&e.nomeMunicipioIbge?esc(e.nomeMunicipioIbge):''}">
       <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Representante legal (usado em contratos/distratos)</div>
       <div class="row">
         <div class="field grow"><label>Nome do representante legal</label><input id="empNomeRepresentante" value="${e&&e.nomeRepresentanteLegal?esc(e.nomeRepresentanteLegal):''}"></div>
@@ -3066,39 +3088,15 @@ function empresaModal(e){
     desenhaEmpRegApuracaoWrap();
     document.querySelectorAll('input[name="empRegimeTributario"]').forEach(r=>r.addEventListener('change', desenhaEmpRegApuracaoWrap));
   }
-  // Município (IBGE) — auto-busca pela cidade/UF cadastradas; "Buscar cidade manualmente" cobre o
-  // caso de não bater (abreviação, acento etc.) ou de a empresa ainda não ter cidade/UF preenchida.
-  async function carregarCidadesMunicipio(uf, tentaPreencherDe){
-    const combo = document.getElementById('empMunicipioCidadeCombo');
-    if(!uf){ setupComboSelect('empMunicipioCidadeCombo', [], ()=>{}); return; }
-    combo.querySelector('.combo-input').placeholder = 'Carregando cidades…';
-    try{
-      const { items } = await api('/nfse/municipios-ibge?uf='+encodeURIComponent(uf));
-      setupComboSelect('empMunicipioCidadeCombo', items, (id)=>{
-        const item = items.find(it=>String(it.id)===String(id));
-        document.getElementById('empCodigoMunicipio').value = item? item.id : '';
-        document.getElementById('empNomeMunicipio').value = item? item.label : '';
-      });
-      combo.querySelector('.combo-input').placeholder = 'Digite para buscar a cidade…';
-      if(tentaPreencherDe){
-        const alvo = normalizaTxt(tentaPreencherDe);
-        const achado = items.find(it=>normalizaTxt(it.label)===alvo);
-        if(achado){
-          combo.querySelector('.combo-input').value = achado.label;
-          combo.querySelector('.combo-value').value = achado.id;
-          document.getElementById('empCodigoMunicipio').value = achado.id;
-          document.getElementById('empNomeMunicipio').value = achado.label;
-        }
-      }
-    }catch(err){
-      combo.querySelector('.combo-input').placeholder = 'Não consegui carregar as cidades.';
-      toast(err.message,'err');
-    }
-  }
-  document.getElementById('empMunicipioUf').addEventListener('change', ev=>carregarCidadesMunicipio(ev.target.value, null));
-  const empMunicipioUfInicial = document.getElementById('empMunicipioUf').value;
-  if(empMunicipioUfInicial) carregarCidadesMunicipio(empMunicipioUfInicial, (e&&e.codigoMunicipioIbge)? null : (e&&e.cidade));
-  else setupComboSelect('empMunicipioCidadeCombo', [], ()=>{});
+  // Cidade (IBGE) — uma busca só: escolher a cidade preenche UF e código do município. Ao abrir,
+  // pré-seleciona pelo código já salvo ou, se não houver, pelo nome da cidade + UF.
+  const empSelecionarCidade = setupCidadeIbge('empCidadeIbge', '/nfse/municipios-ibge-todos', it=>{
+    document.getElementById('empCidade').value = it? it.cidade : '';
+    document.getElementById('empUf').value = it? it.uf : '';
+    document.getElementById('empCodigoMunicipio').value = it? it.id : '';
+    document.getElementById('empNomeMunicipio').value = it? it.cidade : '';
+  });
+  empSelecionarCidade({ codigo: e&&e.codigoMunicipioIbge, cidade: e&&e.cidade, uf: e&&e.uf });
   // Ao sair do campo CNPJ (com 14 dígitos — CPF de produtor rural não tem consulta pública), busca
   // os dados na Receita Federal e preenche só os campos que ainda estão vazios — nunca sobrescreve
   // algo que já foi digitado/cadastrado antes, pra não perder dado real corrigido na mão.
@@ -3117,10 +3115,8 @@ function empresaModal(e){
       preencher('empCep', r.cep);
       const endereco = [r.logradouro, r.numero].filter(Boolean).join(', ') + (r.bairro? ' - '+r.bairro : '') + (r.complemento? ' ('+r.complemento+')' : '');
       preencher('empEndereco', endereco.trim().replace(/^,\s*/,''));
-      const ufMunicipio = document.getElementById('empMunicipioUf');
-      if(r.uf && r.municipio && !ufMunicipio.value){
-        ufMunicipio.value = r.uf;
-        carregarCidadesMunicipio(r.uf, r.municipio);
+      if(r.uf && r.municipio && !document.getElementById('empCodigoMunicipio').value){
+        empSelecionarCidade({ cidade: r.municipio, uf: r.uf });
       }
       status.textContent = 'Dados preenchidos a partir do CNPJ (campos já preenchidos não foram alterados).';
     }catch(err){
@@ -7385,18 +7381,11 @@ async function renderMinhaNfseConfig(){
   box.innerHTML = `
     <div class="card">
       <div class="row">
-        <div class="field" style="width:140px;"><label>Código do município</label><input id="mnfMunicipio" value="${esc(e.codigoMunicipio||'')}" maxlength="7"></div>
-        <div class="field grow"><label>Descrição</label><input id="mnfMunicipioDesc" value="${esc(e.nomeMunicipio||'')}" readonly style="background:var(--paper);"></div>
+        <div class="field grow"><label>Cidade (IBGE)</label>${comboSelectHtml('mnfCidadeCombo','Digite a cidade…')}</div>
+        <div class="field" style="width:140px;"><label>Código do município</label><input id="mnfMunicipio" readonly style="background:var(--paper);" value="${esc(e.codigoMunicipio||'')}" maxlength="7"></div>
+        <div class="field" style="width:70px;"><label>UF</label><input id="mnfUf" readonly style="background:var(--paper);" value=""></div>
       </div>
-      <div class="card" style="margin:6px 0 14px; background:var(--paper);">
-        <div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">Buscar cidade manualmente</div>
-        <div class="row">
-          <div class="field" style="width:90px;"><label>UF</label>
-            <select id="mnfUf"><option value="">—</option>${UFS_BR.map(u=>`<option value="${u}">${u}</option>`).join('')}</select>
-          </div>
-          <div class="field grow"><label>Cidade</label>${comboSelectHtml('mnfCidadeCombo','Selecione a UF primeiro…')}</div>
-        </div>
-      </div>
+      <input type="hidden" id="mnfMunicipioDesc" value="${esc(e.nomeMunicipio||'')}">
       <div class="field"><label>Inscrição municipal</label><input id="mnfIM" value="${esc(e.inscricaoMunicipal||'')}"></div>
       <label class="checkbox-row"><input type="checkbox" id="mnfSimples" ${e.opcaoSimplesNacional!==false?'checked':''}> Optante pelo Simples Nacional</label>
       <div id="mnfRegApuracaoWrap"></div>
@@ -7409,25 +7398,12 @@ async function renderMinhaNfseConfig(){
       <button class="btn primary" id="mnfSalvar">Salvar</button>
     </div>
   `;
-  async function carregarCidadesDaUf(uf){
-    const combo = document.getElementById('mnfCidadeCombo');
-    if(!uf){ setupComboSelect('mnfCidadeCombo', [], ()=>{}); return; }
-    combo.querySelector('.combo-input').placeholder = 'Carregando cidades…';
-    try{
-      const { items } = await api('/nfse/minha-empresa/municipios-ibge?uf='+encodeURIComponent(uf));
-      setupComboSelect('mnfCidadeCombo', items, (id)=>{
-        const item = items.find(it=>String(it.id)===String(id));
-        document.getElementById('mnfMunicipio').value = item? item.id : '';
-        document.getElementById('mnfMunicipioDesc').value = item? item.label : '';
-      });
-      combo.querySelector('.combo-input').placeholder = 'Digite para buscar a cidade…';
-    }catch(err){
-      combo.querySelector('.combo-input').placeholder = 'Não consegui carregar as cidades.';
-      toast(err.message,'err');
-    }
-  }
-  document.getElementById('mnfUf').addEventListener('change', ev=>carregarCidadesDaUf(ev.target.value));
-  setupComboSelect('mnfCidadeCombo', [], ()=>{});
+  const mnfSelecionarCidade = setupCidadeIbge('mnfCidadeCombo', '/nfse/minha-empresa/municipios-ibge-todos', it=>{
+    document.getElementById('mnfMunicipio').value = it? it.id : '';
+    document.getElementById('mnfUf').value = it? it.uf : '';
+    document.getElementById('mnfMunicipioDesc').value = it? it.cidade : '';
+  });
+  mnfSelecionarCidade({ codigo: e.codigoMunicipio });
   function desenhaRegApuracaoWrap(){
     const wrap = document.getElementById('mnfRegApuracaoWrap');
     if(!document.getElementById('mnfSimples').checked){ wrap.innerHTML=''; return; }

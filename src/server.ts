@@ -10842,6 +10842,13 @@ async function nfseMunicipiosDaUf(uf: string): Promise<{ id: number; nome: strin
   }
   return municipios;
 }
+// Municípios do Brasil inteiro (todas as UFs), cada um com a UF — alimenta a busca única de cidade:
+// quem escolhe a cidade já recebe a UF e o código do município, sem escolher a UF antes.
+const NFSE_UFS_BR = ["AC","AL","AP","AM","BA","CE","DF","ES","GO","MA","MT","MS","MG","PA","PB","PR","PE","PI","RJ","RN","RS","RO","RR","SC","SP","SE","TO"];
+async function nfseMunicipiosBrasil(): Promise<{ id: string; label: string; uf: string }[]> {
+  const porUf = await Promise.all(NFSE_UFS_BR.map(async (uf) => (await nfseMunicipiosDaUf(uf)).map((m) => ({ id: String(m.id), label: m.nome, uf }))));
+  return porUf.flat().sort((a, b) => a.label.localeCompare(b.label, "pt-BR"));
+}
 // Busca de CEP (BrasilAPI) já resolvendo o código IBGE do município junto — usado pra
 // pré-preencher o endereço do tomador na emissão de NFS-e mesmo quando ele é pessoa física (CPF
 // não tem consulta pública de CNPJ, então até agora só CNPJ ganhava esse preenchimento automático;
@@ -10883,6 +10890,13 @@ app.get("/api/nfse/municipios-ibge", blockCliente, requirePermissaoOr("empresas"
   try {
     const municipios = await nfseMunicipiosDaUf(uf);
     res.json({ items: municipios.map((m) => ({ id: String(m.id), label: m.nome })) });
+  } catch (e: any) {
+    res.status(502).json({ error: `Não consegui consultar a API do IBGE: ${e.message}` });
+  }
+});
+app.get("/api/nfse/municipios-ibge-todos", blockCliente, requirePermissaoOr("empresas", "nfse", "visualizar"), async (_req, res) => {
+  try {
+    res.json({ items: await nfseMunicipiosBrasil() });
   } catch (e: any) {
     res.status(502).json({ error: `Não consegui consultar a API do IBGE: ${e.message}` });
   }
@@ -12728,6 +12742,13 @@ app.get("/api/nfse/minha-empresa/municipios-ibge", requireCliente, requireModulo
   try {
     const municipios = await nfseMunicipiosDaUf(uf);
     res.json({ items: municipios.map((m) => ({ id: String(m.id), label: m.nome })) });
+  } catch (e: any) {
+    res.status(502).json({ error: `Não consegui consultar a API do IBGE: ${e.message}` });
+  }
+});
+app.get("/api/nfse/minha-empresa/municipios-ibge-todos", requireCliente, requireModuloAtivo('nfse'), async (_req, res) => {
+  try {
+    res.json({ items: await nfseMunicipiosBrasil() });
   } catch (e: any) {
     res.status(502).json({ error: `Não consegui consultar a API do IBGE: ${e.message}` });
   }
