@@ -3444,11 +3444,22 @@ app.post("/api/empresas/:id/contatos", blockCliente, requirePermissao("empresas"
   // atendimento do WhatsApp (tag "Empresa cliente" no deskcomm). Sem e-mail, grava "" e desliga o envio
   // de e-mail — a coluna é NOT NULL desde a criação da tabela.
   if (!nome || (!email && !telefone)) return res.status(400).json({ error: "Informe o nome e o e-mail ou o telefone do contato." });
+  const chave = telefone ? telefoneChaveBr(telefone) : null;
+  const existente = chave
+    ? (sqlite.prepare(`SELECT id, telefone FROM empresa_contatos WHERE empresa_id = ? AND telefone IS NOT NULL`).all(empresaId) as any[]).find((c) => telefoneChaveBr(c.telefone) === chave)
+    : null;
+  if (existente) {
+    sqlite
+      .prepare(`UPDATE empresa_contatos SET nome = ?, email = ?, receber_emails = ?, telefone = ?, receber_whatsapp = ? WHERE id = ?`)
+      .run(nome, email || "", email && receberEmails !== false ? 1 : 0, crmSoDigitos(telefone), receberWhatsapp ? 1 : 0, existente.id);
+    deskcommAgendarSyncEmpresasClientes();
+    return res.json({ id: existente.id, existente: true });
+  }
   const info = sqlite
     .prepare(`INSERT INTO empresa_contatos (empresa_id, nome, email, receber_emails, telefone, receber_whatsapp) VALUES (?, ?, ?, ?, ?, ?)`)
     .run(empresaId, nome, email || "", email && receberEmails !== false ? 1 : 0, telefone || null, receberWhatsapp ? 1 : 0);
   if (telefone) deskcommAgendarSyncEmpresasClientes();
-  res.json({ id: Number(info.lastInsertRowid) });
+  res.json({ id: Number(info.lastInsertRowid), existente: false });
 });
 app.put("/api/empresas/contatos/:contatoId", blockCliente, requirePermissao("empresas", "editar"), (req, res) => {
   const contato = sqlite.prepare(`SELECT empresa_id FROM empresa_contatos WHERE id = ?`).get(Number(req.params.contatoId)) as any;
@@ -16311,23 +16322,28 @@ function garantirContatosDeTelefoneCadastral(empresaId?: number): number {
   let criados = 0;
   for (const e of rows) {
     const contatos = sqlite.prepare(`SELECT id, telefone, nome FROM empresa_contatos WHERE empresa_id = ? AND telefone IS NOT NULL`).all(e.id) as any[];
-    const existentes = new Set(contatos.map((c) => telefoneChaveBr(c.telefone)).filter(Boolean));
+    const ehAutomatico = (c: any) => c.nome.endsWith("(telefone do cadastro)");
     for (const pedaco of String(e.telefone).split(/[\/;,]| e /)) {
       const chave = telefoneChaveBr(pedaco);
       if (!chave) continue;
       const numero = crmSoDigitos(pedaco);
-      const jaExiste = contatos.find((c) => telefoneChaveBr(c.telefone) === chave);
-      if (jaExiste) {
-        if (jaExiste.nome.endsWith("(telefone do cadastro)")) {
-          sqlite.prepare(`UPDATE empresa_contatos SET telefone = ?, receber_whatsapp = 1 WHERE id = ?`).run(numero, jaExiste.id);
-        }
+      const iguais = contatos.filter((c) => telefoneChaveBr(c.telefone) === chave);
+      const manual = iguais.find((c) => !ehAutomatico(c));
+      const automatico = iguais.find(ehAutomatico);
+      if (manual && automatico) {
+        sqlite.prepare(`DELETE FROM empresa_contatos WHERE id = ?`).run(automatico.id);
+        contatos.splice(contatos.indexOf(automatico), 1);
         continue;
       }
-      if (existentes.has(chave)) continue;
-      sqlite
+      if (automatico) {
+        sqlite.prepare(`UPDATE empresa_contatos SET telefone = ?, receber_whatsapp = 1 WHERE id = ?`).run(numero, automatico.id);
+        continue;
+      }
+      if (iguais.length) continue;
+      const info = sqlite
         .prepare(`INSERT INTO empresa_contatos (empresa_id, nome, email, receber_emails, telefone, receber_whatsapp) VALUES (?, ?, '', 0, ?, 1)`)
         .run(e.id, `${e.nome} (telefone do cadastro)`, numero);
-      existentes.add(chave);
+      contatos.push({ id: Number(info.lastInsertRowid), telefone: numero, nome: `${e.nome} (telefone do cadastro)` });
       criados++;
     }
   }

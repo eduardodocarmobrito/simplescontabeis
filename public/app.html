@@ -10191,7 +10191,7 @@ async function atdVincularEmpresaModal(S, c){
     try{ contatos = (await api(`/empresas/${empId}/contatos`)).items; }catch(e){ contatos = []; }
     desenharLista();
     const jaTem = contatos.find(k=>String(k.telefone||'').replace(/\D/g,'').slice(-8)===tel.slice(-8));
-    if(jaTem) toast('Esse número já está cadastrado nessa empresa ('+jaTem.nome+').','err');
+    if(jaTem) toast('Esse número já está nessa empresa ('+jaTem.nome+') — ao vincular, o contato existente é atualizado, sem duplicar.','ok');
   });
   document.getElementById('vcSalvar').addEventListener('click', async ()=>{
     const nome = document.getElementById('vcNome').value.trim(), email = document.getElementById('vcEmail').value.trim(), telefone = document.getElementById('vcTel').value.replace(/\D/g,'');
