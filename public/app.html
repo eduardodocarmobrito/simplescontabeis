@@ -2811,15 +2811,18 @@ let EMP_PEND_FILTRO = 'todas';
 async function renderEmpresasPendencias(){
   const box = document.getElementById('empresasContent');
   box.innerHTML = '<div class="empty-state">Carregando…</div>';
-  let d, lista;
-  try{ [d, lista] = await Promise.all([api('/empresas/pendencias-documentos'), api('/empresas')]); }
+  let d, lista, cfgPend;
+  try{ [d, lista, cfgPend] = await Promise.all([api('/empresas/pendencias-documentos'), api('/empresas'), api('/empresas/pendencias-documentos/config')]); }
   catch(e){ box.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
   const podeEditar = can('empresas','editar');
   const lics = d.licencasMinimas;
-  const semLic = i => lics.filter(l=>!i.licencas[l.chave]);
-  const pend = d.items.filter(i=>!i.temCertificado || semLic(i).length);
-  const nCert = d.items.filter(i=>!i.temCertificado).length;
+  const exigido = (i,chave)=> !!i.exigidos[chave];
+  const semLic = i => lics.filter(l=>exigido(i,l.chave) && !i.licencas[l.chave]);
+  const semCert = i => exigido(i,'certificado') && !i.temCertificado;
+  const pend = d.items.filter(i=>semCert(i) || semLic(i).length);
+  const nCert = d.items.filter(i=>semCert(i)).length;
   const nLic = d.items.filter(i=>semLic(i).length).length;
+  const pfRotulos = d.itensPendencia.map(it=>({ chave: it.chave, label: it.label }));
   const ok = '<span class="tag ok">✓</span>', falta = '<span class="tag bad">Falta</span>';
   box.innerHTML = `
     <p class="subtitle" style="margin-top:-6px;">Empresas ativas que ainda não têm certificado digital anexado ou estão sem alguma das licenças mínimas (Alvará, Vigilância Sanitária, Corpo de Bombeiros e SEMMA). Vale ter ao menos um arquivo de cada licença, de qualquer ano.</p>
@@ -2833,20 +2836,32 @@ async function renderEmpresasPendencias(){
     </div>
     <div class="card" style="padding:0; overflow-x:auto;"><table class="data-table">
       <thead><tr><th>Empresa</th><th>CNPJ</th><th>Certificado</th>${lics.map(l=>`<th>${esc(l.label)}</th>`).join('')}<th></th></tr></thead>
-      <tbody id="pendBody"></tbody></table></div>`;
+      <tbody id="pendBody"></tbody></table></div>
+    <div class="card" style="margin-top:12px;">
+      <div style="font-weight:600; font-size:13px; margin-bottom:4px;">Pessoa física (CPF) — o que conta como pendência</div>
+      <p style="font-size:12px; color:var(--ink-soft); margin:0 0 8px;">Pessoa jurídica (CNPJ) continua exigindo tudo. Marque aqui só o que você quer cobrar de CPF — por padrão, só o certificado.</p>
+      <div class="checkbox-grid">${pfRotulos.map(r=>`<label class="checkbox-row"><input type="checkbox" class="pfExigir" data-chave="${r.chave}" ${cfgPend.exigirPf[r.chave]?'checked':''} ${podeEditar?'':'disabled'}> ${esc(r.label)}</label>`).join('')}</div>
+      <div class="row" style="justify-content:flex-end; margin-top:8px;"><button class="btn small primary" id="pfSalvar" ${podeEditar?'':'disabled'}>Salvar</button></div>
+    </div>`;
+  document.getElementById('pfSalvar')?.addEventListener('click', async ()=>{
+    const exigirPf = {};
+    document.querySelectorAll('.pfExigir').forEach(c=>exigirPf[c.dataset.chave] = c.checked);
+    try{ await api('/empresas/pendencias-documentos/config', { method:'PUT', body:{ exigirPf } }); toast('Pendências de pessoa física salvas.','ok'); renderEmpresasPendencias(); }
+    catch(e){ toast(e.message,'err'); }
+  });
   const sel = document.getElementById('pendFiltro'); sel.value = EMP_PEND_FILTRO;
   function desenhar(){
     const termo = normalizaTxt(document.getElementById('pendBusca').value).trim();
     const f = EMP_PEND_FILTRO;
     const itens = d.items.filter(i=>{
-      const pc = !i.temCertificado, pl = semLic(i).length>0;
+      const pc = semCert(i), pl = semLic(i).length>0;
       if(f==='cert' ? !pc : f==='lic' ? !pl : !(pc||pl)) return false;
       return !termo || normalizaTxt(i.nome).includes(termo) || normalizaTxt(i.cnpj||'').includes(termo);
     });
     document.getElementById('pendBody').innerHTML = itens.length ? itens.map(i=>`
       <tr data-id="${i.id}"><td><b>${esc(i.nome)}</b></td><td>${esc(i.cnpj||'—')}</td>
-        <td>${i.temCertificado?ok:falta}</td>
-        ${lics.map(l=>`<td>${i.licencas[l.chave]?ok:falta}</td>`).join('')}
+        <td>${!exigido(i,'certificado')?'<span style="color:var(--ink-soft);">—</span>':i.temCertificado?ok:falta}</td>
+        ${lics.map(l=>`<td>${!exigido(i,l.chave)?'<span style="color:var(--ink-soft);">—</span>':i.licencas[l.chave]?ok:falta}</td>`).join('')}
         <td style="text-align:right;">${podeEditar?'<button class="btn small" data-act="abrir">Abrir empresa</button>':''}</td></tr>`).join('')
       : `<tr><td colspan="${4+lics.length}"><div class="empty-state">${termo?'Nenhuma empresa encontrada.':'Nenhuma pendência. 🎉'}</div></td></tr>`;
     document.querySelectorAll('#pendBody [data-act="abrir"]').forEach(b=>b.addEventListener('click', ev=>{

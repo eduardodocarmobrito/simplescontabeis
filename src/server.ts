@@ -1026,6 +1026,14 @@ sqlite.exec(`
     UNIQUE(mdfe_documento_id, chave_vinculada)
   );
   CREATE INDEX IF NOT EXISTS idx_mdfe_vinculos_chave ON mdfe_vinculos(chave_vinculada);
+  -- Quais itens (certificado/licenças) contam como pendência pra PESSOA FÍSICA, por escritório. Pessoa jurídica
+  -- exige tudo sempre; isto só ajusta o que o escritório quer cobrar de CPF.
+  CREATE TABLE IF NOT EXISTS pendencias_config (
+    escritorio_id INTEGER NOT NULL REFERENCES escritorios(id),
+    chave TEXT NOT NULL,
+    exigir_pf INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (escritorio_id, chave)
+  );
 
   -- Exportação de XML pro OneDrive direto da nuvem (sem depender de nenhum agente local rodando —
   -- diferente da exportação por pasta local do dominio-agent). OAuth2 com a Microsoft (conta
@@ -3220,6 +3228,30 @@ const LICENCAS_MINIMAS: { chave: string; label: string }[] = [
   { chave: "corpo_bombeiros", label: "Corpo de Bombeiros" },
   { chave: "ambiental_semma", label: "SEMMA" },
 ];
+// Itens exigidos na aba Pendências: certificado + licenças. Pessoa jurídica exige tudo por padrão;
+// pessoa física (CPF, 11 dígitos) não exige licenças por padrão — dá pra ligar cada item por escritório.
+const PENDENCIA_ITENS: { chave: string; label: string }[] = [{ chave: "certificado", label: "Certificado digital" }, ...LICENCAS_MINIMAS];
+function pendenciasExigidasPf(escritorioId: number): Record<string, boolean> {
+  const padrao: Record<string, boolean> = { certificado: true, alvara: false, vigilancia_sanitaria: false, corpo_bombeiros: false, ambiental_semma: false };
+  const salvos = sqlite.prepare(`SELECT chave, exigir_pf FROM pendencias_config WHERE escritorio_id = ?`).all(escritorioId) as any[];
+  for (const r of salvos) if (r.chave in padrao) padrao[r.chave] = !!r.exigir_pf;
+  return padrao;
+}
+app.get("/api/empresas/pendencias-documentos/config", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  res.json({ itens: PENDENCIA_ITENS, exigirPf: pendenciasExigidasPf(user.escritorioId) });
+});
+app.put("/api/empresas/pendencias-documentos/config", blockCliente, requirePermissao("empresas", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const exigir = req.body?.exigirPf && typeof req.body.exigirPf === "object" ? req.body.exigirPf : {};
+  for (const item of PENDENCIA_ITENS) {
+    if (!(item.chave in exigir)) continue;
+    sqlite
+      .prepare(`INSERT INTO pendencias_config (escritorio_id, chave, exigir_pf) VALUES (?, ?, ?) ON CONFLICT(escritorio_id, chave) DO UPDATE SET exigir_pf = excluded.exigir_pf`)
+      .run(user.escritorioId, item.chave, exigir[item.chave] ? 1 : 0);
+  }
+  res.json({ ok: true, exigirPf: pendenciasExigidasPf(user.escritorioId) });
+});
 app.get("/api/empresas/pendencias-documentos", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
   const user = (req as any).user;
   const visiveis = empresasVisiveis(user);
@@ -3235,12 +3267,17 @@ app.get("/api/empresas/pendencias-documentos", blockCliente, requirePermissao("e
   const tem = new Set<string>(
     (sqlite.prepare(`SELECT DISTINCT empresa_id || ':' || tipo as k FROM empresa_anexos WHERE categoria = 'licenca'`).all() as any[]).map((r) => r.k)
   );
+  const exigirPf = pendenciasExigidasPf(user.escritorioId);
   const items = rows.map((r) => {
     const licencas: Record<string, boolean> = {};
     for (const l of LICENCAS_MINIMAS) licencas[l.chave] = tem.has(`${r.id}:${l.chave}`);
-    return { id: r.id, nome: r.nome, cnpj: r.cnpj, temCertificado: !!r.temCertificado, licencas };
+    const pf = String(r.cnpj || "").replace(/\D/g, "").length === 11;
+    // exigidos: o que conta como pendência pra esta empresa (PJ = tudo; PF = só o que o escritório marcou)
+    const exigidos: Record<string, boolean> = {};
+    for (const it of PENDENCIA_ITENS) exigidos[it.chave] = pf ? !!exigirPf[it.chave] : true;
+    return { id: r.id, nome: r.nome, cnpj: r.cnpj, pessoaFisica: pf, temCertificado: !!r.temCertificado, licencas, exigidos };
   });
-  res.json({ licencasMinimas: LICENCAS_MINIMAS, items });
+  res.json({ licencasMinimas: LICENCAS_MINIMAS, itensPendencia: PENDENCIA_ITENS, items });
 });
 app.get("/api/empresas", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
   const user = (req as any).user;
