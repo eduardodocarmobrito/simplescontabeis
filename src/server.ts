@@ -1557,7 +1557,7 @@ for (const tabela of ["chat_mensagens", "chat_equipe_mensagens", "chat_dm_mensag
     ["cpf_representante_legal", "cpf_representante_legal TEXT"],
     ["codigo_municipio_ibge", "codigo_municipio_ibge TEXT"], // código IBGE (7 dígitos) do município — usado na emissão de NFS-e (DPS exige a Tabela do IBGE), centralizado aqui pra não pedir de novo por módulo
     ["nome_municipio_ibge", "nome_municipio_ibge TEXT"], // só exibição do código acima
-    ["regime_tributario", "regime_tributario TEXT NOT NULL DEFAULT 'simples_nacional'"], // 'simples_nacional' | 'lucro_presumido' | 'lucro_real' — mutuamente exclusivos; opcao_simples_nacional (nfse_empresa_config) é sempre derivado deste campo, nunca editado à parte
+    ["regime_tributario", "regime_tributario TEXT NOT NULL DEFAULT 'simples_nacional'"], // 'simples_nacional' | 'lucro_presumido' | 'lucro_real' | 'produtor_rural' — mutuamente exclusivos; opcao_simples_nacional (nfse_empresa_config) é sempre derivado deste campo, nunca editado à parte
     ["apelido", "apelido TEXT"], // apelido curto do Domínio Web — usado no nome da pasta de exportação de XML ("código-apelido")
   ]) {
     if (!nomes.has(coluna)) sqlite.exec(`ALTER TABLE empresas ADD COLUMN ${ddl}`);
@@ -3379,7 +3379,7 @@ app.get("/api/empresas/cnpj/:cnpj", blockCliente, requirePermissao("empresas", "
     res.status(502).json({ error: `Não consegui consultar o CNPJ: ${e.message}` });
   }
 });
-const REGIMES_TRIBUTARIOS = ["simples_nacional", "lucro_presumido", "lucro_real"] as const;
+const REGIMES_TRIBUTARIOS = ["simples_nacional", "lucro_presumido", "lucro_real", "produtor_rural"] as const;
 // Modelo de Envio de Documentos com "auto_regime_tributario" configurado (ex.: DARF IRPJ/CSLL só
 // se aplica a Lucro Real) ganha atribuição sozinho assim que a empresa é classificada nesse regime
 // — chamado toda vez que o regime é salvo (cadastro novo ou edição), idempotente via UNIQUE(template_id,

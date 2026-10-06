@@ -3011,6 +3011,7 @@ function empresaModal(e){
       <label class="checkbox-row"><input type="radio" name="empRegimeTributario" value="simples_nacional" ${(e.regimeTributario||'simples_nacional')==='simples_nacional'?'checked':''}> Optante pelo Simples Nacional</label>
       <label class="checkbox-row"><input type="radio" name="empRegimeTributario" value="lucro_presumido" ${e.regimeTributario==='lucro_presumido'?'checked':''}> Lucro Presumido</label>
       <label class="checkbox-row"><input type="radio" name="empRegimeTributario" value="lucro_real" ${e.regimeTributario==='lucro_real'?'checked':''}> Lucro Real</label>
+      <label class="checkbox-row"><input type="radio" name="empRegimeTributario" value="produtor_rural" ${e.regimeTributario==='produtor_rural'?'checked':''}> Produtor Rural</label>
       <div id="empRegApuracaoWrap"></div>
       <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">O que esta empresa pode solicitar</div>
       <p style="font-size:12.5px; color:var(--ink-soft); margin-top:0;">Nenhuma marcada = pode solicitar tudo. Marque só o que essa empresa pode pedir em "Solicitar Documentos".</p>
@@ -3888,7 +3889,7 @@ const MESES=['','Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov
 // Só o módulo Envio de Documentos tem periodicidade "trimestral" (Solicitações/checklist continua
 // só com mensal/anual/avulso) — mapa próprio pra não confundir os dois.
 const PERIODICIDADE_LABELS = { mensal:'Mensal', trimestral:'Trimestral', anual:'Anual', avulso:'Avulso' };
-const REGIME_TRIBUTARIO_LABELS = { simples_nacional:'Simples Nacional', lucro_presumido:'Lucro Presumido', lucro_real:'Lucro Real' };
+const REGIME_TRIBUTARIO_LABELS = { simples_nacional:'Simples Nacional', lucro_presumido:'Lucro Presumido', lucro_real:'Lucro Real', produtor_rural:'Produtor Rural' };
 const UFS_BR=['AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG','PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO'];
 function rotuloPeriodo(p){ return p.mes? `${MESES[p.mes]}/${p.ano}` : (p.rotulo || String(p.ano)); }
 // Competência no formato "AAAA-MM" (o mesmo do <input type="month">) pro rótulo "Jan/2027" de tela.
@@ -4446,6 +4447,7 @@ function envioModeloModal(t){
         <option value="simples_nacional">Optante pelo Simples Nacional</option>
         <option value="lucro_presumido">Lucro Presumido</option>
         <option value="lucro_real">Lucro Real</option>
+        <option value="produtor_rural">Produtor Rural</option>
       </select>
     </div>
     <p style="font-size:11.5px; color:var(--ink-soft); margin:2px 0 0;">Ao classificar (ou reclassificar) uma empresa nesse regime em Empresas, este modelo já vira uma obrigação atribuída a ela automaticamente — não precisa lembrar de atribuir na mão. Ex.: DARF IRPJ/CSLL trimestral → Lucro Real.</p>
@@ -10199,7 +10201,7 @@ async function atdAcao(S, acao, botao){
 // Painel lateral com o que o sistema sabe da empresa do cliente (pelo telefone): dados, o que o escritório
 // aguarda dele, guias/documentos já enviados, NFS-e e honorários em aberto (cada bloco só pra quem tem
 // permissão do módulo). Documento e NFS-e podem ser mandados na conversa com um clique (📤).
-const REGIMES_ROTULO = { simples_nacional:'Simples Nacional', lucro_presumido:'Lucro Presumido', lucro_real:'Lucro Real', mei:'MEI' };
+const REGIMES_ROTULO = { simples_nacional:'Simples Nacional', lucro_presumido:'Lucro Presumido', lucro_real:'Lucro Real', produtor_rural:'Produtor Rural', mei:'MEI' };
 function atdBr(iso){ return iso ? String(iso).slice(8,10)+'/'+String(iso).slice(5,7)+'/'+String(iso).slice(0,4) : '—'; }
 function atdMoeda(v){ return v==null ? '—' : Number(v).toLocaleString('pt-BR',{style:'currency',currency:'BRL'}); }
 // DDD + 9 + últimos 8 dígitos do número do WhatsApp (ex.: +5594991296138 ou 559491296138 → 94991296138)
