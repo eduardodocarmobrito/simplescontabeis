@@ -465,7 +465,7 @@ export function identificarDocumento(xml: string, schema: string): DocumentoIden
 // (ex.: resumo/resNFe, evento, CT-e) — aí não dá pra saber e fica "não parseado" pra não travar.
 export function extrairIbsCbs(
   xml: string
-): { vIBS: number; vCBS: number; vBC: number; vICMS: number; vPIS: number; vCOFINS: number; vIPI: number; flags: string[]; qtdItens: number } | null {
+): { vIBS: number; vCBS: number; vBC: number; vICMS: number; vPIS: number; vCOFINS: number; vIPI: number; flags: string[]; qtdItens: number; crt: number | null } | null {
   let json: any;
   try {
     json = xmlParser.parse(xml);
@@ -484,6 +484,18 @@ export function extrairIbsCbs(
   if (dets.some((d: any) => d?.prod?.rastro)) flags.push("rastro"); // rastreável (lote/validade)
   if (dets.some((d: any) => d?.prod?.veicProd)) flags.push("veiculo"); // veículo
   if (dets.some((d: any) => d?.prod?.DI)) flags.push("importado"); // tem Declaração de Importação
+  // Substituição tributária: algum item com campo de ST preenchido — o nome do campo muda conforme o
+  // CST/CSOSN (vICMSST/pICMSST nos grupos que calculam ST agora: 10/30/70/201/202/203; vICMSSTRet/
+  // vBCSTRet nos que só repassam ST retido antes: 60/500) — confirmado ao vivo (achado real tinha
+  // vICMSSTRet, não vICMSST). Mais simples procurar a substring em qualquer campo dentro de <ICMS>, em
+  // vez de listar cada CST com seu nome de campo específico.
+  const temIcmsSt = dets.some((d: any) => {
+    const icmsGrupo = d?.imposto?.ICMS;
+    if (!icmsGrupo) return false;
+    const cst = Object.values(icmsGrupo)[0] as any; // ICMS tem um único filho (ICMS00/10/20/.../500...), nome variável
+    return cst && /ICMSST|BCST|MVAST/i.test(Object.keys(cst).join(" "));
+  });
+  if (temIcmsSt) flags.push("st"); // substituição tributária
   // Pagamento: grupo <pag> com uma ou mais formas (<detPag>). NFC-e sempre tem; NF-e normalmente.
   const pag = infNFe.pag || {};
   const detPag = Array.isArray(pag.detPag) ? pag.detPag : pag.detPag ? [pag.detPag] : [];
@@ -508,7 +520,10 @@ export function extrairIbsCbs(
     vCBS = num(ibscbs.gCBS?.vCBS);
     vBC = num(ibscbs.vBCIBSCBS);
   }
-  return { vIBS, vCBS, vBC, vICMS, vPIS, vCOFINS, vIPI, flags, qtdItens };
+  // CRT do emitente (1=Simples Nacional, 2=SN excesso de sublimite, 3=Regime Normal) — mostrado como
+  // selo "SN"/"RN" do lado do nome do emitente na listagem, estilo Espião.
+  const crt = infNFe.emit?.CRT != null ? Number(infNFe.emit.CRT) : null;
+  return { vIBS, vCBS, vBC, vICMS, vPIS, vCOFINS, vIPI, flags, qtdItens, crt };
 }
 
 // Detalhe completo da NF-e/NFC-e (pro painel de detalhe): cabeçalho, participantes, itens e totais

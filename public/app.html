@@ -6479,7 +6479,9 @@ async function pageNfeBusca(){
         comb:['⛽','Contém combustível','produtos'],
         veiculo:['🚗','Contém veículo','produtos'],
         importado:['🌎','Produto importado (com DI)','produtos'],
+        st:['%','Tem substituição tributária (ICMS-ST)','impostos'],
       };
+      const CRT_INFO = { 1:['SN','Emitente optante do Simples Nacional'], 2:['SN*','Simples Nacional — excesso de sublimite'], 3:['RN','Emitente no Regime Normal'] };
       const chaveNum = (ch)=>{ if(!ch||ch.length!==44) return {serie:'',numero:''}; return { serie:String(Number(ch.slice(22,25))), numero:String(Number(ch.slice(25,34))) }; };
       tbody.innerHTML = items.length ? items.map(d=>{
         const canceladaStyle = d.notaCancelada ? 'text-decoration:line-through; color:var(--debit);' : '';
@@ -6500,6 +6502,8 @@ async function pageNfeBusca(){
         if(d.tipo!=='evento' && d.qtdItens>0) flagsHtml += chip('📦', d.qtdItens+' item(ns) na nota', 'produtos', ' '+d.qtdItens);
         flagsArr.forEach(f=>{ const i=FLAG_INFO[f]; if(i) flagsHtml += chip(i[0], i[1], i[2]); });
         const flagsCell = flagsHtml || '<span style="color:var(--ink-soft);">—</span>';
+        const crtInfo = CRT_INFO[d.crt];
+        const crtTag = crtInfo ? ` <span class="tag muted" title="${esc(crtInfo[1])}">${crtInfo[0]}</span>` : '';
         const temObs = !!(d.observacao && d.observacao.trim());
         const opcoesCell = `
           <button class="btn small nfeOpcBtn" data-act="print" data-id="${d.id}" title="Visualizar">🖨️</button>
@@ -6516,7 +6520,7 @@ async function pageNfeBusca(){
           <td><span class="tag ${d.tipo==='evento'?'muted':'ok'}">${d.tipo.toUpperCase()}</span></td>
           <td style="${canceladaStyle}">${kp.numero||'—'}</td>
           <td style="${canceladaStyle}">${kp.serie||'—'}</td>
-          <td style="${canceladaStyle}">${esc(d.emitenteNome||'—')}</td>
+          <td style="white-space:nowrap; ${canceladaStyle}">${esc(d.emitenteNome||'—')}${crtTag}</td>
           <td style="${canceladaStyle}">${esc(d.destinatarioNome||'—')}</td>
           <td style="font-family:'IBM Plex Mono',monospace; font-size:11px; ${canceladaStyle}">${esc(d.chaveAcesso||'—')}</td>
           <td style="${canceladaStyle}">${d.valorTotal!=null?fmtMoney(d.valorTotal):'—'}</td>
