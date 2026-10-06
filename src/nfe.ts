@@ -820,5 +820,98 @@ export function detalharNfe(xml: string): any | null {
       vBCIBSCBS: num(ibscbs.vBCIBSCBS),
     },
     temReforma: !!tot.IBSCBSTot || vIBS > 0 || vCBS > 0,
+    pagamentos: detalharNfePagamentos(infNFe),
+    duplicatas: detalharNfeDuplicatas(infNFe),
+    observacoes: detalharNfeObservacoes(infNFe, dets),
+    referencias: detalharNfeReferencias(ide),
+    especiais: detalharNfeEspeciais(dets),
+    rastro: detalharNfeRastro(dets),
   };
+}
+const NFE_TPAG_LABEL: Record<string, string> = {
+  "01": "Dinheiro", "02": "Cheque", "03": "Cartão de Crédito", "04": "Cartão de Débito", "05": "Crédito Loja",
+  "10": "Vale Alimentação", "11": "Vale Refeição", "12": "Vale Presente", "13": "Vale Combustível",
+  "14": "Duplicata Mercantil", "15": "Boleto Bancário", "16": "Depósito Bancário", "17": "PIX",
+  "18": "Transferência bancária/Carteira Digital", "19": "Programa de fidelidade/Cashback", "90": "Sem pagamento", "99": "Outros",
+};
+function detalharNfePagamentos(infNFe: any): { indPag: string | null; tipo: string; vPag: number; cartao: { bandeira: string | null; autorizacao: string | null } | null }[] {
+  const num = (v: any) => (v != null && v !== "" ? Number(v) || 0 : 0);
+  const pag = infNFe.pag || {};
+  const lista = Array.isArray(pag.detPag) ? pag.detPag : pag.detPag ? [pag.detPag] : [];
+  return lista.map((p: any) => ({
+    indPag: p.indPag != null ? String(p.indPag) : null,
+    tipo: NFE_TPAG_LABEL[String(p.tPag)] || `Código ${p.tPag}`,
+    vPag: num(p.vPag),
+    cartao: p.card ? { bandeira: p.card.tBand || null, autorizacao: p.card.cAut || null } : null,
+  }));
+}
+function detalharNfeDuplicatas(infNFe: any): { fatura: { nFat: string | null; vOrig: number; vDesc: number; vLiq: number } | null; parcelas: { nDup: string | null; dVenc: string | null; vDup: number }[] } {
+  const num = (v: any) => (v != null && v !== "" ? Number(v) || 0 : 0);
+  const cobr = infNFe.cobr || {};
+  const fat = cobr.fat;
+  const dup = cobr.dup;
+  const parcelas = Array.isArray(dup) ? dup : dup ? [dup] : [];
+  return {
+    fatura: fat ? { nFat: fat.nFat || null, vOrig: num(fat.vOrig), vDesc: num(fat.vDesc), vLiq: num(fat.vLiq) } : null,
+    parcelas: parcelas.map((d: any) => ({ nDup: d.nDup || null, dVenc: d.dVenc || null, vDup: num(d.vDup) })),
+  };
+}
+// Observações/informações complementares — mesmo grupo que a Receita usa pra exibir no DANFE
+// ("Informações Complementares"/"Informações de interesse do Fisco"), mais as observações por item
+// (infAdProd), que costumam carregar nº de pedido/lote do comprador.
+function detalharNfeObservacoes(infNFe: any, dets: any[]): { infCpl: string | null; infAdFisco: string | null; itens: { n: string; xProd: string | null; obs: string }[] } {
+  const infAdic = infNFe.infAdic || {};
+  const itens = dets
+    .map((d: any) => ({ n: String(d["@_nItem"] || ""), xProd: d?.prod?.xProd || null, obs: d.infAdProd || "" }))
+    .filter((i: any) => i.obs);
+  return { infCpl: infAdic.infCpl || null, infAdFisco: infAdic.infAdFisco || null, itens };
+}
+// Notas/documentos referenciados (devolução, complementar, substituição) — grupo <ide><NFref>.
+function detalharNfeReferencias(ide: any): { tipo: string; valor: string }[] {
+  const nfref = ide.NFref;
+  const lista = Array.isArray(nfref) ? nfref : nfref ? [nfref] : [];
+  return lista
+    .map((r: any) => {
+      if (r.refNFe) return { tipo: "NF-e referenciada", valor: String(r.refNFe) };
+      if (r.refNFeSig) return { tipo: "NF-e (SVC) referenciada", valor: String(r.refNFeSig) };
+      if (r.refCTe) return { tipo: "CT-e referenciado", valor: String(r.refCTe) };
+      if (r.refECF) return { tipo: "Cupom fiscal (ECF) referenciado", valor: `${r.refECF.mod || ""} ${r.refECF.nECF || ""} ${r.refECF.nCOO || ""}`.trim() };
+      if (r.refNF) {
+        const n = r.refNF;
+        return { tipo: "NF modelo 1/1A referenciada", valor: `${n.UF || ""} ${n.AAMM || ""} ${n.CNPJ || ""} nº ${n.nNF || ""}`.trim() };
+      }
+      return null;
+    })
+    .filter(Boolean) as { tipo: string; valor: string }[];
+}
+// Produtos especiais por item (estilo Espião): medicamento/combustível/veículo/importado, com os campos
+// próprios de cada grupo — mesmos grupos já usados pras flags med/comb/veiculo/importado, só que aqui
+// mostrando o detalhe (não só "tem ou não tem").
+function detalharNfeEspeciais(dets: any[]): { n: string; xProd: string | null; tipo: string; detalhe: string }[] {
+  const out: { n: string; xProd: string | null; tipo: string; detalhe: string }[] = [];
+  for (const d of dets) {
+    const n = String(d["@_nItem"] || "");
+    const xProd = d?.prod?.xProd || null;
+    const med = d?.prod?.med;
+    if (med) out.push({ n, xProd, tipo: "Medicamento", detalhe: [med.cProdANVISA ? `Registro ANVISA ${med.cProdANVISA}` : null, med.xMotivoIsencao || null].filter(Boolean).join(" — ") || "—" });
+    const comb = d?.prod?.comb;
+    if (comb) out.push({ n, xProd, tipo: "Combustível", detalhe: [comb.descANP || null, comb.cProdANP ? `cProdANP ${comb.cProdANP}` : null].filter(Boolean).join(" — ") || "—" });
+    const veic = d?.prod?.veicProd;
+    if (veic) out.push({ n, xProd, tipo: "Veículo", detalhe: [veic.chassi ? `Chassi ${veic.chassi}` : null, veic.cCor || null].filter(Boolean).join(" — ") || "—" });
+    const di = d?.prod?.DI;
+    const diLista = Array.isArray(di) ? di : di ? [di] : [];
+    for (const dd of diLista) out.push({ n, xProd, tipo: "Importado (DI)", detalhe: [dd.nDI ? `DI ${dd.nDI}` : null, dd.xLocDesemb || null].filter(Boolean).join(" — ") || "—" });
+  }
+  return out;
+}
+// Rastreabilidade (lote/validade) por item — grupo <prod><rastro>, pode ter mais de um lote no mesmo item.
+function detalharNfeRastro(dets: any[]): { n: string; xProd: string | null; lote: string | null; qtd: number; fabricacao: string | null; validade: string | null }[] {
+  const num = (v: any) => (v != null && v !== "" ? Number(v) || 0 : 0);
+  const out: { n: string; xProd: string | null; lote: string | null; qtd: number; fabricacao: string | null; validade: string | null }[] = [];
+  for (const d of dets) {
+    const rastro = d?.prod?.rastro;
+    const lista = Array.isArray(rastro) ? rastro : rastro ? [rastro] : [];
+    for (const r of lista) out.push({ n: String(d["@_nItem"] || ""), xProd: d?.prod?.xProd || null, lote: r.nLote || null, qtd: num(r.qLote), fabricacao: r.dFab || null, validade: r.dVal || null });
+  }
+  return out;
 }

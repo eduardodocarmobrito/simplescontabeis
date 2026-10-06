@@ -7818,7 +7818,7 @@ app.get("/api/nfe/documentos/:id/detalhe", blockCliente, requirePermissao("nfe-b
       .prepare(`SELECT 1 FROM nfe_documentos WHERE escritorio_id = ? AND tipo = 'evento' AND chave_acesso = ? AND evento_descricao LIKE '%ancela%' AND evento_descricao NOT LIKE '%CT-e%' AND evento_descricao NOT LIKE '%MDF-e%' LIMIT 1`)
       .get(row.escritorio_id, row.chave_acesso) as any
   );
-  res.json({ tipo: row.tipo, chaveAcesso: row.chave_acesso, notaCancelada, detalhe: nfe.detalharNfe(row.xml) });
+  res.json({ tipo: row.tipo, chaveAcesso: row.chave_acesso, notaCancelada, observacao: row.observacao || "", detalhe: nfe.detalharNfe(row.xml) });
 });
 // Popup "Transportadora" (flag 🚚, clicada a partir de uma NF-e/CT-e) — acha o MDF-e que carrega essa
 // chave (mdfe_vinculos) e devolve um resumo dele (número, série, UF ini/fim, emitente).

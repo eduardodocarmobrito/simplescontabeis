@@ -6732,7 +6732,7 @@ function abrirMenuFlutuante(botaoEl, itens){
   setTimeout(()=>document.addEventListener('click', fecharMenuFlutuanteClique, true), 0);
 }
 // Comentário/observação livre sobre um documento (botão 💬) — fica só no escritório.
-function abrirComentarioNota(id, textoAtual){
+function abrirComentarioNota(id, textoAtual, onSaved){
   openModal(`
     <h3>Comentário da nota</h3>
     <p class="subtitle" style="margin-top:-6px;">Fica só aqui no escritório — não sai em PDF/XML nem é mandado a ninguém.</p>
@@ -6742,9 +6742,11 @@ function abrirComentarioNota(id, textoAtual){
   document.getElementById('nfeObsCancelar').addEventListener('click', closeModal);
   document.getElementById('nfeObsSalvar').addEventListener('click', async ()=>{
     try{
-      await api('/nfe/documentos/'+id+'/observacao', { method:'PUT', body:{ texto: document.getElementById('nfeObsTexto').value } });
+      const texto = document.getElementById('nfeObsTexto').value;
+      await api('/nfe/documentos/'+id+'/observacao', { method:'PUT', body:{ texto } });
       toast('Comentário salvo.','ok'); closeModal();
       if(typeof carregarDocumentos==='function') carregarDocumentos();
+      if(typeof onSaved==='function') onSaved(texto);
     }catch(e){ toast(e.message,'err'); }
   });
 }
@@ -6820,7 +6822,16 @@ async function abrirDetalheNota(id, tabInicial){
         ${(det.transp.nome||det.transp.doc)?`<div class="card" style="margin:0; padding:12px 14px;"><b>Transportadora</b><br>${esc(det.transp.nome||'—')}<br><span style="color:var(--ink-soft); font-size:12.5px;">${esc(det.transp.doc||'')}</span></div>`:''}
       </div>`,
     xml: `<p class="subtitle" style="margin-top:0;">XML completo da nota, direto da Sefaz.</p>${xmlInlineHtml}`,
+    especiais: (det.especiais||[]).length ? `<table class="data-table"><thead><tr><th>#</th><th>Produto</th><th>Tipo</th><th>Detalhe</th></tr></thead><tbody>${det.especiais.map(e=>`<tr><td>${esc(e.n)}</td><td>${esc(e.xProd||'')}</td><td><span class="tag muted">${esc(e.tipo)}</span></td><td>${esc(e.detalhe)}</td></tr>`).join('')}</tbody></table>` : '<div class="empty-state">Nenhum produto especial (medicamento/combustível/veículo/importado) nesta nota.</div>',
+    rastro: (det.rastro||[]).length ? `<table class="data-table"><thead><tr><th>#</th><th>Produto</th><th>Lote</th><th>Qtd</th><th>Fabricação</th><th>Validade</th></tr></thead><tbody>${det.rastro.map(r=>`<tr><td>${esc(r.n)}</td><td>${esc(r.xProd||'')}</td><td>${esc(r.lote||'—')}</td><td style="text-align:right;">${r.qtd}</td><td>${r.fabricacao?fmtDate(r.fabricacao):'—'}</td><td>${r.validade?fmtDate(r.validade):'—'}</td></tr>`).join('')}</tbody></table>` : '<div class="empty-state">Nenhum lote/rastreabilidade informado nesta nota.</div>',
+    pagamentos: (det.pagamentos||[]).length ? `<table class="data-table"><thead><tr><th>Forma</th><th>Valor</th><th>Cartão</th></tr></thead><tbody>${det.pagamentos.map(p=>`<tr><td>${esc(p.tipo)}</td><td>${money(p.vPag)}</td><td>${p.cartao?esc([p.cartao.bandeira,p.cartao.autorizacao].filter(Boolean).join(' · ')||'—'):'—'}</td></tr>`).join('')}</tbody></table>` : '<div class="empty-state">Nenhum pagamento informado nesta nota.</div>',
+    duplicatas: (()=>{ const d2=det.duplicatas||{fatura:null,parcelas:[]}; const fat = d2.fatura ? `<div class="card" style="margin:0 0 10px; padding:10px 12px;"><b>Fatura</b> ${esc(d2.fatura.nFat||'—')}<br><span style="color:var(--ink-soft); font-size:12.5px;">Original ${money(d2.fatura.vOrig)} · Desconto ${money(d2.fatura.vDesc)} · Líquido ${money(d2.fatura.vLiq)}</span></div>` : ''; const parc = d2.parcelas.length ? `<table class="data-table"><thead><tr><th>Parcela</th><th>Vencimento</th><th>Valor</th></tr></thead><tbody>${d2.parcelas.map(p=>`<tr><td>${esc(p.nDup||'—')}</td><td>${p.dVenc?fmtDate(p.dVenc):'—'}</td><td>${money(p.vDup)}</td></tr>`).join('')}</tbody></table>` : '<div class="empty-state">Nenhuma duplicata (parcela) nesta nota.</div>'; return fat+parc; })(),
+    observacoes: (()=>{ const o=det.observacoes||{infCpl:null,infAdFisco:null,itens:[]}; const blocos=[]; if(o.infCpl) blocos.push(`<div class="card" style="margin:0 0 10px; padding:10px 12px;"><b>Informações complementares</b><div style="margin-top:4px; white-space:pre-wrap;">${esc(o.infCpl)}</div></div>`); if(o.infAdFisco) blocos.push(`<div class="card" style="margin:0 0 10px; padding:10px 12px;"><b>Informações de interesse do Fisco</b><div style="margin-top:4px; white-space:pre-wrap;">${esc(o.infAdFisco)}</div></div>`); if(o.itens.length) blocos.push(`<table class="data-table"><thead><tr><th>#</th><th>Produto</th><th>Observação</th></tr></thead><tbody>${o.itens.map(i=>`<tr><td>${esc(i.n)}</td><td>${esc(i.xProd||'')}</td><td>${esc(i.obs)}</td></tr>`).join('')}</tbody></table>`); return blocos.length?blocos.join(''):'<div class="empty-state">Esta nota não traz observações no XML.</div>'; })(),
+    referencias: (det.referencias||[]).length ? `<table class="data-table"><thead><tr><th>Tipo</th><th>Referência</th></tr></thead><tbody>${det.referencias.map(r=>`<tr><td>${esc(r.tipo)}</td><td style="font-family:'IBM Plex Mono',monospace; font-size:11px; word-break:break-all;">${esc(r.valor)}</td></tr>`).join('')}</tbody></table>` : '<div class="empty-state">Esta nota não referencia nenhum outro documento fiscal.</div>',
   };
+  const comentariosHtml = ()=>`<p class="subtitle" style="margin-top:0;">Comentário interno — fica só aqui no escritório, não sai em PDF/XML nem é mandado a ninguém.</p>
+      <div class="card" style="margin:0 0 10px; padding:10px 12px; white-space:pre-wrap;">${data.observacao?esc(data.observacao):'<span style="color:var(--ink-soft);">Sem comentário ainda.</span>'}</div>
+      <button class="btn small" id="detComentarioEditar">${data.observacao?'Editar comentário':'Adicionar comentário'}</button>`;
   openDrawer(`
     <div class="drawer-head">
       <h3>Detalhes da ${esc(det.tipo.toUpperCase())}${numero?' nº '+numero:''}</h3>
@@ -6846,18 +6857,26 @@ async function abrirDetalheNota(id, tabInicial){
         <div class="tab active" data-t="geral">📋 Geral</div>
         <div class="tab" data-t="participantes">👥 Participantes</div>
         <div class="tab" data-t="produtos">📦 Produtos <span class="tag muted">${det.itens.length}</span></div>
+        <div class="tab" data-t="especiais">⭐ Especiais <span class="tag muted">${(det.especiais||[]).length}</span></div>
         <div class="tab" data-t="impostos">💲 Impostos${det.temReforma?' <span class="tag ok">IBS/CBS</span>':''}</div>
+        <div class="tab" data-t="rastro">🧬 Rastro <span class="tag muted">${(det.rastro||[]).length}</span></div>
+        <div class="tab" data-t="pagamentos">💰 Pagamentos <span class="tag muted">${(det.pagamentos||[]).length}</span></div>
+        <div class="tab" data-t="duplicatas">📅 Duplicatas <span class="tag muted">${(det.duplicatas&&det.duplicatas.parcelas||[]).length}</span></div>
+        <div class="tab" data-t="observacoes">📝 Observações <span class="tag muted">${(()=>{const o=det.observacoes||{};return (o.infCpl?1:0)+(o.infAdFisco?1:0)+(o.itens||[]).length;})()}</span></div>
+        <div class="tab" data-t="referencias">🔗 Referências <span class="tag muted">${(det.referencias||[]).length}</span></div>
+        <div class="tab" data-t="comentarios">💬 Comentários</div>
         <div class="tab" data-t="xml">📄 XML</div>
       </div>
       <div id="detConteudo" style="margin-top:12px;"></div>
     </div>
   `);
   const renderTab = (tab)=>{
-    document.getElementById('detConteudo').innerHTML = conteudos[tab]||'';
+    document.getElementById('detConteudo').innerHTML = tab==='comentarios' ? comentariosHtml() : (conteudos[tab]||'');
     if(tab==='xml') carregarXmlInline(id, document.getElementById('detXmlBox'));
+    if(tab==='comentarios') document.getElementById('detComentarioEditar')?.addEventListener('click', ()=>abrirComentarioNota(id, data.observacao||'', (texto)=>{ data.observacao = texto; renderTab('comentarios'); }));
   };
   // Abre já na aba pedida (ao clicar numa flag/XML); se a aba não existir, cai no Geral.
-  const abas = ['geral','participantes','produtos','impostos','xml'];
+  const abas = ['geral','participantes','produtos','especiais','impostos','rastro','pagamentos','duplicatas','observacoes','referencias','comentarios','xml'];
   const tabIni = abas.includes(tabInicial) ? tabInicial : 'geral';
   document.querySelectorAll('#detTabs .tab').forEach(x=>x.classList.toggle('active', x.dataset.t===tabIni));
   renderTab(tabIni);
