@@ -3343,6 +3343,7 @@ app.post("/api/empresas", blockCliente, requirePermissao("empresas", "postar"), 
       user.escritorioId
     );
   const novaEmpresaId = Number(info.lastInsertRowid);
+  garantirContatosDeTelefoneCadastral(novaEmpresaId);
   envioAutoAtribuirPorRegime(novaEmpresaId, user.escritorioId, (REGIMES_TRIBUTARIOS as readonly string[]).includes(regimeTributario) ? regimeTributario : "simples_nacional");
   if (telefone) deskcommAgendarSyncEmpresasClientes();
   res.json({ id: novaEmpresaId });
@@ -3416,6 +3417,7 @@ app.put("/api/empresas/:id", blockCliente, requirePermissao("empresas", "editar"
     empresaSalvarDadosFiscaisNfse(id, regimeTributarioFinal === "simples_nacional", req.body);
   }
   if (regimeTributario !== undefined) envioAutoAtribuirPorRegime(id, (req as any).user.escritorioId, regimeTributarioFinal);
+  garantirContatosDeTelefoneCadastral(id);
   deskcommAgendarSyncEmpresasClientes();
   res.json({ ok: true });
 });
@@ -15335,6 +15337,7 @@ setInterval(() => {
 }, 60_000);
 setInterval(() => deskcommAgendarSyncEmpresasClientes(), 6 * 3600_000);
 setTimeout(() => deskcommAgendarSyncEmpresasClientes(), 30_000);
+setTimeout(() => garantirContatosDeTelefoneCadastral(), 20_000);
 // Toda conversa que passou pelo setor: as que o Roteador (ou uma transferência) já mandou pra ele
 // (`historico`) + as que estão com ele agora (active_intent).
 async function atendimentoConversasDoSetor(escopo: AtendimentoSetorEscopo, colunas: string, historico: Map<string, Set<string>>): Promise<any[]> {
@@ -16295,6 +16298,35 @@ function deskcommEmpresasIdsPorTelefone(): Map<string, { id: number; nome: strin
     }
   }
   return mapa;
+}
+// Telefone cadastral da empresa (campo "Telefone" do cadastro) já conta como vínculo no CRM, mas a tela
+// de Contatos só olhava empresa_contatos — então a empresa aparecia "Faltam configurar" mesmo tendo o
+// número. Aqui cada número do cadastro sem contato equivalente vira um contato automaticamente.
+function garantirContatosDeTelefoneCadastral(empresaId?: number): number {
+  const rows = sqlite
+    .prepare(
+      `SELECT id, nome, telefone FROM empresas WHERE escritorio_id = ? AND ativo = 1 AND telefone IS NOT NULL AND telefone != ''${empresaId ? " AND id = ?" : ""}`
+    )
+    .all(...(empresaId ? [DESKCOMM_ESCRITORIO_ID, empresaId] : [DESKCOMM_ESCRITORIO_ID])) as any[];
+  let criados = 0;
+  for (const e of rows) {
+    const existentes = new Set(
+      (sqlite.prepare(`SELECT telefone FROM empresa_contatos WHERE empresa_id = ? AND telefone IS NOT NULL`).all(e.id) as any[])
+        .map((c) => telefoneChaveBr(c.telefone))
+        .filter(Boolean)
+    );
+    for (const pedaco of String(e.telefone).split(/[\/;,]| e /)) {
+      const chave = telefoneChaveBr(pedaco);
+      if (!chave || existentes.has(chave)) continue;
+      sqlite
+        .prepare(`INSERT INTO empresa_contatos (empresa_id, nome, email, receber_emails, telefone, receber_whatsapp) VALUES (?, ?, '', 0, ?, 0)`)
+        .run(e.id, `${e.nome} (telefone do cadastro)`, pedaco.trim());
+      existentes.add(chave);
+      criados++;
+    }
+  }
+  if (criados) console.log(`Contatos criados a partir do telefone cadastral: ${criados}`);
+  return criados;
 }
 function notaSituacaoTexto(empresas: { id: number; nome: string }[]): { headline: string; body: string } {
   const hoje = new Date().toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" }).slice(0, 5);
