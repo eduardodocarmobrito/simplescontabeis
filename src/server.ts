@@ -6833,8 +6833,10 @@ app.get("/api/nfe/config", blockCliente, requirePermissao("nfe-busca", "visualiz
        FROM nfe_busca_config c JOIN empresas e ON e.id = c.empresa_id
        WHERE c.escritorio_id = ? AND e.ativo = 1 ORDER BY e.nome`
     )
-    .all((req as any).user.escritorioId);
-  res.json({ items: rows, moduloAtivo: escritorioTemModulo((req as any).user.escritorioId, "busca_xml_nfe") });
+    .all((req as any).user.escritorioId) as any[];
+  // Só empresas que este usuário pode ver (empresa fora do acesso dele não aparece, nem como "removida").
+  const visiveisBusca = new Set(empresasVisiveis((req as any).user));
+  res.json({ items: rows.filter((r) => visiveisBusca.has(r.empresaId)), moduloAtivo: escritorioTemModulo((req as any).user.escritorioId, "busca_xml_nfe") });
 });
 app.post("/api/nfe/config", blockCliente, requirePermissao("nfe-busca", "postar"), upload.single("arquivo"), async (req, res) => {
   const user = (req as any).user;
@@ -10851,7 +10853,8 @@ app.get("/api/nfse/empresas", blockCliente, requirePermissao("nfse", "visualizar
        WHERE e.ativo = 1 ORDER BY e.nome`
     )
     .all() as any[];
-  res.json({ items: rows.map((r) => ({ ...r, habilitado: !!r.habilitado, opcaoSimplesNacional: !!r.opcaoSimplesNacional, temCertificadoProprio: !!r.temCertificadoProprio })) });
+  const visiveisNfse = new Set(empresasVisiveis((_req as any).user));
+  res.json({ items: rows.filter((r) => visiveisNfse.has(r.id)).map((r) => ({ ...r, habilitado: !!r.habilitado, opcaoSimplesNacional: !!r.opcaoSimplesNacional, temCertificadoProprio: !!r.temCertificadoProprio })) });
 });
 // Código do município (IBGE) — o próprio leiaute oficial da DPS referencia "Tabela do IBGE" pra
 // esse campo, então é a fonte certa (mesma origem que o Sistema Nacional NFS-e usa). Cache em
