@@ -27,10 +27,6 @@ AGENTE_TOKEN := "COLE_AQUI_O_TOKEN_DO_AGENTE"
 
 POLL_SEGUNDOS := 10       ; de quanto em quanto tempo pergunta ao site
 
-; TESTE: se preenchido (ex.: "117"), o robo roda SO essa empresa (codigo do Dominio).
-; Deixe vazio ("") pra rodar todas as empresas da lista do site.
-SO_CODIGO := "117"
-
 ; Re-selecionar o modulo Folha a cada execucao? true = garante que esta no modulo certo.
 SELECIONAR_MODULO := true
 FAV_KEY      := "f"       ; letra do menu FAVORITOS
@@ -57,7 +53,7 @@ LOGO_X      := 40,   LOGO_Y      := 74     ; logo "DOMINIO" (abre menu de modulo
 MODULO_X    := 75,   MODULO_Y    := 192    ; item "Folha" no menu de modulos
 T_MODULO_CARGA := 10000                    ; espera o modulo carregar (~10s)
 
-; Favoritos (modulo Folha): "EVENTOS PERIODICOS" e o 1o item, "Programacao de Ferias" o 2o (Down x2 -> Enter).
+; Favoritos: "Programacao de Ferias" e o 2o item do submenu (Down x2 -> Enter).
 FAV_DOWNS   := 2
 
 T_CURTO  := 700
@@ -211,8 +207,6 @@ TrocarEmpresa(codigo) {
 ; Abre Favoritos > Programacao de Ferias (Alt+F -> Down x FAV_DOWNS -> Enter), com foco antes.
 AbrirRelatorio() {
     global FAV_KEY, FAV_DOWNS, T_CURTO, T_MEDIO
-    AtivarApp()                  ; a troca de empresa pode ter tirado o foco do Dominio
-    Sleep 500
     Click("700 400")             ; foco de teclado (streaming)
     Sleep 400
     Send "!" . FAV_KEY           ; Alt+F -> abre Favoritos
@@ -529,14 +523,6 @@ RodarCiclo() {
         return
     }
     empresas := PegarEmpresas()
-    if (SO_CODIGO != "") {
-        filtradas := []
-        for e in empresas
-            if (e.codigo = SO_CODIGO)
-                filtradas.Push(e)
-        Logar("TESTE: SO_CODIGO=" . SO_CODIGO . " -> " . filtradas.Length . " empresa(s) da lista")
-        empresas := filtradas
-    }
     total := empresas.Length
     Logar("=== EXECUCAO: " . total . " empresa(s) (Programacao de Ferias) ===")
     ReportarProgresso(true, total, 0, "", true)
