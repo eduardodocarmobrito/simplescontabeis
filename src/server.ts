@@ -6097,7 +6097,7 @@ app.delete("/api/envio/atribuicoes/:id", blockCliente, requirePermissao("envio",
 // então "Gerar ano" chamado 2x pro mesmo ano/atribuição criaria período repetido pro mesmo mês (todo
 // período mensal/trimestral/anual tem rotulo=NULL) — clicar o botão 2x sem querer, ou a virada
 // automática coincidir com um "Gerar ano" manual, duplicava silenciosamente.
-function envioGerarPeriodosAno(atribuicaoId: number, periodicidade: string, ano: number, rotulo?: string | null): number {
+function envioGerarPeriodosAno(atribuicaoId: number, periodicidade: string, ano: number, rotulo?: string | null, mesInicial: number = 1): number {
   const existe = sqlite.prepare(`SELECT 1 FROM envio_periodos WHERE atribuicao_id = ? AND ano = ? AND mes IS ?`);
   const insert = sqlite.prepare(`INSERT INTO envio_periodos (atribuicao_id, ano, mes, rotulo) VALUES (?, ?, ?, ?)`);
   let criados = 0;
@@ -6106,12 +6106,14 @@ function envioGerarPeriodosAno(atribuicaoId: number, periodicidade: string, ano:
     insert.run(atribuicaoId, ano, mes, null);
     criados++;
   };
+  // mesInicial: primeiro mês da grade (1 = janeiro). Meses antes dele não são criados.
+  const inicio = Math.min(12, Math.max(1, Math.floor(mesInicial) || 1));
   if (periodicidade === "mensal") {
-    for (let mes = 1; mes <= 12; mes++) inserirSeNovo(mes);
+    for (let mes = inicio; mes <= 12; mes++) inserirSeNovo(mes);
   } else if (periodicidade === "trimestral") {
     // Um período por trimestre, representado pelo mês de fechamento (Mar/Jun/Set/Dez) — é o padrão
     // de apuração trimestral do IRPJ/CSLL no Lucro Real (o DARF vence no mês seguinte ao fechamento).
-    for (const mes of [3, 6, 9, 12]) inserirSeNovo(mes);
+    for (const mes of [3, 6, 9, 12]) if (mes >= inicio) inserirSeNovo(mes);
   } else if (periodicidade === "anual") {
     inserirSeNovo(null);
   } else {
@@ -6123,12 +6125,12 @@ function envioGerarPeriodosAno(atribuicaoId: number, periodicidade: string, ano:
   return criados;
 }
 app.post("/api/envio/periodos/gerar", blockCliente, requirePermissao("envio", "postar"), (req, res) => {
-  const { atribuicaoId, ano, rotulo } = req.body || {};
+  const { atribuicaoId, ano, rotulo, mesInicial } = req.body || {};
   const atrib = sqlite
     .prepare(`SELECT a.*, t.periodicidade FROM envio_atribuicoes a JOIN envio_templates t ON t.id = a.template_id WHERE a.id = ?`)
     .get(Number(atribuicaoId)) as any;
   if (!atrib || !podeAcessarEmpresa((req as any).user, atrib.empresa_id)) return res.status(404).json({ error: "Atribuição não encontrada." });
-  const criados = envioGerarPeriodosAno(atrib.id, atrib.periodicidade, Number(ano), rotulo);
+  const criados = envioGerarPeriodosAno(atrib.id, atrib.periodicidade, Number(ano), rotulo, mesInicial ? Number(mesInicial) : 1);
   res.json({ ok: true, criados });
 });
 // Virada de ano automática: toda 1ª de janeiro (checado 1x por dia, ver setInterval abaixo), gera

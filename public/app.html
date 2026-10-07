@@ -4774,6 +4774,30 @@ function wireEnvioGradeEvents(container, atribuicaoId, souCliente){
     catch(e){ toast(e.message,'err'); }
   }));
 }
+// Pergunta de que mês começar a grade. Padrão: mês anterior (competência já fechada).
+// Para anos que não são o atual, a grade começa em janeiro. Retorna o número do mês (1-12) ou null se cancelou.
+function escolherMesInicialGrade(ano){
+  return new Promise(resolve=>{
+    const nomes=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+    const hoje=new Date();
+    const souAnoAtual = ano===hoje.getFullYear();
+    const mesAtual = souAnoAtual ? hoje.getMonth()+1 : 1;
+    const mesAnterior = souAnoAtual ? Math.max(1, hoje.getMonth()) : 1;
+    const rotuloMes = m => `${nomes[m-1]}/${ano}`;
+    openModal(`
+      <h3>Começar a grade em qual mês?</h3>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin:-4px 0 14px;">A grade de ${ano} vai até dezembro. Os meses antes do escolhido não são criados.</p>
+      <div class="row" style="gap:10px; justify-content:flex-end;">
+        <button class="btn" id="gmAtual">Mês atual (${rotuloMes(mesAtual)})</button>
+        <button class="btn primary" id="gmAnterior">Mês anterior (${rotuloMes(mesAnterior)})</button>
+      </div>
+      <div class="row" style="justify-content:flex-start; margin-top:12px;"><button class="btn" id="gmCancelar">Cancelar</button></div>`, '520px');
+    const fecha = v => { closeModal(); resolve(v); };
+    document.getElementById('gmAnterior').addEventListener('click', ()=>fecha(mesAnterior));
+    document.getElementById('gmAtual').addEventListener('click', ()=>fecha(mesAtual));
+    document.getElementById('gmCancelar').addEventListener('click', ()=>fecha(null));
+  });
+}
 async function abrirEnvioGrade(atribuicaoId, souCliente){
   const { atribuicao, grade } = await api('/envio/grade/'+atribuicaoId);
   const podePostar = !souCliente && can('envio','postar');
@@ -4808,7 +4832,9 @@ async function abrirEnvioGrade(atribuicaoId, souCliente){
   if(podePostar && atribuicao.periodicidade!=='avulso') document.getElementById('btnGerarEnvioPeriodo').addEventListener('click', async ()=>{
     const ano = prompt('Gerar grade de qual ano?', new Date().getFullYear());
     if(!ano) return;
-    await api('/envio/periodos/gerar', { method:'POST', body:{ atribuicaoId, ano:Number(ano) } });
+    const mesInicial = await escolherMesInicialGrade(Number(ano));
+    if(!mesInicial) return;
+    await api('/envio/periodos/gerar', { method:'POST', body:{ atribuicaoId, ano:Number(ano), mesInicial } });
     abrirEnvioGrade(atribuicaoId, souCliente);
   });
   if(podePostar && atribuicao.periodicidade==='avulso') document.getElementById('btnNovoEnvioAvulso').addEventListener('click', async ()=>{
