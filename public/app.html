@@ -2695,10 +2695,10 @@ async function renderEmpresasTab(){
   const tbody = document.getElementById('empresasBody');
   function desenhaLinhas(filtro){
     const termo = normalizaTxt(filtro).trim();
-    const visiveis = termo ? items.filter(e=> normalizaTxt(e.nome).includes(termo) || normalizaTxt(e.cnpj).includes(termo) || (!!termo.replace(/\D/g,'') && String(e.cnpj||'').replace(/\D/g,'').includes(termo.replace(/\D/g,'')))) : items;
+    const visiveis = termo ? items.filter(e=> normalizaTxt(e.nome).includes(termo) || normalizaTxt(e.codigoDominio).includes(termo) || normalizaTxt(e.cnpj).includes(termo) || (!!termo.replace(/\D/g,'') && String(e.cnpj||'').replace(/\D/g,'').includes(termo.replace(/\D/g,'')))) : items;
     tbody.innerHTML = visiveis.length ? visiveis.map(e=>`
       <tr data-id="${e.id}">
-        <td><b>${esc(e.nome)}</b></td>
+        <td>${e.codigoDominio?`<span style="color:var(--ink-soft); font-weight:600; margin-right:8px;">${esc(e.codigoDominio)}</span>`:''}<b>${esc(e.nome)}</b></td>
         <td>${esc(fmtCnpjCpf(e.cnpj)||'—')}</td>
         <td><span class="tag muted">${e.origem==='dominio'?'Domínio Web':'Manual'}</span></td>
         ${ativasTab? `<td><span class="tag ${e.visivelRelatorios?'ok':'muted'}">${e.visivelRelatorios?'Sim':'Não'}</span></td>`:''}
