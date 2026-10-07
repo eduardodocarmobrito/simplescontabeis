@@ -7220,14 +7220,14 @@ async function pageIntegraContador(deepLinkEmpresaId){
         <p style="font-size:12.5px; color:var(--ink-soft); margin:4px 0 8px;">Comunicados não lidos da Receita Federal, buscados automaticamente todo dia — some sozinho daqui assim que for lido de verdade no e-CAC.</p>
         <div id="icCaixaPostalBody"><div class="empty-state">Carregando…</div></div>
       </div>
-      <div class="card">
+      ${emp?.optanteSimplesNacional ? `<div class="card">
         <div class="row" style="justify-content:space-between; align-items:center;">
           <h3 style="margin:0;">Parcelamentos</h3>
           ${podePostar?`<button class="btn small" id="btnIcVincularParc">+ Vincular parcelamento</button>`:''}
         </div>
         <p style="font-size:12.5px; color:var(--ink-soft); margin:4px 0 8px;">Parcelamentos do Simples Nacional (PARCSN) já concedidos e vinculados — as guias de cada parcela são buscadas e anexadas automaticamente em Envio de Documentos todo mês.</p>
         <div id="icParcBody"><div class="empty-state">Carregando…</div></div>
-      </div>
+      </div>` : ''}
       <div class="card">
         <h3>Documentos</h3>
         <div class="card" style="padding:0; overflow-x:auto;">
@@ -7239,7 +7239,7 @@ async function pageIntegraContador(deepLinkEmpresaId){
       </div>
     `;
     document.getElementById('btnIcVoltarLista').addEventListener('click', mostrarIcLista);
-    if(podePostar) document.getElementById('btnIcVincularParc').addEventListener('click', ()=>{
+    if(podePostar) document.getElementById('btnIcVincularParc')?.addEventListener('click', ()=>{
       vincularParcelamentoModal(empresaId, emp?emp.nome:'Empresa', null, carregarIcParcelamentos);
     });
     async function carregarIcParcelamentos(){
@@ -7287,7 +7287,7 @@ async function pageIntegraContador(deepLinkEmpresaId){
         }catch(e){ toast(e.message,'err'); }
       }));
     }
-    carregarIcParcelamentos();
+    if(emp?.optanteSimplesNacional) carregarIcParcelamentos();
     async function carregarIcCaixaPostal(){
       const wrap = document.getElementById('icCaixaPostalBody');
       const { items: msgs } = await api('/integracontador/empresas/'+empresaId+'/caixa-postal');
