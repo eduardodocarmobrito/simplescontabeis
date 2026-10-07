@@ -203,6 +203,11 @@ TrocarEmpresa(codigo) {
     Sleep T_MEDIO
     Send "{Enter}"
     Sleep T_EMPRESA
+    ; Fecha qualquer quadro de aviso que apareça na troca de empresa (antes do Favoritos).
+    Send "{Esc}"
+    Sleep T_CURTO
+    Send "{Esc}"
+    Sleep T_CURTO
 }
 
 ; Abre Favoritos > Programacao de Ferias (Alt+F -> Down x FAV_DOWNS -> Enter), com foco antes.
