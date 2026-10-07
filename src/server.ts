@@ -5095,6 +5095,7 @@ sqlite.exec(`
   if (!colsFeriasRobo.some((c) => c.name === "t_curto_ms")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN t_curto_ms INTEGER NOT NULL DEFAULT 700`);
   if (!colsFeriasRobo.some((c) => c.name === "t_medio_ms")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN t_medio_ms INTEGER NOT NULL DEFAULT 2000`);
   if (!colsFeriasRobo.some((c) => c.name === "t_longo_ms")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN t_longo_ms INTEGER NOT NULL DEFAULT 4000`);
+  if (!colsFeriasRobo.some((c) => c.name === "t_empresa_ms")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN t_empresa_ms INTEGER NOT NULL DEFAULT 4000`);
 }
 function garantirFeriasEstado(escritorioId: number) {
   sqlite.prepare(`INSERT OR IGNORE INTO ferias_robo_estado (escritorio_id) VALUES (?)`).run(escritorioId);
@@ -5133,7 +5134,7 @@ app.get("/api/dominio-agent/ferias-comando", requireDominioAgent, (_req, res) =>
     SELECT ligado, intervalo_min AS intervaloMin, run_now_em, ultima_exec_em,
       agenda_ativo AS agendaAtivo, agenda_hora AS agendaHora, agenda_minuto AS agendaMinuto, agenda_ultimo_dia AS agendaUltimoDia,
       t_entre_empresas_ms AS tEntreEmpresasMs, t_render_timeout_ms AS tRenderTimeoutMs, t_gerar_pdf_ms AS tGerarPdfMs,
-      t_modulo_carga_ms AS tModuloCargaMs, t_curto_ms AS tCurtoMs, t_medio_ms AS tMedioMs, t_longo_ms AS tLongoMs,
+      t_modulo_carga_ms AS tModuloCargaMs, t_curto_ms AS tCurtoMs, t_medio_ms AS tMedioMs, t_longo_ms AS tLongoMs, t_empresa_ms AS tEmpresaMs,
       (run_now_em IS NOT NULL) AS runNow,
       (parar_em IS NOT NULL) AS parar,
       (ligado = 1 AND (ultima_exec_em IS NULL OR datetime(ultima_exec_em, '+' || intervalo_min || ' minutes') <= datetime('now'))) AS devePorTempo
@@ -5148,7 +5149,7 @@ app.get("/api/dominio-agent/ferias-comando", requireDominioAgent, (_req, res) =>
     deveRodar, motivo: segurar ? "aguardando_outro_robo" : (c.runNow ? "manual" : (devePorAgenda ? "agenda" : (c.devePorTempo ? "automatico" : null))),
     parar: !!c.parar, ligado: !!c.ligado, intervaloMin: c.intervaloMin,
     tEntreEmpresasMs: c.tEntreEmpresasMs, tRenderTimeoutMs: c.tRenderTimeoutMs, tGerarPdfMs: c.tGerarPdfMs,
-    tModuloCargaMs: c.tModuloCargaMs, tCurtoMs: c.tCurtoMs, tMedioMs: c.tMedioMs, tLongoMs: c.tLongoMs,
+    tModuloCargaMs: c.tModuloCargaMs, tCurtoMs: c.tCurtoMs, tMedioMs: c.tMedioMs, tLongoMs: c.tLongoMs, tEmpresaMs: c.tEmpresaMs,
   });
 });
 app.post("/api/dominio-agent/ferias-progresso", requireDominioAgent, (req, res) => {
@@ -5171,7 +5172,7 @@ app.get("/api/ferias-robo/estado", blockCliente, requirePermissao("configuracoes
     SELECT ligado, intervalo_min AS intervaloMin, run_now_em AS runNowEm, ultima_exec_em AS ultimaExecEm,
       agenda_ativo AS agendaAtivo, agenda_hora AS agendaHora, agenda_minuto AS agendaMinuto,
       t_entre_empresas_ms AS tEntreEmpresasMs, t_render_timeout_ms AS tRenderTimeoutMs, t_gerar_pdf_ms AS tGerarPdfMs,
-      t_modulo_carga_ms AS tModuloCargaMs, t_curto_ms AS tCurtoMs, t_medio_ms AS tMedioMs, t_longo_ms AS tLongoMs,
+      t_modulo_carga_ms AS tModuloCargaMs, t_curto_ms AS tCurtoMs, t_medio_ms AS tMedioMs, t_longo_ms AS tLongoMs, t_empresa_ms AS tEmpresaMs,
       prog_total AS total, prog_feitas AS feitas, prog_atual AS atual, prog_em AS progEm,
       (prog_rodando = 1 AND prog_em IS NOT NULL AND datetime(prog_em, '+5 minutes') >= datetime('now')) AS rodando,
       agente_visto_em AS agenteVistoEm,
@@ -5183,7 +5184,7 @@ app.get("/api/ferias-robo/estado", blockCliente, requirePermissao("configuracoes
     ligado: !!c.ligado, intervaloMin: c.intervaloMin, ultimaExecEm: c.ultimaExecEm,
     agendaAtivo: !!c.agendaAtivo, agendaHora: c.agendaHora, agendaMinuto: c.agendaMinuto,
     tEntreEmpresasMs: c.tEntreEmpresasMs, tRenderTimeoutMs: c.tRenderTimeoutMs, tGerarPdfMs: c.tGerarPdfMs,
-    tModuloCargaMs: c.tModuloCargaMs, tCurtoMs: c.tCurtoMs, tMedioMs: c.tMedioMs, tLongoMs: c.tLongoMs,
+    tModuloCargaMs: c.tModuloCargaMs, tCurtoMs: c.tCurtoMs, tMedioMs: c.tMedioMs, tLongoMs: c.tLongoMs, tEmpresaMs: c.tEmpresaMs,
     rodando: !!c.rodando, total: c.total, feitas: c.feitas, atual: c.atual, progEm: c.progEm,
     runNowPendente: !!c.runNowEm, pararPendente: !!c.pararPendente, agenteOnline: !!c.agenteOnline, agenteVistoEm: c.agenteVistoEm,
   });
@@ -5200,12 +5201,13 @@ app.post("/api/ferias-robo/config", blockCliente, requirePermissao("configuracoe
   const tCurtoMs = clampTempoMs(req.body?.tCurtoMs, 700, 100, 30000);
   const tMedioMs = clampTempoMs(req.body?.tMedioMs, 2000, 100, 30000);
   const tLongoMs = clampTempoMs(req.body?.tLongoMs, 4000, 100, 30000);
+  const tEmpresaMs = clampTempoMs(req.body?.tEmpresaMs, 4000, 100, 30000);
   const antesAgenda = sqlite.prepare(`SELECT agenda_ativo, agenda_hora, agenda_minuto FROM ferias_robo_estado WHERE escritorio_id = 1`).get() as any;
   sqlite.prepare(`
     UPDATE ferias_robo_estado SET agenda_ativo = ?, agenda_hora = ?, agenda_minuto = ?,
-      t_entre_empresas_ms = ?, t_render_timeout_ms = ?, t_gerar_pdf_ms = ?, t_modulo_carga_ms = ?, t_curto_ms = ?, t_medio_ms = ?, t_longo_ms = ?
+      t_entre_empresas_ms = ?, t_render_timeout_ms = ?, t_gerar_pdf_ms = ?, t_modulo_carga_ms = ?, t_curto_ms = ?, t_medio_ms = ?, t_longo_ms = ?, t_empresa_ms = ?
     WHERE escritorio_id = 1
-  `).run(agendaAtivo, agendaHora, agendaMinuto, tEntreEmpresasMs, tRenderTimeoutMs, tGerarPdfMs, tModuloCargaMs, tCurtoMs, tMedioMs, tLongoMs);
+  `).run(agendaAtivo, agendaHora, agendaMinuto, tEntreEmpresasMs, tRenderTimeoutMs, tGerarPdfMs, tModuloCargaMs, tCurtoMs, tMedioMs, tLongoMs, tEmpresaMs);
   if (!antesAgenda || !!antesAgenda.agenda_ativo !== !!agendaAtivo || antesAgenda.agenda_hora !== agendaHora || antesAgenda.agenda_minuto !== agendaMinuto)
     sqlite.prepare(`UPDATE ferias_robo_estado SET agenda_ultimo_dia = NULL WHERE escritorio_id = 1`).run();
   res.json({ ok: true });

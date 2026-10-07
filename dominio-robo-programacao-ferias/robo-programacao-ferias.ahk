@@ -59,6 +59,7 @@ FAV_DOWNS   := 2
 T_CURTO  := 700
 T_MEDIO  := 2000
 T_LONGO  := 4000
+T_EMPRESA := 4000        ; espera depois de selecionar a empresa, antes de abrir o Favoritos
 T_GERAR_PDF      := 15000
 T_ENTRE_EMPRESAS := 15000
 T_RENDER_TIMEOUT := 90000                  ; espera o relatorio renderizar ate 90s; senao trata como sem dados
@@ -193,7 +194,7 @@ FecharErroSistema() {
 }
 
 TrocarEmpresa(codigo) {
-    global T_CURTO, T_MEDIO, T_LONGO
+    global T_CURTO, T_MEDIO, T_LONGO, T_EMPRESA
     Send "{F8}"
     Sleep T_MEDIO
     Send "^a"
@@ -201,7 +202,7 @@ TrocarEmpresa(codigo) {
     SendText codigo
     Sleep T_MEDIO
     Send "{Enter}"
-    Sleep T_LONGO
+    Sleep T_EMPRESA
 }
 
 ; Abre Favoritos > Programacao de Ferias (Alt+F -> Down x FAV_DOWNS -> Enter), com foco antes.
@@ -451,7 +452,10 @@ ExtrairNum(body, chave) {
 ; editar esses tempos no site (Configuracoes) sem precisar baixar o robo de novo. Se a chave nao vier
 ; no JSON (robo antigo/site antigo), mantem o valor atual (fallback dos defaults la em cima).
 AtualizarTempos(body) {
-    global T_CURTO, T_MEDIO, T_LONGO, T_GERAR_PDF, T_ENTRE_EMPRESAS, T_RENDER_TIMEOUT, T_MODULO_CARGA
+    global T_CURTO, T_MEDIO, T_LONGO, T_GERAR_PDF, T_ENTRE_EMPRESAS, T_RENDER_TIMEOUT, T_MODULO_CARGA, T_EMPRESA
+    v := ExtrairNum(body, "tEmpresaMs")
+    if (v > 0)
+        T_EMPRESA := v
     v := ExtrairNum(body, "tCurtoMs")
     if (v > 0)
         T_CURTO := v
