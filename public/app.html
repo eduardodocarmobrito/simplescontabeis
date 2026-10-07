@@ -4411,7 +4411,7 @@ async function renderEnvioModelos(){
   `;
   document.getElementById('envioModelosBody').innerHTML = items.length? items.map(t=>`
     <tr data-id="${t.id}">
-      <td><b>${esc(t.nome)}</b>${t.protegido?` <span title="Usado automaticamente pelo Integra Contador — não pode ser renomeado nem excluído">*</span>`:''}${t.descricao?`<br><span style="color:var(--ink-soft); font-size:12px;">${esc(t.descricao)}</span>`:''}${t.suspensoDesde?`<br><span class="tag bad" style="margin-top:3px;">Suspenso a partir de ${esc(mesAnoRotulo(t.suspensoDesde))}</span>`:''}${t.autoRegimeTributario?`<br><span class="tag ok" style="margin-top:3px;">Automático para ${esc(REGIME_TRIBUTARIO_LABELS[t.autoRegimeTributario]||t.autoRegimeTributario)}</span>`:''}</td>
+      <td><b>${esc(t.nome)}</b>${t.protegido?` <span title="Usado automaticamente pelo Integra Contador — não pode ser renomeado nem excluído">*</span>`:''}${t.descricao?`<br><span style="color:var(--ink-soft); font-size:12px;">${esc(t.descricao)}</span>`:''}${t.suspensoDesde?`<br><span class="tag bad" style="margin-top:3px;">Suspenso a partir de ${esc(mesAnoRotulo(t.suspensoDesde))}</span>`:''}${t.autoRegimeTributario?`<br><span class="tag ok" style="margin-top:3px;">Automático para ${esc(REGIME_TRIBUTARIO_LABELS[t.autoRegimeTributario]||t.autoRegimeTributario)}</span>`:''}${t.setor?` <br><span class="tag ok" style="margin-top:3px;">Setor: ${esc((SETORES_EMPRESA_UI.find(x=>x.chave===t.setor)||{}).label||t.setor)}</span>`:' <br><span class="tag muted" style="margin-top:3px;">todas as empresas</span>'}</td>
       <td>${PERIODICIDADE_LABELS[t.periodicidade]||t.periodicidade}</td>
       <td>${t.accept.map(a=>`<span class="tag muted">${esc(a)}</span>`).join(' ')}</td>
       <td><span class="tag ${t.detectarVencimento?'ok':'muted'}">${t.detectarVencimento?'Detecta':'Não se aplica'}</span></td>
@@ -4439,6 +4439,11 @@ function envioModeloModal(t){
         <option value="avulso">Avulso (envios pontuais, com rótulo próprio — ex.: "IRPF 2026")</option>
       </select>
       ${t? `<p style="font-size:11.5px; color:var(--ink-soft); margin:4px 0 0;">Mudar aqui não altera o que já foi gerado na grade de cada empresa — vale a partir da próxima vez que "Gerar ano na grade" (ou "Nova solicitação avulsa") for usado.</p>`:''}
+    </div>
+    <div class="field">
+      <label>Setor que atende este modelo</label>
+      <select id="evSetor"><option value="">— todas as empresas —</option>${SETORES_EMPRESA_UI.map(s=>`<option value="${s.chave}" ${t&&t.setor===s.chave?'selected':''}>${esc(s.label)}</option>`).join('')}</select>
+      <div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">Só aparece para a empresa que marcar este setor no cadastro dela (Empresas › Configurações). Sem setor = aparece para todas.</div>
     </div>
     <div class="field">
       <label>Criar automaticamente para empresa com regime tributário (opcional)</label>
@@ -4473,13 +4478,14 @@ function envioModeloModal(t){
   `);
   if(t) document.getElementById('evPeriodicidade').value = t.periodicidade;
   if(t&&t.autoRegimeTributario) document.getElementById('evAutoRegime').value = t.autoRegimeTributario;
+  if(t&&t.setor) document.getElementById('evSetor').value = t.setor;
   document.getElementById('evCancel').addEventListener('click', closeModal);
   document.getElementById('evSalvar').addEventListener('click', async ()=>{
     const nome=document.getElementById('evNome').value.trim();
     if(!nome){ toast('Informe o nome.','err'); return; }
     const accept=[...document.querySelectorAll('.evAccept:checked')].map(c=>c.value);
     if(!accept.length){ toast('Selecione ao menos um tipo de arquivo.','err'); return; }
-    const body = { nome, descricao: document.getElementById('evDesc').value.trim(), periodicidade: document.getElementById('evPeriodicidade').value, accept, detectarVencimento: document.getElementById('evDetectarVenc').checked, considerarMesAtual: document.getElementById('evConsiderarMesAtual').checked, visivelCliente: document.getElementById('evVisivelCliente').checked, suspensoDesde: document.getElementById('evSuspensoDesde').value || null, autoRegimeTributario: document.getElementById('evAutoRegime').value || null };
+    const body = { nome, descricao: document.getElementById('evDesc').value.trim(), periodicidade: document.getElementById('evPeriodicidade').value, accept, detectarVencimento: document.getElementById('evDetectarVenc').checked, considerarMesAtual: document.getElementById('evConsiderarMesAtual').checked, visivelCliente: document.getElementById('evVisivelCliente').checked, suspensoDesde: document.getElementById('evSuspensoDesde').value || null, autoRegimeTributario: document.getElementById('evAutoRegime').value || null, setor: document.getElementById('evSetor').value || null };
     try{
       if(t) await api('/envio/templates/'+t.id, { method:'PUT', body });
       else await api('/envio/templates', { method:'POST', body });

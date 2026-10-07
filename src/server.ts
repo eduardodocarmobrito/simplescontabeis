@@ -1489,6 +1489,12 @@ for (const tabela of ["chat_mensagens", "chat_equipe_mensagens", "chat_dm_mensag
   }
 }
 
+// Migração leve: envio_templates.setor — setor que atende o modelo (contabilidade, fiscal, dprh).
+// Sem setor = aparece para todas as empresas (comportamento de antes).
+{
+  const colsEnvio = sqlite.prepare(`PRAGMA table_info(envio_templates)`).all() as any[];
+  if (!colsEnvio.some((c) => c.name === "setor")) sqlite.exec(`ALTER TABLE envio_templates ADD COLUMN setor TEXT`);
+}
 // Migração leve: auto_regime_tributario — modelo que nasce sozinho pra empresa quando ela é
 // classificada num regime tributário específico (ex.: DARF IRPJ/CSLL trimestral só se aplica a
 // Lucro Real — marcar a empresa como Lucro Real já cria a atribuição, sem precisar lembrar de
@@ -3256,6 +3262,11 @@ function empresaSetores(empresaId: number): string[] {
   const rows = sqlite.prepare(`SELECT setor FROM empresa_setores WHERE empresa_id = ?`).all(empresaId) as any[];
   return rows.length ? rows.map((r) => r.setor) : SETORES_EMPRESA.map((s) => s.chave);
 }
+// Modelo amarrado a um setor só vale para empresa que atende esse setor. Modelo sem setor vale para todas.
+function envioSetorAtendido(templateSetor: string | null | undefined, empresaId: number): boolean {
+  if (!templateSetor) return true;
+  return empresaSetores(empresaId).includes(templateSetor);
+}
 app.get("/api/empresas/:id/setores", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
   const empresaId = Number(req.params.id);
   if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
@@ -3385,8 +3396,9 @@ const REGIMES_TRIBUTARIOS = ["simples_nacional", "lucro_presumido", "lucro_real"
 // — chamado toda vez que o regime é salvo (cadastro novo ou edição), idempotente via UNIQUE(template_id,
 // empresa_id) do INSERT OR IGNORE, então não recria nem duplica se já existir.
 function envioAutoAtribuirPorRegime(empresaId: number, escritorioId: number, regimeTributario: string) {
-  const templates = sqlite.prepare(`SELECT id FROM envio_templates WHERE escritorio_id = ? AND auto_regime_tributario = ?`).all(escritorioId, regimeTributario) as any[];
+  const templates = sqlite.prepare(`SELECT id, setor FROM envio_templates WHERE escritorio_id = ? AND auto_regime_tributario = ?`).all(escritorioId, regimeTributario) as any[];
   for (const t of templates) {
+    if (!envioSetorAtendido(t.setor, empresaId)) continue;
     sqlite.prepare(`INSERT OR IGNORE INTO envio_atribuicoes (template_id, empresa_id) VALUES (?, ?)`).run(t.id, empresaId);
   }
 }
@@ -5763,14 +5775,15 @@ app.get("/api/envio/templates", blockCliente, requirePermissao("envio", "visuali
 const ENVIO_PERIODICIDADES = ["mensal", "trimestral", "anual", "avulso"];
 app.post("/api/envio/templates", blockCliente, requirePermissao("envio", "postar"), (req, res) => {
   const user = (req as any).user;
-  const { nome, descricao, periodicidade, accept, detectarVencimento, considerarMesAtual, visivelCliente, suspensoDesde, autoRegimeTributario } = req.body || {};
+  const { nome, descricao, periodicidade, accept, detectarVencimento, considerarMesAtual, visivelCliente, suspensoDesde, autoRegimeTributario, setor } = req.body || {};
   if (!nome) return res.status(400).json({ error: "Informe o nome (ex.: \"DARF PIS\")." });
+  if (setor && !SETOR_ROTULO[setor]) return res.status(400).json({ error: "Setor inválido." });
   if (suspensoDesde && !/^\d{4}-\d{2}$/.test(suspensoDesde)) return res.status(400).json({ error: "Competência de suspensão inválida." });
   if (autoRegimeTributario && !(REGIMES_TRIBUTARIOS as readonly string[]).includes(autoRegimeTributario)) return res.status(400).json({ error: "Regime tributário inválido." });
   const acceptFinal = Array.isArray(accept) && accept.length ? accept : ["pdf"];
   const info = sqlite
-    .prepare(`INSERT INTO envio_templates (nome, descricao, periodicidade, accept_json, detectar_vencimento, considera_mes_atual, visivel_cliente, suspenso_desde, auto_regime_tributario, created_by, escritorio_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(nome, descricao || null, ENVIO_PERIODICIDADES.includes(periodicidade) ? periodicidade : "mensal", JSON.stringify(acceptFinal), detectarVencimento === false ? 0 : 1, considerarMesAtual === false ? 0 : 1, visivelCliente ? 1 : 0, suspensoDesde || null, autoRegimeTributario || null, user.id, user.escritorioId);
+    .prepare(`INSERT INTO envio_templates (nome, descricao, periodicidade, accept_json, detectar_vencimento, considera_mes_atual, visivel_cliente, suspenso_desde, auto_regime_tributario, created_by, escritorio_id, setor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(nome, descricao || null, ENVIO_PERIODICIDADES.includes(periodicidade) ? periodicidade : "mensal", JSON.stringify(acceptFinal), detectarVencimento === false ? 0 : 1, considerarMesAtual === false ? 0 : 1, visivelCliente ? 1 : 0, suspensoDesde || null, autoRegimeTributario || null, user.id, user.escritorioId, setor || null);
   res.json({ id: Number(info.lastInsertRowid) });
 });
 app.put("/api/envio/templates/:id", blockCliente, requirePermissao("envio", "editar"), (req, res) => {
@@ -5778,7 +5791,8 @@ app.put("/api/envio/templates/:id", blockCliente, requirePermissao("envio", "edi
   const existing = sqlite.prepare(`SELECT * FROM envio_templates WHERE id = ? AND escritorio_id = ?`).get(id, (req as any).user.escritorioId) as any;
   if (!existing) return res.status(404).json({ error: "Modelo não encontrado." });
   const protegido = ENVIO_TEMPLATES_PROTEGIDOS.includes(existing.nome);
-  const { nome, descricao, periodicidade, accept, ativo, detectarVencimento, considerarMesAtual, visivelCliente, suspensoDesde, autoRegimeTributario } = req.body || {};
+  const { nome, descricao, periodicidade, accept, ativo, detectarVencimento, considerarMesAtual, visivelCliente, suspensoDesde, autoRegimeTributario, setor } = req.body || {};
+  if (setor !== undefined && setor && !SETOR_ROTULO[setor]) return res.status(400).json({ error: "Setor inválido." });
   if (protegido && nome !== undefined && nome !== existing.nome) {
     return res.status(409).json({ error: `"${existing.nome}" é usado automaticamente pelo Integra Contador — renomear quebraria o anexo automático de DAS/Situação Fiscal.` });
   }
@@ -5791,7 +5805,7 @@ app.put("/api/envio/templates/:id", blockCliente, requirePermissao("envio", "edi
   // antigo) — só passa a valer pra próxima vez que "Gerar ano na grade" (ou "+ Nova solicitação
   // avulsa") for usado em cada atribuição desse modelo.
   sqlite
-    .prepare(`UPDATE envio_templates SET nome=?, descricao=?, periodicidade=?, accept_json=?, detectar_vencimento=?, considera_mes_atual=?, visivel_cliente=?, ativo=?, suspenso_desde=?, auto_regime_tributario=? WHERE id=?`)
+    .prepare(`UPDATE envio_templates SET nome=?, descricao=?, periodicidade=?, accept_json=?, detectar_vencimento=?, considera_mes_atual=?, visivel_cliente=?, ativo=?, suspenso_desde=?, auto_regime_tributario=?, setor=? WHERE id=?`)
     .run(
       nome ?? existing.nome,
       descricao !== undefined ? descricao : existing.descricao,
@@ -5803,6 +5817,7 @@ app.put("/api/envio/templates/:id", blockCliente, requirePermissao("envio", "edi
       ativo === undefined ? existing.ativo : ativo ? 1 : 0,
       suspensoDesde === undefined ? existing.suspenso_desde : suspensoDesde || null,
       autoRegimeTributario === undefined ? existing.auto_regime_tributario : autoRegimeTributario || null,
+      setor === undefined ? existing.setor : setor || null,
       id
     );
   res.json({ ok: true });
@@ -5823,7 +5838,7 @@ app.get("/api/envio/atribuicoes", blockCliente, requirePermissao("envio", "visua
   const user = (req as any).user;
   const empresaId = req.query.empresaId ? Number(req.query.empresaId) : null;
   if (empresaId && !podeAcessarEmpresa(user, empresaId)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
-  let sql = `SELECT a.*, t.nome as templateNome, t.periodicidade, t.accept_json as acceptJson, e.nome as empresaNome
+  let sql = `SELECT a.*, t.nome as templateNome, t.periodicidade, t.accept_json as acceptJson, t.setor as templateSetor, e.nome as empresaNome
              FROM envio_atribuicoes a JOIN envio_templates t ON t.id = a.template_id JOIN empresas e ON e.id = a.empresa_id
              WHERE e.ativo = 1`;
   const params: any[] = [];
@@ -5835,6 +5850,7 @@ app.get("/api/envio/atribuicoes", blockCliente, requirePermissao("envio", "visua
   let rows = sqlite.prepare(sql).all(...params) as any[];
   const visiveis = empresasVisiveis(user);
   if (visiveis !== null) rows = rows.filter((r) => visiveis.includes(r.empresa_id));
+  rows = rows.filter((r) => envioSetorAtendido(r.templateSetor, r.empresa_id));
   res.json({
     items: rows.map((r) => ({
       ...r,
@@ -5854,7 +5870,7 @@ app.get("/api/envio/solicitacoes", blockCliente, requirePermissao("envio", "visu
   const empresaId = req.query.empresaId ? Number(req.query.empresaId) : null;
   if (empresaId && !podeAcessarEmpresa(user, empresaId)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
   let sql = `SELECT p.id as periodoId, p.ano, p.mes, p.rotulo, p.solicitado_em as solicitadoEm, p.solicitacao_tipo as tipo,
-              t.nome as templateNome, a.id as atribuicaoId, a.empresa_id as empresaId, e.nome as empresaNome,
+              t.nome as templateNome, t.setor as templateSetor, a.id as atribuicaoId, a.empresa_id as empresaId, e.nome as empresaNome,
               u.nome as solicitadoPorNome, u.perfil as solicitadoPorPerfil,
               EXISTS(SELECT 1 FROM envio_documentos d WHERE d.periodo_id = p.id) as concluida,
               (SELECT MAX(d.enviado_em) FROM envio_documentos d WHERE d.periodo_id = p.id) as retornoClienteEm
@@ -5873,6 +5889,7 @@ app.get("/api/envio/solicitacoes", blockCliente, requirePermissao("envio", "visu
   let rows = sqlite.prepare(sql).all(...params) as any[];
   const visiveis = empresasVisiveis(user);
   if (visiveis !== null) rows = rows.filter((r) => visiveis.includes(r.empresaId));
+  rows = rows.filter((r) => envioSetorAtendido(r.templateSetor, r.empresaId));
   res.json({ items: rows.map((r) => ({ ...r, concluida: !!r.concluida })) });
 });
 app.get("/api/envio/minhas-atribuicoes", (req, res) => {
@@ -5881,12 +5898,12 @@ app.get("/api/envio/minhas-atribuicoes", (req, res) => {
   if (!user.empresaId) return res.json({ items: [] });
   const rows = sqlite
     .prepare(
-      `SELECT a.*, t.nome as templateNome, t.periodicidade, t.descricao, e.nome as empresaNome
+      `SELECT a.*, t.nome as templateNome, t.periodicidade, t.descricao, t.setor as templateSetor, e.nome as empresaNome
        FROM envio_atribuicoes a JOIN envio_templates t ON t.id = a.template_id JOIN empresas e ON e.id = a.empresa_id
        WHERE a.empresa_id = ? AND a.ativo = 1 ORDER BY t.nome`
     )
     .all(user.empresaId) as any[];
-  res.json({ items: rows });
+  res.json({ items: rows.filter((r) => envioSetorAtendido(r.templateSetor, user.empresaId)) });
 });
 
 // ---- Solicitar Documentos (cliente pede, sem depender do escritório já ter atribuído o modelo) ----
@@ -6047,8 +6064,11 @@ app.post("/api/envio/atribuicoes", blockCliente, requirePermissao("envio", "post
   const { templateId, empresaId } = req.body || {};
   if (!templateId || !empresaId) return res.status(400).json({ error: "Selecione o modelo e a empresa." });
   if (!podeAcessarEmpresa(user, Number(empresaId))) return res.status(403).json({ error: "Sem acesso a esta empresa." });
-  const template = sqlite.prepare(`SELECT id FROM envio_templates WHERE id = ? AND escritorio_id = ?`).get(Number(templateId), user.escritorioId);
+  const template = sqlite.prepare(`SELECT id, setor FROM envio_templates WHERE id = ? AND escritorio_id = ?`).get(Number(templateId), user.escritorioId) as any;
   if (!template) return res.status(404).json({ error: "Modelo não encontrado." });
+  if (!envioSetorAtendido(template.setor, Number(empresaId))) {
+    return res.status(400).json({ error: `Esta empresa não atende o setor "${SETOR_ROTULO[template.setor]}". Marque o setor no cadastro da empresa antes de atribuir este modelo.` });
+  }
   try {
     const info = sqlite
       .prepare(`INSERT INTO envio_atribuicoes (template_id, empresa_id, created_by) VALUES (?, ?, ?)`)
