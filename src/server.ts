@@ -1495,6 +1495,12 @@ for (const tabela of ["chat_mensagens", "chat_equipe_mensagens", "chat_dm_mensag
   const colsEnvio = sqlite.prepare(`PRAGMA table_info(envio_templates)`).all() as any[];
   if (!colsEnvio.some((c) => c.name === "setor")) sqlite.exec(`ALTER TABLE envio_templates ADD COLUMN setor TEXT`);
 }
+// envio_atribuicoes.monitorar_desde — competência (AAAA-MM) a partir da qual a empresa é cobrada nesse
+// modelo. Antes dela nada fica pendente. NULL = comportamento de antes (desde o período mais antigo).
+{
+  const colsAtrib = sqlite.prepare(`PRAGMA table_info(envio_atribuicoes)`).all() as any[];
+  if (!colsAtrib.some((c) => c.name === "monitorar_desde")) sqlite.exec(`ALTER TABLE envio_atribuicoes ADD COLUMN monitorar_desde TEXT`);
+}
 // Migração leve: auto_regime_tributario — modelo que nasce sozinho pra empresa quando ela é
 // classificada num regime tributário específico (ex.: DARF IRPJ/CSLL trimestral só se aplica a
 // Lucro Real — marcar a empresa como Lucro Real já cria a atribuição, sem precisar lembrar de
@@ -6061,7 +6067,8 @@ app.get("/api/envio/minhas-solicitacoes", (req, res) => {
 
 app.post("/api/envio/atribuicoes", blockCliente, requirePermissao("envio", "postar"), (req, res) => {
   const user = (req as any).user;
-  const { templateId, empresaId } = req.body || {};
+  const { templateId, empresaId, monitorarDesde } = req.body || {};
+  if (monitorarDesde && !/^\d{4}-\d{2}$/.test(monitorarDesde)) return res.status(400).json({ error: "Competência de início inválida." });
   if (!templateId || !empresaId) return res.status(400).json({ error: "Selecione o modelo e a empresa." });
   if (!podeAcessarEmpresa(user, Number(empresaId))) return res.status(403).json({ error: "Sem acesso a esta empresa." });
   const template = sqlite.prepare(`SELECT id, setor FROM envio_templates WHERE id = ? AND escritorio_id = ?`).get(Number(templateId), user.escritorioId) as any;
@@ -6071,8 +6078,8 @@ app.post("/api/envio/atribuicoes", blockCliente, requirePermissao("envio", "post
   }
   try {
     const info = sqlite
-      .prepare(`INSERT INTO envio_atribuicoes (template_id, empresa_id, created_by) VALUES (?, ?, ?)`)
-      .run(Number(templateId), Number(empresaId), user.id);
+      .prepare(`INSERT INTO envio_atribuicoes (template_id, empresa_id, created_by, monitorar_desde) VALUES (?, ?, ?, ?)`)
+      .run(Number(templateId), Number(empresaId), user.id, monitorarDesde || null);
     res.json({ id: Number(info.lastInsertRowid) });
   } catch (e: any) {
     if (String(e.message).includes("UNIQUE")) return res.status(409).json({ error: "Este modelo já está atribuído a esta empresa." });
@@ -13560,8 +13567,13 @@ function cardDasEmAtraso(user: any): any[] {
     // nada, então pula (evita marcar uma atribuição recém-criada como atrasada desde sempre).
     const periodos = sqlite.prepare(`SELECT p.id, p.ano, p.mes FROM envio_periodos p WHERE p.atribuicao_id = ? AND p.mes IS NOT NULL`).all(atrib.atribuicaoId) as any[];
     const porCompetencia = new Map<string, any>(periodos.map((p) => [`${p.ano}${String(p.mes).padStart(2, "0")}`, p]));
+    // Competência escolhida na atribuição ("monitorar a partir de"): manda sobre o período mais antigo
+    // e não depende de grade gerada — nada antes dela é cobrado.
+    const monitorarDesde = atrib.monitorarDesde ? Number(String(atrib.monitorarDesde).replace("-", "")) : null;
     let anoMesInicio: number;
-    if (periodos.length) {
+    if (monitorarDesde) {
+      anoMesInicio = monitorarDesde;
+    } else if (periodos.length) {
       const maisAntigo = periodos.reduce((min, p) => (p.ano * 100 + p.mes < min.ano * 100 + min.mes ? p : min));
       anoMesInicio = maisAntigo.ano * 100 + maisAntigo.mes;
     } else {
@@ -13638,7 +13650,7 @@ function cardEnvioAtraso(user: any, templateIds: number[]): any[] {
   const placeholders = templateIds.map(() => "?").join(",");
   const atribuicoes = sqlite
     .prepare(
-      `SELECT a.id as atribuicaoId, a.empresa_id as empresaId, e.nome as empresaNome, t.id as templateId, t.nome as templateNome, t.considera_mes_atual as considerarMesAtual, t.suspenso_desde as suspensoDesde, t.periodicidade as periodicidade, t.setor as templateSetor
+      `SELECT a.id as atribuicaoId, a.empresa_id as empresaId, e.nome as empresaNome, t.id as templateId, t.nome as templateNome, t.considera_mes_atual as considerarMesAtual, t.suspenso_desde as suspensoDesde, t.periodicidade as periodicidade, t.setor as templateSetor, a.monitorar_desde as monitorarDesde
        FROM envio_atribuicoes a
        JOIN envio_templates t ON t.id = a.template_id AND t.id IN (${placeholders}) AND t.escritorio_id = ?
        JOIN empresas e ON e.id = a.empresa_id AND e.escritorio_id = ? AND e.ativo = 1
@@ -13653,7 +13665,8 @@ function cardEnvioAtraso(user: any, templateIds: number[]): any[] {
     const todosPeriodos = sqlite
       .prepare(`SELECT p.id, p.ano, p.mes, p.sem_movimento as semMovimento, p.parcela_numero as parcelaNumero, p.parcela_total as parcelaTotal FROM envio_periodos p WHERE p.atribuicao_id = ? AND p.mes IS NOT NULL`)
       .all(atrib.atribuicaoId) as any[];
-    if (!todosPeriodos.length) continue;
+    // Com "monitorar a partir de" definido, a empresa entra no card mesmo sem grade gerada.
+    if (!todosPeriodos.length && !atrib.monitorarDesde) continue;
     // 2ª/3ª quota de um parcelamento (ver POST /envio/periodos/:id/enviar, campo "parcelas") não faz
     // parte do calendário normal do modelo (mensal ou trimestral) — vive num mês avulso, criado só
     // porque a 1ª quota foi postada como parcelada. Entra no calendário principal (porCompetencia)

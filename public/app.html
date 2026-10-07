@@ -4579,11 +4579,25 @@ async function renderEnvioAtribuicoes(){
     finally{ btn.disabled = false; btn.textContent = 'Gerar grade do ano novo pra todo mundo'; }
   });
 }
+// Opções de "monitorar a partir de": 12 meses atrás até 12 à frente, valor AAAA-MM. Vazio = sem limite.
+function opcoesMesMonitoramento(){
+  const nomes=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+  const hoje=new Date();
+  let opts='<option value="">— desde o início da grade —</option>';
+  for(let i=-12;i<=12;i++){
+    const d=new Date(hoje.getFullYear(), hoje.getMonth()+i, 1);
+    const valor=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+    opts+=`<option value="${valor}">${nomes[d.getMonth()]}/${d.getFullYear()}</option>`;
+  }
+  return opts;
+}
 function novaEnvioAtribModal(empresas, templates){
   openModal(`
     <h3>Atribuir modelo de envio a uma empresa</h3>
     <div class="field"><label>Empresa</label>${comboSelectHtml('evAtEmpresaCombo', 'Selecione a empresa…')}</div>
     <div class="field"><label>Modelo</label><select id="evAtTemplate">${templates.map(t=>`<option value="${t.id}">${esc(t.nome)}</option>`).join('')}</select></div>
+    <div class="field"><label>Monitorar a partir de</label><select id="evAtMonitorar">${opcoesMesMonitoramento()}</select>
+      <div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">Competências antes deste mês não ficam pendentes. Sem escolha = desde o início da grade.</div></div>
     <div class="modal-actions">
       <button class="btn" id="evAtCancel">Cancelar</button>
       <button class="btn primary" id="evAtSalvar">Atribuir</button>
@@ -4595,7 +4609,8 @@ function novaEnvioAtribModal(empresas, templates){
     const empresaId = document.querySelector('#evAtEmpresaCombo .combo-value').value;
     if(!empresaId){ toast('Selecione a empresa.','err'); return; }
     try{
-      const r = await api('/envio/atribuicoes', { method:'POST', body:{ empresaId:Number(empresaId), templateId:Number(document.getElementById('evAtTemplate').value) } });
+      const monitorarDesde = document.getElementById('evAtMonitorar').value || null;
+      const r = await api('/envio/atribuicoes', { method:'POST', body:{ empresaId:Number(empresaId), templateId:Number(document.getElementById('evAtTemplate').value), monitorarDesde } });
       closeModal();
       abrirEnvioGrade(r.id, false); // não chamar renderEnvioAtribuicoes() aqui — mesma corrida de innerHTML do fix em novaAtribModal
     }catch(e){ toast(e.message,'err'); }
