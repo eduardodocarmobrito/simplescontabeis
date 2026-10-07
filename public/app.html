@@ -2900,7 +2900,7 @@ async function renderEmpresasPendencias(){
       return !termo || normalizaTxt(i.nome).includes(termo) || normalizaTxt(i.cnpj||'').includes(termo);
     });
     document.getElementById('pendBody').innerHTML = itens.length ? itens.map(i=>`
-      <tr data-id="${i.id}"><td><b>${esc(i.nome)}</b></td><td>${esc(i.cnpj||'—')}</td>
+      <tr data-id="${i.id}"><td><b>${esc(i.nome)}</b></td><td>${esc(fmtCnpjCpf(i.cnpj)||'—')}</td>
         <td>${!exigido(i,'certificado')?'<span style="color:var(--ink-soft);">—</span>':i.temCertificado?ok:falta}</td>
         ${lics.map(l=>`<td>${!exigido(i,l.chave)?'<span style="color:var(--ink-soft);">—</span>':i.licencas[l.chave]?ok:falta}</td>`).join('')}
         <td style="text-align:right;">${podeEditar?'<button class="btn small" data-act="abrir">Abrir empresa</button>':''}</td></tr>`).join('')
@@ -2961,7 +2961,7 @@ function empresaModal(e){
     </div>` : ''}
     <div id="empTabEmpresa">
       <div class="row">
-        <div class="field" style="width:200px;"><label>CNPJ/CPF</label><input id="empCnpj" value="${e&&e.cnpj?esc(e.cnpj):''}" placeholder="Pessoa física: CPF do produtor rural"></div>
+        <div class="field" style="width:200px;"><label>CNPJ/CPF</label><input id="empCnpj" value="${e&&e.cnpj?esc(fmtCnpjCpf(e.cnpj)):''}" placeholder="Pessoa física: CPF do produtor rural"></div>
         <div class="field grow"><label>Nome da empresa</label><input id="empNome" value="${e?esc(e.nome):''}"></div>
         <div class="field" style="width:70px;"><label>Código no Domínio Web (opcional)</label><input id="empCodigo" value="${e&&e.codigoDominio?esc(e.codigoDominio):''}"></div>
         <div class="field" style="width:90px;"><label>Apelido (opcional)</label><input id="empApelido" value="${e&&e.apelido?esc(e.apelido):''}" placeholder="Ex.: AGR" title="Usado no nome da pasta de exportação de XML (código-apelido), igual à convenção do próprio Domínio Web."></div>
@@ -2986,7 +2986,7 @@ function empresaModal(e){
       <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Representante legal (usado em contratos/distratos)</div>
       <div class="row">
         <div class="field grow"><label>Nome do representante legal</label><input id="empNomeRepresentante" value="${e&&e.nomeRepresentanteLegal?esc(e.nomeRepresentanteLegal):''}"></div>
-        <div class="field" style="width:160px;"><label>CPF do representante legal</label><input id="empCpfRepresentante" value="${e&&e.cpfRepresentanteLegal?esc(e.cpfRepresentanteLegal):''}"></div>
+        <div class="field" style="width:160px;"><label>CPF do representante legal</label><input id="empCpfRepresentante" value="${e&&e.cpfRepresentanteLegal?esc(fmtCnpjCpf(e.cpfRepresentanteLegal)):''}"></div>
       </div>
     </div>
     ${e? `
@@ -3129,7 +3129,7 @@ function empresaModal(e){
     if(!nome){ toast('Informe o nome.','err'); return; }
     const body = {
       nome,
-      cnpj: document.getElementById('empCnpj').value.trim(),
+      cnpj: document.getElementById('empCnpj').value.replace(/\D/g,''),
       codigoDominio: document.getElementById('empCodigo').value.trim(),
       apelido: document.getElementById('empApelido').value.trim(),
       email: document.getElementById('empEmail').value.trim(),
@@ -3141,7 +3141,7 @@ function empresaModal(e){
       inscricaoMunicipal: document.getElementById('empInscricaoMunicipal').value.trim(),
       inscricaoEstadual: document.getElementById('empInscricaoEstadual').value.trim(),
       nomeRepresentanteLegal: document.getElementById('empNomeRepresentante').value.trim(),
-      cpfRepresentanteLegal: document.getElementById('empCpfRepresentante').value.trim(),
+      cpfRepresentanteLegal: document.getElementById('empCpfRepresentante').value.replace(/\D/g,''),
       codigoMunicipioIbge: document.getElementById('empCodigoMunicipio').value.trim(),
       nomeMunicipioIbge: document.getElementById('empNomeMunicipio').value.trim(),
     };
@@ -11685,7 +11685,7 @@ function escritorioModal(esc_){
   openModal(`
     <h3>${esc_?'Editar':'Novo'} escritório</h3>
     <div class="field"><label>Nome</label><input id="escNome" value="${esc_?esc(esc_.nome):''}"></div>
-    <div class="field"><label>CNPJ</label><input id="escCnpj" value="${esc_&&esc_.cnpj?esc(esc_.cnpj):''}"></div>
+    <div class="field"><label>CNPJ</label><input id="escCnpj" value="${esc_&&esc_.cnpj?esc(fmtCnpjCpf(esc_.cnpj)):''}"></div>
     <div class="field"><label>E-mail</label><input id="escEmail" type="email" value="${esc_&&esc_.email?esc(esc_.email):''}"></div>
     <div class="field"><label>Telefone</label><input id="escTelefone" value="${esc_&&esc_.telefone?esc(esc_.telefone):''}"></div>
     ${!esc_?'<p class="subtitle" style="margin-top:0;">Depois de criado, use o botão "+ Administrador" na lista pra cadastrar o primeiro acesso desse escritório.</p>':''}
@@ -13724,7 +13724,7 @@ async function renderCfgNfseAgendamento(box){
     lista.innerHTML = items.length? items.map(e=>{
       const digitos = (e.cnpj||'').replace(/\D/g,'');
       const pessoaFisica = digitos.length>0 && digitos.length<=11;
-      const identificador = pessoaFisica ? (e.inscricaoEstadual||'sem IE') : (e.cnpj||'sem CNPJ');
+      const identificador = pessoaFisica ? (e.inscricaoEstadual||'sem IE') : (fmtCnpjCpf(e.cnpj)||'sem CNPJ');
       return `
       <div class="row" style="justify-content:space-between; align-items:center; padding:6px 0; border-bottom:1px solid var(--rule);">
         <span style="font-size:12.5px;">${esc(identificador)} — ${esc(e.nome)}</span>
