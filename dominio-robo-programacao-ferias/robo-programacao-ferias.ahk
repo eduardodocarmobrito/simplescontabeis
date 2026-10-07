@@ -57,12 +57,8 @@ LOGO_X      := 40,   LOGO_Y      := 74     ; logo "DOMINIO" (abre menu de modulo
 MODULO_X    := 75,   MODULO_Y    := 192    ; item "Folha" no menu de modulos
 T_MODULO_CARGA := 10000                    ; espera o modulo carregar (~10s)
 
-; Favoritos: "Programacao de Ferias" e o 2o item do submenu (Down x2 -> Enter).
-; Se o submenu tiver so 1 item (ex.: so "Comparativo de Movimentos"), o robo usa o 1o item.
-; Essa decisao olha a cor de UM pixel onde ficaria o 2o item: branco = menu continua (tem 2o item);
-; fundo azul-esverdeado = menu so tem 1 item. Calibre FAV_SEG_ITEM_X/Y se a tela mudar de escala.
+; Favoritos (modulo Folha): "EVENTOS PERIODICOS" e o 1o item, "Programacao de Ferias" o 2o (Down x2 -> Enter).
 FAV_DOWNS   := 2
-FAV_SEG_ITEM_X := 450, FAV_SEG_ITEM_Y := 80
 
 T_CURTO  := 700
 T_MEDIO  := 2000
@@ -213,35 +209,18 @@ TrocarEmpresa(codigo) {
 }
 
 ; Abre Favoritos > Programacao de Ferias (Alt+F -> Down x FAV_DOWNS -> Enter), com foco antes.
-; Com 2+ itens no submenu: Down x FAV_DOWNS. Com 1 item so: Enter direto no 1o.
 AbrirRelatorio() {
     global FAV_KEY, FAV_DOWNS, T_CURTO, T_MEDIO
     Click("700 400")             ; foco de teclado (streaming)
     Sleep 400
     Send "!" . FAV_KEY           ; Alt+F -> abre Favoritos
     Sleep T_MEDIO
-    if FavoritosTemSegundoItem() {
-        Logar("  Favoritos: 2o item existe -> Down x" . FAV_DOWNS)
-        Loop FAV_DOWNS {
-            Send "{Down}"
-            Sleep T_CURTO
-        }
-    } else {
-        Logar("  Favoritos: so 1 item -> usando o 1o (Programacao de Ferias)")
+    Loop FAV_DOWNS {
+        Send "{Down}"
+        Sleep T_CURTO
     }
     Send "{Enter}"
     Sleep T_MEDIO
-}
-
-; Olha a cor do pixel onde estaria o 2o item do submenu Favoritos. Branco = menu tem 2o item.
-FavoritosTemSegundoItem() {
-    global FAV_SEG_ITEM_X, FAV_SEG_ITEM_Y
-    cor := PixelGetColor(FAV_SEG_ITEM_X, FAV_SEG_ITEM_Y, "RGB")
-    r := (cor >> 16) & 0xFF
-    g := (cor >> 8) & 0xFF
-    b := cor & 0xFF
-    Logar("  Favoritos: pixel do 2o item (" . FAV_SEG_ITEM_X . "," . FAV_SEG_ITEM_Y . ") = " . Format("{:06X}", cor))
-    return (r > 200 && g > 200 && b > 200)
 }
 
 ; Tela "Programacao de Ferias": Data base ja vem com a data de HOJE (padrao). So clicar OK.
