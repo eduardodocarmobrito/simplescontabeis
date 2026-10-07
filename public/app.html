@@ -4579,14 +4579,17 @@ async function renderEnvioAtribuicoes(){
     finally{ btn.disabled = false; btn.textContent = 'Gerar grade do ano novo pra todo mundo'; }
   });
 }
-// Itens do combo "monitorar a partir de": 12 meses atrás até 12 à frente (id AAAA-MM). "inicio" = sem limite.
+// Itens do combo "monitorar a partir de": de janeiro/2026 até dezembro do ano seguinte ao atual (id AAAA-MM).
+// "inicio" = sem limite (comportamento de antes).
 function itensMesMonitoramento(){
   const nomes=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
-  const hoje=new Date();
+  const anoInicio = 2026;
+  const anoFim = new Date().getFullYear() + 1;
   const itens=[{ id:'inicio', label:'Desde o início da grade' }];
-  for(let i=-12;i<=12;i++){
-    const d=new Date(hoje.getFullYear(), hoje.getMonth()+i, 1);
-    itens.push({ id:`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`, label:`${nomes[d.getMonth()]}/${d.getFullYear()}` });
+  for(let ano=anoInicio; ano<=anoFim; ano++){
+    for(let mes=1; mes<=12; mes++){
+      itens.push({ id:`${ano}-${String(mes).padStart(2,'0')}`, label:`${nomes[mes-1]}/${ano}` });
+    }
   }
   return itens;
 }
