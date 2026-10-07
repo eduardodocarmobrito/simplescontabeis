@@ -657,6 +657,12 @@ function fmtCnpjCpf(v){
   if(d.length===14) return d.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/,'$1.$2.$3/$4-$5');
   return v==null?'':String(v);
 }
+// CEP no formato 00.000-000 (ex.: 68.552-675). Valor com outro número de dígitos volta como estava.
+function fmtCep(v){
+  const d = String(v==null?'':v).replace(/\D/g,'');
+  if(d.length===8) return d.replace(/(\d{2})(\d{3})(\d{3})/,'$1.$2-$3');
+  return v==null?'':String(v);
+}
 function fmtMoney(v){ return (Number(v)||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'}); }
 // Máscara de campo de valor em R$ — digita só números, formata milhar/centavos ao vivo (ex.: digitar
 // "1798604" mostra "17.986,04"). moedaInputParaNumero() faz o caminho inverso na leitura do form.
@@ -2979,7 +2985,7 @@ function empresaModal(e){
         <div class="field" style="width:240px;"><label>Cidade (IBGE) — obrigatória pra emitir NFS-e</label>${comboSelectHtml('empCidadeIbge','Digite a cidade…')}</div>
         <div class="field" style="width:110px;"><label>Código do município</label><input id="empCodigoMunicipio" readonly style="background:var(--paper);" value="${e&&e.codigoMunicipioIbge?esc(e.codigoMunicipioIbge):''}" maxlength="7"></div>
         <div class="field" style="width:70px;"><label>UF</label><input id="empUf" readonly style="background:var(--paper);" value="${e&&e.uf?esc(e.uf):''}"></div>
-        <div class="field" style="width:120px;"><label>CEP</label><input id="empCep" value="${e&&e.cep?esc(e.cep):''}"></div>
+        <div class="field" style="width:120px;"><label>CEP</label><input id="empCep" value="${e&&e.cep?esc(fmtCep(e.cep)):''}"></div>
       </div>
       <input type="hidden" id="empCidade" value="${e&&e.cidade?esc(e.cidade):''}">
       <input type="hidden" id="empNomeMunicipio" value="${e&&e.nomeMunicipioIbge?esc(e.nomeMunicipioIbge):''}">
@@ -3112,7 +3118,7 @@ function empresaModal(e){
       preencher('empEmail', r.email);
       preencher('empCidade', r.municipio);
       preencher('empUf', r.uf);
-      preencher('empCep', r.cep);
+      preencher('empCep', fmtCep(r.cep));
       const endereco = [r.logradouro, r.numero].filter(Boolean).join(', ') + (r.bairro? ' - '+r.bairro : '') + (r.complemento? ' ('+r.complemento+')' : '');
       preencher('empEndereco', endereco.trim().replace(/^,\s*/,''));
       if(r.uf && r.municipio && !document.getElementById('empCodigoMunicipio').value){
@@ -3137,7 +3143,7 @@ function empresaModal(e){
       endereco: document.getElementById('empEndereco').value.trim(),
       cidade: document.getElementById('empCidade').value.trim(),
       uf: document.getElementById('empUf').value.trim(),
-      cep: document.getElementById('empCep').value.trim(),
+      cep: document.getElementById('empCep').value.replace(/\D/g,''),
       inscricaoMunicipal: document.getElementById('empInscricaoMunicipal').value.trim(),
       inscricaoEstadual: document.getElementById('empInscricaoEstadual').value.trim(),
       nomeRepresentanteLegal: document.getElementById('empNomeRepresentante').value.trim(),
@@ -5364,7 +5370,7 @@ async function renderNfseEmitir(){
       document.getElementById('nfseEmiEndereco').value = r.logradouro || '';
       document.getElementById('nfseEmiNumero').value = r.numero || '';
       document.getElementById('nfseEmiComplemento').value = r.complemento || '';
-      document.getElementById('nfseEmiCep').value = r.cep || '';
+      document.getElementById('nfseEmiCep').value = fmtCep(r.cep);
       document.getElementById('nfseEmiBairro').value = r.bairro || '';
       document.getElementById('nfseEmiCidade').value = r.municipio || '';
       document.getElementById('nfseEmiUf').value = r.uf || '';
@@ -5386,6 +5392,7 @@ async function renderNfseEmitir(){
   document.getElementById('nfseEmiCep').addEventListener('input', async e=>{
     const cep = e.target.value.replace(/\D/g,'').slice(0,8);
     if(cep.length!==8) return;
+    e.target.value = fmtCep(cep);
     const status = document.getElementById('nfseEmiCnpjStatus');
     status.textContent = 'Consultando CEP…';
     try{
@@ -5412,7 +5419,7 @@ async function renderNfseEmitir(){
         logradouro: document.getElementById('nfseEmiEndereco').value.trim() || null,
         numero: document.getElementById('nfseEmiNumero').value.trim() || null,
         complemento: document.getElementById('nfseEmiComplemento').value.trim() || null,
-        cep: document.getElementById('nfseEmiCep').value.trim() || null,
+        cep: document.getElementById('nfseEmiCep').value.replace(/\D/g,'') || null,
         bairro: document.getElementById('nfseEmiBairro').value.trim() || null,
         codigoMunicipio: document.getElementById('nfseEmiCodMun').value || null,
       },
@@ -7559,7 +7566,7 @@ async function renderMinhaNfseEmitir(){
       document.getElementById('mnfEmiEndereco').value = r.logradouro || '';
       document.getElementById('mnfEmiNumero').value = r.numero || '';
       document.getElementById('mnfEmiComplemento').value = r.complemento || '';
-      document.getElementById('mnfEmiCep').value = r.cep || '';
+      document.getElementById('mnfEmiCep').value = fmtCep(r.cep);
       document.getElementById('mnfEmiBairro').value = r.bairro || '';
       document.getElementById('mnfEmiCidade').value = r.municipio || '';
       document.getElementById('mnfEmiUf').value = r.uf || '';
@@ -7580,6 +7587,7 @@ async function renderMinhaNfseEmitir(){
   document.getElementById('mnfEmiCep').addEventListener('input', async e=>{
     const cep = e.target.value.replace(/\D/g,'').slice(0,8);
     if(cep.length!==8) return;
+    e.target.value = fmtCep(cep);
     const status = document.getElementById('mnfEmiCnpjStatus');
     status.textContent = 'Consultando CEP…';
     try{
@@ -7605,7 +7613,7 @@ async function renderMinhaNfseEmitir(){
         logradouro: document.getElementById('mnfEmiEndereco').value.trim() || null,
         numero: document.getElementById('mnfEmiNumero').value.trim() || null,
         complemento: document.getElementById('mnfEmiComplemento').value.trim() || null,
-        cep: document.getElementById('mnfEmiCep').value.trim() || null,
+        cep: document.getElementById('mnfEmiCep').value.replace(/\D/g,'') || null,
         bairro: document.getElementById('mnfEmiBairro').value.trim() || null,
         codigoMunicipio: document.getElementById('mnfEmiCodMun').value || null,
       },
