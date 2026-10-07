@@ -9603,7 +9603,26 @@ app.get("/api/integracontador/config", blockCliente, requirePermissao("integraco
     validadeCertificadoAte: c.validade_certificado_ate || null,
     ativo: !!c.ativo,
     ultimoErro: c.ultimo_erro || null,
+    agenda: getAgendaBusca((req as any).user.escritorioId),
   });
+});
+// Agenda da busca automática (dias da semana + horários de Brasília), salva pela tela do Integra Contador.
+app.put("/api/integracontador/agenda", blockCliente, requirePermissao("integracontador", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const { dias, horas } = req.body || {};
+  if (!Array.isArray(dias) || !dias.every((d: any) => Number.isInteger(d) && d >= 0 && d <= 6)) return res.status(400).json({ error: "Dias inválidos." });
+  if (!Array.isArray(horas) || !horas.every((h: any) => typeof h === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(h))) return res.status(400).json({ error: "Horário inválido. Use HH:MM." });
+  const agendaLimpa = { dias: [...new Set<number>(dias)].sort(), horas: [...new Set<string>(horas)].sort() };
+  sqlite.prepare(`INSERT OR IGNORE INTO integracontador_config (escritorio_id) VALUES (?)`).run(user.escritorioId);
+  sqlite.prepare(`UPDATE integracontador_config SET agenda_busca_json = ? WHERE escritorio_id = ?`).run(JSON.stringify(agendaLimpa), user.escritorioId);
+  // Horários de hoje que já passaram não viram busca só porque a agenda foi salva agora.
+  const { data, hora, diaSemana } = agoraBrasiliaTextos();
+  if (agendaLimpa.dias.includes(diaSemana)) {
+    for (const h of agendaLimpa.horas.filter((x) => x <= hora)) {
+      sqlite.prepare(`INSERT OR IGNORE INTO integracontador_busca_slots (slot) VALUES (?)`).run(`${data} ${h}`);
+    }
+  }
+  res.json({ ok: true, agenda: agendaLimpa });
 });
 app.put("/api/integracontador/config", blockCliente, requirePermissao("integracontador", "editar"), upload.single("certificado"), (req, res) => {
   const escritorioId = (req as any).user.escritorioId;
@@ -10583,19 +10602,45 @@ async function integraContadorExecutarBuscaAutomatica() {
     await new Promise((resolve) => setTimeout(resolve, INTEGRACONTADOR_AUTO_PAUSA_ENTRE_EMPRESAS_MS));
   }
 }
-// Confere a cada minuto se bateu 8h00 ou 12h00 (só no minuto exato, pra não disparar de novo a cada
-// tick dentro da mesma hora) — mesmo padrão de setInterval de 60 em 60s já usado na rotina do NFS-e.
-// Achado ao vivo: com "só no minuto exato", um deploy/reinício às 12:00 fazia a busca do dia inteira ser pulada
-// (a última busca de uma empresa ficou em 22/09). Agora registra o dia da última execução no banco e roda assim que
-// passar das 12h de um dia que ainda não rodou — inclusive se o servidor voltar depois do meio-dia.
-sqlite.exec(`CREATE TABLE IF NOT EXISTS integracontador_busca_automatica_dias (dia TEXT PRIMARY KEY, iniciada_em TEXT NOT NULL DEFAULT (datetime('now')))`);
+// Agenda da busca automática do Integra Contador: dias da semana e horários (Brasília), definidos na
+// tela. Padrão = todos os dias às 12h (como era). Cada dia+horário vira uma "marca" no banco, então
+// roda uma só vez mesmo se o servidor reiniciar no meio do dia.
+const AGENDA_BUSCA_PADRAO = { dias: [0, 1, 2, 3, 4, 5, 6], horas: ["12:00"] };
+function getAgendaBusca(escritorioId: number): { dias: number[]; horas: string[] } {
+  const row = sqlite.prepare(`SELECT agenda_busca_json FROM integracontador_config WHERE escritorio_id = ?`).get(escritorioId) as any;
+  if (!row?.agenda_busca_json) return AGENDA_BUSCA_PADRAO;
+  try {
+    const a = JSON.parse(row.agenda_busca_json);
+    return { dias: Array.isArray(a.dias) ? a.dias : [], horas: Array.isArray(a.horas) ? a.horas : [] };
+  } catch {
+    return AGENDA_BUSCA_PADRAO;
+  }
+}
+sqlite.exec(`CREATE TABLE IF NOT EXISTS integracontador_busca_slots (slot TEXT PRIMARY KEY, iniciada_em TEXT NOT NULL DEFAULT (datetime('now')))`);
+{
+  const colsIc = sqlite.prepare(`PRAGMA table_info(integracontador_config)`).all() as any[];
+  if (!colsIc.some((c) => c.name === "agenda_busca_json")) sqlite.exec(`ALTER TABLE integracontador_config ADD COLUMN agenda_busca_json TEXT`);
+}
+function agoraBrasiliaTextos() {
+  const a = agoraBrasilia();
+  const data = `${a.ano}-${String(a.mes).padStart(2, "0")}-${String(a.dia).padStart(2, "0")}`;
+  const hora = `${String(a.hora).padStart(2, "0")}:${String(a.minuto).padStart(2, "0")}`;
+  const diaSemana = new Date(Date.UTC(a.ano, a.mes - 1, a.dia)).getUTCDay();
+  return { data, hora, diaSemana };
+}
 setInterval(() => {
-  const agora = agoraBrasilia();
-  if (agora.hora < 12) return;
-  const dia = `${agora.ano}-${String(agora.mes).padStart(2, "0")}-${String(agora.dia).padStart(2, "0")}`;
-  const marcou = sqlite.prepare(`INSERT OR IGNORE INTO integracontador_busca_automatica_dias (dia) VALUES (?)`).run(dia);
-  if (!marcou.changes) return; // já rodou (ou está rodando) hoje
-  integraContadorExecutarBuscaAutomatica().catch((e) => console.error("Erro na rotina automática do Integra Contador:", e.message));
+  const { data, hora, diaSemana } = agoraBrasiliaTextos();
+  const agenda = getAgendaBusca(1);
+  if (!agenda.dias.includes(diaSemana)) return;
+  const devidos = agenda.horas.filter((h) => h <= hora).sort();
+  for (const h of devidos) {
+    const slot = `${data} ${h}`;
+    const marcou = sqlite.prepare(`INSERT OR IGNORE INTO integracontador_busca_slots (slot) VALUES (?)`).run(slot);
+    if (!marcou.changes) continue; // já rodou (ou está rodando) neste horário
+    console.log(`[Integra Contador] busca automática ${slot} iniciada`);
+    integraContadorExecutarBuscaAutomatica().catch((e) => console.error("Erro na rotina automática do Integra Contador:", e.message));
+    return; // uma busca por vez
+  }
 }, 60_000);
 // Busca agendada de uma vez (ex.: "amanhã às 08h, todas as empresas"). Cada linha roda uma única vez,
 // quando o horário de Brasília chega. Criada direto no banco (ou por quem administra o servidor).
