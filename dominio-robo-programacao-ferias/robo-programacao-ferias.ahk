@@ -211,6 +211,8 @@ TrocarEmpresa(codigo) {
 ; Abre Favoritos > Programacao de Ferias (Alt+F -> Down x FAV_DOWNS -> Enter), com foco antes.
 AbrirRelatorio() {
     global FAV_KEY, FAV_DOWNS, T_CURTO, T_MEDIO
+    AtivarApp()                  ; a troca de empresa pode ter tirado o foco do Dominio
+    Sleep 500
     Click("700 400")             ; foco de teclado (streaming)
     Sleep 400
     Send "!" . FAV_KEY           ; Alt+F -> abre Favoritos
