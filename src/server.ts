@@ -8014,9 +8014,8 @@ function nfeDocNomeArquivo(row: any, extensao: string): string {
 async function nfeDocumentoObterPdf(row: any): Promise<{ pdf: Buffer | null; erro: string | null }> {
   if (row.pdf_path && fs.existsSync(row.pdf_path)) return { pdf: fs.readFileSync(row.pdf_path), erro: null };
   if (row.tipo === "evento") return { pdf: null, erro: "Eventos não têm representação em PDF — baixe o XML." };
-  if (row.tipo === "cte") return { pdf: null, erro: "Representação em PDF do CT-e (DACTE) ainda não implementada — baixe o XML." };
   try {
-    const pdf = row.fonte === "nfse" ? await danfse.gerarDanfsePdf(row.xml) : await nfePdf.gerarPdfSimplificadoNfe(row.xml);
+    const pdf = row.fonte === "nfse" ? await danfse.gerarDanfsePdf(row.xml) : row.tipo === "cte" ? await nfePdf.gerarPdfSimplificadoCte(row.xml) : await nfePdf.gerarPdfSimplificadoNfe(row.xml);
     const caminho = nfePdf.salvarPdfEmCache(row.chave_acesso || `doc-${row.id}`, pdf);
     sqlite.prepare(`UPDATE nfe_documentos SET pdf_path = ? WHERE id = ?`).run(caminho, row.id);
     return { pdf, erro: null };

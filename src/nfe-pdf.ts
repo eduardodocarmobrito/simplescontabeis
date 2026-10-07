@@ -585,3 +585,150 @@ export async function gerarPdfSimplificadoNfe(xml: string): Promise<Buffer> {
     await browser.close();
   }
 }
+
+// ---------- DACTE (CT-e) — representação simplificada, a partir do XML ----------
+// Não é o DACTE oficial certificado: mostra os dados principais do próprio XML do CT-e (mesmo critério
+// da NF-e simplificada). Se a Sefaz só devolveu o resumo (resCTe), não há dados suficientes e avisa.
+export interface DadosCte {
+  chave: string;
+  numero: string;
+  serie: string;
+  emissao: string;
+  cfop: string;
+  natureza: string;
+  ufIni: string;
+  ufFim: string;
+  modal: string;
+  emitente: { nome: string; documento: string };
+  remetente: { nome: string; documento: string };
+  destinatario: { nome: string; documento: string };
+  tomador: string;
+  valorTotal: string;
+  valorReceber: string;
+  componentes: { nome: string; valor: string }[];
+  icms: { base: string; aliquota: string; valor: string };
+  carga: { valor: string; produto: string };
+  documentos: string[];
+  protocolo: string | null;
+}
+function docDe(p: any): string {
+  return String(p?.CNPJ || p?.CPF || "");
+}
+export function extrairDadosCte(xml: string): DadosCte | null {
+  const parsed = xmlParser.parse(xml);
+  if (parsed?.resCTe) throw new Error("A Sefaz disponibilizou só o resumo deste CT-e (sem os dados completos) — não dá para montar o PDF.");
+  const inf = parsed?.cteProc?.CTe?.infCte ?? parsed?.CTe?.infCte;
+  if (!inf) return null;
+  const ide = inf.ide || {};
+  const emit = inf.emit || {};
+  const rem = inf.rem || {};
+  const dest = inf.dest || {};
+  const partes = { 0: rem, 1: inf.exped || {}, 2: inf.receb || {}, 3: dest };
+  const tomCod = ide.toma3?.toma;
+  let tomador = "";
+  if (tomCod !== undefined && tomCod !== null && (partes as any)[tomCod]) {
+    const p = (partes as any)[tomCod];
+    tomador = `${p.xNome || ""} · ${docDe(p)}`;
+  } else if (ide.toma4) {
+    tomador = `${ide.toma4.xNome || ""} · ${docDe(ide.toma4)}`;
+  }
+  const vPrest = inf.vPrest || {};
+  const icmsBruto = primeiroFilho(inf.imp?.ICMS) || {};
+  const infCarga = inf.infCTeNorm?.infCarga || {};
+  const docs: string[] = [];
+  for (const nfe of comoLista(inf.infCTeNorm?.infDoc?.infNFe)) if (nfe?.chave) docs.push(`NF-e ${fmtChave(nfe.chave)}`);
+  for (const nf of comoLista(inf.infCTeNorm?.infDoc?.infNF)) if (nf?.nDoc) docs.push(`NF ${nf.nDoc}${nf.serie ? ` · série ${nf.serie}` : ""}`);
+  const comps = comoLista(vPrest.Comp).map((c: any) => ({ nome: String(c.xNome || ""), valor: fmtMoney(num(c.vComp)) }));
+  const prot = parsed?.cteProc?.protCTe?.infProt;
+  return {
+    chave: String(inf["@_Id"] || "").replace(/^CTe/, ""),
+    numero: String(ide.nCT ?? ""),
+    serie: String(ide.serie ?? ""),
+    emissao: fmtDataHora(ide.dhEmi).data + (fmtDataHora(ide.dhEmi).hora ? ` ${fmtDataHora(ide.dhEmi).hora}` : ""),
+    cfop: String(ide.CFOP ?? ""),
+    natureza: String(ide.natOp ?? ""),
+    ufIni: String(ide.UFIni ?? ""),
+    ufFim: String(ide.UFFim ?? ""),
+    modal: Object.keys(inf.infModal || {}).filter((k) => !k.startsWith("@_")).join(", "),
+    emitente: { nome: String(emit.xNome || ""), documento: docDe(emit) },
+    remetente: { nome: String(rem.xNome || ""), documento: docDe(rem) },
+    destinatario: { nome: String(dest.xNome || ""), documento: docDe(dest) },
+    tomador,
+    valorTotal: fmtMoney(num(vPrest.vTPrest)),
+    valorReceber: fmtMoney(num(vPrest.vRec)),
+    componentes: comps,
+    icms: { base: fmtMoney(num(icmsBruto.vBC)), aliquota: icmsBruto.pICMS ? `${icmsBruto.pICMS}%` : "—", valor: fmtMoney(num(icmsBruto.vICMS)) },
+    carga: { valor: fmtMoney(num(infCarga.vCarga)), produto: String(infCarga.proPred || "") },
+    documentos: docs,
+    protocolo: prot?.nProt ? `${prot.nProt}${prot.dhRecbto ? ` · ${fmtDataHora(prot.dhRecbto).data} ${fmtDataHora(prot.dhRecbto).hora}` : ""}` : null,
+  };
+}
+function cteCampo(rotulo: string, valor: string): string {
+  return `<div style="border:1px solid #bbb; padding:4px 6px; min-height:30px;"><div style="font-size:8px; color:#555;">${esc(rotulo)}</div><div style="font-size:11px;">${esc(valor || "—")}</div></div>`;
+}
+export function gerarCteHtml(d: DadosCte): string {
+  const comps = d.componentes.length ? d.componentes.map((c) => `<tr><td>${esc(c.nome)}</td><td style="text-align:right;">${esc(c.valor)}</td></tr>`).join("") : `<tr><td colspan="2">—</td></tr>`;
+  const docs = d.documentos.length ? d.documentos.map((x) => `<div style="font-size:10px;">${esc(x)}</div>`).join("") : `<div style="font-size:10px;">—</div>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><style>
+    body{font-family:Arial,Helvetica,sans-serif; color:#111; margin:0;}
+    .aviso{background:#fff7d6; border:1px solid #e0c96b; padding:6px 8px; font-size:10px; margin-bottom:8px;}
+    .grid{display:grid; gap:4px;}
+    h3{font-size:10px; margin:8px 0 4px; text-transform:uppercase; color:#333; border-bottom:1px solid #999;}
+    table{width:100%; border-collapse:collapse; font-size:11px;} td{border-bottom:1px solid #ddd; padding:3px 4px;}
+  </style></head><body>
+    <div class="aviso">DACTE — representação simplificada do CT-e, montada a partir do XML. Não substitui o DACTE oficial.</div>
+    <div class="grid" style="grid-template-columns: 2fr 1fr 1fr 1.4fr;">
+      ${cteCampo("Chave de acesso", fmtChave(d.chave))}
+      ${cteCampo("Número", d.numero)}
+      ${cteCampo("Série", d.serie)}
+      ${cteCampo("Emissão", d.emissao)}
+    </div>
+    <div class="grid" style="grid-template-columns: 1fr 1fr 1fr 1fr; margin-top:4px;">
+      ${cteCampo("CFOP", d.cfop)}
+      ${cteCampo("UF início", d.ufIni)}
+      ${cteCampo("UF fim", d.ufFim)}
+      ${cteCampo("Modal", d.modal)}
+    </div>
+    ${cteCampo("Natureza da prestação", d.natureza)}
+    <h3>Emitente</h3>
+    ${cteCampo(d.emitente.documento, d.emitente.nome)}
+    <h3>Remetente</h3>
+    ${cteCampo(d.remetente.documento, d.remetente.nome)}
+    <h3>Destinatário</h3>
+    ${cteCampo(d.destinatario.documento, d.destinatario.nome)}
+    <h3>Tomador do serviço</h3>
+    ${cteCampo("Tomador", d.tomador)}
+    <h3>Prestação do serviço</h3>
+    <table>${comps}<tr><td><b>Valor total da prestação</b></td><td style="text-align:right;"><b>${esc(d.valorTotal)}</b></td></tr><tr><td><b>Valor a receber</b></td><td style="text-align:right;"><b>${esc(d.valorReceber)}</b></td></tr></table>
+    <h3>ICMS</h3>
+    <div class="grid" style="grid-template-columns: 1fr 1fr 1fr;">
+      ${cteCampo("Base de cálculo", d.icms.base)}
+      ${cteCampo("Alíquota", d.icms.aliquota)}
+      ${cteCampo("Valor do ICMS", d.icms.valor)}
+    </div>
+    <h3>Carga</h3>
+    <div class="grid" style="grid-template-columns: 1fr 2fr;">
+      ${cteCampo("Valor da carga", d.carga.valor)}
+      ${cteCampo("Produto predominante", d.carga.produto)}
+    </div>
+    <h3>Documentos transportados</h3>
+    ${docs}
+    <h3>Autorização</h3>
+    ${cteCampo("Protocolo de autorização", d.protocolo || "—")}
+  </body></html>`;
+}
+export async function gerarPdfSimplificadoCte(xml: string): Promise<Buffer> {
+  const dados = extrairDadosCte(xml);
+  if (!dados) throw new Error("Não consegui montar o PDF — XML do CT-e em formato inesperado.");
+  const html = gerarCteHtml(dados);
+  const { chromium } = require("playwright");
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage();
+    await page.setContent(html, { waitUntil: "networkidle" });
+    const pdf = await page.pdf({ format: "A4", printBackground: true, margin: { top: "8mm", bottom: "8mm", left: "8mm", right: "8mm" } });
+    return pdf as Buffer;
+  } finally {
+    await browser.close();
+  }
+}

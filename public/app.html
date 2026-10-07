@@ -6773,7 +6773,7 @@ async function pageNfeBusca(){
         const id = b.dataset.id, d = items.find(x=>String(x.id)===id);
         const itens = [];
         if(d.tipo!=='evento'){
-          if(d.tipo!=='cte') itens.push({ label:'Visualizar DANFE', icon:'📄', onClick:()=>window.open('/api/nfe/documentos/'+id+'/pdf','_blank') });
+          itens.push({ label: d.tipo==='cte' ? 'Visualizar DACTE' : 'Visualizar DANFE', icon:'📄', onClick:()=>window.open('/api/nfe/documentos/'+id+'/pdf','_blank') });
           itens.push({ label:'Produtos detalhados', icon:'🛒', onClick:()=>abrirDetalheNota(id,'produtos') });
         }
         itens.push({ label:'Visualizar XML', icon:'🗒️', onClick:()=>abrirDetalheNota(id,'xml') });
@@ -6782,8 +6782,8 @@ async function pageNfeBusca(){
       document.querySelectorAll('.nfeOpcBtn[data-act="download"]').forEach(b=>b.addEventListener('click', ()=>{
         const id = b.dataset.id, d = items.find(x=>String(x.id)===id);
         const itens = [{ label:'Download do XML', icon:'⬇️', onClick:()=>window.open('/api/nfe/documentos/'+id+'/xml','_blank') }];
-        if(d.tipo!=='evento' && d.tipo!=='cte'){
-          itens.push({ label:'Download Danfe em PDF', icon:'⬇️', onClick:()=>window.open('/api/nfe/documentos/'+id+'/pdf?download=1','_blank') });
+        if(d.tipo!=='evento'){
+          itens.push({ label: d.tipo==='cte' ? 'Download DACTE em PDF' : 'Download Danfe em PDF', icon:'⬇️', onClick:()=>window.open('/api/nfe/documentos/'+id+'/pdf?download=1','_blank') });
           itens.push({ label:'Download XML e DANFe .zip', icon:'🗂️', onClick:()=>window.open('/api/nfe/documentos/baixar-lote?ids='+id+'&formato=ambos','_blank') });
         }
         abrirMenuFlutuante(b, itens);
