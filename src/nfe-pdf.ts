@@ -587,135 +587,222 @@ export async function gerarPdfSimplificadoNfe(xml: string): Promise<Buffer> {
 }
 
 // ---------- DACTE (CT-e) — representação simplificada, a partir do XML ----------
-// Não é o DACTE oficial certificado: mostra os dados principais do próprio XML do CT-e (mesmo critério
-// da NF-e simplificada). Se a Sefaz só devolveu o resumo (resCTe), não há dados suficientes e avisa.
+// Layout segue o DACTE do emissor (campos e ordem do modelo oficial). Não é o documento certificado:
+// é montado a partir do XML do CT-e. Se a Sefaz só devolveu o resumo (resCTe), não há dados e avisa.
+interface ParteCte { nome: string; documento: string; ie: string; fone: string; endereco: string; municipio: string; uf: string; cep: string; pais: string }
 export interface DadosCte {
-  chave: string;
-  numero: string;
-  serie: string;
-  emissao: string;
-  cfop: string;
-  natureza: string;
-  ufIni: string;
-  ufFim: string;
-  modal: string;
-  emitente: { nome: string; documento: string };
-  remetente: { nome: string; documento: string };
-  destinatario: { nome: string; documento: string };
-  tomador: string;
-  valorTotal: string;
-  valorReceber: string;
-  componentes: { nome: string; valor: string }[];
-  icms: { base: string; aliquota: string; valor: string };
-  carga: { valor: string; produto: string };
-  documentos: string[];
-  protocolo: string | null;
+  chave: string; numero: string; serie: string; emissao: string; modal: string;
+  tipoCte: string; tipoServico: string; tomador: string; formaPagamento: string;
+  cfop: string; natureza: string; protocolo: string | null;
+  inicio: string; termino: string;
+  emitente: ParteCte; remetente: ParteCte; destinatario: ParteCte; expedidor: ParteCte; recebedor: ParteCte; tomadorServico: ParteCte;
+  produto: string; outrasCaracteristicas: string; valorMercadoria: string;
+  massa: string; cubagem: string; volume: string; unidades: string; responsavel: string; apolice: string; averbacao: string;
+  componentes: { nome: string; valor: string }[]; valorServico: string; valorReceber: string;
+  imposto: { situacao: string; base: string; aliquota: string; valor: string; reducao: string };
+  documentos: { tipo: string; chaveOuCnpj: string; serieNumero: string }[];
+  observacoes: string;
+  rodo: { rntrc: string; ciot: string; lotacao: string; dataPrevista: string };
 }
-function docDe(p: any): string {
-  return String(p?.CNPJ || p?.CPF || "");
+// Procura um campo em qualquer nível do XML (o layout muda de lugar entre versões do leiaute do CT-e).
+function acharCte(obj: any, nome: string): any {
+  if (!obj || typeof obj !== "object") return undefined;
+  if (obj[nome] !== undefined) return obj[nome];
+  for (const k of Object.keys(obj)) {
+    if (k.startsWith("@_")) continue;
+    const r = acharCte(obj[k], nome);
+    if (r !== undefined) return r;
+  }
+  return undefined;
 }
+function parteCte(p: any): ParteCte {
+  p = p || {};
+  const ender = Object.entries(p).find(([k]) => k.startsWith("ender"))?.[1] as any;
+  const endereco = ender ? [ender.xLgr, ender.nro, ender.xCpl, ender.xBairro].filter(Boolean).join(", ") : "";
+  return {
+    nome: String(p.xNome || ""),
+    documento: String(p.CNPJ || p.CPF || ""),
+    ie: String(p.IE || ""),
+    fone: String(p.fone || ""),
+    endereco,
+    municipio: String(ender?.xMun || ""),
+    uf: String(ender?.UF || ""),
+    cep: String(ender?.CEP || ""),
+    pais: String(ender?.xPais || "Brasil"),
+  };
+}
+const TIPO_CTE: Record<string, string> = { "0": "Normal", "1": "Complemento de valores", "2": "Anulação de valores", "3": "Substituto" };
+const TIPO_SERVICO: Record<string, string> = { "0": "Normal", "1": "Subcontratação", "2": "Redespacho", "3": "Redespacho intermediário", "4": "Serviço vinculado a multimodal" };
+const TOMADOR_LABEL: Record<string, string> = { "0": "Remetente", "1": "Expedidor", "2": "Recebedor", "3": "Destinatário" };
 export function extrairDadosCte(xml: string): DadosCte | null {
   const parsed = xmlParser.parse(xml);
   if (parsed?.resCTe) throw new Error("A Sefaz disponibilizou só o resumo deste CT-e (sem os dados completos) — não dá para montar o PDF.");
   const inf = parsed?.cteProc?.CTe?.infCte ?? parsed?.CTe?.infCte;
   if (!inf) return null;
   const ide = inf.ide || {};
-  const emit = inf.emit || {};
-  const rem = inf.rem || {};
-  const dest = inf.dest || {};
-  const partes = { 0: rem, 1: inf.exped || {}, 2: inf.receb || {}, 3: dest };
-  const tomCod = ide.toma3?.toma;
-  let tomador = "";
-  if (tomCod !== undefined && tomCod !== null && (partes as any)[tomCod]) {
-    const p = (partes as any)[tomCod];
-    tomador = `${p.xNome || ""} · ${docDe(p)}`;
-  } else if (ide.toma4) {
-    tomador = `${ide.toma4.xNome || ""} · ${docDe(ide.toma4)}`;
-  }
+  const norm = inf.infCTeNorm || {};
+  const emit = parteCte(inf.emit);
+  const rem = parteCte(inf.rem);
+  const dest = parteCte(inf.dest);
+  const exped = parteCte(inf.exped);
+  const receb = parteCte(inf.receb);
+  const outraToma = parteCte(ide.toma4);
+  const tomCod = ide.toma3?.toma !== undefined ? String(ide.toma3.toma) : null;
+  const porCod: Record<string, ParteCte> = { "0": rem, "1": exped, "2": receb, "3": dest };
+  const tomadorServico = tomCod !== null && tomCod !== "4" ? porCod[tomCod] : outraToma;
   const vPrest = inf.vPrest || {};
   const icmsBruto = primeiroFilho(inf.imp?.ICMS) || {};
-  const infCarga = inf.infCTeNorm?.infCarga || {};
-  const docs: string[] = [];
-  for (const nfe of comoLista(inf.infCTeNorm?.infDoc?.infNFe)) if (nfe?.chave) docs.push(`NF-e ${fmtChave(nfe.chave)}`);
-  for (const nf of comoLista(inf.infCTeNorm?.infDoc?.infNF)) if (nf?.nDoc) docs.push(`NF ${nf.nDoc}${nf.serie ? ` · série ${nf.serie}` : ""}`);
+  const situacao = Object.keys(inf.imp?.ICMS || {}).find((k) => !k.startsWith("@_")) || "";
+  const infCarga = norm.infCarga || {};
+  const quantidades = comoLista(infCarga.infQ);
+  const quant = (tipo: string) => quantidades.find((q: any) => String(q.tpMed || "").toUpperCase().includes(tipo));
+  const docs: DadosCte["documentos"] = [];
+  for (const nfe of comoLista(norm.infDoc?.infNFe)) if (nfe?.chave) docs.push({ tipo: "NF-e", chaveOuCnpj: fmtChave(nfe.chave), serieNumero: "" });
+  for (const nf of comoLista(norm.infDoc?.infNF)) docs.push({ tipo: "NF", chaveOuCnpj: "", serieNumero: `${nf.serie || ""}/${nf.nDoc || ""}` });
   const comps = comoLista(vPrest.Comp).map((c: any) => ({ nome: String(c.xNome || ""), valor: fmtMoney(num(c.vComp)) }));
   const prot = parsed?.cteProc?.protCTe?.infProt;
+  const dh = fmtDataHora(ide.dhEmi);
+  const modalRodo = inf.infModal?.rodo;
+  const obs = [acharCte(inf, "xObs"), acharCte(inf, "xObsCont")].filter(Boolean).join(" | ");
+  const seg = norm.seg ? comoLista(norm.seg)[0] : undefined;
   return {
     chave: String(inf["@_Id"] || "").replace(/^CTe/, ""),
     numero: String(ide.nCT ?? ""),
     serie: String(ide.serie ?? ""),
-    emissao: fmtDataHora(ide.dhEmi).data + (fmtDataHora(ide.dhEmi).hora ? ` ${fmtDataHora(ide.dhEmi).hora}` : ""),
-    cfop: String(ide.CFOP ?? ""),
-    natureza: String(ide.natOp ?? ""),
-    ufIni: String(ide.UFIni ?? ""),
-    ufFim: String(ide.UFFim ?? ""),
-    modal: Object.keys(inf.infModal || {}).filter((k) => !k.startsWith("@_")).join(", "),
-    emitente: { nome: String(emit.xNome || ""), documento: docDe(emit) },
-    remetente: { nome: String(rem.xNome || ""), documento: docDe(rem) },
-    destinatario: { nome: String(dest.xNome || ""), documento: docDe(dest) },
-    tomador,
-    valorTotal: fmtMoney(num(vPrest.vTPrest)),
-    valorReceber: fmtMoney(num(vPrest.vRec)),
+    emissao: `${dh.data}${dh.hora ? ` ${dh.hora}` : ""}`,
+    modal: inf.infModal ? (modalRodo !== undefined ? "Rodoviário" : Object.keys(inf.infModal).filter((k) => !k.startsWith("@_")).join(", ")) : "",
+    tipoCte: TIPO_CTE[String(ide.tpCTe ?? "0")] || String(ide.tpCTe ?? ""),
+    tipoServico: TIPO_SERVICO[String(ide.tpServ ?? "0")] || String(ide.tpServ ?? ""),
+    tomador: tomCod !== null ? (tomCod === "4" ? "Outros" : TOMADOR_LABEL[tomCod] || tomCod) : "",
+    formaPagamento: String(ide.forPag ?? "") === "0" ? "Pago" : String(ide.forPag ?? "") === "1" ? "A pagar" : "",
+    cfop: `${ide.CFOP || ""}`,
+    natureza: String(ide.natOp || ""),
+    protocolo: prot?.nProt ? `${prot.nProt} - ${fmtDataHora(prot.dhRecbto).data} ${fmtDataHora(prot.dhRecbto).hora}`.trim() : null,
+    inicio: `${ide.xMunIni || ""} - ${ide.UFIni || ""}`,
+    termino: `${ide.xMunFim || ""} - ${ide.UFFim || ""}`,
+    emitente: emit, remetente: rem, destinatario: dest, expedidor: exped, recebedor: receb, tomadorServico,
+    produto: String(infCarga.proPred || ""),
+    outrasCaracteristicas: String(infCarga.xOutCat || ""),
+    valorMercadoria: fmtMoney(num(infCarga.vCarga)),
+    massa: quant("PESO") ? String(quant("PESO").qCarga || "") : "",
+    cubagem: quant("CUB") ? String(quant("CUB").qCarga || "") : "",
+    volume: quant("VOL") ? String(quant("VOL").qCarga || "") : "",
+    unidades: quant("UNID") ? String(quant("UNID").qCarga || "") : "",
+    responsavel: seg ? String(seg.respSeg ?? "Emitente") : "Emitente",
+    apolice: seg ? String(seg.nApol || "") : "",
+    averbacao: seg ? String(seg.nAver || "") : "",
     componentes: comps,
-    icms: { base: fmtMoney(num(icmsBruto.vBC)), aliquota: icmsBruto.pICMS ? `${icmsBruto.pICMS}%` : "—", valor: fmtMoney(num(icmsBruto.vICMS)) },
-    carga: { valor: fmtMoney(num(infCarga.vCarga)), produto: String(infCarga.proPred || "") },
+    valorServico: fmtMoney(num(vPrest.vTPrest)),
+    valorReceber: fmtMoney(num(vPrest.vRec)),
+    imposto: {
+      situacao: situacao === "ICMSSN" ? "Simples Nacional" : situacao,
+      base: fmtMoney(num(icmsBruto.vBC)),
+      aliquota: icmsBruto.pICMS ? `${icmsBruto.pICMS}` : "",
+      valor: fmtMoney(num(icmsBruto.vICMS)),
+      reducao: icmsBruto.pRedBC ? `${icmsBruto.pRedBC}` : "",
+    },
     documentos: docs,
-    protocolo: prot?.nProt ? `${prot.nProt}${prot.dhRecbto ? ` · ${fmtDataHora(prot.dhRecbto).data} ${fmtDataHora(prot.dhRecbto).hora}` : ""}` : null,
+    observacoes: obs,
+    rodo: {
+      rntrc: String(modalRodo?.RNTRC || ""),
+      ciot: String(acharCte(inf, "CIOT") || ""),
+      lotacao: String(acharCte(inf, "lota") || ""),
+      dataPrevista: String(acharCte(inf, "dPrev") || ""),
+    },
   };
 }
-function cteCampo(rotulo: string, valor: string): string {
-  return `<div style="border:1px solid #bbb; padding:4px 6px; min-height:30px;"><div style="font-size:8px; color:#555;">${esc(rotulo)}</div><div style="font-size:11px;">${esc(valor || "—")}</div></div>`;
+function cteBox(rotulo: string, valor: string, extra = ""): string {
+  return `<div class="bx" style="${extra}"><div class="rt">${esc(rotulo)}</div><div class="vl">${esc(valor || "")}</div></div>`;
+}
+function cteParte(rotulo: string, p: ParteCte): string {
+  if (!p.nome && !p.documento) return cteBox(rotulo, "");
+  return `<div class="bx parte"><div class="rt">${esc(rotulo)}</div>
+    <div class="vl"><b>${esc(p.nome)}</b></div>
+    <div class="linha"><span>ENDEREÇO</span> ${esc(p.endereco)}</div>
+    <div class="linha"><span>MUNICÍPIO</span> ${esc(p.municipio)} <span>UF</span> ${esc(p.uf)} <span>CEP</span> ${esc(p.cep)}</div>
+    <div class="linha"><span>CNPJ/CPF</span> ${esc(p.documento)} <span>INSCRIÇÃO ESTADUAL</span> ${esc(p.ie)} <span>PAÍS</span> ${esc(p.pais)} <span>FONE</span> ${esc(p.fone)}</div></div>`;
 }
 export function gerarCteHtml(d: DadosCte): string {
-  const comps = d.componentes.length ? d.componentes.map((c) => `<tr><td>${esc(c.nome)}</td><td style="text-align:right;">${esc(c.valor)}</td></tr>`).join("") : `<tr><td colspan="2">—</td></tr>`;
-  const docs = d.documentos.length ? d.documentos.map((x) => `<div style="font-size:10px;">${esc(x)}</div>`).join("") : `<div style="font-size:10px;">—</div>`;
+  const comps = d.componentes.map((c) => `<div class="cp"><div class="rt">${esc(c.nome)}</div><div class="vl">${esc(c.valor)}</div></div>`).join("") || `<div class="cp"><div class="rt">NOME</div><div class="vl">&nbsp;</div></div>`;
+  const docs = d.documentos.map((x) => `<tr><td>${esc(x.tipo)}</td><td>${esc(x.chaveOuCnpj)}</td><td>${esc(x.serieNumero)}</td></tr>`).join("") || `<tr><td>&nbsp;</td><td></td><td></td></tr>`;
   return `<!doctype html><html><head><meta charset="utf-8"><style>
-    body{font-family:Arial,Helvetica,sans-serif; color:#111; margin:0;}
-    .aviso{background:#fff7d6; border:1px solid #e0c96b; padding:6px 8px; font-size:10px; margin-bottom:8px;}
-    .grid{display:grid; gap:4px;}
-    h3{font-size:10px; margin:8px 0 4px; text-transform:uppercase; color:#333; border-bottom:1px solid #999;}
-    table{width:100%; border-collapse:collapse; font-size:11px;} td{border-bottom:1px solid #ddd; padding:3px 4px;}
+    @page { size: A4; margin: 0; }
+    body{font-family:Arial,Helvetica,sans-serif; color:#000; margin:0; font-size:9px;}
+    .pg{border:1px solid #000; width:100%;}
+    .g{display:grid;}
+    .bx{border-right:1px solid #000; border-bottom:1px solid #000; padding:2px 3px; min-height:22px; box-sizing:border-box;}
+    .rt{font-size:6.5px; text-transform:uppercase; color:#222;}
+    .vl{font-size:10px;}
+    .linha{font-size:9px;} .linha span{font-size:6.5px; text-transform:uppercase; color:#222; margin-right:2px;}
+    .parte{min-height:44px;}
+    .tit{font-size:15px; font-weight:bold; text-align:center;}
+    .sec{background:#eee; font-size:7px; text-align:center; font-weight:bold; border-bottom:1px solid #000; padding:1px;}
+    .cp{border-right:1px solid #000; padding:2px 3px; min-height:26px;}
+    table{width:100%; border-collapse:collapse; font-size:9px;} td{border-right:1px solid #000; border-bottom:1px solid #000; padding:2px 3px;}
+    .rod{font-size:9px;}
   </style></head><body>
-    <div class="aviso">DACTE — representação simplificada do CT-e, montada a partir do XML. Não substitui o DACTE oficial.</div>
-    <div class="grid" style="grid-template-columns: 2fr 1fr 1fr 1.4fr;">
-      ${cteCampo("Chave de acesso", fmtChave(d.chave))}
-      ${cteCampo("Número", d.numero)}
-      ${cteCampo("Série", d.serie)}
-      ${cteCampo("Emissão", d.emissao)}
+  <div class="pg">
+    <div class="g" style="grid-template-columns: 2fr 1.4fr 1fr;">
+      <div class="bx" style="text-align:center; min-height:72px;"><div style="font-size:11px; font-weight:bold;">${esc(d.emitente.nome)}</div><div style="font-size:9px;">${esc(d.emitente.endereco)}</div><div style="font-size:9px;">${esc(d.emitente.municipio)} - ${esc(d.emitente.uf)} - ${esc(d.emitente.cep)}</div><div style="font-size:9px;">CNPJ/CPF: ${esc(d.emitente.documento)} Insc. Estadual: ${esc(d.emitente.ie)}</div></div>
+      <div class="bx" style="text-align:center;"><div class="tit">DACTE</div><div style="font-size:8px;">Documento Auxiliar do Conhecimento<br>de Transporte Eletrônico</div></div>
+      <div class="bx" style="text-align:center;"><div class="rt">MODAL</div><div style="font-size:13px; font-weight:bold;">${esc(d.modal)}</div></div>
     </div>
-    <div class="grid" style="grid-template-columns: 1fr 1fr 1fr 1fr; margin-top:4px;">
-      ${cteCampo("CFOP", d.cfop)}
-      ${cteCampo("UF início", d.ufIni)}
-      ${cteCampo("UF fim", d.ufFim)}
-      ${cteCampo("Modal", d.modal)}
+    <div class="g" style="grid-template-columns: 0.7fr 0.6fr 0.9fr 0.5fr 1.3fr 1.6fr;">
+      ${cteBox("Modelo", "57")}${cteBox("Série", d.serie)}${cteBox("Número", d.numero)}${cteBox("Fl", "1/1")}${cteBox("Data e hora de emissão", d.emissao)}${cteBox("Insc. Suframa do destinatário", "")}
     </div>
-    ${cteCampo("Natureza da prestação", d.natureza)}
-    <h3>Emitente</h3>
-    ${cteCampo(d.emitente.documento, d.emitente.nome)}
-    <h3>Remetente</h3>
-    ${cteCampo(d.remetente.documento, d.remetente.nome)}
-    <h3>Destinatário</h3>
-    ${cteCampo(d.destinatario.documento, d.destinatario.nome)}
-    <h3>Tomador do serviço</h3>
-    ${cteCampo("Tomador", d.tomador)}
-    <h3>Prestação do serviço</h3>
-    <table>${comps}<tr><td><b>Valor total da prestação</b></td><td style="text-align:right;"><b>${esc(d.valorTotal)}</b></td></tr><tr><td><b>Valor a receber</b></td><td style="text-align:right;"><b>${esc(d.valorReceber)}</b></td></tr></table>
-    <h3>ICMS</h3>
-    <div class="grid" style="grid-template-columns: 1fr 1fr 1fr;">
-      ${cteCampo("Base de cálculo", d.icms.base)}
-      ${cteCampo("Alíquota", d.icms.aliquota)}
-      ${cteCampo("Valor do ICMS", d.icms.valor)}
+    <div class="g" style="grid-template-columns: 1fr 1fr 2.6fr;">
+      ${cteBox("Tipo do CT-e", d.tipoCte)}${cteBox("Tipo do serviço", d.tipoServico)}${cteBox("Chave de acesso", fmtChave(d.chave))}
     </div>
-    <h3>Carga</h3>
-    <div class="grid" style="grid-template-columns: 1fr 2fr;">
-      ${cteCampo("Valor da carga", d.carga.valor)}
-      ${cteCampo("Produto predominante", d.carga.produto)}
+    <div class="g" style="grid-template-columns: 1fr 1fr 2.6fr;">
+      ${cteBox("Tomador do serviço", d.tomador)}${cteBox("Forma de pagamento", d.formaPagamento)}
+      <div class="bx" style="font-size:8px;">Consulta de autenticidade no portal nacional do CT-e, no site da Sefaz Autorizadora, ou em http://www.cte.fazenda.gov.br</div>
     </div>
-    <h3>Documentos transportados</h3>
-    ${docs}
-    <h3>Autorização</h3>
-    ${cteCampo("Protocolo de autorização", d.protocolo || "—")}
-  </body></html>`;
+    <div class="g" style="grid-template-columns: 1.6fr 2.6fr;">
+      ${cteBox("CFOP - Natureza da prestação", `${d.cfop} - ${d.natureza}`)}${cteBox("Protocolo de autorização de uso", d.protocolo || "")}
+    </div>
+    <div class="g" style="grid-template-columns: 1fr 1fr;">
+      ${cteBox("Início da prestação", d.inicio)}${cteBox("Término da prestação", d.termino)}
+    </div>
+    <div class="g" style="grid-template-columns: 1fr 1fr;">
+      ${cteParte("Remetente", d.remetente)}${cteParte("Destinatário", d.destinatario)}
+    </div>
+    <div class="g" style="grid-template-columns: 1fr 1fr;">
+      ${cteParte("Expedidor", d.expedidor)}${cteParte("Recebedor", d.recebedor)}
+    </div>
+    ${cteParte("Tomador do serviço", d.tomadorServico)}
+    <div class="g" style="grid-template-columns: 1.6fr 1fr 0.6fr 0.9fr 0.5fr 0.5fr 0.8fr 0.8fr;">
+      ${cteBox("Produto predominante", d.produto)}${cteBox("Outras características da carga", d.outrasCaracteristicas)}${cteBox("Valor total da mercadoria", d.valorMercadoria)}${cteBox("Massa (kg)", d.massa)}${cteBox("Cubagem (m3)", d.cubagem)}${cteBox("Volume (litros)", d.volume)}${cteBox("Unidades (und)", d.unidades)}${cteBox("Responsável", d.responsavel)}
+    </div>
+    <div class="sec">COMPONENTES DO VALOR DA PRESTAÇÃO DO SERVIÇO</div>
+    <div class="g" style="grid-template-columns: repeat(4, 1fr) 1.4fr;">
+      <div style="grid-column: span 4; display:grid; grid-template-columns: repeat(4,1fr);">${comps}</div>
+      <div class="bx" style="text-align:right;"><div class="rt">Valor total do serviço</div><div class="vl" style="font-size:12px; font-weight:bold;">${esc(d.valorServico)}</div><div class="rt" style="margin-top:4px;">Valor a receber</div><div class="vl" style="font-size:12px; font-weight:bold;">${esc(d.valorReceber)}</div></div>
+    </div>
+    <div class="sec">INFORMAÇÕES RELATIVAS AO IMPOSTO</div>
+    <div class="g" style="grid-template-columns: 1.6fr 1fr 1fr 1fr 1fr;">
+      ${cteBox("Situação tributária", d.imposto.situacao)}${cteBox("Base de cálculo", d.imposto.base)}${cteBox("Alíq. ICMS", d.imposto.aliquota ? `${d.imposto.aliquota}%` : "")}${cteBox("Valor ICMS", d.imposto.valor)}${cteBox("% red. BC ICMS", d.imposto.reducao ? `${d.imposto.reducao}%` : "")}
+    </div>
+    <div class="sec">DOCUMENTOS ORIGINÁRIOS</div>
+    <table><tr><td style="width:12%"><b>TIPO DOC</b></td><td style="width:55%"><b>CNPJ/CHAVE/OBS</b></td><td><b>SÉRIE/NRO. DOCUMENTO</b></td></tr>${docs}</table>
+    <div class="sec">OBSERVAÇÕES</div>
+    <div class="bx" style="min-height:28px; font-size:9px;">${esc(d.observacoes)}</div>
+    <div class="sec">DADOS ESPECÍFICOS DO MODAL RODOVIÁRIO</div>
+    <div class="g rod" style="grid-template-columns: 1fr 1fr 1fr 1.6fr;">
+      ${cteBox("RNTRC da empresa", d.rodo.rntrc)}${cteBox("CIOT", d.rodo.ciot)}${cteBox("Lotação", d.rodo.lotacao)}${cteBox("Data prevista de entrega", d.rodo.dataPrevista)}
+    </div>
+    <div class="sec">USO EXCLUSIVO DO EMISSOR DO CT-E</div>
+    <div class="g" style="grid-template-columns: 2fr 1fr;">
+      <div class="bx" style="font-size:8px;">O valor aproximado de tributos incidentes sobre o preço deste serviço é de R$0,00</div>
+      <div class="bx" style="text-align:center; font-size:8px;">RESERVADO AO FISCO</div>
+    </div>
+    <div class="sec">DECLARO QUE RECEBI OS VOLUMES DESTE CONHECIMENTO EM PERFEITO ESTADO PELO QUE DOU POR CUMPRIDO O PRESENTE CONTRATO DE TRANSPORTE</div>
+    <div class="g" style="grid-template-columns: 2fr 2fr 1fr;">
+      <div class="bx" style="min-height:30px;"><div class="rt">Nome</div></div>
+      <div class="bx" style="min-height:30px;"><div class="rt">RG / Assinatura / Carimbo</div></div>
+      <div class="bx" style="text-align:center;"><div class="vl" style="font-weight:bold;">CT-E</div><div class="vl">Nº. documento ${esc(d.numero)}</div><div class="vl">Série ${esc(d.serie)}</div></div>
+    </div>
+    <div style="font-size:7px; margin-top:4px;">Representação simplificada do DACTE, montada a partir do XML do CT-e. Não substitui o documento oficial.</div>
+  </div></body></html>`;
 }
 export async function gerarPdfSimplificadoCte(xml: string): Promise<Buffer> {
   const dados = extrairDadosCte(xml);
