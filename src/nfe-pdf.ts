@@ -662,7 +662,8 @@ export function extrairDadosCte(xml: string): DadosCte | null {
   const comps = comoLista(vPrest.Comp).map((c: any) => ({ nome: String(c.xNome || ""), valor: fmtMoney(num(c.vComp)) }));
   const prot = parsed?.cteProc?.protCTe?.infProt;
   const dh = fmtDataHora(ide.dhEmi);
-  const modalRodo = inf.infModal?.rodo;
+  const modalInf = norm.infModal || inf.infModal;
+  const modalRodo = modalInf?.rodo;
   const obs = [acharCte(inf, "xObs"), acharCte(inf, "xObsCont")].filter(Boolean).join(" | ");
   const seg = norm.seg ? comoLista(norm.seg)[0] : undefined;
   return {
@@ -670,7 +671,7 @@ export function extrairDadosCte(xml: string): DadosCte | null {
     numero: String(ide.nCT ?? ""),
     serie: String(ide.serie ?? ""),
     emissao: `${dh.data}${dh.hora ? ` ${dh.hora}` : ""}`,
-    modal: inf.infModal ? (modalRodo !== undefined ? "Rodoviário" : Object.keys(inf.infModal).filter((k) => !k.startsWith("@_")).join(", ")) : "",
+    modal: modalInf ? (modalRodo !== undefined ? "Rodoviário" : Object.keys(modalInf).filter((k) => !k.startsWith("@_")).join(", ")) : "",
     tipoCte: TIPO_CTE[String(ide.tpCTe ?? "0")] || String(ide.tpCTe ?? ""),
     tipoServico: TIPO_SERVICO[String(ide.tpServ ?? "0")] || String(ide.tpServ ?? ""),
     tomador: tomCod !== null ? (tomCod === "4" ? "Outros" : TOMADOR_LABEL[tomCod] || tomCod) : "",
