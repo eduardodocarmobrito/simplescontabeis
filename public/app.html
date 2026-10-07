@@ -6777,6 +6777,13 @@ async function pageNfeBusca(){
           itens.push({ label:'Produtos detalhados', icon:'🛒', onClick:()=>abrirDetalheNota(id,'produtos') });
         }
         itens.push({ label:'Visualizar XML', icon:'🗒️', onClick:()=>abrirDetalheNota(id,'xml') });
+        if(d.tipo==='nfe') itens.push({ label:'Dar ciência da operação', icon:'👁', onClick:async ()=>{
+          try{
+            const r = await api('/nfe/documentos/'+id+'/ciencia', { method:'POST' });
+            if(r.sucesso) toast('Ciência registrada na Sefaz (cStat '+r.cStat+'): '+r.motivo,'ok');
+            else toast('A Sefaz recusou a ciência (cStat '+r.cStat+'): '+r.motivo,'err');
+          }catch(e){ toast(e.message,'err'); }
+        }});
         abrirMenuFlutuante(b, itens);
       }));
       document.querySelectorAll('.nfeOpcBtn[data-act="download"]').forEach(b=>b.addEventListener('click', ()=>{

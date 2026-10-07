@@ -7073,6 +7073,33 @@ app.put("/api/nfe/config/:empresaId/ativo", blockCliente, requirePermissao("nfe-
 // Ciência da Operação automática (desbloqueia o XML completo das NF-e que chegam só como resumo) —
 // opt-in por empresa, desligado por padrão: é uma ação fiscal de verdade na Sefaz (ver
 // nfe.enviarManifestacaoCiencia), não é só um ajuste de exibição.
+// Ciência da operação manual, numa nota recebida que chegou só como resumo. Devolve a resposta da Sefaz
+// (cStat e motivo) pra tela mostrar — não esconde erro, diferente do envio automático em segundo plano.
+app.post("/api/nfe/documentos/:id/ciencia", blockCliente, requirePermissao("nfe-busca", "postar"), async (req, res) => {
+  const user = (req as any).user;
+  const doc = sqlite.prepare(`SELECT * FROM nfe_documentos WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!doc || doc.escritorio_id !== user.escritorioId || !podeAcessarEmpresa(user, doc.empresa_id)) return res.status(404).json({ error: "Documento não encontrado." });
+  if (!doc.chave_acesso || !/^<resNFe/.test(String(doc.xml || "").trimStart())) return res.status(400).json({ error: "Esta nota já tem o XML completo — não precisa de ciência." });
+  const cfg = sqlite.prepare(`SELECT * FROM nfe_busca_config WHERE empresa_id = ?`).get(doc.empresa_id) as any;
+  if (!cfg) return res.status(400).json({ error: "Configure a busca de XML desta empresa (certificado) antes." });
+  try {
+    const cert = nfeCarregarCertificado(cfg);
+    const cnpjBusca = nfeResolverCnpjBusca(cfg, doc.empresa_id);
+    const manif = await nfe.enviarManifestacaoCiencia({ ambiente: cfg.ambiente as nfe.AmbienteNfe, cnpj: cnpjBusca, cUF: nfe.UF_CODIGO_IBGE[cfg.uf_autor], cert, chave: doc.chave_acesso });
+    try {
+      nfeInserirDocumento.run(
+        doc.empresa_id, cfg.escritorio_id, "nfe", `ciencia_${doc.chave_acesso}`, "eventoCienciaManual", "evento",
+        doc.chave_acesso, doc.emitente_cnpj, doc.emitente_nome, cnpjBusca.replace(/\D/g, ""), null, null, manif.dhEvento, manif.xmlEnviado,
+        manif.sucesso ? "Ciencia da Operacao (manual)" : `Ciencia da Operacao (manual) - rejeitada: ${manif.xMotivo}`
+      );
+    } catch (e: any) {
+      console.error("[ciência manual] não consegui gravar o registro:", e.message);
+    }
+    res.json({ sucesso: manif.sucesso, cStat: manif.cStat, motivo: manif.xMotivo });
+  } catch (e: any) {
+    res.status(502).json({ error: `Não consegui enviar a ciência: ${e.message}` });
+  }
+});
 app.put("/api/nfe/config/:empresaId/manifestacao-automatica", blockCliente, requirePermissao("nfe-busca", "editar"), (req, res) => {
   const user = (req as any).user;
   const empId = Number(req.params.empresaId);
