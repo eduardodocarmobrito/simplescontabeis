@@ -7209,6 +7209,7 @@ async function nfeManifestarBacklogResumos(empresaId: number, cfg: any, cert: nf
       `SELECT d.chave_acesso as chaveAcesso, d.emitente_cnpj as emitenteCnpj, d.emitente_nome as emitenteNome
        FROM nfe_documentos d
        WHERE d.empresa_id = ? AND d.tipo IN ('nfe','nfce') AND d.chave_acesso IS NOT NULL AND substr(d.xml,1,7) = '<resNFe'
+         AND substr(d.data_emissao,1,10) >= date('now','-10 days')
          AND NOT EXISTS (SELECT 1 FROM nfe_documentos ev WHERE ev.empresa_id = d.empresa_id AND ev.nsu = 'ciencia_' || d.chave_acesso)
        LIMIT 200`
     )
