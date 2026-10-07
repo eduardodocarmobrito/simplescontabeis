@@ -2873,11 +2873,7 @@ async function renderEmpresasPendencias(){
   const ok = '<span class="tag ok">✓</span>', falta = '<span class="tag bad">Falta</span>';
   box.innerHTML = `
     <p class="subtitle" style="margin-top:-6px;">Empresas ativas que ainda não têm certificado digital anexado ou estão sem alguma das licenças mínimas (Alvará, Vigilância Sanitária, Corpo de Bombeiros e SEMMA). Vale ter ao menos um arquivo de cada licença, de qualquer ano.</p>
-    <div class="field" style="max-width:360px; margin-bottom:10px;"><select id="pendFiltro">
-      <option value="todas">Todas as pendências (${pend.length})</option>
-      <option value="cert">Sem certificado digital (${nCert})</option>
-      <option value="lic">Sem alguma licença (${nLic})</option>
-    </select></div>
+    <div class="field" style="max-width:360px; margin-bottom:10px;">${comboSelectHtml('pendFiltroCombo','Todas as pendências…')}</div>
     <div class="field" style="max-width:360px; margin-bottom:10px;"><input type="text" id="pendBusca" placeholder="Buscar por nome ou CNPJ…" autocomplete="off"></div>
     <div class="card" style="padding:0; overflow-x:auto;"><table class="data-table">
       <thead><tr><th>Empresa</th><th>CNPJ</th><th>Certificado</th>${lics.map(l=>`<th>${esc(l.label)}</th>`).join('')}<th></th></tr></thead>
@@ -2894,7 +2890,17 @@ async function renderEmpresasPendencias(){
     try{ await api('/empresas/pendencias-documentos/config', { method:'PUT', body:{ exigirPf } }); toast('Pendências de pessoa física salvas.','ok'); renderEmpresasPendencias(); }
     catch(e){ toast(e.message,'err'); }
   });
-  const sel = document.getElementById('pendFiltro'); sel.value = EMP_PEND_FILTRO;
+  // Filtro em combo (padrão do site, igual ao campo Empresa): escolhido = EMP_PEND_FILTRO.
+  const filtroItens = [
+    { id:'todas', label:`Todas as pendências (${pend.length})` },
+    { id:'cert', label:`Sem certificado digital (${nCert})` },
+    { id:'lic', label:`Sem alguma licença (${nLic})` },
+  ];
+  setupComboSelect('pendFiltroCombo', filtroItens, id=>{ EMP_PEND_FILTRO = id || 'todas'; desenhar(); });
+  { const atual = filtroItens.find(i=>i.id===EMP_PEND_FILTRO) || filtroItens[0];
+    const root = document.getElementById('pendFiltroCombo');
+    root.querySelector('.combo-input').value = atual.label;
+    root.querySelector('.combo-value').value = atual.id; }
   function desenhar(){
     const termo = normalizaTxt(document.getElementById('pendBusca').value).trim();
     const f = EMP_PEND_FILTRO;
@@ -2915,7 +2921,7 @@ async function renderEmpresasPendencias(){
       if(emp) empresaModal(emp);
     }));
   }
-  sel.addEventListener('change', ()=>{ EMP_PEND_FILTRO = sel.value; desenhar(); });
+
   document.getElementById('pendBusca').addEventListener('input', desenhar);
   desenhar();
 }
