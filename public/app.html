@@ -12186,7 +12186,7 @@ async function cenvEditarModal(doc, escopo, recarregar){
   try{ [{ itens:tipos }, { items:empresas }] = await Promise.all([api('/central-envio/tipos'), api('/empresas')]); }catch(e){ toast(e.message,'err'); return; }
   tipos = tipos.filter(t=>t.ativo && (t.setor===doc.setor || t.setor==='crm'));
   openModal(`<h3>Corrigir documento</h3><p class="subtitle">${esc(doc.arquivo)}</p>
-    <div class="field"><label>Tipo do documento</label><select id="cenvTipo"><option value="">— sem tipo —</option>${tipos.map(t=>`<option value="${t.id}" ${t.id===doc.tipoId?'selected':''}>${esc(t.nome)}</option>`).join('')}</select></div>
+    <div class="field"><label>Tipo do documento</label>${comboSelectHtml('cenvTipoCombo','Digite para buscar o tipo…')}</div>
     <div class="field"><label>Empresa</label>${comboSelectHtml('cenvEmpCombo','Digite para buscar a empresa…')}</div>
     <div class="field"><label>Colaborador</label><input type="text" id="cenvColab" value="${esc(doc.colaborador||'')}"></div>
     <div class="field"><label>Competência (MM/AAAA)</label><input type="text" id="cenvComp" value="${esc(doc.competencia||'')}" placeholder="09/2026"></div>
@@ -12201,12 +12201,17 @@ async function cenvEditarModal(doc, escopo, recarregar){
     if(!pre.classList.contains('hidden')){ pre.classList.add('hidden'); return; }
     try{ const r = await api(`/central-envio/docs/${doc.id}/texto`); pre.textContent = r.texto; pre.classList.remove('hidden'); }catch(e){ toast(e.message,'err'); }
   });
+  // Tipo do documento com busca (a lista é longa) — reaproveita o combo filtrável, com "— sem tipo —".
+  let tipoSel = doc.tipoId || '';
+  setupComboSelect('cenvTipoCombo', [{ id:'', label:'— sem tipo —' }, ...tipos.map(t=>({ id:t.id, label:t.nome }))], v=>{ tipoSel = v || ''; });
+  { const root = document.getElementById('cenvTipoCombo'); const t = tipos.find(x=>x.id===doc.tipoId);
+    root.querySelector('.combo-input').value = t ? t.nome : ''; root.querySelector('.combo-value').value = t ? t.id : ''; }
   let empId = doc.empresaId || null;
   setupComboSelect('cenvEmpCombo', empresas.filter(e=>e.ativo).map(e=>({ id:e.id, label:e.nome })), v=>{ empId = v ? Number(v) : null; });
   if(empId){ const e = empresas.find(x=>x.id===empId); const root = document.getElementById('cenvEmpCombo'); if(e){ root.querySelector('.combo-input').value = e.nome; root.querySelector('.combo-value').value = e.id; } }
   document.getElementById('cenvSalvar').addEventListener('click', async ()=>{
     try{
-      await api('/central-envio/docs/'+doc.id, { method:'PUT', body:{ tipoId: document.getElementById('cenvTipo').value || null, empresaId: empId, colaborador: document.getElementById('cenvColab').value, competencia: document.getElementById('cenvComp').value } });
+      await api('/central-envio/docs/'+doc.id, { method:'PUT', body:{ tipoId: tipoSel || null, empresaId: empId, colaborador: document.getElementById('cenvColab').value, competencia: document.getElementById('cenvComp').value } });
       closeModal(); toast('Corrigido.','ok'); recarregar();
     }catch(e){ toast(e.message,'err'); }
   });
