@@ -13519,13 +13519,13 @@ function cardDasEmAtraso(user: any): any[] {
   const corte = painelMonitoramentoCorte(escritorioId);
   const atribuicoes = sqlite
     .prepare(
-      `SELECT a.id as atribuicaoId, a.empresa_id as empresaId, e.nome as empresaNome
+      `SELECT a.id as atribuicaoId, a.empresa_id as empresaId, e.nome as empresaNome, t.setor as templateSetor
        FROM envio_atribuicoes a
        JOIN envio_templates t ON t.id = a.template_id AND t.nome = 'DAS - Mensal' AND t.escritorio_id = ?
        JOIN empresas e ON e.id = a.empresa_id AND e.escritorio_id = ? AND e.ativo = 1
        WHERE a.ativo = 1`
     )
-    .all(escritorioId, escritorioId) as any[];
+    .all(escritorioId, escritorioId).filter((a: any) => envioSetorAtendido(a.templateSetor, a.empresaId)) as any[];
   // Achado ao vivo (AMIL COMERCIO DE PEÇAS, FERNANDO CARVALHO DA SILVA): a atribuição "DAS - Mensal"
   // só nasce quando um DAS ou Situação Fiscal é gerado com sucesso ao menos uma vez (ver
   // integraContadorAnexarDasEmEnvio/integraContadorAnexarSitfisEmEnvio) — uma empresa optante do
@@ -13638,13 +13638,13 @@ function cardEnvioAtraso(user: any, templateIds: number[]): any[] {
   const placeholders = templateIds.map(() => "?").join(",");
   const atribuicoes = sqlite
     .prepare(
-      `SELECT a.id as atribuicaoId, a.empresa_id as empresaId, e.nome as empresaNome, t.id as templateId, t.nome as templateNome, t.considera_mes_atual as considerarMesAtual, t.suspenso_desde as suspensoDesde, t.periodicidade as periodicidade
+      `SELECT a.id as atribuicaoId, a.empresa_id as empresaId, e.nome as empresaNome, t.id as templateId, t.nome as templateNome, t.considera_mes_atual as considerarMesAtual, t.suspenso_desde as suspensoDesde, t.periodicidade as periodicidade, t.setor as templateSetor
        FROM envio_atribuicoes a
        JOIN envio_templates t ON t.id = a.template_id AND t.id IN (${placeholders}) AND t.escritorio_id = ?
        JOIN empresas e ON e.id = a.empresa_id AND e.escritorio_id = ? AND e.ativo = 1
        WHERE a.ativo = 1`
     )
-    .all(...templateIds, escritorioId, escritorioId) as any[];
+    .all(...templateIds, escritorioId, escritorioId).filter((a: any) => envioSetorAtendido(a.templateSetor, a.empresaId)) as any[];
   // Chave por empresa+modelo (não só empresa) — uma empresa pode estar atrasada em mais de um
   // modelo ao mesmo tempo (ex.: Nota Fiscal E DRE), e cada linha do card precisa dizer qual é qual.
   const resultado: any[] = [];
@@ -13778,6 +13778,8 @@ async function cardSituacaoFiscal(user: any): Promise<any[]> {
   const resultado: any[] = [];
   for (const r of rows) {
     if (!visiveis.has(r.empresaId)) continue;
+    // Situação Fiscal é obrigação do setor Fiscal: empresa que não atende Fiscal não entra no card.
+    if (!envioSetorAtendido("fiscal", r.empresaId)) continue;
     // Achado ao vivo: "Declaração/DAS ainda não localizada" (alerta_declaracao) saiu daqui — não é
     // informação de Situação Fiscal (SITFIS), é sobre a declaração do Simples não ter sido
     // localizada/transmitida, um assunto diferente que estava poluindo este card.
