@@ -27,6 +27,10 @@ AGENTE_TOKEN := "COLE_AQUI_O_TOKEN_DO_AGENTE"
 
 POLL_SEGUNDOS := 10       ; de quanto em quanto tempo pergunta ao site
 
+; TESTE: se preenchido (ex.: "117"), o robo roda SO essa empresa (codigo do Dominio).
+; Deixe vazio ("") pra rodar todas as empresas da lista do site.
+SO_CODIGO := "117"
+
 ; Re-selecionar o modulo Folha a cada execucao? true = garante que esta no modulo certo.
 SELECIONAR_MODULO := true
 FAV_KEY      := "f"       ; letra do menu FAVORITOS
@@ -544,6 +548,14 @@ RodarCiclo() {
         return
     }
     empresas := PegarEmpresas()
+    if (SO_CODIGO != "") {
+        filtradas := []
+        for e in empresas
+            if (e.codigo = SO_CODIGO)
+                filtradas.Push(e)
+        Logar("TESTE: SO_CODIGO=" . SO_CODIGO . " -> " . filtradas.Length . " empresa(s) da lista")
+        empresas := filtradas
+    }
     total := empresas.Length
     Logar("=== EXECUCAO: " . total . " empresa(s) (Programacao de Ferias) ===")
     ReportarProgresso(true, total, 0, "", true)
