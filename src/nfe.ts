@@ -413,7 +413,8 @@ export async function enviarManifestacaoCiencia(params: { ambiente: AmbienteNfe;
   const infEvento =
     `<infEvento Id="${idEvento}">` +
     `<cOrgao>${CORGAO_AMBIENTE_NACIONAL}</cOrgao><tpAmb>${tpAmb}</tpAmb>` +
-    `<CNPJ>${cnpjLimpo}</CNPJ><chNFe>${params.chave}</chNFe><dhEvento>${dhEvento}</dhEvento>` +
+    // Pessoa física (CPF, 11 dígitos) usa a tag <CPF>; com <CNPJ> a Sefaz rejeita o lote (cStat 225).
+    `${cnpjLimpo.length === 11 ? `<CPF>${cnpjLimpo}</CPF>` : `<CNPJ>${cnpjLimpo}</CNPJ>`}<chNFe>${params.chave}</chNFe><dhEvento>${dhEvento}</dhEvento>` +
     `<tpEvento>210210</tpEvento><nSeqEvento>1</nSeqEvento><verEvento>1.00</verEvento>` +
     `<detEvento versao="1.00"><descEvento>Ciencia da Operacao</descEvento></detEvento>` +
     `</infEvento>`;
