@@ -9643,7 +9643,7 @@ app.put("/api/integracontador/agenda", blockCliente, requirePermissao("integraco
   const { data, hora, diaSemana } = agoraBrasiliaTextos();
   if (agendaLimpa.dias.includes(diaSemana)) {
     for (const h of agendaLimpa.horas.filter((x) => x <= hora)) {
-      sqlite.prepare(`INSERT OR IGNORE INTO integracontador_busca_slots (slot) VALUES (?)`).run(`${data} ${h}`);
+      sqlite.prepare(`INSERT OR IGNORE INTO integracontador_busca_slots (slot, concluida_em) VALUES (?, datetime('now'))`).run(`${data} ${h}`);
     }
   }
   res.json({ ok: true, agenda: agendaLimpa });
@@ -10602,10 +10602,10 @@ app.get("/api/integracontador/documentos/:id/declaracao-pdf", blockCliente, asyn
 // menos execuções = mais barato — troca-se dado um pouco menos fresco por menos custo. Roda pra
 // toda empresa ativa, uma de cada vez, com uma pausa entre elas.
 const INTEGRACONTADOR_AUTO_PAUSA_ENTRE_EMPRESAS_MS = 5000;
-async function integraContadorExecutarBuscaAutomatica() {
+async function integraContadorExecutarBuscaAutomatica(desde?: string) {
   const configs = sqlite
     .prepare(
-      `SELECT c.empresa_id as empresaId, c.optante_simples_nacional as optante, c.busca_dctfweb as buscaDctfweb, e.cnpj as cnpj
+      `SELECT c.empresa_id as empresaId, c.optante_simples_nacional as optante, c.busca_dctfweb as buscaDctfweb, e.cnpj as cnpj, c.ultima_busca_em as ultimaBusca
        FROM integracontador_empresa_config c
        JOIN empresas e ON e.id = c.empresa_id
        JOIN integracontador_config ic ON ic.escritorio_id = c.escritorio_id
@@ -10613,6 +10613,8 @@ async function integraContadorExecutarBuscaAutomatica() {
     )
     .all() as any[];
   for (const cfg of configs) {
+    // Já buscada nesta mesma rodada (antes de um reinício do servidor): não repete.
+    if (desde && cfg.ultimaBusca && cfg.ultimaBusca >= desde) continue;
     if (integraContadorBuscasEmAndamento.has(cfg.empresaId)) continue;
     integraContadorBuscasEmAndamento.add(cfg.empresaId);
     try {
@@ -10640,7 +10642,11 @@ function getAgendaBusca(escritorioId: number): { dias: number[]; horas: string[]
     return AGENDA_BUSCA_PADRAO;
   }
 }
-sqlite.exec(`CREATE TABLE IF NOT EXISTS integracontador_busca_slots (slot TEXT PRIMARY KEY, iniciada_em TEXT NOT NULL DEFAULT (datetime('now')))`);
+sqlite.exec(`CREATE TABLE IF NOT EXISTS integracontador_busca_slots (slot TEXT PRIMARY KEY, iniciada_em TEXT NOT NULL DEFAULT (datetime('now')), concluida_em TEXT)`);
+{
+  const colsSlots = sqlite.prepare(`PRAGMA table_info(integracontador_busca_slots)`).all() as any[];
+  if (!colsSlots.some((c) => c.name === "concluida_em")) sqlite.exec(`ALTER TABLE integracontador_busca_slots ADD COLUMN concluida_em TEXT`);
+}
 {
   const colsIc = sqlite.prepare(`PRAGMA table_info(integracontador_config)`).all() as any[];
   if (!colsIc.some((c) => c.name === "agenda_busca_json")) sqlite.exec(`ALTER TABLE integracontador_config ADD COLUMN agenda_busca_json TEXT`);
@@ -10652,18 +10658,41 @@ function agoraBrasiliaTextos() {
   const diaSemana = new Date(Date.UTC(a.ano, a.mes - 1, a.dia)).getUTCDay();
   return { data, hora, diaSemana };
 }
+let integraContadorRodadaEmCurso: string | null = null;
+async function integraContadorRodar(slot: string, iniciadaEm: string) {
+  integraContadorRodadaEmCurso = slot;
+  try {
+    console.log(`[Integra Contador] busca automática ${slot} em andamento`);
+    await integraContadorExecutarBuscaAutomatica(iniciadaEm);
+    sqlite.prepare(`UPDATE integracontador_busca_slots SET concluida_em = datetime('now') WHERE slot = ?`).run(slot);
+    console.log(`[Integra Contador] busca automática ${slot} concluída`);
+  } catch (e: any) {
+    console.error("Erro na rotina automática do Integra Contador:", e.message);
+  } finally {
+    integraContadorRodadaEmCurso = null;
+  }
+}
 setInterval(() => {
+  if (integraContadorRodadaEmCurso) return;
+  // 1) rodada iniciada e não concluída (servidor reiniciou no meio): retoma
+  const pendente = sqlite.prepare(`SELECT slot, iniciada_em FROM integracontador_busca_slots WHERE concluida_em IS NULL ORDER BY slot LIMIT 1`).get() as any;
+  if (pendente) {
+    integraContadorRodar(pendente.slot, pendente.iniciada_em);
+    return;
+  }
+  // 2) horário devido de hoje ainda não rodado
   const { data, hora, diaSemana } = agoraBrasiliaTextos();
   const agenda = getAgendaBusca(1);
   if (!agenda.dias.includes(diaSemana)) return;
   const devidos = agenda.horas.filter((h) => h <= hora).sort();
   for (const h of devidos) {
     const slot = `${data} ${h}`;
-    const marcou = sqlite.prepare(`INSERT OR IGNORE INTO integracontador_busca_slots (slot) VALUES (?)`).run(slot);
-    if (!marcou.changes) continue; // já rodou (ou está rodando) neste horário
-    console.log(`[Integra Contador] busca automática ${slot} iniciada`);
-    integraContadorExecutarBuscaAutomatica().catch((e) => console.error("Erro na rotina automática do Integra Contador:", e.message));
-    return; // uma busca por vez
+    const jaExiste = sqlite.prepare(`SELECT 1 FROM integracontador_busca_slots WHERE slot = ?`).get(slot);
+    if (jaExiste) continue;
+    sqlite.prepare(`INSERT INTO integracontador_busca_slots (slot) VALUES (?)`).run(slot);
+    const iniciadaEm = (sqlite.prepare(`SELECT iniciada_em FROM integracontador_busca_slots WHERE slot = ?`).get(slot) as any).iniciada_em;
+    integraContadorRodar(slot, iniciadaEm);
+    return; // uma rodada por vez
   }
 }, 60_000);
 // Busca agendada de uma vez (ex.: "amanhã às 08h, todas as empresas"). Cada linha roda uma única vez,
