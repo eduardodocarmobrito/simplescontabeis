@@ -4401,6 +4401,7 @@ async function renderEnvioModelos(){
   const box = document.getElementById('envioContent');
   box.innerHTML = `
     <div class="row" style="margin-bottom:14px;">${podePostar?`<button class="btn primary" id="btnNovoEnvioModelo">+ Novo modelo</button>`:''}</div>
+    <div class="field" style="max-width:360px; margin-bottom:10px;"><input type="text" id="envioModeloBusca" placeholder="Buscar modelo por nome ou setor…" autocomplete="off"></div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
         <thead><tr><th>Nome</th><th>Periodicidade</th><th>Arquivo aceito</th><th>Vencimento</th><th>Cliente pode solicitar</th><th></th></tr></thead>
@@ -4409,7 +4410,10 @@ async function renderEnvioModelos(){
     </div>
     ${items.some(t=>t.protegido)? `<p style="font-size:11.5px; color:var(--ink-soft); margin:8px 0 0;">* Modelo usado automaticamente pelo Integra Contador — nome travado, não pode ser excluído.</p>` : ''}
   `;
-  document.getElementById('envioModelosBody').innerHTML = items.length? items.map(t=>`
+  const desenhaModelosEnvio = (filtro)=>{
+    const termo = normalizaTxt(filtro).trim();
+    const lista = termo ? items.filter(t=>normalizaTxt(t.nome).includes(termo) || normalizaTxt((SETORES_EMPRESA_UI.find(x=>x.chave===t.setor)||{}).label||'').includes(termo)) : items;
+    document.getElementById('envioModelosBody').innerHTML = lista.length ? lista.map(t=>`
     <tr data-id="${t.id}">
       <td><b>${esc(t.nome)}</b>${t.protegido?` <span title="Usado automaticamente pelo Integra Contador — não pode ser renomeado nem excluído">*</span>`:''}${t.descricao?`<br><span style="color:var(--ink-soft); font-size:12px;">${esc(t.descricao)}</span>`:''}${t.suspensoDesde?`<br><span class="tag bad" style="margin-top:3px;">Suspenso a partir de ${esc(mesAnoRotulo(t.suspensoDesde))}</span>`:''}${t.autoRegimeTributario?`<br><span class="tag ok" style="margin-top:3px;">Automático para ${esc(REGIME_TRIBUTARIO_LABELS[t.autoRegimeTributario]||t.autoRegimeTributario)}</span>`:''}${t.setor?` <br><span class="tag ok" style="margin-top:3px;">Setor: ${esc((SETORES_EMPRESA_UI.find(x=>x.chave===t.setor)||{}).label||t.setor)}</span>`:' <br><span class="tag muted" style="margin-top:3px;">todas as empresas</span>'}</td>
       <td>${PERIODICIDADE_LABELS[t.periodicidade]||t.periodicidade}</td>
@@ -4418,12 +4422,15 @@ async function renderEnvioModelos(){
       <td><span class="tag ${t.visivelCliente?'ok':'muted'}">${t.visivelCliente?'Sim':'Não'}</span></td>
       <td style="text-align:right;">${podeEditar?`<button class="btn small" data-act="edit">Editar</button>`:''}</td>
     </tr>
-  `).join('') : `<tr><td colspan="6"><div class="empty-state">Nenhum modelo cadastrado ainda.</div></td></tr>`;
+  `).join('') : `<tr><td colspan="6"><div class="empty-state">${items.length?'Nenhum modelo encontrado com esse filtro.':'Nenhum modelo cadastrado ainda.'}</div></td></tr>`;
+    if(podeEditar) document.getElementById('envioModelosBody').querySelectorAll('[data-act="edit"]').forEach(b=>b.addEventListener('click', e=>{
+      const id=Number(e.target.closest('tr').dataset.id);
+      envioModeloModal(items.find(x=>x.id===id));
+    }));
+  };
+  desenhaModelosEnvio('');
+  document.getElementById('envioModeloBusca').addEventListener('input', e=>desenhaModelosEnvio(e.target.value));
   if(podePostar) document.getElementById('btnNovoEnvioModelo').addEventListener('click', ()=>envioModeloModal());
-  if(podeEditar) document.getElementById('envioModelosBody').querySelectorAll('[data-act="edit"]').forEach(b=>b.addEventListener('click', e=>{
-    const id=Number(e.target.closest('tr').dataset.id);
-    envioModeloModal(items.find(x=>x.id===id));
-  }));
 }
 function envioModeloModal(t){
   openModal(`
