@@ -8930,10 +8930,14 @@ function distratoModeloDrawer(config){
 const TIPOS_REL = [ {v:'balanco', l:'Balanço'}, {v:'balancete', l:'Balancete'}, {v:'dre', l:'DRE'}, {v:'faturamento', l:'Relação de Faturamento'}, {v:'razao', l:'Razão'}, {v:'comparativo', l:'Comparativo de Movimento'}, {v:'aviso_ferias', l:'Aviso de Férias'}, {v:'programacao_ferias', l:'Programação de Férias'}, {v:'folha', l:'Folha'}, {v:'retencoes', l:'Retenções de Impostos'} ];
 let REL_TAB='balanco';
 async function pageRelatorios(){
+  // Colaborador só vê as abas liberadas no cadastro dele (lista vazia = todas).
+  const { abas: abasPermitidas } = await api('/relatorios/abas-permitidas');
+  const abasVisiveis = abasPermitidas.length ? TIPOS_REL.filter(t=>abasPermitidas.includes(t.v)) : TIPOS_REL;
+  if(!abasVisiveis.some(t=>t.v===REL_TAB)) REL_TAB = abasVisiveis[0] ? abasVisiveis[0].v : REL_TAB;
   main().innerHTML = `
     <h1>Relatórios</h1>
     <p class="subtitle">Fiscais, contábeis e de folha</p>
-    <div class="tabs">${TIPOS_REL.map(t=>`<div class="tab" data-tab="${t.v}">${t.l}</div>`).join('')}</div>
+    <div class="tabs">${abasVisiveis.map(t=>`<div class="tab" data-tab="${t.v}">${t.l}</div>`).join('')}</div>
     <div id="relContent"></div>
   `;
   main().querySelectorAll('.tab').forEach(t=>t.addEventListener('click', ()=>{ REL_TAB=t.dataset.tab; renderRelTab(); }));
@@ -11596,6 +11600,11 @@ async function usuarioModal(u){
         <p style="font-size:11.5px; color:var(--ink-soft); margin:-2px 0 8px;">Nenhuma marcada = vê todas. Marque só as que esse colaborador deve acessar.</p>
         <div class="checkbox-grid">${CFG_ABAS_TODAS.map(a=>`<label class="checkbox-row"><input type="checkbox" class="usConfigAba" value="${a.id}"> ${esc(a.label)}</label>`).join('')}</div>
       </div>
+      <div id="usRelAbasWrap" style="margin-top:14px;">
+        <div style="font-size:12px; font-weight:600; margin-bottom:4px;">Abas de Relatórios visíveis</div>
+        <p style="font-size:11.5px; color:var(--ink-soft); margin:-2px 0 8px;">Nenhuma marcada = vê todas. Marque só as que esse colaborador deve acessar.</p>
+        <div class="checkbox-grid">${TIPOS_REL.map(t=>`<label class="checkbox-row"><input type="checkbox" class="usRelAba" value="${t.v}"> ${esc(t.l)}</label>`).join('')}</div>
+      </div>
     </div>
     <div class="modal-actions">
       <button class="btn" id="usCancel">Cancelar</button>
@@ -11649,11 +11658,13 @@ async function usuarioModal(u){
   if(!u) listaColabEmp().forEach(c=>{ c.checked = acessoTodasEl.checked; });
 
   if(u && u.perfil==='Colaborador'){
-    const [{ items: perms }, { empresaIds }, { abas: configAbas }] = await Promise.all([
+    const [{ items: perms }, { empresaIds }, { abas: configAbas }, { abas: relAbas }] = await Promise.all([
       api('/users/'+u.id+'/permissoes'),
       api('/users/'+u.id+'/empresas'),
       api('/users/'+u.id+'/config-abas'),
+      api('/users/'+u.id+'/relatorios-abas'),
     ]);
+    document.querySelectorAll('.usRelAba').forEach(c=>{ c.checked = relAbas.includes(c.value); });
     renderPermGrid(perms);
     acessoTodasEl.checked = !!u.acessoTodasEmpresas;
     listaColabEmp().forEach(c=>{ c.checked = acessoTodasEl.checked || empresaIds.includes(Number(c.value)); });
@@ -11717,6 +11728,8 @@ async function usuarioModal(u){
         await api('/users/'+userId+'/empresas', { method:'PUT', body:{ empresaIds } });
         const configAbas = [...document.querySelectorAll('.usConfigAba:checked')].map(c=>c.value);
         await api('/users/'+userId+'/config-abas', { method:'PUT', body:{ abas: configAbas } });
+        const relAbas = [...document.querySelectorAll('.usRelAba:checked')].map(c=>c.value);
+        await api('/users/'+userId+'/relatorios-abas', { method:'PUT', body:{ abas: relAbas } });
       }
       if(perfil==='Cliente'){
         const empresaIds = [...document.querySelectorAll('.usCliEmpCheck:checked')].map(c=>Number(c.value));

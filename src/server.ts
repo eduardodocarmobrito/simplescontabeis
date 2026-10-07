@@ -3181,6 +3181,30 @@ app.put("/api/users/:id/permissoes", requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 const CONFIG_ABAS_VALIDAS = ["dominio", "email", "whatsapp", "fgts-digital", "nfse-agendamento", "painel-tv", "envio-docs", "atendimento", "assinatura-plataforma"];
+// Abas de Relatórios que cada colaborador pode ver. Sem nenhuma linha = vê todas (padrão de antes).
+const RELATORIOS_ABAS_VALIDAS = ["balanco", "balancete", "dre", "faturamento", "razao", "comparativo", "aviso_ferias", "programacao_ferias", "folha", "retencoes"];
+sqlite.exec(`CREATE TABLE IF NOT EXISTS colaborador_relatorios_abas (user_id INTEGER NOT NULL, aba TEXT NOT NULL, PRIMARY KEY (user_id, aba))`);
+app.get("/api/users/:id/relatorios-abas", requireAdmin, (req, res) => {
+  if (!pertenceAoEscritorio(req, Number(req.params.id))) return res.status(404).json({ error: "Usuário não encontrado." });
+  const rows = sqlite.prepare(`SELECT aba FROM colaborador_relatorios_abas WHERE user_id = ?`).all(Number(req.params.id)) as any[];
+  res.json({ abas: rows.map((r) => r.aba) });
+});
+app.put("/api/users/:id/relatorios-abas", requireAdmin, (req, res) => {
+  const userId = Number(req.params.id);
+  if (!pertenceAoEscritorio(req, userId)) return res.status(404).json({ error: "Usuário não encontrado." });
+  const abas: string[] = Array.isArray(req.body?.abas) ? req.body.abas.filter((a: string) => RELATORIOS_ABAS_VALIDAS.includes(a)) : [];
+  sqlite.prepare(`DELETE FROM colaborador_relatorios_abas WHERE user_id = ?`).run(userId);
+  const stmt = sqlite.prepare(`INSERT INTO colaborador_relatorios_abas (user_id, aba) VALUES (?, ?)`);
+  for (const aba of abas) stmt.run(userId, aba);
+  res.json({ ok: true });
+});
+// Abas de Relatórios que o usuário logado pode ver (lista vazia = todas). Só colaborador tem restrição.
+app.get("/api/relatorios/abas-permitidas", blockCliente, requireAuth, (req, res) => {
+  const user = (req as any).user;
+  if (user.perfil !== "Colaborador") return res.json({ abas: [] });
+  const rows = sqlite.prepare(`SELECT aba FROM colaborador_relatorios_abas WHERE user_id = ?`).all(user.id) as any[];
+  res.json({ abas: rows.map((r) => r.aba) });
+});
 app.get("/api/users/:id/config-abas", requireAdmin, (req, res) => {
   if (!pertenceAoEscritorio(req, Number(req.params.id))) return res.status(404).json({ error: "Usuário não encontrado." });
   const rows = sqlite.prepare(`SELECT aba FROM colaborador_config_abas WHERE user_id = ?`).all(Number(req.params.id)) as any[];
