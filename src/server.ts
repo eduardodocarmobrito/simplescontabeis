@@ -10597,6 +10597,21 @@ setInterval(() => {
   if (!marcou.changes) return; // já rodou (ou está rodando) hoje
   integraContadorExecutarBuscaAutomatica().catch((e) => console.error("Erro na rotina automática do Integra Contador:", e.message));
 }, 60_000);
+// Busca agendada de uma vez (ex.: "amanhã às 08h, todas as empresas"). Cada linha roda uma única vez,
+// quando o horário de Brasília chega. Criada direto no banco (ou por quem administra o servidor).
+sqlite.exec(`CREATE TABLE IF NOT EXISTS integracontador_busca_agendada (id INTEGER PRIMARY KEY AUTOINCREMENT, quando TEXT NOT NULL, executada_em TEXT)`);
+setInterval(() => {
+  const agora = agoraBrasilia();
+  const agoraTxt = `${agora.ano}-${String(agora.mes).padStart(2, "0")}-${String(agora.dia).padStart(2, "0")} ${String(agora.hora).padStart(2, "0")}:${String(agora.minuto).padStart(2, "0")}`;
+  const pendente = sqlite
+    .prepare(`SELECT id FROM integracontador_busca_agendada WHERE executada_em IS NULL AND quando <= ? ORDER BY quando LIMIT 1`)
+    .get(agoraTxt) as any;
+  if (!pendente) return;
+  // Marca antes de rodar: se o servidor reiniciar no meio, não repete a busca inteira sem querer.
+  sqlite.prepare(`UPDATE integracontador_busca_agendada SET executada_em = datetime('now') WHERE id = ?`).run(pendente.id);
+  console.log(`[Integra Contador] busca agendada #${pendente.id} iniciada`);
+  integraContadorExecutarBuscaAutomatica().catch((e) => console.error("Erro na busca agendada do Integra Contador:", e.message));
+}, 60_000);
 
 // Modelos de serviço reutilizáveis — configurados uma vez (código de tributação, ISSQN, retenções)
 // e escolhidos na hora da emissão, que só pede descrição e valor.
