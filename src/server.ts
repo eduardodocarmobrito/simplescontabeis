@@ -6216,6 +6216,27 @@ app.post("/api/envio/rollover-ano", requireAdmin, (req, res) => {
   const r = envioRolloverGerarAno(user.escritorioId, ano);
   res.json({ ok: true, ano, ...r });
 });
+// Desfaz um "Gerar ano na grade" disparado num ano futuro por engano (ex.: relógio do navegador
+// errado sugerindo o ano seguinte no prompt) — diferente do DELETE de período avulso logo abaixo,
+// aqui é o ano inteiro de um calendário mensal/trimestral/anual, só permitido se nenhum mês daquele
+// ano tiver documento anexado (senão o jeito é apagar os documentos um a um, como já existe). Só
+// aceita ano estritamente no futuro — nunca deixa zerar o ano corrente ou passado por aqui.
+app.delete("/api/envio/atribuicoes/:id/periodos-do-ano/:ano", requireAdmin, (req, res) => {
+  const user = (req as any).user;
+  const atribuicaoId = Number(req.params.id);
+  const ano = Number(req.params.ano);
+  const atrib = sqlite.prepare(`SELECT empresa_id as empresaId FROM envio_atribuicoes WHERE id = ?`).get(atribuicaoId) as any;
+  if (!atrib || !podeAcessarEmpresa(user, atrib.empresaId)) return res.status(404).json({ error: "Atribuição não encontrada." });
+  if (!Number.isInteger(ano) || ano <= agoraBrasilia().ano) return res.status(400).json({ error: "Só é possível apagar um ano futuro." });
+  const periodos = sqlite.prepare(`SELECT id FROM envio_periodos WHERE atribuicao_id = ? AND ano = ?`).all(atribuicaoId, ano) as any[];
+  if (!periodos.length) return res.status(404).json({ error: "Esse ano não está gerado nessa grade." });
+  const temDocumento = sqlite
+    .prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id IN (${periodos.map(() => "?").join(",")})`)
+    .get(...periodos.map((p) => p.id));
+  if (temDocumento) return res.status(400).json({ error: "Já existe documento anexado em algum mês desse ano — não é possível apagar em massa." });
+  sqlite.prepare(`DELETE FROM envio_periodos WHERE id IN (${periodos.map(() => "?").join(",")})`).run(...periodos.map((p) => p.id));
+  res.json({ ok: true, periodosRemovidos: periodos.length });
+});
 
 // Só pra período avulso (rótulo próprio, ex.: "CND - Receita Federal") e só quando não tem nenhum
 // documento anexado ainda — mensal/anual nunca entra aqui (fazem parte do calendário fixo da grade,
