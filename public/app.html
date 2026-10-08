@@ -4329,27 +4329,27 @@ async function renderEnvioProgramacao(){
     const auto = d.automatico;
     box.innerHTML = `
       <div class="card" style="max-width:760px;">
-        <h3 style="margin-top:0;">Programação de envio ao cliente</h3>
-        <p class="subtitle" style="margin-bottom:0;">Controla <b>todo disparo automático</b> de documentos para o cliente (WhatsApp e e-mail). O robô de baixar e anexar os PDFs continua normal — aqui você decide só se o <b>envio</b> sai sozinho ou na mão.</p>
+        <h3 style="margin-top:0;">Programação de envio — número oficial da Meta</h3>
+        <p class="subtitle" style="margin-bottom:0;">Controla o disparo automático da rotina do <b>Envio de Documentos</b> que sai pelo <b>número oficial da Meta (WhatsApp oficial)</b>. O robô de baixar/anexar continua normal — aqui você decide só se esse envio pela Meta sai sozinho ou na mão.</p>
         <div class="card" style="margin:14px 0; padding:16px; background:${auto?'var(--accent-pale)':'#fff6e6'}; border:1px solid ${auto?'var(--accent)':'#e0b84a'};">
           <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
-            <b style="font-size:15px;">${auto?'🟢 Envio automático LIGADO':'🟠 Envio MANUAL (automático desligado)'}</b>
+            <b style="font-size:15px;">${auto?'🟢 Envio pela Meta: AUTOMÁTICO':'🟠 Envio pela Meta: MANUAL'}</b>
             <button class="btn ${auto?'':'primary'}" id="progToggle">${auto?'Desligar automático (deixar manual)':'Ligar envio automático'}</button>
           </div>
           <p style="margin:12px 0 0; font-size:13px; color:var(--ink);">
             ${auto
-              ? 'Os documentos agendados são enviados <b>sozinhos</b> na hora marcada, por WhatsApp e/ou e-mail.'
-              : 'Nada é enviado sozinho. Você envia <b>na mão</b>, documento por documento, pelo botão <b>Enviar</b> em “Empresas &amp; Envios”. '+(d.aguardando?`Há <b>${d.aguardando}</b> envio(s) agendado(s) aguardando — eles saem quando você religar o automático (ou se mandar na mão).`:'')}
+              ? 'Os documentos do Envio de Documentos que usam o número oficial da Meta saem <b>sozinhos</b> na hora.'
+              : 'Os envios pela Meta <b>não saem sozinhos</b> — você envia <b>na mão</b> pelo botão <b>Enviar</b> em “Empresas &amp; Envios”. '+(d.aguardando?`Há <b>${d.aguardando}</b> envio(s) pela Meta aguardando — saem quando você religar o automático (ou se mandar na mão).`:'')}
           </p>
         </div>
-        <p style="font-size:12.5px; color:var(--ink-soft); margin:0;">⚙️ O que <b>não</b> muda: o robô continua lendo as pastas, baixando e anexando os PDFs normalmente. Esta chave vale <b>só para a rotina do Envio de Documentos</b> (DP/RH, Contábil, Fiscal). O <b>envio em lote do CRM não é afetado</b> — continua disparando normalmente.</p>
+        <p style="font-size:12.5px; color:var(--ink-soft); margin:0;">⚙️ O que <b>não</b> muda (continua tudo normal): o número do <b>atendimento/deskcomm</b>, o <b>e-mail</b>, o <b>envio em lote do CRM</b>, e tudo que você <b>agendou para uma data futura</b>. O robô de baixar/anexar os PDFs também segue normal. Esta chave pega <b>só</b> o disparo imediato da rotina pelo <b>número oficial da Meta</b>.</p>
       </div>`;
     document.getElementById('progToggle').addEventListener('click', async ()=>{
       const novo = !auto;
-      if(!novo && !confirmar('Desligar o envio automático?\n\nA partir de agora NADA será enviado ao cliente sozinho — você envia na mão, pelo botão Enviar. (O robô de baixar/anexar continua normal.)')) return;
-      if(novo && !confirmar('Religar o envio automático?\n\nOs documentos agendados (inclusive os que ficaram aguardando) voltam a ser enviados sozinhos na hora marcada.')) return;
+      if(!novo && !confirmar('Deixar manual o envio pelo número oficial da Meta?\n\nOs envios da rotina do Envio de Documentos que usam a Meta param de sair sozinhos — você envia na mão, pelo botão Enviar.\n\nNÃO muda: atendimento/deskcomm, e-mail, lote do CRM e agendamentos de data futura continuam normais.')) return;
+      if(novo && !confirmar('Religar o envio automático pela Meta?\n\nOs envios pela Meta (inclusive os que ficaram aguardando) voltam a sair sozinhos.')) return;
       const b = document.getElementById('progToggle'); b.disabled = true;
-      try{ const r = await api('/central-envio/programacao', { method:'PUT', body:{ automatico: novo } }); toast(novo?'Envio automático ligado.':'Envio manual ativado — nada sai sozinho.','ok'); render(r); }
+      try{ const r = await api('/central-envio/programacao', { method:'PUT', body:{ automatico: novo } }); toast(novo?'Envio automático pela Meta ligado.':'Envio pela Meta agora é manual.','ok'); render(r); }
       catch(e){ toast(e.message,'err'); b.disabled = false; }
     });
   };

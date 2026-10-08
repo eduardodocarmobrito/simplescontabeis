@@ -421,7 +421,7 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
   };
   app.get("/api/central-envio/programacao", d.blockCliente, gerir, (req, res) => {
     const esc = (req as any).user.escritorioId;
-    const aguardando = (db.prepare(`SELECT COUNT(*) n FROM central_envio_agendados a JOIN central_envio_docs x ON x.id = a.doc_id WHERE a.escritorio_id = ? AND a.status = 'agendado' AND x.setor != 'crm'`).get(esc) as any).n;
+    const aguardando = (db.prepare(`SELECT COUNT(*) n FROM central_envio_agendados a JOIN central_envio_docs x ON x.id = a.doc_id WHERE a.escritorio_id = ? AND a.status = 'agendado' AND a.canal_whatsapp = 'meta' AND x.setor != 'crm' AND a.agendado_para <= datetime('now') AND julianday(a.agendado_para) <= julianday(a.criado_em) + 20.0/86400`).get(esc) as any).n;
     res.json({ automatico: envioAutomaticoLigado(esc), aguardando });
   });
   app.put("/api/central-envio/programacao", d.blockCliente, d.requireAdmin, (req, res) => {
@@ -429,7 +429,7 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     const automatico = req.body?.automatico ? 1 : 0;
     db.prepare(`INSERT INTO central_envio_config (escritorio_id, envio_automatico) VALUES (?, ?)
                 ON CONFLICT(escritorio_id) DO UPDATE SET envio_automatico = excluded.envio_automatico`).run(esc, automatico);
-    const aguardando = (db.prepare(`SELECT COUNT(*) n FROM central_envio_agendados a JOIN central_envio_docs x ON x.id = a.doc_id WHERE a.escritorio_id = ? AND a.status = 'agendado' AND x.setor != 'crm'`).get(esc) as any).n;
+    const aguardando = (db.prepare(`SELECT COUNT(*) n FROM central_envio_agendados a JOIN central_envio_docs x ON x.id = a.doc_id WHERE a.escritorio_id = ? AND a.status = 'agendado' AND a.canal_whatsapp = 'meta' AND x.setor != 'crm' AND a.agendado_para <= datetime('now') AND julianday(a.agendado_para) <= julianday(a.criado_em) + 20.0/86400`).get(esc) as any).n;
     res.json({ ok: true, automatico: !!automatico, aguardando });
   });
   app.put("/api/central-envio/config", d.blockCliente, d.requireAdmin, async (req, res) => {
@@ -935,16 +935,22 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
   }
   setInterval(async () => {
     const vencidos = db.prepare(
-      `SELECT a.*, (SELECT setor FROM central_envio_docs WHERE id = a.doc_id) as doc_setor
+      // "programado" = o usuário escolheu uma data/hora futura (agendado_para bem depois da criação).
+      // "imediato" = disparo na hora (lote "Agora"/rotina): agendado_para ≈ criação.
+      `SELECT a.*, (SELECT setor FROM central_envio_docs WHERE id = a.doc_id) as doc_setor,
+              CASE WHEN julianday(a.agendado_para) > julianday(a.criado_em) + 20.0/86400 THEN 1 ELSE 0 END as programado
        FROM central_envio_agendados a WHERE a.status = 'agendado' AND a.agendado_para <= ? ORDER BY a.agendado_para, a.id LIMIT 40`
     ).all(new Date().toISOString()) as any[];
     const autoCache = new Map<number, boolean>();
     for (const a of vencidos) {
-      // Modo MANUAL: o agendador não dispara nada sozinho — o item espera até voltar pro automático
-      // (ou o usuário mandar na mão). O robô de baixar/anexar continua normal.
-      // IMPORTANTE: a trava vale SÓ para a rotina do Envio de Documentos (setores dprh/contábil/fiscal).
-      // O envio em lote do CRM (setor 'crm') NUNCA é afetado — dispara sempre.
-      if (a.doc_setor !== "crm") {
+      // Modo MANUAL: a trava segura SÓ o envio automático/imediato que sai pelo NÚMERO OFICIAL DA META
+      // (canal_whatsapp = 'meta'), da rotina do Envio de Documentos. NÃO afeta:
+      //   • envios pelo número do atendimento/deskcomm (canal 'conversa') — disparam sempre;
+      //   • e-mail — dispara sempre;
+      //   • o envio em lote do CRM (setor 'crm') — dispara sempre;
+      //   • o que o usuário AGENDOU para uma data futura (programado) — dispara na hora marcada.
+      // O robô de baixar/anexar também continua normal.
+      if (a.canal_whatsapp === "meta" && a.doc_setor !== "crm" && !a.programado) {
         if (!autoCache.has(a.escritorio_id)) autoCache.set(a.escritorio_id, envioAutomaticoLigado(a.escritorio_id));
         if (!autoCache.get(a.escritorio_id)) continue;
       }
