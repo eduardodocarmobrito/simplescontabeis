@@ -2139,8 +2139,10 @@ const CARD_TIPOS_INFO = {
 // escolhido.
 async function cardParametroOpcoes(tipo){
   if(tipo==='envio_atraso'){
+    // Anual fica de fora: cardEnvioAtraso (server.ts) não sabe calcular atraso pra período sem mês
+    // (rotulo=null) — incluir aqui deixaria o admin marcar um modelo que nunca vai disparar o card.
     const { items } = await api('/envio/templates');
-    return items.filter(t=>t.periodicidade==='mensal' && t.ativo).map(t=>({id:t.id, nome:t.nome}));
+    return items.filter(t=>(t.periodicidade==='mensal'||t.periodicidade==='trimestral') && t.ativo).map(t=>({id:t.id, nome:t.nome}));
   }
   if(tipo==='solicitacao_atraso'){
     const { items } = await api('/checklist/templates');
