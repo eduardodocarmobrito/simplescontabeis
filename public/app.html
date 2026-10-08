@@ -4304,6 +4304,7 @@ async function pageEnvio(){
       <div class="tab" data-tab="atribuicoes">Empresas &amp; Envios</div>
       <div class="tab" data-tab="solicitacoes">Solicitações</div>
       <div class="tab" data-tab="modelos">Modelos</div>
+      ${STATE.user.perfil==='Administrador'?'<div class="tab" data-tab="programacao">Programação de envio</div>':''}
     </div>
     <div id="envioContent"></div>
   `;
@@ -4314,7 +4315,45 @@ function renderEnvioTabs(){
   main().querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===ENVIO_TAB));
   if(ENVIO_TAB==='modelos') renderEnvioModelos();
   else if(ENVIO_TAB==='solicitacoes') renderEnvioSolicitacoes();
+  else if(ENVIO_TAB==='programacao') renderEnvioProgramacao();
   else renderEnvioAtribuicoes();
+}
+// Aba "Programação de envio": liga/desliga o disparo AUTOMÁTICO de documentos ao cliente (WhatsApp +
+// e-mail). Manual = nada sai sozinho; o usuário envia na mão. O robô de baixar/anexar não é afetado.
+async function renderEnvioProgramacao(){
+  const box = document.getElementById('envioContent');
+  box.innerHTML = '<div class="empty-state">Carregando…</div>';
+  let data; try{ data = await api('/central-envio/programacao'); }
+  catch(e){ box.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
+  const render = (d)=>{
+    const auto = d.automatico;
+    box.innerHTML = `
+      <div class="card" style="max-width:760px;">
+        <h3 style="margin-top:0;">Programação de envio ao cliente</h3>
+        <p class="subtitle" style="margin-bottom:0;">Controla <b>todo disparo automático</b> de documentos para o cliente (WhatsApp e e-mail). O robô de baixar e anexar os PDFs continua normal — aqui você decide só se o <b>envio</b> sai sozinho ou na mão.</p>
+        <div class="card" style="margin:14px 0; padding:16px; background:${auto?'var(--accent-pale)':'#fff6e6'}; border:1px solid ${auto?'var(--accent)':'#e0b84a'};">
+          <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
+            <b style="font-size:15px;">${auto?'🟢 Envio automático LIGADO':'🟠 Envio MANUAL (automático desligado)'}</b>
+            <button class="btn ${auto?'':'primary'}" id="progToggle">${auto?'Desligar automático (deixar manual)':'Ligar envio automático'}</button>
+          </div>
+          <p style="margin:12px 0 0; font-size:13px; color:var(--ink);">
+            ${auto
+              ? 'Os documentos agendados são enviados <b>sozinhos</b> na hora marcada, por WhatsApp e/ou e-mail.'
+              : 'Nada é enviado sozinho. Você envia <b>na mão</b>, documento por documento, pelo botão <b>Enviar</b> em “Empresas &amp; Envios”. '+(d.aguardando?`Há <b>${d.aguardando}</b> envio(s) agendado(s) aguardando — eles saem quando você religar o automático (ou se mandar na mão).`:'')}
+          </p>
+        </div>
+        <p style="font-size:12.5px; color:var(--ink-soft); margin:0;">⚙️ O que <b>não</b> muda: o robô continua lendo as pastas, baixando e anexando os PDFs normalmente. Só o <b>envio ao cliente</b> é afetado por esta chave.</p>
+      </div>`;
+    document.getElementById('progToggle').addEventListener('click', async ()=>{
+      const novo = !auto;
+      if(!novo && !confirmar('Desligar o envio automático?\n\nA partir de agora NADA será enviado ao cliente sozinho — você envia na mão, pelo botão Enviar. (O robô de baixar/anexar continua normal.)')) return;
+      if(novo && !confirmar('Religar o envio automático?\n\nOs documentos agendados (inclusive os que ficaram aguardando) voltam a ser enviados sozinhos na hora marcada.')) return;
+      const b = document.getElementById('progToggle'); b.disabled = true;
+      try{ const r = await api('/central-envio/programacao', { method:'PUT', body:{ automatico: novo } }); toast(novo?'Envio automático ligado.':'Envio manual ativado — nada sai sozinho.','ok'); render(r); }
+      catch(e){ toast(e.message,'err'); b.disabled = false; }
+    });
+  };
+  render(data);
 }
 // Registro de todo pedido que um cliente já fez — tanto pela tela "Solicitar Documentos" quanto
 // pelo "Recalcular DAS" (os dois gravam no mesmo lugar, ver rota no backend). Complementa a lista

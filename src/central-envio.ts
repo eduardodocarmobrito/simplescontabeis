@@ -234,6 +234,9 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
   for (const [tab, col, ddl] of [
     ["central_envio_enviados", "entrega_ref", "INTEGER"], ["central_envio_agendados", "extras_json", "TEXT NOT NULL DEFAULT '[]'"],
     ["central_envio_agendados", "canal_whatsapp", "TEXT NOT NULL DEFAULT 'conversa'"],
+    // Interruptor Automático × Manual do envio ao cliente (aba "Programação de envio"). 1 = automático
+    // (o agendador dispara na hora marcada); 0 = manual (nada dispara sozinho; o usuário clica "Enviar").
+    ["central_envio_config", "envio_automatico", "INTEGER NOT NULL DEFAULT 1"],
   ] as const) if (!(db.prepare(`PRAGMA table_info(${tab})`).all() as any[]).some((c) => c.name === col)) db.exec(`ALTER TABLE ${tab} ADD COLUMN ${col} ${ddl}`);
   // Correção pontual de rótulo (pedida): um título do PDF ("PROVENTOS E DESCONTOSBASE PARA CÁLCULO") foi lido como nome de colaborador.
   // Só o texto do título/nome nas listas é ajustado; datas, destinatários e status dos envios não mudam. Idempotente.
@@ -409,6 +412,25 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
   app.get("/api/central-envio/config", d.blockCliente, gerir, (req, res) => {
     const c = db.prepare(`SELECT sa_email, ultimo_erro, ultima_varredura, dias_inicial, sa_json_cifrado IS NOT NULL as ok FROM central_envio_config WHERE escritorio_id = ?`).get((req as any).user.escritorioId) as any;
     res.json({ conectado: !!c?.ok, email: c?.sa_email || null, ultimoErro: c?.ultimo_erro || null, ultimaVarredura: c?.ultima_varredura || null, diasInicial: c?.dias_inicial || 30 });
+  });
+  // ------------------------------------------------------------ Programação de envio (Automático × Manual)
+  // Envio ao cliente está em automático neste escritório? (aba "Programação de envio"). Default: sim.
+  const envioAutomaticoLigado = (escId: number): boolean => {
+    const r = db.prepare(`SELECT envio_automatico FROM central_envio_config WHERE escritorio_id = ?`).get(escId) as any;
+    return r ? r.envio_automatico !== 0 : true; // sem config = comportamento antigo (automático)
+  };
+  app.get("/api/central-envio/programacao", d.blockCliente, gerir, (req, res) => {
+    const esc = (req as any).user.escritorioId;
+    const aguardando = (db.prepare(`SELECT COUNT(*) n FROM central_envio_agendados WHERE escritorio_id = ? AND status = 'agendado'`).get(esc) as any).n;
+    res.json({ automatico: envioAutomaticoLigado(esc), aguardando });
+  });
+  app.put("/api/central-envio/programacao", d.blockCliente, d.requireAdmin, (req, res) => {
+    const esc = (req as any).user.escritorioId;
+    const automatico = req.body?.automatico ? 1 : 0;
+    db.prepare(`INSERT INTO central_envio_config (escritorio_id, envio_automatico) VALUES (?, ?)
+                ON CONFLICT(escritorio_id) DO UPDATE SET envio_automatico = excluded.envio_automatico`).run(esc, automatico);
+    const aguardando = (db.prepare(`SELECT COUNT(*) n FROM central_envio_agendados WHERE escritorio_id = ? AND status = 'agendado'`).get(esc) as any).n;
+    res.json({ ok: true, automatico: !!automatico, aguardando });
   });
   app.put("/api/central-envio/config", d.blockCliente, d.requireAdmin, async (req, res) => {
     const esc = (req as any).user.escritorioId;
@@ -913,7 +935,15 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
   }
   setInterval(async () => {
     const vencidos = db.prepare(`SELECT * FROM central_envio_agendados WHERE status = 'agendado' AND agendado_para <= ? ORDER BY agendado_para, id LIMIT 40`).all(new Date().toISOString()) as any[];
-    for (const a of vencidos) { await rodarAgendado(a).catch((e) => console.error("[central-envio] agendado:", e.message)); await new Promise((r) => setTimeout(r, 300)); } // pausa curta: envio em massa sem estourar o limite do WhatsApp
+    const autoCache = new Map<number, boolean>();
+    for (const a of vencidos) {
+      // Modo MANUAL: o agendador não dispara nada sozinho — o item espera até voltar pro automático
+      // (ou o usuário mandar na mão). O robô de baixar/anexar continua normal.
+      if (!autoCache.has(a.escritorio_id)) autoCache.set(a.escritorio_id, envioAutomaticoLigado(a.escritorio_id));
+      if (!autoCache.get(a.escritorio_id)) continue;
+      await rodarAgendado(a).catch((e) => console.error("[central-envio] agendado:", e.message));
+      await new Promise((r) => setTimeout(r, 300)); // pausa curta: envio em massa sem estourar o limite do WhatsApp
+    }
   }, 15_000).unref();
   // ------------------------------------------------------------ EM LOTE: vários documentos (de várias empresas) de uma vez
   // Cada documento vai para os contatos ativos DA PRÓPRIA empresa. "Agora" também passa pelo agendador (dispara em segundos, em segundo plano).
