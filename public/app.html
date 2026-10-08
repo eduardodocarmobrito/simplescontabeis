@@ -1980,12 +1980,11 @@ async function pagePainelTv(){
   // Zoom fixo (pedido) — antes era um auto-ajuste que encolhia até caber tudo, mas o conteúdo da
   // página 2 é maior que a tela mesmo no piso de 0.50, então o zoom nunca passava disso na prática
   // (testado com teto em 0.90/1.00/1.50 sem nenhuma mudança visível — o piso é que mandava, não o
-  // teto). 1.50 cortava demais embaixo; 1.00 ainda corta um pouco (.tvp-pagina-painel já tem
-  // overflow:hidden), mas bem menos.
+  // teto). 1.50 e 1.00 cortavam embaixo (.tvp-pagina-painel já tem overflow:hidden); 0.90 corta menos.
   function ajustarPagina2(){
     const box = document.getElementById('tvpPag2');
     if(!box || box.classList.contains('tvp-off')) return;
-    box.style.zoom = '1.00';
+    box.style.zoom = '0.90';
   }
   function mostrarPagina(i){
     PAG.atual = i;
