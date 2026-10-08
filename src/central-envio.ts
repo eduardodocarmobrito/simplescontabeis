@@ -421,7 +421,7 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
   };
   app.get("/api/central-envio/programacao", d.blockCliente, gerir, (req, res) => {
     const esc = (req as any).user.escritorioId;
-    const aguardando = (db.prepare(`SELECT COUNT(*) n FROM central_envio_agendados WHERE escritorio_id = ? AND status = 'agendado'`).get(esc) as any).n;
+    const aguardando = (db.prepare(`SELECT COUNT(*) n FROM central_envio_agendados a JOIN central_envio_docs x ON x.id = a.doc_id WHERE a.escritorio_id = ? AND a.status = 'agendado' AND x.setor != 'crm'`).get(esc) as any).n;
     res.json({ automatico: envioAutomaticoLigado(esc), aguardando });
   });
   app.put("/api/central-envio/programacao", d.blockCliente, d.requireAdmin, (req, res) => {
@@ -429,7 +429,7 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     const automatico = req.body?.automatico ? 1 : 0;
     db.prepare(`INSERT INTO central_envio_config (escritorio_id, envio_automatico) VALUES (?, ?)
                 ON CONFLICT(escritorio_id) DO UPDATE SET envio_automatico = excluded.envio_automatico`).run(esc, automatico);
-    const aguardando = (db.prepare(`SELECT COUNT(*) n FROM central_envio_agendados WHERE escritorio_id = ? AND status = 'agendado'`).get(esc) as any).n;
+    const aguardando = (db.prepare(`SELECT COUNT(*) n FROM central_envio_agendados a JOIN central_envio_docs x ON x.id = a.doc_id WHERE a.escritorio_id = ? AND a.status = 'agendado' AND x.setor != 'crm'`).get(esc) as any).n;
     res.json({ ok: true, automatico: !!automatico, aguardando });
   });
   app.put("/api/central-envio/config", d.blockCliente, d.requireAdmin, async (req, res) => {
@@ -934,13 +934,20 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     }
   }
   setInterval(async () => {
-    const vencidos = db.prepare(`SELECT * FROM central_envio_agendados WHERE status = 'agendado' AND agendado_para <= ? ORDER BY agendado_para, id LIMIT 40`).all(new Date().toISOString()) as any[];
+    const vencidos = db.prepare(
+      `SELECT a.*, (SELECT setor FROM central_envio_docs WHERE id = a.doc_id) as doc_setor
+       FROM central_envio_agendados a WHERE a.status = 'agendado' AND a.agendado_para <= ? ORDER BY a.agendado_para, a.id LIMIT 40`
+    ).all(new Date().toISOString()) as any[];
     const autoCache = new Map<number, boolean>();
     for (const a of vencidos) {
       // Modo MANUAL: o agendador não dispara nada sozinho — o item espera até voltar pro automático
       // (ou o usuário mandar na mão). O robô de baixar/anexar continua normal.
-      if (!autoCache.has(a.escritorio_id)) autoCache.set(a.escritorio_id, envioAutomaticoLigado(a.escritorio_id));
-      if (!autoCache.get(a.escritorio_id)) continue;
+      // IMPORTANTE: a trava vale SÓ para a rotina do Envio de Documentos (setores dprh/contábil/fiscal).
+      // O envio em lote do CRM (setor 'crm') NUNCA é afetado — dispara sempre.
+      if (a.doc_setor !== "crm") {
+        if (!autoCache.has(a.escritorio_id)) autoCache.set(a.escritorio_id, envioAutomaticoLigado(a.escritorio_id));
+        if (!autoCache.get(a.escritorio_id)) continue;
+      }
       await rodarAgendado(a).catch((e) => console.error("[central-envio] agendado:", e.message));
       await new Promise((r) => setTimeout(r, 300)); // pausa curta: envio em massa sem estourar o limite do WhatsApp
     }

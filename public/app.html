@@ -4342,7 +4342,7 @@ async function renderEnvioProgramacao(){
               : 'Nada é enviado sozinho. Você envia <b>na mão</b>, documento por documento, pelo botão <b>Enviar</b> em “Empresas &amp; Envios”. '+(d.aguardando?`Há <b>${d.aguardando}</b> envio(s) agendado(s) aguardando — eles saem quando você religar o automático (ou se mandar na mão).`:'')}
           </p>
         </div>
-        <p style="font-size:12.5px; color:var(--ink-soft); margin:0;">⚙️ O que <b>não</b> muda: o robô continua lendo as pastas, baixando e anexando os PDFs normalmente. Só o <b>envio ao cliente</b> é afetado por esta chave.</p>
+        <p style="font-size:12.5px; color:var(--ink-soft); margin:0;">⚙️ O que <b>não</b> muda: o robô continua lendo as pastas, baixando e anexando os PDFs normalmente. Esta chave vale <b>só para a rotina do Envio de Documentos</b> (DP/RH, Contábil, Fiscal). O <b>envio em lote do CRM não é afetado</b> — continua disparando normalmente.</p>
       </div>`;
     document.getElementById('progToggle').addEventListener('click', async ()=>{
       const novo = !auto;
