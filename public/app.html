@@ -10151,6 +10151,7 @@ async function atdCarregarLista(S){
   atdRenderFiltros(S);
   box.innerHTML = data.items.length ? data.items.map(c=>{
     const nome = c.contatoNome || c.telefone;
+    const fechada = (c.status==='closed' || c.status==='archived');
     return `
       <div class="dprh-conv ${S.conversaAtiva===c.id?'active':''}" data-id="${c.id}">
         <div class="dprh-avatar">${esc(atdIniciais(nome))}${c.contatoId?atdFotoHtml(c.contatoId):''}${c.naoLidas?'<i></i>':''}</div>
@@ -10161,8 +10162,8 @@ async function atdCarregarLista(S){
           </div>
           ${c.empresaNome?`<div class="dprh-conv-sub">${esc(c.empresaNome)}</div>`:''}
           <div class="dprh-conv-sub">${esc((c.ultimaMensagemTexto||'').slice(0,70))}</div>
-          ${S.filtro==='fechadas' ? `<div class="dprh-conv-sub">${(c.status==='closed'||c.status==='archived') ? 'Fechada' : `↪ Saiu do setor — agora em ${esc(c.setor || 'atendimento geral')}`}</div>` : ''}
-          ${S.cfg.mostraSetor || c.atribuidoNome || c.comando==='automatico' ? `<div class="dprh-conv-sub">${S.cfg.mostraSetor?`<span class="atd-setor">${esc(c.setor||'Sem setor')}</span> `:''}${c.comando==='automatico'?'🤖 IA atendendo':''}${c.atribuidoNome?` ↳ ${esc(c.atribuidoNome)}`:''}</div>` : ''}
+          ${S.filtro==='fechadas' && !fechada ? `<div class="dprh-conv-sub">↪ Saiu do setor — agora em ${esc(c.setor || 'atendimento geral')}</div>` : ''}
+          ${fechada || S.cfg.mostraSetor || c.atribuidoNome || c.comando==='automatico' ? `<div class="dprh-conv-sub">${fechada?'<span class="atd-setor" style="background:var(--debit-pale,#fde8e8); color:var(--debit);">🔒 Fechada</span> ':(S.cfg.mostraSetor?`<span class="atd-setor">${esc(c.setor||'Sem setor')}</span> `:'')}${c.comando==='automatico'?'🤖 IA atendendo':''}${c.atribuidoNome?` ↳ ${esc(c.atribuidoNome)}`:''}</div>` : ''}
         </div>
       </div>`;
   }).join('') : `<div class="empty-state">${S.filtro==='fila'?S.cfg.vazioFila:'Nenhuma conversa aqui.'}</div>`;
