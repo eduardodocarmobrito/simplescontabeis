@@ -6703,8 +6703,26 @@ app.post("/api/envio/documentos/:id/reenviar-email", blockCliente, requirePermis
     res.status(500).json({ error: e.message });
   }
 });
-// Mesma lógica de conteúdo do reenvio por e-mail acima, só que manda por WhatsApp — pra todo
-// contato da empresa marcado como "receber WhatsApp" que tenha telefone cadastrado.
+// Lista os contatos de WhatsApp da empresa do documento — usado pelo modal "ver números antes de
+// enviar" (mesmo padrão já usado na Central de Envio, ver contatosDaEmpresa em central-envio.ts;
+// esta tela é um sistema separado, com sua própria tabela envio_documentos, então replica só a
+// consulta, não a função).
+app.get("/api/envio/documentos/:id/contatos", blockCliente, requirePermissao("envio", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const doc = sqlite
+    .prepare(`SELECT d.*, p.atribuicao_id as atribuicaoId FROM envio_documentos d JOIN envio_periodos p ON p.id = d.periodo_id WHERE d.id = ?`)
+    .get(Number(req.params.id)) as any;
+  if (!doc) return res.status(404).json({ error: "Documento não encontrado." });
+  const atrib = sqlite.prepare(`SELECT empresa_id as empresaId FROM envio_atribuicoes WHERE id = ?`).get(doc.atribuicaoId) as any;
+  if (!atrib || !podeAcessarEmpresa(user, atrib.empresaId)) return res.status(404).json({ error: "Documento não encontrado." });
+  const contatos = sqlite
+    .prepare(`SELECT nome, telefone FROM empresa_contatos WHERE empresa_id = ? AND receber_whatsapp = 1 AND telefone IS NOT NULL AND telefone != ''`)
+    .all(atrib.empresaId) as any[];
+  res.json({ contatos });
+});
+// Mesma lógica de conteúdo do reenvio por e-mail acima, só que manda por WhatsApp — por padrão pra
+// todo contato da empresa marcado como "receber WhatsApp", ou só os números escolhidos no modal
+// (body.telefones) quando a tela deixa o usuário marcar/desmarcar antes de enviar.
 app.post("/api/envio/documentos/:id/enviar-whatsapp", blockCliente, requirePermissao("envio", "postar"), async (req, res) => {
   const user = (req as any).user;
   const doc = sqlite
@@ -6718,9 +6736,13 @@ app.post("/api/envio/documentos/:id/enviar-whatsapp", blockCliente, requirePermi
     .get(doc.atribuicaoId) as any;
   if (!atrib || !podeAcessarEmpresa(user, atrib.empresaId)) return res.status(404).json({ error: "Documento não encontrado." });
   const empresa = sqlite.prepare(`SELECT nome FROM empresas WHERE id = ?`).get(atrib.empresaId) as any;
-  const contatos = sqlite
+  let contatos = sqlite
     .prepare(`SELECT telefone FROM empresa_contatos WHERE empresa_id = ? AND receber_whatsapp = 1 AND telefone IS NOT NULL AND telefone != ''`)
     .all(atrib.empresaId) as any[];
+  if (Array.isArray(req.body?.telefones) && req.body.telefones.length) {
+    const chavesEscolhidas = new Set(req.body.telefones.map((t: any) => telefoneChaveBr(t)).filter(Boolean));
+    contatos = contatos.filter((c) => chavesEscolhidas.has(telefoneChaveBr(c.telefone)));
+  }
   if (!contatos.length) return res.status(400).json({ error: "Esta empresa não tem contato de WhatsApp cadastrado (marque \"Receber WhatsApp\" no contato)." });
   if (!fs.existsSync(doc.file_path)) return res.status(404).json({ error: "Arquivo não encontrado no servidor." });
   const rotulo = doc.mes ? `${doc.mes}/${doc.ano}` : doc.rotulo || String(doc.ano);
@@ -13873,7 +13895,7 @@ function cardEnvioAtraso(user: any, templateIds: number[]): any[] {
       const temDocumento = sqlite.prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id = ?`).get(pq.id);
       if (!temDocumento && !pq.semMovimento) competenciasFaltando.push(`${String(pq.mes).padStart(2, "0")}/${pq.ano} (${pq.parcelaNumero}ª de ${pq.parcelaTotal} quotas)`);
     }
-    if (competenciasFaltando.length) resultado.push({ empresaId: atrib.empresaId, empresaNome: atrib.empresaNome, templateNome: atrib.templateNome, competencias: competenciasFaltando });
+    if (competenciasFaltando.length) resultado.push({ atribuicaoId: atrib.atribuicaoId, empresaId: atrib.empresaId, empresaNome: atrib.empresaNome, templateNome: atrib.templateNome, competencias: competenciasFaltando });
   }
   return resultado;
 }

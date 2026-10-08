@@ -2250,15 +2250,27 @@ async function cardModal(c){
 function cardDetalheModal(c){
   openModal(`
     <h3>${esc(c.titulo)}</h3>
+    <div class="field" style="max-width:360px; margin-bottom:10px;"><input type="text" id="cdFiltro" placeholder="Buscar por empresa…" autocomplete="off" disabled></div>
     <div id="cardDetalheBody"><div class="empty-state">Carregando…</div></div>
     <div class="modal-actions"><button class="btn" id="cdFechar">Fechar</button></div>
-  `);
+  `, '820px');
   document.getElementById('cdFechar').addEventListener('click', closeModal);
   (async ()=>{
     const box = document.getElementById('cardDetalheBody');
+    const filtroEl = document.getElementById('cdFiltro');
+    let todos;
     try{
       const { tipo, items } = await api('/dashboard/cards/'+c.id+'/detalhe');
-      if(!items.length){ box.innerHTML = '<div class="empty-state">Nada pendente — tudo em dia.</div>'; return; }
+      todos = items;
+      if(!items.length){ filtroEl.remove(); box.innerHTML = '<div class="empty-state">Nada pendente — tudo em dia.</div>'; return; }
+      filtroEl.disabled = false;
+      filtroEl.addEventListener('input', ()=>desenhar(tipo, filtroEl.value));
+      desenhar(tipo, '');
+    }catch(e){ filtroEl.remove(); box.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; return; }
+    function desenhar(tipo, filtro){
+      const termo = normalizaTxt(filtro).trim();
+      const items = termo ? todos.filter(i=>normalizaTxt(i.empresaNome).includes(termo)) : todos;
+      if(!items.length){ box.innerHTML = '<div class="empty-state">Nenhum resultado com esse filtro.</div>'; return; }
       if(tipo==='certificados_vencer'){
         const hoje = new Date().toISOString();
         box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Certificado</th><th>Vencimento</th><th></th></tr></thead><tbody>
@@ -2309,12 +2321,17 @@ function cardDetalheModal(c){
         }));
       } else if(tipo==='envio_atraso'){
         box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Modelo</th><th>Competências em aberto</th></tr></thead><tbody>
-          ${items.map(i=>`<tr><td>${esc(i.empresaNome)}</td><td>${esc(i.templateNome)}</td><td>${i.competencias.map(esc).join(', ')}</td></tr>`).join('')}
+          ${items.map(i=>`<tr class="linha-clicavel" data-atribuicao="${i.atribuicaoId}" style="cursor:pointer;"><td>${esc(i.empresaNome)}</td><td>${esc(i.templateNome)}</td><td>${i.competencias.map(esc).join(', ')}</td></tr>`).join('')}
         </tbody></table>`;
+        box.querySelectorAll('.linha-clicavel').forEach(tr=>tr.addEventListener('click', ()=>{
+          closeModal();
+          STATE.page = 'envio'; renderNav();
+          abrirEnvioGrade(Number(tr.dataset.atribuicao), false);
+        }));
       } else {
         box.innerHTML = '<div class="empty-state">Tipo de card desconhecido.</div>';
       }
-    }catch(e){ box.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; }
+    }
   })();
 }
 // Piso de competência aplicado por TODOS os cards de pendência (DAS em Atraso, Documentos
@@ -4539,7 +4556,7 @@ async function renderEnvioAtribuicoes(){
       (!modeloId || String(a.template_id)===String(modeloId))
     );
     envioAtribBody.innerHTML = visiveis.length? visiveis.map(a=>`
-      <tr data-id="${a.id}" ${a.pendentesCliente? 'style="background:var(--accent-pale);"':''}>
+      <tr data-id="${a.id}" class="linha-clicavel" style="cursor:pointer; ${a.pendentesCliente? 'background:var(--accent-pale);':''}">
         <td>${esc(a.empresaNome)}</td>
         <td>${esc(a.templateNome)}${a.pendentesCliente? ` <span class="tag warn" title="Pedido feito pelo cliente, ainda sem documento enviado">${a.pendentesCliente} pedido${a.pendentesCliente>1?'s':''} do cliente</span>`:''}</td>
         <td>${PERIODICIDADE_LABELS[a.periodicidade]||a.periodicidade}</td>
@@ -4552,6 +4569,10 @@ async function renderEnvioAtribuicoes(){
         </td>
       </tr>
     `).join('') : `<tr><td colspan="4"><div class="empty-state">${termo||modeloId?'Nenhum resultado com esse filtro.':'Nenhum envio atribuído ainda.'}</div></td></tr>`;
+    envioAtribBody.querySelectorAll('tr.linha-clicavel').forEach(tr=>tr.addEventListener('click', e=>{
+      if(e.target.closest('button')) return;
+      abrirEnvioGrade(Number(tr.dataset.id), false);
+    }));
     envioAtribBody.querySelectorAll('[data-act="abrir"]').forEach(b=>b.addEventListener('click', e=>{
       abrirEnvioGrade(Number(e.target.closest('tr').dataset.id), false);
     }));
@@ -4796,9 +4817,8 @@ function wireEnvioGradeEvents(container, atribuicaoId, souCliente){
     try{ await api('/envio/documentos/'+b.dataset.doc+'/reenviar-email', { method:'POST' }); toast('E-mail reenviado.','ok'); abrirEnvioGrade(atribuicaoId, souCliente); }
     catch(e){ toast(e.message,'err'); }
   }));
-  container.querySelectorAll('[data-act="enviar-whatsapp"]').forEach(b=>b.addEventListener('click', async ()=>{
-    try{ await api('/envio/documentos/'+b.dataset.doc+'/enviar-whatsapp', { method:'POST', body:{ canal:b.dataset.canal } }); toast('WhatsApp enviado.','ok'); abrirEnvioGrade(atribuicaoId, souCliente); }
-    catch(e){ toast(e.message,'err'); }
+  container.querySelectorAll('[data-act="enviar-whatsapp"]').forEach(b=>b.addEventListener('click', ()=>{
+    envioDocWhatsappModal(b.dataset.doc, b.dataset.canal, ()=>abrirEnvioGrade(atribuicaoId, souCliente));
   }));
   container.querySelectorAll('[data-act="recalcular-das"]').forEach(b=>b.addEventListener('click', async ()=>{
     b.disabled = true; b.textContent = 'Recalculando…';
@@ -4818,6 +4838,34 @@ function wireEnvioGradeEvents(container, atribuicaoId, souCliente){
     try{ await api('/envio/periodos/'+b.dataset.periodo, { method:'DELETE' }); toast('Excluído.','ok'); abrirEnvioGrade(atribuicaoId, souCliente); }
     catch(e){ toast(e.message,'err'); }
   }));
+}
+// Mostra os contatos de WhatsApp da empresa antes de enviar (mesmo padrão do modal da Central de
+// Envio, "cenvEnviarModal"), marcados por padrão — confirmar sem desmarcar nada mantém o
+// comportamento antigo de mandar pra todo mundo.
+async function envioDocWhatsappModal(docId, canal, recarregar){
+  let c;
+  try{ c = await api('/envio/documentos/'+docId+'/contatos'); }catch(e){ toast(e.message,'err'); return; }
+  const contatos = c.contatos||[];
+  if(!contatos.length){ toast('Esta empresa não tem contato de WhatsApp cadastrado (marque "Receber WhatsApp" no contato).','err'); return; }
+  openModal(`<h3>Enviar por WhatsApp</h3>
+    <p class="subtitle" style="margin:0 0 10px;">${canal==='meta'?'Pelo WhatsApp oficial (Meta)':'Pela conversa (atendimento)'}</p>
+    ${contatos.map((t,i)=>`<label class="checkbox-row"><input type="checkbox" class="envioDocTel" value="${esc(t.telefone)}" checked> ${esc(t.nome||'')} — ${esc(t.telefone)}</label>`).join('')}
+    <div class="row" style="justify-content:flex-end; gap:8px; margin-top:12px;">
+      <button class="btn" onclick="closeModal()">Cancelar</button>
+      <button class="btn primary" id="envioDocWhatsappOk">Enviar</button>
+    </div>`, '480px');
+  document.getElementById('envioDocWhatsappOk').addEventListener('click', async ()=>{
+    const telefones = [...document.querySelectorAll('.envioDocTel:checked')].map(x=>x.value);
+    if(!telefones.length){ toast('Marque ao menos um número.','err'); return; }
+    const btn = document.getElementById('envioDocWhatsappOk');
+    btn.disabled = true; btn.textContent = 'Enviando…';
+    try{
+      await api('/envio/documentos/'+docId+'/enviar-whatsapp', { method:'POST', body:{ canal, telefones } });
+      toast('WhatsApp enviado.','ok');
+      closeModal();
+      recarregar();
+    }catch(e){ toast(e.message,'err'); btn.disabled = false; btn.textContent = 'Enviar'; }
+  });
 }
 // Pergunta de que mês começar a grade. Padrão: mês anterior (competência já fechada).
 // Para anos que não são o atual, a grade começa em janeiro. Retorna o número do mês (1-12) ou null se cancelou.
