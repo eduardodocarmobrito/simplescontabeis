@@ -4526,6 +4526,9 @@ function envioModeloModal(t){
   });
 }
 
+// Sobrevive a sair e voltar pra essa tela (abrir grade, salvar atribuição, excluir) — sem isso a
+// busca "msm" digitada some toda vez que o usuário volta do "Abrir grade", obrigando a redigitar.
+const ENVIO_ATRIB_FILTRO = { texto:'', modeloId:'' };
 async function renderEnvioAtribuicoes(){
   const podePostar = can('envio','postar');
   const podeEditar = can('envio','editar');
@@ -4540,7 +4543,7 @@ async function renderEnvioAtribuicoes(){
       ${ehAdmin?`<button class="btn" id="btnRolloverAno" title="Toda virada de ano (1º de janeiro) isso já roda sozinho — use aqui só se quiser adiantar ou como reforço.">Gerar grade do ano novo pra todo mundo</button>`:''}
     </div>
     <div class="row" style="gap:8px; margin-bottom:10px;">
-      <div class="field" style="max-width:360px; margin-bottom:0;"><input type="text" id="envioAtribFiltro" placeholder="Buscar por empresa…" autocomplete="off"></div>
+      <div class="field" style="max-width:360px; margin-bottom:0;"><input type="text" id="envioAtribFiltro" placeholder="Buscar por empresa…" autocomplete="off" value="${esc(ENVIO_ATRIB_FILTRO.texto)}"></div>
       <div class="field" style="max-width:260px; margin-bottom:0;">${comboSelectHtml('envioAtribModeloFiltro', 'Todos os modelos')}</div>
     </div>
     <div class="card" style="padding:0; overflow-x:auto;">
@@ -4587,14 +4590,26 @@ async function renderEnvioAtribuicoes(){
       catch(err){ toast(err.message,'err'); }
     }));
   }
-  desenhaEnvioAtribs('', '');
-  let envioModeloFiltroAtual = '';
-  const atualizaFiltroEnvio = ()=> desenhaEnvioAtribs(document.getElementById('envioAtribFiltro').value, envioModeloFiltroAtual);
+  desenhaEnvioAtribs(ENVIO_ATRIB_FILTRO.texto, ENVIO_ATRIB_FILTRO.modeloId);
+  const atualizaFiltroEnvio = ()=>{
+    ENVIO_ATRIB_FILTRO.texto = document.getElementById('envioAtribFiltro').value;
+    desenhaEnvioAtribs(ENVIO_ATRIB_FILTRO.texto, ENVIO_ATRIB_FILTRO.modeloId);
+  };
   document.getElementById('envioAtribFiltro').addEventListener('input', atualizaFiltroEnvio);
-  setupComboSelect('envioAtribModeloFiltro', [...templates].sort((a,b)=>a.nome.localeCompare(b.nome)).map(t=>({id:t.id, label:t.nome})), (id)=>{
-    envioModeloFiltroAtual = id || '';
+  const modeloItensFiltro = [...templates].sort((a,b)=>a.nome.localeCompare(b.nome)).map(t=>({id:t.id, label:t.nome}));
+  setupComboSelect('envioAtribModeloFiltro', modeloItensFiltro, (id)=>{
+    ENVIO_ATRIB_FILTRO.modeloId = id || '';
     atualizaFiltroEnvio();
   });
+  // Restaura o modelo marcado antes de sair da tela (igual já fazia com o texto da busca).
+  if(ENVIO_ATRIB_FILTRO.modeloId){
+    const itemAtual = modeloItensFiltro.find(t=>String(t.id)===String(ENVIO_ATRIB_FILTRO.modeloId));
+    if(itemAtual){
+      const root = document.getElementById('envioAtribModeloFiltro');
+      root.querySelector('.combo-input').value = itemAtual.label;
+      root.querySelector('.combo-value').value = itemAtual.id;
+    }
+  }
   if(podePostar) document.getElementById('btnNovaEnvioAtrib').addEventListener('click', ()=>novaEnvioAtribModal(empresas, templates));
   if(ehAdmin) document.getElementById('btnRolloverAno').addEventListener('click', async ()=>{
     const ano = prompt('Gerar a grade de qual ano pra todas as empresas? (só renova quem já tinha grade no ano anterior)', new Date().getFullYear()+1);
