@@ -185,6 +185,16 @@ export function extrairCompetenciaDataProcessamento(texto: string): string | nul
   m = /\b\d{2}\/(0[1-9]|1[0-2])\/(20\d{2})\b/.exec(texto);
   return m ? `${m[1]}/${m[2]}` : null;
 }
+// Mês anterior ao de "MM/AAAA" — pedido pro boleto de Contribuição Sindical: ele é processado/emitido
+// no mês seguinte ao que se refere (confirmado no próprio boleto, "REF AO MES DE SETEMBRO" processado
+// em outubro), então a competência real é sempre (mês da Data do processamento) - 1.
+function mesAnterior(mmAaaa: string | null): string | null {
+  const m = mmAaaa && /^(0[1-9]|1[0-2])\/(20\d{2})$/.exec(mmAaaa);
+  if (!m) return mmAaaa;
+  let mes = Number(m[1]) - 1, ano = Number(m[2]);
+  if (mes === 0) { mes = 12; ano -= 1; }
+  return `${String(mes).padStart(2, "0")}/${ano}`;
+}
 const rotuloCompetencia = (p: { inicio: string; fim: string } | null): string | null => {
   const f = p?.fim || p?.inicio;
   return f && /^\d{4}-\d{2}/.test(f) ? `${f.slice(5, 7)}/${f.slice(0, 4)}` : null;
@@ -260,15 +270,18 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
   }
   // Contribuição Sindical (boleto CAIXA): docs já lidos pegaram "RECLAMAÇÕES E SUGESTÕES" (cabeçalho da
   // CAIXA) como colaborador. Limpeza idempotente: tira o colaborador e refaz o título só com
-  // "Contribuição Sindical - <empresa> - <competência (data de processamento)>". Roda só nos que ainda têm o problema.
+  // "Contribuição Sindical - <empresa> - <competência (mês anterior à data de processamento)>". A
+  // condição inclui TODO documento deste tipo (não só os com o problema antigo) porque o cálculo da
+  // competência mudou pra "mês anterior" (pedido: o boleto emitido em outubro é "ref" setembro) — sem
+  // isso, pendentes já lidos ANTES dessa mudança ficariam presos com o mês errado (o do processamento).
   try {
     const ruins = db
       .prepare(`SELECT cd.id, cd.tipo_nome, cd.texto_amostra, cd.competencia, e.nome AS empresa_nome
                 FROM central_envio_docs cd LEFT JOIN empresas e ON e.id = cd.empresa_id
-                WHERE cd.tipo_nome LIKE '%Contribui%Sindical%' AND (cd.colaborador_nome IS NOT NULL OR cd.titulo LIKE '%RECLAMA%' OR cd.competencia IS NULL)`)
+                WHERE cd.tipo_nome LIKE '%Contribui%Sindical%'`)
       .all() as any[];
     for (const r of ruins) {
-      const comp = extrairCompetenciaDataProcessamento(r.texto_amostra || "") || r.competencia || null;
+      const comp = mesAnterior(extrairCompetenciaDataProcessamento(r.texto_amostra || "")) || r.competencia || null;
       const titulo = [r.tipo_nome, r.empresa_nome, comp].filter(Boolean).join(" - ");
       db.prepare(`UPDATE central_envio_docs SET colaborador_nome = NULL, cpf = NULL, competencia = ?, titulo = ? WHERE id = ?`).run(comp, titulo, r.id);
     }
@@ -350,8 +363,11 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     // Afastamento" dele; antes disso rodava primeiro e sequestrava a competência do documento inteiro (achado ao
     // vivo: extrato de 09/2026 saindo com competência 12/2027, puxada de uma data de afastamento de outro
     // funcionário nas páginas seguintes do mesmo PDF).
+    // Contribuição Sindical: o boleto é processado/emitido no mês SEGUINTE ao que se refere (confirmado
+    // no próprio boleto, "REF AO MES DE SETEMBRO" processado em outubro) — pedido: usar sempre (mês da
+    // Data do processamento) - 1, não o mês do processamento em si.
     const competencia = ehContribSindical
-      ? (extrairCompetenciaDataProcessamento(texto) || extrairCompetenciaMes(texto))
+      ? (mesAnterior(extrairCompetenciaDataProcessamento(texto)) || extrairCompetenciaMes(texto))
       : (extrairCompetenciaMes(texto) || extrairDataAfastamento(texto) || rotuloCompetencia(d.extrairPeriodo(texto, nomeArquivo)));
     const titulo = [tipo?.nome || String(nomeArquivo).replace(/\.pdf$/i, ""), colaborador, empresa?.nome, competencia].filter(Boolean).join(" - ");
     return { texto, agrupar: !!tipo?.agrupar, tipoId: tipo?.id ?? null, tipoNome: tipo?.nome ?? null, empresaId: empresa?.id ?? null, cnpj: cnpjDetectado, colaborador, cpf, competencia, titulo };
