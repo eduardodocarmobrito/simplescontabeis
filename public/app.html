@@ -13015,11 +13015,9 @@ function renderCfgDomRelatorios(box, sub, dados){
       </p>
       <div id="roboFeriasStatus" style="font-size:13px; margin-bottom:8px;">Carregando…</div>
       <div class="row" style="align-items:center; gap:10px; flex-wrap:wrap;">
-        <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="roboFeriasAgendaAtivo"> Rodar automaticamente todo dia às</label>
-        <input type="number" class="inp" id="roboFeriasAgendaHora" min="0" max="23" style="width:54px;"> :
-        <input type="number" class="inp" id="roboFeriasAgendaMinuto" min="0" max="59" style="width:54px;">
-        <span style="font-size:11.5px; color:var(--ink-soft);">(horário de Brasília)</span>
+        <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="roboFeriasEncadeado"> Começar sozinho assim que o robô do Comparativo terminar a execução agendada dele</label>
       </div>
+      <p style="font-size:11.5px; color:var(--ink-soft); margin:6px 0 0;">Sem horário próprio: defina só o horário lá em cima, no Comparativo — o site confere quando ele termina e já dispara este aqui em seguida. Um "Executar agora" manual do Comparativo não dispara esta sequência (pra não atrapalhar teste passo a passo); use o "Executar agora" abaixo pra testar o Férias sozinho.</p>
       <div style="margin-top:10px; overflow-x:auto;">
         <table class="data-table" style="font-size:12.5px;"><thead><tr><th>Tempo de cada passo do robô</th><th style="width:90px;">Segundos</th></tr></thead><tbody>
           <tr><td>Entre uma empresa e outra</td><td><input type="number" class="inp" id="roboFeriasTEntreEmpresas" min="1" max="600" step="1" style="width:70px;"></td></tr>
@@ -13238,9 +13236,7 @@ function renderCfgDomRelatorios(box, sub, dados){
     }
     async function carregar(){ try{ pintar(await api('/ferias-robo/estado')); }catch(e){} }
     api('/ferias-robo/estado').then(e=>{
-      if($('roboFeriasAgendaAtivo')) $('roboFeriasAgendaAtivo').checked = e.agendaAtivo;
-      if($('roboFeriasAgendaHora')) $('roboFeriasAgendaHora').value = e.agendaHora;
-      if($('roboFeriasAgendaMinuto')) $('roboFeriasAgendaMinuto').value = String(e.agendaMinuto).padStart(2,'0');
+      if($('roboFeriasEncadeado')) $('roboFeriasEncadeado').checked = e.encadeadoAposComparativo;
       if($('roboFeriasTEntreEmpresas')) $('roboFeriasTEntreEmpresas').value = Math.round(e.tEntreEmpresasMs/1000*10)/10;
       if($('roboFeriasTRenderTimeout')) $('roboFeriasTRenderTimeout').value = Math.round(e.tRenderTimeoutMs/1000*10)/10;
       if($('roboFeriasTGerarPdf')) $('roboFeriasTGerarPdf').value = Math.round(e.tGerarPdfMs/1000*10)/10;
@@ -13251,11 +13247,11 @@ function renderCfgDomRelatorios(box, sub, dados){
       if($('roboFeriasTEmpresa')) $('roboFeriasTEmpresa').value = Math.round(e.tEmpresaMs/1000*10)/10;
       pintar(e);
     }).catch(()=>{});
-    habilitarSalvarAoMudar('btnRoboFeriasSalvar', ['roboFeriasAgendaAtivo','roboFeriasAgendaHora','roboFeriasAgendaMinuto','roboFeriasTEntreEmpresas','roboFeriasTRenderTimeout','roboFeriasTGerarPdf','roboFeriasTModuloCarga','roboFeriasTCurto','roboFeriasTMedio','roboFeriasTLongo','roboFeriasTEmpresa']);
+    habilitarSalvarAoMudar('btnRoboFeriasSalvar', ['roboFeriasEncadeado','roboFeriasTEntreEmpresas','roboFeriasTRenderTimeout','roboFeriasTGerarPdf','roboFeriasTModuloCarga','roboFeriasTCurto','roboFeriasTMedio','roboFeriasTLongo','roboFeriasTEmpresa']);
     $('btnRoboFeriasSalvar')?.addEventListener('click', async ()=>{
       try{
         await api('/ferias-robo/config', { method:'POST', body:{
-          agendaAtivo:$('roboFeriasAgendaAtivo').checked, agendaHora:Number($('roboFeriasAgendaHora').value), agendaMinuto:Number($('roboFeriasAgendaMinuto').value),
+          encadeadoAposComparativo:$('roboFeriasEncadeado').checked,
           tEntreEmpresasMs:Math.round(Number($('roboFeriasTEntreEmpresas').value)*1000),
           tRenderTimeoutMs:Math.round(Number($('roboFeriasTRenderTimeout').value)*1000),
           tGerarPdfMs:Math.round(Number($('roboFeriasTGerarPdf').value)*1000),

@@ -4869,6 +4869,11 @@ sqlite.exec(`
   if (!colsRobo.some((c) => c.name === "t_curto_ms")) sqlite.exec(`ALTER TABLE comparativo_robo_estado ADD COLUMN t_curto_ms INTEGER NOT NULL DEFAULT 700`);
   if (!colsRobo.some((c) => c.name === "t_medio_ms")) sqlite.exec(`ALTER TABLE comparativo_robo_estado ADD COLUMN t_medio_ms INTEGER NOT NULL DEFAULT 2000`);
   if (!colsRobo.some((c) => c.name === "t_longo_ms")) sqlite.exec(`ALTER TABLE comparativo_robo_estado ADD COLUMN t_longo_ms INTEGER NOT NULL DEFAULT 4000`);
+  // Guarda o motivo do disparo mais recente ('agenda'|'manual'|'automatico') — usado só pra decidir se o
+  // Férias encadeado (ver ferias_robo_estado.encadeado_apos_comparativo) deve começar quando este robô
+  // terminar: só encadeia depois de uma execução que veio da AGENDA, nunca de um "Executar agora" manual,
+  // pra não atrapalhar teste passo a passo dos dois robôs.
+  if (!colsRobo.some((c) => c.name === "ultimo_motivo")) sqlite.exec(`ALTER TABLE comparativo_robo_estado ADD COLUMN ultimo_motivo TEXT`);
 }
 // Valida/limita um tempo (segundos ou ms) vindo da tela pros robôs AHK — evita salvar um valor absurdo
 // (0, negativo, texto) que travaria o agente numa espera infinita ou sem espera nenhuma.
@@ -4979,14 +4984,18 @@ app.get("/api/dominio-agent/comparativo-comando", requireDominioAgent, (_req, re
   // (Comparativo tem prioridade: NÃO cede a um Férias só "pendente".)
   const segurar = outroRoboOcupado("ferias_robo_estado", false);
   const deveRodar = (!!c.runNow || !!c.devePorTempo || devePorAgenda) && !segurar;
+  const motivo = c.runNow ? "manual" : (devePorAgenda ? "agenda" : (c.devePorTempo ? "automatico" : null));
   // Qualquer disparo do dia (manual "Executar agora" ou automático) consome o agendamento daquele dia —
   // achado ao vivo: um "Executar agora" clicado antes das 19:30 não marcava o dia, e quando o horário
   // batia o agendamento disparava de NOVO horas depois, rodando as 58 empresas duas vezes no mesmo dia.
   if (deveRodar && c.agendaAtivo && c.agendaUltimoDia !== hojeSp) {
     sqlite.prepare(`UPDATE comparativo_robo_estado SET agenda_ultimo_dia = ? WHERE escritorio_id = 1`).run(hojeSp);
   }
+  // Guarda o motivo deste disparo pra o robô Férias encadeado saber, quando o Comparativo terminar, se
+  // foi uma execução automática da agenda (só aí encadeia) ou um "Executar agora" manual (não encadeia).
+  if (deveRodar) sqlite.prepare(`UPDATE comparativo_robo_estado SET ultimo_motivo = ? WHERE escritorio_id = 1`).run(motivo);
   res.json({
-    deveRodar, motivo: segurar ? "aguardando_outro_robo" : (c.runNow ? "manual" : (devePorAgenda ? "agenda" : (c.devePorTempo ? "automatico" : null))),
+    deveRodar, motivo: segurar ? "aguardando_outro_robo" : motivo,
     parar: !!c.parar,
     ligado: !!c.ligado, intervaloMin: c.intervaloMin,
     periodoIni: c.periodoIni || pad.ini, periodoFim: c.periodoFim || pad.fim,
@@ -5002,13 +5011,30 @@ app.post("/api/dominio-agent/comparativo-progresso", requireDominioAgent, (req, 
     // Começou uma execução nova: limpa o "executar agora" e um eventual freio pendente (não mata a nova run).
     sqlite.prepare(`UPDATE comparativo_robo_estado SET run_now_em = NULL, parar_em = NULL, ultima_exec_em = datetime('now') WHERE escritorio_id = 1`).run();
   }
+  // Lido ANTES de sobrescrever — "estava rodando mesmo (prog_rodando=1) e ninguém pediu Parar
+  // (parar_em NULL)" é o jeito de distinguir "terminou de verdade" de "nunca tinha começado" ou
+  // "foi freado na mão", pra decidir abaixo se encadeia o Férias.
+  const antes = sqlite.prepare(`SELECT prog_rodando AS progRodando, parar_em AS pararEm, ultimo_motivo AS ultimoMotivo FROM comparativo_robo_estado WHERE escritorio_id = 1`).get() as any;
   sqlite.prepare(`
     UPDATE comparativo_robo_estado
        SET prog_rodando = ?, prog_total = ?, prog_feitas = ?, prog_atual = ?, prog_em = datetime('now')
      WHERE escritorio_id = 1
   `).run(b.rodando ? 1 : 0, Number(b.total) || 0, Number(b.feitas) || 0, b.atual ? String(b.atual) : null);
   // Terminou/parou (rodando=false): reseta o freio pra não afetar a próxima execução.
-  if (!b.rodando) sqlite.prepare(`UPDATE comparativo_robo_estado SET parar_em = NULL WHERE escritorio_id = 1`).run();
+  if (!b.rodando) {
+    sqlite.prepare(`UPDATE comparativo_robo_estado SET parar_em = NULL WHERE escritorio_id = 1`).run();
+    // Encadeamento: só dispara o Férias se o Comparativo estava mesmo rodando, terminou sozinho (não
+    // foi "Parar robô") e essa execução veio da AGENDA (nunca de um "Executar agora" manual — assim o
+    // teste passo a passo de cada robô continua isolado, sem efeito colateral). No máximo 1x por dia.
+    if (antes?.progRodando && !antes?.pararEm && antes?.ultimoMotivo === "agenda") {
+      garantirFeriasEstado(1);
+      const hojeSp = new Date(Date.now() - 3 * 3600 * 1000).toISOString().slice(0, 10);
+      const f = sqlite.prepare(`SELECT encadeado_apos_comparativo AS encadeado, encadeado_ultimo_dia AS encadeadoUltimoDia FROM ferias_robo_estado WHERE escritorio_id = 1`).get() as any;
+      if (f?.encadeado && f.encadeadoUltimoDia !== hojeSp) {
+        sqlite.prepare(`UPDATE ferias_robo_estado SET run_now_em = datetime('now'), parar_em = NULL, encadeado_ultimo_dia = ? WHERE escritorio_id = 1`).run(hojeSp);
+      }
+    }
+  }
   res.json({ ok: true });
 });
 // ---- Controle do robô pela tela (Configurações › Relatórios) ----
@@ -5125,6 +5151,11 @@ sqlite.exec(`
   if (!colsFeriasRobo.some((c) => c.name === "t_medio_ms")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN t_medio_ms INTEGER NOT NULL DEFAULT 2000`);
   if (!colsFeriasRobo.some((c) => c.name === "t_longo_ms")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN t_longo_ms INTEGER NOT NULL DEFAULT 4000`);
   if (!colsFeriasRobo.some((c) => c.name === "t_empresa_ms")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN t_empresa_ms INTEGER NOT NULL DEFAULT 4000`);
+  // Encadeamento com o Comparativo: em vez de ter horário próprio, o Férias pode esperar o Comparativo
+  // terminar (uma execução vinda da AGENDA dele) e começar sozinho logo em seguida — ver o disparo em
+  // /api/dominio-agent/comparativo-progresso. "encadeado_ultimo_dia" evita disparar 2x no mesmo dia.
+  if (!colsFeriasRobo.some((c) => c.name === "encadeado_apos_comparativo")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN encadeado_apos_comparativo INTEGER NOT NULL DEFAULT 0`);
+  if (!colsFeriasRobo.some((c) => c.name === "encadeado_ultimo_dia")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN encadeado_ultimo_dia TEXT`);
 }
 function garantirFeriasEstado(escritorioId: number) {
   sqlite.prepare(`INSERT OR IGNORE INTO ferias_robo_estado (escritorio_id) VALUES (?)`).run(escritorioId);
@@ -5205,6 +5236,7 @@ app.get("/api/ferias-robo/estado", blockCliente, requirePermissao("configuracoes
   const c = sqlite.prepare(`
     SELECT ligado, intervalo_min AS intervaloMin, run_now_em AS runNowEm, ultima_exec_em AS ultimaExecEm,
       agenda_ativo AS agendaAtivo, agenda_hora AS agendaHora, agenda_minuto AS agendaMinuto,
+      encadeado_apos_comparativo AS encadeadoAposComparativo,
       t_entre_empresas_ms AS tEntreEmpresasMs, t_render_timeout_ms AS tRenderTimeoutMs, t_gerar_pdf_ms AS tGerarPdfMs,
       t_modulo_carga_ms AS tModuloCargaMs, t_curto_ms AS tCurtoMs, t_medio_ms AS tMedioMs, t_longo_ms AS tLongoMs, t_empresa_ms AS tEmpresaMs,
       prog_total AS total, prog_feitas AS feitas, prog_atual AS atual, prog_em AS progEm,
@@ -5217,6 +5249,7 @@ app.get("/api/ferias-robo/estado", blockCliente, requirePermissao("configuracoes
   res.json({
     ligado: !!c.ligado, intervaloMin: c.intervaloMin, ultimaExecEm: c.ultimaExecEm,
     agendaAtivo: !!c.agendaAtivo, agendaHora: c.agendaHora, agendaMinuto: c.agendaMinuto,
+    encadeadoAposComparativo: !!c.encadeadoAposComparativo,
     tEntreEmpresasMs: c.tEntreEmpresasMs, tRenderTimeoutMs: c.tRenderTimeoutMs, tGerarPdfMs: c.tGerarPdfMs,
     tModuloCargaMs: c.tModuloCargaMs, tCurtoMs: c.tCurtoMs, tMedioMs: c.tMedioMs, tLongoMs: c.tLongoMs, tEmpresaMs: c.tEmpresaMs,
     rodando: !!c.rodando, total: c.total, feitas: c.feitas, atual: c.atual, progEm: c.progEm,
@@ -5225,9 +5258,8 @@ app.get("/api/ferias-robo/estado", blockCliente, requirePermissao("configuracoes
 });
 app.post("/api/ferias-robo/config", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
   garantirFeriasEstado(1);
-  const agendaAtivo = req.body?.agendaAtivo ? 1 : 0;
-  const agendaHora = Math.min(Math.max(Math.round(Number(req.body?.agendaHora)) || 6, 0), 23);
-  const agendaMinuto = Math.min(Math.max(Math.round(Number(req.body?.agendaMinuto)) || 0, 0), 59);
+  // O Férias não tem mais horário próprio — ou encadeia com o Comparativo (preferido) ou fica só no manual.
+  const encadeadoAposComparativo = req.body?.encadeadoAposComparativo ? 1 : 0;
   const tEntreEmpresasMs = clampTempoMs(req.body?.tEntreEmpresasMs, 15000, 1000, 600000);
   const tRenderTimeoutMs = clampTempoMs(req.body?.tRenderTimeoutMs, 90000, 5000, 300000);
   const tGerarPdfMs = clampTempoMs(req.body?.tGerarPdfMs, 15000, 1000, 120000);
@@ -5236,14 +5268,11 @@ app.post("/api/ferias-robo/config", blockCliente, requirePermissao("configuracoe
   const tMedioMs = clampTempoMs(req.body?.tMedioMs, 2000, 100, 30000);
   const tLongoMs = clampTempoMs(req.body?.tLongoMs, 4000, 100, 30000);
   const tEmpresaMs = clampTempoMs(req.body?.tEmpresaMs, 4000, 100, 30000);
-  const antesAgenda = sqlite.prepare(`SELECT agenda_ativo, agenda_hora, agenda_minuto FROM ferias_robo_estado WHERE escritorio_id = 1`).get() as any;
   sqlite.prepare(`
-    UPDATE ferias_robo_estado SET agenda_ativo = ?, agenda_hora = ?, agenda_minuto = ?,
+    UPDATE ferias_robo_estado SET agenda_ativo = 0, encadeado_apos_comparativo = ?,
       t_entre_empresas_ms = ?, t_render_timeout_ms = ?, t_gerar_pdf_ms = ?, t_modulo_carga_ms = ?, t_curto_ms = ?, t_medio_ms = ?, t_longo_ms = ?, t_empresa_ms = ?
     WHERE escritorio_id = 1
-  `).run(agendaAtivo, agendaHora, agendaMinuto, tEntreEmpresasMs, tRenderTimeoutMs, tGerarPdfMs, tModuloCargaMs, tCurtoMs, tMedioMs, tLongoMs, tEmpresaMs);
-  if (!antesAgenda || !!antesAgenda.agenda_ativo !== !!agendaAtivo || antesAgenda.agenda_hora !== agendaHora || antesAgenda.agenda_minuto !== agendaMinuto)
-    sqlite.prepare(`UPDATE ferias_robo_estado SET agenda_ultimo_dia = NULL WHERE escritorio_id = 1`).run();
+  `).run(encadeadoAposComparativo, tEntreEmpresasMs, tRenderTimeoutMs, tGerarPdfMs, tModuloCargaMs, tCurtoMs, tMedioMs, tLongoMs, tEmpresaMs);
   res.json({ ok: true });
 });
 app.post("/api/ferias-robo/executar", blockCliente, requirePermissao("configuracoes", "editar"), (_req, res) => {
