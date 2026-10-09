@@ -4975,11 +4975,16 @@ app.get("/api/dominio-agent/comparativo-comando", requireDominioAgent, (_req, re
   `).get() as any;
   const pad = comparativoPeriodoPadrao();
   const { deve: devePorAgenda, hojeSp } = agendaDeveRodarAgora(c);
-  if (devePorAgenda) sqlite.prepare(`UPDATE comparativo_robo_estado SET agenda_ultimo_dia = ? WHERE escritorio_id = 1`).run(hojeSp);
   // Só um robô por vez: segura se o Férias estiver rodando ou tiver terminado há menos que o intervalo.
   // (Comparativo tem prioridade: NÃO cede a um Férias só "pendente".)
   const segurar = outroRoboOcupado("ferias_robo_estado", false);
   const deveRodar = (!!c.runNow || !!c.devePorTempo || devePorAgenda) && !segurar;
+  // Qualquer disparo do dia (manual "Executar agora" ou automático) consome o agendamento daquele dia —
+  // achado ao vivo: um "Executar agora" clicado antes das 19:30 não marcava o dia, e quando o horário
+  // batia o agendamento disparava de NOVO horas depois, rodando as 58 empresas duas vezes no mesmo dia.
+  if (deveRodar && c.agendaAtivo && c.agendaUltimoDia !== hojeSp) {
+    sqlite.prepare(`UPDATE comparativo_robo_estado SET agenda_ultimo_dia = ? WHERE escritorio_id = 1`).run(hojeSp);
+  }
   res.json({
     deveRodar, motivo: segurar ? "aguardando_outro_robo" : (c.runNow ? "manual" : (devePorAgenda ? "agenda" : (c.devePorTempo ? "automatico" : null))),
     parar: !!c.parar,
@@ -5165,10 +5170,15 @@ app.get("/api/dominio-agent/ferias-comando", requireDominioAgent, (_req, res) =>
     FROM ferias_robo_estado WHERE escritorio_id = 1
   `).get() as any;
   const { deve: devePorAgenda, hojeSp } = agendaDeveRodarAgora(c);
-  if (devePorAgenda) sqlite.prepare(`UPDATE ferias_robo_estado SET agenda_ultimo_dia = ? WHERE escritorio_id = 1`).run(hojeSp);
   // Só um robô por vez: o Férias CEDE ao Comparativo rodando, pendente (run/por-tempo) OU recém-terminado.
   const segurar = outroRoboOcupado("comparativo_robo_estado", true);
   const deveRodar = (!!c.runNow || !!c.devePorTempo || devePorAgenda) && !segurar;
+  // Qualquer disparo do dia (manual "Executar agora" ou automático) consome o agendamento daquele dia —
+  // achado ao vivo: um "Executar agora" clicado antes das 19:30 não marcava o dia, e quando o horário
+  // batia o agendamento disparava de NOVO horas depois, rodando as 58 empresas duas vezes no mesmo dia.
+  if (deveRodar && c.agendaAtivo && c.agendaUltimoDia !== hojeSp) {
+    sqlite.prepare(`UPDATE ferias_robo_estado SET agenda_ultimo_dia = ? WHERE escritorio_id = 1`).run(hojeSp);
+  }
   res.json({
     deveRodar, motivo: segurar ? "aguardando_outro_robo" : (c.runNow ? "manual" : (devePorAgenda ? "agenda" : (c.devePorTempo ? "automatico" : null))),
     parar: !!c.parar, ligado: !!c.ligado, intervaloMin: c.intervaloMin,
