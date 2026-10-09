@@ -4935,6 +4935,22 @@ function comparativoValidaPeriodo(v: any): string | null {
   if (mes < 1 || mes > 12) return null;
   return String(mes).padStart(2, "0") + "/" + m[2];
 }
+// Zipa a pasta do robô INJETANDO o token real do agente no .ahk (troca o placeholder
+// COLE_AQUI_O_TOKEN_DO_AGENTE pelo DOMINIO_AGENT_TOKEN do servidor), pra o robô baixado já autenticar
+// e aparecer "online". Sem token configurado no servidor, mantém o placeholder (e o robô fica offline).
+function zipPastaRoboComToken(zip: any, pasta: string, sub = "") {
+  for (const nome of fs.readdirSync(pasta)) {
+    const full = path.join(pasta, nome);
+    if (fs.statSync(full).isDirectory()) { zipPastaRoboComToken(zip, full, sub ? sub + "/" + nome : nome); continue; }
+    const destino = sub ? sub + "/" + nome : nome;
+    if (nome.toLowerCase().endsWith(".ahk") && DOMINIO_AGENT_TOKEN) {
+      const conteudo = fs.readFileSync(full, "utf8").split("COLE_AQUI_O_TOKEN_DO_AGENTE").join(DOMINIO_AGENT_TOKEN);
+      zip.append(conteudo, { name: destino });
+    } else {
+      zip.append(fs.createReadStream(full), { name: destino });
+    }
+  }
+}
 // Download do pacote do robô (script AutoHotkey + instruções) pra quem for instalar no servidor Windows do
 // Domínio Web — pelo Administrador logado no site (diferente das rotas acima, que são pro ROBÔ chamar).
 app.get("/api/empresas/comparativo-movimento/robo", blockCliente, requireAdmin, (req, res) => {
@@ -4945,7 +4961,7 @@ app.get("/api/empresas/comparativo-movimento/robo", blockCliente, requireAdmin, 
   const zip: any = archiver("zip", { zlib: { level: 9 } });
   zip.on("error", (e: any) => { console.error("[comparativo-movimento] zip do robô:", e.message); res.destroy(); });
   zip.pipe(res);
-  zip.directory(pasta, false);
+  zipPastaRoboComToken(zip, pasta);
   zip.finalize();
 });
 app.get("/api/dominio-agent/empresas-comparativo", requireDominioAgent, (_req, res) => {
@@ -5169,7 +5185,7 @@ app.get("/api/empresas/programacao-ferias/robo", blockCliente, requireAdmin, (re
   const zip: any = archiver("zip", { zlib: { level: 9 } });
   zip.on("error", (e: any) => { console.error("[programacao-ferias] zip do robô:", e.message); res.destroy(); });
   zip.pipe(res);
-  zip.directory(pasta, false);
+  zipPastaRoboComToken(zip, pasta);
   zip.finalize();
 });
 app.get("/api/dominio-agent/empresas-ferias", requireDominioAgent, (_req, res) => {
