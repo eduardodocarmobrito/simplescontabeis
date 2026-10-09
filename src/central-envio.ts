@@ -174,9 +174,15 @@ export function extrairCompetenciaMes(texto: string): string | null {
 // Sindical da CAIXA. Pega a DATA (DD/MM/AAAA) logo após o rótulo e devolve MM/AAAA. Em geral as duas
 // datas são iguais, então qualquer uma das duas dá o mesmo mês/ano.
 export function extrairCompetenciaDataProcessamento(texto: string): string | null {
-  const m =
-    /Data\s+do\s+processamento[\s\S]{0,80}?\d{2}\/(0[1-9]|1[0-2])\/(20\d{2})/i.exec(texto) ||
-    /Data\s+do\s+documento[\s\S]{0,80}?\d{2}\/(0[1-9]|1[0-2])\/(20\d{2})/i.exec(texto);
+  // 1) Data logo após o rótulo "Data do processamento"/"Data do documento" (layout rótulo → valor).
+  let m =
+    /Data\s+do\s+processamento[\s\S]{0,160}?\b\d{2}\/(0[1-9]|1[0-2])\/(20\d{2})\b/i.exec(texto) ||
+    /Data\s+do\s+documento[\s\S]{0,160}?\b\d{2}\/(0[1-9]|1[0-2])\/(20\d{2})\b/i.exec(texto);
+  if (m) return `${m[1]}/${m[2]}`;
+  // 2) Fallback (boleto CAIXA): o pdf-parse pode embaralhar rótulo e valor. Pega a 1ª data DD/MM/AAAA
+  // do documento — em boleto de Contribuição Sindical doc/processamento/vencimento são do mesmo mês.
+  // (CNPJ "xx.xxx.xxx/xxxx-xx" não casa com \d{2}/MM/AAAA, então não dá falso positivo.)
+  m = /\b\d{2}\/(0[1-9]|1[0-2])\/(20\d{2})\b/.exec(texto);
   return m ? `${m[1]}/${m[2]}` : null;
 }
 const rotuloCompetencia = (p: { inicio: string; fim: string } | null): string | null => {
@@ -259,7 +265,7 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     const ruins = db
       .prepare(`SELECT cd.id, cd.tipo_nome, cd.texto_amostra, cd.competencia, e.nome AS empresa_nome
                 FROM central_envio_docs cd LEFT JOIN empresas e ON e.id = cd.empresa_id
-                WHERE cd.tipo_nome LIKE '%Contribui%Sindical%' AND (cd.colaborador_nome IS NOT NULL OR cd.titulo LIKE '%RECLAMA%')`)
+                WHERE cd.tipo_nome LIKE '%Contribui%Sindical%' AND (cd.colaborador_nome IS NOT NULL OR cd.titulo LIKE '%RECLAMA%' OR cd.competencia IS NULL)`)
       .all() as any[];
     for (const r of ruins) {
       const comp = extrairCompetenciaDataProcessamento(r.texto_amostra || "") || r.competencia || null;
