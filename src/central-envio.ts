@@ -170,6 +170,15 @@ export function extrairCompetenciaMes(texto: string): string | null {
   if (nomes) { const i = MESES_NOME.indexOf(nomes[1].toLowerCase().replace("ç", "c")); if (i >= 0) return `${String(i + 1).padStart(2, "0")}/${nomes[2]}`; }
   return null;
 }
+// Competência pela "Data do processamento" (ou "Data do documento") de boletos — ex.: Contribuição
+// Sindical da CAIXA. Pega a DATA (DD/MM/AAAA) logo após o rótulo e devolve MM/AAAA. Em geral as duas
+// datas são iguais, então qualquer uma das duas dá o mesmo mês/ano.
+export function extrairCompetenciaDataProcessamento(texto: string): string | null {
+  const m =
+    /Data\s+do\s+processamento[\s\S]{0,80}?\d{2}\/(0[1-9]|1[0-2])\/(20\d{2})/i.exec(texto) ||
+    /Data\s+do\s+documento[\s\S]{0,80}?\d{2}\/(0[1-9]|1[0-2])\/(20\d{2})/i.exec(texto);
+  return m ? `${m[1]}/${m[2]}` : null;
+}
 const rotuloCompetencia = (p: { inicio: string; fim: string } | null): string | null => {
   const f = p?.fim || p?.inicio;
   return f && /^\d{4}-\d{2}/.test(f) ? `${f.slice(5, 7)}/${f.slice(0, 4)}` : null;
@@ -243,6 +252,29 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
   for (const tabela of ["central_envio_enviados", "central_envio_docs"]) {
     db.prepare(`UPDATE ${tabela} SET titulo = REPLACE(titulo, ' - PROVENTOS E DESCONTOSBASE PARA CÁLCULO', ''), colaborador_nome = NULL WHERE colaborador_nome LIKE 'PROVENTOS E DESCONTOS%' OR titulo LIKE '%PROVENTOS E DESCONTOSBASE PARA CÁLCULO%'`).run();
   }
+  // Contribuição Sindical (boleto CAIXA): docs já lidos pegaram "RECLAMAÇÕES E SUGESTÕES" (cabeçalho da
+  // CAIXA) como colaborador. Limpeza idempotente: tira o colaborador e refaz o título só com
+  // "Contribuição Sindical - <empresa> - <competência (data de processamento)>". Roda só nos que ainda têm o problema.
+  try {
+    const ruins = db
+      .prepare(`SELECT cd.id, cd.tipo_nome, cd.texto_amostra, cd.competencia, e.nome AS empresa_nome
+                FROM central_envio_docs cd LEFT JOIN empresas e ON e.id = cd.empresa_id
+                WHERE cd.tipo_nome LIKE '%Contribui%Sindical%' AND (cd.colaborador_nome IS NOT NULL OR cd.titulo LIKE '%RECLAMA%')`)
+      .all() as any[];
+    for (const r of ruins) {
+      const comp = extrairCompetenciaDataProcessamento(r.texto_amostra || "") || r.competencia || null;
+      const titulo = [r.tipo_nome, r.empresa_nome, comp].filter(Boolean).join(" - ");
+      db.prepare(`UPDATE central_envio_docs SET colaborador_nome = NULL, cpf = NULL, competencia = ?, titulo = ? WHERE id = ?`).run(comp, titulo, r.id);
+    }
+    const ruinsEnv = db
+      .prepare(`SELECT id, tipo_nome, empresa_nome, competencia FROM central_envio_enviados WHERE tipo_nome LIKE '%Contribui%Sindical%' AND (colaborador_nome IS NOT NULL OR titulo LIKE '%RECLAMA%')`)
+      .all() as any[];
+    for (const r of ruinsEnv) {
+      const titulo = [r.tipo_nome, r.empresa_nome, r.competencia].filter(Boolean).join(" - ");
+      db.prepare(`UPDATE central_envio_enviados SET colaborador_nome = NULL, titulo = ? WHERE id = ?`).run(titulo, r.id);
+    }
+    if (ruins.length || ruinsEnv.length) console.log(`Limpeza Contribuição Sindical: ${ruins.length} pendentes + ${ruinsEnv.length} enviados corrigidos.`);
+  } catch (e: any) { console.error("[limpeza contribuição sindical]", e.message); }
   // ------------------------------------------------------------ configuração / credencial
   const credDe = (escId: number): Cred | null => {
     const c = db.prepare(`SELECT sa_json_cifrado FROM central_envio_config WHERE escritorio_id = ?`).get(escId) as any;
@@ -298,7 +330,13 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
       if (melhor) empresa = { id: melhor.id, nome: melhor.nome };
     }
     const nomesEmpresas = (db.prepare(`SELECT nome FROM empresas WHERE escritorio_id = ?`).all(escId) as any[]).map((e) => norm(e.nome).replace(/\s+/g, " ").trim()).filter((n) => n.length >= 6);
-    const { colaborador, cpf } = extrairColaboradorECpf(texto, (n) => nomesEmpresas.some((e) => e === n || (n.length >= 8 && e.includes(n)) || n.includes(e)));
+    const extraidoColab = extrairColaboradorECpf(texto, (n) => nomesEmpresas.some((e) => e === n || (n.length >= 8 && e.includes(n)) || n.includes(e)));
+    // Contribuição Sindical (boleto CAIXA): NÃO pega colaborador — o parser pegava "RECLAMAÇÕES E
+    // SUGESTÕES" do cabeçalho da CAIXA; e a competência vem da Data do processamento. Título fica só
+    // "Contribuição Sindical - <empresa> - <competência>".
+    const ehContribSindical = norm(tipo?.nome || "").includes("CONTRIBUICAO SINDICAL");
+    const colaborador = ehContribSindical ? null : extraidoColab.colaborador;
+    const cpf = ehContribSindical ? null : extraidoColab.cpf;
     // extrairCompetenciaMes primeiro: quando o PDF tem um rótulo explícito "Competência: MM/AAAA" (caso do Extrato
     // Mensal/Folha Mensal), ele é a fonte mais confiável e deve valer sempre. extrairDataAfastamento foi feita pra
     // Rescisão (documento organizado por datas, sem rótulo de competência) — mas um Extrato Mensal "e Complementar"
@@ -306,7 +344,9 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     // Afastamento" dele; antes disso rodava primeiro e sequestrava a competência do documento inteiro (achado ao
     // vivo: extrato de 09/2026 saindo com competência 12/2027, puxada de uma data de afastamento de outro
     // funcionário nas páginas seguintes do mesmo PDF).
-    const competencia = extrairCompetenciaMes(texto) || extrairDataAfastamento(texto) || rotuloCompetencia(d.extrairPeriodo(texto, nomeArquivo));
+    const competencia = ehContribSindical
+      ? (extrairCompetenciaDataProcessamento(texto) || extrairCompetenciaMes(texto))
+      : (extrairCompetenciaMes(texto) || extrairDataAfastamento(texto) || rotuloCompetencia(d.extrairPeriodo(texto, nomeArquivo)));
     const titulo = [tipo?.nome || String(nomeArquivo).replace(/\.pdf$/i, ""), colaborador, empresa?.nome, competencia].filter(Boolean).join(" - ");
     return { texto, agrupar: !!tipo?.agrupar, tipoId: tipo?.id ?? null, tipoNome: tipo?.nome ?? null, empresaId: empresa?.id ?? null, cnpj: cnpjDetectado, colaborador, cpf, competencia, titulo };
   }
