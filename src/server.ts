@@ -8733,6 +8733,22 @@ function domRelExtrairPeriodo(texto: string, nomeArquivo: string): { inicio: str
         datas.push(`${ano}-${mes}-${dia}`);
       }
     }
+    // Achado ao vivo no "Demonstrativo Mensal" (Relatório de Entradas/Saídas): o texto linear do
+    // pdf-parse enfia a linha inteira do cabeçalho da tabela ("MêsSaídasAnoEntradas...") ENTRE a data
+    // inicial e a final, então só a inicial cai na janela normal de 80 caracteres. A data final some
+    // logo depois de um "a" sozinho numa linha própria (resto de "DATA a DATA" quebrado pela
+    // extração) — com só 1 data achada, procura esse padrão num raio maior antes de desistir.
+    if (datas.length === 1) {
+      const trechoLargo = texto.slice(m.index, m.index + 400);
+      const am = /\ba\s*(\d{2})[\/\-.](\d{2})[\/\-.](\d{4})\b/.exec(trechoLargo);
+      if (am) {
+        const [, dia, mes, ano] = am;
+        const diaN = Number(dia), mesN = Number(mes), anoN = Number(ano);
+        if (diaN >= 1 && diaN <= 31 && mesN >= 1 && mesN <= 12 && anoN >= 2000 && anoN <= 2100) {
+          datas.push(`${ano}-${mes}-${dia}`);
+        }
+      }
+    }
     if (datas.length >= 2) {
       const ordenadas = datas.sort();
       return { inicio: ordenadas[0], fim: ordenadas[ordenadas.length - 1] };
