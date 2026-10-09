@@ -9770,6 +9770,7 @@ app.get("/api/integracontador/config", blockCliente, requirePermissao("integraco
     titularCertificado: c.titular_certificado || null,
     validadeCertificadoAte: c.validade_certificado_ate || null,
     ativo: !!c.ativo,
+    envioAutomatico: c.envio_automatico === undefined ? true : !!c.envio_automatico,
     ultimoErro: c.ultimo_erro || null,
     agenda: getAgendaBusca((req as any).user.escritorioId),
   });
@@ -9791,6 +9792,15 @@ app.put("/api/integracontador/agenda", blockCliente, requirePermissao("integraco
     }
   }
   res.json({ ok: true, agenda: agendaLimpa });
+});
+// Freio do envio automático de DAS/DARF DCTF-Web/Guia FGTS/Parcelamento (ver envioEnviarDocumentoAutomatico)
+// — separado da agenda da busca: desligado, a busca continua achando e anexando a guia normalmente,
+// só não dispara sozinha pro cliente (fica manual, pela tela, até religar aqui).
+app.put("/api/integracontador/envio-automatico", blockCliente, requirePermissao("integracontador", "editar"), (req, res) => {
+  const user = (req as any).user;
+  sqlite.prepare(`INSERT OR IGNORE INTO integracontador_config (escritorio_id) VALUES (?)`).run(user.escritorioId);
+  sqlite.prepare(`UPDATE integracontador_config SET envio_automatico = ? WHERE escritorio_id = ?`).run(req.body?.ativo ? 1 : 0, user.escritorioId);
+  res.json({ ok: true });
 });
 app.put("/api/integracontador/config", blockCliente, requirePermissao("integracontador", "editar"), upload.single("certificado"), (req, res) => {
   const escritorioId = (req as any).user.escritorioId;
@@ -10073,6 +10083,11 @@ async function envioEnviarDocumentoAutomatico(opts: {
   descricaoWhatsapp: string;
 }): Promise<void> {
   const { escritorioId, empresaId, docId, fileName, pdf, assunto, corpoEmail, descricaoWhatsapp } = opts;
+  // Freio do Integra Contador (Configurações › Integra Contador): desligado, a guia já foi achada e
+  // anexada em Envio de Documentos (isso acontece ANTES desta função ser chamada) — só o disparo
+  // automático pro cliente para aqui. Envio manual pela tela continua disponível normalmente.
+  const cfgIcEnvio = sqlite.prepare(`SELECT envio_automatico FROM integracontador_config WHERE escritorio_id = ?`).get(escritorioId) as any;
+  if (cfgIcEnvio && cfgIcEnvio.envio_automatico === 0) return;
   if (escritorioTemModulo(escritorioId, "envio_email_automatico")) {
     const contatos = sqlite.prepare(`SELECT email FROM empresa_contatos WHERE empresa_id = ? AND receber_emails = 1`).all(empresaId) as any[];
     if (contatos.length) {
@@ -10794,6 +10809,17 @@ sqlite.exec(`CREATE TABLE IF NOT EXISTS integracontador_busca_slots (slot TEXT P
 {
   const colsIc = sqlite.prepare(`PRAGMA table_info(integracontador_config)`).all() as any[];
   if (!colsIc.some((c) => c.name === "agenda_busca_json")) sqlite.exec(`ALTER TABLE integracontador_config ADD COLUMN agenda_busca_json TEXT`);
+  // Freio separado do "Automático × Manual" do central-envio (pastas do Drive) — esse aqui é só pro
+  // envio automático de DAS/DARF DCTF-Web/Guia FGTS/Parcelamento do DAS (tudo que passa por
+  // envioEnviarDocumentoAutomatico). A busca diária e o anexo em Envio de Documentos continuam
+  // normais mesmo desligado — só o disparo automático pro cliente (e-mail/WhatsApp) para. Achado ao
+  // vivo (2026-10-09): o freio do central-envio não cobria essa rotina, um DARF DCTF-Web saiu
+  // sozinho achando que estava tudo pausado. Nasce DESLIGADO agora, por pedido explícito — fica
+  // manual até o usuário religar na tela do Integra Contador.
+  if (!colsIc.some((c) => c.name === "envio_automatico")) {
+    sqlite.exec(`ALTER TABLE integracontador_config ADD COLUMN envio_automatico INTEGER NOT NULL DEFAULT 1`);
+    sqlite.exec(`UPDATE integracontador_config SET envio_automatico = 0`);
+  }
 }
 function agoraBrasiliaTextos() {
   const a = agoraBrasilia();
@@ -16272,7 +16298,31 @@ async function deskcommRoboEnviarArquivo(telefone: string, nomeContato: string, 
   let digitos = String(telefone).replace(/\D/g, "");
   if (digitos.length <= 11) digitos = "55" + digitos;
   const phoneNumber = "+" + digitos;
-  const { conversation_id: conversationId } = await deskcommRoboApi("/conversations/open-with-contact", { method: "POST", body: { phone_number: phoneNumber, name: nomeContato } });
+  // Se já existe uma conversa FECHADA pra esse telefone, usa o id dela direto, sem chamar
+  // open-with-contact — essa rota reabre a conversa (muda service_started_at), e reabrir zera o setor
+  // atual (ver atendimentoSetorAtual, acima: ela descarta a escolha de setor anterior a
+  // service_started_at). Pedido: envio automático por essa rotina não pode reabrir conversa fechada
+  // nem deixar ela sem setor. Contato novo ou conversa já aberta seguem o caminho de sempre.
+  let conversationId: string | null = null;
+  try {
+    const { data: contato } = await deskcommAdmin.from("contacts").select("id").eq("organization_id", DESKCOMM_ORG_ID).eq("phone_number", phoneNumber).maybeSingle();
+    if (contato) {
+      const { data: conv } = await deskcommAdmin
+        .from("conversations")
+        .select("id, status")
+        .eq("organization_id", DESKCOMM_ORG_ID)
+        .eq("contact_id", contato.id)
+        .is("group_chat_id", null)
+        .order("last_message_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (conv && (conv.status === "closed" || conv.status === "archived")) conversationId = conv.id;
+    }
+  } catch { /* checagem falhou: cai no caminho normal abaixo (open-with-contact) */ }
+  if (!conversationId) {
+    const r = await deskcommRoboApi("/conversations/open-with-contact", { method: "POST", body: { phone_number: phoneNumber, name: nomeContato } });
+    conversationId = r.conversation_id;
+  }
   const fd = new FormData();
   fd.append("file", new Blob([new Uint8Array(arquivo.buffer)], { type: arquivo.tipo }), arquivo.nome);
   const up = await deskcommRoboApi(`/conversations/${conversationId}/media`, { method: "POST", body: fd });
@@ -16281,7 +16331,7 @@ async function deskcommRoboEnviarArquivo(telefone: string, nomeContato: string, 
     const { data: conv } = await deskcommAdmin.from("conversations").select("active_intent, active_agent_set_at, service_started_at").eq("organization_id", DESKCOMM_ORG_ID).eq("id", conversationId).maybeSingle();
     if (conv) {
       const { ultima } = await atendimentoEscolhas();
-      const setor = atendimentoSetorAtual(conv, ultima.get(conversationId));
+      const setor = atendimentoSetorAtual(conv, ultima.get(conversationId!));
       if (setor) texto = `*${setor}*\n${texto}`;
     }
   } catch { /* sem o setor, manda sem prefixo mesmo — mesmo comportamento da mensagem agendada */ }

@@ -7243,6 +7243,11 @@ async function pageIntegraContador(deepLinkEmpresaId){
         <div id="icAgendaHoras" class="row" style="gap:8px; flex-wrap:wrap; margin-top:10px;">${(cfg.agenda?.horas||[]).map(icAgendaHoraHtml).join('')}</div>
         ${podeEditar?`<div class="row" style="margin-top:8px; gap:8px;"><button class="btn small" id="btnIcAgendaHora">+ Horário</button><button class="btn primary" id="btnIcAgendaSalvar">Salvar agenda</button></div>`:''}
       </div>
+      <div style="margin-top:18px; padding-top:14px; border-top:1px solid var(--rule);">
+        <div style="font-weight:600; margin-bottom:4px;">Envio automático pro cliente</div>
+        <p style="font-size:12px; color:var(--ink-soft); margin:0 0 10px;">A busca continua achando e anexando as guias (DAS, DARF DCTF-Web, Guia FGTS, parcelas) em Envio de Documentos normalmente mesmo desligado — isto só controla se o site manda sozinho (e-mail/WhatsApp) assim que acha a guia pela primeira vez, ou se fica esperando você enviar na mão.</p>
+        <label class="checkbox-row"><input type="checkbox" id="icEnvioAutomatico" ${cfg.envioAutomatico?'checked':''} ${podeEditar?'':'disabled'}> Enviar automaticamente pro cliente assim que achar a guia</label>
+      </div>
     `;
     if(!podeEditar) body.querySelectorAll('input').forEach(el=>el.disabled=true);
     if(podeEditar) document.getElementById('btnIcSalvarConfig').addEventListener('click', async (ev)=>{
@@ -7291,6 +7296,12 @@ async function pageIntegraContador(deepLinkEmpresaId){
         toast('Conexão validada com sucesso.','ok');
       }catch(e){ toast(e.message,'err'); }
       finally{ btnTestar.disabled = false; btnTestar.textContent = 'Testar conexão'; }
+    });
+    if(podeEditar) document.getElementById('icEnvioAutomatico').addEventListener('change', async (ev)=>{
+      const chk = ev.target; chk.disabled = true;
+      try{ await api('/integracontador/envio-automatico', { method:'PUT', body:{ ativo: chk.checked } }); toast(chk.checked?'Envio automático ligado.':'Envio automático desligado — fica manual.','ok'); }
+      catch(e){ toast(e.message,'err'); chk.checked = !chk.checked; }
+      finally{ chk.disabled = false; }
     });
   }
 
