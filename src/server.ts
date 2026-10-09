@@ -15760,7 +15760,17 @@ setInterval(() => {
 }, 60_000);
 setInterval(() => deskcommAgendarSyncEmpresasClientes(), 6 * 3600_000);
 setTimeout(() => deskcommAgendarSyncEmpresasClientes(), 30_000);
-setTimeout(() => garantirContatosDeTelefoneCadastral(), 20_000);
+// Limpeza única (a pedido): remove os contatos criados automaticamente do "telefone do cadastro"
+// (nome termina em "(telefone do cadastro)"), pra as empresas que só tinham esse voltarem a aparecer
+// em "Faltam configurar". A criação automática já foi desligada. Guardado em kv pra rodar só 1x.
+setTimeout(() => {
+  try {
+    if (sqlite.prepare(`SELECT 1 FROM kv WHERE key_name = 'limpeza_contato_telefone_cadastro'`).get()) return;
+    const r = sqlite.prepare(`DELETE FROM empresa_contatos WHERE nome LIKE '%(telefone do cadastro)'`).run();
+    sqlite.prepare(`INSERT OR REPLACE INTO kv (key_name, value_data) VALUES ('limpeza_contato_telefone_cadastro', ?)`).run(String(r.changes));
+    console.log(`Limpeza: ${r.changes} contato(s) "(telefone do cadastro)" removido(s) — empresas sem outro contato voltam a "Faltam configurar".`);
+  } catch (e: any) { console.error("[limpeza contatos telefone cadastro]", e.message); }
+}, 20_000);
 // Toda conversa que passou pelo setor: as que o Roteador (ou uma transferência) já mandou pra ele
 // (`historico`) + as que estão com ele agora (active_intent).
 async function atendimentoConversasDoSetor(escopo: AtendimentoSetorEscopo, colunas: string, historico: Map<string, Set<string>>): Promise<any[]> {
@@ -16750,42 +16760,11 @@ function deskcommEmpresasIdsPorTelefone(): Map<string, { id: number; nome: strin
 // Telefone cadastral da empresa (campo "Telefone" do cadastro) já conta como vínculo no CRM, mas a tela
 // de Contatos só olhava empresa_contatos — então a empresa aparecia "Faltam configurar" mesmo tendo o
 // número. Aqui cada número do cadastro sem contato equivalente vira um contato automaticamente.
-function garantirContatosDeTelefoneCadastral(empresaId?: number): number {
-  const rows = sqlite
-    .prepare(
-      `SELECT id, nome, telefone FROM empresas WHERE escritorio_id = ? AND ativo = 1 AND telefone IS NOT NULL AND telefone != ''${empresaId ? " AND id = ?" : ""}`
-    )
-    .all(...(empresaId ? [DESKCOMM_ESCRITORIO_ID, empresaId] : [DESKCOMM_ESCRITORIO_ID])) as any[];
-  let criados = 0;
-  for (const e of rows) {
-    const contatos = sqlite.prepare(`SELECT id, telefone, nome FROM empresa_contatos WHERE empresa_id = ? AND telefone IS NOT NULL`).all(e.id) as any[];
-    const ehAutomatico = (c: any) => c.nome.endsWith("(telefone do cadastro)");
-    for (const pedaco of String(e.telefone).split(/[\/;,]| e /)) {
-      const chave = telefoneChaveBr(pedaco);
-      if (!chave) continue;
-      const numero = crmSoDigitos(pedaco);
-      const iguais = contatos.filter((c) => telefoneChaveBr(c.telefone) === chave);
-      const manual = iguais.find((c) => !ehAutomatico(c));
-      const automatico = iguais.find(ehAutomatico);
-      if (manual && automatico) {
-        sqlite.prepare(`DELETE FROM empresa_contatos WHERE id = ?`).run(automatico.id);
-        contatos.splice(contatos.indexOf(automatico), 1);
-        continue;
-      }
-      if (automatico) {
-        sqlite.prepare(`UPDATE empresa_contatos SET telefone = ?, receber_whatsapp = 1 WHERE id = ?`).run(numero, automatico.id);
-        continue;
-      }
-      if (iguais.length) continue;
-      const info = sqlite
-        .prepare(`INSERT INTO empresa_contatos (empresa_id, nome, email, receber_emails, telefone, receber_whatsapp) VALUES (?, ?, '', 0, ?, 1)`)
-        .run(e.id, `${e.nome} (telefone do cadastro)`, numero);
-      contatos.push({ id: Number(info.lastInsertRowid), telefone: numero, nome: `${e.nome} (telefone do cadastro)` });
-      criados++;
-    }
-  }
-  if (criados) console.log(`Contatos criados a partir do telefone cadastral: ${criados}`);
-  return criados;
+function garantirContatosDeTelefoneCadastral(_empresaId?: number): number {
+  // DESLIGADO a pedido do usuário: não gera mais contato automático a partir do campo "Telefone" do
+  // cadastro da empresa (antes criava "<empresa> (telefone do cadastro)"). Sem um contato manual, a
+  // empresa fica em "Faltam configurar". Ver a limpeza única no startup. No-op pra não mexer em quem chama.
+  return 0;
 }
 function notaSituacaoTexto(empresas: { id: number; nome: string }[]): { headline: string; body: string } {
   const hoje = new Date().toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" }).slice(0, 5);
