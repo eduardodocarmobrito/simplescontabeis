@@ -652,14 +652,14 @@ function empresaComboLabel(e){
 // CPF/CNPJ guardados só com dígitos (importação do Domínio) aparecem com máscara: 000.000.000-00 ou 00.000.000/0000-00.
 // Valor que não tem 11 nem 14 dígitos volta como estava digitado.
 function fmtCnpjCpf(v){
-  const d = String(v==null?'':v).replace(/\D/g,'');
+  const d = String(v==null?'':v).replace(/[^0-9]/g,'');
   if(d.length===11) return d.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/,'$1.$2.$3-$4');
   if(d.length===14) return d.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/,'$1.$2.$3/$4-$5');
   return v==null?'':String(v);
 }
 // CEP no formato 00.000-000 (ex.: 68.552-675). Valor com outro número de dígitos volta como estava.
 function fmtCep(v){
-  const d = String(v==null?'':v).replace(/\D/g,'');
+  const d = String(v==null?'':v).replace(/[^0-9]/g,'');
   if(d.length===8) return d.replace(/(\d{2})(\d{3})(\d{3})/,'$1.$2-$3');
   return v==null?'':String(v);
 }
@@ -668,12 +668,12 @@ function fmtMoney(v){ return (Number(v)||0).toLocaleString('pt-BR',{style:'curre
 // "1798604" mostra "17.986,04"). moedaInputParaNumero() faz o caminho inverso na leitura do form.
 function ligarMascaraMoeda(el){
   el.addEventListener('input', ()=>{
-    const digitos = el.value.replace(/\D/g,'');
+    const digitos = el.value.replace(/[^0-9]/g,'');
     el.value = digitos ? (Number(digitos)/100).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}) : '';
   });
 }
 function moedaInputParaNumero(el){
-  const digitos = el.value.replace(/\D/g,'');
+  const digitos = el.value.replace(/[^0-9]/g,'');
   return digitos ? Number(digitos)/100 : 0;
 }
 // Máscara de CPF/CNPJ — decide o formato pela quantidade de dígitos já digitados (até 11 = CPF em
@@ -687,7 +687,7 @@ function formatarDocumentoBR(digitos){
 }
 function ligarMascaraCep(el){
   el.addEventListener('input', ()=>{
-    const digitos = el.value.replace(/\D/g,'').slice(0,8);
+    const digitos = el.value.replace(/[^0-9]/g,'').slice(0,8);
     el.value = digitos.length>5 ? digitos.replace(/(\d{5})(\d)/,'$1-$2') : digitos;
   });
 }
@@ -2703,7 +2703,7 @@ async function renderEmpresasTab(){
   const tbody = document.getElementById('empresasBody');
   function desenhaLinhas(filtro){
     const termo = normalizaTxt(filtro).trim();
-    const visiveis = termo ? items.filter(e=> normalizaTxt(e.nome).includes(termo) || normalizaTxt(e.codigoDominio).includes(termo) || normalizaTxt(e.cnpj).includes(termo) || (!!termo.replace(/\D/g,'') && String(e.cnpj||'').replace(/\D/g,'').includes(termo.replace(/\D/g,'')))) : items;
+    const visiveis = termo ? items.filter(e=> normalizaTxt(e.nome).includes(termo) || normalizaTxt(e.codigoDominio).includes(termo) || normalizaTxt(e.cnpj).includes(termo) || (!!termo.replace(/[^0-9]/g,'') && String(e.cnpj||'').replace(/[^0-9]/g,'').includes(termo.replace(/[^0-9]/g,'')))) : items;
     tbody.innerHTML = visiveis.length ? visiveis.map(e=>`
       <tr data-id="${e.id}">
         <td>${e.codigoDominio?`<span style="color:var(--ink-soft); font-weight:600; margin-right:8px;">${esc(e.codigoDominio)}</span>`:''}<b>${esc(e.nome)}</b></td>
@@ -3119,7 +3119,7 @@ function empresaModal(e){
   // os dados na Receita Federal e preenche só os campos que ainda estão vazios — nunca sobrescreve
   // algo que já foi digitado/cadastrado antes, pra não perder dado real corrigido na mão.
   document.getElementById('empCnpj').addEventListener('blur', async ev=>{
-    const doc = ev.target.value.replace(/\D/g,'');
+    const doc = ev.target.value.replace(/[^0-9]/g,'');
     const status = document.getElementById('empCnpjStatus');
     if(doc.length!==14){ status.textContent=''; return; }
     status.textContent = 'Consultando CNPJ na Receita Federal…';
@@ -3147,7 +3147,7 @@ function empresaModal(e){
     if(!nome){ toast('Informe o nome.','err'); return; }
     const body = {
       nome,
-      cnpj: document.getElementById('empCnpj').value.replace(/\D/g,''),
+      cnpj: document.getElementById('empCnpj').value.replace(/[^0-9]/g,''),
       codigoDominio: document.getElementById('empCodigo').value.trim(),
       apelido: document.getElementById('empApelido').value.trim(),
       email: document.getElementById('empEmail').value.trim(),
@@ -3155,11 +3155,11 @@ function empresaModal(e){
       endereco: document.getElementById('empEndereco').value.trim(),
       cidade: document.getElementById('empCidade').value.trim(),
       uf: document.getElementById('empUf').value.trim(),
-      cep: document.getElementById('empCep').value.replace(/\D/g,''),
+      cep: document.getElementById('empCep').value.replace(/[^0-9]/g,''),
       inscricaoMunicipal: document.getElementById('empInscricaoMunicipal').value.trim(),
       inscricaoEstadual: document.getElementById('empInscricaoEstadual').value.trim(),
       nomeRepresentanteLegal: document.getElementById('empNomeRepresentante').value.trim(),
-      cpfRepresentanteLegal: document.getElementById('empCpfRepresentante').value.replace(/\D/g,''),
+      cpfRepresentanteLegal: document.getElementById('empCpfRepresentante').value.replace(/[^0-9]/g,''),
       codigoMunicipioIbge: document.getElementById('empCodigoMunicipio').value.trim(),
       nomeMunicipioIbge: document.getElementById('empNomeMunicipio').value.trim(),
     };
@@ -4304,6 +4304,7 @@ async function pageEnvio(){
       <div class="tab" data-tab="atribuicoes">Empresas &amp; Envios</div>
       <div class="tab" data-tab="solicitacoes">Solicitações</div>
       <div class="tab" data-tab="modelos">Modelos</div>
+      ${STATE.user.perfil==='Administrador'?'<div class="tab" data-tab="programacao">Programação de envio</div>':''}
     </div>
     <div id="envioContent"></div>
   `;
@@ -4314,7 +4315,45 @@ function renderEnvioTabs(){
   main().querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===ENVIO_TAB));
   if(ENVIO_TAB==='modelos') renderEnvioModelos();
   else if(ENVIO_TAB==='solicitacoes') renderEnvioSolicitacoes();
+  else if(ENVIO_TAB==='programacao') renderEnvioProgramacao();
   else renderEnvioAtribuicoes();
+}
+// Aba "Programação de envio": liga/desliga o disparo AUTOMÁTICO de documentos ao cliente (WhatsApp +
+// e-mail). Manual = nada sai sozinho; o usuário envia na mão. O robô de baixar/anexar não é afetado.
+async function renderEnvioProgramacao(){
+  const box = document.getElementById('envioContent');
+  box.innerHTML = '<div class="empty-state">Carregando…</div>';
+  let data; try{ data = await api('/central-envio/programacao'); }
+  catch(e){ box.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
+  const render = (d)=>{
+    const auto = d.automatico;
+    box.innerHTML = `
+      <div class="card" style="max-width:760px;">
+        <h3 style="margin-top:0;">Programação de envio — número oficial da Meta</h3>
+        <p class="subtitle" style="margin-bottom:0;">Controla o disparo automático da rotina do <b>Envio de Documentos</b> que sai pelo <b>número oficial da Meta (WhatsApp oficial)</b>. O robô de baixar/anexar continua normal — aqui você decide só se esse envio pela Meta sai sozinho ou na mão.</p>
+        <div class="card" style="margin:14px 0; padding:16px; background:${auto?'var(--accent-pale)':'#fff6e6'}; border:1px solid ${auto?'var(--accent)':'#e0b84a'};">
+          <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
+            <b style="font-size:15px;">${auto?'🟢 Envio pela Meta: AUTOMÁTICO':'🟠 Envio pela Meta: MANUAL'}</b>
+            <button class="btn ${auto?'':'primary'}" id="progToggle">${auto?'Desligar automático (deixar manual)':'Ligar envio automático'}</button>
+          </div>
+          <p style="margin:12px 0 0; font-size:13px; color:var(--ink);">
+            ${auto
+              ? 'Os documentos do Envio de Documentos que usam o número oficial da Meta saem <b>sozinhos</b> na hora.'
+              : 'Os envios pela Meta <b>não saem sozinhos</b> — você envia <b>na mão</b> pelo botão <b>Enviar</b> em “Empresas &amp; Envios”. '+(d.aguardando?`Há <b>${d.aguardando}</b> envio(s) pela Meta aguardando — saem quando você religar o automático (ou se mandar na mão).`:'')}
+          </p>
+        </div>
+        <p style="font-size:12.5px; color:var(--ink-soft); margin:0;">⚙️ O que <b>não</b> muda (continua tudo normal): o número do <b>atendimento/deskcomm</b>, o <b>e-mail</b>, o <b>envio em lote do CRM</b>, e tudo que você <b>agendou para uma data futura</b>. O robô de baixar/anexar os PDFs também segue normal. Esta chave pega <b>só</b> o disparo imediato da rotina pelo <b>número oficial da Meta</b>.</p>
+      </div>`;
+    document.getElementById('progToggle').addEventListener('click', async ()=>{
+      const novo = !auto;
+      if(!novo && !confirmar('Deixar manual o envio pelo número oficial da Meta?\n\nOs envios da rotina do Envio de Documentos que usam a Meta param de sair sozinhos — você envia na mão, pelo botão Enviar.\n\nNÃO muda: atendimento/deskcomm, e-mail, lote do CRM e agendamentos de data futura continuam normais.')) return;
+      if(novo && !confirmar('Religar o envio automático pela Meta?\n\nOs envios pela Meta (inclusive os que ficaram aguardando) voltam a sair sozinhos.')) return;
+      const b = document.getElementById('progToggle'); b.disabled = true;
+      try{ const r = await api('/central-envio/programacao', { method:'PUT', body:{ automatico: novo } }); toast(novo?'Envio automático pela Meta ligado.':'Envio pela Meta agora é manual.','ok'); render(r); }
+      catch(e){ toast(e.message,'err'); b.disabled = false; }
+    });
+  };
+  render(data);
 }
 // Registro de todo pedido que um cliente já fez — tanto pela tela "Solicitar Documentos" quanto
 // pelo "Recalcular DAS" (os dois gravam no mesmo lugar, ver rota no backend). Complementa a lista
@@ -5476,7 +5515,7 @@ async function renderNfseEmitir(){
     setVal('nfseEmiCodMun', prefill.tomadorCodigoMunicipio);
     setVal('nfseEmiDescricao', prefill.descricaoServico);
     if(prefill.valorServico!=null) document.getElementById('nfseEmiValor').value = Number(prefill.valorServico).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
-    if(prefill.tomadorDocumento) document.getElementById('nfseEmiDocTomador').value = formatarDocumentoBR(String(prefill.tomadorDocumento).replace(/\D/g,''));
+    if(prefill.tomadorDocumento) document.getElementById('nfseEmiDocTomador').value = formatarDocumentoBR(String(prefill.tomadorDocumento).replace(/[^0-9]/g,''));
     toast(prefill.__modo==='continuar' ? 'Continuando rascunho — revise os dados antes de emitir.' : 'Dados duplicados — revise antes de emitir.', 'ok');
   }
   ligarMascaraMoeda(document.getElementById('nfseEmiValor'));
@@ -5487,7 +5526,7 @@ async function renderNfseEmitir(){
     renderNfseEmitir();
   });
   document.getElementById('nfseEmiDocTomador').addEventListener('input', async e=>{
-    const doc = e.target.value.replace(/\D/g,'').slice(0,14);
+    const doc = e.target.value.replace(/[^0-9]/g,'').slice(0,14);
     e.target.value = formatarDocumentoBR(doc);
     if(doc.length!==14) return; // busca automática só existe pra CNPJ — CPF não tem consulta pública
     const status = document.getElementById('nfseEmiCnpjStatus');
@@ -5519,7 +5558,7 @@ async function renderNfseEmitir(){
   // tomador, o servidor cai no padrão do prestador — rejeição real da Receita quando o CEP digitado
   // é de outra cidade (achado ao vivo).
   document.getElementById('nfseEmiCep').addEventListener('input', async e=>{
-    const cep = e.target.value.replace(/\D/g,'').slice(0,8);
+    const cep = e.target.value.replace(/[^0-9]/g,'').slice(0,8);
     if(cep.length!==8) return;
     e.target.value = fmtCep(cep);
     const status = document.getElementById('nfseEmiCnpjStatus');
@@ -5541,14 +5580,14 @@ async function renderNfseEmitir(){
       empresaId: Number(document.getElementById('nfseEmiEmpresa').value),
       modeloId: Number(document.getElementById('nfseEmiModelo').value),
       tomador: {
-        documento: document.getElementById('nfseEmiDocTomador').value.replace(/\D/g,''),
+        documento: document.getElementById('nfseEmiDocTomador').value.replace(/[^0-9]/g,''),
         nome: document.getElementById('nfseEmiNomeTomador').value.trim(),
         email: document.getElementById('nfseEmiEmailTomador').value.trim() || null,
-        telefone: document.getElementById('nfseEmiTelTomador').value.replace(/\D/g,'') || null,
+        telefone: document.getElementById('nfseEmiTelTomador').value.replace(/[^0-9]/g,'') || null,
         logradouro: document.getElementById('nfseEmiEndereco').value.trim() || null,
         numero: document.getElementById('nfseEmiNumero').value.trim() || null,
         complemento: document.getElementById('nfseEmiComplemento').value.trim() || null,
-        cep: document.getElementById('nfseEmiCep').value.replace(/\D/g,'') || null,
+        cep: document.getElementById('nfseEmiCep').value.replace(/[^0-9]/g,'') || null,
         bairro: document.getElementById('nfseEmiBairro').value.trim() || null,
         codigoMunicipio: document.getElementById('nfseEmiCodMun').value || null,
       },
@@ -6204,7 +6243,7 @@ async function renderCertificadoBuscaXml(containerEl, empresaId, empresaUfPadrao
     });
     if(podePostar) containerEl.querySelector(`#btnNfeAncorarSaida_${empresaId}`).addEventListener('click', async ()=>{
       const campo = containerEl.querySelector(`#nfeChaveSaida_${empresaId}`);
-      const chave = campo.value.replace(/\D/g,'');
+      const chave = campo.value.replace(/[^0-9]/g,'');
       const resultado = containerEl.querySelector(`#nfeAncorarResultado_${empresaId}`);
       if(chave.length!==44){ resultado.innerHTML = `<div class="tag bad">A chave tem 44 números — confira e cole de novo.</div>`; return; }
       const btn = containerEl.querySelector(`#btnNfeAncorarSaida_${empresaId}`);
@@ -6241,7 +6280,7 @@ async function renderCertificadoBuscaXml(containerEl, empresaId, empresaUfPadrao
     });
     if(podePostar) containerEl.querySelector(`#btnNfeTestarChaves_${empresaId}`).addEventListener('click', async ()=>{
       const campo = containerEl.querySelector(`#nfeChavesTeste_${empresaId}`);
-      const chaves = campo.value.split(/\n/).map(l=>l.replace(/\D/g,'')).filter(c=>c.length===44);
+      const chaves = campo.value.split(/\n/).map(l=>l.replace(/[^0-9]/g,'')).filter(c=>c.length===44);
       const resultado = containerEl.querySelector(`#nfeTestarChavesResultado_${empresaId}`);
       if(!chaves.length){ resultado.innerHTML = `<div class="tag bad">Nenhuma chave válida — cada linha precisa ter 44 números.</div>`; return; }
       const btn = containerEl.querySelector(`#btnNfeTestarChaves_${empresaId}`);
@@ -7714,13 +7753,13 @@ async function renderMinhaNfseEmitir(){
     setVal('mnfEmiCodMun', prefill.tomadorCodigoMunicipio);
     setVal('mnfEmiDescricao', prefill.descricaoServico);
     if(prefill.valorServico!=null) document.getElementById('mnfEmiValor').value = Number(prefill.valorServico).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
-    if(prefill.tomadorDocumento) document.getElementById('mnfEmiDocTomador').value = formatarDocumentoBR(String(prefill.tomadorDocumento).replace(/\D/g,''));
+    if(prefill.tomadorDocumento) document.getElementById('mnfEmiDocTomador').value = formatarDocumentoBR(String(prefill.tomadorDocumento).replace(/[^0-9]/g,''));
     toast(prefill.__modo==='continuar' ? 'Continuando rascunho — revise os dados antes de emitir.' : 'Dados duplicados — revise antes de emitir.', 'ok');
   }
   ligarMascaraMoeda(document.getElementById('mnfEmiValor'));
   ligarMascaraCep(document.getElementById('mnfEmiCep'));
   document.getElementById('mnfEmiDocTomador').addEventListener('input', async e=>{
-    const doc = e.target.value.replace(/\D/g,'').slice(0,14);
+    const doc = e.target.value.replace(/[^0-9]/g,'').slice(0,14);
     e.target.value = formatarDocumentoBR(doc);
     if(doc.length!==14) return;
     const status = document.getElementById('mnfEmiCnpjStatus');
@@ -7751,7 +7790,7 @@ async function renderMinhaNfseEmitir(){
   // pública de CNPJ). Sem isso, faltando o código do município do tomador, o servidor cai no padrão
   // do prestador — rejeição real da Receita quando o CEP digitado é de outra cidade.
   document.getElementById('mnfEmiCep').addEventListener('input', async e=>{
-    const cep = e.target.value.replace(/\D/g,'').slice(0,8);
+    const cep = e.target.value.replace(/[^0-9]/g,'').slice(0,8);
     if(cep.length!==8) return;
     e.target.value = fmtCep(cep);
     const status = document.getElementById('mnfEmiCnpjStatus');
@@ -7772,14 +7811,14 @@ async function renderMinhaNfseEmitir(){
     return {
       modeloId: Number(document.getElementById('mnfEmiModelo').value),
       tomador: {
-        documento: document.getElementById('mnfEmiDocTomador').value.replace(/\D/g,''),
+        documento: document.getElementById('mnfEmiDocTomador').value.replace(/[^0-9]/g,''),
         nome: document.getElementById('mnfEmiNomeTomador').value.trim(),
         email: document.getElementById('mnfEmiEmailTomador').value.trim() || null,
-        telefone: document.getElementById('mnfEmiTelTomador').value.replace(/\D/g,'') || null,
+        telefone: document.getElementById('mnfEmiTelTomador').value.replace(/[^0-9]/g,'') || null,
         logradouro: document.getElementById('mnfEmiEndereco').value.trim() || null,
         numero: document.getElementById('mnfEmiNumero').value.trim() || null,
         complemento: document.getElementById('mnfEmiComplemento').value.trim() || null,
-        cep: document.getElementById('mnfEmiCep').value.replace(/\D/g,'') || null,
+        cep: document.getElementById('mnfEmiCep').value.replace(/[^0-9]/g,'') || null,
         bairro: document.getElementById('mnfEmiBairro').value.trim() || null,
         codigoMunicipio: document.getElementById('mnfEmiCodMun').value || null,
       },
@@ -10112,6 +10151,7 @@ async function atdCarregarLista(S){
   atdRenderFiltros(S);
   box.innerHTML = data.items.length ? data.items.map(c=>{
     const nome = c.contatoNome || c.telefone;
+    const fechada = (c.status==='closed' || c.status==='archived');
     return `
       <div class="dprh-conv ${S.conversaAtiva===c.id?'active':''}" data-id="${c.id}">
         <div class="dprh-avatar">${esc(atdIniciais(nome))}${c.contatoId?atdFotoHtml(c.contatoId):''}${c.naoLidas?'<i></i>':''}</div>
@@ -10122,8 +10162,8 @@ async function atdCarregarLista(S){
           </div>
           ${c.empresaNome?`<div class="dprh-conv-sub">${esc(c.empresaNome)}</div>`:''}
           <div class="dprh-conv-sub">${esc((c.ultimaMensagemTexto||'').slice(0,70))}</div>
-          ${S.filtro==='fechadas' ? `<div class="dprh-conv-sub">${(c.status==='closed'||c.status==='archived') ? 'Fechada' : `↪ Saiu do setor — agora em ${esc(c.setor || 'atendimento geral')}`}</div>` : ''}
-          ${S.cfg.mostraSetor || c.atribuidoNome || c.comando==='automatico' ? `<div class="dprh-conv-sub">${S.cfg.mostraSetor?`<span class="atd-setor">${esc(c.setor||'Sem setor')}</span> `:''}${c.comando==='automatico'?'🤖 IA atendendo':''}${c.atribuidoNome?` ↳ ${esc(c.atribuidoNome)}`:''}</div>` : ''}
+          ${S.filtro==='fechadas' && !fechada ? `<div class="dprh-conv-sub">↪ Saiu do setor — agora em ${esc(c.setor || 'atendimento geral')}</div>` : ''}
+          ${fechada || S.cfg.mostraSetor || c.atribuidoNome || c.comando==='automatico' ? `<div class="dprh-conv-sub">${fechada?'<span class="atd-setor" style="background:var(--debit-pale,#fde8e8); color:var(--debit);">🔒 Fechada</span> ':(S.cfg.mostraSetor?`<span class="atd-setor">${esc(c.setor||'Sem setor')}</span> `:'')}${c.comando==='automatico'?'🤖 IA atendendo':''}${c.atribuidoNome?` ↳ ${esc(c.atribuidoNome)}`:''}</div>` : ''}
         </div>
       </div>`;
   }).join('') : `<div class="empty-state">${S.filtro==='fila'?S.cfg.vazioFila:'Nenhuma conversa aqui.'}</div>`;
@@ -10360,7 +10400,7 @@ function atdBr(iso){ return iso ? String(iso).slice(8,10)+'/'+String(iso).slice(
 function atdMoeda(v){ return v==null ? '—' : Number(v).toLocaleString('pt-BR',{style:'currency',currency:'BRL'}); }
 // DDD + 9 + últimos 8 dígitos do número do WhatsApp (ex.: +5594991296138 ou 559491296138 → 94991296138)
 function telefoneDdd9(bruto){
-  let d = String(bruto||'').replace(/\D/g,'');
+  let d = String(bruto||'').replace(/[^0-9]/g,'');
   if(d.length<10) return d;
   const ult8 = d.slice(-8);
   let resto = d.slice(0,-8);              // DDI + DDD (+ o 9)
@@ -10400,11 +10440,11 @@ async function atdVincularEmpresaModal(S, c){
     if(!empId) return;
     try{ contatos = (await api(`/empresas/${empId}/contatos`)).items; }catch(e){ contatos = []; }
     desenharLista();
-    const jaTem = contatos.find(k=>String(k.telefone||'').replace(/\D/g,'').slice(-8)===tel.slice(-8));
+    const jaTem = contatos.find(k=>String(k.telefone||'').replace(/[^0-9]/g,'').slice(-8)===tel.slice(-8));
     if(jaTem) toast('Esse número já está nessa empresa ('+jaTem.nome+') — ao vincular, o contato existente é atualizado, sem duplicar.','ok');
   });
   document.getElementById('vcSalvar').addEventListener('click', async ()=>{
-    const nome = document.getElementById('vcNome').value.trim(), email = document.getElementById('vcEmail').value.trim(), telefone = document.getElementById('vcTel').value.replace(/\D/g,'');
+    const nome = document.getElementById('vcNome').value.trim(), email = document.getElementById('vcEmail').value.trim(), telefone = document.getElementById('vcTel').value.replace(/[^0-9]/g,'');
     if(!empId){ toast('Escolha a empresa.','err'); return; }
     if(!nome){ toast('Informe o nome do contato.','err'); return; }
     if(telefone.length<10){ toast('Confira o número do WhatsApp (DDD + número).','err'); return; }
@@ -10805,7 +10845,7 @@ async function atdTransferirModal(S, c, executar){
 // celular) ou digita um número, e o deskcomm abre — ou reaproveita — a conversa daquele contato
 // (/conversations/open-with-contact, a mesma rota do "abrir conversa" de um cartão de contato lá).
 function atdTelefoneDigitado(txt){
-  let d = String(txt||'').replace(/\D/g,'');
+  let d = String(txt||'').replace(/[^0-9]/g,'');
   if(d.length===10 || d.length===11) d = '55'+d;
   return (d.length>=12 && d.length<=13 && d.startsWith('55')) ? '+'+d : null;
 }
@@ -10911,7 +10951,7 @@ function atdVcardLer(body){
   const nome = (linhas.find(l=>/^FN[:;]/i.test(l))||'').replace(/^FN[^:]*:/i,'').trim();
   const telefones = linhas.filter(l=>/TEL[;:]/i.test(l)).map(l=>{
     const valor = l.slice(l.lastIndexOf(':')+1).trim();
-    return { texto: valor, digitos: valor.replace(/\D/g,'') };
+    return { texto: valor, digitos: valor.replace(/[^0-9]/g,'') };
   }).filter(x=>x.digitos.length>=10);
   return { nome, telefones };
 }
@@ -13924,7 +13964,7 @@ async function renderCfgNfseAgendamento(box){
     const lista = document.getElementById('agListaDisponiveis');
     const { items } = await api('/nfse/agendamento/empresas-disponiveis'+(NFSE_AG_FILTRO_DISPONIVEIS?'?q='+encodeURIComponent(NFSE_AG_FILTRO_DISPONIVEIS):''));
     lista.innerHTML = items.length? items.map(e=>{
-      const digitos = (e.cnpj||'').replace(/\D/g,'');
+      const digitos = (e.cnpj||'').replace(/[^0-9]/g,'');
       const pessoaFisica = digitos.length>0 && digitos.length<=11;
       const identificador = pessoaFisica ? (e.inscricaoEstadual||'sem IE') : (fmtCnpjCpf(e.cnpj)||'sem CNPJ');
       return `
