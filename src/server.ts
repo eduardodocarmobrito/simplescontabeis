@@ -2129,6 +2129,11 @@ try {
   if (!colsEmpresas.some((c) => c.name === "programacao_ferias")) {
     sqlite.exec(`ALTER TABLE empresas ADD COLUMN programacao_ferias INTEGER NOT NULL DEFAULT 0`);
   }
+  // Demonstrativo Mensal (3º robô, módulo Fiscal/Escrita Fiscal): mesmo esquema, com período MM/AAAA.
+  // Marca as empresas que o robô do Demonstrativo Mensal deve exportar (pega a lista pelo código do Domínio).
+  if (!colsEmpresas.some((c) => c.name === "demonstrativo_mensal")) {
+    sqlite.exec(`ALTER TABLE empresas ADD COLUMN demonstrativo_mensal INTEGER NOT NULL DEFAULT 0`);
+  }
 }
 // Limpeza: fgts_sync_jobs foi criada numa primeira versão que salvava a sessão do FGTS Digital no
 // servidor pra reaproveitar depois — testando ao vivo, confirmamos que essa sessão não sobrevive
@@ -3675,6 +3680,7 @@ app.get("/api/empresas", blockCliente, requirePermissao("empresas", "visualizar"
       fgtsUltimoErro: r.fgts_ultimo_erro,
       comparativoMovimentoDiario: !!r.comparativo_movimento_diario,
       programacaoFerias: !!r.programacao_ferias,
+      demonstrativoMensal: !!r.demonstrativo_mensal,
       origem: r.origem,
       createdAt: r.created_at,
       temAnexos: empresaTemAnexos(r.id),
@@ -3771,7 +3777,7 @@ app.put("/api/empresas/:id", blockCliente, requirePermissao("empresas", "editar"
   const id = Number(req.params.id);
   const existing = sqlite.prepare(`SELECT * FROM empresas WHERE id = ?`).get(id) as any;
   if (!existing || !podeAcessarEmpresa((req as any).user, id)) return res.status(404).json({ error: "Empresa não encontrada." });
-  const { nome, cnpj, codigoDominio, apelido, email, telefone, endereco, cidade, uf, cep, inscricaoMunicipal, inscricaoEstadual, nomeRepresentanteLegal, cpfRepresentanteLegal, codigoMunicipioIbge, nomeMunicipioIbge, regimeTributario, ativo, visivelRelatorios, isentoAssinatura, buscaFgts, comparativoMovimentoDiario, programacaoFerias } = req.body || {};
+  const { nome, cnpj, codigoDominio, apelido, email, telefone, endereco, cidade, uf, cep, inscricaoMunicipal, inscricaoEstadual, nomeRepresentanteLegal, cpfRepresentanteLegal, codigoMunicipioIbge, nomeMunicipioIbge, regimeTributario, ativo, visivelRelatorios, isentoAssinatura, buscaFgts, comparativoMovimentoDiario, programacaoFerias, demonstrativoMensal } = req.body || {};
   const regimeTributarioFinal =
     regimeTributario !== undefined
       ? ((REGIMES_TRIBUTARIOS as readonly string[]).includes(regimeTributario) ? regimeTributario : "simples_nacional")
@@ -3779,7 +3785,7 @@ app.put("/api/empresas/:id", blockCliente, requirePermissao("empresas", "editar"
   sqlite
     .prepare(
       `UPDATE empresas SET nome=?, cnpj=?, codigo_dominio=?, apelido=?, email=?, telefone=?, endereco=?, cidade=?, uf=?, cep=?, inscricao_municipal=?, inscricao_estadual=?,
-         nome_representante_legal=?, cpf_representante_legal=?, codigo_municipio_ibge=?, nome_municipio_ibge=?, regime_tributario=?, ativo=?, visivel_relatorios=?, isento_assinatura=?, busca_fgts=?, comparativo_movimento_diario=?, programacao_ferias=?, updated_at=datetime('now') WHERE id=?`
+         nome_representante_legal=?, cpf_representante_legal=?, codigo_municipio_ibge=?, nome_municipio_ibge=?, regime_tributario=?, ativo=?, visivel_relatorios=?, isento_assinatura=?, busca_fgts=?, comparativo_movimento_diario=?, programacao_ferias=?, demonstrativo_mensal=?, updated_at=datetime('now') WHERE id=?`
     )
     .run(
       nome ?? existing.nome,
@@ -3805,6 +3811,7 @@ app.put("/api/empresas/:id", blockCliente, requirePermissao("empresas", "editar"
       buscaFgts === undefined ? existing.busca_fgts : buscaFgts ? 1 : 0,
       comparativoMovimentoDiario === undefined ? existing.comparativo_movimento_diario : comparativoMovimentoDiario ? 1 : 0,
       programacaoFerias === undefined ? existing.programacao_ferias : programacaoFerias ? 1 : 0,
+      demonstrativoMensal === undefined ? existing.demonstrativo_mensal : demonstrativoMensal ? 1 : 0,
       id
     );
   if (regimeTributario !== undefined || req.body.regimeApuracaoSn !== undefined || req.body.percentualTotalTributosSn !== undefined) {
@@ -5333,7 +5340,7 @@ app.get("/api/dominio-agent/comparativo-comando", requireDominioAgent, (_req, re
   const { deve: devePorAgenda, hojeSp } = agendaDeveRodarAgora(c);
   // Só um robô por vez: segura se o Férias estiver rodando ou tiver terminado há menos que o intervalo.
   // (Comparativo tem prioridade: NÃO cede a um Férias só "pendente".)
-  const segurar = outroRoboOcupado("ferias_robo_estado", false);
+  const segurar = outroRoboOcupado("ferias_robo_estado", false) || outroRoboOcupado("demonstrativo_robo_estado", false);
   const deveRodar = (!!c.runNow || !!c.devePorTempo || devePorAgenda) && !segurar;
   const motivo = c.runNow ? "manual" : (devePorAgenda ? "agenda" : (c.devePorTempo ? "automatico" : null));
   // Qualquer disparo do dia (manual "Executar agora" ou automático) consome o agendamento daquele dia —
@@ -5460,6 +5467,190 @@ app.post("/api/comparativo-robo/parar", blockCliente, requirePermissao("configur
   res.json({ ok: true });
 });
 
+// ================== ROBÔ "DEMONSTRATIVO MENSAL" (módulo Escrita Fiscal) ==================
+// 3º robô, mesmo esquema do Comparativo (TEM período MM/AAAA). Reusa os helpers genéricos
+// (clampTempoMs, agendaDeveRodarAgora, comparativoPeriodoPadrao, comparativoValidaPeriodo,
+// zipPastaRoboComToken, outroRoboOcupado). Prioridade: cede a Comparativo E Férias (é o de menor
+// prioridade dos três). O PDF é importado no Envio de Documentos como "Demonstrativo Mensal".
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS demonstrativo_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    empresa_id INTEGER REFERENCES empresas(id),
+    codigo_dominio TEXT,
+    status TEXT NOT NULL, -- 'ok' | 'erro'
+    erro TEXT,
+    quando TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+`);
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS demonstrativo_robo_estado (
+    escritorio_id INTEGER PRIMARY KEY,
+    ligado INTEGER NOT NULL DEFAULT 0,
+    intervalo_min INTEGER NOT NULL DEFAULT 15,
+    run_now_em TEXT,
+    ultima_exec_em TEXT,
+    prog_rodando INTEGER NOT NULL DEFAULT 0,
+    prog_total INTEGER NOT NULL DEFAULT 0,
+    prog_feitas INTEGER NOT NULL DEFAULT 0,
+    prog_atual TEXT,
+    prog_em TEXT,
+    agente_visto_em TEXT,
+    periodo_ini TEXT,
+    periodo_fim TEXT,
+    parar_em TEXT,
+    agenda_ativo INTEGER NOT NULL DEFAULT 0,
+    agenda_hora INTEGER NOT NULL DEFAULT 6,
+    agenda_minuto INTEGER NOT NULL DEFAULT 0,
+    agenda_ultimo_dia TEXT,
+    t_entre_empresas_ms INTEGER NOT NULL DEFAULT 15000,
+    t_render_timeout_ms INTEGER NOT NULL DEFAULT 90000,
+    t_gerar_pdf_ms INTEGER NOT NULL DEFAULT 15000,
+    t_modulo_carga_ms INTEGER NOT NULL DEFAULT 10000,
+    t_curto_ms INTEGER NOT NULL DEFAULT 700,
+    t_medio_ms INTEGER NOT NULL DEFAULT 2000,
+    t_longo_ms INTEGER NOT NULL DEFAULT 4000,
+    ultimo_motivo TEXT
+  );
+`);
+function garantirDemonstrativoEstado(escritorioId: number) {
+  sqlite.prepare(`INSERT OR IGNORE INTO demonstrativo_robo_estado (escritorio_id) VALUES (?)`).run(escritorioId);
+}
+// ---- Agente ----
+app.get("/api/dominio-agent/empresas-demonstrativo", requireDominioAgent, (_req, res) => {
+  const items = sqlite
+    .prepare(`SELECT id, codigo_dominio as codigoDominio, nome FROM empresas WHERE escritorio_id = 1 AND ativo = 1 AND demonstrativo_mensal = 1 AND codigo_dominio IS NOT NULL AND codigo_dominio != '' ORDER BY codigo_dominio`)
+    .all() as any[];
+  res.json({ items });
+});
+app.post("/api/dominio-agent/demonstrativo-status", requireDominioAgent, (req, res) => {
+  const itens: any[] = Array.isArray(req.body?.itens) ? req.body.itens : [];
+  for (const it of itens) {
+    const empresa = sqlite.prepare(`SELECT id FROM empresas WHERE escritorio_id = 1 AND codigo_dominio = ?`).get(String(it.codigoDominio)) as any;
+    sqlite.prepare(`INSERT INTO demonstrativo_log (empresa_id, codigo_dominio, status, erro) VALUES (?, ?, ?, ?)`)
+      .run(empresa?.id ?? null, String(it.codigoDominio), it.ok ? "ok" : "erro", it.erro || null);
+  }
+  res.json({ ok: true, registrados: itens.length });
+});
+app.get("/api/dominio-agent/demonstrativo-comando", requireDominioAgent, (_req, res) => {
+  garantirDemonstrativoEstado(1);
+  sqlite.prepare(`UPDATE demonstrativo_robo_estado SET agente_visto_em = datetime('now') WHERE escritorio_id = 1`).run();
+  const c = sqlite.prepare(`
+    SELECT ligado, intervalo_min AS intervaloMin, run_now_em, ultima_exec_em, periodo_ini AS periodoIni, periodo_fim AS periodoFim,
+      agenda_ativo AS agendaAtivo, agenda_hora AS agendaHora, agenda_minuto AS agendaMinuto, agenda_ultimo_dia AS agendaUltimoDia,
+      t_entre_empresas_ms AS tEntreEmpresasMs, t_render_timeout_ms AS tRenderTimeoutMs, t_gerar_pdf_ms AS tGerarPdfMs,
+      t_modulo_carga_ms AS tModuloCargaMs, t_curto_ms AS tCurtoMs, t_medio_ms AS tMedioMs, t_longo_ms AS tLongoMs,
+      (run_now_em IS NOT NULL) AS runNow,
+      (parar_em IS NOT NULL) AS parar,
+      (ligado = 1 AND (ultima_exec_em IS NULL OR datetime(ultima_exec_em, '+' || intervalo_min || ' minutes') <= datetime('now'))) AS devePorTempo
+    FROM demonstrativo_robo_estado WHERE escritorio_id = 1
+  `).get() as any;
+  const pad = comparativoPeriodoPadrao();
+  const { deve: devePorAgenda, hojeSp } = agendaDeveRodarAgora(c);
+  if (devePorAgenda) sqlite.prepare(`UPDATE demonstrativo_robo_estado SET agenda_ultimo_dia = ? WHERE escritorio_id = 1`).run(hojeSp);
+  // Menor prioridade: cede a Comparativo (rodando/pendente) E a Férias (rodando/pendente).
+  const segurar = outroRoboOcupado("comparativo_robo_estado", true) || outroRoboOcupado("ferias_robo_estado", true);
+  const deveRodar = (!!c.runNow || !!c.devePorTempo || devePorAgenda) && !segurar;
+  res.json({
+    deveRodar, motivo: segurar ? "aguardando_outro_robo" : (c.runNow ? "manual" : (devePorAgenda ? "agenda" : (c.devePorTempo ? "automatico" : null))),
+    parar: !!c.parar,
+    ligado: !!c.ligado, intervaloMin: c.intervaloMin,
+    periodoIni: c.periodoIni || pad.ini, periodoFim: c.periodoFim || pad.fim,
+    tEntreEmpresasMs: c.tEntreEmpresasMs, tRenderTimeoutMs: c.tRenderTimeoutMs, tGerarPdfMs: c.tGerarPdfMs,
+    tModuloCargaMs: c.tModuloCargaMs, tCurtoMs: c.tCurtoMs, tMedioMs: c.tMedioMs, tLongoMs: c.tLongoMs,
+  });
+});
+app.post("/api/dominio-agent/demonstrativo-progresso", requireDominioAgent, (req, res) => {
+  garantirDemonstrativoEstado(1);
+  const b = req.body || {};
+  if (b.iniciando) {
+    sqlite.prepare(`UPDATE demonstrativo_robo_estado SET run_now_em = NULL, parar_em = NULL, ultima_exec_em = datetime('now') WHERE escritorio_id = 1`).run();
+  }
+  sqlite.prepare(`
+    UPDATE demonstrativo_robo_estado
+       SET prog_rodando = ?, prog_total = ?, prog_feitas = ?, prog_atual = ?, prog_em = datetime('now')
+     WHERE escritorio_id = 1
+  `).run(b.rodando ? 1 : 0, Number(b.total) || 0, Number(b.feitas) || 0, b.atual ? String(b.atual) : null);
+  if (!b.rodando) sqlite.prepare(`UPDATE demonstrativo_robo_estado SET parar_em = NULL WHERE escritorio_id = 1`).run();
+  res.json({ ok: true });
+});
+// ---- Tela (Configurações › Relatórios) ----
+app.get("/api/demonstrativo-robo/estado", blockCliente, requirePermissao("configuracoes", "visualizar"), (_req, res) => {
+  garantirDemonstrativoEstado(1);
+  const c = sqlite.prepare(`
+    SELECT ligado, intervalo_min AS intervaloMin, run_now_em AS runNowEm, ultima_exec_em AS ultimaExecEm,
+      periodo_ini AS periodoIni, periodo_fim AS periodoFim,
+      agenda_ativo AS agendaAtivo, agenda_hora AS agendaHora, agenda_minuto AS agendaMinuto,
+      t_entre_empresas_ms AS tEntreEmpresasMs, t_render_timeout_ms AS tRenderTimeoutMs, t_gerar_pdf_ms AS tGerarPdfMs,
+      t_modulo_carga_ms AS tModuloCargaMs, t_curto_ms AS tCurtoMs, t_medio_ms AS tMedioMs, t_longo_ms AS tLongoMs,
+      prog_total AS total, prog_feitas AS feitas, prog_atual AS atual, prog_em AS progEm,
+      (prog_rodando = 1 AND prog_em IS NOT NULL AND datetime(prog_em, '+5 minutes') >= datetime('now')) AS rodando,
+      agente_visto_em AS agenteVistoEm,
+      (parar_em IS NOT NULL) AS pararPendente,
+      (agente_visto_em IS NOT NULL AND datetime(agente_visto_em, '+40 seconds') >= datetime('now')) AS agenteOnline
+    FROM demonstrativo_robo_estado WHERE escritorio_id = 1
+  `).get() as any;
+  const pad = comparativoPeriodoPadrao();
+  res.json({
+    ligado: !!c.ligado, intervaloMin: c.intervaloMin, ultimaExecEm: c.ultimaExecEm,
+    periodoIni: c.periodoIni, periodoFim: c.periodoFim, periodoPadraoIni: pad.ini, periodoPadraoFim: pad.fim,
+    agendaAtivo: !!c.agendaAtivo, agendaHora: c.agendaHora, agendaMinuto: c.agendaMinuto,
+    tEntreEmpresasMs: c.tEntreEmpresasMs, tRenderTimeoutMs: c.tRenderTimeoutMs, tGerarPdfMs: c.tGerarPdfMs,
+    tModuloCargaMs: c.tModuloCargaMs, tCurtoMs: c.tCurtoMs, tMedioMs: c.tMedioMs, tLongoMs: c.tLongoMs,
+    rodando: !!c.rodando, total: c.total, feitas: c.feitas, atual: c.atual, progEm: c.progEm,
+    runNowPendente: !!c.runNowEm, pararPendente: !!c.pararPendente, agenteOnline: !!c.agenteOnline, agenteVistoEm: c.agenteVistoEm,
+  });
+});
+app.post("/api/demonstrativo-robo/config", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
+  garantirDemonstrativoEstado(1);
+  const pIni = comparativoValidaPeriodo(req.body?.periodoIni);
+  const pFim = comparativoValidaPeriodo(req.body?.periodoFim);
+  const agendaAtivo = req.body?.agendaAtivo ? 1 : 0;
+  const agendaHora = Math.min(Math.max(Math.round(Number(req.body?.agendaHora)) || 6, 0), 23);
+  const agendaMinuto = Math.min(Math.max(Math.round(Number(req.body?.agendaMinuto)) || 0, 0), 59);
+  const tEntreEmpresasMs = clampTempoMs(req.body?.tEntreEmpresasMs, 15000, 1000, 600000);
+  const tRenderTimeoutMs = clampTempoMs(req.body?.tRenderTimeoutMs, 90000, 5000, 300000);
+  const tGerarPdfMs = clampTempoMs(req.body?.tGerarPdfMs, 15000, 1000, 120000);
+  const tModuloCargaMs = clampTempoMs(req.body?.tModuloCargaMs, 10000, 1000, 60000);
+  const tCurtoMs = clampTempoMs(req.body?.tCurtoMs, 700, 100, 30000);
+  const tMedioMs = clampTempoMs(req.body?.tMedioMs, 2000, 100, 30000);
+  const tLongoMs = clampTempoMs(req.body?.tLongoMs, 4000, 100, 30000);
+  const antesAgenda = sqlite.prepare(`SELECT agenda_ativo, agenda_hora, agenda_minuto FROM demonstrativo_robo_estado WHERE escritorio_id = 1`).get() as any;
+  sqlite.prepare(`
+    UPDATE demonstrativo_robo_estado SET periodo_ini = ?, periodo_fim = ?, agenda_ativo = ?, agenda_hora = ?, agenda_minuto = ?,
+      t_entre_empresas_ms = ?, t_render_timeout_ms = ?, t_gerar_pdf_ms = ?, t_modulo_carga_ms = ?, t_curto_ms = ?, t_medio_ms = ?, t_longo_ms = ?
+    WHERE escritorio_id = 1
+  `).run(pIni, pFim, agendaAtivo, agendaHora, agendaMinuto, tEntreEmpresasMs, tRenderTimeoutMs, tGerarPdfMs, tModuloCargaMs, tCurtoMs, tMedioMs, tLongoMs);
+  if (!antesAgenda || !!antesAgenda.agenda_ativo !== !!agendaAtivo || antesAgenda.agenda_hora !== agendaHora || antesAgenda.agenda_minuto !== agendaMinuto)
+    sqlite.prepare(`UPDATE demonstrativo_robo_estado SET agenda_ultimo_dia = NULL WHERE escritorio_id = 1`).run();
+  res.json({ ok: true, periodoIni: pIni, periodoFim: pFim });
+});
+app.post("/api/demonstrativo-robo/executar", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
+  garantirDemonstrativoEstado(1);
+  const pIni = comparativoValidaPeriodo(req.body?.periodoIni);
+  const pFim = comparativoValidaPeriodo(req.body?.periodoFim);
+  if (pIni && pFim) sqlite.prepare(`UPDATE demonstrativo_robo_estado SET periodo_ini = ?, periodo_fim = ? WHERE escritorio_id = 1`).run(pIni, pFim);
+  const online = sqlite.prepare(`SELECT (agente_visto_em IS NOT NULL AND datetime(agente_visto_em, '+40 seconds') >= datetime('now')) AS agenteOn FROM demonstrativo_robo_estado WHERE escritorio_id = 1`).get() as any;
+  sqlite.prepare(`UPDATE demonstrativo_robo_estado SET run_now_em = datetime('now'), parar_em = NULL WHERE escritorio_id = 1`).run();
+  res.json({ ok: true, agenteOnline: !!online.agenteOn });
+});
+app.post("/api/demonstrativo-robo/parar", blockCliente, requirePermissao("configuracoes", "editar"), (_req, res) => {
+  garantirDemonstrativoEstado(1);
+  sqlite.prepare(`UPDATE demonstrativo_robo_estado SET parar_em = datetime('now'), ligado = 0, run_now_em = NULL WHERE escritorio_id = 1`).run();
+  res.json({ ok: true });
+});
+// ---- Download do pacote do robô ----
+app.get("/api/empresas/demonstrativo-mensal/robo", blockCliente, requireAdmin, (req, res) => {
+  const pasta = [path.join(__dirname, "..", "dominio-robo-demonstrativo-mensal"), path.join(__dirname, "dominio-robo-demonstrativo-mensal")].find((p) => fs.existsSync(p));
+  if (!pasta) return res.status(500).json({ error: "Pacote do robô não está disponível nesta versão do servidor." });
+  res.setHeader("Content-Type", "application/zip");
+  res.setHeader("Content-Disposition", 'attachment; filename="Robo-Demonstrativo-Mensal.zip"');
+  const zip: any = archiver("zip", { zlib: { level: 9 } });
+  zip.on("error", (e: any) => { console.error("[demonstrativo-mensal] zip do robô:", e.message); res.destroy(); });
+  zip.pipe(res);
+  zipPastaRoboComToken(zip, pasta);
+  zip.finalize();
+});
+
 // ================== ROBÔ "PROGRAMAÇÃO DE FÉRIAS" (módulo Folha) ==================
 // Mesmo esquema do Comparativo, porém SEM período (o relatório usa "Data base" = hoje).
 sqlite.exec(`
@@ -5555,7 +5746,7 @@ app.get("/api/dominio-agent/ferias-comando", requireDominioAgent, (_req, res) =>
   `).get() as any;
   const { deve: devePorAgenda, hojeSp } = agendaDeveRodarAgora(c);
   // Só um robô por vez: o Férias CEDE ao Comparativo rodando, pendente (run/por-tempo) OU recém-terminado.
-  const segurar = outroRoboOcupado("comparativo_robo_estado", true);
+  const segurar = outroRoboOcupado("comparativo_robo_estado", true) || outroRoboOcupado("demonstrativo_robo_estado", false);
   const deveRodar = (!!c.runNow || !!c.devePorTempo || devePorAgenda) && !segurar;
   // Qualquer disparo do dia (manual "Executar agora" ou automático) consome o agendamento daquele dia —
   // achado ao vivo: um "Executar agora" clicado antes das 19:30 não marcava o dia, e quando o horário
@@ -5690,7 +5881,7 @@ app.get("/api/empresas/comparativo-movimento/diagnostico-cadastro", blockCliente
 // programacao_ferias) + o resultado da ÚLTIMA leitura de cada uma (tabelaLog: comparativo_movimento_log
 // | ferias_log) — pra tela mostrar, lado a lado, "quem está marcado" e "quem deu certo/errado da
 // última vez". Uma empresa marcada mas sem nenhuma linha em tabelaLog ainda é "nunca rodou" (não é erro).
-function roboMarcadasEResultado(escritorioId: number, campoFlag: "comparativo_movimento_diario" | "programacao_ferias", tabelaLog: "comparativo_movimento_log" | "ferias_log") {
+function roboMarcadasEResultado(escritorioId: number, campoFlag: "comparativo_movimento_diario" | "programacao_ferias" | "demonstrativo_mensal", tabelaLog: "comparativo_movimento_log" | "ferias_log" | "demonstrativo_log") {
   const empresas = sqlite
     .prepare(`SELECT id, nome, cnpj, codigo_dominio as codigoDominio FROM empresas WHERE escritorio_id = ? AND ativo = 1 AND ${campoFlag} = 1 ORDER BY nome COLLATE NOCASE`)
     .all(escritorioId) as any[];
@@ -5726,6 +5917,9 @@ app.get("/api/empresas/comparativo-movimento/marcadas", blockCliente, requirePer
 });
 app.get("/api/empresas/programacao-ferias/marcadas", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
   res.json({ items: roboMarcadasEResultado((req as any).user.escritorioId, "programacao_ferias", "ferias_log") });
+});
+app.get("/api/empresas/demonstrativo-mensal/marcadas", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
+  res.json({ items: roboMarcadasEResultado((req as any).user.escritorioId, "demonstrativo_mensal", "demonstrativo_log") });
 });
 app.delete("/api/fgts/agente-tokens", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
   const r = sqlite.prepare(`DELETE FROM fgts_agente_tokens WHERE user_id = ?`).run((req as any).user.id);
