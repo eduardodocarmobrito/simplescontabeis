@@ -4423,8 +4423,14 @@ app.post("/api/empresas/:id/anexos", blockCliente, requirePermissao("empresas", 
   }
   // Allowlist de tipo de arquivo — barra HTML/SVG/JS etc. na entrada (além do Content-Type ser
   // tratado como não confiável também na hora de servir o arquivo, ver GET .../arquivo abaixo).
-  if (!/^(application\/pdf|image\/(png|jpe?g|gif|webp)|application\/(msword|vnd\.(openxmlformats-officedocument\.(wordprocessingml\.document|spreadsheetml\.sheet)|ms-excel))|application\/(zip|x-zip-compressed))$/i.test(req.file.mimetype || "")) {
-    return res.status(400).json({ error: "Tipo de arquivo não permitido. Envie PDF, imagem (PNG/JPG), Word, Excel ou ZIP." });
+  // Certificado digital (.pfx/.p12) é um anexo legítimo aqui (ex.: cópia de posse/procuração) —
+  // navegador não tem um Content-Type padronizado pra esse formato (varia entre
+  // application/x-pkcs12 e application/octet-stream genérico), então aceita pela extensão nesse caso
+  // específico. Sem risco: o download (GET .../arquivo, abaixo) já trata qualquer coisa fora de
+  // PDF/imagem como anexo bruto (nunca inline), então o Content-Type cru armazenado aqui não importa.
+  const ehCertificado = /\.(pfx|p12)$/i.test(req.file.originalname || "");
+  if (!ehCertificado && !/^(application\/pdf|image\/(png|jpe?g|gif|webp)|application\/(msword|vnd\.(openxmlformats-officedocument\.(wordprocessingml\.document|spreadsheetml\.sheet)|ms-excel))|application\/(zip|x-zip-compressed))$/i.test(req.file.mimetype || "")) {
+    return res.status(400).json({ error: "Tipo de arquivo não permitido. Envie PDF, imagem (PNG/JPG), Word, Excel, ZIP ou certificado digital (.pfx/.p12)." });
   }
   req.file.originalname = corrigirNomeArquivo(req.file.originalname);
   const dir = path.join(UPLOADS_DIR, "empresa-anexos", String(empresaId));
