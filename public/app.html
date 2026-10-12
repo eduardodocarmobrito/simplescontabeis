@@ -3128,6 +3128,8 @@ function empresaModal(e){
       <p style="font-size:12px; color:var(--ink-soft); margin-top:-4px;">Entra na lista que o robô do Domínio Web (rodando no servidor Windows) percorre todo dia — precisa do <b>código do Domínio</b> preenchido acima, na aba Empresa.</p>
       <div class="checkbox-row"><input type="checkbox" id="empProgFerias" ${e.programacaoFerias?'checked':''}> <label for="empProgFerias">Exportar Programação de Férias</label></div>
       <p style="font-size:12px; color:var(--ink-soft); margin-top:-4px;">Entra na lista do robô da <b>Programação de Férias</b> (módulo Folha) — também precisa do <b>código do Domínio</b> preenchido.</p>
+      <div class="checkbox-row"><input type="checkbox" id="empDemonstrativo" ${e.demonstrativoMensal?'checked':''}> <label for="empDemonstrativo">Exportar Demonstrativo Mensal</label></div>
+      <p style="font-size:12px; color:var(--ink-soft); margin-top:-4px;">Entra na lista do robô do <b>Demonstrativo Mensal</b> (módulo Escrita Fiscal) — também precisa do <b>código do Domínio</b> preenchido.</p>
       <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Regime tributário</div>
       <label class="checkbox-row"><input type="radio" name="empRegimeTributario" value="simples_nacional" ${(e.regimeTributario||'simples_nacional')==='simples_nacional'?'checked':''}> Optante pelo Simples Nacional</label>
       <label class="checkbox-row"><input type="radio" name="empRegimeTributario" value="lucro_presumido" ${e.regimeTributario==='lucro_presumido'?'checked':''}> Lucro Presumido</label>
@@ -3252,6 +3254,7 @@ function empresaModal(e){
         body.buscaFgts = document.getElementById('empBuscaFgts').checked;
         body.comparativoMovimentoDiario = document.getElementById('empCompMov').checked;
         body.programacaoFerias = document.getElementById('empProgFerias').checked;
+        body.demonstrativoMensal = document.getElementById('empDemonstrativo').checked;
         body.regimeTributario = document.querySelector('input[name="empRegimeTributario"]:checked')?.value || 'simples_nacional';
         body.regimeApuracaoSn = document.getElementById('empRegApuracao')?.value || '1';
         body.percentualTotalTributosSn = document.getElementById('empTotTribSN')?.value || null;
@@ -13459,6 +13462,48 @@ function renderCfgDomRelatorios(box, sub, dados){
       </div>
       <div id="roboFeriasProgresso" style="margin-top:12px;"></div>
     </div>
+    <div class="card" id="cardRoboDemo">
+      <h3>Robô do Demonstrativo Mensal</h3>
+      <p style="font-size:12px; color:var(--ink-soft); margin-top:-6px;">
+        Gera o Demonstrativo Mensal de cada empresa marcada (em <b>Empresas › Editar</b> → "Exportar Demonstrativo
+        Mensal", com o Código do Domínio preenchido) no módulo <b>Escrita Fiscal</b> e salva na pasta do Google Drive acima.
+      </p>
+      <div id="roboDemoStatus" style="font-size:13px; margin-bottom:8px;">Carregando…</div>
+      <div class="row" style="align-items:center; gap:10px; flex-wrap:wrap;">
+        <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="roboDemoAgendaAtivo"> Rodar automaticamente todo dia às</label>
+        <input type="number" class="inp" id="roboDemoAgendaHora" min="0" max="23" style="width:54px;"> :
+        <input type="number" class="inp" id="roboDemoAgendaMinuto" min="0" max="59" style="width:54px;">
+        <span style="font-size:11.5px; color:var(--ink-soft);">(horário de Brasília)</span>
+      </div>
+      <div class="row" style="margin-top:8px; align-items:center; gap:8px; flex-wrap:wrap;">
+        <span style="font-size:12.5px; color:var(--ink-soft);">Período (mm/aaaa) de</span>
+        <input id="roboDemoPerIni" class="inp" style="width:85px;">
+        <span style="font-size:12.5px; color:var(--ink-soft);">até</span>
+        <input id="roboDemoPerFim" class="inp" style="width:85px;">
+        <span style="font-size:11.5px; color:var(--ink-soft);">— em branco = padrão do diálogo (01/ano vigente até o mês atual).</span>
+      </div>
+      <p style="font-size:11.5px; color:var(--ink-soft); margin:8px 0 0;">Os três robôs mexem no mesmo Domínio, então nunca rodam juntos. O Demonstrativo tem a menor prioridade: cede ao Comparativo e à Programação de Férias.</p>
+      <div style="margin-top:10px; overflow-x:auto;">
+        <table class="data-table" style="font-size:12.5px;"><thead><tr><th>Tempo de cada passo do robô</th><th style="width:90px;">Segundos</th></tr></thead><tbody>
+          <tr><td>Entre uma empresa e outra</td><td><input type="number" class="inp" id="roboDemoTEntreEmpresas" min="1" max="600" step="1" style="width:70px;"></td></tr>
+          <tr><td>Esperar o relatório renderizar (antes de desistir)</td><td><input type="number" class="inp" id="roboDemoTRenderTimeout" min="5" max="300" step="1" style="width:70px;"></td></tr>
+          <tr><td>Esperar depois de mandar gerar o PDF</td><td><input type="number" class="inp" id="roboDemoTGerarPdf" min="1" max="120" step="1" style="width:70px;"></td></tr>
+          <tr><td>Esperar o módulo carregar</td><td><input type="number" class="inp" id="roboDemoTModuloCarga" min="1" max="60" step="1" style="width:70px;"></td></tr>
+          <tr><td>Passo curto (entre cliques)</td><td><input type="number" class="inp" id="roboDemoTCurto" min="0.1" max="30" step="0.1" style="width:70px;"></td></tr>
+          <tr><td>Passo médio (entre cliques)</td><td><input type="number" class="inp" id="roboDemoTMedio" min="0.1" max="30" step="0.1" style="width:70px;"></td></tr>
+          <tr><td>Passo longo (entre cliques)</td><td><input type="number" class="inp" id="roboDemoTLongo" min="0.1" max="30" step="0.1" style="width:70px;"></td></tr>
+        </tbody></table>
+        <p style="font-size:11px; color:var(--ink-soft); margin:4px 0 0;">Mexe só se o Domínio estiver lento/rápido demais pro robô e ele começar a errar — o robô pega o valor novo no próximo ciclo (poll a cada ~10s).</p>
+      </div>
+      <div class="row" style="margin-top:8px;">
+        <button class="btn primary" id="btnRoboDemoSalvar" disabled>Salvar</button>
+        <button class="btn" id="btnRoboDemoExecutar">Executar agora</button>
+        <button class="btn" id="btnRoboDemoParar" style="background:#c0392b; border-color:#c0392b; color:#fff;" title="Freia o robô imediatamente">⛔ Parar robô</button>
+        <button class="btn" id="btnRoboDemoMarcadas">📋 Empresas marcadas / resultado</button>
+        ${STATE.user.perfil==='Administrador'?'<a class="btn" href="/api/empresas/demonstrativo-mensal/robo" download>⬇ Baixar robô (instalar em outro servidor)</a>':''}
+      </div>
+      <div id="roboDemoProgresso" style="margin-top:12px;"></div>
+    </div>
   `;
   document.getElementById('irEnvioDocs')?.addEventListener('click', ()=>{ STATE.page='configuracoes'; CFG_TAB='envio-docs'; render(); });
   const escolherPastaDrive = ()=>certImportPastaModal(async (pastaId, pastaNome)=>{
@@ -13700,6 +13745,79 @@ function renderCfgDomRelatorios(box, sub, dados){
     $('btnRoboFeriasMarcadas')?.addEventListener('click', ()=>abrirRoboMarcadasModal('programacao-ferias', 'Programação de Férias'));
     try{ clearInterval(window.__roboFeriasPoll); }catch(e){}
     window.__roboFeriasPoll = setInterval(()=>{ if(document.getElementById('roboFeriasStatus')) carregar(); else { try{ clearInterval(window.__roboFeriasPoll); }catch(e){} } }, 3000);
+  })();
+  // ---- Robô do Demonstrativo Mensal (controle + progresso ao vivo) ----
+  (function(){
+    const $ = id => document.getElementById(id);
+    function pintar(e){
+      const st = $('roboDemoStatus');
+      if(st){
+        const on = e.agenteOnline ? '<span class="tag ok">Robô online</span>' : '<span class="tag bad">Robô offline</span>';
+        const ult = e.ultimaExecEm ? ' · Última execução: '+fmtDateHora(e.ultimaExecEm) : '';
+        const parando = e.pararPendente ? ' <span class="tag bad">Parando…</span>' : '';
+        st.innerHTML = on + (e.rodando?' <span class="tag">Rodando…</span>':'') + parando + ult;
+      }
+      const prog = $('roboDemoProgresso');
+      if(prog){
+        if(e.rodando && e.total>0){
+          const pct = Math.round((e.feitas/e.total)*100);
+          prog.innerHTML = '<div style="font-size:12.5px; margin-bottom:4px;">Empresa '+e.feitas+' de '+e.total+(e.atual?' — '+esc(e.atual):'')+'</div>'+
+            '<div style="background:var(--rule); border-radius:6px; height:12px; overflow:hidden;"><div style="width:'+pct+'%; height:100%; background:var(--accent); transition:width .4s;"></div></div>';
+        } else if(e.runNowPendente){
+          prog.innerHTML = '<div style="font-size:12.5px; color:var(--ink-soft);">Pedido enviado — aguardando o robô pegar…</div>';
+        } else { prog.innerHTML = ''; }
+      }
+    }
+    async function carregar(){ try{ pintar(await api('/demonstrativo-robo/estado')); }catch(e){} }
+    api('/demonstrativo-robo/estado').then(e=>{
+      if($('roboDemoAgendaAtivo')) $('roboDemoAgendaAtivo').checked = e.agendaAtivo;
+      if($('roboDemoAgendaHora')) $('roboDemoAgendaHora').value = e.agendaHora;
+      if($('roboDemoAgendaMinuto')) $('roboDemoAgendaMinuto').value = String(e.agendaMinuto).padStart(2,'0');
+      if($('roboDemoPerIni')){ $('roboDemoPerIni').value = e.periodoIni||''; $('roboDemoPerIni').placeholder = e.periodoPadraoIni||'01/2026'; }
+      if($('roboDemoPerFim')){ $('roboDemoPerFim').value = e.periodoFim||''; $('roboDemoPerFim').placeholder = e.periodoPadraoFim||'09/2026'; }
+      if($('roboDemoTEntreEmpresas')) $('roboDemoTEntreEmpresas').value = Math.round(e.tEntreEmpresasMs/1000*10)/10;
+      if($('roboDemoTRenderTimeout')) $('roboDemoTRenderTimeout').value = Math.round(e.tRenderTimeoutMs/1000*10)/10;
+      if($('roboDemoTGerarPdf')) $('roboDemoTGerarPdf').value = Math.round(e.tGerarPdfMs/1000*10)/10;
+      if($('roboDemoTModuloCarga')) $('roboDemoTModuloCarga').value = Math.round(e.tModuloCargaMs/1000*10)/10;
+      if($('roboDemoTCurto')) $('roboDemoTCurto').value = Math.round(e.tCurtoMs/1000*10)/10;
+      if($('roboDemoTMedio')) $('roboDemoTMedio').value = Math.round(e.tMedioMs/1000*10)/10;
+      if($('roboDemoTLongo')) $('roboDemoTLongo').value = Math.round(e.tLongoMs/1000*10)/10;
+      pintar(e);
+    }).catch(()=>{});
+    habilitarSalvarAoMudar('btnRoboDemoSalvar', ['roboDemoAgendaAtivo','roboDemoAgendaHora','roboDemoAgendaMinuto','roboDemoPerIni','roboDemoPerFim','roboDemoTEntreEmpresas','roboDemoTRenderTimeout','roboDemoTGerarPdf','roboDemoTModuloCarga','roboDemoTCurto','roboDemoTMedio','roboDemoTLongo']);
+    $('btnRoboDemoSalvar')?.addEventListener('click', async ()=>{
+      try{
+        await api('/demonstrativo-robo/config', { method:'POST', body:{
+          agendaAtivo:$('roboDemoAgendaAtivo').checked, agendaHora:Number($('roboDemoAgendaHora').value), agendaMinuto:Number($('roboDemoAgendaMinuto').value),
+          periodoIni:$('roboDemoPerIni').value.trim(), periodoFim:$('roboDemoPerFim').value.trim(),
+          tEntreEmpresasMs:Math.round(Number($('roboDemoTEntreEmpresas').value)*1000),
+          tRenderTimeoutMs:Math.round(Number($('roboDemoTRenderTimeout').value)*1000),
+          tGerarPdfMs:Math.round(Number($('roboDemoTGerarPdf').value)*1000),
+          tModuloCargaMs:Math.round(Number($('roboDemoTModuloCarga').value)*1000),
+          tCurtoMs:Math.round(Number($('roboDemoTCurto').value)*1000),
+          tMedioMs:Math.round(Number($('roboDemoTMedio').value)*1000),
+          tLongoMs:Math.round(Number($('roboDemoTLongo').value)*1000),
+        } });
+        toast('Configuração do robô salva.','ok'); $('btnRoboDemoSalvar').disabled = true;
+      }
+      catch(e){ toast(e.message,'err'); }
+    });
+    $('btnRoboDemoExecutar')?.addEventListener('click', async (ev)=>{
+      const b = ev.target; b.disabled = true;
+      try{ const r = await api('/demonstrativo-robo/executar', { method:'POST', body:{ periodoIni:$('roboDemoPerIni').value.trim(), periodoFim:$('roboDemoPerFim').value.trim() } }); toast(r.agenteOnline?'Rodando agora…':'Pedido enviado — o robô vai pegar quando estiver online.','ok'); }
+      catch(e){ toast(e.message,'err'); }
+      finally{ setTimeout(()=>{ b.disabled = false; }, 1500); carregar(); }
+    });
+    $('btnRoboDemoParar')?.addEventListener('click', async (ev)=>{
+      if(!confirmar('Parar o robô agora? Ele aborta a execução atual (após terminar a empresa em andamento) e desliga o automático.')) return;
+      const b = ev.target; b.disabled = true;
+      try{ await api('/demonstrativo-robo/parar', { method:'POST' }); toast('Freio acionado — o robô vai parar na próxima empresa.','ok'); }
+      catch(e){ toast(e.message,'err'); }
+      finally{ setTimeout(()=>{ b.disabled = false; }, 1500); carregar(); }
+    });
+    $('btnRoboDemoMarcadas')?.addEventListener('click', ()=>abrirRoboMarcadasModal('demonstrativo-mensal', 'Demonstrativo Mensal'));
+    try{ clearInterval(window.__roboDemoPoll); }catch(e){}
+    window.__roboDemoPoll = setInterval(()=>{ if(document.getElementById('roboDemoStatus')) carregar(); else { try{ clearInterval(window.__roboDemoPoll); }catch(e){} } }, 3000);
   })();
 }
 // Modal com duas listas lado a lado, pros robôs do Domínio (Comparativo de Movimento / Programação de
