@@ -1016,6 +1016,7 @@ const NAV = [
   { id:'minha-financeiro', label:'Financeiro', modulo:null, roles:['Cliente'] },
   { id:'minha-assinatura', label:'Assinatura', modulo:null, roles:['Cliente'] },
   { id:'financeiro', label:'Financeiro', modulo:'financeiro', roles:['Administrador','Colaborador'] },
+  { id:'certificados', label:'Certificados', modulo:'certificados', roles:['Administrador','Colaborador'] },
   { id:'contratos', label:'Contratos', modulo:'contratos', roles:['Administrador','Colaborador'] },
   { id:'relatorios', label:'Relatórios', modulo:'relatorios', roles:['Administrador','Colaborador'] },
   { id:'crm', label:'CRM', modulo:'crm', roles:['Administrador','Colaborador'] },
@@ -1213,6 +1214,7 @@ async function render(){
     else if(STATE.page==='minha-financeiro') await pageMinhaFinanceiro();
     else if(STATE.page==='minha-assinatura') await pageMinhaAssinatura();
     else if(STATE.page==='financeiro') await pageFinanceiro();
+    else if(STATE.page==='certificados') await pageCertificados();
     else if(STATE.page==='contratos') await pageContratos();
     else if(STATE.page==='relatorios') await pageRelatorios();
     // Abrir o CRM pelo menu sempre cai no WhatsApp (deskcomm) → Fila; a aba Meta recarrega por pageCrm() direto.
@@ -8628,6 +8630,192 @@ async function renderHonorariosRobo(){
   }
 }
 
+// ===================== Certificados (assinatura digital) =====================
+let CERT_TAB='assinar';
+async function pageCertificados(){
+  main().innerHTML = `
+    <h1>Certificados</h1>
+    <p class="subtitle">Assinatura digital de documentos com o certificado do escritório</p>
+    <div class="tabs">
+      <div class="tab" data-tab="assinar">Assinar documento</div>
+      <div class="tab" data-tab="documentos">Documentos assinados</div>
+      <div class="tab" data-tab="dashboard">Dashboard</div>
+      <div class="tab" data-tab="colaboradores">Colaboradores</div>
+      <div class="tab" data-tab="config">Configuração</div>
+    </div>
+    <div id="certContent"></div>
+  `;
+  main().querySelectorAll('.tab').forEach(t=>t.addEventListener('click', ()=>{ CERT_TAB=t.dataset.tab; renderCertTabs(); }));
+  renderCertTabs();
+}
+function renderCertTabs(){
+  main().querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===CERT_TAB));
+  if(CERT_TAB==='documentos') renderCertDocumentos();
+  else if(CERT_TAB==='dashboard') renderCertDashboard();
+  else if(CERT_TAB==='colaboradores') renderCertColaboradores();
+  else if(CERT_TAB==='config') renderCertConfig();
+  else renderCertAssinar();
+}
+async function renderCertAssinar(){
+  const box = document.getElementById('certContent');
+  box.innerHTML = '<div class="empty-state">Carregando…</div>';
+  let cfg; try{ cfg = await api('/certificados/config'); }catch(e){ box.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
+  if(!cfg.configurado || !cfg.ativo){
+    box.innerHTML = `<div class="card"><div class="empty-state">Nenhum certificado configurado ainda. ${can('certificados','editar')?'Vá em <b>Configuração</b> pra cadastrar o certificado do escritório.':'Peça ao administrador pra configurar o certificado.'}</div></div>`;
+    return;
+  }
+  if(cfg.vencido){
+    box.innerHTML = `<div class="card"><div class="empty-state" style="color:var(--debit)">O certificado do escritório está vencido (venceu ${esc(fmtDate(cfg.validadeAte))}). ${can('certificados','editar')?'Atualize em <b>Configuração</b> antes de assinar.':'Avise o administrador.'}</div></div>`;
+    return;
+  }
+  box.innerHTML = `
+    <div class="card" style="max-width:620px;">
+      <h3 style="margin-top:0;">Assinar um PDF</h3>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Certificado: <b>${esc(cfg.titular||'')}</b>${cfg.diasRestantes!==null && cfg.diasRestantes<=30?` <span class="tag warn">vence em ${cfg.diasRestantes} dia(s)</span>`:''}</p>
+      <div class="field"><label>Arquivo PDF</label><input type="file" id="certArquivo" accept="application/pdf"></div>
+      <div class="field"><label>Confirme sua senha de login</label><input type="password" id="certSenha" placeholder="Sua senha"></div>
+      <div class="row" style="margin-top:8px;"><button class="btn primary" id="btnCertAssinar">Assinar documento</button></div>
+      <div id="certAssinarResultado" style="margin-top:12px;"></div>
+    </div>
+  `;
+  document.getElementById('btnCertAssinar').addEventListener('click', async (ev)=>{
+    const btn = ev.target;
+    const arquivo = document.getElementById('certArquivo').files[0];
+    const senha = document.getElementById('certSenha').value;
+    const resultado = document.getElementById('certAssinarResultado');
+    if(!arquivo){ toast('Escolha o PDF a assinar.','err'); return; }
+    if(!senha){ toast('Confirme sua senha.','err'); return; }
+    btn.disabled = true; btn.textContent = 'Assinando…'; resultado.innerHTML = '';
+    try{
+      const fd = new FormData(); fd.append('documento', arquivo); fd.append('senha', senha);
+      const r = await api('/certificados/assinar', { method:'POST', body: fd });
+      document.getElementById('certSenha').value = '';
+      resultado.innerHTML = `<div class="empty-state" style="color:var(--credit);">✅ Documento assinado.${r.ocspStatus==='indisponivel'?' (checagem de revogação indisponível no momento — assinatura feita normalmente)':''}
+        <div style="margin-top:8px;"><a class="btn small primary" href="/api/certificados/documentos/${r.id}/pdf" target="_blank" rel="noopener">⬇ Baixar PDF assinado</a></div></div>`;
+      toast('Assinado com sucesso.','ok');
+    }catch(e){ resultado.innerHTML = `<div class="empty-state" style="color:var(--debit);">${esc(e.message)}</div>`; }
+    finally{ btn.disabled = false; btn.textContent = 'Assinar documento'; }
+  });
+}
+async function renderCertDocumentos(){
+  const box = document.getElementById('certContent');
+  box.innerHTML = `
+    <div class="row" style="margin-bottom:14px; gap:8px; flex-wrap:wrap;">
+      <div class="field" style="margin-bottom:0;"><label>De</label><input type="date" id="certDocDe"></div>
+      <div class="field" style="margin-bottom:0;"><label>Até</label><input type="date" id="certDocAte"></div>
+      <button class="btn" id="btnCertDocFiltrar" style="align-self:flex-end;">Filtrar</button>
+    </div>
+    <div class="card" style="padding:0; overflow-x:auto;">
+      <table class="data-table">
+        <thead><tr><th>Quando</th><th>Colaborador</th><th>Documento</th><th>Status</th><th>Revogação</th><th></th></tr></thead>
+        <tbody id="certDocBody"></tbody>
+      </table>
+    </div>
+  `;
+  async function carregar(){
+    const de = document.getElementById('certDocDe').value, ate = document.getElementById('certDocAte').value;
+    const qs = new URLSearchParams(); if(de) qs.set('de',de); if(ate) qs.set('ate',ate);
+    const { items } = await api('/certificados/documentos?'+qs.toString());
+    document.getElementById('certDocBody').innerHTML = items.length ? items.map(d=>`
+      <tr>
+        <td style="font-size:12px;">${esc(fmtDateHora(d.criadoEm))}</td>
+        <td>${esc(d.userNome)}</td>
+        <td>${esc(d.nomeArquivo)}</td>
+        <td><span class="tag ${d.status==='assinado'?'ok':'bad'}">${d.status==='assinado'?'Assinado':'Falha'}</span>${d.erro?`<div style="font-size:11px; color:var(--ink-soft);">${esc(d.erro)}</div>`:''}</td>
+        <td><span class="tag ${d.ocspStatus==='ok'?'ok':d.ocspStatus==='revogado'?'bad':'muted'}">${d.ocspStatus==='ok'?'Verificada':d.ocspStatus==='revogado'?'Revogado':d.ocspStatus?'Indisponível':'—'}</span></td>
+        <td style="text-align:right;">${d.temArquivo?`<a class="btn small" href="/api/certificados/documentos/${d.id}/pdf" target="_blank" rel="noopener">⬇ Baixar</a>`:''}</td>
+      </tr>
+    `).join('') : `<tr><td colspan="6"><div class="empty-state">Nenhum documento nesse período.</div></td></tr>`;
+  }
+  document.getElementById('btnCertDocFiltrar').addEventListener('click', carregar);
+  carregar();
+}
+async function renderCertDashboard(){
+  const box = document.getElementById('certContent');
+  box.innerHTML = '<div class="empty-state">Carregando…</div>';
+  const dash = await api('/certificados/dashboard');
+  box.innerHTML = `
+    ${dash.certificado && dash.certificado.avisoVencimento ? `<div class="card" style="background:#fff6e6; border-color:#e0b84a; margin-bottom:14px;">⚠️ O certificado (<b>${esc(dash.certificado.titular||'')}</b>) vence em <b>${dash.certificado.diasRestantes}</b> dia(s) — providencie a renovação.</div>` : ''}
+    <div class="kpi-grid">
+      <div class="kpi"><div class="eyebrow">Hoje</div><div class="val">${dash.hoje.total}</div><div class="sub">${dash.hoje.falhas} falha(s)</div></div>
+      <div class="kpi"><div class="eyebrow">Este mês</div><div class="val">${dash.mes.total}</div><div class="sub">${dash.mes.falhas} falha(s)</div></div>
+    </div>
+    <div class="card" style="margin-top:14px;">
+      <h3 style="margin-top:0;">Por colaborador (este mês)</h3>
+      ${dash.porColaborador.length ? dash.porColaborador.map(c=>`<div class="row" style="justify-content:space-between; padding:4px 0; border-top:1px dashed var(--rule);"><span>${esc(c.nome)}</span><b>${c.total}</b></div>`).join('') : '<div class="empty-state">Nenhuma assinatura este mês.</div>'}
+    </div>
+  `;
+}
+async function renderCertColaboradores(){
+  const box = document.getElementById('certContent');
+  box.innerHTML = '<div class="empty-state">Carregando…</div>';
+  const { items } = await api('/certificados/colaboradores');
+  const podeEditar = can('certificados','editar');
+  box.innerHTML = `
+    <p style="font-size:12.5px; color:var(--ink-soft);">Quem tem chave ativa pode assinar documentos em nome do escritório — a chave identifica, no histórico, quem disparou cada assinatura (controle interno; a responsabilidade legal do certificado continua sendo de um titular só — veja o aviso na aba Configuração).</p>
+    <div class="card" style="padding:0; overflow-x:auto;">
+      <table class="data-table">
+        <thead><tr><th>Colaborador</th><th>E-mail</th><th>Chave</th><th></th></tr></thead>
+        <tbody>
+          ${items.map(c=>`<tr data-user="${c.userId}">
+            <td>${esc(c.nome)}</td>
+            <td>${esc(c.email)}</td>
+            <td>${c.temChaveAtiva?`<span class="tag ok">${esc(c.chave)}</span>`:'<span class="tag muted">Sem chave</span>'}</td>
+            <td style="text-align:right;">${podeEditar?(c.temChaveAtiva?`<button class="btn small danger" data-act="revogar">Revogar</button>`:`<button class="btn small primary" data-act="conceder">Conceder chave</button>`):''}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+  if(podeEditar) box.querySelectorAll('[data-act]').forEach(b=>b.addEventListener('click', async e=>{
+    const tr = e.target.closest('tr'); const userId = tr.dataset.user; const acao = e.target.dataset.act;
+    if(acao==='revogar' && !confirmar('Revogar a chave deste colaborador? Ele não vai mais conseguir assinar documentos.')) return;
+    try{
+      if(acao==='conceder') await api('/certificados/colaboradores/'+userId, { method:'POST' });
+      else await api('/certificados/colaboradores/'+userId, { method:'DELETE' });
+      renderCertColaboradores();
+    }catch(err){ toast(err.message,'err'); }
+  }));
+}
+async function renderCertConfig(){
+  const box = document.getElementById('certContent');
+  box.innerHTML = '<div class="empty-state">Carregando…</div>';
+  const cfg = await api('/certificados/config');
+  const podeEditar = can('certificados','editar');
+  box.innerHTML = `
+    <div class="card" style="background:var(--paper); border-color:var(--warn, #c9a227); margin-bottom:14px;">
+      <b>⚖️ Aviso importante</b>
+      <p style="font-size:12.5px; margin:6px 0 0;">Este certificado tem UM titular legal — a lei presume que toda assinatura feita com ele é dele, independente de qual colaborador disparou a ação pelo sistema. A "chave" de cada colaborador (aba Colaboradores) é controle de acesso e trilha de auditoria interna do Simples Contábeis, não uma segunda identidade perante a ICP-Brasil. Pra documentos de maior risco, considere um parecer jurídico antes de confiar só nisso.</p>
+    </div>
+    <div class="card" style="max-width:620px;">
+      <h3 style="margin-top:0;">Certificado do escritório</h3>
+      ${cfg.configurado ? `<p style="font-size:13px;">Titular: <b>${esc(cfg.titular||'—')}</b>${cfg.cnpj?' · CNPJ '+esc(cfg.cnpj):''}<br>Validade: ${esc(fmtDate(cfg.validadeAte))} ${cfg.vencido?'<span class="tag bad">Vencido</span>':cfg.diasRestantes<=30?`<span class="tag warn">vence em ${cfg.diasRestantes} dia(s)</span>`:'<span class="tag ok">Válido</span>'}</p>` : '<p style="font-size:13px; color:var(--ink-soft);">Nenhum certificado configurado ainda.</p>'}
+      ${podeEditar?`
+        <div style="margin-top:14px; padding-top:14px; border-top:1px solid var(--rule);">
+          <div class="field"><label>${cfg.configurado?'Trocar o certificado (.pfx)':'Certificado (.pfx)'}</label><input type="file" id="certCfgArquivo" accept=".pfx,.p12"></div>
+          <div class="field"><label>Senha do certificado</label><input type="password" id="certCfgSenha"></div>
+          <button class="btn primary" id="btnCertCfgSalvar">Salvar</button>
+        </div>
+      `:''}
+    </div>
+  `;
+  if(podeEditar) document.getElementById('btnCertCfgSalvar').addEventListener('click', async (ev)=>{
+    const btn = ev.target;
+    const arquivo = document.getElementById('certCfgArquivo').files[0];
+    const senha = document.getElementById('certCfgSenha').value;
+    if(!arquivo){ toast('Escolha o arquivo .pfx.','err'); return; }
+    if(!senha){ toast('Informe a senha do certificado.','err'); return; }
+    btn.disabled = true; btn.textContent = 'Salvando…';
+    try{
+      const fd = new FormData(); fd.append('certificado', arquivo); fd.append('senha', senha);
+      await api('/certificados/config', { method:'PUT', body: fd });
+      toast('Certificado configurado.','ok');
+      renderCertConfig();
+    }catch(e){ toast(e.message,'err'); }
+    finally{ btn.disabled = false; btn.textContent = 'Salvar'; }
+  });
+}
+
 // ===================== Contratos =====================
 function rteToolbarHtml(){
   return `
@@ -11701,7 +11889,7 @@ async function pageUsuarios(){
   document.getElementById('usFiltro').addEventListener('input', e=>desenhaUsuarios(e.target.value));
   document.getElementById('btnNovoUsuario').addEventListener('click', ()=>usuarioModal());
 }
-const MODS = [['dashboard','Início'],['empresas','Empresas'],['solicitacoes','Solicitações de Documentos'],['envio','Envio de Documentos'],['nfse','NFS-e'],['nfe-busca','Busca de XML'],['integracontador','Integra Contador'],['licencas','Licenças'],['financeiro','Financeiro'],['contratos','Contratos'],['relatorios','Relatórios'],['crm','CRM'],['dprh','DP/RH'],['contabil','Contabilidade'],['fiscal','Fiscal'],['usuarios','Usuários'],['configuracoes','Configurações'],['email','E-mail']];
+const MODS = [['dashboard','Início'],['empresas','Empresas'],['solicitacoes','Solicitações de Documentos'],['envio','Envio de Documentos'],['nfse','NFS-e'],['nfe-busca','Busca de XML'],['integracontador','Integra Contador'],['licencas','Licenças'],['financeiro','Financeiro'],['certificados','Certificados'],['contratos','Contratos'],['relatorios','Relatórios'],['crm','CRM'],['dprh','DP/RH'],['contabil','Contabilidade'],['fiscal','Fiscal'],['usuarios','Usuários'],['configuracoes','Configurações'],['email','E-mail']];
 // Lista de empresas com busca por texto — usada nos dois pickers de empresa do modal de usuário
 // (Cliente com múltiplas empresas, Colaborador com acesso restrito), já que a base de empresas
 // pode ter centenas de linhas (import do Domínio Web).

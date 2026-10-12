@@ -25,6 +25,7 @@ import { simpleParser } from "mailparser";
 import { registerWebmail } from "./webmail";
 import { registerCentralEnvio, credencialDriveDoEscritorio, driveGet, driveBaixar } from "./central-envio";
 import { registerFerias, feriasProcessarPdf, feriasExtrairFuncionarios } from "./ferias";
+import { registerCertificados } from "./certificados";
 import { createProxyMiddleware } from "http-proxy-middleware";
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 
@@ -2311,7 +2312,7 @@ sqlite.exec(`INSERT OR IGNORE INTO whatsapp_config (escritorio_id) SELECT id FRO
   }
 }
 
-const MODULOS = ["dashboard", "empresas", "solicitacoes", "envio", "nfse", "nfe-busca", "integracontador", "licencas", "financeiro", "contratos", "relatorios", "crm", "dprh", "contabil", "fiscal", "usuarios", "configuracoes", "email"] as const;
+const MODULOS = ["dashboard", "empresas", "solicitacoes", "envio", "nfse", "nfe-busca", "integracontador", "licencas", "financeiro", "contratos", "relatorios", "crm", "dprh", "contabil", "fiscal", "usuarios", "configuracoes", "email", "certificados"] as const;
 type Modulo = (typeof MODULOS)[number];
 
 // ========================= LOGIN (senha com hash + sessão via cookie) =========================
@@ -9354,6 +9355,22 @@ registerFerias(app, {
   enviarEmail,
   enviarWhatsapp: enviarDocumentoWhatsapp as any,
   reprocessarExistentes: feriasReprocessarExistentes,
+});
+// Módulo Certificados: assinatura digital de PDF com o certificado A1 do escritório + chave de acesso
+// por colaborador (trilha de auditoria — ver aviso jurídico no topo de certificados.ts).
+registerCertificados(app, {
+  sqlite,
+  blockCliente,
+  requireAdmin,
+  requirePermissao,
+  verifyPassword,
+  cifrarTexto: nfse.cifrarTexto,
+  decifrarTexto: nfse.decifrarTexto,
+  lerCertificadoPfx: nfse.lerCertificadoPfx,
+  salvarCertificadoCifrado: nfse.salvarCertificadoCifrado,
+  lerCertificadoCifradoDoDisco: nfse.lerCertificadoCifradoDoDisco,
+  excluirCertificadoDoDisco: nfse.excluirCertificadoDoDisco,
+  uploadsDir: UPLOADS_DIR,
 });
 // Módulo E-mail (webmail): reaproveita o e-mail + senha de app de Configurações › E-mail corporativo.
 registerWebmail(app, {
