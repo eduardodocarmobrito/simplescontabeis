@@ -1544,6 +1544,13 @@ for (const tabela of ["chat_mensagens", "chat_equipe_mensagens", "chat_dm_mensag
     console.log("Migração aplicada: envio_templates.auto_regime_tributario.");
   }
 }
+// Migração leve: envio_templates.pendente_revisao — modelo criado automaticamente pela ponte do
+// central-envio (DP/RH e CRM), ainda não revisado pelo escritório (ver envioObterOuCriarTemplateDraft).
+// Zera assim que o modelo é salvo pela tela (PUT /api/envio/templates/:id).
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(envio_templates)`).all() as any[];
+  if (!cols.some((c) => c.name === "pendente_revisao")) sqlite.exec(`ALTER TABLE envio_templates ADD COLUMN pendente_revisao INTEGER NOT NULL DEFAULT 0`);
+}
 
 // Migração leve: envio_periodos ganha (1) "sem_movimento" — marca que não houve imposto a recolher
 // naquela competência, sem precisar anexar nenhum arquivo, só pra sumir a pendência do card — e (2)
@@ -5887,6 +5894,7 @@ app.get("/api/envio/templates", blockCliente, requirePermissao("envio", "visuali
       visivelCliente: !!r.visivel_cliente,
       suspensoDesde: r.suspenso_desde,
       autoRegimeTributario: r.auto_regime_tributario,
+      pendenteRevisao: !!r.pendente_revisao,
       protegido: ENVIO_TEMPLATES_PROTEGIDOS.includes(r.nome),
     })),
   });
@@ -5924,7 +5932,7 @@ app.put("/api/envio/templates/:id", blockCliente, requirePermissao("envio", "edi
   // antigo) — só passa a valer pra próxima vez que "Gerar ano na grade" (ou "+ Nova solicitação
   // avulsa") for usado em cada atribuição desse modelo.
   sqlite
-    .prepare(`UPDATE envio_templates SET nome=?, descricao=?, periodicidade=?, accept_json=?, detectar_vencimento=?, considera_mes_atual=?, visivel_cliente=?, ativo=?, suspenso_desde=?, auto_regime_tributario=?, setor=? WHERE id=?`)
+    .prepare(`UPDATE envio_templates SET nome=?, descricao=?, periodicidade=?, accept_json=?, detectar_vencimento=?, considera_mes_atual=?, visivel_cliente=?, ativo=?, suspenso_desde=?, auto_regime_tributario=?, setor=?, pendente_revisao=0 WHERE id=?`)
     .run(
       nome ?? existing.nome,
       descricao !== undefined ? descricao : existing.descricao,
@@ -9293,6 +9301,9 @@ registerCentralEnvio(app, {
   identificarEmpresa: domRelIdentificarEmpresa,
   extrairPeriodo: domRelExtrairPeriodo,
   pdfParse: (buf) => require("pdf-parse")(buf),
+  envioObterOuCriarTemplateDraft,
+  envioAtribuicaoObterOuCriar,
+  envioAnexarPdf: integraContadorAnexarPdfEmEnvio,
 });
 // Programação de Férias (DP/RH): lê o relatório da mesma esteira do Domínio acima, identifica quem
 // está com férias vencidas/perto de vencer e manda um relatório curado por empresa (uma vez por mês
@@ -10013,14 +10024,31 @@ function integraContadorObterOuCriarAtribuicaoModelo(
       .run(nomeTemplate, descricaoTemplate, periodicidade, visivelCliente ? 1 : 0, escritorioId);
     template = { id: Number(info.lastInsertRowid) };
   }
-  let atribuicao = sqlite.prepare(`SELECT id FROM envio_atribuicoes WHERE template_id = ? AND empresa_id = ?`).get(template.id, empresaId) as any;
+  return envioAtribuicaoObterOuCriar(template.id, empresaId);
+}
+// Acha (ou cria/reativa) a atribuição de um modelo já existente a uma empresa — metade compartilhada de
+// integraContadorObterOuCriarAtribuicaoModelo (acima), reaproveitada também pela ponte do central-envio
+// (ver registerCentralEnvio) com um template já resolvido.
+function envioAtribuicaoObterOuCriar(templateId: number, empresaId: number): number {
+  let atribuicao = sqlite.prepare(`SELECT id FROM envio_atribuicoes WHERE template_id = ? AND empresa_id = ?`).get(templateId, empresaId) as any;
   if (!atribuicao) {
-    const info = sqlite.prepare(`INSERT INTO envio_atribuicoes (template_id, empresa_id, ativo) VALUES (?, ?, 1)`).run(template.id, empresaId);
+    const info = sqlite.prepare(`INSERT INTO envio_atribuicoes (template_id, empresa_id, ativo) VALUES (?, ?, 1)`).run(templateId, empresaId);
     atribuicao = { id: Number(info.lastInsertRowid) };
   } else {
     sqlite.prepare(`UPDATE envio_atribuicoes SET ativo = 1 WHERE id = ?`).run(atribuicao.id);
   }
   return atribuicao.id;
+}
+// Acha (pelo nome) ou cria um modelo RASCUNHO pra ponte do central-envio (DP/RH e CRM) — nasce
+// pendente_revisao=1, visivel_cliente=0 (fica só interno até o escritório abrir e confirmar em
+// Envio de Documentos > Modelos, salvando o modelo pelo menos uma vez).
+function envioObterOuCriarTemplateDraft(escritorioId: number, nome: string): number {
+  const existente = sqlite.prepare(`SELECT id FROM envio_templates WHERE escritorio_id = ? AND nome = ?`).get(escritorioId, nome) as any;
+  if (existente) return existente.id;
+  const info = sqlite
+    .prepare(`INSERT INTO envio_templates (nome, descricao, periodicidade, accept_json, detectar_vencimento, considera_mes_atual, visivel_cliente, pendente_revisao, escritorio_id) VALUES (?, ?, 'mensal', '["pdf"]', 1, 1, 0, 1, ?)`)
+    .run(nome, "Modelo criado automaticamente a partir do leitor de pasta — revise em Envio de Documentos > Modelos.", escritorioId);
+  return Number(info.lastInsertRowid);
 }
 function integraContadorFormatarVencimento(vencAAAAMMDD: string | null): string | null {
   if (!vencAAAAMMDD || vencAAAAMMDD.length !== 8) return null;

@@ -29,6 +29,12 @@ type Deps = {
   identificarEmpresa: (mapa: { porDocumento: Map<string, any>; porCodigo: Map<string, any> }, texto: string, nomeArquivo: string) => { empresa: any | null; cnpjDetectado: string | null };
   extrairPeriodo: (texto: string, nomeArquivo: string) => { inicio: string; fim: string } | null;
   pdfParse: (buf: Buffer) => Promise<{ text: string }>;
+  // Ponte com a grade "Envio de Documentos" (envio_templates/envio_atribuicoes/envio_periodos) — ver
+  // registerCentralEnvio abaixo, centralEnvioEmpurrarParaGrade. São as mesmas funções que o Domínio Web
+  // e o Integra Contador já usam pra alimentar aquela grade.
+  envioObterOuCriarTemplateDraft: (escritorioId: number, nome: string) => number;
+  envioAtribuicaoObterOuCriar: (templateId: number, empresaId: number) => number;
+  envioAnexarPdf: (atribuicaoId: number, empresaId: number, ano: number, mes: number | null, nomeArquivo: string, pdfBase64: string, observacao: string, vencimentoIso: string | null) => number;
 };
 
 const norm = (s: string) => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase();
@@ -256,6 +262,10 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
   for (const [col, ddl] of [["texto_amostra", "TEXT"], ["grupo_id", "INTEGER"], ["e_grupo", "INTEGER NOT NULL DEFAULT 0"], ["grupo_chave", "TEXT"], ["n_arquivos", "INTEGER NOT NULL DEFAULT 1"]] as const)
     if (!colsDocs.includes(col)) db.exec(`ALTER TABLE central_envio_docs ADD COLUMN ${col} ${ddl}`);
   if (!(db.prepare(`PRAGMA table_info(central_envio_tipos)`).all() as any[]).some((c) => c.name === "agrupar")) db.exec(`ALTER TABLE central_envio_tipos ADD COLUMN agrupar INTEGER NOT NULL DEFAULT 0`);
+  // Liga o tipo a um modelo da grade "Envio de Documentos" (envio_templates) — ver
+  // centralEnvioEmpurrarParaGrade, mais abaixo. Resolvido 1x (fica gravado aqui) e nunca mais precisa
+  // procurar de novo pro mesmo tipo.
+  if (!(db.prepare(`PRAGMA table_info(central_envio_tipos)`).all() as any[]).some((c) => c.name === "template_id")) db.exec(`ALTER TABLE central_envio_tipos ADD COLUMN template_id INTEGER`);
   for (const [tab, col, ddl] of [
     ["central_envio_enviados", "entrega_ref", "INTEGER"], ["central_envio_agendados", "extras_json", "TEXT NOT NULL DEFAULT '[]'"],
     ["central_envio_agendados", "canal_whatsapp", "TEXT NOT NULL DEFAULT 'conversa'"],
@@ -294,6 +304,38 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     }
     if (ruins.length || ruinsEnv.length) console.log(`Limpeza Contribuição Sindical: ${ruins.length} pendentes + ${ruinsEnv.length} enviados corrigidos.`);
   } catch (e: any) { console.error("[limpeza contribuição sindical]", e.message); }
+  // Ponte com a grade "Envio de Documentos" (pedido): todo tipo de DP/RH ou CRM ganha um modelo
+  // rascunho na grade (envio_templates), marcado "pendente de revisão" — invisível ao cliente até o
+  // escritório abrir e confirmar. Roda em todo boot, mas só age em quem ainda não tem template_id
+  // (idempotente) — é assim que os tipos que JÁ existiam hoje (ex.: Contribuição Sindical) ganham o
+  // modelo retroativamente, de uma vez só, sem esperar o próximo documento chegar.
+  try {
+    const semPonte = db.prepare(`SELECT id, nome, escritorio_id FROM central_envio_tipos WHERE setor IN ('dprh','crm') AND ativo = 1 AND template_id IS NULL`).all() as any[];
+    for (const t of semPonte) {
+      const templateId = d.envioObterOuCriarTemplateDraft(t.escritorio_id, t.nome);
+      db.prepare(`UPDATE central_envio_tipos SET template_id = ? WHERE id = ?`).run(templateId, t.id);
+    }
+    if (semPonte.length) console.log(`Ponte Envio de Documentos: ${semPonte.length} tipo(s) de DP/RH e CRM ganharam modelo rascunho.`);
+  } catch (e: any) { console.error("[ponte envio de documentos]", e.message); }
+  // Empurra um documento já classificado (tipo + empresa resolvidos) pra grade "Envio de Documentos" —
+  // chamada depois de arquivar normalmente em central_envio_docs, só pra tipos de dprh/crm (os únicos
+  // com essa ponte por enquanto). Falha aqui nunca derruba o arquivamento normal do central-envio
+  // (quem chama trata o erro à parte).
+  async function centralEnvioEmpurrarParaGrade(tipo: { id: number; nome: string; setor: string; template_id: number | null }, empresaId: number, escritorioId: number, competencia: string | null, nomeArquivo: string, buf: Buffer): Promise<void> {
+    if (tipo.setor !== "dprh" && tipo.setor !== "crm") return;
+    let templateId = tipo.template_id;
+    if (!templateId) {
+      templateId = d.envioObterOuCriarTemplateDraft(escritorioId, tipo.nome);
+      db.prepare(`UPDATE central_envio_tipos SET template_id = ? WHERE id = ?`).run(templateId, tipo.id);
+    }
+    const atribuicaoId = d.envioAtribuicaoObterOuCriar(templateId, empresaId);
+    const m = /^(0[1-9]|1[0-2])\/(20\d{2})$/.exec(competencia || "");
+    const { ano, mes } = m ? { ano: Number(m[2]), mes: Number(m[1]) } : (() => {
+      const agora = new Date(Date.now() - 3 * 3600_000); // Brasília — cai pro mês do processamento quando a "competência" não é um único mês (ex.: "Vários", período de férias)
+      return { ano: agora.getUTCFullYear(), mes: agora.getUTCMonth() + 1 };
+    })();
+    d.envioAnexarPdf(atribuicaoId, empresaId, ano, mes, nomeArquivo, buf.toString("base64"), "Importado automaticamente da pasta de documentos.", null);
+  }
   // ------------------------------------------------------------ configuração / credencial
   const credDe = (escId: number): Cred | null => {
     const c = db.prepare(`SELECT sa_json_cifrado FROM central_envio_config WHERE escritorio_id = ?`).get(escId) as any;
@@ -370,7 +412,7 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
       ? (mesAnterior(extrairCompetenciaDataProcessamento(texto)) || extrairCompetenciaMes(texto))
       : (extrairCompetenciaMes(texto) || extrairDataAfastamento(texto) || rotuloCompetencia(d.extrairPeriodo(texto, nomeArquivo)));
     const titulo = [tipo?.nome || String(nomeArquivo).replace(/\.pdf$/i, ""), colaborador, empresa?.nome, competencia].filter(Boolean).join(" - ");
-    return { texto, agrupar: !!tipo?.agrupar, tipoId: tipo?.id ?? null, tipoNome: tipo?.nome ?? null, empresaId: empresa?.id ?? null, cnpj: cnpjDetectado, colaborador, cpf, competencia, titulo };
+    return { texto, agrupar: !!tipo?.agrupar, tipoId: tipo?.id ?? null, tipoNome: tipo?.nome ?? null, tipoSetor: tipo?.setor ?? null, tipoTemplateId: tipo?.template_id ?? null, empresaId: empresa?.id ?? null, cnpj: cnpjDetectado, colaborador, cpf, competencia, titulo };
   }
   async function mesclarPdfs(caminhos: string[]): Promise<Buffer> {
     const saida = await PDFDocument.create();
@@ -421,6 +463,15 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     ).run(escId, raiz.setor, raiz.userId, raiz.pastaId, arq.id, arq.name, arq.modifiedTime, md5, buf.length, a.tipoId, a.tipoNome, a.empresaId, a.cnpj, a.colaborador, a.cpf, a.competencia, a.titulo, destino, versao, a.texto.slice(0, 8000));
     // Tipos com "juntar num PDF só" (ex.: Folha Mensal): todos os arquivos da mesma empresa + competência viram UM pendente.
     if (a.agrupar && a.empresaId && a.competencia && /^\d{2}\/\d{4}$/.test(a.competencia)) await agruparNoPendente(escId, Number(info.lastInsertRowid), a, raiz);
+    // Ponte com a grade "Envio de Documentos" (dprh/crm) — ver centralEnvioEmpurrarParaGrade. Nunca
+    // derruba o arquivamento normal do central-envio se falhar.
+    if (a.tipoId && a.empresaId) {
+      try {
+        await centralEnvioEmpurrarParaGrade({ id: a.tipoId, nome: a.tipoNome, setor: a.tipoSetor, template_id: a.tipoTemplateId }, a.empresaId, escId, a.competencia, arq.name, buf);
+      } catch (e: any) {
+        console.error(`[ponte envio de documentos] falha ao empurrar o documento (empresa ${a.empresaId}, tipo "${a.tipoNome}"):`, e.message);
+      }
+    }
     return true;
   }
 
@@ -841,6 +892,13 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
       .run(a.tipoId, a.tipoNome, a.empresaId, a.cnpj, a.colaborador, a.cpf, a.competencia, a.titulo, a.texto.slice(0, 8000), doc.id);
     // Tipo que junta arquivos (Folha Mensal): ao reler, se agora dá pra saber empresa e competência, entra no PDF único.
     if (a.agrupar && a.empresaId && a.competencia && /^\d{2}\/\d{4}$/.test(a.competencia)) await agruparNoPendente(doc.escritorio_id, doc.id, a, { setor: doc.setor, userId: doc.user_id, pastaId: doc.pasta_id });
+    if (a.tipoId && a.empresaId) {
+      try {
+        await centralEnvioEmpurrarParaGrade({ id: a.tipoId, nome: a.tipoNome, setor: a.tipoSetor, template_id: a.tipoTemplateId }, a.empresaId, doc.escritorio_id, a.competencia, doc.nome_arquivo, fs.readFileSync(doc.arquivo_path));
+      } catch (e: any) {
+        console.error(`[ponte envio de documentos] falha ao empurrar o documento relido (empresa ${a.empresaId}, tipo "${a.tipoNome}"):`, e.message);
+      }
+    }
     res.json({ ok: true, titulo: a.titulo });
   });
   app.post("/api/central-envio/docs/:id/ignorar", d.blockCliente, (req, res) => {
