@@ -2455,6 +2455,13 @@ function blockCliente(req: express.Request, res: express.Response, next: express
 function hasPermissao(user: any, modulo: Modulo, acao: "visualizar" | "postar" | "editar"): boolean {
   if (user.perfil === "Administrador") return true;
   if (user.perfil === "Cliente") return false;
+  // Achado em auditoria (2026-10-12): a conta de Painel de TV é um Colaborador comum com uma sessão
+  // que se autorrenova por 730 dias, pensada só pra ficar passivamente numa tela física — nada no
+  // código impedia um admin de marcar "postar"/"editar" pra ela por engano na matriz de permissões, o
+  // que daria poder de escrita de verdade a um cookie de longuíssima duração, muito mais exposto
+  // (tela física, sem ninguém de olho a cada request) do que a sessão normal de um colaborador. Trava
+  // aqui, não só na tela: painel de TV nunca passa de "visualizar", nenhuma matriz consegue mudar isso.
+  if (user.painelTv && acao !== "visualizar") return false;
   const row = sqlite
     .prepare(`SELECT pode_visualizar, pode_postar, pode_editar FROM colaborador_permissoes WHERE user_id = ? AND modulo = ?`)
     .get(user.id, modulo) as any;
@@ -2945,6 +2952,11 @@ app.get("/api/atendimento/sessao-deskcomm", requireAuth, blockCliente, requireEs
 // IPs diferentes. Trava extra por e-mail (mesmo padrão/limite já usado em troca de senha), em cima da
 // trava por IP que já existia — as duas continuam valendo.
 const loginErrosPorEmail = new Map<string, { n: number; ate: number }>();
+// Achado em auditoria (2026-10-12): com e-mail inexistente (ou inativo), verifyPassword() nunca
+// rodava — só ela faz o scrypt caro, então um e-mail que existe sempre demora uns ms mais que um que
+// não existe, dando pra enumerar e-mail válido por tempo de resposta. Roda um scrypt-dummy do mesmo
+// custo nesses casos, só pra igualar o tempo — não afeta o resultado (sempre dá erro genérico).
+const LOGIN_HASH_DUMMY = hashPassword(crypto.randomBytes(16).toString("hex"));
 app.post("/api/auth/login", loginRateLimiter, (req, res) => {
   const { email, password } = req.body || {};
   if (!email || !password) return res.status(400).json({ error: "Informe e-mail e senha." });
@@ -2952,7 +2964,10 @@ app.post("/api/auth/login", loginRateLimiter, (req, res) => {
   const trava = loginErrosPorEmail.get(emailNorm);
   if (trava && trava.ate > Date.now() && trava.n >= 10) return res.status(429).json({ error: "Muitas tentativas de login. Aguarde alguns minutos." });
   const row = sqlite.prepare(`SELECT * FROM app_users WHERE email = ?`).get(emailNorm) as any;
-  if (!row || !row.ativo || !verifyPassword(password, row.password_hash)) {
+  let senhaOk: boolean;
+  if (row && row.ativo) senhaOk = verifyPassword(password, row.password_hash);
+  else { verifyPassword(password, LOGIN_HASH_DUMMY); senhaOk = false; }
+  if (!row || !row.ativo || !senhaOk) {
     const t = trava && trava.ate > Date.now() ? trava : { n: 0, ate: Date.now() + 15 * 60_000 };
     t.n++; loginErrosPorEmail.set(emailNorm, t);
     return res.status(401).json({ error: "E-mail ou senha inválidos." });
@@ -5861,12 +5876,16 @@ app.post("/api/checklist/periodos/:periodoId/upload", empresaInativaBloqueiaEnvi
     .get(periodoId) as any;
   if (!periodo) return res.status(404).json({ error: "Período não encontrado." });
 
-  if (user.perfil === "Cliente") {
-    // Cliente sempre pode postar na própria empresa — não passa pelo requirePermissao de colaborador.
-    if (user.empresaId !== periodo.empresaId) return res.status(403).json({ error: "Sem acesso a esta empresa." });
-  } else if (user.perfil === "Colaborador") {
-    if (!hasPermissao(user, "solicitacoes", "postar")) return res.status(403).json({ error: "Sem permissão para anexar." });
-    if (!podeAcessarEmpresa(user, periodo.empresaId)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  // Achado em auditoria (2026-10-12): não havia nenhum "else" pra Administrador (nem SuperAdmin) —
+  // esses perfis passavam direto sem nenhuma checagem de acesso à empresa. Como periodoId é um PK
+  // global (compartilhado entre todos os escritórios-clientes da plataforma), um Administrador de
+  // QUALQUER escritório conseguia enviar/substituir arquivo no checklist de empresa de OUTRO
+  // escritório só incrementando o id na URL. Checagem de empresa agora é incondicional pra todo
+  // perfil (igual às rotas de reabertura/download, que já faziam certo), antes de qualquer checagem
+  // extra de permissão.
+  if (!podeAcessarEmpresa(user, periodo.empresaId)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  if (user.perfil === "Colaborador" && !hasPermissao(user, "solicitacoes", "postar")) {
+    return res.status(403).json({ error: "Sem permissão para anexar." });
   }
 
   const itens = JSON.parse(periodo.itensJson);
