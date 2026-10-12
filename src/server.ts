@@ -3462,7 +3462,7 @@ app.put("/api/users/:id/permissoes", requireAdmin, (req, res) => {
 });
 const CONFIG_ABAS_VALIDAS = ["dominio", "email", "whatsapp", "fgts-digital", "nfse-agendamento", "painel-tv", "envio-docs", "atendimento", "assinatura-plataforma"];
 // Abas de Relatórios que cada colaborador pode ver. Sem nenhuma linha = vê todas (padrão de antes).
-const RELATORIOS_ABAS_VALIDAS = ["balanco", "balancete", "dre", "faturamento", "razao", "comparativo", "entradas_saidas", "programacao_ferias", "folha", "retencoes"];
+const RELATORIOS_ABAS_VALIDAS = ["balanco", "balancete", "dre", "faturamento", "razao", "comparativo", "demonstrativo_mensal", "entradas_saidas", "programacao_ferias", "folha", "retencoes"];
 sqlite.exec(`CREATE TABLE IF NOT EXISTS colaborador_relatorios_abas (user_id INTEGER NOT NULL, aba TEXT NOT NULL, PRIMARY KEY (user_id, aba))`);
 app.get("/api/users/:id/relatorios-abas", requireAdmin, (req, res) => {
   if (!pertenceAoEscritorio(req, Number(req.params.id))) return res.status(404).json({ error: "Usuário não encontrado." });
@@ -9244,7 +9244,7 @@ setInterval(() => {
 // se o período já tem documento, sem filtrar por quem pediu, então importando ANTES de qualquer
 // solicitação (esta rotina é proativa/agendada), o pedido do cliente já chega atendido sem nenhum
 // código extra de "atendimento automático".
-type DomRelTipo = "balanco" | "balancete" | "dre" | "faturamento" | "razao" | "comparativo" | "entradas_saidas" | "programacao_ferias";
+type DomRelTipo = "balanco" | "balancete" | "dre" | "faturamento" | "razao" | "comparativo" | "entradas_saidas" | "programacao_ferias" | "demonstrativo_mensal";
 const DOM_REL_TEMPLATE_NOME: Record<string, string> = {
   balanco: "Balanço",
   balancete: "Balancete",
@@ -9253,8 +9253,9 @@ const DOM_REL_TEMPLATE_NOME: Record<string, string> = {
   faturamento: "Relação de Faturamento",
   razao: "Razão",
   comparativo: "Comparativo de Movimento",
-  entradas_saidas: "Relatório de Entradas/Saídas",
+  entradas_saidas: "Relatório de Entradas/Saídas", // legado — o Demonstrativo Mensal agora tem tipo próprio
   programacao_ferias: "Programação de Férias",
+  demonstrativo_mensal: "Demonstrativo Mensal",
 };
 // Nomes dos templates alimentados pela importação automática do OneDrive — pra esses, "Solicitar
 // Documentos" não deixa o cliente digitar qualquer mês/ano (não existe ninguém pra gerar sob
@@ -9269,12 +9270,12 @@ const TEMPLATES_RELATORIOS_DOMINIO = new Set(Object.values(DOM_REL_TEMPLATE_NOME
 // arquivado também como Balancete. Sem prefixo reconhecível, cai pro texto.
 function domRelTipoPeloNome(nome: string): DomRelTipo | null {
   const limpo = nome.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z_]/g, "");
-  // "entradas_saidas" (Demonstrativo Mensal) não entra aqui — ainda não sei com que prefixo o
-  // Domínio nomeia o arquivo desse relatório, então essa classificação é só pelo texto do PDF
-  // (ver domRelClassificarTipos) até confirmar com um nome de arquivo real.
-  const m = /^(balancete|balanco|dre|faturamento|razao|comparativo|programacao)/.exec(limpo);
+  // O robô do Demonstrativo Mensal nomeia "Demonstrativo_Mensal_<cod>_..." → prefixo "demonstrativo".
+  const m = /^(balancete|balanco|dre|faturamento|razao|comparativo|programacao|demonstrativo)/.exec(limpo);
   if (!m) return null;
-  return m[1] === "programacao" ? "programacao_ferias" : (m[1] as DomRelTipo);
+  if (m[1] === "programacao") return "programacao_ferias";
+  if (m[1] === "demonstrativo") return "demonstrativo_mensal";
+  return m[1] as DomRelTipo;
 }
 function domRelClassificarTipos(texto: string): DomRelTipo[] {
   const tipos: DomRelTipo[] = [];
@@ -9287,7 +9288,7 @@ function domRelClassificarTipos(texto: string): DomRelTipo[] {
   // "Período:"/"C.N.P.J.:", nunca da palavra "social" logo depois.
   if (/raz[ãa]o(?!\s*social)/i.test(texto)) tipos.push("razao");
   if (/comparativo\s+(de\s+)?movimento|movimento\s+comparativo/i.test(texto)) tipos.push("comparativo");
-  if (/demonstrativo\s+mensal/i.test(texto) && /entradas\s*r\$/i.test(texto)) tipos.push("entradas_saidas");
+  if (/demonstrativo\s+mensal/i.test(texto) && /entradas\s*r\$/i.test(texto)) tipos.push("demonstrativo_mensal");
   if (/programa[çc][ãa]o\s+de\s+f[ée]rias/i.test(texto)) tipos.push("programacao_ferias");
   return tipos;
 }
@@ -15692,6 +15693,7 @@ function domRelTemplateNomesParaTipo(tipo: string): string[] {
   if (tipo === "faturamento") return ["Relação de Faturamento"];
   if (tipo === "razao") return ["Razão"];
   if (tipo === "comparativo") return ["Comparativo de Movimento"];
+  if (tipo === "demonstrativo_mensal") return ["Demonstrativo Mensal"];
   if (tipo === "entradas_saidas") return ["Relatório de Entradas/Saídas"];
   if (tipo === "programacao_ferias") return ["Programação de Férias"];
   return [];
