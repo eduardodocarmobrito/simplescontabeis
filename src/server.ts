@@ -309,6 +309,29 @@ sqlite.exec(`
     UNIQUE(empresa_id, competencia)
   );
 
+  -- ---- Robô de cobrança de honorários pelo WhatsApp (ver registro completo mais abaixo) ----
+  CREATE TABLE IF NOT EXISTS honorarios_robo_config (
+    escritorio_id INTEGER PRIMARY KEY,
+    validacao_ativa INTEGER NOT NULL DEFAULT 0,
+    envio_boleto_automatico INTEGER NOT NULL DEFAULT 0,
+    ultimo_checkpoint TEXT
+  );
+  -- Conversas que o robô está segurando (assumidas, fora da fila) por empresa inadimplente — "ativo"
+  -- até o pagamento ser confirmado, então vira "liberado" (fica só de histórico, não deleta).
+  CREATE TABLE IF NOT EXISTS honorarios_robo_gate (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+    conversation_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'ativo', -- 'ativo' | 'liberado'
+    ultimo_aviso_em TEXT, -- 'YYYY-MM-DD' (Brasília) — evita repetir o aviso mais de 1x por dia
+    ultimo_inbound_visto TEXT, -- last_inbound_at (deskcomm) já respondido — detecta mensagem NOVA do cliente
+    criado_em TEXT DEFAULT (datetime('now')),
+    liberado_em TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_honorarios_robo_gate_empresa ON honorarios_robo_gate(empresa_id, status);
+  -- Só uma conversa "ativa" por vez (histórico de 'liberado' pode se repetir à vontade).
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_honorarios_robo_gate_ativo ON honorarios_robo_gate(conversation_id) WHERE status = 'ativo';
+
   -- ---- Financeiro do próprio negócio da empresa-cliente self-service (perfil Cliente) ----
   CREATE TABLE IF NOT EXISTS financeiro_pagar (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1314,6 +1337,15 @@ sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_contratos_empresa ON contratos(empre
     `);
     console.log("Migração aplicada: envio_documentos agora aceita mais de um documento por período.");
   }
+}
+
+// Robô de cobrança de honorários pelo WhatsApp (ver registro das rotas mais abaixo, perto de
+// /api/financeiro): quais empresas participam, e o boleto (PDF) de cada competência.
+{
+  const colsHon = sqlite.prepare(`PRAGMA table_info(honorarios)`).all() as any[];
+  if (!colsHon.some((c) => c.name === "participa_cobranca_robo")) sqlite.exec(`ALTER TABLE honorarios ADD COLUMN participa_cobranca_robo INTEGER NOT NULL DEFAULT 0`);
+  const colsHonLanc = sqlite.prepare(`PRAGMA table_info(honorarios_lancamentos)`).all() as any[];
+  if (!colsHonLanc.some((c) => c.name === "boleto_path")) sqlite.exec(`ALTER TABLE honorarios_lancamentos ADD COLUMN boleto_path TEXT`);
 }
 
 // Migração leve: adiciona detectar_vencimento em bancos criados antes dessa coluna existir.
@@ -13680,17 +13712,75 @@ app.put("/api/financeiro/lancamentos/:id", blockCliente, requirePermissao("finan
   const { status, dataPagamento, formaPagamento, observacao, valor } = req.body || {};
   const existing = sqlite.prepare(`SELECT * FROM honorarios_lancamentos WHERE id = ?`).get(id) as any;
   if (!existing || !podeAcessarEmpresa((req as any).user, existing.empresa_id)) return res.status(404).json({ error: "Lançamento não encontrado." });
+  const statusNovo = status ?? existing.status;
   sqlite
     .prepare(`UPDATE honorarios_lancamentos SET status=?, data_pagamento=?, forma_pagamento=?, observacao=?, valor=? WHERE id=?`)
     .run(
-      status ?? existing.status,
+      statusNovo,
       dataPagamento !== undefined ? dataPagamento : existing.data_pagamento,
       formaPagamento !== undefined ? formaPagamento : existing.forma_pagamento,
       observacao !== undefined ? observacao : existing.observacao,
       valor !== undefined ? Number(valor) : existing.valor,
       id
     );
+  // Pagou (ou cancelou) um lançamento que estava em aberto: se não sobrar mais nenhum em atraso pra
+  // essa empresa, solta qualquer conversa que o robô de cobrança esteja segurando dela.
+  if (statusNovo !== existing.status && (statusNovo === "pago" || statusNovo === "cancelado") && (existing.status === "pendente" || existing.status === "atrasado")) {
+    if (!honorariosLancamentosEmAberto(existing.empresa_id).some((h) => h.status === "atrasado")) {
+      void honorariosRoboLiberarEmpresa(existing.empresa_id).catch((e: any) => console.error("[honorarios-robo] falha ao liberar após pagamento:", e.message));
+    }
+  }
   res.json({ ok: true });
+});
+// Upload do boleto (PDF) de um lançamento específico — anexado à mão todo mês; é o que o robô de
+// cobrança manda quando "Enviar o boleto automaticamente" estiver ligado.
+app.post("/api/financeiro/lancamentos/:id/boleto", blockCliente, requirePermissao("financeiro", "editar"), upload.single("boleto"), (req, res) => {
+  const id = Number(req.params.id);
+  const existing = sqlite.prepare(`SELECT * FROM honorarios_lancamentos WHERE id = ?`).get(id) as any;
+  if (!existing || !podeAcessarEmpresa((req as any).user, existing.empresa_id)) return res.status(404).json({ error: "Lançamento não encontrado." });
+  if (!req.file) return res.status(400).json({ error: "Envie o PDF do boleto." });
+  const dir = path.join(UPLOADS_DIR, "honorarios-boletos", String(existing.empresa_id));
+  fs.mkdirSync(dir, { recursive: true });
+  if (existing.boleto_path && fs.existsSync(existing.boleto_path)) { try { fs.unlinkSync(existing.boleto_path); } catch { /* arquivo antigo já sumiu, segue */ } }
+  const destino = path.join(dir, `${Date.now()}-${existing.competencia}.pdf`);
+  fs.writeFileSync(destino, req.file.buffer);
+  sqlite.prepare(`UPDATE honorarios_lancamentos SET boleto_path = ? WHERE id = ?`).run(destino, id);
+  res.json({ ok: true });
+});
+app.get("/api/financeiro/lancamentos/:id/boleto", blockCliente, requirePermissao("financeiro", "visualizar"), (req, res) => {
+  const existing = sqlite.prepare(`SELECT * FROM honorarios_lancamentos WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!existing || !podeAcessarEmpresa((req as any).user, existing.empresa_id)) return res.status(404).json({ error: "Lançamento não encontrado." });
+  if (!existing.boleto_path || !fs.existsSync(existing.boleto_path)) return res.status(404).json({ error: "Sem boleto anexado." });
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", nfseContentDisposition("inline", `Boleto ${existing.competencia}.pdf`));
+  res.send(fs.readFileSync(existing.boleto_path));
+});
+// ---- Robô de cobrança de honorários: configuração (Financeiro > Configuração envio de boletos) ----
+app.get("/api/financeiro/honorarios-robo/config", blockCliente, requirePermissao("financeiro", "visualizar"), (_req, res) => {
+  const cfg = honorariosRoboCfg();
+  res.json({ validacaoAtiva: !!cfg.validacao_ativa, envioBoletoAutomatico: !!cfg.envio_boleto_automatico });
+});
+app.put("/api/financeiro/honorarios-robo/config", blockCliente, requirePermissao("financeiro", "editar"), (req, res) => {
+  honorariosRoboCfg();
+  const { validacaoAtiva, envioBoletoAutomatico } = req.body || {};
+  if (validacaoAtiva !== undefined) sqlite.prepare(`UPDATE honorarios_robo_config SET validacao_ativa = ? WHERE escritorio_id = ?`).run(validacaoAtiva ? 1 : 0, DESKCOMM_ESCRITORIO_ID);
+  if (envioBoletoAutomatico !== undefined) sqlite.prepare(`UPDATE honorarios_robo_config SET envio_boleto_automatico = ? WHERE escritorio_id = ?`).run(envioBoletoAutomatico ? 1 : 0, DESKCOMM_ESCRITORIO_ID);
+  res.json({ ok: true });
+});
+app.get("/api/financeiro/honorarios-robo/empresas", blockCliente, requirePermissao("financeiro", "visualizar"), (_req, res) => {
+  const rows = sqlite
+    .prepare(`SELECT e.id, e.nome, COALESCE(h.participa_cobranca_robo, 0) as participa FROM empresas e LEFT JOIN honorarios h ON h.empresa_id = e.id WHERE e.ativo = 1 ORDER BY e.nome`)
+    .all() as any[];
+  res.json({ items: rows.map((r) => ({ id: r.id, nome: r.nome, participa: !!r.participa })) });
+});
+app.put("/api/financeiro/honorarios-robo/empresas", blockCliente, requirePermissao("financeiro", "editar"), (req, res) => {
+  const ids: number[] = Array.isArray(req.body?.empresaIds) ? req.body.empresaIds.map(Number) : [];
+  sqlite.prepare(`UPDATE honorarios SET participa_cobranca_robo = 0`).run();
+  for (const id of ids) {
+    sqlite.prepare(`INSERT INTO honorarios (empresa_id, participa_cobranca_robo, updated_at) VALUES (?, 1, datetime('now'))
+      ON CONFLICT(empresa_id) DO UPDATE SET participa_cobranca_robo = 1, updated_at = datetime('now')`).run(id);
+  }
+  res.json({ ok: true, marcadas: ids.length });
 });
 app.get("/api/financeiro/resumo", blockCliente, requirePermissao("financeiro", "visualizar"), (req, res) => {
   const competencia = req.query.competencia ? String(req.query.competencia) : new Date().toISOString().slice(0, 7);
@@ -16378,6 +16468,150 @@ async function enviarDocumentoWhatsapp(
     await deskcommRoboEnviarArquivo(telefone, nomeContato, arquivo, descricao);
   }
 }
+
+// ---------- Robô de cobrança de honorários contábeis em atraso, pelo WhatsApp ----------
+// Pedido do escritório: quando a empresa dona do número que está mandando mensagem tem honorários em
+// atraso, o robô responde sozinho (aviso + boleto, se já estiver anexado) e SEGURA a conversa — ela some
+// da fila de atendimento (fica atribuída ao usuário técnico "Automações", igual um atendente "assumiu"
+// a conversa) até o pagamento ser confirmado. Nasce DESLIGADO — os dois interruptores abaixo começam
+// em 0 (honorarios_robo_config) e só valem depois que o escritório ligar em Financeiro > Configuração
+// envio de boletos.
+function honorariosRoboCfg(): any {
+  sqlite.prepare(`INSERT OR IGNORE INTO honorarios_robo_config (escritorio_id) VALUES (?)`).run(DESKCOMM_ESCRITORIO_ID);
+  return sqlite.prepare(`SELECT * FROM honorarios_robo_config WHERE escritorio_id = ?`).get(DESKCOMM_ESCRITORIO_ID) as any;
+}
+// Lançamentos em aberto (pendente/atrasado) de uma empresa — mesma regra já usada hoje na ficha do
+// atendimento (ver empresaSituacao, mais abaixo): "pendente" com vencimento já passado também conta
+// como atrasado, sem precisar de um job separado pra ficar marcando status no banco.
+function honorariosLancamentosEmAberto(empresaId: number): { id: number; competencia: string; valor: number; vencimento: string; status: string; boletoPath: string | null }[] {
+  const hojeIso = new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+  return (sqlite
+    .prepare(`SELECT id, competencia, valor, vencimento, status, boleto_path FROM honorarios_lancamentos WHERE empresa_id = ? AND status IN ('pendente','atrasado') ORDER BY vencimento`)
+    .all(empresaId) as any[]).map((h) => ({ id: h.id, competencia: h.competencia, valor: h.valor, vencimento: h.vencimento, boletoPath: h.boleto_path, status: h.status === "pendente" && h.vencimento < hojeIso ? "atrasado" : h.status }));
+}
+// Solta as conversas que o robô segurou pra uma empresa — chamado quando o lançamento em atraso dela é
+// marcado como pago (ou deixa de existir) — libera de volta pra fila normal e avisa o cliente. Roda
+// independente do interruptor global estar ligado (é uma limpeza, não precisa do robô "ativo" pra soltar
+// o que ele já segurou antes).
+async function honorariosRoboLiberarEmpresa(empresaId: number): Promise<void> {
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return;
+  const gates = sqlite.prepare(`SELECT * FROM honorarios_robo_gate WHERE empresa_id = ? AND status = 'ativo'`).all(empresaId) as any[];
+  for (const g of gates) {
+    try {
+      await deskcommRoboApi(`/conversations/${g.conversation_id}/release`, { method: "POST" });
+      await deskcommRoboEnviar(g.conversation_id, "Pagamento confirmado — a conversa já está liberada. Obrigado! 🙂");
+      sqlite.prepare(`UPDATE honorarios_robo_gate SET status = 'liberado', liberado_em = datetime('now') WHERE id = ?`).run(g.id);
+    } catch (e: any) {
+      console.error(`[honorarios-robo] falha ao liberar a conversa ${g.conversation_id} (empresa ${empresaId}):`, e.message);
+    }
+  }
+}
+const HONORARIOS_ROBO_TEXTO_COM_BOLETO =
+  "Olá! Identificamos que há honorários contábeis em atraso para esta empresa. Para liberar o acesso e a comunicação com o escritório, por favor regularize o pagamento — segue o boleto em anexo.";
+const HONORARIOS_ROBO_TEXTO_SEM_BOLETO =
+  "Olá! Identificamos que há honorários contábeis em atraso para esta empresa. Para liberar o acesso e a comunicação com o escritório, por favor regularize o pagamento. Entre em contato por outro canal pra receber o boleto.";
+// Confere UMA conversa: acha a empresa pelo telefone, confere atraso, manda o aviso (1x por dia) e
+// segura a conversa. `gate` é a linha 'ativo' já existente em honorarios_robo_gate pra essa conversa,
+// se houver — só chama /claim quando NÃO existe ainda (reclamar de novo uma conversa que o próprio
+// robô já segura não muda nada e arrisca a API rejeitar por "expected_assignee" não bater).
+async function honorariosRoboVerificarConversa(
+  conv: { id: string; contactPhone: string | null },
+  cfg: any,
+  empresas: Map<string, { id: number; nome: string }>,
+  hojeSp: string,
+  gate: any | undefined
+): Promise<void> {
+  if (!conv.contactPhone) return;
+  const sufixo = crmSoDigitos(conv.contactPhone).slice(-11);
+  const empresa = empresas.get(sufixo);
+  if (!empresa) return;
+  const hon = sqlite.prepare(`SELECT participa_cobranca_robo FROM honorarios WHERE empresa_id = ?`).get(empresa.id) as any;
+  if (!hon?.participa_cobranca_robo) return;
+  const atrasados = honorariosLancamentosEmAberto(empresa.id).filter((h) => h.status === "atrasado");
+  if (!atrasados.length) return;
+  if (gate && gate.ultimo_aviso_em === hojeSp) return; // já avisou hoje — fica quieto, só continua segurando
+  const comBoleto = atrasados.find((h) => h.boletoPath);
+  await deskcommRoboEnviar(conv.id, comBoleto ? HONORARIOS_ROBO_TEXTO_COM_BOLETO : HONORARIOS_ROBO_TEXTO_SEM_BOLETO);
+  if (cfg.envio_boleto_automatico && comBoleto && comBoleto.boletoPath && fs.existsSync(comBoleto.boletoPath)) {
+    try {
+      const buf = fs.readFileSync(comBoleto.boletoPath);
+      await deskcommRoboEnviarArquivo(conv.contactPhone, empresa.nome, { nome: `Boleto ${comBoleto.competencia}.pdf`, tipo: "application/pdf", buffer: buf }, `Boleto honorários — ${comBoleto.competencia}`);
+    } catch (e: any) {
+      console.error(`[honorarios-robo] falha ao mandar o boleto (empresa ${empresa.id}):`, e.message);
+    }
+  }
+  if (!gate) {
+    try {
+      await deskcommRoboApi(`/conversations/${conv.id}/claim`, { method: "POST", body: {} });
+    } catch (e: any) {
+      console.error(`[honorarios-robo] falha ao assumir a conversa ${conv.id}:`, e.message);
+    }
+    sqlite.prepare(`INSERT INTO honorarios_robo_gate (empresa_id, conversation_id, status, ultimo_aviso_em) VALUES (?, ?, 'ativo', ?)`).run(empresa.id, conv.id, hojeSp);
+  } else {
+    sqlite.prepare(`UPDATE honorarios_robo_gate SET ultimo_aviso_em = ? WHERE id = ?`).run(hojeSp, gate.id);
+  }
+}
+let honorariosRoboRodando = false;
+async function honorariosRoboRodar(): Promise<void> {
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID || honorariosRoboRodando) return;
+  const cfg = honorariosRoboCfg();
+  if (!cfg.validacao_ativa) return;
+  honorariosRoboRodando = true;
+  try {
+    const hojeSp = new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+    const empresas = atendimentoMapaEmpresasPorTelefone(DESKCOMM_ESCRITORIO_ID);
+
+    // 1) conversas NOVAS (sem dono) com mensagem recebida desde o último checkpoint.
+    const desde = cfg.ultimo_checkpoint || new Date(Date.now() - 24 * 3600_000).toISOString();
+    const agoraIso = new Date().toISOString();
+    const { data: novas, error } = await deskcommAdmin
+      .from("conversations")
+      .select("id, status, last_inbound_at, contact:contacts(phone_number)")
+      .eq("organization_id", DESKCOMM_ORG_ID)
+      .is("group_chat_id", null)
+      .is("assigned_to_user_id", null)
+      .not("status", "in", "(closed,archived)")
+      .gt("last_inbound_at", desde)
+      .order("last_inbound_at", { ascending: true })
+      .limit(200);
+    if (error) throw new Error(error.message);
+    for (const c of novas || []) {
+      try {
+        await honorariosRoboVerificarConversa({ id: c.id, contactPhone: (c as any).contact?.phone_number || null }, cfg, empresas, hojeSp, undefined);
+      } catch (e: any) {
+        console.error(`[honorarios-robo] falha na conversa ${c.id}:`, e.message);
+      }
+    }
+    sqlite.prepare(`UPDATE honorarios_robo_config SET ultimo_checkpoint = ? WHERE escritorio_id = ?`).run(agoraIso, DESKCOMM_ESCRITORIO_ID);
+
+    // 2) conversas já SEGURADAS pelo robô — libera quem não está mais em atraso (ex.: pagamento
+    // marcado direto, sem passar pela liberação automática) e reavisa (1x por dia) quem mandou
+    // mensagem nova desde a última checagem.
+    const gatesAtivos = sqlite.prepare(`SELECT * FROM honorarios_robo_gate WHERE status = 'ativo'`).all() as any[];
+    for (const g of gatesAtivos) {
+      try {
+        const { data: conv } = await deskcommAdmin.from("conversations").select("id, status, last_inbound_at, contact:contacts(phone_number)").eq("id", g.conversation_id).maybeSingle();
+        if (!conv) continue;
+        if (!honorariosLancamentosEmAberto(g.empresa_id).some((h) => h.status === "atrasado")) {
+          await honorariosRoboLiberarEmpresa(g.empresa_id);
+          continue;
+        }
+        if (conv.status === "closed" || conv.status === "archived") continue; // fechada: nada a fazer
+        const inboundAtual = (conv as any).last_inbound_at;
+        if (!inboundAtual || inboundAtual === g.ultimo_inbound_visto) continue; // sem mensagem nova
+        sqlite.prepare(`UPDATE honorarios_robo_gate SET ultimo_inbound_visto = ? WHERE id = ?`).run(inboundAtual, g.id);
+        await honorariosRoboVerificarConversa({ id: conv.id, contactPhone: (conv as any).contact?.phone_number || null }, cfg, empresas, hojeSp, g);
+      } catch (e: any) {
+        console.error(`[honorarios-robo] falha ao reconferir a conversa segurada ${g.conversation_id}:`, e.message);
+      }
+    }
+  } catch (e: any) {
+    console.error("[honorarios-robo]", e.message);
+  } finally {
+    honorariosRoboRodando = false;
+  }
+}
+setInterval(() => honorariosRoboRodar(), 20_000);
 // ---------- Mensagens AGENDADAS do atendimento (CRM e setores): escreve agora, o site envia no horário escolhido ----------
 // Sai pelo usuário "Automações" (o site não guarda a sessão de quem agendou); quem agendou fica registrado aqui na tabela.
 sqlite.exec(`

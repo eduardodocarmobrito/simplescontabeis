@@ -8469,6 +8469,7 @@ async function pageFinanceiro(){
     <div class="tabs">
       <div class="tab" data-tab="lancamentos">Lançamentos</div>
       <div class="tab" data-tab="honorarios">Honorários por empresa</div>
+      <div class="tab" data-tab="robo-boletos">Configuração envio de boletos</div>
     </div>
     <div id="finContent"></div>
   `;
@@ -8477,7 +8478,9 @@ async function pageFinanceiro(){
 }
 function renderFinTabs(){
   main().querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===FIN_TAB));
-  if(FIN_TAB==='honorarios') renderHonorarios(); else renderLancamentos();
+  if(FIN_TAB==='honorarios') renderHonorarios();
+  else if(FIN_TAB==='robo-boletos') renderHonorariosRobo();
+  else renderLancamentos();
 }
 async function renderHonorarios(){
   const podeEditar = can('financeiro','editar');
@@ -8542,7 +8545,7 @@ async function renderLancamentos(){
     <div class="kpi-grid" id="finResumo"></div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
-        <thead><tr><th>Empresa</th><th>Valor</th><th>Vencimento</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th>Empresa</th><th>Valor</th><th>Vencimento</th><th>Status</th><th>Boleto</th><th></th></tr></thead>
         <tbody id="lancBody"></tbody>
       </table>
     </div>
@@ -8561,13 +8564,21 @@ async function renderLancamentos(){
         <td>${fmtMoney(l.valor)}</td>
         <td>${fmtDate(l.vencimento)}</td>
         <td><span class="tag ${l.status==='pago'?'ok':l.status==='atrasado'?'bad':l.status==='cancelado'?'muted':'warn'}">${l.status}</span></td>
+        <td>${l.boleto_path?`<a class="btn small" href="/api/financeiro/lancamentos/${l.id}/boleto" target="_blank" rel="noopener">Ver</a>`:'<span class="tag muted">Sem boleto</span>'}${podeEditar?`<label class="btn small" style="margin-left:4px; cursor:pointer;">${l.boleto_path?'Trocar':'Anexar'}<input type="file" accept="application/pdf" data-boleto="${l.id}" style="display:none;"></label>`:''}</td>
         <td style="text-align:right;">${podeEditar?`<button class="btn small" data-act="pago">Marcar pago</button>`:''}</td>
       </tr>
-    `).join('') : `<tr><td colspan="5"><div class="empty-state">Nenhum lançamento nesta competência.</div></td></tr>`;
+    `).join('') : `<tr><td colspan="6"><div class="empty-state">Nenhum lançamento nesta competência.</div></td></tr>`;
     if(podeEditar) document.getElementById('lancBody').querySelectorAll('[data-act="pago"]').forEach(b=>b.addEventListener('click', async e=>{
       const id = Number(e.target.closest('tr').dataset.id);
       await api('/financeiro/lancamentos/'+id, { method:'PUT', body:{ status:'pago', dataPagamento: new Date().toISOString().slice(0,10) } });
       carregar();
+    }));
+    if(podeEditar) document.getElementById('lancBody').querySelectorAll('[data-boleto]').forEach(inp=>inp.addEventListener('change', async e=>{
+      const arquivo = e.target.files[0]; if(!arquivo) return;
+      const id = e.target.dataset.boleto;
+      const fd = new FormData(); fd.append('boleto', arquivo);
+      try{ await api('/financeiro/lancamentos/'+id+'/boleto', { method:'POST', body: fd }); toast('Boleto anexado.','ok'); carregar(); }
+      catch(err){ toast(err.message,'err'); }
     }));
   }
   document.getElementById('finComp').addEventListener('change', carregar);
@@ -8578,6 +8589,42 @@ async function renderLancamentos(){
     carregar();
   });
   carregar();
+}
+// ---- Robô de cobrança de honorários pelo WhatsApp: liga/desliga + quais empresas participam ----
+async function renderHonorariosRobo(){
+  const podeEditar = can('financeiro','editar');
+  const box = document.getElementById('finContent');
+  const [cfg, { items: empresas }] = await Promise.all([ api('/financeiro/honorarios-robo/config'), api('/financeiro/honorarios-robo/empresas') ]);
+  const selecionados = empresas.filter(e=>e.participa).map(e=>e.id);
+  box.innerHTML = `
+    <div class="card" style="max-width:820px;">
+      <h3 style="margin-top:0;">Cobrança automática de honorários pelo WhatsApp</h3>
+      <p class="subtitle" style="margin-bottom:12px;">Quando um cliente marcado abaixo manda mensagem com honorários em atraso, o robô responde
+        sozinho com o aviso de cobrança (e o boleto, se estiver anexado em Lançamentos) e segura a conversa — ela some da fila do
+        atendimento até o pagamento ser marcado. Os dois interruptores nascem <b>desligados</b>; ligue só depois de validar.</p>
+      <label class="checkbox-row"><input type="checkbox" id="hrValidacao" ${cfg.validacaoAtiva?'checked':''} ${podeEditar?'':'disabled'}> Validar inadimplência (responde e segura a conversa de quem está em atraso)</label>
+      <label class="checkbox-row"><input type="checkbox" id="hrBoletoAuto" ${cfg.envioBoletoAutomatico?'checked':''} ${podeEditar?'':'disabled'}> Enviar o boleto automaticamente junto com o aviso (se estiver anexado)</label>
+      <div style="margin-top:16px; padding-top:14px; border-top:1px solid var(--rule);">
+        <div style="font-weight:600; margin-bottom:6px;">Empresas que participam da validação</div>
+        ${checklistComFiltroHtml('hrEmp', empresas, selecionados)}
+        ${podeEditar?`<div class="row" style="margin-top:10px;"><button class="btn primary" id="btnHrSalvarEmpresas">Salvar empresas marcadas</button></div>`:''}
+      </div>
+    </div>
+  `;
+  setupChecklistFiltro('hrEmp');
+  if(podeEditar){
+    const salvarToggle = async (id, chave)=>{
+      try{ await api('/financeiro/honorarios-robo/config', { method:'PUT', body:{ [chave]: document.getElementById(id).checked } }); toast('Salvo.','ok'); }
+      catch(e){ toast(e.message,'err'); document.getElementById(id).checked = !document.getElementById(id).checked; }
+    };
+    document.getElementById('hrValidacao').addEventListener('change', ()=>salvarToggle('hrValidacao','validacaoAtiva'));
+    document.getElementById('hrBoletoAuto').addEventListener('change', ()=>salvarToggle('hrBoletoAuto','envioBoletoAutomatico'));
+    document.getElementById('btnHrSalvarEmpresas').addEventListener('click', async ()=>{
+      const ids = [...document.querySelectorAll('.hrEmpCheck:checked')].map(c=>Number(c.value));
+      try{ const r = await api('/financeiro/honorarios-robo/empresas', { method:'PUT', body:{ empresaIds: ids } }); toast(r.marcadas+' empresa(s) marcada(s).','ok'); }
+      catch(e){ toast(e.message,'err'); }
+    });
+  }
 }
 
 // ===================== Contratos =====================
