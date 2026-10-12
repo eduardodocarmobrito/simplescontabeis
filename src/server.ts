@@ -5540,11 +5540,19 @@ app.get("/api/fgts/empresas-marcadas", blockCliente, requirePermissao("empresas"
 });
 // Recebe o resultado de UMA empresa, enviado por fgts-login-setup.ts ao vivo, logo depois de buscar
 // a guia dela no mesmo navegador logado (ver buscarGuiaFgtsEmpresa em fgts-automacao.ts).
+// Achado em auditoria (2026-10-12): sem cooldown nenhum — um token roubado (fica só como hash, mas
+// se o token em si vazar) podia martelar esta rota e inserir guias falsas em Envio de Documentos
+// repetidamente. Cooldown curto por empresa, só contra abuso/loop — não interfere no uso normal (o
+// agente passa por cada empresa uma vez por rodada).
+const fgtsGuiaUltimoEnvio = new Map<number, number>();
 app.post("/api/fgts/guia", blockCliente, requirePermissao("empresas", "postar"), (req, res) => {
   const user = (req as any).user;
   const { empresaId, ano, mes, ok, guiaGerada, pdfBase64, erro } = req.body || {};
   const idNum = Number(empresaId);
   if (!idNum || !podeAcessarEmpresa(user, idNum)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const ultimo = fgtsGuiaUltimoEnvio.get(idNum);
+  if (ultimo && Date.now() - ultimo < 30_000) return res.status(429).json({ error: "Resultado desta empresa já recebido há pouco." });
+  fgtsGuiaUltimoEnvio.set(idNum, Date.now());
   let erroFinal: string | null = ok ? null : String(erro || "Falha desconhecida.");
   if (ok && guiaGerada && pdfBase64) {
     try {
@@ -13756,7 +13764,13 @@ app.post("/api/escritorio/modulos/pagar", blockCliente, requirePermissao("config
 // sessão de usuário nessa chamada (o Asaas quem chama, não o navegador de ninguém).
 app.post("/api/asaas/webhook", (req, res) => {
   const tokenEsperado = process.env.ASAAS_WEBHOOK_TOKEN;
-  if (tokenEsperado && req.query.token !== tokenEsperado) return res.status(403).json({ error: "Token inválido." });
+  // Achado em auditoria (2026-10-12): sem a env var configurada, a checagem inteira era pulada
+  // (falha aberta) — qualquer POST externo com um payment.id válido liberava módulo de assinatura
+  // sem pagar. Hoje está configurada em produção, mas um .env incompleto (staging, redeploy,
+  // variável limpa por engano) removeria a proteção silenciosamente. Falha fechada: sem token
+  // configurado no servidor, recusa tudo, em vez de aceitar tudo.
+  if (!tokenEsperado) return res.status(503).json({ error: "Webhook não configurado no servidor." });
+  if (req.query.token !== tokenEsperado) return res.status(403).json({ error: "Token inválido." });
   const { event, payment } = req.body || {};
   if (!payment?.id) return res.status(400).json({ error: "Corpo inválido." });
   const statusMap: Record<string, string> = {
