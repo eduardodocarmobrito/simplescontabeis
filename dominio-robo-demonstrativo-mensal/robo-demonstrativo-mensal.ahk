@@ -27,11 +27,10 @@ AGENTE_TOKEN := "COLE_AQUI_O_TOKEN_DO_AGENTE"
 
 POLL_SEGUNDOS := 10       ; de quanto em quanto tempo pergunta ao site
 
-; false = NAO digita o periodo; usa o PADRAO que o proprio dialogo ja abre
-; (01/ano vigente ate o mes atual). Mais robusto no streaming (campo mascarado
-; MM/AAAA embola ao digitar). O site ainda detecta o periodo real pelo TEXTO do PDF.
-; Se um dia quiser controlar o periodo pela tela, confira as coords PER_* abaixo e ligue.
-DIGITAR_PERIODO := false
+; true = digita o periodo que o site mandar (padrao 01/ano vigente ate a competencia
+; anterior, ou o customizado na tela). Clica DIRETO em cada campo (sem Tab) e digita os
+; 6 digitos devagar (streaming). Coords PER_* vindas do Window Spy (prints do dialogo).
+DIGITAR_PERIODO := true
 ; Re-selecionar o modulo Escrita Fiscal a cada execucao? true = garante o modulo certo.
 SELECIONAR_MODULO := true
 FAV_KEY      := "f"       ; letra do menu FAVORITOS
@@ -45,10 +44,10 @@ MAX_TENTATIVAS := 3       ; quantas vezes tenta cada empresa se o PDF nao aparec
 THISPC_X    := 52,   THISPC_Y    := 265
 CAMPO_NOME_X:= 250,  CAMPO_NOME_Y:= 388
 
-; Coordenadas de TELA dos campos de periodo no dialogo "Demonstrativo Mensal".
-; So usadas se DIGITAR_PERIODO = true. >>> AJUSTAR com o Window Spy se for ligar. <<<
-PER_INI_X   := 940,  PER_INI_Y   := 735    ; campo Inicial (01/AAAA)
-PER_FIM_X   := 940,  PER_FIM_Y   := 762    ; campo Final   (MM/AAAA)
+; Coordenadas de TELA dos campos de periodo no dialogo "Demonstrativo Mensal"
+; (Window Spy, prints do usuario). Inicial em cima, Final logo abaixo (empilhados).
+PER_INI_X   := 1207, PER_INI_Y   := 739    ; campo Inicial (01/AAAA)
+PER_FIM_X   := 1208, PER_FIM_Y   := 759    ; campo Final   (MM/AAAA)
 
 ; Centro do dialogo "Sem dados para emitir !" (clique pra dar FOCO de teclado antes do Enter/OK)
 SEMDADOS_X  := 1286, SEMDADOS_Y  := 796
@@ -95,13 +94,19 @@ JsonEscape(s) {
 }
 
 ; ------------------------------------------------------------------- FUNCOES
-; Periodo padrao (fallback, so se o site nao mandar): 01/ano vigente ate o MES ATUAL
-; (igual ao default que o dialogo do Demonstrativo Mensal ja abre).
+; Periodo padrao (fallback, so se o site nao mandar): 01/ano vigente ate a COMPETENCIA
+; ANTERIOR (mes passado) - igual ao Comparativo e ao default do dialogo do Demonstrativo.
 CalcularPeriodo(&compIni, &compFim) {
     anoAtual := Integer(A_YYYY)
     mes := Integer(A_MM)
+    anoFim := anoAtual
+    mesFim := mes - 1
+    if (mesFim = 0) {
+        mesFim := 12
+        anoFim := anoAtual - 1
+    }
     compIni := "01/" . anoAtual
-    compFim := Format("{:02}/{}", mes, anoAtual)
+    compFim := Format("{:02}/{}", mesFim, anoFim)
 }
 
 Logar(txt) {

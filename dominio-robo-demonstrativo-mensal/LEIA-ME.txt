@@ -37,10 +37,9 @@ INSTALACAO (1x)
 
 PERIODO
 -------
-Por padrao o robo NAO digita o periodo: usa o que o proprio dialogo "Demonstrativo
-Mensal" ja abre (01/ano vigente ate o mes atual). O site detecta o periodo real
-pelo texto do PDF. Se quiser controlar o periodo pela tela do site, avise o
-suporte pra ligar a digitacao (precisa conferir as coordenadas dos campos).
+O robo DIGITA o periodo no dialogo "Demonstrativo Mensal" (campos Inicial/Final).
+Por padrao usa 01/ano vigente ate a competencia anterior (igual ao que o dialogo
+ja abre); da pra customizar na tela do site (Config > Relatorios > card do robo).
 
 COMO RODAR
 ----------
