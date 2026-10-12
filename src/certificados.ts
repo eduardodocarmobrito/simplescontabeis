@@ -203,6 +203,11 @@ export function registerCertificados(app: express.Express, d: Deps) {
   });
 
   // ---------------------------------------------------------------- assinatura
+  // Achado em auditoria (2026-10-12): a confirmação de senha antes de assinar não tinha limite de
+  // tentativas — numa máquina compartilhada/sem bloquear tela, alguém poderia tentar adivinhar a
+  // senha de um colega logado só spammando este endpoint. Mesmo limite já usado em troca de senha:
+  // 8 tentativas erradas / 15 min por usuário.
+  const assinarSenhaErros = new Map<number, { n: number; ate: number }>();
   app.post("/api/certificados/assinar", d.blockCliente, d.requirePermissao("certificados", "postar"), upload.single("documento"), async (req, res) => {
     const user = (req as any).user;
     const senha = String(req.body?.senha || "");
@@ -211,8 +216,14 @@ export function registerCertificados(app: express.Express, d: Deps) {
       return res.status(400).json({ error: "Só é possível assinar arquivos PDF." });
     }
     if (!senha) return res.status(400).json({ error: "Confirme sua senha de login pra assinar." });
+    const trava = assinarSenhaErros.get(user.id);
+    if (trava && trava.ate > Date.now() && trava.n >= 8) return res.status(429).json({ error: "Muitas tentativas com a senha errada. Aguarde alguns minutos." });
     const linhaUser = sqlite.prepare(`SELECT password_hash FROM app_users WHERE id = ?`).get(user.id) as any;
-    if (!linhaUser || !d.verifyPassword(senha, linhaUser.password_hash)) return res.status(401).json({ error: "Senha incorreta." });
+    if (!linhaUser || !d.verifyPassword(senha, linhaUser.password_hash)) {
+      const t = trava && trava.ate > Date.now() ? trava : { n: 0, ate: Date.now() + 15 * 60_000 };
+      t.n++; assinarSenhaErros.set(user.id, t);
+      return res.status(401).json({ error: "Senha incorreta." });
+    }
     const chave = chaveAtivaDoUsuario(user.id);
     if (!chave) return res.status(403).json({ error: "Você não tem uma chave ativa pra assinar documentos — peça ao administrador em Certificados › Colaboradores." });
     const cfg = configDe(user.escritorioId);
@@ -248,12 +259,20 @@ export function registerCertificados(app: express.Express, d: Deps) {
       const destino = path.join(DIR, `${Date.now()}_${crypto.randomBytes(4).toString("hex")}.pdf`);
       fs.writeFileSync(destino, pdfAssinado);
 
-      const result = sqlite
-        .prepare(
-          `INSERT INTO certificados_documentos (escritorio_id, user_id, nome_arquivo, arquivo_path, hash_antes, hash_depois, titular, numero_serie, status, ocsp_status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'assinado', ?)`
-        )
-        .run(user.escritorioId, user.id, nomeArquivo, destino, hashAntes, hashDepois, cfg.titular, numeroSerieDoCertPem(info.certPem), ocspStatus);
+      // Se o INSERT falhar depois de já ter gravado o PDF em disco, o arquivo ficaria órfão (sem
+      // nenhuma linha apontando pra ele) — limpa antes de deixar o erro subir pro catch de fora.
+      let result: any;
+      try {
+        result = sqlite
+          .prepare(
+            `INSERT INTO certificados_documentos (escritorio_id, user_id, nome_arquivo, arquivo_path, hash_antes, hash_depois, titular, numero_serie, status, ocsp_status)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'assinado', ?)`
+          )
+          .run(user.escritorioId, user.id, nomeArquivo, destino, hashAntes, hashDepois, cfg.titular, numeroSerieDoCertPem(info.certPem), ocspStatus);
+      } catch (eInsert: any) {
+        try { fs.unlinkSync(destino); } catch { /* melhor esforço — não deixa o erro original ser mascarado */ }
+        throw eInsert;
+      }
       res.json({ ok: true, id: Number(result.lastInsertRowid), nomeArquivo, ocspStatus });
     } catch (e: any) {
       sqlite

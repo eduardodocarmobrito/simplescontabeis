@@ -2911,13 +2911,24 @@ app.get("/api/atendimento/sessao-deskcomm", requireAuth, blockCliente, async (re
 });
 
 // ---------- Autenticação ----------
+// Achado em auditoria (2026-10-12): o `loginRateLimiter` existente trava por IP (ex.: 10 tentativas/
+// 15min) — não impede um ataque de credential-stuffing contra UM e-mail específico vindo de muitos
+// IPs diferentes. Trava extra por e-mail (mesmo padrão/limite já usado em troca de senha), em cima da
+// trava por IP que já existia — as duas continuam valendo.
+const loginErrosPorEmail = new Map<string, { n: number; ate: number }>();
 app.post("/api/auth/login", loginRateLimiter, (req, res) => {
   const { email, password } = req.body || {};
   if (!email || !password) return res.status(400).json({ error: "Informe e-mail e senha." });
-  const row = sqlite.prepare(`SELECT * FROM app_users WHERE email = ?`).get(String(email).trim().toLowerCase()) as any;
+  const emailNorm = String(email).trim().toLowerCase();
+  const trava = loginErrosPorEmail.get(emailNorm);
+  if (trava && trava.ate > Date.now() && trava.n >= 10) return res.status(429).json({ error: "Muitas tentativas de login. Aguarde alguns minutos." });
+  const row = sqlite.prepare(`SELECT * FROM app_users WHERE email = ?`).get(emailNorm) as any;
   if (!row || !row.ativo || !verifyPassword(password, row.password_hash)) {
+    const t = trava && trava.ate > Date.now() ? trava : { n: 0, ate: Date.now() + 15 * 60_000 };
+    t.n++; loginErrosPorEmail.set(emailNorm, t);
     return res.status(401).json({ error: "E-mail ou senha inválidos." });
   }
+  loginErrosPorEmail.delete(emailNorm);
   const token = createSession(row.id, !!row.painel_tv);
   const diasCookie = row.painel_tv ? SESSION_DAYS_PAINEL_TV : SESSION_DAYS;
   res.cookie("sid", token, { httpOnly: true, sameSite: "lax", secure: req.secure, maxAge: diasCookie * 24 * 60 * 60 * 1000 });
@@ -3153,11 +3164,23 @@ app.post("/api/users", requireAdmin, (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+// Achado em auditoria (2026-10-12): nada impedia desativar/excluir o ÚLTIMO Administrador ativo de um
+// escritório — um clique errado (ou o único admin se desativando/excluindo por engano) trancava o
+// escritório inteiro fora do sistema, sem ninguém com acesso pra reverter.
+function ehUltimoAdminAtivo(escritorioId: number, userId: number): boolean {
+  const alvo = sqlite.prepare(`SELECT perfil, ativo FROM app_users WHERE id = ?`).get(userId) as any;
+  if (!alvo || alvo.perfil !== "Administrador" || !alvo.ativo) return false;
+  const outros = (sqlite.prepare(`SELECT COUNT(*) n FROM app_users WHERE escritorio_id = ? AND perfil = 'Administrador' AND ativo = 1 AND id != ?`).get(escritorioId, userId) as any).n;
+  return outros === 0;
+}
 app.put("/api/users/:id", requireAdmin, (req, res) => {
   const id = Number(req.params.id);
   const existing = sqlite.prepare(`SELECT * FROM app_users WHERE id = ?`).get(id) as any;
   if (!existing || existing.escritorio_id !== (req as any).user.escritorioId) return res.status(404).json({ error: "Usuário não encontrado." });
   const { nome, email, password, ativo, acessoTodasEmpresas, isentoAssinatura, painelTv, painelTvPaginas, telefone } = req.body || {};
+  if (ativo === false && ehUltimoAdminAtivo(existing.escritorio_id, id)) {
+    return res.status(409).json({ error: "Este é o único Administrador ativo do escritório — não dá pra desativar. Crie outro Administrador antes." });
+  }
   if (password) {
     const pwError = passwordPolicyError(password);
     if (pwError) return res.status(400).json({ error: pwError });
@@ -3193,6 +3216,9 @@ app.delete("/api/users/:id", requireAdmin, (req, res) => {
   const id = Number(req.params.id);
   const existing = sqlite.prepare(`SELECT escritorio_id FROM app_users WHERE id = ?`).get(id) as any;
   if (!existing || existing.escritorio_id !== (req as any).user.escritorioId) return res.status(404).json({ error: "Usuário não encontrado." });
+  if (ehUltimoAdminAtivo(existing.escritorio_id, id)) {
+    return res.status(409).json({ error: "Este é o único Administrador ativo do escritório — não dá pra excluir. Crie outro Administrador antes." });
+  }
   sqlite.prepare(`DELETE FROM sessions WHERE user_id = ?`).run(id);
   sqlite.prepare(`DELETE FROM app_users WHERE id = ?`).run(id);
   res.json({ id });
@@ -13803,6 +13829,11 @@ app.post("/api/financeiro/lancamentos/:id/boleto", blockCliente, requirePermissa
   const existing = sqlite.prepare(`SELECT * FROM honorarios_lancamentos WHERE id = ?`).get(id) as any;
   if (!existing || !podeAcessarEmpresa((req as any).user, existing.empresa_id)) return res.status(404).json({ error: "Lançamento não encontrado." });
   if (!req.file) return res.status(400).json({ error: "Envie o PDF do boleto." });
+  // Achado em auditoria (2026-10-12): não conferia o tipo do arquivo — um não-PDF salvo como "boleto"
+  // seria mandado pro WhatsApp do cliente de verdade pelo robô de cobrança, rotulado como PDF.
+  if (req.file.mimetype !== "application/pdf" && !/\.pdf$/i.test(req.file.originalname || "")) {
+    return res.status(400).json({ error: "Envie um arquivo PDF." });
+  }
   const dir = path.join(UPLOADS_DIR, "honorarios-boletos", String(existing.empresa_id));
   fs.mkdirSync(dir, { recursive: true });
   if (existing.boleto_path && fs.existsSync(existing.boleto_path)) { try { fs.unlinkSync(existing.boleto_path); } catch { /* arquivo antigo já sumiu, segue */ } }
@@ -13820,26 +13851,47 @@ app.get("/api/financeiro/lancamentos/:id/boleto", blockCliente, requirePermissao
   res.send(fs.readFileSync(existing.boleto_path));
 });
 // ---- Robô de cobrança de honorários: configuração (Financeiro > Configuração envio de boletos) ----
-app.get("/api/financeiro/honorarios-robo/config", blockCliente, requirePermissao("financeiro", "visualizar"), (_req, res) => {
+// O robô em si só processa conversas do deskcomm ligado a DESKCOMM_ESCRITORIO_ID (toda a integração
+// de atendimento/WhatsApp deste sistema é assim — 1 organização do deskcomm = 1 escritório daqui, ver
+// nota em atendimentoMapaEmpresasPorTelefone). Achado em auditoria (2026-10-12): estas duas rotas
+// liam/gravavam nessa mesma linha SEM checar se é o escritório de quem está logado — um usuário de
+// outro escritório (se este sistema algum dia atender mais de um) conseguiria ligar/desligar o robô
+// de cobrança de uma empresa real de OUTRO escritório. Corrigido com a barreira explícita abaixo.
+app.get("/api/financeiro/honorarios-robo/config", blockCliente, requirePermissao("financeiro", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  if (user.escritorioId !== DESKCOMM_ESCRITORIO_ID) return res.status(403).json({ error: "O robô de cobrança por WhatsApp só está disponível pro escritório principal, por enquanto." });
   const cfg = honorariosRoboCfg();
   res.json({ validacaoAtiva: !!cfg.validacao_ativa, envioBoletoAutomatico: !!cfg.envio_boleto_automatico });
 });
 app.put("/api/financeiro/honorarios-robo/config", blockCliente, requirePermissao("financeiro", "editar"), (req, res) => {
+  const user = (req as any).user;
+  if (user.escritorioId !== DESKCOMM_ESCRITORIO_ID) return res.status(403).json({ error: "O robô de cobrança por WhatsApp só está disponível pro escritório principal, por enquanto." });
   honorariosRoboCfg();
   const { validacaoAtiva, envioBoletoAutomatico } = req.body || {};
   if (validacaoAtiva !== undefined) sqlite.prepare(`UPDATE honorarios_robo_config SET validacao_ativa = ? WHERE escritorio_id = ?`).run(validacaoAtiva ? 1 : 0, DESKCOMM_ESCRITORIO_ID);
   if (envioBoletoAutomatico !== undefined) sqlite.prepare(`UPDATE honorarios_robo_config SET envio_boleto_automatico = ? WHERE escritorio_id = ?`).run(envioBoletoAutomatico ? 1 : 0, DESKCOMM_ESCRITORIO_ID);
   res.json({ ok: true });
 });
-app.get("/api/financeiro/honorarios-robo/empresas", blockCliente, requirePermissao("financeiro", "visualizar"), (_req, res) => {
-  const rows = sqlite
-    .prepare(`SELECT e.id, e.nome, COALESCE(h.participa_cobranca_robo, 0) as participa FROM empresas e LEFT JOIN honorarios h ON h.empresa_id = e.id WHERE e.ativo = 1 ORDER BY e.nome`)
-    .all() as any[];
+app.get("/api/financeiro/honorarios-robo/empresas", blockCliente, requirePermissao("financeiro", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  // Achado em auditoria (2026-10-12): faltava filtrar por escritório — devolvia empresa de QUALQUER
+  // escritório, não só do usuário logado. Corrigido.
+  let rows = sqlite
+    .prepare(`SELECT e.id, e.nome, COALESCE(h.participa_cobranca_robo, 0) as participa FROM empresas e LEFT JOIN honorarios h ON h.empresa_id = e.id WHERE e.ativo = 1 AND e.escritorio_id = ? ORDER BY e.nome`)
+    .all(user.escritorioId) as any[];
+  const visiveis = empresasVisiveis(user);
+  if (visiveis !== null) rows = rows.filter((r) => visiveis.includes(r.id));
   res.json({ items: rows.map((r) => ({ id: r.id, nome: r.nome, participa: !!r.participa })) });
 });
 app.put("/api/financeiro/honorarios-robo/empresas", blockCliente, requirePermissao("financeiro", "editar"), (req, res) => {
-  const ids: number[] = Array.isArray(req.body?.empresaIds) ? req.body.empresaIds.map(Number) : [];
-  sqlite.prepare(`UPDATE honorarios SET participa_cobranca_robo = 0`).run();
+  const user = (req as any).user;
+  const idsPedidos: number[] = Array.isArray(req.body?.empresaIds) ? req.body.empresaIds.map(Number) : [];
+  // Achado em auditoria (2026-10-12): o UPDATE não tinha WHERE nenhum — zerava a participação de
+  // TODAS as empresas de TODOS os escritórios a cada salvamento, e os ids recebidos entravam sem
+  // conferir se pertenciam mesmo ao escritório/acesso de quem salvou (IDOR). Corrigido: só mexe nas
+  // empresas do PRÓPRIO escritório, e só aceita id que o usuário pode mesmo acessar.
+  const ids = idsPedidos.filter((id) => podeAcessarEmpresa(user, id));
+  sqlite.prepare(`UPDATE honorarios SET participa_cobranca_robo = 0 WHERE empresa_id IN (SELECT id FROM empresas WHERE escritorio_id = ?)`).run(user.escritorioId);
   for (const id of ids) {
     sqlite.prepare(`INSERT INTO honorarios (empresa_id, participa_cobranca_robo, updated_at) VALUES (?, 1, datetime('now'))
       ON CONFLICT(empresa_id) DO UPDATE SET participa_cobranca_robo = 1, updated_at = datetime('now')`).run(id);
@@ -16586,6 +16638,13 @@ async function honorariosRoboVerificarConversa(
   gate: any | undefined
 ): Promise<void> {
   if (!conv.contactPhone) return;
+  // Achado em auditoria (2026-10-12): o mapa telefone→empresa (empresas, acima) guarda só a PRIMEIRA
+  // empresa achada pra cada telefone — existe de verdade o caso de um número ser sócio/responsável de
+  // mais de uma empresa (mesmo padrão já tratado no atendimento humano via
+  // atendimentoEmpresasPorTelefoneTodas). Pra um robô que manda cobrança + boleto de verdade pro
+  // WhatsApp do cliente, "advinhar errado" manda o boleto da empresa ERRADA — por isso, quando o
+  // telefone é ambíguo, o robô não age (mesma regra do fluxo humano: sem certeza, não decide sozinho).
+  if (atendimentoEmpresasPorTelefoneTodas(DESKCOMM_ESCRITORIO_ID, conv.contactPhone).length > 1) return;
   const sufixo = crmSoDigitos(conv.contactPhone).slice(-11);
   const empresa = empresas.get(sufixo);
   if (!empresa) return;
