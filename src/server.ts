@@ -9709,6 +9709,7 @@ registerCertificados(app, {
   lerCertificadoCifradoDoDisco: nfse.lerCertificadoCifradoDoDisco,
   excluirCertificadoDoDisco: nfse.excluirCertificadoDoDisco,
   uploadsDir: UPLOADS_DIR,
+  podeAcessarEmpresa,
 });
 // Módulo E-mail (webmail): reaproveita o e-mail + senha de app de Configurações › E-mail corporativo.
 registerWebmail(app, {

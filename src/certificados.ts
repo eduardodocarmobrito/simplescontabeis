@@ -41,6 +41,11 @@ type Deps = {
   lerCertificadoCifradoDoDisco: (p: string) => Buffer;
   excluirCertificadoDoDisco: (p: string) => void;
   uploadsDir: string;
+  // Usada só pra filtrar o histórico de documentos por visibilidade geral (ver GET /documentos) —
+  // não é a porta de entrada pra assinar: quem autoriza assinar por uma empresa é o grant próprio
+  // deste módulo (certificados_colaboradores_empresas), independente do que o colaborador enxerga
+  // em outras telas.
+  podeAcessarEmpresa: (user: any, empresaId: number) => boolean;
 };
 
 // Checagem de revogação (OCSP) com timeout curto, nunca lança — qualquer problema (timeout, CA fora do
@@ -103,7 +108,38 @@ export function registerCertificados(app: express.Express, d: Deps) {
     );
     CREATE INDEX IF NOT EXISTS idx_certificados_docs_esc ON certificados_documentos(escritorio_id, criado_em);
     CREATE INDEX IF NOT EXISTS idx_certificados_docs_user ON certificados_documentos(user_id, criado_em);
+
+    -- Certificado de cada empresa-cliente (1 por empresa, mesmo padrão de nfe_busca_config em
+    -- server.ts — sempre o certificado da própria empresa, nunca o do escritório).
+    CREATE TABLE IF NOT EXISTS certificados_empresas (
+      empresa_id INTEGER PRIMARY KEY REFERENCES empresas(id) ON DELETE CASCADE,
+      escritorio_id INTEGER NOT NULL,
+      arquivo_path TEXT,
+      senha_cifrada TEXT,
+      titular TEXT,
+      cnpj_certificado TEXT,
+      validade_ate TEXT,
+      ativo INTEGER NOT NULL DEFAULT 0,
+      atualizado_em TEXT,
+      atualizado_por INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_certificados_empresas_esc ON certificados_empresas(escritorio_id);
+
+    -- Quais empresas um colaborador (já com chave ativa) está autorizado a assinar — permissão
+    -- própria deste módulo, independente da visibilidade geral de empresas (colaborador_empresas).
+    CREATE TABLE IF NOT EXISTS certificados_colaboradores_empresas (
+      user_id INTEGER NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+      empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+      concedido_por INTEGER,
+      concedido_em TEXT DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, empresa_id)
+    );
   `);
+  // Migração leve: empresa_id em certificados_documentos (NULL = assinado como o escritório).
+  const colsDocs = sqlite.prepare(`PRAGMA table_info(certificados_documentos)`).all() as any[];
+  if (!colsDocs.some((c) => c.name === "empresa_id")) {
+    sqlite.exec(`ALTER TABLE certificados_documentos ADD COLUMN empresa_id INTEGER`);
+  }
 
   const DIR = path.join(d.uploadsDir, "certificados-assinados");
   fs.mkdirSync(DIR, { recursive: true });
@@ -111,6 +147,9 @@ export function registerCertificados(app: express.Express, d: Deps) {
 
   const configDe = (escritorioId: number): any => sqlite.prepare(`SELECT * FROM certificados_config WHERE escritorio_id = ?`).get(escritorioId);
   const chaveAtivaDoUsuario = (userId: number): any => sqlite.prepare(`SELECT * FROM certificados_colaboradores WHERE user_id = ? AND ativo = 1`).get(userId);
+  const certificadoEmpresaDe = (empresaId: number): any => sqlite.prepare(`SELECT * FROM certificados_empresas WHERE empresa_id = ?`).get(empresaId);
+  const colaboradorPodeAssinarEmpresa = (userId: number, empresaId: number): boolean =>
+    !!sqlite.prepare(`SELECT 1 FROM certificados_colaboradores_empresas WHERE user_id = ? AND empresa_id = ?`).get(userId, empresaId);
   const gerarChave = (): string => "COL-" + crypto.randomBytes(4).toString("hex").toUpperCase();
   const numeroSerieDoCertPem = (certPem: string): string | null => {
     try {
@@ -167,6 +206,63 @@ export function registerCertificados(app: express.Express, d: Deps) {
     res.json({ ok: true });
   });
 
+  // ---------------------------------------------------------------- certificado por empresa-cliente
+  app.get("/api/certificados/empresas", d.blockCliente, d.requireAdmin, (req, res) => {
+    const user = (req as any).user;
+    const rows = sqlite
+      .prepare(
+        `SELECT ce.empresa_id as empresaId, e.nome as empresaNome, ce.titular, ce.cnpj_certificado as cnpj,
+                ce.validade_ate as validadeAte, ce.ativo
+         FROM certificados_empresas ce JOIN empresas e ON e.id = ce.empresa_id
+         WHERE ce.escritorio_id = ? ORDER BY e.nome`
+      )
+      .all(user.escritorioId) as any[];
+    res.json({
+      items: rows.map((r) => {
+        const validade = r.validadeAte ? new Date(r.validadeAte) : null;
+        const diasRestantes = validade ? Math.ceil((validade.getTime() - Date.now()) / 86400000) : null;
+        return { ...r, diasRestantes, vencido: diasRestantes !== null && diasRestantes < 0 };
+      }),
+    });
+  });
+  app.put("/api/certificados/empresas/:empresaId", d.blockCliente, d.requireAdmin, upload.single("certificado"), (req, res) => {
+    const user = (req as any).user;
+    const empresaId = Number(req.params.empresaId);
+    const empresa = sqlite.prepare(`SELECT id FROM empresas WHERE id = ? AND escritorio_id = ?`).get(empresaId, user.escritorioId) as any;
+    if (!empresa) return res.status(404).json({ error: "Empresa não encontrada." });
+    const senha = String(req.body?.senha || "");
+    if (!req.file) return res.status(400).json({ error: "Envie o arquivo do certificado (.pfx)." });
+    if (!senha) return res.status(400).json({ error: "Informe a senha do certificado." });
+    let info: CertificadoInfo;
+    try {
+      info = d.lerCertificadoPfx(req.file.buffer, senha);
+    } catch (e: any) {
+      return res.status(400).json({ error: e.message });
+    }
+    const atual = certificadoEmpresaDe(empresaId);
+    if (atual?.arquivo_path) d.excluirCertificadoDoDisco(atual.arquivo_path);
+    const arquivoPath = d.salvarCertificadoCifrado(req.file.buffer, req.file.originalname);
+    sqlite
+      .prepare(
+        `INSERT INTO certificados_empresas (empresa_id, escritorio_id, arquivo_path, senha_cifrada, titular, cnpj_certificado, validade_ate, ativo, atualizado_em, atualizado_por)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), ?)
+         ON CONFLICT(empresa_id) DO UPDATE SET arquivo_path=excluded.arquivo_path, senha_cifrada=excluded.senha_cifrada,
+           titular=excluded.titular, cnpj_certificado=excluded.cnpj_certificado, validade_ate=excluded.validade_ate,
+           ativo=1, atualizado_em=datetime('now'), atualizado_por=excluded.atualizado_por`
+      )
+      .run(empresaId, user.escritorioId, arquivoPath, d.cifrarTexto(senha), info.titular, info.cnpjCertificado, info.validadeAte ? info.validadeAte.toISOString() : null, user.id);
+    res.json({ ok: true, titular: info.titular, validadeAte: info.validadeAte });
+  });
+  app.delete("/api/certificados/empresas/:empresaId", d.blockCliente, d.requireAdmin, (req, res) => {
+    const user = (req as any).user;
+    const empresaId = Number(req.params.empresaId);
+    const atual = sqlite.prepare(`SELECT * FROM certificados_empresas WHERE empresa_id = ? AND escritorio_id = ?`).get(empresaId, user.escritorioId) as any;
+    if (!atual) return res.status(404).json({ error: "Certificado não encontrado." });
+    if (atual.arquivo_path) d.excluirCertificadoDoDisco(atual.arquivo_path);
+    sqlite.prepare(`DELETE FROM certificados_empresas WHERE empresa_id = ?`).run(empresaId);
+    res.json({ ok: true });
+  });
+
   // ---------------------------------------------------------------- chaves por colaborador
   app.get("/api/certificados/colaboradores", d.blockCliente, d.requireAdmin, (req, res) => {
     const user = (req as any).user;
@@ -202,6 +298,52 @@ export function registerCertificados(app: express.Express, d: Deps) {
     res.json({ ok: true });
   });
 
+  // ---------------------------------------------------------------- quais empresas cada colaborador pode assinar
+  app.get("/api/certificados/colaboradores/:userId/empresas", d.blockCliente, d.requireAdmin, (req, res) => {
+    const user = (req as any).user;
+    const colaboradorId = Number(req.params.userId);
+    const alvo = sqlite.prepare(`SELECT id FROM app_users WHERE id = ? AND escritorio_id = ?`).get(colaboradorId, user.escritorioId) as any;
+    if (!alvo) return res.status(404).json({ error: "Colaborador não encontrado." });
+    const rows = sqlite.prepare(`SELECT empresa_id as empresaId FROM certificados_colaboradores_empresas WHERE user_id = ?`).all(colaboradorId) as any[];
+    res.json({ items: rows.map((r) => r.empresaId) });
+  });
+  app.put("/api/certificados/colaboradores/:userId/empresas", d.blockCliente, d.requireAdmin, (req, res) => {
+    const user = (req as any).user;
+    const colaboradorId = Number(req.params.userId);
+    const alvo = sqlite.prepare(`SELECT id FROM app_users WHERE id = ? AND escritorio_id = ?`).get(colaboradorId, user.escritorioId) as any;
+    if (!alvo) return res.status(404).json({ error: "Colaborador não encontrado." });
+    const idsPedidos: number[] = Array.isArray(req.body?.empresaIds) ? req.body.empresaIds.map(Number) : [];
+    // Só aceita empresa do próprio escritório — mesma proteção contra IDOR de PUT /api/users/:id/empresas.
+    const validos = sqlite
+      .prepare(`SELECT id FROM empresas WHERE escritorio_id = ? AND id IN (${idsPedidos.map(() => "?").join(",") || "NULL"})`)
+      .all(user.escritorioId, ...idsPedidos) as any[];
+    const idsValidos = new Set(validos.map((r) => r.id));
+    sqlite.prepare(`DELETE FROM certificados_colaboradores_empresas WHERE user_id = ?`).run(colaboradorId);
+    const inserir = sqlite.prepare(`INSERT INTO certificados_colaboradores_empresas (user_id, empresa_id, concedido_por) VALUES (?, ?, ?)`);
+    for (const id of idsPedidos) if (idsValidos.has(id)) inserir.run(colaboradorId, id, user.id);
+    res.json({ ok: true });
+  });
+  // Empresas que o colaborador LOGADO está autorizado a assinar agora (certificado configurado,
+  // ativo e não vencido) — usado pra montar o seletor "Assinar como" na aba Assinar documento.
+  app.get("/api/certificados/minhas-empresas-assinaveis", d.blockCliente, d.requirePermissao("certificados", "postar"), (req, res) => {
+    const user = (req as any).user;
+    const rows = sqlite
+      .prepare(
+        `SELECT e.id as empresaId, e.nome as empresaNome, ce.validade_ate as validadeAte
+         FROM certificados_colaboradores_empresas cce
+         JOIN empresas e ON e.id = cce.empresa_id
+         JOIN certificados_empresas ce ON ce.empresa_id = cce.empresa_id
+         WHERE cce.user_id = ? AND ce.ativo = 1 AND e.escritorio_id = ?
+         ORDER BY e.nome`
+      )
+      .all(user.id, user.escritorioId) as any[];
+    res.json({
+      items: rows
+        .map((r) => ({ ...r, vencido: r.validadeAte ? new Date(r.validadeAte).getTime() < Date.now() : false }))
+        .filter((r) => !r.vencido),
+    });
+  });
+
   // ---------------------------------------------------------------- assinatura
   // Achado em auditoria (2026-10-12): a confirmação de senha antes de assinar não tinha limite de
   // tentativas — numa máquina compartilhada/sem bloquear tela, alguém poderia tentar adivinhar a
@@ -226,10 +368,27 @@ export function registerCertificados(app: express.Express, d: Deps) {
     }
     const chave = chaveAtivaDoUsuario(user.id);
     if (!chave) return res.status(403).json({ error: "Você não tem uma chave ativa pra assinar documentos — peça ao administrador em Certificados › Colaboradores." });
-    const cfg = configDe(user.escritorioId);
-    if (!cfg || !cfg.arquivo_path || !cfg.ativo) return res.status(400).json({ error: "Nenhum certificado configurado. Configure em Certificados › Configuração." });
-    const validade = cfg.validade_ate ? new Date(cfg.validade_ate) : null;
-    if (!validade || validade.getTime() < Date.now()) return res.status(400).json({ error: "O certificado do escritório está vencido — atualize em Certificados › Configuração antes de assinar." });
+
+    // empresaId opcional: assina com o certificado de uma empresa-cliente em vez do escritório. Sem
+    // empresaId, comportamento idêntico ao de antes desta mudança (certificado do escritório).
+    const empresaId = req.body?.empresaId ? Number(req.body.empresaId) : null;
+    let cfg: any;
+    if (empresaId) {
+      if (!colaboradorPodeAssinarEmpresa(user.id, empresaId)) {
+        return res.status(403).json({ error: "Você não está autorizado a assinar documentos por esta empresa — peça ao administrador em Certificados › Colaboradores." });
+      }
+      const empresaRow = sqlite.prepare(`SELECT nome FROM empresas WHERE id = ? AND escritorio_id = ?`).get(empresaId, user.escritorioId) as any;
+      if (!empresaRow) return res.status(404).json({ error: "Empresa não encontrada." });
+      cfg = certificadoEmpresaDe(empresaId);
+      if (!cfg || !cfg.arquivo_path || !cfg.ativo) return res.status(400).json({ error: `Nenhum certificado configurado para ${empresaRow.nome}. Configure em Certificados › Configuração.` });
+      const validadeEmp = cfg.validade_ate ? new Date(cfg.validade_ate) : null;
+      if (!validadeEmp || validadeEmp.getTime() < Date.now()) return res.status(400).json({ error: `O certificado de ${empresaRow.nome} está vencido — atualize em Certificados › Configuração antes de assinar.` });
+    } else {
+      cfg = configDe(user.escritorioId);
+      if (!cfg || !cfg.arquivo_path || !cfg.ativo) return res.status(400).json({ error: "Nenhum certificado configurado. Configure em Certificados › Configuração." });
+      const validade = cfg.validade_ate ? new Date(cfg.validade_ate) : null;
+      if (!validade || validade.getTime() < Date.now()) return res.status(400).json({ error: "O certificado do escritório está vencido — atualize em Certificados › Configuração antes de assinar." });
+    }
 
     const hashAntes = crypto.createHash("sha256").update(req.file.buffer).digest("hex");
     try {
@@ -265,10 +424,10 @@ export function registerCertificados(app: express.Express, d: Deps) {
       try {
         result = sqlite
           .prepare(
-            `INSERT INTO certificados_documentos (escritorio_id, user_id, nome_arquivo, arquivo_path, hash_antes, hash_depois, titular, numero_serie, status, ocsp_status)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'assinado', ?)`
+            `INSERT INTO certificados_documentos (escritorio_id, user_id, nome_arquivo, arquivo_path, hash_antes, hash_depois, titular, numero_serie, status, ocsp_status, empresa_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'assinado', ?, ?)`
           )
-          .run(user.escritorioId, user.id, nomeArquivo, destino, hashAntes, hashDepois, cfg.titular, numeroSerieDoCertPem(info.certPem), ocspStatus);
+          .run(user.escritorioId, user.id, nomeArquivo, destino, hashAntes, hashDepois, cfg.titular, numeroSerieDoCertPem(info.certPem), ocspStatus, empresaId);
       } catch (eInsert: any) {
         try { fs.unlinkSync(destino); } catch { /* melhor esforço — não deixa o erro original ser mascarado */ }
         throw eInsert;
@@ -276,8 +435,8 @@ export function registerCertificados(app: express.Express, d: Deps) {
       res.json({ ok: true, id: Number(result.lastInsertRowid), nomeArquivo, ocspStatus });
     } catch (e: any) {
       sqlite
-        .prepare(`INSERT INTO certificados_documentos (escritorio_id, user_id, nome_arquivo, hash_antes, status, erro) VALUES (?, ?, ?, ?, 'falha', ?)`)
-        .run(user.escritorioId, user.id, req.file.originalname || "documento.pdf", hashAntes, e.message || String(e));
+        .prepare(`INSERT INTO certificados_documentos (escritorio_id, user_id, nome_arquivo, hash_antes, status, erro, empresa_id) VALUES (?, ?, ?, ?, 'falha', ?, ?)`)
+        .run(user.escritorioId, user.id, req.file.originalname || "documento.pdf", hashAntes, e.message || String(e), empresaId);
       res.status(400).json({ error: `Não consegui assinar o documento: ${e.message || e}. Nada foi salvo — tente de novo.` });
     }
   });
@@ -286,17 +445,22 @@ export function registerCertificados(app: express.Express, d: Deps) {
   app.get("/api/certificados/documentos", d.blockCliente, d.requirePermissao("certificados", "visualizar"), (req, res) => {
     const user = (req as any).user;
     const { userId, de, ate } = req.query as any;
-    let sql = `SELECT cd.*, u.nome as userNome FROM certificados_documentos cd JOIN app_users u ON u.id = cd.user_id WHERE cd.escritorio_id = ?`;
+    let sql = `SELECT cd.*, u.nome as userNome, e.nome as empresaNome FROM certificados_documentos cd JOIN app_users u ON u.id = cd.user_id LEFT JOIN empresas e ON e.id = cd.empresa_id WHERE cd.escritorio_id = ?`;
     const params: any[] = [user.escritorioId];
     if (userId) { sql += ` AND cd.user_id = ?`; params.push(Number(userId)); }
     if (de) { sql += ` AND date(cd.criado_em) >= date(?)`; params.push(String(de)); }
     if (ate) { sql += ` AND date(cd.criado_em) <= date(?)`; params.push(String(ate)); }
     sql += ` ORDER BY cd.id DESC LIMIT 500`;
     const rows = sqlite.prepare(sql).all(...params) as any[];
+    // Achado em auditoria (2026-10-12): documento assinado por uma empresa não devia aparecer pra
+    // quem nem deveria enxergar aquela empresa (mesmo cuidado de todo outro módulo com empresa).
+    // Administrador nunca é filtrado — só restringe Colaborador com acesso_todas_empresas=0.
+    const visiveis = rows.filter((r) => user.perfil === "Administrador" || !r.empresa_id || d.podeAcessarEmpresa(user, r.empresa_id));
     res.json({
-      items: rows.map((r) => ({
+      items: visiveis.map((r) => ({
         id: r.id, userNome: r.userNome, nomeArquivo: r.nome_arquivo, status: r.status, erro: r.erro,
         ocspStatus: r.ocsp_status, criadoEm: r.criado_em, temArquivo: !!r.arquivo_path,
+        assinadoComo: r.empresaNome || "Escritório",
       })),
     });
   });
@@ -304,6 +468,9 @@ export function registerCertificados(app: express.Express, d: Deps) {
     const user = (req as any).user;
     const doc = sqlite.prepare(`SELECT * FROM certificados_documentos WHERE id = ? AND escritorio_id = ?`).get(Number(req.params.id), user.escritorioId) as any;
     if (!doc || !doc.arquivo_path || !fs.existsSync(doc.arquivo_path)) return res.status(404).json({ error: "Documento não encontrado." });
+    if (doc.empresa_id && user.perfil !== "Administrador" && !d.podeAcessarEmpresa(user, doc.empresa_id)) {
+      return res.status(404).json({ error: "Documento não encontrado." });
+    }
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `inline; filename="${(doc.nome_arquivo || "documento.pdf").replace(/["\r\n]/g, "")}"`);
     res.send(fs.readFileSync(doc.arquivo_path));
