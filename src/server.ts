@@ -108,6 +108,18 @@ sqlite.exec(`
     expires_at TEXT NOT NULL
   );
 
+  -- "Esqueci minha senha": guarda só o HASH do token (nunca o valor cru, que só existe no link
+  -- mandado por e-mail) — mesmo espírito de app_users.password_hash. Token de uso único, expira em
+  -- 1h (ver POST /api/auth/esqueci-senha e /api/auth/resetar-senha).
+  CREATE TABLE IF NOT EXISTS password_reset_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL UNIQUE,
+    expires_at TEXT NOT NULL,
+    used_at TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+
   -- Empresas que um Colaborador com acesso_todas_empresas=0 pode enxergar
   CREATE TABLE IF NOT EXISTS colaborador_empresas (
     user_id INTEGER NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
@@ -3001,6 +3013,72 @@ app.post("/api/auth/login", loginRateLimiter, (req, res) => {
   res.cookie("sid", token, { httpOnly: true, sameSite: "lax", secure: req.secure, maxAge: diasCookie * 24 * 60 * 60 * 1000 });
   const user = getSessionUser(token);
   res.json({ ok: true, user: { id: user!.id, nome: user!.nome, email: user!.email, perfil: user!.perfil, empresaId: user!.empresaId, painelTv: user!.painelTv } });
+});
+// "Esqueci minha senha" — gap identificado na auditoria de hoje (não existia nenhum jeito de
+// recuperar senha sem pedir pra um Administrador resetar manualmente). Token aleatório de 32 bytes,
+// só o hash (sha256) fica no banco, expira em 1h, uso único. Resposta é SEMPRE genérica (mesma
+// mensagem, mesmo e-mail existindo ou não) — evita enumerar e-mail cadastrado, mesmo padrão de
+// cuidado já aplicado no login.
+const esqueciSenhaRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Muitos pedidos. Aguarde alguns minutos e tente de novo." },
+});
+const esqueciSenhaPorEmail = new Map<string, { n: number; ate: number }>();
+const ESQUECI_SENHA_MSG_OK = { ok: true, message: "Se esse e-mail estiver cadastrado, enviamos um link pra redefinir a senha. Confira também o spam." };
+app.post("/api/auth/esqueci-senha", esqueciSenhaRateLimiter, async (req, res) => {
+  const email = String(req.body?.email || "").trim().toLowerCase();
+  if (!email) return res.status(400).json({ error: "Informe o e-mail." });
+  // Trava por e-mail (não só por IP) — sem isso dava pra martelar o e-mail de uma vítima com pedidos
+  // de reset vindos de IPs diferentes, inundando a caixa dela.
+  const trava = esqueciSenhaPorEmail.get(email);
+  if (trava && trava.ate > Date.now() && trava.n >= 5) return res.json(ESQUECI_SENHA_MSG_OK);
+  const t = trava && trava.ate > Date.now() ? trava : { n: 0, ate: Date.now() + 15 * 60_000 };
+  t.n++; esqueciSenhaPorEmail.set(email, t);
+  const row = sqlite.prepare(`SELECT * FROM app_users WHERE email = ? AND ativo = 1`).get(email) as any;
+  if (row) {
+    try {
+      const tokenCru = crypto.randomBytes(32).toString("hex");
+      const tokenHash = crypto.createHash("sha256").update(tokenCru).digest("hex");
+      // Só um link válido por vez — pedir de novo invalida o anterior.
+      sqlite.prepare(`DELETE FROM password_reset_tokens WHERE user_id = ? AND used_at IS NULL`).run(row.id);
+      sqlite
+        .prepare(`INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES (?, ?, datetime('now', '+1 hour'))`)
+        .run(row.id, tokenHash);
+      const link = `${req.protocol}://${req.get("host")}/?resetToken=${tokenCru}`;
+      await enviarEmail(row.escritorio_id, {
+        to: [row.email],
+        subject: "Redefinição de senha — Simples Contábeis",
+        text: `Olá, ${row.nome}.\n\nPediram a redefinição da sua senha. Se foi você, clique no link abaixo (válido por 1 hora, uso único):\n${link}\n\nSe não foi você, pode ignorar este e-mail — sua senha continua a mesma.`,
+      });
+    } catch (e: any) {
+      // Não revela ao solicitante se o envio falhou (configuração de e-mail do escritório, etc.) —
+      // só fica registrado aqui pro escritório perceber nos logs. Resposta continua genérica.
+      console.error(`[esqueci-senha] falha ao enviar e-mail pra ${email}:`, e.message);
+    }
+  }
+  res.json(ESQUECI_SENHA_MSG_OK);
+});
+app.post("/api/auth/resetar-senha", esqueciSenhaRateLimiter, (req, res) => {
+  const tokenCru = String(req.body?.token || "");
+  const novaSenha = String(req.body?.novaSenha || "");
+  if (!tokenCru) return res.status(400).json({ error: "Link inválido." });
+  const pwError = passwordPolicyError(novaSenha);
+  if (pwError) return res.status(400).json({ error: pwError });
+  const tokenHash = crypto.createHash("sha256").update(tokenCru).digest("hex");
+  const linha = sqlite
+    .prepare(`SELECT * FROM password_reset_tokens WHERE token_hash = ? AND used_at IS NULL AND expires_at > datetime('now')`)
+    .get(tokenHash) as any;
+  if (!linha) return res.status(400).json({ error: "Link inválido ou expirado. Peça um novo link." });
+  sqlite.prepare(`UPDATE app_users SET password_hash = ? WHERE id = ?`).run(hashPassword(novaSenha), linha.user_id);
+  sqlite.prepare(`UPDATE password_reset_tokens SET used_at = datetime('now') WHERE id = ?`).run(linha.id);
+  // Derruba qualquer sessão ativa (mesmo cuidado de troca de senha normal) e qualquer outro link de
+  // reset ainda pendente pra esse usuário.
+  sqlite.prepare(`DELETE FROM sessions WHERE user_id = ?`).run(linha.user_id);
+  sqlite.prepare(`DELETE FROM password_reset_tokens WHERE user_id = ? AND id != ?`).run(linha.user_id, linha.id);
+  res.json({ ok: true });
 });
 app.post("/api/auth/logout", (req, res) => {
   const token = req.cookies?.sid;

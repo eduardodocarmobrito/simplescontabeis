@@ -528,6 +528,19 @@
     <div class="field"><label>Senha</label><div class="pw-wrap"><input id="loginPassword" type="password" autocomplete="current-password"><button type="button" class="pw-olho" data-alvo="loginPassword" tabindex="-1" title="Mostrar/ocultar a senha" aria-label="Mostrar ou ocultar a senha">👁</button></div></div>
     <button class="btn primary" style="width:100%; justify-content:center;" id="btnLogin">Entrar</button>
     <div id="loginError" class="login-error hidden"></div>
+    <div style="margin-top:14px; text-align:center;"><a href="#" id="btnEsqueciSenha" style="font-size:12.5px; color:var(--ink-soft);">Esqueci minha senha</a></div>
+  </div>
+</div>
+
+<div id="resetSenhaScreen" class="login-screen hidden">
+  <div class="login-box">
+    <div class="eyebrow">Escritório contábil</div>
+    <h1>Nova senha</h1>
+    <div class="field"><label>Nova senha</label><div class="pw-wrap"><input id="resetNovaSenha" type="password" autocomplete="new-password"><button type="button" class="pw-olho" data-alvo="resetNovaSenha" tabindex="-1" title="Mostrar/ocultar a senha" aria-label="Mostrar ou ocultar a senha">👁</button></div></div>
+    <div class="field"><label>Confirmar nova senha</label><input id="resetConfirmaSenha" type="password" autocomplete="new-password"></div>
+    <button class="btn primary" style="width:100%; justify-content:center;" id="btnResetarSenha">Redefinir senha</button>
+    <div id="resetSenhaError" class="login-error hidden"></div>
+    <div style="margin-top:14px; text-align:center;"><a href="#" id="btnVoltarLogin" style="font-size:12.5px; color:var(--ink-soft);">Voltar pro login</a></div>
   </div>
 </div>
 
@@ -990,6 +1003,62 @@ document.getElementById('btnLogout').addEventListener('click', async ()=>{
   STATE.user=null;
   showLogin();
 });
+
+// ===================== esqueci minha senha =====================
+document.getElementById('btnEsqueciSenha').addEventListener('click', (e)=>{
+  e.preventDefault();
+  openModal(`
+    <h3>Esqueci minha senha</h3>
+    <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Informe o e-mail da sua conta — se estiver cadastrado, enviamos um link pra redefinir a senha.</p>
+    <div class="field"><label>E-mail</label><input id="esqSenhaEmail" type="email" autocomplete="username" value="${esc(document.getElementById('loginEmail').value.trim())}"></div>
+    <div class="modal-actions">
+      <button class="btn" id="esqSenhaCancel">Cancelar</button>
+      <button class="btn primary" id="esqSenhaEnviar">Enviar link</button>
+    </div>
+  `);
+  document.getElementById('esqSenhaCancel').addEventListener('click', closeModal);
+  document.getElementById('esqSenhaEnviar').addEventListener('click', async ()=>{
+    const email = document.getElementById('esqSenhaEmail').value.trim();
+    if(!email){ toast('Informe o e-mail.','err'); return; }
+    try{
+      const r = await api('/auth/esqueci-senha', { method:'POST', body:{ email } });
+      closeModal();
+      toast(r.message,'ok');
+    }catch(e){ toast(e.message,'err'); }
+  });
+});
+function mostrarTelaResetSenha(token){
+  document.getElementById('loginScreen').classList.add('hidden');
+  document.getElementById('shell').classList.add('hidden');
+  document.getElementById('resetSenhaScreen').classList.remove('hidden');
+  document.getElementById('resetSenhaScreen').dataset.token = token;
+}
+document.getElementById('btnVoltarLogin').addEventListener('click', (e)=>{
+  e.preventDefault();
+  history.replaceState(null, '', location.pathname);
+  document.getElementById('resetSenhaScreen').classList.add('hidden');
+  showLogin();
+});
+async function doResetarSenha(){
+  const token = document.getElementById('resetSenhaScreen').dataset.token;
+  const novaSenha = document.getElementById('resetNovaSenha').value;
+  const confirmaSenha = document.getElementById('resetConfirmaSenha').value;
+  const errEl = document.getElementById('resetSenhaError');
+  errEl.classList.add('hidden');
+  if(novaSenha !== confirmaSenha){ errEl.textContent='As senhas não coincidem.'; errEl.classList.remove('hidden'); return; }
+  try{
+    await api('/auth/resetar-senha', { method:'POST', body:{ token, novaSenha } });
+    history.replaceState(null, '', location.pathname);
+    document.getElementById('resetSenhaScreen').classList.add('hidden');
+    showLogin();
+    toast('Senha redefinida — já pode entrar com a senha nova.','ok');
+  }catch(e){
+    errEl.textContent = e.message;
+    errEl.classList.remove('hidden');
+  }
+}
+document.getElementById('btnResetarSenha').addEventListener('click', doResetarSenha);
+document.getElementById('resetConfirmaSenha').addEventListener('keydown', e=>{ if(e.key==='Enter') doResetarSenha(); });
 
 // ===================== navegação =====================
 const NAV = [
@@ -14791,7 +14860,9 @@ async function renderCfgEmailSmtp(box){
 }
 
 // ===================== start =====================
-boot();
+const resetTokenNaUrl = new URLSearchParams(location.search).get('resetToken');
+if(resetTokenNaUrl) mostrarTelaResetSenha(resetTokenNaUrl);
+else boot();
 </script>
 </body>
 </html>
