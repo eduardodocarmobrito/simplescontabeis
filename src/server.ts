@@ -2,6 +2,7 @@ import "dotenv/config";
 import express from "express";
 import path from "path";
 import fs from "fs";
+import os from "os";
 import crypto from "crypto";
 import cookieParser from "cookie-parser";
 import rateLimit from "express-rate-limit";
@@ -1996,6 +1997,69 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
   if (!colsItens.some((c) => c.name === "quantidade")) {
     sqlite.exec(`ALTER TABLE escritorio_licenca_cobranca_itens ADD COLUMN quantidade INTEGER NOT NULL DEFAULT 1`);
   }
+}
+// Achado em auditoria (2026-10-12): dominio_sync_log/dominio_test_jobs/dominio_sync_jobs não tinham
+// escritorio_id — o sync do Domínio Web/Onvio (diferente dos robôs AHK, esse É por escritório: cada
+// um pode ter sua própria conexão/sessão) deixava qualquer escritório ver o log e os resultados de
+// teste/sincronização de QUALQUER outro, só sabendo (ou adivinhando, por ser sequencial) o id. Todo
+// histórico existente é de antes de existir um 2º escritório de verdade — backfill pro escritório 1.
+{
+  const colsLog = sqlite.prepare(`PRAGMA table_info(dominio_sync_log)`).all() as any[];
+  if (!colsLog.some((c) => c.name === "escritorio_id")) {
+    sqlite.exec(`ALTER TABLE dominio_sync_log ADD COLUMN escritorio_id INTEGER NOT NULL DEFAULT 1`);
+  }
+  const colsTestJobs = sqlite.prepare(`PRAGMA table_info(dominio_test_jobs)`).all() as any[];
+  if (!colsTestJobs.some((c) => c.name === "escritorio_id")) {
+    sqlite.exec(`ALTER TABLE dominio_test_jobs ADD COLUMN escritorio_id INTEGER NOT NULL DEFAULT 1`);
+  }
+  const colsSyncJobs = sqlite.prepare(`PRAGMA table_info(dominio_sync_jobs)`).all() as any[];
+  if (!colsSyncJobs.some((c) => c.name === "escritorio_id")) {
+    sqlite.exec(`ALTER TABLE dominio_sync_jobs ADD COLUMN escritorio_id INTEGER NOT NULL DEFAULT 1`);
+  }
+}
+// Achado em auditoria (2026-10-12): dominio_config.db_password/api_token eram gravados em texto
+// puro (recuperáveis em claro só com acesso ao arquivo/backup do SQLite) — diferente de toda outra
+// credencial equivalente do sistema (senha de certificado, SMTP, client secret do OneDrive), que já
+// passa por nfse.cifrarTexto/decifrarTexto. A partir de agora a rota de salvar cifra; isto aqui
+// migra, uma vez só, qualquer valor que já esteja salvo em claro de antes dessa mudança — tenta
+// decifrar, e só recifra se falhar (ou seja, se ainda não era ciphertext válido). Sem isso, o agente
+// do escritório 1 (em uso de verdade hoje) quebraria na próxima vez que buscasse a config.
+{
+  const linhas = sqlite.prepare(`SELECT escritorio_id, db_password, api_token FROM dominio_config`).all() as any[];
+  for (const l of linhas) {
+    let novaSenha: string | undefined;
+    let novoToken: string | undefined;
+    if (l.db_password) {
+      try { nfse.decifrarTexto(l.db_password); } catch { novaSenha = nfse.cifrarTexto(l.db_password); }
+    }
+    if (l.api_token) {
+      try { nfse.decifrarTexto(l.api_token); } catch { novoToken = nfse.cifrarTexto(l.api_token); }
+    }
+    if (novaSenha !== undefined || novoToken !== undefined) {
+      sqlite
+        .prepare(`UPDATE dominio_config SET db_password = COALESCE(?, db_password), api_token = COALESCE(?, api_token) WHERE escritorio_id = ?`)
+        .run(novaSenha ?? null, novoToken ?? null, l.escritorio_id);
+    }
+  }
+}
+// Mesmo achado acima, mas pro arquivo de sessão do Onvio (data/onvio-session*.json) — tem cookies
+// de sessão reais e reutilizáveis. Migra qualquer arquivo salvo em claro de antes dessa mudança pra
+// cifrado: se o conteúdo já é JSON puro (formato antigo), recifra; se não der pra ler como JSON,
+// assume que já está no formato cifrado (hex) e deixa como está.
+try {
+  for (const nome of fs.readdirSync(DATA_DIR)) {
+    if (!/^onvio-session(-\d+)?\.json$/.test(nome)) continue;
+    const caminho = path.join(DATA_DIR, nome);
+    const conteudo = fs.readFileSync(caminho, "utf8");
+    try {
+      JSON.parse(conteudo); // só dá certo se ainda estiver em claro (formato antigo)
+      fs.writeFileSync(caminho, nfse.cifrarTexto(conteudo), { mode: 0o600 });
+    } catch {
+      // já não é JSON puro — ou já está cifrado, ou é lixo; não mexe.
+    }
+  }
+} catch {
+  // DATA_DIR pode não existir ainda num ambiente novo (sem nenhuma sessão salva) — sem problema.
 }
 // Migração leve: conta cortesia — empresa-cliente isenta de cobrança de NFS-e/Financeiro (acesso
 // liberado sem precisar de teste grátis nem assinatura paga via Asaas).
@@ -4406,6 +4470,12 @@ app.post("/api/chat/mensagens", upload.single("arquivo"), (req, res) => {
     anexoMime: string | null = null,
     anexoSize: number | null = null;
   if (req.file) {
+    // Achado em auditoria (2026-10-12): sem allowlist nenhuma — o download força attachment (ver
+    // GET .../anexo, abaixo), então não abre XSS, mas mesmo assim fica inconsistente com todo outro
+    // upload do sistema. Mesma allowlist já usada em Empresas/Contratos.
+    if (!/^(application\/pdf|image\/(png|jpe?g|gif|webp)|application\/(msword|vnd\.(openxmlformats-officedocument\.(wordprocessingml\.document|spreadsheetml\.sheet)|ms-excel))|application\/(zip|x-zip-compressed))$/i.test(req.file.mimetype || "")) {
+      return res.status(400).json({ error: "Tipo de arquivo não permitido. Envie PDF, imagem (PNG/JPG), Word, Excel ou ZIP." });
+    }
     anexoNome = corrigirNomeArquivo(req.file.originalname);
     const dir = path.join(UPLOADS_DIR, "chat-anexos");
     fs.mkdirSync(dir, { recursive: true });
@@ -4774,16 +4844,15 @@ app.post("/api/dominio/importar-clientes", blockCliente, requirePermissao("confi
     }
   }
   sqlite
-    .prepare(`INSERT INTO dominio_sync_log (origem, empresas_novas, empresas_atualizadas, status) VALUES ('importacao-csv', ?, ?, 'ok')`)
-    .run(novas, atualizadas);
+    .prepare(`INSERT INTO dominio_sync_log (origem, empresas_novas, empresas_atualizadas, status, escritorio_id) VALUES ('importacao-csv', ?, ?, 'ok', ?)`)
+    .run(novas, atualizadas, escritorioId);
   res.json({ ok: true, novas, atualizadas });
 });
 app.get("/api/dominio/sync-log", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
-  // dominio_sync_log ainda não é escopado por escritório (o agente do Domínio Web continua com
-  // token único/global — ver requireDominioAgent) — fica pra quando um segundo agente real existir.
-  const rows = sqlite.prepare(`SELECT * FROM dominio_sync_log ORDER BY id DESC LIMIT 30`).all();
-  const heartbeat = sqlite.prepare(`SELECT last_seen_at as lastSeenAt, version FROM agent_heartbeat WHERE escritorio_id = ?`).get((req as any).user.escritorioId) as any;
-  res.json({ items: rows, agente: heartbeat || null, saudeOnvio: calcularSaudeOnvio() });
+  const escritorioId = (req as any).user.escritorioId;
+  const rows = sqlite.prepare(`SELECT * FROM dominio_sync_log WHERE escritorio_id = ? ORDER BY id DESC LIMIT 30`).all(escritorioId);
+  const heartbeat = sqlite.prepare(`SELECT last_seen_at as lastSeenAt, version FROM agent_heartbeat WHERE escritorio_id = ?`).get(escritorioId) as any;
+  res.json({ items: rows, agente: heartbeat || null, saudeOnvio: calcularSaudeOnvio(escritorioId) });
 });
 
 // ---------- Configuração de acesso do src/dominio-agent.ts (editável pela tela, sem mexer no .env) ----------
@@ -4798,10 +4867,21 @@ function getDominioConfig(escritorioId: number): any {
 // só enviar o arquivo pela tela (ver POST /api/dominio/onvio-sessao) — o dia a dia deixa de
 // depender de qualquer computador ficar ligado.
 function onvioSessionPath(escritorioId: number): string {
-  const dir = path.join(__dirname, "..", "data");
   // escritório 1 mantém o caminho antigo (compatível com o arquivo já usado pelo agente local via
-  // DOMINIO_ONVIO_SESSION_PATH) — outros escritórios ganham um arquivo próprio.
-  return escritorioId === 1 ? path.join(dir, "onvio-session.json") : path.join(dir, `onvio-session-${escritorioId}.json`);
+  // DOMINIO_ONVIO_SESSION_PATH) — outros escritórios ganham um arquivo próprio. Usa DATA_DIR (não
+  // __dirname/../data direto) pra ficar sempre no mesmo volume persistente do banco — mesmo que
+  // hoje, sem DATA_DIR customizado, os dois caminhos coincidam.
+  return escritorioId === 1 ? path.join(DATA_DIR, "onvio-session.json") : path.join(DATA_DIR, `onvio-session-${escritorioId}.json`);
+}
+// Lê o arquivo cifrado salvo pela rota (ver POST /api/dominio/onvio-sessao, abaixo) e devolve o
+// caminho de um arquivo TEMPORÁRIO com o conteúdo decifrado — é o formato que o Playwright exige
+// pra abrir a sessão (storageState só aceita objeto ou caminho de arquivo, nunca um buffer/string
+// direto). Quem chama é responsável por apagar o arquivo retornado (ver uso abaixo).
+function onvioSessionPathDescifradaTemp(escritorioId: number): string {
+  const conteudoCifrado = fs.readFileSync(onvioSessionPath(escritorioId), "utf8");
+  const tmp = path.join(os.tmpdir(), `onvio-session-${escritorioId}-${crypto.randomBytes(8).toString("hex")}.json`);
+  fs.writeFileSync(tmp, nfse.decifrarTexto(conteudoCifrado), { mode: 0o600 });
+  return tmp;
 }
 interface SaudeOnvio {
   nuncaConfigurado: boolean;
@@ -4818,10 +4898,10 @@ interface SaudeOnvio {
 // um blip isolado, mas pega rápido um problema real (achado ao vivo: uma sessão morreu ~1h depois de
 // enviada e ficou 36h falhando de hora em hora sem ninguém notar). Sem nenhuma linha ainda
 // (nuncaConfigurado), nunca é "quebrado" — não é a mesma coisa que "nunca configurado".
-function calcularSaudeOnvio(): SaudeOnvio {
+function calcularSaudeOnvio(escritorioId: number): SaudeOnvio {
   const rows = sqlite
-    .prepare(`SELECT status, executado_em, detalhe FROM dominio_sync_log WHERE origem = 'nuvem' ORDER BY id DESC LIMIT 50`)
-    .all() as { status: string; executado_em: string; detalhe: string | null }[];
+    .prepare(`SELECT status, executado_em, detalhe FROM dominio_sync_log WHERE origem = 'nuvem' AND escritorio_id = ? ORDER BY id DESC LIMIT 50`)
+    .all(escritorioId) as { status: string; executado_em: string; detalhe: string | null }[];
   if (rows.length === 0) {
     return { nuncaConfigurado: true, quebrado: false, falhasConsecutivas: 0, quebradoDesde: null, horasQuebrado: null, ultimoErro: null };
   }
@@ -4847,8 +4927,16 @@ function calcularSaudeOnvio(): SaudeOnvio {
   };
 }
 async function executarSincronizacaoOnvio(escritorioId: number, jobId?: number): Promise<void> {
+  // Achado em auditoria (2026-10-12): a sessão do Onvio (cookies reais, reutilizáveis sem
+  // reautenticar) ficava salva em disco sem cifrar — quem tivesse acesso ao arquivo/backup
+  // conseguia raspar dados do Onvio do cliente direto. Agora fica cifrada em repouso (ver POST
+  // /api/dominio/onvio-sessao); só decifra pra um arquivo temporário na hora de usar (Playwright só
+  // aceita caminho de arquivo ou objeto, não um buffer cifrado), e apaga esse temporário logo
+  // depois, exista sucesso ou erro.
+  let sessaoTempPath: string | null = null;
   try {
-    const items = (await buscarViaOnvio(onvioSessionPath(escritorioId))).filter((it) => it.codigo && it.nome);
+    sessaoTempPath = onvioSessionPathDescifradaTemp(escritorioId);
+    const items = (await buscarViaOnvio(sessaoTempPath)).filter((it) => it.codigo && it.nome);
     let novas = 0, atualizadas = 0;
     const getByCodigo = sqlite.prepare(`SELECT id FROM empresas WHERE codigo_dominio = ? AND escritorio_id = ?`);
     const insert = sqlite.prepare(
@@ -4885,12 +4973,14 @@ async function executarSincronizacaoOnvio(escritorioId: number, jobId?: number):
         novas++;
       }
     }
-    sqlite.prepare(`INSERT INTO dominio_sync_log (origem, empresas_novas, empresas_atualizadas, status) VALUES ('nuvem', ?, ?, 'ok')`).run(novas, atualizadas);
+    sqlite.prepare(`INSERT INTO dominio_sync_log (origem, empresas_novas, empresas_atualizadas, status, escritorio_id) VALUES ('nuvem', ?, ?, 'ok', ?)`).run(novas, atualizadas, escritorioId);
     if (jobId) sqlite.prepare(`UPDATE dominio_sync_jobs SET status='ok', novas=?, atualizadas=?, resolvido_em=datetime('now') WHERE id=?`).run(novas, atualizadas, jobId);
   } catch (e: any) {
-    sqlite.prepare(`INSERT INTO dominio_sync_log (origem, empresas_novas, empresas_atualizadas, status, detalhe) VALUES ('nuvem', 0, 0, 'erro', ?)`).run(e.message);
+    sqlite.prepare(`INSERT INTO dominio_sync_log (origem, empresas_novas, empresas_atualizadas, status, detalhe, escritorio_id) VALUES ('nuvem', 0, 0, 'erro', ?, ?)`).run(e.message, escritorioId);
     if (jobId) sqlite.prepare(`UPDATE dominio_sync_jobs SET status='erro', erro=?, resolvido_em=datetime('now') WHERE id=?`).run(e.message, jobId);
     else console.error("Falha na sincronização automática de clientes via Onvio:", e.message);
+  } finally {
+    if (sessaoTempPath) { try { fs.unlinkSync(sessaoTempPath); } catch {} }
   }
 }
 app.get("/api/dominio/onvio-sessao", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
@@ -4912,7 +5002,10 @@ app.post("/api/dominio/onvio-sessao", blockCliente, requirePermissao("configurac
   }
   const p = onvioSessionPath((req as any).user.escritorioId);
   fs.mkdirSync(path.dirname(p), { recursive: true });
-  fs.writeFileSync(p, file.buffer);
+  // Achado em auditoria (2026-10-12): esse arquivo tem cookies de sessão REAIS e reutilizáveis do
+  // Onvio (Thomson Reuters) — salvo cifrado em repouso agora, mesmo padrão de certificado/SMTP/
+  // OneDrive (ver onvioSessionPathDescifradaTemp, usado na hora de sincronizar de verdade).
+  fs.writeFileSync(p, nfse.cifrarTexto(file.buffer.toString("utf8")), { mode: 0o600 });
   res.json({ ok: true });
 });
 // Sincronização via Onvio: SÓ manual, por pedido explícito do usuário (2026-09-23) — a automática de
@@ -5719,7 +5812,10 @@ app.put("/api/dominio/config", blockCliente, requirePermissao("configuracoes", "
       b.dbPort ? Number(b.dbPort) : null,
       b.dbName || null,
       b.dbUser || null,
-      b.dbPassword ? String(b.dbPassword) : atual.db_password || null, // vazio = mantém a senha já salva
+      // Achado em auditoria (2026-10-12): senha do banco e token de API ficavam em texto puro no
+      // SQLite (recuperáveis em claro só com acesso ao arquivo/backup) — mesmo padrão de cifragem já
+      // usado pra senha de certificado, SMTP e client secret do OneDrive (nfse.cifrarTexto).
+      b.dbPassword ? nfse.cifrarTexto(String(b.dbPassword)) : atual.db_password || null, // vazio = mantém a senha já salva
       b.dbConnectString || null,
       b.queryClientes || null,
       b.colCodigo || "CODIGO",
@@ -5727,7 +5823,7 @@ app.put("/api/dominio/config", blockCliente, requirePermissao("configuracoes", "
       b.colCnpj || "CNPJ",
       b.colStatus || "STATUS",
       b.apiUrl || null,
-      b.apiToken ? String(b.apiToken) : atual.api_token || null,
+      b.apiToken ? nfse.cifrarTexto(String(b.apiToken)) : atual.api_token || null,
       b.xmlExportAtivo ? 1 : 0,
       b.xmlExportDir || null
     );
@@ -5737,11 +5833,14 @@ app.put("/api/dominio/config", blockCliente, requirePermissao("configuracoes", "
 // ela é quem tem acesso à rede do Domínio Web). O front faz polling neste id até status != pending.
 app.post("/api/dominio/testar-conexao", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
   const user = (req as any).user;
-  const info = sqlite.prepare(`INSERT INTO dominio_test_jobs (status, criado_por) VALUES ('pending', ?)`).run(user.id);
+  const info = sqlite.prepare(`INSERT INTO dominio_test_jobs (status, criado_por, escritorio_id) VALUES ('pending', ?, ?)`).run(user.id, user.escritorioId);
   res.json({ id: Number(info.lastInsertRowid) });
 });
+// Achado em auditoria (2026-10-12): id sequencial global sem checar escritório — qualquer usuário
+// autenticado com essa permissão conseguia ler resultado/erro de teste de conexão de OUTRO
+// escritório só trocando o id. Agora o id só resolve se for do próprio escritório.
 app.get("/api/dominio/testar-conexao/:id", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
-  const row = sqlite.prepare(`SELECT * FROM dominio_test_jobs WHERE id = ?`).get(Number(req.params.id)) as any;
+  const row = sqlite.prepare(`SELECT * FROM dominio_test_jobs WHERE id = ? AND escritorio_id = ?`).get(Number(req.params.id), (req as any).user.escritorioId) as any;
   if (!row) return res.status(404).json({ error: "Teste não encontrado." });
   res.json({ status: row.status, resultado: row.resultado_json ? JSON.parse(row.resultado_json) : null, erro: row.erro });
 });
@@ -5752,7 +5851,7 @@ app.get("/api/dominio/testar-conexao/:id", blockCliente, requirePermissao("confi
 // pendente e o agente local atende no ciclo rápido, de ~12 em 12s.
 app.post("/api/dominio/sincronizar-empresas", blockCliente, requirePermissao("empresas", "postar"), (req, res) => {
   const user = (req as any).user;
-  const info = sqlite.prepare(`INSERT INTO dominio_sync_jobs (status, criado_por) VALUES ('pending', ?)`).run(user.id);
+  const info = sqlite.prepare(`INSERT INTO dominio_sync_jobs (status, criado_por, escritorio_id) VALUES ('pending', ?, ?)`).run(user.id, user.escritorioId);
   const jobId = Number(info.lastInsertRowid);
   const cfg = getDominioConfig(user.escritorioId);
   if (cfg.source === "onvio" && fs.existsSync(onvioSessionPath(user.escritorioId))) {
@@ -5760,8 +5859,9 @@ app.post("/api/dominio/sincronizar-empresas", blockCliente, requirePermissao("em
   }
   res.json({ id: jobId });
 });
+// Achado em auditoria (2026-10-12): mesmo motivo de testar-conexao/:id, acima.
 app.get("/api/dominio/sincronizar-empresas/:id", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
-  const row = sqlite.prepare(`SELECT * FROM dominio_sync_jobs WHERE id = ?`).get(Number(req.params.id)) as any;
+  const row = sqlite.prepare(`SELECT * FROM dominio_sync_jobs WHERE id = ? AND escritorio_id = ?`).get(Number(req.params.id), (req as any).user.escritorioId) as any;
   if (!row) return res.status(404).json({ error: "Sincronização não encontrada." });
   res.json({ status: row.status, novas: row.novas, atualizadas: row.atualizadas, erro: row.erro });
 });
@@ -14776,7 +14876,7 @@ app.get("/api/dashboard/cards", requirePermissao("dashboard", "visualizar"), asy
 // incondicionalmente (hasPermissao retorna false pra esse perfil antes de checar qualquer coisa),
 // mesmo padrão de GET /api/dashboard/cards acima.
 app.get("/api/dashboard/onvio-saude", requirePermissao("dashboard", "visualizar"), (req, res) => {
-  res.json(calcularSaudeOnvio());
+  res.json(calcularSaudeOnvio((req as any).user.escritorioId));
 });
 app.get("/api/dashboard/cards/:id/detalhe", requirePermissao("dashboard", "visualizar"), async (req, res) => {
   const user = (req as any).user;
@@ -18724,7 +18824,9 @@ app.post("/api/dominio-agent/empresas", requireDominioAgent, (req, res) => {
       novas++;
     }
   }
-  sqlite.prepare(`INSERT INTO dominio_sync_log (origem, empresas_novas, empresas_atualizadas, status) VALUES ('agente', ?, ?, 'ok')`).run(novas, atualizadas);
+  // Agente AHK legado: token único/global, sempre escritório 1 (mesmo padrão do resto dessa família
+  // de rotas /api/dominio-agent/*).
+  sqlite.prepare(`INSERT INTO dominio_sync_log (origem, empresas_novas, empresas_atualizadas, status, escritorio_id) VALUES ('agente', ?, ?, 'ok', 1)`).run(novas, atualizadas);
   res.json({ ok: true, novas, atualizadas });
 });
 // Config completa (com senha/token em texto puro) — só o agente autenticado por token acessa isso.
@@ -18741,7 +18843,7 @@ app.get("/api/dominio-agent/config", requireDominioAgent, (_req, res) => {
     dbPort: c.db_port || null,
     dbName: c.db_name || "",
     dbUser: c.db_user || "",
-    dbPassword: c.db_password || "",
+    dbPassword: c.db_password ? nfse.decifrarTexto(c.db_password) : "",
     dbConnectString: c.db_connect_string || "",
     queryClientes: c.query_clientes || "",
     colCodigo: c.col_codigo || "CODIGO",
@@ -18749,7 +18851,7 @@ app.get("/api/dominio-agent/config", requireDominioAgent, (_req, res) => {
     colCnpj: c.col_cnpj || "CNPJ",
     colStatus: c.col_status || "STATUS",
     apiUrl: c.api_url || "",
-    apiToken: c.api_token || "",
+    apiToken: c.api_token ? nfse.decifrarTexto(c.api_token) : "",
     xmlExportAtivo: !!c.xml_export_ativo,
     xmlExportDir: c.xml_export_dir || "",
   });
