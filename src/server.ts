@@ -2419,6 +2419,15 @@ function requireAdmin(req: express.Request, res: express.Response, next: express
   }
   next();
 }
+// Robôs do Domínio Web (Comparativo de Movimento / Programação de Férias) são de escritório_id=1 só —
+// toda a automação por trás (/api/dominio-agent/*) já é hardcoded assim. Achado em auditoria
+// (2026-10-12): as rotas de controle pelo site (ligar/desligar, executar agora, parar, config) não
+// conferiam isso — qualquer outro escritório com permissão de "configurações" conseguia enxergar e
+// mexer nos robôs do escritório principal. Mesma barreira já aplicada ao download do pacote do robô.
+function requireEscritorioPrincipalDominio(req: express.Request, res: express.Response, next: express.NextFunction) {
+  if ((req as any).user?.escritorioId !== 1) return res.status(403).json({ error: "Este robô só está disponível pro escritório principal, por enquanto." });
+  next();
+}
 // Dono do SaaS — gerencia os escritórios-cliente, não pertence a nenhum escritório.
 function requireSuperAdmin(req: express.Request, res: express.Response, next: express.NextFunction) {
   if ((req as any).user?.perfil !== "SuperAdmin") {
@@ -5038,7 +5047,13 @@ function zipPastaRoboComToken(zip: any, pasta: string, sub = "") {
 }
 // Download do pacote do robô (script AutoHotkey + instruções) pra quem for instalar no servidor Windows do
 // Domínio Web — pelo Administrador logado no site (diferente das rotas acima, que são pro ROBÔ chamar).
+// Achado em auditoria (2026-10-12): o robô (e tudo que ele automatiza) é de escritório_id=1 só — igual
+// o resto dessa família de rotas (/api/dominio-agent/*, todas com "WHERE escritorio_id = 1" fixo). Sem
+// essa checagem, um Administrador de QUALQUER outro escritório baixava o .zip e ficava com o token
+// GLOBAL do agente embutido no .ahk — esse token dá acesso a TODAS as rotas /api/dominio-agent/*,
+// inclusive uma que devolve a senha do banco e o token de API do Domínio Web em texto puro.
 app.get("/api/empresas/comparativo-movimento/robo", blockCliente, requireAdmin, (req, res) => {
+  if ((req as any).user.escritorioId !== 1) return res.status(403).json({ error: "Este robô só está disponível pro escritório principal, por enquanto." });
   const pasta = [path.join(__dirname, "..", "dominio-robo-comparativo"), path.join(__dirname, "dominio-robo-comparativo")].find((p) => fs.existsSync(p));
   if (!pasta) return res.status(500).json({ error: "Pacote do robô não está disponível nesta versão do servidor." });
   res.setHeader("Content-Type", "application/zip");
@@ -5139,7 +5154,7 @@ app.post("/api/dominio-agent/comparativo-progresso", requireDominioAgent, (req, 
   res.json({ ok: true });
 });
 // ---- Controle do robô pela tela (Configurações › Relatórios) ----
-app.get("/api/comparativo-robo/estado", blockCliente, requirePermissao("configuracoes", "visualizar"), (_req, res) => {
+app.get("/api/comparativo-robo/estado", blockCliente, requirePermissao("configuracoes", "visualizar"), requireEscritorioPrincipalDominio, (_req, res) => {
   garantirRoboEstado(1);
   const c = sqlite.prepare(`
     SELECT ligado, intervalo_min AS intervaloMin, run_now_em AS runNowEm, ultima_exec_em AS ultimaExecEm,
@@ -5167,7 +5182,7 @@ app.get("/api/comparativo-robo/estado", blockCliente, requirePermissao("configur
     runNowPendente: !!c.runNowEm, pararPendente: !!c.pararPendente, agenteOnline: !!c.agenteOnline, agenteVistoEm: c.agenteVistoEm,
   });
 });
-app.post("/api/comparativo-robo/config", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
+app.post("/api/comparativo-robo/config", blockCliente, requirePermissao("configuracoes", "editar"), requireEscritorioPrincipalDominio, (req, res) => {
   garantirRoboEstado(1);
   const pIni = comparativoValidaPeriodo(req.body?.periodoIni);
   const pFim = comparativoValidaPeriodo(req.body?.periodoFim);
@@ -5191,7 +5206,7 @@ app.post("/api/comparativo-robo/config", blockCliente, requirePermissao("configu
     sqlite.prepare(`UPDATE comparativo_robo_estado SET agenda_ultimo_dia = NULL WHERE escritorio_id = 1`).run();
   res.json({ ok: true, periodoIni: pIni, periodoFim: pFim });
 });
-app.post("/api/comparativo-robo/executar", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
+app.post("/api/comparativo-robo/executar", blockCliente, requirePermissao("configuracoes", "editar"), requireEscritorioPrincipalDominio, (req, res) => {
   garantirRoboEstado(1);
   // Se a tela mandou um período válido, guarda antes de disparar (vale pra esta execução e as próximas).
   const pIni = comparativoValidaPeriodo(req.body?.periodoIni);
@@ -5204,7 +5219,7 @@ app.post("/api/comparativo-robo/executar", blockCliente, requirePermissao("confi
 });
 // FREIO DE EMERGÊNCIA: marca "parar". O agente lê no /comparativo-comando e aborta ENTRE as empresas.
 // Também desliga o automático e cancela um "executar agora" pendente, pra não reiniciar sozinho.
-app.post("/api/comparativo-robo/parar", blockCliente, requirePermissao("configuracoes", "editar"), (_req, res) => {
+app.post("/api/comparativo-robo/parar", blockCliente, requirePermissao("configuracoes", "editar"), requireEscritorioPrincipalDominio, (_req, res) => {
   garantirRoboEstado(1);
   sqlite.prepare(`UPDATE comparativo_robo_estado SET parar_em = datetime('now'), ligado = 0, run_now_em = NULL WHERE escritorio_id = 1`).run();
   res.json({ ok: true });
@@ -5262,7 +5277,9 @@ function garantirFeriasEstado(escritorioId: number) {
   sqlite.prepare(`INSERT OR IGNORE INTO ferias_robo_estado (escritorio_id) VALUES (?)`).run(escritorioId);
 }
 // Download do pacote do robô da Programação de Férias (Admin logado no site).
+// Mesma checagem (e mesmo motivo) do zip do robô de Comparativo, acima: vazava o token global do agente.
 app.get("/api/empresas/programacao-ferias/robo", blockCliente, requireAdmin, (req, res) => {
+  if ((req as any).user.escritorioId !== 1) return res.status(403).json({ error: "Este robô só está disponível pro escritório principal, por enquanto." });
   const pasta = [path.join(__dirname, "..", "dominio-robo-programacao-ferias"), path.join(__dirname, "dominio-robo-programacao-ferias")].find((p) => fs.existsSync(p));
   if (!pasta) return res.status(500).json({ error: "Pacote do robô não está disponível nesta versão do servidor." });
   res.setHeader("Content-Type", "application/zip");
@@ -5332,7 +5349,7 @@ app.post("/api/dominio-agent/ferias-progresso", requireDominioAgent, (req, res) 
   if (!b.rodando) sqlite.prepare(`UPDATE ferias_robo_estado SET parar_em = NULL WHERE escritorio_id = 1`).run();
   res.json({ ok: true });
 });
-app.get("/api/ferias-robo/estado", blockCliente, requirePermissao("configuracoes", "visualizar"), (_req, res) => {
+app.get("/api/ferias-robo/estado", blockCliente, requirePermissao("configuracoes", "visualizar"), requireEscritorioPrincipalDominio, (_req, res) => {
   garantirFeriasEstado(1);
   const c = sqlite.prepare(`
     SELECT ligado, intervalo_min AS intervaloMin, run_now_em AS runNowEm, ultima_exec_em AS ultimaExecEm,
@@ -5357,7 +5374,7 @@ app.get("/api/ferias-robo/estado", blockCliente, requirePermissao("configuracoes
     runNowPendente: !!c.runNowEm, pararPendente: !!c.pararPendente, agenteOnline: !!c.agenteOnline, agenteVistoEm: c.agenteVistoEm,
   });
 });
-app.post("/api/ferias-robo/config", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
+app.post("/api/ferias-robo/config", blockCliente, requirePermissao("configuracoes", "editar"), requireEscritorioPrincipalDominio, (req, res) => {
   garantirFeriasEstado(1);
   // O Férias não tem mais horário próprio — ou encadeia com o Comparativo (preferido) ou fica só no manual.
   const encadeadoAposComparativo = req.body?.encadeadoAposComparativo ? 1 : 0;
@@ -5376,13 +5393,19 @@ app.post("/api/ferias-robo/config", blockCliente, requirePermissao("configuracoe
   `).run(encadeadoAposComparativo, tEntreEmpresasMs, tRenderTimeoutMs, tGerarPdfMs, tModuloCargaMs, tCurtoMs, tMedioMs, tLongoMs, tEmpresaMs);
   res.json({ ok: true });
 });
-app.post("/api/ferias-robo/executar", blockCliente, requirePermissao("configuracoes", "editar"), (_req, res) => {
+app.post("/api/ferias-robo/executar", blockCliente, requirePermissao("configuracoes", "editar"), requireEscritorioPrincipalDominio, (_req, res) => {
   garantirFeriasEstado(1);
   const online = sqlite.prepare(`SELECT (agente_visto_em IS NOT NULL AND datetime(agente_visto_em, '+40 seconds') >= datetime('now')) AS agenteOn FROM ferias_robo_estado WHERE escritorio_id = 1`).get() as any;
-  sqlite.prepare(`UPDATE ferias_robo_estado SET run_now_em = datetime('now'), parar_em = NULL WHERE escritorio_id = 1`).run();
+  // Achado em auditoria (2026-10-12): "Executar agora" não marcava encadeado_ultimo_dia — se o
+  // Comparativo (agendado) terminasse DEPOIS desse clique manual no mesmo dia, o encadeamento via
+  // comparativo-progresso (acima) não via o dia como "já usado" e disparava o Férias de NOVO, mesmo
+  // dia — exatamente a classe de bug de "rodar 2x no mesmo dia" já corrigida hoje mais cedo pros dois
+  // robôs. Qualquer disparo de verdade (manual ou encadeado) agora consome o dia igual.
+  const hojeSp = new Date(Date.now() - 3 * 3600 * 1000).toISOString().slice(0, 10);
+  sqlite.prepare(`UPDATE ferias_robo_estado SET run_now_em = datetime('now'), parar_em = NULL, encadeado_ultimo_dia = ? WHERE escritorio_id = 1`).run(hojeSp);
   res.json({ ok: true, agenteOnline: !!online.agenteOn });
 });
-app.post("/api/ferias-robo/parar", blockCliente, requirePermissao("configuracoes", "editar"), (_req, res) => {
+app.post("/api/ferias-robo/parar", blockCliente, requirePermissao("configuracoes", "editar"), requireEscritorioPrincipalDominio, (_req, res) => {
   garantirFeriasEstado(1);
   sqlite.prepare(`UPDATE ferias_robo_estado SET parar_em = datetime('now'), ligado = 0, run_now_em = NULL WHERE escritorio_id = 1`).run();
   res.json({ ok: true });
@@ -9907,7 +9930,11 @@ app.put("/api/integracontador/envio-automatico", blockCliente, requirePermissao(
   sqlite.prepare(`UPDATE integracontador_config SET envio_automatico = ? WHERE escritorio_id = ?`).run(req.body?.ativo ? 1 : 0, user.escritorioId);
   res.json({ ok: true });
 });
-app.put("/api/integracontador/config", blockCliente, requirePermissao("integracontador", "editar"), upload.single("certificado"), (req, res) => {
+// Achado em auditoria (2026-10-12): só exigia "integracontador:editar" — qualquer Colaborador com essa
+// permissão (ex.: pra ligar/desligar a agenda) também conseguia TROCAR o certificado e-CNPJ/consumer
+// key-secret usados pra toda busca na Receita Federal do escritório. Mesmo padrão do certificado de
+// NFS-e: fica Administrador só.
+app.put("/api/integracontador/config", blockCliente, requireAdmin, upload.single("certificado"), (req, res) => {
   const escritorioId = (req as any).user.escritorioId;
   const b = req.body || {};
   const atual = getIntegraContadorConfig(escritorioId);
@@ -10669,6 +10696,11 @@ app.put("/api/integracontador/empresas/:id", blockCliente, requirePermissao("int
   }
   res.json({ ok: true, buscaIniciada });
 });
+// Achado em auditoria (2026-10-12): "Já em andamento" (abaixo) só trava busca CONCORRENTE — nada
+// impedia clicar "Buscar agora" repetidas vezes em sequência (deixando cada uma terminar), e cada
+// clique é uma chamada PAGA ao SERPRO. Cooldown curto por empresa, só pra evitar clique duplo/spam —
+// não é um limite diário rígido, dá pra buscar de novo depois de 2 minutos se for preciso de verdade.
+const integraContadorUltimaBuscaManual = new Map<number, number>();
 app.post("/api/integracontador/empresas/:id/buscar", blockCliente, requirePermissao("integracontador", "postar"), async (req, res) => {
   const user = (req as any).user;
   const empId = Number(req.params.id);
@@ -10678,6 +10710,11 @@ app.post("/api/integracontador/empresas/:id/buscar", blockCliente, requirePermis
   const empConfig = getIntegraContadorEmpresaConfig(empId);
   if (!empConfig.ativo) return res.status(400).json({ error: "Habilite esta empresa antes de buscar." });
   if (integraContadorBuscasEmAndamento.has(empId)) return res.status(409).json({ error: "Já existe uma busca em andamento pra esta empresa." });
+  const ultimaManual = integraContadorUltimaBuscaManual.get(empId);
+  if (ultimaManual && Date.now() - ultimaManual < 2 * 60_000) {
+    return res.status(429).json({ error: "Essa empresa já foi buscada há pouco — espere 2 minutos antes de buscar de novo (cada busca é uma chamada paga)." });
+  }
+  integraContadorUltimaBuscaManual.set(empId, Date.now());
   integraContadorBuscasEmAndamento.add(empId);
   const empresa = sqlite.prepare(`SELECT cnpj FROM empresas WHERE id = ?`).get(empId) as any;
   // Mesma lógica do PUT acima: dispara e não espera, pra não bater no timeout do proxy numa busca
@@ -10884,13 +10921,19 @@ app.get("/api/integracontador/documentos/:id/declaracao-pdf", blockCliente, asyn
 // toda empresa ativa, uma de cada vez, com uma pausa entre elas.
 const INTEGRACONTADOR_AUTO_PAUSA_ENTRE_EMPRESAS_MS = 5000;
 async function integraContadorExecutarBuscaAutomatica(desde?: string) {
+  // Achado em auditoria (2026-10-12): o gatilho (dia/hora) sempre vinha só da agenda do escritório 1
+  // (getAgendaBusca(1), ver integraContadorRodar) — mas esta função rodava pra empresa de QUALQUER
+  // escritório com Integra Contador ativo, não só o 1. Ou seja: se um dia houver um 2º escritório
+  // usando este módulo, a agenda DELE nunca seria lida de verdade, e a busca (paga) das empresas dele
+  // ficaria decidida pelo horário configurado pelo escritório 1. Trava consistente com o gatilho: só
+  // processa o escritório cuja agenda é realmente consultada.
   const configs = sqlite
     .prepare(
       `SELECT c.empresa_id as empresaId, c.optante_simples_nacional as optante, c.busca_dctfweb as buscaDctfweb, e.cnpj as cnpj, c.ultima_busca_em as ultimaBusca
        FROM integracontador_empresa_config c
        JOIN empresas e ON e.id = c.empresa_id
        JOIN integracontador_config ic ON ic.escritorio_id = c.escritorio_id
-       WHERE c.ativo = 1 AND ic.ativo = 1 AND e.ativo = 1`
+       WHERE c.ativo = 1 AND ic.ativo = 1 AND e.ativo = 1 AND c.escritorio_id = 1`
     )
     .all() as any[];
   for (const cfg of configs) {
@@ -13883,7 +13926,7 @@ app.get("/api/financeiro/honorarios-robo/empresas", blockCliente, requirePermiss
   if (visiveis !== null) rows = rows.filter((r) => visiveis.includes(r.id));
   res.json({ items: rows.map((r) => ({ id: r.id, nome: r.nome, participa: !!r.participa })) });
 });
-app.put("/api/financeiro/honorarios-robo/empresas", blockCliente, requirePermissao("financeiro", "editar"), (req, res) => {
+app.put("/api/financeiro/honorarios-robo/empresas", blockCliente, requirePermissao("financeiro", "editar"), async (req, res) => {
   const user = (req as any).user;
   const idsPedidos: number[] = Array.isArray(req.body?.empresaIds) ? req.body.empresaIds.map(Number) : [];
   // Achado em auditoria (2026-10-12): o UPDATE não tinha WHERE nenhum — zerava a participação de
@@ -13891,10 +13934,25 @@ app.put("/api/financeiro/honorarios-robo/empresas", blockCliente, requirePermiss
   // conferir se pertenciam mesmo ao escritório/acesso de quem salvou (IDOR). Corrigido: só mexe nas
   // empresas do PRÓPRIO escritório, e só aceita id que o usuário pode mesmo acessar.
   const ids = idsPedidos.filter((id) => podeAcessarEmpresa(user, id));
+  // Achado em auditoria (2026-10-12): se a empresa saía do robô enquanto a conversa estava presa
+  // ('ativo'), ela ficava travada pra sempre com "Automações" (ninguém mais soltava). Agora, quem
+  // deixa de participar e tinha gate ativo é liberado aqui mesmo, sem a mensagem de "pagamento
+  // confirmado" (seria falso) — a conversa só volta pra fila normal.
+  const participavamAntes = sqlite
+    .prepare(`SELECT empresa_id FROM honorarios WHERE participa_cobranca_robo = 1 AND empresa_id IN (SELECT id FROM empresas WHERE escritorio_id = ?)`)
+    .all(user.escritorioId) as any[];
+  const saindo = participavamAntes.map((r) => r.empresa_id).filter((id: number) => !ids.includes(id));
   sqlite.prepare(`UPDATE honorarios SET participa_cobranca_robo = 0 WHERE empresa_id IN (SELECT id FROM empresas WHERE escritorio_id = ?)`).run(user.escritorioId);
   for (const id of ids) {
     sqlite.prepare(`INSERT INTO honorarios (empresa_id, participa_cobranca_robo, updated_at) VALUES (?, 1, datetime('now'))
       ON CONFLICT(empresa_id) DO UPDATE SET participa_cobranca_robo = 1, updated_at = datetime('now')`).run(id);
+  }
+  for (const id of saindo) {
+    try {
+      await honorariosRoboLiberarEmpresa(id, null);
+    } catch (e: any) {
+      console.error(`[honorarios-robo] falha ao liberar empresa ${id} removida da lista do robô:`, e.message);
+    }
   }
   res.json({ ok: true, marcadas: ids.length });
 });
@@ -16609,13 +16667,13 @@ function honorariosLancamentosEmAberto(empresaId: number): { id: number; compete
 // marcado como pago (ou deixa de existir) — libera de volta pra fila normal e avisa o cliente. Roda
 // independente do interruptor global estar ligado (é uma limpeza, não precisa do robô "ativo" pra soltar
 // o que ele já segurou antes).
-async function honorariosRoboLiberarEmpresa(empresaId: number): Promise<void> {
+async function honorariosRoboLiberarEmpresa(empresaId: number, mensagem: string | null = "Pagamento confirmado — a conversa já está liberada. Obrigado! 🙂"): Promise<void> {
   if (!deskcommAdmin || !DESKCOMM_ORG_ID) return;
   const gates = sqlite.prepare(`SELECT * FROM honorarios_robo_gate WHERE empresa_id = ? AND status = 'ativo'`).all(empresaId) as any[];
   for (const g of gates) {
     try {
       await deskcommRoboApi(`/conversations/${g.conversation_id}/release`, { method: "POST" });
-      await deskcommRoboEnviar(g.conversation_id, "Pagamento confirmado — a conversa já está liberada. Obrigado! 🙂");
+      if (mensagem) await deskcommRoboEnviar(g.conversation_id, mensagem);
       sqlite.prepare(`UPDATE honorarios_robo_gate SET status = 'liberado', liberado_em = datetime('now') WHERE id = ?`).run(g.id);
     } catch (e: any) {
       console.error(`[honorarios-robo] falha ao liberar a conversa ${g.conversation_id} (empresa ${empresaId}):`, e.message);

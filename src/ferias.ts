@@ -403,7 +403,13 @@ export function registerFerias(app: express.Express, d: Deps) {
       res.status(500).json({ error: e.message });
     }
   });
+  // Achado em auditoria (2026-10-12): estas duas config (e o laço mensal, mais abaixo) são singleton
+  // de escritorio_id=1 só (mesmo padrão dos robôs do Domínio — ver comentário logo abaixo), mas não
+  // conferiam isso — qualquer outro escritório com "dprh:editar" conseguia ligar/desligar/reagendar o
+  // envio automático de férias vencidas do escritório principal.
   app.post("/api/ferias/config", d.blockCliente, d.requirePermissao("dprh", "editar"), (req, res) => {
+    const user = (req as any).user;
+    if (user.escritorioId !== 1) return res.status(403).json({ error: "Este agendamento só está disponível pro escritório principal, por enquanto." });
     const b = req.body || {};
     const diaMes = Math.min(28, Math.max(1, Number(b.diaMes) || 5));
     const hora = Math.min(23, Math.max(0, Number(b.hora) || 0));
@@ -412,6 +418,8 @@ export function registerFerias(app: express.Express, d: Deps) {
     res.json({ ok: true });
   });
   app.post("/api/ferias/verificacao-config", d.blockCliente, d.requirePermissao("dprh", "editar"), (req, res) => {
+    const user = (req as any).user;
+    if (user.escritorioId !== 1) return res.status(403).json({ error: "Esta verificação só está disponível pro escritório principal, por enquanto." });
     const b = req.body || {};
     const diaMes = Math.min(28, Math.max(1, Number(b.diaMes) || 15));
     const hora = Math.min(23, Math.max(0, Number(b.hora) || 0));
@@ -477,8 +485,12 @@ export function registerFerias(app: express.Express, d: Deps) {
     if (cfg.ultima_execucao_competencia === competencia) return;
     if (agora.getDate() !== cfg.dia_mes || (agora.getHours() * 60 + agora.getMinutes()) < (cfg.hora * 60 + cfg.minuto)) return;
     sqlite.prepare(`UPDATE ferias_agendamento_config SET ultima_execucao_competencia = ? WHERE id = 1`).run(competencia);
+    // Achado em auditoria (2026-10-12): faltava o filtro de escritório — sem ele, o laço mensal
+    // enviava relatório de férias vencidas pras empresas de QUALQUER escritório que tivesse dado
+    // match em ferias_funcionarios, não só as do escritório principal (mesmo padrão single-tenant
+    // documentado acima).
     const empresas = sqlite
-      .prepare(`SELECT DISTINCT e.id, e.nome, e.escritorio_id FROM empresas e JOIN ferias_funcionarios f ON f.empresa_id = e.id WHERE f.status IN ('vencida','proxima') AND e.ativo = 1`)
+      .prepare(`SELECT DISTINCT e.id, e.nome, e.escritorio_id FROM empresas e JOIN ferias_funcionarios f ON f.empresa_id = e.id WHERE f.status IN ('vencida','proxima') AND e.ativo = 1 AND e.escritorio_id = 1`)
       .all() as any[];
     for (const empresa of empresas) {
       try {
