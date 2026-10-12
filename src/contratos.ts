@@ -265,7 +265,20 @@ export async function gerarPdfDeHtml(conteudoHtml: string, titulo: string, opts:
   const { chromium } = require("playwright");
   const browser = await chromium.launch();
   try {
-    const page = await browser.newPage();
+    // Achado em auditoria (2026-10-12): o HTML renderizado aqui pode conter texto digitado por
+    // qualquer colaborador com permissão de "contratos:postar" (campos do contrato) — se algum dia
+    // escapar a escapagem de entrada (ver aplicarCamposNoModelo/dadosFinal em server.ts), uma tag
+    // <script> ou <img src="http://host-interno/..."> rodando aqui dentro teria JS habilitado e
+    // acesso de rede igual a qualquer página normal, abrindo SSRF contra a rede interna/metadados de
+    // nuvem. JS desligado + bloqueio de toda rede (só "data:"/"about:" passam — único necessário pro
+    // timbrado, que já entra como imagem em base64, nunca por URL) fecha essa classe de risco de
+    // verdade, não só a entrada já corrigida.
+    const page = await browser.newPage({ javaScriptEnabled: false });
+    await page.route("**/*", (route: any) => {
+      const url = route.request().url();
+      if (url.startsWith("data:") || url === "about:blank") return route.continue();
+      return route.abort();
+    });
     // Importante: quando tem timbrado, NÃO declara margin no @page (nem "0") — declarar qualquer
     // valor aqui faz o Chromium ignorar o "margin" passado pro page.pdf() abaixo (testado: com
     // "margin:0" no @page o texto ignora a margem do page.pdf() e escreve por baixo do cabeçalho).

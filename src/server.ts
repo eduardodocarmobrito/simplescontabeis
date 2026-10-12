@@ -2428,6 +2428,18 @@ function requireEscritorioPrincipalDominio(req: express.Request, res: express.Re
   if ((req as any).user?.escritorioId !== 1) return res.status(403).json({ error: "Este robô só está disponível pro escritório principal, por enquanto." });
   next();
 }
+// O deskcomm (atendimento/CRM via WhatsApp) é UMA organização compartilhada só, de DESKCOMM_ESCRITORIO_ID
+// (a integração inteira usa um único DESKCOMM_ORG_ID fixo, não há uma org por escritório-cliente deste
+// SaaS). Achado em auditoria (2026-10-12): nenhuma rota do núcleo de atendimento conferia isso — um
+// Administrador (ou mesmo Colaborador com permissão de atendimento) de QUALQUER OUTRO escritório-cliente
+// conseguia entrar em /deskcomm-login, ser espelhado como admin/agent na organização do escritório
+// principal (deskcommGarantirUsuario), e a partir daí ler/editar/apagar conversas e mensagens reais de
+// clientes do escritório principal no WhatsApp — ou usar as rotas /api/atendimento/* locais direto, sem
+// nem passar pelo deskcomm. Barreira única pra todo o módulo.
+function requireEscritorioPrincipalDeskcomm(req: express.Request, res: express.Response, next: express.NextFunction) {
+  if ((req as any).user?.escritorioId !== DESKCOMM_ESCRITORIO_ID) return res.status(403).json({ error: "O atendimento por WhatsApp só está disponível pro escritório principal, por enquanto." });
+  next();
+}
 // Dono do SaaS — gerencia os escritórios-cliente, não pertence a nenhum escritório.
 function requireSuperAdmin(req: express.Request, res: express.Response, next: express.NextFunction) {
   if ((req as any).user?.perfil !== "SuperAdmin") {
@@ -2785,6 +2797,9 @@ function requireAuthPagina(req: express.Request, res: express.Response, next: ex
   const user = getSessionUser(req.cookies?.sid);
   if (!user) return res.redirect("/");
   if (user.perfil === "Cliente") return res.redirect("/");
+  // Achado em auditoria (2026-10-12): ver comentário de requireEscritorioPrincipalDeskcomm — sem isso,
+  // qualquer usuário de outro escritório-cliente deste SaaS entrava direto no app do deskcomm.
+  if (user.escritorioId !== DESKCOMM_ESCRITORIO_ID) return res.redirect("/");
   (req as any).user = user;
   next();
 }
@@ -2815,6 +2830,7 @@ app.use(
   "/api/v1",
   requireAuth,
   blockCliente,
+  requireEscritorioPrincipalDeskcomm,
   createProxyMiddleware({
     target: DESKCOMM_URL,
     changeOrigin: true, // ver comentário do proxy /deskcomm acima — obrigatório pro TLS não quebrar
@@ -2828,8 +2844,12 @@ app.use(
 // Garante que o usuário daqui tem um espelho no Supabase Auth do deskcomm, vinculado à organização
 // com o papel certo, e devolve o id de lá. Usado pela ponte de login abaixo e pelo módulo DP/RH (que
 // precisa saber o id do deskcomm de cada atendente pra "Minhas" e "Transferir").
-async function deskcommGarantirUsuario(user: { id: number; email: string; nome: string; perfil: string }): Promise<string> {
+async function deskcommGarantirUsuario(user: { id: number; email: string; nome: string; perfil: string; escritorioId: number }): Promise<string> {
   if (!deskcommAdmin || !DESKCOMM_ORG_ID) throw new Error("Integração com o deskcomm não configurada (faltam variáveis de ambiente no servidor).");
+  // Achado em auditoria (2026-10-12): esta função é o único ponto que espelha um usuário local na
+  // organização ÚNICA e compartilhada do deskcomm — travar aqui protege todo chamador, presente e
+  // futuro, mesmo que algum deles esqueça a checagem de escritório na própria rota.
+  if (user.escritorioId !== DESKCOMM_ESCRITORIO_ID) throw new Error("O atendimento por WhatsApp só está disponível pro escritório principal, por enquanto.");
   let deskcommUserId: string | null = (sqlite.prepare(`SELECT deskcomm_user_id FROM app_users WHERE id = ?`).get(user.id) as any)?.deskcomm_user_id || null;
   if (!deskcommUserId) {
     // Busca por e-mail antes de criar — createUser falha se o e-mail já existir por lá (ex.:
@@ -2860,7 +2880,7 @@ async function deskcommGarantirUsuario(user: { id: number; email: string; nome: 
 // ?silencioso=1: usado pelo módulo DP/RH via fetch() — mesma ponte, mas termina num arquivo leve do
 // deskcomm (o manifest) em vez de carregar o Inbox inteiro. O que importa ali é só o Set-Cookie
 // `sb-deskcomm-auth` gravado no caminho, pra tela do DP/RH poder chamar /api/v1/* como esse usuário.
-app.get("/deskcomm-login", requireAuth, blockCliente, async (req, res) => {
+app.get("/deskcomm-login", requireAuth, blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!deskcommAdmin || !DESKCOMM_ORG_ID) {
     return res.status(503).send("Integração com o deskcomm não configurada (faltam variáveis de ambiente no servidor).");
@@ -2901,7 +2921,7 @@ function deskcommUsuarioDoCookie(cookies: Record<string, string> | undefined): s
     return null;
   }
 }
-app.get("/api/atendimento/sessao-deskcomm", requireAuth, blockCliente, async (req, res) => {
+app.get("/api/atendimento/sessao-deskcomm", requireAuth, blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   try {
     const esperado = await deskcommGarantirUsuario(user);
@@ -14792,6 +14812,14 @@ app.post("/api/contratos", blockCliente, requirePermissao("contratos", "postar")
       dadosFinal[campo.chave] = empresa[CONTRATO_EMPRESA_CAMPO_SQL[campo.autoPreencherDe]] ?? "";
     }
   }
+  // Achado em auditoria (2026-10-12): "dados" vem direto do corpo da requisição — a tela sempre
+  // manda vazio e preenche/escapa os campos depois, no navegador (ver "Aplicar no documento" em
+  // app.html, que já usa esc()), mas a API em si não pode depender disso: sem escapar aqui, dava pra
+  // chamar esta rota direto (fora da tela) e injetar HTML/<script> num campo, que ia reto pro PDF
+  // (Chromium) e pro e-mail do contrato. Mesmo escape usado pelos relatórios (escHtmlRelatorio).
+  for (const chave of Object.keys(dadosFinal)) {
+    if (typeof dadosFinal[chave] === "string") dadosFinal[chave] = escHtmlRelatorio(dadosFinal[chave]);
+  }
   const conteudoHtml = contratos.aplicarCamposNoModelo(modelo.conteudo_html, dadosFinal);
   const info = sqlite
     .prepare(
@@ -14882,9 +14910,12 @@ app.post("/api/contratos/:id/aditivo", blockCliente, requirePermissao("contratos
   // é herdado do contrato original (aditivo não gera um número novo — ele referencia o contrato).
   const cabecalho = contratos.extrairTrechoCabecalho(original.conteudo_html) || "";
   const numeroRef = original.numero_sequencial ? ` (nº ${original.numero_sequencial}/${original.numero_sequencial_ano})` : "";
+  // Achado em auditoria (2026-10-12): titulo/nome aqui também podem conter HTML digitado (titulo
+  // vem de "contratos:editar" sem escapar — ver PUT /api/contratos/:id) — mesmo escape do ponto
+  // acima, pra não entrar cru no documento/PDF.
   const conteudoInicial = contratos.aplicarCamposNoModelo(
     cabecalho +
-      `<h1>Aditivo Contratual</h1><p>Aditivo ao contrato "${original.titulo}"${numeroRef}, firmado entre o escritório e ${empresa?.nome || ""}.</p>` +
+      `<h1>Aditivo Contratual</h1><p>Aditivo ao contrato "${escHtmlRelatorio(original.titulo)}"${numeroRef}, firmado entre o escritório e ${escHtmlRelatorio(empresa?.nome || "")}.</p>` +
       `<p>As partes acordam alterar/complementar o contrato original nos seguintes termos:</p>` +
       (dadosAlterados ? `<p>${contratos.escaparEQuebrarLinhas(dadosAlterados)}</p>` : `<p></p>`),
     { n_contrato_sequencial: original.numero_sequencial != null ? String(original.numero_sequencial) : "" }
@@ -14914,10 +14945,12 @@ app.post("/api/contratos/:id/distrato", blockCliente, requirePermissao("contrato
   const escritorio = agConfig?.empresa_prestador_id ? (sqlite.prepare(`SELECT nome FROM empresas WHERE id = ?`).get(agConfig.empresa_prestador_id) as any) : null;
   // Número sequencial herdado do contrato original — o distrato não gera um número novo, ele
   // referencia o contrato que está sendo encerrado.
+  // Achado em auditoria (2026-10-12): mesmo escape do aditivo, acima — titulo/nome podem conter
+  // HTML digitado e vão direto pros tokens {{...}} do template de distrato.
   const tokens = {
-    empresa_nome: empresa?.nome || "",
-    escritorio_nome: escritorio?.nome || "",
-    contrato_titulo: original.titulo,
+    empresa_nome: escHtmlRelatorio(empresa?.nome || ""),
+    escritorio_nome: escHtmlRelatorio(escritorio?.nome || ""),
+    contrato_titulo: escHtmlRelatorio(original.titulo),
     data: new Date().toLocaleDateString("pt-BR"),
     n_contrato_sequencial: original.numero_sequencial != null ? String(original.numero_sequencial) : "",
   };
@@ -14927,7 +14960,7 @@ app.post("/api/contratos/:id/distrato", blockCliente, requirePermissao("contrato
   const assinaturas = padrao?.assinaturas_padrao ? contratos.aplicarCamposNoModelo(padrao.assinaturas_padrao, tokens) : "";
   const conteudoInicial =
     cabecalho +
-    `<h1>Distrato Contratual</h1><p>Distrato do contrato "${original.titulo}"${numeroRef}, firmado entre o escritório e ${empresa?.nome || ""}.</p>` +
+    `<h1>Distrato Contratual</h1><p>Distrato do contrato "${escHtmlRelatorio(original.titulo)}"${numeroRef}, firmado entre o escritório e ${escHtmlRelatorio(empresa?.nome || "")}.</p>` +
     clausula +
     assinaturas;
   const info = sqlite
@@ -14966,12 +14999,19 @@ app.get("/api/contratos/:id/pdf", blockCliente, requirePermissao("contratos", "v
     res.status(502).json({ error: `Não consegui gerar o PDF: ${e.message}` });
   }
 });
+// Achado em auditoria (2026-10-12): sem limite nenhum — dava pra disparar envio de e-mail (custo de
+// SMTP) em loop. Mesmo padrão de freio por usuário já usado em login/certificados (Map em memória).
+const contratoEmailEnvios = new Map<number, { n: number; ate: number }>();
 app.post("/api/contratos/:id/enviar-email", blockCliente, requirePermissao("contratos", "editar"), async (req, res) => {
   const user = (req as any).user;
   const row = sqlite.prepare(`SELECT c.*, e.email as empresaEmail FROM contratos c JOIN empresas e ON e.id = c.empresa_id WHERE c.id = ?`).get(Number(req.params.id)) as any;
   if (!row || !podeAcessarEmpresa(user, row.empresa_id)) return res.status(404).json({ error: "Contrato não encontrado." });
   const destino = (req.body?.email && String(req.body.email).trim()) || row.empresaEmail;
   if (!destino) return res.status(400).json({ error: "Esta empresa não tem e-mail cadastrado — digite um e-mail pra enviar." });
+  const trava = contratoEmailEnvios.get(user.id);
+  if (trava && trava.ate > Date.now() && trava.n >= 15) return res.status(429).json({ error: "Muitos envios em pouco tempo — espere um pouco antes de enviar de novo." });
+  if (!trava || trava.ate <= Date.now()) contratoEmailEnvios.set(user.id, { n: 1, ate: Date.now() + 10 * 60_000 });
+  else trava.n++;
   try {
     const pdf = await contratoObterPdf(row);
     await enviarEmail(user.escritorioId, {
@@ -15558,7 +15598,9 @@ app.get("/api/whatsapp/config", blockCliente, requirePermissao("configuracoes", 
     ativo: !!c.ativo,
     updatedAt: c.updated_at || null,
     webhookUrl: `${req.protocol}://${req.get("host")}/api/whatsapp/webhook`,
-    webhookVerifyToken: c.webhook_verify_token,
+    // Achado em auditoria (2026-10-12): era devolvido a qualquer um com "configuracoes:visualizar",
+    // inconsistente com o SMTP/Access Token/App Secret dessa mesma tela, que já são admin-only.
+    webhookVerifyToken: (req as any).user.perfil === "Administrador" ? c.webhook_verify_token : null,
   });
 });
 app.put("/api/whatsapp/config", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
@@ -15938,7 +15980,7 @@ function atendimentoEmpresasPorTelefoneTodas(escritorioId: number, telefone: str
     .all(escritorioId, sufixo, escritorioId, sufixo) as any[];
   return rows;
 }
-app.get("/api/atendimento/telefone-empresas", blockCliente, (req, res) => {
+app.get("/api/atendimento/telefone-empresas", blockCliente, requireEscritorioPrincipalDeskcomm, (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   const telefone = String(req.query.telefone || "");
@@ -16113,7 +16155,7 @@ const ATENDIMENTO_COLUNAS =
 // paginação no servidor, que ainda não existe.
 const ATENDIMENTO_CRM_LIMITE = 500;
 
-app.get("/api/atendimento/conversas", blockCliente, async (req, res) => {
+app.get("/api/atendimento/conversas", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   const escopo = atendimentoEscopo(req.query.escopo);
   if (!escopo) return res.status(400).json({ error: "Escopo inválido." });
@@ -16214,7 +16256,7 @@ app.get("/api/atendimento/conversas", blockCliente, async (req, res) => {
 // Contatos com tag posta pela equipe (botão "Tag" do atendimento ou do deskcomm). As "Empresa cliente: …"
 // ficam de fora — são automáticas (sincronização com Empresas) e estão em quase todo cliente.
 // ?escopo=dprh|contabil|fiscal: só os clientes atendidos por aquele setor; sem escopo (CRM): todos.
-app.get("/api/atendimento/contatos-tags", blockCliente, async (req, res) => {
+app.get("/api/atendimento/contatos-tags", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   const escopo = atendimentoEscopo(req.query.escopo) || "crm";
   if (!hasPermissao(user, atendimentoModulo(escopo), "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
@@ -16345,12 +16387,12 @@ app.put("/api/painel-tv/config", blockCliente, requireAdmin, (req, res) => {
     .run(user.escritorioId, n, zoom1, zoom2);
   res.json({ segundosPorPagina: n, zoomPagina1: zoom1, zoomPagina2: zoom2 });
 });
-app.get("/api/atendimento/config", blockCliente, (req, res) => {
+app.get("/api/atendimento/config", blockCliente, requireEscritorioPrincipalDeskcomm, (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   res.json({ ...atendimentoConfig(user.escritorioId), expediente: ATENDIMENTO_EXPEDIENTE_TEXTO });
 });
-app.put("/api/atendimento/config", blockCliente, requirePermissao("crm", "editar"), (req, res) => {
+app.put("/api/atendimento/config", blockCliente, requireEscritorioPrincipalDeskcomm, requirePermissao("crm", "editar"), (req, res) => {
   const user = (req as any).user;
   const b = req.body || {};
   const int = (v: any, min: number, max: number, padrao: number) => {
@@ -16408,7 +16450,7 @@ function minutosUteisEntre(inicio: number, fim: number): number {
 // vê) e clientes esperando resposta nas conversas DELA. Só no expediente — fora dele ninguém é cobrado.
 // Mensagens NOVAS de cliente desde `desde` (qualquer conversa que a pessoa enxerga: CRM vê todas; setores só as do
 // setor). A tela chama de poucos em poucos segundos e toca som + avisa. Sem `desde` só devolve o "agora" do servidor.
-app.get("/api/atendimento/novas", blockCliente, async (req, res) => {
+app.get("/api/atendimento/novas", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   const agora = new Date().toISOString();
@@ -16453,7 +16495,7 @@ app.get("/api/atendimento/novas", blockCliente, async (req, res) => {
     res.status(502).json({ error: e.message });
   }
 });
-app.get("/api/atendimento/alertas", blockCliente, async (req, res) => {
+app.get("/api/atendimento/alertas", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.json({ itens: [], aberto: false });
@@ -16879,7 +16921,7 @@ function atendimentoMsgAgendadaDoUsuario(req: express.Request, res: express.Resp
   if (!m || !atendimentoAlgumaPermissao(user, "postar")) { res.status(404).json({ error: "Agendamento não encontrado." }); return null; }
   return m;
 }
-app.post("/api/atendimento/conversas/:id/agendar", blockCliente, async (req, res) => {
+app.post("/api/atendimento/conversas/:id/agendar", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
@@ -16904,7 +16946,7 @@ app.post("/api/atendimento/conversas/:id/agendar", blockCliente, async (req, res
   res.json({ ok: true, id: Number(info.lastInsertRowid), quando: quando.toISOString() });
 });
 // Lista as agendadas (de uma conversa ou do escopo inteiro: o CRM enxerga todas; cada setor, as criadas nele).
-app.get("/api/atendimento/agendadas", blockCliente, async (req, res) => {
+app.get("/api/atendimento/agendadas", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   const escopo = String(req.query.escopo || "crm");
@@ -16922,13 +16964,13 @@ app.get("/api/atendimento/agendadas", blockCliente, async (req, res) => {
   }
   res.json({ itens: rows.map((r) => ({ id: r.id, conversa: r.conversation_id, cliente: nomes.get(r.conversation_id) || "Cliente", escopo: r.escopo, texto: r.texto, quando: r.agendado_para, status: r.status, erro: r.erro, por: r.criado_por_nome, cancelaSeResponder: !!r.cancelar_se_responder, anexoNome: r.anexo_filename || null })) });
 });
-app.post("/api/atendimento/agendadas/:id/cancelar", blockCliente, (req, res) => {
+app.post("/api/atendimento/agendadas/:id/cancelar", blockCliente, requireEscritorioPrincipalDeskcomm, (req, res) => {
   const m = atendimentoMsgAgendadaDoUsuario(req, res); if (!m) return;
   if (m.status !== "agendada" && m.status !== "erro") return res.status(409).json({ error: "Essa mensagem já foi enviada." });
   sqlite.prepare(`UPDATE atendimento_msgs_agendadas SET status = 'cancelada' WHERE id = ?`).run(m.id);
   res.json({ ok: true });
 });
-app.put("/api/atendimento/agendadas/:id", blockCliente, (req, res) => {
+app.put("/api/atendimento/agendadas/:id", blockCliente, requireEscritorioPrincipalDeskcomm, (req, res) => {
   const m = atendimentoMsgAgendadaDoUsuario(req, res); if (!m) return;
   if (m.status !== "agendada") return res.status(409).json({ error: "Só dá para alterar uma mensagem que ainda não foi enviada." });
   const texto = req.body?.texto !== undefined ? String(req.body.texto).trim() : m.texto;
@@ -16938,7 +16980,7 @@ app.put("/api/atendimento/agendadas/:id", blockCliente, (req, res) => {
   sqlite.prepare(`UPDATE atendimento_msgs_agendadas SET texto = ?, agendado_para = ? WHERE id = ?`).run(texto, quando.toISOString(), m.id);
   res.json({ ok: true });
 });
-app.post("/api/atendimento/agendadas/:id/enviar-agora", blockCliente, async (req, res) => {
+app.post("/api/atendimento/agendadas/:id/enviar-agora", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const m = atendimentoMsgAgendadaDoUsuario(req, res); if (!m) return;
   if (m.status !== "agendada") return res.status(409).json({ error: "Essa mensagem não está mais aguardando." });
   await atendimentoRodarMsgAgendada(m, true);
@@ -17012,20 +17054,29 @@ async function atendimentoRodarLembretes() {
     }
     // Respostas aos lembretes enviados nas últimas 48 h: "sim" confirma o compromisso.
     const pendentes = sqlite.prepare(`SELECT * FROM atendimento_lembretes WHERE verificado_em IS NULL AND enviado_em > ?`).all(new Date(agora - 48 * 3600_000).toISOString()) as any[];
+    // Achado em auditoria (2026-10-12): deskcommPrimeiraRespostaDoCliente ficava fora de qualquer
+    // try/catch — se UM item desse pendentes travasse nessa chamada, a exceção subia pro catch de
+    // fora e abortava o resto da lista nesta execução, sem marcar verificado_em; como o item
+    // continua "pending" nas próximas rodadas (a cada 5 min, por até 48h), ele voltava a travar os
+    // outros itens pendentes repetidamente, não só uma vez. Isolado por item, como o resto dos lotes.
     for (const l of pendentes) {
-      const resp = await deskcommPrimeiraRespostaDoCliente(l.conversation_id, l.enviado_em);
-      if (!resp) continue;
-      const confirma = /^\s*(sim|s|1|confirm\w*|ok|ok[,!.]?\s*confirmado|pode confirmar|estarei (a[ií]|l[aá]))\b/i.test(resp.body || "");
-      if (confirma) {
-        try {
-          const { data: ag } = await deskcommAdmin.from("calendar_appointments").select("status").eq("id", l.appointment_id).maybeSingle();
-          if (ag?.status === "pending") await deskcommRoboApi("/agenda/agendamentos", { method: "PATCH", body: { id: l.appointment_id, status: "confirmed" } });
-        } catch (e: any) {
-          console.error("[lembrete] falha ao confirmar", l.appointment_id, e.message);
+      try {
+        const resp = await deskcommPrimeiraRespostaDoCliente(l.conversation_id, l.enviado_em);
+        if (!resp) continue;
+        const confirma = /^\s*(sim|s|1|confirm\w*|ok|ok[,!.]?\s*confirmado|pode confirmar|estarei (a[ií]|l[aá]))\b/i.test(resp.body || "");
+        if (confirma) {
+          try {
+            const { data: ag } = await deskcommAdmin.from("calendar_appointments").select("status").eq("id", l.appointment_id).maybeSingle();
+            if (ag?.status === "pending") await deskcommRoboApi("/agenda/agendamentos", { method: "PATCH", body: { id: l.appointment_id, status: "confirmed" } });
+          } catch (e: any) {
+            console.error("[lembrete] falha ao confirmar", l.appointment_id, e.message);
+          }
         }
+        sqlite.prepare(`UPDATE atendimento_lembretes SET resposta = ?, confirmado = ?, verificado_em = datetime('now') WHERE appointment_id = ?`)
+          .run(String(resp.body || "").slice(0, 500), confirma ? 1 : 0, l.appointment_id);
+      } catch (e: any) {
+        console.error("[lembrete] falha ao verificar resposta", l.appointment_id, e.message);
       }
-      sqlite.prepare(`UPDATE atendimento_lembretes SET resposta = ?, confirmado = ?, verificado_em = datetime('now') WHERE appointment_id = ?`)
-        .run(String(resp.body || "").slice(0, 500), confirma ? 1 : 0, l.appointment_id);
     }
   } catch (e: any) {
     console.error("[lembrete]", e.message);
@@ -17080,7 +17131,7 @@ sqlite.exec(`
   )
 `);
 const PESQUISA_TEXTO = "Seu atendimento foi encerrado. 🙏 Para melhorarmos, de *1 a 5*, como você avalia o atendimento que recebeu?\n(1 = muito ruim, 5 = excelente). É só responder com o número.";
-app.post("/api/atendimento/conversas/:id/pesquisa", blockCliente, async (req, res) => {
+app.post("/api/atendimento/conversas/:id/pesquisa", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
@@ -17179,7 +17230,7 @@ function empresaSituacao(empresaId: number) {
     .all(empresaId) as any[]).map((h) => ({ ...h, status: h.status === "pendente" && h.vencimento < hojeIso ? "atrasado" : h.status }));
   return { competencia, pendencias, documentos, nfse, honorarios };
 }
-app.get("/api/atendimento/empresa/:id/ficha", blockCliente, (req, res) => {
+app.get("/api/atendimento/empresa/:id/ficha", blockCliente, requireEscritorioPrincipalDeskcomm, (req, res) => {
   const user = (req as any).user;
   const id = Number(req.params.id);
   if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
@@ -17322,7 +17373,7 @@ const painelMediana = (xs: number[]) => {
 };
 // Ranking de empresas que mais demandaram no MÊS e no ANO corrente (calendário, fuso de São Paulo) — fixos,
 // independentes do período escolhido no painel. Só conta mensagens recebidas (sem o histórico importado do celular).
-app.get("/api/atendimento/painel/ranking-empresas", blockCliente, async (req, res) => {
+app.get("/api/atendimento/painel/ranking-empresas", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!user.painelTv && !hasPermissao(user, "crm", "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
@@ -17361,7 +17412,7 @@ app.get("/api/atendimento/painel/ranking-empresas", blockCliente, async (req, re
     res.status(502).json({ error: e.message });
   }
 });
-app.get("/api/atendimento/painel", blockCliente, async (req, res) => {
+app.get("/api/atendimento/painel", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   // A conta dedicada do Painel de TV mostra esta visão na 2ª página, sem ter (nem precisar de) a aba CRM.
   if (!user.painelTv && !hasPermissao(user, "crm", "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
@@ -17634,7 +17685,7 @@ app.get("/api/atendimento/painel", blockCliente, async (req, res) => {
   }
 });
 // Conversa mais recente do contato (no setor: a do setor) — clicar num compromisso da Agenda abre ela.
-app.get("/api/atendimento/conversa-do-contato", blockCliente, async (req, res) => {
+app.get("/api/atendimento/conversa-do-contato", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   const escopo = atendimentoEscopo(req.query.escopo) || "crm";
   const contato = String(req.query.contato || "");
@@ -17648,7 +17699,7 @@ app.get("/api/atendimento/conversa-do-contato", blockCliente, async (req, res) =
     res.status(502).json({ error: "Falha ao ler as conversas no deskcomm: " + e.message });
   }
 });
-app.get("/api/atendimento/contatos-do-setor", blockCliente, async (req, res) => {
+app.get("/api/atendimento/contatos-do-setor", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   const escopo = atendimentoEscopo(req.query.escopo);
   if (!escopo || escopo === "crm") return res.status(400).json({ error: "Escopo inválido." });
@@ -17660,7 +17711,7 @@ app.get("/api/atendimento/contatos-do-setor", blockCliente, async (req, res) => 
     res.status(502).json({ error: "Falha ao ler as conversas no deskcomm: " + e.message });
   }
 });
-app.get("/api/atendimento/setores", blockCliente, async (req, res) => {
+app.get("/api/atendimento/setores", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
@@ -17678,7 +17729,7 @@ app.get("/api/atendimento/setores", blockCliente, async (req, res) => {
 // intenção ativa (aderência ao agente daquele setor, como o roteador faria) e SILENCIA o robô: a
 // conversa cai na Fila do setor esperando uma pessoa, não volta pro atendimento automático.
 // `intencao: null` = devolver pro atendimento geral (sem setor) — cai na Fila do CRM.
-app.post("/api/atendimento/conversas/:id/setor", blockCliente, async (req, res) => {
+app.post("/api/atendimento/conversas/:id/setor", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
@@ -17749,7 +17800,7 @@ function citacaoResumoWaha(rt: any): { resumo: string; tipo: string } {
   if (d.stickerMessage) return { resumo: "Figurinha", tipo: "sticker" };
   return { resumo: "[mensagem]", tipo: "outro" };
 }
-app.post("/api/atendimento/conversas/:id/citacoes", blockCliente, async (req, res) => {
+app.post("/api/atendimento/conversas/:id/citacoes", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   if (!deskcommAdmin || !DESKCOMM_ORG_ID || !ATENDIMENTO_WAHA_SEEN_TOKEN) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
@@ -17793,7 +17844,7 @@ app.post("/api/atendimento/conversas/:id/citacoes", blockCliente, async (req, re
 // (cliente não tem ou não deixa ver) = 404, e a tela mostra as iniciais.
 const fotoCache = new Map<string, { buf: Buffer | null; mime: string; em: number }>();
 let fotosEmAndamento = 0;
-app.get("/api/atendimento/contatos/:id/foto", blockCliente, async (req, res) => {
+app.get("/api/atendimento/contatos/:id/foto", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).end();
   if (!deskcommAdmin || !DESKCOMM_ORG_ID || !ATENDIMENTO_WAHA_SEEN_TOKEN) return res.status(404).end();
@@ -17838,7 +17889,7 @@ app.get("/api/atendimento/contatos/:id/foto", blockCliente, async (req, res) => 
     fotosEmAndamento--;
   }
 });
-app.put("/api/atendimento/contatos/:id/nome", blockCliente, async (req, res) => {
+app.put("/api/atendimento/contatos/:id/nome", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
@@ -17892,7 +17943,7 @@ async function atendimentoChamarWahaMsg(m: any, metodo: "PUT" | "DELETE", corpo?
 function atendimentoRespErro(res: express.Response, e: any) {
   res.status(e.codigo || 502).json({ error: e.message });
 }
-app.post("/api/atendimento/mensagens/:id/editar", blockCliente, async (req, res) => {
+app.post("/api/atendimento/mensagens/:id/editar", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   try {
     const m = await atendimentoMensagemParaAcao((req as any).user, String(req.params.id));
     const texto = String(req.body?.texto ?? "").trim();
@@ -17907,7 +17958,7 @@ app.post("/api/atendimento/mensagens/:id/editar", blockCliente, async (req, res)
     res.json({ ok: true });
   } catch (e: any) { atendimentoRespErro(res, e); }
 });
-app.post("/api/atendimento/mensagens/:id/excluir-para-todos", blockCliente, async (req, res) => {
+app.post("/api/atendimento/mensagens/:id/excluir-para-todos", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   try {
     const m = await atendimentoMensagemParaAcao((req as any).user, String(req.params.id));
     if (m.direction !== "outbound") return res.status(400).json({ error: "Só dá pra apagar pra todos as mensagens que nós enviamos." });
@@ -17919,7 +17970,7 @@ app.post("/api/atendimento/mensagens/:id/excluir-para-todos", blockCliente, asyn
     res.json({ ok: true });
   } catch (e: any) { atendimentoRespErro(res, e); }
 });
-app.post("/api/atendimento/mensagens/:id/excluir", blockCliente, async (req, res) => {
+app.post("/api/atendimento/mensagens/:id/excluir", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   try {
     const m = await atendimentoMensagemParaAcao((req as any).user, String(req.params.id));
     const { error } = await deskcommAdmin!.from("messages").update({ metadata: { ...(m.metadata || {}), oculta_da_equipe: true } }).eq("id", m.id);
@@ -17929,7 +17980,7 @@ app.post("/api/atendimento/mensagens/:id/excluir", blockCliente, async (req, res
 });
 // Marcar como não lida: só no deskcomm (contador que a lista usa pro destaque em negrito + bolinha). O WhatsApp do
 // celular não é mexido — o cliente não fica sabendo.
-app.post("/api/atendimento/conversas/:id/nao-lida", blockCliente, async (req, res) => {
+app.post("/api/atendimento/conversas/:id/nao-lida", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
@@ -17943,7 +17994,7 @@ app.post("/api/atendimento/conversas/:id/nao-lida", blockCliente, async (req, re
   if (!data?.length) return res.status(404).json({ error: "Conversa não encontrada." });
   res.json({ ok: true });
 });
-app.post("/api/atendimento/conversas/:id/lida", blockCliente, async (req, res) => {
+app.post("/api/atendimento/conversas/:id/lida", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   if (!deskcommAdmin || !DESKCOMM_ORG_ID || !ATENDIMENTO_WAHA_SEEN_TOKEN) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
@@ -17991,14 +18042,14 @@ app.post("/api/atendimento/conversas/:id/lida", blockCliente, async (req, res) =
 // Pra quem dá pra transferir: Administradores + Colaboradores com acesso ao módulo (no CRM, a quem tem
 // CRM ou DP/RH — o atendente geral pode passar direto pra alguém do setor), já espelhados no deskcomm
 // (quem ainda não tem espelho ganha um aqui — senão não teria como receber a conversa).
-app.get("/api/atendimento/atendentes", blockCliente, async (req, res) => {
+app.get("/api/atendimento/atendentes", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   const escopo = atendimentoEscopo(req.query.escopo);
   if (!escopo) return res.status(400).json({ error: "Escopo inválido." });
   if (!hasPermissao(user, atendimentoModulo(escopo), "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   const candidatos = (
     sqlite
-      .prepare(`SELECT id, nome, email, perfil FROM app_users WHERE escritorio_id = ? AND ativo = 1 AND painel_tv = 0 AND perfil IN ('Administrador','Colaborador') ORDER BY nome`)
+      .prepare(`SELECT id, nome, email, perfil, escritorio_id AS escritorioId FROM app_users WHERE escritorio_id = ? AND ativo = 1 AND painel_tv = 0 AND perfil IN ('Administrador','Colaborador') ORDER BY nome`)
       .all(user.escritorioId) as any[]
   ).filter((u) => (escopo === "crm" ? atendimentoAlgumaPermissao(u, "visualizar") : hasPermissao(u, atendimentoModulo(escopo), "visualizar")));
   const items: { deskcommUserId: string; nome: string }[] = [];
@@ -18431,12 +18482,15 @@ app.post("/api/email/identificar", blockCliente, requirePermissao("configuracoes
   const documentos = extrairDocumentos(texto);
   if (!documentos.length) return res.json({ documentosEncontrados: [], matches: [] });
   const placeholders = documentos.map(() => "?").join(",");
+  // Achado em auditoria (2026-10-12): faltava o filtro de escritório — devolvia empresa/CNPJ de
+  // QUALQUER escritório-cliente deste SaaS, não só o do próprio usuário, vazando carteira de
+  // clientes entre tenants pra quem testasse CNPJs conhecidos.
   const matches = sqlite
     .prepare(
       `SELECT ed.documento, ed.tipo, e.id as empresaId, e.nome as empresaNome
-       FROM empresa_documentos ed JOIN empresas e ON e.id = ed.empresa_id WHERE ed.documento IN (${placeholders}) AND e.ativo = 1`
+       FROM empresa_documentos ed JOIN empresas e ON e.id = ed.empresa_id WHERE ed.documento IN (${placeholders}) AND e.ativo = 1 AND e.escritorio_id = ?`
     )
-    .all(...documentos.map((d) => d.documento));
+    .all(...documentos.map((d) => d.documento), (req as any).user.escritorioId);
   res.json({ documentosEncontrados: documentos, matches });
 });
 
