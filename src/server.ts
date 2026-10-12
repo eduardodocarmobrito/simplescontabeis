@@ -4351,6 +4351,11 @@ app.post("/api/empresas/:id/anexos", blockCliente, requirePermissao("empresas", 
     ano = Number(req.body?.ano);
     if (!Number.isInteger(ano) || ano < 2000 || ano > 2100) return res.status(400).json({ error: "Informe o ano da licença." });
   }
+  // Allowlist de tipo de arquivo — barra HTML/SVG/JS etc. na entrada (além do Content-Type ser
+  // tratado como não confiável também na hora de servir o arquivo, ver GET .../arquivo abaixo).
+  if (!/^(application\/pdf|image\/(png|jpe?g|gif|webp)|application\/(msword|vnd\.(openxmlformats-officedocument\.(wordprocessingml\.document|spreadsheetml\.sheet)|ms-excel))|application\/(zip|x-zip-compressed))$/i.test(req.file.mimetype || "")) {
+    return res.status(400).json({ error: "Tipo de arquivo não permitido. Envie PDF, imagem (PNG/JPG), Word, Excel ou ZIP." });
+  }
   req.file.originalname = corrigirNomeArquivo(req.file.originalname);
   const dir = path.join(UPLOADS_DIR, "empresa-anexos", String(empresaId));
   fs.mkdirSync(dir, { recursive: true });
@@ -4385,7 +4390,12 @@ app.post("/api/empresas/:id/anexos", blockCliente, requirePermissao("empresas", 
 // monta com a resposta daqui, pra preencher rápido depois.
 const REGEX_CNPJ_BUSCA = /\b\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}\b/g;
 const REGEX_CPF_BUSCA = /\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b/g;
-app.post("/api/empresas/anexos/licencas-bulk", blockCliente, requirePermissao("licencas", "postar"), upload.array("arquivos", 300), async (req, res) => {
+// Upload específico pra esta rota (mais restrito que o `upload` genérico de 60MB/arquivo): até 300
+// arquivos de uma vez (pasta inteira) com 60MB cada, tudo em memória, deixava o pior caso em ~18GB
+// por requisição — risco real de derrubar o processo (OOM) com um upload grande ou malicioso. Licença/
+// alvará escaneado não passa de poucos MB; 15MB por arquivo já é folgado e limita o pior caso a ~4,5GB.
+const uploadLicencasBulk = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
+app.post("/api/empresas/anexos/licencas-bulk", blockCliente, requirePermissao("licencas", "postar"), uploadLicencasBulk.array("arquivos", 300), async (req, res) => {
   const user = (req as any).user;
   const tipo = String(req.body?.tipo || "");
   const info = resolverTipoAnexo(user.escritorioId, tipo);
@@ -4482,8 +4492,17 @@ app.get("/api/empresas/anexos/:anexoId/arquivo", blockCliente, requirePermissao(
   if (!anexo || !podeAcessarEmpresa((req as any).user, anexo.empresa_id) || !fs.existsSync(anexo.arquivo_path)) {
     return res.status(404).json({ error: "Arquivo não encontrado." });
   }
-  res.setHeader("Content-Type", anexo.mime || "application/octet-stream");
-  res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(anexo.nome_arquivo)}"`);
+  // O mime salvo vem do navegador de quem fez upload (não é confiável — dá pra forjar num POST manual).
+  // Servir "inline" um tipo que o navegador pode EXECUTAR (text/html, image/svg+xml) com esse
+  // Content-Type permitiria um upload malicioso rodar script dentro da origem do próprio site (furto de
+  // sessão de quem abrir o anexo depois, inclusive um Administrador). Só os tipos seguros de visualizar
+  // (PDF/imagem comum) saem como inline com o Content-Type real; qualquer outro tipo sai forçado pra
+  // download (attachment) com Content-Type genérico — mesmo padrão já usado em webmail.ts pros anexos
+  // de e-mail.
+  const seguroParaInline = /^(application\/pdf|image\/(png|jpe?g|gif|webp))$/i.test(anexo.mime || "");
+  res.setHeader("Content-Type", seguroParaInline ? anexo.mime : "application/octet-stream");
+  res.setHeader("Content-Disposition", `${seguroParaInline ? "inline" : "attachment"}; filename="${encodeURIComponent(anexo.nome_arquivo)}"`);
+  res.setHeader("X-Content-Type-Options", "nosniff");
   res.send(fs.readFileSync(anexo.arquivo_path));
 });
 app.delete("/api/empresas/anexos/:anexoId", blockCliente, requirePermissao("empresas", "editar"), (req, res) => {
@@ -17663,8 +17682,12 @@ app.get("/api/atendimento/contatos/:id/foto", blockCliente, async (req, res) => 
   if (!deskcommAdmin || !DESKCOMM_ORG_ID || !ATENDIMENTO_WAHA_SEEN_TOKEN) return res.status(404).end();
   const id = String(req.params.id);
   const enviar = (c: { buf: Buffer | null; mime: string }) => {
-    if (!c.buf) return res.status(404).end();
+    // Foto de perfil é sempre imagem — Content-Type vem de fora (CDN do WhatsApp via WAHA), então
+    // não confia cegamente: só serve se for mesmo um tipo de imagem (defesa a mais contra o mesmo
+    // risco de Content-Type malicioso tratado em GET /empresas/anexos/:id/arquivo, acima).
+    if (!c.buf || !/^image\//i.test(c.mime || "")) return res.status(404).end();
     res.setHeader("Content-Type", c.mime);
+    res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Cache-Control", "private, max-age=3600");
     res.send(c.buf);
   };
