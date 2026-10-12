@@ -6145,11 +6145,16 @@ app.get("/api/envio/minhas-atribuicoes", (req, res) => {
   const user = (req as any).user;
   if (user.perfil !== "Cliente") return res.status(403).json({ error: "Rota exclusiva para clientes." });
   if (!user.empresaId) return res.json({ items: [] });
+  // Achado em auditoria (2026-10-12): faltava excluir t.pendente_revisao — um modelo rascunho criado
+  // automaticamente pela ponte do central-envio (pendente_revisao=1, visivel_cliente=0, "fica só
+  // interno até o escritório abrir e confirmar", ver server.ts:10185) já nascia com atribuição ativa
+  // pra empresa, e sem este filtro aparecia pro Cliente em "Documentos Recebidos" (com o documento já
+  // anexado e baixável) antes de qualquer revisão — violava o próprio design combinado.
   const rows = sqlite
     .prepare(
       `SELECT a.*, t.nome as templateNome, t.periodicidade, t.descricao, t.setor as templateSetor, e.nome as empresaNome
        FROM envio_atribuicoes a JOIN envio_templates t ON t.id = a.template_id JOIN empresas e ON e.id = a.empresa_id
-       WHERE a.empresa_id = ? AND a.ativo = 1 ORDER BY t.nome`
+       WHERE a.empresa_id = ? AND a.ativo = 1 AND t.pendente_revisao = 0 ORDER BY t.nome`
     )
     .all(user.empresaId) as any[];
   res.json({ items: rows.filter((r) => envioSetorAtendido(r.templateSetor, user.empresaId)) });
@@ -6486,11 +6491,15 @@ app.get("/api/envio/grade/:atribuicaoId", (req, res) => {
   const atribuicaoId = Number(req.params.atribuicaoId);
   const atrib = sqlite
     .prepare(
-      `SELECT a.*, t.nome as templateNome, t.periodicidade, t.accept_json as acceptJson, t.detectar_vencimento as detectarVencimento, e.nome as empresaNome
+      `SELECT a.*, t.nome as templateNome, t.periodicidade, t.accept_json as acceptJson, t.detectar_vencimento as detectarVencimento, t.pendente_revisao as pendenteRevisao, e.nome as empresaNome
        FROM envio_atribuicoes a JOIN envio_templates t ON t.id = a.template_id JOIN empresas e ON e.id = a.empresa_id WHERE a.id = ?`
     )
     .get(atribuicaoId) as any;
   if (!atrib) return res.status(404).json({ error: "Atribuição não encontrada." });
+  // Achado em auditoria (2026-10-12): mesmo motivo de minhas-atribuicoes, acima — um Cliente com o
+  // atribuicaoId em mãos (a própria lista já vazava isso antes da correção) conseguia ver a grade de
+  // um modelo ainda não revisado. Acesso direto também barrado aqui, não só na listagem.
+  if (user.perfil === "Cliente" && atrib.pendenteRevisao) return res.status(404).json({ error: "Atribuição não encontrada." });
   if (user.perfil === "Cliente" && user.empresaId !== atrib.empresa_id) return res.status(403).json({ error: "Sem acesso." });
   if (user.perfil === "Colaborador" && !hasPermissao(user, "envio", "visualizar")) return res.status(403).json({ error: "Sem permissão." });
   if (user.perfil !== "Cliente" && !podeAcessarEmpresa(user, atrib.empresa_id)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
@@ -7008,7 +7017,14 @@ app.get("/api/envio/documentos/:id/download", (req, res) => {
     .prepare(`SELECT d.*, p.atribuicao_id as atribuicaoId FROM envio_documentos d JOIN envio_periodos p ON p.id = d.periodo_id WHERE d.id = ?`)
     .get(Number(req.params.id)) as any;
   if (!doc) return res.status(404).json({ error: "Documento não encontrado." });
-  const atrib = sqlite.prepare(`SELECT empresa_id as empresaId FROM envio_atribuicoes WHERE id = ?`).get(doc.atribuicaoId) as any;
+  const atrib = sqlite
+    .prepare(
+      `SELECT a.empresa_id as empresaId, t.pendente_revisao as pendenteRevisao FROM envio_atribuicoes a JOIN envio_templates t ON t.id = a.template_id WHERE a.id = ?`
+    )
+    .get(doc.atribuicaoId) as any;
+  // Achado em auditoria (2026-10-12): mesmo motivo das rotas acima — download direto por id também
+  // precisa barrar enquanto o modelo estiver pendente de revisão, pro Cliente.
+  if (user.perfil === "Cliente" && atrib.pendenteRevisao) return res.status(404).json({ error: "Documento não encontrado." });
   if (user.perfil === "Cliente") {
     if (user.empresaId !== atrib.empresaId) return res.status(403).json({ error: "Sem acesso." });
   } else {
