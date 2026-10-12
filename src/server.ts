@@ -2710,6 +2710,29 @@ async function enviarEmail(escritorioId: number, opts: { to: string[]; subject: 
 // ========================= APP =========================
 const app = express();
 app.set("trust proxy", 1);
+// Achado em auditoria (2026-10-12): nenhum header de segurança global — sem helmet, sem nada manual.
+// Adiciona só o que é seguro de ligar sem testar página por página (não mexe em script/style/CSS, só
+// cabeçalhos puramente defensivos):
+// - X-Frame-Options/frame-ancestors: barra o site inteiro de ser embutido num <iframe> de outro
+//   site (clickjacking) — nada aqui precisa ser framed por terceiros.
+// - X-Content-Type-Options: nosniff — reforço global; já estava aplicado rota a rota nos pontos que
+//   servem arquivo de upload (anexos, checklist, e-mail etc.), isso cobre o resto.
+// - Referrer-Policy: evita vazar a URL completa (que pode ter token em query string) pra recurso de
+//   terceiro.
+// - Strict-Transport-Security: o site só roda em HTTPS (Railway) — força o navegador a nunca tentar
+//   HTTP puro aqui. Sem includeSubDomains/preload (não dá pra garantir que todo subdomínio futuro já
+//   nasce em HTTPS, e preload exige envio pra lista global, decisão fora do escopo de um reforço
+//   técnico).
+// CSP de verdade (script-src etc.) fica de fora por ora — exigiria testar cada página da SPA (scripts
+// inline, etc.) uma a uma antes de ligar sem quebrar nada.
+app.use((_req, res, next) => {
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Content-Security-Policy", "frame-ancestors 'none'");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.setHeader("Strict-Transport-Security", "max-age=15552000");
+  next();
+});
 // verify: guarda o corpo cru (antes do parse) em req.rawBody — necessário pra conferir a assinatura
 // HMAC (X-Hub-Signature-256) do webhook do WhatsApp, que é calculada sobre os bytes exatos que a
 // Meta mandou, não sobre o JSON re-serializado (que pode diferir em espaço/ordem das chaves).
