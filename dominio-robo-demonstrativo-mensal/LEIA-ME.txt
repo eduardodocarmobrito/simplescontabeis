@@ -1,0 +1,60 @@
+ROBO "DEMONSTRATIVO MENSAL" - DOMINIO WEB (modo AGENTE)
+=======================================================
+
+O QUE ELE FAZ
+-------------
+Fica rodando no servidor Windows onde o Dominio esta instalado e, sozinho,
+PERGUNTA AO SITE a cada 10 segundos se deve rodar. Ele roda quando:
+  - Voce clica "Executar agora" em Configuracoes > Relatorios > Robo do
+    Demonstrativo Mensal; ou
+  - O modo automatico esta ligado e passou o intervalo configurado (ex.: 15 min).
+
+Ao rodar, ele puxa do site as empresas marcadas (Empresas > Editar > "Exportar
+Demonstrativo Mensal", com o Codigo do Dominio preenchido), gera o Demonstrativo
+Mensal de cada uma no modulo ESCRITA FISCAL do Dominio, salva o PDF na pasta do
+Google Drive (Relatorios Dominio) e REPORTA O PROGRESSO pro site (barra empresa
+a empresa). A Importacao de Relatorios do site le esses PDFs automaticamente e
+anexa como "Demonstrativo Mensal".
+
+E o 3o robo do Dominio (depois do Comparativo e da Programacao de Ferias). Os
+tres mexem no MESMO Dominio, entao nunca rodam juntos - o site coordena. O
+Demonstrativo tem a MENOR prioridade (cede ao Comparativo e as Ferias).
+
+INSTALACAO (1x)
+---------------
+1) Instale o AutoHotkey v2 (gratis): https://www.autohotkey.com
+2) Se voce baixou este robo pelo botao "Baixar robo" do site, o TOKEN ja vem
+   embutido - nao precisa fazer nada. (Se pegou o arquivo do repositorio, abra o
+   robo-demonstrativo-mensal.ahk e cole o token na linha AGENTE_TOKEN.)
+3) Deixe estes PRE-REQUISITOS prontos no Dominio, 1x na mao:
+   - Dominio ABERTO e LOGADO.
+   - Tela de troca de empresa (F8) deixada no modo "Codigo" (ele lembra).
+   - "Demonstrativo Mensal" adicionado ao menu FAVORITOS (deixe como o ULTIMO
+     item do menu - o robo abre o ultimo favorito).
+4) IMPORTANTE: enquanto o robo trabalha, NAO pode ter outra janela (Explorer,
+   navegador) cobrindo o canto SUPERIOR ESQUERDO da tela - e onde a janela
+   "Salvar em PDF" abre. Deixe so o Dominio na frente.
+
+PERIODO
+-------
+Por padrao o robo NAO digita o periodo: usa o que o proprio dialogo "Demonstrativo
+Mensal" ja abre (01/ano vigente ate o mes atual). O site detecta o periodo real
+pelo texto do PDF. Se quiser controlar o periodo pela tela do site, avise o
+suporte pra ligar a digitacao (precisa conferir as coordenadas dos campos).
+
+COMO RODAR
+----------
+- Manual: de duplo-clique no robo-demonstrativo-mensal.ahk. Ele fica em segundo
+  plano perguntando ao site. Controle tudo pela tela do site.
+- Para SAIR: Ctrl+Alt+Q.
+
+INICIAR SOZINHO NO LOGIN (Agendador de Tarefas do Windows)
+----------------------------------------------------------
+Rode o instalar-agendador.bat que acompanha (como Administrador), ou crie a
+tarefa na mao apontando pro AutoHotkey64.exe com o caminho do .ahk como
+argumento, disparador "Ao fazer logon".
+
+SEGURANCA
+---------
+- O token da acesso so pra listar as empresas marcadas, reportar progresso e
+  status. Nao compartilhe o .ahk depois de colar o token.
