@@ -3665,14 +3665,15 @@ app.put("/api/empresas/pendencias-documentos/config", blockCliente, requirePermi
   }
   res.json({ ok: true, exigirPf: pendenciasExigidasPf(user.escritorioId) });
 });
-app.get("/api/empresas/pendencias-documentos", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
-  const user = (req as any).user;
+function pendenciasDocsData(user: any) {
   const visiveis = empresasVisiveis(user);
   let rows = sqlite
     .prepare(
       `SELECT e.id, e.nome, e.cnpj,
               ((SELECT 1 FROM nfse_certificados nc WHERE nc.empresa_id = e.id) IS NOT NULL
-                OR (SELECT 1 FROM nfe_busca_config nb WHERE nb.empresa_id = e.id) IS NOT NULL) as temCertificado
+                OR (SELECT 1 FROM nfe_busca_config nb WHERE nb.empresa_id = e.id) IS NOT NULL) as temCertificado,
+              (SELECT MAX(v) FROM (SELECT validade_ate v FROM nfse_certificados WHERE empresa_id = e.id
+                                   UNION ALL SELECT validade_ate v FROM nfe_busca_config WHERE empresa_id = e.id)) as certValidadeAte
        FROM empresas e WHERE e.ativo = 1 ORDER BY e.nome COLLATE NOCASE`
     )
     .all() as any[];
@@ -3688,9 +3689,35 @@ app.get("/api/empresas/pendencias-documentos", blockCliente, requirePermissao("e
     // exigidos: o que conta como pendência pra esta empresa (PJ = tudo; PF = só o que o escritório marcou)
     const exigidos: Record<string, boolean> = {};
     for (const it of PENDENCIA_ITENS) exigidos[it.chave] = pf ? !!exigirPf[it.chave] : true;
-    return { id: r.id, nome: r.nome, cnpj: r.cnpj, pessoaFisica: pf, temCertificado: !!r.temCertificado, licencas, exigidos };
+    const certVencido = !!r.temCertificado && !!r.certValidadeAte && new Date(r.certValidadeAte).getTime() < Date.now();
+    return { id: r.id, nome: r.nome, cnpj: r.cnpj, pessoaFisica: pf, temCertificado: !!r.temCertificado, certValidadeAte: r.certValidadeAte || null, certVencido, licencas, exigidos };
   });
-  res.json({ licencasMinimas: LICENCAS_MINIMAS, itensPendencia: PENDENCIA_ITENS, items });
+  return { licencasMinimas: LICENCAS_MINIMAS, itensPendencia: PENDENCIA_ITENS, items };
+}
+app.get("/api/empresas/pendencias-documentos", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => res.json(pendenciasDocsData((req as any).user)));
+// PDF da tabela de Pendências de documentos (estilo Programação de Férias).
+app.get("/api/empresas/pendencias-documentos/pdf", blockCliente, requirePermissao("empresas", "visualizar"), async (req, res) => {
+  const user = (req as any).user;
+  const { licencasMinimas, items } = pendenciasDocsData(user);
+  const exig = (i: any, ch: string) => !!i.exigidos[ch];
+  const pend = items.filter((i: any) => (exig(i, "certificado") && !i.temCertificado) || licencasMinimas.some((l: any) => exig(i, l.chave) && !i.licencas[l.chave]));
+  const vermelho = (t: string) => `<span style="color:#c0392b; font-weight:600;">${t}</span>`, verde = `<span style="color:#1f8a52;">✓</span>`, traco = `<span style="color:#8a938d;">—</span>`;
+  const cCert = (i: any) => !exig(i, "certificado") ? traco : (!i.temCertificado ? vermelho("Falta") : (i.certVencido ? vermelho("Vencido") : verde));
+  const cLic = (i: any, ch: string) => !exig(i, ch) ? traco : (i.licencas[ch] ? verde : vermelho("Falta"));
+  const row = (i: any) => `<tr><td>${escHtmlRelatorio(i.nome)}</td><td>${escHtmlRelatorio(i.cnpj || "—")}</td><td class="c">${cCert(i)}</td>${licencasMinimas.map((l: any) => `<td class="c">${cLic(i, l.chave)}</td>`).join("")}</tr>`;
+  const html = `<!doctype html><html><head><meta charset="utf-8"><style>${ES_PDF_CSS}
+    table{table-layout:auto;} td.c,th.c{text-align:center;}</style></head><body>
+    <h1>Pendências de documentos</h1>
+    <p class="sub">${escHtmlRelatorio(esEscritorioNome(user.escritorioId))} · gerado em ${new Date().toLocaleDateString("pt-BR")} às ${new Date().toLocaleTimeString("pt-BR")} · ${pend.length} empresa(s) com pendência</p>
+    <table><thead><tr><th>Empresa</th><th>CNPJ</th><th class="c">Certificado</th>${licencasMinimas.map((l: any) => `<th class="c">${escHtmlRelatorio(l.label)}</th>`).join("")}</tr></thead>
+    <tbody>${pend.length ? pend.map(row).join("") : `<tr><td colspan="${3 + licencasMinimas.length}">Nenhuma pendência. 🎉</td></tr>`}</tbody></table>
+  </body></html>`;
+  try {
+    const pdf = await esRenderPdf(html);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="Pendencias_Documentos.pdf"`);
+    res.end(pdf);
+  } catch (e: any) { console.error("[pendencias pdf]", e.message); res.status(500).send("Falha ao gerar o PDF."); }
 });
 app.get("/api/empresas", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
   const user = (req as any).user;

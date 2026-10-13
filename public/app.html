@@ -2748,6 +2748,7 @@ async function pageEmpresas(){
       <div class="tab" data-tab="ativas">Ativas</div>
       <div class="tab" data-tab="inativas">Empresas Inativadas</div>
       <div class="tab" data-tab="pendencias">Pendências de documentos</div>
+      <div class="tab" data-tab="relatorio">📊 Relatório empresas</div>
     </div>
     <div id="empresasContent"></div>
   `;
@@ -2757,6 +2758,7 @@ async function pageEmpresas(){
 async function renderEmpresasTab(){
   main().querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===EMP_TAB));
   if(EMP_TAB==='pendencias') return renderEmpresasPendencias();
+  if(EMP_TAB==='relatorio') return renderEmpresasRelatorio();
   const { items: todas } = await api('/empresas');
   const podePostar = can('empresas','postar');
   const podeEditar = can('empresas','editar');
@@ -2947,6 +2949,38 @@ function certImportRenderizar(){
     }catch(e){ toast(e.message,'err'); b.disabled=false; b.textContent='Importar selecionados'; }
   });
 }
+// Aba "Relatório empresas": quadros por regime tributário (Simples/Lucro Real/Presumido/Produtor Rural),
+// um ao lado do outro, com o total de empresas ativas em cada um.
+async function renderEmpresasRelatorio(){
+  const box = document.getElementById('empresasContent');
+  box.innerHTML = `<div class="empty-state">Carregando…</div>`;
+  let items; try{ ({ items } = await api('/empresas')); }catch(e){ box.innerHTML=`<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
+  const ativas = items.filter(e=>e.ativo);
+  const regimes = [
+    { k:'simples_nacional', nome:'Simples Nacional' },
+    { k:'lucro_real',       nome:'Lucro Real' },
+    { k:'lucro_presumido',  nome:'Lucro Presumido' },
+    { k:'produtor_rural',   nome:'Produtor Rural' },
+  ];
+  const quadro = (r)=>{
+    const lista = ativas.filter(e=>(e.regimeTributario||'simples_nacional')===r.k).sort((a,b)=>a.nome.localeCompare(b.nome,'pt-BR'));
+    return `<div class="card" style="flex:1; min-width:260px; padding:0;">
+      <div style="padding:10px 14px; border-bottom:1px solid var(--rule); display:flex; justify-content:space-between; align-items:baseline; background:var(--accent-pale); border-radius:12px 12px 0 0;">
+        <b>${r.nome}</b><span class="tag ok">${lista.length} empresa${lista.length!==1?'s':''}</span>
+      </div>
+      <div style="max-height:68vh; overflow:auto;">
+        <table class="data-table" style="font-size:12.5px;"><tbody>
+          ${lista.length? lista.map((e,i)=>`<tr><td style="width:34px; color:var(--ink-soft); text-align:right;">${i+1}</td><td>${esc(e.nome)}</td></tr>`).join('') : '<tr><td style="color:var(--ink-soft); padding:14px;">Nenhuma empresa.</td></tr>'}
+        </tbody></table>
+      </div>
+    </div>`;
+  };
+  box.innerHTML = `
+    <p class="subtitle" style="margin:4px 0 12px;">Empresas ativas por regime tributário — total geral: <b>${ativas.length}</b>.</p>
+    <div class="row" style="gap:12px; align-items:flex-start; flex-wrap:wrap;">
+      ${regimes.map(quadro).join('')}
+    </div>`;
+}
 // Aba "Pendências de documentos": empresas ativas sem certificado digital e/ou sem as 4 licenças mínimas.
 let EMP_PEND_FILTRO = 'todas';
 async function renderEmpresasPendencias(){
@@ -2967,8 +3001,11 @@ async function renderEmpresasPendencias(){
   const ok = '<span class="tag ok">✓</span>', falta = '<span class="tag bad">Falta</span>';
   box.innerHTML = `
     <p class="subtitle" style="margin-top:-6px;">Empresas ativas que ainda não têm certificado digital anexado ou estão sem alguma das licenças mínimas (Alvará, Vigilância Sanitária, Corpo de Bombeiros e SEMMA). Vale ter ao menos um arquivo de cada licença, de qualquer ano.</p>
-    <div class="field" style="max-width:360px; margin-bottom:10px;">${comboSelectHtml('pendFiltroCombo','Todas as pendências…')}</div>
-    <div class="field" style="max-width:360px; margin-bottom:10px;"><input type="text" id="pendBusca" placeholder="Buscar por nome ou CNPJ…" autocomplete="off"></div>
+    <div class="row" style="gap:8px; align-items:center; margin-bottom:10px; flex-wrap:wrap;">
+      <div class="field" style="max-width:360px; flex:1; min-width:260px; margin-bottom:0;">${comboSelectHtml('pendFiltroCombo','Todas as pendências…')}</div>
+      <div class="field" style="max-width:360px; flex:1; min-width:260px; margin-bottom:0;"><input type="text" id="pendBusca" placeholder="Buscar por nome ou CNPJ…" autocomplete="off"></div>
+      <button class="btn" id="pendExportarPdf" title="Gera um PDF com todas as empresas com pendência.">📄 Exportar PDF</button>
+    </div>
     <div class="card" style="padding:0; overflow-x:auto;"><table class="data-table">
       <thead><tr><th>Empresa</th><th>CNPJ</th><th>Certificado</th>${lics.map(l=>`<th>${esc(l.label)}</th>`).join('')}<th></th></tr></thead>
       <tbody id="pendBody"></tbody></table></div>
@@ -3005,7 +3042,7 @@ async function renderEmpresasPendencias(){
     });
     document.getElementById('pendBody').innerHTML = itens.length ? itens.map(i=>`
       <tr data-id="${i.id}"><td><b>${esc(i.nome)}</b></td><td>${esc(fmtCnpjCpf(i.cnpj)||'—')}</td>
-        <td>${!exigido(i,'certificado')?'<span style="color:var(--ink-soft);">—</span>':i.temCertificado?ok:falta}</td>
+        <td>${!exigido(i,'certificado')?'<span style="color:var(--ink-soft);">—</span>':(!i.temCertificado?falta:(i.certVencido?`<span class="tag bad" title="Certificado vencido${i.certValidadeAte?' em '+fmtDate(i.certValidadeAte):''}">Vencido</span>`:ok))}</td>
         ${lics.map(l=>`<td>${!exigido(i,l.chave)?'<span style="color:var(--ink-soft);">—</span>':i.licencas[l.chave]?ok:falta}</td>`).join('')}
         <td style="text-align:right;">${podeEditar?'<button class="btn small" data-act="abrir">Abrir empresa</button>':''}</td></tr>`).join('')
       : `<tr><td colspan="${4+lics.length}"><div class="empty-state">${termo?'Nenhuma empresa encontrada.':'Nenhuma pendência. 🎉'}</div></td></tr>`;
@@ -3017,6 +3054,7 @@ async function renderEmpresasPendencias(){
   }
 
   document.getElementById('pendBusca').addEventListener('input', desenhar);
+  document.getElementById('pendExportarPdf')?.addEventListener('click', ()=> window.open('/api/empresas/pendencias-documentos/pdf','_blank'));
   desenhar();
 }
 // Rótulos dos tipos de anexo — espelha EMPRESA_ANEXO_TIPOS do backend (server.ts), só pra montar os
