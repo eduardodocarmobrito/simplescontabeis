@@ -4670,6 +4670,7 @@ async function renderEnvioAtribuicoes(){
     <div class="row" style="margin-bottom:14px; gap:8px;">
       ${podePostar?`<button class="btn primary" id="btnNovaEnvioAtrib">+ Atribuir modelo a uma empresa</button>`:''}
       ${ehAdmin?`<button class="btn" id="btnRolloverAno" title="Toda virada de ano (1º de janeiro) isso já roda sozinho — use aqui só se quiser adiantar ou como reforço.">Gerar grade do ano novo pra todo mundo</button>`:''}
+      ${ehAdmin?`<button class="btn" id="btnPonteDiag" title="Documentos lidos pela pasta (DP/RH e CRM) que NÃO ficaram anexados na grade — ex.: lidos antes da ponte existir ou sem empresa no momento da leitura.">🔎 Documentos não anexados (DP/RH)</button>`:''}
     </div>
     <div class="row" style="gap:8px; margin-bottom:10px;">
       <div class="field" style="max-width:360px; margin-bottom:0;"><input type="text" id="envioAtribFiltro" placeholder="Buscar por empresa…" autocomplete="off" value="${esc(ENVIO_ATRIB_FILTRO.texto)}"></div>
@@ -4751,6 +4752,49 @@ async function renderEnvioAtribuicoes(){
     }catch(e){ toast(e.message,'err'); }
     finally{ btn.disabled = false; btn.textContent = 'Gerar grade do ano novo pra todo mundo'; }
   });
+  if(ehAdmin) document.getElementById('btnPonteDiag').addEventListener('click', abrirPonteDiagModal);
+}
+// Diagnóstico da "ponte" DP/RH/CRM: documentos lidos pela pasta que não ficaram anexados na grade.
+async function abrirPonteDiagModal(){
+  openModal(`<h3>Documentos não anexados (DP/RH e CRM)</h3><div id="ponteDiagBody"><div class="empty-state">Carregando…</div></div>`, '780px');
+  const body = document.getElementById('ponteDiagBody');
+  const carregarErender = async ()=>{
+    const r = await api('/envio/ponte-diagnostico');
+    if(!r.tipos.length){ body.innerHTML = '<div class="empty-state">Nenhum documento de DP/RH ou CRM lido pela pasta ainda.</div>'; return; }
+    const totalFalta = r.totalNaoAnexados;
+    body.innerHTML = `
+      <p style="font-size:13px; color:var(--ink-soft);">Documentos lidos pela pasta que ainda <b>não estão anexados</b> na grade de Envio de Documentos, por tipo. "Anexar" grava o documento na grade retroativamente (o modelo nasce como rascunho pendente de revisão, igual à leitura normal — revise em Modelos pra o cliente ver).</p>
+      <div class="card" style="padding:0;"><table class="data-table"><thead><tr><th>Tipo</th><th style="text-align:right;">Lidos</th><th style="text-align:right;">Anexados</th><th style="text-align:right;">Faltam</th><th></th></tr></thead><tbody>
+        ${r.tipos.map(t=>`<tr>
+          <td>${esc(t.tipo)}</td>
+          <td style="text-align:right;">${t.total}</td>
+          <td style="text-align:right;">${t.anexados}</td>
+          <td style="text-align:right; ${t.naoAnexados? 'color:var(--danger,#c0392b); font-weight:600;':''}">${t.naoAnexados}</td>
+          <td style="text-align:right; white-space:nowrap;">${t.naoAnexados? `<button class="btn small" data-tipo="${esc(t.tipo)}" data-act="ver">Ver</button> <button class="btn small primary" data-tipo="${esc(t.tipo)}" data-act="anexar">Anexar faltantes</button>`:'<span class="tag ok">OK</span>'}</td>
+        </tr>`).join('')}
+      </tbody></table></div>
+      ${totalFalta? `<div class="row" style="margin-top:12px; justify-content:flex-end;"><button class="btn primary" id="ponteAnexarTudo">Anexar TODOS os faltantes (${totalFalta})</button></div>`:'<p style="font-size:13px; color:var(--ink-soft); margin-top:10px;">✓ Tudo anexado.</p>'}
+      <div id="ponteFaltantes" style="margin-top:12px;"></div>`;
+    body.querySelectorAll('[data-act="ver"]').forEach(b=>b.addEventListener('click', ()=>{
+      const t = r.tipos.find(x=>x.tipo===b.dataset.tipo);
+      document.getElementById('ponteFaltantes').innerHTML = `<div style="font-weight:600; font-size:12.5px; margin:6px 0;">Faltantes — ${esc(t.tipo)} (${t.naoAnexados})</div>
+        <div class="card" style="padding:0; max-height:260px; overflow:auto;"><table class="data-table"><thead><tr><th>Empresa</th><th>Competência</th><th>Arquivo</th><th>No servidor?</th></tr></thead><tbody>
+        ${t.faltantes.map(f=>`<tr><td>${esc(f.empresa)}</td><td>${esc(f.competencia)}</td><td style="font-size:11.5px; word-break:break-all;">${esc(f.arquivo)}</td><td>${f.temArquivo?'<span class="tag ok">Sim</span>':'<span class="tag bad">Não</span>'}</td></tr>`).join('')}
+        </tbody></table></div>`;
+    }));
+    const anexar = async (tipo)=>{
+      if(!confirmar(tipo? `Anexar os documentos faltantes de "${tipo}" na grade?` : 'Anexar TODOS os documentos faltantes na grade?')) return;
+      body.innerHTML = '<div class="empty-state">Anexando… (pode levar um tempo se forem muitos)</div>';
+      try{
+        const rr = await api('/envio/ponte-backfill', { method:'POST', body: tipo?{ tipo }:{} });
+        toast(`${rr.anexados} anexado(s)${rr.semArquivo?`, ${rr.semArquivo} sem arquivo no servidor`:''}${rr.erros?`, ${rr.erros} erro(s)`:''}.`, 'ok');
+      }catch(e){ toast(e.message,'err'); }
+      await carregarErender();
+    };
+    body.querySelectorAll('[data-act="anexar"]').forEach(b=>b.addEventListener('click', ()=>anexar(b.dataset.tipo)));
+    const tudo = document.getElementById('ponteAnexarTudo'); if(tudo) tudo.addEventListener('click', ()=>anexar(null));
+  };
+  try{ await carregarErender(); }catch(e){ body.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; }
 }
 // Itens do combo "monitorar a partir de": de janeiro/2026 até dezembro do ano seguinte ao atual (id AAAA-MM).
 // "inicio" = sem limite (comportamento de antes).

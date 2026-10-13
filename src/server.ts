@@ -6534,6 +6534,72 @@ app.get("/api/envio/atribuicoes", blockCliente, requirePermissao("envio", "visua
     })),
   });
 });
+// ---- Diagnóstico + backfill da "ponte" central-envio (DP/RH e CRM) -> grade Envio de Documentos ----
+// A ponte (central-envio.ts: centralEnvioEmpurrarParaGrade) empurra cada arquivo FONTE lido da pasta
+// (central_envio_docs com e_grupo=0 — não a linha "grupo"/mesclada) pra grade. Documentos lidos ANTES
+// da ponte existir, ou com empresa não resolvida no momento da leitura, nunca foram empurrados. Aqui
+// a gente lista esses buracos por tipo e consegue anexar os que faltam de uma vez (backfill).
+function pontaDocsFonte(escritorioId: number): any[] {
+  return sqlite.prepare(`
+    SELECT id, tipo_nome AS tipoNome, empresa_id AS empresaId, competencia, nome_arquivo AS arquivo,
+           arquivo_path AS arquivoPath, status, criado_em AS criadoEm
+      FROM central_envio_docs
+     WHERE escritorio_id = ? AND setor IN ('dprh','crm') AND COALESCE(e_grupo, 0) = 0
+       AND tipo_id IS NOT NULL AND tipo_nome IS NOT NULL AND empresa_id IS NOT NULL
+     ORDER BY tipo_nome, id
+  `).all(escritorioId) as any[];
+}
+// "Anexado" = existe envio_documentos com o MESMO file_name, na empresa e no modelo (tipo) certos.
+function pontaJaAnexado(fileName: string, empresaId: number, escritorioId: number, tipoNome: string): boolean {
+  return !!sqlite.prepare(
+    `SELECT 1 FROM envio_documentos d
+       JOIN envio_periodos p ON p.id = d.periodo_id
+       JOIN envio_atribuicoes a ON a.id = p.atribuicao_id
+       JOIN envio_templates t ON t.id = a.template_id
+      WHERE d.file_name = ? AND a.empresa_id = ? AND t.escritorio_id = ? AND t.nome = ? LIMIT 1`
+  ).get(fileName, empresaId, escritorioId, tipoNome);
+}
+app.get("/api/envio/ponte-diagnostico", blockCliente, requireAdmin, (req, res) => {
+  const esc = (req as any).user.escritorioId;
+  const docs = pontaDocsFonte(esc);
+  const empresaNome = new Map((sqlite.prepare(`SELECT id, nome FROM empresas WHERE escritorio_id = ?`).all(esc) as any[]).map((e) => [e.id, e.nome]));
+  const porTipo: Record<string, any> = {};
+  for (const d of docs) {
+    const t = d.tipoNome as string;
+    if (!porTipo[t]) porTipo[t] = { tipo: t, total: 0, anexados: 0, naoAnexados: 0, faltantes: [] as any[] };
+    porTipo[t].total++;
+    if (pontaJaAnexado(d.arquivo, d.empresaId, esc, t)) porTipo[t].anexados++;
+    else {
+      porTipo[t].naoAnexados++;
+      if (porTipo[t].faltantes.length < 500)
+        porTipo[t].faltantes.push({ id: d.id, arquivo: d.arquivo, empresa: empresaNome.get(d.empresaId) || `(empresa ${d.empresaId})`, competencia: d.competencia || "—", status: d.status, temArquivo: !!(d.arquivoPath && fs.existsSync(d.arquivoPath)) });
+    }
+  }
+  const tipos = Object.values(porTipo).sort((a: any, b: any) => b.naoAnexados - a.naoAnexados || String(a.tipo).localeCompare(String(b.tipo)));
+  res.json({ tipos, totalDocs: docs.length, totalNaoAnexados: tipos.reduce((s: number, x: any) => s + x.naoAnexados, 0) });
+});
+app.post("/api/envio/ponte-backfill", blockCliente, requireAdmin, (req, res) => {
+  const esc = (req as any).user.escritorioId;
+  const tipoFiltro = req.body?.tipo ? String(req.body.tipo) : null; // opcional: anexar só de um tipo
+  const docs = pontaDocsFonte(esc).filter((d) => !tipoFiltro || d.tipoNome === tipoFiltro);
+  let anexados = 0, semArquivo = 0, erros = 0;
+  for (const d of docs) {
+    if (pontaJaAnexado(d.arquivo, d.empresaId, esc, d.tipoNome)) continue;
+    if (!d.arquivoPath || !fs.existsSync(d.arquivoPath)) { semArquivo++; continue; }
+    try {
+      const templateId = envioObterOuCriarTemplateDraft(esc, d.tipoNome);
+      const atribId = envioAtribuicaoObterOuCriar(templateId, d.empresaId);
+      const m = /^(0[1-9]|1[0-2])\/(20\d{2})$/.exec(d.competencia || "");
+      let ano: number, mes: number;
+      if (m) { ano = Number(m[2]); mes = Number(m[1]); }
+      else { const base = d.criadoEm ? new Date(String(d.criadoEm).replace(" ", "T") + "Z") : new Date(); const sp = new Date(base.getTime() - 3 * 3600 * 1000); ano = sp.getUTCFullYear(); mes = sp.getUTCMonth() + 1; }
+      const base64 = fs.readFileSync(d.arquivoPath).toString("base64");
+      integraContadorAnexarPdfEmEnvio(atribId, d.empresaId, ano, mes, d.arquivo, base64, "Anexado retroativamente (backfill da ponte DP/RH).", null);
+      anexados++;
+    } catch (e: any) { erros++; console.error("[ponte backfill]", d.id, e.message); }
+  }
+  res.json({ anexados, semArquivo, erros });
+});
 // Histórico de todo pedido feito por qualquer cliente — tanto pela tela "Solicitar Documentos"
 // (modelos com visivel_cliente) quanto pelo "Recalcular DAS" — os dois usam o mesmo campo
 // envio_periodos.solicitado_em, então essa lista já cobre tudo junto, sem precisar de tabela nova.
