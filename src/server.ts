@@ -5615,9 +5615,8 @@ app.post("/api/demonstrativo-robo/config", blockCliente, requirePermissao("confi
   garantirDemonstrativoEstado(1);
   const pIni = comparativoValidaPeriodo(req.body?.periodoIni);
   const pFim = comparativoValidaPeriodo(req.body?.periodoFim);
-  const agendaAtivo = req.body?.agendaAtivo ? 1 : 0;
-  const agendaHora = Math.min(Math.max(Math.round(Number(req.body?.agendaHora)) || 6, 0), 23);
-  const agendaMinuto = Math.min(Math.max(Math.round(Number(req.body?.agendaMinuto)) || 0, 0), 59);
+  // O Demonstrativo não tem horário próprio — só roda encadeado depois da Programação de Férias
+  // (igual o Férias, que só encadeia do Comparativo). Agenda sempre desligada.
   const tEntreEmpresasMs = clampTempoMs(req.body?.tEntreEmpresasMs, 15000, 1000, 600000);
   const tRenderTimeoutMs = clampTempoMs(req.body?.tRenderTimeoutMs, 90000, 5000, 300000);
   const tGerarPdfMs = clampTempoMs(req.body?.tGerarPdfMs, 15000, 1000, 120000);
@@ -5626,15 +5625,12 @@ app.post("/api/demonstrativo-robo/config", blockCliente, requirePermissao("confi
   const tMedioMs = clampTempoMs(req.body?.tMedioMs, 2000, 100, 30000);
   const tLongoMs = clampTempoMs(req.body?.tLongoMs, 4000, 100, 30000);
   const encadeadoAposFerias = req.body?.encadeadoAposFerias ? 1 : 0;
-  const antesAgenda = sqlite.prepare(`SELECT agenda_ativo, agenda_hora, agenda_minuto FROM demonstrativo_robo_estado WHERE escritorio_id = 1`).get() as any;
   sqlite.prepare(`
-    UPDATE demonstrativo_robo_estado SET periodo_ini = ?, periodo_fim = ?, agenda_ativo = ?, agenda_hora = ?, agenda_minuto = ?,
+    UPDATE demonstrativo_robo_estado SET periodo_ini = ?, periodo_fim = ?, agenda_ativo = 0, agenda_ultimo_dia = NULL,
       t_entre_empresas_ms = ?, t_render_timeout_ms = ?, t_gerar_pdf_ms = ?, t_modulo_carga_ms = ?, t_curto_ms = ?, t_medio_ms = ?, t_longo_ms = ?,
       encadeado_apos_ferias = ?
     WHERE escritorio_id = 1
-  `).run(pIni, pFim, agendaAtivo, agendaHora, agendaMinuto, tEntreEmpresasMs, tRenderTimeoutMs, tGerarPdfMs, tModuloCargaMs, tCurtoMs, tMedioMs, tLongoMs, encadeadoAposFerias);
-  if (!antesAgenda || !!antesAgenda.agenda_ativo !== !!agendaAtivo || antesAgenda.agenda_hora !== agendaHora || antesAgenda.agenda_minuto !== agendaMinuto)
-    sqlite.prepare(`UPDATE demonstrativo_robo_estado SET agenda_ultimo_dia = NULL WHERE escritorio_id = 1`).run();
+  `).run(pIni, pFim, tEntreEmpresasMs, tRenderTimeoutMs, tGerarPdfMs, tModuloCargaMs, tCurtoMs, tMedioMs, tLongoMs, encadeadoAposFerias);
   res.json({ ok: true, periodoIni: pIni, periodoFim: pFim });
 });
 app.post("/api/demonstrativo-robo/executar", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
