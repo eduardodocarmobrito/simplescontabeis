@@ -2739,6 +2739,7 @@ function emlEscrever(modo, m){
 
 // ===================== Empresas =====================
 let EMP_TAB='ativas';
+let EMP_BUSCA=''; // persiste o filtro de Empresas entre re-renders (ao salvar/editar não perde o digitado)
 async function pageEmpresas(){
   main().innerHTML = `
     <h1>Empresas</h1>
@@ -2773,7 +2774,7 @@ async function renderEmpresasTab(){
       ${STATE.user.perfil==='Administrador'? `<button class="btn" id="btnImportarCertificados">📥 Importar certificados (Drive)</button>`:''}
       <span id="atualizarEmpresasStatus" style="font-size:12px; color:var(--ink-soft);"></span>
     </div>` : `<p class="subtitle" style="margin-top:-6px;">Empresas inativadas não aparecem em Relatórios nem podem receber novos anexos — mas nada foi apagado.</p>`}
-    <div class="field" style="max-width:360px; margin-bottom:10px;"><input type="text" id="empFiltro" placeholder="Buscar por nome ou CNPJ…" autocomplete="off"></div>
+    <div class="field" style="max-width:360px; margin-bottom:10px;"><input type="text" id="empFiltro" placeholder="Buscar por nome ou CNPJ…" autocomplete="off" value="${esc(EMP_BUSCA)}"></div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
         <thead><tr><th>Nome</th><th>CNPJ/CPF</th><th>Origem</th>${ativasTab?'<th>Nos relatórios</th>':''}<th></th></tr></thead>
@@ -2824,8 +2825,12 @@ async function renderEmpresasTab(){
       catch(err){ toast(err.message,'err'); }
     }));
   }
-  desenhaLinhas('');
-  document.getElementById('empFiltro').addEventListener('input', e=>desenhaLinhas(e.target.value));
+  desenhaLinhas(EMP_BUSCA);
+  const _empFiltroEl = document.getElementById('empFiltro');
+  _empFiltroEl.addEventListener('input', e=>{ EMP_BUSCA = e.target.value; desenhaLinhas(EMP_BUSCA); });
+  // Mantém o foco e o cursor no fim do que já estava digitado (ex.: depois de salvar/editar, a lista
+  // re-renderiza mas a busca continua posicionada — sem precisar digitar o nome da empresa de novo).
+  if(EMP_BUSCA){ _empFiltroEl.focus(); try{ _empFiltroEl.setSelectionRange(EMP_BUSCA.length, EMP_BUSCA.length); }catch(e){} }
 
   if(podePostar && ativasTab){
     document.getElementById('btnNovaEmpresa').addEventListener('click', ()=>empresaModal());
