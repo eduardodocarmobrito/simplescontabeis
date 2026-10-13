@@ -10138,20 +10138,18 @@ async function entradasSaidasGerarPdf(emp: any, meta: any, meses: any[], aj: any
   const l2 = [emp.endereco && `Endereço: ${emp.endereco}`, emp.cidade && `Cidade: ${emp.cidade}`, emp.cep && `CEP: ${emp.cep}`, emp.cnpj && `CNPJ: ${esFmtCnpj(emp.cnpj)}`].filter(Boolean).join("    ");
   txt(l2, 20, y, 7.5); y -= 16;
   const cols = [
-    { t: "Mês", w: 58, al: "l" }, { t: "Ano", w: 32, al: "l" },
-    { t: "Entradas R$", w: 78, al: "r" }, { t: "Saídas R$", w: 70, al: "r" }, { t: "Serviços R$", w: 72, al: "r" },
-    { t: "Entradas UFIR", w: 80, al: "r" }, { t: "Acumulado", w: 78, al: "r" },
-    { t: "Saídas UFIR", w: 72, al: "r" }, { t: "Acumulado", w: 78, al: "r" },
-    { t: "Serviços UFIR", w: 72, al: "r" }, { t: "Acumulado", w: 70, al: "r" },
+    { t: "Mês", w: 70, al: "l" }, { t: "Ano", w: 40, al: "l" },
+    { t: "Entradas R$", w: 105, al: "r" }, { t: "Saídas R$", w: 105, al: "r" }, { t: "Serviços R$", w: 105, al: "r" },
+    { t: "Acum. Entradas", w: 115, al: "r" }, { t: "Acum. Saídas", w: 115, al: "r" }, { t: "Acum. Serviços", w: 115, al: "r" },
   ];
   let x0 = 20; const colX: number[] = []; for (const c of cols) { colX.push(x0); x0 += c.w; }
   const rightAt = (i: number) => colX[i] + cols[i].w - 2, leftAt = (i: number) => colX[i] + 2;
   cols.forEach((c, i) => { if (c.al === "r") txtR(c.t, rightAt(i), y, 7, bold); else txt(c.t, leftAt(i), y, 7, bold); });
   y -= 4; page.drawLine({ start: { x: 20, y }, end: { x: x0, y }, thickness: 0.7, color: preto }); y -= 11;
   const linhaValores = (vals: string[]) => { cols.forEach((c, i) => { const v = vals[i] ?? ""; if (c.al === "r") txtR(v, rightAt(i), y); else txt(v, leftAt(i), y); }); y -= 11; };
-  for (const l of linhas) linhaValores([ES_MES_NOME[l.mes], String(l.ano), esFmtBR(l.entradas), esFmtBR(l.saidas), esFmtBR(l.servicos), esFmtBR(l.entradas), esFmtBR(l.accE), esFmtBR(l.saidas), esFmtBR(l.accS), esFmtBR(l.servicos), esFmtBR(l.accSv)]);
+  for (const l of linhas) linhaValores([ES_MES_NOME[l.mes], String(l.ano), esFmtBR(l.entradas), esFmtBR(l.saidas), esFmtBR(l.servicos), esFmtBR(l.accE), esFmtBR(l.accS), esFmtBR(l.accSv)]);
   y += 2; page.drawLine({ start: { x: 20, y }, end: { x: x0, y }, thickness: 0.7, color: preto }); y -= 11;
-  linhaValores(["Totais", "", esFmtBR(totais.entradas), esFmtBR(totais.saidas), esFmtBR(totais.servicos), esFmtBR(totais.entradas), "", esFmtBR(totais.saidas), "", esFmtBR(totais.servicos), ""]);
+  linhaValores(["Totais", "", esFmtBR(totais.entradas), esFmtBR(totais.saidas), esFmtBR(totais.servicos), "", "", ""]);
   return Buffer.from(await docu.save());
 }
 app.get("/api/entradas-saidas/estado", blockCliente, requirePermissao("relatorios", "visualizar"), async (req, res) => {

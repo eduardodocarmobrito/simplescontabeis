@@ -12060,7 +12060,7 @@ async function entradasSaidasMontar(box){
           ${podeEditarES?`<button class="btn" id="esEnviar" title="Salva o ajuste e manda o PDF pros contatos (e-mail/WhatsApp) desta empresa.">📤 Enviar agora</button>`:''}
         </div>
         <div class="card" style="padding:0; overflow-x:auto; margin-bottom:0;"><table class="data-table" style="font-size:11.5px;">
-          <thead><tr><th>Mês</th><th>Ano</th><th style="text-align:right;">Entradas R$</th><th style="text-align:right;">Saídas R$</th><th style="text-align:right;">Serviços R$</th><th style="text-align:right;">Entradas UFIR</th><th style="text-align:right;">Acum.</th><th style="text-align:right;">Saídas UFIR</th><th style="text-align:right;">Acum.</th><th style="text-align:right;">Serviços UFIR</th><th style="text-align:right;">Acum.</th></tr></thead>
+          <thead><tr><th>Mês</th><th>Ano</th><th style="text-align:right;">Entradas R$</th><th style="text-align:right;">Saídas R$</th><th style="text-align:right;">Serviços R$</th><th style="text-align:right;">Acum. Entradas</th><th style="text-align:right;">Acum. Saídas</th><th style="text-align:right;">Acum. Serviços</th></tr></thead>
           <tbody id="esTabBody"></tbody></table></div>
         <p style="font-size:11.5px; color:var(--ink-soft); margin-top:8px;">O valor somado vale pra todos os meses e o Acumulado é refeito. "Gerar PDF" salva o ajuste e abre o PDF novo.</p>
       </div>`;
@@ -12069,8 +12069,8 @@ async function entradasSaidasMontar(box){
       const aj = lerAj();
       const linhas = comAjuste(e.meses, aj);
       const tot = linhas.reduce((t,l)=>{ t.e+=l.e; t.s+=l.s; t.v+=l.v; return t; }, {e:0,s:0,v:0});
-      document.getElementById('esTabBody').innerHTML = linhas.map(l=>`<tr><td>${esc(l.mesNome)}</td><td>${l.ano}</td><td style="text-align:right;">${brNum(l.e)}</td><td style="text-align:right;">${brNum(l.s)}</td><td style="text-align:right;">${brNum(l.v)}</td><td style="text-align:right;">${brNum(l.e)}</td><td style="text-align:right;">${brNum(l.aE)}</td><td style="text-align:right;">${brNum(l.s)}</td><td style="text-align:right;">${brNum(l.aS)}</td><td style="text-align:right;">${brNum(l.v)}</td><td style="text-align:right;">${brNum(l.aV)}</td></tr>`).join('')
-        + `<tr style="font-weight:600; border-top:2px solid var(--rule);"><td>Totais</td><td></td><td style="text-align:right;">${brNum(tot.e)}</td><td style="text-align:right;">${brNum(tot.s)}</td><td style="text-align:right;">${brNum(tot.v)}</td><td style="text-align:right;">${brNum(tot.e)}</td><td></td><td style="text-align:right;">${brNum(tot.s)}</td><td></td><td style="text-align:right;">${brNum(tot.v)}</td><td></td></tr>`;
+      document.getElementById('esTabBody').innerHTML = linhas.map(l=>`<tr><td>${esc(l.mesNome)}</td><td>${l.ano}</td><td style="text-align:right;">${brNum(l.e)}</td><td style="text-align:right;">${brNum(l.s)}</td><td style="text-align:right;">${brNum(l.v)}</td><td style="text-align:right;">${brNum(l.aE)}</td><td style="text-align:right;">${brNum(l.aS)}</td><td style="text-align:right;">${brNum(l.aV)}</td></tr>`).join('')
+        + `<tr style="font-weight:600; border-top:2px solid var(--rule);"><td>Totais</td><td></td><td style="text-align:right;">${brNum(tot.e)}</td><td style="text-align:right;">${brNum(tot.s)}</td><td style="text-align:right;">${brNum(tot.v)}</td><td></td><td></td><td></td></tr>`;
     }
     ['esAjE','esAjS','esAjV'].forEach(id=>document.getElementById(id).addEventListener('input', (ev)=>{ esMaskMoney(ev.target); renderTab(); }));
     renderTab();
