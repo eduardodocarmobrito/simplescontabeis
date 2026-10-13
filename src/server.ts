@@ -2135,6 +2135,39 @@ try {
     sqlite.exec(`ALTER TABLE empresas ADD COLUMN demonstrativo_mensal INTEGER NOT NULL DEFAULT 0`);
   }
 }
+// Relatório de Entradas/Saídas (aba Fiscal): a tabela mensal parseada do PDF, o período e o ajuste por
+// empresa (valor que o usuário soma numa coluna; o Acumulado é recalculado na hora). Guarda só os 3
+// valores base (R$); UFIR/Acumulados são derivados.
+{
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS entradas_saidas_dados (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      escritorio_id INTEGER NOT NULL,
+      empresa_id INTEGER NOT NULL,
+      ano INTEGER NOT NULL,
+      mes INTEGER NOT NULL,
+      entradas REAL NOT NULL DEFAULT 0,
+      saidas REAL NOT NULL DEFAULT 0,
+      servicos REAL NOT NULL DEFAULT 0,
+      atualizado_em TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE (empresa_id, ano, mes)
+    );
+    CREATE TABLE IF NOT EXISTS entradas_saidas_meta (
+      empresa_id INTEGER PRIMARY KEY,
+      escritorio_id INTEGER NOT NULL,
+      periodo_ini TEXT, periodo_fim TEXT,
+      atualizado_em TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS entradas_saidas_ajuste (
+      empresa_id INTEGER PRIMARY KEY,
+      escritorio_id INTEGER NOT NULL,
+      aj_entradas REAL NOT NULL DEFAULT 0,
+      aj_saidas REAL NOT NULL DEFAULT 0,
+      aj_servicos REAL NOT NULL DEFAULT 0,
+      atualizado_em TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+}
 // Limpeza: fgts_sync_jobs foi criada numa primeira versão que salvava a sessão do FGTS Digital no
 // servidor pra reaproveitar depois — testando ao vivo, confirmamos que essa sessão não sobrevive
 // fora do navegador que fez o login (o próprio site trata como "Erro de Login"), então a busca
@@ -9767,6 +9800,8 @@ async function dominioRelatoriosSincronizar(
         // Além de arquivar o PDF (igual todo tipo aqui), extrai os funcionários e recalcula
         // vencida/próxima pra essa empresa (ver src/ferias.ts) — só pra este tipo específico.
         if (tipo === "programacao_ferias") feriasProcessarPdf(escritorioId, empresa.id, texto, docId);
+        // Entradas/Saídas: extrai a tabela mensal (ver aba Fiscal "Relatório de Entradas/Saídas").
+        if (tipo === "entradas_saidas") { try { entradasSaidasProcessarPdf(escritorioId, empresa.id, texto); } catch (e: any) { console.error("[entradas-saidas] processar no import:", e.message); } }
       }
       domRelGravarControle({ ...base, tipoDetectado: tipos.join(","), empresaId: empresa.id, envioDocumentoId: primeiroDocId, status: "ok", erro: null, arquivoPendentePath: null });
       ok++;
@@ -9995,6 +10030,146 @@ async function feriasReprocessarExistentes(escritorioId: number): Promise<number
   }
   return processados;
 }
+// ========= Relatório de Entradas/Saídas (aba Fiscal): parser + ajuste por empresa + PDF novo =========
+// Tabela mensal do PDF: Mês | Ano | Entradas R$ | Saídas R$ | Serviços R$ | Entradas UFIR | Acum |
+// Saídas UFIR | Acum | Serviços UFIR | Acum. UFIR espelha o R$ (1:1); os Acumulados são somas acumuladas.
+// Guardamos só os 3 valores base (R$); UFIR/Acumulados são recalculados na hora (com o ajuste aplicado).
+const ES_MESES: Record<string, number> = { janeiro: 1, fevereiro: 2, "março": 3, marco: 3, abril: 4, maio: 5, junho: 6, julho: 7, agosto: 8, setembro: 9, outubro: 10, novembro: 11, dezembro: 12 };
+const ES_MES_NOME = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
+function esBrToNum(s: string): number { return parseFloat(String(s).replace(/\./g, "").replace(",", ".")) || 0; }
+function esFmtBR(n: number): string { const neg = n < 0; const s = Math.abs(n || 0).toFixed(2); const [i, d] = s.split("."); return (neg ? "-" : "") + i.replace(/\B(?=(\d{3})+(?!\d))/g, ".") + "," + d; }
+function esFmtCnpj(c: string): string { const x = String(c || "").replace(/\D/g, ""); if (x.length === 14) return `${x.slice(0, 2)}.${x.slice(2, 5)}.${x.slice(5, 8)}/${x.slice(8, 12)}-${x.slice(12)}`; if (x.length === 11) return `${x.slice(0, 3)}.${x.slice(3, 6)}.${x.slice(6, 9)}-${x.slice(9)}`; return String(c || ""); }
+function entradasSaidasProcessarPdf(escritorioId: number, empresaId: number, texto: string): number {
+  const reMes = /^(janeiro|fevereiro|mar[çc]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\s+(\d{4})\s+(.+)$/i;
+  const rows: { ano: number; mes: number; entradas: number; saidas: number; servicos: number }[] = [];
+  for (const raw of String(texto || "").split(/\r?\n/)) {
+    const m = reMes.exec(raw.trim());
+    if (!m) continue;
+    const mes = ES_MESES[m[1].toLowerCase()];
+    const ano = Number(m[2]);
+    const nums = (m[3].match(/\d{1,3}(?:\.\d{3})*,\d{2}/g) || []).map(esBrToNum);
+    if (!mes || !ano || nums.length < 3) continue;
+    rows.push({ ano, mes, entradas: nums[0], saidas: nums[1], servicos: nums[2] });
+  }
+  if (!rows.length) return 0;
+  const periodoIni = (/per[íi]odo:\s*(\d{2}\/\d{2}\/\d{4})/i.exec(texto) || [])[1] || null;
+  const periodoFim = (/\ba\s+(\d{2}\/\d{2}\/\d{4})/i.exec(texto) || [])[1] || null;
+  const anos = [...new Set(rows.map((r) => r.ano))];
+  sqlite.exec("BEGIN");
+  try {
+    const del = sqlite.prepare(`DELETE FROM entradas_saidas_dados WHERE empresa_id = ? AND ano = ?`);
+    for (const ano of anos) del.run(empresaId, ano);
+    const ins = sqlite.prepare(`INSERT INTO entradas_saidas_dados (escritorio_id, empresa_id, ano, mes, entradas, saidas, servicos) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+    for (const r of rows) ins.run(escritorioId, empresaId, r.ano, r.mes, r.entradas, r.saidas, r.servicos);
+    sqlite.prepare(`INSERT INTO entradas_saidas_meta (empresa_id, escritorio_id, periodo_ini, periodo_fim, atualizado_em) VALUES (?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(empresa_id) DO UPDATE SET periodo_ini = excluded.periodo_ini, periodo_fim = excluded.periodo_fim, atualizado_em = datetime('now')`).run(empresaId, escritorioId, periodoIni, periodoFim);
+    sqlite.exec("COMMIT");
+  } catch (e) { sqlite.exec("ROLLBACK"); throw e; }
+  return rows.length;
+}
+async function entradasSaidasReprocessarExistentes(escritorioId: number): Promise<number> {
+  const rows = sqlite.prepare(
+    `SELECT d.id, d.file_path, a.empresa_id as empresaId
+       FROM envio_documentos d JOIN envio_periodos p ON p.id = d.periodo_id
+       JOIN envio_atribuicoes a ON a.id = p.atribuicao_id JOIN envio_templates t ON t.id = a.template_id
+      WHERE t.escritorio_id = ? AND t.nome = ?`
+  ).all(escritorioId, DOM_REL_TEMPLATE_NOME.entradas_saidas) as any[];
+  let n = 0;
+  for (const row of rows) {
+    if (!row.file_path || !fs.existsSync(row.file_path)) continue;
+    try { if (entradasSaidasProcessarPdf(escritorioId, row.empresaId, await obterTextoDoPdf(fs.readFileSync(row.file_path)))) n++; }
+    catch (e: any) { console.error(`[entradas-saidas] reprocessar ${row.id}:`, e.message); }
+  }
+  return n;
+}
+// Aplica o ajuste (somar valor por coluna) e recalcula Acumulados + totais.
+function entradasSaidasComAjuste(meses: any[], aj: { entradas: number; saidas: number; servicos: number }) {
+  let accE = 0, accS = 0, accSv = 0;
+  const linhas = meses.map((m) => {
+    const e = (m.entradas || 0) + (aj.entradas || 0), s = (m.saidas || 0) + (aj.saidas || 0), sv = (m.servicos || 0) + (aj.servicos || 0);
+    accE += e; accS += s; accSv += sv;
+    return { ano: m.ano, mes: m.mes, entradas: e, saidas: s, servicos: sv, accE, accS, accSv };
+  });
+  return { linhas, totais: { entradas: accE, saidas: accS, servicos: accSv } };
+}
+async function entradasSaidasGerarPdf(emp: any, meta: any, meses: any[], aj: any): Promise<Buffer> {
+  const { PDFDocument, StandardFonts, rgb } = await import("pdf-lib");
+  const docu = await PDFDocument.create();
+  const page = docu.addPage([842, 595]); // A4 paisagem
+  const font = await docu.embedFont(StandardFonts.Helvetica);
+  const bold = await docu.embedFont(StandardFonts.HelveticaBold);
+  const preto = rgb(0.1, 0.1, 0.1);
+  const { linhas, totais } = entradasSaidasComAjuste(meses, { entradas: aj.aj_entradas || 0, saidas: aj.aj_saidas || 0, servicos: aj.aj_servicos || 0 });
+  const txt = (s: string, x: number, y: number, sz = 7.5, f = font) => page.drawText(String(s), { x, y, size: sz, font: f, color: preto });
+  const txtR = (s: string, xRight: number, y: number, sz = 7.5, f = font) => { const w = f.widthOfTextAtSize(String(s), sz); page.drawText(String(s), { x: xRight - w, y, size: sz, font: f, color: preto }); };
+  let y = 565;
+  const titulo = "DEMONSTRATIVO MENSAL"; txt(titulo, 421 - bold.widthOfTextAtSize(titulo, 11) / 2, y, 11, bold); y -= 20;
+  txt(`Empresa: ${emp.nome || ""}`, 20, y, 8, bold);
+  const per = (meta?.periodo_ini && meta?.periodo_fim) ? `Período: ${meta.periodo_ini} a ${meta.periodo_fim}` : "";
+  if (per) txtR(per, 822, y, 8); y -= 12;
+  const l2 = [emp.endereco && `Endereço: ${emp.endereco}`, emp.cidade && `Cidade: ${emp.cidade}`, emp.cep && `CEP: ${emp.cep}`, emp.cnpj && `CNPJ: ${esFmtCnpj(emp.cnpj)}`].filter(Boolean).join("    ");
+  txt(l2, 20, y, 7.5); y -= 16;
+  const cols = [
+    { t: "Mês", w: 58, al: "l" }, { t: "Ano", w: 32, al: "l" },
+    { t: "Entradas R$", w: 78, al: "r" }, { t: "Saídas R$", w: 70, al: "r" }, { t: "Serviços R$", w: 72, al: "r" },
+    { t: "Entradas UFIR", w: 80, al: "r" }, { t: "Acumulado", w: 78, al: "r" },
+    { t: "Saídas UFIR", w: 72, al: "r" }, { t: "Acumulado", w: 78, al: "r" },
+    { t: "Serviços UFIR", w: 72, al: "r" }, { t: "Acumulado", w: 70, al: "r" },
+  ];
+  let x0 = 20; const colX: number[] = []; for (const c of cols) { colX.push(x0); x0 += c.w; }
+  const rightAt = (i: number) => colX[i] + cols[i].w - 2, leftAt = (i: number) => colX[i] + 2;
+  cols.forEach((c, i) => { if (c.al === "r") txtR(c.t, rightAt(i), y, 7, bold); else txt(c.t, leftAt(i), y, 7, bold); });
+  y -= 4; page.drawLine({ start: { x: 20, y }, end: { x: x0, y }, thickness: 0.7, color: preto }); y -= 11;
+  const linhaValores = (vals: string[]) => { cols.forEach((c, i) => { const v = vals[i] ?? ""; if (c.al === "r") txtR(v, rightAt(i), y); else txt(v, leftAt(i), y); }); y -= 11; };
+  for (const l of linhas) linhaValores([ES_MES_NOME[l.mes], String(l.ano), esFmtBR(l.entradas), esFmtBR(l.saidas), esFmtBR(l.servicos), esFmtBR(l.entradas), esFmtBR(l.accE), esFmtBR(l.saidas), esFmtBR(l.accS), esFmtBR(l.servicos), esFmtBR(l.accSv)]);
+  y += 2; page.drawLine({ start: { x: 20, y }, end: { x: x0, y }, thickness: 0.7, color: preto }); y -= 11;
+  linhaValores(["Totais", "", esFmtBR(totais.entradas), esFmtBR(totais.saidas), esFmtBR(totais.servicos), esFmtBR(totais.entradas), "", esFmtBR(totais.saidas), "", esFmtBR(totais.servicos), ""]);
+  return Buffer.from(await docu.save());
+}
+app.get("/api/entradas-saidas/estado", blockCliente, requirePermissao("relatorios", "visualizar"), async (req, res) => {
+  const user = (req as any).user; const esc = user.escritorioId;
+  const temDados = (sqlite.prepare(`SELECT COUNT(*) n FROM entradas_saidas_dados WHERE escritorio_id = ?`).get(esc) as any).n;
+  if (req.query.reler === "1" || !temDados) { try { await entradasSaidasReprocessarExistentes(esc); } catch (e: any) { console.error("[entradas-saidas] reprocessar:", e.message); } }
+  const visiveis = empresasVisiveis(user);
+  const empNome = new Map((sqlite.prepare(`SELECT id, nome FROM empresas WHERE escritorio_id = ? AND ativo = 1`).all(esc) as any[]).map((e) => [e.id, e.nome]));
+  const ajMap = new Map((sqlite.prepare(`SELECT empresa_id, aj_entradas, aj_saidas, aj_servicos FROM entradas_saidas_ajuste WHERE escritorio_id = ?`).all(esc) as any[]).map((a) => [a.empresa_id, a]));
+  const porEmp: Record<number, any> = {};
+  for (const m of sqlite.prepare(`SELECT empresa_id, periodo_ini, periodo_fim, atualizado_em FROM entradas_saidas_meta WHERE escritorio_id = ?`).all(esc) as any[]) {
+    if (!empNome.has(m.empresa_id) || (visiveis && !visiveis.includes(m.empresa_id))) continue;
+    const aj = ajMap.get(m.empresa_id) || {};
+    porEmp[m.empresa_id] = { empresaId: m.empresa_id, nome: empNome.get(m.empresa_id), periodoIni: m.periodo_ini, periodoFim: m.periodo_fim, atualizadoEm: m.atualizado_em, ajuste: { entradas: aj.aj_entradas || 0, saidas: aj.aj_saidas || 0, servicos: aj.aj_servicos || 0 }, meses: [] as any[] };
+  }
+  for (const d of sqlite.prepare(`SELECT empresa_id, ano, mes, entradas, saidas, servicos FROM entradas_saidas_dados WHERE escritorio_id = ? ORDER BY ano, mes`).all(esc) as any[])
+    if (porEmp[d.empresa_id]) porEmp[d.empresa_id].meses.push({ ano: d.ano, mes: d.mes, mesNome: ES_MES_NOME[d.mes], entradas: d.entradas, saidas: d.saidas, servicos: d.servicos });
+  const empresas = (Object.values(porEmp) as any[]).filter((e) => e.meses.length).sort((a, b) => String(a.nome).localeCompare(String(b.nome), "pt-BR"));
+  res.json({ empresas });
+});
+app.post("/api/entradas-saidas/ajuste", blockCliente, requirePermissao("relatorios", "editar"), (req, res) => {
+  const user = (req as any).user; const esc = user.escritorioId;
+  const empresaId = Number(req.body?.empresaId);
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  const num = (v: any) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+  sqlite.prepare(`INSERT INTO entradas_saidas_ajuste (empresa_id, escritorio_id, aj_entradas, aj_saidas, aj_servicos, atualizado_em) VALUES (?, ?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(empresa_id) DO UPDATE SET aj_entradas = excluded.aj_entradas, aj_saidas = excluded.aj_saidas, aj_servicos = excluded.aj_servicos, atualizado_em = datetime('now')`)
+    .run(empresaId, esc, num(req.body?.entradas), num(req.body?.saidas), num(req.body?.servicos));
+  res.json({ ok: true });
+});
+app.get("/api/entradas-saidas/:empresaId/pdf", blockCliente, requirePermissao("relatorios", "visualizar"), async (req, res) => {
+  const user = (req as any).user; const esc = user.escritorioId;
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa(user, empresaId)) return res.status(403).send("Sem acesso a esta empresa.");
+  const emp = sqlite.prepare(`SELECT nome, cnpj, endereco, cidade, cep FROM empresas WHERE id = ? AND escritorio_id = ?`).get(empresaId, esc) as any;
+  const meta = sqlite.prepare(`SELECT periodo_ini, periodo_fim FROM entradas_saidas_meta WHERE empresa_id = ?`).get(empresaId) as any;
+  const meses = sqlite.prepare(`SELECT ano, mes, entradas, saidas, servicos FROM entradas_saidas_dados WHERE empresa_id = ? ORDER BY ano, mes`).all(empresaId) as any[];
+  const aj = (sqlite.prepare(`SELECT aj_entradas, aj_saidas, aj_servicos FROM entradas_saidas_ajuste WHERE empresa_id = ?`).get(empresaId) as any) || { aj_entradas: 0, aj_saidas: 0, aj_servicos: 0 };
+  if (!emp || !meses.length) return res.status(404).send("Sem dados de Entradas/Saídas pra esta empresa.");
+  try {
+    const pdf = await entradasSaidasGerarPdf(emp, meta, meses, aj);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="Entradas_Saidas_${empresaId}.pdf"`);
+    res.end(pdf);
+  } catch (e: any) { console.error("[entradas-saidas] gerar pdf:", e.message); res.status(500).send("Falha ao gerar o PDF."); }
+});
 registerFerias(app, {
   sqlite,
   blockCliente,

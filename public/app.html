@@ -11964,6 +11964,7 @@ async function pageSetor(escopo){
       <div class="tab ${SETOR_ABA[escopo]==='tags'?'active':''}" data-aba="tags">Tags</div>
       <div class="tab ${SETOR_ABA[escopo]==='envio'?'active':''}" data-aba="envio">📤 Envio de documentos</div>
       ${escopo==='dprh'?`<div class="tab ${SETOR_ABA[escopo]==='ferias'?'active':''}" data-aba="ferias">🏖️ Programação de Férias</div>`:''}
+      ${escopo==='fiscal'?`<div class="tab ${SETOR_ABA[escopo]==='entradas_saidas'?'active':''}" data-aba="entradas_saidas">📊 Relatório de Entradas/Saídas</div>`:''}
     </div>
     <div id="setorConteudo"></div>
   `;
@@ -11972,9 +11973,83 @@ async function pageSetor(escopo){
   // Agenda e Tags do setor: só dos clientes que o setor atendeu (o CRM tem a visão geral).
   if(SETOR_ABA[escopo]==='envio') await centralEnvioMontar(escopo, box);
   else if(SETOR_ABA[escopo]==='ferias') await feriasMontar(box);
+  else if(SETOR_ABA[escopo]==='entradas_saidas') await entradasSaidasMontar(box);
   else if(SETOR_ABA[escopo]==='agenda') await crmAgenda(box, escopo);
   else if(SETOR_ABA[escopo]==='tags') await crmTags(box, escopo);
   else await atendimentoMontar(escopo, box);
+}
+
+// ===================== Relatório de Entradas/Saídas (Fiscal) =====================
+// Lê a tabela mensal do "Relatório de Entradas/Saídas" (importado em Relatórios › Domínio Web). Permite
+// somar um valor numa coluna (salvo por empresa, refaz o Acumulado) e gerar um PDF novo ajustado.
+let ES_BUSCA=''; let ES_SEL=null;
+async function entradasSaidasMontar(box){
+  box.innerHTML = `<div class="empty-state">Carregando…</div>`;
+  let r; try{ r = await api('/entradas-saidas/estado'); }catch(e){ box.innerHTML=`<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
+  const empresas = r.empresas||[];
+  const brNum = (n)=> (Number(n)||0).toLocaleString('pt-BR',{minimumFractionDigits:2, maximumFractionDigits:2});
+  box.innerHTML = `
+    <div class="row" style="gap:8px; align-items:center; margin-bottom:8px; flex-wrap:wrap;">
+      <div class="field" style="max-width:360px; margin-bottom:0;"><input type="search" id="esBusca" placeholder="Pesquisar empresa…" autocomplete="off" value="${esc(ES_BUSCA)}"></div>
+      <button class="btn" id="esReler" title="Relê os PDFs de Entradas/Saídas já importados (Relatórios › Domínio Web) e atualiza a tabela.">↻ Reler relatórios</button>
+    </div>
+    <p style="font-size:12.5px; color:var(--ink-soft); margin:0 0 10px;">Tabela do "Relatório de Entradas/Saídas" importado. Clique numa empresa pra ver, somar um valor numa coluna (salvo por empresa — refaz o Acumulado) e gerar o PDF ajustado.</p>
+    ${empresas.length? `<div class="row" style="gap:14px; align-items:flex-start; flex-wrap:wrap;">
+      <div class="card" style="flex:0 0 320px; padding:0; max-height:72vh; overflow:auto;"><table class="data-table"><thead><tr><th>Empresa</th><th style="text-align:right;">Meses</th></tr></thead><tbody id="esLista"></tbody></table></div>
+      <div id="esDetalhe" style="flex:1; min-width:430px;"></div>
+    </div>` : `<div class="empty-state">Nenhuma empresa com Relatório de Entradas/Saídas importado ainda. Importe em Relatórios › Domínio Web (ou clique "Reler relatórios").</div>`}`;
+  const esBuscaEl = document.getElementById('esBusca');
+  if(esBuscaEl){ esBuscaEl.addEventListener('input', ()=>{ ES_BUSCA=esBuscaEl.value; desenhaLista(); }); if(ES_BUSCA){ esBuscaEl.focus(); try{ esBuscaEl.setSelectionRange(ES_BUSCA.length, ES_BUSCA.length); }catch(e){} } }
+  document.getElementById('esReler')?.addEventListener('click', async ()=>{
+    const b=document.getElementById('esReler'); b.disabled=true; b.textContent='Relendo…';
+    try{ await api('/entradas-saidas/estado?reler=1'); toast('Relatórios relidos.','ok'); }catch(e){ toast(e.message,'err'); }
+    b.disabled=false; await entradasSaidasMontar(box);
+  });
+  const listaEl = document.getElementById('esLista');
+  const detalheEl = document.getElementById('esDetalhe');
+  function comAjuste(meses, aj){ let aE=0,aS=0,aV=0; return meses.map(m=>{ const e=(m.entradas||0)+(aj.entradas||0), s=(m.saidas||0)+(aj.saidas||0), v=(m.servicos||0)+(aj.servicos||0); aE+=e;aS+=s;aV+=v; return {mesNome:m.mesNome, ano:m.ano, e,s,v, aE,aS,aV}; }); }
+  function desenhaLista(){
+    if(!listaEl) return;
+    const termo = normalizaTxt(ES_BUSCA).trim();
+    const vis = empresas.filter(e=>!termo || normalizaTxt(e.nome).includes(termo));
+    listaEl.innerHTML = vis.length? vis.map(e=>`<tr class="linha-clicavel" data-emp="${e.empresaId}" style="cursor:pointer; ${String(e.empresaId)===String(ES_SEL)?'background:var(--accent-pale);':''}"><td style="font-size:12px;">${esc(e.nome)}</td><td style="text-align:right;">${e.meses.length}</td></tr>`).join('') : `<tr><td colspan="2" style="color:var(--ink-soft); padding:12px; font-size:12px;">Nenhuma empresa.</td></tr>`;
+    listaEl.querySelectorAll('[data-emp]').forEach(tr=>tr.addEventListener('click', ()=>{ ES_SEL=tr.dataset.emp; desenhaLista(); desenhaDetalhe(); }));
+  }
+  function desenhaDetalhe(){
+    if(!detalheEl) return;
+    const e = empresas.find(x=>String(x.empresaId)===String(ES_SEL));
+    if(!e){ detalheEl.innerHTML = `<div class="empty-state">Selecione uma empresa à esquerda.</div>`; return; }
+    detalheEl.innerHTML = `
+      <div class="card">
+        <h3 style="margin-top:0;">${esc(e.nome)}</h3>
+        <p class="subtitle" style="margin:0 0 10px;">${e.periodoIni&&e.periodoFim?`Período: ${esc(e.periodoIni)} a ${esc(e.periodoFim)} · `:''}atualizado ${e.atualizadoEm?fmtDateHora(e.atualizadoEm):'—'}</p>
+        <div class="row" style="gap:12px; align-items:flex-end; flex-wrap:wrap; margin-bottom:10px;">
+          <div class="field" style="margin:0;"><label>Somar em Entradas R$</label><input type="number" step="0.01" id="esAjE" value="${e.ajuste.entradas||''}" placeholder="0,00" style="width:130px;"></div>
+          <div class="field" style="margin:0;"><label>Somar em Saídas R$</label><input type="number" step="0.01" id="esAjS" value="${e.ajuste.saidas||''}" placeholder="0,00" style="width:130px;"></div>
+          <div class="field" style="margin:0;"><label>Somar em Serviços R$</label><input type="number" step="0.01" id="esAjV" value="${e.ajuste.servicos||''}" placeholder="0,00" style="width:130px;"></div>
+          <button class="btn primary" id="esSalvarAj">Salvar ajuste</button>
+          <button class="btn" id="esPdf">📄 Gerar PDF ajustado</button>
+        </div>
+        <div class="card" style="padding:0; overflow-x:auto; margin-bottom:0;"><table class="data-table" style="font-size:11.5px;">
+          <thead><tr><th>Mês</th><th>Ano</th><th style="text-align:right;">Entradas R$</th><th style="text-align:right;">Saídas R$</th><th style="text-align:right;">Serviços R$</th><th style="text-align:right;">Entradas UFIR</th><th style="text-align:right;">Acum.</th><th style="text-align:right;">Saídas UFIR</th><th style="text-align:right;">Acum.</th><th style="text-align:right;">Serviços UFIR</th><th style="text-align:right;">Acum.</th></tr></thead>
+          <tbody id="esTabBody"></tbody></table></div>
+        <p style="font-size:11.5px; color:var(--ink-soft); margin-top:8px;">O valor somado vale pra todos os meses e o Acumulado é refeito. "Gerar PDF" salva o ajuste e abre o PDF novo.</p>
+      </div>`;
+    function lerAj(){ return { entradas:Number(document.getElementById('esAjE').value)||0, saidas:Number(document.getElementById('esAjS').value)||0, servicos:Number(document.getElementById('esAjV').value)||0 }; }
+    function renderTab(){
+      const aj = lerAj();
+      const linhas = comAjuste(e.meses, aj);
+      const tot = linhas.reduce((t,l)=>{ t.e+=l.e; t.s+=l.s; t.v+=l.v; return t; }, {e:0,s:0,v:0});
+      document.getElementById('esTabBody').innerHTML = linhas.map(l=>`<tr><td>${esc(l.mesNome)}</td><td>${l.ano}</td><td style="text-align:right;">${brNum(l.e)}</td><td style="text-align:right;">${brNum(l.s)}</td><td style="text-align:right;">${brNum(l.v)}</td><td style="text-align:right;">${brNum(l.e)}</td><td style="text-align:right;">${brNum(l.aE)}</td><td style="text-align:right;">${brNum(l.s)}</td><td style="text-align:right;">${brNum(l.aS)}</td><td style="text-align:right;">${brNum(l.v)}</td><td style="text-align:right;">${brNum(l.aV)}</td></tr>`).join('')
+        + `<tr style="font-weight:600; border-top:2px solid var(--rule);"><td>Totais</td><td></td><td style="text-align:right;">${brNum(tot.e)}</td><td style="text-align:right;">${brNum(tot.s)}</td><td style="text-align:right;">${brNum(tot.v)}</td><td style="text-align:right;">${brNum(tot.e)}</td><td></td><td style="text-align:right;">${brNum(tot.s)}</td><td></td><td style="text-align:right;">${brNum(tot.v)}</td><td></td></tr>`;
+    }
+    ['esAjE','esAjS','esAjV'].forEach(id=>document.getElementById(id).addEventListener('input', renderTab));
+    renderTab();
+    async function salvar(){ const aj=lerAj(); await api('/entradas-saidas/ajuste',{ method:'POST', body:{ empresaId:e.empresaId, ...aj } }); e.ajuste=aj; }
+    document.getElementById('esSalvarAj').addEventListener('click', async ()=>{ try{ await salvar(); toast('Ajuste salvo.','ok'); }catch(err){ toast(err.message,'err'); } });
+    document.getElementById('esPdf').addEventListener('click', async ()=>{ try{ await salvar(); window.open('/api/entradas-saidas/'+e.empresaId+'/pdf','_blank'); }catch(err){ toast(err.message,'err'); } });
+  }
+  desenhaLista(); desenhaDetalhe();
 }
 
 // ===================== Programação de Férias (DP/RH) =====================
