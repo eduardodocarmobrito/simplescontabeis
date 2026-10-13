@@ -14985,14 +14985,16 @@ async function renderCfgEmailSmtp(box){
     ` : `<div class="empty-state">${CC_TAB==='configuradas'?'Nenhuma empresa configurada ainda.':'Nenhuma empresa pendente — tudo configurado.'}</div>`;
     listaBox.querySelectorAll('[data-cc-empresa]').forEach(tr=>tr.addEventListener('click', ()=>selecionarEmpresaCc(tr.dataset.ccEmpresa)));
   }
-  function selecionarEmpresaCc(empresaId){
+  async function selecionarEmpresaCc(empresaId){
     const empresa = empresas.find(e=>String(e.id)===String(empresaId));
     if(!empresa) return;
     const combo = document.getElementById('ccEmpresaCombo');
     combo.querySelector('.combo-value').value = String(empresaId);
     combo.querySelector('.combo-input').value = empresaComboLabel(empresa);
-    carregarContatosEDocs();
-    document.getElementById('ccBody').scrollIntoView({behavior:'smooth', block:'nearest'});
+    await carregarContatosEDocs();   // espera o quadro de edição renderizar antes de rolar
+    // Desce a página e posiciona o quadro de ajuste/inclusão no topo da área visível.
+    const alvo = document.getElementById('ccBody');
+    if(alvo) alvo.scrollIntoView({behavior:'smooth', block:'start'});
   }
   function ccComboItensAtuais(){
     return (CC_TAB==='configuradas'?empresasConfiguradas:empresasFaltam).map(e=>({id:e.id, label:empresaComboLabel(e)}));
