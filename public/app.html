@@ -12012,6 +12012,7 @@ async function entradasSaidasMontar(box){
     <div class="row" style="gap:8px; align-items:center; margin-bottom:8px; flex-wrap:wrap;">
       <div class="field" style="max-width:360px; margin-bottom:0;"><input type="search" id="esBusca" placeholder="Pesquisar empresa…" autocomplete="off" value="${esc(ES_BUSCA)}"></div>
       <button class="btn" id="esReler" title="Relê os PDFs de Entradas/Saídas já importados (Relatórios › Domínio Web) e atualiza a tabela.">↻ Reler relatórios</button>
+      ${empresas.length?`<button class="btn" id="esPdfTodas" title="Gera um PDF único (controle interno) com a tabela de todas as empresas, com os ajustes salvos.">📄 Exportar PDF interno (todas as empresas)</button>`:''}
     </div>
     <p style="font-size:12.5px; color:var(--ink-soft); margin:0 0 10px;">Tabela do "Relatório de Entradas/Saídas" importado. Clique numa empresa pra ver, somar um valor numa coluna (salvo por empresa — refaz o Acumulado) e gerar o PDF ajustado.</p>
     ${empresas.length? `<div class="row" style="gap:14px; align-items:flex-start; flex-wrap:wrap;">
@@ -12025,6 +12026,7 @@ async function entradasSaidasMontar(box){
     try{ await api('/entradas-saidas/estado?reler=1'); toast('Relatórios relidos.','ok'); }catch(e){ toast(e.message,'err'); }
     b.disabled=false; await entradasSaidasMontar(box);
   });
+  document.getElementById('esPdfTodas')?.addEventListener('click', ()=> window.open('/api/entradas-saidas/pdf-todas','_blank'));
   if(podeEditarES){
     habilitarSalvarAoMudar('esEnvSalvar', ['esEnvAtivo','esEnvDia','esEnvHora','esEnvMin']);
     document.getElementById('esEnvSalvar')?.addEventListener('click', async ()=>{

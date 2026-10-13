@@ -10120,37 +10120,66 @@ function entradasSaidasComAjuste(meses: any[], aj: { entradas: number; saidas: n
   });
   return { linhas, totais: { entradas: accE, saidas: accS, servicos: accSv } };
 }
-async function entradasSaidasGerarPdf(emp: any, meta: any, meses: any[], aj: any): Promise<Buffer> {
-  const { PDFDocument, StandardFonts, rgb } = await import("pdf-lib");
-  const docu = await PDFDocument.create();
-  const page = docu.addPage([842, 595]); // A4 paisagem
-  const font = await docu.embedFont(StandardFonts.Helvetica);
-  const bold = await docu.embedFont(StandardFonts.HelveticaBold);
-  const preto = rgb(0.1, 0.1, 0.1);
+// PDF no mesmo visual da Programação de Férias (ver gerarPdfControleInterno em ferias.ts): HTML +
+// Playwright, cabeçalho e cores iguais. Um bloco (header verde-claro + tabela) por empresa.
+function esEscritorioNome(escritorioId: number): string {
+  const e = sqlite.prepare(`SELECT nome FROM escritorios WHERE id = ?`).get(escritorioId) as any;
+  return e?.nome || "Simples Contábeis";
+}
+const ES_PDF_CSS = `
+  body{font-family:'Helvetica Neue',Arial,sans-serif; color:#1c2b24; margin:0; padding:26px 30px;}
+  h1{font-size:17px; margin:0 0 2px;}
+  .sub{font-size:11.5px; color:#5b6b63; margin:0 0 14px;}
+  .resumo{font-size:12px; margin-bottom:16px; color:#3c584a;}
+  .empresa{margin-bottom:16px; break-inside:avoid;}
+  .empresa-topo{background:#eef5f1; border-radius:8px 8px 0 0; padding:7px 10px; display:flex; justify-content:space-between; align-items:baseline;}
+  .empresa-nome{font-weight:700; font-size:12.5px;}
+  .empresa-sub{font-size:10.5px; color:#5b6b63;}
+  table{width:100%; table-layout:fixed; border-collapse:collapse; font-size:10.5px; border:1px solid #e5eae7; border-top:none;}
+  th{text-align:left; background:#f7faf9; padding:5px 8px; border-bottom:1px solid #e5eae7; font-size:9.5px; letter-spacing:.03em; text-transform:uppercase; color:#3c584a;}
+  td{padding:5px 8px; border-bottom:1px solid #eef2f0;}
+  th.num, td.num{text-align:right;}
+  tr.tot td{font-weight:700; border-top:1px solid #cfd8d3; background:#fbfdfc;}
+`;
+function esBlocoEmpresaHtml(empNome: string, subEmpresa: string, meses: any[], aj: any): string {
   const { linhas, totais } = entradasSaidasComAjuste(meses, { entradas: aj.aj_entradas || 0, saidas: aj.aj_saidas || 0, servicos: aj.aj_servicos || 0 });
-  const txt = (s: string, x: number, y: number, sz = 7.5, f = font) => page.drawText(String(s), { x, y, size: sz, font: f, color: preto });
-  const txtR = (s: string, xRight: number, y: number, sz = 7.5, f = font) => { const w = f.widthOfTextAtSize(String(s), sz); page.drawText(String(s), { x: xRight - w, y, size: sz, font: f, color: preto }); };
-  let y = 565;
-  const titulo = "DEMONSTRATIVO MENSAL"; txt(titulo, 421 - bold.widthOfTextAtSize(titulo, 11) / 2, y, 11, bold); y -= 20;
-  txt(`Empresa: ${emp.nome || ""}`, 20, y, 8, bold);
-  const per = (meta?.periodo_ini && meta?.periodo_fim) ? `Período: ${meta.periodo_ini} a ${meta.periodo_fim}` : "";
-  if (per) txtR(per, 822, y, 8); y -= 12;
-  const l2 = [emp.endereco && `Endereço: ${emp.endereco}`, emp.cidade && `Cidade: ${emp.cidade}`, emp.cep && `CEP: ${emp.cep}`, emp.cnpj && `CNPJ: ${esFmtCnpj(emp.cnpj)}`].filter(Boolean).join("    ");
-  txt(l2, 20, y, 7.5); y -= 16;
-  const cols = [
-    { t: "Mês", w: 70, al: "l" }, { t: "Ano", w: 40, al: "l" },
-    { t: "Entradas R$", w: 105, al: "r" }, { t: "Saídas R$", w: 105, al: "r" }, { t: "Serviços R$", w: 105, al: "r" },
-    { t: "Acum. Entradas", w: 115, al: "r" }, { t: "Acum. Saídas", w: 115, al: "r" }, { t: "Acum. Serviços", w: 115, al: "r" },
-  ];
-  let x0 = 20; const colX: number[] = []; for (const c of cols) { colX.push(x0); x0 += c.w; }
-  const rightAt = (i: number) => colX[i] + cols[i].w - 2, leftAt = (i: number) => colX[i] + 2;
-  cols.forEach((c, i) => { if (c.al === "r") txtR(c.t, rightAt(i), y, 7, bold); else txt(c.t, leftAt(i), y, 7, bold); });
-  y -= 4; page.drawLine({ start: { x: 20, y }, end: { x: x0, y }, thickness: 0.7, color: preto }); y -= 11;
-  const linhaValores = (vals: string[]) => { cols.forEach((c, i) => { const v = vals[i] ?? ""; if (c.al === "r") txtR(v, rightAt(i), y); else txt(v, leftAt(i), y); }); y -= 11; };
-  for (const l of linhas) linhaValores([ES_MES_NOME[l.mes], String(l.ano), esFmtBR(l.entradas), esFmtBR(l.saidas), esFmtBR(l.servicos), esFmtBR(l.accE), esFmtBR(l.accS), esFmtBR(l.accSv)]);
-  y += 2; page.drawLine({ start: { x: 20, y }, end: { x: x0, y }, thickness: 0.7, color: preto }); y -= 11;
-  linhaValores(["Totais", "", esFmtBR(totais.entradas), esFmtBR(totais.saidas), esFmtBR(totais.servicos), "", "", ""]);
-  return Buffer.from(await docu.save());
+  const row = (l: any) => `<tr><td>${ES_MES_NOME[l.mes]}</td><td>${l.ano}</td><td class="num">${esFmtBR(l.entradas)}</td><td class="num">${esFmtBR(l.saidas)}</td><td class="num">${esFmtBR(l.servicos)}</td><td class="num">${esFmtBR(l.accE)}</td><td class="num">${esFmtBR(l.accS)}</td><td class="num">${esFmtBR(l.accSv)}</td></tr>`;
+  return `<div class="empresa">
+      <div class="empresa-topo"><span class="empresa-nome">${escHtmlRelatorio(empNome)}</span><span class="empresa-sub">${escHtmlRelatorio(subEmpresa)}</span></div>
+      <table><colgroup><col style="width:11%"><col style="width:7%"><col style="width:14%"><col style="width:13%"><col style="width:13%"><col style="width:14%"><col style="width:14%"><col style="width:14%"></colgroup>
+      <thead><tr><th>Mês</th><th>Ano</th><th class="num">Entradas R$</th><th class="num">Saídas R$</th><th class="num">Serviços R$</th><th class="num">Acum. Entradas</th><th class="num">Acum. Saídas</th><th class="num">Acum. Serviços</th></tr></thead>
+      <tbody>${linhas.map(row).join("")}<tr class="tot"><td>Totais</td><td></td><td class="num">${esFmtBR(totais.entradas)}</td><td class="num">${esFmtBR(totais.saidas)}</td><td class="num">${esFmtBR(totais.servicos)}</td><td></td><td></td><td></td></tr></tbody></table>
+    </div>`;
+}
+function esSubEmpresa(emp: any, meta: any): string {
+  return [emp.cnpj ? `CNPJ: ${esFmtCnpj(emp.cnpj)}` : "", (meta?.periodo_ini && meta?.periodo_fim) ? `Período: ${meta.periodo_ini} a ${meta.periodo_fim}` : ""].filter(Boolean).join(" · ");
+}
+async function esRenderPdf(html: string): Promise<Buffer> {
+  const { chromium } = require("playwright");
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage();
+    await page.setContent(html, { waitUntil: "networkidle" });
+    return (await page.pdf({ format: "A4", landscape: true, printBackground: true, margin: { top: "12px", bottom: "12px", left: "12px", right: "12px" } })) as Buffer;
+  } finally { await browser.close(); }
+}
+async function entradasSaidasGerarPdf(escritorioId: number, emp: any, meta: any, meses: any[], aj: any): Promise<Buffer> {
+  const html = `<!doctype html><html><head><meta charset="utf-8"><style>${ES_PDF_CSS}</style></head><body>
+    <h1>Relatório de Entradas/Saídas</h1>
+    <p class="sub">${escHtmlRelatorio(esEscritorioNome(escritorioId))} · gerado em ${new Date().toLocaleDateString("pt-BR")}</p>
+    ${esBlocoEmpresaHtml(emp.nome, esSubEmpresa(emp, meta), meses, aj)}
+  </body></html>`;
+  return esRenderPdf(html);
+}
+async function entradasSaidasGerarPdfTodas(escritorioId: number, empresas: { emp: any; meta: any; meses: any[]; aj: any }[]): Promise<Buffer> {
+  const blocos = empresas.map((e) => esBlocoEmpresaHtml(e.emp.nome, esSubEmpresa(e.emp, e.meta), e.meses, e.aj)).join("");
+  const html = `<!doctype html><html><head><meta charset="utf-8"><style>${ES_PDF_CSS}</style></head><body>
+    <h1>Relatório de Entradas/Saídas — Controle interno</h1>
+    <p class="sub">${escHtmlRelatorio(esEscritorioNome(escritorioId))} · gerado em ${new Date().toLocaleDateString("pt-BR")} às ${new Date().toLocaleTimeString("pt-BR")}</p>
+    <p class="resumo">${empresas.length} empresa(s)</p>
+    ${blocos}
+  </body></html>`;
+  return esRenderPdf(html);
 }
 app.get("/api/entradas-saidas/estado", blockCliente, requirePermissao("relatorios", "visualizar"), async (req, res) => {
   const user = (req as any).user; const esc = user.escritorioId;
@@ -10191,11 +10220,33 @@ app.get("/api/entradas-saidas/:empresaId/pdf", blockCliente, requirePermissao("r
   const aj = (sqlite.prepare(`SELECT aj_entradas, aj_saidas, aj_servicos FROM entradas_saidas_ajuste WHERE empresa_id = ?`).get(empresaId) as any) || { aj_entradas: 0, aj_saidas: 0, aj_servicos: 0 };
   if (!emp || !meses.length) return res.status(404).send("Sem dados de Entradas/Saídas pra esta empresa.");
   try {
-    const pdf = await entradasSaidasGerarPdf(emp, meta, meses, aj);
+    const pdf = await entradasSaidasGerarPdf(esc, emp, meta, meses, aj);
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `inline; filename="Entradas_Saidas_${empresaId}.pdf"`);
     res.end(pdf);
   } catch (e: any) { console.error("[entradas-saidas] gerar pdf:", e.message); res.status(500).send("Falha ao gerar o PDF."); }
+});
+// PDF interno com TODAS as empresas (controle interno, 1 bloco por empresa) — estilo Programação de Férias.
+app.get("/api/entradas-saidas/pdf-todas", blockCliente, requirePermissao("relatorios", "visualizar"), async (req, res) => {
+  const user = (req as any).user; const esc = user.escritorioId;
+  const visiveis = empresasVisiveis(user);
+  const empMap = new Map((sqlite.prepare(`SELECT id, nome, cnpj FROM empresas WHERE escritorio_id = ? AND ativo = 1`).all(esc) as any[]).map((e) => [e.id, e]));
+  const ajMap = new Map((sqlite.prepare(`SELECT empresa_id, aj_entradas, aj_saidas, aj_servicos FROM entradas_saidas_ajuste WHERE escritorio_id = ?`).all(esc) as any[]).map((a) => [a.empresa_id, a]));
+  const lista: any[] = [];
+  for (const m of sqlite.prepare(`SELECT empresa_id, periodo_ini, periodo_fim FROM entradas_saidas_meta WHERE escritorio_id = ?`).all(esc) as any[]) {
+    if (!empMap.has(m.empresa_id) || (visiveis && !visiveis.includes(m.empresa_id))) continue;
+    const meses = sqlite.prepare(`SELECT ano, mes, entradas, saidas, servicos FROM entradas_saidas_dados WHERE empresa_id = ? ORDER BY ano, mes`).all(m.empresa_id) as any[];
+    if (!meses.length) continue;
+    lista.push({ emp: empMap.get(m.empresa_id), meta: m, meses, aj: ajMap.get(m.empresa_id) || { aj_entradas: 0, aj_saidas: 0, aj_servicos: 0 } });
+  }
+  lista.sort((a, b) => String(a.emp.nome).localeCompare(String(b.emp.nome), "pt-BR"));
+  if (!lista.length) return res.status(404).send("Nenhuma empresa com Relatório de Entradas/Saídas.");
+  try {
+    const pdf = await entradasSaidasGerarPdfTodas(esc, lista);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="Entradas_Saidas_Controle_Interno.pdf"`);
+    res.end(pdf);
+  } catch (e: any) { console.error("[entradas-saidas] pdf todas:", e.message); res.status(500).send("Falha ao gerar o PDF."); }
 });
 // Diagnóstico: mostra o TEXTO real (pdf-parse) dos relatórios importados + quantas linhas de mês o
 // parser reconhece. Serve pra ajustar o regex quando o layout extraído difere do esperado.
@@ -10219,7 +10270,7 @@ async function entradasSaidasEnviarEmpresa(escritorioId: number, empresaId: numb
   if (!emp || !meses.length) return { ok: false, erro: "Sem dados de Entradas/Saídas pra esta empresa." };
   const meta = sqlite.prepare(`SELECT periodo_ini, periodo_fim FROM entradas_saidas_meta WHERE empresa_id = ?`).get(empresaId) as any;
   const aj = (sqlite.prepare(`SELECT aj_entradas, aj_saidas, aj_servicos FROM entradas_saidas_ajuste WHERE empresa_id = ?`).get(empresaId) as any) || { aj_entradas: 0, aj_saidas: 0, aj_servicos: 0 };
-  const pdf = await entradasSaidasGerarPdf(emp, meta, meses, aj);
+  const pdf = await entradasSaidasGerarPdf(escritorioId, emp, meta, meses, aj);
   const nomeArquivo = `Relatorio de Entradas-Saidas - ${emp.nome}.pdf`.replace(/[\\/:*?"<>|]/g, "");
   const emails = sqlite.prepare(`SELECT email FROM empresa_contatos WHERE empresa_id = ? AND receber_emails = 1 AND email IS NOT NULL AND email != ''`).all(empresaId) as any[];
   const wpps = sqlite.prepare(`SELECT telefone FROM empresa_contatos WHERE empresa_id = ? AND receber_whatsapp = 1 AND telefone IS NOT NULL AND telefone != ''`).all(empresaId) as any[];
