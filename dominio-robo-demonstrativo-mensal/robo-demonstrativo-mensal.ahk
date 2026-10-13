@@ -166,6 +166,13 @@ NoLauncher() {
     return InStr(WinGetTitle("A"), "Lista de Programas") || InStr(WinGetTitle("A"), "Dominio Web")
 }
 
+; Dialogo do GO-Global quando o STREAMING CAI ("...was dropped. Trying to reconnect...").
+; Quando isso aparece, o Dominio sumiu da tela e qualquer clique vai no lugar errado ->
+; o robo PARA na hora (nao fica clicando as cegas durante a reconexao).
+ConexaoCaiu() {
+    return WinExist("GO-Global", "reconnect") || WinExist("GO-Global", "dropped") || WinExist("GO-Global", "connection to")
+}
+
 FecharErroSistema() {
     static ativo := false
     achou := false
@@ -277,29 +284,24 @@ LimparCampoNome() {
 
 NavegarAtePasta() {
     global THISPC_X, THISPC_Y
-    Logar("    nav: clicando This PC (" . THISPC_X . "," . THISPC_Y . ")")
-    Click(THISPC_X . " " . THISPC_Y)   ; "This PC" (barra esquerda) - reset de qualquer pasta
-    Sleep 4500
-    Send "+{Tab}"                      ; foca a lista de drives/pastas
-    Sleep 4500
-    ; "client g" e o ponto mais fragil: o streaming perde o 'g' e cai no "Client C" -> Recovery.
-    ; Digita BEM devagar (150ms/char) com folga antes/depois.
-    SelecionarPastaPorNome("client g", 150, 2000)
-    SelecionarPastaPorNome("meu drive", 90, 1500)
-    SelecionarPastaPorNome("relatorios dominio", 90, 1500)
-    Logar("    nav: terminou a navegacao")
+    Click(THISPC_X . " " . THISPC_Y)   ; "This PC" (barra esquerda)
+    Sleep 4000                         ; deixa as pastas/drives carregarem
+    Send "+{Tab}"                      ; foca a lista
+    Sleep 4000
+    SelecionarPastaPorNome("client g")   ; -> Client G (N:) [mesmo caminho dos outros robos]
+    SelecionarPastaPorNome("meu drive")
+    SelecionarPastaPorNome("relatorios dominio")
 }
 
-SelecionarPastaPorNome(nome, msPorChar := 90, folga := 1500) {
-    Sleep folga
+SelecionarPastaPorNome(nome) {
+    Sleep 1200
     for ch in StrSplit(nome) {
         SendText ch
-        Sleep msPorChar
+        Sleep 80
     }
-    Sleep folga
+    Sleep 1200
     Send "{Enter}"
-    Sleep 4000
-    Logar("    nav: '" . nome . "' -> Enter | SalvarPDF aberta: " . (WinExist("Salvar em PDF") ? "sim" : "NAO") . " | janelas: " . ListarJanelasDominio())
+    Sleep 4000                         ; a pasta pode demorar a abrir
 }
 
 FecharPrevia() {
@@ -533,6 +535,11 @@ RodarCiclo(compIni, compFim) {
         ReportarProgresso(false, 0, 0, "", false)
         return
     }
+    if (ConexaoCaiu()) {
+        Logar("ERRO: Conexao do GO-Global caiu (reconectando) - execucao cancelada.")
+        ReportarProgresso(false, total, 0, "", false)
+        return
+    }
     AtivarApp()
     Sleep 1500
     Logar("Janelas: " . ListarJanelasDominio())
@@ -551,6 +558,10 @@ RodarCiclo(compIni, compFim) {
     for e in empresas {
         if (DevePararSite()) {
             Logar("=== PARADO pelo site (freio de emergencia) apos " . feitas . "/" . total . " ===")
+            break
+        }
+        if (ConexaoCaiu()) {             ; streaming caiu -> para de clicar as cegas
+            Logar("=== PARADO: conexao do GO-Global caiu apos " . feitas . "/" . total . " ===")
             break
         }
         if (feitas > 0)

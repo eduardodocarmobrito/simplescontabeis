@@ -174,6 +174,13 @@ NoLauncher() {
     return InStr(WinGetTitle("A"), "Lista de Programas") || InStr(WinGetTitle("A"), "Dominio Web")
 }
 
+; Dialogo do GO-Global quando o STREAMING CAI ("...was dropped. Trying to reconnect...").
+; Quando isso aparece, o Dominio sumiu da tela e qualquer clique vai no lugar errado ->
+; o robo PARA na hora (nao fica clicando as cegas durante a reconexao).
+ConexaoCaiu() {
+    return WinExist("GO-Global", "reconnect") || WinExist("GO-Global", "dropped") || WinExist("GO-Global", "connection to")
+}
+
 ; VIGIA: fecha erros do Dominio (bug do chatbot) / Windows pelo X, nunca "Finalizar".
 FecharErroSistema() {
     static ativo := false
@@ -565,6 +572,11 @@ RodarCiclo(compIni, compFim) {
         ReportarProgresso(false, 0, 0, "", false)
         return
     }
+    if (ConexaoCaiu()) {
+        Logar("ERRO: Conexao do GO-Global caiu (reconectando) - execucao cancelada.")
+        ReportarProgresso(false, total, 0, "", false)
+        return
+    }
     AtivarApp()                      ; traz o APP pra frente (nao o launcher)
     Sleep 1500
     Logar("Janelas: " . ListarJanelasDominio())
@@ -584,6 +596,10 @@ RodarCiclo(compIni, compFim) {
     for e in empresas {
         if (DevePararSite()) {           ; FREIO: usuario clicou "Parar robo" no site
             Logar("=== PARADO pelo site (freio de emergencia) apos " . feitas . "/" . total . " ===")
+            break
+        }
+        if (ConexaoCaiu()) {             ; streaming caiu -> para de clicar as cegas
+            Logar("=== PARADO: conexao do GO-Global caiu apos " . feitas . "/" . total . " ===")
             break
         }
         if (feitas > 0)
