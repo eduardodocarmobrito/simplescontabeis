@@ -14119,10 +14119,8 @@ async function renderCfgFgtsDigital(box){
           </p>
         </div>
       ` : ''}
-      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin:14px 0 6px;">
-        <div style="font-weight:600; font-size:13px; color:var(--ink-soft);">Empresas marcadas ("Buscar Guia FGTS Digital" no cadastro)</div>
-        ${marcadas.length ? `<input id="fgtsBusca" class="inp" type="search" placeholder="Pesquisar empresa…" style="max-width:260px;" value="${esc(FGTS_BUSCA)}">` : ''}
-      </div>
+      <div style="font-weight:600; font-size:13px; color:var(--ink-soft); margin:14px 0 6px;">Empresas marcadas ("Buscar Guia FGTS Digital" no cadastro)</div>
+      ${marcadas.length ? `<div class="field" style="max-width:360px; margin-bottom:10px;"><input id="fgtsBusca" type="search" placeholder="Pesquisar empresa…" autocomplete="off" value="${esc(FGTS_BUSCA)}"></div>` : ''}
       ${marcadas.length
         ? `<table class="data-table" id="fgtsTabela"><thead><tr><th>Empresa</th><th>Última busca</th><th>Situação</th></tr></thead><tbody>${linhas}</tbody></table>
            <div id="fgtsVazioBusca" class="empty-state" style="display:none;">Nenhuma empresa encontrada para a busca.</div>`
