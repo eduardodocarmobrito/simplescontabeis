@@ -3206,6 +3206,17 @@ function empresaModal(e){
   // Ao sair do campo CNPJ (com 14 dígitos — CPF de produtor rural não tem consulta pública), busca
   // os dados na Receita Federal e preenche só os campos que ainda estão vazios — nunca sobrescreve
   // algo que já foi digitado/cadastrado antes, pra não perder dado real corrigido na mão.
+  // Formata CPF/CNPJ enquanto digita (000.000.000-00 ou 00.000.000/0000-00). O save já tira a máscara.
+  const _empCnpjEl = document.getElementById('empCnpj');
+  _empCnpjEl.addEventListener('input', ()=>{
+    const d = _empCnpjEl.value.replace(/[^0-9]/g,'').slice(0,14);
+    _empCnpjEl.value = formatarDocumentoBR(d);
+  });
+  const _empCpfRepEl = document.getElementById('empCpfRepresentante');
+  if(_empCpfRepEl) _empCpfRepEl.addEventListener('input', ()=>{
+    const d = _empCpfRepEl.value.replace(/[^0-9]/g,'').slice(0,11);
+    _empCpfRepEl.value = formatarDocumentoBR(d);
+  });
   document.getElementById('empCnpj').addEventListener('blur', async ev=>{
     const doc = ev.target.value.replace(/[^0-9]/g,'');
     const status = document.getElementById('empCnpjStatus');
