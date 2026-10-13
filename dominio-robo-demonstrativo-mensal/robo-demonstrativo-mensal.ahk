@@ -46,15 +46,15 @@ CAMPO_NOME_X:= 250,  CAMPO_NOME_Y:= 388
 
 ; Coordenadas de TELA dos campos de periodo no dialogo "Demonstrativo Mensal"
 ; (Window Spy, prints do usuario). Inicial em cima, Final logo abaixo (empilhados).
-PER_INI_X   := 1207, PER_INI_Y   := 739    ; campo Inicial (01/AAAA)
-PER_FIM_X   := 1208, PER_FIM_Y   := 759    ; campo Final   (MM/AAAA)
+PER_INI_X   := 1207, PER_INI_Y   := 821    ; campo Inicial (01/AAAA)
+PER_FIM_X   := 1210, PER_FIM_Y   := 843    ; campo Final   (MM/AAAA)
 
 ; Centro do dialogo "Sem dados para emitir !" (clique pra dar FOCO de teclado antes do Enter/OK)
 SEMDADOS_X  := 1286, SEMDADOS_Y  := 796
 
 ; SELECAO DE MODULO: 1) clica o logo DOMINIO (abre o menu de modulos); 2) clica "Escrita Fiscal".
-LOGO_X      := 46,   LOGO_Y      := 80     ; logo "DOMINIO" (abre menu de modulos)
-MODULO_X    := 76,   MODULO_Y    := 250    ; item "Escrita Fiscal" no menu de modulos
+LOGO_X      := 49,   LOGO_Y      := 83     ; logo "DOMINIO" (abre menu de modulos)
+MODULO_X    := 80,   MODULO_Y    := 252    ; item "Escrita Fiscal" no menu de modulos
 T_MODULO_CARGA := 10000                    ; espera o modulo carregar (~10s)
 
 T_CURTO  := 700
