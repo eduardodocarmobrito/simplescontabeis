@@ -2166,7 +2166,23 @@ try {
       aj_servicos REAL NOT NULL DEFAULT 0,
       atualizado_em TEXT NOT NULL DEFAULT (datetime('now'))
     );
+    -- Fase 2: envio automático mensal (igual Programação de Férias) — manda o PDF ajustado pros clientes.
+    CREATE TABLE IF NOT EXISTS entradas_saidas_envio_config (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      ativo INTEGER NOT NULL DEFAULT 0,
+      dia_mes INTEGER NOT NULL DEFAULT 5,
+      hora INTEGER NOT NULL DEFAULT 8,
+      minuto INTEGER NOT NULL DEFAULT 0,
+      ultima_execucao_competencia TEXT,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS entradas_saidas_envio_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      empresa_id INTEGER NOT NULL, competencia TEXT, sucesso INTEGER, mensagem TEXT,
+      enviado_em TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `);
+  sqlite.prepare(`INSERT OR IGNORE INTO entradas_saidas_envio_config (id) VALUES (1)`).run();
 }
 // Limpeza: fgts_sync_jobs foi criada numa primeira versão que salvava a sessão do FGTS Digital no
 // servidor pra reaproveitar depois — testando ao vivo, confirmamos que essa sessão não sobrevive
@@ -10142,7 +10158,8 @@ app.get("/api/entradas-saidas/estado", blockCliente, requirePermissao("relatorio
   for (const d of sqlite.prepare(`SELECT empresa_id, ano, mes, entradas, saidas, servicos FROM entradas_saidas_dados WHERE escritorio_id = ? ORDER BY ano, mes`).all(esc) as any[])
     if (porEmp[d.empresa_id]) porEmp[d.empresa_id].meses.push({ ano: d.ano, mes: d.mes, mesNome: ES_MES_NOME[d.mes], entradas: d.entradas, saidas: d.saidas, servicos: d.servicos });
   const empresas = (Object.values(porEmp) as any[]).filter((e) => e.meses.length).sort((a, b) => String(a.nome).localeCompare(String(b.nome), "pt-BR"));
-  res.json({ empresas });
+  const ce = sqlite.prepare(`SELECT ativo, dia_mes, hora, minuto, ultima_execucao_competencia FROM entradas_saidas_envio_config WHERE id = 1`).get() as any;
+  res.json({ empresas, envio: { ativo: !!ce?.ativo, diaMes: ce?.dia_mes ?? 5, hora: ce?.hora ?? 8, minuto: ce?.minuto ?? 0, ultimaCompetencia: ce?.ultima_execucao_competencia || null } });
 });
 app.post("/api/entradas-saidas/ajuste", blockCliente, requirePermissao("relatorios", "editar"), (req, res) => {
   const user = (req as any).user; const esc = user.escritorioId;
@@ -10170,6 +10187,72 @@ app.get("/api/entradas-saidas/:empresaId/pdf", blockCliente, requirePermissao("r
     res.end(pdf);
   } catch (e: any) { console.error("[entradas-saidas] gerar pdf:", e.message); res.status(500).send("Falha ao gerar o PDF."); }
 });
+// Envia o PDF (ajustado) de Entradas/Saídas pros contatos da empresa (e-mail + WhatsApp). Mesma mecânica
+// do envio de Programação de Férias (ver enviarRelatorioEmpresa em ferias.ts).
+async function entradasSaidasEnviarEmpresa(escritorioId: number, empresaId: number, canal: any): Promise<{ ok: boolean; erro?: string }> {
+  const emp = sqlite.prepare(`SELECT id, nome, cnpj, endereco, cidade, cep FROM empresas WHERE id = ? AND escritorio_id = ?`).get(empresaId, escritorioId) as any;
+  const meses = sqlite.prepare(`SELECT ano, mes, entradas, saidas, servicos FROM entradas_saidas_dados WHERE empresa_id = ? ORDER BY ano, mes`).all(empresaId) as any[];
+  if (!emp || !meses.length) return { ok: false, erro: "Sem dados de Entradas/Saídas pra esta empresa." };
+  const meta = sqlite.prepare(`SELECT periodo_ini, periodo_fim FROM entradas_saidas_meta WHERE empresa_id = ?`).get(empresaId) as any;
+  const aj = (sqlite.prepare(`SELECT aj_entradas, aj_saidas, aj_servicos FROM entradas_saidas_ajuste WHERE empresa_id = ?`).get(empresaId) as any) || { aj_entradas: 0, aj_saidas: 0, aj_servicos: 0 };
+  const pdf = await entradasSaidasGerarPdf(emp, meta, meses, aj);
+  const nomeArquivo = `Relatorio de Entradas-Saidas - ${emp.nome}.pdf`.replace(/[\\/:*?"<>|]/g, "");
+  const emails = sqlite.prepare(`SELECT email FROM empresa_contatos WHERE empresa_id = ? AND receber_emails = 1 AND email IS NOT NULL AND email != ''`).all(empresaId) as any[];
+  const wpps = sqlite.prepare(`SELECT telefone FROM empresa_contatos WHERE empresa_id = ? AND receber_whatsapp = 1 AND telefone IS NOT NULL AND telefone != ''`).all(empresaId) as any[];
+  if (!emails.length && !wpps.length) return { ok: false, erro: "Empresa sem contato de e-mail nem WhatsApp cadastrado." };
+  let algumOk = false; const erros: string[] = [];
+  if (emails.length) {
+    try {
+      await enviarEmail(escritorioId, { to: emails.map((e) => e.email), subject: `${emp.nome} — Relatório de Entradas/Saídas`, text: `Olá!\n\nSegue em anexo o Relatório de Entradas/Saídas.\n\nQualquer dúvida, estamos à disposição.`, attachments: [{ filename: nomeArquivo, content: pdf }] });
+      algumOk = true;
+    } catch (e: any) { erros.push(e.message); }
+  }
+  for (const c of wpps) {
+    try { await enviarDocumentoWhatsapp(canal, escritorioId, c.telefone, emp.nome, "Relatório de Entradas/Saídas", { nome: nomeArquivo, tipo: "application/pdf", buffer: pdf }, { tabela: "entradas_saidas_envio_log", id: empresaId } as any); algumOk = true; }
+    catch (e: any) { erros.push(e.message); }
+  }
+  return { ok: algumOk, erro: algumOk ? undefined : erros[0] };
+}
+app.post("/api/entradas-saidas/envio-config", blockCliente, requirePermissao("relatorios", "editar"), (req, res) => {
+  const b = req.body || {};
+  const diaMes = Math.min(28, Math.max(1, Number(b.diaMes) || 5));
+  const hora = Math.min(23, Math.max(0, Number(b.hora) || 0));
+  const minuto = Math.min(59, Math.max(0, Number(b.minuto) || 0));
+  sqlite.prepare(`UPDATE entradas_saidas_envio_config SET ativo = ?, dia_mes = ?, hora = ?, minuto = ?, updated_at = datetime('now') WHERE id = 1`).run(b.ativo ? 1 : 0, diaMes, hora, minuto);
+  res.json({ ok: true });
+});
+app.post("/api/entradas-saidas/:empresaId/enviar-agora", blockCliente, requirePermissao("relatorios", "editar"), async (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa(user, empresaId)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  try {
+    const r = await entradasSaidasEnviarEmpresa(user.escritorioId, empresaId, String(req.body?.canal) === "meta" ? "meta" : "conversa");
+    sqlite.prepare(`INSERT INTO entradas_saidas_envio_log (empresa_id, competencia, sucesso, mensagem) VALUES (?, ?, ?, ?)`).run(empresaId, new Date().toISOString().slice(0, 7), r.ok ? 1 : 0, r.erro || null);
+    if (!r.ok) return res.status(400).json({ error: r.erro || "Não consegui enviar." });
+    res.json({ ok: true });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+// Envio automático mensal (trava por competência, sobrevive a reinício — mesmo padrão do Férias): no dia/
+// hora escolhido, manda o PDF de Entradas/Saídas pra cada empresa que tem relatório (escritório principal).
+setInterval(async () => {
+  const cfg = sqlite.prepare(`SELECT * FROM entradas_saidas_envio_config WHERE id = 1`).get() as any;
+  if (!cfg?.ativo) return;
+  const agora = new Date(Date.now() - 3 * 3600 * 1000);
+  const competencia = agora.toISOString().slice(0, 7);
+  if (cfg.ultima_execucao_competencia === competencia) return;
+  if (agora.getUTCDate() !== cfg.dia_mes || agora.getUTCHours() * 60 + agora.getUTCMinutes() < cfg.hora * 60 + cfg.minuto) return;
+  sqlite.prepare(`UPDATE entradas_saidas_envio_config SET ultima_execucao_competencia = ? WHERE id = 1`).run(competencia);
+  const empresas = sqlite.prepare(`SELECT DISTINCT e.id FROM empresas e JOIN entradas_saidas_meta m ON m.empresa_id = e.id WHERE e.ativo = 1 AND e.escritorio_id = 1`).all() as any[];
+  for (const empresa of empresas) {
+    try {
+      const r = await entradasSaidasEnviarEmpresa(1, empresa.id, "conversa");
+      sqlite.prepare(`INSERT INTO entradas_saidas_envio_log (empresa_id, competencia, sucesso, mensagem) VALUES (?, ?, ?, ?)`).run(empresa.id, competencia, r.ok ? 1 : 0, r.erro || null);
+    } catch (e: any) {
+      sqlite.prepare(`INSERT INTO entradas_saidas_envio_log (empresa_id, competencia, sucesso, mensagem) VALUES (?, ?, 0, ?)`).run(empresa.id, competencia, String(e.message).slice(0, 300));
+    }
+    await new Promise((r) => setTimeout(r, 300));
+  }
+}, 60_000).unref();
 registerFerias(app, {
   sqlite,
   blockCliente,
