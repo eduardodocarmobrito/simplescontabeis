@@ -3462,7 +3462,7 @@ app.put("/api/users/:id/permissoes", requireAdmin, (req, res) => {
 });
 const CONFIG_ABAS_VALIDAS = ["dominio", "email", "whatsapp", "fgts-digital", "nfse-agendamento", "painel-tv", "envio-docs", "atendimento", "assinatura-plataforma"];
 // Abas de Relatórios que cada colaborador pode ver. Sem nenhuma linha = vê todas (padrão de antes).
-const RELATORIOS_ABAS_VALIDAS = ["balanco", "balancete", "dre", "faturamento", "razao", "comparativo", "demonstrativo_mensal", "entradas_saidas", "programacao_ferias", "folha", "retencoes"];
+const RELATORIOS_ABAS_VALIDAS = ["balanco", "balancete", "dre", "faturamento", "razao", "comparativo", "entradas_saidas", "programacao_ferias", "folha", "retencoes"];
 sqlite.exec(`CREATE TABLE IF NOT EXISTS colaborador_relatorios_abas (user_id INTEGER NOT NULL, aba TEXT NOT NULL, PRIMARY KEY (user_id, aba))`);
 app.get("/api/users/:id/relatorios-abas", requireAdmin, (req, res) => {
   if (!pertenceAoEscritorio(req, Number(req.params.id))) return res.status(404).json({ error: "Usuário não encontrado." });
@@ -5512,6 +5512,15 @@ sqlite.exec(`
     ultimo_motivo TEXT
   );
 `);
+{
+  // Encadeamento: começar o Demonstrativo em sequência quando a Programação de Férias terminar.
+  const colsDemo = sqlite.prepare(`PRAGMA table_info(demonstrativo_robo_estado)`).all() as any[];
+  if (!colsDemo.some((c) => c.name === "encadeado_apos_ferias")) sqlite.exec(`ALTER TABLE demonstrativo_robo_estado ADD COLUMN encadeado_apos_ferias INTEGER NOT NULL DEFAULT 0`);
+  if (!colsDemo.some((c) => c.name === "encadeado_ultimo_dia")) sqlite.exec(`ALTER TABLE demonstrativo_robo_estado ADD COLUMN encadeado_ultimo_dia TEXT`);
+  // Férias: marca "deve encadear o Demonstrativo quando eu terminar" (armado no início da execução do Férias).
+  const colsFer = sqlite.prepare(`PRAGMA table_info(ferias_robo_estado)`).all() as any[];
+  if (!colsFer.some((c) => c.name === "encadeia_demo_pendente")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN encadeia_demo_pendente INTEGER NOT NULL DEFAULT 0`);
+}
 function garantirDemonstrativoEstado(escritorioId: number) {
   sqlite.prepare(`INSERT OR IGNORE INTO demonstrativo_robo_estado (escritorio_id) VALUES (?)`).run(escritorioId);
 }
@@ -9244,7 +9253,7 @@ setInterval(() => {
 // se o período já tem documento, sem filtrar por quem pediu, então importando ANTES de qualquer
 // solicitação (esta rotina é proativa/agendada), o pedido do cliente já chega atendido sem nenhum
 // código extra de "atendimento automático".
-type DomRelTipo = "balanco" | "balancete" | "dre" | "faturamento" | "razao" | "comparativo" | "entradas_saidas" | "programacao_ferias" | "demonstrativo_mensal";
+type DomRelTipo = "balanco" | "balancete" | "dre" | "faturamento" | "razao" | "comparativo" | "entradas_saidas" | "programacao_ferias";
 const DOM_REL_TEMPLATE_NOME: Record<string, string> = {
   balanco: "Balanço",
   balancete: "Balancete",
@@ -9253,9 +9262,10 @@ const DOM_REL_TEMPLATE_NOME: Record<string, string> = {
   faturamento: "Relação de Faturamento",
   razao: "Razão",
   comparativo: "Comparativo de Movimento",
-  entradas_saidas: "Relatório de Entradas/Saídas", // legado — o Demonstrativo Mensal agora tem tipo próprio
+  // O Demonstrativo Mensal (gerado pelo robô "Demonstrativo Mensal") é arquivado aqui, como
+  // "Relatório de Entradas/Saídas" — a pedido, sem tipo/aba separados.
+  entradas_saidas: "Relatório de Entradas/Saídas",
   programacao_ferias: "Programação de Férias",
-  demonstrativo_mensal: "Demonstrativo Mensal",
 };
 // Nomes dos templates alimentados pela importação automática do OneDrive — pra esses, "Solicitar
 // Documentos" não deixa o cliente digitar qualquer mês/ano (não existe ninguém pra gerar sob
@@ -9263,6 +9273,24 @@ const DOM_REL_TEMPLATE_NOME: Record<string, string> = {
 // GET /api/envio/periodos-disponiveis). Os outros templates (DAS, Situação Fiscal etc.) continuam
 // deixando digitar livre, porque o escritório gera aquilo quando o cliente pede.
 const TEMPLATES_RELATORIOS_DOMINIO = new Set(Object.values(DOM_REL_TEMPLATE_NOME));
+// Migração única: o Demonstrativo Mensal voltou a ser arquivado como "Relatório de Entradas/Saídas"
+// (a pedido). Move os docs já importados no template "Demonstrativo Mensal" pro template
+// "Relatório de Entradas/Saídas" e remove o template órfão. Idempotente (não faz nada se não existir).
+try {
+  const demos = sqlite.prepare(`SELECT id, escritorio_id FROM envio_templates WHERE nome = 'Demonstrativo Mensal'`).all() as any[];
+  for (const t of demos) {
+    const atrs = sqlite.prepare(`SELECT id, empresa_id FROM envio_atribuicoes WHERE template_id = ?`).all(t.id) as any[];
+    for (const a of atrs) {
+      const destinoAtrId = integraContadorObterOuCriarAtribuicaoModelo(
+        t.escritorio_id, a.empresa_id, "Relatório de Entradas/Saídas",
+        "Relatório de Entradas/Saídas gerado pelo Domínio Web, importado automaticamente de uma pasta do OneDrive", "mensal", true
+      );
+      sqlite.prepare(`UPDATE OR IGNORE envio_periodos SET atribuicao_id = ? WHERE atribuicao_id = ?`).run(destinoAtrId, a.id);
+    }
+    sqlite.prepare(`DELETE FROM envio_templates WHERE id = ?`).run(t.id); // cascade apaga atribuições/períodos remanescentes
+    console.log(`Migração: template "Demonstrativo Mensal" (escritório ${t.escritorio_id}) consolidado em "Relatório de Entradas/Saídas".`);
+  }
+} catch (e: any) { console.error("[migração demonstrativo->entradas_saidas]", e.message); }
 // Acha os tipos que o texto do PDF menciona — pode achar mais de um (ex.: um PDF que já vem com
 // Balanço + DRE juntos); nesse caso o pipeline anexa em CADA template que bateu.
 // O nome do arquivo que o Domínio gera já começa pelo tipo ("comparativo_17_...", "Balancete ...") e é mais
@@ -9270,11 +9298,12 @@ const TEMPLATES_RELATORIOS_DOMINIO = new Set(Object.values(DOM_REL_TEMPLATE_NOME
 // arquivado também como Balancete. Sem prefixo reconhecível, cai pro texto.
 function domRelTipoPeloNome(nome: string): DomRelTipo | null {
   const limpo = nome.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z_]/g, "");
-  // O robô do Demonstrativo Mensal nomeia "Demonstrativo_Mensal_<cod>_..." → prefixo "demonstrativo".
+  // O robô do Demonstrativo Mensal nomeia "Demonstrativo_Mensal_<cod>_..." → arquivado como
+  // "Relatório de Entradas/Saídas" (tipo entradas_saidas), a pedido.
   const m = /^(balancete|balanco|dre|faturamento|razao|comparativo|programacao|demonstrativo)/.exec(limpo);
   if (!m) return null;
   if (m[1] === "programacao") return "programacao_ferias";
-  if (m[1] === "demonstrativo") return "demonstrativo_mensal";
+  if (m[1] === "demonstrativo") return "entradas_saidas";
   return m[1] as DomRelTipo;
 }
 function domRelClassificarTipos(texto: string): DomRelTipo[] {
@@ -9288,7 +9317,7 @@ function domRelClassificarTipos(texto: string): DomRelTipo[] {
   // "Período:"/"C.N.P.J.:", nunca da palavra "social" logo depois.
   if (/raz[ãa]o(?!\s*social)/i.test(texto)) tipos.push("razao");
   if (/comparativo\s+(de\s+)?movimento|movimento\s+comparativo/i.test(texto)) tipos.push("comparativo");
-  if (/demonstrativo\s+mensal/i.test(texto) && /entradas\s*r\$/i.test(texto)) tipos.push("demonstrativo_mensal");
+  if (/demonstrativo\s+mensal/i.test(texto) && /entradas\s*r\$/i.test(texto)) tipos.push("entradas_saidas");
   if (/programa[çc][ãa]o\s+de\s+f[ée]rias/i.test(texto)) tipos.push("programacao_ferias");
   return tipos;
 }
@@ -15693,7 +15722,6 @@ function domRelTemplateNomesParaTipo(tipo: string): string[] {
   if (tipo === "faturamento") return ["Relação de Faturamento"];
   if (tipo === "razao") return ["Razão"];
   if (tipo === "comparativo") return ["Comparativo de Movimento"];
-  if (tipo === "demonstrativo_mensal") return ["Demonstrativo Mensal"];
   if (tipo === "entradas_saidas") return ["Relatório de Entradas/Saídas"];
   if (tipo === "programacao_ferias") return ["Programação de Férias"];
   return [];
