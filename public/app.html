@@ -14073,6 +14073,7 @@ async function abrirEmailExtratosPendenciasModal(){
 // pra salvar uma sessão aqui e reaproveitar depois num botão do site. Por isso a busca inteira
 // (login + guia de cada empresa marcada) roda de uma vez só, localmente, via "npm run fgts-login" —
 // esta tela só mostra como fazer isso e o resultado da última busca de cada empresa.
+let FGTS_BUSCA='';
 async function renderCfgFgtsDigital(box){
   const { items } = await api('/empresas');
   const marcadas = items.filter(e=>e.buscaFgts);
@@ -14118,9 +14119,13 @@ async function renderCfgFgtsDigital(box){
           </p>
         </div>
       ` : ''}
-      <div style="font-weight:600; font-size:13px; color:var(--ink-soft); margin:14px 0 6px;">Empresas marcadas ("Buscar Guia FGTS Digital" no cadastro)</div>
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin:14px 0 6px;">
+        <div style="font-weight:600; font-size:13px; color:var(--ink-soft);">Empresas marcadas ("Buscar Guia FGTS Digital" no cadastro)</div>
+        ${marcadas.length ? `<input id="fgtsBusca" class="inp" type="search" placeholder="Pesquisar empresa…" style="max-width:260px;" value="${esc(FGTS_BUSCA)}">` : ''}
+      </div>
       ${marcadas.length
-        ? `<table class="data-table"><thead><tr><th>Empresa</th><th>Última busca</th><th>Situação</th></tr></thead><tbody>${linhas}</tbody></table>`
+        ? `<table class="data-table" id="fgtsTabela"><thead><tr><th>Empresa</th><th>Última busca</th><th>Situação</th></tr></thead><tbody>${linhas}</tbody></table>
+           <div id="fgtsVazioBusca" class="empty-state" style="display:none;">Nenhuma empresa encontrada para a busca.</div>`
         : `<div class="empty-state">Nenhuma empresa marcada ainda — marque o checkbox no cadastro de cada empresa, aba Configurações.</div>`}
     </div>
   `;
@@ -14129,6 +14134,21 @@ async function renderCfgFgtsDigital(box){
     try{ const r = await api('/fgts/agente-tokens', { method:'DELETE' }); toast(r.revogadas ? 'Chaves revogadas.' : 'Você não tinha chaves ativas.','ok'); }
     catch(e){ toast(e.message,'err'); }
   });
+  // Busca local: filtra as linhas da tabela por nome, sem recarregar. FGTS_BUSCA mantém o texto entre re-renders.
+  const _fgtsBusca = document.getElementById('fgtsBusca');
+  if(_fgtsBusca){
+    const aplicar = ()=>{
+      const q = (FGTS_BUSCA||'').trim().toLowerCase();
+      const trs = box.querySelectorAll('#fgtsTabela tbody tr');
+      let vis = 0;
+      trs.forEach(tr=>{ const ok = !q || (tr.cells[0]?.textContent||'').toLowerCase().includes(q); tr.style.display = ok?'':'none'; if(ok) vis++; });
+      const vazio = document.getElementById('fgtsVazioBusca');
+      if(vazio) vazio.style.display = (trs.length && !vis) ? '' : 'none';
+    };
+    _fgtsBusca.addEventListener('input', ()=>{ FGTS_BUSCA = _fgtsBusca.value; aplicar(); });
+    aplicar();
+    if(FGTS_BUSCA){ _fgtsBusca.focus(); try{ _fgtsBusca.setSelectionRange(FGTS_BUSCA.length, FGTS_BUSCA.length); }catch(e){} }
+  }
 }
 
 let CFG_ASSINATURA_POLL = null;
