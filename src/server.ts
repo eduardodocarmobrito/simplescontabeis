@@ -2183,6 +2183,9 @@ try {
     );
   `);
   sqlite.prepare(`INSERT OR IGNORE INTO entradas_saidas_envio_config (id) VALUES (1)`).run();
+  // Alerta de faturamento: percentual (margem) em que a saída do mês deveria superar a entrada.
+  // saída esperada = entrada / (1 - margem/100). Mês que não atingir vira alerta na coluna/relatório.
+  { const c = sqlite.prepare(`PRAGMA table_info(entradas_saidas_ajuste)`).all() as any[]; if (!c.some((x) => x.name === "margem_pct")) sqlite.exec(`ALTER TABLE entradas_saidas_ajuste ADD COLUMN margem_pct REAL NOT NULL DEFAULT 0`); }
 }
 // Limpeza: fgts_sync_jobs foi criada numa primeira versão que salvava a sessão do FGTS Digital no
 // servidor pra reaproveitar depois — testando ao vivo, confirmamos que essa sessão não sobrevive
@@ -10110,13 +10113,16 @@ async function entradasSaidasReprocessarExistentes(escritorioId: number): Promis
   }
   return n;
 }
-// Aplica o ajuste (somar valor por coluna) e recalcula Acumulados + totais.
-function entradasSaidasComAjuste(meses: any[], aj: { entradas: number; saidas: number; servicos: number }) {
+// Aplica o ajuste (somar valor por coluna) e recalcula Acumulados + totais. Com margemPct > 0, calcula
+// a saída esperada do mês (entrada / (1 - margem/100)) e marca alerta se a saída real não atingir.
+function entradasSaidasComAjuste(meses: any[], aj: { entradas: number; saidas: number; servicos: number }, margemPct = 0) {
   let accE = 0, accS = 0, accSv = 0;
+  const m100 = margemPct > 0 && margemPct < 100 ? margemPct / 100 : 0;
   const linhas = meses.map((m) => {
     const e = (m.entradas || 0) + (aj.entradas || 0), s = (m.saidas || 0) + (aj.saidas || 0), sv = (m.servicos || 0) + (aj.servicos || 0);
     accE += e; accS += s; accSv += sv;
-    return { ano: m.ano, mes: m.mes, entradas: e, saidas: s, servicos: sv, accE, accS, accSv };
+    const esperada = m100 && e > 0 ? e / (1 - m100) : null;
+    return { ano: m.ano, mes: m.mes, entradas: e, saidas: s, servicos: sv, accE, accS, accSv, esperada, alerta: esperada != null && s < esperada };
   });
   return { linhas, totais: { entradas: accE, saidas: accS, servicos: accSv } };
 }
@@ -10142,13 +10148,18 @@ const ES_PDF_CSS = `
   tr.tot td{font-weight:700; border-top:1px solid #cfd8d3; background:#fbfdfc;}
 `;
 function esBlocoEmpresaHtml(empNome: string, subEmpresa: string, meses: any[], aj: any): string {
-  const { linhas, totais } = entradasSaidasComAjuste(meses, { entradas: aj.aj_entradas || 0, saidas: aj.aj_saidas || 0, servicos: aj.aj_servicos || 0 });
-  const row = (l: any) => `<tr><td>${ES_MES_NOME[l.mes]}</td><td>${l.ano}</td><td class="num">${esFmtBR(l.entradas)}</td><td class="num">${esFmtBR(l.saidas)}</td><td class="num">${esFmtBR(l.servicos)}</td><td class="num">${esFmtBR(l.accE)}</td><td class="num">${esFmtBR(l.accS)}</td><td class="num">${esFmtBR(l.accSv)}</td></tr>`;
+  const margem = Number(aj.margem_pct) || 0;
+  const { linhas, totais } = entradasSaidasComAjuste(meses, { entradas: aj.aj_entradas || 0, saidas: aj.aj_saidas || 0, servicos: aj.aj_servicos || 0 }, margem);
+  const alertaCell = (l: any) => l.esperada == null ? "—" : (l.alerta ? `<span style="color:#c0392b; font-weight:600;">R$ ${esFmtBR(l.esperada)}</span>` : `<span style="color:#1f8a52;">✓</span>`);
+  const colA = margem > 0 ? `<col style="width:15%">` : "", thA = margem > 0 ? `<th class="num">Alerta p/ faturamento</th>` : "", tdA = (l: any) => margem > 0 ? `<td class="num">${alertaCell(l)}</td>` : "";
+  const row = (l: any) => `<tr><td>${ES_MES_NOME[l.mes]}</td><td>${l.ano}</td><td class="num">${esFmtBR(l.entradas)}</td><td class="num">${esFmtBR(l.saidas)}</td><td class="num">${esFmtBR(l.servicos)}</td><td class="num">${esFmtBR(l.accE)}</td><td class="num">${esFmtBR(l.accS)}</td><td class="num">${esFmtBR(l.accSv)}</td>${tdA(l)}</tr>`;
+  const legenda = margem > 0 ? `<p style="font-size:9.5px; color:#8a938d; margin:5px 0 0;">Alerta p/ faturamento: a saída do mês deveria ser pelo menos <b>entrada ÷ ${(1 - margem / 100).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</b> (${esFmtBR(margem)}%). Em vermelho = valor que deveria ter faturado; ✓ = atingiu.</p>` : "";
   return `<div class="empresa">
       <div class="empresa-topo"><span class="empresa-nome">${escHtmlRelatorio(empNome)}</span><span class="empresa-sub">${escHtmlRelatorio(subEmpresa)}</span></div>
-      <table><colgroup><col style="width:11%"><col style="width:7%"><col style="width:14%"><col style="width:13%"><col style="width:13%"><col style="width:14%"><col style="width:14%"><col style="width:14%"></colgroup>
-      <thead><tr><th>Mês</th><th>Ano</th><th class="num">Entradas R$</th><th class="num">Saídas R$</th><th class="num">Serviços R$</th><th class="num">Acum. Entradas</th><th class="num">Acum. Saídas</th><th class="num">Acum. Serviços</th></tr></thead>
-      <tbody>${linhas.map(row).join("")}<tr class="tot"><td>Totais</td><td></td><td class="num">${esFmtBR(totais.entradas)}</td><td class="num">${esFmtBR(totais.saidas)}</td><td class="num">${esFmtBR(totais.servicos)}</td><td></td><td></td><td></td></tr></tbody></table>
+      <table><colgroup><col style="width:10%"><col style="width:6%"><col style="width:13%"><col style="width:12%"><col style="width:12%"><col style="width:13%"><col style="width:13%"><col style="width:13%">${colA}</colgroup>
+      <thead><tr><th>Mês</th><th>Ano</th><th class="num">Entradas R$</th><th class="num">Saídas R$</th><th class="num">Serviços R$</th><th class="num">Acum. Entradas</th><th class="num">Acum. Saídas</th><th class="num">Acum. Serviços</th>${thA}</tr></thead>
+      <tbody>${linhas.map(row).join("")}<tr class="tot"><td>Totais</td><td></td><td class="num">${esFmtBR(totais.entradas)}</td><td class="num">${esFmtBR(totais.saidas)}</td><td class="num">${esFmtBR(totais.servicos)}</td><td></td><td></td><td></td>${margem > 0 ? "<td></td>" : ""}</tr></tbody></table>
+      ${legenda}
     </div>`;
 }
 function esSubEmpresa(emp: any, meta: any): string {
@@ -10187,12 +10198,12 @@ app.get("/api/entradas-saidas/estado", blockCliente, requirePermissao("relatorio
   if (req.query.reler === "1" || !temDados) { try { await entradasSaidasReprocessarExistentes(esc); } catch (e: any) { console.error("[entradas-saidas] reprocessar:", e.message); } }
   const visiveis = empresasVisiveis(user);
   const empNome = new Map((sqlite.prepare(`SELECT id, nome FROM empresas WHERE escritorio_id = ? AND ativo = 1`).all(esc) as any[]).map((e) => [e.id, e.nome]));
-  const ajMap = new Map((sqlite.prepare(`SELECT empresa_id, aj_entradas, aj_saidas, aj_servicos FROM entradas_saidas_ajuste WHERE escritorio_id = ?`).all(esc) as any[]).map((a) => [a.empresa_id, a]));
+  const ajMap = new Map((sqlite.prepare(`SELECT empresa_id, aj_entradas, aj_saidas, aj_servicos, margem_pct FROM entradas_saidas_ajuste WHERE escritorio_id = ?`).all(esc) as any[]).map((a) => [a.empresa_id, a]));
   const porEmp: Record<number, any> = {};
   for (const m of sqlite.prepare(`SELECT empresa_id, periodo_ini, periodo_fim, atualizado_em FROM entradas_saidas_meta WHERE escritorio_id = ?`).all(esc) as any[]) {
     if (!empNome.has(m.empresa_id) || (visiveis && !visiveis.includes(m.empresa_id))) continue;
     const aj = ajMap.get(m.empresa_id) || {};
-    porEmp[m.empresa_id] = { empresaId: m.empresa_id, nome: empNome.get(m.empresa_id), periodoIni: m.periodo_ini, periodoFim: m.periodo_fim, atualizadoEm: m.atualizado_em, ajuste: { entradas: aj.aj_entradas || 0, saidas: aj.aj_saidas || 0, servicos: aj.aj_servicos || 0 }, meses: [] as any[] };
+    porEmp[m.empresa_id] = { empresaId: m.empresa_id, nome: empNome.get(m.empresa_id), periodoIni: m.periodo_ini, periodoFim: m.periodo_fim, atualizadoEm: m.atualizado_em, ajuste: { entradas: aj.aj_entradas || 0, saidas: aj.aj_saidas || 0, servicos: aj.aj_servicos || 0, margemPct: aj.margem_pct || 0 }, meses: [] as any[] };
   }
   for (const d of sqlite.prepare(`SELECT empresa_id, ano, mes, entradas, saidas, servicos FROM entradas_saidas_dados WHERE escritorio_id = ? ORDER BY ano, mes`).all(esc) as any[])
     if (porEmp[d.empresa_id]) porEmp[d.empresa_id].meses.push({ ano: d.ano, mes: d.mes, mesNome: ES_MES_NOME[d.mes], entradas: d.entradas, saidas: d.saidas, servicos: d.servicos });
@@ -10205,9 +10216,10 @@ app.post("/api/entradas-saidas/ajuste", blockCliente, requirePermissao("relatori
   const empresaId = Number(req.body?.empresaId);
   if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
   const num = (v: any) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
-  sqlite.prepare(`INSERT INTO entradas_saidas_ajuste (empresa_id, escritorio_id, aj_entradas, aj_saidas, aj_servicos, atualizado_em) VALUES (?, ?, ?, ?, ?, datetime('now'))
-    ON CONFLICT(empresa_id) DO UPDATE SET aj_entradas = excluded.aj_entradas, aj_saidas = excluded.aj_saidas, aj_servicos = excluded.aj_servicos, atualizado_em = datetime('now')`)
-    .run(empresaId, esc, num(req.body?.entradas), num(req.body?.saidas), num(req.body?.servicos));
+  const margem = Math.min(99.99, Math.max(0, num(req.body?.margemPct)));
+  sqlite.prepare(`INSERT INTO entradas_saidas_ajuste (empresa_id, escritorio_id, aj_entradas, aj_saidas, aj_servicos, margem_pct, atualizado_em) VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(empresa_id) DO UPDATE SET aj_entradas = excluded.aj_entradas, aj_saidas = excluded.aj_saidas, aj_servicos = excluded.aj_servicos, margem_pct = excluded.margem_pct, atualizado_em = datetime('now')`)
+    .run(empresaId, esc, num(req.body?.entradas), num(req.body?.saidas), num(req.body?.servicos), margem);
   res.json({ ok: true });
 });
 app.get("/api/entradas-saidas/:empresaId/pdf", blockCliente, requirePermissao("relatorios", "visualizar"), async (req, res) => {
@@ -10217,7 +10229,7 @@ app.get("/api/entradas-saidas/:empresaId/pdf", blockCliente, requirePermissao("r
   const emp = sqlite.prepare(`SELECT nome, cnpj, endereco, cidade, cep FROM empresas WHERE id = ? AND escritorio_id = ?`).get(empresaId, esc) as any;
   const meta = sqlite.prepare(`SELECT periodo_ini, periodo_fim FROM entradas_saidas_meta WHERE empresa_id = ?`).get(empresaId) as any;
   const meses = sqlite.prepare(`SELECT ano, mes, entradas, saidas, servicos FROM entradas_saidas_dados WHERE empresa_id = ? ORDER BY ano, mes`).all(empresaId) as any[];
-  const aj = (sqlite.prepare(`SELECT aj_entradas, aj_saidas, aj_servicos FROM entradas_saidas_ajuste WHERE empresa_id = ?`).get(empresaId) as any) || { aj_entradas: 0, aj_saidas: 0, aj_servicos: 0 };
+  const aj = (sqlite.prepare(`SELECT aj_entradas, aj_saidas, aj_servicos, margem_pct FROM entradas_saidas_ajuste WHERE empresa_id = ?`).get(empresaId) as any) || { aj_entradas: 0, aj_saidas: 0, aj_servicos: 0, margem_pct: 0 };
   if (!emp || !meses.length) return res.status(404).send("Sem dados de Entradas/Saídas pra esta empresa.");
   try {
     const pdf = await entradasSaidasGerarPdf(esc, emp, meta, meses, aj);
@@ -10231,7 +10243,7 @@ app.get("/api/entradas-saidas/pdf-todas", blockCliente, requirePermissao("relato
   const user = (req as any).user; const esc = user.escritorioId;
   const visiveis = empresasVisiveis(user);
   const empMap = new Map((sqlite.prepare(`SELECT id, nome, cnpj FROM empresas WHERE escritorio_id = ? AND ativo = 1`).all(esc) as any[]).map((e) => [e.id, e]));
-  const ajMap = new Map((sqlite.prepare(`SELECT empresa_id, aj_entradas, aj_saidas, aj_servicos FROM entradas_saidas_ajuste WHERE escritorio_id = ?`).all(esc) as any[]).map((a) => [a.empresa_id, a]));
+  const ajMap = new Map((sqlite.prepare(`SELECT empresa_id, aj_entradas, aj_saidas, aj_servicos, margem_pct FROM entradas_saidas_ajuste WHERE escritorio_id = ?`).all(esc) as any[]).map((a) => [a.empresa_id, a]));
   const lista: any[] = [];
   for (const m of sqlite.prepare(`SELECT empresa_id, periodo_ini, periodo_fim FROM entradas_saidas_meta WHERE escritorio_id = ?`).all(esc) as any[]) {
     if (!empMap.has(m.empresa_id) || (visiveis && !visiveis.includes(m.empresa_id))) continue;
@@ -10269,7 +10281,7 @@ async function entradasSaidasEnviarEmpresa(escritorioId: number, empresaId: numb
   const meses = sqlite.prepare(`SELECT ano, mes, entradas, saidas, servicos FROM entradas_saidas_dados WHERE empresa_id = ? ORDER BY ano, mes`).all(empresaId) as any[];
   if (!emp || !meses.length) return { ok: false, erro: "Sem dados de Entradas/Saídas pra esta empresa." };
   const meta = sqlite.prepare(`SELECT periodo_ini, periodo_fim FROM entradas_saidas_meta WHERE empresa_id = ?`).get(empresaId) as any;
-  const aj = (sqlite.prepare(`SELECT aj_entradas, aj_saidas, aj_servicos FROM entradas_saidas_ajuste WHERE empresa_id = ?`).get(empresaId) as any) || { aj_entradas: 0, aj_saidas: 0, aj_servicos: 0 };
+  const aj = (sqlite.prepare(`SELECT aj_entradas, aj_saidas, aj_servicos, margem_pct FROM entradas_saidas_ajuste WHERE empresa_id = ?`).get(empresaId) as any) || { aj_entradas: 0, aj_saidas: 0, aj_servicos: 0, margem_pct: 0 };
   const pdf = await entradasSaidasGerarPdf(escritorioId, emp, meta, meses, aj);
   const nomeArquivo = `Relatorio de Entradas-Saidas - ${emp.nome}.pdf`.replace(/[\\/:*?"<>|]/g, "");
   const emails = sqlite.prepare(`SELECT email FROM empresa_contatos WHERE empresa_id = ? AND receber_emails = 1 AND email IS NOT NULL AND email != ''`).all(empresaId) as any[];

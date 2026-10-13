@@ -12037,7 +12037,7 @@ async function entradasSaidasMontar(box){
   }
   const listaEl = document.getElementById('esLista');
   const detalheEl = document.getElementById('esDetalhe');
-  function comAjuste(meses, aj){ let aE=0,aS=0,aV=0; return meses.map(m=>{ const e=(m.entradas||0)+(aj.entradas||0), s=(m.saidas||0)+(aj.saidas||0), v=(m.servicos||0)+(aj.servicos||0); aE+=e;aS+=s;aV+=v; return {mesNome:m.mesNome, ano:m.ano, e,s,v, aE,aS,aV}; }); }
+  function comAjuste(meses, aj, margem){ let aE=0,aS=0,aV=0; const m100=(margem>0&&margem<100)?margem/100:0; return meses.map(m=>{ const e=(m.entradas||0)+(aj.entradas||0), s=(m.saidas||0)+(aj.saidas||0), v=(m.servicos||0)+(aj.servicos||0); aE+=e;aS+=s;aV+=v; const esperada=(m100&&e>0)?e/(1-m100):null; return {mesNome:m.mesNome, ano:m.ano, e,s,v, aE,aS,aV, esperada, alerta:(esperada!=null&&s<esperada)}; }); }
   function desenhaLista(){
     if(!listaEl) return;
     const termo = normalizaTxt(ES_BUSCA).trim();
@@ -12057,24 +12057,27 @@ async function entradasSaidasMontar(box){
           <div class="field" style="margin:0;"><label>Somar em Entradas R$</label><input type="text" inputmode="numeric" id="esAjE" value="${e.ajuste.entradas? esFmtMoney(e.ajuste.entradas):''}" placeholder="R$ 0,00" style="width:140px;"></div>
           <div class="field" style="margin:0;"><label>Somar em Saídas R$</label><input type="text" inputmode="numeric" id="esAjS" value="${e.ajuste.saidas? esFmtMoney(e.ajuste.saidas):''}" placeholder="R$ 0,00" style="width:140px;"></div>
           <div class="field" style="margin:0;"><label>Somar em Serviços R$</label><input type="text" inputmode="numeric" id="esAjV" value="${e.ajuste.servicos? esFmtMoney(e.ajuste.servicos):''}" placeholder="R$ 0,00" style="width:140px;"></div>
+          <div class="field" style="margin:0;"><label title="Saída esperada = entrada ÷ (1 − %/100). O mês cuja saída não atingir vira alerta.">Saída deve superar entrada (%)</label><input type="number" step="0.01" min="0" max="99" id="esMargem" value="${e.ajuste.margemPct||''}" placeholder="ex.: 20" style="width:110px;"></div>
           <button class="btn primary" id="esSalvarAj">Salvar ajuste</button>
           <button class="btn" id="esPdf">📄 Gerar PDF ajustado</button>
           ${podeEditarES?`<button class="btn" id="esEnviar" title="Salva o ajuste e manda o PDF pros contatos (e-mail/WhatsApp) desta empresa.">📤 Enviar agora</button>`:''}
         </div>
         <div class="card" style="padding:0; overflow-x:auto; margin-bottom:0;"><table class="data-table" style="font-size:11.5px;">
-          <thead><tr><th>Mês</th><th>Ano</th><th style="text-align:right;">Entradas R$</th><th style="text-align:right;">Saídas R$</th><th style="text-align:right;">Serviços R$</th><th style="text-align:right;">Acum. Entradas</th><th style="text-align:right;">Acum. Saídas</th><th style="text-align:right;">Acum. Serviços</th></tr></thead>
+          <thead><tr><th>Mês</th><th>Ano</th><th style="text-align:right;">Entradas R$</th><th style="text-align:right;">Saídas R$</th><th style="text-align:right;">Serviços R$</th><th style="text-align:right;">Acum. Entradas</th><th style="text-align:right;">Acum. Saídas</th><th style="text-align:right;">Acum. Serviços</th><th style="text-align:right;">Alerta p/ faturamento</th></tr></thead>
           <tbody id="esTabBody"></tbody></table></div>
         <p style="font-size:11.5px; color:var(--ink-soft); margin-top:8px;">O valor somado vale pra todos os meses e o Acumulado é refeito. "Gerar PDF" salva o ajuste e abre o PDF novo.</p>
       </div>`;
-    function lerAj(){ return { entradas:esParseMoney(document.getElementById('esAjE').value), saidas:esParseMoney(document.getElementById('esAjS').value), servicos:esParseMoney(document.getElementById('esAjV').value) }; }
+    function lerAj(){ return { entradas:esParseMoney(document.getElementById('esAjE').value), saidas:esParseMoney(document.getElementById('esAjS').value), servicos:esParseMoney(document.getElementById('esAjV').value), margemPct:Number(document.getElementById('esMargem').value)||0 }; }
+    const alertaTd = (l)=> l.esperada==null ? '<span style="color:var(--ink-soft);">—</span>' : (l.alerta ? `<span style="color:var(--danger,#c0392b); font-weight:600;" title="A saída do mês não atingiu o esperado — deveria faturar pelo menos esse valor.">R$ ${brNum(l.esperada)}</span>` : '<span style="color:#1f8a52;">✓</span>');
     function renderTab(){
       const aj = lerAj();
-      const linhas = comAjuste(e.meses, aj);
+      const linhas = comAjuste(e.meses, aj, aj.margemPct);
       const tot = linhas.reduce((t,l)=>{ t.e+=l.e; t.s+=l.s; t.v+=l.v; return t; }, {e:0,s:0,v:0});
-      document.getElementById('esTabBody').innerHTML = linhas.map(l=>`<tr><td>${esc(l.mesNome)}</td><td>${l.ano}</td><td style="text-align:right;">${brNum(l.e)}</td><td style="text-align:right;">${brNum(l.s)}</td><td style="text-align:right;">${brNum(l.v)}</td><td style="text-align:right;">${brNum(l.aE)}</td><td style="text-align:right;">${brNum(l.aS)}</td><td style="text-align:right;">${brNum(l.aV)}</td></tr>`).join('')
-        + `<tr style="font-weight:600; border-top:2px solid var(--rule);"><td>Totais</td><td></td><td style="text-align:right;">${brNum(tot.e)}</td><td style="text-align:right;">${brNum(tot.s)}</td><td style="text-align:right;">${brNum(tot.v)}</td><td></td><td></td><td></td></tr>`;
+      document.getElementById('esTabBody').innerHTML = linhas.map(l=>`<tr><td>${esc(l.mesNome)}</td><td>${l.ano}</td><td style="text-align:right;">${brNum(l.e)}</td><td style="text-align:right;">${brNum(l.s)}</td><td style="text-align:right;">${brNum(l.v)}</td><td style="text-align:right;">${brNum(l.aE)}</td><td style="text-align:right;">${brNum(l.aS)}</td><td style="text-align:right;">${brNum(l.aV)}</td><td style="text-align:right;">${alertaTd(l)}</td></tr>`).join('')
+        + `<tr style="font-weight:600; border-top:2px solid var(--rule);"><td>Totais</td><td></td><td style="text-align:right;">${brNum(tot.e)}</td><td style="text-align:right;">${brNum(tot.s)}</td><td style="text-align:right;">${brNum(tot.v)}</td><td></td><td></td><td></td><td></td></tr>`;
     }
     ['esAjE','esAjS','esAjV'].forEach(id=>document.getElementById(id).addEventListener('input', (ev)=>{ esMaskMoney(ev.target); renderTab(); }));
+    document.getElementById('esMargem').addEventListener('input', renderTab);
     renderTab();
     async function salvar(){ const aj=lerAj(); await api('/entradas-saidas/ajuste',{ method:'POST', body:{ empresaId:e.empresaId, ...aj } }); e.ajuste=aj; }
     document.getElementById('esSalvarAj').addEventListener('click', async ()=>{ try{ await salvar(); toast('Ajuste salvo.','ok'); }catch(err){ toast(err.message,'err'); } });
