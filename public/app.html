@@ -4657,7 +4657,7 @@ function envioModeloModal(t){
 
 // Sobrevive a sair e voltar pra essa tela (abrir grade, salvar atribuição, excluir) — sem isso a
 // busca "msm" digitada some toda vez que o usuário volta do "Abrir grade", obrigando a redigitar.
-const ENVIO_ATRIB_FILTRO = { texto:'', modeloId:'' };
+const ENVIO_ATRIB_FILTRO = { texto:'', modeloIds:[] };
 async function renderEnvioAtribuicoes(){
   const podePostar = can('envio','postar');
   const podeEditar = can('envio','editar');
@@ -4666,15 +4666,26 @@ async function renderEnvioAtribuicoes(){
   ]);
   const ehAdmin = STATE.user.perfil==='Administrador';
   const box = document.getElementById('envioContent');
+  const modeloItensFiltro = [...templates].sort((a,b)=>a.nome.localeCompare(b.nome)).map(t=>({id:String(t.id), label:t.nome}));
+  const rotuloModelos = ()=>{ const n=ENVIO_ATRIB_FILTRO.modeloIds.length; return n===0?'Todos os modelos':(n===1?(modeloItensFiltro.find(t=>t.id===ENVIO_ATRIB_FILTRO.modeloIds[0])?.label||'1 modelo'):n+' modelos selecionados'); };
   box.innerHTML = `
     <div class="row" style="margin-bottom:14px; gap:8px;">
       ${podePostar?`<button class="btn primary" id="btnNovaEnvioAtrib">+ Atribuir modelo a uma empresa</button>`:''}
       ${ehAdmin?`<button class="btn" id="btnRolloverAno" title="Toda virada de ano (1º de janeiro) isso já roda sozinho — use aqui só se quiser adiantar ou como reforço.">Gerar grade do ano novo pra todo mundo</button>`:''}
       ${ehAdmin?`<button class="btn" id="btnPonteDiag" title="Documentos lidos pela pasta (DP/RH e CRM) que NÃO ficaram anexados na grade — ex.: lidos antes da ponte existir ou sem empresa no momento da leitura.">🔎 Documentos não anexados (DP/RH)</button>`:''}
     </div>
-    <div class="row" style="gap:8px; margin-bottom:10px;">
-      <div class="field" style="max-width:360px; margin-bottom:0;"><input type="text" id="envioAtribFiltro" placeholder="Buscar por empresa…" autocomplete="off" value="${esc(ENVIO_ATRIB_FILTRO.texto)}"></div>
-      <div class="field" style="max-width:260px; margin-bottom:0;">${comboSelectHtml('envioAtribModeloFiltro', 'Todos os modelos')}</div>
+    <div class="row" style="gap:8px; margin-bottom:10px; align-items:flex-start;">
+      <div class="field" style="flex:1; min-width:320px; max-width:560px; margin-bottom:0;"><input type="text" id="envioAtribFiltro" placeholder="Buscar por empresa…" autocomplete="off" value="${esc(ENVIO_ATRIB_FILTRO.texto)}"></div>
+      <div class="field" style="min-width:260px; margin-bottom:0; position:relative;">
+        <div id="envioModeloBtn" class="combo-input" style="cursor:pointer; user-select:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:flex; justify-content:space-between; gap:8px;"><span id="envioModeloRotulo">${esc(rotuloModelos())}</span><span style="opacity:.5;">▾</span></div>
+        <div id="envioModeloPanel" style="display:none; position:absolute; z-index:60; top:calc(100% + 4px); left:0; min-width:300px; max-width:440px; background:var(--surface); border:1px solid var(--rule); border-radius:10px; box-shadow:0 8px 28px rgba(0,0,0,.14); padding:8px;">
+          <input type="text" id="envioModeloBusca" class="combo-input" placeholder="Filtrar modelos…" autocomplete="off" style="width:100%; margin-bottom:6px;">
+          <div id="envioModeloLista" style="max-height:280px; overflow:auto;">
+            ${modeloItensFiltro.map(t=>`<label class="checklist-item envioModeloLinha" data-nome="${esc(normalizaTxt(t.label))}"><input type="checkbox" class="envioModeloChk" value="${t.id}" ${ENVIO_ATRIB_FILTRO.modeloIds.includes(t.id)?'checked':''}><span>${esc(t.label)}</span></label>`).join('')}
+          </div>
+          <div class="row" style="justify-content:space-between; margin-top:6px; gap:8px;"><button type="button" class="btn small" id="envioModeloLimpar">Limpar</button><button type="button" class="btn small" id="envioModeloFechar">Fechar</button></div>
+        </div>
+      </div>
     </div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
@@ -4684,11 +4695,12 @@ async function renderEnvioAtribuicoes(){
     </div>
   `;
   const envioAtribBody = document.getElementById('envioAtribBody');
-  function desenhaEnvioAtribs(filtro, modeloId){
+  function desenhaEnvioAtribs(filtro, modeloIds){
+    modeloIds = modeloIds || [];
     const termo = normalizaTxt(filtro).trim();
     const visiveis = atribs.filter(a=>
       (!termo || normalizaTxt(a.empresaNome).includes(termo)) &&
-      (!modeloId || String(a.template_id)===String(modeloId))
+      (!modeloIds.length || modeloIds.includes(String(a.template_id)))
     );
     envioAtribBody.innerHTML = visiveis.length? visiveis.map(a=>`
       <tr data-id="${a.id}" class="linha-clicavel" style="cursor:pointer; ${a.pendentesCliente? 'background:var(--accent-pale);':''}">
@@ -4703,7 +4715,7 @@ async function renderEnvioAtribuicoes(){
             : ''}
         </td>
       </tr>
-    `).join('') : `<tr><td colspan="4"><div class="empty-state">${termo||modeloId?'Nenhum resultado com esse filtro.':'Nenhum envio atribuído ainda.'}</div></td></tr>`;
+    `).join('') : `<tr><td colspan="4"><div class="empty-state">${termo||modeloIds.length?'Nenhum resultado com esse filtro.':'Nenhum envio atribuído ainda.'}</div></td></tr>`;
     envioAtribBody.querySelectorAll('tr.linha-clicavel').forEach(tr=>tr.addEventListener('click', e=>{
       if(e.target.closest('button')) return;
       abrirEnvioGrade(Number(tr.dataset.id), false);
@@ -4720,26 +4732,22 @@ async function renderEnvioAtribuicoes(){
       catch(err){ toast(err.message,'err'); }
     }));
   }
-  desenhaEnvioAtribs(ENVIO_ATRIB_FILTRO.texto, ENVIO_ATRIB_FILTRO.modeloId);
+  desenhaEnvioAtribs(ENVIO_ATRIB_FILTRO.texto, ENVIO_ATRIB_FILTRO.modeloIds);
   const atualizaFiltroEnvio = ()=>{
     ENVIO_ATRIB_FILTRO.texto = document.getElementById('envioAtribFiltro').value;
-    desenhaEnvioAtribs(ENVIO_ATRIB_FILTRO.texto, ENVIO_ATRIB_FILTRO.modeloId);
+    desenhaEnvioAtribs(ENVIO_ATRIB_FILTRO.texto, ENVIO_ATRIB_FILTRO.modeloIds);
   };
   document.getElementById('envioAtribFiltro').addEventListener('input', atualizaFiltroEnvio);
-  const modeloItensFiltro = [...templates].sort((a,b)=>a.nome.localeCompare(b.nome)).map(t=>({id:t.id, label:t.nome}));
-  setupComboSelect('envioAtribModeloFiltro', modeloItensFiltro, (id)=>{
-    ENVIO_ATRIB_FILTRO.modeloId = id || '';
-    atualizaFiltroEnvio();
-  });
-  // Restaura o modelo marcado antes de sair da tela (igual já fazia com o texto da busca).
-  if(ENVIO_ATRIB_FILTRO.modeloId){
-    const itemAtual = modeloItensFiltro.find(t=>String(t.id)===String(ENVIO_ATRIB_FILTRO.modeloId));
-    if(itemAtual){
-      const root = document.getElementById('envioAtribModeloFiltro');
-      root.querySelector('.combo-input').value = itemAtual.label;
-      root.querySelector('.combo-value').value = itemAtual.id;
-    }
-  }
+  // Filtro de modelos com MÚLTIPLA seleção (dropdown de checkboxes).
+  const mBtn = document.getElementById('envioModeloBtn'), mPanel = document.getElementById('envioModeloPanel'), mRotulo = document.getElementById('envioModeloRotulo');
+  const fecharModeloPanel = ()=>{ mPanel.style.display='none'; document.removeEventListener('click', onDocClickModelo, true); };
+  function onDocClickModelo(ev){ if(!mPanel.contains(ev.target) && !mBtn.contains(ev.target)) fecharModeloPanel(); }
+  mBtn.addEventListener('click', ()=>{ const abrir = mPanel.style.display==='none'; mPanel.style.display = abrir?'block':'none'; if(abrir){ document.addEventListener('click', onDocClickModelo, true); setTimeout(()=>document.getElementById('envioModeloBusca').focus(),0); } });
+  const aplicarModelos = ()=>{ ENVIO_ATRIB_FILTRO.modeloIds = [...document.querySelectorAll('.envioModeloChk:checked')].map(c=>c.value); mRotulo.textContent = rotuloModelos(); atualizaFiltroEnvio(); };
+  document.querySelectorAll('.envioModeloChk').forEach(c=>c.addEventListener('change', aplicarModelos));
+  document.getElementById('envioModeloBusca').addEventListener('input', (ev)=>{ const t=normalizaTxt(ev.target.value).trim(); document.querySelectorAll('.envioModeloLinha').forEach(l=>{ l.style.display = (!t || l.dataset.nome.includes(t))?'':'none'; }); });
+  document.getElementById('envioModeloLimpar').addEventListener('click', ()=>{ document.querySelectorAll('.envioModeloChk:checked').forEach(c=>c.checked=false); aplicarModelos(); });
+  document.getElementById('envioModeloFechar').addEventListener('click', fecharModeloPanel);
   if(podePostar) document.getElementById('btnNovaEnvioAtrib').addEventListener('click', ()=>novaEnvioAtribModal(empresas, templates));
   if(ehAdmin) document.getElementById('btnRolloverAno').addEventListener('click', async ()=>{
     const ano = prompt('Gerar a grade de qual ano pra todas as empresas? (só renova quem já tinha grade no ano anterior)', new Date().getFullYear()+1);
