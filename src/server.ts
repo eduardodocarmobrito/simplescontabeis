@@ -10187,6 +10187,21 @@ app.get("/api/entradas-saidas/:empresaId/pdf", blockCliente, requirePermissao("r
     res.end(pdf);
   } catch (e: any) { console.error("[entradas-saidas] gerar pdf:", e.message); res.status(500).send("Falha ao gerar o PDF."); }
 });
+// Diagnóstico: mostra o TEXTO real (pdf-parse) dos relatórios importados + quantas linhas de mês o
+// parser reconhece. Serve pra ajustar o regex quando o layout extraído difere do esperado.
+app.get("/api/entradas-saidas/diag", blockCliente, requireAdmin, async (req, res) => {
+  const esc = (req as any).user.escritorioId;
+  const docs = sqlite.prepare(`SELECT d.id, d.file_path as filePath, d.file_name as fileName, a.empresa_id as empresaId FROM envio_documentos d JOIN envio_periodos p ON p.id = d.periodo_id JOIN envio_atribuicoes a ON a.id = p.atribuicao_id JOIN envio_templates t ON t.id = a.template_id WHERE t.escritorio_id = ? AND t.nome = ? ORDER BY d.id DESC`).all(esc, DOM_REL_TEMPLATE_NOME.entradas_saidas) as any[];
+  const reMes = /^(janeiro|fevereiro|mar[çc]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\s+(\d{4})\s+(.+)$/i;
+  const out: any = { templateNome: DOM_REL_TEMPLATE_NOME.entradas_saidas, nDocs: docs.length, amostras: [] as any[] };
+  for (const d of docs.slice(0, 2)) {
+    const existe = !!(d.filePath && fs.existsSync(d.filePath));
+    let texto = "", linhasMatch = 0, erro: string | null = null;
+    if (existe) { try { texto = await obterTextoDoPdf(fs.readFileSync(d.filePath)); for (const ln of texto.split(/\r?\n/)) if (reMes.test(ln.trim())) linhasMatch++; } catch (e: any) { erro = e.message; } }
+    out.amostras.push({ id: d.id, empresaId: d.empresaId, fileName: d.fileName, existe, linhasMatch, erro, texto: texto.slice(0, 1800) });
+  }
+  res.json(out);
+});
 // Envia o PDF (ajustado) de Entradas/Saídas pros contatos da empresa (e-mail + WhatsApp). Mesma mecânica
 // do envio de Programação de Férias (ver enviarRelatorioEmpresa em ferias.ts).
 async function entradasSaidasEnviarEmpresa(escritorioId: number, empresaId: number, canal: any): Promise<{ ok: boolean; erro?: string }> {
