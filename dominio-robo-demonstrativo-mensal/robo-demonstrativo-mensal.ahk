@@ -277,24 +277,29 @@ LimparCampoNome() {
 
 NavegarAtePasta() {
     global THISPC_X, THISPC_Y
-    Click(THISPC_X . " " . THISPC_Y)   ; "This PC" (barra esquerda)
-    Sleep 4000
-    Send "+{Tab}"                      ; foca a lista
-    Sleep 4000
-    SelecionarPastaPorNome("client g")
-    SelecionarPastaPorNome("meu drive")
-    SelecionarPastaPorNome("relatorios dominio")
+    Logar("    nav: clicando This PC (" . THISPC_X . "," . THISPC_Y . ")")
+    Click(THISPC_X . " " . THISPC_Y)   ; "This PC" (barra esquerda) - reset de qualquer pasta
+    Sleep 4500
+    Send "+{Tab}"                      ; foca a lista de drives/pastas
+    Sleep 4500
+    ; "client g" e o ponto mais fragil: o streaming perde o 'g' e cai no "Client C" -> Recovery.
+    ; Digita BEM devagar (150ms/char) com folga antes/depois.
+    SelecionarPastaPorNome("client g", 150, 2000)
+    SelecionarPastaPorNome("meu drive", 90, 1500)
+    SelecionarPastaPorNome("relatorios dominio", 90, 1500)
+    Logar("    nav: terminou a navegacao")
 }
 
-SelecionarPastaPorNome(nome) {
-    Sleep 1200
+SelecionarPastaPorNome(nome, msPorChar := 90, folga := 1500) {
+    Sleep folga
     for ch in StrSplit(nome) {
         SendText ch
-        Sleep 80
+        Sleep msPorChar
     }
-    Sleep 1200
+    Sleep folga
     Send "{Enter}"
     Sleep 4000
+    Logar("    nav: '" . nome . "' -> Enter | SalvarPDF aberta: " . (WinExist("Salvar em PDF") ? "sim" : "NAO") . " | janelas: " . ListarJanelasDominio())
 }
 
 FecharPrevia() {
@@ -375,6 +380,10 @@ ProcessarEmpresa(codigo, compIni, compFim) {
         while (!WinExist("Salvar em PDF") && (A_TickCount - ini) < 20000)
             Sleep 500
     }
+    if WinExist("Salvar em PDF")
+        Logar("  Salvar em PDF ABRIU - navegando ate a pasta")
+    else
+        Logar("  AVISO: Salvar em PDF NAO detectada apos Ctrl+D - vou tentar navegar mesmo assim")
     Sleep 4000
     NavegarAtePasta()
     Sleep T_MEDIO
@@ -387,7 +396,9 @@ ProcessarEmpresa(codigo, compIni, compFim) {
     Click(CAMPO_NOME_X . " " . CAMPO_NOME_Y)
     Sleep 500
     LimparCampoNome()
-    DigitarTexto(MontarNome(codigo, compIni, compFim))
+    nomeArq := MontarNome(codigo, compIni, compFim)
+    Logar("    nav: digitando nome '" . nomeArq . "' | SalvarPDF aberta: " . (WinExist("Salvar em PDF") ? "sim" : "NAO"))
+    DigitarTexto(nomeArq)
     Sleep T_CURTO
     Send "{Enter}"
     Sleep T_CURTO
