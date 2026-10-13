@@ -12058,7 +12058,8 @@ async function entradasSaidasMontar(box){
           <div class="field" style="margin:0;"><label>Somar em Saídas R$</label><input type="text" inputmode="numeric" id="esAjS" value="${e.ajuste.saidas? esFmtMoney(e.ajuste.saidas):''}" placeholder="R$ 0,00" style="width:140px;"></div>
           <div class="field" style="margin:0;"><label>Somar em Serviços R$</label><input type="text" inputmode="numeric" id="esAjV" value="${e.ajuste.servicos? esFmtMoney(e.ajuste.servicos):''}" placeholder="R$ 0,00" style="width:140px;"></div>
           <div class="field" style="margin:0;"><label title="Saída esperada = entrada ÷ (1 − %/100). O mês cuja saída não atingir vira alerta.">Saída deve superar entrada (%)</label><input type="number" step="0.01" min="0" max="99" id="esMargem" value="${e.ajuste.margemPct||''}" placeholder="ex.: 20" style="width:110px;"></div>
-          <button class="btn primary" id="esSalvarAj">Salvar ajuste</button>
+          <button class="btn primary" id="esSalvarAj" disabled>Salvar ajuste</button>
+          <button class="btn" id="esCancelarAj" style="display:none;">Cancelar</button>
           <button class="btn" id="esPdf">📄 Gerar PDF ajustado</button>
           ${podeEditarES?`<button class="btn" id="esEnviar" title="Salva o ajuste e manda o PDF pros contatos (e-mail/WhatsApp) desta empresa.">📤 Enviar agora</button>`:''}
         </div>
@@ -12076,11 +12077,14 @@ async function entradasSaidasMontar(box){
       document.getElementById('esTabBody').innerHTML = linhas.map(l=>`<tr><td>${esc(l.mesNome)}</td><td>${l.ano}</td><td style="text-align:right;">${brNum(l.e)}</td><td style="text-align:right;">${brNum(l.s)}</td><td style="text-align:right;">${brNum(l.v)}</td><td style="text-align:right;">${brNum(l.aE)}</td><td style="text-align:right;">${brNum(l.aS)}</td><td style="text-align:right;">${brNum(l.aV)}</td><td style="text-align:right;">${alertaTd(l)}</td></tr>`).join('')
         + `<tr style="font-weight:600; border-top:2px solid var(--rule);"><td>Totais</td><td></td><td style="text-align:right;">${brNum(tot.e)}</td><td style="text-align:right;">${brNum(tot.s)}</td><td style="text-align:right;">${brNum(tot.v)}</td><td></td><td></td><td></td><td></td></tr>`;
     }
-    ['esAjE','esAjS','esAjV'].forEach(id=>document.getElementById(id).addEventListener('input', (ev)=>{ esMaskMoney(ev.target); renderTab(); }));
-    document.getElementById('esMargem').addEventListener('input', renderTab);
+    const esSalvarBtn = document.getElementById('esSalvarAj'), esCancelBtn = document.getElementById('esCancelarAj');
+    function marcarEditado(){ esSalvarBtn.disabled=false; esCancelBtn.style.display=''; }
+    ['esAjE','esAjS','esAjV'].forEach(id=>document.getElementById(id).addEventListener('input', (ev)=>{ esMaskMoney(ev.target); renderTab(); marcarEditado(); }));
+    document.getElementById('esMargem').addEventListener('input', ()=>{ renderTab(); marcarEditado(); });
     renderTab();
     async function salvar(){ const aj=lerAj(); await api('/entradas-saidas/ajuste',{ method:'POST', body:{ empresaId:e.empresaId, ...aj } }); e.ajuste=aj; }
-    document.getElementById('esSalvarAj').addEventListener('click', async ()=>{ try{ await salvar(); toast('Ajuste salvo.','ok'); }catch(err){ toast(err.message,'err'); } });
+    esSalvarBtn.addEventListener('click', async ()=>{ try{ await salvar(); toast('Ajuste salvo.','ok'); esSalvarBtn.disabled=true; esCancelBtn.style.display='none'; }catch(err){ toast(err.message,'err'); } });
+    esCancelBtn.addEventListener('click', ()=> desenhaDetalhe());
     document.getElementById('esPdf').addEventListener('click', async ()=>{ try{ await salvar(); window.open('/api/entradas-saidas/'+e.empresaId+'/pdf','_blank'); }catch(err){ toast(err.message,'err'); } });
     document.getElementById('esEnviar')?.addEventListener('click', async ()=>{
       if(!confirmar(`Salvar o ajuste e enviar o Relatório de Entradas/Saídas de "${e.nome}" pros contatos cadastrados (e-mail/WhatsApp)?`)) return;
