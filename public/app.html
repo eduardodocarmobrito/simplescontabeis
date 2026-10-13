@@ -11990,6 +11990,9 @@ async function entradasSaidasMontar(box){
   const env = r.envio||{ativo:false,diaMes:5,hora:8,minuto:0,ultimaCompetencia:null};
   const podeEditarES = can('relatorios','editar');
   const brNum = (n)=> (Number(n)||0).toLocaleString('pt-BR',{minimumFractionDigits:2, maximumFractionDigits:2});
+  const esFmtMoney = (n)=> 'R$ ' + brNum(n);
+  const esParseMoney = (str)=>{ const d = String(str).replace(/\D/g,''); return d ? Number(d)/100 : 0; };
+  const esMaskMoney = (el)=>{ const d = el.value.replace(/\D/g,''); el.value = d ? esFmtMoney(Number(d)/100) : ''; };
   box.innerHTML = `
     ${podeEditarES?`<div class="card" style="margin-bottom:12px;">
       <h3 style="margin-top:0;">📤 Envio automático mensal</h3>
@@ -12049,9 +12052,9 @@ async function entradasSaidasMontar(box){
         <h3 style="margin-top:0;">${esc(e.nome)}</h3>
         <p class="subtitle" style="margin:0 0 10px;">${e.periodoIni&&e.periodoFim?`Período: ${esc(e.periodoIni)} a ${esc(e.periodoFim)} · `:''}atualizado ${e.atualizadoEm?fmtDateHora(e.atualizadoEm):'—'}</p>
         <div class="row" style="gap:12px; align-items:flex-end; flex-wrap:wrap; margin-bottom:10px;">
-          <div class="field" style="margin:0;"><label>Somar em Entradas R$</label><input type="number" step="0.01" id="esAjE" value="${e.ajuste.entradas||''}" placeholder="0,00" style="width:130px;"></div>
-          <div class="field" style="margin:0;"><label>Somar em Saídas R$</label><input type="number" step="0.01" id="esAjS" value="${e.ajuste.saidas||''}" placeholder="0,00" style="width:130px;"></div>
-          <div class="field" style="margin:0;"><label>Somar em Serviços R$</label><input type="number" step="0.01" id="esAjV" value="${e.ajuste.servicos||''}" placeholder="0,00" style="width:130px;"></div>
+          <div class="field" style="margin:0;"><label>Somar em Entradas R$</label><input type="text" inputmode="numeric" id="esAjE" value="${e.ajuste.entradas? esFmtMoney(e.ajuste.entradas):''}" placeholder="R$ 0,00" style="width:140px;"></div>
+          <div class="field" style="margin:0;"><label>Somar em Saídas R$</label><input type="text" inputmode="numeric" id="esAjS" value="${e.ajuste.saidas? esFmtMoney(e.ajuste.saidas):''}" placeholder="R$ 0,00" style="width:140px;"></div>
+          <div class="field" style="margin:0;"><label>Somar em Serviços R$</label><input type="text" inputmode="numeric" id="esAjV" value="${e.ajuste.servicos? esFmtMoney(e.ajuste.servicos):''}" placeholder="R$ 0,00" style="width:140px;"></div>
           <button class="btn primary" id="esSalvarAj">Salvar ajuste</button>
           <button class="btn" id="esPdf">📄 Gerar PDF ajustado</button>
           ${podeEditarES?`<button class="btn" id="esEnviar" title="Salva o ajuste e manda o PDF pros contatos (e-mail/WhatsApp) desta empresa.">📤 Enviar agora</button>`:''}
@@ -12061,7 +12064,7 @@ async function entradasSaidasMontar(box){
           <tbody id="esTabBody"></tbody></table></div>
         <p style="font-size:11.5px; color:var(--ink-soft); margin-top:8px;">O valor somado vale pra todos os meses e o Acumulado é refeito. "Gerar PDF" salva o ajuste e abre o PDF novo.</p>
       </div>`;
-    function lerAj(){ return { entradas:Number(document.getElementById('esAjE').value)||0, saidas:Number(document.getElementById('esAjS').value)||0, servicos:Number(document.getElementById('esAjV').value)||0 }; }
+    function lerAj(){ return { entradas:esParseMoney(document.getElementById('esAjE').value), saidas:esParseMoney(document.getElementById('esAjS').value), servicos:esParseMoney(document.getElementById('esAjV').value) }; }
     function renderTab(){
       const aj = lerAj();
       const linhas = comAjuste(e.meses, aj);
@@ -12069,7 +12072,7 @@ async function entradasSaidasMontar(box){
       document.getElementById('esTabBody').innerHTML = linhas.map(l=>`<tr><td>${esc(l.mesNome)}</td><td>${l.ano}</td><td style="text-align:right;">${brNum(l.e)}</td><td style="text-align:right;">${brNum(l.s)}</td><td style="text-align:right;">${brNum(l.v)}</td><td style="text-align:right;">${brNum(l.e)}</td><td style="text-align:right;">${brNum(l.aE)}</td><td style="text-align:right;">${brNum(l.s)}</td><td style="text-align:right;">${brNum(l.aS)}</td><td style="text-align:right;">${brNum(l.v)}</td><td style="text-align:right;">${brNum(l.aV)}</td></tr>`).join('')
         + `<tr style="font-weight:600; border-top:2px solid var(--rule);"><td>Totais</td><td></td><td style="text-align:right;">${brNum(tot.e)}</td><td style="text-align:right;">${brNum(tot.s)}</td><td style="text-align:right;">${brNum(tot.v)}</td><td style="text-align:right;">${brNum(tot.e)}</td><td></td><td style="text-align:right;">${brNum(tot.s)}</td><td></td><td style="text-align:right;">${brNum(tot.v)}</td><td></td></tr>`;
     }
-    ['esAjE','esAjS','esAjV'].forEach(id=>document.getElementById(id).addEventListener('input', renderTab));
+    ['esAjE','esAjS','esAjV'].forEach(id=>document.getElementById(id).addEventListener('input', (ev)=>{ esMaskMoney(ev.target); renderTab(); }));
     renderTab();
     async function salvar(){ const aj=lerAj(); await api('/entradas-saidas/ajuste',{ method:'POST', body:{ empresaId:e.empresaId, ...aj } }); e.ajuste=aj; }
     document.getElementById('esSalvarAj').addEventListener('click', async ()=>{ try{ await salvar(); toast('Ajuste salvo.','ok'); }catch(err){ toast(err.message,'err'); } });
