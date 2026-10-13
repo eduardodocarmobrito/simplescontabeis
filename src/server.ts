@@ -5381,14 +5381,16 @@ app.post("/api/dominio-agent/comparativo-progresso", requireDominioAgent, (req, 
   // Terminou/parou (rodando=false): reseta o freio pra não afetar a próxima execução.
   if (!b.rodando) {
     sqlite.prepare(`UPDATE comparativo_robo_estado SET parar_em = NULL WHERE escritorio_id = 1`).run();
-    // Encadeamento: só dispara o Férias se o Comparativo estava mesmo rodando, terminou sozinho (não
-    // foi "Parar robô") e essa execução veio da AGENDA (nunca de um "Executar agora" manual — assim o
-    // teste passo a passo de cada robô continua isolado, sem efeito colateral). No máximo 1x por dia.
-    if (antes?.progRodando && !antes?.pararEm && antes?.ultimoMotivo === "agenda") {
+    // Encadeamento: dispara o Férias se o Comparativo estava mesmo rodando e terminou sozinho (não foi
+    // "Parar robô"). Vale pra AGENDA e pro "Executar agora" MANUAL — assim dá pra disparar a cadeia na mão.
+    const ehAgenda = antes?.ultimoMotivo === "agenda";
+    const ehManual = antes?.ultimoMotivo === "manual";
+    if (antes?.progRodando && !antes?.pararEm && (ehAgenda || ehManual)) {
       garantirFeriasEstado(1);
       const hojeSp = new Date(Date.now() - 3 * 3600 * 1000).toISOString().slice(0, 10);
       const f = sqlite.prepare(`SELECT encadeado_apos_comparativo AS encadeado, encadeado_ultimo_dia AS encadeadoUltimoDia FROM ferias_robo_estado WHERE escritorio_id = 1`).get() as any;
-      if (f?.encadeado && f.encadeadoUltimoDia !== hojeSp) {
+      // Agenda: no máximo 1x/dia (evita rodar 2x sem querer). Manual: sempre (foi clique explícito seu).
+      if (f?.encadeado && (ehManual || f.encadeadoUltimoDia !== hojeSp)) {
         sqlite.prepare(`UPDATE ferias_robo_estado SET run_now_em = datetime('now'), parar_em = NULL, encadeado_ultimo_dia = ? WHERE escritorio_id = 1`).run(hojeSp);
       }
     }
