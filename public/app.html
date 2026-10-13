@@ -7368,7 +7368,7 @@ async function pageIntegraContador(deepLinkEmpresaId){
       <label class="checkbox-row"><input type="checkbox" id="icAtivo" ${cfg.ativo?'checked':''} ${podeEditar?'':'disabled'}> Manter o Integra Contador ativo</label>
       ${cfg.ultimoErro?`<p style="color:var(--debit); font-size:12.5px;">Último erro: ${esc(cfg.ultimoErro)}</p>`:''}
       <div class="row" style="margin-top:8px;">
-        ${podeEditar?`<button class="btn primary" id="btnIcSalvarConfig">Salvar</button>`:''}
+        ${podeEditar?`<button class="btn primary" id="btnIcSalvarConfig" disabled>Salvar</button>`:''}
         ${podePostar?`<button class="btn" id="btnIcTestar" ${cfg.temCertificado&&cfg.consumerKey?'':'disabled'}>Testar conexão</button>`:''}
       </div>
       <div style="margin-top:18px; padding-top:14px; border-top:1px solid var(--rule);">
@@ -7404,6 +7404,7 @@ async function pageIntegraContador(deepLinkEmpresaId){
       }catch(e){ toast(e.message,'err'); }
       finally{ btn.disabled = false; btn.textContent = 'Salvar'; }
     });
+    if(podeEditar) habilitarSalvarAoMudar('btnIcSalvarConfig', ['icCnpj','icConsumerKey','icConsumerSecret','icCertSenha','icAtivo','icCertArquivo']);
     if(podeEditar){
       const boxHoras = document.getElementById('icAgendaHoras');
       document.getElementById('btnIcAgendaHora').addEventListener('click', ()=>{
@@ -14352,7 +14353,7 @@ async function renderCfgAssinaturaPlataforma(box){
         <div class="field grow"><label>E-mail (opcional)</label><input id="cfgFatEmail" type="email" value="${esc(dados.email||'')}"></div>
         <div class="field" style="width:200px;"><label>Telefone (opcional)</label><input id="cfgFatTelefone" value="${esc(dados.telefone||'')}"></div>
       </div>
-      <button class="btn" id="btnSalvarFaturamento">Salvar dados de faturamento</button>
+      <button class="btn" id="btnSalvarFaturamento" disabled>Salvar dados de faturamento</button>
       <div id="cfgFaturamentoResultado" style="margin-top:8px;"></div>
     </div>
     <div id="cfgAssinaturaContent"></div>
@@ -14369,6 +14370,7 @@ async function renderCfgAssinaturaPlataforma(box){
       renderCfgAssinaturaPlataforma(box);
     }catch(e){ document.getElementById('cfgFaturamentoResultado').innerHTML = `<span style="color:var(--debit); font-size:12.5px;">${esc(e.message)}</span>`; }
   });
+  habilitarSalvarAoMudar('btnSalvarFaturamento', ['cfgFatNome','cfgFatCnpj','cfgFatEmail','cfgFatTelefone']);
   const content = document.getElementById('cfgAssinaturaContent');
   content.innerHTML = `
     ${items.map(assinaturaModuloCardHtml).join('')}
