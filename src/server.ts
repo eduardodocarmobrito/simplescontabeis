@@ -10055,21 +10055,33 @@ const ES_MES_NOME = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Jun
 function esBrToNum(s: string): number { return parseFloat(String(s).replace(/\./g, "").replace(",", ".")) || 0; }
 function esFmtBR(n: number): string { const neg = n < 0; const s = Math.abs(n || 0).toFixed(2); const [i, d] = s.split("."); return (neg ? "-" : "") + i.replace(/\B(?=(\d{3})+(?!\d))/g, ".") + "," + d; }
 function esFmtCnpj(c: string): string { const x = String(c || "").replace(/\D/g, ""); if (x.length === 14) return `${x.slice(0, 2)}.${x.slice(2, 5)}.${x.slice(5, 8)}/${x.slice(8, 12)}-${x.slice(12)}`; if (x.length === 11) return `${x.slice(0, 3)}.${x.slice(3, 6)}.${x.slice(6, 9)}-${x.slice(9)}`; return String(c || ""); }
-function entradasSaidasProcessarPdf(escritorioId: number, empresaId: number, texto: string): number {
-  const reMes = /^(janeiro|fevereiro|mar[çc]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\s+(\d{4})\s+(.+)$/i;
+function entradasSaidasParse(texto: string): { ano: number; mes: number; entradas: number; saidas: number; servicos: number }[] {
+  // O pdf-parse extrai a tabela COLADA e com as colunas da direita embaralhadas (ex.:
+  // "Janeiro12.691,5856.478,44202656.478,44..." — ano grudado, sem espaços). Padrão confiável
+  // (confirmado em produção AGUIAR/FERNANDO): logo APÓS o ANO vêm, em ordem, Entradas R$, Saídas R$,
+  // Serviços R$. Então: acha o mês no começo da linha, isola o ano (20xx/19xx) e pega os 3 números
+  // seguintes. O que vem depois (UFIR/Acumulados) é recalculado, não precisa ler.
+  const reMes = /^(janeiro|fevereiro|mar[çc]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\s*(.*)$/i;
   const rows: { ano: number; mes: number; entradas: number; saidas: number; servicos: number }[] = [];
   for (const raw of String(texto || "").split(/\r?\n/)) {
     const m = reMes.exec(raw.trim());
     if (!m) continue;
     const mes = ES_MESES[m[1].toLowerCase()];
-    const ano = Number(m[2]);
-    const nums = (m[3].match(/\d{1,3}(?:\.\d{3})*,\d{2}/g) || []).map(esBrToNum);
-    if (!mes || !ano || nums.length < 3) continue;
-    rows.push({ ano, mes, entradas: nums[0], saidas: nums[1], servicos: nums[2] });
+    if (!mes) continue;
+    const corpo = m[2].replace(/(,\d{2})((?:19|20)\d{2})(\d)/, "$1 $2 $3").replace(/^((?:19|20)\d{2})(\d)/, "$1 $2");
+    const anoM = corpo.match(/\b(?:19|20)\d{2}\b/);
+    if (!anoM) continue;
+    const nums = (corpo.slice((anoM.index || 0) + anoM[0].length).match(/\d{1,3}(?:\.\d{3})*,\d{2}/g) || []).map(esBrToNum);
+    if (nums.length < 3) continue;
+    rows.push({ ano: Number(anoM[0]), mes, entradas: nums[0], saidas: nums[1], servicos: nums[2] });
   }
+  return rows;
+}
+function entradasSaidasProcessarPdf(escritorioId: number, empresaId: number, texto: string): number {
+  const rows = entradasSaidasParse(texto);
   if (!rows.length) return 0;
   const periodoIni = (/per[íi]odo:\s*(\d{2}\/\d{2}\/\d{4})/i.exec(texto) || [])[1] || null;
-  const periodoFim = (/\ba\s+(\d{2}\/\d{2}\/\d{4})/i.exec(texto) || [])[1] || null;
+  const periodoFim = (/\ba\s*(\d{2}\/\d{2}\/\d{4})/i.exec(texto) || [])[1] || (texto.match(/\d{2}\/\d{2}\/\d{4}/g) || []).slice(-1)[0] || null;
   const anos = [...new Set(rows.map((r) => r.ano))];
   sqlite.exec("BEGIN");
   try {
@@ -10192,12 +10204,11 @@ app.get("/api/entradas-saidas/:empresaId/pdf", blockCliente, requirePermissao("r
 app.get("/api/entradas-saidas/diag", blockCliente, requireAdmin, async (req, res) => {
   const esc = (req as any).user.escritorioId;
   const docs = sqlite.prepare(`SELECT d.id, d.file_path as filePath, d.file_name as fileName, a.empresa_id as empresaId FROM envio_documentos d JOIN envio_periodos p ON p.id = d.periodo_id JOIN envio_atribuicoes a ON a.id = p.atribuicao_id JOIN envio_templates t ON t.id = a.template_id WHERE t.escritorio_id = ? AND t.nome = ? ORDER BY d.id DESC`).all(esc, DOM_REL_TEMPLATE_NOME.entradas_saidas) as any[];
-  const reMes = /^(janeiro|fevereiro|mar[çc]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\s+(\d{4})\s+(.+)$/i;
   const out: any = { templateNome: DOM_REL_TEMPLATE_NOME.entradas_saidas, nDocs: docs.length, amostras: [] as any[] };
   for (const d of docs.slice(0, 2)) {
     const existe = !!(d.filePath && fs.existsSync(d.filePath));
     let texto = "", linhasMatch = 0, erro: string | null = null;
-    if (existe) { try { texto = await obterTextoDoPdf(fs.readFileSync(d.filePath)); for (const ln of texto.split(/\r?\n/)) if (reMes.test(ln.trim())) linhasMatch++; } catch (e: any) { erro = e.message; } }
+    if (existe) { try { texto = await obterTextoDoPdf(fs.readFileSync(d.filePath)); linhasMatch = entradasSaidasParse(texto).length; } catch (e: any) { erro = e.message; } }
     out.amostras.push({ id: d.id, empresaId: d.empresaId, fileName: d.fileName, existe, linhasMatch, erro, texto: texto.slice(0, 1800) });
   }
   res.json(out);
