@@ -5592,6 +5592,7 @@ app.get("/api/demonstrativo-robo/estado", blockCliente, requirePermissao("config
       t_entre_empresas_ms AS tEntreEmpresasMs, t_render_timeout_ms AS tRenderTimeoutMs, t_gerar_pdf_ms AS tGerarPdfMs,
       t_modulo_carga_ms AS tModuloCargaMs, t_curto_ms AS tCurtoMs, t_medio_ms AS tMedioMs, t_longo_ms AS tLongoMs,
       prog_total AS total, prog_feitas AS feitas, prog_atual AS atual, prog_em AS progEm,
+      encadeado_apos_ferias AS encadeadoAposFerias,
       (prog_rodando = 1 AND prog_em IS NOT NULL AND datetime(prog_em, '+5 minutes') >= datetime('now')) AS rodando,
       agente_visto_em AS agenteVistoEm,
       (parar_em IS NOT NULL) AS pararPendente,
@@ -5602,6 +5603,7 @@ app.get("/api/demonstrativo-robo/estado", blockCliente, requirePermissao("config
   res.json({
     ligado: !!c.ligado, intervaloMin: c.intervaloMin, ultimaExecEm: c.ultimaExecEm,
     periodoIni: c.periodoIni, periodoFim: c.periodoFim, periodoPadraoIni: pad.ini, periodoPadraoFim: pad.fim,
+    encadeadoAposFerias: !!c.encadeadoAposFerias,
     agendaAtivo: !!c.agendaAtivo, agendaHora: c.agendaHora, agendaMinuto: c.agendaMinuto,
     tEntreEmpresasMs: c.tEntreEmpresasMs, tRenderTimeoutMs: c.tRenderTimeoutMs, tGerarPdfMs: c.tGerarPdfMs,
     tModuloCargaMs: c.tModuloCargaMs, tCurtoMs: c.tCurtoMs, tMedioMs: c.tMedioMs, tLongoMs: c.tLongoMs,
@@ -5623,12 +5625,14 @@ app.post("/api/demonstrativo-robo/config", blockCliente, requirePermissao("confi
   const tCurtoMs = clampTempoMs(req.body?.tCurtoMs, 700, 100, 30000);
   const tMedioMs = clampTempoMs(req.body?.tMedioMs, 2000, 100, 30000);
   const tLongoMs = clampTempoMs(req.body?.tLongoMs, 4000, 100, 30000);
+  const encadeadoAposFerias = req.body?.encadeadoAposFerias ? 1 : 0;
   const antesAgenda = sqlite.prepare(`SELECT agenda_ativo, agenda_hora, agenda_minuto FROM demonstrativo_robo_estado WHERE escritorio_id = 1`).get() as any;
   sqlite.prepare(`
     UPDATE demonstrativo_robo_estado SET periodo_ini = ?, periodo_fim = ?, agenda_ativo = ?, agenda_hora = ?, agenda_minuto = ?,
-      t_entre_empresas_ms = ?, t_render_timeout_ms = ?, t_gerar_pdf_ms = ?, t_modulo_carga_ms = ?, t_curto_ms = ?, t_medio_ms = ?, t_longo_ms = ?
+      t_entre_empresas_ms = ?, t_render_timeout_ms = ?, t_gerar_pdf_ms = ?, t_modulo_carga_ms = ?, t_curto_ms = ?, t_medio_ms = ?, t_longo_ms = ?,
+      encadeado_apos_ferias = ?
     WHERE escritorio_id = 1
-  `).run(pIni, pFim, agendaAtivo, agendaHora, agendaMinuto, tEntreEmpresasMs, tRenderTimeoutMs, tGerarPdfMs, tModuloCargaMs, tCurtoMs, tMedioMs, tLongoMs);
+  `).run(pIni, pFim, agendaAtivo, agendaHora, agendaMinuto, tEntreEmpresasMs, tRenderTimeoutMs, tGerarPdfMs, tModuloCargaMs, tCurtoMs, tMedioMs, tLongoMs, encadeadoAposFerias);
   if (!antesAgenda || !!antesAgenda.agenda_ativo !== !!agendaAtivo || antesAgenda.agenda_hora !== agendaHora || antesAgenda.agenda_minuto !== agendaMinuto)
     sqlite.prepare(`UPDATE demonstrativo_robo_estado SET agenda_ultimo_dia = NULL WHERE escritorio_id = 1`).run();
   res.json({ ok: true, periodoIni: pIni, periodoFim: pFim });
@@ -5772,16 +5776,35 @@ app.get("/api/dominio-agent/ferias-comando", requireDominioAgent, (_req, res) =>
 });
 app.post("/api/dominio-agent/ferias-progresso", requireDominioAgent, (req, res) => {
   garantirFeriasEstado(1);
+  garantirDemonstrativoEstado(1);
   const b = req.body || {};
   if (b.iniciando) {
-    sqlite.prepare(`UPDATE ferias_robo_estado SET run_now_em = NULL, parar_em = NULL, ultima_exec_em = datetime('now') WHERE escritorio_id = 1`).run();
+    // Ao começar o Férias, "arma" o encadeamento do Demonstrativo se ele estiver ligado pra rodar em
+    // sequência — fotografa a config agora pra disparar quando o Férias terminar (sem "Parar").
+    const demoChain = (sqlite.prepare(`SELECT encadeado_apos_ferias AS on_ FROM demonstrativo_robo_estado WHERE escritorio_id = 1`).get() as any)?.on_ ? 1 : 0;
+    sqlite.prepare(`UPDATE ferias_robo_estado SET run_now_em = NULL, parar_em = NULL, ultima_exec_em = datetime('now'), encadeia_demo_pendente = ? WHERE escritorio_id = 1`).run(demoChain);
   }
+  // Lido ANTES de sobrescrever — "estava rodando (prog_rodando=1) e ninguém pediu Parar (parar_em NULL)"
+  // distingue "terminou de verdade" de "nunca começou"/"foi freado na mão", pra decidir se encadeia o Demo.
+  const antes = sqlite.prepare(`SELECT prog_rodando AS progRodando, parar_em AS pararEm, encadeia_demo_pendente AS encadeiaDemo FROM ferias_robo_estado WHERE escritorio_id = 1`).get() as any;
   sqlite.prepare(`
     UPDATE ferias_robo_estado
        SET prog_rodando = ?, prog_total = ?, prog_feitas = ?, prog_atual = ?, prog_em = datetime('now')
      WHERE escritorio_id = 1
   `).run(b.rodando ? 1 : 0, Number(b.total) || 0, Number(b.feitas) || 0, b.atual ? String(b.atual) : null);
-  if (!b.rodando) sqlite.prepare(`UPDATE ferias_robo_estado SET parar_em = NULL WHERE escritorio_id = 1`).run();
+  if (!b.rodando) {
+    // Terminou/parou: reseta o freio e desarma o encadeamento (one-shot) pra não afetar a próxima run.
+    sqlite.prepare(`UPDATE ferias_robo_estado SET parar_em = NULL, encadeia_demo_pendente = 0 WHERE escritorio_id = 1`).run();
+    // Encadeamento Demonstrativo: só dispara se o Férias estava mesmo rodando, terminou sozinho (não foi
+    // "Parar") e o encadeamento estava armado quando começou. Começa o Demonstrativo em sequência.
+    if (antes?.progRodando && !antes?.pararEm && antes?.encadeiaDemo) {
+      const demo = sqlite.prepare(`SELECT encadeado_apos_ferias AS on_ FROM demonstrativo_robo_estado WHERE escritorio_id = 1`).get() as any;
+      if (demo?.on_) {
+        const hojeSp = new Date(Date.now() - 3 * 3600 * 1000).toISOString().slice(0, 10);
+        sqlite.prepare(`UPDATE demonstrativo_robo_estado SET run_now_em = datetime('now'), parar_em = NULL, encadeado_ultimo_dia = ? WHERE escritorio_id = 1`).run(hojeSp);
+      }
+    }
+  }
   res.json({ ok: true });
 });
 app.get("/api/ferias-robo/estado", blockCliente, requirePermissao("configuracoes", "visualizar"), requireEscritorioPrincipalDominio, (_req, res) => {
