@@ -396,8 +396,15 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     // SUGESTÕES" do cabeçalho da CAIXA; e a competência vem da Data do processamento. Título fica só
     // "Contribuição Sindical - <empresa> - <competência>".
     const ehContribSindical = norm(tipo?.nome || "").includes("CONTRIBUICAO SINDICAL");
-    const colaborador = ehContribSindical ? null : extraidoColab.colaborador;
-    const cpf = ehContribSindical ? null : extraidoColab.cpf;
+    // FGTS Digital (GFD): é guia do EMPREGADOR (lista quantidade de trabalhadores e o total, sem
+    // funcionário individual) — igual à Contribuição Sindical, não tem colaborador. Sem isso, o parser
+    // pegava o NOME DA EMPRESA (vem no campo "Nome/Razão Social do Empregador" da GFD, muitas vezes
+    // truncado/variante do cadastro — por isso o filtro de empresa não o reconhecia) e jogava na coluna
+    // Colaborador. Título fica só "FGTS - <empresa> - <competência>".
+    const ehFgts = norm(tipo?.nome || "").includes("FGTS");
+    const semColaborador = ehContribSindical || ehFgts;
+    const colaborador = semColaborador ? null : extraidoColab.colaborador;
+    const cpf = semColaborador ? null : extraidoColab.cpf;
     // extrairCompetenciaMes primeiro: quando o PDF tem um rótulo explícito "Competência: MM/AAAA" (caso do Extrato
     // Mensal/Folha Mensal), ele é a fonte mais confiável e deve valer sempre. extrairDataAfastamento foi feita pra
     // Rescisão (documento organizado por datas, sem rótulo de competência) — mas um Extrato Mensal "e Complementar"
