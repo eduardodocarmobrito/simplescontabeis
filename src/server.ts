@@ -17504,16 +17504,31 @@ async function deskcommRoboId(): Promise<string> {
 let deskcommRoboSessao: { cookie: string; em: number } | null = null;
 async function deskcommRoboLogin(): Promise<string> {
   await deskcommRoboId();
-  const { data, error } = await deskcommAdmin!.auth.admin.generateLink({ type: "magiclink", email: DESKCOMM_ROBO_EMAIL });
-  const tokenHash = (data as any)?.properties?.hashed_token;
-  if (error || !tokenHash) throw new Error(error?.message || "O Supabase não devolveu o token de acesso.");
-  const qs = new URLSearchParams({ token_hash: tokenHash, type: "magiclink", next: "/manifest.webmanifest" });
-  const r = await fetch(`${DESKCOMM_URL}/deskcomm/auth/confirm?${qs}`, { redirect: "manual" });
-  const setCookies: string[] = (r.headers as any).getSetCookie?.() || [];
-  const cookie = setCookies.map((c) => c.split(";")[0]).filter((c) => c.startsWith("sb-")).join("; ");
-  if (!cookie) throw new Error(`Login do usuário de automações no deskcomm falhou (HTTP ${r.status}).`);
-  deskcommRoboSessao = { cookie, em: Date.now() };
-  return cookie;
+  // O login usa um magic-link de uso único e validade curta do Supabase Auth: gera o token, confirma
+  // em /deskcomm/auth/confirm (com redirect manual) e colhe o cookie de sessão sb-* que vem no 307 de
+  // sucesso. Esse passo às vezes falha de forma TRANSITÓRIA (throttle do Supabase Auth, token que
+  // expira no limite, timing) e volta um 307 SEM cookie — antes isso estourava de primeira e, pior,
+  // uma mensagem agendada caía em 'erro' pra sempre (o agendador só reprocessa 'agendada'). Agora
+  // tenta até 3x com token NOVO a cada vez — a falha transitória se cura sozinha, como a própria
+  // mensagem de erro já prometia ("normalmente se resolve sozinho na próxima tentativa").
+  let ultimoStatus = 0;
+  for (let tentativa = 1; tentativa <= 3; tentativa++) {
+    const { data, error } = await deskcommAdmin!.auth.admin.generateLink({ type: "magiclink", email: DESKCOMM_ROBO_EMAIL });
+    const tokenHash = (data as any)?.properties?.hashed_token;
+    if (error || !tokenHash) {
+      if (tentativa === 3) throw new Error(error?.message || "O Supabase não devolveu o token de acesso.");
+      await new Promise((r) => setTimeout(r, 400 * tentativa));
+      continue;
+    }
+    const qs = new URLSearchParams({ token_hash: tokenHash, type: "magiclink", next: "/manifest.webmanifest" });
+    const r = await fetch(`${DESKCOMM_URL}/deskcomm/auth/confirm?${qs}`, { redirect: "manual" });
+    const setCookies: string[] = (r.headers as any).getSetCookie?.() || [];
+    const cookie = setCookies.map((c) => c.split(";")[0]).filter((c) => c.startsWith("sb-")).join("; ");
+    if (cookie) { deskcommRoboSessao = { cookie, em: Date.now() }; return cookie; }
+    ultimoStatus = r.status;
+    if (tentativa < 3) await new Promise((res) => setTimeout(res, 400 * tentativa));
+  }
+  throw new Error(`Login do usuário de automações no deskcomm falhou (HTTP ${ultimoStatus}).`);
 }
 async function deskcommRoboApi(caminho: string, init: { method?: string; body?: any } = {}, jaRenovou = false): Promise<any> {
   if (!deskcommRoboSessao || Date.now() - deskcommRoboSessao.em > 45 * 60_000) await deskcommRoboLogin();
