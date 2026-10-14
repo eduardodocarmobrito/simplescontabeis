@@ -17755,14 +17755,15 @@ function whatsappDocRegistrar(r: {
   }
 }
 // Envio(s) anterior(es) desse mesmo documento (por hash) no escritório — pra montar a confirmação.
-function whatsappDocAnterior(escritorioId: number, hash: string): { total: number; ultimo: any } | null {
+// Devolve o HISTÓRICO COMPLETO (até 50 mais recentes) além do total, pra tela listar todos os envios.
+function whatsappDocAnterior(escritorioId: number, hash: string): { total: number; ultimo: any; envios: any[] } | null {
   if (!hash) return null;
+  const envios = sqlite
+    .prepare(`SELECT nome_arquivo as nomeArquivo, empresa_nome as empresaNome, telefone, canal, enviado_por as enviadoPor, enviado_em as enviadoEm FROM whatsapp_docs_enviados WHERE escritorio_id = ? AND hash = ? ORDER BY enviado_em DESC, id DESC LIMIT 50`)
+    .all(escritorioId, hash) as any[];
+  if (!envios.length) return null;
   const total = (sqlite.prepare(`SELECT COUNT(*) n FROM whatsapp_docs_enviados WHERE escritorio_id = ? AND hash = ?`).get(escritorioId, hash) as any).n;
-  if (!total) return null;
-  const ultimo = sqlite
-    .prepare(`SELECT nome_arquivo as nomeArquivo, empresa_nome as empresaNome, telefone, canal, enviado_por as enviadoPor, enviado_em as enviadoEm FROM whatsapp_docs_enviados WHERE escritorio_id = ? AND hash = ? ORDER BY enviado_em DESC, id DESC LIMIT 1`)
-    .get(escritorioId, hash) as any;
-  return { total, ultimo };
+  return { total, ultimo: envios[0], envios };
 }
 async function enviarDocumentoWhatsapp(
   canal: CanalWhatsapp,

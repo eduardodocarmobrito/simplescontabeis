@@ -643,21 +643,24 @@ async function api(path, opts){
 // quando o MESMO documento (mesmo conteúdo) já foi mandado antes. Mostra a confirmação com data/hora/número
 // e, se o usuário aceitar, reenvia com confirmarReenvio:true.
 function fmtJaEnviadoHtml(ja){
-  const u = (ja && ja.ultimo) || {};
-  const canalTxt = u.canal==='meta' ? 'número oficial (Meta)' : (u.canal==='atendimento' ? 'atendimento (conversa)' : (u.canal==='conversa' ? 'número de atendimento' : (u.canal||'WhatsApp')));
-  const quando = u.enviadoEm ? (typeof fmtDateHora==='function' ? fmtDateHora(u.enviadoEm) : esc(u.enviadoEm)) : '—';
-  return `<div style="font-size:13px; line-height:1.6;">Este documento <b>já foi enviado</b> por WhatsApp${u.empresaNome?` para <b>${esc(u.empresaNome)}</b>`:''}.`
-    + `<div style="margin-top:10px; padding:10px 12px; background:var(--surface-soft,#f1f6f4); border-radius:8px;">`
-    + `📅 <b>Data/hora:</b> ${quando}<br>📱 <b>Número:</b> ${esc(u.telefone||'—')}<br>💬 <b>Canal:</b> ${esc(canalTxt)}`
-    + (u.nomeArquivo?`<br>📎 <b>Arquivo:</b> ${esc(u.nomeArquivo)}`:'')
-    + (ja && ja.total>1?`<br><br><span style="color:var(--ink-soft);">Enviado ${ja.total} vezes no total.</span>`:'')
-    + `</div><div style="margin-top:12px;">Deseja <b>enviar novamente</b>?</div></div>`;
+  const envios = (ja && ja.envios && ja.envios.length) ? ja.envios : ((ja && ja.ultimo) ? [ja.ultimo] : []);
+  const canalNome = c => c==='meta' ? 'Meta (oficial)' : (c==='atendimento' ? 'Atendimento' : (c==='conversa' ? 'Atendimento' : (c||'WhatsApp')));
+  const total = (ja && ja.total) || envios.length;
+  const linhas = envios.map(u=>{
+    const quando = u.enviadoEm ? (typeof fmtDateHora==='function' ? fmtDateHora(u.enviadoEm) : esc(u.enviadoEm)) : '—';
+    return `<tr><td style="white-space:nowrap;">${esc(quando)}</td><td style="white-space:nowrap;">${esc(u.telefone||'—')}</td><td>${esc(canalNome(u.canal))}</td><td>${esc(u.empresaNome||'—')}${u.enviadoPor?`<div style="font-size:10.5px; color:var(--ink-soft);">por ${esc(u.enviadoPor)}</div>`:''}</td></tr>`;
+  }).join('');
+  const mais = total>envios.length ? `<div style="font-size:11.5px; color:var(--ink-soft); margin-top:6px;">…e mais ${total-envios.length} envio(s) mais antigo(s).</div>` : '';
+  return `<div style="font-size:13px; line-height:1.5;">Este documento <b>já foi enviado ${total} ${total>1?'vezes':'vez'}</b> por WhatsApp:`
+    + `<div style="max-height:240px; overflow:auto; margin-top:10px; border:1px solid var(--rule,#e5eae7); border-radius:8px;">`
+    + `<table class="data-table" style="width:100%; font-size:12px;"><thead><tr><th>Data/hora</th><th>Número</th><th>Canal</th><th>Destinatário</th></tr></thead><tbody>${linhas}</tbody></table></div>${mais}`
+    + `<div style="margin-top:12px;">Deseja <b>enviar novamente</b>?</div></div>`;
 }
 function confirmarReenvioModal(ja){
   return new Promise(resolve=>{
     openModal(`<h3>⚠️ Documento já enviado</h3>${fmtJaEnviadoHtml(ja)}`
       + `<div class="modal-actions" style="margin-top:16px; display:flex; gap:8px; justify-content:flex-end;">`
-      + `<button class="btn" id="reenvNao">Cancelar</button><button class="btn primary" id="reenvSim">Enviar novamente</button></div>`, '460px');
+      + `<button class="btn" id="reenvNao">Cancelar</button><button class="btn primary" id="reenvSim">Enviar novamente</button></div>`, '560px');
     let resolvido=false;
     const fim = v=>{ if(resolvido) return; resolvido=true; closeModal(); resolve(v); };
     document.getElementById('reenvNao').addEventListener('click', ()=>fim(false));
@@ -11825,17 +11828,18 @@ async function sha256HexDoArquivo(f){
 }
 async function atdEnviarArquivo(S, f, legenda){
   if(f.size > 50*1024*1024){ toast('Arquivo acima de 50MB.','err'); return false; }
-  // Trava anti-reenvio — só pra DOCUMENTOS (PDF, office, etc.); imagem/áudio/vídeo da conversa não
-  // entram (seria ruído). Calcula o hash SHA-256 do arquivo (igual ao do servidor) e confere no
-  // histórico; se já foi enviado antes, pergunta antes de mandar. Falha na checagem nunca trava o envio.
-  const ehDoc = !/^(image|audio|video)\//.test(f.type||'');
+  // Trava anti-reenvio — pra DOCUMENTOS e IMAGENS (PDF, office, fotos, etc.); só ÁUDIO e VÍDEO ficam de
+  // fora (nota de voz/vídeo é sempre gravado na hora, nunca é "o mesmo"). O hash SHA-256 só bate em
+  // arquivo byte-a-byte idêntico, então foto parecida mas diferente não gera alerta. Falha na checagem
+  // nunca trava o envio.
+  const ehDoc = !/^(audio|video)\//.test(f.type||'');
   let hashDoc = null;
   if(ehDoc){
     try{
       hashDoc = await sha256HexDoArquivo(f);
       const chk = await api('/atendimento/doc-ja-enviado', { method:'POST', body:{ hash: hashDoc } });
       if(chk && chk.jaEnviado){ const ok = await confirmarReenvioModal(chk.jaEnviado); if(!ok) return false; }
-    }catch(e){ hashDoc = hashDoc; /* segue o envio mesmo sem conseguir checar */ }
+    }catch(e){ /* segue o envio mesmo sem conseguir checar */ }
   }
   const fd = new FormData(); fd.append('file', f);
   const up = await dcApi(`/conversations/${S.conversaAtiva}/media`, { method:'POST', body: fd });
