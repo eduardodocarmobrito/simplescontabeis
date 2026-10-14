@@ -218,7 +218,7 @@ export async function gerarPdfControleInterno(escritorioNome: string, empresas: 
     return `<div class="empresa">
       <div class="empresa-topo"><span class="empresa-nome">${emp.nome}</span>
         <span class="empresa-cont">${v ? `<b class="vencida">${v} vencida(s)</b>` : ""}${v && p ? " · " : ""}${p ? `<b class="proxima">${p} próxima(s)</b>` : ""}</span></div>
-      <table><thead><tr><th>Código</th><th>Funcionário</th><th>Situação</th><th>Admissão</th><th>Período aquisitivo</th><th>Limite p/ gozo</th><th>Dias em aberto</th></tr></thead>
+      <table><colgroup><col style="width:8%"><col style="width:25%"><col style="width:11%"><col style="width:11%"><col style="width:21%"><col style="width:12%"><col style="width:12%"></colgroup><thead><tr><th>Código</th><th>Funcionário</th><th>Situação</th><th>Admissão</th><th>Período aquisitivo</th><th>Limite p/ gozo</th><th>Dias em aberto</th></tr></thead>
       <tbody>${emp.funcionarios.map(linhaFunc).join("")}</tbody></table>
     </div>`;
   };
@@ -233,7 +233,7 @@ export async function gerarPdfControleInterno(escritorioNome: string, empresas: 
     .empresa-nome{font-weight:700; font-size:12.5px;}
     .empresa-cont{font-size:10.5px;}
     .empresa-cont b.vencida{color:#b23b3b;} .empresa-cont b.proxima{color:#a5730a;}
-    table{width:100%; border-collapse:collapse; font-size:10.5px; border:1px solid #e5eae7; border-top:none;}
+    table{width:100%; table-layout:fixed; border-collapse:collapse; font-size:10.5px; border:1px solid #e5eae7; border-top:none;}
     th{text-align:left; background:#f7faf9; padding:5px 8px; border-bottom:1px solid #e5eae7; font-size:9.5px; letter-spacing:.03em; text-transform:uppercase; color:#3c584a;}
     td{padding:5px 8px; border-bottom:1px solid #eef2f0;}
     td.vencida{color:#b23b3b; font-weight:600;}
@@ -403,7 +403,13 @@ export function registerFerias(app: express.Express, d: Deps) {
       res.status(500).json({ error: e.message });
     }
   });
+  // Achado em auditoria (2026-10-12): estas duas config (e o laço mensal, mais abaixo) são singleton
+  // de escritorio_id=1 só (mesmo padrão dos robôs do Domínio — ver comentário logo abaixo), mas não
+  // conferiam isso — qualquer outro escritório com "dprh:editar" conseguia ligar/desligar/reagendar o
+  // envio automático de férias vencidas do escritório principal.
   app.post("/api/ferias/config", d.blockCliente, d.requirePermissao("dprh", "editar"), (req, res) => {
+    const user = (req as any).user;
+    if (user.escritorioId !== 1) return res.status(403).json({ error: "Este agendamento só está disponível pro escritório principal, por enquanto." });
     const b = req.body || {};
     const diaMes = Math.min(28, Math.max(1, Number(b.diaMes) || 5));
     const hora = Math.min(23, Math.max(0, Number(b.hora) || 0));
@@ -412,6 +418,8 @@ export function registerFerias(app: express.Express, d: Deps) {
     res.json({ ok: true });
   });
   app.post("/api/ferias/verificacao-config", d.blockCliente, d.requirePermissao("dprh", "editar"), (req, res) => {
+    const user = (req as any).user;
+    if (user.escritorioId !== 1) return res.status(403).json({ error: "Esta verificação só está disponível pro escritório principal, por enquanto." });
     const b = req.body || {};
     const diaMes = Math.min(28, Math.max(1, Number(b.diaMes) || 15));
     const hora = Math.min(23, Math.max(0, Number(b.hora) || 0));
@@ -449,17 +457,22 @@ export function registerFerias(app: express.Express, d: Deps) {
 
   // Verificação automática: no dia/hora escolhido, relê os "Programação de Férias" já importados
   // (escritorio_id = 1, mesmo padrão de instalação única já usado pelo Robô do Comparativo/NFS-e).
+  // "Já passou do horário hoje" em vez de "é exatamente este minuto" — um reinício do servidor bem
+  // na hora configurada podia derrubar o tick certo e nunca rodar até o mês seguinte (mesmo achado ao
+  // vivo no agendamento de NFS-e, ver setInterval em server.ts). ultimaExecDia evita rodar 2x no dia.
   setInterval(async () => {
     const cfg = sqlite.prepare(`SELECT * FROM ferias_verificacao_config WHERE id = 1`).get() as any;
     if (!cfg?.ativo) return;
     const agora = new Date(Date.now() - 3 * 3600 * 1000);
-    if (agora.getDate() !== cfg.dia_mes || agora.getHours() !== cfg.hora || agora.getMinutes() !== cfg.minuto) return;
+    const hojeSp = agora.toISOString().slice(0, 10);
+    if (cfg.ultima_execucao_em && String(cfg.ultima_execucao_em).slice(0, 10) === hojeSp) return;
+    if (agora.getDate() !== cfg.dia_mes || (agora.getHours() * 60 + agora.getMinutes()) < (cfg.hora * 60 + cfg.minuto)) return;
+    sqlite.prepare(`UPDATE ferias_verificacao_config SET ultima_execucao_em = datetime('now') WHERE id = 1`).run();
     try {
       await d.reprocessarExistentes(1);
     } catch (e: any) {
       console.error("[ferias] verificação automática:", e.message);
     }
-    sqlite.prepare(`UPDATE ferias_verificacao_config SET ultima_execucao_em = datetime('now') WHERE id = 1`).run();
   }, 60_000).unref();
 
   // Uma vez por mês (trava por competência, sobrevive a reinício — mesmo padrão do agendamento de
@@ -470,10 +483,14 @@ export function registerFerias(app: express.Express, d: Deps) {
     const agora = new Date(Date.now() - 3 * 3600 * 1000);
     const competencia = agora.toISOString().slice(0, 7);
     if (cfg.ultima_execucao_competencia === competencia) return;
-    if (agora.getDate() !== cfg.dia_mes || agora.getHours() !== cfg.hora || agora.getMinutes() !== cfg.minuto) return;
+    if (agora.getDate() !== cfg.dia_mes || (agora.getHours() * 60 + agora.getMinutes()) < (cfg.hora * 60 + cfg.minuto)) return;
     sqlite.prepare(`UPDATE ferias_agendamento_config SET ultima_execucao_competencia = ? WHERE id = 1`).run(competencia);
+    // Achado em auditoria (2026-10-12): faltava o filtro de escritório — sem ele, o laço mensal
+    // enviava relatório de férias vencidas pras empresas de QUALQUER escritório que tivesse dado
+    // match em ferias_funcionarios, não só as do escritório principal (mesmo padrão single-tenant
+    // documentado acima).
     const empresas = sqlite
-      .prepare(`SELECT DISTINCT e.id, e.nome, e.escritorio_id FROM empresas e JOIN ferias_funcionarios f ON f.empresa_id = e.id WHERE f.status IN ('vencida','proxima') AND e.ativo = 1`)
+      .prepare(`SELECT DISTINCT e.id, e.nome, e.escritorio_id FROM empresas e JOIN ferias_funcionarios f ON f.empresa_id = e.id WHERE f.status IN ('vencida','proxima') AND e.ativo = 1 AND e.escritorio_id = 1`)
       .all() as any[];
     for (const empresa of empresas) {
       try {

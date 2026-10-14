@@ -2,6 +2,7 @@ import "dotenv/config";
 import express from "express";
 import path from "path";
 import fs from "fs";
+import os from "os";
 import crypto from "crypto";
 import cookieParser from "cookie-parser";
 import rateLimit from "express-rate-limit";
@@ -25,6 +26,7 @@ import { simpleParser } from "mailparser";
 import { registerWebmail } from "./webmail";
 import { registerCentralEnvio, credencialDriveDoEscritorio, driveGet, driveBaixar } from "./central-envio";
 import { registerFerias, feriasProcessarPdf, feriasExtrairFuncionarios } from "./ferias";
+import { registerCertificados } from "./certificados";
 import { createProxyMiddleware } from "http-proxy-middleware";
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 
@@ -105,6 +107,18 @@ sqlite.exec(`
     user_id INTEGER NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
     created_at TEXT DEFAULT (datetime('now')),
     expires_at TEXT NOT NULL
+  );
+
+  -- "Esqueci minha senha": guarda só o HASH do token (nunca o valor cru, que só existe no link
+  -- mandado por e-mail) — mesmo espírito de app_users.password_hash. Token de uso único, expira em
+  -- 1h (ver POST /api/auth/esqueci-senha e /api/auth/resetar-senha).
+  CREATE TABLE IF NOT EXISTS password_reset_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL UNIQUE,
+    expires_at TEXT NOT NULL,
+    used_at TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
   );
 
   -- Empresas que um Colaborador com acesso_todas_empresas=0 pode enxergar
@@ -308,6 +322,29 @@ sqlite.exec(`
     created_at TEXT DEFAULT (datetime('now')),
     UNIQUE(empresa_id, competencia)
   );
+
+  -- ---- Robô de cobrança de honorários pelo WhatsApp (ver registro completo mais abaixo) ----
+  CREATE TABLE IF NOT EXISTS honorarios_robo_config (
+    escritorio_id INTEGER PRIMARY KEY,
+    validacao_ativa INTEGER NOT NULL DEFAULT 0,
+    envio_boleto_automatico INTEGER NOT NULL DEFAULT 0,
+    ultimo_checkpoint TEXT
+  );
+  -- Conversas que o robô está segurando (assumidas, fora da fila) por empresa inadimplente — "ativo"
+  -- até o pagamento ser confirmado, então vira "liberado" (fica só de histórico, não deleta).
+  CREATE TABLE IF NOT EXISTS honorarios_robo_gate (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+    conversation_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'ativo', -- 'ativo' | 'liberado'
+    ultimo_aviso_em TEXT, -- 'YYYY-MM-DD' (Brasília) — evita repetir o aviso mais de 1x por dia
+    ultimo_inbound_visto TEXT, -- last_inbound_at (deskcomm) já respondido — detecta mensagem NOVA do cliente
+    criado_em TEXT DEFAULT (datetime('now')),
+    liberado_em TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_honorarios_robo_gate_empresa ON honorarios_robo_gate(empresa_id, status);
+  -- Só uma conversa "ativa" por vez (histórico de 'liberado' pode se repetir à vontade).
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_honorarios_robo_gate_ativo ON honorarios_robo_gate(conversation_id) WHERE status = 'ativo';
 
   -- ---- Financeiro do próprio negócio da empresa-cliente self-service (perfil Cliente) ----
   CREATE TABLE IF NOT EXISTS financeiro_pagar (
@@ -1016,6 +1053,33 @@ sqlite.exec(`
     UNIQUE(empresa_id, fonte, nsu)
   );
 
+  -- Vínculo MDF-e -> NF-e/CT-e transportados (grupo infDoc do MDF-e). Confirmado ao vivo que a chave
+  -- NÃO vem mascarada (apesar da NT 2015/002 prever mascaramento por sigilo fiscal em outros casos) —
+  -- usado pra mostrar "esta nota está neste MDF-e" (flag 🚚, estilo Espião) sem precisar baixar nada
+  -- a mais: indexado por chave_vinculada pra achar rápido o MDF-e de uma nota/CT-e específica.
+  CREATE TABLE IF NOT EXISTS mdfe_vinculos (
+    mdfe_documento_id INTEGER NOT NULL REFERENCES nfe_documentos(id) ON DELETE CASCADE,
+    chave_vinculada TEXT NOT NULL,
+    UNIQUE(mdfe_documento_id, chave_vinculada)
+  );
+  CREATE INDEX IF NOT EXISTS idx_mdfe_vinculos_chave ON mdfe_vinculos(chave_vinculada);
+  -- Quais itens (certificado/licenças) contam como pendência pra PESSOA FÍSICA, por escritório. Pessoa jurídica
+  -- exige tudo sempre; isto só ajusta o que o escritório quer cobrar de CPF.
+  -- Setores que cada empresa atende (Contabilidade, Fiscal, DP/RH). Sem nenhuma linha = atende todos
+  -- (empresas já cadastradas continuam como eram). Um modelo de solicitação só pode ser atribuído a uma
+  -- empresa que atende o setor dele.
+  CREATE TABLE IF NOT EXISTS empresa_setores (
+    empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+    setor TEXT NOT NULL,
+    PRIMARY KEY (empresa_id, setor)
+  );
+  CREATE TABLE IF NOT EXISTS pendencias_config (
+    escritorio_id INTEGER NOT NULL REFERENCES escritorios(id),
+    chave TEXT NOT NULL,
+    exigir_pf INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (escritorio_id, chave)
+  );
+
   -- Exportação de XML pro OneDrive direto da nuvem (sem depender de nenhum agente local rodando —
   -- diferente da exportação por pasta local do dominio-agent). OAuth2 com a Microsoft (conta
   -- pessoal), client_secret e refresh_token cifrados em repouso (mesmo padrão AES-256-GCM já usado
@@ -1289,6 +1353,15 @@ sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_contratos_empresa ON contratos(empre
   }
 }
 
+// Robô de cobrança de honorários pelo WhatsApp (ver registro das rotas mais abaixo, perto de
+// /api/financeiro): quais empresas participam, e o boleto (PDF) de cada competência.
+{
+  const colsHon = sqlite.prepare(`PRAGMA table_info(honorarios)`).all() as any[];
+  if (!colsHon.some((c) => c.name === "participa_cobranca_robo")) sqlite.exec(`ALTER TABLE honorarios ADD COLUMN participa_cobranca_robo INTEGER NOT NULL DEFAULT 0`);
+  const colsHonLanc = sqlite.prepare(`PRAGMA table_info(honorarios_lancamentos)`).all() as any[];
+  if (!colsHonLanc.some((c) => c.name === "boleto_path")) sqlite.exec(`ALTER TABLE honorarios_lancamentos ADD COLUMN boleto_path TEXT`);
+}
+
 // Migração leve: adiciona detectar_vencimento em bancos criados antes dessa coluna existir.
 {
   const cols = sqlite.prepare(`PRAGMA table_info(envio_templates)`).all() as any[];
@@ -1462,6 +1535,18 @@ for (const tabela of ["chat_mensagens", "chat_equipe_mensagens", "chat_dm_mensag
   }
 }
 
+// Migração leve: envio_templates.setor — setor que atende o modelo (contabilidade, fiscal, dprh).
+// Sem setor = aparece para todas as empresas (comportamento de antes).
+{
+  const colsEnvio = sqlite.prepare(`PRAGMA table_info(envio_templates)`).all() as any[];
+  if (!colsEnvio.some((c) => c.name === "setor")) sqlite.exec(`ALTER TABLE envio_templates ADD COLUMN setor TEXT`);
+}
+// envio_atribuicoes.monitorar_desde — competência (AAAA-MM) a partir da qual a empresa é cobrada nesse
+// modelo. Antes dela nada fica pendente. NULL = comportamento de antes (desde o período mais antigo).
+{
+  const colsAtrib = sqlite.prepare(`PRAGMA table_info(envio_atribuicoes)`).all() as any[];
+  if (!colsAtrib.some((c) => c.name === "monitorar_desde")) sqlite.exec(`ALTER TABLE envio_atribuicoes ADD COLUMN monitorar_desde TEXT`);
+}
 // Migração leve: auto_regime_tributario — modelo que nasce sozinho pra empresa quando ela é
 // classificada num regime tributário específico (ex.: DARF IRPJ/CSLL trimestral só se aplica a
 // Lucro Real — marcar a empresa como Lucro Real já cria a atribuição, sem precisar lembrar de
@@ -1472,6 +1557,13 @@ for (const tabela of ["chat_mensagens", "chat_equipe_mensagens", "chat_dm_mensag
     sqlite.exec(`ALTER TABLE envio_templates ADD COLUMN auto_regime_tributario TEXT`);
     console.log("Migração aplicada: envio_templates.auto_regime_tributario.");
   }
+}
+// Migração leve: envio_templates.pendente_revisao — modelo criado automaticamente pela ponte do
+// central-envio (DP/RH e CRM), ainda não revisado pelo escritório (ver envioObterOuCriarTemplateDraft).
+// Zera assim que o modelo é salvo pela tela (PUT /api/envio/templates/:id).
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(envio_templates)`).all() as any[];
+  if (!cols.some((c) => c.name === "pendente_revisao")) sqlite.exec(`ALTER TABLE envio_templates ADD COLUMN pendente_revisao INTEGER NOT NULL DEFAULT 0`);
 }
 
 // Migração leve: envio_periodos ganha (1) "sem_movimento" — marca que não houve imposto a recolher
@@ -1530,7 +1622,7 @@ for (const tabela of ["chat_mensagens", "chat_equipe_mensagens", "chat_dm_mensag
     ["cpf_representante_legal", "cpf_representante_legal TEXT"],
     ["codigo_municipio_ibge", "codigo_municipio_ibge TEXT"], // código IBGE (7 dígitos) do município — usado na emissão de NFS-e (DPS exige a Tabela do IBGE), centralizado aqui pra não pedir de novo por módulo
     ["nome_municipio_ibge", "nome_municipio_ibge TEXT"], // só exibição do código acima
-    ["regime_tributario", "regime_tributario TEXT NOT NULL DEFAULT 'simples_nacional'"], // 'simples_nacional' | 'lucro_presumido' | 'lucro_real' — mutuamente exclusivos; opcao_simples_nacional (nfse_empresa_config) é sempre derivado deste campo, nunca editado à parte
+    ["regime_tributario", "regime_tributario TEXT NOT NULL DEFAULT 'simples_nacional'"], // 'simples_nacional' | 'lucro_presumido' | 'lucro_real' | 'produtor_rural' — mutuamente exclusivos; opcao_simples_nacional (nfse_empresa_config) é sempre derivado deste campo, nunca editado à parte
     ["apelido", "apelido TEXT"], // apelido curto do Domínio Web — usado no nome da pasta de exportação de XML ("código-apelido")
   ]) {
     if (!nomes.has(coluna)) sqlite.exec(`ALTER TABLE empresas ADD COLUMN ${ddl}`);
@@ -1610,6 +1702,22 @@ for (const tabela of ["chat_mensagens", "chat_equipe_mensagens", "chat_dm_mensag
   if (!nomes.has("ultimo_nsu_nfse")) sqlite.exec(`ALTER TABLE nfe_busca_config ADD COLUMN ultimo_nsu_nfse TEXT NOT NULL DEFAULT '0'`);
   if (!nomes.has("ultima_busca_nfse_em")) sqlite.exec(`ALTER TABLE nfe_busca_config ADD COLUMN ultima_busca_nfse_em TEXT`);
   if (!nomes.has("ultimo_erro_nfse")) sqlite.exec(`ALTER TABLE nfe_busca_config ADD COLUMN ultimo_erro_nfse TEXT`);
+  // CT-e tem um web service de Distribuição DFe PRÓPRIO (CTeDistribuicaoDFe, host cte.fazenda.gov.br),
+  // separado do de NF-e — é a causa real de CT-e tomado nunca aparecer (o sistema só chamava
+  // NFeDistribuicaoDFe, que nunca devolve CT-e, mesmo o CNPJ sendo o tomador de verdade). NSU próprio,
+  // mesmo padrão do cursor de NFS-e acima.
+  if (!nomes.has("ultimo_nsu_cte")) sqlite.exec(`ALTER TABLE nfe_busca_config ADD COLUMN ultimo_nsu_cte TEXT NOT NULL DEFAULT '0'`);
+  if (!nomes.has("ultima_busca_cte_em")) sqlite.exec(`ALTER TABLE nfe_busca_config ADD COLUMN ultima_busca_cte_em TEXT`);
+  if (!nomes.has("ultimo_erro_cte")) sqlite.exec(`ALTER TABLE nfe_busca_config ADD COLUMN ultimo_erro_cte TEXT`);
+  // Opt-in por empresa: manda "Ciência da Operação" automaticamente pra NF-e que chegam só como resumo
+  // (resNFe) — é o evento que desbloqueia o XML completo (ver nfe.enviarManifestacaoCiencia). Desligado
+  // por padrão porque é uma ação fiscal de verdade, registrada na Sefaz em nome do CNPJ do cliente.
+  if (!nomes.has("manifestacao_automatica")) sqlite.exec(`ALTER TABLE nfe_busca_config ADD COLUMN manifestacao_automatica INTEGER NOT NULL DEFAULT 0`);
+  // MDF-e tem web service de Distribuição DFe próprio (MDFeDistribuicaoDFe, host svrs.rs.gov.br — NT
+  // 2015/002), NSU independente dos outros.
+  if (!nomes.has("ultimo_nsu_mdfe")) sqlite.exec(`ALTER TABLE nfe_busca_config ADD COLUMN ultimo_nsu_mdfe TEXT NOT NULL DEFAULT '0'`);
+  if (!nomes.has("ultima_busca_mdfe_em")) sqlite.exec(`ALTER TABLE nfe_busca_config ADD COLUMN ultima_busca_mdfe_em TEXT`);
+  if (!nomes.has("ultimo_erro_mdfe")) sqlite.exec(`ALTER TABLE nfe_busca_config ADD COLUMN ultimo_erro_mdfe TEXT`);
 }
 // Migração: nfe_documentos ganhou a coluna "fonte" (nfe | nfse) — cada uma tem sua própria
 // numeração de NSU, então precisa entrar na chave de unicidade junto com o NSU (antes só
@@ -1850,11 +1958,21 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
     sqlite.exec(`ALTER TABLE financeiro_receber ADD COLUMN conta_id INTEGER REFERENCES financeiro_contas(id) ON DELETE SET NULL`);
   }
 }
+// Migração leve: checklist_templates.setor (departamento que atende o modelo).
+{
+  const colsCl = sqlite.prepare(`PRAGMA table_info(checklist_templates)`).all() as any[];
+  if (!colsCl.some((c) => c.name === "setor")) sqlite.exec(`ALTER TABLE checklist_templates ADD COLUMN setor TEXT`);
+}
 // Migração leve: empresa_anexos.ano (organiza a aba Licenças por exercício/competência).
 {
   const colsAnexos = sqlite.prepare(`PRAGMA table_info(empresa_anexos)`).all() as any[];
   if (!colsAnexos.some((c) => c.name === "ano")) {
     sqlite.exec(`ALTER TABLE empresa_anexos ADD COLUMN ano INTEGER`);
+  }
+  // descricao: rótulo livre digitado pelo usuário — só usada na aba "Anexo" (categoria='anexo'), que é
+  // documento avulso sem um catálogo fixo de tipos como Constituição/Licenças têm.
+  if (!colsAnexos.some((c) => c.name === "descricao")) {
+    sqlite.exec(`ALTER TABLE empresa_anexos ADD COLUMN descricao TEXT`);
   }
 }
 // Migração leve: isenção de cobrança por assento (app_users) e quantidade no item de fatura do
@@ -1880,6 +1998,69 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
     sqlite.exec(`ALTER TABLE escritorio_licenca_cobranca_itens ADD COLUMN quantidade INTEGER NOT NULL DEFAULT 1`);
   }
 }
+// Achado em auditoria (2026-10-12): dominio_sync_log/dominio_test_jobs/dominio_sync_jobs não tinham
+// escritorio_id — o sync do Domínio Web/Onvio (diferente dos robôs AHK, esse É por escritório: cada
+// um pode ter sua própria conexão/sessão) deixava qualquer escritório ver o log e os resultados de
+// teste/sincronização de QUALQUER outro, só sabendo (ou adivinhando, por ser sequencial) o id. Todo
+// histórico existente é de antes de existir um 2º escritório de verdade — backfill pro escritório 1.
+{
+  const colsLog = sqlite.prepare(`PRAGMA table_info(dominio_sync_log)`).all() as any[];
+  if (!colsLog.some((c) => c.name === "escritorio_id")) {
+    sqlite.exec(`ALTER TABLE dominio_sync_log ADD COLUMN escritorio_id INTEGER NOT NULL DEFAULT 1`);
+  }
+  const colsTestJobs = sqlite.prepare(`PRAGMA table_info(dominio_test_jobs)`).all() as any[];
+  if (!colsTestJobs.some((c) => c.name === "escritorio_id")) {
+    sqlite.exec(`ALTER TABLE dominio_test_jobs ADD COLUMN escritorio_id INTEGER NOT NULL DEFAULT 1`);
+  }
+  const colsSyncJobs = sqlite.prepare(`PRAGMA table_info(dominio_sync_jobs)`).all() as any[];
+  if (!colsSyncJobs.some((c) => c.name === "escritorio_id")) {
+    sqlite.exec(`ALTER TABLE dominio_sync_jobs ADD COLUMN escritorio_id INTEGER NOT NULL DEFAULT 1`);
+  }
+}
+// Achado em auditoria (2026-10-12): dominio_config.db_password/api_token eram gravados em texto
+// puro (recuperáveis em claro só com acesso ao arquivo/backup do SQLite) — diferente de toda outra
+// credencial equivalente do sistema (senha de certificado, SMTP, client secret do OneDrive), que já
+// passa por nfse.cifrarTexto/decifrarTexto. A partir de agora a rota de salvar cifra; isto aqui
+// migra, uma vez só, qualquer valor que já esteja salvo em claro de antes dessa mudança — tenta
+// decifrar, e só recifra se falhar (ou seja, se ainda não era ciphertext válido). Sem isso, o agente
+// do escritório 1 (em uso de verdade hoje) quebraria na próxima vez que buscasse a config.
+{
+  const linhas = sqlite.prepare(`SELECT escritorio_id, db_password, api_token FROM dominio_config`).all() as any[];
+  for (const l of linhas) {
+    let novaSenha: string | undefined;
+    let novoToken: string | undefined;
+    if (l.db_password) {
+      try { nfse.decifrarTexto(l.db_password); } catch { novaSenha = nfse.cifrarTexto(l.db_password); }
+    }
+    if (l.api_token) {
+      try { nfse.decifrarTexto(l.api_token); } catch { novoToken = nfse.cifrarTexto(l.api_token); }
+    }
+    if (novaSenha !== undefined || novoToken !== undefined) {
+      sqlite
+        .prepare(`UPDATE dominio_config SET db_password = COALESCE(?, db_password), api_token = COALESCE(?, api_token) WHERE escritorio_id = ?`)
+        .run(novaSenha ?? null, novoToken ?? null, l.escritorio_id);
+    }
+  }
+}
+// Mesmo achado acima, mas pro arquivo de sessão do Onvio (data/onvio-session*.json) — tem cookies
+// de sessão reais e reutilizáveis. Migra qualquer arquivo salvo em claro de antes dessa mudança pra
+// cifrado: se o conteúdo já é JSON puro (formato antigo), recifra; se não der pra ler como JSON,
+// assume que já está no formato cifrado (hex) e deixa como está.
+try {
+  for (const nome of fs.readdirSync(DATA_DIR)) {
+    if (!/^onvio-session(-\d+)?\.json$/.test(nome)) continue;
+    const caminho = path.join(DATA_DIR, nome);
+    const conteudo = fs.readFileSync(caminho, "utf8");
+    try {
+      JSON.parse(conteudo); // só dá certo se ainda estiver em claro (formato antigo)
+      fs.writeFileSync(caminho, nfse.cifrarTexto(conteudo), { mode: 0o600 });
+    } catch {
+      // já não é JSON puro — ou já está cifrado, ou é lixo; não mexe.
+    }
+  }
+} catch {
+  // DATA_DIR pode não existir ainda num ambiente novo (sem nenhuma sessão salva) — sem problema.
+}
 // Migração leve: conta cortesia — empresa-cliente isenta de cobrança de NFS-e/Financeiro (acesso
 // liberado sem precisar de teste grátis nem assinatura paga via Asaas).
 {
@@ -1887,6 +2068,41 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
   if (!colsEmpresas.some((c) => c.name === "isento_assinatura")) {
     sqlite.exec(`ALTER TABLE empresas ADD COLUMN isento_assinatura INTEGER NOT NULL DEFAULT 0`);
   }
+}
+// Migração leve: escritório ISENTO de cobrança da plataforma — o SuperAdmin libera acesso a TODOS os
+// módulos (escritório) sem teste/assinatura paga. Mesmo esquema do isento_assinatura da empresa.
+{
+  const colsEscr = sqlite.prepare(`PRAGMA table_info(escritorios)`).all() as any[];
+  if (!colsEscr.some((c) => c.name === "isento_assinatura")) {
+    sqlite.exec(`ALTER TABLE escritorios ADD COLUMN isento_assinatura INTEGER NOT NULL DEFAULT 0`);
+  }
+}
+// Migração leve: monitor de IBS/CBS (reforma tributária, NT 2025.002) por nota — valores lidos do XML
+// (grupo total/IBSCBSTot). tributos_parseado=0 = ainda não lido; 1 = já lido (mesmo que a nota não
+// traga o grupo ainda, na transição da reforma). Backfill preguiçoso na listagem de documentos.
+{
+  const colsNfeDoc = sqlite.prepare(`PRAGMA table_info(nfe_documentos)`).all() as any[];
+  if (!colsNfeDoc.some((c) => c.name === "valor_ibs")) sqlite.exec(`ALTER TABLE nfe_documentos ADD COLUMN valor_ibs REAL`);
+  if (!colsNfeDoc.some((c) => c.name === "valor_cbs")) sqlite.exec(`ALTER TABLE nfe_documentos ADD COLUMN valor_cbs REAL`);
+  if (!colsNfeDoc.some((c) => c.name === "valor_bc_ibscbs")) sqlite.exec(`ALTER TABLE nfe_documentos ADD COLUMN valor_bc_ibscbs REAL`);
+  if (!colsNfeDoc.some((c) => c.name === "tributos_parseado")) sqlite.exec(`ALTER TABLE nfe_documentos ADD COLUMN tributos_parseado INTEGER NOT NULL DEFAULT 0`);
+  // flags = marcadores por produto (comb,med,rastro,veiculo,importado), separados por vírgula; "" = sem
+  // flags; NULL = ainda não parseado (serve de gatilho do backfill, inclusive pros docs lidos antes
+  // dessa coluna existir).
+  if (!colsNfeDoc.some((c) => c.name === "flags")) sqlite.exec(`ALTER TABLE nfe_documentos ADD COLUMN flags TEXT`);
+  // Totais de impostos clássicos (ICMS/PIS/COFINS/IPI) lidos do XML — pro dashboard somar por SQL.
+  // valor_icms NULL vira o gatilho do backfill (reparseia os docs lidos antes dessas colunas).
+  if (!colsNfeDoc.some((c) => c.name === "valor_icms")) sqlite.exec(`ALTER TABLE nfe_documentos ADD COLUMN valor_icms REAL`);
+  if (!colsNfeDoc.some((c) => c.name === "valor_pis")) sqlite.exec(`ALTER TABLE nfe_documentos ADD COLUMN valor_pis REAL`);
+  if (!colsNfeDoc.some((c) => c.name === "valor_cofins")) sqlite.exec(`ALTER TABLE nfe_documentos ADD COLUMN valor_cofins REAL`);
+  if (!colsNfeDoc.some((c) => c.name === "valor_ipi")) sqlite.exec(`ALTER TABLE nfe_documentos ADD COLUMN valor_ipi REAL`);
+  // Qtd de itens da nota (pra flag "nº de itens" na listagem, estilo Espião).
+  if (!colsNfeDoc.some((c) => c.name === "qtd_itens")) sqlite.exec(`ALTER TABLE nfe_documentos ADD COLUMN qtd_itens INTEGER`);
+  // Observação/comentário livre do escritório sobre o documento (botão 💬 na coluna Opções, estilo Espião).
+  if (!colsNfeDoc.some((c) => c.name === "observacao")) sqlite.exec(`ALTER TABLE nfe_documentos ADD COLUMN observacao TEXT`);
+  // CRT do emitente (1=Simples Nacional, 2=SN excesso sublimite, 3=Regime Normal) — selo SN/RN do lado
+  // do emitente na listagem, estilo Espião.
+  if (!colsNfeDoc.some((c) => c.name === "crt")) sqlite.exec(`ALTER TABLE nfe_documentos ADD COLUMN crt INTEGER`);
 }
 // Migração leve: opt-in por empresa pra busca automática da Guia FGTS Digital (nem toda empresa tem
 // FGTS, ex. MEI sem funcionário) + rastro da última busca em lote (ver fgts-automacao.ts).
@@ -1913,6 +2129,63 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
   if (!colsEmpresas.some((c) => c.name === "programacao_ferias")) {
     sqlite.exec(`ALTER TABLE empresas ADD COLUMN programacao_ferias INTEGER NOT NULL DEFAULT 0`);
   }
+  // Demonstrativo Mensal (3º robô, módulo Fiscal/Escrita Fiscal): mesmo esquema, com período MM/AAAA.
+  // Marca as empresas que o robô do Demonstrativo Mensal deve exportar (pega a lista pelo código do Domínio).
+  if (!colsEmpresas.some((c) => c.name === "demonstrativo_mensal")) {
+    sqlite.exec(`ALTER TABLE empresas ADD COLUMN demonstrativo_mensal INTEGER NOT NULL DEFAULT 0`);
+  }
+}
+// Relatório de Entradas/Saídas (aba Fiscal): a tabela mensal parseada do PDF, o período e o ajuste por
+// empresa (valor que o usuário soma numa coluna; o Acumulado é recalculado na hora). Guarda só os 3
+// valores base (R$); UFIR/Acumulados são derivados.
+{
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS entradas_saidas_dados (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      escritorio_id INTEGER NOT NULL,
+      empresa_id INTEGER NOT NULL,
+      ano INTEGER NOT NULL,
+      mes INTEGER NOT NULL,
+      entradas REAL NOT NULL DEFAULT 0,
+      saidas REAL NOT NULL DEFAULT 0,
+      servicos REAL NOT NULL DEFAULT 0,
+      atualizado_em TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE (empresa_id, ano, mes)
+    );
+    CREATE TABLE IF NOT EXISTS entradas_saidas_meta (
+      empresa_id INTEGER PRIMARY KEY,
+      escritorio_id INTEGER NOT NULL,
+      periodo_ini TEXT, periodo_fim TEXT,
+      atualizado_em TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS entradas_saidas_ajuste (
+      empresa_id INTEGER PRIMARY KEY,
+      escritorio_id INTEGER NOT NULL,
+      aj_entradas REAL NOT NULL DEFAULT 0,
+      aj_saidas REAL NOT NULL DEFAULT 0,
+      aj_servicos REAL NOT NULL DEFAULT 0,
+      atualizado_em TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    -- Fase 2: envio automático mensal (igual Programação de Férias) — manda o PDF ajustado pros clientes.
+    CREATE TABLE IF NOT EXISTS entradas_saidas_envio_config (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      ativo INTEGER NOT NULL DEFAULT 0,
+      dia_mes INTEGER NOT NULL DEFAULT 5,
+      hora INTEGER NOT NULL DEFAULT 8,
+      minuto INTEGER NOT NULL DEFAULT 0,
+      ultima_execucao_competencia TEXT,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS entradas_saidas_envio_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      empresa_id INTEGER NOT NULL, competencia TEXT, sucesso INTEGER, mensagem TEXT,
+      enviado_em TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+  sqlite.prepare(`INSERT OR IGNORE INTO entradas_saidas_envio_config (id) VALUES (1)`).run();
+  // Alerta de faturamento: percentual (margem) em que a saída do mês deveria superar a entrada.
+  // saída esperada = entrada / (1 - margem/100). Mês que não atingir vira alerta na coluna/relatório.
+  { const c = sqlite.prepare(`PRAGMA table_info(entradas_saidas_ajuste)`).all() as any[]; if (!c.some((x) => x.name === "margem_pct")) sqlite.exec(`ALTER TABLE entradas_saidas_ajuste ADD COLUMN margem_pct REAL NOT NULL DEFAULT 0`); }
 }
 // Limpeza: fgts_sync_jobs foi criada numa primeira versão que salvava a sessão do FGTS Digital no
 // servidor pra reaproveitar depois — testando ao vivo, confirmamos que essa sessão não sobrevive
@@ -2172,7 +2445,7 @@ sqlite.exec(`INSERT OR IGNORE INTO whatsapp_config (escritorio_id) SELECT id FRO
   }
 }
 
-const MODULOS = ["dashboard", "empresas", "solicitacoes", "envio", "nfse", "nfe-busca", "integracontador", "licencas", "financeiro", "contratos", "relatorios", "crm", "dprh", "contabil", "fiscal", "usuarios", "configuracoes", "email"] as const;
+const MODULOS = ["dashboard", "empresas", "solicitacoes", "envio", "nfse", "nfe-busca", "integracontador", "licencas", "financeiro", "contratos", "relatorios", "crm", "dprh", "contabil", "fiscal", "usuarios", "configuracoes", "email", "certificados"] as const;
 type Modulo = (typeof MODULOS)[number];
 
 // ========================= LOGIN (senha com hash + sessão via cookie) =========================
@@ -2203,11 +2476,13 @@ function createSession(userId: number, painelTv = false): string {
   return token;
 }
 // Empresas atribuídas a um usuário Cliente, ordenadas por nome — pode ser mais de uma.
+// Empresa desativada no escritório continua vinculada ao login do cliente (ele pode ainda ter módulos
+// contratados, ex.: NFS-e). Só os envios de documentos são barrados — ver empresaInativaBloqueiaEnvio.
 function clienteEmpresasDoUsuario(userId: number): { id: number; nome: string }[] {
   return sqlite
     .prepare(
       `SELECT e.id, e.nome FROM cliente_empresas ce JOIN empresas e ON e.id = ce.empresa_id
-       WHERE ce.user_id = ? AND e.ativo = 1 ORDER BY e.nome`
+       WHERE ce.user_id = ? ORDER BY e.nome`
     )
     .all(userId) as any[];
 }
@@ -2277,6 +2552,27 @@ function requireAdmin(req: express.Request, res: express.Response, next: express
   }
   next();
 }
+// Robôs do Domínio Web (Comparativo de Movimento / Programação de Férias) são de escritório_id=1 só —
+// toda a automação por trás (/api/dominio-agent/*) já é hardcoded assim. Achado em auditoria
+// (2026-10-12): as rotas de controle pelo site (ligar/desligar, executar agora, parar, config) não
+// conferiam isso — qualquer outro escritório com permissão de "configurações" conseguia enxergar e
+// mexer nos robôs do escritório principal. Mesma barreira já aplicada ao download do pacote do robô.
+function requireEscritorioPrincipalDominio(req: express.Request, res: express.Response, next: express.NextFunction) {
+  if ((req as any).user?.escritorioId !== 1) return res.status(403).json({ error: "Este robô só está disponível pro escritório principal, por enquanto." });
+  next();
+}
+// O deskcomm (atendimento/CRM via WhatsApp) é UMA organização compartilhada só, de DESKCOMM_ESCRITORIO_ID
+// (a integração inteira usa um único DESKCOMM_ORG_ID fixo, não há uma org por escritório-cliente deste
+// SaaS). Achado em auditoria (2026-10-12): nenhuma rota do núcleo de atendimento conferia isso — um
+// Administrador (ou mesmo Colaborador com permissão de atendimento) de QUALQUER OUTRO escritório-cliente
+// conseguia entrar em /deskcomm-login, ser espelhado como admin/agent na organização do escritório
+// principal (deskcommGarantirUsuario), e a partir daí ler/editar/apagar conversas e mensagens reais de
+// clientes do escritório principal no WhatsApp — ou usar as rotas /api/atendimento/* locais direto, sem
+// nem passar pelo deskcomm. Barreira única pra todo o módulo.
+function requireEscritorioPrincipalDeskcomm(req: express.Request, res: express.Response, next: express.NextFunction) {
+  if ((req as any).user?.escritorioId !== DESKCOMM_ESCRITORIO_ID) return res.status(403).json({ error: "O atendimento por WhatsApp só está disponível pro escritório principal, por enquanto." });
+  next();
+}
 // Dono do SaaS — gerencia os escritórios-cliente, não pertence a nenhum escritório.
 function requireSuperAdmin(req: express.Request, res: express.Response, next: express.NextFunction) {
   if ((req as any).user?.perfil !== "SuperAdmin") {
@@ -2292,6 +2588,13 @@ function blockCliente(req: express.Request, res: express.Response, next: express
 function hasPermissao(user: any, modulo: Modulo, acao: "visualizar" | "postar" | "editar"): boolean {
   if (user.perfil === "Administrador") return true;
   if (user.perfil === "Cliente") return false;
+  // Achado em auditoria (2026-10-12): a conta de Painel de TV é um Colaborador comum com uma sessão
+  // que se autorrenova por 730 dias, pensada só pra ficar passivamente numa tela física — nada no
+  // código impedia um admin de marcar "postar"/"editar" pra ela por engano na matriz de permissões, o
+  // que daria poder de escrita de verdade a um cookie de longuíssima duração, muito mais exposto
+  // (tela física, sem ninguém de olho a cada request) do que a sessão normal de um colaborador. Trava
+  // aqui, não só na tela: painel de TV nunca passa de "visualizar", nenhuma matriz consegue mudar isso.
+  if (user.painelTv && acao !== "visualizar") return false;
   const row = sqlite
     .prepare(`SELECT pode_visualizar, pode_postar, pode_editar FROM colaborador_permissoes WHERE user_id = ? AND modulo = ?`)
     .get(user.id, modulo) as any;
@@ -2540,6 +2843,29 @@ async function enviarEmail(escritorioId: number, opts: { to: string[]; subject: 
 // ========================= APP =========================
 const app = express();
 app.set("trust proxy", 1);
+// Achado em auditoria (2026-10-12): nenhum header de segurança global — sem helmet, sem nada manual.
+// Adiciona só o que é seguro de ligar sem testar página por página (não mexe em script/style/CSS, só
+// cabeçalhos puramente defensivos):
+// - X-Frame-Options/frame-ancestors: barra o site inteiro de ser embutido num <iframe> de outro
+//   site (clickjacking) — nada aqui precisa ser framed por terceiros.
+// - X-Content-Type-Options: nosniff — reforço global; já estava aplicado rota a rota nos pontos que
+//   servem arquivo de upload (anexos, checklist, e-mail etc.), isso cobre o resto.
+// - Referrer-Policy: evita vazar a URL completa (que pode ter token em query string) pra recurso de
+//   terceiro.
+// - Strict-Transport-Security: o site só roda em HTTPS (Railway) — força o navegador a nunca tentar
+//   HTTP puro aqui. Sem includeSubDomains/preload (não dá pra garantir que todo subdomínio futuro já
+//   nasce em HTTPS, e preload exige envio pra lista global, decisão fora do escopo de um reforço
+//   técnico).
+// CSP de verdade (script-src etc.) fica de fora por ora — exigiria testar cada página da SPA (scripts
+// inline, etc.) uma a uma antes de ligar sem quebrar nada.
+app.use((_req, res, next) => {
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Content-Security-Policy", "frame-ancestors 'none'");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.setHeader("Strict-Transport-Security", "max-age=15552000");
+  next();
+});
 // verify: guarda o corpo cru (antes do parse) em req.rawBody — necessário pra conferir a assinatura
 // HMAC (X-Hub-Signature-256) do webhook do WhatsApp, que é calculada sobre os bytes exatos que a
 // Meta mandou, não sobre o JSON re-serializado (que pode diferir em espaço/ordem das chaves).
@@ -2634,6 +2960,9 @@ function requireAuthPagina(req: express.Request, res: express.Response, next: ex
   const user = getSessionUser(req.cookies?.sid);
   if (!user) return res.redirect("/");
   if (user.perfil === "Cliente") return res.redirect("/");
+  // Achado em auditoria (2026-10-12): ver comentário de requireEscritorioPrincipalDeskcomm — sem isso,
+  // qualquer usuário de outro escritório-cliente deste SaaS entrava direto no app do deskcomm.
+  if (user.escritorioId !== DESKCOMM_ESCRITORIO_ID) return res.redirect("/");
   (req as any).user = user;
   next();
 }
@@ -2664,6 +2993,7 @@ app.use(
   "/api/v1",
   requireAuth,
   blockCliente,
+  requireEscritorioPrincipalDeskcomm,
   createProxyMiddleware({
     target: DESKCOMM_URL,
     changeOrigin: true, // ver comentário do proxy /deskcomm acima — obrigatório pro TLS não quebrar
@@ -2677,8 +3007,12 @@ app.use(
 // Garante que o usuário daqui tem um espelho no Supabase Auth do deskcomm, vinculado à organização
 // com o papel certo, e devolve o id de lá. Usado pela ponte de login abaixo e pelo módulo DP/RH (que
 // precisa saber o id do deskcomm de cada atendente pra "Minhas" e "Transferir").
-async function deskcommGarantirUsuario(user: { id: number; email: string; nome: string; perfil: string }): Promise<string> {
+async function deskcommGarantirUsuario(user: { id: number; email: string; nome: string; perfil: string; escritorioId: number }): Promise<string> {
   if (!deskcommAdmin || !DESKCOMM_ORG_ID) throw new Error("Integração com o deskcomm não configurada (faltam variáveis de ambiente no servidor).");
+  // Achado em auditoria (2026-10-12): esta função é o único ponto que espelha um usuário local na
+  // organização ÚNICA e compartilhada do deskcomm — travar aqui protege todo chamador, presente e
+  // futuro, mesmo que algum deles esqueça a checagem de escritório na própria rota.
+  if (user.escritorioId !== DESKCOMM_ESCRITORIO_ID) throw new Error("O atendimento por WhatsApp só está disponível pro escritório principal, por enquanto.");
   let deskcommUserId: string | null = (sqlite.prepare(`SELECT deskcomm_user_id FROM app_users WHERE id = ?`).get(user.id) as any)?.deskcomm_user_id || null;
   if (!deskcommUserId) {
     // Busca por e-mail antes de criar — createUser falha se o e-mail já existir por lá (ex.:
@@ -2709,7 +3043,7 @@ async function deskcommGarantirUsuario(user: { id: number; email: string; nome: 
 // ?silencioso=1: usado pelo módulo DP/RH via fetch() — mesma ponte, mas termina num arquivo leve do
 // deskcomm (o manifest) em vez de carregar o Inbox inteiro. O que importa ali é só o Set-Cookie
 // `sb-deskcomm-auth` gravado no caminho, pra tela do DP/RH poder chamar /api/v1/* como esse usuário.
-app.get("/deskcomm-login", requireAuth, blockCliente, async (req, res) => {
+app.get("/deskcomm-login", requireAuth, blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!deskcommAdmin || !DESKCOMM_ORG_ID) {
     return res.status(503).send("Integração com o deskcomm não configurada (faltam variáveis de ambiente no servidor).");
@@ -2750,7 +3084,7 @@ function deskcommUsuarioDoCookie(cookies: Record<string, string> | undefined): s
     return null;
   }
 }
-app.get("/api/atendimento/sessao-deskcomm", requireAuth, blockCliente, async (req, res) => {
+app.get("/api/atendimento/sessao-deskcomm", requireAuth, blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   try {
     const esperado = await deskcommGarantirUsuario(user);
@@ -2769,18 +3103,103 @@ app.get("/api/atendimento/sessao-deskcomm", requireAuth, blockCliente, async (re
 });
 
 // ---------- Autenticação ----------
+// Achado em auditoria (2026-10-12): o `loginRateLimiter` existente trava por IP (ex.: 10 tentativas/
+// 15min) — não impede um ataque de credential-stuffing contra UM e-mail específico vindo de muitos
+// IPs diferentes. Trava extra por e-mail (mesmo padrão/limite já usado em troca de senha), em cima da
+// trava por IP que já existia — as duas continuam valendo.
+const loginErrosPorEmail = new Map<string, { n: number; ate: number }>();
+// Achado em auditoria (2026-10-12): com e-mail inexistente (ou inativo), verifyPassword() nunca
+// rodava — só ela faz o scrypt caro, então um e-mail que existe sempre demora uns ms mais que um que
+// não existe, dando pra enumerar e-mail válido por tempo de resposta. Roda um scrypt-dummy do mesmo
+// custo nesses casos, só pra igualar o tempo — não afeta o resultado (sempre dá erro genérico).
+const LOGIN_HASH_DUMMY = hashPassword(crypto.randomBytes(16).toString("hex"));
 app.post("/api/auth/login", loginRateLimiter, (req, res) => {
   const { email, password } = req.body || {};
   if (!email || !password) return res.status(400).json({ error: "Informe e-mail e senha." });
-  const row = sqlite.prepare(`SELECT * FROM app_users WHERE email = ?`).get(String(email).trim().toLowerCase()) as any;
-  if (!row || !row.ativo || !verifyPassword(password, row.password_hash)) {
+  const emailNorm = String(email).trim().toLowerCase();
+  const trava = loginErrosPorEmail.get(emailNorm);
+  if (trava && trava.ate > Date.now() && trava.n >= 10) return res.status(429).json({ error: "Muitas tentativas de login. Aguarde alguns minutos." });
+  const row = sqlite.prepare(`SELECT * FROM app_users WHERE email = ?`).get(emailNorm) as any;
+  let senhaOk: boolean;
+  if (row && row.ativo) senhaOk = verifyPassword(password, row.password_hash);
+  else { verifyPassword(password, LOGIN_HASH_DUMMY); senhaOk = false; }
+  if (!row || !row.ativo || !senhaOk) {
+    const t = trava && trava.ate > Date.now() ? trava : { n: 0, ate: Date.now() + 15 * 60_000 };
+    t.n++; loginErrosPorEmail.set(emailNorm, t);
     return res.status(401).json({ error: "E-mail ou senha inválidos." });
   }
+  loginErrosPorEmail.delete(emailNorm);
   const token = createSession(row.id, !!row.painel_tv);
   const diasCookie = row.painel_tv ? SESSION_DAYS_PAINEL_TV : SESSION_DAYS;
   res.cookie("sid", token, { httpOnly: true, sameSite: "lax", secure: req.secure, maxAge: diasCookie * 24 * 60 * 60 * 1000 });
   const user = getSessionUser(token);
   res.json({ ok: true, user: { id: user!.id, nome: user!.nome, email: user!.email, perfil: user!.perfil, empresaId: user!.empresaId, painelTv: user!.painelTv } });
+});
+// "Esqueci minha senha" — gap identificado na auditoria de hoje (não existia nenhum jeito de
+// recuperar senha sem pedir pra um Administrador resetar manualmente). Token aleatório de 32 bytes,
+// só o hash (sha256) fica no banco, expira em 1h, uso único. Resposta é SEMPRE genérica (mesma
+// mensagem, mesmo e-mail existindo ou não) — evita enumerar e-mail cadastrado, mesmo padrão de
+// cuidado já aplicado no login.
+const esqueciSenhaRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Muitos pedidos. Aguarde alguns minutos e tente de novo." },
+});
+const esqueciSenhaPorEmail = new Map<string, { n: number; ate: number }>();
+const ESQUECI_SENHA_MSG_OK = { ok: true, message: "Se esse e-mail estiver cadastrado, enviamos um link pra redefinir a senha. Confira também o spam." };
+app.post("/api/auth/esqueci-senha", esqueciSenhaRateLimiter, async (req, res) => {
+  const email = String(req.body?.email || "").trim().toLowerCase();
+  if (!email) return res.status(400).json({ error: "Informe o e-mail." });
+  // Trava por e-mail (não só por IP) — sem isso dava pra martelar o e-mail de uma vítima com pedidos
+  // de reset vindos de IPs diferentes, inundando a caixa dela.
+  const trava = esqueciSenhaPorEmail.get(email);
+  if (trava && trava.ate > Date.now() && trava.n >= 5) return res.json(ESQUECI_SENHA_MSG_OK);
+  const t = trava && trava.ate > Date.now() ? trava : { n: 0, ate: Date.now() + 15 * 60_000 };
+  t.n++; esqueciSenhaPorEmail.set(email, t);
+  const row = sqlite.prepare(`SELECT * FROM app_users WHERE email = ? AND ativo = 1`).get(email) as any;
+  if (row) {
+    try {
+      const tokenCru = crypto.randomBytes(32).toString("hex");
+      const tokenHash = crypto.createHash("sha256").update(tokenCru).digest("hex");
+      // Só um link válido por vez — pedir de novo invalida o anterior.
+      sqlite.prepare(`DELETE FROM password_reset_tokens WHERE user_id = ? AND used_at IS NULL`).run(row.id);
+      sqlite
+        .prepare(`INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES (?, ?, datetime('now', '+1 hour'))`)
+        .run(row.id, tokenHash);
+      const link = `${req.protocol}://${req.get("host")}/?resetToken=${tokenCru}`;
+      await enviarEmail(row.escritorio_id, {
+        to: [row.email],
+        subject: "Redefinição de senha — Simples Contábeis",
+        text: `Olá, ${row.nome}.\n\nPediram a redefinição da sua senha. Se foi você, clique no link abaixo (válido por 1 hora, uso único):\n${link}\n\nSe não foi você, pode ignorar este e-mail — sua senha continua a mesma.`,
+      });
+    } catch (e: any) {
+      // Não revela ao solicitante se o envio falhou (configuração de e-mail do escritório, etc.) —
+      // só fica registrado aqui pro escritório perceber nos logs. Resposta continua genérica.
+      console.error(`[esqueci-senha] falha ao enviar e-mail pra ${email}:`, e.message);
+    }
+  }
+  res.json(ESQUECI_SENHA_MSG_OK);
+});
+app.post("/api/auth/resetar-senha", esqueciSenhaRateLimiter, (req, res) => {
+  const tokenCru = String(req.body?.token || "");
+  const novaSenha = String(req.body?.novaSenha || "");
+  if (!tokenCru) return res.status(400).json({ error: "Link inválido." });
+  const pwError = passwordPolicyError(novaSenha);
+  if (pwError) return res.status(400).json({ error: pwError });
+  const tokenHash = crypto.createHash("sha256").update(tokenCru).digest("hex");
+  const linha = sqlite
+    .prepare(`SELECT * FROM password_reset_tokens WHERE token_hash = ? AND used_at IS NULL AND expires_at > datetime('now')`)
+    .get(tokenHash) as any;
+  if (!linha) return res.status(400).json({ error: "Link inválido ou expirado. Peça um novo link." });
+  sqlite.prepare(`UPDATE app_users SET password_hash = ? WHERE id = ?`).run(hashPassword(novaSenha), linha.user_id);
+  sqlite.prepare(`UPDATE password_reset_tokens SET used_at = datetime('now') WHERE id = ?`).run(linha.id);
+  // Derruba qualquer sessão ativa (mesmo cuidado de troca de senha normal) e qualquer outro link de
+  // reset ainda pendente pra esse usuário.
+  sqlite.prepare(`DELETE FROM sessions WHERE user_id = ?`).run(linha.user_id);
+  sqlite.prepare(`DELETE FROM password_reset_tokens WHERE user_id = ? AND id != ?`).run(linha.user_id, linha.id);
+  res.json({ ok: true });
 });
 app.post("/api/auth/logout", (req, res) => {
   const token = req.cookies?.sid;
@@ -2879,13 +3298,23 @@ app.use("/api", (req, res, next) => {
 app.get("/api/super/escritorios", requireSuperAdmin, (_req, res) => {
   const rows = sqlite
     .prepare(
-      `SELECT id, nome, cnpj, email, telefone, empresa_id as empresaId, ativo, criado_em as criadoEm,
+      `SELECT id, nome, cnpj, email, telefone, empresa_id as empresaId, ativo, isento_assinatura as isentoAssinatura, criado_em as criadoEm,
               (SELECT COUNT(*) FROM empresas e WHERE e.escritorio_id = escritorios.id) as totalEmpresas,
               (SELECT COUNT(*) FROM app_users u WHERE u.escritorio_id = escritorios.id) as totalUsuarios
        FROM escritorios ORDER BY nome`
     )
     .all() as any[];
-  res.json({ items: rows.map((r) => ({ ...r, ativo: !!r.ativo })) });
+  res.json({ items: rows.map((r) => ({ ...r, ativo: !!r.ativo, isentoAssinatura: !!r.isentoAssinatura })) });
+});
+// SuperAdmin: isenta (ou volta a cobrar) um escritório da assinatura da plataforma — isento = acesso
+// a todos os módulos de escritório sem teste/pagamento (ver modulosDoEscritorio/escritorioTemModulo).
+app.put("/api/super/escritorios/:id/isencao", requireSuperAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  const existe = sqlite.prepare(`SELECT 1 FROM escritorios WHERE id = ?`).get(id);
+  if (!existe) return res.status(404).json({ error: "Escritório não encontrado." });
+  const isento = req.body?.isento ? 1 : 0;
+  sqlite.prepare(`UPDATE escritorios SET isento_assinatura = ?, updated_at = datetime('now') WHERE id = ?`).run(isento, id);
+  res.json({ ok: true, isentoAssinatura: !!isento });
 });
 app.post("/api/super/escritorios", requireSuperAdmin, (req, res) => {
   const { nome, cnpj, email, telefone } = req.body || {};
@@ -3001,11 +3430,23 @@ app.post("/api/users", requireAdmin, (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+// Achado em auditoria (2026-10-12): nada impedia desativar/excluir o ÚLTIMO Administrador ativo de um
+// escritório — um clique errado (ou o único admin se desativando/excluindo por engano) trancava o
+// escritório inteiro fora do sistema, sem ninguém com acesso pra reverter.
+function ehUltimoAdminAtivo(escritorioId: number, userId: number): boolean {
+  const alvo = sqlite.prepare(`SELECT perfil, ativo FROM app_users WHERE id = ?`).get(userId) as any;
+  if (!alvo || alvo.perfil !== "Administrador" || !alvo.ativo) return false;
+  const outros = (sqlite.prepare(`SELECT COUNT(*) n FROM app_users WHERE escritorio_id = ? AND perfil = 'Administrador' AND ativo = 1 AND id != ?`).get(escritorioId, userId) as any).n;
+  return outros === 0;
+}
 app.put("/api/users/:id", requireAdmin, (req, res) => {
   const id = Number(req.params.id);
   const existing = sqlite.prepare(`SELECT * FROM app_users WHERE id = ?`).get(id) as any;
   if (!existing || existing.escritorio_id !== (req as any).user.escritorioId) return res.status(404).json({ error: "Usuário não encontrado." });
   const { nome, email, password, ativo, acessoTodasEmpresas, isentoAssinatura, painelTv, painelTvPaginas, telefone } = req.body || {};
+  if (ativo === false && ehUltimoAdminAtivo(existing.escritorio_id, id)) {
+    return res.status(409).json({ error: "Este é o único Administrador ativo do escritório — não dá pra desativar. Crie outro Administrador antes." });
+  }
   if (password) {
     const pwError = passwordPolicyError(password);
     if (pwError) return res.status(400).json({ error: pwError });
@@ -3041,6 +3482,9 @@ app.delete("/api/users/:id", requireAdmin, (req, res) => {
   const id = Number(req.params.id);
   const existing = sqlite.prepare(`SELECT escritorio_id FROM app_users WHERE id = ?`).get(id) as any;
   if (!existing || existing.escritorio_id !== (req as any).user.escritorioId) return res.status(404).json({ error: "Usuário não encontrado." });
+  if (ehUltimoAdminAtivo(existing.escritorio_id, id)) {
+    return res.status(409).json({ error: "Este é o único Administrador ativo do escritório — não dá pra excluir. Crie outro Administrador antes." });
+  }
   sqlite.prepare(`DELETE FROM sessions WHERE user_id = ?`).run(id);
   sqlite.prepare(`DELETE FROM app_users WHERE id = ?`).run(id);
   res.json({ id });
@@ -3069,6 +3513,30 @@ app.put("/api/users/:id/permissoes", requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 const CONFIG_ABAS_VALIDAS = ["dominio", "email", "whatsapp", "fgts-digital", "nfse-agendamento", "painel-tv", "envio-docs", "atendimento", "assinatura-plataforma"];
+// Abas de Relatórios que cada colaborador pode ver. Sem nenhuma linha = vê todas (padrão de antes).
+const RELATORIOS_ABAS_VALIDAS = ["balanco", "balancete", "dre", "faturamento", "razao", "comparativo", "entradas_saidas", "programacao_ferias", "folha", "retencoes"];
+sqlite.exec(`CREATE TABLE IF NOT EXISTS colaborador_relatorios_abas (user_id INTEGER NOT NULL, aba TEXT NOT NULL, PRIMARY KEY (user_id, aba))`);
+app.get("/api/users/:id/relatorios-abas", requireAdmin, (req, res) => {
+  if (!pertenceAoEscritorio(req, Number(req.params.id))) return res.status(404).json({ error: "Usuário não encontrado." });
+  const rows = sqlite.prepare(`SELECT aba FROM colaborador_relatorios_abas WHERE user_id = ?`).all(Number(req.params.id)) as any[];
+  res.json({ abas: rows.map((r) => r.aba) });
+});
+app.put("/api/users/:id/relatorios-abas", requireAdmin, (req, res) => {
+  const userId = Number(req.params.id);
+  if (!pertenceAoEscritorio(req, userId)) return res.status(404).json({ error: "Usuário não encontrado." });
+  const abas: string[] = Array.isArray(req.body?.abas) ? req.body.abas.filter((a: string) => RELATORIOS_ABAS_VALIDAS.includes(a)) : [];
+  sqlite.prepare(`DELETE FROM colaborador_relatorios_abas WHERE user_id = ?`).run(userId);
+  const stmt = sqlite.prepare(`INSERT INTO colaborador_relatorios_abas (user_id, aba) VALUES (?, ?)`);
+  for (const aba of abas) stmt.run(userId, aba);
+  res.json({ ok: true });
+});
+// Abas de Relatórios que o usuário logado pode ver (lista vazia = todas). Só colaborador tem restrição.
+app.get("/api/relatorios/abas-permitidas", blockCliente, requireAuth, (req, res) => {
+  const user = (req as any).user;
+  if (user.perfil !== "Colaborador") return res.json({ abas: [] });
+  const rows = sqlite.prepare(`SELECT aba FROM colaborador_relatorios_abas WHERE user_id = ?`).all(user.id) as any[];
+  res.json({ abas: rows.map((r) => r.aba) });
+});
 app.get("/api/users/:id/config-abas", requireAdmin, (req, res) => {
   if (!pertenceAoEscritorio(req, Number(req.params.id))) return res.status(404).json({ error: "Usuário não encontrado." });
   const rows = sqlite.prepare(`SELECT aba FROM colaborador_config_abas WHERE user_id = ?`).all(Number(req.params.id)) as any[];
@@ -3143,14 +3611,69 @@ const LICENCAS_MINIMAS: { chave: string; label: string }[] = [
   { chave: "corpo_bombeiros", label: "Corpo de Bombeiros" },
   { chave: "ambiental_semma", label: "SEMMA" },
 ];
-app.get("/api/empresas/pendencias-documentos", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
+// Itens exigidos na aba Pendências: certificado + licenças. Pessoa jurídica exige tudo por padrão;
+// pessoa física (CPF, 11 dígitos) não exige licenças por padrão — dá pra ligar cada item por escritório.
+const PENDENCIA_ITENS: { chave: string; label: string }[] = [{ chave: "certificado", label: "Certificado digital" }, ...LICENCAS_MINIMAS];
+const SETORES_EMPRESA: { chave: string; label: string }[] = [
+  { chave: "contabilidade", label: "Contabilidade" },
+  { chave: "fiscal", label: "Fiscal" },
+  { chave: "dprh", label: "DP/RH" },
+];
+const SETOR_ROTULO: Record<string, string> = Object.fromEntries(SETORES_EMPRESA.map((s) => [s.chave, s.label]));
+function empresaSetores(empresaId: number): string[] {
+  const rows = sqlite.prepare(`SELECT setor FROM empresa_setores WHERE empresa_id = ?`).all(empresaId) as any[];
+  return rows.length ? rows.map((r) => r.setor) : SETORES_EMPRESA.map((s) => s.chave);
+}
+// Modelo amarrado a um setor só vale para empresa que atende esse setor. Modelo sem setor vale para todas.
+function envioSetorAtendido(templateSetor: string | null | undefined, empresaId: number): boolean {
+  if (!templateSetor) return true;
+  return empresaSetores(empresaId).includes(templateSetor);
+}
+app.get("/api/empresas/:id/setores", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
+  const empresaId = Number(req.params.id);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  res.json({ setores: empresaSetores(empresaId), todos: SETORES_EMPRESA });
+});
+app.put("/api/empresas/:id/setores", blockCliente, requirePermissao("empresas", "editar"), (req, res) => {
+  const empresaId = Number(req.params.id);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const escolhidos: string[] = Array.isArray(req.body?.setores) ? req.body.setores : [];
+  const validos = escolhidos.filter((c) => SETOR_ROTULO[c]);
+  if (!validos.length) return res.status(400).json({ error: "Marque pelo menos um setor que a empresa atende." });
+  sqlite.prepare(`DELETE FROM empresa_setores WHERE empresa_id = ?`).run(empresaId);
+  for (const c of [...new Set(validos)]) sqlite.prepare(`INSERT INTO empresa_setores (empresa_id, setor) VALUES (?, ?)`).run(empresaId, c);
+  res.json({ ok: true, setores: validos });
+});
+function pendenciasExigidasPf(escritorioId: number): Record<string, boolean> {
+  const padrao: Record<string, boolean> = { certificado: true, alvara: false, vigilancia_sanitaria: false, corpo_bombeiros: false, ambiental_semma: false };
+  const salvos = sqlite.prepare(`SELECT chave, exigir_pf FROM pendencias_config WHERE escritorio_id = ?`).all(escritorioId) as any[];
+  for (const r of salvos) if (r.chave in padrao) padrao[r.chave] = !!r.exigir_pf;
+  return padrao;
+}
+app.get("/api/empresas/pendencias-documentos/config", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
   const user = (req as any).user;
+  res.json({ itens: PENDENCIA_ITENS, exigirPf: pendenciasExigidasPf(user.escritorioId) });
+});
+app.put("/api/empresas/pendencias-documentos/config", blockCliente, requirePermissao("empresas", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const exigir = req.body?.exigirPf && typeof req.body.exigirPf === "object" ? req.body.exigirPf : {};
+  for (const item of PENDENCIA_ITENS) {
+    if (!(item.chave in exigir)) continue;
+    sqlite
+      .prepare(`INSERT INTO pendencias_config (escritorio_id, chave, exigir_pf) VALUES (?, ?, ?) ON CONFLICT(escritorio_id, chave) DO UPDATE SET exigir_pf = excluded.exigir_pf`)
+      .run(user.escritorioId, item.chave, exigir[item.chave] ? 1 : 0);
+  }
+  res.json({ ok: true, exigirPf: pendenciasExigidasPf(user.escritorioId) });
+});
+function pendenciasDocsData(user: any) {
   const visiveis = empresasVisiveis(user);
   let rows = sqlite
     .prepare(
       `SELECT e.id, e.nome, e.cnpj,
               ((SELECT 1 FROM nfse_certificados nc WHERE nc.empresa_id = e.id) IS NOT NULL
-                OR (SELECT 1 FROM nfe_busca_config nb WHERE nb.empresa_id = e.id) IS NOT NULL) as temCertificado
+                OR (SELECT 1 FROM nfe_busca_config nb WHERE nb.empresa_id = e.id) IS NOT NULL) as temCertificado,
+              (SELECT MAX(v) FROM (SELECT validade_ate v FROM nfse_certificados WHERE empresa_id = e.id
+                                   UNION ALL SELECT validade_ate v FROM nfe_busca_config WHERE empresa_id = e.id)) as certValidadeAte
        FROM empresas e WHERE e.ativo = 1 ORDER BY e.nome COLLATE NOCASE`
     )
     .all() as any[];
@@ -3158,12 +3681,43 @@ app.get("/api/empresas/pendencias-documentos", blockCliente, requirePermissao("e
   const tem = new Set<string>(
     (sqlite.prepare(`SELECT DISTINCT empresa_id || ':' || tipo as k FROM empresa_anexos WHERE categoria = 'licenca'`).all() as any[]).map((r) => r.k)
   );
+  const exigirPf = pendenciasExigidasPf(user.escritorioId);
   const items = rows.map((r) => {
     const licencas: Record<string, boolean> = {};
     for (const l of LICENCAS_MINIMAS) licencas[l.chave] = tem.has(`${r.id}:${l.chave}`);
-    return { id: r.id, nome: r.nome, cnpj: r.cnpj, temCertificado: !!r.temCertificado, licencas };
+    const pf = String(r.cnpj || "").replace(/\D/g, "").length === 11;
+    // exigidos: o que conta como pendência pra esta empresa (PJ = tudo; PF = só o que o escritório marcou)
+    const exigidos: Record<string, boolean> = {};
+    for (const it of PENDENCIA_ITENS) exigidos[it.chave] = pf ? !!exigirPf[it.chave] : true;
+    const certVencido = !!r.temCertificado && !!r.certValidadeAte && new Date(r.certValidadeAte).getTime() < Date.now();
+    return { id: r.id, nome: r.nome, cnpj: r.cnpj, pessoaFisica: pf, temCertificado: !!r.temCertificado, certValidadeAte: r.certValidadeAte || null, certVencido, licencas, exigidos };
   });
-  res.json({ licencasMinimas: LICENCAS_MINIMAS, items });
+  return { licencasMinimas: LICENCAS_MINIMAS, itensPendencia: PENDENCIA_ITENS, items };
+}
+app.get("/api/empresas/pendencias-documentos", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => res.json(pendenciasDocsData((req as any).user)));
+// PDF da tabela de Pendências de documentos (estilo Programação de Férias).
+app.get("/api/empresas/pendencias-documentos/pdf", blockCliente, requirePermissao("empresas", "visualizar"), async (req, res) => {
+  const user = (req as any).user;
+  const { licencasMinimas, items } = pendenciasDocsData(user);
+  const exig = (i: any, ch: string) => !!i.exigidos[ch];
+  const pend = items.filter((i: any) => (exig(i, "certificado") && !i.temCertificado) || licencasMinimas.some((l: any) => exig(i, l.chave) && !i.licencas[l.chave]));
+  const vermelho = (t: string) => `<span style="color:#c0392b; font-weight:600;">${t}</span>`, verde = `<span style="color:#1f8a52;">✓</span>`, traco = `<span style="color:#8a938d;">—</span>`;
+  const cCert = (i: any) => !exig(i, "certificado") ? traco : (!i.temCertificado ? vermelho("Falta") : (i.certVencido ? vermelho("Vencido") : verde));
+  const cLic = (i: any, ch: string) => !exig(i, ch) ? traco : (i.licencas[ch] ? verde : vermelho("Falta"));
+  const row = (i: any) => `<tr><td>${escHtmlRelatorio(i.nome)}</td><td>${escHtmlRelatorio(i.cnpj || "—")}</td><td class="c">${cCert(i)}</td>${licencasMinimas.map((l: any) => `<td class="c">${cLic(i, l.chave)}</td>`).join("")}</tr>`;
+  const html = `<!doctype html><html><head><meta charset="utf-8"><style>${ES_PDF_CSS}
+    table{table-layout:auto;} td.c,th.c{text-align:center;}</style></head><body>
+    <h1>Pendências de documentos</h1>
+    <p class="sub">${escHtmlRelatorio(esEscritorioNome(user.escritorioId))} · gerado em ${new Date().toLocaleDateString("pt-BR")} às ${new Date().toLocaleTimeString("pt-BR")} · ${pend.length} empresa(s) com pendência</p>
+    <table><thead><tr><th>Empresa</th><th>CNPJ</th><th class="c">Certificado</th>${licencasMinimas.map((l: any) => `<th class="c">${escHtmlRelatorio(l.label)}</th>`).join("")}</tr></thead>
+    <tbody>${pend.length ? pend.map(row).join("") : `<tr><td colspan="${3 + licencasMinimas.length}">Nenhuma pendência. 🎉</td></tr>`}</tbody></table>
+  </body></html>`;
+  try {
+    const pdf = await esRenderPdf(html);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="Pendencias_Documentos.pdf"`);
+    res.end(pdf);
+  } catch (e: any) { console.error("[pendencias pdf]", e.message); res.status(500).send("Falha ao gerar o PDF."); }
 });
 app.get("/api/empresas", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
   const user = (req as any).user;
@@ -3205,6 +3759,7 @@ app.get("/api/empresas", blockCliente, requirePermissao("empresas", "visualizar"
       fgtsUltimoErro: r.fgts_ultimo_erro,
       comparativoMovimentoDiario: !!r.comparativo_movimento_diario,
       programacaoFerias: !!r.programacao_ferias,
+      demonstrativoMensal: !!r.demonstrativo_mensal,
       origem: r.origem,
       createdAt: r.created_at,
       temAnexos: empresaTemAnexos(r.id),
@@ -3225,14 +3780,15 @@ app.get("/api/empresas/cnpj/:cnpj", blockCliente, requirePermissao("empresas", "
     res.status(502).json({ error: `Não consegui consultar o CNPJ: ${e.message}` });
   }
 });
-const REGIMES_TRIBUTARIOS = ["simples_nacional", "lucro_presumido", "lucro_real"] as const;
+const REGIMES_TRIBUTARIOS = ["simples_nacional", "lucro_presumido", "lucro_real", "produtor_rural"] as const;
 // Modelo de Envio de Documentos com "auto_regime_tributario" configurado (ex.: DARF IRPJ/CSLL só
 // se aplica a Lucro Real) ganha atribuição sozinho assim que a empresa é classificada nesse regime
 // — chamado toda vez que o regime é salvo (cadastro novo ou edição), idempotente via UNIQUE(template_id,
 // empresa_id) do INSERT OR IGNORE, então não recria nem duplica se já existir.
 function envioAutoAtribuirPorRegime(empresaId: number, escritorioId: number, regimeTributario: string) {
-  const templates = sqlite.prepare(`SELECT id FROM envio_templates WHERE escritorio_id = ? AND auto_regime_tributario = ?`).all(escritorioId, regimeTributario) as any[];
+  const templates = sqlite.prepare(`SELECT id, setor FROM envio_templates WHERE escritorio_id = ? AND auto_regime_tributario = ?`).all(escritorioId, regimeTributario) as any[];
   for (const t of templates) {
+    if (!envioSetorAtendido(t.setor, empresaId)) continue;
     sqlite.prepare(`INSERT OR IGNORE INTO envio_atribuicoes (template_id, empresa_id) VALUES (?, ?)`).run(t.id, empresaId);
   }
 }
@@ -3266,6 +3822,7 @@ app.post("/api/empresas", blockCliente, requirePermissao("empresas", "postar"), 
       user.escritorioId
     );
   const novaEmpresaId = Number(info.lastInsertRowid);
+  garantirContatosDeTelefoneCadastral(novaEmpresaId);
   envioAutoAtribuirPorRegime(novaEmpresaId, user.escritorioId, (REGIMES_TRIBUTARIOS as readonly string[]).includes(regimeTributario) ? regimeTributario : "simples_nacional");
   if (telefone) deskcommAgendarSyncEmpresasClientes();
   res.json({ id: novaEmpresaId });
@@ -3299,7 +3856,7 @@ app.put("/api/empresas/:id", blockCliente, requirePermissao("empresas", "editar"
   const id = Number(req.params.id);
   const existing = sqlite.prepare(`SELECT * FROM empresas WHERE id = ?`).get(id) as any;
   if (!existing || !podeAcessarEmpresa((req as any).user, id)) return res.status(404).json({ error: "Empresa não encontrada." });
-  const { nome, cnpj, codigoDominio, apelido, email, telefone, endereco, cidade, uf, cep, inscricaoMunicipal, inscricaoEstadual, nomeRepresentanteLegal, cpfRepresentanteLegal, codigoMunicipioIbge, nomeMunicipioIbge, regimeTributario, ativo, visivelRelatorios, isentoAssinatura, buscaFgts, comparativoMovimentoDiario, programacaoFerias } = req.body || {};
+  const { nome, cnpj, codigoDominio, apelido, email, telefone, endereco, cidade, uf, cep, inscricaoMunicipal, inscricaoEstadual, nomeRepresentanteLegal, cpfRepresentanteLegal, codigoMunicipioIbge, nomeMunicipioIbge, regimeTributario, ativo, visivelRelatorios, isentoAssinatura, buscaFgts, comparativoMovimentoDiario, programacaoFerias, demonstrativoMensal } = req.body || {};
   const regimeTributarioFinal =
     regimeTributario !== undefined
       ? ((REGIMES_TRIBUTARIOS as readonly string[]).includes(regimeTributario) ? regimeTributario : "simples_nacional")
@@ -3307,7 +3864,7 @@ app.put("/api/empresas/:id", blockCliente, requirePermissao("empresas", "editar"
   sqlite
     .prepare(
       `UPDATE empresas SET nome=?, cnpj=?, codigo_dominio=?, apelido=?, email=?, telefone=?, endereco=?, cidade=?, uf=?, cep=?, inscricao_municipal=?, inscricao_estadual=?,
-         nome_representante_legal=?, cpf_representante_legal=?, codigo_municipio_ibge=?, nome_municipio_ibge=?, regime_tributario=?, ativo=?, visivel_relatorios=?, isento_assinatura=?, busca_fgts=?, comparativo_movimento_diario=?, programacao_ferias=?, updated_at=datetime('now') WHERE id=?`
+         nome_representante_legal=?, cpf_representante_legal=?, codigo_municipio_ibge=?, nome_municipio_ibge=?, regime_tributario=?, ativo=?, visivel_relatorios=?, isento_assinatura=?, busca_fgts=?, comparativo_movimento_diario=?, programacao_ferias=?, demonstrativo_mensal=?, updated_at=datetime('now') WHERE id=?`
     )
     .run(
       nome ?? existing.nome,
@@ -3333,12 +3890,14 @@ app.put("/api/empresas/:id", blockCliente, requirePermissao("empresas", "editar"
       buscaFgts === undefined ? existing.busca_fgts : buscaFgts ? 1 : 0,
       comparativoMovimentoDiario === undefined ? existing.comparativo_movimento_diario : comparativoMovimentoDiario ? 1 : 0,
       programacaoFerias === undefined ? existing.programacao_ferias : programacaoFerias ? 1 : 0,
+      demonstrativoMensal === undefined ? existing.demonstrativo_mensal : demonstrativoMensal ? 1 : 0,
       id
     );
   if (regimeTributario !== undefined || req.body.regimeApuracaoSn !== undefined || req.body.percentualTotalTributosSn !== undefined) {
     empresaSalvarDadosFiscaisNfse(id, regimeTributarioFinal === "simples_nacional", req.body);
   }
   if (regimeTributario !== undefined) envioAutoAtribuirPorRegime(id, (req as any).user.escritorioId, regimeTributarioFinal);
+  garantirContatosDeTelefoneCadastral(id);
   deskcommAgendarSyncEmpresasClientes();
   res.json({ ok: true });
 });
@@ -3365,11 +3924,22 @@ app.post("/api/empresas/:id/contatos", blockCliente, requirePermissao("empresas"
   // atendimento do WhatsApp (tag "Empresa cliente" no deskcomm). Sem e-mail, grava "" e desliga o envio
   // de e-mail — a coluna é NOT NULL desde a criação da tabela.
   if (!nome || (!email && !telefone)) return res.status(400).json({ error: "Informe o nome e o e-mail ou o telefone do contato." });
+  const chave = telefone ? telefoneChaveBr(telefone) : null;
+  const existente = chave
+    ? (sqlite.prepare(`SELECT id, telefone FROM empresa_contatos WHERE empresa_id = ? AND telefone IS NOT NULL`).all(empresaId) as any[]).find((c) => telefoneChaveBr(c.telefone) === chave)
+    : null;
+  if (existente) {
+    sqlite
+      .prepare(`UPDATE empresa_contatos SET nome = ?, email = ?, receber_emails = ?, telefone = ?, receber_whatsapp = ? WHERE id = ?`)
+      .run(nome, email || "", email && receberEmails !== false ? 1 : 0, crmSoDigitos(telefone), receberWhatsapp ? 1 : 0, existente.id);
+    deskcommAgendarSyncEmpresasClientes();
+    return res.json({ id: existente.id, existente: true });
+  }
   const info = sqlite
     .prepare(`INSERT INTO empresa_contatos (empresa_id, nome, email, receber_emails, telefone, receber_whatsapp) VALUES (?, ?, ?, ?, ?, ?)`)
     .run(empresaId, nome, email || "", email && receberEmails !== false ? 1 : 0, telefone || null, receberWhatsapp ? 1 : 0);
   if (telefone) deskcommAgendarSyncEmpresasClientes();
-  res.json({ id: Number(info.lastInsertRowid) });
+  res.json({ id: Number(info.lastInsertRowid), existente: false });
 });
 app.put("/api/empresas/contatos/:contatoId", blockCliente, requirePermissao("empresas", "editar"), (req, res) => {
   const contato = sqlite.prepare(`SELECT empresa_id FROM empresa_contatos WHERE id = ?`).get(Number(req.params.contatoId)) as any;
@@ -3395,9 +3965,13 @@ app.delete("/api/empresas/contatos/:contatoId", blockCliente, requirePermissao("
 app.get("/api/empresas/contatos-resumo", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
   const user = (req as any).user;
   const visiveis = empresasVisiveis(user);
-  let ids = (sqlite.prepare(`SELECT DISTINCT empresa_id FROM empresa_contatos`).all() as any[]).map((r) => r.empresa_id);
-  if (visiveis !== null) ids = ids.filter((id) => visiveis.includes(id));
-  res.json({ comContato: ids });
+  const rows = sqlite.prepare(`SELECT empresa_id, nome, email, telefone, receber_emails, receber_whatsapp FROM empresa_contatos ORDER BY nome`).all() as any[];
+  const porEmpresa: Record<number, any[]> = {};
+  for (const r of rows) {
+    if (visiveis !== null && !visiveis.includes(r.empresa_id)) continue;
+    (porEmpresa[r.empresa_id] ||= []).push({ nome: r.nome, email: r.email, telefone: r.telefone, receberEmails: !!r.receber_emails, receberWhatsapp: !!r.receber_whatsapp });
+  }
+  res.json({ comContato: Object.keys(porEmpresa).map(Number), porEmpresa });
 });
 
 // ---- O que cada empresa pode pedir em "Solicitar Documentos" ----
@@ -3437,7 +4011,7 @@ app.put("/api/empresas/:id/solicitacao-tipos", blockCliente, requirePermissao("e
   res.json({ ok: true });
 });
 
-// ---- Anexos do cadastro (Constituição/Licenças) ----
+// ---- Anexos do cadastro (Constituição/Licenças/Anexo) ----
 const EMPRESA_ANEXO_TIPOS: Record<string, { categoria: string; label: string }> = {
   contrato_social: { categoria: "constituicao", label: "Contrato Social / Alteração" },
   cartao_cnpj: { categoria: "constituicao", label: "Cartão CNPJ" },
@@ -3446,6 +4020,9 @@ const EMPRESA_ANEXO_TIPOS: Record<string, { categoria: string; label: string }> 
   vigilancia_sanitaria: { categoria: "licenca", label: "Licença Vigilância Sanitária" },
   corpo_bombeiros: { categoria: "licenca", label: "Licença Corpo de Bombeiros" },
   ambiental_semma: { categoria: "licenca", label: "Licença Ambiental - SEMMA" },
+  // Aba "Anexo": documento avulso qualquer, sem catálogo fixo de tipos — o rótulo vem do campo
+  // "descricao" (livre, digitado na hora do envio), não de um "tipo" escolhido numa lista.
+  documento_geral: { categoria: "anexo", label: "Documento" },
 };
 // Tipos de licença cadastrados à mão (tabela empresa_licenca_tipos), além dos fixos acima. Sempre
 // categoria 'licenca'. Com empresaId: só os compartilhados (empresa_id NULL) + os dessa empresa
@@ -3979,6 +4556,12 @@ app.post("/api/chat/mensagens", upload.single("arquivo"), (req, res) => {
     anexoMime: string | null = null,
     anexoSize: number | null = null;
   if (req.file) {
+    // Achado em auditoria (2026-10-12): sem allowlist nenhuma — o download força attachment (ver
+    // GET .../anexo, abaixo), então não abre XSS, mas mesmo assim fica inconsistente com todo outro
+    // upload do sistema. Mesma allowlist já usada em Empresas/Contratos.
+    if (!/^(application\/pdf|image\/(png|jpe?g|gif|webp)|application\/(msword|vnd\.(openxmlformats-officedocument\.(wordprocessingml\.document|spreadsheetml\.sheet)|ms-excel))|application\/(zip|x-zip-compressed))$/i.test(req.file.mimetype || "")) {
+      return res.status(400).json({ error: "Tipo de arquivo não permitido. Envie PDF, imagem (PNG/JPG), Word, Excel ou ZIP." });
+    }
     anexoNome = corrigirNomeArquivo(req.file.originalname);
     const dir = path.join(UPLOADS_DIR, "chat-anexos");
     fs.mkdirSync(dir, { recursive: true });
@@ -4071,7 +4654,7 @@ app.get("/api/empresas/:id/anexos", blockCliente, requirePermissao("empresas", "
   if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
   const categoria = typeof req.query.categoria === "string" ? req.query.categoria : null;
   let sql = `SELECT a.id, a.categoria, a.tipo, a.ano, a.nome_arquivo as nomeArquivo, a.mime, a.size_bytes as sizeBytes,
-             a.vencimento, a.vencimento_origem as vencimentoOrigem, a.criado_em as criadoEm, u.nome as criadoPorNome
+             a.vencimento, a.vencimento_origem as vencimentoOrigem, a.descricao, a.criado_em as criadoEm, u.nome as criadoPorNome
              FROM empresa_anexos a LEFT JOIN app_users u ON u.id = a.criado_por WHERE a.empresa_id = ?`;
   const params: any[] = [empresaId];
   if (categoria) {
@@ -4095,6 +4678,17 @@ app.post("/api/empresas/:id/anexos", blockCliente, requirePermissao("empresas", 
     ano = Number(req.body?.ano);
     if (!Number.isInteger(ano) || ano < 2000 || ano > 2100) return res.status(400).json({ error: "Informe o ano da licença." });
   }
+  // Allowlist de tipo de arquivo — barra HTML/SVG/JS etc. na entrada (além do Content-Type ser
+  // tratado como não confiável também na hora de servir o arquivo, ver GET .../arquivo abaixo).
+  // Certificado digital (.pfx/.p12) é um anexo legítimo aqui (ex.: cópia de posse/procuração) —
+  // navegador não tem um Content-Type padronizado pra esse formato (varia entre
+  // application/x-pkcs12 e application/octet-stream genérico), então aceita pela extensão nesse caso
+  // específico. Sem risco: o download (GET .../arquivo, abaixo) já trata qualquer coisa fora de
+  // PDF/imagem como anexo bruto (nunca inline), então o Content-Type cru armazenado aqui não importa.
+  const ehCertificado = /\.(pfx|p12)$/i.test(req.file.originalname || "");
+  if (!ehCertificado && !/^(application\/pdf|image\/(png|jpe?g|gif|webp)|application\/(msword|vnd\.(openxmlformats-officedocument\.(wordprocessingml\.document|spreadsheetml\.sheet)|ms-excel))|application\/(zip|x-zip-compressed))$/i.test(req.file.mimetype || "")) {
+    return res.status(400).json({ error: "Tipo de arquivo não permitido. Envie PDF, imagem (PNG/JPG), Word, Excel, ZIP ou certificado digital (.pfx/.p12)." });
+  }
   req.file.originalname = corrigirNomeArquivo(req.file.originalname);
   const dir = path.join(UPLOADS_DIR, "empresa-anexos", String(empresaId));
   fs.mkdirSync(dir, { recursive: true });
@@ -4112,13 +4706,14 @@ app.post("/api/empresas/:id/anexos", blockCliente, requirePermissao("empresas", 
       if (vencimento) vencimentoOrigem = "automatico";
     }
   }
+  const descricao = info.categoria === "anexo" && req.body?.descricao ? String(req.body.descricao).trim().slice(0, 300) : null;
   const result = sqlite
     .prepare(
-      `INSERT INTO empresa_anexos (empresa_id, categoria, tipo, ano, nome_arquivo, arquivo_path, mime, size_bytes, vencimento, vencimento_origem, criado_por)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO empresa_anexos (empresa_id, categoria, tipo, ano, nome_arquivo, arquivo_path, mime, size_bytes, vencimento, vencimento_origem, descricao, criado_por)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(empresaId, info.categoria, tipo, ano, req.file.originalname, destino, req.file.mimetype, req.file.buffer.length, vencimento, vencimentoOrigem, user.id);
-  res.json({ id: Number(result.lastInsertRowid), ano, vencimento, vencimentoOrigem });
+    .run(empresaId, info.categoria, tipo, ano, req.file.originalname, destino, req.file.mimetype, req.file.buffer.length, vencimento, vencimentoOrigem, descricao, user.id);
+  res.json({ id: Number(result.lastInsertRowid), ano, vencimento, vencimentoOrigem, descricao });
 });
 // Carrega uma pasta inteira de licenças de uma vez (o navegador junta os PDFs da pasta escolhida e
 // manda tudo num só POST) — lê o CNPJ/CPF de dentro de CADA PDF pra descobrir sozinho de qual
@@ -4128,7 +4723,12 @@ app.post("/api/empresas/:id/anexos", blockCliente, requirePermissao("empresas", 
 // monta com a resposta daqui, pra preencher rápido depois.
 const REGEX_CNPJ_BUSCA = /\b\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}\b/g;
 const REGEX_CPF_BUSCA = /\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b/g;
-app.post("/api/empresas/anexos/licencas-bulk", blockCliente, requirePermissao("licencas", "postar"), upload.array("arquivos", 300), async (req, res) => {
+// Upload específico pra esta rota (mais restrito que o `upload` genérico de 60MB/arquivo): até 300
+// arquivos de uma vez (pasta inteira) com 60MB cada, tudo em memória, deixava o pior caso em ~18GB
+// por requisição — risco real de derrubar o processo (OOM) com um upload grande ou malicioso. Licença/
+// alvará escaneado não passa de poucos MB; 15MB por arquivo já é folgado e limita o pior caso a ~4,5GB.
+const uploadLicencasBulk = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
+app.post("/api/empresas/anexos/licencas-bulk", blockCliente, requirePermissao("licencas", "postar"), uploadLicencasBulk.array("arquivos", 300), async (req, res) => {
   const user = (req as any).user;
   const tipo = String(req.body?.tipo || "");
   const info = resolverTipoAnexo(user.escritorioId, tipo);
@@ -4225,8 +4825,17 @@ app.get("/api/empresas/anexos/:anexoId/arquivo", blockCliente, requirePermissao(
   if (!anexo || !podeAcessarEmpresa((req as any).user, anexo.empresa_id) || !fs.existsSync(anexo.arquivo_path)) {
     return res.status(404).json({ error: "Arquivo não encontrado." });
   }
-  res.setHeader("Content-Type", anexo.mime || "application/octet-stream");
-  res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(anexo.nome_arquivo)}"`);
+  // O mime salvo vem do navegador de quem fez upload (não é confiável — dá pra forjar num POST manual).
+  // Servir "inline" um tipo que o navegador pode EXECUTAR (text/html, image/svg+xml) com esse
+  // Content-Type permitiria um upload malicioso rodar script dentro da origem do próprio site (furto de
+  // sessão de quem abrir o anexo depois, inclusive um Administrador). Só os tipos seguros de visualizar
+  // (PDF/imagem comum) saem como inline com o Content-Type real; qualquer outro tipo sai forçado pra
+  // download (attachment) com Content-Type genérico — mesmo padrão já usado em webmail.ts pros anexos
+  // de e-mail.
+  const seguroParaInline = /^(application\/pdf|image\/(png|jpe?g|gif|webp))$/i.test(anexo.mime || "");
+  res.setHeader("Content-Type", seguroParaInline ? anexo.mime : "application/octet-stream");
+  res.setHeader("Content-Disposition", `${seguroParaInline ? "inline" : "attachment"}; filename="${encodeURIComponent(anexo.nome_arquivo)}"`);
+  res.setHeader("X-Content-Type-Options", "nosniff");
   res.send(fs.readFileSync(anexo.arquivo_path));
 });
 app.delete("/api/empresas/anexos/:anexoId", blockCliente, requirePermissao("empresas", "editar"), (req, res) => {
@@ -4294,8 +4903,10 @@ app.post("/api/dominio/importar-clientes", blockCliente, requirePermissao("confi
   const getByCodigo = sqlite.prepare(`SELECT id FROM empresas WHERE codigo_dominio = ? AND escritorio_id = ?`);
   const getByNome = sqlite.prepare(`SELECT id FROM empresas WHERE LOWER(nome) = LOWER(?) AND escritorio_id = ?`);
   const insert = sqlite.prepare(`INSERT INTO empresas (nome, cnpj, codigo_dominio, apelido, inscricao_estadual, ativo, origem, escritorio_id) VALUES (?, ?, ?, ?, ?, ?, 'dominio', ?)`);
+  // Importação só preenche campo vazio: valor que já está na empresa (digitado à mão, inclusive) não é trocado,
+  // e a situação ativo/inativo não é mexida em empresa já cadastrada (senão reativa o que foi inativado à mão).
   const update = sqlite.prepare(
-    `UPDATE empresas SET nome=?, cnpj=COALESCE(?, cnpj), codigo_dominio=COALESCE(?, codigo_dominio), apelido=COALESCE(?, apelido), inscricao_estadual=COALESCE(?, inscricao_estadual), ativo=?, updated_at=datetime('now') WHERE id=?`
+    `UPDATE empresas SET nome=COALESCE(NULLIF(nome,''), ?), cnpj=COALESCE(NULLIF(cnpj,''), ?), codigo_dominio=COALESCE(NULLIF(codigo_dominio,''), ?), apelido=COALESCE(NULLIF(apelido,''), ?), inscricao_estadual=COALESCE(NULLIF(inscricao_estadual,''), ?), updated_at=datetime('now') WHERE id=?`
   );
 
   for (let i = 1; i < linhas.length; i++) {
@@ -4311,7 +4922,7 @@ app.post("/api/dominio/importar-clientes", blockCliente, requirePermissao("confi
 
     const existente = (codigo ? getByCodigo.get(codigo, escritorioId) : undefined) || getByNome.get(nome, escritorioId);
     if (existente) {
-      update.run(nome, cnpj || null, codigo || null, apelido || null, inscricaoEstadual || null, ativo, (existente as any).id);
+      update.run(nome, cnpj || null, codigo || null, apelido || null, inscricaoEstadual || null, (existente as any).id);
       atualizadas++;
     } else {
       insert.run(nome, cnpj || null, codigo || null, apelido || null, inscricaoEstadual || null, ativo, escritorioId);
@@ -4319,16 +4930,15 @@ app.post("/api/dominio/importar-clientes", blockCliente, requirePermissao("confi
     }
   }
   sqlite
-    .prepare(`INSERT INTO dominio_sync_log (origem, empresas_novas, empresas_atualizadas, status) VALUES ('importacao-csv', ?, ?, 'ok')`)
-    .run(novas, atualizadas);
+    .prepare(`INSERT INTO dominio_sync_log (origem, empresas_novas, empresas_atualizadas, status, escritorio_id) VALUES ('importacao-csv', ?, ?, 'ok', ?)`)
+    .run(novas, atualizadas, escritorioId);
   res.json({ ok: true, novas, atualizadas });
 });
 app.get("/api/dominio/sync-log", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
-  // dominio_sync_log ainda não é escopado por escritório (o agente do Domínio Web continua com
-  // token único/global — ver requireDominioAgent) — fica pra quando um segundo agente real existir.
-  const rows = sqlite.prepare(`SELECT * FROM dominio_sync_log ORDER BY id DESC LIMIT 30`).all();
-  const heartbeat = sqlite.prepare(`SELECT last_seen_at as lastSeenAt, version FROM agent_heartbeat WHERE escritorio_id = ?`).get((req as any).user.escritorioId) as any;
-  res.json({ items: rows, agente: heartbeat || null, saudeOnvio: calcularSaudeOnvio() });
+  const escritorioId = (req as any).user.escritorioId;
+  const rows = sqlite.prepare(`SELECT * FROM dominio_sync_log WHERE escritorio_id = ? ORDER BY id DESC LIMIT 30`).all(escritorioId);
+  const heartbeat = sqlite.prepare(`SELECT last_seen_at as lastSeenAt, version FROM agent_heartbeat WHERE escritorio_id = ?`).get(escritorioId) as any;
+  res.json({ items: rows, agente: heartbeat || null, saudeOnvio: calcularSaudeOnvio(escritorioId) });
 });
 
 // ---------- Configuração de acesso do src/dominio-agent.ts (editável pela tela, sem mexer no .env) ----------
@@ -4343,10 +4953,21 @@ function getDominioConfig(escritorioId: number): any {
 // só enviar o arquivo pela tela (ver POST /api/dominio/onvio-sessao) — o dia a dia deixa de
 // depender de qualquer computador ficar ligado.
 function onvioSessionPath(escritorioId: number): string {
-  const dir = path.join(__dirname, "..", "data");
   // escritório 1 mantém o caminho antigo (compatível com o arquivo já usado pelo agente local via
-  // DOMINIO_ONVIO_SESSION_PATH) — outros escritórios ganham um arquivo próprio.
-  return escritorioId === 1 ? path.join(dir, "onvio-session.json") : path.join(dir, `onvio-session-${escritorioId}.json`);
+  // DOMINIO_ONVIO_SESSION_PATH) — outros escritórios ganham um arquivo próprio. Usa DATA_DIR (não
+  // __dirname/../data direto) pra ficar sempre no mesmo volume persistente do banco — mesmo que
+  // hoje, sem DATA_DIR customizado, os dois caminhos coincidam.
+  return escritorioId === 1 ? path.join(DATA_DIR, "onvio-session.json") : path.join(DATA_DIR, `onvio-session-${escritorioId}.json`);
+}
+// Lê o arquivo cifrado salvo pela rota (ver POST /api/dominio/onvio-sessao, abaixo) e devolve o
+// caminho de um arquivo TEMPORÁRIO com o conteúdo decifrado — é o formato que o Playwright exige
+// pra abrir a sessão (storageState só aceita objeto ou caminho de arquivo, nunca um buffer/string
+// direto). Quem chama é responsável por apagar o arquivo retornado (ver uso abaixo).
+function onvioSessionPathDescifradaTemp(escritorioId: number): string {
+  const conteudoCifrado = fs.readFileSync(onvioSessionPath(escritorioId), "utf8");
+  const tmp = path.join(os.tmpdir(), `onvio-session-${escritorioId}-${crypto.randomBytes(8).toString("hex")}.json`);
+  fs.writeFileSync(tmp, nfse.decifrarTexto(conteudoCifrado), { mode: 0o600 });
+  return tmp;
 }
 interface SaudeOnvio {
   nuncaConfigurado: boolean;
@@ -4363,10 +4984,10 @@ interface SaudeOnvio {
 // um blip isolado, mas pega rápido um problema real (achado ao vivo: uma sessão morreu ~1h depois de
 // enviada e ficou 36h falhando de hora em hora sem ninguém notar). Sem nenhuma linha ainda
 // (nuncaConfigurado), nunca é "quebrado" — não é a mesma coisa que "nunca configurado".
-function calcularSaudeOnvio(): SaudeOnvio {
+function calcularSaudeOnvio(escritorioId: number): SaudeOnvio {
   const rows = sqlite
-    .prepare(`SELECT status, executado_em, detalhe FROM dominio_sync_log WHERE origem = 'nuvem' ORDER BY id DESC LIMIT 50`)
-    .all() as { status: string; executado_em: string; detalhe: string | null }[];
+    .prepare(`SELECT status, executado_em, detalhe FROM dominio_sync_log WHERE origem = 'nuvem' AND escritorio_id = ? ORDER BY id DESC LIMIT 50`)
+    .all(escritorioId) as { status: string; executado_em: string; detalhe: string | null }[];
   if (rows.length === 0) {
     return { nuncaConfigurado: true, quebrado: false, falhasConsecutivas: 0, quebradoDesde: null, horasQuebrado: null, ultimoErro: null };
   }
@@ -4392,19 +5013,28 @@ function calcularSaudeOnvio(): SaudeOnvio {
   };
 }
 async function executarSincronizacaoOnvio(escritorioId: number, jobId?: number): Promise<void> {
+  // Achado em auditoria (2026-10-12): a sessão do Onvio (cookies reais, reutilizáveis sem
+  // reautenticar) ficava salva em disco sem cifrar — quem tivesse acesso ao arquivo/backup
+  // conseguia raspar dados do Onvio do cliente direto. Agora fica cifrada em repouso (ver POST
+  // /api/dominio/onvio-sessao); só decifra pra um arquivo temporário na hora de usar (Playwright só
+  // aceita caminho de arquivo ou objeto, não um buffer cifrado), e apaga esse temporário logo
+  // depois, exista sucesso ou erro.
+  let sessaoTempPath: string | null = null;
   try {
-    const items = (await buscarViaOnvio(onvioSessionPath(escritorioId))).filter((it) => it.codigo && it.nome);
+    sessaoTempPath = onvioSessionPathDescifradaTemp(escritorioId);
+    const items = (await buscarViaOnvio(sessaoTempPath)).filter((it) => it.codigo && it.nome);
     let novas = 0, atualizadas = 0;
     const getByCodigo = sqlite.prepare(`SELECT id FROM empresas WHERE codigo_dominio = ? AND escritorio_id = ?`);
     const insert = sqlite.prepare(
       `INSERT INTO empresas (nome, cnpj, codigo_dominio, apelido, email, telefone, endereco, cidade, uf, cep, inscricao_municipal, inscricao_estadual, nome_representante_legal, cpf_representante_legal, origem, escritorio_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'dominio', ?)`
     );
+    // Só preenche campo vazio — nunca troca o que já está na empresa (ver importar-clientes).
     const update = sqlite.prepare(
-      `UPDATE empresas SET nome=?, cnpj=COALESCE(?, cnpj), apelido=COALESCE(?, apelido), email=COALESCE(?, email), telefone=COALESCE(?, telefone),
-         endereco=COALESCE(?, endereco), cidade=COALESCE(?, cidade), uf=COALESCE(?, uf), cep=COALESCE(?, cep),
-         inscricao_municipal=COALESCE(?, inscricao_municipal), inscricao_estadual=COALESCE(?, inscricao_estadual),
-         nome_representante_legal=COALESCE(?, nome_representante_legal), cpf_representante_legal=COALESCE(?, cpf_representante_legal),
+      `UPDATE empresas SET nome=COALESCE(NULLIF(nome,''), ?), cnpj=COALESCE(NULLIF(cnpj,''), ?), apelido=COALESCE(NULLIF(apelido,''), ?), email=COALESCE(NULLIF(email,''), ?), telefone=COALESCE(NULLIF(telefone,''), ?),
+         endereco=COALESCE(NULLIF(endereco,''), ?), cidade=COALESCE(NULLIF(cidade,''), ?), uf=COALESCE(NULLIF(uf,''), ?), cep=COALESCE(NULLIF(cep,''), ?),
+         inscricao_municipal=COALESCE(NULLIF(inscricao_municipal,''), ?), inscricao_estadual=COALESCE(NULLIF(inscricao_estadual,''), ?),
+         nome_representante_legal=COALESCE(NULLIF(nome_representante_legal,''), ?), cpf_representante_legal=COALESCE(NULLIF(cpf_representante_legal,''), ?),
          updated_at=datetime('now') WHERE id=?`
     );
     // situação (ativo/inativo) não vem na API do Onvio — não mexe nesse campo pra não
@@ -4429,12 +5059,14 @@ async function executarSincronizacaoOnvio(escritorioId: number, jobId?: number):
         novas++;
       }
     }
-    sqlite.prepare(`INSERT INTO dominio_sync_log (origem, empresas_novas, empresas_atualizadas, status) VALUES ('nuvem', ?, ?, 'ok')`).run(novas, atualizadas);
+    sqlite.prepare(`INSERT INTO dominio_sync_log (origem, empresas_novas, empresas_atualizadas, status, escritorio_id) VALUES ('nuvem', ?, ?, 'ok', ?)`).run(novas, atualizadas, escritorioId);
     if (jobId) sqlite.prepare(`UPDATE dominio_sync_jobs SET status='ok', novas=?, atualizadas=?, resolvido_em=datetime('now') WHERE id=?`).run(novas, atualizadas, jobId);
   } catch (e: any) {
-    sqlite.prepare(`INSERT INTO dominio_sync_log (origem, empresas_novas, empresas_atualizadas, status, detalhe) VALUES ('nuvem', 0, 0, 'erro', ?)`).run(e.message);
+    sqlite.prepare(`INSERT INTO dominio_sync_log (origem, empresas_novas, empresas_atualizadas, status, detalhe, escritorio_id) VALUES ('nuvem', 0, 0, 'erro', ?, ?)`).run(e.message, escritorioId);
     if (jobId) sqlite.prepare(`UPDATE dominio_sync_jobs SET status='erro', erro=?, resolvido_em=datetime('now') WHERE id=?`).run(e.message, jobId);
     else console.error("Falha na sincronização automática de clientes via Onvio:", e.message);
+  } finally {
+    if (sessaoTempPath) { try { fs.unlinkSync(sessaoTempPath); } catch {} }
   }
 }
 app.get("/api/dominio/onvio-sessao", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
@@ -4456,7 +5088,10 @@ app.post("/api/dominio/onvio-sessao", blockCliente, requirePermissao("configurac
   }
   const p = onvioSessionPath((req as any).user.escritorioId);
   fs.mkdirSync(path.dirname(p), { recursive: true });
-  fs.writeFileSync(p, file.buffer);
+  // Achado em auditoria (2026-10-12): esse arquivo tem cookies de sessão REAIS e reutilizáveis do
+  // Onvio (Thomson Reuters) — salvo cifrado em repouso agora, mesmo padrão de certificado/SMTP/
+  // OneDrive (ver onvioSessionPathDescifradaTemp, usado na hora de sincronizar de verdade).
+  fs.writeFileSync(p, nfse.cifrarTexto(file.buffer.toString("utf8")), { mode: 0o600 });
   res.json({ ok: true });
 });
 // Sincronização via Onvio: SÓ manual, por pedido explícito do usuário (2026-09-23) — a automática de
@@ -4639,41 +5274,62 @@ sqlite.exec(`
   if (!colsRobo.some((c) => c.name === "agenda_hora")) sqlite.exec(`ALTER TABLE comparativo_robo_estado ADD COLUMN agenda_hora INTEGER NOT NULL DEFAULT 6`);
   if (!colsRobo.some((c) => c.name === "agenda_minuto")) sqlite.exec(`ALTER TABLE comparativo_robo_estado ADD COLUMN agenda_minuto INTEGER NOT NULL DEFAULT 0`);
   if (!colsRobo.some((c) => c.name === "agenda_ultimo_dia")) sqlite.exec(`ALTER TABLE comparativo_robo_estado ADD COLUMN agenda_ultimo_dia TEXT`);
+  // Tempos de cada passo do robô (AutoHotkey), editáveis pela tela em vez de fixos no .ahk — o agente
+  // lê esses valores a cada poll (~10s) via /comparativo-comando. Defaults = valores que já estavam
+  // hardcoded no script.
+  if (!colsRobo.some((c) => c.name === "t_entre_empresas_ms")) sqlite.exec(`ALTER TABLE comparativo_robo_estado ADD COLUMN t_entre_empresas_ms INTEGER NOT NULL DEFAULT 15000`);
+  if (!colsRobo.some((c) => c.name === "t_render_timeout_ms")) sqlite.exec(`ALTER TABLE comparativo_robo_estado ADD COLUMN t_render_timeout_ms INTEGER NOT NULL DEFAULT 90000`);
+  if (!colsRobo.some((c) => c.name === "t_gerar_pdf_ms")) sqlite.exec(`ALTER TABLE comparativo_robo_estado ADD COLUMN t_gerar_pdf_ms INTEGER NOT NULL DEFAULT 15000`);
+  if (!colsRobo.some((c) => c.name === "t_modulo_carga_ms")) sqlite.exec(`ALTER TABLE comparativo_robo_estado ADD COLUMN t_modulo_carga_ms INTEGER NOT NULL DEFAULT 10000`);
+  if (!colsRobo.some((c) => c.name === "t_curto_ms")) sqlite.exec(`ALTER TABLE comparativo_robo_estado ADD COLUMN t_curto_ms INTEGER NOT NULL DEFAULT 700`);
+  if (!colsRobo.some((c) => c.name === "t_medio_ms")) sqlite.exec(`ALTER TABLE comparativo_robo_estado ADD COLUMN t_medio_ms INTEGER NOT NULL DEFAULT 2000`);
+  if (!colsRobo.some((c) => c.name === "t_longo_ms")) sqlite.exec(`ALTER TABLE comparativo_robo_estado ADD COLUMN t_longo_ms INTEGER NOT NULL DEFAULT 4000`);
+  // Guarda o motivo do disparo mais recente ('agenda'|'manual'|'automatico') — usado só pra decidir se o
+  // Férias encadeado (ver ferias_robo_estado.encadeado_apos_comparativo) deve começar quando este robô
+  // terminar: só encadeia depois de uma execução que veio da AGENDA, nunca de um "Executar agora" manual,
+  // pra não atrapalhar teste passo a passo dos dois robôs.
+  if (!colsRobo.some((c) => c.name === "ultimo_motivo")) sqlite.exec(`ALTER TABLE comparativo_robo_estado ADD COLUMN ultimo_motivo TEXT`);
+}
+// Valida/limita um tempo (segundos ou ms) vindo da tela pros robôs AHK — evita salvar um valor absurdo
+// (0, negativo, texto) que travaria o agente numa espera infinita ou sem espera nenhuma.
+function clampTempoMs(v: any, def: number, min: number, max: number): number {
+  const n = Math.round(Number(v));
+  if (!Number.isFinite(n)) return def;
+  return Math.min(Math.max(n, min), max);
 }
 // true se o robô deve disparar AGORA pelo horário fixo diário configurado (hora/minuto batendo com o
 // horário de Brasília e ainda não disparado hoje). Mesma conta de fuso (-3h) já usada em outros
 // agendamentos deste arquivo (ex.: comparativoPeriodoPadrao).
+// "Já passou do horário hoje" em vez de "é exatamente este minuto" — um reinício do servidor (deploy)
+// bem na hora configurada pode derrubar o tick certo (mesmo achado ao vivo no agendamento de NFS-e,
+// ver o setInterval logo abaixo de nfseExecutarAgendamentoAutomatico); agendaUltimoDia já impede
+// rodar de novo no mesmo dia, então alargar a janela é seguro.
 function agendaDeveRodarAgora(cfg: { agendaAtivo: any; agendaHora: number; agendaMinuto: number; agendaUltimoDia: string | null }): { deve: boolean; hojeSp: string } {
   const agora = new Date(Date.now() - 3 * 3600 * 1000);
   const hojeSp = agora.toISOString().slice(0, 10);
-  const deve = !!cfg.agendaAtivo && agora.getHours() === cfg.agendaHora && agora.getMinutes() === cfg.agendaMinuto && cfg.agendaUltimoDia !== hojeSp;
+  const deve = !!cfg.agendaAtivo && (agora.getHours() * 60 + agora.getMinutes()) >= (cfg.agendaHora * 60 + cfg.agendaMinuto) && cfg.agendaUltimoDia !== hojeSp;
   return { deve, hojeSp };
 }
 function garantirRoboEstado(escritorioId: number) {
   sqlite.prepare(`INSERT OR IGNORE INTO comparativo_robo_estado (escritorio_id) VALUES (?)`).run(escritorioId);
 }
 // Coordenação entre os dois robôs (Comparativo + Programação de Férias): eles mexem no MESMO Domínio,
-// então só um roda por vez. Retorna se o "outro" agente está OCUPADO (rodando, com run pendente/por
-// tempo, ou terminou há menos que o intervalo configurado). O Comparativo tem PRIORIDADE: o Férias
-// cede a um Comparativo pendente; o Comparativo só cede a um Férias já rodando/recém-terminado.
-function robosGapSeg(): number {
-  const r = sqlite.prepare(`SELECT gap_agentes_seg AS g FROM comparativo_robo_estado WHERE escritorio_id = 1`).get() as any;
-  const g = Number(r?.g);
-  return Number.isFinite(g) && g >= 0 ? g : 30;
-}
-// tabela: 'comparativo_robo_estado' | 'ferias_robo_estado'. incluirPendente: conta run_now/por-tempo como ocupado.
+// então só um roda por vez. Retorna se o "outro" agente está OCUPADO (rodando de verdade agora, ou
+// com um disparo pendente). O Comparativo tem PRIORIDADE: o Férias cede a um Comparativo pendente; o
+// Comparativo só cede a um Férias já rodando. Em sequência, sem espera por tempo entre um e outro —
+// assim que o `prog_rodando` do que estava rodando vira 0, o próximo poll (~10s, do próprio agente)
+// já libera o outro pra começar. Existia uma folga configurável (gap_agentes_seg) só aí no meio, só
+// atrasando a troca sem necessidade — removida a pedido (rodar 1, 2 em sequência, não por tempo).
 function outroRoboOcupado(tabela: string, incluirPendente: boolean): boolean {
-  const gap = robosGapSeg();
   const c = sqlite.prepare(`
     SELECT
       (prog_rodando = 1 AND prog_em IS NOT NULL AND datetime(prog_em, '+5 minutes') >= datetime('now')) AS rodando,
-      (prog_rodando = 0 AND prog_em IS NOT NULL AND datetime(prog_em, '+' || ? || ' seconds') >= datetime('now')) AS recemTerminou,
       (run_now_em IS NOT NULL) AS runNow,
       (ligado = 1 AND (ultima_exec_em IS NULL OR datetime(ultima_exec_em, '+' || intervalo_min || ' minutes') <= datetime('now'))) AS devePorTempo
     FROM ${tabela} WHERE escritorio_id = 1
-  `).get(gap) as any;
+  `).get() as any;
   if (!c) return false;
-  if (c.rodando || c.recemTerminou) return true;
+  if (c.rodando) return true;
   if (incluirPendente && (c.runNow || c.devePorTempo)) return true;
   return false;
 }
@@ -4694,9 +5350,31 @@ function comparativoValidaPeriodo(v: any): string | null {
   if (mes < 1 || mes > 12) return null;
   return String(mes).padStart(2, "0") + "/" + m[2];
 }
+// Zipa a pasta do robô INJETANDO o token real do agente no .ahk (troca o placeholder
+// COLE_AQUI_O_TOKEN_DO_AGENTE pelo DOMINIO_AGENT_TOKEN do servidor), pra o robô baixado já autenticar
+// e aparecer "online". Sem token configurado no servidor, mantém o placeholder (e o robô fica offline).
+function zipPastaRoboComToken(zip: any, pasta: string, sub = "") {
+  for (const nome of fs.readdirSync(pasta)) {
+    const full = path.join(pasta, nome);
+    if (fs.statSync(full).isDirectory()) { zipPastaRoboComToken(zip, full, sub ? sub + "/" + nome : nome); continue; }
+    const destino = sub ? sub + "/" + nome : nome;
+    if (nome.toLowerCase().endsWith(".ahk") && DOMINIO_AGENT_TOKEN) {
+      const conteudo = fs.readFileSync(full, "utf8").split("COLE_AQUI_O_TOKEN_DO_AGENTE").join(DOMINIO_AGENT_TOKEN);
+      zip.append(conteudo, { name: destino });
+    } else {
+      zip.append(fs.createReadStream(full), { name: destino });
+    }
+  }
+}
 // Download do pacote do robô (script AutoHotkey + instruções) pra quem for instalar no servidor Windows do
 // Domínio Web — pelo Administrador logado no site (diferente das rotas acima, que são pro ROBÔ chamar).
+// Achado em auditoria (2026-10-12): o robô (e tudo que ele automatiza) é de escritório_id=1 só — igual
+// o resto dessa família de rotas (/api/dominio-agent/*, todas com "WHERE escritorio_id = 1" fixo). Sem
+// essa checagem, um Administrador de QUALQUER outro escritório baixava o .zip e ficava com o token
+// GLOBAL do agente embutido no .ahk — esse token dá acesso a TODAS as rotas /api/dominio-agent/*,
+// inclusive uma que devolve a senha do banco e o token de API do Domínio Web em texto puro.
 app.get("/api/empresas/comparativo-movimento/robo", blockCliente, requireAdmin, (req, res) => {
+  if ((req as any).user.escritorioId !== 1) return res.status(403).json({ error: "Este robô só está disponível pro escritório principal, por enquanto." });
   const pasta = [path.join(__dirname, "..", "dominio-robo-comparativo"), path.join(__dirname, "dominio-robo-comparativo")].find((p) => fs.existsSync(p));
   if (!pasta) return res.status(500).json({ error: "Pacote do robô não está disponível nesta versão do servidor." });
   res.setHeader("Content-Type", "application/zip");
@@ -4704,7 +5382,7 @@ app.get("/api/empresas/comparativo-movimento/robo", blockCliente, requireAdmin, 
   const zip: any = archiver("zip", { zlib: { level: 9 } });
   zip.on("error", (e: any) => { console.error("[comparativo-movimento] zip do robô:", e.message); res.destroy(); });
   zip.pipe(res);
-  zip.directory(pasta, false);
+  zipPastaRoboComToken(zip, pasta);
   zip.finalize();
 });
 app.get("/api/dominio-agent/empresas-comparativo", requireDominioAgent, (_req, res) => {
@@ -4730,6 +5408,8 @@ app.get("/api/dominio-agent/comparativo-comando", requireDominioAgent, (_req, re
   const c = sqlite.prepare(`
     SELECT ligado, intervalo_min AS intervaloMin, run_now_em, ultima_exec_em, periodo_ini AS periodoIni, periodo_fim AS periodoFim,
       agenda_ativo AS agendaAtivo, agenda_hora AS agendaHora, agenda_minuto AS agendaMinuto, agenda_ultimo_dia AS agendaUltimoDia,
+      t_entre_empresas_ms AS tEntreEmpresasMs, t_render_timeout_ms AS tRenderTimeoutMs, t_gerar_pdf_ms AS tGerarPdfMs,
+      t_modulo_carga_ms AS tModuloCargaMs, t_curto_ms AS tCurtoMs, t_medio_ms AS tMedioMs, t_longo_ms AS tLongoMs,
       (run_now_em IS NOT NULL) AS runNow,
       (parar_em IS NOT NULL) AS parar,
       (ligado = 1 AND (ultima_exec_em IS NULL OR datetime(ultima_exec_em, '+' || intervalo_min || ' minutes') <= datetime('now'))) AS devePorTempo
@@ -4737,16 +5417,27 @@ app.get("/api/dominio-agent/comparativo-comando", requireDominioAgent, (_req, re
   `).get() as any;
   const pad = comparativoPeriodoPadrao();
   const { deve: devePorAgenda, hojeSp } = agendaDeveRodarAgora(c);
-  if (devePorAgenda) sqlite.prepare(`UPDATE comparativo_robo_estado SET agenda_ultimo_dia = ? WHERE escritorio_id = 1`).run(hojeSp);
   // Só um robô por vez: segura se o Férias estiver rodando ou tiver terminado há menos que o intervalo.
   // (Comparativo tem prioridade: NÃO cede a um Férias só "pendente".)
-  const segurar = outroRoboOcupado("ferias_robo_estado", false);
+  const segurar = outroRoboOcupado("ferias_robo_estado", false) || outroRoboOcupado("demonstrativo_robo_estado", false);
   const deveRodar = (!!c.runNow || !!c.devePorTempo || devePorAgenda) && !segurar;
+  const motivo = c.runNow ? "manual" : (devePorAgenda ? "agenda" : (c.devePorTempo ? "automatico" : null));
+  // Qualquer disparo do dia (manual "Executar agora" ou automático) consome o agendamento daquele dia —
+  // achado ao vivo: um "Executar agora" clicado antes das 19:30 não marcava o dia, e quando o horário
+  // batia o agendamento disparava de NOVO horas depois, rodando as 58 empresas duas vezes no mesmo dia.
+  if (deveRodar && c.agendaAtivo && c.agendaUltimoDia !== hojeSp) {
+    sqlite.prepare(`UPDATE comparativo_robo_estado SET agenda_ultimo_dia = ? WHERE escritorio_id = 1`).run(hojeSp);
+  }
+  // Guarda o motivo deste disparo pra o robô Férias encadeado saber, quando o Comparativo terminar, se
+  // foi uma execução automática da agenda (só aí encadeia) ou um "Executar agora" manual (não encadeia).
+  if (deveRodar) sqlite.prepare(`UPDATE comparativo_robo_estado SET ultimo_motivo = ? WHERE escritorio_id = 1`).run(motivo);
   res.json({
-    deveRodar, motivo: segurar ? "aguardando_outro_robo" : (c.runNow ? "manual" : (devePorAgenda ? "agenda" : (c.devePorTempo ? "automatico" : null))),
+    deveRodar, motivo: segurar ? "aguardando_outro_robo" : motivo,
     parar: !!c.parar,
     ligado: !!c.ligado, intervaloMin: c.intervaloMin,
     periodoIni: c.periodoIni || pad.ini, periodoFim: c.periodoFim || pad.fim,
+    tEntreEmpresasMs: c.tEntreEmpresasMs, tRenderTimeoutMs: c.tRenderTimeoutMs, tGerarPdfMs: c.tGerarPdfMs,
+    tModuloCargaMs: c.tModuloCargaMs, tCurtoMs: c.tCurtoMs, tMedioMs: c.tMedioMs, tLongoMs: c.tLongoMs,
   });
 });
 // O robô reporta o progresso (empresa a empresa). Ao INICIAR, limpa o "executar agora" e marca a última execução.
@@ -4757,22 +5448,43 @@ app.post("/api/dominio-agent/comparativo-progresso", requireDominioAgent, (req, 
     // Começou uma execução nova: limpa o "executar agora" e um eventual freio pendente (não mata a nova run).
     sqlite.prepare(`UPDATE comparativo_robo_estado SET run_now_em = NULL, parar_em = NULL, ultima_exec_em = datetime('now') WHERE escritorio_id = 1`).run();
   }
+  // Lido ANTES de sobrescrever — "estava rodando mesmo (prog_rodando=1) e ninguém pediu Parar
+  // (parar_em NULL)" é o jeito de distinguir "terminou de verdade" de "nunca tinha começado" ou
+  // "foi freado na mão", pra decidir abaixo se encadeia o Férias.
+  const antes = sqlite.prepare(`SELECT prog_rodando AS progRodando, parar_em AS pararEm, ultimo_motivo AS ultimoMotivo FROM comparativo_robo_estado WHERE escritorio_id = 1`).get() as any;
   sqlite.prepare(`
     UPDATE comparativo_robo_estado
        SET prog_rodando = ?, prog_total = ?, prog_feitas = ?, prog_atual = ?, prog_em = datetime('now')
      WHERE escritorio_id = 1
   `).run(b.rodando ? 1 : 0, Number(b.total) || 0, Number(b.feitas) || 0, b.atual ? String(b.atual) : null);
   // Terminou/parou (rodando=false): reseta o freio pra não afetar a próxima execução.
-  if (!b.rodando) sqlite.prepare(`UPDATE comparativo_robo_estado SET parar_em = NULL WHERE escritorio_id = 1`).run();
+  if (!b.rodando) {
+    sqlite.prepare(`UPDATE comparativo_robo_estado SET parar_em = NULL WHERE escritorio_id = 1`).run();
+    // Encadeamento: dispara o Férias se o Comparativo estava mesmo rodando e terminou sozinho (não foi
+    // "Parar robô"). Vale pra AGENDA e pro "Executar agora" MANUAL — assim dá pra disparar a cadeia na mão.
+    const ehAgenda = antes?.ultimoMotivo === "agenda";
+    const ehManual = antes?.ultimoMotivo === "manual";
+    if (antes?.progRodando && !antes?.pararEm && (ehAgenda || ehManual)) {
+      garantirFeriasEstado(1);
+      const hojeSp = new Date(Date.now() - 3 * 3600 * 1000).toISOString().slice(0, 10);
+      const f = sqlite.prepare(`SELECT encadeado_apos_comparativo AS encadeado, encadeado_ultimo_dia AS encadeadoUltimoDia FROM ferias_robo_estado WHERE escritorio_id = 1`).get() as any;
+      // Agenda: no máximo 1x/dia (evita rodar 2x sem querer). Manual: sempre (foi clique explícito seu).
+      if (f?.encadeado && (ehManual || f.encadeadoUltimoDia !== hojeSp)) {
+        sqlite.prepare(`UPDATE ferias_robo_estado SET run_now_em = datetime('now'), parar_em = NULL, encadeado_ultimo_dia = ? WHERE escritorio_id = 1`).run(hojeSp);
+      }
+    }
+  }
   res.json({ ok: true });
 });
 // ---- Controle do robô pela tela (Configurações › Relatórios) ----
-app.get("/api/comparativo-robo/estado", blockCliente, requirePermissao("configuracoes", "visualizar"), (_req, res) => {
+app.get("/api/comparativo-robo/estado", blockCliente, requirePermissao("configuracoes", "visualizar"), requireEscritorioPrincipalDominio, (_req, res) => {
   garantirRoboEstado(1);
   const c = sqlite.prepare(`
     SELECT ligado, intervalo_min AS intervaloMin, run_now_em AS runNowEm, ultima_exec_em AS ultimaExecEm,
-      periodo_ini AS periodoIni, periodo_fim AS periodoFim, gap_agentes_seg AS gapAgentesSeg,
+      periodo_ini AS periodoIni, periodo_fim AS periodoFim,
       agenda_ativo AS agendaAtivo, agenda_hora AS agendaHora, agenda_minuto AS agendaMinuto,
+      t_entre_empresas_ms AS tEntreEmpresasMs, t_render_timeout_ms AS tRenderTimeoutMs, t_gerar_pdf_ms AS tGerarPdfMs,
+      t_modulo_carga_ms AS tModuloCargaMs, t_curto_ms AS tCurtoMs, t_medio_ms AS tMedioMs, t_longo_ms AS tLongoMs,
       prog_total AS total, prog_feitas AS feitas, prog_atual AS atual, prog_em AS progEm,
       -- "rodando" só vale se o progresso for recente; se o agente morreu/foi fechado sem avisar
       -- (progresso velho > 5min), considera parado pra a barra do site NÃO ficar congelada.
@@ -4786,34 +5498,38 @@ app.get("/api/comparativo-robo/estado", blockCliente, requirePermissao("configur
   res.json({
     ligado: !!c.ligado, intervaloMin: c.intervaloMin, ultimaExecEm: c.ultimaExecEm,
     periodoIni: c.periodoIni, periodoFim: c.periodoFim, periodoPadraoIni: pad.ini, periodoPadraoFim: pad.fim,
-    gapAgentesSeg: c.gapAgentesSeg ?? 30,
     agendaAtivo: !!c.agendaAtivo, agendaHora: c.agendaHora, agendaMinuto: c.agendaMinuto,
+    tEntreEmpresasMs: c.tEntreEmpresasMs, tRenderTimeoutMs: c.tRenderTimeoutMs, tGerarPdfMs: c.tGerarPdfMs,
+    tModuloCargaMs: c.tModuloCargaMs, tCurtoMs: c.tCurtoMs, tMedioMs: c.tMedioMs, tLongoMs: c.tLongoMs,
     rodando: !!c.rodando, total: c.total, feitas: c.feitas, atual: c.atual, progEm: c.progEm,
     runNowPendente: !!c.runNowEm, pararPendente: !!c.pararPendente, agenteOnline: !!c.agenteOnline, agenteVistoEm: c.agenteVistoEm,
   });
 });
-app.post("/api/comparativo-robo/config", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
+app.post("/api/comparativo-robo/config", blockCliente, requirePermissao("configuracoes", "editar"), requireEscritorioPrincipalDominio, (req, res) => {
   garantirRoboEstado(1);
-  const ligado = req.body?.ligado ? 1 : 0;
-  let intervalo = Number(req.body?.intervaloMin);
-  if (!Number.isFinite(intervalo) || intervalo < 1) intervalo = 15;
-  intervalo = Math.min(Math.max(Math.round(intervalo), 1), 1440);
   const pIni = comparativoValidaPeriodo(req.body?.periodoIni);
   const pFim = comparativoValidaPeriodo(req.body?.periodoFim);
   const agendaAtivo = req.body?.agendaAtivo ? 1 : 0;
   const agendaHora = Math.min(Math.max(Math.round(Number(req.body?.agendaHora)) || 6, 0), 23);
   const agendaMinuto = Math.min(Math.max(Math.round(Number(req.body?.agendaMinuto)) || 0, 0), 59);
-  // Intervalo (segundos) entre os dois robôs — compartilhado. Só grava se veio no body (0..3600).
-  let gap: number | null = null;
-  if (req.body?.gapAgentesSeg !== undefined) {
-    const g = Number(req.body.gapAgentesSeg);
-    gap = Number.isFinite(g) ? Math.min(Math.max(Math.round(g), 0), 3600) : 30;
-    sqlite.prepare(`UPDATE comparativo_robo_estado SET gap_agentes_seg = ? WHERE escritorio_id = 1`).run(gap);
-  }
-  sqlite.prepare(`UPDATE comparativo_robo_estado SET ligado = ?, intervalo_min = ?, periodo_ini = ?, periodo_fim = ?, agenda_ativo = ?, agenda_hora = ?, agenda_minuto = ? WHERE escritorio_id = 1`).run(ligado, intervalo, pIni, pFim, agendaAtivo, agendaHora, agendaMinuto);
-  res.json({ ok: true, ligado: !!ligado, intervaloMin: intervalo, periodoIni: pIni, periodoFim: pFim, gapAgentesSeg: gap ?? undefined });
+  const tEntreEmpresasMs = clampTempoMs(req.body?.tEntreEmpresasMs, 15000, 1000, 600000);
+  const tRenderTimeoutMs = clampTempoMs(req.body?.tRenderTimeoutMs, 90000, 5000, 300000);
+  const tGerarPdfMs = clampTempoMs(req.body?.tGerarPdfMs, 15000, 1000, 120000);
+  const tModuloCargaMs = clampTempoMs(req.body?.tModuloCargaMs, 10000, 1000, 60000);
+  const tCurtoMs = clampTempoMs(req.body?.tCurtoMs, 700, 100, 30000);
+  const tMedioMs = clampTempoMs(req.body?.tMedioMs, 2000, 100, 30000);
+  const tLongoMs = clampTempoMs(req.body?.tLongoMs, 4000, 100, 30000);
+  const antesAgenda = sqlite.prepare(`SELECT agenda_ativo, agenda_hora, agenda_minuto FROM comparativo_robo_estado WHERE escritorio_id = 1`).get() as any;
+  sqlite.prepare(`
+    UPDATE comparativo_robo_estado SET periodo_ini = ?, periodo_fim = ?, agenda_ativo = ?, agenda_hora = ?, agenda_minuto = ?,
+      t_entre_empresas_ms = ?, t_render_timeout_ms = ?, t_gerar_pdf_ms = ?, t_modulo_carga_ms = ?, t_curto_ms = ?, t_medio_ms = ?, t_longo_ms = ?
+    WHERE escritorio_id = 1
+  `).run(pIni, pFim, agendaAtivo, agendaHora, agendaMinuto, tEntreEmpresasMs, tRenderTimeoutMs, tGerarPdfMs, tModuloCargaMs, tCurtoMs, tMedioMs, tLongoMs);
+  if (!antesAgenda || !!antesAgenda.agenda_ativo !== !!agendaAtivo || antesAgenda.agenda_hora !== agendaHora || antesAgenda.agenda_minuto !== agendaMinuto)
+    sqlite.prepare(`UPDATE comparativo_robo_estado SET agenda_ultimo_dia = NULL WHERE escritorio_id = 1`).run();
+  res.json({ ok: true, periodoIni: pIni, periodoFim: pFim });
 });
-app.post("/api/comparativo-robo/executar", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
+app.post("/api/comparativo-robo/executar", blockCliente, requirePermissao("configuracoes", "editar"), requireEscritorioPrincipalDominio, (req, res) => {
   garantirRoboEstado(1);
   // Se a tela mandou um período válido, guarda antes de disparar (vale pra esta execução e as próximas).
   const pIni = comparativoValidaPeriodo(req.body?.periodoIni);
@@ -4826,10 +5542,203 @@ app.post("/api/comparativo-robo/executar", blockCliente, requirePermissao("confi
 });
 // FREIO DE EMERGÊNCIA: marca "parar". O agente lê no /comparativo-comando e aborta ENTRE as empresas.
 // Também desliga o automático e cancela um "executar agora" pendente, pra não reiniciar sozinho.
-app.post("/api/comparativo-robo/parar", blockCliente, requirePermissao("configuracoes", "editar"), (_req, res) => {
+app.post("/api/comparativo-robo/parar", blockCliente, requirePermissao("configuracoes", "editar"), requireEscritorioPrincipalDominio, (_req, res) => {
   garantirRoboEstado(1);
   sqlite.prepare(`UPDATE comparativo_robo_estado SET parar_em = datetime('now'), ligado = 0, run_now_em = NULL WHERE escritorio_id = 1`).run();
   res.json({ ok: true });
+});
+
+// ================== ROBÔ "DEMONSTRATIVO MENSAL" (módulo Escrita Fiscal) ==================
+// 3º robô, mesmo esquema do Comparativo (TEM período MM/AAAA). Reusa os helpers genéricos
+// (clampTempoMs, agendaDeveRodarAgora, comparativoPeriodoPadrao, comparativoValidaPeriodo,
+// zipPastaRoboComToken, outroRoboOcupado). Prioridade: cede a Comparativo E Férias (é o de menor
+// prioridade dos três). O PDF é importado no Envio de Documentos como "Demonstrativo Mensal".
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS demonstrativo_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    empresa_id INTEGER REFERENCES empresas(id),
+    codigo_dominio TEXT,
+    status TEXT NOT NULL, -- 'ok' | 'erro'
+    erro TEXT,
+    quando TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+`);
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS demonstrativo_robo_estado (
+    escritorio_id INTEGER PRIMARY KEY,
+    ligado INTEGER NOT NULL DEFAULT 0,
+    intervalo_min INTEGER NOT NULL DEFAULT 15,
+    run_now_em TEXT,
+    ultima_exec_em TEXT,
+    prog_rodando INTEGER NOT NULL DEFAULT 0,
+    prog_total INTEGER NOT NULL DEFAULT 0,
+    prog_feitas INTEGER NOT NULL DEFAULT 0,
+    prog_atual TEXT,
+    prog_em TEXT,
+    agente_visto_em TEXT,
+    periodo_ini TEXT,
+    periodo_fim TEXT,
+    parar_em TEXT,
+    agenda_ativo INTEGER NOT NULL DEFAULT 0,
+    agenda_hora INTEGER NOT NULL DEFAULT 6,
+    agenda_minuto INTEGER NOT NULL DEFAULT 0,
+    agenda_ultimo_dia TEXT,
+    t_entre_empresas_ms INTEGER NOT NULL DEFAULT 15000,
+    t_render_timeout_ms INTEGER NOT NULL DEFAULT 90000,
+    t_gerar_pdf_ms INTEGER NOT NULL DEFAULT 15000,
+    t_modulo_carga_ms INTEGER NOT NULL DEFAULT 10000,
+    t_curto_ms INTEGER NOT NULL DEFAULT 700,
+    t_medio_ms INTEGER NOT NULL DEFAULT 2000,
+    t_longo_ms INTEGER NOT NULL DEFAULT 4000,
+    ultimo_motivo TEXT
+  );
+`);
+{
+  // Encadeamento: começar o Demonstrativo em sequência quando a Programação de Férias terminar.
+  const colsDemo = sqlite.prepare(`PRAGMA table_info(demonstrativo_robo_estado)`).all() as any[];
+  if (!colsDemo.some((c) => c.name === "encadeado_apos_ferias")) sqlite.exec(`ALTER TABLE demonstrativo_robo_estado ADD COLUMN encadeado_apos_ferias INTEGER NOT NULL DEFAULT 0`);
+  if (!colsDemo.some((c) => c.name === "encadeado_ultimo_dia")) sqlite.exec(`ALTER TABLE demonstrativo_robo_estado ADD COLUMN encadeado_ultimo_dia TEXT`);
+  // Férias: marca "deve encadear o Demonstrativo quando eu terminar" (armado no início da execução do Férias).
+  const colsFer = sqlite.prepare(`PRAGMA table_info(ferias_robo_estado)`).all() as any[];
+  if (!colsFer.some((c) => c.name === "encadeia_demo_pendente")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN encadeia_demo_pendente INTEGER NOT NULL DEFAULT 0`);
+}
+function garantirDemonstrativoEstado(escritorioId: number) {
+  sqlite.prepare(`INSERT OR IGNORE INTO demonstrativo_robo_estado (escritorio_id) VALUES (?)`).run(escritorioId);
+}
+// ---- Agente ----
+app.get("/api/dominio-agent/empresas-demonstrativo", requireDominioAgent, (_req, res) => {
+  const items = sqlite
+    .prepare(`SELECT id, codigo_dominio as codigoDominio, nome FROM empresas WHERE escritorio_id = 1 AND ativo = 1 AND demonstrativo_mensal = 1 AND codigo_dominio IS NOT NULL AND codigo_dominio != '' ORDER BY codigo_dominio`)
+    .all() as any[];
+  res.json({ items });
+});
+app.post("/api/dominio-agent/demonstrativo-status", requireDominioAgent, (req, res) => {
+  const itens: any[] = Array.isArray(req.body?.itens) ? req.body.itens : [];
+  for (const it of itens) {
+    const empresa = sqlite.prepare(`SELECT id FROM empresas WHERE escritorio_id = 1 AND codigo_dominio = ?`).get(String(it.codigoDominio)) as any;
+    sqlite.prepare(`INSERT INTO demonstrativo_log (empresa_id, codigo_dominio, status, erro) VALUES (?, ?, ?, ?)`)
+      .run(empresa?.id ?? null, String(it.codigoDominio), it.ok ? "ok" : "erro", it.erro || null);
+  }
+  res.json({ ok: true, registrados: itens.length });
+});
+app.get("/api/dominio-agent/demonstrativo-comando", requireDominioAgent, (_req, res) => {
+  garantirDemonstrativoEstado(1);
+  sqlite.prepare(`UPDATE demonstrativo_robo_estado SET agente_visto_em = datetime('now') WHERE escritorio_id = 1`).run();
+  const c = sqlite.prepare(`
+    SELECT ligado, intervalo_min AS intervaloMin, run_now_em, ultima_exec_em, periodo_ini AS periodoIni, periodo_fim AS periodoFim,
+      agenda_ativo AS agendaAtivo, agenda_hora AS agendaHora, agenda_minuto AS agendaMinuto, agenda_ultimo_dia AS agendaUltimoDia,
+      t_entre_empresas_ms AS tEntreEmpresasMs, t_render_timeout_ms AS tRenderTimeoutMs, t_gerar_pdf_ms AS tGerarPdfMs,
+      t_modulo_carga_ms AS tModuloCargaMs, t_curto_ms AS tCurtoMs, t_medio_ms AS tMedioMs, t_longo_ms AS tLongoMs,
+      (run_now_em IS NOT NULL) AS runNow,
+      (parar_em IS NOT NULL) AS parar,
+      (ligado = 1 AND (ultima_exec_em IS NULL OR datetime(ultima_exec_em, '+' || intervalo_min || ' minutes') <= datetime('now'))) AS devePorTempo
+    FROM demonstrativo_robo_estado WHERE escritorio_id = 1
+  `).get() as any;
+  const pad = comparativoPeriodoPadrao();
+  const { deve: devePorAgenda, hojeSp } = agendaDeveRodarAgora(c);
+  if (devePorAgenda) sqlite.prepare(`UPDATE demonstrativo_robo_estado SET agenda_ultimo_dia = ? WHERE escritorio_id = 1`).run(hojeSp);
+  // Menor prioridade: cede a Comparativo (rodando/pendente) E a Férias (rodando/pendente).
+  const segurar = outroRoboOcupado("comparativo_robo_estado", true) || outroRoboOcupado("ferias_robo_estado", true);
+  const deveRodar = (!!c.runNow || !!c.devePorTempo || devePorAgenda) && !segurar;
+  res.json({
+    deveRodar, motivo: segurar ? "aguardando_outro_robo" : (c.runNow ? "manual" : (devePorAgenda ? "agenda" : (c.devePorTempo ? "automatico" : null))),
+    parar: !!c.parar,
+    ligado: !!c.ligado, intervaloMin: c.intervaloMin,
+    periodoIni: c.periodoIni || pad.ini, periodoFim: c.periodoFim || pad.fim,
+    tEntreEmpresasMs: c.tEntreEmpresasMs, tRenderTimeoutMs: c.tRenderTimeoutMs, tGerarPdfMs: c.tGerarPdfMs,
+    tModuloCargaMs: c.tModuloCargaMs, tCurtoMs: c.tCurtoMs, tMedioMs: c.tMedioMs, tLongoMs: c.tLongoMs,
+  });
+});
+app.post("/api/dominio-agent/demonstrativo-progresso", requireDominioAgent, (req, res) => {
+  garantirDemonstrativoEstado(1);
+  const b = req.body || {};
+  if (b.iniciando) {
+    sqlite.prepare(`UPDATE demonstrativo_robo_estado SET run_now_em = NULL, parar_em = NULL, ultima_exec_em = datetime('now') WHERE escritorio_id = 1`).run();
+  }
+  sqlite.prepare(`
+    UPDATE demonstrativo_robo_estado
+       SET prog_rodando = ?, prog_total = ?, prog_feitas = ?, prog_atual = ?, prog_em = datetime('now')
+     WHERE escritorio_id = 1
+  `).run(b.rodando ? 1 : 0, Number(b.total) || 0, Number(b.feitas) || 0, b.atual ? String(b.atual) : null);
+  if (!b.rodando) sqlite.prepare(`UPDATE demonstrativo_robo_estado SET parar_em = NULL WHERE escritorio_id = 1`).run();
+  res.json({ ok: true });
+});
+// ---- Tela (Configurações › Relatórios) ----
+app.get("/api/demonstrativo-robo/estado", blockCliente, requirePermissao("configuracoes", "visualizar"), (_req, res) => {
+  garantirDemonstrativoEstado(1);
+  const c = sqlite.prepare(`
+    SELECT ligado, intervalo_min AS intervaloMin, run_now_em AS runNowEm, ultima_exec_em AS ultimaExecEm,
+      periodo_ini AS periodoIni, periodo_fim AS periodoFim,
+      agenda_ativo AS agendaAtivo, agenda_hora AS agendaHora, agenda_minuto AS agendaMinuto,
+      t_entre_empresas_ms AS tEntreEmpresasMs, t_render_timeout_ms AS tRenderTimeoutMs, t_gerar_pdf_ms AS tGerarPdfMs,
+      t_modulo_carga_ms AS tModuloCargaMs, t_curto_ms AS tCurtoMs, t_medio_ms AS tMedioMs, t_longo_ms AS tLongoMs,
+      prog_total AS total, prog_feitas AS feitas, prog_atual AS atual, prog_em AS progEm,
+      encadeado_apos_ferias AS encadeadoAposFerias,
+      (prog_rodando = 1 AND prog_em IS NOT NULL AND datetime(prog_em, '+5 minutes') >= datetime('now')) AS rodando,
+      agente_visto_em AS agenteVistoEm,
+      (parar_em IS NOT NULL) AS pararPendente,
+      (agente_visto_em IS NOT NULL AND datetime(agente_visto_em, '+40 seconds') >= datetime('now')) AS agenteOnline
+    FROM demonstrativo_robo_estado WHERE escritorio_id = 1
+  `).get() as any;
+  const pad = comparativoPeriodoPadrao();
+  res.json({
+    ligado: !!c.ligado, intervaloMin: c.intervaloMin, ultimaExecEm: c.ultimaExecEm,
+    periodoIni: c.periodoIni, periodoFim: c.periodoFim, periodoPadraoIni: pad.ini, periodoPadraoFim: pad.fim,
+    encadeadoAposFerias: !!c.encadeadoAposFerias,
+    agendaAtivo: !!c.agendaAtivo, agendaHora: c.agendaHora, agendaMinuto: c.agendaMinuto,
+    tEntreEmpresasMs: c.tEntreEmpresasMs, tRenderTimeoutMs: c.tRenderTimeoutMs, tGerarPdfMs: c.tGerarPdfMs,
+    tModuloCargaMs: c.tModuloCargaMs, tCurtoMs: c.tCurtoMs, tMedioMs: c.tMedioMs, tLongoMs: c.tLongoMs,
+    rodando: !!c.rodando, total: c.total, feitas: c.feitas, atual: c.atual, progEm: c.progEm,
+    runNowPendente: !!c.runNowEm, pararPendente: !!c.pararPendente, agenteOnline: !!c.agenteOnline, agenteVistoEm: c.agenteVistoEm,
+  });
+});
+app.post("/api/demonstrativo-robo/config", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
+  garantirDemonstrativoEstado(1);
+  const pIni = comparativoValidaPeriodo(req.body?.periodoIni);
+  const pFim = comparativoValidaPeriodo(req.body?.periodoFim);
+  // O Demonstrativo não tem horário próprio — só roda encadeado depois da Programação de Férias
+  // (igual o Férias, que só encadeia do Comparativo). Agenda sempre desligada.
+  const tEntreEmpresasMs = clampTempoMs(req.body?.tEntreEmpresasMs, 15000, 1000, 600000);
+  const tRenderTimeoutMs = clampTempoMs(req.body?.tRenderTimeoutMs, 90000, 5000, 300000);
+  const tGerarPdfMs = clampTempoMs(req.body?.tGerarPdfMs, 15000, 1000, 120000);
+  const tModuloCargaMs = clampTempoMs(req.body?.tModuloCargaMs, 10000, 1000, 60000);
+  const tCurtoMs = clampTempoMs(req.body?.tCurtoMs, 700, 100, 30000);
+  const tMedioMs = clampTempoMs(req.body?.tMedioMs, 2000, 100, 30000);
+  const tLongoMs = clampTempoMs(req.body?.tLongoMs, 4000, 100, 30000);
+  const encadeadoAposFerias = req.body?.encadeadoAposFerias ? 1 : 0;
+  sqlite.prepare(`
+    UPDATE demonstrativo_robo_estado SET periodo_ini = ?, periodo_fim = ?, agenda_ativo = 0, agenda_ultimo_dia = NULL,
+      t_entre_empresas_ms = ?, t_render_timeout_ms = ?, t_gerar_pdf_ms = ?, t_modulo_carga_ms = ?, t_curto_ms = ?, t_medio_ms = ?, t_longo_ms = ?,
+      encadeado_apos_ferias = ?
+    WHERE escritorio_id = 1
+  `).run(pIni, pFim, tEntreEmpresasMs, tRenderTimeoutMs, tGerarPdfMs, tModuloCargaMs, tCurtoMs, tMedioMs, tLongoMs, encadeadoAposFerias);
+  res.json({ ok: true, periodoIni: pIni, periodoFim: pFim });
+});
+app.post("/api/demonstrativo-robo/executar", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
+  garantirDemonstrativoEstado(1);
+  const pIni = comparativoValidaPeriodo(req.body?.periodoIni);
+  const pFim = comparativoValidaPeriodo(req.body?.periodoFim);
+  if (pIni && pFim) sqlite.prepare(`UPDATE demonstrativo_robo_estado SET periodo_ini = ?, periodo_fim = ? WHERE escritorio_id = 1`).run(pIni, pFim);
+  const online = sqlite.prepare(`SELECT (agente_visto_em IS NOT NULL AND datetime(agente_visto_em, '+40 seconds') >= datetime('now')) AS agenteOn FROM demonstrativo_robo_estado WHERE escritorio_id = 1`).get() as any;
+  sqlite.prepare(`UPDATE demonstrativo_robo_estado SET run_now_em = datetime('now'), parar_em = NULL WHERE escritorio_id = 1`).run();
+  res.json({ ok: true, agenteOnline: !!online.agenteOn });
+});
+app.post("/api/demonstrativo-robo/parar", blockCliente, requirePermissao("configuracoes", "editar"), (_req, res) => {
+  garantirDemonstrativoEstado(1);
+  sqlite.prepare(`UPDATE demonstrativo_robo_estado SET parar_em = datetime('now'), ligado = 0, run_now_em = NULL WHERE escritorio_id = 1`).run();
+  res.json({ ok: true });
+});
+// ---- Download do pacote do robô ----
+app.get("/api/empresas/demonstrativo-mensal/robo", blockCliente, requireAdmin, (req, res) => {
+  const pasta = [path.join(__dirname, "..", "dominio-robo-demonstrativo-mensal"), path.join(__dirname, "dominio-robo-demonstrativo-mensal")].find((p) => fs.existsSync(p));
+  if (!pasta) return res.status(500).json({ error: "Pacote do robô não está disponível nesta versão do servidor." });
+  res.setHeader("Content-Type", "application/zip");
+  res.setHeader("Content-Disposition", 'attachment; filename="Robo-Demonstrativo-Mensal.zip"');
+  const zip: any = archiver("zip", { zlib: { level: 9 } });
+  zip.on("error", (e: any) => { console.error("[demonstrativo-mensal] zip do robô:", e.message); res.destroy(); });
+  zip.pipe(res);
+  zipPastaRoboComToken(zip, pasta);
+  zip.finalize();
 });
 
 // ================== ROBÔ "PROGRAMAÇÃO DE FÉRIAS" (módulo Folha) ==================
@@ -4866,12 +5775,27 @@ sqlite.exec(`
   if (!colsFeriasRobo.some((c) => c.name === "agenda_hora")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN agenda_hora INTEGER NOT NULL DEFAULT 6`);
   if (!colsFeriasRobo.some((c) => c.name === "agenda_minuto")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN agenda_minuto INTEGER NOT NULL DEFAULT 0`);
   if (!colsFeriasRobo.some((c) => c.name === "agenda_ultimo_dia")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN agenda_ultimo_dia TEXT`);
+  if (!colsFeriasRobo.some((c) => c.name === "t_entre_empresas_ms")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN t_entre_empresas_ms INTEGER NOT NULL DEFAULT 15000`);
+  if (!colsFeriasRobo.some((c) => c.name === "t_render_timeout_ms")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN t_render_timeout_ms INTEGER NOT NULL DEFAULT 90000`);
+  if (!colsFeriasRobo.some((c) => c.name === "t_gerar_pdf_ms")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN t_gerar_pdf_ms INTEGER NOT NULL DEFAULT 15000`);
+  if (!colsFeriasRobo.some((c) => c.name === "t_modulo_carga_ms")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN t_modulo_carga_ms INTEGER NOT NULL DEFAULT 10000`);
+  if (!colsFeriasRobo.some((c) => c.name === "t_curto_ms")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN t_curto_ms INTEGER NOT NULL DEFAULT 700`);
+  if (!colsFeriasRobo.some((c) => c.name === "t_medio_ms")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN t_medio_ms INTEGER NOT NULL DEFAULT 2000`);
+  if (!colsFeriasRobo.some((c) => c.name === "t_longo_ms")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN t_longo_ms INTEGER NOT NULL DEFAULT 4000`);
+  if (!colsFeriasRobo.some((c) => c.name === "t_empresa_ms")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN t_empresa_ms INTEGER NOT NULL DEFAULT 4000`);
+  // Encadeamento com o Comparativo: em vez de ter horário próprio, o Férias pode esperar o Comparativo
+  // terminar (uma execução vinda da AGENDA dele) e começar sozinho logo em seguida — ver o disparo em
+  // /api/dominio-agent/comparativo-progresso. "encadeado_ultimo_dia" evita disparar 2x no mesmo dia.
+  if (!colsFeriasRobo.some((c) => c.name === "encadeado_apos_comparativo")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN encadeado_apos_comparativo INTEGER NOT NULL DEFAULT 0`);
+  if (!colsFeriasRobo.some((c) => c.name === "encadeado_ultimo_dia")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN encadeado_ultimo_dia TEXT`);
 }
 function garantirFeriasEstado(escritorioId: number) {
   sqlite.prepare(`INSERT OR IGNORE INTO ferias_robo_estado (escritorio_id) VALUES (?)`).run(escritorioId);
 }
 // Download do pacote do robô da Programação de Férias (Admin logado no site).
+// Mesma checagem (e mesmo motivo) do zip do robô de Comparativo, acima: vazava o token global do agente.
 app.get("/api/empresas/programacao-ferias/robo", blockCliente, requireAdmin, (req, res) => {
+  if ((req as any).user.escritorioId !== 1) return res.status(403).json({ error: "Este robô só está disponível pro escritório principal, por enquanto." });
   const pasta = [path.join(__dirname, "..", "dominio-robo-programacao-ferias"), path.join(__dirname, "dominio-robo-programacao-ferias")].find((p) => fs.existsSync(p));
   if (!pasta) return res.status(500).json({ error: "Pacote do robô não está disponível nesta versão do servidor." });
   res.setHeader("Content-Type", "application/zip");
@@ -4879,7 +5803,7 @@ app.get("/api/empresas/programacao-ferias/robo", blockCliente, requireAdmin, (re
   const zip: any = archiver("zip", { zlib: { level: 9 } });
   zip.on("error", (e: any) => { console.error("[programacao-ferias] zip do robô:", e.message); res.destroy(); });
   zip.pipe(res);
-  zip.directory(pasta, false);
+  zipPastaRoboComToken(zip, pasta);
   zip.finalize();
 });
 app.get("/api/dominio-agent/empresas-ferias", requireDominioAgent, (_req, res) => {
@@ -4903,40 +5827,71 @@ app.get("/api/dominio-agent/ferias-comando", requireDominioAgent, (_req, res) =>
   const c = sqlite.prepare(`
     SELECT ligado, intervalo_min AS intervaloMin, run_now_em, ultima_exec_em,
       agenda_ativo AS agendaAtivo, agenda_hora AS agendaHora, agenda_minuto AS agendaMinuto, agenda_ultimo_dia AS agendaUltimoDia,
+      t_entre_empresas_ms AS tEntreEmpresasMs, t_render_timeout_ms AS tRenderTimeoutMs, t_gerar_pdf_ms AS tGerarPdfMs,
+      t_modulo_carga_ms AS tModuloCargaMs, t_curto_ms AS tCurtoMs, t_medio_ms AS tMedioMs, t_longo_ms AS tLongoMs, t_empresa_ms AS tEmpresaMs,
       (run_now_em IS NOT NULL) AS runNow,
       (parar_em IS NOT NULL) AS parar,
       (ligado = 1 AND (ultima_exec_em IS NULL OR datetime(ultima_exec_em, '+' || intervalo_min || ' minutes') <= datetime('now'))) AS devePorTempo
     FROM ferias_robo_estado WHERE escritorio_id = 1
   `).get() as any;
   const { deve: devePorAgenda, hojeSp } = agendaDeveRodarAgora(c);
-  if (devePorAgenda) sqlite.prepare(`UPDATE ferias_robo_estado SET agenda_ultimo_dia = ? WHERE escritorio_id = 1`).run(hojeSp);
   // Só um robô por vez: o Férias CEDE ao Comparativo rodando, pendente (run/por-tempo) OU recém-terminado.
-  const segurar = outroRoboOcupado("comparativo_robo_estado", true);
+  const segurar = outroRoboOcupado("comparativo_robo_estado", true) || outroRoboOcupado("demonstrativo_robo_estado", false);
   const deveRodar = (!!c.runNow || !!c.devePorTempo || devePorAgenda) && !segurar;
+  // Qualquer disparo do dia (manual "Executar agora" ou automático) consome o agendamento daquele dia —
+  // achado ao vivo: um "Executar agora" clicado antes das 19:30 não marcava o dia, e quando o horário
+  // batia o agendamento disparava de NOVO horas depois, rodando as 58 empresas duas vezes no mesmo dia.
+  if (deveRodar && c.agendaAtivo && c.agendaUltimoDia !== hojeSp) {
+    sqlite.prepare(`UPDATE ferias_robo_estado SET agenda_ultimo_dia = ? WHERE escritorio_id = 1`).run(hojeSp);
+  }
   res.json({
     deveRodar, motivo: segurar ? "aguardando_outro_robo" : (c.runNow ? "manual" : (devePorAgenda ? "agenda" : (c.devePorTempo ? "automatico" : null))),
     parar: !!c.parar, ligado: !!c.ligado, intervaloMin: c.intervaloMin,
+    tEntreEmpresasMs: c.tEntreEmpresasMs, tRenderTimeoutMs: c.tRenderTimeoutMs, tGerarPdfMs: c.tGerarPdfMs,
+    tModuloCargaMs: c.tModuloCargaMs, tCurtoMs: c.tCurtoMs, tMedioMs: c.tMedioMs, tLongoMs: c.tLongoMs, tEmpresaMs: c.tEmpresaMs,
   });
 });
 app.post("/api/dominio-agent/ferias-progresso", requireDominioAgent, (req, res) => {
   garantirFeriasEstado(1);
+  garantirDemonstrativoEstado(1);
   const b = req.body || {};
   if (b.iniciando) {
-    sqlite.prepare(`UPDATE ferias_robo_estado SET run_now_em = NULL, parar_em = NULL, ultima_exec_em = datetime('now') WHERE escritorio_id = 1`).run();
+    // Ao começar o Férias, "arma" o encadeamento do Demonstrativo se ele estiver ligado pra rodar em
+    // sequência — fotografa a config agora pra disparar quando o Férias terminar (sem "Parar").
+    const demoChain = (sqlite.prepare(`SELECT encadeado_apos_ferias AS on_ FROM demonstrativo_robo_estado WHERE escritorio_id = 1`).get() as any)?.on_ ? 1 : 0;
+    sqlite.prepare(`UPDATE ferias_robo_estado SET run_now_em = NULL, parar_em = NULL, ultima_exec_em = datetime('now'), encadeia_demo_pendente = ? WHERE escritorio_id = 1`).run(demoChain);
   }
+  // Lido ANTES de sobrescrever — "estava rodando (prog_rodando=1) e ninguém pediu Parar (parar_em NULL)"
+  // distingue "terminou de verdade" de "nunca começou"/"foi freado na mão", pra decidir se encadeia o Demo.
+  const antes = sqlite.prepare(`SELECT prog_rodando AS progRodando, parar_em AS pararEm, encadeia_demo_pendente AS encadeiaDemo FROM ferias_robo_estado WHERE escritorio_id = 1`).get() as any;
   sqlite.prepare(`
     UPDATE ferias_robo_estado
        SET prog_rodando = ?, prog_total = ?, prog_feitas = ?, prog_atual = ?, prog_em = datetime('now')
      WHERE escritorio_id = 1
   `).run(b.rodando ? 1 : 0, Number(b.total) || 0, Number(b.feitas) || 0, b.atual ? String(b.atual) : null);
-  if (!b.rodando) sqlite.prepare(`UPDATE ferias_robo_estado SET parar_em = NULL WHERE escritorio_id = 1`).run();
+  if (!b.rodando) {
+    // Terminou/parou: reseta o freio e desarma o encadeamento (one-shot) pra não afetar a próxima run.
+    sqlite.prepare(`UPDATE ferias_robo_estado SET parar_em = NULL, encadeia_demo_pendente = 0 WHERE escritorio_id = 1`).run();
+    // Encadeamento Demonstrativo: só dispara se o Férias estava mesmo rodando, terminou sozinho (não foi
+    // "Parar") e o encadeamento estava armado quando começou. Começa o Demonstrativo em sequência.
+    if (antes?.progRodando && !antes?.pararEm && antes?.encadeiaDemo) {
+      const demo = sqlite.prepare(`SELECT encadeado_apos_ferias AS on_ FROM demonstrativo_robo_estado WHERE escritorio_id = 1`).get() as any;
+      if (demo?.on_) {
+        const hojeSp = new Date(Date.now() - 3 * 3600 * 1000).toISOString().slice(0, 10);
+        sqlite.prepare(`UPDATE demonstrativo_robo_estado SET run_now_em = datetime('now'), parar_em = NULL, encadeado_ultimo_dia = ? WHERE escritorio_id = 1`).run(hojeSp);
+      }
+    }
+  }
   res.json({ ok: true });
 });
-app.get("/api/ferias-robo/estado", blockCliente, requirePermissao("configuracoes", "visualizar"), (_req, res) => {
+app.get("/api/ferias-robo/estado", blockCliente, requirePermissao("configuracoes", "visualizar"), requireEscritorioPrincipalDominio, (_req, res) => {
   garantirFeriasEstado(1);
   const c = sqlite.prepare(`
     SELECT ligado, intervalo_min AS intervaloMin, run_now_em AS runNowEm, ultima_exec_em AS ultimaExecEm,
       agenda_ativo AS agendaAtivo, agenda_hora AS agendaHora, agenda_minuto AS agendaMinuto,
+      encadeado_apos_comparativo AS encadeadoAposComparativo,
+      t_entre_empresas_ms AS tEntreEmpresasMs, t_render_timeout_ms AS tRenderTimeoutMs, t_gerar_pdf_ms AS tGerarPdfMs,
+      t_modulo_carga_ms AS tModuloCargaMs, t_curto_ms AS tCurtoMs, t_medio_ms AS tMedioMs, t_longo_ms AS tLongoMs, t_empresa_ms AS tEmpresaMs,
       prog_total AS total, prog_feitas AS feitas, prog_atual AS atual, prog_em AS progEm,
       (prog_rodando = 1 AND prog_em IS NOT NULL AND datetime(prog_em, '+5 minutes') >= datetime('now')) AS rodando,
       agente_visto_em AS agenteVistoEm,
@@ -4947,29 +5902,45 @@ app.get("/api/ferias-robo/estado", blockCliente, requirePermissao("configuracoes
   res.json({
     ligado: !!c.ligado, intervaloMin: c.intervaloMin, ultimaExecEm: c.ultimaExecEm,
     agendaAtivo: !!c.agendaAtivo, agendaHora: c.agendaHora, agendaMinuto: c.agendaMinuto,
+    encadeadoAposComparativo: !!c.encadeadoAposComparativo,
+    tEntreEmpresasMs: c.tEntreEmpresasMs, tRenderTimeoutMs: c.tRenderTimeoutMs, tGerarPdfMs: c.tGerarPdfMs,
+    tModuloCargaMs: c.tModuloCargaMs, tCurtoMs: c.tCurtoMs, tMedioMs: c.tMedioMs, tLongoMs: c.tLongoMs, tEmpresaMs: c.tEmpresaMs,
     rodando: !!c.rodando, total: c.total, feitas: c.feitas, atual: c.atual, progEm: c.progEm,
     runNowPendente: !!c.runNowEm, pararPendente: !!c.pararPendente, agenteOnline: !!c.agenteOnline, agenteVistoEm: c.agenteVistoEm,
   });
 });
-app.post("/api/ferias-robo/config", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
+app.post("/api/ferias-robo/config", blockCliente, requirePermissao("configuracoes", "editar"), requireEscritorioPrincipalDominio, (req, res) => {
   garantirFeriasEstado(1);
-  const ligado = req.body?.ligado ? 1 : 0;
-  let intervalo = Number(req.body?.intervaloMin);
-  if (!Number.isFinite(intervalo) || intervalo < 1) intervalo = 15;
-  intervalo = Math.min(Math.max(Math.round(intervalo), 1), 1440);
-  const agendaAtivo = req.body?.agendaAtivo ? 1 : 0;
-  const agendaHora = Math.min(Math.max(Math.round(Number(req.body?.agendaHora)) || 6, 0), 23);
-  const agendaMinuto = Math.min(Math.max(Math.round(Number(req.body?.agendaMinuto)) || 0, 0), 59);
-  sqlite.prepare(`UPDATE ferias_robo_estado SET ligado = ?, intervalo_min = ?, agenda_ativo = ?, agenda_hora = ?, agenda_minuto = ? WHERE escritorio_id = 1`).run(ligado, intervalo, agendaAtivo, agendaHora, agendaMinuto);
-  res.json({ ok: true, ligado: !!ligado, intervaloMin: intervalo });
+  // O Férias não tem mais horário próprio — ou encadeia com o Comparativo (preferido) ou fica só no manual.
+  const encadeadoAposComparativo = req.body?.encadeadoAposComparativo ? 1 : 0;
+  const tEntreEmpresasMs = clampTempoMs(req.body?.tEntreEmpresasMs, 15000, 1000, 600000);
+  const tRenderTimeoutMs = clampTempoMs(req.body?.tRenderTimeoutMs, 90000, 5000, 300000);
+  const tGerarPdfMs = clampTempoMs(req.body?.tGerarPdfMs, 15000, 1000, 120000);
+  const tModuloCargaMs = clampTempoMs(req.body?.tModuloCargaMs, 10000, 1000, 60000);
+  const tCurtoMs = clampTempoMs(req.body?.tCurtoMs, 700, 100, 30000);
+  const tMedioMs = clampTempoMs(req.body?.tMedioMs, 2000, 100, 30000);
+  const tLongoMs = clampTempoMs(req.body?.tLongoMs, 4000, 100, 30000);
+  const tEmpresaMs = clampTempoMs(req.body?.tEmpresaMs, 4000, 100, 30000);
+  sqlite.prepare(`
+    UPDATE ferias_robo_estado SET agenda_ativo = 0, encadeado_apos_comparativo = ?,
+      t_entre_empresas_ms = ?, t_render_timeout_ms = ?, t_gerar_pdf_ms = ?, t_modulo_carga_ms = ?, t_curto_ms = ?, t_medio_ms = ?, t_longo_ms = ?, t_empresa_ms = ?
+    WHERE escritorio_id = 1
+  `).run(encadeadoAposComparativo, tEntreEmpresasMs, tRenderTimeoutMs, tGerarPdfMs, tModuloCargaMs, tCurtoMs, tMedioMs, tLongoMs, tEmpresaMs);
+  res.json({ ok: true });
 });
-app.post("/api/ferias-robo/executar", blockCliente, requirePermissao("configuracoes", "editar"), (_req, res) => {
+app.post("/api/ferias-robo/executar", blockCliente, requirePermissao("configuracoes", "editar"), requireEscritorioPrincipalDominio, (_req, res) => {
   garantirFeriasEstado(1);
   const online = sqlite.prepare(`SELECT (agente_visto_em IS NOT NULL AND datetime(agente_visto_em, '+40 seconds') >= datetime('now')) AS agenteOn FROM ferias_robo_estado WHERE escritorio_id = 1`).get() as any;
-  sqlite.prepare(`UPDATE ferias_robo_estado SET run_now_em = datetime('now'), parar_em = NULL WHERE escritorio_id = 1`).run();
+  // Achado em auditoria (2026-10-12): "Executar agora" não marcava encadeado_ultimo_dia — se o
+  // Comparativo (agendado) terminasse DEPOIS desse clique manual no mesmo dia, o encadeamento via
+  // comparativo-progresso (acima) não via o dia como "já usado" e disparava o Férias de NOVO, mesmo
+  // dia — exatamente a classe de bug de "rodar 2x no mesmo dia" já corrigida hoje mais cedo pros dois
+  // robôs. Qualquer disparo de verdade (manual ou encadeado) agora consome o dia igual.
+  const hojeSp = new Date(Date.now() - 3 * 3600 * 1000).toISOString().slice(0, 10);
+  sqlite.prepare(`UPDATE ferias_robo_estado SET run_now_em = datetime('now'), parar_em = NULL, encadeado_ultimo_dia = ? WHERE escritorio_id = 1`).run(hojeSp);
   res.json({ ok: true, agenteOnline: !!online.agenteOn });
 });
-app.post("/api/ferias-robo/parar", blockCliente, requirePermissao("configuracoes", "editar"), (_req, res) => {
+app.post("/api/ferias-robo/parar", blockCliente, requirePermissao("configuracoes", "editar"), requireEscritorioPrincipalDominio, (_req, res) => {
   garantirFeriasEstado(1);
   sqlite.prepare(`UPDATE ferias_robo_estado SET parar_em = datetime('now'), ligado = 0, run_now_em = NULL WHERE escritorio_id = 1`).run();
   res.json({ ok: true });
@@ -5019,7 +5990,7 @@ app.get("/api/empresas/comparativo-movimento/diagnostico-cadastro", blockCliente
 // programacao_ferias) + o resultado da ÚLTIMA leitura de cada uma (tabelaLog: comparativo_movimento_log
 // | ferias_log) — pra tela mostrar, lado a lado, "quem está marcado" e "quem deu certo/errado da
 // última vez". Uma empresa marcada mas sem nenhuma linha em tabelaLog ainda é "nunca rodou" (não é erro).
-function roboMarcadasEResultado(escritorioId: number, campoFlag: "comparativo_movimento_diario" | "programacao_ferias", tabelaLog: "comparativo_movimento_log" | "ferias_log") {
+function roboMarcadasEResultado(escritorioId: number, campoFlag: "comparativo_movimento_diario" | "programacao_ferias" | "demonstrativo_mensal", tabelaLog: "comparativo_movimento_log" | "ferias_log" | "demonstrativo_log") {
   const empresas = sqlite
     .prepare(`SELECT id, nome, cnpj, codigo_dominio as codigoDominio FROM empresas WHERE escritorio_id = ? AND ativo = 1 AND ${campoFlag} = 1 ORDER BY nome COLLATE NOCASE`)
     .all(escritorioId) as any[];
@@ -5056,6 +6027,9 @@ app.get("/api/empresas/comparativo-movimento/marcadas", blockCliente, requirePer
 app.get("/api/empresas/programacao-ferias/marcadas", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
   res.json({ items: roboMarcadasEResultado((req as any).user.escritorioId, "programacao_ferias", "ferias_log") });
 });
+app.get("/api/empresas/demonstrativo-mensal/marcadas", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
+  res.json({ items: roboMarcadasEResultado((req as any).user.escritorioId, "demonstrativo_mensal", "demonstrativo_log") });
+});
 app.delete("/api/fgts/agente-tokens", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
   const r = sqlite.prepare(`DELETE FROM fgts_agente_tokens WHERE user_id = ?`).run((req as any).user.id);
   res.json({ ok: true, revogadas: Number(r.changes) });
@@ -5069,11 +6043,19 @@ app.get("/api/fgts/empresas-marcadas", blockCliente, requirePermissao("empresas"
 });
 // Recebe o resultado de UMA empresa, enviado por fgts-login-setup.ts ao vivo, logo depois de buscar
 // a guia dela no mesmo navegador logado (ver buscarGuiaFgtsEmpresa em fgts-automacao.ts).
+// Achado em auditoria (2026-10-12): sem cooldown nenhum — um token roubado (fica só como hash, mas
+// se o token em si vazar) podia martelar esta rota e inserir guias falsas em Envio de Documentos
+// repetidamente. Cooldown curto por empresa, só contra abuso/loop — não interfere no uso normal (o
+// agente passa por cada empresa uma vez por rodada).
+const fgtsGuiaUltimoEnvio = new Map<number, number>();
 app.post("/api/fgts/guia", blockCliente, requirePermissao("empresas", "postar"), (req, res) => {
   const user = (req as any).user;
   const { empresaId, ano, mes, ok, guiaGerada, pdfBase64, erro } = req.body || {};
   const idNum = Number(empresaId);
   if (!idNum || !podeAcessarEmpresa(user, idNum)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const ultimo = fgtsGuiaUltimoEnvio.get(idNum);
+  if (ultimo && Date.now() - ultimo < 30_000) return res.status(429).json({ error: "Resultado desta empresa já recebido há pouco." });
+  fgtsGuiaUltimoEnvio.set(idNum, Date.now());
   let erroFinal: string | null = ok ? null : String(erro || "Falha desconhecida.");
   if (ok && guiaGerada && pdfBase64) {
     try {
@@ -5133,7 +6115,10 @@ app.put("/api/dominio/config", blockCliente, requirePermissao("configuracoes", "
       b.dbPort ? Number(b.dbPort) : null,
       b.dbName || null,
       b.dbUser || null,
-      b.dbPassword ? String(b.dbPassword) : atual.db_password || null, // vazio = mantém a senha já salva
+      // Achado em auditoria (2026-10-12): senha do banco e token de API ficavam em texto puro no
+      // SQLite (recuperáveis em claro só com acesso ao arquivo/backup) — mesmo padrão de cifragem já
+      // usado pra senha de certificado, SMTP e client secret do OneDrive (nfse.cifrarTexto).
+      b.dbPassword ? nfse.cifrarTexto(String(b.dbPassword)) : atual.db_password || null, // vazio = mantém a senha já salva
       b.dbConnectString || null,
       b.queryClientes || null,
       b.colCodigo || "CODIGO",
@@ -5141,7 +6126,7 @@ app.put("/api/dominio/config", blockCliente, requirePermissao("configuracoes", "
       b.colCnpj || "CNPJ",
       b.colStatus || "STATUS",
       b.apiUrl || null,
-      b.apiToken ? String(b.apiToken) : atual.api_token || null,
+      b.apiToken ? nfse.cifrarTexto(String(b.apiToken)) : atual.api_token || null,
       b.xmlExportAtivo ? 1 : 0,
       b.xmlExportDir || null
     );
@@ -5151,11 +6136,14 @@ app.put("/api/dominio/config", blockCliente, requirePermissao("configuracoes", "
 // ela é quem tem acesso à rede do Domínio Web). O front faz polling neste id até status != pending.
 app.post("/api/dominio/testar-conexao", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
   const user = (req as any).user;
-  const info = sqlite.prepare(`INSERT INTO dominio_test_jobs (status, criado_por) VALUES ('pending', ?)`).run(user.id);
+  const info = sqlite.prepare(`INSERT INTO dominio_test_jobs (status, criado_por, escritorio_id) VALUES ('pending', ?, ?)`).run(user.id, user.escritorioId);
   res.json({ id: Number(info.lastInsertRowid) });
 });
+// Achado em auditoria (2026-10-12): id sequencial global sem checar escritório — qualquer usuário
+// autenticado com essa permissão conseguia ler resultado/erro de teste de conexão de OUTRO
+// escritório só trocando o id. Agora o id só resolve se for do próprio escritório.
 app.get("/api/dominio/testar-conexao/:id", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
-  const row = sqlite.prepare(`SELECT * FROM dominio_test_jobs WHERE id = ?`).get(Number(req.params.id)) as any;
+  const row = sqlite.prepare(`SELECT * FROM dominio_test_jobs WHERE id = ? AND escritorio_id = ?`).get(Number(req.params.id), (req as any).user.escritorioId) as any;
   if (!row) return res.status(404).json({ error: "Teste não encontrado." });
   res.json({ status: row.status, resultado: row.resultado_json ? JSON.parse(row.resultado_json) : null, erro: row.erro });
 });
@@ -5166,7 +6154,7 @@ app.get("/api/dominio/testar-conexao/:id", blockCliente, requirePermissao("confi
 // pendente e o agente local atende no ciclo rápido, de ~12 em 12s.
 app.post("/api/dominio/sincronizar-empresas", blockCliente, requirePermissao("empresas", "postar"), (req, res) => {
   const user = (req as any).user;
-  const info = sqlite.prepare(`INSERT INTO dominio_sync_jobs (status, criado_por) VALUES ('pending', ?)`).run(user.id);
+  const info = sqlite.prepare(`INSERT INTO dominio_sync_jobs (status, criado_por, escritorio_id) VALUES ('pending', ?, ?)`).run(user.id, user.escritorioId);
   const jobId = Number(info.lastInsertRowid);
   const cfg = getDominioConfig(user.escritorioId);
   if (cfg.source === "onvio" && fs.existsSync(onvioSessionPath(user.escritorioId))) {
@@ -5174,8 +6162,9 @@ app.post("/api/dominio/sincronizar-empresas", blockCliente, requirePermissao("em
   }
   res.json({ id: jobId });
 });
+// Achado em auditoria (2026-10-12): mesmo motivo de testar-conexao/:id, acima.
 app.get("/api/dominio/sincronizar-empresas/:id", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
-  const row = sqlite.prepare(`SELECT * FROM dominio_sync_jobs WHERE id = ?`).get(Number(req.params.id)) as any;
+  const row = sqlite.prepare(`SELECT * FROM dominio_sync_jobs WHERE id = ? AND escritorio_id = ?`).get(Number(req.params.id), (req as any).user.escritorioId) as any;
   if (!row) return res.status(404).json({ error: "Sincronização não encontrada." });
   res.json({ status: row.status, novas: row.novas, atualizadas: row.atualizadas, erro: row.erro });
 });
@@ -5187,8 +6176,9 @@ app.get("/api/checklist/templates", blockCliente, requirePermissao("solicitacoes
 });
 app.post("/api/checklist/templates", blockCliente, requirePermissao("solicitacoes", "postar"), (req, res) => {
   const user = (req as any).user;
-  const { nome, descricao, periodicidade, itens, notificarEmail, prazoDia } = req.body || {};
+  const { nome, descricao, periodicidade, itens, notificarEmail, prazoDia, setor } = req.body || {};
   if (!nome || !Array.isArray(itens) || !itens.length) return res.status(400).json({ error: "Informe o nome e ao menos um item para anexar." });
+  if (!SETOR_ROTULO[setor]) return res.status(400).json({ error: "Escolha o setor que atende este modelo (Contabilidade, Fiscal ou DP/RH)." });
   const itensNormalizados = itens.map((it: any, i: number) => ({
     chave: it.chave || `item${i + 1}`,
     label: it.label || `Item ${i + 1}`,
@@ -5197,19 +6187,20 @@ app.post("/api/checklist/templates", blockCliente, requirePermissao("solicitacoe
   }));
   const prazoDiaNum = prazoDia ? Math.min(28, Math.max(1, Number(prazoDia))) : null;
   const info = sqlite
-    .prepare(`INSERT INTO checklist_templates (nome, descricao, periodicidade, itens_json, notificar_email, prazo_dia, created_by, escritorio_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(nome, descricao || null, periodicidade || "mensal", JSON.stringify(itensNormalizados), notificarEmail ? 1 : 0, prazoDiaNum, user.id, user.escritorioId);
+    .prepare(`INSERT INTO checklist_templates (nome, descricao, periodicidade, itens_json, notificar_email, prazo_dia, created_by, escritorio_id, setor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(nome, descricao || null, periodicidade || "mensal", JSON.stringify(itensNormalizados), notificarEmail ? 1 : 0, prazoDiaNum, user.id, user.escritorioId, setor);
   res.json({ id: Number(info.lastInsertRowid) });
 });
 app.put("/api/checklist/templates/:id", blockCliente, requirePermissao("solicitacoes", "editar"), (req, res) => {
   const id = Number(req.params.id);
   const existing = sqlite.prepare(`SELECT * FROM checklist_templates WHERE id = ? AND escritorio_id = ?`).get(id, (req as any).user.escritorioId) as any;
   if (!existing) return res.status(404).json({ error: "Modelo não encontrado." });
-  const { nome, descricao, itens, notificarEmail, ativo, prazoDia } = req.body || {};
+  const { nome, descricao, itens, notificarEmail, ativo, prazoDia, setor } = req.body || {};
+  if (setor !== undefined && !SETOR_ROTULO[setor]) return res.status(400).json({ error: "Setor inválido." });
   const itensJson = Array.isArray(itens) ? JSON.stringify(itens) : existing.itens_json;
   const prazoDiaNum = prazoDia === undefined ? existing.prazo_dia : prazoDia ? Math.min(28, Math.max(1, Number(prazoDia))) : null;
   sqlite
-    .prepare(`UPDATE checklist_templates SET nome=?, descricao=?, itens_json=?, notificar_email=?, ativo=?, prazo_dia=? WHERE id=?`)
+    .prepare(`UPDATE checklist_templates SET nome=?, descricao=?, itens_json=?, notificar_email=?, ativo=?, prazo_dia=?, setor=? WHERE id=?`)
     .run(
       nome ?? existing.nome,
       descricao !== undefined ? descricao : existing.descricao,
@@ -5217,6 +6208,7 @@ app.put("/api/checklist/templates/:id", blockCliente, requirePermissao("solicita
       notificarEmail === undefined ? existing.notificar_email : notificarEmail ? 1 : 0,
       ativo === undefined ? existing.ativo : ativo ? 1 : 0,
       prazoDiaNum,
+      setor !== undefined ? setor : existing.setor,
       id
     );
   res.json({ ok: true });
@@ -5268,8 +6260,11 @@ app.post("/api/checklist/atribuicoes", blockCliente, requirePermissao("solicitac
   const { templateId, empresaId } = req.body || {};
   if (!templateId || !empresaId) return res.status(400).json({ error: "Selecione o modelo e a empresa." });
   if (!podeAcessarEmpresa(user, Number(empresaId))) return res.status(403).json({ error: "Sem acesso a esta empresa." });
-  const template = sqlite.prepare(`SELECT id FROM checklist_templates WHERE id = ? AND escritorio_id = ?`).get(Number(templateId), user.escritorioId);
+  const template = sqlite.prepare(`SELECT id, setor FROM checklist_templates WHERE id = ? AND escritorio_id = ?`).get(Number(templateId), user.escritorioId) as any;
   if (!template) return res.status(404).json({ error: "Modelo não encontrado." });
+  if (template.setor && !empresaSetores(Number(empresaId)).includes(template.setor)) {
+    return res.status(400).json({ error: `Esta empresa não trabalha com o setor ${SETOR_ROTULO[template.setor]}. Marque o setor no cadastro dela para atribuir este modelo.` });
+  }
   try {
     const info = sqlite
       .prepare(`INSERT INTO checklist_atribuicoes (template_id, empresa_id, created_by) VALUES (?, ?, ?)`)
@@ -5386,7 +6381,7 @@ app.get("/api/checklist/grade/:atribuicaoId", (req, res) => {
 });
 
 // Cliente (ou colaborador com permissão) anexa e salva um arquivo num slot — trava automaticamente após salvar
-app.post("/api/checklist/periodos/:periodoId/upload", upload.single("arquivo"), (req, res) => {
+app.post("/api/checklist/periodos/:periodoId/upload", empresaInativaBloqueiaEnvio, upload.single("arquivo"), (req, res) => {
   const user = (req as any).user;
   const periodoId = Number(req.params.periodoId);
   const itemChave = String(req.body?.itemChave || "");
@@ -5399,12 +6394,16 @@ app.post("/api/checklist/periodos/:periodoId/upload", upload.single("arquivo"), 
     .get(periodoId) as any;
   if (!periodo) return res.status(404).json({ error: "Período não encontrado." });
 
-  if (user.perfil === "Cliente") {
-    // Cliente sempre pode postar na própria empresa — não passa pelo requirePermissao de colaborador.
-    if (user.empresaId !== periodo.empresaId) return res.status(403).json({ error: "Sem acesso a esta empresa." });
-  } else if (user.perfil === "Colaborador") {
-    if (!hasPermissao(user, "solicitacoes", "postar")) return res.status(403).json({ error: "Sem permissão para anexar." });
-    if (!podeAcessarEmpresa(user, periodo.empresaId)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  // Achado em auditoria (2026-10-12): não havia nenhum "else" pra Administrador (nem SuperAdmin) —
+  // esses perfis passavam direto sem nenhuma checagem de acesso à empresa. Como periodoId é um PK
+  // global (compartilhado entre todos os escritórios-clientes da plataforma), um Administrador de
+  // QUALQUER escritório conseguia enviar/substituir arquivo no checklist de empresa de OUTRO
+  // escritório só incrementando o id na URL. Checagem de empresa agora é incondicional pra todo
+  // perfil (igual às rotas de reabertura/download, que já faziam certo), antes de qualquer checagem
+  // extra de permissão.
+  if (!podeAcessarEmpresa(user, periodo.empresaId)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  if (user.perfil === "Colaborador" && !hasPermissao(user, "solicitacoes", "postar")) {
+    return res.status(403).json({ error: "Sem permissão para anexar." });
   }
 
   const itens = JSON.parse(periodo.itensJson);
@@ -5521,6 +6520,7 @@ app.get("/api/envio/templates", blockCliente, requirePermissao("envio", "visuali
       visivelCliente: !!r.visivel_cliente,
       suspensoDesde: r.suspenso_desde,
       autoRegimeTributario: r.auto_regime_tributario,
+      pendenteRevisao: !!r.pendente_revisao,
       protegido: ENVIO_TEMPLATES_PROTEGIDOS.includes(r.nome),
     })),
   });
@@ -5528,14 +6528,15 @@ app.get("/api/envio/templates", blockCliente, requirePermissao("envio", "visuali
 const ENVIO_PERIODICIDADES = ["mensal", "trimestral", "anual", "avulso"];
 app.post("/api/envio/templates", blockCliente, requirePermissao("envio", "postar"), (req, res) => {
   const user = (req as any).user;
-  const { nome, descricao, periodicidade, accept, detectarVencimento, considerarMesAtual, visivelCliente, suspensoDesde, autoRegimeTributario } = req.body || {};
+  const { nome, descricao, periodicidade, accept, detectarVencimento, considerarMesAtual, visivelCliente, suspensoDesde, autoRegimeTributario, setor } = req.body || {};
   if (!nome) return res.status(400).json({ error: "Informe o nome (ex.: \"DARF PIS\")." });
+  if (setor && !SETOR_ROTULO[setor]) return res.status(400).json({ error: "Setor inválido." });
   if (suspensoDesde && !/^\d{4}-\d{2}$/.test(suspensoDesde)) return res.status(400).json({ error: "Competência de suspensão inválida." });
   if (autoRegimeTributario && !(REGIMES_TRIBUTARIOS as readonly string[]).includes(autoRegimeTributario)) return res.status(400).json({ error: "Regime tributário inválido." });
   const acceptFinal = Array.isArray(accept) && accept.length ? accept : ["pdf"];
   const info = sqlite
-    .prepare(`INSERT INTO envio_templates (nome, descricao, periodicidade, accept_json, detectar_vencimento, considera_mes_atual, visivel_cliente, suspenso_desde, auto_regime_tributario, created_by, escritorio_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(nome, descricao || null, ENVIO_PERIODICIDADES.includes(periodicidade) ? periodicidade : "mensal", JSON.stringify(acceptFinal), detectarVencimento === false ? 0 : 1, considerarMesAtual === false ? 0 : 1, visivelCliente ? 1 : 0, suspensoDesde || null, autoRegimeTributario || null, user.id, user.escritorioId);
+    .prepare(`INSERT INTO envio_templates (nome, descricao, periodicidade, accept_json, detectar_vencimento, considera_mes_atual, visivel_cliente, suspenso_desde, auto_regime_tributario, created_by, escritorio_id, setor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(nome, descricao || null, ENVIO_PERIODICIDADES.includes(periodicidade) ? periodicidade : "mensal", JSON.stringify(acceptFinal), detectarVencimento === false ? 0 : 1, considerarMesAtual === false ? 0 : 1, visivelCliente ? 1 : 0, suspensoDesde || null, autoRegimeTributario || null, user.id, user.escritorioId, setor || null);
   res.json({ id: Number(info.lastInsertRowid) });
 });
 app.put("/api/envio/templates/:id", blockCliente, requirePermissao("envio", "editar"), (req, res) => {
@@ -5543,7 +6544,8 @@ app.put("/api/envio/templates/:id", blockCliente, requirePermissao("envio", "edi
   const existing = sqlite.prepare(`SELECT * FROM envio_templates WHERE id = ? AND escritorio_id = ?`).get(id, (req as any).user.escritorioId) as any;
   if (!existing) return res.status(404).json({ error: "Modelo não encontrado." });
   const protegido = ENVIO_TEMPLATES_PROTEGIDOS.includes(existing.nome);
-  const { nome, descricao, periodicidade, accept, ativo, detectarVencimento, considerarMesAtual, visivelCliente, suspensoDesde, autoRegimeTributario } = req.body || {};
+  const { nome, descricao, periodicidade, accept, ativo, detectarVencimento, considerarMesAtual, visivelCliente, suspensoDesde, autoRegimeTributario, setor } = req.body || {};
+  if (setor !== undefined && setor && !SETOR_ROTULO[setor]) return res.status(400).json({ error: "Setor inválido." });
   if (protegido && nome !== undefined && nome !== existing.nome) {
     return res.status(409).json({ error: `"${existing.nome}" é usado automaticamente pelo Integra Contador — renomear quebraria o anexo automático de DAS/Situação Fiscal.` });
   }
@@ -5556,7 +6558,7 @@ app.put("/api/envio/templates/:id", blockCliente, requirePermissao("envio", "edi
   // antigo) — só passa a valer pra próxima vez que "Gerar ano na grade" (ou "+ Nova solicitação
   // avulsa") for usado em cada atribuição desse modelo.
   sqlite
-    .prepare(`UPDATE envio_templates SET nome=?, descricao=?, periodicidade=?, accept_json=?, detectar_vencimento=?, considera_mes_atual=?, visivel_cliente=?, ativo=?, suspenso_desde=?, auto_regime_tributario=? WHERE id=?`)
+    .prepare(`UPDATE envio_templates SET nome=?, descricao=?, periodicidade=?, accept_json=?, detectar_vencimento=?, considera_mes_atual=?, visivel_cliente=?, ativo=?, suspenso_desde=?, auto_regime_tributario=?, setor=?, pendente_revisao=0 WHERE id=?`)
     .run(
       nome ?? existing.nome,
       descricao !== undefined ? descricao : existing.descricao,
@@ -5568,6 +6570,7 @@ app.put("/api/envio/templates/:id", blockCliente, requirePermissao("envio", "edi
       ativo === undefined ? existing.ativo : ativo ? 1 : 0,
       suspensoDesde === undefined ? existing.suspenso_desde : suspensoDesde || null,
       autoRegimeTributario === undefined ? existing.auto_regime_tributario : autoRegimeTributario || null,
+      setor === undefined ? existing.setor : setor || null,
       id
     );
   res.json({ ok: true });
@@ -5588,7 +6591,7 @@ app.get("/api/envio/atribuicoes", blockCliente, requirePermissao("envio", "visua
   const user = (req as any).user;
   const empresaId = req.query.empresaId ? Number(req.query.empresaId) : null;
   if (empresaId && !podeAcessarEmpresa(user, empresaId)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
-  let sql = `SELECT a.*, t.nome as templateNome, t.periodicidade, t.accept_json as acceptJson, e.nome as empresaNome
+  let sql = `SELECT a.*, t.nome as templateNome, t.periodicidade, t.accept_json as acceptJson, t.setor as templateSetor, e.nome as empresaNome
              FROM envio_atribuicoes a JOIN envio_templates t ON t.id = a.template_id JOIN empresas e ON e.id = a.empresa_id
              WHERE e.ativo = 1`;
   const params: any[] = [];
@@ -5600,6 +6603,7 @@ app.get("/api/envio/atribuicoes", blockCliente, requirePermissao("envio", "visua
   let rows = sqlite.prepare(sql).all(...params) as any[];
   const visiveis = empresasVisiveis(user);
   if (visiveis !== null) rows = rows.filter((r) => visiveis.includes(r.empresa_id));
+  rows = rows.filter((r) => envioSetorAtendido(r.templateSetor, r.empresa_id));
   res.json({
     items: rows.map((r) => ({
       ...r,
@@ -5608,6 +6612,72 @@ app.get("/api/envio/atribuicoes", blockCliente, requirePermissao("envio", "visua
       pendentesCliente: envioAtribuicaoPendentesCliente(r.id),
     })),
   });
+});
+// ---- Diagnóstico + backfill da "ponte" central-envio (DP/RH e CRM) -> grade Envio de Documentos ----
+// A ponte (central-envio.ts: centralEnvioEmpurrarParaGrade) empurra cada arquivo FONTE lido da pasta
+// (central_envio_docs com e_grupo=0 — não a linha "grupo"/mesclada) pra grade. Documentos lidos ANTES
+// da ponte existir, ou com empresa não resolvida no momento da leitura, nunca foram empurrados. Aqui
+// a gente lista esses buracos por tipo e consegue anexar os que faltam de uma vez (backfill).
+function pontaDocsFonte(escritorioId: number): any[] {
+  return sqlite.prepare(`
+    SELECT id, tipo_nome AS tipoNome, empresa_id AS empresaId, competencia, nome_arquivo AS arquivo,
+           arquivo_path AS arquivoPath, status, criado_em AS criadoEm
+      FROM central_envio_docs
+     WHERE escritorio_id = ? AND setor IN ('dprh','crm') AND COALESCE(e_grupo, 0) = 0
+       AND tipo_id IS NOT NULL AND tipo_nome IS NOT NULL AND empresa_id IS NOT NULL
+     ORDER BY tipo_nome, id
+  `).all(escritorioId) as any[];
+}
+// "Anexado" = existe envio_documentos com o MESMO file_name, na empresa e no modelo (tipo) certos.
+function pontaJaAnexado(fileName: string, empresaId: number, escritorioId: number, tipoNome: string): boolean {
+  return !!sqlite.prepare(
+    `SELECT 1 FROM envio_documentos d
+       JOIN envio_periodos p ON p.id = d.periodo_id
+       JOIN envio_atribuicoes a ON a.id = p.atribuicao_id
+       JOIN envio_templates t ON t.id = a.template_id
+      WHERE d.file_name = ? AND a.empresa_id = ? AND t.escritorio_id = ? AND t.nome = ? LIMIT 1`
+  ).get(fileName, empresaId, escritorioId, tipoNome);
+}
+app.get("/api/envio/ponte-diagnostico", blockCliente, requireAdmin, (req, res) => {
+  const esc = (req as any).user.escritorioId;
+  const docs = pontaDocsFonte(esc);
+  const empresaNome = new Map((sqlite.prepare(`SELECT id, nome FROM empresas WHERE escritorio_id = ?`).all(esc) as any[]).map((e) => [e.id, e.nome]));
+  const porTipo: Record<string, any> = {};
+  for (const d of docs) {
+    const t = d.tipoNome as string;
+    if (!porTipo[t]) porTipo[t] = { tipo: t, total: 0, anexados: 0, naoAnexados: 0, faltantes: [] as any[] };
+    porTipo[t].total++;
+    if (pontaJaAnexado(d.arquivo, d.empresaId, esc, t)) porTipo[t].anexados++;
+    else {
+      porTipo[t].naoAnexados++;
+      if (porTipo[t].faltantes.length < 500)
+        porTipo[t].faltantes.push({ id: d.id, arquivo: d.arquivo, empresa: empresaNome.get(d.empresaId) || `(empresa ${d.empresaId})`, competencia: d.competencia || "—", status: d.status, temArquivo: !!(d.arquivoPath && fs.existsSync(d.arquivoPath)) });
+    }
+  }
+  const tipos = Object.values(porTipo).sort((a: any, b: any) => b.naoAnexados - a.naoAnexados || String(a.tipo).localeCompare(String(b.tipo)));
+  res.json({ tipos, totalDocs: docs.length, totalNaoAnexados: tipos.reduce((s: number, x: any) => s + x.naoAnexados, 0) });
+});
+app.post("/api/envio/ponte-backfill", blockCliente, requireAdmin, (req, res) => {
+  const esc = (req as any).user.escritorioId;
+  const tipoFiltro = req.body?.tipo ? String(req.body.tipo) : null; // opcional: anexar só de um tipo
+  const docs = pontaDocsFonte(esc).filter((d) => !tipoFiltro || d.tipoNome === tipoFiltro);
+  let anexados = 0, semArquivo = 0, erros = 0;
+  for (const d of docs) {
+    if (pontaJaAnexado(d.arquivo, d.empresaId, esc, d.tipoNome)) continue;
+    if (!d.arquivoPath || !fs.existsSync(d.arquivoPath)) { semArquivo++; continue; }
+    try {
+      const templateId = envioObterOuCriarTemplateDraft(esc, d.tipoNome);
+      const atribId = envioAtribuicaoObterOuCriar(templateId, d.empresaId);
+      const m = /^(0[1-9]|1[0-2])\/(20\d{2})$/.exec(d.competencia || "");
+      let ano: number, mes: number;
+      if (m) { ano = Number(m[2]); mes = Number(m[1]); }
+      else { const base = d.criadoEm ? new Date(String(d.criadoEm).replace(" ", "T") + "Z") : new Date(); const sp = new Date(base.getTime() - 3 * 3600 * 1000); ano = sp.getUTCFullYear(); mes = sp.getUTCMonth() + 1; }
+      const base64 = fs.readFileSync(d.arquivoPath).toString("base64");
+      integraContadorAnexarPdfEmEnvio(atribId, d.empresaId, ano, mes, d.arquivo, base64, "Anexado retroativamente (backfill da ponte DP/RH).", null);
+      anexados++;
+    } catch (e: any) { erros++; console.error("[ponte backfill]", d.id, e.message); }
+  }
+  res.json({ anexados, semArquivo, erros });
 });
 // Histórico de todo pedido feito por qualquer cliente — tanto pela tela "Solicitar Documentos"
 // (modelos com visivel_cliente) quanto pelo "Recalcular DAS" — os dois usam o mesmo campo
@@ -5619,7 +6689,7 @@ app.get("/api/envio/solicitacoes", blockCliente, requirePermissao("envio", "visu
   const empresaId = req.query.empresaId ? Number(req.query.empresaId) : null;
   if (empresaId && !podeAcessarEmpresa(user, empresaId)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
   let sql = `SELECT p.id as periodoId, p.ano, p.mes, p.rotulo, p.solicitado_em as solicitadoEm, p.solicitacao_tipo as tipo,
-              t.nome as templateNome, a.id as atribuicaoId, a.empresa_id as empresaId, e.nome as empresaNome,
+              t.nome as templateNome, t.setor as templateSetor, a.id as atribuicaoId, a.empresa_id as empresaId, e.nome as empresaNome,
               u.nome as solicitadoPorNome, u.perfil as solicitadoPorPerfil,
               EXISTS(SELECT 1 FROM envio_documentos d WHERE d.periodo_id = p.id) as concluida,
               (SELECT MAX(d.enviado_em) FROM envio_documentos d WHERE d.periodo_id = p.id) as retornoClienteEm
@@ -5638,20 +6708,26 @@ app.get("/api/envio/solicitacoes", blockCliente, requirePermissao("envio", "visu
   let rows = sqlite.prepare(sql).all(...params) as any[];
   const visiveis = empresasVisiveis(user);
   if (visiveis !== null) rows = rows.filter((r) => visiveis.includes(r.empresaId));
+  rows = rows.filter((r) => envioSetorAtendido(r.templateSetor, r.empresaId));
   res.json({ items: rows.map((r) => ({ ...r, concluida: !!r.concluida })) });
 });
 app.get("/api/envio/minhas-atribuicoes", (req, res) => {
   const user = (req as any).user;
   if (user.perfil !== "Cliente") return res.status(403).json({ error: "Rota exclusiva para clientes." });
   if (!user.empresaId) return res.json({ items: [] });
+  // Achado em auditoria (2026-10-12): faltava excluir t.pendente_revisao — um modelo rascunho criado
+  // automaticamente pela ponte do central-envio (pendente_revisao=1, visivel_cliente=0, "fica só
+  // interno até o escritório abrir e confirmar", ver server.ts:10185) já nascia com atribuição ativa
+  // pra empresa, e sem este filtro aparecia pro Cliente em "Documentos Recebidos" (com o documento já
+  // anexado e baixável) antes de qualquer revisão — violava o próprio design combinado.
   const rows = sqlite
     .prepare(
-      `SELECT a.*, t.nome as templateNome, t.periodicidade, t.descricao, e.nome as empresaNome
+      `SELECT a.*, t.nome as templateNome, t.periodicidade, t.descricao, t.setor as templateSetor, e.nome as empresaNome
        FROM envio_atribuicoes a JOIN envio_templates t ON t.id = a.template_id JOIN empresas e ON e.id = a.empresa_id
-       WHERE a.empresa_id = ? AND a.ativo = 1 ORDER BY t.nome`
+       WHERE a.empresa_id = ? AND a.ativo = 1 AND t.pendente_revisao = 0 ORDER BY t.nome`
     )
     .all(user.empresaId) as any[];
-  res.json({ items: rows });
+  res.json({ items: rows.filter((r) => envioSetorAtendido(r.templateSetor, user.empresaId)) });
 });
 
 // ---- Solicitar Documentos (cliente pede, sem depender do escritório já ter atribuído o modelo) ----
@@ -5809,15 +6885,19 @@ app.get("/api/envio/minhas-solicitacoes", (req, res) => {
 
 app.post("/api/envio/atribuicoes", blockCliente, requirePermissao("envio", "postar"), (req, res) => {
   const user = (req as any).user;
-  const { templateId, empresaId } = req.body || {};
+  const { templateId, empresaId, monitorarDesde } = req.body || {};
+  if (monitorarDesde && !/^\d{4}-\d{2}$/.test(monitorarDesde)) return res.status(400).json({ error: "Competência de início inválida." });
   if (!templateId || !empresaId) return res.status(400).json({ error: "Selecione o modelo e a empresa." });
   if (!podeAcessarEmpresa(user, Number(empresaId))) return res.status(403).json({ error: "Sem acesso a esta empresa." });
-  const template = sqlite.prepare(`SELECT id FROM envio_templates WHERE id = ? AND escritorio_id = ?`).get(Number(templateId), user.escritorioId);
+  const template = sqlite.prepare(`SELECT id, setor FROM envio_templates WHERE id = ? AND escritorio_id = ?`).get(Number(templateId), user.escritorioId) as any;
   if (!template) return res.status(404).json({ error: "Modelo não encontrado." });
+  if (!envioSetorAtendido(template.setor, Number(empresaId))) {
+    return res.status(400).json({ error: `Esta empresa não atende o setor "${SETOR_ROTULO[template.setor]}". Marque o setor no cadastro da empresa antes de atribuir este modelo.` });
+  }
   try {
     const info = sqlite
-      .prepare(`INSERT INTO envio_atribuicoes (template_id, empresa_id, created_by) VALUES (?, ?, ?)`)
-      .run(Number(templateId), Number(empresaId), user.id);
+      .prepare(`INSERT INTO envio_atribuicoes (template_id, empresa_id, created_by, monitorar_desde) VALUES (?, ?, ?, ?)`)
+      .run(Number(templateId), Number(empresaId), user.id, monitorarDesde || null);
     res.json({ id: Number(info.lastInsertRowid) });
   } catch (e: any) {
     if (String(e.message).includes("UNIQUE")) return res.status(409).json({ error: "Este modelo já está atribuído a esta empresa." });
@@ -5842,7 +6922,7 @@ app.delete("/api/envio/atribuicoes/:id", blockCliente, requirePermissao("envio",
 // então "Gerar ano" chamado 2x pro mesmo ano/atribuição criaria período repetido pro mesmo mês (todo
 // período mensal/trimestral/anual tem rotulo=NULL) — clicar o botão 2x sem querer, ou a virada
 // automática coincidir com um "Gerar ano" manual, duplicava silenciosamente.
-function envioGerarPeriodosAno(atribuicaoId: number, periodicidade: string, ano: number, rotulo?: string | null): number {
+function envioGerarPeriodosAno(atribuicaoId: number, periodicidade: string, ano: number, rotulo?: string | null, mesInicial: number = 1): number {
   const existe = sqlite.prepare(`SELECT 1 FROM envio_periodos WHERE atribuicao_id = ? AND ano = ? AND mes IS ?`);
   const insert = sqlite.prepare(`INSERT INTO envio_periodos (atribuicao_id, ano, mes, rotulo) VALUES (?, ?, ?, ?)`);
   let criados = 0;
@@ -5851,12 +6931,14 @@ function envioGerarPeriodosAno(atribuicaoId: number, periodicidade: string, ano:
     insert.run(atribuicaoId, ano, mes, null);
     criados++;
   };
+  // mesInicial: primeiro mês da grade (1 = janeiro). Meses antes dele não são criados.
+  const inicio = Math.min(12, Math.max(1, Math.floor(mesInicial) || 1));
   if (periodicidade === "mensal") {
-    for (let mes = 1; mes <= 12; mes++) inserirSeNovo(mes);
+    for (let mes = inicio; mes <= 12; mes++) inserirSeNovo(mes);
   } else if (periodicidade === "trimestral") {
     // Um período por trimestre, representado pelo mês de fechamento (Mar/Jun/Set/Dez) — é o padrão
     // de apuração trimestral do IRPJ/CSLL no Lucro Real (o DARF vence no mês seguinte ao fechamento).
-    for (const mes of [3, 6, 9, 12]) inserirSeNovo(mes);
+    for (const mes of [3, 6, 9, 12]) if (mes >= inicio) inserirSeNovo(mes);
   } else if (periodicidade === "anual") {
     inserirSeNovo(null);
   } else {
@@ -5868,12 +6950,12 @@ function envioGerarPeriodosAno(atribuicaoId: number, periodicidade: string, ano:
   return criados;
 }
 app.post("/api/envio/periodos/gerar", blockCliente, requirePermissao("envio", "postar"), (req, res) => {
-  const { atribuicaoId, ano, rotulo } = req.body || {};
+  const { atribuicaoId, ano, rotulo, mesInicial } = req.body || {};
   const atrib = sqlite
     .prepare(`SELECT a.*, t.periodicidade FROM envio_atribuicoes a JOIN envio_templates t ON t.id = a.template_id WHERE a.id = ?`)
     .get(Number(atribuicaoId)) as any;
   if (!atrib || !podeAcessarEmpresa((req as any).user, atrib.empresa_id)) return res.status(404).json({ error: "Atribuição não encontrada." });
-  const criados = envioGerarPeriodosAno(atrib.id, atrib.periodicidade, Number(ano), rotulo);
+  const criados = envioGerarPeriodosAno(atrib.id, atrib.periodicidade, Number(ano), rotulo, mesInicial ? Number(mesInicial) : 1);
   res.json({ ok: true, criados });
 });
 // Virada de ano automática: toda 1ª de janeiro (checado 1x por dia, ver setInterval abaixo), gera
@@ -5897,9 +6979,12 @@ function envioRolloverGerarAno(escritorioId: number, ano: number): { atribuicoes
   for (const a of atribs) periodosCriados += envioGerarPeriodosAno(a.atribuicaoId, a.periodicidade, ano);
   return { atribuicoesRenovadas: atribs.length, periodosCriados };
 }
+// "Já passou das 03:10 hoje" em vez de "é exatamente 03:10" — mesmo motivo do agendamento de NFS-e
+// (ver setInterval de nfseExecutarAgendamentoAutomatico): sobrevive a um deploy que caia bem nesse
+// minuto. envio_rollover_ultimo_ano (por ano, não por dia) já evita rodar 2x.
 setInterval(() => {
   const agora = agoraBrasilia();
-  if (agora.hora !== 3 || agora.minuto !== 10) return;
+  if (agora.hora * 60 + agora.minuto < 3 * 60 + 10) return;
   const escritorios = sqlite.prepare(`SELECT id FROM escritorios WHERE ativo = 1 AND (envio_rollover_ultimo_ano IS NULL OR envio_rollover_ultimo_ano < ?)`).all(agora.ano) as any[];
   for (const e of escritorios) {
     try {
@@ -5922,6 +7007,27 @@ app.post("/api/envio/rollover-ano", requireAdmin, (req, res) => {
   const ano = Number(req.body?.ano) || agoraBrasilia().ano;
   const r = envioRolloverGerarAno(user.escritorioId, ano);
   res.json({ ok: true, ano, ...r });
+});
+// Desfaz um "Gerar ano na grade" disparado num ano futuro por engano (ex.: relógio do navegador
+// errado sugerindo o ano seguinte no prompt) — diferente do DELETE de período avulso logo abaixo,
+// aqui é o ano inteiro de um calendário mensal/trimestral/anual, só permitido se nenhum mês daquele
+// ano tiver documento anexado (senão o jeito é apagar os documentos um a um, como já existe). Só
+// aceita ano estritamente no futuro — nunca deixa zerar o ano corrente ou passado por aqui.
+app.delete("/api/envio/atribuicoes/:id/periodos-do-ano/:ano", requireAdmin, (req, res) => {
+  const user = (req as any).user;
+  const atribuicaoId = Number(req.params.id);
+  const ano = Number(req.params.ano);
+  const atrib = sqlite.prepare(`SELECT empresa_id as empresaId FROM envio_atribuicoes WHERE id = ?`).get(atribuicaoId) as any;
+  if (!atrib || !podeAcessarEmpresa(user, atrib.empresaId)) return res.status(404).json({ error: "Atribuição não encontrada." });
+  if (!Number.isInteger(ano) || ano <= agoraBrasilia().ano) return res.status(400).json({ error: "Só é possível apagar um ano futuro." });
+  const periodos = sqlite.prepare(`SELECT id FROM envio_periodos WHERE atribuicao_id = ? AND ano = ?`).all(atribuicaoId, ano) as any[];
+  if (!periodos.length) return res.status(404).json({ error: "Esse ano não está gerado nessa grade." });
+  const temDocumento = sqlite
+    .prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id IN (${periodos.map(() => "?").join(",")})`)
+    .get(...periodos.map((p) => p.id));
+  if (temDocumento) return res.status(400).json({ error: "Já existe documento anexado em algum mês desse ano — não é possível apagar em massa." });
+  sqlite.prepare(`DELETE FROM envio_periodos WHERE id IN (${periodos.map(() => "?").join(",")})`).run(...periodos.map((p) => p.id));
+  res.json({ ok: true, periodosRemovidos: periodos.length });
 });
 
 // Só pra período avulso (rótulo próprio, ex.: "CND - Receita Federal") e só quando não tem nenhum
@@ -5955,11 +7061,15 @@ app.get("/api/envio/grade/:atribuicaoId", (req, res) => {
   const atribuicaoId = Number(req.params.atribuicaoId);
   const atrib = sqlite
     .prepare(
-      `SELECT a.*, t.nome as templateNome, t.periodicidade, t.accept_json as acceptJson, t.detectar_vencimento as detectarVencimento, e.nome as empresaNome
+      `SELECT a.*, t.nome as templateNome, t.periodicidade, t.accept_json as acceptJson, t.detectar_vencimento as detectarVencimento, t.pendente_revisao as pendenteRevisao, e.nome as empresaNome
        FROM envio_atribuicoes a JOIN envio_templates t ON t.id = a.template_id JOIN empresas e ON e.id = a.empresa_id WHERE a.id = ?`
     )
     .get(atribuicaoId) as any;
   if (!atrib) return res.status(404).json({ error: "Atribuição não encontrada." });
+  // Achado em auditoria (2026-10-12): mesmo motivo de minhas-atribuicoes, acima — um Cliente com o
+  // atribuicaoId em mãos (a própria lista já vazava isso antes da correção) conseguia ver a grade de
+  // um modelo ainda não revisado. Acesso direto também barrado aqui, não só na listagem.
+  if (user.perfil === "Cliente" && atrib.pendenteRevisao) return res.status(404).json({ error: "Atribuição não encontrada." });
   if (user.perfil === "Cliente" && user.empresaId !== atrib.empresa_id) return res.status(403).json({ error: "Sem acesso." });
   if (user.perfil === "Colaborador" && !hasPermissao(user, "envio", "visualizar")) return res.status(403).json({ error: "Sem permissão." });
   if (user.perfil !== "Cliente" && !podeAcessarEmpresa(user, atrib.empresa_id)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
@@ -6144,7 +7254,7 @@ app.post("/api/envio/periodos/:periodoId/solicitar-recalculo-das", async (req, r
 });
 // Mesmo recurso, mas disparado a partir de Solicitar Documentos — o cliente escolhe a competência
 // (mês/ano) em vez de já estar na grade de Envio de Documentos com o periodoId em mãos.
-app.post("/api/envio/solicitar-recalculo-das", requireCliente, async (req, res) => {
+app.post("/api/envio/solicitar-recalculo-das", requireCliente, empresaInativaBloqueiaEnvio, async (req, res) => {
   const user = (req as any).user;
   if (!empresaPodeSolicitar(user.empresaId, "recalculo_das")) {
     return res.status(403).json({ error: "Sua empresa não está habilitada a solicitar recálculo de DAS." });
@@ -6167,7 +7277,7 @@ app.post("/api/envio/solicitar-recalculo-das", requireCliente, async (req, res) 
 // na hora: a Receita não expõe simulação nem adesão a parcelamento novo por API (só consulta de um
 // parcelamento que já existe), então esse pedido só avisa o escritório, que negocia no e-CAC como já
 // faz hoje e depois vincula o parcelamento concedido (ver POST /api/integracontador/parcelamentos).
-app.post("/api/envio/solicitar-parcelamento-das", requireCliente, (req, res) => {
+app.post("/api/envio/solicitar-parcelamento-das", requireCliente, empresaInativaBloqueiaEnvio, (req, res) => {
   const user = (req as any).user;
   if (!user.empresaId) return res.status(400).json({ error: "Seu usuário não está vinculado a uma empresa." });
   if (!empresaPodeSolicitar(user.empresaId, "parcelamento_das")) {
@@ -6410,8 +7520,26 @@ app.post("/api/envio/documentos/:id/reenviar-email", blockCliente, requirePermis
     res.status(500).json({ error: e.message });
   }
 });
-// Mesma lógica de conteúdo do reenvio por e-mail acima, só que manda por WhatsApp — pra todo
-// contato da empresa marcado como "receber WhatsApp" que tenha telefone cadastrado.
+// Lista os contatos de WhatsApp da empresa do documento — usado pelo modal "ver números antes de
+// enviar" (mesmo padrão já usado na Central de Envio, ver contatosDaEmpresa em central-envio.ts;
+// esta tela é um sistema separado, com sua própria tabela envio_documentos, então replica só a
+// consulta, não a função).
+app.get("/api/envio/documentos/:id/contatos", blockCliente, requirePermissao("envio", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const doc = sqlite
+    .prepare(`SELECT d.*, p.atribuicao_id as atribuicaoId FROM envio_documentos d JOIN envio_periodos p ON p.id = d.periodo_id WHERE d.id = ?`)
+    .get(Number(req.params.id)) as any;
+  if (!doc) return res.status(404).json({ error: "Documento não encontrado." });
+  const atrib = sqlite.prepare(`SELECT empresa_id as empresaId FROM envio_atribuicoes WHERE id = ?`).get(doc.atribuicaoId) as any;
+  if (!atrib || !podeAcessarEmpresa(user, atrib.empresaId)) return res.status(404).json({ error: "Documento não encontrado." });
+  const contatos = sqlite
+    .prepare(`SELECT nome, telefone FROM empresa_contatos WHERE empresa_id = ? AND receber_whatsapp = 1 AND telefone IS NOT NULL AND telefone != ''`)
+    .all(atrib.empresaId) as any[];
+  res.json({ contatos });
+});
+// Mesma lógica de conteúdo do reenvio por e-mail acima, só que manda por WhatsApp — por padrão pra
+// todo contato da empresa marcado como "receber WhatsApp", ou só os números escolhidos no modal
+// (body.telefones) quando a tela deixa o usuário marcar/desmarcar antes de enviar.
 app.post("/api/envio/documentos/:id/enviar-whatsapp", blockCliente, requirePermissao("envio", "postar"), async (req, res) => {
   const user = (req as any).user;
   const doc = sqlite
@@ -6425,9 +7553,13 @@ app.post("/api/envio/documentos/:id/enviar-whatsapp", blockCliente, requirePermi
     .get(doc.atribuicaoId) as any;
   if (!atrib || !podeAcessarEmpresa(user, atrib.empresaId)) return res.status(404).json({ error: "Documento não encontrado." });
   const empresa = sqlite.prepare(`SELECT nome FROM empresas WHERE id = ?`).get(atrib.empresaId) as any;
-  const contatos = sqlite
+  let contatos = sqlite
     .prepare(`SELECT telefone FROM empresa_contatos WHERE empresa_id = ? AND receber_whatsapp = 1 AND telefone IS NOT NULL AND telefone != ''`)
     .all(atrib.empresaId) as any[];
+  if (Array.isArray(req.body?.telefones) && req.body.telefones.length) {
+    const chavesEscolhidas = new Set(req.body.telefones.map((t: any) => telefoneChaveBr(t)).filter(Boolean));
+    contatos = contatos.filter((c) => chavesEscolhidas.has(telefoneChaveBr(c.telefone)));
+  }
   if (!contatos.length) return res.status(400).json({ error: "Esta empresa não tem contato de WhatsApp cadastrado (marque \"Receber WhatsApp\" no contato)." });
   if (!fs.existsSync(doc.file_path)) return res.status(404).json({ error: "Arquivo não encontrado no servidor." });
   const rotulo = doc.mes ? `${doc.mes}/${doc.ano}` : doc.rotulo || String(doc.ano);
@@ -6455,7 +7587,14 @@ app.get("/api/envio/documentos/:id/download", (req, res) => {
     .prepare(`SELECT d.*, p.atribuicao_id as atribuicaoId FROM envio_documentos d JOIN envio_periodos p ON p.id = d.periodo_id WHERE d.id = ?`)
     .get(Number(req.params.id)) as any;
   if (!doc) return res.status(404).json({ error: "Documento não encontrado." });
-  const atrib = sqlite.prepare(`SELECT empresa_id as empresaId FROM envio_atribuicoes WHERE id = ?`).get(doc.atribuicaoId) as any;
+  const atrib = sqlite
+    .prepare(
+      `SELECT a.empresa_id as empresaId, t.pendente_revisao as pendenteRevisao FROM envio_atribuicoes a JOIN envio_templates t ON t.id = a.template_id WHERE a.id = ?`
+    )
+    .get(doc.atribuicaoId) as any;
+  // Achado em auditoria (2026-10-12): mesmo motivo das rotas acima — download direto por id também
+  // precisa barrar enquanto o modelo estiver pendente de revisão, pro Cliente.
+  if (user.perfil === "Cliente" && atrib.pendenteRevisao) return res.status(404).json({ error: "Documento não encontrado." });
   if (user.perfil === "Cliente") {
     if (user.empresaId !== atrib.empresaId) return res.status(403).json({ error: "Sem acesso." });
   } else {
@@ -6559,12 +7698,17 @@ app.get("/api/nfe/config", blockCliente, requirePermissao("nfe-busca", "visualiz
       `SELECT c.empresa_id as empresaId, e.nome as empresaNome, c.cnpj, c.uf_autor as ufAutor, c.ambiente,
               c.titular, c.cnpj_certificado as cnpjCertificado, c.validade_ate as validadeAte, c.ativo,
               c.ultimo_nsu as ultimoNsu, c.ultima_busca_em as ultimaBuscaEm, c.ultimo_erro as ultimoErro,
-              c.ultimo_nsu_nfse as ultimoNsuNfse, c.ultima_busca_nfse_em as ultimaBuscaNfseEm, c.ultimo_erro_nfse as ultimoErroNfse
+              c.ultimo_nsu_nfse as ultimoNsuNfse, c.ultima_busca_nfse_em as ultimaBuscaNfseEm, c.ultimo_erro_nfse as ultimoErroNfse,
+              c.ultimo_nsu_cte as ultimoNsuCte, c.ultima_busca_cte_em as ultimaBuscaCteEm, c.ultimo_erro_cte as ultimoErroCte,
+              c.ultimo_nsu_mdfe as ultimoNsuMdfe, c.ultima_busca_mdfe_em as ultimaBuscaMdfeEm, c.ultimo_erro_mdfe as ultimoErroMdfe,
+              c.manifestacao_automatica as manifestacaoAutomatica
        FROM nfe_busca_config c JOIN empresas e ON e.id = c.empresa_id
        WHERE c.escritorio_id = ? AND e.ativo = 1 ORDER BY e.nome`
     )
-    .all((req as any).user.escritorioId);
-  res.json({ items: rows, moduloAtivo: escritorioTemModulo((req as any).user.escritorioId, "busca_xml_nfe") });
+    .all((req as any).user.escritorioId) as any[];
+  // Só empresas que este usuário pode ver (empresa fora do acesso dele não aparece, nem como "removida").
+  const visiveisBusca = new Set(empresasVisiveis((req as any).user));
+  res.json({ items: rows.filter((r) => visiveisBusca.has(r.empresaId)), moduloAtivo: escritorioTemModulo((req as any).user.escritorioId, "busca_xml_nfe") });
 });
 app.post("/api/nfe/config", blockCliente, requirePermissao("nfe-busca", "postar"), upload.single("arquivo"), async (req, res) => {
   const user = (req as any).user;
@@ -6605,7 +7749,7 @@ app.post("/api/nfe/config", blockCliente, requirePermissao("nfe-busca", "postar"
   // usuário não deveria precisar cadastrar o certificado E DEPOIS lembrar de clicar em "Buscar
   // agora" separadamente. Cada busca é independente (uma falhando não trava a outra), igual à rota
   // manual /buscar.
-  let resultadoSync = { novosNfe: 0, novosNfse: 0, erroNfe: null as string | null, erroNfse: null as string | null };
+  let resultadoSync = { novosNfe: 0, novosNfse: 0, novosCte: 0, erroNfe: null as string | null, erroNfse: null as string | null, erroCte: null as string | null };
   if (escritorioTemModulo(user.escritorioId, "busca_xml_nfe") && !nfeBuscasEmAndamento.has(empId)) {
     const cfgAtualizado = sqlite.prepare(`SELECT * FROM nfe_busca_config WHERE empresa_id = ?`).get(empId) as any;
     nfeBuscasEmAndamento.add(empId);
@@ -6758,7 +7902,7 @@ app.put("/api/nfe/config/:empresaId/ativo", blockCliente, requirePermissao("nfe-
   if (!row || row.escritorio_id !== user.escritorioId) return res.status(404).json({ error: "Configuração não encontrada." });
   const ativando = !!req.body?.ativo && !row.ativo;
   sqlite.prepare(`UPDATE nfe_busca_config SET ativo = ?, updated_at = datetime('now') WHERE empresa_id = ?`).run(req.body?.ativo ? 1 : 0, empId);
-  let sync = { novosNfe: 0, novosNfse: 0, erroNfe: null as string | null, erroNfse: null as string | null };
+  let sync = { novosNfe: 0, novosNfse: 0, novosCte: 0, erroNfe: null as string | null, erroNfse: null as string | null, erroCte: null as string | null };
   if (ativando && escritorioTemModulo(user.escritorioId, "busca_xml_nfe") && !nfeBuscasEmAndamento.has(empId)) {
     nfeBuscasEmAndamento.add(empId);
     try {
@@ -6771,6 +7915,54 @@ app.put("/api/nfe/config/:empresaId/ativo", blockCliente, requirePermissao("nfe-
     }
   }
   res.json({ ok: true, sync });
+});
+// Ciência da Operação automática (desbloqueia o XML completo das NF-e que chegam só como resumo) —
+// opt-in por empresa, desligado por padrão: é uma ação fiscal de verdade na Sefaz (ver
+// nfe.enviarManifestacaoCiencia), não é só um ajuste de exibição.
+// Ciência da operação manual, numa nota recebida que chegou só como resumo. Devolve a resposta da Sefaz
+// (cStat e motivo) pra tela mostrar — não esconde erro, diferente do envio automático em segundo plano.
+app.post("/api/nfe/documentos/:id/ciencia", blockCliente, requirePermissao("nfe-busca", "postar"), async (req, res) => {
+  const user = (req as any).user;
+  const doc = sqlite.prepare(`SELECT * FROM nfe_documentos WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!doc || doc.escritorio_id !== user.escritorioId || !podeAcessarEmpresa(user, doc.empresa_id)) return res.status(404).json({ error: "Documento não encontrado." });
+  if (!doc.chave_acesso || !/^<resNFe/.test(String(doc.xml || "").trimStart())) return res.status(400).json({ error: "Esta nota já tem o XML completo — não precisa de ciência." });
+  const cfg = sqlite.prepare(`SELECT * FROM nfe_busca_config WHERE empresa_id = ?`).get(doc.empresa_id) as any;
+  if (!cfg) return res.status(400).json({ error: "Configure a busca de XML desta empresa (certificado) antes." });
+  try {
+    const cert = nfeCarregarCertificado(cfg);
+    const cnpjBusca = nfeResolverCnpjBusca(cfg, doc.empresa_id);
+    const manif = await nfe.enviarManifestacaoCiencia({ ambiente: cfg.ambiente as nfe.AmbienteNfe, cnpj: cnpjBusca, cUF: nfe.UF_CODIGO_IBGE[cfg.uf_autor], cert, chave: doc.chave_acesso });
+    try {
+      nfeInserirDocumento.run(
+        doc.empresa_id, cfg.escritorio_id, "nfe", `ciencia_${doc.chave_acesso}`, "eventoCienciaManual", "evento",
+        doc.chave_acesso, doc.emitente_cnpj, doc.emitente_nome, cnpjBusca.replace(/\D/g, ""), null, null, manif.dhEvento, manif.xmlEnviado,
+        manif.sucesso ? "Ciencia da Operacao (manual)" : `Ciencia da Operacao (manual) - rejeitada: ${manif.xMotivo}`
+      );
+    } catch (e: any) {
+      console.error("[ciência manual] não consegui gravar o registro:", e.message);
+    }
+    res.json({ sucesso: manif.sucesso, cStat: manif.cStat, motivo: manif.xMotivo });
+  } catch (e: any) {
+    res.status(502).json({ error: `Não consegui enviar a ciência: ${e.message}` });
+  }
+});
+app.put("/api/nfe/config/:empresaId/manifestacao-automatica", blockCliente, requirePermissao("nfe-busca", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const empId = Number(req.params.empresaId);
+  const row = sqlite.prepare(`SELECT * FROM nfe_busca_config WHERE empresa_id = ?`).get(empId) as any;
+  if (!row || row.escritorio_id !== user.escritorioId) return res.status(404).json({ error: "Configuração não encontrada." });
+  const ligando = !!req.body?.ativo && !row.manifestacao_automatica;
+  sqlite.prepare(`UPDATE nfe_busca_config SET manifestacao_automatica = ? WHERE empresa_id = ?`).run(req.body?.ativo ? 1 : 0, empId);
+  // Ao ligar, manda Ciência pro backlog de notas que já estavam em resumo — em segundo plano (pode
+  // levar alguns minutos se tiver muita nota pendente), não trava a resposta desta tela.
+  console.log(`[manifestação] PUT empresa ${empId}: ativo=${req.body?.ativo} manifestacao_automatica_antes=${row.manifestacao_automatica} ligando=${ligando}`);
+  if (ligando) {
+    const cert = nfeCarregarCertificado(row);
+    nfeManifestarBacklogResumos(empId, row, cert)
+      .then((r) => console.log(`[manifestação] backlog empresa ${empId} concluído:`, JSON.stringify(r)))
+      .catch((e) => console.error(`[manifestação] backlog empresa ${empId} ERRO:`, e.message));
+  }
+  res.json({ ok: true });
 });
 app.delete("/api/nfe/config/:empresaId", blockCliente, requirePermissao("nfe-busca", "editar"), (req, res) => {
   const empId = Number(req.params.empresaId);
@@ -6788,6 +7980,52 @@ const nfeInserirDocumento = sqlite.prepare(
   `INSERT OR IGNORE INTO nfe_documentos (empresa_id, escritorio_id, fonte, nsu, doc_schema, tipo, chave_acesso, emitente_cnpj, emitente_nome, destinatario_cnpj, destinatario_nome, valor_total, data_emissao, xml, evento_descricao)
    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 );
+// Alguns schemas da Distribuição DFe (resNFe/resCTe/resEvento) são só RESUMO — sem produtos/impostos/CRT
+// — a Sefaz só libera o XML completo (nfeProc/cteProc) pro destinatário depois dele manifestar "Ciência
+// da Operação". Sem isso, as duas versões (resumo e completo) chegavam em NSUs diferentes e viravam DUAS
+// linhas pra mesma chave — duplicava a nota na tela e inflava os totais do dashboard (o resumo também traz
+// valor_total preenchido). Achado ao vivo: 58% das NF-e/NFC-e capturadas eram só resumo.
+function nfeEhResumo(xml: string | null | undefined): boolean {
+  return /^<res(NFe|CTe|Evento)\b/.test((xml || "").trimStart());
+}
+function nfeInserirDocumentoDedup(args: {
+  empresaId: number; escritorioId: number; fonte: string; nsu: string; schema: string; tipo: string;
+  chaveAcesso: string | null | undefined; emitenteCnpj: string | null | undefined; emitenteNome: string | null | undefined;
+  destinatarioCnpj: string | null | undefined; destinatarioNome: string | null | undefined; valorTotal: number | null | undefined;
+  dataEmissao: string | null | undefined; xml: string; eventoDescricao: string | null | undefined;
+}): { inserido: boolean; atualizado: boolean; id: number | null } {
+  if (args.chaveAcesso) {
+    const existente = sqlite
+      .prepare(`SELECT id, xml FROM nfe_documentos WHERE empresa_id = ? AND chave_acesso = ? AND tipo != 'evento'`)
+      .get(args.empresaId, args.chaveAcesso) as any;
+    if (existente) {
+      if (nfeEhResumo(existente.xml) && !nfeEhResumo(args.xml)) {
+        // Upgrade: a versão completa chegou agora — troca o resumo que já estava guardado, não duplica.
+        sqlite
+          .prepare(
+            `UPDATE nfe_documentos SET fonte=?, nsu=?, doc_schema=?, tipo=?, emitente_cnpj=?, emitente_nome=?, destinatario_cnpj=?, destinatario_nome=?,
+               valor_total=?, data_emissao=?, xml=?, evento_descricao=?, tributos_parseado=0, pdf_path=NULL
+             WHERE id=?`
+          )
+          .run(
+            args.fonte, args.nsu, args.schema, args.tipo, args.emitenteCnpj || null, args.emitenteNome || null,
+            args.destinatarioCnpj || null, args.destinatarioNome || null, args.valorTotal ?? null, args.dataEmissao || null,
+            args.xml, args.eventoDescricao || null, existente.id
+          );
+        return { inserido: false, atualizado: true, id: existente.id };
+      }
+      // Já tem a versão completa (não rebaixa pra resumo), ou as duas são resumo: não duplica.
+      return { inserido: false, atualizado: false, id: existente.id };
+    }
+  }
+  const r = nfeInserirDocumento.run(
+    args.empresaId, args.escritorioId, args.fonte, args.nsu, args.schema, args.tipo, args.chaveAcesso || null,
+    args.emitenteCnpj || null, args.emitenteNome || null, args.destinatarioCnpj || null, args.destinatarioNome || null,
+    args.valorTotal ?? null, args.dataEmissao || null, args.xml, args.eventoDescricao || null
+  );
+  const id = r.changes > 0 ? Number(r.lastInsertRowid) : (sqlite.prepare(`SELECT id FROM nfe_documentos WHERE empresa_id = ? AND fonte = ? AND nsu = ?`).get(args.empresaId, args.fonte, args.nsu) as any)?.id ?? null;
+  return { inserido: r.changes > 0, atualizado: false, id };
+}
 // Achado ao vivo (LUCELIO MARTINS DE OLIVEIRA): nfe_busca_config.cnpj é uma cópia de empresas.cnpj
 // tirada só no momento em que o certificado é cadastrado — se o CPF/CNPJ da empresa ainda estava em
 // branco naquela hora (comum pra pessoa física recém-cadastrada), a cópia ficou vazia pra sempre,
@@ -6804,6 +8042,41 @@ function nfeResolverCnpjBusca(cfg: any, empresaId: number): string {
     sqlite.prepare(`UPDATE nfe_busca_config SET cnpj = ? WHERE empresa_id = ?`).run(cnpjEmpresa, empresaId);
   }
   return cnpjEmpresa;
+}
+// Manda Ciência da Operação pro BACKLOG de notas que já estavam em resumo antes de ligar a
+// manifestação automática pra essa empresa (sem isso, só a nota NOVA a partir de agora seria
+// manifestada — a pendência de antes ficaria presa em resumo pra sempre). Rodada à parte do ciclo
+// normal de busca, disparada uma vez quando a opção é ligada (ver PUT .../manifestacao-automatica).
+// Teto de segurança (200) pra não travar numa empresa com milhares de notas em resumo de uma vez.
+async function nfeManifestarBacklogResumos(empresaId: number, cfg: any, cert: nfse.CertificadoInfo): Promise<{ tentadas: number; ok: number; erros: number }> {
+  const cnpjBusca = nfeResolverCnpjBusca(cfg, empresaId);
+  const pendentes = sqlite
+    .prepare(
+      `SELECT d.chave_acesso as chaveAcesso, d.emitente_cnpj as emitenteCnpj, d.emitente_nome as emitenteNome
+       FROM nfe_documentos d
+       WHERE d.empresa_id = ? AND d.tipo IN ('nfe','nfce') AND d.chave_acesso IS NOT NULL AND substr(d.xml,1,7) = '<resNFe'
+         AND substr(d.data_emissao,1,10) >= date('now','-10 days')
+         AND NOT EXISTS (SELECT 1 FROM nfe_documentos ev WHERE ev.empresa_id = d.empresa_id AND ev.nsu = 'ciencia_' || d.chave_acesso)
+       LIMIT 200`
+    )
+    .all(empresaId) as any[];
+  console.log(`[manifestação] backlog empresa ${empresaId}: ${pendentes.length} pendente(s)`);
+  let ok = 0, erros = 0;
+  for (const p of pendentes) {
+    try {
+      const manif = await nfe.enviarManifestacaoCiencia({ ambiente: cfg.ambiente as nfe.AmbienteNfe, cnpj: cnpjBusca, cUF: nfe.UF_CODIGO_IBGE[cfg.uf_autor], cert, chave: p.chaveAcesso });
+      nfeInserirDocumento.run(
+        empresaId, cfg.escritorio_id, "nfe", `ciencia_${p.chaveAcesso}`, "eventoCienciaAutomatica", "evento",
+        p.chaveAcesso, p.emitenteCnpj, p.emitenteNome, cnpjBusca.replace(/\D/g, ""), null, null, manif.dhEvento, manif.xmlEnviado,
+        manif.sucesso ? "Ciencia da Operacao (automatica)" : `Ciencia da Operacao (automatica) - rejeitada: ${manif.xMotivo}`
+      );
+      if (manif.sucesso) ok++; else erros++;
+    } catch (e: any) {
+      erros++;
+      console.error(`Manifestação de backlog falhou (empresa ${empresaId}, chave ${p.chaveAcesso}):`, e.message);
+    }
+  }
+  return { tentadas: pendentes.length, ok, erros };
 }
 // Captura de nota emitida por um CLIENTE via tag autXML (investigação registrada em memory.md):
 // quando o cliente configura o CNPJ do escritório como "autorizado a acessar o XML" no software
@@ -6862,24 +8135,29 @@ async function nfeBuscarDocumentosNovos(empresaId: number, cfg: any, cert: nfse.
           }
           nsuArmazenado = `autxml_${cnpjBusca.replace(/\D/g, "")}_${doc.nsu}`;
         }
-        const r = nfeInserirDocumento.run(
-          empresaDestino,
-          cfg.escritorio_id,
-          "nfe",
-          nsuArmazenado,
-          doc.schema,
-          info.tipo,
-          info.chaveAcesso,
-          info.emitenteCnpj,
-          info.emitenteNome,
-          info.destinatarioCnpj,
-          info.destinatarioNome,
-          info.valorTotal,
-          info.dataEmissao,
-          doc.xml,
-          info.eventoDescricao
-        );
-        if (r.changes > 0) novos++;
+        const r = nfeInserirDocumentoDedup({
+          empresaId: empresaDestino, escritorioId: cfg.escritorio_id, fonte: "nfe", nsu: nsuArmazenado, schema: doc.schema, tipo: info.tipo,
+          chaveAcesso: info.chaveAcesso, emitenteCnpj: info.emitenteCnpj, emitenteNome: info.emitenteNome,
+          destinatarioCnpj: info.destinatarioCnpj, destinatarioNome: info.destinatarioNome, valorTotal: info.valorTotal,
+          dataEmissao: info.dataEmissao, xml: doc.xml, eventoDescricao: info.eventoDescricao,
+        });
+        if (r.inserido) novos++;
+        // Ciência da Operação automática (opt-in): só pra captura DIRETA (nunca autXML — o CNPJ que
+        // manifestaria não é o nosso cert nesse caso) de uma nota nova que chegou só como resumo. Uma
+        // manifestação que falhar não aborta a busca inteira — só essa nota continua em resumo até a
+        // próxima tentativa.
+        if (cfg.manifestacao_automatica && r.inserido && empresaDestino === empresaId && (info.tipo === "nfe" || info.tipo === "nfce") && info.chaveAcesso && nfeEhResumo(doc.xml)) {
+          try {
+            const manif = await nfe.enviarManifestacaoCiencia({ ambiente: cfg.ambiente as nfe.AmbienteNfe, cnpj: cnpjBusca, cUF: nfe.UF_CODIGO_IBGE[cfg.uf_autor], cert, chave: info.chaveAcesso });
+            nfeInserirDocumento.run(
+              empresaId, cfg.escritorio_id, "nfe", `ciencia_${info.chaveAcesso}`, "eventoCienciaAutomatica", "evento",
+              info.chaveAcesso, info.emitenteCnpj, info.emitenteNome, cnpjBusca.replace(/\D/g, ""), null, null, manif.dhEvento, manif.xmlEnviado,
+              manif.sucesso ? "Ciencia da Operacao (automatica)" : `Ciencia da Operacao (automatica) - rejeitada: ${manif.xMotivo}`
+            );
+          } catch (e: any) {
+            console.error(`Manifestação automática falhou (empresa ${empresaId}, chave ${info.chaveAcesso}):`, e.message);
+          }
+        }
       }
       ultNsu = resp.ultNSU || ultNsu;
       sqlite.prepare(`UPDATE nfe_busca_config SET ultimo_nsu = ?, ultima_busca_em = datetime('now'), ultimo_erro = NULL WHERE empresa_id = ?`).run(ultNsu, empresaId);
@@ -6902,24 +8180,13 @@ async function nfseBuscarDocumentosNovos(empresaId: number, cfg: any, cert: nfse
       const resp = await nfse.consultarDistribuicaoNfse(cfg.ambiente as nfse.AmbienteNfse, ultNsu, cnpjBusca, cert);
       for (const doc of resp.documentos) {
         const info = nfse.identificarNfseDistribuida(doc.xml);
-        const r = nfeInserirDocumento.run(
-          empresaId,
-          cfg.escritorio_id,
-          "nfse",
-          doc.nsu,
-          "NFSe_v1.00",
-          "nfse",
-          info.chaveAcesso || doc.chaveAcesso,
-          info.emitenteDocumento,
-          info.emitenteNome,
-          info.tomadorDocumento,
-          info.tomadorNome,
-          info.valorTotal,
-          info.dataEmissao,
-          doc.xml,
-          null
-        );
-        if (r.changes > 0) novos++;
+        const r = nfeInserirDocumentoDedup({
+          empresaId, escritorioId: cfg.escritorio_id, fonte: "nfse", nsu: doc.nsu, schema: "NFSe_v1.00", tipo: "nfse",
+          chaveAcesso: info.chaveAcesso || doc.chaveAcesso, emitenteCnpj: info.emitenteDocumento, emitenteNome: info.emitenteNome,
+          destinatarioCnpj: info.tomadorDocumento, destinatarioNome: info.tomadorNome, valorTotal: info.valorTotal,
+          dataEmissao: info.dataEmissao, xml: doc.xml, eventoDescricao: null,
+        });
+        if (r.inserido) novos++;
       }
       const avancou = resp.ultimoNsu && resp.ultimoNsu !== ultNsu;
       ultNsu = resp.ultimoNsu || ultNsu;
@@ -6928,6 +8195,88 @@ async function nfseBuscarDocumentosNovos(empresaId: number, cfg: any, cert: nfse
     }
   } catch (e: any) {
     sqlite.prepare(`UPDATE nfe_busca_config SET ultima_busca_nfse_em = datetime('now'), ultimo_erro_nfse = ? WHERE empresa_id = ?`).run(e.message || String(e), empresaId);
+    throw e;
+  }
+  return { novos };
+}
+// CT-e via o web service PRÓPRIO dele (CTeDistribuicaoDFe — ver comentário em nfe.ts/CTE_DISTRIBUICAO_URL).
+// Mesma estrutura de resposta do NF-e (distDFeInt/retDistDFeInt), NSU independente, fonte='cte' na tabela
+// (evita colidir com o NSU de 'nfe' na UNIQUE(empresa_id, fonte, nsu)). Documentos emitidos pela própria
+// empresa nunca aparecem aqui (regra oficial, igual NF-e) — só interessa pra quem é tomador/destinatário/
+// remetente/expedidor/recebedor do CT-e de outra empresa, que é exatamente o caso de "CT-e tomado".
+async function nfeCteBuscarDocumentosNovos(empresaId: number, cfg: any, cert: nfse.CertificadoInfo): Promise<{ novos: number }> {
+  let novos = 0;
+  let ultNsu = cfg.ultimo_nsu_cte || "0";
+  const cnpjBusca = nfeResolverCnpjBusca(cfg, empresaId);
+  try {
+    for (let pagina = 0; pagina < 20; pagina++) {
+      const resp = await nfe.consultarNovosDocumentosCte({
+        ambiente: cfg.ambiente as nfe.AmbienteNfe,
+        cnpj: cnpjBusca,
+        cUFAutor: nfe.UF_CODIGO_IBGE[cfg.uf_autor],
+        cert,
+        ultimoNsuConhecido: ultNsu,
+      });
+      for (const doc of resp.documentos) {
+        const info = nfe.identificarDocumento(doc.xml, doc.schema);
+        const r = nfeInserirDocumentoDedup({
+          empresaId, escritorioId: cfg.escritorio_id, fonte: "cte", nsu: doc.nsu, schema: doc.schema, tipo: info.tipo,
+          chaveAcesso: info.chaveAcesso, emitenteCnpj: info.emitenteCnpj, emitenteNome: info.emitenteNome,
+          destinatarioCnpj: info.destinatarioCnpj, destinatarioNome: info.destinatarioNome, valorTotal: info.valorTotal,
+          dataEmissao: info.dataEmissao, xml: doc.xml, eventoDescricao: info.eventoDescricao,
+        });
+        if (r.inserido) novos++;
+      }
+      ultNsu = resp.ultNSU || ultNsu;
+      sqlite.prepare(`UPDATE nfe_busca_config SET ultimo_nsu_cte = ?, ultima_busca_cte_em = datetime('now'), ultimo_erro_cte = NULL WHERE empresa_id = ?`).run(ultNsu, empresaId);
+      if (!resp.maxNSU || !resp.ultNSU || Number(resp.maxNSU) <= Number(resp.ultNSU) || resp.documentos.length === 0) break;
+    }
+  } catch (e: any) {
+    sqlite.prepare(`UPDATE nfe_busca_config SET ultima_busca_cte_em = datetime('now'), ultimo_erro_cte = ? WHERE empresa_id = ?`).run(e.message || String(e), empresaId);
+    throw e;
+  }
+  return { novos };
+}
+// MDF-e via o web service PRÓPRIO dele (MDFeDistribuicaoDFe — ver comentário em nfe.ts/
+// MDFE_DISTRIBUICAO_URL). Mesma estrutura de resposta (distDFeInt/retDistDFeInt), NSU independente,
+// fonte='mdfe' na tabela.
+async function nfeMdfeBuscarDocumentosNovos(empresaId: number, cfg: any, cert: nfse.CertificadoInfo): Promise<{ novos: number }> {
+  let novos = 0;
+  let ultNsu = cfg.ultimo_nsu_mdfe || "0";
+  const cnpjBusca = nfeResolverCnpjBusca(cfg, empresaId);
+  try {
+    for (let pagina = 0; pagina < 20; pagina++) {
+      const resp = await nfe.consultarNovosDocumentosMdfe({
+        ambiente: cfg.ambiente as nfe.AmbienteNfe,
+        cnpj: cnpjBusca,
+        cUF: nfe.UF_CODIGO_IBGE[cfg.uf_autor],
+        cert,
+        ultimoNsuConhecido: ultNsu,
+      });
+      for (const doc of resp.documentos) {
+        const info = nfe.identificarDocumento(doc.xml, doc.schema);
+        const r = nfeInserirDocumentoDedup({
+          empresaId, escritorioId: cfg.escritorio_id, fonte: "mdfe", nsu: doc.nsu, schema: doc.schema, tipo: info.tipo,
+          chaveAcesso: info.chaveAcesso, emitenteCnpj: info.emitenteCnpj, emitenteNome: info.emitenteNome,
+          destinatarioCnpj: info.destinatarioCnpj, destinatarioNome: info.destinatarioNome, valorTotal: info.valorTotal,
+          dataEmissao: info.dataEmissao, xml: doc.xml, eventoDescricao: info.eventoDescricao,
+        });
+        if (r.inserido) novos++;
+        // Grava o vínculo MDF-e -> NF-e/CT-e transportados (grupo infDoc), pra achar depois "esta nota
+        // está em qual MDF-e" sem reler XML nenhum. Refaz do zero a cada recaptura (delete+insert) —
+        // mais simples que tentar diffar, e o conjunto raramente muda depois de emitido.
+        if (r.id && info.docsVinculados?.length) {
+          sqlite.prepare(`DELETE FROM mdfe_vinculos WHERE mdfe_documento_id = ?`).run(r.id);
+          const insVinculo = sqlite.prepare(`INSERT OR IGNORE INTO mdfe_vinculos (mdfe_documento_id, chave_vinculada) VALUES (?, ?)`);
+          for (const chave of info.docsVinculados) insVinculo.run(r.id, chave);
+        }
+      }
+      ultNsu = resp.ultNSU || ultNsu;
+      sqlite.prepare(`UPDATE nfe_busca_config SET ultimo_nsu_mdfe = ?, ultima_busca_mdfe_em = datetime('now'), ultimo_erro_mdfe = NULL WHERE empresa_id = ?`).run(ultNsu, empresaId);
+      if (!resp.maxNSU || !resp.ultNSU || Number(resp.maxNSU) <= Number(resp.ultNSU) || resp.documentos.length === 0) break;
+    }
+  } catch (e: any) {
+    sqlite.prepare(`UPDATE nfe_busca_config SET ultima_busca_mdfe_em = datetime('now'), ultimo_erro_mdfe = ? WHERE empresa_id = ?`).run(e.message || String(e), empresaId);
     throw e;
   }
   return { novos };
@@ -6954,7 +8303,11 @@ function nfeChecarCooldown656(cfg: any): string | null {
 // Roda as duas fontes (NF-e/NFC-e e NFS-e) — usado pelo clique manual, pelo cadastro de certificado
 // e pela rotina automática, sempre do mesmo jeito (falha numa fonte não trava a outra).
 async function nfeENfseBuscarTudo(empresaId: number, cfg: any, cert: nfse.CertificadoInfo) {
-  const resultado = { novosNfe: 0, novosNfse: 0, erroNfe: null as string | null, erroNfse: null as string | null, porSchema: {} as Record<string, number> };
+  const resultado = {
+    novosNfe: 0, novosNfse: 0, novosCte: 0, novosMdfe: 0,
+    erroNfe: null as string | null, erroNfse: null as string | null, erroCte: null as string | null, erroMdfe: null as string | null,
+    porSchema: {} as Record<string, number>,
+  };
   try {
     const r = await nfeBuscarDocumentosNovos(empresaId, cfg, cert);
     resultado.novosNfe = r.novos;
@@ -6966,6 +8319,16 @@ async function nfeENfseBuscarTudo(empresaId: number, cfg: any, cert: nfse.Certif
     resultado.novosNfse = (await nfseBuscarDocumentosNovos(empresaId, cfg, cert)).novos;
   } catch (e: any) {
     resultado.erroNfse = e.message || "Falha ao consultar o ADN (NFS-e).";
+  }
+  try {
+    resultado.novosCte = (await nfeCteBuscarDocumentosNovos(empresaId, cfg, cert)).novos;
+  } catch (e: any) {
+    resultado.erroCte = e.message || "Falha ao consultar a Sefaz (CT-e).";
+  }
+  try {
+    resultado.novosMdfe = (await nfeMdfeBuscarDocumentosNovos(empresaId, cfg, cert)).novos;
+  } catch (e: any) {
+    resultado.erroMdfe = e.message || "Falha ao consultar a Sefaz (MDF-e).";
   }
   return resultado;
 }
@@ -6990,10 +8353,10 @@ app.post("/api/nfe/config/:empresaId/buscar", blockCliente, requirePermissao("nf
   try {
     const cert = nfeCarregarCertificado(cfg);
     const resultado = await nfeENfseBuscarTudo(empId, cfg, cert);
-    if (resultado.erroNfe && resultado.erroNfse) {
-      return res.status(400).json({ error: `NF-e/NFC-e: ${resultado.erroNfe} | NFS-e: ${resultado.erroNfse}` });
+    if (resultado.erroNfe && resultado.erroNfse && resultado.erroCte && resultado.erroMdfe) {
+      return res.status(400).json({ error: `NF-e/NFC-e: ${resultado.erroNfe} | NFS-e: ${resultado.erroNfse} | CT-e: ${resultado.erroCte} | MDF-e: ${resultado.erroMdfe}` });
     }
-    res.json({ ok: true, ...resultado, novos: resultado.novosNfe + resultado.novosNfse });
+    res.json({ ok: true, ...resultado, novos: resultado.novosNfe + resultado.novosNfse + resultado.novosCte + resultado.novosMdfe });
   } finally {
     nfeBuscasEmAndamento.delete(empId);
   }
@@ -7116,16 +8479,13 @@ app.post("/api/nfe/config/:empresaId/testar-chaves", blockCliente, requirePermis
         const doc = resp.documentos[0];
         const info = nfe.identificarDocumento(doc.xml, doc.schema);
         const jaTem = sqlite.prepare(`SELECT 1 FROM nfe_documentos WHERE empresa_id = ? AND chave_acesso = ?`).get(empId, chave);
-        let inserido = false;
-        if (!jaTem) {
-          const r = nfeInserirDocumento.run(
-            empId, cfg.escritorio_id, "nfe", `porchave_${chave}`, doc.schema, info.tipo,
-            info.chaveAcesso, info.emitenteCnpj, info.emitenteNome, info.destinatarioCnpj, info.destinatarioNome,
-            info.valorTotal, info.dataEmissao, doc.xml, info.eventoDescricao
-          );
-          inserido = r.changes > 0;
-        }
-        resultados.push({ chave, encontrado: true, tipo: info.tipo, schema: doc.schema, emitenteNome: info.emitenteNome, jaExistia: !!jaTem, inserido });
+        const r = nfeInserirDocumentoDedup({
+          empresaId: empId, escritorioId: cfg.escritorio_id, fonte: "nfe", nsu: `porchave_${chave}`, schema: doc.schema, tipo: info.tipo,
+          chaveAcesso: info.chaveAcesso, emitenteCnpj: info.emitenteCnpj, emitenteNome: info.emitenteNome,
+          destinatarioCnpj: info.destinatarioCnpj, destinatarioNome: info.destinatarioNome, valorTotal: info.valorTotal,
+          dataEmissao: info.dataEmissao, xml: doc.xml, eventoDescricao: info.eventoDescricao,
+        });
+        resultados.push({ chave, encontrado: true, tipo: info.tipo, schema: doc.schema, emitenteNome: info.emitenteNome, jaExistia: !!jaTem, inserido: r.inserido, atualizado: r.atualizado });
       } catch (e: any) {
         resultados.push({ chave, encontrado: false, erro: e.message });
         if (/656/.test(e.message)) {
@@ -7192,8 +8552,8 @@ async function nfeExecutarBuscaAutomatica() {
     try {
       const cert = nfeCarregarCertificado(cfg);
       const r = await nfeENfseBuscarTudo(cfg.empresa_id, cfg, cert);
-      if (r.novosNfe || r.novosNfse) {
-        console.log(`[busca automática de XML] empresa ${cfg.empresa_id}: ${r.novosNfe} NF-e/NFC-e, ${r.novosNfse} NFS-e novos.`);
+      if (r.novosNfe || r.novosNfse || r.novosCte || r.novosMdfe) {
+        console.log(`[busca automática de XML] empresa ${cfg.empresa_id}: ${r.novosNfe} NF-e/NFC-e, ${r.novosNfse} NFS-e, ${r.novosCte} CT-e, ${r.novosMdfe} MDF-e novos.`);
       }
     } catch (e: any) {
       console.error(`[busca automática de XML] empresa ${cfg.empresa_id} falhou:`, e.message);
@@ -7206,6 +8566,38 @@ async function nfeExecutarBuscaAutomatica() {
 setInterval(() => {
   nfeExecutarBuscaAutomatica().catch((e) => console.error("Erro na busca automática de XML:", e.message));
 }, NFE_AUTO_INTERVALO_MS);
+// Versão do parser de tributos — ao subir (novas colunas/lógica), força reparsear os docs já lidos.
+const NFE_TRIB_VERSAO = 4; // v4: + crt do emitente, + flag "st" (substituição tributária)
+// Lê o XML das notas (ids) e cacheia IBS/CBS/ICMS/PIS/COFINS/IPI/flags/qtd_itens/crt nas colunas.
+// Retorna, por id, o que a listagem exibe na hora. Marca tributos_parseado = versão.
+function parsearECachearTributos(ids: number[]): Map<number, { vIBS: number; vCBS: number; flags: string; qtdItens: number; crt: number | null }> {
+  const out = new Map<number, { vIBS: number; vCBS: number; flags: string; qtdItens: number; crt: number | null }>();
+  if (!ids.length) return out;
+  const xmls = sqlite.prepare(`SELECT id, xml FROM nfe_documentos WHERE id IN (${ids.map(() => "?").join(",")})`).all(...ids) as any[];
+  const upd = sqlite.prepare(
+    `UPDATE nfe_documentos SET valor_ibs=?, valor_cbs=?, valor_bc_ibscbs=?, valor_icms=?, valor_pis=?, valor_cofins=?, valor_ipi=?, flags=?, qtd_itens=?, crt=?, tributos_parseado=? WHERE id=?`
+  );
+  // node:sqlite não tem .transaction(): BEGIN/COMMIT na mão.
+  sqlite.exec("BEGIN");
+  try {
+    for (const x of xmls) {
+      const t = nfe.extrairIbsCbs(x.xml);
+      if (t) {
+        const flags = t.flags.join(",");
+        upd.run(t.vIBS, t.vCBS, t.vBC, t.vICMS, t.vPIS, t.vCOFINS, t.vIPI, flags, t.qtdItens, t.crt, NFE_TRIB_VERSAO, x.id);
+        out.set(x.id, { vIBS: t.vIBS, vCBS: t.vCBS, flags, qtdItens: t.qtdItens, crt: t.crt });
+      } else {
+        upd.run(0, 0, 0, 0, 0, 0, 0, "", 0, null, NFE_TRIB_VERSAO, x.id); // não é NF-e completa — zera e marca parseado
+        out.set(x.id, { vIBS: 0, vCBS: 0, flags: "", qtdItens: 0, crt: null });
+      }
+    }
+    sqlite.exec("COMMIT");
+  } catch (e) {
+    sqlite.exec("ROLLBACK");
+    throw e;
+  }
+  return out;
+}
 app.get("/api/nfe/documentos", blockCliente, requirePermissao("nfe-busca", "visualizar"), (req, res) => {
   const user = (req as any).user;
   const empresaId = req.query.empresaId ? Number(req.query.empresaId) : null;
@@ -7267,18 +8659,163 @@ app.get("/api/nfe/documentos", blockCliente, requirePermissao("nfe-busca", "visu
       `SELECT d.id, d.empresa_id as empresaId, e.nome as empresaNome, d.tipo, d.chave_acesso as chaveAcesso,
               d.emitente_cnpj as emitenteCnpj, d.emitente_nome as emitenteNome, d.destinatario_cnpj as destinatarioCnpj,
               d.destinatario_nome as destinatarioNome, d.valor_total as valorTotal, d.data_emissao as dataEmissao, d.criado_em as criadoEm,
+              d.valor_ibs as valorIbs, d.valor_cbs as valorCbs, d.flags as flags, d.qtd_itens as qtdItens, d.tributos_parseado as tributosParseado,
+              d.observacao as observacao, d.crt as crt,
+              (d.chave_acesso IS NOT NULL AND EXISTS (SELECT 1 FROM mdfe_vinculos mv WHERE mv.chave_vinculada = d.chave_acesso)) as temMdfe,
               ${direcaoExpr} as direcao, (CASE WHEN d.tipo = 'evento' THEN 0 ELSE ${notaCanceladaExpr} END) as notaCancelada
        FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id
        WHERE ${condicoes.join(" AND ")}
        ORDER BY d.data_emissao DESC, d.id DESC LIMIT 500`
     )
     .all(...params) as any[];
-  res.json({ items: rows.map((r) => ({ ...r, notaCancelada: !!r.notaCancelada })) });
+  // Backfill preguiçoso (IBS/CBS/ICMS/PIS/COFINS/IPI/flags): lê o XML das NF-e/NFC-e desta página ainda
+  // não parseadas na versão atual (inclusive as lidas antes das colunas novas) e cacheia nas colunas.
+  const naoParseados = rows.filter((r) => (r.tributosParseado || 0) < NFE_TRIB_VERSAO && (r.tipo === "nfe" || r.tipo === "nfce"));
+  if (naoParseados.length) {
+    const mapa = parsearECachearTributos(naoParseados.map((r) => r.id));
+    for (const r of rows) {
+      const v = mapa.get(r.id);
+      if (v) {
+        r.valorIbs = v.vIBS;
+        r.valorCbs = v.vCBS;
+        r.flags = v.flags;
+        r.qtdItens = v.qtdItens;
+        r.crt = v.crt;
+      }
+    }
+  }
+  // Eventos encadeados por nota (manifestação do destinatário, carta de correção, EPEC…), além do
+  // cancelamento já detectado acima. Agrega as descrições dos eventos (tipo='evento') que batem com a
+  // chave de cada nota, pra enriquecer o Status na tela.
+  const chavesNota = [...new Set(rows.filter((r) => r.tipo !== "evento" && r.chaveAcesso).map((r) => r.chaveAcesso as string))];
+  const eventosPorChave = new Map<string, string[]>();
+  if (chavesNota.length) {
+    const ph = chavesNota.map(() => "?").join(",");
+    const evs = sqlite
+      .prepare(`SELECT chave_acesso as chave, evento_descricao as descricao FROM nfe_documentos WHERE escritorio_id = ? AND tipo = 'evento' AND chave_acesso IN (${ph})`)
+      .all(user.escritorioId, ...chavesNota) as any[];
+    for (const ev of evs) {
+      if (!ev.chave) continue;
+      const arr = eventosPorChave.get(ev.chave) || [];
+      if (ev.descricao) arr.push(ev.descricao);
+      eventosPorChave.set(ev.chave, arr);
+    }
+  }
+  const normEv = (s: string) => (s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+  const derivarEventos = (descricoes: string[]): { manifestacao: string | null; eventos: string[] } => {
+    const tem = (sub: string) => descricoes.some((d) => normEv(d).includes(sub));
+    // Manifestação do destinatário — fica com a mais "forte"/final do ciclo (confirmação/não realizada/
+    // desconhecimento vêm depois da ciência).
+    let manifestacao: string | null = null;
+    if (tem("confirmacao")) manifestacao = "confirmada";
+    else if (tem("nao realizada")) manifestacao = "nao_realizada";
+    else if (tem("desconhecimento")) manifestacao = "desconhecida";
+    else if (tem("ciencia")) manifestacao = "ciencia";
+    const eventos: string[] = [];
+    if (descricoes.some((d) => { const n = normEv(d); return n.includes("correcao") || n.includes("carta de") || n.includes("cc-e"); })) eventos.push("cce");
+    if (tem("epec")) eventos.push("epec");
+    return { manifestacao, eventos };
+  };
+  res.json({
+    items: rows.map((r) => {
+      const ev = r.tipo !== "evento" ? derivarEventos(eventosPorChave.get(r.chaveAcesso) || []) : { manifestacao: null, eventos: [] };
+      return { ...r, notaCancelada: !!r.notaCancelada, manifestacao: ev.manifestacao, eventos: ev.eventos };
+    }),
+  });
 });
 // Contagem de verdade por empresa, sem o LIMIT 500 da listagem acima — a listagem só serve pra
 // mostrar as últimas notas na tela de detalhe, não é confiável pra somar quantos documentos cada
 // empresa tem (com volume grande, os 500 mais recentes do escritório inteiro ficam concentrados em
 // poucas empresas e a soma por empresa fica errada pras outras).
+// Dashboard de NF-e/NFC-e por empresa + período: KPIs (emitidas/recebidas/canceladas) + totais de
+// impostos (ICMS/PIS/COFINS/IPI + IBS/CBS). Backfilla os docs do escopo ainda não lidos antes de somar.
+// Reaproveitado pelo /dashboard (JSON pra tela) e pelo /exportar-analitico-pdf (cabeçalho do relatório
+// com os dois painéis — Perfil das Notas + Impostos no período — igual ao que a tela mostra).
+function nfeCalcularDashboard(user: any, empresaId: number, dataDe: string | null, dataAte: string | null) {
+  const cond: string[] = [`d.escritorio_id = ?`, `d.empresa_id = ?`, `d.tipo IN ('nfe','nfce')`];
+  const params: any[] = [user.escritorioId, empresaId];
+  if (dataDe) {
+    cond.push(`substr(d.data_emissao,1,10) >= ?`);
+    params.push(dataDe);
+  }
+  if (dataAte) {
+    cond.push(`substr(d.data_emissao,1,10) <= ?`);
+    params.push(dataAte);
+  }
+  const where = cond.join(" AND ");
+  // Backfill dos docs do escopo ainda não parseados na versão atual (até 3000 por chamada).
+  const pend = sqlite.prepare(`SELECT id FROM nfe_documentos d WHERE ${where} AND (tributos_parseado IS NULL OR tributos_parseado < ?) LIMIT 3000`).all(...params, NFE_TRIB_VERSAO) as any[];
+  if (pend.length) parsearECachearTributos(pend.map((p) => p.id));
+  const emitExpr = `d.emitente_cnpj = REPLACE(REPLACE(REPLACE(e.cnpj,'.',''),'/',''),'-','')`;
+  const canceladaExpr = `EXISTS (SELECT 1 FROM nfe_documentos ev WHERE ev.escritorio_id = d.escritorio_id AND ev.tipo='evento' AND ev.chave_acesso = d.chave_acesso AND ev.evento_descricao LIKE '%ancela%' AND ev.evento_descricao NOT LIKE '%CT-e%' AND ev.evento_descricao NOT LIKE '%MDF-e%')`;
+  const r = sqlite
+    .prepare(
+      `SELECT COUNT(*) as total,
+         SUM(CASE WHEN ${emitExpr} THEN 1 ELSE 0 END) as emitidasQtd,
+         SUM(CASE WHEN ${emitExpr} THEN COALESCE(d.valor_total,0) ELSE 0 END) as emitidasValor,
+         SUM(CASE WHEN NOT (${emitExpr}) THEN 1 ELSE 0 END) as recebidasQtd,
+         SUM(CASE WHEN NOT (${emitExpr}) THEN COALESCE(d.valor_total,0) ELSE 0 END) as recebidasValor,
+         SUM(CASE WHEN ${canceladaExpr} THEN 1 ELSE 0 END) as canceladasQtd,
+         SUM(COALESCE(d.valor_total,0)) as valorTotal,
+         SUM(COALESCE(d.valor_icms,0)) as icms, SUM(COALESCE(d.valor_pis,0)) as pis,
+         SUM(COALESCE(d.valor_cofins,0)) as cofins, SUM(COALESCE(d.valor_ipi,0)) as ipi,
+         SUM(COALESCE(d.valor_ibs,0)) as ibs, SUM(COALESCE(d.valor_cbs,0)) as cbs,
+         SUM(CASE WHEN COALESCE(d.valor_ibs,0)>0 OR COALESCE(d.valor_cbs,0)>0 THEN 1 ELSE 0 END) as comReforma
+       FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id WHERE ${where}`
+    )
+    .get(...params) as any;
+  // Perfil das Notas (estilo Espião): quantas notas têm cada marcador, dentro do mesmo período/escopo
+  // já filtrado acima — reaproveita as colunas já cacheadas por parsearECachearTributos (flags/qtd_itens)
+  // em vez de reabrir o XML. flags é um TEXT separado por vírgula ("comb,med,st"); ','||flags||',' LIKE
+  // '%,xxx,%' acha o marcador sem casar prefixo de outro (ex.: "comb" dentro de "combxyz").
+  const flagLike = (f: string) => `SUM(CASE WHEN ','||COALESCE(d.flags,'')||',' LIKE '%,${f},%' THEN 1 ELSE 0 END)`;
+  const perfilRow = sqlite
+    .prepare(
+      `SELECT COUNT(*) as totalNotas,
+         SUM(CASE WHEN COALESCE(d.flags,'')!='' OR COALESCE(d.qtd_itens,0)>0 THEN 1 ELSE 0 END) as comFlags,
+         SUM(COALESCE(d.qtd_itens,0)) as somaItens,
+         SUM(CASE WHEN COALESCE(d.qtd_itens,0)>0 THEN 1 ELSE 0 END) as comCarrinho,
+         ${flagLike("med")} as medicamento,
+         ${flagLike("comb")} as combustivel,
+         ${flagLike("rastro")} as rastreavel,
+         ${flagLike("veiculo")} as veiculo,
+         ${flagLike("importado")} as importado,
+         ${flagLike("st")} as icmsSt,
+         ${flagLike("dup")} as duplicatas,
+         ${flagLike("pag")} as pagamento,
+         SUM(CASE WHEN EXISTS (SELECT 1 FROM mdfe_vinculos mv WHERE mv.chave_vinculada = d.chave_acesso) THEN 1 ELSE 0 END) as transportadora,
+         SUM(CASE WHEN d.observacao IS NOT NULL AND TRIM(d.observacao)!='' THEN 1 ELSE 0 END) as comComentario
+       FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id WHERE ${where} AND d.tipo IN ('nfe','nfce')`
+    )
+    .get(...params) as any;
+  return {
+    total: r.total || 0,
+    emitidas: { qtd: r.emitidasQtd || 0, valor: r.emitidasValor || 0 },
+    recebidas: { qtd: r.recebidasQtd || 0, valor: r.recebidasValor || 0 },
+    canceladas: r.canceladasQtd || 0,
+    autorizadas: (r.total || 0) - (r.canceladasQtd || 0),
+    valorTotal: r.valorTotal || 0,
+    comReforma: r.comReforma || 0,
+    impostos: { icms: r.icms || 0, pis: r.pis || 0, cofins: r.cofins || 0, ipi: r.ipi || 0, ibs: r.ibs || 0, cbs: r.cbs || 0 },
+    perfil: {
+      totalNotas: perfilRow.totalNotas || 0,
+      comFlags: perfilRow.comFlags || 0,
+      itensPorNota: perfilRow.totalNotas ? (perfilRow.somaItens || 0) / perfilRow.totalNotas : 0,
+      produtos: { medicamento: perfilRow.medicamento || 0, combustivel: perfilRow.combustivel || 0, rastreavel: perfilRow.rastreavel || 0, veiculo: perfilRow.veiculo || 0, importado: perfilRow.importado || 0 },
+      fiscal: { icmsSt: perfilRow.icmsSt || 0 },
+      reforma: { comIbsCbs: r.comReforma || 0 },
+      operacional: { comCarrinho: perfilRow.comCarrinho || 0, transportadora: perfilRow.transportadora || 0, duplicatas: perfilRow.duplicatas || 0, pagamento: perfilRow.pagamento || 0, comComentario: perfilRow.comComentario || 0 },
+    },
+  };
+}
+app.get("/api/nfe/documentos/dashboard", blockCliente, requirePermissao("nfe-busca", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.query.empresaId);
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
+  const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
+  res.json(nfeCalcularDashboard(user, empresaId, dataDe, dataAte));
+});
 app.get("/api/nfe/documentos/contagem", blockCliente, requirePermissao("nfe-busca", "visualizar"), (req, res) => {
   const user = (req as any).user;
   const empresasIds = empresasVisiveis(user);
@@ -7304,6 +8841,41 @@ app.get("/api/nfe/documentos/:id/xml", blockCliente, requirePermissao("nfe-busca
   res.setHeader("Content-Disposition", `attachment; filename="${row.chave_acesso || row.nsu}.xml"`);
   res.send(row.xml);
 });
+// Detalhe estruturado da nota (pro painel de abas Geral/Produtos/Impostos/Participantes). Parseia o
+// XML na hora (barato pra um doc só). Se não for NF-e completa, detalhe = null (a tela mostra só o XML).
+app.get("/api/nfe/documentos/:id/detalhe", blockCliente, requirePermissao("nfe-busca", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const row = sqlite.prepare(`SELECT * FROM nfe_documentos WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!row || row.escritorio_id !== user.escritorioId || !podeAcessarEmpresa(user, row.empresa_id)) {
+    return res.status(404).json({ error: "Documento não encontrado." });
+  }
+  const notaCancelada = !!(
+    sqlite
+      .prepare(`SELECT 1 FROM nfe_documentos WHERE escritorio_id = ? AND tipo = 'evento' AND chave_acesso = ? AND evento_descricao LIKE '%ancela%' AND evento_descricao NOT LIKE '%CT-e%' AND evento_descricao NOT LIKE '%MDF-e%' LIMIT 1`)
+      .get(row.escritorio_id, row.chave_acesso) as any
+  );
+  res.json({ tipo: row.tipo, chaveAcesso: row.chave_acesso, notaCancelada, observacao: row.observacao || "", detalhe: nfe.detalharNfe(row.xml) });
+});
+// Popup "Transportadora" (flag 🚚, clicada a partir de uma NF-e/CT-e) — acha o MDF-e que carrega essa
+// chave (mdfe_vinculos) e devolve um resumo dele (número, série, UF ini/fim, emitente).
+app.get("/api/nfe/documentos/:id/mdfe-vinculado", blockCliente, requirePermissao("nfe-busca", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const row = sqlite.prepare(`SELECT escritorio_id, empresa_id, chave_acesso FROM nfe_documentos WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!row || row.escritorio_id !== user.escritorioId || !podeAcessarEmpresa(user, row.empresa_id)) {
+    return res.status(404).json({ error: "Documento não encontrado." });
+  }
+  if (!row.chave_acesso) return res.json({ encontrado: false });
+  const mdfeDoc = sqlite
+    .prepare(
+      `SELECT d.id, d.xml FROM mdfe_vinculos mv JOIN nfe_documentos d ON d.id = mv.mdfe_documento_id
+       WHERE mv.chave_vinculada = ? ORDER BY mv.mdfe_documento_id DESC LIMIT 1`
+    )
+    .get(row.chave_acesso) as any;
+  if (!mdfeDoc) return res.json({ encontrado: false });
+  const info = nfe.resumoMdfe(mdfeDoc.xml);
+  if (!info) return res.json({ encontrado: false });
+  res.json({ encontrado: true, mdfeDocumentoId: mdfeDoc.id, ...info });
+});
 function nfeDocNomeArquivo(row: any, extensao: string): string {
   const quem = row.emitente_nome || row.destinatario_nome || String(row.tipo).toUpperCase();
   const base = `${quem} - ${String(row.tipo).toUpperCase()} ${row.chave_acesso || row.nsu}`.replace(/[\\/:*?"<>|]/g, "").trim();
@@ -7316,9 +8888,8 @@ function nfeDocNomeArquivo(row: any, extensao: string): string {
 async function nfeDocumentoObterPdf(row: any): Promise<{ pdf: Buffer | null; erro: string | null }> {
   if (row.pdf_path && fs.existsSync(row.pdf_path)) return { pdf: fs.readFileSync(row.pdf_path), erro: null };
   if (row.tipo === "evento") return { pdf: null, erro: "Eventos não têm representação em PDF — baixe o XML." };
-  if (row.tipo === "cte") return { pdf: null, erro: "Representação em PDF do CT-e (DACTE) ainda não implementada — baixe o XML." };
   try {
-    const pdf = row.fonte === "nfse" ? await danfse.gerarDanfsePdf(row.xml) : await nfePdf.gerarPdfSimplificadoNfe(row.xml);
+    const pdf = row.fonte === "nfse" ? await danfse.gerarDanfsePdf(row.xml) : row.tipo === "cte" ? await nfePdf.gerarPdfSimplificadoCte(row.xml) : await nfePdf.gerarPdfSimplificadoNfe(row.xml);
     const caminho = nfePdf.salvarPdfEmCache(row.chave_acesso || `doc-${row.id}`, pdf);
     sqlite.prepare(`UPDATE nfe_documentos SET pdf_path = ? WHERE id = ?`).run(caminho, row.id);
     return { pdf, erro: null };
@@ -7335,8 +8906,20 @@ app.get("/api/nfe/documentos/:id/pdf", blockCliente, requirePermissao("nfe-busca
   const { pdf, erro } = await nfeDocumentoObterPdf(row);
   if (!pdf) return res.status(502).json({ error: erro });
   res.setHeader("Content-Type", "application/pdf");
-  res.setHeader("Content-Disposition", nfseContentDisposition("inline", nfeDocNomeArquivo(row, "pdf")));
+  res.setHeader("Content-Disposition", nfseContentDisposition(req.query.download ? "attachment" : "inline", nfeDocNomeArquivo(row, "pdf")));
   res.send(pdf);
+});
+// Observação/comentário livre sobre o documento (botão 💬 na coluna Opções) — fica só no escritório,
+// não sai em nenhum PDF/XML nem é mandado a ninguém.
+app.put("/api/nfe/documentos/:id/observacao", blockCliente, requirePermissao("nfe-busca", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const row = sqlite.prepare(`SELECT escritorio_id, empresa_id FROM nfe_documentos WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!row || row.escritorio_id !== user.escritorioId || !podeAcessarEmpresa(user, row.empresa_id)) {
+    return res.status(404).json({ error: "Documento não encontrado." });
+  }
+  const texto = String(req.body?.texto || "").trim().slice(0, 2000);
+  sqlite.prepare(`UPDATE nfe_documentos SET observacao = ? WHERE id = ?`).run(texto || null, Number(req.params.id));
+  res.json({ ok: true });
 });
 // ---- Notas de Entrada (cliente vê só as notas recebidas da PRÓPRIA empresa, somente leitura) ----
 // Aba opcional (ver PAGINAS_CLIENTE_VALIDAS/cliente_paginas_visiveis) — o admin decide, por usuário
@@ -7454,6 +9037,198 @@ app.get("/api/nfe/documentos/baixar-lote", blockCliente, requirePermissao("nfe-b
     }
   }
   await zip.finalize();
+});
+
+// Relatório analítico (PDF) do período selecionado na tela de Busca de XML, agrupado por fornecedor
+// (emitente) pra conferência interna: dentro de cada fornecedor, uma nota depois da outra, cada uma com
+// a tabela de produtos lida do próprio XML — é o que embasa "bateu com o que foi comprado" nota a nota,
+// sem precisar abrir XML por XML na mão. Mesmos filtros da tela (empresaId/direcao/tipo/datas/busca),
+// pra exportar exatamente o que está sendo visto na hora.
+// Campos extraídos por regex direto do XML bruto (não via parser) vêm com as entidades XML ainda
+// codificadas (ex.: "&amp;" em vez de "&") — sem decodificar, escHtmlRelatorio escapa de novo em cima
+// e dá "&amp;amp;" na tela (achado ao vivo no xDescServ de NFS-e com "&" na descrição do serviço).
+function decodificarEntidadesXml(s: string): string {
+  return s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
+}
+function nfeChaveNumeroSerie(chave: string | null): { numero: string; serie: string } {
+  if (!chave || chave.length !== 44) return { numero: "-", serie: "-" };
+  return { serie: String(Number(chave.slice(22, 25))), numero: String(Number(chave.slice(25, 34))) };
+}
+// HTML dos dois painéis do topo (Perfil das Notas + Impostos no período) pro cabeçalho do relatório
+// analítico em PDF — mesmos números/percentuais da tela, só que em markup estático (sem flex, pra
+// imprimir igual em qualquer motor de PDF): duas colunas via display:inline-block; width:48%.
+function nfePainelPerfilHtmlRelatorio(dash: ReturnType<typeof nfeCalcularDashboard>): string {
+  const pf = dash.perfil;
+  const pct = (n: number) => (pf.totalNotas ? Math.round((n / pf.totalNotas) * 100) : 0);
+  const item = (ic: string, label: string, val: number, cor: string) => {
+    const p = pct(val);
+    return `<div style="border:1px solid #ddd; border-radius:5px; padding:4px 6px; margin:3px 4px 3px 0; display:inline-block; width:31%; vertical-align:top;">
+      <div style="font-size:8px; display:flex;"><span style="flex:1;">${ic} ${escHtmlRelatorio(label)}</span><b>${val}</b>&nbsp;<span style="color:#888;">${p}%</span></div>
+      <div style="background:#eee; border-radius:3px; height:4px; overflow:hidden; margin-top:3px;"><div style="width:${p}%; height:100%; background:${cor};"></div></div>
+    </div>`;
+  };
+  const grupo = (titulo: string, cor: string, itens: string) => `<div style="margin-top:6px;"><div style="font-size:7.5px; font-weight:bold; color:${cor}; text-transform:uppercase;">${escHtmlRelatorio(titulo)}</div>${itens}</div>`;
+  return `<div style="font-weight:bold; font-size:10px; margin-bottom:6px;">🏷️ Perfil das Notas</div>
+    <div style="font-size:8.5px; margin-bottom:4px;"><b style="font-size:13px;">${pf.comFlags}</b> NF-e com flags &nbsp;·&nbsp; <b style="font-size:13px;">${pf.itensPorNota.toFixed(1).replace(".", ",")}</b> itens/nota</div>
+    ${grupo("Produtos especiais", "#dc2626", item("💊", "Medicamento", pf.produtos.medicamento, "#dc2626") + item("⛽", "Combustível", pf.produtos.combustivel, "#dc2626") + item("🔖", "Rastreável", pf.produtos.rastreavel, "#dc2626"))}
+    ${grupo("Tributário / fiscal", "#d97706", item("%", "ICMS-ST", pf.fiscal.icmsSt, "#d97706"))}
+    ${grupo("Reforma tributária", "#7c3aed", item("⚖️", "IBS/CBS", pf.reforma.comIbsCbs, "#7c3aed"))}
+    ${grupo("Operacional", "#059669", item("📦", "Carrinho", pf.operacional.comCarrinho, "#059669") + item("🚚", "Transportadora", pf.operacional.transportadora, "#059669") + item("🧾", "Duplicatas", pf.operacional.duplicatas, "#059669") + item("💰", "Pagamento", pf.operacional.pagamento, "#059669") + item("💬", "Comentário", pf.operacional.comComentario, "#059669"))}`;
+}
+function nfePainelImpostosHtmlRelatorio(dash: ReturnType<typeof nfeCalcularDashboard>): string {
+  const imp = dash.impostos;
+  const total = imp.icms + imp.pis + imp.cofins + imp.ipi + imp.ibs + imp.cbs;
+  const max = Math.max(imp.icms, imp.pis, imp.cofins, imp.ipi, imp.ibs, imp.cbs, 1);
+  const bar = (label: string, val: number, cor: string) => {
+    const p = Math.round((val / max) * 100);
+    return `<div style="margin-bottom:5px;"><div style="display:flex; justify-content:space-between; font-size:8.5px;"><span>${escHtmlRelatorio(label)}</span><b>R$ ${fmtMoedaRelatorio(val)}</b></div><div style="background:#eee; border-radius:3px; height:5px; overflow:hidden;"><div style="width:${p}%; height:100%; background:${cor};"></div></div></div>`;
+  };
+  return `<div style="font-weight:bold; font-size:10px; margin-bottom:6px;">Impostos no período — total R$ ${fmtMoedaRelatorio(total)}</div>
+    ${bar("ICMS", imp.icms, "#3b82f6")}${bar("PIS", imp.pis, "#10b981")}${bar("COFINS", imp.cofins, "#8b5cf6")}${bar("IPI", imp.ipi, "#f59e0b")}${bar("IBS (reforma)", imp.ibs, "#6366f1")}${bar("CBS (reforma)", imp.cbs, "#4338ca")}
+    <div style="font-size:8px; color:#666; margin-top:6px;">Total de notas: <b>${dash.total}</b> &nbsp;·&nbsp; Recebidas: <b>${dash.recebidas.qtd}</b> &nbsp;·&nbsp; Emitidas: <b>${dash.emitidas.qtd}</b> &nbsp;·&nbsp; Canceladas: <b>${dash.canceladas}</b> &nbsp;·&nbsp; Com IBS/CBS: <b>${dash.comReforma}</b></div>`;
+}
+app.get("/api/nfe/documentos/exportar-analitico-pdf", blockCliente, requirePermissao("nfe-busca", "visualizar"), async (req, res) => {
+  const user = (req as any).user;
+  const empresaId = req.query.empresaId ? Number(req.query.empresaId) : null;
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const empresa = sqlite.prepare(`SELECT * FROM empresas WHERE id = ?`).get(empresaId) as any;
+  if (!empresa) return res.status(404).json({ error: "Empresa não encontrada." });
+  const tipo = typeof req.query.tipo === "string" && req.query.tipo ? req.query.tipo : null;
+  const direcao = typeof req.query.direcao === "string" && ["emitida", "recebida"].includes(req.query.direcao) ? req.query.direcao : null;
+  const busca = typeof req.query.busca === "string" ? req.query.busca.trim() : "";
+  const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
+  const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
+  const direcaoExpr = `(CASE WHEN d.emitente_cnpj = REPLACE(REPLACE(REPLACE(e.cnpj,'.',''),'/',''),'-','') THEN 'emitida' ELSE 'recebida' END)`;
+  // Sem travar em nfe/nfce: a tela também exporta com o filtro em CT-e/MDF-e/NFS-e — só evento fica de
+  // fora (não é documento pra listar por fornecedor). O "tipo" abaixo, quando vem da tela, já restringe
+  // mais ainda; sem ele, pega todos os tipos reais do período.
+  const condicoes: string[] = [`d.escritorio_id = ?`, `d.empresa_id = ?`, `d.tipo != 'evento'`];
+  const params: any[] = [user.escritorioId, empresaId];
+  if (tipo) { condicoes.push(`d.tipo = ?`); params.push(tipo); }
+  if (direcao) { condicoes.push(`${direcaoExpr} = ?`); params.push(direcao); }
+  if (dataDe) { condicoes.push(`substr(d.data_emissao,1,10) >= ?`); params.push(dataDe); }
+  if (dataAte) { condicoes.push(`substr(d.data_emissao,1,10) <= ?`); params.push(dataAte); }
+  if (busca) {
+    const digits = busca.replace(/\D/g, "");
+    condicoes.push(`(d.emitente_nome LIKE ? OR d.destinatario_nome LIKE ? OR d.chave_acesso LIKE ? OR d.emitente_cnpj LIKE ? OR d.destinatario_cnpj LIKE ?)`);
+    const likeTexto = `%${busca}%`;
+    const likeDigits = `%${digits || busca}%`;
+    params.push(likeTexto, likeTexto, likeTexto, likeDigits, likeDigits);
+  }
+  const notaCanceladaExpr = `EXISTS (SELECT 1 FROM nfe_documentos ev WHERE ev.escritorio_id = d.escritorio_id AND ev.tipo = 'evento' AND ev.chave_acesso = d.chave_acesso AND ev.evento_descricao LIKE '%ancela%' AND ev.evento_descricao NOT LIKE '%CT-e%' AND ev.evento_descricao NOT LIKE '%MDF-e%')`;
+  const rows = sqlite
+    .prepare(
+      `SELECT d.id, d.xml, d.tipo, d.chave_acesso as chaveAcesso, d.emitente_cnpj as emitenteCnpj, d.emitente_nome as emitenteNome,
+              d.valor_total as valorTotal, d.data_emissao as dataEmissao, ${notaCanceladaExpr} as notaCancelada
+       FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id
+       WHERE ${condicoes.join(" AND ")}
+       ORDER BY d.emitente_nome, d.data_emissao`
+    )
+    .all(...params) as any[];
+  if (!rows.length) return res.status(400).json({ error: "Nenhuma nota encontrada com esses filtros pra gerar o relatório." });
+  // Mesmos dois painéis do topo da tela (Perfil das Notas + Impostos no período), calculados com o
+  // mesmo escopo empresa+data desta exportação — direção/tipo/busca não entram aqui porque o painel na
+  // tela também não usa esses três (sempre nfe/nfce da empresa inteira no período).
+  const dash = nfeCalcularDashboard(user, empresaId, dataDe, dataAte);
+
+  const grupos = new Map<string, { nome: string; cnpj: string | null; notas: any[]; subtotal: number }>();
+  for (const r of rows) {
+    const chave = r.emitenteCnpj || `sem-cnpj-${r.emitenteNome || r.id}`;
+    if (!grupos.has(chave)) grupos.set(chave, { nome: r.emitenteNome || "(sem nome)", cnpj: r.emitenteCnpj || null, notas: [], subtotal: 0 });
+    const g = grupos.get(chave)!;
+    const detalhe = nfe.detalharNfe(r.xml);
+    g.notas.push({ ...r, tipo: r.tipo, itens: detalhe ? detalhe.itens : null });
+    if (!r.notaCancelada) g.subtotal += r.valorTotal || 0;
+  }
+  const listaGrupos = [...grupos.values()].sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
+  const totalGeral = listaGrupos.reduce((s, g) => s + g.subtotal, 0);
+  const fmtDataEmissaoRelatorio = (iso: string | null) => {
+    if (!iso) return "-";
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso));
+    return m ? `${m[3]}/${m[2]}/${m[1]}` : "-";
+  };
+  const fmtDataBrRelatorio = (iso: string) => iso.split("-").reverse().join("/");
+  const periodoLinha = dataDe || dataAte ? `Período: ${dataDe ? fmtDataBrRelatorio(dataDe) : "…"} até ${dataAte ? fmtDataBrRelatorio(dataAte) : "…"}` : "Período: todas as datas";
+  const blocosFornecedor = listaGrupos
+    .map((g) => {
+      const notasHtml = g.notas
+        .map((n) => {
+          // NFS-e não usa a numeração por chave (44 posições) do padrão NF-e/CT-e/MDF-e — a chave dela
+          // (ADN nacional) tem outro tamanho, e o número que importa é o <nNFSe> de dentro do XML, não
+          // uma posição fixa da chave.
+          const numeroLabel =
+            n.tipo === "nfse"
+              ? `NFS-e ${escHtmlRelatorio(String(n.xml).match(/<nNFSe>([^<]+)<\/nNFSe>/)?.[1] || "-")}`
+              : `Nota ${escHtmlRelatorio(nfeChaveNumeroSerie(n.chaveAcesso).numero)} · Série ${escHtmlRelatorio(nfeChaveNumeroSerie(n.chaveAcesso).serie)}`;
+          const tituloNota = `${numeroLabel} · ${fmtDataEmissaoRelatorio(n.dataEmissao)}${n.notaCancelada ? " · <span style=\"color:#b91c1c;\">CANCELADA</span>" : ""} · <b>R$ ${fmtMoedaRelatorio(n.valorTotal)}</b>`;
+          const itensHtml =
+            n.itens && n.itens.length
+              ? `<table class="rep"><colgroup><col style="width:9%"><col style="width:37%"><col style="width:10%"><col style="width:7%"><col style="width:8%"><col style="width:13%"><col style="width:16%"></colgroup><thead><tr><th>Código</th><th>Descrição</th><th>NCM</th><th>CFOP</th><th class="num">Qtd</th><th class="num">Vl. Unit.</th><th class="num">Vl. Total</th></tr></thead><tbody>${n.itens
+                  .map(
+                    (it: any) =>
+                      `<tr><td>${escHtmlRelatorio(it.cProd)}</td><td>${escHtmlRelatorio(it.xProd)}</td><td>${escHtmlRelatorio(it.ncm)}</td><td>${escHtmlRelatorio(it.cfop)}</td><td class="num">${it.qtd}</td><td class="num">${fmtMoedaRelatorio(it.vUnit)}</td><td class="num">${fmtMoedaRelatorio(it.vProd)}</td></tr>`
+                  )
+                  .join("")}</tbody></table>`
+              : n.tipo === "nfe" || n.tipo === "nfce"
+                ? `<div style="color:#888; font-size:8.5px; margin:2px 0 8px;">XML resumido — produtos não disponíveis ainda (precisa da nota completa).</div>`
+                : n.tipo === "nfse"
+                  ? `<div style="color:#444; font-size:8.5px; margin:2px 0 8px;">Serviço: ${escHtmlRelatorio(decodificarEntidadesXml(String(n.xml).match(/<xDescServ>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/xDescServ>/)?.[1]?.trim() || "—"))}</div>`
+                  : `<div style="color:#888; font-size:8.5px; margin:2px 0 8px;">${escHtmlRelatorio((n.tipo || "").toUpperCase())} não tem lista de produtos (documento de serviço/transporte).</div>`;
+          return `<div style="margin:4px 0 6px; page-break-inside:avoid;"><div style="font-size:9.5px; margin-bottom:2px;">${tituloNota}</div>${itensHtml}</div>`;
+        })
+        .join("");
+      // Sem page-break-inside:avoid aqui no bloco inteiro: travar o fornecedor inteiro numa página só
+      // deixava um vão enorme em branco toda vez que ele não cabia no resto da página (achado ao vivo,
+      // relatório de 46 páginas com metade de página em branco antes de cada fornecedor que não coube).
+      // Cada nota (acima) evita quebrar NO MEIO da tabela dela, o que já é suficiente — o fornecedor em
+      // si pode continuar normalmente na página seguinte, sem vão.
+      return `<div style="margin-top:10px;">
+        <div class="forn-head"><span class="forn-nome">${escHtmlRelatorio(g.nome)}</span><span class="forn-cnpj">CNPJ ${escHtmlRelatorio(fmtCnpjRelatorio(g.cnpj))}</span></div>
+        ${notasHtml}
+        <div class="forn-subtotal">Subtotal ${escHtmlRelatorio(g.nome)} <b>R$ ${fmtMoedaRelatorio(g.subtotal)}</b></div>
+      </div>`;
+    })
+    .join("");
+  // Paleta igual à do sistema (public/app.html :root): --accent #2ECC8F, --accent-deep #159873,
+  // --accent-pale #DFF7EC — pedido explícito do usuário ("fundo verde claro do sistema").
+  const html = `<style>
+      body { font-family: 'Helvetica Neue', Arial, sans-serif !important; font-size: 9px; color:#2b2b2b; }
+      .cab { border-bottom: 2.5px solid #159873; padding-bottom: 7px; margin-bottom: 4px; }
+      h1 { font-size: 16px; text-align:left; margin: 0 0 3px; color:#0E6B52; letter-spacing:.2px; }
+      .cab p { margin: 1px 0; text-align:left; color:#555; font-size: 9.5px; }
+      .cab p b { color:#222; }
+      table.rep { border-collapse: collapse; width: 100%; table-layout: fixed; margin: 2px 0 5px; }
+      table.rep th, table.rep td { border: 1px solid #cdeee1; padding: 3px 5px; overflow-wrap: break-word; }
+      table.rep th { background:#DFF7EC; color:#0E6B52; text-align:left; font-size: 7.8px; font-weight:700; text-transform:uppercase; letter-spacing:.2px; white-space: nowrap; }
+      table.rep td.num, table.rep th.num { text-align:right; white-space:nowrap; }
+      table.rep tbody tr:nth-child(even) td { background:#F5FCFA; }
+      .forn-head { background:#DFF7EC; border-left:4px solid #159873; border-radius:3px; padding:5px 8px; margin:0 0 5px; display:flex; justify-content:space-between; align-items:baseline; }
+      .forn-nome { font-size: 11px; font-weight:700; color:#0E6B52; }
+      .forn-cnpj { font-size: 8.5px; color:#3b8268; font-family:'Courier New',monospace; }
+      .forn-subtotal { text-align:right; font-weight:700; font-size:9.5px; background:#F5FCFA; border:1px solid #cdeee1; border-radius:3px; padding:4px 8px; color:#0E6B52; }
+      .forn-subtotal b { font-size:11px; }
+      .tag-total { display:inline-block; background:linear-gradient(135deg,#2ECC8F,#159873); color:#fff; padding:8px 18px; border-radius:7px; font-weight:700; font-size:12.5px; margin-top:16px; letter-spacing:.2px; }
+      .painel { display:inline-block; width:48%; vertical-align:top; background:#fbfffd; border:1px solid #cdeee1; border-radius:8px; padding:9px 11px; box-sizing:border-box; }
+    </style>
+    <div class="cab">
+      <h1>${escHtmlRelatorio(empresa.nome)} — Relatório Analítico por Fornecedor</h1>
+      <p><b>CNPJ:</b> ${escHtmlRelatorio(fmtCnpjRelatorio(empresa.cnpj))}</p>
+      <p><b>${escHtmlRelatorio(periodoLinha)}</b> — conferência interna</p>
+    </div>
+    <div style="margin-top:10px;">
+      <div class="painel" style="margin-right:3%;">${nfePainelPerfilHtmlRelatorio(dash)}</div>
+      <div class="painel">${nfePainelImpostosHtmlRelatorio(dash)}</div>
+    </div>
+    ${blocosFornecedor}
+    <div><span class="tag-total">Total geral: R$ ${fmtMoedaRelatorio(totalGeral)}</span></div>`;
+  try {
+    const pdf = await contratos.gerarPdfDeHtml(html, `Relatório Analítico - ${empresa.nome}`, { landscape: true });
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="Relatorio Analitico - ${empresa.nome.replace(/[\\/:*?"<>|]/g, "_")}.pdf"`);
+    res.send(pdf);
+  } catch (e: any) {
+    res.status(500).json({ error: "Falha ao gerar o PDF: " + e.message });
+  }
 });
 
 // ---------- Exportação de XML pro OneDrive (direto da nuvem, sem agente local) ----------
@@ -7644,7 +9419,7 @@ setInterval(() => {
 // se o período já tem documento, sem filtrar por quem pediu, então importando ANTES de qualquer
 // solicitação (esta rotina é proativa/agendada), o pedido do cliente já chega atendido sem nenhum
 // código extra de "atendimento automático".
-type DomRelTipo = "balanco" | "balancete" | "dre" | "faturamento" | "razao" | "comparativo" | "aviso_ferias" | "programacao_ferias";
+type DomRelTipo = "balanco" | "balancete" | "dre" | "faturamento" | "razao" | "comparativo" | "entradas_saidas" | "programacao_ferias";
 const DOM_REL_TEMPLATE_NOME: Record<string, string> = {
   balanco: "Balanço",
   balancete: "Balancete",
@@ -7653,7 +9428,9 @@ const DOM_REL_TEMPLATE_NOME: Record<string, string> = {
   faturamento: "Relação de Faturamento",
   razao: "Razão",
   comparativo: "Comparativo de Movimento",
-  aviso_ferias: "Aviso de Férias",
+  // O Demonstrativo Mensal (gerado pelo robô "Demonstrativo Mensal") é arquivado aqui, como
+  // "Relatório de Entradas/Saídas" — a pedido, sem tipo/aba separados.
+  entradas_saidas: "Relatório de Entradas/Saídas",
   programacao_ferias: "Programação de Férias",
 };
 // Nomes dos templates alimentados pela importação automática do OneDrive — pra esses, "Solicitar
@@ -7662,8 +9439,39 @@ const DOM_REL_TEMPLATE_NOME: Record<string, string> = {
 // GET /api/envio/periodos-disponiveis). Os outros templates (DAS, Situação Fiscal etc.) continuam
 // deixando digitar livre, porque o escritório gera aquilo quando o cliente pede.
 const TEMPLATES_RELATORIOS_DOMINIO = new Set(Object.values(DOM_REL_TEMPLATE_NOME));
+// Migração única: o Demonstrativo Mensal voltou a ser arquivado como "Relatório de Entradas/Saídas"
+// (a pedido). Move os docs já importados no template "Demonstrativo Mensal" pro template
+// "Relatório de Entradas/Saídas" e remove o template órfão. Idempotente (não faz nada se não existir).
+try {
+  const demos = sqlite.prepare(`SELECT id, escritorio_id FROM envio_templates WHERE nome = 'Demonstrativo Mensal'`).all() as any[];
+  for (const t of demos) {
+    const atrs = sqlite.prepare(`SELECT id, empresa_id FROM envio_atribuicoes WHERE template_id = ?`).all(t.id) as any[];
+    for (const a of atrs) {
+      const destinoAtrId = integraContadorObterOuCriarAtribuicaoModelo(
+        t.escritorio_id, a.empresa_id, "Relatório de Entradas/Saídas",
+        "Relatório de Entradas/Saídas gerado pelo Domínio Web, importado automaticamente de uma pasta do OneDrive", "mensal", true
+      );
+      sqlite.prepare(`UPDATE OR IGNORE envio_periodos SET atribuicao_id = ? WHERE atribuicao_id = ?`).run(destinoAtrId, a.id);
+    }
+    sqlite.prepare(`DELETE FROM envio_templates WHERE id = ?`).run(t.id); // cascade apaga atribuições/períodos remanescentes
+    console.log(`Migração: template "Demonstrativo Mensal" (escritório ${t.escritorio_id}) consolidado em "Relatório de Entradas/Saídas".`);
+  }
+} catch (e: any) { console.error("[migração demonstrativo->entradas_saidas]", e.message); }
 // Acha os tipos que o texto do PDF menciona — pode achar mais de um (ex.: um PDF que já vem com
 // Balanço + DRE juntos); nesse caso o pipeline anexa em CADA template que bateu.
+// O nome do arquivo que o Domínio gera já começa pelo tipo ("comparativo_17_...", "Balancete ...") e é mais
+// confiável que procurar palavras no corpo do PDF — um Comparativo pode citar "balancete" no texto e ser
+// arquivado também como Balancete. Sem prefixo reconhecível, cai pro texto.
+function domRelTipoPeloNome(nome: string): DomRelTipo | null {
+  const limpo = nome.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z_]/g, "");
+  // O robô do Demonstrativo Mensal nomeia "Demonstrativo_Mensal_<cod>_..." → arquivado como
+  // "Relatório de Entradas/Saídas" (tipo entradas_saidas), a pedido.
+  const m = /^(balancete|balanco|dre|faturamento|razao|comparativo|programacao|demonstrativo)/.exec(limpo);
+  if (!m) return null;
+  if (m[1] === "programacao") return "programacao_ferias";
+  if (m[1] === "demonstrativo") return "entradas_saidas";
+  return m[1] as DomRelTipo;
+}
 function domRelClassificarTipos(texto: string): DomRelTipo[] {
   const tipos: DomRelTipo[] = [];
   if (/balan[çc]o\s+patrimonial/i.test(texto)) tipos.push("balanco");
@@ -7675,7 +9483,7 @@ function domRelClassificarTipos(texto: string): DomRelTipo[] {
   // "Período:"/"C.N.P.J.:", nunca da palavra "social" logo depois.
   if (/raz[ãa]o(?!\s*social)/i.test(texto)) tipos.push("razao");
   if (/comparativo\s+(de\s+)?movimento|movimento\s+comparativo/i.test(texto)) tipos.push("comparativo");
-  if (/aviso\s+de\s+f[ée]rias/i.test(texto)) tipos.push("aviso_ferias");
+  if (/demonstrativo\s+mensal/i.test(texto) && /entradas\s*r\$/i.test(texto)) tipos.push("entradas_saidas");
   if (/programa[çc][ãa]o\s+de\s+f[ée]rias/i.test(texto)) tipos.push("programacao_ferias");
   return tipos;
 }
@@ -7708,6 +9516,22 @@ function domRelExtrairPeriodo(texto: string, nomeArquivo: string): { inicio: str
       const diaN = Number(dia), mesN = Number(mes), anoN = Number(ano);
       if (diaN >= 1 && diaN <= 31 && mesN >= 1 && mesN <= 12 && anoN >= 2000 && anoN <= 2100) {
         datas.push(`${ano}-${mes}-${dia}`);
+      }
+    }
+    // Achado ao vivo no "Demonstrativo Mensal" (Relatório de Entradas/Saídas): o texto linear do
+    // pdf-parse enfia a linha inteira do cabeçalho da tabela ("MêsSaídasAnoEntradas...") ENTRE a data
+    // inicial e a final, então só a inicial cai na janela normal de 80 caracteres. A data final some
+    // logo depois de um "a" sozinho numa linha própria (resto de "DATA a DATA" quebrado pela
+    // extração) — com só 1 data achada, procura esse padrão num raio maior antes de desistir.
+    if (datas.length === 1) {
+      const trechoLargo = texto.slice(m.index, m.index + 400);
+      const am = /\ba\s*(\d{2})[\/\-.](\d{2})[\/\-.](\d{4})\b/.exec(trechoLargo);
+      if (am) {
+        const [, dia, mes, ano] = am;
+        const diaN = Number(dia), mesN = Number(mes), anoN = Number(ano);
+        if (diaN >= 1 && diaN <= 31 && mesN >= 1 && mesN <= 12 && anoN >= 2000 && anoN <= 2100) {
+          datas.push(`${ano}-${mes}-${dia}`);
+        }
       }
     }
     if (datas.length >= 2) {
@@ -7780,6 +9604,30 @@ function domRelIdentificarEmpresa(mapa: { porDocumento: Map<string, any>; porCod
   if (!empresa && codigoArquivo) {
     const porCod = mapa.porCodigo.get(codigoArquivo);
     if (porCod) empresa = porCod;
+  }
+  // Fallback por RAIZ do CNPJ (8 primeiros dígitos). A GFD do FGTS Digital (e outros documentos que
+  // preservam o sigilo) MASCARA o CNPJ e mostra só a raiz — "04.801.040" no campo do empregador e na
+  // Tag ("04801040 09/2026 MENSAL") — o CNPJ cheio (14) nunca aparece, então o match por documento
+  // acima falha. E como o nome do empregador vem truncado na própria GFD ("...PERICIA E AUDIT"), o
+  // fallback por nome (em central-envio) também não casa empresa de nome longo → caía em "Sem empresa".
+  // Casa pela raiz, mas só se ela apontar pra EXATAMENTE uma empresa (nunca num grupo com filiais que
+  // compartilham a mesma raiz) — mesma cautela do fallback por código acima.
+  if (!empresa) {
+    const empresasPorRaiz = new Map<string, { emp: any; ids: Set<number> }>();
+    for (const [dig, emp] of mapa.porDocumento) {
+      if (dig.length !== 14 || typeof emp?.id !== "number") continue;
+      const raiz = dig.slice(0, 8);
+      const reg = empresasPorRaiz.get(raiz) || { emp, ids: new Set<number>() };
+      reg.ids.add(emp.id);
+      empresasPorRaiz.set(raiz, reg);
+    }
+    // Raízes que aparecem no texto no formato de CNPJ/raiz ("04.801.040" ou "04801040" isolado) — o \b
+    // nas pontas evita pegar os 8 primeiros dígitos de um número maior (um CNPJ cheio colado, p.ex.).
+    for (const m of texto.matchAll(/\b(\d{2})\.?(\d{3})\.?(\d{3})\b/g)) {
+      const raiz = m[1] + m[2] + m[3];
+      const reg = empresasPorRaiz.get(raiz);
+      if (reg && reg.ids.size === 1) { empresa = reg.emp; cnpjDetectado = cnpjDetectado || raiz; break; }
+    }
   }
   return { empresa, cnpjDetectado, codigoArquivo };
 }
@@ -7940,7 +9788,8 @@ async function dominioRelatoriosSincronizar(
     try {
       const buf = await item.baixar();
       const texto = await obterTextoDoPdf(buf);
-      const tipos = domRelClassificarTipos(texto);
+      const tipoPeloNome = domRelTipoPeloNome(item.nome);
+      const tipos = tipoPeloNome ? [tipoPeloNome] : domRelClassificarTipos(texto);
       let periodo = domRelExtrairPeriodo(texto, item.nome);
       // Programação de Férias não tem range de período: usa uma data única ("Data base: dd/mm/aaaa"
       // no texto, ou o _ddmmaaaa no fim do nome do arquivo). Fica sob o mês/ano dessa data.
@@ -8021,6 +9870,8 @@ async function dominioRelatoriosSincronizar(
         // Além de arquivar o PDF (igual todo tipo aqui), extrai os funcionários e recalcula
         // vencida/próxima pra essa empresa (ver src/ferias.ts) — só pra este tipo específico.
         if (tipo === "programacao_ferias") feriasProcessarPdf(escritorioId, empresa.id, texto, docId);
+        // Entradas/Saídas: extrai a tabela mensal (ver aba Fiscal "Relatório de Entradas/Saídas").
+        if (tipo === "entradas_saidas") { try { entradasSaidasProcessarPdf(escritorioId, empresa.id, texto); } catch (e: any) { console.error("[entradas-saidas] processar no import:", e.message); } }
       }
       domRelGravarControle({ ...base, tipoDetectado: tipos.join(","), empresaId: empresa.id, envioDocumentoId: primeiroDocId, status: "ok", erro: null, arquivoPendentePath: null });
       ok++;
@@ -8205,6 +10056,9 @@ registerCentralEnvio(app, {
   identificarEmpresa: domRelIdentificarEmpresa,
   extrairPeriodo: domRelExtrairPeriodo,
   pdfParse: (buf) => require("pdf-parse")(buf),
+  envioObterOuCriarTemplateDraft,
+  envioAtribuicaoObterOuCriar,
+  envioAnexarPdf: integraContadorAnexarPdfEmEnvio,
 });
 // Programação de Férias (DP/RH): lê o relatório da mesma esteira do Domínio acima, identifica quem
 // está com férias vencidas/perto de vencer e manda um relatório curado por empresa (uma vez por mês
@@ -8246,6 +10100,297 @@ async function feriasReprocessarExistentes(escritorioId: number): Promise<number
   }
   return processados;
 }
+// ========= Relatório de Entradas/Saídas (aba Fiscal): parser + ajuste por empresa + PDF novo =========
+// Tabela mensal do PDF: Mês | Ano | Entradas R$ | Saídas R$ | Serviços R$ | Entradas UFIR | Acum |
+// Saídas UFIR | Acum | Serviços UFIR | Acum. UFIR espelha o R$ (1:1); os Acumulados são somas acumuladas.
+// Guardamos só os 3 valores base (R$); UFIR/Acumulados são recalculados na hora (com o ajuste aplicado).
+const ES_MESES: Record<string, number> = { janeiro: 1, fevereiro: 2, "março": 3, marco: 3, abril: 4, maio: 5, junho: 6, julho: 7, agosto: 8, setembro: 9, outubro: 10, novembro: 11, dezembro: 12 };
+const ES_MES_NOME = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
+function esBrToNum(s: string): number { return parseFloat(String(s).replace(/\./g, "").replace(",", ".")) || 0; }
+function esFmtBR(n: number): string { const neg = n < 0; const s = Math.abs(n || 0).toFixed(2); const [i, d] = s.split("."); return (neg ? "-" : "") + i.replace(/\B(?=(\d{3})+(?!\d))/g, ".") + "," + d; }
+function esFmtCnpj(c: string): string { const x = String(c || "").replace(/\D/g, ""); if (x.length === 14) return `${x.slice(0, 2)}.${x.slice(2, 5)}.${x.slice(5, 8)}/${x.slice(8, 12)}-${x.slice(12)}`; if (x.length === 11) return `${x.slice(0, 3)}.${x.slice(3, 6)}.${x.slice(6, 9)}-${x.slice(9)}`; return String(c || ""); }
+function entradasSaidasParse(texto: string): { ano: number; mes: number; entradas: number; saidas: number; servicos: number }[] {
+  // O pdf-parse extrai a tabela COLADA e com as colunas da direita embaralhadas (ex.:
+  // "Janeiro12.691,5856.478,44202656.478,44..." — ano grudado, sem espaços). Padrão confiável
+  // (confirmado em produção AGUIAR/FERNANDO): logo APÓS o ANO vêm, em ordem, Entradas R$, Saídas R$,
+  // Serviços R$. Então: acha o mês no começo da linha, isola o ano (20xx/19xx) e pega os 3 números
+  // seguintes. O que vem depois (UFIR/Acumulados) é recalculado, não precisa ler.
+  const reMes = /^(janeiro|fevereiro|mar[çc]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\s*(.*)$/i;
+  const rows: { ano: number; mes: number; entradas: number; saidas: number; servicos: number }[] = [];
+  for (const raw of String(texto || "").split(/\r?\n/)) {
+    const m = reMes.exec(raw.trim());
+    if (!m) continue;
+    const mes = ES_MESES[m[1].toLowerCase()];
+    if (!mes) continue;
+    const corpo = m[2].replace(/(,\d{2})((?:19|20)\d{2})(\d)/, "$1 $2 $3").replace(/^((?:19|20)\d{2})(\d)/, "$1 $2");
+    const anoM = corpo.match(/\b(?:19|20)\d{2}\b/);
+    if (!anoM) continue;
+    const nums = (corpo.slice((anoM.index || 0) + anoM[0].length).match(/\d{1,3}(?:\.\d{3})*,\d{2}/g) || []).map(esBrToNum);
+    if (nums.length < 3) continue;
+    rows.push({ ano: Number(anoM[0]), mes, entradas: nums[0], saidas: nums[1], servicos: nums[2] });
+  }
+  return rows;
+}
+function entradasSaidasProcessarPdf(escritorioId: number, empresaId: number, texto: string): number {
+  const rows = entradasSaidasParse(texto);
+  if (!rows.length) return 0;
+  const periodoIni = (/per[íi]odo:\s*(\d{2}\/\d{2}\/\d{4})/i.exec(texto) || [])[1] || null;
+  const periodoFim = (/\ba\s*(\d{2}\/\d{2}\/\d{4})/i.exec(texto) || [])[1] || (texto.match(/\d{2}\/\d{2}\/\d{4}/g) || []).slice(-1)[0] || null;
+  const anos = [...new Set(rows.map((r) => r.ano))];
+  sqlite.exec("BEGIN");
+  try {
+    const del = sqlite.prepare(`DELETE FROM entradas_saidas_dados WHERE empresa_id = ? AND ano = ?`);
+    for (const ano of anos) del.run(empresaId, ano);
+    const ins = sqlite.prepare(`INSERT INTO entradas_saidas_dados (escritorio_id, empresa_id, ano, mes, entradas, saidas, servicos) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+    for (const r of rows) ins.run(escritorioId, empresaId, r.ano, r.mes, r.entradas, r.saidas, r.servicos);
+    sqlite.prepare(`INSERT INTO entradas_saidas_meta (empresa_id, escritorio_id, periodo_ini, periodo_fim, atualizado_em) VALUES (?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(empresa_id) DO UPDATE SET periodo_ini = excluded.periodo_ini, periodo_fim = excluded.periodo_fim, atualizado_em = datetime('now')`).run(empresaId, escritorioId, periodoIni, periodoFim);
+    sqlite.exec("COMMIT");
+  } catch (e) { sqlite.exec("ROLLBACK"); throw e; }
+  return rows.length;
+}
+async function entradasSaidasReprocessarExistentes(escritorioId: number): Promise<number> {
+  const rows = sqlite.prepare(
+    `SELECT d.id, d.file_path, a.empresa_id as empresaId
+       FROM envio_documentos d JOIN envio_periodos p ON p.id = d.periodo_id
+       JOIN envio_atribuicoes a ON a.id = p.atribuicao_id JOIN envio_templates t ON t.id = a.template_id
+      WHERE t.escritorio_id = ? AND t.nome = ?`
+  ).all(escritorioId, DOM_REL_TEMPLATE_NOME.entradas_saidas) as any[];
+  let n = 0;
+  for (const row of rows) {
+    if (!row.file_path || !fs.existsSync(row.file_path)) continue;
+    try { if (entradasSaidasProcessarPdf(escritorioId, row.empresaId, await obterTextoDoPdf(fs.readFileSync(row.file_path)))) n++; }
+    catch (e: any) { console.error(`[entradas-saidas] reprocessar ${row.id}:`, e.message); }
+  }
+  return n;
+}
+// Aplica o ajuste (somar valor por coluna) e recalcula Acumulados + totais. Com margemPct > 0, calcula
+// a saída esperada do mês (entrada / (1 - margem/100)) e marca alerta se a saída real não atingir.
+function entradasSaidasComAjuste(meses: any[], aj: { entradas: number; saidas: number; servicos: number }, margemPct = 0) {
+  let accE = 0, accS = 0, accSv = 0;
+  const m100 = margemPct > 0 && margemPct < 100 ? margemPct / 100 : 0;
+  const linhas = meses.map((m) => {
+    const e = (m.entradas || 0) + (aj.entradas || 0), s = (m.saidas || 0) + (aj.saidas || 0), sv = (m.servicos || 0) + (aj.servicos || 0);
+    accE += e; accS += s; accSv += sv;
+    const esperada = m100 && e > 0 ? e / (1 - m100) : null;
+    return { ano: m.ano, mes: m.mes, entradas: e, saidas: s, servicos: sv, accE, accS, accSv, esperada, alerta: esperada != null && s < esperada };
+  });
+  return { linhas, totais: { entradas: accE, saidas: accS, servicos: accSv } };
+}
+// PDF no mesmo visual da Programação de Férias (ver gerarPdfControleInterno em ferias.ts): HTML +
+// Playwright, cabeçalho e cores iguais. Um bloco (header verde-claro + tabela) por empresa.
+function esEscritorioNome(escritorioId: number): string {
+  const e = sqlite.prepare(`SELECT nome FROM escritorios WHERE id = ?`).get(escritorioId) as any;
+  return e?.nome || "Simples Contábeis";
+}
+const ES_PDF_CSS = `
+  body{font-family:'Helvetica Neue',Arial,sans-serif; color:#1c2b24; margin:0; padding:26px 30px;}
+  h1{font-size:17px; margin:0 0 2px;}
+  .sub{font-size:11.5px; color:#5b6b63; margin:0 0 14px;}
+  .resumo{font-size:12px; margin-bottom:16px; color:#3c584a;}
+  .empresa{margin-bottom:16px; break-inside:avoid;}
+  .empresa-topo{background:#eef5f1; border-radius:8px 8px 0 0; padding:7px 10px; display:flex; justify-content:space-between; align-items:baseline;}
+  .empresa-nome{font-weight:700; font-size:12.5px;}
+  .empresa-sub{font-size:10.5px; color:#5b6b63;}
+  table{width:100%; table-layout:fixed; border-collapse:collapse; font-size:10.5px; border:1px solid #e5eae7; border-top:none;}
+  th{text-align:left; background:#f7faf9; padding:5px 8px; border-bottom:1px solid #e5eae7; font-size:9.5px; letter-spacing:.03em; text-transform:uppercase; color:#3c584a;}
+  td{padding:5px 8px; border-bottom:1px solid #eef2f0;}
+  th.num, td.num{text-align:right;}
+  tr.tot td{font-weight:700; border-top:1px solid #cfd8d3; background:#fbfdfc;}
+`;
+function esBlocoEmpresaHtml(empNome: string, subEmpresa: string, meses: any[], aj: any): string {
+  const margem = Number(aj.margem_pct) || 0;
+  const { linhas, totais } = entradasSaidasComAjuste(meses, { entradas: aj.aj_entradas || 0, saidas: aj.aj_saidas || 0, servicos: aj.aj_servicos || 0 }, margem);
+  const alertaCell = (l: any) => l.esperada == null ? "—" : (l.alerta ? `<span style="color:#c0392b; font-weight:600;">R$ ${esFmtBR(l.esperada)}</span>` : `<span style="color:#1f8a52;">✓</span>`);
+  const colA = margem > 0 ? `<col style="width:15%">` : "", thA = margem > 0 ? `<th class="num">Alerta p/ faturamento</th>` : "", tdA = (l: any) => margem > 0 ? `<td class="num">${alertaCell(l)}</td>` : "";
+  const row = (l: any) => `<tr><td>${ES_MES_NOME[l.mes]}</td><td>${l.ano}</td><td class="num">${esFmtBR(l.entradas)}</td><td class="num">${esFmtBR(l.saidas)}</td><td class="num">${esFmtBR(l.servicos)}</td><td class="num">${esFmtBR(l.accE)}</td><td class="num">${esFmtBR(l.accS)}</td><td class="num">${esFmtBR(l.accSv)}</td>${tdA(l)}</tr>`;
+  const legenda = margem > 0 ? `<p style="font-size:9.5px; color:#8a938d; margin:5px 0 0;">Alerta p/ faturamento: a saída do mês deveria ser pelo menos <b>entrada ÷ ${(1 - margem / 100).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</b> (${esFmtBR(margem)}%). Em vermelho = valor que deveria ter faturado; ✓ = atingiu.</p>` : "";
+  return `<div class="empresa">
+      <div class="empresa-topo"><span class="empresa-nome">${escHtmlRelatorio(empNome)}</span><span class="empresa-sub">${escHtmlRelatorio(subEmpresa)}</span></div>
+      <table><colgroup><col style="width:10%"><col style="width:6%"><col style="width:13%"><col style="width:12%"><col style="width:12%"><col style="width:13%"><col style="width:13%"><col style="width:13%">${colA}</colgroup>
+      <thead><tr><th>Mês</th><th>Ano</th><th class="num">Entradas R$</th><th class="num">Saídas R$</th><th class="num">Serviços R$</th><th class="num">Acum. Entradas</th><th class="num">Acum. Saídas</th><th class="num">Acum. Serviços</th>${thA}</tr></thead>
+      <tbody>${linhas.map(row).join("")}<tr class="tot"><td>Totais</td><td></td><td class="num">${esFmtBR(totais.entradas)}</td><td class="num">${esFmtBR(totais.saidas)}</td><td class="num">${esFmtBR(totais.servicos)}</td><td></td><td></td><td></td>${margem > 0 ? "<td></td>" : ""}</tr></tbody></table>
+      ${legenda}
+    </div>`;
+}
+function esSubEmpresa(emp: any, meta: any): string {
+  return [emp.cnpj ? `CNPJ: ${esFmtCnpj(emp.cnpj)}` : "", (meta?.periodo_ini && meta?.periodo_fim) ? `Período: ${meta.periodo_ini} a ${meta.periodo_fim}` : ""].filter(Boolean).join(" · ");
+}
+async function esRenderPdf(html: string): Promise<Buffer> {
+  const { chromium } = require("playwright");
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage();
+    await page.setContent(html, { waitUntil: "networkidle" });
+    return (await page.pdf({ format: "A4", landscape: true, printBackground: true, margin: { top: "12px", bottom: "12px", left: "12px", right: "12px" } })) as Buffer;
+  } finally { await browser.close(); }
+}
+async function entradasSaidasGerarPdf(escritorioId: number, emp: any, meta: any, meses: any[], aj: any): Promise<Buffer> {
+  const html = `<!doctype html><html><head><meta charset="utf-8"><style>${ES_PDF_CSS}</style></head><body>
+    <h1>Relatório de Entradas/Saídas</h1>
+    <p class="sub">${escHtmlRelatorio(esEscritorioNome(escritorioId))} · gerado em ${new Date().toLocaleDateString("pt-BR")}</p>
+    ${esBlocoEmpresaHtml(emp.nome, esSubEmpresa(emp, meta), meses, aj)}
+  </body></html>`;
+  return esRenderPdf(html);
+}
+async function entradasSaidasGerarPdfTodas(escritorioId: number, empresas: { emp: any; meta: any; meses: any[]; aj: any }[]): Promise<Buffer> {
+  const blocos = empresas.map((e) => esBlocoEmpresaHtml(e.emp.nome, esSubEmpresa(e.emp, e.meta), e.meses, e.aj)).join("");
+  const html = `<!doctype html><html><head><meta charset="utf-8"><style>${ES_PDF_CSS}</style></head><body>
+    <h1>Relatório de Entradas/Saídas — Controle interno</h1>
+    <p class="sub">${escHtmlRelatorio(esEscritorioNome(escritorioId))} · gerado em ${new Date().toLocaleDateString("pt-BR")} às ${new Date().toLocaleTimeString("pt-BR")}</p>
+    <p class="resumo">${empresas.length} empresa(s)</p>
+    ${blocos}
+  </body></html>`;
+  return esRenderPdf(html);
+}
+app.get("/api/entradas-saidas/estado", blockCliente, requirePermissao("relatorios", "visualizar"), async (req, res) => {
+  const user = (req as any).user; const esc = user.escritorioId;
+  const temDados = (sqlite.prepare(`SELECT COUNT(*) n FROM entradas_saidas_dados WHERE escritorio_id = ?`).get(esc) as any).n;
+  if (req.query.reler === "1" || !temDados) { try { await entradasSaidasReprocessarExistentes(esc); } catch (e: any) { console.error("[entradas-saidas] reprocessar:", e.message); } }
+  const visiveis = empresasVisiveis(user);
+  const empNome = new Map((sqlite.prepare(`SELECT id, nome FROM empresas WHERE escritorio_id = ? AND ativo = 1`).all(esc) as any[]).map((e) => [e.id, e.nome]));
+  const ajMap = new Map((sqlite.prepare(`SELECT empresa_id, aj_entradas, aj_saidas, aj_servicos, margem_pct FROM entradas_saidas_ajuste WHERE escritorio_id = ?`).all(esc) as any[]).map((a) => [a.empresa_id, a]));
+  const porEmp: Record<number, any> = {};
+  for (const m of sqlite.prepare(`SELECT empresa_id, periodo_ini, periodo_fim, atualizado_em FROM entradas_saidas_meta WHERE escritorio_id = ?`).all(esc) as any[]) {
+    if (!empNome.has(m.empresa_id) || (visiveis && !visiveis.includes(m.empresa_id))) continue;
+    const aj = ajMap.get(m.empresa_id) || {};
+    porEmp[m.empresa_id] = { empresaId: m.empresa_id, nome: empNome.get(m.empresa_id), periodoIni: m.periodo_ini, periodoFim: m.periodo_fim, atualizadoEm: m.atualizado_em, ajuste: { entradas: aj.aj_entradas || 0, saidas: aj.aj_saidas || 0, servicos: aj.aj_servicos || 0, margemPct: aj.margem_pct || 0 }, meses: [] as any[] };
+  }
+  for (const d of sqlite.prepare(`SELECT empresa_id, ano, mes, entradas, saidas, servicos FROM entradas_saidas_dados WHERE escritorio_id = ? ORDER BY ano, mes`).all(esc) as any[])
+    if (porEmp[d.empresa_id]) porEmp[d.empresa_id].meses.push({ ano: d.ano, mes: d.mes, mesNome: ES_MES_NOME[d.mes], entradas: d.entradas, saidas: d.saidas, servicos: d.servicos });
+  const empresas = (Object.values(porEmp) as any[]).filter((e) => e.meses.length).sort((a, b) => String(a.nome).localeCompare(String(b.nome), "pt-BR"));
+  const ce = sqlite.prepare(`SELECT ativo, dia_mes, hora, minuto, ultima_execucao_competencia FROM entradas_saidas_envio_config WHERE id = 1`).get() as any;
+  res.json({ empresas, envio: { ativo: !!ce?.ativo, diaMes: ce?.dia_mes ?? 5, hora: ce?.hora ?? 8, minuto: ce?.minuto ?? 0, ultimaCompetencia: ce?.ultima_execucao_competencia || null } });
+});
+app.post("/api/entradas-saidas/ajuste", blockCliente, requirePermissao("relatorios", "editar"), (req, res) => {
+  const user = (req as any).user; const esc = user.escritorioId;
+  const empresaId = Number(req.body?.empresaId);
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  const num = (v: any) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+  const margem = Math.min(99.99, Math.max(0, num(req.body?.margemPct)));
+  sqlite.prepare(`INSERT INTO entradas_saidas_ajuste (empresa_id, escritorio_id, aj_entradas, aj_saidas, aj_servicos, margem_pct, atualizado_em) VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(empresa_id) DO UPDATE SET aj_entradas = excluded.aj_entradas, aj_saidas = excluded.aj_saidas, aj_servicos = excluded.aj_servicos, margem_pct = excluded.margem_pct, atualizado_em = datetime('now')`)
+    .run(empresaId, esc, num(req.body?.entradas), num(req.body?.saidas), num(req.body?.servicos), margem);
+  res.json({ ok: true });
+});
+app.get("/api/entradas-saidas/:empresaId/pdf", blockCliente, requirePermissao("relatorios", "visualizar"), async (req, res) => {
+  const user = (req as any).user; const esc = user.escritorioId;
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa(user, empresaId)) return res.status(403).send("Sem acesso a esta empresa.");
+  const emp = sqlite.prepare(`SELECT nome, cnpj, endereco, cidade, cep FROM empresas WHERE id = ? AND escritorio_id = ?`).get(empresaId, esc) as any;
+  const meta = sqlite.prepare(`SELECT periodo_ini, periodo_fim FROM entradas_saidas_meta WHERE empresa_id = ?`).get(empresaId) as any;
+  const meses = sqlite.prepare(`SELECT ano, mes, entradas, saidas, servicos FROM entradas_saidas_dados WHERE empresa_id = ? ORDER BY ano, mes`).all(empresaId) as any[];
+  const aj = (sqlite.prepare(`SELECT aj_entradas, aj_saidas, aj_servicos, margem_pct FROM entradas_saidas_ajuste WHERE empresa_id = ?`).get(empresaId) as any) || { aj_entradas: 0, aj_saidas: 0, aj_servicos: 0, margem_pct: 0 };
+  if (!emp || !meses.length) return res.status(404).send("Sem dados de Entradas/Saídas pra esta empresa.");
+  try {
+    const pdf = await entradasSaidasGerarPdf(esc, emp, meta, meses, aj);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="Entradas_Saidas_${empresaId}.pdf"`);
+    res.end(pdf);
+  } catch (e: any) { console.error("[entradas-saidas] gerar pdf:", e.message); res.status(500).send("Falha ao gerar o PDF."); }
+});
+// PDF interno com TODAS as empresas (controle interno, 1 bloco por empresa) — estilo Programação de Férias.
+app.get("/api/entradas-saidas/pdf-todas", blockCliente, requirePermissao("relatorios", "visualizar"), async (req, res) => {
+  const user = (req as any).user; const esc = user.escritorioId;
+  const visiveis = empresasVisiveis(user);
+  const empMap = new Map((sqlite.prepare(`SELECT id, nome, cnpj FROM empresas WHERE escritorio_id = ? AND ativo = 1`).all(esc) as any[]).map((e) => [e.id, e]));
+  const ajMap = new Map((sqlite.prepare(`SELECT empresa_id, aj_entradas, aj_saidas, aj_servicos, margem_pct FROM entradas_saidas_ajuste WHERE escritorio_id = ?`).all(esc) as any[]).map((a) => [a.empresa_id, a]));
+  const lista: any[] = [];
+  for (const m of sqlite.prepare(`SELECT empresa_id, periodo_ini, periodo_fim FROM entradas_saidas_meta WHERE escritorio_id = ?`).all(esc) as any[]) {
+    if (!empMap.has(m.empresa_id) || (visiveis && !visiveis.includes(m.empresa_id))) continue;
+    const meses = sqlite.prepare(`SELECT ano, mes, entradas, saidas, servicos FROM entradas_saidas_dados WHERE empresa_id = ? ORDER BY ano, mes`).all(m.empresa_id) as any[];
+    if (!meses.length) continue;
+    lista.push({ emp: empMap.get(m.empresa_id), meta: m, meses, aj: ajMap.get(m.empresa_id) || { aj_entradas: 0, aj_saidas: 0, aj_servicos: 0 } });
+  }
+  lista.sort((a, b) => String(a.emp.nome).localeCompare(String(b.emp.nome), "pt-BR"));
+  if (!lista.length) return res.status(404).send("Nenhuma empresa com Relatório de Entradas/Saídas.");
+  try {
+    const pdf = await entradasSaidasGerarPdfTodas(esc, lista);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="Entradas_Saidas_Controle_Interno.pdf"`);
+    res.end(pdf);
+  } catch (e: any) { console.error("[entradas-saidas] pdf todas:", e.message); res.status(500).send("Falha ao gerar o PDF."); }
+});
+// Diagnóstico: mostra o TEXTO real (pdf-parse) dos relatórios importados + quantas linhas de mês o
+// parser reconhece. Serve pra ajustar o regex quando o layout extraído difere do esperado.
+app.get("/api/entradas-saidas/diag", blockCliente, requireAdmin, async (req, res) => {
+  const esc = (req as any).user.escritorioId;
+  const docs = sqlite.prepare(`SELECT d.id, d.file_path as filePath, d.file_name as fileName, a.empresa_id as empresaId FROM envio_documentos d JOIN envio_periodos p ON p.id = d.periodo_id JOIN envio_atribuicoes a ON a.id = p.atribuicao_id JOIN envio_templates t ON t.id = a.template_id WHERE t.escritorio_id = ? AND t.nome = ? ORDER BY d.id DESC`).all(esc, DOM_REL_TEMPLATE_NOME.entradas_saidas) as any[];
+  const out: any = { templateNome: DOM_REL_TEMPLATE_NOME.entradas_saidas, nDocs: docs.length, amostras: [] as any[] };
+  for (const d of docs.slice(0, 2)) {
+    const existe = !!(d.filePath && fs.existsSync(d.filePath));
+    let texto = "", linhasMatch = 0, erro: string | null = null;
+    if (existe) { try { texto = await obterTextoDoPdf(fs.readFileSync(d.filePath)); linhasMatch = entradasSaidasParse(texto).length; } catch (e: any) { erro = e.message; } }
+    out.amostras.push({ id: d.id, empresaId: d.empresaId, fileName: d.fileName, existe, linhasMatch, erro, texto: texto.slice(0, 1800) });
+  }
+  res.json(out);
+});
+// Envia o PDF (ajustado) de Entradas/Saídas pros contatos da empresa (e-mail + WhatsApp). Mesma mecânica
+// do envio de Programação de Férias (ver enviarRelatorioEmpresa em ferias.ts).
+async function entradasSaidasEnviarEmpresa(escritorioId: number, empresaId: number, canal: any): Promise<{ ok: boolean; erro?: string }> {
+  const emp = sqlite.prepare(`SELECT id, nome, cnpj, endereco, cidade, cep FROM empresas WHERE id = ? AND escritorio_id = ?`).get(empresaId, escritorioId) as any;
+  const meses = sqlite.prepare(`SELECT ano, mes, entradas, saidas, servicos FROM entradas_saidas_dados WHERE empresa_id = ? ORDER BY ano, mes`).all(empresaId) as any[];
+  if (!emp || !meses.length) return { ok: false, erro: "Sem dados de Entradas/Saídas pra esta empresa." };
+  const meta = sqlite.prepare(`SELECT periodo_ini, periodo_fim FROM entradas_saidas_meta WHERE empresa_id = ?`).get(empresaId) as any;
+  const aj = (sqlite.prepare(`SELECT aj_entradas, aj_saidas, aj_servicos, margem_pct FROM entradas_saidas_ajuste WHERE empresa_id = ?`).get(empresaId) as any) || { aj_entradas: 0, aj_saidas: 0, aj_servicos: 0, margem_pct: 0 };
+  const pdf = await entradasSaidasGerarPdf(escritorioId, emp, meta, meses, aj);
+  const nomeArquivo = `Relatorio de Entradas-Saidas - ${emp.nome}.pdf`.replace(/[\\/:*?"<>|]/g, "");
+  const emails = sqlite.prepare(`SELECT email FROM empresa_contatos WHERE empresa_id = ? AND receber_emails = 1 AND email IS NOT NULL AND email != ''`).all(empresaId) as any[];
+  const wpps = sqlite.prepare(`SELECT telefone FROM empresa_contatos WHERE empresa_id = ? AND receber_whatsapp = 1 AND telefone IS NOT NULL AND telefone != ''`).all(empresaId) as any[];
+  if (!emails.length && !wpps.length) return { ok: false, erro: "Empresa sem contato de e-mail nem WhatsApp cadastrado." };
+  let algumOk = false; const erros: string[] = [];
+  if (emails.length) {
+    try {
+      await enviarEmail(escritorioId, { to: emails.map((e) => e.email), subject: `${emp.nome} — Relatório de Entradas/Saídas`, text: `Olá!\n\nSegue em anexo o Relatório de Entradas/Saídas.\n\nQualquer dúvida, estamos à disposição.`, attachments: [{ filename: nomeArquivo, content: pdf }] });
+      algumOk = true;
+    } catch (e: any) { erros.push(e.message); }
+  }
+  for (const c of wpps) {
+    try { await enviarDocumentoWhatsapp(canal, escritorioId, c.telefone, emp.nome, "Relatório de Entradas/Saídas", { nome: nomeArquivo, tipo: "application/pdf", buffer: pdf }, { tabela: "entradas_saidas_envio_log", id: empresaId } as any); algumOk = true; }
+    catch (e: any) { erros.push(e.message); }
+  }
+  return { ok: algumOk, erro: algumOk ? undefined : erros[0] };
+}
+app.post("/api/entradas-saidas/envio-config", blockCliente, requirePermissao("relatorios", "editar"), (req, res) => {
+  const b = req.body || {};
+  const diaMes = Math.min(28, Math.max(1, Number(b.diaMes) || 5));
+  const hora = Math.min(23, Math.max(0, Number(b.hora) || 0));
+  const minuto = Math.min(59, Math.max(0, Number(b.minuto) || 0));
+  sqlite.prepare(`UPDATE entradas_saidas_envio_config SET ativo = ?, dia_mes = ?, hora = ?, minuto = ?, updated_at = datetime('now') WHERE id = 1`).run(b.ativo ? 1 : 0, diaMes, hora, minuto);
+  res.json({ ok: true });
+});
+app.post("/api/entradas-saidas/:empresaId/enviar-agora", blockCliente, requirePermissao("relatorios", "editar"), async (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa(user, empresaId)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  try {
+    const r = await entradasSaidasEnviarEmpresa(user.escritorioId, empresaId, String(req.body?.canal) === "meta" ? "meta" : "conversa");
+    sqlite.prepare(`INSERT INTO entradas_saidas_envio_log (empresa_id, competencia, sucesso, mensagem) VALUES (?, ?, ?, ?)`).run(empresaId, new Date().toISOString().slice(0, 7), r.ok ? 1 : 0, r.erro || null);
+    if (!r.ok) return res.status(400).json({ error: r.erro || "Não consegui enviar." });
+    res.json({ ok: true });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+// Envio automático mensal (trava por competência, sobrevive a reinício — mesmo padrão do Férias): no dia/
+// hora escolhido, manda o PDF de Entradas/Saídas pra cada empresa que tem relatório (escritório principal).
+setInterval(async () => {
+  const cfg = sqlite.prepare(`SELECT * FROM entradas_saidas_envio_config WHERE id = 1`).get() as any;
+  if (!cfg?.ativo) return;
+  const agora = new Date(Date.now() - 3 * 3600 * 1000);
+  const competencia = agora.toISOString().slice(0, 7);
+  if (cfg.ultima_execucao_competencia === competencia) return;
+  if (agora.getUTCDate() !== cfg.dia_mes || agora.getUTCHours() * 60 + agora.getUTCMinutes() < cfg.hora * 60 + cfg.minuto) return;
+  sqlite.prepare(`UPDATE entradas_saidas_envio_config SET ultima_execucao_competencia = ? WHERE id = 1`).run(competencia);
+  const empresas = sqlite.prepare(`SELECT DISTINCT e.id FROM empresas e JOIN entradas_saidas_meta m ON m.empresa_id = e.id WHERE e.ativo = 1 AND e.escritorio_id = 1`).all() as any[];
+  for (const empresa of empresas) {
+    try {
+      const r = await entradasSaidasEnviarEmpresa(1, empresa.id, "conversa");
+      sqlite.prepare(`INSERT INTO entradas_saidas_envio_log (empresa_id, competencia, sucesso, mensagem) VALUES (?, ?, ?, ?)`).run(empresa.id, competencia, r.ok ? 1 : 0, r.erro || null);
+    } catch (e: any) {
+      sqlite.prepare(`INSERT INTO entradas_saidas_envio_log (empresa_id, competencia, sucesso, mensagem) VALUES (?, ?, 0, ?)`).run(empresa.id, competencia, String(e.message).slice(0, 300));
+    }
+    await new Promise((r) => setTimeout(r, 300));
+  }
+}, 60_000).unref();
 registerFerias(app, {
   sqlite,
   blockCliente,
@@ -8255,6 +10400,23 @@ registerFerias(app, {
   enviarEmail,
   enviarWhatsapp: enviarDocumentoWhatsapp as any,
   reprocessarExistentes: feriasReprocessarExistentes,
+});
+// Módulo Certificados: assinatura digital de PDF com o certificado A1 do escritório + chave de acesso
+// por colaborador (trilha de auditoria — ver aviso jurídico no topo de certificados.ts).
+registerCertificados(app, {
+  sqlite,
+  blockCliente,
+  requireAdmin,
+  requirePermissao,
+  verifyPassword,
+  cifrarTexto: nfse.cifrarTexto,
+  decifrarTexto: nfse.decifrarTexto,
+  lerCertificadoPfx: nfse.lerCertificadoPfx,
+  salvarCertificadoCifrado: nfse.salvarCertificadoCifrado,
+  lerCertificadoCifradoDoDisco: nfse.lerCertificadoCifradoDoDisco,
+  excluirCertificadoDoDisco: nfse.excluirCertificadoDoDisco,
+  uploadsDir: UPLOADS_DIR,
+  podeAcessarEmpresa,
 });
 // Módulo E-mail (webmail): reaproveita o e-mail + senha de app de Configurações › E-mail corporativo.
 registerWebmail(app, {
@@ -8714,10 +10876,43 @@ app.get("/api/integracontador/config", blockCliente, requirePermissao("integraco
     titularCertificado: c.titular_certificado || null,
     validadeCertificadoAte: c.validade_certificado_ate || null,
     ativo: !!c.ativo,
+    envioAutomatico: c.envio_automatico === undefined ? true : !!c.envio_automatico,
     ultimoErro: c.ultimo_erro || null,
+    agenda: getAgendaBusca((req as any).user.escritorioId),
   });
 });
-app.put("/api/integracontador/config", blockCliente, requirePermissao("integracontador", "editar"), upload.single("certificado"), (req, res) => {
+// Agenda da busca automática (dias da semana + horários de Brasília), salva pela tela do Integra Contador.
+app.put("/api/integracontador/agenda", blockCliente, requirePermissao("integracontador", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const { dias, horas } = req.body || {};
+  if (!Array.isArray(dias) || !dias.every((d: any) => Number.isInteger(d) && d >= 0 && d <= 6)) return res.status(400).json({ error: "Dias inválidos." });
+  if (!Array.isArray(horas) || !horas.every((h: any) => typeof h === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(h))) return res.status(400).json({ error: "Horário inválido. Use HH:MM." });
+  const agendaLimpa = { dias: [...new Set<number>(dias)].sort(), horas: [...new Set<string>(horas)].sort() };
+  sqlite.prepare(`INSERT OR IGNORE INTO integracontador_config (escritorio_id) VALUES (?)`).run(user.escritorioId);
+  sqlite.prepare(`UPDATE integracontador_config SET agenda_busca_json = ? WHERE escritorio_id = ?`).run(JSON.stringify(agendaLimpa), user.escritorioId);
+  // Horários de hoje que já passaram não viram busca só porque a agenda foi salva agora.
+  const { data, hora, diaSemana } = agoraBrasiliaTextos();
+  if (agendaLimpa.dias.includes(diaSemana)) {
+    for (const h of agendaLimpa.horas.filter((x) => x <= hora)) {
+      sqlite.prepare(`INSERT OR IGNORE INTO integracontador_busca_slots (slot, concluida_em) VALUES (?, datetime('now'))`).run(`${data} ${h}`);
+    }
+  }
+  res.json({ ok: true, agenda: agendaLimpa });
+});
+// Freio do envio automático de DAS/DARF DCTF-Web/Guia FGTS/Parcelamento (ver envioEnviarDocumentoAutomatico)
+// — separado da agenda da busca: desligado, a busca continua achando e anexando a guia normalmente,
+// só não dispara sozinha pro cliente (fica manual, pela tela, até religar aqui).
+app.put("/api/integracontador/envio-automatico", blockCliente, requirePermissao("integracontador", "editar"), (req, res) => {
+  const user = (req as any).user;
+  sqlite.prepare(`INSERT OR IGNORE INTO integracontador_config (escritorio_id) VALUES (?)`).run(user.escritorioId);
+  sqlite.prepare(`UPDATE integracontador_config SET envio_automatico = ? WHERE escritorio_id = ?`).run(req.body?.ativo ? 1 : 0, user.escritorioId);
+  res.json({ ok: true });
+});
+// Achado em auditoria (2026-10-12): só exigia "integracontador:editar" — qualquer Colaborador com essa
+// permissão (ex.: pra ligar/desligar a agenda) também conseguia TROCAR o certificado e-CNPJ/consumer
+// key-secret usados pra toda busca na Receita Federal do escritório. Mesmo padrão do certificado de
+// NFS-e: fica Administrador só.
+app.put("/api/integracontador/config", blockCliente, requireAdmin, upload.single("certificado"), (req, res) => {
   const escritorioId = (req as any).user.escritorioId;
   const b = req.body || {};
   const atual = getIntegraContadorConfig(escritorioId);
@@ -8825,7 +11020,7 @@ function checklistObterOuCriarAtribuicaoModelo(
   let template = sqlite.prepare(`SELECT id FROM checklist_templates WHERE escritorio_id = ? AND nome = ?`).get(escritorioId, nomeTemplate) as any;
   if (!template) {
     const info = sqlite
-      .prepare(`INSERT INTO checklist_templates (nome, descricao, periodicidade, itens_json, notificar_email, escritorio_id) VALUES (?, ?, ?, ?, 0, ?)`)
+      .prepare(`INSERT INTO checklist_templates (nome, descricao, periodicidade, itens_json, notificar_email, escritorio_id, setor) VALUES (?, ?, ?, ?, 0, ?, 'contabilidade')`)
       .run(nomeTemplate, descricaoTemplate, periodicidade, JSON.stringify(itens), escritorioId);
     template = { id: Number(info.lastInsertRowid) };
   }
@@ -8896,14 +11091,31 @@ function integraContadorObterOuCriarAtribuicaoModelo(
       .run(nomeTemplate, descricaoTemplate, periodicidade, visivelCliente ? 1 : 0, escritorioId);
     template = { id: Number(info.lastInsertRowid) };
   }
-  let atribuicao = sqlite.prepare(`SELECT id FROM envio_atribuicoes WHERE template_id = ? AND empresa_id = ?`).get(template.id, empresaId) as any;
+  return envioAtribuicaoObterOuCriar(template.id, empresaId);
+}
+// Acha (ou cria/reativa) a atribuição de um modelo já existente a uma empresa — metade compartilhada de
+// integraContadorObterOuCriarAtribuicaoModelo (acima), reaproveitada também pela ponte do central-envio
+// (ver registerCentralEnvio) com um template já resolvido.
+function envioAtribuicaoObterOuCriar(templateId: number, empresaId: number): number {
+  let atribuicao = sqlite.prepare(`SELECT id FROM envio_atribuicoes WHERE template_id = ? AND empresa_id = ?`).get(templateId, empresaId) as any;
   if (!atribuicao) {
-    const info = sqlite.prepare(`INSERT INTO envio_atribuicoes (template_id, empresa_id, ativo) VALUES (?, ?, 1)`).run(template.id, empresaId);
+    const info = sqlite.prepare(`INSERT INTO envio_atribuicoes (template_id, empresa_id, ativo) VALUES (?, ?, 1)`).run(templateId, empresaId);
     atribuicao = { id: Number(info.lastInsertRowid) };
   } else {
     sqlite.prepare(`UPDATE envio_atribuicoes SET ativo = 1 WHERE id = ?`).run(atribuicao.id);
   }
   return atribuicao.id;
+}
+// Acha (pelo nome) ou cria um modelo RASCUNHO pra ponte do central-envio (DP/RH e CRM) — nasce
+// pendente_revisao=1, visivel_cliente=0 (fica só interno até o escritório abrir e confirmar em
+// Envio de Documentos > Modelos, salvando o modelo pelo menos uma vez).
+function envioObterOuCriarTemplateDraft(escritorioId: number, nome: string): number {
+  const existente = sqlite.prepare(`SELECT id FROM envio_templates WHERE escritorio_id = ? AND nome = ?`).get(escritorioId, nome) as any;
+  if (existente) return existente.id;
+  const info = sqlite
+    .prepare(`INSERT INTO envio_templates (nome, descricao, periodicidade, accept_json, detectar_vencimento, considera_mes_atual, visivel_cliente, pendente_revisao, escritorio_id) VALUES (?, ?, 'mensal', '["pdf"]', 1, 1, 0, 1, ?)`)
+    .run(nome, "Modelo criado automaticamente a partir do leitor de pasta — revise em Envio de Documentos > Modelos.", escritorioId);
+  return Number(info.lastInsertRowid);
 }
 function integraContadorFormatarVencimento(vencAAAAMMDD: string | null): string | null {
   if (!vencAAAAMMDD || vencAAAAMMDD.length !== 8) return null;
@@ -8998,6 +11210,11 @@ async function envioEnviarDocumentoAutomatico(opts: {
   descricaoWhatsapp: string;
 }): Promise<void> {
   const { escritorioId, empresaId, docId, fileName, pdf, assunto, corpoEmail, descricaoWhatsapp } = opts;
+  // Freio do Integra Contador (Configurações › Integra Contador): desligado, a guia já foi achada e
+  // anexada em Envio de Documentos (isso acontece ANTES desta função ser chamada) — só o disparo
+  // automático pro cliente para aqui. Envio manual pela tela continua disponível normalmente.
+  const cfgIcEnvio = sqlite.prepare(`SELECT envio_automatico FROM integracontador_config WHERE escritorio_id = ?`).get(escritorioId) as any;
+  if (cfgIcEnvio && cfgIcEnvio.envio_automatico === 0) return;
   if (escritorioTemModulo(escritorioId, "envio_email_automatico")) {
     const contatos = sqlite.prepare(`SELECT email FROM empresa_contatos WHERE empresa_id = ? AND receber_emails = 1`).all(empresaId) as any[];
     if (contatos.length) {
@@ -9457,6 +11674,11 @@ app.put("/api/integracontador/empresas/:id", blockCliente, requirePermissao("int
   }
   res.json({ ok: true, buscaIniciada });
 });
+// Achado em auditoria (2026-10-12): "Já em andamento" (abaixo) só trava busca CONCORRENTE — nada
+// impedia clicar "Buscar agora" repetidas vezes em sequência (deixando cada uma terminar), e cada
+// clique é uma chamada PAGA ao SERPRO. Cooldown curto por empresa, só pra evitar clique duplo/spam —
+// não é um limite diário rígido, dá pra buscar de novo depois de 2 minutos se for preciso de verdade.
+const integraContadorUltimaBuscaManual = new Map<number, number>();
 app.post("/api/integracontador/empresas/:id/buscar", blockCliente, requirePermissao("integracontador", "postar"), async (req, res) => {
   const user = (req as any).user;
   const empId = Number(req.params.id);
@@ -9466,6 +11688,11 @@ app.post("/api/integracontador/empresas/:id/buscar", blockCliente, requirePermis
   const empConfig = getIntegraContadorEmpresaConfig(empId);
   if (!empConfig.ativo) return res.status(400).json({ error: "Habilite esta empresa antes de buscar." });
   if (integraContadorBuscasEmAndamento.has(empId)) return res.status(409).json({ error: "Já existe uma busca em andamento pra esta empresa." });
+  const ultimaManual = integraContadorUltimaBuscaManual.get(empId);
+  if (ultimaManual && Date.now() - ultimaManual < 2 * 60_000) {
+    return res.status(429).json({ error: "Essa empresa já foi buscada há pouco — espere 2 minutos antes de buscar de novo (cada busca é uma chamada paga)." });
+  }
+  integraContadorUltimaBuscaManual.set(empId, Date.now());
   integraContadorBuscasEmAndamento.add(empId);
   const empresa = sqlite.prepare(`SELECT cnpj FROM empresas WHERE id = ?`).get(empId) as any;
   // Mesma lógica do PUT acima: dispara e não espera, pra não bater no timeout do proxy numa busca
@@ -9671,17 +11898,25 @@ app.get("/api/integracontador/documentos/:id/declaracao-pdf", blockCliente, asyn
 // menos execuções = mais barato — troca-se dado um pouco menos fresco por menos custo. Roda pra
 // toda empresa ativa, uma de cada vez, com uma pausa entre elas.
 const INTEGRACONTADOR_AUTO_PAUSA_ENTRE_EMPRESAS_MS = 5000;
-async function integraContadorExecutarBuscaAutomatica() {
+async function integraContadorExecutarBuscaAutomatica(desde?: string) {
+  // Achado em auditoria (2026-10-12): o gatilho (dia/hora) sempre vinha só da agenda do escritório 1
+  // (getAgendaBusca(1), ver integraContadorRodar) — mas esta função rodava pra empresa de QUALQUER
+  // escritório com Integra Contador ativo, não só o 1. Ou seja: se um dia houver um 2º escritório
+  // usando este módulo, a agenda DELE nunca seria lida de verdade, e a busca (paga) das empresas dele
+  // ficaria decidida pelo horário configurado pelo escritório 1. Trava consistente com o gatilho: só
+  // processa o escritório cuja agenda é realmente consultada.
   const configs = sqlite
     .prepare(
-      `SELECT c.empresa_id as empresaId, c.optante_simples_nacional as optante, c.busca_dctfweb as buscaDctfweb, e.cnpj as cnpj
+      `SELECT c.empresa_id as empresaId, c.optante_simples_nacional as optante, c.busca_dctfweb as buscaDctfweb, e.cnpj as cnpj, c.ultima_busca_em as ultimaBusca
        FROM integracontador_empresa_config c
        JOIN empresas e ON e.id = c.empresa_id
        JOIN integracontador_config ic ON ic.escritorio_id = c.escritorio_id
-       WHERE c.ativo = 1 AND ic.ativo = 1 AND e.ativo = 1`
+       WHERE c.ativo = 1 AND ic.ativo = 1 AND e.ativo = 1 AND c.escritorio_id = 1`
     )
     .all() as any[];
   for (const cfg of configs) {
+    // Já buscada nesta mesma rodada (antes de um reinício do servidor): não repete.
+    if (desde && cfg.ultimaBusca && cfg.ultimaBusca >= desde) continue;
     if (integraContadorBuscasEmAndamento.has(cfg.empresaId)) continue;
     integraContadorBuscasEmAndamento.add(cfg.empresaId);
     try {
@@ -9695,19 +11930,98 @@ async function integraContadorExecutarBuscaAutomatica() {
     await new Promise((resolve) => setTimeout(resolve, INTEGRACONTADOR_AUTO_PAUSA_ENTRE_EMPRESAS_MS));
   }
 }
-// Confere a cada minuto se bateu 8h00 ou 12h00 (só no minuto exato, pra não disparar de novo a cada
-// tick dentro da mesma hora) — mesmo padrão de setInterval de 60 em 60s já usado na rotina do NFS-e.
-// Achado ao vivo: com "só no minuto exato", um deploy/reinício às 12:00 fazia a busca do dia inteira ser pulada
-// (a última busca de uma empresa ficou em 22/09). Agora registra o dia da última execução no banco e roda assim que
-// passar das 12h de um dia que ainda não rodou — inclusive se o servidor voltar depois do meio-dia.
-sqlite.exec(`CREATE TABLE IF NOT EXISTS integracontador_busca_automatica_dias (dia TEXT PRIMARY KEY, iniciada_em TEXT NOT NULL DEFAULT (datetime('now')))`);
+// Agenda da busca automática do Integra Contador: dias da semana e horários (Brasília), definidos na
+// tela. Padrão = todos os dias às 12h (como era). Cada dia+horário vira uma "marca" no banco, então
+// roda uma só vez mesmo se o servidor reiniciar no meio do dia.
+const AGENDA_BUSCA_PADRAO = { dias: [0, 1, 2, 3, 4, 5, 6], horas: ["12:00"] };
+function getAgendaBusca(escritorioId: number): { dias: number[]; horas: string[] } {
+  const row = sqlite.prepare(`SELECT agenda_busca_json FROM integracontador_config WHERE escritorio_id = ?`).get(escritorioId) as any;
+  if (!row?.agenda_busca_json) return AGENDA_BUSCA_PADRAO;
+  try {
+    const a = JSON.parse(row.agenda_busca_json);
+    return { dias: Array.isArray(a.dias) ? a.dias : [], horas: Array.isArray(a.horas) ? a.horas : [] };
+  } catch {
+    return AGENDA_BUSCA_PADRAO;
+  }
+}
+sqlite.exec(`CREATE TABLE IF NOT EXISTS integracontador_busca_slots (slot TEXT PRIMARY KEY, iniciada_em TEXT NOT NULL DEFAULT (datetime('now')), concluida_em TEXT)`);
+{
+  const colsSlots = sqlite.prepare(`PRAGMA table_info(integracontador_busca_slots)`).all() as any[];
+  if (!colsSlots.some((c) => c.name === "concluida_em")) sqlite.exec(`ALTER TABLE integracontador_busca_slots ADD COLUMN concluida_em TEXT`);
+}
+{
+  const colsIc = sqlite.prepare(`PRAGMA table_info(integracontador_config)`).all() as any[];
+  if (!colsIc.some((c) => c.name === "agenda_busca_json")) sqlite.exec(`ALTER TABLE integracontador_config ADD COLUMN agenda_busca_json TEXT`);
+  // Freio separado do "Automático × Manual" do central-envio (pastas do Drive) — esse aqui é só pro
+  // envio automático de DAS/DARF DCTF-Web/Guia FGTS/Parcelamento do DAS (tudo que passa por
+  // envioEnviarDocumentoAutomatico). A busca diária e o anexo em Envio de Documentos continuam
+  // normais mesmo desligado — só o disparo automático pro cliente (e-mail/WhatsApp) para. Achado ao
+  // vivo (2026-10-09): o freio do central-envio não cobria essa rotina, um DARF DCTF-Web saiu
+  // sozinho achando que estava tudo pausado. Nasce DESLIGADO agora, por pedido explícito — fica
+  // manual até o usuário religar na tela do Integra Contador.
+  if (!colsIc.some((c) => c.name === "envio_automatico")) {
+    sqlite.exec(`ALTER TABLE integracontador_config ADD COLUMN envio_automatico INTEGER NOT NULL DEFAULT 1`);
+    sqlite.exec(`UPDATE integracontador_config SET envio_automatico = 0`);
+  }
+}
+function agoraBrasiliaTextos() {
+  const a = agoraBrasilia();
+  const data = `${a.ano}-${String(a.mes).padStart(2, "0")}-${String(a.dia).padStart(2, "0")}`;
+  const hora = `${String(a.hora).padStart(2, "0")}:${String(a.minuto).padStart(2, "0")}`;
+  const diaSemana = new Date(Date.UTC(a.ano, a.mes - 1, a.dia)).getUTCDay();
+  return { data, hora, diaSemana };
+}
+let integraContadorRodadaEmCurso: string | null = null;
+async function integraContadorRodar(slot: string, iniciadaEm: string) {
+  integraContadorRodadaEmCurso = slot;
+  try {
+    console.log(`[Integra Contador] busca automática ${slot} em andamento`);
+    await integraContadorExecutarBuscaAutomatica(iniciadaEm);
+    sqlite.prepare(`UPDATE integracontador_busca_slots SET concluida_em = datetime('now') WHERE slot = ?`).run(slot);
+    console.log(`[Integra Contador] busca automática ${slot} concluída`);
+  } catch (e: any) {
+    console.error("Erro na rotina automática do Integra Contador:", e.message);
+  } finally {
+    integraContadorRodadaEmCurso = null;
+  }
+}
+setInterval(() => {
+  if (integraContadorRodadaEmCurso) return;
+  // 1) rodada iniciada e não concluída (servidor reiniciou no meio): retoma
+  const pendente = sqlite.prepare(`SELECT slot, iniciada_em FROM integracontador_busca_slots WHERE concluida_em IS NULL ORDER BY slot LIMIT 1`).get() as any;
+  if (pendente) {
+    integraContadorRodar(pendente.slot, pendente.iniciada_em);
+    return;
+  }
+  // 2) horário devido de hoje ainda não rodado
+  const { data, hora, diaSemana } = agoraBrasiliaTextos();
+  const agenda = getAgendaBusca(1);
+  if (!agenda.dias.includes(diaSemana)) return;
+  const devidos = agenda.horas.filter((h) => h <= hora).sort();
+  for (const h of devidos) {
+    const slot = `${data} ${h}`;
+    const jaExiste = sqlite.prepare(`SELECT 1 FROM integracontador_busca_slots WHERE slot = ?`).get(slot);
+    if (jaExiste) continue;
+    sqlite.prepare(`INSERT INTO integracontador_busca_slots (slot) VALUES (?)`).run(slot);
+    const iniciadaEm = (sqlite.prepare(`SELECT iniciada_em FROM integracontador_busca_slots WHERE slot = ?`).get(slot) as any).iniciada_em;
+    integraContadorRodar(slot, iniciadaEm);
+    return; // uma rodada por vez
+  }
+}, 60_000);
+// Busca agendada de uma vez (ex.: "amanhã às 08h, todas as empresas"). Cada linha roda uma única vez,
+// quando o horário de Brasília chega. Criada direto no banco (ou por quem administra o servidor).
+sqlite.exec(`CREATE TABLE IF NOT EXISTS integracontador_busca_agendada (id INTEGER PRIMARY KEY AUTOINCREMENT, quando TEXT NOT NULL, executada_em TEXT)`);
 setInterval(() => {
   const agora = agoraBrasilia();
-  if (agora.hora < 12) return;
-  const dia = `${agora.ano}-${String(agora.mes).padStart(2, "0")}-${String(agora.dia).padStart(2, "0")}`;
-  const marcou = sqlite.prepare(`INSERT OR IGNORE INTO integracontador_busca_automatica_dias (dia) VALUES (?)`).run(dia);
-  if (!marcou.changes) return; // já rodou (ou está rodando) hoje
-  integraContadorExecutarBuscaAutomatica().catch((e) => console.error("Erro na rotina automática do Integra Contador:", e.message));
+  const agoraTxt = `${agora.ano}-${String(agora.mes).padStart(2, "0")}-${String(agora.dia).padStart(2, "0")} ${String(agora.hora).padStart(2, "0")}:${String(agora.minuto).padStart(2, "0")}`;
+  const pendente = sqlite
+    .prepare(`SELECT id FROM integracontador_busca_agendada WHERE executada_em IS NULL AND quando <= ? ORDER BY quando LIMIT 1`)
+    .get(agoraTxt) as any;
+  if (!pendente) return;
+  // Marca antes de rodar: se o servidor reiniciar no meio, não repete a busca inteira sem querer.
+  sqlite.prepare(`UPDATE integracontador_busca_agendada SET executada_em = datetime('now') WHERE id = ?`).run(pendente.id);
+  console.log(`[Integra Contador] busca agendada #${pendente.id} iniciada`);
+  integraContadorExecutarBuscaAutomatica().catch((e) => console.error("Erro na busca agendada do Integra Contador:", e.message));
 }, 60_000);
 
 // Modelos de serviço reutilizáveis — configurados uma vez (código de tributação, ISSQN, retenções)
@@ -9967,7 +12281,8 @@ app.get("/api/nfse/empresas", blockCliente, requirePermissao("nfse", "visualizar
        WHERE e.ativo = 1 ORDER BY e.nome`
     )
     .all() as any[];
-  res.json({ items: rows.map((r) => ({ ...r, habilitado: !!r.habilitado, opcaoSimplesNacional: !!r.opcaoSimplesNacional, temCertificadoProprio: !!r.temCertificadoProprio })) });
+  const visiveisNfse = new Set(empresasVisiveis((_req as any).user));
+  res.json({ items: rows.filter((r) => visiveisNfse.has(r.id)).map((r) => ({ ...r, habilitado: !!r.habilitado, opcaoSimplesNacional: !!r.opcaoSimplesNacional, temCertificadoProprio: !!r.temCertificadoProprio })) });
 });
 // Código do município (IBGE) — o próprio leiaute oficial da DPS referencia "Tabela do IBGE" pra
 // esse campo, então é a fonte certa (mesma origem que o Sistema Nacional NFS-e usa). Cache em
@@ -9986,6 +12301,13 @@ async function nfseMunicipiosDaUf(uf: string): Promise<{ id: number; nome: strin
     nfseCacheMunicipiosPorUf.set(uf, municipios);
   }
   return municipios;
+}
+// Municípios do Brasil inteiro (todas as UFs), cada um com a UF — alimenta a busca única de cidade:
+// quem escolhe a cidade já recebe a UF e o código do município, sem escolher a UF antes.
+const NFSE_UFS_BR = ["AC","AL","AP","AM","BA","CE","DF","ES","GO","MA","MT","MS","MG","PA","PB","PR","PE","PI","RJ","RN","RS","RO","RR","SC","SP","SE","TO"];
+async function nfseMunicipiosBrasil(): Promise<{ id: string; label: string; uf: string }[]> {
+  const porUf = await Promise.all(NFSE_UFS_BR.map(async (uf) => (await nfseMunicipiosDaUf(uf)).map((m) => ({ id: String(m.id), label: m.nome, uf }))));
+  return porUf.flat().sort((a, b) => a.label.localeCompare(b.label, "pt-BR"));
 }
 // Busca de CEP (BrasilAPI) já resolvendo o código IBGE do município junto — usado pra
 // pré-preencher o endereço do tomador na emissão de NFS-e mesmo quando ele é pessoa física (CPF
@@ -10028,6 +12350,13 @@ app.get("/api/nfse/municipios-ibge", blockCliente, requirePermissaoOr("empresas"
   try {
     const municipios = await nfseMunicipiosDaUf(uf);
     res.json({ items: municipios.map((m) => ({ id: String(m.id), label: m.nome })) });
+  } catch (e: any) {
+    res.status(502).json({ error: `Não consegui consultar a API do IBGE: ${e.message}` });
+  }
+});
+app.get("/api/nfse/municipios-ibge-todos", blockCliente, requirePermissaoOr("empresas", "nfse", "visualizar"), async (_req, res) => {
+  try {
+    res.json({ items: await nfseMunicipiosBrasil() });
   } catch (e: any) {
     res.status(502).json({ error: `Não consegui consultar a API do IBGE: ${e.message}` });
   }
@@ -10422,6 +12751,114 @@ app.get("/api/nfse/emissoes/baixar-lote", blockCliente, requirePermissao("nfse",
   }
   await zip.finalize();
 });
+// Resumo em PDF das notas selecionadas (não o DANFSe individual) — agrupado por modelo de serviço,
+// com subtotal por grupo e total geral no fim, pra saber rápido quanto foi emitido no período sem
+// abrir nota por nota. Mesmo motor de PDF (Chromium via contratos.gerarPdfDeHtml) do relatório de
+// Retenções de Impostos.
+app.get("/api/nfse/emissoes/baixar-lote/resumo", blockCliente, requirePermissao("nfse", "visualizar"), async (req, res) => {
+  const user = (req as any).user;
+  const ids = String(req.query.ids || "")
+    .split(",")
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isInteger(n) && n > 0);
+  if (!ids.length) return res.status(400).json({ error: "Selecione ao menos uma emissão." });
+  const placeholders = ids.map(() => "?").join(",");
+  const rows = sqlite
+    .prepare(
+      `SELECT n.id, n.empresa_id, e.nome as empresa_nome, n.modelo_nome, n.tomador_nome, n.numero_nfse, n.descricao_servico, n.valor_servico, n.status, n.criado_em
+       FROM nfse_emissoes n JOIN empresas e ON e.id = n.empresa_id WHERE n.id IN (${placeholders}) ORDER BY n.criado_em ASC, n.id ASC`
+    )
+    .all(...ids) as any[];
+  const visiveis = empresasVisiveis(user);
+  const permitidas = rows.filter((r) => podeAcessarEmpresa(user, r.empresa_id) && (visiveis === null || visiveis.includes(r.empresa_id)));
+  if (!permitidas.length) return res.status(403).json({ error: "Sem acesso às emissões selecionadas." });
+  const STATUS_LABEL_PDF: Record<string, string> = { emitida: "Emitida", pendente: "Pendente", rejeitada: "Rejeitada", erro: "Erro", rascunho: "Rascunho", cancelada: "Cancelada" };
+  // Canceladas/rejeitadas não valem nota fiscal de verdade — ficam num quadro à parte, sem entrar
+  // nas somas, pra não inflar o total do que realmente foi faturado.
+  const validas = permitidas.filter((r) => r.status === "emitida");
+  const outras = permitidas.filter((r) => r.status !== "emitida");
+  const porModelo = new Map<string, any[]>();
+  for (const r of validas) {
+    const chave = r.modelo_nome || "Sem modelo";
+    (porModelo.get(chave) || porModelo.set(chave, []).get(chave)!).push(r);
+  }
+  const grupos = [...porModelo.entries()].sort((a, b) => a[0].localeCompare(b[0], "pt-BR"));
+  const fmtDataHoraRelatorio = (iso: string | null) => {
+    if (!iso) return "-";
+    const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(String(iso));
+    return m ? `${m[3]}/${m[2]}/${m[1]} ${m[4]}:${m[5]}` : "-";
+  };
+  const linhaHtml = (r: any) => `<tr>
+        <td>${escHtmlRelatorio(r.numero_nfse || "-")}</td>
+        <td>${escHtmlRelatorio(r.empresa_nome)}</td>
+        <td>${escHtmlRelatorio(r.tomador_nome)}</td>
+        <td>${escHtmlRelatorio(r.descricao_servico)}</td>
+        <td><span class="tag-status status-${r.status}">${escHtmlRelatorio(STATUS_LABEL_PDF[r.status] || r.status)}</span></td>
+        <td>${fmtDataHoraRelatorio(r.criado_em)}</td>
+        <td class="num">${fmtMoedaRelatorio(r.valor_servico)}</td>
+      </tr>`;
+  const blocosHtml = grupos
+    .map(([modelo, itensGrupo]) => {
+      const subtotal = itensGrupo.reduce((s, r) => s + (r.valor_servico || 0), 0);
+      return `<h2>${escHtmlRelatorio(modelo)} <span class="qtd">(${itensGrupo.length} nota${itensGrupo.length === 1 ? "" : "s"})</span></h2>
+      <div class="card-rep"><table class="rep">
+        <thead><tr><th>Número</th><th>Prestador</th><th>Tomador</th><th>Serviço</th><th>Status</th><th>Emitido em</th><th class="num">Valor</th></tr></thead>
+        <tbody>
+          ${itensGrupo.map(linhaHtml).join("")}
+          <tr class="total-row"><td colspan="6">Subtotal — ${escHtmlRelatorio(modelo)}</td><td class="num">${fmtMoedaRelatorio(subtotal)}</td></tr>
+        </tbody>
+      </table></div>`;
+    })
+    .join("");
+  const totalGeral = validas.reduce((s, r) => s + (r.valor_servico || 0), 0);
+  const outrasHtml = outras.length
+    ? `<h2 class="h2-outras">Canceladas / rejeitadas <span class="qtd">(${outras.length} nota${outras.length === 1 ? "" : "s"} — fora do total acima)</span></h2>
+      <div class="card-rep card-rep-outras"><table class="rep">
+        <thead><tr><th>Número</th><th>Prestador</th><th>Tomador</th><th>Serviço</th><th>Status</th><th>Emitido em</th><th class="num">Valor</th></tr></thead>
+        <tbody>${outras.map(linhaHtml).join("")}</tbody>
+      </table></div>`
+    : "";
+  const html = `<style>
+    body { font-family: 'Helvetica Neue', Arial, sans-serif !important; font-size: 9px; color:#2a2a2a; }
+    h1 { font-size: 16px; margin: 0 0 3px; color:#16693f; letter-spacing:.2px; }
+    .cab { border-bottom: 2px solid #e4ede8; padding-bottom: 8px; margin-bottom: 14px; }
+    .cab p { margin: 1px 0; color:#666; font-size: 10px; }
+    h2 { font-size: 12px; margin: 18px 0 7px; color:#16693f; }
+    h2.h2-outras { color:#8a3b3b; }
+    h2 .qtd { font-weight:normal; color:#888; font-size: 10px; }
+    .card-rep { border: 1px solid #dfe6e2; border-radius: 10px; overflow: hidden; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+    .card-rep-outras { border-color: #ecdcdc; opacity: .92; }
+    table.rep { border-collapse: collapse; width: 100%; }
+    table.rep th, table.rep td { padding: 5px 7px; border-bottom: 1px solid #edf1ef; }
+    table.rep th { background:#f3f8f5; text-align:left; font-size: 8.5px; white-space: nowrap; color:#3c4a43; font-weight:600; }
+    .card-rep-outras table.rep th { background:#faf3f3; color:#5a3c3c; }
+    table.rep tbody tr:last-child td { border-bottom: none; }
+    table.rep tbody tr:nth-child(even) td { background: #fafcfb; }
+    table.rep td.num, table.rep th.num { text-align:right; white-space: nowrap; }
+    table.rep td:nth-child(1), table.rep td:nth-child(6) { white-space: nowrap; }
+    .tag-status { display:inline-block; font-size: 8px; padding: 2px 7px; border-radius: 20px; background:#e8e8e8; }
+    .tag-status.status-cancelada { background:#f6dede; color:#8a3b3b; }
+    .tag-status.status-rejeitada { background:#f6dede; color:#8a3b3b; }
+    .tag-status.status-emitida { background:#dcf0e4; color:#16693f; }
+    tr.total-row td { font-weight:bold; background:#eef6f1 !important; color:#16693f; }
+    .tag-total { display:inline-block; background:#1a7f4b; color:#fff; padding:8px 18px; border-radius:20px; font-weight:bold; font-size:12px; margin-top:16px; box-shadow: 0 2px 5px rgba(26,127,75,.25); }
+  </style>
+  <div class="cab">
+    <h1>Resumo de NFS-e emitidas</h1>
+    <p>${permitidas.length} nota${permitidas.length === 1 ? "" : "s"} selecionada${permitidas.length === 1 ? "" : "s"}</p>
+  </div>
+  ${blocosHtml}
+  <div><span class="tag-total">Total geral (notas válidas): R$ ${fmtMoedaRelatorio(totalGeral)}</span></div>
+  ${outrasHtml}`;
+  try {
+    const pdf = await contratos.gerarPdfDeHtml(html, "Resumo de NFS-e", { landscape: true });
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="Resumo de NFS-e - ${new Date().toISOString().slice(0, 10)}.pdf"`);
+    res.send(pdf);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
 const NFSE_MOTIVO_CANCELAMENTO_LABEL: Record<string, string> = { "1": "Erro na emissão", "2": "Serviço não prestado", "9": "Outros" };
 // Depois de cancelar de verdade no Sistema Nacional NFS-e: anexa um aviso de cancelamento em Envio
 // de Documentos, na MESMA competência da nota original — some ao lado dela, nunca a substitui, só
@@ -10558,8 +12995,17 @@ app.post("/api/nfse/emissoes/:id/cancelar", blockCliente, requirePermissao("nfse
     // O recebível gerado por essa nota fica marcado como cancelado, não é apagado — quem vê o
     // Financeiro continua tendo o histórico completo, só que sinalizado como não mais válido.
     sqlite.prepare(`UPDATE financeiro_receber SET status='cancelado' WHERE nfse_emissao_id = ?`).run(row.id);
-    await nfseNotificarCancelamento(row.id);
-    res.json({ ok: true });
+    // O cancelamento em si (governo + banco) já está feito e é IRREVERSÍVEL — a notificação por
+    // e-mail/WhatsApp é só um aviso best-effort, fora do try principal. Achado ao vivo: uma falha
+    // aqui (ex.: e-mail fora do ar) fazia a rota inteira responder 500, o modal não fechava e a tela
+    // não atualizava sozinha mesmo o cancelamento tendo dado certo — só um F5 revelava que funcionou.
+    let avisoErro: string | null = null;
+    try {
+      await nfseNotificarCancelamento(row.id);
+    } catch (e: any) {
+      avisoErro = e.message;
+    }
+    res.json({ ok: true, avisoErro });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -10871,6 +13317,15 @@ app.delete("/api/nfse/emissoes/:id", blockCliente, requirePermissao("nfse", "edi
 // isolamento entre empresas-cliente diferentes. Reaproveitam as funções puras já existentes
 // (nfseValidarEntrada, nfseInserirEmissao, nfseTransmitirEmissao, nfseObterDanfsePdf etc.), só
 // mudando a camada de autorização.
+function empresaInativaBloqueiaEnvio(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const user = (req as any).user;
+  if (user?.perfil !== "Cliente" || !user.empresaId) return next();
+  const e = sqlite.prepare(`SELECT ativo FROM empresas WHERE id = ?`).get(user.empresaId) as any;
+  if (e && !e.ativo) {
+    return res.status(403).json({ error: "Esta empresa está desativada no escritório — o envio de documentos está suspenso. Os demais módulos contratados continuam disponíveis." });
+  }
+  next();
+}
 function requireCliente(req: express.Request, res: express.Response, next: express.NextFunction) {
   const user = (req as any).user;
   if (user?.perfil !== "Cliente" || !user.empresaId) return res.status(403).json({ error: "Rota exclusiva para empresas-cliente." });
@@ -11157,7 +13612,16 @@ async function nfseExecutarAgendamentoAutomatico(
   // filtrou "ativo" e "ainda não executou nesta competência" foi a query que gerou a lista de configs.
   if (!forcarMesmoSeJaExecutou && config) {
     if (!config.ativo) return { processados: 0, sucesso: 0, falha: 0, motivo: "Rotina desativada." };
-    if (config.ultima_execucao_competencia === competenciaAtual) return { processados: 0, sucesso: 0, falha: 0, motivo: "Já executou nesta competência." };
+    // Claim atômico (UPDATE...WHERE + changes, mesmo padrão do "status='enviando' WHERE
+    // status='agendado'" da Central de Envio) — achado ao vivo: um deploy reiniciando o servidor
+    // bem na hora configurada deixou DOIS processos rodando por um instante, os dois viram "ainda
+    // não rodei este mês" (checagem só de leitura) e processaram o mesmo cliente em paralelo, saindo
+    // 2 NFS-e reais pro mesmo serviço/competência. Com UPDATE...WHERE só o primeiro que chegar marca
+    // a competência; o outro recebe changes=0 e nunca entra no loop de itens.
+    const claim = sqlite
+      .prepare(`UPDATE nfse_agendamento_config SET ultima_execucao_competencia = ? WHERE escritorio_id = ? AND (ultima_execucao_competencia IS NULL OR ultima_execucao_competencia != ?)`)
+      .run(competenciaAtual, config.escritorio_id, competenciaAtual);
+    if (!claim.changes) return { processados: 0, sucesso: 0, falha: 0, motivo: "Já executou nesta competência." };
   }
   const configs = config
     ? [config]
@@ -11355,12 +13819,19 @@ async function nfseAnexarEEnviarDocumento(escritorioId: number, emissaoId: numbe
   return `Anexado em Envio de Documentos; ${msgEmail}${msgWhatsapp ? ` E ${msgWhatsapp}` : ""}`;
 }
 // Confere a cada minuto se é hora de rodar a rotina — sobrevive a reinício porque a trava real
-// (ultima_execucao_competencia) fica no banco, não em memória.
+// (ultima_execucao_competencia) fica no banco, não em memória. Usa "já passou do horário hoje"
+// em vez de "é exatamente este minuto": um reinício do servidor (deploy) bem na hora configurada
+// podia derrubar o processo antigo antes do tick certo e o novo só ticka 60s depois de subir —
+// aí o minuto exato já tinha passado e a rotina ficava sem rodar até o mês seguinte (achado ao
+// vivo: config salva pras 11:50, deploy reiniciou o processo às 11:50, nunca rodou). Rodar de novo
+// no mesmo dia depois do primeiro disparo é inofensivo — nfseExecutarAgendamentoAutomatico já some
+// sozinho (ultima_execucao_competencia) assim que executa uma vez.
 setInterval(() => {
   const agora = agoraBrasilia();
+  const minutosAgora = agora.hora * 60 + agora.minuto;
   const configs = sqlite
-    .prepare(`SELECT escritorio_id FROM nfse_agendamento_config WHERE dia_mes = ? AND hora = ? AND minuto = ?`)
-    .all(agora.dia, agora.hora, agora.minuto) as any[];
+    .prepare(`SELECT escritorio_id FROM nfse_agendamento_config WHERE dia_mes = ? AND (hora * 60 + minuto) <= ?`)
+    .all(agora.dia, minutosAgora) as any[];
   for (const c of configs) {
     nfseExecutarAgendamentoAutomatico(false, c.escritorio_id).catch((e) => console.error("Erro na rotina automática de NFS-e:", e.message));
   }
@@ -11699,8 +14170,16 @@ app.post("/api/nfse/minha-empresa/emissoes/:id/cancelar", requireCliente, requir
     // O recebível gerado por essa nota fica marcado como cancelado, não é apagado — quem vê o
     // Financeiro continua tendo o histórico completo, só que sinalizado como não mais válido.
     sqlite.prepare(`UPDATE financeiro_receber SET status='cancelado' WHERE nfse_emissao_id = ?`).run(row.id);
-    await nfseNotificarCancelamento(row.id);
-    res.json({ ok: true });
+    // O cancelamento em si (governo + banco) já está feito e é IRREVERSÍVEL — a notificação por
+    // e-mail/WhatsApp é só um aviso best-effort, fora do try principal. Mesmo motivo do bug achado
+    // na rota de admin: uma falha aqui respondia 500 mesmo com o cancelamento já concluído.
+    let avisoErro: string | null = null;
+    try {
+      await nfseNotificarCancelamento(row.id);
+    } catch (e: any) {
+      avisoErro = e.message;
+    }
+    res.json({ ok: true, avisoErro });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -11723,6 +14202,13 @@ app.get("/api/nfse/minha-empresa/municipios-ibge", requireCliente, requireModulo
   try {
     const municipios = await nfseMunicipiosDaUf(uf);
     res.json({ items: municipios.map((m) => ({ id: String(m.id), label: m.nome })) });
+  } catch (e: any) {
+    res.status(502).json({ error: `Não consegui consultar a API do IBGE: ${e.message}` });
+  }
+});
+app.get("/api/nfse/minha-empresa/municipios-ibge-todos", requireCliente, requireModuloAtivo('nfse'), async (_req, res) => {
+  try {
+    res.json({ items: await nfseMunicipiosBrasil() });
   } catch (e: any) {
     res.status(502).json({ error: `Não consegui consultar a API do IBGE: ${e.message}` });
   }
@@ -12052,13 +14538,15 @@ function contarAssentosColaborador(escritorioId: number): number {
 // que precisam saber se um escritório tem direito a rodar a rotina automática de NFS-e / mandar por
 // e-mail ou WhatsApp automaticamente.
 function modulosDoEscritorio(escritorioId: number) {
+  const escr = sqlite.prepare(`SELECT isento_assinatura FROM escritorios WHERE id = ?`).get(escritorioId) as any;
+  const isento = !!escr?.isento_assinatura;
   const catalogo = sqlite.prepare(`SELECT * FROM modulos_escritorio_catalogo ORDER BY chave`).all() as any[];
   const contratados = sqlite.prepare(`SELECT * FROM escritorio_modulos WHERE escritorio_id = ?`).all(escritorioId) as any[];
   const porChave = new Map(contratados.map((c) => [c.modulo_chave, c]));
   const assentos = contarAssentosColaborador(escritorioId);
   return catalogo.map((m) => {
     const contratado = porChave.get(m.chave);
-    const { status, acesso } = moduloStatusParaEscritorio(m, contratado);
+    const { status, acesso } = isento ? { status: "isento", acesso: true } : moduloStatusParaEscritorio(m, contratado);
     const porAssento = m.chave === "assento_colaborador";
     return {
       chave: m.chave,
@@ -12078,6 +14566,8 @@ function modulosDoEscritorio(escritorioId: number) {
 // Confere se um escritório tem acesso ativo (teste ou pago) a um módulo específico — usado pelos
 // pontos do código que gatilham comportamento automático (rotina de NFS-e, envio automático).
 function escritorioTemModulo(escritorioId: number, chave: string): boolean {
+  const escr = sqlite.prepare(`SELECT isento_assinatura FROM escritorios WHERE id = ?`).get(escritorioId) as any;
+  if (escr?.isento_assinatura) return true; // escritório isento tem acesso a tudo
   const m = sqlite.prepare(`SELECT * FROM modulos_escritorio_catalogo WHERE chave = ?`).get(chave) as any;
   if (!m) return false;
   const contratado = sqlite.prepare(`SELECT * FROM escritorio_modulos WHERE escritorio_id = ? AND modulo_chave = ?`).get(escritorioId, chave) as any;
@@ -12205,7 +14695,13 @@ app.post("/api/escritorio/modulos/pagar", blockCliente, requirePermissao("config
 // sessão de usuário nessa chamada (o Asaas quem chama, não o navegador de ninguém).
 app.post("/api/asaas/webhook", (req, res) => {
   const tokenEsperado = process.env.ASAAS_WEBHOOK_TOKEN;
-  if (tokenEsperado && req.query.token !== tokenEsperado) return res.status(403).json({ error: "Token inválido." });
+  // Achado em auditoria (2026-10-12): sem a env var configurada, a checagem inteira era pulada
+  // (falha aberta) — qualquer POST externo com um payment.id válido liberava módulo de assinatura
+  // sem pagar. Hoje está configurada em produção, mas um .env incompleto (staging, redeploy,
+  // variável limpa por engano) removeria a proteção silenciosamente. Falha fechada: sem token
+  // configurado no servidor, recusa tudo, em vez de aceitar tudo.
+  if (!tokenEsperado) return res.status(503).json({ error: "Webhook não configurado no servidor." });
+  if (req.query.token !== tokenEsperado) return res.status(403).json({ error: "Token inválido." });
   const { event, payment } = req.body || {};
   if (!payment?.id) return res.status(400).json({ error: "Corpo inválido." });
   const statusMap: Record<string, string> = {
@@ -12333,17 +14829,116 @@ app.put("/api/financeiro/lancamentos/:id", blockCliente, requirePermissao("finan
   const { status, dataPagamento, formaPagamento, observacao, valor } = req.body || {};
   const existing = sqlite.prepare(`SELECT * FROM honorarios_lancamentos WHERE id = ?`).get(id) as any;
   if (!existing || !podeAcessarEmpresa((req as any).user, existing.empresa_id)) return res.status(404).json({ error: "Lançamento não encontrado." });
+  const statusNovo = status ?? existing.status;
   sqlite
     .prepare(`UPDATE honorarios_lancamentos SET status=?, data_pagamento=?, forma_pagamento=?, observacao=?, valor=? WHERE id=?`)
     .run(
-      status ?? existing.status,
+      statusNovo,
       dataPagamento !== undefined ? dataPagamento : existing.data_pagamento,
       formaPagamento !== undefined ? formaPagamento : existing.forma_pagamento,
       observacao !== undefined ? observacao : existing.observacao,
       valor !== undefined ? Number(valor) : existing.valor,
       id
     );
+  // Pagou (ou cancelou) um lançamento que estava em aberto: se não sobrar mais nenhum em atraso pra
+  // essa empresa, solta qualquer conversa que o robô de cobrança esteja segurando dela.
+  if (statusNovo !== existing.status && (statusNovo === "pago" || statusNovo === "cancelado") && (existing.status === "pendente" || existing.status === "atrasado")) {
+    if (!honorariosLancamentosEmAberto(existing.empresa_id).some((h) => h.status === "atrasado")) {
+      void honorariosRoboLiberarEmpresa(existing.empresa_id).catch((e: any) => console.error("[honorarios-robo] falha ao liberar após pagamento:", e.message));
+    }
+  }
   res.json({ ok: true });
+});
+// Upload do boleto (PDF) de um lançamento específico — anexado à mão todo mês; é o que o robô de
+// cobrança manda quando "Enviar o boleto automaticamente" estiver ligado.
+app.post("/api/financeiro/lancamentos/:id/boleto", blockCliente, requirePermissao("financeiro", "editar"), upload.single("boleto"), (req, res) => {
+  const id = Number(req.params.id);
+  const existing = sqlite.prepare(`SELECT * FROM honorarios_lancamentos WHERE id = ?`).get(id) as any;
+  if (!existing || !podeAcessarEmpresa((req as any).user, existing.empresa_id)) return res.status(404).json({ error: "Lançamento não encontrado." });
+  if (!req.file) return res.status(400).json({ error: "Envie o PDF do boleto." });
+  // Achado em auditoria (2026-10-12): não conferia o tipo do arquivo — um não-PDF salvo como "boleto"
+  // seria mandado pro WhatsApp do cliente de verdade pelo robô de cobrança, rotulado como PDF.
+  if (req.file.mimetype !== "application/pdf" && !/\.pdf$/i.test(req.file.originalname || "")) {
+    return res.status(400).json({ error: "Envie um arquivo PDF." });
+  }
+  const dir = path.join(UPLOADS_DIR, "honorarios-boletos", String(existing.empresa_id));
+  fs.mkdirSync(dir, { recursive: true });
+  if (existing.boleto_path && fs.existsSync(existing.boleto_path)) { try { fs.unlinkSync(existing.boleto_path); } catch { /* arquivo antigo já sumiu, segue */ } }
+  const destino = path.join(dir, `${Date.now()}-${existing.competencia}.pdf`);
+  fs.writeFileSync(destino, req.file.buffer);
+  sqlite.prepare(`UPDATE honorarios_lancamentos SET boleto_path = ? WHERE id = ?`).run(destino, id);
+  res.json({ ok: true });
+});
+app.get("/api/financeiro/lancamentos/:id/boleto", blockCliente, requirePermissao("financeiro", "visualizar"), (req, res) => {
+  const existing = sqlite.prepare(`SELECT * FROM honorarios_lancamentos WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!existing || !podeAcessarEmpresa((req as any).user, existing.empresa_id)) return res.status(404).json({ error: "Lançamento não encontrado." });
+  if (!existing.boleto_path || !fs.existsSync(existing.boleto_path)) return res.status(404).json({ error: "Sem boleto anexado." });
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", nfseContentDisposition("inline", `Boleto ${existing.competencia}.pdf`));
+  res.send(fs.readFileSync(existing.boleto_path));
+});
+// ---- Robô de cobrança de honorários: configuração (Financeiro > Configuração envio de boletos) ----
+// O robô em si só processa conversas do deskcomm ligado a DESKCOMM_ESCRITORIO_ID (toda a integração
+// de atendimento/WhatsApp deste sistema é assim — 1 organização do deskcomm = 1 escritório daqui, ver
+// nota em atendimentoMapaEmpresasPorTelefone). Achado em auditoria (2026-10-12): estas duas rotas
+// liam/gravavam nessa mesma linha SEM checar se é o escritório de quem está logado — um usuário de
+// outro escritório (se este sistema algum dia atender mais de um) conseguiria ligar/desligar o robô
+// de cobrança de uma empresa real de OUTRO escritório. Corrigido com a barreira explícita abaixo.
+app.get("/api/financeiro/honorarios-robo/config", blockCliente, requirePermissao("financeiro", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  if (user.escritorioId !== DESKCOMM_ESCRITORIO_ID) return res.status(403).json({ error: "O robô de cobrança por WhatsApp só está disponível pro escritório principal, por enquanto." });
+  const cfg = honorariosRoboCfg();
+  res.json({ validacaoAtiva: !!cfg.validacao_ativa, envioBoletoAutomatico: !!cfg.envio_boleto_automatico });
+});
+app.put("/api/financeiro/honorarios-robo/config", blockCliente, requirePermissao("financeiro", "editar"), (req, res) => {
+  const user = (req as any).user;
+  if (user.escritorioId !== DESKCOMM_ESCRITORIO_ID) return res.status(403).json({ error: "O robô de cobrança por WhatsApp só está disponível pro escritório principal, por enquanto." });
+  honorariosRoboCfg();
+  const { validacaoAtiva, envioBoletoAutomatico } = req.body || {};
+  if (validacaoAtiva !== undefined) sqlite.prepare(`UPDATE honorarios_robo_config SET validacao_ativa = ? WHERE escritorio_id = ?`).run(validacaoAtiva ? 1 : 0, DESKCOMM_ESCRITORIO_ID);
+  if (envioBoletoAutomatico !== undefined) sqlite.prepare(`UPDATE honorarios_robo_config SET envio_boleto_automatico = ? WHERE escritorio_id = ?`).run(envioBoletoAutomatico ? 1 : 0, DESKCOMM_ESCRITORIO_ID);
+  res.json({ ok: true });
+});
+app.get("/api/financeiro/honorarios-robo/empresas", blockCliente, requirePermissao("financeiro", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  // Achado em auditoria (2026-10-12): faltava filtrar por escritório — devolvia empresa de QUALQUER
+  // escritório, não só do usuário logado. Corrigido.
+  let rows = sqlite
+    .prepare(`SELECT e.id, e.nome, COALESCE(h.participa_cobranca_robo, 0) as participa FROM empresas e LEFT JOIN honorarios h ON h.empresa_id = e.id WHERE e.ativo = 1 AND e.escritorio_id = ? ORDER BY e.nome`)
+    .all(user.escritorioId) as any[];
+  const visiveis = empresasVisiveis(user);
+  if (visiveis !== null) rows = rows.filter((r) => visiveis.includes(r.id));
+  res.json({ items: rows.map((r) => ({ id: r.id, nome: r.nome, participa: !!r.participa })) });
+});
+app.put("/api/financeiro/honorarios-robo/empresas", blockCliente, requirePermissao("financeiro", "editar"), async (req, res) => {
+  const user = (req as any).user;
+  const idsPedidos: number[] = Array.isArray(req.body?.empresaIds) ? req.body.empresaIds.map(Number) : [];
+  // Achado em auditoria (2026-10-12): o UPDATE não tinha WHERE nenhum — zerava a participação de
+  // TODAS as empresas de TODOS os escritórios a cada salvamento, e os ids recebidos entravam sem
+  // conferir se pertenciam mesmo ao escritório/acesso de quem salvou (IDOR). Corrigido: só mexe nas
+  // empresas do PRÓPRIO escritório, e só aceita id que o usuário pode mesmo acessar.
+  const ids = idsPedidos.filter((id) => podeAcessarEmpresa(user, id));
+  // Achado em auditoria (2026-10-12): se a empresa saía do robô enquanto a conversa estava presa
+  // ('ativo'), ela ficava travada pra sempre com "Automações" (ninguém mais soltava). Agora, quem
+  // deixa de participar e tinha gate ativo é liberado aqui mesmo, sem a mensagem de "pagamento
+  // confirmado" (seria falso) — a conversa só volta pra fila normal.
+  const participavamAntes = sqlite
+    .prepare(`SELECT empresa_id FROM honorarios WHERE participa_cobranca_robo = 1 AND empresa_id IN (SELECT id FROM empresas WHERE escritorio_id = ?)`)
+    .all(user.escritorioId) as any[];
+  const saindo = participavamAntes.map((r) => r.empresa_id).filter((id: number) => !ids.includes(id));
+  sqlite.prepare(`UPDATE honorarios SET participa_cobranca_robo = 0 WHERE empresa_id IN (SELECT id FROM empresas WHERE escritorio_id = ?)`).run(user.escritorioId);
+  for (const id of ids) {
+    sqlite.prepare(`INSERT INTO honorarios (empresa_id, participa_cobranca_robo, updated_at) VALUES (?, 1, datetime('now'))
+      ON CONFLICT(empresa_id) DO UPDATE SET participa_cobranca_robo = 1, updated_at = datetime('now')`).run(id);
+  }
+  for (const id of saindo) {
+    try {
+      await honorariosRoboLiberarEmpresa(id, null);
+    } catch (e: any) {
+      console.error(`[honorarios-robo] falha ao liberar empresa ${id} removida da lista do robô:`, e.message);
+    }
+  }
+  res.json({ ok: true, marcadas: ids.length });
 });
 app.get("/api/financeiro/resumo", blockCliente, requirePermissao("financeiro", "visualizar"), (req, res) => {
   const competencia = req.query.competencia ? String(req.query.competencia) : new Date().toISOString().slice(0, 7);
@@ -12467,13 +15062,13 @@ function cardDasEmAtraso(user: any): any[] {
   const corte = painelMonitoramentoCorte(escritorioId);
   const atribuicoes = sqlite
     .prepare(
-      `SELECT a.id as atribuicaoId, a.empresa_id as empresaId, e.nome as empresaNome
+      `SELECT a.id as atribuicaoId, a.empresa_id as empresaId, e.nome as empresaNome, t.setor as templateSetor
        FROM envio_atribuicoes a
        JOIN envio_templates t ON t.id = a.template_id AND t.nome = 'DAS - Mensal' AND t.escritorio_id = ?
        JOIN empresas e ON e.id = a.empresa_id AND e.escritorio_id = ? AND e.ativo = 1
        WHERE a.ativo = 1`
     )
-    .all(escritorioId, escritorioId) as any[];
+    .all(escritorioId, escritorioId).filter((a: any) => envioSetorAtendido(a.templateSetor, a.empresaId)) as any[];
   // Achado ao vivo (AMIL COMERCIO DE PEÇAS, FERNANDO CARVALHO DA SILVA): a atribuição "DAS - Mensal"
   // só nasce quando um DAS ou Situação Fiscal é gerado com sucesso ao menos uma vez (ver
   // integraContadorAnexarDasEmEnvio/integraContadorAnexarSitfisEmEnvio) — uma empresa optante do
@@ -12508,8 +15103,13 @@ function cardDasEmAtraso(user: any): any[] {
     // nada, então pula (evita marcar uma atribuição recém-criada como atrasada desde sempre).
     const periodos = sqlite.prepare(`SELECT p.id, p.ano, p.mes FROM envio_periodos p WHERE p.atribuicao_id = ? AND p.mes IS NOT NULL`).all(atrib.atribuicaoId) as any[];
     const porCompetencia = new Map<string, any>(periodos.map((p) => [`${p.ano}${String(p.mes).padStart(2, "0")}`, p]));
+    // Competência escolhida na atribuição ("monitorar a partir de"): manda sobre o período mais antigo
+    // e não depende de grade gerada — nada antes dela é cobrado.
+    const monitorarDesde = atrib.monitorarDesde ? Number(String(atrib.monitorarDesde).replace("-", "")) : null;
     let anoMesInicio: number;
-    if (periodos.length) {
+    if (monitorarDesde) {
+      anoMesInicio = monitorarDesde;
+    } else if (periodos.length) {
       const maisAntigo = periodos.reduce((min, p) => (p.ano * 100 + p.mes < min.ano * 100 + min.mes ? p : min));
       anoMesInicio = maisAntigo.ano * 100 + maisAntigo.mes;
     } else {
@@ -12586,13 +15186,13 @@ function cardEnvioAtraso(user: any, templateIds: number[]): any[] {
   const placeholders = templateIds.map(() => "?").join(",");
   const atribuicoes = sqlite
     .prepare(
-      `SELECT a.id as atribuicaoId, a.empresa_id as empresaId, e.nome as empresaNome, t.id as templateId, t.nome as templateNome, t.considera_mes_atual as considerarMesAtual, t.suspenso_desde as suspensoDesde, t.periodicidade as periodicidade
+      `SELECT a.id as atribuicaoId, a.empresa_id as empresaId, e.nome as empresaNome, t.id as templateId, t.nome as templateNome, t.considera_mes_atual as considerarMesAtual, t.suspenso_desde as suspensoDesde, t.periodicidade as periodicidade, t.setor as templateSetor, a.monitorar_desde as monitorarDesde
        FROM envio_atribuicoes a
        JOIN envio_templates t ON t.id = a.template_id AND t.id IN (${placeholders}) AND t.escritorio_id = ?
        JOIN empresas e ON e.id = a.empresa_id AND e.escritorio_id = ? AND e.ativo = 1
        WHERE a.ativo = 1`
     )
-    .all(...templateIds, escritorioId, escritorioId) as any[];
+    .all(...templateIds, escritorioId, escritorioId).filter((a: any) => envioSetorAtendido(a.templateSetor, a.empresaId)) as any[];
   // Chave por empresa+modelo (não só empresa) — uma empresa pode estar atrasada em mais de um
   // modelo ao mesmo tempo (ex.: Nota Fiscal E DRE), e cada linha do card precisa dizer qual é qual.
   const resultado: any[] = [];
@@ -12601,7 +15201,8 @@ function cardEnvioAtraso(user: any, templateIds: number[]): any[] {
     const todosPeriodos = sqlite
       .prepare(`SELECT p.id, p.ano, p.mes, p.sem_movimento as semMovimento, p.parcela_numero as parcelaNumero, p.parcela_total as parcelaTotal FROM envio_periodos p WHERE p.atribuicao_id = ? AND p.mes IS NOT NULL`)
       .all(atrib.atribuicaoId) as any[];
-    if (!todosPeriodos.length) continue;
+    // Com "monitorar a partir de" definido, a empresa entra no card mesmo sem grade gerada.
+    if (!todosPeriodos.length && !atrib.monitorarDesde) continue;
     // 2ª/3ª quota de um parcelamento (ver POST /envio/periodos/:id/enviar, campo "parcelas") não faz
     // parte do calendário normal do modelo (mensal ou trimestral) — vive num mês avulso, criado só
     // porque a 1ª quota foi postada como parcelada. Entra no calendário principal (porCompetencia)
@@ -12663,7 +15264,7 @@ function cardEnvioAtraso(user: any, templateIds: number[]): any[] {
       const temDocumento = sqlite.prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id = ?`).get(pq.id);
       if (!temDocumento && !pq.semMovimento) competenciasFaltando.push(`${String(pq.mes).padStart(2, "0")}/${pq.ano} (${pq.parcelaNumero}ª de ${pq.parcelaTotal} quotas)`);
     }
-    if (competenciasFaltando.length) resultado.push({ empresaId: atrib.empresaId, empresaNome: atrib.empresaNome, templateNome: atrib.templateNome, competencias: competenciasFaltando });
+    if (competenciasFaltando.length) resultado.push({ atribuicaoId: atrib.atribuicaoId, empresaId: atrib.empresaId, empresaNome: atrib.empresaNome, templateNome: atrib.templateNome, competencias: competenciasFaltando });
   }
   return resultado;
 }
@@ -12726,6 +15327,8 @@ async function cardSituacaoFiscal(user: any): Promise<any[]> {
   const resultado: any[] = [];
   for (const r of rows) {
     if (!visiveis.has(r.empresaId)) continue;
+    // Situação Fiscal é obrigação do setor Fiscal: empresa que não atende Fiscal não entra no card.
+    if (!envioSetorAtendido("fiscal", r.empresaId)) continue;
     // Achado ao vivo: "Declaração/DAS ainda não localizada" (alerta_declaracao) saiu daqui — não é
     // informação de Situação Fiscal (SITFIS), é sobre a declaração do Simples não ter sido
     // localizada/transmitida, um assunto diferente que estava poluindo este card.
@@ -12981,7 +15584,7 @@ app.get("/api/dashboard/cards", requirePermissao("dashboard", "visualizar"), asy
 // incondicionalmente (hasPermissao retorna false pra esse perfil antes de checar qualquer coisa),
 // mesmo padrão de GET /api/dashboard/cards acima.
 app.get("/api/dashboard/onvio-saude", requirePermissao("dashboard", "visualizar"), (req, res) => {
-  res.json(calcularSaudeOnvio());
+  res.json(calcularSaudeOnvio((req as any).user.escritorioId));
 });
 app.get("/api/dashboard/cards/:id/detalhe", requirePermissao("dashboard", "visualizar"), async (req, res) => {
   const user = (req as any).user;
@@ -13173,6 +15776,14 @@ app.post("/api/contratos", blockCliente, requirePermissao("contratos", "postar")
       dadosFinal[campo.chave] = empresa[CONTRATO_EMPRESA_CAMPO_SQL[campo.autoPreencherDe]] ?? "";
     }
   }
+  // Achado em auditoria (2026-10-12): "dados" vem direto do corpo da requisição — a tela sempre
+  // manda vazio e preenche/escapa os campos depois, no navegador (ver "Aplicar no documento" em
+  // app.html, que já usa esc()), mas a API em si não pode depender disso: sem escapar aqui, dava pra
+  // chamar esta rota direto (fora da tela) e injetar HTML/<script> num campo, que ia reto pro PDF
+  // (Chromium) e pro e-mail do contrato. Mesmo escape usado pelos relatórios (escHtmlRelatorio).
+  for (const chave of Object.keys(dadosFinal)) {
+    if (typeof dadosFinal[chave] === "string") dadosFinal[chave] = escHtmlRelatorio(dadosFinal[chave]);
+  }
   const conteudoHtml = contratos.aplicarCamposNoModelo(modelo.conteudo_html, dadosFinal);
   const info = sqlite
     .prepare(
@@ -13263,9 +15874,12 @@ app.post("/api/contratos/:id/aditivo", blockCliente, requirePermissao("contratos
   // é herdado do contrato original (aditivo não gera um número novo — ele referencia o contrato).
   const cabecalho = contratos.extrairTrechoCabecalho(original.conteudo_html) || "";
   const numeroRef = original.numero_sequencial ? ` (nº ${original.numero_sequencial}/${original.numero_sequencial_ano})` : "";
+  // Achado em auditoria (2026-10-12): titulo/nome aqui também podem conter HTML digitado (titulo
+  // vem de "contratos:editar" sem escapar — ver PUT /api/contratos/:id) — mesmo escape do ponto
+  // acima, pra não entrar cru no documento/PDF.
   const conteudoInicial = contratos.aplicarCamposNoModelo(
     cabecalho +
-      `<h1>Aditivo Contratual</h1><p>Aditivo ao contrato "${original.titulo}"${numeroRef}, firmado entre o escritório e ${empresa?.nome || ""}.</p>` +
+      `<h1>Aditivo Contratual</h1><p>Aditivo ao contrato "${escHtmlRelatorio(original.titulo)}"${numeroRef}, firmado entre o escritório e ${escHtmlRelatorio(empresa?.nome || "")}.</p>` +
       `<p>As partes acordam alterar/complementar o contrato original nos seguintes termos:</p>` +
       (dadosAlterados ? `<p>${contratos.escaparEQuebrarLinhas(dadosAlterados)}</p>` : `<p></p>`),
     { n_contrato_sequencial: original.numero_sequencial != null ? String(original.numero_sequencial) : "" }
@@ -13295,10 +15909,12 @@ app.post("/api/contratos/:id/distrato", blockCliente, requirePermissao("contrato
   const escritorio = agConfig?.empresa_prestador_id ? (sqlite.prepare(`SELECT nome FROM empresas WHERE id = ?`).get(agConfig.empresa_prestador_id) as any) : null;
   // Número sequencial herdado do contrato original — o distrato não gera um número novo, ele
   // referencia o contrato que está sendo encerrado.
+  // Achado em auditoria (2026-10-12): mesmo escape do aditivo, acima — titulo/nome podem conter
+  // HTML digitado e vão direto pros tokens {{...}} do template de distrato.
   const tokens = {
-    empresa_nome: empresa?.nome || "",
-    escritorio_nome: escritorio?.nome || "",
-    contrato_titulo: original.titulo,
+    empresa_nome: escHtmlRelatorio(empresa?.nome || ""),
+    escritorio_nome: escHtmlRelatorio(escritorio?.nome || ""),
+    contrato_titulo: escHtmlRelatorio(original.titulo),
     data: new Date().toLocaleDateString("pt-BR"),
     n_contrato_sequencial: original.numero_sequencial != null ? String(original.numero_sequencial) : "",
   };
@@ -13308,7 +15924,7 @@ app.post("/api/contratos/:id/distrato", blockCliente, requirePermissao("contrato
   const assinaturas = padrao?.assinaturas_padrao ? contratos.aplicarCamposNoModelo(padrao.assinaturas_padrao, tokens) : "";
   const conteudoInicial =
     cabecalho +
-    `<h1>Distrato Contratual</h1><p>Distrato do contrato "${original.titulo}"${numeroRef}, firmado entre o escritório e ${empresa?.nome || ""}.</p>` +
+    `<h1>Distrato Contratual</h1><p>Distrato do contrato "${escHtmlRelatorio(original.titulo)}"${numeroRef}, firmado entre o escritório e ${escHtmlRelatorio(empresa?.nome || "")}.</p>` +
     clausula +
     assinaturas;
   const info = sqlite
@@ -13347,12 +15963,19 @@ app.get("/api/contratos/:id/pdf", blockCliente, requirePermissao("contratos", "v
     res.status(502).json({ error: `Não consegui gerar o PDF: ${e.message}` });
   }
 });
+// Achado em auditoria (2026-10-12): sem limite nenhum — dava pra disparar envio de e-mail (custo de
+// SMTP) em loop. Mesmo padrão de freio por usuário já usado em login/certificados (Map em memória).
+const contratoEmailEnvios = new Map<number, { n: number; ate: number }>();
 app.post("/api/contratos/:id/enviar-email", blockCliente, requirePermissao("contratos", "editar"), async (req, res) => {
   const user = (req as any).user;
   const row = sqlite.prepare(`SELECT c.*, e.email as empresaEmail FROM contratos c JOIN empresas e ON e.id = c.empresa_id WHERE c.id = ?`).get(Number(req.params.id)) as any;
   if (!row || !podeAcessarEmpresa(user, row.empresa_id)) return res.status(404).json({ error: "Contrato não encontrado." });
   const destino = (req.body?.email && String(req.body.email).trim()) || row.empresaEmail;
   if (!destino) return res.status(400).json({ error: "Esta empresa não tem e-mail cadastrado — digite um e-mail pra enviar." });
+  const trava = contratoEmailEnvios.get(user.id);
+  if (trava && trava.ate > Date.now() && trava.n >= 15) return res.status(429).json({ error: "Muitos envios em pouco tempo — espere um pouco antes de enviar de novo." });
+  if (!trava || trava.ate <= Date.now()) contratoEmailEnvios.set(user.id, { n: 1, ate: Date.now() + 10 * 60_000 });
+  else trava.n++;
   try {
     const pdf = await contratoObterPdf(row);
     await enviarEmail(user.escritorioId, {
@@ -13582,7 +16205,7 @@ function domRelTemplateNomesParaTipo(tipo: string): string[] {
   if (tipo === "faturamento") return ["Relação de Faturamento"];
   if (tipo === "razao") return ["Razão"];
   if (tipo === "comparativo") return ["Comparativo de Movimento"];
-  if (tipo === "aviso_ferias") return ["Aviso de Férias"];
+  if (tipo === "entradas_saidas") return ["Relatório de Entradas/Saídas"];
   if (tipo === "programacao_ferias") return ["Programação de Férias"];
   return [];
 }
@@ -13754,7 +16377,7 @@ app.get("/api/relatorios/retencoes/pdf", blockCliente, requirePermissao("relator
 // notas já recebidas e anexa em Envio de Documentos sob um template interno dedicado, igual ao
 // recálculo de DAS (ver executarRecalculoDas acima). substituirExistente:true porque, se o cliente
 // pedir a mesma competência de novo, o certo é regenerar com as notas mais recentes, não empilhar.
-app.post("/api/envio/solicitar-retencoes", requireCliente, async (req, res) => {
+app.post("/api/envio/solicitar-retencoes", requireCliente, empresaInativaBloqueiaEnvio, async (req, res) => {
   const user = (req as any).user;
   if (!user.empresaId) return res.status(400).json({ error: "Seu usuário não está vinculado a uma empresa." });
   if (!empresaPodeSolicitar(user.empresaId, "retencoes")) {
@@ -13939,7 +16562,9 @@ app.get("/api/whatsapp/config", blockCliente, requirePermissao("configuracoes", 
     ativo: !!c.ativo,
     updatedAt: c.updated_at || null,
     webhookUrl: `${req.protocol}://${req.get("host")}/api/whatsapp/webhook`,
-    webhookVerifyToken: c.webhook_verify_token,
+    // Achado em auditoria (2026-10-12): era devolvido a qualquer um com "configuracoes:visualizar",
+    // inconsistente com o SMTP/Access Token/App Secret dessa mesma tela, que já são admin-only.
+    webhookVerifyToken: (req as any).user.perfil === "Administrador" ? c.webhook_verify_token : null,
   });
 });
 app.put("/api/whatsapp/config", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
@@ -14319,7 +16944,7 @@ function atendimentoEmpresasPorTelefoneTodas(escritorioId: number, telefone: str
     .all(escritorioId, sufixo, escritorioId, sufixo) as any[];
   return rows;
 }
-app.get("/api/atendimento/telefone-empresas", blockCliente, (req, res) => {
+app.get("/api/atendimento/telefone-empresas", blockCliente, requireEscritorioPrincipalDeskcomm, (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   const telefone = String(req.query.telefone || "");
@@ -14431,6 +17056,17 @@ setInterval(() => {
 }, 60_000);
 setInterval(() => deskcommAgendarSyncEmpresasClientes(), 6 * 3600_000);
 setTimeout(() => deskcommAgendarSyncEmpresasClientes(), 30_000);
+// Limpeza única (a pedido): remove os contatos criados automaticamente do "telefone do cadastro"
+// (nome termina em "(telefone do cadastro)"), pra as empresas que só tinham esse voltarem a aparecer
+// em "Faltam configurar". A criação automática já foi desligada. Guardado em kv pra rodar só 1x.
+setTimeout(() => {
+  try {
+    if (sqlite.prepare(`SELECT 1 FROM kv WHERE key_name = 'limpeza_contato_telefone_cadastro'`).get()) return;
+    const r = sqlite.prepare(`DELETE FROM empresa_contatos WHERE nome LIKE '%(telefone do cadastro)'`).run();
+    sqlite.prepare(`INSERT OR REPLACE INTO kv (key_name, value_data) VALUES ('limpeza_contato_telefone_cadastro', ?)`).run(String(r.changes));
+    console.log(`Limpeza: ${r.changes} contato(s) "(telefone do cadastro)" removido(s) — empresas sem outro contato voltam a "Faltam configurar".`);
+  } catch (e: any) { console.error("[limpeza contatos telefone cadastro]", e.message); }
+}, 20_000);
 // Toda conversa que passou pelo setor: as que o Roteador (ou uma transferência) já mandou pra ele
 // (`historico`) + as que estão com ele agora (active_intent).
 async function atendimentoConversasDoSetor(escopo: AtendimentoSetorEscopo, colunas: string, historico: Map<string, Set<string>>): Promise<any[]> {
@@ -14483,7 +17119,7 @@ const ATENDIMENTO_COLUNAS =
 // paginação no servidor, que ainda não existe.
 const ATENDIMENTO_CRM_LIMITE = 500;
 
-app.get("/api/atendimento/conversas", blockCliente, async (req, res) => {
+app.get("/api/atendimento/conversas", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   const escopo = atendimentoEscopo(req.query.escopo);
   if (!escopo) return res.status(400).json({ error: "Escopo inválido." });
@@ -14584,7 +17220,7 @@ app.get("/api/atendimento/conversas", blockCliente, async (req, res) => {
 // Contatos com tag posta pela equipe (botão "Tag" do atendimento ou do deskcomm). As "Empresa cliente: …"
 // ficam de fora — são automáticas (sincronização com Empresas) e estão em quase todo cliente.
 // ?escopo=dprh|contabil|fiscal: só os clientes atendidos por aquele setor; sem escopo (CRM): todos.
-app.get("/api/atendimento/contatos-tags", blockCliente, async (req, res) => {
+app.get("/api/atendimento/contatos-tags", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   const escopo = atendimentoEscopo(req.query.escopo) || "crm";
   if (!hasPermissao(user, atendimentoModulo(escopo), "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
@@ -14666,36 +17302,61 @@ sqlite.exec(`
   CREATE TABLE IF NOT EXISTS painel_tv_config (
     escritorio_id INTEGER PRIMARY KEY,
     segundos_por_pagina INTEGER NOT NULL DEFAULT 30,
+    zoom_pagina1 REAL NOT NULL DEFAULT 1.0,
+    zoom_pagina2 REAL NOT NULL DEFAULT 1.0,
     updated_at TEXT
   );
 `);
+{
+  const colsTv = sqlite.prepare(`PRAGMA table_info(painel_tv_config)`).all() as any[];
+  if (!colsTv.some((c) => c.name === "zoom_pagina1")) sqlite.exec(`ALTER TABLE painel_tv_config ADD COLUMN zoom_pagina1 REAL NOT NULL DEFAULT 1.0`);
+  if (!colsTv.some((c) => c.name === "zoom_pagina2")) sqlite.exec(`ALTER TABLE painel_tv_config ADD COLUMN zoom_pagina2 REAL NOT NULL DEFAULT 1.0`);
+}
 const PAINEL_TV_SEGUNDOS_PADRAO = 30;
+const PAINEL_TV_ZOOMS_VALIDOS = [0.8, 0.85, 0.9, 0.95, 1.0, 1.05, 1.1];
+function painelTvConfigLinha(escritorioId: number | null): any {
+  return escritorioId == null ? null : (sqlite.prepare(`SELECT segundos_por_pagina, zoom_pagina1, zoom_pagina2 FROM painel_tv_config WHERE escritorio_id = ?`).get(escritorioId) as any);
+}
 function painelTvSegundos(escritorioId: number | null): number {
-  const r = escritorioId == null ? null : (sqlite.prepare(`SELECT segundos_por_pagina FROM painel_tv_config WHERE escritorio_id = ?`).get(escritorioId) as any);
+  const r = painelTvConfigLinha(escritorioId);
   return r?.segundos_por_pagina ?? PAINEL_TV_SEGUNDOS_PADRAO;
 }
 app.get("/api/painel-tv/config", blockCliente, (req, res) => {
   const user = (req as any).user;
-  res.json({ segundosPorPagina: painelTvSegundos(user.escritorioId), padrao: PAINEL_TV_SEGUNDOS_PADRAO });
+  const r = painelTvConfigLinha(user.escritorioId);
+  res.json({
+    segundosPorPagina: r?.segundos_por_pagina ?? PAINEL_TV_SEGUNDOS_PADRAO,
+    zoomPagina1: r?.zoom_pagina1 ?? 1.0,
+    zoomPagina2: r?.zoom_pagina2 ?? 1.0,
+    padrao: PAINEL_TV_SEGUNDOS_PADRAO,
+    zoomsValidos: PAINEL_TV_ZOOMS_VALIDOS,
+  });
 });
 app.put("/api/painel-tv/config", blockCliente, requireAdmin, (req, res) => {
   const user = (req as any).user;
+  const atual = painelTvConfigLinha(user.escritorioId);
   const n = Math.round(Number(req.body?.segundosPorPagina));
   if (!Number.isFinite(n) || n < 5 || n > 600) return res.status(400).json({ error: "Informe entre 5 e 600 segundos." });
+  const validarZoom = (v: any, padrao: number) => {
+    const z = Number(v);
+    return PAINEL_TV_ZOOMS_VALIDOS.includes(z) ? z : padrao;
+  };
+  const zoom1 = req.body?.zoomPagina1 !== undefined ? validarZoom(req.body.zoomPagina1, atual?.zoom_pagina1 ?? 1.0) : (atual?.zoom_pagina1 ?? 1.0);
+  const zoom2 = req.body?.zoomPagina2 !== undefined ? validarZoom(req.body.zoomPagina2, atual?.zoom_pagina2 ?? 1.0) : (atual?.zoom_pagina2 ?? 1.0);
   sqlite
     .prepare(
-      `INSERT INTO painel_tv_config (escritorio_id, segundos_por_pagina, updated_at) VALUES (?, ?, datetime('now'))
-       ON CONFLICT(escritorio_id) DO UPDATE SET segundos_por_pagina=excluded.segundos_por_pagina, updated_at=datetime('now')`
+      `INSERT INTO painel_tv_config (escritorio_id, segundos_por_pagina, zoom_pagina1, zoom_pagina2, updated_at) VALUES (?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(escritorio_id) DO UPDATE SET segundos_por_pagina=excluded.segundos_por_pagina, zoom_pagina1=excluded.zoom_pagina1, zoom_pagina2=excluded.zoom_pagina2, updated_at=datetime('now')`
     )
-    .run(user.escritorioId, n);
-  res.json({ segundosPorPagina: n });
+    .run(user.escritorioId, n, zoom1, zoom2);
+  res.json({ segundosPorPagina: n, zoomPagina1: zoom1, zoomPagina2: zoom2 });
 });
-app.get("/api/atendimento/config", blockCliente, (req, res) => {
+app.get("/api/atendimento/config", blockCliente, requireEscritorioPrincipalDeskcomm, (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   res.json({ ...atendimentoConfig(user.escritorioId), expediente: ATENDIMENTO_EXPEDIENTE_TEXTO });
 });
-app.put("/api/atendimento/config", blockCliente, requirePermissao("crm", "editar"), (req, res) => {
+app.put("/api/atendimento/config", blockCliente, requireEscritorioPrincipalDeskcomm, requirePermissao("crm", "editar"), (req, res) => {
   const user = (req as any).user;
   const b = req.body || {};
   const int = (v: any, min: number, max: number, padrao: number) => {
@@ -14753,7 +17414,7 @@ function minutosUteisEntre(inicio: number, fim: number): number {
 // vê) e clientes esperando resposta nas conversas DELA. Só no expediente — fora dele ninguém é cobrado.
 // Mensagens NOVAS de cliente desde `desde` (qualquer conversa que a pessoa enxerga: CRM vê todas; setores só as do
 // setor). A tela chama de poucos em poucos segundos e toca som + avisa. Sem `desde` só devolve o "agora" do servidor.
-app.get("/api/atendimento/novas", blockCliente, async (req, res) => {
+app.get("/api/atendimento/novas", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   const agora = new Date().toISOString();
@@ -14798,7 +17459,7 @@ app.get("/api/atendimento/novas", blockCliente, async (req, res) => {
     res.status(502).json({ error: e.message });
   }
 });
-app.get("/api/atendimento/alertas", blockCliente, async (req, res) => {
+app.get("/api/atendimento/alertas", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.json({ itens: [], aberto: false });
@@ -14867,16 +17528,31 @@ async function deskcommRoboId(): Promise<string> {
 let deskcommRoboSessao: { cookie: string; em: number } | null = null;
 async function deskcommRoboLogin(): Promise<string> {
   await deskcommRoboId();
-  const { data, error } = await deskcommAdmin!.auth.admin.generateLink({ type: "magiclink", email: DESKCOMM_ROBO_EMAIL });
-  const tokenHash = (data as any)?.properties?.hashed_token;
-  if (error || !tokenHash) throw new Error(error?.message || "O Supabase não devolveu o token de acesso.");
-  const qs = new URLSearchParams({ token_hash: tokenHash, type: "magiclink", next: "/manifest.webmanifest" });
-  const r = await fetch(`${DESKCOMM_URL}/deskcomm/auth/confirm?${qs}`, { redirect: "manual" });
-  const setCookies: string[] = (r.headers as any).getSetCookie?.() || [];
-  const cookie = setCookies.map((c) => c.split(";")[0]).filter((c) => c.startsWith("sb-")).join("; ");
-  if (!cookie) throw new Error(`Login do usuário de automações no deskcomm falhou (HTTP ${r.status}).`);
-  deskcommRoboSessao = { cookie, em: Date.now() };
-  return cookie;
+  // O login usa um magic-link de uso único e validade curta do Supabase Auth: gera o token, confirma
+  // em /deskcomm/auth/confirm (com redirect manual) e colhe o cookie de sessão sb-* que vem no 307 de
+  // sucesso. Esse passo às vezes falha de forma TRANSITÓRIA (throttle do Supabase Auth, token que
+  // expira no limite, timing) e volta um 307 SEM cookie — antes isso estourava de primeira e, pior,
+  // uma mensagem agendada caía em 'erro' pra sempre (o agendador só reprocessa 'agendada'). Agora
+  // tenta até 3x com token NOVO a cada vez — a falha transitória se cura sozinha, como a própria
+  // mensagem de erro já prometia ("normalmente se resolve sozinho na próxima tentativa").
+  let ultimoStatus = 0;
+  for (let tentativa = 1; tentativa <= 3; tentativa++) {
+    const { data, error } = await deskcommAdmin!.auth.admin.generateLink({ type: "magiclink", email: DESKCOMM_ROBO_EMAIL });
+    const tokenHash = (data as any)?.properties?.hashed_token;
+    if (error || !tokenHash) {
+      if (tentativa === 3) throw new Error(error?.message || "O Supabase não devolveu o token de acesso.");
+      await new Promise((r) => setTimeout(r, 400 * tentativa));
+      continue;
+    }
+    const qs = new URLSearchParams({ token_hash: tokenHash, type: "magiclink", next: "/manifest.webmanifest" });
+    const r = await fetch(`${DESKCOMM_URL}/deskcomm/auth/confirm?${qs}`, { redirect: "manual" });
+    const setCookies: string[] = (r.headers as any).getSetCookie?.() || [];
+    const cookie = setCookies.map((c) => c.split(";")[0]).filter((c) => c.startsWith("sb-")).join("; ");
+    if (cookie) { deskcommRoboSessao = { cookie, em: Date.now() }; return cookie; }
+    ultimoStatus = r.status;
+    if (tentativa < 3) await new Promise((res) => setTimeout(res, 400 * tentativa));
+  }
+  throw new Error(`Login do usuário de automações no deskcomm falhou (HTTP ${ultimoStatus}).`);
 }
 async function deskcommRoboApi(caminho: string, init: { method?: string; body?: any } = {}, jaRenovou = false): Promise<any> {
   if (!deskcommRoboSessao || Date.now() - deskcommRoboSessao.em > 45 * 60_000) await deskcommRoboLogin();
@@ -14907,7 +17583,31 @@ async function deskcommRoboEnviarArquivo(telefone: string, nomeContato: string, 
   let digitos = String(telefone).replace(/\D/g, "");
   if (digitos.length <= 11) digitos = "55" + digitos;
   const phoneNumber = "+" + digitos;
-  const { conversation_id: conversationId } = await deskcommRoboApi("/conversations/open-with-contact", { method: "POST", body: { phone_number: phoneNumber, name: nomeContato } });
+  // Se já existe uma conversa FECHADA pra esse telefone, usa o id dela direto, sem chamar
+  // open-with-contact — essa rota reabre a conversa (muda service_started_at), e reabrir zera o setor
+  // atual (ver atendimentoSetorAtual, acima: ela descarta a escolha de setor anterior a
+  // service_started_at). Pedido: envio automático por essa rotina não pode reabrir conversa fechada
+  // nem deixar ela sem setor. Contato novo ou conversa já aberta seguem o caminho de sempre.
+  let conversationId: string | null = null;
+  try {
+    const { data: contato } = await deskcommAdmin.from("contacts").select("id").eq("organization_id", DESKCOMM_ORG_ID).eq("phone_number", phoneNumber).maybeSingle();
+    if (contato) {
+      const { data: conv } = await deskcommAdmin
+        .from("conversations")
+        .select("id, status")
+        .eq("organization_id", DESKCOMM_ORG_ID)
+        .eq("contact_id", contato.id)
+        .is("group_chat_id", null)
+        .order("last_message_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (conv && (conv.status === "closed" || conv.status === "archived")) conversationId = conv.id;
+    }
+  } catch { /* checagem falhou: cai no caminho normal abaixo (open-with-contact) */ }
+  if (!conversationId) {
+    const r = await deskcommRoboApi("/conversations/open-with-contact", { method: "POST", body: { phone_number: phoneNumber, name: nomeContato } });
+    conversationId = r.conversation_id;
+  }
   const fd = new FormData();
   fd.append("file", new Blob([new Uint8Array(arquivo.buffer)], { type: arquivo.tipo }), arquivo.nome);
   const up = await deskcommRoboApi(`/conversations/${conversationId}/media`, { method: "POST", body: fd });
@@ -14916,7 +17616,7 @@ async function deskcommRoboEnviarArquivo(telefone: string, nomeContato: string, 
     const { data: conv } = await deskcommAdmin.from("conversations").select("active_intent, active_agent_set_at, service_started_at").eq("organization_id", DESKCOMM_ORG_ID).eq("id", conversationId).maybeSingle();
     if (conv) {
       const { ultima } = await atendimentoEscolhas();
-      const setor = atendimentoSetorAtual(conv, ultima.get(conversationId));
+      const setor = atendimentoSetorAtual(conv, ultima.get(conversationId!));
       if (setor) texto = `*${setor}*\n${texto}`;
     }
   } catch { /* sem o setor, manda sem prefixo mesmo — mesmo comportamento da mensagem agendada */ }
@@ -14963,6 +17663,157 @@ async function enviarDocumentoWhatsapp(
     await deskcommRoboEnviarArquivo(telefone, nomeContato, arquivo, descricao);
   }
 }
+
+// ---------- Robô de cobrança de honorários contábeis em atraso, pelo WhatsApp ----------
+// Pedido do escritório: quando a empresa dona do número que está mandando mensagem tem honorários em
+// atraso, o robô responde sozinho (aviso + boleto, se já estiver anexado) e SEGURA a conversa — ela some
+// da fila de atendimento (fica atribuída ao usuário técnico "Automações", igual um atendente "assumiu"
+// a conversa) até o pagamento ser confirmado. Nasce DESLIGADO — os dois interruptores abaixo começam
+// em 0 (honorarios_robo_config) e só valem depois que o escritório ligar em Financeiro > Configuração
+// envio de boletos.
+function honorariosRoboCfg(): any {
+  sqlite.prepare(`INSERT OR IGNORE INTO honorarios_robo_config (escritorio_id) VALUES (?)`).run(DESKCOMM_ESCRITORIO_ID);
+  return sqlite.prepare(`SELECT * FROM honorarios_robo_config WHERE escritorio_id = ?`).get(DESKCOMM_ESCRITORIO_ID) as any;
+}
+// Lançamentos em aberto (pendente/atrasado) de uma empresa — mesma regra já usada hoje na ficha do
+// atendimento (ver empresaSituacao, mais abaixo): "pendente" com vencimento já passado também conta
+// como atrasado, sem precisar de um job separado pra ficar marcando status no banco.
+function honorariosLancamentosEmAberto(empresaId: number): { id: number; competencia: string; valor: number; vencimento: string; status: string; boletoPath: string | null }[] {
+  const hojeIso = new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+  return (sqlite
+    .prepare(`SELECT id, competencia, valor, vencimento, status, boleto_path FROM honorarios_lancamentos WHERE empresa_id = ? AND status IN ('pendente','atrasado') ORDER BY vencimento`)
+    .all(empresaId) as any[]).map((h) => ({ id: h.id, competencia: h.competencia, valor: h.valor, vencimento: h.vencimento, boletoPath: h.boleto_path, status: h.status === "pendente" && h.vencimento < hojeIso ? "atrasado" : h.status }));
+}
+// Solta as conversas que o robô segurou pra uma empresa — chamado quando o lançamento em atraso dela é
+// marcado como pago (ou deixa de existir) — libera de volta pra fila normal e avisa o cliente. Roda
+// independente do interruptor global estar ligado (é uma limpeza, não precisa do robô "ativo" pra soltar
+// o que ele já segurou antes).
+async function honorariosRoboLiberarEmpresa(empresaId: number, mensagem: string | null = "Pagamento confirmado — a conversa já está liberada. Obrigado! 🙂"): Promise<void> {
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return;
+  const gates = sqlite.prepare(`SELECT * FROM honorarios_robo_gate WHERE empresa_id = ? AND status = 'ativo'`).all(empresaId) as any[];
+  for (const g of gates) {
+    try {
+      await deskcommRoboApi(`/conversations/${g.conversation_id}/release`, { method: "POST" });
+      if (mensagem) await deskcommRoboEnviar(g.conversation_id, mensagem);
+      sqlite.prepare(`UPDATE honorarios_robo_gate SET status = 'liberado', liberado_em = datetime('now') WHERE id = ?`).run(g.id);
+    } catch (e: any) {
+      console.error(`[honorarios-robo] falha ao liberar a conversa ${g.conversation_id} (empresa ${empresaId}):`, e.message);
+    }
+  }
+}
+const HONORARIOS_ROBO_TEXTO_COM_BOLETO =
+  "Olá! Identificamos que há honorários contábeis em atraso para esta empresa. Para liberar o acesso e a comunicação com o escritório, por favor regularize o pagamento — segue o boleto em anexo.";
+const HONORARIOS_ROBO_TEXTO_SEM_BOLETO =
+  "Olá! Identificamos que há honorários contábeis em atraso para esta empresa. Para liberar o acesso e a comunicação com o escritório, por favor regularize o pagamento. Entre em contato por outro canal pra receber o boleto.";
+// Confere UMA conversa: acha a empresa pelo telefone, confere atraso, manda o aviso (1x por dia) e
+// segura a conversa. `gate` é a linha 'ativo' já existente em honorarios_robo_gate pra essa conversa,
+// se houver — só chama /claim quando NÃO existe ainda (reclamar de novo uma conversa que o próprio
+// robô já segura não muda nada e arrisca a API rejeitar por "expected_assignee" não bater).
+async function honorariosRoboVerificarConversa(
+  conv: { id: string; contactPhone: string | null },
+  cfg: any,
+  empresas: Map<string, { id: number; nome: string }>,
+  hojeSp: string,
+  gate: any | undefined
+): Promise<void> {
+  if (!conv.contactPhone) return;
+  // Achado em auditoria (2026-10-12): o mapa telefone→empresa (empresas, acima) guarda só a PRIMEIRA
+  // empresa achada pra cada telefone — existe de verdade o caso de um número ser sócio/responsável de
+  // mais de uma empresa (mesmo padrão já tratado no atendimento humano via
+  // atendimentoEmpresasPorTelefoneTodas). Pra um robô que manda cobrança + boleto de verdade pro
+  // WhatsApp do cliente, "advinhar errado" manda o boleto da empresa ERRADA — por isso, quando o
+  // telefone é ambíguo, o robô não age (mesma regra do fluxo humano: sem certeza, não decide sozinho).
+  if (atendimentoEmpresasPorTelefoneTodas(DESKCOMM_ESCRITORIO_ID, conv.contactPhone).length > 1) return;
+  const sufixo = crmSoDigitos(conv.contactPhone).slice(-11);
+  const empresa = empresas.get(sufixo);
+  if (!empresa) return;
+  const hon = sqlite.prepare(`SELECT participa_cobranca_robo FROM honorarios WHERE empresa_id = ?`).get(empresa.id) as any;
+  if (!hon?.participa_cobranca_robo) return;
+  const atrasados = honorariosLancamentosEmAberto(empresa.id).filter((h) => h.status === "atrasado");
+  if (!atrasados.length) return;
+  if (gate && gate.ultimo_aviso_em === hojeSp) return; // já avisou hoje — fica quieto, só continua segurando
+  const comBoleto = atrasados.find((h) => h.boletoPath);
+  await deskcommRoboEnviar(conv.id, comBoleto ? HONORARIOS_ROBO_TEXTO_COM_BOLETO : HONORARIOS_ROBO_TEXTO_SEM_BOLETO);
+  if (cfg.envio_boleto_automatico && comBoleto && comBoleto.boletoPath && fs.existsSync(comBoleto.boletoPath)) {
+    try {
+      const buf = fs.readFileSync(comBoleto.boletoPath);
+      await deskcommRoboEnviarArquivo(conv.contactPhone, empresa.nome, { nome: `Boleto ${comBoleto.competencia}.pdf`, tipo: "application/pdf", buffer: buf }, `Boleto honorários — ${comBoleto.competencia}`);
+    } catch (e: any) {
+      console.error(`[honorarios-robo] falha ao mandar o boleto (empresa ${empresa.id}):`, e.message);
+    }
+  }
+  if (!gate) {
+    try {
+      await deskcommRoboApi(`/conversations/${conv.id}/claim`, { method: "POST", body: {} });
+    } catch (e: any) {
+      console.error(`[honorarios-robo] falha ao assumir a conversa ${conv.id}:`, e.message);
+    }
+    sqlite.prepare(`INSERT INTO honorarios_robo_gate (empresa_id, conversation_id, status, ultimo_aviso_em) VALUES (?, ?, 'ativo', ?)`).run(empresa.id, conv.id, hojeSp);
+  } else {
+    sqlite.prepare(`UPDATE honorarios_robo_gate SET ultimo_aviso_em = ? WHERE id = ?`).run(hojeSp, gate.id);
+  }
+}
+let honorariosRoboRodando = false;
+async function honorariosRoboRodar(): Promise<void> {
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID || honorariosRoboRodando) return;
+  const cfg = honorariosRoboCfg();
+  if (!cfg.validacao_ativa) return;
+  honorariosRoboRodando = true;
+  try {
+    const hojeSp = new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+    const empresas = atendimentoMapaEmpresasPorTelefone(DESKCOMM_ESCRITORIO_ID);
+
+    // 1) conversas NOVAS (sem dono) com mensagem recebida desde o último checkpoint.
+    const desde = cfg.ultimo_checkpoint || new Date(Date.now() - 24 * 3600_000).toISOString();
+    const agoraIso = new Date().toISOString();
+    const { data: novas, error } = await deskcommAdmin
+      .from("conversations")
+      .select("id, status, last_inbound_at, contact:contacts(phone_number)")
+      .eq("organization_id", DESKCOMM_ORG_ID)
+      .is("group_chat_id", null)
+      .is("assigned_to_user_id", null)
+      .not("status", "in", "(closed,archived)")
+      .gt("last_inbound_at", desde)
+      .order("last_inbound_at", { ascending: true })
+      .limit(200);
+    if (error) throw new Error(error.message);
+    for (const c of novas || []) {
+      try {
+        await honorariosRoboVerificarConversa({ id: c.id, contactPhone: (c as any).contact?.phone_number || null }, cfg, empresas, hojeSp, undefined);
+      } catch (e: any) {
+        console.error(`[honorarios-robo] falha na conversa ${c.id}:`, e.message);
+      }
+    }
+    sqlite.prepare(`UPDATE honorarios_robo_config SET ultimo_checkpoint = ? WHERE escritorio_id = ?`).run(agoraIso, DESKCOMM_ESCRITORIO_ID);
+
+    // 2) conversas já SEGURADAS pelo robô — libera quem não está mais em atraso (ex.: pagamento
+    // marcado direto, sem passar pela liberação automática) e reavisa (1x por dia) quem mandou
+    // mensagem nova desde a última checagem.
+    const gatesAtivos = sqlite.prepare(`SELECT * FROM honorarios_robo_gate WHERE status = 'ativo'`).all() as any[];
+    for (const g of gatesAtivos) {
+      try {
+        const { data: conv } = await deskcommAdmin.from("conversations").select("id, status, last_inbound_at, contact:contacts(phone_number)").eq("id", g.conversation_id).maybeSingle();
+        if (!conv) continue;
+        if (!honorariosLancamentosEmAberto(g.empresa_id).some((h) => h.status === "atrasado")) {
+          await honorariosRoboLiberarEmpresa(g.empresa_id);
+          continue;
+        }
+        if (conv.status === "closed" || conv.status === "archived") continue; // fechada: nada a fazer
+        const inboundAtual = (conv as any).last_inbound_at;
+        if (!inboundAtual || inboundAtual === g.ultimo_inbound_visto) continue; // sem mensagem nova
+        sqlite.prepare(`UPDATE honorarios_robo_gate SET ultimo_inbound_visto = ? WHERE id = ?`).run(inboundAtual, g.id);
+        await honorariosRoboVerificarConversa({ id: conv.id, contactPhone: (conv as any).contact?.phone_number || null }, cfg, empresas, hojeSp, g);
+      } catch (e: any) {
+        console.error(`[honorarios-robo] falha ao reconferir a conversa segurada ${g.conversation_id}:`, e.message);
+      }
+    }
+  } catch (e: any) {
+    console.error("[honorarios-robo]", e.message);
+  } finally {
+    honorariosRoboRodando = false;
+  }
+}
+setInterval(() => honorariosRoboRodar(), 20_000);
 // ---------- Mensagens AGENDADAS do atendimento (CRM e setores): escreve agora, o site envia no horário escolhido ----------
 // Sai pelo usuário "Automações" (o site não guarda a sessão de quem agendou); quem agendou fica registrado aqui na tabela.
 sqlite.exec(`
@@ -15049,7 +17900,7 @@ function atendimentoMsgAgendadaDoUsuario(req: express.Request, res: express.Resp
   if (!m || !atendimentoAlgumaPermissao(user, "postar")) { res.status(404).json({ error: "Agendamento não encontrado." }); return null; }
   return m;
 }
-app.post("/api/atendimento/conversas/:id/agendar", blockCliente, async (req, res) => {
+app.post("/api/atendimento/conversas/:id/agendar", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
@@ -15074,7 +17925,7 @@ app.post("/api/atendimento/conversas/:id/agendar", blockCliente, async (req, res
   res.json({ ok: true, id: Number(info.lastInsertRowid), quando: quando.toISOString() });
 });
 // Lista as agendadas (de uma conversa ou do escopo inteiro: o CRM enxerga todas; cada setor, as criadas nele).
-app.get("/api/atendimento/agendadas", blockCliente, async (req, res) => {
+app.get("/api/atendimento/agendadas", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   const escopo = String(req.query.escopo || "crm");
@@ -15092,13 +17943,13 @@ app.get("/api/atendimento/agendadas", blockCliente, async (req, res) => {
   }
   res.json({ itens: rows.map((r) => ({ id: r.id, conversa: r.conversation_id, cliente: nomes.get(r.conversation_id) || "Cliente", escopo: r.escopo, texto: r.texto, quando: r.agendado_para, status: r.status, erro: r.erro, por: r.criado_por_nome, cancelaSeResponder: !!r.cancelar_se_responder, anexoNome: r.anexo_filename || null })) });
 });
-app.post("/api/atendimento/agendadas/:id/cancelar", blockCliente, (req, res) => {
+app.post("/api/atendimento/agendadas/:id/cancelar", blockCliente, requireEscritorioPrincipalDeskcomm, (req, res) => {
   const m = atendimentoMsgAgendadaDoUsuario(req, res); if (!m) return;
   if (m.status !== "agendada" && m.status !== "erro") return res.status(409).json({ error: "Essa mensagem já foi enviada." });
   sqlite.prepare(`UPDATE atendimento_msgs_agendadas SET status = 'cancelada' WHERE id = ?`).run(m.id);
   res.json({ ok: true });
 });
-app.put("/api/atendimento/agendadas/:id", blockCliente, (req, res) => {
+app.put("/api/atendimento/agendadas/:id", blockCliente, requireEscritorioPrincipalDeskcomm, (req, res) => {
   const m = atendimentoMsgAgendadaDoUsuario(req, res); if (!m) return;
   if (m.status !== "agendada") return res.status(409).json({ error: "Só dá para alterar uma mensagem que ainda não foi enviada." });
   const texto = req.body?.texto !== undefined ? String(req.body.texto).trim() : m.texto;
@@ -15108,7 +17959,7 @@ app.put("/api/atendimento/agendadas/:id", blockCliente, (req, res) => {
   sqlite.prepare(`UPDATE atendimento_msgs_agendadas SET texto = ?, agendado_para = ? WHERE id = ?`).run(texto, quando.toISOString(), m.id);
   res.json({ ok: true });
 });
-app.post("/api/atendimento/agendadas/:id/enviar-agora", blockCliente, async (req, res) => {
+app.post("/api/atendimento/agendadas/:id/enviar-agora", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const m = atendimentoMsgAgendadaDoUsuario(req, res); if (!m) return;
   if (m.status !== "agendada") return res.status(409).json({ error: "Essa mensagem não está mais aguardando." });
   await atendimentoRodarMsgAgendada(m, true);
@@ -15182,20 +18033,29 @@ async function atendimentoRodarLembretes() {
     }
     // Respostas aos lembretes enviados nas últimas 48 h: "sim" confirma o compromisso.
     const pendentes = sqlite.prepare(`SELECT * FROM atendimento_lembretes WHERE verificado_em IS NULL AND enviado_em > ?`).all(new Date(agora - 48 * 3600_000).toISOString()) as any[];
+    // Achado em auditoria (2026-10-12): deskcommPrimeiraRespostaDoCliente ficava fora de qualquer
+    // try/catch — se UM item desse pendentes travasse nessa chamada, a exceção subia pro catch de
+    // fora e abortava o resto da lista nesta execução, sem marcar verificado_em; como o item
+    // continua "pending" nas próximas rodadas (a cada 5 min, por até 48h), ele voltava a travar os
+    // outros itens pendentes repetidamente, não só uma vez. Isolado por item, como o resto dos lotes.
     for (const l of pendentes) {
-      const resp = await deskcommPrimeiraRespostaDoCliente(l.conversation_id, l.enviado_em);
-      if (!resp) continue;
-      const confirma = /^\s*(sim|s|1|confirm\w*|ok|ok[,!.]?\s*confirmado|pode confirmar|estarei (a[ií]|l[aá]))\b/i.test(resp.body || "");
-      if (confirma) {
-        try {
-          const { data: ag } = await deskcommAdmin.from("calendar_appointments").select("status").eq("id", l.appointment_id).maybeSingle();
-          if (ag?.status === "pending") await deskcommRoboApi("/agenda/agendamentos", { method: "PATCH", body: { id: l.appointment_id, status: "confirmed" } });
-        } catch (e: any) {
-          console.error("[lembrete] falha ao confirmar", l.appointment_id, e.message);
+      try {
+        const resp = await deskcommPrimeiraRespostaDoCliente(l.conversation_id, l.enviado_em);
+        if (!resp) continue;
+        const confirma = /^\s*(sim|s|1|confirm\w*|ok|ok[,!.]?\s*confirmado|pode confirmar|estarei (a[ií]|l[aá]))\b/i.test(resp.body || "");
+        if (confirma) {
+          try {
+            const { data: ag } = await deskcommAdmin.from("calendar_appointments").select("status").eq("id", l.appointment_id).maybeSingle();
+            if (ag?.status === "pending") await deskcommRoboApi("/agenda/agendamentos", { method: "PATCH", body: { id: l.appointment_id, status: "confirmed" } });
+          } catch (e: any) {
+            console.error("[lembrete] falha ao confirmar", l.appointment_id, e.message);
+          }
         }
+        sqlite.prepare(`UPDATE atendimento_lembretes SET resposta = ?, confirmado = ?, verificado_em = datetime('now') WHERE appointment_id = ?`)
+          .run(String(resp.body || "").slice(0, 500), confirma ? 1 : 0, l.appointment_id);
+      } catch (e: any) {
+        console.error("[lembrete] falha ao verificar resposta", l.appointment_id, e.message);
       }
-      sqlite.prepare(`UPDATE atendimento_lembretes SET resposta = ?, confirmado = ?, verificado_em = datetime('now') WHERE appointment_id = ?`)
-        .run(String(resp.body || "").slice(0, 500), confirma ? 1 : 0, l.appointment_id);
     }
   } catch (e: any) {
     console.error("[lembrete]", e.message);
@@ -15250,7 +18110,7 @@ sqlite.exec(`
   )
 `);
 const PESQUISA_TEXTO = "Seu atendimento foi encerrado. 🙏 Para melhorarmos, de *1 a 5*, como você avalia o atendimento que recebeu?\n(1 = muito ruim, 5 = excelente). É só responder com o número.";
-app.post("/api/atendimento/conversas/:id/pesquisa", blockCliente, async (req, res) => {
+app.post("/api/atendimento/conversas/:id/pesquisa", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
@@ -15349,7 +18209,7 @@ function empresaSituacao(empresaId: number) {
     .all(empresaId) as any[]).map((h) => ({ ...h, status: h.status === "pendente" && h.vencimento < hojeIso ? "atrasado" : h.status }));
   return { competencia, pendencias, documentos, nfse, honorarios };
 }
-app.get("/api/atendimento/empresa/:id/ficha", blockCliente, (req, res) => {
+app.get("/api/atendimento/empresa/:id/ficha", blockCliente, requireEscritorioPrincipalDeskcomm, (req, res) => {
   const user = (req as any).user;
   const id = Number(req.params.id);
   if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
@@ -15391,6 +18251,15 @@ function deskcommEmpresasIdsPorTelefone(): Map<string, { id: number; nome: strin
     }
   }
   return mapa;
+}
+// Telefone cadastral da empresa (campo "Telefone" do cadastro) já conta como vínculo no CRM, mas a tela
+// de Contatos só olhava empresa_contatos — então a empresa aparecia "Faltam configurar" mesmo tendo o
+// número. Aqui cada número do cadastro sem contato equivalente vira um contato automaticamente.
+function garantirContatosDeTelefoneCadastral(_empresaId?: number): number {
+  // DESLIGADO a pedido do usuário: não gera mais contato automático a partir do campo "Telefone" do
+  // cadastro da empresa (antes criava "<empresa> (telefone do cadastro)"). Sem um contato manual, a
+  // empresa fica em "Faltam configurar". Ver a limpeza única no startup. No-op pra não mexer em quem chama.
+  return 0;
 }
 function notaSituacaoTexto(empresas: { id: number; nome: string }[]): { headline: string; body: string } {
   const hoje = new Date().toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" }).slice(0, 5);
@@ -15483,7 +18352,7 @@ const painelMediana = (xs: number[]) => {
 };
 // Ranking de empresas que mais demandaram no MÊS e no ANO corrente (calendário, fuso de São Paulo) — fixos,
 // independentes do período escolhido no painel. Só conta mensagens recebidas (sem o histórico importado do celular).
-app.get("/api/atendimento/painel/ranking-empresas", blockCliente, async (req, res) => {
+app.get("/api/atendimento/painel/ranking-empresas", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!user.painelTv && !hasPermissao(user, "crm", "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
@@ -15522,7 +18391,7 @@ app.get("/api/atendimento/painel/ranking-empresas", blockCliente, async (req, re
     res.status(502).json({ error: e.message });
   }
 });
-app.get("/api/atendimento/painel", blockCliente, async (req, res) => {
+app.get("/api/atendimento/painel", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   // A conta dedicada do Painel de TV mostra esta visão na 2ª página, sem ter (nem precisar de) a aba CRM.
   if (!user.painelTv && !hasPermissao(user, "crm", "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
@@ -15795,7 +18664,7 @@ app.get("/api/atendimento/painel", blockCliente, async (req, res) => {
   }
 });
 // Conversa mais recente do contato (no setor: a do setor) — clicar num compromisso da Agenda abre ela.
-app.get("/api/atendimento/conversa-do-contato", blockCliente, async (req, res) => {
+app.get("/api/atendimento/conversa-do-contato", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   const escopo = atendimentoEscopo(req.query.escopo) || "crm";
   const contato = String(req.query.contato || "");
@@ -15809,7 +18678,7 @@ app.get("/api/atendimento/conversa-do-contato", blockCliente, async (req, res) =
     res.status(502).json({ error: "Falha ao ler as conversas no deskcomm: " + e.message });
   }
 });
-app.get("/api/atendimento/contatos-do-setor", blockCliente, async (req, res) => {
+app.get("/api/atendimento/contatos-do-setor", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   const escopo = atendimentoEscopo(req.query.escopo);
   if (!escopo || escopo === "crm") return res.status(400).json({ error: "Escopo inválido." });
@@ -15821,7 +18690,7 @@ app.get("/api/atendimento/contatos-do-setor", blockCliente, async (req, res) => 
     res.status(502).json({ error: "Falha ao ler as conversas no deskcomm: " + e.message });
   }
 });
-app.get("/api/atendimento/setores", blockCliente, async (req, res) => {
+app.get("/api/atendimento/setores", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
@@ -15839,7 +18708,7 @@ app.get("/api/atendimento/setores", blockCliente, async (req, res) => {
 // intenção ativa (aderência ao agente daquele setor, como o roteador faria) e SILENCIA o robô: a
 // conversa cai na Fila do setor esperando uma pessoa, não volta pro atendimento automático.
 // `intencao: null` = devolver pro atendimento geral (sem setor) — cai na Fila do CRM.
-app.post("/api/atendimento/conversas/:id/setor", blockCliente, async (req, res) => {
+app.post("/api/atendimento/conversas/:id/setor", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
@@ -15910,7 +18779,7 @@ function citacaoResumoWaha(rt: any): { resumo: string; tipo: string } {
   if (d.stickerMessage) return { resumo: "Figurinha", tipo: "sticker" };
   return { resumo: "[mensagem]", tipo: "outro" };
 }
-app.post("/api/atendimento/conversas/:id/citacoes", blockCliente, async (req, res) => {
+app.post("/api/atendimento/conversas/:id/citacoes", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   if (!deskcommAdmin || !DESKCOMM_ORG_ID || !ATENDIMENTO_WAHA_SEEN_TOKEN) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
@@ -15954,14 +18823,18 @@ app.post("/api/atendimento/conversas/:id/citacoes", blockCliente, async (req, re
 // (cliente não tem ou não deixa ver) = 404, e a tela mostra as iniciais.
 const fotoCache = new Map<string, { buf: Buffer | null; mime: string; em: number }>();
 let fotosEmAndamento = 0;
-app.get("/api/atendimento/contatos/:id/foto", blockCliente, async (req, res) => {
+app.get("/api/atendimento/contatos/:id/foto", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).end();
   if (!deskcommAdmin || !DESKCOMM_ORG_ID || !ATENDIMENTO_WAHA_SEEN_TOKEN) return res.status(404).end();
   const id = String(req.params.id);
   const enviar = (c: { buf: Buffer | null; mime: string }) => {
-    if (!c.buf) return res.status(404).end();
+    // Foto de perfil é sempre imagem — Content-Type vem de fora (CDN do WhatsApp via WAHA), então
+    // não confia cegamente: só serve se for mesmo um tipo de imagem (defesa a mais contra o mesmo
+    // risco de Content-Type malicioso tratado em GET /empresas/anexos/:id/arquivo, acima).
+    if (!c.buf || !/^image\//i.test(c.mime || "")) return res.status(404).end();
     res.setHeader("Content-Type", c.mime);
+    res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Cache-Control", "private, max-age=3600");
     res.send(c.buf);
   };
@@ -15995,7 +18868,7 @@ app.get("/api/atendimento/contatos/:id/foto", blockCliente, async (req, res) => 
     fotosEmAndamento--;
   }
 });
-app.put("/api/atendimento/contatos/:id/nome", blockCliente, async (req, res) => {
+app.put("/api/atendimento/contatos/:id/nome", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
@@ -16049,7 +18922,7 @@ async function atendimentoChamarWahaMsg(m: any, metodo: "PUT" | "DELETE", corpo?
 function atendimentoRespErro(res: express.Response, e: any) {
   res.status(e.codigo || 502).json({ error: e.message });
 }
-app.post("/api/atendimento/mensagens/:id/editar", blockCliente, async (req, res) => {
+app.post("/api/atendimento/mensagens/:id/editar", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   try {
     const m = await atendimentoMensagemParaAcao((req as any).user, String(req.params.id));
     const texto = String(req.body?.texto ?? "").trim();
@@ -16064,7 +18937,7 @@ app.post("/api/atendimento/mensagens/:id/editar", blockCliente, async (req, res)
     res.json({ ok: true });
   } catch (e: any) { atendimentoRespErro(res, e); }
 });
-app.post("/api/atendimento/mensagens/:id/excluir-para-todos", blockCliente, async (req, res) => {
+app.post("/api/atendimento/mensagens/:id/excluir-para-todos", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   try {
     const m = await atendimentoMensagemParaAcao((req as any).user, String(req.params.id));
     if (m.direction !== "outbound") return res.status(400).json({ error: "Só dá pra apagar pra todos as mensagens que nós enviamos." });
@@ -16076,7 +18949,7 @@ app.post("/api/atendimento/mensagens/:id/excluir-para-todos", blockCliente, asyn
     res.json({ ok: true });
   } catch (e: any) { atendimentoRespErro(res, e); }
 });
-app.post("/api/atendimento/mensagens/:id/excluir", blockCliente, async (req, res) => {
+app.post("/api/atendimento/mensagens/:id/excluir", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   try {
     const m = await atendimentoMensagemParaAcao((req as any).user, String(req.params.id));
     const { error } = await deskcommAdmin!.from("messages").update({ metadata: { ...(m.metadata || {}), oculta_da_equipe: true } }).eq("id", m.id);
@@ -16086,7 +18959,7 @@ app.post("/api/atendimento/mensagens/:id/excluir", blockCliente, async (req, res
 });
 // Marcar como não lida: só no deskcomm (contador que a lista usa pro destaque em negrito + bolinha). O WhatsApp do
 // celular não é mexido — o cliente não fica sabendo.
-app.post("/api/atendimento/conversas/:id/nao-lida", blockCliente, async (req, res) => {
+app.post("/api/atendimento/conversas/:id/nao-lida", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
@@ -16100,7 +18973,7 @@ app.post("/api/atendimento/conversas/:id/nao-lida", blockCliente, async (req, re
   if (!data?.length) return res.status(404).json({ error: "Conversa não encontrada." });
   res.json({ ok: true });
 });
-app.post("/api/atendimento/conversas/:id/lida", blockCliente, async (req, res) => {
+app.post("/api/atendimento/conversas/:id/lida", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   if (!deskcommAdmin || !DESKCOMM_ORG_ID || !ATENDIMENTO_WAHA_SEEN_TOKEN) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
@@ -16148,14 +19021,14 @@ app.post("/api/atendimento/conversas/:id/lida", blockCliente, async (req, res) =
 // Pra quem dá pra transferir: Administradores + Colaboradores com acesso ao módulo (no CRM, a quem tem
 // CRM ou DP/RH — o atendente geral pode passar direto pra alguém do setor), já espelhados no deskcomm
 // (quem ainda não tem espelho ganha um aqui — senão não teria como receber a conversa).
-app.get("/api/atendimento/atendentes", blockCliente, async (req, res) => {
+app.get("/api/atendimento/atendentes", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   const escopo = atendimentoEscopo(req.query.escopo);
   if (!escopo) return res.status(400).json({ error: "Escopo inválido." });
   if (!hasPermissao(user, atendimentoModulo(escopo), "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   const candidatos = (
     sqlite
-      .prepare(`SELECT id, nome, email, perfil FROM app_users WHERE escritorio_id = ? AND ativo = 1 AND painel_tv = 0 AND perfil IN ('Administrador','Colaborador') ORDER BY nome`)
+      .prepare(`SELECT id, nome, email, perfil, escritorio_id AS escritorioId FROM app_users WHERE escritorio_id = ? AND ativo = 1 AND painel_tv = 0 AND perfil IN ('Administrador','Colaborador') ORDER BY nome`)
       .all(user.escritorioId) as any[]
   ).filter((u) => (escopo === "crm" ? atendimentoAlgumaPermissao(u, "visualizar") : hasPermissao(u, atendimentoModulo(escopo), "visualizar")));
   const items: { deskcommUserId: string; nome: string }[] = [];
@@ -16588,12 +19461,15 @@ app.post("/api/email/identificar", blockCliente, requirePermissao("configuracoes
   const documentos = extrairDocumentos(texto);
   if (!documentos.length) return res.json({ documentosEncontrados: [], matches: [] });
   const placeholders = documentos.map(() => "?").join(",");
+  // Achado em auditoria (2026-10-12): faltava o filtro de escritório — devolvia empresa/CNPJ de
+  // QUALQUER escritório-cliente deste SaaS, não só o do próprio usuário, vazando carteira de
+  // clientes entre tenants pra quem testasse CNPJs conhecidos.
   const matches = sqlite
     .prepare(
       `SELECT ed.documento, ed.tipo, e.id as empresaId, e.nome as empresaNome
-       FROM empresa_documentos ed JOIN empresas e ON e.id = ed.empresa_id WHERE ed.documento IN (${placeholders}) AND e.ativo = 1`
+       FROM empresa_documentos ed JOIN empresas e ON e.id = ed.empresa_id WHERE ed.documento IN (${placeholders}) AND e.ativo = 1 AND e.escritorio_id = ?`
     )
-    .all(...documentos.map((d) => d.documento));
+    .all(...documentos.map((d) => d.documento), (req as any).user.escritorioId);
   res.json({ documentosEncontrados: documentos, matches });
 });
 
@@ -16622,20 +19498,19 @@ app.post("/api/dominio-agent/empresas", requireDominioAgent, (req, res) => {
     `INSERT INTO empresas (nome, cnpj, codigo_dominio, email, telefone, endereco, cidade, uf, cep, inscricao_municipal, inscricao_estadual, nome_representante_legal, cpf_representante_legal, ativo, origem)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'dominio')`
   );
+  // Só preenche campo vazio e nunca mexe em ativo numa empresa já cadastrada: o que foi digitado à mão
+  // (CPF, e-mail, inativação...) fica, e a sincronização não reativa/desativa empresa por conta própria.
   const update = sqlite.prepare(
-    `UPDATE empresas SET nome=?, cnpj=COALESCE(?, cnpj), email=COALESCE(?, email), telefone=COALESCE(?, telefone),
-       endereco=COALESCE(?, endereco), cidade=COALESCE(?, cidade), uf=COALESCE(?, uf), cep=COALESCE(?, cep),
-       inscricao_municipal=COALESCE(?, inscricao_municipal), inscricao_estadual=COALESCE(?, inscricao_estadual),
-       nome_representante_legal=COALESCE(?, nome_representante_legal), cpf_representante_legal=COALESCE(?, cpf_representante_legal),
-       ativo=COALESCE(?, ativo), updated_at=datetime('now') WHERE id=?`
+    `UPDATE empresas SET nome=COALESCE(NULLIF(nome,''), ?), cnpj=COALESCE(NULLIF(cnpj,''), ?), email=COALESCE(NULLIF(email,''), ?), telefone=COALESCE(NULLIF(telefone,''), ?),
+       endereco=COALESCE(NULLIF(endereco,''), ?), cidade=COALESCE(NULLIF(cidade,''), ?), uf=COALESCE(NULLIF(uf,''), ?), cep=COALESCE(NULLIF(cep,''), ?),
+       inscricao_municipal=COALESCE(NULLIF(inscricao_municipal,''), ?), inscricao_estadual=COALESCE(NULLIF(inscricao_estadual,''), ?),
+       nome_representante_legal=COALESCE(NULLIF(nome_representante_legal,''), ?), cpf_representante_legal=COALESCE(NULLIF(cpf_representante_legal,''), ?),
+       updated_at=datetime('now') WHERE id=?`
   );
   for (const it of items) {
     if (!it?.codigo || !it?.nome) continue;
     const existente = getByCodigo.get(String(it.codigo)) as any;
     if (existente) {
-      // ativo só é alterado se o item trouxer o campo explicitamente — a sincronização via Onvio
-      // não sabe a situação real (isso vem só do relatório do Domínio, feito à parte), então não
-      // deve reativar/desativar sozinha uma empresa já cadastrada.
       update.run(
         it.nome,
         it.cnpj || null,
@@ -16649,7 +19524,6 @@ app.post("/api/dominio-agent/empresas", requireDominioAgent, (req, res) => {
         it.inscricaoEstadual || null,
         it.nomeRepresentanteLegal || null,
         it.cpfRepresentanteLegal || null,
-        it.ativo === undefined ? null : it.ativo ? 1 : 0,
         existente.id
       );
       atualizadas++;
@@ -16673,7 +19547,9 @@ app.post("/api/dominio-agent/empresas", requireDominioAgent, (req, res) => {
       novas++;
     }
   }
-  sqlite.prepare(`INSERT INTO dominio_sync_log (origem, empresas_novas, empresas_atualizadas, status) VALUES ('agente', ?, ?, 'ok')`).run(novas, atualizadas);
+  // Agente AHK legado: token único/global, sempre escritório 1 (mesmo padrão do resto dessa família
+  // de rotas /api/dominio-agent/*).
+  sqlite.prepare(`INSERT INTO dominio_sync_log (origem, empresas_novas, empresas_atualizadas, status, escritorio_id) VALUES ('agente', ?, ?, 'ok', 1)`).run(novas, atualizadas);
   res.json({ ok: true, novas, atualizadas });
 });
 // Config completa (com senha/token em texto puro) — só o agente autenticado por token acessa isso.
@@ -16690,7 +19566,7 @@ app.get("/api/dominio-agent/config", requireDominioAgent, (_req, res) => {
     dbPort: c.db_port || null,
     dbName: c.db_name || "",
     dbUser: c.db_user || "",
-    dbPassword: c.db_password || "",
+    dbPassword: c.db_password ? nfse.decifrarTexto(c.db_password) : "",
     dbConnectString: c.db_connect_string || "",
     queryClientes: c.query_clientes || "",
     colCodigo: c.col_codigo || "CODIGO",
@@ -16698,7 +19574,7 @@ app.get("/api/dominio-agent/config", requireDominioAgent, (_req, res) => {
     colCnpj: c.col_cnpj || "CNPJ",
     colStatus: c.col_status || "STATUS",
     apiUrl: c.api_url || "",
-    apiToken: c.api_token || "",
+    apiToken: c.api_token ? nfse.decifrarTexto(c.api_token) : "",
     xmlExportAtivo: !!c.xml_export_ativo,
     xmlExportDir: c.xml_export_dir || "",
   });

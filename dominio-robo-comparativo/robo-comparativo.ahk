@@ -143,6 +143,15 @@ DialogoSemDados() {
     return false
 }
 
+; Existe uma janela do APP do Dominio aberta (o launcher "Lista de Programas" nao conta).
+DominioAberto() {
+    for hwnd in WinGetList("ahk_exe AppController.exe") {
+        if !InStr(WinGetTitle("ahk_id " . hwnd), "Lista de Programas")
+            return true
+    }
+    return false
+}
+
 ; Ativa a janela do APP do Dominio (a que NAO e o launcher "Lista de Programas").
 AtivarApp() {
     global DOMINIO_WIN
@@ -163,6 +172,13 @@ AtivarApp() {
 ; Launcher (app fechado / sessao caiu) esta na frente?
 NoLauncher() {
     return InStr(WinGetTitle("A"), "Lista de Programas") || InStr(WinGetTitle("A"), "Dominio Web")
+}
+
+; Dialogo do GO-Global quando o STREAMING CAI ("...was dropped. Trying to reconnect...").
+; Quando isso aparece, o Dominio sumiu da tela e qualquer clique vai no lugar errado ->
+; o robo PARA na hora (nao fica clicando as cegas durante a reconexao).
+ConexaoCaiu() {
+    return WinExist("GO-Global", "reconnect") || WinExist("GO-Global", "dropped") || WinExist("GO-Global", "connection to")
 }
 
 ; VIGIA: fecha erros do Dominio (bug do chatbot) / Windows pelo X, nunca "Finalizar".
@@ -465,6 +481,41 @@ ExtrairStr(body, chave) {
     return ""
 }
 
+; Extrai o valor numerico de uma chave do JSON: "chave":123
+ExtrairNum(body, chave) {
+    if RegExMatch(body, '"' . chave . '":(\d+)', &m)
+        return Integer(m[1])
+    return 0
+}
+
+; Atualiza os tempos (T_CURTO, T_MEDIO etc.) com o que a tela mandou no /comparativo-comando — assim
+; da pra editar esses tempos no site (Configuracoes) sem precisar baixar o robo de novo. Se a chave nao
+; vier no JSON (robo antigo/site antigo), mantem o valor atual (fallback dos defaults la em cima).
+AtualizarTempos(body) {
+    global T_CURTO, T_MEDIO, T_LONGO, T_GERAR_PDF, T_ENTRE_EMPRESAS, T_RENDER_TIMEOUT, T_MODULO_CARGA
+    v := ExtrairNum(body, "tCurtoMs")
+    if (v > 0)
+        T_CURTO := v
+    v := ExtrairNum(body, "tMedioMs")
+    if (v > 0)
+        T_MEDIO := v
+    v := ExtrairNum(body, "tLongoMs")
+    if (v > 0)
+        T_LONGO := v
+    v := ExtrairNum(body, "tGerarPdfMs")
+    if (v > 0)
+        T_GERAR_PDF := v
+    v := ExtrairNum(body, "tEntreEmpresasMs")
+    if (v > 0)
+        T_ENTRE_EMPRESAS := v
+    v := ExtrairNum(body, "tRenderTimeoutMs")
+    if (v > 0)
+        T_RENDER_TIMEOUT := v
+    v := ExtrairNum(body, "tModuloCargaMs")
+    if (v > 0)
+        T_MODULO_CARGA := v
+}
+
 ; Pergunta ao site se o usuario clicou "Parar robo" (freio de emergencia).
 DevePararSite() {
     body := HttpReq("GET", "/api/dominio-agent/comparativo-comando")
@@ -506,6 +557,13 @@ ReportarStatus(itens) {
 
 RodarCiclo(compIni, compFim) {
     global DOMINIO_WIN, T_ENTRE_EMPRESAS, SELECIONAR_MODULO
+    if !DominioAberto() {
+        Logar("ERRO: Dominio nao esta aberto - execucao cancelada.")
+        ReportarProgresso(true, 0, 0, "", true)
+        ReportarProgresso(false, 0, 0, "", false)
+        MsgBox("A Dominio nao esta aberta.`n`nAbra o Dominio Web, faca o login e tente de novo.", "Robo do Comparativo de Movimento", "Icon! T60")
+        return
+    }
     empresas := PegarEmpresas()
     total := empresas.Length
     Logar("=== EXECUCAO: " . total . " empresa(s), periodo " . compIni . " a " . compFim . " ===")
@@ -514,8 +572,8 @@ RodarCiclo(compIni, compFim) {
         ReportarProgresso(false, 0, 0, "", false)
         return
     }
-    if !WinExist(DOMINIO_WIN) {
-        Logar("ERRO: Dominio nao esta aberto - execucao cancelada.")
+    if (ConexaoCaiu()) {
+        Logar("ERRO: Conexao do GO-Global caiu (reconectando) - execucao cancelada.")
         ReportarProgresso(false, total, 0, "", false)
         return
     }
@@ -538,6 +596,10 @@ RodarCiclo(compIni, compFim) {
     for e in empresas {
         if (DevePararSite()) {           ; FREIO: usuario clicou "Parar robo" no site
             Logar("=== PARADO pelo site (freio de emergencia) apos " . feitas . "/" . total . " ===")
+            break
+        }
+        if (ConexaoCaiu()) {             ; streaming caiu -> para de clicar as cegas
+            Logar("=== PARADO: conexao do GO-Global caiu apos " . feitas . "/" . total . " ===")
             break
         }
         if (feitas > 0)
@@ -574,6 +636,7 @@ AoSair(*) {
 
 Loop {
     body := HttpReq("GET", "/api/dominio-agent/comparativo-comando")
+    AtualizarTempos(body)
     if (InStr(body, '"deveRodar":true')) {
         compIni := ExtrairStr(body, "periodoIni")
         compFim := ExtrairStr(body, "periodoFim")

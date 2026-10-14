@@ -7,6 +7,7 @@ import fs from "fs";
 import path from "path";
 import type express from "express";
 import { PDFDocument } from "pdf-lib";
+import { gerarPdfDeHtml } from "./contratos";
 
 export const SETORES_CENTRAL = ["crm", "dprh", "contabil", "fiscal"] as const;
 type Setor = (typeof SETORES_CENTRAL)[number];
@@ -28,6 +29,12 @@ type Deps = {
   identificarEmpresa: (mapa: { porDocumento: Map<string, any>; porCodigo: Map<string, any> }, texto: string, nomeArquivo: string) => { empresa: any | null; cnpjDetectado: string | null };
   extrairPeriodo: (texto: string, nomeArquivo: string) => { inicio: string; fim: string } | null;
   pdfParse: (buf: Buffer) => Promise<{ text: string }>;
+  // Ponte com a grade "Envio de Documentos" (envio_templates/envio_atribuicoes/envio_periodos) — ver
+  // registerCentralEnvio abaixo, centralEnvioEmpurrarParaGrade. São as mesmas funções que o Domínio Web
+  // e o Integra Contador já usam pra alimentar aquela grade.
+  envioObterOuCriarTemplateDraft: (escritorioId: number, nome: string) => number;
+  envioAtribuicaoObterOuCriar: (templateId: number, empresaId: number) => number;
+  envioAnexarPdf: (atribuicaoId: number, empresaId: number, ano: number, mes: number | null, nomeArquivo: string, pdfBase64: string, observacao: string, vencimentoIso: string | null) => number;
 };
 
 const norm = (s: string) => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase();
@@ -169,6 +176,31 @@ export function extrairCompetenciaMes(texto: string): string | null {
   if (nomes) { const i = MESES_NOME.indexOf(nomes[1].toLowerCase().replace("ç", "c")); if (i >= 0) return `${String(i + 1).padStart(2, "0")}/${nomes[2]}`; }
   return null;
 }
+// Competência pela "Data do processamento" (ou "Data do documento") de boletos — ex.: Contribuição
+// Sindical da CAIXA. Pega a DATA (DD/MM/AAAA) logo após o rótulo e devolve MM/AAAA. Em geral as duas
+// datas são iguais, então qualquer uma das duas dá o mesmo mês/ano.
+export function extrairCompetenciaDataProcessamento(texto: string): string | null {
+  // 1) Data logo após o rótulo "Data do processamento"/"Data do documento" (layout rótulo → valor).
+  let m =
+    /Data\s+do\s+processamento[\s\S]{0,160}?\b\d{2}\/(0[1-9]|1[0-2])\/(20\d{2})\b/i.exec(texto) ||
+    /Data\s+do\s+documento[\s\S]{0,160}?\b\d{2}\/(0[1-9]|1[0-2])\/(20\d{2})\b/i.exec(texto);
+  if (m) return `${m[1]}/${m[2]}`;
+  // 2) Fallback (boleto CAIXA): o pdf-parse pode embaralhar rótulo e valor. Pega a 1ª data DD/MM/AAAA
+  // do documento — em boleto de Contribuição Sindical doc/processamento/vencimento são do mesmo mês.
+  // (CNPJ "xx.xxx.xxx/xxxx-xx" não casa com \d{2}/MM/AAAA, então não dá falso positivo.)
+  m = /\b\d{2}\/(0[1-9]|1[0-2])\/(20\d{2})\b/.exec(texto);
+  return m ? `${m[1]}/${m[2]}` : null;
+}
+// Mês anterior ao de "MM/AAAA" — pedido pro boleto de Contribuição Sindical: ele é processado/emitido
+// no mês seguinte ao que se refere (confirmado no próprio boleto, "REF AO MES DE SETEMBRO" processado
+// em outubro), então a competência real é sempre (mês da Data do processamento) - 1.
+function mesAnterior(mmAaaa: string | null): string | null {
+  const m = mmAaaa && /^(0[1-9]|1[0-2])\/(20\d{2})$/.exec(mmAaaa);
+  if (!m) return mmAaaa;
+  let mes = Number(m[1]) - 1, ano = Number(m[2]);
+  if (mes === 0) { mes = 12; ano -= 1; }
+  return `${String(mes).padStart(2, "0")}/${ano}`;
+}
 const rotuloCompetencia = (p: { inicio: string; fim: string } | null): string | null => {
   const f = p?.fim || p?.inicio;
   return f && /^\d{4}-\d{2}/.test(f) ? `${f.slice(5, 7)}/${f.slice(0, 4)}` : null;
@@ -230,14 +262,79 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
   for (const [col, ddl] of [["texto_amostra", "TEXT"], ["grupo_id", "INTEGER"], ["e_grupo", "INTEGER NOT NULL DEFAULT 0"], ["grupo_chave", "TEXT"], ["n_arquivos", "INTEGER NOT NULL DEFAULT 1"]] as const)
     if (!colsDocs.includes(col)) db.exec(`ALTER TABLE central_envio_docs ADD COLUMN ${col} ${ddl}`);
   if (!(db.prepare(`PRAGMA table_info(central_envio_tipos)`).all() as any[]).some((c) => c.name === "agrupar")) db.exec(`ALTER TABLE central_envio_tipos ADD COLUMN agrupar INTEGER NOT NULL DEFAULT 0`);
+  // Liga o tipo a um modelo da grade "Envio de Documentos" (envio_templates) — ver
+  // centralEnvioEmpurrarParaGrade, mais abaixo. Resolvido 1x (fica gravado aqui) e nunca mais precisa
+  // procurar de novo pro mesmo tipo.
+  if (!(db.prepare(`PRAGMA table_info(central_envio_tipos)`).all() as any[]).some((c) => c.name === "template_id")) db.exec(`ALTER TABLE central_envio_tipos ADD COLUMN template_id INTEGER`);
   for (const [tab, col, ddl] of [
     ["central_envio_enviados", "entrega_ref", "INTEGER"], ["central_envio_agendados", "extras_json", "TEXT NOT NULL DEFAULT '[]'"],
     ["central_envio_agendados", "canal_whatsapp", "TEXT NOT NULL DEFAULT 'conversa'"],
+    // Interruptor Automático × Manual do envio ao cliente (aba "Programação de envio"). 1 = automático
+    // (o agendador dispara na hora marcada); 0 = manual (nada dispara sozinho; o usuário clica "Enviar").
+    ["central_envio_config", "envio_automatico", "INTEGER NOT NULL DEFAULT 1"],
   ] as const) if (!(db.prepare(`PRAGMA table_info(${tab})`).all() as any[]).some((c) => c.name === col)) db.exec(`ALTER TABLE ${tab} ADD COLUMN ${col} ${ddl}`);
   // Correção pontual de rótulo (pedida): um título do PDF ("PROVENTOS E DESCONTOSBASE PARA CÁLCULO") foi lido como nome de colaborador.
   // Só o texto do título/nome nas listas é ajustado; datas, destinatários e status dos envios não mudam. Idempotente.
   for (const tabela of ["central_envio_enviados", "central_envio_docs"]) {
     db.prepare(`UPDATE ${tabela} SET titulo = REPLACE(titulo, ' - PROVENTOS E DESCONTOSBASE PARA CÁLCULO', ''), colaborador_nome = NULL WHERE colaborador_nome LIKE 'PROVENTOS E DESCONTOS%' OR titulo LIKE '%PROVENTOS E DESCONTOSBASE PARA CÁLCULO%'`).run();
+  }
+  // Contribuição Sindical (boleto CAIXA): docs já lidos pegaram "RECLAMAÇÕES E SUGESTÕES" (cabeçalho da
+  // CAIXA) como colaborador. Limpeza idempotente: tira o colaborador e refaz o título só com
+  // "Contribuição Sindical - <empresa> - <competência (mês anterior à data de processamento)>". A
+  // condição inclui TODO documento deste tipo (não só os com o problema antigo) porque o cálculo da
+  // competência mudou pra "mês anterior" (pedido: o boleto emitido em outubro é "ref" setembro) — sem
+  // isso, pendentes já lidos ANTES dessa mudança ficariam presos com o mês errado (o do processamento).
+  try {
+    const ruins = db
+      .prepare(`SELECT cd.id, cd.tipo_nome, cd.texto_amostra, cd.competencia, e.nome AS empresa_nome
+                FROM central_envio_docs cd LEFT JOIN empresas e ON e.id = cd.empresa_id
+                WHERE cd.tipo_nome LIKE '%Contribui%Sindical%'`)
+      .all() as any[];
+    for (const r of ruins) {
+      const comp = mesAnterior(extrairCompetenciaDataProcessamento(r.texto_amostra || "")) || r.competencia || null;
+      const titulo = [r.tipo_nome, r.empresa_nome, comp].filter(Boolean).join(" - ");
+      db.prepare(`UPDATE central_envio_docs SET colaborador_nome = NULL, cpf = NULL, competencia = ?, titulo = ? WHERE id = ?`).run(comp, titulo, r.id);
+    }
+    const ruinsEnv = db
+      .prepare(`SELECT id, tipo_nome, empresa_nome, competencia FROM central_envio_enviados WHERE tipo_nome LIKE '%Contribui%Sindical%' AND (colaborador_nome IS NOT NULL OR titulo LIKE '%RECLAMA%')`)
+      .all() as any[];
+    for (const r of ruinsEnv) {
+      const titulo = [r.tipo_nome, r.empresa_nome, r.competencia].filter(Boolean).join(" - ");
+      db.prepare(`UPDATE central_envio_enviados SET colaborador_nome = NULL, titulo = ? WHERE id = ?`).run(titulo, r.id);
+    }
+    if (ruins.length || ruinsEnv.length) console.log(`Limpeza Contribuição Sindical: ${ruins.length} pendentes + ${ruinsEnv.length} enviados corrigidos.`);
+  } catch (e: any) { console.error("[limpeza contribuição sindical]", e.message); }
+  // Ponte com a grade "Envio de Documentos" (pedido): todo tipo de DP/RH ou CRM ganha um modelo
+  // rascunho na grade (envio_templates), marcado "pendente de revisão" — invisível ao cliente até o
+  // escritório abrir e confirmar. Roda em todo boot, mas só age em quem ainda não tem template_id
+  // (idempotente) — é assim que os tipos que JÁ existiam hoje (ex.: Contribuição Sindical) ganham o
+  // modelo retroativamente, de uma vez só, sem esperar o próximo documento chegar.
+  try {
+    const semPonte = db.prepare(`SELECT id, nome, escritorio_id FROM central_envio_tipos WHERE setor IN ('dprh','crm') AND ativo = 1 AND template_id IS NULL`).all() as any[];
+    for (const t of semPonte) {
+      const templateId = d.envioObterOuCriarTemplateDraft(t.escritorio_id, t.nome);
+      db.prepare(`UPDATE central_envio_tipos SET template_id = ? WHERE id = ?`).run(templateId, t.id);
+    }
+    if (semPonte.length) console.log(`Ponte Envio de Documentos: ${semPonte.length} tipo(s) de DP/RH e CRM ganharam modelo rascunho.`);
+  } catch (e: any) { console.error("[ponte envio de documentos]", e.message); }
+  // Empurra um documento já classificado (tipo + empresa resolvidos) pra grade "Envio de Documentos" —
+  // chamada depois de arquivar normalmente em central_envio_docs, só pra tipos de dprh/crm (os únicos
+  // com essa ponte por enquanto). Falha aqui nunca derruba o arquivamento normal do central-envio
+  // (quem chama trata o erro à parte).
+  async function centralEnvioEmpurrarParaGrade(tipo: { id: number; nome: string; setor: string; template_id: number | null }, empresaId: number, escritorioId: number, competencia: string | null, nomeArquivo: string, buf: Buffer): Promise<void> {
+    if (tipo.setor !== "dprh" && tipo.setor !== "crm") return;
+    let templateId = tipo.template_id;
+    if (!templateId) {
+      templateId = d.envioObterOuCriarTemplateDraft(escritorioId, tipo.nome);
+      db.prepare(`UPDATE central_envio_tipos SET template_id = ? WHERE id = ?`).run(templateId, tipo.id);
+    }
+    const atribuicaoId = d.envioAtribuicaoObterOuCriar(templateId, empresaId);
+    const m = /^(0[1-9]|1[0-2])\/(20\d{2})$/.exec(competencia || "");
+    const { ano, mes } = m ? { ano: Number(m[2]), mes: Number(m[1]) } : (() => {
+      const agora = new Date(Date.now() - 3 * 3600_000); // Brasília — cai pro mês do processamento quando a "competência" não é um único mês (ex.: "Vários", período de férias)
+      return { ano: agora.getUTCFullYear(), mes: agora.getUTCMonth() + 1 };
+    })();
+    d.envioAnexarPdf(atribuicaoId, empresaId, ano, mes, nomeArquivo, buf.toString("base64"), "Importado automaticamente da pasta de documentos.", null);
   }
   // ------------------------------------------------------------ configuração / credencial
   const credDe = (escId: number): Cred | null => {
@@ -294,7 +391,20 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
       if (melhor) empresa = { id: melhor.id, nome: melhor.nome };
     }
     const nomesEmpresas = (db.prepare(`SELECT nome FROM empresas WHERE escritorio_id = ?`).all(escId) as any[]).map((e) => norm(e.nome).replace(/\s+/g, " ").trim()).filter((n) => n.length >= 6);
-    const { colaborador, cpf } = extrairColaboradorECpf(texto, (n) => nomesEmpresas.some((e) => e === n || (n.length >= 8 && e.includes(n)) || n.includes(e)));
+    const extraidoColab = extrairColaboradorECpf(texto, (n) => nomesEmpresas.some((e) => e === n || (n.length >= 8 && e.includes(n)) || n.includes(e)));
+    // Contribuição Sindical (boleto CAIXA): NÃO pega colaborador — o parser pegava "RECLAMAÇÕES E
+    // SUGESTÕES" do cabeçalho da CAIXA; e a competência vem da Data do processamento. Título fica só
+    // "Contribuição Sindical - <empresa> - <competência>".
+    const ehContribSindical = norm(tipo?.nome || "").includes("CONTRIBUICAO SINDICAL");
+    // FGTS Digital (GFD): é guia do EMPREGADOR (lista quantidade de trabalhadores e o total, sem
+    // funcionário individual) — igual à Contribuição Sindical, não tem colaborador. Sem isso, o parser
+    // pegava o NOME DA EMPRESA (vem no campo "Nome/Razão Social do Empregador" da GFD, muitas vezes
+    // truncado/variante do cadastro — por isso o filtro de empresa não o reconhecia) e jogava na coluna
+    // Colaborador. Título fica só "FGTS - <empresa> - <competência>".
+    const ehFgts = norm(tipo?.nome || "").includes("FGTS");
+    const semColaborador = ehContribSindical || ehFgts;
+    const colaborador = semColaborador ? null : extraidoColab.colaborador;
+    const cpf = semColaborador ? null : extraidoColab.cpf;
     // extrairCompetenciaMes primeiro: quando o PDF tem um rótulo explícito "Competência: MM/AAAA" (caso do Extrato
     // Mensal/Folha Mensal), ele é a fonte mais confiável e deve valer sempre. extrairDataAfastamento foi feita pra
     // Rescisão (documento organizado por datas, sem rótulo de competência) — mas um Extrato Mensal "e Complementar"
@@ -302,9 +412,14 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     // Afastamento" dele; antes disso rodava primeiro e sequestrava a competência do documento inteiro (achado ao
     // vivo: extrato de 09/2026 saindo com competência 12/2027, puxada de uma data de afastamento de outro
     // funcionário nas páginas seguintes do mesmo PDF).
-    const competencia = extrairCompetenciaMes(texto) || extrairDataAfastamento(texto) || rotuloCompetencia(d.extrairPeriodo(texto, nomeArquivo));
+    // Contribuição Sindical: o boleto é processado/emitido no mês SEGUINTE ao que se refere (confirmado
+    // no próprio boleto, "REF AO MES DE SETEMBRO" processado em outubro) — pedido: usar sempre (mês da
+    // Data do processamento) - 1, não o mês do processamento em si.
+    const competencia = ehContribSindical
+      ? (mesAnterior(extrairCompetenciaDataProcessamento(texto)) || extrairCompetenciaMes(texto))
+      : (extrairCompetenciaMes(texto) || extrairDataAfastamento(texto) || rotuloCompetencia(d.extrairPeriodo(texto, nomeArquivo)));
     const titulo = [tipo?.nome || String(nomeArquivo).replace(/\.pdf$/i, ""), colaborador, empresa?.nome, competencia].filter(Boolean).join(" - ");
-    return { texto, agrupar: !!tipo?.agrupar, tipoId: tipo?.id ?? null, tipoNome: tipo?.nome ?? null, empresaId: empresa?.id ?? null, cnpj: cnpjDetectado, colaborador, cpf, competencia, titulo };
+    return { texto, agrupar: !!tipo?.agrupar, tipoId: tipo?.id ?? null, tipoNome: tipo?.nome ?? null, tipoSetor: tipo?.setor ?? null, tipoTemplateId: tipo?.template_id ?? null, empresaId: empresa?.id ?? null, cnpj: cnpjDetectado, colaborador, cpf, competencia, titulo };
   }
   async function mesclarPdfs(caminhos: string[]): Promise<Buffer> {
     const saida = await PDFDocument.create();
@@ -355,6 +470,15 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     ).run(escId, raiz.setor, raiz.userId, raiz.pastaId, arq.id, arq.name, arq.modifiedTime, md5, buf.length, a.tipoId, a.tipoNome, a.empresaId, a.cnpj, a.colaborador, a.cpf, a.competencia, a.titulo, destino, versao, a.texto.slice(0, 8000));
     // Tipos com "juntar num PDF só" (ex.: Folha Mensal): todos os arquivos da mesma empresa + competência viram UM pendente.
     if (a.agrupar && a.empresaId && a.competencia && /^\d{2}\/\d{4}$/.test(a.competencia)) await agruparNoPendente(escId, Number(info.lastInsertRowid), a, raiz);
+    // Ponte com a grade "Envio de Documentos" (dprh/crm) — ver centralEnvioEmpurrarParaGrade. Nunca
+    // derruba o arquivamento normal do central-envio se falhar.
+    if (a.tipoId && a.empresaId) {
+      try {
+        await centralEnvioEmpurrarParaGrade({ id: a.tipoId, nome: a.tipoNome, setor: a.tipoSetor, template_id: a.tipoTemplateId }, a.empresaId, escId, a.competencia, arq.name, buf);
+      } catch (e: any) {
+        console.error(`[ponte envio de documentos] falha ao empurrar o documento (empresa ${a.empresaId}, tipo "${a.tipoNome}"):`, e.message);
+      }
+    }
     return true;
   }
 
@@ -408,6 +532,25 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
   app.get("/api/central-envio/config", d.blockCliente, gerir, (req, res) => {
     const c = db.prepare(`SELECT sa_email, ultimo_erro, ultima_varredura, dias_inicial, sa_json_cifrado IS NOT NULL as ok FROM central_envio_config WHERE escritorio_id = ?`).get((req as any).user.escritorioId) as any;
     res.json({ conectado: !!c?.ok, email: c?.sa_email || null, ultimoErro: c?.ultimo_erro || null, ultimaVarredura: c?.ultima_varredura || null, diasInicial: c?.dias_inicial || 30 });
+  });
+  // ------------------------------------------------------------ Programação de envio (Automático × Manual)
+  // Envio ao cliente está em automático neste escritório? (aba "Programação de envio"). Default: sim.
+  const envioAutomaticoLigado = (escId: number): boolean => {
+    const r = db.prepare(`SELECT envio_automatico FROM central_envio_config WHERE escritorio_id = ?`).get(escId) as any;
+    return r ? r.envio_automatico !== 0 : true; // sem config = comportamento antigo (automático)
+  };
+  app.get("/api/central-envio/programacao", d.blockCliente, gerir, (req, res) => {
+    const esc = (req as any).user.escritorioId;
+    const aguardando = (db.prepare(`SELECT COUNT(*) n FROM central_envio_agendados a JOIN central_envio_docs x ON x.id = a.doc_id WHERE a.escritorio_id = ? AND a.status = 'agendado' AND a.canal_whatsapp = 'meta' AND x.setor != 'crm' AND a.agendado_para <= datetime('now') AND julianday(a.agendado_para) <= julianday(a.criado_em) + 20.0/86400`).get(esc) as any).n;
+    res.json({ automatico: envioAutomaticoLigado(esc), aguardando });
+  });
+  app.put("/api/central-envio/programacao", d.blockCliente, d.requireAdmin, (req, res) => {
+    const esc = (req as any).user.escritorioId;
+    const automatico = req.body?.automatico ? 1 : 0;
+    db.prepare(`INSERT INTO central_envio_config (escritorio_id, envio_automatico) VALUES (?, ?)
+                ON CONFLICT(escritorio_id) DO UPDATE SET envio_automatico = excluded.envio_automatico`).run(esc, automatico);
+    const aguardando = (db.prepare(`SELECT COUNT(*) n FROM central_envio_agendados a JOIN central_envio_docs x ON x.id = a.doc_id WHERE a.escritorio_id = ? AND a.status = 'agendado' AND a.canal_whatsapp = 'meta' AND x.setor != 'crm' AND a.agendado_para <= datetime('now') AND julianday(a.agendado_para) <= julianday(a.criado_em) + 20.0/86400`).get(esc) as any).n;
+    res.json({ ok: true, automatico: !!automatico, aguardando });
   });
   app.put("/api/central-envio/config", d.blockCliente, d.requireAdmin, async (req, res) => {
     const esc = (req as any).user.escritorioId;
@@ -615,6 +758,97 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     if (!doc || !(d.hasPermissao(user, doc.setor, "visualizar") || d.hasPermissao(user, "crm", "visualizar"))) { res.status(404).json({ error: "Documento não encontrado." }); return null; }
     return doc;
   };
+  // Relatório (PDF) da aba Enviados com os mesmos filtros da tela — pra conferência interna.
+  app.get("/api/central-envio/enviados/relatorio.pdf", d.blockCliente, async (req, res) => {
+    const user = (req as any).user;
+    const setores = visiveis(user, req.query.setor);
+    if (!setores) return semAcesso(res);
+    const esc = user.escritorioId;
+    const busca = `%${String(req.query.busca || "").toLowerCase().replace(/[%_]/g, "")}%`;
+    const marcas = setores.map(() => "?").join(",");
+    const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
+    const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
+    const situacao = typeof req.query.situacao === "string" ? req.query.situacao : "";
+    const rows = db.prepare(
+      `SELECT * FROM central_envio_enviados WHERE escritorio_id = ? AND setor IN (${marcas}) AND (LOWER(COALESCE(empresa_nome,'')) LIKE ? OR LOWER(COALESCE(titulo,'')) LIKE ?)
+       ORDER BY empresa_nome, enviado_em, id`
+    ).all(esc, ...setores, busca, busca) as any[];
+    const refs = [...new Set(rows.map((r) => r.entrega_ref || r.id))];
+    const st = refs.length ? (db.prepare(`SELECT origem_id, status FROM whatsapp_mensagens WHERE origem_tabela = 'central_envio_enviados' AND origem_id IN (${refs.map(() => "?").join(",")})`).all(...refs) as any[]) : [];
+    const mapa = new Map(st.map((s) => [s.origem_id, s.status]));
+    const classificar = (r: any): string => {
+      if (r.status !== "ok") return "erro";
+      const entrega = r.canal === "whatsapp" ? mapa.get(r.entrega_ref || r.id) : null;
+      if (entrega === "delivered") return "entregue";
+      if (entrega === "read") return "lido";
+      if (entrega === "failed") return "falhou_entrega";
+      return "enviado";
+    };
+    const filtrados = rows.filter((r) => {
+      const dia = String(r.enviado_em || "").slice(0, 10);
+      if (dataDe && dia < dataDe) return false;
+      if (dataAte && dia > dataAte) return false;
+      if (situacao && classificar(r) !== situacao) return false;
+      return true;
+    });
+    const rotuloSituacao: Record<string, string> = { enviado: "Enviado", entregue: "Enviado · entregue", lido: "Enviado · lido ✓✓", falhou_entrega: "Falhou na entrega", erro: "Erro" };
+    const cor: Record<string, string> = { enviado: "#DFF7EC", entregue: "#DFF7EC", lido: "#DFF7EC", falhou_entrega: "#fde2e2", erro: "#fde2e2" };
+    const fmtData = (iso: string | null) => {
+      if (!iso) return "—";
+      const dt = new Date(String(iso).includes("T") || String(iso).includes("Z") ? iso : String(iso).replace(" ", "T") + "Z");
+      return isNaN(dt.getTime()) ? "—" : dt.toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo", day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+    };
+    const h = (s: any) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    const grupos = new Map<string, any[]>();
+    for (const r of filtrados) {
+      const k = r.empresa_nome || "Sem empresa";
+      if (!grupos.has(k)) grupos.set(k, []);
+      grupos.get(k)!.push(r);
+    }
+    const contagem = (c: string) => filtrados.filter((r) => classificar(r) === c).length;
+    const periodo = dataDe || dataAte ? `${dataDe ? dataDe.split("-").reverse().join("/") : "…"} até ${dataAte ? dataAte.split("-").reverse().join("/") : "…"}` : "todo o período";
+    const blocos = [...grupos.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0], "pt-BR"))
+      .map(([nome, lista]) => `
+        <div class="forn-head"><span class="forn-nome">${h(nome)}</span><span class="forn-cnpj">${lista.length} envio(s)</span></div>
+        <table class="rep">
+          <colgroup><col style="width:15%"><col style="width:33%"><col style="width:15%"><col style="width:20%"><col style="width:17%"></colgroup>
+          <thead><tr><th>Quando</th><th>Documento</th><th>Canal</th><th>Destino</th><th>Situação</th></tr></thead>
+          <tbody>${lista
+            .map((r) => {
+              const c = classificar(r);
+              return `<tr><td>${h(fmtData(r.enviado_em))}</td><td><b>${h(r.titulo || "")}</b>${r.tipo_nome ? `<div class="sub">${h(r.tipo_nome)}</div>` : ""}</td><td>${r.canal === "whatsapp" ? "WhatsApp" : "E-mail"}</td><td>${h(r.destino || "—")}</td><td><span class="sit" style="background:${cor[c]}">${h(rotuloSituacao[c])}</span>${r.erro && c === "erro" ? `<div class="sub" style="color:#9b1c1c;">${h(r.erro)}</div>` : ""}</td></tr>`;
+            })
+            .join("")}</tbody>
+        </table>`)
+      .join("");
+    const html = `<style>
+      body { font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 9px; color:#2b2b2b; }
+      .cab { border-bottom: 2.5px solid #159873; padding-bottom: 7px; margin-bottom: 10px; }
+      h1 { font-size: 16px; margin: 0 0 3px; color:#0E6B52; }
+      .cab p { margin: 1px 0; color:#555; font-size: 9.5px; }
+      .resumo { display:inline-block; background:#DFF7EC; border-radius:6px; padding:5px 10px; margin-right:6px; font-weight:700; color:#0E6B52; font-size:9.5px; }
+      .forn-head { background:#DFF7EC; border-left:4px solid #159873; border-radius:3px; padding:5px 8px; margin:12px 0 4px; display:flex; justify-content:space-between; }
+      .forn-nome { font-size: 10.5px; font-weight:700; color:#0E6B52; }
+      .forn-cnpj { font-size: 8.5px; color:#3b8268; }
+      table.rep { border-collapse: collapse; width: 100%; table-layout: fixed; margin: 0 0 6px; }
+      table.rep th, table.rep td { border: 1px solid #cdeee1; padding: 3px 5px; overflow-wrap: break-word; vertical-align: top; }
+      table.rep th { background:#DFF7EC; color:#0E6B52; text-align:left; font-size: 7.8px; text-transform:uppercase; letter-spacing:.2px; }
+      table.rep tbody tr:nth-child(even) td { background:#F5FCFA; }
+      .sub { font-size: 8px; color:#666; margin-top:2px; }
+      .sit { display:inline-block; border-radius:4px; padding:1px 5px; font-size:8px; font-weight:700; color:#2b2b2b; }
+    </style>
+    <div class="cab">
+      <h1>Relatório de documentos enviados</h1>
+      <p><b>Período:</b> ${h(periodo)} · <b>Gerado em:</b> ${h(fmtData(new Date().toISOString().replace("T", " ").slice(0, 19)))}</p>
+      <p><span class="resumo">${filtrados.length} envio(s)</span><span class="resumo">${contagem("enviado") + contagem("entregue") + contagem("lido")} enviados</span><span class="resumo">${contagem("falhou_entrega") + contagem("erro")} com erro</span></p>
+    </div>
+    ${blocos || '<p style="color:#666;">Nenhum envio no filtro escolhido.</p>'}`;
+    const pdf = await gerarPdfDeHtml(html, "Relatório de documentos enviados", { landscape: true });
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="Documentos enviados.pdf"`);
+    res.send(pdf);
+  });
   app.get("/api/central-envio/docs/:id/pdf", d.blockCliente, (req, res) => {
     const doc = docDoUsuario(req, res); if (!doc) return;
     if (!fs.existsSync(doc.arquivo_path)) return res.status(404).json({ error: "Arquivo não encontrado no servidor." });
@@ -665,6 +899,13 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
       .run(a.tipoId, a.tipoNome, a.empresaId, a.cnpj, a.colaborador, a.cpf, a.competencia, a.titulo, a.texto.slice(0, 8000), doc.id);
     // Tipo que junta arquivos (Folha Mensal): ao reler, se agora dá pra saber empresa e competência, entra no PDF único.
     if (a.agrupar && a.empresaId && a.competencia && /^\d{2}\/\d{4}$/.test(a.competencia)) await agruparNoPendente(doc.escritorio_id, doc.id, a, { setor: doc.setor, userId: doc.user_id, pastaId: doc.pasta_id });
+    if (a.tipoId && a.empresaId) {
+      try {
+        await centralEnvioEmpurrarParaGrade({ id: a.tipoId, nome: a.tipoNome, setor: a.tipoSetor, template_id: a.tipoTemplateId }, a.empresaId, doc.escritorio_id, a.competencia, doc.nome_arquivo, fs.readFileSync(doc.arquivo_path));
+      } catch (e: any) {
+        console.error(`[ponte envio de documentos] falha ao empurrar o documento relido (empresa ${a.empresaId}, tipo "${a.tipoNome}"):`, e.message);
+      }
+    }
     res.json({ ok: true, titulo: a.titulo });
   });
   app.post("/api/central-envio/docs/:id/ignorar", d.blockCliente, (req, res) => {
@@ -820,8 +1061,29 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     }
   }
   setInterval(async () => {
-    const vencidos = db.prepare(`SELECT * FROM central_envio_agendados WHERE status = 'agendado' AND agendado_para <= ? ORDER BY agendado_para, id LIMIT 40`).all(new Date().toISOString()) as any[];
-    for (const a of vencidos) { await rodarAgendado(a).catch((e) => console.error("[central-envio] agendado:", e.message)); await new Promise((r) => setTimeout(r, 300)); } // pausa curta: envio em massa sem estourar o limite do WhatsApp
+    const vencidos = db.prepare(
+      // "programado" = o usuário escolheu uma data/hora futura (agendado_para bem depois da criação).
+      // "imediato" = disparo na hora (lote "Agora"/rotina): agendado_para ≈ criação.
+      `SELECT a.*, (SELECT setor FROM central_envio_docs WHERE id = a.doc_id) as doc_setor,
+              CASE WHEN julianday(a.agendado_para) > julianday(a.criado_em) + 20.0/86400 THEN 1 ELSE 0 END as programado
+       FROM central_envio_agendados a WHERE a.status = 'agendado' AND a.agendado_para <= ? ORDER BY a.agendado_para, a.id LIMIT 40`
+    ).all(new Date().toISOString()) as any[];
+    const autoCache = new Map<number, boolean>();
+    for (const a of vencidos) {
+      // Modo MANUAL: a trava segura SÓ o envio automático/imediato que sai pelo NÚMERO OFICIAL DA META
+      // (canal_whatsapp = 'meta'), da rotina do Envio de Documentos. NÃO afeta:
+      //   • envios pelo número do atendimento/deskcomm (canal 'conversa') — disparam sempre;
+      //   • e-mail — dispara sempre;
+      //   • o envio em lote do CRM (setor 'crm') — dispara sempre;
+      //   • o que o usuário AGENDOU para uma data futura (programado) — dispara na hora marcada.
+      // O robô de baixar/anexar também continua normal.
+      if (a.canal_whatsapp === "meta" && a.doc_setor !== "crm" && !a.programado) {
+        if (!autoCache.has(a.escritorio_id)) autoCache.set(a.escritorio_id, envioAutomaticoLigado(a.escritorio_id));
+        if (!autoCache.get(a.escritorio_id)) continue;
+      }
+      await rodarAgendado(a).catch((e) => console.error("[central-envio] agendado:", e.message));
+      await new Promise((r) => setTimeout(r, 300)); // pausa curta: envio em massa sem estourar o limite do WhatsApp
+    }
   }, 15_000).unref();
   // ------------------------------------------------------------ EM LOTE: vários documentos (de várias empresas) de uma vez
   // Cada documento vai para os contatos ativos DA PRÓPRIA empresa. "Agora" também passa pelo agendador (dispara em segundos, em segundo plano).
@@ -850,14 +1112,25 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     const ok: number[] = [];
     const validos: { doc: any; telefones: string[]; emails: string[] }[] = [];
     const ignorados: { id: number; titulo: string; motivo: string }[] = [];
+    // Destinatários escolhidos por documento (checkboxes do modal). Sem isso, vai para todos os contatos da empresa.
+    const escolhas: Record<string, { telefones?: string[]; emails?: string[] }> | null = req.body?.destinatarios && typeof req.body.destinatarios === "object" ? req.body.destinatarios : null;
     for (const id of ids) {
       const doc = db.prepare(`SELECT * FROM central_envio_docs WHERE id = ? AND escritorio_id = ?`).get(id, user.escritorioId) as any;
       if (!doc) continue;
       const motivo = doc.status !== "pendente" ? "já foi enviado, agendado ou dispensado" : !d.hasPermissao(user, doc.setor, "postar") ? "sem permissão neste setor" : !doc.empresa_id ? "sem empresa" : !fs.existsSync(doc.arquivo_path) ? "arquivo não está no servidor" : null;
       const c = contatosDaEmpresa(doc.empresa_id);
-      const telefones = canais.includes("whatsapp") ? c.whatsapp.map((w: any) => w.telefone) : [];
-      const emails = canais.includes("email") ? c.email.map((m: any) => m.email) : [];
-      const m2 = motivo || (!telefones.length && !emails.length ? "empresa sem contato ativo nos canais escolhidos" : null);
+      let telefones: string[], emails: string[];
+      if (escolhas) {
+        const esc = escolhas[String(id)] || {};
+        const telValidos = new Set(c.whatsapp.map((w: any) => w.telefone));
+        const mailValidos = new Set(c.email.map((m: any) => m.email));
+        telefones = canais.includes("whatsapp") ? (esc.telefones || []).filter((t) => telValidos.has(t)) : [];
+        emails = canais.includes("email") ? (esc.emails || []).filter((e) => mailValidos.has(e)) : [];
+      } else {
+        telefones = canais.includes("whatsapp") ? c.whatsapp.map((w: any) => w.telefone) : [];
+        emails = canais.includes("email") ? c.email.map((m: any) => m.email) : [];
+      }
+      const m2 = motivo || (!telefones.length && !emails.length ? "nenhum destinatário marcado" : null);
       if (m2) { ignorados.push({ id, titulo: doc.titulo, motivo: m2 }); continue; }
       validos.push({ doc, telefones, emails });
       ok.push(id);
@@ -865,7 +1138,9 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     // "Uma mensagem por empresa": os documentos da mesma empresa saem juntos (e-mail com todos os anexos; WhatsApp com um PDF único).
     const grupos = new Map<string, { doc: any; telefones: string[]; emails: string[]; extras: number[] }>();
     for (const v of validos) {
-      const chave = req.body?.porEmpresa ? `e${v.doc.empresa_id}` : `d${v.doc.id}`;
+      // Mesma empresa e mesmos destinatários saem juntos; se os destinatários marcados forem diferentes, cada grupo sai separado.
+      const assinatura = [...v.telefones].sort().join(",") + "|" + [...v.emails].sort().join(",");
+      const chave = req.body?.porEmpresa ? `e${v.doc.empresa_id}|${assinatura}` : `d${v.doc.id}`;
       const g = grupos.get(chave);
       if (g) g.extras.push(v.doc.id); else grupos.set(chave, { ...v, extras: [] });
     }

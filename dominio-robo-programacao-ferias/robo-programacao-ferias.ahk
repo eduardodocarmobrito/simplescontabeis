@@ -59,6 +59,7 @@ FAV_DOWNS   := 2
 T_CURTO  := 700
 T_MEDIO  := 2000
 T_LONGO  := 4000
+T_EMPRESA := 4000        ; espera depois de selecionar a empresa, antes de abrir o Favoritos
 T_GERAR_PDF      := 15000
 T_ENTRE_EMPRESAS := 15000
 T_RENDER_TIMEOUT := 90000                  ; espera o relatorio renderizar ate 90s; senao trata como sem dados
@@ -141,6 +142,15 @@ TelaParamAberta() {
     return false
 }
 
+; Existe uma janela do APP do Dominio aberta (o launcher "Lista de Programas" nao conta).
+DominioAberto() {
+    for hwnd in WinGetList("ahk_exe AppController.exe") {
+        if !InStr(WinGetTitle("ahk_id " . hwnd), "Lista de Programas")
+            return true
+    }
+    return false
+}
+
 ; Ativa a janela do APP do Dominio (a que NAO e o launcher "Lista de Programas").
 AtivarApp() {
     global DOMINIO_WIN
@@ -161,6 +171,13 @@ AtivarApp() {
 ; Launcher (app fechado / sessao caiu) esta na frente?
 NoLauncher() {
     return InStr(WinGetTitle("A"), "Lista de Programas") || InStr(WinGetTitle("A"), "Dominio Web")
+}
+
+; Dialogo do GO-Global quando o STREAMING CAI ("...was dropped. Trying to reconnect...").
+; Quando isso aparece, o Dominio sumiu da tela e qualquer clique vai no lugar errado ->
+; o robo PARA na hora (nao fica clicando as cegas durante a reconexao).
+ConexaoCaiu() {
+    return WinExist("GO-Global", "reconnect") || WinExist("GO-Global", "dropped") || WinExist("GO-Global", "connection to")
 }
 
 ; VIGIA: fecha erros do Dominio (bug do chatbot) / Windows pelo X, nunca "Finalizar".
@@ -184,7 +201,7 @@ FecharErroSistema() {
 }
 
 TrocarEmpresa(codigo) {
-    global T_CURTO, T_MEDIO, T_LONGO
+    global T_CURTO, T_MEDIO, T_LONGO, T_EMPRESA
     Send "{F8}"
     Sleep T_MEDIO
     Send "^a"
@@ -192,7 +209,12 @@ TrocarEmpresa(codigo) {
     SendText codigo
     Sleep T_MEDIO
     Send "{Enter}"
-    Sleep T_LONGO
+    Sleep T_EMPRESA
+    ; Fecha qualquer quadro de aviso que apareça na troca de empresa (antes do Favoritos).
+    Send "{Esc}"
+    Sleep T_CURTO
+    Send "{Esc}"
+    Sleep T_CURTO
 }
 
 ; Abre Favoritos > Programacao de Ferias (Alt+F -> Down x FAV_DOWNS -> Enter), com foco antes.
@@ -431,6 +453,44 @@ ProcessarEmpresaVerificado(codigo) {
 }
 
 ; ------------------------------------------------------------- SITE (comandos)
+; Extrai o valor numerico de uma chave do JSON: "chave":123
+ExtrairNum(body, chave) {
+    if RegExMatch(body, '"' . chave . '":(\d+)', &m)
+        return Integer(m[1])
+    return 0
+}
+
+; Atualiza os tempos (T_CURTO, T_MEDIO etc.) com o que a tela mandou no /ferias-comando — assim da pra
+; editar esses tempos no site (Configuracoes) sem precisar baixar o robo de novo. Se a chave nao vier
+; no JSON (robo antigo/site antigo), mantem o valor atual (fallback dos defaults la em cima).
+AtualizarTempos(body) {
+    global T_CURTO, T_MEDIO, T_LONGO, T_GERAR_PDF, T_ENTRE_EMPRESAS, T_RENDER_TIMEOUT, T_MODULO_CARGA, T_EMPRESA
+    v := ExtrairNum(body, "tEmpresaMs")
+    if (v > 0)
+        T_EMPRESA := v
+    v := ExtrairNum(body, "tCurtoMs")
+    if (v > 0)
+        T_CURTO := v
+    v := ExtrairNum(body, "tMedioMs")
+    if (v > 0)
+        T_MEDIO := v
+    v := ExtrairNum(body, "tLongoMs")
+    if (v > 0)
+        T_LONGO := v
+    v := ExtrairNum(body, "tGerarPdfMs")
+    if (v > 0)
+        T_GERAR_PDF := v
+    v := ExtrairNum(body, "tEntreEmpresasMs")
+    if (v > 0)
+        T_ENTRE_EMPRESAS := v
+    v := ExtrairNum(body, "tRenderTimeoutMs")
+    if (v > 0)
+        T_RENDER_TIMEOUT := v
+    v := ExtrairNum(body, "tModuloCargaMs")
+    if (v > 0)
+        T_MODULO_CARGA := v
+}
+
 DevePararSite() {
     body := HttpReq("GET", "/api/dominio-agent/ferias-comando")
     return InStr(body, '"parar":true') ? true : false
@@ -471,6 +531,13 @@ ReportarStatus(itens) {
 
 RodarCiclo() {
     global DOMINIO_WIN, T_ENTRE_EMPRESAS, SELECIONAR_MODULO
+    if !DominioAberto() {
+        Logar("ERRO: Dominio nao esta aberto - execucao cancelada.")
+        ReportarProgresso(true, 0, 0, "", true)
+        ReportarProgresso(false, 0, 0, "", false)
+        MsgBox("A Dominio nao esta aberta.`n`nAbra o Dominio Web, faca o login e tente de novo.", "Robo da Programacao de Ferias", "Icon! T60")
+        return
+    }
     empresas := PegarEmpresas()
     total := empresas.Length
     Logar("=== EXECUCAO: " . total . " empresa(s) (Programacao de Ferias) ===")
@@ -479,8 +546,8 @@ RodarCiclo() {
         ReportarProgresso(false, 0, 0, "", false)
         return
     }
-    if !WinExist(DOMINIO_WIN) {
-        Logar("ERRO: Dominio nao esta aberto - execucao cancelada.")
+    if (ConexaoCaiu()) {
+        Logar("ERRO: Conexao do GO-Global caiu (reconectando) - execucao cancelada.")
         ReportarProgresso(false, total, 0, "", false)
         return
     }
@@ -502,6 +569,10 @@ RodarCiclo() {
     for e in empresas {
         if (DevePararSite()) {
             Logar("=== PARADO pelo site (freio de emergencia) apos " . feitas . "/" . total . " ===")
+            break
+        }
+        if (ConexaoCaiu()) {             ; streaming caiu -> para de clicar as cegas
+            Logar("=== PARADO: conexao do GO-Global caiu apos " . feitas . "/" . total . " ===")
             break
         }
         if (feitas > 0)
@@ -537,6 +608,7 @@ AoSair(*) {
 
 Loop {
     body := HttpReq("GET", "/api/dominio-agent/ferias-comando")
+    AtualizarTempos(body)
     if (InStr(body, '"deveRodar":true')) {
         RodarCiclo()
     }

@@ -352,9 +352,18 @@ export function registerWebmail(app: express.Express, d: Deps) {
     } catch (e) { falha(res, e); }
   });
 
+  // Achado em auditoria (2026-10-12): sem limite nenhum — a caixa é UMA só por escritório (SMTP do
+  // Gmail), compartilhada entre todos os colaboradores; sem freio, dava pra esgotar a cota diária do
+  // Gmail ou fazer a conta ser marcada como spam/suspensa com um loop de envio.
+  const emailEnvios = new Map<number, { n: number; ate: number }>();
   // Envia (novo, resposta ou encaminhamento). Multipart: campos + arquivos em "anexos".
   app.post("/api/email/enviar", d.blockCliente, d.requirePermissao("email", "postar"), d.upload.array("anexos", 10), async (req, res) => {
     const c = cred(req, res); if (!c) return;
+    const escritorioId = (req as any).user.escritorioId;
+    const trava = emailEnvios.get(escritorioId);
+    if (trava && trava.ate > Date.now() && trava.n >= 30) return res.status(429).json({ error: "Muitos e-mails enviados em pouco tempo por esta caixa — espere um pouco antes de enviar mais." });
+    if (!trava || trava.ate <= Date.now()) emailEnvios.set(escritorioId, { n: 1, ate: Date.now() + 10 * 60_000 });
+    else trava.n++;
     const b = req.body || {};
     const lista = (v: any) => String(v || "").split(/[;,\n]/).map((s) => s.trim()).filter(Boolean);
     const para = lista(b.para), cc = lista(b.cc), cco = lista(b.cco);
