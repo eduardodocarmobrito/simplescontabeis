@@ -11876,12 +11876,35 @@ function atdAgendarModal(S, input){
     }catch(e){ toast(e.message,'err'); b.disabled=false; b.textContent='Agendar'; }
   });
 }
+// Traduz o motivo cru (em inglês, vindo da API do atendimento) da falha de uma mensagem agendada
+// pra uma explicação em português que o usuário entenda — mantém o texto original entre parênteses
+// pra diagnóstico. Cobre as causas típicas (WhatsApp desconectado, sessão/login, conversa sumiu, etc.).
+function traduzErroEnvioWpp(erro){
+  const e = String(erro||'').trim(); if(!e) return 'Falhou sem motivo registrado.';
+  const b = e.toLowerCase();
+  let msg = null;
+  if(/not connected|disconnected|session.*(not|closed|expired|found)|no session|not logged|logged out|qr|unpaired|device|phone.*(offline|disconnected)/.test(b))
+    msg = 'O WhatsApp do número de atendimento estava desconectado na hora do envio. Reconecte o WhatsApp no deskcomm e reenvie.';
+  else if(/unauthor|401|forbidden|403|token|credential|login/.test(b))
+    msg = 'O site não conseguiu autenticar no atendimento (sessão expirada no servidor). Normalmente se resolve sozinho na próxima tentativa — é só reenviar.';
+  else if(/conversation.*(not found|deleted)|no conversation|contact.*not found|404/.test(b))
+    msg = 'A conversa/contato não foi encontrado no atendimento (pode ter sido apagada).';
+  else if(/rate|too many|429|flood|limit/.test(b))
+    msg = 'Muitos envios em sequência — o WhatsApp bloqueou momentaneamente. Espere um pouco e reenvie.';
+  else if(/invalid.*(number|phone)|not.*whatsapp|no.*whatsapp account/.test(b))
+    msg = 'O número do cliente não é um WhatsApp válido.';
+  else if(/timeout|timed out|econnreset|network|fetch failed|socket|502|503|504/.test(b))
+    msg = 'O servidor de atendimento falhou/caiu por um instante. É só reenviar.';
+  else if(/media|upload|storage|file/.test(b))
+    msg = 'Falha no anexo da mensagem (upload/arquivo). Reenvie o anexo.';
+  return msg ? `${msg} <span style="color:var(--ink-soft)">(detalhe: ${esc(e)})</span>` : esc(e);
+}
 async function atdAgendadasModal(S, conversaId){
   let r; try{ r = await api(`/atendimento/agendadas?escopo=${S.escopo}${conversaId?'&conversa='+encodeURIComponent(conversaId):''}`); }catch(e){ toast(e.message,'err'); return; }
   const podePostar = can(S.cfg.modulo,'postar');
   openModal(`<h3>🕗 Mensagens agendadas${conversaId?' desta conversa':''}</h3>
     ${r.itens.length?`<div class="card" style="padding:0; max-height:380px; overflow-y:auto;"><table class="data-table"><thead><tr><th>Envio em</th><th>Cliente</th><th>Mensagem</th><th></th></tr></thead><tbody>
-      ${r.itens.map(i=>`<tr data-id="${i.id}"><td style="white-space:nowrap;"><b>${esc(cenvDataHora(i.quando))}</b>${i.status==='erro'?`<div><span class="tag bad" title="${esc(i.erro||'')}">Falhou</span></div>`:''}${i.status==='cancelada'?`<div><span class="tag warn">Cancelada: cliente respondeu</span></div>`:''}${i.status==='agendada'&&i.cancelaSeResponder?'<div style="font-size:11px; color:var(--ink-soft);">cancela se o cliente responder</div>':''}<div style="font-size:11px; color:var(--ink-soft);">por ${esc(i.por||'—')}</div></td>
+      ${r.itens.map(i=>`<tr data-id="${i.id}"><td style="white-space:nowrap;"><b>${esc(cenvDataHora(i.quando))}</b>${i.status==='erro'?`<div><span class="tag bad">Falhou</span></div><div style="font-size:11px; color:var(--debit); white-space:normal; max-width:230px; margin-top:3px;">${traduzErroEnvioWpp(i.erro)}</div>`:''}${i.status==='cancelada'?`<div><span class="tag warn">Cancelada: cliente respondeu</span></div>`:''}${i.status==='agendada'&&i.cancelaSeResponder?'<div style="font-size:11px; color:var(--ink-soft);">cancela se o cliente responder</div>':''}<div style="font-size:11px; color:var(--ink-soft);">por ${esc(i.por||'—')}</div></td>
         <td>${esc(i.cliente)}</td><td style="max-width:280px; white-space:pre-wrap; font-size:12.5px;">${esc(i.texto)}${i.anexoNome?`<div style="color:var(--ink-soft);">📎 ${esc(i.anexoNome)}</div>`:''}</td>
         <td style="text-align:right; white-space:nowrap;">${podePostar&&i.status==='agendada'?`<button class="btn small" data-a="hora">🕗</button> <button class="btn small primary" data-a="agora">Agora</button> `:''}${podePostar&&i.status!=='cancelada'?`<button class="btn small danger" data-a="cancelar">Cancelar</button>`:''}</td></tr>`).join('')}
       </tbody></table></div>`:'<div class="empty-state">Nenhuma mensagem agendada. Escreva a mensagem, clique em 🕗 ao lado do envio e escolha o horário.</div>'}
