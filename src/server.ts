@@ -11481,10 +11481,21 @@ async function integraContadorBuscarEmpresaInterno(
     let alertaDeclaracao: string | null | undefined;
     if (optante) {
       const anoAtual = new Date().getFullYear();
+      // Em janeiro, "mês anterior" é dezembro do ano QUE PASSOU — consultarDeclaracoesPorAno só com
+      // anoAtual nunca pegava a declaração de dezembro nesse caso (ela fica no ano anterior), então
+      // o alerta de atraso disparava todo janeiro pra toda empresa optante, mesmo quem declarou
+      // dezembro certinho. Busca os dois anos quando "mês anterior" cai no ano passado.
+      const hoje = new Date();
+      const mesAnterior = new Date(hoje.getFullYear(), hoje.getMonth() - 1, 1);
+      const anoMesAnterior = mesAnterior.getFullYear();
+      const anosParaBuscar = anoMesAnterior === anoAtual ? [anoAtual] : [anoMesAnterior, anoAtual];
       let ultimoPeriodoDeclarado: string | null = null;
       let ultimoDasPago = false;
       try {
-        const declaracoes = await integracontador.consultarDeclaracoesPorAno(token, cnpjEscritorio, empresaCnpj, String(anoAtual));
+        const declaracoes: integracontador.DeclaracaoSimplesNacional[] = [];
+        for (const ano of anosParaBuscar) {
+          declaracoes.push(...(await integracontador.consultarDeclaracoesPorAno(token, cnpjEscritorio, empresaCnpj, String(ano))));
+        }
         const inserirDecl = sqlite.prepare(
           `INSERT INTO integracontador_documentos (empresa_id, escritorio_id, tipo, periodo_apuracao, numero_documento, detalhes_json) VALUES (?, ?, 'declaracao', ?, ?, ?)`
         );
@@ -11497,8 +11508,6 @@ async function integraContadorBuscarEmpresaInterno(
         // Monitoramento de atraso: a competência do mês anterior já devia estar declarada a essa
         // altura (PGDAS-D vence dia 20 do mês seguinte) — se não achou nada pra ela (nem período
         // mais recente que ela), acende o alerta pra você conferir se o cliente esqueceu de mandar.
-        const hoje = new Date();
-        const mesAnterior = new Date(hoje.getFullYear(), hoje.getMonth() - 1, 1);
         const competenciaEsperada = `${mesAnterior.getFullYear()}${String(mesAnterior.getMonth() + 1).padStart(2, "0")}`;
         if (!ultimoPeriodoDeclarado || ultimoPeriodoDeclarado < competenciaEsperada) {
           const rotulo = `${competenciaEsperada.slice(4, 6)}/${competenciaEsperada.slice(0, 4)}`;
