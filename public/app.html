@@ -7428,6 +7428,18 @@ async function pageIntegraContador(deepLinkEmpresaId){
         <div class="checkbox-grid">${ICAGENDA_DIAS.map((d,i)=>`<label class="checkbox-row"><input type="checkbox" class="icAgendaDia" value="${i}" ${(cfg.agenda?.dias||[]).includes(i)?'checked':''} ${podeEditar?'':'disabled'}> ${d}</label>`).join('')}</div>
         <div id="icAgendaHoras" class="row" style="gap:8px; flex-wrap:wrap; margin-top:10px;">${(cfg.agenda?.horas||[]).map(icAgendaHoraHtml).join('')}</div>
         ${podeEditar?`<div class="row" style="margin-top:8px; gap:8px;"><button class="btn small" id="btnIcAgendaHora">+ Horário</button><button class="btn primary" id="btnIcAgendaSalvar">Salvar agenda</button></div>`:''}
+        <div style="margin-top:14px;">
+          <div style="font-weight:600; margin-bottom:4px;">Frequência da Situação Fiscal</div>
+          <p style="font-size:12px; color:var(--ink-soft); margin:0 0 8px;">A Situação Fiscal (SITFIS) é a consulta mais lenta e cara, e é uma "foto do momento" que quase não muda de um dia pro outro. Deixá-la menos frequente reduz os erros de "não respondeu em 5 minutos" e o custo, sem afetar DAS/DARF/Declaração (que continuam diários). <b>"Buscar agora" sempre traz a Situação Fiscal na hora.</b></p>
+          <div class="field" style="max-width:280px;">
+            <select id="icSitfisFreq" ${podeEditar?'':'disabled'}>
+              <option value="1" ${Number(cfg.sitfisFrequenciaDias)===1?'selected':''}>Todo dia (junto com o resto)</option>
+              <option value="7" ${Number(cfg.sitfisFrequenciaDias)===7||cfg.sitfisFrequenciaDias==null?'selected':''}>Toda semana (recomendado)</option>
+              <option value="15" ${Number(cfg.sitfisFrequenciaDias)===15?'selected':''}>A cada 15 dias</option>
+              <option value="30" ${Number(cfg.sitfisFrequenciaDias)===30?'selected':''}>Todo mês</option>
+            </select>
+          </div>
+        </div>
       </div>
       <div style="margin-top:18px; padding-top:14px; border-top:1px solid var(--rule);">
         <div style="font-weight:600; margin-bottom:4px;">Envio automático pro cliente</div>
@@ -7490,6 +7502,16 @@ async function pageIntegraContador(deepLinkEmpresaId){
       catch(e){ toast(e.message,'err'); chk.checked = !chk.checked; }
       finally{ chk.disabled = false; }
     });
+    if(podeEditar){
+      const selFreq = document.getElementById('icSitfisFreq');
+      let freqAnterior = selFreq.value;
+      selFreq.addEventListener('change', async ()=>{
+        selFreq.disabled = true;
+        try{ await api('/integracontador/sitfis-frequencia', { method:'PUT', body:{ dias: Number(selFreq.value) } }); freqAnterior = selFreq.value; toast('Frequência da Situação Fiscal salva.','ok'); }
+        catch(e){ toast(e.message,'err'); selFreq.value = freqAnterior; }
+        finally{ selFreq.disabled = false; }
+      });
+    }
   }
 
   async function mostrarIcLista(){

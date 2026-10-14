@@ -10877,9 +10877,21 @@ app.get("/api/integracontador/config", blockCliente, requirePermissao("integraco
     validadeCertificadoAte: c.validade_certificado_ate || null,
     ativo: !!c.ativo,
     envioAutomatico: c.envio_automatico === undefined ? true : !!c.envio_automatico,
+    sitfisFrequenciaDias: c.sitfis_frequencia_dias ?? 7,
     ultimoErro: c.ultimo_erro || null,
     agenda: getAgendaBusca((req as any).user.escritorioId),
   });
+});
+// Cadência da Situação Fiscal (SITFIS) na busca automática — de quantos em quantos dias rebuscar.
+// Só valores da lista (1=todo dia, 7=semanal, 15=quinzenal, 30=mensal) pra não virar um número
+// qualquer. A busca manual ("Buscar agora") ignora isso e sempre rebusca a Situação Fiscal.
+app.put("/api/integracontador/sitfis-frequencia", blockCliente, requirePermissao("integracontador", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const dias = Number(req.body?.dias);
+  if (![1, 7, 15, 30].includes(dias)) return res.status(400).json({ error: "Cadência inválida. Use 1, 7, 15 ou 30 dias." });
+  sqlite.prepare(`INSERT OR IGNORE INTO integracontador_config (escritorio_id) VALUES (?)`).run(user.escritorioId);
+  sqlite.prepare(`UPDATE integracontador_config SET sitfis_frequencia_dias = ? WHERE escritorio_id = ?`).run(dias, user.escritorioId);
+  res.json({ ok: true, sitfisFrequenciaDias: dias });
 });
 // Agenda da busca automática (dias da semana + horários de Brasília), salva pela tela do Integra Contador.
 app.put("/api/integracontador/agenda", blockCliente, requirePermissao("integracontador", "editar"), (req, res) => {
@@ -11433,9 +11445,9 @@ function integraContadorComLimiteTempo<T>(p: Promise<T>, ms: number, msgErro: st
     new Promise<T>((_, reject) => setTimeout(() => reject(new Error(msgErro)), ms)),
   ]);
 }
-async function integraContadorBuscarEmpresa(empresaId: number, empresaCnpj: string, optante: boolean, buscaDctfweb: boolean): Promise<{ novos: number; erro: string | null }> {
+async function integraContadorBuscarEmpresa(empresaId: number, empresaCnpj: string, optante: boolean, buscaDctfweb: boolean, forcarSitfis = false): Promise<{ novos: number; erro: string | null }> {
   return Promise.race([
-    integraContadorBuscarEmpresaInterno(empresaId, empresaCnpj, optante, buscaDctfweb),
+    integraContadorBuscarEmpresaInterno(empresaId, empresaCnpj, optante, buscaDctfweb, forcarSitfis),
     new Promise<{ novos: number; erro: string | null }>((resolve) =>
       setTimeout(() => {
         const msg = "A busca não respondeu em 5 minutos (Receita/SERPRO travado ou muito lento) — tente de novo mais tarde.";
@@ -11450,6 +11462,7 @@ async function integraContadorBuscarEmpresaInterno(
   empresaCnpj: string,
   optante: boolean,
   buscaDctfweb: boolean,
+  forcarSitfis = false,
   tentandoComTokenNovo = false
 ): Promise<{ novos: number; erro: string | null }> {
   const empConfig = getIntegraContadorEmpresaConfig(empresaId);
@@ -11459,40 +11472,10 @@ async function integraContadorBuscarEmpresaInterno(
   try {
     const token = await obterTokenIntegraContador(cfg);
     const cnpjEscritorio = cfg.cnpj;
-    // Situação Fiscal — vale pra qualquer empresa, independente do regime tributário. Com teto próprio
-    // (INTEGRACONTADOR_TIMEOUT_SITFIS_MS): se o SERPRO estiver lento, falha rápido aqui em vez de comer
-    // o orçamento inteiro de 5 min e derrubar DAS/Declaração/DARF (que rodam logo abaixo).
-    try {
-      const pdfBase64 = await integraContadorComLimiteTempo(
-        integracontador.obterRelatorioSitfisCompleto(token, cnpjEscritorio, empresaCnpj),
-        INTEGRACONTADOR_TIMEOUT_SITFIS_MS,
-        "Situação Fiscal demorou demais (SERPRO lento) — as outras consultas da empresa seguiram normalmente; tente a Situação Fiscal de novo mais tarde."
-      );
-      const caminho = salvarPdfBase64EmCache(`sitfis_${empresaId}_${Date.now()}`, pdfBase64);
-      sqlite
-        .prepare(`INSERT INTO integracontador_documentos (empresa_id, escritorio_id, tipo, pdf_path) VALUES (?, ?, 'situacao_fiscal', ?)`)
-        .run(empresaId, empConfig.escritorio_id, caminho);
-      integraContadorAnexarSitfisEmEnvio(empConfig.escritorio_id, empresaId, pdfBase64);
-      novos++;
-    } catch (e: any) {
-      console.error(`[Integra Contador] situação fiscal da empresa ${empresaId} falhou:`, e.message);
-      falhas.push(`Situação Fiscal: ${e.message}`);
-    }
-    // Caixa Postal do e-CAC (mensagens não lidas da Receita Federal) — vale pra qualquer empresa,
-    // igual Situação Fiscal, sem opt-in. Apaga e recria o retrato inteiro a cada busca: reflete
-    // sempre o estado atual de "não lida" segundo a Receita (não é um alerta que a gente "resolve"
-    // aqui — uma vez lida de verdade no e-CAC, some sozinha na próxima busca).
-    try {
-      const mensagens = await integracontador.consultarMensagensCaixaPostalNaoLidas(token, cnpjEscritorio, empresaCnpj);
-      sqlite.prepare(`DELETE FROM integracontador_caixapostal_mensagens WHERE empresa_id = ?`).run(empresaId);
-      const inserirMsg = sqlite.prepare(
-        `INSERT INTO integracontador_caixapostal_mensagens (empresa_id, numero_controle, assunto, data_envio, relevancia) VALUES (?, ?, ?, ?, ?)`
-      );
-      for (const m of mensagens) inserirMsg.run(empresaId, m.numeroControle, m.assunto, m.dataEnvio, m.relevancia);
-    } catch (e: any) {
-      console.error(`[Integra Contador] caixa postal da empresa ${empresaId} falhou:`, e.message);
-      falhas.push(`Caixa Postal: ${e.message}`);
-    }
+    // ORDEM (ajuste 2026-10-14): as GUIAS que o cliente precisa pagar — DAS, Declaração, DARF DCTF-Web
+    // e parcela de parcelamento — rodam PRIMEIRO. A Situação Fiscal (passo mais lento e mais caro) e a
+    // Caixa Postal ficam por ÚLTIMO, pra que, num dia em que o SERPRO está lento, o que importa saia
+    // dentro do orçamento de 5 min em vez de a empresa inteira cair porque a SITFIS demorou.
     // DAS + Declaração — só pra quem é optante do Simples Nacional.
     // "alertaDeclaracao" fica undefined se a consulta de declarações falhar (não sabemos de verdade
     // se falta ou não, então não sobrescreve o alerta anterior) — só vira null/mensagem quando a
@@ -11641,6 +11624,55 @@ async function integraContadorBuscarEmpresaInterno(
         sqlite.prepare(`UPDATE integracontador_parcelamentos SET ultima_busca_em = datetime('now'), ultimo_erro = ? WHERE id = ?`).run(e.message, parc.id);
       }
     }
+    // Situação Fiscal — por ÚLTIMO (ver nota de ordem acima) e com CADÊNCIA configurável
+    // (sitfis_frequencia_dias, padrão 7). É o passo mais lento/caro e é uma "foto do momento" que
+    // raramente muda de um dia pro outro, então não precisa rodar todo dia: pula quando já existe uma
+    // Situação Fiscal recente (dentro da janela de dias), a não ser numa busca MANUAL (forcarSitfis),
+    // em que a pessoa pediu tudo agora de propósito. Mantém o teto próprio de 2 min
+    // (INTEGRACONTADOR_TIMEOUT_SITFIS_MS) pra não comer o orçamento das guias.
+    const sitfisFreqDias = Math.max(1, Number(cfg.sitfis_frequencia_dias) || 7);
+    const ultimaSitfis = sqlite
+      .prepare(`SELECT MAX(criado_em) as m FROM integracontador_documentos WHERE empresa_id = ? AND tipo = 'situacao_fiscal'`)
+      .get(empresaId) as any;
+    // Margem de 12h na janela: duas buscas diárias ficam ~24h uma da outra, então com freq=1 ("todo
+    // dia") uma janela de 24h "cheia" poderia pular dias alternados por causa de alguns segundos de
+    // diferença no horário do slot. Tirando meio dia, uma Situação Fiscal de ~24h atrás já não conta
+    // como "recente" e roda de novo — sem afetar as cadências maiores (7/15/30).
+    const sitfisJanelaMs = (sitfisFreqDias * 86400 - 43200) * 1000;
+    const sitfisRecente = !!ultimaSitfis?.m && Date.now() - new Date(String(ultimaSitfis.m).replace(" ", "T") + "Z").getTime() < sitfisJanelaMs;
+    if (forcarSitfis || !sitfisRecente) {
+      try {
+        const pdfBase64 = await integraContadorComLimiteTempo(
+          integracontador.obterRelatorioSitfisCompleto(token, cnpjEscritorio, empresaCnpj),
+          INTEGRACONTADOR_TIMEOUT_SITFIS_MS,
+          "Situação Fiscal demorou demais (SERPRO lento) — as outras consultas da empresa seguiram normalmente; tente a Situação Fiscal de novo mais tarde."
+        );
+        const caminho = salvarPdfBase64EmCache(`sitfis_${empresaId}_${Date.now()}`, pdfBase64);
+        sqlite
+          .prepare(`INSERT INTO integracontador_documentos (empresa_id, escritorio_id, tipo, pdf_path) VALUES (?, ?, 'situacao_fiscal', ?)`)
+          .run(empresaId, empConfig.escritorio_id, caminho);
+        integraContadorAnexarSitfisEmEnvio(empConfig.escritorio_id, empresaId, pdfBase64);
+        novos++;
+      } catch (e: any) {
+        console.error(`[Integra Contador] situação fiscal da empresa ${empresaId} falhou:`, e.message);
+        falhas.push(`Situação Fiscal: ${e.message}`);
+      }
+    }
+    // Caixa Postal do e-CAC (mensagens não lidas da Receita Federal) — vale pra qualquer empresa,
+    // igual Situação Fiscal, sem opt-in. Apaga e recria o retrato inteiro a cada busca: reflete
+    // sempre o estado atual de "não lida" segundo a Receita (não é um alerta que a gente "resolve"
+    // aqui — uma vez lida de verdade no e-CAC, some sozinha na próxima busca).
+    try {
+      const mensagens = await integracontador.consultarMensagensCaixaPostalNaoLidas(token, cnpjEscritorio, empresaCnpj);
+      sqlite.prepare(`DELETE FROM integracontador_caixapostal_mensagens WHERE empresa_id = ?`).run(empresaId);
+      const inserirMsg = sqlite.prepare(
+        `INSERT INTO integracontador_caixapostal_mensagens (empresa_id, numero_controle, assunto, data_envio, relevancia) VALUES (?, ?, ?, ?, ?)`
+      );
+      for (const m of mensagens) inserirMsg.run(empresaId, m.numeroControle, m.assunto, m.dataEnvio, m.relevancia);
+    } catch (e: any) {
+      console.error(`[Integra Contador] caixa postal da empresa ${empresaId} falhou:`, e.message);
+      falhas.push(`Caixa Postal: ${e.message}`);
+    }
     // Achado ao vivo: um token com validade "ainda dentro do prazo" localmente (ver tokenValido) às
     // vezes já não é mais aceito pelo SERPRO — cada chamada com ele responde 401 (convertido em
     // "TOKEN_EXPIRADO" por chamarServico). O comentário original de obterTokenIntegraContador já
@@ -11650,7 +11682,7 @@ async function integraContadorBuscarEmpresaInterno(
     // também falhar).
     if (!tentandoComTokenNovo && falhas.some((f) => f.includes("TOKEN_EXPIRADO"))) {
       integraContadorTokens.delete(empConfig.escritorio_id);
-      return integraContadorBuscarEmpresaInterno(empresaId, empresaCnpj, optante, buscaDctfweb, true);
+      return integraContadorBuscarEmpresaInterno(empresaId, empresaCnpj, optante, buscaDctfweb, forcarSitfis, true);
     }
     const erroResumo = falhas.length ? falhas.join(" | ") : null;
     sqlite.prepare(`UPDATE integracontador_empresa_config SET ultima_busca_em = datetime('now'), ultimo_erro = ? WHERE empresa_id = ?`).run(erroResumo, empresaId);
@@ -11725,7 +11757,8 @@ app.post("/api/integracontador/empresas/:id/buscar", blockCliente, requirePermis
   const empresa = sqlite.prepare(`SELECT cnpj FROM empresas WHERE id = ?`).get(empId) as any;
   // Mesma lógica do PUT acima: dispara e não espera, pra não bater no timeout do proxy numa busca
   // de Situação Fiscal que demora — o front confere o resultado consultando de novo em alguns segundos.
-  integraContadorBuscarEmpresa(empId, empresa?.cnpj || "", !!empConfig.optante_simples_nacional, !!empConfig.busca_dctfweb).finally(() => {
+  // forcarSitfis=true: busca MANUAL ignora a cadência da Situação Fiscal (a pessoa pediu tudo agora).
+  integraContadorBuscarEmpresa(empId, empresa?.cnpj || "", !!empConfig.optante_simples_nacional, !!empConfig.busca_dctfweb, true).finally(() => {
     integraContadorBuscasEmAndamento.delete(empId);
   });
   res.json({ ok: true, buscaIniciada: true });
@@ -11980,6 +12013,10 @@ sqlite.exec(`CREATE TABLE IF NOT EXISTS integracontador_busca_slots (slot TEXT P
 {
   const colsIc = sqlite.prepare(`PRAGMA table_info(integracontador_config)`).all() as any[];
   if (!colsIc.some((c) => c.name === "agenda_busca_json")) sqlite.exec(`ALTER TABLE integracontador_config ADD COLUMN agenda_busca_json TEXT`);
+  // Cadência da Situação Fiscal (SITFIS): de quantos em quantos dias a busca automática rebusca a
+  // Situação Fiscal de cada empresa. Padrão 7 (semanal) — é o passo mais lento/caro e uma foto do
+  // momento, não precisa de todo dia. Controlado na tela do Integra Contador.
+  if (!colsIc.some((c) => c.name === "sitfis_frequencia_dias")) sqlite.exec(`ALTER TABLE integracontador_config ADD COLUMN sitfis_frequencia_dias INTEGER NOT NULL DEFAULT 7`);
   // Freio separado do "Automático × Manual" do central-envio (pastas do Drive) — esse aqui é só pro
   // envio automático de DAS/DARF DCTF-Web/Guia FGTS/Parcelamento do DAS (tudo que passa por
   // envioEnviarDocumentoAutomatico). A busca diária e o anexo em Envio de Documentos continuam
