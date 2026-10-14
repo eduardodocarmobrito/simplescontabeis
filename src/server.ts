@@ -11420,6 +11420,19 @@ function integraContadorAnexarParcelaEmEnvio(atribuicaoId: number, empresaId: nu
 // 5 minutos (não 3): o SITFIS tem dois polls de até 10 tentativas cada, de verdade assíncronos do
 // lado da Receita — em dia ruim, esperar mais é melhor que cortar uma busca que ia dar certo.
 const INTEGRACONTADOR_TIMEOUT_BUSCA_MS = 5 * 60 * 1000;
+// Teto PRÓPRIO da Situação Fiscal (SITFIS). A SITFIS é de longe o passo mais lento (dois loops de
+// polling de até 10 tentativas cada, cada chamada ainda com 3×25s de retry quando o gateway do SERPRO
+// oscila — ver obterRelatorioSitfisCompleto/chamarHttps em integracontador.ts): num dia ruim ela
+// sozinha passa dos 5 min e, como roda ANTES de DAS/Declaração/DARF, derrubava a empresa inteira no
+// teto geral — mesmo as guias (chamadas rápidas) nem chegavam a rodar. Com um teto próprio bem menor,
+// a SITFIS falha rápido com um aviso específico e as outras consultas seguem normalmente.
+const INTEGRACONTADOR_TIMEOUT_SITFIS_MS = 2 * 60 * 1000;
+function integraContadorComLimiteTempo<T>(p: Promise<T>, ms: number, msgErro: string): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error(msgErro)), ms)),
+  ]);
+}
 async function integraContadorBuscarEmpresa(empresaId: number, empresaCnpj: string, optante: boolean, buscaDctfweb: boolean): Promise<{ novos: number; erro: string | null }> {
   return Promise.race([
     integraContadorBuscarEmpresaInterno(empresaId, empresaCnpj, optante, buscaDctfweb),
@@ -11446,9 +11459,15 @@ async function integraContadorBuscarEmpresaInterno(
   try {
     const token = await obterTokenIntegraContador(cfg);
     const cnpjEscritorio = cfg.cnpj;
-    // Situação Fiscal — vale pra qualquer empresa, independente do regime tributário.
+    // Situação Fiscal — vale pra qualquer empresa, independente do regime tributário. Com teto próprio
+    // (INTEGRACONTADOR_TIMEOUT_SITFIS_MS): se o SERPRO estiver lento, falha rápido aqui em vez de comer
+    // o orçamento inteiro de 5 min e derrubar DAS/Declaração/DARF (que rodam logo abaixo).
     try {
-      const pdfBase64 = await integracontador.obterRelatorioSitfisCompleto(token, cnpjEscritorio, empresaCnpj);
+      const pdfBase64 = await integraContadorComLimiteTempo(
+        integracontador.obterRelatorioSitfisCompleto(token, cnpjEscritorio, empresaCnpj),
+        INTEGRACONTADOR_TIMEOUT_SITFIS_MS,
+        "Situação Fiscal demorou demais (SERPRO lento) — as outras consultas da empresa seguiram normalmente; tente a Situação Fiscal de novo mais tarde."
+      );
       const caminho = salvarPdfBase64EmCache(`sitfis_${empresaId}_${Date.now()}`, pdfBase64);
       sqlite
         .prepare(`INSERT INTO integracontador_documentos (empresa_id, escritorio_id, tipo, pdf_path) VALUES (?, ?, 'situacao_fiscal', ?)`)
