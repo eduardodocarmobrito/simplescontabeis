@@ -9605,6 +9605,30 @@ function domRelIdentificarEmpresa(mapa: { porDocumento: Map<string, any>; porCod
     const porCod = mapa.porCodigo.get(codigoArquivo);
     if (porCod) empresa = porCod;
   }
+  // Fallback por RAIZ do CNPJ (8 primeiros dígitos). A GFD do FGTS Digital (e outros documentos que
+  // preservam o sigilo) MASCARA o CNPJ e mostra só a raiz — "04.801.040" no campo do empregador e na
+  // Tag ("04801040 09/2026 MENSAL") — o CNPJ cheio (14) nunca aparece, então o match por documento
+  // acima falha. E como o nome do empregador vem truncado na própria GFD ("...PERICIA E AUDIT"), o
+  // fallback por nome (em central-envio) também não casa empresa de nome longo → caía em "Sem empresa".
+  // Casa pela raiz, mas só se ela apontar pra EXATAMENTE uma empresa (nunca num grupo com filiais que
+  // compartilham a mesma raiz) — mesma cautela do fallback por código acima.
+  if (!empresa) {
+    const empresasPorRaiz = new Map<string, { emp: any; ids: Set<number> }>();
+    for (const [dig, emp] of mapa.porDocumento) {
+      if (dig.length !== 14 || typeof emp?.id !== "number") continue;
+      const raiz = dig.slice(0, 8);
+      const reg = empresasPorRaiz.get(raiz) || { emp, ids: new Set<number>() };
+      reg.ids.add(emp.id);
+      empresasPorRaiz.set(raiz, reg);
+    }
+    // Raízes que aparecem no texto no formato de CNPJ/raiz ("04.801.040" ou "04801040" isolado) — o \b
+    // nas pontas evita pegar os 8 primeiros dígitos de um número maior (um CNPJ cheio colado, p.ex.).
+    for (const m of texto.matchAll(/\b(\d{2})\.?(\d{3})\.?(\d{3})\b/g)) {
+      const raiz = m[1] + m[2] + m[3];
+      const reg = empresasPorRaiz.get(raiz);
+      if (reg && reg.ids.size === 1) { empresa = reg.emp; cnpjDetectado = cnpjDetectado || raiz; break; }
+    }
+  }
   return { empresa, cnpjDetectado, codigoArquivo };
 }
 function domRelSalvarPendente(escritorioId: number, buf: Buffer, nomeArquivo: string): string {
