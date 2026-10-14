@@ -164,6 +164,20 @@ export function extrairCompetenciaMes(texto: string): string | null {
   if (gozo) return `${gozo[1]} a ${gozo[2]}`;
   const m = /(?:Compet[êe]ncia|M[êe]s\s*\/?\s*Ano|Refer[êe]ncia|Referente\s+a)\s*[:\-]?\s*(?:\d{2}\/)?(0[1-9]|1[0-2])\/(20\d{2})\b/i.exec(texto);
   if (m) return `${m[1]}/${m[2]}`;
+  // DARF/DAE da Receita (DCTF-Web, DAS, etc.): a competência é o "Período de Apuração", NÃO o
+  // vencimento. Vem como "PA:09/2026" nas linhas de composição (inline, confiável mesmo com o pdf-parse
+  // embaralhando o cabeçalho) e como "Período de Apuração setembro/2026" (mês por extenso + barra) no
+  // topo. Sem reconhecer isso, extrairCompetenciaMes devolvia null e a competência caía pro mês do
+  // VENCIMENTO (ex.: Data de Vencimento 20/10/2026 → 10/2026), um mês à frente do certo (achado ao
+  // vivo: DARF DCTF-Web de 09/2026 entrando como 10/2026).
+  const pa =
+    /\bPA\s*[:\-]?\s*(0[1-9]|1[0-2])\/(20\d{2})\b/i.exec(texto) ||
+    /Per[íi]odo\s+de\s+Apura[çc][ãa]o\s*[:\-]?\s*(?:\d{2}\/)?(0[1-9]|1[0-2])\/(20\d{2})\b/i.exec(texto);
+  if (pa) return `${pa[1]}/${pa[2]}`;
+  // "Período de Apuração setembro/2026" — mês por extenso logo após o rótulo (janela curta pra tolerar
+  // os rótulos das caixas vizinhas que o pdf-parse às vezes intercala, sem alcançar outro mês do texto).
+  const paExtenso = /Per[íi]odo\s+de\s+Apura[çc][ãa]o[\s\S]{0,80}?(janeiro|fevereiro|mar[çc]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\s*\/\s*(20\d{2})/i.exec(texto);
+  if (paExtenso) { const i = MESES_NOME.indexOf(paExtenso[1].toLowerCase().replace("ç", "c")); if (i >= 0) return `${String(i + 1).padStart(2, "0")}/${paExtenso[2]}`; }
   // Cabeçalho do "EXTRATO MENSAL" (Folha Mensal e Complementar): o pdf-parse embaralha rótulo e valor
   // do cabeçalho — "09/2026" aparece ANTES do próprio rótulo "Competência:", logo antes de "Empresa:"
   // ("...EXTRATO MENSAL\nTodos\n09/2026\nEmpresa:\nCompetência:..."). O regex acima (rótulo seguido do
