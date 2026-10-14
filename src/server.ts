@@ -15038,25 +15038,17 @@ function painelMonitoramentoCorte(escritorioId: number): number | null {
   return row.ano * 100 + row.mes;
 }
 
-// Unifica os 3 lugares onde uma data de validade de certificado é guardada hoje (emissão de NFS-e,
-// Busca de XML, e-CNPJ do Integra Contador) numa lista só — o card não sabe (nem precisa saber) de
-// onde cada item veio, só que "vence em breve".
+// Unifica os lugares onde uma data de validade de certificado é guardada hoje numa lista só — o card
+// não sabe (nem precisa saber) de onde cada item veio, só que "vence em breve".
+// NOTA (pedido do usuário 2026-10-14): a fonte "NFS-e (emissão)" (nfse_certificados) foi RETIRADA
+// deste card de propósito — o escritório não acompanha o vencimento desses certificados por aqui. O
+// vencimento continua guardado e visível na tela de Certificados/NFS-e, só não gera alerta neste card.
+// Restam Busca de XML (nfe_busca_config) e o e-CNPJ do Integra Contador.
 function cardCertificadosAVencer(user: any, diasLimite = 30): any[] {
   const escritorioId = user.escritorioId;
   const visiveis = new Set(empresasVisiveis(user));
   const limite = new Date(Date.now() + diasLimite * 86400000).toISOString();
   const itens: any[] = [];
-  const nfse = sqlite
-    .prepare(
-      `SELECT c.empresa_id as empresaId, e.nome as empresaNome, e.ativo as empresaAtivo, c.validade_ate as validadeAte
-       FROM nfse_certificados c LEFT JOIN empresas e ON e.id = c.empresa_id
-       WHERE c.escritorio_id = ? AND c.validade_ate IS NOT NULL AND c.validade_ate <= ?`
-    )
-    .all(escritorioId, limite) as any[];
-  for (const r of nfse) {
-    if (r.empresaId && (!visiveis.has(r.empresaId) || !r.empresaAtivo)) continue;
-    itens.push({ tipo: "NFS-e (emissão)", empresaId: r.empresaId, empresaNome: r.empresaNome || "Escritório (procuração)", validadeAte: r.validadeAte });
-  }
   const nfe = sqlite
     .prepare(
       `SELECT c.empresa_id as empresaId, e.nome as empresaNome, c.validade_ate as validadeAte
