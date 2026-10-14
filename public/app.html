@@ -634,9 +634,49 @@ async function api(path, opts){
   if(!r.ok){
     const msg = (data && data.error) || ('Erro '+r.status);
     if(r.status===401 && path!=='/auth/me'){ showLogin(); }
-    throw new Error(msg);
+    const err = new Error(msg); err.status = r.status; err.data = data; throw err;
   }
   return data;
+}
+// ---- Trava anti-reenvio de documento por WhatsApp ----
+// O backend responde 409 { jaEnviado:{ total, ultimo:{ enviadoEm, telefone, canal, empresaNome, nomeArquivo } } }
+// quando o MESMO documento (mesmo conteúdo) já foi mandado antes. Mostra a confirmação com data/hora/número
+// e, se o usuário aceitar, reenvia com confirmarReenvio:true.
+function fmtJaEnviadoHtml(ja){
+  const u = (ja && ja.ultimo) || {};
+  const canalTxt = u.canal==='meta' ? 'número oficial (Meta)' : (u.canal==='atendimento' ? 'atendimento (conversa)' : (u.canal==='conversa' ? 'número de atendimento' : (u.canal||'WhatsApp')));
+  const quando = u.enviadoEm ? (typeof fmtDateHora==='function' ? fmtDateHora(u.enviadoEm) : esc(u.enviadoEm)) : '—';
+  return `<div style="font-size:13px; line-height:1.6;">Este documento <b>já foi enviado</b> por WhatsApp${u.empresaNome?` para <b>${esc(u.empresaNome)}</b>`:''}.`
+    + `<div style="margin-top:10px; padding:10px 12px; background:var(--surface-soft,#f1f6f4); border-radius:8px;">`
+    + `📅 <b>Data/hora:</b> ${quando}<br>📱 <b>Número:</b> ${esc(u.telefone||'—')}<br>💬 <b>Canal:</b> ${esc(canalTxt)}`
+    + (u.nomeArquivo?`<br>📎 <b>Arquivo:</b> ${esc(u.nomeArquivo)}`:'')
+    + (ja && ja.total>1?`<br><br><span style="color:var(--ink-soft);">Enviado ${ja.total} vezes no total.</span>`:'')
+    + `</div><div style="margin-top:12px;">Deseja <b>enviar novamente</b>?</div></div>`;
+}
+function confirmarReenvioModal(ja){
+  return new Promise(resolve=>{
+    openModal(`<h3>⚠️ Documento já enviado</h3>${fmtJaEnviadoHtml(ja)}`
+      + `<div class="modal-actions" style="margin-top:16px; display:flex; gap:8px; justify-content:flex-end;">`
+      + `<button class="btn" id="reenvNao">Cancelar</button><button class="btn primary" id="reenvSim">Enviar novamente</button></div>`, '460px');
+    let resolvido=false;
+    const fim = v=>{ if(resolvido) return; resolvido=true; closeModal(); resolve(v); };
+    document.getElementById('reenvNao').addEventListener('click', ()=>fim(false));
+    document.getElementById('reenvSim').addEventListener('click', ()=>fim(true));
+  });
+}
+// Executa um POST de envio por WhatsApp que pode responder 409 {jaEnviado}. Retorna o resultado do
+// envio, ou { cancelado:true } se o usuário recusou o reenvio. Outros erros sobem normalmente.
+async function enviarWhatsappDocComConfirmacao(path, body){
+  try{
+    return await api(path, { method:'POST', body });
+  }catch(e){
+    if(e && e.status===409 && e.data && e.data.jaEnviado){
+      const ok = await confirmarReenvioModal(e.data.jaEnviado);
+      if(!ok) return { cancelado:true };
+      return await api(path, { method:'POST', body: Object.assign({}, body, { confirmarReenvio:true }) });
+    }
+    throw e;
+  }
 }
 // Fonte única pra "lista de empresas ativas" — usada por todo seletor/combo que serve pra ESCOLHER
 // uma empresa e agir sobre ela (atribuir modelo, cadastrar contato, criar contrato, dar acesso a
@@ -5099,7 +5139,8 @@ async function envioDocWhatsappModal(docId, canal, recarregar){
     const btn = document.getElementById('envioDocWhatsappOk');
     btn.disabled = true; btn.textContent = 'Enviando…';
     try{
-      await api('/envio/documentos/'+docId+'/enviar-whatsapp', { method:'POST', body:{ canal, telefones } });
+      const rr = await enviarWhatsappDocComConfirmacao('/envio/documentos/'+docId+'/enviar-whatsapp', { canal, telefones });
+      if(rr && rr.cancelado){ btn.disabled = false; btn.textContent = 'Enviar'; return; }
       toast('WhatsApp enviado.','ok');
       closeModal();
       recarregar();
@@ -6289,7 +6330,8 @@ async function renderNfseNotasDetalhe(empresaId){
     const rotuloOriginal = b.textContent;
     b.disabled = true; b.textContent = 'Enviando…';
     try{
-      const r = await api('/nfse/emissoes/'+b.dataset.id+'/enviar-whatsapp', { method:'POST', body:{ canal:b.dataset.canal } });
+      const r = await enviarWhatsappDocComConfirmacao('/nfse/emissoes/'+b.dataset.id+'/enviar-whatsapp', { canal:b.dataset.canal });
+      if(r && r.cancelado){ b.disabled = false; b.textContent = rotuloOriginal; return; }
       toast('Enviado por WhatsApp'+(r.falhas?' (algum contato falhou)':'')+'.','ok');
       renderNfseNotas();
     }catch(e){ toast(e.message,'err'); b.disabled = false; b.textContent = rotuloOriginal; }
@@ -9787,7 +9829,7 @@ function renderRelDominio(box, empresas, tipo){
     }));
     resultBox.querySelectorAll('[data-act="whatsapp"]').forEach(b=>b.addEventListener('click', async ()=>{
       b.disabled = true;
-      try{ await api('/envio/documentos/'+b.dataset.id+'/enviar-whatsapp', { method:'POST', body:{ canal:b.dataset.canal } }); toast('WhatsApp enviado.','ok'); }
+      try{ const rr = await enviarWhatsappDocComConfirmacao('/envio/documentos/'+b.dataset.id+'/enviar-whatsapp', { canal:b.dataset.canal }); if(!(rr&&rr.cancelado)) toast('WhatsApp enviado.','ok'); }
       catch(e){ toast(e.message,'err'); }
       finally{ b.disabled=false; }
     }));
@@ -11776,13 +11818,34 @@ function atdMenuMensagem(S, id){
 // Arquivo ou áudio: sobe pro storage do deskcomm (/media devolve o tipo — imagem, documento, áudio…)
 // e depois manda a mensagem com ele. Nota de voz gravada no navegador sai em webm; o deskcomm converte
 // pra ogg antes de mandar pro WhatsApp (transcodificarNotaDeVoz, na rota /media de lá).
+async function sha256HexDoArquivo(f){
+  const buf = await f.arrayBuffer();
+  const digest = await crypto.subtle.digest('SHA-256', buf);
+  return [...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,'0')).join('');
+}
 async function atdEnviarArquivo(S, f, legenda){
   if(f.size > 50*1024*1024){ toast('Arquivo acima de 50MB.','err'); return false; }
+  // Trava anti-reenvio — só pra DOCUMENTOS (PDF, office, etc.); imagem/áudio/vídeo da conversa não
+  // entram (seria ruído). Calcula o hash SHA-256 do arquivo (igual ao do servidor) e confere no
+  // histórico; se já foi enviado antes, pergunta antes de mandar. Falha na checagem nunca trava o envio.
+  const ehDoc = !/^(image|audio|video)\//.test(f.type||'');
+  let hashDoc = null;
+  if(ehDoc){
+    try{
+      hashDoc = await sha256HexDoArquivo(f);
+      const chk = await api('/atendimento/doc-ja-enviado', { method:'POST', body:{ hash: hashDoc } });
+      if(chk && chk.jaEnviado){ const ok = await confirmarReenvioModal(chk.jaEnviado); if(!ok) return false; }
+    }catch(e){ hashDoc = hashDoc; /* segue o envio mesmo sem conseguir checar */ }
+  }
   const fd = new FormData(); fd.append('file', f);
   const up = await dcApi(`/conversations/${S.conversaAtiva}/media`, { method:'POST', body: fd });
   const corpo = { conversation_id: S.conversaAtiva, type: up.kind, media_storage_path: up.storage_path, media_mime: up.media_mime, media_size_bytes: up.media_size_bytes, metadata:{ filename: f.name } };
   if(legenda && up.kind!=='audio') corpo.body = atdPrefixoSetor(S) + legenda;
   await dcApi('/messages', { method:'POST', body: corpo });
+  if(ehDoc && hashDoc){
+    const dd = S.conversaDados || {};
+    try{ await api('/atendimento/registrar-envio-doc', { method:'POST', body:{ hash: hashDoc, nomeArquivo: f.name, telefone: dd.telefone||null, empresaNome: dd.empresaNome||dd.contatoNome||null } }); }catch(e){}
+  }
   await atdCarregarMensagens(S, true);
   atdCarregarLista(S);
   return !!corpo.body;

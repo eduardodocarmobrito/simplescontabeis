@@ -7566,6 +7566,13 @@ app.post("/api/envio/documentos/:id/enviar-whatsapp", blockCliente, requirePermi
   const descricao = `${atrib.templateNome} — ${rotulo}`;
   const arquivo = { nome: doc.file_name, tipo: doc.mime || "application/pdf", buffer: fs.readFileSync(doc.file_path) };
   const canal = canalWhatsappDoBody(req.body?.canal);
+  // Trava anti-reenvio: se este MESMO documento (mesmo conteúdo) já foi mandado por WhatsApp antes,
+  // devolve 409 com os dados do último envio pra a tela confirmar "deseja enviar de novo?". O reenvio
+  // confirmado volta com confirmarReenvio=true e passa direto.
+  if (!req.body?.confirmarReenvio) {
+    const ja = whatsappDocAnterior(user.escritorioId, hashDocBuffer(arquivo.buffer));
+    if (ja) return res.status(409).json({ jaEnviado: ja });
+  }
   let enviados = 0;
   const erros: string[] = [];
   for (const c of contatos) {
@@ -12755,6 +12762,11 @@ app.post("/api/nfse/emissoes/:id/enviar-whatsapp", blockCliente, requirePermissa
   const arquivo = { nome: nfseNomeArquivo(row, "pdf"), tipo: "application/pdf", buffer: pdf };
   const descricao = `NFS-e ${row.numero_nfse || row.numero_dps} — competência ${row.competencia?.slice(0, 7) || ""}`;
   const canal = canalWhatsappDoBody(req.body?.canal);
+  // Trava anti-reenvio (ver whatsappDocAnterior): pergunta antes de mandar de novo o mesmo documento.
+  if (!req.body?.confirmarReenvio) {
+    const ja = whatsappDocAnterior(user.escritorioId, hashDocBuffer(arquivo.buffer));
+    if (ja) return res.status(409).json({ jaEnviado: ja });
+  }
   let enviados = 0;
   const erros: string[] = [];
   for (const c of contatos) {
@@ -17705,6 +17717,53 @@ type CanalWhatsapp = "conversa" | "meta";
 function canalWhatsappDoBody(v: any): CanalWhatsapp {
   return v === "meta" ? "meta" : "conversa";
 }
+// ---------- Trava anti-reenvio: histórico de TODO documento mandado por WhatsApp ----------
+// Pedido do usuário: antes de mandar um documento pelo WhatsApp (pela conversa de atendimento OU pelo
+// número oficial da Meta), avisar se aquele MESMO documento já foi enviado antes — com data, hora e
+// número — e perguntar se quer mandar de novo. "Mesmo documento" = mesmo CONTEÚDO (hash SHA-256 dos
+// bytes), então vale independente do nome do arquivo e de por qual caminho saiu (o hash do navegador,
+// crypto.subtle SHA-256, bate com o do Node). Esta tabela é o histórico unificado: alimentada por
+// TODO envio (manual e automático) e consultada só nos envios manuais (onde há alguém pra confirmar).
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS whatsapp_docs_enviados (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    escritorio_id INTEGER NOT NULL,
+    hash TEXT NOT NULL,
+    nome_arquivo TEXT,
+    empresa_id INTEGER,
+    empresa_nome TEXT,
+    telefone TEXT,
+    canal TEXT, -- 'conversa' | 'meta' | 'atendimento'
+    enviado_por TEXT,
+    enviado_em TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_wa_docs_enviados ON whatsapp_docs_enviados(escritorio_id, hash, enviado_em);
+`);
+function hashDocBuffer(buf: Buffer): string {
+  return crypto.createHash("sha256").update(new Uint8Array(buf)).digest("hex");
+}
+function whatsappDocRegistrar(r: {
+  escritorioId: number; hash: string; nomeArquivo?: string | null; empresaId?: number | null;
+  empresaNome?: string | null; telefone?: string | null; canal?: string | null; enviadoPor?: string | null;
+}): void {
+  try {
+    sqlite
+      .prepare(`INSERT INTO whatsapp_docs_enviados (escritorio_id, hash, nome_arquivo, empresa_id, empresa_nome, telefone, canal, enviado_por) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(r.escritorioId, r.hash, r.nomeArquivo || null, r.empresaId ?? null, r.empresaNome || null, r.telefone || null, r.canal || null, r.enviadoPor || null);
+  } catch (e: any) {
+    console.error("[whatsapp-docs] falha ao registrar envio:", e.message);
+  }
+}
+// Envio(s) anterior(es) desse mesmo documento (por hash) no escritório — pra montar a confirmação.
+function whatsappDocAnterior(escritorioId: number, hash: string): { total: number; ultimo: any } | null {
+  if (!hash) return null;
+  const total = (sqlite.prepare(`SELECT COUNT(*) n FROM whatsapp_docs_enviados WHERE escritorio_id = ? AND hash = ?`).get(escritorioId, hash) as any).n;
+  if (!total) return null;
+  const ultimo = sqlite
+    .prepare(`SELECT nome_arquivo as nomeArquivo, empresa_nome as empresaNome, telefone, canal, enviado_por as enviadoPor, enviado_em as enviadoEm FROM whatsapp_docs_enviados WHERE escritorio_id = ? AND hash = ? ORDER BY enviado_em DESC, id DESC LIMIT 1`)
+    .get(escritorioId, hash) as any;
+  return { total, ultimo };
+}
 async function enviarDocumentoWhatsapp(
   canal: CanalWhatsapp,
   escritorioId: number,
@@ -17719,6 +17778,9 @@ async function enviarDocumentoWhatsapp(
   } else {
     await deskcommRoboEnviarArquivo(telefone, nomeContato, arquivo, descricao);
   }
+  // Envio OK (as chamadas acima jogam erro se falharem) — registra no histórico unificado pra a trava
+  // anti-reenvio (manual e automático alimentam; só o manual consulta/pergunta).
+  whatsappDocRegistrar({ escritorioId, hash: hashDocBuffer(arquivo.buffer), nomeArquivo: arquivo.nome, empresaNome: nomeContato, telefone, canal });
 }
 
 // ---------- Robô de cobrança de honorários contábeis em atraso, pelo WhatsApp ----------
@@ -17957,6 +18019,28 @@ function atendimentoMsgAgendadaDoUsuario(req: express.Request, res: express.Resp
   if (!m || !atendimentoAlgumaPermissao(user, "postar")) { res.status(404).json({ error: "Agendamento não encontrado." }); return null; }
   return m;
 }
+// Trava anti-reenvio no ATENDIMENTO: o anexo manual vai direto do navegador pro deskcomm (não passa
+// por enviarDocumentoWhatsapp), então a tela calcula o hash SHA-256 do arquivo e consulta aqui ANTES
+// de mandar. Se já foi enviado antes, a tela mostra a confirmação; depois de mandar, registra pelo
+// endpoint abaixo. (Hash do navegador = hash do Node, então casa com o histórico dos envios backend.)
+app.post("/api/atendimento/doc-ja-enviado", blockCliente, requireEscritorioPrincipalDeskcomm, (req, res) => {
+  const hash = String(req.body?.hash || "").toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(hash)) return res.json({ jaEnviado: null });
+  res.json({ jaEnviado: whatsappDocAnterior((req as any).user.escritorioId, hash) });
+});
+app.post("/api/atendimento/registrar-envio-doc", blockCliente, requireEscritorioPrincipalDeskcomm, (req, res) => {
+  const user = (req as any).user;
+  const hash = String(req.body?.hash || "").toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(hash)) return res.json({ ok: false });
+  whatsappDocRegistrar({
+    escritorioId: user.escritorioId, hash,
+    nomeArquivo: req.body?.nomeArquivo ? String(req.body.nomeArquivo).slice(0, 300) : null,
+    telefone: req.body?.telefone ? String(req.body.telefone).slice(0, 40) : null,
+    empresaNome: req.body?.empresaNome ? String(req.body.empresaNome).slice(0, 200) : null,
+    canal: "atendimento", enviadoPor: user.nome || null,
+  });
+  res.json({ ok: true });
+});
 app.post("/api/atendimento/conversas/:id/agendar", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
