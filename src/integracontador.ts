@@ -430,12 +430,24 @@ export async function obterRelatorioSitfisCompleto(token: TokenIntegraContador, 
     if (!protocolo) await new Promise((resolve) => setTimeout(resolve, 5000));
   }
   if (!protocolo) throw new Error("A Receita não devolveu um protocolo de relatório a tempo — tente de novo em alguns minutos.");
+  let ultimoErroTransitorio: any = null;
   for (let tentativa = 0; tentativa < 10; tentativa++) {
-    const r = await emitirRelatorioSitfis(token, contratanteCnpj, documentoEmpresa, protocolo);
-    if (r.pronto && r.pdfBase64) return r.pdfBase64;
-    await new Promise((resolve) => setTimeout(resolve, (r.tempoEsperaSegundos || 5) * 1000));
+    try {
+      const r = await emitirRelatorioSitfis(token, contratanteCnpj, documentoEmpresa, protocolo);
+      if (r.pronto && r.pdfBase64) return r.pdfBase64;
+      await new Promise((resolve) => setTimeout(resolve, (r.tempoEsperaSegundos || 5) * 1000));
+    } catch (e: any) {
+      // Achado ao vivo: "[Erro-Sitfis-ER03] : Erro ao obter o relatório. Tente novamente mais
+      // tarde." — a própria Receita pedindo retry, não um erro definitivo. chamarServico lança
+      // Error na hora (não devolve {pronto:false}), então sem isso o /emitir desistia na PRIMEIRA
+      // ocorrência, mesmo a mensagem dizendo explicitamente "tente novamente". Trata como "ainda
+      // não pronto" e continua o poll com o mesmo protocolo, até o teto de tentativas.
+      if (!/ER03|tente novamente/i.test(String(e?.message || ""))) throw e;
+      ultimoErroTransitorio = e;
+      await new Promise((resolve) => setTimeout(resolve, 8000));
+    }
   }
-  throw new Error("O relatório de situação fiscal não ficou pronto a tempo — tente de novo em alguns minutos.");
+  throw ultimoErroTransitorio || new Error("O relatório de situação fiscal não ficou pronto a tempo — tente de novo em alguns minutos.");
 }
 
 // ===================== DCTFWeb — GERARGUIA31 confirmado contra o catálogo oficial de serviços =====================

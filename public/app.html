@@ -6329,6 +6329,8 @@ async function pageNfeBusca(){
 // ===================== Integra Contador (DAS, Declaração, Situação Fiscal) =====================
 const IC_TIPO_LABEL = { das:'DAS', declaracao:'Declaração do Simples', situacao_fiscal:'Situação Fiscal', darf_dctfweb:'DARF (DCTF-Web)' };
 let IC_TAB = 'configuradas';
+let icDocBusca = ''; // filtro por tipo de documento na tela de detalhe — persiste entre re-renders (Salvar/Buscar agora)
+let icDocsTodos = [];
 async function pageIntegraContador(deepLinkEmpresaId){
   const podePostar = can('integracontador','postar');
   const podeEditar = can('integracontador','editar');
@@ -6483,6 +6485,7 @@ async function pageIntegraContador(deepLinkEmpresaId){
       </div>
       <div class="card">
         <h3>Documentos</h3>
+        <div class="field" style="max-width:360px; margin-bottom:10px;"><input type="search" id="icDocBusca" placeholder="Pesquisar por tipo de documento…" autocomplete="off" value="${esc(icDocBusca)}"></div>
         <div class="card" style="padding:0; overflow-x:auto;">
           <table class="data-table">
             <thead><tr><th>Tipo</th><th>Período</th><th>Número</th><th>Vencimento</th><th>Recebido em</th><th></th></tr></thead>
@@ -6602,10 +6605,10 @@ async function pageIntegraContador(deepLinkEmpresaId){
       finally{ btn.disabled = false; btn.textContent = 'Buscar agora'; }
     });
 
-    async function carregarIcDocumentos(){
+    function renderIcDocumentos(){
       const tbody = document.getElementById('icDocBody');
-      tbody.innerHTML = `<tr><td colspan="6"><div class="empty-state">Carregando…</div></td></tr>`;
-      const { items: docs } = await api('/integracontador/documentos?empresaId='+empresaId);
+      const termo = normalizaTxt(icDocBusca);
+      const docs = termo ? icDocsTodos.filter(d=>normalizaTxt(IC_TIPO_LABEL[d.tipo]||d.tipo).includes(termo)) : icDocsTodos;
       tbody.innerHTML = docs.length ? docs.map(d=>`
         <tr>
           <td>${esc(IC_TIPO_LABEL[d.tipo]||d.tipo)}</td>
@@ -6615,7 +6618,7 @@ async function pageIntegraContador(deepLinkEmpresaId){
           <td>${fmtDateHora(d.criadoEm)}</td>
           <td style="text-align:right; white-space:nowrap;">${d.temPdf?`<a class="btn small" href="/api/integracontador/documentos/${d.id}/pdf" target="_blank" rel="noopener">PDF</a>`:d.tipo==='declaracao'&&d.numeroDocumento?`<button class="btn small" data-declpdf="${d.id}" data-qual="declaracao">PDF da declaração</button> <button class="btn small" data-declpdf="${d.id}" data-qual="recibo">PDF do recibo</button>`:'—'}</td>
         </tr>
-      `).join('') : '<tr><td colspan="6"><div class="empty-state">Nenhum documento encontrado ainda.</div></td></tr>';
+      `).join('') : `<tr><td colspan="6"><div class="empty-state">${termo?'Nenhum documento bate com esse filtro.':'Nenhum documento encontrado ainda.'}</div></td></tr>`;
       tbody.querySelectorAll('[data-declpdf]').forEach(btn=>btn.addEventListener('click', async ()=>{
         // Abre a aba já (o navegador bloqueia janela aberta depois de uma espera) e preenche quando o PDF chegar.
         const aba = window.open('', '_blank');
@@ -6629,6 +6632,19 @@ async function pageIntegraContador(deepLinkEmpresaId){
         finally{ btn.disabled = false; btn.textContent = antes; }
       }));
     }
+    async function carregarIcDocumentos(){
+      const tbody = document.getElementById('icDocBody');
+      tbody.innerHTML = `<tr><td colspan="6"><div class="empty-state">Carregando…</div></td></tr>`;
+      const { items: docs } = await api('/integracontador/documentos?empresaId='+empresaId);
+      icDocsTodos = docs;
+      renderIcDocumentos();
+    }
+    const icDocBuscaEl = document.getElementById('icDocBusca');
+    icDocBuscaEl.addEventListener('input', e=>{
+      icDocBusca = e.target.value;
+      renderIcDocumentos();
+    });
+    if(icDocBusca){ icDocBuscaEl.focus(); try{ icDocBuscaEl.setSelectionRange(icDocBusca.length, icDocBusca.length); }catch(e){} }
     carregarIcDocumentos();
   }
 }
