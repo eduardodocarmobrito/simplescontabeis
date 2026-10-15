@@ -12363,16 +12363,52 @@ const nfseCacheMunicipiosPorUf = new Map<string, { id: number; nome: string }[]>
 function nfseNormalizaCidade(s: string): string {
   return String(s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
 }
+function ibgeMunicipiosDiskPath(uf: string): string {
+  return path.join(DATA_DIR, "ibge-municipios", `${uf}.json`);
+}
 async function nfseMunicipiosDaUf(uf: string): Promise<{ id: number; nome: string }[]> {
-  let municipios = nfseCacheMunicipiosPorUf.get(uf);
-  if (!municipios) {
-    const resp = await fetch(`https://servicodados.ibge.gov.br/api/v1/localidades/estados/${uf}/municipios`);
-    if (!resp.ok) throw new Error(`API do IBGE retornou HTTP ${resp.status}.`);
-    const json = (await resp.json()) as any[];
-    municipios = json.map((m) => ({ id: m.id, nome: m.nome }));
-    nfseCacheMunicipiosPorUf.set(uf, municipios);
+  const emMemoria = nfseCacheMunicipiosPorUf.get(uf);
+  if (emMemoria) return emMemoria;
+  // A API pública do IBGE às vezes dá "fetch failed" cru (soluço de rede/IBGE fora do ar) e, sem
+  // timeout, pode até pendurar a requisição. Tenta algumas vezes com timeout; o "fetch failed"
+  // costuma passar na tentativa seguinte.
+  let ultimoErro: any = null;
+  for (let tentativa = 1; tentativa <= 3; tentativa++) {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 8000);
+      let json: any[];
+      try {
+        const resp = await fetch(`https://servicodados.ibge.gov.br/api/v1/localidades/estados/${uf}/municipios`, { signal: ctrl.signal });
+        if (!resp.ok) throw new Error(`a API do IBGE retornou HTTP ${resp.status}`);
+        json = (await resp.json()) as any[];
+      } finally {
+        clearTimeout(timer);
+      }
+      const municipios = json.map((m) => ({ id: m.id, nome: m.nome }));
+      if (!municipios.length) throw new Error("a API do IBGE devolveu lista vazia");
+      nfseCacheMunicipiosPorUf.set(uf, municipios);
+      // Guarda em disco: os municípios quase não mudam, então uma vez baixada a UF nunca mais depende
+      // do IBGE estar no ar (sobrevive a restart e a quedas da API — ver fallback abaixo).
+      try {
+        fs.mkdirSync(path.dirname(ibgeMunicipiosDiskPath(uf)), { recursive: true });
+        fs.writeFileSync(ibgeMunicipiosDiskPath(uf), JSON.stringify(municipios));
+      } catch { /* cache em disco é best-effort */ }
+      return municipios;
+    } catch (e: any) {
+      ultimoErro = e;
+      if (tentativa < 3) await new Promise((r) => setTimeout(r, 600 * tentativa));
+    }
   }
-  return municipios;
+  // IBGE indisponível nas 3 tentativas — usa a última cópia salva em disco dessa UF, se houver.
+  try {
+    const disco = JSON.parse(fs.readFileSync(ibgeMunicipiosDiskPath(uf), "utf8")) as { id: number; nome: string }[];
+    if (Array.isArray(disco) && disco.length) {
+      nfseCacheMunicipiosPorUf.set(uf, disco);
+      return disco;
+    }
+  } catch { /* sem cópia em disco — cai no erro abaixo */ }
+  throw new Error(ultimoErro?.name === "AbortError" ? "a API do IBGE não respondeu a tempo (8s)" : (ultimoErro?.message || "fetch failed"));
 }
 // Municípios do Brasil inteiro (todas as UFs), cada um com a UF — alimenta a busca única de cidade:
 // quem escolhe a cidade já recebe a UF e o código do município, sem escolher a UF antes.
