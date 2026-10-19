@@ -12539,13 +12539,14 @@ async function feriasMontar(box){
   }));
 }
 // ===================== Usuários =====================
+let USUARIOS_FILTRO = ''; // persiste a busca ao salvar/voltar pra página (padrão do sistema)
 async function pageUsuarios(){
   const { items } = await api('/users');
   main().innerHTML = `
     <h1>Usuários</h1>
     <p class="subtitle">Equipe do escritório e acessos dos clientes</p>
     <div class="row" style="margin-bottom:14px;"><button class="btn primary" id="btnNovoUsuario">+ Novo usuário</button></div>
-    <div class="field" style="max-width:360px; margin-bottom:10px;"><input type="text" id="usFiltro" placeholder="Buscar por nome, e-mail ou empresa…" autocomplete="off"></div>
+    <div class="field" style="max-width:360px; margin-bottom:10px;"><input type="text" id="usFiltro" placeholder="Buscar por nome, e-mail ou empresa…" autocomplete="off" value="${esc(USUARIOS_FILTRO)}"></div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
         <thead><tr><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Empresa</th><th>Ativo</th><th></th></tr></thead>
@@ -12572,8 +12573,8 @@ async function pageUsuarios(){
       usuarioModal(items.find(x=>x.id===id));
     }));
   }
-  desenhaUsuarios('');
-  document.getElementById('usFiltro').addEventListener('input', e=>desenhaUsuarios(e.target.value));
+  desenhaUsuarios(USUARIOS_FILTRO);
+  document.getElementById('usFiltro').addEventListener('input', e=>{ USUARIOS_FILTRO = e.target.value; desenhaUsuarios(USUARIOS_FILTRO); });
   document.getElementById('btnNovoUsuario').addEventListener('click', ()=>usuarioModal());
 }
 const MODS = [['dashboard','Início'],['empresas','Empresas'],['solicitacoes','Solicitações de Documentos'],['envio','Envio de Documentos'],['nfse','NFS-e'],['nfe-busca','Busca de XML'],['integracontador','Integra Contador'],['licencas','Licenças'],['financeiro','Financeiro'],['certificados','Certificados'],['contratos','Contratos'],['relatorios','Relatórios'],['crm','CRM'],['dprh','DP/RH'],['contabil','Contabilidade'],['fiscal','Fiscal'],['usuarios','Usuários'],['configuracoes','Configurações'],['email','E-mail']];
