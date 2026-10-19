@@ -15183,6 +15183,21 @@ function cardLicencasAVencer(user: any, diasLimite = 30): any[] {
   return itens;
 }
 
+// Dispensas manuais do card "DAS que Falta Entregar": competência que o escritório marcou como "sem
+// movimento" (declaração sem DAS a pagar) — não é cobrança, então some do card. Guardada por
+// empresa+competência (AAAAMM).
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS das_dispensas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    escritorio_id INTEGER NOT NULL,
+    empresa_id INTEGER NOT NULL,
+    competencia TEXT NOT NULL, -- AAAAMM
+    motivo TEXT,
+    criado_por INTEGER,
+    criado_em TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(empresa_id, competencia)
+  );
+`);
 // Empresas com o DAS (template protegido "DAS - Mensal") de uma competência passada ainda sem
 // nenhum documento anexado em Envio de Documentos — inclui qualquer mês em aberto, não só o
 // anterior (uma empresa pode acumular mais de um).
@@ -15191,6 +15206,12 @@ function cardDasEmAtraso(user: any): any[] {
   const visiveis = new Set(empresasVisiveis(user));
   const agora = agoraBrasilia();
   const corte = painelMonitoramentoCorte(escritorioId);
+  // Competências dispensadas (sem movimento) por empresa — não contam como pendência.
+  const dispensas = new Map<number, Set<string>>();
+  for (const d of sqlite.prepare(`SELECT empresa_id, competencia FROM das_dispensas WHERE escritorio_id = ?`).all(escritorioId) as any[]) {
+    if (!dispensas.has(d.empresa_id)) dispensas.set(d.empresa_id, new Set());
+    dispensas.get(d.empresa_id)!.add(d.competencia);
+  }
   const atribuicoes = sqlite
     .prepare(
       `SELECT a.id as atribuicaoId, a.empresa_id as empresaId, e.nome as empresaNome, t.setor as templateSetor
@@ -15277,7 +15298,7 @@ function cardDasEmAtraso(user: any): any[] {
           const decls = sqlite.prepare(`SELECT periodo_apuracao FROM integracontador_documentos WHERE empresa_id = ? AND tipo = 'declaracao'`).all(atrib.empresaId) as any[];
           declaradas = new Set(decls.map((d) => d.periodo_apuracao));
         }
-        if (!declaradas.has(chave)) competenciasFaltando.push(`${String(mes).padStart(2, "0")}/${ano}`);
+        if (!declaradas.has(chave) && !dispensas.get(atrib.empresaId)?.has(chave)) competenciasFaltando.push(`${String(mes).padStart(2, "0")}/${ano}`);
       }
       mes++;
       if (mes > 12) {
@@ -15723,6 +15744,34 @@ app.get("/api/dashboard/cards/:id/detalhe", requirePermissao("dashboard", "visua
   if (!card) return res.status(404).json({ error: "Card não encontrado." });
   if (!card.tipo) return res.status(400).json({ error: "Este card não tem detalhamento — é um valor digitado manualmente." });
   res.json({ tipo: card.tipo, items: await calcularCardComputado(card.tipo, user, card.parametro) });
+});
+// Dispensar uma competência do card "DAS que Falta Entregar" (declaração entregue SEM MOVIMENTO, sem
+// DAS a pagar). Recebe empresaId + competencia ("MM/AAAA" ou "AAAAMM"); guarda como AAAAMM.
+function dashDasCompetencia(v: any): string | null {
+  const s = String(v || "").trim();
+  let m = /^(0[1-9]|1[0-2])\/(20\d{2})$/.exec(s); // MM/AAAA
+  if (m) return `${m[2]}${m[1]}`;
+  m = /^(20\d{2})(0[1-9]|1[0-2])$/.exec(s); // AAAAMM
+  return m ? s : null;
+}
+app.post("/api/dashboard/das-dispensa", blockCliente, requirePermissao("dashboard", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.body?.empresaId);
+  const competencia = dashDasCompetencia(req.body?.competencia);
+  if (!empresaId || !competencia) return res.status(400).json({ error: "Empresa e competência (MM/AAAA) são obrigatórias." });
+  if (!podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  sqlite
+    .prepare(`INSERT OR IGNORE INTO das_dispensas (escritorio_id, empresa_id, competencia, motivo, criado_por) VALUES (?, ?, ?, 'Entregue sem movimento', ?)`)
+    .run(user.escritorioId, empresaId, competencia, user.id);
+  res.json({ ok: true });
+});
+app.delete("/api/dashboard/das-dispensa", blockCliente, requirePermissao("dashboard", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.body?.empresaId);
+  const competencia = dashDasCompetencia(req.body?.competencia);
+  if (!empresaId || !competencia) return res.status(400).json({ error: "Empresa e competência são obrigatórias." });
+  sqlite.prepare(`DELETE FROM das_dispensas WHERE escritorio_id = ? AND empresa_id = ? AND competencia = ?`).run(user.escritorioId, empresaId, competencia);
+  res.json({ ok: true });
 });
 // "envio_atraso" precisa de um envio_templates válido (do mesmo escritório, mensal, ativo) como
 // parâmetro — sem isso o card ficaria "computado" mas sem saber o que calcular. "solicitacao_atraso"

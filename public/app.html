@@ -2427,9 +2427,16 @@ function cardDetalheModal(c){
           }).join('')}
         </tbody></table>`;
       } else if(tipo==='das_atraso'){
+        const podeDispensar = can('dashboard','editar');
         box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Competências em aberto</th></tr></thead><tbody>
-          ${items.map(i=>`<tr><td>${esc(i.empresaNome)}</td><td>${i.competencias.map(esc).join(', ')}</td></tr>`).join('')}
-        </tbody></table>`;
+          ${items.map(i=>`<tr><td>${esc(i.empresaNome)}</td><td>${i.competencias.map(comp=>`<span class="tag" style="margin:2px 6px 2px 0; display:inline-block;">${esc(comp)}${podeDispensar?` <a href="#" class="das-disp" data-emp="${i.empresaId}" data-comp="${esc(comp)}" title="Dispensar — entregue sem movimento (sem DAS a pagar)" style="text-decoration:none; color:var(--debit); font-weight:700; margin-left:4px;">✕</a>`:''}</span>`).join('')}</td></tr>`).join('')}
+        </tbody></table>${podeDispensar?'<div style="font-size:11.5px; color:var(--ink-soft); margin-top:8px;">Clique no <b>✕</b> de uma competência pra <b>dispensar</b> — use só quando ela foi entregue <b>sem movimento</b> (sem DAS a pagar).</div>':''}`;
+        if(podeDispensar) box.querySelectorAll('.das-disp').forEach(a=>a.addEventListener('click', async (ev)=>{
+          ev.preventDefault();
+          if(!confirmar('Dispensar '+a.dataset.comp+' desta empresa? Marque só quando a competência foi entregue SEM MOVIMENTO (sem DAS a pagar).')) return;
+          try{ await api('/dashboard/das-dispensa', { method:'POST', body:{ empresaId:Number(a.dataset.emp), competencia:a.dataset.comp } }); toast('Competência dispensada (sem movimento).','ok'); cardModal(c); }
+          catch(e){ toast(e.message,'err'); }
+        }));
       } else if(tipo==='situacao_fiscal'){
         box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Alerta</th><th></th></tr></thead><tbody>
           ${items.map(i=>`<tr><td>${esc(i.empresaNome)}</td><td>${esc(i.alerta)}</td><td style="text-align:right;">${i.docId?`<a class="btn small" href="/api/integracontador/documentos/${i.docId}/pdf" target="_blank" rel="noopener">Baixar Situação Fiscal</a>`:''}</td></tr>`).join('')}
