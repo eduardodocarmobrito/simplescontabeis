@@ -10989,13 +10989,18 @@ async function atdAcao(S, acao, botao){
       try{
         await dcApi(base+'/close', { method:'POST', body:{ expected_revision: c.revisao || undefined } });
       }catch(err){
-        // "Conversa não encontrada" / conflito de revisão: a conversa está em ATENDIMENTO AUTOMÁTICO (bot),
-        // então não há um atendimento humano aberto pra fechar — ou o número de revisão da tela está velho.
-        // Tenta fechar sem a revisão; se ainda assim não houver atendimento, abre um (claim) e fecha.
-        if(/n[ãa]o encontrad|not found|revis|conflict|\b404\b|\b409\b/i.test(err.message||'')){
-          try{ await dcApi(base+'/close', { method:'POST', body:{} }); }
-          catch(e2){ await dcApi(base+'/claim', { method:'POST', body:{} }); await dcApi(base+'/close', { method:'POST', body:{} }); }
-        } else throw err;
+        // Em QUALQUER falha ao fechar, tenta de novo SEM o expected_revision — a maioria dos erros aqui
+        // é conflito de revisão por dado velho na tela (o deskcomm reporta como "Outro atendente já
+        // assumiu"/"revisão" mesmo quando a conversa é sua, só porque a revisão mudou depois que a tela
+        // carregou). Fechar é uma ação manual e deliberada, então seguir sem a trava otimista é o certo.
+        try{
+          await dcApi(base+'/close', { method:'POST', body:{} });
+        }catch(e2){
+          // Ainda não fechou: conversa em ATENDIMENTO AUTOMÁTICO (bot) não tem atendimento humano aberto
+          // pra fechar — abre um (claim) e fecha.
+          try{ await dcApi(base+'/claim', { method:'POST', body:{} }); await dcApi(base+'/close', { method:'POST', body:{} }); }
+          catch(e3){ throw e2; }
+        }
       }
     }, 'Conversa fechada.');
   }
