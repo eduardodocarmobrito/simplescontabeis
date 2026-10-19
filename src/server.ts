@@ -3096,7 +3096,22 @@ app.get("/api/atendimento/sessao-deskcomm", requireAuth, blockCliente, requireEs
       papel = uo?.role ?? null;
       emailLa = (await deskcommAdmin!.auth.admin.getUserById(noCookie)).data.user?.email ?? null;
     }
-    res.json({ ok: !!esperado && !!noCookie && esperado === noCookie, papel, emailLa, esperado: user.perfil === "Administrador" ? "admin" : "agent" });
+    let ok = !!esperado && !!noCookie && esperado === noCookie;
+    // Autocorreção (achado ao vivo 2026-10-19, usuária Geissy): o cookie estava logado numa conta do
+    // deskcomm com o MESMO e-mail do usuário, mas o deskcomm_user_id guardado no cadastro tinha ficado
+    // defasado (conta recriada/duplicada no Supabase) — esperado≠cookie e travava pra sempre, mesmo
+    // sendo a pessoa certa. Quando o e-mail do cookie bate com o do usuário, é ela: aceita, corrige o
+    // id em cache e garante o papel na org pro id correto. Segue travando quando o e-mail é de OUTRA
+    // pessoa (o caso que a checagem existe pra proteger).
+    if (!ok && noCookie && emailLa && emailLa.toLowerCase() === String(user.email || "").toLowerCase()) {
+      sqlite.prepare(`UPDATE app_users SET deskcomm_user_id = ? WHERE id = ?`).run(noCookie, user.id);
+      await deskcommAdmin!.from("user_organizations").upsert(
+        { organization_id: DESKCOMM_ORG_ID, user_id: noCookie, role: user.perfil === "Administrador" ? "admin" : "agent", accepted_at: new Date().toISOString() },
+        { onConflict: "organization_id,user_id" }
+      );
+      ok = true;
+    }
+    res.json({ ok, papel, emailLa, esperado: user.perfil === "Administrador" ? "admin" : "agent" });
   } catch (e: any) {
     res.status(502).json({ ok: false, error: e.message });
   }
