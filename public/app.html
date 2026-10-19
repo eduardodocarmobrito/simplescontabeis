@@ -10986,22 +10986,10 @@ async function atdAcao(S, acao, botao){
       // Pesquisa de satisfação (se ligada em ⚙ Metas e alertas): sai ANTES de fechar, pelo usuário Automações.
       try{ await api('/atendimento/conversas/'+encodeURIComponent(c.id)+'/pesquisa', { method:'POST' }); }
       catch(e){ toast('A pesquisa de satisfação não foi enviada: '+e.message,'err'); }
-      try{
-        await dcApi(base+'/close', { method:'POST', body:{ expected_revision: c.revisao || undefined } });
-      }catch(err){
-        // Em QUALQUER falha ao fechar, tenta de novo SEM o expected_revision — a maioria dos erros aqui
-        // é conflito de revisão por dado velho na tela (o deskcomm reporta como "Outro atendente já
-        // assumiu"/"revisão" mesmo quando a conversa é sua, só porque a revisão mudou depois que a tela
-        // carregou). Fechar é uma ação manual e deliberada, então seguir sem a trava otimista é o certo.
-        try{
-          await dcApi(base+'/close', { method:'POST', body:{} });
-        }catch(e2){
-          // Ainda não fechou: conversa em ATENDIMENTO AUTOMÁTICO (bot) não tem atendimento humano aberto
-          // pra fechar — abre um (claim) e fecha.
-          try{ await dcApi(base+'/claim', { method:'POST', body:{} }); await dcApi(base+'/close', { method:'POST', body:{} }); }
-          catch(e3){ throw e2; }
-        }
-      }
+      // Fecha pelo backend (robô admin): um Colaborador (agente) só fecharia pela sessão dele as conversas
+      // atribuídas a ele — nas automáticas ou de outro atendente dava "não encontrada"/"outro atendente já
+      // assumiu". O backend fecha qualquer conversa do escritório, com a revisão atual.
+      await api('/atendimento/conversas/'+encodeURIComponent(c.id)+'/fechar', { method:'POST' });
     }, 'Conversa fechada.');
   }
   if(acao==='nao-lida'){

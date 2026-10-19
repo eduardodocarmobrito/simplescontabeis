@@ -19299,6 +19299,38 @@ app.get("/api/atendimento/conversas/:id/dono", blockCliente, requireEscritorioPr
   }
   res.json({ atribuidoDeskcommId: donoId, atribuidoNome: nome, status: (c as any).status });
 });
+// Fechar a conversa pelo servidor (sessão do robô, admin no deskcomm), não pela sessão do usuário. Um
+// AGENTE (Colaborador) só fecha pelo deskcomm as conversas atribuídas a ele — nas automáticas ou de
+// outro atendente dava "Conversa não encontrada" / "Outro atendente já assumiu". Aqui fecha com a
+// revisão ATUAL (lida na hora, sem depender do que a tela tinha) e, se não houver atendimento aberto
+// (conversa no automático), abre um (claim) e fecha. O trigger de "recomeça ao fechar" vale igual.
+app.post("/api/atendimento/conversas/:id/fechar", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
+  const user = (req as any).user;
+  if (!atendimentoAlgumaPermissao(user, "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  const id = String(req.params.id);
+  try {
+    const { data: c } = await deskcommAdmin.from("conversations").select("id, status, service_revision").eq("organization_id", DESKCOMM_ORG_ID).eq("id", id).maybeSingle();
+    if (!c) return res.status(404).json({ error: "Conversa não encontrada." });
+    if ((c as any).status === "closed" || (c as any).status === "archived") return res.json({ ok: true, jaFechada: true });
+    const fechar = (body: any) => deskcommRoboApi(`/conversations/${id}/close`, { method: "POST", body });
+    try {
+      await fechar((c as any).service_revision ? { expected_revision: (c as any).service_revision } : {});
+    } catch {
+      try {
+        await fechar({});
+      } catch {
+        // Conversa no automático (sem atendimento humano aberto): abre um e fecha.
+        await deskcommRoboApi(`/conversations/${id}/claim`, { method: "POST", body: {} });
+        await fechar({});
+      }
+    }
+    res.json({ ok: true });
+  } catch (e: any) {
+    console.error("[atendimento] falha ao fechar:", e.message);
+    res.status(502).json({ error: `Não foi possível fechar: ${e.message}` });
+  }
+});
 
 // Pra quem dá pra transferir: Administradores + Colaboradores com acesso ao módulo (no CRM, a quem tem
 // CRM ou DP/RH — o atendente geral pode passar direto pra alguém do setor), já espelhados no deskcomm
