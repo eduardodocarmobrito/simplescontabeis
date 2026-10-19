@@ -11568,6 +11568,84 @@ function atdNovaConversaModal(S){
     }catch(e){ toast(e.message,'err'); botao.disabled = false; }
   });
 }
+// Encaminhar uma mensagem (recebida ou enviada) pra OUTRA pessoa: escolhe o contato (mesma busca da
+// Nova conversa, ou digita o número), abre/reaproveita a conversa dele e posta o conteúdo lá —
+// texto, ou mídia reaproveitando o arquivo que já está no storage do deskcomm. Dá pra adicionar uma
+// observação junto. Não assume o atendimento da conversa de destino (é só um envio).
+function atdEncaminharModal(S, m){
+  const temMidia = !!m.media_storage_path;
+  const tipoLabel = temMidia ? ((ATD_MIDIA_TIPOS[m.type]||['📎','Arquivo'])[1]) : 'Mensagem de texto';
+  const preview = temMidia ? `${(ATD_MIDIA_TIPOS[m.type]||['📎',''])[0]} ${esc(tipoLabel)}${m.body?` — "${esc(m.body)}"`:''}` : esc(m.body||'');
+  openModal(`
+    <h3>Encaminhar para outra pessoa</h3>
+    <div style="background:var(--bg-soft,#f4f6f5); border-radius:8px; padding:10px; margin-bottom:12px; max-height:110px; overflow:auto; white-space:pre-wrap; font-size:13px;">${preview||'[sem conteúdo]'}</div>
+    <div class="field"><label>Buscar na agenda</label><input type="text" id="atdEncBusca" placeholder="Nome ou telefone…" autocomplete="off"></div>
+    <div id="atdEncResultados" style="max-height:200px; overflow-y:auto; border:1px solid var(--rule); border-radius:10px; margin:-6px 0 14px;"><div class="empty-state" style="padding:14px;">Digite pra procurar um contato.</div></div>
+    <div class="field"><label>Ou digite o número (com DDD)</label><input type="text" id="atdEncTelefone" placeholder="Ex.: 94 99999-8888" autocomplete="off"></div>
+    <div class="field"><label>Nome (opcional, pra número novo)</label><input type="text" id="atdEncNome" maxlength="200"></div>
+    <div class="field"><label>Observação (opcional, vai junto)</label><input type="text" id="atdEncNota" maxlength="1000" placeholder="Ex.: segue a mensagem do cliente…"></div>
+    <div class="modal-actions"><button class="btn" id="atdEncCancel">Cancelar</button><button class="btn primary" id="atdEncEnviar">↪️ Encaminhar</button></div>
+  `);
+  let contatoId = null, t = null;
+  const resultados = document.getElementById('atdEncResultados');
+  document.getElementById('atdEncBusca').addEventListener('input', ev=>{
+    clearTimeout(t);
+    const termo = ev.target.value.trim();
+    contatoId = null;
+    if(termo.length < 2){ resultados.innerHTML = `<div class="empty-state" style="padding:14px;">Digite pra procurar um contato.</div>`; return; }
+    t = setTimeout(async ()=>{
+      let lista;
+      try{ lista = await dcApi('/contacts?limit=15&search='+encodeURIComponent(termo)); }
+      catch(e){ resultados.innerHTML = `<div class="empty-state" style="padding:14px; color:var(--debit)">${esc(e.message)}</div>`; return; }
+      lista = (lista||[]).filter(ct=>ct.phone_number && !ct.is_blocked && !ct.is_anonymized);
+      resultados.innerHTML = lista.length ? lista.map(ct=>`
+        <div class="dprh-conv" data-id="${esc(ct.id)}" style="padding:8px 10px;">
+          <div class="dprh-avatar">${esc(atdIniciais(ct.display_name||ct.name||ct.phone_number))}</div>
+          <div style="min-width:0;"><div class="dprh-conv-nome">${esc(ct.display_name||ct.name||ct.phone_number)}</div><div class="dprh-conv-sub">${esc(ct.phone_number)}</div></div>
+        </div>`).join('') : `<div class="empty-state" style="padding:14px;">Nenhum contato encontrado — digite o número abaixo.</div>`;
+      resultados.querySelectorAll('.dprh-conv').forEach(el=>el.addEventListener('click', ()=>{
+        contatoId = el.dataset.id;
+        resultados.querySelectorAll('.dprh-conv').forEach(x=>x.classList.toggle('active', x===el));
+        document.getElementById('atdEncTelefone').value = '';
+      }));
+    }, 300);
+  });
+  document.getElementById('atdEncTelefone').addEventListener('input', ()=>{ contatoId = null; resultados.querySelectorAll('.dprh-conv').forEach(x=>x.classList.remove('active')); });
+  document.getElementById('atdEncCancel').addEventListener('click', closeModal);
+  document.getElementById('atdEncEnviar').addEventListener('click', async ()=>{
+    let corpoAbrir;
+    if(contatoId) corpoAbrir = { contact_id: contatoId };
+    else{
+      const tel = atdTelefoneDigitado(document.getElementById('atdEncTelefone').value);
+      if(!tel){ toast('Escolha um contato ou digite um número com DDD.','err'); return; }
+      const nome = document.getElementById('atdEncNome').value.trim();
+      corpoAbrir = nome ? { phone_number: tel, name: nome } : { phone_number: tel };
+    }
+    const nota = document.getElementById('atdEncNota').value.trim();
+    const botao = document.getElementById('atdEncEnviar');
+    botao.disabled = true;
+    try{
+      await dcGarantirSessao();
+      const r = await dcApi('/conversations/open-with-contact', { method:'POST', body: corpoAbrir });
+      const convId = r.conversation_id;
+      let msg;
+      if(temMidia){
+        msg = { conversation_id: convId, type: m.type, media_storage_path: m.media_storage_path, media_mime: m.media_mime, media_size_bytes: m.media_size_bytes, metadata: (m.metadata && m.metadata.filename)?{ filename: m.metadata.filename }:{} };
+        const legenda = [nota, m.body].filter(Boolean).join('\n');
+        if(legenda && m.type!=='audio') msg.body = legenda;
+      } else {
+        const texto = [nota, m.body||''].filter(Boolean).join('\n').trim();
+        if(!texto){ toast('Nada pra encaminhar nesta mensagem.','err'); botao.disabled = false; return; }
+        msg = { conversation_id: convId, type:'text', body: texto };
+      }
+      await dcApi('/messages', { method:'POST', body: msg });
+      // Se por acaso encaminhou pra conversa que está aberta, atualiza; senão só avisa.
+      if(S.conversaAtiva===convId){ S.ultimaMsgId=null; await atdCarregarMensagens(S, true); }
+      closeModal();
+      toast('Mensagem encaminhada.','ok');
+    }catch(e){ toast(e.message,'err'); botao.disabled = false; }
+  });
+}
 function atdAutorMsg(S, m, c){
   if(m.direction==='inbound') return c.contatoNome || c.telefone;
   if(m.sent_by_user_id){
@@ -11816,6 +11894,7 @@ function atdMenuMensagem(S, id){
     <div style="background:var(--bg-soft,#f4f6f5); border-radius:8px; padding:10px; margin-bottom:12px; max-height:120px; overflow:auto; white-space:pre-wrap;">${esc(m.body||'['+(m.type||'mídia')+']')}</div>
     <div style="display:flex; flex-direction:column; gap:8px;">
       ${!m.revoked_at?`<button class="btn primary" id="msgResponder">↩️ Responder esta mensagem</button>`:''}
+      ${!m.revoked_at && (m.body || m.media_storage_path)?`<button class="btn" id="msgEncaminhar">↪️ Encaminhar para outra pessoa</button>`:''}
       ${podeEditar?`<button class="btn" id="msgEditar">✏️ Editar mensagem</button>`:''}
       ${nossa && !m.revoked_at?`<button class="btn danger" id="msgParaTodos">🗑 Excluir para todos <span style="font-weight:400; font-size:12px;">(apaga no WhatsApp do cliente)</span></button>`:''}
       <button class="btn" id="msgExcluir">🙈 Excluir <span style="font-weight:400; font-size:12px;">(some daqui; o histórico continua guardado)</span></button>
@@ -11832,6 +11911,8 @@ function atdMenuMensagem(S, id){
   };
   const bResp = document.getElementById('msgResponder');
   if(bResp) bResp.addEventListener('click', ()=>{ closeModal(); atdResponderA(S, m); });
+  const bEnc = document.getElementById('msgEncaminhar');
+  if(bEnc) bEnc.addEventListener('click', ()=>{ closeModal(); atdEncaminharModal(S, m); });
   const bExc = document.getElementById('msgExcluir');
   bExc.addEventListener('click', ()=>{ if(confirmar('Esconder esta mensagem da conversa? (ela continua guardada no histórico)')) chamar('excluir', null, 'Mensagem escondida.', bExc); });
   const bTodos = document.getElementById('msgParaTodos');
