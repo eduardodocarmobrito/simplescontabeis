@@ -3795,7 +3795,10 @@ app.get("/api/empresas/cnpj/:cnpj", blockCliente, requirePermissao("empresas", "
     res.status(502).json({ error: `Não consegui consultar o CNPJ: ${e.message}` });
   }
 });
-const REGIMES_TRIBUTARIOS = ["simples_nacional", "lucro_presumido", "lucro_real", "produtor_rural"] as const;
+// "mei" (SIMEI) é uma modalidade do Simples Nacional — pra NFS-e conta como optante do Simples (ver
+// onde opcaoSimplesNacional é derivado abaixo).
+const REGIMES_TRIBUTARIOS = ["simples_nacional", "mei", "lucro_presumido", "lucro_real", "produtor_rural"] as const;
+const REGIMES_OPTANTE_SIMPLES = ["simples_nacional", "mei"];
 // Modelo de Envio de Documentos com "auto_regime_tributario" configurado (ex.: DARF IRPJ/CSLL só
 // se aplica a Lucro Real) ganha atribuição sozinho assim que a empresa é classificada nesse regime
 // — chamado toda vez que o regime é salvo (cadastro novo ou edição), idempotente via UNIQUE(template_id,
@@ -3909,7 +3912,7 @@ app.put("/api/empresas/:id", blockCliente, requirePermissao("empresas", "editar"
       id
     );
   if (regimeTributario !== undefined || req.body.regimeApuracaoSn !== undefined || req.body.percentualTotalTributosSn !== undefined) {
-    empresaSalvarDadosFiscaisNfse(id, regimeTributarioFinal === "simples_nacional", req.body);
+    empresaSalvarDadosFiscaisNfse(id, REGIMES_OPTANTE_SIMPLES.includes(regimeTributarioFinal), req.body);
   }
   if (regimeTributario !== undefined) envioAutoAtribuirPorRegime(id, (req as any).user.escritorioId, regimeTributarioFinal);
   garantirContatosDeTelefoneCadastral(id);

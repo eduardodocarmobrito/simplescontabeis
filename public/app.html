@@ -3032,6 +3032,7 @@ async function renderEmpresasRelatorio(){
   const ativas = items.filter(e=>e.ativo);
   const regimes = [
     { k:'simples_nacional', nome:'Simples Nacional' },
+    { k:'mei',              nome:'MEI' },
     { k:'lucro_real',       nome:'Lucro Real' },
     { k:'lucro_presumido',  nome:'Lucro Presumido' },
     { k:'produtor_rural',   nome:'Produtor Rural' },
@@ -3249,6 +3250,7 @@ function empresaModal(e){
       <p style="font-size:12px; color:var(--ink-soft); margin-top:-4px;">Entra na lista do robô do <b>Demonstrativo Mensal</b> (módulo Escrita Fiscal) — também precisa do <b>código do Domínio</b> preenchido.</p>
       <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Regime tributário</div>
       <label class="checkbox-row"><input type="radio" name="empRegimeTributario" value="simples_nacional" ${(e.regimeTributario||'simples_nacional')==='simples_nacional'?'checked':''}> Optante pelo Simples Nacional</label>
+      <label class="checkbox-row"><input type="radio" name="empRegimeTributario" value="mei" ${e.regimeTributario==='mei'?'checked':''}> MEI (Microempreendedor Individual)</label>
       <label class="checkbox-row"><input type="radio" name="empRegimeTributario" value="lucro_presumido" ${e.regimeTributario==='lucro_presumido'?'checked':''}> Lucro Presumido</label>
       <label class="checkbox-row"><input type="radio" name="empRegimeTributario" value="lucro_real" ${e.regimeTributario==='lucro_real'?'checked':''}> Lucro Real</label>
       <label class="checkbox-row"><input type="radio" name="empRegimeTributario" value="produtor_rural" ${e.regimeTributario==='produtor_rural'?'checked':''}> Produtor Rural</label>
@@ -3288,7 +3290,8 @@ function empresaModal(e){
     function desenhaEmpRegApuracaoWrap(){
       const wrap = document.getElementById('empRegApuracaoWrap');
       const marcado = document.querySelector('input[name="empRegimeTributario"]:checked');
-      if(!marcado || marcado.value!=='simples_nacional'){ wrap.innerHTML=''; return; }
+      // MEI (SIMEI) é optante do Simples — mostra o mesmo bloco (regime de apuração + % de tributos pra NFS-e).
+      if(!marcado || (marcado.value!=='simples_nacional' && marcado.value!=='mei')){ wrap.innerHTML=''; return; }
       const atual = e.regimeApuracaoSn || '1';
       wrap.innerHTML = `
         <div class="field"><label>Regime de apuração dos tributos do Simples Nacional</label>
@@ -4115,7 +4118,7 @@ const MESES=['','Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov
 // Só o módulo Envio de Documentos tem periodicidade "trimestral" (Solicitações/checklist continua
 // só com mensal/anual/avulso) — mapa próprio pra não confundir os dois.
 const PERIODICIDADE_LABELS = { mensal:'Mensal', trimestral:'Trimestral', anual:'Anual', avulso:'Avulso' };
-const REGIME_TRIBUTARIO_LABELS = { simples_nacional:'Simples Nacional', lucro_presumido:'Lucro Presumido', lucro_real:'Lucro Real', produtor_rural:'Produtor Rural' };
+const REGIME_TRIBUTARIO_LABELS = { simples_nacional:'Simples Nacional', mei:'MEI', lucro_presumido:'Lucro Presumido', lucro_real:'Lucro Real', produtor_rural:'Produtor Rural' };
 const UFS_BR=['AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG','PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO'];
 function rotuloPeriodo(p){ return p.mes? `${MESES[p.mes]}/${p.ano}` : (p.rotulo || String(p.ano)); }
 // Competência no formato "AAAA-MM" (o mesmo do <input type="month">) pro rótulo "Jan/2027" de tela.
@@ -4723,6 +4726,7 @@ function envioModeloModal(t){
       <select id="evAutoRegime">
         <option value="">Nenhum — atribuir manualmente</option>
         <option value="simples_nacional">Optante pelo Simples Nacional</option>
+        <option value="mei">MEI (Microempreendedor Individual)</option>
         <option value="lucro_presumido">Lucro Presumido</option>
         <option value="lucro_real">Lucro Real</option>
         <option value="produtor_rural">Produtor Rural</option>
