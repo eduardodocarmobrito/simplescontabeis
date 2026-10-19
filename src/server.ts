@@ -7479,6 +7479,17 @@ app.delete("/api/envio/documentos/:id", blockCliente, requirePermissao("envio", 
   sqlite.prepare(`DELETE FROM envio_documentos WHERE id = ?`).run(doc.id);
   res.json({ ok: true });
 });
+// Preview dos destinatários de e-mail de um documento — pra tela mostrar "vai pra tal e-mail" antes
+// de enviar (mesma fonte que o reenviar-email usa: contatos da empresa com receber_emails=1).
+app.get("/api/envio/documentos/:id/destinatarios-email", blockCliente, requirePermissao("envio", "postar"), (req, res) => {
+  const user = (req as any).user;
+  const doc = sqlite.prepare(`SELECT p.atribuicao_id as atribuicaoId FROM envio_documentos d JOIN envio_periodos p ON p.id = d.periodo_id WHERE d.id = ?`).get(Number(req.params.id)) as any;
+  if (!doc) return res.status(404).json({ error: "Documento não encontrado." });
+  const atrib = sqlite.prepare(`SELECT a.empresa_id as empresaId, e.nome as empresaNome FROM envio_atribuicoes a JOIN empresas e ON e.id = a.empresa_id WHERE a.id = ?`).get(doc.atribuicaoId) as any;
+  if (!atrib || !podeAcessarEmpresa(user, atrib.empresaId)) return res.status(404).json({ error: "Documento não encontrado." });
+  const contatos = sqlite.prepare(`SELECT nome, email FROM empresa_contatos WHERE empresa_id = ? AND receber_emails = 1 AND email IS NOT NULL AND email != ''`).all(atrib.empresaId) as any[];
+  res.json({ empresaNome: atrib.empresaNome, destinatarios: contatos.map((c) => ({ nome: c.nome || null, email: c.email })) });
+});
 app.post("/api/envio/documentos/:id/reenviar-email", blockCliente, requirePermissao("envio", "postar"), async (req, res) => {
   const user = (req as any).user;
   const doc = sqlite

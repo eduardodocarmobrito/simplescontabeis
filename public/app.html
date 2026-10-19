@@ -667,6 +667,31 @@ function confirmarReenvioModal(ja){
     document.getElementById('reenvSim').addEventListener('click', ()=>fim(true));
   });
 }
+// Caixa de confirmação de envio de e-mail de um documento da grade Envio de Documentos: mostra pra
+// quais e-mails vai ANTES de enviar. Retorna true se foi enviado, false se cancelou/sem destinatário.
+function confirmarEnvioEmailModal(empresaNome, dests){
+  return new Promise(resolve=>{
+    const linhas = dests.map(d=>`<li style="margin:3px 0;">✉️ <b>${esc(d.email)}</b>${d.nome?` <span style="color:var(--ink-soft);">— ${esc(d.nome)}</span>`:''}</li>`).join('');
+    openModal(`<h3>Enviar e-mail</h3>`
+      + `<div style="font-size:13px; line-height:1.5;">O documento será enviado${empresaNome?` para os contatos de <b>${esc(empresaNome)}</b>`:''}:</div>`
+      + `<ul style="margin:10px 0 0; padding-left:20px; max-height:230px; overflow:auto;">${linhas}</ul>`
+      + `<div class="modal-actions" style="margin-top:16px; display:flex; gap:8px; justify-content:flex-end;">`
+      + `<button class="btn" id="emlDocNao">Cancelar</button><button class="btn primary" id="emlDocSim">Enviar</button></div>`, '460px');
+    let done=false; const fim=v=>{ if(done)return; done=true; closeModal(); resolve(v); };
+    document.getElementById('emlDocNao').addEventListener('click', ()=>fim(false));
+    document.getElementById('emlDocSim').addEventListener('click', ()=>fim(true));
+  });
+}
+async function enviarEmailDocComPreview(docId){
+  let prev;
+  try{ prev = await api('/envio/documentos/'+docId+'/destinatarios-email'); }
+  catch(e){ toast(e.message,'err'); return false; }
+  const dests = (prev && prev.destinatarios) || [];
+  if(!dests.length){ toast('Esta empresa não tem contatos de e-mail cadastrados (marque "Receber e-mails" no contato).','err'); return false; }
+  if(!await confirmarEnvioEmailModal(prev.empresaNome, dests)) return false;
+  await api('/envio/documentos/'+docId+'/reenviar-email', { method:'POST' });
+  return true;
+}
 // Executa um POST de envio por WhatsApp que pode responder 409 {jaEnviado}. Retorna o resultado do
 // envio, ou { cancelado:true } se o usuário recusou o reenvio. Outros erros sobem normalmente.
 async function enviarWhatsappDocComConfirmacao(path, body){
@@ -5095,7 +5120,7 @@ function wireEnvioGradeEvents(container, atribuicaoId, souCliente){
     vencimentoModal(b.dataset.doc, b.dataset.venc||'', ()=>abrirEnvioGrade(atribuicaoId, souCliente));
   }));
   container.querySelectorAll('[data-act="reenviar-email"]').forEach(b=>b.addEventListener('click', async ()=>{
-    try{ await api('/envio/documentos/'+b.dataset.doc+'/reenviar-email', { method:'POST' }); toast('E-mail reenviado.','ok'); abrirEnvioGrade(atribuicaoId, souCliente); }
+    try{ if(await enviarEmailDocComPreview(b.dataset.doc)){ toast('E-mail enviado.','ok'); abrirEnvioGrade(atribuicaoId, souCliente); } }
     catch(e){ toast(e.message,'err'); }
   }));
   container.querySelectorAll('[data-act="enviar-whatsapp"]').forEach(b=>b.addEventListener('click', ()=>{
@@ -9825,7 +9850,7 @@ function renderRelDominio(box, empresas, tipo){
   function ligarBotoesEnvio(resultBox){
     resultBox.querySelectorAll('[data-act="email"]').forEach(b=>b.addEventListener('click', async ()=>{
       b.disabled = true;
-      try{ await api('/envio/documentos/'+b.dataset.id+'/reenviar-email', { method:'POST' }); toast('E-mail enviado.','ok'); }
+      try{ if(await enviarEmailDocComPreview(b.dataset.id)) toast('E-mail enviado.','ok'); }
       catch(e){ toast(e.message,'err'); }
       finally{ b.disabled=false; }
     }));
