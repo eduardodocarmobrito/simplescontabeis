@@ -19277,6 +19277,28 @@ app.get("/api/atendimento/mensagens/:id/media", blockCliente, requireEscritorioP
     res.status(502).end();
   }
 });
+// Quem está com a conversa AGORA (dono atual) — usado quando "Assumir no lugar" falha, pra dizer na
+// tela quem já assumiu (e pra tentar de novo com o dono atual, caso a tela estivesse com dado velho).
+app.get("/api/atendimento/conversas/:id/dono", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
+  const user = (req as any).user;
+  if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  const { data: c, error } = await deskcommAdmin
+    .from("conversations")
+    .select("assigned_to_user_id, assigned_to_user_name, status")
+    .eq("organization_id", DESKCOMM_ORG_ID)
+    .eq("id", String(req.params.id))
+    .maybeSingle();
+  if (error) return res.status(502).json({ error: error.message });
+  if (!c) return res.status(404).json({ error: "Conversa não encontrada." });
+  const donoId = (c as any).assigned_to_user_id || null;
+  let nome: string | null = null;
+  if (donoId) {
+    const row = sqlite.prepare(`SELECT nome FROM app_users WHERE escritorio_id = ? AND deskcomm_user_id = ?`).get(user.escritorioId, donoId) as any;
+    nome = row?.nome || (c as any).assigned_to_user_name || "Outro atendente";
+  }
+  res.json({ atribuidoDeskcommId: donoId, atribuidoNome: nome, status: (c as any).status });
+});
 
 // Pra quem dá pra transferir: Administradores + Colaboradores com acesso ao módulo (no CRM, a quem tem
 // CRM ou DP/RH — o atendente geral pode passar direto pra alguém do setor), já espelhados no deskcomm

@@ -10944,7 +10944,26 @@ async function atdAcao(S, acao, botao){
     const tomandoDeOutro = !!c.atribuidoDeskcommId;
     const avisar = !tomandoDeOutro && await atdAvisoAtivo('assumir');
     return executar(async ()=>{
-      await dcApi(base+'/claim', { method:'POST', body: tomandoDeOutro ? { expected_assignee: c.atribuidoDeskcommId } : {} });
+      const claim = dono=>dcApi(base+'/claim', { method:'POST', body: dono ? { expected_assignee: dono } : {} });
+      try{
+        await claim(tomandoDeOutro ? c.atribuidoDeskcommId : null);
+      }catch(err){
+        // Quase sempre o deskcomm recusa com "já tem outro usuário que assumiu" (trava otimista): a tela
+        // pode estar com dado velho. Descobre quem está com ela AGORA, tenta de novo com o dono atual e,
+        // se ainda assim não deixar, avisa claramente QUEM assumiu.
+        let dono=null; try{ dono = await api('/atendimento/conversas/'+encodeURIComponent(c.id)+'/dono'); }catch(e){}
+        const quem = (dono && dono.atribuidoNome) || c.atribuidoNome || 'outro atendente';
+        if(dono && dono.atribuidoDeskcommId && dono.atribuidoDeskcommId!==c.atribuidoDeskcommId){
+          try{ await claim(dono.atribuidoDeskcommId); }
+          catch(e2){ throw new Error('Este atendimento já foi assumido por '+quem+'. (Atualizei a lista.)'); }
+        } else if(dono && !dono.atribuidoDeskcommId){
+          // Ninguém tem mais — tenta assumir do zero (ficou livre entre o clique e agora).
+          try{ await claim(null); }
+          catch(e2){ throw new Error(err.message); }
+        } else {
+          throw new Error('Este atendimento já foi assumido por '+quem+'.'+(/admin|permiss|forbidden|403|não tem permiss/i.test(err.message||'') ? ' Só um administrador pode assumir no lugar — peça pra '+quem+' liberar ou transferir a conversa.' : ''));
+        }
+      }
       // Saindo da fila/automático, o cliente fica sabendo que uma pessoa pegou a conversa. Trocar de
       // um atendente pro outro não avisa — pro cliente o atendimento humano já estava acontecendo.
       if(tomandoDeOutro || !avisar) return;
