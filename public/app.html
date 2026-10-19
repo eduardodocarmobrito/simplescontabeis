@@ -7761,7 +7761,7 @@ async function pageIntegraContador(deepLinkEmpresaId){
       tbody.innerHTML = docs.length ? docs.map(d=>`
         <tr>
           <td>${esc(IC_TIPO_LABEL[d.tipo]||d.tipo)}</td>
-          <td>${esc(d.periodoApuracao||'—')}</td>
+          <td>${d.periodoApuracao ? (/^\d{6}$/.test(String(d.periodoApuracao)) ? String(d.periodoApuracao).slice(4,6)+'/'+String(d.periodoApuracao).slice(0,4) : esc(d.periodoApuracao)) : '—'}</td>
           <td>${esc(d.numeroDocumento||'—')}</td>
           <td>${d.dataVencimento?fmtDate(d.dataVencimento):'—'}</td>
           <td>${fmtDateHora(d.criadoEm)}</td>
