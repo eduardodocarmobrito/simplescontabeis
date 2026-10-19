@@ -10986,7 +10986,17 @@ async function atdAcao(S, acao, botao){
       // Pesquisa de satisfação (se ligada em ⚙ Metas e alertas): sai ANTES de fechar, pelo usuário Automações.
       try{ await api('/atendimento/conversas/'+encodeURIComponent(c.id)+'/pesquisa', { method:'POST' }); }
       catch(e){ toast('A pesquisa de satisfação não foi enviada: '+e.message,'err'); }
-      await dcApi(base+'/close', { method:'POST', body:{ expected_revision: c.revisao || undefined } });
+      try{
+        await dcApi(base+'/close', { method:'POST', body:{ expected_revision: c.revisao || undefined } });
+      }catch(err){
+        // "Conversa não encontrada" / conflito de revisão: a conversa está em ATENDIMENTO AUTOMÁTICO (bot),
+        // então não há um atendimento humano aberto pra fechar — ou o número de revisão da tela está velho.
+        // Tenta fechar sem a revisão; se ainda assim não houver atendimento, abre um (claim) e fecha.
+        if(/n[ãa]o encontrad|not found|revis|conflict|\b404\b|\b409\b/i.test(err.message||'')){
+          try{ await dcApi(base+'/close', { method:'POST', body:{} }); }
+          catch(e2){ await dcApi(base+'/claim', { method:'POST', body:{} }); await dcApi(base+'/close', { method:'POST', body:{} }); }
+        } else throw err;
+      }
     }, 'Conversa fechada.');
   }
   if(acao==='nao-lida'){
