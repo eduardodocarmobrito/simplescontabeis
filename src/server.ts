@@ -17650,8 +17650,12 @@ async function deskcommRoboId(): Promise<string> {
     if (e2 || !criado.user) throw new Error(e2?.message || "Falha ao criar o usuário de automações no deskcomm.");
     id = criado.user.id;
   }
+  // admin (não agent): o robô precisa LER qualquer conversa do escritório pra servir a mídia das
+  // mensagens no atendimento (GET /api/atendimento/mensagens/:id/media) — um agente só veria a mídia
+  // das conversas atribuídas a ele. Admin é superconjunto do que o robô já fazia (enviar, claim,
+  // release, upload), então não muda nenhum comportamento existente.
   const { error: e3 } = await deskcommAdmin.from("user_organizations")
-    .upsert({ organization_id: DESKCOMM_ORG_ID, user_id: id, role: "agent", accepted_at: new Date().toISOString() }, { onConflict: "organization_id,user_id" });
+    .upsert({ organization_id: DESKCOMM_ORG_ID, user_id: id, role: "admin", accepted_at: new Date().toISOString() }, { onConflict: "organization_id,user_id" });
   if (e3) throw new Error(e3.message);
   deskcommRoboIdCache = id;
   return id;
@@ -19219,6 +19223,58 @@ app.post("/api/atendimento/conversas/:id/lida", blockCliente, requireEscritorioP
   } catch (e: any) {
     console.error("[atendimento] falha ao marcar como lida no WhatsApp:", e.message);
     res.status(502).json({ error: `Não foi possível marcar como lida no WhatsApp: ${e.message}` });
+  }
+});
+// Mensagens da conversa LIDAS pelo servidor (service-role), não pela sessão do usuário. A API do
+// deskcomm só deixa um AGENTE ver as mensagens das conversas atribuídas a ele — então um Colaborador
+// via essa conversa na lista (que já vem do service-role) mas abria vazia se ela fosse de outro
+// atendente. Aqui a leitura é com a service-role (vê tudo do escritório), igual a lista já faz. Mesmo
+// formato que a API do deskcomm devolve ({ data: [...], meta:{ cursor, has_more } }), paginando por
+// created_at. Esconde as marcadas como ocultas_da_equipe (igual o front já filtrava).
+app.get("/api/atendimento/conversas/:id/mensagens", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
+  const user = (req as any).user;
+  if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  const convId = String(req.params.id);
+  const cursor = typeof req.query.cursor === "string" && req.query.cursor ? req.query.cursor : null;
+  const LIM = 100;
+  try {
+    let q = deskcommAdmin
+      .from("messages")
+      .select("*")
+      .eq("organization_id", DESKCOMM_ORG_ID)
+      .eq("conversation_id", convId)
+      .order("created_at", { ascending: false })
+      .limit(LIM + 1);
+    if (cursor) q = q.lt("created_at", cursor); // mais antigas que o cursor (keyset por created_at)
+    const { data, error } = await q;
+    if (error) throw new Error(error.message);
+    const rows = (data || []) as any[];
+    const hasMore = rows.length > LIM;
+    const chrono = rows.slice(0, LIM).reverse(); // a página vem do mais novo pro mais antigo; devolve em ordem cronológica
+    const novoCursor = chrono.length ? chrono[0].created_at : null; // o mais antigo desta página → buscar os anteriores a ele
+    res.json({ data: chrono, meta: { cursor: novoCursor, has_more: hasMore } });
+  } catch (e: any) {
+    res.status(502).json({ error: e.message });
+  }
+});
+// Mídia de uma mensagem servida pelo servidor (sessão do robô, que é admin no deskcomm), pelo mesmo
+// motivo acima: a sessão do Colaborador não baixa a mídia de uma conversa que não é dele. Faz streaming
+// do arquivo que vem da API do deskcomm.
+app.get("/api/atendimento/mensagens/:id/media", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
+  const user = (req as any).user;
+  if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).end();
+  try {
+    if (!deskcommRoboSessao || Date.now() - deskcommRoboSessao.em > 45 * 60_000) await deskcommRoboLogin();
+    const r = await fetch(`${DESKCOMM_URL}/deskcomm/api/v1/messages/${encodeURIComponent(String(req.params.id))}/media`, { headers: { cookie: deskcommRoboSessao!.cookie } });
+    if (!r.ok) return res.status(r.status).end();
+    const ct = r.headers.get("content-type"); if (ct) res.setHeader("Content-Type", ct);
+    const cd = r.headers.get("content-disposition"); if (cd) res.setHeader("Content-Disposition", cd);
+    res.setHeader("Cache-Control", "private, max-age=86400");
+    res.send(Buffer.from(await r.arrayBuffer()));
+  } catch (e: any) {
+    console.error("[atendimento] falha ao servir mídia:", e.message);
+    res.status(502).end();
   }
 });
 

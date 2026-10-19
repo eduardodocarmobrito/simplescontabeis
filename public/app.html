@@ -11717,7 +11717,9 @@ function atdConteudoHtml(m){
 }
 function atdMidiaHtml(m){
   if(!m.media_storage_path && !m.media_url) return '';
-  const src = `/api/v1/messages/${m.id}/media`;
+  // Mídia pelo nosso backend (robô admin) — a sessão do Colaborador não baixaria a mídia de conversa
+  // que não é dele; o backend baixa de qualquer conversa do escritório.
+  const src = `/api/atendimento/mensagens/${encodeURIComponent(m.id)}/media`;
   if(m.type==='image' || m.type==='sticker') return `<a href="${src}" target="_blank" rel="noopener"><img src="${src}" loading="lazy" class="dprh-midia-img" alt="imagem"></a>`;
   if(m.type==='audio') return `<audio controls preload="none" src="${src}" class="dprh-midia-audio"></audio>`;
   if(m.type==='video') return `<video controls preload="none" src="${src}" class="dprh-midia-img"></video>`;
@@ -11756,13 +11758,24 @@ async function atdCarregarMensagens(S, primeira){
   const lista = document.getElementById('atdMsgs');
   if(!id || !lista || !atdNaTela(S)) return;
   let msgs;
+  // Lê as mensagens pelo NOSSO backend (service-role: vê todas as conversas do escritório) — assim um
+  // Colaborador vê a conversa mesmo quando ela está atribuída a outro atendente (a API do deskcomm só
+  // deixa o agente ver as dele). Se o backend falhar, cai pra sessão do próprio usuário (pelo menos as
+  // conversas dele continuam abrindo).
   try{
-    const resp = await dcApi(`/conversations/${id}/messages?limit=100`, { meta:true });
+    const resp = await api(`/atendimento/conversas/${encodeURIComponent(id)}/mensagens?limit=100`);
     msgs = resp.data;
     // Cursor pra buscar as mensagens ANTERIORES às 100 mais recentes (usado ao clicar numa mensagem marcada antiga).
     if(!(S.antigas && S.antigas.length)){ S.cursorAntigo = resp.meta && resp.meta.cursor || null; S.temMaisAntigas = !!(resp.meta && resp.meta.has_more); }
   }
-  catch(e){ if(primeira) lista.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
+  catch(eBack){
+    try{
+      const resp = await dcApi(`/conversations/${id}/messages?limit=100`, { meta:true });
+      msgs = resp.data;
+      if(!(S.antigas && S.antigas.length)){ S.cursorAntigo = resp.meta && resp.meta.cursor || null; S.temMaisAntigas = !!(resp.meta && resp.meta.has_more); }
+    }
+    catch(e){ if(primeira) lista.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
+  }
   if(S.conversaAtiva!==id || !document.getElementById('atdMsgs') || !atdNaTela(S)) return;
   msgs = (msgs || []);
   if(S.antigas && S.antigas.length){ const ja = new Set(msgs.map(m=>m.id)); msgs = [...S.antigas.filter(m=>!ja.has(m.id)), ...msgs]; }
@@ -11867,8 +11880,8 @@ async function atdIrParaMensagem(S, id, chave){
   toast('Procurando a mensagem…','ok');
   for(let i=0; i<30 && S.temMaisAntigas && S.cursorAntigo; i++){
     let resp;
-    try{ resp = await dcApi(`/conversations/${conv}/messages?limit=100&cursor=${encodeURIComponent(S.cursorAntigo)}`, { meta:true }); }
-    catch(e){ toast(e.message,'err'); return; }
+    try{ resp = await api(`/atendimento/conversas/${encodeURIComponent(conv)}/mensagens?limit=100&cursor=${encodeURIComponent(S.cursorAntigo)}`); }
+    catch(eBack){ try{ resp = await dcApi(`/conversations/${conv}/messages?limit=100&cursor=${encodeURIComponent(S.cursorAntigo)}`, { meta:true }); }catch(e){ toast(e.message,'err'); return; } }
     if(S.conversaAtiva!==conv) return;
     S.antigas = [...(resp.data||[]), ...(S.antigas||[])];
     S.cursorAntigo = resp.meta && resp.meta.cursor || null;
