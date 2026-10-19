@@ -10629,12 +10629,19 @@ async function dcGarantirSessao(forcar){
       const r = await fetch('/deskcomm-login?silencioso=1', { credentials:'include' });
       if(!r.ok) throw new Error('Não foi possível conectar ao WhatsApp (deskcomm): '+((await r.text().catch(()=>'')).slice(0,200) || ('erro '+r.status)));
       // O login pode ser recusado sem erro visível (o navegador fica com o acesso de OUTRA pessoa e as ações
-      // saem no nome dela) — confere quem está logado lá antes de liberar.
-      try{ const v = await api('/atendimento/sessao-deskcomm'); if(v && v.ok){ ATEND_SESSAO_USER = STATE.user.id; return; } }
+      // saem no nome dela) — confere quem está logado lá antes de liberar. Quando NÃO bate, mostra como
+      // qual conta o navegador está logado no deskcomm (emailLa) — quase sempre e uma sessao antiga de
+      // outra pessoa que logou nesse navegador antes, e ai o certo e sair/limpar e entrar como voce.
+      try{
+        const v = await api('/atendimento/sessao-deskcomm');
+        if(v && v.ok){ ATEND_SESSAO_USER = STATE.user.id; return; }
+        if(v && v.emailLa) motivo = 'o navegador está logado no deskcomm como outra conta ('+v.emailLa+')';
+        else if(v) motivo = 'o navegador ainda não tem uma sessão válida do deskcomm (cookies bloqueados?)';
+      }
       catch(e){ motivo = e.message; }
       await new Promise(res=>setTimeout(res, 700*(tentativa+1)));
     }
-    throw new Error('Não foi possível entrar no deskcomm como o seu usuário ('+motivo+'). Recarregue a página e tente de novo.');
+    throw new Error('Não foi possível entrar no deskcomm como o seu usuário ('+motivo+'). Saia e entre de novo com a sua conta; se continuar, limpe os cookies do site (ou use uma janela anônima).');
   })().finally(()=>{ ATEND_SESSAO_PROMESSA = null; });
   return ATEND_SESSAO_PROMESSA;
 }
