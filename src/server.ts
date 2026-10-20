@@ -19383,6 +19383,37 @@ app.post("/api/atendimento/conversas/:id/fechar", blockCliente, requireEscritori
     res.status(502).json({ error: `Não foi possível fechar: ${e.message}` });
   }
 });
+// Override do ADMINISTRADOR: assumir no lugar de outro atendente (ou transferir pra uma pessoa)
+// mesmo quando o deskcomm recusaria (um agente só toma conversa atribuída a ele). Força a atribuição
+// pela service-role com fn_conversation_assign (p_enforce_expected=false), a MESMA função que o deskcomm
+// usa internamente pra claim/liberar — e que a transferência de setor já usa em produção. `para` = id
+// deskcomm do destino; sem ele, assume pro próprio admin.
+app.post("/api/atendimento/conversas/:id/atribuir-admin", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
+  const user = (req as any).user;
+  if (user.perfil !== "Administrador") return res.status(403).json({ error: "Só um administrador pode assumir/transferir no lugar de outro atendente." });
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  const id = String(req.params.id);
+  try {
+    const { data: conv } = await deskcommAdmin.from("conversations").select("id, status").eq("organization_id", DESKCOMM_ORG_ID).eq("id", id).maybeSingle();
+    if (!conv) return res.status(404).json({ error: "Conversa não encontrada." });
+    if ((conv as any).status === "closed" || (conv as any).status === "archived") return res.status(409).json({ error: "Conversa fechada." });
+    const alvo = req.body?.para ? String(req.body.para) : await deskcommGarantirUsuario(user);
+    const { error } = await deskcommAdmin.rpc("fn_conversation_assign", {
+      p_organization_id: DESKCOMM_ORG_ID,
+      p_conversation_id: id,
+      p_to_user_id: alvo,
+      p_reason: "transfer",
+      p_enforce_expected: false,
+    });
+    if (error) throw new Error(error.message);
+    // Pausa o automático, igual quando alguém assume pelo deskcomm.
+    await deskcommAdmin.from("conversations").update({ bot_silenced_until: "infinity" }).eq("organization_id", DESKCOMM_ORG_ID).eq("id", id);
+    res.json({ ok: true });
+  } catch (e: any) {
+    console.error("[atendimento] falha no atribuir-admin:", e.message);
+    res.status(502).json({ error: `Não foi possível assumir/transferir: ${e.message}` });
+  }
+});
 
 // Pra quem dá pra transferir: Administradores + Colaboradores com acesso ao módulo (no CRM, a quem tem
 // CRM ou DP/RH — o atendente geral pode passar direto pra alguém do setor), já espelhados no deskcomm

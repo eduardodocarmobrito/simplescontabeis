@@ -10956,6 +10956,12 @@ async function atdAcao(S, acao, botao){
     const avisar = !tomandoDeOutro && await atdAvisoAtivo('assumir');
     return executar(async ()=>{
       const claim = dono=>dcApi(base+'/claim', { method:'POST', body: dono ? { expected_assignee: dono } : {} });
+      const souAdmin = STATE.user && STATE.user.perfil==='Administrador';
+      if(souAdmin && tomandoDeOutro){
+        // Administrador tem override: assume no lugar de QUALQUER atendente pelo backend (service-role),
+        // mesmo quando o deskcomm recusaria pra um agente ("outro atendente já assumiu").
+        await api('/atendimento/conversas/'+encodeURIComponent(c.id)+'/atribuir-admin', { method:'POST' });
+      } else {
       try{
         await claim(tomandoDeOutro ? c.atribuidoDeskcommId : null);
       }catch(err){
@@ -10974,6 +10980,7 @@ async function atdAcao(S, acao, botao){
         } else {
           throw new Error('Este atendimento já foi assumido por '+quem+'.'+(/admin|permiss|forbidden|403|não tem permiss/i.test(err.message||'') ? ' Só um administrador pode assumir no lugar — peça pra '+quem+' liberar ou transferir a conversa.' : ''));
         }
+      }
       }
       // Saindo da fila/automático, o cliente fica sabendo que uma pessoa pegou a conversa. Trocar de
       // um atendente pro outro não avisa — pro cliente o atendimento humano já estava acontecendo.
@@ -11526,7 +11533,12 @@ async function atdTransferirModal(S, c, executar){
       const para = document.querySelector('#atdTransfPara .combo-value').value;
       if(!para){ toast('Escolha para quem transferir.','err'); return; }
       closeModal();
-      executar(()=>dcApi(`/conversations/${c.id}/transfer`, { method:'POST', body: motivo ? { to_user_id: para, reason: motivo } : { to_user_id: para } }), 'Conversa transferida.');
+      const souAdmin = STATE.user && STATE.user.perfil==='Administrador';
+      // Administrador tem override: transfere pra pessoa pelo backend (service-role), mesmo quando o
+      // deskcomm recusaria pra um agente. Colaborador segue pela regra normal do deskcomm.
+      executar(()=> souAdmin
+        ? api('/atendimento/conversas/'+encodeURIComponent(c.id)+'/atribuir-admin', { method:'POST', body:{ para } })
+        : dcApi(`/conversations/${c.id}/transfer`, { method:'POST', body: motivo ? { to_user_id: para, reason: motivo } : { to_user_id: para } }), 'Conversa transferida.');
     }
   });
 }
