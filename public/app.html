@@ -7710,6 +7710,11 @@ async function pageIntegraContador(deepLinkEmpresaId){
         <p style="font-size:12.5px; color:var(--ink-soft); margin:4px 0 8px;">Comunicados não lidos da Receita Federal, buscados automaticamente todo dia — some sozinho daqui assim que for lido de verdade no e-CAC.</p>
         <div id="icCaixaPostalBody"><div class="empty-state">Carregando…</div></div>
       </div>
+      <div class="card">
+        <h3>Débitos na PGFN (Dívida Ativa)</h3>
+        <p style="font-size:12.5px; color:var(--ink-soft); margin:4px 0 8px;">Lido do Relatório de Situação Fiscal (SITFIS), que é integrado Receita Federal + PGFN — atualiza junto com a Situação Fiscal.</p>
+        <div id="icPgfnBody"><div class="empty-state">Carregando…</div></div>
+      </div>
       ${emp?.optanteSimplesNacional ? `<div class="card">
         <div class="row" style="justify-content:space-between; align-items:center;">
           <h3 style="margin:0;">Parcelamentos</h3>
@@ -7789,6 +7794,21 @@ async function pageIntegraContador(deepLinkEmpresaId){
         : `<div class="empty-state">Nenhuma mensagem não lida.</div>`;
     }
     carregarIcCaixaPostal();
+    async function carregarIcPgfn(){
+      const wrap = document.getElementById('icPgfnBody');
+      if(!wrap) return;
+      let r; try{ r = await api('/integracontador/empresas/'+empresaId+'/pgfn'); }catch(e){ wrap.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
+      if(!r.temSitfis){ wrap.innerHTML = `<div class="empty-state">Sem Relatório de Situação Fiscal ainda — clique em "Buscar agora" (ele traz a Situação Fiscal, que inclui a PGFN).</div>`; return; }
+      const tag = r.status==='com_debito' ? '<span class="tag bad">Com débito na PGFN</span>'
+        : r.status==='sem_debito' ? '<span class="tag ok">Sem débito na PGFN</span>'
+        : '<span class="tag warn">Não identificado automaticamente</span>';
+      wrap.innerHTML = `
+        <div style="margin-bottom:6px;">${tag} <span style="font-size:11.5px; color:var(--ink-soft);">· SITFIS de ${r.sitfisEm?fmtDateHora(r.sitfisEm):'—'}</span></div>
+        ${r.valores&&r.valores.length?`<div style="font-size:12.5px; margin-bottom:6px;"><b>Valores na seção da PGFN:</b> ${r.valores.map(v=>'R$ '+esc(v)).join(' · ')}</div>`:''}
+        ${r.trecho?`<details style="font-size:12px;"><summary style="cursor:pointer; color:var(--ink-soft);">Ver trecho do relatório (PGFN / Dívida Ativa)</summary><pre style="white-space:pre-wrap; background:var(--bg-soft,#f4f6f5); padding:10px; border-radius:8px; max-height:300px; overflow:auto; margin-top:6px;">${esc(r.trecho)}</pre></details>`:''}
+        <div style="font-size:11px; color:var(--ink-soft); margin-top:6px;">Leitura automática do SITFIS — em caso de dúvida, confira no PDF da Situação Fiscal (aba Documentos abaixo).</div>`;
+    }
+    carregarIcPgfn();
     // A busca de Situação Fiscal sozinha já pode passar de 1 minuto (fica reconsultando a Receita
     // até o relatório ficar pronto) — tempo suficiente pro proxy do Railway devolver um erro 502 pro
     // navegador mesmo quando a busca deu certo do lado do servidor. Por isso o backend não segura a
