@@ -10987,7 +10987,13 @@ async function obterTokenIntegraContador(cfg: any): Promise<integracontador.Toke
   return token;
 }
 app.get("/api/integracontador/config", blockCliente, requirePermissao("integracontador", "visualizar"), (req, res) => {
-  const c = getIntegraContadorConfig((req as any).user.escritorioId);
+  const user = (req as any).user;
+  const c = getIntegraContadorConfig(user.escritorioId);
+  // Só o Administrador recebe os dados sensíveis do escritório (CNPJ/chaves da Loja SERPRO, certificado,
+  // agenda). O Colaborador só precisa saber se está ativo (pro aviso + liberar "Buscar agora").
+  if (user.perfil !== "Administrador") {
+    return res.json({ ativo: !!c.ativo, apenasAtivo: true });
+  }
   res.json({
     cnpj: c.cnpj || "",
     consumerKey: c.consumer_key || "",
@@ -10999,13 +11005,13 @@ app.get("/api/integracontador/config", blockCliente, requirePermissao("integraco
     envioAutomatico: c.envio_automatico === undefined ? true : !!c.envio_automatico,
     sitfisFrequenciaDias: c.sitfis_frequencia_dias ?? 7,
     ultimoErro: c.ultimo_erro || null,
-    agenda: getAgendaBusca((req as any).user.escritorioId),
+    agenda: getAgendaBusca(user.escritorioId),
   });
 });
 // Cadência da Situação Fiscal (SITFIS) na busca automática — de quantos em quantos dias rebuscar.
 // Só valores da lista (1=todo dia, 7=semanal, 15=quinzenal, 30=mensal) pra não virar um número
 // qualquer. A busca manual ("Buscar agora") ignora isso e sempre rebusca a Situação Fiscal.
-app.put("/api/integracontador/sitfis-frequencia", blockCliente, requirePermissao("integracontador", "editar"), (req, res) => {
+app.put("/api/integracontador/sitfis-frequencia", blockCliente, requireAdmin, (req, res) => {
   const user = (req as any).user;
   const dias = Number(req.body?.dias);
   if (![1, 7, 15, 30].includes(dias)) return res.status(400).json({ error: "Cadência inválida. Use 1, 7, 15 ou 30 dias." });
@@ -11014,7 +11020,7 @@ app.put("/api/integracontador/sitfis-frequencia", blockCliente, requirePermissao
   res.json({ ok: true, sitfisFrequenciaDias: dias });
 });
 // Agenda da busca automática (dias da semana + horários de Brasília), salva pela tela do Integra Contador.
-app.put("/api/integracontador/agenda", blockCliente, requirePermissao("integracontador", "editar"), (req, res) => {
+app.put("/api/integracontador/agenda", blockCliente, requireAdmin, (req, res) => {
   const user = (req as any).user;
   const { dias, horas } = req.body || {};
   if (!Array.isArray(dias) || !dias.every((d: any) => Number.isInteger(d) && d >= 0 && d <= 6)) return res.status(400).json({ error: "Dias inválidos." });
@@ -11034,7 +11040,7 @@ app.put("/api/integracontador/agenda", blockCliente, requirePermissao("integraco
 // Freio do envio automático de DAS/DARF DCTF-Web/Guia FGTS/Parcelamento (ver envioEnviarDocumentoAutomatico)
 // — separado da agenda da busca: desligado, a busca continua achando e anexando a guia normalmente,
 // só não dispara sozinha pro cliente (fica manual, pela tela, até religar aqui).
-app.put("/api/integracontador/envio-automatico", blockCliente, requirePermissao("integracontador", "editar"), (req, res) => {
+app.put("/api/integracontador/envio-automatico", blockCliente, requireAdmin, (req, res) => {
   const user = (req as any).user;
   sqlite.prepare(`INSERT OR IGNORE INTO integracontador_config (escritorio_id) VALUES (?)`).run(user.escritorioId);
   sqlite.prepare(`UPDATE integracontador_config SET envio_automatico = ? WHERE escritorio_id = ?`).run(req.body?.ativo ? 1 : 0, user.escritorioId);

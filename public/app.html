@@ -7506,17 +7506,20 @@ function icAgendaHoraHtml(h){
 async function pageIntegraContador(deepLinkEmpresaId){
   const podePostar = can('integracontador','postar');
   const podeEditar = can('integracontador','editar');
+  // A "Configuração do escritório" (CNPJ/chaves da Loja SERPRO, certificado, agenda) é dado sensível do
+  // escritório — só o Administrador vê/edita. Colaborador usa o módulo (lista, Buscar agora) sem o card.
+  const souAdmin = STATE.user && STATE.user.perfil==='Administrador';
   main().innerHTML = `
     <h1>Integra Contador</h1>
     <p class="subtitle">Busca automática de DAS, Declaração do Simples Nacional e Relatório de Situação Fiscal direto na Receita Federal, usando o certificado digital do próprio escritório — serviço pago por consulta (SERPRO).</p>
-    <div class="card" id="icConfigCard">
+    ${souAdmin? `<div class="card" id="icConfigCard">
       <h3>Configuração do escritório</h3>
       <div id="icConfigBody"><div class="empty-state">Carregando…</div></div>
-    </div>
+    </div>` : ''}
     <div id="icAviso"></div>
     <div id="icMain"></div>
   `;
-  await renderIcConfig();
+  if(souAdmin) await renderIcConfig();
   const cfgAtual = await api('/integracontador/config');
   avisoIc(cfgAtual.ativo);
   await mostrarIcLista();
@@ -7525,7 +7528,7 @@ async function pageIntegraContador(deepLinkEmpresaId){
   function avisoIc(ativo){
     document.getElementById('icAviso').innerHTML = ativo ? '' : `
       <div class="card" style="background:var(--paper); border-color:var(--warn, #c9a227);">
-        <span style="font-size:12.5px;">Configure e ative o Integra Contador acima antes de habilitar empresas — sem isso, o botão "Buscar agora" fica desativado.</span>
+        <span style="font-size:12.5px;">${souAdmin ? 'Configure e ative o Integra Contador acima antes de habilitar empresas — sem isso, o botão "Buscar agora" fica desativado.' : 'O Integra Contador ainda não foi configurado/ativado — peça ao administrador. Enquanto isso, o botão "Buscar agora" fica desativado.'}</span>
       </div>
     `;
   }
