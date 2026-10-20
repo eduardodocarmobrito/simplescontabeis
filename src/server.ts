@@ -1624,6 +1624,9 @@ for (const tabela of ["chat_mensagens", "chat_equipe_mensagens", "chat_dm_mensag
     ["nome_municipio_ibge", "nome_municipio_ibge TEXT"], // só exibição do código acima
     ["regime_tributario", "regime_tributario TEXT NOT NULL DEFAULT 'simples_nacional'"], // 'simples_nacional' | 'lucro_presumido' | 'lucro_real' | 'produtor_rural' — mutuamente exclusivos; opcao_simples_nacional (nfse_empresa_config) é sempre derivado deste campo, nunca editado à parte
     ["apelido", "apelido TEXT"], // apelido curto do Domínio Web — usado no nome da pasta de exportação de XML ("código-apelido")
+    ["cnae_principal_json", "cnae_principal_json TEXT"], // { codigo, descricao } da atividade principal (Receita) — atualizado sob demanda
+    ["cnaes_secundarios_json", "cnaes_secundarios_json TEXT"], // [{ codigo, descricao }] das atividades secundárias
+    ["atividades_atualizadas_em", "atividades_atualizadas_em TEXT"],
   ]) {
     if (!nomes.has(coluna)) sqlite.exec(`ALTER TABLE empresas ADD COLUMN ${ddl}`);
   }
@@ -3918,6 +3921,43 @@ app.put("/api/empresas/:id", blockCliente, requirePermissao("empresas", "editar"
   garantirContatosDeTelefoneCadastral(id);
   deskcommAgendarSyncEmpresasClientes();
   res.json({ ok: true });
+});
+// Atividades econômicas (CNAE) da empresa — principal + secundárias, consultadas na Receita (fonte
+// pública de CNPJ). Lidas do que está salvo (GET) e atualizadas sob demanda pelo botão da tela (POST).
+function empresaAtividadesSalvas(r: any): { cnaePrincipal: any; cnaesSecundarios: any[]; atualizadasEm: string | null } {
+  const parse = (s: any, fb: any) => { try { return s ? JSON.parse(s) : fb; } catch { return fb; } };
+  return {
+    cnaePrincipal: parse(r.cnae_principal_json, null),
+    cnaesSecundarios: parse(r.cnaes_secundarios_json, []) || [],
+    atualizadasEm: r.atividades_atualizadas_em || null,
+  };
+}
+app.get("/api/empresas/:id/atividades", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
+  const id = Number(req.params.id);
+  if (!podeAcessarEmpresa((req as any).user, id)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const r = sqlite.prepare(`SELECT cnae_principal_json, cnaes_secundarios_json, atividades_atualizadas_em FROM empresas WHERE id = ?`).get(id) as any;
+  if (!r) return res.status(404).json({ error: "Empresa não encontrada." });
+  res.json(empresaAtividadesSalvas(r));
+});
+app.post("/api/empresas/:id/atualizar-atividades", blockCliente, requirePermissao("empresas", "editar"), async (req, res) => {
+  const id = Number(req.params.id);
+  if (!podeAcessarEmpresa((req as any).user, id)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const emp = sqlite.prepare(`SELECT cnpj FROM empresas WHERE id = ?`).get(id) as any;
+  const cnpj = String(emp?.cnpj || "").replace(/\D/g, "");
+  if (cnpj.length !== 14) return res.status(400).json({ error: "A empresa precisa ter um CNPJ válido (14 dígitos) pra consultar as atividades na Receita." });
+  try {
+    const dados = await consultarCnpjBrasilApi(cnpj);
+    if ((dados as any).notFound) return res.status(404).json({ error: "CNPJ não encontrado na Receita." });
+    const cnaePrincipal = (dados as any).cnaePrincipal || null;
+    const cnaesSecundarios = (dados as any).cnaesSecundarios || [];
+    const agora = new Date().toISOString();
+    sqlite
+      .prepare(`UPDATE empresas SET cnae_principal_json = ?, cnaes_secundarios_json = ?, atividades_atualizadas_em = ? WHERE id = ?`)
+      .run(cnaePrincipal ? JSON.stringify(cnaePrincipal) : null, JSON.stringify(cnaesSecundarios), agora, id);
+    res.json({ cnaePrincipal, cnaesSecundarios, atualizadasEm: agora });
+  } catch (e: any) {
+    res.status(502).json({ error: `Não consegui consultar as atividades na Receita: ${e.message}` });
+  }
 });
 app.delete("/api/empresas/:id", requireAdmin, (req, res) => {
   const id = Number(req.params.id);
@@ -12516,6 +12556,11 @@ app.get("/api/nfse/municipio-ibge", blockCliente, requirePermissaoOr("empresas",
 // Consulta de CNPJ (dados públicos da Receita Federal) — usado pra pré-preencher formulários com
 // CNPJ (tomador do serviço na emissão de NFS-e, cadastro de empresa etc.). BrasilAPI é um espelho
 // gratuito e sem autenticação dos mesmos dados públicos do CNPJ; não expõe nenhum dado sigiloso.
+// Formata o código CNAE de 7 dígitos no padrão da Receita (ex.: "7490103" → "74.90-1-03").
+function fmtCnae(codigo: any): string {
+  const d = String(codigo ?? "").replace(/\D/g, "");
+  return d.length === 7 ? `${d.slice(0, 2)}.${d.slice(2, 4)}-${d.slice(4, 5)}-${d.slice(5, 7)}` : String(codigo ?? "");
+}
 async function consultarCnpjPublicaWs(cnpj: string) {
   const resp = await fetch(`https://publica.cnpj.ws/cnpj/${cnpj}`);
   if (resp.status === 404) return { notFound: true as const };
@@ -12534,6 +12579,8 @@ async function consultarCnpjPublicaWs(cnpj: string) {
     cep: est.cep || null,
     municipio: est.cidade?.nome || null,
     uf: est.estado?.sigla || null,
+    cnaePrincipal: est.atividade_principal ? { codigo: fmtCnae(est.atividade_principal.id), descricao: est.atividade_principal.descricao || null } : null,
+    cnaesSecundarios: Array.isArray(est.atividades_secundarias) ? est.atividades_secundarias.map((a: any) => ({ codigo: fmtCnae(a.id), descricao: a.descricao || null })) : [],
   };
 }
 async function consultarCnpjBrasilApi(cnpj: string) {
@@ -12555,6 +12602,8 @@ async function consultarCnpjBrasilApi(cnpj: string) {
       cep: j.cep || null,
       municipio: j.municipio || null,
       uf: j.uf || null,
+      cnaePrincipal: j.cnae_fiscal ? { codigo: fmtCnae(j.cnae_fiscal), descricao: j.cnae_fiscal_descricao || null } : null,
+      cnaesSecundarios: Array.isArray(j.cnaes_secundarios) ? j.cnaes_secundarios.map((a: any) => ({ codigo: fmtCnae(a.codigo), descricao: a.descricao || null })) : [],
     };
   } catch (e) {
     // BrasilAPI às vezes trava (504/500) num CNPJ específico mesmo com outros CNPJs passando normalmente — usa uma segunda fonte antes de desistir.

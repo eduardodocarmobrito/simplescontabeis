@@ -3205,6 +3205,13 @@ function empresaModal(e){
         <div class="field grow"><label>Nome do representante legal</label><input id="empNomeRepresentante" value="${e&&e.nomeRepresentanteLegal?esc(e.nomeRepresentanteLegal):''}"></div>
         <div class="field" style="width:160px;"><label>CPF do representante legal</label><input id="empCpfRepresentante" value="${e&&e.cpfRepresentanteLegal?esc(fmtCnpjCpf(e.cpfRepresentanteLegal)):''}"></div>
       </div>
+      ${e? `
+      <div style="margin:14px 0 8px; display:flex; justify-content:space-between; align-items:center; gap:10px; border-top:1px solid var(--rule); padding-top:12px;">
+        <div style="font-weight:600; font-size:13px; color:var(--ink-soft);">Atividades da Empresa</div>
+        <button type="button" class="btn small" id="empAtivAtualizar" title="Consultar e atualizar as atividades na Receita" style="font-size:11px; padding:1px 8px; color:var(--ink-soft); font-weight:400;">↻ atualizar</button>
+      </div>
+      <div id="empAtividadesBox" style="font-size:12.5px; line-height:1.5;"><div class="empty-state" style="padding:6px;">Carregando…</div></div>
+      ` : ''}
     </div>
     ${e? `
     <div id="empTabConstituicao" class="hidden">
@@ -3272,6 +3279,25 @@ function empresaModal(e){
       if(box) box.innerHTML = SETORES_EMPRESA_UI.map(s=>`<label class="checkbox-row"><input type="checkbox" class="empSetorCk" value="${s.chave}" ${r.setores.includes(s.chave)?'checked':''}> ${esc(s.label)}</label>`).join('');
     }).catch(()=>{});
     renderSolicitacaoTiposEmpresa(document.getElementById('empSolicTipos'), e.id);
+    // Atividades (CNAE) da empresa — principal + secundárias, consultadas na Receita; botão "↻ atualizar".
+    const renderEmpAtividades = (a)=>{
+      const box = document.getElementById('empAtividadesBox');
+      if(!box) return;
+      const prin = a && a.cnaePrincipal;
+      const sec = (a && a.cnaesSecundarios) || [];
+      if(!prin && !sec.length){ box.innerHTML = `<div style="color:var(--ink-soft); padding:4px 0;">Ainda não consultado. Clique em <b>↻ atualizar</b> pra buscar na Receita.</div>`; return; }
+      box.innerHTML = `
+        <div style="margin-bottom:6px;"><span style="color:var(--ink-soft);">Atividade principal:</span> ${prin?`<b>${esc(prin.codigo||'')}</b> — ${esc(prin.descricao||'')}`:'—'}</div>
+        <div><span style="color:var(--ink-soft);">Atividades secundárias:</span>${sec.length?`<ul style="margin:4px 0 0; padding-left:18px;">${sec.map(c=>`<li><b>${esc(c.codigo||'')}</b> — ${esc(c.descricao||'')}</li>`).join('')}</ul>`:' —'}</div>
+        ${a&&a.atualizadasEm?`<div style="font-size:11px; color:var(--ink-soft); margin-top:6px;">Atualizado em ${esc(fmtDateHora(a.atualizadasEm))}</div>`:''}`;
+    };
+    api('/empresas/'+e.id+'/atividades').then(renderEmpAtividades).catch(()=>{ const box=document.getElementById('empAtividadesBox'); if(box) box.innerHTML='<div class="empty-state" style="padding:6px; color:var(--debit);">Não foi possível carregar.</div>'; });
+    document.getElementById('empAtivAtualizar')?.addEventListener('click', async (ev)=>{
+      const btn = ev.currentTarget; btn.disabled = true; const orig = btn.textContent; btn.textContent = 'atualizando…';
+      try{ renderEmpAtividades(await api('/empresas/'+e.id+'/atualizar-atividades', { method:'POST' })); toast('Atividades atualizadas pela Receita.','ok'); }
+      catch(err){ toast(err.message,'err'); }
+      finally{ btn.disabled = false; btn.textContent = orig; }
+    });
     document.getElementById('empModalTabs').querySelectorAll('.tab').forEach(t=>{
       t.classList.toggle('active', t.dataset.tab===empTabAtual);
       t.addEventListener('click', ()=>{
