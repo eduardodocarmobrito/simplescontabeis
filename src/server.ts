@@ -8766,6 +8766,25 @@ app.get("/api/nfe/documentos", blockCliente, requirePermissao("nfe-busca", "visu
     const likeDigits = `%${digits || busca}%`;
     params.push(likeTexto, likeTexto, likeTexto, likeDigits, likeDigits, `%${valorNorm}%`);
   }
+  // Filtro por FLAG do "Perfil das Notas" (clicável na tela): mostra só as notas que têm aquele
+  // marcador. As flags de produto/fiscal vivem na coluna d.flags (texto separado por vírgula); as
+  // outras são derivadas (reforma = IBS/CBS no XML, carrinho = tem itens, mdfe = MDF-e vinculado,
+  // comentario = tem observação).
+  const flag = typeof req.query.flag === "string" && req.query.flag ? req.query.flag : null;
+  if (flag) {
+    if (["med", "comb", "rastro", "veiculo", "importado", "st", "dup", "pag"].includes(flag)) {
+      condicoes.push(`(',' || COALESCE(d.flags,'') || ',') LIKE ?`);
+      params.push(`%,${flag},%`);
+    } else if (flag === "reforma") {
+      condicoes.push(`(COALESCE(d.valor_ibs,0) > 0 OR COALESCE(d.valor_cbs,0) > 0)`);
+    } else if (flag === "carrinho") {
+      condicoes.push(`COALESCE(d.qtd_itens,0) > 0`);
+    } else if (flag === "mdfe") {
+      condicoes.push(`EXISTS (SELECT 1 FROM mdfe_vinculos mv WHERE mv.chave_vinculada = d.chave_acesso)`);
+    } else if (flag === "comentario") {
+      condicoes.push(`(d.observacao IS NOT NULL AND TRIM(d.observacao) != '')`);
+    }
+  }
   // "Cancelada de verdade" (pra riscar/destacar em vermelho na tela) é só o evento de cancelamento
   // da PRÓPRIA NF-e/NFC-e — exclui explicitamente "Cancelamento de CT-e"/"Cancelamento de MDF-e"
   // (ambos têm "Cancelamento" na descrição mas são sobre o transporte, não sobre a nota em si).
@@ -19458,6 +19477,67 @@ app.get("/api/atendimento/mensagens/:id/media", blockCliente, requireEscritorioP
   } catch (e: any) {
     console.error("[atendimento] falha ao servir mídia:", e.message);
     res.status(502).end();
+  }
+});
+// Encaminhar uma mensagem (texto ou mídia) pra OUTRA pessoa, pelo servidor (robô admin). A mídia NÃO
+// pode ser reaproveitada por referência: o media_storage_path do original aponta pra pasta da conversa
+// de origem, e o deskcomm recusa com "media_storage_path fora da conversa" ao postar numa conversa
+// diferente (cada conversa só aceita arquivo do próprio namespace). Então aqui a gente BAIXA o arquivo
+// original e SOBE de novo na conversa de destino, pegando um storage_path novo — o mesmo que acontece
+// quando alguém anexa o arquivo na mão. Fazer no backend evita que a sessão do Colaborador tente baixar
+// mídia de conversa que não é dele (o robô é admin e enxerga tudo).
+app.post("/api/atendimento/encaminhar", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
+  const user = (req as any).user;
+  if (!atendimentoAlgumaPermissao(user, "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  const body = req.body || {};
+  const messageId = String(body.messageId || "").trim();
+  if (!messageId) return res.status(400).json({ error: "Mensagem não informada." });
+  const nota = typeof body.nota === "string" ? body.nota.trim() : "";
+  try {
+    const { data: m, error } = await deskcommAdmin.from("messages")
+      .select("id, type, body, media_storage_path, media_mime, media_size_bytes, metadata")
+      .eq("organization_id", DESKCOMM_ORG_ID).eq("id", messageId).maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!m) return res.status(404).json({ error: "Mensagem não encontrada." });
+    const temMidia = !!(m as any).media_storage_path;
+    // Abre (ou reaproveita) a conversa de destino — por contato escolhido na agenda ou por número digitado.
+    const abrir: any = body.contact_id
+      ? { contact_id: String(body.contact_id) }
+      : (() => {
+          let digitos = String(body.phone_number || "").replace(/\D/g, "");
+          if (!digitos) return null;
+          if (digitos.length <= 11) digitos = "55" + digitos;
+          const nome = typeof body.name === "string" ? body.name.trim() : "";
+          return nome ? { phone_number: "+" + digitos, name: nome } : { phone_number: "+" + digitos };
+        })();
+    if (!abrir) return res.status(400).json({ error: "Escolha um contato ou digite um número com DDD." });
+    const aberta = await deskcommRoboApi("/conversations/open-with-contact", { method: "POST", body: abrir });
+    const convId = aberta.conversation_id;
+    if (temMidia) {
+      // Baixa o arquivo original (robô admin) e sobe de novo na conversa de destino.
+      if (!deskcommRoboSessao || Date.now() - deskcommRoboSessao.em > 45 * 60_000) await deskcommRoboLogin();
+      const rMedia = await fetch(`${DESKCOMM_URL}/deskcomm/api/v1/messages/${encodeURIComponent(messageId)}/media`, { headers: { cookie: deskcommRoboSessao!.cookie } });
+      if (!rMedia.ok) throw new Error(`Não foi possível baixar o arquivo original (HTTP ${rMedia.status}).`);
+      const buf = Buffer.from(await rMedia.arrayBuffer());
+      const mime = (m as any).media_mime || rMedia.headers.get("content-type") || "application/octet-stream";
+      const nome = ((m as any).metadata && (m as any).metadata.filename) || `arquivo-${messageId}`;
+      const fd = new FormData();
+      fd.append("file", new Blob([new Uint8Array(buf)], { type: mime }), nome);
+      const up = await deskcommRoboApi(`/conversations/${convId}/media`, { method: "POST", body: fd });
+      const legenda = [nota, (m as any).body].filter(Boolean).join("\n");
+      const msg: any = { conversation_id: convId, type: up.kind, media_storage_path: up.storage_path, media_mime: up.media_mime, media_size_bytes: up.media_size_bytes, metadata: { filename: nome } };
+      if (legenda && up.kind !== "audio") msg.body = legenda;
+      await deskcommRoboApi("/messages", { method: "POST", body: msg });
+    } else {
+      const texto = [nota, (m as any).body || ""].filter(Boolean).join("\n").trim();
+      if (!texto) return res.status(400).json({ error: "Nada pra encaminhar nesta mensagem." });
+      await deskcommRoboApi("/messages", { method: "POST", body: { conversation_id: convId, type: "text", body: texto } });
+    }
+    res.json({ ok: true, conversation_id: convId });
+  } catch (e: any) {
+    console.error("[atendimento] falha ao encaminhar:", e.message);
+    res.status(502).json({ error: `Não foi possível encaminhar: ${e.message}` });
   }
 });
 // Quem está com a conversa AGORA (dono atual) — usado quando "Assumir no lugar" falha, pra dizer na

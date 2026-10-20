@@ -6915,6 +6915,7 @@ async function pageNfeBusca(){
   async function mostrarDetalhe(empresaId){
     const empresa = empresas.find(e=>e.id===empresaId);
     let nfeDocDirecao = 'emitida';
+    let nfePerfilFlag = ''; // flag do "Perfil das Notas" clicada pra filtrar a lista de Documentos ('' = Todas)
     // mostrarLista() já barrou a entrada aqui se o módulo estivesse inativo (paywall antes de
     // chegar no detalhe) — esse callback só cobre o caso raro de o módulo vencer com a tela já
     // aberta; sem handler nenhum, renderCertificadoBuscaXml tentava chamar uma função inexistente
@@ -6925,6 +6926,10 @@ async function pageNfeBusca(){
     }
     const _hojeIso = new Date().toISOString().slice(0,10);
     const _anoIni = new Date().getFullYear()+'-01-01';
+    // Datas padrão = mês atual (1º ao último dia), pra já entrar com a tela filtrada no mês corrente.
+    const _dh = new Date(), _p2 = n=>String(n).padStart(2,'0');
+    const _mesPrimeiro = `${_dh.getFullYear()}-${_p2(_dh.getMonth()+1)}-01`;
+    const _mesUltimo = `${_dh.getFullYear()}-${_p2(_dh.getMonth()+1)}-${_p2(new Date(_dh.getFullYear(), _dh.getMonth()+1, 0).getDate())}`;
     box.innerHTML = `
       <button class="btn small" id="btnNfeVoltarLista">← Voltar pra lista de empresas</button>
       <div class="card" style="margin-top:10px;">
@@ -6946,8 +6951,8 @@ async function pageNfeBusca(){
           <div class="field grow" style="margin-bottom:0; min-width:260px;"><label>Buscar</label>
             <input id="nfeDocBusca" placeholder="Número da nota, nome, CNPJ ou valor…">
           </div>
-          ${dateFieldHtml('nfeDocDataDe','Data de','')}
-          ${dateFieldHtml('nfeDocDataAte','Data até','')}
+          ${dateFieldHtml('nfeDocDataDe','Data de',_mesPrimeiro)}
+          ${dateFieldHtml('nfeDocDataAte','Data até',_mesUltimo)}
           <div class="field" style="margin-bottom:0; width:180px;"><label>Tipo</label>
             <select id="nfeDocTipo"><option value="">Todos</option><option value="nfe">NF-e</option><option value="nfce">NFC-e</option><option value="nfse">NFS-e</option><option value="cte">CT-e</option><option value="mdfe">MDF-e</option><option value="nf3e">NF3-e</option><option value="satcfe">SAT-CF-e</option><option value="evento">Evento</option><option value="outro">Outro</option></select>
           </div>
@@ -7001,13 +7006,18 @@ async function pageNfeBusca(){
       const pf = d.perfil || {};
       const pct = (n)=> pf.totalNotas ? Math.round((n/pf.totalNotas)*100) : 0;
       const perfilTile = (label, val)=>`<div style="min-width:110px; flex:1;"><div style="font-size:19px; font-weight:700;">${val}</div><div style="font-size:11px; color:var(--ink-soft);">${label}</div></div>`;
-      const perfilItem = (ic, label, val, cor)=>{
+      // Cada item é clicável: filtra a lista de "Documentos" só pelas NF daquele marcador (clicar de
+      // novo, ou na "Todas", limpa o filtro). O item ativo fica destacado.
+      const perfilItem = (ic, label, val, cor, flagKey)=>{
         const p = pct(val);
-        return `<div style="min-width:150px; flex:1; background:var(--paper); border:1px solid var(--rule); border-radius:8px; padding:8px 10px;">
+        const ativo = flagKey && nfePerfilFlag===flagKey;
+        return `<div class="nfePerfilTile" data-flag="${flagKey||''}" title="Clique pra filtrar os documentos por: ${esc(label)}" style="min-width:150px; flex:1; background:${ativo?'var(--accent-pale)':'var(--paper)'}; border:1px solid ${ativo?'var(--accent)':'var(--rule)'}; border-radius:8px; padding:8px 10px; cursor:pointer;">
           <div style="display:flex; align-items:center; gap:6px; font-size:12.5px;"><span>${ic}</span><span style="flex:1;">${label}</span><b>${val}</b><span style="color:var(--ink-soft); font-size:11px;">${p}%</span></div>
           <div style="background:var(--rule); border-radius:4px; height:5px; overflow:hidden; margin-top:5px;"><div style="width:${p}%; height:100%; background:${cor};"></div></div>
         </div>`;
       };
+      const todasAtivo = !nfePerfilFlag;
+      const perfilTodas = `<div class="nfePerfilTile" data-flag="" title="Mostrar todos os documentos (sem filtro de marcador)" style="min-width:150px; flex:1; display:flex; align-items:center; justify-content:center; gap:6px; font-size:12.5px; font-weight:600; background:${todasAtivo?'var(--accent-pale)':'var(--paper)'}; border:1px solid ${todasAtivo?'var(--accent)':'var(--rule)'}; border-radius:8px; padding:8px 10px; cursor:pointer;">🗂️ Todas</div>`;
       const grupo = (titulo, cor, itens)=>`
         <div style="margin-top:10px;">
           <div style="font-size:11px; font-weight:700; color:${cor}; text-transform:uppercase; letter-spacing:.3px; margin-bottom:6px;">● ${titulo}</div>
@@ -7029,25 +7039,26 @@ async function pageNfeBusca(){
             ${perfilTile('NF-e com flags', pf.comFlags||0)}
             ${perfilTile('Itens / nota', (pf.itensPorNota||0).toFixed(1).replace('.',','))}
           </div>
+          <div class="row" style="gap:8px; flex-wrap:wrap; margin-bottom:2px;">${perfilTodas}</div>
           ${grupo('Produtos especiais', '#dc2626', [
-            perfilItem('💊','Medicamento', pf.produtos?.medicamento||0, '#dc2626'),
-            perfilItem('⛽','Combustível', pf.produtos?.combustivel||0, '#dc2626'),
-            perfilItem('🔖','Rastreável', pf.produtos?.rastreavel||0, '#dc2626'),
-            perfilItem('🚗','Veículo', pf.produtos?.veiculo||0, '#dc2626'),
-            perfilItem('🌎','Importado', pf.produtos?.importado||0, '#dc2626'),
+            perfilItem('💊','Medicamento', pf.produtos?.medicamento||0, '#dc2626', 'med'),
+            perfilItem('⛽','Combustível', pf.produtos?.combustivel||0, '#dc2626', 'comb'),
+            perfilItem('🔖','Rastreável', pf.produtos?.rastreavel||0, '#dc2626', 'rastro'),
+            perfilItem('🚗','Veículo', pf.produtos?.veiculo||0, '#dc2626', 'veiculo'),
+            perfilItem('🌎','Importado', pf.produtos?.importado||0, '#dc2626', 'importado'),
           ].join(''))}
           ${grupo('Tributário / fiscal', '#d97706', [
-            perfilItem('%','ICMS-ST', pf.fiscal?.icmsSt||0, '#d97706'),
+            perfilItem('%','ICMS-ST', pf.fiscal?.icmsSt||0, '#d97706', 'st'),
           ].join(''))}
           ${grupo('Reforma tributária', '#7c3aed', [
-            perfilItem('⚖️','IBS/CBS', pf.reforma?.comIbsCbs||0, '#7c3aed'),
+            perfilItem('⚖️','IBS/CBS', pf.reforma?.comIbsCbs||0, '#7c3aed', 'reforma'),
           ].join(''))}
           ${grupo('Operacional', '#059669', [
-            perfilItem('📦','Com itens (carrinho)', pf.operacional?.comCarrinho||0, '#059669'),
-            perfilItem('🚚','Transportadora (MDF-e)', pf.operacional?.transportadora||0, '#059669'),
-            perfilItem('🧾','Duplicatas', pf.operacional?.duplicatas||0, '#059669'),
-            perfilItem('💰','Pagamento informado', pf.operacional?.pagamento||0, '#059669'),
-            perfilItem('💬','Com comentário', pf.operacional?.comComentario||0, '#059669'),
+            perfilItem('📦','Com itens (carrinho)', pf.operacional?.comCarrinho||0, '#059669', 'carrinho'),
+            perfilItem('🚚','Transportadora (MDF-e)', pf.operacional?.transportadora||0, '#059669', 'mdfe'),
+            perfilItem('🧾','Duplicatas', pf.operacional?.duplicatas||0, '#059669', 'dup'),
+            perfilItem('💰','Pagamento informado', pf.operacional?.pagamento||0, '#059669', 'pag'),
+            perfilItem('💬','Com comentário', pf.operacional?.comComentario||0, '#059669', 'comentario'),
           ].join(''))}
         </div>
         <div class="card" style="margin:0; background:var(--paper); flex:1 1 320px; min-width:320px;">
@@ -7060,6 +7071,18 @@ async function pageNfeBusca(){
           ${bar('CBS (reforma)', imp.cbs, 'var(--accent-deep)')}
         </div>
         </div>`;
+      // Clicar num marcador do "Perfil das Notas" filtra a lista de Documentos só por aquelas NF
+      // (clicar no mesmo de novo, ou na "Todas", limpa). Não recarrega o dashboard — só os documentos.
+      body.querySelectorAll('.nfePerfilTile').forEach(el=>el.addEventListener('click', ()=>{
+        const f = el.dataset.flag || '';
+        nfePerfilFlag = (f && nfePerfilFlag===f) ? '' : f;
+        body.querySelectorAll('.nfePerfilTile').forEach(t=>{
+          const ativo = (t.dataset.flag||'')===nfePerfilFlag;
+          t.style.background = ativo ? 'var(--accent-pale)' : 'var(--paper)';
+          t.style.borderColor = ativo ? 'var(--accent)' : 'var(--rule)';
+        });
+        carregarDocumentos();
+      }));
     }
 
     function atualizarBarraSelecao(){
@@ -7108,6 +7131,7 @@ async function pageNfeBusca(){
       if(busca) params.set('busca', busca);
       if(dataDe) params.set('dataDe', dataDe);
       if(dataAte) params.set('dataAte', dataAte);
+      if(nfePerfilFlag) params.set('flag', nfePerfilFlag);
       const { items } = await api('/nfe/documentos?'+params.toString());
       // Monitor da reforma (IBS/CBS): soma o que as notas desta lista já trazem no XML.
       const comReforma = items.filter(d=>(d.valorIbs>0||d.valorCbs>0));
@@ -11744,34 +11768,25 @@ function atdEncaminharModal(S, m){
   document.getElementById('atdEncTelefone').addEventListener('input', ()=>{ contatoId = null; resultados.querySelectorAll('.dprh-conv').forEach(x=>x.classList.remove('active')); });
   document.getElementById('atdEncCancel').addEventListener('click', closeModal);
   document.getElementById('atdEncEnviar').addEventListener('click', async ()=>{
-    let corpoAbrir;
-    if(contatoId) corpoAbrir = { contact_id: contatoId };
+    const corpo = { messageId: m.id };
+    if(contatoId) corpo.contact_id = contatoId;
     else{
       const tel = atdTelefoneDigitado(document.getElementById('atdEncTelefone').value);
       if(!tel){ toast('Escolha um contato ou digite um número com DDD.','err'); return; }
+      corpo.phone_number = tel;
       const nome = document.getElementById('atdEncNome').value.trim();
-      corpoAbrir = nome ? { phone_number: tel, name: nome } : { phone_number: tel };
+      if(nome) corpo.name = nome;
     }
     const nota = document.getElementById('atdEncNota').value.trim();
+    if(nota) corpo.nota = nota;
     const botao = document.getElementById('atdEncEnviar');
     botao.disabled = true;
     try{
-      await dcGarantirSessao();
-      const r = await dcApi('/conversations/open-with-contact', { method:'POST', body: corpoAbrir });
-      const convId = r.conversation_id;
-      let msg;
-      if(temMidia){
-        msg = { conversation_id: convId, type: m.type, media_storage_path: m.media_storage_path, media_mime: m.media_mime, media_size_bytes: m.media_size_bytes, metadata: (m.metadata && m.metadata.filename)?{ filename: m.metadata.filename }:{} };
-        const legenda = [nota, m.body].filter(Boolean).join('\n');
-        if(legenda && m.type!=='audio') msg.body = legenda;
-      } else {
-        const texto = [nota, m.body||''].filter(Boolean).join('\n').trim();
-        if(!texto){ toast('Nada pra encaminhar nesta mensagem.','err'); botao.disabled = false; return; }
-        msg = { conversation_id: convId, type:'text', body: texto };
-      }
-      await dcApi('/messages', { method:'POST', body: msg });
+      // Encaminha pelo backend (robô admin): a mídia é baixada e RE-ENVIADA na conversa de destino, pois
+      // reaproveitar o media_storage_path do original dá "media_storage_path fora da conversa" no deskcomm.
+      const r = await api('/atendimento/encaminhar', { method:'POST', body: corpo });
       // Se por acaso encaminhou pra conversa que está aberta, atualiza; senão só avisa.
-      if(S.conversaAtiva===convId){ S.ultimaMsgId=null; await atdCarregarMensagens(S, true); }
+      if(r && r.conversation_id && S.conversaAtiva===r.conversation_id){ S.ultimaMsgId=null; await atdCarregarMensagens(S, true); }
       closeModal();
       toast('Mensagem encaminhada.','ok');
     }catch(e){ toast(e.message,'err'); botao.disabled = false; }
