@@ -3959,6 +3959,50 @@ app.post("/api/empresas/:id/atualizar-atividades", blockCliente, requirePermissa
     res.status(502).json({ error: `Não consegui consultar as atividades na Receita: ${e.message}` });
   }
 });
+// Atualização em LOTE das atividades (CNAE) de todas as empresas do escritório que ainda NÃO têm —
+// roda em segundo plano, com intervalo entre cada consulta pra respeitar o limite da fonte pública de
+// CNPJ. Resumível: só pega as que estão sem atividade (atividades_atualizadas_em IS NULL), então se
+// parar no meio (erro/limite da Receita), rodar de novo continua de onde parou.
+const atividadesLote = new Map<number, { total: number; feitas: number; erros: number; rodando: boolean }>();
+async function atualizarAtividadesEmLote(escritorioId: number) {
+  const prog = atividadesLote.get(escritorioId);
+  if (!prog) return;
+  const alvos = sqlite.prepare(`SELECT id, cnpj FROM empresas WHERE escritorio_id = ? AND ativo = 1 AND cnpj IS NOT NULL AND cnpj != '' AND atividades_atualizadas_em IS NULL`).all(escritorioId) as any[];
+  prog.total = alvos.length;
+  for (const emp of alvos) {
+    const cnpj = String(emp.cnpj || "").replace(/\D/g, "");
+    if (cnpj.length !== 14) { prog.feitas++; continue; }
+    try {
+      const dados = await consultarCnpjBrasilApi(cnpj);
+      if (!(dados as any).notFound) {
+        const cnaePrincipal = (dados as any).cnaePrincipal || null;
+        const cnaesSecundarios = (dados as any).cnaesSecundarios || [];
+        sqlite.prepare(`UPDATE empresas SET cnae_principal_json = ?, cnaes_secundarios_json = ?, atividades_atualizadas_em = ? WHERE id = ?`)
+          .run(cnaePrincipal ? JSON.stringify(cnaePrincipal) : null, JSON.stringify(cnaesSecundarios), new Date().toISOString(), emp.id);
+      } else {
+        prog.erros++;
+      }
+    } catch {
+      prog.erros++; // soluço/limite da Receita — fica pra próxima rodada (ainda sem atividade)
+    }
+    prog.feitas++;
+    await new Promise((r) => setTimeout(r, 3000)); // intervalo pra não estourar o limite da fonte pública
+  }
+  prog.rodando = false;
+}
+app.post("/api/empresas/atualizar-atividades-todas", blockCliente, requirePermissao("empresas", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const existente = atividadesLote.get(user.escritorioId);
+  if (existente?.rodando) return res.json({ iniciado: false, jaRodando: true, total: existente.total });
+  const total = (sqlite.prepare(`SELECT COUNT(*) n FROM empresas WHERE escritorio_id = ? AND ativo = 1 AND cnpj IS NOT NULL AND cnpj != '' AND atividades_atualizadas_em IS NULL`).get(user.escritorioId) as any).n;
+  atividadesLote.set(user.escritorioId, { total, feitas: 0, erros: 0, rodando: total > 0 });
+  if (total > 0) void atualizarAtividadesEmLote(user.escritorioId).catch((e) => { console.error("[atividades-lote]", e.message); const p = atividadesLote.get(user.escritorioId); if (p) p.rodando = false; });
+  res.json({ iniciado: total > 0, total });
+});
+app.get("/api/empresas/atualizar-atividades-todas/status", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
+  const p = atividadesLote.get((req as any).user.escritorioId) || { total: 0, feitas: 0, erros: 0, rodando: false };
+  res.json(p);
+});
 app.delete("/api/empresas/:id", requireAdmin, (req, res) => {
   const id = Number(req.params.id);
   if (!podeAcessarEmpresa((req as any).user, id)) return res.status(404).json({ error: "Empresa não encontrada." });

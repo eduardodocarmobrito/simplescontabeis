@@ -2848,7 +2848,9 @@ async function renderEmpresasTab(){
       ${podePostar? `<button class="btn" id="btnImportarDominio">Importar do Domínio Web (CSV)</button>`:''}
       ${podePostar? `<button class="btn" id="btnAtualizarEmpresas">↻ Atualizar Empresas</button>`:''}
       ${STATE.user.perfil==='Administrador'? `<button class="btn" id="btnImportarCertificados">📥 Importar certificados (Drive)</button>`:''}
+      ${podePostar? `<button class="btn" id="btnAtividadesTodas" title="Consulta na Receita as atividades (CNAE) de todas as empresas que ainda não têm — roda em segundo plano">↻ Atividades (todas)</button>`:''}
       <span id="atualizarEmpresasStatus" style="font-size:12px; color:var(--ink-soft);"></span>
+      <span id="atividadesTodasStatus" style="font-size:12px; color:var(--ink-soft);"></span>
     </div>` : `<p class="subtitle" style="margin-top:-6px;">Empresas inativadas não aparecem em Relatórios nem podem receber novos anexos — mas nada foi apagado.</p>`}
     <div class="field" style="max-width:360px; margin-bottom:10px;"><input type="text" id="empFiltro" placeholder="Buscar por nome ou CNPJ…" autocomplete="off" value="${esc(EMP_BUSCA)}"></div>
     <div class="card" style="padding:0; overflow-x:auto;">
@@ -2912,6 +2914,25 @@ async function renderEmpresasTab(){
     document.getElementById('btnNovaEmpresa').addEventListener('click', ()=>empresaModal());
     document.getElementById('btnImportarDominio').addEventListener('click', importarDominioModal);
     document.getElementById('btnAtualizarEmpresas').addEventListener('click', atualizarEmpresasDoDominio);
+    // Atualizar atividades (CNAE) de TODAS as empresas que ainda não têm — roda em segundo plano na Receita.
+    const btnAtivTodas = document.getElementById('btnAtividadesTodas');
+    const stAtiv = document.getElementById('atividadesTodasStatus');
+    const pollAtiv = async ()=>{
+      let s; try{ s = await api('/empresas/atualizar-atividades-todas/status'); }catch(e){ return; }
+      if(stAtiv) stAtiv.textContent = s.rodando ? ` atualizando atividades… ${s.feitas}/${s.total}${s.erros?` (${s.erros} erro)`:''}` : (s.total? ` concluído: ${s.feitas}/${s.total}${s.erros?`, ${s.erros} não achada(s)`:''}`:'');
+      if(btnAtivTodas) btnAtivTodas.disabled = !!s.rodando;
+      if(s.rodando) setTimeout(pollAtiv, 3000);
+    };
+    if(btnAtivTodas){
+      btnAtivTodas.addEventListener('click', async ()=>{
+        if(!confirmar('Consultar na Receita as atividades (CNAE) de todas as empresas que ainda não têm? Roda em segundo plano, com um intervalo entre cada pra respeitar o limite da Receita.')) return;
+        btnAtivTodas.disabled = true;
+        try{ const r = await api('/empresas/atualizar-atividades-todas', { method:'POST' }); if(stAtiv) stAtiv.textContent = ` ${r.total} empresa(s) na fila…`; toast(r.total? 'Começando a atualizar '+r.total+' empresa(s) em segundo plano.':'Todas as empresas já têm atividades.','ok'); }
+        catch(e){ toast(e.message,'err'); btnAtivTodas.disabled=false; return; }
+        setTimeout(pollAtiv, 1500);
+      });
+      pollAtiv(); // reflete um lote que já esteja rodando ao abrir a página
+    }
   }
   if(ativasTab && STATE.user.perfil==='Administrador') document.getElementById('btnImportarCertificados')?.addEventListener('click', importarCertificadosDriveModal);
 }
