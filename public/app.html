@@ -11542,7 +11542,23 @@ async function atdDialogoSetorAssumir(S, c){
   document.getElementById('atdSaAssumir').addEventListener('click', async ()=>{
     try{
       if(!(await aplicarSetor())) return;
-      await dcApi(`/conversations/${c.id}/claim`, { method:'POST', body:{} });
+      // Claim robusto (igual o botão "Assumir" do cabeçalho): se o claim simples falhar, confere quem
+      // está com a conversa AGORA — se ainda estiver LIVRE (race/estado velho), tenta de novo; se alguém
+      // assumiu, avisa quem; se for Administrador, força pelo backend.
+      const souAdmin = STATE.user && STATE.user.perfil==='Administrador';
+      const claim = dono=>dcApi(`/conversations/${c.id}/claim`, { method:'POST', body: dono ? { expected_assignee: dono } : {} });
+      try{
+        await claim(null);
+      }catch(err){
+        let dono=null; try{ dono = await api('/atendimento/conversas/'+encodeURIComponent(c.id)+'/dono'); }catch(e){}
+        if(dono && dono.atribuidoDeskcommId){
+          if(souAdmin){ await api('/atendimento/conversas/'+encodeURIComponent(c.id)+'/atribuir-admin', { method:'POST' }); }
+          else throw new Error('Este atendimento já foi assumido por '+(dono.atribuidoNome||'outro atendente')+'.');
+        } else {
+          // Ninguém tem (ou acabou de ser liberada) — tenta de novo.
+          await claim(null);
+        }
+      }
       closeModal(); toast('Conversa assumida. Pode responder.','ok');
       await atdCarregarLista(S);
       await atdAbrirConversa(S, c.id);
