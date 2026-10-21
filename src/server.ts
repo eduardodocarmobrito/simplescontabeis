@@ -19625,6 +19625,46 @@ app.post("/api/atendimento/conversas/:id/atribuir-admin", blockCliente, requireE
     res.status(502).json({ error: `Não foi possível assumir/transferir: ${e.message}` });
   }
 });
+// Achado em auditoria (2026-10-21): quando uma conversa está na Fila sem ninguém atendendo mas o
+// automático (IA) ainda está "ativo" nela (active_ai_agent_id setado na tabela conversations), o
+// deskcomm recusa o claim simples com "Outro atendente já assumiu." mesmo sem nenhum humano de
+// verdade segurando — confirmado direto no banco (assigned_to_user_id null). O fluxo existente só
+// resolve isso pra Administrador (via /atribuir-admin, que ignora essa checagem do deskcomm); um
+// Colaborador comum ficava travado, sem conseguir responder a conversa nenhuma. Esta rota faz a
+// mesma coisa (fn_conversation_assign com p_enforce_expected=false), mas só pra QUALQUER colaborador
+// com permissão de postar, e só pra assumir PRA SI MESMO — nunca move de outra pessoa pra um
+// terceiro como /atribuir-admin faz. Confere no servidor (não confia no que o cliente já tinha) que
+// a conversa está mesmo livre antes de forçar, então nunca tira a conversa de um colega humano real.
+app.post("/api/atendimento/conversas/:id/assumir-livre", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
+  const user = (req as any).user;
+  if (!atendimentoAlgumaPermissao(user, "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  const id = String(req.params.id);
+  try {
+    const { data: conv } = await deskcommAdmin.from("conversations").select("id, status, assigned_to_user_id, assigned_to_user_name").eq("organization_id", DESKCOMM_ORG_ID).eq("id", id).maybeSingle();
+    if (!conv) return res.status(404).json({ error: "Conversa não encontrada." });
+    if ((conv as any).status === "closed" || (conv as any).status === "archived") return res.status(409).json({ error: "Conversa fechada." });
+    const meuId = await deskcommGarantirUsuario(user);
+    const donoAtual = (conv as any).assigned_to_user_id;
+    if (donoAtual && donoAtual !== meuId) {
+      return res.status(409).json({ error: `Este atendimento já foi assumido por ${(conv as any).assigned_to_user_name || "outro atendente"}.` });
+    }
+    const { error } = await deskcommAdmin.rpc("fn_conversation_assign", {
+      p_organization_id: DESKCOMM_ORG_ID,
+      p_conversation_id: id,
+      p_to_user_id: meuId,
+      p_reason: "claim",
+      p_enforce_expected: false,
+    });
+    if (error) throw new Error(error.message);
+    // Pausa o automático, igual quando alguém assume pelo deskcomm normalmente.
+    await deskcommAdmin.from("conversations").update({ bot_silenced_until: "infinity" }).eq("organization_id", DESKCOMM_ORG_ID).eq("id", id);
+    res.json({ ok: true });
+  } catch (e: any) {
+    console.error("[atendimento] falha no assumir-livre:", e.message);
+    res.status(502).json({ error: `Não foi possível assumir: ${e.message}` });
+  }
+});
 
 // Pra quem dá pra transferir: Administradores + Colaboradores com acesso ao módulo (no CRM, a quem tem
 // CRM ou DP/RH — o atendente geral pode passar direto pra alguém do setor), já espelhados no deskcomm
