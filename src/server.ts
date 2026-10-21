@@ -11172,7 +11172,7 @@ function sitfisExtrairPgfn(texto: string): { status: "com_debito" | "sem_debito"
   const re = /(PROCURADORIA[\s-]*GERAL DA FAZENDA|Inscri[çc][õo]es? em D[íi]vida Ativa|D[íi]vida Ativa da Uni[ãa]o|\bPGFN\b)/i;
   const m = re.exec(t);
   if (!m) return { status: "indefinido", valores: [], trecho: null };
-  const trecho = t.slice(m.index || 0, (m.index || 0) + 3000).replace(/\n{3,}/g, "\n\n").trim();
+  const trecho = t.slice(m.index || 0, (m.index || 0) + 8000).replace(/\n{3,}/g, "\n\n").trim();
   const semDebito = /n[ãa]o\s+const(a|am)|nada\s+const|sem\s+pend[êe]nci|n[ãa]o\s+(h[áa]|possui|existe[m]?)\s+(d[ée]bit|inscri|pend)/i.test(trecho);
   const valores = [...new Set(trecho.match(/\d{1,3}(?:\.\d{3})*,\d{2}/g) || [])];
   const temSinalDebito = /inscri[çc][ãa]o|\bd[ée]bito|processo|certid[ãa]o de d[íi]vida|\bCDA\b|saldo devedor|exigibilidade/i.test(trecho) && valores.length > 0;
