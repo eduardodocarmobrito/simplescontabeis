@@ -2314,7 +2314,13 @@ sqlite.exec(`DROP TABLE IF EXISTS fgts_sync_jobs`);
   // rotina de NFS-e, se houver, sem precisar o admin configurar de novo.
   const escritorio1 = sqlite.prepare(`SELECT empresa_id FROM escritorios WHERE id = 1`).get() as any;
   if (escritorio1 && !escritorio1.empresa_id) {
-    const agConfig = sqlite.prepare(`SELECT empresa_prestador_id FROM nfse_agendamento_config WHERE id = 1`).get() as any;
+    // nfse_agendamento_config pode já estar no formato novo (escritorio_id) se a migração de
+    // multi-tenant mais abaixo já rodou antes (ex.: banco que já passou por um boot anterior).
+    const colsAgConfig = sqlite.prepare(`PRAGMA table_info(nfse_agendamento_config)`).all() as any[];
+    const chaveAgConfig = colsAgConfig.some((c) => c.name === "id") ? "id" : colsAgConfig.some((c) => c.name === "escritorio_id") ? "escritorio_id" : null;
+    const agConfig = chaveAgConfig
+      ? (sqlite.prepare(`SELECT empresa_prestador_id FROM nfse_agendamento_config WHERE ${chaveAgConfig} = 1`).get() as any)
+      : undefined;
     if (agConfig?.empresa_prestador_id) {
       sqlite.prepare(`UPDATE escritorios SET empresa_id = ? WHERE id = 1`).run(agConfig.empresa_prestador_id);
     }
