@@ -2028,7 +2028,10 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
 // decifrar, e só recifra se falhar (ou seja, se ainda não era ciphertext válido). Sem isso, o agente
 // do escritório 1 (em uso de verdade hoje) quebraria na próxima vez que buscasse a config.
 {
-  const linhas = sqlite.prepare(`SELECT escritorio_id, db_password, api_token FROM dominio_config`).all() as any[];
+  const colsDominioConfig = sqlite.prepare(`PRAGMA table_info(dominio_config)`).all() as any[];
+  const linhas = colsDominioConfig.some((c) => c.name === "escritorio_id")
+    ? (sqlite.prepare(`SELECT escritorio_id, db_password, api_token FROM dominio_config`).all() as any[])
+    : []; // banco novo — a tabela ainda está no formato antigo (singleton), migra mais abaixo; nada a recifrar ainda.
   for (const l of linhas) {
     let novaSenha: string | undefined;
     let novoToken: string | undefined;
@@ -5701,8 +5704,9 @@ sqlite.exec(`
   if (!colsDemo.some((c) => c.name === "encadeado_apos_ferias")) sqlite.exec(`ALTER TABLE demonstrativo_robo_estado ADD COLUMN encadeado_apos_ferias INTEGER NOT NULL DEFAULT 0`);
   if (!colsDemo.some((c) => c.name === "encadeado_ultimo_dia")) sqlite.exec(`ALTER TABLE demonstrativo_robo_estado ADD COLUMN encadeado_ultimo_dia TEXT`);
   // Férias: marca "deve encadear o Demonstrativo quando eu terminar" (armado no início da execução do Férias).
+  // Banco novo: a tabela ainda nem existe (só é criada mais abaixo, já com esta coluna) — nada a alterar ainda.
   const colsFer = sqlite.prepare(`PRAGMA table_info(ferias_robo_estado)`).all() as any[];
-  if (!colsFer.some((c) => c.name === "encadeia_demo_pendente")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN encadeia_demo_pendente INTEGER NOT NULL DEFAULT 0`);
+  if (colsFer.length && !colsFer.some((c) => c.name === "encadeia_demo_pendente")) sqlite.exec(`ALTER TABLE ferias_robo_estado ADD COLUMN encadeia_demo_pendente INTEGER NOT NULL DEFAULT 0`);
 }
 function garantirDemonstrativoEstado(escritorioId: number) {
   sqlite.prepare(`INSERT OR IGNORE INTO demonstrativo_robo_estado (escritorio_id) VALUES (?)`).run(escritorioId);
@@ -5868,7 +5872,8 @@ sqlite.exec(`
     prog_atual TEXT,
     prog_em TEXT,
     agente_visto_em TEXT,
-    parar_em TEXT
+    parar_em TEXT,
+    encadeia_demo_pendente INTEGER NOT NULL DEFAULT 0
   );
 `);
 {
