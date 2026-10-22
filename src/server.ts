@@ -18,6 +18,7 @@ import * as danfse from "./danfse";
 import * as whatsapp from "./whatsapp";
 import * as nfe from "./nfe";
 import * as nfePdf from "./nfe-pdf";
+import * as ofx from "./ofx";
 import * as onedrive from "./onedrive";
 import * as integracontador from "./integracontador";
 import * as ocr from "./ocr";
@@ -1983,6 +1984,54 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
   const colsNfeDoc2 = sqlite.prepare(`PRAGMA table_info(nfe_documentos)`).all() as any[];
   if (!colsNfeDoc2.some((c) => c.name === "integrado_financeiro")) {
     sqlite.exec(`ALTER TABLE nfe_documentos ADD COLUMN integrado_financeiro INTEGER NOT NULL DEFAULT 0`);
+  }
+}
+// Migração leve: saldo inicial da conta banco/caixa — usado como ponto de partida do saldo exibido
+// (saldo inicial + soma dos títulos já pagos/recebidos naquela conta), não é uma movimentação.
+{
+  const colsFinContas = sqlite.prepare(`PRAGMA table_info(financeiro_contas)`).all() as any[];
+  if (!colsFinContas.some((c) => c.name === "saldo_inicial")) {
+    sqlite.exec(`ALTER TABLE financeiro_contas ADD COLUMN saldo_inicial REAL NOT NULL DEFAULT 0`);
+  }
+}
+// Migração: conciliação bancária (extrato .OFX) — tabela nova pra guardar cada transação importada
+// do banco; UNIQUE(conta_id, fitid) usa o ID único que o próprio OFX dá pra cada transação, pra
+// reimportar um extrato com datas sobrepostas (comum: baixar "últimos 30 dias" toda semana) nunca
+// duplicar o que já foi trazido antes.
+{
+  const temTabelaOfx = (sqlite.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='financeiro_ofx_transacoes'`).get() as any) !== undefined;
+  if (!temTabelaOfx) {
+    sqlite.exec(`
+      CREATE TABLE financeiro_ofx_transacoes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+        conta_id INTEGER NOT NULL REFERENCES financeiro_contas(id) ON DELETE CASCADE,
+        fitid TEXT NOT NULL,
+        data TEXT NOT NULL,
+        valor REAL NOT NULL,
+        descricao TEXT,
+        tipo_ofx TEXT,
+        status TEXT NOT NULL DEFAULT 'pendente', -- 'pendente' | 'conciliado' | 'ignorado'
+        vinculo_tabela TEXT, -- 'financeiro_pagar' | 'financeiro_receber' (preenchido quando concilia ou cadastra)
+        vinculo_id INTEGER,
+        documento_vinculado_id INTEGER REFERENCES nfe_documentos(id) ON DELETE SET NULL,
+        importado_em TEXT DEFAULT (datetime('now')),
+        UNIQUE(conta_id, fitid)
+      );
+      CREATE INDEX idx_financeiro_ofx_empresa_conta_status ON financeiro_ofx_transacoes(empresa_id, conta_id, status);
+    `);
+  }
+}
+// Migração: renegociação de título — quando um "a pagar"/"a receber" vencido é renegociado em N
+// parcelas novas (acordo com juros/multa, prazo maior etc.), o título original vira status
+// 'renegociado' (nunca apagado — fica no histórico) e cada parcela nova aponta de volta pra ele via
+// renegociado_de_id. Mesma ideia em ambas as tabelas, por isso duas ALTER iguais.
+{
+  for (const tabela of ["financeiro_pagar", "financeiro_receber"]) {
+    const cols = sqlite.prepare(`PRAGMA table_info(${tabela})`).all() as any[];
+    if (!cols.some((c) => c.name === "renegociado_de_id")) {
+      sqlite.exec(`ALTER TABLE ${tabela} ADD COLUMN renegociado_de_id INTEGER REFERENCES ${tabela}(id) ON DELETE SET NULL`);
+    }
   }
 }
 // Migração leve: checklist_templates.setor (departamento que atende o modelo).
@@ -14732,32 +14781,110 @@ app.get("/api/nfse/minha-empresa/cep/:cep", requireCliente, requireModuloAtivo('
 // ---------- Financeiro do próprio negócio da empresa-cliente self-service (perfil Cliente) ----------
 // Contas (banco/caixa) — só organizam/indicam onde cada título foi pago ou recebido, sem nenhuma
 // integração bancária real (sem saldo calculado, sem extrato importado).
-app.get("/api/financeiro/minha-empresa/contas", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
-  const empresaId = (req as any).user.empresaId;
-  const items = sqlite
-    .prepare(`SELECT id, nome, tipo, ativo FROM financeiro_contas WHERE empresa_id = ? ORDER BY ativo DESC, nome`)
+// Saldo atual de cada conta = saldo_inicial (informado na hora de cadastrar, não é movimentação) +
+// recebido (financeiro_receber.status='pago' naquela conta) - pago (financeiro_pagar.status='pago'
+// naquela conta). Calculado sempre na hora, não guardado em coluna — reflete o estado real dos
+// títulos a qualquer momento, sem precisar manter saldo em cache sincronizado a cada mudança.
+function financeiroContasComSaldo(empresaId: number): any[] {
+  return sqlite
+    .prepare(
+      `SELECT c.id, c.nome, c.tipo, c.ativo, c.saldo_inicial as saldoInicial,
+              c.saldo_inicial
+                + COALESCE((SELECT SUM(valor) FROM financeiro_receber WHERE conta_id = c.id AND status = 'pago'), 0)
+                - COALESCE((SELECT SUM(valor) FROM financeiro_pagar WHERE conta_id = c.id AND status = 'pago'), 0) as saldoAtual
+       FROM financeiro_contas c WHERE c.empresa_id = ? ORDER BY c.ativo DESC, c.nome`
+    )
     .all(empresaId) as any[];
+}
+// Relatórios do Financeiro — tudo derivado dos títulos já existentes (financeiro_pagar/receber) e do
+// saldo das contas, sem nenhum conceito novo: resumo de pendente/atrasado/baixado de cada lado,
+// saldo consolidado das contas ativas, e um fluxo de caixa PROJETADO (só títulos ainda pendentes,
+// nunca os já pagos/recebidos — esses já viraram saldo de conta) agrupado por semana, pras próximas
+// 13 semanas (~3 meses, horizonte comum de fluxo de caixa de curto prazo). Título vencido e ainda
+// pendente entra na semana 0 (needs attention now) em vez de ficar numa semana negativa.
+// "Atrasado" é calculado na hora (vencimento < hoje E status ainda 'pendente') — o campo status
+// nunca é promovido pra 'atrasado' sozinho em lugar nenhum do sistema, só manualmente pelo usuário.
+function financeiroRelatorio(empresaId: number) {
+  const hoje = new Date().toISOString().slice(0, 10);
+  const contasAtivas = financeiroContasComSaldo(empresaId).filter((c: any) => c.ativo);
+  const saldoTotalContas = contasAtivas.reduce((s: number, c: any) => s + (c.saldoAtual || 0), 0);
+
+  const resumoLado = (tabela: "financeiro_pagar" | "financeiro_receber") => {
+    const pendente = sqlite
+      .prepare(`SELECT COUNT(*) as qtd, COALESCE(SUM(valor),0) as valor FROM ${tabela} WHERE empresa_id = ? AND status = 'pendente' AND date(vencimento) >= date(?)`)
+      .get(empresaId, hoje) as any;
+    const atrasado = sqlite
+      .prepare(`SELECT COUNT(*) as qtd, COALESCE(SUM(valor),0) as valor FROM ${tabela} WHERE empresa_id = ? AND status = 'pendente' AND date(vencimento) < date(?)`)
+      .get(empresaId, hoje) as any;
+    const campoData = tabela === "financeiro_pagar" ? "data_pagamento" : "data_recebimento";
+    const baixadoMes = sqlite
+      .prepare(`SELECT COUNT(*) as qtd, COALESCE(SUM(valor),0) as valor FROM ${tabela} WHERE empresa_id = ? AND status = 'pago' AND strftime('%Y-%m', ${campoData}) = strftime('%Y-%m','now')`)
+      .get(empresaId) as any;
+    return { pendente, atrasado, baixadoMes };
+  };
+
+  const NUM_SEMANAS = 13;
+  const hojeDate = new Date(hoje + "T00:00:00");
+  const fimHorizonteIso = new Date(hojeDate.getTime() + NUM_SEMANAS * 7 * 86400000).toISOString().slice(0, 10);
+  const pendentesReceber = sqlite
+    .prepare(`SELECT vencimento, valor FROM financeiro_receber WHERE empresa_id = ? AND status = 'pendente' AND date(vencimento) <= date(?)`)
+    .all(empresaId, fimHorizonteIso) as any[];
+  const pendentesPagar = sqlite
+    .prepare(`SELECT vencimento, valor FROM financeiro_pagar WHERE empresa_id = ? AND status = 'pendente' AND date(vencimento) <= date(?)`)
+    .all(empresaId, fimHorizonteIso) as any[];
+  const semanaDe = (vencimentoIso: string) => {
+    const diffDias = Math.floor((new Date(vencimentoIso + "T00:00:00").getTime() - hojeDate.getTime()) / 86400000);
+    return Math.min(NUM_SEMANAS - 1, Math.max(0, Math.floor(diffDias / 7)));
+  };
+  const semanas = Array.from({ length: NUM_SEMANAS }, () => ({ entradas: 0, saidas: 0 }));
+  for (const r of pendentesReceber) semanas[semanaDe(r.vencimento)].entradas += r.valor || 0;
+  for (const p of pendentesPagar) semanas[semanaDe(p.vencimento)].saidas += p.valor || 0;
+  const fmtDiaMes = (d: Date) => `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
+  let acumulado = saldoTotalContas;
+  const fluxoCaixa = semanas.map((s, i) => {
+    const saldoPeriodo = s.entradas - s.saidas;
+    acumulado += saldoPeriodo;
+    const inicio = new Date(hojeDate.getTime() + i * 7 * 86400000);
+    const fim = new Date(inicio.getTime() + 6 * 86400000);
+    return { periodo: `${fmtDiaMes(inicio)} a ${fmtDiaMes(fim)}`, entradas: s.entradas, saidas: s.saidas, saldoPeriodo, saldoAcumulado: acumulado };
+  });
+
+  return {
+    saldoContas: { total: saldoTotalContas, contas: contasAtivas.map((c: any) => ({ nome: c.nome, tipo: c.tipo, saldoAtual: c.saldoAtual })) },
+    pagar: resumoLado("financeiro_pagar"),
+    receber: resumoLado("financeiro_receber"),
+    fluxoCaixa,
+  };
+}
+app.get("/api/financeiro/minha-empresa/contas", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
+  const items = financeiroContasComSaldo((req as any).user.empresaId);
   res.json({ items: items.map((r) => ({ ...r, ativo: !!r.ativo })) });
 });
 app.post("/api/financeiro/minha-empresa/contas", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
   const user = (req as any).user;
-  const { nome, tipo } = req.body || {};
+  const { nome, tipo, saldoInicial } = req.body || {};
   if (!nome || !String(nome).trim()) return res.status(400).json({ error: "Informe o nome da conta." });
   const tipoValido = ["banco", "caixa", "outro"].includes(tipo) ? tipo : "banco";
   const info = sqlite
-    .prepare(`INSERT INTO financeiro_contas (empresa_id, nome, tipo) VALUES (?, ?, ?)`)
-    .run(user.empresaId, String(nome).trim(), tipoValido);
+    .prepare(`INSERT INTO financeiro_contas (empresa_id, nome, tipo, saldo_inicial) VALUES (?, ?, ?, ?)`)
+    .run(user.empresaId, String(nome).trim(), tipoValido, saldoInicial != null ? Number(saldoInicial) : 0);
   res.json({ id: Number(info.lastInsertRowid) });
 });
 app.put("/api/financeiro/minha-empresa/contas/:id", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
   const user = (req as any).user;
   const existente = sqlite.prepare(`SELECT * FROM financeiro_contas WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), user.empresaId) as any;
   if (!existente) return res.status(404).json({ error: "Conta não encontrada." });
-  const { nome, tipo, ativo } = req.body || {};
+  const { nome, tipo, ativo, saldoInicial } = req.body || {};
   const tipoValido = ["banco", "caixa", "outro"].includes(tipo) ? tipo : existente.tipo;
   sqlite
-    .prepare(`UPDATE financeiro_contas SET nome=?, tipo=?, ativo=? WHERE id=?`)
-    .run(nome != null ? String(nome).trim() : existente.nome, tipoValido, ativo != null ? (ativo ? 1 : 0) : existente.ativo, existente.id);
+    .prepare(`UPDATE financeiro_contas SET nome=?, tipo=?, ativo=?, saldo_inicial=? WHERE id=?`)
+    .run(
+      nome != null ? String(nome).trim() : existente.nome,
+      tipoValido,
+      ativo != null ? (ativo ? 1 : 0) : existente.ativo,
+      saldoInicial != null ? Number(saldoInicial) : existente.saldo_inicial,
+      existente.id
+    );
   res.json({ ok: true });
 });
 app.delete("/api/financeiro/minha-empresa/contas/:id", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
@@ -14769,6 +14896,144 @@ app.delete("/api/financeiro/minha-empresa/contas/:id", requireCliente, requireMo
     .get(Number(req.params.id), Number(req.params.id)) as any;
   if (emUso.c > 0) return res.status(409).json({ error: "Esta conta já está usada em algum título — desative em vez de excluir." });
   sqlite.prepare(`DELETE FROM financeiro_contas WHERE id = ?`).run(Number(req.params.id));
+  res.json({ ok: true });
+});
+app.get("/api/financeiro/minha-empresa/relatorios", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
+  res.json(financeiroRelatorio((req as any).user.empresaId));
+});
+// ---- Conciliação bancária (extrato .OFX) ----
+// Pra cada transação do extrato ainda sem conciliar, sugere títulos pendentes do lado certo
+// (entrada=valor positivo olha financeiro_receber, saída=negativo olha financeiro_pagar) com o MESMO
+// valor (exato, sem tolerância — evita casar errado) e vencimento dentro de uma janela de 15 dias.
+// Não aplica sozinho: só sugere, quem concilia de fato é o usuário clicando (ver /conciliar abaixo).
+const OFX_JANELA_DIAS_MATCH = 15;
+function financeiroOfxSugerirMatch(empresaId: number, valor: number, data: string): any[] {
+  const tabela = valor >= 0 ? "financeiro_receber" : "financeiro_pagar";
+  const campoTerceiro = valor >= 0 ? "cliente_nome" : "fornecedor";
+  const rows = sqlite
+    .prepare(
+      `SELECT id, descricao, ${campoTerceiro} as terceiro, vencimento, valor FROM ${tabela}
+       WHERE empresa_id = ? AND status = 'pendente' AND ABS(valor - ?) < 0.01
+         AND ABS(julianday(vencimento) - julianday(?)) <= ?
+       ORDER BY ABS(julianday(vencimento) - julianday(?)) LIMIT 5`
+    )
+    .all(empresaId, Math.abs(valor), data, OFX_JANELA_DIAS_MATCH, data) as any[];
+  return rows.map((r) => ({ tabela, id: r.id, descricao: r.descricao, terceiro: r.terceiro, vencimento: r.vencimento, valor: r.valor }));
+}
+// Excluir um título "a pagar"/"a receber" que já foi conciliado com o extrato bancário (quer tenha
+// sido CRIADO pela conciliação — origem='ofx' — quer seja um título manual que só foi CASADO com uma
+// transação depois) não pode deixar a transação do extrato apontando pra um id que não existe mais.
+// Em vez de bloquear a exclusão pra sempre (sem nenhum jeito de desfazer a conciliação na tela),
+// solta o vínculo e devolve a transação pra "pendente" — fica disponível de novo pra conciliar com
+// outra coisa ou cadastrar de novo.
+function financeiroSoltarVinculoOfx(tabela: "financeiro_pagar" | "financeiro_receber", tituloId: number) {
+  sqlite
+    .prepare(`UPDATE financeiro_ofx_transacoes SET status = 'pendente', vinculo_tabela = NULL, vinculo_id = NULL WHERE vinculo_tabela = ? AND vinculo_id = ?`)
+    .run(tabela, tituloId);
+}
+function financeiroOfxListar(empresaId: number, contaId: number, status: string): any[] {
+  const rows = sqlite
+    .prepare(`SELECT * FROM financeiro_ofx_transacoes WHERE empresa_id = ? AND conta_id = ? AND status = ? ORDER BY data DESC, id DESC`)
+    .all(empresaId, contaId, status) as any[];
+  return rows.map((r) => ({
+    id: r.id,
+    data: r.data,
+    valor: r.valor,
+    descricao: r.descricao,
+    status: r.status,
+    vinculoTabela: r.vinculo_tabela,
+    vinculoId: r.vinculo_id,
+    documentoVinculadoId: r.documento_vinculado_id,
+    sugestoes: r.status === "pendente" ? financeiroOfxSugerirMatch(empresaId, r.valor, r.data) : [],
+  }));
+}
+const uploadOfx = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
+app.post("/api/financeiro/minha-empresa/contas/:contaId/ofx/importar", requireCliente, requireModuloAtivo('financeiro'), uploadOfx.single("arquivo"), (req, res) => {
+  const user = (req as any).user;
+  const contaId = Number(req.params.contaId);
+  const conta = sqlite.prepare(`SELECT id FROM financeiro_contas WHERE id = ? AND empresa_id = ?`).get(contaId, user.empresaId);
+  if (!conta) return res.status(404).json({ error: "Conta não encontrada." });
+  if (!req.file) return res.status(400).json({ error: "Selecione o arquivo .ofx exportado do internet banking." });
+  let extrato: ofx.OfxExtrato;
+  try {
+    extrato = ofx.parseOfx(req.file.buffer.toString("utf8"));
+  } catch (e: any) {
+    return res.status(400).json({ error: `Não consegui ler o OFX: ${e.message}` });
+  }
+  if (!extrato.transacoes.length) return res.status(400).json({ error: "Não encontrei nenhuma transação nesse arquivo — confira se é mesmo um .ofx exportado do banco." });
+  const insert = sqlite.prepare(
+    `INSERT OR IGNORE INTO financeiro_ofx_transacoes (empresa_id, conta_id, fitid, data, valor, descricao, tipo_ofx) VALUES (?, ?, ?, ?, ?, ?, ?)`
+  );
+  let novas = 0;
+  for (const t of extrato.transacoes) {
+    const r = insert.run(user.empresaId, contaId, t.fitid, t.data, t.valor, t.descricao, t.tipoOfx);
+    if (r.changes > 0) novas++;
+  }
+  res.json({ ok: true, total: extrato.transacoes.length, novas, duplicadas: extrato.transacoes.length - novas });
+});
+app.get("/api/financeiro/minha-empresa/contas/:contaId/ofx", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
+  const user = (req as any).user;
+  const contaId = Number(req.params.contaId);
+  const conta = sqlite.prepare(`SELECT id FROM financeiro_contas WHERE id = ? AND empresa_id = ?`).get(contaId, user.empresaId);
+  if (!conta) return res.status(404).json({ error: "Conta não encontrada." });
+  const status = typeof req.query.status === "string" && ["pendente", "conciliado", "ignorado"].includes(req.query.status) ? req.query.status : "pendente";
+  res.json({ items: financeiroOfxListar(user.empresaId, contaId, status) });
+});
+app.post("/api/financeiro/minha-empresa/ofx/:id/conciliar", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
+  const user = (req as any).user;
+  const ofxRow = sqlite.prepare(`SELECT * FROM financeiro_ofx_transacoes WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), user.empresaId) as any;
+  if (!ofxRow) return res.status(404).json({ error: "Transação não encontrada." });
+  if (ofxRow.status !== "pendente") return res.status(409).json({ error: "Esta transação do extrato já foi conciliada ou ignorada." });
+  const { tabela, tituloId } = req.body || {};
+  if (!["financeiro_pagar", "financeiro_receber"].includes(tabela)) return res.status(400).json({ error: "Tipo de título inválido." });
+  const titulo = sqlite.prepare(`SELECT * FROM ${tabela} WHERE id = ? AND empresa_id = ?`).get(Number(tituloId), user.empresaId) as any;
+  if (!titulo) return res.status(404).json({ error: "Título não encontrado." });
+  if (titulo.status !== "pendente") return res.status(409).json({ error: "Este título já não está mais pendente." });
+  const campoData = tabela === "financeiro_pagar" ? "data_pagamento" : "data_recebimento";
+  sqlite.prepare(`UPDATE ${tabela} SET status = 'pago', ${campoData} = ?, conta_id = ? WHERE id = ?`).run(ofxRow.data, ofxRow.conta_id, titulo.id);
+  sqlite.prepare(`UPDATE financeiro_ofx_transacoes SET status = 'conciliado', vinculo_tabela = ?, vinculo_id = ? WHERE id = ?`).run(tabela, titulo.id, ofxRow.id);
+  res.json({ ok: true });
+});
+// Transação do extrato sem nenhum título correspondente no sistema — cadastra um título NOVO já
+// baixado (a data/valor vêm do banco, que é fonte de verdade aqui), vinculado de volta à transação.
+app.post("/api/financeiro/minha-empresa/ofx/:id/cadastrar", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
+  const user = (req as any).user;
+  const ofxRow = sqlite.prepare(`SELECT * FROM financeiro_ofx_transacoes WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), user.empresaId) as any;
+  if (!ofxRow) return res.status(404).json({ error: "Transação não encontrada." });
+  if (ofxRow.status !== "pendente") return res.status(409).json({ error: "Esta transação do extrato já foi conciliada ou ignorada." });
+  const descFinal = (req.body?.descricao && String(req.body.descricao).trim()) || ofxRow.descricao || "Lançamento do extrato bancário";
+  const ehReceber = ofxRow.valor >= 0;
+  const tabela = ehReceber ? "financeiro_receber" : "financeiro_pagar";
+  const campoTerceiro = ehReceber ? "cliente_nome" : "fornecedor";
+  const campoData = ehReceber ? "data_recebimento" : "data_pagamento";
+  const info = sqlite
+    .prepare(
+      `INSERT INTO ${tabela} (empresa_id, descricao, ${campoTerceiro}, valor, vencimento, status, ${campoData}, conta_id, origem, criado_por)
+       VALUES (?, ?, NULL, ?, ?, 'pago', ?, ?, 'ofx', ?)`
+    )
+    .run(user.empresaId, descFinal, Math.abs(ofxRow.valor), ofxRow.data, ofxRow.data, ofxRow.conta_id, user.id);
+  const tituloId = Number(info.lastInsertRowid);
+  sqlite.prepare(`UPDATE financeiro_ofx_transacoes SET status = 'conciliado', vinculo_tabela = ?, vinculo_id = ? WHERE id = ?`).run(tabela, tituloId, ofxRow.id);
+  res.json({ ok: true, id: tituloId });
+});
+app.post("/api/financeiro/minha-empresa/ofx/:id/ignorar", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
+  const user = (req as any).user;
+  const r = sqlite.prepare(`UPDATE financeiro_ofx_transacoes SET status = 'ignorado' WHERE id = ? AND empresa_id = ? AND status = 'pendente'`).run(Number(req.params.id), user.empresaId);
+  if (r.changes === 0) return res.status(404).json({ error: "Transação não encontrada ou já processada." });
+  res.json({ ok: true });
+});
+// Vínculo opcional com um documento (NF-e/NFC-e recebida) — só referência pra conferência, não muda
+// nada no título nem no status da conciliação (dá pra vincular mesmo numa transação já conciliada).
+app.put("/api/financeiro/minha-empresa/ofx/:id/vincular-documento", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
+  const user = (req as any).user;
+  const ofxRow = sqlite.prepare(`SELECT id FROM financeiro_ofx_transacoes WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), user.empresaId) as any;
+  if (!ofxRow) return res.status(404).json({ error: "Transação não encontrada." });
+  const documentoId = req.body?.documentoId ? Number(req.body.documentoId) : null;
+  if (documentoId) {
+    const doc = sqlite.prepare(`SELECT id FROM nfe_documentos WHERE id = ? AND empresa_id = ?`).get(documentoId, user.empresaId);
+    if (!doc) return res.status(404).json({ error: "Documento não encontrado." });
+  }
+  sqlite.prepare(`UPDATE financeiro_ofx_transacoes SET documento_vinculado_id = ? WHERE id = ?`).run(documentoId, ofxRow.id);
   res.json({ ok: true });
 });
 app.get("/api/financeiro/minha-empresa/pagar", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
@@ -14802,7 +15067,7 @@ app.put("/api/financeiro/minha-empresa/pagar/:id", requireCliente, requireModulo
   // Lançamento gerado por uma NF-e integrada (origem='nfe') tem descrição/fornecedor/valor travados
   // — mesma proteção que o recebível gerado por NFS-e já tinha, só vencimento/status/conta/observação
   // editáveis, pra não desalinhar do valor real da nota.
-  const travadoPelaNfe = existente.origem === "nfe";
+  const travadoPelaNfe = existente.origem === "nfe" || existente.origem === "ofx";
   sqlite
     .prepare(
       `UPDATE financeiro_pagar SET descricao=?, fornecedor=?, valor=?, vencimento=?, status=?, data_pagamento=?, observacao=?, conta_id=? WHERE id=?`
@@ -14825,6 +15090,7 @@ app.delete("/api/financeiro/minha-empresa/pagar/:id", requireCliente, requireMod
   const existente = sqlite.prepare(`SELECT origem FROM financeiro_pagar WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), user.empresaId) as any;
   if (!existente) return res.status(404).json({ error: "Lançamento não encontrado." });
   if (existente.origem === "nfe") return res.status(409).json({ error: "Este título veio de uma nota de entrada integrada — desmarque a integração na nota (Notas de Entrada) em vez de excluir aqui." });
+  financeiroSoltarVinculoOfx("financeiro_pagar", Number(req.params.id));
   sqlite.prepare(`DELETE FROM financeiro_pagar WHERE id = ?`).run(Number(req.params.id));
   res.json({ ok: true });
 });
@@ -14859,7 +15125,7 @@ app.put("/api/financeiro/minha-empresa/receber/:id", requireCliente, requireModu
   // Lançamentos gerados por NFS-e OU por NF-e integrada (origem='nfse'|'nfe') têm descrição/valor
   // travados — só vencimento, status, conta e observação são editáveis, pra não desalinhar do valor
   // real da nota emitida.
-  const travadoPelaNfse = existente.origem === "nfse" || existente.origem === "nfe";
+  const travadoPelaNfse = existente.origem === "nfse" || existente.origem === "nfe" || existente.origem === "ofx";
   sqlite
     .prepare(
       `UPDATE financeiro_receber SET descricao=?, cliente_nome=?, valor=?, vencimento=?, status=?, data_recebimento=?, observacao=?, conta_id=? WHERE id=?`
@@ -14883,6 +15149,7 @@ app.delete("/api/financeiro/minha-empresa/receber/:id", requireCliente, requireM
   if (!existente) return res.status(404).json({ error: "Lançamento não encontrado." });
   if (existente.origem === "nfse") return res.status(409).json({ error: "Este recebível veio de uma NFS-e emitida — cancele a nota se não for mais válido, em vez de excluir aqui." });
   if (existente.origem === "nfe") return res.status(409).json({ error: "Este recebível veio de uma nota emitida integrada — desmarque a integração na nota (Busca de XML) em vez de excluir aqui." });
+  financeiroSoltarVinculoOfx("financeiro_receber", Number(req.params.id));
   sqlite.prepare(`DELETE FROM financeiro_receber WHERE id = ?`).run(Number(req.params.id));
   res.json({ ok: true });
 });
@@ -14894,16 +15161,18 @@ app.delete("/api/financeiro/minha-empresa/receber/:id", requireCliente, requireM
 app.get("/api/financeiro/empresas/:empresaId/contas", blockCliente, requirePermissao("financeiro", "visualizar"), (req, res) => {
   const empresaId = Number(req.params.empresaId);
   if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
-  const items = sqlite.prepare(`SELECT id, nome, tipo, ativo FROM financeiro_contas WHERE empresa_id = ? ORDER BY ativo DESC, nome`).all(empresaId) as any[];
+  const items = financeiroContasComSaldo(empresaId);
   res.json({ items: items.map((r) => ({ ...r, ativo: !!r.ativo })) });
 });
 app.post("/api/financeiro/empresas/:empresaId/contas", blockCliente, requirePermissao("financeiro", "postar"), (req, res) => {
   const empresaId = Number(req.params.empresaId);
   if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
-  const { nome, tipo } = req.body || {};
+  const { nome, tipo, saldoInicial } = req.body || {};
   if (!nome || !String(nome).trim()) return res.status(400).json({ error: "Informe o nome da conta." });
   const tipoValido = ["banco", "caixa", "outro"].includes(tipo) ? tipo : "banco";
-  const info = sqlite.prepare(`INSERT INTO financeiro_contas (empresa_id, nome, tipo) VALUES (?, ?, ?)`).run(empresaId, String(nome).trim(), tipoValido);
+  const info = sqlite
+    .prepare(`INSERT INTO financeiro_contas (empresa_id, nome, tipo, saldo_inicial) VALUES (?, ?, ?, ?)`)
+    .run(empresaId, String(nome).trim(), tipoValido, saldoInicial != null ? Number(saldoInicial) : 0);
   res.json({ id: Number(info.lastInsertRowid) });
 });
 app.put("/api/financeiro/empresas/:empresaId/contas/:id", blockCliente, requirePermissao("financeiro", "editar"), (req, res) => {
@@ -14911,11 +15180,17 @@ app.put("/api/financeiro/empresas/:empresaId/contas/:id", blockCliente, requireP
   if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
   const existente = sqlite.prepare(`SELECT * FROM financeiro_contas WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), empresaId) as any;
   if (!existente) return res.status(404).json({ error: "Conta não encontrada." });
-  const { nome, tipo, ativo } = req.body || {};
+  const { nome, tipo, ativo, saldoInicial } = req.body || {};
   const tipoValido = ["banco", "caixa", "outro"].includes(tipo) ? tipo : existente.tipo;
   sqlite
-    .prepare(`UPDATE financeiro_contas SET nome=?, tipo=?, ativo=? WHERE id=?`)
-    .run(nome != null ? String(nome).trim() : existente.nome, tipoValido, ativo != null ? (ativo ? 1 : 0) : existente.ativo, existente.id);
+    .prepare(`UPDATE financeiro_contas SET nome=?, tipo=?, ativo=?, saldo_inicial=? WHERE id=?`)
+    .run(
+      nome != null ? String(nome).trim() : existente.nome,
+      tipoValido,
+      ativo != null ? (ativo ? 1 : 0) : existente.ativo,
+      saldoInicial != null ? Number(saldoInicial) : existente.saldo_inicial,
+      existente.id
+    );
   res.json({ ok: true });
 });
 app.delete("/api/financeiro/empresas/:empresaId/contas/:id", blockCliente, requirePermissao("financeiro", "editar"), (req, res) => {
@@ -14929,6 +15204,11 @@ app.delete("/api/financeiro/empresas/:empresaId/contas/:id", blockCliente, requi
   if (emUso.c > 0) return res.status(409).json({ error: "Esta conta já está usada em algum título — desative em vez de excluir." });
   sqlite.prepare(`DELETE FROM financeiro_contas WHERE id = ?`).run(Number(req.params.id));
   res.json({ ok: true });
+});
+app.get("/api/financeiro/empresas/:empresaId/relatorios", blockCliente, requirePermissao("financeiro", "visualizar"), (req, res) => {
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  res.json(financeiroRelatorio(empresaId));
 });
 app.get("/api/financeiro/empresas/:empresaId/pagar", blockCliente, requirePermissao("financeiro", "visualizar"), (req, res) => {
   const empresaId = Number(req.params.empresaId);
@@ -14962,7 +15242,7 @@ app.put("/api/financeiro/empresas/:empresaId/pagar/:id", blockCliente, requirePe
   if (!existente) return res.status(404).json({ error: "Lançamento não encontrado." });
   const { descricao, fornecedor, valor, vencimento, status, observacao, contaId } = req.body || {};
   const statusValido = ["pendente", "pago", "atrasado", "cancelado"].includes(status) ? status : existente.status;
-  const travadoPelaNfe = existente.origem === "nfe";
+  const travadoPelaNfe = existente.origem === "nfe" || existente.origem === "ofx";
   sqlite
     .prepare(`UPDATE financeiro_pagar SET descricao=?, fornecedor=?, valor=?, vencimento=?, status=?, data_pagamento=?, observacao=?, conta_id=? WHERE id=?`)
     .run(
@@ -14984,6 +15264,7 @@ app.delete("/api/financeiro/empresas/:empresaId/pagar/:id", blockCliente, requir
   const existente = sqlite.prepare(`SELECT origem FROM financeiro_pagar WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), empresaId) as any;
   if (!existente) return res.status(404).json({ error: "Lançamento não encontrado." });
   if (existente.origem === "nfe") return res.status(409).json({ error: "Este título veio de uma nota integrada — desmarque a integração na nota (Busca de XML) em vez de excluir aqui." });
+  financeiroSoltarVinculoOfx("financeiro_pagar", Number(req.params.id));
   sqlite.prepare(`DELETE FROM financeiro_pagar WHERE id = ?`).run(Number(req.params.id));
   res.json({ ok: true });
 });
@@ -15019,7 +15300,7 @@ app.put("/api/financeiro/empresas/:empresaId/receber/:id", blockCliente, require
   if (!existente) return res.status(404).json({ error: "Lançamento não encontrado." });
   const { descricao, clienteNome, valor, vencimento, status, observacao, contaId } = req.body || {};
   const statusValido = ["pendente", "pago", "atrasado", "cancelado"].includes(status) ? status : existente.status;
-  const travadoPelaNfse = existente.origem === "nfse" || existente.origem === "nfe";
+  const travadoPelaNfse = existente.origem === "nfse" || existente.origem === "nfe" || existente.origem === "ofx";
   sqlite
     .prepare(`UPDATE financeiro_receber SET descricao=?, cliente_nome=?, valor=?, vencimento=?, status=?, data_recebimento=?, observacao=?, conta_id=? WHERE id=?`)
     .run(
@@ -15042,6 +15323,7 @@ app.delete("/api/financeiro/empresas/:empresaId/receber/:id", blockCliente, requ
   if (!existente) return res.status(404).json({ error: "Lançamento não encontrado." });
   if (existente.origem === "nfse") return res.status(409).json({ error: "Este recebível veio de uma NFS-e emitida — cancele a nota se não for mais válido, em vez de excluir aqui." });
   if (existente.origem === "nfe") return res.status(409).json({ error: "Este recebível veio de uma nota integrada — desmarque a integração na nota (Busca de XML) em vez de excluir aqui." });
+  financeiroSoltarVinculoOfx("financeiro_receber", Number(req.params.id));
   sqlite.prepare(`DELETE FROM financeiro_receber WHERE id = ?`).run(Number(req.params.id));
   res.json({ ok: true });
 });
