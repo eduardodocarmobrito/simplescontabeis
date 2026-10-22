@@ -2032,6 +2032,9 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
     if (!cols.some((c) => c.name === "renegociado_de_id")) {
       sqlite.exec(`ALTER TABLE ${tabela} ADD COLUMN renegociado_de_id INTEGER REFERENCES ${tabela}(id) ON DELETE SET NULL`);
     }
+    if (!cols.some((c) => c.name === "renegociado_em")) {
+      sqlite.exec(`ALTER TABLE ${tabela} ADD COLUMN renegociado_em TEXT`);
+    }
   }
 }
 // Migração leve: checklist_templates.setor (departamento que atende o modelo).
@@ -14856,6 +14859,98 @@ function financeiroRelatorio(empresaId: number) {
     fluxoCaixa,
   };
 }
+// ---- Renegociação de título ----
+// Quando um título vencido é renegociado (acordo com o fornecedor/cliente em N parcelas novas, com
+// juros/multa, prazo maior etc.), o original vira status 'renegociado' — nunca é apagado, fica no
+// histórico — e cada parcela nova é um título independente de verdade (mesma convenção já usada pra
+// parcelas de nota integrada: uma linha por parcela, numerada na descrição), com renegociado_de_id
+// apontando de volta pro original. 'renegociado' só é setado por aqui, nunca pelo campo de status
+// comum do PUT — assim nunca existe um título 'renegociado' sem as parcelas novas de verdade.
+function financeiroRenegociarTitulo(
+  tabela: "financeiro_pagar" | "financeiro_receber",
+  tituloId: number,
+  empresaId: number,
+  parcelas: { valor: number; vencimento: string }[],
+  observacao: string | undefined,
+  userId: number
+): { ok: boolean; erro?: string; novosIds?: number[] } {
+  const titulo = sqlite.prepare(`SELECT * FROM ${tabela} WHERE id = ? AND empresa_id = ?`).get(tituloId, empresaId) as any;
+  if (!titulo) return { ok: false, erro: "Título não encontrado." };
+  if (titulo.status !== "pendente" && titulo.status !== "atrasado") return { ok: false, erro: "Só é possível renegociar um título pendente/atrasado." };
+  if (!Array.isArray(parcelas) || !parcelas.length) return { ok: false, erro: "Informe ao menos uma parcela do novo acordo." };
+  for (const p of parcelas) {
+    if (!(Number(p.valor) > 0) || !p.vencimento) return { ok: false, erro: "Cada parcela precisa de valor e vencimento." };
+  }
+  const ehReceber = tabela === "financeiro_receber";
+  const campoTerceiro = ehReceber ? "cliente_nome" : "fornecedor";
+  const terceiro = ehReceber ? titulo.cliente_nome : titulo.fornecedor;
+  const agora = new Date().toISOString().replace("T", " ").slice(0, 19);
+  const obsFinal = [titulo.observacao, observacao ? `Renegociado em ${agora.slice(0, 10)}: ${observacao}` : `Renegociado em ${agora.slice(0, 10)}.`].filter(Boolean).join("\n");
+  sqlite.prepare(`UPDATE ${tabela} SET status = 'renegociado', observacao = ?, renegociado_em = ? WHERE id = ?`).run(obsFinal, agora, tituloId);
+  const insert = sqlite.prepare(
+    `INSERT INTO ${tabela} (empresa_id, descricao, ${campoTerceiro}, valor, vencimento, origem, renegociado_de_id, criado_por) VALUES (?, ?, ?, ?, ?, 'manual', ?, ?)`
+  );
+  const novosIds: number[] = [];
+  parcelas.forEach((p, i) => {
+    const desc = parcelas.length > 1 ? `Renegociação de: ${titulo.descricao} (parcela ${i + 1}/${parcelas.length})` : `Renegociação de: ${titulo.descricao}`;
+    const info = insert.run(empresaId, desc, terceiro, Number(p.valor), String(p.vencimento), tituloId, userId);
+    novosIds.push(Number(info.lastInsertRowid));
+  });
+  return { ok: true, novosIds };
+}
+function financeiroRenegociacoesListar(empresaId: number): any[] {
+  const porTabela = (tabela: "financeiro_pagar" | "financeiro_receber") => {
+    const campoTerceiro = tabela === "financeiro_receber" ? "cliente_nome" : "fornecedor";
+    const rows = sqlite
+      .prepare(
+        `SELECT o.id, o.descricao, o.${campoTerceiro} as terceiro, o.valor as valorOriginal, o.renegociado_em as renegociadoEm,
+                (SELECT COUNT(*) FROM ${tabela} WHERE renegociado_de_id = o.id) as parcelasNovas,
+                COALESCE((SELECT SUM(valor) FROM ${tabela} WHERE renegociado_de_id = o.id), 0) as valorNovoTotal,
+                (SELECT COUNT(*) FROM ${tabela} WHERE renegociado_de_id = o.id AND status = 'pago') as parcelasPagas,
+                COALESCE((SELECT SUM(valor) FROM ${tabela} WHERE renegociado_de_id = o.id AND status = 'pago'), 0) as valorPago
+         FROM ${tabela} o WHERE o.empresa_id = ? AND o.status = 'renegociado' ORDER BY o.renegociado_em DESC`
+      )
+      .all(empresaId) as any[];
+    return rows.map((r) => ({ ...r, tipo: tabela === "financeiro_receber" ? "receber" : "pagar", valorFalta: r.valorNovoTotal - r.valorPago }));
+  };
+  return [...porTabela("financeiro_pagar"), ...porTabela("financeiro_receber")].sort((a, b) => (b.renegociadoEm || "").localeCompare(a.renegociadoEm || ""));
+}
+app.put("/api/financeiro/minha-empresa/pagar/:id/renegociar", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
+  const user = (req as any).user;
+  const r = financeiroRenegociarTitulo("financeiro_pagar", Number(req.params.id), user.empresaId, req.body?.parcelas, req.body?.observacao, user.id);
+  if (!r.ok) return res.status(400).json({ error: r.erro });
+  res.json({ ok: true, novosIds: r.novosIds });
+});
+app.put("/api/financeiro/minha-empresa/receber/:id/renegociar", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
+  const user = (req as any).user;
+  const r = financeiroRenegociarTitulo("financeiro_receber", Number(req.params.id), user.empresaId, req.body?.parcelas, req.body?.observacao, user.id);
+  if (!r.ok) return res.status(400).json({ error: r.erro });
+  res.json({ ok: true, novosIds: r.novosIds });
+});
+app.get("/api/financeiro/minha-empresa/relatorios/renegociacoes", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
+  res.json({ items: financeiroRenegociacoesListar((req as any).user.empresaId) });
+});
+app.put("/api/financeiro/empresas/:empresaId/pagar/:id/renegociar", blockCliente, requirePermissao("financeiro", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const r = financeiroRenegociarTitulo("financeiro_pagar", Number(req.params.id), empresaId, req.body?.parcelas, req.body?.observacao, user.id);
+  if (!r.ok) return res.status(400).json({ error: r.erro });
+  res.json({ ok: true, novosIds: r.novosIds });
+});
+app.put("/api/financeiro/empresas/:empresaId/receber/:id/renegociar", blockCliente, requirePermissao("financeiro", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const r = financeiroRenegociarTitulo("financeiro_receber", Number(req.params.id), empresaId, req.body?.parcelas, req.body?.observacao, user.id);
+  if (!r.ok) return res.status(400).json({ error: r.erro });
+  res.json({ ok: true, novosIds: r.novosIds });
+});
+app.get("/api/financeiro/empresas/:empresaId/relatorios/renegociacoes", blockCliente, requirePermissao("financeiro", "visualizar"), (req, res) => {
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  res.json({ items: financeiroRenegociacoesListar(empresaId) });
+});
 app.get("/api/financeiro/minha-empresa/contas", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
   const items = financeiroContasComSaldo((req as any).user.empresaId);
   res.json({ items: items.map((r) => ({ ...r, ativo: !!r.ativo })) });
