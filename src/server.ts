@@ -3057,7 +3057,14 @@ app.get("/api/health", (_req, res) => res.json({ ok: true }));
 // origem), o cookie de sessão do deskcomm (`sb-deskcomm-auth`) fica gravado neste mesmo domínio, sem
 // precisar sair pra `srv1998403.hstgr.cloud`. O deskcomm em si já foi reconstruído com
 // `basePath: "/deskcomm"`, então os caminhos batem sem nenhuma reescrita aqui.
-const DESKCOMM_URL = "https://srv1998403.hstgr.cloud";
+// IMPORTANTE (migração pra VPS, 2026-10-22): este é o endereço do SERVIDOR DO DESKCOMM pra onde o
+// proxy /deskcomm e /api/v1 encaminham. Deixou de ser hardcoded porque, ao consolidar tudo numa VPS,
+// o hostname `srv1998403.hstgr.cloud` passou a apontar pra PRÓPRIA VPS nova (que serve ESTE app) —
+// então o proxy ficava apontando pra ele mesmo e dava "Error occurred while trying to proxy" (quebrava
+// o login de usuário novo no CRM, o robô de envio, media, etc.). Agora vem de DESKCOMM_URL: na VPS,
+// apontar pro endereço REAL do deskcomm (ex.: serviço interno do docker-compose, `http://deskcomm:PORTA`,
+// ou o host/porta onde o container do deskcomm escuta) — NÃO pro domínio público deste app.
+const DESKCOMM_URL = (process.env.DESKCOMM_URL || "https://srv1998403.hstgr.cloud").trim();
 // .trim(): variáveis de ambiente coladas por um painel web (Railway etc.) vêm sujeitas a espaço/quebra
 // de linha grudado sem querer — medido ao vivo com DESKCOMM_ORG_ID assim, e "invalid input syntax for
 // type uuid" não deixa óbvio que o problema é um espaço, não o valor em si.
