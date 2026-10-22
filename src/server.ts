@@ -1962,6 +1962,29 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
     sqlite.exec(`ALTER TABLE financeiro_receber ADD COLUMN conta_id INTEGER REFERENCES financeiro_contas(id) ON DELETE SET NULL`);
   }
 }
+// Migração: integração NF-e → Financeiro — o escritório (Busca de XML) ou o próprio cliente (Notas
+// de Entrada) marca uma nota e ela gera o(s) lançamento(s) correspondente(s): emitida vira
+// financeiro_receber (a empresa vendeu, tem a receber), recebida vira financeiro_pagar (a empresa
+// comprou, tem a pagar). Mesmo padrão já usado pra NFS-e → financeiro_receber (nfse_emissao_id,
+// origem='nfse') — aqui só precisa do equivalente pro lado "a pagar" também, que não existia
+// (financeiro_pagar nunca teve coluna de origem, porque até agora todo lançamento lá era manual).
+{
+  const colsPagar2 = sqlite.prepare(`PRAGMA table_info(financeiro_pagar)`).all() as any[];
+  if (!colsPagar2.some((c) => c.name === "origem")) {
+    sqlite.exec(`ALTER TABLE financeiro_pagar ADD COLUMN origem TEXT NOT NULL DEFAULT 'manual'`);
+  }
+  if (!colsPagar2.some((c) => c.name === "nfe_documento_id")) {
+    sqlite.exec(`ALTER TABLE financeiro_pagar ADD COLUMN nfe_documento_id INTEGER REFERENCES nfe_documentos(id) ON DELETE SET NULL`);
+  }
+  const colsReceber2 = sqlite.prepare(`PRAGMA table_info(financeiro_receber)`).all() as any[];
+  if (!colsReceber2.some((c) => c.name === "nfe_documento_id")) {
+    sqlite.exec(`ALTER TABLE financeiro_receber ADD COLUMN nfe_documento_id INTEGER REFERENCES nfe_documentos(id) ON DELETE SET NULL`);
+  }
+  const colsNfeDoc2 = sqlite.prepare(`PRAGMA table_info(nfe_documentos)`).all() as any[];
+  if (!colsNfeDoc2.some((c) => c.name === "integrado_financeiro")) {
+    sqlite.exec(`ALTER TABLE nfe_documentos ADD COLUMN integrado_financeiro INTEGER NOT NULL DEFAULT 0`);
+  }
+}
 // Migração leve: checklist_templates.setor (departamento que atende o modelo).
 {
   const colsCl = sqlite.prepare(`PRAGMA table_info(checklist_templates)`).all() as any[];
@@ -8887,7 +8910,7 @@ function nfeListarDocumentosQuery(
               d.emitente_cnpj as emitenteCnpj, d.emitente_nome as emitenteNome, d.destinatario_cnpj as destinatarioCnpj,
               d.destinatario_nome as destinatarioNome, d.valor_total as valorTotal, d.data_emissao as dataEmissao, d.criado_em as criadoEm,
               d.valor_ibs as valorIbs, d.valor_cbs as valorCbs, d.flags as flags, d.qtd_itens as qtdItens, d.tributos_parseado as tributosParseado,
-              d.observacao as observacao, d.crt as crt,
+              d.observacao as observacao, d.crt as crt, d.integrado_financeiro as integradoFinanceiro,
               (d.chave_acesso IS NOT NULL AND EXISTS (SELECT 1 FROM mdfe_vinculos mv WHERE mv.chave_vinculada = d.chave_acesso)) as temMdfe,
               ${direcaoExpr} as direcao, (CASE WHEN d.tipo = 'evento' THEN 0 ELSE ${notaCanceladaExpr} END) as notaCancelada
        FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id
@@ -8945,7 +8968,7 @@ function nfeListarDocumentosQuery(
   };
   return rows.map((r) => {
     const ev = r.tipo !== "evento" ? derivarEventos(eventosPorChave.get(r.chaveAcesso) || []) : { manifestacao: null, eventos: [] };
-    return { ...r, notaCancelada: !!r.notaCancelada, manifestacao: ev.manifestacao, eventos: ev.eventos };
+    return { ...r, notaCancelada: !!r.notaCancelada, integradoFinanceiro: !!r.integradoFinanceiro, manifestacao: ev.manifestacao, eventos: ev.eventos };
   });
 }
 app.get("/api/nfe/documentos", blockCliente, requirePermissao("nfe-busca", "visualizar"), (req, res) => {
@@ -9162,6 +9185,76 @@ app.put("/api/nfe/documentos/:id/observacao", blockCliente, requirePermissao("nf
   sqlite.prepare(`UPDATE nfe_documentos SET observacao = ? WHERE id = ?`).run(texto || null, Number(req.params.id));
   res.json({ ok: true });
 });
+// ---- Integração NF-e -> Financeiro ----
+// "Emitida" (a empresa é a emitente) vira financeiro_receber (vendeu, tem a receber); "recebida" vira
+// financeiro_pagar (comprou, tem a pagar) — mesma empresa que já está em nfe_documentos.empresa_id,
+// é a mesma dona do Financeiro self-service (financeiro_pagar/receber são por empresa_id). Uma linha
+// por duplicata do XML (<cobr><dup>, lido via nfe.detalharNfe — já teria que reabrir o XML de
+// qualquer forma); sem duplicata no XML, uma linha única no valor total. Idempotente: marcar de novo
+// uma nota já integrada não duplica (SELECT 1 antes de inserir, mesmo padrão de
+// nfseGerarRecebivelSeEmitida, que já faz isso pra NFS-e).
+function nfeChaveNumero(chaveAcesso: string | null): string | null {
+  if (!chaveAcesso || chaveAcesso.length !== 44) return chaveAcesso;
+  return String(Number(chaveAcesso.slice(25, 34)));
+}
+function nfeIntegrarFinanceiro(docId: number, userId: number): { ok: boolean; erro?: string } {
+  const row = sqlite.prepare(`SELECT * FROM nfe_documentos WHERE id = ?`).get(docId) as any;
+  if (!row) return { ok: false, erro: "Documento não encontrado." };
+  if (row.tipo !== "nfe" && row.tipo !== "nfce") return { ok: false, erro: "Só é possível integrar NF-e/NFC-e ao Financeiro." };
+  const empresa = sqlite.prepare(`SELECT cnpj FROM empresas WHERE id = ?`).get(row.empresa_id) as any;
+  const cnpjEmpresaDigitos = (empresa?.cnpj || "").replace(/\D/g, "");
+  const emitida = (row.emitente_cnpj || "").replace(/\D/g, "") === cnpjEmpresaDigitos;
+  const tabela = emitida ? "financeiro_receber" : "financeiro_pagar";
+  const campoTerceiro = emitida ? "cliente_nome" : "fornecedor";
+  const terceiro = (emitida ? row.destinatario_nome : row.emitente_nome) || null;
+  const jaExiste = sqlite.prepare(`SELECT 1 FROM ${tabela} WHERE nfe_documento_id = ?`).get(docId);
+  if (jaExiste) return { ok: true }; // já integrada — idempotente, não duplica
+
+  const detalhe = row.xml ? nfe.detalharNfe(row.xml) : null;
+  const parcelasXml = detalhe?.duplicatas?.parcelas || [];
+  const parcelas = parcelasXml.length ? parcelasXml : [{ nDup: null, dVenc: null, vDup: row.valor_total || 0 }];
+  const numero = nfeChaveNumero(row.chave_acesso) || row.id;
+  const descBase = `NF-e nº ${numero} — ${emitida ? row.destinatario_nome || "cliente" : row.emitente_nome || "fornecedor"}`;
+  const hojeIso = new Date().toISOString().slice(0, 10);
+  const insert =
+    tabela === "financeiro_receber"
+      ? sqlite.prepare(`INSERT INTO financeiro_receber (empresa_id, descricao, cliente_nome, valor, vencimento, origem, nfe_documento_id, criado_por) VALUES (?, ?, ?, ?, ?, 'nfe', ?, ?)`)
+      : sqlite.prepare(`INSERT INTO financeiro_pagar (empresa_id, descricao, fornecedor, valor, vencimento, origem, nfe_documento_id, criado_por) VALUES (?, ?, ?, ?, ?, 'nfe', ?, ?)`);
+  parcelas.forEach((p: any, i: number) => {
+    const desc = parcelas.length > 1 ? `${descBase} (parcela ${i + 1}/${parcelas.length})` : descBase;
+    insert.run(row.empresa_id, desc, terceiro, p.vDup || row.valor_total || 0, p.dVenc || hojeIso, docId, userId);
+  });
+  sqlite.prepare(`UPDATE nfe_documentos SET integrado_financeiro = 1 WHERE id = ?`).run(docId);
+  return { ok: true };
+}
+// Desmarcar: só remove se NENHUMA parcela gerada já foi mexida (paga/recebida/cancelada) — protege
+// histórico financeiro real. Se alguma já saiu de "pendente", pede pra resolver direto no Financeiro
+// em vez de apagar sem avisar (mesmo espírito do soft-cancel já usado pra NFS-e: nunca apaga título
+// que já foi baixado).
+function nfeDesintegrarFinanceiro(docId: number): { ok: boolean; erro?: string } {
+  const rows = [
+    ...(sqlite.prepare(`SELECT status FROM financeiro_receber WHERE nfe_documento_id = ?`).all(docId) as any[]),
+    ...(sqlite.prepare(`SELECT status FROM financeiro_pagar WHERE nfe_documento_id = ?`).all(docId) as any[]),
+  ];
+  if (rows.some((r) => r.status !== "pendente")) {
+    return { ok: false, erro: "Já tem parcela paga/recebida ou com outro status — ajuste direto no Financeiro antes de desmarcar." };
+  }
+  sqlite.prepare(`DELETE FROM financeiro_receber WHERE nfe_documento_id = ?`).run(docId);
+  sqlite.prepare(`DELETE FROM financeiro_pagar WHERE nfe_documento_id = ?`).run(docId);
+  sqlite.prepare(`UPDATE nfe_documentos SET integrado_financeiro = 0 WHERE id = ?`).run(docId);
+  return { ok: true };
+}
+app.put("/api/nfe/documentos/:id/integrar-financeiro", blockCliente, requirePermissao("nfe-busca", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const row = sqlite.prepare(`SELECT escritorio_id, empresa_id FROM nfe_documentos WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!row || row.escritorio_id !== user.escritorioId || !podeAcessarEmpresa(user, row.empresa_id)) {
+    return res.status(404).json({ error: "Documento não encontrado." });
+  }
+  const ativo = !!req.body?.ativo;
+  const r = ativo ? nfeIntegrarFinanceiro(Number(req.params.id), user.id) : nfeDesintegrarFinanceiro(Number(req.params.id));
+  if (!r.ok) return res.status(400).json({ error: r.erro });
+  res.json({ ok: true });
+});
 // ---- Notas de Entrada (cliente vê só as notas recebidas da PRÓPRIA empresa, somente leitura) ----
 // Aba opcional (ver PAGINAS_CLIENTE_VALIDAS/cliente_paginas_visiveis) — o admin decide, por usuário
 // cliente, se ela aparece no menu dele. Sem "Buscar agora"/certificado aqui — é só consulta do que
@@ -9217,6 +9310,21 @@ app.get("/api/nfe/minha-empresa/documentos/:id/pdf", requireCliente, async (req,
   res.setHeader("Content-Type", "application/pdf");
   res.setHeader("Content-Disposition", nfseContentDisposition("inline", nfeDocNomeArquivo(row, "pdf")));
   res.send(pdf);
+});
+// Mesma integração com Financeiro que o escritório tem em Busca de XML — aqui só pro lado "a pagar"
+// (Notas de Entrada só mostra recebidas, então nfeIntegrarFinanceiro sempre vai gerar em
+// financeiro_pagar pra essa empresa). Exige o módulo Financeiro ativo — sem isso o cliente não
+// consegue nem ver a tela onde o lançamento apareceria.
+app.put("/api/nfe/minha-empresa/documentos/:id/integrar-financeiro", requireCliente, requireModuloAtivo("financeiro"), (req, res) => {
+  const user = (req as any).user;
+  const row = sqlite.prepare(`SELECT escritorio_id, empresa_id FROM nfe_documentos WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!row || row.escritorio_id !== user.escritorioId || row.empresa_id !== user.empresaId) {
+    return res.status(404).json({ error: "Documento não encontrado." });
+  }
+  const ativo = !!req.body?.ativo;
+  const r = ativo ? nfeIntegrarFinanceiro(Number(req.params.id), user.id) : nfeDesintegrarFinanceiro(Number(req.params.id));
+  if (!r.ok) return res.status(400).json({ error: r.erro });
+  res.json({ ok: true });
 });
 // Download em lote — zip com XML e/ou PDF de vários documentos buscados de uma vez (mesmo padrão de
 // /api/nfse/emissoes/baixar-lote).
@@ -14691,14 +14799,18 @@ app.put("/api/financeiro/minha-empresa/pagar/:id", requireCliente, requireModulo
   if (!existente) return res.status(404).json({ error: "Lançamento não encontrado." });
   const { descricao, fornecedor, valor, vencimento, status, observacao, contaId } = req.body || {};
   const statusValido = ["pendente", "pago", "atrasado", "cancelado"].includes(status) ? status : existente.status;
+  // Lançamento gerado por uma NF-e integrada (origem='nfe') tem descrição/fornecedor/valor travados
+  // — mesma proteção que o recebível gerado por NFS-e já tinha, só vencimento/status/conta/observação
+  // editáveis, pra não desalinhar do valor real da nota.
+  const travadoPelaNfe = existente.origem === "nfe";
   sqlite
     .prepare(
       `UPDATE financeiro_pagar SET descricao=?, fornecedor=?, valor=?, vencimento=?, status=?, data_pagamento=?, observacao=?, conta_id=? WHERE id=?`
     )
     .run(
-      descricao != null ? String(descricao).trim() : existente.descricao,
-      fornecedor !== undefined ? fornecedor || null : existente.fornecedor,
-      valor != null ? Number(valor) : existente.valor,
+      travadoPelaNfe ? existente.descricao : descricao != null ? String(descricao).trim() : existente.descricao,
+      travadoPelaNfe ? existente.fornecedor : fornecedor !== undefined ? fornecedor || null : existente.fornecedor,
+      travadoPelaNfe ? existente.valor : valor != null ? Number(valor) : existente.valor,
       vencimento || existente.vencimento,
       statusValido,
       statusValido === "pago" ? new Date().toISOString().slice(0, 10) : statusValido === existente.status ? existente.data_pagamento : null,
@@ -14710,7 +14822,10 @@ app.put("/api/financeiro/minha-empresa/pagar/:id", requireCliente, requireModulo
 });
 app.delete("/api/financeiro/minha-empresa/pagar/:id", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
   const user = (req as any).user;
-  sqlite.prepare(`DELETE FROM financeiro_pagar WHERE id = ? AND empresa_id = ?`).run(Number(req.params.id), user.empresaId);
+  const existente = sqlite.prepare(`SELECT origem FROM financeiro_pagar WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), user.empresaId) as any;
+  if (!existente) return res.status(404).json({ error: "Lançamento não encontrado." });
+  if (existente.origem === "nfe") return res.status(409).json({ error: "Este título veio de uma nota de entrada integrada — desmarque a integração na nota (Notas de Entrada) em vez de excluir aqui." });
+  sqlite.prepare(`DELETE FROM financeiro_pagar WHERE id = ?`).run(Number(req.params.id));
   res.json({ ok: true });
 });
 app.get("/api/financeiro/minha-empresa/receber", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
@@ -14741,9 +14856,10 @@ app.put("/api/financeiro/minha-empresa/receber/:id", requireCliente, requireModu
   if (!existente) return res.status(404).json({ error: "Lançamento não encontrado." });
   const { descricao, clienteNome, valor, vencimento, status, observacao, contaId } = req.body || {};
   const statusValido = ["pendente", "pago", "atrasado", "cancelado"].includes(status) ? status : existente.status;
-  // Lançamentos gerados pela NFS-e (origem='nfse') têm descrição/valor travados — só vencimento,
-  // status, conta e observação são editáveis, pra não desalinhar do valor real da nota emitida.
-  const travadoPelaNfse = existente.origem === "nfse";
+  // Lançamentos gerados por NFS-e OU por NF-e integrada (origem='nfse'|'nfe') têm descrição/valor
+  // travados — só vencimento, status, conta e observação são editáveis, pra não desalinhar do valor
+  // real da nota emitida.
+  const travadoPelaNfse = existente.origem === "nfse" || existente.origem === "nfe";
   sqlite
     .prepare(
       `UPDATE financeiro_receber SET descricao=?, cliente_nome=?, valor=?, vencimento=?, status=?, data_recebimento=?, observacao=?, conta_id=? WHERE id=?`
@@ -14766,6 +14882,166 @@ app.delete("/api/financeiro/minha-empresa/receber/:id", requireCliente, requireM
   const existente = sqlite.prepare(`SELECT origem FROM financeiro_receber WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), user.empresaId) as any;
   if (!existente) return res.status(404).json({ error: "Lançamento não encontrado." });
   if (existente.origem === "nfse") return res.status(409).json({ error: "Este recebível veio de uma NFS-e emitida — cancele a nota se não for mais válido, em vez de excluir aqui." });
+  if (existente.origem === "nfe") return res.status(409).json({ error: "Este recebível veio de uma nota emitida integrada — desmarque a integração na nota (Busca de XML) em vez de excluir aqui." });
+  sqlite.prepare(`DELETE FROM financeiro_receber WHERE id = ?`).run(Number(req.params.id));
+  res.json({ ok: true });
+});
+// ---- Financeiro do escritório, por empresa-cliente — mesmas tabelas/regras do self-service do
+// cliente (financeiro_pagar/receber são por empresa_id, não por quem acessa), só que aqui o
+// escritório escolhe a empresa e entra direto, sem precisar logar como o cliente. Fecha o ciclo de
+// quem marca "integrar ao Financeiro" numa nota (Busca de XML): consegue ver/editar o resultado sem
+// sair da própria tela de admin.
+app.get("/api/financeiro/empresas/:empresaId/contas", blockCliente, requirePermissao("financeiro", "visualizar"), (req, res) => {
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const items = sqlite.prepare(`SELECT id, nome, tipo, ativo FROM financeiro_contas WHERE empresa_id = ? ORDER BY ativo DESC, nome`).all(empresaId) as any[];
+  res.json({ items: items.map((r) => ({ ...r, ativo: !!r.ativo })) });
+});
+app.post("/api/financeiro/empresas/:empresaId/contas", blockCliente, requirePermissao("financeiro", "postar"), (req, res) => {
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const { nome, tipo } = req.body || {};
+  if (!nome || !String(nome).trim()) return res.status(400).json({ error: "Informe o nome da conta." });
+  const tipoValido = ["banco", "caixa", "outro"].includes(tipo) ? tipo : "banco";
+  const info = sqlite.prepare(`INSERT INTO financeiro_contas (empresa_id, nome, tipo) VALUES (?, ?, ?)`).run(empresaId, String(nome).trim(), tipoValido);
+  res.json({ id: Number(info.lastInsertRowid) });
+});
+app.put("/api/financeiro/empresas/:empresaId/contas/:id", blockCliente, requirePermissao("financeiro", "editar"), (req, res) => {
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const existente = sqlite.prepare(`SELECT * FROM financeiro_contas WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), empresaId) as any;
+  if (!existente) return res.status(404).json({ error: "Conta não encontrada." });
+  const { nome, tipo, ativo } = req.body || {};
+  const tipoValido = ["banco", "caixa", "outro"].includes(tipo) ? tipo : existente.tipo;
+  sqlite
+    .prepare(`UPDATE financeiro_contas SET nome=?, tipo=?, ativo=? WHERE id=?`)
+    .run(nome != null ? String(nome).trim() : existente.nome, tipoValido, ativo != null ? (ativo ? 1 : 0) : existente.ativo, existente.id);
+  res.json({ ok: true });
+});
+app.delete("/api/financeiro/empresas/:empresaId/contas/:id", blockCliente, requirePermissao("financeiro", "editar"), (req, res) => {
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const existente = sqlite.prepare(`SELECT id FROM financeiro_contas WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), empresaId);
+  if (!existente) return res.status(404).json({ error: "Conta não encontrada." });
+  const emUso = sqlite
+    .prepare(`SELECT (SELECT COUNT(*) FROM financeiro_pagar WHERE conta_id = ?) + (SELECT COUNT(*) FROM financeiro_receber WHERE conta_id = ?) as c`)
+    .get(Number(req.params.id), Number(req.params.id)) as any;
+  if (emUso.c > 0) return res.status(409).json({ error: "Esta conta já está usada em algum título — desative em vez de excluir." });
+  sqlite.prepare(`DELETE FROM financeiro_contas WHERE id = ?`).run(Number(req.params.id));
+  res.json({ ok: true });
+});
+app.get("/api/financeiro/empresas/:empresaId/pagar", blockCliente, requirePermissao("financeiro", "visualizar"), (req, res) => {
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
+  const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
+  let sql = `SELECT p.id, p.descricao, p.fornecedor, p.valor, p.vencimento, p.status, p.data_pagamento as dataPagamento, p.observacao,
+                    p.origem, p.nfe_documento_id as nfeDocumentoId, p.conta_id as contaId, c.nome as contaNome, p.criado_em as criadoEm
+             FROM financeiro_pagar p LEFT JOIN financeiro_contas c ON c.id = p.conta_id WHERE p.empresa_id = ?`;
+  const params: any[] = [empresaId];
+  if (dataDe) { sql += ` AND date(vencimento) >= date(?)`; params.push(dataDe); }
+  if (dataAte) { sql += ` AND date(vencimento) <= date(?)`; params.push(dataAte); }
+  sql += ` ORDER BY p.vencimento DESC, p.id DESC`;
+  res.json({ items: sqlite.prepare(sql).all(...params) });
+});
+app.post("/api/financeiro/empresas/:empresaId/pagar", blockCliente, requirePermissao("financeiro", "postar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const { descricao, fornecedor, valor, vencimento, observacao, contaId } = req.body || {};
+  if (!descricao || !valor || !vencimento) return res.status(400).json({ error: "Preencha a descrição, o valor e o vencimento." });
+  const info = sqlite
+    .prepare(`INSERT INTO financeiro_pagar (empresa_id, descricao, fornecedor, valor, vencimento, observacao, conta_id, criado_por) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(empresaId, String(descricao).trim(), fornecedor || null, Number(valor), String(vencimento), observacao || null, contaId ? Number(contaId) : null, user.id);
+  res.json({ id: Number(info.lastInsertRowid) });
+});
+app.put("/api/financeiro/empresas/:empresaId/pagar/:id", blockCliente, requirePermissao("financeiro", "editar"), (req, res) => {
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const existente = sqlite.prepare(`SELECT * FROM financeiro_pagar WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), empresaId) as any;
+  if (!existente) return res.status(404).json({ error: "Lançamento não encontrado." });
+  const { descricao, fornecedor, valor, vencimento, status, observacao, contaId } = req.body || {};
+  const statusValido = ["pendente", "pago", "atrasado", "cancelado"].includes(status) ? status : existente.status;
+  const travadoPelaNfe = existente.origem === "nfe";
+  sqlite
+    .prepare(`UPDATE financeiro_pagar SET descricao=?, fornecedor=?, valor=?, vencimento=?, status=?, data_pagamento=?, observacao=?, conta_id=? WHERE id=?`)
+    .run(
+      travadoPelaNfe ? existente.descricao : descricao != null ? String(descricao).trim() : existente.descricao,
+      travadoPelaNfe ? existente.fornecedor : fornecedor !== undefined ? fornecedor || null : existente.fornecedor,
+      travadoPelaNfe ? existente.valor : valor != null ? Number(valor) : existente.valor,
+      vencimento || existente.vencimento,
+      statusValido,
+      statusValido === "pago" ? new Date().toISOString().slice(0, 10) : statusValido === existente.status ? existente.data_pagamento : null,
+      observacao !== undefined ? observacao || null : existente.observacao,
+      contaId !== undefined ? (contaId ? Number(contaId) : null) : existente.conta_id,
+      existente.id
+    );
+  res.json({ ok: true });
+});
+app.delete("/api/financeiro/empresas/:empresaId/pagar/:id", blockCliente, requirePermissao("financeiro", "editar"), (req, res) => {
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const existente = sqlite.prepare(`SELECT origem FROM financeiro_pagar WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), empresaId) as any;
+  if (!existente) return res.status(404).json({ error: "Lançamento não encontrado." });
+  if (existente.origem === "nfe") return res.status(409).json({ error: "Este título veio de uma nota integrada — desmarque a integração na nota (Busca de XML) em vez de excluir aqui." });
+  sqlite.prepare(`DELETE FROM financeiro_pagar WHERE id = ?`).run(Number(req.params.id));
+  res.json({ ok: true });
+});
+app.get("/api/financeiro/empresas/:empresaId/receber", blockCliente, requirePermissao("financeiro", "visualizar"), (req, res) => {
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
+  const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
+  let sql = `SELECT r.id, r.descricao, r.cliente_nome as clienteNome, r.valor, r.vencimento, r.status, r.data_recebimento as dataRecebimento, r.observacao,
+                    r.origem, r.nfse_emissao_id as nfseEmissaoId, r.nfe_documento_id as nfeDocumentoId, r.conta_id as contaId, c.nome as contaNome, r.criado_em as criadoEm
+             FROM financeiro_receber r LEFT JOIN financeiro_contas c ON c.id = r.conta_id WHERE r.empresa_id = ?`;
+  const params: any[] = [empresaId];
+  if (dataDe) { sql += ` AND date(vencimento) >= date(?)`; params.push(dataDe); }
+  if (dataAte) { sql += ` AND date(vencimento) <= date(?)`; params.push(dataAte); }
+  sql += ` ORDER BY r.vencimento DESC, r.id DESC`;
+  res.json({ items: sqlite.prepare(sql).all(...params) });
+});
+app.post("/api/financeiro/empresas/:empresaId/receber", blockCliente, requirePermissao("financeiro", "postar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const { descricao, clienteNome, valor, vencimento, observacao, contaId } = req.body || {};
+  if (!descricao || !valor || !vencimento) return res.status(400).json({ error: "Preencha a descrição, o valor e o vencimento." });
+  const info = sqlite
+    .prepare(`INSERT INTO financeiro_receber (empresa_id, descricao, cliente_nome, valor, vencimento, observacao, origem, conta_id, criado_por) VALUES (?, ?, ?, ?, ?, ?, 'manual', ?, ?)`)
+    .run(empresaId, String(descricao).trim(), clienteNome || null, Number(valor), String(vencimento), observacao || null, contaId ? Number(contaId) : null, user.id);
+  res.json({ id: Number(info.lastInsertRowid) });
+});
+app.put("/api/financeiro/empresas/:empresaId/receber/:id", blockCliente, requirePermissao("financeiro", "editar"), (req, res) => {
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const existente = sqlite.prepare(`SELECT * FROM financeiro_receber WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), empresaId) as any;
+  if (!existente) return res.status(404).json({ error: "Lançamento não encontrado." });
+  const { descricao, clienteNome, valor, vencimento, status, observacao, contaId } = req.body || {};
+  const statusValido = ["pendente", "pago", "atrasado", "cancelado"].includes(status) ? status : existente.status;
+  const travadoPelaNfse = existente.origem === "nfse" || existente.origem === "nfe";
+  sqlite
+    .prepare(`UPDATE financeiro_receber SET descricao=?, cliente_nome=?, valor=?, vencimento=?, status=?, data_recebimento=?, observacao=?, conta_id=? WHERE id=?`)
+    .run(
+      travadoPelaNfse ? existente.descricao : descricao != null ? String(descricao).trim() : existente.descricao,
+      travadoPelaNfse ? existente.cliente_nome : clienteNome !== undefined ? clienteNome || null : existente.cliente_nome,
+      travadoPelaNfse ? existente.valor : valor != null ? Number(valor) : existente.valor,
+      vencimento || existente.vencimento,
+      statusValido,
+      statusValido === "pago" ? new Date().toISOString().slice(0, 10) : statusValido === existente.status ? existente.data_recebimento : null,
+      observacao !== undefined ? observacao || null : existente.observacao,
+      contaId !== undefined ? (contaId ? Number(contaId) : null) : existente.conta_id,
+      existente.id
+    );
+  res.json({ ok: true });
+});
+app.delete("/api/financeiro/empresas/:empresaId/receber/:id", blockCliente, requirePermissao("financeiro", "editar"), (req, res) => {
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const existente = sqlite.prepare(`SELECT origem FROM financeiro_receber WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), empresaId) as any;
+  if (!existente) return res.status(404).json({ error: "Lançamento não encontrado." });
+  if (existente.origem === "nfse") return res.status(409).json({ error: "Este recebível veio de uma NFS-e emitida — cancele a nota se não for mais válido, em vez de excluir aqui." });
+  if (existente.origem === "nfe") return res.status(409).json({ error: "Este recebível veio de uma nota integrada — desmarque a integração na nota (Busca de XML) em vez de excluir aqui." });
   sqlite.prepare(`DELETE FROM financeiro_receber WHERE id = ?`).run(Number(req.params.id));
   res.json({ ok: true });
 });

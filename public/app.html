@@ -5622,11 +5622,14 @@ async function pageNotasEntrada(){
       if(d.tipo!=='evento' && d.qtdItens>0) flagsHtml += `<span class="tag" title="${d.qtdItens} item(ns) na nota" style="margin-right:3px;">📦 ${d.qtdItens}</span>`;
       flagsArr.forEach(f=>{ const i=FLAG_INFO[f]; if(i) flagsHtml += `<span class="tag" title="${esc(i[1])}" style="margin-right:3px;">${i[0]}</span>`; });
       if(d.temMdfe) flagsHtml += `<span class="tag" title="Transportadora — tem MDF-e vinculado" style="margin-right:3px;">🚚</span>`;
+      if(d.integradoFinanceiro) flagsHtml += `<span class="tag" title="Integrada ao Financeiro (a pagar)" style="margin-right:3px;">💵</span>`;
       const flagsCell = flagsHtml || '<span style="color:var(--ink-soft);">—</span>';
       const temPdf = d.tipo!=='evento' && d.tipo!=='cte';
+      const podeIntegrarFin = d.tipo==='nfe' || d.tipo==='nfce';
       const opcoesCell = `
         <button class="btn small neOpcBtn" data-act="ver" data-id="${d.id}" data-pdf="${temPdf?1:0}" title="Visualizar">🖨️</button>
         <button class="btn small neOpcBtn" data-act="baixar" data-id="${d.id}" data-pdf="${temPdf?1:0}" title="Baixar">⬇️</button>
+        ${podeIntegrarFin?`<button class="btn small neOpcBtn ${d.integradoFinanceiro?'primary':''}" data-act="financeiro" data-id="${d.id}" title="${d.integradoFinanceiro?'Integrada ao Financeiro — clique pra desmarcar':'Integrar ao Financeiro (a pagar)'}">💵</button>`:''}
       `;
       return `
       <tr>
@@ -5651,6 +5654,16 @@ async function pageNotasEntrada(){
       const id = b.dataset.id, itens = [{ label:'Download do XML', icon:'⬇️', onClick:()=>window.open('/api/nfe/minha-empresa/documentos/'+id+'/xml','_blank') }];
       if(b.dataset.pdf==='1') itens.push({ label:'Download do PDF', icon:'⬇️', onClick:()=>window.open('/api/nfe/minha-empresa/documentos/'+id+'/pdf','_blank') });
       abrirMenuFlutuante(b, itens);
+    }));
+    document.querySelectorAll('.neOpcBtn[data-act="financeiro"]').forEach(b=>b.addEventListener('click', async ()=>{
+      const id = b.dataset.id, d = items.find(x=>String(x.id)===id);
+      const ligando = !d.integradoFinanceiro;
+      if(!ligando && !confirm('Desmarcar a integração? O lançamento gerado no Financeiro será removido (só funciona se nenhuma parcela já tiver sido paga).')) return;
+      try{
+        await api('/nfe/minha-empresa/documentos/'+id+'/integrar-financeiro', { method:'PUT', body:{ ativo: ligando } });
+        toast(ligando?'Integrada ao Financeiro — confira em Financeiro → A Pagar.':'Integração removida.', 'ok');
+        carregar();
+      }catch(e){ toast(e.message,'err'); }
     }));
   }
   await Promise.all([carregarDashboard(), carregar()]);
@@ -7314,14 +7327,17 @@ async function pageNfeBusca(){
         if(d.tipo!=='evento' && d.qtdItens>0) flagsHtml += chip('📦', d.qtdItens+' item(ns) na nota', 'produtos', ' '+d.qtdItens);
         flagsArr.forEach(f=>{ const i=FLAG_INFO[f]; if(i) flagsHtml += chip(i[0], i[1], i[2]); });
         if(d.temMdfe) flagsHtml += `<span class="tag nfeMdfeBtn" data-id="${d.id}" title="Transportadora — tem MDF-e vinculado" style="margin-right:3px; cursor:pointer;">🚚</span>`;
+        if(d.integradoFinanceiro) flagsHtml += `<span class="tag" title="Integrada ao Financeiro (${d.direcao==='emitida'?'a receber':'a pagar'})" style="margin-right:3px;">💵</span>`;
         const flagsCell = flagsHtml || '<span style="color:var(--ink-soft);">—</span>';
         const crtInfo = CRT_INFO[d.crt];
         const crtTag = crtInfo ? ` <span class="tag muted" title="${esc(crtInfo[1])}">${crtInfo[0]}</span>` : '';
         const temObs = !!(d.observacao && d.observacao.trim());
+        const podeIntegrarFin = d.tipo==='nfe' || d.tipo==='nfce';
         const opcoesCell = `
           <button class="btn small nfeOpcBtn" data-act="print" data-id="${d.id}" title="Visualizar">🖨️</button>
           <button class="btn small nfeOpcBtn" data-act="download" data-id="${d.id}" title="Baixar">⬇️</button>
           <button class="btn small nfeOpcBtn ${temObs?'primary':''}" data-act="comentario" data-id="${d.id}" title="${temObs?esc(d.observacao):'Adicionar comentário'}">💬</button>
+          ${podeIntegrarFin?`<button class="btn small nfeOpcBtn ${d.integradoFinanceiro?'primary':''}" data-act="financeiro" data-id="${d.id}" title="${d.integradoFinanceiro?'Integrada ao Financeiro — clique pra desmarcar':'Integrar ao Financeiro ('+(d.direcao==='emitida'?'a receber':'a pagar')+')'}">💵</button>`:''}
         `;
         return `
         <tr>
@@ -7371,6 +7387,16 @@ async function pageNfeBusca(){
       document.querySelectorAll('.nfeOpcBtn[data-act="comentario"]').forEach(b=>b.addEventListener('click', ()=>{
         const id = b.dataset.id, d = items.find(x=>String(x.id)===id);
         abrirComentarioNota(id, d.observacao||'');
+      }));
+      document.querySelectorAll('.nfeOpcBtn[data-act="financeiro"]').forEach(b=>b.addEventListener('click', async ()=>{
+        const id = b.dataset.id, d = items.find(x=>String(x.id)===id);
+        const ligando = !d.integradoFinanceiro;
+        if(!ligando && !confirm('Desmarcar a integração? O lançamento gerado no Financeiro será removido (só funciona se nenhuma parcela já tiver sido paga/recebida).')) return;
+        try{
+          await api('/nfe/documentos/'+id+'/integrar-financeiro', { method:'PUT', body:{ ativo: ligando } });
+          toast(ligando?'Integrada ao Financeiro — confira em Financeiro → '+(d.direcao==='emitida'?'A Receber':'A Pagar')+'.':'Integração removida.', 'ok');
+          carregarDocumentos();
+        }catch(e){ toast(e.message,'err'); }
       }));
       document.querySelectorAll('.nfeMdfeBtn').forEach(b=>b.addEventListener('click', ()=>abrirMdfeVinculadoModal(b.dataset.id)));
       atualizarBarraSelecao();
@@ -8637,13 +8663,18 @@ async function pageMinhaFinanceiro(){
 }
 function renderMinhaFinTabs(){
   main().querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===MINHA_FIN_TAB));
-  if(MINHA_FIN_TAB==='pagar') renderMinhaFinPagar();
-  else if(MINHA_FIN_TAB==='contas') renderMinhaFinContas();
-  else renderMinhaFinReceber();
+  if(MINHA_FIN_TAB==='pagar') finRenderPagar('/financeiro/minha-empresa','minhaFinContent',MINHA_FIN_PAGAR_FILTRO,true,true);
+  else if(MINHA_FIN_TAB==='contas') finRenderContas('/financeiro/minha-empresa','minhaFinContent',true);
+  else finRenderReceber('/financeiro/minha-empresa','minhaFinContent',MINHA_FIN_RECEBER_FILTRO,true,true);
 }
-// ===================== Contas (banco/caixa) — só organiza onde cada título foi pago/recebido =====
-async function minhaFinContasCache(){
-  const { items } = await api('/financeiro/minha-empresa/contas');
+// ===================== Financeiro (Contas a Receber/Pagar/Contas) — compartilhado entre a tela do
+// cliente (financeiro_minha-empresa, sempre a própria empresa) e a tela do escritório
+// (/financeiro/empresas/:id, empresa escolhida numa combo) — mesmas tabelas no banco por trás
+// (financeiro_pagar/receber são por empresa_id, não por quem acessa), só muda o prefixo da rota e se
+// os botões de criar/editar aparecem (podePostar/podeEditar — sempre true pro cliente, que só vê a
+// própria empresa; vem de can('financeiro',...) no escritório). =====================
+async function finContasCache(basePath){
+  const { items } = await api(basePath+'/contas');
   return items;
 }
 function contaSelectHtml(id, contas, contaIdAtual){
@@ -8653,13 +8684,13 @@ function contaSelectHtml(id, contas, contaIdAtual){
     ${contas.map(c=>`<option value="${c.id}" ${c.id===contaIdAtual?'selected':''}>${esc(c.nome)} (${TIPO_LABEL[c.tipo]||c.tipo})</option>`).join('')}
   </select>`;
 }
-async function renderMinhaFinContas(){
-  const items = await minhaFinContasCache();
-  const box = document.getElementById('minhaFinContent');
+async function finRenderContas(basePath, containerId, podeEditar){
+  const items = await finContasCache(basePath);
+  const box = document.getElementById(containerId);
   const TIPO_LABEL={banco:'Banco',caixa:'Caixa',outro:'Outro'};
   box.innerHTML = `
     <div class="row" style="margin-bottom:12px; justify-content:flex-end;">
-      <button class="btn primary" id="btnNovaConta">+ Nova conta</button>
+      ${podeEditar?`<button class="btn primary" id="btnNovaConta">+ Nova conta</button>`:''}
     </div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
@@ -8671,8 +8702,8 @@ async function renderMinhaFinContas(){
               <td>${TIPO_LABEL[c.tipo]||c.tipo}</td>
               <td><span class="tag ${c.ativo?'ok':'muted'}">${c.ativo?'Ativa':'Inativa'}</span></td>
               <td style="text-align:right; white-space:nowrap;">
-                <button class="btn small" data-id="${c.id}" data-act="editar">Editar</button>
-                <button class="btn small" data-id="${c.id}" data-act="excluir">Excluir</button>
+                ${podeEditar?`<button class="btn small" data-id="${c.id}" data-act="editar">Editar</button>
+                <button class="btn small" data-id="${c.id}" data-act="excluir">Excluir</button>`:''}
               </td>
             </tr>
           `).join('') : `<tr><td colspan="4"><div class="empty-state">Nenhuma conta cadastrada — use pra indicar em qual banco/caixa cada título foi pago ou recebido.</div></td></tr>`}
@@ -8680,17 +8711,18 @@ async function renderMinhaFinContas(){
       </table>
     </div>
   `;
-  document.getElementById('btnNovaConta').addEventListener('click', ()=>minhaFinContaModal());
+  if(!podeEditar) return;
+  document.getElementById('btnNovaConta').addEventListener('click', ()=>finContaModal(basePath, null, ()=>finRenderContas(basePath, containerId, podeEditar)));
   box.querySelectorAll('[data-act="editar"]').forEach(b=>b.addEventListener('click', ()=>{
-    minhaFinContaModal(items.find(c=>c.id===Number(b.dataset.id)));
+    finContaModal(basePath, items.find(c=>c.id===Number(b.dataset.id)), ()=>finRenderContas(basePath, containerId, podeEditar));
   }));
   box.querySelectorAll('[data-act="excluir"]').forEach(b=>b.addEventListener('click', async ()=>{
     if(!confirm('Excluir esta conta?')) return;
-    try{ await api('/financeiro/minha-empresa/contas/'+b.dataset.id, { method:'DELETE' }); toast('Excluída.','ok'); renderMinhaFinContas(); }
+    try{ await api(basePath+'/contas/'+b.dataset.id, { method:'DELETE' }); toast('Excluída.','ok'); finRenderContas(basePath, containerId, podeEditar); }
     catch(e){ toast(e.message,'err'); }
   }));
 }
-function minhaFinContaModal(item){
+function finContaModal(basePath, item, onSaved){
   openModal(`
     <h3>${item?'Editar':'Nova'} conta</h3>
     <div class="field"><label>Nome</label><input id="mfcNome" value="${item?esc(item.nome):''}" placeholder="Ex.: Banco Itaú, Caixa da loja…"></div>
@@ -8714,27 +8746,30 @@ function minhaFinContaModal(item){
     const body = { nome, tipo: document.getElementById('mfcTipo').value };
     if(item) body.ativo = document.getElementById('mfcAtivo').checked;
     try{
-      if(item) await api('/financeiro/minha-empresa/contas/'+item.id, { method:'PUT', body });
-      else await api('/financeiro/minha-empresa/contas', { method:'POST', body });
+      if(item) await api(basePath+'/contas/'+item.id, { method:'PUT', body });
+      else await api(basePath+'/contas', { method:'POST', body });
       closeModal();
       toast('Conta salva.','ok');
-      renderMinhaFinContas();
+      onSaved();
     }catch(e){ toast(e.message,'err'); }
   });
 }
 // Modal de lançamento manual, compartilhado entre Receber e Pagar — os campos são quase iguais,
-// só muda o rótulo "Cliente"/"Fornecedor" e a rota da API.
-async function minhaFinLancamentoModal(tipo, item){
+// só muda o rótulo "Cliente"/"Fornecedor" e a rota da API. "travado" cobre origem 'nfse' (recebível
+// gerado por NFS-e emitida) e 'nfe' (gerado pela integração de nota marcada em Busca de XML/Notas de
+// Entrada) — nos dois casos o valor real vem do documento fiscal, não pode ficar desalinhado.
+async function finLancamentoModal(basePath, tipo, item, onSaved){
   const ehReceber = tipo==='receber';
-  const rota = ehReceber ? '/financeiro/minha-empresa/receber' : '/financeiro/minha-empresa/pagar';
+  const rota = basePath + (ehReceber?'/receber':'/pagar');
   const rotuloTerceiro = ehReceber ? 'Cliente' : 'Fornecedor';
   const campoTerceiro = ehReceber ? 'clienteNome' : 'fornecedor';
   const valorTerceiro = item ? (ehReceber? item.clienteNome : item.fornecedor) : '';
-  const travado = ehReceber && item && item.origem==='nfse';
-  const contas = await minhaFinContasCache();
+  const travado = item && (item.origem==='nfse' || item.origem==='nfe');
+  const origemLabel = item&&item.origem==='nfse' ? 'uma NFS-e emitida' : item&&item.origem==='nfe' ? 'uma nota (NF-e) integrada' : '';
+  const contas = await finContasCache(basePath);
   openModal(`
     <h3>${item?'Editar':'Novo'} lançamento — ${ehReceber?'a receber':'a pagar'}</h3>
-    ${travado?`<p style="font-size:12px; color:var(--ink-soft); margin:-4px 0 10px;">Este recebível veio de uma NFS-e emitida — descrição, ${rotuloTerceiro.toLowerCase()} e valor ficam travados.</p>`:''}
+    ${travado?`<p style="font-size:12px; color:var(--ink-soft); margin:-4px 0 10px;">Este título veio de ${origemLabel} — descrição, ${rotuloTerceiro.toLowerCase()} e valor ficam travados.</p>`:''}
     <div class="field"><label>Descrição</label><input id="mflDescricao" value="${item?esc(item.descricao):''}" ${travado?'readonly style="background:var(--paper);"':''}></div>
     <div class="field"><label>${rotuloTerceiro} (opcional)</label><input id="mflTerceiro" value="${valorTerceiro?esc(valorTerceiro):''}" ${travado?'readonly style="background:var(--paper);"':''}></div>
     <div class="row">
@@ -8772,24 +8807,25 @@ async function minhaFinLancamentoModal(tipo, item){
       else await api(rota, { method:'POST', body });
       closeModal();
       toast('Lançamento salvo.','ok');
-      if(ehReceber) renderMinhaFinReceber(); else renderMinhaFinPagar();
+      onSaved();
     }catch(e){ toast(e.message,'err'); }
   });
 }
 let MINHA_FIN_RECEBER_FILTRO = { dataDe:'', dataAte:'' };
-async function renderMinhaFinReceber(){
-  const { dataDe, dataAte } = MINHA_FIN_RECEBER_FILTRO;
+async function finRenderReceber(basePath, containerId, filtro, podePostar, podeEditar){
+  const { dataDe, dataAte } = filtro;
   const qs = new URLSearchParams();
   if(dataDe) qs.set('dataDe', dataDe);
   if(dataAte) qs.set('dataAte', dataAte);
-  const { items } = await api('/financeiro/minha-empresa/receber'+(qs.toString()?'?'+qs.toString():''));
-  const box = document.getElementById('minhaFinContent');
+  const { items } = await api(basePath+'/receber'+(qs.toString()?'?'+qs.toString():''));
+  const box = document.getElementById(containerId);
   const STATUS_LABEL={pendente:'Pendente',pago:'Recebido',atrasado:'Atrasado',cancelado:'Cancelado'};
+  const ORIGEM_LABEL={nfse:'Gerado pela NFS-e',nfe:'Gerado pela nota (NF-e) integrada'};
   box.innerHTML = `
     <div class="row" style="margin-bottom:12px; align-items:flex-end;">
       ${dateFieldHtml('mfrDe','De',dataDe)}
       ${dateFieldHtml('mfrAte','Até',dataAte)}
-      <button class="btn primary" id="btnNovoReceber">+ Novo lançamento</button>
+      ${podePostar?`<button class="btn primary" id="btnNovoReceber">+ Novo lançamento</button>`:''}
     </div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
@@ -8797,16 +8833,16 @@ async function renderMinhaFinReceber(){
         <tbody>
           ${items.length? items.map(i=>`
             <tr>
-              <td><b>${esc(i.descricao)}</b>${i.origem==='nfse'?`<div style="font-size:11px; color:var(--ink-soft);">Gerado pela NFS-e</div>`:''}</td>
+              <td><b>${esc(i.descricao)}</b>${ORIGEM_LABEL[i.origem]?`<div style="font-size:11px; color:var(--ink-soft);">${ORIGEM_LABEL[i.origem]}</div>`:''}</td>
               <td>${esc(i.clienteNome||'—')}</td>
               <td>${fmtMoney(i.valor)}</td>
               <td>${fmtDateIso(i.vencimento)}</td>
               <td>${esc(i.contaNome||'—')}</td>
               <td><span class="tag ${i.status==='pago'?'ok':(i.status==='atrasado'||i.status==='cancelado'?'bad':'muted')}">${STATUS_LABEL[i.status]||i.status}</span></td>
               <td style="text-align:right; white-space:nowrap;">
-                ${i.status==='pendente'?`<button class="btn small" data-id="${i.id}" data-act="marcar-recebido">Marcar recebido</button>`:''}
-                <button class="btn small" data-id="${i.id}" data-act="editar">Editar</button>
-                ${i.origem!=='nfse'?`<button class="btn small" data-id="${i.id}" data-act="excluir">Excluir</button>`:''}
+                ${podeEditar&&i.status==='pendente'?`<button class="btn small" data-id="${i.id}" data-act="marcar-recebido">Marcar recebido</button>`:''}
+                ${podeEditar?`<button class="btn small" data-id="${i.id}" data-act="editar">Editar</button>`:''}
+                ${podeEditar&&i.origem!=='nfse'&&i.origem!=='nfe'?`<button class="btn small" data-id="${i.id}" data-act="excluir">Excluir</button>`:''}
               </td>
             </tr>
           `).join('') : `<tr><td colspan="7"><div class="empty-state">Nenhum lançamento neste período.</div></td></tr>`}
@@ -8816,36 +8852,38 @@ async function renderMinhaFinReceber(){
   `;
   setupDatePicker('mfrDe','mfrDe_text');
   setupDatePicker('mfrAte','mfrAte_text');
-  document.getElementById('mfrDe').addEventListener('change', e=>{ MINHA_FIN_RECEBER_FILTRO.dataDe = e.target.value; renderMinhaFinReceber(); });
-  document.getElementById('mfrAte').addEventListener('change', e=>{ MINHA_FIN_RECEBER_FILTRO.dataAte = e.target.value; renderMinhaFinReceber(); });
-  document.getElementById('btnNovoReceber').addEventListener('click', ()=>minhaFinLancamentoModal('receber'));
+  const recarregar = ()=>finRenderReceber(basePath, containerId, filtro, podePostar, podeEditar);
+  document.getElementById('mfrDe').addEventListener('change', e=>{ filtro.dataDe = e.target.value; recarregar(); });
+  document.getElementById('mfrAte').addEventListener('change', e=>{ filtro.dataAte = e.target.value; recarregar(); });
+  if(podePostar) document.getElementById('btnNovoReceber').addEventListener('click', ()=>finLancamentoModal(basePath, 'receber', null, recarregar));
+  if(!podeEditar) return;
   box.querySelectorAll('[data-act="editar"]').forEach(b=>b.addEventListener('click', ()=>{
-    minhaFinLancamentoModal('receber', items.find(i=>i.id===Number(b.dataset.id)));
+    finLancamentoModal(basePath, 'receber', items.find(i=>i.id===Number(b.dataset.id)), recarregar);
   }));
   box.querySelectorAll('[data-act="marcar-recebido"]').forEach(b=>b.addEventListener('click', async ()=>{
-    try{ await api('/financeiro/minha-empresa/receber/'+b.dataset.id, { method:'PUT', body:{ status:'pago' } }); toast('Marcado como recebido.','ok'); renderMinhaFinReceber(); }
+    try{ await api(basePath+'/receber/'+b.dataset.id, { method:'PUT', body:{ status:'pago' } }); toast('Marcado como recebido.','ok'); recarregar(); }
     catch(e){ toast(e.message,'err'); }
   }));
   box.querySelectorAll('[data-act="excluir"]').forEach(b=>b.addEventListener('click', async ()=>{
     if(!confirm('Excluir este lançamento?')) return;
-    try{ await api('/financeiro/minha-empresa/receber/'+b.dataset.id, { method:'DELETE' }); toast('Excluído.','ok'); renderMinhaFinReceber(); }
+    try{ await api(basePath+'/receber/'+b.dataset.id, { method:'DELETE' }); toast('Excluído.','ok'); recarregar(); }
     catch(e){ toast(e.message,'err'); }
   }));
 }
 let MINHA_FIN_PAGAR_FILTRO = { dataDe:'', dataAte:'' };
-async function renderMinhaFinPagar(){
-  const { dataDe, dataAte } = MINHA_FIN_PAGAR_FILTRO;
+async function finRenderPagar(basePath, containerId, filtro, podePostar, podeEditar){
+  const { dataDe, dataAte } = filtro;
   const qs = new URLSearchParams();
   if(dataDe) qs.set('dataDe', dataDe);
   if(dataAte) qs.set('dataAte', dataAte);
-  const { items } = await api('/financeiro/minha-empresa/pagar'+(qs.toString()?'?'+qs.toString():''));
-  const box = document.getElementById('minhaFinContent');
+  const { items } = await api(basePath+'/pagar'+(qs.toString()?'?'+qs.toString():''));
+  const box = document.getElementById(containerId);
   const STATUS_LABEL={pendente:'Pendente',pago:'Pago',atrasado:'Atrasado',cancelado:'Cancelado'};
   box.innerHTML = `
     <div class="row" style="margin-bottom:12px; align-items:flex-end;">
       ${dateFieldHtml('mfpDe','De',dataDe)}
       ${dateFieldHtml('mfpAte','Até',dataAte)}
-      <button class="btn primary" id="btnNovoPagar">+ Novo lançamento</button>
+      ${podePostar?`<button class="btn primary" id="btnNovoPagar">+ Novo lançamento</button>`:''}
     </div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
@@ -8853,16 +8891,16 @@ async function renderMinhaFinPagar(){
         <tbody>
           ${items.length? items.map(i=>`
             <tr>
-              <td><b>${esc(i.descricao)}</b></td>
+              <td><b>${esc(i.descricao)}</b>${i.origem==='nfe'?`<div style="font-size:11px; color:var(--ink-soft);">Gerado pela nota (NF-e) integrada</div>`:''}</td>
               <td>${esc(i.fornecedor||'—')}</td>
               <td>${fmtMoney(i.valor)}</td>
               <td>${fmtDateIso(i.vencimento)}</td>
               <td>${esc(i.contaNome||'—')}</td>
               <td><span class="tag ${i.status==='pago'?'ok':(i.status==='atrasado'||i.status==='cancelado'?'bad':'muted')}">${STATUS_LABEL[i.status]||i.status}</span></td>
               <td style="text-align:right; white-space:nowrap;">
-                ${i.status==='pendente'?`<button class="btn small" data-id="${i.id}" data-act="marcar-pago">Marcar pago</button>`:''}
-                <button class="btn small" data-id="${i.id}" data-act="editar">Editar</button>
-                <button class="btn small" data-id="${i.id}" data-act="excluir">Excluir</button>
+                ${podeEditar&&i.status==='pendente'?`<button class="btn small" data-id="${i.id}" data-act="marcar-pago">Marcar pago</button>`:''}
+                ${podeEditar?`<button class="btn small" data-id="${i.id}" data-act="editar">Editar</button>`:''}
+                ${podeEditar&&i.origem!=='nfe'?`<button class="btn small" data-id="${i.id}" data-act="excluir">Excluir</button>`:''}
               </td>
             </tr>
           `).join('') : `<tr><td colspan="7"><div class="empty-state">Nenhum lançamento neste período.</div></td></tr>`}
@@ -8872,19 +8910,21 @@ async function renderMinhaFinPagar(){
   `;
   setupDatePicker('mfpDe','mfpDe_text');
   setupDatePicker('mfpAte','mfpAte_text');
-  document.getElementById('mfpDe').addEventListener('change', e=>{ MINHA_FIN_PAGAR_FILTRO.dataDe = e.target.value; renderMinhaFinPagar(); });
-  document.getElementById('mfpAte').addEventListener('change', e=>{ MINHA_FIN_PAGAR_FILTRO.dataAte = e.target.value; renderMinhaFinPagar(); });
-  document.getElementById('btnNovoPagar').addEventListener('click', ()=>minhaFinLancamentoModal('pagar'));
+  const recarregar = ()=>finRenderPagar(basePath, containerId, filtro, podePostar, podeEditar);
+  document.getElementById('mfpDe').addEventListener('change', e=>{ filtro.dataDe = e.target.value; recarregar(); });
+  document.getElementById('mfpAte').addEventListener('change', e=>{ filtro.dataAte = e.target.value; recarregar(); });
+  if(podePostar) document.getElementById('btnNovoPagar').addEventListener('click', ()=>finLancamentoModal(basePath, 'pagar', null, recarregar));
+  if(!podeEditar) return;
   box.querySelectorAll('[data-act="editar"]').forEach(b=>b.addEventListener('click', ()=>{
-    minhaFinLancamentoModal('pagar', items.find(i=>i.id===Number(b.dataset.id)));
+    finLancamentoModal(basePath, 'pagar', items.find(i=>i.id===Number(b.dataset.id)), recarregar);
   }));
   box.querySelectorAll('[data-act="marcar-pago"]').forEach(b=>b.addEventListener('click', async ()=>{
-    try{ await api('/financeiro/minha-empresa/pagar/'+b.dataset.id, { method:'PUT', body:{ status:'pago' } }); toast('Marcado como pago.','ok'); renderMinhaFinPagar(); }
+    try{ await api(basePath+'/pagar/'+b.dataset.id, { method:'PUT', body:{ status:'pago' } }); toast('Marcado como pago.','ok'); recarregar(); }
     catch(e){ toast(e.message,'err'); }
   }));
   box.querySelectorAll('[data-act="excluir"]').forEach(b=>b.addEventListener('click', async ()=>{
     if(!confirm('Excluir este lançamento?')) return;
-    try{ await api('/financeiro/minha-empresa/pagar/'+b.dataset.id, { method:'DELETE' }); toast('Excluído.','ok'); renderMinhaFinPagar(); }
+    try{ await api(basePath+'/pagar/'+b.dataset.id, { method:'DELETE' }); toast('Excluído.','ok'); recarregar(); }
     catch(e){ toast(e.message,'err'); }
   }));
 }
@@ -9042,6 +9082,9 @@ async function pageFinanceiro(){
     <div class="tabs">
       <div class="tab" data-tab="lancamentos">Lançamentos</div>
       <div class="tab" data-tab="honorarios">Honorários por empresa</div>
+      <div class="tab" data-tab="receber">A Receber</div>
+      <div class="tab" data-tab="pagar">A Pagar</div>
+      <div class="tab" data-tab="contas">Contas</div>
       <div class="tab" data-tab="robo-boletos">Configuração envio de boletos</div>
     </div>
     <div id="finContent"></div>
@@ -9053,8 +9096,46 @@ function renderFinTabs(){
   main().querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===FIN_TAB));
   if(FIN_TAB==='honorarios') renderHonorarios();
   else if(FIN_TAB==='robo-boletos') renderHonorariosRobo();
+  else if(FIN_TAB==='receber'||FIN_TAB==='pagar'||FIN_TAB==='contas') renderFinEmpresaScoped(FIN_TAB);
   else renderLancamentos();
 }
+// "A Receber"/"A Pagar"/"Contas" do escritório são as MESMAS tabelas que a empresa-cliente vê no
+// próprio Financeiro self-service (financeiro_pagar/receber/contas são por empresa_id) — aqui o
+// escritório só escolhe qual empresa antes, pra poder ver/gerenciar sem precisar logar como o
+// cliente (é pra onde vai o lançamento gerado ao integrar uma nota em Busca de XML).
+let FIN_EMPRESA_SELECIONADA = null;
+async function renderFinEmpresaScoped(tab){
+  const box = document.getElementById('finContent');
+  const empresas = await empresasAtivas();
+  box.innerHTML = `
+    <div class="row" style="margin-bottom:12px; align-items:flex-end;">
+      <div class="field" style="min-width:320px; margin-bottom:0;"><label>Empresa</label>${comboSelectHtml('finEmpresaCombo','Buscar empresa…')}</div>
+    </div>
+    <div id="finEmpresaContent"><div class="empty-state">Escolha uma empresa.</div></div>
+  `;
+  function carregar(){
+    const empresaId = FIN_EMPRESA_SELECIONADA;
+    const content = document.getElementById('finEmpresaContent');
+    if(!empresaId){ content.innerHTML = '<div class="empty-state">Escolha uma empresa.</div>'; return; }
+    const basePath = '/financeiro/empresas/'+empresaId;
+    const podePostar = can('financeiro','postar'), podeEditar = can('financeiro','editar');
+    if(tab==='receber') finRenderReceber(basePath, 'finEmpresaContent', FIN_RECEBER_EMPRESA_FILTRO, podePostar, podeEditar);
+    else if(tab==='pagar') finRenderPagar(basePath, 'finEmpresaContent', FIN_PAGAR_EMPRESA_FILTRO, podePostar, podeEditar);
+    else finRenderContas(basePath, 'finEmpresaContent', podeEditar);
+  }
+  setupComboSelect('finEmpresaCombo', empresas.map(e=>({id:e.id,label:e.nome})), (id)=>{ FIN_EMPRESA_SELECIONADA = id; carregar(); });
+  if(FIN_EMPRESA_SELECIONADA){
+    const emp = empresas.find(e=>e.id===FIN_EMPRESA_SELECIONADA);
+    if(emp){
+      const combo = document.getElementById('finEmpresaCombo');
+      combo.querySelector('.combo-input').value = emp.nome;
+      combo.querySelector('.combo-value').value = emp.id;
+      carregar();
+    } else FIN_EMPRESA_SELECIONADA = null;
+  }
+}
+let FIN_RECEBER_EMPRESA_FILTRO = { dataDe:'', dataAte:'' };
+let FIN_PAGAR_EMPRESA_FILTRO = { dataDe:'', dataAte:'' };
 async function renderHonorarios(){
   const podeEditar = can('financeiro','editar');
   const { items } = await api('/financeiro/honorarios');
