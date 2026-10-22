@@ -21104,6 +21104,40 @@ app.post("/api/atendimento/conversas/:id/reabrir", blockCliente, requireEscritor
     res.status(502).json({ error: `Não foi possível reabrir: ${e.message}` });
   }
 });
+// Enviar ARQUIVO pelo backend robô-admin — fallback do anexo quando a sessão do agente dá "Conversa não
+// encontrada" (RLS do papel 'agent'), igual ao /enviar-texto. Sobe a mídia e manda a mensagem pelo robô
+// (admin), preservando a autoria via sent_by_user_id (sem ele se o deskcomm recusar). Já vem com a
+// legenda PRONTA (com prefixo de setor, montado no front) — não reprefixa aqui.
+app.post("/api/atendimento/conversas/:id/enviar-arquivo", blockCliente, requireEscritorioPrincipalDeskcomm, upload.single("file"), async (req, res) => {
+  const user = (req as any).user;
+  if (!atendimentoAlgumaPermissao(user, "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  const id = String(req.params.id);
+  const arquivo = (req as any).file;
+  if (!arquivo) return res.status(400).json({ error: "Arquivo não enviado." });
+  const legenda = typeof req.body?.legenda === "string" ? req.body.legenda : "";
+  try {
+    const { data: c } = await deskcommAdmin.from("conversations").select("id, status").eq("organization_id", DESKCOMM_ORG_ID).eq("id", id).maybeSingle();
+    if (!c) return res.status(404).json({ error: "Conversa não encontrada." });
+    if ((c as any).status === "closed" || (c as any).status === "archived") return res.status(409).json({ error: "Conversa fechada." });
+    const meuId = await deskcommGarantirUsuario(user);
+    const nome = arquivo.originalname || "arquivo";
+    const fd = new FormData();
+    fd.append("file", new Blob([new Uint8Array(arquivo.buffer)], { type: arquivo.mimetype || "application/octet-stream" }), nome);
+    const up = await deskcommRoboApi(`/conversations/${id}/media`, { method: "POST", body: fd });
+    const corpo: any = { conversation_id: id, type: up.kind, media_storage_path: up.storage_path, media_mime: up.media_mime, media_size_bytes: up.media_size_bytes, metadata: { filename: nome } };
+    if (legenda && up.kind !== "audio") corpo.body = legenda;
+    try {
+      await deskcommRoboApi("/messages", { method: "POST", body: { ...corpo, sent_by_user_id: meuId } });
+    } catch {
+      await deskcommRoboApi("/messages", { method: "POST", body: corpo });
+    }
+    res.json({ ok: true, type: up.kind });
+  } catch (e: any) {
+    console.error("[atendimento] falha ao enviar arquivo:", e.message);
+    res.status(502).json({ error: `Não foi possível enviar o arquivo: ${e.message}` });
+  }
+});
 // Override do ADMINISTRADOR: assumir no lugar de outro atendente (ou transferir pra uma pessoa)
 // mesmo quando o deskcomm recusaria (um agente só toma conversa atribuída a ele). Força a atribuição
 // pela service-role com fn_conversation_assign (p_enforce_expected=false), a MESMA função que o deskcomm

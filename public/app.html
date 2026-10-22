@@ -13141,18 +13141,28 @@ async function atdEnviarArquivo(S, f, legenda){
       if(chk && chk.jaEnviado){ const ok = await confirmarReenvioModal(chk.jaEnviado); if(!ok) return false; }
     }catch(e){ /* segue o envio mesmo sem conseguir checar */ }
   }
-  const fd = new FormData(); fd.append('file', f);
-  const up = await dcApi(`/conversations/${S.conversaAtiva}/media`, { method:'POST', body: fd });
-  const corpo = { conversation_id: S.conversaAtiva, type: up.kind, media_storage_path: up.storage_path, media_mime: up.media_mime, media_size_bytes: up.media_size_bytes, metadata:{ filename: f.name } };
-  if(legenda && up.kind!=='audio') corpo.body = atdPrefixoSetor(S) + legenda;
-  await dcApi('/messages', { method:'POST', body: corpo });
+  const legendaComPrefixo = legenda ? (atdPrefixoSetor(S) + legenda) : '';
+  let temLegenda = false;
+  try{
+    const fd = new FormData(); fd.append('file', f);
+    const up = await dcApi(`/conversations/${S.conversaAtiva}/media`, { method:'POST', body: fd });
+    const corpo = { conversation_id: S.conversaAtiva, type: up.kind, media_storage_path: up.storage_path, media_mime: up.media_mime, media_size_bytes: up.media_size_bytes, metadata:{ filename: f.name } };
+    if(legenda && up.kind!=='audio'){ corpo.body = legendaComPrefixo; temLegenda = true; }
+    await dcApi('/messages', { method:'POST', body: corpo });
+  }catch(e1){
+    // O deskcomm barra o anexo pela sessão do agente ("Conversa não encontrada", RLS do papel 'agent').
+    // Cai pro backend robô-admin, que sobe e manda o arquivo preservando a sua autoria. Reusa o mesmo f.
+    const fd2 = new FormData(); fd2.append('file', f, f.name); if(legendaComPrefixo) fd2.append('legenda', legendaComPrefixo);
+    const r = await api('/atendimento/conversas/'+encodeURIComponent(S.conversaAtiva)+'/enviar-arquivo', { method:'POST', body: fd2 });
+    temLegenda = !!(legendaComPrefixo && r && r.type !== 'audio');
+  }
   if(ehDoc && hashDoc){
     const dd = S.conversaDados || {};
     try{ await api('/atendimento/registrar-envio-doc', { method:'POST', body:{ hash: hashDoc, nomeArquivo: f.name, telefone: dd.telefone||null, empresaNome: dd.empresaNome||dd.contatoNome||null } }); }catch(e){}
   }
   await atdCarregarMensagens(S, true);
   atdCarregarLista(S);
-  return !!corpo.body;
+  return temLegenda;
 }
 function atdPreviaEnvio(S, arquivos){
   const nomeado = arquivos.map((f, i)=>{
