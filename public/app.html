@@ -5758,7 +5758,7 @@ async function pageNotasEntrada(){
       if(d.integradoFinanceiro) flagsHtml += `<span class="tag" title="Integrada ao Financeiro (${saida?'a receber':'a pagar'})" style="margin-right:3px;">💵</span>`;
       const flagsCell = flagsHtml || '<span style="color:var(--ink-soft);">—</span>';
       const temPdf = d.tipo!=='evento' && d.tipo!=='cte';
-      const podeIntegrarFin = d.tipo==='nfe' || d.tipo==='nfce';
+      const podeIntegrarFin = d.tipo==='nfe' || d.tipo==='nfce' || d.tipo==='nfse';
       const opcoesCell = `
         <button class="btn small neOpcBtn" data-act="ver" data-id="${d.id}" data-pdf="${temPdf?1:0}" title="Visualizar">🖨️</button>
         <button class="btn small neOpcBtn" data-act="baixar" data-id="${d.id}" data-pdf="${temPdf?1:0}" title="Baixar">⬇️</button>
@@ -7477,7 +7477,7 @@ async function pageNfeBusca(){
         const crtInfo = CRT_INFO[d.crt];
         const crtTag = crtInfo ? ` <span class="tag muted" title="${esc(crtInfo[1])}">${crtInfo[0]}</span>` : '';
         const temObs = !!(d.observacao && d.observacao.trim());
-        const podeIntegrarFin = d.tipo==='nfe' || d.tipo==='nfce';
+        const podeIntegrarFin = d.tipo==='nfe' || d.tipo==='nfce' || d.tipo==='nfse';
         const opcoesCell = `
           <button class="btn small nfeOpcBtn" data-act="print" data-id="${d.id}" title="Visualizar">🖨️</button>
           <button class="btn small nfeOpcBtn" data-act="download" data-id="${d.id}" title="Baixar">⬇️</button>

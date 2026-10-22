@@ -9346,7 +9346,7 @@ function nfeChaveNumero(chaveAcesso: string | null): string | null {
 function nfeIntegrarFinanceiro(docId: number, userId: number): { ok: boolean; erro?: string } {
   const row = sqlite.prepare(`SELECT * FROM nfe_documentos WHERE id = ?`).get(docId) as any;
   if (!row) return { ok: false, erro: "Documento não encontrado." };
-  if (row.tipo !== "nfe" && row.tipo !== "nfce") return { ok: false, erro: "Só é possível integrar NF-e/NFC-e ao Financeiro." };
+  if (row.tipo !== "nfe" && row.tipo !== "nfce" && row.tipo !== "nfse") return { ok: false, erro: "Só é possível integrar NF-e/NFC-e/NFS-e ao Financeiro." };
   const empresa = sqlite.prepare(`SELECT cnpj FROM empresas WHERE id = ?`).get(row.empresa_id) as any;
   const cnpjEmpresaDigitos = (empresa?.cnpj || "").replace(/\D/g, "");
   const emitida = (row.emitente_cnpj || "").replace(/\D/g, "") === cnpjEmpresaDigitos;
@@ -9360,7 +9360,8 @@ function nfeIntegrarFinanceiro(docId: number, userId: number): { ok: boolean; er
   const parcelasXml = detalhe?.duplicatas?.parcelas || [];
   const parcelas = parcelasXml.length ? parcelasXml : [{ nDup: null, dVenc: null, vDup: row.valor_total || 0 }];
   const numero = nfeChaveNumero(row.chave_acesso) || row.id;
-  const descBase = `NF-e nº ${numero} — ${emitida ? row.destinatario_nome || "cliente" : row.emitente_nome || "fornecedor"}`;
+  const rotuloDoc = row.tipo === "nfse" ? "NFS-e" : row.tipo === "nfce" ? "NFC-e" : "NF-e";
+  const descBase = `${rotuloDoc} nº ${numero} — ${emitida ? row.destinatario_nome || "cliente" : row.emitente_nome || "fornecedor"}`;
   const hojeIso = new Date().toISOString().slice(0, 10);
   const insert =
     tabela === "financeiro_receber"
@@ -15735,7 +15736,7 @@ app.delete("/api/financeiro/minha-empresa/pagar/:id", requireCliente, requireMod
   const user = (req as any).user;
   const existente = sqlite.prepare(`SELECT origem FROM financeiro_pagar WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), user.empresaId) as any;
   if (!existente) return res.status(404).json({ error: "Lançamento não encontrado." });
-  if (existente.origem === "nfe") return res.status(409).json({ error: "Este título veio de uma nota de entrada integrada — desmarque a integração na nota (Notas de Entrada) em vez de excluir aqui." });
+  if (existente.origem === "nfe") return res.status(409).json({ error: "Este título veio de uma nota integrada — desmarque a integração na nota (Notas de Entradas/Saídas) em vez de excluir aqui." });
   financeiroReverterUsoAdiantamento("financeiro_pagar", Number(req.params.id));
   financeiroSoltarVinculoOfx("financeiro_pagar", Number(req.params.id));
   sqlite.prepare(`DELETE FROM financeiro_pagar WHERE id = ?`).run(Number(req.params.id));
@@ -15795,7 +15796,7 @@ app.delete("/api/financeiro/minha-empresa/receber/:id", requireCliente, requireM
   const existente = sqlite.prepare(`SELECT origem FROM financeiro_receber WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), user.empresaId) as any;
   if (!existente) return res.status(404).json({ error: "Lançamento não encontrado." });
   if (existente.origem === "nfse") return res.status(409).json({ error: "Este recebível veio de uma NFS-e emitida — cancele a nota se não for mais válido, em vez de excluir aqui." });
-  if (existente.origem === "nfe") return res.status(409).json({ error: "Este recebível veio de uma nota emitida integrada — desmarque a integração na nota (Busca de XML) em vez de excluir aqui." });
+  if (existente.origem === "nfe") return res.status(409).json({ error: "Este recebível veio de uma nota integrada — desmarque a integração na nota (Notas de Entradas/Saídas) em vez de excluir aqui." });
   financeiroReverterUsoAdiantamento("financeiro_receber", Number(req.params.id));
   financeiroSoltarVinculoOfx("financeiro_receber", Number(req.params.id));
   sqlite.prepare(`DELETE FROM financeiro_receber WHERE id = ?`).run(Number(req.params.id));
