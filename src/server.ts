@@ -15381,6 +15381,7 @@ app.delete("/api/financeiro/minha-empresa/pagar/:id", requireCliente, requireMod
   const existente = sqlite.prepare(`SELECT origem FROM financeiro_pagar WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), user.empresaId) as any;
   if (!existente) return res.status(404).json({ error: "Lançamento não encontrado." });
   if (existente.origem === "nfe") return res.status(409).json({ error: "Este título veio de uma nota de entrada integrada — desmarque a integração na nota (Notas de Entrada) em vez de excluir aqui." });
+  financeiroReverterUsoAdiantamento("financeiro_pagar", Number(req.params.id));
   financeiroSoltarVinculoOfx("financeiro_pagar", Number(req.params.id));
   sqlite.prepare(`DELETE FROM financeiro_pagar WHERE id = ?`).run(Number(req.params.id));
   res.json({ ok: true });
@@ -15440,6 +15441,7 @@ app.delete("/api/financeiro/minha-empresa/receber/:id", requireCliente, requireM
   if (!existente) return res.status(404).json({ error: "Lançamento não encontrado." });
   if (existente.origem === "nfse") return res.status(409).json({ error: "Este recebível veio de uma NFS-e emitida — cancele a nota se não for mais válido, em vez de excluir aqui." });
   if (existente.origem === "nfe") return res.status(409).json({ error: "Este recebível veio de uma nota emitida integrada — desmarque a integração na nota (Busca de XML) em vez de excluir aqui." });
+  financeiroReverterUsoAdiantamento("financeiro_receber", Number(req.params.id));
   financeiroSoltarVinculoOfx("financeiro_receber", Number(req.params.id));
   sqlite.prepare(`DELETE FROM financeiro_receber WHERE id = ?`).run(Number(req.params.id));
   res.json({ ok: true });
@@ -15555,6 +15557,7 @@ app.delete("/api/financeiro/empresas/:empresaId/pagar/:id", blockCliente, requir
   const existente = sqlite.prepare(`SELECT origem FROM financeiro_pagar WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), empresaId) as any;
   if (!existente) return res.status(404).json({ error: "Lançamento não encontrado." });
   if (existente.origem === "nfe") return res.status(409).json({ error: "Este título veio de uma nota integrada — desmarque a integração na nota (Busca de XML) em vez de excluir aqui." });
+  financeiroReverterUsoAdiantamento("financeiro_pagar", Number(req.params.id));
   financeiroSoltarVinculoOfx("financeiro_pagar", Number(req.params.id));
   sqlite.prepare(`DELETE FROM financeiro_pagar WHERE id = ?`).run(Number(req.params.id));
   res.json({ ok: true });
@@ -15614,6 +15617,7 @@ app.delete("/api/financeiro/empresas/:empresaId/receber/:id", blockCliente, requ
   if (!existente) return res.status(404).json({ error: "Lançamento não encontrado." });
   if (existente.origem === "nfse") return res.status(409).json({ error: "Este recebível veio de uma NFS-e emitida — cancele a nota se não for mais válido, em vez de excluir aqui." });
   if (existente.origem === "nfe") return res.status(409).json({ error: "Este recebível veio de uma nota integrada — desmarque a integração na nota (Busca de XML) em vez de excluir aqui." });
+  financeiroReverterUsoAdiantamento("financeiro_receber", Number(req.params.id));
   financeiroSoltarVinculoOfx("financeiro_receber", Number(req.params.id));
   sqlite.prepare(`DELETE FROM financeiro_receber WHERE id = ?`).run(Number(req.params.id));
   res.json({ ok: true });

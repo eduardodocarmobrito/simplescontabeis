@@ -8736,6 +8736,7 @@ async function pageMinhaFinanceiro(){
     <div class="tabs">
       <div class="tab" data-tab="receber">A Receber</div>
       <div class="tab" data-tab="pagar">A Pagar</div>
+      <div class="tab" data-tab="adiantamentos">Adiantamentos</div>
       <div class="tab" data-tab="contas">Contas</div>
       <div class="tab" data-tab="relatorios">Relatórios</div>
     </div>
@@ -8747,6 +8748,7 @@ async function pageMinhaFinanceiro(){
 function renderMinhaFinTabs(){
   main().querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===MINHA_FIN_TAB));
   if(MINHA_FIN_TAB==='pagar') finRenderPagar('/financeiro/minha-empresa','minhaFinContent',MINHA_FIN_PAGAR_FILTRO,true,true);
+  else if(MINHA_FIN_TAB==='adiantamentos') finRenderAdiantamentos('/financeiro/minha-empresa','minhaFinContent',true);
   else if(MINHA_FIN_TAB==='contas') finRenderContas('/financeiro/minha-empresa','minhaFinContent',true);
   else if(MINHA_FIN_TAB==='relatorios') finRenderRelatorios('/financeiro/minha-empresa','minhaFinContent');
   else finRenderReceber('/financeiro/minha-empresa','minhaFinContent',MINHA_FIN_RECEBER_FILTRO,true,true);
@@ -9099,6 +9101,123 @@ function finRenegociarModal(basePath, tipo, item, onDone){
     }catch(e){ toast(e.message,'err'); }
   });
 }
+// Adiantamentos: dinheiro que já saiu/entrou da conta na hora (adiantamento a fornecedor = pagou
+// antes; de cliente = recebeu antes) — fica como crédito disponível pra abater um título futuro do
+// mesmo terceiro. "Usar" só funciona quando o saldo cobre o título inteiro (ver financeiroAdiantamentoUsar
+// no backend — sem baixa parcial nesta versão).
+async function finRenderAdiantamentos(basePath, containerId, podePostar){
+  const box = document.getElementById(containerId);
+  const { items } = await api(basePath+'/adiantamentos');
+  const TIPO_LABEL = { fornecedor:'A fornecedor', cliente:'De cliente' };
+  box.innerHTML = `
+    <div class="row" style="margin-bottom:12px; justify-content:flex-end;">
+      ${podePostar?`<button class="btn primary" id="btnNovoAdiant">+ Novo adiantamento</button>`:''}
+    </div>
+    <div class="card" style="padding:0; overflow-x:auto;">
+      <table class="data-table">
+        <thead><tr><th>Tipo</th><th>Terceiro</th><th>Data</th><th>Valor original</th><th>Saldo disponível</th><th>Observação</th></tr></thead>
+        <tbody>
+          ${items.length? items.map(a=>`
+            <tr>
+              <td><span class="tag ${a.tipo==='cliente'?'ok':'muted'}">${TIPO_LABEL[a.tipo]||a.tipo}</span></td>
+              <td><b>${esc(a.terceiroNome)}</b></td>
+              <td>${fmtDateIso(a.data)}</td>
+              <td>${fmtMoney(a.valorOriginal)}</td>
+              <td style="font-weight:600; ${a.saldoDisponivel<=0?'color:var(--ink-soft);':'color:#059669;'}">${fmtMoney(a.saldoDisponivel)}</td>
+              <td style="font-size:12px; color:var(--ink-soft);">${esc(a.observacao||'—')}</td>
+            </tr>
+          `).join('') : `<tr><td colspan="6"><div class="empty-state">Nenhum adiantamento cadastrado — use quando pagar um fornecedor antes de receber a mercadoria/serviço, ou receber de um cliente antes de entregar.</div></td></tr>`}
+        </tbody>
+      </table>
+    </div>
+  `;
+  if(podePostar) document.getElementById('btnNovoAdiant').addEventListener('click', ()=>finAdiantamentoModal(basePath, ()=>finRenderAdiantamentos(basePath, containerId, podePostar)));
+}
+async function finAdiantamentoModal(basePath, onSaved){
+  const contas = await finContasCache(basePath);
+  openModal(`
+    <h3>Novo adiantamento</h3>
+    <div class="field"><label>Tipo</label>
+      <select id="adiTipo">
+        <option value="fornecedor">A fornecedor (a empresa pagou antes de receber)</option>
+        <option value="cliente">De cliente (a empresa recebeu antes de entregar)</option>
+      </select>
+    </div>
+    <div class="field"><label id="adiTerceiroLabel">Fornecedor</label><input id="adiTerceiro" placeholder="Nome do fornecedor…"></div>
+    <div class="row">
+      <div class="field" style="width:160px;"><label>Valor (R$)</label><input id="adiValor" type="number" step="0.01" min="0"></div>
+      <div class="field" style="width:170px;">${dateFieldHtml('adiData','Data', new Date().toISOString().slice(0,10))}</div>
+    </div>
+    <div class="field"><label>Conta (de onde saiu/pra onde entrou, opcional)</label>${contaSelectHtml('adiConta', contas, null)}</div>
+    <div class="field"><label>Observação (opcional)</label><textarea id="adiObs" rows="2"></textarea></div>
+    <div class="modal-actions">
+      <button class="btn" id="adiCancel">Cancelar</button>
+      <button class="btn primary" id="adiSalvar">Salvar</button>
+    </div>
+  `);
+  setupDatePicker('adiData','adiData_text');
+  document.getElementById('adiTipo').addEventListener('change', (e)=>{
+    document.getElementById('adiTerceiroLabel').textContent = e.target.value==='cliente' ? 'Cliente' : 'Fornecedor';
+    document.getElementById('adiTerceiro').placeholder = e.target.value==='cliente' ? 'Nome do cliente…' : 'Nome do fornecedor…';
+  });
+  document.getElementById('adiCancel').addEventListener('click', closeModal);
+  document.getElementById('adiSalvar').addEventListener('click', async ()=>{
+    const terceiroNome = document.getElementById('adiTerceiro').value.trim();
+    const valor = Number(document.getElementById('adiValor').value);
+    const data = document.getElementById('adiData').value;
+    if(!terceiroNome || !(valor>0) || !data){ toast('Preencha o nome, o valor e a data.','err'); return; }
+    const contaVal = document.getElementById('adiConta').value;
+    const body = { tipo: document.getElementById('adiTipo').value, terceiroNome, valor, data, contaId: contaVal?Number(contaVal):null, observacao: document.getElementById('adiObs').value.trim() };
+    try{
+      await api(basePath+'/adiantamentos', { method:'POST', body });
+      closeModal();
+      toast('Adiantamento registrado.','ok');
+      onSaved();
+    }catch(e){ toast(e.message,'err'); }
+  });
+}
+// Picker "Usar adiantamento" num título a pagar/receber — só lista adiantamentos do tipo certo
+// (fornecedor pro "a pagar", cliente pro "a receber") com saldo suficiente pra cobrir o título
+// inteiro (sem baixa parcial nesta versão); os que não cobrem aparecem desabilitados, pra não
+// esconder "existe mas não dá" sem explicação.
+async function finUsarAdiantamentoModal(basePath, tipo, item, onDone){
+  const ehReceber = tipo==='receber';
+  const tipoAdiant = ehReceber ? 'cliente' : 'fornecedor';
+  const { items } = await api(basePath+'/adiantamentos?tipo='+tipoAdiant);
+  const disponiveis = items.filter(a=>a.saldoDisponivel>0);
+  if(!disponiveis.length){
+    openModal(`<h3>Usar adiantamento</h3><div class="empty-state">Nenhum adiantamento ${ehReceber?'de cliente':'a fornecedor'} com saldo disponível.</div><div class="modal-actions"><button class="btn" onclick="closeModal()">Fechar</button></div>`);
+    return;
+  }
+  openModal(`
+    <h3>Usar adiantamento — ${esc(item.descricao)}</h3>
+    <p style="font-size:12px; color:var(--ink-soft); margin-top:-4px;">Valor do título: <b>${fmtMoney(item.valor)}</b>. Só é possível usar um adiantamento que cubra o valor inteiro.</p>
+    <div style="max-height:40vh; overflow:auto;">
+      ${disponiveis.map(a=>{
+        const cobre = a.saldoDisponivel >= item.valor;
+        return `<label class="checkbox-row" style="display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid var(--rule); ${cobre?'':'opacity:.5;'}">
+          <input type="radio" name="adiEscolha" value="${a.id}" ${cobre?'':'disabled'}>
+          <span style="flex:1;">${esc(a.terceiroNome)} — saldo ${fmtMoney(a.saldoDisponivel)} ${cobre?'':'<b>(não cobre sozinho)</b>'}</span>
+        </label>`;
+      }).join('')}
+    </div>
+    <div class="modal-actions">
+      <button class="btn" id="usaCancel">Cancelar</button>
+      <button class="btn primary" id="usaConfirmar">Usar</button>
+    </div>
+  `);
+  document.getElementById('usaCancel').addEventListener('click', closeModal);
+  document.getElementById('usaConfirmar').addEventListener('click', async ()=>{
+    const escolhido = document.querySelector('input[name="adiEscolha"]:checked');
+    if(!escolhido){ toast('Escolha um adiantamento que cubra o valor.','err'); return; }
+    try{
+      await api(basePath+'/'+(ehReceber?'receber':'pagar')+'/'+item.id+'/usar-adiantamento', { method:'PUT', body:{ adiantamentoId: Number(escolhido.value) } });
+      closeModal();
+      toast('Título baixado com o adiantamento.','ok');
+      onDone();
+    }catch(e){ toast(e.message,'err'); }
+  });
+}
 let MINHA_FIN_RECEBER_FILTRO = { dataDe:'', dataAte:'' };
 async function finRenderReceber(basePath, containerId, filtro, podePostar, podeEditar){
   const { dataDe, dataAte } = filtro;
@@ -9129,6 +9248,7 @@ async function finRenderReceber(basePath, containerId, filtro, podePostar, podeE
               <td><span class="tag ${i.status==='pago'?'ok':(i.status==='atrasado'||i.status==='cancelado'?'bad':i.status==='renegociado'?'muted':'muted')}">${STATUS_LABEL[i.status]||i.status}</span></td>
               <td style="text-align:right; white-space:nowrap;">
                 ${podeEditar&&i.status==='pendente'?`<button class="btn small" data-id="${i.id}" data-act="marcar-recebido">Marcar recebido</button>`:''}
+                ${podeEditar&&(i.status==='pendente'||i.status==='atrasado')?`<button class="btn small" data-id="${i.id}" data-act="usar-adiant">Usar adiantamento</button>`:''}
                 ${podeEditar&&(i.status==='pendente'||i.status==='atrasado')?`<button class="btn small" data-id="${i.id}" data-act="renegociar">Renegociar</button>`:''}
                 ${podeEditar&&i.status!=='renegociado'?`<button class="btn small" data-id="${i.id}" data-act="editar">Editar</button>`:''}
                 ${podeEditar&&i.status!=='renegociado'&&i.origem!=='nfse'&&i.origem!=='nfe'?`<button class="btn small" data-id="${i.id}" data-act="excluir">Excluir</button>`:''}
@@ -9155,6 +9275,9 @@ async function finRenderReceber(basePath, containerId, filtro, podePostar, podeE
   }));
   box.querySelectorAll('[data-act="renegociar"]').forEach(b=>b.addEventListener('click', ()=>{
     finRenegociarModal(basePath, 'receber', items.find(i=>i.id===Number(b.dataset.id)), recarregar);
+  }));
+  box.querySelectorAll('[data-act="usar-adiant"]').forEach(b=>b.addEventListener('click', ()=>{
+    finUsarAdiantamentoModal(basePath, 'receber', items.find(i=>i.id===Number(b.dataset.id)), recarregar);
   }));
   box.querySelectorAll('[data-act="excluir"]').forEach(b=>b.addEventListener('click', async ()=>{
     if(!confirm('Excluir este lançamento?')) return;
@@ -9192,6 +9315,7 @@ async function finRenderPagar(basePath, containerId, filtro, podePostar, podeEdi
               <td><span class="tag ${i.status==='pago'?'ok':(i.status==='atrasado'||i.status==='cancelado'?'bad':'muted')}">${STATUS_LABEL[i.status]||i.status}</span></td>
               <td style="text-align:right; white-space:nowrap;">
                 ${podeEditar&&i.status==='pendente'?`<button class="btn small" data-id="${i.id}" data-act="marcar-pago">Marcar pago</button>`:''}
+                ${podeEditar&&(i.status==='pendente'||i.status==='atrasado')?`<button class="btn small" data-id="${i.id}" data-act="usar-adiant">Usar adiantamento</button>`:''}
                 ${podeEditar&&(i.status==='pendente'||i.status==='atrasado')?`<button class="btn small" data-id="${i.id}" data-act="renegociar">Renegociar</button>`:''}
                 ${podeEditar&&i.status!=='renegociado'?`<button class="btn small" data-id="${i.id}" data-act="editar">Editar</button>`:''}
                 ${podeEditar&&i.status!=='renegociado'&&i.origem!=='nfe'?`<button class="btn small" data-id="${i.id}" data-act="excluir">Excluir</button>`:''}
@@ -9215,6 +9339,9 @@ async function finRenderPagar(basePath, containerId, filtro, podePostar, podeEdi
   box.querySelectorAll('[data-act="renegociar"]').forEach(b=>b.addEventListener('click', ()=>{
     finRenegociarModal(basePath, 'pagar', items.find(i=>i.id===Number(b.dataset.id)), recarregar);
   }));
+  box.querySelectorAll('[data-act="usar-adiant"]').forEach(b=>b.addEventListener('click', ()=>{
+    finUsarAdiantamentoModal(basePath, 'pagar', items.find(i=>i.id===Number(b.dataset.id)), recarregar);
+  }));
   box.querySelectorAll('[data-act="marcar-pago"]').forEach(b=>b.addEventListener('click', async ()=>{
     try{ await api(basePath+'/pagar/'+b.dataset.id, { method:'PUT', body:{ status:'pago' } }); toast('Marcado como pago.','ok'); recarregar(); }
     catch(e){ toast(e.message,'err'); }
@@ -9233,9 +9360,9 @@ async function finRenderPagar(basePath, containerId, filtro, podePostar, podeEdi
 async function finRenderRelatorios(basePath, containerId){
   const box = document.getElementById(containerId);
   box.innerHTML = `<div class="empty-state">Carregando…</div>`;
-  let d, renegociacoes;
+  let d, renegociacoes, adiantamentos;
   try{
-    [d, renegociacoes] = await Promise.all([api(basePath+'/relatorios'), api(basePath+'/relatorios/renegociacoes')]);
+    [d, renegociacoes, adiantamentos] = await Promise.all([api(basePath+'/relatorios'), api(basePath+'/relatorios/renegociacoes'), api(basePath+'/relatorios/adiantamentos')]);
   }
   catch(e){ box.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
   const tile = (label, val, cor)=>`<div class="kpi" style="min-width:150px; flex:1;"><div style="font-size:10.5px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.3px;">${label}</div><div style="font-size:22px; font-weight:700; ${cor?'color:'+cor+';':''}">${val}</div></div>`;
@@ -9325,6 +9452,33 @@ async function finRenderRelatorios(basePath, containerId){
           </table>
         </div>
       ` : `<div class="empty-state">Nenhuma renegociação ainda.</div>`}
+    </div>
+    <div class="card" style="margin-top:12px;">
+      <div style="font-weight:600; font-size:13px; margin-bottom:4px;">💰 Adiantamentos</div>
+      <div style="font-size:11.5px; color:var(--ink-soft); margin-bottom:10px;">Saldos de adiantamento a fornecedores e de clientes, disponíveis pra abater em títulos futuros.</div>
+      <div class="row" style="gap:10px; flex-wrap:wrap; margin-bottom:10px;">
+        ${tile('Disponível — adiantado a fornecedores', fmtMoney(adiantamentos.totalFornecedorDisponivel), 'var(--debit)')}
+        ${tile('Disponível — adiantado por clientes', fmtMoney(adiantamentos.totalClienteDisponivel), 'var(--accent-deep)')}
+      </div>
+      ${adiantamentos.items.length? `
+        <div style="overflow-x:auto;">
+          <table class="data-table" style="white-space:nowrap;">
+            <thead><tr><th>Tipo</th><th>Terceiro</th><th>Data</th><th>Valor original</th><th>Já usado</th><th>Saldo disponível</th></tr></thead>
+            <tbody>
+              ${adiantamentos.items.map(a=>`
+                <tr>
+                  <td><span class="tag ${a.tipo==='cliente'?'ok':'muted'}">${a.tipo==='cliente'?'De cliente':'A fornecedor'}</span></td>
+                  <td>${esc(a.terceiroNome)}</td>
+                  <td>${a.data?fmtDateIso(String(a.data).slice(0,10)):'—'}</td>
+                  <td>${fmtMoney(a.valorOriginal)}</td>
+                  <td style="color:var(--ink-soft);">${fmtMoney(a.valorUsado)}</td>
+                  <td style="font-weight:600; ${a.saldoDisponivel>0?'color:#059669;':''}">${fmtMoney(a.saldoDisponivel)}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      ` : `<div class="empty-state">Nenhum adiantamento lançado ainda.</div>`}
     </div>
   `;
 }
@@ -9484,6 +9638,7 @@ async function pageFinanceiro(){
       <div class="tab" data-tab="honorarios">Honorários por empresa</div>
       <div class="tab" data-tab="receber">A Receber</div>
       <div class="tab" data-tab="pagar">A Pagar</div>
+      <div class="tab" data-tab="adiantamentos">Adiantamentos</div>
       <div class="tab" data-tab="contas">Contas</div>
       <div class="tab" data-tab="relatorios">Relatórios</div>
       <div class="tab" data-tab="robo-boletos">Configuração envio de boletos</div>
@@ -9497,7 +9652,7 @@ function renderFinTabs(){
   main().querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===FIN_TAB));
   if(FIN_TAB==='honorarios') renderHonorarios();
   else if(FIN_TAB==='robo-boletos') renderHonorariosRobo();
-  else if(FIN_TAB==='receber'||FIN_TAB==='pagar'||FIN_TAB==='contas'||FIN_TAB==='relatorios') renderFinEmpresaScoped(FIN_TAB);
+  else if(FIN_TAB==='receber'||FIN_TAB==='pagar'||FIN_TAB==='adiantamentos'||FIN_TAB==='contas'||FIN_TAB==='relatorios') renderFinEmpresaScoped(FIN_TAB);
   else renderLancamentos();
 }
 // "A Receber"/"A Pagar"/"Contas" do escritório são as MESMAS tabelas que a empresa-cliente vê no
@@ -9522,6 +9677,7 @@ async function renderFinEmpresaScoped(tab){
     const podePostar = can('financeiro','postar'), podeEditar = can('financeiro','editar');
     if(tab==='receber') finRenderReceber(basePath, 'finEmpresaContent', FIN_RECEBER_EMPRESA_FILTRO, podePostar, podeEditar);
     else if(tab==='pagar') finRenderPagar(basePath, 'finEmpresaContent', FIN_PAGAR_EMPRESA_FILTRO, podePostar, podeEditar);
+    else if(tab==='adiantamentos') finRenderAdiantamentos(basePath, 'finEmpresaContent', podePostar);
     else if(tab==='relatorios') finRenderRelatorios(basePath, 'finEmpresaContent');
     else finRenderContas(basePath, 'finEmpresaContent', podeEditar);
   }
