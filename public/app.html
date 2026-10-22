@@ -9178,6 +9178,8 @@ async function finLancamentoModal(basePath, tipo, item, onSaved){
     const body = { descricao, valor, vencimento, observacao: document.getElementById('mflObs').value.trim(), contaId: contaVal?Number(contaVal):null };
     body[campoTerceiro] = document.getElementById('mflTerceiro').value.trim();
     if(item) body.status = document.getElementById('mflStatus').value;
+    // A Pagar: não deixa salvar como Pago sem a conta de pagamento (mesma regra do botão "Marcar pago").
+    if(item && !ehReceber && body.status==='pago' && !body.contaId){ toast('Pra marcar como Pago, escolha a conta de onde saiu o pagamento.','err'); return; }
     try{
       if(item) await api(rota+'/'+item.id, { method:'PUT', body });
       else await api(rota, { method:'POST', body });
@@ -9421,6 +9423,40 @@ async function finRenderReceber(basePath, containerId, filtro, podePostar, podeE
     catch(e){ toast(e.message,'err'); }
   }));
 }
+// Baixar um título a pagar SEMPRE pedindo a conta (de onde saiu o pagamento) — pedido do usuário: não
+// deixar marcar pago sem informar a conta, pra o saldo das contas e os relatórios ficarem com lastro.
+// O backend também recusa pago sem conta (não dá pra burlar pela API).
+async function finMarcarPagoModal(basePath, item, recarregar){
+  if(!item) return;
+  let contas;
+  try{ contas = await finContasCache(basePath); }
+  catch(e){ toast(e.message,'err'); return; }
+  if(!contas.length){
+    openModal(`<h3>Marcar pago — ${esc(item.descricao)}</h3>
+      <p class="subtitle">Pra baixar um título, o sistema precisa saber de qual <b>conta</b> (banco/caixa) saiu o pagamento — assim o saldo fica certo.</p>
+      <p style="font-size:13px; margin:8px 0 0;">Você ainda não tem nenhuma conta cadastrada. Cadastre em <b>Financeiro → Contas</b> e volte aqui.</p>
+      <div class="modal-actions"><button class="btn primary" onclick="closeModal()">Entendi</button></div>`, '460px');
+    return;
+  }
+  const hoje = new Date().toISOString().slice(0,10);
+  const TIPO_LABEL={banco:'Banco',caixa:'Caixa',outro:'Outro'};
+  openModal(`<h3>Marcar pago — ${esc(item.descricao)}</h3>
+    <p class="subtitle" style="margin-bottom:12px;">Informe de qual conta saiu o pagamento de <b>${fmtMoney(item.valor)}</b>${item.fornecedor?` para <b>${esc(item.fornecedor)}</b>`:''}.</p>
+    <div class="field"><label>Conta de pagamento <span style="color:var(--debit)">*</span></label>
+      <select id="mpConta"><option value="">— Escolha a conta —</option>${contas.map(c=>`<option value="${c.id}" ${c.id===item.contaId?'selected':''}>${esc(c.nome)} (${TIPO_LABEL[c.tipo]||c.tipo})</option>`).join('')}</select>
+    </div>
+    ${dateFieldHtml('mpData','Data do pagamento', hoje)}
+    <div class="modal-actions"><button class="btn" onclick="closeModal()">Cancelar</button><button class="btn primary" id="mpOk">Confirmar pagamento</button></div>`, '480px');
+  setupDatePicker('mpData','mpData_text');
+  document.getElementById('mpOk').addEventListener('click', async ()=>{
+    const contaId = Number(document.getElementById('mpConta').value);
+    if(!contaId){ toast('Escolha a conta de onde saiu o pagamento.','err'); return; }
+    const dataPagamento = document.getElementById('mpData').value || hoje;
+    const btn = document.getElementById('mpOk'); btn.disabled = true;
+    try{ await api(basePath+'/pagar/'+item.id, { method:'PUT', body:{ status:'pago', contaId, dataPagamento } }); closeModal(); toast('Marcado como pago.','ok'); recarregar(); }
+    catch(e){ toast(e.message,'err'); btn.disabled = false; }
+  });
+}
 let MINHA_FIN_PAGAR_FILTRO = { dataDe:'', dataAte:'' };
 async function finRenderPagar(basePath, containerId, filtro, podePostar, podeEditar){
   const { dataDe, dataAte } = filtro;
@@ -9478,9 +9514,8 @@ async function finRenderPagar(basePath, containerId, filtro, podePostar, podeEdi
   box.querySelectorAll('[data-act="usar-adiant"]').forEach(b=>b.addEventListener('click', ()=>{
     finUsarAdiantamentoModal(basePath, 'pagar', items.find(i=>i.id===Number(b.dataset.id)), recarregar);
   }));
-  box.querySelectorAll('[data-act="marcar-pago"]').forEach(b=>b.addEventListener('click', async ()=>{
-    try{ await api(basePath+'/pagar/'+b.dataset.id, { method:'PUT', body:{ status:'pago' } }); toast('Marcado como pago.','ok'); recarregar(); }
-    catch(e){ toast(e.message,'err'); }
+  box.querySelectorAll('[data-act="marcar-pago"]').forEach(b=>b.addEventListener('click', ()=>{
+    finMarcarPagoModal(basePath, items.find(i=>i.id===Number(b.dataset.id)), recarregar);
   }));
   box.querySelectorAll('[data-act="excluir"]').forEach(b=>b.addEventListener('click', async ()=>{
     if(!confirm('Excluir este lançamento?')) return;

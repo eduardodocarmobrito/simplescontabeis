@@ -15774,12 +15774,21 @@ app.put("/api/financeiro/minha-empresa/pagar/:id", requireCliente, requireModulo
   const user = (req as any).user;
   const existente = sqlite.prepare(`SELECT * FROM financeiro_pagar WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), user.empresaId) as any;
   if (!existente) return res.status(404).json({ error: "Lançamento não encontrado." });
-  const { descricao, fornecedor, valor, vencimento, status, observacao, contaId } = req.body || {};
+  const { descricao, fornecedor, valor, vencimento, status, observacao, contaId, dataPagamento } = req.body || {};
   const statusValido = ["pendente", "pago", "atrasado", "cancelado"].includes(status) ? status : existente.status;
+  // Conta que vai ficar no título depois do update (a nova se veio no corpo, senão a que já tinha).
+  const contaFinal = contaId !== undefined ? (contaId ? Number(contaId) : null) : existente.conta_id;
+  // Pedido do usuário: NÃO deixar baixar (marcar pago) um título sem dizer de qual conta saiu o
+  // pagamento — senão o saldo das contas e os relatórios ficam sem lastro.
+  if (statusValido === "pago" && !contaFinal) return res.status(400).json({ error: "Informe a conta de onde saiu o pagamento para marcar como pago." });
+  if (contaFinal && !sqlite.prepare(`SELECT 1 FROM financeiro_contas WHERE id = ? AND empresa_id = ?`).get(contaFinal, user.empresaId)) return res.status(400).json({ error: "Conta de pagamento inválida." });
   // Lançamento gerado por uma NF-e integrada (origem='nfe') tem descrição/fornecedor/valor travados
   // — mesma proteção que o recebível gerado por NFS-e já tinha, só vencimento/status/conta/observação
   // editáveis, pra não desalinhar do valor real da nota.
   const travadoPelaNfe = existente.origem === "nfe" || existente.origem === "ofx";
+  const dataPag = statusValido === "pago"
+    ? (typeof dataPagamento === "string" && /^\d{4}-\d{2}-\d{2}$/.test(dataPagamento) ? dataPagamento : existente.data_pagamento || new Date().toISOString().slice(0, 10))
+    : statusValido === existente.status ? existente.data_pagamento : null;
   sqlite
     .prepare(
       `UPDATE financeiro_pagar SET descricao=?, fornecedor=?, valor=?, vencimento=?, status=?, data_pagamento=?, observacao=?, conta_id=? WHERE id=?`
@@ -15790,9 +15799,9 @@ app.put("/api/financeiro/minha-empresa/pagar/:id", requireCliente, requireModulo
       travadoPelaNfe ? existente.valor : valor != null ? Number(valor) : existente.valor,
       vencimento || existente.vencimento,
       statusValido,
-      statusValido === "pago" ? new Date().toISOString().slice(0, 10) : statusValido === existente.status ? existente.data_pagamento : null,
+      dataPag,
       observacao !== undefined ? observacao || null : existente.observacao,
-      contaId !== undefined ? (contaId ? Number(contaId) : null) : existente.conta_id,
+      contaFinal,
       existente.id
     );
   res.json({ ok: true });
@@ -15972,9 +15981,16 @@ app.put("/api/financeiro/empresas/:empresaId/pagar/:id", blockCliente, requirePe
   if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
   const existente = sqlite.prepare(`SELECT * FROM financeiro_pagar WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), empresaId) as any;
   if (!existente) return res.status(404).json({ error: "Lançamento não encontrado." });
-  const { descricao, fornecedor, valor, vencimento, status, observacao, contaId } = req.body || {};
+  const { descricao, fornecedor, valor, vencimento, status, observacao, contaId, dataPagamento } = req.body || {};
   const statusValido = ["pendente", "pago", "atrasado", "cancelado"].includes(status) ? status : existente.status;
+  const contaFinal = contaId !== undefined ? (contaId ? Number(contaId) : null) : existente.conta_id;
+  // Mesma regra do self-service: não baixa (marca pago) sem informar a conta de pagamento.
+  if (statusValido === "pago" && !contaFinal) return res.status(400).json({ error: "Informe a conta de onde saiu o pagamento para marcar como pago." });
+  if (contaFinal && !sqlite.prepare(`SELECT 1 FROM financeiro_contas WHERE id = ? AND empresa_id = ?`).get(contaFinal, empresaId)) return res.status(400).json({ error: "Conta de pagamento inválida." });
   const travadoPelaNfe = existente.origem === "nfe" || existente.origem === "ofx";
+  const dataPag = statusValido === "pago"
+    ? (typeof dataPagamento === "string" && /^\d{4}-\d{2}-\d{2}$/.test(dataPagamento) ? dataPagamento : existente.data_pagamento || new Date().toISOString().slice(0, 10))
+    : statusValido === existente.status ? existente.data_pagamento : null;
   sqlite
     .prepare(`UPDATE financeiro_pagar SET descricao=?, fornecedor=?, valor=?, vencimento=?, status=?, data_pagamento=?, observacao=?, conta_id=? WHERE id=?`)
     .run(
@@ -15983,9 +15999,9 @@ app.put("/api/financeiro/empresas/:empresaId/pagar/:id", blockCliente, requirePe
       travadoPelaNfe ? existente.valor : valor != null ? Number(valor) : existente.valor,
       vencimento || existente.vencimento,
       statusValido,
-      statusValido === "pago" ? new Date().toISOString().slice(0, 10) : statusValido === existente.status ? existente.data_pagamento : null,
+      dataPag,
       observacao !== undefined ? observacao || null : existente.observacao,
-      contaId !== undefined ? (contaId ? Number(contaId) : null) : existente.conta_id,
+      contaFinal,
       existente.id
     );
   res.json({ ok: true });
