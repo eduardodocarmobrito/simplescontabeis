@@ -4083,6 +4083,10 @@ function modeloModal(t){
   });
 }
 
+// Filtro desta tela fica guardado fora da função — igual ao padrão já usado no Financeiro — pra
+// sobreviver a um redesenho (ex.: depois de excluir uma atribuição) sem perder o que já tava
+// digitado/selecionado.
+let SOLIC_ATRIB_FILTRO = { busca:'', templateId:'' };
 async function renderAtribuicoes(){
   const podePostar = can('solicitacoes','postar');
   const podeEditar = can('solicitacoes','editar');
@@ -4092,7 +4096,10 @@ async function renderAtribuicoes(){
   const box = document.getElementById('solicContent');
   box.innerHTML = `
     <div class="row" style="margin-bottom:14px;">${podePostar?`<button class="btn primary" id="btnNovaAtrib">+ Atribuir modelo a uma empresa</button>`:''}</div>
-    <div class="field" style="max-width:360px; margin-bottom:10px;"><input type="text" id="atribFiltro" placeholder="Buscar por empresa…" autocomplete="off"></div>
+    <div class="row" style="gap:8px; margin-bottom:10px; flex-wrap:wrap;">
+      <div class="field" style="max-width:300px; flex:1; min-width:220px; margin-bottom:0;"><input type="text" id="atribFiltro" placeholder="Buscar por empresa…" autocomplete="off"></div>
+      <div class="field" style="max-width:280px; flex:1; min-width:200px; margin-bottom:0;"><select id="atribFiltroModelo"><option value="">Todos os modelos</option>${templates.map(t=>`<option value="${t.id}">${esc(t.nome)}</option>`).join('')}</select></div>
+    </div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
         <thead><tr><th>Empresa</th><th>Modelo</th><th>Periodicidade</th><th></th></tr></thead>
@@ -4101,9 +4108,17 @@ async function renderAtribuicoes(){
     </div>
   `;
   const atribBody = document.getElementById('atribBody');
-  function desenhaAtribs(filtro){
-    const termo = normalizaTxt(filtro).trim();
-    const visiveis = termo ? atribs.filter(a=> normalizaTxt(a.empresaNome).includes(termo)) : atribs;
+  const inputBusca = document.getElementById('atribFiltro');
+  const selModelo = document.getElementById('atribFiltroModelo');
+  inputBusca.value = SOLIC_ATRIB_FILTRO.busca;
+  selModelo.value = SOLIC_ATRIB_FILTRO.templateId;
+  function desenhaAtribs(){
+    const termo = normalizaTxt(SOLIC_ATRIB_FILTRO.busca).trim();
+    const templateId = SOLIC_ATRIB_FILTRO.templateId;
+    const visiveis = atribs.filter(a=>
+      (!termo || normalizaTxt(a.empresaNome).includes(termo)) &&
+      (!templateId || String(a.template_id)===String(templateId))
+    );
     atribBody.innerHTML = visiveis.length? visiveis.map(a=>`
       <tr data-id="${a.id}">
         <td>${esc(a.empresaNome)}</td>
@@ -4117,7 +4132,7 @@ async function renderAtribuicoes(){
             : ''}
         </td>
       </tr>
-    `).join('') : `<tr><td colspan="4"><div class="empty-state">${termo?'Nenhuma empresa encontrada.':'Nenhuma solicitação atribuída ainda.'}</div></td></tr>`;
+    `).join('') : `<tr><td colspan="4"><div class="empty-state">${termo||templateId?'Nenhuma empresa encontrada.':'Nenhuma solicitação atribuída ainda.'}</div></td></tr>`;
     atribBody.querySelectorAll('[data-act="abrir"]').forEach(b=>b.addEventListener('click', e=>{
       const id=Number(e.target.closest('tr').dataset.id);
       abrirGrade(id, false);
@@ -4127,12 +4142,20 @@ async function renderAtribuicoes(){
       const id = Number(tr.dataset.id);
       const a = atribs.find(x=>x.id===id);
       if(!confirmar(`Excluir "${a.templateNome}" de ${a.empresaNome}? Isso apaga também todos os anexos já enviados para essa solicitação. Não dá pra desfazer.`)) return;
-      try{ await api('/checklist/atribuicoes/'+id, { method:'DELETE' }); toast('Excluído.','ok'); renderAtribuicoes(); }
+      try{
+        await api('/checklist/atribuicoes/'+id, { method:'DELETE' });
+        toast('Excluído.','ok');
+        // Redesenha só a tabela (não chama renderAtribuicoes() de novo) — senão o campo de busca e o
+        // filtro de modelo voltam pro estado inicial, perdendo o que a pessoa já tinha escolhido.
+        atribs.splice(atribs.indexOf(a), 1);
+        desenhaAtribs();
+      }
       catch(err){ toast(err.message,'err'); }
     }));
   }
-  desenhaAtribs('');
-  document.getElementById('atribFiltro').addEventListener('input', e=>desenhaAtribs(e.target.value));
+  desenhaAtribs();
+  inputBusca.addEventListener('input', e=>{ SOLIC_ATRIB_FILTRO.busca = e.target.value; desenhaAtribs(); });
+  selModelo.addEventListener('change', e=>{ SOLIC_ATRIB_FILTRO.templateId = e.target.value; desenhaAtribs(); });
   if(podePostar) document.getElementById('btnNovaAtrib').addEventListener('click', ()=>novaAtribModal(empresas, templates));
 }
 function novaAtribModal(empresas, templates){
