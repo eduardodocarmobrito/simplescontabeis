@@ -31,14 +31,7 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/simplescontabeis:latest
             ghcr.io/${{ github.repository_owner }}/simplescontabeis:${{ github.sha }}
 
-      - name: Deploy na VPS (puxa a imagem nova e reinicia)
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.DEPLOY_SSH_HOST }}
-          username: ${{ secrets.DEPLOY_SSH_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          script: |
-            cd /opt/simplescontabeis
-            docker compose pull
-            docker compose up -d
-            docker image prune -f
+      # Sem passo de SSH: o GitHub não alcança a porta 22 da VPS (i/o timeout desde 2026-10-22 ~17h).
+      # A VPS puxa sozinha — timer systemd `simplescontabeis-deploy` roda `docker compose pull && up -d`
+      # em /opt/simplescontabeis a cada 2 min e só recria o container quando a imagem :latest mudou.
+      # Deploy leva até ~2 min depois do workflow terminar.
