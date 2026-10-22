@@ -7313,11 +7313,12 @@ async function pageNfeBusca(){
       const sumario = document.getElementById('nfeReformaSumario');
       if(sumario){
         sumario.innerHTML = comReforma.length
-          ? `<div class="card" style="margin:0; padding:10px 14px; background:var(--accent-pale); border:1px solid var(--accent);">
+          ? `<div class="card" id="nfeReformaCard" style="margin:0; padding:10px 14px; background:var(--accent-pale); border:1px solid var(--accent); cursor:pointer;" title="Clique pra ver o relatório detalhado, nota por nota">
                <b style="color:var(--accent-deep);">🧾 Monitor reforma (IBS/CBS)</b> — <b>${comReforma.length}</b> de ${items.length} nota(s) já trazem IBS/CBS no XML ·
                Total <b>IBS</b>: ${fmtMoney(totIbs)} · Total <b>CBS</b>: ${fmtMoney(totCbs)}
              </div>`
-          : `<div style="font-size:12px; color:var(--ink-soft);">🧾 Monitor reforma (IBS/CBS): nenhuma nota desta lista traz IBS/CBS no XML ainda (reforma em transição).</div>`;
+          : `<div id="nfeReformaCard" style="font-size:12px; color:var(--ink-soft); cursor:pointer;" title="Clique pra ver o relatório detalhado, nota por nota">🧾 Monitor reforma (IBS/CBS): nenhuma nota desta lista traz IBS/CBS no XML ainda (reforma em transição).</div>`;
+        document.getElementById('nfeReformaCard')?.addEventListener('click', ()=>abrirRelatorioReformaModal(items.filter(d=>d.tipo!=='evento')));
       }
       // Marcadores da nota (estilo Espião): cada um abre o detalhe já na aba certa.
       // [ícone, descrição, aba-destino do drawer]
@@ -7570,6 +7571,56 @@ function fecharMenuFlutuante(){
 function fecharMenuFlutuanteClique(e){
   const m = document.getElementById('menuFlutuante');
   if(m && !m.contains(e.target)) fecharMenuFlutuante();
+}
+// Relatório do "Monitor reforma": separa as notas da lista atual (já filtrada por empresa/período/
+// tipo/flag na tela) em "destacadas" (já trazem IBS/CBS no XML) e "não destacadas" — e, pra cada
+// uma, o regime tributário do EMITENTE lido do próprio XML (campo CRT, já cacheado em d.crt — não
+// precisa reabrir XML nem rota nova). Útil pra achar padrão (ex.: só quem ainda não destaca é Simples
+// Nacional, que tem cronograma de transição diferente do Regime Normal).
+function abrirRelatorioReformaModal(items){
+  const CRT_INFO = { 1:'Simples Nacional', 2:'Simples Nacional (excesso de sublimite)', 3:'Regime Normal' };
+  const regimeDe = (d)=> CRT_INFO[d.crt] || 'Não identificado no XML';
+  const destacadas = items.filter(d=>(d.valorIbs>0||d.valorCbs>0));
+  const naoDestacadas = items.filter(d=>!(d.valorIbs>0||d.valorCbs>0));
+  const porRegime = (lista)=>{
+    const mapa = new Map();
+    lista.forEach(d=>{ const r=regimeDe(d); mapa.set(r, (mapa.get(r)||0)+1); });
+    return [...mapa.entries()].sort((a,b)=>b[1]-a[1]).map(([r,n])=>`${esc(r)}: <b>${n}</b>`).join(' · ') || '—';
+  };
+  const linhaNota = (d)=>`
+    <tr>
+      <td>${d.dataEmissao?fmtDateHora(d.dataEmissao):'—'}</td>
+      <td>${esc(d.emitenteNome||'—')}</td>
+      <td>${esc(d.emitenteCnpj||'—')}</td>
+      <td><span class="tag muted">${esc(regimeDe(d))}</span></td>
+      <td>${d.valorTotal!=null?fmtMoney(d.valorTotal):'—'}</td>
+      <td>${(d.valorIbs>0||d.valorCbs>0)?`${fmtMoney(d.valorIbs||0)} / ${fmtMoney(d.valorCbs||0)}`:'<span style="color:var(--ink-soft);">—</span>'}</td>
+    </tr>`;
+  openModal(`
+    <h3>🧾 Monitor reforma (IBS/CBS) — relatório detalhado</h3>
+    <p style="font-size:12px; color:var(--ink-soft); margin-top:-4px;">Mesmo filtro (empresa/período/tipo/marcador) já aplicado na tela de Documentos. Regime tributário vem do campo CRT do emitente, lido do próprio XML da nota.</p>
+    <div class="row" style="gap:16px; margin-bottom:10px; flex-wrap:wrap;">
+      <div class="kpi" style="min-width:150px;"><div style="font-size:10.5px; color:var(--ink-soft); text-transform:uppercase;">Destacadas</div><div style="font-size:20px; font-weight:700; color:var(--accent-deep);">${destacadas.length}</div></div>
+      <div class="kpi" style="min-width:150px;"><div style="font-size:10.5px; color:var(--ink-soft); text-transform:uppercase;">Não destacadas</div><div style="font-size:20px; font-weight:700; ${naoDestacadas.length?'color:var(--debit);':''}">${naoDestacadas.length}</div></div>
+    </div>
+    <div style="font-size:12px; margin-bottom:4px;"><b>Destacadas, por regime:</b> ${porRegime(destacadas)}</div>
+    <div style="font-size:12px; margin-bottom:14px;"><b>Não destacadas, por regime:</b> ${porRegime(naoDestacadas)}</div>
+    <div class="tabs" style="margin-bottom:0;">
+      <div class="tab active" data-sub="nao">Não destacadas (${naoDestacadas.length})</div>
+      <div class="tab" data-sub="sim">Destacadas (${destacadas.length})</div>
+    </div>
+    <div style="overflow:auto; max-height:46vh; margin-top:10px;">
+      <table class="data-table" style="white-space:nowrap;">
+        <thead><tr><th>Data</th><th>Emitente</th><th>CNPJ</th><th>Regime</th><th>Valor</th><th>IBS / CBS</th></tr></thead>
+        <tbody id="rrSubBody">${naoDestacadas.length? naoDestacadas.map(linhaNota).join('') : '<tr><td colspan="6"><div class="empty-state">Nenhuma — todas já destacam.</div></td></tr>'}</tbody>
+      </table>
+    </div>
+  `, '1000px');
+  document.querySelectorAll('.modal [data-sub]').forEach(t=>t.addEventListener('click', ()=>{
+    document.querySelectorAll('.modal [data-sub]').forEach(x=>x.classList.toggle('active', x===t));
+    const lista = t.dataset.sub==='sim' ? destacadas : naoDestacadas;
+    document.getElementById('rrSubBody').innerHTML = lista.length ? lista.map(linhaNota).join('') : `<tr><td colspan="6"><div class="empty-state">Nenhuma nota aqui.</div></td></tr>`;
+  }));
 }
 function abrirMenuFlutuante(botaoEl, itens){
   const mesmoBotao = MENU_FLUTUANTE_BOTAO === botaoEl;
