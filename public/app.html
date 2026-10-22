@@ -7134,6 +7134,8 @@ async function pageNfeBusca(){
           <button class="btn small" id="btnNfeBaixarLotePdf" disabled>Baixar selecionados — PDF</button>
           <button class="btn small" id="btnNfeBaixarLoteAmbos" disabled>Baixar selecionados — XML + PDF</button>
           <button class="btn small" id="btnNfeExportarAnalitico" title="PDF por fornecedor (com produtos de cada nota), do período filtrado abaixo — pra conferência interna">📄 Exportar PDF analítico (por fornecedor)</button>
+          <button class="btn small" id="btnNfeExportarUfDentro" title="Mesmo relatório, só com as notas cujo emitente/destinatário (o outro lado da operação) está no mesmo Estado da empresa">📍 Exportar — dentro do Estado</button>
+          <button class="btn small" id="btnNfeExportarUfFora" title="Mesmo relatório, só com as notas cujo emitente/destinatário está em outro Estado">📍 Exportar — fora do Estado</button>
           <button class="btn small" id="btnNfeImportarXml" title="Importar o XML completo de uma ou mais notas na mão (ou um .zip com várias) — use quando a busca automática na Sefaz falhar ou estiver fora do ar">⬆️ Importar XML</button>
           <input type="file" id="nfeImportarXmlInput" accept=".xml,.zip" multiple style="display:none;">
         </div>
@@ -7274,7 +7276,7 @@ async function pageNfeBusca(){
     document.getElementById('btnNfeBaixarLoteXml').addEventListener('click', ()=>baixarLote('xml'));
     document.getElementById('btnNfeBaixarLotePdf').addEventListener('click', ()=>baixarLote('pdf'));
     document.getElementById('btnNfeBaixarLoteAmbos').addEventListener('click', ()=>baixarLote('ambos'));
-    document.getElementById('btnNfeExportarAnalitico').addEventListener('click', ()=>{
+    function exportarAnaliticoPdf(uf){
       const tipo = document.getElementById('nfeDocTipo').value;
       const busca = document.getElementById('nfeDocBusca').value.trim();
       const dataDe = document.getElementById('nfeDocDataDe').value;
@@ -7284,8 +7286,12 @@ async function pageNfeBusca(){
       if(busca) params.set('busca', busca);
       if(dataDe) params.set('dataDe', dataDe);
       if(dataAte) params.set('dataAte', dataAte);
+      if(uf) params.set('uf', uf);
       window.open('/api/nfe/documentos/exportar-analitico-pdf?'+params.toString(), '_blank');
-    });
+    }
+    document.getElementById('btnNfeExportarAnalitico').addEventListener('click', ()=>exportarAnaliticoPdf());
+    document.getElementById('btnNfeExportarUfDentro').addEventListener('click', ()=>exportarAnaliticoPdf('dentro'));
+    document.getElementById('btnNfeExportarUfFora').addEventListener('click', ()=>exportarAnaliticoPdf('fora'));
     document.getElementById('nfeDocSelecionarTodos').addEventListener('change', (ev)=>{
       document.querySelectorAll('.nfeDocCheck').forEach(c=>c.checked=ev.target.checked);
       atualizarBarraSelecao();

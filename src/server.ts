@@ -2037,6 +2037,41 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
     }
   }
 }
+// Migração: adiantamento a fornecedor (pagou antes de receber a mercadoria/serviço) ou de cliente
+// (recebeu antes de entregar) — é dinheiro que já saiu/entrou da conta na hora do adiantamento
+// (único movimento de caixa real), guardado como "crédito" disponível pra abater um título futuro do
+// MESMO terceiro depois. saldo_disponivel começa igual a valor_original e só diminui conforme é
+// usado (financeiro_adiantamento_usos guarda o histórico de uso — nesta versão, uso é sempre
+// integral: só aplica quando o saldo cobre o título inteiro, sem pagamento parcial).
+{
+  const temTabelaAdiant = (sqlite.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='financeiro_adiantamentos'`).get() as any) !== undefined;
+  if (!temTabelaAdiant) {
+    sqlite.exec(`
+      CREATE TABLE financeiro_adiantamentos (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+        tipo TEXT NOT NULL, -- 'fornecedor' (a empresa pagou adiantado) | 'cliente' (a empresa recebeu adiantado)
+        terceiro_nome TEXT NOT NULL,
+        valor_original REAL NOT NULL,
+        saldo_disponivel REAL NOT NULL,
+        data TEXT NOT NULL,
+        conta_id INTEGER REFERENCES financeiro_contas(id) ON DELETE SET NULL,
+        observacao TEXT,
+        criado_por INTEGER REFERENCES app_users(id),
+        criado_em TEXT DEFAULT (datetime('now'))
+      );
+      CREATE INDEX idx_financeiro_adiantamentos_empresa ON financeiro_adiantamentos(empresa_id, tipo);
+      CREATE TABLE financeiro_adiantamento_usos (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        adiantamento_id INTEGER NOT NULL REFERENCES financeiro_adiantamentos(id) ON DELETE CASCADE,
+        vinculo_tabela TEXT NOT NULL, -- 'financeiro_pagar' | 'financeiro_receber'
+        vinculo_id INTEGER NOT NULL,
+        valor_usado REAL NOT NULL,
+        usado_em TEXT DEFAULT (datetime('now'))
+      );
+    `);
+  }
+}
 // Migração leve: checklist_templates.setor (departamento que atende o modelo).
 {
   const colsCl = sqlite.prepare(`PRAGMA table_info(checklist_templates)`).all() as any[];
@@ -9495,11 +9530,18 @@ app.get("/api/nfe/documentos/exportar-analitico-pdf", blockCliente, requirePermi
     const likeDigits = `%${digits || busca}%`;
     params.push(likeTexto, likeTexto, likeTexto, likeDigits, likeDigits);
   }
+  // "Dentro"/"fora do Estado": compara a UF do TERCEIRO (quem não é a própria empresa — destinatário
+  // se a nota é emitida, emitente se é recebida) com empresas.uf. Só dá pra saber lendo o XML completo
+  // (NF-e/NFC-e, via detalharNfe — CT-e/MDF-e/NFS-e e resumos sem XML completo não têm UF confiável
+  // aqui), por isso o filtro restringe ao que dá pra classificar — nunca chuta nota sem UF achada pra
+  // dentro de um dos dois grupos.
+  const ufFiltro = typeof req.query.uf === "string" && ["dentro", "fora"].includes(req.query.uf) ? req.query.uf : null;
+  const empresaUf = (empresa.uf || "").toUpperCase().trim();
   const notaCanceladaExpr = `EXISTS (SELECT 1 FROM nfe_documentos ev WHERE ev.escritorio_id = d.escritorio_id AND ev.tipo = 'evento' AND ev.chave_acesso = d.chave_acesso AND ev.evento_descricao LIKE '%ancela%' AND ev.evento_descricao NOT LIKE '%CT-e%' AND ev.evento_descricao NOT LIKE '%MDF-e%')`;
   const rows = sqlite
     .prepare(
       `SELECT d.id, d.xml, d.tipo, d.chave_acesso as chaveAcesso, d.emitente_cnpj as emitenteCnpj, d.emitente_nome as emitenteNome,
-              d.valor_total as valorTotal, d.data_emissao as dataEmissao, ${notaCanceladaExpr} as notaCancelada
+              d.valor_total as valorTotal, d.data_emissao as dataEmissao, ${notaCanceladaExpr} as notaCancelada, ${direcaoExpr} as direcao
        FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id
        WHERE ${condicoes.join(" AND ")}
        ORDER BY d.emitente_nome, d.data_emissao`
@@ -9513,12 +9555,22 @@ app.get("/api/nfe/documentos/exportar-analitico-pdf", blockCliente, requirePermi
 
   const grupos = new Map<string, { nome: string; cnpj: string | null; notas: any[]; subtotal: number }>();
   for (const r of rows) {
+    const detalhe = nfe.detalharNfe(r.xml);
+    if (ufFiltro) {
+      const terceiroUf = (detalhe ? (r.direcao === "emitida" ? detalhe.dest?.uf : detalhe.emit?.uf) : null) || null;
+      if (!terceiroUf || !empresaUf) continue; // sem UF confiável dos dois lados — fica fora dos dois grupos, não chuta
+      const dentro = String(terceiroUf).toUpperCase().trim() === empresaUf;
+      if (ufFiltro === "dentro" && !dentro) continue;
+      if (ufFiltro === "fora" && dentro) continue;
+    }
     const chave = r.emitenteCnpj || `sem-cnpj-${r.emitenteNome || r.id}`;
     if (!grupos.has(chave)) grupos.set(chave, { nome: r.emitenteNome || "(sem nome)", cnpj: r.emitenteCnpj || null, notas: [], subtotal: 0 });
     const g = grupos.get(chave)!;
-    const detalhe = nfe.detalharNfe(r.xml);
     g.notas.push({ ...r, tipo: r.tipo, itens: detalhe ? detalhe.itens : null });
     if (!r.notaCancelada) g.subtotal += r.valorTotal || 0;
+  }
+  if (ufFiltro && !grupos.size) {
+    return res.status(400).json({ error: `Nenhuma nota ${ufFiltro === "dentro" ? "dentro" : "fora"} do Estado encontrada com esses filtros (ou nenhuma tinha UF identificável no XML).` });
   }
   const listaGrupos = [...grupos.values()].sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
   const totalGeral = listaGrupos.reduce((s, g) => s + g.subtotal, 0);
@@ -9528,7 +9580,9 @@ app.get("/api/nfe/documentos/exportar-analitico-pdf", blockCliente, requirePermi
     return m ? `${m[3]}/${m[2]}/${m[1]}` : "-";
   };
   const fmtDataBrRelatorio = (iso: string) => iso.split("-").reverse().join("/");
-  const periodoLinha = dataDe || dataAte ? `Período: ${dataDe ? fmtDataBrRelatorio(dataDe) : "…"} até ${dataAte ? fmtDataBrRelatorio(dataAte) : "…"}` : "Período: todas as datas";
+  const periodoLinha =
+    (dataDe || dataAte ? `Período: ${dataDe ? fmtDataBrRelatorio(dataDe) : "…"} até ${dataAte ? fmtDataBrRelatorio(dataAte) : "…"}` : "Período: todas as datas") +
+    (ufFiltro ? ` — só notas ${ufFiltro === "dentro" ? `dentro do Estado (${empresaUf || "?"})` : `fora do Estado (${empresaUf || "?"})`}` : "");
   const blocosFornecedor = listaGrupos
     .map((g) => {
       const notasHtml = g.notas
@@ -14794,7 +14848,9 @@ function financeiroContasComSaldo(empresaId: number): any[] {
       `SELECT c.id, c.nome, c.tipo, c.ativo, c.saldo_inicial as saldoInicial,
               c.saldo_inicial
                 + COALESCE((SELECT SUM(valor) FROM financeiro_receber WHERE conta_id = c.id AND status = 'pago'), 0)
-                - COALESCE((SELECT SUM(valor) FROM financeiro_pagar WHERE conta_id = c.id AND status = 'pago'), 0) as saldoAtual
+                - COALESCE((SELECT SUM(valor) FROM financeiro_pagar WHERE conta_id = c.id AND status = 'pago'), 0)
+                + COALESCE((SELECT SUM(valor_original) FROM financeiro_adiantamentos WHERE conta_id = c.id AND tipo = 'cliente'), 0)
+                - COALESCE((SELECT SUM(valor_original) FROM financeiro_adiantamentos WHERE conta_id = c.id AND tipo = 'fornecedor'), 0) as saldoAtual
        FROM financeiro_contas c WHERE c.empresa_id = ? ORDER BY c.ativo DESC, c.nome`
     )
     .all(empresaId) as any[];
@@ -14950,6 +15006,146 @@ app.get("/api/financeiro/empresas/:empresaId/relatorios/renegociacoes", blockCli
   const empresaId = Number(req.params.empresaId);
   if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
   res.json({ items: financeiroRenegociacoesListar(empresaId) });
+});
+// ---- Adiantamentos a fornecedor / de cliente ----
+// "fornecedor": a empresa pagou antes de receber a mercadoria/serviço — é dinheiro que SAIU da conta
+// agora, crédito a favor da empresa pra abater uma conta a pagar futura do mesmo fornecedor.
+// "cliente": a empresa recebeu antes de entregar — dinheiro que ENTROU agora, crédito a favor do
+// cliente pra abater uma conta a receber futura. "Usar" só é permitido quando cobre o título INTEIRO
+// (sem pagamento parcial nesta versão) — título vinculado a adiantamento nunca recebe conta_id (o
+// movimento de caixa real já aconteceu na hora do adiantamento, não pode contar duas vezes no saldo
+// da conta — ver financeiroContasComSaldo).
+function financeiroAdiantamentosListar(empresaId: number, tipo?: string | null): any[] {
+  let sql = `SELECT id, tipo, terceiro_nome as terceiroNome, valor_original as valorOriginal, saldo_disponivel as saldoDisponivel, data, conta_id as contaId, observacao, criado_em as criadoEm FROM financeiro_adiantamentos WHERE empresa_id = ?`;
+  const params: any[] = [empresaId];
+  if (tipo) {
+    sql += ` AND tipo = ?`;
+    params.push(tipo);
+  }
+  sql += ` ORDER BY data DESC, id DESC`;
+  return sqlite.prepare(sql).all(...params) as any[];
+}
+function financeiroAdiantamentoCriar(
+  empresaId: number,
+  tipo: string,
+  terceiroNome: string,
+  valor: number,
+  data: string,
+  contaId: number | null,
+  observacao: string | undefined,
+  userId: number
+): { ok: boolean; erro?: string; id?: number } {
+  if (!["fornecedor", "cliente"].includes(tipo)) return { ok: false, erro: "Tipo inválido — use fornecedor ou cliente." };
+  if (!terceiroNome || !terceiroNome.trim()) return { ok: false, erro: `Informe o nome do ${tipo === "fornecedor" ? "fornecedor" : "cliente"}.` };
+  if (!(Number(valor) > 0)) return { ok: false, erro: "Informe um valor maior que zero." };
+  if (!data) return { ok: false, erro: "Informe a data do adiantamento." };
+  const info = sqlite
+    .prepare(
+      `INSERT INTO financeiro_adiantamentos (empresa_id, tipo, terceiro_nome, valor_original, saldo_disponivel, data, conta_id, observacao, criado_por)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(empresaId, tipo, terceiroNome.trim(), Number(valor), Number(valor), data, contaId || null, observacao || null, userId);
+  return { ok: true, id: Number(info.lastInsertRowid) };
+}
+function financeiroAdiantamentoUsar(
+  tabela: "financeiro_pagar" | "financeiro_receber",
+  tituloId: number,
+  empresaId: number,
+  adiantamentoId: number
+): { ok: boolean; erro?: string } {
+  const titulo = sqlite.prepare(`SELECT * FROM ${tabela} WHERE id = ? AND empresa_id = ?`).get(tituloId, empresaId) as any;
+  if (!titulo) return { ok: false, erro: "Título não encontrado." };
+  if (titulo.status !== "pendente" && titulo.status !== "atrasado") return { ok: false, erro: "Só é possível usar adiantamento num título pendente/atrasado." };
+  const adiant = sqlite.prepare(`SELECT * FROM financeiro_adiantamentos WHERE id = ? AND empresa_id = ?`).get(adiantamentoId, empresaId) as any;
+  if (!adiant) return { ok: false, erro: "Adiantamento não encontrado." };
+  const tipoEsperado = tabela === "financeiro_pagar" ? "fornecedor" : "cliente";
+  if (adiant.tipo !== tipoEsperado) return { ok: false, erro: `Este adiantamento é de ${adiant.tipo}, não serve pra um título "a ${tabela === "financeiro_pagar" ? "pagar" : "receber"}".` };
+  if (adiant.saldo_disponivel < titulo.valor) return { ok: false, erro: `Saldo disponível (${adiant.saldo_disponivel.toFixed(2)}) é menor que o valor do título (${titulo.valor.toFixed(2)}) — não cobre sozinho (sem baixa parcial nesta versão).` };
+  const campoData = tabela === "financeiro_pagar" ? "data_pagamento" : "data_recebimento";
+  const hoje = new Date().toISOString().slice(0, 10);
+  sqlite.prepare(`UPDATE ${tabela} SET status = 'pago', ${campoData} = ?, conta_id = NULL WHERE id = ?`).run(hoje, tituloId);
+  sqlite.prepare(`UPDATE financeiro_adiantamentos SET saldo_disponivel = saldo_disponivel - ? WHERE id = ?`).run(titulo.valor, adiant.id);
+  sqlite
+    .prepare(`INSERT INTO financeiro_adiantamento_usos (adiantamento_id, vinculo_tabela, vinculo_id, valor_usado) VALUES (?, ?, ?, ?)`)
+    .run(adiant.id, tabela, tituloId, titulo.valor);
+  return { ok: true };
+}
+// Excluir um título que foi baixado usando adiantamento devolve o valor pro saldo disponível do
+// adiantamento antes de apagar — mesmo espírito do "solta o vínculo" já usado pra OFX, nunca deixa
+// saldo inconsistente nem bloqueia a exclusão pra sempre.
+function financeiroReverterUsoAdiantamento(tabela: "financeiro_pagar" | "financeiro_receber", tituloId: number) {
+  const uso = sqlite.prepare(`SELECT * FROM financeiro_adiantamento_usos WHERE vinculo_tabela = ? AND vinculo_id = ?`).get(tabela, tituloId) as any;
+  if (!uso) return;
+  sqlite.prepare(`UPDATE financeiro_adiantamentos SET saldo_disponivel = saldo_disponivel + ? WHERE id = ?`).run(uso.valor_usado, uso.adiantamento_id);
+  sqlite.prepare(`DELETE FROM financeiro_adiantamento_usos WHERE id = ?`).run(uso.id);
+}
+function financeiroAdiantamentosRelatorio(empresaId: number) {
+  const items = financeiroAdiantamentosListar(empresaId).map((a: any) => ({ ...a, valorUsado: a.valorOriginal - a.saldoDisponivel }));
+  return {
+    items,
+    totalFornecedorDisponivel: items.filter((a: any) => a.tipo === "fornecedor").reduce((s: number, a: any) => s + a.saldoDisponivel, 0),
+    totalClienteDisponivel: items.filter((a: any) => a.tipo === "cliente").reduce((s: number, a: any) => s + a.saldoDisponivel, 0),
+  };
+}
+app.get("/api/financeiro/minha-empresa/adiantamentos", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
+  const tipo = typeof req.query.tipo === "string" && ["fornecedor", "cliente"].includes(req.query.tipo) ? req.query.tipo : null;
+  res.json({ items: financeiroAdiantamentosListar((req as any).user.empresaId, tipo) });
+});
+app.post("/api/financeiro/minha-empresa/adiantamentos", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
+  const user = (req as any).user;
+  const { tipo, terceiroNome, valor, data, contaId, observacao } = req.body || {};
+  const r = financeiroAdiantamentoCriar(user.empresaId, tipo, terceiroNome, Number(valor), data, contaId ? Number(contaId) : null, observacao, user.id);
+  if (!r.ok) return res.status(400).json({ error: r.erro });
+  res.json({ id: r.id });
+});
+app.put("/api/financeiro/minha-empresa/pagar/:id/usar-adiantamento", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
+  const user = (req as any).user;
+  const r = financeiroAdiantamentoUsar("financeiro_pagar", Number(req.params.id), user.empresaId, Number(req.body?.adiantamentoId));
+  if (!r.ok) return res.status(400).json({ error: r.erro });
+  res.json({ ok: true });
+});
+app.put("/api/financeiro/minha-empresa/receber/:id/usar-adiantamento", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
+  const user = (req as any).user;
+  const r = financeiroAdiantamentoUsar("financeiro_receber", Number(req.params.id), user.empresaId, Number(req.body?.adiantamentoId));
+  if (!r.ok) return res.status(400).json({ error: r.erro });
+  res.json({ ok: true });
+});
+app.get("/api/financeiro/minha-empresa/relatorios/adiantamentos", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
+  res.json(financeiroAdiantamentosRelatorio((req as any).user.empresaId));
+});
+app.get("/api/financeiro/empresas/:empresaId/adiantamentos", blockCliente, requirePermissao("financeiro", "visualizar"), (req, res) => {
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const tipo = typeof req.query.tipo === "string" && ["fornecedor", "cliente"].includes(req.query.tipo) ? req.query.tipo : null;
+  res.json({ items: financeiroAdiantamentosListar(empresaId, tipo) });
+});
+app.post("/api/financeiro/empresas/:empresaId/adiantamentos", blockCliente, requirePermissao("financeiro", "postar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const { tipo, terceiroNome, valor, data, contaId, observacao } = req.body || {};
+  const r = financeiroAdiantamentoCriar(empresaId, tipo, terceiroNome, Number(valor), data, contaId ? Number(contaId) : null, observacao, user.id);
+  if (!r.ok) return res.status(400).json({ error: r.erro });
+  res.json({ id: r.id });
+});
+app.put("/api/financeiro/empresas/:empresaId/pagar/:id/usar-adiantamento", blockCliente, requirePermissao("financeiro", "editar"), (req, res) => {
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const r = financeiroAdiantamentoUsar("financeiro_pagar", Number(req.params.id), empresaId, Number(req.body?.adiantamentoId));
+  if (!r.ok) return res.status(400).json({ error: r.erro });
+  res.json({ ok: true });
+});
+app.put("/api/financeiro/empresas/:empresaId/receber/:id/usar-adiantamento", blockCliente, requirePermissao("financeiro", "editar"), (req, res) => {
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const r = financeiroAdiantamentoUsar("financeiro_receber", Number(req.params.id), empresaId, Number(req.body?.adiantamentoId));
+  if (!r.ok) return res.status(400).json({ error: r.erro });
+  res.json({ ok: true });
+});
+app.get("/api/financeiro/empresas/:empresaId/relatorios/adiantamentos", blockCliente, requirePermissao("financeiro", "visualizar"), (req, res) => {
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  res.json(financeiroAdiantamentosRelatorio(empresaId));
 });
 app.get("/api/financeiro/minha-empresa/contas", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
   const items = financeiroContasComSaldo((req as any).user.empresaId);
