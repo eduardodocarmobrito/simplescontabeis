@@ -12176,9 +12176,10 @@ async function atdAcao(S, acao, botao){
     // quem clicou — cai em Minhas. Num setor, a conversa volta pro setor (robô pausado).
     if(botao) botao.disabled = true;
     try{
-      const r = await dcApi('/conversations/open-with-contact', { method:'POST', body:{ contact_id:c.contatoId } });
+      // Reabre pelo backend (robô admin): pela sessão do agente o open-with-contact dava "Sessão de
+      // canal não encontrada". O backend reabre e já atribui pra você.
+      const r = await api('/atendimento/conversas/'+encodeURIComponent(c.id)+'/reabrir', { method:'POST', body:{ contatoId:c.contatoId } });
       if(S.escopo!=='crm') await api('/atendimento/conversas/'+encodeURIComponent(r.conversation_id)+'/setor', { method:'POST', body:{ escopo:S.escopo, motivo:'Conversa reaberta pelo setor' } });
-      await dcApi('/conversations/'+r.conversation_id+'/claim', { method:'POST', body:{} });
       toast('Conversa reaberta — está em Minhas.','ok');
       S.filtro = 'minhas';
       S.conversaAtiva = r.conversation_id;

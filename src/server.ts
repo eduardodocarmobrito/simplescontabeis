@@ -3071,6 +3071,12 @@ const DESKCOMM_URL = (process.env.DESKCOMM_URL || "https://srv1998403.hstgr.clou
 // sem setar o cookie — login do robô falhava, quebrando mídia/envio/fechar pelo robô). Mandar
 // x-forwarded-host com o host público (o mesmo que o proxy já manda pros usuários) resolve.
 const DESKCOMM_PUBLIC_HOST = (process.env.DESKCOMM_PUBLIC_HOST || "simplescontabeis.com.br").trim();
+// Base das rotas /simplescontabeis/waha-* (recibo de leitura, foto/mídia pelo celular, editar/apagar).
+// ELAS NÃO FICAM no container do app do deskcomm — ficam no CADDY do deskcomm, no bloco do domínio dele
+// ($DOMAIN = srv1998403.hstgr.cloud), que injeta a X-Api-Key e proxya pro container `waha`. Por isso usam
+// uma base DIFERENTE do DESKCOMM_URL (que agora aponta pro container interno do app e NÃO tem essas rotas
+// -> dava "WAHA 404"). O default aponta pro Caddy público do deskcomm, onde essas rotas sempre moraram.
+const DESKCOMM_WAHA_URL = (process.env.DESKCOMM_WAHA_URL || "https://srv1998403.hstgr.cloud").trim();
 // .trim(): variáveis de ambiente coladas por um painel web (Railway etc.) vêm sujeitas a espaço/quebra
 // de linha grudado sem querer — medido ao vivo com DESKCOMM_ORG_ID assim, e "invalid input syntax for
 // type uuid" não deixa óbvio que o problema é um espaço, não o valor em si.
@@ -20581,7 +20587,7 @@ app.post("/api/atendimento/conversas/:id/citacoes", blockCliente, requireEscrito
       let citacao: any = null;
       try {
         const chatId = String(m.external_id).split("_")[1];
-        const r = await fetch(`${DESKCOMM_URL}/simplescontabeis/waha-get/${encodeURIComponent(sessao)}/${encodeURIComponent(chatId).replace(/%40/g, "@")}/${encodeURIComponent(m.external_id).replace(/%40/g, "@")}`, { headers: { "X-Simples-Token": ATENDIMENTO_WAHA_SEEN_TOKEN } });
+        const r = await fetch(`${DESKCOMM_WAHA_URL}/simplescontabeis/waha-get/${encodeURIComponent(sessao)}/${encodeURIComponent(chatId).replace(/%40/g, "@")}/${encodeURIComponent(m.external_id).replace(/%40/g, "@")}`, { headers: { "X-Simples-Token": ATENDIMENTO_WAHA_SEEN_TOKEN } });
         if (!r.ok) return; // tenta de novo numa próxima abertura
         const j: any = await r.json();
         if (j?.replyTo?.id) {
@@ -20634,7 +20640,7 @@ app.get("/api/atendimento/contatos/:id/foto", blockCliente, requireEscritorioPri
     const meta: any = ct.source_metadata || {};
     const chatId = meta.waha_chat_id || (ct.wa_lid ? `${ct.wa_lid}@lid` : ct.phone_number ? `${String(ct.phone_number).replace(/\D/g, "")}@c.us` : null);
     if (!sessao || !chatId) { fotoCache.set(id, { buf: null, mime: "", em: Date.now() }); return res.status(404).end(); }
-    const r = await fetch(`${DESKCOMM_URL}/simplescontabeis/waha-foto/${encodeURIComponent(sessao)}/${encodeURIComponent(chatId).replace(/%40/g, "@")}`, { headers: { "X-Simples-Token": ATENDIMENTO_WAHA_SEEN_TOKEN } });
+    const r = await fetch(`${DESKCOMM_WAHA_URL}/simplescontabeis/waha-foto/${encodeURIComponent(sessao)}/${encodeURIComponent(chatId).replace(/%40/g, "@")}`, { headers: { "X-Simples-Token": ATENDIMENTO_WAHA_SEEN_TOKEN } });
     const j: any = r.ok ? await r.json().catch(() => null) : null;
     const url = j?.profilePictureURL;
     let entrada: { buf: Buffer | null; mime: string; em: number } = { buf: null, mime: "", em: Date.now() };
@@ -20699,7 +20705,7 @@ async function atendimentoChamarWahaMsg(m: any, metodo: "PUT" | "DELETE", corpo?
     chatId = ref[1];
     idCompleto = `true_${chatId}_${m.external_id}`;
   }
-  const url = `${DESKCOMM_URL}/simplescontabeis/waha-msg/${encodeURIComponent(sessao)}/${encodeURIComponent(chatId).replace(/%40/g, "@")}/${encodeURIComponent(idCompleto).replace(/%40/g, "@")}`;
+  const url = `${DESKCOMM_WAHA_URL}/simplescontabeis/waha-msg/${encodeURIComponent(sessao)}/${encodeURIComponent(chatId).replace(/%40/g, "@")}/${encodeURIComponent(idCompleto).replace(/%40/g, "@")}`;
   const r = await fetch(url, { method: metodo, headers: { "Content-Type": "application/json", "X-Simples-Token": ATENDIMENTO_WAHA_SEEN_TOKEN }, body: corpo ? JSON.stringify(corpo) : undefined });
   if (!r.ok) throw new Error(`WhatsApp ${r.status}: ${(await r.text().catch(() => "")).slice(0, 200)}`);
 }
@@ -20789,7 +20795,7 @@ app.post("/api/atendimento/conversas/:id/lida", blockCliente, requireEscritorioP
     const ids = (recebidas || []).map((m: any) => String(m.external_id));
     if (!ids.length) return res.json({ ok: true, nada: true });
     const chatId = ids[0].split("_")[1];
-    const r = await fetch(`${DESKCOMM_URL}/simplescontabeis/waha-seen`, {
+    const r = await fetch(`${DESKCOMM_WAHA_URL}/simplescontabeis/waha-seen`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Simples-Token": ATENDIMENTO_WAHA_SEEN_TOKEN },
       body: JSON.stringify({ session: sessao, chatId, messageIds: ids.filter((x) => x.split("_")[1] === chatId) }),
@@ -21027,6 +21033,29 @@ app.post("/api/atendimento/conversas/:id/enviar-texto", blockCliente, requireEsc
   } catch (e: any) {
     console.error("[atendimento] falha ao enviar texto:", e.message);
     res.status(502).json({ error: `Não foi possível enviar: ${e.message}` });
+  }
+});
+// Reabrir uma conversa fechada pelo backend robô-admin. Pela sessão do agente o open-with-contact dava
+// "Sessão de canal não encontrada" (o deskcomm, pro papel 'agent', não acha a sessão de canal/WAHA via
+// RLS). O robô é admin, então reabre; depois atribui a conversa pro usuário que clicou (cai em Minhas).
+app.post("/api/atendimento/conversas/:id/reabrir", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
+  const user = (req as any).user;
+  if (!atendimentoAlgumaPermissao(user, "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  const contatoId = req.body?.contatoId ? String(req.body.contatoId) : null;
+  if (!contatoId) return res.status(400).json({ error: "Contato da conversa não informado." });
+  try {
+    const r = await deskcommRoboApi("/conversations/open-with-contact", { method: "POST", body: { contact_id: contatoId } });
+    const convId = r?.conversation_id;
+    if (!convId) throw new Error("O deskcomm não devolveu a conversa reaberta.");
+    // Atribui pro usuário que reabriu (cai em Minhas) e pausa o automático.
+    const meuId = await deskcommGarantirUsuario(user);
+    await deskcommAdmin.rpc("fn_conversation_assign", { p_organization_id: DESKCOMM_ORG_ID, p_conversation_id: convId, p_to_user_id: meuId, p_reason: "transfer", p_enforce_expected: false });
+    await deskcommAdmin.from("conversations").update({ bot_silenced_until: "infinity" }).eq("organization_id", DESKCOMM_ORG_ID).eq("id", convId);
+    res.json({ ok: true, conversation_id: convId });
+  } catch (e: any) {
+    console.error("[atendimento] falha ao reabrir:", e.message);
+    res.status(502).json({ error: `Não foi possível reabrir: ${e.message}` });
   }
 });
 // Override do ADMINISTRADOR: assumir no lugar de outro atendente (ou transferir pra uma pessoa)
