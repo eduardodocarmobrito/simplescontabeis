@@ -13359,9 +13359,17 @@ function atdLigarComposer(S){
     if(!texto) return;
     enviarBtn.disabled = true;
     try{
-      const corpoMsg = { conversation_id: S.conversaAtiva, type:'text', body: atdPrefixoSetor(S) + texto };
+      const bodyTexto = atdPrefixoSetor(S) + texto;
+      const corpoMsg = { conversation_id: S.conversaAtiva, type:'text', body: bodyTexto };
       if(S.respondendo) corpoMsg.reply_to_message_id = S.respondendo.id;
-      await dcApi('/messages', { method:'POST', body: corpoMsg });
+      try{
+        await dcApi('/messages', { method:'POST', body: corpoMsg });
+      }catch(e1){
+        // O deskcomm às vezes recusa o envio pela sessão do agente com "Conversa não encontrada" (RLS do
+        // papel 'agent' não enxerga nem a conversa assumida). Cai pro backend robô-admin, que envia
+        // preservando a sua autoria. Só cai aqui em erro mesmo — não mascara outras falhas de envio.
+        await api('/atendimento/conversas/'+encodeURIComponent(S.conversaAtiva)+'/enviar-texto', { method:'POST', body:{ texto: bodyTexto, replyTo: S.respondendo ? S.respondendo.id : null } });
+      }
       S.respondendo = null; atdRenderRespBar(S);
       input.value=''; input.style.height='';
       await atdCarregarMensagens(S, true);

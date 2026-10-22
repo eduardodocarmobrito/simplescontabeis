@@ -20992,6 +20992,37 @@ app.post("/api/atendimento/conversas/:id/liberar", blockCliente, requireEscritor
     res.status(502).json({ error: `Não foi possível liberar: ${e.message}` });
   }
 });
+// Enviar texto pelo backend robô-admin — usado como FALLBACK quando o envio pela sessão do próprio
+// agente falha com "Conversa não encontrada" (o deskcomm, pro papel 'agent', às vezes não enxerga via
+// RLS nem a conversa que a pessoa assumiu — comportamento do próprio deskcomm). O robô é admin, então
+// não tem essa trava. Tenta preservar a autoria passando sent_by_user_id = id do usuário; se o deskcomm
+// recusar esse campo, reenvia sem ele (aí fica como atendente genérico, mas a mensagem SAI).
+app.post("/api/atendimento/conversas/:id/enviar-texto", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
+  const user = (req as any).user;
+  if (!atendimentoAlgumaPermissao(user, "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  const id = String(req.params.id);
+  const texto = typeof req.body?.texto === "string" ? req.body.texto : "";
+  const replyTo = req.body?.replyTo ? String(req.body.replyTo) : null;
+  if (!texto.trim()) return res.status(400).json({ error: "Digite uma mensagem." });
+  try {
+    const { data: c } = await deskcommAdmin.from("conversations").select("id, status").eq("organization_id", DESKCOMM_ORG_ID).eq("id", id).maybeSingle();
+    if (!c) return res.status(404).json({ error: "Conversa não encontrada." });
+    if ((c as any).status === "closed" || (c as any).status === "archived") return res.status(409).json({ error: "Conversa fechada." });
+    const meuId = await deskcommGarantirUsuario(user);
+    const base: any = { conversation_id: id, type: "text", body: texto };
+    if (replyTo) base.reply_to_message_id = replyTo;
+    try {
+      await deskcommRoboApi("/messages", { method: "POST", body: { ...base, sent_by_user_id: meuId } });
+    } catch {
+      await deskcommRoboApi("/messages", { method: "POST", body: base });
+    }
+    res.json({ ok: true });
+  } catch (e: any) {
+    console.error("[atendimento] falha ao enviar texto:", e.message);
+    res.status(502).json({ error: `Não foi possível enviar: ${e.message}` });
+  }
+});
 // Override do ADMINISTRADOR: assumir no lugar de outro atendente (ou transferir pra uma pessoa)
 // mesmo quando o deskcomm recusaria (um agente só toma conversa atribuída a ele). Força a atribuição
 // pela service-role com fn_conversation_assign (p_enforce_expected=false), a MESMA função que o deskcomm
