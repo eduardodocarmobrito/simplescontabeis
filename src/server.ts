@@ -8780,18 +8780,18 @@ function parsearECachearTributos(ids: number[]): Map<number, { vIBS: number; vCB
   }
   return out;
 }
-app.get("/api/nfe/documentos", blockCliente, requirePermissao("nfe-busca", "visualizar"), (req, res) => {
-  const user = (req as any).user;
-  const empresaId = req.query.empresaId ? Number(req.query.empresaId) : null;
-  if (empresaId && !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
-  const empresasIds = empresaId ? [empresaId] : empresasVisiveis(user);
-  if (empresasIds.length === 0) return res.json({ items: [] });
+// Monta a listagem enriquecida (flags/qtd_itens/IBS-CBS/manifestação/eventos/cancelada) de
+// nfe_documentos pra um conjunto de empresas — compartilhada entre a tela do escritório
+// (/api/nfe/documentos, várias empresas) e a do cliente (/api/nfe/minha-empresa/documentos, só a
+// própria empresa) pra não duplicar essa lógica (backfill de tributos + agregação de eventos) em
+// dois lugares.
+function nfeListarDocumentosQuery(
+  user: any,
+  opts: { empresasIds: number[]; tipo?: string | null; direcao?: "emitida" | "recebida" | null; busca?: string; dataDe?: string | null; dataAte?: string | null; flag?: string | null }
+): any[] {
+  const { empresasIds, tipo, direcao, busca, dataDe, dataAte, flag } = opts;
+  if (empresasIds.length === 0) return [];
   const placeholders = empresasIds.map(() => "?").join(",");
-  const tipo = typeof req.query.tipo === "string" && req.query.tipo ? req.query.tipo : null;
-  const direcao = typeof req.query.direcao === "string" && ["emitida", "recebida"].includes(req.query.direcao) ? req.query.direcao : null;
-  const busca = typeof req.query.busca === "string" ? req.query.busca.trim() : "";
-  const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
-  const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
   // "Emitida" = o CNPJ da própria empresa (dona do certificado) é o emitente do documento; senão é
   // "recebida" — cobre tanto NF-e de compra (destinatário é a empresa) quanto casos em que a
   // Distribuição DFe devolve o documento sem o destinatário preenchido (comum no schema resumido).
@@ -8832,7 +8832,6 @@ app.get("/api/nfe/documentos", blockCliente, requirePermissao("nfe-busca", "visu
   // marcador. As flags de produto/fiscal vivem na coluna d.flags (texto separado por vírgula); as
   // outras são derivadas (reforma = IBS/CBS no XML, carrinho = tem itens, mdfe = MDF-e vinculado,
   // comentario = tem observação).
-  const flag = typeof req.query.flag === "string" && req.query.flag ? req.query.flag : null;
   if (flag) {
     if (["med", "comb", "rastro", "veiculo", "importado", "st", "dup", "pag"].includes(flag)) {
       condicoes.push(`(',' || COALESCE(d.flags,'') || ',') LIKE ?`);
@@ -8917,12 +8916,26 @@ app.get("/api/nfe/documentos", blockCliente, requirePermissao("nfe-busca", "visu
     if (tem("epec")) eventos.push("epec");
     return { manifestacao, eventos };
   };
-  res.json({
-    items: rows.map((r) => {
-      const ev = r.tipo !== "evento" ? derivarEventos(eventosPorChave.get(r.chaveAcesso) || []) : { manifestacao: null, eventos: [] };
-      return { ...r, notaCancelada: !!r.notaCancelada, manifestacao: ev.manifestacao, eventos: ev.eventos };
-    }),
+  return rows.map((r) => {
+    const ev = r.tipo !== "evento" ? derivarEventos(eventosPorChave.get(r.chaveAcesso) || []) : { manifestacao: null, eventos: [] };
+    return { ...r, notaCancelada: !!r.notaCancelada, manifestacao: ev.manifestacao, eventos: ev.eventos };
   });
+}
+app.get("/api/nfe/documentos", blockCliente, requirePermissao("nfe-busca", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = req.query.empresaId ? Number(req.query.empresaId) : null;
+  if (empresaId && !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const empresasIds = empresaId ? [empresaId] : empresasVisiveis(user);
+  const items = nfeListarDocumentosQuery(user, {
+    empresasIds,
+    tipo: typeof req.query.tipo === "string" && req.query.tipo ? req.query.tipo : null,
+    direcao: typeof req.query.direcao === "string" && ["emitida", "recebida"].includes(req.query.direcao) ? (req.query.direcao as "emitida" | "recebida") : null,
+    busca: typeof req.query.busca === "string" ? req.query.busca.trim() : "",
+    dataDe: typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null,
+    dataAte: typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null,
+    flag: typeof req.query.flag === "string" && req.query.flag ? req.query.flag : null,
+  });
+  res.json({ items });
 });
 // Contagem de verdade por empresa, sem o LIMIT 500 da listagem acima — a listagem só serve pra
 // mostrar as últimas notas na tela de detalhe, não é confiável pra somar quantos documentos cada
@@ -9131,51 +9144,30 @@ app.get("/api/nfe/minha-empresa/documentos", requireCliente, (req, res) => {
   if (!user.empresaId) return res.json({ items: [], moduloAtivo: false });
   const moduloAtivo = escritorioTemModulo(user.escritorioId, "busca_xml_nfe");
   if (!moduloAtivo) return res.json({ items: [], moduloAtivo: false });
-  const busca = typeof req.query.busca === "string" ? req.query.busca.trim() : "";
+  // Mesma lógica rica (flags/qtd_itens/IBS-CBS/manifestação/eventos) que a tela do escritório usa,
+  // só restrita à própria empresa e sempre "recebida" (é pra isso que este acesso existe) — igual
+  // pedido pelo usuário: o cliente vê os mesmos marcadores/opções da tela do escritório, sem o card
+  // de "Buscar agora"/certificado (que é administrativo, não aparece aqui de propósito).
+  const items = nfeListarDocumentosQuery(user, {
+    empresasIds: [user.empresaId],
+    direcao: "recebida",
+    busca: typeof req.query.busca === "string" ? req.query.busca.trim() : "",
+    dataDe: typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null,
+    dataAte: typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null,
+    flag: typeof req.query.flag === "string" && req.query.flag ? req.query.flag : null,
+  });
+  res.json({ items, moduloAtivo: true });
+});
+// Mesmo resumo (KPIs + Perfil das Notas + Impostos) que a tela do escritório mostra pra uma empresa
+// — reaproveita nfeCalcularDashboard, só trocando "empresaId" pelo da própria empresa do cliente.
+app.get("/api/nfe/minha-empresa/dashboard", requireCliente, (req, res) => {
+  const user = (req as any).user;
+  if (!user.empresaId) return res.json({ moduloAtivo: false });
+  const moduloAtivo = escritorioTemModulo(user.escritorioId, "busca_xml_nfe");
+  if (!moduloAtivo) return res.json({ moduloAtivo: false });
   const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
   const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
-  // Mesmo critério de "emitida"/"recebida" de /api/nfe/documentos, mas aqui só interessa "recebida"
-  // (a empresa é a destinatária) — é pra isso que este acesso do cliente foi pensado.
-  const direcaoExpr = `(CASE WHEN d.emitente_cnpj = REPLACE(REPLACE(REPLACE(e.cnpj,'.',''),'/',''),'-','') THEN 'emitida' ELSE 'recebida' END)`;
-  const condicoes: string[] = [
-    `d.escritorio_id = ?`,
-    `d.empresa_id = ?`,
-    `(d.tipo != 'evento' OR d.evento_descricao LIKE '%ancela%')`,
-    `${direcaoExpr} = 'recebida'`,
-  ];
-  const params: any[] = [user.escritorioId, user.empresaId];
-  if (dataDe) {
-    condicoes.push(`substr(d.data_emissao,1,10) >= ?`);
-    params.push(dataDe);
-  }
-  if (dataAte) {
-    condicoes.push(`substr(d.data_emissao,1,10) <= ?`);
-    params.push(dataAte);
-  }
-  if (busca) {
-    const digits = busca.replace(/\D/g, "");
-    const valorNorm = busca.replace(",", ".");
-    condicoes.push(`(d.emitente_nome LIKE ? OR d.chave_acesso LIKE ? OR d.emitente_cnpj LIKE ? OR CAST(d.valor_total AS TEXT) LIKE ?)`);
-    const likeTexto = `%${busca}%`;
-    const likeDigits = `%${digits || busca}%`;
-    params.push(likeTexto, likeTexto, likeDigits, `%${valorNorm}%`);
-  }
-  const notaCanceladaExpr = `EXISTS (
-    SELECT 1 FROM nfe_documentos ev
-    WHERE ev.escritorio_id = d.escritorio_id AND ev.tipo = 'evento' AND ev.chave_acesso = d.chave_acesso
-      AND ev.evento_descricao LIKE '%ancela%' AND ev.evento_descricao NOT LIKE '%CT-e%' AND ev.evento_descricao NOT LIKE '%MDF-e%'
-  )`;
-  const rows = sqlite
-    .prepare(
-      `SELECT d.id, d.tipo, d.chave_acesso as chaveAcesso, d.emitente_cnpj as emitenteCnpj, d.emitente_nome as emitenteNome,
-              d.valor_total as valorTotal, d.data_emissao as dataEmissao,
-              (CASE WHEN d.tipo = 'evento' THEN 0 ELSE ${notaCanceladaExpr} END) as notaCancelada
-       FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id
-       WHERE ${condicoes.join(" AND ")}
-       ORDER BY d.data_emissao DESC, d.id DESC LIMIT 500`
-    )
-    .all(...params) as any[];
-  res.json({ items: rows.map((r) => ({ ...r, notaCancelada: !!r.notaCancelada })), moduloAtivo: true });
+  res.json({ moduloAtivo: true, ...nfeCalcularDashboard(user, user.empresaId, dataDe, dataAte) });
 });
 app.get("/api/nfe/minha-empresa/documentos/:id/xml", requireCliente, (req, res) => {
   const user = (req as any).user;
