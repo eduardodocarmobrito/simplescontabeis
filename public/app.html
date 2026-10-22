@@ -149,7 +149,9 @@
 
   .modal-bg{position:fixed; inset:0; background:rgba(20,30,26,.35); display:none; align-items:center; justify-content:center; z-index:1000; padding:20px;}
   .modal-bg.open{display:flex;}
-  .modal{background:var(--surface); border-radius:var(--radius); box-shadow:0 10px 40px rgba(20,30,26,.25); padding:24px 26px; width:520px; max-width:100%; max-height:88vh; overflow-y:auto;}
+  .modal{position:relative; background:var(--surface); border-radius:var(--radius); box-shadow:0 10px 40px rgba(20,30,26,.25); padding:24px 26px; width:520px; max-width:100%; max-height:88vh; overflow-y:auto;}
+  .modal-close-x{position:absolute; top:10px; right:10px; width:28px; height:28px; border:none; background:transparent; border-radius:50%; font-size:18px; line-height:1; color:var(--ink-soft); cursor:pointer;}
+  .modal-close-x:hover{background:var(--rule); color:var(--ink);}
   .modal h3{margin:0 0 16px; font-size:17px;}
   .modal-actions{display:flex; justify-content:flex-end; gap:8px; margin-top:18px;}
   /* Drawer lateral (detalhe da nota, estilo Espião): desliza da direita */
@@ -1033,10 +1035,10 @@ function setupCidadeIbge(comboId, apiPath, onEscolha){
   };
 }
 
-function openModal(html, larguraMax){ const m=document.getElementById('modalBody'); m.innerHTML=html; m.style.width = larguraMax || ''; document.getElementById('modalBg').classList.add('open'); }
+function openModal(html, larguraMax){ const m=document.getElementById('modalBody'); m.innerHTML='<button type="button" class="modal-close-x" onclick="closeModal()" title="Fechar" aria-label="Fechar">×</button>'+html; m.style.width = larguraMax || ''; document.getElementById('modalBg').classList.add('open'); }
 function closeModal(){ document.getElementById('modalBg').classList.remove('open'); document.getElementById('modalBody').innerHTML=''; }
 document.getElementById('modalBg').addEventListener('click', e=>{ if(e.target.id==='modalBg') closeModal(); });
-function openDrawer(html){ document.getElementById('drawerBody').innerHTML=html; document.getElementById('drawerBg').classList.add('open'); }
+function openDrawer(html){ document.getElementById('drawerBody').innerHTML='<button type="button" class="modal-close-x" onclick="closeDrawer()" title="Fechar" aria-label="Fechar">×</button>'+html; document.getElementById('drawerBg').classList.add('open'); }
 function closeDrawer(){ document.getElementById('drawerBg').classList.remove('open'); document.getElementById('drawerBody').innerHTML=''; }
 document.getElementById('drawerBg').addEventListener('click', e=>{ if(e.target.id==='drawerBg') closeDrawer(); });
 
@@ -3099,7 +3101,7 @@ async function renderEmpresasPendencias(){
   box.innerHTML = `
     <p class="subtitle" style="margin-top:-6px;">Empresas ativas que ainda não têm certificado digital anexado ou estão sem alguma das licenças mínimas (Alvará, Vigilância Sanitária, Corpo de Bombeiros e SEMMA). Vale ter ao menos um arquivo de cada licença, de qualquer ano.</p>
     <div class="row" style="gap:8px; align-items:center; margin-bottom:10px; flex-wrap:wrap;">
-      <div class="field" style="max-width:360px; flex:1; min-width:260px; margin-bottom:0;">${comboSelectHtml('pendFiltroCombo','Todas as pendências…')}</div>
+      <div class="field" style="max-width:300px; flex:1; min-width:220px; margin-bottom:0;"><select id="pendFiltroSelect"></select></div>
       <div class="field" style="max-width:360px; flex:1; min-width:260px; margin-bottom:0;"><input type="text" id="pendBusca" placeholder="Buscar por nome ou CNPJ…" autocomplete="off"></div>
       <button class="btn" id="pendExportarPdf" title="Gera um PDF com todas as empresas com pendência.">📄 Exportar PDF</button>
     </div>
@@ -3118,17 +3120,16 @@ async function renderEmpresasPendencias(){
     try{ await api('/empresas/pendencias-documentos/config', { method:'PUT', body:{ exigirPf } }); toast('Pendências de pessoa física salvas.','ok'); renderEmpresasPendencias(); }
     catch(e){ toast(e.message,'err'); }
   });
-  // Filtro em combo (padrão do site, igual ao campo Empresa): escolhido = EMP_PEND_FILTRO.
+  // Só 3 opções fixas — <select> comum (um clique, sem digitar) é mais direto aqui do que o combo de
+  // busca (esse é pro padrão de listas grandes, tipo Empresa — numa lista de 3 fica só no caminho).
   const filtroItens = [
     { id:'todas', label:`Todas as pendências (${pend.length})` },
     { id:'cert', label:`Sem certificado digital (${nCert})` },
     { id:'lic', label:`Sem alguma licença (${nLic})` },
   ];
-  setupComboSelect('pendFiltroCombo', filtroItens, id=>{ EMP_PEND_FILTRO = id || 'todas'; desenhar(); });
-  { const atual = filtroItens.find(i=>i.id===EMP_PEND_FILTRO) || filtroItens[0];
-    const root = document.getElementById('pendFiltroCombo');
-    root.querySelector('.combo-input').value = atual.label;
-    root.querySelector('.combo-value').value = atual.id; }
+  const selFiltro = document.getElementById('pendFiltroSelect');
+  selFiltro.innerHTML = filtroItens.map(i=>`<option value="${i.id}" ${i.id===EMP_PEND_FILTRO?'selected':''}>${esc(i.label)}</option>`).join('');
+  selFiltro.addEventListener('change', ()=>{ EMP_PEND_FILTRO = selFiltro.value || 'todas'; desenhar(); });
   function desenhar(){
     const termo = normalizaTxt(document.getElementById('pendBusca').value).trim();
     const f = EMP_PEND_FILTRO;
