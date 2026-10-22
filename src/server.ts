@@ -2985,6 +2985,32 @@ async function enviarEmail(escritorioId: number, opts: { to: string[]; subject: 
 // ========================= APP =========================
 const app = express();
 app.set("trust proxy", 1);
+// Interruptor de "mudamos de endereço" — pensado pra ligar só no Railway depois da migração pra VPS
+// (REDIRECIONAR_PARA=https://simplescontabeis.com.br no ambiente do Railway, sem mexer em nada na
+// VPS). Responde QUALQUER rota com uma página pedindo pra clicar no link novo, em vez de rodar o app
+// de verdade — não depende de banco nem de nenhum outro setup abaixo, por isso fica logo aqui no
+// topo, antes de tudo o mais.
+const REDIRECIONAR_PARA = process.env.REDIRECIONAR_PARA;
+if (REDIRECIONAR_PARA) {
+  app.use((_req, res) => {
+    res.status(200).send(`<!doctype html>
+<html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Simples Contábeis mudou de endereço</title>
+<meta http-equiv="refresh" content="3;url=${REDIRECIONAR_PARA}">
+<style>
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f4f5f7;margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;}
+  .card{background:#fff;border-radius:12px;box-shadow:0 2px 16px rgba(0,0,0,.08);padding:40px;max-width:420px;text-align:center;}
+  h1{font-size:20px;margin:0 0 12px;}
+  p{color:#555;font-size:14.5px;line-height:1.5;margin:0 0 20px;}
+  a.btn{display:inline-block;background:#4f46e5;color:#fff;text-decoration:none;padding:12px 24px;border-radius:8px;font-weight:600;}
+</style></head>
+<body><div class="card">
+  <h1>Mudamos de endereço 🎉</h1>
+  <p>O Simples Contábeis agora está em um novo link. Você será redirecionado automaticamente em alguns segundos — ou clique no botão abaixo.</p>
+  <a class="btn" href="${REDIRECIONAR_PARA}">Ir para o novo site</a>
+</div></body></html>`);
+  });
+}
 // Achado em auditoria (2026-10-12): nenhum header de segurança global — sem helmet, sem nada manual.
 // Adiciona só o que é seguro de ligar sem testar página por página (não mexe em script/style/CSS, só
 // cabeçalhos puramente defensivos):
