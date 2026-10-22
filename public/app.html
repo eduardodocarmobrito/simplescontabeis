@@ -2265,6 +2265,7 @@ const CARD_TIPOS_INFO = {
   das_atraso: { label:'DAS em Atraso', subtitulo:'Competências não entregues' },
   situacao_fiscal: { label:'Situação Fiscal', subtitulo:'Empresas com pendência' },
   caixapostal_nao_lida: { label:'Mensagens no e-CAC', subtitulo:'Empresas com mensagem não lida na Caixa Postal' },
+  pesquisa_pagamento: { label:'Pagamento DAS/DCTF-Web', subtitulo:'Cliente respondeu que não pagou, ou não respondeu a pesquisa' },
   checklist_atraso: { label:'Documentos Pendentes', subtitulo:'Competência anterior, após o prazo, sem envio do cliente' },
   solicitacoes_pendentes: { label:'Solicitações dos Clientes', subtitulo:'Aguardando retorno do escritório' },
   envio_atraso: { label:'Modelo de Envio em Atraso', subtitulo:'Competências não entregues', multi:true,
@@ -2477,6 +2478,10 @@ function cardDetalheModal(c){
           STATE.page = 'envio'; renderNav();
           abrirEnvioGrade(Number(tr.dataset.atribuicao), false);
         }));
+      } else if(tipo==='pesquisa_pagamento'){
+        box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Alerta</th></tr></thead><tbody>
+          ${items.map(i=>`<tr><td>${esc(i.empresaNome)}</td><td>${esc(i.alerta)}</td></tr>`).join('')}
+        </tbody></table>`;
       } else {
         box.innerHTML = '<div class="empty-state">Tipo de card desconhecido.</div>';
       }
@@ -7884,6 +7889,17 @@ async function pageIntegraContador(deepLinkEmpresaId){
         <p style="font-size:12px; color:var(--ink-soft); margin:0 0 10px;">A busca continua achando e anexando as guias (DAS, DARF DCTF-Web, Guia FGTS, parcelas) em Envio de Documentos normalmente mesmo desligado — isto só controla se o site manda sozinho (e-mail/WhatsApp) assim que acha a guia pela primeira vez, ou se fica esperando você enviar na mão.</p>
         <label class="checkbox-row"><input type="checkbox" id="icEnvioAutomatico" ${cfg.envioAutomatico?'checked':''} ${podeEditar?'':'disabled'}> Enviar automaticamente pro cliente assim que achar a guia</label>
       </div>
+      <div style="margin-top:18px; padding-top:14px; border-top:1px solid var(--rule);">
+        <div style="font-weight:600; margin-bottom:4px;">Pesquisa de pagamento (WhatsApp)</div>
+        <p style="font-size:12px; color:var(--ink-soft); margin:0 0 10px;">Alguns dias depois do vencimento (DAS) ou da geração da guia (DARF DCTF-Web), o sistema pergunta pro cliente no WhatsApp se ele já pagou — a resposta aparece no card "Pagamento DAS/DCTF-Web" do Início e no relatório, em Relatórios.</p>
+        <label class="checkbox-row"><input type="checkbox" id="icPesquisaPagamentoAtiva" ${cfg.pesquisaPagamentoAtiva?'checked':''} ${podeEditar?'':'disabled'}> Perguntar automaticamente se o cliente já pagou</label>
+        <div class="field" style="max-width:280px; margin-top:8px;">
+          <label>Quantos dias depois disparar a pergunta</label>
+          <select id="icPesquisaPagamentoDias" ${podeEditar?'':'disabled'}>
+            ${[2,3,5,7,10,15].map(d=>`<option value="${d}" ${Number(cfg.pesquisaPagamentoDias)===d?'selected':''}>${d} dias</option>`).join('')}
+          </select>
+        </div>
+      </div>
     `;
     if(!podeEditar) body.querySelectorAll('input').forEach(el=>el.disabled=true);
     if(podeEditar) document.getElementById('btnIcSalvarConfig').addEventListener('click', async (ev)=>{
@@ -7940,6 +7956,18 @@ async function pageIntegraContador(deepLinkEmpresaId){
       catch(e){ toast(e.message,'err'); chk.checked = !chk.checked; }
       finally{ chk.disabled = false; }
     });
+    if(podeEditar){
+      const salvarPesquisaPagamento = async ()=>{
+        const chk = document.getElementById('icPesquisaPagamentoAtiva');
+        const sel = document.getElementById('icPesquisaPagamentoDias');
+        chk.disabled = true; sel.disabled = true;
+        try{ await api('/integracontador/pesquisa-pagamento', { method:'PUT', body:{ ativa: chk.checked, dias: Number(sel.value) } }); toast('Pesquisa de pagamento salva.','ok'); }
+        catch(e){ toast(e.message,'err'); }
+        finally{ chk.disabled = false; sel.disabled = false; }
+      };
+      document.getElementById('icPesquisaPagamentoAtiva').addEventListener('change', salvarPesquisaPagamento);
+      document.getElementById('icPesquisaPagamentoDias').addEventListener('change', salvarPesquisaPagamento);
+    }
     if(podeEditar){
       const selFreq = document.getElementById('icSitfisFreq');
       let freqAnterior = selFreq.value;
@@ -10596,7 +10624,7 @@ function distratoModeloDrawer(config){
 }
 
 // ===================== Relatórios =====================
-const TIPOS_REL = [ {v:'balanco', l:'Balanço'}, {v:'balancete', l:'Balancete'}, {v:'dre', l:'DRE'}, {v:'faturamento', l:'Relação de Faturamento'}, {v:'razao', l:'Razão'}, {v:'comparativo', l:'Comparativo de Movimento'}, {v:'entradas_saidas', l:'Relatório de Entradas/Saídas'}, {v:'programacao_ferias', l:'Programação de Férias'}, {v:'folha', l:'Folha'}, {v:'retencoes', l:'Retenções de Impostos'} ];
+const TIPOS_REL = [ {v:'balanco', l:'Balanço'}, {v:'balancete', l:'Balancete'}, {v:'dre', l:'DRE'}, {v:'faturamento', l:'Relação de Faturamento'}, {v:'razao', l:'Razão'}, {v:'comparativo', l:'Comparativo de Movimento'}, {v:'entradas_saidas', l:'Relatório de Entradas/Saídas'}, {v:'programacao_ferias', l:'Programação de Férias'}, {v:'folha', l:'Folha'}, {v:'retencoes', l:'Retenções de Impostos'}, {v:'pesquisa_pagamento', l:'Pagamento DAS/DCTF-Web'} ];
 let REL_TAB='balanco';
 async function pageRelatorios(){
   // Colaborador só vê as abas liberadas no cadastro dele (lista vazia = todas).
@@ -10617,6 +10645,7 @@ async function renderRelTab(){
   const { items: empresas } = await api('/relatorios/empresas');
   const box = document.getElementById('relContent');
   if(REL_TAB==='retencoes'){ renderRelRetencoes(box, empresas); return; }
+  if(REL_TAB==='pesquisa_pagamento'){ renderRelPesquisaPagamento(box, empresas); return; }
   if(REL_TAB==='balanco'||REL_TAB==='balancete'||REL_TAB==='dre'||REL_TAB==='faturamento'||REL_TAB==='razao'||REL_TAB==='comparativo'||REL_TAB==='entradas_saidas'||REL_TAB==='programacao_ferias'){ renderRelDominio(box, empresas, REL_TAB); return; }
   box.innerHTML = `
     <div class="row" style="margin-bottom:16px;">
@@ -10753,6 +10782,60 @@ function renderRelRetencoes(box, empresas){
   document.getElementById('relRetDataDe').addEventListener('change', gerar);
   document.getElementById('relRetDataAte').addEventListener('change', gerar);
   gerar(); // carga automática ao abrir a aba — já vem com a grade da competência anterior
+}
+// Pesquisa de pagamento (DAS/DARF DCTF-Web) — histórico das perguntas automáticas mandadas por
+// WhatsApp (ver integraContadorEnviarPesquisasPagamento no server) e a resposta de cada cliente.
+const PESQ_PAG_RESPOSTA_LABEL = { pago:'Pago', nao_pago:'Não pago', pendente:'Aguardando resposta' };
+function renderRelPesquisaPagamento(box, empresas){
+  box.innerHTML = `
+    <div class="row" style="margin-bottom:16px; align-items:flex-end; gap:12px; flex-wrap:wrap;">
+      <div class="field" style="margin-bottom:0; min-width:260px;"><label>Cliente (opcional)</label>${comboSelectHtml('relPagEmpresaCombo', 'Todas as empresas…')}</div>
+      <div class="field" style="margin-bottom:0; max-width:180px;"><label>Guia</label>
+        <select id="relPagTipo"><option value="">Todas</option><option value="das">DAS</option><option value="darf_dctfweb">DARF DCTF-Web</option></select>
+      </div>
+      <div class="field" style="margin-bottom:0; max-width:220px;"><label>Resposta</label>
+        <select id="relPagResposta"><option value="">Todas</option><option value="pago">Pago</option><option value="nao_pago">Não pago</option><option value="pendente">Aguardando resposta</option></select>
+      </div>
+      <button class="btn primary" id="btnRelPagGerar">Gerar</button>
+    </div>
+    <p style="font-size:12.5px; color:var(--ink-soft); margin:-10px 0 14px;">Depois de alguns dias do vencimento (DAS) ou da geração da guia (DARF DCTF-Web), o sistema pergunta pro cliente no WhatsApp se ele já pagou — configurável em Configurações › Integra Contador.</p>
+    <div id="relPagResultado" class="card"><div class="empty-state">Carregando…</div></div>
+  `;
+  setupComboSelect('relPagEmpresaCombo', empresas.map(e=>({id:e.id, label:empresaComboLabel(e)})), ()=>gerar());
+  async function gerar(){
+    const resultBox = document.getElementById('relPagResultado');
+    resultBox.innerHTML = '<div class="empty-state">Carregando…</div>';
+    const params = new URLSearchParams();
+    const empresaId = document.querySelector('#relPagEmpresaCombo .combo-value').value || '';
+    const tipo = document.getElementById('relPagTipo').value;
+    const resposta = document.getElementById('relPagResposta').value;
+    if(empresaId) params.set('empresaId', empresaId);
+    if(tipo) params.set('tipo', tipo);
+    if(resposta) params.set('resposta', resposta);
+    try{
+      const { items } = await api('/relatorios/pesquisa-pagamento?'+params.toString());
+      if(!items.length){ resultBox.innerHTML = '<div class="empty-state">Nenhuma pesquisa de pagamento encontrada.</div>'; return; }
+      resultBox.innerHTML = `
+        <div style="overflow-x:auto;">
+        <table class="data-table">
+          <thead><tr><th>Empresa</th><th>Guia</th><th>Competência</th><th>Enviada em</th><th>Resposta</th><th>Respondida em</th></tr></thead>
+          <tbody>
+            ${items.map(i=>{
+              const statusKey = i.resposta || 'pendente';
+              const tagClass = i.resposta==='pago' ? 'ok' : i.resposta==='nao_pago' ? 'bad' : 'muted';
+              const mes = i.periodoApuracao.slice(4,6), ano = i.periodoApuracao.slice(0,4);
+              return `<tr><td>${esc(i.empresaNome)}</td><td>${i.tipo==='das'?'DAS':'DARF DCTF-Web'}</td><td>${mes}/${ano}</td><td>${fmtDateHora(i.enviadaEm)}</td><td><span class="tag ${tagClass}">${PESQ_PAG_RESPOSTA_LABEL[statusKey]}</span></td><td>${i.respondidaEm?fmtDateHora(i.respondidaEm):'—'}</td></tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+        </div>
+      `;
+    }catch(e){ resultBox.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; }
+  }
+  document.getElementById('btnRelPagGerar').addEventListener('click', gerar);
+  document.getElementById('relPagTipo').addEventListener('change', gerar);
+  document.getElementById('relPagResposta').addEventListener('change', gerar);
+  gerar();
 }
 // Balanço/DRE/Balancete — alimentados pela importação automática de PDF do OneDrive (Configurações ›
 // Domínio Web). Os documentos já são envio_documentos de verdade, então baixar/reenviar e-mail/

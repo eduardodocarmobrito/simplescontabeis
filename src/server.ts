@@ -1163,6 +1163,25 @@ sqlite.exec(`
     relevancia TEXT,
     atualizado_em TEXT DEFAULT (datetime('now'))
   );
+  -- Pesquisa de pagamento por WhatsApp: pergunta automaticamente pro cliente se já pagou o DAS ou a
+  -- guia DARF da DCTF-Web, alguns dias depois do vencimento (DAS) ou da geração da guia (DCTF-Web,
+  -- que a Receita não devolve vencimento pronto). Uma linha por empresa+tipo+competência (nunca
+  -- repete a pergunta pra mesma guia). "encerrada" fecha o ciclo (respondeu ou estourou o prazo sem
+  -- resposta) — ver integraContadorEnviarPesquisasPagamento/integraContadorColetarPesquisasPagamento.
+  CREATE TABLE IF NOT EXISTS integracontador_pesquisas_pagamento (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+    escritorio_id INTEGER NOT NULL REFERENCES escritorios(id),
+    tipo TEXT NOT NULL, -- 'das' | 'darf_dctfweb'
+    periodo_apuracao TEXT NOT NULL, -- AAAAMM
+    documento_id INTEGER REFERENCES integracontador_documentos(id),
+    conversation_id TEXT,
+    enviada_em TEXT NOT NULL,
+    resposta TEXT, -- 'pago' | 'nao_pago' | NULL (sem resposta ainda ou nunca respondeu)
+    respondida_em TEXT,
+    encerrada INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(empresa_id, tipo, periodo_apuracao)
+  );
   -- Parcelamento de DAS (PARCSN) vinculado por empresa — a adesão em si é feita pelo escritório no
   -- e-CAC (a API não permite simular nem aderir), aqui só guardamos o parcelamento JÁ CONCEDIDO que o
   -- escritório escolheu vincular, pra rotina automática buscar e anexar a guia de cada parcela todo
@@ -3652,7 +3671,7 @@ app.put("/api/users/:id/permissoes", requireAdmin, (req, res) => {
 });
 const CONFIG_ABAS_VALIDAS = ["dominio", "email", "whatsapp", "fgts-digital", "nfse-agendamento", "painel-tv", "envio-docs", "atendimento", "assinatura-plataforma"];
 // Abas de Relatórios que cada colaborador pode ver. Sem nenhuma linha = vê todas (padrão de antes).
-const RELATORIOS_ABAS_VALIDAS = ["balanco", "balancete", "dre", "faturamento", "razao", "comparativo", "entradas_saidas", "programacao_ferias", "folha", "retencoes"];
+const RELATORIOS_ABAS_VALIDAS = ["balanco", "balancete", "dre", "faturamento", "razao", "comparativo", "entradas_saidas", "programacao_ferias", "folha", "retencoes", "pesquisa_pagamento"];
 sqlite.exec(`CREATE TABLE IF NOT EXISTS colaborador_relatorios_abas (user_id INTEGER NOT NULL, aba TEXT NOT NULL, PRIMARY KEY (user_id, aba))`);
 app.get("/api/users/:id/relatorios-abas", requireAdmin, (req, res) => {
   if (!pertenceAoEscritorio(req, Number(req.params.id))) return res.status(404).json({ error: "Usuário não encontrado." });
@@ -11318,6 +11337,8 @@ app.get("/api/integracontador/config", blockCliente, requirePermissao("integraco
     ativo: !!c.ativo,
     envioAutomatico: c.envio_automatico === undefined ? true : !!c.envio_automatico,
     sitfisFrequenciaDias: c.sitfis_frequencia_dias ?? 7,
+    pesquisaPagamentoAtiva: c.pesquisa_pagamento_ativa === undefined ? true : !!c.pesquisa_pagamento_ativa,
+    pesquisaPagamentoDias: c.pesquisa_pagamento_dias ?? 5,
     ultimoErro: c.ultimo_erro || null,
     agenda: getAgendaBusca(user.escritorioId),
   });
@@ -11358,6 +11379,17 @@ app.put("/api/integracontador/envio-automatico", blockCliente, requireAdmin, (re
   const user = (req as any).user;
   sqlite.prepare(`INSERT OR IGNORE INTO integracontador_config (escritorio_id) VALUES (?)`).run(user.escritorioId);
   sqlite.prepare(`UPDATE integracontador_config SET envio_automatico = ? WHERE escritorio_id = ?`).run(req.body?.ativo ? 1 : 0, user.escritorioId);
+  res.json({ ok: true });
+});
+// Pesquisa de pagamento (WhatsApp) — liga/desliga e ajusta quantos dias depois do vencimento
+// (DAS)/geração (DARF DCTF-Web) a pergunta é disparada. Ver integraContadorEnviarPesquisasPagamento.
+app.put("/api/integracontador/pesquisa-pagamento", blockCliente, requireAdmin, (req, res) => {
+  const user = (req as any).user;
+  const dias = Number(req.body?.dias);
+  if (!Number.isInteger(dias) || dias < 1 || dias > 60) return res.status(400).json({ error: "Informe de 1 a 60 dias." });
+  sqlite.prepare(`INSERT OR IGNORE INTO integracontador_config (escritorio_id) VALUES (?)`).run(user.escritorioId);
+  sqlite.prepare(`UPDATE integracontador_config SET pesquisa_pagamento_ativa = ?, pesquisa_pagamento_dias = ? WHERE escritorio_id = ?`)
+    .run(req.body?.ativa ? 1 : 0, dias, user.escritorioId);
   res.json({ ok: true });
 });
 // Achado em auditoria (2026-10-12): só exigia "integracontador:editar" — qualquer Colaborador com essa
@@ -12500,6 +12532,12 @@ sqlite.exec(`CREATE TABLE IF NOT EXISTS integracontador_busca_slots (slot TEXT P
     sqlite.exec(`ALTER TABLE integracontador_config ADD COLUMN envio_automatico INTEGER NOT NULL DEFAULT 1`);
     sqlite.exec(`UPDATE integracontador_config SET envio_automatico = 0`);
   }
+  // Pesquisa de pagamento (DAS/DARF DCTF-Web) por WhatsApp — nasce LIGADA com 5 dias de prazo (padrão
+  // razoável: dá tempo do cliente pagar sem ser cobrado no dia seguinte ao vencimento), mas some
+  // escritório que nunca configurou nada continua sem nenhuma pesquisa disparada, porque a rotina só
+  // considera guias com data_vencimento/criado_em já existente — nada retroage sozinho de surpresa.
+  if (!colsIc.some((c) => c.name === "pesquisa_pagamento_ativa")) sqlite.exec(`ALTER TABLE integracontador_config ADD COLUMN pesquisa_pagamento_ativa INTEGER NOT NULL DEFAULT 1`);
+  if (!colsIc.some((c) => c.name === "pesquisa_pagamento_dias")) sqlite.exec(`ALTER TABLE integracontador_config ADD COLUMN pesquisa_pagamento_dias INTEGER NOT NULL DEFAULT 5`);
 }
 function agoraBrasiliaTextos() {
   const a = agoraBrasilia();
@@ -12560,6 +12598,123 @@ setInterval(() => {
   console.log(`[Integra Contador] busca agendada #${pendente.id} iniciada`);
   integraContadorExecutarBuscaAutomatica().catch((e) => console.error("Erro na busca agendada do Integra Contador:", e.message));
 }, 60_000);
+
+// ---------- Pesquisa de pagamento (DAS/DARF DCTF-Web) por WhatsApp ----------
+// Pedido do usuário: perguntar direto pro cliente se ele já pagou a guia, em vez de só confiar no que
+// a Receita devolve (pode ter pago por outro meio, ou a Receita ainda não processou) — mesmo espírito
+// da pesquisa de satisfação (atendimento_pesquisas) e do lembrete de compromisso (atendimento_lembretes):
+// manda uma pergunta de resposta numérica pela MESMA conversa de WhatsApp do cliente, pelo robô de
+// automações, e lê a primeira resposta reconhecida.
+// Gatilho: pra DAS, data_vencimento + N dias (N configurável, padrão 5); pra DARF DCTF-Web não há
+// vencimento devolvido pela API (ver GuiaDctfWeb em integracontador.ts), então usa a data em que a
+// guia foi gerada (criado_em) + N dias como aproximação razoável.
+function integraContadorPesquisaPagamentoGatilho(doc: { tipo: string; dataVencimento: string | null; criadoEm: string }): string | null {
+  const base = doc.tipo === "das" ? doc.dataVencimento : String(doc.criadoEm || "").slice(0, 10);
+  if (!base) return null;
+  const d = new Date(base + "T00:00:00");
+  if (isNaN(d.getTime())) return null;
+  return d.toISOString().slice(0, 10);
+}
+async function integraContadorEnviarPesquisasPagamento() {
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return;
+  const hojeIso = new Date().toISOString().slice(0, 10);
+  const cfgCache = new Map<number, any>();
+  try {
+    // Uma linha por doc, mas pode haver mais de um documento (ex.: DAS recalculado) pra mesma
+    // empresa+tipo+competência — ORDER BY criado_em DESC + "primeira vez que a chave aparece" (no
+    // laço abaixo) fica só com o mais recente, que é o que vale pra perguntar.
+    const docs = sqlite
+      .prepare(
+        `SELECT d.id as docId, d.empresa_id as empresaId, d.escritorio_id as escritorioId, d.tipo, d.periodo_apuracao as periodoApuracao,
+                d.data_vencimento as dataVencimento, d.criado_em as criadoEm, e.nome as empresaNome
+         FROM integracontador_documentos d JOIN empresas e ON e.id = d.empresa_id AND e.ativo = 1
+         WHERE d.tipo IN ('das', 'darf_dctfweb')
+         ORDER BY d.criado_em DESC`
+      )
+      .all() as any[];
+    const vistos = new Set<string>();
+    for (const doc of docs) {
+      const chave = `${doc.empresaId}:${doc.tipo}:${doc.periodoApuracao}`;
+      if (vistos.has(chave)) continue;
+      vistos.add(chave);
+      if (sqlite.prepare(`SELECT 1 FROM integracontador_pesquisas_pagamento WHERE empresa_id = ? AND tipo = ? AND periodo_apuracao = ?`).get(doc.empresaId, doc.tipo, doc.periodoApuracao)) continue;
+      if (!escritorioTemModulo(doc.escritorioId, "envio_whatsapp")) continue;
+      if (!cfgCache.has(doc.escritorioId)) cfgCache.set(doc.escritorioId, getIntegraContadorConfig(doc.escritorioId));
+      const cfg = cfgCache.get(doc.escritorioId);
+      if (cfg.pesquisa_pagamento_ativa === 0) continue;
+      const gatilho = integraContadorPesquisaPagamentoGatilho(doc);
+      if (!gatilho) continue;
+      const diasConfig = Math.max(1, Number(cfg.pesquisa_pagamento_dias) || 5);
+      const dispararEm = new Date(gatilho + "T00:00:00");
+      dispararEm.setDate(dispararEm.getDate() + diasConfig);
+      if (hojeIso < dispararEm.toISOString().slice(0, 10)) continue;
+      const contato = sqlite
+        .prepare(`SELECT nome, telefone FROM empresa_contatos WHERE empresa_id = ? AND receber_whatsapp = 1 AND telefone IS NOT NULL AND telefone != '' ORDER BY id LIMIT 1`)
+        .get(doc.empresaId) as any;
+      if (!contato) continue;
+      const mes = doc.periodoApuracao.slice(4, 6), ano = doc.periodoApuracao.slice(0, 4);
+      const rotuloGuia = doc.tipo === "das" ? "DAS (Simples Nacional)" : "DARF da DCTF-Web";
+      const texto = `Olá! Aqui é da Simples Contábeis 👋\n\nSobre o *${rotuloGuia}* da competência ${mes}/${ano} — você já pagou essa guia?\n\nResponda *1* para SIM, já paguei, ou *2* para NÃO, ainda não paguei.`;
+      try {
+        const conversationId = await deskcommRoboEnviarTexto(contato.telefone, doc.empresaNome, texto);
+        sqlite
+          .prepare(`INSERT INTO integracontador_pesquisas_pagamento (empresa_id, escritorio_id, tipo, periodo_apuracao, documento_id, conversation_id, enviada_em) VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`)
+          .run(doc.empresaId, doc.escritorioId, doc.tipo, doc.periodoApuracao, doc.docId, conversationId);
+      } catch (e: any) {
+        console.error(`[pesquisa pagamento] falha ao enviar pra empresa ${doc.empresaId} (${doc.tipo} ${doc.periodoApuracao}):`, e.message);
+      }
+    }
+  } catch (e: any) {
+    console.error("[pesquisa pagamento] envio:", e.message);
+  }
+}
+async function integraContadorColetarPesquisasPagamento() {
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return;
+  try {
+    const abertas = sqlite.prepare(`SELECT * FROM integracontador_pesquisas_pagamento WHERE resposta IS NULL AND encerrada = 0`).all() as any[];
+    for (const p of abertas) {
+      const venceu = Date.now() - new Date(p.enviada_em).getTime() > 5 * 86400_000;
+      const resp = await deskcommPrimeiraRespostaDoCliente(p.conversation_id, p.enviada_em);
+      if (resp) {
+        const txt = String(resp.body || "").trim();
+        let resposta: "pago" | "nao_pago" | null = null;
+        if (/^(1|sim|s|pago|paguei|j[aá]\s*paguei)\.?$/i.test(txt)) resposta = "pago";
+        else if (/^(2|n[aã]o|n|nao\s*paguei|n[aã]o\s*paguei)\.?$/i.test(txt)) resposta = "nao_pago";
+        if (resposta) {
+          sqlite.prepare(`UPDATE integracontador_pesquisas_pagamento SET resposta = ?, respondida_em = ?, encerrada = 1 WHERE id = ?`).run(resposta, resp.created_at, p.id);
+        } else if (venceu) {
+          // Respondeu outra coisa sem nunca mandar algo reconhecível, e já passou do prazo: fecha sem nota.
+          sqlite.prepare(`UPDATE integracontador_pesquisas_pagamento SET encerrada = 1 WHERE id = ?`).run(p.id);
+        }
+      } else if (venceu) {
+        sqlite.prepare(`UPDATE integracontador_pesquisas_pagamento SET encerrada = 1 WHERE id = ?`).run(p.id);
+      }
+    }
+  } catch (e: any) {
+    console.error("[pesquisa pagamento] coleta:", e.message);
+  }
+}
+setInterval(() => integraContadorEnviarPesquisasPagamento(), 5 * 60_000);
+setInterval(() => integraContadorColetarPesquisasPagamento(), 60_000);
+app.get("/api/relatorios/pesquisa-pagamento", blockCliente, requirePermissao("relatorios", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const visiveis = new Set(empresasVisiveis(user));
+  const tipo = typeof req.query.tipo === "string" && ["das", "darf_dctfweb"].includes(req.query.tipo) ? req.query.tipo : null;
+  const resposta = typeof req.query.resposta === "string" && ["pago", "nao_pago", "pendente"].includes(req.query.resposta) ? req.query.resposta : null;
+  const empresaIdFiltro = req.query.empresaId ? Number(req.query.empresaId) : null;
+  let sql = `SELECT p.id, p.empresa_id as empresaId, e.nome as empresaNome, p.tipo, p.periodo_apuracao as periodoApuracao,
+                    p.enviada_em as enviadaEm, p.resposta, p.respondida_em as respondidaEm, p.encerrada
+             FROM integracontador_pesquisas_pagamento p JOIN empresas e ON e.id = p.empresa_id
+             WHERE p.escritorio_id = ?`;
+  const params: any[] = [user.escritorioId];
+  if (tipo) { sql += ` AND p.tipo = ?`; params.push(tipo); }
+  if (resposta === "pendente") sql += ` AND p.resposta IS NULL`;
+  else if (resposta) { sql += ` AND p.resposta = ?`; params.push(resposta); }
+  if (empresaIdFiltro) { sql += ` AND p.empresa_id = ?`; params.push(empresaIdFiltro); }
+  sql += ` ORDER BY p.enviada_em DESC`;
+  const items = (sqlite.prepare(sql).all(...params) as any[]).filter((r) => visiveis.has(r.empresaId));
+  res.json({ items });
+});
 
 // Modelos de serviço reutilizáveis — configurados uma vez (código de tributação, ISSQN, retenções)
 // e escolhidos na hora da emissão, que só pede descrição e valor.
@@ -16186,7 +16341,7 @@ app.get("/api/financeiro/resumo", blockCliente, requirePermissao("financeiro", "
 // função abaixo devolve a lista (o card mostra só items.length); todas já filtram pelas empresas
 // que o usuário logado pode ver (empresasVisiveis), pro caso de um Colaborador restrito abrir o
 // Painel.
-const CARD_TIPOS: string[] = ["certificados_vencer", "das_atraso", "situacao_fiscal", "caixapostal_nao_lida", "checklist_atraso", "solicitacoes_pendentes", "envio_atraso", "solicitacao_atraso", "licencas_vencer"];
+const CARD_TIPOS: string[] = ["certificados_vencer", "das_atraso", "situacao_fiscal", "caixapostal_nao_lida", "checklist_atraso", "solicitacoes_pendentes", "envio_atraso", "solicitacao_atraso", "licencas_vencer", "pesquisa_pagamento"];
 
 // Piso de competência (aaaamm, ex.: 202607) configurado em painel_monitoramento_config — null
 // quando não há corte definido (comportamento de sempre: cada card usa o período mais antigo já
@@ -16622,6 +16777,35 @@ async function cardCaixaPostalNaoLida(user: any): Promise<any[]> {
   }
   return resultado;
 }
+// Mostra as pesquisas de pagamento (DAS/DARF DCTF-Web, ver integraContadorEnviarPesquisasPagamento)
+// que precisam de atenção: o cliente respondeu que NÃO pagou, ou a pesquisa estourou o prazo sem
+// nenhuma resposta reconhecida — "pago" não entra aqui, já está resolvido.
+async function cardPesquisaPagamento(user: any): Promise<any[]> {
+  const visiveis = new Set(empresasVisiveis(user));
+  const rows = sqlite
+    .prepare(
+      `SELECT p.empresa_id as empresaId, e.nome as empresaNome, p.tipo, p.periodo_apuracao as periodoApuracao, p.resposta, p.enviada_em as enviadaEm
+       FROM integracontador_pesquisas_pagamento p JOIN empresas e ON e.id = p.empresa_id AND e.ativo = 1
+       WHERE p.escritorio_id = ? AND (p.resposta = 'nao_pago' OR (p.resposta IS NULL AND p.encerrada = 1))
+       ORDER BY p.enviada_em DESC`
+    )
+    .all(user.escritorioId) as any[];
+  const resultado: any[] = [];
+  for (const r of rows) {
+    if (!visiveis.has(r.empresaId)) continue;
+    if (!envioSetorAtendido("fiscal", r.empresaId)) continue;
+    const rotulo = r.tipo === "das" ? "DAS" : "DARF DCTF-Web";
+    const mes = r.periodoApuracao.slice(4, 6), ano = r.periodoApuracao.slice(0, 4);
+    resultado.push({
+      empresaId: r.empresaId,
+      empresaNome: r.empresaNome,
+      alerta: r.resposta === "nao_pago"
+        ? `Cliente respondeu que ainda NÃO pagou o ${rotulo} de ${mes}/${ano}.`
+        : `${rotulo} de ${mes}/${ano}: pesquisa de pagamento enviada, sem resposta.`,
+    });
+  }
+  return resultado;
+}
 
 // Empresas que já passaram do prazo (dia do mês) de um modelo de Solicitação de Documentos e ainda
 // têm ao menos um item obrigatório sem upload salvo na competência ANTERIOR (ex.: hoje é 08/2026 e
@@ -16760,6 +16944,7 @@ async function calcularCardComputado(tipo: string, user: any, parametro?: string
   if (tipo === "das_atraso") return cardDasEmAtraso(user);
   if (tipo === "situacao_fiscal") return cardSituacaoFiscal(user);
   if (tipo === "caixapostal_nao_lida") return cardCaixaPostalNaoLida(user);
+  if (tipo === "pesquisa_pagamento") return cardPesquisaPagamento(user);
   if (tipo === "checklist_atraso") return cardChecklistAtraso(user);
   if (tipo === "solicitacoes_pendentes") return cardSolicitacoesPendentes(user);
   if (tipo === "envio_atraso") {
@@ -18849,21 +19034,21 @@ async function deskcommRoboEnviar(conversationId: string, texto: string): Promis
 // cria a conversa do contato pelo telefone, sobe o arquivo pro storage do deskcomm e manda a
 // mensagem com ele — os mesmos dois passos que a tela de Atendimento já faz de verdade
 // (atdEnviarArquivo, em app.html) quando alguém anexa um arquivo na mão.
-async function deskcommRoboEnviarArquivo(telefone: string, nomeContato: string, arquivo: { nome: string; tipo: string; buffer: Buffer }, legenda: string): Promise<void> {
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID) throw new Error("Integração com o deskcomm não configurada.");
+// Se já existe uma conversa FECHADA pra esse telefone, usa o id dela direto, sem chamar
+// open-with-contact — essa rota reabre a conversa (muda service_started_at), e reabrir zera o setor
+// atual (ver atendimentoSetorAtual, acima: ela descarta a escolha de setor anterior a
+// service_started_at). Pedido: envio automático por essa rotina não pode reabrir conversa fechada nem
+// deixar ela sem setor. Contato novo ou conversa já aberta seguem o caminho de sempre. Compartilhada
+// por todo envio automático do robô de automações (documento ou texto puro).
+async function deskcommRoboResolverConversa(telefone: string, nomeContato: string): Promise<string> {
   let digitos = String(telefone).replace(/\D/g, "");
   if (digitos.length <= 11) digitos = "55" + digitos;
   const phoneNumber = "+" + digitos;
-  // Se já existe uma conversa FECHADA pra esse telefone, usa o id dela direto, sem chamar
-  // open-with-contact — essa rota reabre a conversa (muda service_started_at), e reabrir zera o setor
-  // atual (ver atendimentoSetorAtual, acima: ela descarta a escolha de setor anterior a
-  // service_started_at). Pedido: envio automático por essa rotina não pode reabrir conversa fechada
-  // nem deixar ela sem setor. Contato novo ou conversa já aberta seguem o caminho de sempre.
   let conversationId: string | null = null;
   try {
-    const { data: contato } = await deskcommAdmin.from("contacts").select("id").eq("organization_id", DESKCOMM_ORG_ID).eq("phone_number", phoneNumber).maybeSingle();
+    const { data: contato } = await deskcommAdmin!.from("contacts").select("id").eq("organization_id", DESKCOMM_ORG_ID).eq("phone_number", phoneNumber).maybeSingle();
     if (contato) {
-      const { data: conv } = await deskcommAdmin
+      const { data: conv } = await deskcommAdmin!
         .from("conversations")
         .select("id, status")
         .eq("organization_id", DESKCOMM_ORG_ID)
@@ -18879,6 +19064,29 @@ async function deskcommRoboEnviarArquivo(telefone: string, nomeContato: string, 
     const r = await deskcommRoboApi("/conversations/open-with-contact", { method: "POST", body: { phone_number: phoneNumber, name: nomeContato } });
     conversationId = r.conversation_id;
   }
+  return conversationId!;
+}
+// Manda só texto (sem anexo) pela conversa de WhatsApp do cliente, prefixado pelo setor atual —
+// usado pela pesquisa de pagamento (DAS/DARF DCTF-Web). Devolve o conversation_id, pra quem chamou
+// acompanhar a resposta depois (ver deskcommPrimeiraRespostaDoCliente).
+async function deskcommRoboEnviarTexto(telefone: string, nomeContato: string, texto: string): Promise<string> {
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID) throw new Error("Integração com o deskcomm não configurada.");
+  const conversationId = await deskcommRoboResolverConversa(telefone, nomeContato);
+  let corpo = texto;
+  try {
+    const { data: conv } = await deskcommAdmin.from("conversations").select("active_intent, active_agent_set_at, service_started_at").eq("organization_id", DESKCOMM_ORG_ID).eq("id", conversationId).maybeSingle();
+    if (conv) {
+      const { ultima } = await atendimentoEscolhas();
+      const setor = atendimentoSetorAtual(conv, ultima.get(conversationId));
+      if (setor) corpo = `*${setor}*\n${corpo}`;
+    }
+  } catch { /* sem o setor, manda sem prefixo mesmo */ }
+  await deskcommRoboApi("/messages", { method: "POST", body: { conversation_id: conversationId, type: "text", body: corpo } });
+  return conversationId;
+}
+async function deskcommRoboEnviarArquivo(telefone: string, nomeContato: string, arquivo: { nome: string; tipo: string; buffer: Buffer }, legenda: string): Promise<void> {
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID) throw new Error("Integração com o deskcomm não configurada.");
+  const conversationId = await deskcommRoboResolverConversa(telefone, nomeContato);
   const fd = new FormData();
   fd.append("file", new Blob([new Uint8Array(arquivo.buffer)], { type: arquivo.tipo }), arquivo.nome);
   const up = await deskcommRoboApi(`/conversations/${conversationId}/media`, { method: "POST", body: fd });
