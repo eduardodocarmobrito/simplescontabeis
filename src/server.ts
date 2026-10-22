@@ -3065,6 +3065,12 @@ app.get("/api/health", (_req, res) => res.json({ ok: true }));
 // apontar pro endereço REAL do deskcomm (ex.: serviço interno do docker-compose, `http://deskcomm:PORTA`,
 // ou o host/porta onde o container do deskcomm escuta) — NÃO pro domínio público deste app.
 const DESKCOMM_URL = (process.env.DESKCOMM_URL || "https://srv1998403.hstgr.cloud").trim();
+// Host PÚBLICO deste site (o que o navegador vê). Quando DESKCOMM_URL aponta pro container interno
+// (http://deskcomm-app-1:3000), as chamadas diretas do robô (login do magic-link, /api/v1) chegam no
+// deskcomm com Host=deskcomm-app-1:3000, que o Next.js do deskcomm rejeita (redireciona pro login, 307,
+// sem setar o cookie — login do robô falhava, quebrando mídia/envio/fechar pelo robô). Mandar
+// x-forwarded-host com o host público (o mesmo que o proxy já manda pros usuários) resolve.
+const DESKCOMM_PUBLIC_HOST = (process.env.DESKCOMM_PUBLIC_HOST || "simplescontabeis.com.br").trim();
 // .trim(): variáveis de ambiente coladas por um painel web (Railway etc.) vêm sujeitas a espaço/quebra
 // de linha grudado sem querer — medido ao vivo com DESKCOMM_ORG_ID assim, e "invalid input syntax for
 // type uuid" não deixa óbvio que o problema é um espaço, não o valor em si.
@@ -19227,7 +19233,7 @@ async function deskcommRoboLogin(): Promise<string> {
       continue;
     }
     const qs = new URLSearchParams({ token_hash: tokenHash, type: "magiclink", next: "/manifest.webmanifest" });
-    const r = await fetch(`${DESKCOMM_URL}/deskcomm/auth/confirm?${qs}`, { redirect: "manual" });
+    const r = await fetch(`${DESKCOMM_URL}/deskcomm/auth/confirm?${qs}`, { redirect: "manual", headers: { "x-forwarded-host": DESKCOMM_PUBLIC_HOST, "x-forwarded-proto": "https" } });
     const setCookies: string[] = (r.headers as any).getSetCookie?.() || [];
     const cookie = setCookies.map((c) => c.split(";")[0]).filter((c) => c.startsWith("sb-")).join("; ");
     if (cookie) { deskcommRoboSessao = { cookie, em: Date.now() }; return cookie; }
@@ -19243,7 +19249,7 @@ async function deskcommRoboApi(caminho: string, init: { method?: string; body?: 
   const isForm = init.body instanceof FormData;
   const r = await fetch(`${DESKCOMM_URL}/deskcomm/api/v1${caminho}`, {
     method: init.method || "GET",
-    headers: { cookie: deskcommRoboSessao!.cookie, origin: DESKCOMM_URL, ...(init.body && !isForm ? { "content-type": "application/json" } : {}) },
+    headers: { cookie: deskcommRoboSessao!.cookie, origin: `https://${DESKCOMM_PUBLIC_HOST}`, "x-forwarded-host": DESKCOMM_PUBLIC_HOST, "x-forwarded-proto": "https", ...(init.body && !isForm ? { "content-type": "application/json" } : {}) },
     body: isForm ? init.body : init.body ? JSON.stringify(init.body) : undefined,
   });
   if (r.status === 401 && !jaRenovou) { deskcommRoboSessao = null; return deskcommRoboApi(caminho, init, true); }
@@ -20836,7 +20842,7 @@ app.get("/api/atendimento/mensagens/:id/media", blockCliente, requireEscritorioP
   if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).end();
   try {
     if (!deskcommRoboSessao || Date.now() - deskcommRoboSessao.em > 45 * 60_000) await deskcommRoboLogin();
-    const r = await fetch(`${DESKCOMM_URL}/deskcomm/api/v1/messages/${encodeURIComponent(String(req.params.id))}/media`, { headers: { cookie: deskcommRoboSessao!.cookie } });
+    const r = await fetch(`${DESKCOMM_URL}/deskcomm/api/v1/messages/${encodeURIComponent(String(req.params.id))}/media`, { headers: { cookie: deskcommRoboSessao!.cookie, "x-forwarded-host": DESKCOMM_PUBLIC_HOST, "x-forwarded-proto": "https" } });
     if (!r.ok) return res.status(r.status).end();
     const ct = r.headers.get("content-type"); if (ct) res.setHeader("Content-Type", ct);
     const cd = r.headers.get("content-disposition"); if (cd) res.setHeader("Content-Disposition", cd);
@@ -20885,7 +20891,7 @@ app.post("/api/atendimento/encaminhar", blockCliente, requireEscritorioPrincipal
     if (temMidia) {
       // Baixa o arquivo original (robô admin) e sobe de novo na conversa de destino.
       if (!deskcommRoboSessao || Date.now() - deskcommRoboSessao.em > 45 * 60_000) await deskcommRoboLogin();
-      const rMedia = await fetch(`${DESKCOMM_URL}/deskcomm/api/v1/messages/${encodeURIComponent(messageId)}/media`, { headers: { cookie: deskcommRoboSessao!.cookie } });
+      const rMedia = await fetch(`${DESKCOMM_URL}/deskcomm/api/v1/messages/${encodeURIComponent(messageId)}/media`, { headers: { cookie: deskcommRoboSessao!.cookie, "x-forwarded-host": DESKCOMM_PUBLIC_HOST, "x-forwarded-proto": "https" } });
       if (!rMedia.ok) throw new Error(`Não foi possível baixar o arquivo original (HTTP ${rMedia.status}).`);
       const buf = Buffer.from(await rMedia.arrayBuffer());
       const mime = (m as any).media_mime || rMedia.headers.get("content-type") || "application/octet-stream";
