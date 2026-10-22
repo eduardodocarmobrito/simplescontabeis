@@ -15774,7 +15774,7 @@ app.get("/api/financeiro/minha-empresa/pagar", requireCliente, requireModuloAtiv
   const params: any[] = [empresaId];
   if (dataDe) { sql += ` AND date(vencimento) >= date(?)`; params.push(dataDe); }
   if (dataAte) { sql += ` AND date(vencimento) <= date(?)`; params.push(dataAte); }
-  sql += ` ORDER BY p.vencimento DESC, p.id DESC`;
+  sql += ` ORDER BY date(p.vencimento) ASC, p.id ASC`;
   res.json({ items: sqlite.prepare(sql).all(...params) });
 });
 app.post("/api/financeiro/minha-empresa/pagar", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
@@ -15842,7 +15842,7 @@ app.get("/api/financeiro/minha-empresa/receber", requireCliente, requireModuloAt
   const params: any[] = [empresaId];
   if (dataDe) { sql += ` AND date(vencimento) >= date(?)`; params.push(dataDe); }
   if (dataAte) { sql += ` AND date(vencimento) <= date(?)`; params.push(dataAte); }
-  sql += ` ORDER BY r.vencimento DESC, r.id DESC`;
+  sql += ` ORDER BY date(r.vencimento) ASC, r.id ASC`;
   res.json({ items: sqlite.prepare(sql).all(...params) });
 });
 app.post("/api/financeiro/minha-empresa/receber", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
@@ -15978,7 +15978,7 @@ app.get("/api/financeiro/empresas/:empresaId/pagar", blockCliente, requirePermis
   const params: any[] = [empresaId];
   if (dataDe) { sql += ` AND date(vencimento) >= date(?)`; params.push(dataDe); }
   if (dataAte) { sql += ` AND date(vencimento) <= date(?)`; params.push(dataAte); }
-  sql += ` ORDER BY p.vencimento DESC, p.id DESC`;
+  sql += ` ORDER BY date(p.vencimento) ASC, p.id ASC`;
   res.json({ items: sqlite.prepare(sql).all(...params) });
 });
 app.post("/api/financeiro/empresas/:empresaId/pagar", blockCliente, requirePermissao("financeiro", "postar"), (req, res) => {
@@ -16044,7 +16044,7 @@ app.get("/api/financeiro/empresas/:empresaId/receber", blockCliente, requirePerm
   const params: any[] = [empresaId];
   if (dataDe) { sql += ` AND date(vencimento) >= date(?)`; params.push(dataDe); }
   if (dataAte) { sql += ` AND date(vencimento) <= date(?)`; params.push(dataAte); }
-  sql += ` ORDER BY r.vencimento DESC, r.id DESC`;
+  sql += ` ORDER BY date(r.vencimento) ASC, r.id ASC`;
   res.json({ items: sqlite.prepare(sql).all(...params) });
 });
 app.post("/api/financeiro/empresas/:empresaId/receber", blockCliente, requirePermissao("financeiro", "postar"), (req, res) => {
