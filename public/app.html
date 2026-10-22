@@ -4359,42 +4359,69 @@ async function pageMeusDocumentos(){
   main().innerHTML = `
     <h1>Meus Documentos</h1>
     <p class="subtitle">Envie aqui os arquivos solicitados pelo seu escritório de contabilidade</p>
+    <style>
+      .md-acc{border:1px solid var(--rule); border-radius:var(--radius); background:var(--surface); box-shadow:var(--shadow); margin-bottom:8px; overflow:hidden;}
+      .md-acc-head{width:100%; display:flex; align-items:center; gap:12px; padding:12px 16px; background:none; border:0; cursor:pointer; text-align:left; font:inherit; color:inherit;}
+      .md-acc-head:hover{background:rgba(127,127,127,.06);}
+      .md-acc-tt{flex:1; min-width:0;}
+      .md-acc-tt h3{margin:0; font-size:14px;}
+      .md-acc-sub{font-size:11.5px; color:var(--ink-soft); margin-top:2px;}
+      .md-acc-chev{color:var(--ink-soft); transition:transform .15s; flex-shrink:0; font-size:12px;}
+      .md-acc.open .md-acc-chev{transform:rotate(90deg);}
+      .md-acc-body{display:none; padding:0 16px 14px; border-top:1px solid var(--rule);}
+      .md-acc.open .md-acc-body{display:block;}
+    </style>
     <div id="mdList"></div>
   `;
   const box = document.getElementById('mdList');
   if(!items.length){ box.innerHTML = '<div class="empty-state">Nenhuma solicitação criada para sua empresa ainda.</div>'; return; }
 
-  box.innerHTML = items.map(a=>`
-    <div class="doc-row" data-id="${a.id}">
-      <div class="doc-card" data-id="${a.id}">
-        <h3>${esc(a.templateNome)}</h3>
-        <div class="doc-card-sub">${({mensal:'Mensal',anual:'Anual',avulso:'Avulso'})[a.periodicidade]||a.periodicidade}</div>
-        <div class="doc-card-link">Ver histórico completo →</div>
-      </div>
-      <div class="doc-inline" id="docInline${a.id}"><div class="empty-state" style="padding:10px;">Carregando…</div></div>
-    </div>
-  `).join('');
-  box.querySelectorAll('.doc-card').forEach(c=>c.addEventListener('click', ()=>abrirGrade(Number(c.dataset.id), true)));
+  // Carrega as grades em paralelo só pra saber se a linha tem pendência (badge). Os slots de upload
+  // só são montados quando o cliente EXPANDE a linha — pedido do usuário: linha enxuta, clica e vê.
+  const grades = await Promise.all(items.map(a=>api('/checklist/grade/'+a.id).then(r=>r.grade).catch(()=>null)));
+  const PER={mensal:'Mensal',anual:'Anual',avulso:'Avulso'};
+  box.innerHTML = items.map((a,idx)=>{
+    const grade = grades[idx];
+    const p = grade ? periodoDaVez(a, grade) : null;
+    const tag = !grade ? '<span class="tag muted">—</span>' : p ? '<span class="tag warn">Pendente</span>' : '<span class="tag ok">Em dia</span>';
+    return `
+      <div class="md-acc" data-idx="${idx}" data-id="${a.id}">
+        <button type="button" class="md-acc-head">
+          <span class="md-acc-tt"><h3>${esc(a.templateNome)}</h3><span class="md-acc-sub">${PER[a.periodicidade]||a.periodicidade}</span></span>
+          ${tag}
+          <span class="md-acc-chev">▸</span>
+        </button>
+        <div class="md-acc-body" id="docInline${a.id}"></div>
+      </div>`;
+  }).join('');
 
-  for(const a of items){
-    const painel = document.getElementById('docInline'+a.id);
-    try{
-      const { grade } = await api('/checklist/grade/'+a.id);
-      const p = periodoDaVez(a, grade);
-      if(!p){
-        painel.innerHTML = `<div class="doc-inline-empty">Nenhuma pendência no momento — clique no card para ver o histórico.</div>`;
-        continue;
+  box.querySelectorAll('.md-acc').forEach(acc=>{
+    const idx = Number(acc.dataset.idx);
+    const a = items[idx];
+    const grade = grades[idx];
+    const body = acc.querySelector('.md-acc-body');
+    let montado = false;
+    const ligarHist = ()=> body.querySelectorAll('.md-hist').forEach(h=>h.addEventListener('click', e=>{ e.preventDefault(); abrirGrade(a.id, true); }));
+    acc.querySelector('.md-acc-head').addEventListener('click', ()=>{
+      const abrindo = !acc.classList.contains('open');
+      acc.classList.toggle('open', abrindo);
+      if(abrindo && !montado){
+        montado = true;
+        const p = grade ? periodoDaVez(a, grade) : null;
+        if(!grade){ body.innerHTML = `<div class="doc-inline-empty" style="padding:12px 0;">Não consegui carregar — <a href="#" class="md-hist">abrir o histórico</a>.</div>`; }
+        else if(!p){ body.innerHTML = `<div class="doc-inline-empty" style="padding:12px 0;">Nenhuma pendência no momento. <a href="#" class="md-hist">Ver histórico completo →</a></div>`; }
+        else {
+          const opts = { podePostar:true, podeVerDownload:false, podeEditar:false, mostrarLabel:true, souCliente:true };
+          body.innerHTML = `
+            <div class="doc-inline-periodo" style="margin:12px 0 8px;">${esc(rotuloPeriodo(p))}</div>
+            <div style="display:flex; gap:24px; align-items:flex-start; flex-wrap:wrap;">${p.slots.map(s=>slotInner(p.periodoId, s, opts)).join('')}</div>
+            <div style="margin-top:10px;"><a href="#" class="md-hist" style="font-size:12px;">Ver histórico completo →</a></div>`;
+          wireSlotEvents(body, ()=>pageMeusDocumentos());
+        }
+        ligarHist();
       }
-      const opts = { podePostar:true, podeVerDownload:false, podeEditar:false, mostrarLabel:true, souCliente:true };
-      painel.innerHTML = `
-        <div class="doc-inline-periodo">${esc(rotuloPeriodo(p))}</div>
-        ${p.slots.map(s=>slotInner(p.periodoId, s, opts)).join('')}
-      `;
-      wireSlotEvents(painel, ()=>pageMeusDocumentos());
-    }catch(e){
-      painel.innerHTML = `<div class="doc-inline-empty">Não consegui carregar — abra o card.</div>`;
-    }
-  }
+    });
+  });
 }
 
 // ===================== Solicitar Documentos (cliente pede ao escritório) =====================
