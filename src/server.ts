@@ -16378,54 +16378,60 @@ app.post("/api/asaas/webhook", (req, res) => {
   const novoStatus = statusMap[event];
   if (!novoStatus) return res.json({ ok: true });
   const agora = new Date().toISOString().replace("T", " ").slice(0, 19);
+  const PAGOS = ["confirmado", "recebido"];
 
   // Uma cobrança do Asaas com esse payment_id pertence OU a uma empresa-cliente (módulos que o
   // escritório vende pra ela) OU a um escritório-cliente da plataforma (módulos da plataforma) —
   // nunca as duas, mas o webhook não sabe de antemão qual foi, então confere as duas tabelas.
-  const cobrancaEmpresa = sqlite.prepare(`SELECT * FROM financeiro_licenca_cobrancas WHERE asaas_payment_id = ?`).get(payment.id) as any;
-  if (cobrancaEmpresa) {
-    sqlite.prepare(`UPDATE financeiro_licenca_cobrancas SET status = ? WHERE id = ?`).run(novoStatus, cobrancaEmpresa.id);
-    if (novoStatus === "confirmado" || novoStatus === "recebido") {
-      const itens = sqlite.prepare(`SELECT modulo_chave FROM financeiro_licenca_cobranca_itens WHERE cobranca_id = ?`).all(cobrancaEmpresa.id) as any[];
+  //
+  // Idempotência (corrigido 2026-10-22): o Asaas manda PAYMENT_CONFIRMED e depois PAYMENT_RECEIVED para
+  // o MESMO pagamento (e reenvia eventos). Antes cada um estendia +1 mês — um pagamento liberava 2 meses.
+  // Agora o +1 mês só acontece na TRANSIÇÃO de não-pago para pago (UPDATE condicional; o handler é
+  // síncrono com node:sqlite, então não há corrida entre a checagem e a gravação). Evento de vencido/
+  // cancelado que chegue depois de pago também não desfaz o pagamento.
+  const processar = (
+    tabelaCobranca: string, tabelaItens: string, tabelaModulos: string, colDono: "empresa_id" | "escritorio_id", cobranca: any,
+  ) => {
+    if (PAGOS.includes(novoStatus)) {
+      const virouPago = sqlite
+        .prepare(`UPDATE ${tabelaCobranca} SET status = ? WHERE id = ? AND status NOT IN ('confirmado','recebido')`)
+        .run(novoStatus, cobranca.id).changes > 0;
+      if (!virouPago) {
+        // Já estava paga: só registra o status mais recente (confirmado -> recebido), sem estender.
+        sqlite.prepare(`UPDATE ${tabelaCobranca} SET status = ? WHERE id = ?`).run(novoStatus, cobranca.id);
+        return;
+      }
+      const itens = sqlite.prepare(`SELECT modulo_chave FROM ${tabelaItens} WHERE cobranca_id = ?`).all(cobranca.id) as any[];
       for (const item of itens) {
-        const atual = sqlite.prepare(`SELECT assinatura_ativa_ate FROM empresa_modulos WHERE empresa_id = ? AND modulo_chave = ?`).get(cobrancaEmpresa.empresa_id, item.modulo_chave) as any;
+        const atual = sqlite.prepare(`SELECT assinatura_ativa_ate FROM ${tabelaModulos} WHERE ${colDono} = ? AND modulo_chave = ?`).get(cobranca[colDono], item.modulo_chave) as any;
         if (atual) {
           const base = atual.assinatura_ativa_ate && atual.assinatura_ativa_ate > agora ? atual.assinatura_ativa_ate : agora;
           sqlite
-            .prepare(`UPDATE empresa_modulos SET assinatura_ativa_ate = datetime(?, '+1 month') WHERE empresa_id = ? AND modulo_chave = ?`)
-            .run(base, cobrancaEmpresa.empresa_id, item.modulo_chave);
+            .prepare(`UPDATE ${tabelaModulos} SET assinatura_ativa_ate = datetime(?, '+1 month') WHERE ${colDono} = ? AND modulo_chave = ?`)
+            .run(base, cobranca[colDono], item.modulo_chave);
         } else {
           sqlite
             .prepare(
-              `INSERT INTO empresa_modulos (empresa_id, modulo_chave, trial_inicio, trial_fim, assinatura_ativa_ate) VALUES (?, ?, datetime('now'), datetime('now'), datetime('now','+1 month'))`
+              `INSERT INTO ${tabelaModulos} (${colDono}, modulo_chave, trial_inicio, trial_fim, assinatura_ativa_ate) VALUES (?, ?, datetime('now'), datetime('now'), datetime('now','+1 month'))`
             )
-            .run(cobrancaEmpresa.empresa_id, item.modulo_chave);
+            .run(cobranca[colDono], item.modulo_chave);
         }
       }
+      return;
     }
+    sqlite
+      .prepare(`UPDATE ${tabelaCobranca} SET status = ? WHERE id = ? AND status NOT IN ('confirmado','recebido')`)
+      .run(novoStatus, cobranca.id);
+  };
+
+  const cobrancaEmpresa = sqlite.prepare(`SELECT * FROM financeiro_licenca_cobrancas WHERE asaas_payment_id = ?`).get(payment.id) as any;
+  if (cobrancaEmpresa) {
+    processar("financeiro_licenca_cobrancas", "financeiro_licenca_cobranca_itens", "empresa_modulos", "empresa_id", cobrancaEmpresa);
     return res.json({ ok: true });
   }
   const cobrancaEscritorio = sqlite.prepare(`SELECT * FROM escritorio_licenca_cobrancas WHERE asaas_payment_id = ?`).get(payment.id) as any;
   if (cobrancaEscritorio) {
-    sqlite.prepare(`UPDATE escritorio_licenca_cobrancas SET status = ? WHERE id = ?`).run(novoStatus, cobrancaEscritorio.id);
-    if (novoStatus === "confirmado" || novoStatus === "recebido") {
-      const itens = sqlite.prepare(`SELECT modulo_chave FROM escritorio_licenca_cobranca_itens WHERE cobranca_id = ?`).all(cobrancaEscritorio.id) as any[];
-      for (const item of itens) {
-        const atual = sqlite.prepare(`SELECT assinatura_ativa_ate FROM escritorio_modulos WHERE escritorio_id = ? AND modulo_chave = ?`).get(cobrancaEscritorio.escritorio_id, item.modulo_chave) as any;
-        if (atual) {
-          const base = atual.assinatura_ativa_ate && atual.assinatura_ativa_ate > agora ? atual.assinatura_ativa_ate : agora;
-          sqlite
-            .prepare(`UPDATE escritorio_modulos SET assinatura_ativa_ate = datetime(?, '+1 month') WHERE escritorio_id = ? AND modulo_chave = ?`)
-            .run(base, cobrancaEscritorio.escritorio_id, item.modulo_chave);
-        } else {
-          sqlite
-            .prepare(
-              `INSERT INTO escritorio_modulos (escritorio_id, modulo_chave, trial_inicio, trial_fim, assinatura_ativa_ate) VALUES (?, ?, datetime('now'), datetime('now'), datetime('now','+1 month'))`
-            )
-            .run(cobrancaEscritorio.escritorio_id, item.modulo_chave);
-        }
-      }
-    }
+    processar("escritorio_licenca_cobrancas", "escritorio_licenca_cobranca_itens", "escritorio_modulos", "escritorio_id", cobrancaEscritorio);
   }
   res.json({ ok: true });
 });
