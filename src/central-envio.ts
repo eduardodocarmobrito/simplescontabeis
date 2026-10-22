@@ -338,7 +338,13 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
   async function centralEnvioEmpurrarParaGrade(tipo: { id: number; nome: string; setor: string; template_id: number | null }, empresaId: number, escritorioId: number, competencia: string | null, nomeArquivo: string, buf: Buffer): Promise<void> {
     if (tipo.setor !== "dprh" && tipo.setor !== "crm") return;
     let templateId = tipo.template_id;
-    if (!templateId) {
+    // O template_id guardado pode estar ÓRFÃO — apontar pra um modelo que não existe mais (apagado em
+    // Modelos, ou perdido numa migração). Antes só recriava quando era NULO; com id órfão, o INSERT da
+    // atribuição quebrava com "FOREIGN KEY constraint failed" e o documento NUNCA chegava na grade
+    // (achado ao vivo 2026-10-22: tipo "Programação de férias" com template_id 54 inexistente, para
+    // dezenas de empresas). Recria o rascunho também quando o id não existe mais.
+    const templateValido = templateId ? db.prepare(`SELECT 1 FROM envio_templates WHERE id = ?`).get(templateId) : null;
+    if (!templateId || !templateValido) {
       templateId = d.envioObterOuCriarTemplateDraft(escritorioId, tipo.nome);
       db.prepare(`UPDATE central_envio_tipos SET template_id = ? WHERE id = ?`).run(templateId, tipo.id);
     }
