@@ -9,6 +9,7 @@ import rateLimit from "express-rate-limit";
 import multer from "multer";
 import nodemailer from "nodemailer";
 import archiver from "archiver";
+import JSZip from "jszip";
 import { DatabaseSync } from "node:sqlite";
 import * as nfse from "./nfse";
 import * as asaas from "./asaas";
@@ -8161,27 +8162,53 @@ function nfeInserirDocumentoDedup(args: {
 // (rejeição "Consumo Indevido", instabilidade do webservice etc.) ou pra notas de antes do cadastro
 // do certificado. Aceita o XML completo (nfeProc/cteProc/mdfeProc, o que qualquer emissor ou o
 // próprio portal da Sefaz chama de "baixar XML") — reaproveita identificarDocumento e o MESMO
-// dedup por chave de acesso da busca automática, então importar uma nota que já existe não duplica.
-// NSU não existe pra um documento que não veio da Distribuição DFe — usa "manual_<chave>" só pra
-// satisfazer a constraint (o dedup de verdade é por chave_acesso, não por nsu).
-const uploadXmlBulk = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2 * 1024 * 1024, files: 50 } });
-app.post("/api/nfe/documentos/:empresaId/importar", blockCliente, requirePermissao("nfe-busca", "postar"), uploadXmlBulk.array("arquivos", 50), (req, res) => {
+// dedup por chave de acesso da busca automática, então importar uma nota que já existe não duplica
+// (fica "duplicado" no retorno, não cria linha nova nem sobrescreve). NSU não existe pra um
+// documento que não veio da Distribuição DFe — usa "manual_<chave>" só pra satisfazer a constraint
+// (o dedup de verdade é por chave_acesso, não por nsu). Também aceita .zip (comum em "baixar lote"
+// de portais de emissão/Sefaz) — extrai todo .xml de dentro, inclusive em subpastas, e processa cada
+// um como se tivesse sido enviado solto.
+const uploadXmlBulk = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024, files: 50 } });
+app.post("/api/nfe/documentos/:empresaId/importar", blockCliente, requirePermissao("nfe-busca", "postar"), uploadXmlBulk.array("arquivos", 50), async (req, res) => {
   const user = (req as any).user;
   const empresaId = Number(req.params.empresaId);
   if (!podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
   const empresa = sqlite.prepare(`SELECT cnpj FROM empresas WHERE id = ?`).get(empresaId) as any;
   const cnpjEmpresaDigitos = (empresa?.cnpj || "").replace(/\D/g, "");
-  const arquivos = (req.files as Express.Multer.File[]) || [];
-  if (!arquivos.length) return res.status(400).json({ error: "Selecione um ou mais arquivos XML." });
+  const arquivosEnviados = (req.files as Express.Multer.File[]) || [];
+  if (!arquivosEnviados.length) return res.status(400).json({ error: "Selecione um ou mais arquivos XML (ou um .zip com vários)." });
 
   const resultados: { nomeArquivo: string; status: "importado" | "atualizado" | "duplicado" | "erro"; direcao?: "emitida" | "recebida"; motivo?: string }[] = [];
-  for (const file of arquivos) {
-    const nomeArquivo = corrigirNomeArquivo(file.originalname);
-    if (!/\.xml$/i.test(nomeArquivo)) {
-      resultados.push({ nomeArquivo, status: "erro", motivo: "Não é um arquivo .xml." });
-      continue;
+  // Achata .zip em XMLs individuais antes do loop principal — cada entrada vira um "arquivo" como se
+  // tivesse sido enviado solto, com o caminho dentro do zip no nome (pra identificar de qual veio).
+  const arquivosXml: { nomeArquivo: string; buffer: Buffer }[] = [];
+  for (const file of arquivosEnviados) {
+    const nomeOriginal = corrigirNomeArquivo(file.originalname);
+    if (/\.zip$/i.test(nomeOriginal)) {
+      let zip: JSZip;
+      try {
+        zip = await JSZip.loadAsync(file.buffer);
+      } catch (e: any) {
+        resultados.push({ nomeArquivo: nomeOriginal, status: "erro", motivo: `Não consegui abrir o .zip: ${e.message}` });
+        continue;
+      }
+      const entradas = Object.values(zip.files).filter((f) => !f.dir && /\.xml$/i.test(f.name));
+      if (!entradas.length) {
+        resultados.push({ nomeArquivo: nomeOriginal, status: "erro", motivo: "O .zip não tem nenhum arquivo .xml dentro." });
+        continue;
+      }
+      for (const entrada of entradas) {
+        const buffer = await entrada.async("nodebuffer");
+        arquivosXml.push({ nomeArquivo: `${nomeOriginal} → ${entrada.name}`, buffer });
+      }
+    } else if (/\.xml$/i.test(nomeOriginal)) {
+      arquivosXml.push({ nomeArquivo: nomeOriginal, buffer: file.buffer });
+    } else {
+      resultados.push({ nomeArquivo: nomeOriginal, status: "erro", motivo: "Não é um arquivo .xml nem .zip." });
     }
-    const xml = file.buffer.toString("utf8");
+  }
+  for (const { nomeArquivo, buffer } of arquivosXml) {
+    const xml = buffer.toString("utf8");
     let doc: nfe.DocumentoIdentificado;
     try {
       doc = nfe.identificarDocumento(xml, "manual_upload");

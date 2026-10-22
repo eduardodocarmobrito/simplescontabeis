@@ -7096,8 +7096,8 @@ async function pageNfeBusca(){
           <button class="btn small" id="btnNfeBaixarLotePdf" disabled>Baixar selecionados — PDF</button>
           <button class="btn small" id="btnNfeBaixarLoteAmbos" disabled>Baixar selecionados — XML + PDF</button>
           <button class="btn small" id="btnNfeExportarAnalitico" title="PDF por fornecedor (com produtos de cada nota), do período filtrado abaixo — pra conferência interna">📄 Exportar PDF analítico (por fornecedor)</button>
-          <button class="btn small" id="btnNfeImportarXml" title="Importar o XML completo de uma nota na mão — use quando a busca automática na Sefaz falhar ou estiver fora do ar">⬆️ Importar XML</button>
-          <input type="file" id="nfeImportarXmlInput" accept=".xml" multiple style="display:none;">
+          <button class="btn small" id="btnNfeImportarXml" title="Importar o XML completo de uma ou mais notas na mão (ou um .zip com várias) — use quando a busca automática na Sefaz falhar ou estiver fora do ar">⬆️ Importar XML</button>
+          <input type="file" id="nfeImportarXmlInput" accept=".xml,.zip" multiple style="display:none;">
         </div>
         <div id="nfeReformaSumario" style="margin-bottom:8px;"></div>
         <!-- Barra de rolagem horizontal fixa no topo da tabela (sincronizada): a barra nativa fica no
@@ -7417,19 +7417,21 @@ async function pageNfeBusca(){
       arquivos.forEach(f=>fd.append('arquivos', f, f.name));
       try{
         const r = await api(`/nfe/documentos/${empresaId}/importar`, { method:'POST', body: fd });
-        const ok = r.resultados.filter(x=>x.status!=='erro');
+        const novas = r.resultados.filter(x=>x.status==='importado'||x.status==='atualizado');
+        const duplicadas = r.resultados.filter(x=>x.status==='duplicado');
         const erros = r.resultados.filter(x=>x.status==='erro');
         const porDirecao = { emitida:0, recebida:0 };
-        ok.forEach(x=>porDirecao[x.direcao]++);
+        novas.forEach(x=>porDirecao[x.direcao]++);
         const partes = [];
-        if(porDirecao.emitida) partes.push(`${porDirecao.emitida} emitida(s)`);
-        if(porDirecao.recebida) partes.push(`${porDirecao.recebida} recebida(s)`);
+        if(porDirecao.emitida) partes.push(`${porDirecao.emitida} emitida(s) nova(s)`);
+        if(porDirecao.recebida) partes.push(`${porDirecao.recebida} recebida(s) nova(s)`);
+        if(duplicadas.length) partes.push(`${duplicadas.length} já estava(m) importada(s)`);
         if(erros.length) partes.push(`${erros.length} com erro`);
-        toast(partes.length? partes.join(', ') : 'Nenhum arquivo importado.', erros.length && !ok.length ? 'err' : 'ok');
+        toast(partes.length? partes.join(', ') : 'Nenhum arquivo importado.', erros.length && !novas.length && !duplicadas.length ? 'err' : 'ok');
         if(erros.length) console.warn('Importação de XML — arquivos com erro:', erros);
         // Cai na aba certa sozinho: se os importados foram todos de um lado só, vai pra lá; se veio
         // misturado, fica na aba que teve mais (empate ou nada importado = não mexe na aba atual).
-        if(ok.length){
+        if(novas.length){
           const alvo = porDirecao.emitida>porDirecao.recebida ? 'emitida' : porDirecao.recebida>porDirecao.emitida ? 'recebida' : nfeDocDirecao;
           irParaAba(alvo);
         }
