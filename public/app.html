@@ -7400,7 +7400,24 @@ async function pageNfeBusca(){
       if(dataDe) params.set('dataDe', dataDe);
       if(dataAte) params.set('dataAte', dataAte);
       if(uf) params.set('uf', uf);
-      window.open('/api/nfe/documentos/exportar-analitico-pdf?'+params.toString(), '_blank');
+      // Abre a aba JÁ no gesto do clique (evita bloqueio de pop-up); se o backend devolver um erro
+      // (ex.: "Nenhuma nota fora do Estado encontrada"), fecha a aba e mostra um toast amigável em vez
+      // de deixar o JSON cru aparecendo na tela.
+      const win = window.open('', '_blank');
+      if(win){ try{ win.document.write('<p style="font:14px sans-serif;padding:16px">Gerando o PDF…</p>'); }catch(e){} }
+      fetch('/api/nfe/documentos/exportar-analitico-pdf?'+params.toString(), { credentials:'include' }).then(async r=>{
+        if(!r.ok){
+          let msg = 'Não foi possível gerar o PDF.';
+          try{ const j = await r.json(); if(j && j.error) msg = j.error; }catch(e){}
+          if(win) win.close();
+          toast(msg, 'err');
+          return;
+        }
+        const blob = await r.blob();
+        const u = URL.createObjectURL(blob);
+        if(win) win.location = u; else window.open(u, '_blank');
+        setTimeout(()=>URL.revokeObjectURL(u), 60000);
+      }).catch(e=>{ if(win) win.close(); toast('Não foi possível gerar o PDF: '+e.message, 'err'); });
     }
     document.getElementById('btnNfeExportarAnalitico').addEventListener('click', ()=>exportarAnaliticoPdf());
     document.getElementById('btnNfeExportarUfDentro').addEventListener('click', ()=>exportarAnaliticoPdf('dentro'));
@@ -9528,34 +9545,84 @@ async function finRenderPagar(basePath, containerId, filtro, podePostar, podeEdi
 // pendentes — os já baixados já viraram saldo de conta, contar os dois juntaria a mesma grana duas
 // vezes). Mesmo estilo visual (tiles + barras em CSS) do Resumo de NF-e/NFC-e em Busca de XML, pra
 // não introduzir uma biblioteca de gráfico nova só pra isto.
+// Drill-down do "Resumo de títulos": lista QUAIS títulos compõem cada número (a vencer / vencido /
+// baixado este mês), pedido do usuário. Busca a lista completa de pagar/receber e filtra no cliente
+// com os mesmos critérios dos buckets do backend (pendente>=hoje, pendente<hoje, pago no mês atual).
+async function finAbrirTitulosResumo(basePath, tipo, bucket, label){
+  openModal(`<h3 style="margin:0 0 12px;">${esc(label)}</h3><div id="finDrillBody"><div class="empty-state">Carregando…</div></div>`, '660px');
+  let items;
+  try{ items = (await api(basePath+'/'+tipo)).items || []; }
+  catch(e){ const b=document.getElementById('finDrillBody'); if(b) b.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
+  const hoje = new Date().toISOString().slice(0,10);
+  const mes = hoje.slice(0,7);
+  const ehReceber = tipo==='receber';
+  const dataBaixaDe = it => ehReceber ? it.dataRecebimento : it.dataPagamento;
+  let filtro;
+  if(bucket==='pendente') filtro = it => it.status==='pendente' && String(it.vencimento).slice(0,10) >= hoje;
+  else if(bucket==='atrasado') filtro = it => it.status==='pendente' && String(it.vencimento).slice(0,10) < hoje;
+  else filtro = it => it.status==='pago' && dataBaixaDe(it) && String(dataBaixaDe(it)).slice(0,7)===mes;
+  const lista = items.filter(filtro);
+  const total = lista.reduce((s,it)=>s+(Number(it.valor)||0),0);
+  const body = document.getElementById('finDrillBody');
+  if(!body) return;
+  if(!lista.length){ body.innerHTML = `<div class="empty-state">Nenhum título nesse grupo.</div>`; return; }
+  body.innerHTML = `
+    <div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">${lista.length} título(s) — total <b>${fmtMoney(total)}</b></div>
+    <div style="overflow-x:auto;">
+      <table class="data-table" style="white-space:nowrap;">
+        <thead><tr><th>Descrição</th><th>${ehReceber?'Cliente':'Fornecedor'}</th><th>Vencimento</th><th style="text-align:right;">Valor</th>${bucket==='baixadoMes'?'<th>Baixa</th><th>Conta</th>':''}</tr></thead>
+        <tbody>
+          ${lista.map(it=>`
+            <tr>
+              <td>${esc(it.descricao||'—')}</td>
+              <td>${esc((ehReceber?it.clienteNome:it.fornecedor)||'—')}</td>
+              <td>${it.vencimento?fmtDateIso(String(it.vencimento).slice(0,10)):'—'}</td>
+              <td style="text-align:right;">${fmtMoney(it.valor)}</td>
+              ${bucket==='baixadoMes'?`<td>${dataBaixaDe(it)?fmtDateIso(String(dataBaixaDe(it)).slice(0,10)):'—'}</td><td>${esc(it.contaNome||'—')}</td>`:''}
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>`;
+}
 async function finRenderRelatorios(basePath, containerId){
   const box = document.getElementById(containerId);
   box.innerHTML = `<div class="empty-state">Carregando…</div>`;
-  let d, renegociacoes, adiantamentos;
+  let renegociacoes, adiantamentos;
   try{
-    [d, renegociacoes, adiantamentos] = await Promise.all([api(basePath+'/relatorios'), api(basePath+'/relatorios/renegociacoes'), api(basePath+'/relatorios/adiantamentos')]);
+    [renegociacoes, adiantamentos] = await Promise.all([api(basePath+'/relatorios/renegociacoes'), api(basePath+'/relatorios/adiantamentos')]);
   }
   catch(e){ box.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
   const tile = (label, val, cor)=>`<div class="kpi" style="min-width:150px; flex:1;"><div style="font-size:10.5px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.3px;">${label}</div><div style="font-size:22px; font-weight:700; ${cor?'color:'+cor+';':''}">${val}</div></div>`;
-  const resultadoProjetado = d.receber.pendente.valor + d.receber.atrasado.valor - d.pagar.pendente.valor - d.pagar.atrasado.valor;
-  const linhaResumo = (label, r, corAtrasado)=>`
+  // tipo = 'receber'|'pagar' — cada número vira clicável pra abrir o drill-down dos títulos daquele bucket.
+  const linhaResumo = (titulo, tipo, r, corAtrasado)=>`
     <div style="margin-bottom:10px;">
-      <div style="font-size:12.5px; font-weight:600; margin-bottom:4px;">${label}</div>
+      <div style="font-size:12.5px; font-weight:600; margin-bottom:4px;">${titulo}</div>
       <div class="row" style="gap:16px; flex-wrap:wrap; font-size:12.5px;">
-        <span>A vencer: <b>${fmtMoney(r.pendente.valor)}</b> <span style="color:var(--ink-soft);">(${r.pendente.qtd})</span></span>
-        <span style="${r.atrasado.qtd?'color:'+corAtrasado+'; font-weight:600;':'color:var(--ink-soft);'}">Vencido: <b>${fmtMoney(r.atrasado.valor)}</b> (${r.atrasado.qtd})</span>
-        <span style="color:var(--ink-soft);">Baixado este mês: ${fmtMoney(r.baixadoMes.valor)} (${r.baixadoMes.qtd})</span>
+        <span class="fin-drill" data-tipo="${tipo}" data-bucket="pendente" data-label="${esc(titulo+' — A vencer')}" style="cursor:pointer;" title="Ver os títulos">A vencer: <b style="text-decoration:underline dotted; text-underline-offset:2px;">${fmtMoney(r.pendente.valor)}</b> <span style="color:var(--ink-soft);">(${r.pendente.qtd})</span></span>
+        <span class="fin-drill" data-tipo="${tipo}" data-bucket="atrasado" data-label="${esc(titulo+' — Vencido')}" style="cursor:pointer; ${r.atrasado.qtd?'color:'+corAtrasado+'; font-weight:600;':'color:var(--ink-soft);'}" title="Ver os títulos">Vencido: <b style="text-decoration:underline dotted; text-underline-offset:2px;">${fmtMoney(r.atrasado.valor)}</b> (${r.atrasado.qtd})</span>
+        <span class="fin-drill" data-tipo="${tipo}" data-bucket="baixadoMes" data-label="${esc(titulo+' — Baixado este mês')}" style="cursor:pointer; color:var(--ink-soft);" title="Ver os títulos">Baixado este mês: <span style="text-decoration:underline dotted; text-underline-offset:2px;">${fmtMoney(r.baixadoMes.valor)} (${r.baixadoMes.qtd})</span></span>
       </div>
     </div>`;
-  const maxFluxo = Math.max(...d.fluxoCaixa.map(f=>Math.max(f.entradas,f.saidas)), 1);
-  const barraFluxo = (entradas, saidas)=>{
-    const pe = Math.round((entradas/maxFluxo)*100), ps = Math.round((saidas/maxFluxo)*100);
-    return `<div style="display:flex; flex-direction:column; gap:2px; min-width:70px;">
-      <div style="background:var(--rule); border-radius:3px; height:7px; overflow:hidden;"><div style="width:${pe}%; height:100%; background:#059669;"></div></div>
-      <div style="background:var(--rule); border-radius:3px; height:7px; overflow:hidden;"><div style="width:${ps}%; height:100%; background:var(--debit);"></div></div>
-    </div>`;
-  };
-  box.innerHTML = `
+  const GRAN_INFO = { dia:{label:'Dia', titulo:'próximos 30 dias'}, semana:{label:'Semana', titulo:'próximas 13 semanas'}, mes:{label:'Mês', titulo:'próximos 6 meses'} };
+  async function render(gran){
+    box.innerHTML = `<div class="empty-state">Carregando…</div>`;
+    let d;
+    try{ d = await api(basePath+'/relatorios?granularidade='+gran); }
+    catch(e){ box.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
+    gran = d.granularidade || gran;
+    const info = GRAN_INFO[gran] || GRAN_INFO.semana;
+    const resultadoProjetado = d.receber.pendente.valor + d.receber.atrasado.valor - d.pagar.pendente.valor - d.pagar.atrasado.valor;
+    const maxFluxo = Math.max(...d.fluxoCaixa.map(f=>Math.max(f.entradas,f.saidas)), 1);
+    const barraFluxo = (entradas, saidas)=>{
+      const pe = Math.round((entradas/maxFluxo)*100), ps = Math.round((saidas/maxFluxo)*100);
+      return `<div style="display:flex; flex-direction:column; gap:2px; min-width:70px;">
+        <div style="background:var(--rule); border-radius:3px; height:7px; overflow:hidden;"><div style="width:${pe}%; height:100%; background:#059669;"></div></div>
+        <div style="background:var(--rule); border-radius:3px; height:7px; overflow:hidden;"><div style="width:${ps}%; height:100%; background:var(--debit);"></div></div>
+      </div>`;
+    };
+    const btnGran = g=>`<button type="button" class="btn small fin-gran${g===gran?' primary':''}" data-gran="${g}" style="${g===gran?'':'background:var(--paper);'}">${GRAN_INFO[g].label}</button>`;
+    box.innerHTML = `
     <div class="row" style="gap:8px; justify-content:flex-end; margin-bottom:10px;">
       <a class="btn small" href="/api${basePath}/relatorios/pdf" target="_blank" rel="noopener">📄 Exportar PDF</a>
       <a class="btn small" href="/api${basePath}/relatorios/csv">📊 Exportar Excel</a>
@@ -9576,14 +9643,21 @@ async function finRenderRelatorios(basePath, containerId){
         `).join('') : '<div class="empty-state">Nenhuma conta ativa cadastrada.</div>'}
       </div>
       <div class="card" style="margin:0; background:var(--paper); flex:1 1 420px; min-width:380px;">
-        <div style="font-weight:600; font-size:13px; margin-bottom:10px;">📋 Resumo de títulos</div>
-        ${linhaResumo('A Receber', d.receber, 'var(--accent-deep)')}
-        ${linhaResumo('A Pagar', d.pagar, 'var(--debit)')}
+        <div style="font-weight:600; font-size:13px; margin-bottom:4px;">📋 Resumo de títulos</div>
+        <div style="font-size:11px; color:var(--ink-soft); margin-bottom:10px;">Clique num valor pra ver quais títulos compõem o número.</div>
+        ${linhaResumo('A Receber', 'receber', d.receber, 'var(--accent-deep)')}
+        ${linhaResumo('A Pagar', 'pagar', d.pagar, 'var(--debit)')}
       </div>
     </div>
     <div class="card" style="margin-top:12px;">
-      <div style="font-weight:600; font-size:13px; margin-bottom:4px;">📈 Fluxo de caixa projetado — próximas 13 semanas</div>
-      <div style="font-size:11.5px; color:var(--ink-soft); margin-bottom:10px;">Só títulos ainda pendentes (vencido e não baixado entra na primeira semana) — verde = entradas, vermelho = saídas.</div>
+      <div class="row" style="gap:10px; align-items:center; justify-content:space-between; flex-wrap:wrap; margin-bottom:4px;">
+        <div style="font-weight:600; font-size:13px;">📈 Fluxo de caixa projetado — ${info.titulo}</div>
+        <div class="row" style="gap:4px;">
+          <span style="font-size:11px; color:var(--ink-soft); margin-right:2px;">Ver por:</span>
+          ${btnGran('dia')}${btnGran('semana')}${btnGran('mes')}
+        </div>
+      </div>
+      <div style="font-size:11.5px; color:var(--ink-soft); margin-bottom:10px;">Só títulos ainda pendentes (vencido e não baixado entra no primeiro período) — verde = entradas, vermelho = saídas.</div>
       <div style="overflow-x:auto;">
         <table class="data-table" style="white-space:nowrap;">
           <thead><tr><th>Período</th><th></th><th>Entradas</th><th>Saídas</th><th>Saldo do período</th><th>Saldo acumulado</th></tr></thead>
@@ -9602,6 +9676,10 @@ async function finRenderRelatorios(basePath, containerId){
         </table>
       </div>
     </div>
+    <div id="finRelExtras"></div>`;
+    box.querySelectorAll('.fin-gran').forEach(b=> b.addEventListener('click', ()=> render(b.dataset.gran)));
+    box.querySelectorAll('.fin-drill').forEach(el=> el.addEventListener('click', ()=> finAbrirTitulosResumo(basePath, el.dataset.tipo, el.dataset.bucket, el.dataset.label)));
+    document.getElementById('finRelExtras').innerHTML = `
     <div class="card" style="margin-top:12px;">
       <div style="font-weight:600; font-size:13px; margin-bottom:4px;">🔄 Renegociações</div>
       <div style="font-size:11.5px; color:var(--ink-soft); margin-bottom:10px;">Títulos vencidos renegociados em novas parcelas — o original fica aqui como histórico, com o progresso das parcelas do novo acordo.</div>
@@ -9656,6 +9734,8 @@ async function finRenderRelatorios(basePath, containerId){
       ` : `<div class="empty-state">Nenhum adiantamento lançado ainda.</div>`}
     </div>
   `;
+  }
+  await render('semana');
 }
 // ===================== Assinatura (catálogo de módulos, teste grátis, pagamento — perfil Cliente) =====================
 // ===================== Minha Assinatura (Colaborador) =====================

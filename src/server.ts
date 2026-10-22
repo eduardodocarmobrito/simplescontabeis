@@ -15173,7 +15173,7 @@ function financeiroContasComSaldo(empresaId: number): any[] {
 // pendente entra na semana 0 (needs attention now) em vez de ficar numa semana negativa.
 // "Atrasado" é calculado na hora (vencimento < hoje E status ainda 'pendente') — o campo status
 // nunca é promovido pra 'atrasado' sozinho em lugar nenhum do sistema, só manualmente pelo usuário.
-function financeiroRelatorio(empresaId: number) {
+function financeiroRelatorio(empresaId: number, granularidade: "dia" | "semana" | "mes" = "semana") {
   const hoje = new Date().toISOString().slice(0, 10);
   const contasAtivas = financeiroContasComSaldo(empresaId).filter((c: any) => c.ativo);
   const saldoTotalContas = contasAtivas.reduce((s: number, c: any) => s + (c.saldoAtual || 0), 0);
@@ -15192,30 +15192,41 @@ function financeiroRelatorio(empresaId: number) {
     return { pendente, atrasado, baixadoMes };
   };
 
-  const NUM_SEMANAS = 13;
+  // Fluxo de caixa projetado por granularidade: dia (30 dias), semana (13 semanas) ou mês (6 meses).
+  // Título vencido e ainda pendente cai no PRIMEIRO período (precisa de atenção agora).
   const hojeDate = new Date(hoje + "T00:00:00");
-  const fimHorizonteIso = new Date(hojeDate.getTime() + NUM_SEMANAS * 7 * 86400000).toISOString().slice(0, 10);
+  const N = granularidade === "dia" ? 30 : granularidade === "mes" ? 6 : 13;
+  const fimHorizonte = granularidade === "mes"
+    ? new Date(hojeDate.getFullYear(), hojeDate.getMonth() + N, 0)
+    : new Date(hojeDate.getTime() + N * (granularidade === "dia" ? 1 : 7) * 86400000);
+  const fimHorizonteIso = fimHorizonte.toISOString().slice(0, 10);
   const pendentesReceber = sqlite
     .prepare(`SELECT vencimento, valor FROM financeiro_receber WHERE empresa_id = ? AND status = 'pendente' AND date(vencimento) <= date(?)`)
     .all(empresaId, fimHorizonteIso) as any[];
   const pendentesPagar = sqlite
     .prepare(`SELECT vencimento, valor FROM financeiro_pagar WHERE empresa_id = ? AND status = 'pendente' AND date(vencimento) <= date(?)`)
     .all(empresaId, fimHorizonteIso) as any[];
-  const semanaDe = (vencimentoIso: string) => {
-    const diffDias = Math.floor((new Date(vencimentoIso + "T00:00:00").getTime() - hojeDate.getTime()) / 86400000);
-    return Math.min(NUM_SEMANAS - 1, Math.max(0, Math.floor(diffDias / 7)));
+  const indiceDe = (vencimentoIso: string) => {
+    const v = new Date(vencimentoIso + "T00:00:00");
+    if (v <= hojeDate) return 0;
+    if (granularidade === "dia") return Math.min(N - 1, Math.floor((v.getTime() - hojeDate.getTime()) / 86400000));
+    if (granularidade === "mes") return Math.min(N - 1, Math.max(0, (v.getFullYear() - hojeDate.getFullYear()) * 12 + (v.getMonth() - hojeDate.getMonth())));
+    return Math.min(N - 1, Math.max(0, Math.floor((v.getTime() - hojeDate.getTime()) / (7 * 86400000))));
   };
-  const semanas = Array.from({ length: NUM_SEMANAS }, () => ({ entradas: 0, saidas: 0 }));
-  for (const r of pendentesReceber) semanas[semanaDe(r.vencimento)].entradas += r.valor || 0;
-  for (const p of pendentesPagar) semanas[semanaDe(p.vencimento)].saidas += p.valor || 0;
+  const periodos = Array.from({ length: N }, () => ({ entradas: 0, saidas: 0 }));
+  for (const r of pendentesReceber) periodos[indiceDe(r.vencimento)].entradas += r.valor || 0;
+  for (const p of pendentesPagar) periodos[indiceDe(p.vencimento)].saidas += p.valor || 0;
   const fmtDiaMes = (d: Date) => `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
+  const MESES = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
   let acumulado = saldoTotalContas;
-  const fluxoCaixa = semanas.map((s, i) => {
+  const fluxoCaixa = periodos.map((s, i) => {
     const saldoPeriodo = s.entradas - s.saidas;
     acumulado += saldoPeriodo;
-    const inicio = new Date(hojeDate.getTime() + i * 7 * 86400000);
-    const fim = new Date(inicio.getTime() + 6 * 86400000);
-    return { periodo: `${fmtDiaMes(inicio)} a ${fmtDiaMes(fim)}`, entradas: s.entradas, saidas: s.saidas, saldoPeriodo, saldoAcumulado: acumulado };
+    let periodo: string;
+    if (granularidade === "dia") periodo = fmtDiaMes(new Date(hojeDate.getTime() + i * 86400000));
+    else if (granularidade === "mes") { const m = new Date(hojeDate.getFullYear(), hojeDate.getMonth() + i, 1); periodo = `${MESES[m.getMonth()]}/${String(m.getFullYear()).slice(2)}`; }
+    else { const inicio = new Date(hojeDate.getTime() + i * 7 * 86400000); const fim = new Date(inicio.getTime() + 6 * 86400000); periodo = `${fmtDiaMes(inicio)} a ${fmtDiaMes(fim)}`; }
+    return { periodo, entradas: s.entradas, saidas: s.saidas, saldoPeriodo, saldoAcumulado: acumulado };
   });
 
   return {
@@ -15223,6 +15234,7 @@ function financeiroRelatorio(empresaId: number) {
     pagar: resumoLado("financeiro_pagar"),
     receber: resumoLado("financeiro_receber"),
     fluxoCaixa,
+    granularidade,
   };
 }
 // ---- Renegociação de título ----
@@ -15499,8 +15511,12 @@ app.delete("/api/financeiro/minha-empresa/contas/:id", requireCliente, requireMo
   sqlite.prepare(`DELETE FROM financeiro_contas WHERE id = ?`).run(Number(req.params.id));
   res.json({ ok: true });
 });
+function granularidadeDaQuery(req: express.Request): "dia" | "semana" | "mes" {
+  const g = String(req.query.granularidade || "");
+  return g === "dia" || g === "mes" ? g : "semana";
+}
 app.get("/api/financeiro/minha-empresa/relatorios", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
-  res.json(financeiroRelatorio((req as any).user.empresaId));
+  res.json(financeiroRelatorio((req as any).user.empresaId, granularidadeDaQuery(req)));
 });
 // Exportação do Relatórios do Financeiro (PDF e Excel/CSV) — mesmos dados das 4 seções da tela
 // (saldo por conta, resumo de títulos, fluxo de caixa projetado, renegociações, adiantamentos),
@@ -15931,7 +15947,7 @@ app.delete("/api/financeiro/empresas/:empresaId/contas/:id", blockCliente, requi
 app.get("/api/financeiro/empresas/:empresaId/relatorios", blockCliente, requirePermissao("financeiro", "visualizar"), (req, res) => {
   const empresaId = Number(req.params.empresaId);
   if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
-  res.json(financeiroRelatorio(empresaId));
+  res.json(financeiroRelatorio(empresaId, granularidadeDaQuery(req)));
 });
 app.get("/api/financeiro/empresas/:empresaId/relatorios/pdf", blockCliente, requirePermissao("financeiro", "visualizar"), async (req, res) => {
   const empresaId = Number(req.params.empresaId);
