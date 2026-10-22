@@ -12532,12 +12532,18 @@ sqlite.exec(`CREATE TABLE IF NOT EXISTS integracontador_busca_slots (slot TEXT P
     sqlite.exec(`ALTER TABLE integracontador_config ADD COLUMN envio_automatico INTEGER NOT NULL DEFAULT 1`);
     sqlite.exec(`UPDATE integracontador_config SET envio_automatico = 0`);
   }
-  // Pesquisa de pagamento (DAS/DARF DCTF-Web) por WhatsApp — nasce LIGADA com 5 dias de prazo (padrão
-  // razoável: dá tempo do cliente pagar sem ser cobrado no dia seguinte ao vencimento), mas some
-  // escritório que nunca configurou nada continua sem nenhuma pesquisa disparada, porque a rotina só
-  // considera guias com data_vencimento/criado_em já existente — nada retroage sozinho de surpresa.
+  // Pesquisa de pagamento (DAS/DARF DCTF-Web) por WhatsApp — a pergunta "você já pagou essa guia?" que
+  // sai sozinha pro cliente. A coluna nasceu com DEFAULT 1 (ligada), 5 dias de prazo.
   if (!colsIc.some((c) => c.name === "pesquisa_pagamento_ativa")) sqlite.exec(`ALTER TABLE integracontador_config ADD COLUMN pesquisa_pagamento_ativa INTEGER NOT NULL DEFAULT 1`);
   if (!colsIc.some((c) => c.name === "pesquisa_pagamento_dias")) sqlite.exec(`ALTER TABLE integracontador_config ADD COLUMN pesquisa_pagamento_dias INTEGER NOT NULL DEFAULT 5`);
+  // Freio inicial (pedido 2026-10-22): a pesquisa começou a disparar pros clientes sem o escritório ter
+  // escolhido ligar. Igual ao envio automático da Meta (envio_automatico acima), passa a ser OPT-IN:
+  // desliga pra todo mundo UMA vez; quem quiser religa na aba "Programação de envio". O marcador garante
+  // que o freio rode só nessa migração — religar depois pela tela NÃO é desfeito por este bloco.
+  if (!colsIc.some((c) => c.name === "pesquisa_pagamento_freio_inicial")) {
+    sqlite.exec(`ALTER TABLE integracontador_config ADD COLUMN pesquisa_pagamento_freio_inicial INTEGER NOT NULL DEFAULT 1`);
+    sqlite.exec(`UPDATE integracontador_config SET pesquisa_pagamento_ativa = 0`);
+  }
 }
 function agoraBrasiliaTextos() {
   const a = agoraBrasilia();

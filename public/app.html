@@ -4617,6 +4617,9 @@ async function renderEnvioProgramacao(){
   box.innerHTML = '<div class="empty-state">Carregando…</div>';
   let data; try{ data = await api('/central-envio/programacao'); }
   catch(e){ box.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
+  // Config da pesquisa de pagamento (Integra Contador) — mostrada aqui como 2º card. Se o módulo não
+  // estiver disponível/ativo, só não renderiza esse card (não quebra a aba da Meta).
+  let icCfg = null; try{ icCfg = await api('/integracontador/config'); }catch(e){ icCfg = null; }
   const render = (d)=>{
     const auto = d.automatico;
     box.innerHTML = `
@@ -4635,7 +4638,8 @@ async function renderEnvioProgramacao(){
           </p>
         </div>
         <p style="font-size:12.5px; color:var(--ink-soft); margin:0;">⚙️ O que <b>não</b> muda (continua tudo normal): o número do <b>atendimento/deskcomm</b>, o <b>e-mail</b>, o <b>envio em lote do CRM</b>, e tudo que você <b>agendou para uma data futura</b>. O robô de baixar/anexar os PDFs também segue normal. Esta chave pega <b>só</b> o disparo imediato da rotina pelo <b>número oficial da Meta</b>.</p>
-      </div>`;
+      </div>
+      ${icCfg && icCfg.pesquisaPagamentoAtiva!==undefined ? renderPesquisaPagamentoCard(icCfg) : ''}`;
     document.getElementById('progToggle').addEventListener('click', async ()=>{
       const novo = !auto;
       if(!novo && !confirmar('Deixar manual o envio pelo número oficial da Meta?\n\nOs envios da rotina do Envio de Documentos que usam a Meta param de sair sozinhos — você envia na mão, pelo botão Enviar.\n\nNÃO muda: atendimento/deskcomm, e-mail, lote do CRM e agendamentos de data futura continuam normais.')) return;
@@ -4644,7 +4648,60 @@ async function renderEnvioProgramacao(){
       try{ const r = await api('/central-envio/programacao', { method:'PUT', body:{ automatico: novo } }); toast(novo?'Envio automático pela Meta ligado.':'Envio pela Meta agora é manual.','ok'); render(r); }
       catch(e){ toast(e.message,'err'); b.disabled = false; }
     });
+    if(icCfg && icCfg.pesquisaPagamentoAtiva!==undefined) wirePesquisaPagamentoCard();
   };
+  // 2º card: pesquisa de pagamento automática (pergunta "já pagou essa guia?" pelo WhatsApp).
+  function renderPesquisaPagamentoCard(c){
+    const on = !!c.pesquisaPagamentoAtiva;
+    const dias = c.pesquisaPagamentoDias ?? 5;
+    return `
+      <div class="card" style="max-width:760px; margin-top:16px;">
+        <h3 style="margin-top:0;">Pesquisa de pagamento automática — WhatsApp (atendimento)</h3>
+        <p class="subtitle" style="margin-bottom:0;">Depois que a guia é gerada, o sistema pode <b>perguntar sozinho pro cliente</b>, pela conversa de WhatsApp do atendimento, se ele <b>já pagou o DAS / DARF da DCTF-Web</b> (“você já pagou essa guia? Responda 1 para SIM, 2 para NÃO”). As respostas aparecem em <b>Relatórios → Pesquisa de pagamento</b>.</p>
+        <div class="card" style="margin:14px 0; padding:16px; background:${on?'var(--accent-pale)':'#fff6e6'}; border:1px solid ${on?'var(--accent)':'#e0b84a'};">
+          <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
+            <b style="font-size:15px;">${on?'🟢 Pesquisa automática: LIGADA':'🟠 Pesquisa automática: DESLIGADA'}</b>
+            <button class="btn ${on?'':'primary'}" id="ppToggle">${on?'Desligar pesquisa automática':'Ligar pesquisa automática'}</button>
+          </div>
+          <p style="margin:12px 0 0; font-size:13px; color:var(--ink);">
+            ${on
+              ? `A pergunta é disparada <b>${dias} dia(s)</b> após o vencimento do DAS (ou após a geração do DARF da DCTF-Web).`
+              : 'Nenhuma pergunta sai sozinha pro cliente. Ligue aqui quando quiser ativar.'}
+          </p>
+          <div style="display:flex; align-items:flex-end; gap:10px; flex-wrap:wrap; margin-top:12px;">
+            <div class="field" style="margin:0; width:160px;"><label>Disparar após (dias)</label>
+              <input type="number" id="ppDias" min="1" max="60" value="${dias}">
+            </div>
+            <button class="btn small" id="ppSalvarDias">Salvar prazo</button>
+          </div>
+        </div>
+        <p style="font-size:12.5px; color:var(--ink-soft); margin:0;">⚙️ Só pega empresas com um <b>contato marcado pra receber WhatsApp</b> e que tenham guia (DAS/DARF DCTF-Web) gerada. Nada retroage de surpresa — só vale pra guias a partir de agora.</p>
+      </div>`;
+  }
+  function wirePesquisaPagamentoCard(){
+    const salvar = async (ativa, dias)=>{
+      const r = await api('/integracontador/pesquisa-pagamento', { method:'PUT', body:{ ativa, dias } });
+      icCfg.pesquisaPagamentoAtiva = ativa ? 1 : 0;
+      icCfg.pesquisaPagamentoDias = dias;
+      return r;
+    };
+    document.getElementById('ppToggle')?.addEventListener('click', async ()=>{
+      const novo = !icCfg.pesquisaPagamentoAtiva;
+      const dias = Math.min(60, Math.max(1, Number(document.getElementById('ppDias').value)||5));
+      if(novo && !confirmar('Ligar a pesquisa de pagamento automática?\n\nO sistema vai perguntar sozinho, pelo WhatsApp do atendimento, se o cliente já pagou o DAS/DARF da DCTF-Web — '+dias+' dia(s) após o vencimento/geração.')) return;
+      if(!novo && !confirmar('Desligar a pesquisa de pagamento automática?\n\nNenhuma pergunta "já pagou essa guia?" sai mais sozinha pros clientes.')) return;
+      const b = document.getElementById('ppToggle'); b.disabled = true;
+      try{ await salvar(novo, dias); toast(novo?'Pesquisa de pagamento automática ligada.':'Pesquisa de pagamento automática desligada.','ok'); render(data); }
+      catch(e){ toast(e.message,'err'); b.disabled = false; }
+    });
+    document.getElementById('ppSalvarDias')?.addEventListener('click', async ()=>{
+      const dias = Number(document.getElementById('ppDias').value);
+      if(!Number.isInteger(dias) || dias<1 || dias>60){ toast('Informe de 1 a 60 dias.','err'); return; }
+      const b = document.getElementById('ppSalvarDias'); b.disabled = true;
+      try{ await salvar(!!icCfg.pesquisaPagamentoAtiva, dias); toast('Prazo salvo ('+dias+' dia(s)).','ok'); render(data); }
+      catch(e){ toast(e.message,'err'); b.disabled = false; }
+    });
+  }
   render(data);
 }
 // Registro de todo pedido que um cliente já fez — tanto pela tela "Solicitar Documentos" quanto
