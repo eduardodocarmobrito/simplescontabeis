@@ -8157,6 +8157,57 @@ function nfeInserirDocumentoDedup(args: {
   const id = r.changes > 0 ? Number(r.lastInsertRowid) : (sqlite.prepare(`SELECT id FROM nfe_documentos WHERE empresa_id = ? AND fonte = ? AND nsu = ?`).get(args.empresaId, args.fonte, args.nsu) as any)?.id ?? null;
   return { inserido: r.changes > 0, atualizado: false, id };
 }
+// Importação manual de XML — fallback pra quando a busca automática na Sefaz falha/está fora do ar
+// (rejeição "Consumo Indevido", instabilidade do webservice etc.) ou pra notas de antes do cadastro
+// do certificado. Aceita o XML completo (nfeProc/cteProc/mdfeProc, o que qualquer emissor ou o
+// próprio portal da Sefaz chama de "baixar XML") — reaproveita identificarDocumento e o MESMO
+// dedup por chave de acesso da busca automática, então importar uma nota que já existe não duplica.
+// NSU não existe pra um documento que não veio da Distribuição DFe — usa "manual_<chave>" só pra
+// satisfazer a constraint (o dedup de verdade é por chave_acesso, não por nsu).
+const uploadXmlBulk = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2 * 1024 * 1024, files: 50 } });
+app.post("/api/nfe/documentos/:empresaId/importar", blockCliente, requirePermissao("nfe-busca", "postar"), uploadXmlBulk.array("arquivos", 50), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const empresa = sqlite.prepare(`SELECT cnpj FROM empresas WHERE id = ?`).get(empresaId) as any;
+  const cnpjEmpresaDigitos = (empresa?.cnpj || "").replace(/\D/g, "");
+  const arquivos = (req.files as Express.Multer.File[]) || [];
+  if (!arquivos.length) return res.status(400).json({ error: "Selecione um ou mais arquivos XML." });
+
+  const resultados: { nomeArquivo: string; status: "importado" | "atualizado" | "duplicado" | "erro"; direcao?: "emitida" | "recebida"; motivo?: string }[] = [];
+  for (const file of arquivos) {
+    const nomeArquivo = corrigirNomeArquivo(file.originalname);
+    if (!/\.xml$/i.test(nomeArquivo)) {
+      resultados.push({ nomeArquivo, status: "erro", motivo: "Não é um arquivo .xml." });
+      continue;
+    }
+    const xml = file.buffer.toString("utf8");
+    let doc: nfe.DocumentoIdentificado;
+    try {
+      doc = nfe.identificarDocumento(xml, "manual_upload");
+    } catch (e: any) {
+      resultados.push({ nomeArquivo, status: "erro", motivo: `XML inválido: ${e.message}` });
+      continue;
+    }
+    if (!doc.chaveAcesso || doc.tipo === "outro") {
+      resultados.push({ nomeArquivo, status: "erro", motivo: "Não reconheci esse XML — precisa ser a nota completa (nfeProc/cteProc/mdfeProc), não um resumo." });
+      continue;
+    }
+    const r = nfeInserirDocumentoDedup({
+      empresaId, escritorioId: user.escritorioId, fonte: "nfe", nsu: `manual_${doc.chaveAcesso}`, schema: "manual_upload",
+      tipo: doc.tipo, chaveAcesso: doc.chaveAcesso, emitenteCnpj: doc.emitenteCnpj, emitenteNome: doc.emitenteNome,
+      destinatarioCnpj: doc.destinatarioCnpj, destinatarioNome: doc.destinatarioNome, valorTotal: doc.valorTotal,
+      dataEmissao: doc.dataEmissao, xml, eventoDescricao: null,
+    });
+    const direcao: "emitida" | "recebida" = (doc.emitenteCnpj || "").replace(/\D/g, "") === cnpjEmpresaDigitos ? "emitida" : "recebida";
+    resultados.push({
+      nomeArquivo,
+      status: r.inserido ? "importado" : r.atualizado ? "atualizado" : "duplicado",
+      direcao,
+    });
+  }
+  res.json({ resultados });
+});
 // Achado ao vivo (LUCELIO MARTINS DE OLIVEIRA): nfe_busca_config.cnpj é uma cópia de empresas.cnpj
 // tirada só no momento em que o certificado é cadastrado — se o CPF/CNPJ da empresa ainda estava em
 // branco naquela hora (comum pra pessoa física recém-cadastrada), a cópia ficou vazia pra sempre,

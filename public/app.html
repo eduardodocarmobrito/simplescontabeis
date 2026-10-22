@@ -6963,6 +6963,8 @@ async function pageNfeBusca(){
           <button class="btn small" id="btnNfeBaixarLotePdf" disabled>Baixar selecionados — PDF</button>
           <button class="btn small" id="btnNfeBaixarLoteAmbos" disabled>Baixar selecionados — XML + PDF</button>
           <button class="btn small" id="btnNfeExportarAnalitico" title="PDF por fornecedor (com produtos de cada nota), do período filtrado abaixo — pra conferência interna">📄 Exportar PDF analítico (por fornecedor)</button>
+          <button class="btn small" id="btnNfeImportarXml" title="Importar o XML completo de uma nota na mão — use quando a busca automática na Sefaz falhar ou estiver fora do ar">⬆️ Importar XML</button>
+          <input type="file" id="nfeImportarXmlInput" accept=".xml" multiple style="display:none;">
         </div>
         <div id="nfeReformaSumario" style="margin-bottom:8px;"></div>
         <!-- Barra de rolagem horizontal fixa no topo da tabela (sincronizada): a barra nativa fica no
@@ -7266,6 +7268,45 @@ async function pageNfeBusca(){
       carregarDocumentos();
     }));
     box.querySelector('.tab[data-direcao="emitida"]').classList.add('active');
+    function irParaAba(direcao){
+      nfeDocDirecao = direcao;
+      box.querySelectorAll('.tab[data-direcao]').forEach(x=>x.classList.toggle('active', x.dataset.direcao===direcao));
+      carregarDocumentos();
+    }
+    const btnImportarXml = document.getElementById('btnNfeImportarXml');
+    const inputImportarXml = document.getElementById('nfeImportarXmlInput');
+    btnImportarXml.addEventListener('click', ()=>inputImportarXml.click());
+    inputImportarXml.addEventListener('change', async ()=>{
+      const arquivos = [...inputImportarXml.files];
+      if(!arquivos.length) return;
+      btnImportarXml.disabled = true; btnImportarXml.textContent = `Importando… (${arquivos.length})`;
+      const fd = new FormData();
+      arquivos.forEach(f=>fd.append('arquivos', f, f.name));
+      try{
+        const r = await api(`/nfe/documentos/${empresaId}/importar`, { method:'POST', body: fd });
+        const ok = r.resultados.filter(x=>x.status!=='erro');
+        const erros = r.resultados.filter(x=>x.status==='erro');
+        const porDirecao = { emitida:0, recebida:0 };
+        ok.forEach(x=>porDirecao[x.direcao]++);
+        const partes = [];
+        if(porDirecao.emitida) partes.push(`${porDirecao.emitida} emitida(s)`);
+        if(porDirecao.recebida) partes.push(`${porDirecao.recebida} recebida(s)`);
+        if(erros.length) partes.push(`${erros.length} com erro`);
+        toast(partes.length? partes.join(', ') : 'Nenhum arquivo importado.', erros.length && !ok.length ? 'err' : 'ok');
+        if(erros.length) console.warn('Importação de XML — arquivos com erro:', erros);
+        // Cai na aba certa sozinho: se os importados foram todos de um lado só, vai pra lá; se veio
+        // misturado, fica na aba que teve mais (empate ou nada importado = não mexe na aba atual).
+        if(ok.length){
+          const alvo = porDirecao.emitida>porDirecao.recebida ? 'emitida' : porDirecao.recebida>porDirecao.emitida ? 'recebida' : nfeDocDirecao;
+          irParaAba(alvo);
+        }
+      }catch(e){
+        toast(e.message,'err');
+      }finally{
+        inputImportarXml.value = '';
+        btnImportarXml.disabled = false; btnImportarXml.textContent = '⬆️ Importar XML';
+      }
+    });
     document.getElementById('nfeDocTipo').addEventListener('change', carregarDocumentos);
     // Tipo pré-selecionado pelo sub-menu (NF-e/CT-e/NFC-e/NF3-e/SAT-CF-e). Fica disponível pro menu
     // aplicar o filtro na hora, sem sair da empresa aberta.
