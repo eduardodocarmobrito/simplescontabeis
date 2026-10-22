@@ -3089,6 +3089,10 @@ function reescreverCorpoNoProxy(proxyReq: any, req: express.Request) {
   // "Invalid Server Actions request" (confirmado ao vivo nos logs do deskcomm). req.headers.host é
   // sempre o domínio original de quem chamou este servidor, então é o valor certo aqui.
   if (req.headers.host) proxyReq.setHeader("x-forwarded-host", req.headers.host);
+  // O navegador sempre fala HTTPS com este site (HSTS), mas quando o alvo do proxy é o container
+  // interno via HTTP (http://deskcomm-app-1:3000) o deskcomm veria a conexão como http e montaria
+  // redirects/links com http. Força https aqui pra os redirects do /auth/confirm saírem em https.
+  proxyReq.setHeader("x-forwarded-proto", "https");
   // Reenvia os bytes ORIGINAIS (guardados pelo `verify` do express.json) e não só quando o objeto
   // tem chaves: um POST com corpo `{}` (Content-Length: 2 — marcar como lida, devolver ao
   // automático) caía no `return` antigo, o cabeçalho seguia e o corpo não, e o deskcomm ficava
@@ -3146,11 +3150,14 @@ app.use(
   requireAuthPagina,
   createProxyMiddleware({
     target: DESKCOMM_URL,
-    // changeOrigin:true é obrigatório aqui — testado ao vivo sem ele: o TLS quebra com EPROTO na
-    // negociação com o Caddy da VPS (o SNI acompanha essa opção). O ajuste do x-forwarded-host pra
-    // Server Actions (ver reescreverCorpoNoProxy) resolve o problema de origem sem precisar desligar
-    // isto.
-    changeOrigin: true,
+    // changeOrigin só pra alvo HTTPS (ex.: Caddy público da VPS) — sem ele o TLS quebrava com EPROTO
+    // na negociação do SNI. Mas quando DESKCOMM_URL é um alvo HTTP INTERNO (ex.: http://deskcomm-app-1:3000,
+    // o container na rede do docker), changeOrigin:true vira um TIRO NO PÉ: ele reescreve o Host pra
+    // "deskcomm-app-1:3000", e o deskcomm (Next.js) monta os redirects do /auth/confirm com ESSE host
+    // interno (via request.url), que o NAVEGADOR não resolve → "falha de rede ao conectar no deskcomm"
+    // no login de usuário novo. Com changeOrigin:false o Host do navegador (simplescontabeis.com.br) é
+    // preservado e os redirects saem no host público certo. Alvo HTTP não tem TLS, então não há EPROTO.
+    changeOrigin: DESKCOMM_URL.startsWith("https://"),
     ws: false,
     proxyTimeout: 45_000,
     timeout: 45_000,
@@ -3171,7 +3178,7 @@ app.use(
   requireEscritorioPrincipalDeskcomm,
   createProxyMiddleware({
     target: DESKCOMM_URL,
-    changeOrigin: true, // ver comentário do proxy /deskcomm acima — obrigatório pro TLS não quebrar
+    changeOrigin: DESKCOMM_URL.startsWith("https://"), // ver comentário do proxy /deskcomm acima (só HTTPS)
     ws: false,
     proxyTimeout: 45_000,
     timeout: 45_000,
