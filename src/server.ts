@@ -1,6 +1,7 @@
 import "dotenv/config";
 import express from "express";
 import path from "path";
+import https from "node:https";
 import fs from "fs";
 import os from "os";
 import crypto from "crypto";
@@ -3077,6 +3078,51 @@ const DESKCOMM_PUBLIC_HOST = (process.env.DESKCOMM_PUBLIC_HOST || "simplescontab
 // uma base DIFERENTE do DESKCOMM_URL (que agora aponta pro container interno do app e NÃO tem essas rotas
 // -> dava "WAHA 404"). O default aponta pro Caddy público do deskcomm, onde essas rotas sempre moraram.
 const DESKCOMM_WAHA_URL = (process.env.DESKCOMM_WAHA_URL || "https://srv1998403.hstgr.cloud").trim();
+// As rotas WAHA ficam no Caddy do deskcomm, mas o hairpin pro IP PÚBLICO de `DESKCOMM_WAHA_URL` não
+// funciona de dentro do container (fetch failed). Então a gente CONECTA no Caddy pela rede interna
+// (container `deskcomm-caddy-1`), mas com TLS SNI + header Host = o host de DESKCOMM_WAHA_URL — senão o
+// Caddy não casa o bloco do domínio e cai no catch-all (404). `fetch` não deixa forçar Host/SNI, e o
+// undici não está disponível, então usa o módulo https direto. rejectUnauthorized:false porque
+// conectamos pelo nome interno (o cert é do host público, validado pelo servername).
+const DESKCOMM_WAHA_CONNECT = (process.env.DESKCOMM_WAHA_CONNECT || "deskcomm-caddy-1").trim();
+const _deskcommWahaUrl = new URL(DESKCOMM_WAHA_URL);
+function wahaFetch(
+  caminho: string,
+  init: { method?: string; headers?: Record<string, string>; body?: string } = {}
+): Promise<{ ok: boolean; status: number; json: () => Promise<any>; text: () => Promise<string> }> {
+  return new Promise((resolve, reject) => {
+    const usaInterno = DESKCOMM_WAHA_CONNECT && DESKCOMM_WAHA_CONNECT.toLowerCase() !== "direto";
+    const req = https.request(
+      {
+        host: usaInterno ? DESKCOMM_WAHA_CONNECT : _deskcommWahaUrl.hostname,
+        port: Number(_deskcommWahaUrl.port) || 443,
+        path: caminho,
+        method: init.method || "GET",
+        servername: _deskcommWahaUrl.hostname,
+        rejectUnauthorized: !usaInterno,
+        headers: { ...(init.headers || {}), host: _deskcommWahaUrl.host },
+      },
+      (resp) => {
+        const chunks: Buffer[] = [];
+        resp.on("data", (c) => chunks.push(c as Buffer));
+        resp.on("end", () => {
+          const buf = Buffer.concat(chunks);
+          const status = resp.statusCode || 0;
+          resolve({
+            ok: status >= 200 && status < 300,
+            status,
+            text: async () => buf.toString("utf8"),
+            json: async () => JSON.parse(buf.toString("utf8")),
+          });
+        });
+      }
+    );
+    req.on("error", reject);
+    req.setTimeout(20_000, () => req.destroy(new Error("timeout ao falar com o WAHA")));
+    if (init.body) req.write(init.body);
+    req.end();
+  });
+}
 // .trim(): variáveis de ambiente coladas por um painel web (Railway etc.) vêm sujeitas a espaço/quebra
 // de linha grudado sem querer — medido ao vivo com DESKCOMM_ORG_ID assim, e "invalid input syntax for
 // type uuid" não deixa óbvio que o problema é um espaço, não o valor em si.
@@ -20549,7 +20595,7 @@ app.post("/api/atendimento/conversas/:id/setor", blockCliente, requireEscritorio
 // /simplescontabeis/waha-seen do Caddy da VPS (única rota do WAHA publicada; ver Caddyfile lá), com a
 // chave sha256("simplescontabeis-waha-seen:" + service-role do Supabase do deskcomm) — o mesmo
 // segredo que os dois lados já têm, sem variável nova no Railway.
-const ATENDIMENTO_WAHA_SEEN_TOKEN = DESKCOMM_SUPABASE_SERVICE_ROLE_KEY
+const ATENDIMENTO_WAHA_SEEN_TOKEN = (process.env.WAHA_SEEN_TOKEN || DESKCOMM_SUPABASE_SERVICE_ROLE_KEY).trim()
   ? crypto.createHash("sha256").update("simplescontabeis-waha-seen:" + DESKCOMM_SUPABASE_SERVICE_ROLE_KEY).digest("hex")
   : "";
 // Renomear o contato (nome que aparece em toda a lista/painel). O deskcomm só preenche display_name quando está
@@ -20587,7 +20633,7 @@ app.post("/api/atendimento/conversas/:id/citacoes", blockCliente, requireEscrito
       let citacao: any = null;
       try {
         const chatId = String(m.external_id).split("_")[1];
-        const r = await fetch(`${DESKCOMM_WAHA_URL}/simplescontabeis/waha-get/${encodeURIComponent(sessao)}/${encodeURIComponent(chatId).replace(/%40/g, "@")}/${encodeURIComponent(m.external_id).replace(/%40/g, "@")}`, { headers: { "X-Simples-Token": ATENDIMENTO_WAHA_SEEN_TOKEN } });
+        const r = await wahaFetch(`/simplescontabeis/waha-get/${encodeURIComponent(sessao)}/${encodeURIComponent(chatId).replace(/%40/g, "@")}/${encodeURIComponent(m.external_id).replace(/%40/g, "@")}`, { headers: { "X-Simples-Token": ATENDIMENTO_WAHA_SEEN_TOKEN } });
         if (!r.ok) return; // tenta de novo numa próxima abertura
         const j: any = await r.json();
         if (j?.replyTo?.id) {
@@ -20640,7 +20686,7 @@ app.get("/api/atendimento/contatos/:id/foto", blockCliente, requireEscritorioPri
     const meta: any = ct.source_metadata || {};
     const chatId = meta.waha_chat_id || (ct.wa_lid ? `${ct.wa_lid}@lid` : ct.phone_number ? `${String(ct.phone_number).replace(/\D/g, "")}@c.us` : null);
     if (!sessao || !chatId) { fotoCache.set(id, { buf: null, mime: "", em: Date.now() }); return res.status(404).end(); }
-    const r = await fetch(`${DESKCOMM_WAHA_URL}/simplescontabeis/waha-foto/${encodeURIComponent(sessao)}/${encodeURIComponent(chatId).replace(/%40/g, "@")}`, { headers: { "X-Simples-Token": ATENDIMENTO_WAHA_SEEN_TOKEN } });
+    const r = await wahaFetch(`/simplescontabeis/waha-foto/${encodeURIComponent(sessao)}/${encodeURIComponent(chatId).replace(/%40/g, "@")}`, { headers: { "X-Simples-Token": ATENDIMENTO_WAHA_SEEN_TOKEN } });
     const j: any = r.ok ? await r.json().catch(() => null) : null;
     const url = j?.profilePictureURL;
     let entrada: { buf: Buffer | null; mime: string; em: number } = { buf: null, mime: "", em: Date.now() };
@@ -20705,8 +20751,8 @@ async function atendimentoChamarWahaMsg(m: any, metodo: "PUT" | "DELETE", corpo?
     chatId = ref[1];
     idCompleto = `true_${chatId}_${m.external_id}`;
   }
-  const url = `${DESKCOMM_WAHA_URL}/simplescontabeis/waha-msg/${encodeURIComponent(sessao)}/${encodeURIComponent(chatId).replace(/%40/g, "@")}/${encodeURIComponent(idCompleto).replace(/%40/g, "@")}`;
-  const r = await fetch(url, { method: metodo, headers: { "Content-Type": "application/json", "X-Simples-Token": ATENDIMENTO_WAHA_SEEN_TOKEN }, body: corpo ? JSON.stringify(corpo) : undefined });
+  const url = `/simplescontabeis/waha-msg/${encodeURIComponent(sessao)}/${encodeURIComponent(chatId).replace(/%40/g, "@")}/${encodeURIComponent(idCompleto).replace(/%40/g, "@")}`;
+  const r = await wahaFetch(url, { method: metodo, headers: { "Content-Type": "application/json", "X-Simples-Token": ATENDIMENTO_WAHA_SEEN_TOKEN }, body: corpo ? JSON.stringify(corpo) : undefined });
   if (!r.ok) throw new Error(`WhatsApp ${r.status}: ${(await r.text().catch(() => "")).slice(0, 200)}`);
 }
 function atendimentoRespErro(res: express.Response, e: any) {
@@ -20795,7 +20841,7 @@ app.post("/api/atendimento/conversas/:id/lida", blockCliente, requireEscritorioP
     const ids = (recebidas || []).map((m: any) => String(m.external_id));
     if (!ids.length) return res.json({ ok: true, nada: true });
     const chatId = ids[0].split("_")[1];
-    const r = await fetch(`${DESKCOMM_WAHA_URL}/simplescontabeis/waha-seen`, {
+    const r = await wahaFetch(`/simplescontabeis/waha-seen`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Simples-Token": ATENDIMENTO_WAHA_SEEN_TOKEN },
       body: JSON.stringify({ session: sessao, chatId, messageIds: ids.filter((x) => x.split("_")[1] === chatId) }),
