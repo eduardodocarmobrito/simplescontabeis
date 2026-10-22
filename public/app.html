@@ -12089,10 +12089,14 @@ async function atdAcao(S, acao, botao){
         if(dono && dono.atribuidoDeskcommId && dono.atribuidoDeskcommId!==c.atribuidoDeskcommId){
           try{ await claim(dono.atribuidoDeskcommId); }
           catch(e2){ throw new Error('Este atendimento já foi assumido por '+quem+'. (Atualizei a lista.)'); }
-        } else if(dono && !dono.atribuidoDeskcommId){
-          // Ninguém tem mais — tenta assumir do zero (ficou livre entre o clique e agora).
+        } else if((dono && !dono.atribuidoDeskcommId) || (!dono && !tomandoDeOutro)){
+          // Ninguém HUMANO tem a conversa (ou não deu pra confirmar o dono, mas você não está tomando
+          // de outra pessoa). O deskcomm às vezes recusa o claim com "outro atendente já assumiu" só
+          // porque a IA/automático segue "ativo" na conversa, mesmo sem humano. Tenta o claim normal e,
+          // se ainda recusar, força pelo backend: /assumir-livre confere NO SERVIDOR que está livre antes
+          // de atribuir pra você (se um humano real tiver, ele recusa e cai na mensagem certa).
           try{ await claim(null); }
-          catch(e2){ throw new Error(err.message); }
+          catch(e2){ await api('/atendimento/conversas/'+encodeURIComponent(c.id)+'/assumir-livre', { method:'POST' }); }
         } else {
           throw new Error('Este atendimento já foi assumido por '+quem+'.'+(/admin|permiss|forbidden|403|não tem permiss/i.test(err.message||'') ? ' Só um administrador pode assumir no lugar — peça pra '+quem+' liberar ou transferir a conversa.' : ''));
         }
@@ -12107,7 +12111,10 @@ async function atdAcao(S, acao, botao){
       }catch(e){ toast('Conversa assumida, mas o aviso ao cliente não foi enviado: '+e.message,'err'); }
     }, !avisar ? (tomandoDeOutro ? 'Conversa assumida.' : 'Conversa assumida — o automático foi pausado.') : 'Conversa assumida — o automático foi pausado e o cliente foi avisado.');
   }
-  if(acao==='liberar') return executar(()=>dcApi(base+'/release', { method:'POST' }), 'Conversa liberada.');
+  // Libera pelo backend (robô admin): um agente só solta pela própria sessão a conversa atribuída a
+  // ELE, e a tela pode estar com dado velho ("você assumiu" mas o deskcomm já não te vê como dono) —
+  // dava "Você não está atribuído a essa conversa". O backend solta independente disso.
+  if(acao==='liberar') return executar(()=>api('/atendimento/conversas/'+encodeURIComponent(c.id)+'/liberar', { method:'POST' }), 'Conversa liberada.');
   if(acao==='automatico'){
     if(!confirmar('Devolver esta conversa ao atendimento automático?')) return;
     return executar(()=>dcApi(base+'/reactivate-bot', { method:'POST' }), 'Conversa devolvida ao automático.');

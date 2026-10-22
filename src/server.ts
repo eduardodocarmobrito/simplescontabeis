@@ -20962,6 +20962,36 @@ app.post("/api/atendimento/conversas/:id/fechar", blockCliente, requireEscritori
     res.status(502).json({ error: `Não foi possível fechar: ${e.message}` });
   }
 });
+// Liberar (soltar de volta pra fila, sem voltar pro automático) pelo backend robô-admin — mesmo motivo
+// do fechar: um agente só solta pela própria sessão a conversa atribuída a ELE, e a tela pode estar com
+// dado velho ("você assumiu" mas o deskcomm já não te vê como dono) → dava "Você não está atribuído a
+// essa conversa". Solta pelo robô (admin); se o robô não for o dono, força a conversa pra ele
+// (fn_conversation_assign) e então solta — funciona independente de quem o deskcomm acha que está com ela.
+app.post("/api/atendimento/conversas/:id/liberar", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
+  const user = (req as any).user;
+  if (!atendimentoAlgumaPermissao(user, "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
+  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  const id = String(req.params.id);
+  try {
+    const { data: c } = await deskcommAdmin.from("conversations").select("id, status, assigned_to_user_id").eq("organization_id", DESKCOMM_ORG_ID).eq("id", id).maybeSingle();
+    if (!c) return res.status(404).json({ error: "Conversa não encontrada." });
+    if ((c as any).status === "closed" || (c as any).status === "archived") return res.json({ ok: true, jaFechada: true });
+    if (!(c as any).assigned_to_user_id) return res.json({ ok: true, jaLivre: true });
+    const release = () => deskcommRoboApi(`/conversations/${id}/release`, { method: "POST" });
+    try {
+      await release();
+    } catch {
+      // Robô não era o dono: força a conversa pra ele (service-role) e então solta.
+      const roboId = await deskcommRoboId();
+      await deskcommAdmin.rpc("fn_conversation_assign", { p_organization_id: DESKCOMM_ORG_ID, p_conversation_id: id, p_to_user_id: roboId, p_reason: "transfer", p_enforce_expected: false });
+      await release();
+    }
+    res.json({ ok: true });
+  } catch (e: any) {
+    console.error("[atendimento] falha ao liberar:", e.message);
+    res.status(502).json({ error: `Não foi possível liberar: ${e.message}` });
+  }
+});
 // Override do ADMINISTRADOR: assumir no lugar de outro atendente (ou transferir pra uma pessoa)
 // mesmo quando o deskcomm recusaria (um agente só toma conversa atribuída a ele). Força a atribuição
 // pela service-role com fn_conversation_assign (p_enforce_expected=false), a MESMA função que o deskcomm
