@@ -14285,6 +14285,7 @@ function cenvDesenharPendentes(box, itens, escopo, podePostar, recarregar, dispe
   box.innerHTML = `${selecionaveis?`<div class="row" style="gap:8px; align-items:center; margin-bottom:8px; flex-wrap:wrap;">
       <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="cenvSelTodos" ${nSel && nSel===itens.length?'checked':''}> Selecionar todos (${itens.length})</label>
       <button class="btn primary" id="cenvLote" ${nSel?'':'disabled'}>📨 Enviar / agendar selecionados${nSel?` (${nSel})`:''}</button>
+      <button class="btn" id="cenvDispLote" ${nSel?'':'disabled'}>🗑 Dispensar selecionados${nSel?` (${nSel})`:''}</button>
       <span style="font-size:12px; color:var(--ink-soft);">Cada documento vai para os contatos da sua própria empresa.</span></div>`:''}
     <div class="card" style="padding:0; overflow-x:auto;"><table class="data-table">
     <thead><tr>${selecionaveis?'<th style="width:28px;"></th>':''}<th>Documento</th><th>Empresa</th><th>Colaborador</th><th>Competência</th><th>Lido em</th><th></th></tr></thead><tbody>
@@ -14306,11 +14307,24 @@ function cenvDesenharPendentes(box, itens, escopo, podePostar, recarregar, dispe
     const atualizarBotao = ()=>{
       const n = itens.filter(i=>CENV.sel.has(i.id)).length; const btn = document.getElementById('cenvLote');
       btn.disabled = !n; btn.textContent = '📨 Enviar / agendar selecionados'+(n?` (${n})`:'');
+      const bd = document.getElementById('cenvDispLote'); if(bd){ bd.disabled = !n; bd.textContent = '🗑 Dispensar selecionados'+(n?` (${n})`:''); }
       document.getElementById('cenvSelTodos').checked = n>0 && n===itens.length;
     };
     box.querySelectorAll('.cenvSel').forEach(cb=>cb.addEventListener('change', ()=>{ const id = Number(cb.closest('tr').dataset.id); if(cb.checked) CENV.sel.add(id); else CENV.sel.delete(id); atualizarBotao(); }));
     document.getElementById('cenvSelTodos').addEventListener('change', e=>{ itens.forEach(i=>{ if(e.target.checked) CENV.sel.add(i.id); else CENV.sel.delete(i.id); }); box.querySelectorAll('.cenvSel').forEach(cb=>cb.checked = e.target.checked); atualizarBotao(); });
     document.getElementById('cenvLote').addEventListener('click', ()=>cenvLoteModal(itens.filter(i=>CENV.sel.has(i.id)).map(i=>i.id), recarregar));
+    document.getElementById('cenvDispLote').addEventListener('click', async ()=>{
+      const ids = itens.filter(i=>CENV.sel.has(i.id)).map(i=>i.id);
+      if(!ids.length) return;
+      if(!confirmar(`Dispensar ${ids.length} documento(s) selecionado(s)? Eles saem de Pendentes e não serão enviados (os arquivos continuam guardados).`)) return;
+      const bd = document.getElementById('cenvDispLote'); bd.disabled = true;
+      try{
+        const r = await api('/central-envio/docs/ignorar-lote', { method:'POST', body:{ ids } });
+        ids.forEach(id=>CENV.sel.delete(id));
+        toast((r && r.dispensados!=null ? r.dispensados : ids.length)+' documento(s) dispensado(s).','ok');
+        recarregar();
+      }catch(e){ toast(e.message,'err'); bd.disabled = false; }
+    });
   }
   box.querySelectorAll('[data-a]').forEach(b=>b.addEventListener('click', ()=>{
     const id = Number(b.closest('tr').dataset.id); const doc = itens.find(x=>x.id===id);

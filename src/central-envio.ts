@@ -934,6 +934,22 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     db.prepare(`UPDATE central_envio_docs SET status = 'ignorado' WHERE id = ?`).run(doc.id);
     res.json({ ok: true });
   });
+  // Dispensar vários de uma vez (mesma seleção do envio em lote). Confere escritório + permissão de
+  // postar no setor de CADA doc e só mexe nos que estão pendentes — ignora em silêncio o que não pode.
+  app.post("/api/central-envio/docs/ignorar-lote", d.blockCliente, (req, res) => {
+    const user = (req as any).user;
+    const ids = Array.isArray(req.body?.ids) ? (req.body.ids as any[]).map(Number).filter((n) => Number.isInteger(n)) : [];
+    if (!ids.length) return res.status(400).json({ error: "Nenhum documento selecionado." });
+    const pega = db.prepare(`SELECT setor FROM central_envio_docs WHERE id = ? AND escritorio_id = ? AND status = 'pendente'`);
+    const upd = db.prepare(`UPDATE central_envio_docs SET status = 'ignorado' WHERE id = ? AND escritorio_id = ? AND status = 'pendente'`);
+    let dispensados = 0;
+    for (const id of ids) {
+      const doc = pega.get(id, user.escritorioId) as any;
+      if (!doc || !d.hasPermissao(user, doc.setor, "postar")) continue;
+      if (upd.run(id, user.escritorioId).changes) dispensados++;
+    }
+    res.json({ ok: true, dispensados });
+  });
   app.post("/api/central-envio/docs/:id/restaurar", d.blockCliente, (req, res) => {
     const doc = docDoUsuario(req, res); if (!doc) return;
     if (!d.hasPermissao((req as any).user, doc.setor, "postar")) return semAcesso(res);
