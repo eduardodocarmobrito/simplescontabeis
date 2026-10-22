@@ -9127,7 +9127,7 @@ app.get("/api/nfe/documentos", blockCliente, requirePermissao("nfe-busca", "visu
 // impostos (ICMS/PIS/COFINS/IPI + IBS/CBS). Backfilla os docs do escopo ainda não lidos antes de somar.
 // Reaproveitado pelo /dashboard (JSON pra tela) e pelo /exportar-analitico-pdf (cabeçalho do relatório
 // com os dois painéis — Perfil das Notas + Impostos no período — igual ao que a tela mostra).
-function nfeCalcularDashboard(user: any, empresaId: number, dataDe: string | null, dataAte: string | null) {
+function nfeCalcularDashboard(user: any, empresaId: number, dataDe: string | null, dataAte: string | null, direcao?: "emitida" | "recebida" | null) {
   const cond: string[] = [`d.escritorio_id = ?`, `d.empresa_id = ?`, `d.tipo IN ('nfe','nfce')`];
   const params: any[] = [user.escritorioId, empresaId];
   if (dataDe) {
@@ -9139,10 +9139,17 @@ function nfeCalcularDashboard(user: any, empresaId: number, dataDe: string | nul
     params.push(dataAte);
   }
   const where = cond.join(" AND ");
-  // Backfill dos docs do escopo ainda não parseados na versão atual (até 3000 por chamada).
+  // Backfill dos docs do escopo ainda não parseados na versão atual (até 3000 por chamada) — sem
+  // JOIN empresas (não precisa saber direção pra isso, só preencher o cache), por isso usa "where"
+  // (sem o filtro de direção abaixo, que depende do alias "e" que só existe nas duas consultas de
+  // agregação logo adiante).
   const pend = sqlite.prepare(`SELECT id FROM nfe_documentos d WHERE ${where} AND (tributos_parseado IS NULL OR tributos_parseado < ?) LIMIT 3000`).all(...params, NFE_TRIB_VERSAO) as any[];
   if (pend.length) parsearECachearTributos(pend.map((p) => p.id));
   const emitExpr = `d.emitente_cnpj = REPLACE(REPLACE(REPLACE(e.cnpj,'.',''),'/',''),'-','')`;
+  // Resumo (KPIs/Perfil/Impostos) restrito à mesma direção da tela que pediu — sem isso, "Notas de
+  // Entrada" e "Notas de Saída" mostrariam o mesmo resumo (misturando as duas), só a tabela embaixo
+  // mudaria. direcao=null/undefined (telas do escritório) mantém o total combinado, como sempre foi.
+  const whereDir = direcao === "emitida" ? `${where} AND ${emitExpr}` : direcao === "recebida" ? `${where} AND NOT (${emitExpr})` : where;
   const canceladaExpr = `EXISTS (SELECT 1 FROM nfe_documentos ev WHERE ev.escritorio_id = d.escritorio_id AND ev.tipo='evento' AND ev.chave_acesso = d.chave_acesso AND ev.evento_descricao LIKE '%ancela%' AND ev.evento_descricao NOT LIKE '%CT-e%' AND ev.evento_descricao NOT LIKE '%MDF-e%')`;
   const r = sqlite
     .prepare(
@@ -9157,7 +9164,7 @@ function nfeCalcularDashboard(user: any, empresaId: number, dataDe: string | nul
          SUM(COALESCE(d.valor_cofins,0)) as cofins, SUM(COALESCE(d.valor_ipi,0)) as ipi,
          SUM(COALESCE(d.valor_ibs,0)) as ibs, SUM(COALESCE(d.valor_cbs,0)) as cbs,
          SUM(CASE WHEN COALESCE(d.valor_ibs,0)>0 OR COALESCE(d.valor_cbs,0)>0 THEN 1 ELSE 0 END) as comReforma
-       FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id WHERE ${where}`
+       FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id WHERE ${whereDir}`
     )
     .get(...params) as any;
   // Perfil das Notas (estilo Espião): quantas notas têm cada marcador, dentro do mesmo período/escopo
@@ -9181,7 +9188,7 @@ function nfeCalcularDashboard(user: any, empresaId: number, dataDe: string | nul
          ${flagLike("pag")} as pagamento,
          SUM(CASE WHEN EXISTS (SELECT 1 FROM mdfe_vinculos mv WHERE mv.chave_vinculada = d.chave_acesso) THEN 1 ELSE 0 END) as transportadora,
          SUM(CASE WHEN d.observacao IS NOT NULL AND TRIM(d.observacao)!='' THEN 1 ELSE 0 END) as comComentario
-       FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id WHERE ${where} AND d.tipo IN ('nfe','nfce')`
+       FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id WHERE ${whereDir} AND d.tipo IN ('nfe','nfce')`
     )
     .get(...params) as any;
   return {
@@ -9387,22 +9394,24 @@ app.put("/api/nfe/documentos/:id/integrar-financeiro", blockCliente, requirePerm
   if (!r.ok) return res.status(400).json({ error: r.erro });
   res.json({ ok: true });
 });
-// ---- Notas de Entrada (cliente vê só as notas recebidas da PRÓPRIA empresa, somente leitura) ----
+// ---- Notas de Entrada/Saída (cliente vê só as notas da PRÓPRIA empresa, somente leitura) ----
 // Aba opcional (ver PAGINAS_CLIENTE_VALIDAS/cliente_paginas_visiveis) — o admin decide, por usuário
 // cliente, se ela aparece no menu dele. Sem "Buscar agora"/certificado aqui — é só consulta do que
-// a busca automática do escritório (módulo busca_xml_nfe) já capturou.
+// a busca automática do escritório (módulo busca_xml_nfe) já capturou. "direcao" na query escolhe
+// entre a tela de Entrada (recebida, padrão — mantém compatível com quem já chamava sem o parâmetro)
+// e a de Saída (emitida).
 app.get("/api/nfe/minha-empresa/documentos", requireCliente, (req, res) => {
   const user = (req as any).user;
   if (!user.empresaId) return res.json({ items: [], moduloAtivo: false });
   const moduloAtivo = escritorioTemModulo(user.escritorioId, "busca_xml_nfe");
   if (!moduloAtivo) return res.json({ items: [], moduloAtivo: false });
-  // Mesma lógica rica (flags/qtd_itens/IBS-CBS/manifestação/eventos) que a tela do escritório usa,
-  // só restrita à própria empresa e sempre "recebida" (é pra isso que este acesso existe) — igual
-  // pedido pelo usuário: o cliente vê os mesmos marcadores/opções da tela do escritório, sem o card
-  // de "Buscar agora"/certificado (que é administrativo, não aparece aqui de propósito).
+  const direcao = req.query.direcao === "emitida" ? "emitida" : "recebida";
+  // Mesma lógica rica (flags/qtd_itens/IBS-CBS/manifestação/eventos) que a tela do escritório usa, só
+  // restrita à própria empresa — igual pedido pelo usuário: o cliente vê os mesmos marcadores/opções
+  // da tela do escritório, sem o card de "Buscar agora"/certificado (administrativo, de propósito).
   const items = nfeListarDocumentosQuery(user, {
     empresasIds: [user.empresaId],
-    direcao: "recebida",
+    direcao,
     busca: typeof req.query.busca === "string" ? req.query.busca.trim() : "",
     dataDe: typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null,
     dataAte: typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null,
@@ -9419,7 +9428,8 @@ app.get("/api/nfe/minha-empresa/dashboard", requireCliente, (req, res) => {
   if (!moduloAtivo) return res.json({ moduloAtivo: false });
   const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
   const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
-  res.json({ moduloAtivo: true, ...nfeCalcularDashboard(user, user.empresaId, dataDe, dataAte) });
+  const direcao = req.query.direcao === "emitida" ? "emitida" : "recebida";
+  res.json({ moduloAtivo: true, ...nfeCalcularDashboard(user, user.empresaId, dataDe, dataAte, direcao) });
 });
 app.get("/api/nfe/minha-empresa/documentos/:id/xml", requireCliente, (req, res) => {
   const user = (req as any).user;

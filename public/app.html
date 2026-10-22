@@ -1153,6 +1153,7 @@ const NAV = [
   { id:'solicitar-documentos', label:'Solicitar Documentos', modulo:null, roles:['Cliente'] },
   { id:'documentos-recebidos', label:'Documentos Recebidos', modulo:null, roles:['Cliente'] },
   { id:'notas-entrada', label:'Notas de Entrada', modulo:null, roles:['Cliente'] },
+  { id:'notas-saida', label:'Notas de Saída', modulo:null, roles:['Cliente'] },
   { id:'minha-assinatura', label:'Assinatura', modulo:null, roles:['Cliente'] },
   { id:'financeiro', label:'Financeiro', modulo:'financeiro', roles:['Administrador','Colaborador'] },
   { id:'certificados', label:'Certificados', modulo:'certificados', roles:['Administrador','Colaborador'] },
@@ -1177,13 +1178,14 @@ let NFE_TIPO_SEL = '';
 // o expandido/recolhido só seguia a página atual e clicar de novo no item não tinha efeito (sempre
 // reabria, porque "já estar na página" é justamente a condição que mantém expandido).
 let NAV_FECHADOS = new Set();
-const PAGINAS_CLIENTE_RESTRINGIVEIS = ['minha-nfse','meus-documentos','solicitar-documentos','documentos-recebidos','notas-entrada','minha-financeiro','minha-assinatura'];
+const PAGINAS_CLIENTE_RESTRINGIVEIS = ['minha-nfse','meus-documentos','solicitar-documentos','documentos-recebidos','notas-entrada','notas-saida','minha-financeiro','minha-assinatura'];
 const PAGINAS_CLIENTE_TODAS = [
   { id:'minha-nfse', label:'NFS-e' },
   { id:'meus-documentos', label:'Meus Documentos' },
   { id:'solicitar-documentos', label:'Solicitar Documentos' },
   { id:'documentos-recebidos', label:'Documentos Recebidos' },
   { id:'notas-entrada', label:'Notas de Entrada (XML)' },
+  { id:'notas-saida', label:'Notas de Saída (XML)' },
   { id:'minha-financeiro', label:'Financeiro' },
   { id:'minha-assinatura', label:'Assinatura' },
 ];
@@ -1349,6 +1351,7 @@ async function render(){
     else if(STATE.page==='solicitar-documentos') await pageSolicitarDocumentos();
     else if(STATE.page==='documentos-recebidos') await pageDocumentosRecebidos();
     else if(STATE.page==='notas-entrada') await pageNotasEntrada();
+    else if(STATE.page==='notas-saida') await pageNotasSaida();
     else if(STATE.page==='minha-nfse') await pageMinhaNfse();
     else if(STATE.page==='minha-financeiro') await pageMinhaFinanceiro();
     else if(STATE.page==='minha-assinatura') await pageMinhaAssinatura();
@@ -5539,10 +5542,13 @@ async function pageDocumentosRecebidos(){
 // (Busca de XML). Sem "Buscar agora" nem certificado aqui — é só consulta. Flags/Opções/Resumo
 // espelham a tela do escritório (mesmos marcadores e dashboard), só sem ações administrativas
 // (comentário interno, dar ciência da operação) nem o card de configuração do certificado.
-async function pageNotasEntrada(){
+async function pageNotasSaida(){ return pageNotasEntrada('emitida'); }
+async function pageNotasEntrada(direcao){
+  direcao = direcao === 'emitida' ? 'emitida' : 'recebida';
+  const saida = direcao === 'emitida';
   main().innerHTML = `
-    <h1>Notas de Entrada</h1>
-    <p class="subtitle">Notas fiscais recebidas pela sua empresa, capturadas automaticamente pelo escritório</p>
+    <h1>${saida?'Notas de Saída':'Notas de Entrada'}</h1>
+    <p class="subtitle">${saida?'Notas fiscais emitidas pela sua empresa, capturadas automaticamente pelo escritório':'Notas fiscais recebidas pela sua empresa, capturadas automaticamente pelo escritório'}</p>
     <div class="card" id="neDashCard">
       <h3 style="margin:0;">📊 Resumo (NF-e / NFC-e)</h3>
       <div style="font-size:11.5px; color:var(--ink-soft); margin-top:2px;">Segue o filtro de data logo abaixo.</div>
@@ -5559,6 +5565,7 @@ async function pageNotasEntrada(){
     const de = document.getElementById('neDataDe')?.value || '';
     const ate = document.getElementById('neDataAte')?.value || '';
     const p = new URLSearchParams();
+    p.set('direcao', direcao);
     if(de) p.set('dataDe', de);
     if(ate) p.set('dataAte', ate);
     let d;
@@ -5591,7 +5598,7 @@ async function pageNotasEntrada(){
     body.innerHTML = `
       <div class="row" style="gap:10px; flex-wrap:wrap;">
         ${tile('Total de notas', d.total, '')}
-        ${tile('Recebidas', d.recebidas.qtd, fmtMoney(d.recebidas.valor))}
+        ${saida ? tile('Emitidas', d.emitidas.qtd, fmtMoney(d.emitidas.valor)) : tile('Recebidas', d.recebidas.qtd, fmtMoney(d.recebidas.valor))}
         ${tile('Autorizadas', d.autorizadas, '', 'var(--accent-deep)')}
         ${tile('Canceladas', d.canceladas, '', d.canceladas?'var(--debit)':'')}
         ${tile('Com IBS/CBS', d.comReforma, 'reforma', 'var(--accent-deep)')}
@@ -5646,6 +5653,7 @@ async function pageNotasEntrada(){
     const dataDe = document.getElementById('neDataDe')?.value || '';
     const dataAte = document.getElementById('neDataAte')?.value || '';
     const params = new URLSearchParams();
+    params.set('direcao', direcao);
     if(busca) params.set('busca', busca);
     if(dataDe) params.set('dataDe', dataDe);
     if(dataAte) params.set('dataAte', dataAte);
@@ -5668,7 +5676,7 @@ async function pageNotasEntrada(){
         </div>
         <div class="card" style="padding:0; overflow-x:auto;">
           <table class="data-table ne-table" style="white-space:nowrap;">
-            <thead><tr><th>Opções</th><th>Flags</th><th>Status</th><th>Data</th><th>Tipo</th><th>Emitente</th><th>CNPJ</th><th class="ne-col-chave">Chave de acesso</th><th>Valor</th></tr></thead>
+            <thead><tr><th>Opções</th><th>Flags</th><th>Status</th><th>Data</th><th>Tipo</th><th>${saida?'Destinatário':'Emitente'}</th><th>CNPJ</th><th class="ne-col-chave">Chave de acesso</th><th>Valor</th></tr></thead>
             <tbody id="neBody"></tbody>
           </table>
         </div>
@@ -5709,15 +5717,17 @@ async function pageNotasEntrada(){
       if(d.tipo!=='evento' && d.qtdItens>0) flagsHtml += `<span class="tag" title="${d.qtdItens} item(ns) na nota" style="margin-right:3px;">📦 ${d.qtdItens}</span>`;
       flagsArr.forEach(f=>{ const i=FLAG_INFO[f]; if(i) flagsHtml += `<span class="tag" title="${esc(i[1])}" style="margin-right:3px;">${i[0]}</span>`; });
       if(d.temMdfe) flagsHtml += `<span class="tag" title="Transportadora — tem MDF-e vinculado" style="margin-right:3px;">🚚</span>`;
-      if(d.integradoFinanceiro) flagsHtml += `<span class="tag" title="Integrada ao Financeiro (a pagar)" style="margin-right:3px;">💵</span>`;
+      if(d.integradoFinanceiro) flagsHtml += `<span class="tag" title="Integrada ao Financeiro (${saida?'a receber':'a pagar'})" style="margin-right:3px;">💵</span>`;
       const flagsCell = flagsHtml || '<span style="color:var(--ink-soft);">—</span>';
       const temPdf = d.tipo!=='evento' && d.tipo!=='cte';
       const podeIntegrarFin = d.tipo==='nfe' || d.tipo==='nfce';
       const opcoesCell = `
         <button class="btn small neOpcBtn" data-act="ver" data-id="${d.id}" data-pdf="${temPdf?1:0}" title="Visualizar">🖨️</button>
         <button class="btn small neOpcBtn" data-act="baixar" data-id="${d.id}" data-pdf="${temPdf?1:0}" title="Baixar">⬇️</button>
-        ${podeIntegrarFin?`<button class="btn small neOpcBtn ${d.integradoFinanceiro?'primary':''}" data-act="financeiro" data-id="${d.id}" title="${d.integradoFinanceiro?'Integrada ao Financeiro — clique pra desmarcar':'Integrar ao Financeiro (a pagar)'}">💵</button>`:''}
+        ${podeIntegrarFin?`<button class="btn small neOpcBtn ${d.integradoFinanceiro?'primary':''}" data-act="financeiro" data-id="${d.id}" title="${d.integradoFinanceiro?'Integrada ao Financeiro — clique pra desmarcar':'Integrar ao Financeiro ('+(saida?'a receber':'a pagar')+')'}">💵</button>`:''}
       `;
+      const contraparteNome = saida ? d.destinatarioNome : d.emitenteNome;
+      const contraparteCnpj = saida ? d.destinatarioCnpj : d.emitenteCnpj;
       return `
       <tr>
         <td style="white-space:nowrap;">${opcoesCell}</td>
@@ -5725,12 +5735,12 @@ async function pageNotasEntrada(){
         <td style="white-space:nowrap;">${statusCell}</td>
         <td style="${canceladaStyle}">${d.dataEmissao?fmtDateHora(d.dataEmissao):'—'}</td>
         <td><span class="tag ${d.tipo==='evento'?'muted':'ok'}">${d.tipo.toUpperCase()}</span></td>
-        <td style="${canceladaStyle}">${esc(d.emitenteNome||'—')}</td>
-        <td style="${canceladaStyle}">${esc(d.emitenteCnpj||'—')}</td>
+        <td style="${canceladaStyle}">${esc(contraparteNome||'—')}</td>
+        <td style="${canceladaStyle}">${esc(contraparteCnpj||'—')}</td>
         <td class="ne-col-chave" style="font-family:'IBM Plex Mono',monospace; font-size:11px; ${canceladaStyle}">${esc(d.chaveAcesso||'—')}</td>
         <td style="${canceladaStyle}">${d.valorTotal!=null?fmtMoney(d.valorTotal):'—'}</td>
       </tr>
-    `;}).join('') : '<tr><td colspan="9"><div class="empty-state">Nenhuma nota recebida ainda.</div></td></tr>';
+    `;}).join('') : `<tr><td colspan="9"><div class="empty-state">${saida?'Nenhuma nota emitida ainda.':'Nenhuma nota recebida ainda.'}</div></td></tr>`;
     document.querySelectorAll('.neOpcBtn[data-act="ver"]').forEach(b=>b.addEventListener('click', ()=>{
       const id = b.dataset.id, itens = [];
       if(b.dataset.pdf==='1') itens.push({ label:'Visualizar PDF', icon:'📄', onClick:()=>window.open('/api/nfe/minha-empresa/documentos/'+id+'/pdf','_blank') });
@@ -5748,7 +5758,7 @@ async function pageNotasEntrada(){
       if(!ligando && !confirm('Desmarcar a integração? O lançamento gerado no Financeiro será removido (só funciona se nenhuma parcela já tiver sido paga).')) return;
       try{
         await api('/nfe/minha-empresa/documentos/'+id+'/integrar-financeiro', { method:'PUT', body:{ ativo: ligando } });
-        toast(ligando?'Integrada ao Financeiro — confira em Financeiro → A Pagar.':'Integração removida.', 'ok');
+        toast(ligando?('Integrada ao Financeiro — confira em Financeiro → '+(saida?'A Receber':'A Pagar')+'.'):'Integração removida.', 'ok');
         carregar();
       }catch(e){ toast(e.message,'err'); }
     }));
