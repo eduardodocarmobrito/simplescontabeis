@@ -15389,6 +15389,117 @@ app.delete("/api/financeiro/minha-empresa/contas/:id", requireCliente, requireMo
 app.get("/api/financeiro/minha-empresa/relatorios", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
   res.json(financeiroRelatorio((req as any).user.empresaId));
 });
+// Exportação do Relatórios do Financeiro (PDF e Excel/CSV) — mesmos dados das 4 seções da tela
+// (saldo por conta, resumo de títulos, fluxo de caixa projetado, renegociações, adiantamentos),
+// montados aqui de novo porque a tela consome 3 endpoints JSON separados (relatorios/renegociacoes/
+// adiantamentos) e o PDF/CSV precisa dos três juntos num documento só.
+async function financeiroRelatorioGerarPdf(empresaId: number): Promise<{ pdf: Buffer; empresaNome: string }> {
+  const empresa = sqlite.prepare(`SELECT nome FROM empresas WHERE id = ?`).get(empresaId) as any;
+  const d = financeiroRelatorio(empresaId);
+  const renegociacoes = financeiroRenegociacoesListar(empresaId);
+  const adiantamentos = financeiroAdiantamentosRelatorio(empresaId);
+  const resultadoProjetado = d.pagar && d.receber ? d.receber.pendente.valor + d.receber.atrasado.valor - d.pagar.pendente.valor - d.pagar.atrasado.valor : 0;
+  const linhaResumo = (label: string, r: any) => `
+    <p style="margin:2px 0;"><b>${escHtmlRelatorio(label)}</b> — A vencer: ${fmtMoedaRelatorio(r.pendente.valor)} (${r.pendente.qtd}) ·
+    Vencido: ${fmtMoedaRelatorio(r.atrasado.valor)} (${r.atrasado.qtd}) · Baixado este mês: ${fmtMoedaRelatorio(r.baixadoMes.valor)} (${r.baixadoMes.qtd})</p>`;
+  const html = `<style>
+    body { font-family: 'Helvetica Neue', Arial, sans-serif !important; font-size: 10px; color:#222; }
+    h1 { font-size: 16px; margin: 0 0 4px; }
+    h2 { font-size: 12.5px; margin: 16px 0 6px; border-bottom: 1px solid #ccc; padding-bottom: 3px; }
+    .cab p { margin: 1px 0; color:#444; font-size: 10.5px; }
+    table.rep { border-collapse: collapse; width: 100%; margin-top: 4px; }
+    table.rep th, table.rep td { border: 1px solid #ccc; padding: 3px 6px; }
+    table.rep th { background:#f0f0f0; text-align:left; }
+    table.rep td.num, table.rep th.num { text-align:right; }
+    .kpis { display:flex; gap:16px; margin-top:6px; }
+    .kpi { flex:1; border:1px solid #ccc; border-radius:4px; padding:6px 10px; }
+    .kpi b { display:block; font-size:13px; }
+  </style>
+  <div class="cab">
+    <h1>${escHtmlRelatorio(empresa?.nome || "")}</h1>
+    <p>Relatório financeiro — gerado em ${new Date().toLocaleDateString("pt-BR")} às ${new Date().toLocaleTimeString("pt-BR")}</p>
+  </div>
+  <div class="kpis">
+    <div class="kpi">Saldo em contas<b>${fmtMoedaRelatorio(d.saldoContas.total)}</b></div>
+    <div class="kpi">A receber<b>${fmtMoedaRelatorio(d.receber.pendente.valor + d.receber.atrasado.valor)}</b></div>
+    <div class="kpi">A pagar<b>${fmtMoedaRelatorio(d.pagar.pendente.valor + d.pagar.atrasado.valor)}</b></div>
+    <div class="kpi">Resultado projetado<b>${fmtMoedaRelatorio(resultadoProjetado)}</b></div>
+  </div>
+  <h2>Saldo por conta</h2>
+  ${d.saldoContas.contas.length ? `<table class="rep"><thead><tr><th>Conta</th><th class="num">Saldo atual</th></tr></thead><tbody>
+    ${d.saldoContas.contas.map((c: any) => `<tr><td>${escHtmlRelatorio(c.nome)}</td><td class="num">${fmtMoedaRelatorio(c.saldoAtual)}</td></tr>`).join("")}
+  </tbody></table>` : `<p>Nenhuma conta ativa cadastrada.</p>`}
+  <h2>Resumo de títulos</h2>
+  ${linhaResumo("A Receber", d.receber)}
+  ${linhaResumo("A Pagar", d.pagar)}
+  <h2>Fluxo de caixa projetado — próximas 13 semanas</h2>
+  <table class="rep"><thead><tr><th>Período</th><th class="num">Entradas</th><th class="num">Saídas</th><th class="num">Saldo do período</th><th class="num">Saldo acumulado</th></tr></thead><tbody>
+    ${d.fluxoCaixa.map((f: any) => `<tr><td>${escHtmlRelatorio(f.periodo)}</td><td class="num">${fmtMoedaRelatorio(f.entradas)}</td><td class="num">${fmtMoedaRelatorio(f.saidas)}</td><td class="num">${fmtMoedaRelatorio(f.saldoPeriodo)}</td><td class="num">${fmtMoedaRelatorio(f.saldoAcumulado)}</td></tr>`).join("")}
+  </tbody></table>
+  <h2>Renegociações</h2>
+  ${renegociacoes.length ? `<table class="rep"><thead><tr><th>Tipo</th><th>Descrição</th><th>Terceiro</th><th class="num">Valor original</th><th>Renegociado em</th><th>Parcelas</th><th class="num">Novo total</th><th class="num">Já pago</th><th class="num">Falta</th></tr></thead><tbody>
+    ${renegociacoes.map((r: any) => `<tr><td>${r.tipo === "receber" ? "A Receber" : "A Pagar"}</td><td>${escHtmlRelatorio(r.descricao)}</td><td>${escHtmlRelatorio(r.terceiro || "-")}</td><td class="num">${fmtMoedaRelatorio(r.valorOriginal)}</td><td>${r.renegociadoEm ? String(r.renegociadoEm).slice(0, 10).split("-").reverse().join("/") : "-"}</td><td>${r.parcelasPagas}/${r.parcelasNovas}</td><td class="num">${fmtMoedaRelatorio(r.valorNovoTotal)}</td><td class="num">${fmtMoedaRelatorio(r.valorPago)}</td><td class="num">${fmtMoedaRelatorio(r.valorFalta)}</td></tr>`).join("")}
+  </tbody></table>` : `<p>Nenhuma renegociação.</p>`}
+  <h2>Adiantamentos</h2>
+  <p>Disponível a fornecedores: ${fmtMoedaRelatorio(adiantamentos.totalFornecedorDisponivel)} · Disponível de clientes: ${fmtMoedaRelatorio(adiantamentos.totalClienteDisponivel)}</p>
+  ${adiantamentos.items.length ? `<table class="rep"><thead><tr><th>Tipo</th><th>Terceiro</th><th>Data</th><th class="num">Valor original</th><th class="num">Já usado</th><th class="num">Saldo disponível</th></tr></thead><tbody>
+    ${adiantamentos.items.map((a: any) => `<tr><td>${a.tipo === "cliente" ? "De cliente" : "A fornecedor"}</td><td>${escHtmlRelatorio(a.terceiroNome)}</td><td>${a.data ? String(a.data).slice(0, 10).split("-").reverse().join("/") : "-"}</td><td class="num">${fmtMoedaRelatorio(a.valorOriginal)}</td><td class="num">${fmtMoedaRelatorio(a.valorUsado)}</td><td class="num">${fmtMoedaRelatorio(a.saldoDisponivel)}</td></tr>`).join("")}
+  </tbody></table>` : `<p>Nenhum adiantamento lançado.</p>`}`;
+  const pdf = await contratos.gerarPdfDeHtml(html, `Relatório Financeiro - ${empresa?.nome || ""}`, {});
+  return { pdf, empresaNome: empresa?.nome || "empresa" };
+}
+function financeiroRelatorioGerarCsv(empresaId: number): { csv: string; empresaNome: string } {
+  const empresa = sqlite.prepare(`SELECT nome FROM empresas WHERE id = ?`).get(empresaId) as any;
+  const d = financeiroRelatorio(empresaId);
+  const renegociacoes = financeiroRenegociacoesListar(empresaId);
+  const adiantamentos = financeiroAdiantamentosRelatorio(empresaId);
+  // Excel (pt-BR) abre CSV separado por ";" sem precisar de assistente de importação; números usam
+  // vírgula decimal — os dois pontos que mais travam quando alguém só usa "," como delimitador puro.
+  const num = (v: number) => (v || 0).toFixed(2).replace(".", ",");
+  const linhas: string[] = [];
+  const add = (...campos: (string | number)[]) => linhas.push(campos.map((c) => String(c).replace(/;/g, ",")).join(";"));
+  add("Relatório Financeiro", empresa?.nome || "");
+  add("Gerado em", new Date().toLocaleString("pt-BR"));
+  linhas.push("");
+  add("Saldo por conta");
+  add("Conta", "Saldo atual");
+  for (const c of d.saldoContas.contas) add(c.nome, num(c.saldoAtual));
+  add("Total", num(d.saldoContas.total));
+  linhas.push("");
+  add("Resumo de títulos");
+  add("Lado", "A vencer (qtd)", "A vencer (valor)", "Vencido (qtd)", "Vencido (valor)", "Baixado no mês (qtd)", "Baixado no mês (valor)");
+  add("A Receber", d.receber.pendente.qtd, num(d.receber.pendente.valor), d.receber.atrasado.qtd, num(d.receber.atrasado.valor), d.receber.baixadoMes.qtd, num(d.receber.baixadoMes.valor));
+  add("A Pagar", d.pagar.pendente.qtd, num(d.pagar.pendente.valor), d.pagar.atrasado.qtd, num(d.pagar.atrasado.valor), d.pagar.baixadoMes.qtd, num(d.pagar.baixadoMes.valor));
+  linhas.push("");
+  add("Fluxo de caixa projetado — próximas 13 semanas");
+  add("Período", "Entradas", "Saídas", "Saldo do período", "Saldo acumulado");
+  for (const f of d.fluxoCaixa) add(f.periodo, num(f.entradas), num(f.saidas), num(f.saldoPeriodo), num(f.saldoAcumulado));
+  linhas.push("");
+  add("Renegociações");
+  add("Tipo", "Descrição", "Terceiro", "Valor original", "Renegociado em", "Parcelas pagas", "Parcelas novas", "Novo total", "Já pago", "Falta");
+  for (const r of renegociacoes) add(r.tipo === "receber" ? "A Receber" : "A Pagar", r.descricao, r.terceiro || "", num(r.valorOriginal), r.renegociadoEm ? String(r.renegociadoEm).slice(0, 10) : "", r.parcelasPagas, r.parcelasNovas, num(r.valorNovoTotal), num(r.valorPago), num(r.valorFalta));
+  linhas.push("");
+  add("Adiantamentos");
+  add("Disponível a fornecedores", num(adiantamentos.totalFornecedorDisponivel));
+  add("Disponível de clientes", num(adiantamentos.totalClienteDisponivel));
+  add("Tipo", "Terceiro", "Data", "Valor original", "Já usado", "Saldo disponível");
+  for (const a of adiantamentos.items) add(a.tipo === "cliente" ? "De cliente" : "A fornecedor", a.terceiroNome, a.data ? String(a.data).slice(0, 10) : "", num(a.valorOriginal), num(a.valorUsado), num(a.saldoDisponivel));
+  return { csv: "﻿" + linhas.join("\r\n"), empresaNome: empresa?.nome || "empresa" };
+}
+app.get("/api/financeiro/minha-empresa/relatorios/pdf", requireCliente, requireModuloAtivo('financeiro'), async (req, res) => {
+  try {
+    const { pdf, empresaNome } = await financeiroRelatorioGerarPdf((req as any).user.empresaId);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="Relatorio Financeiro - ${empresaNome.replace(/[\\/:*?"<>|]/g, "_")}.pdf"`);
+    res.send(pdf);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+app.get("/api/financeiro/minha-empresa/relatorios/csv", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
+  const { csv, empresaNome } = financeiroRelatorioGerarCsv((req as any).user.empresaId);
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="Relatorio Financeiro - ${empresaNome.replace(/[\\/:*?"<>|]/g, "_")}.csv"`);
+  res.send(csv);
+});
 // ---- Conciliação bancária (extrato .OFX) ----
 // Pra cada transação do extrato ainda sem conciliar, sugere títulos pendentes do lado certo
 // (entrada=valor positivo olha financeiro_receber, saída=negativo olha financeiro_pagar) com o MESMO
@@ -15699,6 +15810,24 @@ app.get("/api/financeiro/empresas/:empresaId/relatorios", blockCliente, requireP
   const empresaId = Number(req.params.empresaId);
   if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
   res.json(financeiroRelatorio(empresaId));
+});
+app.get("/api/financeiro/empresas/:empresaId/relatorios/pdf", blockCliente, requirePermissao("financeiro", "visualizar"), async (req, res) => {
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  try {
+    const { pdf, empresaNome } = await financeiroRelatorioGerarPdf(empresaId);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="Relatorio Financeiro - ${empresaNome.replace(/[\\/:*?"<>|]/g, "_")}.pdf"`);
+    res.send(pdf);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+app.get("/api/financeiro/empresas/:empresaId/relatorios/csv", blockCliente, requirePermissao("financeiro", "visualizar"), (req, res) => {
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const { csv, empresaNome } = financeiroRelatorioGerarCsv(empresaId);
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="Relatorio Financeiro - ${empresaNome.replace(/[\\/:*?"<>|]/g, "_")}.csv"`);
+  res.send(csv);
 });
 app.get("/api/financeiro/empresas/:empresaId/pagar", blockCliente, requirePermissao("financeiro", "visualizar"), (req, res) => {
   const empresaId = Number(req.params.empresaId);

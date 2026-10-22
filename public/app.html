@@ -9480,6 +9480,10 @@ async function finRenderRelatorios(basePath, containerId){
     </div>`;
   };
   box.innerHTML = `
+    <div class="row" style="gap:8px; justify-content:flex-end; margin-bottom:10px;">
+      <a class="btn small" href="/api${basePath}/relatorios/pdf" target="_blank" rel="noopener">📄 Exportar PDF</a>
+      <a class="btn small" href="/api${basePath}/relatorios/csv">📊 Exportar Excel</a>
+    </div>
     <div class="row" style="gap:10px; flex-wrap:wrap;">
       ${tile('Saldo em contas', fmtMoney(d.saldoContas.total), d.saldoContas.total<0?'var(--debit)':'')}
       ${tile('A receber (a vencer + vencido)', fmtMoney(d.receber.pendente.valor+d.receber.atrasado.valor), 'var(--accent-deep)')}
