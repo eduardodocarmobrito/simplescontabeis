@@ -1152,8 +1152,7 @@ const NAV = [
   { id:'meus-documentos', label:'Meus Documentos', modulo:null, roles:['Cliente'] },
   { id:'solicitar-documentos', label:'Solicitar Documentos', modulo:null, roles:['Cliente'] },
   { id:'documentos-recebidos', label:'Documentos Recebidos', modulo:null, roles:['Cliente'] },
-  { id:'notas-entrada', label:'Notas de Entrada', modulo:null, roles:['Cliente'] },
-  { id:'notas-saida', label:'Notas de Saída', modulo:null, roles:['Cliente'] },
+  { id:'notas-entrada', label:'Notas de Entradas/Saídas', modulo:null, roles:['Cliente'] },
   { id:'minha-assinatura', label:'Assinatura', modulo:null, roles:['Cliente'] },
   { id:'financeiro', label:'Financeiro', modulo:'financeiro', roles:['Administrador','Colaborador'] },
   { id:'certificados', label:'Certificados', modulo:'certificados', roles:['Administrador','Colaborador'] },
@@ -1178,14 +1177,13 @@ let NFE_TIPO_SEL = '';
 // o expandido/recolhido só seguia a página atual e clicar de novo no item não tinha efeito (sempre
 // reabria, porque "já estar na página" é justamente a condição que mantém expandido).
 let NAV_FECHADOS = new Set();
-const PAGINAS_CLIENTE_RESTRINGIVEIS = ['minha-nfse','meus-documentos','solicitar-documentos','documentos-recebidos','notas-entrada','notas-saida','minha-financeiro','minha-assinatura'];
+const PAGINAS_CLIENTE_RESTRINGIVEIS = ['minha-nfse','meus-documentos','solicitar-documentos','documentos-recebidos','notas-entrada','minha-financeiro','minha-assinatura'];
 const PAGINAS_CLIENTE_TODAS = [
   { id:'minha-nfse', label:'NFS-e' },
   { id:'meus-documentos', label:'Meus Documentos' },
   { id:'solicitar-documentos', label:'Solicitar Documentos' },
   { id:'documentos-recebidos', label:'Documentos Recebidos' },
-  { id:'notas-entrada', label:'Notas de Entrada (XML)' },
-  { id:'notas-saida', label:'Notas de Saída (XML)' },
+  { id:'notas-entrada', label:'Notas de Entradas/Saídas (XML)' },
   { id:'minha-financeiro', label:'Financeiro' },
   { id:'minha-assinatura', label:'Assinatura' },
 ];
@@ -1351,7 +1349,6 @@ async function render(){
     else if(STATE.page==='solicitar-documentos') await pageSolicitarDocumentos();
     else if(STATE.page==='documentos-recebidos') await pageDocumentosRecebidos();
     else if(STATE.page==='notas-entrada') await pageNotasEntrada();
-    else if(STATE.page==='notas-saida') await pageNotasSaida();
     else if(STATE.page==='minha-nfse') await pageMinhaNfse();
     else if(STATE.page==='minha-financeiro') await pageMinhaFinanceiro();
     else if(STATE.page==='minha-assinatura') await pageMinhaAssinatura();
@@ -5542,13 +5539,15 @@ async function pageDocumentosRecebidos(){
 // (Busca de XML). Sem "Buscar agora" nem certificado aqui — é só consulta. Flags/Opções/Resumo
 // espelham a tela do escritório (mesmos marcadores e dashboard), só sem ações administrativas
 // (comentário interno, dar ciência da operação) nem o card de configuração do certificado.
-async function pageNotasSaida(){ return pageNotasEntrada('emitida'); }
-async function pageNotasEntrada(direcao){
-  direcao = direcao === 'emitida' ? 'emitida' : 'recebida';
-  const saida = direcao === 'emitida';
+async function pageNotasEntrada(){
+  let direcao = 'recebida';
   main().innerHTML = `
-    <h1>${saida?'Notas de Saída':'Notas de Entrada'}</h1>
-    <p class="subtitle">${saida?'Notas fiscais emitidas pela sua empresa, capturadas automaticamente pelo escritório':'Notas fiscais recebidas pela sua empresa, capturadas automaticamente pelo escritório'}</p>
+    <h1>Notas de Entradas/Saídas</h1>
+    <p class="subtitle">Notas fiscais da sua empresa, capturadas automaticamente pelo escritório</p>
+    <div class="tabs">
+      <div class="tab active" data-direcao="recebida">Notas recebidas</div>
+      <div class="tab" data-direcao="emitida">Notas emitidas</div>
+    </div>
     <div class="card" id="neDashCard">
       <h3 style="margin:0;">📊 Resumo (NF-e / NFC-e)</h3>
       <div style="font-size:11.5px; color:var(--ink-soft); margin-top:2px;">Segue o filtro de data logo abaixo.</div>
@@ -5558,7 +5557,16 @@ async function pageNotasEntrada(direcao){
   `;
   const box = document.getElementById('neBox');
   let nePerfilFlag = '';
+  main().querySelectorAll('.tab').forEach(t=>t.addEventListener('click', ()=>{
+    if(t.dataset.direcao===direcao) return;
+    direcao = t.dataset.direcao;
+    main().querySelectorAll('.tab').forEach(tt=>tt.classList.toggle('active', tt===t));
+    nePerfilFlag = '';
+    box.innerHTML = `<div class="empty-state">Carregando…</div>`;
+    Promise.all([carregarDashboard(), carregar()]);
+  }));
   async function carregarDashboard(){
+    const saida = direcao === 'emitida';
     const body = document.getElementById('neDashBody');
     if(!body) return;
     body.innerHTML = '<div class="empty-state">Carregando…</div>';
@@ -5649,6 +5657,9 @@ async function pageNotasEntrada(direcao){
     }));
   }
   async function carregar(){
+    const saida = direcao === 'emitida';
+    const selTodos = document.getElementById('neSelecionarTodos');
+    if(selTodos) selTodos.checked = false;
     const busca = document.getElementById('neBusca')?.value.trim() || '';
     const dataDe = document.getElementById('neDataDe')?.value || '';
     const dataAte = document.getElementById('neDataAte')?.value || '';
@@ -5674,9 +5685,15 @@ async function pageNotasEntrada(direcao){
           ${dateFieldHtml('neDataDe','Data de','')}
           ${dateFieldHtml('neDataAte','Data até','')}
         </div>
+        <div class="row" style="margin-bottom:8px; align-items:center; gap:10px;">
+          <span style="font-size:12.5px; color:var(--ink-soft);"><span id="neSelecionadosCount">0</span> selecionado(s)</span>
+          <button class="btn small" id="btnNeBaixarLoteXml" disabled>Baixar selecionados — XML</button>
+          <button class="btn small" id="btnNeBaixarLotePdf" disabled>Baixar selecionados — PDF</button>
+          <button class="btn small" id="btnNeBaixarLoteAmbos" disabled>Baixar selecionados — XML + PDF</button>
+        </div>
         <div class="card" style="padding:0; overflow-x:auto;">
           <table class="data-table ne-table" style="white-space:nowrap;">
-            <thead><tr><th>Opções</th><th>Flags</th><th>Status</th><th>Data</th><th>Tipo</th><th>${saida?'Destinatário':'Emitente'}</th><th>CNPJ</th><th class="ne-col-chave">Chave de acesso</th><th>Valor</th></tr></thead>
+            <thead><tr><th style="width:32px;"><input type="checkbox" id="neSelecionarTodos"></th><th>Opções</th><th>Flags</th><th>Status</th><th>Data</th><th>Tipo</th><th>${saida?'Destinatário':'Emitente'}</th><th>CNPJ</th><th class="ne-col-chave">Chave de acesso</th><th>Valor</th></tr></thead>
             <tbody id="neBody"></tbody>
           </table>
         </div>
@@ -5690,10 +5707,30 @@ async function pageNotasEntrada(direcao){
         clearTimeout(neBuscaTimer);
         neBuscaTimer = setTimeout(carregar, 350);
       });
+      document.getElementById('neSelecionarTodos').addEventListener('change', (ev)=>{
+        document.querySelectorAll('.neCheck').forEach(c=>c.checked=ev.target.checked);
+        atualizarBarraSelecaoNe();
+      });
+      function baixarLoteNe(formato){
+        const ids = [...document.querySelectorAll('.neCheck:checked')].map(c=>c.dataset.id);
+        if(!ids.length) return;
+        window.open('/api/nfe/minha-empresa/documentos/baixar-lote?ids='+ids.join(',')+'&formato='+formato, '_blank');
+      }
+      document.getElementById('btnNeBaixarLoteXml').addEventListener('click', ()=>baixarLoteNe('xml'));
+      document.getElementById('btnNeBaixarLotePdf').addEventListener('click', ()=>baixarLoteNe('pdf'));
+      document.getElementById('btnNeBaixarLoteAmbos').addEventListener('click', ()=>baixarLoteNe('ambos'));
       renderLinhas(items);
       return;
     }
     renderLinhas(items);
+  }
+  function atualizarBarraSelecaoNe(){
+    const marcados = [...document.querySelectorAll('.neCheck:checked')];
+    document.getElementById('neSelecionadosCount').textContent = marcados.length;
+    const semSelecao = marcados.length===0;
+    document.getElementById('btnNeBaixarLoteXml').disabled = semSelecao;
+    document.getElementById('btnNeBaixarLotePdf').disabled = semSelecao;
+    document.getElementById('btnNeBaixarLoteAmbos').disabled = semSelecao;
   }
   // Mesmos marcadores/ícones da tela do escritório (ver mostrarDetalhe em Busca de XML) — aqui só
   // visuais (sem clique pra abrir o detalhe em abas, que é recurso do escritório).
@@ -5706,6 +5743,7 @@ async function pageNotasEntrada(direcao){
   const MANIF_INFO = { ciencia:['👁 Ciência','muted','Ciência da operação'], confirmada:['✅ Confirmada','ok','Confirmação da operação'], desconhecida:['❓ Desconhecida','bad','Desconhecimento da operação'], nao_realizada:['🚫 Não realizada','bad','Operação não realizada'] };
   const EVENTO_INFO = { cce:['✏️ CC-e','Carta de correção'], epec:['📝 EPEC','EPEC — emissão prévia de contingência'] };
   function renderLinhas(items){
+    const saida = direcao === 'emitida';
     const tbody = document.getElementById('neBody');
     tbody.innerHTML = items.length ? items.map(d=>{
       const canceladaStyle = d.notaCancelada ? 'text-decoration:line-through; color:var(--debit);' : '';
@@ -5730,6 +5768,7 @@ async function pageNotasEntrada(direcao){
       const contraparteCnpj = saida ? d.destinatarioCnpj : d.emitenteCnpj;
       return `
       <tr>
+        <td><input type="checkbox" class="neCheck" data-id="${d.id}"></td>
         <td style="white-space:nowrap;">${opcoesCell}</td>
         <td style="white-space:nowrap;">${flagsCell}</td>
         <td style="white-space:nowrap;">${statusCell}</td>
@@ -5740,7 +5779,9 @@ async function pageNotasEntrada(direcao){
         <td class="ne-col-chave" style="font-family:'IBM Plex Mono',monospace; font-size:11px; ${canceladaStyle}">${esc(d.chaveAcesso||'—')}</td>
         <td style="${canceladaStyle}">${d.valorTotal!=null?fmtMoney(d.valorTotal):'—'}</td>
       </tr>
-    `;}).join('') : `<tr><td colspan="9"><div class="empty-state">${saida?'Nenhuma nota emitida ainda.':'Nenhuma nota recebida ainda.'}</div></td></tr>`;
+    `;}).join('') : `<tr><td colspan="10"><div class="empty-state">${saida?'Nenhuma nota emitida ainda.':'Nenhuma nota recebida ainda.'}</div></td></tr>`;
+    document.querySelectorAll('.neCheck').forEach(c=>c.addEventListener('change', atualizarBarraSelecaoNe));
+    atualizarBarraSelecaoNe();
     document.querySelectorAll('.neOpcBtn[data-act="ver"]').forEach(b=>b.addEventListener('click', ()=>{
       const id = b.dataset.id, itens = [];
       if(b.dataset.pdf==='1') itens.push({ label:'Visualizar PDF', icon:'📄', onClick:()=>window.open('/api/nfe/minha-empresa/documentos/'+id+'/pdf','_blank') });

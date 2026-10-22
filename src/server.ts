@@ -9460,10 +9460,50 @@ app.get("/api/nfe/minha-empresa/documentos/:id/pdf", requireCliente, async (req,
   res.setHeader("Content-Disposition", nfseContentDisposition("inline", nfeDocNomeArquivo(row, "pdf")));
   res.send(pdf);
 });
-// Mesma integração com Financeiro que o escritório tem em Busca de XML — aqui só pro lado "a pagar"
-// (Notas de Entrada só mostra recebidas, então nfeIntegrarFinanceiro sempre vai gerar em
-// financeiro_pagar pra essa empresa). Exige o módulo Financeiro ativo — sem isso o cliente não
-// consegue nem ver a tela onde o lançamento apareceria.
+// Baixar vários documentos de uma vez (checkbox + seleção, igual a tela do escritório em Busca de
+// XML) — mesmo zip de lá (nfeDocNomeArquivo/archiver), só restrito à própria empresa do cliente.
+app.get("/api/nfe/minha-empresa/documentos/baixar-lote", requireCliente, async (req, res) => {
+  const user = (req as any).user;
+  const ids = String(req.query.ids || "")
+    .split(",")
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isInteger(n) && n > 0);
+  if (!ids.length) return res.status(400).json({ error: "Selecione ao menos um documento." });
+  const formato = req.query.formato === "pdf" ? "pdf" : req.query.formato === "ambos" ? "ambos" : "xml";
+  const placeholders = ids.map(() => "?").join(",");
+  const rows = sqlite.prepare(`SELECT * FROM nfe_documentos WHERE id IN (${placeholders})`).all(...ids) as any[];
+  const permitidas = rows.filter((r) => r.escritorio_id === user.escritorioId && r.empresa_id === user.empresaId);
+  if (!permitidas.length) return res.status(403).json({ error: "Sem acesso aos documentos selecionados." });
+
+  res.setHeader("Content-Type", "application/zip");
+  res.setHeader("Content-Disposition", `attachment; filename="documentos-fiscais-${new Date().toISOString().slice(0, 10)}.zip"`);
+  const zip = archiver("zip", { zlib: { level: 9 } });
+  zip.on("error", (e) => { if (!res.headersSent) res.status(500); res.end(); console.error("Erro ao gerar zip de documentos fiscais (cliente):", e); });
+  zip.pipe(res);
+  const usados = new Set<string>();
+  const nomeUnico = (nome: string) => {
+    let final = nome, i = 2;
+    while (usados.has(final)) final = nome.replace(/(\.[^.]+)$/, ` (${i++})$1`);
+    usados.add(final);
+    return final;
+  };
+  for (const row of permitidas) {
+    if (formato === "xml" || formato === "ambos") zip.append(row.xml, { name: nomeUnico(nfeDocNomeArquivo(row, "xml")) });
+    if ((formato === "pdf" || formato === "ambos") && row.tipo !== "evento" && row.tipo !== "cte") {
+      try {
+        const { pdf } = await nfeDocumentoObterPdf(row);
+        if (pdf) zip.append(pdf, { name: nomeUnico(nfeDocNomeArquivo(row, "pdf")) });
+      } catch {
+        // PDF de um documento específico falhou — segue pros outros, não aborta o lote inteiro.
+      }
+    }
+  }
+  await zip.finalize();
+});
+// Mesma integração com Financeiro que o escritório tem em Busca de XML — o lado (a pagar/a receber)
+// é decidido sozinho por nfeIntegrarFinanceiro, comparando o CNPJ emitente com o da empresa (nota
+// recebida vira a pagar, nota emitida vira a receber). Exige o módulo Financeiro ativo — sem isso o
+// cliente não consegue nem ver a tela onde o lançamento apareceria.
 app.put("/api/nfe/minha-empresa/documentos/:id/integrar-financeiro", requireCliente, requireModuloAtivo("financeiro"), (req, res) => {
   const user = (req as any).user;
   const row = sqlite.prepare(`SELECT escritorio_id, empresa_id FROM nfe_documentos WHERE id = ?`).get(Number(req.params.id)) as any;
