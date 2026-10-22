@@ -15769,7 +15769,7 @@ app.get("/api/financeiro/minha-empresa/pagar", requireCliente, requireModuloAtiv
   const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
   const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
   let sql = `SELECT p.id, p.descricao, p.fornecedor, p.valor, p.vencimento, p.status, p.data_pagamento as dataPagamento, p.observacao,
-                    p.conta_id as contaId, c.nome as contaNome, p.criado_em as criadoEm
+                    p.origem, p.nfe_documento_id as nfeDocumentoId, p.conta_id as contaId, c.nome as contaNome, p.criado_em as criadoEm
              FROM financeiro_pagar p LEFT JOIN financeiro_contas c ON c.id = p.conta_id WHERE p.empresa_id = ?`;
   const params: any[] = [empresaId];
   if (dataDe) { sql += ` AND date(vencimento) >= date(?)`; params.push(dataDe); }
@@ -15837,7 +15837,7 @@ app.get("/api/financeiro/minha-empresa/receber", requireCliente, requireModuloAt
   const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
   const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
   let sql = `SELECT r.id, r.descricao, r.cliente_nome as clienteNome, r.valor, r.vencimento, r.status, r.data_recebimento as dataRecebimento, r.observacao,
-                    r.origem, r.nfse_emissao_id as nfseEmissaoId, r.conta_id as contaId, c.nome as contaNome, r.criado_em as criadoEm
+                    r.origem, r.nfse_emissao_id as nfseEmissaoId, r.nfe_documento_id as nfeDocumentoId, r.conta_id as contaId, c.nome as contaNome, r.criado_em as criadoEm
              FROM financeiro_receber r LEFT JOIN financeiro_contas c ON c.id = r.conta_id WHERE r.empresa_id = ?`;
   const params: any[] = [empresaId];
   if (dataDe) { sql += ` AND date(vencimento) >= date(?)`; params.push(dataDe); }

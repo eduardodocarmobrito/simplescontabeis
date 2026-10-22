@@ -9382,7 +9382,7 @@ async function finRenderReceber(basePath, containerId, filtro, podePostar, podeE
   const { items } = await api(basePath+'/receber'+(qs.toString()?'?'+qs.toString():''));
   const box = document.getElementById(containerId);
   const STATUS_LABEL={pendente:'Pendente',pago:'Recebido',atrasado:'Atrasado',cancelado:'Cancelado',renegociado:'Renegociado'};
-  const ORIGEM_LABEL={nfse:'Gerado pela NFS-e',nfe:'Gerado pela nota (NF-e) integrada',ofx:'Gerado pela conciliação do extrato'};
+  const ORIGEM_LABEL={manual:'Lançamento manual',nfse:'Gerado pela NFS-e',nfe:'Gerado pela nota (NF-e) integrada',ofx:'Gerado pela conciliação do extrato'};
   box.innerHTML = `
     <div class="row" style="margin-bottom:12px; align-items:flex-end;">
       ${dateFieldHtml('mfrDe','De',dataDe)}
@@ -9483,7 +9483,7 @@ async function finRenderPagar(basePath, containerId, filtro, podePostar, podeEdi
   const { items } = await api(basePath+'/pagar'+(qs.toString()?'?'+qs.toString():''));
   const box = document.getElementById(containerId);
   const STATUS_LABEL={pendente:'Pendente',pago:'Pago',atrasado:'Atrasado',cancelado:'Cancelado',renegociado:'Renegociado'};
-  const ORIGEM_LABEL_PAGAR={nfe:'Gerado pela nota (NF-e) integrada',ofx:'Gerado pela conciliação do extrato'};
+  const ORIGEM_LABEL_PAGAR={manual:'Lançamento manual',nfe:'Gerado pela nota (NF-e) integrada',ofx:'Gerado pela conciliação do extrato'};
   box.innerHTML = `
     <div class="row" style="margin-bottom:12px; align-items:flex-end;">
       ${dateFieldHtml('mfpDe','De',dataDe)}
