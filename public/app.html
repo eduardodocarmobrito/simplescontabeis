@@ -5681,9 +5681,16 @@ async function pageNotasEntrada(){
       </div>
       </div>
     `;
-    document.querySelectorAll('.nePerfilTile').forEach(el=>el.addEventListener('click', ()=>{
-      nePerfilFlag = el.dataset.flag || '';
-      carregarDashboard();
+    // Clicar num marcador filtra só a lista (igual à tela do escritório) — re-destaca no lugar, sem
+    // re-renderizar o dashboard inteiro (que piscava "Carregando…"); clicar no ativo de novo limpa.
+    body.querySelectorAll('.nePerfilTile').forEach(el=>el.addEventListener('click', ()=>{
+      const f = el.dataset.flag || '';
+      nePerfilFlag = (f && nePerfilFlag===f) ? '' : f;
+      body.querySelectorAll('.nePerfilTile').forEach(t=>{
+        const ativo = (t.dataset.flag||'')===nePerfilFlag;
+        t.style.background = ativo ? 'var(--accent-pale)' : 'var(--paper)';
+        t.style.borderColor = ativo ? 'var(--accent)' : 'var(--rule)';
+      });
       carregar();
     }));
   }
@@ -5832,7 +5839,7 @@ async function pageNotasEntrada(){
       try{
         await api('/nfe/minha-empresa/documentos/'+id+'/integrar-financeiro', { method:'PUT', body:{ ativo: ligando } });
         toast(ligando?('Integrada ao Financeiro — confira em Financeiro → '+(saida?'A Receber':'A Pagar')+'.'):'Integração removida.', 'ok');
-        carregar();
+        carregar(); carregarDashboard();
       }catch(e){ toast(e.message,'err'); }
     }));
   }
