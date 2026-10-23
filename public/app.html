@@ -5665,6 +5665,10 @@ async function pageNotasEntrada(){
           perfilItem('🧾','Duplicatas', pf.operacional?.duplicatas||0, '#059669', 'dup'),
           perfilItem('💰','Pagamento informado', pf.operacional?.pagamento||0, '#059669', 'pag'),
         ].join(''))}
+        ${grupo('Financeiro', '#0369a1', [
+          perfilItem('💵','Integradas', pf.financeiro?.integradas||0, '#0369a1', 'integrada'),
+          perfilItem('⏳','Falta integrar', pf.financeiro?.faltaIntegrar||0, '#0369a1', 'falta_integrar'),
+        ].join(''))}
       </div>
       <div class="card" style="margin:0; background:var(--paper); flex:1 1 320px; min-width:320px;">
         <div style="font-weight:600; font-size:13px; margin-bottom:10px;">Impostos no período — total ${fmtMoney(totalImp)}</div>
@@ -5783,6 +5787,7 @@ async function pageNotasEntrada(){
       flagsArr.forEach(f=>{ const i=FLAG_INFO[f]; if(i) flagsHtml += `<span class="tag" title="${esc(i[1])}" style="margin-right:3px;">${i[0]}</span>`; });
       if(d.temMdfe) flagsHtml += `<span class="tag" title="Transportadora — tem MDF-e vinculado" style="margin-right:3px;">🚚</span>`;
       if(d.integradoFinanceiro) flagsHtml += `<span class="tag" title="Integrada ao Financeiro (${saida?'a receber':'a pagar'})" style="margin-right:3px;">💵</span>`;
+      else if(['nfe','nfce','nfse'].includes(d.tipo) && !d.notaCancelada) flagsHtml += `<span class="tag" title="Falta integrar ao Financeiro" style="margin-right:3px;">⏳</span>`;
       const flagsCell = flagsHtml || '<span style="color:var(--ink-soft);">—</span>';
       const temPdf = d.tipo!=='evento' && d.tipo!=='cte';
       const podeIntegrarFin = d.tipo==='nfe' || d.tipo==='nfce' || d.tipo==='nfse';
@@ -7375,6 +7380,10 @@ async function pageNfeBusca(){
             perfilItem('💰','Pagamento informado', pf.operacional?.pagamento||0, '#059669', 'pag'),
             perfilItem('💬','Com comentário', pf.operacional?.comComentario||0, '#059669', 'comentario'),
           ].join(''))}
+          ${grupo('Financeiro', '#0369a1', [
+            perfilItem('💵','Integradas', pf.financeiro?.integradas||0, '#0369a1', 'integrada'),
+            perfilItem('⏳','Falta integrar', pf.financeiro?.faltaIntegrar||0, '#0369a1', 'falta_integrar'),
+          ].join(''))}
         </div>
         <div class="card" style="margin:0; background:var(--paper); flex:1 1 320px; min-width:320px;">
           <div style="font-weight:600; font-size:13px; margin-bottom:10px;">Impostos no período — total ${fmtMoney(totalImp)}</div>
@@ -7517,6 +7526,7 @@ async function pageNfeBusca(){
         flagsArr.forEach(f=>{ const i=FLAG_INFO[f]; if(i) flagsHtml += chip(i[0], i[1], i[2]); });
         if(d.temMdfe) flagsHtml += `<span class="tag nfeMdfeBtn" data-id="${d.id}" title="Transportadora — tem MDF-e vinculado" style="margin-right:3px; cursor:pointer;">🚚</span>`;
         if(d.integradoFinanceiro) flagsHtml += `<span class="tag" title="Integrada ao Financeiro (${d.direcao==='emitida'?'a receber':'a pagar'})" style="margin-right:3px;">💵</span>`;
+        else if(['nfe','nfce','nfse'].includes(d.tipo) && !d.notaCancelada) flagsHtml += `<span class="tag" title="Falta integrar ao Financeiro" style="margin-right:3px;">⏳</span>`;
         const flagsCell = flagsHtml || '<span style="color:var(--ink-soft);">—</span>';
         const crtInfo = CRT_INFO[d.crt];
         const crtTag = crtInfo ? ` <span class="tag muted" title="${esc(crtInfo[1])}">${crtInfo[0]}</span>` : '';

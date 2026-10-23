@@ -9158,6 +9158,11 @@ function nfeListarDocumentosQuery(
       condicoes.push(`EXISTS (SELECT 1 FROM mdfe_vinculos mv WHERE mv.chave_vinculada = d.chave_acesso)`);
     } else if (flag === "comentario") {
       condicoes.push(`(d.observacao IS NOT NULL AND TRIM(d.observacao) != '')`);
+    } else if (flag === "integrada") {
+      condicoes.push(`d.integrado_financeiro = 1`);
+    } else if (flag === "falta_integrar") {
+      // Integrável (NF-e/NFC-e/NFS-e) ainda não integrada e não cancelada — o que precisa de atenção.
+      condicoes.push(`d.integrado_financeiro = 0 AND d.tipo IN ('nfe','nfce','nfse') AND NOT EXISTS (SELECT 1 FROM nfe_documentos ev WHERE ev.escritorio_id = d.escritorio_id AND ev.tipo='evento' AND ev.chave_acesso = d.chave_acesso AND ev.evento_descricao LIKE '%ancela%' AND ev.evento_descricao NOT LIKE '%CT-e%' AND ev.evento_descricao NOT LIKE '%MDF-e%')`);
     }
   }
   // "Cancelada de verdade" (pra riscar/destacar em vermelho na tela) é só o evento de cancelamento
@@ -9323,6 +9328,15 @@ function nfeCalcularDashboard(user: any, empresaId: number, dataDe: string | nul
        FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id WHERE ${whereDir} AND d.tipo IN ('nfe','nfce')`
     )
     .get(...params) as any;
+  // Integração ao Financeiro — conta sobre os tipos integráveis (inclui NFS-e, fora do perfilRow). Falta
+  // integrar = integrável, não integrada e não cancelada.
+  const integRow = sqlite
+    .prepare(
+      `SELECT SUM(CASE WHEN d.integrado_financeiro=1 THEN 1 ELSE 0 END) as integradas,
+         SUM(CASE WHEN d.integrado_financeiro=0 AND NOT EXISTS (SELECT 1 FROM nfe_documentos ev WHERE ev.escritorio_id = d.escritorio_id AND ev.tipo='evento' AND ev.chave_acesso = d.chave_acesso AND ev.evento_descricao LIKE '%ancela%' AND ev.evento_descricao NOT LIKE '%CT-e%' AND ev.evento_descricao NOT LIKE '%MDF-e%') THEN 1 ELSE 0 END) as faltaIntegrar
+       FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id WHERE ${whereDir} AND d.tipo IN ('nfe','nfce','nfse')`
+    )
+    .get(...params) as any;
   return {
     total: r.total || 0,
     emitidas: { qtd: r.emitidasQtd || 0, valor: r.emitidasValor || 0 },
@@ -9340,6 +9354,7 @@ function nfeCalcularDashboard(user: any, empresaId: number, dataDe: string | nul
       fiscal: { icmsSt: perfilRow.icmsSt || 0 },
       reforma: { comIbsCbs: r.comReforma || 0 },
       operacional: { comCarrinho: perfilRow.comCarrinho || 0, transportadora: perfilRow.transportadora || 0, duplicatas: perfilRow.duplicatas || 0, pagamento: perfilRow.pagamento || 0, comComentario: perfilRow.comComentario || 0 },
+      financeiro: { integradas: integRow.integradas || 0, faltaIntegrar: integRow.faltaIntegrar || 0 },
     },
   };
 }
@@ -9720,7 +9735,8 @@ function nfePainelPerfilHtmlRelatorio(dash: ReturnType<typeof nfeCalcularDashboa
     ${grupo("Produtos especiais", "#dc2626", item("💊", "Medicamento", pf.produtos.medicamento, "#dc2626") + item("⛽", "Combustível", pf.produtos.combustivel, "#dc2626") + item("🔖", "Rastreável", pf.produtos.rastreavel, "#dc2626"))}
     ${grupo("Tributário / fiscal", "#d97706", item("%", "ICMS-ST", pf.fiscal.icmsSt, "#d97706"))}
     ${grupo("Reforma tributária", "#7c3aed", item("⚖️", "IBS/CBS", pf.reforma.comIbsCbs, "#7c3aed"))}
-    ${grupo("Operacional", "#059669", item("📦", "Carrinho", pf.operacional.comCarrinho, "#059669") + item("🚚", "Transportadora", pf.operacional.transportadora, "#059669") + item("🧾", "Duplicatas", pf.operacional.duplicatas, "#059669") + item("💰", "Pagamento", pf.operacional.pagamento, "#059669") + item("💬", "Comentário", pf.operacional.comComentario, "#059669"))}`;
+    ${grupo("Operacional", "#059669", item("📦", "Carrinho", pf.operacional.comCarrinho, "#059669") + item("🚚", "Transportadora", pf.operacional.transportadora, "#059669") + item("🧾", "Duplicatas", pf.operacional.duplicatas, "#059669") + item("💰", "Pagamento", pf.operacional.pagamento, "#059669") + item("💬", "Comentário", pf.operacional.comComentario, "#059669"))}
+    ${grupo("Financeiro", "#0369a1", item("💵", "Integradas", pf.financeiro?.integradas || 0, "#0369a1") + item("⏳", "Falta integrar", pf.financeiro?.faltaIntegrar || 0, "#0369a1"))}`;
 }
 function nfePainelImpostosHtmlRelatorio(dash: ReturnType<typeof nfeCalcularDashboard>): string {
   const imp = dash.impostos;
