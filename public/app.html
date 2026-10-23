@@ -16522,6 +16522,17 @@ async function renderCfgNfseAgendamento(box){
         <button class="btn" id="agExecutarFalhas">Executar só as que falharam</button>
       </div>
     </div>
+    <div class="card">
+      <h3>📋 Parametrizar em lote por planilha</h3>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin:2px 0 10px;">Pra configurar muitas empresas de uma vez: baixe o modelo (já vem com as suas empresas), preencha o <b>modelo de serviço</b>, o <b>valor</b> e os <b>contatos</b>, e reimporte. Cada linha = 1 serviço (repita a empresa em várias linhas pra vários serviços). Vários e-mails/WhatsApp na mesma célula: separe por <b>;</b> (ponto e vírgula).</p>
+      <div class="row" style="gap:8px; flex-wrap:wrap; align-items:center;">
+        <a class="btn" href="/api/nfse/agendamento/planilha-modelo">📥 Baixar modelo (planilha)</a>
+        <input type="file" id="agPlanilhaArquivo" accept=".csv,text/csv" style="font-size:12.5px;">
+        <button class="btn primary" id="agPlanilhaImportar">📤 Importar planilha</button>
+      </div>
+      <div id="agPlanilhaModelos" style="font-size:11.5px; color:var(--ink-soft); margin-top:8px;"></div>
+      <div id="agPlanilhaResultado" style="margin-top:10px;"></div>
+    </div>
     <div class="row" style="align-items:flex-start; gap:16px; flex-wrap:wrap;">
       <div class="card" style="flex:1; min-width:260px;">
         <h3>Empresas disponíveis</h3>
@@ -16586,6 +16597,28 @@ async function renderCfgNfseAgendamento(box){
   document.getElementById('agFiltroDisponiveis').addEventListener('input', (e)=>{
     NFSE_AG_FILTRO_DISPONIVEIS = e.target.value;
     carregarQuadroDisponiveis();
+  });
+  // Planilha em lote: mostra os nomes de modelo válidos e trata a importação.
+  api('/nfse/agendamento/planilha-modelos-servico').then(r=>{
+    const el=document.getElementById('agPlanilhaModelos'); if(!el) return;
+    el.innerHTML = (r.items&&r.items.length)
+      ? 'Modelos de serviço pra usar na coluna "Modelo de servico": '+r.items.map(n=>`<span class="tag muted">${esc(n)}</span>`).join(' ')
+      : '⚠️ Você ainda não tem modelos de serviço — cadastre em <b>NFS-e → Modelos</b> antes de importar (a coluna "Modelo de servico" precisa casar com um nome existente).';
+  }).catch(()=>{});
+  document.getElementById('agPlanilhaImportar').addEventListener('click', async ()=>{
+    const inp=document.getElementById('agPlanilhaArquivo');
+    const f=inp.files&&inp.files[0];
+    if(!f){ toast('Escolha a planilha (CSV) preenchida.','err'); return; }
+    const fd=new FormData(); fd.append('arquivo', f);
+    const btn=document.getElementById('agPlanilhaImportar'); btn.disabled=true; const txt=btn.textContent; btn.textContent='Importando…';
+    try{
+      const r=await api('/nfse/agendamento/planilha-importar', { method:'POST', body:fd });
+      const linhas=(r.resultados||[]).map(x=>`<tr><td>${esc(x.ref)}</td><td><span class="tag ${x.status==='ok'?'ok':'bad'}">${x.status==='ok'?'OK':'Erro'}</span></td><td style="font-size:12px;">${esc(x.mensagem||'')}</td></tr>`).join('');
+      document.getElementById('agPlanilhaResultado').innerHTML = `<div style="font-size:12.5px; margin-bottom:6px;">Importado: <b>${r.resumo.empresas}</b> empresa(s), <b>${r.resumo.servicos}</b> serviço(s), <b>${r.resumo.contatos}</b> contato(s) de ${r.resumo.total} linha(s).</div><div class="card" style="padding:0; max-height:300px; overflow:auto; margin:0;"><table class="data-table"><thead><tr><th>Empresa</th><th>Status</th><th>Detalhe</th></tr></thead><tbody>${linhas||'<tr><td colspan="3"><div class="empty-state">Nada processado.</div></td></tr>'}</tbody></table></div>`;
+      toast('Planilha importada.','ok');
+      carregarQuadroDisponiveis(); carregarQuadroSelecionadas();
+    }catch(e){ toast(e.message,'err'); }
+    finally{ btn.disabled=false; btn.textContent=txt; }
   });
   async function carregarQuadroDisponiveis(){
     const lista = document.getElementById('agListaDisponiveis');

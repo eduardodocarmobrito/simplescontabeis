@@ -14970,6 +14970,149 @@ app.delete("/api/nfse/agendamento/itens/:itemId", blockCliente, requirePermissao
   sqlite.prepare(`DELETE FROM nfse_agendamento_itens WHERE id = ?`).run(itemId);
   res.json({ ok: true });
 });
+// ---- Parametrização de NFS-e em LOTE por planilha (CSV) — exporta um modelo com as empresas do
+// escritório pré-preenchidas, o admin preenche (modelo de serviço + valor + contatos) e reimporta.
+// Multi-valor nas colunas de contato é separado por ";" DENTRO da célula (o Excel coloca aspas
+// sozinho). Usa CSV ";" (pt-BR) com parser que respeita aspas — nenhuma dependência nova.
+function parseCsvTexto(texto: string, sep: string): string[][] {
+  const out: string[][] = [];
+  let campo = "";
+  let linha: string[] = [];
+  let aspas = false;
+  const s = texto.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (aspas) {
+      if (c === '"') { if (s[i + 1] === '"') { campo += '"'; i++; } else aspas = false; }
+      else campo += c;
+    } else if (c === '"') aspas = true;
+    else if (c === sep) { linha.push(campo); campo = ""; }
+    else if (c === "\n") { linha.push(campo); out.push(linha); linha = []; campo = ""; }
+    else campo += c;
+  }
+  if (campo !== "" || linha.length) { linha.push(campo); out.push(linha); }
+  return out;
+}
+function csvCampo(v: any): string {
+  const s = v == null ? "" : String(v);
+  return /[";\n,]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+function gerarCsv(linhas: any[][]): string {
+  return "﻿" + linhas.map((l) => l.map(csvCampo).join(";")).join("\r\n");
+}
+const PLANILHA_HEADER = ["CNPJ/CPF", "Razao social", "Modelo de servico", "Descricao do servico", "Valor (R$)", "Contato - Nome", "Contato - E-mail", "Contato - WhatsApp"];
+app.get("/api/nfse/agendamento/planilha-modelo", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const visiveis = empresasVisiveis(user);
+  let empresas: any[];
+  if (visiveis === null) empresas = sqlite.prepare(`SELECT nome, cnpj FROM empresas WHERE escritorio_id=? AND ativo=1 ORDER BY nome`).all(user.escritorioId) as any[];
+  else if (!visiveis.length) empresas = [];
+  else empresas = sqlite.prepare(`SELECT nome, cnpj FROM empresas WHERE escritorio_id=? AND ativo=1 AND id IN (${visiveis.map(() => "?").join(",")}) ORDER BY nome`).all(user.escritorioId, ...visiveis) as any[];
+  const linhas: any[][] = [PLANILHA_HEADER];
+  for (const e of empresas) linhas.push([e.cnpj || "", e.nome || "", "", "", "", "", "", ""]);
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="Modelo NFS-e em lote.csv"`);
+  res.send(gerarCsv(linhas));
+});
+// Lista os modelos de serviço do escritório — mostrados na tela de import pra o admin saber os nomes
+// exatos que pode digitar na coluna "Modelo de servico" da planilha.
+app.get("/api/nfse/agendamento/planilha-modelos-servico", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const rows = sqlite.prepare(`SELECT nome FROM nfse_modelos WHERE empresa_id IS NULL AND escritorio_id=? ORDER BY nome`).all(user.escritorioId) as any[];
+  res.json({ items: rows.map((r) => r.nome) });
+});
+app.post("/api/nfse/agendamento/planilha-importar", blockCliente, requirePermissao("configuracoes", "postar"), upload.single("arquivo"), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "Envie a planilha (CSV) preenchida." });
+  const user = (req as any).user;
+  const escritorioId = user.escritorioId;
+  const texto = req.file.buffer.toString("utf8").replace(/^﻿/, "");
+  const primeira = texto.split("\n")[0] || "";
+  const sep = primeira.split(";").length >= primeira.split(",").length ? ";" : ",";
+  const linhas = parseCsvTexto(texto, sep).filter((l) => l.some((c) => (c || "").trim() !== ""));
+  if (linhas.length < 2) return res.status(400).json({ error: "Planilha vazia ou só com o cabeçalho." });
+  const header = linhas[0].map((h) => (h || "").toLowerCase().trim());
+  const achar = (pred: (h: string) => boolean) => header.findIndex(pred);
+  const iDoc = achar((h) => h.includes("cnpj") || h.includes("cpf") || h.includes("documento"));
+  const iRazao = achar((h) => h.includes("razao") || h.includes("razão") || h === "empresa");
+  const iModelo = achar((h) => h.includes("modelo"));
+  const iDesc = achar((h) => h.includes("descri"));
+  const iValor = achar((h) => h.includes("valor"));
+  const iCNome = achar((h) => (h.includes("contato") && h.includes("nome")) || h === "nome");
+  const iCEmail = achar((h) => h.includes("mail"));
+  const iCWhats = achar((h) => h.includes("whats") || h.includes("telefone") || h.includes("celular"));
+  const limparValor = (v: string): number | null => {
+    let s = (v || "").replace(/[^\d.,-]/g, "");
+    if (!s) return null;
+    if (s.includes(",")) s = s.replace(/\./g, "").replace(",", ".");
+    const n = Number(s);
+    return isFinite(n) ? n : null;
+  };
+  const multi = (v: string) => (v || "").split(";").map((x) => x.trim()).filter(Boolean);
+  const cfg = sqlite.prepare(`SELECT envio_template_id FROM nfse_agendamento_config WHERE escritorio_id=?`).get(escritorioId) as any;
+  const resultados: any[] = [];
+  let okCount = 0, servicosCount = 0, contatosCount = 0, precisaSyncWhats = false;
+  for (let i = 1; i < linhas.length; i++) {
+    const cols = linhas[i];
+    const get = (idx: number) => (idx >= 0 ? (cols[idx] || "").trim() : "");
+    const docDig = get(iDoc).replace(/\D/g, "");
+    const razao = get(iRazao);
+    if (!docDig && !razao) continue;
+    const ref = razao || get(iDoc) || `Linha ${i + 1}`;
+    let empresa = docDig
+      ? (sqlite.prepare(`SELECT id, email FROM empresas WHERE escritorio_id=? AND REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(cnpj,''),'.',''),'/',''),'-',''),' ','')=?`).get(escritorioId, docDig) as any)
+      : null;
+    if (!empresa && razao) empresa = sqlite.prepare(`SELECT id, email FROM empresas WHERE escritorio_id=? AND LOWER(nome)=LOWER(?)`).get(escritorioId, razao) as any;
+    if (!empresa) { resultados.push({ ref, status: "erro", mensagem: "Empresa não encontrada (confira o CNPJ/CPF ou a razão social)." }); continue; }
+    if (!podeAcessarEmpresa(user, empresa.id)) { resultados.push({ ref, status: "erro", mensagem: "Sem acesso a esta empresa." }); continue; }
+    // Resolve o modelo de serviço pelo nome (catálogo do escritório).
+    const modeloNome = get(iModelo);
+    let modeloId: number | null = null;
+    if (modeloNome) {
+      const m = sqlite.prepare(`SELECT id FROM nfse_modelos WHERE empresa_id IS NULL AND escritorio_id=? AND LOWER(nome)=LOWER(?) LIMIT 1`).get(escritorioId, modeloNome) as any;
+      if (!m) { resultados.push({ ref, status: "erro", mensagem: `Modelo de serviço "${modeloNome}" não existe no escritório.` }); continue; }
+      modeloId = m.id;
+    }
+    const descricao = get(iDesc);
+    const valor = limparValor(get(iValor));
+    // 1) entra na rotina automática + liga a atribuição de Envio de Documentos (mesma lógica do botão).
+    sqlite.prepare(`INSERT OR IGNORE INTO nfse_agendamento_empresas (empresa_id) VALUES (?)`).run(empresa.id);
+    if (cfg?.envio_template_id) sqlite.prepare(`INSERT OR IGNORE INTO envio_atribuicoes (template_id, empresa_id, ativo) VALUES (?, ?, 1)`).run(cfg.envio_template_id, empresa.id);
+    // 2) serviço (item): atualiza o item do mesmo modelo se já existir, senão reaproveita um item em
+    // branco, senão cria. Só mexe se veio modelo/valor/descrição.
+    let servicoFeito = false;
+    if (modeloId || valor != null || descricao) {
+      let item = modeloId ? (sqlite.prepare(`SELECT id FROM nfse_agendamento_itens WHERE empresa_id=? AND modelo_id=?`).get(empresa.id, modeloId) as any) : null;
+      if (!item) item = sqlite.prepare(`SELECT id FROM nfse_agendamento_itens WHERE empresa_id=? AND modelo_id IS NULL AND COALESCE(descricao_servico,'')='' AND COALESCE(valor_servico,0)=0 LIMIT 1`).get(empresa.id) as any;
+      if (item) sqlite.prepare(`UPDATE nfse_agendamento_itens SET modelo_id=COALESCE(?,modelo_id), descricao_servico=?, valor_servico=COALESCE(?,valor_servico), ativo=1, updated_at=datetime('now') WHERE id=?`).run(modeloId, descricao || null, valor, item.id);
+      else sqlite.prepare(`INSERT INTO nfse_agendamento_itens (empresa_id, modelo_id, descricao_servico, valor_servico, ativo) VALUES (?, ?, ?, ?, 1)`).run(empresa.id, modeloId, descricao || null, valor);
+      servicoFeito = true;
+      servicosCount++;
+    }
+    // 3) contatos de envio (e-mail e/ou WhatsApp) — multi-valor separado por ";" na célula; casa por
+    // índice (1º nome com 1º e-mail/telefone, etc.). Não duplica contato já existente.
+    const nomes = multi(get(iCNome)), emails = multi(get(iCEmail)), whats = multi(get(iCWhats));
+    const qtd = Math.max(nomes.length, emails.length, whats.length);
+    let contatosFeitos = 0;
+    for (let k = 0; k < qtd; k++) {
+      const email = (emails[k] || "").trim();
+      const tel = (whats[k] || "").trim();
+      if (!email && !tel) continue;
+      const nome = (nomes[k] || nomes[0] || email || tel || "Contato").trim();
+      const telKey = tel ? telefoneChaveBr(tel) : null;
+      const jaEmail = email ? sqlite.prepare(`SELECT 1 FROM empresa_contatos WHERE empresa_id=? AND LOWER(email)=LOWER(?)`).get(empresa.id, email) : null;
+      const jaTel = telKey ? (sqlite.prepare(`SELECT telefone FROM empresa_contatos WHERE empresa_id=? AND telefone IS NOT NULL`).all(empresa.id) as any[]).some((c) => telefoneChaveBr(c.telefone) === telKey) : false;
+      if (jaEmail || jaTel) continue; // não duplica
+      sqlite.prepare(`INSERT INTO empresa_contatos (empresa_id, nome, email, receber_emails, telefone, receber_whatsapp) VALUES (?, ?, ?, ?, ?, ?)`).run(empresa.id, nome, email || "", email ? 1 : 0, tel ? crmSoDigitos(tel) : null, tel ? 1 : 0);
+      contatosFeitos++;
+      contatosCount++;
+      if (tel) precisaSyncWhats = true;
+    }
+    okCount++;
+    resultados.push({ ref, status: "ok", mensagem: `${servicoFeito ? "1 serviço" : "sem serviço"}${contatosFeitos ? ` · ${contatosFeitos} contato(s)` : ""}.` });
+  }
+  if (precisaSyncWhats) deskcommAgendarSyncEmpresasClientes();
+  res.json({ ok: true, resumo: { empresas: okCount, servicos: servicosCount, contatos: contatosCount, total: resultados.length }, resultados });
+});
 app.get("/api/nfse/agendamento/log", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
   const rows = sqlite
     .prepare(
