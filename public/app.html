@@ -9130,6 +9130,11 @@ function finOfxCartaoHtml(t){
     </div>
     ${t.status==='pendente'?`
       ${sugestoesHtml?`<div style="margin-top:6px;"><div style="font-size:11px; color:var(--ink-soft); text-transform:uppercase;">Possível correspondência no sistema</div>${sugestoesHtml}</div>`:''}
+      ${(t.grupos||[]).length?`<div style="margin-top:6px;"><div style="font-size:11px; color:var(--ink-soft); text-transform:uppercase;">Parece pagamento de vários títulos (a soma bate)</div>${(t.grupos||[]).map(g=>`
+        <div style="padding:6px 0; border-top:1px solid var(--rule);">
+          <div style="font-size:12px; margin-bottom:4px;">${g.map(x=>esc(x.descricao)+(x.terceiro?' — '+esc(x.terceiro):'')+' ('+fmtMoney(x.valor)+')').join(' &nbsp;+&nbsp; ')}</div>
+          <button class="btn small primary" data-act="conciliar-grupo" data-ofx="${t.id}" data-tabela="${g[0].tabela}" data-ids="${g.map(x=>x.id).join(',')}">Conciliar os ${g.length} títulos</button>
+        </div>`).join('')}</div>`:''}
       <div class="row" style="gap:8px; margin-top:8px; flex-wrap:wrap;">
         <button class="btn small" data-act="cadastrar" data-ofx="${t.id}">+ Cadastrar no Financeiro</button>
         <button class="btn small" data-act="vincular" data-ofx="${t.id}">🔗 Vincular documento</button>
@@ -9142,6 +9147,12 @@ function finOfxCartaoHtml(t){
 function finOfxWireAcoes(scope, recarregar){
   scope.querySelectorAll('[data-act="conciliar"]').forEach(b=>b.addEventListener('click', async ()=>{
     try{ await api('/financeiro/minha-empresa/ofx/'+b.dataset.ofx+'/conciliar', { method:'POST', body:{ tabela:b.dataset.tabela, tituloId:Number(b.dataset.titulo) } }); toast('Conciliado.','ok'); recarregar(); }
+    catch(e){ toast(e.message,'err'); }
+  }));
+  scope.querySelectorAll('[data-act="conciliar-grupo"]').forEach(b=>b.addEventListener('click', async ()=>{
+    const ids = b.dataset.ids.split(',').map(Number);
+    if(!confirm('Dar baixa nos '+ids.length+' títulos deste grupo com esta transação?')) return;
+    try{ await api('/financeiro/minha-empresa/ofx/'+b.dataset.ofx+'/conciliar-grupo', { method:'POST', body:{ tabela:b.dataset.tabela, tituloIds:ids } }); toast('Grupo conciliado — '+ids.length+' títulos baixados.','ok'); recarregar(); }
     catch(e){ toast(e.message,'err'); }
   }));
   scope.querySelectorAll('[data-act="cadastrar"]').forEach(b=>b.addEventListener('click', ()=>finOfxCadastrarModal(b.dataset.ofx, recarregar)));

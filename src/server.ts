@@ -2129,6 +2129,23 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
     `);
   }
 }
+// Aprendizado da conciliação: toda vez que o usuário concilia uma transação do extrato a um título,
+// a gente guarda "este texto do banco (normalizado) → este terceiro" pra, nas próximas importações,
+// casar/desempatar melhor (o OFX costuma repetir a mesma descrição pro mesmo pagador/recebedor).
+{
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS financeiro_ofx_aprendizado (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+      descricao_norm TEXT NOT NULL,
+      terceiro TEXT NOT NULL,
+      tabela TEXT NOT NULL,
+      hits INTEGER NOT NULL DEFAULT 1,
+      atualizado_em TEXT DEFAULT (datetime('now')),
+      UNIQUE(empresa_id, descricao_norm, terceiro)
+    )`);
+  sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_ofx_aprendizado_emp ON financeiro_ofx_aprendizado(empresa_id, descricao_norm)`);
+}
 // Migração: renegociação de título — quando um "a pagar"/"a receber" vencido é renegociado em N
 // parcelas novas (acordo com juros/multa, prazo maior etc.), o título original vira status
 // 'renegociado' (nunca apagado — fica no histórico) e cada parcela nova aponta de volta pra ele via
@@ -16160,18 +16177,93 @@ app.get("/api/financeiro/minha-empresa/relatorios/csv", requireCliente, requireM
 // valor (exato, sem tolerância — evita casar errado) e vencimento dentro de uma janela de 15 dias.
 // Não aplica sozinho: só sugere, quem concilia de fato é o usuário clicando (ver /conciliar abaixo).
 const OFX_JANELA_DIAS_MATCH = 15;
-function financeiroOfxSugerirMatch(empresaId: number, valor: number, data: string): any[] {
+// ---- Conciliação inteligente: normalização + similaridade de texto + aprendizado ----
+function ofxNorm(s: string | null): string {
+  return (s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+}
+function ofxTokens(s: string | null): string[] {
+  return ofxNorm(s).split(" ").filter((w) => w.length >= 3);
+}
+// Similaridade 0..1 por overlap de tokens (Jaccard sobre o maior conjunto) — robusto e barato, sem
+// precisar de Levenshtein; o OFX costuma repetir palavras-chave (nome do pagador, "ted", "pix" etc.).
+function ofxSimilaridade(a: string | null, b: string | null): number {
+  const ta = new Set(ofxTokens(a)), tb = new Set(ofxTokens(b));
+  if (!ta.size || !tb.size) return 0;
+  let inter = 0;
+  for (const w of ta) if (tb.has(w)) inter++;
+  return inter / Math.max(ta.size, tb.size);
+}
+// Terceiros "aprendidos" pra uma descrição de banco: devolve terceiro(normalizado) → peso (quanto
+// maior, mais confiança). Casa por descrição normalizada igual ou por overlap (banco varia um pedaço).
+function ofxTerceirosAprendidos(empresaId: number, descBanco: string): Map<string, number> {
+  const norm = ofxNorm(descBanco);
+  const m = new Map<string, number>();
+  if (!norm) return m;
+  const rows = sqlite.prepare(`SELECT descricao_norm, terceiro, hits FROM financeiro_ofx_aprendizado WHERE empresa_id = ?`).all(empresaId) as any[];
+  for (const r of rows) {
+    const sim = r.descricao_norm === norm ? 1 : ofxSimilaridade(r.descricao_norm, norm);
+    if (sim >= 0.5) {
+      const k = ofxNorm(r.terceiro);
+      m.set(k, Math.max(m.get(k) || 0, sim + Math.min(0.3, (r.hits || 1) * 0.05)));
+    }
+  }
+  return m;
+}
+// Score de um candidato (0..~1.6): similaridade texto-do-banco × (descrição+terceiro do título) +
+// bônus de aprendizado quando o terceiro do título já foi casado antes com esse texto de banco.
+function ofxScoreCandidato(descBanco: string, descricao: string | null, terceiro: string | null, aprendidos: Map<string, number>): number {
+  const base = ofxSimilaridade(descBanco, `${descricao || ""} ${terceiro || ""}`);
+  const bonus = terceiro ? aprendidos.get(ofxNorm(terceiro)) || 0 : 0;
+  return base + bonus;
+}
+function financeiroOfxSugerirMatch(empresaId: number, valor: number, data: string, descBanco: string): any[] {
   const tabela = valor >= 0 ? "financeiro_receber" : "financeiro_pagar";
   const campoTerceiro = valor >= 0 ? "cliente_nome" : "fornecedor";
   const rows = sqlite
     .prepare(
       `SELECT id, descricao, ${campoTerceiro} as terceiro, vencimento, valor FROM ${tabela}
        WHERE empresa_id = ? AND status = 'pendente' AND ABS(valor - ?) < 0.01
-         AND ABS(julianday(vencimento) - julianday(?)) <= ?
-       ORDER BY ABS(julianday(vencimento) - julianday(?)) LIMIT 5`
+         AND ABS(julianday(vencimento) - julianday(?)) <= ?`
     )
-    .all(empresaId, Math.abs(valor), data, OFX_JANELA_DIAS_MATCH, data) as any[];
-  return rows.map((r) => ({ tabela, id: r.id, descricao: r.descricao, terceiro: r.terceiro, vencimento: r.vencimento, valor: r.valor }));
+    .all(empresaId, Math.abs(valor), data, OFX_JANELA_DIAS_MATCH) as any[];
+  const aprendidos = ofxTerceirosAprendidos(empresaId, descBanco);
+  return rows
+    .map((r) => ({ tabela, id: r.id, descricao: r.descricao, terceiro: r.terceiro, vencimento: r.vencimento, valor: r.valor, _score: ofxScoreCandidato(descBanco, r.descricao, r.terceiro, aprendidos), _dist: Math.abs(julianDiasDesde(r.vencimento, data)) }))
+    .sort((a, b) => b._score - a._score || a._dist - b._dist)
+    .slice(0, 5)
+    .map(({ _score, _dist, ...rest }) => rest);
+}
+function julianDiasDesde(a: string, b: string): number {
+  const da = new Date(String(a).slice(0, 10) + "T00:00:00").getTime(), db2 = new Date(String(b).slice(0, 10) + "T00:00:00").getTime();
+  return (da - db2) / 86400000;
+}
+// Conciliação 1-para-vários: um lançamento do banco que corresponde à SOMA de vários títulos pendentes
+// (ex.: um pagamento que quita 3 parcelas). Procura subconjuntos de 2 a 4 títulos (mesmo lado, dentro
+// da janela) cuja soma bata com o valor da transação. Só SUGERE — a baixa do grupo o usuário confirma.
+function financeiroOfxSugerirGrupo(empresaId: number, valor: number, data: string): any[] {
+  const tabela = valor >= 0 ? "financeiro_receber" : "financeiro_pagar";
+  const campoTerceiro = valor >= 0 ? "cliente_nome" : "fornecedor";
+  const alvo = Math.round(Math.abs(valor) * 100);
+  const cand = (sqlite
+    .prepare(
+      `SELECT id, descricao, ${campoTerceiro} as terceiro, vencimento, valor FROM ${tabela}
+       WHERE empresa_id = ? AND status = 'pendente' AND ABS(valor) <= ? AND ABS(julianday(vencimento) - julianday(?)) <= ?
+       ORDER BY ABS(julianday(vencimento) - julianday(?)) LIMIT 14`
+    )
+    .all(empresaId, Math.abs(valor) + 0.01, data, OFX_JANELA_DIAS_MATCH, data) as any[]).map((c) => ({ ...c, cent: Math.round(Math.abs(c.valor) * 100) }));
+  const grupos: any[] = [];
+  const n = cand.length;
+  const fmt = (idxs: number[]) => idxs.map((i) => ({ tabela, id: cand[i].id, descricao: cand[i].descricao, terceiro: cand[i].terceiro, vencimento: cand[i].vencimento, valor: cand[i].valor }));
+  for (let i = 0; i < n && grupos.length < 3; i++)
+    for (let j = i + 1; j < n && grupos.length < 3; j++) {
+      if (cand[i].cent + cand[j].cent === alvo) { grupos.push(fmt([i, j])); continue; }
+      for (let k = j + 1; k < n && grupos.length < 3; k++) {
+        if (cand[i].cent + cand[j].cent + cand[k].cent === alvo) { grupos.push(fmt([i, j, k])); continue; }
+        for (let l = k + 1; l < n && grupos.length < 3; l++)
+          if (cand[i].cent + cand[j].cent + cand[k].cent + cand[l].cent === alvo) grupos.push(fmt([i, j, k, l]));
+      }
+    }
+  return grupos;
 }
 // Excluir um título "a pagar"/"a receber" que já foi conciliado com o extrato bancário (quer tenha
 // sido CRIADO pela conciliação — origem='ofx' — quer seja um título manual que só foi CASADO com uma
@@ -16197,30 +16289,51 @@ function financeiroOfxListar(empresaId: number, contaId: number, status: string)
     vinculoTabela: r.vinculo_tabela,
     vinculoId: r.vinculo_id,
     documentoVinculadoId: r.documento_vinculado_id,
-    sugestoes: r.status === "pendente" ? financeiroOfxSugerirMatch(empresaId, r.valor, r.data) : [],
+    sugestoes: r.status === "pendente" ? financeiroOfxSugerirMatch(empresaId, r.valor, r.data, r.descricao) : [],
+    grupos: r.status === "pendente" ? financeiroOfxSugerirGrupo(empresaId, r.valor, r.data) : [],
   }));
 }
-// Baixa um título a partir de uma transação do extrato (fonte de verdade: data/conta do banco) e
-// marca a transação como conciliada. Usado tanto pela conciliação manual quanto pela automática.
+// Registra o aprendizado "texto do banco → terceiro" (reforça com hits) pra casar melhor no futuro.
+function financeiroOfxAprender(empresaId: number, descBanco: string | null, terceiro: string | null, tabela: string): void {
+  const norm = ofxNorm(descBanco);
+  if (!norm || !terceiro) return;
+  sqlite
+    .prepare(`INSERT INTO financeiro_ofx_aprendizado (empresa_id, descricao_norm, terceiro, tabela) VALUES (?, ?, ?, ?)
+              ON CONFLICT(empresa_id, descricao_norm, terceiro) DO UPDATE SET hits = hits + 1, atualizado_em = datetime('now')`)
+    .run(empresaId, norm, String(terceiro).trim(), tabela);
+}
+// Baixa um título a partir de uma transação do extrato (fonte de verdade: data/conta do banco),
+// marca a transação como conciliada e aprende o terceiro pra esse texto de banco.
 function financeiroOfxConciliarTitulo(ofxRow: any, tabela: "financeiro_pagar" | "financeiro_receber", titulo: any): void {
   const campoData = tabela === "financeiro_pagar" ? "data_pagamento" : "data_recebimento";
   sqlite.prepare(`UPDATE ${tabela} SET status = 'pago', ${campoData} = ?, conta_id = ? WHERE id = ?`).run(ofxRow.data, ofxRow.conta_id, titulo.id);
   sqlite.prepare(`UPDATE financeiro_ofx_transacoes SET status = 'conciliado', vinculo_tabela = ?, vinculo_id = ? WHERE id = ?`).run(tabela, titulo.id, ofxRow.id);
+  financeiroOfxAprender(ofxRow.empresa_id, ofxRow.descricao, tabela === "financeiro_pagar" ? titulo.fornecedor : titulo.cliente_nome, tabela);
 }
-// Auto-conciliação no import: pra cada transação recém-trazida, se existe EXATAMENTE UM título
-// pendente que bate (mesmo sinal, valor igual, vencimento dentro da janela), baixa sozinho. Se houver
-// vários candidatos (ambíguo) ou nenhum, deixa pra revisão manual — nunca dá baixa no escuro, que é a
-// boa prática de conciliação (auto só no inequívoco; o resto vai pra fila de revisão).
+// Auto-conciliação no import: pra cada transação recém-trazida com valor igual + vencimento na janela:
+//  - 1 único candidato → baixa sozinho;
+//  - vários candidatos → desempata por similaridade de texto + aprendizado; só baixa se houver um
+//    vencedor CLARO (score forte E bem à frente do 2º), senão deixa pra revisão;
+//  - 0 candidatos → revisão (pode ser um grupo 1-para-vários, que é só sugerido, nunca auto).
+// Nunca dá baixa no escuro — boa prática de conciliação.
 function financeiroOfxAutoConciliar(empresaId: number, transIds: number[]): number {
   let n = 0;
   for (const id of transIds) {
     const t = sqlite.prepare(`SELECT * FROM financeiro_ofx_transacoes WHERE id = ? AND status = 'pendente'`).get(id) as any;
     if (!t) continue;
     const tabela: "financeiro_pagar" | "financeiro_receber" = t.valor >= 0 ? "financeiro_receber" : "financeiro_pagar";
+    const campoTerceiro = tabela === "financeiro_pagar" ? "fornecedor" : "cliente_nome";
     const matches = sqlite
       .prepare(`SELECT * FROM ${tabela} WHERE empresa_id = ? AND status = 'pendente' AND ABS(valor - ?) < 0.01 AND ABS(julianday(vencimento) - julianday(?)) <= ?`)
       .all(empresaId, Math.abs(t.valor), t.data, OFX_JANELA_DIAS_MATCH) as any[];
-    if (matches.length === 1) { financeiroOfxConciliarTitulo(t, tabela, matches[0]); n++; }
+    if (matches.length === 1) { financeiroOfxConciliarTitulo(t, tabela, matches[0]); n++; continue; }
+    if (matches.length > 1) {
+      const aprendidos = ofxTerceirosAprendidos(empresaId, t.descricao);
+      const scored = matches
+        .map((m) => ({ m, s: ofxScoreCandidato(t.descricao, m.descricao, m[campoTerceiro], aprendidos) }))
+        .sort((a, b) => b.s - a.s);
+      if (scored[0].s >= 0.6 && scored[0].s - (scored[1]?.s || 0) >= 0.25) { financeiroOfxConciliarTitulo(t, tabela, scored[0].m); n++; }
+    }
   }
   return n;
 }
@@ -16270,6 +16383,28 @@ app.post("/api/financeiro/minha-empresa/ofx/:id/conciliar", requireCliente, requ
   if (titulo.status !== "pendente") return res.status(409).json({ error: "Este título já não está mais pendente." });
   financeiroOfxConciliarTitulo(ofxRow, tabela, titulo);
   res.json({ ok: true });
+});
+// Conciliação 1-para-vários: uma transação do banco que quita VÁRIOS títulos (a soma bate). Baixa
+// todos, vincula a transação ao 1º (referência) e aprende os terceiros.
+app.post("/api/financeiro/minha-empresa/ofx/:id/conciliar-grupo", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
+  const user = (req as any).user;
+  const ofxRow = sqlite.prepare(`SELECT * FROM financeiro_ofx_transacoes WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), user.empresaId) as any;
+  if (!ofxRow) return res.status(404).json({ error: "Transação não encontrada." });
+  if (ofxRow.status !== "pendente") return res.status(409).json({ error: "Esta transação já foi conciliada ou ignorada." });
+  const { tabela, tituloIds } = req.body || {};
+  if (!["financeiro_pagar", "financeiro_receber"].includes(tabela) || !Array.isArray(tituloIds) || tituloIds.length < 2) return res.status(400).json({ error: "Informe ao menos 2 títulos do grupo." });
+  const titulos = tituloIds.map((id: any) => sqlite.prepare(`SELECT * FROM ${tabela} WHERE id = ? AND empresa_id = ? AND status = 'pendente'`).get(Number(id), user.empresaId)).filter(Boolean) as any[];
+  if (titulos.length !== tituloIds.length) return res.status(409).json({ error: "Algum título do grupo já não está mais pendente." });
+  const soma = titulos.reduce((s, t) => s + Math.abs(t.valor), 0);
+  if (Math.abs(soma - Math.abs(ofxRow.valor)) >= 0.01) return res.status(400).json({ error: "A soma dos títulos não bate com o valor da transação." });
+  const campoData = tabela === "financeiro_pagar" ? "data_pagamento" : "data_recebimento";
+  const campoTerceiro = tabela === "financeiro_pagar" ? "fornecedor" : "cliente_nome";
+  for (const t of titulos) {
+    sqlite.prepare(`UPDATE ${tabela} SET status = 'pago', ${campoData} = ?, conta_id = ? WHERE id = ?`).run(ofxRow.data, ofxRow.conta_id, t.id);
+    financeiroOfxAprender(ofxRow.empresa_id, ofxRow.descricao, t[campoTerceiro], tabela);
+  }
+  sqlite.prepare(`UPDATE financeiro_ofx_transacoes SET status = 'conciliado', vinculo_tabela = ?, vinculo_id = ? WHERE id = ?`).run(tabela, titulos[0].id, ofxRow.id);
+  res.json({ ok: true, titulos: titulos.length });
 });
 // Transação do extrato sem nenhum título correspondente no sistema — cadastra um título NOVO já
 // baixado (a data/valor vêm do banco, que é fonte de verdade aqui), vinculado de volta à transação.
