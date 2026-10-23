@@ -2344,6 +2344,10 @@ try {
   // CRT do emitente (1=Simples Nacional, 2=SN excesso sublimite, 3=Regime Normal) — selo SN/RN do lado
   // do emitente na listagem, estilo Espião.
   if (!colsNfeDoc.some((c) => c.name === "crt")) sqlite.exec(`ALTER TABLE nfe_documentos ADD COLUMN crt INTEGER`);
+  // Tipo de operação da NF-e: finalidade (1=Normal 2=Complementar 3=Ajuste 4=Devolução) + natureza da
+  // operação (texto). Cacheado no mesmo parse dos tributos (bump da versão força re-parse uma vez).
+  if (!colsNfeDoc.some((c) => c.name === "fin_nfe")) sqlite.exec(`ALTER TABLE nfe_documentos ADD COLUMN fin_nfe INTEGER`);
+  if (!colsNfeDoc.some((c) => c.name === "nat_op")) sqlite.exec(`ALTER TABLE nfe_documentos ADD COLUMN nat_op TEXT`);
 }
 // Migração leve: opt-in por empresa pra busca automática da Guia FGTS Digital (nem toda empresa tem
 // FGTS, ex. MEI sem funcionário) + rastro da última busca em lote (ver fgts-automacao.ts).
@@ -9160,15 +9164,15 @@ setInterval(() => {
   nfeExecutarBuscaAutomatica().catch((e) => console.error("Erro na busca automática de XML:", e.message));
 }, NFE_AUTO_INTERVALO_MS);
 // Versão do parser de tributos — ao subir (novas colunas/lógica), força reparsear os docs já lidos.
-const NFE_TRIB_VERSAO = 4; // v4: + crt do emitente, + flag "st" (substituição tributária)
+const NFE_TRIB_VERSAO = 5; // v5: + fin_nfe/nat_op (tipo de operação); v4: + crt, + flag "st"
 // Lê o XML das notas (ids) e cacheia IBS/CBS/ICMS/PIS/COFINS/IPI/flags/qtd_itens/crt nas colunas.
 // Retorna, por id, o que a listagem exibe na hora. Marca tributos_parseado = versão.
-function parsearECachearTributos(ids: number[]): Map<number, { vIBS: number; vCBS: number; flags: string; qtdItens: number; crt: number | null }> {
-  const out = new Map<number, { vIBS: number; vCBS: number; flags: string; qtdItens: number; crt: number | null }>();
+function parsearECachearTributos(ids: number[]): Map<number, { vIBS: number; vCBS: number; flags: string; qtdItens: number; crt: number | null; finNFe: number | null; natOp: string | null }> {
+  const out = new Map<number, { vIBS: number; vCBS: number; flags: string; qtdItens: number; crt: number | null; finNFe: number | null; natOp: string | null }>();
   if (!ids.length) return out;
   const xmls = sqlite.prepare(`SELECT id, xml FROM nfe_documentos WHERE id IN (${ids.map(() => "?").join(",")})`).all(...ids) as any[];
   const upd = sqlite.prepare(
-    `UPDATE nfe_documentos SET valor_ibs=?, valor_cbs=?, valor_bc_ibscbs=?, valor_icms=?, valor_pis=?, valor_cofins=?, valor_ipi=?, flags=?, qtd_itens=?, crt=?, tributos_parseado=? WHERE id=?`
+    `UPDATE nfe_documentos SET valor_ibs=?, valor_cbs=?, valor_bc_ibscbs=?, valor_icms=?, valor_pis=?, valor_cofins=?, valor_ipi=?, flags=?, qtd_itens=?, crt=?, fin_nfe=?, nat_op=?, tributos_parseado=? WHERE id=?`
   );
   // node:sqlite não tem .transaction(): BEGIN/COMMIT na mão.
   sqlite.exec("BEGIN");
@@ -9177,11 +9181,11 @@ function parsearECachearTributos(ids: number[]): Map<number, { vIBS: number; vCB
       const t = nfe.extrairIbsCbs(x.xml);
       if (t) {
         const flags = t.flags.join(",");
-        upd.run(t.vIBS, t.vCBS, t.vBC, t.vICMS, t.vPIS, t.vCOFINS, t.vIPI, flags, t.qtdItens, t.crt, NFE_TRIB_VERSAO, x.id);
-        out.set(x.id, { vIBS: t.vIBS, vCBS: t.vCBS, flags, qtdItens: t.qtdItens, crt: t.crt });
+        upd.run(t.vIBS, t.vCBS, t.vBC, t.vICMS, t.vPIS, t.vCOFINS, t.vIPI, flags, t.qtdItens, t.crt, t.finNFe, t.natOp, NFE_TRIB_VERSAO, x.id);
+        out.set(x.id, { vIBS: t.vIBS, vCBS: t.vCBS, flags, qtdItens: t.qtdItens, crt: t.crt, finNFe: t.finNFe, natOp: t.natOp });
       } else {
-        upd.run(0, 0, 0, 0, 0, 0, 0, "", 0, null, NFE_TRIB_VERSAO, x.id); // não é NF-e completa — zera e marca parseado
-        out.set(x.id, { vIBS: 0, vCBS: 0, flags: "", qtdItens: 0, crt: null });
+        upd.run(0, 0, 0, 0, 0, 0, 0, "", 0, null, null, null, NFE_TRIB_VERSAO, x.id); // não é NF-e completa — zera e marca parseado
+        out.set(x.id, { vIBS: 0, vCBS: 0, flags: "", qtdItens: 0, crt: null, finNFe: null, natOp: null });
       }
     }
     sqlite.exec("COMMIT");
@@ -9198,9 +9202,9 @@ function parsearECachearTributos(ids: number[]): Map<number, { vIBS: number; vCB
 // dois lugares.
 function nfeListarDocumentosQuery(
   user: any,
-  opts: { empresasIds: number[]; tipo?: string | null; direcao?: "emitida" | "recebida" | null; busca?: string; dataDe?: string | null; dataAte?: string | null; flag?: string | null }
+  opts: { empresasIds: number[]; tipo?: string | null; direcao?: "emitida" | "recebida" | null; busca?: string; dataDe?: string | null; dataAte?: string | null; flag?: string | null; situacao?: string | null }
 ): any[] {
-  const { empresasIds, tipo, direcao, busca, dataDe, dataAte, flag } = opts;
+  const { empresasIds, tipo, direcao, busca, dataDe, dataAte, flag, situacao } = opts;
   if (empresasIds.length === 0) return [];
   const placeholders = empresasIds.map(() => "?").join(",");
   // "Emitida" = o CNPJ da própria empresa (dona do certificado) é o emitente do documento; senão é
@@ -9270,12 +9274,16 @@ function nfeListarDocumentosQuery(
     WHERE ev.escritorio_id = d.escritorio_id AND ev.tipo = 'evento' AND ev.chave_acesso = d.chave_acesso
       AND ev.evento_descricao LIKE '%ancela%' AND ev.evento_descricao NOT LIKE '%CT-e%' AND ev.evento_descricao NOT LIKE '%MDF-e%'
   )`;
+  // Filtro por situação: só canceladas, ou só autorizadas (não canceladas e não evento).
+  if (situacao === "canceladas") condicoes.push(`d.tipo != 'evento' AND ${notaCanceladaExpr}`);
+  else if (situacao === "autorizadas") condicoes.push(`d.tipo != 'evento' AND NOT ${notaCanceladaExpr}`);
   const rows = sqlite
     .prepare(
       `SELECT d.id, d.empresa_id as empresaId, e.nome as empresaNome, d.tipo, d.chave_acesso as chaveAcesso,
               d.emitente_cnpj as emitenteCnpj, d.emitente_nome as emitenteNome, d.destinatario_cnpj as destinatarioCnpj,
               d.destinatario_nome as destinatarioNome, d.valor_total as valorTotal, d.data_emissao as dataEmissao, d.criado_em as criadoEm,
               d.valor_ibs as valorIbs, d.valor_cbs as valorCbs, d.flags as flags, d.qtd_itens as qtdItens, d.tributos_parseado as tributosParseado,
+              d.fin_nfe as finNFe, d.nat_op as natOp,
               d.observacao as observacao, d.crt as crt, d.integrado_financeiro as integradoFinanceiro,
               (d.chave_acesso IS NOT NULL AND EXISTS (SELECT 1 FROM mdfe_vinculos mv WHERE mv.chave_vinculada = d.chave_acesso)) as temMdfe,
               ${direcaoExpr} as direcao, (CASE WHEN d.tipo = 'evento' THEN 0 ELSE ${notaCanceladaExpr} END) as notaCancelada
@@ -9297,6 +9305,8 @@ function nfeListarDocumentosQuery(
         r.flags = v.flags;
         r.qtdItens = v.qtdItens;
         r.crt = v.crt;
+        r.finNFe = v.finNFe;
+        r.natOp = v.natOp;
       }
     }
   }
@@ -9662,6 +9672,7 @@ app.get("/api/nfe/minha-empresa/documentos", requireCliente, (req, res) => {
     empresasIds: [user.empresaId],
     direcao,
     tipo: typeof req.query.tipo === "string" && req.query.tipo ? req.query.tipo : null,
+    situacao: typeof req.query.situacao === "string" && req.query.situacao ? req.query.situacao : null,
     busca: typeof req.query.busca === "string" ? req.query.busca.trim() : "",
     dataDe: typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null,
     dataAte: typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null,
@@ -9863,17 +9874,16 @@ function nfePainelImpostosHtmlRelatorio(dash: ReturnType<typeof nfeCalcularDashb
     ${bar("ICMS", imp.icms, "#3b82f6")}${bar("PIS", imp.pis, "#10b981")}${bar("COFINS", imp.cofins, "#8b5cf6")}${bar("IPI", imp.ipi, "#f59e0b")}${bar("IBS (reforma)", imp.ibs, "#6366f1")}${bar("CBS (reforma)", imp.cbs, "#4338ca")}
     <div style="font-size:8px; color:#666; margin-top:6px;">Total de notas: <b>${dash.total}</b> &nbsp;·&nbsp; Recebidas: <b>${dash.recebidas.qtd}</b> &nbsp;·&nbsp; Emitidas: <b>${dash.emitidas.qtd}</b> &nbsp;·&nbsp; Canceladas: <b>${dash.canceladas}</b> &nbsp;·&nbsp; Com IBS/CBS: <b>${dash.comReforma}</b></div>`;
 }
-app.get("/api/nfe/documentos/exportar-analitico-pdf", blockCliente, requirePermissao("nfe-busca", "visualizar"), async (req, res) => {
-  const user = (req as any).user;
-  const empresaId = req.query.empresaId ? Number(req.query.empresaId) : null;
-  if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+// Relatório analítico por fornecedor (PDF) — compartilhado entre a tela do escritório (Busca de XML)
+// e a do cliente (Notas de Entradas/Saídas). empresaId já vem resolvido/autorizado pela rota.
+async function nfeGerarAnaliticoPdf(user: any, empresaId: number, query: any, res: express.Response): Promise<any> {
   const empresa = sqlite.prepare(`SELECT * FROM empresas WHERE id = ?`).get(empresaId) as any;
   if (!empresa) return res.status(404).json({ error: "Empresa não encontrada." });
-  const tipo = typeof req.query.tipo === "string" && req.query.tipo ? req.query.tipo : null;
-  const direcao = typeof req.query.direcao === "string" && ["emitida", "recebida"].includes(req.query.direcao) ? req.query.direcao : null;
-  const busca = typeof req.query.busca === "string" ? req.query.busca.trim() : "";
-  const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
-  const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
+  const tipo = typeof query.tipo === "string" && query.tipo ? query.tipo : null;
+  const direcao = typeof query.direcao === "string" && ["emitida", "recebida"].includes(query.direcao) ? query.direcao : null;
+  const busca = typeof query.busca === "string" ? query.busca.trim() : "";
+  const dataDe = typeof query.dataDe === "string" && query.dataDe ? query.dataDe : null;
+  const dataAte = typeof query.dataAte === "string" && query.dataAte ? query.dataAte : null;
   const direcaoExpr = `(CASE WHEN d.emitente_cnpj = REPLACE(REPLACE(REPLACE(e.cnpj,'.',''),'/',''),'-','') THEN 'emitida' ELSE 'recebida' END)`;
   // Sem travar em nfe/nfce: a tela também exporta com o filtro em CT-e/MDF-e/NFS-e — só evento fica de
   // fora (não é documento pra listar por fornecedor). O "tipo" abaixo, quando vem da tela, já restringe
@@ -9896,7 +9906,7 @@ app.get("/api/nfe/documentos/exportar-analitico-pdf", blockCliente, requirePermi
   // (NF-e/NFC-e, via detalharNfe — CT-e/MDF-e/NFS-e e resumos sem XML completo não têm UF confiável
   // aqui), por isso o filtro restringe ao que dá pra classificar — nunca chuta nota sem UF achada pra
   // dentro de um dos dois grupos.
-  const ufFiltro = typeof req.query.uf === "string" && ["dentro", "fora"].includes(req.query.uf) ? req.query.uf : null;
+  const ufFiltro = typeof query.uf === "string" && ["dentro", "fora"].includes(query.uf) ? query.uf : null;
   const empresaUf = (empresa.uf || "").toUpperCase().trim();
   const notaCanceladaExpr = `EXISTS (SELECT 1 FROM nfe_documentos ev WHERE ev.escritorio_id = d.escritorio_id AND ev.tipo = 'evento' AND ev.chave_acesso = d.chave_acesso AND ev.evento_descricao LIKE '%ancela%' AND ev.evento_descricao NOT LIKE '%CT-e%' AND ev.evento_descricao NOT LIKE '%MDF-e%')`;
   const rows = sqlite
@@ -10024,6 +10034,18 @@ app.get("/api/nfe/documentos/exportar-analitico-pdf", blockCliente, requirePermi
   } catch (e: any) {
     res.status(500).json({ error: "Falha ao gerar o PDF: " + e.message });
   }
+}
+app.get("/api/nfe/documentos/exportar-analitico-pdf", blockCliente, requirePermissao("nfe-busca", "visualizar"), async (req, res) => {
+  const user = (req as any).user;
+  const empresaId = req.query.empresaId ? Number(req.query.empresaId) : null;
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  await nfeGerarAnaliticoPdf(user, empresaId, req.query, res);
+});
+// Mesmo relatório na tela do cliente (só a própria empresa) — pedido: botões de export iguais ao escritório.
+app.get("/api/nfe/minha-empresa/documentos/exportar-analitico-pdf", requireCliente, async (req, res) => {
+  const user = (req as any).user;
+  if (!user.empresaId || !escritorioTemModulo(user.escritorioId, "busca_xml_nfe")) return res.status(404).json({ error: "Recurso não disponível." });
+  await nfeGerarAnaliticoPdf(user, user.empresaId, req.query, res);
 });
 
 // ---------- Exportação de XML pro OneDrive (direto da nuvem, sem agente local) ----------

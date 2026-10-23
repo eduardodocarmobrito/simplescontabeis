@@ -5573,6 +5573,14 @@ async function pageDocumentosRecebidos(){
 // (Busca de XML). Sem "Buscar agora" nem certificado aqui — é só consulta. Flags/Opções/Resumo
 // espelham a tela do escritório (mesmos marcadores e dashboard), só sem ações administrativas
 // (comentário interno, dar ciência da operação) nem o card de configuração do certificado.
+// Tipo de operação da nota (finalidade da NF-e + natureza da operação, lidos do XML): devolução/ajuste/
+// complementar vêm do finNFe; o resto mostra a natureza da operação (ex.: "VENDA...").
+function neTipoOperacao(d){
+  if(d.finNFe===4) return 'Devolução';
+  if(d.finNFe===3) return 'Ajuste';
+  if(d.finNFe===2) return 'Complementar';
+  return d.natOp || (d.finNFe===1?'Normal':'—');
+}
 async function pageNotasEntrada(){
   let direcao = 'recebida';
   main().innerHTML = `
@@ -5712,9 +5720,11 @@ async function pageNotasEntrada(){
     const dataDe = document.getElementById('neDataDe')?.value || '';
     const dataAte = document.getElementById('neDataAte')?.value || '';
     const tipo = document.getElementById('neTipo')?.value || '';
+    const situacao = document.getElementById('neSituacao')?.value || '';
     const params = new URLSearchParams();
     params.set('direcao', direcao);
     if(tipo) params.set('tipo', tipo);
+    if(situacao) params.set('situacao', situacao);
     if(busca) params.set('busca', busca);
     if(dataDe) params.set('dataDe', dataDe);
     if(dataAte) params.set('dataAte', dataAte);
@@ -5735,18 +5745,25 @@ async function pageNotasEntrada(){
           <div class="field" style="margin-bottom:0; min-width:140px;"><label>Tipo</label>
             <select id="neTipo"><option value="">Todos</option><option value="nfe">NF-e</option><option value="nfce">NFC-e</option><option value="nfse">NFS-e</option><option value="cte">CT-e</option><option value="mdfe">MDF-e</option><option value="nf3e">NF3-e</option><option value="satcfe">SAT-CF-e</option><option value="evento">Evento</option><option value="outro">Outro</option></select>
           </div>
+          <div class="field" style="margin-bottom:0; min-width:140px;"><label>Situação</label>
+            <select id="neSituacao"><option value="">Todas</option><option value="autorizadas">Autorizadas</option><option value="canceladas">Canceladas</option></select>
+          </div>
           ${dateFieldHtml('neDataDe','Data de','')}
           ${dateFieldHtml('neDataAte','Data até','')}
         </div>
-        <div class="row" style="margin-bottom:8px; align-items:center; gap:10px;">
+        <div class="row" style="margin-bottom:8px; align-items:center; gap:10px; flex-wrap:wrap;">
           <span style="font-size:12.5px; color:var(--ink-soft);"><span id="neSelecionadosCount">0</span> selecionado(s)</span>
           <button class="btn small" id="btnNeBaixarLoteXml" disabled>Baixar selecionados — XML</button>
           <button class="btn small" id="btnNeBaixarLotePdf" disabled>Baixar selecionados — PDF</button>
           <button class="btn small" id="btnNeBaixarLoteAmbos" disabled>Baixar selecionados — XML + PDF</button>
+          <span style="width:1px; height:18px; background:var(--rule);"></span>
+          <button class="btn small" id="btnNeExportarAnalitico" title="PDF por fornecedor (com os produtos de cada nota), do período filtrado">📄 Exportar PDF analítico</button>
+          <button class="btn small" id="btnNeExportarUfDentro" title="Só notas dentro do seu Estado">📄 Dentro do Estado</button>
+          <button class="btn small" id="btnNeExportarUfFora" title="Só notas fora do seu Estado">📄 Fora do Estado</button>
         </div>
         <div class="card" style="padding:0; overflow-x:auto;">
           <table class="data-table ne-table" style="white-space:nowrap;">
-            <thead><tr><th style="width:32px;"><input type="checkbox" id="neSelecionarTodos"></th><th>Opções</th><th>Flags</th><th>Status</th><th>Data</th><th>Tipo</th><th>${saida?'Destinatário':'Emitente'}</th><th>CNPJ</th><th class="ne-col-chave">Chave de acesso</th><th>Valor</th></tr></thead>
+            <thead><tr><th style="width:32px;"><input type="checkbox" id="neSelecionarTodos"></th><th>Opções</th><th>Flags</th><th>Status</th><th>Data</th><th>Tipo</th><th>Nº NF</th><th>Operação</th><th>${saida?'Destinatário':'Emitente'}</th><th>CNPJ</th><th class="ne-col-chave">Chave de acesso</th><th>Valor</th></tr></thead>
             <tbody id="neBody"></tbody>
           </table>
         </div>
@@ -5756,6 +5773,28 @@ async function pageNotasEntrada(){
       document.getElementById('neDataDe').addEventListener('change', ()=>{ carregar(); carregarDashboard(); });
       document.getElementById('neDataAte').addEventListener('change', ()=>{ carregar(); carregarDashboard(); });
       document.getElementById('neTipo').addEventListener('change', carregar);
+      document.getElementById('neSituacao').addEventListener('change', carregar);
+      // Export PDF analítico (igual à tela do escritório) — abre a aba já no clique e, se der erro
+      // (ex.: nenhuma nota fora do Estado), fecha e mostra toast amigável em vez do JSON cru.
+      const exportarAnaliticoPdfNe = (uf)=>{
+        const params = new URLSearchParams({ direcao });
+        const tp = document.getElementById('neTipo').value; if(tp) params.set('tipo', tp);
+        const bq = document.getElementById('neBusca').value.trim(); if(bq) params.set('busca', bq);
+        const dd = document.getElementById('neDataDe').value; if(dd) params.set('dataDe', dd);
+        const da = document.getElementById('neDataAte').value; if(da) params.set('dataAte', da);
+        if(uf) params.set('uf', uf);
+        const win = window.open('', '_blank');
+        if(win){ try{ win.document.write('<p style="font:14px sans-serif;padding:16px">Gerando o PDF…</p>'); }catch(e){} }
+        fetch('/api/nfe/minha-empresa/documentos/exportar-analitico-pdf?'+params.toString(), { credentials:'include' }).then(async r=>{
+          if(!r.ok){ let msg='Não foi possível gerar o PDF.'; try{ const j=await r.json(); if(j&&j.error) msg=j.error; }catch(e){} if(win) win.close(); toast(msg,'err'); return; }
+          const blob = await r.blob(); const u = URL.createObjectURL(blob);
+          if(win) win.location = u; else window.open(u,'_blank');
+          setTimeout(()=>URL.revokeObjectURL(u), 60000);
+        }).catch(e=>{ if(win) win.close(); toast('Não foi possível gerar o PDF: '+e.message, 'err'); });
+      };
+      document.getElementById('btnNeExportarAnalitico').addEventListener('click', ()=>exportarAnaliticoPdfNe());
+      document.getElementById('btnNeExportarUfDentro').addEventListener('click', ()=>exportarAnaliticoPdfNe('dentro'));
+      document.getElementById('btnNeExportarUfFora').addEventListener('click', ()=>exportarAnaliticoPdfNe('fora'));
       let neBuscaTimer = null;
       document.getElementById('neBusca').addEventListener('input', ()=>{
         clearTimeout(neBuscaTimer);
@@ -5823,6 +5862,8 @@ async function pageNotasEntrada(){
       `;
       const contraparteNome = saida ? d.destinatarioNome : d.emitenteNome;
       const contraparteCnpj = saida ? d.destinatarioCnpj : d.emitenteCnpj;
+      const numeroNf = (d.chaveAcesso && d.chaveAcesso.length===44) ? String(Number(d.chaveAcesso.slice(25,34))) : '—';
+      const op = neTipoOperacao(d);
       return `
       <tr>
         <td><input type="checkbox" class="neCheck" data-id="${d.id}"></td>
@@ -5831,12 +5872,14 @@ async function pageNotasEntrada(){
         <td style="white-space:nowrap;">${statusCell}</td>
         <td style="${canceladaStyle}">${d.dataEmissao?fmtDateHora(d.dataEmissao):'—'}</td>
         <td><span class="tag ${d.tipo==='evento'?'muted':'ok'}">${d.tipo.toUpperCase()}</span></td>
+        <td style="${canceladaStyle}">${esc(numeroNf)}</td>
+        <td style="max-width:220px; overflow:hidden; text-overflow:ellipsis; ${canceladaStyle}" title="${esc(op)}">${esc(op)}</td>
         <td style="${canceladaStyle}">${esc(contraparteNome||'—')}</td>
         <td style="${canceladaStyle}">${esc(contraparteCnpj||'—')}</td>
         <td class="ne-col-chave" style="font-family:'IBM Plex Mono',monospace; font-size:11px; ${canceladaStyle}">${esc(d.chaveAcesso||'—')}</td>
         <td style="${canceladaStyle}">${d.valorTotal!=null?fmtMoney(d.valorTotal):'—'}</td>
       </tr>
-    `;}).join('') : `<tr><td colspan="10"><div class="empty-state">${saida?'Nenhuma nota emitida ainda.':'Nenhuma nota recebida ainda.'}</div></td></tr>`;
+    `;}).join('') : `<tr><td colspan="12"><div class="empty-state">${saida?'Nenhuma nota emitida ainda.':'Nenhuma nota recebida ainda.'}</div></td></tr>`;
     document.querySelectorAll('.neCheck').forEach(c=>c.addEventListener('change', atualizarBarraSelecaoNe));
     document.querySelectorAll('.neFlagBtn').forEach(el=>el.addEventListener('click', ()=>abrirDetalheNota(el.dataset.id, el.dataset.tab, { basePath:'/nfe/minha-empresa', souCliente:true })));
     atualizarBarraSelecaoNe();

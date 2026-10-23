@@ -675,7 +675,7 @@ export function identificarDocumento(xml: string, schema: string): DocumentoIden
 // (ex.: resumo/resNFe, evento, CT-e) — aí não dá pra saber e fica "não parseado" pra não travar.
 export function extrairIbsCbs(
   xml: string
-): { vIBS: number; vCBS: number; vBC: number; vICMS: number; vPIS: number; vCOFINS: number; vIPI: number; flags: string[]; qtdItens: number; crt: number | null } | null {
+): { vIBS: number; vCBS: number; vBC: number; vICMS: number; vPIS: number; vCOFINS: number; vIPI: number; flags: string[]; qtdItens: number; crt: number | null; finNFe: number | null; natOp: string | null } | null {
   let json: any;
   try {
     json = xmlParser.parse(xml);
@@ -733,7 +733,11 @@ export function extrairIbsCbs(
   // CRT do emitente (1=Simples Nacional, 2=SN excesso de sublimite, 3=Regime Normal) — mostrado como
   // selo "SN"/"RN" do lado do nome do emitente na listagem, estilo Espião.
   const crt = infNFe.emit?.CRT != null ? Number(infNFe.emit.CRT) : null;
-  return { vIBS, vCBS, vBC, vICMS, vPIS, vCOFINS, vIPI, flags, qtdItens, crt };
+  // Finalidade da NF-e (1=Normal 2=Complementar 3=Ajuste 4=Devolução) e natureza da operação (texto
+  // livre: "VENDA...", "DEVOLUÇÃO..." etc.) — pra mostrar o "tipo de operação" da nota na listagem.
+  const finNFe = infNFe.ide?.finNFe != null ? Number(infNFe.ide.finNFe) : null;
+  const natOp = infNFe.ide?.natOp != null ? String(infNFe.ide.natOp).trim() : null;
+  return { vIBS, vCBS, vBC, vICMS, vPIS, vCOFINS, vIPI, flags, qtdItens, crt, finNFe, natOp };
 }
 
 // Resumo de um MDF-e completo (pro popup "Transportadora" — flag 🚚 estilo Espião, clicada a partir de
