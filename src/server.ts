@@ -9661,6 +9661,7 @@ app.get("/api/nfe/minha-empresa/documentos", requireCliente, (req, res) => {
   const items = nfeListarDocumentosQuery(user, {
     empresasIds: [user.empresaId],
     direcao,
+    tipo: typeof req.query.tipo === "string" && req.query.tipo ? req.query.tipo : null,
     busca: typeof req.query.busca === "string" ? req.query.busca.trim() : "",
     dataDe: typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null,
     dataAte: typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null,

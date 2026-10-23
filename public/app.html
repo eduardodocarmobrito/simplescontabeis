@@ -5701,8 +5701,10 @@ async function pageNotasEntrada(){
     const busca = document.getElementById('neBusca')?.value.trim() || '';
     const dataDe = document.getElementById('neDataDe')?.value || '';
     const dataAte = document.getElementById('neDataAte')?.value || '';
+    const tipo = document.getElementById('neTipo')?.value || '';
     const params = new URLSearchParams();
     params.set('direcao', direcao);
+    if(tipo) params.set('tipo', tipo);
     if(busca) params.set('busca', busca);
     if(dataDe) params.set('dataDe', dataDe);
     if(dataAte) params.set('dataAte', dataAte);
@@ -5719,6 +5721,9 @@ async function pageNotasEntrada(){
         <div class="row ne-filtros" style="margin-bottom:8px; align-items:flex-end; flex-wrap:wrap;">
           <div class="field grow" style="margin-bottom:0; min-width:260px;"><label>Buscar</label>
             <input id="neBusca" placeholder="Número da nota, nome, CNPJ ou valor…">
+          </div>
+          <div class="field" style="margin-bottom:0; min-width:140px;"><label>Tipo</label>
+            <select id="neTipo"><option value="">Todos</option><option value="nfe">NF-e</option><option value="nfce">NFC-e</option><option value="nfse">NFS-e</option><option value="cte">CT-e</option><option value="mdfe">MDF-e</option><option value="nf3e">NF3-e</option><option value="satcfe">SAT-CF-e</option><option value="evento">Evento</option><option value="outro">Outro</option></select>
           </div>
           ${dateFieldHtml('neDataDe','Data de','')}
           ${dateFieldHtml('neDataAte','Data até','')}
@@ -5740,6 +5745,7 @@ async function pageNotasEntrada(){
       setupDatePicker('neDataAte','neDataAte_text');
       document.getElementById('neDataDe').addEventListener('change', ()=>{ carregar(); carregarDashboard(); });
       document.getElementById('neDataAte').addEventListener('change', ()=>{ carregar(); carregarDashboard(); });
+      document.getElementById('neTipo').addEventListener('change', carregar);
       let neBuscaTimer = null;
       document.getElementById('neBusca').addEventListener('input', ()=>{
         clearTimeout(neBuscaTimer);
