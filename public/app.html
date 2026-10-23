@@ -5603,7 +5603,9 @@ async function pageNotasEntrada(){
     const saida = direcao === 'emitida';
     const body = document.getElementById('neDashBody');
     if(!body) return;
-    body.innerHTML = '<div class="empty-state">Carregando…</div>';
+    // Só mostra "Carregando…" na 1ª vez; nos re-renders (trocar data, integrar nota) mantém o
+    // conteúdo atual durante o fetch pra o card não encolher e fazer a página pular o scroll.
+    if(!body.dataset.carregado) body.innerHTML = '<div class="empty-state">Carregando…</div>';
     const de = document.getElementById('neDataDe')?.value || '';
     const ate = document.getElementById('neDataAte')?.value || '';
     const p = new URLSearchParams();
@@ -5688,6 +5690,7 @@ async function pageNotasEntrada(){
       </div>
       </div>
     `;
+    body.dataset.carregado = '1';
     // Clicar num marcador filtra só a lista (igual à tela do escritório) — re-destaca no lugar, sem
     // re-renderizar o dashboard inteiro (que piscava "Carregando…"); clicar no ativo de novo limpa.
     body.querySelectorAll('.nePerfilTile').forEach(el=>el.addEventListener('click', ()=>{
