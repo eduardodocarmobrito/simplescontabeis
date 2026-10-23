@@ -16200,6 +16200,30 @@ function financeiroOfxListar(empresaId: number, contaId: number, status: string)
     sugestoes: r.status === "pendente" ? financeiroOfxSugerirMatch(empresaId, r.valor, r.data) : [],
   }));
 }
+// Baixa um título a partir de uma transação do extrato (fonte de verdade: data/conta do banco) e
+// marca a transação como conciliada. Usado tanto pela conciliação manual quanto pela automática.
+function financeiroOfxConciliarTitulo(ofxRow: any, tabela: "financeiro_pagar" | "financeiro_receber", titulo: any): void {
+  const campoData = tabela === "financeiro_pagar" ? "data_pagamento" : "data_recebimento";
+  sqlite.prepare(`UPDATE ${tabela} SET status = 'pago', ${campoData} = ?, conta_id = ? WHERE id = ?`).run(ofxRow.data, ofxRow.conta_id, titulo.id);
+  sqlite.prepare(`UPDATE financeiro_ofx_transacoes SET status = 'conciliado', vinculo_tabela = ?, vinculo_id = ? WHERE id = ?`).run(tabela, titulo.id, ofxRow.id);
+}
+// Auto-conciliação no import: pra cada transação recém-trazida, se existe EXATAMENTE UM título
+// pendente que bate (mesmo sinal, valor igual, vencimento dentro da janela), baixa sozinho. Se houver
+// vários candidatos (ambíguo) ou nenhum, deixa pra revisão manual — nunca dá baixa no escuro, que é a
+// boa prática de conciliação (auto só no inequívoco; o resto vai pra fila de revisão).
+function financeiroOfxAutoConciliar(empresaId: number, transIds: number[]): number {
+  let n = 0;
+  for (const id of transIds) {
+    const t = sqlite.prepare(`SELECT * FROM financeiro_ofx_transacoes WHERE id = ? AND status = 'pendente'`).get(id) as any;
+    if (!t) continue;
+    const tabela: "financeiro_pagar" | "financeiro_receber" = t.valor >= 0 ? "financeiro_receber" : "financeiro_pagar";
+    const matches = sqlite
+      .prepare(`SELECT * FROM ${tabela} WHERE empresa_id = ? AND status = 'pendente' AND ABS(valor - ?) < 0.01 AND ABS(julianday(vencimento) - julianday(?)) <= ?`)
+      .all(empresaId, Math.abs(t.valor), t.data, OFX_JANELA_DIAS_MATCH) as any[];
+    if (matches.length === 1) { financeiroOfxConciliarTitulo(t, tabela, matches[0]); n++; }
+  }
+  return n;
+}
 const uploadOfx = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 app.post("/api/financeiro/minha-empresa/contas/:contaId/ofx/importar", requireCliente, requireModuloAtivo('financeiro'), uploadOfx.single("arquivo"), (req, res) => {
   const user = (req as any).user;
@@ -16218,11 +16242,13 @@ app.post("/api/financeiro/minha-empresa/contas/:contaId/ofx/importar", requireCl
     `INSERT OR IGNORE INTO financeiro_ofx_transacoes (empresa_id, conta_id, fitid, data, valor, descricao, tipo_ofx) VALUES (?, ?, ?, ?, ?, ?, ?)`
   );
   let novas = 0;
+  const novasIds: number[] = [];
   for (const t of extrato.transacoes) {
     const r = insert.run(user.empresaId, contaId, t.fitid, t.data, t.valor, t.descricao, t.tipoOfx);
-    if (r.changes > 0) novas++;
+    if (r.changes > 0) { novas++; novasIds.push(Number(r.lastInsertRowid)); }
   }
-  res.json({ ok: true, total: extrato.transacoes.length, novas, duplicadas: extrato.transacoes.length - novas });
+  const conciliadasAuto = financeiroOfxAutoConciliar(user.empresaId, novasIds);
+  res.json({ ok: true, total: extrato.transacoes.length, novas, duplicadas: extrato.transacoes.length - novas, conciliadasAuto, pendentes: novas - conciliadasAuto });
 });
 app.get("/api/financeiro/minha-empresa/contas/:contaId/ofx", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
   const user = (req as any).user;
@@ -16242,9 +16268,7 @@ app.post("/api/financeiro/minha-empresa/ofx/:id/conciliar", requireCliente, requ
   const titulo = sqlite.prepare(`SELECT * FROM ${tabela} WHERE id = ? AND empresa_id = ?`).get(Number(tituloId), user.empresaId) as any;
   if (!titulo) return res.status(404).json({ error: "Título não encontrado." });
   if (titulo.status !== "pendente") return res.status(409).json({ error: "Este título já não está mais pendente." });
-  const campoData = tabela === "financeiro_pagar" ? "data_pagamento" : "data_recebimento";
-  sqlite.prepare(`UPDATE ${tabela} SET status = 'pago', ${campoData} = ?, conta_id = ? WHERE id = ?`).run(ofxRow.data, ofxRow.conta_id, titulo.id);
-  sqlite.prepare(`UPDATE financeiro_ofx_transacoes SET status = 'conciliado', vinculo_tabela = ?, vinculo_id = ? WHERE id = ?`).run(tabela, titulo.id, ofxRow.id);
+  financeiroOfxConciliarTitulo(ofxRow, tabela, titulo);
   res.json({ ok: true });
 });
 // Transação do extrato sem nenhum título correspondente no sistema — cadastra um título NOVO já

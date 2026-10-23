@@ -8943,6 +8943,7 @@ async function pageMinhaFinanceiro(){
       <div class="tab" data-tab="contas">Contas</div>
       <div class="tab" data-tab="relatorios">Relatórios</div>
       <div class="tab" data-tab="cadastro">Cadastro</div>
+      <div class="tab" data-tab="conciliacao">Conciliação</div>
     </div>
     <div id="minhaFinContent"></div>
   `;
@@ -8956,6 +8957,7 @@ function renderMinhaFinTabs(){
   else if(MINHA_FIN_TAB==='contas') finRenderContas('/financeiro/minha-empresa','minhaFinContent',true);
   else if(MINHA_FIN_TAB==='relatorios') finRenderRelatorios('/financeiro/minha-empresa','minhaFinContent');
   else if(MINHA_FIN_TAB==='cadastro') finRenderCadastros('/financeiro/minha-empresa','minhaFinContent',true);
+  else if(MINHA_FIN_TAB==='conciliacao') finRenderConciliacao('/financeiro/minha-empresa','minhaFinContent');
   else finRenderReceber('/financeiro/minha-empresa','minhaFinContent',MINHA_FIN_RECEBER_FILTRO,true,true);
 }
 // ===================== Financeiro (Contas a Receber/Pagar/Contas) — compartilhado entre a tela do
@@ -9102,52 +9104,113 @@ async function finOfxConciliacao(conta){
     body.innerHTML = '<div class="empty-state">Carregando…</div>';
     const { items } = await api('/financeiro/minha-empresa/contas/'+conta.id+'/ofx?status='+OFX_STATUS_TAB);
     if(!items.length){ body.innerHTML = '<div class="empty-state">Nada por aqui.</div>'; return; }
-    body.innerHTML = items.map(t=>{
-      const cor = t.valor>=0 ? '#059669' : 'var(--debit)';
-      const sugestoesHtml = (t.sugestoes||[]).map(s=>`
-        <div class="row" style="align-items:center; gap:8px; padding:6px 0; border-top:1px solid var(--rule);">
-          <span style="flex:1; font-size:12.5px;">${esc(s.descricao)}${s.terceiro?' — '+esc(s.terceiro):''} · venc. ${fmtDateIso(s.vencimento)} · ${fmtMoney(s.valor)}</span>
-          <button class="btn small primary" data-act="conciliar" data-ofx="${t.id}" data-tabela="${s.tabela}" data-titulo="${s.id}">Conciliar com este</button>
-        </div>
-      `).join('');
-      return `
-      <div class="card" style="margin-bottom:8px;">
-        <div class="row" style="justify-content:space-between; align-items:flex-start; gap:10px;">
-          <div>
-            <div style="font-size:13px;">${esc(t.descricao)}</div>
-            <div style="font-size:11.5px; color:var(--ink-soft);">${fmtDateIso(t.data)}</div>
-          </div>
-          <b style="color:${cor}; white-space:nowrap;">${fmtMoney(t.valor)}</b>
-        </div>
-        ${t.status==='pendente'?`
-          ${sugestoesHtml?`<div style="margin-top:6px;"><div style="font-size:11px; color:var(--ink-soft); text-transform:uppercase;">Possível correspondência no sistema</div>${sugestoesHtml}</div>`:''}
-          <div class="row" style="gap:8px; margin-top:8px; flex-wrap:wrap;">
-            <button class="btn small" data-act="cadastrar" data-ofx="${t.id}">+ Cadastrar no Financeiro</button>
-            <button class="btn small" data-act="vincular" data-ofx="${t.id}">🔗 Vincular documento</button>
-            <button class="btn small" data-act="ignorar" data-ofx="${t.id}">Ignorar</button>
-          </div>
-        `: t.status==='conciliado' ? `<div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">✓ Conciliada${t.documentoVinculadoId?' · documento vinculado':''} <button class="btn small" data-act="vincular" data-ofx="${t.id}" style="margin-left:6px;">🔗 ${t.documentoVinculadoId?'Trocar':'Vincular'} documento</button></div>`
-        : `<div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">Ignorada</div>`}
-      </div>`;
-    }).join('');
-    document.querySelectorAll('[data-act="conciliar"]').forEach(b=>b.addEventListener('click', async ()=>{
-      try{
-        await api('/financeiro/minha-empresa/ofx/'+b.dataset.ofx+'/conciliar', { method:'POST', body:{ tabela:b.dataset.tabela, tituloId:Number(b.dataset.titulo) } });
-        toast('Conciliado.','ok');
-        carregar();
-      }catch(e){ toast(e.message,'err'); }
-    }));
-    document.querySelectorAll('[data-act="cadastrar"]').forEach(b=>b.addEventListener('click', ()=>{
-      finOfxCadastrarModal(b.dataset.ofx, carregar);
-    }));
-    document.querySelectorAll('[data-act="vincular"]').forEach(b=>b.addEventListener('click', ()=>{
-      finOfxVincularDocumentoModal(b.dataset.ofx, carregar);
-    }));
-    document.querySelectorAll('[data-act="ignorar"]').forEach(b=>b.addEventListener('click', async ()=>{
-      if(!confirm('Ignorar esta transação? Ela some da lista de pendentes (não mexe em nada do Financeiro).')) return;
-      try{ await api('/financeiro/minha-empresa/ofx/'+b.dataset.ofx+'/ignorar', { method:'POST' }); toast('Ignorada.','ok'); carregar(); }
-      catch(e){ toast(e.message,'err'); }
-    }));
+    body.innerHTML = items.map(finOfxCartaoHtml).join('');
+    finOfxWireAcoes(body, carregar);
+  }
+  await carregar();
+}
+// Card de uma transação do extrato (+ sugestões de match) e a fiação das ações — compartilhados entre
+// a tela antiga (Contas → Conciliar extrato) e a aba nova "Conciliação".
+function finOfxCartaoHtml(t){
+  const cor = t.valor>=0 ? '#059669' : 'var(--debit)';
+  const sugestoesHtml = (t.sugestoes||[]).map(s=>`
+    <div class="row" style="align-items:center; gap:8px; padding:6px 0; border-top:1px solid var(--rule);">
+      <span style="flex:1; font-size:12.5px;">${esc(s.descricao)}${s.terceiro?' — '+esc(s.terceiro):''} · venc. ${fmtDateIso(s.vencimento)} · ${fmtMoney(s.valor)}</span>
+      <button class="btn small primary" data-act="conciliar" data-ofx="${t.id}" data-tabela="${s.tabela}" data-titulo="${s.id}">Conciliar com este</button>
+    </div>
+  `).join('');
+  return `
+  <div class="card" style="margin-bottom:8px;">
+    <div class="row" style="justify-content:space-between; align-items:flex-start; gap:10px;">
+      <div>
+        <div style="font-size:13px;">${esc(t.descricao)}</div>
+        <div style="font-size:11.5px; color:var(--ink-soft);">${fmtDateIso(t.data)}</div>
+      </div>
+      <b style="color:${cor}; white-space:nowrap;">${fmtMoney(t.valor)}</b>
+    </div>
+    ${t.status==='pendente'?`
+      ${sugestoesHtml?`<div style="margin-top:6px;"><div style="font-size:11px; color:var(--ink-soft); text-transform:uppercase;">Possível correspondência no sistema</div>${sugestoesHtml}</div>`:''}
+      <div class="row" style="gap:8px; margin-top:8px; flex-wrap:wrap;">
+        <button class="btn small" data-act="cadastrar" data-ofx="${t.id}">+ Cadastrar no Financeiro</button>
+        <button class="btn small" data-act="vincular" data-ofx="${t.id}">🔗 Vincular documento</button>
+        <button class="btn small" data-act="ignorar" data-ofx="${t.id}">Ignorar</button>
+      </div>
+    `: t.status==='conciliado' ? `<div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">✓ Conciliada${t.documentoVinculadoId?' · documento vinculado':''} <button class="btn small" data-act="vincular" data-ofx="${t.id}" style="margin-left:6px;">🔗 ${t.documentoVinculadoId?'Trocar':'Vincular'} documento</button></div>`
+    : `<div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">Ignorada</div>`}
+  </div>`;
+}
+function finOfxWireAcoes(scope, recarregar){
+  scope.querySelectorAll('[data-act="conciliar"]').forEach(b=>b.addEventListener('click', async ()=>{
+    try{ await api('/financeiro/minha-empresa/ofx/'+b.dataset.ofx+'/conciliar', { method:'POST', body:{ tabela:b.dataset.tabela, tituloId:Number(b.dataset.titulo) } }); toast('Conciliado.','ok'); recarregar(); }
+    catch(e){ toast(e.message,'err'); }
+  }));
+  scope.querySelectorAll('[data-act="cadastrar"]').forEach(b=>b.addEventListener('click', ()=>finOfxCadastrarModal(b.dataset.ofx, recarregar)));
+  scope.querySelectorAll('[data-act="vincular"]').forEach(b=>b.addEventListener('click', ()=>finOfxVincularDocumentoModal(b.dataset.ofx, recarregar)));
+  scope.querySelectorAll('[data-act="ignorar"]').forEach(b=>b.addEventListener('click', async ()=>{
+    if(!confirm('Ignorar esta transação? Ela some da lista de pendentes (não mexe em nada do Financeiro).')) return;
+    try{ await api('/financeiro/minha-empresa/ofx/'+b.dataset.ofx+'/ignorar', { method:'POST' }); toast('Ignorada.','ok'); recarregar(); }
+    catch(e){ toast(e.message,'err'); }
+  }));
+}
+// Aba "Conciliação" (financeiro do cliente): escolhe a conta, importa o .ofx e concilia — com baixa
+// automática do que casa inequivocamente (feita no backend no import) e revisão em 1 clique do resto.
+let FIN_CONCIL_CONTA = null;
+let FIN_CONCIL_STATUS = 'pendente';
+async function finRenderConciliacao(basePath, containerId){
+  const box = document.getElementById(containerId);
+  box.innerHTML = '<div class="empty-state">Carregando…</div>';
+  let contas;
+  try{ contas = await finContasCache(basePath); }
+  catch(e){ box.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
+  const ativas = contas.filter(c=>c.ativo!==false);
+  if(!ativas.length){ box.innerHTML = `<div class="empty-state">Cadastre uma conta (banco/caixa) em <b>Contas</b> antes de importar o extrato.</div>`; return; }
+  if(!FIN_CONCIL_CONTA || !ativas.some(c=>c.id===FIN_CONCIL_CONTA)) FIN_CONCIL_CONTA = ativas[0].id;
+  const TIPO_LABEL={banco:'Banco',caixa:'Caixa',outro:'Outro'};
+  box.innerHTML = `
+    <div class="row" style="gap:10px; align-items:flex-end; flex-wrap:wrap; margin-bottom:10px;">
+      <div class="field" style="min-width:220px; margin-bottom:0;"><label>Conta</label>
+        <select id="concilConta">${ativas.map(c=>`<option value="${c.id}" ${c.id===FIN_CONCIL_CONTA?'selected':''}>${esc(c.nome)} (${TIPO_LABEL[c.tipo]||c.tipo})</option>`).join('')}</select>
+      </div>
+      <button class="btn primary" id="btnConcilImportar">⬆️ Importar extrato (.ofx)</button>
+      <input type="file" id="concilInput" accept=".ofx" style="display:none;">
+    </div>
+    <p style="font-size:12px; color:var(--ink-soft); margin:0 0 12px;">Exporte o .ofx do seu internet banking e importe aqui — o sistema casa com os títulos já lançados e <b>dá baixa automática</b> no que for inequívoco; o resto fica pra você revisar com 1 clique.</p>
+    <div id="concilResultado"></div>
+    <div class="tabs" id="concilTabs" style="margin-top:4px;">
+      <div class="tab" data-status="pendente">A revisar</div>
+      <div class="tab" data-status="conciliado">Conciliadas</div>
+      <div class="tab" data-status="ignorado">Ignoradas</div>
+    </div>
+    <div id="concilBody" style="margin-top:12px;"><div class="empty-state">Carregando…</div></div>
+  `;
+  const marcarTab = ()=> box.querySelectorAll('#concilTabs .tab').forEach(x=>x.classList.toggle('active', x.dataset.status===FIN_CONCIL_STATUS));
+  marcarTab();
+  document.getElementById('concilConta').addEventListener('change', e=>{ FIN_CONCIL_CONTA = Number(e.target.value); document.getElementById('concilResultado').innerHTML=''; carregar(); });
+  document.getElementById('btnConcilImportar').addEventListener('click', ()=>document.getElementById('concilInput').click());
+  document.getElementById('concilInput').addEventListener('change', async ()=>{
+    const f = document.getElementById('concilInput').files[0]; if(!f) return;
+    const fd = new FormData(); fd.append('arquivo', f);
+    const resEl = document.getElementById('concilResultado');
+    resEl.innerHTML = '<div class="empty-state" style="padding:8px;">Importando e conciliando…</div>';
+    try{
+      const r = await api(basePath+'/contas/'+FIN_CONCIL_CONTA+'/ofx/importar', { method:'POST', body: fd });
+      document.getElementById('concilInput').value='';
+      resEl.innerHTML = `<div class="card" style="margin:0 0 10px; background:var(--paper);"><b>${r.novas}</b> nova(s) · <b style="color:#059669;">${r.conciliadasAuto} baixada(s) automaticamente</b> · <b>${r.pendentes}</b> pra revisar${r.duplicadas?` · ${r.duplicadas} já existia(m)`:''}.</div>`;
+      FIN_CONCIL_STATUS = 'pendente'; marcarTab();
+      carregar();
+      toast(r.conciliadasAuto?`✓ ${r.conciliadasAuto} baixada(s) automaticamente!`:'Extrato importado.','ok');
+    }catch(e){ resEl.innerHTML=''; toast(e.message,'err'); }
+  });
+  box.querySelectorAll('#concilTabs .tab').forEach(t=>t.addEventListener('click', ()=>{ FIN_CONCIL_STATUS = t.dataset.status; marcarTab(); carregar(); }));
+  async function carregar(){
+    const body = document.getElementById('concilBody');
+    body.innerHTML = '<div class="empty-state">Carregando…</div>';
+    let items;
+    try{ items = (await api(basePath+'/contas/'+FIN_CONCIL_CONTA+'/ofx?status='+FIN_CONCIL_STATUS)).items; }
+    catch(e){ body.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
+    if(!items.length){ body.innerHTML = '<div class="empty-state">Nada por aqui.</div>'; return; }
+    body.innerHTML = items.map(finOfxCartaoHtml).join('');
+    finOfxWireAcoes(body, carregar);
   }
   await carregar();
 }
