@@ -2082,6 +2082,16 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
       canal_whatsapp_ativo INTEGER NOT NULL DEFAULT 1,
       updated_at TEXT
     )`);
+  // Fase 4 (base) — remetente do WhatsApp por empresa: 'escritorio' (nº único de hoje, default) ou
+  // 'proprio' (nº do próprio cliente, conectado por QR via WAHA Plus). session_id = nome da sessão
+  // WAHA do cliente; status/numero preenchidos quando ele conecta. Enquanto 'proprio' não está
+  // conectado, o envio continua saindo pelo nº do escritório (ver roteamento) — nada quebra.
+  const colsEnvio = sqlite.prepare(`PRAGMA table_info(empresa_envio_config)`).all() as any[];
+  const temEnvioCol = (n: string) => colsEnvio.some((c) => c.name === n);
+  if (!temEnvioCol("whatsapp_sender_mode")) sqlite.exec(`ALTER TABLE empresa_envio_config ADD COLUMN whatsapp_sender_mode TEXT NOT NULL DEFAULT 'escritorio'`);
+  if (!temEnvioCol("whatsapp_session_id")) sqlite.exec(`ALTER TABLE empresa_envio_config ADD COLUMN whatsapp_session_id TEXT`);
+  if (!temEnvioCol("whatsapp_sender_status")) sqlite.exec(`ALTER TABLE empresa_envio_config ADD COLUMN whatsapp_sender_status TEXT NOT NULL DEFAULT 'nao_conectado'`);
+  if (!temEnvioCol("whatsapp_sender_numero")) sqlite.exec(`ALTER TABLE empresa_envio_config ADD COLUMN whatsapp_sender_numero TEXT`);
 }
 // Migração leve: saldo inicial da conta banco/caixa — usado como ponto de partida do saldo exibido
 // (saldo inicial + soma dos títulos já pagos/recebidos naquela conta), não é uma movimentação.
@@ -3149,6 +3159,10 @@ const DESKCOMM_URL = (process.env.DESKCOMM_URL || "https://srv1998403.hstgr.clou
 // sem setar o cookie — login do robô falhava, quebrando mídia/envio/fechar pelo robô). Mandar
 // x-forwarded-host com o host público (o mesmo que o proxy já manda pros usuários) resolve.
 const DESKCOMM_PUBLIC_HOST = (process.env.DESKCOMM_PUBLIC_HOST || "simplescontabeis.com.br").trim();
+// Fase 4 — "WhatsApp próprio do cliente" (nº do cliente, conectado por QR). Fica DESLIGADO até o WAHA
+// Plus + as rotas de sessão no Caddy do deskcomm estarem provisionados. Enquanto off, a tela mostra
+// "em preparação" e o envio segue sempre pelo nº do escritório (nada muda).
+const WHATSAPP_PROPRIO_DISPONIVEL = String(process.env.WHATSAPP_PROPRIO_DISPONIVEL || "").trim() === "1";
 // Base das rotas /simplescontabeis/waha-* (recibo de leitura, foto/mídia pelo celular, editar/apagar).
 // ELAS NÃO FICAM no container do app do deskcomm — ficam no CADDY do deskcomm, no bloco do domínio dele
 // ($DOMAIN = srv1998403.hstgr.cloud), que injeta a X-Api-Key e proxya pro container `waha`. Por isso usam
@@ -4395,6 +4409,34 @@ app.put("/api/empresas/:id/envio-config", blockCliente, requirePermissao("empres
               ON CONFLICT(empresa_id) DO UPDATE SET canal_email_ativo=excluded.canal_email_ativo, canal_whatsapp_ativo=excluded.canal_whatsapp_ativo, updated_at=datetime('now')`)
     .run(empresaId, email, whats);
   res.json({ ok: true });
+});
+// ---- WhatsApp próprio do cliente (Fase 4 — base). Define o remetente ('escritorio'|'proprio') e,
+// no futuro (com WAHA Plus), conecta o número do cliente por QR. Enquanto o Plus não está provisionado
+// (WHATSAPP_PROPRIO_DISPONIVEL=0), 'conectar' responde "em preparação" e o envio segue pelo escritório.
+app.get("/api/empresas/:id/whatsapp-proprio", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
+  const empresaId = Number(req.params.id);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const s = empresaWhatsappSender(empresaId);
+  res.json({ mode: s.mode, status: s.status, numero: s.numero, disponivel: WHATSAPP_PROPRIO_DISPONIVEL });
+});
+app.put("/api/empresas/:id/whatsapp-proprio", blockCliente, requirePermissao("empresas", "editar"), (req, res) => {
+  const empresaId = Number(req.params.id);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const mode = req.body?.mode === "proprio" ? "proprio" : "escritorio";
+  sqlite
+    .prepare(`INSERT INTO empresa_envio_config (empresa_id, whatsapp_sender_mode, updated_at) VALUES (?, ?, datetime('now'))
+              ON CONFLICT(empresa_id) DO UPDATE SET whatsapp_sender_mode=excluded.whatsapp_sender_mode, updated_at=datetime('now')`)
+    .run(empresaId, mode);
+  res.json({ ok: true, mode });
+});
+app.post("/api/empresas/:id/whatsapp-proprio/conectar", blockCliente, requirePermissao("empresas", "editar"), (req, res) => {
+  const empresaId = Number(req.params.id);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  if (!WHATSAPP_PROPRIO_DISPONIVEL) {
+    return res.status(503).json({ error: "A conexão do WhatsApp do próprio cliente ainda não está no ar — ela depende do WAHA Plus ser provisionado. Esta é a base pronta; quando o Plus entrar, aqui aparece o QR pro cliente ler." });
+  }
+  // (Com WAHA Plus) iniciar a sessão 'emp-<empresaId>' no WAHA e devolver o QR pro cliente ler.
+  return res.status(503).json({ error: "Conexão por QR em implementação (WAHA Plus disponível, aguardando ligação final)." });
 });
 // Lista os IDs de empresa que já têm pelo menos 1 contato cadastrado (e-mail ou WhatsApp) — usado
 // pela tela "Contatos e documentos por cliente" pra separar em abas "Configuradas" x "Faltam
@@ -12002,6 +12044,19 @@ function empresaCanalContratado(empresaId: number, chave: "envio_notas_email" | 
   const contratado = sqlite.prepare(`SELECT * FROM empresa_modulos WHERE empresa_id = ? AND modulo_chave = ?`).get(empresaId, chave) as any;
   return moduloStatusParaEmpresa(catalogo, contratado).acesso;
 }
+// Remetente do WhatsApp desta empresa (Fase 4 — base). mode 'escritorio' (default) ou 'proprio'.
+function empresaWhatsappSender(empresaId: number): { mode: string; sessionId: string | null; status: string; numero: string | null } {
+  const row = sqlite.prepare(`SELECT whatsapp_sender_mode, whatsapp_session_id, whatsapp_sender_status, whatsapp_sender_numero FROM empresa_envio_config WHERE empresa_id = ?`).get(empresaId) as any;
+  return { mode: row?.whatsapp_sender_mode || "escritorio", sessionId: row?.whatsapp_session_id || null, status: row?.whatsapp_sender_status || "nao_conectado", numero: row?.whatsapp_sender_numero || null };
+}
+// O envio pelo nº PRÓPRIO do cliente só vale com modo 'proprio' E sessão conectada. Sem WAHA Plus,
+// nunca fica 'conectado', então isto é sempre false e o envio segue pelo nº do escritório — ponto de
+// extensão pra quando o Plus entrar (aí o roteamento usa empresaWhatsappSender(...).sessionId).
+function empresaWhatsappProprioAtivo(empresaId: number): boolean {
+  const s = empresaWhatsappSender(empresaId);
+  return WHATSAPP_PROPRIO_DISPONIVEL && s.mode === "proprio" && s.status === "conectado" && !!s.sessionId;
+}
+void empresaWhatsappProprioAtivo; // usado quando o roteamento por nº próprio for ligado (Fase 4)
 // Canal de envio (e-mail/WhatsApp) ligado pra esta empresa-cliente? Combina o liga/desliga manual
 // (Fase 2, empresa_envio_config — sem linha = ligado) com o contrato do canal (Fase 3). Com preço 0
 // o contrato não trava, então o comportamento de hoje é preservado.

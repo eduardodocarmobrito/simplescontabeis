@@ -17102,8 +17102,8 @@ async function renderCfgEmailSmtp(box){
     const empresaId = document.querySelector('#ccEmpresaCombo .combo-value').value;
     const ccBody = document.getElementById('ccBody');
     if(!empresaId){ ccBody.innerHTML=''; return; }
-    const [{items:contatos}, {items:docs}, envioCfg] = await Promise.all([
-      api('/empresas/'+empresaId+'/contatos'), api('/empresas/'+empresaId+'/documentos'), api('/empresas/'+empresaId+'/envio-config').catch(()=>({canalEmailAtivo:true,canalWhatsappAtivo:true})),
+    const [{items:contatos}, {items:docs}, envioCfg, waProprio] = await Promise.all([
+      api('/empresas/'+empresaId+'/contatos'), api('/empresas/'+empresaId+'/documentos'), api('/empresas/'+empresaId+'/envio-config').catch(()=>({canalEmailAtivo:true,canalWhatsappAtivo:true})), api('/empresas/'+empresaId+'/whatsapp-proprio').catch(()=>({mode:'escritorio',status:'nao_conectado',disponivel:false})),
     ]);
     const empresaSelecionada = empresas.find(e=>String(e.id)===String(empresaId));
     ccBody.innerHTML = `
@@ -17115,7 +17115,21 @@ async function renderCfgEmailSmtp(box){
           <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="ccCanalEmail" ${envioCfg.canalEmailAtivo?'checked':''}> 📧 E-mail</label>
           <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="ccCanalWhats" ${envioCfg.canalWhatsappAtivo?'checked':''}> 💬 WhatsApp</label>
         </div>
-        <div style="font-weight:600; font-size:12.5px; margin:0 0 6px; padding-top:12px; border-top:1px dashed var(--rule);">Contatos (e-mail e WhatsApp)</div>
+        <div style="font-weight:600; font-size:12.5px; margin:0 0 6px; padding-top:12px; border-top:1px dashed var(--rule);">Remetente do WhatsApp</div>
+        <div style="font-size:11.5px; color:var(--ink-soft); margin-bottom:6px;">De qual número as notas saem pra este cliente.</div>
+        <div class="row" style="gap:10px; align-items:center; flex-wrap:wrap;">
+          <select id="ccWaMode" style="max-width:280px;">
+            <option value="escritorio" ${waProprio.mode!=='proprio'?'selected':''}>Número do escritório (padrão)</option>
+            <option value="proprio" ${waProprio.mode==='proprio'?'selected':''}>Número do próprio cliente (conectar por QR)</option>
+          </select>
+          <span id="ccWaStatus" style="font-size:11.5px;"></span>
+        </div>
+        <div id="ccWaProprioBox" style="margin-top:8px; ${waProprio.mode==='proprio'?'':'display:none;'}">
+          <div style="font-size:11.5px; color:var(--ink-soft); margin-bottom:6px;">O cliente lê um QR code no WhatsApp dele → o site conecta → as notas passam a sair do número dele.${waProprio.disponivel?'':' <b>Em preparação</b> — depende do WAHA Plus ser ligado; por enquanto o envio sai pelo número do escritório.'}</div>
+          <button class="btn small" id="ccWaConectar">📱 Conectar WhatsApp (QR)</button>
+          <div id="ccWaConectarResultado" style="margin-top:8px;"></div>
+        </div>
+        <div style="font-weight:600; font-size:12.5px; margin:14px 0 6px; padding-top:12px; border-top:1px dashed var(--rule);">Contatos (e-mail e WhatsApp)</div>
         <table class="data-table"><tbody id="ccContatosBody">
           ${contatos.map(c=>linhaContatoHtml(c)).join('') || '<tr><td colspan="4"><span style="font-size:12px; color:var(--ink-soft);">Nenhum contato cadastrado.</span></td></tr>'}
         </tbody></table>
@@ -17142,6 +17156,29 @@ async function renderCfgEmailSmtp(box){
     };
     document.getElementById('ccCanalEmail').addEventListener('change', salvarCanais);
     document.getElementById('ccCanalWhats').addEventListener('change', salvarCanais);
+    // Remetente do WhatsApp (Fase 4 — base)
+    const ccWaStatusEl = document.getElementById('ccWaStatus');
+    const pintarWaStatus = ()=>{
+      const st = waProprio.status, nm = waProprio.numero;
+      ccWaStatusEl.innerHTML = (document.getElementById('ccWaMode').value==='proprio')
+        ? (st==='conectado'? `<span class="tag ok">Conectado${nm?' ('+esc(nm)+')':''}</span>` : `<span class="tag muted">Não conectado</span>`)
+        : '';
+    };
+    pintarWaStatus();
+    document.getElementById('ccWaMode').addEventListener('change', async (e)=>{
+      const mode = e.target.value;
+      document.getElementById('ccWaProprioBox').style.display = mode==='proprio'?'':'none';
+      try{ await api('/empresas/'+empresaId+'/whatsapp-proprio', { method:'PUT', body:{ mode } }); waProprio.mode=mode; pintarWaStatus(); toast('Remetente do WhatsApp atualizado.','ok'); }
+      catch(err){ toast(err.message,'err'); }
+    });
+    document.getElementById('ccWaConectar').addEventListener('click', async ()=>{
+      const box=document.getElementById('ccWaConectarResultado');
+      box.innerHTML = '<div class="empty-state" style="padding:8px;">Conectando…</div>';
+      try{
+        const r = await api('/empresas/'+empresaId+'/whatsapp-proprio/conectar', { method:'POST' });
+        box.innerHTML = r.qr ? `<div style="font-size:12px; margin-bottom:6px;">Abra o WhatsApp do cliente → Aparelhos conectados → Conectar → aponte pra este QR:</div><img src="${esc(r.qr)}" alt="QR" style="width:220px; height:220px; border:1px solid var(--rule); border-radius:8px;">` : '<div class="empty-state" style="padding:8px;">Conexão iniciada.</div>';
+      }catch(err){ box.innerHTML = `<div style="font-size:12px; color:var(--ink-soft); background:var(--paper); border:1px solid var(--rule); border-radius:8px; padding:10px;">${esc(err.message)}</div>`; }
+    });
     document.getElementById('btnAddContato').addEventListener('click', async ()=>{
       const nome = document.getElementById('ccNome').value.trim();
       const email = document.getElementById('ccEmail').value.trim();
