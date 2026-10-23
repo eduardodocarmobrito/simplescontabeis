@@ -2070,6 +2070,10 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
   if (!colsReceber3.some((c) => c.name === "tipo_documento_id")) {
     sqlite.exec(`ALTER TABLE financeiro_receber ADD COLUMN tipo_documento_id INTEGER REFERENCES financeiro_tipos_documento(id) ON DELETE SET NULL`);
   }
+  // Pagamento PARCIAL: quanto já foi baixado do título (via adiantamento parcial, por enquanto). O
+  // título só vira 'pago' quando valor_pago alcança o valor; antes fica pendente com saldo a pagar.
+  if (!colsPagar3.some((c) => c.name === "valor_pago")) sqlite.exec(`ALTER TABLE financeiro_pagar ADD COLUMN valor_pago REAL NOT NULL DEFAULT 0`);
+  if (!colsReceber3.some((c) => c.name === "valor_pago")) sqlite.exec(`ALTER TABLE financeiro_receber ADD COLUMN valor_pago REAL NOT NULL DEFAULT 0`);
 }
 // Canais de envio ATIVOS por empresa-cliente (Fase 2 do envio por cliente): além do módulo do
 // escritório (envio_email_automatico / envio_whatsapp), cada empresa pode ter o canal ligado/desligado
@@ -15899,12 +15903,16 @@ function financeiroAdiantamentoCriar(
     .run(empresaId, tipo, terceiroNome.trim(), Number(valor), Number(valor), data, contaId || null, observacao || null, userId);
   return { ok: true, id: Number(info.lastInsertRowid) };
 }
+// Usar adiantamento — agora com BAIXA PARCIAL: aplica um valor (o informado, ou o máximo possível =
+// min(saldo do adiantamento, o que falta no título)). O título só vira 'pago' quando o valor_pago
+// alcança o valor; antes fica pendente com saldo a pagar (ex.: adiantou um pouco, paga o resto depois).
 function financeiroAdiantamentoUsar(
   tabela: "financeiro_pagar" | "financeiro_receber",
   tituloId: number,
   empresaId: number,
-  adiantamentoId: number
-): { ok: boolean; erro?: string } {
+  adiantamentoId: number,
+  valorAplicar?: number | null
+): { ok: boolean; erro?: string; aplicado?: number; quitado?: boolean } {
   const titulo = sqlite.prepare(`SELECT * FROM ${tabela} WHERE id = ? AND empresa_id = ?`).get(tituloId, empresaId) as any;
   if (!titulo) return { ok: false, erro: "Título não encontrado." };
   if (titulo.status !== "pendente" && titulo.status !== "atrasado") return { ok: false, erro: "Só é possível usar adiantamento num título pendente/atrasado." };
@@ -15912,24 +15920,34 @@ function financeiroAdiantamentoUsar(
   if (!adiant) return { ok: false, erro: "Adiantamento não encontrado." };
   const tipoEsperado = tabela === "financeiro_pagar" ? "fornecedor" : "cliente";
   if (adiant.tipo !== tipoEsperado) return { ok: false, erro: `Este adiantamento é de ${adiant.tipo}, não serve pra um título "a ${tabela === "financeiro_pagar" ? "pagar" : "receber"}".` };
-  if (adiant.saldo_disponivel < titulo.valor) return { ok: false, erro: `Saldo disponível (${adiant.saldo_disponivel.toFixed(2)}) é menor que o valor do título (${titulo.valor.toFixed(2)}) — não cobre sozinho (sem baixa parcial nesta versão).` };
+  const jaPago = titulo.valor_pago || 0;
+  const restante = Math.round((titulo.valor - jaPago) * 100) / 100;
+  if (restante <= 0) return { ok: false, erro: "Este título já está quitado." };
+  if (!(adiant.saldo_disponivel > 0)) return { ok: false, erro: "Este adiantamento não tem saldo disponível." };
+  const maxAplicar = Math.round(Math.min(adiant.saldo_disponivel, restante) * 100) / 100;
+  let aplicar = valorAplicar != null && valorAplicar > 0 ? Math.round(valorAplicar * 100) / 100 : maxAplicar;
+  if (aplicar <= 0) return { ok: false, erro: "Informe um valor maior que zero." };
+  if (aplicar > maxAplicar + 0.005) return { ok: false, erro: `O valor a usar (${aplicar.toFixed(2)}) passa do saldo do adiantamento ou do que falta no título (máx ${maxAplicar.toFixed(2)}).` };
+  const novoPago = Math.round((jaPago + aplicar) * 100) / 100;
+  const quitado = novoPago >= titulo.valor - 0.005;
   const campoData = tabela === "financeiro_pagar" ? "data_pagamento" : "data_recebimento";
   const hoje = new Date().toISOString().slice(0, 10);
-  sqlite.prepare(`UPDATE ${tabela} SET status = 'pago', ${campoData} = ?, conta_id = NULL WHERE id = ?`).run(hoje, tituloId);
-  sqlite.prepare(`UPDATE financeiro_adiantamentos SET saldo_disponivel = saldo_disponivel - ? WHERE id = ?`).run(titulo.valor, adiant.id);
+  if (quitado) sqlite.prepare(`UPDATE ${tabela} SET valor_pago = ?, status = 'pago', ${campoData} = COALESCE(${campoData}, ?) WHERE id = ?`).run(titulo.valor, hoje, tituloId);
+  else sqlite.prepare(`UPDATE ${tabela} SET valor_pago = ? WHERE id = ?`).run(novoPago, tituloId);
+  sqlite.prepare(`UPDATE financeiro_adiantamentos SET saldo_disponivel = saldo_disponivel - ? WHERE id = ?`).run(aplicar, adiant.id);
   sqlite
     .prepare(`INSERT INTO financeiro_adiantamento_usos (adiantamento_id, vinculo_tabela, vinculo_id, valor_usado) VALUES (?, ?, ?, ?)`)
-    .run(adiant.id, tabela, tituloId, titulo.valor);
-  return { ok: true };
+    .run(adiant.id, tabela, tituloId, aplicar);
+  return { ok: true, aplicado: aplicar, quitado };
 }
-// Excluir um título que foi baixado usando adiantamento devolve o valor pro saldo disponível do
-// adiantamento antes de apagar — mesmo espírito do "solta o vínculo" já usado pra OFX, nunca deixa
-// saldo inconsistente nem bloqueia a exclusão pra sempre.
+// Excluir um título que foi baixado usando adiantamento(s) devolve o valor pro saldo disponível de
+// cada adiantamento antes de apagar (pode haver vários usos parciais) — nunca deixa saldo inconsistente.
 function financeiroReverterUsoAdiantamento(tabela: "financeiro_pagar" | "financeiro_receber", tituloId: number) {
-  const uso = sqlite.prepare(`SELECT * FROM financeiro_adiantamento_usos WHERE vinculo_tabela = ? AND vinculo_id = ?`).get(tabela, tituloId) as any;
-  if (!uso) return;
-  sqlite.prepare(`UPDATE financeiro_adiantamentos SET saldo_disponivel = saldo_disponivel + ? WHERE id = ?`).run(uso.valor_usado, uso.adiantamento_id);
-  sqlite.prepare(`DELETE FROM financeiro_adiantamento_usos WHERE id = ?`).run(uso.id);
+  const usos = sqlite.prepare(`SELECT * FROM financeiro_adiantamento_usos WHERE vinculo_tabela = ? AND vinculo_id = ?`).all(tabela, tituloId) as any[];
+  for (const uso of usos) {
+    sqlite.prepare(`UPDATE financeiro_adiantamentos SET saldo_disponivel = saldo_disponivel + ? WHERE id = ?`).run(uso.valor_usado, uso.adiantamento_id);
+    sqlite.prepare(`DELETE FROM financeiro_adiantamento_usos WHERE id = ?`).run(uso.id);
+  }
 }
 function financeiroAdiantamentosRelatorio(empresaId: number) {
   const items = financeiroAdiantamentosListar(empresaId).map((a: any) => ({ ...a, valorUsado: a.valorOriginal - a.saldoDisponivel }));
@@ -15952,13 +15970,13 @@ app.post("/api/financeiro/minha-empresa/adiantamentos", requireCliente, requireM
 });
 app.put("/api/financeiro/minha-empresa/pagar/:id/usar-adiantamento", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
   const user = (req as any).user;
-  const r = financeiroAdiantamentoUsar("financeiro_pagar", Number(req.params.id), user.empresaId, Number(req.body?.adiantamentoId));
+  const r = financeiroAdiantamentoUsar("financeiro_pagar", Number(req.params.id), user.empresaId, Number(req.body?.adiantamentoId), req.body?.valor != null ? Number(req.body.valor) : null);
   if (!r.ok) return res.status(400).json({ error: r.erro });
   res.json({ ok: true });
 });
 app.put("/api/financeiro/minha-empresa/receber/:id/usar-adiantamento", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
   const user = (req as any).user;
-  const r = financeiroAdiantamentoUsar("financeiro_receber", Number(req.params.id), user.empresaId, Number(req.body?.adiantamentoId));
+  const r = financeiroAdiantamentoUsar("financeiro_receber", Number(req.params.id), user.empresaId, Number(req.body?.adiantamentoId), req.body?.valor != null ? Number(req.body.valor) : null);
   if (!r.ok) return res.status(400).json({ error: r.erro });
   res.json({ ok: true });
 });
@@ -15983,14 +16001,14 @@ app.post("/api/financeiro/empresas/:empresaId/adiantamentos", blockCliente, requ
 app.put("/api/financeiro/empresas/:empresaId/pagar/:id/usar-adiantamento", blockCliente, requirePermissao("financeiro", "editar"), (req, res) => {
   const empresaId = Number(req.params.empresaId);
   if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
-  const r = financeiroAdiantamentoUsar("financeiro_pagar", Number(req.params.id), empresaId, Number(req.body?.adiantamentoId));
+  const r = financeiroAdiantamentoUsar("financeiro_pagar", Number(req.params.id), empresaId, Number(req.body?.adiantamentoId), req.body?.valor != null ? Number(req.body.valor) : null);
   if (!r.ok) return res.status(400).json({ error: r.erro });
   res.json({ ok: true });
 });
 app.put("/api/financeiro/empresas/:empresaId/receber/:id/usar-adiantamento", blockCliente, requirePermissao("financeiro", "editar"), (req, res) => {
   const empresaId = Number(req.params.empresaId);
   if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
-  const r = financeiroAdiantamentoUsar("financeiro_receber", Number(req.params.id), empresaId, Number(req.body?.adiantamentoId));
+  const r = financeiroAdiantamentoUsar("financeiro_receber", Number(req.params.id), empresaId, Number(req.body?.adiantamentoId), req.body?.valor != null ? Number(req.body.valor) : null);
   if (!r.ok) return res.status(400).json({ error: r.erro });
   res.json({ ok: true });
 });
@@ -16488,7 +16506,7 @@ app.get("/api/financeiro/minha-empresa/pagar", requireCliente, requireModuloAtiv
   const empresaId = (req as any).user.empresaId;
   const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
   const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
-  let sql = `SELECT p.id, p.descricao, p.fornecedor, p.valor, p.vencimento, p.status, p.data_pagamento as dataPagamento, p.observacao,
+  let sql = `SELECT p.id, p.descricao, p.fornecedor, p.valor, p.vencimento, p.status, p.valor_pago as valorPago, p.data_pagamento as dataPagamento, p.observacao,
                     p.origem, p.nfe_documento_id as nfeDocumentoId, p.tipo_documento_id as tipoDocumentoId, td.nome as tipoDocumentoNome, nd.tipo as docFiscalTipo,
                     p.conta_id as contaId, c.nome as contaNome, p.criado_em as criadoEm
              FROM financeiro_pagar p
@@ -16572,7 +16590,7 @@ app.get("/api/financeiro/minha-empresa/receber", requireCliente, requireModuloAt
   const empresaId = (req as any).user.empresaId;
   const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
   const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
-  let sql = `SELECT r.id, r.descricao, r.cliente_nome as clienteNome, r.valor, r.vencimento, r.status, r.data_recebimento as dataRecebimento, r.observacao,
+  let sql = `SELECT r.id, r.descricao, r.cliente_nome as clienteNome, r.valor, r.vencimento, r.status, r.valor_pago as valorPago, r.data_recebimento as dataRecebimento, r.observacao,
                     r.origem, r.nfse_emissao_id as nfseEmissaoId, r.nfe_documento_id as nfeDocumentoId, r.tipo_documento_id as tipoDocumentoId, td.nome as tipoDocumentoNome, nd.tipo as docFiscalTipo,
                     r.conta_id as contaId, c.nome as contaNome, r.criado_em as criadoEm
              FROM financeiro_receber r
@@ -16722,7 +16740,7 @@ app.get("/api/financeiro/empresas/:empresaId/pagar", blockCliente, requirePermis
   if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
   const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
   const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
-  let sql = `SELECT p.id, p.descricao, p.fornecedor, p.valor, p.vencimento, p.status, p.data_pagamento as dataPagamento, p.observacao,
+  let sql = `SELECT p.id, p.descricao, p.fornecedor, p.valor, p.vencimento, p.status, p.valor_pago as valorPago, p.data_pagamento as dataPagamento, p.observacao,
                     p.origem, p.nfe_documento_id as nfeDocumentoId, p.tipo_documento_id as tipoDocumentoId, td.nome as tipoDocumentoNome, nd.tipo as docFiscalTipo,
                     p.conta_id as contaId, c.nome as contaNome, p.criado_em as criadoEm
              FROM financeiro_pagar p
@@ -16802,7 +16820,7 @@ app.get("/api/financeiro/empresas/:empresaId/receber", blockCliente, requirePerm
   if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
   const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
   const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
-  let sql = `SELECT r.id, r.descricao, r.cliente_nome as clienteNome, r.valor, r.vencimento, r.status, r.data_recebimento as dataRecebimento, r.observacao,
+  let sql = `SELECT r.id, r.descricao, r.cliente_nome as clienteNome, r.valor, r.vencimento, r.status, r.valor_pago as valorPago, r.data_recebimento as dataRecebimento, r.observacao,
                     r.origem, r.nfse_emissao_id as nfseEmissaoId, r.nfe_documento_id as nfeDocumentoId, r.tipo_documento_id as tipoDocumentoId, td.nome as tipoDocumentoNome, nd.tipo as docFiscalTipo,
                     r.conta_id as contaId, c.nome as contaNome, r.criado_em as criadoEm
              FROM financeiro_receber r

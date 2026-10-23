@@ -9596,31 +9596,41 @@ async function finUsarAdiantamentoModal(basePath, tipo, item, onDone){
     openModal(`<h3>Usar adiantamento</h3><div class="empty-state">Nenhum adiantamento ${ehReceber?'de cliente':'a fornecedor'} com saldo disponível.</div><div class="modal-actions"><button class="btn" onclick="closeModal()">Fechar</button></div>`);
     return;
   }
+  const restante = item.status==='pago' ? 0 : Math.max(0, (item.valor||0) - (item.valorPago||0));
   openModal(`
     <h3>Usar adiantamento — ${esc(item.descricao)}</h3>
-    <p style="font-size:12px; color:var(--ink-soft); margin-top:-4px;">Valor do título: <b>${fmtMoney(item.valor)}</b>. Só é possível usar um adiantamento que cubra o valor inteiro.</p>
+    <p style="font-size:12px; color:var(--ink-soft); margin-top:-4px;">Falta pagar deste título: <b>${fmtMoney(restante)}</b> (de ${fmtMoney(item.valor)}). Pode usar <b>parcial</b> — o que sobrar você paga depois.</p>
     <div style="max-height:40vh; overflow:auto;">
-      ${disponiveis.map(a=>{
-        const cobre = a.saldoDisponivel >= item.valor;
-        return `<label class="checkbox-row" style="display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid var(--rule); ${cobre?'':'opacity:.5;'}">
-          <input type="radio" name="adiEscolha" value="${a.id}" ${cobre?'':'disabled'}>
-          <span style="flex:1;">${esc(a.terceiroNome)} — saldo ${fmtMoney(a.saldoDisponivel)} ${cobre?'':'<b>(não cobre sozinho)</b>'}</span>
-        </label>`;
-      }).join('')}
+      ${disponiveis.map(a=>`
+        <label class="checkbox-row" style="display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid var(--rule);">
+          <input type="radio" name="adiEscolha" value="${a.id}" data-saldo="${a.saldoDisponivel}">
+          <span style="flex:1;">${esc(a.terceiroNome)} — saldo ${fmtMoney(a.saldoDisponivel)}</span>
+        </label>`).join('')}
+    </div>
+    <div class="field" style="margin-top:10px;"><label>Valor a usar (R$)</label>
+      <input id="usaValor" type="number" step="0.01" min="0" placeholder="Em branco = o máximo possível">
     </div>
     <div class="modal-actions">
       <button class="btn" id="usaCancel">Cancelar</button>
       <button class="btn primary" id="usaConfirmar">Usar</button>
     </div>
   `);
+  // Ao escolher um adiantamento, já sugere o valor = min(saldo do adiantamento, o que falta no título).
+  document.querySelectorAll('input[name="adiEscolha"]').forEach(r=>r.addEventListener('change', ()=>{
+    const saldo = Number(r.dataset.saldo)||0;
+    document.getElementById('usaValor').value = Math.min(saldo, restante).toFixed(2);
+  }));
   document.getElementById('usaCancel').addEventListener('click', closeModal);
   document.getElementById('usaConfirmar').addEventListener('click', async ()=>{
     const escolhido = document.querySelector('input[name="adiEscolha"]:checked');
-    if(!escolhido){ toast('Escolha um adiantamento que cubra o valor.','err'); return; }
+    if(!escolhido){ toast('Escolha um adiantamento.','err'); return; }
+    const vraw = document.getElementById('usaValor').value;
+    const body = { adiantamentoId: Number(escolhido.value) };
+    if(vraw!=='' && Number(vraw)>0) body.valor = Number(vraw);
     try{
-      await api(basePath+'/'+(ehReceber?'receber':'pagar')+'/'+item.id+'/usar-adiantamento', { method:'PUT', body:{ adiantamentoId: Number(escolhido.value) } });
+      await api(basePath+'/'+(ehReceber?'receber':'pagar')+'/'+item.id+'/usar-adiantamento', { method:'PUT', body });
       closeModal();
-      toast('Título baixado com o adiantamento.','ok');
+      toast('Adiantamento aplicado.','ok');
       onDone();
     }catch(e){ toast(e.message,'err'); }
   });
@@ -9636,6 +9646,8 @@ function finLabelDocumento(i){
 }
 // Nº da nota (só nos títulos gerados por nota — extraído da descrição "... nº 109839 ...").
 function finNumeroNf(i){ const m=/n[ºo°]\s*(\d+)/i.exec(i.descricao||''); return m?m[1]:'—'; }
+// Quanto já foi baixado do título (pago integral conta como valor cheio; parcial via adiantamento usa valorPago).
+function finBaixado(i){ return i.status==='pago' ? (i.valor||0) : (i.valorPago||0); }
 // Descrição curta na última coluna: nos títulos de nota, só "NF-e nº 109839 - (parcela 1/2)" (sem
 // repetir o nome do fornecedor, que já vem na coluna própria). Lançamento manual mantém a descrição.
 function finDescricaoCurta(i){
@@ -9662,7 +9674,7 @@ async function finRenderReceber(basePath, containerId, filtro, podePostar, podeE
     </div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
-        <thead><tr><th>Nº</th><th>Nº NF</th><th>Cliente</th><th>Tipo Doc.</th><th>Valor</th><th>Vencimento</th><th>Data baixa</th><th>Conta</th><th>Status</th><th></th><th>Descrição</th></tr></thead>
+        <thead><tr><th>Nº</th><th>Nº NF</th><th>Cliente</th><th>Tipo Doc.</th><th>Valor</th><th>Baixado</th><th>Saldo</th><th>Vencimento</th><th>Data baixa</th><th>Conta</th><th>Status</th><th></th><th>Descrição</th></tr></thead>
         <tbody>
           ${items.length? items.map(i=>`
             <tr>
@@ -9671,6 +9683,8 @@ async function finRenderReceber(basePath, containerId, filtro, podePostar, podeE
               <td>${esc(i.clienteNome||'—')}</td>
               <td><span class="tag muted" style="font-weight:600;">${esc(finLabelDocumento(i))}</span></td>
               <td>${fmtMoney(i.valor)}</td>
+              <td>${finBaixado(i)>0?fmtMoney(finBaixado(i)):'—'}</td>
+              <td style="${((i.valor||0)-finBaixado(i))>0.004 && i.status!=='pago'?'color:var(--debit); font-weight:600;':'color:var(--ink-soft);'}">${fmtMoney((i.valor||0)-finBaixado(i))}</td>
               <td>${fmtDateIso(i.vencimento)}</td>
               <td>${i.dataRecebimento?fmtDateIso(String(i.dataRecebimento).slice(0,10)):'—'}</td>
               <td>${esc(i.contaNome||'—')}</td>
@@ -9684,7 +9698,7 @@ async function finRenderReceber(basePath, containerId, filtro, podePostar, podeE
               </td>
               <td>${esc(finDescricaoCurta(i))}</td>
             </tr>
-          `).join('') : `<tr><td colspan="11"><div class="empty-state">Nenhum lançamento neste período.</div></td></tr>`}
+          `).join('') : `<tr><td colspan="13"><div class="empty-state">Nenhum lançamento neste período.</div></td></tr>`}
         </tbody>
       </table>
     </div>
@@ -9767,7 +9781,7 @@ async function finRenderPagar(basePath, containerId, filtro, podePostar, podeEdi
     </div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
-        <thead><tr><th>Nº</th><th>Nº NF</th><th>Fornecedor</th><th>Tipo Doc.</th><th>Valor</th><th>Vencimento</th><th>Data baixa</th><th>Conta</th><th>Status</th><th></th><th>Descrição</th></tr></thead>
+        <thead><tr><th>Nº</th><th>Nº NF</th><th>Fornecedor</th><th>Tipo Doc.</th><th>Valor</th><th>Baixado</th><th>Saldo</th><th>Vencimento</th><th>Data baixa</th><th>Conta</th><th>Status</th><th></th><th>Descrição</th></tr></thead>
         <tbody>
           ${items.length? items.map(i=>`
             <tr>
@@ -9776,6 +9790,8 @@ async function finRenderPagar(basePath, containerId, filtro, podePostar, podeEdi
               <td>${esc(i.fornecedor||'—')}</td>
               <td><span class="tag muted" style="font-weight:600;">${esc(finLabelDocumento(i))}</span></td>
               <td>${fmtMoney(i.valor)}</td>
+              <td>${finBaixado(i)>0?fmtMoney(finBaixado(i)):'—'}</td>
+              <td style="${((i.valor||0)-finBaixado(i))>0.004 && i.status!=='pago'?'color:var(--debit); font-weight:600;':'color:var(--ink-soft);'}">${fmtMoney((i.valor||0)-finBaixado(i))}</td>
               <td>${fmtDateIso(i.vencimento)}</td>
               <td>${i.dataPagamento?fmtDateIso(String(i.dataPagamento).slice(0,10)):'—'}</td>
               <td>${esc(i.contaNome||'—')}</td>
@@ -9789,7 +9805,7 @@ async function finRenderPagar(basePath, containerId, filtro, podePostar, podeEdi
               </td>
               <td>${esc(finDescricaoCurta(i))}</td>
             </tr>
-          `).join('') : `<tr><td colspan="11"><div class="empty-state">Nenhum lançamento neste período.</div></td></tr>`}
+          `).join('') : `<tr><td colspan="13"><div class="empty-state">Nenhum lançamento neste período.</div></td></tr>`}
         </tbody>
       </table>
     </div>
