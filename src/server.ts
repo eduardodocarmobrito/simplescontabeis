@@ -9593,6 +9593,21 @@ app.get("/api/nfe/minha-empresa/documentos/:id/xml", requireCliente, (req, res) 
   res.setHeader("Content-Disposition", `attachment; filename="${row.chave_acesso || row.nsu}.xml"`);
   res.send(row.xml);
 });
+// Detalhe da nota pro cliente (mesmo conteúdo da tela do escritório, restrito à própria empresa) —
+// pedido do usuário: clicar nas flags do cliente abre o detalhamento igual ao colaborador.
+app.get("/api/nfe/minha-empresa/documentos/:id/detalhe", requireCliente, (req, res) => {
+  const user = (req as any).user;
+  const row = sqlite.prepare(`SELECT * FROM nfe_documentos WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!row || row.escritorio_id !== user.escritorioId || row.empresa_id !== user.empresaId) {
+    return res.status(404).json({ error: "Documento não encontrado." });
+  }
+  const notaCancelada = !!(
+    sqlite
+      .prepare(`SELECT 1 FROM nfe_documentos WHERE escritorio_id = ? AND tipo = 'evento' AND chave_acesso = ? AND evento_descricao LIKE '%ancela%' AND evento_descricao NOT LIKE '%CT-e%' AND evento_descricao NOT LIKE '%MDF-e%' LIMIT 1`)
+      .get(row.escritorio_id, row.chave_acesso) as any
+  );
+  res.json({ tipo: row.tipo, chaveAcesso: row.chave_acesso, notaCancelada, observacao: row.observacao || "", detalhe: nfe.detalharNfe(row.xml) });
+});
 app.get("/api/nfe/minha-empresa/documentos/:id/pdf", requireCliente, async (req, res) => {
   const user = (req as any).user;
   const row = sqlite.prepare(`SELECT * FROM nfe_documentos WHERE id = ?`).get(Number(req.params.id)) as any;

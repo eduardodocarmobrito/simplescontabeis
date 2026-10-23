@@ -5773,10 +5773,10 @@ async function pageNotasEntrada(){
   // Mesmos marcadores/ícones da tela do escritório (ver mostrarDetalhe em Busca de XML) — aqui só
   // visuais (sem clique pra abrir o detalhe em abas, que é recurso do escritório).
   const FLAG_INFO = {
-    pag:['💰','Tem pagamento informado'], dup:['🧾','Tem duplicatas (parcelas)'],
-    med:['💊','Contém medicamento'], rastro:['🔖','Produto rastreável (lote/validade)'],
-    comb:['⛽','Contém combustível'], veiculo:['🚗','Contém veículo'],
-    importado:['🌎','Produto importado (com DI)'], st:['%','Tem substituição tributária (ICMS-ST)'],
+    pag:['💰','Tem pagamento informado','pagamentos'], dup:['🧾','Tem duplicatas (parcelas)','duplicatas'],
+    med:['💊','Contém medicamento','especiais'], rastro:['🔖','Produto rastreável (lote/validade)','rastro'],
+    comb:['⛽','Contém combustível','especiais'], veiculo:['🚗','Contém veículo','especiais'],
+    importado:['🌎','Produto importado (com DI)','especiais'], st:['%','Tem substituição tributária (ICMS-ST)','impostos'],
   };
   const MANIF_INFO = { ciencia:['👁 Ciência','muted','Ciência da operação'], confirmada:['✅ Confirmada','ok','Confirmação da operação'], desconhecida:['❓ Desconhecida','bad','Desconhecimento da operação'], nao_realizada:['🚫 Não realizada','bad','Operação não realizada'] };
   const EVENTO_INFO = { cce:['✏️ CC-e','Carta de correção'], epec:['📝 EPEC','EPEC — emissão prévia de contingência'] };
@@ -5789,9 +5789,11 @@ async function pageNotasEntrada(){
       if(d.manifestacao && MANIF_INFO[d.manifestacao]){ const m=MANIF_INFO[d.manifestacao]; statusCell += ` <span class="tag ${m[1]}" title="${esc(m[2])}">${m[0]}</span>`; }
       (d.eventos||[]).forEach(ev=>{ const e=EVENTO_INFO[ev]; if(e) statusCell += ` <span class="tag muted" title="${esc(e[1])}">${e[0]}</span>`; });
       const flagsArr = (d.flags||'').split(',').filter(Boolean);
+      // Chips clicáveis: abrem o detalhamento da nota na aba certa (igual à tela do escritório).
+      const chip = (ic, title, tab, extra='')=>`<span class="tag neFlagBtn" data-id="${d.id}" data-tab="${tab}" title="${esc(title)} — clique pra ver" style="margin-right:3px; cursor:pointer;">${ic}${extra}</span>`;
       let flagsHtml = '';
-      if(d.tipo!=='evento' && d.qtdItens>0) flagsHtml += `<span class="tag" title="${d.qtdItens} item(ns) na nota" style="margin-right:3px;">📦 ${d.qtdItens}</span>`;
-      flagsArr.forEach(f=>{ const i=FLAG_INFO[f]; if(i) flagsHtml += `<span class="tag" title="${esc(i[1])}" style="margin-right:3px;">${i[0]}</span>`; });
+      if(d.tipo!=='evento' && d.qtdItens>0) flagsHtml += chip('📦', d.qtdItens+' item(ns) na nota', 'produtos', ' '+d.qtdItens);
+      flagsArr.forEach(f=>{ const i=FLAG_INFO[f]; if(i) flagsHtml += chip(i[0], i[1], i[2]); });
       if(d.temMdfe) flagsHtml += `<span class="tag" title="Transportadora — tem MDF-e vinculado" style="margin-right:3px;">🚚</span>`;
       if(d.integradoFinanceiro) flagsHtml += `<span class="tag" title="Integrada ao Financeiro (${saida?'a receber':'a pagar'})" style="margin-right:3px;">💵</span>`;
       else if(['nfe','nfce','nfse'].includes(d.tipo) && !d.notaCancelada) flagsHtml += `<span class="tag" title="Falta integrar ao Financeiro" style="margin-right:3px;">⏳</span>`;
@@ -5820,6 +5822,7 @@ async function pageNotasEntrada(){
       </tr>
     `;}).join('') : `<tr><td colspan="10"><div class="empty-state">${saida?'Nenhuma nota emitida ainda.':'Nenhuma nota recebida ainda.'}</div></td></tr>`;
     document.querySelectorAll('.neCheck').forEach(c=>c.addEventListener('change', atualizarBarraSelecaoNe));
+    document.querySelectorAll('.neFlagBtn').forEach(el=>el.addEventListener('click', ()=>abrirDetalheNota(el.dataset.id, el.dataset.tab, { basePath:'/nfe/minha-empresa', souCliente:true })));
     atualizarBarraSelecaoNe();
     document.querySelectorAll('.neOpcBtn[data-act="ver"]').forEach(b=>b.addEventListener('click', ()=>{
       const id = b.dataset.id, itens = [];
@@ -7729,11 +7732,11 @@ function formatarXml(xml){
 }
 // Carrega o XML cru da nota e mostra formatado, com numeração de linha (estilo Espião), dentro do
 // container (lazy — só quando a aba abre).
-async function carregarXmlInline(id, container){
+async function carregarXmlInline(id, container, basePath){
   if(!container || container.dataset.loaded) return;
   container.dataset.loaded = '1';
   try{
-    const r = await fetch('/api/nfe/documentos/'+id+'/xml', { credentials:'same-origin' });
+    const r = await fetch('/api'+(basePath||'/nfe')+'/documentos/'+id+'/xml', { credentials:'same-origin' });
     const txt = await r.text();
     const linhas = formatarXml(txt).split('\n');
     container.innerHTML = linhas.map((l,i)=>`<div class="xml-linha"><span class="xml-num">${i+1}</span><span class="xml-conteudo">${esc(l)}</span></div>`).join('');
@@ -7861,14 +7864,17 @@ async function abrirMdfeVinculadoModal(id){
     document.getElementById('mdfeVinculadoVer')?.addEventListener('click', ()=>{ closeModal(); abrirDetalheNota(r.mdfeDocumentoId, 'xml'); });
   }catch(e){ body.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; }
 }
-async function abrirDetalheNota(id, tabInicial){
+async function abrirDetalheNota(id, tabInicial, opts){
+  opts = opts || {};
+  const basePath = opts.basePath || '/nfe';      // '/nfe/minha-empresa' na tela do cliente
+  const souCliente = !!opts.souCliente;          // esconde o comentário interno (recurso do escritório)
   let data;
-  try{ data = await api('/nfe/documentos/'+id+'/detalhe'); }
+  try{ data = await api(basePath+'/documentos/'+id+'/detalhe'); }
   catch(e){ toast(e.message,'err'); return; }
   const det = data.detalhe;
   const money = (v)=>fmtMoney(v||0);
   const statusTag = data.notaCancelada ? '<span class="tag bad">Cancelada</span>' : (data.tipo==='evento'?'<span class="tag muted">Evento</span>':'<span class="tag ok">Autorizada</span>');
-  const xmlLink = `/api/nfe/documentos/${id}/xml`;
+  const xmlLink = `/api${basePath}/documentos/${id}/xml`;
   const xmlInlineHtml = `<div class="row" style="margin-bottom:8px;"><a class="btn small" href="${xmlLink}" target="_blank" rel="noopener">⬇ Baixar XML</a></div><div id="detXmlBox" class="xml-view-wrap"><div style="padding:10px; color:var(--ink-soft); font-size:12px;">Carregando XML…</div></div>`;
   if(!det){
     openDrawer(`
@@ -7879,7 +7885,7 @@ async function abrirDetalheNota(id, tabInicial){
         <div style="margin-top:12px;">${xmlInlineHtml}</div>
       </div>`);
     document.getElementById('detFechar').addEventListener('click', closeDrawer);
-    carregarXmlInline(id, document.getElementById('detXmlBox'));
+    carregarXmlInline(id, document.getElementById('detXmlBox'), basePath);
     return;
   }
   const t = det.totais;
@@ -7953,7 +7959,7 @@ async function abrirDetalheNota(id, tabInicial){
         <div class="tab" data-t="duplicatas">📅 Duplicatas <span class="tag muted">${(det.duplicatas&&det.duplicatas.parcelas||[]).length}</span></div>
         <div class="tab" data-t="observacoes">📝 Observações <span class="tag muted">${(()=>{const o=det.observacoes||{};return (o.infCpl?1:0)+(o.infAdFisco?1:0)+(o.itens||[]).length;})()}</span></div>
         <div class="tab" data-t="referencias">🔗 Referências <span class="tag muted">${(det.referencias||[]).length}</span></div>
-        <div class="tab" data-t="comentarios">💬 Comentários</div>
+        ${souCliente?'':'<div class="tab" data-t="comentarios">💬 Comentários</div>'}
         <div class="tab" data-t="xml">📄 XML</div>
       </div>
       <div id="detConteudo" style="margin-top:12px;"></div>
@@ -7965,7 +7971,7 @@ async function abrirDetalheNota(id, tabInicial){
     if(tab==='comentarios') document.getElementById('detComentarioEditar')?.addEventListener('click', ()=>abrirComentarioNota(id, data.observacao||'', (texto)=>{ data.observacao = texto; renderTab('comentarios'); }));
   };
   // Abre já na aba pedida (ao clicar numa flag/XML); se a aba não existir, cai no Geral.
-  const abas = ['geral','participantes','produtos','especiais','impostos','rastro','pagamentos','duplicatas','observacoes','referencias','comentarios','xml'];
+  const abas = ['geral','participantes','produtos','especiais','impostos','rastro','pagamentos','duplicatas','observacoes','referencias',...(souCliente?[]:['comentarios']),'xml'];
   const tabIni = abas.includes(tabInicial) ? tabInicial : 'geral';
   document.querySelectorAll('#detTabs .tab').forEach(x=>x.classList.toggle('active', x.dataset.t===tabIni));
   renderTab(tabIni);
