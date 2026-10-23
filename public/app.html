@@ -9591,9 +9591,14 @@ async function finUsarAdiantamentoModal(basePath, tipo, item, onDone){
   const ehReceber = tipo==='receber';
   const tipoAdiant = ehReceber ? 'cliente' : 'fornecedor';
   const { items } = await api(basePath+'/adiantamentos?tipo='+tipoAdiant);
-  const disponiveis = items.filter(a=>a.saldoDisponivel>0);
+  // Só adiantamentos do MESMO terceiro do título (fornecedor no a pagar / cliente no a receber) e com
+  // saldo. Se o título não tem terceiro (lançamento manual sem nome), aí sim mostra todos.
+  const norm = s=> (s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/\s+/g,' ').trim();
+  const terceiroTitulo = ehReceber ? item.clienteNome : item.fornecedor;
+  const alvo = norm(terceiroTitulo);
+  const disponiveis = items.filter(a=> a.saldoDisponivel>0 && (!alvo || norm(a.terceiroNome)===alvo));
   if(!disponiveis.length){
-    openModal(`<h3>Usar adiantamento</h3><div class="empty-state">Nenhum adiantamento ${ehReceber?'de cliente':'a fornecedor'} com saldo disponível.</div><div class="modal-actions"><button class="btn" onclick="closeModal()">Fechar</button></div>`);
+    openModal(`<h3>Usar adiantamento</h3><div class="empty-state">Nenhum adiantamento com saldo disponível${terceiroTitulo?` ${ehReceber?'de':'a'} <b>${esc(terceiroTitulo)}</b>`:''}.</div><div class="modal-actions"><button class="btn" onclick="closeModal()">Fechar</button></div>`);
     return;
   }
   const restante = item.status==='pago' ? 0 : Math.max(0, (item.valor||0) - (item.valorPago||0));
