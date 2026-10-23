@@ -15601,18 +15601,31 @@ function financeiroContasComSaldo(empresaId: number): any[] {
 
 // ---- Cadastro de clientes/fornecedores/funcionários (a "agenda" do Financeiro) ----
 const CADASTRO_TIPOS = ["cliente", "fornecedor", "funcionario"];
+// Papéis de um cadastro: um terceiro pode ser cliente E fornecedor ao mesmo tempo (pedido do usuário).
+// Guardado no campo `tipo` como texto separado por vírgula, ordenado e sem repetição ("cliente,fornecedor").
+function cadastroNormalizarTipos(input: any): string | null {
+  let brutos: string[] = [];
+  if (Array.isArray(input)) brutos = input.map((x) => String(x).trim().toLowerCase());
+  else if (typeof input === "string") brutos = input.split(",").map((x) => x.trim().toLowerCase());
+  const set = CADASTRO_TIPOS.filter((t) => brutos.includes(t));
+  return set.length ? set.join(",") : null;
+}
+function cadastroTemPapel(tipo: string | null, papel: string): boolean {
+  return !!tipo && ("," + tipo + ",").includes("," + papel + ",");
+}
 // Upsert idempotente usado pela integração de notas: não duplica (casa por documento quando tem, ou
-// por nome quando não tem) e completa o documento se antes estava em branco.
+// por nome quando não tem) e ADICIONA o papel se o cadastro já existe com outro (ex.: já era cliente e
+// agora aparece como fornecedor → vira "cliente,fornecedor").
 function financeiroUpsertCadastro(empresaId: number, tipo: string, nome: string | null, documento: string | null, origem: string, userId: number | null): number | null {
   const nomeTrim = (nome || "").trim();
   if (!nomeTrim || !CADASTRO_TIPOS.includes(tipo)) return null;
   const doc = (documento || "").replace(/\D/g, "") || null;
   const existe = doc
-    ? (sqlite.prepare(`SELECT id FROM financeiro_cadastros WHERE empresa_id=? AND tipo=? AND documento=?`).get(empresaId, tipo, doc) as any)
-    : (sqlite.prepare(`SELECT id FROM financeiro_cadastros WHERE empresa_id=? AND tipo=? AND lower(nome)=lower(?) AND (documento IS NULL OR documento='')`).get(empresaId, tipo, nomeTrim) as any);
+    ? (sqlite.prepare(`SELECT id, tipo FROM financeiro_cadastros WHERE empresa_id=? AND documento=?`).get(empresaId, doc) as any)
+    : (sqlite.prepare(`SELECT id, tipo FROM financeiro_cadastros WHERE empresa_id=? AND lower(nome)=lower(?) AND (documento IS NULL OR documento='')`).get(empresaId, nomeTrim) as any);
   if (existe) {
-    if (doc) sqlite.prepare(`UPDATE financeiro_cadastros SET documento=COALESCE(documento,?), ativo=1 WHERE id=?`).run(doc, existe.id);
-    else sqlite.prepare(`UPDATE financeiro_cadastros SET ativo=1 WHERE id=?`).run(existe.id);
+    const papeis = cadastroNormalizarTipos((existe.tipo || "") + "," + tipo) || tipo;
+    sqlite.prepare(`UPDATE financeiro_cadastros SET tipo=?, documento=COALESCE(documento,?), ativo=1 WHERE id=?`).run(papeis, doc, existe.id);
     return existe.id;
   }
   const info = sqlite
@@ -15623,15 +15636,15 @@ function financeiroUpsertCadastro(empresaId: number, tipo: string, nome: string 
 function cadastrosListar(empresaId: number, tipo?: string | null, busca?: string | null) {
   let sql = `SELECT id, tipo, nome, documento, email, telefone, observacao, origem, criado_em as criadoEm FROM financeiro_cadastros WHERE empresa_id=? AND ativo=1`;
   const p: any[] = [empresaId];
-  if (tipo && CADASTRO_TIPOS.includes(tipo)) { sql += ` AND tipo=?`; p.push(tipo); }
+  if (tipo && CADASTRO_TIPOS.includes(tipo)) { sql += ` AND (','||tipo||',') LIKE ?`; p.push(`%,${tipo},%`); }
   if (busca) { sql += ` AND (nome LIKE ? OR documento LIKE ?)`; const like = `%${busca}%`; p.push(like, like.replace(/\D/g, "") ? `%${busca.replace(/\D/g, "")}%` : like); }
-  sql += ` ORDER BY tipo, nome COLLATE NOCASE`;
+  sql += ` ORDER BY nome COLLATE NOCASE`;
   return sqlite.prepare(sql).all(...p);
 }
 function cadastroCriar(empresaId: number, body: any, userId: number | null): { id?: number; error?: string } {
-  const tipo = CADASTRO_TIPOS.includes(body?.tipo) ? body.tipo : null;
+  const tipo = cadastroNormalizarTipos(body?.tipos ?? body?.tipo);
   const nome = (body?.nome || "").trim();
-  if (!tipo || !nome) return { error: "Informe o tipo (cliente/fornecedor/funcionário) e o nome." };
+  if (!tipo || !nome) return { error: "Informe ao menos um tipo (cliente/fornecedor/funcionário) e o nome." };
   const doc = (body?.documento || "").replace(/\D/g, "") || null;
   const info = sqlite
     .prepare(`INSERT INTO financeiro_cadastros (empresa_id, tipo, nome, documento, email, telefone, observacao, origem, criado_por) VALUES (?, ?, ?, ?, ?, ?, ?, 'manual', ?)`)
@@ -15641,7 +15654,7 @@ function cadastroCriar(empresaId: number, body: any, userId: number | null): { i
 function cadastroEditar(empresaId: number, id: number, body: any): { ok?: boolean; error?: string } {
   const existe = sqlite.prepare(`SELECT * FROM financeiro_cadastros WHERE id=? AND empresa_id=? AND ativo=1`).get(id, empresaId) as any;
   if (!existe) return { error: "Cadastro não encontrado." };
-  const tipo = CADASTRO_TIPOS.includes(body?.tipo) ? body.tipo : existe.tipo;
+  const tipo = cadastroNormalizarTipos(body?.tipos ?? body?.tipo) || existe.tipo;
   const nome = body?.nome !== undefined ? (body.nome || "").trim() : existe.nome;
   if (!nome) return { error: "O nome não pode ficar em branco." };
   const doc = body?.documento !== undefined ? ((body.documento || "").replace(/\D/g, "") || null) : existe.documento;

@@ -9350,7 +9350,7 @@ async function finLancamentoModal(basePath, tipo, item, onSaved){
   let cadastros = [], tiposDoc = [];
   if(!travado){
     const tiposQ = ehReceber ? ['cliente'] : ['fornecedor','funcionario'];
-    try{ cadastros = ((await api(basePath+'/cadastros')).items||[]).filter(c=>tiposQ.includes(c.tipo)); }catch(e){}
+    try{ cadastros = ((await api(basePath+'/cadastros')).items||[]).filter(c=>tiposQ.some(r=>(c.tipo||'').split(',').includes(r))); }catch(e){}
     try{ tiposDoc = (await api(basePath+'/tipos-documento')).items||[]; }catch(e){}
   }
   openModal(`
@@ -9515,6 +9515,7 @@ async function finRenderAdiantamentos(basePath, containerId, podePostar){
 }
 async function finAdiantamentoModal(basePath, onSaved){
   const contas = await finContasCache(basePath);
+  let cadastros = ((await api(basePath+'/cadastros').catch(()=>({items:[]}))).items)||[];
   openModal(`
     <h3>Novo adiantamento</h3>
     <div class="field"><label>Tipo</label>
@@ -9523,7 +9524,13 @@ async function finAdiantamentoModal(basePath, onSaved){
         <option value="cliente">De cliente (a empresa recebeu antes de entregar)</option>
       </select>
     </div>
-    <div class="field"><label id="adiTerceiroLabel">Fornecedor</label><input id="adiTerceiro" placeholder="Nome do fornecedor…"></div>
+    <div class="field"><label id="adiTerceiroLabel">Fornecedor</label>
+      <div class="row" style="gap:6px; align-items:center;">
+        <select id="adiCadastro" style="flex:1;"></select>
+        <button type="button" class="btn small" id="adiNovoCad" title="Cadastrar o nome digitado abaixo">+ Cadastrar</button>
+      </div>
+      <input id="adiTerceiro" placeholder="Nome do fornecedor…" style="margin-top:6px;">
+    </div>
     <div class="row">
       <div class="field" style="width:160px;"><label>Valor (R$)</label><input id="adiValor" type="number" step="0.01" min="0"></div>
       <div class="field" style="width:170px;">${dateFieldHtml('adiData','Data', new Date().toISOString().slice(0,10))}</div>
@@ -9536,9 +9543,29 @@ async function finAdiantamentoModal(basePath, onSaved){
     </div>
   `);
   setupDatePicker('adiData','adiData_text');
+  const papelAtual = ()=> document.getElementById('adiTipo').value; // 'fornecedor' | 'cliente'
+  function popularCad(){
+    const papel = papelAtual();
+    const lista = cadastros.filter(c=>(c.tipo||'').split(',').includes(papel));
+    document.getElementById('adiCadastro').innerHTML = '<option value="">— Escolher do cadastro / digitar abaixo —</option>'+lista.map(c=>`<option value="${esc(c.nome)}">${esc(c.nome)}</option>`).join('');
+  }
+  popularCad();
+  document.getElementById('adiCadastro').addEventListener('change', e=>{ if(e.target.value) document.getElementById('adiTerceiro').value = e.target.value; });
+  document.getElementById('adiNovoCad').addEventListener('click', async ()=>{
+    const nome = document.getElementById('adiTerceiro').value.trim();
+    if(!nome){ toast('Digite o nome no campo abaixo pra cadastrar.','err'); return; }
+    try{
+      await api(basePath+'/cadastros', { method:'POST', body:{ tipos:[papelAtual()], nome } });
+      cadastros = ((await api(basePath+'/cadastros')).items)||[];
+      popularCad();
+      document.getElementById('adiCadastro').value = nome;
+      toast('Cadastrado como '+(papelAtual()==='cliente'?'cliente':'fornecedor')+'.','ok');
+    }catch(e){ toast(e.message,'err'); }
+  });
   document.getElementById('adiTipo').addEventListener('change', (e)=>{
     document.getElementById('adiTerceiroLabel').textContent = e.target.value==='cliente' ? 'Cliente' : 'Fornecedor';
     document.getElementById('adiTerceiro').placeholder = e.target.value==='cliente' ? 'Nome do cliente…' : 'Nome do fornecedor…';
+    popularCad();
   });
   document.getElementById('adiCancel').addEventListener('click', closeModal);
   document.getElementById('adiSalvar').addEventListener('click', async ()=>{
@@ -9607,6 +9634,17 @@ function finLabelDocumento(i){
   if(i.origem==='ofx') return 'Extrato';
   return i.tipoDocumentoNome || '—';
 }
+// Nº da nota (só nos títulos gerados por nota — extraído da descrição "... nº 109839 ...").
+function finNumeroNf(i){ const m=/n[ºo°]\s*(\d+)/i.exec(i.descricao||''); return m?m[1]:'—'; }
+// Descrição curta na última coluna: nos títulos de nota, só "NF-e nº 109839 - (parcela 1/2)" (sem
+// repetir o nome do fornecedor, que já vem na coluna própria). Lançamento manual mantém a descrição.
+function finDescricaoCurta(i){
+  if(i.origem!=='nfe' && i.origem!=='nfse') return i.descricao||'';
+  const partes=(i.descricao||'').split(' — ');
+  const antes=partes[0];
+  const parc=(partes.slice(1).join(' — ').match(/\(parcela[^)]*\)/)||[])[0]||'';
+  return antes+(parc?' - '+parc:'');
+}
 async function finRenderReceber(basePath, containerId, filtro, podePostar, podeEditar){
   const { dataDe, dataAte } = filtro;
   const qs = new URLSearchParams();
@@ -9624,15 +9662,17 @@ async function finRenderReceber(basePath, containerId, filtro, podePostar, podeE
     </div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
-        <thead><tr><th>Descrição</th><th>Cliente</th><th>Documento</th><th>Valor</th><th>Vencimento</th><th>Conta</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th>Nº</th><th>Nº NF</th><th>Cliente</th><th>Tipo Doc.</th><th>Valor</th><th>Vencimento</th><th>Data baixa</th><th>Conta</th><th>Status</th><th></th><th>Descrição</th></tr></thead>
         <tbody>
           ${items.length? items.map(i=>`
             <tr>
-              <td><b>${esc(i.descricao)}</b>${ORIGEM_LABEL[i.origem]?`<div style="font-size:11px; color:var(--ink-soft);">${ORIGEM_LABEL[i.origem]}</div>`:''}</td>
+              <td style="color:var(--ink-soft);">${i.id}</td>
+              <td>${esc(finNumeroNf(i))}</td>
               <td>${esc(i.clienteNome||'—')}</td>
               <td><span class="tag muted" style="font-weight:600;">${esc(finLabelDocumento(i))}</span></td>
               <td>${fmtMoney(i.valor)}</td>
               <td>${fmtDateIso(i.vencimento)}</td>
+              <td>${i.dataRecebimento?fmtDateIso(String(i.dataRecebimento).slice(0,10)):'—'}</td>
               <td>${esc(i.contaNome||'—')}</td>
               <td><span class="tag ${i.status==='pago'?'ok':(i.status==='atrasado'||i.status==='cancelado'?'bad':i.status==='renegociado'?'muted':'muted')}">${STATUS_LABEL[i.status]||i.status}</span></td>
               <td style="text-align:right; white-space:nowrap;">
@@ -9642,8 +9682,9 @@ async function finRenderReceber(basePath, containerId, filtro, podePostar, podeE
                 ${podeEditar&&i.status!=='renegociado'?`<button class="btn small" data-id="${i.id}" data-act="editar">Editar</button>`:''}
                 ${podeEditar&&i.status!=='renegociado'&&i.origem!=='nfse'&&i.origem!=='nfe'?`<button class="btn small" data-id="${i.id}" data-act="excluir">Excluir</button>`:''}
               </td>
+              <td>${esc(finDescricaoCurta(i))}</td>
             </tr>
-          `).join('') : `<tr><td colspan="8"><div class="empty-state">Nenhum lançamento neste período.</div></td></tr>`}
+          `).join('') : `<tr><td colspan="11"><div class="empty-state">Nenhum lançamento neste período.</div></td></tr>`}
         </tbody>
       </table>
     </div>
@@ -9726,15 +9767,17 @@ async function finRenderPagar(basePath, containerId, filtro, podePostar, podeEdi
     </div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
-        <thead><tr><th>Descrição</th><th>Fornecedor</th><th>Documento</th><th>Valor</th><th>Vencimento</th><th>Conta</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th>Nº</th><th>Nº NF</th><th>Fornecedor</th><th>Tipo Doc.</th><th>Valor</th><th>Vencimento</th><th>Data baixa</th><th>Conta</th><th>Status</th><th></th><th>Descrição</th></tr></thead>
         <tbody>
           ${items.length? items.map(i=>`
             <tr>
-              <td><b>${esc(i.descricao)}</b>${ORIGEM_LABEL_PAGAR[i.origem]?`<div style="font-size:11px; color:var(--ink-soft);">${ORIGEM_LABEL_PAGAR[i.origem]}</div>`:''}</td>
+              <td style="color:var(--ink-soft);">${i.id}</td>
+              <td>${esc(finNumeroNf(i))}</td>
               <td>${esc(i.fornecedor||'—')}</td>
               <td><span class="tag muted" style="font-weight:600;">${esc(finLabelDocumento(i))}</span></td>
               <td>${fmtMoney(i.valor)}</td>
               <td>${fmtDateIso(i.vencimento)}</td>
+              <td>${i.dataPagamento?fmtDateIso(String(i.dataPagamento).slice(0,10)):'—'}</td>
               <td>${esc(i.contaNome||'—')}</td>
               <td><span class="tag ${i.status==='pago'?'ok':(i.status==='atrasado'||i.status==='cancelado'?'bad':'muted')}">${STATUS_LABEL[i.status]||i.status}</span></td>
               <td style="text-align:right; white-space:nowrap;">
@@ -9744,8 +9787,9 @@ async function finRenderPagar(basePath, containerId, filtro, podePostar, podeEdi
                 ${podeEditar&&i.status!=='renegociado'?`<button class="btn small" data-id="${i.id}" data-act="editar">Editar</button>`:''}
                 ${podeEditar&&i.status!=='renegociado'&&i.origem!=='nfe'?`<button class="btn small" data-id="${i.id}" data-act="excluir">Excluir</button>`:''}
               </td>
+              <td>${esc(finDescricaoCurta(i))}</td>
             </tr>
-          `).join('') : `<tr><td colspan="8"><div class="empty-state">Nenhum lançamento neste período.</div></td></tr>`}
+          `).join('') : `<tr><td colspan="11"><div class="empty-state">Nenhum lançamento neste período.</div></td></tr>`}
         </tbody>
       </table>
     </div>
@@ -10038,7 +10082,7 @@ async function finRenderCadastros(basePath, containerId, podeEditar){
     const bq = FIN_CAD_FILTRO.busca.trim().toLowerCase();
     const bqDigitos = bq.replace(/\D/g,'');
     const lista = todos.filter(c=>{
-      if(FIN_CAD_FILTRO.tipo && c.tipo!==FIN_CAD_FILTRO.tipo) return false;
+      if(FIN_CAD_FILTRO.tipo && !(c.tipo||'').split(',').includes(FIN_CAD_FILTRO.tipo)) return false;
       if(!bq) return true;
       const nomeOk = (c.nome||'').toLowerCase().includes(bq);
       const docOk = bqDigitos && (c.documento||'').includes(bqDigitos);
@@ -10047,7 +10091,7 @@ async function finRenderCadastros(basePath, containerId, podeEditar){
     tbody.innerHTML = lista.length? lista.map(c=>`
       <tr>
         <td><b>${esc(c.nome)}</b>${c.observacao?`<div style="font-size:11px; color:var(--ink-soft);">${esc(c.observacao)}</div>`:''}</td>
-        <td><span class="tag ${TIPO_TAG[c.tipo]||'muted'}">${TIPO[c.tipo]||c.tipo}</span></td>
+        <td>${(c.tipo||'').split(',').filter(Boolean).map(t=>`<span class="tag ${TIPO_TAG[t]||'muted'}" style="margin-right:3px;">${TIPO[t]||t}</span>`).join('')||'—'}</td>
         <td>${c.documento?esc(formatarDocumentoBR(c.documento)):'—'}</td>
         <td style="font-size:12px;">${[c.email,c.telefone].filter(Boolean).map(esc).join('<br>')||'—'}</td>
         <td><span style="font-size:11px; color:var(--ink-soft);">${c.origem==='nfe'?'Da nota integrada':'Manual'}</span></td>
@@ -10071,15 +10115,16 @@ async function finRenderCadastros(basePath, containerId, podeEditar){
   if(podeEditar) document.getElementById('btnNovoCadastro').addEventListener('click', ()=>finCadastroModal(basePath, FIN_CAD_FILTRO.tipo||'fornecedor', null, recarregar));
 }
 function finCadastroModal(basePath, tipoDefault, item, onSaved){
-  const tipoAtual = item?item.tipo:(tipoDefault||'fornecedor');
+  const papeis = item?(item.tipo||'').split(',').filter(Boolean):[tipoDefault||'fornecedor'];
+  const tem = t=>papeis.includes(t);
   openModal(`
     <h3>${item?'Editar':'Novo'} cadastro</h3>
-    <div class="field"><label>Tipo</label>
-      <select id="cadTipo">
-        <option value="cliente" ${tipoAtual==='cliente'?'selected':''}>Cliente</option>
-        <option value="fornecedor" ${tipoAtual==='fornecedor'?'selected':''}>Fornecedor</option>
-        <option value="funcionario" ${tipoAtual==='funcionario'?'selected':''}>Funcionário</option>
-      </select>
+    <div class="field"><label>Tipo (pode marcar mais de um)</label>
+      <div class="row" style="gap:16px;">
+        <label class="checkbox-row" style="margin:0;"><input type="checkbox" class="cadTipoChk" value="cliente" ${tem('cliente')?'checked':''}> Cliente</label>
+        <label class="checkbox-row" style="margin:0;"><input type="checkbox" class="cadTipoChk" value="fornecedor" ${tem('fornecedor')?'checked':''}> Fornecedor</label>
+        <label class="checkbox-row" style="margin:0;"><input type="checkbox" class="cadTipoChk" value="funcionario" ${tem('funcionario')?'checked':''}> Funcionário</label>
+      </div>
     </div>
     <div class="field"><label>Nome</label><input id="cadNome" value="${item?esc(item.nome):''}"></div>
     <div class="field"><label>CPF/CNPJ (opcional)</label><input id="cadDoc" value="${item&&item.documento?esc(formatarDocumentoBR(item.documento)):''}" placeholder="000.000.000-00"></div>
@@ -10099,8 +10144,10 @@ function finCadastroModal(basePath, tipoDefault, item, onSaved){
   document.getElementById('cadSalvar').addEventListener('click', async ()=>{
     const nome = document.getElementById('cadNome').value.trim();
     if(!nome){ toast('Informe o nome.','err'); return; }
+    const tipos = [...document.querySelectorAll('.cadTipoChk:checked')].map(c=>c.value);
+    if(!tipos.length){ toast('Marque ao menos um tipo (Cliente/Fornecedor/Funcionário).','err'); return; }
     const body = {
-      tipo: document.getElementById('cadTipo').value,
+      tipos,
       nome,
       documento: docEl.value.replace(/\D/g,''),
       email: document.getElementById('cadEmail').value.trim(),
