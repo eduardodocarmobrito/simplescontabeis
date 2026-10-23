@@ -2006,6 +2006,44 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
     sqlite.exec(`ALTER TABLE nfe_documentos ADD COLUMN integrado_financeiro INTEGER NOT NULL DEFAULT 0`);
   }
 }
+// Cadastro de clientes/fornecedores/funcionários por empresa — a "agenda" do Financeiro. Serve pra
+// lançar a pagar/receber escolhendo um terceiro já conhecido (ex.: pagar férias de um funcionário) e
+// é alimentado automaticamente quando uma nota é integrada ao Financeiro (cada emitente/destinatário
+// vira um cadastro). origem: 'manual' (cadastrado à mão) | 'nfe' (criado pela integração de nota).
+{
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS financeiro_cadastros (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      empresa_id INTEGER NOT NULL,
+      tipo TEXT NOT NULL,               -- 'cliente' | 'fornecedor' | 'funcionario'
+      nome TEXT NOT NULL,
+      documento TEXT,                   -- CPF/CNPJ só dígitos (pode ser null)
+      email TEXT,
+      telefone TEXT,
+      observacao TEXT,
+      origem TEXT NOT NULL DEFAULT 'manual',
+      ativo INTEGER NOT NULL DEFAULT 1,
+      criado_em TEXT NOT NULL DEFAULT (datetime('now')),
+      criado_por INTEGER
+    )`);
+  sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_fin_cad_empresa ON financeiro_cadastros(empresa_id, tipo)`);
+  // Backfill único (só quando a tabela nasce vazia): puxa os terceiros já usados nos títulos
+  // existentes — fornecedores do "a pagar" e clientes do "a receber" — agrupando por nome. origem
+  // 'nfe' vence 'manual' no MAX (n > m) quando o mesmo nome aparece nos dois tipos de lançamento.
+  const cadVazio = sqlite.prepare(`SELECT COUNT(*) as c FROM financeiro_cadastros`).get() as any;
+  if (cadVazio.c === 0) {
+    sqlite.exec(`
+      INSERT INTO financeiro_cadastros (empresa_id, tipo, nome, origem)
+      SELECT empresa_id, 'fornecedor', TRIM(fornecedor), MAX(CASE WHEN origem='nfe' THEN 'nfe' ELSE 'manual' END)
+      FROM financeiro_pagar WHERE fornecedor IS NOT NULL AND TRIM(fornecedor) <> ''
+      GROUP BY empresa_id, lower(TRIM(fornecedor))`);
+    sqlite.exec(`
+      INSERT INTO financeiro_cadastros (empresa_id, tipo, nome, origem)
+      SELECT empresa_id, 'cliente', TRIM(cliente_nome), MAX(CASE WHEN origem='nfe' THEN 'nfe' ELSE 'manual' END)
+      FROM financeiro_receber WHERE cliente_nome IS NOT NULL AND TRIM(cliente_nome) <> ''
+      GROUP BY empresa_id, lower(TRIM(cliente_nome))`);
+  }
+}
 // Migração leve: saldo inicial da conta banco/caixa — usado como ponto de partida do saldo exibido
 // (saldo inicial + soma dos títulos já pagos/recebidos naquela conta), não é uma movimentação.
 {
@@ -9437,6 +9475,10 @@ function nfeIntegrarFinanceiro(docId: number, userId: number): { ok: boolean; er
     insert.run(row.empresa_id, desc, terceiro, p.vDup || row.valor_total || 0, p.dVenc || hojeIso, docId, userId);
   });
   sqlite.prepare(`UPDATE nfe_documentos SET integrado_financeiro = 1 WHERE id = ?`).run(docId);
+  // Alimenta a "agenda" do Financeiro: o terceiro da nota (fornecedor se recebida, cliente se emitida)
+  // vira/atualiza um cadastro automaticamente — pedido do usuário.
+  const docTerceiro = emitida ? row.destinatario_cnpj : row.emitente_cnpj;
+  financeiroUpsertCadastro(row.empresa_id, emitida ? "cliente" : "fornecedor", terceiro, docTerceiro, "nfe", userId);
   return { ok: true };
 }
 // Desmarcar: só remove se NENHUMA parcela gerada já foi mexida (paga/recebida/cancelada) — protege
@@ -15173,6 +15215,64 @@ function financeiroContasComSaldo(empresaId: number): any[] {
 // pendente entra na semana 0 (needs attention now) em vez de ficar numa semana negativa.
 // "Atrasado" é calculado na hora (vencimento < hoje E status ainda 'pendente') — o campo status
 // nunca é promovido pra 'atrasado' sozinho em lugar nenhum do sistema, só manualmente pelo usuário.
+
+// ---- Cadastro de clientes/fornecedores/funcionários (a "agenda" do Financeiro) ----
+const CADASTRO_TIPOS = ["cliente", "fornecedor", "funcionario"];
+// Upsert idempotente usado pela integração de notas: não duplica (casa por documento quando tem, ou
+// por nome quando não tem) e completa o documento se antes estava em branco.
+function financeiroUpsertCadastro(empresaId: number, tipo: string, nome: string | null, documento: string | null, origem: string, userId: number | null): number | null {
+  const nomeTrim = (nome || "").trim();
+  if (!nomeTrim || !CADASTRO_TIPOS.includes(tipo)) return null;
+  const doc = (documento || "").replace(/\D/g, "") || null;
+  const existe = doc
+    ? (sqlite.prepare(`SELECT id FROM financeiro_cadastros WHERE empresa_id=? AND tipo=? AND documento=?`).get(empresaId, tipo, doc) as any)
+    : (sqlite.prepare(`SELECT id FROM financeiro_cadastros WHERE empresa_id=? AND tipo=? AND lower(nome)=lower(?) AND (documento IS NULL OR documento='')`).get(empresaId, tipo, nomeTrim) as any);
+  if (existe) {
+    if (doc) sqlite.prepare(`UPDATE financeiro_cadastros SET documento=COALESCE(documento,?), ativo=1 WHERE id=?`).run(doc, existe.id);
+    else sqlite.prepare(`UPDATE financeiro_cadastros SET ativo=1 WHERE id=?`).run(existe.id);
+    return existe.id;
+  }
+  const info = sqlite
+    .prepare(`INSERT INTO financeiro_cadastros (empresa_id, tipo, nome, documento, origem, criado_por) VALUES (?, ?, ?, ?, ?, ?)`)
+    .run(empresaId, tipo, nomeTrim, doc, origem, userId);
+  return Number(info.lastInsertRowid);
+}
+function cadastrosListar(empresaId: number, tipo?: string | null, busca?: string | null) {
+  let sql = `SELECT id, tipo, nome, documento, email, telefone, observacao, origem, criado_em as criadoEm FROM financeiro_cadastros WHERE empresa_id=? AND ativo=1`;
+  const p: any[] = [empresaId];
+  if (tipo && CADASTRO_TIPOS.includes(tipo)) { sql += ` AND tipo=?`; p.push(tipo); }
+  if (busca) { sql += ` AND (nome LIKE ? OR documento LIKE ?)`; const like = `%${busca}%`; p.push(like, like.replace(/\D/g, "") ? `%${busca.replace(/\D/g, "")}%` : like); }
+  sql += ` ORDER BY tipo, nome COLLATE NOCASE`;
+  return sqlite.prepare(sql).all(...p);
+}
+function cadastroCriar(empresaId: number, body: any, userId: number | null): { id?: number; error?: string } {
+  const tipo = CADASTRO_TIPOS.includes(body?.tipo) ? body.tipo : null;
+  const nome = (body?.nome || "").trim();
+  if (!tipo || !nome) return { error: "Informe o tipo (cliente/fornecedor/funcionário) e o nome." };
+  const doc = (body?.documento || "").replace(/\D/g, "") || null;
+  const info = sqlite
+    .prepare(`INSERT INTO financeiro_cadastros (empresa_id, tipo, nome, documento, email, telefone, observacao, origem, criado_por) VALUES (?, ?, ?, ?, ?, ?, ?, 'manual', ?)`)
+    .run(empresaId, tipo, nome, doc, body?.email || null, body?.telefone || null, body?.observacao || null, userId);
+  return { id: Number(info.lastInsertRowid) };
+}
+function cadastroEditar(empresaId: number, id: number, body: any): { ok?: boolean; error?: string } {
+  const existe = sqlite.prepare(`SELECT * FROM financeiro_cadastros WHERE id=? AND empresa_id=? AND ativo=1`).get(id, empresaId) as any;
+  if (!existe) return { error: "Cadastro não encontrado." };
+  const tipo = CADASTRO_TIPOS.includes(body?.tipo) ? body.tipo : existe.tipo;
+  const nome = body?.nome !== undefined ? (body.nome || "").trim() : existe.nome;
+  if (!nome) return { error: "O nome não pode ficar em branco." };
+  const doc = body?.documento !== undefined ? ((body.documento || "").replace(/\D/g, "") || null) : existe.documento;
+  sqlite
+    .prepare(`UPDATE financeiro_cadastros SET tipo=?, nome=?, documento=?, email=?, telefone=?, observacao=? WHERE id=?`)
+    .run(tipo, nome, doc, body?.email !== undefined ? body.email || null : existe.email, body?.telefone !== undefined ? body.telefone || null : existe.telefone, body?.observacao !== undefined ? body.observacao || null : existe.observacao, id);
+  return { ok: true };
+}
+function cadastroExcluir(empresaId: number, id: number): { ok?: boolean; error?: string } {
+  const existe = sqlite.prepare(`SELECT id FROM financeiro_cadastros WHERE id=? AND empresa_id=?`).get(id, empresaId) as any;
+  if (!existe) return { error: "Cadastro não encontrado." };
+  sqlite.prepare(`UPDATE financeiro_cadastros SET ativo=0 WHERE id=?`).run(id); // soft delete: não quebra histórico
+  return { ok: true };
+}
 function financeiroRelatorio(empresaId: number, granularidade: "dia" | "semana" | "mes" = "semana") {
   const hoje = new Date().toISOString().slice(0, 10);
   const contasAtivas = financeiroContasComSaldo(empresaId).filter((c: any) => c.ativo);
@@ -16092,6 +16192,56 @@ app.delete("/api/financeiro/empresas/:empresaId/receber/:id", blockCliente, requ
   financeiroSoltarVinculoOfx("financeiro_receber", Number(req.params.id));
   sqlite.prepare(`DELETE FROM financeiro_receber WHERE id = ?`).run(Number(req.params.id));
   res.json({ ok: true });
+});
+
+// ---- Rotas do cadastro de clientes/fornecedores/funcionários (cliente e escritório) ----
+app.get("/api/financeiro/minha-empresa/cadastros", requireCliente, requireModuloAtivo("financeiro"), (req, res) => {
+  const tipo = typeof req.query.tipo === "string" ? req.query.tipo : null;
+  const busca = typeof req.query.busca === "string" && req.query.busca.trim() ? req.query.busca.trim() : null;
+  res.json({ items: cadastrosListar((req as any).user.empresaId, tipo, busca) });
+});
+app.post("/api/financeiro/minha-empresa/cadastros", requireCliente, requireModuloAtivo("financeiro"), (req, res) => {
+  const r = cadastroCriar((req as any).user.empresaId, req.body, (req as any).user.id);
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json(r);
+});
+app.put("/api/financeiro/minha-empresa/cadastros/:id", requireCliente, requireModuloAtivo("financeiro"), (req, res) => {
+  const r = cadastroEditar((req as any).user.empresaId, Number(req.params.id), req.body);
+  if (r.error) return res.status(r.error === "Cadastro não encontrado." ? 404 : 400).json({ error: r.error });
+  res.json(r);
+});
+app.delete("/api/financeiro/minha-empresa/cadastros/:id", requireCliente, requireModuloAtivo("financeiro"), (req, res) => {
+  const r = cadastroExcluir((req as any).user.empresaId, Number(req.params.id));
+  if (r.error) return res.status(404).json({ error: r.error });
+  res.json(r);
+});
+app.get("/api/financeiro/empresas/:empresaId/cadastros", blockCliente, requirePermissao("financeiro", "visualizar"), (req, res) => {
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const tipo = typeof req.query.tipo === "string" ? req.query.tipo : null;
+  const busca = typeof req.query.busca === "string" && req.query.busca.trim() ? req.query.busca.trim() : null;
+  res.json({ items: cadastrosListar(empresaId, tipo, busca) });
+});
+app.post("/api/financeiro/empresas/:empresaId/cadastros", blockCliente, requirePermissao("financeiro", "postar"), (req, res) => {
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const r = cadastroCriar(empresaId, req.body, (req as any).user.id);
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json(r);
+});
+app.put("/api/financeiro/empresas/:empresaId/cadastros/:id", blockCliente, requirePermissao("financeiro", "editar"), (req, res) => {
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const r = cadastroEditar(empresaId, Number(req.params.id), req.body);
+  if (r.error) return res.status(r.error === "Cadastro não encontrado." ? 404 : 400).json({ error: r.error });
+  res.json(r);
+});
+app.delete("/api/financeiro/empresas/:empresaId/cadastros/:id", blockCliente, requirePermissao("financeiro", "editar"), (req, res) => {
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const r = cadastroExcluir(empresaId, Number(req.params.id));
+  if (r.error) return res.status(404).json({ error: r.error });
+  res.json(r);
 });
 
 // ---------- Catálogo de módulos, teste grátis de 3 dias e contratação self-service (Asaas) ----------

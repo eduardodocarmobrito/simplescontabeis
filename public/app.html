@@ -8919,6 +8919,7 @@ async function pageMinhaFinanceiro(){
       <div class="tab" data-tab="adiantamentos">Adiantamentos</div>
       <div class="tab" data-tab="contas">Contas</div>
       <div class="tab" data-tab="relatorios">Relatórios</div>
+      <div class="tab" data-tab="cadastro">Cadastro</div>
     </div>
     <div id="minhaFinContent"></div>
   `;
@@ -8931,6 +8932,7 @@ function renderMinhaFinTabs(){
   else if(MINHA_FIN_TAB==='adiantamentos') finRenderAdiantamentos('/financeiro/minha-empresa','minhaFinContent',true);
   else if(MINHA_FIN_TAB==='contas') finRenderContas('/financeiro/minha-empresa','minhaFinContent',true);
   else if(MINHA_FIN_TAB==='relatorios') finRenderRelatorios('/financeiro/minha-empresa','minhaFinContent');
+  else if(MINHA_FIN_TAB==='cadastro') finRenderCadastros('/financeiro/minha-empresa','minhaFinContent',true);
   else finRenderReceber('/financeiro/minha-empresa','minhaFinContent',MINHA_FIN_RECEBER_FILTRO,true,true);
 }
 // ===================== Financeiro (Contas a Receber/Pagar/Contas) — compartilhado entre a tela do
@@ -9187,10 +9189,21 @@ async function finLancamentoModal(basePath, tipo, item, onSaved){
   const travado = item && (item.origem==='nfse' || item.origem==='nfe');
   const origemLabel = item&&item.origem==='nfse' ? 'uma NFS-e emitida' : item&&item.origem==='nfe' ? 'uma nota (NF-e) integrada' : '';
   const contas = await finContasCache(basePath);
+  // Seletor opcional pra puxar um terceiro já cadastrado (A Pagar: fornecedor/funcionário; A Receber:
+  // cliente) — ex.: lançar pagamento de férias de um funcionário sem redigitar o nome.
+  let cadastros = [];
+  if(!travado){
+    const tiposQ = ehReceber ? ['cliente'] : ['fornecedor','funcionario'];
+    try{ cadastros = ((await api(basePath+'/cadastros')).items||[]).filter(c=>tiposQ.includes(c.tipo)); }catch(e){}
+  }
   openModal(`
     <h3>${item?'Editar':'Novo'} lançamento — ${ehReceber?'a receber':'a pagar'}</h3>
     ${travado?`<p style="font-size:12px; color:var(--ink-soft); margin:-4px 0 10px;">Este título veio de ${origemLabel} — descrição, ${rotuloTerceiro.toLowerCase()} e valor ficam travados.</p>`:''}
     <div class="field"><label>Descrição</label><input id="mflDescricao" value="${item?esc(item.descricao):''}" ${travado?'readonly style="background:var(--paper);"':''}></div>
+    ${!travado&&cadastros.length?`<div class="field"><label>Escolher do cadastro (opcional)</label>
+      <select id="mflCadastro"><option value="">— Digitar manualmente —</option>
+        ${cadastros.map(c=>`<option value="${esc(c.nome)}">${esc(c.nome)}${c.tipo==='funcionario'?' · funcionário':''}</option>`).join('')}
+      </select></div>`:''}
     <div class="field"><label>${rotuloTerceiro} (opcional)</label><input id="mflTerceiro" value="${valorTerceiro?esc(valorTerceiro):''}" ${travado?'readonly style="background:var(--paper);"':''}></div>
     <div class="row">
       <div class="field" style="width:160px;"><label>Valor (R$)</label><input id="mflValor" type="number" step="0.01" min="0" value="${item?item.valor:''}" ${travado?'readonly style="background:var(--paper);"':''}></div>
@@ -9212,6 +9225,8 @@ async function finLancamentoModal(basePath, tipo, item, onSaved){
     </div>
   `);
   setupDatePicker('mflVencimento','mflVencimento_text');
+  const cadSel = document.getElementById('mflCadastro');
+  if(cadSel) cadSel.addEventListener('change', ()=>{ if(cadSel.value) document.getElementById('mflTerceiro').value = cadSel.value; });
   document.getElementById('mflCancel').addEventListener('click', closeModal);
   document.getElementById('mflSalvar').addEventListener('click', async ()=>{
     const descricao = document.getElementById('mflDescricao').value.trim();
@@ -9764,6 +9779,121 @@ async function finRenderRelatorios(basePath, containerId){
   }
   await render('semana');
 }
+// ===================== Cadastro de clientes/fornecedores/funcionários (a "agenda" do Financeiro) ====
+// Alimentado automaticamente quando uma nota é integrada ao Financeiro (vira cliente/fornecedor) e
+// também à mão (inclui funcionário, pra lançar ex. pagamento de férias). Filtro persiste entre
+// re-renders. Compartilhado entre a tela do cliente e a do escritório, igual os outros finRender*.
+let FIN_CAD_FILTRO = { busca:'', tipo:'' };
+async function finRenderCadastros(basePath, containerId, podeEditar){
+  const box = document.getElementById(containerId);
+  box.innerHTML = `<div class="empty-state">Carregando…</div>`;
+  let todos;
+  try{ todos = (await api(basePath+'/cadastros')).items || []; }
+  catch(e){ box.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
+  const TIPO={cliente:'Cliente',fornecedor:'Fornecedor',funcionario:'Funcionário'};
+  const TIPO_TAG={cliente:'ok',fornecedor:'muted',funcionario:'warn'};
+  const recarregar = ()=>finRenderCadastros(basePath, containerId, podeEditar);
+  box.innerHTML = `
+    <div class="row" style="margin-bottom:12px; align-items:flex-end; gap:10px; flex-wrap:wrap;">
+      <div class="field" style="min-width:240px; margin-bottom:0;"><label>Buscar</label><input id="cadBusca" placeholder="Nome ou CPF/CNPJ…" value="${esc(FIN_CAD_FILTRO.busca)}"></div>
+      <div class="field" style="width:170px; margin-bottom:0;"><label>Tipo</label>
+        <select id="cadTipoFiltro">
+          <option value="">Todos</option>
+          <option value="cliente">Clientes</option>
+          <option value="fornecedor">Fornecedores</option>
+          <option value="funcionario">Funcionários</option>
+        </select>
+      </div>
+      ${podeEditar?`<button class="btn primary" id="btnNovoCadastro" style="margin-left:auto;">+ Novo cadastro</button>`:''}
+    </div>
+    <div class="card" style="padding:0; overflow-x:auto;">
+      <table class="data-table">
+        <thead><tr><th>Nome</th><th>Tipo</th><th>CPF/CNPJ</th><th>Contato</th><th>Origem</th>${podeEditar?'<th></th>':''}</tr></thead>
+        <tbody id="cadTbody"></tbody>
+      </table>
+    </div>`;
+  document.getElementById('cadTipoFiltro').value = FIN_CAD_FILTRO.tipo;
+  const tbody = document.getElementById('cadTbody');
+  function pintar(){
+    const bq = FIN_CAD_FILTRO.busca.trim().toLowerCase();
+    const bqDigitos = bq.replace(/\D/g,'');
+    const lista = todos.filter(c=>{
+      if(FIN_CAD_FILTRO.tipo && c.tipo!==FIN_CAD_FILTRO.tipo) return false;
+      if(!bq) return true;
+      const nomeOk = (c.nome||'').toLowerCase().includes(bq);
+      const docOk = bqDigitos && (c.documento||'').includes(bqDigitos);
+      return nomeOk || docOk;
+    });
+    tbody.innerHTML = lista.length? lista.map(c=>`
+      <tr>
+        <td><b>${esc(c.nome)}</b>${c.observacao?`<div style="font-size:11px; color:var(--ink-soft);">${esc(c.observacao)}</div>`:''}</td>
+        <td><span class="tag ${TIPO_TAG[c.tipo]||'muted'}">${TIPO[c.tipo]||c.tipo}</span></td>
+        <td>${c.documento?esc(formatarDocumentoBR(c.documento)):'—'}</td>
+        <td style="font-size:12px;">${[c.email,c.telefone].filter(Boolean).map(esc).join('<br>')||'—'}</td>
+        <td><span style="font-size:11px; color:var(--ink-soft);">${c.origem==='nfe'?'Da nota integrada':'Manual'}</span></td>
+        ${podeEditar?`<td style="text-align:right; white-space:nowrap;">
+          <button class="btn small" data-id="${c.id}" data-act="editar">Editar</button>
+          <button class="btn small" data-id="${c.id}" data-act="excluir">Excluir</button>
+        </td>`:''}
+      </tr>`).join('') : `<tr><td colspan="${podeEditar?6:5}"><div class="empty-state">Nenhum cadastro${FIN_CAD_FILTRO.tipo?' de '+(TIPO[FIN_CAD_FILTRO.tipo]||'').toLowerCase():''}${bq?' pra essa busca':''}. ${podeEditar?'Use "+ Novo cadastro", ou integre uma nota no Financeiro pra criar automaticamente.':''}</div></td></tr>`;
+    if(podeEditar){
+      tbody.querySelectorAll('[data-act="editar"]').forEach(b=>b.addEventListener('click', ()=>finCadastroModal(basePath, null, todos.find(c=>c.id===Number(b.dataset.id)), recarregar)));
+      tbody.querySelectorAll('[data-act="excluir"]').forEach(b=>b.addEventListener('click', async ()=>{
+        if(!confirm('Excluir este cadastro? Os lançamentos já feitos não são afetados.')) return;
+        try{ await api(basePath+'/cadastros/'+b.dataset.id, { method:'DELETE' }); toast('Cadastro excluído.','ok'); recarregar(); }
+        catch(e){ toast(e.message,'err'); }
+      }));
+    }
+  }
+  pintar();
+  document.getElementById('cadBusca').addEventListener('input', e=>{ FIN_CAD_FILTRO.busca = e.target.value; pintar(); });
+  document.getElementById('cadTipoFiltro').addEventListener('change', e=>{ FIN_CAD_FILTRO.tipo = e.target.value; pintar(); });
+  if(podeEditar) document.getElementById('btnNovoCadastro').addEventListener('click', ()=>finCadastroModal(basePath, FIN_CAD_FILTRO.tipo||'fornecedor', null, recarregar));
+}
+function finCadastroModal(basePath, tipoDefault, item, onSaved){
+  const tipoAtual = item?item.tipo:(tipoDefault||'fornecedor');
+  openModal(`
+    <h3>${item?'Editar':'Novo'} cadastro</h3>
+    <div class="field"><label>Tipo</label>
+      <select id="cadTipo">
+        <option value="cliente" ${tipoAtual==='cliente'?'selected':''}>Cliente</option>
+        <option value="fornecedor" ${tipoAtual==='fornecedor'?'selected':''}>Fornecedor</option>
+        <option value="funcionario" ${tipoAtual==='funcionario'?'selected':''}>Funcionário</option>
+      </select>
+    </div>
+    <div class="field"><label>Nome</label><input id="cadNome" value="${item?esc(item.nome):''}"></div>
+    <div class="field"><label>CPF/CNPJ (opcional)</label><input id="cadDoc" value="${item&&item.documento?esc(formatarDocumentoBR(item.documento)):''}" placeholder="000.000.000-00"></div>
+    <div class="row">
+      <div class="field" style="flex:1; min-width:180px;"><label>E-mail (opcional)</label><input id="cadEmail" value="${item&&item.email?esc(item.email):''}"></div>
+      <div class="field" style="width:170px;"><label>Telefone (opcional)</label><input id="cadTel" value="${item&&item.telefone?esc(item.telefone):''}"></div>
+    </div>
+    <div class="field"><label>Observação (opcional)</label><textarea id="cadObs" rows="2">${item&&item.observacao?esc(item.observacao):''}</textarea></div>
+    <div class="modal-actions">
+      <button class="btn" id="cadCancel">Cancelar</button>
+      <button class="btn primary" id="cadSalvar">Salvar</button>
+    </div>
+  `, '480px');
+  const docEl = document.getElementById('cadDoc');
+  docEl.addEventListener('input', ()=>{ docEl.value = formatarDocumentoBR(docEl.value.replace(/\D/g,'').slice(0,14)); });
+  document.getElementById('cadCancel').addEventListener('click', closeModal);
+  document.getElementById('cadSalvar').addEventListener('click', async ()=>{
+    const nome = document.getElementById('cadNome').value.trim();
+    if(!nome){ toast('Informe o nome.','err'); return; }
+    const body = {
+      tipo: document.getElementById('cadTipo').value,
+      nome,
+      documento: docEl.value.replace(/\D/g,''),
+      email: document.getElementById('cadEmail').value.trim(),
+      telefone: document.getElementById('cadTel').value.trim(),
+      observacao: document.getElementById('cadObs').value.trim(),
+    };
+    try{
+      if(item) await api(basePath+'/cadastros/'+item.id, { method:'PUT', body });
+      else await api(basePath+'/cadastros', { method:'POST', body });
+      closeModal(); toast('Cadastro salvo.','ok'); onSaved();
+    }catch(e){ toast(e.message,'err'); }
+  });
+}
 // ===================== Assinatura (catálogo de módulos, teste grátis, pagamento — perfil Cliente) =====================
 // ===================== Minha Assinatura (Colaborador) =====================
 // Diferente da tela do Cliente: quem paga de verdade é o escritório (cobrança agregada em
@@ -9923,6 +10053,7 @@ async function pageFinanceiro(){
       <div class="tab" data-tab="adiantamentos">Adiantamentos</div>
       <div class="tab" data-tab="contas">Contas</div>
       <div class="tab" data-tab="relatorios">Relatórios</div>
+      <div class="tab" data-tab="cadastro">Cadastro</div>
       <div class="tab" data-tab="robo-boletos">Configuração envio de boletos</div>
     </div>
     <div id="finContent"></div>
@@ -9934,7 +10065,7 @@ function renderFinTabs(){
   main().querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===FIN_TAB));
   if(FIN_TAB==='honorarios') renderHonorarios();
   else if(FIN_TAB==='robo-boletos') renderHonorariosRobo();
-  else if(FIN_TAB==='receber'||FIN_TAB==='pagar'||FIN_TAB==='adiantamentos'||FIN_TAB==='contas'||FIN_TAB==='relatorios') renderFinEmpresaScoped(FIN_TAB);
+  else if(FIN_TAB==='receber'||FIN_TAB==='pagar'||FIN_TAB==='adiantamentos'||FIN_TAB==='contas'||FIN_TAB==='relatorios'||FIN_TAB==='cadastro') renderFinEmpresaScoped(FIN_TAB);
   else renderLancamentos();
 }
 // "A Receber"/"A Pagar"/"Contas" do escritório são as MESMAS tabelas que a empresa-cliente vê no
@@ -9961,6 +10092,7 @@ async function renderFinEmpresaScoped(tab){
     else if(tab==='pagar') finRenderPagar(basePath, 'finEmpresaContent', FIN_PAGAR_EMPRESA_FILTRO, podePostar, podeEditar);
     else if(tab==='adiantamentos') finRenderAdiantamentos(basePath, 'finEmpresaContent', podePostar);
     else if(tab==='relatorios') finRenderRelatorios(basePath, 'finEmpresaContent');
+    else if(tab==='cadastro') finRenderCadastros(basePath, 'finEmpresaContent', podeEditar);
     else finRenderContas(basePath, 'finEmpresaContent', podeEditar);
   }
   setupComboSelect('finEmpresaCombo', empresas.map(e=>({id:e.id,label:e.nome})), (id)=>{ FIN_EMPRESA_SELECIONADA = id; carregar(); });
