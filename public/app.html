@@ -9191,10 +9191,11 @@ async function finLancamentoModal(basePath, tipo, item, onSaved){
   const contas = await finContasCache(basePath);
   // Seletor opcional pra puxar um terceiro já cadastrado (A Pagar: fornecedor/funcionário; A Receber:
   // cliente) — ex.: lançar pagamento de férias de um funcionário sem redigitar o nome.
-  let cadastros = [];
+  let cadastros = [], tiposDoc = [];
   if(!travado){
     const tiposQ = ehReceber ? ['cliente'] : ['fornecedor','funcionario'];
     try{ cadastros = ((await api(basePath+'/cadastros')).items||[]).filter(c=>tiposQ.includes(c.tipo)); }catch(e){}
+    try{ tiposDoc = (await api(basePath+'/tipos-documento')).items||[]; }catch(e){}
   }
   openModal(`
     <h3>${item?'Editar':'Novo'} lançamento — ${ehReceber?'a receber':'a pagar'}</h3>
@@ -9205,6 +9206,13 @@ async function finLancamentoModal(basePath, tipo, item, onSaved){
         ${cadastros.map(c=>`<option value="${esc(c.nome)}">${esc(c.nome)}${c.tipo==='funcionario'?' · funcionário':''}</option>`).join('')}
       </select></div>`:''}
     <div class="field"><label>${rotuloTerceiro} (opcional)</label><input id="mflTerceiro" value="${valorTerceiro?esc(valorTerceiro):''}" ${travado?'readonly style="background:var(--paper);"':''}></div>
+    ${!travado?`<div class="field"><label>Tipo de documento <span style="color:var(--debit)">*</span></label>
+      <div class="row" style="gap:6px; align-items:center;">
+        <select id="mflTipoDoc" style="flex:1;"><option value="">— Escolha o tipo —</option>
+          ${tiposDoc.map(t=>`<option value="${t.id}" ${item&&item.tipoDocumentoId===t.id?'selected':''}>${esc(t.nome)}</option>`).join('')}
+        </select>
+        <button type="button" class="btn small" id="mflNovoTipoDoc" title="Criar um novo tipo de documento">+ novo</button>
+      </div></div>`:''}
     <div class="row">
       <div class="field" style="width:160px;"><label>Valor (R$)</label><input id="mflValor" type="number" step="0.01" min="0" value="${item?item.valor:''}" ${travado?'readonly style="background:var(--paper);"':''}></div>
       <div class="field" style="width:170px;">${dateFieldHtml('mflVencimento','Vencimento', item?item.vencimento:'')}</div>
@@ -9227,6 +9235,19 @@ async function finLancamentoModal(basePath, tipo, item, onSaved){
   setupDatePicker('mflVencimento','mflVencimento_text');
   const cadSel = document.getElementById('mflCadastro');
   if(cadSel) cadSel.addEventListener('change', ()=>{ if(cadSel.value) document.getElementById('mflTerceiro').value = cadSel.value; });
+  const btnNovoTipo = document.getElementById('mflNovoTipoDoc');
+  if(btnNovoTipo) btnNovoTipo.addEventListener('click', async ()=>{
+    const nome = (prompt('Nome do novo tipo de documento (ex.: Recibo, Folha, Rescisão):')||'').trim();
+    if(!nome) return;
+    try{
+      const r = await api(basePath+'/tipos-documento', { method:'POST', body:{ nome } });
+      const sel = document.getElementById('mflTipoDoc');
+      let opt = [...sel.options].find(o=>Number(o.value)===Number(r.id));
+      if(!opt){ opt = document.createElement('option'); opt.value = r.id; opt.textContent = nome; sel.appendChild(opt); }
+      sel.value = String(r.id);
+      toast('Tipo de documento criado.','ok');
+    }catch(e){ toast(e.message,'err'); }
+  });
   document.getElementById('mflCancel').addEventListener('click', closeModal);
   document.getElementById('mflSalvar').addEventListener('click', async ()=>{
     const descricao = document.getElementById('mflDescricao').value.trim();
@@ -9237,6 +9258,12 @@ async function finLancamentoModal(basePath, tipo, item, onSaved){
     const body = { descricao, valor, vencimento, observacao: document.getElementById('mflObs').value.trim(), contaId: contaVal?Number(contaVal):null };
     body[campoTerceiro] = document.getElementById('mflTerceiro').value.trim();
     if(item) body.status = document.getElementById('mflStatus').value;
+    // Tipo de documento obrigatório no lançamento manual (pedido do usuário: "não deixar lançar sem").
+    if(!travado){
+      const tipoDocVal = document.getElementById('mflTipoDoc').value;
+      if(!tipoDocVal){ toast('Escolha o tipo de documento do lançamento (Recibo, Folha, etc.).','err'); return; }
+      body.tipoDocumentoId = Number(tipoDocVal);
+    }
     // A Pagar: não deixa salvar como Pago sem a conta de pagamento (mesma regra do botão "Marcar pago").
     if(item && !ehReceber && body.status==='pago' && !body.contaId){ toast('Pra marcar como Pago, escolha a conta de onde saiu o pagamento.','err'); return; }
     try{
@@ -9416,6 +9443,14 @@ async function finUsarAdiantamentoModal(basePath, tipo, item, onDone){
   });
 }
 let MINHA_FIN_RECEBER_FILTRO = { dataDe:'', dataAte:'' };
+// Rótulo do tipo de documento de um título: integrados mostram o tipo fiscal (NF-e/NFC-e/NFS-e/CT-e),
+// NFS-e emitida mostra NFS-e, extrato mostra Extrato; manual mostra o tipo escolhido (Recibo/Folha/…).
+function finLabelDocumento(i){
+  if(i.origem==='nfe'){ const M={nfe:'NF-e',nfce:'NFC-e',nfse:'NFS-e',cte:'CT-e'}; return M[i.docFiscalTipo]||'Nota fiscal'; }
+  if(i.origem==='nfse') return 'NFS-e';
+  if(i.origem==='ofx') return 'Extrato';
+  return i.tipoDocumentoNome || '—';
+}
 async function finRenderReceber(basePath, containerId, filtro, podePostar, podeEditar){
   const { dataDe, dataAte } = filtro;
   const qs = new URLSearchParams();
@@ -9433,12 +9468,13 @@ async function finRenderReceber(basePath, containerId, filtro, podePostar, podeE
     </div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
-        <thead><tr><th>Descrição</th><th>Cliente</th><th>Valor</th><th>Vencimento</th><th>Conta</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th>Descrição</th><th>Cliente</th><th>Documento</th><th>Valor</th><th>Vencimento</th><th>Conta</th><th>Status</th><th></th></tr></thead>
         <tbody>
           ${items.length? items.map(i=>`
             <tr>
               <td><b>${esc(i.descricao)}</b>${ORIGEM_LABEL[i.origem]?`<div style="font-size:11px; color:var(--ink-soft);">${ORIGEM_LABEL[i.origem]}</div>`:''}</td>
               <td>${esc(i.clienteNome||'—')}</td>
+              <td><span class="tag muted" style="font-weight:600;">${esc(finLabelDocumento(i))}</span></td>
               <td>${fmtMoney(i.valor)}</td>
               <td>${fmtDateIso(i.vencimento)}</td>
               <td>${esc(i.contaNome||'—')}</td>
@@ -9451,7 +9487,7 @@ async function finRenderReceber(basePath, containerId, filtro, podePostar, podeE
                 ${podeEditar&&i.status!=='renegociado'&&i.origem!=='nfse'&&i.origem!=='nfe'?`<button class="btn small" data-id="${i.id}" data-act="excluir">Excluir</button>`:''}
               </td>
             </tr>
-          `).join('') : `<tr><td colspan="7"><div class="empty-state">Nenhum lançamento neste período.</div></td></tr>`}
+          `).join('') : `<tr><td colspan="8"><div class="empty-state">Nenhum lançamento neste período.</div></td></tr>`}
         </tbody>
       </table>
     </div>
@@ -9534,12 +9570,13 @@ async function finRenderPagar(basePath, containerId, filtro, podePostar, podeEdi
     </div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
-        <thead><tr><th>Descrição</th><th>Fornecedor</th><th>Valor</th><th>Vencimento</th><th>Conta</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th>Descrição</th><th>Fornecedor</th><th>Documento</th><th>Valor</th><th>Vencimento</th><th>Conta</th><th>Status</th><th></th></tr></thead>
         <tbody>
           ${items.length? items.map(i=>`
             <tr>
               <td><b>${esc(i.descricao)}</b>${ORIGEM_LABEL_PAGAR[i.origem]?`<div style="font-size:11px; color:var(--ink-soft);">${ORIGEM_LABEL_PAGAR[i.origem]}</div>`:''}</td>
               <td>${esc(i.fornecedor||'—')}</td>
+              <td><span class="tag muted" style="font-weight:600;">${esc(finLabelDocumento(i))}</span></td>
               <td>${fmtMoney(i.valor)}</td>
               <td>${fmtDateIso(i.vencimento)}</td>
               <td>${esc(i.contaNome||'—')}</td>
@@ -9552,7 +9589,7 @@ async function finRenderPagar(basePath, containerId, filtro, podePostar, podeEdi
                 ${podeEditar&&i.status!=='renegociado'&&i.origem!=='nfe'?`<button class="btn small" data-id="${i.id}" data-act="excluir">Excluir</button>`:''}
               </td>
             </tr>
-          `).join('') : `<tr><td colspan="7"><div class="empty-state">Nenhum lançamento neste período.</div></td></tr>`}
+          `).join('') : `<tr><td colspan="8"><div class="empty-state">Nenhum lançamento neste período.</div></td></tr>`}
         </tbody>
       </table>
     </div>
@@ -9787,8 +9824,8 @@ let FIN_CAD_FILTRO = { busca:'', tipo:'' };
 async function finRenderCadastros(basePath, containerId, podeEditar){
   const box = document.getElementById(containerId);
   box.innerHTML = `<div class="empty-state">Carregando…</div>`;
-  let todos;
-  try{ todos = (await api(basePath+'/cadastros')).items || []; }
+  let todos, tiposDoc;
+  try{ [todos, tiposDoc] = await Promise.all([ api(basePath+'/cadastros').then(r=>r.items||[]), api(basePath+'/tipos-documento').then(r=>r.items||[]) ]); }
   catch(e){ box.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
   const TIPO={cliente:'Cliente',fornecedor:'Fornecedor',funcionario:'Funcionário'};
   const TIPO_TAG={cliente:'ok',fornecedor:'muted',funcionario:'warn'};
@@ -9811,8 +9848,35 @@ async function finRenderCadastros(basePath, containerId, podeEditar){
         <thead><tr><th>Nome</th><th>Tipo</th><th>CPF/CNPJ</th><th>Contato</th><th>Origem</th>${podeEditar?'<th></th>':''}</tr></thead>
         <tbody id="cadTbody"></tbody>
       </table>
+    </div>
+    <div class="card" style="margin-top:14px;">
+      <div class="row" style="justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+        <div><div style="font-weight:600; font-size:13px;">🧾 Tipos de documento (lançamentos manuais)</div>
+          <div style="font-size:11.5px; color:var(--ink-soft); margin-top:2px;">Usados no lançamento manual a pagar/receber (Recibo, Folha, Rescisão…). O lançamento exige um tipo.</div></div>
+        ${podeEditar?`<button class="btn small primary" id="btnNovoTipoDocCad">+ Novo tipo</button>`:''}
+      </div>
+      <div id="tipoDocChips" style="display:flex; flex-wrap:wrap; gap:6px; margin-top:12px;"></div>
     </div>`;
   document.getElementById('cadTipoFiltro').value = FIN_CAD_FILTRO.tipo;
+  function pintarTipos(){
+    const cont = document.getElementById('tipoDocChips');
+    cont.innerHTML = tiposDoc.length? tiposDoc.map(t=>`
+      <span class="tag muted" style="display:inline-flex; align-items:center; gap:6px; font-size:12px; padding:4px 8px;">${esc(t.nome)}${podeEditar?`<button type="button" data-tipodoc="${t.id}" title="Remover" style="border:0; background:none; cursor:pointer; color:var(--ink-soft); font-size:14px; line-height:1; padding:0;">×</button>`:''}</span>
+    `).join('') : `<span style="font-size:12px; color:var(--ink-soft);">Nenhum tipo cadastrado.</span>`;
+    if(podeEditar) cont.querySelectorAll('[data-tipodoc]').forEach(b=>b.addEventListener('click', async ()=>{
+      if(!confirm('Remover este tipo de documento? Lançamentos antigos que já usam ele continuam como estão.')) return;
+      try{ await api(basePath+'/tipos-documento/'+b.dataset.tipodoc, { method:'DELETE' }); tiposDoc = tiposDoc.filter(t=>String(t.id)!==String(b.dataset.tipodoc)); pintarTipos(); toast('Tipo removido.','ok'); }
+      catch(e){ toast(e.message,'err'); }
+    }));
+  }
+  pintarTipos();
+  if(podeEditar) document.getElementById('btnNovoTipoDocCad').addEventListener('click', async ()=>{
+    const nome = (prompt('Nome do novo tipo de documento (ex.: Recibo, Folha, Rescisão):')||'').trim();
+    if(!nome) return;
+    try{ const r = await api(basePath+'/tipos-documento', { method:'POST', body:{ nome } });
+      if(!tiposDoc.some(t=>Number(t.id)===Number(r.id))) tiposDoc.push({ id:r.id, nome }); pintarTipos(); toast('Tipo criado.','ok'); }
+    catch(e){ toast(e.message,'err'); }
+  });
   const tbody = document.getElementById('cadTbody');
   function pintar(){
     const bq = FIN_CAD_FILTRO.busca.trim().toLowerCase();

@@ -2044,6 +2044,28 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
       GROUP BY empresa_id, lower(TRIM(cliente_nome))`);
   }
 }
+// Tipos de documento do lançamento manual (Recibo, Folha, Rescisão, etc.) — por empresa, geridos pelo
+// usuário. Lançamento manual passa a EXIGIR um tipo (pedido do usuário: "não deixar lançar sem"); os
+// títulos gerados por nota/NFS-e/extrato não usam esta lista (o tipo vem do próprio documento fiscal).
+{
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS financeiro_tipos_documento (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      empresa_id INTEGER NOT NULL,
+      nome TEXT NOT NULL,
+      ativo INTEGER NOT NULL DEFAULT 1,
+      criado_em TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+  sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_fin_tipodoc_empresa ON financeiro_tipos_documento(empresa_id)`);
+  const colsPagar3 = sqlite.prepare(`PRAGMA table_info(financeiro_pagar)`).all() as any[];
+  if (!colsPagar3.some((c) => c.name === "tipo_documento_id")) {
+    sqlite.exec(`ALTER TABLE financeiro_pagar ADD COLUMN tipo_documento_id INTEGER REFERENCES financeiro_tipos_documento(id) ON DELETE SET NULL`);
+  }
+  const colsReceber3 = sqlite.prepare(`PRAGMA table_info(financeiro_receber)`).all() as any[];
+  if (!colsReceber3.some((c) => c.name === "tipo_documento_id")) {
+    sqlite.exec(`ALTER TABLE financeiro_receber ADD COLUMN tipo_documento_id INTEGER REFERENCES financeiro_tipos_documento(id) ON DELETE SET NULL`);
+  }
+}
 // Migração leve: saldo inicial da conta banco/caixa — usado como ponto de partida do saldo exibido
 // (saldo inicial + soma dos títulos já pagos/recebidos naquela conta), não é uma movimentação.
 {
@@ -15273,6 +15295,40 @@ function cadastroExcluir(empresaId: number, id: number): { ok?: boolean; error?:
   sqlite.prepare(`UPDATE financeiro_cadastros SET ativo=0 WHERE id=?`).run(id); // soft delete: não quebra histórico
   return { ok: true };
 }
+// ---- Tipos de documento do lançamento manual ----
+const TIPOS_DOC_PADRAO = ["Recibo", "Folha de pagamento", "Rescisão", "Contrato", "Boleto", "Comprovante", "Outro"];
+function tiposDocListar(empresaId: number): any[] {
+  let rows = sqlite.prepare(`SELECT id, nome FROM financeiro_tipos_documento WHERE empresa_id=? AND ativo=1 ORDER BY nome COLLATE NOCASE`).all(empresaId) as any[];
+  if (!rows.length) {
+    // Semeia a lista padrão na primeira vez que a empresa abre a tela — usuário edita/remove à vontade.
+    const ins = sqlite.prepare(`INSERT INTO financeiro_tipos_documento (empresa_id, nome) VALUES (?, ?)`);
+    for (const n of TIPOS_DOC_PADRAO) ins.run(empresaId, n);
+    rows = sqlite.prepare(`SELECT id, nome FROM financeiro_tipos_documento WHERE empresa_id=? AND ativo=1 ORDER BY nome COLLATE NOCASE`).all(empresaId) as any[];
+  }
+  return rows;
+}
+function tipoDocCriar(empresaId: number, body: any): { id?: number; error?: string } {
+  const nome = (body?.nome || "").trim();
+  if (!nome) return { error: "Informe o nome do tipo de documento." };
+  const existe = sqlite.prepare(`SELECT id FROM financeiro_tipos_documento WHERE empresa_id=? AND ativo=1 AND lower(nome)=lower(?)`).get(empresaId, nome) as any;
+  if (existe) return { id: existe.id }; // idempotente: não duplica
+  const info = sqlite.prepare(`INSERT INTO financeiro_tipos_documento (empresa_id, nome) VALUES (?, ?)`).run(empresaId, nome);
+  return { id: Number(info.lastInsertRowid) };
+}
+function tipoDocExcluir(empresaId: number, id: number): { ok?: boolean; error?: string } {
+  const existe = sqlite.prepare(`SELECT id FROM financeiro_tipos_documento WHERE id=? AND empresa_id=?`).get(id, empresaId) as any;
+  if (!existe) return { error: "Tipo de documento não encontrado." };
+  sqlite.prepare(`UPDATE financeiro_tipos_documento SET ativo=0 WHERE id=?`).run(id); // soft delete: títulos antigos mantêm o vínculo
+  return { ok: true };
+}
+// Valida o tipo de documento obrigatório de um lançamento MANUAL (os gerados por nota/NFS-e/extrato
+// não passam por aqui — o tipo deles vem do próprio documento).
+function validarTipoDocManual(empresaId: number, body: any): { id?: number; error?: string } {
+  const id = body?.tipoDocumentoId ? Number(body.tipoDocumentoId) : null;
+  if (!id) return { error: "Escolha o tipo de documento do lançamento (Recibo, Folha, etc.)." };
+  if (!sqlite.prepare(`SELECT 1 FROM financeiro_tipos_documento WHERE id=? AND empresa_id=? AND ativo=1`).get(id, empresaId)) return { error: "Tipo de documento inválido." };
+  return { id };
+}
 function financeiroRelatorio(empresaId: number, granularidade: "dia" | "semana" | "mes" = "semana") {
   const hoje = new Date().toISOString().slice(0, 10);
   const contasAtivas = financeiroContasComSaldo(empresaId).filter((c: any) => c.ativo);
@@ -15869,11 +15925,16 @@ app.get("/api/financeiro/minha-empresa/pagar", requireCliente, requireModuloAtiv
   const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
   const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
   let sql = `SELECT p.id, p.descricao, p.fornecedor, p.valor, p.vencimento, p.status, p.data_pagamento as dataPagamento, p.observacao,
-                    p.origem, p.nfe_documento_id as nfeDocumentoId, p.conta_id as contaId, c.nome as contaNome, p.criado_em as criadoEm
-             FROM financeiro_pagar p LEFT JOIN financeiro_contas c ON c.id = p.conta_id WHERE p.empresa_id = ?`;
+                    p.origem, p.nfe_documento_id as nfeDocumentoId, p.tipo_documento_id as tipoDocumentoId, td.nome as tipoDocumentoNome, nd.tipo as docFiscalTipo,
+                    p.conta_id as contaId, c.nome as contaNome, p.criado_em as criadoEm
+             FROM financeiro_pagar p
+             LEFT JOIN financeiro_contas c ON c.id = p.conta_id
+             LEFT JOIN financeiro_tipos_documento td ON td.id = p.tipo_documento_id
+             LEFT JOIN nfe_documentos nd ON nd.id = p.nfe_documento_id
+             WHERE p.empresa_id = ?`;
   const params: any[] = [empresaId];
-  if (dataDe) { sql += ` AND date(vencimento) >= date(?)`; params.push(dataDe); }
-  if (dataAte) { sql += ` AND date(vencimento) <= date(?)`; params.push(dataAte); }
+  if (dataDe) { sql += ` AND date(p.vencimento) >= date(?)`; params.push(dataDe); }
+  if (dataAte) { sql += ` AND date(p.vencimento) <= date(?)`; params.push(dataAte); }
   sql += ` ORDER BY date(p.vencimento) ASC, p.id ASC`;
   res.json({ items: sqlite.prepare(sql).all(...params) });
 });
@@ -15881,9 +15942,11 @@ app.post("/api/financeiro/minha-empresa/pagar", requireCliente, requireModuloAti
   const user = (req as any).user;
   const { descricao, fornecedor, valor, vencimento, observacao, contaId } = req.body || {};
   if (!descricao || !valor || !vencimento) return res.status(400).json({ error: "Preencha a descrição, o valor e o vencimento." });
+  const td = validarTipoDocManual(user.empresaId, req.body);
+  if (!td.id) return res.status(400).json({ error: td.error || "Escolha o tipo de documento do lançamento." });
   const info = sqlite
-    .prepare(`INSERT INTO financeiro_pagar (empresa_id, descricao, fornecedor, valor, vencimento, observacao, conta_id, criado_por) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(user.empresaId, String(descricao).trim(), fornecedor || null, Number(valor), String(vencimento), observacao || null, contaId ? Number(contaId) : null, user.id);
+    .prepare(`INSERT INTO financeiro_pagar (empresa_id, descricao, fornecedor, valor, vencimento, observacao, conta_id, tipo_documento_id, criado_por) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(user.empresaId, String(descricao).trim(), fornecedor || null, Number(valor), String(vencimento), observacao || null, contaId ? Number(contaId) : null, td.id, user.id);
   res.json({ id: Number(info.lastInsertRowid) });
 });
 app.put("/api/financeiro/minha-empresa/pagar/:id", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
@@ -15902,12 +15965,20 @@ app.put("/api/financeiro/minha-empresa/pagar/:id", requireCliente, requireModulo
   // — mesma proteção que o recebível gerado por NFS-e já tinha, só vencimento/status/conta/observação
   // editáveis, pra não desalinhar do valor real da nota.
   const travadoPelaNfe = existente.origem === "nfe" || existente.origem === "ofx";
+  // Tipo de documento: obrigatório em lançamento manual (pedido do usuário). Nos gerados por nota/
+  // extrato o tipo vem do documento, então mantém o que estiver (geralmente null).
+  let tipoDocFinal = existente.tipo_documento_id;
+  if (existente.origem === "manual") {
+    const td = validarTipoDocManual(user.empresaId, { tipoDocumentoId: req.body?.tipoDocumentoId !== undefined ? req.body.tipoDocumentoId : existente.tipo_documento_id });
+    if (!td.id) return res.status(400).json({ error: td.error || "Escolha o tipo de documento do lançamento." });
+    tipoDocFinal = td.id;
+  }
   const dataPag = statusValido === "pago"
     ? (typeof dataPagamento === "string" && /^\d{4}-\d{2}-\d{2}$/.test(dataPagamento) ? dataPagamento : existente.data_pagamento || new Date().toISOString().slice(0, 10))
     : statusValido === existente.status ? existente.data_pagamento : null;
   sqlite
     .prepare(
-      `UPDATE financeiro_pagar SET descricao=?, fornecedor=?, valor=?, vencimento=?, status=?, data_pagamento=?, observacao=?, conta_id=? WHERE id=?`
+      `UPDATE financeiro_pagar SET descricao=?, fornecedor=?, valor=?, vencimento=?, status=?, data_pagamento=?, observacao=?, conta_id=?, tipo_documento_id=? WHERE id=?`
     )
     .run(
       travadoPelaNfe ? existente.descricao : descricao != null ? String(descricao).trim() : existente.descricao,
@@ -15918,6 +15989,7 @@ app.put("/api/financeiro/minha-empresa/pagar/:id", requireCliente, requireModulo
       dataPag,
       observacao !== undefined ? observacao || null : existente.observacao,
       contaFinal,
+      tipoDocFinal,
       existente.id
     );
   res.json({ ok: true });
@@ -15937,11 +16009,16 @@ app.get("/api/financeiro/minha-empresa/receber", requireCliente, requireModuloAt
   const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
   const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
   let sql = `SELECT r.id, r.descricao, r.cliente_nome as clienteNome, r.valor, r.vencimento, r.status, r.data_recebimento as dataRecebimento, r.observacao,
-                    r.origem, r.nfse_emissao_id as nfseEmissaoId, r.nfe_documento_id as nfeDocumentoId, r.conta_id as contaId, c.nome as contaNome, r.criado_em as criadoEm
-             FROM financeiro_receber r LEFT JOIN financeiro_contas c ON c.id = r.conta_id WHERE r.empresa_id = ?`;
+                    r.origem, r.nfse_emissao_id as nfseEmissaoId, r.nfe_documento_id as nfeDocumentoId, r.tipo_documento_id as tipoDocumentoId, td.nome as tipoDocumentoNome, nd.tipo as docFiscalTipo,
+                    r.conta_id as contaId, c.nome as contaNome, r.criado_em as criadoEm
+             FROM financeiro_receber r
+             LEFT JOIN financeiro_contas c ON c.id = r.conta_id
+             LEFT JOIN financeiro_tipos_documento td ON td.id = r.tipo_documento_id
+             LEFT JOIN nfe_documentos nd ON nd.id = r.nfe_documento_id
+             WHERE r.empresa_id = ?`;
   const params: any[] = [empresaId];
-  if (dataDe) { sql += ` AND date(vencimento) >= date(?)`; params.push(dataDe); }
-  if (dataAte) { sql += ` AND date(vencimento) <= date(?)`; params.push(dataAte); }
+  if (dataDe) { sql += ` AND date(r.vencimento) >= date(?)`; params.push(dataDe); }
+  if (dataAte) { sql += ` AND date(r.vencimento) <= date(?)`; params.push(dataAte); }
   sql += ` ORDER BY date(r.vencimento) ASC, r.id ASC`;
   res.json({ items: sqlite.prepare(sql).all(...params) });
 });
@@ -15949,9 +16026,11 @@ app.post("/api/financeiro/minha-empresa/receber", requireCliente, requireModuloA
   const user = (req as any).user;
   const { descricao, clienteNome, valor, vencimento, observacao, contaId } = req.body || {};
   if (!descricao || !valor || !vencimento) return res.status(400).json({ error: "Preencha a descrição, o valor e o vencimento." });
+  const td = validarTipoDocManual(user.empresaId, req.body);
+  if (!td.id) return res.status(400).json({ error: td.error || "Escolha o tipo de documento do lançamento." });
   const info = sqlite
-    .prepare(`INSERT INTO financeiro_receber (empresa_id, descricao, cliente_nome, valor, vencimento, observacao, origem, conta_id, criado_por) VALUES (?, ?, ?, ?, ?, ?, 'manual', ?, ?)`)
-    .run(user.empresaId, String(descricao).trim(), clienteNome || null, Number(valor), String(vencimento), observacao || null, contaId ? Number(contaId) : null, user.id);
+    .prepare(`INSERT INTO financeiro_receber (empresa_id, descricao, cliente_nome, valor, vencimento, observacao, origem, conta_id, tipo_documento_id, criado_por) VALUES (?, ?, ?, ?, ?, ?, 'manual', ?, ?, ?)`)
+    .run(user.empresaId, String(descricao).trim(), clienteNome || null, Number(valor), String(vencimento), observacao || null, contaId ? Number(contaId) : null, td.id, user.id);
   res.json({ id: Number(info.lastInsertRowid) });
 });
 app.put("/api/financeiro/minha-empresa/receber/:id", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
@@ -15964,9 +16043,15 @@ app.put("/api/financeiro/minha-empresa/receber/:id", requireCliente, requireModu
   // travados — só vencimento, status, conta e observação são editáveis, pra não desalinhar do valor
   // real da nota emitida.
   const travadoPelaNfse = existente.origem === "nfse" || existente.origem === "nfe" || existente.origem === "ofx";
+  let tipoDocFinal = existente.tipo_documento_id;
+  if (existente.origem === "manual") {
+    const td = validarTipoDocManual(user.empresaId, { tipoDocumentoId: req.body?.tipoDocumentoId !== undefined ? req.body.tipoDocumentoId : existente.tipo_documento_id });
+    if (!td.id) return res.status(400).json({ error: td.error || "Escolha o tipo de documento do lançamento." });
+    tipoDocFinal = td.id;
+  }
   sqlite
     .prepare(
-      `UPDATE financeiro_receber SET descricao=?, cliente_nome=?, valor=?, vencimento=?, status=?, data_recebimento=?, observacao=?, conta_id=? WHERE id=?`
+      `UPDATE financeiro_receber SET descricao=?, cliente_nome=?, valor=?, vencimento=?, status=?, data_recebimento=?, observacao=?, conta_id=?, tipo_documento_id=? WHERE id=?`
     )
     .run(
       travadoPelaNfse ? existente.descricao : descricao != null ? String(descricao).trim() : existente.descricao,
@@ -15977,6 +16062,7 @@ app.put("/api/financeiro/minha-empresa/receber/:id", requireCliente, requireModu
       statusValido === "pago" ? new Date().toISOString().slice(0, 10) : statusValido === existente.status ? existente.data_recebimento : null,
       observacao !== undefined ? observacao || null : existente.observacao,
       contaId !== undefined ? (contaId ? Number(contaId) : null) : existente.conta_id,
+      tipoDocFinal,
       existente.id
     );
   res.json({ ok: true });
@@ -16073,11 +16159,16 @@ app.get("/api/financeiro/empresas/:empresaId/pagar", blockCliente, requirePermis
   const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
   const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
   let sql = `SELECT p.id, p.descricao, p.fornecedor, p.valor, p.vencimento, p.status, p.data_pagamento as dataPagamento, p.observacao,
-                    p.origem, p.nfe_documento_id as nfeDocumentoId, p.conta_id as contaId, c.nome as contaNome, p.criado_em as criadoEm
-             FROM financeiro_pagar p LEFT JOIN financeiro_contas c ON c.id = p.conta_id WHERE p.empresa_id = ?`;
+                    p.origem, p.nfe_documento_id as nfeDocumentoId, p.tipo_documento_id as tipoDocumentoId, td.nome as tipoDocumentoNome, nd.tipo as docFiscalTipo,
+                    p.conta_id as contaId, c.nome as contaNome, p.criado_em as criadoEm
+             FROM financeiro_pagar p
+             LEFT JOIN financeiro_contas c ON c.id = p.conta_id
+             LEFT JOIN financeiro_tipos_documento td ON td.id = p.tipo_documento_id
+             LEFT JOIN nfe_documentos nd ON nd.id = p.nfe_documento_id
+             WHERE p.empresa_id = ?`;
   const params: any[] = [empresaId];
-  if (dataDe) { sql += ` AND date(vencimento) >= date(?)`; params.push(dataDe); }
-  if (dataAte) { sql += ` AND date(vencimento) <= date(?)`; params.push(dataAte); }
+  if (dataDe) { sql += ` AND date(p.vencimento) >= date(?)`; params.push(dataDe); }
+  if (dataAte) { sql += ` AND date(p.vencimento) <= date(?)`; params.push(dataAte); }
   sql += ` ORDER BY date(p.vencimento) ASC, p.id ASC`;
   res.json({ items: sqlite.prepare(sql).all(...params) });
 });
@@ -16087,9 +16178,11 @@ app.post("/api/financeiro/empresas/:empresaId/pagar", blockCliente, requirePermi
   if (!podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
   const { descricao, fornecedor, valor, vencimento, observacao, contaId } = req.body || {};
   if (!descricao || !valor || !vencimento) return res.status(400).json({ error: "Preencha a descrição, o valor e o vencimento." });
+  const td = validarTipoDocManual(empresaId, req.body);
+  if (!td.id) return res.status(400).json({ error: td.error || "Escolha o tipo de documento do lançamento." });
   const info = sqlite
-    .prepare(`INSERT INTO financeiro_pagar (empresa_id, descricao, fornecedor, valor, vencimento, observacao, conta_id, criado_por) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(empresaId, String(descricao).trim(), fornecedor || null, Number(valor), String(vencimento), observacao || null, contaId ? Number(contaId) : null, user.id);
+    .prepare(`INSERT INTO financeiro_pagar (empresa_id, descricao, fornecedor, valor, vencimento, observacao, conta_id, tipo_documento_id, criado_por) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(empresaId, String(descricao).trim(), fornecedor || null, Number(valor), String(vencimento), observacao || null, contaId ? Number(contaId) : null, td.id, user.id);
   res.json({ id: Number(info.lastInsertRowid) });
 });
 app.put("/api/financeiro/empresas/:empresaId/pagar/:id", blockCliente, requirePermissao("financeiro", "editar"), (req, res) => {
@@ -16104,11 +16197,17 @@ app.put("/api/financeiro/empresas/:empresaId/pagar/:id", blockCliente, requirePe
   if (statusValido === "pago" && !contaFinal) return res.status(400).json({ error: "Informe a conta de onde saiu o pagamento para marcar como pago." });
   if (contaFinal && !sqlite.prepare(`SELECT 1 FROM financeiro_contas WHERE id = ? AND empresa_id = ?`).get(contaFinal, empresaId)) return res.status(400).json({ error: "Conta de pagamento inválida." });
   const travadoPelaNfe = existente.origem === "nfe" || existente.origem === "ofx";
+  let tipoDocFinal = existente.tipo_documento_id;
+  if (existente.origem === "manual") {
+    const td = validarTipoDocManual(empresaId, { tipoDocumentoId: req.body?.tipoDocumentoId !== undefined ? req.body.tipoDocumentoId : existente.tipo_documento_id });
+    if (!td.id) return res.status(400).json({ error: td.error || "Escolha o tipo de documento do lançamento." });
+    tipoDocFinal = td.id;
+  }
   const dataPag = statusValido === "pago"
     ? (typeof dataPagamento === "string" && /^\d{4}-\d{2}-\d{2}$/.test(dataPagamento) ? dataPagamento : existente.data_pagamento || new Date().toISOString().slice(0, 10))
     : statusValido === existente.status ? existente.data_pagamento : null;
   sqlite
-    .prepare(`UPDATE financeiro_pagar SET descricao=?, fornecedor=?, valor=?, vencimento=?, status=?, data_pagamento=?, observacao=?, conta_id=? WHERE id=?`)
+    .prepare(`UPDATE financeiro_pagar SET descricao=?, fornecedor=?, valor=?, vencimento=?, status=?, data_pagamento=?, observacao=?, conta_id=?, tipo_documento_id=? WHERE id=?`)
     .run(
       travadoPelaNfe ? existente.descricao : descricao != null ? String(descricao).trim() : existente.descricao,
       travadoPelaNfe ? existente.fornecedor : fornecedor !== undefined ? fornecedor || null : existente.fornecedor,
@@ -16118,6 +16217,7 @@ app.put("/api/financeiro/empresas/:empresaId/pagar/:id", blockCliente, requirePe
       dataPag,
       observacao !== undefined ? observacao || null : existente.observacao,
       contaFinal,
+      tipoDocFinal,
       existente.id
     );
   res.json({ ok: true });
@@ -16139,11 +16239,16 @@ app.get("/api/financeiro/empresas/:empresaId/receber", blockCliente, requirePerm
   const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
   const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
   let sql = `SELECT r.id, r.descricao, r.cliente_nome as clienteNome, r.valor, r.vencimento, r.status, r.data_recebimento as dataRecebimento, r.observacao,
-                    r.origem, r.nfse_emissao_id as nfseEmissaoId, r.nfe_documento_id as nfeDocumentoId, r.conta_id as contaId, c.nome as contaNome, r.criado_em as criadoEm
-             FROM financeiro_receber r LEFT JOIN financeiro_contas c ON c.id = r.conta_id WHERE r.empresa_id = ?`;
+                    r.origem, r.nfse_emissao_id as nfseEmissaoId, r.nfe_documento_id as nfeDocumentoId, r.tipo_documento_id as tipoDocumentoId, td.nome as tipoDocumentoNome, nd.tipo as docFiscalTipo,
+                    r.conta_id as contaId, c.nome as contaNome, r.criado_em as criadoEm
+             FROM financeiro_receber r
+             LEFT JOIN financeiro_contas c ON c.id = r.conta_id
+             LEFT JOIN financeiro_tipos_documento td ON td.id = r.tipo_documento_id
+             LEFT JOIN nfe_documentos nd ON nd.id = r.nfe_documento_id
+             WHERE r.empresa_id = ?`;
   const params: any[] = [empresaId];
-  if (dataDe) { sql += ` AND date(vencimento) >= date(?)`; params.push(dataDe); }
-  if (dataAte) { sql += ` AND date(vencimento) <= date(?)`; params.push(dataAte); }
+  if (dataDe) { sql += ` AND date(r.vencimento) >= date(?)`; params.push(dataDe); }
+  if (dataAte) { sql += ` AND date(r.vencimento) <= date(?)`; params.push(dataAte); }
   sql += ` ORDER BY date(r.vencimento) ASC, r.id ASC`;
   res.json({ items: sqlite.prepare(sql).all(...params) });
 });
@@ -16153,9 +16258,11 @@ app.post("/api/financeiro/empresas/:empresaId/receber", blockCliente, requirePer
   if (!podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
   const { descricao, clienteNome, valor, vencimento, observacao, contaId } = req.body || {};
   if (!descricao || !valor || !vencimento) return res.status(400).json({ error: "Preencha a descrição, o valor e o vencimento." });
+  const td = validarTipoDocManual(empresaId, req.body);
+  if (!td.id) return res.status(400).json({ error: td.error || "Escolha o tipo de documento do lançamento." });
   const info = sqlite
-    .prepare(`INSERT INTO financeiro_receber (empresa_id, descricao, cliente_nome, valor, vencimento, observacao, origem, conta_id, criado_por) VALUES (?, ?, ?, ?, ?, ?, 'manual', ?, ?)`)
-    .run(empresaId, String(descricao).trim(), clienteNome || null, Number(valor), String(vencimento), observacao || null, contaId ? Number(contaId) : null, user.id);
+    .prepare(`INSERT INTO financeiro_receber (empresa_id, descricao, cliente_nome, valor, vencimento, observacao, origem, conta_id, tipo_documento_id, criado_por) VALUES (?, ?, ?, ?, ?, ?, 'manual', ?, ?, ?)`)
+    .run(empresaId, String(descricao).trim(), clienteNome || null, Number(valor), String(vencimento), observacao || null, contaId ? Number(contaId) : null, td.id, user.id);
   res.json({ id: Number(info.lastInsertRowid) });
 });
 app.put("/api/financeiro/empresas/:empresaId/receber/:id", blockCliente, requirePermissao("financeiro", "editar"), (req, res) => {
@@ -16166,8 +16273,14 @@ app.put("/api/financeiro/empresas/:empresaId/receber/:id", blockCliente, require
   const { descricao, clienteNome, valor, vencimento, status, observacao, contaId } = req.body || {};
   const statusValido = ["pendente", "pago", "atrasado", "cancelado"].includes(status) ? status : existente.status;
   const travadoPelaNfse = existente.origem === "nfse" || existente.origem === "nfe" || existente.origem === "ofx";
+  let tipoDocFinal = existente.tipo_documento_id;
+  if (existente.origem === "manual") {
+    const td = validarTipoDocManual(empresaId, { tipoDocumentoId: req.body?.tipoDocumentoId !== undefined ? req.body.tipoDocumentoId : existente.tipo_documento_id });
+    if (!td.id) return res.status(400).json({ error: td.error || "Escolha o tipo de documento do lançamento." });
+    tipoDocFinal = td.id;
+  }
   sqlite
-    .prepare(`UPDATE financeiro_receber SET descricao=?, cliente_nome=?, valor=?, vencimento=?, status=?, data_recebimento=?, observacao=?, conta_id=? WHERE id=?`)
+    .prepare(`UPDATE financeiro_receber SET descricao=?, cliente_nome=?, valor=?, vencimento=?, status=?, data_recebimento=?, observacao=?, conta_id=?, tipo_documento_id=? WHERE id=?`)
     .run(
       travadoPelaNfse ? existente.descricao : descricao != null ? String(descricao).trim() : existente.descricao,
       travadoPelaNfse ? existente.cliente_nome : clienteNome !== undefined ? clienteNome || null : existente.cliente_nome,
@@ -16177,6 +16290,7 @@ app.put("/api/financeiro/empresas/:empresaId/receber/:id", blockCliente, require
       statusValido === "pago" ? new Date().toISOString().slice(0, 10) : statusValido === existente.status ? existente.data_recebimento : null,
       observacao !== undefined ? observacao || null : existente.observacao,
       contaId !== undefined ? (contaId ? Number(contaId) : null) : existente.conta_id,
+      tipoDocFinal,
       existente.id
     );
   res.json({ ok: true });
@@ -16240,6 +16354,39 @@ app.delete("/api/financeiro/empresas/:empresaId/cadastros/:id", blockCliente, re
   const empresaId = Number(req.params.empresaId);
   if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
   const r = cadastroExcluir(empresaId, Number(req.params.id));
+  if (r.error) return res.status(404).json({ error: r.error });
+  res.json(r);
+});
+// ---- Rotas dos tipos de documento (cliente e escritório) ----
+app.get("/api/financeiro/minha-empresa/tipos-documento", requireCliente, requireModuloAtivo("financeiro"), (req, res) => {
+  res.json({ items: tiposDocListar((req as any).user.empresaId) });
+});
+app.post("/api/financeiro/minha-empresa/tipos-documento", requireCliente, requireModuloAtivo("financeiro"), (req, res) => {
+  const r = tipoDocCriar((req as any).user.empresaId, req.body);
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json(r);
+});
+app.delete("/api/financeiro/minha-empresa/tipos-documento/:id", requireCliente, requireModuloAtivo("financeiro"), (req, res) => {
+  const r = tipoDocExcluir((req as any).user.empresaId, Number(req.params.id));
+  if (r.error) return res.status(404).json({ error: r.error });
+  res.json(r);
+});
+app.get("/api/financeiro/empresas/:empresaId/tipos-documento", blockCliente, requirePermissao("financeiro", "visualizar"), (req, res) => {
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  res.json({ items: tiposDocListar(empresaId) });
+});
+app.post("/api/financeiro/empresas/:empresaId/tipos-documento", blockCliente, requirePermissao("financeiro", "postar"), (req, res) => {
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const r = tipoDocCriar(empresaId, req.body);
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json(r);
+});
+app.delete("/api/financeiro/empresas/:empresaId/tipos-documento/:id", blockCliente, requirePermissao("financeiro", "editar"), (req, res) => {
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const r = tipoDocExcluir(empresaId, Number(req.params.id));
   if (r.error) return res.status(404).json({ error: r.error });
   res.json(r);
 });
