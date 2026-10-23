@@ -15041,16 +15041,20 @@ function csvCampo(v: any): string {
 function gerarCsv(linhas: any[][]): string {
   return "﻿" + linhas.map((l) => l.map(csvCampo).join(";")).join("\r\n");
 }
-const PLANILHA_HEADER = ["CNPJ/CPF", "Razao social", "Modelo de servico", "Descricao do servico", "Valor (R$)", "Contato - Nome", "Contato - E-mail", "Contato - WhatsApp"];
+const PLANILHA_HEADER = ["CNPJ/CPF", "Razao social", "Modelo de servico", "Descricao do servico", "Valor (R$)", "Contato - Nome", "Contato - E-mail", "Contato - WhatsApp", "Canal E-mail (sim/nao)", "Canal WhatsApp (sim/nao)"];
 app.get("/api/nfse/agendamento/planilha-modelo", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
   const user = (req as any).user;
   const visiveis = empresasVisiveis(user);
+  // LEFT JOIN no empresa_envio_config pra pré-preencher os canais com o estado atual (sem linha = sim).
+  const sel = `SELECT e.nome, e.cnpj, COALESCE(ec.canal_email_ativo,1) as cemail, COALESCE(ec.canal_whatsapp_ativo,1) as cwhats
+               FROM empresas e LEFT JOIN empresa_envio_config ec ON ec.empresa_id = e.id
+               WHERE e.escritorio_id=? AND e.ativo=1`;
   let empresas: any[];
-  if (visiveis === null) empresas = sqlite.prepare(`SELECT nome, cnpj FROM empresas WHERE escritorio_id=? AND ativo=1 ORDER BY nome`).all(user.escritorioId) as any[];
+  if (visiveis === null) empresas = sqlite.prepare(`${sel} ORDER BY e.nome`).all(user.escritorioId) as any[];
   else if (!visiveis.length) empresas = [];
-  else empresas = sqlite.prepare(`SELECT nome, cnpj FROM empresas WHERE escritorio_id=? AND ativo=1 AND id IN (${visiveis.map(() => "?").join(",")}) ORDER BY nome`).all(user.escritorioId, ...visiveis) as any[];
+  else empresas = sqlite.prepare(`${sel} AND e.id IN (${visiveis.map(() => "?").join(",")}) ORDER BY e.nome`).all(user.escritorioId, ...visiveis) as any[];
   const linhas: any[][] = [PLANILHA_HEADER];
-  for (const e of empresas) linhas.push([e.cnpj || "", e.nome || "", "", "", "", "", "", ""]);
+  for (const e of empresas) linhas.push([e.cnpj || "", e.nome || "", "", "", "", "", "", "", e.cemail ? "sim" : "nao", e.cwhats ? "sim" : "nao"]);
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader("Content-Disposition", `attachment; filename="Modelo NFS-e em lote.csv"`);
   res.send(gerarCsv(linhas));
@@ -15079,8 +15083,17 @@ app.post("/api/nfse/agendamento/planilha-importar", blockCliente, requirePermiss
   const iDesc = achar((h) => h.includes("descri"));
   const iValor = achar((h) => h.includes("valor"));
   const iCNome = achar((h) => (h.includes("contato") && h.includes("nome")) || h === "nome");
-  const iCEmail = achar((h) => h.includes("mail"));
-  const iCWhats = achar((h) => h.includes("whats") || h.includes("telefone") || h.includes("celular"));
+  const iCEmail = achar((h) => h.includes("mail") && !h.includes("canal"));
+  const iCWhats = achar((h) => (h.includes("whats") || h.includes("telefone") || h.includes("celular")) && !h.includes("canal"));
+  const iCanalEmail = achar((h) => h.includes("canal") && h.includes("mail"));
+  const iCanalWhats = achar((h) => h.includes("canal") && (h.includes("whats") || h.includes("telefone")));
+  // "sim/1/s/true/x" liga, "nao/0/n/false" desliga, vazio = não mexe.
+  const simNao = (v: string): boolean | null => {
+    const s = (v || "").trim().toLowerCase();
+    if (!s) return null;
+    if (["nao", "não", "n", "0", "false", "f", "off"].includes(s)) return false;
+    return true;
+  };
   const limparValor = (v: string): number | null => {
     let s = (v || "").replace(/[^\d.,-]/g, "");
     if (!s) return null;
@@ -15118,6 +15131,14 @@ app.post("/api/nfse/agendamento/planilha-importar", blockCliente, requirePermiss
     // 1) entra na rotina automática + liga a atribuição de Envio de Documentos (mesma lógica do botão).
     sqlite.prepare(`INSERT OR IGNORE INTO nfse_agendamento_empresas (empresa_id) VALUES (?)`).run(empresa.id);
     if (cfg?.envio_template_id) sqlite.prepare(`INSERT OR IGNORE INTO envio_atribuicoes (template_id, empresa_id, ativo) VALUES (?, ?, 1)`).run(cfg.envio_template_id, empresa.id);
+    // Canais de envio (colunas opcionais da planilha) — só mexe quando veio valor na célula.
+    const cE = simNao(get(iCanalEmail)), cW = simNao(get(iCanalWhats));
+    if (cE !== null || cW !== null) {
+      const atual = sqlite.prepare(`SELECT canal_email_ativo, canal_whatsapp_ativo FROM empresa_envio_config WHERE empresa_id=?`).get(empresa.id) as any;
+      const eFinal = (cE !== null ? cE : atual ? !!atual.canal_email_ativo : true) ? 1 : 0;
+      const wFinal = (cW !== null ? cW : atual ? !!atual.canal_whatsapp_ativo : true) ? 1 : 0;
+      sqlite.prepare(`INSERT INTO empresa_envio_config (empresa_id, canal_email_ativo, canal_whatsapp_ativo, updated_at) VALUES (?, ?, ?, datetime('now')) ON CONFLICT(empresa_id) DO UPDATE SET canal_email_ativo=excluded.canal_email_ativo, canal_whatsapp_ativo=excluded.canal_whatsapp_ativo, updated_at=datetime('now')`).run(empresa.id, eFinal, wFinal);
+    }
     // 2) serviço (item): atualiza o item do mesmo modelo se já existir, senão reaproveita um item em
     // branco, senão cria. Só mexe se veio modelo/valor/descrição.
     let servicoFeito = false;
