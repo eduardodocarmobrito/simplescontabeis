@@ -1916,6 +1916,11 @@ sqlite.exec(`DROP TABLE IF EXISTS nfse_licenca`);
 // Seed do catálogo de módulos vendáveis — preço 0 até eu configurar em Configurações > Módulos.
 sqlite.exec(`INSERT OR IGNORE INTO modulos_catalogo (chave, nome, valor_mensal) VALUES ('nfse', 'NFS-e', 0)`);
 sqlite.exec(`INSERT OR IGNORE INTO modulos_catalogo (chave, nome, valor_mensal) VALUES ('financeiro', 'Financeiro', 0)`);
+// Canais de envio das notas vendidos à empresa-cliente (Fase 3). Nascem com preço 0 = de graça, sem
+// travar nada (comportamento atual). Quando o SuperAdmin põe preço > 0, os clientes de hoje são
+// "grandfathered" (ver PUT /api/super/modulos-clientes) e só os novos passam a precisar contratar.
+sqlite.exec(`INSERT OR IGNORE INTO modulos_catalogo (chave, nome, valor_mensal) VALUES ('envio_notas_email', 'Envio das notas por e-mail', 0)`);
+sqlite.exec(`INSERT OR IGNORE INTO modulos_catalogo (chave, nome, valor_mensal) VALUES ('envio_notas_whatsapp', 'Envio das notas por WhatsApp', 0)`);
 // Migração leve: cobrança da licença de escritório via Asaas reaproveita um customerId entre módulos.
 {
   const cols = sqlite.prepare(`PRAGMA table_info(escritorios)`).all() as any[];
@@ -11987,11 +11992,24 @@ function integraContadorAnexarPdfEmEnvio(
     .run(periodo.id, nomeArquivo, destino, buf.length, observacao, vencimentoIso);
   return Number(info.lastInsertRowid);
 }
-// Canal de envio (e-mail/WhatsApp) ligado pra esta empresa-cliente? Sem config = ligado (default).
+// O canal virou módulo pago e esta empresa tem contrato ativo? Preço 0 (default) = de graça, não
+// trava. Grátis/isento = sempre ok. Senão, exige teste/assinatura ativa (moduloStatusParaEmpresa).
+function empresaCanalContratado(empresaId: number, chave: "envio_notas_email" | "envio_notas_whatsapp"): boolean {
+  const catalogo = sqlite.prepare(`SELECT valor_mensal FROM modulos_catalogo WHERE chave = ? AND ativo = 1`).get(chave) as any;
+  if (!catalogo || !(catalogo.valor_mensal > 0)) return true; // módulo inexistente ou grátis → não trava
+  const empresa = sqlite.prepare(`SELECT isento_assinatura FROM empresas WHERE id = ?`).get(empresaId) as any;
+  if (empresa?.isento_assinatura) return true;
+  const contratado = sqlite.prepare(`SELECT * FROM empresa_modulos WHERE empresa_id = ? AND modulo_chave = ?`).get(empresaId, chave) as any;
+  return moduloStatusParaEmpresa(catalogo, contratado).acesso;
+}
+// Canal de envio (e-mail/WhatsApp) ligado pra esta empresa-cliente? Combina o liga/desliga manual
+// (Fase 2, empresa_envio_config — sem linha = ligado) com o contrato do canal (Fase 3). Com preço 0
+// o contrato não trava, então o comportamento de hoje é preservado.
 function empresaCanalAtivo(empresaId: number, canal: "email" | "whatsapp"): boolean {
   const row = sqlite.prepare(`SELECT canal_email_ativo, canal_whatsapp_ativo FROM empresa_envio_config WHERE empresa_id = ?`).get(empresaId) as any;
-  if (!row) return true;
-  return canal === "email" ? !!row.canal_email_ativo : !!row.canal_whatsapp_ativo;
+  const toggleOn = !row ? true : canal === "email" ? !!row.canal_email_ativo : !!row.canal_whatsapp_ativo;
+  if (!toggleOn) return false;
+  return empresaCanalContratado(empresaId, canal === "email" ? "envio_notas_email" : "envio_notas_whatsapp");
 }
 // Envia pro cliente (e-mail + WhatsApp) um documento recém-anexado em Envio de Documentos, com o
 // mesmo gating de módulo e os mesmos contatos que o botão manual usa. Best-effort: nunca lança —
@@ -13518,13 +13536,25 @@ app.get("/api/super/modulos-clientes", requireSuperAdmin, (_req, res) => {
 });
 app.put("/api/super/modulos-clientes/:chave", requireSuperAdmin, (req, res) => {
   const chave = String(req.params.chave);
-  const existente = sqlite.prepare(`SELECT chave FROM modulos_catalogo WHERE chave = ?`).get(chave);
+  const existente = sqlite.prepare(`SELECT chave, valor_mensal FROM modulos_catalogo WHERE chave = ?`).get(chave) as any;
   if (!existente) return res.status(404).json({ error: "Módulo não encontrado." });
   const { nome, valorMensal, ativo } = req.body || {};
+  const novoValor = valorMensal != null ? Number(valorMensal) : null;
   sqlite
     .prepare(`UPDATE modulos_catalogo SET nome = COALESCE(?, nome), valor_mensal = COALESCE(?, valor_mensal), ativo = COALESCE(?, ativo), updated_at = datetime('now') WHERE chave = ?`)
-    .run(nome ?? null, valorMensal != null ? Number(valorMensal) : null, ativo != null ? (ativo ? 1 : 0) : null, chave);
-  res.json({ ok: true });
+    .run(nome ?? null, novoValor, ativo != null ? (ativo ? 1 : 0) : null, chave);
+  // Grandfather: ao ligar a cobrança de um canal de envio (preço saindo de 0 pra > 0), os clientes
+  // que JÁ existem continuam recebendo de graça (assinatura vitalícia), e só os novos vão precisar
+  // contratar — igual ao que foi combinado. Roda uma vez, só na virada 0→>0.
+  let grandfathered = 0;
+  if ((chave === "envio_notas_email" || chave === "envio_notas_whatsapp") && novoValor != null && novoValor > 0 && !(existente.valor_mensal > 0)) {
+    const info = sqlite
+      .prepare(`INSERT OR IGNORE INTO empresa_modulos (empresa_id, modulo_chave, trial_inicio, trial_fim, assinatura_ativa_ate)
+                SELECT id, ?, datetime('now'), datetime('now'), '2099-12-31 23:59:59' FROM empresas`)
+      .run(chave);
+    grandfathered = Number(info.changes) || 0;
+  }
+  res.json({ ok: true, grandfathered });
 });
 
 app.get("/api/nfse/emissoes", blockCliente, requirePermissao("nfse", "visualizar"), (req, res) => {
@@ -16690,7 +16720,11 @@ function nfseModulosDaEmpresa(empresaId: number) {
   const catalogo = sqlite.prepare(`SELECT * FROM modulos_catalogo ORDER BY chave`).all() as any[];
   const contratados = sqlite.prepare(`SELECT * FROM empresa_modulos WHERE empresa_id = ?`).all(empresaId) as any[];
   const porChave = new Map(contratados.map((c) => [c.modulo_chave, c]));
-  return catalogo.map((m) => {
+  // Os canais de envio (Fase 3) só aparecem pra contratar quando têm preço > 0 — enquanto são de
+  // graça, ficam fora da tela de assinatura pra não confundir (o envio funciona do mesmo jeito).
+  return catalogo
+    .filter((m) => !((m.chave === "envio_notas_email" || m.chave === "envio_notas_whatsapp") && !(m.valor_mensal > 0)))
+    .map((m) => {
     const contratado = porChave.get(m.chave);
     const { status, acesso } = isento ? { status: "isento", acesso: true } : moduloStatusParaEmpresa(m, contratado);
     return {
