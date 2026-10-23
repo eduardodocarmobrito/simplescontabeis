@@ -1037,10 +1037,17 @@ function setupCidadeIbge(comboId, apiPath, onEscolha){
 
 function openModal(html, larguraMax){ const m=document.getElementById('modalBody'); m.innerHTML='<button type="button" class="modal-close-x" onclick="closeModal()" title="Fechar" aria-label="Fechar">×</button>'+html; m.style.width = larguraMax || ''; document.getElementById('modalBg').classList.add('open'); }
 function closeModal(){ document.getElementById('modalBg').classList.remove('open'); document.getElementById('modalBody').innerHTML=''; }
-document.getElementById('modalBg').addEventListener('click', e=>{ if(e.target.id==='modalBg') closeModal(); });
+// Só fecha ao clicar no fundo se o clique COMEÇOU no fundo — senão, selecionar texto num campo e
+// soltar o mouse fora do modal (o click cai no ancestral comum = modalBg) fechava o modal e perdia
+// o que o usuário digitou.
+let _modalMouseDownNoFundo = false;
+document.getElementById('modalBg').addEventListener('mousedown', e=>{ _modalMouseDownNoFundo = (e.target.id==='modalBg'); });
+document.getElementById('modalBg').addEventListener('click', e=>{ if(e.target.id==='modalBg' && _modalMouseDownNoFundo) closeModal(); });
 function openDrawer(html){ document.getElementById('drawerBody').innerHTML='<button type="button" class="modal-close-x" onclick="closeDrawer()" title="Fechar" aria-label="Fechar">×</button>'+html; document.getElementById('drawerBg').classList.add('open'); }
 function closeDrawer(){ document.getElementById('drawerBg').classList.remove('open'); document.getElementById('drawerBody').innerHTML=''; }
-document.getElementById('drawerBg').addEventListener('click', e=>{ if(e.target.id==='drawerBg') closeDrawer(); });
+let _drawerMouseDownNoFundo = false;
+document.getElementById('drawerBg').addEventListener('mousedown', e=>{ _drawerMouseDownNoFundo = (e.target.id==='drawerBg'); });
+document.getElementById('drawerBg').addEventListener('click', e=>{ if(e.target.id==='drawerBg' && _drawerMouseDownNoFundo) closeDrawer(); });
 
 function confirmar(msg){ return window.confirm(msg); }
 
