@@ -15678,11 +15678,50 @@ app.get("/api/financeiro/minha-empresa/relatorios", requireCliente, requireModul
 // (saldo por conta, resumo de títulos, fluxo de caixa projetado, renegociações, adiantamentos),
 // montados aqui de novo porque a tela consome 3 endpoints JSON separados (relatorios/renegociacoes/
 // adiantamentos) e o PDF/CSV precisa dos três juntos num documento só.
+// Quebra dos títulos por tipo de documento, pros relatórios (PDF/Excel). Mesma lógica do rótulo da
+// tela: integrados pelo tipo fiscal (NF-e/NFC-e/NFS-e/CT-e), NFS-e emitida, extrato, ou o tipo manual
+// (Recibo/Folha/…). Ignora cancelados/renegociados (não são posição real a pagar/receber).
+function financeiroTitulosPorTipoDoc(empresaId: number): { tipo: string; recQtd: number; recValor: number; pagQtd: number; pagValor: number }[] {
+  const mapFiscal: Record<string, string> = { nfe: "NF-e", nfce: "NFC-e", nfse: "NFS-e", cte: "CT-e" };
+  const rotulo = (r: any): string => {
+    if (r.origem === "nfe") return mapFiscal[r.docFiscalTipo] || "Nota fiscal";
+    if (r.origem === "nfse") return "NFS-e";
+    if (r.origem === "ofx") return "Extrato";
+    return r.tipoDocNome || "Sem tipo";
+  };
+  const agg = (tabela: "financeiro_pagar" | "financeiro_receber") => {
+    const rows = sqlite
+      .prepare(
+        `SELECT t.valor, t.origem, td.nome as tipoDocNome, nd.tipo as docFiscalTipo
+         FROM ${tabela} t
+         LEFT JOIN financeiro_tipos_documento td ON td.id = t.tipo_documento_id
+         LEFT JOIN nfe_documentos nd ON nd.id = t.nfe_documento_id
+         WHERE t.empresa_id = ? AND t.status NOT IN ('cancelado','renegociado')`
+      )
+      .all(empresaId) as any[];
+    const m = new Map<string, { qtd: number; valor: number }>();
+    for (const r of rows) {
+      const k = rotulo(r);
+      const e = m.get(k) || { qtd: 0, valor: 0 };
+      e.qtd++;
+      e.valor += r.valor || 0;
+      m.set(k, e);
+    }
+    return m;
+  };
+  const pagarMap = agg("financeiro_pagar");
+  const receberMap = agg("financeiro_receber");
+  const labels = new Set([...pagarMap.keys(), ...receberMap.keys()]);
+  return [...labels]
+    .map((l) => ({ tipo: l, recQtd: receberMap.get(l)?.qtd || 0, recValor: receberMap.get(l)?.valor || 0, pagQtd: pagarMap.get(l)?.qtd || 0, pagValor: pagarMap.get(l)?.valor || 0 }))
+    .sort((a, b) => b.recValor + b.pagValor - (a.recValor + a.pagValor));
+}
 async function financeiroRelatorioGerarPdf(empresaId: number): Promise<{ pdf: Buffer; empresaNome: string }> {
   const empresa = sqlite.prepare(`SELECT nome FROM empresas WHERE id = ?`).get(empresaId) as any;
   const d = financeiroRelatorio(empresaId);
   const renegociacoes = financeiroRenegociacoesListar(empresaId);
   const adiantamentos = financeiroAdiantamentosRelatorio(empresaId);
+  const porTipoDoc = financeiroTitulosPorTipoDoc(empresaId);
   const resultadoProjetado = d.pagar && d.receber ? d.receber.pendente.valor + d.receber.atrasado.valor - d.pagar.pendente.valor - d.pagar.atrasado.valor : 0;
   const linhaResumo = (label: string, r: any) => `
     <p style="margin:2px 0;"><b>${escHtmlRelatorio(label)}</b> — A vencer: ${fmtMoedaRelatorio(r.pendente.valor)} (${r.pendente.qtd}) ·
@@ -15717,6 +15756,10 @@ async function financeiroRelatorioGerarPdf(empresaId: number): Promise<{ pdf: Bu
   <h2>Resumo de títulos</h2>
   ${linhaResumo("A Receber", d.receber)}
   ${linhaResumo("A Pagar", d.pagar)}
+  <h2>Títulos por tipo de documento</h2>
+  ${porTipoDoc.length ? `<table class="rep"><thead><tr><th>Tipo de documento</th><th class="num">A Receber (qtd)</th><th class="num">A Receber (valor)</th><th class="num">A Pagar (qtd)</th><th class="num">A Pagar (valor)</th></tr></thead><tbody>
+    ${porTipoDoc.map((t) => `<tr><td>${escHtmlRelatorio(t.tipo)}</td><td class="num">${t.recQtd || ""}</td><td class="num">${t.recValor ? fmtMoedaRelatorio(t.recValor) : ""}</td><td class="num">${t.pagQtd || ""}</td><td class="num">${t.pagValor ? fmtMoedaRelatorio(t.pagValor) : ""}</td></tr>`).join("")}
+  </tbody></table>` : `<p>Nenhum título lançado.</p>`}
   <h2>Fluxo de caixa projetado — próximas 13 semanas</h2>
   <table class="rep"><thead><tr><th>Período</th><th class="num">Entradas</th><th class="num">Saídas</th><th class="num">Saldo do período</th><th class="num">Saldo acumulado</th></tr></thead><tbody>
     ${d.fluxoCaixa.map((f: any) => `<tr><td>${escHtmlRelatorio(f.periodo)}</td><td class="num">${fmtMoedaRelatorio(f.entradas)}</td><td class="num">${fmtMoedaRelatorio(f.saidas)}</td><td class="num">${fmtMoedaRelatorio(f.saldoPeriodo)}</td><td class="num">${fmtMoedaRelatorio(f.saldoAcumulado)}</td></tr>`).join("")}
@@ -15738,6 +15781,7 @@ function financeiroRelatorioGerarCsv(empresaId: number): { csv: string; empresaN
   const d = financeiroRelatorio(empresaId);
   const renegociacoes = financeiroRenegociacoesListar(empresaId);
   const adiantamentos = financeiroAdiantamentosRelatorio(empresaId);
+  const porTipoDoc = financeiroTitulosPorTipoDoc(empresaId);
   // Excel (pt-BR) abre CSV separado por ";" sem precisar de assistente de importação; números usam
   // vírgula decimal — os dois pontos que mais travam quando alguém só usa "," como delimitador puro.
   const num = (v: number) => (v || 0).toFixed(2).replace(".", ",");
@@ -15755,6 +15799,10 @@ function financeiroRelatorioGerarCsv(empresaId: number): { csv: string; empresaN
   add("Lado", "A vencer (qtd)", "A vencer (valor)", "Vencido (qtd)", "Vencido (valor)", "Baixado no mês (qtd)", "Baixado no mês (valor)");
   add("A Receber", d.receber.pendente.qtd, num(d.receber.pendente.valor), d.receber.atrasado.qtd, num(d.receber.atrasado.valor), d.receber.baixadoMes.qtd, num(d.receber.baixadoMes.valor));
   add("A Pagar", d.pagar.pendente.qtd, num(d.pagar.pendente.valor), d.pagar.atrasado.qtd, num(d.pagar.atrasado.valor), d.pagar.baixadoMes.qtd, num(d.pagar.baixadoMes.valor));
+  linhas.push("");
+  add("Títulos por tipo de documento");
+  add("Tipo de documento", "A Receber (qtd)", "A Receber (valor)", "A Pagar (qtd)", "A Pagar (valor)");
+  for (const t of porTipoDoc) add(t.tipo, t.recQtd, num(t.recValor), t.pagQtd, num(t.pagValor));
   linhas.push("");
   add("Fluxo de caixa projetado — próximas 13 semanas");
   add("Período", "Entradas", "Saídas", "Saldo do período", "Saldo acumulado");
