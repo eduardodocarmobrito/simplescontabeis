@@ -2066,6 +2066,18 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
     sqlite.exec(`ALTER TABLE financeiro_receber ADD COLUMN tipo_documento_id INTEGER REFERENCES financeiro_tipos_documento(id) ON DELETE SET NULL`);
   }
 }
+// Canais de envio ATIVOS por empresa-cliente (Fase 2 do envio por cliente): além do módulo do
+// escritório (envio_email_automatico / envio_whatsapp), cada empresa pode ter o canal ligado/desligado
+// individualmente. Sem linha = ambos ativos (default — não muda o comportamento de quem já recebe).
+{
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS empresa_envio_config (
+      empresa_id INTEGER PRIMARY KEY REFERENCES empresas(id) ON DELETE CASCADE,
+      canal_email_ativo INTEGER NOT NULL DEFAULT 1,
+      canal_whatsapp_ativo INTEGER NOT NULL DEFAULT 1,
+      updated_at TEXT
+    )`);
+}
 // Migração leve: saldo inicial da conta banco/caixa — usado como ponto de partida do saldo exibido
 // (saldo inicial + soma dos títulos já pagos/recebidos naquela conta), não é uma movimentação.
 {
@@ -4356,6 +4368,27 @@ app.delete("/api/empresas/contatos/:contatoId", blockCliente, requirePermissao("
   if (!contato || !podeAcessarEmpresa((req as any).user, contato.empresa_id)) return res.status(404).json({ error: "Contato não encontrado." });
   sqlite.prepare(`DELETE FROM empresa_contatos WHERE id = ?`).run(Number(req.params.contatoId));
   deskcommAgendarSyncEmpresasClientes();
+  res.json({ ok: true });
+});
+// Canais de envio ATIVOS por empresa-cliente (e-mail/WhatsApp liga/desliga individual). Sem linha =
+// ambos ativos (default). O envio automático só sai quando o módulo do escritório E o canal da
+// empresa estão ligados (ver empresaCanalAtivo nos pontos de disparo).
+app.get("/api/empresas/:id/envio-config", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
+  const empresaId = Number(req.params.id);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const row = sqlite.prepare(`SELECT canal_email_ativo, canal_whatsapp_ativo FROM empresa_envio_config WHERE empresa_id = ?`).get(empresaId) as any;
+  res.json({ canalEmailAtivo: row ? !!row.canal_email_ativo : true, canalWhatsappAtivo: row ? !!row.canal_whatsapp_ativo : true });
+});
+app.put("/api/empresas/:id/envio-config", blockCliente, requirePermissao("empresas", "editar"), (req, res) => {
+  const empresaId = Number(req.params.id);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const b = req.body || {};
+  const email = b.canalEmailAtivo === false ? 0 : 1;
+  const whats = b.canalWhatsappAtivo === false ? 0 : 1;
+  sqlite
+    .prepare(`INSERT INTO empresa_envio_config (empresa_id, canal_email_ativo, canal_whatsapp_ativo, updated_at) VALUES (?, ?, ?, datetime('now'))
+              ON CONFLICT(empresa_id) DO UPDATE SET canal_email_ativo=excluded.canal_email_ativo, canal_whatsapp_ativo=excluded.canal_whatsapp_ativo, updated_at=datetime('now')`)
+    .run(empresaId, email, whats);
   res.json({ ok: true });
 });
 // Lista os IDs de empresa que já têm pelo menos 1 contato cadastrado (e-mail ou WhatsApp) — usado
@@ -11954,6 +11987,12 @@ function integraContadorAnexarPdfEmEnvio(
     .run(periodo.id, nomeArquivo, destino, buf.length, observacao, vencimentoIso);
   return Number(info.lastInsertRowid);
 }
+// Canal de envio (e-mail/WhatsApp) ligado pra esta empresa-cliente? Sem config = ligado (default).
+function empresaCanalAtivo(empresaId: number, canal: "email" | "whatsapp"): boolean {
+  const row = sqlite.prepare(`SELECT canal_email_ativo, canal_whatsapp_ativo FROM empresa_envio_config WHERE empresa_id = ?`).get(empresaId) as any;
+  if (!row) return true;
+  return canal === "email" ? !!row.canal_email_ativo : !!row.canal_whatsapp_ativo;
+}
 // Envia pro cliente (e-mail + WhatsApp) um documento recém-anexado em Envio de Documentos, com o
 // mesmo gating de módulo e os mesmos contatos que o botão manual usa. Best-effort: nunca lança —
 // grava o resultado (ok/erro) na própria linha do envio_documentos, igual à rotina de NFS-e.
@@ -11975,7 +12014,7 @@ async function envioEnviarDocumentoAutomatico(opts: {
   // automático pro cliente para aqui. Envio manual pela tela continua disponível normalmente.
   const cfgIcEnvio = sqlite.prepare(`SELECT envio_automatico FROM integracontador_config WHERE escritorio_id = ?`).get(escritorioId) as any;
   if (cfgIcEnvio && cfgIcEnvio.envio_automatico === 0) return;
-  if (escritorioTemModulo(escritorioId, "envio_email_automatico")) {
+  if (escritorioTemModulo(escritorioId, "envio_email_automatico") && empresaCanalAtivo(empresaId, "email")) {
     const contatos = sqlite.prepare(`SELECT email FROM empresa_contatos WHERE empresa_id = ? AND receber_emails = 1`).all(empresaId) as any[];
     if (contatos.length) {
       const lista = contatos.map((c) => c.email);
@@ -11993,7 +12032,7 @@ async function envioEnviarDocumentoAutomatico(opts: {
       }
     }
   }
-  if (escritorioTemModulo(escritorioId, "envio_whatsapp")) {
+  if (escritorioTemModulo(escritorioId, "envio_whatsapp") && empresaCanalAtivo(empresaId, "whatsapp")) {
     const contatos = sqlite
       .prepare(`SELECT telefone FROM empresa_contatos WHERE empresa_id = ? AND receber_whatsapp = 1 AND telefone IS NOT NULL AND telefone != ''`)
       .all(empresaId) as any[];
@@ -12888,7 +12927,7 @@ async function integraContadorEnviarPesquisasPagamento() {
       if (vistos.has(chave)) continue;
       vistos.add(chave);
       if (sqlite.prepare(`SELECT 1 FROM integracontador_pesquisas_pagamento WHERE empresa_id = ? AND tipo = ? AND periodo_apuracao = ?`).get(doc.empresaId, doc.tipo, doc.periodoApuracao)) continue;
-      if (!escritorioTemModulo(doc.escritorioId, "envio_whatsapp")) continue;
+      if (!escritorioTemModulo(doc.escritorioId, "envio_whatsapp") || !empresaCanalAtivo(doc.empresaId, "whatsapp")) continue;
       if (!cfgCache.has(doc.escritorioId)) cfgCache.set(doc.escritorioId, getIntegraContadorConfig(doc.escritorioId));
       const cfg = cfgCache.get(doc.escritorioId);
       if (cfg.pesquisa_pagamento_ativa === 0) continue;
@@ -14756,6 +14795,8 @@ async function nfseAnexarEEnviarDocumento(escritorioId: number, emissaoId: numbe
   // escritório manda manualmente pelo botão "Reenviar e-mail" se quiser).
   if (!escritorioTemModulo(escritorioId, "envio_email_automatico")) {
     msgEmail = "módulo de envio automático por e-mail não contratado — nota disponível em Envio de Documentos pra envio manual.";
+  } else if (!empresaCanalAtivo(empresaId, "email")) {
+    msgEmail = "canal de e-mail desativado pra este cliente — nota disponível em Envio de Documentos pra envio manual.";
   } else if (!contatos.length) {
     msgEmail = "empresa sem contatos de e-mail cadastrados pra enviar.";
   } else {
@@ -14782,7 +14823,7 @@ async function nfseAnexarEEnviarDocumento(escritorioId: number, emissaoId: numbe
   // WhatsApp segue independente do e-mail (uma falha não bloqueia a outra) — só tenta se o
   // escritório tiver a integração ativa e a empresa tiver ao menos um contato marcado pra receber.
   let msgWhatsapp: string | null = null;
-  const contatosWhatsapp = escritorioTemModulo(escritorioId, "envio_whatsapp")
+  const contatosWhatsapp = escritorioTemModulo(escritorioId, "envio_whatsapp") && empresaCanalAtivo(empresaId, "whatsapp")
     ? (sqlite
         .prepare(`SELECT telefone FROM empresa_contatos WHERE empresa_id = ? AND receber_whatsapp = 1 AND telefone IS NOT NULL AND telefone != ''`)
         .all(empresaId) as any[])

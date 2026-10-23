@@ -17102,14 +17102,20 @@ async function renderCfgEmailSmtp(box){
     const empresaId = document.querySelector('#ccEmpresaCombo .combo-value').value;
     const ccBody = document.getElementById('ccBody');
     if(!empresaId){ ccBody.innerHTML=''; return; }
-    const [{items:contatos}, {items:docs}] = await Promise.all([
-      api('/empresas/'+empresaId+'/contatos'), api('/empresas/'+empresaId+'/documentos'),
+    const [{items:contatos}, {items:docs}, envioCfg] = await Promise.all([
+      api('/empresas/'+empresaId+'/contatos'), api('/empresas/'+empresaId+'/documentos'), api('/empresas/'+empresaId+'/envio-config').catch(()=>({canalEmailAtivo:true,canalWhatsappAtivo:true})),
     ]);
     const empresaSelecionada = empresas.find(e=>String(e.id)===String(empresaId));
     ccBody.innerHTML = `
       <div style="border:1px solid var(--accent); border-radius:10px; background:var(--paper); padding:16px 18px;">
         <div style="font-weight:700; font-size:14px; margin-bottom:14px; color:var(--accent-deep);">${esc(empresaSelecionada?empresaComboLabel(empresaSelecionada):'')}</div>
-        <div style="font-weight:600; font-size:12.5px; margin:0 0 6px;">Contatos (e-mail e WhatsApp)</div>
+        <div style="font-weight:600; font-size:12.5px; margin:0 0 6px;">Canais de envio deste cliente</div>
+        <div style="font-size:11.5px; color:var(--ink-soft); margin-bottom:6px;">Liga/desliga o envio automático por canal pra esta empresa. Desligado aqui, a nota ainda fica em Envio de Documentos pra envio manual. (A cobrança por canal por cliente vem na próxima fase.)</div>
+        <div class="row" style="gap:16px; margin-bottom:14px;">
+          <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="ccCanalEmail" ${envioCfg.canalEmailAtivo?'checked':''}> 📧 E-mail</label>
+          <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="ccCanalWhats" ${envioCfg.canalWhatsappAtivo?'checked':''}> 💬 WhatsApp</label>
+        </div>
+        <div style="font-weight:600; font-size:12.5px; margin:0 0 6px; padding-top:12px; border-top:1px dashed var(--rule);">Contatos (e-mail e WhatsApp)</div>
         <table class="data-table"><tbody id="ccContatosBody">
           ${contatos.map(c=>linhaContatoHtml(c)).join('') || '<tr><td colspan="4"><span style="font-size:12px; color:var(--ink-soft);">Nenhum contato cadastrado.</span></td></tr>'}
         </tbody></table>
@@ -17130,6 +17136,12 @@ async function renderCfgEmailSmtp(box){
         </div>
       </div>
     `;
+    const salvarCanais = async ()=>{
+      try{ await api('/empresas/'+empresaId+'/envio-config', { method:'PUT', body:{ canalEmailAtivo: document.getElementById('ccCanalEmail').checked, canalWhatsappAtivo: document.getElementById('ccCanalWhats').checked } }); toast('Canais de envio atualizados.','ok'); }
+      catch(e){ toast(e.message,'err'); }
+    };
+    document.getElementById('ccCanalEmail').addEventListener('change', salvarCanais);
+    document.getElementById('ccCanalWhats').addEventListener('change', salvarCanais);
     document.getElementById('btnAddContato').addEventListener('click', async ()=>{
       const nome = document.getElementById('ccNome').value.trim();
       const email = document.getElementById('ccEmail').value.trim();
