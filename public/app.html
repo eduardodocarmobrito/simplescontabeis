@@ -14668,13 +14668,12 @@ async function deskcommConfigModal(esc_){
     </div>
     <div class="row">
       <div class="field"><label>Supabase Service Role Key</label><input id="dcSupabaseKey" type="password" placeholder="${c.temSupabaseServiceRoleKey?'••••••••  (deixe em branco pra manter)':''}"></div>
-      <div class="field"><label>WAHA Seen Token</label><input id="dcWahaSeenToken" type="password" placeholder="${c.temWahaSeenToken?'••••••••  (deixe em branco pra manter)':''}"></div>
     </div>
     <div class="modal-actions">
       <button class="btn" id="dcCancel">Cancelar</button>
       <button class="btn primary" id="dcSalvar">Salvar</button>
     </div>
-  `;
+  `);
   document.getElementById('dcCancel').addEventListener('click', closeModal);
   document.getElementById('dcSalvar').addEventListener('click', async ()=>{
     const body = {
@@ -14688,8 +14687,6 @@ async function deskcommConfigModal(esc_){
     };
     const supabaseKey = document.getElementById('dcSupabaseKey').value;
     if(supabaseKey) body.supabaseServiceRoleKey = supabaseKey;
-    const wahaSeenToken = document.getElementById('dcWahaSeenToken').value;
-    if(wahaSeenToken) body.wahaSeenToken = wahaSeenToken;
     try{
       await api('/super/escritorios/'+esc_.id+'/deskcomm-config', { method:'PUT', body });
       closeModal(); toast('Configuração salva.','ok'); pageEscritorios();

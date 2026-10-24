@@ -2,6 +2,7 @@ import "dotenv/config";
 import express from "express";
 import path from "path";
 import https from "node:https";
+import { AsyncLocalStorage } from "node:async_hooks";
 import fs from "fs";
 import os from "os";
 import crypto from "crypto";
@@ -2841,17 +2842,17 @@ function requireEscritorioPrincipalDominio(req: express.Request, res: express.Re
   if ((req as any).user?.escritorioId !== 1) return res.status(403).json({ error: "Este robô só está disponível pro escritório principal, por enquanto." });
   next();
 }
-// O deskcomm (atendimento/CRM via WhatsApp) é UMA organização compartilhada só, de DESKCOMM_ESCRITORIO_ID
-// (a integração inteira usa um único DESKCOMM_ORG_ID fixo, não há uma org por escritório-cliente deste
-// SaaS). Achado em auditoria (2026-10-12): nenhuma rota do núcleo de atendimento conferia isso — um
-// Administrador (ou mesmo Colaborador com permissão de atendimento) de QUALQUER OUTRO escritório-cliente
-// conseguia entrar em /deskcomm-login, ser espelhado como admin/agent na organização do escritório
-// principal (deskcommGarantirUsuario), e a partir daí ler/editar/apagar conversas e mensagens reais de
-// clientes do escritório principal no WhatsApp — ou usar as rotas /api/atendimento/* locais direto, sem
-// nem passar pelo deskcomm. Barreira única pra todo o módulo.
+// O deskcomm (atendimento/CRM via WhatsApp) de cada escritório é uma pilha própria (deskcomm_config,
+// Fase A/B — 2026-10-24), resolvida aqui pelo escritório do usuário logado e carregada por toda a
+// cadeia de awaits da requisição via AsyncLocalStorage (deskcommCtx(), ver seção "contexto por
+// escritório"). Achado em auditoria (2026-10-12), continua valendo com o novo desenho: nenhuma rota
+// do núcleo de atendimento pode pular esta barreira — só entra quem tem deskcomm_config.ativo=1 pro
+// PRÓPRIO escritório, nunca o de outro.
 function requireEscritorioPrincipalDeskcomm(req: express.Request, res: express.Response, next: express.NextFunction) {
-  if ((req as any).user?.escritorioId !== DESKCOMM_ESCRITORIO_ID) return res.status(403).json({ error: "O atendimento por WhatsApp só está disponível pro escritório principal, por enquanto." });
-  next();
+  const ctx = deskcommContextoDoEscritorio((req as any).user?.escritorioId);
+  if (!ctx) return res.status(403).json({ error: "O atendimento por WhatsApp não está configurado pro seu escritório." });
+  (req as any).deskcommCtx = ctx;
+  deskcommAls.run(ctx, next);
 }
 // Dono do SaaS — gerencia os escritórios-cliente, não pertence a nenhum escritório.
 function requireSuperAdmin(req: express.Request, res: express.Response, next: express.NextFunction) {
@@ -3199,16 +3200,20 @@ app.get("/api/health", (_req, res) => res.json({ ok: true }));
 // proxy /deskcomm e /api/v1 encaminham. Deixou de ser hardcoded porque, ao consolidar tudo numa VPS,
 // o hostname `srv1998403.hstgr.cloud` passou a apontar pra PRÓPRIA VPS nova (que serve ESTE app) —
 // então o proxy ficava apontando pra ele mesmo e dava "Error occurred while trying to proxy" (quebrava
-// o login de usuário novo no CRM, o robô de envio, media, etc.). Agora vem de DESKCOMM_URL: na VPS,
+// o login de usuário novo no CRM, o robô de envio, media, etc.). Agora vem de deskcommCtx().url: na VPS,
 // apontar pro endereço REAL do deskcomm (ex.: serviço interno do docker-compose, `http://deskcomm:PORTA`,
 // ou o host/porta onde o container do deskcomm escuta) — NÃO pro domínio público deste app.
-const DESKCOMM_URL = (process.env.DESKCOMM_URL || "https://srv1998403.hstgr.cloud").trim();
-// Host PÚBLICO deste site (o que o navegador vê). Quando DESKCOMM_URL aponta pro container interno
+// [2026-10-24] Renomeadas pra "_ENV": estas são só os valores CRUS do .env, usados daqui em diante só
+// como fallback/semente (ver deskcommContextoDoEscritorio abaixo) — o resto do código passou a ler o
+// contexto por escritório (deskcommCtx()), não mais estas constantes direto. Ver seção "Atendimento
+// por WhatsApp — contexto por escritório" logo depois da declaração de deskcommAdminEnv.
+const DESKCOMM_URL_ENV = (process.env.DESKCOMM_URL || "https://srv1998403.hstgr.cloud").trim();
+// Host PÚBLICO deste site (o que o navegador vê). Quando deskcommCtx().url aponta pro container interno
 // (http://deskcomm-app-1:3000), as chamadas diretas do robô (login do magic-link, /api/v1) chegam no
 // deskcomm com Host=deskcomm-app-1:3000, que o Next.js do deskcomm rejeita (redireciona pro login, 307,
 // sem setar o cookie — login do robô falhava, quebrando mídia/envio/fechar pelo robô). Mandar
 // x-forwarded-host com o host público (o mesmo que o proxy já manda pros usuários) resolve.
-const DESKCOMM_PUBLIC_HOST = (process.env.DESKCOMM_PUBLIC_HOST || "simplescontabeis.com.br").trim();
+const DESKCOMM_PUBLIC_HOST_ENV = (process.env.DESKCOMM_PUBLIC_HOST || "simplescontabeis.com.br").trim();
 // Fase 4 — "WhatsApp próprio do cliente" (nº do cliente, conectado por QR). Fica DESLIGADO até o WAHA
 // Plus + as rotas de sessão no Caddy do deskcomm estarem provisionados. Enquanto off, a tela mostra
 // "em preparação" e o envio segue sempre pelo nº do escritório (nada muda).
@@ -3216,32 +3221,36 @@ const WHATSAPP_PROPRIO_DISPONIVEL = String(process.env.WHATSAPP_PROPRIO_DISPONIV
 // Base das rotas /simplescontabeis/waha-* (recibo de leitura, foto/mídia pelo celular, editar/apagar).
 // ELAS NÃO FICAM no container do app do deskcomm — ficam no CADDY do deskcomm, no bloco do domínio dele
 // ($DOMAIN = srv1998403.hstgr.cloud), que injeta a X-Api-Key e proxya pro container `waha`. Por isso usam
-// uma base DIFERENTE do DESKCOMM_URL (que agora aponta pro container interno do app e NÃO tem essas rotas
+// uma base DIFERENTE do deskcommCtx().url (que agora aponta pro container interno do app e NÃO tem essas rotas
 // -> dava "WAHA 404"). O default aponta pro Caddy público do deskcomm, onde essas rotas sempre moraram.
-const DESKCOMM_WAHA_URL = (process.env.DESKCOMM_WAHA_URL || "https://srv1998403.hstgr.cloud").trim();
-// As rotas WAHA ficam no Caddy do deskcomm, mas o hairpin pro IP PÚBLICO de `DESKCOMM_WAHA_URL` não
+const DESKCOMM_WAHA_URL_ENV = (process.env.DESKCOMM_WAHA_URL || "https://srv1998403.hstgr.cloud").trim();
+// As rotas WAHA ficam no Caddy do deskcomm, mas o hairpin pro IP PÚBLICO de `deskcommCtx().wahaUrl` não
 // funciona de dentro do container (fetch failed). Então a gente CONECTA no Caddy pela rede interna
-// (container `deskcomm-caddy-1`), mas com TLS SNI + header Host = o host de DESKCOMM_WAHA_URL — senão o
+// (container `deskcomm-caddy-1`), mas com TLS SNI + header Host = o host de deskcommCtx().wahaUrl — senão o
 // Caddy não casa o bloco do domínio e cai no catch-all (404). `fetch` não deixa forçar Host/SNI, e o
 // undici não está disponível, então usa o módulo https direto. rejectUnauthorized:false porque
 // conectamos pelo nome interno (o cert é do host público, validado pelo servername).
-const DESKCOMM_WAHA_CONNECT = (process.env.DESKCOMM_WAHA_CONNECT || "deskcomm-caddy-1").trim();
-const _deskcommWahaUrl = new URL(DESKCOMM_WAHA_URL);
+const DESKCOMM_WAHA_CONNECT_ENV = (process.env.DESKCOMM_WAHA_CONNECT || "deskcomm-caddy-1").trim();
+// [2026-10-24] wahaUrl/wahaConnect agora vêm do contexto do escritório atual (deskcommCtx()), não mais
+// fixos — cada chamada resolve o host/porta/conexão interna na hora, pro escritório certo.
 function wahaFetch(
   caminho: string,
   init: { method?: string; headers?: Record<string, string>; body?: string } = {}
 ): Promise<{ ok: boolean; status: number; json: () => Promise<any>; text: () => Promise<string> }> {
+  const ctx = deskcommCtx();
+  const wahaUrlAlvo = new URL(ctx.wahaUrl || DESKCOMM_WAHA_URL_ENV);
+  const wahaConnectAlvo = ctx.wahaConnect || "";
   return new Promise((resolve, reject) => {
-    const usaInterno = DESKCOMM_WAHA_CONNECT && DESKCOMM_WAHA_CONNECT.toLowerCase() !== "direto";
+    const usaInterno = wahaConnectAlvo && wahaConnectAlvo.toLowerCase() !== "direto";
     const req = https.request(
       {
-        host: usaInterno ? DESKCOMM_WAHA_CONNECT : _deskcommWahaUrl.hostname,
-        port: Number(_deskcommWahaUrl.port) || 443,
+        host: usaInterno ? wahaConnectAlvo : wahaUrlAlvo.hostname,
+        port: Number(wahaUrlAlvo.port) || 443,
         path: caminho,
         method: init.method || "GET",
-        servername: _deskcommWahaUrl.hostname,
+        servername: wahaUrlAlvo.hostname,
         rejectUnauthorized: !usaInterno,
-        headers: { ...(init.headers || {}), host: _deskcommWahaUrl.host },
+        headers: { ...(init.headers || {}), host: wahaUrlAlvo.host },
       },
       (resp) => {
         const chunks: Buffer[] = [];
@@ -3265,15 +3274,94 @@ function wahaFetch(
   });
 }
 // .trim(): variáveis de ambiente coladas por um painel web (Railway etc.) vêm sujeitas a espaço/quebra
-// de linha grudado sem querer — medido ao vivo com DESKCOMM_ORG_ID assim, e "invalid input syntax for
+// de linha grudado sem querer — medido ao vivo com deskcommCtx().orgId assim, e "invalid input syntax for
 // type uuid" não deixa óbvio que o problema é um espaço, não o valor em si.
-const DESKCOMM_SUPABASE_URL = (process.env.DESKCOMM_SUPABASE_URL || "").trim();
-const DESKCOMM_SUPABASE_SERVICE_ROLE_KEY = (process.env.DESKCOMM_SUPABASE_SERVICE_ROLE_KEY || "").trim();
-const DESKCOMM_ORG_ID = (process.env.DESKCOMM_ORG_ID || "").trim();
-const deskcommAdmin =
-  DESKCOMM_SUPABASE_URL && DESKCOMM_SUPABASE_SERVICE_ROLE_KEY
-    ? createSupabaseClient(DESKCOMM_SUPABASE_URL, DESKCOMM_SUPABASE_SERVICE_ROLE_KEY, { auth: { autoRefreshToken: false, persistSession: false } })
+const DESKCOMM_SUPABASE_URL_ENV = (process.env.DESKCOMM_SUPABASE_URL || "").trim();
+const DESKCOMM_SUPABASE_SERVICE_ROLE_KEY_ENV = (process.env.DESKCOMM_SUPABASE_SERVICE_ROLE_KEY || "").trim();
+const DESKCOMM_ORG_ID_ENV = (process.env.DESKCOMM_ORG_ID || "").trim();
+const deskcommAdminEnv =
+  DESKCOMM_SUPABASE_URL_ENV && DESKCOMM_SUPABASE_SERVICE_ROLE_KEY_ENV
+    ? createSupabaseClient(DESKCOMM_SUPABASE_URL_ENV, DESKCOMM_SUPABASE_SERVICE_ROLE_KEY_ENV, { auth: { autoRefreshToken: false, persistSession: false } })
     : null;
+
+// ---------- Atendimento por WhatsApp — contexto por escritório (2026-10-24) ----------
+// Até aqui, TUDO (client do Supabase, organization_id, URL do deskcomm/WAHA) era um valor global só,
+// do .env, pro escritório principal. Agora cada request de atendimento resolve o contexto do PRÓPRIO
+// escritório (deskcomm_config, ver CREATE TABLE/Fase A) e o carrega via AsyncLocalStorage por toda a
+// cadeia de awaits — sem precisar passar "escritorioId" argumento por argumento pelas ~45 rotas e
+// pelas dezenas de funções auxiliares que elas chamam. Fora de uma requisição de atendimento (crons/
+// robôs, que hoje só operam no escritório principal — ver DESKCOMM_ESCRITORIO_ID mais abaixo),
+// deskcommCtx() cai no contexto do escritório principal, calculado a partir do PRÓPRIO
+// deskcomm_config (não mais direto do .env) — e como a migração de compatibilidade da Fase A já
+// grava ali os mesmos valores que o .env tinha, o comportamento de hoje não muda em nada.
+interface DeskcommContexto {
+  escritorioId: number;
+  admin: any; // SupabaseClient | null — any pelo mesmo motivo de sempre neste arquivo (ReturnType<typeof createSupabaseClient> colide de tipo entre chamadas com/sem genérico explícito)
+  orgId: string;
+  url: string;
+  publicHost: string;
+  wahaUrl: string;
+  wahaConnect: string;
+  wahaSeenToken: string;
+}
+const deskcommAls = new AsyncLocalStorage<DeskcommContexto>();
+const deskcommClientesPorEscritorio = new Map<number, any>();
+function deskcommClienteSupabase(url: string, key: string): any {
+  return url && key ? createSupabaseClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } }) : null;
+}
+// Resolve (e cacheia o client Supabase de) o contexto de atendimento de UM escritório, lendo
+// deskcomm_config. null = esse escritório não tem atendimento habilitado/configurado (sem linha,
+// "ativo=0", ou faltando Supabase/org — nada funciona sem isso).
+function deskcommContextoDoEscritorio(escritorioId: number | null | undefined): DeskcommContexto | null {
+  if (!escritorioId) return null;
+  const c = sqlite.prepare(`SELECT * FROM deskcomm_config WHERE escritorio_id = ?`).get(escritorioId) as any;
+  if (!c || !c.ativo || !c.supabase_url || !c.supabase_service_role_key_cifrada || !c.org_id) return null;
+  if (!deskcommClientesPorEscritorio.has(escritorioId)) {
+    deskcommClientesPorEscritorio.set(escritorioId, deskcommClienteSupabase(c.supabase_url, nfse.decifrarTexto(c.supabase_service_role_key_cifrada)));
+  }
+  const supabaseServiceRoleKey = nfse.decifrarTexto(c.supabase_service_role_key_cifrada);
+  return {
+    escritorioId,
+    admin: deskcommClientesPorEscritorio.get(escritorioId) || null,
+    orgId: c.org_id,
+    url: c.url || DESKCOMM_URL_ENV,
+    publicHost: c.public_host || DESKCOMM_PUBLIC_HOST_ENV,
+    wahaUrl: c.waha_url || DESKCOMM_WAHA_URL_ENV,
+    wahaConnect: c.waha_connect || DESKCOMM_WAHA_CONNECT_ENV,
+    // Derivado do PRÓPRIO service-role key deste escritório (mesma fórmula de sempre) — nunca um
+    // segredo cadastrado à parte, pra não ter como os dois lados ficarem dessincronizados.
+    wahaSeenToken: supabaseServiceRoleKey ? crypto.createHash("sha256").update("simplescontabeis-waha-seen:" + supabaseServiceRoleKey).digest("hex") : "",
+  };
+}
+// Contexto do escritório PRINCIPAL (DESKCOMM_ESCRITORIO_ID, definida mais abaixo) — usado fora de
+// qualquer requisição de atendimento (crons/robôs) e como fallback de deskcommCtx(). Calculado uma
+// vez, de forma preguiçosa (a 1ª chamada só acontece depois que DESKCOMM_ESCRITORIO_ID e a migração
+// de compatibilidade da Fase A já rodaram) e cacheado.
+let _deskcommContextoPrincipalCache: DeskcommContexto | null | undefined;
+function deskcommContextoPrincipal(): DeskcommContexto | null {
+  if (_deskcommContextoPrincipalCache === undefined) {
+    _deskcommContextoPrincipalCache = deskcommContextoDoEscritorio(DESKCOMM_ESCRITORIO_ID);
+  }
+  return _deskcommContextoPrincipalCache;
+}
+// Contexto de atendimento da requisição ATUAL (ou do escritório principal, fora de uma requisição).
+// admin pode vir null (atendimento não configurado) — quem chama já trata isso como hoje tratava
+// `!deskcommCtx().admin`.
+function deskcommCtx(): DeskcommContexto {
+  return (
+    deskcommAls.getStore() ||
+    deskcommContextoPrincipal() || {
+      escritorioId: DESKCOMM_ESCRITORIO_ID,
+      admin: deskcommAdminEnv,
+      orgId: DESKCOMM_ORG_ID_ENV,
+      url: DESKCOMM_URL_ENV,
+      publicHost: DESKCOMM_PUBLIC_HOST_ENV,
+      wahaUrl: DESKCOMM_WAHA_URL_ENV,
+      wahaConnect: DESKCOMM_WAHA_CONNECT_ENV,
+      wahaSeenToken: "",
+    }
+  );
+}
 // `express.json()` (registrado lá em cima, global) já CONSOME o corpo da requisição antes de chegar
 // aqui — sem isso, todo PUT/POST/PATCH proxeado chegava vazio no deskcomm (medido ao vivo: salvar
 // membros de Roteador dava "Failed to load response data" no DevTools, sem status nenhum — o corpo
@@ -3338,25 +3426,29 @@ function requireAuthPagina(req: express.Request, res: express.Response, next: ex
   const user = getSessionUser(req.cookies?.sid);
   if (!user) return res.redirect("/");
   if (user.perfil === "Cliente") return res.redirect("/");
-  // Achado em auditoria (2026-10-12): ver comentário de requireEscritorioPrincipalDeskcomm — sem isso,
-  // qualquer usuário de outro escritório-cliente deste SaaS entrava direto no app do deskcomm.
-  if (user.escritorioId !== DESKCOMM_ESCRITORIO_ID) return res.redirect("/");
+  // Achado em auditoria (2026-10-12), continua valendo com o novo desenho por escritório (2026-10-24):
+  // sem isso, qualquer usuário de outro escritório-cliente deste SaaS entrava direto no app do
+  // deskcomm — agora a barreira é "tem deskcomm_config.ativo=1 pro PRÓPRIO escritório".
+  const ctx = deskcommContextoDoEscritorio(user.escritorioId);
+  if (!ctx) return res.redirect("/");
   (req as any).user = user;
-  next();
+  (req as any).deskcommCtx = ctx;
+  deskcommAls.run(ctx, next);
 }
 app.use(
   "/deskcomm",
   requireAuthPagina,
   createProxyMiddleware({
-    target: DESKCOMM_URL,
-    // changeOrigin só pra alvo HTTPS (ex.: Caddy público da VPS) — sem ele o TLS quebrava com EPROTO
-    // na negociação do SNI. Mas quando DESKCOMM_URL é um alvo HTTP INTERNO (ex.: http://deskcomm-app-1:3000,
-    // o container na rede do docker), changeOrigin:true vira um TIRO NO PÉ: ele reescreve o Host pra
-    // "deskcomm-app-1:3000", e o deskcomm (Next.js) monta os redirects do /auth/confirm com ESSE host
-    // interno (via request.url), que o NAVEGADOR não resolve → "falha de rede ao conectar no deskcomm"
-    // no login de usuário novo. Com changeOrigin:false o Host do navegador (simplescontabeis.com.br) é
-    // preservado e os redirects saem no host público certo. Alvo HTTP não tem TLS, então não há EPROTO.
-    changeOrigin: DESKCOMM_URL.startsWith("https://"),
+    // Alvo resolvido por requisição, pelo escritório de quem está logado (requireAuthPagina já
+    // validou e guardou em req.deskcommCtx) — cada escritório fala com a PRÓPRIA pilha deskcomm.
+    router: (req: any) => req.deskcommCtx?.url || DESKCOMM_URL_ENV,
+    // changeOrigin:false SEMPRE — hoje (e na convenção pra escritório novo, ver Fase C) o alvo é
+    // sempre um endereço HTTP INTERNO (ex.: http://deskcomm-app-1:3000, container na rede do docker).
+    // changeOrigin:true era um TIRO NO PÉ nesse caso: reescreve o Host pro nome interno, e o deskcomm
+    // (Next.js) monta os redirects do /auth/confirm com ESSE host, que o NAVEGADOR não resolve →
+    // "falha de rede ao conectar no deskcomm" no login de usuário novo. Com false o Host do navegador
+    // (o domínio público de cada escritório) é preservado e os redirects saem certos.
+    changeOrigin: false,
     ws: false,
     proxyTimeout: 45_000,
     timeout: 45_000,
@@ -3376,8 +3468,10 @@ app.use(
   blockCliente,
   requireEscritorioPrincipalDeskcomm,
   createProxyMiddleware({
-    target: DESKCOMM_URL,
-    changeOrigin: DESKCOMM_URL.startsWith("https://"), // ver comentário do proxy /deskcomm acima (só HTTPS)
+    // requireEscritorioPrincipalDeskcomm já resolveu e guardou em req.deskcommCtx — lê direto (mais
+    // confiável que depender do ALS atravessar os internos da lib de proxy).
+    router: (req: any) => req.deskcommCtx?.url || DESKCOMM_URL_ENV,
+    changeOrigin: false, // ver comentário do proxy /deskcomm acima
     ws: false,
     proxyTimeout: 45_000,
     timeout: 45_000,
@@ -3389,22 +3483,23 @@ app.use(
 // com o papel certo, e devolve o id de lá. Usado pela ponte de login abaixo e pelo módulo DP/RH (que
 // precisa saber o id do deskcomm de cada atendente pra "Minhas" e "Transferir").
 async function deskcommGarantirUsuario(user: { id: number; email: string; nome: string; perfil: string; escritorioId: number }): Promise<string> {
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID) throw new Error("Integração com o deskcomm não configurada (faltam variáveis de ambiente no servidor).");
-  // Achado em auditoria (2026-10-12): esta função é o único ponto que espelha um usuário local na
-  // organização ÚNICA e compartilhada do deskcomm — travar aqui protege todo chamador, presente e
-  // futuro, mesmo que algum deles esqueça a checagem de escritório na própria rota.
-  if (user.escritorioId !== DESKCOMM_ESCRITORIO_ID) throw new Error("O atendimento por WhatsApp só está disponível pro escritório principal, por enquanto.");
+  // [2026-10-24] Não trava mais num escritório fixo — usa o contexto resolvido pela rota chamadora
+  // (requireEscritorioPrincipalDeskcomm já validou e estabeleceu o ALS antes de chegar aqui). Fora de
+  // uma rota gateada, deskcommCtx() cai no contexto do escritório principal — mesmo comportamento de
+  // sempre pra quem não passar pelo gate.
+  const ctx = deskcommCtx();
+  if (!ctx.admin || !ctx.orgId) throw new Error("Integração com o deskcomm não configurada (faltam variáveis de ambiente no servidor).");
   let deskcommUserId: string | null = (sqlite.prepare(`SELECT deskcomm_user_id FROM app_users WHERE id = ?`).get(user.id) as any)?.deskcomm_user_id || null;
   if (!deskcommUserId) {
     // Busca por e-mail antes de criar — createUser falha se o e-mail já existir por lá (ex.:
     // usuário provisionado manualmente antes desta ponte existir).
-    const { data: existentes, error: erroListar } = await deskcommAdmin.auth.admin.listUsers({ page: 1, perPage: 1000 });
+    const { data: existentes, error: erroListar } = await ctx.admin.auth.admin.listUsers({ page: 1, perPage: 1000 });
     if (erroListar) throw new Error(erroListar.message);
-    const existente = existentes.users.find((u) => (u.email || "").toLowerCase() === user.email.toLowerCase());
+    const existente = existentes.users.find((u: any) => (u.email || "").toLowerCase() === user.email.toLowerCase());
     if (existente) {
       deskcommUserId = existente.id;
     } else {
-      const { data: criado, error: erroCriar } = await deskcommAdmin.auth.admin.createUser({
+      const { data: criado, error: erroCriar } = await ctx.admin.auth.admin.createUser({
         email: user.email,
         email_confirm: true,
         user_metadata: { nome: user.nome, full_name: user.nome, origem: "simplescontabeis" },
@@ -3415,23 +3510,23 @@ async function deskcommGarantirUsuario(user: { id: number; email: string; nome: 
     sqlite.prepare(`UPDATE app_users SET deskcomm_user_id = ? WHERE id = ?`).run(deskcommUserId, user.id);
   }
   const role = user.perfil === "Administrador" ? "admin" : "agent";
-  const { error: erroOrg } = await deskcommAdmin
+  const { error: erroOrg } = await ctx.admin
     .from("user_organizations")
-    .upsert({ organization_id: DESKCOMM_ORG_ID, user_id: deskcommUserId, role, accepted_at: new Date().toISOString() }, { onConflict: "organization_id,user_id" });
+    .upsert({ organization_id: ctx.orgId, user_id: deskcommUserId, role, accepted_at: new Date().toISOString() }, { onConflict: "organization_id,user_id" });
   if (erroOrg) throw new Error(erroOrg.message);
-  return deskcommUserId;
+  return deskcommUserId as string;
 }
 // ?silencioso=1: usado pelo módulo DP/RH via fetch() — mesma ponte, mas termina num arquivo leve do
 // deskcomm (o manifest) em vez de carregar o Inbox inteiro. O que importa ali é só o Set-Cookie
 // `sb-deskcomm-auth` gravado no caminho, pra tela do DP/RH poder chamar /api/v1/* como esse usuário.
 app.get("/deskcomm-login", requireAuth, blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID) {
+  if (!deskcommCtx().admin || !deskcommCtx().orgId) {
     return res.status(503).send("Integração com o deskcomm não configurada (faltam variáveis de ambiente no servidor).");
   }
   try {
     await deskcommGarantirUsuario(user);
-    const { data: linkData, error: erroLink } = await deskcommAdmin.auth.admin.generateLink({ type: "magiclink", email: user.email });
+    const { data: linkData, error: erroLink } = await deskcommCtx().admin.auth.admin.generateLink({ type: "magiclink", email: user.email });
     const tokenHash = (linkData as any)?.properties?.hashed_token;
     if (erroLink || !tokenHash) throw new Error(erroLink?.message || "O Supabase não devolveu o token de acesso.");
     const next = req.query.silencioso === "1" ? "/manifest.webmanifest" : "/app/inbox";
@@ -3473,9 +3568,9 @@ app.get("/api/atendimento/sessao-deskcomm", requireAuth, blockCliente, requireEs
     // Papel de quem está logado LÁ (agente só enxerga as conversas atribuídas a ele; admin enxerga tudo).
     let papel: string | null = null, emailLa: string | null = null;
     if (noCookie) {
-      const { data: uo } = await deskcommAdmin!.from("user_organizations").select("role").eq("organization_id", DESKCOMM_ORG_ID).eq("user_id", noCookie).maybeSingle();
+      const { data: uo } = await deskcommCtx().admin!.from("user_organizations").select("role").eq("organization_id", deskcommCtx().orgId).eq("user_id", noCookie).maybeSingle();
       papel = uo?.role ?? null;
-      emailLa = (await deskcommAdmin!.auth.admin.getUserById(noCookie)).data.user?.email ?? null;
+      emailLa = (await deskcommCtx().admin!.auth.admin.getUserById(noCookie)).data.user?.email ?? null;
     }
     let ok = !!esperado && !!noCookie && esperado === noCookie;
     // Autocorreção (achado ao vivo 2026-10-19, usuária Geissy): o cookie estava logado numa conta do
@@ -3486,8 +3581,8 @@ app.get("/api/atendimento/sessao-deskcomm", requireAuth, blockCliente, requireEs
     // pessoa (o caso que a checagem existe pra proteger).
     if (!ok && noCookie && emailLa && emailLa.toLowerCase() === String(user.email || "").toLowerCase()) {
       sqlite.prepare(`UPDATE app_users SET deskcomm_user_id = ? WHERE id = ?`).run(noCookie, user.id);
-      await deskcommAdmin!.from("user_organizations").upsert(
-        { organization_id: DESKCOMM_ORG_ID, user_id: noCookie, role: user.perfil === "Administrador" ? "admin" : "agent", accepted_at: new Date().toISOString() },
+      await deskcommCtx().admin!.from("user_organizations").upsert(
+        { organization_id: deskcommCtx().orgId, user_id: noCookie, role: user.perfil === "Administrador" ? "admin" : "agent", accepted_at: new Date().toISOString() },
         { onConflict: "organization_id,user_id" }
       );
       ok = true;
@@ -3719,7 +3814,6 @@ app.get("/api/super/escritorios/:id/deskcomm-config", requireSuperAdmin, (req, r
     supabaseUrl: c.supabase_url || "",
     temSupabaseServiceRoleKey: !!c.supabase_service_role_key_cifrada,
     orgId: c.org_id || "",
-    temWahaSeenToken: !!c.waha_seen_token_cifrado,
     updatedAt: c.updated_at || null,
   });
 });
@@ -3731,7 +3825,7 @@ app.put("/api/super/escritorios/:id/deskcomm-config", requireSuperAdmin, (req, r
   sqlite
     .prepare(
       `UPDATE deskcomm_config SET ativo=?, url=?, public_host=?, waha_url=?, waha_connect=?,
-         supabase_url=?, supabase_service_role_key_cifrada=?, org_id=?, waha_seen_token_cifrado=?,
+         supabase_url=?, supabase_service_role_key_cifrada=?, org_id=?,
          updated_at=datetime('now')
        WHERE escritorio_id=?`
     )
@@ -3744,7 +3838,6 @@ app.put("/api/super/escritorios/:id/deskcomm-config", requireSuperAdmin, (req, r
       b.supabaseUrl !== undefined ? (String(b.supabaseUrl).trim() || null) : atual.supabase_url,
       b.supabaseServiceRoleKey ? nfse.cifrarTexto(String(b.supabaseServiceRoleKey).trim()) : atual.supabase_service_role_key_cifrada,
       b.orgId !== undefined ? (String(b.orgId).trim() || null) : atual.org_id,
-      b.wahaSeenToken ? nfse.cifrarTexto(String(b.wahaSeenToken).trim()) : atual.waha_seen_token_cifrado,
       id
     );
   res.json({ ok: true });
@@ -13094,7 +13187,7 @@ function integraContadorPesquisaPagamentoGatilho(doc: { tipo: string; dataVencim
   return d.toISOString().slice(0, 10);
 }
 async function integraContadorEnviarPesquisasPagamento() {
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return;
+  if (!deskcommCtx().admin || !deskcommCtx().orgId) return;
   const hojeIso = new Date().toISOString().slice(0, 10);
   const cfgCache = new Map<number, any>();
   try {
@@ -13147,7 +13240,7 @@ async function integraContadorEnviarPesquisasPagamento() {
   }
 }
 async function integraContadorColetarPesquisasPagamento() {
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return;
+  if (!deskcommCtx().admin || !deskcommCtx().orgId) return;
   try {
     const abertas = sqlite.prepare(`SELECT * FROM integracontador_pesquisas_pagamento WHERE resposta IS NULL AND encerrada = 0`).all() as any[];
     for (const p of abertas) {
@@ -19594,15 +19687,15 @@ sqlite.exec(`
 let atendimentoSetoresCache: { em: number; itens: { intencao: string; agentId: string }[] } | null = null;
 async function atendimentoSetores(): Promise<{ intencao: string; agentId: string }[]> {
   if (atendimentoSetoresCache && Date.now() - atendimentoSetoresCache.em < 60_000) return atendimentoSetoresCache.itens;
-  const { data: roteadores, error } = await deskcommAdmin!.from("ai_routers").select("id").eq("organization_id", DESKCOMM_ORG_ID).eq("is_active", true);
+  const { data: roteadores, error } = await deskcommCtx().admin!.from("ai_routers").select("id").eq("organization_id", deskcommCtx().orgId).eq("is_active", true);
   if (error) throw new Error(error.message);
   const ids = (roteadores || []).map((r: any) => r.id);
   let itens: { intencao: string; agentId: string }[] = [];
   if (ids.length) {
-    const { data: membros, error: erroMembros } = await deskcommAdmin!
+    const { data: membros, error: erroMembros } = await deskcommCtx().admin!
       .from("ai_router_members")
       .select("intent_name, agent_id, position")
-      .eq("organization_id", DESKCOMM_ORG_ID)
+      .eq("organization_id", deskcommCtx().orgId)
       .in("router_id", ids)
       .order("position");
     if (erroMembros) throw new Error(erroMembros.message);
@@ -19619,10 +19712,10 @@ async function atendimentoSetores(): Promise<{ intencao: string; agentId: string
 // guarda toda conversa que JÁ passou por cada setor (nunca some da aba Fechadas daquele setor).
 // Depois que alguém assume, o robô silencia e não há decisão nova — a última segue valendo.
 async function atendimentoEscolhas(): Promise<{ ultima: Map<string, { setor: string | null; em: string }>; historico: Map<string, Set<string>> }> {
-  const { data: decisoes, error } = await deskcommAdmin!
+  const { data: decisoes, error } = await deskcommCtx().admin!
     .from("ai_router_decisions")
     .select("conversation_id, intent_name, created_at")
-    .eq("organization_id", DESKCOMM_ORG_ID)
+    .eq("organization_id", deskcommCtx().orgId)
     .order("created_at", { ascending: false })
     .limit(10000);
   if (error) throw new Error(error.message);
@@ -19739,13 +19832,13 @@ function deskcommEmpresasPorTelefone(): Map<string, string[]> {
 // acabou de mandar a 1ª mensagem); sem ele, confere todos.
 let deskcommSyncEmpresasRodando = false;
 async function deskcommSincronizarEmpresasClientes(desde?: Date): Promise<{ conferidos: number; alterados: number }> {
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID || deskcommSyncEmpresasRodando) return { conferidos: 0, alterados: 0 };
+  if (!deskcommCtx().admin || !deskcommCtx().orgId || deskcommSyncEmpresasRodando) return { conferidos: 0, alterados: 0 };
   deskcommSyncEmpresasRodando = true;
   try {
     const empresasPorTelefone = deskcommEmpresasPorTelefone();
     let conferidos = 0, alterados = 0;
     for (let de = 0; ; de += 1000) {
-      let q = deskcommAdmin.from("contacts").select("id, phone_number, tags").eq("organization_id", DESKCOMM_ORG_ID).order("id").range(de, de + 999);
+      let q = deskcommCtx().admin.from("contacts").select("id, phone_number, tags").eq("organization_id", deskcommCtx().orgId).order("id").range(de, de + 999);
       if (desde) q = q.gte("updated_at", desde.toISOString());
       const { data, error } = await q;
       if (error) throw new Error(error.message);
@@ -19756,7 +19849,7 @@ async function deskcommSincronizarEmpresasClientes(desde?: Date): Promise<{ conf
         const empresas = (chave && empresasPorTelefone.get(chave)) || [];
         const desejadas = [...atuais.filter((t) => !t.startsWith(DESKCOMM_TAG_EMPRESA)), ...empresas.sort().map((n) => DESKCOMM_TAG_EMPRESA + n)];
         if (JSON.stringify(desejadas) === JSON.stringify(atuais)) continue;
-        const { error: e2 } = await deskcommAdmin.from("contacts").update({ tags: desejadas }).eq("id", c.id).eq("organization_id", DESKCOMM_ORG_ID);
+        const { error: e2 } = await deskcommCtx().admin.from("contacts").update({ tags: desejadas }).eq("id", c.id).eq("organization_id", deskcommCtx().orgId);
         if (e2) console.error("Sync empresa cliente → deskcomm, contato", c.id, e2.message);
         else alterados++;
       }
@@ -19799,17 +19892,17 @@ setTimeout(() => {
 // Toda conversa que passou pelo setor: as que o Roteador (ou uma transferência) já mandou pra ele
 // (`historico`) + as que estão com ele agora (active_intent).
 async function atendimentoConversasDoSetor(escopo: AtendimentoSetorEscopo, colunas: string, historico: Map<string, Set<string>>): Promise<any[]> {
-  if (!deskcommAdmin) return [];
+  if (!deskcommCtx().admin) return [];
   const intencao = ATENDIMENTO_SETORES[escopo];
   const ids = new Set(historico.get(intencao) || []);
-  const { data: ativas, error: erroAtivas } = await deskcommAdmin.from("conversations").select("id").eq("organization_id", DESKCOMM_ORG_ID).eq("active_intent", intencao);
+  const { data: ativas, error: erroAtivas } = await deskcommCtx().admin.from("conversations").select("id").eq("organization_id", deskcommCtx().orgId).eq("active_intent", intencao);
   if (erroAtivas) throw new Error(erroAtivas.message);
   for (const c of ativas || []) ids.add(c.id);
   const lista = [...ids];
   const linhas: any[] = [];
   // .in() vira query string — em lotes pra não estourar o tamanho da URL.
   for (let i = 0; i < lista.length; i += 100) {
-    const { data, error } = await deskcommAdmin.from("conversations").select(colunas).eq("organization_id", DESKCOMM_ORG_ID).in("id", lista.slice(i, i + 100));
+    const { data, error } = await deskcommCtx().admin.from("conversations").select(colunas).eq("organization_id", deskcommCtx().orgId).in("id", lista.slice(i, i + 100));
     if (error) throw new Error(error.message);
     linhas.push(...(data || []));
   }
@@ -19824,12 +19917,12 @@ async function atendimentoContatosDoSetor(escopo: AtendimentoSetorEscopo): Promi
 // num cliente (aba Tags), abrir direto a conversa dele.
 async function atendimentoUltimaConversaPorContato(escopo: AtendimentoEscopo, contatoIds: string[]): Promise<Map<string, { id: string; status: string }>> {
   const mapa = new Map<string, { id: string; status: string }>();
-  if (!deskcommAdmin || !contatoIds.length) return mapa;
+  if (!deskcommCtx().admin || !contatoIds.length) return mapa;
   const colunas = "id, contact_id, status, last_message_at";
   let linhas: any[] = [];
   if (escopo === "crm") {
     for (let i = 0; i < contatoIds.length; i += 100) {
-      const { data, error } = await deskcommAdmin.from("conversations").select(colunas).eq("organization_id", DESKCOMM_ORG_ID).is("group_chat_id", null).in("contact_id", contatoIds.slice(i, i + 100));
+      const { data, error } = await deskcommCtx().admin.from("conversations").select(colunas).eq("organization_id", deskcommCtx().orgId).is("group_chat_id", null).in("contact_id", contatoIds.slice(i, i + 100));
       if (error) throw new Error(error.message);
       linhas.push(...(data || []));
     }
@@ -19853,7 +19946,7 @@ app.get("/api/atendimento/conversas", blockCliente, requireEscritorioPrincipalDe
   const escopo = atendimentoEscopo(req.query.escopo);
   if (!escopo) return res.status(400).json({ error: "Escopo inválido." });
   if (!hasPermissao(user, atendimentoModulo(escopo), "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  if (!deskcommCtx().admin || !deskcommCtx().orgId) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
   const abas = ATENDIMENTO_ABAS[escopo];
   const aba = abas.includes(String(req.query.aba)) ? String(req.query.aba) : "fila";
   const busca = crmNormalizaTxt(String(req.query.busca || ""));
@@ -19862,10 +19955,10 @@ app.get("/api/atendimento/conversas", blockCliente, requireEscritorioPrincipalDe
     const { ultima, historico } = await atendimentoEscolhas();
     const brutas: any[] = [];
     if (escopo === "crm") {
-      const { data, error } = await deskcommAdmin
+      const { data, error } = await deskcommCtx().admin
         .from("conversations")
         .select(ATENDIMENTO_COLUNAS)
-        .eq("organization_id", DESKCOMM_ORG_ID)
+        .eq("organization_id", deskcommCtx().orgId)
         .order("last_message_at", { ascending: false, nullsFirst: false })
         .limit(ATENDIMENTO_CRM_LIMITE);
       if (error) throw new Error(error.message);
@@ -19953,16 +20046,16 @@ app.get("/api/atendimento/contatos-tags", blockCliente, requireEscritorioPrincip
   const user = (req as any).user;
   const escopo = atendimentoEscopo(req.query.escopo) || "crm";
   if (!hasPermissao(user, atendimentoModulo(escopo), "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  if (!deskcommCtx().admin || !deskcommCtx().orgId) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
   try {
     const doSetor = escopo === "crm" ? null : await atendimentoContatosDoSetor(escopo);
     const itens: any[] = [];
     const empresas = atendimentoMapaEmpresasPorTelefone(user.escritorioId);
     for (let de = 0; ; de += 1000) {
-      const { data, error } = await deskcommAdmin
+      const { data, error } = await deskcommCtx().admin
         .from("contacts")
         .select("id, display_name, name, phone_number, tags")
-        .eq("organization_id", DESKCOMM_ORG_ID)
+        .eq("organization_id", deskcommCtx().orgId)
         .neq("tags", "{}")
         .order("id")
         .range(de, de + 999);
@@ -20026,11 +20119,12 @@ if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'deskcomm_conf
        WHERE escritorio_id = ?`
     )
     .run(
-      DESKCOMM_URL, DESKCOMM_PUBLIC_HOST, DESKCOMM_WAHA_URL, DESKCOMM_WAHA_CONNECT,
-      DESKCOMM_SUPABASE_URL || null, DESKCOMM_SUPABASE_SERVICE_ROLE_KEY ? nfse.cifrarTexto(DESKCOMM_SUPABASE_SERVICE_ROLE_KEY) : null, DESKCOMM_ORG_ID || null,
-      // Mesmo fallback de ATENDIMENTO_WAHA_SEEN_TOKEN (definida só lá embaixo, perto do uso) — não dá
-      // pra referenciar a const daqui (temporal dead zone), então repete a mesma expressão.
-      (process.env.WAHA_SEEN_TOKEN || DESKCOMM_SUPABASE_SERVICE_ROLE_KEY || "").trim() ? nfse.cifrarTexto((process.env.WAHA_SEEN_TOKEN || DESKCOMM_SUPABASE_SERVICE_ROLE_KEY || "").trim()) : null,
+      DESKCOMM_URL_ENV, DESKCOMM_PUBLIC_HOST_ENV, DESKCOMM_WAHA_URL_ENV, DESKCOMM_WAHA_CONNECT_ENV,
+      DESKCOMM_SUPABASE_URL_ENV || null, DESKCOMM_SUPABASE_SERVICE_ROLE_KEY_ENV ? nfse.cifrarTexto(DESKCOMM_SUPABASE_SERVICE_ROLE_KEY_ENV) : null, DESKCOMM_ORG_ID_ENV || null,
+      // waha_seen_token_cifrado não é mais lido (deskcommContextoDoEscritorio agora DERIVA o token
+      // toda vez, do próprio supabase_service_role_key_cifrada) — coluna mantida só por compatibilidade
+      // com quem já rodou esta migração antes; grava null aqui, sem efeito em nada.
+      null,
       DESKCOMM_ESCRITORIO_ID
     );
   sqlite.exec(`INSERT INTO migracoes_unicas (chave) VALUES ('deskcomm_config_backfill_20261024')`);
@@ -20170,21 +20264,21 @@ app.get("/api/atendimento/novas", blockCliente, requireEscritorioPrincipalDeskco
   if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
   const agora = new Date().toISOString();
   const desde = req.query.desde ? new Date(String(req.query.desde)) : null;
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID || !desde || isNaN(desde.getTime())) return res.json({ agora, itens: [] });
+  if (!deskcommCtx().admin || !deskcommCtx().orgId || !desde || isNaN(desde.getTime())) return res.json({ agora, itens: [] });
   try {
     const veCrm = hasPermissao(user, "crm", "visualizar");
     const setoresVisiveis = new Map(ATENDIMENTO_ESCOPOS_SETOR.filter((e) => hasPermissao(user, e, "visualizar")).map((e) => [ATENDIMENTO_SETORES[e], e]));
-    const { data, error } = await deskcommAdmin
+    const { data, error } = await deskcommCtx().admin
       .from("conversations")
       .select("id, last_inbound_at, last_message_preview, service_started_at, active_intent, active_agent_set_at, contact:contacts(display_name, name, phone_number)")
-      .eq("organization_id", DESKCOMM_ORG_ID).is("group_chat_id", null)
+      .eq("organization_id", deskcommCtx().orgId).is("group_chat_id", null)
       .gt("last_inbound_at", desde.toISOString()).order("last_inbound_at", { ascending: false }).limit(30);
     if (error) throw new Error(error.message);
     // Conversa que ACABOU de cair num setor (transferida por alguém ou encaminhada pela IA): o setor também é avisado.
-    const { data: enviadas, error: erroEnv } = await deskcommAdmin
+    const { data: enviadas, error: erroEnv } = await deskcommCtx().admin
       .from("conversations")
       .select("id, last_inbound_at, last_message_preview, service_started_at, active_intent, active_agent_set_at, contact:contacts(display_name, name, phone_number)")
-      .eq("organization_id", DESKCOMM_ORG_ID).is("group_chat_id", null).not("status", "in", "(closed,archived)")
+      .eq("organization_id", deskcommCtx().orgId).is("group_chat_id", null).not("status", "in", "(closed,archived)")
       .gt("active_agent_set_at", desde.toISOString()).order("active_agent_set_at", { ascending: false }).limit(30);
     if (erroEnv) throw new Error(erroEnv.message);
     const idsInbound = new Set(((data || []) as any[]).map((c) => c.id));
@@ -20213,7 +20307,7 @@ app.get("/api/atendimento/novas", blockCliente, requireEscritorioPrincipalDeskco
 app.get("/api/atendimento/alertas", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.json({ itens: [], aberto: false });
+  if (!deskcommCtx().admin || !deskcommCtx().orgId) return res.json({ itens: [], aberto: false });
   const cfg = atendimentoConfig(user.escritorioId);
   if (!expedienteAberto()) return res.json({ itens: [], aberto: false, limiteMin: cfg.alertaFilaMin });
   try {
@@ -20222,9 +20316,9 @@ app.get("/api/atendimento/alertas", blockCliente, requireEscritorioPrincipalDesk
     const setoresVisiveis = new Map(ATENDIMENTO_ESCOPOS_SETOR.filter((e) => hasPermissao(user, e, "visualizar")).map((e) => [ATENDIMENTO_SETORES[e], e]));
     const { ultima } = await atendimentoEscolhas();
     const abertas = await painelPaginado((de, ate) =>
-      deskcommAdmin!.from("conversations")
+      deskcommCtx().admin!.from("conversations")
         .select("id, comando_da_conversa, assigned_to_user_id, last_inbound_at, last_outbound_at, last_handoff_at, snooze_until, service_started_at, active_intent, active_agent_set_at, contact:contacts(display_name, name, phone_number)")
-        .eq("organization_id", DESKCOMM_ORG_ID).is("group_chat_id", null).not("status", "in", "(closed,archived)").order("id").range(de, ate));
+        .eq("organization_id", deskcommCtx().orgId).is("group_chat_id", null).not("status", "in", "(closed,archived)").order("id").range(de, ate));
     const agora = Date.now();
     const itens: any[] = [];
     for (const c of abertas) {
@@ -20258,12 +20352,12 @@ const DESKCOMM_ROBO_NOME = "Automações Simples Contábeis";
 let deskcommRoboIdCache: string | null = null;
 async function deskcommRoboId(): Promise<string> {
   if (deskcommRoboIdCache) return deskcommRoboIdCache;
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID) throw new Error("Integração com o deskcomm não configurada.");
-  const { data: lista, error } = await deskcommAdmin.auth.admin.listUsers({ page: 1, perPage: 1000 });
+  if (!deskcommCtx().admin || !deskcommCtx().orgId) throw new Error("Integração com o deskcomm não configurada.");
+  const { data: lista, error } = await deskcommCtx().admin.auth.admin.listUsers({ page: 1, perPage: 1000 });
   if (error) throw new Error(error.message);
-  let id = lista.users.find((u) => (u.email || "").toLowerCase() === DESKCOMM_ROBO_EMAIL)?.id || null;
+  let id = lista.users.find((u: any) => (u.email || "").toLowerCase() === DESKCOMM_ROBO_EMAIL)?.id || null;
   if (!id) {
-    const { data: criado, error: e2 } = await deskcommAdmin.auth.admin.createUser({
+    const { data: criado, error: e2 } = await deskcommCtx().admin.auth.admin.createUser({
       email: DESKCOMM_ROBO_EMAIL, email_confirm: true,
       user_metadata: { nome: DESKCOMM_ROBO_NOME, full_name: DESKCOMM_ROBO_NOME, origem: "simplescontabeis-automacoes" },
     });
@@ -20274,8 +20368,8 @@ async function deskcommRoboId(): Promise<string> {
   // mensagens no atendimento (GET /api/atendimento/mensagens/:id/media) — um agente só veria a mídia
   // das conversas atribuídas a ele. Admin é superconjunto do que o robô já fazia (enviar, claim,
   // release, upload), então não muda nenhum comportamento existente.
-  const { error: e3 } = await deskcommAdmin.from("user_organizations")
-    .upsert({ organization_id: DESKCOMM_ORG_ID, user_id: id, role: "admin", accepted_at: new Date().toISOString() }, { onConflict: "organization_id,user_id" });
+  const { error: e3 } = await deskcommCtx().admin.from("user_organizations")
+    .upsert({ organization_id: deskcommCtx().orgId, user_id: id, role: "admin", accepted_at: new Date().toISOString() }, { onConflict: "organization_id,user_id" });
   if (e3) throw new Error(e3.message);
   deskcommRoboIdCache = id;
   return id;
@@ -20292,7 +20386,7 @@ async function deskcommRoboLogin(): Promise<string> {
   // mensagem de erro já prometia ("normalmente se resolve sozinho na próxima tentativa").
   let ultimoStatus = 0;
   for (let tentativa = 1; tentativa <= 3; tentativa++) {
-    const { data, error } = await deskcommAdmin!.auth.admin.generateLink({ type: "magiclink", email: DESKCOMM_ROBO_EMAIL });
+    const { data, error } = await deskcommCtx().admin!.auth.admin.generateLink({ type: "magiclink", email: DESKCOMM_ROBO_EMAIL });
     const tokenHash = (data as any)?.properties?.hashed_token;
     if (error || !tokenHash) {
       if (tentativa === 3) throw new Error(error?.message || "O Supabase não devolveu o token de acesso.");
@@ -20300,7 +20394,7 @@ async function deskcommRoboLogin(): Promise<string> {
       continue;
     }
     const qs = new URLSearchParams({ token_hash: tokenHash, type: "magiclink", next: "/manifest.webmanifest" });
-    const r = await fetch(`${DESKCOMM_URL}/deskcomm/auth/confirm?${qs}`, { redirect: "manual", headers: { "x-forwarded-host": DESKCOMM_PUBLIC_HOST, "x-forwarded-proto": "https" } });
+    const r = await fetch(`${deskcommCtx().url}/deskcomm/auth/confirm?${qs}`, { redirect: "manual", headers: { "x-forwarded-host": deskcommCtx().publicHost, "x-forwarded-proto": "https" } });
     const setCookies: string[] = (r.headers as any).getSetCookie?.() || [];
     const cookie = setCookies.map((c) => c.split(";")[0]).filter((c) => c.startsWith("sb-")).join("; ");
     if (cookie) { deskcommRoboSessao = { cookie, em: Date.now() }; return cookie; }
@@ -20314,9 +20408,9 @@ async function deskcommRoboApi(caminho: string, init: { method?: string; body?: 
   // FormData (upload de mídia) precisa ir sem content-type manual — o fetch preenche o boundary
   // sozinho — e sem JSON.stringify, diferente do corpo normal (mesma distinção do dcApi do front).
   const isForm = init.body instanceof FormData;
-  const r = await fetch(`${DESKCOMM_URL}/deskcomm/api/v1${caminho}`, {
+  const r = await fetch(`${deskcommCtx().url}/deskcomm/api/v1${caminho}`, {
     method: init.method || "GET",
-    headers: { cookie: deskcommRoboSessao!.cookie, origin: `https://${DESKCOMM_PUBLIC_HOST}`, "x-forwarded-host": DESKCOMM_PUBLIC_HOST, "x-forwarded-proto": "https", ...(init.body && !isForm ? { "content-type": "application/json" } : {}) },
+    headers: { cookie: deskcommRoboSessao!.cookie, origin: `https://${deskcommCtx().publicHost}`, "x-forwarded-host": deskcommCtx().publicHost, "x-forwarded-proto": "https", ...(init.body && !isForm ? { "content-type": "application/json" } : {}) },
     body: isForm ? init.body : init.body ? JSON.stringify(init.body) : undefined,
   });
   if (r.status === 401 && !jaRenovou) { deskcommRoboSessao = null; return deskcommRoboApi(caminho, init, true); }
@@ -20345,12 +20439,12 @@ async function deskcommRoboResolverConversa(telefone: string, nomeContato: strin
   const phoneNumber = "+" + digitos;
   let conversationId: string | null = null;
   try {
-    const { data: contato } = await deskcommAdmin!.from("contacts").select("id").eq("organization_id", DESKCOMM_ORG_ID).eq("phone_number", phoneNumber).maybeSingle();
+    const { data: contato } = await deskcommCtx().admin!.from("contacts").select("id").eq("organization_id", deskcommCtx().orgId).eq("phone_number", phoneNumber).maybeSingle();
     if (contato) {
-      const { data: conv } = await deskcommAdmin!
+      const { data: conv } = await deskcommCtx().admin!
         .from("conversations")
         .select("id, status")
-        .eq("organization_id", DESKCOMM_ORG_ID)
+        .eq("organization_id", deskcommCtx().orgId)
         .eq("contact_id", contato.id)
         .is("group_chat_id", null)
         .order("last_message_at", { ascending: false })
@@ -20369,11 +20463,11 @@ async function deskcommRoboResolverConversa(telefone: string, nomeContato: strin
 // usado pela pesquisa de pagamento (DAS/DARF DCTF-Web). Devolve o conversation_id, pra quem chamou
 // acompanhar a resposta depois (ver deskcommPrimeiraRespostaDoCliente).
 async function deskcommRoboEnviarTexto(telefone: string, nomeContato: string, texto: string): Promise<string> {
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID) throw new Error("Integração com o deskcomm não configurada.");
+  if (!deskcommCtx().admin || !deskcommCtx().orgId) throw new Error("Integração com o deskcomm não configurada.");
   const conversationId = await deskcommRoboResolverConversa(telefone, nomeContato);
   let corpo = texto;
   try {
-    const { data: conv } = await deskcommAdmin.from("conversations").select("active_intent, active_agent_set_at, service_started_at").eq("organization_id", DESKCOMM_ORG_ID).eq("id", conversationId).maybeSingle();
+    const { data: conv } = await deskcommCtx().admin.from("conversations").select("active_intent, active_agent_set_at, service_started_at").eq("organization_id", deskcommCtx().orgId).eq("id", conversationId).maybeSingle();
     if (conv) {
       const { ultima } = await atendimentoEscolhas();
       const setor = atendimentoSetorAtual(conv, ultima.get(conversationId));
@@ -20384,14 +20478,14 @@ async function deskcommRoboEnviarTexto(telefone: string, nomeContato: string, te
   return conversationId;
 }
 async function deskcommRoboEnviarArquivo(telefone: string, nomeContato: string, arquivo: { nome: string; tipo: string; buffer: Buffer }, legenda: string): Promise<void> {
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID) throw new Error("Integração com o deskcomm não configurada.");
+  if (!deskcommCtx().admin || !deskcommCtx().orgId) throw new Error("Integração com o deskcomm não configurada.");
   const conversationId = await deskcommRoboResolverConversa(telefone, nomeContato);
   const fd = new FormData();
   fd.append("file", new Blob([new Uint8Array(arquivo.buffer)], { type: arquivo.tipo }), arquivo.nome);
   const up = await deskcommRoboApi(`/conversations/${conversationId}/media`, { method: "POST", body: fd });
   let texto = legenda;
   try {
-    const { data: conv } = await deskcommAdmin.from("conversations").select("active_intent, active_agent_set_at, service_started_at").eq("organization_id", DESKCOMM_ORG_ID).eq("id", conversationId).maybeSingle();
+    const { data: conv } = await deskcommCtx().admin.from("conversations").select("active_intent, active_agent_set_at, service_started_at").eq("organization_id", deskcommCtx().orgId).eq("id", conversationId).maybeSingle();
     if (conv) {
       const { ultima } = await atendimentoEscolhas();
       const setor = atendimentoSetorAtual(conv, ultima.get(conversationId!));
@@ -20518,7 +20612,7 @@ function honorariosLancamentosEmAberto(empresaId: number): { id: number; compete
 // independente do interruptor global estar ligado (é uma limpeza, não precisa do robô "ativo" pra soltar
 // o que ele já segurou antes).
 async function honorariosRoboLiberarEmpresa(empresaId: number, mensagem: string | null = "Pagamento confirmado — a conversa já está liberada. Obrigado! 🙂"): Promise<void> {
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return;
+  if (!deskcommCtx().admin || !deskcommCtx().orgId) return;
   const gates = sqlite.prepare(`SELECT * FROM honorarios_robo_gate WHERE empresa_id = ? AND status = 'ativo'`).all(empresaId) as any[];
   for (const g of gates) {
     try {
@@ -20584,7 +20678,7 @@ async function honorariosRoboVerificarConversa(
 }
 let honorariosRoboRodando = false;
 async function honorariosRoboRodar(): Promise<void> {
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID || honorariosRoboRodando) return;
+  if (!deskcommCtx().admin || !deskcommCtx().orgId || honorariosRoboRodando) return;
   const cfg = honorariosRoboCfg();
   if (!cfg.validacao_ativa) return;
   honorariosRoboRodando = true;
@@ -20595,10 +20689,10 @@ async function honorariosRoboRodar(): Promise<void> {
     // 1) conversas NOVAS (sem dono) com mensagem recebida desde o último checkpoint.
     const desde = cfg.ultimo_checkpoint || new Date(Date.now() - 24 * 3600_000).toISOString();
     const agoraIso = new Date().toISOString();
-    const { data: novas, error } = await deskcommAdmin
+    const { data: novas, error } = await deskcommCtx().admin
       .from("conversations")
       .select("id, status, last_inbound_at, contact:contacts(phone_number)")
-      .eq("organization_id", DESKCOMM_ORG_ID)
+      .eq("organization_id", deskcommCtx().orgId)
       .is("group_chat_id", null)
       .is("assigned_to_user_id", null)
       .not("status", "in", "(closed,archived)")
@@ -20621,7 +20715,7 @@ async function honorariosRoboRodar(): Promise<void> {
     const gatesAtivos = sqlite.prepare(`SELECT * FROM honorarios_robo_gate WHERE status = 'ativo'`).all() as any[];
     for (const g of gatesAtivos) {
       try {
-        const { data: conv } = await deskcommAdmin.from("conversations").select("id, status, last_inbound_at, contact:contacts(phone_number)").eq("id", g.conversation_id).maybeSingle();
+        const { data: conv } = await deskcommCtx().admin.from("conversations").select("id, status, last_inbound_at, contact:contacts(phone_number)").eq("id", g.conversation_id).maybeSingle();
         if (!conv) continue;
         if (!honorariosLancamentosEmAberto(g.empresa_id).some((h) => h.status === "atrasado")) {
           await honorariosRoboLiberarEmpresa(g.empresa_id);
@@ -20681,8 +20775,8 @@ async function atendimentoRodarMsgAgendada(m: any, forcar = false): Promise<void
   try {
     // "Cancelar se o cliente responder": se chegou mensagem DO CLIENTE depois de agendar, o texto pode não fazer mais sentido — não envia.
     // (Enviar agora, pedido de propósito pela pessoa, ignora essa checagem.)
-    if (!forcar && m.cancelar_se_responder && deskcommAdmin) {
-      const { data: conv } = await deskcommAdmin.from("conversations").select("last_inbound_at").eq("organization_id", DESKCOMM_ORG_ID).eq("id", m.conversation_id).maybeSingle();
+    if (!forcar && m.cancelar_se_responder && deskcommCtx().admin) {
+      const { data: conv } = await deskcommCtx().admin.from("conversations").select("last_inbound_at").eq("organization_id", deskcommCtx().orgId).eq("id", m.conversation_id).maybeSingle();
       const agendadaEm = new Date(String(m.criado_em).replace(" ", "T") + "Z").getTime();
       if (conv?.last_inbound_at && new Date(conv.last_inbound_at).getTime() > agendadaEm) {
         sqlite.prepare(`UPDATE atendimento_msgs_agendadas SET status = 'cancelada', erro = 'O cliente respondeu antes do horário — não enviada.', enviado_em = datetime('now') WHERE id = ?`).run(m.id);
@@ -20692,7 +20786,7 @@ async function atendimentoRodarMsgAgendada(m: any, forcar = false): Promise<void
     // Mesmo prefixo "*Setor*" do envio manual — pra o cliente ver de qual departamento veio, mesmo agendada.
     let texto = m.texto;
     try {
-      const { data: conv } = await deskcommAdmin!.from("conversations").select("active_intent, active_agent_set_at, service_started_at").eq("organization_id", DESKCOMM_ORG_ID).eq("id", m.conversation_id).maybeSingle();
+      const { data: conv } = await deskcommCtx().admin!.from("conversations").select("active_intent, active_agent_set_at, service_started_at").eq("organization_id", deskcommCtx().orgId).eq("id", m.conversation_id).maybeSingle();
       if (conv) {
         const { ultima } = await atendimentoEscolhas();
         const setor = atendimentoSetorAtual(conv, ultima.get(m.conversation_id));
@@ -20719,7 +20813,7 @@ async function atendimentoRodarMsgAgendada(m: any, forcar = false): Promise<void
   }
 }
 setInterval(async () => {
-  if (!deskcommAdmin) return;
+  if (!deskcommCtx().admin) return;
   const vencidas = sqlite.prepare(`SELECT * FROM atendimento_msgs_agendadas WHERE status = 'agendada' AND agendado_para <= ? ORDER BY agendado_para, id LIMIT 30`).all(new Date().toISOString()) as any[];
   for (const m of vencidas) { await atendimentoRodarMsgAgendada(m).catch(() => {}); await new Promise((r) => setTimeout(r, 300)); }
 }, 15_000).unref();
@@ -20754,14 +20848,14 @@ app.post("/api/atendimento/registrar-envio-doc", blockCliente, requireEscritorio
 app.post("/api/atendimento/conversas/:id/agendar", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  if (!deskcommCtx().admin || !deskcommCtx().orgId) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
   const texto = String(req.body?.texto || "").trim();
   const anexo = req.body?.anexo && req.body.anexo.storagePath ? req.body.anexo : null;
   const quando = new Date(String(req.body?.quando || ""));
   if (!texto && !anexo) return res.status(400).json({ error: "Escreva a mensagem ou anexe um arquivo." });
   if (texto.length > 4000) return res.status(400).json({ error: "A mensagem passa de 4000 caracteres." });
   if (isNaN(quando.getTime()) || quando.getTime() < Date.now() + 30_000) return res.status(400).json({ error: "Escolha um dia e horário no futuro." });
-  const { data: conv } = await deskcommAdmin.from("conversations").select("id").eq("organization_id", DESKCOMM_ORG_ID).eq("id", String(req.params.id)).maybeSingle();
+  const { data: conv } = await deskcommCtx().admin.from("conversations").select("id").eq("organization_id", deskcommCtx().orgId).eq("id", String(req.params.id)).maybeSingle();
   if (!conv) return res.status(404).json({ error: "Conversa não encontrada." });
   const escopo = ["crm", "dprh", "contabil", "fiscal"].includes(String(req.body?.escopo)) ? String(req.body.escopo) : "crm";
   const info = sqlite
@@ -20788,8 +20882,8 @@ app.get("/api/atendimento/agendadas", blockCliente, requireEscritorioPrincipalDe
   const rows = sqlite.prepare(`SELECT * FROM atendimento_msgs_agendadas WHERE ${cond.join(" AND ")} ORDER BY agendado_para, id LIMIT 200`).all(...args) as any[];
   const nomes = new Map<string, string>();
   const ids = [...new Set(rows.map((r) => r.conversation_id))];
-  if (ids.length && deskcommAdmin) {
-    const { data } = await deskcommAdmin.from("conversations").select("id, contact:contacts(display_name, name, phone_number)").eq("organization_id", DESKCOMM_ORG_ID).in("id", ids.slice(0, 100));
+  if (ids.length && deskcommCtx().admin) {
+    const { data } = await deskcommCtx().admin.from("conversations").select("id, contact:contacts(display_name, name, phone_number)").eq("organization_id", deskcommCtx().orgId).in("id", ids.slice(0, 100));
     for (const c of (data || []) as any[]) nomes.set(c.id, c.contact?.display_name || c.contact?.name || c.contact?.phone_number || "Cliente");
   }
   res.json({ itens: rows.map((r) => ({ id: r.id, conversa: r.conversation_id, cliente: nomes.get(r.conversation_id) || "Cliente", escopo: r.escopo, texto: r.texto, quando: r.agendado_para, status: r.status, erro: r.erro, por: r.criado_por_nome, cancelaSeResponder: !!r.cancelar_se_responder, anexoNome: r.anexo_filename || null })) });
@@ -20820,8 +20914,8 @@ app.post("/api/atendimento/agendadas/:id/enviar-agora", blockCliente, requireEsc
 });
 // Primeira mensagem do cliente depois de um instante, na conversa.
 async function deskcommPrimeiraRespostaDoCliente(conversationId: string, depoisDe: string): Promise<{ body: string; created_at: string } | null> {
-  const { data, error } = await deskcommAdmin!.from("messages").select("body, created_at")
-    .eq("organization_id", DESKCOMM_ORG_ID).eq("conversation_id", conversationId).eq("direction", "inbound")
+  const { data, error } = await deskcommCtx().admin!.from("messages").select("body, created_at")
+    .eq("organization_id", deskcommCtx().orgId).eq("conversation_id", conversationId).eq("direction", "inbound")
     .gt("created_at", depoisDe).order("created_at").limit(1);
   if (error) throw new Error(error.message);
   return data?.[0] || null;
@@ -20842,7 +20936,7 @@ sqlite.exec(`
 `);
 let atendimentoLembretesRodando = false;
 async function atendimentoRodarLembretes() {
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID || atendimentoLembretesRodando) return;
+  if (!deskcommCtx().admin || !deskcommCtx().orgId || atendimentoLembretesRodando) return;
   atendimentoLembretesRodando = true;
   try {
     const cfg = atendimentoConfig(DESKCOMM_ESCRITORIO_ID);
@@ -20851,13 +20945,13 @@ async function atendimentoRodarLembretes() {
     const localAgora = new Date(agora - BRT_MS);
     const horarioDecente = localAgora.getUTCDay() !== 0 && localAgora.getUTCHours() >= 8 && localAgora.getUTCHours() < 19;
     if (cfg.lembreteAtivo && horarioDecente) {
-      const { data: ags, error } = await deskcommAdmin.from("calendar_appointments")
+      const { data: ags, error } = await deskcommCtx().admin.from("calendar_appointments")
         .select("id, title, starts_at, status, contact_id, conversation_id, created_at, event_type_id")
-        .eq("organization_id", DESKCOMM_ORG_ID).in("status", ["pending", "confirmed"]).is("reminder_sent_at", null)
+        .eq("organization_id", deskcommCtx().orgId).in("status", ["pending", "confirmed"]).is("reminder_sent_at", null)
         .gt("starts_at", new Date(agora + 30 * 60_000).toISOString())
         .lte("starts_at", new Date(agora + cfg.lembreteHoras * 3600_000).toISOString());
       if (error) throw new Error(error.message);
-      const { data: tipos } = await deskcommAdmin.from("calendar_event_types").select("id, name").eq("organization_id", DESKCOMM_ORG_ID);
+      const { data: tipos } = await deskcommCtx().admin.from("calendar_event_types").select("id, name").eq("organization_id", deskcommCtx().orgId);
       for (const a of ags || []) {
         if (agora - new Date(a.created_at).getTime() < 3 * 3600_000) continue;
         if (sqlite.prepare(`SELECT 1 FROM atendimento_lembretes WHERE appointment_id = ?`).get(a.id)) continue;
@@ -20876,7 +20970,7 @@ async function atendimentoRodarLembretes() {
           await deskcommRoboEnviar(conv, texto);
           const agoraIso = new Date().toISOString();
           sqlite.prepare(`INSERT INTO atendimento_lembretes (appointment_id, conversation_id, enviado_em) VALUES (?, ?, ?)`).run(a.id, conv, agoraIso);
-          await deskcommAdmin.from("calendar_appointments").update({ reminder_sent_at: agoraIso }).eq("id", a.id).eq("organization_id", DESKCOMM_ORG_ID);
+          await deskcommCtx().admin.from("calendar_appointments").update({ reminder_sent_at: agoraIso }).eq("id", a.id).eq("organization_id", deskcommCtx().orgId);
         } catch (e: any) {
           console.error("[lembrete] falha ao enviar", a.id, e.message);
         }
@@ -20896,7 +20990,7 @@ async function atendimentoRodarLembretes() {
         const confirma = /^\s*(sim|s|1|confirm\w*|ok|ok[,!.]?\s*confirmado|pode confirmar|estarei (a[ií]|l[aá]))\b/i.test(resp.body || "");
         if (confirma) {
           try {
-            const { data: ag } = await deskcommAdmin.from("calendar_appointments").select("status").eq("id", l.appointment_id).maybeSingle();
+            const { data: ag } = await deskcommCtx().admin.from("calendar_appointments").select("status").eq("id", l.appointment_id).maybeSingle();
             if (ag?.status === "pending") await deskcommRoboApi("/agenda/agendamentos", { method: "PATCH", body: { id: l.appointment_id, status: "confirmed" } });
           } catch (e: any) {
             console.error("[lembrete] falha ao confirmar", l.appointment_id, e.message);
@@ -20922,10 +21016,10 @@ setTimeout(() => atendimentoRodarLembretes(), 60_000);
 // satisfação delas continuariam entrando nas médias do Painel. Só apaga o que tem mais de 1h (evita
 // pegar uma conversa criada agorinha) e NUNCA age se a leitura das conversas voltar vazia ou falhar.
 async function atendimentoLimparOrfas() {
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return;
+  if (!deskcommCtx().admin || !deskcommCtx().orgId) return;
   try {
     const linhas = await painelPaginado((de, ate) =>
-      deskcommAdmin!.from("conversations").select("id").eq("organization_id", DESKCOMM_ORG_ID).order("id").range(de, ate));
+      deskcommCtx().admin!.from("conversations").select("id").eq("organization_id", deskcommCtx().orgId).order("id").range(de, ate));
     const existentes = new Set<string>(linhas.map((r: any) => r.id));
     if (!existentes.size) return;
     let apagadas = 0;
@@ -20964,14 +21058,14 @@ const PESQUISA_TEXTO = "Seu atendimento foi encerrado. 🙏 Para melhorarmos, de
 app.post("/api/atendimento/conversas/:id/pesquisa", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  if (!deskcommCtx().admin || !deskcommCtx().orgId) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
   if (!atendimentoConfig(user.escritorioId).pesquisaAtiva) return res.json({ enviada: false });
   const id = String(req.params.id);
   try {
     // Não repete a pesquisa pra mesma conversa em menos de 24 h.
     const recente = sqlite.prepare(`SELECT 1 FROM atendimento_pesquisas WHERE conversation_id = ? AND enviada_em > ?`).get(id, new Date(Date.now() - 86400_000).toISOString());
     if (recente) return res.json({ enviada: false });
-    const { data: c } = await deskcommAdmin.from("conversations").select("id, assigned_to_user_id, service_started_at, active_intent, active_agent_set_at").eq("organization_id", DESKCOMM_ORG_ID).eq("id", id).maybeSingle();
+    const { data: c } = await deskcommCtx().admin.from("conversations").select("id, assigned_to_user_id, service_started_at, active_intent, active_agent_set_at").eq("organization_id", deskcommCtx().orgId).eq("id", id).maybeSingle();
     if (!c) return res.status(404).json({ error: "Conversa não encontrada." });
     const { ultima } = await atendimentoEscolhas();
     const atendenteId = c.assigned_to_user_id || (await deskcommGarantirUsuario(user));
@@ -20985,7 +21079,7 @@ app.post("/api/atendimento/conversas/:id/pesquisa", blockCliente, requireEscrito
   }
 });
 async function atendimentoColetarPesquisas() {
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return;
+  if (!deskcommCtx().admin || !deskcommCtx().orgId) return;
   try {
     const abertas = sqlite.prepare(`SELECT * FROM atendimento_pesquisas WHERE nota IS NULL AND encerrada = 0`).all() as any[];
     for (const p of abertas) {
@@ -20997,7 +21091,7 @@ async function atendimentoColetarPesquisas() {
           // Espera ~1 min pra Recepção agradecer antes de fechar de novo.
           if (Date.now() - new Date(resp.created_at).getTime() < 60_000) continue;
           sqlite.prepare(`UPDATE atendimento_pesquisas SET nota = ?, respondida_em = ?, encerrada = 1 WHERE id = ?`).run(Number(m[1]), resp.created_at, p.id);
-          const { data: c } = await deskcommAdmin.from("conversations").select("status, service_revision").eq("id", p.conversation_id).maybeSingle();
+          const { data: c } = await deskcommCtx().admin.from("conversations").select("status, service_revision").eq("id", p.conversation_id).maybeSingle();
           if (c && c.status !== "closed" && c.status !== "archived") {
             await deskcommRoboApi(`/conversations/${p.conversation_id}/close`, { method: "POST", body: c.service_revision ? { expected_revision: c.service_revision } : {} })
               .catch((e) => console.error("[pesquisa] falha ao fechar de novo", p.conversation_id, e.message));
@@ -21139,12 +21233,12 @@ function notaSituacaoTexto(empresas: { id: number; nome: string }[]): { headline
 }
 let notasSituacaoRodando = false;
 async function deskcommSincronizarNotasSituacao() {
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID || notasSituacaoRodando) return;
+  if (!deskcommCtx().admin || !deskcommCtx().orgId || notasSituacaoRodando) return;
   notasSituacaoRodando = true;
   try {
     const porTelefone = deskcommEmpresasIdsPorTelefone();
-    const contatos = await painelPaginado((de, ate) => deskcommAdmin!.from("contacts").select("id, phone_number").eq("organization_id", DESKCOMM_ORG_ID).not("phone_number", "is", null).order("id").range(de, ate));
-    const notas = await painelPaginado((de, ate) => deskcommAdmin!.from("lead_notes").select("id, contact_id, headline, body").eq("organization_id", DESKCOMM_ORG_ID).like("headline", `${NOTA_SISTEMA_PREFIXO}%`).order("id").range(de, ate));
+    const contatos = await painelPaginado((de, ate) => deskcommCtx().admin!.from("contacts").select("id, phone_number").eq("organization_id", deskcommCtx().orgId).not("phone_number", "is", null).order("id").range(de, ate));
+    const notas = await painelPaginado((de, ate) => deskcommCtx().admin!.from("lead_notes").select("id, contact_id, headline, body").eq("organization_id", deskcommCtx().orgId).like("headline", `${NOTA_SISTEMA_PREFIXO}%`).order("id").range(de, ate));
     const notaPorContato = new Map(notas.map((n) => [n.contact_id, n]));
     let gravadas = 0, removidas = 0;
     for (const c of contatos) {
@@ -21152,15 +21246,15 @@ async function deskcommSincronizarNotasSituacao() {
       const empresas = (chave && porTelefone.get(chave)) || [];
       const atual = notaPorContato.get(c.id);
       if (!empresas.length) {
-        if (atual) { await deskcommAdmin.from("lead_notes").delete().eq("id", atual.id).eq("organization_id", DESKCOMM_ORG_ID); removidas++; }
+        if (atual) { await deskcommCtx().admin.from("lead_notes").delete().eq("id", atual.id).eq("organization_id", deskcommCtx().orgId); removidas++; }
         continue;
       }
       const { headline, body } = notaSituacaoTexto(empresas);
       // Só grava se mudou algo além da data do título.
       const semData = (h: string) => h.replace(/\(\d\d\/\d\d\)/, "");
       if (atual && semData(atual.headline) === semData(headline) && atual.body.split("\n").slice(1).join("\n") === body.split("\n").slice(1).join("\n")) continue;
-      if (atual) await deskcommAdmin.from("lead_notes").update({ headline, body, embedding: null, updated_at: new Date().toISOString() }).eq("id", atual.id).eq("organization_id", DESKCOMM_ORG_ID);
-      else await deskcommAdmin.from("lead_notes").insert({ organization_id: DESKCOMM_ORG_ID, contact_id: c.id, headline, body });
+      if (atual) await deskcommCtx().admin.from("lead_notes").update({ headline, body, embedding: null, updated_at: new Date().toISOString() }).eq("id", atual.id).eq("organization_id", deskcommCtx().orgId);
+      else await deskcommCtx().admin.from("lead_notes").insert({ organization_id: deskcommCtx().orgId, contact_id: c.id, headline, body });
       gravadas++;
     }
     if (gravadas || removidas) console.log(`Notas de situação → deskcomm: ${gravadas} gravada(s), ${removidas} removida(s)`);
@@ -21206,7 +21300,7 @@ const painelMediana = (xs: number[]) => {
 app.get("/api/atendimento/painel/ranking-empresas", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!user.painelTv && !hasPermissao(user, "crm", "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  if (!deskcommCtx().admin || !deskcommCtx().orgId) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
   const tipo = req.query.periodo === "ano" ? "ano" : "mes";
   const hojeSp = new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" }); // YYYY-MM-DD
   const inicio = new Date(`${tipo === "ano" ? hojeSp.slice(0, 4) + "-01-01" : hojeSp.slice(0, 7) + "-01"}T00:00:00-03:00`);
@@ -21214,16 +21308,16 @@ app.get("/api/atendimento/painel/ranking-empresas", blockCliente, requireEscrito
     const empresas = atendimentoMapaEmpresasPorTelefone(user.escritorioId);
     const { ultima } = await atendimentoEscolhas();
     const msgs = await painelPaginado((de, ate) =>
-      deskcommAdmin!.from("messages").select("conversation_id").eq("organization_id", DESKCOMM_ORG_ID).eq("direction", "inbound")
+      deskcommCtx().admin!.from("messages").select("conversation_id").eq("organization_id", deskcommCtx().orgId).eq("direction", "inbound")
         .gte("created_at", inicio.toISOString()).is("metadata->importado_do_celular", null).order("created_at").range(de, ate));
     const recPorConv = new Map<string, number>();
     for (const m of msgs) recPorConv.set(m.conversation_id, (recPorConv.get(m.conversation_id) || 0) + 1);
     const ids = [...recPorConv.keys()];
     const ranking = new Map<string, { empresa: string; conversas: number; recebidas: number; setores: Record<string, number> }>();
     for (let i = 0; i < ids.length; i += 100) {
-      const { data, error } = await deskcommAdmin.from("conversations")
+      const { data, error } = await deskcommCtx().admin.from("conversations")
         .select("id, service_started_at, active_intent, active_agent_set_at, contact:contacts(phone_number)")
-        .eq("organization_id", DESKCOMM_ORG_ID).in("id", ids.slice(i, i + 100));
+        .eq("organization_id", deskcommCtx().orgId).in("id", ids.slice(i, i + 100));
       if (error) throw new Error(error.message);
       for (const c of (data || []) as any[]) {
         const emp = empresas.get(crmSoDigitos(c.contact?.phone_number).slice(-11));
@@ -21246,7 +21340,7 @@ app.get("/api/atendimento/painel", blockCliente, requireEscritorioPrincipalDeskc
   const user = (req as any).user;
   // A conta dedicada do Painel de TV mostra esta visão na 2ª página, sem ter (nem precisar de) a aba CRM.
   if (!user.painelTv && !hasPermissao(user, "crm", "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  if (!deskcommCtx().admin || !deskcommCtx().orgId) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
   const periodo = String(req.query.periodo || "hoje") in PAINEL_PERIODOS ? String(req.query.periodo || "hoje") : "hoje";
   const inicio = painelInicioDoPeriodo(periodo);
   const agora = Date.now();
@@ -21258,7 +21352,7 @@ app.get("/api/atendimento/painel", blockCliente, requireEscritorioPrincipalDeskc
     const colunas = "id, status, comando_da_conversa, assigned_to_user_id, assigned_to_user_name, assigned_at, last_message_at, last_message_preview, last_inbound_at, last_outbound_at, last_handoff_at, snooze_until, service_started_at, service_closed_at, active_intent, active_agent_set_at, contact_id, contact:contacts(display_name, name, phone_number)";
     // Abertas agora
     const abertas = await painelPaginado((de, ate) =>
-      deskcommAdmin!.from("conversations").select(colunas).eq("organization_id", DESKCOMM_ORG_ID).is("group_chat_id", null).not("status", "in", "(closed,archived)").order("id").range(de, ate));
+      deskcommCtx().admin!.from("conversations").select(colunas).eq("organization_id", deskcommCtx().orgId).is("group_chat_id", null).not("status", "in", "(closed,archived)").order("id").range(de, ate));
     const nomeAtendente = (id: string | null, fallback?: string | null) => (id ? nomes.get(id) || fallback || "Outro atendente" : null);
     const item = (c: any) => {
       const telefone = c.contact?.phone_number || "";
@@ -21309,8 +21403,8 @@ app.get("/api/atendimento/painel", blockCliente, requireEscritorioPrincipalDeskc
 
     // Período: mensagens
     const msgs = await painelPaginado((de, ate) =>
-      deskcommAdmin!.from("messages").select("conversation_id, direction, sent_via, sent_by_user_id, status, created_at")
-        .eq("organization_id", DESKCOMM_ORG_ID).gte("created_at", inicio.toISOString()).is("metadata->importado_do_celular", null)
+      deskcommCtx().admin!.from("messages").select("conversation_id, direction, sent_via, sent_by_user_id, status, created_at")
+        .eq("organization_id", deskcommCtx().orgId).gte("created_at", inicio.toISOString()).is("metadata->importado_do_celular", null)
         .order("created_at").range(de, ate));
     const porConversa = new Map<string, any[]>();
     for (const m of msgs) {
@@ -21368,12 +21462,12 @@ app.get("/api/atendimento/painel", blockCliente, requireEscritorioPrincipalDeskc
     }
     // Período: atendimentos
     const iniciados = await painelPaginado((de, ate) =>
-      deskcommAdmin!.from("conversations").select(colunas).eq("organization_id", DESKCOMM_ORG_ID)
+      deskcommCtx().admin!.from("conversations").select(colunas).eq("organization_id", deskcommCtx().orgId)
         .is("group_chat_id", null).gte("service_started_at", inicio.toISOString()).is("metadata->importado_do_celular", null).order("id").range(de, ate));
     // Fechamentos feitos pela importação do histórico (até 11:50Z de 24/09/2026) não são atendimentos encerrados de verdade.
     // Sem filtro de status: conversa fechada que o cliente reabriu depois continua contando o fechamento.
     const encerrados = await painelPaginado((de, ate) =>
-      deskcommAdmin!.from("conversations").select(colunas).eq("organization_id", DESKCOMM_ORG_ID)
+      deskcommCtx().admin!.from("conversations").select(colunas).eq("organization_id", deskcommCtx().orgId)
         .is("group_chat_id", null).gte("service_closed_at", new Date(Math.max(inicio.getTime(), Date.parse("2026-09-24T11:50:00Z"))).toISOString()).is("metadata->importado_do_celular", null).order("id").range(de, ate));
     const duracoes = encerrados
       .filter((c) => c.service_started_at && c.service_closed_at)
@@ -21382,10 +21476,10 @@ app.get("/api/atendimento/painel", blockCliente, requireEscritorioPrincipalDeskc
 
     // Período: agenda (compromissos com início no período ou marcados no período)
     const compromissos = await painelPaginado((de, ate) =>
-      deskcommAdmin!.from("calendar_appointments").select("id, title, starts_at, status, event_type_id, owner_user_id, created_by_user_id, contact_id, conversation_id, created_at")
-        .eq("organization_id", DESKCOMM_ORG_ID).or(`starts_at.gte.${inicio.toISOString()},created_at.gte.${inicio.toISOString()}`).order("id").range(de, ate));
-    const { data: tiposAgenda } = await deskcommAdmin.from("calendar_event_types").select("id, name").eq("organization_id", DESKCOMM_ORG_ID);
-    const nomeTipo = new Map((tiposAgenda || []).map((t: any) => [t.id, t.name]));
+      deskcommCtx().admin!.from("calendar_appointments").select("id, title, starts_at, status, event_type_id, owner_user_id, created_by_user_id, contact_id, conversation_id, created_at")
+        .eq("organization_id", deskcommCtx().orgId).or(`starts_at.gte.${inicio.toISOString()},created_at.gte.${inicio.toISOString()}`).order("id").range(de, ate));
+    const { data: tiposAgenda } = await deskcommCtx().admin.from("calendar_event_types").select("id, name").eq("organization_id", deskcommCtx().orgId);
+    const nomeTipo = new Map<any, string>((tiposAgenda || []).map((t: any) => [t.id, t.name]));
     const agendaPorTipo = new Map<string, Record<string, number>>();
     const agendaPorSituacao: Record<string, number> = {};
     const agendaPorQuemMarcou = new Map<string, number>();
@@ -21406,7 +21500,7 @@ app.get("/api/atendimento/painel", blockCliente, requireEscritorioPrincipalDeskc
     for (const c of [...iniciados, ...encerrados, ...abertas]) jaTenho.set(c.id, c);
     const faltam = [...idsDetalhe].filter((id) => !jaTenho.has(id));
     for (let i = 0; i < faltam.length; i += 100) {
-      const { data } = await deskcommAdmin.from("conversations").select(colunas).in("id", faltam.slice(i, i + 100));
+      const { data } = await deskcommCtx().admin.from("conversations").select(colunas).in("id", faltam.slice(i, i + 100));
       for (const c of data || []) jaTenho.set(c.id, c);
     }
     const dessa = (id: string, detalhe: string, ordem: number) => {
@@ -21443,9 +21537,9 @@ app.get("/api/atendimento/painel", blockCliente, requireEscritorioPrincipalDeskc
     const convIds = [...porConversa.keys()];
     const convInfo: any[] = [];
     for (let i = 0; i < convIds.length; i += 100) {
-      const { data, error } = await deskcommAdmin.from("conversations")
+      const { data, error } = await deskcommCtx().admin.from("conversations")
         .select("id, service_started_at, active_intent, active_agent_set_at, contact:contacts(phone_number)")
-        .eq("organization_id", DESKCOMM_ORG_ID).in("id", convIds.slice(i, i + 100));
+        .eq("organization_id", deskcommCtx().orgId).in("id", convIds.slice(i, i + 100));
       if (error) throw new Error(error.message);
       convInfo.push(...(data || []));
     }
@@ -21521,7 +21615,7 @@ app.get("/api/atendimento/conversa-do-contato", blockCliente, requireEscritorioP
   const contato = String(req.query.contato || "");
   if (!contato) return res.status(400).json({ error: "Informe o contato." });
   if (!hasPermissao(user, atendimentoModulo(escopo), "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  if (!deskcommCtx().admin || !deskcommCtx().orgId) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
   try {
     const cv = (await atendimentoUltimaConversaPorContato(escopo, [contato])).get(contato);
     res.json({ conversaId: cv?.id || null, fechada: cv ? cv.status === "closed" || cv.status === "archived" : false });
@@ -21534,7 +21628,7 @@ app.get("/api/atendimento/contatos-do-setor", blockCliente, requireEscritorioPri
   const escopo = atendimentoEscopo(req.query.escopo);
   if (!escopo || escopo === "crm") return res.status(400).json({ error: "Escopo inválido." });
   if (!hasPermissao(user, atendimentoModulo(escopo), "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  if (!deskcommCtx().admin || !deskcommCtx().orgId) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
   try {
     res.json({ contatoIds: [...(await atendimentoContatosDoSetor(escopo))] });
   } catch (e: any) {
@@ -21544,7 +21638,7 @@ app.get("/api/atendimento/contatos-do-setor", blockCliente, requireEscritorioPri
 app.get("/api/atendimento/setores", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  if (!deskcommCtx().admin || !deskcommCtx().orgId) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
   try {
     const doRoteador = (await atendimentoSetores()).map((s) => s.intencao);
     res.json({ items: [...doRoteador, ATENDIMENTO_SETOR_INTERNO] });
@@ -21562,7 +21656,7 @@ app.get("/api/atendimento/setores", blockCliente, requireEscritorioPrincipalDesk
 app.post("/api/atendimento/conversas/:id/setor", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  if (!deskcommCtx().admin || !deskcommCtx().orgId) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
   const id = String(req.params.id);
   // `escopo` (dprh/contabil/fiscal) = "para o setor deste módulo" — usado pela Nova conversa de um setor,
   // que não precisa saber o nome da intenção no Roteador.
@@ -21576,12 +21670,12 @@ app.post("/api/atendimento/conversas/:id/setor", blockCliente, requireEscritorio
       if (!setor) return res.status(400).json({ error: "Setor desconhecido." });
       agentId = setor.agentId;
     }
-    const { data: atual, error: erroLer } = await deskcommAdmin.from("conversations").select("id, status").eq("organization_id", DESKCOMM_ORG_ID).eq("id", id).maybeSingle();
+    const { data: atual, error: erroLer } = await deskcommCtx().admin.from("conversations").select("id, status").eq("organization_id", deskcommCtx().orgId).eq("id", id).maybeSingle();
     if (erroLer) throw new Error(erroLer.message);
     if (!atual) return res.status(404).json({ error: "Conversa não encontrada." });
     if (atual.status === "closed" || atual.status === "archived") return res.status(409).json({ error: "Conversa fechada — não dá pra transferir." });
-    const { error: erroSoltar } = await deskcommAdmin.rpc("fn_conversation_assign", {
-      p_organization_id: DESKCOMM_ORG_ID,
+    const { error: erroSoltar } = await deskcommCtx().admin.rpc("fn_conversation_assign", {
+      p_organization_id: deskcommCtx().orgId,
       p_conversation_id: id,
       p_to_user_id: null,
       p_reason: "transfer",
@@ -21589,10 +21683,10 @@ app.post("/api/atendimento/conversas/:id/setor", blockCliente, requireEscritorio
     });
     if (erroSoltar) throw new Error(erroSoltar.message);
     const agora = new Date().toISOString();
-    const { error: erroSetor } = await deskcommAdmin
+    const { error: erroSetor } = await deskcommCtx().admin
       .from("conversations")
       .update({ bot_silenced_until: "infinity", active_intent: intencao, active_ai_agent_id: agentId, active_agent_set_at: agora })
-      .eq("organization_id", DESKCOMM_ORG_ID)
+      .eq("organization_id", deskcommCtx().orgId)
       .eq("id", id);
     if (erroSetor) throw new Error(erroSetor.message);
     sqlite
@@ -21609,10 +21703,9 @@ app.post("/api/atendimento/conversas/:id/setor", blockCliente, requireEscritorio
 // conversa como não lida e o cliente sem os tiques azuis. Isto chama o sendSeen do WAHA pela rota
 // /simplescontabeis/waha-seen do Caddy da VPS (única rota do WAHA publicada; ver Caddyfile lá), com a
 // chave sha256("simplescontabeis-waha-seen:" + service-role do Supabase do deskcomm) — o mesmo
-// segredo que os dois lados já têm, sem variável nova no Railway.
-const ATENDIMENTO_WAHA_SEEN_TOKEN = (process.env.WAHA_SEEN_TOKEN || DESKCOMM_SUPABASE_SERVICE_ROLE_KEY).trim()
-  ? crypto.createHash("sha256").update("simplescontabeis-waha-seen:" + DESKCOMM_SUPABASE_SERVICE_ROLE_KEY).digest("hex")
-  : "";
+// segredo que os dois lados já têm, sem variável nova no Railway. [2026-10-24] Era uma const fixa
+// aqui; agora deskcommCtx().wahaSeenToken calcula isso pro escritório certo a cada chamada (ver
+// deskcommContextoDoEscritorio, mesma fórmula).
 // Renomear o contato (nome que aparece em toda a lista/painel). O deskcomm só preenche display_name quando está
 // vazio (coalesce), então o nome escolhido aqui não é sobrescrito pelo nome do WhatsApp nas próximas mensagens.
 // ---- Citações do cliente ("marcou uma mensagem e respondeu em cima") ----
@@ -21633,32 +21726,32 @@ function citacaoResumoWaha(rt: any): { resumo: string; tipo: string } {
 app.post("/api/atendimento/conversas/:id/citacoes", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID || !ATENDIMENTO_WAHA_SEEN_TOKEN) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  if (!deskcommCtx().admin || !deskcommCtx().orgId || !deskcommCtx().wahaSeenToken) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
   const convId = String(req.params.id);
   const ids: string[] = (Array.isArray(req.body?.ids) ? req.body.ids : []).map(String).slice(0, 25);
   if (!ids.length) return res.json({ atualizadas: 0 });
   try {
-    const { data: conv } = await deskcommAdmin.from("conversations").select("id, channel_session:channel_sessions(waha_session_name)").eq("organization_id", DESKCOMM_ORG_ID).eq("id", convId).maybeSingle();
+    const { data: conv } = await deskcommCtx().admin.from("conversations").select("id, channel_session:channel_sessions(waha_session_name)").eq("organization_id", deskcommCtx().orgId).eq("id", convId).maybeSingle();
     const sessao = (conv as any)?.channel_session?.waha_session_name;
     if (!conv || !sessao) return res.status(404).json({ error: "Conversa não encontrada." });
-    const { data: msgs } = await deskcommAdmin.from("messages").select("id, external_id, direction, metadata, reply_to_message_id").eq("conversation_id", convId).in("id", ids);
+    const { data: msgs } = await deskcommCtx().admin.from("messages").select("id, external_id, direction, metadata, reply_to_message_id").eq("conversation_id", convId).in("id", ids);
     const pendentes = (msgs || []).filter((m: any) => m.direction === "inbound" && m.external_id && String(m.external_id).startsWith("false_") && !m.metadata?.citacao_ok && !m.metadata?.importado_do_celular);
     let atualizadas = 0;
     const trabalhar = async (m: any) => {
       let citacao: any = null;
       try {
         const chatId = String(m.external_id).split("_")[1];
-        const r = await wahaFetch(`/simplescontabeis/waha-get/${encodeURIComponent(sessao)}/${encodeURIComponent(chatId).replace(/%40/g, "@")}/${encodeURIComponent(m.external_id).replace(/%40/g, "@")}`, { headers: { "X-Simples-Token": ATENDIMENTO_WAHA_SEEN_TOKEN } });
+        const r = await wahaFetch(`/simplescontabeis/waha-get/${encodeURIComponent(sessao)}/${encodeURIComponent(chatId).replace(/%40/g, "@")}/${encodeURIComponent(m.external_id).replace(/%40/g, "@")}`, { headers: { "X-Simples-Token": deskcommCtx().wahaSeenToken } });
         if (!r.ok) return; // tenta de novo numa próxima abertura
         const j: any = await r.json();
         if (j?.replyTo?.id) {
           const { resumo, tipo } = citacaoResumoWaha(j.replyTo);
-          const { data: local } = await deskcommAdmin!.from("messages").select("id").eq("conversation_id", convId).like("external_id", `%\\_${j.replyTo.id}`).limit(1).maybeSingle();
+          const { data: local } = await deskcommCtx().admin!.from("messages").select("id").eq("conversation_id", convId).like("external_id", `%\\_${j.replyTo.id}`).limit(1).maybeSingle();
           citacao = { resumo, tipo, waha_id: j.replyTo.id, local_id: local?.id ?? null };
         }
       } catch { return; }
       const metadata = { ...(m.metadata || {}), citacao_ok: true, ...(citacao ? { citacao } : {}) };
-      await deskcommAdmin!.from("messages").update({ metadata, ...(citacao?.local_id ? { reply_to_message_id: citacao.local_id } : {}) }).eq("id", m.id);
+      await deskcommCtx().admin!.from("messages").update({ metadata, ...(citacao?.local_id ? { reply_to_message_id: citacao.local_id } : {}) }).eq("id", m.id);
       if (citacao) atualizadas++;
     };
     const fila = [...pendentes];
@@ -21677,7 +21770,7 @@ let fotosEmAndamento = 0;
 app.get("/api/atendimento/contatos/:id/foto", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).end();
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID || !ATENDIMENTO_WAHA_SEEN_TOKEN) return res.status(404).end();
+  if (!deskcommCtx().admin || !deskcommCtx().orgId || !deskcommCtx().wahaSeenToken) return res.status(404).end();
   const id = String(req.params.id);
   const enviar = (c: { buf: Buffer | null; mime: string }) => {
     // Foto de perfil é sempre imagem — Content-Type vem de fora (CDN do WhatsApp via WAHA), então
@@ -21694,14 +21787,14 @@ app.get("/api/atendimento/contatos/:id/foto", blockCliente, requireEscritorioPri
   for (let i = 0; fotosEmAndamento >= 4 && i < 75; i++) await new Promise((r) => setTimeout(r, 200)); // fila simples
   fotosEmAndamento++;
   try {
-    const { data: ct } = await deskcommAdmin.from("contacts").select("id, phone_number, wa_lid, source_metadata").eq("organization_id", DESKCOMM_ORG_ID).eq("id", id).maybeSingle();
+    const { data: ct } = await deskcommCtx().admin.from("contacts").select("id, phone_number, wa_lid, source_metadata").eq("organization_id", deskcommCtx().orgId).eq("id", id).maybeSingle();
     if (!ct) return res.status(404).end();
-    const { data: canal } = await deskcommAdmin.from("channel_sessions").select("waha_session_name").eq("organization_id", DESKCOMM_ORG_ID).eq("status", "WORKING").not("waha_session_name", "is", null).limit(1).maybeSingle();
+    const { data: canal } = await deskcommCtx().admin.from("channel_sessions").select("waha_session_name").eq("organization_id", deskcommCtx().orgId).eq("status", "WORKING").not("waha_session_name", "is", null).limit(1).maybeSingle();
     const sessao = canal?.waha_session_name;
     const meta: any = ct.source_metadata || {};
     const chatId = meta.waha_chat_id || (ct.wa_lid ? `${ct.wa_lid}@lid` : ct.phone_number ? `${String(ct.phone_number).replace(/\D/g, "")}@c.us` : null);
     if (!sessao || !chatId) { fotoCache.set(id, { buf: null, mime: "", em: Date.now() }); return res.status(404).end(); }
-    const r = await wahaFetch(`/simplescontabeis/waha-foto/${encodeURIComponent(sessao)}/${encodeURIComponent(chatId).replace(/%40/g, "@")}`, { headers: { "X-Simples-Token": ATENDIMENTO_WAHA_SEEN_TOKEN } });
+    const r = await wahaFetch(`/simplescontabeis/waha-foto/${encodeURIComponent(sessao)}/${encodeURIComponent(chatId).replace(/%40/g, "@")}`, { headers: { "X-Simples-Token": deskcommCtx().wahaSeenToken } });
     const j: any = r.ok ? await r.json().catch(() => null) : null;
     const url = j?.profilePictureURL;
     let entrada: { buf: Buffer | null; mime: string; em: number } = { buf: null, mime: "", em: Date.now() };
@@ -21722,12 +21815,12 @@ app.get("/api/atendimento/contatos/:id/foto", blockCliente, requireEscritorioPri
 app.put("/api/atendimento/contatos/:id/nome", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  if (!deskcommCtx().admin || !deskcommCtx().orgId) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
   const nome = String(req.body?.nome ?? "").replace(/\s+/g, " ").trim().slice(0, 120);
   if (!nome) return res.status(400).json({ error: "Informe o nome." });
   try {
-    const { data, error } = await deskcommAdmin.from("contacts").update({ display_name: nome, updated_at: new Date().toISOString() })
-      .eq("organization_id", DESKCOMM_ORG_ID).eq("id", String(req.params.id)).select("id").maybeSingle();
+    const { data, error } = await deskcommCtx().admin.from("contacts").update({ display_name: nome, updated_at: new Date().toISOString() })
+      .eq("organization_id", deskcommCtx().orgId).eq("id", String(req.params.id)).select("id").maybeSingle();
     if (error) throw new Error(error.message);
     if (!data) return res.status(404).json({ error: "Contato não encontrado." });
     res.json({ ok: true, nome });
@@ -21741,10 +21834,10 @@ app.put("/api/atendimento/contatos/:id/nome", blockCliente, requireEscritorioPri
 // continua guardada (histórico de provas) e nada muda no WhatsApp. Nada é apagado do banco.
 async function atendimentoMensagemParaAcao(user: any, id: string) {
   if (!atendimentoAlgumaPermissao(user, "postar")) throw Object.assign(new Error("Você não tem permissão para fazer isso."), { codigo: 403 });
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID || !ATENDIMENTO_WAHA_SEEN_TOKEN) throw Object.assign(new Error("Integração com o deskcomm não configurada no servidor."), { codigo: 503 });
-  const { data: m, error } = await deskcommAdmin.from("messages")
+  if (!deskcommCtx().admin || !deskcommCtx().orgId || !deskcommCtx().wahaSeenToken) throw Object.assign(new Error("Integração com o deskcomm não configurada no servidor."), { codigo: 503 });
+  const { data: m, error } = await deskcommCtx().admin.from("messages")
     .select("id, conversation_id, external_id, direction, type, body, sent_at, created_at, revoked_at, metadata, conversation:conversations(channel_session:channel_sessions(waha_session_name))")
-    .eq("organization_id", DESKCOMM_ORG_ID).eq("id", id).maybeSingle();
+    .eq("organization_id", deskcommCtx().orgId).eq("id", id).maybeSingle();
   if (error) throw new Error(error.message);
   if (!m) throw Object.assign(new Error("Mensagem não encontrada."), { codigo: 404 });
   return m as any;
@@ -21760,14 +21853,14 @@ async function atendimentoChamarWahaMsg(m: any, metodo: "PUT" | "DELETE", corpo?
   } else {
     // Enviada pelo próprio sistema (usuário/IA): o id guardado é só o curto do WhatsApp. O chatId exato (LID ou
     // telefone) sai de outra mensagem da mesma conversa, que guarda o id no formato `true_/false_<chatId>_<id>`.
-    const { data: outras } = await deskcommAdmin!.from("messages").select("external_id").eq("conversation_id", m.conversation_id).like("external_id", "%\\_%").order("created_at", { ascending: false }).limit(20);
+    const { data: outras } = await deskcommCtx().admin!.from("messages").select("external_id").eq("conversation_id", m.conversation_id).like("external_id", "%\\_%").order("created_at", { ascending: false }).limit(20);
     const ref = (outras || []).map((o: any) => String(o.external_id).split("_")).find((x: string[]) => (x[0] === "true" || x[0] === "false") && x.length >= 3);
     if (!ref) throw Object.assign(new Error("Não foi possível descobrir o chat do WhatsApp desta conversa."), { codigo: 400 });
     chatId = ref[1];
     idCompleto = `true_${chatId}_${m.external_id}`;
   }
   const url = `/simplescontabeis/waha-msg/${encodeURIComponent(sessao)}/${encodeURIComponent(chatId).replace(/%40/g, "@")}/${encodeURIComponent(idCompleto).replace(/%40/g, "@")}`;
-  const r = await wahaFetch(url, { method: metodo, headers: { "Content-Type": "application/json", "X-Simples-Token": ATENDIMENTO_WAHA_SEEN_TOKEN }, body: corpo ? JSON.stringify(corpo) : undefined });
+  const r = await wahaFetch(url, { method: metodo, headers: { "Content-Type": "application/json", "X-Simples-Token": deskcommCtx().wahaSeenToken }, body: corpo ? JSON.stringify(corpo) : undefined });
   if (!r.ok) throw new Error(`WhatsApp ${r.status}: ${(await r.text().catch(() => "")).slice(0, 200)}`);
 }
 function atendimentoRespErro(res: express.Response, e: any) {
@@ -21783,7 +21876,7 @@ app.post("/api/atendimento/mensagens/:id/editar", blockCliente, requireEscritori
     if (idade > 15 * 60 * 1000) return res.status(400).json({ error: "O WhatsApp só permite editar até 15 minutos depois do envio." });
     await atendimentoChamarWahaMsg(m, "PUT", { text: texto });
     const meta = { ...(m.metadata || {}), editada_em: new Date().toISOString(), texto_original: (m.metadata as any)?.texto_original ?? m.body };
-    const { error } = await deskcommAdmin!.from("messages").update({ body: texto, metadata: meta }).eq("id", m.id);
+    const { error } = await deskcommCtx().admin!.from("messages").update({ body: texto, metadata: meta }).eq("id", m.id);
     if (error) throw new Error(error.message);
     res.json({ ok: true });
   } catch (e: any) { atendimentoRespErro(res, e); }
@@ -21795,7 +21888,7 @@ app.post("/api/atendimento/mensagens/:id/excluir-para-todos", blockCliente, requ
     if (m.revoked_at) return res.json({ ok: true });
     await atendimentoChamarWahaMsg(m, "DELETE");
     // O texto original fica guardado (body intacto); a tela mostra "Mensagem apagada".
-    const { error } = await deskcommAdmin!.from("messages").update({ revoked_at: new Date().toISOString(), metadata: { ...(m.metadata || {}), apagada_por_nos: true } }).eq("id", m.id);
+    const { error } = await deskcommCtx().admin!.from("messages").update({ revoked_at: new Date().toISOString(), metadata: { ...(m.metadata || {}), apagada_por_nos: true } }).eq("id", m.id);
     if (error) throw new Error(error.message);
     res.json({ ok: true });
   } catch (e: any) { atendimentoRespErro(res, e); }
@@ -21803,7 +21896,7 @@ app.post("/api/atendimento/mensagens/:id/excluir-para-todos", blockCliente, requ
 app.post("/api/atendimento/mensagens/:id/excluir", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   try {
     const m = await atendimentoMensagemParaAcao((req as any).user, String(req.params.id));
-    const { error } = await deskcommAdmin!.from("messages").update({ metadata: { ...(m.metadata || {}), oculta_da_equipe: true } }).eq("id", m.id);
+    const { error } = await deskcommCtx().admin!.from("messages").update({ metadata: { ...(m.metadata || {}), oculta_da_equipe: true } }).eq("id", m.id);
     if (error) throw new Error(error.message);
     res.json({ ok: true });
   } catch (e: any) { atendimentoRespErro(res, e); }
@@ -21813,11 +21906,11 @@ app.post("/api/atendimento/mensagens/:id/excluir", blockCliente, requireEscritor
 app.post("/api/atendimento/conversas/:id/nao-lida", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
-  const { data, error } = await deskcommAdmin
+  if (!deskcommCtx().admin || !deskcommCtx().orgId) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  const { data, error } = await deskcommCtx().admin
     .from("conversations")
     .update({ unread_count_for_assignee: 1 })
-    .eq("organization_id", DESKCOMM_ORG_ID)
+    .eq("organization_id", deskcommCtx().orgId)
     .eq("id", String(req.params.id))
     .select("id");
   if (error) return res.status(502).json({ error: error.message });
@@ -21827,13 +21920,13 @@ app.post("/api/atendimento/conversas/:id/nao-lida", blockCliente, requireEscrito
 app.post("/api/atendimento/conversas/:id/lida", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID || !ATENDIMENTO_WAHA_SEEN_TOKEN) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  if (!deskcommCtx().admin || !deskcommCtx().orgId || !deskcommCtx().wahaSeenToken) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
   const id = String(req.params.id);
   try {
-    const { data: conv, error } = await deskcommAdmin
+    const { data: conv, error } = await deskcommCtx().admin
       .from("conversations")
       .select("id, channel_session:channel_sessions(waha_session_name)")
-      .eq("organization_id", DESKCOMM_ORG_ID)
+      .eq("organization_id", deskcommCtx().orgId)
       .eq("id", id)
       .maybeSingle();
     if (error) throw new Error(error.message);
@@ -21842,10 +21935,10 @@ app.post("/api/atendimento/conversas/:id/lida", blockCliente, requireEscritorioP
     // O webhook grava o id do WhatsApp como `false_<chatId>_<id>` — é daí que sai o chatId EXATO que o
     // WAHA conhece (LID ou telefone). Só mensagens que vieram do celular do cliente (não as importadas
     // do histórico, que usam o chatId do store).
-    const { data: recebidas, error: erroMsgs } = await deskcommAdmin
+    const { data: recebidas, error: erroMsgs } = await deskcommCtx().admin
       .from("messages")
       .select("external_id")
-      .eq("organization_id", DESKCOMM_ORG_ID)
+      .eq("organization_id", deskcommCtx().orgId)
       .eq("conversation_id", id)
       .eq("direction", "inbound")
       .like("external_id", "false_%")
@@ -21858,8 +21951,8 @@ app.post("/api/atendimento/conversas/:id/lida", blockCliente, requireEscritorioP
     const chatId = ids[0].split("_")[1];
     const r = await wahaFetch(`/simplescontabeis/waha-seen`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "X-Simples-Token": ATENDIMENTO_WAHA_SEEN_TOKEN },
-      body: JSON.stringify({ session: sessao, chatId, messageIds: ids.filter((x) => x.split("_")[1] === chatId) }),
+      headers: { "Content-Type": "application/json", "X-Simples-Token": deskcommCtx().wahaSeenToken },
+      body: JSON.stringify({ session: sessao, chatId, messageIds: ids.filter((x: string) => x.split("_")[1] === chatId) }),
     });
     if (!r.ok) throw new Error(`WAHA ${r.status}: ${(await r.text().catch(() => "")).slice(0, 200)}`);
     res.json({ ok: true });
@@ -21877,15 +21970,15 @@ app.post("/api/atendimento/conversas/:id/lida", blockCliente, requireEscritorioP
 app.get("/api/atendimento/conversas/:id/mensagens", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  if (!deskcommCtx().admin || !deskcommCtx().orgId) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
   const convId = String(req.params.id);
   const cursor = typeof req.query.cursor === "string" && req.query.cursor ? req.query.cursor : null;
   const LIM = 100;
   try {
-    let q = deskcommAdmin
+    let q = deskcommCtx().admin
       .from("messages")
       .select("*")
-      .eq("organization_id", DESKCOMM_ORG_ID)
+      .eq("organization_id", deskcommCtx().orgId)
       .eq("conversation_id", convId)
       .order("created_at", { ascending: false })
       .limit(LIM + 1);
@@ -21909,7 +22002,7 @@ app.get("/api/atendimento/mensagens/:id/media", blockCliente, requireEscritorioP
   if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).end();
   try {
     if (!deskcommRoboSessao || Date.now() - deskcommRoboSessao.em > 45 * 60_000) await deskcommRoboLogin();
-    const r = await fetch(`${DESKCOMM_URL}/deskcomm/api/v1/messages/${encodeURIComponent(String(req.params.id))}/media`, { headers: { cookie: deskcommRoboSessao!.cookie, "x-forwarded-host": DESKCOMM_PUBLIC_HOST, "x-forwarded-proto": "https" } });
+    const r = await fetch(`${deskcommCtx().url}/deskcomm/api/v1/messages/${encodeURIComponent(String(req.params.id))}/media`, { headers: { cookie: deskcommRoboSessao!.cookie, "x-forwarded-host": deskcommCtx().publicHost, "x-forwarded-proto": "https" } });
     if (!r.ok) return res.status(r.status).end();
     const ct = r.headers.get("content-type"); if (ct) res.setHeader("Content-Type", ct);
     const cd = r.headers.get("content-disposition"); if (cd) res.setHeader("Content-Disposition", cd);
@@ -21930,15 +22023,15 @@ app.get("/api/atendimento/mensagens/:id/media", blockCliente, requireEscritorioP
 app.post("/api/atendimento/encaminhar", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  if (!deskcommCtx().admin || !deskcommCtx().orgId) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
   const body = req.body || {};
   const messageId = String(body.messageId || "").trim();
   if (!messageId) return res.status(400).json({ error: "Mensagem não informada." });
   const nota = typeof body.nota === "string" ? body.nota.trim() : "";
   try {
-    const { data: m, error } = await deskcommAdmin.from("messages")
+    const { data: m, error } = await deskcommCtx().admin.from("messages")
       .select("id, type, body, media_storage_path, media_mime, media_size_bytes, metadata")
-      .eq("organization_id", DESKCOMM_ORG_ID).eq("id", messageId).maybeSingle();
+      .eq("organization_id", deskcommCtx().orgId).eq("id", messageId).maybeSingle();
     if (error) throw new Error(error.message);
     if (!m) return res.status(404).json({ error: "Mensagem não encontrada." });
     const temMidia = !!(m as any).media_storage_path;
@@ -21958,7 +22051,7 @@ app.post("/api/atendimento/encaminhar", blockCliente, requireEscritorioPrincipal
     if (temMidia) {
       // Baixa o arquivo original (robô admin) e sobe de novo na conversa de destino.
       if (!deskcommRoboSessao || Date.now() - deskcommRoboSessao.em > 45 * 60_000) await deskcommRoboLogin();
-      const rMedia = await fetch(`${DESKCOMM_URL}/deskcomm/api/v1/messages/${encodeURIComponent(messageId)}/media`, { headers: { cookie: deskcommRoboSessao!.cookie, "x-forwarded-host": DESKCOMM_PUBLIC_HOST, "x-forwarded-proto": "https" } });
+      const rMedia = await fetch(`${deskcommCtx().url}/deskcomm/api/v1/messages/${encodeURIComponent(messageId)}/media`, { headers: { cookie: deskcommRoboSessao!.cookie, "x-forwarded-host": deskcommCtx().publicHost, "x-forwarded-proto": "https" } });
       if (!rMedia.ok) throw new Error(`Não foi possível baixar o arquivo original (HTTP ${rMedia.status}).`);
       const buf = Buffer.from(await rMedia.arrayBuffer());
       const mime = (m as any).media_mime || rMedia.headers.get("content-type") || "application/octet-stream";
@@ -21986,11 +22079,11 @@ app.post("/api/atendimento/encaminhar", blockCliente, requireEscritorioPrincipal
 app.get("/api/atendimento/conversas/:id/dono", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
-  const { data: c, error } = await deskcommAdmin
+  if (!deskcommCtx().admin || !deskcommCtx().orgId) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  const { data: c, error } = await deskcommCtx().admin
     .from("conversations")
     .select("assigned_to_user_id, assigned_to_user_name, status")
-    .eq("organization_id", DESKCOMM_ORG_ID)
+    .eq("organization_id", deskcommCtx().orgId)
     .eq("id", String(req.params.id))
     .maybeSingle();
   if (error) return res.status(502).json({ error: error.message });
@@ -22011,10 +22104,10 @@ app.get("/api/atendimento/conversas/:id/dono", blockCliente, requireEscritorioPr
 app.post("/api/atendimento/conversas/:id/fechar", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  if (!deskcommCtx().admin || !deskcommCtx().orgId) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
   const id = String(req.params.id);
   try {
-    const { data: c } = await deskcommAdmin.from("conversations").select("id, status, service_revision").eq("organization_id", DESKCOMM_ORG_ID).eq("id", id).maybeSingle();
+    const { data: c } = await deskcommCtx().admin.from("conversations").select("id, status, service_revision").eq("organization_id", deskcommCtx().orgId).eq("id", id).maybeSingle();
     if (!c) return res.status(404).json({ error: "Conversa não encontrada." });
     if ((c as any).status === "closed" || (c as any).status === "archived") return res.json({ ok: true, jaFechada: true });
     const fechar = (body: any) => deskcommRoboApi(`/conversations/${id}/close`, { method: "POST", body });
@@ -22043,10 +22136,10 @@ app.post("/api/atendimento/conversas/:id/fechar", blockCliente, requireEscritori
 app.post("/api/atendimento/conversas/:id/liberar", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  if (!deskcommCtx().admin || !deskcommCtx().orgId) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
   const id = String(req.params.id);
   try {
-    const { data: c } = await deskcommAdmin.from("conversations").select("id, status, assigned_to_user_id").eq("organization_id", DESKCOMM_ORG_ID).eq("id", id).maybeSingle();
+    const { data: c } = await deskcommCtx().admin.from("conversations").select("id, status, assigned_to_user_id").eq("organization_id", deskcommCtx().orgId).eq("id", id).maybeSingle();
     if (!c) return res.status(404).json({ error: "Conversa não encontrada." });
     if ((c as any).status === "closed" || (c as any).status === "archived") return res.json({ ok: true, jaFechada: true });
     if (!(c as any).assigned_to_user_id) return res.json({ ok: true, jaLivre: true });
@@ -22056,7 +22149,7 @@ app.post("/api/atendimento/conversas/:id/liberar", blockCliente, requireEscritor
     } catch {
       // Robô não era o dono: força a conversa pra ele (service-role) e então solta.
       const roboId = await deskcommRoboId();
-      await deskcommAdmin.rpc("fn_conversation_assign", { p_organization_id: DESKCOMM_ORG_ID, p_conversation_id: id, p_to_user_id: roboId, p_reason: "transfer", p_enforce_expected: false });
+      await deskcommCtx().admin.rpc("fn_conversation_assign", { p_organization_id: deskcommCtx().orgId, p_conversation_id: id, p_to_user_id: roboId, p_reason: "transfer", p_enforce_expected: false });
       await release();
     }
     res.json({ ok: true });
@@ -22073,13 +22166,13 @@ app.post("/api/atendimento/conversas/:id/liberar", blockCliente, requireEscritor
 app.post("/api/atendimento/conversas/:id/enviar-texto", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  if (!deskcommCtx().admin || !deskcommCtx().orgId) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
   const id = String(req.params.id);
   const texto = typeof req.body?.texto === "string" ? req.body.texto : "";
   const replyTo = req.body?.replyTo ? String(req.body.replyTo) : null;
   if (!texto.trim()) return res.status(400).json({ error: "Digite uma mensagem." });
   try {
-    const { data: c } = await deskcommAdmin.from("conversations").select("id, status").eq("organization_id", DESKCOMM_ORG_ID).eq("id", id).maybeSingle();
+    const { data: c } = await deskcommCtx().admin.from("conversations").select("id, status").eq("organization_id", deskcommCtx().orgId).eq("id", id).maybeSingle();
     if (!c) return res.status(404).json({ error: "Conversa não encontrada." });
     if ((c as any).status === "closed" || (c as any).status === "archived") return res.status(409).json({ error: "Conversa fechada." });
     const meuId = await deskcommGarantirUsuario(user);
@@ -22102,7 +22195,7 @@ app.post("/api/atendimento/conversas/:id/enviar-texto", blockCliente, requireEsc
 app.post("/api/atendimento/conversas/:id/reabrir", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  if (!deskcommCtx().admin || !deskcommCtx().orgId) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
   const contatoId = req.body?.contatoId ? String(req.body.contatoId) : null;
   if (!contatoId) return res.status(400).json({ error: "Contato da conversa não informado." });
   try {
@@ -22111,8 +22204,8 @@ app.post("/api/atendimento/conversas/:id/reabrir", blockCliente, requireEscritor
     if (!convId) throw new Error("O deskcomm não devolveu a conversa reaberta.");
     // Atribui pro usuário que reabriu (cai em Minhas) e pausa o automático.
     const meuId = await deskcommGarantirUsuario(user);
-    await deskcommAdmin.rpc("fn_conversation_assign", { p_organization_id: DESKCOMM_ORG_ID, p_conversation_id: convId, p_to_user_id: meuId, p_reason: "transfer", p_enforce_expected: false });
-    await deskcommAdmin.from("conversations").update({ bot_silenced_until: "infinity" }).eq("organization_id", DESKCOMM_ORG_ID).eq("id", convId);
+    await deskcommCtx().admin.rpc("fn_conversation_assign", { p_organization_id: deskcommCtx().orgId, p_conversation_id: convId, p_to_user_id: meuId, p_reason: "transfer", p_enforce_expected: false });
+    await deskcommCtx().admin.from("conversations").update({ bot_silenced_until: "infinity" }).eq("organization_id", deskcommCtx().orgId).eq("id", convId);
     res.json({ ok: true, conversation_id: convId });
   } catch (e: any) {
     console.error("[atendimento] falha ao reabrir:", e.message);
@@ -22126,13 +22219,13 @@ app.post("/api/atendimento/conversas/:id/reabrir", blockCliente, requireEscritor
 app.post("/api/atendimento/conversas/:id/enviar-arquivo", blockCliente, requireEscritorioPrincipalDeskcomm, upload.single("file"), async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  if (!deskcommCtx().admin || !deskcommCtx().orgId) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
   const id = String(req.params.id);
   const arquivo = (req as any).file;
   if (!arquivo) return res.status(400).json({ error: "Arquivo não enviado." });
   const legenda = typeof req.body?.legenda === "string" ? req.body.legenda : "";
   try {
-    const { data: c } = await deskcommAdmin.from("conversations").select("id, status").eq("organization_id", DESKCOMM_ORG_ID).eq("id", id).maybeSingle();
+    const { data: c } = await deskcommCtx().admin.from("conversations").select("id, status").eq("organization_id", deskcommCtx().orgId).eq("id", id).maybeSingle();
     if (!c) return res.status(404).json({ error: "Conversa não encontrada." });
     if ((c as any).status === "closed" || (c as any).status === "archived") return res.status(409).json({ error: "Conversa fechada." });
     const meuId = await deskcommGarantirUsuario(user);
@@ -22161,15 +22254,15 @@ app.post("/api/atendimento/conversas/:id/enviar-arquivo", blockCliente, requireE
 app.post("/api/atendimento/conversas/:id/atribuir-admin", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (user.perfil !== "Administrador") return res.status(403).json({ error: "Só um administrador pode assumir/transferir no lugar de outro atendente." });
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  if (!deskcommCtx().admin || !deskcommCtx().orgId) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
   const id = String(req.params.id);
   try {
-    const { data: conv } = await deskcommAdmin.from("conversations").select("id, status").eq("organization_id", DESKCOMM_ORG_ID).eq("id", id).maybeSingle();
+    const { data: conv } = await deskcommCtx().admin.from("conversations").select("id, status").eq("organization_id", deskcommCtx().orgId).eq("id", id).maybeSingle();
     if (!conv) return res.status(404).json({ error: "Conversa não encontrada." });
     if ((conv as any).status === "closed" || (conv as any).status === "archived") return res.status(409).json({ error: "Conversa fechada." });
     const alvo = req.body?.para ? String(req.body.para) : await deskcommGarantirUsuario(user);
-    const { error } = await deskcommAdmin.rpc("fn_conversation_assign", {
-      p_organization_id: DESKCOMM_ORG_ID,
+    const { error } = await deskcommCtx().admin.rpc("fn_conversation_assign", {
+      p_organization_id: deskcommCtx().orgId,
       p_conversation_id: id,
       p_to_user_id: alvo,
       p_reason: "transfer",
@@ -22177,7 +22270,7 @@ app.post("/api/atendimento/conversas/:id/atribuir-admin", blockCliente, requireE
     });
     if (error) throw new Error(error.message);
     // Pausa o automático, igual quando alguém assume pelo deskcomm.
-    await deskcommAdmin.from("conversations").update({ bot_silenced_until: "infinity" }).eq("organization_id", DESKCOMM_ORG_ID).eq("id", id);
+    await deskcommCtx().admin.from("conversations").update({ bot_silenced_until: "infinity" }).eq("organization_id", deskcommCtx().orgId).eq("id", id);
     res.json({ ok: true });
   } catch (e: any) {
     console.error("[atendimento] falha no atribuir-admin:", e.message);
@@ -22197,10 +22290,10 @@ app.post("/api/atendimento/conversas/:id/atribuir-admin", blockCliente, requireE
 app.post("/api/atendimento/conversas/:id/assumir-livre", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "postar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
-  if (!deskcommAdmin || !DESKCOMM_ORG_ID) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  if (!deskcommCtx().admin || !deskcommCtx().orgId) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
   const id = String(req.params.id);
   try {
-    const { data: conv } = await deskcommAdmin.from("conversations").select("id, status, assigned_to_user_id, assigned_to_user_name").eq("organization_id", DESKCOMM_ORG_ID).eq("id", id).maybeSingle();
+    const { data: conv } = await deskcommCtx().admin.from("conversations").select("id, status, assigned_to_user_id, assigned_to_user_name").eq("organization_id", deskcommCtx().orgId).eq("id", id).maybeSingle();
     if (!conv) return res.status(404).json({ error: "Conversa não encontrada." });
     if ((conv as any).status === "closed" || (conv as any).status === "archived") return res.status(409).json({ error: "Conversa fechada." });
     const meuId = await deskcommGarantirUsuario(user);
@@ -22208,8 +22301,8 @@ app.post("/api/atendimento/conversas/:id/assumir-livre", blockCliente, requireEs
     if (donoAtual && donoAtual !== meuId) {
       return res.status(409).json({ error: `Este atendimento já foi assumido por ${(conv as any).assigned_to_user_name || "outro atendente"}.` });
     }
-    const { error } = await deskcommAdmin.rpc("fn_conversation_assign", {
-      p_organization_id: DESKCOMM_ORG_ID,
+    const { error } = await deskcommCtx().admin.rpc("fn_conversation_assign", {
+      p_organization_id: deskcommCtx().orgId,
       p_conversation_id: id,
       p_to_user_id: meuId,
       p_reason: "claim",
@@ -22217,7 +22310,7 @@ app.post("/api/atendimento/conversas/:id/assumir-livre", blockCliente, requireEs
     });
     if (error) throw new Error(error.message);
     // Pausa o automático, igual quando alguém assume pelo deskcomm normalmente.
-    await deskcommAdmin.from("conversations").update({ bot_silenced_until: "infinity" }).eq("organization_id", DESKCOMM_ORG_ID).eq("id", id);
+    await deskcommCtx().admin.from("conversations").update({ bot_silenced_until: "infinity" }).eq("organization_id", deskcommCtx().orgId).eq("id", id);
     res.json({ ok: true });
   } catch (e: any) {
     console.error("[atendimento] falha no assumir-livre:", e.message);
