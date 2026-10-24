@@ -14544,6 +14544,7 @@ async function pageEscritorios(){
       <td style="text-align:right; white-space:nowrap;">
         <button class="btn small" data-act="editar">Editar</button>
         <button class="btn small" data-act="admin">+ Administrador</button>
+        <button class="btn small ${e.deskcommAtivo?'primary':''}" data-act="deskcomm" title="${e.deskcommAtivo?'Atendimento por WhatsApp configurado e ativo':'Atendimento por WhatsApp — ainda não configurado'}">📱 Atendimento WhatsApp</button>
         <button class="btn small" data-act="isencao">${e.isentoAssinatura?'Voltar a cobrar':'Isentar cobrança'}</button>
         <button class="btn small" data-act="toggle">${e.ativo?'Desativar':'Ativar'}</button>
       </td>
@@ -14559,6 +14560,11 @@ async function pageEscritorios(){
     const tr = e.target.closest('tr');
     const id = Number(tr.dataset.id);
     administradorModal(items.find(x=>x.id===id));
+  }));
+  document.getElementById('escritoriosBody').querySelectorAll('[data-act="deskcomm"]').forEach(b=>b.addEventListener('click', e=>{
+    const tr = e.target.closest('tr');
+    const id = Number(tr.dataset.id);
+    deskcommConfigModal(items.find(x=>x.id===id));
   }));
   document.getElementById('escritoriosBody').querySelectorAll('[data-act="toggle"]').forEach(b=>b.addEventListener('click', async e=>{
     const tr = e.target.closest('tr');
@@ -14633,6 +14639,60 @@ function administradorModal(esc_){
     try{
       await api('/super/escritorios/'+esc_.id+'/administrador', { method:'POST', body:{ nome, email, password } });
       closeModal(); toast('Administrador criado.','ok'); pageEscritorios();
+    }catch(e){ toast(e.message,'err'); }
+  });
+}
+// Atendimento por WhatsApp (deskcomm+WAHA) de um escritório — a pilha em si é provisionada à parte
+// (fora deste app, manual); aqui só cadastra pra ONDE apontar depois que ela existir. Nasce vazia/
+// desligada pra todo escritório novo — ninguém tem atendimento até o SuperAdmin preencher isto.
+async function deskcommConfigModal(esc_){
+  openModal(`<h3>Atendimento por WhatsApp — ${esc(esc_.nome)}</h3><div class="empty-state">Carregando…</div>`);
+  let c;
+  try{ c = await api('/super/escritorios/'+esc_.id+'/deskcomm-config'); }
+  catch(e){ openModal(`<h3>Atendimento por WhatsApp — ${esc(esc_.nome)}</h3><div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`); return; }
+  openModal(`
+    <h3>Atendimento por WhatsApp — ${esc(esc_.nome)}</h3>
+    <p class="subtitle" style="margin-top:-4px;">Credenciais da pilha deskcomm+WAHA PRÓPRIA deste escritório — provisionada à parte (outra VPS ou outra pasta isolada), nunca a mesma do escritório principal. Deixe em branco o que ainda não existir.</p>
+    <label class="checkbox-row"><input type="checkbox" id="dcAtivo" ${c.ativo?'checked':''}> Atendimento ativo (pilha já provisionada e pronta)</label>
+    <div class="row">
+      <div class="field"><label>URL base do deskcomm</label><input id="dcUrl" value="${esc(c.url)}" placeholder="https://..."></div>
+      <div class="field"><label>Host público (Caddy)</label><input id="dcPublicHost" value="${esc(c.publicHost)}"></div>
+    </div>
+    <div class="row">
+      <div class="field"><label>URL do WAHA</label><input id="dcWahaUrl" value="${esc(c.wahaUrl)}" placeholder="https://..."></div>
+      <div class="field"><label>Nome do container Caddy (proxy interno)</label><input id="dcWahaConnect" value="${esc(c.wahaConnect)}"></div>
+    </div>
+    <div class="row">
+      <div class="field"><label>Supabase URL</label><input id="dcSupabaseUrl" value="${esc(c.supabaseUrl)}" placeholder="https://xxx.supabase.co"></div>
+      <div class="field"><label>Organization ID (deskcomm)</label><input id="dcOrgId" value="${esc(c.orgId)}"></div>
+    </div>
+    <div class="row">
+      <div class="field"><label>Supabase Service Role Key</label><input id="dcSupabaseKey" type="password" placeholder="${c.temSupabaseServiceRoleKey?'••••••••  (deixe em branco pra manter)':''}"></div>
+      <div class="field"><label>WAHA Seen Token</label><input id="dcWahaSeenToken" type="password" placeholder="${c.temWahaSeenToken?'••••••••  (deixe em branco pra manter)':''}"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" id="dcCancel">Cancelar</button>
+      <button class="btn primary" id="dcSalvar">Salvar</button>
+    </div>
+  `;
+  document.getElementById('dcCancel').addEventListener('click', closeModal);
+  document.getElementById('dcSalvar').addEventListener('click', async ()=>{
+    const body = {
+      ativo: document.getElementById('dcAtivo').checked,
+      url: document.getElementById('dcUrl').value.trim(),
+      publicHost: document.getElementById('dcPublicHost').value.trim(),
+      wahaUrl: document.getElementById('dcWahaUrl').value.trim(),
+      wahaConnect: document.getElementById('dcWahaConnect').value.trim(),
+      supabaseUrl: document.getElementById('dcSupabaseUrl').value.trim(),
+      orgId: document.getElementById('dcOrgId').value.trim(),
+    };
+    const supabaseKey = document.getElementById('dcSupabaseKey').value;
+    if(supabaseKey) body.supabaseServiceRoleKey = supabaseKey;
+    const wahaSeenToken = document.getElementById('dcWahaSeenToken').value;
+    if(wahaSeenToken) body.wahaSeenToken = wahaSeenToken;
+    try{
+      await api('/super/escritorios/'+esc_.id+'/deskcomm-config', { method:'PUT', body });
+      closeModal(); toast('Configuração salva.','ok'); pageEscritorios();
     }catch(e){ toast(e.message,'err'); }
   });
 }

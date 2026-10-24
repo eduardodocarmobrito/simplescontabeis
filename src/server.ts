@@ -693,6 +693,26 @@ sqlite.exec(`
     app_secret_cifrado TEXT, -- opcional — valida a assinatura (X-Hub-Signature-256) das chamadas do webhook, se preenchido
     updated_at TEXT DEFAULT (datetime('now'))
   );
+  -- Atendimento por WhatsApp (CRM/deskcomm) por escritório — FUNDAÇÃO (2026-10-24), ainda não lida em
+  -- lugar nenhum do runtime: hoje o atendimento inteiro usa as constantes globais DESKCOMM_* (um
+  -- único escritório, ver requireEscritorioPrincipalDeskcomm). O deskcomm é um produto self-host de
+  -- "uma instalação completa por cliente" (app+worker+waha+redis+srh+scheduler próprios) — dar
+  -- atendimento a um novo escritório exige subir essa pilha separada (manual, fora deste app) e só
+  -- depois cadastrar aqui pra onde apontar. "ativo=1" é o sinal de que a pilha já foi provisionada e
+  -- os dados abaixo são válidos; sem isso, nenhum escritório novo tem atendimento habilitado.
+  CREATE TABLE IF NOT EXISTS deskcomm_config (
+    escritorio_id INTEGER PRIMARY KEY REFERENCES escritorios(id),
+    ativo INTEGER NOT NULL DEFAULT 0,
+    url TEXT, -- base do deskcomm (ex.: https://srv-do-cliente.hstgr.cloud ou domínio próprio)
+    public_host TEXT, -- host público usado nas rotas internas do Caddy (ex.: simplescontabeis.com.br)
+    waha_url TEXT,
+    waha_connect TEXT, -- nome do container/serviço do Caddy, pro proxy interno (ex.: deskcomm-caddy-1)
+    supabase_url TEXT,
+    supabase_service_role_key_cifrada TEXT,
+    org_id TEXT, -- organization_id do deskcomm (Supabase) deste escritório
+    waha_seen_token_cifrado TEXT,
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
   -- Status real de entrega de cada mensagem, recebido via webhook do WhatsApp (sem isso, só
   -- sabemos se a Meta ACEITOU o envio, não se entregou de verdade no celular do cliente).
   CREATE TABLE IF NOT EXISTS whatsapp_mensagens (
@@ -1935,6 +1955,9 @@ sqlite.exec(`INSERT OR IGNORE INTO modulos_escritorio_catalogo (chave, nome, val
 sqlite.exec(`INSERT OR IGNORE INTO modulos_escritorio_catalogo (chave, nome, valor_mensal) VALUES ('envio_email_automatico', 'Envio automático por e-mail', 0)`);
 sqlite.exec(`INSERT OR IGNORE INTO modulos_escritorio_catalogo (chave, nome, valor_mensal) VALUES ('envio_whatsapp', 'Envio automático por WhatsApp', 0)`);
 sqlite.exec(`INSERT OR IGNORE INTO modulos_escritorio_catalogo (chave, nome, valor_mensal) VALUES ('busca_xml_nfe', 'Busca automática de XML (NF-e/NFC-e/NFS-e)', 0)`);
+// Atendimento por WhatsApp (CRM/deskcomm) — direito contratual de o escritório TER o módulo; a pilha
+// em si (deskcomm_config, ver CREATE TABLE acima) é provisionada à parte, manualmente, por escritório.
+sqlite.exec(`INSERT OR IGNORE INTO modulos_escritorio_catalogo (chave, nome, valor_mensal) VALUES ('atendimento_whatsapp', 'Atendimento por WhatsApp (CRM)', 0)`);
 // Valor "por assento" — diferente dos outros módulos (fixo, contratado ou não), o valor final desse
 // item na fatura é o preço unitário aqui multiplicado pela quantidade de colaboradores ativos e não
 // isentos (ver contarAssentosColaborador). Preço 0 até o SuperAdmin configurar em Escritórios >
@@ -2659,11 +2682,13 @@ function garantirLinhasDeConfig(escritorioId: number) {
   sqlite.prepare(`INSERT OR IGNORE INTO email_config (escritorio_id) VALUES (?)`).run(escritorioId);
   sqlite.prepare(`INSERT OR IGNORE INTO nfse_agendamento_config (escritorio_id) VALUES (?)`).run(escritorioId);
   sqlite.prepare(`INSERT OR IGNORE INTO whatsapp_config (escritorio_id) VALUES (?)`).run(escritorioId);
+  sqlite.prepare(`INSERT OR IGNORE INTO deskcomm_config (escritorio_id) VALUES (?)`).run(escritorioId);
 }
 garantirLinhasDeConfig(1);
 // Escritórios criados antes da tabela whatsapp_config existir (ou de garantirLinhasDeConfig ganhar
 // essa linha) também precisam da própria linha — não só o escritório 1.
 sqlite.exec(`INSERT OR IGNORE INTO whatsapp_config (escritorio_id) SELECT id FROM escritorios`);
+sqlite.exec(`INSERT OR IGNORE INTO deskcomm_config (escritorio_id) SELECT id FROM escritorios`);
 
 // Migração: multi-tenant Fase 3 — nfse_certificados e nfse_modelos usam `empresa_id IS NULL` como
 // sentinela de "pertence ao próprio escritório" (não a uma empresa-cliente específica). Sem uma
@@ -3671,11 +3696,58 @@ app.get("/api/super/escritorios", requireSuperAdmin, (_req, res) => {
     .prepare(
       `SELECT id, nome, cnpj, email, telefone, empresa_id as empresaId, ativo, isento_assinatura as isentoAssinatura, criado_em as criadoEm,
               (SELECT COUNT(*) FROM empresas e WHERE e.escritorio_id = escritorios.id) as totalEmpresas,
-              (SELECT COUNT(*) FROM app_users u WHERE u.escritorio_id = escritorios.id) as totalUsuarios
+              (SELECT COUNT(*) FROM app_users u WHERE u.escritorio_id = escritorios.id) as totalUsuarios,
+              (SELECT ativo FROM deskcomm_config d WHERE d.escritorio_id = escritorios.id) as deskcommAtivo
        FROM escritorios ORDER BY nome`
     )
     .all() as any[];
-  res.json({ items: rows.map((r) => ({ ...r, ativo: !!r.ativo, isentoAssinatura: !!r.isentoAssinatura })) });
+  res.json({ items: rows.map((r) => ({ ...r, ativo: !!r.ativo, isentoAssinatura: !!r.isentoAssinatura, deskcommAtivo: !!r.deskcommAtivo })) });
+});
+// Config da pilha de atendimento por WhatsApp (deskcomm+WAHA) deste escritório — só o SuperAdmin vê/
+// edita (são credenciais de infraestrutura de uma pilha provisionada à parte, não config comum do
+// escritório). "ativo=0" (padrão) = atendimento não disponível pra esse escritório ainda.
+app.get("/api/super/escritorios/:id/deskcomm-config", requireSuperAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  const c = sqlite.prepare(`SELECT * FROM deskcomm_config WHERE escritorio_id = ?`).get(id) as any;
+  if (!c) return res.status(404).json({ error: "Escritório não encontrado." });
+  res.json({
+    ativo: !!c.ativo,
+    url: c.url || "",
+    publicHost: c.public_host || "",
+    wahaUrl: c.waha_url || "",
+    wahaConnect: c.waha_connect || "",
+    supabaseUrl: c.supabase_url || "",
+    temSupabaseServiceRoleKey: !!c.supabase_service_role_key_cifrada,
+    orgId: c.org_id || "",
+    temWahaSeenToken: !!c.waha_seen_token_cifrado,
+    updatedAt: c.updated_at || null,
+  });
+});
+app.put("/api/super/escritorios/:id/deskcomm-config", requireSuperAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  const atual = sqlite.prepare(`SELECT * FROM deskcomm_config WHERE escritorio_id = ?`).get(id) as any;
+  if (!atual) return res.status(404).json({ error: "Escritório não encontrado." });
+  const b = req.body || {};
+  sqlite
+    .prepare(
+      `UPDATE deskcomm_config SET ativo=?, url=?, public_host=?, waha_url=?, waha_connect=?,
+         supabase_url=?, supabase_service_role_key_cifrada=?, org_id=?, waha_seen_token_cifrado=?,
+         updated_at=datetime('now')
+       WHERE escritorio_id=?`
+    )
+    .run(
+      b.ativo !== undefined ? (b.ativo ? 1 : 0) : atual.ativo || 0,
+      b.url !== undefined ? (String(b.url).trim() || null) : atual.url,
+      b.publicHost !== undefined ? (String(b.publicHost).trim() || null) : atual.public_host,
+      b.wahaUrl !== undefined ? (String(b.wahaUrl).trim() || null) : atual.waha_url,
+      b.wahaConnect !== undefined ? (String(b.wahaConnect).trim() || null) : atual.waha_connect,
+      b.supabaseUrl !== undefined ? (String(b.supabaseUrl).trim() || null) : atual.supabase_url,
+      b.supabaseServiceRoleKey ? nfse.cifrarTexto(String(b.supabaseServiceRoleKey).trim()) : atual.supabase_service_role_key_cifrada,
+      b.orgId !== undefined ? (String(b.orgId).trim() || null) : atual.org_id,
+      b.wahaSeenToken ? nfse.cifrarTexto(String(b.wahaSeenToken).trim()) : atual.waha_seen_token_cifrado,
+      id
+    );
+  res.json({ ok: true });
 });
 // SuperAdmin: isenta (ou volta a cobrar) um escritório da assinatura da plataforma — isento = acesso
 // a todos os módulos de escritório sem teste/pagamento (ver modulosDoEscritorio/escritorioTemModulo).
@@ -19940,6 +20012,28 @@ sqlite.exec(`CREATE TABLE IF NOT EXISTS migracoes_unicas (chave TEXT PRIMARY KEY
 if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'pesquisa_satisfacao_off_20260924'`).get()) {
   sqlite.exec(`UPDATE atendimento_config SET pesquisa_ativa = 0`);
   sqlite.exec(`INSERT INTO migracoes_unicas (chave) VALUES ('pesquisa_satisfacao_off_20260924')`);
+}
+// Compatibilidade: preenche deskcomm_config do escritório ATUAL (o único com atendimento hoje) com os
+// valores que já vêm do .env — deixa o dado certo no banco pra quando o runtime passar a ler daqui
+// (fase seguinte), SEM mudar nada agora (nenhuma rota lê deskcomm_config ainda). Roda uma única vez;
+// se o SuperAdmin editar essa linha depois pela tela, não é sobrescrita de novo.
+if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'deskcomm_config_backfill_20261024'`).get()) {
+  sqlite
+    .prepare(
+      `UPDATE deskcomm_config SET ativo = 1, url = ?, public_host = ?, waha_url = ?, waha_connect = ?,
+         supabase_url = ?, supabase_service_role_key_cifrada = ?, org_id = ?,
+         waha_seen_token_cifrado = ?, updated_at = datetime('now')
+       WHERE escritorio_id = ?`
+    )
+    .run(
+      DESKCOMM_URL, DESKCOMM_PUBLIC_HOST, DESKCOMM_WAHA_URL, DESKCOMM_WAHA_CONNECT,
+      DESKCOMM_SUPABASE_URL || null, DESKCOMM_SUPABASE_SERVICE_ROLE_KEY ? nfse.cifrarTexto(DESKCOMM_SUPABASE_SERVICE_ROLE_KEY) : null, DESKCOMM_ORG_ID || null,
+      // Mesmo fallback de ATENDIMENTO_WAHA_SEEN_TOKEN (definida só lá embaixo, perto do uso) — não dá
+      // pra referenciar a const daqui (temporal dead zone), então repete a mesma expressão.
+      (process.env.WAHA_SEEN_TOKEN || DESKCOMM_SUPABASE_SERVICE_ROLE_KEY || "").trim() ? nfse.cifrarTexto((process.env.WAHA_SEEN_TOKEN || DESKCOMM_SUPABASE_SERVICE_ROLE_KEY || "").trim()) : null,
+      DESKCOMM_ESCRITORIO_ID
+    );
+  sqlite.exec(`INSERT INTO migracoes_unicas (chave) VALUES ('deskcomm_config_backfill_20261024')`);
 }
 function atendimentoConfig(escritorioId: number) {
   const r = sqlite.prepare(`SELECT * FROM atendimento_config WHERE escritorio_id = ?`).get(escritorioId) as any;
