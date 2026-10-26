@@ -22,7 +22,7 @@ CoordMode "Mouse", "Screen"
 ; ============================================================================
 
 ; ---------------------------------------------------------------- CONFIGURACAO
-SITE_URL     := "https://simplescontabeis-production.up.railway.app"
+SITE_URL     := "https://simplescontabeis.com.br"
 AGENTE_TOKEN := "COLE_AQUI_O_TOKEN_DO_AGENTE"
 
 POLL_SEGUNDOS := 10       ; de quanto em quanto tempo pergunta ao site
