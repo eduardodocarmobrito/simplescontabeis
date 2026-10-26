@@ -2272,6 +2272,7 @@ const CARD_TIPOS_INFO = {
   das_atraso: { label:'DAS em Atraso', subtitulo:'Competências não entregues' },
   situacao_fiscal: { label:'Situação Fiscal', subtitulo:'Empresas com pendência' },
   efd_omisso: { label:'SPED-Fiscal (EFD ICMS/IPI) Omisso', subtitulo:'Empresas obrigadas com EFD não entregue (Consulta SEFA)' },
+  cnd_estadual: { label:'Certidão Estadual (CND)', subtitulo:'Certidão vencida, vencendo ou positiva (com débito) — SEFA' },
   caixapostal_nao_lida: { label:'Mensagens no e-CAC', subtitulo:'Empresas com mensagem não lida na Caixa Postal' },
   pesquisa_pagamento: { label:'Pagamento DAS/DCTF-Web', subtitulo:'Cliente respondeu que não pagou, ou não respondeu a pesquisa' },
   checklist_atraso: { label:'Documentos Pendentes', subtitulo:'Competência anterior, após o prazo, sem envio do cliente' },
@@ -2399,32 +2400,38 @@ async function cardModal(c){
   });
 }
 function cardDetalheModal(c){
-  const podeImportarEfd = c.tipo==='efd_omisso' && can('dashboard','editar');
+  // Cards de SEFA (EFD omisso e CND estadual) ganham uma toolbar de importação de PDF (casa por CNPJ).
+  const IMPORT_SEFA = {
+    efd_omisso: { endpoint:'/efd-omisso/importar', botao:'⬆ Importar Consulta SEFA (PDF)', ajuda:'Importe o PDF "Consulta de Débitos / Obrigações Acessórias" da SEFA — a empresa é identificada pelo CNPJ.', sucesso:r=>`${r.empresaNome}: ${r.competencias} competência(s) omissa(s) importada(s).` },
+    cnd_estadual: { endpoint:'/cnd-estadual/importar', botao:'⬆ Importar Certidão (PDF)', ajuda:'Importe o PDF da Certidão de Débitos Estaduais da SEFA — a empresa é identificada pelo CNPJ.', sucesso:r=>{ const t={negativa:'negativa',positiva_efeito:'positiva c/ efeito de negativa',positiva:'POSITIVA (com débito)'}[r.tipo]||r.tipo; return `${r.empresaNome}: certidão ${t}${r.validade?' — válida até '+fmtDateIso(r.validade):''}.`; } },
+  };
+  const impCfg = (c.tipo && IMPORT_SEFA[c.tipo] && can('dashboard','editar')) ? IMPORT_SEFA[c.tipo] : null;
+  const importavel = c.tipo==='efd_omisso' || c.tipo==='cnd_estadual';
   openModal(`
     <h3>${esc(c.titulo)}</h3>
-    ${podeImportarEfd? `<div class="row" style="align-items:center; gap:10px; margin-bottom:10px;">
-      <input type="file" id="efdImpFile" accept="application/pdf" class="hidden">
-      <button class="btn" id="efdImpBtn">⬆ Importar Consulta SEFA (PDF)</button>
-      <span id="efdImpMsg" style="font-size:12px; color:var(--ink-soft);">Importe o PDF "Consulta de Débitos / Obrigações Acessórias" da SEFA — a empresa é identificada pelo CNPJ.</span>
+    ${impCfg? `<div class="row" style="align-items:center; gap:10px; margin-bottom:10px;">
+      <input type="file" id="sefaImpFile" accept="application/pdf" class="hidden">
+      <button class="btn" id="sefaImpBtn">${impCfg.botao}</button>
+      <span id="sefaImpMsg" style="font-size:12px; color:var(--ink-soft);">${impCfg.ajuda}</span>
     </div>`:''}
     <div class="field" style="max-width:360px; margin-bottom:10px;"><input type="text" id="cdFiltro" placeholder="Buscar por empresa…" autocomplete="off" disabled></div>
     <div id="cardDetalheBody"><div class="empty-state">Carregando…</div></div>
     <div class="modal-actions"><button class="btn" id="cdFechar">Fechar</button></div>
   `, '820px');
   document.getElementById('cdFechar').addEventListener('click', closeModal);
-  if(podeImportarEfd){
-    const fileEl = document.getElementById('efdImpFile');
-    const btnEl = document.getElementById('efdImpBtn');
-    const msgEl = document.getElementById('efdImpMsg');
+  if(impCfg){
+    const fileEl = document.getElementById('sefaImpFile');
+    const btnEl = document.getElementById('sefaImpBtn');
+    const msgEl = document.getElementById('sefaImpMsg');
     btnEl.addEventListener('click', ()=>fileEl.click());
     fileEl.addEventListener('change', async ()=>{
       const f = fileEl.files[0]; if(!f) return;
       btnEl.disabled = true; msgEl.style.color = 'var(--ink-soft)'; msgEl.textContent = 'Lendo o PDF…';
       try{
         const fd = new FormData(); fd.append('arquivo', f);
-        const r = await api('/efd-omisso/importar', { method:'POST', body: fd });
+        const r = await api(impCfg.endpoint, { method:'POST', body: fd });
         msgEl.style.color = 'var(--credit)';
-        msgEl.textContent = `${r.empresaNome}: ${r.competencias} competência(s) omissa(s) importada(s).`;
+        msgEl.textContent = impCfg.sucesso(r);
         carregar();
         pageDashboard();
       }catch(e){ msgEl.style.color = 'var(--debit)'; msgEl.textContent = e.message; }
@@ -2439,14 +2446,14 @@ function cardDetalheModal(c){
       const { tipo, items } = await api('/dashboard/cards/'+c.id+'/detalhe');
       todos = items;
       if(!items.length){
-        // efd_omisso pode ser reimportado na hora: mantém o filtro (oculto) pra não quebrar o reload.
-        if(c.tipo==='efd_omisso'){ filtroEl.style.display='none'; box.innerHTML = '<div class="empty-state">Nenhuma pendência de EFD importada ainda — importe o PDF da Consulta de Débitos da SEFA acima.</div>'; return; }
+        // cards importáveis (EFD/CND) podem ser reimportados na hora: mantém o filtro (oculto) pra não quebrar o reload.
+        if(importavel){ filtroEl.style.display='none'; box.innerHTML = `<div class="empty-state">${c.tipo==='cnd_estadual'?'Nenhuma certidão importada ainda — importe o PDF da Certidão da SEFA acima.':'Nenhuma pendência de EFD importada ainda — importe o PDF da Consulta de Débitos da SEFA acima.'}</div>`; return; }
         filtroEl.remove(); box.innerHTML = '<div class="empty-state">Nada pendente — tudo em dia.</div>'; return;
       }
       filtroEl.style.display=''; filtroEl.disabled = false;
       filtroEl.oninput = ()=>desenhar(tipo, filtroEl.value);
       desenhar(tipo, '');
-    }catch(e){ if(c.tipo!=='efd_omisso') filtroEl.remove(); box.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; return; }
+    }catch(e){ if(!importavel) filtroEl.remove(); box.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; return; }
     function desenhar(tipo, filtro){
       const termo = normalizaTxt(filtro).trim();
       const items = termo ? todos.filter(i=>normalizaTxt(i.empresaNome).includes(termo)) : todos;
@@ -2528,6 +2535,21 @@ function cardDetalheModal(c){
           ev.preventDefault();
           if(!confirmar('Remover '+a.dataset.nome+' da lista de EFD omisso? Use quando a empresa já regularizou.')) return;
           try{ await api('/efd-omisso/empresa/'+a.dataset.emp+'/limpar', { method:'POST' }); toast('Empresa removida da lista.','ok'); carregar(); pageDashboard(); }
+          catch(e){ toast(e.message,'err'); }
+        }));
+      } else if(tipo==='cnd_estadual'){
+        const podeLimpar = can('dashboard','editar');
+        const tipoLabel = {negativa:'Negativa', positiva_efeito:'Positiva c/ efeito', positiva:'Positiva (débito)'};
+        box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Insc. Estadual</th><th>Certidão</th><th>Válida até</th><th>Alerta</th><th>Importado</th>${podeLimpar?'<th></th>':''}</tr></thead><tbody>
+          ${items.map(i=>{
+            const tag = i.comDebito?'bad':(i.vencida?'bad':'warn');
+            return `<tr><td>${esc(i.empresaNome)}</td><td>${esc(i.inscricao||'—')}</td><td>${esc(tipoLabel[i.tipo]||i.tipo||'—')}</td><td style="font-size:12px;">${i.validade?fmtDateIso(i.validade):'—'}</td><td><span class="tag ${tag}">${esc(i.alerta)}</span></td><td style="font-size:12px; color:var(--ink-soft);">${i.importadoEm?fmtDateHora(i.importadoEm):'—'}</td>${podeLimpar?`<td style="text-align:right;"><a href="#" class="cnd-limpar" data-emp="${i.empresaId}" data-nome="${esc(i.empresaNome)}" title="Remover da lista" style="text-decoration:none; color:var(--debit); font-weight:700;">✕</a></td>`:''}</tr>`;
+          }).join('')}
+        </tbody></table>${podeLimpar?'<div style="font-size:11.5px; color:var(--ink-soft); margin-top:8px;">Reimporte a certidão atualizada (substitui a da empresa) ou clique no <b>✕</b> pra remover.</div>':''}`;
+        if(podeLimpar) box.querySelectorAll('.cnd-limpar').forEach(a=>a.addEventListener('click', async (ev)=>{
+          ev.preventDefault();
+          if(!confirmar('Remover '+a.dataset.nome+' da lista de certidão estadual?')) return;
+          try{ await api('/cnd-estadual/empresa/'+a.dataset.emp+'/limpar', { method:'POST' }); toast('Empresa removida da lista.','ok'); carregar(); pageDashboard(); }
           catch(e){ toast(e.message,'err'); }
         }));
       } else {
