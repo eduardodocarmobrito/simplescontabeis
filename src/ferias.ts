@@ -50,7 +50,7 @@ export function feriasExtrairFuncionarios(texto: string): {
   codigo: string; nome: string;
   dataAdmissaoBr: string | null; ferVenc: number;
   inicioAquisitivoBr: string | null; fimAquisitivoBr: string | null;
-  diasRestantes: number | null; limiteGozoBr: string | null;
+  diasRestantes: number | null; limiteGozoBr: string | null; diasAfast: number;
 }[] {
   const funcionarios: ReturnType<typeof feriasExtrairFuncionarios> = [];
   const linhas = texto.split(/\r?\n/);
@@ -66,6 +66,14 @@ export function feriasExtrairFuncionarios(texto: string): {
     const resto = m[8];
     const restoDatas = [...resto.matchAll(/\d{2}\/\d{2}\/\d{4}/g)];
     const limiteGozoBr = restoDatas[0]?.[0] || null;
+    // "Dias afast." (dias afastado) vem DEPOIS do "Limite p/ gozo" na linha — >0 marca que o
+    // funcionário está afastado. Pega o 1º número depois da data do limite (faltas vem só depois).
+    let diasAfast = 0;
+    if (restoDatas[0]) {
+      const depois = resto.slice((restoDatas[0].index || 0) + restoDatas[0][0].length);
+      const mA = /(\d{1,3})/.exec(depois);
+      if (mA) diasAfast = parseInt(mA[1], 10) || 0;
+    }
     let diasRestantes: number | null = null;
     if (restoDatas[0]) {
       const numeros = [...resto.slice(0, restoDatas[0].index).matchAll(/\d{1,3}/g)];
@@ -83,7 +91,7 @@ export function feriasExtrairFuncionarios(texto: string): {
       codigo: m[2], nome,
       dataAdmissaoBr: m[3], ferVenc: parseInt(m[4], 10) || 0,
       inicioAquisitivoBr: m[6], fimAquisitivoBr: m[7],
-      diasRestantes, limiteGozoBr,
+      diasRestantes, limiteGozoBr, diasAfast,
     });
   }
   return funcionarios;
@@ -107,8 +115,8 @@ export function feriasProcessarPdf(escritorioId: number, empresaId: number, text
   const hoje = hojeIso();
   deps.sqlite.prepare(`DELETE FROM ferias_funcionarios WHERE empresa_id = ?`).run(empresaId);
   const ins = deps.sqlite.prepare(
-    `INSERT INTO ferias_funcionarios (escritorio_id, empresa_id, codigo, nome, data_admissao, fer_venc, inicio_aquisitivo, fim_aquisitivo, dias_restantes, limite_gozo, status, origem_doc_id)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+    `INSERT INTO ferias_funcionarios (escritorio_id, empresa_id, codigo, nome, data_admissao, fer_venc, inicio_aquisitivo, fim_aquisitivo, dias_restantes, limite_gozo, status, dias_afast, origem_doc_id)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
   );
   let gravados = 0;
   for (const f of funcionarios) {
@@ -119,7 +127,7 @@ export function feriasProcessarPdf(escritorioId: number, empresaId: number, text
       brParaIso(f.dataAdmissaoBr || ""), f.ferVenc,
       brParaIso(f.inicioAquisitivoBr || ""), brParaIso(f.fimAquisitivoBr || ""),
       f.diasRestantes, brParaIso(f.limiteGozoBr || ""),
-      status, origemDocId
+      status, f.diasAfast || 0, origemDocId
     );
     gravados++;
   }
@@ -257,8 +265,9 @@ export async function gerarPdfControleInterno(escritorioNome: string, empresas: 
 }
 
 function funcionariosPendentes(sqlite: any, empresaId: number): any[] {
+  // Ordena por VENCIMENTO (limite p/ gozo) — quem vence antes primeiro (pedido do usuário); sem data vai pro fim.
   return sqlite
-    .prepare(`SELECT * FROM ferias_funcionarios WHERE empresa_id = ? AND status IN ('vencida','proxima') ORDER BY status, limite_gozo`)
+    .prepare(`SELECT * FROM ferias_funcionarios WHERE empresa_id = ? AND status IN ('vencida','proxima') ORDER BY (limite_gozo IS NULL OR limite_gozo=''), limite_gozo ASC`)
     .all(empresaId) as any[];
 }
 async function enviarRelatorioEmpresa(escritorioId: number, empresa: any, canal: string): Promise<{ ok: boolean; erro?: string; qtd: number }> {
@@ -316,10 +325,15 @@ export function registerFerias(app: express.Express, d: Deps) {
       dias_restantes INTEGER,
       limite_gozo TEXT,
       status TEXT NOT NULL, -- 'vencida' | 'proxima'
+      dias_afast INTEGER NOT NULL DEFAULT 0,
       origem_doc_id INTEGER,
       atualizado_em TEXT NOT NULL DEFAULT (datetime('now'))
     );
-    CREATE INDEX IF NOT EXISTS idx_ferias_func_empresa ON ferias_funcionarios(empresa_id, status);
+    CREATE INDEX IF NOT EXISTS idx_ferias_func_empresa ON ferias_funcionarios(empresa_id, status);`);
+  if (!(sqlite.prepare(`PRAGMA table_info(ferias_funcionarios)`).all() as any[]).some((c) => c.name === "dias_afast")) {
+    sqlite.exec(`ALTER TABLE ferias_funcionarios ADD COLUMN dias_afast INTEGER NOT NULL DEFAULT 0`);
+  }
+  sqlite.exec(`
     CREATE TABLE IF NOT EXISTS ferias_agendamento_config (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       ativo INTEGER NOT NULL DEFAULT 0,

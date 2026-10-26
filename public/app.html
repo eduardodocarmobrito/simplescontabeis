@@ -14160,6 +14160,8 @@ async function entradasSaidasMontar(box){
 // mostra só quem está com férias vencidas ou a 30 dias do limite — com botão pra mandar pro cliente
 // na hora, e um agendador mensal (config nesta mesma tela, sem precisar ir em Configurações).
 function feriasBr(iso){ return iso ? iso.split('-').reverse().join('/') : '—'; }
+// Dias de hoje até o "Limite p/ gozo" (negativo = já passou). Usado pra alertar quem está a ≤60 dias.
+function feriasDiasAteLimite(iso){ if(!iso) return null; const d=new Date(iso+'T00:00:00').getTime(); const h=new Date(); h.setHours(0,0,0,0); return Math.round((d-h.getTime())/86400000); }
 async function feriasMontar(box){
   box.innerHTML = `<div class="empty-state">Carregando…</div>`;
   let r; try{ r = await api('/ferias/estado'); }catch(e){ box.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
@@ -14214,16 +14216,23 @@ async function feriasMontar(box){
             <button class="btn small" data-empresa="${emp.id}" data-canal="meta" data-act="ferias-enviar" title="Pelo número separado da API oficial (Meta)">📱 Enviar (Meta)</button>
           </div>
         </div>
-        <table class="data-table" style="margin-top:10px;"><thead><tr><th>Código</th><th>Funcionário</th><th>Situação</th><th>Admissão</th><th>Período aquisitivo</th><th>Limite p/ gozo</th><th>Dias em aberto</th></tr></thead><tbody>
-          ${emp.funcionarios.map(f=>`<tr>
+        <table class="data-table" style="margin-top:10px; table-layout:fixed; width:100%;">
+          <colgroup><col style="width:6%"><col style="width:22%"><col style="width:10%"><col style="width:6%"><col style="width:9%"><col style="width:15%"><col style="width:9%"><col style="width:7%"><col style="width:16%"></colgroup>
+          <thead><tr><th>Código</th><th>Funcionário</th><th>Situação</th><th style="text-align:center;">Afast.</th><th>Admissão</th><th>Período aquisitivo</th><th>Limite p/ gozo</th><th style="text-align:center;">Dias em aberto</th><th>Alerta</th></tr></thead><tbody>
+          ${emp.funcionarios.map(f=>{
+            const diasLim = feriasDiasAteLimite(f.limite_gozo);
+            const alerta60 = diasLim!=null && diasLim<=60;
+            return `<tr>
             <td>${esc(f.codigo||'—')}</td>
-            <td>${esc(f.nome)}</td>
+            <td style="white-space:normal;">${esc(f.nome)}</td>
             <td>${f.status==='vencida'?'<span class="tag bad">Vencida</span>':'<span class="tag warn">Último mês</span>'}</td>
+            <td style="text-align:center;">${f.dias_afast>0?`<span style="color:#b23b3b; font-weight:700;" title="Funcionário afastado há ${f.dias_afast} dia(s)">✓</span>`:'<span style="color:var(--ink-soft);">—</span>'}</td>
             <td style="font-size:12px;">${feriasBr(f.data_admissao)}</td>
             <td style="font-size:12px;">${feriasBr(f.inicio_aquisitivo)} a ${feriasBr(f.fim_aquisitivo)}</td>
             <td style="font-size:12px;">${feriasBr(f.limite_gozo)}</td>
-            <td style="font-size:12px;">${f.dias_restantes??'—'}</td>
-          </tr>`).join('')}
+            <td style="font-size:12px; text-align:center;">${f.dias_restantes??'—'}</td>
+            <td style="font-size:11.5px;">${alerta60?`<span class="tag ${diasLim<0?'bad':'warn'}" title="Limite p/ gozo ${diasLim<0?('venceu há '+(-diasLim)+' dia(s)'):('em '+diasLim+' dia(s)')} — próximo de vencer a 2ª férias">⚠ ${diasLim<0?'vencido':diasLim+'d p/ limite'}</span>`:'<span style="color:var(--ink-soft);">—</span>'}</td>
+          </tr>`;}).join('')}
         </tbody></table>
       </div>
     `).join('') : '<div class="empty-state">Nenhuma pendência de férias no momento — ou ainda não chegou nenhum relatório de Programação de Férias pela leitura automática do Domínio (Relatórios › Domínio Web).</div>'}
