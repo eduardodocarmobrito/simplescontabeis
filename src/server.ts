@@ -17025,6 +17025,128 @@ app.put("/api/financeiro/minha-empresa/ofx/:id/vincular-documento", requireClien
   sqlite.prepare(`UPDATE financeiro_ofx_transacoes SET documento_vinculado_id = ? WHERE id = ?`).run(documentoId, ofxRow.id);
   res.json({ ok: true });
 });
+// ---- Conciliação de extrato (.OFX) pelo ESCRITÓRIO (mesma tela/lógica do self-service do cliente,
+// ver rotas /minha-empresa/... acima — reaproveita as mesmas funções, só troca de onde vem o
+// empresaId: ali é o do usuário logado, aqui é o da empresa escolhida na tela, com a permissão de
+// "financeiro" do Colaborador/Administrador em vez do login do cliente).
+app.post("/api/financeiro/empresas/:empresaId/contas/:contaId/ofx/importar", blockCliente, requirePermissao("financeiro", "postar"), uploadOfx.single("arquivo"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const contaId = Number(req.params.contaId);
+  const conta = sqlite.prepare(`SELECT id FROM financeiro_contas WHERE id = ? AND empresa_id = ?`).get(contaId, empresaId);
+  if (!conta) return res.status(404).json({ error: "Conta não encontrada." });
+  if (!req.file) return res.status(400).json({ error: "Selecione o arquivo .ofx exportado do internet banking." });
+  let extrato: ofx.OfxExtrato;
+  try {
+    extrato = ofx.parseOfx(req.file.buffer.toString("utf8"));
+  } catch (e: any) {
+    return res.status(400).json({ error: `Não consegui ler o OFX: ${e.message}` });
+  }
+  if (!extrato.transacoes.length) return res.status(400).json({ error: "Não encontrei nenhuma transação nesse arquivo — confira se é mesmo um .ofx exportado do banco." });
+  const insert = sqlite.prepare(
+    `INSERT OR IGNORE INTO financeiro_ofx_transacoes (empresa_id, conta_id, fitid, data, valor, descricao, tipo_ofx) VALUES (?, ?, ?, ?, ?, ?, ?)`
+  );
+  let novas = 0;
+  const novasIds: number[] = [];
+  for (const t of extrato.transacoes) {
+    const r = insert.run(empresaId, contaId, t.fitid, t.data, t.valor, t.descricao, t.tipoOfx);
+    if (r.changes > 0) { novas++; novasIds.push(Number(r.lastInsertRowid)); }
+  }
+  const conciliadasAuto = financeiroOfxAutoConciliar(empresaId, novasIds);
+  res.json({ ok: true, total: extrato.transacoes.length, novas, duplicadas: extrato.transacoes.length - novas, conciliadasAuto, pendentes: novas - conciliadasAuto });
+});
+app.get("/api/financeiro/empresas/:empresaId/contas/:contaId/ofx", blockCliente, requirePermissao("financeiro", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const contaId = Number(req.params.contaId);
+  const conta = sqlite.prepare(`SELECT id FROM financeiro_contas WHERE id = ? AND empresa_id = ?`).get(contaId, empresaId);
+  if (!conta) return res.status(404).json({ error: "Conta não encontrada." });
+  const status = typeof req.query.status === "string" && ["pendente", "conciliado", "ignorado"].includes(req.query.status) ? req.query.status : "pendente";
+  res.json({ items: financeiroOfxListar(empresaId, contaId, status) });
+});
+app.post("/api/financeiro/empresas/:empresaId/ofx/:id/conciliar", blockCliente, requirePermissao("financeiro", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const ofxRow = sqlite.prepare(`SELECT * FROM financeiro_ofx_transacoes WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), empresaId) as any;
+  if (!ofxRow) return res.status(404).json({ error: "Transação não encontrada." });
+  if (ofxRow.status !== "pendente") return res.status(409).json({ error: "Esta transação do extrato já foi conciliada ou ignorada." });
+  const { tabela, tituloId } = req.body || {};
+  if (!["financeiro_pagar", "financeiro_receber"].includes(tabela)) return res.status(400).json({ error: "Tipo de título inválido." });
+  const titulo = sqlite.prepare(`SELECT * FROM ${tabela} WHERE id = ? AND empresa_id = ?`).get(Number(tituloId), empresaId) as any;
+  if (!titulo) return res.status(404).json({ error: "Título não encontrado." });
+  if (titulo.status !== "pendente") return res.status(409).json({ error: "Este título já não está mais pendente." });
+  financeiroOfxConciliarTitulo(ofxRow, tabela, titulo);
+  res.json({ ok: true });
+});
+app.post("/api/financeiro/empresas/:empresaId/ofx/:id/conciliar-grupo", blockCliente, requirePermissao("financeiro", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const ofxRow = sqlite.prepare(`SELECT * FROM financeiro_ofx_transacoes WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), empresaId) as any;
+  if (!ofxRow) return res.status(404).json({ error: "Transação não encontrada." });
+  if (ofxRow.status !== "pendente") return res.status(409).json({ error: "Esta transação já foi conciliada ou ignorada." });
+  const { tabela, tituloIds } = req.body || {};
+  if (!["financeiro_pagar", "financeiro_receber"].includes(tabela) || !Array.isArray(tituloIds) || tituloIds.length < 2) return res.status(400).json({ error: "Informe ao menos 2 títulos do grupo." });
+  const titulos = tituloIds.map((id: any) => sqlite.prepare(`SELECT * FROM ${tabela} WHERE id = ? AND empresa_id = ? AND status = 'pendente'`).get(Number(id), empresaId)).filter(Boolean) as any[];
+  if (titulos.length !== tituloIds.length) return res.status(409).json({ error: "Algum título do grupo já não está mais pendente." });
+  const soma = titulos.reduce((s, t) => s + Math.abs(t.valor), 0);
+  if (Math.abs(soma - Math.abs(ofxRow.valor)) >= 0.01) return res.status(400).json({ error: "A soma dos títulos não bate com o valor da transação." });
+  const campoData = tabela === "financeiro_pagar" ? "data_pagamento" : "data_recebimento";
+  const campoTerceiro = tabela === "financeiro_pagar" ? "fornecedor" : "cliente_nome";
+  for (const t of titulos) {
+    sqlite.prepare(`UPDATE ${tabela} SET status = 'pago', ${campoData} = ?, conta_id = ? WHERE id = ?`).run(ofxRow.data, ofxRow.conta_id, t.id);
+    financeiroOfxAprender(ofxRow.empresa_id, ofxRow.descricao, t[campoTerceiro], tabela);
+  }
+  sqlite.prepare(`UPDATE financeiro_ofx_transacoes SET status = 'conciliado', vinculo_tabela = ?, vinculo_id = ? WHERE id = ?`).run(tabela, titulos[0].id, ofxRow.id);
+  res.json({ ok: true, titulos: titulos.length });
+});
+app.post("/api/financeiro/empresas/:empresaId/ofx/:id/cadastrar", blockCliente, requirePermissao("financeiro", "postar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const ofxRow = sqlite.prepare(`SELECT * FROM financeiro_ofx_transacoes WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), empresaId) as any;
+  if (!ofxRow) return res.status(404).json({ error: "Transação não encontrada." });
+  if (ofxRow.status !== "pendente") return res.status(409).json({ error: "Esta transação do extrato já foi conciliada ou ignorada." });
+  const descFinal = (req.body?.descricao && String(req.body.descricao).trim()) || ofxRow.descricao || "Lançamento do extrato bancário";
+  const ehReceber = ofxRow.valor >= 0;
+  const tabela = ehReceber ? "financeiro_receber" : "financeiro_pagar";
+  const campoTerceiro = ehReceber ? "cliente_nome" : "fornecedor";
+  const campoData = ehReceber ? "data_recebimento" : "data_pagamento";
+  const info = sqlite
+    .prepare(
+      `INSERT INTO ${tabela} (empresa_id, descricao, ${campoTerceiro}, valor, vencimento, status, ${campoData}, conta_id, origem, criado_por)
+       VALUES (?, ?, NULL, ?, ?, 'pago', ?, ?, 'ofx', ?)`
+    )
+    .run(empresaId, descFinal, Math.abs(ofxRow.valor), ofxRow.data, ofxRow.data, ofxRow.conta_id, user.id);
+  const tituloId = Number(info.lastInsertRowid);
+  sqlite.prepare(`UPDATE financeiro_ofx_transacoes SET status = 'conciliado', vinculo_tabela = ?, vinculo_id = ? WHERE id = ?`).run(tabela, tituloId, ofxRow.id);
+  res.json({ ok: true, id: tituloId });
+});
+app.post("/api/financeiro/empresas/:empresaId/ofx/:id/ignorar", blockCliente, requirePermissao("financeiro", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const r = sqlite.prepare(`UPDATE financeiro_ofx_transacoes SET status = 'ignorado' WHERE id = ? AND empresa_id = ? AND status = 'pendente'`).run(Number(req.params.id), empresaId);
+  if (r.changes === 0) return res.status(404).json({ error: "Transação não encontrada ou já processada." });
+  res.json({ ok: true });
+});
+app.put("/api/financeiro/empresas/:empresaId/ofx/:id/vincular-documento", blockCliente, requirePermissao("financeiro", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const ofxRow = sqlite.prepare(`SELECT id FROM financeiro_ofx_transacoes WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), empresaId) as any;
+  if (!ofxRow) return res.status(404).json({ error: "Transação não encontrada." });
+  const documentoId = req.body?.documentoId ? Number(req.body.documentoId) : null;
+  if (documentoId) {
+    const doc = sqlite.prepare(`SELECT id FROM nfe_documentos WHERE id = ? AND empresa_id = ?`).get(documentoId, empresaId);
+    if (!doc) return res.status(404).json({ error: "Documento não encontrado." });
+  }
+  sqlite.prepare(`UPDATE financeiro_ofx_transacoes SET documento_vinculado_id = ? WHERE id = ?`).run(documentoId, ofxRow.id);
+  res.json({ ok: true });
+});
 app.get("/api/financeiro/minha-empresa/pagar", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
   const empresaId = (req as any).user.empresaId;
   const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
@@ -20545,6 +20667,48 @@ if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'financeiro_de
   }
   if (corrigidos) console.log(`[migração] financeiro_descricao_nfse_numero_backfill: ${corrigidos} descrição(ões) corrigida(s).`);
   sqlite.exec(`INSERT INTO migracoes_unicas (chave) VALUES ('financeiro_descricao_nfse_numero_backfill_20261026')`);
+}
+// Backfill: NF-e/NFC-e/CT-e/MDF-e de emitente PESSOA FÍSICA (produtor rural, <CPF> em vez de
+// <CNPJ> no XML) ficavam com emitente_cnpj NULL — nfe.identificarDocumento() só lia emit.CNPJ nos
+// schemas completos (procNFe/cteProc/mdfeProc), esquecendo o fallback pra CPF que o campo do
+// DESTINATÁRIO, na mesma função, já tinha (bug corrigido em nfe.ts). Consequência real:
+// nfeResolverEmpresaDestino() nunca conseguia checar se esse emitente também é uma empresa
+// cadastrada no mesmo escritório (ex.: outra "fazenda" do mesmo produtor rural, nosso cliente) —
+// a nota ficava presa na empresa de quem fez a busca, mesmo sendo nota de outro cliente nosso.
+// Achado ao vivo (2026-10-26): notas de terceiros aparecendo em "Notas recebidas" de quem buscou.
+// Corrige o CPF em TODOS os documentos afetados (qualidade do dado) e só MUDA de empresa quando
+// o emitente bate com uma empresa DIFERENTE da que já está — se a empresa certa já tinha essa
+// mesma nota (chave de acesso), remove a cópia duplicada em vez de mover (mesma regra de
+// deduplicação já usada na busca ao vivo); nenhum dos documentos afetados estava integrado ao
+// Financeiro ainda, então não há recebível/pagável órfão por causa disso.
+if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'nfe_emitente_cpf_backfill_20261026'`).get()) {
+  const afetados = sqlite
+    .prepare(`SELECT id, empresa_id, escritorio_id, chave_acesso, xml FROM nfe_documentos WHERE tipo IN ('nfe','nfce','cte','mdfe') AND emitente_cnpj IS NULL`)
+    .all() as any[];
+  let cpfCorrigido = 0, movidos = 0, duplicadosRemovidos = 0;
+  for (const d of afetados) {
+    const m = (d.xml as string).match(/<emit>[\s\S]*?<CPF>(\d+)<\/CPF>/);
+    if (!m) continue;
+    const cpf = m[1];
+    sqlite.prepare(`UPDATE nfe_documentos SET emitente_cnpj = ? WHERE id = ?`).run(cpf, d.id);
+    cpfCorrigido++;
+    const empresaCerta = nfeResolverEmpresaDestino(d.escritorio_id, d.empresa_id, "", cpf);
+    if (empresaCerta === d.empresa_id) continue;
+    const jaExisteNoDestino = sqlite.prepare(`SELECT 1 FROM nfe_documentos WHERE empresa_id = ? AND chave_acesso = ?`).get(empresaCerta, d.chave_acesso);
+    try {
+      if (jaExisteNoDestino) {
+        sqlite.prepare(`DELETE FROM nfe_documentos WHERE id = ?`).run(d.id);
+        duplicadosRemovidos++;
+      } else {
+        sqlite.prepare(`UPDATE nfe_documentos SET empresa_id = ? WHERE id = ?`).run(empresaCerta, d.id);
+        movidos++;
+      }
+    } catch (e: any) {
+      console.error(`[migração nfe_emitente_cpf_backfill] documento ${d.id}:`, e.message);
+    }
+  }
+  console.log(`[migração] nfe_emitente_cpf_backfill: ${cpfCorrigido} CPF corrigido(s), ${movidos} documento(s) movido(s) pra empresa certa, ${duplicadosRemovidos} duplicata(s) removida(s).`);
+  sqlite.exec(`INSERT INTO migracoes_unicas (chave) VALUES ('nfe_emitente_cpf_backfill_20261026')`);
 }
 function atendimentoConfig(escritorioId: number) {
   const r = sqlite.prepare(`SELECT * FROM atendimento_config WHERE escritorio_id = ?`).get(escritorioId) as any;
