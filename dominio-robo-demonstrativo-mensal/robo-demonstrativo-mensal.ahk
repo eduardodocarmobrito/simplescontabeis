@@ -73,14 +73,18 @@ HttpReq(metodo, rota, corpo := "") {
     global SITE_URL, AGENTE_TOKEN
     try {
         req := ComObject("WinHttp.WinHttpRequest.5.1")
+        req.Option(9) := 0x800   ; forca TLS 1.2 (WinHttp em Windows mais antigo as vezes nao usa por padrao)
         req.Open(metodo, SITE_URL . rota, false)
         req.SetTimeouts(10000, 10000, 10000, 15000)
         req.SetRequestHeader("X-Agent-Token", AGENTE_TOKEN)
         if (metodo = "POST")
             req.SetRequestHeader("Content-Type", "application/json")
         req.Send(corpo)
+        if (req.Status != 200)
+            Logar("HTTP " . req.Status . " (" . rota . "): " . SubStr(req.ResponseText, 1, 200))
         return req.ResponseText
     } catch as e {
+        Logar("HTTP ERRO (" . rota . "): " . e.Message)
         return ""
     }
 }
