@@ -2414,9 +2414,12 @@ function cardDetalheModal(c){
   };
   const impCfg = (c.tipo && IMPORT_SEFA[c.tipo] && can('dashboard','editar')) ? IMPORT_SEFA[c.tipo] : null;
   const importavel = !!(c.tipo && IMPORT_SEFA[c.tipo]);
+  // Consulta automática via Infosimples: por enquanto só Estadual (Municipal entra com o link da prefeitura).
+  const consultaEsfera = (c.tipo==='cnd_estadual' && can('dashboard','editar')) ? 'estadual' : null;
   openModal(`
     <h3>${esc(c.titulo)}</h3>
-    ${impCfg? `<div class="row" style="align-items:center; gap:10px; margin-bottom:10px;">
+    ${impCfg? `<div class="row" style="align-items:center; gap:10px; margin-bottom:10px; flex-wrap:wrap;">
+      ${consultaEsfera? `<button class="btn primary" id="cndConsultarBtn" title="Consulta todas as empresas com Inscrição Estadual na SEFA via Infosimples (~R$ 0,20/empresa)">🔄 Consultar agora (Infosimples)</button>`:''}
       <input type="file" id="sefaImpFile" accept="application/pdf" class="hidden">
       <button class="btn" id="sefaImpBtn">${impCfg.botao}</button>
       <span id="sefaImpMsg" style="font-size:12px; color:var(--ink-soft);">${impCfg.ajuda}</span>
@@ -2443,6 +2446,21 @@ function cardDetalheModal(c){
         pageDashboard();
       }catch(e){ msgEl.style.color = 'var(--debit)'; msgEl.textContent = e.message; }
       finally{ btnEl.disabled = false; fileEl.value = ''; }
+    });
+  }
+  if(consultaEsfera){
+    const cBtn = document.getElementById('cndConsultarBtn');
+    const msgEl = document.getElementById('sefaImpMsg');
+    cBtn.addEventListener('click', async ()=>{
+      if(!confirmar('Consultar a certidão estadual de todas as empresas com Inscrição Estadual na SEFA (via Infosimples)? Custo ~R$ 0,20 por empresa.')) return;
+      cBtn.disabled = true; const txt0 = cBtn.textContent; cBtn.textContent = 'Consultando…';
+      if(msgEl){ msgEl.style.color='var(--ink-soft)'; msgEl.textContent='Consultando na SEFA via Infosimples — pode levar alguns minutos…'; }
+      try{
+        const r = await api('/cnd/estadual/consultar', { method:'POST' });
+        if(msgEl){ msgEl.style.color='var(--credit)'; msgEl.textContent = `${r.ok}/${r.total} consultadas com sucesso${r.erros&&r.erros.length?` · ${r.erros.length} com erro (${r.erros.slice(0,3).map(e=>e.empresa).join(', ')}${r.erros.length>3?'…':''})`:''}.`; }
+        carregar(); pageDashboard();
+      }catch(e){ if(msgEl){ msgEl.style.color='var(--debit)'; msgEl.textContent = e.message; } }
+      finally{ cBtn.disabled = false; cBtn.textContent = txt0; }
     });
   }
   async function carregar(){
@@ -15470,6 +15488,7 @@ const CFG_ABAS_TODAS = [
   { id:'painel-tv', label:'Painel de TV' },
   { id:'envio-docs', label:'Envio de documentos' },
   { id:'atendimento', label:'Atendimento' },
+  { id:'certidoes', label:'Certidões (Infosimples)' },
   { id:'assinatura-plataforma', label:'Assinatura da plataforma' },
 ];
 async function pageConfiguracoes(){
@@ -15505,12 +15524,38 @@ async function renderCfgTab(){
     else if(CFG_TAB==='painel-tv') await renderCfgPainelTv(box);
     else if(CFG_TAB==='envio-docs') await renderCfgEnvioDocs(box);
     else if(CFG_TAB==='atendimento') await renderCfgAtendimento(box);
+    else if(CFG_TAB==='certidoes') await renderCfgCertidoes(box);
     else await renderCfgEmail(box);
   }catch(e){
     box.innerHTML = `<div class="empty-state">Não foi possível carregar esta aba: ${esc(e.message||'erro desconhecido')}</div>`;
   }
 }
 
+async function renderCfgCertidoes(box){
+  const podeEditar = STATE.user.perfil==='Administrador';
+  const c = await api('/infosimples/config');
+  box.innerHTML = `
+    <div class="card" style="max-width:680px;">
+      <h3 style="margin-top:0;">Consulta automática de certidões (Infosimples)</h3>
+      <p style="font-size:13px; color:var(--ink-soft); margin-top:-4px;">Consulta as <b>certidões Estadual e Municipal</b> por CNPJ/Inscrição Estadual a partir do Brasil (contorna o bloqueio da SEFA ao servidor). A <b>Federal</b> continua vindo da Situação Fiscal. Cadastre o token da sua conta Infosimples (fica <b>criptografado</b>).</p>
+      <div class="field"><label>Token Infosimples</label>
+        <input id="infoToken" type="password" placeholder="${c.temToken?'•••••••• (já cadastrado — deixe em branco pra manter)':'cole aqui o token de integração'}" autocomplete="off" ${podeEditar?'':'disabled'}>
+        <div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">${c.temToken?'Token já cadastrado. Para trocar, cole um novo; para manter, deixe em branco.':'Em api.infosimples.com → ADMINISTRAÇÃO → Tokens.'}</div>
+      </div>
+      <label class="checkbox-row" style="margin-top:6px;"><input type="checkbox" id="infoAtivo" ${c.ativo?'checked':''} ${podeEditar?'':'disabled'}> Consultar automaticamente a cada
+        <input id="infoIntervalo" type="number" min="1" max="60" value="${c.intervaloDias||15}" style="width:64px; margin:0 4px;" ${podeEditar?'':'disabled'}> dias</label>
+      <div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">${c.ultimaExecucao?('Última execução automática: '+fmtDateHora(c.ultimaExecucao)):'Ainda não rodou automaticamente.'} · Custo ~R$ 0,20 por consulta (cobrado pela Infosimples).</div>
+      ${podeEditar?'<div class="row" style="gap:8px; margin-top:14px;"><button class="btn primary" id="infoSalvar">Salvar</button></div>':'<p style="font-size:12px; color:var(--ink-soft);">Só o Administrador altera esta integração.</p>'}
+    </div>`;
+  if(!podeEditar) return;
+  document.getElementById('infoSalvar').addEventListener('click', async ()=>{
+    const body = { ativo: document.getElementById('infoAtivo').checked, intervaloDias: Number(document.getElementById('infoIntervalo').value)||15 };
+    const tk = document.getElementById('infoToken').value.trim();
+    if(tk) body.token = tk;
+    try{ await api('/infosimples/config', { method:'PUT', body }); toast('Configuração salva.','ok'); renderCfgTab(); }
+    catch(e){ toast(e.message,'err'); }
+  });
+}
 async function renderCfgAtendimento(box){
   const c = await api('/atendimento/config');
   const podeEditar = STATE.user.perfil==='Administrador';

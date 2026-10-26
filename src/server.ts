@@ -2495,6 +2495,18 @@ sqlite.exec(`
     UNIQUE (empresa_id, esfera)
   );
 `);
+// Configuração da integração Infosimples (consulta automática de certidões estadual/municipal por
+// CNPJ/IE, a partir do Brasil — contorna o bloqueio da SEFA ao servidor). Token guardado cifrado.
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS infosimples_config (
+    escritorio_id INTEGER PRIMARY KEY,
+    token_cifrado TEXT,
+    ativo INTEGER NOT NULL DEFAULT 0,          -- liga a consulta automática periódica
+    intervalo_dias INTEGER NOT NULL DEFAULT 15,
+    ultima_execucao_em TEXT,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+`);
 // Migração da cnd_estadual (v1) pra cnd_certidoes (esfera='estadual'), se existir com dados.
 if ((sqlite.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='cnd_estadual'`).get())) {
   try {
@@ -11649,6 +11661,117 @@ function cardCnd(user: any, esfera: CndEsfera): any[] {
   }
   return out;
 }
+
+// ---------- Infosimples: consulta automática de certidões (estadual/municipal) ----------
+// Endpoints por esfera (api.infosimples.com/api/v2/consultas/<path>). Federal fica de fora (vem do
+// SITFIS). Municipal entra quando o usuário passar o link/consulta da prefeitura.
+const INFOSIMPLES_ENDPOINTS: Partial<Record<CndEsfera, { path: string; precisaIe: boolean }>> = {
+  estadual: { path: "sefaz/pa/certidao-debitos", precisaIe: true },
+};
+function infosimplesToken(escritorioId: number): string | null {
+  const row = sqlite.prepare(`SELECT token_cifrado FROM infosimples_config WHERE escritorio_id = ?`).get(escritorioId) as any;
+  if (!row?.token_cifrado) return null;
+  try { return nfse.decifrarTexto(row.token_cifrado); } catch { return null; }
+}
+function cndTipoDeInfosimples(data: any): "negativa" | "positiva_efeito" | "positiva" {
+  const txt = `${data?.titulo_certidao_tributaria || ""} ${data?.titulo_certidao_nao_tributaria || ""} ${data?.mensagem || ""}`;
+  if (/POSITIVA\s+COM\s+EFEITOS?\s+DE\s+NEGATIVA/i.test(txt)) return "positiva_efeito";
+  if (/CERTID[ÃA]O\s+POSITIVA/i.test(txt)) return "positiva";
+  if (data?.conseguiu_emitir_certidao_negativa === true) return "negativa";
+  return /N[ÃA]O\s+CONSTAM/i.test(txt) ? "negativa" : "positiva";
+}
+async function infosimplesConsultarCnd(escritorioId: number, empresa: any, esfera: CndEsfera): Promise<{ ok: boolean; tipo?: string; erro?: string }> {
+  const ep = INFOSIMPLES_ENDPOINTS[esfera];
+  if (!ep) return { ok: false, erro: `Consulta automática ${esfera} ainda não configurada.` };
+  const token = infosimplesToken(escritorioId);
+  if (!token) return { ok: false, erro: "Token Infosimples não cadastrado." };
+  const cnpj = String(empresa.cnpj || "").replace(/\D/g, "");
+  const ie = String(empresa.inscricao_estadual || "").replace(/[^\dA-Za-z]/g, "");
+  if (!cnpj) return { ok: false, erro: "Empresa sem CNPJ." };
+  if (ep.precisaIe && !ie) return { ok: false, erro: "Empresa sem Inscrição Estadual cadastrada." };
+  const body = new URLSearchParams();
+  body.set("token", token);
+  body.set("cnpj", cnpj);
+  if (ie) body.set("ie", ie);
+  body.set("timeout", "600");
+  let json: any;
+  try {
+    const resp = await fetch(`https://api.infosimples.com/api/v2/consultas/${ep.path}`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body });
+    json = await resp.json();
+  } catch (e: any) { return { ok: false, erro: "Falha de rede: " + e.message }; }
+  if (json?.code !== 200) {
+    const msg = (json?.errors && json.errors[0]) || json?.code_message || `Erro ${json?.code}`;
+    return { ok: false, erro: msg };
+  }
+  const d = (json.data && json.data[0]) || {};
+  const tipo = cndTipoDeInfosimples(d);
+  const toIso = (br: string | undefined) => { const m = /(\d{2})\/(\d{2})\/(\d{4})/.exec(br || ""); return m ? `${m[3]}-${m[2]}-${m[1]}` : null; };
+  sqlite.prepare(
+    `INSERT INTO cnd_certidoes (escritorio_id, empresa_id, esfera, tipo, numero, emissao, validade, inscricao, cnpj, importado_em)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+     ON CONFLICT(empresa_id, esfera) DO UPDATE SET tipo=excluded.tipo, numero=excluded.numero, emissao=excluded.emissao, validade=excluded.validade, inscricao=excluded.inscricao, cnpj=excluded.cnpj, importado_em=datetime('now')`
+  ).run(escritorioId, empresa.id, esfera, tipo, d.certidao_codigo || null, toIso(d.emissao_data), toIso(d.validade_data), ie || null, cnpj);
+  return { ok: true, tipo };
+}
+async function infosimplesConsultarTodas(escritorioId: number, esfera: CndEsfera): Promise<{ total: number; ok: number; erros: { empresa: string; erro: string }[] }> {
+  const ep = INFOSIMPLES_ENDPOINTS[esfera];
+  // Pra estadual, só empresas com Inscrição Estadual (a SEFA exige IE). Sem IE não dá pra consultar.
+  const empresas = sqlite
+    .prepare(`SELECT id, nome, cnpj, inscricao_estadual FROM empresas WHERE escritorio_id = ? AND ativo = 1 ${ep?.precisaIe ? "AND inscricao_estadual IS NOT NULL AND inscricao_estadual != ''" : ""}`)
+    .all(escritorioId) as any[];
+  const erros: { empresa: string; erro: string }[] = [];
+  let ok = 0;
+  for (const emp of empresas) {
+    const r = await infosimplesConsultarCnd(escritorioId, emp, esfera);
+    if (r.ok) ok++; else erros.push({ empresa: emp.nome, erro: r.erro || "erro" });
+  }
+  return { total: empresas.length, ok, erros };
+}
+app.get("/api/infosimples/config", blockCliente, requireAdmin, (req, res) => {
+  const user = (req as any).user;
+  const row = sqlite.prepare(`SELECT ativo, intervalo_dias as intervaloDias, ultima_execucao_em as ultimaExecucao, token_cifrado FROM infosimples_config WHERE escritorio_id = ?`).get(user.escritorioId) as any;
+  res.json({ temToken: !!row?.token_cifrado, ativo: !!row?.ativo, intervaloDias: row?.intervaloDias || 15, ultimaExecucao: row?.ultimaExecucao || null });
+});
+app.put("/api/infosimples/config", blockCliente, requireAdmin, (req, res) => {
+  const user = (req as any).user;
+  const { token, ativo, intervaloDias } = req.body || {};
+  const existing = sqlite.prepare(`SELECT token_cifrado FROM infosimples_config WHERE escritorio_id = ?`).get(user.escritorioId) as any;
+  let tokenCifrado = existing?.token_cifrado || null;
+  if (typeof token === "string" && token.trim()) tokenCifrado = nfse.cifrarTexto(token.trim());
+  const intv = Math.min(60, Math.max(1, Number(intervaloDias) || 15));
+  sqlite
+    .prepare(
+      `INSERT INTO infosimples_config (escritorio_id, token_cifrado, ativo, intervalo_dias, updated_at) VALUES (?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(escritorio_id) DO UPDATE SET token_cifrado=excluded.token_cifrado, ativo=excluded.ativo, intervalo_dias=excluded.intervalo_dias, updated_at=datetime('now')`
+    )
+    .run(user.escritorioId, tokenCifrado, ativo ? 1 : 0, intv);
+  res.json({ ok: true, temToken: !!tokenCifrado });
+});
+// Dispara a consulta de todas as empresas da esfera agora (manual). Estadual/Municipal (via Infosimples).
+app.post("/api/cnd/:esfera/consultar", blockCliente, requirePermissao("dashboard", "editar"), async (req, res) => {
+  const user = (req as any).user;
+  const esfera = cndEsferaValida(req.params.esfera);
+  if (!esfera || !INFOSIMPLES_ENDPOINTS[esfera]) return res.status(400).json({ error: "Consulta automática indisponível para esta esfera." });
+  if (!infosimplesToken(user.escritorioId)) return res.status(400).json({ error: "Cadastre o token Infosimples em Configurações › Integrações." });
+  try { res.json(await infosimplesConsultarTodas(user.escritorioId, esfera)); }
+  catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+// Agendador: a cada hora, roda a consulta das esferas configuradas se já passou o intervalo (15 dias).
+setInterval(() => {
+  const cfgs = sqlite.prepare(`SELECT escritorio_id, intervalo_dias, ultima_execucao_em FROM infosimples_config WHERE ativo = 1 AND token_cifrado IS NOT NULL`).all() as any[];
+  const agora = Date.now();
+  for (const c of cfgs) {
+    const ultima = c.ultima_execucao_em ? new Date(String(c.ultima_execucao_em).replace(" ", "T") + "Z").getTime() : 0;
+    if (agora - ultima < (c.intervalo_dias || 15) * 86400_000) continue;
+    sqlite.prepare(`UPDATE infosimples_config SET ultima_execucao_em = datetime('now') WHERE escritorio_id = ?`).run(c.escritorio_id);
+    (async () => {
+      for (const esfera of Object.keys(INFOSIMPLES_ENDPOINTS) as CndEsfera[]) {
+        try { const r = await infosimplesConsultarTodas(c.escritorio_id, esfera); console.log(`[infosimples] ${esfera}: ${r.ok}/${r.total} ok`); }
+        catch (e: any) { console.error(`[infosimples] ${esfera}:`, e.message); }
+      }
+    })();
+  }
+}, 60 * 60 * 1000);
 // Envia o PDF (ajustado) de Entradas/Saídas pros contatos da empresa (e-mail + WhatsApp). Mesma mecânica
 // do envio de Programação de Férias (ver enviarRelatorioEmpresa em ferias.ts).
 async function entradasSaidasEnviarEmpresa(escritorioId: number, empresaId: number, canal: any): Promise<{ ok: boolean; erro?: string }> {
