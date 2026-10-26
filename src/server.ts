@@ -14620,6 +14620,24 @@ async function nfseNotificarCancelamento(emissaoId: number) {
     }
   }
 }
+// Depois de cancelar no ADN (governo) + local (nfse_emissoes), registra o evento em nfe_documentos
+// também — achado ao vivo (2026-10-26): "Busca de XML" lê de nfe_documentos (tabela separada de
+// nfse_emissoes) e continuava mostrando a nota como "Autorizada" pra sempre depois de cancelada,
+// porque nada aqui nunca criava o 'evento' que notaCanceladaExpr procura (mesmo padrão já usado pra
+// NF-e: uma linha tipo='evento' com a MESMA chave_acesso e "ancela" na descrição). O XML do evento é
+// o que o próprio ADN devolveu confirmando o cancelamento (ou o que assinamos, se o ADN não re-enviar).
+function nfseRegistrarEventoCancelamento(row: any, escritorioId: number, empresaCnpj: string | null | undefined, r: { xmlAssinado: string; xmlEvento: string | null }) {
+  if (!row.chave_acesso) return;
+  try {
+    nfeInserirDocumento.run(
+      row.empresa_id, escritorioId, "nfse", `cancelamento_${row.chave_acesso}`, "eventoCancelamentoNfse", "evento",
+      row.chave_acesso, empresaCnpj ? empresaCnpj.replace(/\D/g, "") : null, null, null, null, null, new Date().toISOString(),
+      r.xmlEvento || r.xmlAssinado, "Cancelamento de NFS-e"
+    );
+  } catch (e: any) {
+    console.error(`[nfse] não consegui registrar o evento de cancelamento em nfe_documentos (emissão ${row.id}):`, e.message);
+  }
+}
 // Cancelamento — evento e101101, só é possível pra NFS-e já emitida (status 'emitida'). É uma ação
 // real e definitiva no Sistema Nacional NFS-e, sem "desfazer" depois.
 app.post("/api/nfse/emissoes/:id/cancelar", blockCliente, requirePermissao("nfse", "postar"), async (req, res) => {
@@ -14650,6 +14668,7 @@ app.post("/api/nfse/emissoes/:id/cancelar", blockCliente, requirePermissao("nfse
     sqlite
       .prepare(`UPDATE nfse_emissoes SET status='cancelada', motivo_cancelamento=?, justificativa_cancelamento=?, cancelado_em=datetime('now'), danfse_path=NULL WHERE id=?`)
       .run(motivo, String(justificativa).trim(), row.id);
+    nfseRegistrarEventoCancelamento(row, user.escritorioId, empresa?.cnpj, r);
     // O recebível gerado por essa nota fica marcado como cancelado, não é apagado — quem vê o
     // Financeiro continua tendo o histórico completo, só que sinalizado como não mais válido.
     sqlite.prepare(`UPDATE financeiro_receber SET status='cancelado' WHERE nfse_emissao_id = ?`).run(row.id);
@@ -15991,6 +16010,7 @@ app.post("/api/nfse/minha-empresa/emissoes/:id/cancelar", requireCliente, requir
     sqlite
       .prepare(`UPDATE nfse_emissoes SET status='cancelada', motivo_cancelamento=?, justificativa_cancelamento=?, cancelado_em=datetime('now'), danfse_path=NULL WHERE id=?`)
       .run(motivo, String(justificativa).trim(), row.id);
+    nfseRegistrarEventoCancelamento(row, user.escritorioId, empresa?.cnpj, r);
     // O recebível gerado por essa nota fica marcado como cancelado, não é apagado — quem vê o
     // Financeiro continua tendo o histórico completo, só que sinalizado como não mais válido.
     sqlite.prepare(`UPDATE financeiro_receber SET status='cancelado' WHERE nfse_emissao_id = ?`).run(row.id);
@@ -20465,6 +20485,34 @@ if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'deskcomm_conf
       DESKCOMM_ESCRITORIO_ID
     );
   sqlite.exec(`INSERT INTO migracoes_unicas (chave) VALUES ('deskcomm_config_backfill_20261024')`);
+}
+// Backfill: NFS-e já canceladas (de TODOS os escritórios/clientes) que ainda não têm o 'evento' em
+// nfe_documentos (ver nfseRegistrarEventoCancelamento, lá em cima, perto das rotas de cancelar) —
+// "Busca de XML" mostrava essas notas como "Autorizada" pra sempre, porque até agora NENHUM
+// cancelamento (nem novo, nem antigo) criava esse evento. Cancelamentos daqui pra frente já ficam
+// certos pela própria rota; isto só conserta o que já tinha sido cancelado antes do conserto.
+if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'nfse_evento_cancelamento_backfill_20261026'`).get()) {
+  const canceladas = sqlite
+    .prepare(
+      `SELECT ne.id, ne.empresa_id, ne.chave_acesso, ne.cancelado_em, e.cnpj as empresaCnpj, e.escritorio_id as escritorioId
+       FROM nfse_emissoes ne JOIN empresas e ON e.id = ne.empresa_id
+       WHERE ne.status = 'cancelada' AND ne.chave_acesso IS NOT NULL
+         AND NOT EXISTS (SELECT 1 FROM nfe_documentos ev WHERE ev.tipo = 'evento' AND ev.chave_acesso = ne.chave_acesso AND ev.evento_descricao LIKE '%ancela%')`
+    )
+    .all() as any[];
+  for (const c of canceladas) {
+    try {
+      nfeInserirDocumento.run(
+        c.empresa_id, c.escritorioId, "nfse", `cancelamento_${c.chave_acesso}`, "eventoCancelamentoNfse", "evento",
+        c.chave_acesso, c.empresaCnpj ? c.empresaCnpj.replace(/\D/g, "") : null, null, null, null, null, c.cancelado_em || new Date().toISOString(),
+        "<!-- evento de cancelamento registrado por backfill - XML original do ADN não foi guardado na época -->", "Cancelamento de NFS-e"
+      );
+    } catch (e: any) {
+      console.error(`[migração nfse_evento_cancelamento_backfill] emissão ${c.id}:`, e.message);
+    }
+  }
+  if (canceladas.length) console.log(`[migração] nfse_evento_cancelamento_backfill: ${canceladas.length} NFS-e cancelada(s) corrigida(s) em "Busca de XML".`);
+  sqlite.exec(`INSERT INTO migracoes_unicas (chave) VALUES ('nfse_evento_cancelamento_backfill_20261026')`);
 }
 function atendimentoConfig(escritorioId: number) {
   const r = sqlite.prepare(`SELECT * FROM atendimento_config WHERE escritorio_id = ?`).get(escritorioId) as any;
