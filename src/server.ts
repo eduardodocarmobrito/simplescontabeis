@@ -2475,22 +2475,34 @@ sqlite.exec(`
     UNIQUE (empresa_id, obrigacao, competencia)
   );
 `);
-// Certidão de Débitos Tributários Estaduais (CND estadual, ex.: SEFA-PA). Uma foto por empresa (a
-// última certidão importada). tipo: 'negativa' (NÃO CONSTAM), 'positiva_efeito' (positiva com efeito
-// de negativa — débitos suspensos/parcelados, ainda regular), 'positiva' (CONSTAM débitos).
+// Certidões de Débitos (CND) por esfera: 'federal' (RFB/PGFN), 'estadual' (SEFA) e 'municipal'
+// (prefeitura). Uma foto por (empresa, esfera) — a última certidão importada. tipo: 'negativa'
+// (NÃO CONSTAM), 'positiva_efeito' (positiva com efeito de negativa — débitos suspensos/parcelados,
+// ainda regular), 'positiva' (CONSTAM débitos). A cnd_estadual (v1) era só estadual; migra pra cá.
 sqlite.exec(`
-  CREATE TABLE IF NOT EXISTS cnd_estadual (
-    empresa_id INTEGER PRIMARY KEY,
+  CREATE TABLE IF NOT EXISTS cnd_certidoes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     escritorio_id INTEGER NOT NULL,
+    empresa_id INTEGER NOT NULL,
+    esfera TEXT NOT NULL,                    -- 'federal' | 'estadual' | 'municipal'
     tipo TEXT NOT NULL,                      -- 'negativa' | 'positiva_efeito' | 'positiva'
     numero TEXT,
     emissao TEXT,                            -- ISO 'AAAA-MM-DD'
     validade TEXT,                           -- ISO 'AAAA-MM-DD'
-    inscricao_estadual TEXT,
+    inscricao TEXT,
     cnpj TEXT,
-    importado_em TEXT NOT NULL DEFAULT (datetime('now'))
+    importado_em TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (empresa_id, esfera)
   );
 `);
+// Migração da cnd_estadual (v1) pra cnd_certidoes (esfera='estadual'), se existir com dados.
+if ((sqlite.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='cnd_estadual'`).get())) {
+  try {
+    sqlite.exec(`INSERT OR IGNORE INTO cnd_certidoes (escritorio_id, empresa_id, esfera, tipo, numero, emissao, validade, inscricao, cnpj, importado_em)
+                 SELECT escritorio_id, empresa_id, 'estadual', tipo, numero, emissao, validade, inscricao_estadual, cnpj, importado_em FROM cnd_estadual`);
+  } catch { /* ignora */ }
+  sqlite.exec(`DROP TABLE IF EXISTS cnd_estadual`);
+}
 // Limpeza: fgts_sync_jobs foi criada numa primeira versão que salvava a sessão do FGTS Digital no
 // servidor pra reaproveitar depois — testando ao vivo, confirmamos que essa sessão não sobrevive
 // fora do navegador que fez o login (o próprio site trata como "Erro de Login"), então a busca
@@ -2523,14 +2535,21 @@ sqlite.exec(`DROP TABLE IF EXISTS fgts_sync_jobs`);
   const seedCard = (tipo: string, titulo: string, subtitulo: string) => {
     if (!escPrincipal) return;
     if (sqlite.prepare(`SELECT 1 FROM dashboard_card_seed WHERE escritorio_id = 1 AND tipo = ?`).get(tipo)) return;
-    const ordem = ((sqlite.prepare(`SELECT MAX(ordem) as m FROM dashboard_cards WHERE escritorio_id = 1`).get() as any)?.m || 0) + 1;
-    sqlite
-      .prepare(`INSERT INTO dashboard_cards (titulo, valor, subtitulo, cor, ordem, created_by, escritorio_id, tipo, parametro) VALUES (?, '0', ?, 'brass', ?, NULL, 1, ?, NULL)`)
-      .run(titulo, subtitulo, ordem, tipo);
+    // Guard à prova de duplicata: se já existe um card desse tipo no escritório (ex.: criado à mão ou
+    // numa transição de migração), só marca como seedado — nunca cria um segundo.
+    const jaExiste = sqlite.prepare(`SELECT 1 FROM dashboard_cards WHERE escritorio_id = 1 AND tipo = ?`).get(tipo);
+    if (!jaExiste) {
+      const ordem = ((sqlite.prepare(`SELECT MAX(ordem) as m FROM dashboard_cards WHERE escritorio_id = 1`).get() as any)?.m || 0) + 1;
+      sqlite
+        .prepare(`INSERT INTO dashboard_cards (titulo, valor, subtitulo, cor, ordem, created_by, escritorio_id, tipo, parametro) VALUES (?, '0', ?, 'brass', ?, NULL, 1, ?, NULL)`)
+        .run(titulo, subtitulo, ordem, tipo);
+    }
     sqlite.prepare(`INSERT OR IGNORE INTO dashboard_card_seed (escritorio_id, tipo) VALUES (1, ?)`).run(tipo);
   };
   seedCard("efd_omisso", "SPED-Fiscal (EFD ICMS/IPI) Omisso", "Empresas obrigadas com EFD não entregue (Consulta SEFA)");
+  seedCard("cnd_federal", "Certidão Federal (CND)", "Certidão vencida, vencendo ou positiva (com débito) — RFB/PGFN");
   seedCard("cnd_estadual", "Certidão Estadual (CND)", "Certidão vencida, vencendo ou positiva (com débito) — SEFA");
+  seedCard("cnd_municipal", "Certidão Municipal (CND)", "Certidão vencida, vencendo ou positiva (com débito) — Prefeitura");
 }
 // Migração leve: prazo (dia do mês) de um modelo de Solicitação de Documentos — usado pelo card
 // "Documentos pendentes" pra saber quando um item obrigatório já venceu sem upload.
@@ -10843,19 +10862,23 @@ async function dominioRelatoriosSincronizar(
         }
         continue;
       }
-      // Certidão de Débitos Estaduais (SEFA): rota própria — casa por CNPJ e atualiza o card de CND.
-      if (/CERTID[ÃA]O/i.test(texto) && /SECRETARIA\s+DE\s+ESTADO\s+DA\s+FAZENDA/i.test(texto) && /(NEGATIVA|POSITIVA)/i.test(texto)) {
-        if (opts.dryRun) { previews.push({ nomeArquivo: item.nome, tiposDetectados: ["certidao_estadual_sefa"], periodoInicio: null, periodoFim: null, cnpjDetectado: null, codigoArquivoDominio: null, empresaEncontrada: null, textoPreview: texto.slice(0, 2000) }); continue; }
-        const baseCnd = { escritorioId, itemId: item.id, nomeArquivo: item.nome, periodoInicio: null, periodoFim: null, cnpjDetectado: null, codigoArquivo: null, textoPreview: texto.slice(0, 2000), modificadoEm: item.modificadoEm, tipoDetectado: "certidao_estadual_sefa", envioDocumentoId: null };
-        try {
-          const r = cndEstadualProcessarTexto(escritorioId, texto);
-          domRelGravarControle({ ...baseCnd, empresaId: r.empresaId, status: "ok", erro: null, arquivoPendentePath: null });
-          ok++;
-        } catch (e: any) {
-          domRelGravarControle({ ...baseCnd, empresaId: null, status: "erro", erro: e.message, arquivoPendentePath: domRelSalvarPendente(escritorioId, buf, item.nome) });
-          erros++;
+      // Certidão de Débitos (Federal/Estadual/Municipal): rota própria — detecta a esfera, casa por
+      // CNPJ e atualiza o card de CND daquela esfera, sem passar pelo fluxo de código do Domínio.
+      if (/CERTID[ÃA]O/i.test(texto) && /(NEGATIVA|POSITIVA)/i.test(texto)) {
+        const esferaCnd = cndDetectarEsfera(texto);
+        if (esferaCnd) {
+          if (opts.dryRun) { previews.push({ nomeArquivo: item.nome, tiposDetectados: ["cnd_" + esferaCnd], periodoInicio: null, periodoFim: null, cnpjDetectado: null, codigoArquivoDominio: null, empresaEncontrada: null, textoPreview: texto.slice(0, 2000) }); continue; }
+          const baseCnd = { escritorioId, itemId: item.id, nomeArquivo: item.nome, periodoInicio: null, periodoFim: null, cnpjDetectado: null, codigoArquivo: null, textoPreview: texto.slice(0, 2000), modificadoEm: item.modificadoEm, tipoDetectado: "cnd_" + esferaCnd, envioDocumentoId: null };
+          try {
+            const r = cndProcessarTexto(escritorioId, texto, esferaCnd);
+            domRelGravarControle({ ...baseCnd, empresaId: r.empresaId, status: "ok", erro: null, arquivoPendentePath: null });
+            ok++;
+          } catch (e: any) {
+            domRelGravarControle({ ...baseCnd, empresaId: null, status: "erro", erro: e.message, arquivoPendentePath: domRelSalvarPendente(escritorioId, buf, item.nome) });
+            erros++;
+          }
+          continue;
         }
-        continue;
       }
       const tipoPeloNome = domRelTipoPeloNome(item.nome);
       const tipos = tipoPeloNome ? [tipoPeloNome] : domRelClassificarTipos(texto);
@@ -11498,40 +11521,58 @@ function cardEfdOmisso(user: any): any[] {
 // ===================== Certidão de Débitos Estaduais (CND) — SEFA =====================
 // Lê o PDF da Certidão (ex.: SEFA-PA). O documento tem natureza TRIBUTÁRIA e NÃO TRIBUTÁRIA; pega o
 // pior status das duas (positiva real > positiva c/ efeito > negativa). Casa a empresa pelo CNPJ.
-function cndEstadualParse(texto: string): { cnpj: string | null; nome: string | null; inscricao: string | null; tipo: "negativa" | "positiva_efeito" | "positiva" | null; numero: string | null; emissaoIso: string | null; validadeIso: string | null } {
+function cndParse(texto: string): { cnpj: string | null; nome: string | null; inscricao: string | null; tipo: "negativa" | "positiva_efeito" | "positiva" | null; numero: string | null; emissaoIso: string | null; validadeIso: string | null } {
   const t = (texto || "").replace(/ /g, " ");
   const mCnpj = /CNPJ:?\s*([\d]{2}\.?[\d]{3}\.?[\d]{3}\/?[\d]{4}-?[\d]{2})/i.exec(t);
   const cnpj = mCnpj ? mCnpj[1].replace(/\D/g, "") : null;
-  const mIe = /Inscri[çc][ãa]o\s+Estadual:?\s*([\d.\-]+)/i.exec(t);
+  const mIe = /Inscri[çc][ãa]o\s+(?:Estadual|Municipal):?\s*([\d.\-\/]+)/i.exec(t);
   const inscricao = mIe ? mIe[1].trim() : null;
-  const mNome = /Nome:?\s*(.+?)\s*(?:Inscri[çc][ãa]o|CNPJ)/i.exec(t);
+  const mNome = /Nome:?\s*(.+?)\s*(?:Inscri[çc][ãa]o|CNPJ|CPF)/i.exec(t);
   const nome = mNome ? mNome[1].trim() : null;
   // Status pelo TÍTULO (fonte autoritativa), pegando o pior das duas naturezas (tributária e não
   // tributária): POSITIVA real > POSITIVA COM EFEITO DE NEGATIVA > NEGATIVA. Só cai no corpo
   // ("CONSTAM"/"NÃO CONSTAM") se nenhum título casar.
   let tipo: "negativa" | "positiva_efeito" | "positiva" | null = null;
-  const positivaTitulo = /CERTID[ÃA]O\s+POSITIVA(?!\s+COM\s+EFEITO)/i.test(t);
-  const positivaEfeito = /POSITIVA\s+COM\s+EFEITO\s+DE\s+NEGATIVA/i.test(t);
+  const positivaTitulo = /CERTID[ÃA]O\s+POSITIVA(?!\s+COM\s+EFEITOS?)/i.test(t);
+  const positivaEfeito = /POSITIVA\s+COM\s+EFEITOS?\s+DE\s+NEGATIVA/i.test(t);
   const negativaTitulo = /CERTID[ÃA]O\s+NEGATIVA/i.test(t);
   if (positivaTitulo) tipo = "positiva";
   else if (positivaEfeito) tipo = "positiva_efeito";
   else if (negativaTitulo) tipo = "negativa";
   else if (/N[ÃA]O\s+CONSTAM/i.test(t)) tipo = "negativa";
   else if (/\bCONSTAM\b/i.test(t)) tipo = "positiva";
-  const mNum = /N[úu]mero\s+da\s+Certid[ãa]o:?\s*([\d.\-]+)/i.exec(t);
+  const mNum = /(?:N[úu]mero\s+da\s+Certid[ãa]o|C[óo]digo\s+de\s+controle(?:\s+da\s+certid[ãa]o)?):?\s*([\w.\-]+)/i.exec(t);
   const numero = mNum ? mNum[1].trim() : null;
-  const mEmi = /Emitida\s+[àa]s:[^\n]*?dia\s*(\d{2})\/(\d{2})\/(\d{4})/i.exec(t);
+  const mEmi = /Emitida\s+[àa]s[\s:][\s\S]{0,40}?dia\s*(\d{2})\/(\d{2})\/(\d{4})/i.exec(t);
   const emissaoIso = mEmi ? `${mEmi[3]}-${mEmi[2]}-${mEmi[1]}` : null;
   const mVal = /V[áa]lida\s+at[ée]:?\s*(\d{2})\/(\d{2})\/(\d{4})/i.exec(t);
   const validadeIso = mVal ? `${mVal[3]}-${mVal[2]}-${mVal[1]}` : null;
   return { cnpj, nome, inscricao, tipo, numero, emissaoIso, validadeIso };
 }
 // Núcleo compartilhado (upload manual + coleta automática): casa por CNPJ e substitui a foto da CND.
-function cndEstadualProcessarTexto(escritorioId: number, texto: string): { empresaId: number; empresaNome: string; tipo: string; validadeIso: string | null } {
-  if (!/CERTID[ÃA]O/i.test(texto || "") || !/SECRETARIA\s+DE\s+ESTADO\s+DA\s+FAZENDA|SEFA/i.test(texto || "")) {
-    const e: any = new Error("Este PDF não parece uma Certidão de Débitos Estaduais da SEFA."); e.status = 400; throw e;
+type CndEsfera = "federal" | "estadual" | "municipal";
+const CND_ESFERAS: Record<CndEsfera, { label: string; detecta: RegExp; nomeCurto: string }> = {
+  federal: { label: "Federal", detecta: /CR[ÉE]DITOS?\s+TRIBUT[ÁA]RIOS?\s+FEDERAIS|TRIBUTOS\s+FEDERAIS|D[ÍI]VIDA\s+ATIVA\s+DA\s+UNI[ÃA]O|RECEITA\s+FEDERAL\s+DO\s+BRASIL|PROCURADORIA-?GERAL\s+DA\s+FAZENDA\s+NACIONAL/i, nomeCurto: "federal" },
+  estadual: { label: "Estadual", detecta: /SECRETARIA\s+DE\s+ESTADO\s+DA\s+FAZENDA|GOVERNO\s+DO\s+ESTADO|FAZENDA\s+P[ÚU]BLICA\s+ESTADUAL/i, nomeCurto: "estadual" },
+  municipal: { label: "Municipal", detecta: /PREFEITURA|MUNIC[ÍI]PIO|FAZENDA\s+(P[ÚU]BLICA\s+)?MUNICIPAL|TRIBUTOS\s+MUNICIPAIS|ISSQN|MOBILI[ÁA]RIO/i, nomeCurto: "municipal" },
+};
+function cndEsferaValida(v: any): CndEsfera | null {
+  return v === "federal" || v === "estadual" || v === "municipal" ? v : null;
+}
+// Detecta a esfera de uma certidão pelo texto (pra auto-ingestão de PDF na pasta monitorada).
+function cndDetectarEsfera(texto: string): CndEsfera | null {
+  if (!/CERTID[ÃA]O/i.test(texto || "")) return null;
+  if (CND_ESFERAS.federal.detecta.test(texto)) return "federal";
+  if (CND_ESFERAS.estadual.detecta.test(texto)) return "estadual";
+  if (CND_ESFERAS.municipal.detecta.test(texto)) return "municipal";
+  return null;
+}
+function cndProcessarTexto(escritorioId: number, texto: string, esfera: CndEsfera): { empresaId: number; empresaNome: string; tipo: string; validadeIso: string | null } {
+  const cfg = CND_ESFERAS[esfera];
+  if (!/CERTID[ÃA]O/i.test(texto || "") || !cfg.detecta.test(texto || "")) {
+    const e: any = new Error(`Este PDF não parece uma Certidão de Débitos ${cfg.label}.`); e.status = 400; throw e;
   }
-  const p = cndEstadualParse(texto);
+  const p = cndParse(texto);
   if (!p.cnpj) { const e: any = new Error("Não encontrei o CNPJ na certidão."); e.status = 400; throw e; }
   if (!p.tipo) { const e: any = new Error("Não consegui identificar se a certidão é negativa ou positiva."); e.status = 400; throw e; }
   const empresa = (sqlite.prepare(`SELECT id, nome, cnpj FROM empresas WHERE escritorio_id = ? AND ativo = 1`).all(escritorioId) as any[])
@@ -11542,48 +11583,52 @@ function cndEstadualProcessarTexto(escritorioId: number, texto: string): { empre
   }
   sqlite
     .prepare(
-      `INSERT INTO cnd_estadual (empresa_id, escritorio_id, tipo, numero, emissao, validade, inscricao_estadual, cnpj, importado_em)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-       ON CONFLICT(empresa_id) DO UPDATE SET tipo=excluded.tipo, numero=excluded.numero, emissao=excluded.emissao, validade=excluded.validade, inscricao_estadual=excluded.inscricao_estadual, cnpj=excluded.cnpj, importado_em=datetime('now')`
+      `INSERT INTO cnd_certidoes (escritorio_id, empresa_id, esfera, tipo, numero, emissao, validade, inscricao, cnpj, importado_em)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(empresa_id, esfera) DO UPDATE SET tipo=excluded.tipo, numero=excluded.numero, emissao=excluded.emissao, validade=excluded.validade, inscricao=excluded.inscricao, cnpj=excluded.cnpj, importado_em=datetime('now')`
     )
-    .run(empresa.id, escritorioId, p.tipo, p.numero, p.emissaoIso, p.validadeIso, p.inscricao, p.cnpj);
+    .run(escritorioId, empresa.id, esfera, p.tipo, p.numero, p.emissaoIso, p.validadeIso, p.inscricao, p.cnpj);
   return { empresaId: empresa.id, empresaNome: empresa.nome, tipo: p.tipo, validadeIso: p.validadeIso };
 }
-const uploadCndEstadual = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
-app.post("/api/cnd-estadual/importar", blockCliente, requirePermissao("dashboard", "editar"), uploadCndEstadual.single("arquivo"), async (req, res) => {
+const uploadCnd = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
+app.post("/api/cnd/:esfera/importar", blockCliente, requirePermissao("dashboard", "editar"), uploadCnd.single("arquivo"), async (req, res) => {
   const user = (req as any).user;
-  if (!req.file) return res.status(400).json({ error: "Selecione o PDF da Certidão Estadual." });
+  const esfera = cndEsferaValida(req.params.esfera);
+  if (!esfera) return res.status(400).json({ error: "Esfera inválida." });
+  if (!req.file) return res.status(400).json({ error: `Selecione o PDF da Certidão ${CND_ESFERAS[esfera].label}.` });
   let texto = "";
   try { texto = await obterTextoDoPdf(req.file.buffer); } catch { /* vazio cai no erro abaixo */ }
   try {
-    const r = cndEstadualProcessarTexto(user.escritorioId, texto);
+    const r = cndProcessarTexto(user.escritorioId, texto, esfera);
     if (!podeAcessarEmpresa(user, r.empresaId)) return res.status(403).json({ error: "Você não tem acesso a esta empresa." });
     res.json({ ok: true, empresaNome: r.empresaNome, tipo: r.tipo, validade: r.validadeIso });
   } catch (e: any) { res.status(e.status || 500).json({ error: e.message }); }
 });
-app.post("/api/cnd-estadual/empresa/:id/limpar", blockCliente, requirePermissao("dashboard", "editar"), (req, res) => {
+app.post("/api/cnd/:esfera/empresa/:id/limpar", blockCliente, requirePermissao("dashboard", "editar"), (req, res) => {
   const user = (req as any).user;
+  const esfera = cndEsferaValida(req.params.esfera);
+  if (!esfera) return res.status(400).json({ error: "Esfera inválida." });
   const empresaId = Number(req.params.id);
   if (!podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
-  sqlite.prepare(`DELETE FROM cnd_estadual WHERE escritorio_id = ? AND empresa_id = ?`).run(user.escritorioId, empresaId);
+  sqlite.prepare(`DELETE FROM cnd_certidoes WHERE escritorio_id = ? AND empresa_id = ? AND esfera = ?`).run(user.escritorioId, empresaId, esfera);
   res.json({ ok: true });
 });
 const CND_DIAS_AVISO = 30; // vence nos próximos N dias → entra no card como "vence em breve"
 // Card: empresas cuja CND estadual precisa de atenção — positiva (com débito), vencida, ou vencendo
 // nos próximos 30 dias. Negativa/positiva-c-efeito válida e longe do vencimento não entra.
-function cardCndEstadual(user: any): any[] {
+function cardCnd(user: any, esfera: CndEsfera): any[] {
   const visiveis = new Set(empresasVisiveis(user));
   const hoje = new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
   const limite = new Date(new Date(hoje + "T00:00:00").getTime() + CND_DIAS_AVISO * 86400000).toISOString().slice(0, 10);
   const rows = sqlite
     .prepare(
       `SELECT c.empresa_id as empresaId, e.nome as empresaNome, c.tipo, c.numero, c.emissao, c.validade,
-              c.inscricao_estadual as inscricao, c.importado_em as importadoEm
-       FROM cnd_estadual c JOIN empresas e ON e.id = c.empresa_id AND e.ativo = 1
-       WHERE c.escritorio_id = ?
+              c.inscricao as inscricao, c.importado_em as importadoEm
+       FROM cnd_certidoes c JOIN empresas e ON e.id = c.empresa_id AND e.ativo = 1
+       WHERE c.escritorio_id = ? AND c.esfera = ?
        ORDER BY c.validade, e.nome`
     )
-    .all(user.escritorioId) as any[];
+    .all(user.escritorioId, esfera) as any[];
   const out: any[] = [];
   for (const r of rows) {
     if (!visiveis.has(r.empresaId)) continue;
@@ -11592,7 +11637,7 @@ function cardCndEstadual(user: any): any[] {
     const comDebito = r.tipo === "positiva";
     if (!vencida && !vencendo && !comDebito) continue; // negativa/efeito válida e longe do vencimento
     let alerta = "";
-    if (comDebito) alerta = "Positiva — com débito estadual";
+    if (comDebito) alerta = `Positiva — com débito ${CND_ESFERAS[esfera].nomeCurto}`;
     else if (vencida) alerta = "Certidão vencida";
     else alerta = "Vence em breve";
     out.push({ ...r, vencida, vencendo, comDebito, alerta });
@@ -17999,7 +18044,7 @@ app.get("/api/financeiro/resumo", blockCliente, requirePermissao("financeiro", "
 // função abaixo devolve a lista (o card mostra só items.length); todas já filtram pelas empresas
 // que o usuário logado pode ver (empresasVisiveis), pro caso de um Colaborador restrito abrir o
 // Painel.
-const CARD_TIPOS: string[] = ["certificados_vencer", "das_atraso", "situacao_fiscal", "caixapostal_nao_lida", "checklist_atraso", "solicitacoes_pendentes", "envio_atraso", "solicitacao_atraso", "licencas_vencer", "pesquisa_pagamento", "efd_omisso", "cnd_estadual"];
+const CARD_TIPOS: string[] = ["certificados_vencer", "das_atraso", "situacao_fiscal", "caixapostal_nao_lida", "checklist_atraso", "solicitacoes_pendentes", "envio_atraso", "solicitacao_atraso", "licencas_vencer", "pesquisa_pagamento", "efd_omisso", "cnd_federal", "cnd_estadual", "cnd_municipal"];
 
 // Piso de competência (aaaamm, ex.: 202607) configurado em painel_monitoramento_config — null
 // quando não há corte definido (comportamento de sempre: cada card usa o período mais antigo já
@@ -18602,7 +18647,9 @@ async function calcularCardComputado(tipo: string, user: any, parametro?: string
   if (tipo === "das_atraso") return cardDasEmAtraso(user);
   if (tipo === "situacao_fiscal") return cardSituacaoFiscal(user);
   if (tipo === "efd_omisso") return cardEfdOmisso(user);
-  if (tipo === "cnd_estadual") return cardCndEstadual(user);
+  if (tipo === "cnd_federal") return cardCnd(user, "federal");
+  if (tipo === "cnd_estadual") return cardCnd(user, "estadual");
+  if (tipo === "cnd_municipal") return cardCnd(user, "municipal");
   if (tipo === "caixapostal_nao_lida") return cardCaixaPostalNaoLida(user);
   if (tipo === "pesquisa_pagamento") return cardPesquisaPagamento(user);
   if (tipo === "checklist_atraso") return cardChecklistAtraso(user);
