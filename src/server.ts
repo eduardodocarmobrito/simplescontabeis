@@ -9867,14 +9867,18 @@ function nfeIntegrarFinanceiro(docId: number, userId: number): { ok: boolean; er
   const numero = row.tipo === "nfse" ? (row.xml?.match(/<nNFSe>([^<]+)<\/nNFSe>/)?.[1] ?? row.id) : nfeChaveNumero(row.chave_acesso) || row.id;
   const rotuloDoc = row.tipo === "nfse" ? "NFS-e" : row.tipo === "nfce" ? "NFC-e" : "NF-e";
   const descBase = `${rotuloDoc} nº ${numero} — ${emitida ? row.destinatario_nome || "cliente" : row.emitente_nome || "fornecedor"}`;
-  const hojeIso = new Date().toISOString().slice(0, 10);
+  // Sem duplicata no XML (sempre o caso pra NFS-e — o leiaute nacional não tem <cobr><dup>), o
+  // vencimento caía em HOJE (data de quando alguém clicou "integrar"), não na data da nota. Achado
+  // ao vivo: integrar notas de janeiro/2026 fazia elas aparecerem no Financeiro de outubro/2026 (dia
+  // do clique) — pareciam ter sumido do período certo. Agora usa a própria data de emissão da nota.
+  const vencimentoDefault = (row.data_emissao ? String(row.data_emissao).slice(0, 10) : null) || new Date().toISOString().slice(0, 10);
   const insert =
     tabela === "financeiro_receber"
       ? sqlite.prepare(`INSERT INTO financeiro_receber (empresa_id, descricao, cliente_nome, valor, vencimento, origem, nfe_documento_id, criado_por) VALUES (?, ?, ?, ?, ?, 'nfe', ?, ?)`)
       : sqlite.prepare(`INSERT INTO financeiro_pagar (empresa_id, descricao, fornecedor, valor, vencimento, origem, nfe_documento_id, criado_por) VALUES (?, ?, ?, ?, ?, 'nfe', ?, ?)`);
   parcelas.forEach((p: any, i: number) => {
     const desc = parcelas.length > 1 ? `${descBase} (parcela ${i + 1}/${parcelas.length})` : descBase;
-    insert.run(row.empresa_id, desc, terceiro, p.vDup || row.valor_total || 0, p.dVenc || hojeIso, docId, userId);
+    insert.run(row.empresa_id, desc, terceiro, p.vDup || row.valor_total || 0, p.dVenc || vencimentoDefault, docId, userId);
   });
   sqlite.prepare(`UPDATE nfe_documentos SET integrado_financeiro = 1 WHERE id = ?`).run(docId);
   // Alimenta a "agenda" do Financeiro: o terceiro da nota (fornecedor se recebida, cliente se emitida)
@@ -20832,6 +20836,32 @@ if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'nfe_emitente_
   }
   console.log(`[migração] nfe_emitente_cpf_backfill: ${cpfCorrigido} CPF corrigido(s), ${movidos} documento(s) movido(s) pra empresa certa, ${duplicadosRemovidos} duplicata(s) removida(s).`);
   sqlite.exec(`INSERT INTO migracoes_unicas (chave) VALUES ('nfe_emitente_cpf_backfill_20261026')`);
+}
+// Backfill: lançamentos de financeiro_receber/pagar gerados ao integrar um documento (Busca de XML)
+// sem duplicata no XML (sempre o caso pra NFS-e) ficavam com vencimento = dia em que alguém clicou
+// "integrar", não a data da nota — corrigido acima, em nfeIntegrarFinanceiro. Achado ao vivo
+// (2026-10-26): integrar NFS-e de janeiro/2026 fazia elas aparecerem no Financeiro de outubro
+// (hoje), parecendo ter sumido do período certo. Só corrige onde o vencimento bate exatamente com o
+// dia da criação do lançamento (a assinatura do bug) E ainda está pendente — nunca mexe em título já
+// baixado/pago, nem num vencimento genuinamente diferente (duplicata real do XML).
+if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'financeiro_vencimento_nfe_backfill_20261026'`).get()) {
+  let corrigidos = 0;
+  for (const tabela of ["financeiro_receber", "financeiro_pagar"]) {
+    const afetados = sqlite
+      .prepare(
+        `SELECT r.id, substr(d.data_emissao,1,10) as dataEmissao
+         FROM ${tabela} r JOIN nfe_documentos d ON d.id = r.nfe_documento_id
+         WHERE r.origem = 'nfe' AND r.status = 'pendente' AND r.vencimento = date(r.criado_em)
+           AND r.vencimento != substr(d.data_emissao,1,10) AND d.data_emissao IS NOT NULL`
+      )
+      .all() as any[];
+    for (const a of afetados) {
+      sqlite.prepare(`UPDATE ${tabela} SET vencimento = ? WHERE id = ?`).run(a.dataEmissao, a.id);
+      corrigidos++;
+    }
+  }
+  if (corrigidos) console.log(`[migração] financeiro_vencimento_nfe_backfill: ${corrigidos} vencimento(s) corrigido(s).`);
+  sqlite.exec(`INSERT INTO migracoes_unicas (chave) VALUES ('financeiro_vencimento_nfe_backfill_20261026')`);
 }
 function atendimentoConfig(escritorioId: number) {
   const r = sqlite.prepare(`SELECT * FROM atendimento_config WHERE escritorio_id = ?`).get(escritorioId) as any;
