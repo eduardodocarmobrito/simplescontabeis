@@ -9246,7 +9246,7 @@ async function finOfxConciliacao(conta){
     const { items } = await api('/financeiro/minha-empresa/contas/'+conta.id+'/ofx?status='+OFX_STATUS_TAB);
     if(!items.length){ body.innerHTML = '<div class="empty-state">Nada por aqui.</div>'; return; }
     body.innerHTML = items.map(finOfxCartaoHtml).join('');
-    finOfxWireAcoes(body, carregar);
+    finOfxWireAcoes(body, carregar, '/financeiro/minha-empresa');
   }
   await carregar();
 }
@@ -9285,22 +9285,22 @@ function finOfxCartaoHtml(t){
     : `<div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">Ignorada</div>`}
   </div>`;
 }
-function finOfxWireAcoes(scope, recarregar){
+function finOfxWireAcoes(scope, recarregar, basePath){
   scope.querySelectorAll('[data-act="conciliar"]').forEach(b=>b.addEventListener('click', async ()=>{
-    try{ await api('/financeiro/minha-empresa/ofx/'+b.dataset.ofx+'/conciliar', { method:'POST', body:{ tabela:b.dataset.tabela, tituloId:Number(b.dataset.titulo) } }); toast('Conciliado.','ok'); recarregar(); }
+    try{ await api(basePath+'/ofx/'+b.dataset.ofx+'/conciliar', { method:'POST', body:{ tabela:b.dataset.tabela, tituloId:Number(b.dataset.titulo) } }); toast('Conciliado.','ok'); recarregar(); }
     catch(e){ toast(e.message,'err'); }
   }));
   scope.querySelectorAll('[data-act="conciliar-grupo"]').forEach(b=>b.addEventListener('click', async ()=>{
     const ids = b.dataset.ids.split(',').map(Number);
     if(!confirm('Dar baixa nos '+ids.length+' títulos deste grupo com esta transação?')) return;
-    try{ await api('/financeiro/minha-empresa/ofx/'+b.dataset.ofx+'/conciliar-grupo', { method:'POST', body:{ tabela:b.dataset.tabela, tituloIds:ids } }); toast('Grupo conciliado — '+ids.length+' títulos baixados.','ok'); recarregar(); }
+    try{ await api(basePath+'/ofx/'+b.dataset.ofx+'/conciliar-grupo', { method:'POST', body:{ tabela:b.dataset.tabela, tituloIds:ids } }); toast('Grupo conciliado — '+ids.length+' títulos baixados.','ok'); recarregar(); }
     catch(e){ toast(e.message,'err'); }
   }));
-  scope.querySelectorAll('[data-act="cadastrar"]').forEach(b=>b.addEventListener('click', ()=>finOfxCadastrarModal(b.dataset.ofx, recarregar)));
-  scope.querySelectorAll('[data-act="vincular"]').forEach(b=>b.addEventListener('click', ()=>finOfxVincularDocumentoModal(b.dataset.ofx, recarregar)));
+  scope.querySelectorAll('[data-act="cadastrar"]').forEach(b=>b.addEventListener('click', ()=>finOfxCadastrarModal(b.dataset.ofx, recarregar, basePath)));
+  scope.querySelectorAll('[data-act="vincular"]').forEach(b=>b.addEventListener('click', ()=>finOfxVincularDocumentoModal(b.dataset.ofx, recarregar, basePath)));
   scope.querySelectorAll('[data-act="ignorar"]').forEach(b=>b.addEventListener('click', async ()=>{
     if(!confirm('Ignorar esta transação? Ela some da lista de pendentes (não mexe em nada do Financeiro).')) return;
-    try{ await api('/financeiro/minha-empresa/ofx/'+b.dataset.ofx+'/ignorar', { method:'POST' }); toast('Ignorada.','ok'); recarregar(); }
+    try{ await api(basePath+'/ofx/'+b.dataset.ofx+'/ignorar', { method:'POST' }); toast('Ignorada.','ok'); recarregar(); }
     catch(e){ toast(e.message,'err'); }
   }));
 }
@@ -9362,11 +9362,11 @@ async function finRenderConciliacao(basePath, containerId){
     catch(e){ body.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
     if(!items.length){ body.innerHTML = '<div class="empty-state">Nada por aqui.</div>'; return; }
     body.innerHTML = items.map(finOfxCartaoHtml).join('');
-    finOfxWireAcoes(body, carregar);
+    finOfxWireAcoes(body, carregar, basePath);
   }
   await carregar();
 }
-function finOfxCadastrarModal(ofxId, onDone){
+function finOfxCadastrarModal(ofxId, onDone, basePath){
   openModal(`
     <h3>Cadastrar no Financeiro</h3>
     <p style="font-size:12px; color:var(--ink-soft); margin-top:-4px;">Valor e data vêm do extrato bancário — só a descrição é editável.</p>
@@ -9379,16 +9379,25 @@ function finOfxCadastrarModal(ofxId, onDone){
   document.getElementById('ofxCadCancel').addEventListener('click', closeModal);
   document.getElementById('ofxCadSalvar').addEventListener('click', async ()=>{
     try{
-      await api('/financeiro/minha-empresa/ofx/'+ofxId+'/cadastrar', { method:'POST', body:{ descricao: document.getElementById('ofxCadDescricao').value.trim() } });
+      await api(basePath+'/ofx/'+ofxId+'/cadastrar', { method:'POST', body:{ descricao: document.getElementById('ofxCadDescricao').value.trim() } });
       closeModal();
       toast('Cadastrado e conciliado.','ok');
       onDone();
     }catch(e){ toast(e.message,'err'); }
   });
 }
-async function finOfxVincularDocumentoModal(ofxId, onDone){
+// Lista de documentos (NF-e/NFC-e recebida) pra "vincular" — cliente lê sempre a própria empresa;
+// escritório lê a MESMA listagem de "Busca de XML" (/nfe/documentos?empresaId=), filtrada pela
+// empresa escolhida (extraída do basePath, "/financeiro/empresas/123" → 123).
+async function finOfxDocumentosParaVincular(basePath){
+  const ehCliente = basePath === '/financeiro/minha-empresa';
+  const caminho = ehCliente ? '/nfe/minha-empresa/documentos' : '/nfe/documentos?empresaId='+basePath.split('/').pop();
+  const r = await api(caminho);
+  return r.items || [];
+}
+async function finOfxVincularDocumentoModal(ofxId, onDone, basePath){
   let items = [];
-  try{ const r = await api('/nfe/minha-empresa/documentos'); items = r.items||[]; }catch(e){}
+  try{ items = await finOfxDocumentosParaVincular(basePath); }catch(e){}
   openModal(`
     <h3>Vincular a um documento</h3>
     <p style="font-size:12px; color:var(--ink-soft); margin-top:-4px;">Associa essa movimentação a uma nota recebida, só pra referência — não muda nada no Financeiro.</p>
@@ -9407,7 +9416,7 @@ async function finOfxVincularDocumentoModal(ofxId, onDone){
   document.getElementById('ofxVincSalvar').addEventListener('click', async ()=>{
     const v = document.getElementById('ofxVincDoc').value;
     try{
-      await api('/financeiro/minha-empresa/ofx/'+ofxId+'/vincular-documento', { method:'PUT', body:{ documentoId: v?Number(v):null } });
+      await api(basePath+'/ofx/'+ofxId+'/vincular-documento', { method:'PUT', body:{ documentoId: v?Number(v):null } });
       closeModal();
       toast('Documento vinculado.','ok');
       onDone();
@@ -10422,6 +10431,7 @@ async function pageFinanceiro(){
       <div class="tab" data-tab="honorarios">Honorários por empresa</div>
       <div class="tab" data-tab="adiantamentos">Adiantamentos</div>
       <div class="tab" data-tab="contas">Contas</div>
+      <div class="tab" data-tab="conciliacao">Conciliação</div>
       <div class="tab" data-tab="relatorios">Relatórios</div>
       <div class="tab" data-tab="cadastro">Cadastro</div>
       <div class="tab" data-tab="robo-boletos">Configuração envio de boletos</div>
@@ -10435,7 +10445,7 @@ function renderFinTabs(){
   main().querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===FIN_TAB));
   if(FIN_TAB==='honorarios') renderHonorarios();
   else if(FIN_TAB==='robo-boletos') renderHonorariosRobo();
-  else if(FIN_TAB==='receber'||FIN_TAB==='pagar'||FIN_TAB==='adiantamentos'||FIN_TAB==='contas'||FIN_TAB==='relatorios'||FIN_TAB==='cadastro') renderFinEmpresaScoped(FIN_TAB);
+  else if(FIN_TAB==='receber'||FIN_TAB==='pagar'||FIN_TAB==='adiantamentos'||FIN_TAB==='contas'||FIN_TAB==='conciliacao'||FIN_TAB==='relatorios'||FIN_TAB==='cadastro') renderFinEmpresaScoped(FIN_TAB);
   else renderLancamentos();
 }
 // "A Receber"/"A Pagar"/"Contas" do escritório são as MESMAS tabelas que a empresa-cliente vê no
@@ -10461,11 +10471,15 @@ async function renderFinEmpresaScoped(tab){
     if(tab==='receber') finRenderReceber(basePath, 'finEmpresaContent', FIN_RECEBER_EMPRESA_FILTRO, podePostar, podeEditar);
     else if(tab==='pagar') finRenderPagar(basePath, 'finEmpresaContent', FIN_PAGAR_EMPRESA_FILTRO, podePostar, podeEditar);
     else if(tab==='adiantamentos') finRenderAdiantamentos(basePath, 'finEmpresaContent', podePostar);
+    else if(tab==='conciliacao') finRenderConciliacao(basePath, 'finEmpresaContent');
     else if(tab==='relatorios') finRenderRelatorios(basePath, 'finEmpresaContent');
     else if(tab==='cadastro') finRenderCadastros(basePath, 'finEmpresaContent', podeEditar);
     else finRenderContas(basePath, 'finEmpresaContent', podeEditar);
   }
   setupComboSelect('finEmpresaCombo', empresas.map(e=>({id:e.id,label:e.nome})), (id)=>{ FIN_EMPRESA_SELECIONADA = id; carregar(); });
+  // Só uma empresa pra escolher (comum pra quem só tem acesso a uma, ex.: Colaborador vinculado a
+  // uma única empresa) — carrega ela direto, sem obrigar a pessoa a buscar e clicar.
+  if(!FIN_EMPRESA_SELECIONADA && empresas.length===1) FIN_EMPRESA_SELECIONADA = empresas[0].id;
   if(FIN_EMPRESA_SELECIONADA){
     const emp = empresas.find(e=>e.id===FIN_EMPRESA_SELECIONADA);
     if(emp){
