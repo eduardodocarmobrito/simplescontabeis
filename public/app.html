@@ -4418,15 +4418,19 @@ async function abrirGrade(atribuicaoId, souCliente){
 // de fechar), anual mostra o ano corrente, avulso mostra a pendência mais recente ainda aberta.
 function periodoDaVez(atribuicao, grade){
   if(!grade.length) return null;
+  // Só conta como pendência de verdade se faltar algum item OBRIGATÓRIO (*) — um período com tudo
+  // que era exigido já enviado é "Em dia", mesmo com slot opcional em aberto (ex.: "Outros Documentos
+  // Financeiros", onde nenhum item é obrigatório e ficava eternamente "Pendente" mesmo já enviado).
+  const pendente = p => (p && p.slots.some(s=>s.obrigatorio && !s.travado)) ? p : null;
   if(atribuicao.periodicidade==='mensal'){
     const hoje = new Date();
     const anterior = new Date(hoje.getFullYear(), hoje.getMonth()-1, 1);
     const ano = anterior.getFullYear(), mes = anterior.getMonth()+1;
-    return grade.find(p=>p.ano===ano && p.mes===mes) || null;
+    return pendente(grade.find(p=>p.ano===ano && p.mes===mes));
   }
   if(atribuicao.periodicidade==='anual'){
     const anoAtual = new Date().getFullYear();
-    return grade.find(p=>p.ano===anoAtual) || grade.slice().sort((a,b)=>b.ano-a.ano)[0];
+    return pendente(grade.find(p=>p.ano===anoAtual) || grade.slice().sort((a,b)=>b.ano-a.ano)[0]);
   }
   // avulso: a pendência aberta mais recente (algum slot ainda não travado)
   const abertos = grade.filter(p=>p.slots.some(s=>!s.travado));
