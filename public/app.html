@@ -12638,6 +12638,8 @@ async function atdAbrirConversa(S, id){
   atdRenderCabecalho(S);
   atdLigarComposer(S);
   atdLigarBuscaMsgs(S);
+  const listaMsgsEl = document.getElementById('atdMsgs');
+  if(listaMsgsEl) listaMsgsEl.addEventListener('scroll', ()=>{ if(listaMsgsEl.scrollTop < 120) atdCarregarAntigas(S); });
   await atdCarregarMensagens(S, true);
   atdMarcarLida(S, id);
   S.mensagensTimer = setInterval(()=>atdCarregarMensagens(S, false), 6000);
@@ -13740,6 +13742,30 @@ function atdCitaHtml(S, m){
   if(o) return `<div class="atd-cita"${attr}><b>${esc(atdAutorCurto(S,o))}</b><span>${esc(atdResumoMsg(o).slice(0,120))}</span></div>`;
   if(cit) return `<div class="atd-cita"${attr}><b>Mensagem marcada</b><span>${esc(String(cit.resumo||'').slice(0,120))}</span></div>`;
   return `<div class="atd-cita"${attr}><b>Mensagem anterior</b><span>(clique pra localizar)</span></div>`;
+}
+// Rolar até perto do topo da conversa carrega a página anterior (cursor por created_at) — sem isso só
+// dava pra ver as últimas 100 mensagens, sem jeito nenhum de rolar pra trás numa conversa bem movimentada
+// (achado real: 100 mensagens recentes cobriam só até uns dias atrás, parecia que "sumiu" tudo antes disso).
+async function atdCarregarAntigas(S){
+  if(S.carregandoAntigas || !S.temMaisAntigas || !S.cursorAntigo) return;
+  const conv = S.conversaAtiva;
+  const lista = document.getElementById('atdMsgs');
+  if(!conv || !lista) return;
+  S.carregandoAntigas = true;
+  try{
+    let resp;
+    try{ resp = await api(`/atendimento/conversas/${encodeURIComponent(conv)}/mensagens?limit=100&cursor=${encodeURIComponent(S.cursorAntigo)}`); }
+    catch(eBack){ resp = await dcApi(`/conversations/${conv}/messages?limit=100&cursor=${encodeURIComponent(S.cursorAntigo)}`, { meta:true }); }
+    if(S.conversaAtiva!==conv) return;
+    S.antigas = [...(resp.data||[]), ...(S.antigas||[])];
+    S.cursorAntigo = resp.meta && resp.meta.cursor || null;
+    S.temMaisAntigas = !!(resp.meta && resp.meta.has_more);
+    const alturaAntes = lista.scrollHeight, topoAntes = lista.scrollTop;
+    S.ultimaMsgId = null; // força o redesenho mesmo sem mudança na mensagem mais recente
+    await atdCarregarMensagens(S, false);
+    lista.scrollTop = topoAntes + (lista.scrollHeight - alturaAntes); // mantém o olhar na mesma mensagem
+  }catch(e){ toast(e.message,'err'); }
+  finally{ S.carregandoAntigas = false; }
 }
 // Clicar na mensagem marcada leva até ela na conversa; se for antiga (fora das últimas 100), busca páginas
 // anteriores. `chave` é o reforço (chave da mensagem no WhatsApp) pra quando ainda não se sabe o id local —
