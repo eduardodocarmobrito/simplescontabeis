@@ -2460,6 +2460,21 @@ try {
   // saída esperada = entrada / (1 - margem/100). Mês que não atingir vira alerta na coluna/relatório.
   { const c = sqlite.prepare(`PRAGMA table_info(entradas_saidas_ajuste)`).all() as any[]; if (!c.some((x) => x.name === "margem_pct")) sqlite.exec(`ALTER TABLE entradas_saidas_ajuste ADD COLUMN margem_pct REAL NOT NULL DEFAULT 0`); }
 }
+// Pendências de EFD ICMS/IPI (SPED-Fiscal) omissas, lidas do PDF "Consulta de Débitos / Obrigações
+// Acessórias" da SEFA (ex.: SEFA-PA). Cada linha é uma competência omissa de uma empresa (casada por
+// CNPJ na importação). A última consulta é a fonte da verdade — reimportar substitui tudo da empresa.
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS efd_omissos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    escritorio_id INTEGER NOT NULL,
+    empresa_id INTEGER NOT NULL,
+    obrigacao TEXT NOT NULL,
+    competencia TEXT NOT NULL,              -- 'AAAAMM'
+    inscricao_estadual TEXT,
+    importado_em TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (empresa_id, obrigacao, competencia)
+  );
+`);
 // Limpeza: fgts_sync_jobs foi criada numa primeira versão que salvava a sessão do FGTS Digital no
 // servidor pra reaproveitar depois — testando ao vivo, confirmamos que essa sessão não sobrevive
 // fora do navegador que fez o login (o próprio site trata como "Erro de Login"), então a busca
@@ -11311,6 +11326,97 @@ app.get("/api/entradas-saidas/diag", blockCliente, requireAdmin, async (req, res
   }
   res.json(out);
 });
+// ===================== EFD ICMS/IPI (SPED-Fiscal) omisso — Consulta SEFA =====================
+// Lê o PDF "Consulta de Débitos / Obrigações Acessórias" da SEFA (ex.: SEFA-PA). O relatório lista
+// SÓ as pendências, então toda linha "<IE> <obrigação com EFD> MM/AAAA" é uma competência omissa.
+// Casa a empresa pelo CNPJ do cabeçalho. Ex. de texto do pdf-parse (colado, sem a coluna Situação):
+//   "USUÁRIO: ALTO BRASIL ... LTDACNPJ: 32.773.119/0001-93
+//    156332850 308-EFD 01/2026 156332850 308-EFD 02/2026 ... 156332850 308-EFD 08/2026"
+function efdOmissoParse(texto: string): { cnpj: string | null; usuario: string | null; itens: { obrigacao: string; inscricao: string; competencia: string }[] } {
+  const t = (texto || "").replace(/ /g, " ");
+  const mCnpj = /CNPJ:?\s*([\d]{2}\.?[\d]{3}\.?[\d]{3}\/?[\d]{4}-?[\d]{2})/i.exec(t);
+  const cnpj = mCnpj ? mCnpj[1].replace(/\D/g, "") : null;
+  const mUser = /USU[ÁA]RIO:?\s*(.+?)\s*CNPJ/i.exec(t);
+  const usuario = mUser ? mUser[1].trim() : null;
+  // IE (6-12 díg.) + obrigação (ex.: "308-EFD") que contenha "EFD" + competência MM/AAAA. Só EFD entra:
+  // o relatório pode listar outras obrigações acessórias, mas o card é de SPED-Fiscal ICMS/IPI.
+  const itens: { obrigacao: string; inscricao: string; competencia: string }[] = [];
+  const re = /(\d{6,12})\s+(\d{2,4}-[A-ZÀ-Ú]*EFD[A-ZÀ-Ú]*)\s+(0[1-9]|1[0-2])\/(20\d{2})/gi;
+  const vistos = new Set<string>();
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(t))) {
+    const inscricao = m[1];
+    const obrigacao = m[2].toUpperCase();
+    const competencia = `${m[4]}${m[3]}`; // AAAAMM
+    const chave = `${obrigacao}|${competencia}`;
+    if (vistos.has(chave)) continue;
+    vistos.add(chave);
+    itens.push({ obrigacao, inscricao, competencia });
+  }
+  return { cnpj, usuario, itens };
+}
+const uploadEfdOmisso = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
+app.post("/api/efd-omisso/importar", blockCliente, requirePermissao("dashboard", "editar"), uploadEfdOmisso.single("arquivo"), async (req, res) => {
+  const user = (req as any).user;
+  const escritorioId = user.escritorioId;
+  if (!req.file) return res.status(400).json({ error: "Selecione o PDF da Consulta de Débitos da SEFA." });
+  let texto = "";
+  try { texto = await obterTextoDoPdf(req.file.buffer); } catch { /* texto vazio cai no erro abaixo */ }
+  if (!/OBRIGA[ÇC]|CONSULTA DE D[ÉE]BITO|EFD/i.test(texto)) {
+    return res.status(400).json({ error: "Este PDF não parece uma Consulta de Débitos / Obrigações Acessórias da SEFA." });
+  }
+  const parsed = efdOmissoParse(texto);
+  if (!parsed.cnpj) return res.status(400).json({ error: "Não encontrei o CNPJ no PDF — confira se é a Consulta de Débitos da SEFA." });
+  if (!parsed.itens.length) return res.status(400).json({ error: "Nenhuma pendência de EFD (SPED-Fiscal ICMS/IPI) encontrada neste PDF." });
+  const empresa = (sqlite.prepare(`SELECT id, nome, cnpj FROM empresas WHERE escritorio_id = ? AND ativo = 1`).all(escritorioId) as any[])
+    .find((e) => String(e.cnpj || "").replace(/\D/g, "") === parsed.cnpj);
+  if (!empresa) {
+    return res.status(404).json({ error: `Nenhuma empresa ativa com o CNPJ ${parsed.cnpj.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, "$1.$2.$3/$4-$5")} (${parsed.usuario || "—"}) foi encontrada no escritório.` });
+  }
+  if (!podeAcessarEmpresa(user, empresa.id)) return res.status(403).json({ error: "Você não tem acesso a esta empresa." });
+  // A consulta é a foto completa da obrigação EFD da empresa: substitui tudo que havia dela.
+  const tx = sqlite.prepare(`DELETE FROM efd_omissos WHERE escritorio_id = ? AND empresa_id = ?`);
+  const ins = sqlite.prepare(`INSERT OR IGNORE INTO efd_omissos (escritorio_id, empresa_id, obrigacao, competencia, inscricao_estadual) VALUES (?, ?, ?, ?, ?)`);
+  sqlite.exec("BEGIN");
+  try {
+    tx.run(escritorioId, empresa.id);
+    for (const it of parsed.itens) ins.run(escritorioId, empresa.id, it.obrigacao, it.competencia, it.inscricao);
+    sqlite.exec("COMMIT");
+  } catch (e: any) { sqlite.exec("ROLLBACK"); return res.status(500).json({ error: "Falha ao salvar: " + e.message }); }
+  res.json({ ok: true, empresaNome: empresa.nome, competencias: parsed.itens.length });
+});
+app.post("/api/efd-omisso/empresa/:id/limpar", blockCliente, requirePermissao("dashboard", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.params.id);
+  if (!podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  sqlite.prepare(`DELETE FROM efd_omissos WHERE escritorio_id = ? AND empresa_id = ?`).run(user.escritorioId, empresaId);
+  res.json({ ok: true });
+});
+// Card: empresas com ≥1 competência de EFD ICMS/IPI omissa (da última Consulta SEFA importada).
+function cardEfdOmisso(user: any): any[] {
+  const visiveis = new Set(empresasVisiveis(user));
+  const rows = sqlite
+    .prepare(
+      `SELECT o.empresa_id as empresaId, e.nome as empresaNome, o.inscricao_estadual as inscricao,
+              o.competencia as competencia, o.obrigacao as obrigacao, MAX(o.importado_em) as importadoEm
+       FROM efd_omissos o JOIN empresas e ON e.id = o.empresa_id AND e.ativo = 1
+       WHERE o.escritorio_id = ?
+       GROUP BY o.empresa_id, o.competencia
+       ORDER BY e.nome, o.competencia`
+    )
+    .all(user.escritorioId) as any[];
+  const porEmpresa = new Map<number, any>();
+  for (const r of rows) {
+    if (!visiveis.has(r.empresaId)) continue;
+    if (!porEmpresa.has(r.empresaId)) {
+      porEmpresa.set(r.empresaId, { empresaId: r.empresaId, empresaNome: r.empresaNome, inscricao: r.inscricao, obrigacao: r.obrigacao, importadoEm: r.importadoEm, competencias: [] as string[] });
+    }
+    const e = porEmpresa.get(r.empresaId);
+    e.competencias.push(`${r.competencia.slice(4, 6)}/${r.competencia.slice(0, 4)}`); // AAAAMM -> MM/AAAA
+    if (r.importadoEm > e.importadoEm) e.importadoEm = r.importadoEm;
+  }
+  return [...porEmpresa.values()];
+}
 // Envia o PDF (ajustado) de Entradas/Saídas pros contatos da empresa (e-mail + WhatsApp). Mesma mecânica
 // do envio de Programação de Férias (ver enviarRelatorioEmpresa em ferias.ts).
 async function entradasSaidasEnviarEmpresa(escritorioId: number, empresaId: number, canal: any): Promise<{ ok: boolean; erro?: string }> {
@@ -17711,7 +17817,7 @@ app.get("/api/financeiro/resumo", blockCliente, requirePermissao("financeiro", "
 // função abaixo devolve a lista (o card mostra só items.length); todas já filtram pelas empresas
 // que o usuário logado pode ver (empresasVisiveis), pro caso de um Colaborador restrito abrir o
 // Painel.
-const CARD_TIPOS: string[] = ["certificados_vencer", "das_atraso", "situacao_fiscal", "caixapostal_nao_lida", "checklist_atraso", "solicitacoes_pendentes", "envio_atraso", "solicitacao_atraso", "licencas_vencer", "pesquisa_pagamento"];
+const CARD_TIPOS: string[] = ["certificados_vencer", "das_atraso", "situacao_fiscal", "caixapostal_nao_lida", "checklist_atraso", "solicitacoes_pendentes", "envio_atraso", "solicitacao_atraso", "licencas_vencer", "pesquisa_pagamento", "efd_omisso"];
 
 // Piso de competência (aaaamm, ex.: 202607) configurado em painel_monitoramento_config — null
 // quando não há corte definido (comportamento de sempre: cada card usa o período mais antigo já
@@ -18313,6 +18419,7 @@ async function calcularCardComputado(tipo: string, user: any, parametro?: string
   if (tipo === "licencas_vencer") return cardLicencasAVencer(user);
   if (tipo === "das_atraso") return cardDasEmAtraso(user);
   if (tipo === "situacao_fiscal") return cardSituacaoFiscal(user);
+  if (tipo === "efd_omisso") return cardEfdOmisso(user);
   if (tipo === "caixapostal_nao_lida") return cardCaixaPostalNaoLida(user);
   if (tipo === "pesquisa_pagamento") return cardPesquisaPagamento(user);
   if (tipo === "checklist_atraso") return cardChecklistAtraso(user);

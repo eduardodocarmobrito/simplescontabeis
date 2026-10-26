@@ -2271,6 +2271,7 @@ const CARD_TIPOS_INFO = {
   licencas_vencer: { label:'Licenças a Vencer', subtitulo:'Vencidas ou vencendo nos próximos 30 dias' },
   das_atraso: { label:'DAS em Atraso', subtitulo:'Competências não entregues' },
   situacao_fiscal: { label:'Situação Fiscal', subtitulo:'Empresas com pendência' },
+  efd_omisso: { label:'SPED-Fiscal (EFD ICMS/IPI) Omisso', subtitulo:'Empresas obrigadas com EFD não entregue (Consulta SEFA)' },
   caixapostal_nao_lida: { label:'Mensagens no e-CAC', subtitulo:'Empresas com mensagem não lida na Caixa Postal' },
   pesquisa_pagamento: { label:'Pagamento DAS/DCTF-Web', subtitulo:'Cliente respondeu que não pagou, ou não respondeu a pesquisa' },
   checklist_atraso: { label:'Documentos Pendentes', subtitulo:'Competência anterior, após o prazo, sem envio do cliente' },
@@ -2398,25 +2399,54 @@ async function cardModal(c){
   });
 }
 function cardDetalheModal(c){
+  const podeImportarEfd = c.tipo==='efd_omisso' && can('dashboard','editar');
   openModal(`
     <h3>${esc(c.titulo)}</h3>
+    ${podeImportarEfd? `<div class="row" style="align-items:center; gap:10px; margin-bottom:10px;">
+      <input type="file" id="efdImpFile" accept="application/pdf" class="hidden">
+      <button class="btn" id="efdImpBtn">⬆ Importar Consulta SEFA (PDF)</button>
+      <span id="efdImpMsg" style="font-size:12px; color:var(--ink-soft);">Importe o PDF "Consulta de Débitos / Obrigações Acessórias" da SEFA — a empresa é identificada pelo CNPJ.</span>
+    </div>`:''}
     <div class="field" style="max-width:360px; margin-bottom:10px;"><input type="text" id="cdFiltro" placeholder="Buscar por empresa…" autocomplete="off" disabled></div>
     <div id="cardDetalheBody"><div class="empty-state">Carregando…</div></div>
     <div class="modal-actions"><button class="btn" id="cdFechar">Fechar</button></div>
   `, '820px');
   document.getElementById('cdFechar').addEventListener('click', closeModal);
-  (async ()=>{
+  if(podeImportarEfd){
+    const fileEl = document.getElementById('efdImpFile');
+    const btnEl = document.getElementById('efdImpBtn');
+    const msgEl = document.getElementById('efdImpMsg');
+    btnEl.addEventListener('click', ()=>fileEl.click());
+    fileEl.addEventListener('change', async ()=>{
+      const f = fileEl.files[0]; if(!f) return;
+      btnEl.disabled = true; msgEl.style.color = 'var(--ink-soft)'; msgEl.textContent = 'Lendo o PDF…';
+      try{
+        const fd = new FormData(); fd.append('arquivo', f);
+        const r = await api('/efd-omisso/importar', { method:'POST', body: fd });
+        msgEl.style.color = 'var(--credit)';
+        msgEl.textContent = `${r.empresaNome}: ${r.competencias} competência(s) omissa(s) importada(s).`;
+        carregar();
+        pageDashboard();
+      }catch(e){ msgEl.style.color = 'var(--debit)'; msgEl.textContent = e.message; }
+      finally{ btnEl.disabled = false; fileEl.value = ''; }
+    });
+  }
+  async function carregar(){
     const box = document.getElementById('cardDetalheBody');
     const filtroEl = document.getElementById('cdFiltro');
     let todos;
     try{
       const { tipo, items } = await api('/dashboard/cards/'+c.id+'/detalhe');
       todos = items;
-      if(!items.length){ filtroEl.remove(); box.innerHTML = '<div class="empty-state">Nada pendente — tudo em dia.</div>'; return; }
-      filtroEl.disabled = false;
-      filtroEl.addEventListener('input', ()=>desenhar(tipo, filtroEl.value));
+      if(!items.length){
+        // efd_omisso pode ser reimportado na hora: mantém o filtro (oculto) pra não quebrar o reload.
+        if(c.tipo==='efd_omisso'){ filtroEl.style.display='none'; box.innerHTML = '<div class="empty-state">Nenhuma pendência de EFD importada ainda — importe o PDF da Consulta de Débitos da SEFA acima.</div>'; return; }
+        filtroEl.remove(); box.innerHTML = '<div class="empty-state">Nada pendente — tudo em dia.</div>'; return;
+      }
+      filtroEl.style.display=''; filtroEl.disabled = false;
+      filtroEl.oninput = ()=>desenhar(tipo, filtroEl.value);
       desenhar(tipo, '');
-    }catch(e){ filtroEl.remove(); box.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; return; }
+    }catch(e){ if(c.tipo!=='efd_omisso') filtroEl.remove(); box.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; return; }
     function desenhar(tipo, filtro){
       const termo = normalizaTxt(filtro).trim();
       const items = termo ? todos.filter(i=>normalizaTxt(i.empresaNome).includes(termo)) : todos;
@@ -2489,11 +2519,23 @@ function cardDetalheModal(c){
         box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Alerta</th></tr></thead><tbody>
           ${items.map(i=>`<tr><td>${esc(i.empresaNome)}</td><td>${esc(i.alerta)}</td></tr>`).join('')}
         </tbody></table>`;
+      } else if(tipo==='efd_omisso'){
+        const podeLimpar = can('dashboard','editar');
+        box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Insc. Estadual</th><th>Competências omissas</th><th>Importado</th>${podeLimpar?'<th></th>':''}</tr></thead><tbody>
+          ${items.map(i=>`<tr><td>${esc(i.empresaNome)}</td><td>${esc(i.inscricao||'—')}</td><td>${i.competencias.map(comp=>`<span class="tag bad" style="margin:2px 6px 2px 0; display:inline-block;">${esc(comp)}</span>`).join('')}</td><td style="font-size:12px; color:var(--ink-soft);">${i.importadoEm?fmtDateHora(i.importadoEm):'—'}</td>${podeLimpar?`<td style="text-align:right;"><a href="#" class="efd-limpar" data-emp="${i.empresaId}" data-nome="${esc(i.empresaNome)}" title="Remover da lista — a empresa regularizou o EFD" style="text-decoration:none; color:var(--debit); font-weight:700;">✕</a></td>`:''}</tr>`).join('')}
+        </tbody></table>${podeLimpar?'<div style="font-size:11.5px; color:var(--ink-soft); margin-top:8px;">Clique no <b>✕</b> quando a empresa regularizar — ou apenas reimporte a Consulta SEFA atualizada (ela substitui a lista da empresa).</div>':''}`;
+        if(podeLimpar) box.querySelectorAll('.efd-limpar').forEach(a=>a.addEventListener('click', async (ev)=>{
+          ev.preventDefault();
+          if(!confirmar('Remover '+a.dataset.nome+' da lista de EFD omisso? Use quando a empresa já regularizou.')) return;
+          try{ await api('/efd-omisso/empresa/'+a.dataset.emp+'/limpar', { method:'POST' }); toast('Empresa removida da lista.','ok'); carregar(); pageDashboard(); }
+          catch(e){ toast(e.message,'err'); }
+        }));
       } else {
         box.innerHTML = '<div class="empty-state">Tipo de card desconhecido.</div>';
       }
     }
-  })();
+  }
+  carregar();
 }
 // Piso de competência aplicado por TODOS os cards de pendência (DAS em Atraso, Documentos
 // Pendentes de Envio, Documentos Pendentes, Solicitações de Documentos) — nenhum deles cobra
