@@ -2275,7 +2275,7 @@ const CARD_TIPOS_INFO = {
   das_atraso: { label:'DAS em Atraso', subtitulo:'Competências não entregues' },
   situacao_fiscal: { label:'Situação Fiscal', subtitulo:'Empresas com pendência' },
   efd_omisso: { label:'SPED-Fiscal (EFD ICMS/IPI) Omisso', subtitulo:'Empresas obrigadas com EFD não entregue (Consulta SEFA)' },
-  cnd_federal: { label:'Certidão Federal (CND)', subtitulo:'Certidão vencida, vencendo ou positiva (com débito) — RFB/PGFN' },
+  cnd_federal: { label:'Certidão Federal (CND)', subtitulo:'Empresas sem regularidade federal (RFB/PGFN) — via Situação Fiscal' },
   cnd_estadual: { label:'Certidão Estadual (CND)', subtitulo:'Certidão vencida, vencendo ou positiva (com débito) — SEFA' },
   cnd_municipal: { label:'Certidão Municipal (CND)', subtitulo:'Certidão vencida, vencendo ou positiva (com débito) — Prefeitura' },
   caixapostal_nao_lida: { label:'Mensagens no e-CAC', subtitulo:'Empresas com mensagem não lida na Caixa Postal' },
@@ -2409,7 +2409,6 @@ function cardDetalheModal(c){
   const cndSucesso = r=>{ const t={negativa:'negativa',positiva_efeito:'positiva c/ efeito de negativa',positiva:'POSITIVA (com débito)'}[r.tipo]||r.tipo; return `${r.empresaNome}: certidão ${t}${r.validade?' — válida até '+fmtDateIso(r.validade):''}.`; };
   const IMPORT_SEFA = {
     efd_omisso: { endpoint:'/efd-omisso/importar', botao:'⬆ Importar Consulta SEFA (PDF)', ajuda:'Importe o PDF "Consulta de Débitos / Obrigações Acessórias" da SEFA — a empresa é identificada pelo CNPJ.', sucesso:r=>`${r.empresaNome}: ${r.competencias} competência(s) omissa(s) importada(s).` },
-    cnd_federal: { endpoint:'/cnd/federal/importar', botao:'⬆ Importar Certidão Federal (PDF)', ajuda:'Importe o PDF da Certidão de Débitos Federais (RFB/PGFN) — a empresa é identificada pelo CNPJ.', sucesso:cndSucesso },
     cnd_estadual: { endpoint:'/cnd/estadual/importar', botao:'⬆ Importar Certidão Estadual (PDF)', ajuda:'Importe o PDF da Certidão de Débitos Estaduais da SEFA — a empresa é identificada pelo CNPJ.', sucesso:cndSucesso },
     cnd_municipal: { endpoint:'/cnd/municipal/importar', botao:'⬆ Importar Certidão Municipal (PDF)', ajuda:'Importe o PDF da Certidão de Débitos Municipais (Prefeitura) — a empresa é identificada pelo CNPJ.', sucesso:cndSucesso },
   };
@@ -2493,7 +2492,8 @@ function cardDetalheModal(c){
           try{ await api('/dashboard/das-dispensa', { method:'POST', body:{ empresaId:Number(a.dataset.emp), competencia:a.dataset.comp } }); toast('Competência dispensada (sem movimento).','ok'); cardModal(c); }
           catch(e){ toast(e.message,'err'); }
         }));
-      } else if(tipo==='situacao_fiscal'){
+      } else if(tipo==='situacao_fiscal' || tipo==='cnd_federal'){
+        // CND Federal é alimentada pela Situação Fiscal (RFB/PGFN) — mesma fonte/detalhe.
         box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Alerta</th><th></th></tr></thead><tbody>
           ${items.map(i=>`<tr><td>${esc(i.empresaNome)}</td><td>${esc(i.alerta)}</td><td style="text-align:right;">${i.docId?`<a class="btn small" href="/api/integracontador/documentos/${i.docId}/pdf" target="_blank" rel="noopener">Baixar Situação Fiscal</a>`:''}</td></tr>`).join('')}
         </tbody></table>`;

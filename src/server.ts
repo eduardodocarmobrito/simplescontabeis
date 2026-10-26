@@ -2547,7 +2547,7 @@ sqlite.exec(`DROP TABLE IF EXISTS fgts_sync_jobs`);
     sqlite.prepare(`INSERT OR IGNORE INTO dashboard_card_seed (escritorio_id, tipo) VALUES (1, ?)`).run(tipo);
   };
   seedCard("efd_omisso", "SPED-Fiscal (EFD ICMS/IPI) Omisso", "Empresas obrigadas com EFD não entregue (Consulta SEFA)");
-  seedCard("cnd_federal", "Certidão Federal (CND)", "Certidão vencida, vencendo ou positiva (com débito) — RFB/PGFN");
+  seedCard("cnd_federal", "Certidão Federal (CND)", "Empresas sem regularidade federal (RFB/PGFN) — via Situação Fiscal");
   seedCard("cnd_estadual", "Certidão Estadual (CND)", "Certidão vencida, vencendo ou positiva (com débito) — SEFA");
   seedCard("cnd_municipal", "Certidão Municipal (CND)", "Certidão vencida, vencendo ou positiva (com débito) — Prefeitura");
 }
@@ -18672,7 +18672,10 @@ async function calcularCardComputado(tipo: string, user: any, parametro?: string
   if (tipo === "das_atraso") return cardDasEmAtraso(user);
   if (tipo === "situacao_fiscal") return cardSituacaoFiscal(user);
   if (tipo === "efd_omisso") return cardEfdOmisso(user);
-  if (tipo === "cnd_federal") return cardCnd(user, "federal");
+  // CND Federal = regularidade RFB/PGFN, que já vem automática pela Situação Fiscal (SITFIS) buscada
+  // pelo Integra Contador — não depende de importar PDF. Empresa com pendência no SITFIS não emitiria
+  // CND negativa, então entra no card. Reaproveita cardSituacaoFiscal (mesma fonte, mesmo detalhe).
+  if (tipo === "cnd_federal") return cardSituacaoFiscal(user);
   if (tipo === "cnd_estadual") return cardCnd(user, "estadual");
   if (tipo === "cnd_municipal") return cardCnd(user, "municipal");
   if (tipo === "caixapostal_nao_lida") return cardCaixaPostalNaoLida(user);
