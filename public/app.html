@@ -12514,6 +12514,10 @@ async function atendimentoMontar(escopo, box){
   if(S.geracao!==minha) return;
   if(S.listaTimer) clearInterval(S.listaTimer);
   S.listaTimer = setInterval(()=>atdCarregarLista(S), 10000);
+  // Navegador throttleia (ou pausa) o setInterval de aba em segundo plano por muito tempo — se a pessoa
+  // deixa a tela aberta minimizada por dias, a lista pode ficar "presa" na última leitura. Força uma
+  // atualização assim que a aba volta a ficar visível, sem esperar o próximo tick do timer.
+  document.addEventListener('visibilitychange', ()=>{ if(!document.hidden && S.geracao===minha && atdNaTela(S)) atdCarregarLista(S); });
   if(S.conversaAtiva){
     const focar = S.focarAoAbrir; S.focarAoAbrir = false;
     await atdAbrirConversa(S, S.conversaAtiva);
