@@ -10801,6 +10801,22 @@ async function dominioRelatoriosSincronizar(
     try {
       const buf = await item.baixar();
       const texto = await obterTextoDoPdf(buf);
+      // Consulta de Débitos / Obrigações Acessórias (SEFA): rota própria — casa por CNPJ e atualiza o
+      // card de EFD omisso, sem passar pelo fluxo de relatório por código do Domínio. Qualquer PDF
+      // desse tipo que caia na pasta monitorada é ingerido automaticamente (robô/escritório só dropa).
+      if (/CONSULTA DE D[ÉE]BITO|OBRIGA[ÇC][ÕO]ES ACESS[ÓO]RIA/i.test(texto) && /\d{2,4}-[A-ZÀ-Ú]*EFD/i.test(texto)) {
+        if (opts.dryRun) { previews.push({ nomeArquivo: item.nome, tiposDetectados: ["consulta_debitos_sefa"], periodoInicio: null, periodoFim: null, cnpjDetectado: null, codigoArquivoDominio: null, empresaEncontrada: null, textoPreview: texto.slice(0, 2000) }); continue; }
+        const baseSefa = { escritorioId, itemId: item.id, nomeArquivo: item.nome, periodoInicio: null, periodoFim: null, cnpjDetectado: null, codigoArquivo: null, textoPreview: texto.slice(0, 2000), modificadoEm: item.modificadoEm, tipoDetectado: "consulta_debitos_sefa", envioDocumentoId: null };
+        try {
+          const r = efdOmissoProcessarTexto(escritorioId, texto);
+          domRelGravarControle({ ...baseSefa, empresaId: r.empresaId, status: "ok", erro: null, arquivoPendentePath: null });
+          ok++;
+        } catch (e: any) {
+          domRelGravarControle({ ...baseSefa, empresaId: null, status: "erro", erro: e.message, arquivoPendentePath: domRelSalvarPendente(escritorioId, buf, item.nome) });
+          erros++;
+        }
+        continue;
+      }
       const tipoPeloNome = domRelTipoPeloNome(item.nome);
       const tipos = tipoPeloNome ? [tipoPeloNome] : domRelClassificarTipos(texto);
       let periodo = domRelExtrairPeriodo(texto, item.nome);
