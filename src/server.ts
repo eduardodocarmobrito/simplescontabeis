@@ -2493,6 +2493,18 @@ sqlite.exec(`DROP TABLE IF EXISTS fgts_sync_jobs`);
   if (!colsCards.some((c) => c.name === "parametro")) {
     sqlite.exec(`ALTER TABLE dashboard_cards ADD COLUMN parametro TEXT`);
   }
+  // Seed automático do card de EFD ICMS/IPI omisso no escritório principal (id=1), uma vez só: marca
+  // na efd_omisso_seed pra NÃO ressuscitar caso o usuário apague o card depois.
+  sqlite.exec(`CREATE TABLE IF NOT EXISTS efd_omisso_seed (escritorio_id INTEGER PRIMARY KEY, criado_em TEXT NOT NULL DEFAULT (datetime('now')))`);
+  const jaSeed = sqlite.prepare(`SELECT 1 FROM efd_omisso_seed WHERE escritorio_id = 1`).get();
+  const escPrincipal = sqlite.prepare(`SELECT 1 FROM escritorios WHERE id = 1`).get();
+  if (!jaSeed && escPrincipal) {
+    const ordem = ((sqlite.prepare(`SELECT MAX(ordem) as m FROM dashboard_cards WHERE escritorio_id = 1`).get() as any)?.m || 0) + 1;
+    sqlite
+      .prepare(`INSERT INTO dashboard_cards (titulo, valor, subtitulo, cor, ordem, created_by, escritorio_id, tipo, parametro) VALUES (?, '0', ?, 'brass', ?, NULL, 1, 'efd_omisso', NULL)`)
+      .run("SPED-Fiscal (EFD ICMS/IPI) Omisso", "Empresas obrigadas com EFD não entregue (Consulta SEFA)", ordem);
+    sqlite.prepare(`INSERT INTO efd_omisso_seed (escritorio_id) VALUES (1)`).run();
+  }
 }
 // Migração leve: prazo (dia do mês) de um modelo de Solicitação de Documentos — usado pelo card
 // "Documentos pendentes" pra saber quando um item obrigatório já venceu sem upload.
@@ -11355,35 +11367,44 @@ function efdOmissoParse(texto: string): { cnpj: string | null; usuario: string |
   }
   return { cnpj, usuario, itens };
 }
-const uploadEfdOmisso = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
-app.post("/api/efd-omisso/importar", blockCliente, requirePermissao("dashboard", "editar"), uploadEfdOmisso.single("arquivo"), async (req, res) => {
-  const user = (req as any).user;
-  const escritorioId = user.escritorioId;
-  if (!req.file) return res.status(400).json({ error: "Selecione o PDF da Consulta de Débitos da SEFA." });
-  let texto = "";
-  try { texto = await obterTextoDoPdf(req.file.buffer); } catch { /* texto vazio cai no erro abaixo */ }
-  if (!/OBRIGA[ÇC]|CONSULTA DE D[ÉE]BITO|EFD/i.test(texto)) {
-    return res.status(400).json({ error: "Este PDF não parece uma Consulta de Débitos / Obrigações Acessórias da SEFA." });
+// Núcleo compartilhado: recebe o texto de uma Consulta SEFA, casa a empresa pelo CNPJ e substitui a
+// foto de EFD omisso dela. Usado tanto pelo upload manual quanto pela coleta automática (robô).
+// Lança Error (com .status opcional) quando não dá pra importar — o chamador decide como reportar.
+function efdOmissoProcessarTexto(escritorioId: number, texto: string): { empresaId: number; empresaNome: string; competencias: number } {
+  if (!/OBRIGA[ÇC]|CONSULTA DE D[ÉE]BITO|EFD/i.test(texto || "")) {
+    const e: any = new Error("Este PDF não parece uma Consulta de Débitos / Obrigações Acessórias da SEFA."); e.status = 400; throw e;
   }
   const parsed = efdOmissoParse(texto);
-  if (!parsed.cnpj) return res.status(400).json({ error: "Não encontrei o CNPJ no PDF — confira se é a Consulta de Débitos da SEFA." });
-  if (!parsed.itens.length) return res.status(400).json({ error: "Nenhuma pendência de EFD (SPED-Fiscal ICMS/IPI) encontrada neste PDF." });
+  if (!parsed.cnpj) { const e: any = new Error("Não encontrei o CNPJ no PDF — confira se é a Consulta de Débitos da SEFA."); e.status = 400; throw e; }
+  if (!parsed.itens.length) { const e: any = new Error("Nenhuma pendência de EFD (SPED-Fiscal ICMS/IPI) encontrada neste PDF."); e.status = 400; throw e; }
   const empresa = (sqlite.prepare(`SELECT id, nome, cnpj FROM empresas WHERE escritorio_id = ? AND ativo = 1`).all(escritorioId) as any[])
-    .find((e) => String(e.cnpj || "").replace(/\D/g, "") === parsed.cnpj);
+    .find((em) => String(em.cnpj || "").replace(/\D/g, "") === parsed.cnpj);
   if (!empresa) {
-    return res.status(404).json({ error: `Nenhuma empresa ativa com o CNPJ ${parsed.cnpj.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, "$1.$2.$3/$4-$5")} (${parsed.usuario || "—"}) foi encontrada no escritório.` });
+    const cnpjFmt = parsed.cnpj.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, "$1.$2.$3/$4-$5");
+    const e: any = new Error(`Nenhuma empresa ativa com o CNPJ ${cnpjFmt} (${parsed.usuario || "—"}) foi encontrada no escritório.`); e.status = 404; throw e;
   }
-  if (!podeAcessarEmpresa(user, empresa.id)) return res.status(403).json({ error: "Você não tem acesso a esta empresa." });
   // A consulta é a foto completa da obrigação EFD da empresa: substitui tudo que havia dela.
-  const tx = sqlite.prepare(`DELETE FROM efd_omissos WHERE escritorio_id = ? AND empresa_id = ?`);
+  const del = sqlite.prepare(`DELETE FROM efd_omissos WHERE escritorio_id = ? AND empresa_id = ?`);
   const ins = sqlite.prepare(`INSERT OR IGNORE INTO efd_omissos (escritorio_id, empresa_id, obrigacao, competencia, inscricao_estadual) VALUES (?, ?, ?, ?, ?)`);
   sqlite.exec("BEGIN");
   try {
-    tx.run(escritorioId, empresa.id);
+    del.run(escritorioId, empresa.id);
     for (const it of parsed.itens) ins.run(escritorioId, empresa.id, it.obrigacao, it.competencia, it.inscricao);
     sqlite.exec("COMMIT");
-  } catch (e: any) { sqlite.exec("ROLLBACK"); return res.status(500).json({ error: "Falha ao salvar: " + e.message }); }
-  res.json({ ok: true, empresaNome: empresa.nome, competencias: parsed.itens.length });
+  } catch (e) { sqlite.exec("ROLLBACK"); throw e; }
+  return { empresaId: empresa.id, empresaNome: empresa.nome, competencias: parsed.itens.length };
+}
+const uploadEfdOmisso = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
+app.post("/api/efd-omisso/importar", blockCliente, requirePermissao("dashboard", "editar"), uploadEfdOmisso.single("arquivo"), async (req, res) => {
+  const user = (req as any).user;
+  if (!req.file) return res.status(400).json({ error: "Selecione o PDF da Consulta de Débitos da SEFA." });
+  let texto = "";
+  try { texto = await obterTextoDoPdf(req.file.buffer); } catch { /* texto vazio cai no erro abaixo */ }
+  try {
+    const r = efdOmissoProcessarTexto(user.escritorioId, texto);
+    if (!podeAcessarEmpresa(user, r.empresaId)) return res.status(403).json({ error: "Você não tem acesso a esta empresa." });
+    res.json({ ok: true, empresaNome: r.empresaNome, competencias: r.competencias });
+  } catch (e: any) { res.status(e.status || 500).json({ error: e.message }); }
 });
 app.post("/api/efd-omisso/empresa/:id/limpar", blockCliente, requirePermissao("dashboard", "editar"), (req, res) => {
   const user = (req as any).user;
