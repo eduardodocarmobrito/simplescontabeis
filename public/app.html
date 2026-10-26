@@ -14221,7 +14221,8 @@ async function feriasMontar(box){
           <thead><tr><th>Código</th><th>Funcionário</th><th>Situação</th><th style="text-align:center;">Afast.</th><th>Admissão</th><th>Período aquisitivo</th><th>Limite p/ gozo</th><th style="text-align:center;">Dias em aberto</th><th>Alerta</th></tr></thead><tbody>
           ${emp.funcionarios.map(f=>{
             const diasLim = feriasDiasAteLimite(f.limite_gozo);
-            const alerta60 = diasLim!=null && diasLim<=60;
+            // só alerta quando FALTAM <=60 dias (futuro); limite já passado não é "vencido" aqui
+            const alerta60 = diasLim!=null && diasLim>=0 && diasLim<=60;
             return `<tr>
             <td>${esc(f.codigo||'—')}</td>
             <td style="white-space:normal;">${esc(f.nome)}</td>
@@ -14231,7 +14232,7 @@ async function feriasMontar(box){
             <td style="font-size:12px;">${feriasBr(f.inicio_aquisitivo)} a ${feriasBr(f.fim_aquisitivo)}</td>
             <td style="font-size:12px;">${feriasBr(f.limite_gozo)}</td>
             <td style="font-size:12px; text-align:center;">${f.dias_restantes??'—'}</td>
-            <td style="font-size:11.5px;">${alerta60?`<span class="tag ${diasLim<0?'bad':'warn'}" title="Limite p/ gozo ${diasLim<0?('venceu há '+(-diasLim)+' dia(s)'):('em '+diasLim+' dia(s)')} — próximo de vencer a 2ª férias">⚠ ${diasLim<0?'vencido':diasLim+'d p/ limite'}</span>`:'<span style="color:var(--ink-soft);">—</span>'}</td>
+            <td style="font-size:11.5px;">${alerta60?`<span class="tag warn" title="Limite p/ gozo em ${diasLim} dia(s) — próximo de vencer a 2ª férias">⚠ ${diasLim}d p/ limite</span>`:'<span style="color:var(--ink-soft);">—</span>'}</td>
           </tr>`;}).join('')}
         </tbody></table>
       </div>

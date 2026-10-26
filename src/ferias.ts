@@ -66,12 +66,15 @@ export function feriasExtrairFuncionarios(texto: string): {
     const resto = m[8];
     const restoDatas = [...resto.matchAll(/\d{2}\/\d{2}\/\d{4}/g)];
     const limiteGozoBr = restoDatas[0]?.[0] || null;
-    // "Dias afast." (dias afastado) vem DEPOIS do "Limite p/ gozo" na linha — >0 marca que o
-    // funcionário está afastado. Pega o 1º número depois da data do limite (faltas vem só depois).
+    // "Dias afast." (dias afastado) vem GRUDADO logo depois da data "Limite p/ gozo" — >0 marca que o
+    // funcionário está afastado. Quando há afastamento é um número no início (ex.: "141-..."); quando
+    // não há, a coluna vem como "-" ("--........" = afast e faltas ambos vazios). Por isso ANCORA no
+    // começo (^): sem isso o \d pegava o 1º dígito de qualquer lugar (o dia da data final da linha),
+    // marcando todo mundo como afastado.
     let diasAfast = 0;
     if (restoDatas[0]) {
       const depois = resto.slice((restoDatas[0].index || 0) + restoDatas[0][0].length);
-      const mA = /(\d{1,3})/.exec(depois);
+      const mA = /^(\d{1,3})/.exec(depois);
       if (mA) diasAfast = parseInt(mA[1], 10) || 0;
     }
     let diasRestantes: number | null = null;
