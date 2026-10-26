@@ -9847,7 +9847,12 @@ function nfeIntegrarFinanceiro(docId: number, userId: number): { ok: boolean; er
   const detalhe = row.xml ? nfe.detalharNfe(row.xml) : null;
   const parcelasXml = detalhe?.duplicatas?.parcelas || [];
   const parcelas = parcelasXml.length ? parcelasXml : [{ nDup: null, dVenc: null, vDup: row.valor_total || 0 }];
-  const numero = nfeChaveNumero(row.chave_acesso) || row.id;
+  // nfeChaveNumero() extrai o número de dentro da chave só no formato de 44 dígitos da NF-e/NFC-e —
+  // a chave da NFS-e (ADN, Sistema Nacional) é mais longa e em outro esquema, então caía no fallback
+  // (devolvia a CHAVE INTEIRA como se fosse "o número"). Achado ao vivo: descrição do lançamento
+  // virava "NFS-e nº 1506138...5640 — Fulano" em vez de "NFS-e nº 191 — Fulano". Pra NFS-e, lê o
+  // nNFSe de dentro do próprio XML (mesmo regex já usado ao emitir, em nfseInserirEmissao/handler).
+  const numero = row.tipo === "nfse" ? (row.xml?.match(/<nNFSe>([^<]+)<\/nNFSe>/)?.[1] ?? row.id) : nfeChaveNumero(row.chave_acesso) || row.id;
   const rotuloDoc = row.tipo === "nfse" ? "NFS-e" : row.tipo === "nfce" ? "NFC-e" : "NF-e";
   const descBase = `${rotuloDoc} nº ${numero} — ${emitida ? row.destinatario_nome || "cliente" : row.emitente_nome || "fornecedor"}`;
   const hojeIso = new Date().toISOString().slice(0, 10);
@@ -20513,6 +20518,30 @@ if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'nfse_evento_c
   }
   if (canceladas.length) console.log(`[migração] nfse_evento_cancelamento_backfill: ${canceladas.length} NFS-e cancelada(s) corrigida(s) em "Busca de XML".`);
   sqlite.exec(`INSERT INTO migracoes_unicas (chave) VALUES ('nfse_evento_cancelamento_backfill_20261026')`);
+}
+// Backfill: lançamentos de financeiro_receber gerados ao integrar uma NFS-e (Busca de XML) antes do
+// conserto acima de nfeIntegrarFinanceiro — a descrição tinha a CHAVE DE ACESSO inteira no lugar do
+// número da nota ("NFS-e nº 1506138...103815982765 — Fulano" em vez de "NFS-e nº 191 — Fulano"),
+// porque nfeChaveNumero() só sabe extrair o número do formato de 44 dígitos da NF-e, não do formato
+// mais longo da NFS-e (ADN). Reescreve a descrição lendo o nNFSe de dentro do XML já guardado.
+if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'financeiro_descricao_nfse_numero_backfill_20261026'`).get()) {
+  const afetados = sqlite
+    .prepare(
+      `SELECT r.id, r.descricao, d.xml, d.chave_acesso
+       FROM financeiro_receber r JOIN nfe_documentos d ON d.id = r.nfe_documento_id
+       WHERE d.tipo = 'nfse' AND r.descricao LIKE '%' || d.chave_acesso || '%'`
+    )
+    .all() as any[];
+  let corrigidos = 0;
+  for (const a of afetados) {
+    const numero = a.xml?.match(/<nNFSe>([^<]+)<\/nNFSe>/)?.[1];
+    if (!numero) continue;
+    const descCorrigida = a.descricao.split(a.chave_acesso).join(numero);
+    sqlite.prepare(`UPDATE financeiro_receber SET descricao = ? WHERE id = ?`).run(descCorrigida, a.id);
+    corrigidos++;
+  }
+  if (corrigidos) console.log(`[migração] financeiro_descricao_nfse_numero_backfill: ${corrigidos} descrição(ões) corrigida(s).`);
+  sqlite.exec(`INSERT INTO migracoes_unicas (chave) VALUES ('financeiro_descricao_nfse_numero_backfill_20261026')`);
 }
 function atendimentoConfig(escritorioId: number) {
   const r = sqlite.prepare(`SELECT * FROM atendimento_config WHERE escritorio_id = ?`).get(escritorioId) as any;
