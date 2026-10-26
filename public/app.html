@@ -7456,7 +7456,10 @@ async function pageNfeBusca(){
     async function carregarDashboard(){
       const body = document.getElementById('nfeDashBody');
       if(!body) return;
-      body.innerHTML = '<div class="empty-state">Carregando…</div>';
+      // Não zera o conteúdo aqui antes de buscar (o HTML inicial da tela já começa com "Carregando…",
+      // isso cobre a 1ª vez) — ao trocar o filtro de data, apagar e reconstruir fazia esse card encolher
+      // e crescer de novo, empurrando a tabela de Documentos logo abaixo pra cima e pra baixo na tela
+      // (parecia que "a tela subia" ao escolher uma data). Deixa o conteúdo antigo até o novo chegar.
       const de = document.getElementById('nfeDocDataDe').value;
       const ate = document.getElementById('nfeDocDataAte').value;
       const p = new URLSearchParams({ empresaId });
@@ -7612,7 +7615,8 @@ async function pageNfeBusca(){
 
     async function carregarDocumentos(){
       const tbody = document.getElementById('nfeDocBody');
-      tbody.innerHTML = `<tr><td colspan="13"><div class="empty-state">Carregando…</div></td></tr>`;
+      // Mesmo motivo do carregarDashboard acima: não apaga a tabela antes de buscar (o HTML inicial já
+      // cobre a 1ª carga) — evita o encolhe-e-cresce que empurrava a tela ao trocar o filtro de data.
       document.getElementById('nfeDocSelecionarTodos').checked = false;
       const tipo = document.getElementById('nfeDocTipo').value;
       const busca = document.getElementById('nfeDocBusca').value.trim();
