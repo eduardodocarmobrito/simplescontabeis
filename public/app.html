@@ -401,6 +401,9 @@
   .dprh-conv-sub{font-size:11.5px; color:var(--ink-soft); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:1px;}
   .dprh-cab{padding:12px 14px; border-bottom:1px solid var(--rule); display:flex; justify-content:space-between; align-items:flex-start; gap:10px; flex-wrap:wrap; flex:none;}
   .dprh-acoes{gap:6px; flex-wrap:wrap; justify-content:flex-end;}
+  .dprh-busca-msgs{border-bottom:1px solid var(--rule); flex:none; max-height:260px; overflow:auto;}
+  .dprh-busca-resultado{padding:8px 12px; border-top:1px solid var(--rule); cursor:pointer; font-size:12.5px;}
+  .dprh-busca-resultado:hover{background:rgba(127,127,127,.06);}
   .dprh-msgs{padding:14px; font-size:13px;}
   .dprh-msgs .chat-msg{font-size:13px; max-width:70%;}
   .dprh-msgs .chat-msg.dprh-bot{background:var(--accent-deep);}
@@ -12603,6 +12606,13 @@ async function atdAbrirConversa(S, id){
   S.respondendo = null; S.antigas = []; S.cursorAntigo = null; S.temMaisAntigas = true;
   card.innerHTML = `
     <div id="atdCab" class="dprh-cab"></div>
+    <div class="dprh-busca-msgs hidden" id="atdBuscaMsgsBox">
+      <div class="row" style="gap:6px; padding:8px 12px;">
+        <input type="text" id="atdBuscaMsgsInput" placeholder="Buscar nesta conversa…" autocomplete="off" style="flex:1;">
+        <button class="btn small" id="atdBuscaMsgsFechar">✕</button>
+      </div>
+      <div id="atdBuscaMsgsResultados"></div>
+    </div>
     <div class="chat-lista dprh-msgs" id="atdMsgs"><div class="empty-state">Carregando mensagens…</div></div>
     <div class="atd-resp-bar hidden" id="atdRespBar"></div>
     <div class="dprh-composer" id="atdComposer">
@@ -12623,6 +12633,7 @@ async function atdAbrirConversa(S, id){
   `;
   atdRenderCabecalho(S);
   atdLigarComposer(S);
+  atdLigarBuscaMsgs(S);
   await atdCarregarMensagens(S, true);
   atdMarcarLida(S, id);
   S.mensagensTimer = setInterval(()=>atdCarregarMensagens(S, false), 6000);
@@ -12675,6 +12686,7 @@ function atdRenderCabecalho(S){
     botoes.push(`<button class="btn small" data-acao="compromisso">📅 Compromisso</button>`);
     botoes.push(`<button class="btn small" data-acao="tag">🏷 Tag</button>`);
   }
+  botoes.push(`<button class="btn small" id="atdBtnBuscaMsg" title="Buscar mensagem nesta conversa">🔍 Buscar</button>`);
   const tagsLivres = (c.contatoTags||[]).filter(t=>!t.startsWith(ATD_TAG_EMPRESA));
   cab.innerHTML = `
     <div style="min-width:0; display:flex; gap:10px; align-items:center;">
@@ -12692,6 +12704,53 @@ function atdRenderCabecalho(S){
     <div class="row dprh-acoes">${botoes.join('')}</div>
   `;
   cab.querySelectorAll('[data-acao]').forEach(b=>b.addEventListener('click', ()=>atdAcao(S, b.dataset.acao, b)));
+  const btnBuscaMsg = document.getElementById('atdBtnBuscaMsg');
+  if(btnBuscaMsg) btnBuscaMsg.addEventListener('click', ()=>atdToggleBuscaMsgs());
+}
+// Busca por palavra dentro da conversa aberta — pra não precisar rolar manualmente um histórico
+// de milhares de mensagens atrás de algo antigo (achado real: atestado de meses atrás, sem jeito de achar).
+function atdToggleBuscaMsgs(){
+  const box = document.getElementById('atdBuscaMsgsBox');
+  if(!box) return;
+  const abrindo = box.classList.contains('hidden');
+  box.classList.toggle('hidden', !abrindo);
+  if(abrindo){
+    const input = document.getElementById('atdBuscaMsgsInput');
+    document.getElementById('atdBuscaMsgsResultados').innerHTML = '';
+    if(input){ input.value=''; input.focus(); }
+  }
+}
+function atdLigarBuscaMsgs(S){
+  const input = document.getElementById('atdBuscaMsgsInput');
+  const fechar = document.getElementById('atdBuscaMsgsFechar');
+  const resultados = document.getElementById('atdBuscaMsgsResultados');
+  if(!input || !resultados) return;
+  if(fechar) fechar.addEventListener('click', atdToggleBuscaMsgs);
+  let t;
+  input.addEventListener('input', ()=>{
+    clearTimeout(t);
+    const termo = input.value.trim();
+    if(!termo){ resultados.innerHTML=''; return; }
+    t = setTimeout(async ()=>{
+      resultados.innerHTML = '<div class="empty-state" style="padding:8px;">Buscando…</div>';
+      let r;
+      try{ r = await api('/atendimento/conversas/'+encodeURIComponent(S.conversaAtiva)+'/buscar?q='+encodeURIComponent(termo)); }
+      catch(e){ resultados.innerHTML = `<div class="empty-state" style="color:var(--debit); padding:8px;">${esc(e.message)}</div>`; return; }
+      if(input.value.trim()!==termo) return; // resposta de uma busca já desatualizada
+      const itens = r.data||[];
+      resultados.innerHTML = itens.length ? itens.map(m=>{
+        const resumo = m.body ? esc(m.body).slice(0,140) : (({audio:'🎤 Áudio', image:'📷 Imagem', video:'🎬 Vídeo', document:'📄 '+esc((m.metadata&&m.metadata.filename)||'Documento'), sticker:'Figurinha'})[m.type] || '[mídia]');
+        return `<div class="dprh-busca-resultado" data-mid="${esc(m.id)}">
+          <div style="color:var(--ink-soft); margin-bottom:2px;">${esc(new Date(m.created_at).toLocaleString('pt-BR'))} · ${m.direction==='inbound'?'Cliente':'Nós'}</div>
+          <div>${resumo}</div>
+        </div>`;
+      }).join('') : '<div class="empty-state" style="padding:8px;">Nada encontrado.</div>';
+      resultados.querySelectorAll('.dprh-busca-resultado').forEach(el=>el.addEventListener('click', ()=>{
+        atdToggleBuscaMsgs();
+        atdIrParaMensagem(S, el.dataset.mid);
+      }));
+    }, 350);
+  });
 }
 async function atdAcao(S, acao, botao){
   const c = S.conversaDados;

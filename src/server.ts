@@ -22331,6 +22331,33 @@ app.get("/api/atendimento/conversas/:id/mensagens", blockCliente, requireEscrito
     res.status(502).json({ error: e.message });
   }
 });
+// Busca por palavra DENTRO de uma conversa (achado em auditoria: uma conversa longa, tipo DP/RH com
+// centenas/milhares de mensagens, não tinha nenhum jeito de achar algo de meses atrás a não ser rolar
+// a tela na mão — "Lucas procurando um atestado antigo e não achando"). Mesmo filtro de oculta/apagada
+// da lista normal de mensagens; devolve até 30 resultados mais recentes primeiro.
+app.get("/api/atendimento/conversas/:id/buscar", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
+  const user = (req as any).user;
+  if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
+  if (!deskcommCtx().admin || !deskcommCtx().orgId) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  const convId = String(req.params.id);
+  const termo = String(req.query.q || "").trim();
+  if (!termo) return res.json({ data: [] });
+  try {
+    const { data, error } = await deskcommCtx()
+      .admin!.from("messages")
+      .select("id, type, body, direction, created_at, revoked_at, metadata")
+      .eq("organization_id", deskcommCtx().orgId)
+      .eq("conversation_id", convId)
+      .ilike("body", `%${termo}%`)
+      .order("created_at", { ascending: false })
+      .limit(50);
+    if (error) throw new Error(error.message);
+    const rows = (data || []).filter((m: any) => !m.revoked_at && !(m.metadata && m.metadata.oculta_da_equipe)).slice(0, 30);
+    res.json({ data: rows });
+  } catch (e: any) {
+    res.status(502).json({ error: e.message });
+  }
+});
 // Mídia de uma mensagem servida pelo servidor (sessão do robô, que é admin no deskcomm), pelo mesmo
 // motivo acima: a sessão do Colaborador não baixa a mídia de uma conversa que não é dele. Faz streaming
 // do arquivo que vem da API do deskcomm.
