@@ -9889,6 +9889,8 @@ function finOfxWireAcoes(scope, recarregar, basePath){
 let FIN_CONCIL_CONTA = null;
 let FIN_CONCIL_STATUS = 'pendente';
 let FIN_CONCIL_BUSCA = '';
+let FIN_CONCIL_DE = '';
+let FIN_CONCIL_ATE = '';
 async function finRenderConciliacao(basePath, containerId){
   const box = document.getElementById(containerId);
   box.innerHTML = '<div class="empty-state">Carregando…</div>';
@@ -9906,6 +9908,8 @@ async function finRenderConciliacao(basePath, containerId){
       </div>
       <button class="btn primary" id="btnConcilImportar">⬆️ Importar extrato (.ofx)</button>
       <input type="file" id="concilInput" accept=".ofx" style="display:none;">
+      ${dateFieldHtml('concilDe','De',FIN_CONCIL_DE)}
+      ${dateFieldHtml('concilAte','Até',FIN_CONCIL_ATE)}
       <div class="field" style="min-width:240px; margin-bottom:0;"><label>Buscar</label><input id="concilBusca" placeholder="Nome, valor, data…" value="${esc(FIN_CONCIL_BUSCA)}"></div>
     </div>
     <p style="font-size:12px; color:var(--ink-soft); margin:0 0 12px;">Exporte o .ofx do seu internet banking e importe aqui — o sistema casa com os títulos já lançados e <b>dá baixa automática</b> no que for inequívoco; o resto fica pra você revisar com 1 clique.</p>
@@ -9920,6 +9924,10 @@ async function finRenderConciliacao(basePath, containerId){
   const marcarTab = ()=> box.querySelectorAll('#concilTabs .tab').forEach(x=>x.classList.toggle('active', x.dataset.status===FIN_CONCIL_STATUS));
   marcarTab();
   document.getElementById('concilConta').addEventListener('change', e=>{ FIN_CONCIL_CONTA = Number(e.target.value); document.getElementById('concilResultado').innerHTML=''; carregar(); });
+  setupDatePicker('concilDe','concilDe_text');
+  setupDatePicker('concilAte','concilAte_text');
+  document.getElementById('concilDe').addEventListener('change', e=>{ FIN_CONCIL_DE = e.target.value; pintarItens(); });
+  document.getElementById('concilAte').addEventListener('change', e=>{ FIN_CONCIL_ATE = e.target.value; pintarItens(); });
   document.getElementById('btnConcilImportar').addEventListener('click', ()=>document.getElementById('concilInput').click());
   document.getElementById('concilInput').addEventListener('change', async ()=>{
     const f = document.getElementById('concilInput').files[0]; if(!f) return;
@@ -9940,8 +9948,12 @@ async function finRenderConciliacao(basePath, containerId){
   function pintarItens(){
     const body = document.getElementById('concilBody');
     const bq = FIN_CONCIL_BUSCA.trim().toLowerCase();
-    const visiveis = bq ? itemsCarregados.filter(t=>[t.descricao, fmtDateIso(t.data), t.data, fmtMoney(t.valor), String(t.valor)].filter(Boolean).some(v=>String(v).toLowerCase().includes(bq))) : itemsCarregados;
-    if(!visiveis.length){ body.innerHTML = `<div class="empty-state">${bq?'Nenhum resultado pra essa busca.':'Nada por aqui.'}</div>`; return; }
+    // Filtro por período (DE/ATÉ) na data da transação do extrato — pra ver só um mês específico.
+    const noPeriodo = t=>{ const d=(t.data||'').slice(0,10); if(FIN_CONCIL_DE && d<FIN_CONCIL_DE) return false; if(FIN_CONCIL_ATE && d>FIN_CONCIL_ATE) return false; return true; };
+    let visiveis = itemsCarregados.filter(noPeriodo);
+    if(bq) visiveis = visiveis.filter(t=>[t.descricao, fmtDateIso(t.data), t.data, fmtMoney(t.valor), String(t.valor)].filter(Boolean).some(v=>String(v).toLowerCase().includes(bq)));
+    const temFiltro = bq || FIN_CONCIL_DE || FIN_CONCIL_ATE;
+    if(!visiveis.length){ body.innerHTML = `<div class="empty-state">${temFiltro?'Nenhum resultado pra esse filtro.':'Nada por aqui.'}</div>`; return; }
     body.innerHTML = visiveis.map(finOfxCartaoHtml).join('');
     finOfxWireAcoes(body, carregar, basePath);
   }
