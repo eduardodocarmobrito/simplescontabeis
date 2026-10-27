@@ -12095,6 +12095,40 @@ app.post("/api/cnd/:esfera/consultar", blockCliente, requirePermissao("dashboard
     return res.status(400).json({ error: "Consulta automática indisponível para esta esfera." });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
+// Consulta a CND de UMA empresa (botão na edição da empresa › aba Configurações). Estadual via
+// Infosimples; Municipal via portal de Redenção (Playwright) — abre um navegador só pra essa empresa.
+app.post("/api/cnd/:esfera/empresa/:id/consultar", blockCliente, requirePermissao("dashboard", "editar"), async (req, res) => {
+  const user = (req as any).user;
+  const esfera = cndEsferaValida(req.params.esfera);
+  if (!esfera) return res.status(400).json({ error: "Esfera inválida." });
+  const empresaId = Number(req.params.id);
+  if (!podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const empresa = sqlite
+    .prepare(`SELECT id, nome, cnpj, inscricao_estadual, inscricao_municipal, codigo_municipio_ibge FROM empresas WHERE id = ? AND escritorio_id = ?`)
+    .get(empresaId, user.escritorioId) as any;
+  if (!empresa) return res.status(404).json({ error: "Empresa não encontrada." });
+  try {
+    if (esfera === "estadual") {
+      if (!INFOSIMPLES_ENDPOINTS.estadual) return res.status(400).json({ error: "Consulta estadual não configurada." });
+      if (!infosimplesToken(user.escritorioId)) return res.status(400).json({ error: "Cadastre o token Infosimples em Configurações › Certidões (Infosimples)." });
+      const r = await infosimplesConsultarCnd(user.escritorioId, empresa, "estadual");
+      if (!r.ok) return res.status(400).json({ error: r.erro || "Falha na consulta." });
+      return res.json({ ok: true, tipo: r.tipo });
+    }
+    if (esfera === "municipal") {
+      if (String(empresa.codigo_municipio_ibge || "") !== REDENCAO_IBGE)
+        return res.status(400).json({ error: "Consulta municipal automática disponível só para empresas de Redenção-PA." });
+      let browser: any = null;
+      try {
+        browser = await cndRedencao.abrirNavegadorRedencao();
+        const r = await cndMunicipalConsultarEmpresa(user.escritorioId, empresa, browser);
+        if (!r.ok) return res.status(400).json({ error: r.erro || "Falha na consulta." });
+        return res.json({ ok: true, tipo: r.tipo });
+      } finally { if (browser) await browser.close().catch(() => {}); }
+    }
+    return res.status(400).json({ error: "Consulta automática indisponível para esta esfera (só Estadual e Municipal)." });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
 // Agendador: 2x/dia, consulta SÓ as certidões vencidas/ausentes (por vencimento de cada uma) —
 // não reconsulta uma negativa ainda válida. Começa no primeiro tick (+12h), nunca no boot.
 setInterval(() => {

@@ -2567,20 +2567,14 @@ function cardDetalheModal(c){
       } else if(tipo==='cnd_federal' || tipo==='cnd_estadual' || tipo==='cnd_municipal'){
         const esferaCnd = tipo.replace('cnd_','');
         const colIE = {federal:'Documento', estadual:'Insc. Estadual', municipal:'Insc. Municipal'}[esferaCnd]||'Inscrição';
-        const podeLimpar = can('dashboard','editar');
+        const podeEditar = can('dashboard','editar');
         const tipoLabel = {negativa:'Negativa', positiva_efeito:'Positiva c/ efeito', positiva:'Positiva (débito)'};
-        box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>${colIE}</th><th>Certidão</th><th>Válida até</th><th>Alerta</th><th>Importado</th>${podeLimpar?'<th></th>':''}</tr></thead><tbody>
+        box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>${colIE}</th><th>Certidão</th><th>Válida até</th><th>Alerta</th><th>Importado</th></tr></thead><tbody>
           ${items.map(i=>{
             const tag = i.comDebito?'bad':(i.vencida?'bad':'warn');
-            return `<tr><td>${esc(i.empresaNome)}</td><td>${esc(i.inscricao||'—')}</td><td>${esc(tipoLabel[i.tipo]||i.tipo||'—')}</td><td style="font-size:12px;">${i.validade?fmtDateIso(i.validade):'—'}</td><td><span class="tag ${tag}">${esc(i.alerta)}</span></td><td style="font-size:12px; color:var(--ink-soft);">${i.importadoEm?fmtDateHora(i.importadoEm):'—'}</td>${podeLimpar?`<td style="text-align:right;"><a href="#" class="cnd-limpar" data-emp="${i.empresaId}" data-nome="${esc(i.empresaNome)}" title="Remover da lista" style="text-decoration:none; color:var(--debit); font-weight:700;">✕</a></td>`:''}</tr>`;
+            return `<tr><td>${esc(i.empresaNome)}</td><td>${esc(i.inscricao||'—')}</td><td>${esc(tipoLabel[i.tipo]||i.tipo||'—')}</td><td style="font-size:12px;">${i.validade?fmtDateIso(i.validade):'—'}</td><td><span class="tag ${tag}">${esc(i.alerta)}</span></td><td style="font-size:12px; color:var(--ink-soft);">${i.importadoEm?fmtDateHora(i.importadoEm):'—'}</td></tr>`;
           }).join('')}
-        </tbody></table>${podeLimpar?'<div style="font-size:11.5px; color:var(--ink-soft); margin-top:8px;">Reimporte a certidão atualizada (substitui a da empresa) ou clique no <b>✕</b> pra remover.</div>':''}`;
-        if(podeLimpar) box.querySelectorAll('.cnd-limpar').forEach(a=>a.addEventListener('click', async (ev)=>{
-          ev.preventDefault();
-          if(!confirmar('Remover '+a.dataset.nome+' desta lista de certidão?')) return;
-          try{ await api('/cnd/'+esferaCnd+'/empresa/'+a.dataset.emp+'/limpar', { method:'POST' }); toast('Empresa removida da lista.','ok'); carregar(); pageDashboard(); }
-          catch(e){ toast(e.message,'err'); }
-        }));
+        </tbody></table>${podeEditar?'<div style="font-size:11.5px; color:var(--ink-soft); margin-top:8px;">Reimporte a certidão atualizada (substitui a da empresa) ou consulte uma empresa específica na <b>edição da empresa › aba Configurações</b>.</div>':''}`;
       } else {
         box.innerHTML = '<div class="empty-state">Tipo de card desconhecido.</div>';
       }
@@ -3393,6 +3387,13 @@ function empresaModal(e){
       <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">O que esta empresa pode solicitar</div>
       <p style="font-size:12.5px; color:var(--ink-soft); margin-top:0;">Nenhuma marcada = pode solicitar tudo. Marque só o que essa empresa pode pedir em "Solicitar Documentos".</p>
       <div id="empSolicTipos"><div class="empty-state">Carregando…</div></div>
+      <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Certidões (CND)</div>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:0;">Consulta a certidão <b>desta empresa</b> agora. Se negativa (ou positiva c/ efeito de negativa), baixa e anexa no Envio de Documentos; se positiva (com débito), vira pendência no card. Estadual via Infosimples (~R$ 0,20); Municipal no portal da prefeitura de Redenção (sem custo).</p>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button type="button" class="btn small" id="empCndEstadual">🔄 Consultar Estadual (Infosimples)</button>
+        <button type="button" class="btn small" id="empCndMunicipal">🔄 Consultar Municipal (Prefeitura)</button>
+      </div>
+      <div id="empCndMsg" style="font-size:12px; color:var(--ink-soft); margin-top:6px;"></div>
     </div>
     ` : ''}
     <div class="modal-actions">
@@ -3426,6 +3427,24 @@ function empresaModal(e){
       catch(err){ toast(err.message,'err'); }
       finally{ btn.disabled = false; btn.textContent = orig; }
     });
+    // Consultar CND por empresa (aba Configurações). Estadual = Infosimples; Municipal = portal de Redenção.
+    function ligarEmpCndBtn(id, esfera){
+      const btn = document.getElementById(id); if(!btn) return;
+      btn.addEventListener('click', async ()=>{
+        const msg = document.getElementById('empCndMsg');
+        btn.disabled = true; const orig = btn.textContent; btn.textContent = 'consultando…';
+        if(msg){ msg.style.color='var(--ink-soft)'; msg.textContent = esfera==='municipal'?'Consultando na prefeitura de Redenção — pode levar alguns minutos…':'Consultando na SEFA via Infosimples…'; }
+        try{
+          const r = await api('/cnd/'+esfera+'/empresa/'+e.id+'/consultar', { method:'POST' });
+          const lbl = {negativa:'Negativa', positiva_efeito:'Positiva c/ efeito de negativa', positiva:'Positiva (com débito)'}[r.tipo] || r.tipo || 'consultada';
+          if(msg){ msg.style.color = r.tipo==='positiva'?'var(--debit)':'var(--ok)'; msg.textContent = 'Resultado: '+lbl+(r.tipo==='positiva'?' — sem certidão negativa (vira pendência no card).':' — anexada no Envio de Documentos.'); }
+          toast('CND '+esfera+': '+lbl, 'ok'); pageDashboard();
+        }catch(err){ if(msg){ msg.style.color='var(--debit)'; msg.textContent = err.message; } toast(err.message,'err'); }
+        finally{ btn.disabled = false; btn.textContent = orig; }
+      });
+    }
+    ligarEmpCndBtn('empCndEstadual','estadual');
+    ligarEmpCndBtn('empCndMunicipal','municipal');
     document.getElementById('empModalTabs').querySelectorAll('.tab').forEach(t=>{
       t.classList.toggle('active', t.dataset.tab===empTabAtual);
       t.addEventListener('click', ()=>{
