@@ -9478,8 +9478,7 @@ async function finOfxCadastrarModal(ofxId, onDone, basePath){
     <p style="font-size:12px; color:var(--ink-soft); margin-top:-4px;">Valor e data vêm do extrato bancário — só a descrição é editável.</p>
     <div class="field"><label>Descrição</label><input id="ofxCadDescricao" placeholder="Descrição do lançamento"></div>
     <div class="field"><label>Natureza (opcional)</label>
-      <input id="ofxCadNaturezaBusca" placeholder="Buscar natureza…" autocomplete="off" style="margin-bottom:6px;">
-      <select id="ofxCadNatureza"><option value="">— Não informar —</option>${naturezas.map(n=>`<option value="${n.id}">${esc(n.nome)}</option>`).join('')}</select>
+      ${comboSelectHtml('ofxCadNaturezaCombo','Buscar / escolher natureza…')}
       <div style="font-size:11px; color:var(--ink-soft); margin-top:4px;">Da próxima vez que aparecer esta mesma descrição no extrato, o sistema cadastra e concilia sozinho com a mesma natureza.</div>
     </div>
     <div class="field"><label>Forma de pagamento (opcional)</label>
@@ -9491,16 +9490,10 @@ async function finOfxCadastrarModal(ofxId, onDone, basePath){
     </div>
   `);
   document.getElementById('ofxCadCancel').addEventListener('click', closeModal);
-  // Campo de busca que filtra as opções de Natureza (lista pode ter dezenas).
-  (()=>{ const sel=document.getElementById('ofxCadNatureza'); const inp=document.getElementById('ofxCadNaturezaBusca'); if(!sel||!inp) return;
-    inp.addEventListener('input', ()=>{ const termo=normalizaTxt(inp.value); const atual=sel.value;
-      const lista = termo ? naturezas.filter(n=>normalizaTxt(n.nome).includes(termo)) : naturezas;
-      sel.innerHTML = '<option value="">— Não informar —</option>'+lista.map(n=>`<option value="${n.id}">${esc(n.nome)}</option>`).join('');
-      if([...sel.options].some(o=>o.value===atual)) sel.value=atual;
-    });
-  })();
+  // Combobox com busca no próprio campo (clicou → digita → filtra); vazio = "não informar".
+  setupComboSelect('ofxCadNaturezaCombo', naturezas.map(n=>({ id:n.id, label:n.nome })), ()=>{});
   document.getElementById('ofxCadSalvar').addEventListener('click', async ()=>{
-    const naturezaVal = document.getElementById('ofxCadNatureza').value;
+    const naturezaVal = document.getElementById('ofxCadNaturezaCombo').querySelector('.combo-value').value;
     const formaPagamentoVal = document.getElementById('ofxCadFormaPagamento').value;
     try{
       const r = await api(basePath+'/ofx/'+ofxId+'/cadastrar', { method:'POST', body:{ descricao: document.getElementById('ofxCadDescricao').value.trim(), naturezaId: naturezaVal?Number(naturezaVal):null, formaPagamentoId: formaPagamentoVal?Number(formaPagamentoVal):null } });
