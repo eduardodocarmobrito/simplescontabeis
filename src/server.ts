@@ -12245,6 +12245,20 @@ sqlite.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_cofre_senhas_escritorio ON cofre_senhas(escritorio_id);
 `);
+// Anexo opcional (1 arquivo por registro, substituível) — mesmo molde de nfse_certificados: coluna de
+// caminho na própria linha, não uma tabela de anexos à parte (não precisa de histórico/múltiplos
+// arquivos aqui, é só "o comprovante/print daquele acesso").
+{
+  const colsCofre = sqlite.prepare(`PRAGMA table_info(cofre_senhas)`).all() as any[];
+  const nomesCofre = new Set(colsCofre.map((c) => c.name));
+  for (const [coluna, ddl] of [
+    ["arquivo_path", "arquivo_path TEXT"],
+    ["arquivo_nome", "arquivo_nome TEXT"],
+    ["arquivo_mime", "arquivo_mime TEXT"],
+  ] as const) {
+    if (!nomesCofre.has(coluna)) sqlite.exec(`ALTER TABLE cofre_senhas ADD COLUMN ${ddl}`);
+  }
+}
 function cofreCampos(body: any) {
   const txt = (v: any, max: number) => (typeof v === "string" ? v.trim().slice(0, max) : "");
   return { titulo: txt(body?.titulo, 200), categoria: txt(body?.categoria, 100), url: txt(body?.url, 500), login: txt(body?.login, 300), email: txt(body?.email, 300) };
@@ -12252,13 +12266,13 @@ function cofreCampos(body: any) {
 app.get("/api/cofre-senhas", blockCliente, requireAdmin, (req, res) => {
   const user = (req as any).user;
   const rows = sqlite
-    .prepare(`SELECT id, titulo, categoria, url, login, email, senha_cifrada, observacoes_cifradas, updated_at as updatedAt FROM cofre_senhas WHERE escritorio_id = ? ORDER BY categoria COLLATE NOCASE, titulo COLLATE NOCASE`)
+    .prepare(`SELECT id, titulo, categoria, url, login, email, senha_cifrada, observacoes_cifradas, arquivo_nome, updated_at as updatedAt FROM cofre_senhas WHERE escritorio_id = ? ORDER BY categoria COLLATE NOCASE, titulo COLLATE NOCASE`)
     .all(user.escritorioId) as any[];
   res.json({
     itens: rows.map((r) => {
       let observacoes = "";
       try { observacoes = r.observacoes_cifradas ? nfse.decifrarTexto(r.observacoes_cifradas) : ""; } catch { /* chave trocada */ }
-      return { id: r.id, titulo: r.titulo, categoria: r.categoria || "", url: r.url || "", login: r.login || "", email: r.email || "", temSenha: !!r.senha_cifrada, observacoes, updatedAt: r.updatedAt };
+      return { id: r.id, titulo: r.titulo, categoria: r.categoria || "", url: r.url || "", login: r.login || "", email: r.email || "", temSenha: !!r.senha_cifrada, observacoes, arquivoNome: r.arquivo_nome || null, updatedAt: r.updatedAt };
     }),
   });
 });
@@ -12269,39 +12283,85 @@ app.get("/api/cofre-senhas/:id/senha", blockCliente, requireAdmin, (req, res) =>
   try { res.json({ senha: row.senha_cifrada ? nfse.decifrarTexto(row.senha_cifrada) : "" }); }
   catch { res.status(500).json({ error: "Não foi possível decifrar a senha (a chave de criptografia mudou?)." }); }
 });
-app.post("/api/cofre-senhas", blockCliente, requireAdmin, (req, res) => {
+// Mesma allowlist de tipo já usada em empresa_anexos — PDF/imagem/Office/ZIP, sem HTML/SVG/JS.
+function cofreArquivoPermitido(mimetype: string): boolean {
+  return /^(application\/pdf|image\/(png|jpe?g|gif|webp)|application\/(msword|vnd\.(openxmlformats-officedocument\.(wordprocessingml\.document|spreadsheetml\.sheet)|ms-excel))|application\/(zip|x-zip-compressed))$/i.test(
+    mimetype || ""
+  );
+}
+function cofreSalvarArquivo(escritorioId: number, file: Express.Multer.File): { path: string; nome: string; mime: string } {
+  const nome = corrigirNomeArquivo(file.originalname);
+  const dir = path.join(UPLOADS_DIR, "cofre-senhas", String(escritorioId));
+  fs.mkdirSync(dir, { recursive: true });
+  const destino = path.join(dir, `${Date.now()}-${nome}`);
+  fs.writeFileSync(destino, file.buffer);
+  return { path: destino, nome, mime: file.mimetype };
+}
+app.post("/api/cofre-senhas", blockCliente, requireAdmin, upload.single("arquivo"), (req, res) => {
   const user = (req as any).user;
   const c = cofreCampos(req.body);
   if (!c.titulo) return res.status(400).json({ error: "Informe o nome do acesso (ex.: Hostinger, Banco do Brasil)." });
+  if (req.file && !cofreArquivoPermitido(req.file.mimetype)) {
+    return res.status(400).json({ error: "Tipo de arquivo não permitido. Envie PDF, imagem (PNG/JPG), Word, Excel ou ZIP." });
+  }
   const senha = typeof req.body?.senha === "string" ? req.body.senha : "";
   const obs = typeof req.body?.observacoes === "string" ? req.body.observacoes.trim() : "";
+  const arq = req.file ? cofreSalvarArquivo(user.escritorioId, req.file) : null;
   try {
     const r = sqlite
-      .prepare(`INSERT INTO cofre_senhas (escritorio_id, titulo, categoria, url, login, email, senha_cifrada, observacoes_cifradas) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(user.escritorioId, c.titulo, c.categoria, c.url, c.login, c.email, senha ? nfse.cifrarTexto(senha) : null, obs ? nfse.cifrarTexto(obs) : null);
+      .prepare(`INSERT INTO cofre_senhas (escritorio_id, titulo, categoria, url, login, email, senha_cifrada, observacoes_cifradas, arquivo_path, arquivo_nome, arquivo_mime) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(user.escritorioId, c.titulo, c.categoria, c.url, c.login, c.email, senha ? nfse.cifrarTexto(senha) : null, obs ? nfse.cifrarTexto(obs) : null, arq?.path || null, arq?.nome || null, arq?.mime || null);
     res.json({ ok: true, id: r.lastInsertRowid });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
-app.put("/api/cofre-senhas/:id", blockCliente, requireAdmin, (req, res) => {
+app.put("/api/cofre-senhas/:id", blockCliente, requireAdmin, upload.single("arquivo"), (req, res) => {
   const user = (req as any).user;
   const id = Number(req.params.id);
-  const existing = sqlite.prepare(`SELECT senha_cifrada FROM cofre_senhas WHERE id = ? AND escritorio_id = ?`).get(id, user.escritorioId) as any;
+  const existing = sqlite.prepare(`SELECT * FROM cofre_senhas WHERE id = ? AND escritorio_id = ?`).get(id, user.escritorioId) as any;
   if (!existing) return res.status(404).json({ error: "Registro não encontrado." });
   const c = cofreCampos(req.body);
   if (!c.titulo) return res.status(400).json({ error: "Informe o nome do acesso." });
+  if (req.file && !cofreArquivoPermitido(req.file.mimetype)) {
+    return res.status(400).json({ error: "Tipo de arquivo não permitido. Envie PDF, imagem (PNG/JPG), Word, Excel ou ZIP." });
+  }
   // senha em branco = mantém a atual (o formulário de edição não recebe a senha antiga)
   const senha = typeof req.body?.senha === "string" ? req.body.senha : "";
   const obs = typeof req.body?.observacoes === "string" ? req.body.observacoes.trim() : "";
+  // removerArquivo=1 tira o anexo sem mandar um novo; mandar um arquivo novo substitui o antigo (o
+  // disco só perde o arquivo velho depois do UPDATE confirmar, pra nunca ficar sem nenhum dos dois
+  // em caso de erro no meio do caminho).
+  const removerArquivo = req.body?.removerArquivo === "true" || req.body?.removerArquivo === "1";
+  const arq = req.file ? cofreSalvarArquivo(user.escritorioId, req.file) : null;
+  const arquivoPath = arq ? arq.path : removerArquivo ? null : existing.arquivo_path;
+  const arquivoNome = arq ? arq.nome : removerArquivo ? null : existing.arquivo_nome;
+  const arquivoMime = arq ? arq.mime : removerArquivo ? null : existing.arquivo_mime;
   try {
     sqlite
-      .prepare(`UPDATE cofre_senhas SET titulo=?, categoria=?, url=?, login=?, email=?, senha_cifrada=?, observacoes_cifradas=?, updated_at=datetime('now') WHERE id = ? AND escritorio_id = ?`)
-      .run(c.titulo, c.categoria, c.url, c.login, c.email, senha ? nfse.cifrarTexto(senha) : existing.senha_cifrada, obs ? nfse.cifrarTexto(obs) : null, id, user.escritorioId);
+      .prepare(`UPDATE cofre_senhas SET titulo=?, categoria=?, url=?, login=?, email=?, senha_cifrada=?, observacoes_cifradas=?, arquivo_path=?, arquivo_nome=?, arquivo_mime=?, updated_at=datetime('now') WHERE id = ? AND escritorio_id = ?`)
+      .run(c.titulo, c.categoria, c.url, c.login, c.email, senha ? nfse.cifrarTexto(senha) : existing.senha_cifrada, obs ? nfse.cifrarTexto(obs) : null, arquivoPath, arquivoNome, arquivoMime, id, user.escritorioId);
+    if ((arq || removerArquivo) && existing.arquivo_path && existing.arquivo_path !== arquivoPath) {
+      try { fs.unlinkSync(existing.arquivo_path); } catch {}
+    }
     res.json({ ok: true });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
+app.get("/api/cofre-senhas/:id/arquivo", blockCliente, requireAdmin, (req, res) => {
+  const user = (req as any).user;
+  const row = sqlite.prepare(`SELECT arquivo_path, arquivo_nome, arquivo_mime FROM cofre_senhas WHERE id = ? AND escritorio_id = ?`).get(Number(req.params.id), user.escritorioId) as any;
+  if (!row || !row.arquivo_path || !fs.existsSync(row.arquivo_path)) return res.status(404).json({ error: "Arquivo não encontrado." });
+  // Mesmo cuidado de empresa_anexos: só PDF/imagem comum sai "inline" (visualizável); qualquer outro
+  // tipo força download, pra não arriscar o navegador executar um upload malicioso dentro do site.
+  const seguroParaInline = /^(application\/pdf|image\/(png|jpe?g|gif|webp))$/i.test(row.arquivo_mime || "");
+  res.setHeader("Content-Type", seguroParaInline ? row.arquivo_mime : "application/octet-stream");
+  res.setHeader("Content-Disposition", `${seguroParaInline ? "inline" : "attachment"}; filename="${encodeURIComponent(row.arquivo_nome || "anexo")}"`);
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.send(fs.readFileSync(row.arquivo_path));
+});
 app.delete("/api/cofre-senhas/:id", blockCliente, requireAdmin, (req, res) => {
   const user = (req as any).user;
+  const row = sqlite.prepare(`SELECT arquivo_path FROM cofre_senhas WHERE id = ? AND escritorio_id = ?`).get(Number(req.params.id), user.escritorioId) as any;
   sqlite.prepare(`DELETE FROM cofre_senhas WHERE id = ? AND escritorio_id = ?`).run(Number(req.params.id), user.escritorioId);
+  if (row?.arquivo_path) { try { fs.unlinkSync(row.arquivo_path); } catch {} }
   res.json({ ok: true });
 });
 // Dispara a consulta das empresas da esfera agora (manual). ?devidas=1 consulta só as vencidas/ausentes.

@@ -16539,7 +16539,7 @@ async function renderCfgSenhas(box){
       ${itens.length ? `<div style="overflow-x:auto;"><table>
         <thead><tr><th>Acesso</th><th>Categoria</th><th>Login / E-mail</th><th>Senha</th><th></th></tr></thead>
         <tbody id="cofreBody">${itens.map(i=>`<tr data-cid="${i.id}" data-busca="${esc(normalizaTxt([i.titulo,i.categoria,i.login,i.email,i.url].join(' ')))}">
-          <td><b>${esc(i.titulo)}</b>${i.url?`<div style="font-size:12px;"><a href="${esc(/^https?:\/\//i.test(i.url)?i.url:'https://'+i.url)}" target="_blank" rel="noopener noreferrer">${esc(i.url)}</a></div>`:''}${i.observacoes?`<div style="font-size:12px; color:var(--ink-soft); white-space:pre-wrap;">${esc(i.observacoes)}</div>`:''}</td>
+          <td><b>${esc(i.titulo)}</b>${i.url?`<div style="font-size:12px;"><a href="${esc(/^https?:\/\//i.test(i.url)?i.url:'https://'+i.url)}" target="_blank" rel="noopener noreferrer">${esc(i.url)}</a></div>`:''}${i.observacoes?`<div style="font-size:12px; color:var(--ink-soft); white-space:pre-wrap;">${esc(i.observacoes)}</div>`:''}${i.arquivoNome?`<div style="font-size:12px;"><a href="/api/cofre-senhas/${i.id}/arquivo" target="_blank" rel="noopener noreferrer">📎 ${esc(i.arquivoNome)}</a></div>`:''}</td>
           <td>${i.categoria?`<span class="tag muted">${esc(i.categoria)}</span>`:''}</td>
           <td>${i.login?`<div>${esc(i.login)}${copiarBtn('Login',i.login)}</div>`:''}${i.email?`<div>${esc(i.email)}${copiarBtn('E-mail',i.email)}</div>`:''}</td>
           <td style="white-space:nowrap;">${i.temSenha?`<span class="cofreSenha" style="font-family:monospace;">••••••••</span> <button class="btn small" data-a="ver" title="Mostrar">👁</button> <button class="btn small" data-a="copiar" title="Copiar senha">⧉</button>`:'<span style="color:var(--ink-soft);">—</span>'}</td>
@@ -16583,11 +16583,26 @@ async function renderCfgSenhas(box){
       <div class="field"><label>Senha</label>
         <div class="row" style="gap:6px;"><input type="password" id="cfSenha" style="flex:1;" autocomplete="new-password" placeholder="${i&&i.temSenha?'•••••••• (deixe em branco para manter a atual)':''}"><button type="button" class="btn small" id="cfVerSenha" title="Mostrar">👁</button></div></div>
       <div class="field"><label>Observações</label><textarea id="cfObs" rows="3" placeholder="PIN, perguntas de segurança, quem usa…">${esc(i?i.observacoes:'')}</textarea></div>
+      <div class="field"><label>Anexo (opcional)</label>
+        ${i&&i.arquivoNome?`<div style="font-size:13px; margin-bottom:6px; display:flex; align-items:center; gap:6px;">📎 <a href="/api/cofre-senhas/${i.id}/arquivo" target="_blank" rel="noopener noreferrer">${esc(i.arquivoNome)}</a><span style="margin-left:10px; display:inline-flex; align-items:center; gap:4px; text-transform:none; font-size:13px; font-weight:400;"><input type="checkbox" id="cfRemoverArquivo" style="width:auto;"> remover anexo</span></div>`:''}
+        <input type="file" id="cfArquivo">
+        <p style="font-size:11.5px; color:var(--ink-soft); margin:4px 0 0;">PDF, imagem, Word, Excel ou ZIP. ${i&&i.arquivoNome?'Enviar um novo substitui o atual.':''}</p>
+      </div>
       <div class="row" style="justify-content:flex-end; gap:8px; margin-top:12px;"><button class="btn" onclick="closeModal()">Cancelar</button><button class="btn primary" id="cfSalvar">Salvar</button></div>`, '620px');
     document.getElementById('cfVerSenha').addEventListener('click', ()=>{ const s=document.getElementById('cfSenha'); s.type = s.type==='password'?'text':'password'; });
     document.getElementById('cfSalvar').addEventListener('click', async ()=>{
-      const body = { titulo:document.getElementById('cfNome').value, categoria:document.getElementById('cfCat').value, url:document.getElementById('cfUrl').value, login:document.getElementById('cfLogin').value, email:document.getElementById('cfEmail').value, senha:document.getElementById('cfSenha').value, observacoes:document.getElementById('cfObs').value };
-      try{ await api('/cofre-senhas'+(i?'/'+i.id:''), { method:i?'PUT':'POST', body }); closeModal(); toast('Salvo.','ok'); recarregar(); }catch(e){ toast(e.message,'err'); }
+      const fd = new FormData();
+      fd.append('titulo', document.getElementById('cfNome').value);
+      fd.append('categoria', document.getElementById('cfCat').value);
+      fd.append('url', document.getElementById('cfUrl').value);
+      fd.append('login', document.getElementById('cfLogin').value);
+      fd.append('email', document.getElementById('cfEmail').value);
+      fd.append('senha', document.getElementById('cfSenha').value);
+      fd.append('observacoes', document.getElementById('cfObs').value);
+      const arquivo = document.getElementById('cfArquivo').files[0];
+      if(arquivo) fd.append('arquivo', arquivo);
+      if(document.getElementById('cfRemoverArquivo')?.checked) fd.append('removerArquivo', '1');
+      try{ await api('/cofre-senhas'+(i?'/'+i.id:''), { method:i?'PUT':'POST', body: fd }); closeModal(); toast('Salvo.','ok'); recarregar(); }catch(e){ toast(e.message,'err'); }
     });
   }
 }
