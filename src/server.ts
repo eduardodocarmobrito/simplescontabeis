@@ -2256,6 +2256,16 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
   if (!colsAprendizado.some((c) => c.name === "forma_pagamento_id")) {
     sqlite.exec(`ALTER TABLE financeiro_ofx_aprendizado ADD COLUMN forma_pagamento_id INTEGER REFERENCES financeiro_formas_pagamento(id) ON DELETE SET NULL`);
   }
+  // Chave "estável" pra recorrências cujo texto do banco traz um número que MUDA toda vez (nº de boleto/
+  // documento, ex.: "TARIFA COBRANCA BOLETO 133 1792823161968"): remove sequências de 5+ dígitos, mantendo
+  // códigos curtos ("133"). Assim o auto-cadastro reconhece a mesma tarifa mesmo com número diferente.
+  if (!colsAprendizado.some((c) => c.name === "descricao_norm_estavel")) {
+    sqlite.exec(`ALTER TABLE financeiro_ofx_aprendizado ADD COLUMN descricao_norm_estavel TEXT`);
+    const rows = sqlite.prepare(`SELECT id, descricao_norm FROM financeiro_ofx_aprendizado`).all() as any[];
+    const upd = sqlite.prepare(`UPDATE financeiro_ofx_aprendizado SET descricao_norm_estavel = ? WHERE id = ?`);
+    for (const r of rows) upd.run(String(r.descricao_norm || "").replace(/\d{5,}/g, " ").replace(/\s+/g, " ").trim(), r.id);
+    sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_ofx_aprendizado_estavel ON financeiro_ofx_aprendizado(empresa_id, descricao_norm_estavel)`);
+  }
 }
 // Migração: renegociação de título — quando um "a pagar"/"a receber" vencido é renegociado em N
 // parcelas novas (acordo com juros/multa, prazo maior etc.), o título original vira status
@@ -17285,6 +17295,11 @@ const OFX_JANELA_DIAS_MATCH = 15;
 function ofxNorm(s: string | null): string {
   return (s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
 }
+// Chave "estável": igual à normalizada, mas sem sequências de 5+ dígitos (nº de boleto/documento que
+// muda a cada transação) — mantém códigos curtos. Usada pro auto-cadastro reconhecer tarifas recorrentes.
+function ofxNormEstavel(s: string | null): string {
+  return ofxNorm(s).replace(/\d{5,}/g, " ").replace(/\s+/g, " ").trim();
+}
 function ofxTokens(s: string | null): string[] {
   return ofxNorm(s).split(" ").filter((w) => w.length >= 3);
 }
@@ -17401,12 +17416,14 @@ function financeiroOfxListar(empresaId: number, contaId: number, status: string)
 function financeiroOfxAprender(empresaId: number, descBanco: string | null, terceiro: string | null, tabela: string, naturezaId?: number | null, formaPagamentoId?: number | null): void {
   const norm = ofxNorm(descBanco);
   if (!norm || !terceiro) return;
+  const normEstavel = ofxNormEstavel(descBanco);
   sqlite
-    .prepare(`INSERT INTO financeiro_ofx_aprendizado (empresa_id, descricao_norm, terceiro, tabela, natureza_id, forma_pagamento_id) VALUES (?, ?, ?, ?, ?, ?)
+    .prepare(`INSERT INTO financeiro_ofx_aprendizado (empresa_id, descricao_norm, descricao_norm_estavel, terceiro, tabela, natureza_id, forma_pagamento_id) VALUES (?, ?, ?, ?, ?, ?, ?)
               ON CONFLICT(empresa_id, descricao_norm, terceiro) DO UPDATE SET hits = hits + 1, atualizado_em = datetime('now'),
+                descricao_norm_estavel = excluded.descricao_norm_estavel,
                 natureza_id = COALESCE(excluded.natureza_id, financeiro_ofx_aprendizado.natureza_id),
                 forma_pagamento_id = COALESCE(excluded.forma_pagamento_id, financeiro_ofx_aprendizado.forma_pagamento_id)`)
-    .run(empresaId, norm, String(terceiro).trim(), tabela, naturezaId ?? null, formaPagamentoId ?? null);
+    .run(empresaId, norm, normEstavel, String(terceiro).trim(), tabela, naturezaId ?? null, formaPagamentoId ?? null);
 }
 // Baixa um título a partir de uma transação do extrato (fonte de verdade: data/conta do banco),
 // marca a transação como conciliada e aprende o terceiro pra esse texto de banco.
@@ -17447,11 +17464,19 @@ function financeiroOfxAutoConciliar(empresaId: number, transIds: number[]): numb
       // usuário configurou da primeira vez. É a recorrência pedida (retirada de sócio, salário etc.
       // todo mês) sem precisar clicar "Cadastrar" de novo toda vez.
       const norm = ofxNorm(t.descricao);
-      const aprendido = norm
+      let aprendido = norm
         ? (sqlite
             .prepare(`SELECT terceiro, natureza_id, forma_pagamento_id FROM financeiro_ofx_aprendizado WHERE empresa_id = ? AND descricao_norm = ? AND tabela = ? ORDER BY hits DESC LIMIT 1`)
             .get(empresaId, norm, tabela) as any)
         : null;
+      // Sem match exato: tenta a chave ESTÁVEL (mesma descrição com nº de boleto/documento diferente).
+      if (!aprendido) {
+        const est = ofxNormEstavel(t.descricao);
+        if (est)
+          aprendido = sqlite
+            .prepare(`SELECT terceiro, natureza_id, forma_pagamento_id FROM financeiro_ofx_aprendizado WHERE empresa_id = ? AND descricao_norm_estavel = ? AND tabela = ? ORDER BY hits DESC LIMIT 1`)
+            .get(empresaId, est, tabela) as any;
+      }
       if (aprendido) {
         const campoData = tabela === "financeiro_pagar" ? "data_pagamento" : "data_recebimento";
         const info = sqlite
