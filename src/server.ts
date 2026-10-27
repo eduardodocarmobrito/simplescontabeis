@@ -12859,18 +12859,70 @@ app.get("/api/integracontador/empresas/:id/caixa-postal", blockCliente, requireP
 // o relatório INTEGRADO RFB + PGFN. Lê o SITFIS mais recente da empresa, isola a seção da PGFN/Dívida
 // Ativa e devolve um status (com/sem débito/indefinido), os valores encontrados e o trecho do
 // relatório pra conferência. É best-effort (o layout do SITFIS varia) — por isso devolve o trecho.
-function sitfisExtrairPgfn(texto: string): { status: "com_debito" | "sem_debito" | "indefinido"; valores: string[]; trecho: string | null } {
+interface PgfnDebito { receita: string; periodo: string; vencimento: string | null; valorOriginal: number; saldoConsolidado: number; situacao: string; }
+function sitfisParseMoedaBR(s: string): number {
+  const n = parseFloat(String(s).replace(/\./g, "").replace(",", "."));
+  return isFinite(n) ? n : 0;
+}
+function sitfisExtrairPgfn(texto: string): {
+  status: "com_debito" | "sem_debito" | "indefinido";
+  debitos: PgfnDebito[];
+  parcelamento: string | null;
+  omissoes: string | null;
+  totalConsolidado: number;
+  valores: string[];
+  trecho: string | null;
+} {
   const t = String(texto || "").replace(/\r/g, "");
+  // Débitos estruturados da seção "Pendência - Débito (SIEF)". O pdf-parse quebra cada célula da tabela
+  // numa linha: Receita / PA/Exerc. / Dt.Vcto / Vl.Original / Sdo.Devedor / Multa / Juros / Sdo.Dev.Cons. /
+  // Situação. O regex ancora no código da receita (NNNN-NN - NOME) e lê os campos na ordem. O PA às vezes
+  // é MM/AAAA (débito comum) e às vezes dd/mm/aaaa (ex.: MAED). De quebra ignora o ruído da "Notificação
+  // de lançamento" grudada antes do código, porque ancora no último NNNN-NN da linha.
+  const reDeb = /(\d{4}-\d{2})\s*-\s*([^\n]+?)\s*\n\s*(\d{2}\/\d{4}|\d{2}\/\d{2}\/\d{4})\s*\n\s*(\d{2}\/\d{2}\/\d{4})\s*\n\s*([\d.]+,\d{2})\s*\n\s*([\d.]+,\d{2})\s*\n\s*([\d.]+,\d{2})\s*\n\s*([\d.]+,\d{2})\s*\n\s*([\d.]+,\d{2})\s*\n\s*([A-ZÀ-Ü][A-ZÀ-Ü0-9 .\-/]*)/g;
+  const debitos: PgfnDebito[] = [];
+  let md: RegExpExecArray | null;
+  while ((md = reDeb.exec(t))) {
+    debitos.push({
+      receita: `${md[1]} - ${md[2].trim()}`,
+      periodo: md[3],
+      vencimento: md[4],
+      valorOriginal: sitfisParseMoedaBR(md[5]),
+      saldoConsolidado: sitfisParseMoedaBR(md[9]),
+      situacao: md[10].trim(),
+    });
+  }
+  // Parcelamento (PARCSN/PARCMEI). A situação ("SIMPLES NACIONAL - EM PARCELAMENTO") vem GRUDADA no fim da
+  // linha do cabeçalho, logo depois do CNPJ (o pdf-parse cola os "____" do separador + CNPJ + situação);
+  // se não achar ali, cai pra linha seguinte. Depois tira os "____" do separador.
+  let parcelamento: string | null = null;
+  const pmHeader = /Pend[êe]ncia\s*-\s*Parcelamento[^\n]*/i.exec(t);
+  if (pmHeader) {
+    const linha = pmHeader[0];
+    let situacao = "";
+    const afterCnpj = /\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}\s*([A-Za-zÀ-Ü][^\n]*)$/.exec(linha);
+    if (afterCnpj) situacao = afterCnpj[1];
+    else { const prox = t.slice(pmHeader.index + linha.length).match(/\n\s*([A-Za-zÀ-Ü][^\n]*)/); if (prox) situacao = prox[1]; }
+    situacao = situacao.replace(/_+/g, " ").replace(/\s{2,}/g, " ").trim();
+    const atraso = /Parcelas?\s+em\s+atraso\s*\n\s*(\d+)/i.exec(t);
+    if (situacao || atraso) parcelamento = (situacao || "Em parcelamento") + (atraso ? ` — ${atraso[1]} parcela(s) em atraso` : "");
+  }
+  // Omissões (ex.: "Omissão de PGDAS-D (Período de Apuração) 2026 - AGO SET"). Tira os "____" do separador.
+  let omissoes: string | null = null;
+  const om = /Omiss[ãa]o de ([^\n(]+?)[_\s]*\(Per[íi]odo de Apura[çc][ãa]o\)\s*\n([^\n]+)/i.exec(t);
+  if (om) omissoes = `${om[1].replace(/_+/g, " ").trim()}: ${om[2].trim()}`;
+  const totalConsolidado = debitos.reduce((s, d) => s + d.saldoConsolidado, 0);
+  // trecho/valores mantidos pra conferência e retrocompatibilidade.
   const re = /(PROCURADORIA[\s-]*GERAL DA FAZENDA|Inscri[çc][õo]es? em D[íi]vida Ativa|D[íi]vida Ativa da Uni[ãa]o|\bPGFN\b)/i;
   const m = re.exec(t);
-  if (!m) return { status: "indefinido", valores: [], trecho: null };
-  const trecho = t.slice(m.index || 0, (m.index || 0) + 8000).replace(/\n{3,}/g, "\n\n").trim();
-  const semDebito = /n[ãa]o\s+const(a|am)|nada\s+const|sem\s+pend[êe]nci|n[ãa]o\s+(h[áa]|possui|existe[m]?)\s+(d[ée]bit|inscri|pend)/i.test(trecho);
-  const valores = [...new Set(trecho.match(/\d{1,3}(?:\.\d{3})*,\d{2}/g) || [])];
-  const temSinalDebito = /inscri[çc][ãa]o|\bd[ée]bito|processo|certid[ãa]o de d[íi]vida|\bCDA\b|saldo devedor|exigibilidade/i.test(trecho) && valores.length > 0;
-  if (temSinalDebito) return { status: "com_debito", valores, trecho };
-  if (semDebito) return { status: "sem_debito", valores: [], trecho };
-  return { status: "indefinido", valores, trecho };
+  const trecho = m ? t.slice(m.index, m.index + 8000).replace(/\n{3,}/g, "\n\n").trim() : null;
+  const valores = debitos.map((d) => d.saldoConsolidado.toLocaleString("pt-BR", { minimumFractionDigits: 2 }));
+  const semDebito = /n[ãa]o\s+const(a|am)|nada\s+const|sem\s+pend[êe]nci|n[ãa]o\s+(h[áa]|possui|existe[m]?)\s+(d[ée]bit|inscri|pend)/i.test(trecho || "");
+  let status: "com_debito" | "sem_debito" | "indefinido";
+  if (debitos.length || parcelamento || omissoes) status = "com_debito";
+  else if (semDebito) status = "sem_debito";
+  else status = "indefinido";
+  return { status, debitos, parcelamento, omissoes, totalConsolidado, valores, trecho };
 }
 app.get("/api/integracontador/empresas/:id/pgfn", blockCliente, requirePermissao("integracontador", "visualizar"), async (req, res) => {
   const empresaId = Number(req.params.id);

@@ -8492,10 +8492,27 @@ async function pageIntegraContador(deepLinkEmpresaId){
       const tag = r.status==='com_debito' ? '<span class="tag bad">Com débito na PGFN</span>'
         : r.status==='sem_debito' ? '<span class="tag ok">Sem débito na PGFN</span>'
         : '<span class="tag warn">Não identificado automaticamente</span>';
+      const fmtBRL = n => 'R$ ' + Number(n||0).toLocaleString('pt-BR',{minimumFractionDigits:2, maximumFractionDigits:2});
+      const debRows = (r.debitos||[]).map(d=>`<tr>
+        <td>${esc(d.receita)}</td>
+        <td>${esc(d.periodo||'—')}</td>
+        <td>${d.vencimento?esc(d.vencimento):'—'}</td>
+        <td style="text-align:right;">${fmtBRL(d.valorOriginal)}</td>
+        <td style="text-align:right;"><b>${fmtBRL(d.saldoConsolidado)}</b></td>
+        <td><span class="tag ${/PARCEL/i.test(d.situacao)?'warn':(/SUSPEN/i.test(d.situacao)?'ok':'bad')}">${esc(d.situacao)}</span></td>
+      </tr>`).join('');
       wrap.innerHTML = `
-        <div style="margin-bottom:6px;">${tag} <span style="font-size:11.5px; color:var(--ink-soft);">· SITFIS de ${r.sitfisEm?fmtDateHora(r.sitfisEm):'—'}</span></div>
-        ${r.valores&&r.valores.length?`<div style="font-size:12.5px; margin-bottom:6px;"><b>Valores na seção da PGFN:</b> ${r.valores.map(v=>'R$ '+esc(v)).join(' · ')}</div>`:''}
-        ${r.trecho?`<details style="font-size:12px;"><summary style="cursor:pointer; color:var(--ink-soft);">Ver trecho do relatório (PGFN / Dívida Ativa)</summary><pre style="white-space:pre-wrap; background:var(--bg-soft,#f4f6f5); padding:10px; border-radius:8px; max-height:300px; overflow:auto; margin-top:6px;">${esc(r.trecho)}</pre></details>`:''}
+        <div style="margin-bottom:8px;">${tag} <span style="font-size:11.5px; color:var(--ink-soft);">· SITFIS de ${r.sitfisEm?fmtDateHora(r.sitfisEm):'—'}</span></div>
+        ${r.parcelamento?`<div style="font-size:12.5px; margin-bottom:6px;"><span class="tag warn">Parcelamento</span> ${esc(r.parcelamento)}</div>`:''}
+        ${r.omissoes?`<div style="font-size:12.5px; margin-bottom:6px;"><span class="tag bad">Omissão</span> ${esc(r.omissoes)}</div>`:''}
+        ${r.debitos&&r.debitos.length?`
+          <table class="data-table" style="margin-top:4px;">
+            <thead><tr><th>Receita / Débito</th><th>Período</th><th>Vencimento</th><th style="text-align:right;">Valor original</th><th style="text-align:right;">Saldo consolidado</th><th>Situação</th></tr></thead>
+            <tbody>${debRows}</tbody>
+            <tfoot><tr><td colspan="4" style="text-align:right; font-weight:600;">Total consolidado</td><td style="text-align:right; font-weight:700;">${fmtBRL(r.totalConsolidado)}</td><td></td></tr></tfoot>
+          </table>`
+          : (r.parcelamento||r.omissoes?'':`<div class="empty-state" style="font-size:12.5px;">Nenhum débito detalhado detectado na leitura automática.</div>`)}
+        ${r.trecho?`<details style="font-size:12px; margin-top:8px;"><summary style="cursor:pointer; color:var(--ink-soft);">Ver trecho do relatório (Situação Fiscal)</summary><pre style="white-space:pre-wrap; background:var(--bg-soft,#f4f6f5); padding:10px; border-radius:8px; max-height:300px; overflow:auto; margin-top:6px;">${esc(r.trecho)}</pre></details>`:''}
         <div style="font-size:11px; color:var(--ink-soft); margin-top:6px;">Leitura automática do SITFIS — em caso de dúvida, confira no PDF da Situação Fiscal (aba Documentos abaixo).</div>`;
     }
     carregarIcPgfn();
