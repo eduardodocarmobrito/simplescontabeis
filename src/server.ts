@@ -13194,6 +13194,58 @@ app.put("/api/webdfe/minha-empresa", requireCliente, (req, res) => {
 // simplescontabeis.com.br — os cookies/armazenamento deles deixam de ser "de terceiro" pro navegador,
 // em qualquer navegador, não só Safari.
 const WEBDFE_ORIGEM = "https://app.webdfe.com.br";
+// Achado ao vivo 2026-10-27 (segunda rodada): a troca de texto no HTML/JS (abaixo) só pega URL que já
+// vem ESCRITA no código-fonte deles. O painel logado, depois de login, monta iframe/chamada interna
+// usando `window.location.origin` CALCULADO em tempo real pelo navegador — e isso, rodando atrás do
+// proxy, aponta pro NOSSO domínio (simplescontabeis.com.br), não pro deles, porque é literalmente o
+// que o navegador vê. O JS deles então tenta abrir um iframe próprio apontando pra "raiz" do que ele
+// acha que é o próprio domínio — cai na raiz do nosso site — e a CSP global do nosso site (que proíbe
+// qualquer um nos colocar dentro de um iframe) barra isso, deixando a área em branco. Esse shim roda
+// ANTES de qualquer script da página: intercepta toda criação/alteração de src/href de iframe/script/
+// link/a, e toda chamada fetch/XMLHttpRequest, e corrige de volta pro caminho do espelho sempre que o
+// valor for um path absoluto começando com "/" (não precedido do nosso prefixo) — é exatamente esse
+// tipo de valor "calculado pela própria página" que escapava da troca de texto simples.
+const WEBDFE_SHIM = `<script>(function(){
+  var P='/api/webdfe-mirror';
+  function fix(u){
+    if(typeof u!=='string'||!u) return u;
+    if(u.indexOf(P)===0) return u;
+    if(/^https?:\\/\\//i.test(u)) return u;
+    if(u.charAt(0)==='/') return P+u;
+    return u;
+  }
+  try{
+    var oOpen=XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open=function(m,u){ arguments[1]=fix(u); return oOpen.apply(this,arguments); };
+  }catch(e){}
+  try{
+    var oFetch=window.fetch;
+    if(oFetch) window.fetch=function(i,init){ if(typeof i==='string') i=fix(i); return oFetch.call(this,i,init); };
+  }catch(e){}
+  try{
+    var oSetAttr=Element.prototype.setAttribute;
+    Element.prototype.setAttribute=function(n,v){
+      if((n==='src'||n==='href')&&/^(IFRAME|SCRIPT|LINK|A|FORM)$/.test(this.tagName)) v=fix(v);
+      if(n==='action'&&this.tagName==='FORM') v=fix(v);
+      return oSetAttr.call(this,n,v);
+    };
+  }catch(e){}
+  ['src','href','action'].forEach(function(prop){
+    [['HTMLIFrameElement',['src']],['HTMLScriptElement',['src']],['HTMLAnchorElement',['href']],['HTMLFormElement',['action']],['HTMLLinkElement',['href']]].forEach(function(pair){
+      var Ctor=window[pair[0]];
+      if(!Ctor||pair[1].indexOf(prop)===-1) return;
+      var desc=Object.getOwnPropertyDescriptor(Ctor.prototype,prop);
+      if(!desc||!desc.set) return;
+      try{
+        Object.defineProperty(Ctor.prototype,prop,{
+          get:desc.get,
+          set:function(v){ desc.set.call(this,fix(v)); },
+          configurable:true,
+        });
+      }catch(e){}
+    });
+  });
+})();</script>`;
 app.use(
   "/api/webdfe-mirror",
   requireAuth, // qualquer perfil logado — é só exibição; as credenciais em si já são protegidas pelas rotas /api/webdfe/* acima
@@ -13224,7 +13276,15 @@ app.use(
       // Troca toda referência ao domínio de verdade pelo nosso caminho de espelho — cobre URL absoluta
       // em HTML/CSS/JS, inclusive dentro de string literal de JavaScript (ex. o redirect pós-login
       // deles: `let url = 'https://app.webdfe.com.br'; ...`).
-      return responseBuffer.toString("utf8").split(WEBDFE_ORIGEM).join("/api/webdfe-mirror");
+      let texto = responseBuffer.toString("utf8").split(WEBDFE_ORIGEM).join("/api/webdfe-mirror");
+      if (/text\/html/i.test(contentType)) {
+        // Shim precisa rodar ANTES de qualquer outro script da página — logo depois do <head> (ou, se
+        // não achar, logo no início do documento).
+        // Fronteira de palavra depois de "head" — sem isso, "<head...>" também casava com
+        // "<header id=...>" (achado ao vivo), injetando o shim tarde demais, depois de outros scripts.
+        texto = /<head(\s[^>]*)?>/i.test(texto) ? texto.replace(/<head(\s[^>]*)?>/i, (m) => m + WEBDFE_SHIM) : WEBDFE_SHIM + texto;
+      }
+      return texto;
     }),
   })
 );
