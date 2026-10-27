@@ -9541,6 +9541,18 @@ function parsearECachearTributos(ids: number[]): Map<number, { vIBS: number; vCB
   }
   return out;
 }
+// Data de COMPETÊNCIA do documento (pra filtro por período e ordenação). A NFS-e traz a competência
+// fiscal declarada no XML em <dCompet> (formato AAAA-MM-DD), que pode cair em mês DIFERENTE da emissão
+// — ex.: nota emitida 01/09 00:00:45 mas com competência 31/08. O Domínio lança pela competência, então
+// o site precisa filtrar/ordenar igual, senão a nota "some" do mês certo. NF-e/NFC-e/CT-e não têm essa
+// separação (dhSaiEnt raramente vem preenchido), então usam a própria data de emissão. Tudo calculado no
+// SQL pra não ter que parsear XML nem manter coluna à parte. `alias` é o prefixo da tabela nfe_documentos.
+function competenciaSql(alias = "d"): string {
+  const a = alias ? `${alias}.` : "";
+  return `(CASE WHEN ${a}tipo='nfse' AND instr(${a}xml,'<dCompet>')>0 AND instr(${a}xml,'</dCompet>')>instr(${a}xml,'<dCompet>')
+    THEN substr(${a}xml, instr(${a}xml,'<dCompet>')+9, instr(${a}xml,'</dCompet>')-instr(${a}xml,'<dCompet>')-9)
+    ELSE substr(${a}data_emissao,1,10) END)`;
+}
 // Monta a listagem enriquecida (flags/qtd_itens/IBS-CBS/manifestação/eventos/cancelada) de
 // nfe_documentos pra um conjunto de empresas — compartilhada entre a tela do escritório
 // (/api/nfe/documentos, várias empresas) e a do cliente (/api/nfe/minha-empresa/documentos, só a
@@ -9572,11 +9584,11 @@ function nfeListarDocumentosQuery(
     params.push(direcao);
   }
   if (dataDe) {
-    condicoes.push(`substr(d.data_emissao,1,10) >= ?`);
+    condicoes.push(`${competenciaSql("d")} >= ?`);
     params.push(dataDe);
   }
   if (dataAte) {
-    condicoes.push(`substr(d.data_emissao,1,10) <= ?`);
+    condicoes.push(`${competenciaSql("d")} <= ?`);
     params.push(dataAte);
   }
   if (busca) {
@@ -9658,7 +9670,7 @@ function nfeListarDocumentosQuery(
                     ELSE NULL END) as numeroNfse
        FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id
        WHERE ${condicoes.join(" AND ")}
-       ORDER BY d.data_emissao DESC, d.id DESC LIMIT 500`
+       ORDER BY ${competenciaSql("d")} DESC, d.id DESC LIMIT 500`
     )
     .all(...params) as any[];
   // Backfill preguiçoso (IBS/CBS/ICMS/PIS/COFINS/IPI/flags): lê o XML das NF-e/NFC-e desta página ainda
@@ -10284,8 +10296,8 @@ async function nfeGerarAnaliticoPdf(user: any, empresaId: number, query: any, re
   const params: any[] = [user.escritorioId, empresaId];
   if (tipo) { condicoes.push(`d.tipo = ?`); params.push(tipo); }
   if (direcao) { condicoes.push(`${direcaoExpr} = ?`); params.push(direcao); }
-  if (dataDe) { condicoes.push(`substr(d.data_emissao,1,10) >= ?`); params.push(dataDe); }
-  if (dataAte) { condicoes.push(`substr(d.data_emissao,1,10) <= ?`); params.push(dataAte); }
+  if (dataDe) { condicoes.push(`${competenciaSql("d")} >= ?`); params.push(dataDe); }
+  if (dataAte) { condicoes.push(`${competenciaSql("d")} <= ?`); params.push(dataAte); }
   if (busca) {
     const digits = busca.replace(/\D/g, "");
     condicoes.push(`(d.emitente_nome LIKE ? OR d.destinatario_nome LIKE ? OR d.chave_acesso LIKE ? OR d.emitente_cnpj LIKE ? OR d.destinatario_cnpj LIKE ?)`);
@@ -20186,11 +20198,11 @@ function calcularRetencoesNfse(user: any, empresaId: number, dataDe: string | nu
              FROM nfe_documentos WHERE escritorio_id = ? AND empresa_id = ? AND fonte = 'nfse' AND destinatario_cnpj = ?`;
   const params: any[] = [user.escritorioId, empresaId, cnpjLimpo];
   if (dataDe) {
-    sql += ` AND substr(data_emissao,1,10) >= ?`;
+    sql += ` AND ${competenciaSql("")} >= ?`;
     params.push(dataDe);
   }
   if (dataAte) {
-    sql += ` AND substr(data_emissao,1,10) <= ?`;
+    sql += ` AND ${competenciaSql("")} <= ?`;
     params.push(dataAte);
   }
   sql += ` ORDER BY data_emissao ASC`;
@@ -20258,7 +20270,7 @@ function listarEmpresasComRetencoes(user: any, dataDe: string, dataAte: string) 
   let sql = `SELECT d.empresa_id as empresaId, e.nome as empresaNome, d.xml
              FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id
              WHERE d.escritorio_id = ? AND d.fonte = 'nfse' AND e.ativo = 1
-               AND substr(d.data_emissao,1,10) >= ? AND substr(d.data_emissao,1,10) <= ?`;
+               AND ${competenciaSql("d")} >= ? AND ${competenciaSql("d")} <= ?`;
   const params: any[] = [user.escritorioId, dataDe, dataAte];
   if (visiveis !== null) {
     sql += ` AND d.empresa_id IN (${visiveis.map(() => "?").join(",")})`;
