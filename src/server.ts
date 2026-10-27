@@ -2559,9 +2559,8 @@ sqlite.exec(`DROP TABLE IF EXISTS fgts_sync_jobs`);
     sqlite.prepare(`INSERT OR IGNORE INTO dashboard_card_seed (escritorio_id, tipo) VALUES (1, ?)`).run(tipo);
   };
   seedCard("efd_omisso", "SPED-Fiscal (EFD ICMS/IPI) Omisso", "Empresas obrigadas com EFD não entregue (Consulta SEFA)");
-  seedCard("cnd_federal", "Certidão Federal (CND)", "Empresas sem regularidade federal (RFB/PGFN) — via Situação Fiscal");
-  seedCard("cnd_estadual", "Certidão Estadual (CND)", "Certidão vencida, vencendo ou positiva (com débito) — SEFA");
-  seedCard("cnd_municipal", "Certidão Municipal (CND)", "Certidão vencida, vencendo ou positiva (com débito) — Prefeitura");
+  seedCard("cnd_estadual", "Certidão Estadual (CND)", "Empresas com pendência estadual (sem certidão negativa) — SEFA");
+  seedCard("cnd_municipal", "Certidão Municipal (CND)", "Empresas com pendência municipal (sem certidão negativa) — Prefeitura");
 }
 // Migração leve: prazo (dia do mês) de um modelo de Solicitação de Documentos — usado pelo card
 // "Documentos pendentes" pra saber quando um item obrigatório já venceu sem upload.
@@ -11653,16 +11652,14 @@ function cardCnd(user: any, esfera: CndEsfera): any[] {
   const out: any[] = [];
   for (const r of rows) {
     if (!visiveis.has(r.empresaId)) continue;
+    // Só entra no card quem NÃO conseguiu emitir certidão negativa (tipo 'positiva' = com débito). As
+    // negativas (e positivas com efeito de negativa) são baixadas e anexadas no Envio de Documentos.
+    if (r.tipo !== "positiva") continue;
     const vencida = !!r.validade && r.validade < hoje;
-    const vencendo = !!r.validade && r.validade >= hoje && r.validade <= limite;
-    const comDebito = r.tipo === "positiva";
-    if (!vencida && !vencendo && !comDebito) continue; // negativa/efeito válida e longe do vencimento
-    let alerta = "";
-    if (comDebito) alerta = `Positiva — com débito ${CND_ESFERAS[esfera].nomeCurto}`;
-    else if (vencida) alerta = "Certidão vencida";
-    else alerta = "Vence em breve";
-    out.push({ ...r, vencida, vencendo, comDebito, alerta });
+    out.push({ ...r, vencida, vencendo: false, comDebito: true, alerta: `Com débito ${CND_ESFERAS[esfera].nomeCurto} — sem certidão negativa` });
   }
+  // `limite` deixou de ser usado (card mostra só pendência real), mas mantém o cálculo de `hoje`.
+  void limite;
   return out;
 }
 
@@ -11683,6 +11680,34 @@ function cndTipoDeInfosimples(data: any): "negativa" | "positiva_efeito" | "posi
   if (/CERTID[ÃA]O\s+POSITIVA/i.test(txt)) return "positiva";
   if (data?.conseguiu_emitir_certidao_negativa === true) return "negativa";
   return /N[ÃA]O\s+CONSTAM/i.test(txt) ? "negativa" : "positiva";
+}
+// Baixa a certidão emitida (HTML que o Infosimples captura), renderiza em PDF (Chromium) e anexa no
+// Envio de Documentos pro cliente — mesma mecânica do SITFIS. Anexa só 1x por mês (evita reenvio a
+// cada ciclo). Chamado só quando a certidão foi emitida (negativa ou positiva com efeito de negativa).
+async function cndAnexarCertidaoEmEnvio(escritorioId: number, empresa: any, esfera: CndEsfera, htmlUrl: string, validadeIso: string | null): Promise<void> {
+  if (!htmlUrl) return;
+  const label = CND_ESFERAS[esfera].label;
+  const atribuicaoId = integraContadorObterOuCriarAtribuicaoModelo(escritorioId, empresa.id, `Certidão de Débitos ${label}`, `Certidão Negativa de Débitos ${label}, emitida e enviada automaticamente`);
+  const hoje = new Date();
+  const ano = hoje.getFullYear(), mes = hoje.getMonth() + 1;
+  const periodo = sqlite.prepare(`SELECT id FROM envio_periodos WHERE atribuicao_id = ? AND ano = ? AND mes = ?`).get(atribuicaoId, ano, mes) as any;
+  if (periodo && envioJaTemDocumento(periodo.id)) return; // já anexada/enviada neste mês
+  let pdf: Buffer;
+  try {
+    const resp = await fetch(htmlUrl);
+    const html = await resp.text();
+    pdf = await contratos.gerarPdfDeHtml(html, `Certidão ${label}`);
+  } catch (e: any) { console.error(`[cnd] render PDF ${esfera} empresa ${empresa.id}:`, e.message); return; }
+  const validadeBr = validadeIso ? validadeIso.split("-").reverse().join("/") : null;
+  const nomeArquivo = `Certidao ${label} - ${MESES_PT_EXTENSO[mes - 1]} ${ano}.pdf`;
+  const obs = `Certidão Negativa de Débitos ${label}${validadeBr ? ` — válida até ${validadeBr}` : ""}, emitida automaticamente em ${hoje.toLocaleDateString("pt-BR")}.`;
+  const docId = integraContadorAnexarPdfEmEnvio(atribuicaoId, empresa.id, ano, mes, nomeArquivo, pdf.toString("base64"), obs, validadeIso);
+  void envioEnviarDocumentoAutomatico({
+    escritorioId, empresaId: empresa.id, docId, fileName: nomeArquivo, pdf,
+    assunto: `Certidão Negativa ${label} — ${empresa.nome}`,
+    corpoEmail: `Segue em anexo a Certidão Negativa de Débitos ${label}${validadeBr ? `, válida até ${validadeBr}` : ""}.`,
+    descricaoWhatsapp: `Certidão Negativa ${label}`,
+  }).catch((e) => console.error(`[cnd] envio automático ${esfera} empresa ${empresa.id}:`, e.message));
 }
 async function infosimplesConsultarCnd(escritorioId: number, empresa: any, esfera: CndEsfera): Promise<{ ok: boolean; tipo?: string; erro?: string }> {
   const ep = INFOSIMPLES_ENDPOINTS[esfera];
@@ -11715,21 +11740,50 @@ async function infosimplesConsultarCnd(escritorioId: number, empresa: any, esfer
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
      ON CONFLICT(empresa_id, esfera) DO UPDATE SET tipo=excluded.tipo, numero=excluded.numero, emissao=excluded.emissao, validade=excluded.validade, inscricao=excluded.inscricao, cnpj=excluded.cnpj, importado_em=datetime('now')`
   ).run(escritorioId, empresa.id, esfera, tipo, d.certidao_codigo || null, toIso(d.emissao_data), toIso(d.validade_data), ie || null, cnpj);
+  // Certidão emitida (negativa ou positiva c/ efeito de negativa) → baixa e anexa no Envio pro cliente.
+  // Só a 'positiva' (com débito, sem certidão) fica de fora e aparece no card como pendência.
+  if (tipo !== "positiva") {
+    const htmlUrl = d.site_receipt || (json.site_receipts && json.site_receipts[0]) || null;
+    if (htmlUrl) await cndAnexarCertidaoEmEnvio(escritorioId, empresa, esfera, htmlUrl, toIso(d.validade_data));
+  }
   return { ok: true, tipo };
 }
-async function infosimplesConsultarTodas(escritorioId: number, esfera: CndEsfera): Promise<{ total: number; ok: number; erros: { empresa: string; erro: string }[] }> {
+// Consulta as certidões de uma esfera. somenteDevidas=true (uso automático): consulta SÓ as empresas
+// cuja certidão está vencida/ausente — uma certidão negativa válida até X não é reconsultada até X
+// (economiza consultas). Pendência (positiva, sem validade) é rechecada a cada intervalo_dias. Sem
+// somenteDevidas (botão manual): consulta todas.
+async function infosimplesConsultarCertidoes(
+  escritorioId: number,
+  esfera: CndEsfera,
+  opts: { somenteDevidas?: boolean } = {}
+): Promise<{ total: number; consultadas: number; ok: number; puladas: number; erros: { empresa: string; erro: string }[] }> {
   const ep = INFOSIMPLES_ENDPOINTS[esfera];
-  // Pra estadual, só empresas com Inscrição Estadual (a SEFA exige IE). Sem IE não dá pra consultar.
+  // Estadual exige Inscrição Estadual (a SEFA pede IE). Sem IE não dá pra consultar.
   const empresas = sqlite
     .prepare(`SELECT id, nome, cnpj, inscricao_estadual FROM empresas WHERE escritorio_id = ? AND ativo = 1 ${ep?.precisaIe ? "AND inscricao_estadual IS NOT NULL AND inscricao_estadual != ''" : ""}`)
     .all(escritorioId) as any[];
+  const hoje = new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+  const recheckDias = ((sqlite.prepare(`SELECT intervalo_dias FROM infosimples_config WHERE escritorio_id = ?`).get(escritorioId) as any)?.intervalo_dias) || 30;
   const erros: { empresa: string; erro: string }[] = [];
-  let ok = 0;
+  let ok = 0, consultadas = 0, puladas = 0;
   for (const emp of empresas) {
+    if (opts.somenteDevidas) {
+      const cur = sqlite.prepare(`SELECT validade, importado_em FROM cnd_certidoes WHERE empresa_id = ? AND esfera = ?`).get(emp.id, esfera) as any;
+      if (cur) {
+        if (cur.validade) {
+          if (cur.validade > hoje) { puladas++; continue; } // negativa ainda válida — não reconsulta
+        } else {
+          // pendência (sem validade): recheca só a cada intervalo_dias, pra ver se regularizou
+          const imp = cur.importado_em ? new Date(String(cur.importado_em).replace(" ", "T") + "Z").getTime() : 0;
+          if (Date.now() - imp < recheckDias * 86400_000) { puladas++; continue; }
+        }
+      }
+    }
+    consultadas++;
     const r = await infosimplesConsultarCnd(escritorioId, emp, esfera);
     if (r.ok) ok++; else erros.push({ empresa: emp.nome, erro: r.erro || "erro" });
   }
-  return { total: empresas.length, ok, erros };
+  return { total: empresas.length, consultadas, ok, puladas, erros };
 }
 app.get("/api/infosimples/config", blockCliente, requireAdmin, (req, res) => {
   const user = (req as any).user;
@@ -11756,26 +11810,24 @@ app.post("/api/cnd/:esfera/consultar", blockCliente, requirePermissao("dashboard
   const user = (req as any).user;
   const esfera = cndEsferaValida(req.params.esfera);
   if (!esfera || !INFOSIMPLES_ENDPOINTS[esfera]) return res.status(400).json({ error: "Consulta automática indisponível para esta esfera." });
-  if (!infosimplesToken(user.escritorioId)) return res.status(400).json({ error: "Cadastre o token Infosimples em Configurações › Integrações." });
-  try { res.json(await infosimplesConsultarTodas(user.escritorioId, esfera)); }
+  if (!infosimplesToken(user.escritorioId)) return res.status(400).json({ error: "Cadastre o token Infosimples em Configurações › Certidões (Infosimples)." });
+  try { res.json(await infosimplesConsultarCertidoes(user.escritorioId, esfera)); } // manual = consulta todas
   catch (e: any) { res.status(500).json({ error: e.message }); }
 });
-// Agendador: a cada hora, roda a consulta das esferas configuradas se já passou o intervalo (15 dias).
+// Agendador: 2x/dia, consulta SÓ as certidões vencidas/ausentes (por vencimento de cada uma) —
+// não reconsulta uma negativa ainda válida. Começa no primeiro tick (+12h), nunca no boot.
 setInterval(() => {
-  const cfgs = sqlite.prepare(`SELECT escritorio_id, intervalo_dias, ultima_execucao_em FROM infosimples_config WHERE ativo = 1 AND token_cifrado IS NOT NULL`).all() as any[];
-  const agora = Date.now();
+  const cfgs = sqlite.prepare(`SELECT escritorio_id FROM infosimples_config WHERE ativo = 1 AND token_cifrado IS NOT NULL`).all() as any[];
   for (const c of cfgs) {
-    const ultima = c.ultima_execucao_em ? new Date(String(c.ultima_execucao_em).replace(" ", "T") + "Z").getTime() : 0;
-    if (agora - ultima < (c.intervalo_dias || 15) * 86400_000) continue;
     sqlite.prepare(`UPDATE infosimples_config SET ultima_execucao_em = datetime('now') WHERE escritorio_id = ?`).run(c.escritorio_id);
     (async () => {
       for (const esfera of Object.keys(INFOSIMPLES_ENDPOINTS) as CndEsfera[]) {
-        try { const r = await infosimplesConsultarTodas(c.escritorio_id, esfera); console.log(`[infosimples] ${esfera}: ${r.ok}/${r.total} ok`); }
+        try { const r = await infosimplesConsultarCertidoes(c.escritorio_id, esfera, { somenteDevidas: true }); if (r.consultadas) console.log(`[infosimples] ${esfera}: ${r.ok}/${r.consultadas} consultadas (${r.puladas} ainda válidas)`); }
         catch (e: any) { console.error(`[infosimples] ${esfera}:`, e.message); }
       }
     })();
   }
-}, 60 * 60 * 1000);
+}, 12 * 60 * 60 * 1000);
 // Envia o PDF (ajustado) de Entradas/Saídas pros contatos da empresa (e-mail + WhatsApp). Mesma mecânica
 // do envio de Programação de Férias (ver enviarRelatorioEmpresa em ferias.ts).
 async function entradasSaidasEnviarEmpresa(escritorioId: number, empresaId: number, canal: any): Promise<{ ok: boolean; erro?: string }> {
@@ -18318,7 +18370,7 @@ app.get("/api/financeiro/resumo", blockCliente, requirePermissao("financeiro", "
 // função abaixo devolve a lista (o card mostra só items.length); todas já filtram pelas empresas
 // que o usuário logado pode ver (empresasVisiveis), pro caso de um Colaborador restrito abrir o
 // Painel.
-const CARD_TIPOS: string[] = ["certificados_vencer", "das_atraso", "situacao_fiscal", "caixapostal_nao_lida", "checklist_atraso", "solicitacoes_pendentes", "envio_atraso", "solicitacao_atraso", "licencas_vencer", "pesquisa_pagamento", "efd_omisso", "cnd_federal", "cnd_estadual", "cnd_municipal"];
+const CARD_TIPOS: string[] = ["certificados_vencer", "das_atraso", "situacao_fiscal", "caixapostal_nao_lida", "checklist_atraso", "solicitacoes_pendentes", "envio_atraso", "solicitacao_atraso", "licencas_vencer", "pesquisa_pagamento", "efd_omisso", "cnd_estadual", "cnd_municipal"];
 
 // Piso de competência (aaaamm, ex.: 202607) configurado em painel_monitoramento_config — null
 // quando não há corte definido (comportamento de sempre: cada card usa o período mais antigo já
@@ -18921,10 +18973,6 @@ async function calcularCardComputado(tipo: string, user: any, parametro?: string
   if (tipo === "das_atraso") return cardDasEmAtraso(user);
   if (tipo === "situacao_fiscal") return cardSituacaoFiscal(user);
   if (tipo === "efd_omisso") return cardEfdOmisso(user);
-  // CND Federal = regularidade RFB/PGFN, que já vem automática pela Situação Fiscal (SITFIS) buscada
-  // pelo Integra Contador — não depende de importar PDF. Empresa com pendência no SITFIS não emitiria
-  // CND negativa, então entra no card. Reaproveita cardSituacaoFiscal (mesma fonte, mesmo detalhe).
-  if (tipo === "cnd_federal") return cardSituacaoFiscal(user);
   if (tipo === "cnd_estadual") return cardCnd(user, "estadual");
   if (tipo === "cnd_municipal") return cardCnd(user, "municipal");
   if (tipo === "caixapostal_nao_lida") return cardCaixaPostalNaoLida(user);

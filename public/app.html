@@ -2275,9 +2275,8 @@ const CARD_TIPOS_INFO = {
   das_atraso: { label:'DAS em Atraso', subtitulo:'Competências não entregues' },
   situacao_fiscal: { label:'Situação Fiscal', subtitulo:'Empresas com pendência' },
   efd_omisso: { label:'SPED-Fiscal (EFD ICMS/IPI) Omisso', subtitulo:'Empresas obrigadas com EFD não entregue (Consulta SEFA)' },
-  cnd_federal: { label:'Certidão Federal (CND)', subtitulo:'Empresas sem regularidade federal (RFB/PGFN) — via Situação Fiscal' },
-  cnd_estadual: { label:'Certidão Estadual (CND)', subtitulo:'Certidão vencida, vencendo ou positiva (com débito) — SEFA' },
-  cnd_municipal: { label:'Certidão Municipal (CND)', subtitulo:'Certidão vencida, vencendo ou positiva (com débito) — Prefeitura' },
+  cnd_estadual: { label:'Certidão Estadual (CND)', subtitulo:'Empresas com pendência estadual (sem certidão negativa) — SEFA' },
+  cnd_municipal: { label:'Certidão Municipal (CND)', subtitulo:'Empresas com pendência municipal (sem certidão negativa) — Prefeitura' },
   caixapostal_nao_lida: { label:'Mensagens no e-CAC', subtitulo:'Empresas com mensagem não lida na Caixa Postal' },
   pesquisa_pagamento: { label:'Pagamento DAS/DCTF-Web', subtitulo:'Cliente respondeu que não pagou, ou não respondeu a pesquisa' },
   checklist_atraso: { label:'Documentos Pendentes', subtitulo:'Competência anterior, após o prazo, sem envio do cliente' },
@@ -2510,8 +2509,7 @@ function cardDetalheModal(c){
           try{ await api('/dashboard/das-dispensa', { method:'POST', body:{ empresaId:Number(a.dataset.emp), competencia:a.dataset.comp } }); toast('Competência dispensada (sem movimento).','ok'); cardModal(c); }
           catch(e){ toast(e.message,'err'); }
         }));
-      } else if(tipo==='situacao_fiscal' || tipo==='cnd_federal'){
-        // CND Federal é alimentada pela Situação Fiscal (RFB/PGFN) — mesma fonte/detalhe.
+      } else if(tipo==='situacao_fiscal'){
         box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Alerta</th><th></th></tr></thead><tbody>
           ${items.map(i=>`<tr><td>${esc(i.empresaNome)}</td><td>${esc(i.alerta)}</td><td style="text-align:right;">${i.docId?`<a class="btn small" href="/api/integracontador/documentos/${i.docId}/pdf" target="_blank" rel="noopener">Baixar Situação Fiscal</a>`:''}</td></tr>`).join('')}
         </tbody></table>`;
@@ -15542,9 +15540,10 @@ async function renderCfgCertidoes(box){
         <input id="infoToken" type="password" placeholder="${c.temToken?'•••••••• (já cadastrado — deixe em branco pra manter)':'cole aqui o token de integração'}" autocomplete="off" ${podeEditar?'':'disabled'}>
         <div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">${c.temToken?'Token já cadastrado. Para trocar, cole um novo; para manter, deixe em branco.':'Em api.infosimples.com → ADMINISTRAÇÃO → Tokens.'}</div>
       </div>
-      <label class="checkbox-row" style="margin-top:6px;"><input type="checkbox" id="infoAtivo" ${c.ativo?'checked':''} ${podeEditar?'':'disabled'}> Consultar automaticamente a cada
-        <input id="infoIntervalo" type="number" min="1" max="60" value="${c.intervaloDias||15}" style="width:64px; margin:0 4px;" ${podeEditar?'':'disabled'}> dias</label>
-      <div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">${c.ultimaExecucao?('Última execução automática: '+fmtDateHora(c.ultimaExecucao)):'Ainda não rodou automaticamente.'} · Custo ~R$ 0,20 por consulta (cobrado pela Infosimples).</div>
+      <label class="checkbox-row" style="margin-top:6px;"><input type="checkbox" id="infoAtivo" ${c.ativo?'checked':''} ${podeEditar?'':'disabled'}> Consultar automaticamente <b>no vencimento de cada certidão</b></label>
+      <div style="font-size:12px; color:var(--ink-soft); margin:2px 0 6px 26px;">Uma certidão negativa válida não é reconsultada até vencer (economiza consultas). As empresas <b>com pendência</b> (sem certidão) são rechecadas a cada
+        <input id="infoIntervalo" type="number" min="1" max="60" value="${c.intervaloDias||30}" style="width:60px; margin:0 4px;" ${podeEditar?'':'disabled'}> dias.</div>
+      <div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">${c.ultimaExecucao?('Última verificação automática: '+fmtDateHora(c.ultimaExecucao)):'Ainda não rodou automaticamente.'} · Custo ~R$ 0,20 por consulta (cobrado pela Infosimples).</div>
       ${podeEditar?'<div class="row" style="gap:8px; margin-top:14px;"><button class="btn primary" id="infoSalvar">Salvar</button></div>':'<p style="font-size:12px; color:var(--ink-soft);">Só o Administrador altera esta integração.</p>'}
     </div>`;
   if(!podeEditar) return;
