@@ -9426,23 +9426,21 @@ async function finOfxDocumentosParaVincular(basePath){
 async function finOfxVincularDocumentoModal(ofxId, onDone, basePath){
   let items = [];
   try{ items = await finOfxDocumentosParaVincular(basePath); }catch(e){}
+  const opcoes = items.map(d=>({ id:d.id, label: `${d.emitenteNome||'—'} · ${d.dataEmissao?fmtDateIso(d.dataEmissao.slice(0,10)):'—'} · ${d.valorTotal!=null?fmtMoney(d.valorTotal):''}` }));
+  let documentoEscolhido = null;
   openModal(`
     <h3>Vincular a um documento</h3>
     <p style="font-size:12px; color:var(--ink-soft); margin-top:-4px;">Associa essa movimentação a uma nota recebida, só pra referência — não muda nada no Financeiro.</p>
-    <div class="field"><label>Nota</label>
-      <select id="ofxVincDoc">
-        <option value="">— Nenhum —</option>
-        ${items.map(d=>`<option value="${d.id}">${esc(d.emitenteNome||'—')} · ${d.dataEmissao?fmtDateIso(d.dataEmissao.slice(0,10)):'—'} · ${d.valorTotal!=null?fmtMoney(d.valorTotal):''}</option>`).join('')}
-      </select>
-    </div>
+    <div class="field"><label>Nota</label>${comboSelectHtml('ofxVincDocCombo','Digite para buscar a nota…')}</div>
     <div class="modal-actions">
       <button class="btn" id="ofxVincCancel">Cancelar</button>
       <button class="btn primary" id="ofxVincSalvar">Vincular</button>
     </div>
   `);
+  setupComboSelect('ofxVincDocCombo', opcoes, id=>{ documentoEscolhido = id; });
   document.getElementById('ofxVincCancel').addEventListener('click', closeModal);
   document.getElementById('ofxVincSalvar').addEventListener('click', async ()=>{
-    const v = document.getElementById('ofxVincDoc').value;
+    const v = documentoEscolhido;
     try{
       await api(basePath+'/ofx/'+ofxId+'/vincular-documento', { method:'PUT', body:{ documentoId: v?Number(v):null } });
       closeModal();
