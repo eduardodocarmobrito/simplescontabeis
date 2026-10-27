@@ -9778,7 +9778,24 @@ async function finRenderReceber(basePath, containerId, filtro, podePostar, podeE
   const box = document.getElementById(containerId);
   const STATUS_LABEL={pendente:'Pendente',pago:'Recebido',atrasado:'Atrasado',cancelado:'Cancelado',renegociado:'Renegociado'};
   const ORIGEM_LABEL={manual:'Lançamento manual',nfse:'Gerado pela NFS-e',nfe:'Gerado pela nota (NF-e) integrada',ofx:'Gerado pela conciliação do extrato'};
+  const totalFiltrado = items.reduce((s,i)=>s+(i.valor||0),0);
+  const totalRecebido = items.reduce((s,i)=>s+finBaixado(i),0);
+  const totalFalta = totalFiltrado - totalRecebido;
   box.innerHTML = `
+    <div class="row" style="gap:10px; flex-wrap:wrap; margin-bottom:12px;">
+      <div class="kpi" style="min-width:170px; flex:1;">
+        <div style="font-size:10.5px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.3px;">Total filtrado</div>
+        <div style="font-size:21px; font-weight:700;">${fmtMoney(totalFiltrado)}</div>
+      </div>
+      <div class="kpi" style="min-width:170px; flex:1;">
+        <div style="font-size:10.5px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.3px;">Recebido (conciliado no banco)</div>
+        <div style="font-size:21px; font-weight:700; color:#059669;">${fmtMoney(totalRecebido)}</div>
+      </div>
+      <div class="kpi" style="min-width:170px; flex:1;">
+        <div style="font-size:10.5px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.3px;">Falta receber</div>
+        <div style="font-size:21px; font-weight:700; ${totalFalta>0.004?'color:var(--debit);':''}">${fmtMoney(totalFalta)}</div>
+      </div>
+    </div>
     <div class="row" style="margin-bottom:12px; align-items:flex-end;">
       ${dateFieldHtml('mfrDe','De',dataDe)}
       ${dateFieldHtml('mfrAte','Até',dataAte)}
@@ -9885,7 +9902,24 @@ async function finRenderPagar(basePath, containerId, filtro, podePostar, podeEdi
   const box = document.getElementById(containerId);
   const STATUS_LABEL={pendente:'Pendente',pago:'Pago',atrasado:'Atrasado',cancelado:'Cancelado',renegociado:'Renegociado'};
   const ORIGEM_LABEL_PAGAR={manual:'Lançamento manual',nfe:'Gerado pela nota (NF-e) integrada',ofx:'Gerado pela conciliação do extrato'};
+  const totalFiltrado = items.reduce((s,i)=>s+(i.valor||0),0);
+  const totalPago = items.reduce((s,i)=>s+finBaixado(i),0);
+  const totalFalta = totalFiltrado - totalPago;
   box.innerHTML = `
+    <div class="row" style="gap:10px; flex-wrap:wrap; margin-bottom:12px;">
+      <div class="kpi" style="min-width:170px; flex:1;">
+        <div style="font-size:10.5px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.3px;">Total filtrado</div>
+        <div style="font-size:21px; font-weight:700;">${fmtMoney(totalFiltrado)}</div>
+      </div>
+      <div class="kpi" style="min-width:170px; flex:1;">
+        <div style="font-size:10.5px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.3px;">Pago (conciliado no banco)</div>
+        <div style="font-size:21px; font-weight:700; color:#059669;">${fmtMoney(totalPago)}</div>
+      </div>
+      <div class="kpi" style="min-width:170px; flex:1;">
+        <div style="font-size:10.5px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.3px;">Falta pagar</div>
+        <div style="font-size:21px; font-weight:700; ${totalFalta>0.004?'color:var(--debit);':''}">${fmtMoney(totalFalta)}</div>
+      </div>
+    </div>
     <div class="row" style="margin-bottom:12px; align-items:flex-end;">
       ${dateFieldHtml('mfpDe','De',dataDe)}
       ${dateFieldHtml('mfpAte','Até',dataAte)}
