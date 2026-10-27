@@ -10613,7 +10613,13 @@ async function onedriveExportarDocumentosNovos(escritorioId: number): Promise<{ 
           `SELECT d.id, d.xml, d.tipo, d.chave_acesso as chaveAcesso, d.emitente_cnpj as emitenteCnpj, d.nsu, d.data_emissao as dataEmissao,
                   e.nome as empresaNome, e.codigo_dominio as empresaCodigo, e.apelido as empresaApelido, e.cnpj as empresaCnpj
            FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id
-           WHERE d.escritorio_id = ? AND d.id > ? ORDER BY d.id ASC LIMIT 200`
+           WHERE d.escritorio_id = ? AND d.id > ?
+             -- Eventos NÃO vão pra pasta de notas, EXCETO o CANCELAMENTO da própria nota (o Domínio
+             -- precisa dele). Detecta pelo tpEvento do XML (110111/110112 = cancelamento), porque esses
+             -- eventos vêm da Distribuição DFe com evento_descricao NULL. Outros eventos (ex.: "Registro
+             -- de Autorização de CT-e para a NF-e" tpEvento 610600, CC-e 110110, manifestação) ficam fora.
+             AND (d.tipo != 'evento' OR d.xml LIKE '%<tpEvento>110111</tpEvento>%' OR d.xml LIKE '%<tpEvento>110112</tpEvento>%')
+           ORDER BY d.id ASC LIMIT 200`
         )
         .all(escritorioId, ultimoId) as any[];
       if (!rows.length) break;
@@ -10625,7 +10631,10 @@ async function onedriveExportarDocumentosNovos(escritorioId: number): Promise<{ 
         const pastaEmpresa = (
           doc.empresaCodigo && doc.empresaApelido ? `${doc.empresaCodigo}-${doc.empresaApelido}` : String(doc.empresaNome || "Sem empresa")
         ).replace(/[\\:*?"<>|]/g, "_");
-        const nomeArquivo = String(doc.chaveAcesso || `doc-${doc.id}`).replace(/[\\:*?"<>|]/g, "_") + ".xml";
+        // Evento de cancelamento ganha sufixo "-cancelamento" pra NÃO sobrescrever a nota (que tem o
+        // mesmo nome = a chave). Assim a nota e o evento convivem na pasta.
+        const baseNome = String(doc.chaveAcesso || `doc-${doc.id}`).replace(/[\\:*?"<>|]/g, "_");
+        const nomeArquivo = doc.tipo === "evento" ? `${baseNome}-cancelamento.xml` : `${baseNome}.xml`;
         // NFS-e de serviço PRESTADO (a própria empresa é a emitente/prestadora) vai pra pasta separada,
         // pra não misturar com as notas tomadas/entradas que o Domínio importa (evita erro na importação).
         const ehServicoPrestado = doc.tipo === "nfse" && doc.emitenteCnpj && String(doc.emitenteCnpj).replace(/\D/g, "") === String(doc.empresaCnpj || "").replace(/\D/g, "");
