@@ -2228,6 +2228,9 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
       CREATE INDEX idx_financeiro_ofx_empresa_conta_status ON financeiro_ofx_transacoes(empresa_id, conta_id, status);
     `);
   }
+  // Vínculo da transação do extrato a um cadastro (cliente/fornecedor/funcionário) — pedido do usuário:
+  // na Conciliação, poder editar e vincular a transação ao terceiro, gravando também no título conciliado.
+  { const c = sqlite.prepare(`PRAGMA table_info(financeiro_ofx_transacoes)`).all() as any[]; if (!c.some((x) => x.name === "cadastro_id")) sqlite.exec(`ALTER TABLE financeiro_ofx_transacoes ADD COLUMN cadastro_id INTEGER REFERENCES financeiro_cadastros(id) ON DELETE SET NULL`); }
 }
 // Aprendizado da conciliação: toda vez que o usuário concilia uma transação do extrato a um título,
 // a gente guarda "este texto do banco (normalizado) → este terceiro" pra, nas próximas importações,
@@ -17627,9 +17630,49 @@ function financeiroSoltarVinculoOfx(tabela: "financeiro_pagar" | "financeiro_rec
     .prepare(`UPDATE financeiro_ofx_transacoes SET status = 'pendente', vinculo_tabela = NULL, vinculo_id = NULL WHERE vinculo_tabela = ? AND vinculo_id = ?`)
     .run(tabela, tituloId);
 }
+// Vincula uma transação do extrato a um cadastro (cliente/fornecedor/funcionário). Cria o cadastro se
+// vier um nome novo; e, se a transação já estiver CONCILIADA a um título, grava o nome do terceiro no
+// título (fornecedor pra A Pagar, cliente pra A Receber) pra refletir nos relatórios por cadastro.
+function financeiroOfxVincularCadastro(empresaId: number, ofxId: number, tipo: string, nome: string, cadastroId: number | null, userId: number | null): { ok?: boolean; error?: string; cadastroId?: number | null; cadastroNome?: string | null; cadastroTipo?: string | null } {
+  const tx = sqlite.prepare(`SELECT id, vinculo_tabela AS vinculoTabela, vinculo_id AS vinculoId FROM financeiro_ofx_transacoes WHERE id = ? AND empresa_id = ?`).get(ofxId, empresaId) as any;
+  if (!tx) return { error: "Transação não encontrada." };
+  // Desvincular (sem cadastro e sem nome): só limpa o vínculo da transação (não mexe no título).
+  if (!cadastroId && !(nome || "").trim()) {
+    sqlite.prepare(`UPDATE financeiro_ofx_transacoes SET cadastro_id = NULL WHERE id = ?`).run(ofxId);
+    return { ok: true, cadastroId: null, cadastroNome: null, cadastroTipo: null };
+  }
+  let cid: number | null = cadastroId || null;
+  let cadNome = "";
+  let cadTipo: string | null = null;
+  if (cid) {
+    const c = sqlite.prepare(`SELECT id, nome, tipo FROM financeiro_cadastros WHERE id = ? AND empresa_id = ? AND ativo = 1`).get(cid, empresaId) as any;
+    if (!c) return { error: "Cadastro não encontrado." };
+    cadNome = c.nome; cadTipo = c.tipo;
+    // Se o usuário escolheu um papel e o cadastro ainda não tem, adiciona (ex.: já era fornecedor, marca também funcionário).
+    if (tipo && CADASTRO_TIPOS.includes(tipo) && !cadastroTemPapel(c.tipo, tipo)) {
+      cadTipo = cadastroNormalizarTipos((c.tipo || "") + "," + tipo) || c.tipo;
+      sqlite.prepare(`UPDATE financeiro_cadastros SET tipo = ? WHERE id = ?`).run(cadTipo, cid);
+    }
+  } else {
+    if (!CADASTRO_TIPOS.includes(tipo)) return { error: "Escolha o tipo (cliente, fornecedor ou funcionário)." };
+    cid = financeiroUpsertCadastro(empresaId, tipo, nome.trim(), null, "manual", userId);
+    if (!cid) return { error: "Não consegui criar o cadastro." };
+    cadNome = nome.trim(); cadTipo = tipo;
+  }
+  sqlite.prepare(`UPDATE financeiro_ofx_transacoes SET cadastro_id = ? WHERE id = ?`).run(cid, ofxId);
+  // Conciliada → grava o nome no título pra aparecer nos relatórios por cadastro.
+  if (tx.vinculoTabela === "financeiro_pagar" && tx.vinculoId) {
+    sqlite.prepare(`UPDATE financeiro_pagar SET fornecedor = ? WHERE id = ? AND empresa_id = ?`).run(cadNome, tx.vinculoId, empresaId);
+  } else if (tx.vinculoTabela === "financeiro_receber" && tx.vinculoId) {
+    sqlite.prepare(`UPDATE financeiro_receber SET cliente_nome = ? WHERE id = ? AND empresa_id = ?`).run(cadNome, tx.vinculoId, empresaId);
+  }
+  return { ok: true, cadastroId: cid, cadastroNome: cadNome, cadastroTipo: cadTipo };
+}
 function financeiroOfxListar(empresaId: number, contaId: number, status: string): any[] {
   const rows = sqlite
-    .prepare(`SELECT * FROM financeiro_ofx_transacoes WHERE empresa_id = ? AND conta_id = ? AND status = ? ORDER BY data DESC, id DESC`)
+    .prepare(`SELECT t.*, c.nome AS cadastro_nome, c.tipo AS cadastro_tipo
+              FROM financeiro_ofx_transacoes t LEFT JOIN financeiro_cadastros c ON c.id = t.cadastro_id
+              WHERE t.empresa_id = ? AND t.conta_id = ? AND t.status = ? ORDER BY t.data DESC, t.id DESC`)
     .all(empresaId, contaId, status) as any[];
   return rows.map((r) => ({
     id: r.id,
@@ -17640,6 +17683,9 @@ function financeiroOfxListar(empresaId: number, contaId: number, status: string)
     vinculoTabela: r.vinculo_tabela,
     vinculoId: r.vinculo_id,
     documentoVinculadoId: r.documento_vinculado_id,
+    cadastroId: r.cadastro_id || null,
+    cadastroNome: r.cadastro_nome || null,
+    cadastroTipo: r.cadastro_tipo || null,
     sugestoes: r.status === "pendente" ? financeiroOfxSugerirMatch(empresaId, r.valor, r.data, r.descricao) : [],
     grupos: r.status === "pendente" ? financeiroOfxSugerirGrupo(empresaId, r.valor, r.data) : [],
   }));
@@ -17857,6 +17903,12 @@ app.put("/api/financeiro/minha-empresa/ofx/:id/vincular-documento", requireClien
   sqlite.prepare(`UPDATE financeiro_ofx_transacoes SET documento_vinculado_id = ? WHERE id = ?`).run(documentoId, ofxRow.id);
   res.json({ ok: true });
 });
+app.put("/api/financeiro/minha-empresa/ofx/:id/vincular-cadastro", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
+  const user = (req as any).user;
+  const r = financeiroOfxVincularCadastro(user.empresaId, Number(req.params.id), String(req.body?.tipo || ""), String(req.body?.nome || ""), req.body?.cadastroId ? Number(req.body.cadastroId) : null, user.id);
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json(r);
+});
 // ---- Conciliação de extrato (.OFX) pelo ESCRITÓRIO (mesma tela/lógica do self-service do cliente,
 // ver rotas /minha-empresa/... acima — reaproveita as mesmas funções, só troca de onde vem o
 // empresaId: ali é o do usuário logado, aqui é o da empresa escolhida na tela, com a permissão de
@@ -17984,6 +18036,14 @@ app.put("/api/financeiro/empresas/:empresaId/ofx/:id/vincular-documento", blockC
   }
   sqlite.prepare(`UPDATE financeiro_ofx_transacoes SET documento_vinculado_id = ? WHERE id = ?`).run(documentoId, ofxRow.id);
   res.json({ ok: true });
+});
+app.put("/api/financeiro/empresas/:empresaId/ofx/:id/vincular-cadastro", blockCliente, requirePermissao("financeiro", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const r = financeiroOfxVincularCadastro(empresaId, Number(req.params.id), String(req.body?.tipo || ""), String(req.body?.nome || ""), req.body?.cadastroId ? Number(req.body.cadastroId) : null, user.id);
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json(r);
 });
 app.get("/api/financeiro/minha-empresa/pagar", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
   const empresaId = (req as any).user.empresaId;

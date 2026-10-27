@@ -9660,6 +9660,8 @@ async function finOfxConciliacao(conta){
 // a tela antiga (Contas → Conciliar extrato) e a aba nova "Conciliação".
 function finOfxCartaoHtml(t){
   const cor = t.valor>=0 ? '#059669' : 'var(--debit)';
+  const TCAD = {cliente:'Cliente', fornecedor:'Fornecedor', funcionario:'Funcionário'};
+  const cadTxt = t.cadastroNome ? ('👤 '+esc(t.cadastroNome)+(t.cadastroTipo?(' <span style="color:var(--ink-soft);">('+t.cadastroTipo.split(',').map(x=>TCAD[x]||x).join('/')+')</span>'):'')) : '';
   const sugestoesHtml = (t.sugestoes||[]).map(s=>`
     <div class="row" style="align-items:center; gap:8px; padding:6px 0; border-top:1px solid var(--rule);">
       <span style="flex:1; font-size:12.5px;">${esc(s.descricao)}${s.terceiro?' — '+esc(s.terceiro):''} · venc. ${fmtDateIso(s.vencimento)} · ${fmtMoney(s.valor)}</span>
@@ -9672,6 +9674,7 @@ function finOfxCartaoHtml(t){
       <div>
         <div style="font-size:13px;">${esc(t.descricao)}</div>
         <div style="font-size:11.5px; color:var(--ink-soft);">${fmtDateIso(t.data)}</div>
+        ${cadTxt?`<div style="font-size:11.5px; margin-top:2px;">${cadTxt}</div>`:''}
       </div>
       <b style="color:${cor}; white-space:nowrap;">${fmtMoney(t.valor)}</b>
     </div>
@@ -9688,9 +9691,10 @@ function finOfxCartaoHtml(t){
       <div class="row" style="gap:8px; margin-top:8px; flex-wrap:wrap;">
         <button class="btn small" data-act="cadastrar" data-ofx="${t.id}">+ Cadastrar no Financeiro</button>
         <button class="btn small" data-act="vincular" data-ofx="${t.id}">🔗 Vincular documento</button>
+        <button class="btn small" data-act="vincular-cadastro" data-ofx="${t.id}">👤 ${t.cadastroNome?'Trocar':'Vincular'} cadastro</button>
         <button class="btn small" data-act="ignorar" data-ofx="${t.id}">Ignorar</button>
       </div>
-    `: t.status==='conciliado' ? `<div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">✓ Conciliada${t.documentoVinculadoId?' · documento vinculado':''} <button class="btn small" data-act="vincular" data-ofx="${t.id}" style="margin-left:6px;">🔗 ${t.documentoVinculadoId?'Trocar':'Vincular'} documento</button></div>`
+    `: t.status==='conciliado' ? `<div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">✓ Conciliada${t.documentoVinculadoId?' · documento vinculado':''} <button class="btn small" data-act="vincular" data-ofx="${t.id}" style="margin-left:6px;">🔗 ${t.documentoVinculadoId?'Trocar':'Vincular'} documento</button> <button class="btn small" data-act="vincular-cadastro" data-ofx="${t.id}">👤 ${t.cadastroNome?'Trocar':'Vincular'} cadastro</button></div>`
     : `<div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">Ignorada</div>`}
   </div>`;
 }
@@ -9708,6 +9712,7 @@ function finOfxWireAcoes(scope, recarregar, basePath){
   }));
   scope.querySelectorAll('[data-act="cadastrar"]').forEach(b=>b.addEventListener('click', ()=>finOfxCadastrarModal(b.dataset.ofx, recarregar, basePath)));
   scope.querySelectorAll('[data-act="vincular"]').forEach(b=>b.addEventListener('click', ()=>finOfxVincularDocumentoModal(b.dataset.ofx, recarregar, basePath)));
+  scope.querySelectorAll('[data-act="vincular-cadastro"]').forEach(b=>b.addEventListener('click', ()=>finOfxVincularCadastroModal(b.dataset.ofx, recarregar, basePath, b.textContent.includes('Trocar'))));
   scope.querySelectorAll('[data-act="ignorar"]').forEach(b=>b.addEventListener('click', async ()=>{
     if(!confirm('Ignorar esta transação? Ela some da lista de pendentes (não mexe em nada do Financeiro).')) return;
     try{ await api(basePath+'/ofx/'+b.dataset.ofx+'/ignorar', { method:'POST' }); toast('Ignorada.','ok'); recarregar(); }
@@ -9851,6 +9856,52 @@ async function finOfxVincularDocumentoModal(ofxId, onDone, basePath){
       toast('Documento vinculado.','ok');
       onDone();
     }catch(e){ toast(e.message,'err'); }
+  });
+}
+// Vincular a transação do extrato a um Fornecedor/Cliente/Funcionário (cadastro). Escolhe um existente
+// (combobox com busca embutida) ou digita um novo nome + tipo. Se conciliada, o backend grava o nome no
+// título (fornecedor/cliente) pra refletir nos relatórios por cadastro. `temVinculo` habilita "Desvincular".
+async function finOfxVincularCadastroModal(ofxId, onDone, basePath, temVinculo){
+  let cadastros = [];
+  try{ cadastros = (await api(basePath+'/cadastros')).items||[]; }catch(e){}
+  const TLBL = {cliente:'Cliente', fornecedor:'Fornecedor', funcionario:'Funcionário'};
+  const opcoes = cadastros.map(c=>({ id:c.id, label: c.nome + ' — ' + (c.tipo||'').split(',').map(x=>TLBL[x]||x).join('/') }));
+  let cadastroEscolhido = null;
+  openModal(`
+    <h3>Vincular a Fornecedor / Cliente / Funcionário</h3>
+    <p style="font-size:12px; color:var(--ink-soft); margin-top:-4px;">Escolha um cadastro existente ou digite um novo. Se a transação já estiver conciliada, o nome vai pro título (aparece nos relatórios por cadastro).</p>
+    <div class="field"><label>Cadastro existente</label>${comboSelectHtml('ofxCadCombo','Digite para buscar…')}</div>
+    <div style="text-align:center; font-size:11.5px; color:var(--ink-soft); margin:2px 0 8px;">— ou cadastrar novo —</div>
+    <div class="field"><label>Novo nome</label><input id="ofxCadNovoNome" placeholder="Nome do fornecedor / cliente / funcionário" autocomplete="off"></div>
+    <div class="field" style="margin-bottom:6px;"><label>Tipo (para o novo)</label>
+      <label class="checkbox-row"><input type="radio" name="ofxCadTipo" value="fornecedor" checked> Fornecedor</label>
+      <label class="checkbox-row"><input type="radio" name="ofxCadTipo" value="cliente"> Cliente</label>
+      <label class="checkbox-row"><input type="radio" name="ofxCadTipo" value="funcionario"> Funcionário</label>
+    </div>
+    <div class="modal-actions" style="justify-content:space-between;">
+      <div>${temVinculo?`<button class="btn" id="ofxCadDesvincular" style="color:var(--debit);">Desvincular</button>`:''}</div>
+      <div style="display:flex; gap:8px;">
+        <button class="btn" id="ofxCadCancel">Cancelar</button>
+        <button class="btn primary" id="ofxCadSalvar">Vincular</button>
+      </div>
+    </div>
+  `);
+  setupComboSelect('ofxCadCombo', opcoes, id=>{ cadastroEscolhido = id; if(id){ const n=document.getElementById('ofxCadNovoNome'); if(n) n.value=''; } });
+  document.getElementById('ofxCadCancel').addEventListener('click', closeModal);
+  const desv = document.getElementById('ofxCadDesvincular');
+  if(desv) desv.addEventListener('click', async ()=>{
+    try{ await api(basePath+'/ofx/'+ofxId+'/vincular-cadastro', { method:'PUT', body:{} }); closeModal(); toast('Desvinculado.','ok'); onDone(); }
+    catch(e){ toast(e.message,'err'); }
+  });
+  document.getElementById('ofxCadSalvar').addEventListener('click', async ()=>{
+    const novoNome = (document.getElementById('ofxCadNovoNome').value||'').trim();
+    const tipo = (document.querySelector('input[name="ofxCadTipo"]:checked')||{}).value || 'fornecedor';
+    let body;
+    if(cadastroEscolhido && !novoNome) body = { cadastroId: Number(cadastroEscolhido), tipo };
+    else if(novoNome) body = { tipo, nome: novoNome };
+    else { toast('Escolha um cadastro existente ou digite um novo nome.','err'); return; }
+    try{ await api(basePath+'/ofx/'+ofxId+'/vincular-cadastro', { method:'PUT', body }); closeModal(); toast('Vinculado.','ok'); onDone(); }
+    catch(e){ toast(e.message,'err'); }
   });
 }
 // Modal de lançamento manual, compartilhado entre Receber e Pagar — os campos são quase iguais,
