@@ -16411,7 +16411,7 @@ function renderCfgDomRelatorios(box, sub, dados){
   habilitarSalvarAoMudar('btnSalvarOdRel', ['odRelAtivo']);
   document.getElementById('btnSalvarOdRel').addEventListener('click', async ()=>{
     const body = {
-      clientId: oneDriveCfg.clientId, pastaDestino: oneDriveCfg.pastaDestino, ativo: oneDriveCfg.ativo,
+      clientId: oneDriveCfg.clientId, pastaDestino: oneDriveCfg.pastaDestino, pastaDestinoServicos: oneDriveCfg.pastaDestinoServicos, ativo: oneDriveCfg.ativo,
       relatoriosPastaOrigem: '', // OneDrive não é mais usado como origem de Relatórios — só Google Drive
       relatoriosAtivo: document.getElementById('odRelAtivo').checked,
     };
@@ -16771,7 +16771,9 @@ function renderCfgDomOneDrive(box, sub, dados){
         <div class="field grow"><label>Client ID (do app registrado no Azure)</label><input id="odClientId" value="${esc(oneDriveCfg.clientId)}"></div>
         <div class="field grow"><label>Client Secret ${oneDriveCfg.temClientSecret?'(já salvo — preencha só se quiser trocar)':''}</label><input id="odClientSecret" type="password" placeholder="${oneDriveCfg.temClientSecret?'••••••••':''}"></div>
       </div>
-      <div class="field"><label>Pasta de destino no OneDrive</label><input id="odPastaDestino" value="${esc(oneDriveCfg.pastaDestino)}"></div>
+      <div class="field"><label>Pasta de destino no OneDrive — notas tomadas/entradas (NF-e, NFC-e, NFS-e tomadas)</label><input id="odPastaDestino" value="${esc(oneDriveCfg.pastaDestino)}"></div>
+      <div class="field"><label>Pasta de destino — NFS-e de serviços PRESTADOS (a empresa é a emitente)</label><input id="odPastaDestinoServicos" value="${esc(oneDriveCfg.pastaDestinoServicos||'Notas Fiscais Serviços Prestados - Clientes')}">
+        <div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">As NFS-e que a própria empresa emitiu (serviços prestados) vão pra esta pasta separada — pra não misturar com as notas que o Domínio importa como entrada (evita erro na importação).</div></div>
       <label class="checkbox-row"><input type="checkbox" id="odAtivo" ${oneDriveCfg.ativo?'checked':''}> Manter o OneDrive sincronizado automaticamente</label>
       ${oneDriveCfg.ultimaExportacaoEm?`<p style="font-size:12px; color:var(--ink-soft);">Última exportação: ${fmtDateHora(oneDriveCfg.ultimaExportacaoEm)}${oneDriveCfg.ultimoErro?` — <span style="color:var(--debit);">${esc(oneDriveCfg.ultimoErro)}</span>`:''}</p>`:''}
       <div class="row" style="margin-top:6px;">
@@ -16782,12 +16784,13 @@ function renderCfgDomOneDrive(box, sub, dados){
       <div id="odResultado" style="margin-top:10px;"></div>
     </div>
   `;
-  habilitarSalvarAoMudar('btnSalvarOneDrive', ['odClientId','odClientSecret','odPastaDestino','odAtivo']);
+  habilitarSalvarAoMudar('btnSalvarOneDrive', ['odClientId','odClientSecret','odPastaDestino','odPastaDestinoServicos','odAtivo']);
   document.getElementById('btnSalvarOneDrive').addEventListener('click', async ()=>{
     const body = {
       clientId: document.getElementById('odClientId').value.trim(),
       clientSecret: document.getElementById('odClientSecret').value,
       pastaDestino: document.getElementById('odPastaDestino').value.trim(),
+      pastaDestinoServicos: document.getElementById('odPastaDestinoServicos').value.trim(),
       ativo: document.getElementById('odAtivo').checked,
       // Esse PUT reescreve o registro inteiro, então reenvia o que já estava salvo pro card de
       // "Importar Relatórios" (outra aba) pra não apagar sem querer.

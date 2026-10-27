@@ -1117,6 +1117,9 @@ sqlite.exec(`
     conta_nome TEXT,
     conta_email TEXT,
     pasta_destino TEXT NOT NULL DEFAULT 'Notas Fiscais - Clientes',
+    -- NFS-e de serviços PRESTADOS (a empresa é a prestadora/emitente) vão pra uma pasta separada, pra
+    -- não misturar com as notas tomadas/entradas que o Domínio importa (senão dá erro na importação).
+    pasta_destino_servicos TEXT NOT NULL DEFAULT 'Notas Fiscais Serviços Prestados - Clientes',
     ativo INTEGER NOT NULL DEFAULT 0,
     ultimo_id_exportado INTEGER NOT NULL DEFAULT 0,
     oauth_state_pendente TEXT,
@@ -2599,6 +2602,7 @@ if ((sqlite.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name=
 // servidor pra reaproveitar depois — testando ao vivo, confirmamos que essa sessão não sobrevive
 // fora do navegador que fez o login (o próprio site trata como "Erro de Login"), então a busca
 // passou a rodar inteira em fgts-login-setup.ts (local) e essa tabela ficou sem uso.
+{ const c = sqlite.prepare(`PRAGMA table_info(onedrive_config)`).all() as any[]; if (!c.some((x) => x.name === "pasta_destino_servicos")) sqlite.exec(`ALTER TABLE onedrive_config ADD COLUMN pasta_destino_servicos TEXT NOT NULL DEFAULT 'Notas Fiscais Serviços Prestados - Clientes'`); }
 sqlite.exec(`DROP TABLE IF EXISTS fgts_sync_jobs`);
 // Migração leve: cards do Painel podem virar "computados" (tipo preenchido) em vez de só texto
 // digitado à mão — o valor passa a ser calculado na hora em GET /api/dashboard/cards.
@@ -10476,6 +10480,7 @@ app.get("/api/onedrive/config", blockCliente, requirePermissao("configuracoes", 
     contaNome: c.conta_nome || null,
     contaEmail: c.conta_email || null,
     pastaDestino: c.pasta_destino || "Notas Fiscais - Clientes",
+    pastaDestinoServicos: c.pasta_destino_servicos || "Notas Fiscais Serviços Prestados - Clientes",
     ativo: !!c.ativo,
     ultimaExportacaoEm: c.ultima_exportacao_em || null,
     ultimoErro: c.ultimo_erro || null,
@@ -10507,10 +10512,10 @@ app.put("/api/onedrive/config", blockCliente, requirePermissao("configuracoes", 
   const atual = getOnedriveConfig(escritorioId);
   sqlite
     .prepare(
-      `INSERT INTO onedrive_config (escritorio_id, client_id, client_secret_cifrado, pasta_destino, ativo, relatorios_pasta_origem, relatorios_ativo, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      `INSERT INTO onedrive_config (escritorio_id, client_id, client_secret_cifrado, pasta_destino, pasta_destino_servicos, ativo, relatorios_pasta_origem, relatorios_ativo, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
        ON CONFLICT(escritorio_id) DO UPDATE SET client_id=excluded.client_id, client_secret_cifrado=excluded.client_secret_cifrado,
-         pasta_destino=excluded.pasta_destino, ativo=excluded.ativo,
+         pasta_destino=excluded.pasta_destino, pasta_destino_servicos=excluded.pasta_destino_servicos, ativo=excluded.ativo,
          relatorios_pasta_origem=excluded.relatorios_pasta_origem, relatorios_ativo=excluded.relatorios_ativo, updated_at=datetime('now')`
     )
     .run(
@@ -10518,6 +10523,7 @@ app.put("/api/onedrive/config", blockCliente, requirePermissao("configuracoes", 
       b.clientId || null,
       b.clientSecret ? nfse.cifrarTexto(String(b.clientSecret)) : atual.client_secret_cifrado || null,
       b.pastaDestino || "Notas Fiscais - Clientes",
+      b.pastaDestinoServicos || "Notas Fiscais Serviços Prestados - Clientes",
       b.ativo ? 1 : 0,
       // Diferente dos outros campos: aqui um valor VAZIO enviado de propósito (o admin apagou o campo
       // e salvou) precisa ser respeitado como "não usar OneDrive como origem de Relatórios" — não pode
@@ -10594,7 +10600,8 @@ async function onedriveExportarDocumentosNovos(escritorioId: number): Promise<{ 
     for (;;) {
       const rows = sqlite
         .prepare(
-          `SELECT d.id, d.xml, d.chave_acesso as chaveAcesso, d.nsu, d.data_emissao as dataEmissao, e.nome as empresaNome, e.codigo_dominio as empresaCodigo, e.apelido as empresaApelido
+          `SELECT d.id, d.xml, d.tipo, d.chave_acesso as chaveAcesso, d.emitente_cnpj as emitenteCnpj, d.nsu, d.data_emissao as dataEmissao,
+                  e.nome as empresaNome, e.codigo_dominio as empresaCodigo, e.apelido as empresaApelido, e.cnpj as empresaCnpj
            FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id
            WHERE d.escritorio_id = ? AND d.id > ? ORDER BY d.id ASC LIMIT 200`
         )
@@ -10609,7 +10616,13 @@ async function onedriveExportarDocumentosNovos(escritorioId: number): Promise<{ 
           doc.empresaCodigo && doc.empresaApelido ? `${doc.empresaCodigo}-${doc.empresaApelido}` : String(doc.empresaNome || "Sem empresa")
         ).replace(/[\\:*?"<>|]/g, "_");
         const nomeArquivo = String(doc.chaveAcesso || `doc-${doc.id}`).replace(/[\\:*?"<>|]/g, "_") + ".xml";
-        const caminho = `${cfg.pasta_destino || "Notas Fiscais - Clientes"}/${pastaEmpresa}/${competencia}/${nomeArquivo}`;
+        // NFS-e de serviço PRESTADO (a própria empresa é a emitente/prestadora) vai pra pasta separada,
+        // pra não misturar com as notas tomadas/entradas que o Domínio importa (evita erro na importação).
+        const ehServicoPrestado = doc.tipo === "nfse" && doc.emitenteCnpj && String(doc.emitenteCnpj).replace(/\D/g, "") === String(doc.empresaCnpj || "").replace(/\D/g, "");
+        const pastaBase = ehServicoPrestado
+          ? cfg.pasta_destino_servicos || "Notas Fiscais Serviços Prestados - Clientes"
+          : cfg.pasta_destino || "Notas Fiscais - Clientes";
+        const caminho = `${pastaBase}/${pastaEmpresa}/${competencia}/${nomeArquivo}`;
         await onedrive.enviarArquivo(token.accessToken, caminho, Buffer.from(doc.xml, "utf8"));
         ultimoId = doc.id;
         novos++;
