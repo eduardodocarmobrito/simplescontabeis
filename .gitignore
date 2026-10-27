@@ -7,3 +7,7 @@ logs
 .railway
 .claude/settings.local.json
 .DS_Store
+
+# arquivos pessoais / anotacoes locais (repo e publico)
+*.rtf
+/c
