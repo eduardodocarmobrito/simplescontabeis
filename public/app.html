@@ -9101,9 +9101,10 @@ async function pageMinhaFinanceiro(){
       <div class="tab" data-tab="pagar">A Pagar</div>
       <div class="tab" data-tab="adiantamentos">Adiantamentos</div>
       <div class="tab" data-tab="contas">Contas</div>
+      <div class="tab" data-tab="conciliacao">Conciliação</div>
+      <div class="tab" data-tab="naturezas">Naturezas</div>
       <div class="tab" data-tab="relatorios">Relatórios</div>
       <div class="tab" data-tab="cadastro">Cadastro</div>
-      <div class="tab" data-tab="conciliacao">Conciliação</div>
     </div>
     <div id="minhaFinContent"></div>
   `;
@@ -9118,6 +9119,7 @@ function renderMinhaFinTabs(){
   else if(MINHA_FIN_TAB==='relatorios') finRenderRelatorios('/financeiro/minha-empresa','minhaFinContent');
   else if(MINHA_FIN_TAB==='cadastro') finRenderCadastros('/financeiro/minha-empresa','minhaFinContent',true);
   else if(MINHA_FIN_TAB==='conciliacao') finRenderConciliacao('/financeiro/minha-empresa','minhaFinContent');
+  else if(MINHA_FIN_TAB==='naturezas') finRenderNaturezas('/financeiro/minha-empresa','minhaFinContent',true);
   else finRenderReceber('/financeiro/minha-empresa','minhaFinContent',MINHA_FIN_RECEBER_FILTRO,true,true);
 }
 // ===================== Financeiro (Contas a Receber/Pagar/Contas) — compartilhado entre a tela do
@@ -9385,11 +9387,17 @@ async function finRenderConciliacao(basePath, containerId){
   }
   await carregar();
 }
-function finOfxCadastrarModal(ofxId, onDone, basePath){
+async function finOfxCadastrarModal(ofxId, onDone, basePath){
+  let naturezas = [];
+  try{ naturezas = (await api(basePath+'/naturezas')).items||[]; }catch(e){}
   openModal(`
     <h3>Cadastrar no Financeiro</h3>
     <p style="font-size:12px; color:var(--ink-soft); margin-top:-4px;">Valor e data vêm do extrato bancário — só a descrição é editável.</p>
     <div class="field"><label>Descrição</label><input id="ofxCadDescricao" placeholder="Descrição do lançamento"></div>
+    <div class="field"><label>Natureza (opcional)</label>
+      <select id="ofxCadNatureza"><option value="">— Não informar —</option>${naturezas.map(n=>`<option value="${n.id}">${esc(n.nome)}</option>`).join('')}</select>
+      <div style="font-size:11px; color:var(--ink-soft); margin-top:4px;">Da próxima vez que aparecer esta mesma descrição no extrato, o sistema cadastra e concilia sozinho com a mesma natureza.</div>
+    </div>
     <div class="modal-actions">
       <button class="btn" id="ofxCadCancel">Cancelar</button>
       <button class="btn primary" id="ofxCadSalvar">Cadastrar</button>
@@ -9397,8 +9405,9 @@ function finOfxCadastrarModal(ofxId, onDone, basePath){
   `);
   document.getElementById('ofxCadCancel').addEventListener('click', closeModal);
   document.getElementById('ofxCadSalvar').addEventListener('click', async ()=>{
+    const naturezaVal = document.getElementById('ofxCadNatureza').value;
     try{
-      await api(basePath+'/ofx/'+ofxId+'/cadastrar', { method:'POST', body:{ descricao: document.getElementById('ofxCadDescricao').value.trim() } });
+      await api(basePath+'/ofx/'+ofxId+'/cadastrar', { method:'POST', body:{ descricao: document.getElementById('ofxCadDescricao').value.trim(), naturezaId: naturezaVal?Number(naturezaVal):null } });
       closeModal();
       toast('Cadastrado e conciliado.','ok');
       onDone();
@@ -9457,12 +9466,13 @@ async function finLancamentoModal(basePath, tipo, item, onSaved){
   const contas = await finContasCache(basePath);
   // Seletor opcional pra puxar um terceiro já cadastrado (A Pagar: fornecedor/funcionário; A Receber:
   // cliente) — ex.: lançar pagamento de férias de um funcionário sem redigitar o nome.
-  let cadastros = [], tiposDoc = [];
+  let cadastros = [], tiposDoc = [], naturezas = [];
   if(!travado){
     const tiposQ = ehReceber ? ['cliente'] : ['fornecedor','funcionario'];
     try{ cadastros = ((await api(basePath+'/cadastros')).items||[]).filter(c=>tiposQ.some(r=>(c.tipo||'').split(',').includes(r))); }catch(e){}
     try{ tiposDoc = (await api(basePath+'/tipos-documento')).items||[]; }catch(e){}
   }
+  try{ naturezas = (await api(basePath+'/naturezas')).items||[]; }catch(e){}
   openModal(`
     <h3>${item?'Editar':'Novo'} lançamento — ${ehReceber?'a receber':'a pagar'}</h3>
     ${travado?`<p style="font-size:12px; color:var(--ink-soft); margin:-4px 0 10px;">Este título veio de ${origemLabel} — descrição, ${rotuloTerceiro.toLowerCase()} e valor ficam travados.</p>`:''}
@@ -9492,6 +9502,9 @@ async function finLancamentoModal(basePath, tipo, item, onSaved){
         <option value="cancelado" ${item.status==='cancelado'?'selected':''}>Cancelado</option>
       </select>
     </div>`:''}
+    <div class="field"><label>Natureza (opcional)</label>
+      <select id="mflNatureza"><option value="">— Não informar —</option>${naturezas.map(n=>`<option value="${n.id}" ${item&&n.id===item.naturezaId?'selected':''}>${esc(n.nome)}</option>`).join('')}</select>
+    </div>
     <div class="field"><label>Observação (opcional)</label><textarea id="mflObs" rows="2">${item&&item.observacao?esc(item.observacao):''}</textarea></div>
     <div class="modal-actions">
       <button class="btn" id="mflCancel">Cancelar</button>
@@ -9521,7 +9534,8 @@ async function finLancamentoModal(basePath, tipo, item, onSaved){
     const vencimento = document.getElementById('mflVencimento').value;
     if(!descricao || !valor || !vencimento){ toast('Preencha a descrição, o valor e o vencimento.','err'); return; }
     const contaVal = document.getElementById('mflConta').value;
-    const body = { descricao, valor, vencimento, observacao: document.getElementById('mflObs').value.trim(), contaId: contaVal?Number(contaVal):null };
+    const naturezaVal = document.getElementById('mflNatureza').value;
+    const body = { descricao, valor, vencimento, observacao: document.getElementById('mflObs').value.trim(), contaId: contaVal?Number(contaVal):null, naturezaId: naturezaVal?Number(naturezaVal):null };
     body[campoTerceiro] = document.getElementById('mflTerceiro').value.trim();
     if(item) body.status = document.getElementById('mflStatus').value;
     // Tipo de documento obrigatório no lançamento manual (pedido do usuário: "não deixar lançar sem").
@@ -9772,6 +9786,35 @@ function finDescricaoCurta(i){
   const parc=(partes.slice(1).join(' — ').match(/\(parcela[^)]*\)/)||[])[0]||'';
   return antes+(parc?' - '+parc:'');
 }
+// Marcar recebido: igual finMarcarPagoModal, mas conta é opcional aqui (comportamento já existente —
+// o backend de receber nunca exigiu conta pra baixar, diferente do pagar). Mesmo motivo de existir:
+// dar a chance de escolher natureza/observação no momento da baixa, sem precisar editar depois.
+async function finMarcarRecebidoModal(basePath, item, recarregar){
+  if(!item) return;
+  let contas, naturezas;
+  try{ [contas, naturezas] = await Promise.all([ finContasCache(basePath), api(basePath+'/naturezas').then(r=>r.items||[]) ]); }
+  catch(e){ toast(e.message,'err'); return; }
+  const hoje = new Date().toISOString().slice(0,10);
+  const TIPO_LABEL={banco:'Banco',caixa:'Caixa',outro:'Outro'};
+  openModal(`<h3>Marcar recebido — ${esc(item.descricao)}</h3>
+    <p class="subtitle" style="margin-bottom:12px;">Confirma o recebimento de <b>${fmtMoney(item.valor)}</b>${item.clienteNome?` de <b>${esc(item.clienteNome)}</b>`:''}.</p>
+    <div class="field"><label>Conta de recebimento</label>
+      <select id="mrConta"><option value="">— Não informar —</option>${contas.map(c=>`<option value="${c.id}" ${c.id===item.contaId?'selected':''}>${esc(c.nome)} (${TIPO_LABEL[c.tipo]||c.tipo})</option>`).join('')}</select>
+    </div>
+    <div class="field"><label>Natureza</label>
+      <select id="mrNatureza"><option value="">— Não informar —</option>${naturezas.map(n=>`<option value="${n.id}" ${n.id===item.naturezaId?'selected':''}>${esc(n.nome)}</option>`).join('')}</select>
+    </div>
+    <div class="field"><label>Observação</label><textarea id="mrObservacao" rows="2" placeholder="Opcional">${esc(item.observacao||'')}</textarea></div>
+    <div class="modal-actions"><button class="btn" onclick="closeModal()">Cancelar</button><button class="btn primary" id="mrOk">Confirmar recebimento</button></div>`, '480px');
+  document.getElementById('mrOk').addEventListener('click', async ()=>{
+    const contaId = document.getElementById('mrConta').value || null;
+    const naturezaId = document.getElementById('mrNatureza').value || null;
+    const observacao = document.getElementById('mrObservacao').value.trim();
+    const btn = document.getElementById('mrOk'); btn.disabled = true;
+    try{ await api(basePath+'/receber/'+item.id, { method:'PUT', body:{ status:'pago', contaId, naturezaId, observacao } }); closeModal(); toast('Marcado como recebido.','ok'); recarregar(); }
+    catch(e){ toast(e.message,'err'); btn.disabled = false; }
+  });
+}
 async function finRenderReceber(basePath, containerId, filtro, podePostar, podeEditar){
   const { dataDe, dataAte } = filtro;
   const qs = new URLSearchParams();
@@ -9806,7 +9849,7 @@ async function finRenderReceber(basePath, containerId, filtro, podePostar, podeE
     </div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
-        <thead><tr><th>Nº</th><th>Nº NF</th><th>Cliente</th><th>Tipo Doc.</th><th>Valor</th><th>Baixado</th><th>Saldo</th><th>Vencimento</th><th>Data baixa</th><th>Conta</th><th>Status</th><th></th><th>Descrição</th></tr></thead>
+        <thead><tr><th>Nº</th><th>Nº NF</th><th>Cliente</th><th>Tipo Doc.</th><th>Natureza</th><th>Valor</th><th>Baixado</th><th>Saldo</th><th>Vencimento</th><th>Data baixa</th><th>Conta</th><th>Status</th><th></th><th>Descrição</th></tr></thead>
         <tbody>
           ${items.length? items.map(i=>`
             <tr>
@@ -9814,6 +9857,7 @@ async function finRenderReceber(basePath, containerId, filtro, podePostar, podeE
               <td>${esc(finNumeroNf(i))}</td>
               <td>${esc(i.clienteNome||'—')}</td>
               <td><span class="tag muted" style="font-weight:600;">${esc(finLabelDocumento(i))}</span></td>
+              <td>${i.naturezaNome?esc(i.naturezaNome):'<span style="color:var(--ink-soft);">—</span>'}</td>
               <td>${fmtMoney(i.valor)}</td>
               <td>${finBaixado(i)>0?fmtMoney(finBaixado(i)):'—'}</td>
               <td style="${((i.valor||0)-finBaixado(i))>0.004 && i.status!=='pago'?'color:var(--debit); font-weight:600;':'color:var(--ink-soft);'}">${fmtMoney((i.valor||0)-finBaixado(i))}</td>
@@ -9830,7 +9874,7 @@ async function finRenderReceber(basePath, containerId, filtro, podePostar, podeE
               </td>
               <td>${esc(finDescricaoCurta(i))}</td>
             </tr>
-          `).join('') : `<tr><td colspan="13"><div class="empty-state">Nenhum lançamento neste período.</div></td></tr>`}
+          `).join('') : `<tr><td colspan="14"><div class="empty-state">Nenhum lançamento neste período.</div></td></tr>`}
         </tbody>
       </table>
     </div>
@@ -9845,9 +9889,8 @@ async function finRenderReceber(basePath, containerId, filtro, podePostar, podeE
   box.querySelectorAll('[data-act="editar"]').forEach(b=>b.addEventListener('click', ()=>{
     finLancamentoModal(basePath, 'receber', items.find(i=>i.id===Number(b.dataset.id)), recarregar);
   }));
-  box.querySelectorAll('[data-act="marcar-recebido"]').forEach(b=>b.addEventListener('click', async ()=>{
-    try{ await api(basePath+'/receber/'+b.dataset.id, { method:'PUT', body:{ status:'pago' } }); toast('Marcado como recebido.','ok'); recarregar(); }
-    catch(e){ toast(e.message,'err'); }
+  box.querySelectorAll('[data-act="marcar-recebido"]').forEach(b=>b.addEventListener('click', ()=>{
+    finMarcarRecebidoModal(basePath, items.find(i=>i.id===Number(b.dataset.id)), recarregar);
   }));
   box.querySelectorAll('[data-act="renegociar"]').forEach(b=>b.addEventListener('click', ()=>{
     finRenegociarModal(basePath, 'receber', items.find(i=>i.id===Number(b.dataset.id)), recarregar);
@@ -9866,8 +9909,8 @@ async function finRenderReceber(basePath, containerId, filtro, podePostar, podeE
 // O backend também recusa pago sem conta (não dá pra burlar pela API).
 async function finMarcarPagoModal(basePath, item, recarregar){
   if(!item) return;
-  let contas;
-  try{ contas = await finContasCache(basePath); }
+  let contas, naturezas;
+  try{ [contas, naturezas] = await Promise.all([ finContasCache(basePath), api(basePath+'/naturezas').then(r=>r.items||[]) ]); }
   catch(e){ toast(e.message,'err'); return; }
   if(!contas.length){
     openModal(`<h3>Marcar pago — ${esc(item.descricao)}</h3>
@@ -9884,14 +9927,20 @@ async function finMarcarPagoModal(basePath, item, recarregar){
       <select id="mpConta"><option value="">— Escolha a conta —</option>${contas.map(c=>`<option value="${c.id}" ${c.id===item.contaId?'selected':''}>${esc(c.nome)} (${TIPO_LABEL[c.tipo]||c.tipo})</option>`).join('')}</select>
     </div>
     ${dateFieldHtml('mpData','Data do pagamento', hoje)}
+    <div class="field"><label>Natureza</label>
+      <select id="mpNatureza"><option value="">— Não informar —</option>${naturezas.map(n=>`<option value="${n.id}" ${n.id===item.naturezaId?'selected':''}>${esc(n.nome)}</option>`).join('')}</select>
+    </div>
+    <div class="field"><label>Observação</label><textarea id="mpObservacao" rows="2" placeholder="Opcional">${esc(item.observacao||'')}</textarea></div>
     <div class="modal-actions"><button class="btn" onclick="closeModal()">Cancelar</button><button class="btn primary" id="mpOk">Confirmar pagamento</button></div>`, '480px');
   setupDatePicker('mpData','mpData_text');
   document.getElementById('mpOk').addEventListener('click', async ()=>{
     const contaId = Number(document.getElementById('mpConta').value);
     if(!contaId){ toast('Escolha a conta de onde saiu o pagamento.','err'); return; }
     const dataPagamento = document.getElementById('mpData').value || hoje;
+    const naturezaId = document.getElementById('mpNatureza').value || null;
+    const observacao = document.getElementById('mpObservacao').value.trim();
     const btn = document.getElementById('mpOk'); btn.disabled = true;
-    try{ await api(basePath+'/pagar/'+item.id, { method:'PUT', body:{ status:'pago', contaId, dataPagamento } }); closeModal(); toast('Marcado como pago.','ok'); recarregar(); }
+    try{ await api(basePath+'/pagar/'+item.id, { method:'PUT', body:{ status:'pago', contaId, dataPagamento, naturezaId, observacao } }); closeModal(); toast('Marcado como pago.','ok'); recarregar(); }
     catch(e){ toast(e.message,'err'); btn.disabled = false; }
   });
 }
@@ -9930,7 +9979,7 @@ async function finRenderPagar(basePath, containerId, filtro, podePostar, podeEdi
     </div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
-        <thead><tr><th>Nº</th><th>Nº NF</th><th>Fornecedor</th><th>Tipo Doc.</th><th>Valor</th><th>Baixado</th><th>Saldo</th><th>Vencimento</th><th>Data baixa</th><th>Conta</th><th>Status</th><th></th><th>Descrição</th></tr></thead>
+        <thead><tr><th>Nº</th><th>Nº NF</th><th>Fornecedor</th><th>Tipo Doc.</th><th>Natureza</th><th>Valor</th><th>Baixado</th><th>Saldo</th><th>Vencimento</th><th>Data baixa</th><th>Conta</th><th>Status</th><th></th><th>Descrição</th></tr></thead>
         <tbody>
           ${items.length? items.map(i=>`
             <tr>
@@ -9938,6 +9987,7 @@ async function finRenderPagar(basePath, containerId, filtro, podePostar, podeEdi
               <td>${esc(finNumeroNf(i))}</td>
               <td>${esc(i.fornecedor||'—')}</td>
               <td><span class="tag muted" style="font-weight:600;">${esc(finLabelDocumento(i))}</span></td>
+              <td>${i.naturezaNome?esc(i.naturezaNome):'<span style="color:var(--ink-soft);">—</span>'}</td>
               <td>${fmtMoney(i.valor)}</td>
               <td>${finBaixado(i)>0?fmtMoney(finBaixado(i)):'—'}</td>
               <td style="${((i.valor||0)-finBaixado(i))>0.004 && i.status!=='pago'?'color:var(--debit); font-weight:600;':'color:var(--ink-soft);'}">${fmtMoney((i.valor||0)-finBaixado(i))}</td>
@@ -9954,7 +10004,7 @@ async function finRenderPagar(basePath, containerId, filtro, podePostar, podeEdi
               </td>
               <td>${esc(finDescricaoCurta(i))}</td>
             </tr>
-          `).join('') : `<tr><td colspan="13"><div class="empty-state">Nenhum lançamento neste período.</div></td></tr>`}
+          `).join('') : `<tr><td colspan="14"><div class="empty-state">Nenhum lançamento neste período.</div></td></tr>`}
         </tbody>
       </table>
     </div>
@@ -10177,7 +10227,55 @@ async function finRenderRelatorios(basePath, containerId){
         </div>
       ` : `<div class="empty-state">Nenhum adiantamento lançado ainda.</div>`}
     </div>
+    <div class="card" style="margin-top:12px;">
+      <div style="font-weight:600; font-size:13px; margin-bottom:4px;">📂 Por Natureza</div>
+      <div style="font-size:11.5px; color:var(--ink-soft); margin-bottom:10px;">Soma de valor por natureza do lançamento (Salários, Retiradas…), filtrado por vencimento. Deixe os campos vazios pra ver tudo.</div>
+      <div class="row" style="gap:8px; align-items:flex-end; margin-bottom:10px;">
+        ${dateFieldHtml('relNatDe','De','')}
+        ${dateFieldHtml('relNatAte','Até','')}
+      </div>
+      <div id="finRelNaturezaBody"><div class="empty-state">Carregando…</div></div>
+    </div>
   `;
+    setupDatePicker('relNatDe','relNatDe_text');
+    setupDatePicker('relNatAte','relNatAte_text');
+    document.getElementById('relNatDe').addEventListener('change', carregarRelatorioNatureza);
+    document.getElementById('relNatAte').addEventListener('change', carregarRelatorioNatureza);
+    await carregarRelatorioNatureza();
+  }
+  const tabelaNatureza = (titulo, items, cor)=> `
+    <div style="font-size:12.5px; font-weight:600; margin:10px 0 4px;">${titulo}</div>
+    ${items.length? `
+      <div style="overflow-x:auto;">
+        <table class="data-table" style="white-space:nowrap;">
+          <thead><tr><th>Natureza</th><th>Qtd.</th><th>Total</th><th>Baixado</th><th>Falta</th></tr></thead>
+          <tbody>
+            ${items.map(n=>`
+              <tr>
+                <td>${esc(n.natureza)}</td>
+                <td style="color:var(--ink-soft);">${n.qtd}</td>
+                <td>${fmtMoney(n.total)}</td>
+                <td style="color:${cor};">${fmtMoney(n.totalBaixado)}</td>
+                <td style="${n.totalFalta>0.004?'color:var(--debit); font-weight:600;':'color:var(--ink-soft);'}">${fmtMoney(n.totalFalta)}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    ` : `<div class="empty-state">Nenhum lançamento no período.</div>`}`;
+  async function carregarRelatorioNatureza(){
+    const body = document.getElementById('finRelNaturezaBody');
+    if(!body) return;
+    body.innerHTML = `<div class="empty-state">Carregando…</div>`;
+    const dataDe = document.getElementById('relNatDe').value;
+    const dataAte = document.getElementById('relNatAte').value;
+    const qs = new URLSearchParams();
+    if(dataDe) qs.set('dataDe', dataDe);
+    if(dataAte) qs.set('dataAte', dataAte);
+    let d;
+    try{ d = await api(basePath+'/relatorios/natureza'+(qs.toString()?'?'+qs.toString():'')); }
+    catch(e){ body.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
+    body.innerHTML = tabelaNatureza('A Receber', d.receber, '#059669') + tabelaNatureza('A Pagar', d.pagar, 'var(--debit)');
   }
   await render('semana');
 }
@@ -10278,6 +10376,47 @@ async function finRenderCadastros(basePath, containerId, podeEditar){
   document.getElementById('cadBusca').addEventListener('input', e=>{ FIN_CAD_FILTRO.busca = e.target.value; pintar(); });
   document.getElementById('cadTipoFiltro').addEventListener('change', e=>{ FIN_CAD_FILTRO.tipo = e.target.value; pintar(); });
   if(podeEditar) document.getElementById('btnNovoCadastro').addEventListener('click', ()=>finCadastroModal(basePath, FIN_CAD_FILTRO.tipo||'fornecedor', null, recarregar));
+}
+// Naturezas: categoria do lançamento pro relatório (Salários, Retiradas, Honorários…), escolhida na
+// BAIXA (ou na edição) — mesmo molde de "Tipos de documento" acima, só que tela própria (pedido do
+// usuário) por ser mais importante/visível: alimenta o relatório por natureza E o aprendizado da
+// conciliação (lançamento recorrente do extrato já cadastra sozinho reconhecendo o mesmo histórico).
+async function finRenderNaturezas(basePath, containerId, podeEditar){
+  const box = document.getElementById(containerId);
+  box.innerHTML = `<div class="empty-state">Carregando…</div>`;
+  let naturezas;
+  try{ naturezas = (await api(basePath+'/naturezas')).items||[]; }
+  catch(e){ box.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
+  box.innerHTML = `
+    <div class="card">
+      <div class="row" style="justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+        <div><div style="font-weight:600; font-size:13px;">📂 Naturezas do lançamento</div>
+          <div style="font-size:11.5px; color:var(--ink-soft); margin-top:2px;">Categoria do fluxo (Salários, Retiradas, Honorários…), escolhida ao baixar um título a pagar/receber. Usada no relatório por natureza e também treina a conciliação do extrato: um lançamento recorrente (ex.: retirada de sócio todo mês) já cadastra sozinho reconhecendo o mesmo histórico do banco, sem precisar conciliar na mão de novo.</div></div>
+        ${podeEditar?`<button class="btn small primary" id="btnNovaNatureza">+ Nova natureza</button>`:''}
+      </div>
+      <div id="naturezaChips" style="display:flex; flex-wrap:wrap; gap:6px; margin-top:12px;"></div>
+    </div>`;
+  function pintar(){
+    const cont = document.getElementById('naturezaChips');
+    cont.innerHTML = naturezas.length? naturezas.map(n=>`
+      <span class="tag muted" style="display:inline-flex; align-items:center; gap:6px; font-size:12px; padding:4px 8px;">${esc(n.nome)}${podeEditar?`<button type="button" data-natureza="${n.id}" title="Remover" style="border:0; background:none; cursor:pointer; color:var(--ink-soft); font-size:14px; line-height:1; padding:0;">×</button>`:''}</span>
+    `).join('') : `<span style="font-size:12px; color:var(--ink-soft);">Nenhuma natureza cadastrada.</span>`;
+    if(podeEditar) cont.querySelectorAll('[data-natureza]').forEach(b=>b.addEventListener('click', async ()=>{
+      if(!confirm('Remover esta natureza? Lançamentos antigos que já usam ela continuam como estão.')) return;
+      try{ await api(basePath+'/naturezas/'+b.dataset.natureza, { method:'DELETE' }); naturezas = naturezas.filter(n=>String(n.id)!==String(b.dataset.natureza)); pintar(); toast('Natureza removida.','ok'); }
+      catch(e){ toast(e.message,'err'); }
+    }));
+  }
+  pintar();
+  if(podeEditar) document.getElementById('btnNovaNatureza').addEventListener('click', async ()=>{
+    const nome = (prompt('Nome da nova natureza (ex.: Pagamentos de Salários, Retiradas):')||'').trim();
+    if(!nome) return;
+    try{
+      const r = await api(basePath+'/naturezas', { method:'POST', body:{ nome } });
+      if(!naturezas.some(n=>Number(n.id)===Number(r.id))) naturezas.push({ id:r.id, nome });
+      pintar(); toast('Natureza criada.','ok');
+    }catch(e){ toast(e.message,'err'); }
+  });
 }
 function finCadastroModal(basePath, tipoDefault, item, onSaved){
   const papeis = item?(item.tipo||'').split(',').filter(Boolean):[tipoDefault||'fornecedor'];
@@ -10485,6 +10624,7 @@ async function pageFinanceiro(){
       <div class="tab" data-tab="adiantamentos">Adiantamentos</div>
       <div class="tab" data-tab="contas">Contas</div>
       <div class="tab" data-tab="conciliacao">Conciliação</div>
+      <div class="tab" data-tab="naturezas">Naturezas</div>
       <div class="tab" data-tab="relatorios">Relatórios</div>
       <div class="tab" data-tab="cadastro">Cadastro</div>
       <div class="tab" data-tab="robo-boletos">Configuração envio de boletos</div>
@@ -10498,7 +10638,7 @@ function renderFinTabs(){
   main().querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===FIN_TAB));
   if(FIN_TAB==='honorarios') renderHonorarios();
   else if(FIN_TAB==='robo-boletos') renderHonorariosRobo();
-  else if(FIN_TAB==='receber'||FIN_TAB==='pagar'||FIN_TAB==='adiantamentos'||FIN_TAB==='contas'||FIN_TAB==='conciliacao'||FIN_TAB==='relatorios'||FIN_TAB==='cadastro') renderFinEmpresaScoped(FIN_TAB);
+  else if(FIN_TAB==='receber'||FIN_TAB==='pagar'||FIN_TAB==='adiantamentos'||FIN_TAB==='contas'||FIN_TAB==='conciliacao'||FIN_TAB==='naturezas'||FIN_TAB==='relatorios'||FIN_TAB==='cadastro') renderFinEmpresaScoped(FIN_TAB);
   else renderLancamentos();
 }
 // "A Receber"/"A Pagar"/"Contas" do escritório são as MESMAS tabelas que a empresa-cliente vê no
@@ -10525,6 +10665,7 @@ async function renderFinEmpresaScoped(tab){
     else if(tab==='pagar') finRenderPagar(basePath, 'finEmpresaContent', FIN_PAGAR_EMPRESA_FILTRO, podePostar, podeEditar);
     else if(tab==='adiantamentos') finRenderAdiantamentos(basePath, 'finEmpresaContent', podePostar);
     else if(tab==='conciliacao') finRenderConciliacao(basePath, 'finEmpresaContent');
+    else if(tab==='naturezas') finRenderNaturezas(basePath, 'finEmpresaContent', podeEditar);
     else if(tab==='relatorios') finRenderRelatorios(basePath, 'finEmpresaContent');
     else if(tab==='cadastro') finRenderCadastros(basePath, 'finEmpresaContent', podeEditar);
     else finRenderContas(basePath, 'finEmpresaContent', podeEditar);
