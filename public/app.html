@@ -8533,7 +8533,6 @@ async function webdfeCredencialPainel(containerId, getPath, putPath, podeEditar)
         <div class="row" style="gap:6px;">
           <input type="password" id="${containerId}Senha" value="${esc(dados.senha||'')}" ${podeEditar?'':'disabled'} style="flex:1;">
           <button class="btn small" type="button" id="${containerId}Ver" title="Mostrar/ocultar">👁</button>
-          <button class="btn small" type="button" id="${containerId}Copiar">Copiar senha</button>
         </div>
       </div>
       ${podeEditar?`<button class="btn small primary" type="button" id="${containerId}Salvar" disabled>Salvar</button>`:''}
@@ -8543,12 +8542,6 @@ async function webdfeCredencialPainel(containerId, getPath, putPath, podeEditar)
   document.getElementById(containerId+'Ver').addEventListener('click', ()=>{
     const inp = document.getElementById(containerId+'Senha');
     inp.type = inp.type==='password' ? 'text' : 'password';
-  });
-  document.getElementById(containerId+'Copiar').addEventListener('click', async ()=>{
-    const v = document.getElementById(containerId+'Senha').value;
-    if(!v){ toast('Nenhuma senha cadastrada ainda.','err'); return; }
-    try{ await navigator.clipboard.writeText(v); toast('Senha copiada.','ok'); }
-    catch(e){ toast('Não consegui copiar — selecione o campo e copie manualmente (Ctrl/Cmd+C).','err'); }
   });
   if(podeEditar){
     document.getElementById(containerId+'Salvar').addEventListener('click', async ()=>{
