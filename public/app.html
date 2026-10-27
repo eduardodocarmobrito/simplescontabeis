@@ -8536,9 +8536,10 @@ async function webdfeCredencialPainel(containerId, getPath, putPath, podeEditar)
           <button class="btn small" type="button" id="${containerId}Copiar">Copiar senha</button>
         </div>
       </div>
-      ${podeEditar?`<button class="btn small primary" type="button" id="${containerId}Salvar">Salvar</button>`:''}
+      ${podeEditar?`<button class="btn small primary" type="button" id="${containerId}Salvar" disabled>Salvar</button>`:''}
     </div>
   `;
+  if(podeEditar) habilitarSalvarAoMudar(containerId+'Salvar', [containerId+'Usuario', containerId+'Senha']);
   document.getElementById(containerId+'Ver').addEventListener('click', ()=>{
     const inp = document.getElementById(containerId+'Senha');
     inp.type = inp.type==='password' ? 'text' : 'password';
@@ -8551,10 +8552,11 @@ async function webdfeCredencialPainel(containerId, getPath, putPath, podeEditar)
   });
   if(podeEditar){
     document.getElementById(containerId+'Salvar').addEventListener('click', async ()=>{
+      const btn = document.getElementById(containerId+'Salvar'); btn.disabled = true;
       const usuario = document.getElementById(containerId+'Usuario').value.trim();
       const senha = document.getElementById(containerId+'Senha').value;
       try{ await api(putPath, { method:'PUT', body:{ usuario, senha: senha||undefined } }); toast('Salvo.','ok'); }
-      catch(e){ toast(e.message,'err'); }
+      catch(e){ toast(e.message,'err'); btn.disabled = false; }
     });
   }
 }
