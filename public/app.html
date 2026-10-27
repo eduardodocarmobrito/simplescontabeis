@@ -9478,6 +9478,7 @@ async function finOfxCadastrarModal(ofxId, onDone, basePath){
     <p style="font-size:12px; color:var(--ink-soft); margin-top:-4px;">Valor e data vêm do extrato bancário — só a descrição é editável.</p>
     <div class="field"><label>Descrição</label><input id="ofxCadDescricao" placeholder="Descrição do lançamento"></div>
     <div class="field"><label>Natureza (opcional)</label>
+      <input id="ofxCadNaturezaBusca" placeholder="Buscar natureza…" autocomplete="off" style="margin-bottom:6px;">
       <select id="ofxCadNatureza"><option value="">— Não informar —</option>${naturezas.map(n=>`<option value="${n.id}">${esc(n.nome)}</option>`).join('')}</select>
       <div style="font-size:11px; color:var(--ink-soft); margin-top:4px;">Da próxima vez que aparecer esta mesma descrição no extrato, o sistema cadastra e concilia sozinho com a mesma natureza.</div>
     </div>
@@ -9490,6 +9491,14 @@ async function finOfxCadastrarModal(ofxId, onDone, basePath){
     </div>
   `);
   document.getElementById('ofxCadCancel').addEventListener('click', closeModal);
+  // Campo de busca que filtra as opções de Natureza (lista pode ter dezenas).
+  (()=>{ const sel=document.getElementById('ofxCadNatureza'); const inp=document.getElementById('ofxCadNaturezaBusca'); if(!sel||!inp) return;
+    inp.addEventListener('input', ()=>{ const termo=normalizaTxt(inp.value); const atual=sel.value;
+      const lista = termo ? naturezas.filter(n=>normalizaTxt(n.nome).includes(termo)) : naturezas;
+      sel.innerHTML = '<option value="">— Não informar —</option>'+lista.map(n=>`<option value="${n.id}">${esc(n.nome)}</option>`).join('');
+      if([...sel.options].some(o=>o.value===atual)) sel.value=atual;
+    });
+  })();
   document.getElementById('ofxCadSalvar').addEventListener('click', async ()=>{
     const naturezaVal = document.getElementById('ofxCadNatureza').value;
     const formaPagamentoVal = document.getElementById('ofxCadFormaPagamento').value;
@@ -9915,7 +9924,15 @@ async function finMarcarRecebidoModal(basePath, item, recarregar){
 function finFiltrarBusca(items, busca){
   const bq = (busca||'').trim().toLowerCase();
   if(!bq) return items;
-  return items.filter(i=>[i.clienteNome, i.fornecedor, i.descricao, finNumeroNf(i), i.tipoDocumentoNome, i.naturezaNome].filter(Boolean).some(v=>String(v).toLowerCase().includes(bq)));
+  // também casa por VALOR (ex.: "30" acha R$ 30,00) — compara com o valor cru e com a versão em
+  // vírgula (padrão BR), assim tanto "30" quanto "30,00"/"1530" funcionam.
+  const bqNum = bq.replace(',', '.');
+  return items.filter(i=>{
+    const textos = [i.clienteNome, i.fornecedor, i.descricao, finNumeroNf(i), i.tipoDocumentoNome, i.naturezaNome].filter(Boolean);
+    if(textos.some(v=>String(v).toLowerCase().includes(bq))) return true;
+    const vals = [i.valor, i.valorPago, i.saldo].filter(v=>v!=null);
+    return vals.some(v=>{ const s=String(v); return s.includes(bqNum) || s.replace('.',',').includes(bq); });
+  });
 }
 async function finRenderReceber(basePath, containerId, filtro, podePostar, podeEditar){
   const { dataDe, dataAte } = filtro;
