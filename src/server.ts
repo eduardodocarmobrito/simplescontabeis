@@ -10173,10 +10173,11 @@ async function nfeGerarAnaliticoPdf(user: any, empresaId: number, query: any, re
   const rows = sqlite
     .prepare(
       `SELECT d.id, d.xml, d.tipo, d.chave_acesso as chaveAcesso, d.emitente_cnpj as emitenteCnpj, d.emitente_nome as emitenteNome,
+              d.destinatario_cnpj as destinatarioCnpj, d.destinatario_nome as destinatarioNome,
               d.valor_total as valorTotal, d.data_emissao as dataEmissao, ${notaCanceladaExpr} as notaCancelada, ${direcaoExpr} as direcao
        FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id
        WHERE ${condicoes.join(" AND ")}
-       ORDER BY d.emitente_nome, d.data_emissao`
+       ORDER BY d.data_emissao`
     )
     .all(...params) as any[];
   if (!rows.length) return res.status(400).json({ error: "Nenhuma nota encontrada com esses filtros pra gerar o relatório." });
@@ -10185,7 +10186,11 @@ async function nfeGerarAnaliticoPdf(user: any, empresaId: number, query: any, re
   // tela também não usa esses três (sempre nfe/nfce da empresa inteira no período).
   const dash = nfeCalcularDashboard(user, empresaId, dataDe, dataAte);
 
+  // Agrupa pela CONTRAPARTE (a "outra" parte da nota): numa nota RECEBIDA é o emitente (fornecedor);
+  // numa nota EMITIDA é o destinatário (tomador/cliente). Assim o relatório de emitidas fica igual ao
+  // de recebidas — uma seção por cliente — em vez de jogar tudo num bloco só da própria empresa.
   const grupos = new Map<string, { nome: string; cnpj: string | null; notas: any[]; subtotal: number }>();
+  const canceladas: any[] = []; // válidas entram nos grupos; canceladas vão num quadro à parte, fora do total
   for (const r of rows) {
     const detalhe = nfe.detalharNfe(r.xml);
     if (ufFiltro) {
@@ -10195,11 +10200,16 @@ async function nfeGerarAnaliticoPdf(user: any, empresaId: number, query: any, re
       if (ufFiltro === "dentro" && !dentro) continue;
       if (ufFiltro === "fora" && dentro) continue;
     }
-    const chave = r.emitenteCnpj || `sem-cnpj-${r.emitenteNome || r.id}`;
-    if (!grupos.has(chave)) grupos.set(chave, { nome: r.emitenteNome || "(sem nome)", cnpj: r.emitenteCnpj || null, notas: [], subtotal: 0 });
+    const ehEmitida = r.direcao === "emitida";
+    const cpCnpj = ehEmitida ? r.destinatarioCnpj : r.emitenteCnpj;
+    const cpNome = (ehEmitida ? r.destinatarioNome : r.emitenteNome) || "(sem nome)";
+    const nota = { ...r, tipo: r.tipo, itens: detalhe ? detalhe.itens : null, contraparteNome: cpNome, contraparteCnpj: cpCnpj || null };
+    if (r.notaCancelada) { canceladas.push(nota); continue; }
+    const chave = cpCnpj || `sem-cnpj-${cpNome || r.id}`;
+    if (!grupos.has(chave)) grupos.set(chave, { nome: cpNome, cnpj: cpCnpj || null, notas: [], subtotal: 0 });
     const g = grupos.get(chave)!;
-    g.notas.push({ ...r, tipo: r.tipo, itens: detalhe ? detalhe.itens : null });
-    if (!r.notaCancelada) g.subtotal += r.valorTotal || 0;
+    g.notas.push(nota);
+    g.subtotal += r.valorTotal || 0;
   }
   if (ufFiltro && !grupos.size) {
     return res.status(400).json({ error: `Nenhuma nota ${ufFiltro === "dentro" ? "dentro" : "fora"} do Estado encontrada com esses filtros (ou nenhuma tinha UF identificável no XML).` });
@@ -10215,6 +10225,13 @@ async function nfeGerarAnaliticoPdf(user: any, empresaId: number, query: any, re
   const periodoLinha =
     (dataDe || dataAte ? `Período: ${dataDe ? fmtDataBrRelatorio(dataDe) : "…"} até ${dataAte ? fmtDataBrRelatorio(dataAte) : "…"}` : "Período: todas as datas") +
     (ufFiltro ? ` — só notas ${ufFiltro === "dentro" ? `dentro do Estado (${empresaUf || "?"})` : `fora do Estado (${empresaUf || "?"})`}` : "");
+  // Nome do tomador de uma NFS-e: usa o destinatário já extraído no cadastro do documento; se vier
+  // vazio, cai no <xNome> de dentro do grupo <toma>/<tomador> do XML (padrão nacional NFS-e).
+  const nfseTomadorNome = (n: any): string => {
+    if (n.destinatarioNome && String(n.destinatarioNome).trim()) return String(n.destinatarioNome).trim();
+    const m = /<(?:toma|tomador|tomadorServico|TomadorServico)\b[\s\S]*?<[^>]*[Nn]ome>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/[^>]*[Nn]ome>/.exec(String(n.xml || ""));
+    return m ? decodificarEntidadesXml(m[1].trim()) : "";
+  };
   const blocosFornecedor = listaGrupos
     .map((g) => {
       const notasHtml = g.notas
@@ -10238,7 +10255,7 @@ async function nfeGerarAnaliticoPdf(user: any, empresaId: number, query: any, re
               : n.tipo === "nfe" || n.tipo === "nfce"
                 ? `<div style="color:#888; font-size:8.5px; margin:2px 0 8px;">XML resumido — produtos não disponíveis ainda (precisa da nota completa).</div>`
                 : n.tipo === "nfse"
-                  ? `<div style="color:#444; font-size:8.5px; margin:2px 0 8px;">Serviço: ${escHtmlRelatorio(decodificarEntidadesXml(String(n.xml).match(/<xDescServ>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/xDescServ>/)?.[1]?.trim() || "—"))}</div>`
+                  ? `<div style="color:#444; font-size:8.5px; margin:2px 0 8px;"><b>Tomador:</b> ${escHtmlRelatorio(nfseTomadorNome(n) || "—")} &nbsp;·&nbsp; <b>Serviço:</b> ${escHtmlRelatorio(decodificarEntidadesXml(String(n.xml).match(/<xDescServ>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/xDescServ>/)?.[1]?.trim() || "—"))}</div>`
                   : `<div style="color:#888; font-size:8.5px; margin:2px 0 8px;">${escHtmlRelatorio((n.tipo || "").toUpperCase())} não tem lista de produtos (documento de serviço/transporte).</div>`;
           return `<div style="margin:4px 0 6px; page-break-inside:avoid;"><div style="font-size:9.5px; margin-bottom:2px;">${tituloNota}</div>${itensHtml}</div>`;
         })
@@ -10255,6 +10272,25 @@ async function nfeGerarAnaliticoPdf(user: any, empresaId: number, query: any, re
       </div>`;
     })
     .join("");
+  // Título conforme a direção filtrada: emitidas agrupam por tomador/cliente, recebidas por fornecedor.
+  const tituloAgrupamento = direcao === "emitida" ? "por Tomador" : direcao === "recebida" ? "por Fornecedor" : "por Fornecedor / Tomador";
+  const numeroDaNota = (n: any): string =>
+    n.tipo === "nfse"
+      ? `NFS-e ${String(n.xml).match(/<nNFSe>([^<]+)<\/nNFSe>/)?.[1] || "-"}`
+      : `Nota ${nfeChaveNumeroSerie(n.chaveAcesso).numero} · Série ${nfeChaveNumeroSerie(n.chaveAcesso).serie}`;
+  const canceladasHtml = canceladas.length
+    ? `<div style="margin-top:18px;">
+        <div style="font-size:12px; font-weight:700; color:#8a3b3b; margin-bottom:5px;">Canceladas <span style="font-weight:normal; color:#a06; font-size:10px;">(${canceladas.length} nota${canceladas.length === 1 ? "" : "s"} — fora do total acima)</span></div>
+        <div style="border:1px solid #ecdcdc; border-radius:7px; background:#fdf6f6; padding:4px 10px;">
+          ${canceladas
+            .map(
+              (n) =>
+                `<div style="font-size:9px; padding:3px 0; border-bottom:1px solid #f3e7e7;"><span style="color:#b91c1c; font-weight:700;">${escHtmlRelatorio(numeroDaNota(n))}</span> · ${fmtDataEmissaoRelatorio(n.dataEmissao)} · <b>R$ ${fmtMoedaRelatorio(n.valorTotal)}</b> — ${escHtmlRelatorio(n.contraparteNome || "—")}${n.tipo === "nfse" ? ` · ${escHtmlRelatorio(decodificarEntidadesXml(String(n.xml).match(/<xDescServ>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/xDescServ>/)?.[1]?.trim() || ""))}` : ""}</div>`
+            )
+            .join("")}
+        </div>
+      </div>`
+    : "";
   // Paleta igual à do sistema (public/app.html :root): --accent #2ECC8F, --accent-deep #159873,
   // --accent-pale #DFF7EC — pedido explícito do usuário ("fundo verde claro do sistema").
   const html = `<style>
@@ -10277,7 +10313,7 @@ async function nfeGerarAnaliticoPdf(user: any, empresaId: number, query: any, re
       .painel { display:inline-block; width:48%; vertical-align:top; background:#fbfffd; border:1px solid #cdeee1; border-radius:8px; padding:9px 11px; box-sizing:border-box; }
     </style>
     <div class="cab">
-      <h1>${escHtmlRelatorio(empresa.nome)} — Relatório Analítico por Fornecedor</h1>
+      <h1>${escHtmlRelatorio(empresa.nome)} — Relatório Analítico ${tituloAgrupamento}</h1>
       <p><b>CNPJ:</b> ${escHtmlRelatorio(fmtCnpjRelatorio(empresa.cnpj))}</p>
       <p><b>${escHtmlRelatorio(periodoLinha)}</b> — conferência interna</p>
     </div>
@@ -10286,7 +10322,8 @@ async function nfeGerarAnaliticoPdf(user: any, empresaId: number, query: any, re
       <div class="painel">${nfePainelImpostosHtmlRelatorio(dash)}</div>
     </div>
     ${blocosFornecedor}
-    <div><span class="tag-total">Total geral: R$ ${fmtMoedaRelatorio(totalGeral)}</span></div>`;
+    <div><span class="tag-total">Total geral: R$ ${fmtMoedaRelatorio(totalGeral)}</span></div>
+    ${canceladasHtml}`;
   try {
     const pdf = await contratos.gerarPdfDeHtml(html, `Relatório Analítico - ${empresa.nome}`, { landscape: true });
     res.setHeader("Content-Type", "application/pdf");
