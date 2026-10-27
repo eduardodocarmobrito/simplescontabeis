@@ -8547,8 +8547,8 @@ async function pageIntegraContador(deepLinkEmpresaId){
           if(atualizado) toast(atualizado.ultimoErro ? 'Busca terminou com erro: '+atualizado.ultimoErro : 'Busca concluída.', atualizado.ultimoErro?'err':'ok');
           else toast('Busca ainda em andamento — confira em alguns instantes.','ok');
         } else toast('Salvo.','ok');
-        mostrarIcDetalhe(empresaId);
-        carregarIcDocumentos();
+        // Só re-renderiza se ainda estiver na tela do Integra Contador (a busca pode ter levado minutos).
+        if(document.getElementById('icUltimaBusca')){ mostrarIcDetalhe(empresaId); carregarIcDocumentos(); }
       }catch(e){ toast(e.message,'err'); }
       finally{ btn.disabled = false; btn.textContent = 'Salvar'; }
     });
@@ -8560,9 +8560,11 @@ async function pageIntegraContador(deepLinkEmpresaId){
         const atualizado = await esperarIcBuscaTerminar(ultimaBuscaAntes);
         if(atualizado){
           toast(atualizado.ultimoErro ? 'Busca terminou com erro: '+atualizado.ultimoErro : 'Busca concluída.', atualizado.ultimoErro?'err':'ok');
-          document.getElementById('icUltimaBusca').textContent = fmtDateHora(atualizado.ultimaBuscaEm);
+          // A busca pode levar minutos — se o usuário já saiu da tela do Integra Contador, o elemento
+          // não existe mais; só atualiza se ainda estiver na tela (evita "Cannot set properties of null").
+          const elUB = document.getElementById('icUltimaBusca'); if(elUB) elUB.textContent = fmtDateHora(atualizado.ultimaBuscaEm);
         } else toast('Busca ainda em andamento — confira em alguns instantes.','ok');
-        carregarIcDocumentos();
+        if(document.getElementById('icDocBody')) carregarIcDocumentos();
       }catch(e){ toast(e.message,'err'); }
       finally{ btn.disabled = false; btn.textContent = 'Buscar agora'; }
     });
@@ -8609,6 +8611,7 @@ async function pageIntegraContador(deepLinkEmpresaId){
     }
     async function carregarIcDocumentos(){
       const tbody = document.getElementById('icDocBody');
+      if(!tbody) return; // usuário pode ter saído da tela durante uma busca longa
       tbody.innerHTML = `<tr><td colspan="6"><div class="empty-state">Carregando…</div></td></tr>`;
       const { items: docs } = await api('/integracontador/documentos?empresaId='+empresaId);
       icDocsTodos = docs;
