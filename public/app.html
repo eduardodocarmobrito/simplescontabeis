@@ -7716,8 +7716,8 @@ async function pageNfeBusca(){
           <td style="white-space:nowrap;">${statusCell}</td>
           <td style="${canceladaStyle}">${d.dataEmissao?fmtDateHora(d.dataEmissao):'—'}</td>
           <td><span class="tag ${d.tipo==='evento'?'muted':'ok'}">${d.tipo.toUpperCase()}</span></td>
-          <td style="${canceladaStyle}">${kp.numero||'—'}</td>
-          <td style="${canceladaStyle}">${kp.serie||'—'}</td>
+          <td style="${canceladaStyle}">${d.tipo==='nfse' ? (d.numeroNfse||'—') : (kp.numero||'—')}</td>
+          <td style="${canceladaStyle}">${d.tipo==='nfse' ? '—' : (kp.serie||'—')}</td>
           <td style="white-space:nowrap; ${canceladaStyle}">${esc(d.emitenteNome||'—')}${crtTag}</td>
           <td style="${canceladaStyle}">${esc(d.destinatarioNome||'—')}</td>
           <td style="font-family:'IBM Plex Mono',monospace; font-size:11px; ${canceladaStyle}">${esc(d.chaveAcesso||'—')}</td>

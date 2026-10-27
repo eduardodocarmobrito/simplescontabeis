@@ -9618,7 +9618,12 @@ function nfeListarDocumentosQuery(
               d.fin_nfe as finNFe, d.nat_op as natOp,
               d.observacao as observacao, d.crt as crt, d.integrado_financeiro as integradoFinanceiro,
               (d.chave_acesso IS NOT NULL AND EXISTS (SELECT 1 FROM mdfe_vinculos mv WHERE mv.chave_vinculada = d.chave_acesso)) as temMdfe,
-              ${direcaoExpr} as direcao, (CASE WHEN d.tipo = 'evento' THEN 0 ELSE ${notaCanceladaExpr} END) as notaCancelada
+              ${direcaoExpr} as direcao, (CASE WHEN d.tipo = 'evento' THEN 0 ELSE ${notaCanceladaExpr} END) as notaCancelada,
+              -- Número da NFS-e: vem do <nNFSe> dentro do XML (a NFS-e não usa numeração pela chave de 44
+              -- posições como a NF-e). Extrai direto no SQL pra não trafegar o XML inteiro pra listagem.
+              (CASE WHEN d.tipo = 'nfse' AND instr(d.xml, '<nNFSe>') > 0 AND instr(d.xml, '</nNFSe>') > instr(d.xml, '<nNFSe>')
+                    THEN substr(d.xml, instr(d.xml, '<nNFSe>') + 7, instr(d.xml, '</nNFSe>') - instr(d.xml, '<nNFSe>') - 7)
+                    ELSE NULL END) as numeroNfse
        FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id
        WHERE ${condicoes.join(" AND ")}
        ORDER BY d.data_emissao DESC, d.id DESC LIMIT 500`
