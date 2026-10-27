@@ -129,6 +129,12 @@
   table.data-table th{text-align:left; font-family:'IBM Plex Mono',monospace; font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-soft); padding:8px 10px; border-bottom:1px solid var(--rule);}
   table.data-table td{padding:11px 10px; border-bottom:1px solid var(--rule-soft); vertical-align:middle;}
   table.data-table tbody tr:hover{background:var(--paper);}
+  /* Cabeçalho de tabela sempre fixo ao rolar (não perder a referência das colunas em listas longas). */
+  table.data-table thead th{position:sticky; top:0; background:var(--surface); z-index:3;}
+  /* Inputs e selects inline dentro das tabelas: mesmo visual arredondado do resto do sistema. */
+  table.data-table td input[type=text], table.data-table td select{font-family:'Inter',sans-serif; font-size:13px; border:1px solid var(--rule); border-radius:8px; padding:6px 9px; background:var(--paper); color:var(--ink);}
+  table.data-table td input[type=text]:focus, table.data-table td select:focus{outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-pale); background:var(--surface);}
+  table.data-table td input.cad-vazio{border-color:var(--debit);}
   /* Notas de Entrada (cliente) — a coluna "Chave de acesso" (44 dígitos) sozinha já força rolagem
      horizontal na maioria das telas de cliente; em vez de depender da pessoa notar a barra de
      rolagem, encolhe a fonte e esconde essa coluna em telas mais estreitas (o XML continua
@@ -3187,6 +3193,7 @@ async function renderEmpresasRelatorio(){
 // grava direto na mesma rota que a tela original usa — não duplica dado nenhum.
 let EMP_CHECK_GRUPO = 'config';
 let EMP_CHECK_BUSCA = '';
+let EMP_CHECK_FLAG = 'todos'; // 'todos' | 'nao' (tem algum "Não"/vazio) | 'sim' (tudo "Sim"/preenchido)
 const EMP_CHECK_GRUPOS = [
   { id:'config', label:'Configurações' },
   { id:'nfse', label:'NFS-e' },
@@ -3210,13 +3217,21 @@ async function renderEmpresasChecklist(){
     <div class="tabs" style="margin-bottom:0;">
       ${EMP_CHECK_GRUPOS.map(g=>`<div class="tab" data-checkgrupo="${g.id}">${esc(g.label)}</div>`).join('')}
     </div>
-    <div class="field" style="max-width:360px; margin:10px 0 10px;"><input type="text" id="checkBusca" placeholder="Buscar por nome ou CNPJ…" autocomplete="off" value="${esc(EMP_CHECK_BUSCA)}"></div>
+    <div class="row" style="gap:12px; align-items:center; flex-wrap:wrap; margin:10px 0;">
+      <div class="field" style="max-width:360px; flex:1; min-width:240px; margin:0;"><input type="text" id="checkBusca" placeholder="Buscar por nome ou CNPJ…" autocomplete="off" value="${esc(EMP_CHECK_BUSCA)}"></div>
+      <div class="tabs" style="margin:0;" id="checkFlagTabs">
+        <div class="tab ${EMP_CHECK_FLAG==='todos'?'active':''}" data-checkflag="todos">Todos</div>
+        <div class="tab ${EMP_CHECK_FLAG==='nao'?'active':''}" data-checkflag="nao">Com "Não"</div>
+        <div class="tab ${EMP_CHECK_FLAG==='sim'?'active':''}" data-checkflag="sim">Tudo "Sim"</div>
+      </div>
+    </div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table"><thead id="checkHead"></thead><tbody id="checkBody"></tbody></table>
     </div>
   `;
   box.querySelectorAll('[data-checkgrupo]').forEach(t=>t.addEventListener('click', ()=>{ EMP_CHECK_GRUPO=t.dataset.checkgrupo; pintarGrupo(); }));
   document.getElementById('checkBusca').addEventListener('input', (ev)=>{ EMP_CHECK_BUSCA = ev.target.value; pintarLinhas(); });
+  box.querySelectorAll('[data-checkflag]').forEach(t=>t.addEventListener('click', ()=>{ EMP_CHECK_FLAG = t.dataset.checkflag; box.querySelectorAll('[data-checkflag]').forEach(x=>x.classList.toggle('active', x===t)); pintarLinhas(); }));
 
   const REGIMES = [
     { v:'simples_nacional', label:'Simples Nacional' },
@@ -3228,11 +3243,31 @@ async function renderEmpresasChecklist(){
   const METODOS_NFSE = [{ v:'procuracao_escritorio', label:'Procuração do escritório' }, { v:'certificado_proprio', label:'Certificado próprio' }];
   const REMETENTES_WHATS = [{ v:'escritorio', label:'Número do escritório' }, { v:'proprio', label:'Número próprio' }];
 
+  // Valores Sim/Não (booleanos) das colunas do grupo atual, pra o filtro "Com Não"/"Tudo Sim".
+  // Pro grupo 'cadastro' (campos de texto), "Sim" = preenchido e "Não" = vazio.
+  function valoresBoolDoGrupo(e, grupo){
+    const col = colunasDoGrupo(grupo);
+    if(col.length) return col.map(c=>!!e[c.campo]);
+    if(grupo==='nfse') return [!!e.nfseHabilitado];
+    if(grupo==='buscaxml') return [!!e.temCertificado, !!e.buscaXmlAtivo, !!e.buscaXmlManifestacao];
+    if(grupo==='comunicacao') return [!!e.canalEmailAtivo, !!e.canalWhatsappAtivo];
+    if(grupo==='nfseagenda') return [!!e.nfseAgendCadastrada, !!e.nfseAgendAtivo];
+    if(grupo==='financeiro') return [!!e.honorarioAtivo, !!e.participaCobrancaRobo];
+    if(grupo==='setores') return ['contabilidade','fiscal','dprh'].map(c=>e.setores.includes(c));
+    if(grupo==='documentos') return [!!e.anexoContratoSocialId, !!e.anexoCartaoCnpjId];
+    if(grupo==='cadastro') return [e.telefone, e.email, e.inscricaoEstadual, e.inscricaoMunicipal, e.endereco].map(v=>!!(v&&String(v).trim()));
+    return [];
+  }
   function itensFiltrados(){
     const termo = normalizaTxt(EMP_CHECK_BUSCA).trim();
     const termoNum = termo.replace(/[^0-9]/g,'');
-    if(!termo) return itens;
-    return itens.filter(e=> normalizaTxt(e.nome).includes(termo) || (!!termoNum && String(e.cnpj||'').replace(/[^0-9]/g,'').includes(termoNum)));
+    let lista = itens;
+    if(termo) lista = lista.filter(e=> normalizaTxt(e.nome).includes(termo) || (!!termoNum && String(e.cnpj||'').replace(/[^0-9]/g,'').includes(termoNum)));
+    if(EMP_CHECK_FLAG!=='todos'){
+      const grupo = EMP_CHECK_GRUPO;
+      lista = lista.filter(e=>{ const vals = valoresBoolDoGrupo(e, grupo); if(!vals.length) return true; return EMP_CHECK_FLAG==='nao' ? vals.some(v=>!v) : vals.every(v=>v); });
+    }
+    return lista;
   }
 
   // Toggle genérico de flag Sim/Não com revert automático em caso de erro.
@@ -3323,11 +3358,16 @@ async function renderEmpresasChecklist(){
           : (podeEditar ? `<span class="tag muted" data-id="${e.id}" data-anexotipo="${tipo}" style="cursor:pointer;">Não — anexar</span>` : tagHtml(false,false));
         celulas = `<td>${docCel('contrato_social', e.anexoContratoSocialId)}</td><td>${docCel('cartao_cnpj', e.anexoCartaoCnpjId)}</td>`;
       } else if(grupo==='cadastro'){
-        const campo = (valor, nome)=> `<td><input type="text" data-id="${e.id}" data-campocad="${nome}" value="${esc(valor||'')}" style="border:1px solid ${valor?'transparent':'var(--debit)'}; width:140px;" ${podeEditar?'':'disabled'}></td>`;
+        const campo = (valor, nome)=> `<td><input type="text" data-id="${e.id}" data-campocad="${nome}" value="${esc(valor||'')}" class="${valor?'':'cad-vazio'}" style="width:140px;" ${podeEditar?'':'disabled'}></td>`;
         celulas = campo(e.telefone,'telefone') + campo(e.email,'email') + campo(e.inscricaoEstadual,'inscricaoEstadual') + campo(e.inscricaoMunicipal,'inscricaoMunicipal') + campo(e.endereco,'endereco');
       }
-      return `<tr><td>${nomeCol}</td><td>${cnpjCol}</td>${celulas}</tr>`;
+      const nomeTd = grupo==='buscaxml'
+        ? `<td class="emp-cert-link" data-id="${e.id}" data-uf="${esc(e.uf||'')}" data-nome="${esc(e.nome)}" style="cursor:pointer;" title="Clique para anexar/ver o certificado digital">${nomeCol}</td>`
+        : `<td>${nomeCol}</td>`;
+      return `<tr>${nomeTd}<td>${cnpjCol}</td>${celulas}</tr>`;
     }).join('');
+    // Aba Busca de XML: clicar na empresa abre o anexar/ver certificado digital (não precisa ir ao módulo).
+    if(grupo==='buscaxml') body.querySelectorAll('.emp-cert-link').forEach(td=>td.addEventListener('click', ()=>abrirCertificadoModal(Number(td.dataset.id), td.dataset.uf, td.dataset.nome, recarregar)));
     if(!podeEditar) return;
 
     // --- flags simples (config + integracontador): PUT /api/empresas/:id ou /api/integracontador/empresas/:id ---
@@ -7261,6 +7301,18 @@ async function renderSolicitacaoTiposEmpresa(containerEl, empresaId){
 // Gerencia o certificado (upload/remover/ativar) — usado só no cadastro da empresa (Empresas →
 // Configurações). Na tela de Busca de XML fica só o resumo somente-leitura (ver
 // renderBuscaXmlResumoCertificado abaixo) pra não ter dois lugares pra subir o mesmo .pfx.
+// Modal pra anexar/ver o certificado digital de uma empresa direto da aba Checklist › Busca de XML
+// (reaproveita o mesmo componente da tela de edição da empresa). Ao fechar, recarrega a lista.
+function abrirCertificadoModal(empresaId, uf, nome, onClose){
+  openModal(`
+    <h3>Certificado digital${nome?' — '+esc(nome):''}</h3>
+    <p style="font-size:12px; color:var(--ink-soft); margin-top:-4px;">Anexe ou troque o certificado A1 (.pfx/.p12) desta empresa — habilita a Busca de XML (NF-e/CT-e) e a manifestação automática.</p>
+    <div id="certModalBox"><div class="empty-state">Carregando…</div></div>
+    <div class="modal-actions"><button class="btn" id="certModalFechar">Fechar</button></div>
+  `);
+  document.getElementById('certModalFechar').addEventListener('click', ()=>{ closeModal(); if(onClose) onClose(); });
+  renderCertificadoBuscaXml(document.getElementById('certModalBox'), empresaId, uf||'');
+}
 async function renderCertificadoBuscaXml(containerEl, empresaId, empresaUfPadrao, opts){
   opts = opts || {};
   const podePostar = can('nfe-busca','postar');
