@@ -11884,10 +11884,12 @@ async function cndMunicipalConsultarEmpresa(escritorioId: number, empresa: any, 
   return { ok: true, tipo: r.tipo };
 }
 async function cndMunicipalConsultarTodas(escritorioId: number, opts: { somenteDevidas?: boolean } = {}): Promise<{ total: number; consultadas: number; ok: number; puladas: number; erros: { empresa: string; erro: string }[] }> {
-  // Só empresas de Redenção (o portal é específico desse município).
-  const empresas = sqlite
+  // Só empresas de Redenção (o portal é específico desse município) e só PJ — o portal emite por CNPJ;
+  // pessoa física (CPF, 11 dígitos) não se aplica. Filtra pelo tamanho dos dígitos do documento.
+  const empresas = (sqlite
     .prepare(`SELECT id, nome, cnpj, inscricao_municipal FROM empresas WHERE escritorio_id = ? AND ativo = 1 AND codigo_municipio_ibge = ? AND cnpj IS NOT NULL AND cnpj != ''`)
-    .all(escritorioId, REDENCAO_IBGE) as any[];
+    .all(escritorioId, REDENCAO_IBGE) as any[])
+    .filter((e) => String(e.cnpj || "").replace(/\D/g, "").length === 14);
   const hoje = new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
   const recheckDias = ((sqlite.prepare(`SELECT intervalo_dias FROM infosimples_config WHERE escritorio_id = ?`).get(escritorioId) as any)?.intervalo_dias) || 30;
   const devidas = empresas.filter((emp) => {
