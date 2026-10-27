@@ -15569,7 +15569,7 @@ async function usuarioModal(u){
       <div id="usConfigAbasWrap" class="hidden" style="margin-top:14px;">
         <div style="font-size:12px; font-weight:600; margin-bottom:4px;">Abas de Configurações visíveis</div>
         <p style="font-size:11.5px; color:var(--ink-soft); margin:-2px 0 8px;">Nenhuma marcada = vê todas. Marque só as que esse colaborador deve acessar.</p>
-        <div class="checkbox-grid">${CFG_ABAS_TODAS.map(a=>`<label class="checkbox-row"><input type="checkbox" class="usConfigAba" value="${a.id}"> ${esc(a.label)}</label>`).join('')}</div>
+        <div class="checkbox-grid">${CFG_ABAS_TODAS.filter(a=>!a.soAdmin).map(a=>`<label class="checkbox-row"><input type="checkbox" class="usConfigAba" value="${a.id}"> ${esc(a.label)}</label>`).join('')}</div>
       </div>
       <div id="usRelAbasWrap" style="margin-top:14px;">
         <div style="font-size:12px; font-weight:600; margin-bottom:4px;">Abas de Relatórios visíveis</div>
@@ -16476,13 +16476,14 @@ const CFG_ABAS_TODAS = [
   { id:'atendimento', label:'Atendimento' },
   { id:'certidoes', label:'Certidões (Infosimples)' },
   { id:'assinatura-plataforma', label:'Assinatura da plataforma' },
+  { id:'senhas', label:'Senhas e acessos', soAdmin:true },
 ];
 async function pageConfiguracoes(){
   // Administrador e Colaborador sem restrição explícita (configAbas===null) veem todas as abas —
   // um Colaborador só fica restrito quando o admin marca abas específicas pra ele em Usuários.
   const abasVisiveis = (STATE.user.perfil==='Colaborador' && Array.isArray(STATE.configAbas))
-    ? CFG_ABAS_TODAS.filter(a=>STATE.configAbas.includes(a.id))
-    : CFG_ABAS_TODAS;
+    ? CFG_ABAS_TODAS.filter(a=>STATE.configAbas.includes(a.id) && !a.soAdmin)
+    : CFG_ABAS_TODAS.filter(a=>!a.soAdmin || STATE.user.perfil==='Administrador');
   if(!abasVisiveis.some(a=>a.id===CFG_TAB)) CFG_TAB = abasVisiveis[0]?.id || 'dominio';
   main().innerHTML = `
     <h1>Configurações</h1>
@@ -16511,9 +16512,83 @@ async function renderCfgTab(){
     else if(CFG_TAB==='envio-docs') await renderCfgEnvioDocs(box);
     else if(CFG_TAB==='atendimento') await renderCfgAtendimento(box);
     else if(CFG_TAB==='certidoes') await renderCfgCertidoes(box);
+    else if(CFG_TAB==='senhas') await renderCfgSenhas(box);
     else await renderCfgEmail(box);
   }catch(e){
     box.innerHTML = `<div class="empty-state">Não foi possível carregar esta aba: ${esc(e.message||'erro desconhecido')}</div>`;
+  }
+}
+
+// Cofre de senhas do escritório — só Administrador. A listagem não traz a senha; ela é buscada sob
+// demanda (/cofre-senhas/:id/senha) ao clicar em mostrar/copiar.
+async function renderCfgSenhas(box){
+  const { itens } = await api('/cofre-senhas');
+  const recarregar = ()=>renderCfgSenhas(box);
+  const categorias = [...new Set(itens.map(i=>i.categoria).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+  const copiarBtn = (campo, valor)=> valor ? ` <button class="btn small" data-copiar="${esc(campo)}" data-valor="${esc(valor)}" title="Copiar">⧉</button>` : '';
+  box.innerHTML = `
+    <div class="card">
+      <div class="row" style="justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+        <div>
+          <h3 style="margin:0;">Senhas e acessos</h3>
+          <p style="font-size:13px; color:var(--ink-soft); margin:4px 0 0;">Logins, e-mails e senhas dos portais e sistemas do escritório. Só o <b>Administrador</b> vê esta aba; senhas e observações ficam <b>criptografadas</b>.</p>
+        </div>
+        <button class="btn primary" id="cofreNovo">+ Novo acesso</button>
+      </div>
+      <div class="field" style="margin-top:12px; max-width:360px;"><input type="text" id="cofreBusca" placeholder="Buscar por nome, categoria, login ou e-mail…"></div>
+      ${itens.length ? `<div style="overflow-x:auto;"><table>
+        <thead><tr><th>Acesso</th><th>Categoria</th><th>Login / E-mail</th><th>Senha</th><th></th></tr></thead>
+        <tbody id="cofreBody">${itens.map(i=>`<tr data-cid="${i.id}" data-busca="${esc(normalizaTxt([i.titulo,i.categoria,i.login,i.email,i.url].join(' ')))}">
+          <td><b>${esc(i.titulo)}</b>${i.url?`<div style="font-size:12px;"><a href="${esc(/^https?:\/\//i.test(i.url)?i.url:'https://'+i.url)}" target="_blank" rel="noopener noreferrer">${esc(i.url)}</a></div>`:''}${i.observacoes?`<div style="font-size:12px; color:var(--ink-soft); white-space:pre-wrap;">${esc(i.observacoes)}</div>`:''}</td>
+          <td>${i.categoria?`<span class="tag muted">${esc(i.categoria)}</span>`:''}</td>
+          <td>${i.login?`<div>${esc(i.login)}${copiarBtn('Login',i.login)}</div>`:''}${i.email?`<div>${esc(i.email)}${copiarBtn('E-mail',i.email)}</div>`:''}</td>
+          <td style="white-space:nowrap;">${i.temSenha?`<span class="cofreSenha" style="font-family:monospace;">••••••••</span> <button class="btn small" data-a="ver" title="Mostrar">👁</button> <button class="btn small" data-a="copiar" title="Copiar senha">⧉</button>`:'<span style="color:var(--ink-soft);">—</span>'}</td>
+          <td style="white-space:nowrap; text-align:right;"><button class="btn small" data-a="edit">Editar</button> <button class="btn small danger" data-a="del">Excluir</button></td>
+        </tr>`).join('')}</tbody></table></div>` : '<div class="empty-state">Nenhum acesso cadastrado ainda. Clique em <b>+ Novo acesso</b>.</div>'}
+    </div>`;
+  const busca = document.getElementById('cofreBusca');
+  busca.addEventListener('input', ()=>{
+    const termo = normalizaTxt(busca.value);
+    box.querySelectorAll('#cofreBody tr[data-cid]').forEach(tr=>{ tr.style.display = (!termo || (tr.dataset.busca||'').includes(termo)) ? '' : 'none'; });
+  });
+  const pegarSenha = async id => (await api('/cofre-senhas/'+id+'/senha')).senha;
+  box.querySelectorAll('[data-copiar]').forEach(b=>b.addEventListener('click', async ()=>{
+    try{ await navigator.clipboard.writeText(b.dataset.valor); toast(b.dataset.copiar+' copiado.','ok'); }catch(e){ toast('Não foi possível copiar.','err'); }
+  }));
+  box.querySelectorAll('[data-cid] [data-a]').forEach(b=>b.addEventListener('click', async ()=>{
+    const tr = b.closest('tr'); const id = Number(tr.dataset.cid); const item = itens.find(x=>x.id===id);
+    try{
+      if(b.dataset.a==='ver'){
+        const span = tr.querySelector('.cofreSenha');
+        if(span.dataset.aberta){ span.textContent='••••••••'; delete span.dataset.aberta; b.textContent='👁'; }
+        else { span.textContent = await pegarSenha(id); span.dataset.aberta='1'; b.textContent='🙈'; }
+      } else if(b.dataset.a==='copiar'){
+        await navigator.clipboard.writeText(await pegarSenha(id)); toast('Senha copiada.','ok');
+      } else if(b.dataset.a==='edit') cofreModal(item);
+      else if(b.dataset.a==='del' && confirmar(`Excluir o acesso "${item.titulo}"? Não dá para desfazer.`)){ await api('/cofre-senhas/'+id,{method:'DELETE'}); toast('Excluído.','ok'); recarregar(); }
+    }catch(e){ toast(e.message,'err'); }
+  }));
+  document.getElementById('cofreNovo').addEventListener('click', ()=>cofreModal(null));
+  function cofreModal(i){
+    openModal(`<h3>${i?'Editar acesso':'Novo acesso'}</h3>
+      <div class="field"><label>Nome do acesso *</label><input type="text" id="cfNome" value="${esc(i?i.titulo:'')}" placeholder="Hostinger, Banco do Brasil, e-CAC…"></div>
+      <div class="row">
+        <div class="field" style="flex:1;"><label>Categoria</label><input type="text" id="cfCat" list="cfCatLista" value="${esc(i?i.categoria:'')}" placeholder="Banco, Hospedagem, E-mail, Governo…"><datalist id="cfCatLista">${categorias.map(c=>`<option value="${esc(c)}">`).join('')}</datalist></div>
+        <div class="field" style="flex:1;"><label>Site / link</label><input type="text" id="cfUrl" value="${esc(i?i.url:'')}" placeholder="https://…"></div>
+      </div>
+      <div class="row">
+        <div class="field" style="flex:1;"><label>Login / usuário</label><input type="text" id="cfLogin" value="${esc(i?i.login:'')}" autocomplete="off"></div>
+        <div class="field" style="flex:1;"><label>E-mail</label><input type="text" id="cfEmail" value="${esc(i?i.email:'')}" autocomplete="off"></div>
+      </div>
+      <div class="field"><label>Senha</label>
+        <div class="row" style="gap:6px;"><input type="password" id="cfSenha" style="flex:1;" autocomplete="new-password" placeholder="${i&&i.temSenha?'•••••••• (deixe em branco para manter a atual)':''}"><button type="button" class="btn small" id="cfVerSenha" title="Mostrar">👁</button></div></div>
+      <div class="field"><label>Observações</label><textarea id="cfObs" rows="3" placeholder="PIN, perguntas de segurança, quem usa…">${esc(i?i.observacoes:'')}</textarea></div>
+      <div class="row" style="justify-content:flex-end; gap:8px; margin-top:12px;"><button class="btn" onclick="closeModal()">Cancelar</button><button class="btn primary" id="cfSalvar">Salvar</button></div>`, '620px');
+    document.getElementById('cfVerSenha').addEventListener('click', ()=>{ const s=document.getElementById('cfSenha'); s.type = s.type==='password'?'text':'password'; });
+    document.getElementById('cfSalvar').addEventListener('click', async ()=>{
+      const body = { titulo:document.getElementById('cfNome').value, categoria:document.getElementById('cfCat').value, url:document.getElementById('cfUrl').value, login:document.getElementById('cfLogin').value, email:document.getElementById('cfEmail').value, senha:document.getElementById('cfSenha').value, observacoes:document.getElementById('cfObs').value };
+      try{ await api('/cofre-senhas'+(i?'/'+i.id:''), { method:i?'PUT':'POST', body }); closeModal(); toast('Salvo.','ok'); recarregar(); }catch(e){ toast(e.message,'err'); }
+    });
   }
 }
 

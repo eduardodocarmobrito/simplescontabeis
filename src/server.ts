@@ -12225,6 +12225,85 @@ app.put("/api/infosimples/config", blockCliente, requireAdmin, (req, res) => {
     .run(user.escritorioId, tokenCifrado, ativo ? 1 : 0, intv);
   res.json({ ok: true, temToken: !!tokenCifrado });
 });
+// ===================== Cofre de senhas do escritório (Configurações → Senhas e acessos) =====================
+// Logins, e-mails e senhas de portais/sistemas usados pelo escritório. Só Administrador. Senha e
+// observações ficam cifradas (mesma chave do certificado NFS-e); a listagem nunca devolve a senha —
+// ela só sai pela rota /senha, sob demanda, quando o admin clica em "mostrar"/"copiar".
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS cofre_senhas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    escritorio_id INTEGER NOT NULL,
+    titulo TEXT NOT NULL,
+    categoria TEXT,
+    url TEXT,
+    login TEXT,
+    email TEXT,
+    senha_cifrada TEXT,
+    observacoes_cifradas TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_cofre_senhas_escritorio ON cofre_senhas(escritorio_id);
+`);
+function cofreCampos(body: any) {
+  const txt = (v: any, max: number) => (typeof v === "string" ? v.trim().slice(0, max) : "");
+  return { titulo: txt(body?.titulo, 200), categoria: txt(body?.categoria, 100), url: txt(body?.url, 500), login: txt(body?.login, 300), email: txt(body?.email, 300) };
+}
+app.get("/api/cofre-senhas", blockCliente, requireAdmin, (req, res) => {
+  const user = (req as any).user;
+  const rows = sqlite
+    .prepare(`SELECT id, titulo, categoria, url, login, email, senha_cifrada, observacoes_cifradas, updated_at as updatedAt FROM cofre_senhas WHERE escritorio_id = ? ORDER BY categoria COLLATE NOCASE, titulo COLLATE NOCASE`)
+    .all(user.escritorioId) as any[];
+  res.json({
+    itens: rows.map((r) => {
+      let observacoes = "";
+      try { observacoes = r.observacoes_cifradas ? nfse.decifrarTexto(r.observacoes_cifradas) : ""; } catch { /* chave trocada */ }
+      return { id: r.id, titulo: r.titulo, categoria: r.categoria || "", url: r.url || "", login: r.login || "", email: r.email || "", temSenha: !!r.senha_cifrada, observacoes, updatedAt: r.updatedAt };
+    }),
+  });
+});
+app.get("/api/cofre-senhas/:id/senha", blockCliente, requireAdmin, (req, res) => {
+  const user = (req as any).user;
+  const row = sqlite.prepare(`SELECT senha_cifrada FROM cofre_senhas WHERE id = ? AND escritorio_id = ?`).get(Number(req.params.id), user.escritorioId) as any;
+  if (!row) return res.status(404).json({ error: "Registro não encontrado." });
+  try { res.json({ senha: row.senha_cifrada ? nfse.decifrarTexto(row.senha_cifrada) : "" }); }
+  catch { res.status(500).json({ error: "Não foi possível decifrar a senha (a chave de criptografia mudou?)." }); }
+});
+app.post("/api/cofre-senhas", blockCliente, requireAdmin, (req, res) => {
+  const user = (req as any).user;
+  const c = cofreCampos(req.body);
+  if (!c.titulo) return res.status(400).json({ error: "Informe o nome do acesso (ex.: Hostinger, Banco do Brasil)." });
+  const senha = typeof req.body?.senha === "string" ? req.body.senha : "";
+  const obs = typeof req.body?.observacoes === "string" ? req.body.observacoes.trim() : "";
+  try {
+    const r = sqlite
+      .prepare(`INSERT INTO cofre_senhas (escritorio_id, titulo, categoria, url, login, email, senha_cifrada, observacoes_cifradas) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(user.escritorioId, c.titulo, c.categoria, c.url, c.login, c.email, senha ? nfse.cifrarTexto(senha) : null, obs ? nfse.cifrarTexto(obs) : null);
+    res.json({ ok: true, id: r.lastInsertRowid });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+app.put("/api/cofre-senhas/:id", blockCliente, requireAdmin, (req, res) => {
+  const user = (req as any).user;
+  const id = Number(req.params.id);
+  const existing = sqlite.prepare(`SELECT senha_cifrada FROM cofre_senhas WHERE id = ? AND escritorio_id = ?`).get(id, user.escritorioId) as any;
+  if (!existing) return res.status(404).json({ error: "Registro não encontrado." });
+  const c = cofreCampos(req.body);
+  if (!c.titulo) return res.status(400).json({ error: "Informe o nome do acesso." });
+  // senha em branco = mantém a atual (o formulário de edição não recebe a senha antiga)
+  const senha = typeof req.body?.senha === "string" ? req.body.senha : "";
+  const obs = typeof req.body?.observacoes === "string" ? req.body.observacoes.trim() : "";
+  try {
+    sqlite
+      .prepare(`UPDATE cofre_senhas SET titulo=?, categoria=?, url=?, login=?, email=?, senha_cifrada=?, observacoes_cifradas=?, updated_at=datetime('now') WHERE id = ? AND escritorio_id = ?`)
+      .run(c.titulo, c.categoria, c.url, c.login, c.email, senha ? nfse.cifrarTexto(senha) : existing.senha_cifrada, obs ? nfse.cifrarTexto(obs) : null, id, user.escritorioId);
+    res.json({ ok: true });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+app.delete("/api/cofre-senhas/:id", blockCliente, requireAdmin, (req, res) => {
+  const user = (req as any).user;
+  sqlite.prepare(`DELETE FROM cofre_senhas WHERE id = ? AND escritorio_id = ?`).run(Number(req.params.id), user.escritorioId);
+  res.json({ ok: true });
+});
 // Dispara a consulta das empresas da esfera agora (manual). ?devidas=1 consulta só as vencidas/ausentes.
 // Estadual = Infosimples (pago); Municipal = portal de Redenção via Playwright (sem custo).
 app.post("/api/cnd/:esfera/consultar", blockCliente, requirePermissao("dashboard", "editar"), async (req, res) => {
