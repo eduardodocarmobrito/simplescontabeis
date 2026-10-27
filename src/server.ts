@@ -13277,7 +13277,12 @@ app.use(
       // em HTML/CSS/JS, inclusive dentro de string literal de JavaScript (ex. o redirect pós-login
       // deles: `let url = 'https://app.webdfe.com.br'; ...`).
       let texto = responseBuffer.toString("utf8").split(WEBDFE_ORIGEM).join("/api/webdfe-mirror");
-      if (/text\/html/i.test(contentType)) {
+      // Algumas rotas de AJAX do WebDFe (ex. nf_historico_select_ajax.php) devolvem JSON puro mas
+      // marcam o header como text/html por engano — não é uma página de verdade, então o corpo começa
+      // com "{" ou "[", não com "<". Injetar o shim nelas colava um <script> na frente do JSON e
+      // quebrava o parser do DataTables ("Invalid JSON response"), achado ao vivo em 2026-10-27.
+      const pareceHtml = /^\s*</.test(texto);
+      if (/text\/html/i.test(contentType) && pareceHtml) {
         // Shim precisa rodar ANTES de qualquer outro script da página — logo depois do <head> (ou, se
         // não achar, logo no início do documento).
         // Fronteira de palavra depois de "head" — sem isso, "<head...>" também casava com
