@@ -5821,9 +5821,29 @@ async function abrirEnvioGrade(atribuicaoId, souCliente){
   if(grade.length){
     const tbody = document.getElementById('envioGradeBody');
     const ehAvulso = atribuicao.periodicidade==='avulso';
-    tbody.innerHTML = grade.map(p=>
-      `<tr data-periodo="${p.periodoId}"><td><b>${esc(rotuloPeriodoEnvio(p, atribuicao.periodicidade))}</b></td><td>${envioCelulaHtml(p, accept, podePostar, podeEditar, souCliente, atribuicao.detectarVencimento, ehDas, ehAvulso, atribuicao.periodicidade)}</td></tr>`
-    ).join('');
+    const rowHtml = (p, extra='') => `<tr ${extra} data-periodo="${p.periodoId}"><td><b>${esc(rotuloPeriodoEnvio(p, atribuicao.periodicidade))}</b></td><td>${envioCelulaHtml(p, accept, podePostar, podeEditar, souCliente, atribuicao.detectarVencimento, ehDas, ehAvulso, atribuicao.periodicidade)}</td></tr>`;
+    if(ehAvulso){
+      tbody.innerHTML = grade.map(p=>rowHtml(p)).join('');
+    } else {
+      // Agrupa por ano: o ano corrente (e futuros, se houver) fica aberto; anos passados ficam
+      // RECOLHIDOS por padrão (clique no separador pra expandir) — pedido do usuário: ao virar o ano,
+      // recolher o ano anterior e abrir o novo mês a mês.
+      const anoAtual = Number(new Date().toLocaleDateString('en-CA',{timeZone:'America/Sao_Paulo'}).slice(0,4));
+      const porAno = {};
+      grade.forEach(p=>{ (porAno[p.ano]=porAno[p.ano]||[]).push(p); });
+      const anos = Object.keys(porAno).map(Number).sort((a,b)=>b-a);
+      tbody.innerHTML = anos.map(ano=>{
+        if(ano>=anoAtual) return porAno[ano].map(p=>rowHtml(p)).join('');
+        const sep = `<tr class="ano-sep" data-ano="${ano}"><td colspan="2" style="cursor:pointer; background:var(--paper); font-weight:700; color:var(--ink-soft);">▸ ${ano} — ${porAno[ano].length} competência(s) · clique para expandir</td></tr>`;
+        return sep + porAno[ano].map(p=>rowHtml(p, `class="ano-grp-${ano}" style="display:none;"`)).join('');
+      }).join('');
+      tbody.querySelectorAll('.ano-sep').forEach(sep=>sep.addEventListener('click', ()=>{
+        const rows = tbody.querySelectorAll('.ano-grp-'+sep.dataset.ano);
+        const abrir = rows.length && rows[0].style.display==='none';
+        rows.forEach(r=>{ r.style.display = abrir?'':'none'; });
+        const td = sep.querySelector('td'); td.textContent = (abrir?'▾ ':'▸ ') + td.textContent.slice(2);
+      }));
+    }
     wireEnvioGradeEvents(tbody, atribuicaoId, souCliente);
   }
 

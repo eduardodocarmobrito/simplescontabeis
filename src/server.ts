@@ -8039,7 +8039,16 @@ app.get("/api/envio/grade/:atribuicaoId", (req, res) => {
   if (user.perfil === "Colaborador" && !hasPermissao(user, "envio", "visualizar")) return res.status(403).json({ error: "Sem permissão." });
   if (user.perfil !== "Cliente" && !podeAcessarEmpresa(user, atrib.empresa_id)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
 
-  const periodos = sqlite.prepare(`SELECT * FROM envio_periodos WHERE atribuicao_id = ? ORDER BY ano DESC, mes ASC`).all(atribuicaoId) as any[];
+  const periodosTodos = sqlite.prepare(`SELECT * FROM envio_periodos WHERE atribuicao_id = ? ORDER BY ano DESC, mes ASC`).all(atribuicaoId) as any[];
+  // A grade NÃO mostra competência FUTURA — os meses "abrem" um a um conforme o mês vira (pedido do
+  // usuário: em 2026 não deve aparecer 2027; e Nov/Dez só aparecem quando o mês chega). Avulso sempre
+  // aparece (é manual/explícito); anual aparece quando o ano chega; mensal/trimestral até o mês
+  // corrente, inclusive. Fuso de São Paulo pra a virada do mês/ano cair na hora certa.
+  const hojeSp = new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" }); // "AAAA-MM-DD"
+  const curAno = Number(hojeSp.slice(0, 4)), curComp = curAno * 100 + Number(hojeSp.slice(5, 7));
+  const periodos = atrib.periodicidade === "avulso"
+    ? periodosTodos
+    : periodosTodos.filter((p) => (atrib.periodicidade === "anual" ? p.ano <= curAno : (p.mes == null ? true : p.ano * 100 + p.mes <= curComp)));
   const periodoIds = periodos.map((p) => p.id);
   const docs = periodoIds.length
     ? (sqlite
