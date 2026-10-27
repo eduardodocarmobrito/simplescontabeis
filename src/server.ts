@@ -19,6 +19,7 @@ import * as contratos from "./contratos";
 import * as danfse from "./danfse";
 import * as whatsapp from "./whatsapp";
 import * as nfe from "./nfe";
+import * as cndRedencao from "./cnd-redencao";
 import * as nfePdf from "./nfe-pdf";
 import * as ofx from "./ofx";
 import * as onedrive from "./onedrive";
@@ -11721,26 +11722,38 @@ function cndTipoDeInfosimples(data: any): "negativa" | "positiva_efeito" | "posi
 // Baixa a certidão emitida (HTML que o Infosimples captura), renderiza em PDF (Chromium) e anexa no
 // Envio de Documentos pro cliente — mesma mecânica do SITFIS. Anexa só 1x por mês (evita reenvio a
 // cada ciclo). Chamado só quando a certidão foi emitida (negativa ou positiva com efeito de negativa).
-async function cndAnexarCertidaoEmEnvio(escritorioId: number, empresa: any, esfera: CndEsfera, htmlUrl: string, validadeIso: string | null): Promise<void> {
-  if (!htmlUrl) return;
+// Núcleo: recebe o PDF (base64) já pronto e anexa na grade do Envio de Documentos (1x/mês). SÓ anexa
+// (igual ao Situação Fiscal) — o escritório envia pro cliente de lá; não dispara e-mail/WhatsApp
+// automático pra não blastar todos os clientes de uma vez.
+function cndAnexarCertidaoPdfBase64(escritorioId: number, empresa: any, esfera: CndEsfera, pdfBase64: string, validadeIso: string | null): void {
+  if (!pdfBase64) return;
   const label = CND_ESFERAS[esfera].label;
   const atribuicaoId = integraContadorObterOuCriarAtribuicaoModelo(escritorioId, empresa.id, `Certidão de Débitos ${label}`, `Certidão Negativa de Débitos ${label}, emitida e enviada automaticamente`);
   const hoje = new Date();
   const ano = hoje.getFullYear(), mes = hoje.getMonth() + 1;
   const periodo = sqlite.prepare(`SELECT id FROM envio_periodos WHERE atribuicao_id = ? AND ano = ? AND mes = ?`).get(atribuicaoId, ano, mes) as any;
-  if (periodo && envioJaTemDocumento(periodo.id)) return; // já anexada/enviada neste mês
+  if (periodo && envioJaTemDocumento(periodo.id)) return; // já anexada neste mês
+  const validadeBr = validadeIso ? validadeIso.split("-").reverse().join("/") : null;
+  const nomeArquivo = `Certidao ${label} - ${MESES_PT_EXTENSO[mes - 1]} ${ano}.pdf`;
+  const obs = `Certidão Negativa de Débitos ${label}${validadeBr ? ` — válida até ${validadeBr}` : ""}, emitida automaticamente em ${hoje.toLocaleDateString("pt-BR")}.`;
+  integraContadorAnexarPdfEmEnvio(atribuicaoId, empresa.id, ano, mes, nomeArquivo, pdfBase64, obs, validadeIso);
+}
+// Estadual (Infosimples): a certidão vem como HTML; renderiza em PDF (Chromium) e anexa pelo núcleo acima.
+async function cndAnexarCertidaoEmEnvio(escritorioId: number, empresa: any, esfera: CndEsfera, htmlUrl: string, validadeIso: string | null): Promise<void> {
+  if (!htmlUrl) return;
+  const label = CND_ESFERAS[esfera].label;
+  // Pré-checa a trava mensal antes de gastar tempo renderizando o PDF à toa.
+  const atribuicaoId = integraContadorObterOuCriarAtribuicaoModelo(escritorioId, empresa.id, `Certidão de Débitos ${label}`, `Certidão Negativa de Débitos ${label}, emitida e enviada automaticamente`);
+  const hoje = new Date();
+  const periodo = sqlite.prepare(`SELECT id FROM envio_periodos WHERE atribuicao_id = ? AND ano = ? AND mes = ?`).get(atribuicaoId, hoje.getFullYear(), hoje.getMonth() + 1) as any;
+  if (periodo && envioJaTemDocumento(periodo.id)) return;
   let pdf: Buffer;
   try {
     const resp = await fetch(htmlUrl);
     const html = await resp.text();
     pdf = await contratos.gerarPdfDeHtml(html, `Certidão ${label}`);
   } catch (e: any) { console.error(`[cnd] render PDF ${esfera} empresa ${empresa.id}:`, e.message); return; }
-  const validadeBr = validadeIso ? validadeIso.split("-").reverse().join("/") : null;
-  const nomeArquivo = `Certidao ${label} - ${MESES_PT_EXTENSO[mes - 1]} ${ano}.pdf`;
-  const obs = `Certidão Negativa de Débitos ${label}${validadeBr ? ` — válida até ${validadeBr}` : ""}, emitida automaticamente em ${hoje.toLocaleDateString("pt-BR")}.`;
-  // SÓ anexa na grade do Envio de Documentos (igual ao Situação Fiscal) — o escritório envia pro
-  // cliente de lá. Não dispara e-mail/WhatsApp automático pra não blastar todos os clientes de uma vez.
-  integraContadorAnexarPdfEmEnvio(atribuicaoId, empresa.id, ano, mes, nomeArquivo, pdf.toString("base64"), obs, validadeIso);
+  cndAnexarCertidaoPdfBase64(escritorioId, empresa, esfera, pdf.toString("base64"), validadeIso);
 }
 async function infosimplesConsultarCnd(escritorioId: number, empresa: any, esfera: CndEsfera): Promise<{ ok: boolean; tipo?: string; erro?: string }> {
   const ep = INFOSIMPLES_ENDPOINTS[esfera];
@@ -11818,6 +11831,55 @@ async function infosimplesConsultarCertidoes(
   }
   return { total: empresas.length, consultadas, ok, puladas, erros };
 }
+// ---------- Municipal: Redenção-PA (IBGE 1506138) via portal da prefeitura (Playwright, sem custo) ----------
+const REDENCAO_IBGE = "1506138";
+async function cndMunicipalConsultarEmpresa(escritorioId: number, empresa: any, browser: any): Promise<{ ok: boolean; tipo?: string; erro?: string }> {
+  const cnpj = String(empresa.cnpj || "").replace(/\D/g, "");
+  if (cnpj.length !== 14) return { ok: false, erro: "Empresa sem CNPJ válido." };
+  let r: cndRedencao.CertidaoMunicipal;
+  try { r = await cndRedencao.consultarCertidaoRedencao(cnpj, browser); }
+  catch (e: any) { return { ok: false, erro: e.message }; }
+  sqlite
+    .prepare(
+      `INSERT INTO cnd_certidoes (escritorio_id, empresa_id, esfera, tipo, numero, emissao, validade, inscricao, cnpj, importado_em)
+       VALUES (?, ?, 'municipal', ?, ?, ?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(empresa_id, esfera) DO UPDATE SET tipo=excluded.tipo, numero=excluded.numero, emissao=excluded.emissao, validade=excluded.validade, cnpj=excluded.cnpj, importado_em=datetime('now')`
+    )
+    .run(escritorioId, empresa.id, r.tipo, r.numero, r.emissaoIso, r.validadeIso, empresa.inscricao_municipal || null, cnpj);
+  // positiva (com débito) → fica no card como pendência; negativa / positiva c/ efeito → anexa no Envio.
+  if (r.tipo !== "positiva") cndAnexarCertidaoPdfBase64(escritorioId, empresa, "municipal", r.pdfBase64, r.validadeIso);
+  return { ok: true, tipo: r.tipo };
+}
+async function cndMunicipalConsultarTodas(escritorioId: number, opts: { somenteDevidas?: boolean } = {}): Promise<{ total: number; consultadas: number; ok: number; puladas: number; erros: { empresa: string; erro: string }[] }> {
+  // Só empresas de Redenção (o portal é específico desse município).
+  const empresas = sqlite
+    .prepare(`SELECT id, nome, cnpj, inscricao_municipal FROM empresas WHERE escritorio_id = ? AND ativo = 1 AND codigo_municipio_ibge = ? AND cnpj IS NOT NULL AND cnpj != ''`)
+    .all(escritorioId, REDENCAO_IBGE) as any[];
+  const hoje = new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+  const recheckDias = ((sqlite.prepare(`SELECT intervalo_dias FROM infosimples_config WHERE escritorio_id = ?`).get(escritorioId) as any)?.intervalo_dias) || 30;
+  const devidas = empresas.filter((emp) => {
+    if (!opts.somenteDevidas) return true;
+    const cur = sqlite.prepare(`SELECT validade, importado_em FROM cnd_certidoes WHERE empresa_id = ? AND esfera = 'municipal'`).get(emp.id) as any;
+    if (!cur) return true;
+    if (cur.validade) return cur.validade <= hoje; // vence no dia — reconsulta
+    const imp = cur.importado_em ? new Date(String(cur.importado_em).replace(" ", "T") + "Z").getTime() : 0;
+    return Date.now() - imp >= recheckDias * 86400_000; // pendência: recheca a cada intervalo
+  });
+  const puladas = empresas.length - devidas.length;
+  const erros: { empresa: string; erro: string }[] = [];
+  let ok = 0, consultadas = 0;
+  if (devidas.length) {
+    const browser = await cndRedencao.abrirNavegadorRedencao();
+    try {
+      for (const emp of devidas) {
+        consultadas++;
+        const r = await cndMunicipalConsultarEmpresa(escritorioId, emp, browser);
+        if (r.ok) ok++; else erros.push({ empresa: emp.nome, erro: r.erro || "erro" });
+      }
+    } finally { await browser.close().catch(() => {}); }
+  }
+  return { total: empresas.length, consultadas, ok, puladas, erros };
+}
 app.get("/api/infosimples/config", blockCliente, requireAdmin, (req, res) => {
   const user = (req as any).user;
   const row = sqlite.prepare(`SELECT ativo, intervalo_dias as intervaloDias, ultima_execucao_em as ultimaExecucao, token_cifrado FROM infosimples_config WHERE escritorio_id = ?`).get(user.escritorioId) as any;
@@ -11838,26 +11900,38 @@ app.put("/api/infosimples/config", blockCliente, requireAdmin, (req, res) => {
     .run(user.escritorioId, tokenCifrado, ativo ? 1 : 0, intv);
   res.json({ ok: true, temToken: !!tokenCifrado });
 });
-// Dispara a consulta de todas as empresas da esfera agora (manual). Estadual/Municipal (via Infosimples).
+// Dispara a consulta das empresas da esfera agora (manual). ?devidas=1 consulta só as vencidas/ausentes.
+// Estadual = Infosimples (pago); Municipal = portal de Redenção via Playwright (sem custo).
 app.post("/api/cnd/:esfera/consultar", blockCliente, requirePermissao("dashboard", "editar"), async (req, res) => {
   const user = (req as any).user;
   const esfera = cndEsferaValida(req.params.esfera);
-  if (!esfera || !INFOSIMPLES_ENDPOINTS[esfera]) return res.status(400).json({ error: "Consulta automática indisponível para esta esfera." });
-  if (!infosimplesToken(user.escritorioId)) return res.status(400).json({ error: "Cadastre o token Infosimples em Configurações › Certidões (Infosimples)." });
-  try { res.json(await infosimplesConsultarCertidoes(user.escritorioId, esfera)); } // manual = consulta todas
-  catch (e: any) { res.status(500).json({ error: e.message }); }
+  const somenteDevidas = String(req.query.devidas || "") === "1";
+  try {
+    if (esfera === "municipal") { res.json(await cndMunicipalConsultarTodas(user.escritorioId, { somenteDevidas })); return; }
+    if (esfera === "estadual" && INFOSIMPLES_ENDPOINTS.estadual) {
+      if (!infosimplesToken(user.escritorioId)) return res.status(400).json({ error: "Cadastre o token Infosimples em Configurações › Certidões (Infosimples)." });
+      res.json(await infosimplesConsultarCertidoes(user.escritorioId, esfera, { somenteDevidas }));
+      return;
+    }
+    return res.status(400).json({ error: "Consulta automática indisponível para esta esfera." });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 // Agendador: 2x/dia, consulta SÓ as certidões vencidas/ausentes (por vencimento de cada uma) —
 // não reconsulta uma negativa ainda válida. Começa no primeiro tick (+12h), nunca no boot.
 setInterval(() => {
-  const cfgs = sqlite.prepare(`SELECT escritorio_id FROM infosimples_config WHERE ativo = 1 AND token_cifrado IS NOT NULL`).all() as any[];
+  const cfgs = sqlite.prepare(`SELECT escritorio_id, token_cifrado FROM infosimples_config WHERE ativo = 1`).all() as any[];
   for (const c of cfgs) {
     sqlite.prepare(`UPDATE infosimples_config SET ultima_execucao_em = datetime('now') WHERE escritorio_id = ?`).run(c.escritorio_id);
     (async () => {
-      for (const esfera of Object.keys(INFOSIMPLES_ENDPOINTS) as CndEsfera[]) {
-        try { const r = await infosimplesConsultarCertidoes(c.escritorio_id, esfera, { somenteDevidas: true }); if (r.consultadas) console.log(`[infosimples] ${esfera}: ${r.ok}/${r.consultadas} consultadas (${r.puladas} ainda válidas)`); }
-        catch (e: any) { console.error(`[infosimples] ${esfera}:`, e.message); }
+      // Estadual via Infosimples (só se tem token). Municipal via portal de Redenção (sem token/custo).
+      if (c.token_cifrado) {
+        for (const esfera of Object.keys(INFOSIMPLES_ENDPOINTS) as CndEsfera[]) {
+          try { const r = await infosimplesConsultarCertidoes(c.escritorio_id, esfera, { somenteDevidas: true }); if (r.consultadas) console.log(`[cnd ${esfera}] ${r.ok}/${r.consultadas} (${r.puladas} válidas)`); }
+          catch (e: any) { console.error(`[cnd ${esfera}]`, e.message); }
+        }
       }
+      try { const r = await cndMunicipalConsultarTodas(c.escritorio_id, { somenteDevidas: true }); if (r.consultadas) console.log(`[cnd municipal] ${r.ok}/${r.consultadas} (${r.puladas} válidas)`); }
+      catch (e: any) { console.error(`[cnd municipal]`, e.message); }
     })();
   }
 }, 12 * 60 * 60 * 1000);

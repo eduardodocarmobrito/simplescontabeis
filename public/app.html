@@ -2413,12 +2413,12 @@ function cardDetalheModal(c){
   };
   const impCfg = (c.tipo && IMPORT_SEFA[c.tipo] && can('dashboard','editar')) ? IMPORT_SEFA[c.tipo] : null;
   const importavel = !!(c.tipo && IMPORT_SEFA[c.tipo]);
-  // Consulta automática via Infosimples: por enquanto só Estadual (Municipal entra com o link da prefeitura).
-  const consultaEsfera = (c.tipo==='cnd_estadual' && can('dashboard','editar')) ? 'estadual' : null;
+  // Consulta automática: Estadual via Infosimples (~R$0,20/empresa); Municipal via portal da prefeitura (sem custo).
+  const consultaEsfera = ((c.tipo==='cnd_estadual' || c.tipo==='cnd_municipal') && can('dashboard','editar')) ? c.tipo.replace('cnd_','') : null;
   openModal(`
     <h3>${esc(c.titulo)}</h3>
     ${impCfg? `<div class="row" style="align-items:center; gap:10px; margin-bottom:10px; flex-wrap:wrap;">
-      ${consultaEsfera? `<button class="btn primary" id="cndConsultarBtn" title="Consulta todas as empresas com Inscrição Estadual na SEFA via Infosimples (~R$ 0,20/empresa)">🔄 Consultar agora (Infosimples)</button>`:''}
+      ${consultaEsfera? `<button class="btn primary" id="cndConsultarBtn" title="${consultaEsfera==='municipal'?'Consulta na prefeitura de Redenção (sem custo por consulta)':'Consulta na SEFA via Infosimples (~R$ 0,20/empresa)'}">🔄 Consultar agora${consultaEsfera==='municipal'?' (Prefeitura)':' (Infosimples)'}</button>`:''}
       <input type="file" id="sefaImpFile" accept="application/pdf" class="hidden">
       <button class="btn" id="sefaImpBtn">${impCfg.botao}</button>
       <span id="sefaImpMsg" style="font-size:12px; color:var(--ink-soft);">${impCfg.ajuda}</span>
@@ -2451,11 +2451,14 @@ function cardDetalheModal(c){
     const cBtn = document.getElementById('cndConsultarBtn');
     const msgEl = document.getElementById('sefaImpMsg');
     cBtn.addEventListener('click', async ()=>{
-      if(!confirmar('Consultar a certidão estadual de todas as empresas com Inscrição Estadual na SEFA (via Infosimples)? Custo ~R$ 0,20 por empresa.')) return;
+      const msgConfirm = consultaEsfera==='municipal'
+        ? 'Consultar a certidão municipal de todas as empresas de Redenção na prefeitura (sem custo por consulta)? Leva ~30s por empresa.'
+        : 'Consultar a certidão estadual de todas as empresas com Inscrição Estadual na SEFA (via Infosimples)? Custo ~R$ 0,20 por empresa.';
+      if(!confirmar(msgConfirm)) return;
       cBtn.disabled = true; const txt0 = cBtn.textContent; cBtn.textContent = 'Consultando…';
-      if(msgEl){ msgEl.style.color='var(--ink-soft)'; msgEl.textContent='Consultando na SEFA via Infosimples — pode levar alguns minutos…'; }
+      if(msgEl){ msgEl.style.color='var(--ink-soft)'; msgEl.textContent= consultaEsfera==='municipal'?'Consultando na prefeitura de Redenção — pode levar vários minutos…':'Consultando na SEFA via Infosimples — pode levar alguns minutos…'; }
       try{
-        const r = await api('/cnd/estadual/consultar', { method:'POST' });
+        const r = await api('/cnd/'+consultaEsfera+'/consultar', { method:'POST' });
         if(msgEl){ msgEl.style.color='var(--credit)'; msgEl.textContent = `${r.ok}/${r.total} consultadas com sucesso${r.erros&&r.erros.length?` · ${r.erros.length} com erro (${r.erros.slice(0,3).map(e=>e.empresa).join(', ')}${r.erros.length>3?'…':''})`:''}.`; }
         carregar(); pageDashboard();
       }catch(e){ if(msgEl){ msgEl.style.color='var(--debit)'; msgEl.textContent = e.message; } }
