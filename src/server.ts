@@ -11868,16 +11868,21 @@ async function cndMunicipalConsultarTodas(escritorioId: number, opts: { somenteD
   const puladas = empresas.length - devidas.length;
   const erros: { empresa: string; erro: string }[] = [];
   let ok = 0, consultadas = 0;
-  if (devidas.length) {
-    const browser = await cndRedencao.abrirNavegadorRedencao();
-    try {
-      for (const emp of devidas) {
-        consultadas++;
-        const r = await cndMunicipalConsultarEmpresa(escritorioId, emp, browser);
-        if (r.ok) ok++; else erros.push({ empresa: emp.nome, erro: r.erro || "erro" });
-      }
-    } finally { await browser.close().catch(() => {}); }
-  }
+  // Playwright/Chromium acumula memória ao longo de muitos contextos — relança o navegador a cada
+  // poucas empresas (e se ele cair) pra não derrubar o processo numa varredura grande.
+  let browser: any = null;
+  const RELANCA_A_CADA = 6;
+  const novoBrowser = async () => { try { if (browser) await browser.close().catch(() => {}); } catch { /* ignora */ } browser = await cndRedencao.abrirNavegadorRedencao(); };
+  try {
+    for (const emp of devidas) {
+      if (!browser || consultadas % RELANCA_A_CADA === 0 || !browser.isConnected?.()) await novoBrowser();
+      consultadas++;
+      let r: { ok: boolean; tipo?: string; erro?: string };
+      try { r = await cndMunicipalConsultarEmpresa(escritorioId, emp, browser); }
+      catch (e: any) { r = { ok: false, erro: e.message }; await novoBrowser().catch(() => {}); } // relança se o browser caiu no meio
+      if (r.ok) ok++; else erros.push({ empresa: emp.nome, erro: r.erro || "erro" });
+    }
+  } finally { if (browser) await browser.close().catch(() => {}); }
   return { total: empresas.length, consultadas, ok, puladas, erros };
 }
 app.get("/api/infosimples/config", blockCliente, requireAdmin, (req, res) => {
