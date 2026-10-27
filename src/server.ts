@@ -11701,13 +11701,9 @@ async function cndAnexarCertidaoEmEnvio(escritorioId: number, empresa: any, esfe
   const validadeBr = validadeIso ? validadeIso.split("-").reverse().join("/") : null;
   const nomeArquivo = `Certidao ${label} - ${MESES_PT_EXTENSO[mes - 1]} ${ano}.pdf`;
   const obs = `Certidão Negativa de Débitos ${label}${validadeBr ? ` — válida até ${validadeBr}` : ""}, emitida automaticamente em ${hoje.toLocaleDateString("pt-BR")}.`;
-  const docId = integraContadorAnexarPdfEmEnvio(atribuicaoId, empresa.id, ano, mes, nomeArquivo, pdf.toString("base64"), obs, validadeIso);
-  void envioEnviarDocumentoAutomatico({
-    escritorioId, empresaId: empresa.id, docId, fileName: nomeArquivo, pdf,
-    assunto: `Certidão Negativa ${label} — ${empresa.nome}`,
-    corpoEmail: `Segue em anexo a Certidão Negativa de Débitos ${label}${validadeBr ? `, válida até ${validadeBr}` : ""}.`,
-    descricaoWhatsapp: `Certidão Negativa ${label}`,
-  }).catch((e) => console.error(`[cnd] envio automático ${esfera} empresa ${empresa.id}:`, e.message));
+  // SÓ anexa na grade do Envio de Documentos (igual ao Situação Fiscal) — o escritório envia pro
+  // cliente de lá. Não dispara e-mail/WhatsApp automático pra não blastar todos os clientes de uma vez.
+  integraContadorAnexarPdfEmEnvio(atribuicaoId, empresa.id, ano, mes, nomeArquivo, pdf.toString("base64"), obs, validadeIso);
 }
 async function infosimplesConsultarCnd(escritorioId: number, empresa: any, esfera: CndEsfera): Promise<{ ok: boolean; tipo?: string; erro?: string }> {
   const ep = INFOSIMPLES_ENDPOINTS[esfera];
