@@ -1160,6 +1160,24 @@ sqlite.exec(`
     alerta_declaracao TEXT, -- preenchido quando a declaração/DAS do mês anterior ainda não foi localizada (monitoramento de atraso, não é erro técnico)
     updated_at TEXT DEFAULT (datetime('now'))
   );
+  -- ---- Emissor de NF-e (WebDFe) — site de terceiro sem API, encaixado via iframe. Guarda só
+  -- usuário/senha de cada login (cifrado com a mesma chave AES-256-GCM de nfse.ts), pra mostrar na
+  -- tela com botão "copiar senha" ao lado do iframe — nunca pra auto-login (a tela deles é de outro
+  -- domínio, o navegador não deixa o nosso JS mexer nela). Dois níveis, igual Integra Contador:
+  -- acesso MASTER do escritório (vê as empresas todas dentro do WebDFe) e acesso próprio de cada
+  -- empresa-cliente (login separado que ela já usa hoje).
+  CREATE TABLE IF NOT EXISTS webdfe_config (
+    escritorio_id INTEGER PRIMARY KEY REFERENCES escritorios(id),
+    usuario TEXT,
+    senha_cifrada TEXT,
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS webdfe_empresa_config (
+    empresa_id INTEGER PRIMARY KEY REFERENCES empresas(id) ON DELETE CASCADE,
+    usuario TEXT,
+    senha_cifrada TEXT,
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
   -- Documentos obtidos (DAS, declaração consultada, relatório de situação fiscal, DARF da DCTFWeb).
   -- "detalhes_json" guarda o resto dos campos específicos de cada tipo — não vale a pena normalizar
   -- em colunas próprias pra formatos tão diferentes entre si.
@@ -2864,12 +2882,14 @@ function garantirLinhasDeConfig(escritorioId: number) {
   sqlite.prepare(`INSERT OR IGNORE INTO nfse_agendamento_config (escritorio_id) VALUES (?)`).run(escritorioId);
   sqlite.prepare(`INSERT OR IGNORE INTO whatsapp_config (escritorio_id) VALUES (?)`).run(escritorioId);
   sqlite.prepare(`INSERT OR IGNORE INTO deskcomm_config (escritorio_id) VALUES (?)`).run(escritorioId);
+  sqlite.prepare(`INSERT OR IGNORE INTO webdfe_config (escritorio_id) VALUES (?)`).run(escritorioId);
 }
 garantirLinhasDeConfig(1);
 // Escritórios criados antes da tabela whatsapp_config existir (ou de garantirLinhasDeConfig ganhar
 // essa linha) também precisam da própria linha — não só o escritório 1.
 sqlite.exec(`INSERT OR IGNORE INTO whatsapp_config (escritorio_id) SELECT id FROM escritorios`);
 sqlite.exec(`INSERT OR IGNORE INTO deskcomm_config (escritorio_id) SELECT id FROM escritorios`);
+sqlite.exec(`INSERT OR IGNORE INTO webdfe_config (escritorio_id) SELECT id FROM escritorios`);
 
 // Migração: multi-tenant Fase 3 — nfse_certificados e nfse_modelos usam `empresa_id IS NULL` como
 // sentinela de "pertence ao próprio escritório" (não a uma empresa-cliente específica). Sem uma
@@ -2906,7 +2926,7 @@ sqlite.exec(`INSERT OR IGNORE INTO deskcomm_config (escritorio_id) SELECT id FRO
   }
 }
 
-const MODULOS = ["dashboard", "empresas", "solicitacoes", "envio", "nfse", "nfe-busca", "integracontador", "licencas", "financeiro", "contratos", "relatorios", "crm", "dprh", "contabil", "fiscal", "usuarios", "configuracoes", "email", "certificados"] as const;
+const MODULOS = ["dashboard", "empresas", "solicitacoes", "envio", "nfse", "nfe-busca", "integracontador", "licencas", "financeiro", "contratos", "relatorios", "crm", "dprh", "contabil", "fiscal", "usuarios", "configuracoes", "email", "certificados", "webdfe"] as const;
 type Modulo = (typeof MODULOS)[number];
 
 // ========================= LOGIN (senha com hash + sessão via cookie) =========================
@@ -12953,6 +12973,77 @@ app.post("/api/integracontador/config/testar", blockCliente, requirePermissao("i
     res.status(400).json({ error: e.message });
   }
 });
+// ---------- Emissor de NF-e (WebDFe) — iframe + usuário/senha pra copiar, sem API de verdade ----------
+// Mostra a senha em texto puro na resposta de propósito (decifra só na hora de responder, igual o
+// agente do Domínio Web em /api/dominio-agent/config) — é exatamente o que a tela precisa pro botão
+// "copiar senha" funcionar. Nunca loga nem grava em lugar nenhum fora do próprio banco cifrado.
+app.get("/api/webdfe/config", blockCliente, requirePermissao("webdfe", "visualizar"), (req, res) => {
+  const escritorioId = (req as any).user.escritorioId;
+  const c = sqlite.prepare(`SELECT * FROM webdfe_config WHERE escritorio_id = ?`).get(escritorioId) as any;
+  res.json({ usuario: c?.usuario || "", senha: c?.senha_cifrada ? nfse.decifrarTexto(c.senha_cifrada) : "" });
+});
+app.put("/api/webdfe/config", blockCliente, requirePermissao("webdfe", "editar"), (req, res) => {
+  const escritorioId = (req as any).user.escritorioId;
+  const { usuario, senha } = req.body || {};
+  const atual = sqlite.prepare(`SELECT * FROM webdfe_config WHERE escritorio_id = ?`).get(escritorioId) as any;
+  sqlite
+    .prepare(
+      `INSERT INTO webdfe_config (escritorio_id, usuario, senha_cifrada, updated_at) VALUES (?, ?, ?, datetime('now'))
+       ON CONFLICT(escritorio_id) DO UPDATE SET usuario=excluded.usuario, senha_cifrada=excluded.senha_cifrada, updated_at=datetime('now')`
+    )
+    .run(escritorioId, usuario !== undefined ? usuario || null : atual?.usuario || null, senha ? nfse.cifrarTexto(senha) : atual?.senha_cifrada || null);
+  res.json({ ok: true });
+});
+app.get("/api/webdfe/empresas", blockCliente, requirePermissao("webdfe", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const ids = empresasVisiveis(user);
+  if (!ids.length) return res.json({ items: [] });
+  const placeholders = ids.map(() => "?").join(",");
+  const rows = sqlite
+    .prepare(
+      `SELECT e.id, e.nome, e.cnpj, c.usuario FROM empresas e LEFT JOIN webdfe_empresa_config c ON c.empresa_id = e.id
+       WHERE e.id IN (${placeholders}) AND e.ativo = 1 ORDER BY e.nome COLLATE NOCASE`
+    )
+    .all(...ids) as any[];
+  res.json({ items: rows.map((r) => ({ id: r.id, nome: r.nome, cnpj: r.cnpj, usuario: r.usuario || null })) });
+});
+app.get("/api/webdfe/empresas/:empresaId", blockCliente, requirePermissao("webdfe", "visualizar"), (req, res) => {
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const c = sqlite.prepare(`SELECT * FROM webdfe_empresa_config WHERE empresa_id = ?`).get(empresaId) as any;
+  res.json({ usuario: c?.usuario || "", senha: c?.senha_cifrada ? nfse.decifrarTexto(c.senha_cifrada) : "" });
+});
+app.put("/api/webdfe/empresas/:empresaId", blockCliente, requirePermissao("webdfe", "editar"), (req, res) => {
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const { usuario, senha } = req.body || {};
+  const atual = sqlite.prepare(`SELECT * FROM webdfe_empresa_config WHERE empresa_id = ?`).get(empresaId) as any;
+  sqlite
+    .prepare(
+      `INSERT INTO webdfe_empresa_config (empresa_id, usuario, senha_cifrada, updated_at) VALUES (?, ?, ?, datetime('now'))
+       ON CONFLICT(empresa_id) DO UPDATE SET usuario=excluded.usuario, senha_cifrada=excluded.senha_cifrada, updated_at=datetime('now')`
+    )
+    .run(empresaId, usuario !== undefined ? usuario || null : atual?.usuario || null, senha ? nfse.cifrarTexto(senha) : atual?.senha_cifrada || null);
+  res.json({ ok: true });
+});
+app.get("/api/webdfe/minha-empresa", requireCliente, (req, res) => {
+  const empresaId = (req as any).user.empresaId;
+  const c = sqlite.prepare(`SELECT * FROM webdfe_empresa_config WHERE empresa_id = ?`).get(empresaId) as any;
+  res.json({ usuario: c?.usuario || "", senha: c?.senha_cifrada ? nfse.decifrarTexto(c.senha_cifrada) : "" });
+});
+app.put("/api/webdfe/minha-empresa", requireCliente, (req, res) => {
+  const empresaId = (req as any).user.empresaId;
+  const { usuario, senha } = req.body || {};
+  const atual = sqlite.prepare(`SELECT * FROM webdfe_empresa_config WHERE empresa_id = ?`).get(empresaId) as any;
+  sqlite
+    .prepare(
+      `INSERT INTO webdfe_empresa_config (empresa_id, usuario, senha_cifrada, updated_at) VALUES (?, ?, ?, datetime('now'))
+       ON CONFLICT(empresa_id) DO UPDATE SET usuario=excluded.usuario, senha_cifrada=excluded.senha_cifrada, updated_at=datetime('now')`
+    )
+    .run(empresaId, usuario !== undefined ? usuario || null : atual?.usuario || null, senha ? nfse.cifrarTexto(senha) : atual?.senha_cifrada || null);
+  res.json({ ok: true });
+});
+
 function getIntegraContadorEmpresaConfig(empresaId: number): any {
   return sqlite.prepare(`SELECT * FROM integracontador_empresa_config WHERE empresa_id = ?`).get(empresaId) || {};
 }

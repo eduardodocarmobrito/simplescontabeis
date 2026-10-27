@@ -1163,8 +1163,10 @@ const NAV = [
     { label:'SAT-CF-e', tipo:'satcfe' },
   ] },
   { id:'integracontador', label:'Integra Contador', modulo:'integracontador', roles:['Administrador','Colaborador'] },
+  { id:'webdfe', label:'Emissor NF-e', modulo:'webdfe', roles:['Administrador','Colaborador'] },
   { id:'minha-financeiro', label:'Financeiro', modulo:null, roles:['Cliente'] },
   { id:'minha-nfse', label:'NFS-e', modulo:null, roles:['Cliente'] },
+  { id:'minha-webdfe', label:'Emissor NF-e', modulo:null, roles:['Cliente'] },
   { id:'meus-documentos', label:'Meus Documentos', modulo:null, roles:['Cliente'] },
   { id:'solicitar-documentos', label:'Solicitar Documentos', modulo:null, roles:['Cliente'] },
   { id:'documentos-recebidos', label:'Documentos Recebidos', modulo:null, roles:['Cliente'] },
@@ -1193,7 +1195,7 @@ let NFE_TIPO_SEL = '';
 // o expandido/recolhido só seguia a página atual e clicar de novo no item não tinha efeito (sempre
 // reabria, porque "já estar na página" é justamente a condição que mantém expandido).
 let NAV_FECHADOS = new Set();
-const PAGINAS_CLIENTE_RESTRINGIVEIS = ['minha-nfse','meus-documentos','solicitar-documentos','documentos-recebidos','notas-entrada','minha-financeiro','minha-assinatura'];
+const PAGINAS_CLIENTE_RESTRINGIVEIS = ['minha-nfse','meus-documentos','solicitar-documentos','documentos-recebidos','notas-entrada','minha-financeiro','minha-assinatura','minha-webdfe'];
 const PAGINAS_CLIENTE_TODAS = [
   { id:'minha-nfse', label:'NFS-e' },
   { id:'meus-documentos', label:'Meus Documentos' },
@@ -1202,6 +1204,7 @@ const PAGINAS_CLIENTE_TODAS = [
   { id:'notas-entrada', label:'Notas de Entradas/Saídas (XML)' },
   { id:'minha-financeiro', label:'Financeiro' },
   { id:'minha-assinatura', label:'Assinatura' },
+  { id:'minha-webdfe', label:'Emissor NF-e' },
 ];
 function podeVerModulo(item){
   if(!item.roles.includes(STATE.user.perfil)) return false;
@@ -1361,6 +1364,8 @@ async function render(){
     else if(STATE.page==='nfse') await pageNfse();
     else if(STATE.page==='nfe-busca') await pageNfeBusca();
     else if(STATE.page==='integracontador') await pageIntegraContador();
+    else if(STATE.page==='webdfe') await pageWebdfe();
+    else if(STATE.page==='minha-webdfe') await pageMinhaWebdfe();
     else if(STATE.page==='meus-documentos') await pageMeusDocumentos();
     else if(STATE.page==='solicitar-documentos') await pageSolicitarDocumentos();
     else if(STATE.page==='documentos-recebidos') await pageDocumentosRecebidos();
@@ -8504,6 +8509,99 @@ let icDocsTodos = [];
 const ICAGENDA_DIAS = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
 function icAgendaHoraHtml(h){
   return `<div class="icAgendaHoraItem" style="display:flex; gap:4px; align-items:center;"><input type="time" class="icAgendaHoraInp" value="${esc(h)}" style="width:120px;"><button class="btn small" data-rm-hora type="button">×</button></div>`;
+}
+// ---------- Emissor de NF-e (WebDFe) — site de terceiro sem API, encaixado via iframe. O miolo
+// (iframe) continua com a cara do WebDFe — não dá pra repintar: é outro domínio, o navegador não deixa
+// JS daqui mexer no conteúdo de lá (same-origin policy). O que dá pra fazer: nunca sair do Simples
+// Contábeis (mesma aba, mesmo menu), e já deixar usuário/senha prontos pra copiar ao lado.
+function webdfeIframeHtml(){
+  return `<div class="card" style="padding:0; margin-top:12px; height:78vh; overflow:hidden;">
+    <iframe src="https://app.webdfe.com.br/login.php" style="width:100%; height:100%; border:0;" title="WebDFe"></iframe>
+  </div>`;
+}
+// getPath/putPath: mesma rota serve GET (carregar) e PUT (salvar) nos três contextos (master, empresa
+// do escritório, minha-empresa do cliente) — só muda a URL.
+async function webdfeCredencialPainel(containerId, getPath, putPath, podeEditar){
+  const box = document.getElementById(containerId);
+  box.innerHTML = `<div class="empty-state">Carregando…</div>`;
+  let dados;
+  try{ dados = await api(getPath); }catch(e){ box.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
+  box.innerHTML = `
+    <div class="row" style="align-items:flex-end; gap:10px; flex-wrap:wrap;">
+      <div class="field" style="min-width:220px; margin-bottom:0;"><label>Usuário (login no WebDFe)</label><input type="text" id="${containerId}Usuario" value="${esc(dados.usuario||'')}" ${podeEditar?'':'disabled'}></div>
+      <div class="field" style="min-width:260px; margin-bottom:0;"><label>Senha</label>
+        <div class="row" style="gap:6px;">
+          <input type="password" id="${containerId}Senha" value="${esc(dados.senha||'')}" ${podeEditar?'':'disabled'} style="flex:1;">
+          <button class="btn small" type="button" id="${containerId}Ver" title="Mostrar/ocultar">👁</button>
+          <button class="btn small" type="button" id="${containerId}Copiar">Copiar senha</button>
+        </div>
+      </div>
+      ${podeEditar?`<button class="btn small primary" type="button" id="${containerId}Salvar">Salvar</button>`:''}
+    </div>
+  `;
+  document.getElementById(containerId+'Ver').addEventListener('click', ()=>{
+    const inp = document.getElementById(containerId+'Senha');
+    inp.type = inp.type==='password' ? 'text' : 'password';
+  });
+  document.getElementById(containerId+'Copiar').addEventListener('click', async ()=>{
+    const v = document.getElementById(containerId+'Senha').value;
+    if(!v){ toast('Nenhuma senha cadastrada ainda.','err'); return; }
+    try{ await navigator.clipboard.writeText(v); toast('Senha copiada.','ok'); }
+    catch(e){ toast('Não consegui copiar — selecione o campo e copie manualmente (Ctrl/Cmd+C).','err'); }
+  });
+  if(podeEditar){
+    document.getElementById(containerId+'Salvar').addEventListener('click', async ()=>{
+      const usuario = document.getElementById(containerId+'Usuario').value.trim();
+      const senha = document.getElementById(containerId+'Senha').value;
+      try{ await api(putPath, { method:'PUT', body:{ usuario, senha: senha||undefined } }); toast('Salvo.','ok'); }
+      catch(e){ toast(e.message,'err'); }
+    });
+  }
+}
+async function pageMinhaWebdfe(){
+  main().innerHTML = `
+    <h1>Emissor de NF-e</h1>
+    <p class="subtitle">Emissão via WebDFe — confira seu usuário e senha abaixo, cole na tela logo em seguida pra entrar.</p>
+    <div class="card" id="webdfeMinhaCred"></div>
+    ${webdfeIframeHtml()}
+  `;
+  webdfeCredencialPainel('webdfeMinhaCred', '/webdfe/minha-empresa', '/webdfe/minha-empresa', true);
+}
+let WEBDFE_ABA = 'master';
+async function pageWebdfe(){
+  const podeEditar = can('webdfe','editar');
+  main().innerHTML = `
+    <h1>Emissor de NF-e</h1>
+    <p class="subtitle">WebDFe encaixado aqui dentro — escolha o acesso master (vê todas as empresas) ou o login de uma empresa-cliente específica, copie a senha e use na tela logo abaixo.</p>
+    <div class="tabs" style="margin-bottom:0;">
+      <div class="tab" data-webdfeaba="master">Acesso master (escritório)</div>
+      <div class="tab" data-webdfeaba="empresa">Acesso por empresa</div>
+    </div>
+    <div class="card" id="webdfeAbaContent" style="margin-top:0;"></div>
+    ${webdfeIframeHtml()}
+  `;
+  main().querySelectorAll('[data-webdfeaba]').forEach(t=>t.addEventListener('click', ()=>{ WEBDFE_ABA=t.dataset.webdfeaba; pintarAbaWebdfe(podeEditar); }));
+  pintarAbaWebdfe(podeEditar);
+}
+async function pintarAbaWebdfe(podeEditar){
+  document.querySelectorAll('[data-webdfeaba]').forEach(t=>t.classList.toggle('active', t.dataset.webdfeaba===WEBDFE_ABA));
+  const box = document.getElementById('webdfeAbaContent');
+  if(WEBDFE_ABA==='master'){
+    box.innerHTML = `<div id="webdfeMasterCred"></div>`;
+    webdfeCredencialPainel('webdfeMasterCred', '/webdfe/config', '/webdfe/config', podeEditar);
+  } else {
+    let empresas; try{ ({ items: empresas } = await api('/webdfe/empresas')); }catch(e){ box.innerHTML=`<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
+    box.innerHTML = `
+      <div class="field" style="max-width:360px;"><label>Empresa</label>${comboSelectHtml('webdfeEmpresaCombo','Selecione a empresa…')}</div>
+      <div id="webdfeEmpresaCred" style="margin-top:10px;"></div>
+    `;
+    setupComboSelect('webdfeEmpresaCombo', empresas.map(e=>({ id:e.id, label: e.nome + (e.usuario?' — já cadastrado':' — sem login cadastrado') + (e.cnpj?' · '+fmtCnpjCpf(e.cnpj):'') })), (id)=>{
+      const cred = document.getElementById('webdfeEmpresaCred');
+      if(!id){ cred.innerHTML=''; return; }
+      cred.innerHTML = `<div id="webdfeEmpresaCredBox"></div>`;
+      webdfeCredencialPainel('webdfeEmpresaCredBox', '/webdfe/empresas/'+id, '/webdfe/empresas/'+id, podeEditar);
+    });
+  }
 }
 async function pageIntegraContador(deepLinkEmpresaId){
   const podePostar = can('integracontador','postar');
