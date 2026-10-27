@@ -10518,7 +10518,8 @@ async function onedriveExportarDocumentosNovos(escritorioId: number): Promise<{ 
         .all(escritorioId, ultimoId) as any[];
       if (!rows.length) break;
       for (const doc of rows) {
-        const competencia = doc.dataEmissao ? String(doc.dataEmissao).slice(0, 7) : "sem-data";
+        // Pasta da competência no padrão MMAAAA (ex.: "092026") — de dataEmissao "AAAA-MM-DD".
+        const competencia = doc.dataEmissao ? `${String(doc.dataEmissao).slice(5, 7)}${String(doc.dataEmissao).slice(0, 4)}` : "sem-data";
         // Mesma convenção da pasta de importação do próprio Domínio ("125-AGR" — código do cliente
         // + apelido curto) — cai pro nome completo quando código ou apelido ainda não cadastrados.
         const pastaEmpresa = (

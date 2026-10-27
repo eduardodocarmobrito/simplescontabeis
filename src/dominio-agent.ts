@@ -281,7 +281,7 @@ async function exportarDocumentosNovos(cfg: Config) {
     const { items } = await cloudFetch(`/api/dominio-agent/documentos-novos?desdeId=${ultimoId}&limite=200`);
     if (!items || !items.length) break;
     for (const doc of items) {
-      const competencia = doc.dataEmissao ? String(doc.dataEmissao).slice(0, 7) : "sem-data"; // AAAA-MM
+      const competencia = doc.dataEmissao ? `${String(doc.dataEmissao).slice(5, 7)}${String(doc.dataEmissao).slice(0, 4)}` : "sem-data"; // MMAAAA (ex.: 092026)
       // Mesma convenção que a própria pasta de importação do Domínio já usa ("125-AGR" — código do
       // cliente no Domínio + apelido curto): com os dois preenchidos, o contador acha a pasta certa
       // olhando pra ela igual já está acostumado a fazer dentro do próprio Domínio. Sem apelido
