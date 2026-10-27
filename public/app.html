@@ -2925,6 +2925,7 @@ async function pageEmpresas(){
       <div class="tab" data-tab="inativas">Empresas Inativadas</div>
       <div class="tab" data-tab="pendencias">Pendências de documentos</div>
       <div class="tab" data-tab="relatorio">📊 Relatório empresas</div>
+      <div class="tab" data-tab="checklist">✅ Checklist</div>
     </div>
     <div id="empresasContent"></div>
   `;
@@ -2935,6 +2936,7 @@ async function renderEmpresasTab(){
   main().querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===EMP_TAB));
   if(EMP_TAB==='pendencias') return renderEmpresasPendencias();
   if(EMP_TAB==='relatorio') return renderEmpresasRelatorio();
+  if(EMP_TAB==='checklist') return renderEmpresasChecklist();
   const { items: todas } = await api('/empresas');
   const podePostar = can('empresas','postar');
   const podeEditar = can('empresas','editar');
@@ -3178,6 +3180,267 @@ async function renderEmpresasRelatorio(){
     <div class="row" style="gap:12px; align-items:flex-start; flex-wrap:wrap;">
       ${regimes.map(quadro).join('')}
     </div>`;
+}
+// Aba "Checklist": consolida num só lugar as ~20 flags/configurações por empresa que hoje ficam
+// espalhadas em telas diferentes (modal de empresa, NFS-e, Busca de XML, Integra Contador,
+// Comunicação, Financeiro), pra facilitar marcar/ver em lote sem pular nenhuma empresa. Cada clique
+// grava direto na mesma rota que a tela original usa — não duplica dado nenhum.
+let EMP_CHECK_GRUPO = 'config';
+let EMP_CHECK_BUSCA = '';
+const EMP_CHECK_GRUPOS = [
+  { id:'config', label:'Configurações' },
+  { id:'nfse', label:'NFS-e' },
+  { id:'buscaxml', label:'Busca de XML' },
+  { id:'integracontador', label:'Integra Contador' },
+  { id:'comunicacao', label:'Comunicação' },
+  { id:'nfseagenda', label:'NFS-e Automática' },
+  { id:'financeiro', label:'Financeiro' },
+  { id:'setores', label:'Setores' },
+  { id:'documentos', label:'Documentos' },
+  { id:'cadastro', label:'Cadastro básico' },
+];
+async function renderEmpresasChecklist(){
+  const box = document.getElementById('empresasContent');
+  box.innerHTML = '<div class="empty-state">Carregando…</div>';
+  let itens;
+  try{ ({ items: itens } = await api('/empresas/checklist')); }
+  catch(e){ box.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
+  const podeEditar = can('empresas','editar');
+  box.innerHTML = `
+    <div class="tabs" style="margin-bottom:0;">
+      ${EMP_CHECK_GRUPOS.map(g=>`<div class="tab" data-checkgrupo="${g.id}">${esc(g.label)}</div>`).join('')}
+    </div>
+    <div class="field" style="max-width:360px; margin:10px 0 10px;"><input type="text" id="checkBusca" placeholder="Buscar por nome ou CNPJ…" autocomplete="off" value="${esc(EMP_CHECK_BUSCA)}"></div>
+    <div class="card" style="padding:0; overflow-x:auto;">
+      <table class="data-table"><thead id="checkHead"></thead><tbody id="checkBody"></tbody></table>
+    </div>
+  `;
+  box.querySelectorAll('[data-checkgrupo]').forEach(t=>t.addEventListener('click', ()=>{ EMP_CHECK_GRUPO=t.dataset.checkgrupo; pintarGrupo(); }));
+  document.getElementById('checkBusca').addEventListener('input', (ev)=>{ EMP_CHECK_BUSCA = ev.target.value; pintarLinhas(); });
+
+  const REGIMES = [
+    { v:'simples_nacional', label:'Simples Nacional' },
+    { v:'mei', label:'MEI' },
+    { v:'lucro_presumido', label:'Lucro Presumido' },
+    { v:'lucro_real', label:'Lucro Real' },
+    { v:'produtor_rural', label:'Produtor Rural' },
+  ];
+  const METODOS_NFSE = [{ v:'procuracao_escritorio', label:'Procuração do escritório' }, { v:'certificado_proprio', label:'Certificado próprio' }];
+  const REMETENTES_WHATS = [{ v:'escritorio', label:'Número do escritório' }, { v:'proprio', label:'Número próprio' }];
+
+  function itensFiltrados(){
+    const termo = normalizaTxt(EMP_CHECK_BUSCA).trim();
+    const termoNum = termo.replace(/[^0-9]/g,'');
+    if(!termo) return itens;
+    return itens.filter(e=> normalizaTxt(e.nome).includes(termo) || (!!termoNum && String(e.cnpj||'').replace(/[^0-9]/g,'').includes(termoNum)));
+  }
+
+  // Toggle genérico de flag Sim/Não com revert automático em caso de erro.
+  async function salvarToggle(td, rota, body){
+    const original = td.innerHTML;
+    td.innerHTML = '<span class="tag muted">…</span>';
+    try{ await api(rota, { method:'PUT', body }); await recarregar(); toast('Salvo.','ok'); }
+    catch(err){ td.innerHTML = original; toast(err.message,'err'); }
+  }
+  async function recarregar(){
+    try{ ({ items: itens } = await api('/empresas/checklist')); pintarLinhas(); }catch(e){ /* mantém a tela como estava */ }
+  }
+  const tagHtml = (valor, clicavel)=> `<span class="tag ${valor?'ok':'muted'}" ${clicavel?'style="cursor:pointer;"':''}>${valor?'Sim':'Não'}</span>`;
+  const tagDesabilitada = (texto)=> `<span class="tag muted" title="${esc(texto)}">${esc(texto)}</span>`;
+
+  function colunasDoGrupo(grupo){
+    if(grupo==='config') return [
+      { label:'Ativo', campo:'ativo' },
+      { label:'Nos relatórios', campo:'visivelRelatorios' },
+      { label:'Isento de assinatura', campo:'isentoAssinatura' },
+      { label:'Busca FGTS', campo:'buscaFgts' },
+      { label:'Comparativo diário', campo:'comparativoMovimentoDiario' },
+      { label:'Programação férias', campo:'programacaoFerias' },
+      { label:'Demonstrativo mensal', campo:'demonstrativoMensal' },
+    ];
+    if(grupo==='integracontador') return [
+      { label:'Ativo', campo:'icAtivo' },
+      { label:'Optante Simples', campo:'icOptante' },
+      { label:'Busca DCTF-Web', campo:'icDctfweb' },
+    ];
+    return [];
+  }
+
+  function pintarGrupo(){
+    document.querySelectorAll('[data-checkgrupo]').forEach(t=>t.classList.toggle('active', t.dataset.checkgrupo===EMP_CHECK_GRUPO));
+    const head = document.getElementById('checkHead');
+    const grupo = EMP_CHECK_GRUPO;
+    let colunas = [];
+    if(grupo==='nfse') colunas = ['Habilitado','Método de assinatura'];
+    else if(grupo==='buscaxml') colunas = ['Certificado','Busca ativa','Manifestação automática'];
+    else if(grupo==='comunicacao') colunas = ['E-mail ativo','WhatsApp ativo','Remetente do WhatsApp'];
+    else if(grupo==='nfseagenda') colunas = ['Cadastrada no quadro','NFS-e automática ativa'];
+    else if(grupo==='financeiro') colunas = ['Honorário ativo','Participa cobrança robô'];
+    else if(grupo==='setores') colunas = ['Contabilidade','Fiscal','DP/RH'];
+    else if(grupo==='documentos') colunas = ['Contrato Social','Cartão CNPJ'];
+    else if(grupo==='cadastro') colunas = ['Telefone','E-mail','Inscrição Estadual','Inscrição Municipal','Endereço'];
+    else colunas = colunasDoGrupo(grupo).map(c=>c.label);
+    head.innerHTML = `<tr><th>Empresa</th><th>CNPJ</th>${colunas.map(c=>`<th>${esc(c)}</th>`).join('')}</tr>`;
+    pintarLinhas();
+  }
+
+  function pintarLinhas(){
+    const lista = itensFiltrados();
+    const body = document.getElementById('checkBody');
+    const grupo = EMP_CHECK_GRUPO;
+    const colspanExtra = grupo==='setores'?3 : grupo==='documentos'?2 : grupo==='cadastro'?5 : grupo==='nfse'?2 : grupo==='buscaxml'?3 : grupo==='comunicacao'?3 : grupo==='nfseagenda'?2 : grupo==='financeiro'?2 : colunasDoGrupo(grupo).length;
+    if(!lista.length){ body.innerHTML = `<tr><td colspan="${2+colspanExtra}"><div class="empty-state">Nenhuma empresa encontrada.</div></td></tr>`; return; }
+    body.innerHTML = lista.map(e=>{
+      const nomeCol = `${e.codigoDominio?`<span style="color:var(--ink-soft); font-weight:600; margin-right:6px;">${esc(e.codigoDominio)}</span>`:''}<b>${esc(e.nome)}</b>`;
+      const cnpjCol = esc(fmtCnpjCpf(e.cnpj)||'—');
+      let celulas = '';
+      const col = colunasDoGrupo(grupo);
+      if(col.length){
+        celulas = col.map(c=>`<td data-id="${e.id}" data-campo="${c.campo}">${podeEditar?tagHtml(e[c.campo], true):tagHtml(e[c.campo], false)}</td>`).join('');
+      } else if(grupo==='nfse'){
+        celulas = `<td data-id="${e.id}" data-campo="nfseHabilitado">${podeEditar?tagHtml(e.nfseHabilitado, true):tagHtml(e.nfseHabilitado, false)}</td>
+          <td><select data-id="${e.id}" data-campo="nfseMetodoAssinatura" ${podeEditar?'':'disabled'}>${METODOS_NFSE.map(m=>`<option value="${m.v}" ${m.v===e.nfseMetodoAssinatura?'selected':''}>${esc(m.label)}</option>`).join('')}</select></td>`;
+      } else if(grupo==='buscaxml'){
+        celulas = `<td>${e.temCertificado? tagHtml(true,false) : tagDesabilitada('Sem certificado')}</td>
+          <td data-id="${e.id}" data-campo="buscaXmlAtivo">${e.temCertificado ? (podeEditar?tagHtml(e.buscaXmlAtivo,true):tagHtml(e.buscaXmlAtivo,false)) : tagDesabilitada('—')}</td>
+          <td data-id="${e.id}" data-campo="buscaXmlManifestacao">${e.temCertificado ? (podeEditar?tagHtml(e.buscaXmlManifestacao,true):tagHtml(e.buscaXmlManifestacao,false)) : tagDesabilitada('—')}</td>`;
+      } else if(grupo==='comunicacao'){
+        celulas = `<td data-id="${e.id}" data-campo="canalEmailAtivo">${podeEditar?tagHtml(e.canalEmailAtivo,true):tagHtml(e.canalEmailAtivo,false)}</td>
+          <td data-id="${e.id}" data-campo="canalWhatsappAtivo">${podeEditar?tagHtml(e.canalWhatsappAtivo,true):tagHtml(e.canalWhatsappAtivo,false)}</td>
+          <td><select data-id="${e.id}" data-campo="whatsappSenderMode" ${podeEditar?'':'disabled'}>${REMETENTES_WHATS.map(m=>`<option value="${m.v}" ${m.v===e.whatsappSenderMode?'selected':''}>${esc(m.label)}</option>`).join('')}</select></td>`;
+      } else if(grupo==='nfseagenda'){
+        celulas = `<td>${e.nfseAgendCadastrada? tagHtml(true,false) : tagDesabilitada('Não cadastrada')}</td>
+          <td data-id="${e.id}" data-campo="nfseAgendAtivo">${e.nfseAgendCadastrada ? (podeEditar?tagHtml(e.nfseAgendAtivo,true):tagHtml(e.nfseAgendAtivo,false)) : tagDesabilitada('—')}</td>`;
+      } else if(grupo==='financeiro'){
+        celulas = `<td data-id="${e.id}" data-campo="honorarioAtivo">${e.honorarioCadastrado ? (podeEditar?tagHtml(e.honorarioAtivo,true):tagHtml(e.honorarioAtivo,false)) : tagDesabilitada('Sem valor cadastrado')}</td>
+          <td data-id="${e.id}" data-campo="participaCobrancaRobo">${podeEditar?tagHtml(e.participaCobrancaRobo,true):tagHtml(e.participaCobrancaRobo,false)}</td>`;
+      } else if(grupo==='setores'){
+        const marca = (chave)=> e.setores.includes(chave);
+        celulas = ['contabilidade','fiscal','dprh'].map(chave=>`<td data-id="${e.id}" data-setor="${chave}">${podeEditar?tagHtml(marca(chave),true):tagHtml(marca(chave),false)}</td>`).join('');
+      } else if(grupo==='documentos'){
+        const docCel = (tipo, anexoId)=> anexoId
+          ? `<a href="/api/empresas/anexos/${anexoId}/arquivo" target="_blank" class="tag ok" style="text-decoration:none;">Sim</a>`
+          : (podeEditar ? `<span class="tag muted" data-id="${e.id}" data-anexotipo="${tipo}" style="cursor:pointer;">Não — anexar</span>` : tagHtml(false,false));
+        celulas = `<td>${docCel('contrato_social', e.anexoContratoSocialId)}</td><td>${docCel('cartao_cnpj', e.anexoCartaoCnpjId)}</td>`;
+      } else if(grupo==='cadastro'){
+        const campo = (valor, nome)=> `<td><input type="text" data-id="${e.id}" data-campocad="${nome}" value="${esc(valor||'')}" style="border:1px solid ${valor?'transparent':'var(--debit)'}; width:140px;" ${podeEditar?'':'disabled'}></td>`;
+        celulas = campo(e.telefone,'telefone') + campo(e.email,'email') + campo(e.inscricaoEstadual,'inscricaoEstadual') + campo(e.inscricaoMunicipal,'inscricaoMunicipal') + campo(e.endereco,'endereco');
+      }
+      return `<tr><td>${nomeCol}</td><td>${cnpjCol}</td>${celulas}</tr>`;
+    }).join('');
+    if(!podeEditar) return;
+
+    // --- flags simples (config + integracontador): PUT /api/empresas/:id ou /api/integracontador/empresas/:id ---
+    body.querySelectorAll('td[data-campo]').forEach(td=>{
+      const campo = td.dataset.campo;
+      const colSimples = colunasDoGrupo(grupo).some(c=>c.campo===campo);
+      if(!colSimples) return;
+      td.querySelector('.tag')?.addEventListener('click', async ()=>{
+        const id = Number(td.dataset.id);
+        const item = itens.find(x=>x.id===id);
+        const novo = !item[campo];
+        if(grupo==='config') await salvarToggle(td, '/empresas/'+id, { [campo]: novo });
+        else if(grupo==='integracontador') await salvarToggle(td, '/integracontador/empresas/'+id, { ativo: campo==='icAtivo'?novo:item.icAtivo, optanteSimplesNacional: campo==='icOptante'?novo:item.icOptante, buscaDctfweb: campo==='icDctfweb'?novo:item.icDctfweb });
+      });
+    });
+    if(grupo==='nfse'){
+      body.querySelectorAll('td[data-campo="nfseHabilitado"] .tag').forEach(tag=>tag.addEventListener('click', async ()=>{
+        const td = tag.closest('td'); const id = Number(td.dataset.id); const item = itens.find(x=>x.id===id);
+        await salvarToggle(td, '/nfse/empresas/'+id, { habilitado: !item.nfseHabilitado, metodoAssinatura: item.nfseMetodoAssinatura });
+      }));
+      body.querySelectorAll('select[data-campo="nfseMetodoAssinatura"]').forEach(sel=>sel.addEventListener('change', async ()=>{
+        const id = Number(sel.dataset.id); const item = itens.find(x=>x.id===id);
+        try{ await api('/nfse/empresas/'+id, { method:'PUT', body:{ habilitado: item.nfseHabilitado, metodoAssinatura: sel.value } }); toast('Salvo.','ok'); await recarregar(); }
+        catch(err){ toast(err.message,'err'); }
+      }));
+    }
+    if(grupo==='buscaxml'){
+      body.querySelectorAll('td[data-campo="buscaXmlAtivo"] .tag').forEach(tag=>tag.addEventListener('click', async ()=>{
+        const td = tag.closest('td'); const id = Number(td.dataset.id); const item = itens.find(x=>x.id===id);
+        await salvarToggle(td, '/nfe/config/'+id+'/ativo', { ativo: !item.buscaXmlAtivo });
+      }));
+      body.querySelectorAll('td[data-campo="buscaXmlManifestacao"] .tag').forEach(tag=>tag.addEventListener('click', async ()=>{
+        const td = tag.closest('td'); const id = Number(td.dataset.id); const item = itens.find(x=>x.id===id);
+        await salvarToggle(td, '/nfe/config/'+id+'/manifestacao-automatica', { ativo: !item.buscaXmlManifestacao });
+      }));
+    }
+    if(grupo==='comunicacao'){
+      body.querySelectorAll('td[data-campo="canalEmailAtivo"] .tag, td[data-campo="canalWhatsappAtivo"] .tag').forEach(tag=>tag.addEventListener('click', async ()=>{
+        const td = tag.closest('td'); const id = Number(td.dataset.id); const item = itens.find(x=>x.id===id); const campo = td.dataset.campo;
+        await salvarToggle(td, '/empresas/'+id+'/envio-config', { canalEmailAtivo: campo==='canalEmailAtivo'?!item.canalEmailAtivo:item.canalEmailAtivo, canalWhatsappAtivo: campo==='canalWhatsappAtivo'?!item.canalWhatsappAtivo:item.canalWhatsappAtivo });
+      }));
+      body.querySelectorAll('select[data-campo="whatsappSenderMode"]').forEach(sel=>sel.addEventListener('change', async ()=>{
+        const id = Number(sel.dataset.id);
+        try{ await api('/empresas/'+id+'/whatsapp-proprio', { method:'PUT', body:{ mode: sel.value } }); toast('Salvo.','ok'); await recarregar(); }
+        catch(err){ toast(err.message,'err'); }
+      }));
+    }
+    if(grupo==='nfseagenda'){
+      body.querySelectorAll('td[data-campo="nfseAgendAtivo"] .tag').forEach(tag=>tag.addEventListener('click', async ()=>{
+        const td = tag.closest('td'); const id = Number(td.dataset.id); const item = itens.find(x=>x.id===id);
+        await salvarToggle(td, '/nfse/agendamento/empresas/'+id, { ativo: !item.nfseAgendAtivo });
+      }));
+    }
+    if(grupo==='financeiro'){
+      body.querySelectorAll('td[data-campo="honorarioAtivo"] .tag').forEach(tag=>tag.addEventListener('click', async ()=>{
+        const td = tag.closest('td'); const id = Number(td.dataset.id); const item = itens.find(x=>x.id===id);
+        await salvarToggle(td, '/financeiro/honorarios/'+id, { ativo: !item.honorarioAtivo, valor: item.honorarioValor, diaVencimento: item.honorarioDiaVencimento, observacao: item.honorarioObservacao });
+      }));
+      body.querySelectorAll('td[data-campo="participaCobrancaRobo"] .tag').forEach(tag=>tag.addEventListener('click', async ()=>{
+        const td = tag.closest('td'); const id = Number(td.dataset.id);
+        const participantes = new Set(itens.filter(x=>x.participaCobrancaRobo).map(x=>x.id));
+        if(participantes.has(id)) participantes.delete(id); else participantes.add(id);
+        await salvarToggle(td, '/financeiro/honorarios-robo/empresas', { empresaIds:[...participantes] });
+      }));
+    }
+    if(grupo==='setores'){
+      body.querySelectorAll('td[data-setor] .tag').forEach(tag=>tag.addEventListener('click', async ()=>{
+        const td = tag.closest('td'); const id = Number(td.dataset.id); const setorClicado = td.dataset.setor;
+        const item = itens.find(x=>x.id===id);
+        const atuais = new Set(item.setores);
+        const vaiDesmarcar = atuais.has(setorClicado);
+        if(vaiDesmarcar && atuais.size<=1){ toast('Marque pelo menos um setor que a empresa atende.','err'); return; }
+        if(vaiDesmarcar) atuais.delete(setorClicado); else atuais.add(setorClicado);
+        await salvarToggle(td, '/empresas/'+id+'/setores', { setores:[...atuais] });
+      }));
+    }
+    if(grupo==='documentos'){
+      body.querySelectorAll('td [data-anexotipo]').forEach(span=>span.addEventListener('click', ()=>{
+        const id = Number(span.dataset.id); const tipo = span.dataset.anexotipo;
+        abrirUploadAnexoEmpresa(id, tipo, span.parentElement, recarregar);
+      }));
+    }
+    if(grupo==='cadastro'){
+      body.querySelectorAll('input[data-campocad]').forEach(inp=>inp.addEventListener('blur', async ()=>{
+        const id = Number(inp.dataset.id); const campo = inp.dataset.campocad; const valor = inp.value.trim();
+        const item = itens.find(x=>x.id===id);
+        if((item[campo]||'')===valor) return;
+        try{ await api('/empresas/'+id, { method:'PUT', body:{ [campo]: valor || null } }); item[campo]=valor; toast('Salvo.','ok'); inp.style.border = valor? '1px solid transparent' : '1px solid var(--debit)'; }
+        catch(err){ toast(err.message,'err'); }
+      }));
+    }
+  }
+  pintarGrupo();
+}
+// Pequeno formulário inline pra anexar um documento de tipo fixo (ex.: Contrato Social, Cartão CNPJ)
+// sem precisar abrir o modal de empresa — usado pela aba Checklist. Reaproveita a mesma rota de
+// upload já usada pelo modal (`POST /api/empresas/:id/anexos`), só sem o <select> de tipo (aqui o
+// tipo já vem fixo por coluna).
+function abrirUploadAnexoEmpresa(empresaId, tipo, container, onDone){
+  const label = EMPRESA_ANEXO_TIPOS[tipo]?.label || tipo;
+  container.innerHTML = `<div class="row" style="align-items:center; gap:6px; flex-wrap:nowrap;">
+    <input type="file" style="max-width:160px;">
+    <button class="btn small primary" type="button">Enviar</button>
+    <button class="btn small" type="button" data-act="cancelar">×</button>
+  </div>`;
+  container.querySelector('[data-act="cancelar"]').addEventListener('click', ()=>{ container.innerHTML = `<span class="tag muted" data-id="${empresaId}" data-anexotipo="${tipo}" style="cursor:pointer;">Não — anexar</span>`; container.querySelector('[data-anexotipo]').addEventListener('click', ()=>abrirUploadAnexoEmpresa(empresaId, tipo, container, onDone)); });
+  container.querySelector('button.primary').addEventListener('click', async ()=>{
+    const arquivo = container.querySelector('input[type="file"]').files[0];
+    if(!arquivo){ toast('Selecione um arquivo.','err'); return; }
+    const fd = new FormData(); fd.append('tipo', tipo); fd.append('arquivo', arquivo);
+    try{ await api('/empresas/'+empresaId+'/anexos', { method:'POST', body: fd }); toast(`${label} enviado.`,'ok'); if(onDone) onDone(); }
+    catch(err){ toast(err.message,'err'); }
+  });
 }
 // Aba "Pendências de documentos": empresas ativas sem certificado digital e/ou sem as 4 licenças mínimas.
 let EMP_PEND_FILTRO = 'todas';

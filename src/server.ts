@@ -4479,6 +4479,92 @@ app.get("/api/empresas", blockCliente, requirePermissao("empresas", "visualizar"
     })),
   });
 });
+// Checklist consolidado: todas as flags/configurações por empresa, hoje espalhadas em telas
+// diferentes (modal de empresa, NFS-e, Busca de XML, Integra Contador, Comunicação, Financeiro,
+// Setores, Documentos), num único JOIN pra alimentar a aba "Checklist" do módulo Empresas.
+app.get("/api/empresas/checklist", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const visiveis = empresasVisiveis(user);
+  let rows = sqlite
+    .prepare(
+      `SELECT e.id, e.nome, e.cnpj, e.codigo_dominio, e.telefone, e.email, e.endereco, e.cidade, e.uf, e.cep,
+              e.inscricao_estadual, e.inscricao_municipal, e.nome_representante_legal, e.cpf_representante_legal,
+              e.ativo, e.visivel_relatorios, e.isento_assinatura, e.busca_fgts, e.comparativo_movimento_diario,
+              e.programacao_ferias, e.demonstrativo_mensal, e.regime_tributario,
+              nc.habilitado as nfse_habilitado, nc.metodo_assinatura as nfse_metodo_assinatura,
+              nc.opcao_simples_nacional as nfse_simples, nc.regime_apuracao_sn as nfse_regime_apuracao,
+              bx.ativo as busca_xml_ativo, bx.manifestacao_automatica as busca_xml_manifestacao,
+              (bx.empresa_id IS NOT NULL) as tem_certificado,
+              ic.ativo as ic_ativo, ic.optante_simples_nacional as ic_optante, ic.busca_dctfweb as ic_dctfweb,
+              env.canal_email_ativo, env.canal_whatsapp_ativo, env.whatsapp_sender_mode,
+              (ag.empresa_id IS NOT NULL) as nfse_agend_cadastrada, ag.ativo as nfse_agend_ativo,
+              h.ativo as honorario_ativo, h.valor as honorario_valor, h.dia_vencimento as honorario_dia_vencimento,
+              h.observacao as honorario_observacao, h.participa_cobranca_robo,
+              (SELECT a.id FROM empresa_anexos a WHERE a.empresa_id = e.id AND a.tipo = 'contrato_social' ORDER BY a.criado_em DESC LIMIT 1) as anexo_contrato_social_id,
+              (SELECT a.id FROM empresa_anexos a WHERE a.empresa_id = e.id AND a.tipo = 'cartao_cnpj' ORDER BY a.criado_em DESC LIMIT 1) as anexo_cartao_cnpj_id
+       FROM empresas e
+       LEFT JOIN nfse_empresa_config nc ON nc.empresa_id = e.id
+       LEFT JOIN nfe_busca_config bx ON bx.empresa_id = e.id
+       LEFT JOIN integracontador_empresa_config ic ON ic.empresa_id = e.id
+       LEFT JOIN empresa_envio_config env ON env.empresa_id = e.id
+       LEFT JOIN nfse_agendamento_empresas ag ON ag.empresa_id = e.id
+       LEFT JOIN honorarios h ON h.empresa_id = e.id
+       WHERE e.ativo = 1
+       ORDER BY e.nome COLLATE NOCASE`
+    )
+    .all() as any[];
+  if (visiveis !== null) rows = rows.filter((r) => visiveis.includes(r.id));
+  res.json({
+    items: rows.map((r) => ({
+      id: r.id,
+      nome: r.nome,
+      cnpj: r.cnpj,
+      codigoDominio: r.codigo_dominio,
+      telefone: r.telefone,
+      email: r.email,
+      endereco: r.endereco,
+      cidade: r.cidade,
+      uf: r.uf,
+      cep: r.cep,
+      inscricaoEstadual: r.inscricao_estadual,
+      inscricaoMunicipal: r.inscricao_municipal,
+      nomeRepresentanteLegal: r.nome_representante_legal,
+      cpfRepresentanteLegal: r.cpf_representante_legal,
+      ativo: !!r.ativo,
+      visivelRelatorios: !!r.visivel_relatorios,
+      isentoAssinatura: !!r.isento_assinatura,
+      buscaFgts: !!r.busca_fgts,
+      comparativoMovimentoDiario: !!r.comparativo_movimento_diario,
+      programacaoFerias: !!r.programacao_ferias,
+      demonstrativoMensal: !!r.demonstrativo_mensal,
+      regimeTributario: r.regime_tributario || "simples_nacional",
+      nfseHabilitado: !!r.nfse_habilitado,
+      nfseMetodoAssinatura: r.nfse_metodo_assinatura || "procuracao_escritorio",
+      nfseSimples: !!r.nfse_simples,
+      nfseRegimeApuracao: r.nfse_regime_apuracao || "1",
+      temCertificado: !!r.tem_certificado,
+      buscaXmlAtivo: !!r.busca_xml_ativo,
+      buscaXmlManifestacao: !!r.busca_xml_manifestacao,
+      icAtivo: !!r.ic_ativo,
+      icOptante: !!r.ic_optante,
+      icDctfweb: !!r.ic_dctfweb,
+      canalEmailAtivo: r.canal_email_ativo === null ? true : !!r.canal_email_ativo,
+      canalWhatsappAtivo: r.canal_whatsapp_ativo === null ? true : !!r.canal_whatsapp_ativo,
+      whatsappSenderMode: r.whatsapp_sender_mode || "escritorio",
+      nfseAgendCadastrada: !!r.nfse_agend_cadastrada,
+      nfseAgendAtivo: !!r.nfse_agend_ativo,
+      honorarioAtivo: !!r.honorario_ativo,
+      honorarioCadastrado: r.honorario_valor !== null && r.honorario_valor !== undefined,
+      honorarioValor: r.honorario_valor,
+      honorarioDiaVencimento: r.honorario_dia_vencimento,
+      honorarioObservacao: r.honorario_observacao,
+      participaCobrancaRobo: !!r.participa_cobranca_robo,
+      setores: empresaSetores(r.id),
+      anexoContratoSocialId: r.anexo_contrato_social_id || null,
+      anexoCartaoCnpjId: r.anexo_cartao_cnpj_id || null,
+    })),
+  });
+});
 // Preenche o formulário de cadastro/edição de empresa a partir do CNPJ digitado — mesma consulta
 // pública (BrasilAPI/Receita Federal) já usada na emissão de NFS-e, só que sob o módulo "empresas"
 // (o de NFS-e exige a permissão de NFS-e, que nem todo Colaborador que cadastra empresa tem).
