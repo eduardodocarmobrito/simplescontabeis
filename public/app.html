@@ -8515,9 +8515,14 @@ function icAgendaHoraHtml(h){
 // JS daqui mexer no conteúdo de lá (same-origin policy). O que dá pra fazer: nunca sair do Simples
 // Contábeis (mesma aba, mesmo menu), e já deixar usuário/senha prontos pra copiar ao lado.
 function webdfeIframeHtml(){
-  return `<div class="card" style="padding:0; margin-top:12px; height:78vh; overflow:hidden;">
-    <iframe src="https://app.webdfe.com.br/login.php" style="width:100%; height:100%; border:0;" title="WebDFe"></iframe>
-  </div>`;
+  return `
+    <div class="row" style="justify-content:flex-end; margin-top:12px; margin-bottom:-4px;">
+      <a href="https://app.webdfe.com.br/login.php" target="_blank" rel="noopener" style="font-size:12px; color:var(--ink-soft);">Problema pra entrar? Abrir em uma aba separada ↗</a>
+    </div>
+    <div class="card" style="padding:0; margin-top:12px; height:78vh; overflow:hidden;">
+      <iframe src="/api/webdfe-mirror/login.php" style="width:100%; height:100%; border:0;" title="WebDFe"></iframe>
+    </div>
+  `;
 }
 // getPath/putPath: mesma rota serve GET (carregar) e PUT (salvar) nos três contextos (master, empresa
 // do escritório, minha-empresa do cliente) — só muda a URL.
@@ -8553,14 +8558,25 @@ async function webdfeCredencialPainel(containerId, getPath, putPath, podeEditar)
     });
   }
 }
+// Checa o robô de detecção do espelho (server.ts) e mostra um alerta visível se a WebDFe tiver mudado
+// a tela de login de um jeito que quebrou o proxy — detecção, nunca conserto sozinho sem supervisão.
+async function webdfeChecarEExibirAlerta(containerId){
+  try{
+    const s = await api('/webdfe/mirror-saude');
+    const box = document.getElementById(containerId);
+    if(box && !s.ok) box.innerHTML = `<div class="alerta-critico"><span>⚠ O espelho do WebDFe pode estar fora do ar — ${esc(s.erro||'')} Use o link "Abrir em uma aba separada" acima do quadro enquanto isso.</span></div>`;
+  }catch(e){ /* checagem falhou silenciosamente não trava a tela — o iframe/link de fallback continuam normais */ }
+}
 async function pageMinhaWebdfe(){
   main().innerHTML = `
     <h1>Emissor de NF-e</h1>
     <p class="subtitle">Emissão via WebDFe — confira seu usuário e senha abaixo, cole na tela logo em seguida pra entrar.</p>
+    <div id="webdfeAlertaMinha"></div>
     <div class="card" id="webdfeMinhaCred"></div>
     ${webdfeIframeHtml()}
   `;
   webdfeCredencialPainel('webdfeMinhaCred', '/webdfe/minha-empresa', '/webdfe/minha-empresa', true);
+  webdfeChecarEExibirAlerta('webdfeAlertaMinha');
 }
 let WEBDFE_ABA = 'master';
 async function pageWebdfe(){
@@ -8568,6 +8584,7 @@ async function pageWebdfe(){
   main().innerHTML = `
     <h1>Emissor de NF-e</h1>
     <p class="subtitle">WebDFe encaixado aqui dentro — escolha o acesso master (vê todas as empresas) ou o login de uma empresa-cliente específica, copie a senha e use na tela logo abaixo.</p>
+    <div id="webdfeAlertaEscritorio"></div>
     <div class="tabs" style="margin-bottom:0;">
       <div class="tab" data-webdfeaba="master">Acesso master (escritório)</div>
       <div class="tab" data-webdfeaba="empresa">Acesso por empresa</div>
@@ -8577,6 +8594,7 @@ async function pageWebdfe(){
   `;
   main().querySelectorAll('[data-webdfeaba]').forEach(t=>t.addEventListener('click', ()=>{ WEBDFE_ABA=t.dataset.webdfeaba; pintarAbaWebdfe(podeEditar); }));
   pintarAbaWebdfe(podeEditar);
+  webdfeChecarEExibirAlerta('webdfeAlertaEscritorio');
 }
 async function pintarAbaWebdfe(podeEditar){
   document.querySelectorAll('[data-webdfeaba]').forEach(t=>t.classList.toggle('active', t.dataset.webdfeaba===WEBDFE_ABA));

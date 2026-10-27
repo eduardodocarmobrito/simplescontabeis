@@ -32,7 +32,7 @@ import { registerWebmail } from "./webmail";
 import { registerCentralEnvio, credencialDriveDoEscritorio, driveGet, driveBaixar } from "./central-envio";
 import { registerFerias, feriasProcessarPdf, feriasExtrairFuncionarios } from "./ferias";
 import { registerCertificados } from "./certificados";
-import { createProxyMiddleware } from "http-proxy-middleware";
+import { createProxyMiddleware, responseInterceptor } from "http-proxy-middleware";
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
@@ -13043,6 +13043,72 @@ app.put("/api/webdfe/minha-empresa", requireCliente, (req, res) => {
     .run(empresaId, usuario !== undefined ? usuario || null : atual?.usuario || null, senha ? nfse.cifrarTexto(senha) : atual?.senha_cifrada || null);
   res.json({ ok: true });
 });
+
+// ---------- Emissor de NF-e (WebDFe) — espelho via proxy reverso ----------
+// O iframe apontando direto pro domínio deles (app.webdfe.com.br) não funciona em navegadores com
+// bloqueio de armazenamento entre sites ativo (Safari por padrão) — achado ao vivo 2026-10-27: o
+// próprio JavaScript da tela de login deles chama `sessionStorage.removeItem(...)` sem tratar erro,
+// logo no topo do script, ANTES de registrar o clique do botão "Entrar". O Safari bloqueia esse acesso
+// quando o site está dentro de um iframe de outro domínio, a chamada lança exceção, e o script inteiro
+// trava ali — o botão nunca liga. Não dá pra consertar o JS deles do nosso lado (same-origin policy).
+// A solução: buscar as páginas do WebDFe pelo NOSSO servidor e servir como se fossem parte do
+// simplescontabeis.com.br — os cookies/armazenamento deles deixam de ser "de terceiro" pro navegador,
+// em qualquer navegador, não só Safari.
+const WEBDFE_ORIGEM = "https://app.webdfe.com.br";
+app.use(
+  "/api/webdfe-mirror",
+  requireAuth, // qualquer perfil logado — é só exibição; as credenciais em si já são protegidas pelas rotas /api/webdfe/* acima
+  createProxyMiddleware({
+    target: WEBDFE_ORIGEM,
+    changeOrigin: true,
+    ws: false,
+    pathRewrite: { "^/api/webdfe-mirror": "" },
+    selfHandleResponse: true,
+    onProxyRes: responseInterceptor(async (responseBuffer, proxyRes, _req, res) => {
+      // Exceção pontual ao header global de X-Frame-Options/CSP (server.ts:~3369) — sem isso, o
+      // PRÓPRIO iframe (já same-origin depois do proxy) seria bloqueado pelo navegador mesmo assim.
+      // Não afeta nenhuma outra rota do site — só as respostas que passam por este proxy.
+      res.removeHeader("X-Frame-Options");
+      res.removeHeader("Content-Security-Policy");
+      // responseInterceptor já tira o Domain= do Set-Cookie (vira host-only, do nosso domínio) — só
+      // falta restringir o Path, pra esse cookie nunca vazar pro resto do cookie jar do site.
+      const setCookie = res.getHeader("set-cookie");
+      if (setCookie) {
+        const lista = Array.isArray(setCookie) ? setCookie : [String(setCookie)];
+        res.setHeader(
+          "set-cookie",
+          lista.map((c) => (/;\s*Path=/i.test(c) ? c.replace(/;\s*Path=[^;]*/i, "; Path=/api/webdfe-mirror") : `${c}; Path=/api/webdfe-mirror`))
+        );
+      }
+      const contentType = String(proxyRes.headers["content-type"] || "");
+      if (!/text\/html|text\/css|javascript/i.test(contentType)) return responseBuffer; // binário (imagem/fonte/etc.) — repassa intacto
+      // Troca toda referência ao domínio de verdade pelo nosso caminho de espelho — cobre URL absoluta
+      // em HTML/CSS/JS, inclusive dentro de string literal de JavaScript (ex. o redirect pós-login
+      // deles: `let url = 'https://app.webdfe.com.br'; ...`).
+      return responseBuffer.toString("utf8").split(WEBDFE_ORIGEM).join("/api/webdfe-mirror");
+    }),
+  })
+);
+
+// Robô de DETECÇÃO (não autocorreção — decisão explícita com o usuário em 2026-10-27: código tentando
+// se consertar sozinho sem supervisão é arriscado demais, pode mascarar um problema maior). Confere
+// periodicamente se a página de login de VERDADE do WebDFe ainda tem a cara que o proxy espera (campo
+// de usuário/senha presentes) — se a WebDFe mudar a tela deles de um jeito que quebre o espelho, isso
+// aparece rápido como alerta na tela, em vez de só o cliente reportar "não consegui entrar".
+let webdfeMirrorSaude: { ok: boolean; checadoEm: string; erro: string | null } = { ok: true, checadoEm: new Date().toISOString(), erro: null };
+async function webdfeMirrorChecarSaude() {
+  try {
+    const r = await fetch(`${WEBDFE_ORIGEM}/login.php`, { signal: AbortSignal.timeout(15_000) });
+    const texto = await r.text();
+    const ok = r.ok && texto.includes('id="form-login"') && texto.includes('name="senha"') && texto.includes('name="usuario"');
+    webdfeMirrorSaude = { ok, checadoEm: new Date().toISOString(), erro: ok ? null : `A tela de login do WebDFe mudou ou está fora do ar (status ${r.status}) — o espelho pode ter parado de funcionar.` };
+  } catch (e: any) {
+    webdfeMirrorSaude = { ok: false, checadoEm: new Date().toISOString(), erro: `Não consegui checar o WebDFe: ${e.message}` };
+  }
+}
+webdfeMirrorChecarSaude();
+setInterval(webdfeMirrorChecarSaude, 30 * 60_000);
+app.get("/api/webdfe/mirror-saude", requireAuth, (_req, res) => res.json(webdfeMirrorSaude));
 
 function getIntegraContadorEmpresaConfig(empresaId: number): any {
   return sqlite.prepare(`SELECT * FROM integracontador_empresa_config WHERE empresa_id = ?`).get(empresaId) || {};
