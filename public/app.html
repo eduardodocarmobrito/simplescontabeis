@@ -9141,17 +9141,20 @@ function contaSelectHtml(id, contas, contaIdAtual){
 }
 async function finRenderContas(basePath, containerId, podeEditar){
   const items = await finContasCache(basePath);
+  let transferencias = [];
+  try{ transferencias = (await api(basePath+'/transferencias')).items||[]; }catch(e){}
   const box = document.getElementById(containerId);
   const TIPO_LABEL={banco:'Banco',caixa:'Caixa',outro:'Outro'};
   // Conciliação de extrato (.OFX) só existe no financeiro self-service do cliente por enquanto.
   const ehCliente = basePath === '/financeiro/minha-empresa';
   box.innerHTML = `
-    <div class="row" style="margin-bottom:12px; justify-content:flex-end;">
+    <div class="row" style="margin-bottom:12px; justify-content:flex-end; gap:8px;">
+      ${podeEditar&&items.length>=2?`<button class="btn" id="btnTransferir">🔁 Transferir entre contas</button>`:''}
       ${podeEditar?`<button class="btn primary" id="btnNovaConta">+ Nova conta</button>`:''}
     </div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
-        <thead><tr><th>Nome</th><th>Tipo</th><th>Saldo inicial</th><th title="Saldo inicial + recebido - pago já baixados nesta conta">Saldo atual</th><th>Ativo</th><th></th></tr></thead>
+        <thead><tr><th>Nome</th><th>Tipo</th><th>Saldo inicial</th><th title="Saldo inicial + recebido - pago já baixados nesta conta + transferências">Saldo atual</th><th>Ativo</th><th></th></tr></thead>
         <tbody>
           ${items.length? items.map(c=>`
             <tr>
@@ -9170,20 +9173,87 @@ async function finRenderContas(basePath, containerId, podeEditar){
         </tbody>
       </table>
     </div>
+    <div class="card" style="margin-top:14px;">
+      <div style="font-weight:600; font-size:13px; margin-bottom:4px;">🔁 Transferências entre contas</div>
+      <div style="font-size:11.5px; color:var(--ink-soft); margin-bottom:10px;">Dinheiro movido entre as próprias contas (ex.: banco → caixa) — debita a origem e credita o destino automaticamente, sem entrar em A Receber/A Pagar.</div>
+      ${transferencias.length? `
+        <div style="overflow-x:auto;">
+          <table class="data-table" style="white-space:nowrap;">
+            <thead><tr><th>Data</th><th>De</th><th>Para</th><th>Valor</th><th>Descrição</th>${podeEditar?'<th></th>':''}</tr></thead>
+            <tbody>
+              ${transferencias.map(t=>`
+                <tr>
+                  <td>${fmtDateIso(t.data)}</td>
+                  <td>${esc(t.contaOrigemNome)}</td>
+                  <td>${esc(t.contaDestinoNome)}</td>
+                  <td>${fmtMoney(t.valor)}</td>
+                  <td style="color:var(--ink-soft);">${esc(t.descricao||'—')}</td>
+                  ${podeEditar?`<td style="text-align:right;"><button class="btn small" data-id="${t.id}" data-act="excluir-transf">Excluir</button></td>`:''}
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      ` : `<div class="empty-state">Nenhuma transferência registrada ainda.</div>`}
+    </div>
   `;
   box.querySelectorAll('[data-act="conciliar"]').forEach(b=>b.addEventListener('click', ()=>{
     finOfxConciliacao(items.find(c=>c.id===Number(b.dataset.id)));
   }));
+  const recarregar = ()=>finRenderContas(basePath, containerId, podeEditar);
   if(!podeEditar) return;
-  document.getElementById('btnNovaConta').addEventListener('click', ()=>finContaModal(basePath, null, ()=>finRenderContas(basePath, containerId, podeEditar)));
+  document.getElementById('btnNovaConta').addEventListener('click', ()=>finContaModal(basePath, null, recarregar));
+  const btnTransferir = document.getElementById('btnTransferir');
+  if(btnTransferir) btnTransferir.addEventListener('click', ()=>finTransferenciaModal(basePath, items, recarregar));
   box.querySelectorAll('[data-act="editar"]').forEach(b=>b.addEventListener('click', ()=>{
-    finContaModal(basePath, items.find(c=>c.id===Number(b.dataset.id)), ()=>finRenderContas(basePath, containerId, podeEditar));
+    finContaModal(basePath, items.find(c=>c.id===Number(b.dataset.id)), recarregar);
   }));
   box.querySelectorAll('[data-act="excluir"]').forEach(b=>b.addEventListener('click', async ()=>{
     if(!confirm('Excluir esta conta?')) return;
-    try{ await api(basePath+'/contas/'+b.dataset.id, { method:'DELETE' }); toast('Excluída.','ok'); finRenderContas(basePath, containerId, podeEditar); }
+    try{ await api(basePath+'/contas/'+b.dataset.id, { method:'DELETE' }); toast('Excluída.','ok'); recarregar(); }
     catch(e){ toast(e.message,'err'); }
   }));
+  box.querySelectorAll('[data-act="excluir-transf"]').forEach(b=>b.addEventListener('click', async ()=>{
+    if(!confirm('Excluir esta transferência? O saldo das duas contas volta a ser como se ela não tivesse existido.')) return;
+    try{ await api(basePath+'/transferencias/'+b.dataset.id, { method:'DELETE' }); toast('Transferência excluída.','ok'); recarregar(); }
+    catch(e){ toast(e.message,'err'); }
+  }));
+}
+function finTransferenciaModal(basePath, contas, onSaved){
+  const hoje = new Date().toISOString().slice(0,10);
+  const TIPO_LABEL={banco:'Banco',caixa:'Caixa',outro:'Outro'};
+  openModal(`
+    <h3>Transferir entre contas</h3>
+    <p style="font-size:12px; color:var(--ink-soft); margin-top:-4px;">Debita o valor da conta de origem e credita na conta de destino — não entra em A Receber/A Pagar.</p>
+    <div class="field"><label>De (origem)</label>
+      <select id="mftOrigem"><option value="">— Escolha a conta —</option>${contas.map(c=>`<option value="${c.id}">${esc(c.nome)} (${TIPO_LABEL[c.tipo]||c.tipo}) — saldo ${fmtMoney(c.saldoAtual||0)}</option>`).join('')}</select>
+    </div>
+    <div class="field"><label>Para (destino)</label>
+      <select id="mftDestino"><option value="">— Escolha a conta —</option>${contas.map(c=>`<option value="${c.id}">${esc(c.nome)} (${TIPO_LABEL[c.tipo]||c.tipo})</option>`).join('')}</select>
+    </div>
+    <div class="row">
+      <div class="field" style="width:160px;"><label>Valor (R$)</label><input id="mftValor" type="number" step="0.01" min="0.01"></div>
+      <div class="field" style="width:170px;">${dateFieldHtml('mftData','Data', hoje)}</div>
+    </div>
+    <div class="field"><label>Descrição (opcional)</label><input id="mftDescricao" placeholder="Ex.: reforço de caixa"></div>
+    <div class="modal-actions">
+      <button class="btn" id="mftCancel">Cancelar</button>
+      <button class="btn primary" id="mftSalvar">Transferir</button>
+    </div>
+  `, '460px');
+  setupDatePicker('mftData','mftData_text');
+  document.getElementById('mftCancel').addEventListener('click', closeModal);
+  document.getElementById('mftSalvar').addEventListener('click', async ()=>{
+    const contaOrigemId = document.getElementById('mftOrigem').value;
+    const contaDestinoId = document.getElementById('mftDestino').value;
+    const valor = Number(document.getElementById('mftValor').value);
+    if(!contaOrigemId || !contaDestinoId){ toast('Escolha a conta de origem e a de destino.','err'); return; }
+    if(contaOrigemId===contaDestinoId){ toast('A conta de origem e a de destino não podem ser a mesma.','err'); return; }
+    if(!(valor>0)){ toast('Informe um valor maior que zero.','err'); return; }
+    const body = { contaOrigemId:Number(contaOrigemId), contaDestinoId:Number(contaDestinoId), valor, data:document.getElementById('mftData').value||hoje, descricao:document.getElementById('mftDescricao').value.trim() };
+    try{ await api(basePath+'/transferencias', { method:'POST', body }); closeModal(); toast('Transferência realizada.','ok'); onSaved(); }
+    catch(e){ toast(e.message,'err'); }
+  });
 }
 function finContaModal(basePath, item, onSaved){
   openModal(`
@@ -9292,7 +9362,10 @@ function finOfxCartaoHtml(t){
     </div>
     ${t.status==='pendente'?`
       ${sugestoesHtml?`<div style="margin-top:6px;"><div style="font-size:11px; color:var(--ink-soft); text-transform:uppercase;">Possível correspondência no sistema</div>${sugestoesHtml}</div>`:''}
-      ${(t.grupos||[]).length?`<div style="margin-top:6px;"><div style="font-size:11px; color:var(--ink-soft); text-transform:uppercase;">Parece pagamento de vários títulos (a soma bate)</div>${(t.grupos||[]).map(g=>`
+      ${(t.grupos||[]).length?`<div style="margin-top:6px;">
+        <div style="font-size:11px; color:var(--ink-soft); text-transform:uppercase;">Parece pagamento de vários títulos (a soma bate)</div>
+        ${(t.grupos||[]).length>1?`<div style="font-size:11px; color:var(--ink-soft); margin-top:2px;">${(t.grupos||[]).length} combinações possíveis pra esse valor — são opções alternativas, não títulos duplicados. Confira qual bate com o que o cliente pagou e conclua só nessa.</div>`:''}
+        ${(t.grupos||[]).map(g=>`
         <div style="padding:6px 0; border-top:1px solid var(--rule);">
           <div style="font-size:12px; margin-bottom:4px;">${g.map(x=>esc(x.descricao)+(x.terceiro?' — '+esc(x.terceiro):'')+' ('+fmtMoney(x.valor)+')').join(' &nbsp;+&nbsp; ')}</div>
           <button class="btn small primary" data-act="conciliar-grupo" data-ofx="${t.id}" data-tabela="${g[0].tabela}" data-ids="${g.map(x=>x.id).join(',')}">Conciliar os ${g.length} títulos</button>
@@ -9306,15 +9379,16 @@ function finOfxCartaoHtml(t){
     : `<div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">Ignorada</div>`}
   </div>`;
 }
+function finOfxMsgExtra(r){ return r&&r.reconciliadasExtra>0 ? ` + ${r.reconciliadasExtra} outra(s) reconciliada(s) sozinha(s) com o mesmo padrão.` : ''; }
 function finOfxWireAcoes(scope, recarregar, basePath){
   scope.querySelectorAll('[data-act="conciliar"]').forEach(b=>b.addEventListener('click', async ()=>{
-    try{ await api(basePath+'/ofx/'+b.dataset.ofx+'/conciliar', { method:'POST', body:{ tabela:b.dataset.tabela, tituloId:Number(b.dataset.titulo) } }); toast('Conciliado.','ok'); recarregar(); }
+    try{ const r = await api(basePath+'/ofx/'+b.dataset.ofx+'/conciliar', { method:'POST', body:{ tabela:b.dataset.tabela, tituloId:Number(b.dataset.titulo) } }); toast('Conciliado.'+finOfxMsgExtra(r),'ok'); recarregar(); }
     catch(e){ toast(e.message,'err'); }
   }));
   scope.querySelectorAll('[data-act="conciliar-grupo"]').forEach(b=>b.addEventListener('click', async ()=>{
     const ids = b.dataset.ids.split(',').map(Number);
     if(!confirm('Dar baixa nos '+ids.length+' títulos deste grupo com esta transação?')) return;
-    try{ await api(basePath+'/ofx/'+b.dataset.ofx+'/conciliar-grupo', { method:'POST', body:{ tabela:b.dataset.tabela, tituloIds:ids } }); toast('Grupo conciliado — '+ids.length+' títulos baixados.','ok'); recarregar(); }
+    try{ const r = await api(basePath+'/ofx/'+b.dataset.ofx+'/conciliar-grupo', { method:'POST', body:{ tabela:b.dataset.tabela, tituloIds:ids } }); toast('Grupo conciliado — '+ids.length+' títulos baixados.'+finOfxMsgExtra(r),'ok'); recarregar(); }
     catch(e){ toast(e.message,'err'); }
   }));
   scope.querySelectorAll('[data-act="cadastrar"]').forEach(b=>b.addEventListener('click', ()=>finOfxCadastrarModal(b.dataset.ofx, recarregar, basePath)));
@@ -9329,6 +9403,7 @@ function finOfxWireAcoes(scope, recarregar, basePath){
 // automática do que casa inequivocamente (feita no backend no import) e revisão em 1 clique do resto.
 let FIN_CONCIL_CONTA = null;
 let FIN_CONCIL_STATUS = 'pendente';
+let FIN_CONCIL_BUSCA = '';
 async function finRenderConciliacao(basePath, containerId){
   const box = document.getElementById(containerId);
   box.innerHTML = '<div class="empty-state">Carregando…</div>';
@@ -9346,6 +9421,7 @@ async function finRenderConciliacao(basePath, containerId){
       </div>
       <button class="btn primary" id="btnConcilImportar">⬆️ Importar extrato (.ofx)</button>
       <input type="file" id="concilInput" accept=".ofx" style="display:none;">
+      <div class="field" style="min-width:240px; margin-bottom:0;"><label>Buscar</label><input id="concilBusca" placeholder="Nome, valor, data…" value="${esc(FIN_CONCIL_BUSCA)}"></div>
     </div>
     <p style="font-size:12px; color:var(--ink-soft); margin:0 0 12px;">Exporte o .ofx do seu internet banking e importe aqui — o sistema casa com os títulos já lançados e <b>dá baixa automática</b> no que for inequívoco; o resto fica pra você revisar com 1 clique.</p>
     <div id="concilResultado"></div>
@@ -9375,21 +9451,28 @@ async function finRenderConciliacao(basePath, containerId){
     }catch(e){ resEl.innerHTML=''; toast(e.message,'err'); }
   });
   box.querySelectorAll('#concilTabs .tab').forEach(t=>t.addEventListener('click', ()=>{ FIN_CONCIL_STATUS = t.dataset.status; marcarTab(); carregar(); }));
+  let itemsCarregados = [];
+  function pintarItens(){
+    const body = document.getElementById('concilBody');
+    const bq = FIN_CONCIL_BUSCA.trim().toLowerCase();
+    const visiveis = bq ? itemsCarregados.filter(t=>[t.descricao, fmtDateIso(t.data), t.data, fmtMoney(t.valor), String(t.valor)].filter(Boolean).some(v=>String(v).toLowerCase().includes(bq))) : itemsCarregados;
+    if(!visiveis.length){ body.innerHTML = `<div class="empty-state">${bq?'Nenhum resultado pra essa busca.':'Nada por aqui.'}</div>`; return; }
+    body.innerHTML = visiveis.map(finOfxCartaoHtml).join('');
+    finOfxWireAcoes(body, carregar, basePath);
+  }
+  document.getElementById('concilBusca').addEventListener('input', e=>{ FIN_CONCIL_BUSCA = e.target.value; pintarItens(); });
   async function carregar(){
     const body = document.getElementById('concilBody');
     body.innerHTML = '<div class="empty-state">Carregando…</div>';
-    let items;
-    try{ items = (await api(basePath+'/contas/'+FIN_CONCIL_CONTA+'/ofx?status='+FIN_CONCIL_STATUS)).items; }
+    try{ itemsCarregados = (await api(basePath+'/contas/'+FIN_CONCIL_CONTA+'/ofx?status='+FIN_CONCIL_STATUS)).items; }
     catch(e){ body.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
-    if(!items.length){ body.innerHTML = '<div class="empty-state">Nada por aqui.</div>'; return; }
-    body.innerHTML = items.map(finOfxCartaoHtml).join('');
-    finOfxWireAcoes(body, carregar, basePath);
+    pintarItens();
   }
   await carregar();
 }
 async function finOfxCadastrarModal(ofxId, onDone, basePath){
-  let naturezas = [];
-  try{ naturezas = (await api(basePath+'/naturezas')).items||[]; }catch(e){}
+  let naturezas = [], formasPagamento = [];
+  try{ [naturezas, formasPagamento] = await Promise.all([ api(basePath+'/naturezas').then(r=>r.items||[]), api(basePath+'/formas-pagamento').then(r=>r.items||[]) ]); }catch(e){}
   openModal(`
     <h3>Cadastrar no Financeiro</h3>
     <p style="font-size:12px; color:var(--ink-soft); margin-top:-4px;">Valor e data vêm do extrato bancário — só a descrição é editável.</p>
@@ -9397,6 +9480,9 @@ async function finOfxCadastrarModal(ofxId, onDone, basePath){
     <div class="field"><label>Natureza (opcional)</label>
       <select id="ofxCadNatureza"><option value="">— Não informar —</option>${naturezas.map(n=>`<option value="${n.id}">${esc(n.nome)}</option>`).join('')}</select>
       <div style="font-size:11px; color:var(--ink-soft); margin-top:4px;">Da próxima vez que aparecer esta mesma descrição no extrato, o sistema cadastra e concilia sozinho com a mesma natureza.</div>
+    </div>
+    <div class="field"><label>Forma de pagamento (opcional)</label>
+      <select id="ofxCadFormaPagamento"><option value="">— Não informar —</option>${formasPagamento.map(f=>`<option value="${f.id}">${esc(f.nome)}</option>`).join('')}</select>
     </div>
     <div class="modal-actions">
       <button class="btn" id="ofxCadCancel">Cancelar</button>
@@ -9406,10 +9492,11 @@ async function finOfxCadastrarModal(ofxId, onDone, basePath){
   document.getElementById('ofxCadCancel').addEventListener('click', closeModal);
   document.getElementById('ofxCadSalvar').addEventListener('click', async ()=>{
     const naturezaVal = document.getElementById('ofxCadNatureza').value;
+    const formaPagamentoVal = document.getElementById('ofxCadFormaPagamento').value;
     try{
-      await api(basePath+'/ofx/'+ofxId+'/cadastrar', { method:'POST', body:{ descricao: document.getElementById('ofxCadDescricao').value.trim(), naturezaId: naturezaVal?Number(naturezaVal):null } });
+      const r = await api(basePath+'/ofx/'+ofxId+'/cadastrar', { method:'POST', body:{ descricao: document.getElementById('ofxCadDescricao').value.trim(), naturezaId: naturezaVal?Number(naturezaVal):null, formaPagamentoId: formaPagamentoVal?Number(formaPagamentoVal):null } });
       closeModal();
-      toast('Cadastrado e conciliado.','ok');
+      toast('Cadastrado e conciliado.'+finOfxMsgExtra(r),'ok');
       onDone();
     }catch(e){ toast(e.message,'err'); }
   });
@@ -9464,13 +9551,13 @@ async function finLancamentoModal(basePath, tipo, item, onSaved){
   const contas = await finContasCache(basePath);
   // Seletor opcional pra puxar um terceiro já cadastrado (A Pagar: fornecedor/funcionário; A Receber:
   // cliente) — ex.: lançar pagamento de férias de um funcionário sem redigitar o nome.
-  let cadastros = [], tiposDoc = [], naturezas = [];
+  let cadastros = [], tiposDoc = [], naturezas = [], formasPagamento = [];
   if(!travado){
     const tiposQ = ehReceber ? ['cliente'] : ['fornecedor','funcionario'];
     try{ cadastros = ((await api(basePath+'/cadastros')).items||[]).filter(c=>tiposQ.some(r=>(c.tipo||'').split(',').includes(r))); }catch(e){}
     try{ tiposDoc = (await api(basePath+'/tipos-documento')).items||[]; }catch(e){}
   }
-  try{ naturezas = (await api(basePath+'/naturezas')).items||[]; }catch(e){}
+  try{ [naturezas, formasPagamento] = await Promise.all([ api(basePath+'/naturezas').then(r=>r.items||[]), api(basePath+'/formas-pagamento').then(r=>r.items||[]) ]); }catch(e){}
   openModal(`
     <h3>${item?'Editar':'Novo'} lançamento — ${ehReceber?'a receber':'a pagar'}</h3>
     ${travado?`<p style="font-size:12px; color:var(--ink-soft); margin:-4px 0 10px;">Este título veio de ${origemLabel} — descrição, ${rotuloTerceiro.toLowerCase()} e valor ficam travados.</p>`:''}
@@ -9500,8 +9587,13 @@ async function finLancamentoModal(basePath, tipo, item, onSaved){
         <option value="cancelado" ${item.status==='cancelado'?'selected':''}>Cancelado</option>
       </select>
     </div>`:''}
-    <div class="field"><label>Natureza (opcional)</label>
-      <select id="mflNatureza"><option value="">— Não informar —</option>${naturezas.map(n=>`<option value="${n.id}" ${item&&n.id===item.naturezaId?'selected':''}>${esc(n.nome)}</option>`).join('')}</select>
+    <div class="row">
+      <div class="field" style="flex:1;"><label>Natureza (opcional)</label>
+        <select id="mflNatureza"><option value="">— Não informar —</option>${naturezas.map(n=>`<option value="${n.id}" ${item&&n.id===item.naturezaId?'selected':''}>${esc(n.nome)}</option>`).join('')}</select>
+      </div>
+      <div class="field" style="flex:1;"><label>Forma de pagamento (opcional)</label>
+        <select id="mflFormaPagamento"><option value="">— Não informar —</option>${formasPagamento.map(f=>`<option value="${f.id}" ${item&&f.id===item.formaPagamentoId?'selected':''}>${esc(f.nome)}</option>`).join('')}</select>
+      </div>
     </div>
     <div class="field"><label>Observação (opcional)</label><textarea id="mflObs" rows="2">${item&&item.observacao?esc(item.observacao):''}</textarea></div>
     <div class="modal-actions">
@@ -9533,7 +9625,8 @@ async function finLancamentoModal(basePath, tipo, item, onSaved){
     if(!descricao || !valor || !vencimento){ toast('Preencha a descrição, o valor e o vencimento.','err'); return; }
     const contaVal = document.getElementById('mflConta').value;
     const naturezaVal = document.getElementById('mflNatureza').value;
-    const body = { descricao, valor, vencimento, observacao: document.getElementById('mflObs').value.trim(), contaId: contaVal?Number(contaVal):null, naturezaId: naturezaVal?Number(naturezaVal):null };
+    const formaPagamentoVal = document.getElementById('mflFormaPagamento').value;
+    const body = { descricao, valor, vencimento, observacao: document.getElementById('mflObs').value.trim(), contaId: contaVal?Number(contaVal):null, naturezaId: naturezaVal?Number(naturezaVal):null, formaPagamentoId: formaPagamentoVal?Number(formaPagamentoVal):null };
     body[campoTerceiro] = document.getElementById('mflTerceiro').value.trim();
     if(item) body.status = document.getElementById('mflStatus').value;
     // Tipo de documento obrigatório no lançamento manual (pedido do usuário: "não deixar lançar sem").
@@ -9789,8 +9882,8 @@ function finDescricaoCurta(i){
 // dar a chance de escolher natureza/observação no momento da baixa, sem precisar editar depois.
 async function finMarcarRecebidoModal(basePath, item, recarregar){
   if(!item) return;
-  let contas, naturezas;
-  try{ [contas, naturezas] = await Promise.all([ finContasCache(basePath), api(basePath+'/naturezas').then(r=>r.items||[]) ]); }
+  let contas, naturezas, formasPagamento;
+  try{ [contas, naturezas, formasPagamento] = await Promise.all([ finContasCache(basePath), api(basePath+'/naturezas').then(r=>r.items||[]), api(basePath+'/formas-pagamento').then(r=>r.items||[]) ]); }
   catch(e){ toast(e.message,'err'); return; }
   const hoje = new Date().toISOString().slice(0,10);
   const TIPO_LABEL={banco:'Banco',caixa:'Caixa',outro:'Outro'};
@@ -9799,17 +9892,23 @@ async function finMarcarRecebidoModal(basePath, item, recarregar){
     <div class="field"><label>Conta de recebimento</label>
       <select id="mrConta"><option value="">— Não informar —</option>${contas.map(c=>`<option value="${c.id}" ${c.id===item.contaId?'selected':''}>${esc(c.nome)} (${TIPO_LABEL[c.tipo]||c.tipo})</option>`).join('')}</select>
     </div>
-    <div class="field"><label>Natureza</label>
-      <select id="mrNatureza"><option value="">— Não informar —</option>${naturezas.map(n=>`<option value="${n.id}" ${n.id===item.naturezaId?'selected':''}>${esc(n.nome)}</option>`).join('')}</select>
+    <div class="row">
+      <div class="field" style="flex:1;"><label>Natureza</label>
+        <select id="mrNatureza"><option value="">— Não informar —</option>${naturezas.map(n=>`<option value="${n.id}" ${n.id===item.naturezaId?'selected':''}>${esc(n.nome)}</option>`).join('')}</select>
+      </div>
+      <div class="field" style="flex:1;"><label>Forma de pagamento</label>
+        <select id="mrFormaPagamento"><option value="">— Não informar —</option>${formasPagamento.map(f=>`<option value="${f.id}" ${f.id===item.formaPagamentoId?'selected':''}>${esc(f.nome)}</option>`).join('')}</select>
+      </div>
     </div>
     <div class="field"><label>Observação</label><textarea id="mrObservacao" rows="2" placeholder="Opcional">${esc(item.observacao||'')}</textarea></div>
     <div class="modal-actions"><button class="btn" onclick="closeModal()">Cancelar</button><button class="btn primary" id="mrOk">Confirmar recebimento</button></div>`, '480px');
   document.getElementById('mrOk').addEventListener('click', async ()=>{
     const contaId = document.getElementById('mrConta').value || null;
     const naturezaId = document.getElementById('mrNatureza').value || null;
+    const formaPagamentoId = document.getElementById('mrFormaPagamento').value || null;
     const observacao = document.getElementById('mrObservacao').value.trim();
     const btn = document.getElementById('mrOk'); btn.disabled = true;
-    try{ await api(basePath+'/receber/'+item.id, { method:'PUT', body:{ status:'pago', contaId, naturezaId, observacao } }); closeModal(); toast('Marcado como recebido.','ok'); recarregar(); }
+    try{ await api(basePath+'/receber/'+item.id, { method:'PUT', body:{ status:'pago', contaId, naturezaId, formaPagamentoId, observacao } }); closeModal(); toast('Marcado como recebido.','ok'); recarregar(); }
     catch(e){ toast(e.message,'err'); btn.disabled = false; }
   });
 }
@@ -9928,8 +10027,8 @@ async function finRenderReceber(basePath, containerId, filtro, podePostar, podeE
 // O backend também recusa pago sem conta (não dá pra burlar pela API).
 async function finMarcarPagoModal(basePath, item, recarregar){
   if(!item) return;
-  let contas, naturezas;
-  try{ [contas, naturezas] = await Promise.all([ finContasCache(basePath), api(basePath+'/naturezas').then(r=>r.items||[]) ]); }
+  let contas, naturezas, formasPagamento;
+  try{ [contas, naturezas, formasPagamento] = await Promise.all([ finContasCache(basePath), api(basePath+'/naturezas').then(r=>r.items||[]), api(basePath+'/formas-pagamento').then(r=>r.items||[]) ]); }
   catch(e){ toast(e.message,'err'); return; }
   if(!contas.length){
     openModal(`<h3>Marcar pago — ${esc(item.descricao)}</h3>
@@ -9946,8 +10045,13 @@ async function finMarcarPagoModal(basePath, item, recarregar){
       <select id="mpConta"><option value="">— Escolha a conta —</option>${contas.map(c=>`<option value="${c.id}" ${c.id===item.contaId?'selected':''}>${esc(c.nome)} (${TIPO_LABEL[c.tipo]||c.tipo})</option>`).join('')}</select>
     </div>
     ${dateFieldHtml('mpData','Data do pagamento', hoje)}
-    <div class="field"><label>Natureza</label>
-      <select id="mpNatureza"><option value="">— Não informar —</option>${naturezas.map(n=>`<option value="${n.id}" ${n.id===item.naturezaId?'selected':''}>${esc(n.nome)}</option>`).join('')}</select>
+    <div class="row">
+      <div class="field" style="flex:1;"><label>Natureza</label>
+        <select id="mpNatureza"><option value="">— Não informar —</option>${naturezas.map(n=>`<option value="${n.id}" ${n.id===item.naturezaId?'selected':''}>${esc(n.nome)}</option>`).join('')}</select>
+      </div>
+      <div class="field" style="flex:1;"><label>Forma de pagamento</label>
+        <select id="mpFormaPagamento"><option value="">— Não informar —</option>${formasPagamento.map(f=>`<option value="${f.id}" ${f.id===item.formaPagamentoId?'selected':''}>${esc(f.nome)}</option>`).join('')}</select>
+      </div>
     </div>
     <div class="field"><label>Observação</label><textarea id="mpObservacao" rows="2" placeholder="Opcional">${esc(item.observacao||'')}</textarea></div>
     <div class="modal-actions"><button class="btn" onclick="closeModal()">Cancelar</button><button class="btn primary" id="mpOk">Confirmar pagamento</button></div>`, '480px');
@@ -9957,9 +10061,10 @@ async function finMarcarPagoModal(basePath, item, recarregar){
     if(!contaId){ toast('Escolha a conta de onde saiu o pagamento.','err'); return; }
     const dataPagamento = document.getElementById('mpData').value || hoje;
     const naturezaId = document.getElementById('mpNatureza').value || null;
+    const formaPagamentoId = document.getElementById('mpFormaPagamento').value || null;
     const observacao = document.getElementById('mpObservacao').value.trim();
     const btn = document.getElementById('mpOk'); btn.disabled = true;
-    try{ await api(basePath+'/pagar/'+item.id, { method:'PUT', body:{ status:'pago', contaId, dataPagamento, naturezaId, observacao } }); closeModal(); toast('Marcado como pago.','ok'); recarregar(); }
+    try{ await api(basePath+'/pagar/'+item.id, { method:'PUT', body:{ status:'pago', contaId, dataPagamento, naturezaId, formaPagamentoId, observacao } }); closeModal(); toast('Marcado como pago.','ok'); recarregar(); }
     catch(e){ toast(e.message,'err'); btn.disabled = false; }
   });
 }
@@ -10322,8 +10427,8 @@ let FIN_CAD_FILTRO = { busca:'', tipo:'' };
 async function finRenderCadastros(basePath, containerId, podeEditar){
   const box = document.getElementById(containerId);
   box.innerHTML = `<div class="empty-state">Carregando…</div>`;
-  let todos, tiposDoc;
-  try{ [todos, tiposDoc] = await Promise.all([ api(basePath+'/cadastros').then(r=>r.items||[]), api(basePath+'/tipos-documento').then(r=>r.items||[]) ]); }
+  let todos, tiposDoc, formasPagamento;
+  try{ [todos, tiposDoc, formasPagamento] = await Promise.all([ api(basePath+'/cadastros').then(r=>r.items||[]), api(basePath+'/tipos-documento').then(r=>r.items||[]), api(basePath+'/formas-pagamento').then(r=>r.items||[]) ]); }
   catch(e){ box.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
   const TIPO={cliente:'Cliente',fornecedor:'Fornecedor',funcionario:'Funcionário'};
   const TIPO_TAG={cliente:'ok',fornecedor:'muted',funcionario:'warn'};
@@ -10354,6 +10459,14 @@ async function finRenderCadastros(basePath, containerId, podeEditar){
         ${podeEditar?`<button class="btn small primary" id="btnNovoTipoDocCad">+ Novo tipo</button>`:''}
       </div>
       <div id="tipoDocChips" style="display:flex; flex-wrap:wrap; gap:6px; margin-top:12px;"></div>
+    </div>
+    <div class="card" style="margin-top:14px;">
+      <div class="row" style="justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+        <div><div style="font-weight:600; font-size:13px;">💳 Formas de pagamento</div>
+          <div style="font-size:11.5px; color:var(--ink-soft); margin-top:2px;">Usadas ao marcar um lançamento como pago/recebido (Pix, TED, DOC, Dinheiro…).</div></div>
+        ${podeEditar?`<button class="btn small primary" id="btnNovaFormaPagCad">+ Nova forma</button>`:''}
+      </div>
+      <div id="formaPagChips" style="display:flex; flex-wrap:wrap; gap:6px; margin-top:12px;"></div>
     </div>`;
   document.getElementById('cadTipoFiltro').value = FIN_CAD_FILTRO.tipo;
   function pintarTipos(){
@@ -10368,6 +10481,25 @@ async function finRenderCadastros(basePath, containerId, podeEditar){
     }));
   }
   pintarTipos();
+  function pintarFormasPagamento(){
+    const cont = document.getElementById('formaPagChips');
+    cont.innerHTML = formasPagamento.length? formasPagamento.map(f=>`
+      <span class="tag muted" style="display:inline-flex; align-items:center; gap:6px; font-size:12px; padding:4px 8px;">${esc(f.nome)}${podeEditar?`<button type="button" data-formapag="${f.id}" title="Remover" style="border:0; background:none; cursor:pointer; color:var(--ink-soft); font-size:14px; line-height:1; padding:0;">×</button>`:''}</span>
+    `).join('') : `<span style="font-size:12px; color:var(--ink-soft);">Nenhuma forma de pagamento cadastrada.</span>`;
+    if(podeEditar) cont.querySelectorAll('[data-formapag]').forEach(b=>b.addEventListener('click', async ()=>{
+      if(!confirm('Remover esta forma de pagamento? Lançamentos antigos que já usam ela continuam como estão.')) return;
+      try{ await api(basePath+'/formas-pagamento/'+b.dataset.formapag, { method:'DELETE' }); formasPagamento = formasPagamento.filter(f=>String(f.id)!==String(b.dataset.formapag)); pintarFormasPagamento(); toast('Forma de pagamento removida.','ok'); }
+      catch(e){ toast(e.message,'err'); }
+    }));
+  }
+  pintarFormasPagamento();
+  if(podeEditar) document.getElementById('btnNovaFormaPagCad').addEventListener('click', async ()=>{
+    const nome = (prompt('Nome da nova forma de pagamento (ex.: Pix, TED, Dinheiro):')||'').trim();
+    if(!nome) return;
+    try{ const r = await api(basePath+'/formas-pagamento', { method:'POST', body:{ nome } });
+      if(!formasPagamento.some(f=>Number(f.id)===Number(r.id))) formasPagamento.push({ id:r.id, nome }); pintarFormasPagamento(); toast('Forma de pagamento criada.','ok'); }
+    catch(e){ toast(e.message,'err'); }
+  });
   if(podeEditar) document.getElementById('btnNovoTipoDocCad').addEventListener('click', async ()=>{
     const nome = (prompt('Nome do novo tipo de documento (ex.: Recibo, Folha, Rescisão):')||'').trim();
     if(!nome) return;

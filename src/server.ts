@@ -2125,6 +2125,49 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
     sqlite.exec(`ALTER TABLE financeiro_receber ADD COLUMN natureza_id INTEGER REFERENCES financeiro_naturezas(id) ON DELETE SET NULL`);
   }
 }
+// Forma de pagamento (Pix, TED, DOC, Dinheiro etc.) — como a natureza, é escolhida na BAIXA (ou na
+// edição), opcional, mesmo molde de financeiro_naturezas (tabela por empresa + ALTER nas duas tabelas
+// de título). Diferente de natureza (categoria contábil do fluxo): aqui é só o MEIO usado no
+// pagamento/recebimento.
+{
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS financeiro_formas_pagamento (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      empresa_id INTEGER NOT NULL,
+      nome TEXT NOT NULL,
+      ativo INTEGER NOT NULL DEFAULT 1,
+      criado_em TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+  sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_fin_forma_pagamento_empresa ON financeiro_formas_pagamento(empresa_id)`);
+  const colsPagarFp = sqlite.prepare(`PRAGMA table_info(financeiro_pagar)`).all() as any[];
+  if (!colsPagarFp.some((c) => c.name === "forma_pagamento_id")) {
+    sqlite.exec(`ALTER TABLE financeiro_pagar ADD COLUMN forma_pagamento_id INTEGER REFERENCES financeiro_formas_pagamento(id) ON DELETE SET NULL`);
+  }
+  const colsReceberFp = sqlite.prepare(`PRAGMA table_info(financeiro_receber)`).all() as any[];
+  if (!colsReceberFp.some((c) => c.name === "forma_pagamento_id")) {
+    sqlite.exec(`ALTER TABLE financeiro_receber ADD COLUMN forma_pagamento_id INTEGER REFERENCES financeiro_formas_pagamento(id) ON DELETE SET NULL`);
+  }
+}
+// Transferência entre contas (banco→banco, banco→caixa etc.): debita o saldo da conta de origem e
+// credita a de destino, sem passar por financeiro_pagar/financeiro_receber — não é receita nem
+// despesa, só dinheiro mudando de lugar dentro da própria empresa, então fica fora de A Receber/A
+// Pagar (não contaminaria os KPIs de total/recebido/pago) e das listas de título. financeiroContasComSaldo
+// (abaixo) soma/subtrai direto desta tabela no cálculo do saldo de cada conta.
+{
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS financeiro_transferencias (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+      conta_origem_id INTEGER NOT NULL REFERENCES financeiro_contas(id),
+      conta_destino_id INTEGER NOT NULL REFERENCES financeiro_contas(id),
+      valor REAL NOT NULL,
+      data TEXT NOT NULL,
+      descricao TEXT,
+      criado_por INTEGER,
+      criado_em TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+  sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_fin_transferencias_empresa ON financeiro_transferencias(empresa_id)`);
+}
 // Canais de envio ATIVOS por empresa-cliente (Fase 2 do envio por cliente): além do módulo do
 // escritório (envio_email_automatico / envio_whatsapp), cada empresa pode ter o canal ligado/desligado
 // individualmente. Sem linha = ambos ativos (default — não muda o comportamento de quem já recebe).
@@ -2206,6 +2249,9 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
   const colsAprendizado = sqlite.prepare(`PRAGMA table_info(financeiro_ofx_aprendizado)`).all() as any[];
   if (!colsAprendizado.some((c) => c.name === "natureza_id")) {
     sqlite.exec(`ALTER TABLE financeiro_ofx_aprendizado ADD COLUMN natureza_id INTEGER REFERENCES financeiro_naturezas(id) ON DELETE SET NULL`);
+  }
+  if (!colsAprendizado.some((c) => c.name === "forma_pagamento_id")) {
+    sqlite.exec(`ALTER TABLE financeiro_ofx_aprendizado ADD COLUMN forma_pagamento_id INTEGER REFERENCES financeiro_formas_pagamento(id) ON DELETE SET NULL`);
   }
 }
 // Migração: renegociação de título — quando um "a pagar"/"a receber" vencido é renegociado em N
@@ -16453,7 +16499,9 @@ function financeiroContasComSaldo(empresaId: number): any[] {
                 + COALESCE((SELECT SUM(valor) FROM financeiro_receber WHERE conta_id = c.id AND status = 'pago'), 0)
                 - COALESCE((SELECT SUM(valor) FROM financeiro_pagar WHERE conta_id = c.id AND status = 'pago'), 0)
                 + COALESCE((SELECT SUM(valor_original) FROM financeiro_adiantamentos WHERE conta_id = c.id AND tipo = 'cliente'), 0)
-                - COALESCE((SELECT SUM(valor_original) FROM financeiro_adiantamentos WHERE conta_id = c.id AND tipo = 'fornecedor'), 0) as saldoAtual
+                - COALESCE((SELECT SUM(valor_original) FROM financeiro_adiantamentos WHERE conta_id = c.id AND tipo = 'fornecedor'), 0)
+                + COALESCE((SELECT SUM(valor) FROM financeiro_transferencias WHERE conta_destino_id = c.id), 0)
+                - COALESCE((SELECT SUM(valor) FROM financeiro_transferencias WHERE conta_origem_id = c.id), 0) as saldoAtual
        FROM financeiro_contas c WHERE c.empresa_id = ? ORDER BY c.ativo DESC, c.nome`
     )
     .all(empresaId) as any[];
@@ -16603,6 +16651,75 @@ function validarNaturezaOpcional(empresaId: number, body: any): { id: number | n
   if (!id) return { id: null };
   if (!sqlite.prepare(`SELECT 1 FROM financeiro_naturezas WHERE id=? AND empresa_id=? AND ativo=1`).get(id, empresaId)) return { id: null, error: "Natureza inválida." };
   return { id };
+}
+// ---- Forma de pagamento (Pix, TED, DOC, Dinheiro etc. — mesmo molde de Natureza acima) ----
+const FORMAS_PAGAMENTO_PADRAO = ["Pix", "TED", "DOC", "Dinheiro", "Boleto", "Cartão de crédito", "Cartão de débito", "Cheque"];
+function formasPagamentoListar(empresaId: number): any[] {
+  let rows = sqlite.prepare(`SELECT id, nome FROM financeiro_formas_pagamento WHERE empresa_id=? AND ativo=1 ORDER BY nome COLLATE NOCASE`).all(empresaId) as any[];
+  if (!rows.length) {
+    const ins = sqlite.prepare(`INSERT INTO financeiro_formas_pagamento (empresa_id, nome) VALUES (?, ?)`);
+    for (const n of FORMAS_PAGAMENTO_PADRAO) ins.run(empresaId, n);
+    rows = sqlite.prepare(`SELECT id, nome FROM financeiro_formas_pagamento WHERE empresa_id=? AND ativo=1 ORDER BY nome COLLATE NOCASE`).all(empresaId) as any[];
+  }
+  return rows;
+}
+function formaPagamentoCriar(empresaId: number, body: any): { id?: number; error?: string } {
+  const nome = (body?.nome || "").trim();
+  if (!nome) return { error: "Informe o nome da forma de pagamento." };
+  const existe = sqlite.prepare(`SELECT id FROM financeiro_formas_pagamento WHERE empresa_id=? AND ativo=1 AND lower(nome)=lower(?)`).get(empresaId, nome) as any;
+  if (existe) return { id: existe.id }; // idempotente: não duplica
+  const info = sqlite.prepare(`INSERT INTO financeiro_formas_pagamento (empresa_id, nome) VALUES (?, ?)`).run(empresaId, nome);
+  return { id: Number(info.lastInsertRowid) };
+}
+function formaPagamentoExcluir(empresaId: number, id: number): { ok?: boolean; error?: string } {
+  const existe = sqlite.prepare(`SELECT id FROM financeiro_formas_pagamento WHERE id=? AND empresa_id=?`).get(id, empresaId) as any;
+  if (!existe) return { error: "Forma de pagamento não encontrada." };
+  sqlite.prepare(`UPDATE financeiro_formas_pagamento SET ativo=0 WHERE id=?`).run(id); // soft delete: títulos antigos mantêm o vínculo
+  return { ok: true };
+}
+function validarFormaPagamentoOpcional(empresaId: number, body: any): { id: number | null; error?: string } {
+  const id = body?.formaPagamentoId ? Number(body.formaPagamentoId) : null;
+  if (!id) return { id: null };
+  if (!sqlite.prepare(`SELECT 1 FROM financeiro_formas_pagamento WHERE id=? AND empresa_id=? AND ativo=1`).get(id, empresaId)) return { id: null, error: "Forma de pagamento inválida." };
+  return { id };
+}
+// ---- Transferência entre contas (ver comentário da tabela no schema) ----
+function financeiroTransferenciasListar(empresaId: number, dataDe: string | null, dataAte: string | null): any[] {
+  let sql = `SELECT t.id, t.conta_origem_id as contaOrigemId, co.nome as contaOrigemNome, t.conta_destino_id as contaDestinoId, cd.nome as contaDestinoNome,
+                    t.valor, t.data, t.descricao, t.criado_em as criadoEm
+             FROM financeiro_transferencias t
+             JOIN financeiro_contas co ON co.id = t.conta_origem_id
+             JOIN financeiro_contas cd ON cd.id = t.conta_destino_id
+             WHERE t.empresa_id = ?`;
+  const params: any[] = [empresaId];
+  if (dataDe) { sql += ` AND date(t.data) >= date(?)`; params.push(dataDe); }
+  if (dataAte) { sql += ` AND date(t.data) <= date(?)`; params.push(dataAte); }
+  sql += ` ORDER BY t.data DESC, t.id DESC`;
+  return sqlite.prepare(sql).all(...params) as any[];
+}
+function financeiroTransferenciaCriar(empresaId: number, body: any, userId: number): { id?: number; error?: string } {
+  const contaOrigemId = Number(body?.contaOrigemId);
+  const contaDestinoId = Number(body?.contaDestinoId);
+  const valor = Number(body?.valor);
+  const data = typeof body?.data === "string" && /^\d{4}-\d{2}-\d{2}$/.test(body.data) ? body.data : new Date().toISOString().slice(0, 10);
+  if (!contaOrigemId || !contaDestinoId) return { error: "Escolha a conta de origem e a de destino." };
+  if (contaOrigemId === contaDestinoId) return { error: "A conta de origem e a de destino não podem ser a mesma." };
+  if (!(valor > 0)) return { error: "Informe um valor maior que zero." };
+  const contaOrigem = sqlite.prepare(`SELECT id FROM financeiro_contas WHERE id=? AND empresa_id=?`).get(contaOrigemId, empresaId);
+  if (!contaOrigem) return { error: "Conta de origem não encontrada." };
+  const contaDestino = sqlite.prepare(`SELECT id FROM financeiro_contas WHERE id=? AND empresa_id=?`).get(contaDestinoId, empresaId);
+  if (!contaDestino) return { error: "Conta de destino não encontrada." };
+  const descricao = (body?.descricao || "").trim() || null;
+  const info = sqlite
+    .prepare(`INSERT INTO financeiro_transferencias (empresa_id, conta_origem_id, conta_destino_id, valor, data, descricao, criado_por) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run(empresaId, contaOrigemId, contaDestinoId, valor, data, descricao, userId);
+  return { id: Number(info.lastInsertRowid) };
+}
+function financeiroTransferenciaExcluir(empresaId: number, id: number): { ok?: boolean; error?: string } {
+  const existe = sqlite.prepare(`SELECT id FROM financeiro_transferencias WHERE id=? AND empresa_id=?`).get(id, empresaId);
+  if (!existe) return { error: "Transferência não encontrada." };
+  sqlite.prepare(`DELETE FROM financeiro_transferencias WHERE id=?`).run(id);
+  return { ok: true };
 }
 function financeiroRelatorio(empresaId: number, granularidade: "dia" | "semana" | "mes" = "semana") {
   const hoje = new Date().toISOString().slice(0, 10);
@@ -17245,14 +17362,15 @@ function financeiroOfxListar(empresaId: number, contaId: number, status: string)
   }));
 }
 // Registra o aprendizado "texto do banco → terceiro" (reforça com hits) pra casar melhor no futuro.
-function financeiroOfxAprender(empresaId: number, descBanco: string | null, terceiro: string | null, tabela: string, naturezaId?: number | null): void {
+function financeiroOfxAprender(empresaId: number, descBanco: string | null, terceiro: string | null, tabela: string, naturezaId?: number | null, formaPagamentoId?: number | null): void {
   const norm = ofxNorm(descBanco);
   if (!norm || !terceiro) return;
   sqlite
-    .prepare(`INSERT INTO financeiro_ofx_aprendizado (empresa_id, descricao_norm, terceiro, tabela, natureza_id) VALUES (?, ?, ?, ?, ?)
+    .prepare(`INSERT INTO financeiro_ofx_aprendizado (empresa_id, descricao_norm, terceiro, tabela, natureza_id, forma_pagamento_id) VALUES (?, ?, ?, ?, ?, ?)
               ON CONFLICT(empresa_id, descricao_norm, terceiro) DO UPDATE SET hits = hits + 1, atualizado_em = datetime('now'),
-                natureza_id = COALESCE(excluded.natureza_id, financeiro_ofx_aprendizado.natureza_id)`)
-    .run(empresaId, norm, String(terceiro).trim(), tabela, naturezaId ?? null);
+                natureza_id = COALESCE(excluded.natureza_id, financeiro_ofx_aprendizado.natureza_id),
+                forma_pagamento_id = COALESCE(excluded.forma_pagamento_id, financeiro_ofx_aprendizado.forma_pagamento_id)`)
+    .run(empresaId, norm, String(terceiro).trim(), tabela, naturezaId ?? null, formaPagamentoId ?? null);
 }
 // Baixa um título a partir de uma transação do extrato (fonte de verdade: data/conta do banco),
 // marca a transação como conciliada e aprende o terceiro pra esse texto de banco.
@@ -17295,25 +17413,36 @@ function financeiroOfxAutoConciliar(empresaId: number, transIds: number[]): numb
       const norm = ofxNorm(t.descricao);
       const aprendido = norm
         ? (sqlite
-            .prepare(`SELECT terceiro, natureza_id FROM financeiro_ofx_aprendizado WHERE empresa_id = ? AND descricao_norm = ? AND tabela = ? ORDER BY hits DESC LIMIT 1`)
+            .prepare(`SELECT terceiro, natureza_id, forma_pagamento_id FROM financeiro_ofx_aprendizado WHERE empresa_id = ? AND descricao_norm = ? AND tabela = ? ORDER BY hits DESC LIMIT 1`)
             .get(empresaId, norm, tabela) as any)
         : null;
       if (aprendido) {
         const campoData = tabela === "financeiro_pagar" ? "data_pagamento" : "data_recebimento";
         const info = sqlite
           .prepare(
-            `INSERT INTO ${tabela} (empresa_id, descricao, ${campoTerceiro}, valor, vencimento, status, ${campoData}, conta_id, origem, natureza_id)
-             VALUES (?, ?, NULL, ?, ?, 'pago', ?, ?, 'ofx', ?)`
+            `INSERT INTO ${tabela} (empresa_id, descricao, ${campoTerceiro}, valor, vencimento, status, ${campoData}, conta_id, origem, natureza_id, forma_pagamento_id)
+             VALUES (?, ?, NULL, ?, ?, 'pago', ?, ?, 'ofx', ?, ?)`
           )
-          .run(empresaId, aprendido.terceiro, Math.abs(t.valor), t.data, t.data, t.conta_id, aprendido.natureza_id);
+          .run(empresaId, aprendido.terceiro, Math.abs(t.valor), t.data, t.data, t.conta_id, aprendido.natureza_id, aprendido.forma_pagamento_id);
         const tituloId = Number(info.lastInsertRowid);
         sqlite.prepare(`UPDATE financeiro_ofx_transacoes SET status = 'conciliado', vinculo_tabela = ?, vinculo_id = ? WHERE id = ?`).run(tabela, tituloId, t.id);
-        financeiroOfxAprender(empresaId, t.descricao, aprendido.terceiro, tabela, aprendido.natureza_id);
+        financeiroOfxAprender(empresaId, t.descricao, aprendido.terceiro, tabela, aprendido.natureza_id, aprendido.forma_pagamento_id);
         n++;
       }
     }
   }
   return n;
+}
+// Depois de QUALQUER conciliação manual (1-pra-1, grupo ou cadastro novo) — que sempre ensina o
+// aprendizado (financeiroOfxAprender) — reaplica esse aprendizado na mesma hora nas outras transações
+// que já estavam pendentes (mesmo lote importado ou lotes anteriores ainda não revisados), sem
+// precisar esperar a próxima importação. Achado pedido do usuário: várias transações do mesmo padrão
+// (ex.: vários boletos "Crédito Títulos Cobrança Própria") chegavam juntas e, ao resolver a primeira
+// à mão, as outras continuavam pedindo revisão manual uma por uma. Reusa a mesma financeiroOfxAutoConciliar
+// (nunca baixa no escuro — só aplica quando sobra 1 candidato claro ou bate o aprendizado exato).
+function financeiroOfxReaplicarAprendizado(empresaId: number): number {
+  const pendentesIds = (sqlite.prepare(`SELECT id FROM financeiro_ofx_transacoes WHERE empresa_id = ? AND status = 'pendente'`).all(empresaId) as any[]).map((r) => r.id);
+  return pendentesIds.length ? financeiroOfxAutoConciliar(empresaId, pendentesIds) : 0;
 }
 const uploadOfx = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 app.post("/api/financeiro/minha-empresa/contas/:contaId/ofx/importar", requireCliente, requireModuloAtivo('financeiro'), uploadOfx.single("arquivo"), (req, res) => {
@@ -17360,7 +17489,8 @@ app.post("/api/financeiro/minha-empresa/ofx/:id/conciliar", requireCliente, requ
   if (!titulo) return res.status(404).json({ error: "Título não encontrado." });
   if (titulo.status !== "pendente") return res.status(409).json({ error: "Este título já não está mais pendente." });
   financeiroOfxConciliarTitulo(ofxRow, tabela, titulo);
-  res.json({ ok: true });
+  const reconciliadasExtra = financeiroOfxReaplicarAprendizado(user.empresaId);
+  res.json({ ok: true, reconciliadasExtra });
 });
 // Conciliação 1-para-vários: uma transação do banco que quita VÁRIOS títulos (a soma bate). Baixa
 // todos, vincula a transação ao 1º (referência) e aprende os terceiros.
@@ -17382,7 +17512,8 @@ app.post("/api/financeiro/minha-empresa/ofx/:id/conciliar-grupo", requireCliente
     financeiroOfxAprender(ofxRow.empresa_id, ofxRow.descricao, t[campoTerceiro], tabela);
   }
   sqlite.prepare(`UPDATE financeiro_ofx_transacoes SET status = 'conciliado', vinculo_tabela = ?, vinculo_id = ? WHERE id = ?`).run(tabela, titulos[0].id, ofxRow.id);
-  res.json({ ok: true, titulos: titulos.length });
+  const reconciliadasExtra = financeiroOfxReaplicarAprendizado(ofxRow.empresa_id);
+  res.json({ ok: true, titulos: titulos.length, reconciliadasExtra });
 });
 // Transação do extrato sem nenhum título correspondente no sistema — cadastra um título NOVO já
 // baixado (a data/valor vêm do banco, que é fonte de verdade aqui), vinculado de volta à transação.
@@ -17397,19 +17528,21 @@ app.post("/api/financeiro/minha-empresa/ofx/:id/cadastrar", requireCliente, requ
   const campoTerceiro = ehReceber ? "cliente_nome" : "fornecedor";
   const campoData = ehReceber ? "data_recebimento" : "data_pagamento";
   const naturezaId = validarNaturezaOpcional(user.empresaId, req.body).id;
+  const formaPagamentoId = validarFormaPagamentoOpcional(user.empresaId, req.body).id;
   const info = sqlite
     .prepare(
-      `INSERT INTO ${tabela} (empresa_id, descricao, ${campoTerceiro}, valor, vencimento, status, ${campoData}, conta_id, origem, criado_por, natureza_id)
-       VALUES (?, ?, NULL, ?, ?, 'pago', ?, ?, 'ofx', ?, ?)`
+      `INSERT INTO ${tabela} (empresa_id, descricao, ${campoTerceiro}, valor, vencimento, status, ${campoData}, conta_id, origem, criado_por, natureza_id, forma_pagamento_id)
+       VALUES (?, ?, NULL, ?, ?, 'pago', ?, ?, 'ofx', ?, ?, ?)`
     )
-    .run(user.empresaId, descFinal, Math.abs(ofxRow.valor), ofxRow.data, ofxRow.data, ofxRow.conta_id, user.id, naturezaId);
+    .run(user.empresaId, descFinal, Math.abs(ofxRow.valor), ofxRow.data, ofxRow.data, ofxRow.conta_id, user.id, naturezaId, formaPagamentoId);
   const tituloId = Number(info.lastInsertRowid);
   sqlite.prepare(`UPDATE financeiro_ofx_transacoes SET status = 'conciliado', vinculo_tabela = ?, vinculo_id = ? WHERE id = ?`).run(tabela, tituloId, ofxRow.id);
   // Ensina o aprendizado com a descrição digitada como "terceiro" (chave estável pra recorrência tipo
   // "Retirada sócio" — não tem cliente/fornecedor de verdade num lançamento assim) — a mesma descrição
   // do banco, com a mesma natureza, já cadastra sozinha da próxima vez (ver financeiroOfxAutoConciliar).
-  financeiroOfxAprender(user.empresaId, ofxRow.descricao, descFinal, tabela, naturezaId);
-  res.json({ ok: true, id: tituloId });
+  financeiroOfxAprender(user.empresaId, ofxRow.descricao, descFinal, tabela, naturezaId, formaPagamentoId);
+  const reconciliadasExtra = financeiroOfxReaplicarAprendizado(user.empresaId);
+  res.json({ ok: true, id: tituloId, reconciliadasExtra });
 });
 app.post("/api/financeiro/minha-empresa/ofx/:id/ignorar", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
   const user = (req as any).user;
@@ -17485,7 +17618,8 @@ app.post("/api/financeiro/empresas/:empresaId/ofx/:id/conciliar", blockCliente, 
   if (!titulo) return res.status(404).json({ error: "Título não encontrado." });
   if (titulo.status !== "pendente") return res.status(409).json({ error: "Este título já não está mais pendente." });
   financeiroOfxConciliarTitulo(ofxRow, tabela, titulo);
-  res.json({ ok: true });
+  const reconciliadasExtra = financeiroOfxReaplicarAprendizado(empresaId);
+  res.json({ ok: true, reconciliadasExtra });
 });
 app.post("/api/financeiro/empresas/:empresaId/ofx/:id/conciliar-grupo", blockCliente, requirePermissao("financeiro", "editar"), (req, res) => {
   const user = (req as any).user;
@@ -17507,7 +17641,8 @@ app.post("/api/financeiro/empresas/:empresaId/ofx/:id/conciliar-grupo", blockCli
     financeiroOfxAprender(ofxRow.empresa_id, ofxRow.descricao, t[campoTerceiro], tabela);
   }
   sqlite.prepare(`UPDATE financeiro_ofx_transacoes SET status = 'conciliado', vinculo_tabela = ?, vinculo_id = ? WHERE id = ?`).run(tabela, titulos[0].id, ofxRow.id);
-  res.json({ ok: true, titulos: titulos.length });
+  const reconciliadasExtra = financeiroOfxReaplicarAprendizado(empresaId);
+  res.json({ ok: true, titulos: titulos.length, reconciliadasExtra });
 });
 app.post("/api/financeiro/empresas/:empresaId/ofx/:id/cadastrar", blockCliente, requirePermissao("financeiro", "postar"), (req, res) => {
   const user = (req as any).user;
@@ -17522,16 +17657,18 @@ app.post("/api/financeiro/empresas/:empresaId/ofx/:id/cadastrar", blockCliente, 
   const campoTerceiro = ehReceber ? "cliente_nome" : "fornecedor";
   const campoData = ehReceber ? "data_recebimento" : "data_pagamento";
   const naturezaId = validarNaturezaOpcional(empresaId, req.body).id;
+  const formaPagamentoId = validarFormaPagamentoOpcional(empresaId, req.body).id;
   const info = sqlite
     .prepare(
-      `INSERT INTO ${tabela} (empresa_id, descricao, ${campoTerceiro}, valor, vencimento, status, ${campoData}, conta_id, origem, criado_por, natureza_id)
-       VALUES (?, ?, NULL, ?, ?, 'pago', ?, ?, 'ofx', ?, ?)`
+      `INSERT INTO ${tabela} (empresa_id, descricao, ${campoTerceiro}, valor, vencimento, status, ${campoData}, conta_id, origem, criado_por, natureza_id, forma_pagamento_id)
+       VALUES (?, ?, NULL, ?, ?, 'pago', ?, ?, 'ofx', ?, ?, ?)`
     )
-    .run(empresaId, descFinal, Math.abs(ofxRow.valor), ofxRow.data, ofxRow.data, ofxRow.conta_id, user.id, naturezaId);
+    .run(empresaId, descFinal, Math.abs(ofxRow.valor), ofxRow.data, ofxRow.data, ofxRow.conta_id, user.id, naturezaId, formaPagamentoId);
   const tituloId = Number(info.lastInsertRowid);
   sqlite.prepare(`UPDATE financeiro_ofx_transacoes SET status = 'conciliado', vinculo_tabela = ?, vinculo_id = ? WHERE id = ?`).run(tabela, tituloId, ofxRow.id);
-  financeiroOfxAprender(empresaId, ofxRow.descricao, descFinal, tabela, naturezaId);
-  res.json({ ok: true, id: tituloId });
+  financeiroOfxAprender(empresaId, ofxRow.descricao, descFinal, tabela, naturezaId, formaPagamentoId);
+  const reconciliadasExtra = financeiroOfxReaplicarAprendizado(empresaId);
+  res.json({ ok: true, id: tituloId, reconciliadasExtra });
 });
 app.post("/api/financeiro/empresas/:empresaId/ofx/:id/ignorar", blockCliente, requirePermissao("financeiro", "editar"), (req, res) => {
   const user = (req as any).user;
@@ -17561,12 +17698,14 @@ app.get("/api/financeiro/minha-empresa/pagar", requireCliente, requireModuloAtiv
   const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
   let sql = `SELECT p.id, p.descricao, p.fornecedor, p.valor, p.vencimento, p.status, p.valor_pago as valorPago, p.data_pagamento as dataPagamento, p.observacao,
                     p.origem, p.nfe_documento_id as nfeDocumentoId, p.tipo_documento_id as tipoDocumentoId, td.nome as tipoDocumentoNome, nd.tipo as docFiscalTipo,
-                    p.conta_id as contaId, c.nome as contaNome, p.criado_em as criadoEm, p.natureza_id as naturezaId, n.nome as naturezaNome
+                    p.conta_id as contaId, c.nome as contaNome, p.criado_em as criadoEm, p.natureza_id as naturezaId, n.nome as naturezaNome,
+                    p.forma_pagamento_id as formaPagamentoId, fp.nome as formaPagamentoNome
              FROM financeiro_pagar p
              LEFT JOIN financeiro_contas c ON c.id = p.conta_id
              LEFT JOIN financeiro_tipos_documento td ON td.id = p.tipo_documento_id
              LEFT JOIN nfe_documentos nd ON nd.id = p.nfe_documento_id
              LEFT JOIN financeiro_naturezas n ON n.id = p.natureza_id
+             LEFT JOIN financeiro_formas_pagamento fp ON fp.id = p.forma_pagamento_id
              WHERE p.empresa_id = ?`;
   const params: any[] = [empresaId];
   if (dataDe) { sql += ` AND date(p.vencimento) >= date(?)`; params.push(dataDe); }
@@ -17581,9 +17720,10 @@ app.post("/api/financeiro/minha-empresa/pagar", requireCliente, requireModuloAti
   const td = validarTipoDocManual(user.empresaId, req.body);
   if (!td.id) return res.status(400).json({ error: td.error || "Escolha o tipo de documento do lançamento." });
   const naturezaId = validarNaturezaOpcional(user.empresaId, req.body).id;
+  const formaPagamentoId = validarFormaPagamentoOpcional(user.empresaId, req.body).id;
   const info = sqlite
-    .prepare(`INSERT INTO financeiro_pagar (empresa_id, descricao, fornecedor, valor, vencimento, observacao, conta_id, tipo_documento_id, criado_por, natureza_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(user.empresaId, String(descricao).trim(), fornecedor || null, Number(valor), String(vencimento), observacao || null, contaId ? Number(contaId) : null, td.id, user.id, naturezaId);
+    .prepare(`INSERT INTO financeiro_pagar (empresa_id, descricao, fornecedor, valor, vencimento, observacao, conta_id, tipo_documento_id, criado_por, natureza_id, forma_pagamento_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(user.empresaId, String(descricao).trim(), fornecedor || null, Number(valor), String(vencimento), observacao || null, contaId ? Number(contaId) : null, td.id, user.id, naturezaId, formaPagamentoId);
   res.json({ id: Number(info.lastInsertRowid) });
 });
 app.put("/api/financeiro/minha-empresa/pagar/:id", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
@@ -17613,12 +17753,14 @@ app.put("/api/financeiro/minha-empresa/pagar/:id", requireCliente, requireModulo
   const dataPag = statusValido === "pago"
     ? (typeof dataPagamento === "string" && /^\d{4}-\d{2}-\d{2}$/.test(dataPagamento) ? dataPagamento : existente.data_pagamento || new Date().toISOString().slice(0, 10))
     : statusValido === existente.status ? existente.data_pagamento : null;
-  // Natureza (categoria pro relatório: Salários, Retiradas etc.) é editável sempre, mesmo em
-  // lançamento travado por nota/extrato — é uma classificação nossa, não faz parte do documento fiscal.
+  // Natureza (categoria pro relatório: Salários, Retiradas etc.) e forma de pagamento são editáveis
+  // sempre, mesmo em lançamento travado por nota/extrato — são classificações nossas, não fazem parte
+  // do documento fiscal.
   const naturezaFinal = req.body?.naturezaId !== undefined ? validarNaturezaOpcional(user.empresaId, req.body).id : existente.natureza_id;
+  const formaPagamentoFinal = req.body?.formaPagamentoId !== undefined ? validarFormaPagamentoOpcional(user.empresaId, req.body).id : existente.forma_pagamento_id;
   sqlite
     .prepare(
-      `UPDATE financeiro_pagar SET descricao=?, fornecedor=?, valor=?, vencimento=?, status=?, data_pagamento=?, observacao=?, conta_id=?, tipo_documento_id=?, natureza_id=? WHERE id=?`
+      `UPDATE financeiro_pagar SET descricao=?, fornecedor=?, valor=?, vencimento=?, status=?, data_pagamento=?, observacao=?, conta_id=?, tipo_documento_id=?, natureza_id=?, forma_pagamento_id=? WHERE id=?`
     )
     .run(
       travadoPelaNfe ? existente.descricao : descricao != null ? String(descricao).trim() : existente.descricao,
@@ -17631,6 +17773,7 @@ app.put("/api/financeiro/minha-empresa/pagar/:id", requireCliente, requireModulo
       contaFinal,
       tipoDocFinal,
       naturezaFinal,
+      formaPagamentoFinal,
       existente.id
     );
   res.json({ ok: true });
@@ -17651,12 +17794,14 @@ app.get("/api/financeiro/minha-empresa/receber", requireCliente, requireModuloAt
   const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
   let sql = `SELECT r.id, r.descricao, r.cliente_nome as clienteNome, r.valor, r.vencimento, r.status, r.valor_pago as valorPago, r.data_recebimento as dataRecebimento, r.observacao,
                     r.origem, r.nfse_emissao_id as nfseEmissaoId, r.nfe_documento_id as nfeDocumentoId, r.tipo_documento_id as tipoDocumentoId, td.nome as tipoDocumentoNome, nd.tipo as docFiscalTipo,
-                    r.conta_id as contaId, c.nome as contaNome, r.criado_em as criadoEm, r.natureza_id as naturezaId, n.nome as naturezaNome
+                    r.conta_id as contaId, c.nome as contaNome, r.criado_em as criadoEm, r.natureza_id as naturezaId, n.nome as naturezaNome,
+                    r.forma_pagamento_id as formaPagamentoId, fp.nome as formaPagamentoNome
              FROM financeiro_receber r
              LEFT JOIN financeiro_contas c ON c.id = r.conta_id
              LEFT JOIN financeiro_tipos_documento td ON td.id = r.tipo_documento_id
              LEFT JOIN nfe_documentos nd ON nd.id = r.nfe_documento_id
              LEFT JOIN financeiro_naturezas n ON n.id = r.natureza_id
+             LEFT JOIN financeiro_formas_pagamento fp ON fp.id = r.forma_pagamento_id
              WHERE r.empresa_id = ?`;
   const params: any[] = [empresaId];
   if (dataDe) { sql += ` AND date(r.vencimento) >= date(?)`; params.push(dataDe); }
@@ -17671,9 +17816,10 @@ app.post("/api/financeiro/minha-empresa/receber", requireCliente, requireModuloA
   const td = validarTipoDocManual(user.empresaId, req.body);
   if (!td.id) return res.status(400).json({ error: td.error || "Escolha o tipo de documento do lançamento." });
   const naturezaId = validarNaturezaOpcional(user.empresaId, req.body).id;
+  const formaPagamentoId = validarFormaPagamentoOpcional(user.empresaId, req.body).id;
   const info = sqlite
-    .prepare(`INSERT INTO financeiro_receber (empresa_id, descricao, cliente_nome, valor, vencimento, observacao, origem, conta_id, tipo_documento_id, criado_por, natureza_id) VALUES (?, ?, ?, ?, ?, ?, 'manual', ?, ?, ?, ?)`)
-    .run(user.empresaId, String(descricao).trim(), clienteNome || null, Number(valor), String(vencimento), observacao || null, contaId ? Number(contaId) : null, td.id, user.id, naturezaId);
+    .prepare(`INSERT INTO financeiro_receber (empresa_id, descricao, cliente_nome, valor, vencimento, observacao, origem, conta_id, tipo_documento_id, criado_por, natureza_id, forma_pagamento_id) VALUES (?, ?, ?, ?, ?, ?, 'manual', ?, ?, ?, ?, ?)`)
+    .run(user.empresaId, String(descricao).trim(), clienteNome || null, Number(valor), String(vencimento), observacao || null, contaId ? Number(contaId) : null, td.id, user.id, naturezaId, formaPagamentoId);
   res.json({ id: Number(info.lastInsertRowid) });
 });
 app.put("/api/financeiro/minha-empresa/receber/:id", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
@@ -17693,9 +17839,10 @@ app.put("/api/financeiro/minha-empresa/receber/:id", requireCliente, requireModu
     tipoDocFinal = td.id;
   }
   const naturezaFinal = req.body?.naturezaId !== undefined ? validarNaturezaOpcional(user.empresaId, req.body).id : existente.natureza_id;
+  const formaPagamentoFinal = req.body?.formaPagamentoId !== undefined ? validarFormaPagamentoOpcional(user.empresaId, req.body).id : existente.forma_pagamento_id;
   sqlite
     .prepare(
-      `UPDATE financeiro_receber SET descricao=?, cliente_nome=?, valor=?, vencimento=?, status=?, data_recebimento=?, observacao=?, conta_id=?, tipo_documento_id=?, natureza_id=? WHERE id=?`
+      `UPDATE financeiro_receber SET descricao=?, cliente_nome=?, valor=?, vencimento=?, status=?, data_recebimento=?, observacao=?, conta_id=?, tipo_documento_id=?, natureza_id=?, forma_pagamento_id=? WHERE id=?`
     )
     .run(
       travadoPelaNfse ? existente.descricao : descricao != null ? String(descricao).trim() : existente.descricao,
@@ -17708,6 +17855,7 @@ app.put("/api/financeiro/minha-empresa/receber/:id", requireCliente, requireModu
       contaId !== undefined ? (contaId ? Number(contaId) : null) : existente.conta_id,
       tipoDocFinal,
       naturezaFinal,
+      formaPagamentoFinal,
       existente.id
     );
   res.json({ ok: true });
@@ -17805,12 +17953,14 @@ app.get("/api/financeiro/empresas/:empresaId/pagar", blockCliente, requirePermis
   const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
   let sql = `SELECT p.id, p.descricao, p.fornecedor, p.valor, p.vencimento, p.status, p.valor_pago as valorPago, p.data_pagamento as dataPagamento, p.observacao,
                     p.origem, p.nfe_documento_id as nfeDocumentoId, p.tipo_documento_id as tipoDocumentoId, td.nome as tipoDocumentoNome, nd.tipo as docFiscalTipo,
-                    p.conta_id as contaId, c.nome as contaNome, p.criado_em as criadoEm, p.natureza_id as naturezaId, n.nome as naturezaNome
+                    p.conta_id as contaId, c.nome as contaNome, p.criado_em as criadoEm, p.natureza_id as naturezaId, n.nome as naturezaNome,
+                    p.forma_pagamento_id as formaPagamentoId, fp.nome as formaPagamentoNome
              FROM financeiro_pagar p
              LEFT JOIN financeiro_contas c ON c.id = p.conta_id
              LEFT JOIN financeiro_tipos_documento td ON td.id = p.tipo_documento_id
              LEFT JOIN nfe_documentos nd ON nd.id = p.nfe_documento_id
              LEFT JOIN financeiro_naturezas n ON n.id = p.natureza_id
+             LEFT JOIN financeiro_formas_pagamento fp ON fp.id = p.forma_pagamento_id
              WHERE p.empresa_id = ?`;
   const params: any[] = [empresaId];
   if (dataDe) { sql += ` AND date(p.vencimento) >= date(?)`; params.push(dataDe); }
@@ -17827,9 +17977,10 @@ app.post("/api/financeiro/empresas/:empresaId/pagar", blockCliente, requirePermi
   const td = validarTipoDocManual(empresaId, req.body);
   if (!td.id) return res.status(400).json({ error: td.error || "Escolha o tipo de documento do lançamento." });
   const naturezaId = validarNaturezaOpcional(empresaId, req.body).id;
+  const formaPagamentoId = validarFormaPagamentoOpcional(empresaId, req.body).id;
   const info = sqlite
-    .prepare(`INSERT INTO financeiro_pagar (empresa_id, descricao, fornecedor, valor, vencimento, observacao, conta_id, tipo_documento_id, criado_por, natureza_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(empresaId, String(descricao).trim(), fornecedor || null, Number(valor), String(vencimento), observacao || null, contaId ? Number(contaId) : null, td.id, user.id, naturezaId);
+    .prepare(`INSERT INTO financeiro_pagar (empresa_id, descricao, fornecedor, valor, vencimento, observacao, conta_id, tipo_documento_id, criado_por, natureza_id, forma_pagamento_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(empresaId, String(descricao).trim(), fornecedor || null, Number(valor), String(vencimento), observacao || null, contaId ? Number(contaId) : null, td.id, user.id, naturezaId, formaPagamentoId);
   res.json({ id: Number(info.lastInsertRowid) });
 });
 app.put("/api/financeiro/empresas/:empresaId/pagar/:id", blockCliente, requirePermissao("financeiro", "editar"), (req, res) => {
@@ -17854,8 +18005,9 @@ app.put("/api/financeiro/empresas/:empresaId/pagar/:id", blockCliente, requirePe
     ? (typeof dataPagamento === "string" && /^\d{4}-\d{2}-\d{2}$/.test(dataPagamento) ? dataPagamento : existente.data_pagamento || new Date().toISOString().slice(0, 10))
     : statusValido === existente.status ? existente.data_pagamento : null;
   const naturezaFinal = req.body?.naturezaId !== undefined ? validarNaturezaOpcional(empresaId, req.body).id : existente.natureza_id;
+  const formaPagamentoFinal = req.body?.formaPagamentoId !== undefined ? validarFormaPagamentoOpcional(empresaId, req.body).id : existente.forma_pagamento_id;
   sqlite
-    .prepare(`UPDATE financeiro_pagar SET descricao=?, fornecedor=?, valor=?, vencimento=?, status=?, data_pagamento=?, observacao=?, conta_id=?, tipo_documento_id=?, natureza_id=? WHERE id=?`)
+    .prepare(`UPDATE financeiro_pagar SET descricao=?, fornecedor=?, valor=?, vencimento=?, status=?, data_pagamento=?, observacao=?, conta_id=?, tipo_documento_id=?, natureza_id=?, forma_pagamento_id=? WHERE id=?`)
     .run(
       travadoPelaNfe ? existente.descricao : descricao != null ? String(descricao).trim() : existente.descricao,
       travadoPelaNfe ? existente.fornecedor : fornecedor !== undefined ? fornecedor || null : existente.fornecedor,
@@ -17867,6 +18019,7 @@ app.put("/api/financeiro/empresas/:empresaId/pagar/:id", blockCliente, requirePe
       contaFinal,
       tipoDocFinal,
       naturezaFinal,
+      formaPagamentoFinal,
       existente.id
     );
   res.json({ ok: true });
@@ -17889,12 +18042,14 @@ app.get("/api/financeiro/empresas/:empresaId/receber", blockCliente, requirePerm
   const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
   let sql = `SELECT r.id, r.descricao, r.cliente_nome as clienteNome, r.valor, r.vencimento, r.status, r.valor_pago as valorPago, r.data_recebimento as dataRecebimento, r.observacao,
                     r.origem, r.nfse_emissao_id as nfseEmissaoId, r.nfe_documento_id as nfeDocumentoId, r.tipo_documento_id as tipoDocumentoId, td.nome as tipoDocumentoNome, nd.tipo as docFiscalTipo,
-                    r.conta_id as contaId, c.nome as contaNome, r.criado_em as criadoEm, r.natureza_id as naturezaId, n.nome as naturezaNome
+                    r.conta_id as contaId, c.nome as contaNome, r.criado_em as criadoEm, r.natureza_id as naturezaId, n.nome as naturezaNome,
+                    r.forma_pagamento_id as formaPagamentoId, fp.nome as formaPagamentoNome
              FROM financeiro_receber r
              LEFT JOIN financeiro_contas c ON c.id = r.conta_id
              LEFT JOIN financeiro_tipos_documento td ON td.id = r.tipo_documento_id
              LEFT JOIN nfe_documentos nd ON nd.id = r.nfe_documento_id
              LEFT JOIN financeiro_naturezas n ON n.id = r.natureza_id
+             LEFT JOIN financeiro_formas_pagamento fp ON fp.id = r.forma_pagamento_id
              WHERE r.empresa_id = ?`;
   const params: any[] = [empresaId];
   if (dataDe) { sql += ` AND date(r.vencimento) >= date(?)`; params.push(dataDe); }
@@ -17911,9 +18066,10 @@ app.post("/api/financeiro/empresas/:empresaId/receber", blockCliente, requirePer
   const td = validarTipoDocManual(empresaId, req.body);
   if (!td.id) return res.status(400).json({ error: td.error || "Escolha o tipo de documento do lançamento." });
   const naturezaId = validarNaturezaOpcional(empresaId, req.body).id;
+  const formaPagamentoId = validarFormaPagamentoOpcional(empresaId, req.body).id;
   const info = sqlite
-    .prepare(`INSERT INTO financeiro_receber (empresa_id, descricao, cliente_nome, valor, vencimento, observacao, origem, conta_id, tipo_documento_id, criado_por, natureza_id) VALUES (?, ?, ?, ?, ?, ?, 'manual', ?, ?, ?, ?)`)
-    .run(empresaId, String(descricao).trim(), clienteNome || null, Number(valor), String(vencimento), observacao || null, contaId ? Number(contaId) : null, td.id, user.id, naturezaId);
+    .prepare(`INSERT INTO financeiro_receber (empresa_id, descricao, cliente_nome, valor, vencimento, observacao, origem, conta_id, tipo_documento_id, criado_por, natureza_id, forma_pagamento_id) VALUES (?, ?, ?, ?, ?, ?, 'manual', ?, ?, ?, ?, ?)`)
+    .run(empresaId, String(descricao).trim(), clienteNome || null, Number(valor), String(vencimento), observacao || null, contaId ? Number(contaId) : null, td.id, user.id, naturezaId, formaPagamentoId);
   res.json({ id: Number(info.lastInsertRowid) });
 });
 app.put("/api/financeiro/empresas/:empresaId/receber/:id", blockCliente, requirePermissao("financeiro", "editar"), (req, res) => {
@@ -17931,8 +18087,9 @@ app.put("/api/financeiro/empresas/:empresaId/receber/:id", blockCliente, require
     tipoDocFinal = td.id;
   }
   const naturezaFinal = req.body?.naturezaId !== undefined ? validarNaturezaOpcional(empresaId, req.body).id : existente.natureza_id;
+  const formaPagamentoFinal = req.body?.formaPagamentoId !== undefined ? validarFormaPagamentoOpcional(empresaId, req.body).id : existente.forma_pagamento_id;
   sqlite
-    .prepare(`UPDATE financeiro_receber SET descricao=?, cliente_nome=?, valor=?, vencimento=?, status=?, data_recebimento=?, observacao=?, conta_id=?, tipo_documento_id=?, natureza_id=? WHERE id=?`)
+    .prepare(`UPDATE financeiro_receber SET descricao=?, cliente_nome=?, valor=?, vencimento=?, status=?, data_recebimento=?, observacao=?, conta_id=?, tipo_documento_id=?, natureza_id=?, forma_pagamento_id=? WHERE id=?`)
     .run(
       travadoPelaNfse ? existente.descricao : descricao != null ? String(descricao).trim() : existente.descricao,
       travadoPelaNfse ? existente.cliente_nome : clienteNome !== undefined ? clienteNome || null : existente.cliente_nome,
@@ -17944,6 +18101,7 @@ app.put("/api/financeiro/empresas/:empresaId/receber/:id", blockCliente, require
       contaId !== undefined ? (contaId ? Number(contaId) : null) : existente.conta_id,
       tipoDocFinal,
       naturezaFinal,
+      formaPagamentoFinal,
       existente.id
     );
   res.json({ ok: true });
@@ -18073,6 +18231,79 @@ app.delete("/api/financeiro/empresas/:empresaId/naturezas/:id", blockCliente, re
   const empresaId = Number(req.params.empresaId);
   if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
   const r = naturezaExcluir(empresaId, Number(req.params.id));
+  if (r.error) return res.status(404).json({ error: r.error });
+  res.json(r);
+});
+app.get("/api/financeiro/minha-empresa/formas-pagamento", requireCliente, requireModuloAtivo("financeiro"), (req, res) => {
+  res.json({ items: formasPagamentoListar((req as any).user.empresaId) });
+});
+app.post("/api/financeiro/minha-empresa/formas-pagamento", requireCliente, requireModuloAtivo("financeiro"), (req, res) => {
+  const r = formaPagamentoCriar((req as any).user.empresaId, req.body);
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json(r);
+});
+app.delete("/api/financeiro/minha-empresa/formas-pagamento/:id", requireCliente, requireModuloAtivo("financeiro"), (req, res) => {
+  const r = formaPagamentoExcluir((req as any).user.empresaId, Number(req.params.id));
+  if (r.error) return res.status(404).json({ error: r.error });
+  res.json(r);
+});
+app.get("/api/financeiro/empresas/:empresaId/formas-pagamento", blockCliente, requirePermissao("financeiro", "visualizar"), (req, res) => {
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  res.json({ items: formasPagamentoListar(empresaId) });
+});
+app.post("/api/financeiro/empresas/:empresaId/formas-pagamento", blockCliente, requirePermissao("financeiro", "postar"), (req, res) => {
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const r = formaPagamentoCriar(empresaId, req.body);
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json(r);
+});
+app.delete("/api/financeiro/empresas/:empresaId/formas-pagamento/:id", blockCliente, requirePermissao("financeiro", "editar"), (req, res) => {
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const r = formaPagamentoExcluir(empresaId, Number(req.params.id));
+  if (r.error) return res.status(404).json({ error: r.error });
+  res.json(r);
+});
+// ---- Transferência entre contas ----
+app.get("/api/financeiro/minha-empresa/transferencias", requireCliente, requireModuloAtivo("financeiro"), (req, res) => {
+  const user = (req as any).user;
+  const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
+  const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
+  res.json({ items: financeiroTransferenciasListar(user.empresaId, dataDe, dataAte) });
+});
+app.post("/api/financeiro/minha-empresa/transferencias", requireCliente, requireModuloAtivo("financeiro"), (req, res) => {
+  const user = (req as any).user;
+  const r = financeiroTransferenciaCriar(user.empresaId, req.body, user.id);
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json(r);
+});
+app.delete("/api/financeiro/minha-empresa/transferencias/:id", requireCliente, requireModuloAtivo("financeiro"), (req, res) => {
+  const user = (req as any).user;
+  const r = financeiroTransferenciaExcluir(user.empresaId, Number(req.params.id));
+  if (r.error) return res.status(404).json({ error: r.error });
+  res.json(r);
+});
+app.get("/api/financeiro/empresas/:empresaId/transferencias", blockCliente, requirePermissao("financeiro", "visualizar"), (req, res) => {
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const dataDe = typeof req.query.dataDe === "string" && req.query.dataDe ? req.query.dataDe : null;
+  const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
+  res.json({ items: financeiroTransferenciasListar(empresaId, dataDe, dataAte) });
+});
+app.post("/api/financeiro/empresas/:empresaId/transferencias", blockCliente, requirePermissao("financeiro", "postar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const r = financeiroTransferenciaCriar(empresaId, req.body, user.id);
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json(r);
+});
+app.delete("/api/financeiro/empresas/:empresaId/transferencias/:id", blockCliente, requirePermissao("financeiro", "editar"), (req, res) => {
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const r = financeiroTransferenciaExcluir(empresaId, Number(req.params.id));
   if (r.error) return res.status(404).json({ error: r.error });
   res.json(r);
 });
