@@ -599,6 +599,11 @@ AoSair(*) {
     try ReportarProgresso(false, 0, 0, "", false)
 }
 
+; STANDBY no boot: ao abrir o robo, avisa o site e zera os gatilhos pendentes (um "Executar agora"
+; antigo, o intervalo automatico "vencido", a agenda do dia ja vencida). Assim ABRIR o robo nunca
+; dispara execucao -> so roda em comando NOVO do site ("Executar agora") ou no proximo horario/intervalo.
+HttpReq("POST", "/api/dominio-agent/demonstrativo/boot")
+
 Loop {
     body := HttpReq("GET", "/api/dominio-agent/demonstrativo-comando")
     AtualizarTempos(body)

@@ -6286,6 +6286,34 @@ app.get("/api/dominio-agent/comparativo-comando", requireDominioAgent, (_req, re
     tModuloCargaMs: c.tModuloCargaMs, tCurtoMs: c.tCurtoMs, tMedioMs: c.tMedioMs, tLongoMs: c.tLongoMs,
   });
 });
+// Boot do robô: ao ABRIR o .ahk, ele chama isto UMA vez pra entrar em STANDBY sem disparar nada. Zera os
+// gatilhos que fariam rodar na hora: cancela um "Executar agora" antigo pendente (run_now_em), reseta o
+// baseline de tempo pra agora (ultima_exec_em = now → o intervalo automático só conta a partir daqui, não
+// dispara por estar "vencido") e, SÓ se a agenda do dia já estava vencida neste instante, marca o dia como
+// consumido (uma agenda ainda não vencida continua disparando no horário). Assim abrir o robô nunca inicia
+// uma execução — ela só acontece em comando NOVO do site (botão "Executar agora") ou no próximo horário/intervalo.
+const ROBO_ESTADO_TABELA: Record<string, string> = {
+  comparativo: "comparativo_robo_estado",
+  demonstrativo: "demonstrativo_robo_estado",
+  ferias: "ferias_robo_estado",
+};
+app.post("/api/dominio-agent/:robo/boot", requireDominioAgent, (req, res) => {
+  const tabela = ROBO_ESTADO_TABELA[String(req.params.robo)];
+  if (!tabela) return res.status(404).json({ error: "Robô desconhecido." });
+  if (tabela === "comparativo_robo_estado") garantirRoboEstado(1);
+  else if (tabela === "demonstrativo_robo_estado") garantirDemonstrativoEstado(1);
+  else garantirFeriasEstado(1);
+  const c = sqlite
+    .prepare(`SELECT agenda_ativo AS agendaAtivo, agenda_hora AS agendaHora, agenda_minuto AS agendaMinuto, agenda_ultimo_dia AS agendaUltimoDia FROM ${tabela} WHERE escritorio_id = 1`)
+    .get() as any;
+  const { deve: agendaVencidaAgora, hojeSp } = agendaDeveRodarAgora(c);
+  if (agendaVencidaAgora) {
+    sqlite.prepare(`UPDATE ${tabela} SET run_now_em = NULL, ultima_exec_em = datetime('now'), agenda_ultimo_dia = ?, agente_visto_em = datetime('now') WHERE escritorio_id = 1`).run(hojeSp);
+  } else {
+    sqlite.prepare(`UPDATE ${tabela} SET run_now_em = NULL, ultima_exec_em = datetime('now'), agente_visto_em = datetime('now') WHERE escritorio_id = 1`).run();
+  }
+  res.json({ ok: true });
+});
 // O robô reporta o progresso (empresa a empresa). Ao INICIAR, limpa o "executar agora" e marca a última execução.
 app.post("/api/dominio-agent/comparativo-progresso", requireDominioAgent, (req, res) => {
   garantirRoboEstado(1);
