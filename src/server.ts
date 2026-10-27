@@ -18152,7 +18152,8 @@ app.get("/api/financeiro/minha-empresa/pagar", requireCliente, requireModuloAtiv
   let sql = `SELECT p.id, p.descricao, p.fornecedor, p.valor, p.vencimento, p.status, p.valor_pago as valorPago, p.data_pagamento as dataPagamento, p.observacao,
                     p.origem, p.nfe_documento_id as nfeDocumentoId, p.tipo_documento_id as tipoDocumentoId, td.nome as tipoDocumentoNome, nd.tipo as docFiscalTipo,
                     p.conta_id as contaId, c.nome as contaNome, p.criado_em as criadoEm, p.natureza_id as naturezaId, n.nome as naturezaNome,
-                    p.forma_pagamento_id as formaPagamentoId, fp.nome as formaPagamentoNome
+                    p.forma_pagamento_id as formaPagamentoId, fp.nome as formaPagamentoNome,
+                    nd.data_emissao as dataEmissaoNota
              FROM financeiro_pagar p
              LEFT JOIN financeiro_contas c ON c.id = p.conta_id
              LEFT JOIN financeiro_tipos_documento td ON td.id = p.tipo_documento_id
@@ -18248,11 +18249,13 @@ app.get("/api/financeiro/minha-empresa/receber", requireCliente, requireModuloAt
   let sql = `SELECT r.id, r.descricao, r.cliente_nome as clienteNome, r.valor, r.vencimento, r.status, r.valor_pago as valorPago, r.data_recebimento as dataRecebimento, r.observacao,
                     r.origem, r.nfse_emissao_id as nfseEmissaoId, r.nfe_documento_id as nfeDocumentoId, r.tipo_documento_id as tipoDocumentoId, td.nome as tipoDocumentoNome, nd.tipo as docFiscalTipo,
                     r.conta_id as contaId, c.nome as contaNome, r.criado_em as criadoEm, r.natureza_id as naturezaId, n.nome as naturezaNome,
-                    r.forma_pagamento_id as formaPagamentoId, fp.nome as formaPagamentoNome
+                    r.forma_pagamento_id as formaPagamentoId, fp.nome as formaPagamentoNome,
+                    COALESCE(nd.data_emissao, ne.criado_em) as dataEmissaoNota
              FROM financeiro_receber r
              LEFT JOIN financeiro_contas c ON c.id = r.conta_id
              LEFT JOIN financeiro_tipos_documento td ON td.id = r.tipo_documento_id
              LEFT JOIN nfe_documentos nd ON nd.id = r.nfe_documento_id
+             LEFT JOIN nfse_emissoes ne ON ne.id = r.nfse_emissao_id
              LEFT JOIN financeiro_naturezas n ON n.id = r.natureza_id
              LEFT JOIN financeiro_formas_pagamento fp ON fp.id = r.forma_pagamento_id
              WHERE r.empresa_id = ?`;
@@ -18407,7 +18410,8 @@ app.get("/api/financeiro/empresas/:empresaId/pagar", blockCliente, requirePermis
   let sql = `SELECT p.id, p.descricao, p.fornecedor, p.valor, p.vencimento, p.status, p.valor_pago as valorPago, p.data_pagamento as dataPagamento, p.observacao,
                     p.origem, p.nfe_documento_id as nfeDocumentoId, p.tipo_documento_id as tipoDocumentoId, td.nome as tipoDocumentoNome, nd.tipo as docFiscalTipo,
                     p.conta_id as contaId, c.nome as contaNome, p.criado_em as criadoEm, p.natureza_id as naturezaId, n.nome as naturezaNome,
-                    p.forma_pagamento_id as formaPagamentoId, fp.nome as formaPagamentoNome
+                    p.forma_pagamento_id as formaPagamentoId, fp.nome as formaPagamentoNome,
+                    nd.data_emissao as dataEmissaoNota
              FROM financeiro_pagar p
              LEFT JOIN financeiro_contas c ON c.id = p.conta_id
              LEFT JOIN financeiro_tipos_documento td ON td.id = p.tipo_documento_id
@@ -18496,11 +18500,13 @@ app.get("/api/financeiro/empresas/:empresaId/receber", blockCliente, requirePerm
   let sql = `SELECT r.id, r.descricao, r.cliente_nome as clienteNome, r.valor, r.vencimento, r.status, r.valor_pago as valorPago, r.data_recebimento as dataRecebimento, r.observacao,
                     r.origem, r.nfse_emissao_id as nfseEmissaoId, r.nfe_documento_id as nfeDocumentoId, r.tipo_documento_id as tipoDocumentoId, td.nome as tipoDocumentoNome, nd.tipo as docFiscalTipo,
                     r.conta_id as contaId, c.nome as contaNome, r.criado_em as criadoEm, r.natureza_id as naturezaId, n.nome as naturezaNome,
-                    r.forma_pagamento_id as formaPagamentoId, fp.nome as formaPagamentoNome
+                    r.forma_pagamento_id as formaPagamentoId, fp.nome as formaPagamentoNome,
+                    COALESCE(nd.data_emissao, ne.criado_em) as dataEmissaoNota
              FROM financeiro_receber r
              LEFT JOIN financeiro_contas c ON c.id = r.conta_id
              LEFT JOIN financeiro_tipos_documento td ON td.id = r.tipo_documento_id
              LEFT JOIN nfe_documentos nd ON nd.id = r.nfe_documento_id
+             LEFT JOIN nfse_emissoes ne ON ne.id = r.nfse_emissao_id
              LEFT JOIN financeiro_naturezas n ON n.id = r.natureza_id
              LEFT JOIN financeiro_formas_pagamento fp ON fp.id = r.forma_pagamento_id
              WHERE r.empresa_id = ?`;

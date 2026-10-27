@@ -10486,11 +10486,17 @@ async function finRenderReceber(basePath, containerId, filtro, podePostar, podeE
       ${dateFieldHtml('mfrDe','De',dataDe)}
       ${dateFieldHtml('mfrAte','Até',dataAte)}
       <div class="field" style="min-width:220px; margin-bottom:0;"><label>Buscar</label><input id="mfrBusca" placeholder="Cliente, descrição, Nº NF…" value="${esc(filtro.busca||'')}"></div>
+      <div class="field" style="min-width:170px; margin-bottom:0;"><label>Ordenar por</label><select id="mfrOrdenar">
+        <option value="vencimento" ${(filtro.ordenar||'vencimento')==='vencimento'?'selected':''}>Vencimento</option>
+        <option value="dataBaixa" ${filtro.ordenar==='dataBaixa'?'selected':''}>Data de baixa</option>
+        <option value="nota" ${filtro.ordenar==='nota'?'selected':''}>Nº da nota</option>
+        <option value="emissao" ${filtro.ordenar==='emissao'?'selected':''}>Emissão da nota</option>
+      </select></div>
       ${podePostar?`<button class="btn primary" id="btnNovoReceber">+ Novo lançamento</button>`:''}
     </div>
-    <div class="card" style="padding:0; overflow-x:auto;">
+    <div class="card" style="padding:0; overflow:auto; max-height:calc(100vh - 300px);">
       <table class="data-table">
-        <thead><tr><th>Nº</th><th>Nº NF</th><th>Cliente</th><th>Tipo Doc.</th><th>Natureza</th><th>Valor</th><th>Baixado</th><th>Saldo</th><th>Vencimento</th><th>Data baixa</th><th>Conta</th><th>Status</th><th></th><th>Descrição</th></tr></thead>
+        <thead><tr><th>Nº</th><th>Nº NF</th><th>Cliente</th><th>Tipo Doc.</th><th>Natureza</th><th>Valor</th><th>Baixado</th><th>Saldo</th><th>Emissão</th><th>Vencimento</th><th>Data baixa</th><th>Conta</th><th>Status</th><th></th><th>Descrição</th></tr></thead>
         <tbody id="mfrTbody"></tbody>
       </table>
     </div>
@@ -10503,6 +10509,16 @@ async function finRenderReceber(basePath, containerId, filtro, podePostar, podeE
   if(podePostar) document.getElementById('btnNovoReceber').addEventListener('click', ()=>finLancamentoModal(basePath, 'receber', null, recarregar));
   function pintar(){
     const visiveis = finFiltrarBusca(items, filtro.busca);
+    // Ordenação escolhida: vencimento (↑), data de baixa (↓ recente), nº da nota (↑) ou emissão (↓).
+    const ordenar = filtro.ordenar||'vencimento';
+    const numNota = i=>{ const s=String(finNumeroNf(i)||'').replace(/\D/g,''); return s?Number(s):Infinity; };
+    const cmpDesc = (da,db)=>{ da=da||''; db=db||''; if(!da&&!db) return 0; if(!da) return 1; if(!db) return -1; return da<db?1:(da>db?-1:0); };
+    visiveis.sort((a,b)=>{
+      if(ordenar==='nota') return numNota(a)-numNota(b);
+      if(ordenar==='dataBaixa') return cmpDesc(a.dataRecebimento, b.dataRecebimento);
+      if(ordenar==='emissao') return cmpDesc(a.dataEmissaoNota, b.dataEmissaoNota);
+      const va=a.vencimento||'', vb=b.vencimento||''; return va<vb?-1:(va>vb?1:(a.id-b.id));
+    });
     const validos = visiveis.filter(i=>i.status!=='cancelado');
     const totalFiltrado = validos.reduce((s,i)=>s+(i.valor||0),0);
     const totalRecebido = validos.reduce((s,i)=>s+finBaixado(i),0);
@@ -10520,12 +10536,13 @@ async function finRenderReceber(basePath, containerId, filtro, podePostar, podeE
             <tr style="${trStyle}">
               <td style="color:var(--ink-soft);">${i.id}</td>
               <td>${esc(finNumeroNf(i))}</td>
-              <td>${esc(i.clienteNome||'—')}</td>
+              <td>${esc(i.clienteNome || (i.origem==='ofx' ? (i.descricao||'') : '') || '—')}</td>
               <td><span class="tag muted" style="font-weight:600;">${esc(finLabelDocumento(i))}</span></td>
               <td>${i.naturezaNome?esc(i.naturezaNome):'<span style="color:var(--ink-soft);">—</span>'}</td>
               <td>${fmtMoney(i.valor)}</td>
               <td>${finBaixado(i)>0?fmtMoney(finBaixado(i)):'—'}</td>
               <td style="${!cancelado && ((i.valor||0)-finBaixado(i))>0.004 && i.status!=='pago'?'color:var(--debit); font-weight:600;':''}">${fmtMoney((i.valor||0)-finBaixado(i))}</td>
+              <td>${i.dataEmissaoNota?fmtDateIso(String(i.dataEmissaoNota).slice(0,10)):'<span style="color:var(--ink-soft);">—</span>'}</td>
               <td>${fmtDateIso(i.vencimento)}</td>
               <td>${i.dataRecebimento?fmtDateIso(String(i.dataRecebimento).slice(0,10)):'—'}</td>
               <td>${esc(i.contaNome||'—')}</td>
@@ -10540,7 +10557,7 @@ async function finRenderReceber(basePath, containerId, filtro, podePostar, podeE
               <td>${esc(finDescricaoCurta(i))}</td>
             </tr>
           `;
-    }).join('') : `<tr><td colspan="14"><div class="empty-state">Nenhum lançamento${filtro.busca?' pra essa busca':''} neste período.</div></td></tr>`;
+    }).join('') : `<tr><td colspan="15"><div class="empty-state">Nenhum lançamento${filtro.busca?' pra essa busca':''} neste período.</div></td></tr>`;
     if(!podeEditar) return;
     tbody.querySelectorAll('[data-act="editar"]').forEach(b=>b.addEventListener('click', ()=>{
       finLancamentoModal(basePath, 'receber', items.find(i=>i.id===Number(b.dataset.id)), recarregar);
@@ -10562,6 +10579,7 @@ async function finRenderReceber(basePath, containerId, filtro, podePostar, podeE
   }
   pintar();
   document.getElementById('mfrBusca').addEventListener('input', e=>{ filtro.busca = e.target.value; pintar(); });
+  document.getElementById('mfrOrdenar').addEventListener('change', e=>{ filtro.ordenar = e.target.value; pintar(); });
 }
 // Baixar um título a pagar SEMPRE pedindo a conta (de onde saiu o pagamento) — pedido do usuário: não
 // deixar marcar pago sem informar a conta, pra o saldo das contas e os relatórios ficarem com lastro.
@@ -10638,11 +10656,17 @@ async function finRenderPagar(basePath, containerId, filtro, podePostar, podeEdi
       ${dateFieldHtml('mfpDe','De',dataDe)}
       ${dateFieldHtml('mfpAte','Até',dataAte)}
       <div class="field" style="min-width:220px; margin-bottom:0;"><label>Buscar</label><input id="mfpBusca" placeholder="Fornecedor, descrição, Nº NF…" value="${esc(filtro.busca||'')}"></div>
+      <div class="field" style="min-width:170px; margin-bottom:0;"><label>Ordenar por</label><select id="mfpOrdenar">
+        <option value="vencimento" ${(filtro.ordenar||'vencimento')==='vencimento'?'selected':''}>Vencimento</option>
+        <option value="dataBaixa" ${filtro.ordenar==='dataBaixa'?'selected':''}>Data de baixa</option>
+        <option value="nota" ${filtro.ordenar==='nota'?'selected':''}>Nº da nota</option>
+        <option value="emissao" ${filtro.ordenar==='emissao'?'selected':''}>Emissão da nota</option>
+      </select></div>
       ${podePostar?`<button class="btn primary" id="btnNovoPagar">+ Novo lançamento</button>`:''}
     </div>
-    <div class="card" style="padding:0; overflow-x:auto;">
+    <div class="card" style="padding:0; overflow:auto; max-height:calc(100vh - 300px);">
       <table class="data-table">
-        <thead><tr><th>Nº</th><th>Nº NF</th><th>Fornecedor</th><th>Tipo Doc.</th><th>Natureza</th><th>Valor</th><th>Baixado</th><th>Saldo</th><th>Vencimento</th><th>Data baixa</th><th>Conta</th><th>Status</th><th></th><th>Descrição</th></tr></thead>
+        <thead><tr><th>Nº</th><th>Nº NF</th><th>Fornecedor</th><th>Tipo Doc.</th><th>Natureza</th><th>Valor</th><th>Baixado</th><th>Saldo</th><th>Emissão</th><th>Vencimento</th><th>Data baixa</th><th>Conta</th><th>Status</th><th></th><th>Descrição</th></tr></thead>
         <tbody id="mfpTbody"></tbody>
       </table>
     </div>
@@ -10655,6 +10679,15 @@ async function finRenderPagar(basePath, containerId, filtro, podePostar, podeEdi
   if(podePostar) document.getElementById('btnNovoPagar').addEventListener('click', ()=>finLancamentoModal(basePath, 'pagar', null, recarregar));
   function pintar(){
     const visiveis = finFiltrarBusca(items, filtro.busca);
+    const ordenar = filtro.ordenar||'vencimento';
+    const numNota = i=>{ const s=String(finNumeroNf(i)||'').replace(/\D/g,''); return s?Number(s):Infinity; };
+    const cmpDesc = (da,db)=>{ da=da||''; db=db||''; if(!da&&!db) return 0; if(!da) return 1; if(!db) return -1; return da<db?1:(da>db?-1:0); };
+    visiveis.sort((a,b)=>{
+      if(ordenar==='nota') return numNota(a)-numNota(b);
+      if(ordenar==='dataBaixa') return cmpDesc(a.dataPagamento, b.dataPagamento);
+      if(ordenar==='emissao') return cmpDesc(a.dataEmissaoNota, b.dataEmissaoNota);
+      const va=a.vencimento||'', vb=b.vencimento||''; return va<vb?-1:(va>vb?1:(a.id-b.id));
+    });
     const validos = visiveis.filter(i=>i.status!=='cancelado');
     const totalFiltrado = validos.reduce((s,i)=>s+(i.valor||0),0);
     const totalPago = validos.reduce((s,i)=>s+finBaixado(i),0);
@@ -10672,12 +10705,13 @@ async function finRenderPagar(basePath, containerId, filtro, podePostar, podeEdi
             <tr style="${trStyle}">
               <td style="color:var(--ink-soft);">${i.id}</td>
               <td>${esc(finNumeroNf(i))}</td>
-              <td>${esc(i.fornecedor||'—')}</td>
+              <td>${esc(i.fornecedor || (i.origem==='ofx' ? (i.descricao||'') : '') || '—')}</td>
               <td><span class="tag muted" style="font-weight:600;">${esc(finLabelDocumento(i))}</span></td>
               <td>${i.naturezaNome?esc(i.naturezaNome):'<span style="color:var(--ink-soft);">—</span>'}</td>
               <td>${fmtMoney(i.valor)}</td>
               <td>${finBaixado(i)>0?fmtMoney(finBaixado(i)):'—'}</td>
               <td style="${!cancelado && ((i.valor||0)-finBaixado(i))>0.004 && i.status!=='pago'?'color:var(--debit); font-weight:600;':''}">${fmtMoney((i.valor||0)-finBaixado(i))}</td>
+              <td>${i.dataEmissaoNota?fmtDateIso(String(i.dataEmissaoNota).slice(0,10)):'<span style="color:var(--ink-soft);">—</span>'}</td>
               <td>${fmtDateIso(i.vencimento)}</td>
               <td>${i.dataPagamento?fmtDateIso(String(i.dataPagamento).slice(0,10)):'—'}</td>
               <td>${esc(i.contaNome||'—')}</td>
@@ -10692,7 +10726,7 @@ async function finRenderPagar(basePath, containerId, filtro, podePostar, podeEdi
               <td>${esc(finDescricaoCurta(i))}</td>
             </tr>
           `;
-    }).join('') : `<tr><td colspan="14"><div class="empty-state">Nenhum lançamento${filtro.busca?' pra essa busca':''} neste período.</div></td></tr>`;
+    }).join('') : `<tr><td colspan="15"><div class="empty-state">Nenhum lançamento${filtro.busca?' pra essa busca':''} neste período.</div></td></tr>`;
     if(!podeEditar) return;
     tbody.querySelectorAll('[data-act="editar"]').forEach(b=>b.addEventListener('click', ()=>{
       finLancamentoModal(basePath, 'pagar', items.find(i=>i.id===Number(b.dataset.id)), recarregar);
@@ -10714,6 +10748,7 @@ async function finRenderPagar(basePath, containerId, filtro, podePostar, podeEdi
   }
   pintar();
   document.getElementById('mfpBusca').addEventListener('input', e=>{ filtro.busca = e.target.value; pintar(); });
+  document.getElementById('mfpOrdenar').addEventListener('change', e=>{ filtro.ordenar = e.target.value; pintar(); });
 }
 // Relatórios: visão gerencial só de leitura — saldo consolidado das contas, resumo de pendente/
 // atrasado/baixado dos dois lados, e fluxo de caixa projetado (13 semanas, só títulos ainda
