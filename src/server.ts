@@ -10624,6 +10624,17 @@ async function onedriveExportarDocumentosNovos(escritorioId: number): Promise<{ 
         .all(escritorioId, ultimoId) as any[];
       if (!rows.length) break;
       for (const doc of rows) {
+        // CT-e só vai pra pasta de notas da empresa se ela for o TOMADOR do serviço (quem contratou/paga
+        // o frete). A empresa costuma aparecer no CT-e como remetente/destinatário sem ser a tomadora —
+        // nesses casos o XML não é dela pra escriturar, então pula (avança o ponteiro pra não reprocessar).
+        if (doc.tipo === "cte") {
+          const tomador = nfePdf.extrairTomadorCteDocumento(doc.xml || "");
+          const empresaDig = String(doc.empresaCnpj || "").replace(/\D/g, "");
+          if (tomador && empresaDig && tomador !== empresaDig) {
+            ultimoId = doc.id;
+            continue;
+          }
+        }
         // Pasta da competência no padrão MMAAAA (ex.: "092026") — de dataEmissao "AAAA-MM-DD".
         const competencia = doc.dataEmissao ? `${String(doc.dataEmissao).slice(5, 7)}${String(doc.dataEmissao).slice(0, 4)}` : "sem-data";
         // Mesma convenção da pasta de importação do próprio Domínio ("125-AGR" — código do cliente

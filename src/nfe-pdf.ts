@@ -712,6 +712,24 @@ export function extrairDadosCte(xml: string): DadosCte | null {
     },
   };
 }
+// Extrai SÓ o CNPJ/CPF do tomador do serviço de um CT-e (quem contratou/paga o frete), em dígitos.
+// Usado pra decidir se o XML vai pra pasta de notas da empresa: só interessa o CT-e em que a própria
+// empresa é a tomadora (ver onedriveExportarDocumentosNovos). Resolve toma3 (0=Remetente,1=Expedidor,
+// 2=Recebedor,3=Destinatário) e toma4 (Outros, CNPJ explícito). Nunca lança — devolve null se não der.
+export function extrairTomadorCteDocumento(xml: string): string | null {
+  try {
+    const parsed = xmlParser.parse(xml);
+    const inf = parsed?.cteProc?.CTe?.infCte ?? parsed?.CTe?.infCte;
+    if (!inf) return null;
+    const ide = inf.ide || {};
+    const tomCod = ide.toma3?.toma !== undefined ? String(ide.toma3.toma) : null;
+    const parte = tomCod !== null && tomCod !== "4" ? { "0": inf.rem, "1": inf.exped, "2": inf.receb, "3": inf.dest }[tomCod] : ide.toma4;
+    const doc = String((parte || {}).CNPJ || (parte || {}).CPF || "").replace(/\D/g, "");
+    return doc || null;
+  } catch {
+    return null;
+  }
+}
 function cteBox(rotulo: string, valor: string, extra = ""): string {
   return `<div class="bx" style="${extra}"><div class="rt">${esc(rotulo)}</div><div class="vl">${esc(valor || "")}</div></div>`;
 }
