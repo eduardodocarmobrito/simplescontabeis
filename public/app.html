@@ -10511,13 +10511,13 @@ async function finRenderReceber(basePath, containerId, filtro, podePostar, podeE
     const visiveis = finFiltrarBusca(items, filtro.busca);
     // Ordenação escolhida: vencimento (↑), data de baixa (↓ recente), nº da nota (↑) ou emissão (↓).
     const ordenar = filtro.ordenar||'vencimento';
-    const numNota = i=>{ const s=String(finNumeroNf(i)||'').replace(/\D/g,''); return s?Number(s):Infinity; };
+    const numNota = i=>{ const s=String(finNumeroNf(i)||'').replace(/\D/g,''); return s?Number(s):-1; };
     const cmpDesc = (da,db)=>{ da=da||''; db=db||''; if(!da&&!db) return 0; if(!da) return 1; if(!db) return -1; return da<db?1:(da>db?-1:0); };
     visiveis.sort((a,b)=>{
-      if(ordenar==='nota') return numNota(a)-numNota(b);
+      if(ordenar==='nota') return numNota(b)-numNota(a);
       if(ordenar==='dataBaixa') return cmpDesc(a.dataRecebimento, b.dataRecebimento);
       if(ordenar==='emissao') return cmpDesc(a.dataEmissaoNota, b.dataEmissaoNota);
-      const va=a.vencimento||'', vb=b.vencimento||''; return va<vb?-1:(va>vb?1:(a.id-b.id));
+      const va=a.vencimento||'', vb=b.vencimento||''; return va<vb?1:(va>vb?-1:(b.id-a.id));
     });
     const validos = visiveis.filter(i=>i.status!=='cancelado');
     const totalFiltrado = validos.reduce((s,i)=>s+(i.valor||0),0);
@@ -10680,13 +10680,13 @@ async function finRenderPagar(basePath, containerId, filtro, podePostar, podeEdi
   function pintar(){
     const visiveis = finFiltrarBusca(items, filtro.busca);
     const ordenar = filtro.ordenar||'vencimento';
-    const numNota = i=>{ const s=String(finNumeroNf(i)||'').replace(/\D/g,''); return s?Number(s):Infinity; };
+    const numNota = i=>{ const s=String(finNumeroNf(i)||'').replace(/\D/g,''); return s?Number(s):-1; };
     const cmpDesc = (da,db)=>{ da=da||''; db=db||''; if(!da&&!db) return 0; if(!da) return 1; if(!db) return -1; return da<db?1:(da>db?-1:0); };
     visiveis.sort((a,b)=>{
-      if(ordenar==='nota') return numNota(a)-numNota(b);
+      if(ordenar==='nota') return numNota(b)-numNota(a);
       if(ordenar==='dataBaixa') return cmpDesc(a.dataPagamento, b.dataPagamento);
       if(ordenar==='emissao') return cmpDesc(a.dataEmissaoNota, b.dataEmissaoNota);
-      const va=a.vencimento||'', vb=b.vencimento||''; return va<vb?-1:(va>vb?1:(a.id-b.id));
+      const va=a.vencimento||'', vb=b.vencimento||''; return va<vb?1:(va>vb?-1:(b.id-a.id));
     });
     const validos = visiveis.filter(i=>i.status!=='cancelado');
     const totalFiltrado = validos.reduce((s,i)=>s+(i.valor||0),0);
