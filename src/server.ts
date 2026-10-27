@@ -9889,6 +9889,20 @@ function nfeIntegrarFinanceiro(docId: number, userId: number): { ok: boolean; er
   const jaExiste = sqlite.prepare(`SELECT 1 FROM ${tabela} WHERE nfe_documento_id = ?`).get(docId);
   if (jaExiste) return { ok: true }; // já integrada — idempotente, não duplica
 
+  // NFS-e emitida pela própria empresa também aparece na Busca de XML (o Sistema Nacional/ADN devolve
+  // até as notas que o próprio escritório emitiu) — é a MESMA nota que o módulo de emissão de NFS-e já
+  // lançou no Financeiro (nfse_emissoes, casado por chave de acesso). Achado ao vivo: um "integrar" em
+  // lote na Busca de XML duplicou 15 títulos a receber que já existiam via a emissão direta. Se essa
+  // emissão já existe e já foi integrada (tem nfse_emissao_id preenchido em algum título), não duplica
+  // — só marca este documento como integrado (ele já está representado pelo outro título) e sai.
+  if (row.tipo === "nfse" && emitida && row.chave_acesso) {
+    const emissaoCorrespondente = sqlite.prepare(`SELECT id FROM nfse_emissoes WHERE empresa_id = ? AND chave_acesso = ?`).get(row.empresa_id, row.chave_acesso) as any;
+    if (emissaoCorrespondente && sqlite.prepare(`SELECT 1 FROM financeiro_receber WHERE nfse_emissao_id = ?`).get(emissaoCorrespondente.id)) {
+      sqlite.prepare(`UPDATE nfe_documentos SET integrado_financeiro = 1 WHERE id = ?`).run(docId);
+      return { ok: true };
+    }
+  }
+
   const detalhe = row.xml ? nfe.detalharNfe(row.xml) : null;
   const parcelasXml = detalhe?.duplicatas?.parcelas || [];
   const parcelas = parcelasXml.length ? parcelasXml : [{ nDup: null, dVenc: null, vDup: row.valor_total || 0 }];
@@ -21204,6 +21218,36 @@ if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'financeiro_ve
   }
   if (corrigidos) console.log(`[migração] financeiro_vencimento_nfe_backfill: ${corrigidos} vencimento(s) corrigido(s).`);
   sqlite.exec(`INSERT INTO migracoes_unicas (chave) VALUES ('financeiro_vencimento_nfe_backfill_20261026')`);
+}
+// Backfill: NFS-e emitida pela própria empresa também aparece na Busca de XML (o Sistema
+// Nacional/ADN devolve até as notas que o próprio escritório emitiu) — integrar essa mesma nota por
+// ali duplicava o título a receber que o módulo de emissão de NFS-e já tinha lançado (origem='nfse',
+// casado por chave de acesso). Corrigido acima, em nfeIntegrarFinanceiro. Achado ao vivo
+// (2026-10-27): um "integrar" em lote na Busca de XML duplicou 15 títulos a receber (NFS-e 172 a 187
+// de uma só empresa), ~R$52.674 fantasmas no "A Receber". Remove só o título duplicado
+// (origem='nfe', ainda pendente — nunca mexe em título já baixado) quando já existe o título
+// original (origem='nfse') pra essa mesma nota; marca o documento como integrado (ele já está
+// representado pelo título original que sobra).
+if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'financeiro_nfse_autoemitida_duplicata_backfill_20261027'`).get()) {
+  const duplicatas = sqlite
+    .prepare(
+      `SELECT r.id, r.valor, r.nfe_documento_id as nfeDocumentoId
+       FROM financeiro_receber r
+       JOIN nfe_documentos d ON d.id = r.nfe_documento_id
+       JOIN nfse_emissoes em ON em.empresa_id = d.empresa_id AND em.chave_acesso = d.chave_acesso
+       WHERE r.origem = 'nfe' AND d.tipo = 'nfse' AND r.status = 'pendente'
+         AND EXISTS (SELECT 1 FROM financeiro_receber r2 WHERE r2.nfse_emissao_id = em.id)`
+    )
+    .all() as any[];
+  let removidos = 0, valorTotal = 0;
+  for (const d of duplicatas) {
+    sqlite.prepare(`DELETE FROM financeiro_receber WHERE id = ?`).run(d.id);
+    sqlite.prepare(`UPDATE nfe_documentos SET integrado_financeiro = 1 WHERE id = ?`).run(d.nfeDocumentoId);
+    removidos++;
+    valorTotal += d.valor || 0;
+  }
+  if (removidos) console.log(`[migração] financeiro_nfse_autoemitida_duplicata_backfill: ${removidos} título(s) duplicado(s) removido(s), R$ ${valorTotal.toFixed(2)}.`);
+  sqlite.exec(`INSERT INTO migracoes_unicas (chave) VALUES ('financeiro_nfse_autoemitida_duplicata_backfill_20261027')`);
 }
 function atendimentoConfig(escritorioId: number) {
   const r = sqlite.prepare(`SELECT * FROM atendimento_config WHERE escritorio_id = ?`).get(escritorioId) as any;
