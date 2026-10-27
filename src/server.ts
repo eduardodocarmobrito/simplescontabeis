@@ -18347,15 +18347,15 @@ app.delete("/api/financeiro/empresas/:empresaId/transferencias/:id", blockClient
 // pagar separados, no período filtrado (mesmo range de data usado nas telas de A Receber/A Pagar).
 function financeiroRelatorioNatureza(empresaId: number, dataDe: string | null, dataAte: string | null) {
   const porTabela = (tabela: "financeiro_receber" | "financeiro_pagar") => {
-    let sql = `SELECT COALESCE(n.nome, '(sem natureza)') as natureza, COUNT(*) as qtd,
+    let sql = `SELECT r.natureza_id as naturezaId, COALESCE(n.nome, '(sem natureza)') as natureza, COUNT(*) as qtd,
                       SUM(r.valor) as total, SUM(CASE WHEN r.status='pago' THEN r.valor ELSE r.valor_pago END) as totalBaixado
                FROM ${tabela} r LEFT JOIN financeiro_naturezas n ON n.id = r.natureza_id
                WHERE r.empresa_id = ?`;
     const params: any[] = [empresaId];
     if (dataDe) { sql += ` AND date(r.vencimento) >= date(?)`; params.push(dataDe); }
     if (dataAte) { sql += ` AND date(r.vencimento) <= date(?)`; params.push(dataAte); }
-    sql += ` GROUP BY natureza ORDER BY total DESC`;
-    return (sqlite.prepare(sql).all(...params) as any[]).map((r) => ({ natureza: r.natureza, qtd: r.qtd, total: r.total || 0, totalBaixado: r.totalBaixado || 0, totalFalta: (r.total || 0) - (r.totalBaixado || 0) }));
+    sql += ` GROUP BY r.natureza_id ORDER BY total DESC`;
+    return (sqlite.prepare(sql).all(...params) as any[]).map((r) => ({ naturezaId: r.naturezaId ?? null, natureza: r.natureza, qtd: r.qtd, total: r.total || 0, totalBaixado: r.totalBaixado || 0, totalFalta: (r.total || 0) - (r.totalBaixado || 0) }));
   };
   return { receber: porTabela("financeiro_receber"), pagar: porTabela("financeiro_pagar") };
 }

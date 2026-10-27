@@ -10400,7 +10400,7 @@ async function finRenderRelatorios(basePath, containerId){
     document.getElementById('relNatAte').addEventListener('change', carregarRelatorioNatureza);
     await carregarRelatorioNatureza();
   }
-  const tabelaNatureza = (titulo, items, cor)=> `
+  const tabelaNatureza = (titulo, items, cor, tipo)=> `
     <div style="font-size:12.5px; font-weight:600; margin:10px 0 4px;">${titulo}</div>
     ${items.length? `
       <div style="overflow-x:auto;">
@@ -10408,7 +10408,7 @@ async function finRenderRelatorios(basePath, containerId){
           <thead><tr><th>Natureza</th><th>Qtd.</th><th>Total</th><th>Baixado</th><th>Falta</th></tr></thead>
           <tbody>
             ${items.map(n=>`
-              <tr>
+              <tr class="linha-clicavel" data-nat-tipo="${tipo}" data-nat-id="${n.naturezaId==null?'':n.naturezaId}" data-nat-nome="${esc(n.natureza)}" style="cursor:pointer;" title="Ver os lançamentos desta natureza">
                 <td>${esc(n.natureza)}</td>
                 <td style="color:var(--ink-soft);">${n.qtd}</td>
                 <td>${fmtMoney(n.total)}</td>
@@ -10420,6 +10420,42 @@ async function finRenderRelatorios(basePath, containerId){
         </table>
       </div>
     ` : `<div class="empty-state">Nenhum lançamento no período.</div>`}`;
+  // Drill-down: abre a grade dos lançamentos de uma natureza (mesmo período do relatório) + botão Voltar.
+  async function abrirLancamentosNatureza(tipo, natId, natNome){
+    const body = document.getElementById('finRelNaturezaBody');
+    if(!body) return;
+    const dataDe = document.getElementById('relNatDe').value;
+    const dataAte = document.getElementById('relNatAte').value;
+    body.innerHTML = `<div class="empty-state">Carregando…</div>`;
+    const qs = new URLSearchParams(); if(dataDe) qs.set('dataDe', dataDe); if(dataAte) qs.set('dataAte', dataAte);
+    let items;
+    try{ const r = await api(basePath+'/'+tipo+(qs.toString()?'?'+qs.toString():'')); items = (r.items||[]).filter(i=>(natId==='')? (i.naturezaId==null) : (String(i.naturezaId)===String(natId))); }
+    catch(e){ body.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
+    const quem = tipo==='receber'?'Cliente':'Fornecedor';
+    const total = items.reduce((s,i)=>s+(i.valor||0),0);
+    const baixado = items.reduce((s,i)=>s+(i.status==='pago'?(i.valor||0):(i.valorPago||0)),0);
+    body.innerHTML = `
+      <div class="row" style="align-items:center; gap:10px; margin-bottom:8px;">
+        <button class="btn" id="finNatVoltar">← Voltar</button>
+        <div style="font-weight:600;">${tipo==='receber'?'A Receber':'A Pagar'} · ${esc(natNome)}</div>
+        <div style="margin-left:auto; font-size:12px; color:var(--ink-soft);">${items.length} lançamento(s) · Total ${fmtMoney(total)} · Baixado ${fmtMoney(baixado)}</div>
+      </div>
+      ${items.length? `<div style="overflow-x:auto;"><table class="data-table" style="white-space:nowrap;">
+        <thead><tr><th>Vencimento</th><th>${quem}</th><th>Tipo Doc.</th><th>Valor</th><th>Baixado</th><th>Saldo</th><th>Status</th><th>Descrição</th></tr></thead>
+        <tbody>${items.map(i=>{ const bx = i.status==='pago'?(i.valor||0):(i.valorPago||0); const saldo=(i.valor||0)-bx; const st={pendente:['Pendente','warn'],pago:['Baixado','ok'],atrasado:['Atrasado','bad'],cancelado:['Cancelado','muted']}[i.status]||[i.status,'muted'];
+          return `<tr>
+            <td>${i.vencimento?fmtDateIso(String(i.vencimento).slice(0,10)):'—'}</td>
+            <td>${esc((tipo==='receber'?i.clienteNome:i.fornecedor)||'—')}</td>
+            <td>${esc(i.tipoDocumentoNome||'—')}</td>
+            <td>${fmtMoney(i.valor)}</td>
+            <td style="color:${tipo==='receber'?'#059669':'var(--debit)'};">${fmtMoney(bx)}</td>
+            <td style="${saldo>0.004?'color:var(--debit); font-weight:600;':'color:var(--ink-soft);'}">${fmtMoney(saldo)}</td>
+            <td><span class="tag ${st[1]}">${st[0]}</span></td>
+            <td style="white-space:normal;">${esc(i.descricao||'—')}</td>
+          </tr>`; }).join('')}</tbody>
+      </table></div>` : `<div class="empty-state">Nenhum lançamento desta natureza no período.</div>`}`;
+    document.getElementById('finNatVoltar').addEventListener('click', carregarRelatorioNatureza);
+  }
   async function carregarRelatorioNatureza(){
     const body = document.getElementById('finRelNaturezaBody');
     if(!body) return;
@@ -10432,7 +10468,8 @@ async function finRenderRelatorios(basePath, containerId){
     let d;
     try{ d = await api(basePath+'/relatorios/natureza'+(qs.toString()?'?'+qs.toString():'')); }
     catch(e){ body.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
-    body.innerHTML = tabelaNatureza('A Receber', d.receber, '#059669') + tabelaNatureza('A Pagar', d.pagar, 'var(--debit)');
+    body.innerHTML = tabelaNatureza('A Receber', d.receber, '#059669', 'receber') + tabelaNatureza('A Pagar', d.pagar, 'var(--debit)', 'pagar');
+    body.querySelectorAll('.linha-clicavel[data-nat-tipo]').forEach(tr=>tr.addEventListener('click', ()=>abrirLancamentosNatureza(tr.dataset.natTipo, tr.dataset.natId, tr.dataset.natNome)));
   }
   await render('semana');
 }
