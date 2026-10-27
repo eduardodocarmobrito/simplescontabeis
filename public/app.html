@@ -8396,7 +8396,7 @@ async function pageIntegraContador(deepLinkEmpresaId){
       </div>` : ''}
       <div class="card">
         <h3>Documentos</h3>
-        <div class="field" style="max-width:360px; margin-bottom:10px;"><input type="search" id="icDocBusca" placeholder="Pesquisar por tipo de documento…" autocomplete="off" value="${esc(icDocBusca)}"></div>
+        <div class="field" style="max-width:360px; margin-bottom:10px;"><input type="search" id="icDocBusca" placeholder="Pesquisar por tipo ou competência (ex.: 07/2026)…" autocomplete="off" value="${esc(icDocBusca)}"></div>
         <div class="card" style="padding:0; overflow-x:auto;">
           <table class="data-table">
             <thead><tr><th>Tipo</th><th>Período</th><th>Número</th><th>Vencimento</th><th>Recebido em</th><th></th></tr></thead>
@@ -8534,7 +8534,20 @@ async function pageIntegraContador(deepLinkEmpresaId){
     function renderIcDocumentos(){
       const tbody = document.getElementById('icDocBody');
       const termo = normalizaTxt(icDocBusca);
-      const docs = termo ? icDocsTodos.filter(d=>normalizaTxt(IC_TIPO_LABEL[d.tipo]||d.tipo).includes(termo)) : icDocsTodos;
+      const termoDig = String(icDocBusca||'').replace(/\D/g,''); // dígitos pra casar competência/número
+      // Busca por TIPO (texto) ou por COMPETÊNCIA/NÚMERO (dígitos). A competência casa tanto "07/2026"
+      // quanto "072026", "202607", só "07" ou só "2026" (compara nas duas formas AAAAMM e MMAAAA).
+      function casaDoc(d){
+        if(normalizaTxt(IC_TIPO_LABEL[d.tipo]||d.tipo).includes(termo)) return true;
+        if(termoDig){
+          const perRaw = String(d.periodoApuracao||''); const perDig = perRaw.replace(/\D/g,'');
+          const perMMAAAA = /^\d{6}$/.test(perRaw) ? perRaw.slice(4,6)+perRaw.slice(0,4) : perDig;
+          if(perDig.includes(termoDig) || perMMAAAA.includes(termoDig)) return true;
+          if(String(d.numeroDocumento||'').replace(/\D/g,'').includes(termoDig)) return true;
+        }
+        return false;
+      }
+      const docs = termo ? icDocsTodos.filter(casaDoc) : icDocsTodos;
       tbody.innerHTML = docs.length ? docs.map(d=>`
         <tr>
           <td>${esc(IC_TIPO_LABEL[d.tipo]||d.tipo)}</td>
