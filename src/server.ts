@@ -9568,12 +9568,30 @@ function nfeListarDocumentosQuery(
   if (busca) {
     const digits = busca.replace(/\D/g, "");
     const valorNorm = busca.replace(",", ".");
-    condicoes.push(
-      `(d.emitente_nome LIKE ? OR d.destinatario_nome LIKE ? OR d.chave_acesso LIKE ? OR d.emitente_cnpj LIKE ? OR d.destinatario_cnpj LIKE ? OR CAST(d.valor_total AS TEXT) LIKE ?)`
-    );
     const likeTexto = `%${busca}%`;
-    const likeDigits = `%${digits || busca}%`;
-    params.push(likeTexto, likeTexto, likeTexto, likeDigits, likeDigits, `%${valorNorm}%`);
+    // Monta a busca como OR de vários critérios, escolhendo quais entram conforme o termo digitado.
+    const subs: string[] = [`d.emitente_nome LIKE ?`, `d.destinatario_nome LIKE ?`];
+    const p: any[] = [likeTexto, likeTexto];
+    if (digits) {
+      // CNPJ (por dígitos).
+      subs.push(`d.emitente_cnpj LIKE ?`, `d.destinatario_cnpj LIKE ?`);
+      p.push(`%${digits}%`, `%${digits}%`);
+      // NÚMERO da nota: NFS-e pelo <nNFSe> (dentro do XML); NF-e/NFC-e pela posição 26–34 da chave.
+      // Casamento EXATO — digitar "40" acha o número 40, não pedaços de chave.
+      subs.push(
+        `(d.tipo = 'nfse' AND instr(d.xml,'<nNFSe>') > 0 AND instr(d.xml,'</nNFSe>') > instr(d.xml,'<nNFSe>') AND substr(d.xml, instr(d.xml,'<nNFSe>')+7, instr(d.xml,'</nNFSe>')-instr(d.xml,'<nNFSe>')-7) = ?)`
+      );
+      p.push(digits);
+      subs.push(`(d.tipo IN ('nfe','nfce') AND length(d.chave_acesso) = 44 AND CAST(substr(d.chave_acesso,26,9) AS INTEGER) = CAST(? AS INTEGER))`);
+      p.push(digits);
+      // CHAVE de acesso: só quando o termo é um pedaço de chave de verdade (≥10 dígitos) — senão um
+      // número curto ("40") casaria pedaços de várias chaves e "filtraria" tudo.
+      if (digits.length >= 10) { subs.push(`d.chave_acesso LIKE ?`); p.push(`%${digits}%`); }
+    }
+    subs.push(`CAST(d.valor_total AS TEXT) LIKE ?`);
+    p.push(`%${valorNorm}%`);
+    condicoes.push(`(${subs.join(" OR ")})`);
+    params.push(...p);
   }
   // Filtro por FLAG do "Perfil das Notas" (clicável na tela): mostra só as notas que têm aquele
   // marcador. As flags de produto/fiscal vivem na coluna d.flags (texto separado por vírgula); as
