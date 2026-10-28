@@ -3227,10 +3227,10 @@ async function renderEmpresasTab(){
   box.innerHTML = `
     ${ativasTab? `<div class="row" style="margin-bottom:8px; align-items:center;">
       ${podePostar? `<button class="btn primary" id="btnNovaEmpresa">+ Nova empresa</button>`:''}
-      ${podePostar? `<button class="btn" id="btnImportarDominio">Importar do Domínio Web (CSV)</button>`:''}
-      ${podePostar? `<button class="btn" id="btnAtualizarEmpresas">↻ Atualizar Empresas</button>`:''}
+      ${STATE.user.perfil==='Administrador'&&podePostar? `<button class="btn" id="btnImportarDominio">Importar do Domínio Web (CSV)</button>`:''}
+      ${STATE.user.perfil==='Administrador'&&podePostar? `<button class="btn" id="btnAtualizarEmpresas">↻ Atualizar Empresas</button>`:''}
       ${STATE.user.perfil==='Administrador'? `<button class="btn" id="btnImportarCertificados">📥 Importar certificados (Drive)</button>`:''}
-      ${podePostar? `<button class="btn" id="btnAtividadesTodas" title="Consulta na Receita as atividades (CNAE) de todas as empresas que ainda não têm — roda em segundo plano">↻ Atividades (todas)</button>`:''}
+      ${STATE.user.perfil==='Administrador'&&podePostar? `<button class="btn" id="btnAtividadesTodas" title="Consulta na Receita as atividades (CNAE) de todas as empresas que ainda não têm — roda em segundo plano">↻ Atividades (todas)</button>`:''}
       <span id="atualizarEmpresasStatus" style="font-size:12px; color:var(--ink-soft);"></span>
       <span id="atividadesTodasStatus" style="font-size:12px; color:var(--ink-soft);"></span>
     </div>` : `<p class="subtitle" style="margin-top:-6px;">Empresas inativadas não aparecem em Relatórios nem podem receber novos anexos — mas nada foi apagado.</p>`}
@@ -3294,8 +3294,8 @@ async function renderEmpresasTab(){
 
   if(podePostar && ativasTab){
     document.getElementById('btnNovaEmpresa').addEventListener('click', ()=>empresaModal());
-    document.getElementById('btnImportarDominio').addEventListener('click', importarDominioModal);
-    document.getElementById('btnAtualizarEmpresas').addEventListener('click', atualizarEmpresasDoDominio);
+    document.getElementById('btnImportarDominio')?.addEventListener('click', importarDominioModal);
+    document.getElementById('btnAtualizarEmpresas')?.addEventListener('click', atualizarEmpresasDoDominio);
     // Atualizar atividades (CNAE) de TODAS as empresas que ainda não têm — roda em segundo plano na Receita.
     const btnAtivTodas = document.getElementById('btnAtividadesTodas');
     const stAtiv = document.getElementById('atividadesTodasStatus');
