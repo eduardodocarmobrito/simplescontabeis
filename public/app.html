@@ -16174,8 +16174,8 @@ function tabelaModulosHtml(prefixo, items){
       <tbody>
         ${items.map(m=>`
           <tr data-chave="${m.chave}">
-            <td><input class="${prefixo}Nome" value="${esc(m.nome)}" style="width:100%;" disabled></td>
-            <td style="width:160px;"><input class="${prefixo}Valor" type="number" step="0.01" min="0" value="${m.valorMensal}" style="width:100%;" disabled></td>
+            <td><input class="${prefixo}Nome inp" value="${esc(m.nome)}" style="width:100%;" disabled></td>
+            <td style="width:160px;"><input class="${prefixo}Valor inp" type="number" step="0.01" min="0" value="${m.valorMensal}" style="width:100%;" disabled></td>
             <td style="width:70px; text-align:center;"><input class="${prefixo}Ativo" type="checkbox" ${m.ativo?'checked':''} disabled></td>
             <td style="width:150px; white-space:nowrap;">
               <button class="btn small ${prefixo}Editar">Editar</button>
