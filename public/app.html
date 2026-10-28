@@ -18787,7 +18787,7 @@ async function renderCfgEmailSmtp(box){
       <h3>Histórico de envios</h3>
       <div style="max-height:460px; overflow-y:auto;">
         <table class="data-table">
-          <thead><tr><th style="position:sticky; top:0; background:var(--surface);">Quando</th><th style="position:sticky; top:0; background:var(--surface);">Empresa</th><th style="position:sticky; top:0; background:var(--surface);">Assunto</th><th style="position:sticky; top:0; background:var(--surface);">Status</th></tr></thead>
+          <thead><tr><th style="position:sticky; top:0;">Quando</th><th style="position:sticky; top:0;">Empresa</th><th style="position:sticky; top:0;">Assunto</th><th style="position:sticky; top:0;">Status</th></tr></thead>
           <tbody>${items.length? items.map(e=>`<tr><td>${fmtDate(e.enviado_em)}</td><td>${esc(e.empresaNome||'—')}</td><td>${esc(e.assunto)}</td><td><span class="tag ${e.status==='ok'?'ok':'bad'}">${e.status}</span></td></tr>`).join(''):'<tr><td colspan="4"><div class="empty-state">Nenhum envio ainda.</div></td></tr>'}</tbody>
         </table>
       </div>
@@ -18908,8 +18908,8 @@ async function renderCfgEmailSmtp(box){
     const listaBox = document.getElementById('ccListaEmpresas');
     listaBox.innerHTML = lista.length ? `
       <table class="data-table"><thead><tr>
-        <th style="position:sticky; top:0; background:var(--surface); ${CC_TAB==='configuradas'?'width:540px;':''}">Empresa</th>
-        ${CC_TAB==='configuradas'?'<th style="position:sticky; top:0; background:var(--surface);">Contatos</th>':''}
+        <th style="position:sticky; top:0; ${CC_TAB==='configuradas'?'width:540px;':''}">Empresa</th>
+        ${CC_TAB==='configuradas'?'<th style="position:sticky; top:0;">Contatos</th>':''}
       </tr></thead><tbody>
         ${lista.map(e=>`<tr data-cc-empresa="${e.id}" style="cursor:pointer;">
           <td style="vertical-align:top; font-size:12px; line-height:1.3; ${CC_TAB==='configuradas'?'width:540px; white-space:normal; word-break:break-word;':'white-space:nowrap;'}">${esc(empresaComboLabel(e))}</td>
