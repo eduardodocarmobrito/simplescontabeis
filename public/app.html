@@ -126,7 +126,7 @@
   .main{flex:1; min-width:0; padding:44px 52px 90px;}
   h1{font-size:34px; font-weight:800; letter-spacing:-.02em; margin:0 0 5px;}
   .subtitle{color:var(--ink-soft); font-size:15px; margin:0 0 28px;}
-  .card{background:var(--surface); border-radius:22px; box-shadow:var(--shadow); padding:26px 28px; margin-bottom:20px; transition:transform .18s ease, box-shadow .18s ease;}
+  .card{position:relative; background:var(--surface); border-radius:22px; box-shadow:var(--shadow); padding:26px 28px; margin-bottom:20px; transition:transform .18s ease, box-shadow .18s ease;}
   .card h3{margin:0 0 12px; font-size:15px;}
   .row{display:flex; gap:12px; flex-wrap:wrap; align-items:flex-end;}
   .grow{flex:1; min-width:160px;}
@@ -238,12 +238,12 @@
   .alerta-critico b{font-weight:700;}
 
   .doc-row{display:flex; gap:14px; align-items:stretch; margin-bottom:14px;}
-  .doc-card{width:340px; flex-shrink:0; background:var(--surface); border:1px solid var(--rule); border-radius:var(--radius); box-shadow:var(--shadow); padding:14px 16px; cursor:pointer; display:flex; flex-direction:column; justify-content:center; transition:border-color .15s;}
+  .doc-card{position:relative; width:340px; flex-shrink:0; background:var(--surface); border:1px solid var(--rule); border-radius:var(--radius); box-shadow:var(--shadow); padding:14px 16px; cursor:pointer; display:flex; flex-direction:column; justify-content:center; transition:border-color .15s;}
   .doc-card:hover{border-color:var(--accent);}
   .doc-card h3{margin:0 0 3px; font-size:14.5px;}
   .doc-card .doc-card-sub{font-size:11.5px; color:var(--ink-soft);}
   .doc-card .doc-card-link{margin-top:8px; font-family:'IBM Plex Mono',monospace; font-size:10px; letter-spacing:.04em; text-transform:uppercase; color:var(--accent-deep);}
-  .doc-inline{flex:1; min-width:0; background:var(--surface); border:1px solid var(--rule); border-radius:var(--radius); box-shadow:var(--shadow); padding:14px 16px; display:flex; gap:24px; align-items:flex-start; flex-wrap:wrap;}
+  .doc-inline{position:relative; flex:1; min-width:0; background:var(--surface); border:1px solid var(--rule); border-radius:var(--radius); box-shadow:var(--shadow); padding:14px 16px; display:flex; gap:24px; align-items:flex-start; flex-wrap:wrap;}
   .doc-inline-periodo{font-family:'IBM Plex Mono',monospace; font-size:11px; letter-spacing:.05em; text-transform:uppercase; color:var(--ink-soft); align-self:center; min-width:64px;}
   .doc-inline-empty{color:var(--ink-soft); font-size:12.5px; align-self:center;}
 
@@ -566,11 +566,23 @@ body.theme-glass .sidebar{
   border-right: 1px solid rgba(255,255,255,.12);
 }
 body.theme-glass .nav-item:hover, body.theme-glass .nav-sub:hover{background:rgba(255,255,255,.1);}
+/* O vidro (cor + blur) vai numa camada ::before atrás do conteúdo, não no elemento em si — colocar
+   backdrop-filter direto no .card criava um novo "contexto de empilhamento" que prendia menus
+   suspensos (como o combo de busca) atrás da próxima tabela/card da tela, mesmo com z-index alto
+   neles. Com o blur isolado no ::before, o .card continua "normal" pros filhos dele empilharem por
+   cima de qualquer coisa fora dele, como antes. Achado ao vivo em produção em 2026-10-27. */
 body.theme-glass .card, body.theme-glass .kpi, body.theme-glass .modal, body.theme-glass .drawer, body.theme-glass .doc-card, body.theme-glass .doc-inline{
+  background: transparent;
+  border: 1px solid rgba(255,255,255,.14);
+}
+body.theme-glass .card::before, body.theme-glass .kpi::before, body.theme-glass .modal::before, body.theme-glass .drawer::before, body.theme-glass .doc-card::before, body.theme-glass .doc-inline::before{
+  content:'';
+  position:absolute; inset:0;
+  z-index:-1;
+  border-radius:inherit;
   background: rgba(var(--glass-rgb,5,31,32),.52);
   backdrop-filter: saturate(180%) blur(20px);
   -webkit-backdrop-filter: saturate(180%) blur(20px);
-  border: 1px solid rgba(255,255,255,.14);
 }
 /* Campos de formulário sempre têm fundo claro (var(--paper)/var(--surface)) — texto precisa continuar escuro, em qualquer lugar da tela, não só dentro de card/modal (inclui a tela de login). */
 body.theme-glass .field input, body.theme-glass .field select, body.theme-glass .field textarea,
@@ -578,7 +590,25 @@ body.theme-glass .combo-input, body.theme-glass .inp, body.theme-glass input.dat
 body.theme-glass table.data-table td input[type=text], body.theme-glass table.data-table td select{
   background: rgba(255,255,255,.92); color:#1D1D1F;
 }
-/* .login-screen nunca fica escuro (fica sempre com --surface/--paper claros, não flipados pelo tema) — login-box não precisa de ajuste de cor de texto aqui. */
+/* Tela de login segue o mesmo tema escolhido no sistema — painel direito vira vidro escuro com
+   texto claro (igual ao resto do app), painel esquerdo ganha o gradiente vívido do tema, mas com um
+   brilho suave e sem bordas atrás da logo (que tem texto escuro, precisa de uma área clara pra
+   continuar legível). */
+body.theme-glass .login-visual{
+  background:
+    radial-gradient(640px 640px at 50% 42%, rgba(255,255,255,.98) 0%, rgba(255,255,255,.85) 38%, rgba(255,255,255,0) 62%),
+    radial-gradient(1300px 820px at 6% -12%, rgba(255,255,255,.3), transparent 52%),
+    radial-gradient(950px 650px at 94% 110%, rgba(255,255,255,.14), transparent 55%),
+    linear-gradient(160deg, var(--glass-c1,#163832) 0%, var(--glass-c2,#0B2B26) 55%, var(--glass-c3,#051F20) 100%);
+}
+body.theme-glass .login-form-side{
+  background: rgba(var(--glass-rgb,5,31,32),.88);
+}
+body.theme-glass .login-box .eyebrow{color:#6FE3B4;}
+body.theme-glass .login-box h1{color:#F5F5F7;}
+body.theme-glass .login-box .field label{color:#C3C7C5;}
+body.theme-glass .login-box a{color:#C3C7C5;}
+body.theme-glass .login-box .field input{background:rgba(255,255,255,.95); color:#1D1D1F;}
 /* Faixa de "receber aviso de notificação" tem fundo branco sólido fixo — mesmo vidro escuro do resto */
 body.theme-glass .notif-faixa{
   background: rgba(var(--glass-rgb,5,31,32),.65);
@@ -616,8 +646,8 @@ body.theme-glass .btn{
   color: #F5F5F7;
 }
 body.theme-glass .btn:hover{background:rgba(var(--glass-rgb,5,31,32),.65); border-color:rgba(255,255,255,.4); color:#fff;}
-body.theme-glass .btn.primary{color:#fff;}
-body.theme-glass .btn.primary:hover{color:#fff;}
+body.theme-glass .btn.primary{background:var(--accent); border-color:var(--accent); color:#fff;}
+body.theme-glass .btn.primary:hover{background:var(--accent-deep); border-color:var(--accent-deep); color:#fff;}
 /* Trilho das abas — mesmo vidro escuro da sidebar; a aba ativa continua um chip mais claro por cima, pra dar contraste de seleção */
 body.theme-glass .tabs{
   background: rgba(var(--glass-rgb,5,31,32),.4);
@@ -7953,8 +7983,8 @@ async function pageNfeBusca(){
     box.innerHTML = `
       <div class="card">
         <div class="tabs">
-          <div class="tab" data-tab="configuradas">Empresas Configuradas <span class="tag muted">${configuradas.length}</span></div>
-          <div class="tab" data-tab="naoConfiguradas">Empresas Não Configuradas <span class="tag muted">${naoConfiguradas.length}</span></div>
+          <div class="tab" data-tab="configuradas">Empresas Configuradas <span class="tag ok">${configuradas.length}</span></div>
+          <div class="tab" data-tab="naoConfiguradas">Empresas Não Configuradas <span class="tag warn">${naoConfiguradas.length}</span></div>
           <div class="tab" data-tab="diagnostico">🔍 Diagnóstico</div>
         </div>
         <div class="field" style="margin:10px 0 6px;"><label>Buscar</label><input type="text" id="nfeListaFiltro" placeholder="Buscar empresa…"></div>
@@ -9016,8 +9046,8 @@ async function pageIntegraContador(deepLinkEmpresaId){
     const visiveis = IC_TAB==='configuradas' ? configuradas : naoConfiguradas;
     box.innerHTML = `
       <div class="tabs">
-        <div class="tab" data-tab="configuradas">Empresas Configuradas <span class="tag muted">${configuradas.length}</span></div>
-        <div class="tab" data-tab="naoConfiguradas">Empresas Não Configuradas <span class="tag muted">${naoConfiguradas.length}</span></div>
+        <div class="tab" data-tab="configuradas">Empresas Configuradas <span class="tag ok">${configuradas.length}</span></div>
+        <div class="tab" data-tab="naoConfiguradas">Empresas Não Configuradas <span class="tag warn">${naoConfiguradas.length}</span></div>
       </div>
       <div class="card">
         <div class="field" style="max-width:420px; margin-bottom:0;"><label>Buscar empresa</label>${comboSelectHtml('icFiltroEmpresaCombo', 'Digite para buscar a empresa…')}</div>
@@ -9185,7 +9215,7 @@ async function pageIntegraContador(deepLinkEmpresaId){
             <tfoot><tr><td colspan="4" style="text-align:right; font-weight:600;">Total consolidado</td><td style="text-align:right; font-weight:700;">${fmtBRL(r.totalConsolidado)}</td><td></td></tr></tfoot>
           </table>`
           : (r.parcelamento||r.omissoes?'':`<div class="empty-state" style="font-size:12.5px;">Nenhum débito detalhado detectado na leitura automática.</div>`)}
-        ${r.trecho?`<details style="font-size:12px; margin-top:8px;"><summary style="cursor:pointer; color:var(--ink-soft);">Ver trecho do relatório (Situação Fiscal)</summary><pre style="white-space:pre-wrap; background:var(--bg-soft,#f4f6f5); padding:10px; border-radius:8px; max-height:300px; overflow:auto; margin-top:6px;">${esc(r.trecho)}</pre></details>`:''}
+        ${r.trecho?`<details style="font-size:12px; margin-top:8px;"><summary style="cursor:pointer; color:var(--ink-soft);">Ver trecho do relatório (Situação Fiscal)</summary><pre style="white-space:pre-wrap; background:var(--bg-soft,#f4f6f5); color:#1D1D1F; padding:10px; border-radius:8px; max-height:300px; overflow:auto; margin-top:6px;">${esc(r.trecho)}</pre></details>`:''}
         <div style="font-size:11px; color:var(--ink-soft); margin-top:6px;">Leitura automática do SITFIS — em caso de dúvida, confira no PDF da Situação Fiscal (aba Documentos abaixo).</div>`;
     }
     carregarIcPgfn();
@@ -14713,7 +14743,7 @@ function atdEncaminharModal(S, m){
   const preview = temMidia ? `${(ATD_MIDIA_TIPOS[m.type]||['📎',''])[0]} ${esc(tipoLabel)}${m.body?` — "${esc(m.body)}"`:''}` : esc(m.body||'');
   openModal(`
     <h3>Encaminhar para outra pessoa</h3>
-    <div style="background:var(--bg-soft,#f4f6f5); border-radius:8px; padding:10px; margin-bottom:12px; max-height:110px; overflow:auto; white-space:pre-wrap; font-size:13px;">${preview||'[sem conteúdo]'}</div>
+    <div style="background:var(--bg-soft,#f4f6f5); color:#1D1D1F; border-radius:8px; padding:10px; margin-bottom:12px; max-height:110px; overflow:auto; white-space:pre-wrap; font-size:13px;">${preview||'[sem conteúdo]'}</div>
     <div class="field"><label>Buscar na agenda</label><input type="text" id="atdEncBusca" placeholder="Nome ou telefone…" autocomplete="off"></div>
     <div id="atdEncResultados" style="max-height:200px; overflow-y:auto; border:1px solid var(--rule); border-radius:10px; margin:-6px 0 14px;"><div class="empty-state" style="padding:14px;">Digite pra procurar um contato.</div></div>
     <div class="field"><label>Ou digite o número (com DDD)</label><input type="text" id="atdEncTelefone" placeholder="Ex.: 94 99999-8888" autocomplete="off"></div>
@@ -15054,7 +15084,7 @@ function atdMenuMensagem(S, id){
   const podeEditar = nossa && m.type==='text' && !m.revoked_at && idadeMin<=15;
   openModal(`
     <h3>Mensagem</h3>
-    <div style="background:var(--bg-soft,#f4f6f5); border-radius:8px; padding:10px; margin-bottom:12px; max-height:120px; overflow:auto; white-space:pre-wrap;">${esc(m.body||'['+(m.type||'mídia')+']')}</div>
+    <div style="background:var(--bg-soft,#f4f6f5); color:#1D1D1F; border-radius:8px; padding:10px; margin-bottom:12px; max-height:120px; overflow:auto; white-space:pre-wrap;">${esc(m.body||'['+(m.type||'mídia')+']')}</div>
     <div style="display:flex; flex-direction:column; gap:8px;">
       ${!m.revoked_at?`<button class="btn primary" id="msgResponder">↩️ Responder esta mensagem</button>`:''}
       ${!m.revoked_at && (m.body || m.media_storage_path)?`<button class="btn" id="msgEncaminhar">↪️ Encaminhar para outra pessoa</button>`:''}
@@ -16227,6 +16257,7 @@ function cenvDataHora(iso){
 async function centralEnvioMontar(escopo, box){
   centralEnvioParar();
   const podePostar = can(escopo,'postar');
+  const ehAdmin = STATE.user.perfil==='Administrador';
   box.innerHTML = `
     <div id="cenvStatus" class="subtitle" style="margin:-4px 0 10px;"></div>
     <div class="row" style="gap:8px; flex-wrap:wrap; align-items:flex-end; margin-bottom:10px;">
@@ -16237,7 +16268,7 @@ async function centralEnvioMontar(escopo, box){
         <div class="tab ${CENV.sub==='dispensados'?'active':''}" data-s="dispensados">Dispensados</div>
       </div>
       <div class="field" style="width:280px; margin:0;"><input type="text" id="cenvBusca" placeholder="Buscar por empresa ou documento…" autocomplete="off"></div>
-      <button class="btn" id="cenvMinhaPasta">📁 Minha pasta</button>
+      ${ehAdmin?`<button class="btn" id="cenvMinhaPasta">📁 Minha pasta</button>`:''}
       <button class="btn" id="cenvLer" title="Lê a pasta agora (o site já confere sozinho a cada 10 segundos)">↻ Ler pasta agora</button>
       <button class="btn" id="cenvDiag" title="Explica por que um arquivo do Drive não apareceu na lista">🔎 Não apareceu?</button>
       <div class="field hidden" id="cenvSituacaoBox" style="width:200px; margin:0;">
@@ -16289,7 +16320,7 @@ async function centralEnvioMontar(escopo, box){
         :'<div class="empty-state">Nenhum arquivo foi ignorado recentemente. Se o seu PDF não está em Pendentes, confira: (1) ele está dentro de uma pasta lida, listada acima? (2) o arquivo é PDF de verdade? (3) a pasta foi compartilhada com <b>agente-drive@simples-contabeis.iam.gserviceaccount.com</b> como Leitor? Depois clique em <b>↻ Ler pasta agora</b>.</div>'}
       <div class="row" style="justify-content:flex-end; margin-top:12px;"><button class="btn primary" onclick="closeModal()">Fechar</button></div>`, '760px');
   });
-  document.getElementById('cenvMinhaPasta').addEventListener('click', ()=>cenvPastaModal(escopo, true, ()=>centralEnvioMontar(escopo, box)));
+  document.getElementById('cenvMinhaPasta')?.addEventListener('click', ()=>cenvPastaModal(escopo, true, ()=>centralEnvioMontar(escopo, box)));
   async function carregar(){
     if(!document.getElementById('cenvLista')){ centralEnvioParar(); return; }
     let r, resumo;
@@ -16641,9 +16672,9 @@ async function renderCfgEnvioDocs(box){
         <button class="btn primary" id="cenvSalvarChave">Salvar e testar</button>
       </div></div>
     <div class="card" style="margin-top:12px;"><h3 style="margin-top:0;">Pastas lidas</h3>
-      <p class="subtitle" style="margin:0 0 8px;">Cada setor lê a sua pasta (e as subpastas dela). Cada colaborador também pode escolher a sua em <b>📁 Minha pasta</b>, na aba Envio de documentos do setor.</p>
-      ${pastas.itens.length?`<table class="data-table"><thead><tr><th>Setor</th><th>Pasta</th><th>De quem</th><th></th></tr></thead><tbody>${pastas.itens.map(p=>`<tr><td>${esc(setorNome(p.setor))}</td><td>📁 ${esc(p.pasta_nome||p.pasta_id)}</td><td>${p.user_nome?esc(p.user_nome):'Setor inteiro'}</td><td style="text-align:right;"><button class="btn small danger" data-rm-pasta="${p.id}">Remover</button></td></tr>`).join('')}</tbody></table>`:'<div class="empty-state">Nenhuma pasta configurada.</div>'}
-      <div class="row" style="gap:8px; margin-top:10px;"><button class="btn primary" id="cenvAddPasta" ${cfg.conectado?'':'disabled'}>+ Adicionar pasta de um setor</button><button class="btn" id="cenvRelerTudo" ${cfg.conectado?'':'disabled'} title="Relê os PDFs modificados nos últimos 90 dias">↻ Reler últimos 90 dias</button></div></div>
+      <p class="subtitle" style="margin:0 0 8px;">Cada setor lê a sua pasta (e as subpastas dela). Só o Administrador escolhe ou troca a pasta de cada um, em <b>📁 Minha pasta</b> (na aba Envio de documentos do setor) ou aqui.</p>
+      ${pastas.itens.length?`<table class="data-table"><thead><tr><th>Setor</th><th>Pasta</th><th>De quem</th><th></th></tr></thead><tbody>${pastas.itens.map(p=>`<tr><td>${esc(setorNome(p.setor))}</td><td>📁 ${esc(p.pasta_nome||p.pasta_id)}</td><td>${p.user_nome?esc(p.user_nome):'Setor inteiro'}</td><td style="text-align:right;">${ehAdminCenv?`<button class="btn small danger" data-rm-pasta="${p.id}">Remover</button>`:''}</td></tr>`).join('')}</tbody></table>`:'<div class="empty-state">Nenhuma pasta configurada.</div>'}
+      <div class="row" style="gap:8px; margin-top:10px;">${ehAdminCenv?`<button class="btn primary" id="cenvAddPasta" ${cfg.conectado?'':'disabled'}>+ Adicionar pasta de um setor</button>`:''}<button class="btn" id="cenvRelerTudo" ${cfg.conectado?'':'disabled'} title="Relê os PDFs modificados nos últimos 90 dias">↻ Reler últimos 90 dias</button></div></div>
     <div class="card" style="margin-top:12px;"><h3 style="margin-top:0;">Tipos de documento (como o site reconhece cada PDF)</h3>
       <p class="subtitle" style="margin:0 0 8px;">Para cada tipo, informe as palavras que aparecem no PDF (ex.: "TERMO DE RESCISÃO"). Acentos e maiúsculas não importam. Sem tipo reconhecido, o documento entra como "Tipo não identificado" e você corrige na mão.</p>
       ${tipos.itens.length?`<div class="field" style="margin:4px 0 10px;"><input type="text" id="cenvTipoFiltro" placeholder="🔎 Buscar tipo, setor ou palavra no PDF…"></div>` : ''}
@@ -16665,7 +16696,7 @@ async function renderCfgEnvioDocs(box){
     catch(e){ toast(e.message,'err'); b.disabled=false; b.textContent='Salvar e testar'; }
   });
   box.querySelectorAll('[data-rm-pasta]').forEach(b=>b.addEventListener('click', async ()=>{ if(!confirmar('Parar de ler essa pasta? Os documentos já lidos continuam guardados.')) return; await api('/central-envio/pastas/'+b.dataset.rmPasta,{method:'DELETE'}); recarregar(); }));
-  document.getElementById('cenvAddPasta').addEventListener('click', ()=>cenvPastaModal('dprh', false, recarregar));
+  document.getElementById('cenvAddPasta')?.addEventListener('click', ()=>cenvPastaModal('dprh', false, recarregar));
   document.getElementById('cenvRelerTudo').addEventListener('click', async ()=>{ try{ const r = await api('/central-envio/varrer',{method:'POST',body:{dias:90}}); toast('Relendo em segundo plano. Veja os documentos na aba Envio de documentos do setor.','ok'); }catch(e){ toast(e.message,'err'); } });
   function tipoModal(t){
     openModal(`<h3>${t?'Editar tipo':'Novo tipo de documento'}</h3>

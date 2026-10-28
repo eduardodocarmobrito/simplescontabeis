@@ -607,25 +607,25 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     const rows = db.prepare(`SELECT p.*, u.nome as user_nome FROM central_envio_pastas p LEFT JOIN app_users u ON u.id = p.user_id WHERE p.escritorio_id = ? ORDER BY p.setor, u.nome`).all(user.escritorioId) as any[];
     res.json({ itens: rows.filter((r) => d.hasPermissao(user, r.setor, "visualizar")) });
   });
-  app.post("/api/central-envio/pastas", d.blockCliente, (req, res) => {
+  // Só Administrador escolhe/troca pasta lida (criar e remover) — antes qualquer colaborador com
+  // acesso ao setor podia escolher a própria pasta, e um clique errado (pasta igual sem relação com o
+  // setor) passava a ser varrida e subida junto com o resto. Decisão com o usuário em 2026-10-28.
+  app.post("/api/central-envio/pastas", d.blockCliente, d.requireAdmin, (req, res) => {
     const user = (req as any).user;
     const setor = setorValido(req.body?.setor);
     const pastaId = String(req.body?.pastaId || "").replace(/[^\w-]/g, "");
     if (!setor || !pastaId) return res.status(400).json({ error: "Escolha o setor e a pasta." });
-    // Cada um escolhe a SUA pasta (dentro do setor a que tem acesso); pasta geral do setor (sem colaborador) só o Administrador.
     const paraMim = !!req.body?.minha;
-    if (paraMim ? !d.hasPermissao(user, setor, "visualizar") : !(d.abaConfigPermitida(user) && setorDoUsuario(user, setor))) return semAcesso(res);
     try {
       db.prepare(`INSERT INTO central_envio_pastas (escritorio_id, setor, user_id, pasta_id, pasta_nome) VALUES (?, ?, ?, ?, ?)`).run(user.escritorioId, setor, paraMim ? user.id : null, pastaId, String(req.body?.pastaNome || "").slice(0, 200));
     } catch { return res.status(409).json({ error: "Essa pasta já está cadastrada." }); }
     void varrer(user.escritorioId, { dias: Number(req.body?.dias) || 30 });
     res.json({ ok: true });
   });
-  app.delete("/api/central-envio/pastas/:id", d.blockCliente, (req, res) => {
+  app.delete("/api/central-envio/pastas/:id", d.blockCliente, d.requireAdmin, (req, res) => {
     const user = (req as any).user;
     const p = db.prepare(`SELECT * FROM central_envio_pastas WHERE id = ? AND escritorio_id = ?`).get(Number(req.params.id), user.escritorioId) as any;
     if (!p) return res.status(404).json({ error: "Pasta não encontrada." });
-    if (user.perfil !== "Administrador" && p.user_id !== user.id && !(d.abaConfigPermitida(user) && setorDoUsuario(user, p.setor))) return semAcesso(res);
     db.prepare(`DELETE FROM central_envio_pastas WHERE id = ?`).run(p.id);
     res.json({ ok: true });
   });
