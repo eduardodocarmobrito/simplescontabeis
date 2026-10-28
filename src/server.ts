@@ -24141,7 +24141,10 @@ app.post("/api/atendimento/encaminhar", blockCliente, requireEscritorioPrincipal
       .eq("organization_id", deskcommCtx().orgId).eq("id", messageId).maybeSingle();
     if (error) throw new Error(error.message);
     if (!m) return res.status(404).json({ error: "Mensagem não encontrada." });
-    const temMidia = !!(m as any).media_storage_path;
+    // Trata como mídia qualquer mensagem de tipo de mídia (image/sticker/audio/video/document), mesmo sem
+    // media_storage_path preenchido na linha — a mídia é baixada por messageId no endpoint do deskcomm (o
+    // mesmo que serve a bolha na tela), então dá pra encaminhar foto recebida que não tem storage_path.
+    const temMidia = !!(m as any).media_storage_path || ["image", "sticker", "audio", "video", "document"].includes(String((m as any).type));
     // Abre (ou reaproveita) a conversa de destino — por contato escolhido na agenda ou por número digitado.
     const abrir: any = body.contact_id
       ? { contact_id: String(body.contact_id) }
@@ -24159,14 +24162,16 @@ app.post("/api/atendimento/encaminhar", blockCliente, requireEscritorioPrincipal
       // Baixa o arquivo original (robô admin) e sobe de novo na conversa de destino.
       if (!deskcommRoboSessao || Date.now() - deskcommRoboSessao.em > 45 * 60_000) await deskcommRoboLogin();
       const rMedia = await fetch(`${deskcommCtx().url}/deskcomm/api/v1/messages/${encodeURIComponent(messageId)}/media`, { headers: { cookie: deskcommRoboSessao!.cookie, "x-forwarded-host": deskcommCtx().publicHost, "x-forwarded-proto": "https" } });
-      if (!rMedia.ok) throw new Error(`Não foi possível baixar o arquivo original (HTTP ${rMedia.status}).`);
+      if (!rMedia.ok) throw new Error(rMedia.status === 404 ? "A mídia desta mensagem não está disponível (não foi baixada do WhatsApp — passou pelo celular conectado)." : `Não foi possível baixar o arquivo original (HTTP ${rMedia.status}).`);
       const buf = Buffer.from(await rMedia.arrayBuffer());
       const mime = (m as any).media_mime || rMedia.headers.get("content-type") || "application/octet-stream";
       const nome = ((m as any).metadata && (m as any).metadata.filename) || `arquivo-${messageId}`;
       const fd = new FormData();
       fd.append("file", new Blob([new Uint8Array(buf)], { type: mime }), nome);
       const up = await deskcommRoboApi(`/conversations/${convId}/media`, { method: "POST", body: fd });
-      const legenda = [nota, (m as any).body].filter(Boolean).join("\n");
+      // Não manda o placeholder ("[image]", "[áudio]") como legenda — só legenda de verdade.
+      const bodyReal = (m as any).body && !/^\[[^\]]+\]$/.test(String((m as any).body).trim()) ? (m as any).body : "";
+      const legenda = [nota, bodyReal].filter(Boolean).join("\n");
       const msg: any = { conversation_id: convId, type: up.kind, media_storage_path: up.storage_path, media_mime: up.media_mime, media_size_bytes: up.media_size_bytes, metadata: { filename: nome } };
       if (legenda && up.kind !== "audio") msg.body = legenda;
       await deskcommRoboApi("/messages", { method: "POST", body: msg });

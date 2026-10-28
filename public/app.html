@@ -14757,7 +14757,7 @@ function atdNovaConversaModal(S){
 // texto, ou mídia reaproveitando o arquivo que já está no storage do deskcomm. Dá pra adicionar uma
 // observação junto. Não assume o atendimento da conversa de destino (é só um envio).
 function atdEncaminharModal(S, m){
-  const temMidia = !!m.media_storage_path;
+  const temMidia = !!(m.media_storage_path || m.media_url || ATD_MIDIA_TIPOS[m.type]);
   const tipoLabel = temMidia ? ((ATD_MIDIA_TIPOS[m.type]||['📎','Arquivo'])[1]) : 'Mensagem de texto';
   const preview = temMidia ? `${(ATD_MIDIA_TIPOS[m.type]||['📎',''])[0]} ${esc(tipoLabel)}${m.body?` — "${esc(m.body)}"`:''}` : esc(m.body||'');
   openModal(`
@@ -15106,7 +15106,7 @@ function atdMenuMensagem(S, id){
     <div style="background:var(--bg-soft,#f4f6f5); color:#1D1D1F; border-radius:8px; padding:10px; margin-bottom:12px; max-height:120px; overflow:auto; white-space:pre-wrap;">${esc(m.body||'['+(m.type||'mídia')+']')}</div>
     <div style="display:flex; flex-direction:column; gap:8px;">
       ${!m.revoked_at?`<button class="btn primary" id="msgResponder">↩️ Responder esta mensagem</button>`:''}
-      ${!m.revoked_at && (m.body || m.media_storage_path)?`<button class="btn" id="msgEncaminhar">↪️ Encaminhar para outra pessoa</button>`:''}
+      ${!m.revoked_at && (m.body || m.media_storage_path || m.media_url || ATD_MIDIA_TIPOS[m.type])?`<button class="btn" id="msgEncaminhar">↪️ Encaminhar para outra pessoa</button>`:''}
       ${podeEditar?`<button class="btn" id="msgEditar">✏️ Editar mensagem</button>`:''}
       ${nossa && !m.revoked_at?`<button class="btn danger" id="msgParaTodos">🗑 Excluir para todos <span style="font-weight:400; font-size:12px;">(apaga no WhatsApp do cliente)</span></button>`:''}
       <button class="btn" id="msgExcluir">🙈 Excluir <span style="font-weight:400; font-size:12px;">(some daqui; o histórico continua guardado)</span></button>
