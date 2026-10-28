@@ -23,8 +23,21 @@
   button{font-family:inherit;}
   a{color:var(--accent-deep);}
 
-  .login-screen{display:flex; align-items:center; justify-content:center; min-height:100vh; background:var(--paper);}
-  .login-box{width:360px; max-width:90vw; background:var(--surface); border-radius:var(--radius); box-shadow:var(--shadow); padding:34px 32px;}
+  .login-screen{display:flex; min-height:100vh; background:var(--surface);}
+  .login-visual{position:relative; flex:1 1 58%; min-width:0; display:flex; align-items:center; justify-content:center; padding:48px; overflow:hidden;
+    background:
+      radial-gradient(900px 620px at 85% 110%, var(--accent-pale) 0%, transparent 60%),
+      radial-gradient(1000px 680px at -5% -15%, var(--accent-pale) 0%, transparent 55%),
+      var(--paper);}
+  .login-visual-logo{width:62%; max-width:460px; min-width:220px; height:auto; display:block;}
+  .login-form-side{flex:1 1 42%; min-width:340px; display:flex; align-items:center; justify-content:center; padding:40px; background:var(--surface);}
+  .login-box{width:360px; max-width:90vw; padding:0;}
+  @media (max-width: 760px){
+    .login-screen{flex-direction:column;}
+    .login-visual{flex:none; min-height:200px; padding:28px;}
+    .login-visual-logo{width:68%; max-width:280px;}
+    .login-form-side{flex:none; padding:32px 20px;}
+  }
   .login-box .eyebrow{font-family:'IBM Plex Mono',monospace; font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--accent);}
   .login-box h1{font-weight:700; font-size:24px; margin:4px 0 20px;}
   .field{display:flex; flex-direction:column; gap:5px; margin-bottom:14px;}
@@ -565,8 +578,7 @@ body.theme-glass .combo-input, body.theme-glass .inp, body.theme-glass input.dat
 body.theme-glass table.data-table td input[type=text], body.theme-glass table.data-table td select{
   background: rgba(255,255,255,.92); color:#1D1D1F;
 }
-body.theme-glass .login-box{background:rgba(255,255,255,.94); backdrop-filter:saturate(180%) blur(20px); -webkit-backdrop-filter:saturate(180%) blur(20px);}
-body.theme-glass .login-box h1, body.theme-glass .login-box .field label{color:#1D1D1F;}
+/* .login-screen nunca fica escuro (fica sempre com --surface/--paper claros, não flipados pelo tema) — login-box não precisa de ajuste de cor de texto aqui. */
 /* Faixa de "receber aviso de notificação" tem fundo branco sólido fixo — mesmo vidro escuro do resto */
 body.theme-glass .notif-faixa{
   background: rgba(var(--glass-rgb,5,31,32),.65);
@@ -616,7 +628,11 @@ body.theme-glass .tab{color:#C3C7C5;}
 body.theme-glass .tab:hover{color:#fff;}
 body.theme-glass table.data-table tbody tr:hover{background:rgba(255,255,255,.06);}
 body.theme-glass .tab.active{color:#163832;}
-body.theme-glass .combo-list, body.theme-glass .cal-popup, body.theme-glass .tema-popover{
+/* Painéis flutuantes que ficam sempre claros (fundo fixo var(--surface) — dropdowns, listas de
+   filtro, avisos) — qualquer um novo que apareça com esse mesmo padrão deve entrar nessa lista. */
+body.theme-glass .combo-list, body.theme-glass .cal-popup, body.theme-glass .tema-popover,
+body.theme-glass .eml-sug, body.theme-glass .atd-alerta-box, body.theme-glass .md-acc,
+body.theme-glass #envioModeloPanel{
   background: rgba(255,255,255,.92);
   backdrop-filter: saturate(180%) blur(20px);
   -webkit-backdrop-filter: saturate(180%) blur(20px);
@@ -625,6 +641,9 @@ body.theme-glass .combo-list, body.theme-glass .cal-popup, body.theme-glass .tem
 body.theme-glass .tema-popover .tema-opcao-nome{color:#1D1D1F;}
 body.theme-glass .tema-popover .tema-titulo{color:#6E6E73;}
 body.theme-glass .tema-opcao:hover{background:rgba(0,0,0,.06);}
+/* Qualquer <th> solto (sem a classe table.data-table) que ainda dependa do var(--surface) claro —
+   pega os casos avulsos sem precisar caçar um por um nas telas. */
+body.theme-glass th{color:#6E6E73;}
 
 .tema-fab{position:fixed; isolation:isolate; overflow:hidden; top:14px; left:14px; z-index:5000; width:34px; height:34px; border-radius:50%; border:2px solid rgba(255,255,255,.8); cursor:pointer; box-shadow:0 2px 6px rgba(0,0,0,.18), 0 8px 18px rgba(0,0,0,.14); background:conic-gradient(from 180deg, #2ECC8F, #163832, #4A5C6A, #DAF1DE, #2ECC8F); transition:transform .15s ease;}
 .tema-fab::after{content:''; position:absolute; inset:0; border-radius:inherit; box-shadow:inset 1px 1px 2px 0 rgba(255,255,255,.75), inset -1px -1px 2px 0 rgba(255,255,255,.3); pointer-events:none;}
@@ -671,26 +690,32 @@ body.theme-glass .tab.active::after, body.theme-glass .nav-item.active::after{
 </svg>
 
 <div id="loginScreen" class="login-screen hidden">
-  <div class="login-box">
-    <div class="eyebrow">Escritório contábil</div>
-    <h1>Simples Contábeis</h1>
-    <div class="field"><label>E-mail</label><input id="loginEmail" type="email" autocomplete="username"></div>
-    <div class="field"><label>Senha</label><div class="pw-wrap"><input id="loginPassword" type="password" autocomplete="current-password"><button type="button" class="pw-olho" data-alvo="loginPassword" tabindex="-1" title="Mostrar/ocultar a senha" aria-label="Mostrar ou ocultar a senha">👁</button></div></div>
-    <button class="btn primary" style="width:100%; justify-content:center;" id="btnLogin">Entrar</button>
-    <div id="loginError" class="login-error hidden"></div>
-    <div style="margin-top:14px; text-align:center;"><a href="#" id="btnEsqueciSenha" style="font-size:12.5px; color:var(--ink-soft);">Esqueci minha senha</a></div>
+  <div class="login-visual"><img src="/img/logo-escritorio.png" alt="Simples Contábeis" class="login-visual-logo"></div>
+  <div class="login-form-side">
+    <div class="login-box">
+      <div class="eyebrow">Escritório contábil</div>
+      <h1>Simples Contábeis</h1>
+      <div class="field"><label>E-mail</label><input id="loginEmail" type="email" autocomplete="username"></div>
+      <div class="field"><label>Senha</label><div class="pw-wrap"><input id="loginPassword" type="password" autocomplete="current-password"><button type="button" class="pw-olho" data-alvo="loginPassword" tabindex="-1" title="Mostrar/ocultar a senha" aria-label="Mostrar ou ocultar a senha">👁</button></div></div>
+      <button class="btn primary" style="width:100%; justify-content:center;" id="btnLogin">Entrar</button>
+      <div id="loginError" class="login-error hidden"></div>
+      <div style="margin-top:14px; text-align:center;"><a href="#" id="btnEsqueciSenha" style="font-size:12.5px; color:var(--ink-soft);">Esqueci minha senha</a></div>
+    </div>
   </div>
 </div>
 
 <div id="resetSenhaScreen" class="login-screen hidden">
-  <div class="login-box">
-    <div class="eyebrow">Escritório contábil</div>
-    <h1>Nova senha</h1>
-    <div class="field"><label>Nova senha</label><div class="pw-wrap"><input id="resetNovaSenha" type="password" autocomplete="new-password"><button type="button" class="pw-olho" data-alvo="resetNovaSenha" tabindex="-1" title="Mostrar/ocultar a senha" aria-label="Mostrar ou ocultar a senha">👁</button></div></div>
-    <div class="field"><label>Confirmar nova senha</label><input id="resetConfirmaSenha" type="password" autocomplete="new-password"></div>
-    <button class="btn primary" style="width:100%; justify-content:center;" id="btnResetarSenha">Redefinir senha</button>
-    <div id="resetSenhaError" class="login-error hidden"></div>
-    <div style="margin-top:14px; text-align:center;"><a href="#" id="btnVoltarLogin" style="font-size:12.5px; color:var(--ink-soft);">Voltar pro login</a></div>
+  <div class="login-visual"><img src="/img/logo-escritorio.png" alt="Simples Contábeis" class="login-visual-logo"></div>
+  <div class="login-form-side">
+    <div class="login-box">
+      <div class="eyebrow">Escritório contábil</div>
+      <h1>Nova senha</h1>
+      <div class="field"><label>Nova senha</label><div class="pw-wrap"><input id="resetNovaSenha" type="password" autocomplete="new-password"><button type="button" class="pw-olho" data-alvo="resetNovaSenha" tabindex="-1" title="Mostrar/ocultar a senha" aria-label="Mostrar ou ocultar a senha">👁</button></div></div>
+      <div class="field"><label>Confirmar nova senha</label><input id="resetConfirmaSenha" type="password" autocomplete="new-password"></div>
+      <button class="btn primary" style="width:100%; justify-content:center;" id="btnResetarSenha">Redefinir senha</button>
+      <div id="resetSenhaError" class="login-error hidden"></div>
+      <div style="margin-top:14px; text-align:center;"><a href="#" id="btnVoltarLogin" style="font-size:12.5px; color:var(--ink-soft);">Voltar pro login</a></div>
+    </div>
   </div>
 </div>
 
