@@ -9,17 +9,17 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   :root{
-    --paper:#F2FAF6; --paper-deep:#E3EFE9; --rule:#DCE9E3; --rule-soft:#EAF3EF;
-    --ink:#22302B; --ink-soft:#66756F; --surface:#FFFFFF;
+    --paper:#F5F5F7; --paper-deep:#E8E8ED; --rule:#E3E3E8; --rule-soft:#EDEDF2;
+    --ink:#1D1D1F; --ink-soft:#6E6E73; --surface:#FFFFFF;
     --accent:#2ECC8F; --accent-deep:#159873; --accent-pale:#DFF7EC;
-    --credit:#159873; --debit:#B8433A; --amber:#B7791F;
-    --sidebar:#FFFFFF; --sidebar-ink:#22302B; --sidebar-soft:#8A968F; --sidebar-active:#DFF7EC;
-    --shadow: 0 1px 3px rgba(20,30,26,0.07), 0 8px 24px rgba(20,30,26,0.07);
-    --radius: 16px;
+    --credit:#159873; --debit:#FF3B30; --amber:#FF9500;
+    --sidebar:rgba(255,255,255,.72); --sidebar-ink:#1D1D1F; --sidebar-soft:#86868B; --sidebar-active:#DFF7EC;
+    --shadow: 0 1px 2px rgba(0,0,0,.04), 0 14px 28px rgba(0,0,0,.08);
+    --radius: 18px;
   }
   *{box-sizing:border-box;}
   html,body{margin:0;padding:0;}
-  body{background:linear-gradient(180deg, #EAFAF4 0%, #FCFEFD 340px, #FCFEFD 100%); color:var(--ink); font-family:'Inter',sans-serif; -webkit-font-smoothing:antialiased;}
+  body{background:#F5F5F7; color:var(--ink); font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Inter',sans-serif; -webkit-font-smoothing:antialiased;}
   button{font-family:inherit;}
   a{color:var(--accent-deep);}
 
@@ -33,6 +33,8 @@
   .field input:focus, .field select:focus, .field textarea:focus{outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-pale); background:var(--surface);}
   /* Input "solto" (fora de .field) com o mesmo visual do sistema — pros campinhos inline (hora/dia etc.) */
   .inp{font-family:'Inter',sans-serif; font-size:14px; border:1px solid var(--rule); border-radius:10px; padding:8px 10px; background:var(--paper); color:var(--ink);}
+  .notif-faixa{background:var(--surface);}
+  input[type=time]{font-family:'Inter',sans-serif; font-size:14px; border:1px solid var(--rule); border-radius:10px; padding:8px 10px; background:var(--paper); color:var(--ink);}
   input[type=number]{-moz-appearance:textfield; appearance:textfield;}
   input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none; margin:0;}
   .inp:focus{outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-pale); background:var(--surface);}
@@ -77,26 +79,27 @@
   .cal-foot button{background:none; border:none; color:var(--accent-deep); font-size:11.5px; font-family:'IBM Plex Mono',monospace; text-transform:uppercase; letter-spacing:.05em; cursor:pointer;}
   .cal-foot button:hover{text-decoration:underline;}
 
-  .btn{display:inline-flex; align-items:center; gap:6px; border:1px solid var(--rule); background:var(--surface); color:var(--ink); padding:9px 16px; border-radius:12px; font-size:13.5px; cursor:pointer; font-weight:500; transition:border-color .15s, background .15s, color .15s;}
+  .btn{display:inline-flex; align-items:center; gap:6px; border:1px solid var(--rule); background:var(--surface); color:var(--ink); padding:10px 18px; border-radius:980px; font-size:13.5px; cursor:pointer; font-weight:500; transition:border-color .15s, background .15s, color .15s, transform .08s, box-shadow .15s;}
   .btn:hover{border-color:var(--accent); color:var(--accent-deep);}
-  .btn.primary{background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600;}
-  .btn.primary:hover{background:var(--accent-deep); border-color:var(--accent-deep); color:#fff;}
+  .btn:active{transform:scale(.96);}
+  .btn.primary{background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; box-shadow:0 1px 2px rgba(21,152,115,.18), 0 8px 20px rgba(46,204,143,.38);}
+  .btn.primary:hover{background:var(--accent-deep); border-color:var(--accent-deep); color:#fff; box-shadow:0 1px 2px rgba(21,152,115,.22), 0 10px 26px rgba(46,204,143,.46);}
   .btn.danger{color:var(--debit); border-color:#E3B8AC;}
   .btn.danger:hover{background:#F6E6E3;}
-  .btn.small{padding:6px 12px; font-size:12px; border-radius:9px;}
+  .btn.small{padding:7px 14px; font-size:12px;}
   .btn:disabled{opacity:.45; cursor:not-allowed;}
 
   .shell{display:flex; min-height:100vh;}
-  .sidebar{width:246px; flex-shrink:0; background:var(--sidebar); padding:12px 0 24px; position:sticky; top:0; align-self:flex-start; height:100vh; overflow-y:auto; border-right:1px solid var(--rule);}
-  .sidebar-brand{padding:2px 20px 12px; border-bottom:1px solid var(--rule); margin-bottom:6px;}
+  .sidebar{width:260px; flex-shrink:0; background:var(--sidebar); backdrop-filter:saturate(180%) blur(20px); -webkit-backdrop-filter:saturate(180%) blur(20px); padding:16px 12px 24px; position:sticky; top:0; align-self:flex-start; height:100vh; overflow-y:auto; border-right:1px solid var(--rule);}
+  .sidebar-brand{padding:4px 8px 16px 54px; border-bottom:1px solid var(--rule); margin-bottom:10px;}
   .sidebar-brand .eyebrow{font-family:'IBM Plex Mono',monospace; font-size:9.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--accent);}
-  .sidebar-brand h2{font-size:16px; margin:3px 0 0; font-weight:700;}
-  .nav-item{display:flex; align-items:center; gap:8px; padding:6px 18px; font-size:12px; color:var(--sidebar-ink); cursor:pointer; border-left:2px solid transparent; text-decoration:none;}
-  .nav-item:hover{background:var(--paper);}
-  .nav-item.active{background:var(--sidebar-active); border-left-color:var(--accent); color:var(--accent-deep); font-weight:600;}
-  .nav-sub{padding:5px 18px 5px 38px; font-size:11.5px; color:var(--sidebar-ink); cursor:pointer; border-left:2px solid transparent;}
-  .nav-sub:hover{background:var(--paper);}
-  .nav-sub.active{background:var(--sidebar-active); border-left-color:var(--accent); color:var(--accent-deep); font-weight:600;}
+  .sidebar-brand h2{font-size:17px; margin:3px 0 0; font-weight:700; letter-spacing:-.01em;}
+  .nav-item{display:flex; align-items:center; gap:8px; padding:9px 12px; margin:1px 0; font-size:13px; color:var(--sidebar-ink); cursor:pointer; border-radius:10px; text-decoration:none; transition:background .12s;}
+  .nav-item:hover{background:var(--paper-deep);}
+  .nav-item.active{background:var(--accent); color:#fff; font-weight:600; box-shadow:0 4px 12px rgba(46,204,143,.35);}
+  .nav-sub{padding:7px 12px 7px 34px; margin:1px 0; font-size:12px; color:var(--sidebar-ink); cursor:pointer; border-radius:10px; transition:background .12s;}
+  .nav-sub:hover{background:var(--paper-deep);}
+  .nav-sub.active{background:var(--accent-pale); color:var(--accent-deep); font-weight:600;}
   .sidebar-foot{padding:14px 20px 0; margin-top:14px; border-top:1px solid var(--rule);}
   .sidebar-foot .who{font-family:'IBM Plex Mono',monospace; font-size:10.5px; color:var(--sidebar-soft); line-height:1.5;}
   .sidebar-foot .who b{color:var(--ink); display:block; font-size:12.5px; font-family:'Inter',sans-serif;}
@@ -107,19 +110,20 @@
   .pw-olho.on{opacity:1; text-decoration:line-through;}
   .sidebar-foot .logout{margin-top:8px; cursor:pointer; color:var(--debit); font-size:11.5px; font-family:'IBM Plex Mono',monospace; text-transform:uppercase;}
 
-  .main{flex:1; min-width:0; padding:30px 34px 80px;}
-  h1{font-size:25px; font-weight:700; margin:0 0 3px;}
-  .subtitle{color:var(--ink-soft); font-size:13.5px; margin:0 0 20px;}
-  .card{background:var(--surface); border-radius:var(--radius); box-shadow:var(--shadow); padding:20px 22px; margin-bottom:18px;}
+  .main{flex:1; min-width:0; padding:44px 52px 90px;}
+  h1{font-size:34px; font-weight:800; letter-spacing:-.02em; margin:0 0 5px;}
+  .subtitle{color:var(--ink-soft); font-size:15px; margin:0 0 28px;}
+  .card{background:var(--surface); border-radius:22px; box-shadow:var(--shadow); padding:26px 28px; margin-bottom:20px; transition:transform .18s ease, box-shadow .18s ease;}
   .card h3{margin:0 0 12px; font-size:15px;}
   .row{display:flex; gap:12px; flex-wrap:wrap; align-items:flex-end;}
   .grow{flex:1; min-width:160px;}
 
-  .kpi-grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); gap:14px; margin-bottom:20px;}
-  .kpi{background:var(--surface); border-radius:var(--radius); box-shadow:var(--shadow); padding:16px 18px; position:relative;}
-  .kpi .eyebrow{font-family:'IBM Plex Mono',monospace; font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-soft);}
-  .kpi .val{font-size:26px; font-weight:700; margin-top:4px;}
-  .kpi .sub{font-size:12px; color:var(--ink-soft); margin-top:3px;}
+  .kpi-grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:18px; margin-bottom:24px;}
+  .kpi{background:var(--surface); border-radius:22px; box-shadow:var(--shadow); padding:22px 24px; position:relative; transition:transform .18s ease, box-shadow .18s ease;}
+  .kpi:hover{transform:translateY(-3px); box-shadow:0 2px 4px rgba(0,0,0,.05), 0 22px 40px rgba(0,0,0,.12);}
+  .kpi .eyebrow{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Inter',sans-serif; font-size:12px; font-weight:600; letter-spacing:0; text-transform:none; color:var(--ink-soft);}
+  .kpi .val{font-size:38px; font-weight:800; letter-spacing:-.02em; margin-top:6px;}
+  .kpi .sub{font-size:12.5px; color:var(--ink-soft); margin-top:4px;}
   .kpi .kpi-actions{position:absolute; top:10px; right:10px; display:none; gap:4px;}
   .kpi:hover .kpi-actions{display:flex;}
   .kpi.add{display:flex; align-items:center; justify-content:center; border:1.5px dashed var(--rule); cursor:pointer; color:var(--ink-soft); font-size:13px; box-shadow:none;}
@@ -198,15 +202,14 @@
   .campos-grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:12px; margin-bottom:16px;}
 
   .toast-wrap{position:fixed; bottom:20px; right:20px; z-index:2000; display:flex; flex-direction:column; gap:8px;}
-  .toast{background:var(--ink); color:#fff; padding:11px 16px; border-radius:8px; font-size:13px; box-shadow:var(--shadow); max-width:340px;}
+  .toast{background:#22302B; color:#fff; padding:11px 16px; border-radius:8px; font-size:13px; box-shadow:var(--shadow); max-width:340px;}
   .toast.err{background:#7A2E24;}
   .toast.ok{background:var(--accent-deep);}
 
-  .tabs{display:flex; gap:4px; border-bottom:1px solid var(--rule); margin-bottom:18px; flex-wrap:wrap;}
-  .tab{padding:9px 14px; font-size:13px; cursor:pointer; color:var(--ink-soft); border-bottom:2px solid transparent; font-weight:500;}
-  .tab.active{color:var(--accent-deep); border-color:var(--accent); font-weight:700;}
-  .cc-tabs .tab{border-radius:8px 8px 0 0;}
-  .cc-tabs .tab.active{background:var(--accent-pale); border-bottom-width:3px;}
+  .tabs{display:flex; gap:3px; background:var(--paper-deep); padding:4px; border-radius:14px; margin-bottom:18px; flex-wrap:wrap;}
+  .tab{padding:8px 15px; font-size:13px; cursor:pointer; color:var(--ink-soft); border-radius:10px; font-weight:500; transition:background .15s ease, color .15s ease, box-shadow .15s ease;}
+  .tab:hover{color:var(--ink);}
+  .tab.active{background:var(--surface); color:var(--accent-deep); font-weight:700; box-shadow:0 1px 2px rgba(0,0,0,.06), 0 5px 14px rgba(0,0,0,.10);}
 
   .grade-table{width:100%; border-collapse:collapse; font-size:13px;}
   .grade-table th{font-family:'IBM Plex Mono',monospace; font-size:10.5px; text-transform:uppercase; color:var(--ink-soft); padding:8px; border-bottom:1px solid var(--rule); text-align:left;}
@@ -338,7 +341,7 @@
   .chat-badge{position:absolute; top:-3px; right:-3px; background:var(--debit); color:#fff; font-size:10.5px; font-weight:700; min-width:18px; height:18px; border-radius:9px; display:flex; align-items:center; justify-content:center; padding:0 4px; font-family:'IBM Plex Sans',sans-serif; border:2px solid var(--paper);}
   @keyframes chatPulse{0%,100%{box-shadow:0 6px 18px rgba(20,40,32,.28), 0 0 0 0 rgba(184,67,58,.55);}50%{box-shadow:0 6px 18px rgba(20,40,32,.28), 0 0 0 9px rgba(184,67,58,0);}}
   .chat-panel{position:fixed; right:22px; bottom:142px; z-index:700; width:320px; max-width:calc(100vw - 32px); height:min(460px, calc(100vh - 186px)); background:var(--surface); border-radius:14px; box-shadow:0 14px 44px rgba(20,40,32,.3); display:flex; flex-direction:column; overflow:hidden; border:1px solid var(--rule);}
-  .chat-panel-header{display:flex; align-items:center; gap:8px; padding:12px 14px; background:var(--ink); color:#fff; flex:none;}
+  .chat-panel-header{display:flex; align-items:center; gap:8px; padding:12px 14px; background:#22302B; color:#fff; flex:none;}
   .chat-panel-header .titulo{font-weight:600; font-size:13.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
   .chat-panel-back{background:none; border:none; color:#fff; opacity:.75; cursor:pointer; font-size:15px; padding:0 2px 0 0; line-height:1;}
   .chat-panel-back:hover{opacity:1;}
@@ -527,9 +530,145 @@
 .atd-msg-menu{ position:absolute; top:2px; right:4px; border:0; background:rgba(0,0,0,.08); border-radius:6px; width:22px; height:20px; line-height:16px; cursor:pointer; opacity:0; transition:opacity .15s; font-weight:700; }
 .atd-msg:hover .atd-msg-menu{ opacity:1; }
 @media (hover:none){ .atd-msg-menu{ opacity:.7; } }
+
+/* ===== Tema "Liquid Glass" — fundo colorido vívido + painéis escuros translúcidos com texto claro ===== */
+body.theme-glass{
+  --ink: #F5F5F7; --ink-soft: #C3C7C5; --sidebar-ink: #F5F5F7; --sidebar-soft: #A8ACAA;
+  /* --paper/--paper-deep são usados em ~120 lugares do sistema (caixinhas internas, hover, menus
+     flutuantes) sempre pareados com --ink/--ink-soft — virar translúcido aqui faz todos esses
+     lugares "só funcionarem" no tema escuro, sem precisar de ajuste manual em cada tela. */
+  --paper: rgba(255,255,255,.14);
+  --paper-deep: rgba(255,255,255,.22);
+  background:
+    radial-gradient(1300px 820px at 6% -12%, rgba(255,255,255,.32), transparent 52%),
+    radial-gradient(950px 650px at 94% 10%, rgba(255,255,255,.16), transparent 55%),
+    linear-gradient(160deg, var(--glass-c1,#163832) 0%, var(--glass-c2,#0B2B26) 55%, var(--glass-c3,#051F20) 100%);
+  background-attachment: fixed;
+  transition: background .4s ease;
+}
+body.theme-glass .sidebar{
+  background: rgba(var(--glass-rgb,5,31,32),.6);
+  backdrop-filter: saturate(180%) blur(28px);
+  -webkit-backdrop-filter: saturate(180%) blur(28px);
+  border-right: 1px solid rgba(255,255,255,.12);
+}
+body.theme-glass .nav-item:hover, body.theme-glass .nav-sub:hover{background:rgba(255,255,255,.1);}
+body.theme-glass .card, body.theme-glass .kpi, body.theme-glass .modal, body.theme-glass .drawer, body.theme-glass .doc-card, body.theme-glass .doc-inline{
+  background: rgba(var(--glass-rgb,5,31,32),.52);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  border: 1px solid rgba(255,255,255,.14);
+}
+/* Campos de formulário sempre têm fundo claro (var(--paper)/var(--surface)) — texto precisa continuar escuro, em qualquer lugar da tela, não só dentro de card/modal (inclui a tela de login). */
+body.theme-glass .field input, body.theme-glass .field select, body.theme-glass .field textarea,
+body.theme-glass .combo-input, body.theme-glass .inp, body.theme-glass input.date-text, body.theme-glass input[type=time],
+body.theme-glass table.data-table td input[type=text], body.theme-glass table.data-table td select{
+  background: rgba(255,255,255,.92); color:#1D1D1F;
+}
+body.theme-glass .login-box{background:rgba(255,255,255,.94); backdrop-filter:saturate(180%) blur(20px); -webkit-backdrop-filter:saturate(180%) blur(20px);}
+body.theme-glass .login-box h1, body.theme-glass .login-box .field label{color:#1D1D1F;}
+/* Faixa de "receber aviso de notificação" tem fundo branco sólido fixo — mesmo vidro escuro do resto */
+body.theme-glass .notif-faixa{
+  background: rgba(var(--glass-rgb,5,31,32),.65);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  color: #F5F5F7;
+}
+/* Painel do chat (bolha no canto) tem fundo branco sólido fixo — mesmo vidro escuro do resto */
+body.theme-glass .chat-panel{
+  background: rgba(var(--glass-rgb,5,31,32),.7);
+  backdrop-filter: saturate(180%) blur(24px);
+  -webkit-backdrop-filter: saturate(180%) blur(24px);
+  border-color: rgba(255,255,255,.12);
+}
+body.theme-glass .chat-conv-busca{background:transparent; border-bottom-color:rgba(255,255,255,.1);}
+body.theme-glass .chat-conv-item{border-bottom-color:rgba(255,255,255,.08);}
+body.theme-glass .chat-conv-item:hover{background:rgba(255,255,255,.08);}
+body.theme-glass .chat-conv-nome{color:#F5F5F7;}
+body.theme-glass .chat-conv-preview{color:#B8BDBA;}
+/* thead th tem fundo branco sólido fixo (var(--surface)) — troca pro mesmo vidro escuro da sidebar,
+   em vez de deixar uma barra branca "sólida" destoando do resto. */
+body.theme-glass table.data-table thead th{
+  background: rgba(var(--glass-rgb,5,31,32),.6);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  color:#C3C7C5;
+}
+body.theme-glass table.data-table td{border-bottom-color:rgba(255,255,255,.1);}
+/* Botões secundários (fundo branco sólido por padrão) — mesmo vidro escuro da sidebar */
+body.theme-glass .btn{
+  background: rgba(var(--glass-rgb,5,31,32),.45);
+  backdrop-filter: saturate(180%) blur(16px);
+  -webkit-backdrop-filter: saturate(180%) blur(16px);
+  border-color: rgba(255,255,255,.2);
+  color: #F5F5F7;
+}
+body.theme-glass .btn:hover{background:rgba(var(--glass-rgb,5,31,32),.65); border-color:rgba(255,255,255,.4); color:#fff;}
+body.theme-glass .btn.primary{color:#fff;}
+body.theme-glass .btn.primary:hover{color:#fff;}
+/* Trilho das abas — mesmo vidro escuro da sidebar; a aba ativa continua um chip mais claro por cima, pra dar contraste de seleção */
+body.theme-glass .tabs{
+  background: rgba(var(--glass-rgb,5,31,32),.4);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+}
+body.theme-glass .tab{color:#C3C7C5;}
+body.theme-glass .tab:hover{color:#fff;}
+body.theme-glass table.data-table tbody tr:hover{background:rgba(255,255,255,.06);}
+body.theme-glass .tab.active{color:#163832;}
+body.theme-glass .combo-list, body.theme-glass .cal-popup, body.theme-glass .tema-popover{
+  background: rgba(255,255,255,.92);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  color:#1D1D1F;
+}
+body.theme-glass .tema-popover .tema-opcao-nome{color:#1D1D1F;}
+body.theme-glass .tema-popover .tema-titulo{color:#6E6E73;}
+body.theme-glass .tema-opcao:hover{background:rgba(0,0,0,.06);}
+
+.tema-fab{position:fixed; isolation:isolate; overflow:hidden; top:14px; left:14px; z-index:5000; width:34px; height:34px; border-radius:50%; border:2px solid rgba(255,255,255,.8); cursor:pointer; box-shadow:0 2px 6px rgba(0,0,0,.18), 0 8px 18px rgba(0,0,0,.14); background:conic-gradient(from 180deg, #2ECC8F, #163832, #4A5C6A, #DAF1DE, #2ECC8F); transition:transform .15s ease;}
+.tema-fab::after{content:''; position:absolute; inset:0; border-radius:inherit; box-shadow:inset 1px 1px 2px 0 rgba(255,255,255,.75), inset -1px -1px 2px 0 rgba(255,255,255,.3); pointer-events:none;}
+.tema-fab:hover{transform:scale(1.08);}
+.tema-fab:active{transform:scale(.94);}
+
+/* ===== "Liquid Glass" de verdade — filtro SVG de refração aplicado na aba/item ativo do tema escuro ===== */
+body.theme-glass .tab.active, body.theme-glass .nav-item.active{position:relative; isolation:isolate; overflow:hidden;}
+body.theme-glass .tab.active{background:rgba(255,255,255,.4);}
+body.theme-glass .nav-item.active{background:rgba(46,204,143,.55);}
+body.theme-glass .tab.active::before, body.theme-glass .nav-item.active::before{
+  content:''; position:absolute; inset:0; z-index:-1;
+  backdrop-filter:blur(3px); -webkit-backdrop-filter:blur(3px);
+  filter:url(#glass-distortion);
+}
+body.theme-glass .tab.active::after, body.theme-glass .nav-item.active::after{
+  content:''; position:absolute; inset:0; border-radius:inherit; pointer-events:none;
+  box-shadow:inset 1px 1px 1px 0 rgba(255,255,255,.55), inset -1px -1px 1px 0 rgba(255,255,255,.18);
+}
+.tema-popover{position:fixed; top:54px; left:14px; z-index:5001; width:230px; background:rgba(255,255,255,.92); backdrop-filter:saturate(180%) blur(20px); -webkit-backdrop-filter:saturate(180%) blur(20px); border:1px solid rgba(255,255,255,.6); border-radius:16px; box-shadow:0 10px 32px rgba(0,0,0,.22); padding:8px;}
+.tema-popover .tema-titulo{font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--ink-soft); font-family:'IBM Plex Mono',monospace; padding:6px 8px 8px;}
+.tema-opcao{display:flex; align-items:center; gap:10px; padding:8px; border-radius:10px; cursor:pointer; transition:background .12s;}
+.tema-opcao:hover{background:rgba(0,0,0,.05);}
+.tema-opcao.selecionada{background:var(--accent-pale);}
+.tema-swatches{display:flex; flex-shrink:0;}
+.tema-swatches span{width:14px; height:22px; margin-left:-6px; border-radius:7px; border:1.5px solid rgba(255,255,255,.9); box-shadow:0 1px 2px rgba(0,0,0,.15);}
+.tema-swatches span:first-child{margin-left:0;}
+.tema-opcao-nome{font-size:13px; font-weight:500; color:var(--ink);}
 </style>
 </head>
 <body>
+
+<svg style="position:absolute; width:0; height:0; overflow:hidden;" aria-hidden="true">
+  <filter id="glass-distortion" x="-20%" y="-20%" width="140%" height="140%" filterUnits="objectBoundingBox">
+    <feTurbulence type="fractalNoise" baseFrequency="0.012 0.012" numOctaves="1" seed="5" result="turbulence"/>
+    <feComponentTransfer in="turbulence" result="mapped">
+      <feFuncR type="gamma" amplitude="1" exponent="10" offset="0.5"/>
+      <feFuncG type="gamma" amplitude="0" exponent="1" offset="0"/>
+      <feFuncB type="gamma" amplitude="0" exponent="1" offset="0.5"/>
+    </feComponentTransfer>
+    <feGaussianBlur in="turbulence" stdDeviation="3" result="softMap"/>
+    <feDisplacementMap in="SourceGraphic" in2="softMap" scale="40" xChannelSelector="R" yChannelSelector="G"/>
+  </filter>
+</svg>
 
 <div id="loginScreen" class="login-screen hidden">
   <div class="login-box">
@@ -556,6 +695,8 @@
 </div>
 
 <div id="shell" class="shell hidden">
+  <button id="btnTema" class="tema-fab" title="Escolher tema" aria-label="Escolher tema"></button>
+  <div id="temaPopover" class="tema-popover hidden"></div>
   <div class="sidebar">
     <div class="sidebar-brand" id="sidebarBrand">
       <div class="eyebrow">Escritório contábil</div>
@@ -600,6 +741,66 @@ function toast(msg, kind){
   document.getElementById('toastWrap').appendChild(el);
   setTimeout(()=>el.remove(),4200);
 }
+
+// ===================== tema do sistema (paletas "Liquid Glass") =====================
+const TEMAS = [
+  { id:'padrao', nome:'Padrão', glass:false, swatches:['#2ECC8F','#159873'] },
+  { id:'verde-noturno', nome:'Verde noturno', glass:true, dark:'#051F20', mid:'#163832', light:'#0B2B26', rgb:'5,31,32' },
+  { id:'azul-noturno', nome:'Azul noturno', glass:true, dark:'#06141B', mid:'#253745', light:'#11212D', rgb:'6,20,27' },
+];
+function aplicarTema(id, opts){
+  const tema = TEMAS.find(t=>t.id===id) || TEMAS[0];
+  const root = document.documentElement.style;
+  document.body.classList.toggle('theme-glass', !!tema.glass);
+  // O verde da marca continua sendo a cor de destaque (botões, aba/menu ativo) em qualquer tema de
+  // fundo — garante contraste e "isso é clicável" consistentes, não importa a paleta escolhida.
+  if(tema.glass){
+    root.setProperty('--glass-c1', tema.mid);
+    root.setProperty('--glass-c2', tema.light);
+    root.setProperty('--glass-c3', tema.dark);
+    root.setProperty('--glass-rgb', tema.rgb);
+  } else {
+    root.removeProperty('--glass-c1'); root.removeProperty('--glass-c2'); root.removeProperty('--glass-c3'); root.removeProperty('--glass-rgb');
+  }
+  try{ localStorage.setItem('sc_tema', id); }catch(e){}
+  if(!opts || !opts.semRepintar) pintarTemaPopover(id);
+}
+function pintarTemaPopover(selecionadoId){
+  const pop = document.getElementById('temaPopover');
+  if(!pop) return;
+  pop.innerHTML = `
+    <div class="tema-titulo">Tema do sistema</div>
+    ${TEMAS.map(t=>`
+      <div class="tema-opcao${t.id===selecionadoId?' selecionada':''}" data-tema="${t.id}">
+        <span class="tema-swatches">${(t.glass?[t.dark,t.mid,t.light,'#2ECC8F']:t.swatches).map(c=>`<span style="background:${c};"></span>`).join('')}</span>
+        <span class="tema-opcao-nome">${t.nome}</span>
+      </div>
+    `).join('')}
+  `;
+  pop.querySelectorAll('.tema-opcao').forEach(el=>{
+    el.addEventListener('click', ()=>{
+      aplicarTema(el.dataset.tema);
+      pop.classList.add('hidden');
+    });
+  });
+}
+(function(){
+  let temaSalvo = 'padrao';
+  try{ temaSalvo = localStorage.getItem('sc_tema') || 'padrao'; }catch(e){}
+  aplicarTema(temaSalvo, { semRepintar:true });
+  pintarTemaPopover(temaSalvo);
+  const btnTema = document.getElementById('btnTema');
+  const temaPopover = document.getElementById('temaPopover');
+  btnTema.addEventListener('click', ev=>{
+    ev.stopPropagation();
+    temaPopover.classList.toggle('hidden');
+  });
+  document.addEventListener('click', ev=>{
+    if(temaPopover.classList.contains('hidden')) return;
+    if(ev.target.closest('#temaPopover') || ev.target.closest('#btnTema')) return;
+    temaPopover.classList.add('hidden');
+  });
+})();
 
 // Olhinho de mostrar/ocultar senha (qualquer botão .pw-olho com data-alvo="id do input"; funciona também em conteúdo criado depois)
 document.addEventListener('click', ev=>{
@@ -1431,7 +1632,8 @@ function oferecerNotificacoesDoComputador(){
     if(!('Notification' in window) || Notification.permission!=='default' || document.getElementById('atdNotifFaixa')) return;
     const f = document.createElement('div');
     f.id = 'atdNotifFaixa';
-    f.style.cssText = 'position:fixed; left:50%; transform:translateX(-50%); top:12px; z-index:1300; background:var(--surface); border:1px solid var(--accent); border-radius:10px; box-shadow:0 8px 24px rgba(0,0,0,.15); padding:10px 14px; display:flex; gap:12px; align-items:center; font-size:13px; max-width:92vw;';
+    f.className = 'notif-faixa';
+    f.style.cssText = 'position:fixed; left:50%; transform:translateX(-50%); top:12px; z-index:1300; border:1px solid var(--accent); border-radius:10px; box-shadow:0 8px 24px rgba(0,0,0,.15); padding:10px 14px; display:flex; gap:12px; align-items:center; font-size:13px; max-width:92vw;';
     f.innerHTML = '<span>🔔 Receber aviso de mensagem nova no computador, mesmo com outra tela aberta?</span><button class="btn small primary" id="atdNotifSim">Ativar avisos</button><button class="btn small" id="atdNotifNao">Agora não</button>';
     document.body.appendChild(f);
     document.getElementById('atdNotifNao').addEventListener('click', ()=>f.remove());
