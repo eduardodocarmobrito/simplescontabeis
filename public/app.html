@@ -820,6 +820,12 @@ function aplicarTema(id, opts){
   } else {
     root.removeProperty('--glass-c1'); root.removeProperty('--glass-c2'); root.removeProperty('--glass-c3'); root.removeProperty('--glass-rgb');
   }
+  // Logo tem texto escuro desenhado na própria imagem — no tema escuro troca pra uma versão com o
+  // texto em branco (mesmo ícone dourado/prateado), já que não dá pra recolorir só o texto via CSS
+  // num PNG achatado.
+  document.querySelectorAll('.login-visual-logo').forEach(img=>{
+    img.src = tema.glass ? '/img/logo-escritorio-claro.png' : '/img/logo-escritorio.png';
+  });
   try{ localStorage.setItem('sc_tema', id); }catch(e){}
   if(!opts || !opts.semRepintar) pintarTemaPopover(id);
 }
