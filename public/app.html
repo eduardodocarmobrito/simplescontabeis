@@ -8937,7 +8937,7 @@ async function pageIntegraContador(deepLinkEmpresaId){
         <p style="font-size:12px; color:var(--ink-soft); margin:0 0 10px;">Escolha os dias e os horários (horário de Brasília) em que a busca roda para todas as empresas. Sem nenhum dia ou horário marcado, a busca automática fica desligada.</p>
         <div class="checkbox-grid">${ICAGENDA_DIAS.map((d,i)=>`<label class="checkbox-row"><input type="checkbox" class="icAgendaDia" value="${i}" ${(cfg.agenda?.dias||[]).includes(i)?'checked':''} ${podeEditar?'':'disabled'}> ${d}</label>`).join('')}</div>
         <div id="icAgendaHoras" class="row" style="gap:8px; flex-wrap:wrap; margin-top:10px;">${(cfg.agenda?.horas||[]).map(icAgendaHoraHtml).join('')}</div>
-        ${podeEditar?`<div class="row" style="margin-top:8px; gap:8px;"><button class="btn small" id="btnIcAgendaHora">+ Horário</button><button class="btn primary" id="btnIcAgendaSalvar">Salvar agenda</button></div>`:''}
+        ${podeEditar?`<div class="row" style="margin-top:8px; gap:8px;"><button class="btn small" id="btnIcAgendaHora">+ Horário</button><button class="btn primary" id="btnIcAgendaSalvar" disabled>Salvar agenda</button></div>`:''}
         <div style="margin-top:14px;">
           <div style="font-weight:600; margin-bottom:4px;">Frequência da Situação Fiscal</div>
           <p style="font-size:12px; color:var(--ink-soft); margin:0 0 8px;">A Situação Fiscal (SITFIS) é a consulta mais lenta e cara, e é uma "foto do momento" que quase não muda de um dia pro outro. Deixá-la menos frequente reduz os erros de "não respondeu em 5 minutos" e o custo, sem afetar DAS/DARF/Declaração (que continuam diários). <b>"Buscar agora" sempre traz a Situação Fiscal na hora.</b></p>
@@ -8991,21 +8991,27 @@ async function pageIntegraContador(deepLinkEmpresaId){
     if(podeEditar) habilitarSalvarAoMudar('btnIcSalvarConfig', ['icCnpj','icConsumerKey','icConsumerSecret','icCertSenha','icAtivo','icCertArquivo']);
     if(podeEditar){
       const boxHoras = document.getElementById('icAgendaHoras');
+      const btnAgendaSalvar = document.getElementById('btnIcAgendaSalvar');
+      const habilitarAgendaSalvar = ()=>{ btnAgendaSalvar.disabled = false; };
       document.getElementById('btnIcAgendaHora').addEventListener('click', ()=>{
         boxHoras.insertAdjacentHTML('beforeend', icAgendaHoraHtml('12:00'));
+        habilitarAgendaSalvar();
       });
       boxHoras.addEventListener('click', ev=>{
         const rm = ev.target.closest('[data-rm-hora]');
-        if(rm) rm.closest('.icAgendaHoraItem').remove();
+        if(rm){ rm.closest('.icAgendaHoraItem').remove(); habilitarAgendaSalvar(); }
       });
-      document.getElementById('btnIcAgendaSalvar').addEventListener('click', async ()=>{
+      boxHoras.addEventListener('input', habilitarAgendaSalvar);
+      document.querySelectorAll('.icAgendaDia').forEach(c=>c.addEventListener('change', habilitarAgendaSalvar));
+      btnAgendaSalvar.addEventListener('click', async ()=>{
         const dias = [...document.querySelectorAll('.icAgendaDia:checked')].map(c=>Number(c.value));
         const horas = [...document.querySelectorAll('.icAgendaHoraInp')].map(i=>i.value).filter(Boolean);
         if(horas.some(h=>!/^([01]\d|2[0-3]):[0-5]\d$/.test(h))){ toast('Confira os horários (use HH:MM).','err'); return; }
+        btnAgendaSalvar.disabled = true;
         try{
           await api('/integracontador/agenda', { method:'PUT', body:{ dias, horas } });
           toast('Agenda da busca automática salva.','ok');
-        }catch(e){ toast(e.message,'err'); }
+        }catch(e){ toast(e.message,'err'); btnAgendaSalvar.disabled = false; }
       });
     }
     const btnTestar = document.getElementById('btnIcTestar');
@@ -9104,7 +9110,7 @@ async function pageIntegraContador(deepLinkEmpresaId){
         ${emp?.alertaDeclaracao?`<div class="card" style="background:var(--paper); border-color:var(--warn, #c9a227); margin:8px 0;"><span style="font-size:12.5px;">⚠ ${esc(emp.alertaDeclaracao)}</span></div>`:''}
         ${emp?.ultimoErro?`<p style="color:var(--debit); font-size:12.5px;">Último erro: ${esc(emp.ultimoErro)}</p>`:''}
         <div class="row" style="margin-top:8px;">
-          ${podeEditar?`<button class="btn primary" id="btnIcSalvarEmpresa">Salvar</button>`:''}
+          ${podeEditar?`<button class="btn primary" id="btnIcSalvarEmpresa" disabled>Salvar</button>`:''}
           ${podePostar?`<button class="btn" id="btnIcBuscarAgora" ${emp?.ativo?'':'disabled'}>Buscar agora</button>`:''}
         </div>
       </div>
@@ -9265,6 +9271,7 @@ async function pageIntegraContador(deepLinkEmpresaId){
       }catch(e){ toast(e.message,'err'); }
       finally{ btn.disabled = false; btn.textContent = 'Salvar'; }
     });
+    if(podeEditar) habilitarSalvarAoMudar('btnIcSalvarEmpresa', ['icEmpAtivo','icEmpOptante','icEmpDctfweb']);
     if(podePostar) document.getElementById('btnIcBuscarAgora').addEventListener('click', async (ev)=>{
       const btn = ev.target; btn.disabled = true; btn.textContent = 'Buscando…';
       try{
@@ -18743,7 +18750,7 @@ async function renderCfgEmailSmtp(box){
         <div class="field grow"><label>E-mail do remetente (opcional, padrão = usuário)</label><input id="cfgFromEmail" value="${esc(cfg.fromEmail)}" placeholder="simplescontabeis@gmail.com"></div>
       </div>
       <div class="row">
-        <button class="btn primary" id="cfgSmtpSalvar">Salvar</button>
+        <button class="btn primary" id="cfgSmtpSalvar" disabled>Salvar</button>
         <button class="btn" id="cfgSmtpTestar">Testar conexão</button>
       </div>
       <div id="cfgSmtpResultado" style="margin-top:10px;"></div>
@@ -18758,7 +18765,7 @@ async function renderCfgEmailSmtp(box){
       <label class="checkbox-row"><input type="checkbox" id="cfgExtratosAtivo" ${extratosCfg.ativo?'checked':''}> Manter a importação automática ligada</label>
       ${extratosCfg.ultimaVarreduraEm?`<p style="font-size:12px; color:var(--ink-soft);">Última varredura: ${fmtDateHora(extratosCfg.ultimaVarreduraEm)}${extratosCfg.ultimoErro?` — <span style="color:var(--debit);">${esc(extratosCfg.ultimoErro)}</span>`:''}</p>`:''}
       <div class="row" style="margin-top:6px;">
-        <button class="btn primary" id="cfgExtratosSalvar">Salvar</button>
+        <button class="btn primary" id="cfgExtratosSalvar" disabled>Salvar</button>
         <button class="btn" id="cfgExtratosTestar">Testar (não grava nada)</button>
         <button class="btn" id="cfgExtratosImportar">Importar agora</button>
         <button class="btn" id="cfgExtratosPendencias">Pendências de extratos</button>
@@ -18814,6 +18821,7 @@ async function renderCfgEmailSmtp(box){
         resEl.innerHTML = `<div class="tag bad">Falhou</div> <span style="font-size:12.5px;">${esc(e.message)}</span>`;
       }
     });
+    habilitarSalvarAoMudar('cfgSmtpSalvar', ['cfgSmtpHost','cfgSmtpPort','cfgSmtpSecure','cfgSmtpUser','cfgSmtpPassword','cfgFromName','cfgFromEmail']);
     document.getElementById('cfgExtratosSalvar').addEventListener('click', async ()=>{
       const body = {
         email: document.getElementById('cfgExtratosEmail').value.trim(),
@@ -18826,6 +18834,7 @@ async function renderCfgEmailSmtp(box){
         renderCfgTab();
       }catch(e){ toast(e.message,'err'); }
     });
+    habilitarSalvarAoMudar('cfgExtratosSalvar', ['cfgExtratosEmail','cfgExtratosSenha','cfgExtratosAtivo']);
     document.getElementById('cfgExtratosTestar').addEventListener('click', async ()=>{
       const btn = document.getElementById('cfgExtratosTestar');
       const resEl = document.getElementById('cfgExtratosResultado');
