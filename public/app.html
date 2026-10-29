@@ -14881,6 +14881,14 @@ function atdConteudoHtml(m){
     const cap = (m.body && !ehPlaceholder) ? esc(m.body) : ''; // legenda real (não o placeholder)
     return cap + atdMidiaHtml(m);
   }
+  // Mídia que veio só como TEXTO (sem arquivo), puxada do histórico do aparelho conectado.
+  // Ex.: "[📷 imagem] Junior", "[📄 documento: x.pdf]". O WhatsApp só entrega o resumo nesse caso,
+  // nunca o binário — então mostra aviso claro + a legenda, em vez do texto cru entre colchetes.
+  const mph = String(m.body||'').match(/^\[((?:📷|🎬|📄|🎤|🏷|📎)[^\]]*|(?:imagem|[aá]udio|v[ií]deo|documento|figurinha|sticker)[^\]]*)\]\s*([\s\S]*)$/i);
+  if(mph){
+    const cap = mph[2].trim() ? esc(mph[2].trim())+'<br>' : '';
+    return cap + `<span class="atd-midia-indisp" title="Recebida direto no celular conectado (não pelo CRM), então o arquivo não foi baixado. Para ver, abra esta conversa no WhatsApp do aparelho.">[${esc(mph[1])}] não baixada <span style="opacity:.65;">· recebida no celular</span></span>`;
+  }
   const info = ATD_MIDIA_TIPOS[m.type];
   if(info || ehPlaceholder){
     const ic = info ? info[0] : '📎';
