@@ -436,7 +436,8 @@
   .dprh-midia-img{display:block; max-width:260px; max-height:260px; border-radius:8px; margin-top:4px;}
   .dprh-midia-audio{display:block; width:240px; margin-top:4px;}
   .dprh-composer{display:flex; gap:8px; align-items:flex-end; padding:10px; border-top:1px solid var(--rule); flex:none;}
-  .dprh-composer textarea{flex:1; resize:none; border:1px solid var(--rule); border-radius:8px; padding:8px 10px; font-size:13px; font-family:inherit; max-height:120px; background:var(--paper);}
+  .dprh-composer textarea{flex:1; resize:none; border:1px solid var(--rule); border-radius:8px; padding:8px 10px; font-size:13px; font-family:inherit; max-height:120px; background:var(--paper); color:var(--ink);}
+  .dprh-composer textarea::placeholder{color:var(--ink-soft);}
   .atd-soltar{outline:2px dashed var(--accent); outline-offset:-6px;}
   .atd-setor{display:inline-block; font-size:10.5px; padding:1px 7px; border-radius:8px; background:var(--accent-pale); color:var(--accent-deep); font-weight:600;}
   .atd-gravando{align-items:center; font-size:13px; color:var(--debit);}
@@ -509,7 +510,8 @@
     .dprh-msgs .chat-msg{max-width:88%;}
     .dprh-midia-img, .dprh-midia-audio{max-width:100%;}
   }
-  .chat-input-row textarea{flex:1; resize:none; border:1px solid var(--rule); border-radius:8px; padding:7px 9px; font-size:12.5px; font-family:inherit; max-height:70px; background:var(--paper);}
+  .chat-input-row textarea{flex:1; resize:none; border:1px solid var(--rule); border-radius:8px; padding:7px 9px; font-size:12.5px; font-family:inherit; max-height:70px; background:var(--paper); color:var(--ink);}
+  .chat-input-row textarea::placeholder{color:var(--ink-soft);}
   .chat-input-row textarea:focus{outline:none; border-color:var(--accent);}
   .chat-input-row button{border:none; background:var(--accent-deep); color:#fff; border-radius:8px; width:36px; cursor:pointer; font-size:15px; flex:none;}
   .chat-input-row button:disabled{opacity:.5; cursor:default;}
@@ -634,6 +636,11 @@ body.theme-glass .chat-conv-item{border-bottom-color:rgba(255,255,255,.08);}
 body.theme-glass .chat-conv-item:hover{background:rgba(255,255,255,.08);}
 body.theme-glass .chat-conv-nome{color:#F5F5F7;}
 body.theme-glass .chat-conv-preview{color:#B8BDBA;}
+/* Conversa selecionada: no tema escuro o --accent-pale (verde-claro fixo) deixava o texto branco
+   ilegível. Troca por um tinte translúcido do verde do tema, que mantém o texto claro legível e
+   marca a seleção com a borda esquerda. */
+body.theme-glass .dprh-conv.active{background:rgba(46,204,143,.22); border-left-color:var(--accent);}
+body.theme-glass .dprh-conv.active .dprh-conv-sub{color:#D3E8DE;}
 /* thead th tem fundo branco sólido fixo (var(--surface)) — troca pro mesmo vidro escuro da sidebar,
    em vez de deixar uma barra branca "sólida" destoando do resto. */
 body.theme-glass table.data-table thead th{
