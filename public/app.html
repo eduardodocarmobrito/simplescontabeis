@@ -2609,6 +2609,7 @@ const CARD_TIPOS_INFO = {
   caixapostal_nao_lida: { label:'Mensagens no e-CAC', subtitulo:'Empresas com mensagem não lida na Caixa Postal' },
   pesquisa_pagamento: { label:'Pagamento DAS/DCTF-Web', subtitulo:'Cliente respondeu que não pagou, ou não respondeu a pesquisa' },
   checklist_atraso: { label:'Documentos Pendentes', subtitulo:'Competência anterior, após o prazo, sem envio do cliente' },
+  solicitacao_cobranca_manual: { label:'Cobranças Manuais', subtitulo:'Competências anteriores cobradas à mão de empresas específicas, ainda não enviadas' },
   solicitacoes_pendentes: { label:'Solicitações dos Clientes', subtitulo:'Aguardando retorno do escritório' },
   envio_atraso: { label:'Modelo de Envio em Atraso', subtitulo:'Competências não entregues', multi:true,
     parametroLabel:'Modelos de envio — marque um ou mais', parametroVazio:'Nenhum modelo mensal cadastrado ainda — crie um em Envio de Documentos › Modelos.' },
@@ -2854,7 +2855,7 @@ function cardDetalheModal(c){
           STATE.page = 'integracontador'; renderNav();
           pageIntegraContador(Number(tr.dataset.empresa));
         }));
-      } else if(tipo==='checklist_atraso' || tipo==='solicitacao_atraso'){
+      } else if(tipo==='checklist_atraso' || tipo==='solicitacao_atraso' || tipo==='solicitacao_cobranca_manual'){
         box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Modelo</th><th>Competência</th><th>Prazo</th><th>Itens faltando</th></tr></thead><tbody>
           ${items.map(i=>`<tr><td>${esc(i.empresaNome)}</td><td>${esc(i.templateNome)}</td><td>${esc(i.competencia)}${i.manual?' <span class="tag warn" style="font-size:10px; margin-left:4px;">cobrança manual</span>':''}</td><td>${i.manual?'<span style="color:var(--ink-soft);">—</span>':'Dia '+i.prazoDia}</td><td>${i.itensFaltando.map(esc).join(', ')}</td></tr>`).join('')}
         </tbody></table>`;
@@ -5179,7 +5180,11 @@ function manuaisPendentesGrade(grade, manuais){
   const out = [];
   for(const pm of manuais){
     const p = grade.find(g=>g.ano===pm.ano && g.mes===pm.mes);
-    if(p && p.slots.some(s=>s.obrigatorio && !s.travado)) out.push(p);
+    if(!p) continue;
+    // Mesmo critério do backend: se o modelo não tem item obrigatório, cobra qualquer item não enviado.
+    const obrig = p.slots.filter(s=>s.obrigatorio);
+    const alvo = obrig.length? obrig : p.slots;
+    if(alvo.some(s=>!s.travado)) out.push(p);
   }
   return out;
 }

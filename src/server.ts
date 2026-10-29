@@ -7294,14 +7294,16 @@ app.post("/api/checklist/periodos/gerar", blockCliente, requirePermissao("solici
   if (!atrib || !podeAcessarEmpresa((req as any).user, atrib.empresa_id)) return res.status(404).json({ error: "Atribuição não encontrada." });
   const insert = sqlite.prepare(`INSERT OR IGNORE INTO checklist_periodos (atribuicao_id, ano, mes, rotulo) VALUES (?, ?, ?, ?)`);
   let criados = 0;
+  // Não dá pra confiar no INSERT OR IGNORE com rotulo NULL: o UNIQUE inclui rotulo e no SQLite
+  // NULL ≠ NULL no índice, então reexecutar "Gerar ano" duplicaria os meses. Checa antes de inserir.
   if (atrib.periodicidade === "mensal") {
     for (let mes = 1; mes <= 12; mes++) {
-      const info = insert.run(atrib.id, Number(ano), mes, null);
-      if (info.changes) criados++;
+      const existe = sqlite.prepare(`SELECT id FROM checklist_periodos WHERE atribuicao_id = ? AND ano = ? AND mes = ?`).get(atrib.id, Number(ano), mes) as any;
+      if (!existe) { insert.run(atrib.id, Number(ano), mes, null); criados++; }
     }
   } else if (atrib.periodicidade === "anual") {
-    const info = insert.run(atrib.id, Number(ano), null, null);
-    if (info.changes) criados++;
+    const existe = sqlite.prepare(`SELECT id FROM checklist_periodos WHERE atribuicao_id = ? AND ano = ? AND mes IS NULL AND rotulo IS NULL`).get(atrib.id, Number(ano)) as any;
+    if (!existe) { insert.run(atrib.id, Number(ano), null, null); criados++; }
   } else {
     // avulso: cada chamada cria uma solicitação pontual nova com rótulo próprio (ex.: "Extrato de Financiamento nº 4521")
     const info = insert.run(atrib.id, Number(ano) || new Date().getFullYear(), null, rotulo || `Solicitação avulsa ${Date.now()}`);
@@ -7326,8 +7328,20 @@ app.post("/api/checklist/pendencias-manuais", blockCliente, requirePermissao("so
   if (!Number.isInteger(anoNum) || anoNum < 2000 || anoNum > 2100 || !Number.isInteger(mesNum) || mesNum < 1 || mesNum > 12) {
     return res.status(400).json({ error: "Informe uma competência (mês/ano) válida." });
   }
-  sqlite.prepare(`INSERT OR IGNORE INTO checklist_periodos (atribuicao_id, ano, mes, rotulo) VALUES (?, ?, ?, NULL)`).run(atrib.id, anoNum, mesNum);
+  // Reaproveita o período já existente (não dá pra confiar no INSERT OR IGNORE: o UNIQUE inclui
+  // rotulo, que aqui é NULL, e no SQLite NULL ≠ NULL no índice — inseriria um mês duplicado).
+  const jaTem = sqlite.prepare(`SELECT id FROM checklist_periodos WHERE atribuicao_id = ? AND ano = ? AND mes = ?`).get(atrib.id, anoNum, mesNum) as any;
+  if (!jaTem) sqlite.prepare(`INSERT INTO checklist_periodos (atribuicao_id, ano, mes, rotulo) VALUES (?, ?, ?, NULL)`).run(atrib.id, anoNum, mesNum);
   sqlite.prepare(`INSERT OR IGNORE INTO checklist_pendencias_manuais (atribuicao_id, ano, mes, criado_por) VALUES (?, ?, ?, ?)`).run(atrib.id, anoNum, mesNum, user.id);
+  // Garante que o Painel tenha o card dedicado — assim a cobrança aparece na hora, sem depender de
+  // o escritório ter configurado um card por modelo (que monitora só modelos específicos).
+  const temCard = sqlite.prepare(`SELECT id FROM dashboard_cards WHERE escritorio_id = ? AND tipo = 'solicitacao_cobranca_manual'`).get(user.escritorioId) as any;
+  if (!temCard) {
+    const ordem = (sqlite.prepare(`SELECT COALESCE(MAX(ordem), 0) + 1 as o FROM dashboard_cards WHERE escritorio_id = ?`).get(user.escritorioId) as any).o;
+    sqlite
+      .prepare(`INSERT INTO dashboard_cards (titulo, valor, subtitulo, cor, ordem, created_by, escritorio_id, tipo, parametro) VALUES (?, '0', ?, 'brass', ?, ?, ?, 'solicitacao_cobranca_manual', NULL)`)
+      .run("Cobranças Manuais", "Competências anteriores cobradas à mão, ainda não enviadas", ordem, user.id, user.escritorioId);
+  }
   res.json({ ok: true });
 });
 app.delete("/api/checklist/pendencias-manuais/:id", blockCliente, requirePermissao("solicitacoes", "editar"), (req, res) => {
@@ -19689,7 +19703,7 @@ app.get("/api/financeiro/resumo", blockCliente, requirePermissao("financeiro", "
 // função abaixo devolve a lista (o card mostra só items.length); todas já filtram pelas empresas
 // que o usuário logado pode ver (empresasVisiveis), pro caso de um Colaborador restrito abrir o
 // Painel.
-const CARD_TIPOS: string[] = ["certificados_vencer", "das_atraso", "situacao_fiscal", "caixapostal_nao_lida", "checklist_atraso", "solicitacoes_pendentes", "envio_atraso", "solicitacao_atraso", "licencas_vencer", "pesquisa_pagamento", "efd_omisso", "cnd_estadual", "cnd_municipal"];
+const CARD_TIPOS: string[] = ["certificados_vencer", "das_atraso", "situacao_fiscal", "caixapostal_nao_lida", "checklist_atraso", "solicitacoes_pendentes", "envio_atraso", "solicitacao_atraso", "solicitacao_cobranca_manual", "licencas_vencer", "pesquisa_pagamento", "efd_omisso", "cnd_estadual", "cnd_municipal"];
 
 // Piso de competência (aaaamm, ex.: 202607) configurado em painel_monitoramento_config — null
 // quando não há corte definido (comportamento de sempre: cada card usa o período mais antigo já
@@ -20190,9 +20204,11 @@ function checklistPendenciasManuaisCard(user: any, templateIds: number[] | null)
   const resultado: any[] = [];
   for (const r of rows) {
     if (!visiveis.has(r.empresaId)) continue;
-    const itensObrigatorios = (JSON.parse(r.itensJson) as any[]).filter((it) => it.obrigatorio);
-    if (!itensObrigatorios.length) continue;
-    const faltando = checklistFaltandoCompetencia(r.atribuicaoId, itensObrigatorios, r.ano, r.mes);
+    // Diferente do card automático, a cobrança manual é um pedido explícito do escritório: se o
+    // modelo não tem item marcado como obrigatório (ex.: "Extrato Itaú"), cobra TODOS os itens.
+    const itens = JSON.parse(r.itensJson) as any[];
+    const alvo = itens.filter((it) => it.obrigatorio);
+    const faltando = checklistFaltandoCompetencia(r.atribuicaoId, alvo.length ? alvo : itens, r.ano, r.mes);
     if (!faltando.length) continue;
     resultado.push({
       empresaId: r.empresaId,
@@ -20358,6 +20374,7 @@ async function calcularCardComputado(tipo: string, user: any, parametro?: string
   if (tipo === "caixapostal_nao_lida") return cardCaixaPostalNaoLida(user);
   if (tipo === "pesquisa_pagamento") return cardPesquisaPagamento(user);
   if (tipo === "checklist_atraso") return cardChecklistAtraso(user);
+  if (tipo === "solicitacao_cobranca_manual") return checklistPendenciasManuaisCard(user, null);
   if (tipo === "solicitacoes_pendentes") return cardSolicitacoesPendentes(user);
   if (tipo === "envio_atraso") {
     const templateIds = parseParametroIds(parametro);
