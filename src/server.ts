@@ -23913,6 +23913,7 @@ async function atendimentoBackfillMidia(opts: { convId?: string; limit?: number;
     .eq("organization_id", ctx.orgId).eq("direction", "inbound").eq("type", "text")
     .is("media_storage_path", null)
     .like("external_id", "false_%")
+    .like("body", "[%") // só bodies que começam com "[" (placeholders) — senão a janela do limite se enche de texto normal e nunca alcança os placeholders esparsos
     .gte("created_at", desde)
     .order("created_at", { ascending: false })
     .limit(limite * 5);
