@@ -475,14 +475,24 @@
   .eml-pasta-tit{padding:12px 14px 4px; font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-soft); font-family:'IBM Plex Mono',monospace;}
   .eml-busca{display:flex; gap:8px; padding:10px; border-bottom:1px solid var(--rule);}
   .eml-lista{flex:1; overflow-y:auto; min-height:0;}
-  .eml-item{padding:9px 12px; border-bottom:1px solid var(--rule-soft); cursor:pointer; font-size:13px;}
+  .eml-item{padding:9px 12px 9px 11px; border-bottom:1px solid var(--rule-soft); border-left:3px solid transparent; cursor:pointer; font-size:13px;}
   .eml-item:hover{background:var(--paper);}
   .eml-item.ativa{background:var(--accent-pale);}
   .eml-item-l1{display:flex; justify-content:space-between; gap:8px;}
   .eml-quem{white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
   .eml-data{font-size:11.5px; color:var(--ink-soft); flex:none;}
   .eml-item-l2{color:var(--ink-soft); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:2px;}
+  /* Lido x não lido: o não lido ganha barra lateral de destaque + negrito + cor cheia; o LIDO fica com
+     o remetente mais apagado (--ink-soft), pra separação ficar nítida — inclusive no tema escuro. */
+  .eml-item.nova{border-left-color:var(--accent);}
   .eml-item.nova .eml-quem, .eml-item.nova .eml-item-l2{font-weight:700; color:var(--ink);}
+  .eml-item:not(.nova) .eml-quem{color:var(--ink-soft); font-weight:400;}
+  /* Tema escuro: não lido ganha um leve tinte verde (além da barra) e o remetente lido fica bem apagado;
+     e-mail SELECIONADO usa tinte translúcido (o --accent-pale claro deixava o texto branco ilegível). */
+  body.theme-glass .eml-item.nova{background:rgba(46,204,143,.10);}
+  body.theme-glass .eml-item:not(.nova) .eml-quem{color:#9DA3A0;}
+  body.theme-glass .eml-item:not(.nova) .eml-item-l2{color:#8A908D;}
+  body.theme-glass .eml-item.ativa{background:rgba(46,204,143,.22);}
   .eml-pag{display:flex; justify-content:space-between; align-items:center; padding:8px 12px; border-top:1px solid var(--rule); font-size:12px; color:var(--ink-soft);}
   .eml-leitor{min-width:0;}
   .eml-tools{display:flex; flex-wrap:wrap; gap:6px; padding:10px 12px; border-bottom:1px solid var(--rule);}

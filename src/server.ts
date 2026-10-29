@@ -23851,7 +23851,9 @@ app.post("/api/atendimento/conversas/:id/citacoes", blockCliente, requireEscrito
 // + /waha-file no Caddy da VPS) pra RE-BAIXAR a mídia por ID da mensagem (o NOWEB store guarda as chaves
 // — validado em produção, recupera até de dias atrás), subimos o arquivo na própria conversa e corrigimos
 // a linha da mensagem. A bolha passa a exibir a imagem, sem o usuário precisar abrir o celular.
-const BACKFILL_PLACEHOLDER_RE = /^\s*\[(?:📷|🎬|🎤|📄|🏷|📎)/u;
+// Code points (não o emoji cru) pra não depender de encoding no build/transfer:
+// 📷 1F4F7 · 🎬 1F3AC · 🎤 1F3A4 · 📄 1F4C4 · 🏷 1F3F7 · 📎 1F4CE. Fallback por palavra (imagem/documento…).
+const BACKFILL_PLACEHOLDER_RE = /^\s*\[(?:\u{1F4F7}|\u{1F3AC}|\u{1F3A4}|\u{1F4C4}|\u{1F3F7}|\u{1F4CE}|\s*(?:imagem|v[ií]deo|[aá]udio|documento|figurinha|sticker))/iu;
 function backfillTiraPlaceholder(body: string | null | undefined): string {
   return String(body || "").replace(/^\s*\[[^\]]+\]\s*/u, "").trim();
 }
