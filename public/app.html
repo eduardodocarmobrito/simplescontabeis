@@ -43,6 +43,10 @@
   }
   .login-box .eyebrow{font-family:'IBM Plex Mono',monospace; font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--accent);}
   .login-box h1{font-weight:700; font-size:24px; margin:4px 0 20px;}
+  /* Baseline "nunca mais quadrados": todo input de texto/número/select/textarea solto já nasce com
+     cantos arredondados. Especificidade mínima (:where() zera), então .field/.inp/.combo/tabela
+     continuam mandando no resto do visual. Checkbox/radio/range/file/color ficam de fora. */
+  input:where(:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=file]):not([type=color])), select, textarea{border-radius:10px;}
   .field{display:flex; flex-direction:column; gap:5px; margin-bottom:14px;}
   .field label{font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-soft); font-family:'IBM Plex Mono',monospace;}
   .field input, .field select, .field textarea{font-family:'Inter',sans-serif; font-size:14px; border:1px solid var(--rule); border-radius:10px; padding:9px 11px; background:var(--paper); color:var(--ink); width:100%;}
@@ -17004,11 +17008,12 @@ async function renderCfgCertidoes(box){
       </div>
       <label class="checkbox-row" style="margin-top:6px;"><input type="checkbox" id="infoAtivo" ${c.ativo?'checked':''} ${podeEditar?'':'disabled'}> Consultar automaticamente <b>no vencimento de cada certidão</b></label>
       <div style="font-size:12px; color:var(--ink-soft); margin:2px 0 6px 26px;">Uma certidão negativa válida não é reconsultada até vencer (economiza consultas). As empresas <b>com pendência</b> (sem certidão) são rechecadas a cada
-        <input id="infoIntervalo" type="number" min="1" max="60" value="${c.intervaloDias||30}" style="width:60px; margin:0 4px;" ${podeEditar?'':'disabled'}> dias.</div>
+        <input id="infoIntervalo" type="number" min="1" max="60" value="${c.intervaloDias||30}" class="inp" style="width:62px; margin:0 4px; padding:5px 8px;" ${podeEditar?'':'disabled'}> dias.</div>
       <div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">${c.ultimaExecucao?('Última verificação automática: '+fmtDateHora(c.ultimaExecucao)):'Ainda não rodou automaticamente.'} · Custo ~R$ 0,20 por consulta (cobrado pela Infosimples).</div>
-      ${podeEditar?'<div class="row" style="gap:8px; margin-top:14px;"><button class="btn primary" id="infoSalvar">Salvar</button></div>':'<p style="font-size:12px; color:var(--ink-soft);">Só o Administrador altera esta integração.</p>'}
+      ${podeEditar?'<div class="row" style="gap:8px; margin-top:14px;"><button class="btn primary" id="infoSalvar" disabled>Salvar</button></div>':'<p style="font-size:12px; color:var(--ink-soft);">Só o Administrador altera esta integração.</p>'}
     </div>`;
   if(!podeEditar) return;
+  habilitarSalvarAoMudar('infoSalvar', ['infoToken','infoAtivo','infoIntervalo']);
   document.getElementById('infoSalvar').addEventListener('click', async ()=>{
     const body = { ativo: document.getElementById('infoAtivo').checked, intervaloDias: Number(document.getElementById('infoIntervalo').value)||15 };
     const tk = document.getElementById('infoToken').value.trim();

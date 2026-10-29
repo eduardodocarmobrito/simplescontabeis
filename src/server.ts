@@ -23939,8 +23939,17 @@ async function atendimentoBackfillMidiaLoop() {
   if (backfillRodando) return;
   backfillRodando = true;
   try {
-    const r = await atendimentoBackfillMidia({ limit: 12, diasAtras: 15 });
-    if (r.recuperadas) console.log(`[atendimento] backfill de mídia: ${r.recuperadas}/${r.tentadas} recuperadas`);
+    // Em background não há contexto de requisição: monta o contexto de CADA escritório com atendimento
+    // (traz admin + wahaSeenToken + wahaUrl) e roda dentro do deskcommAls pra deskcommCtx() enxergar.
+    const rows = sqlite.prepare(`SELECT escritorio_id FROM deskcomm_config`).all() as any[];
+    for (const row of rows) {
+      const ctx = deskcommContextoDoEscritorio(row.escritorio_id);
+      if (!ctx || !ctx.admin || !ctx.orgId || !ctx.wahaSeenToken) continue;
+      await deskcommAls.run(ctx, async () => {
+        const r = await atendimentoBackfillMidia({ limit: 12, diasAtras: 15 });
+        if (r.recuperadas) console.log(`[atendimento] backfill de mídia (esc ${row.escritorio_id}): ${r.recuperadas}/${r.tentadas} recuperadas`);
+      });
+    }
   } catch (e: any) { console.error("[atendimento] backfill loop:", e?.message); }
   finally { backfillRodando = false; }
 }
