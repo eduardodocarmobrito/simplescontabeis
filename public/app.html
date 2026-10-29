@@ -12765,6 +12765,7 @@ function renderRelRetencoes(box, empresas){
   setupComboSelect('relRetEmpresaCombo', empresas.map(e=>({id:e.id, label:empresaComboLabel(e)})));
   setupDatePicker('relRetDataDe','relRetDataDe_text');
   setupDatePicker('relRetDataAte','relRetDataAte_text');
+  let retBuscaDet=''; let retBuscaGrade=''; // filtros de busca persistidos enquanto digita
 
   async function gerarDetalhe(empresaId){
     const resultBox = document.getElementById('relRetResultado');
@@ -12779,23 +12780,59 @@ function renderRelRetencoes(box, empresas){
     try{
       const { itens, somas } = await api('/relatorios/retencoes?'+params.toString());
       if(!itens.length){
-        resultBox.innerHTML = '<div class="empty-state">Nenhuma nota com retenção encontrada no período. <span class="link-discreto" id="btnRelRetVoltarGrade">← Ver todas as empresas</span></div>';
+        resultBox.innerHTML = '<div class="empty-state">Nenhuma nota com retenção encontrada no período.<div style="margin-top:12px;"><button class="btn" id="btnRelRetVoltarGrade">← Ver todas as empresas</button></div></div>';
         document.getElementById('btnRelRetVoltarGrade').addEventListener('click', limparSelecao);
         return;
       }
       resultBox.innerHTML = `
-        <div style="margin-bottom:10px;"><span class="link-discreto" id="btnRelRetVoltarGrade">← Ver todas as empresas</span></div>
+        <div style="display:flex; align-items:flex-end; gap:12px; flex-wrap:wrap; margin-bottom:12px;">
+          <button class="btn" id="btnRelRetVoltarGrade">← Ver todas as empresas</button>
+          <div class="field" style="margin-bottom:0; max-width:340px; flex:1 1 220px;">
+            <label>Buscar nota</label>
+            <input type="text" id="relRetBuscaDet" placeholder="CNPJ, emitente ou valor…" value="${esc(retBuscaDet)}" autocomplete="off">
+          </div>
+        </div>
         <div style="overflow-x:auto;">
         <table class="data-table">
           <thead><tr><th>Data Emissão</th><th>Número</th><th>Emitente</th><th>CNPJ</th><th>Valor Bruto</th><th>INSS</th><th>IRRF</th><th>PIS</th><th>COFINS</th><th>CSLL</th><th>ISS</th><th></th></tr></thead>
           <tbody>
-            ${itens.map(it=>`<tr><td>${fmtDate(it.dataEmissao)}</td><td>${esc(it.numeroNfse||'-')}</td><td>${esc(it.emitenteNome||'-')}</td><td>${esc(it.emitenteCnpj||'-')}</td><td>${fmtMoney(it.valorServico)}</td><td>${fmtMoney(it.inss)}</td><td>${fmtMoney(it.irrf)}</td><td>${fmtMoney(it.pis)}</td><td>${fmtMoney(it.cofins)}</td><td>${fmtMoney(it.csll)}</td><td>${fmtMoney(it.iss)}</td><td><a class="btn small" href="/api/nfe/documentos/${it.docId}/pdf" target="_blank" rel="noopener">Ver PDF</a></td></tr>`).join('')}
-            <tr style="font-weight:700; background:var(--paper);"><td colspan="4">TOTAL</td><td>${fmtMoney(somas.valorServico)}</td><td>${fmtMoney(somas.inss)}</td><td>${fmtMoney(somas.irrf)}</td><td>${fmtMoney(somas.pis)}</td><td>${fmtMoney(somas.cofins)}</td><td>${fmtMoney(somas.csll)}</td><td>${fmtMoney(somas.iss)}</td><td></td></tr>
+            ${itens.map(it=>{
+              const chave = `${(it.emitenteNome||'').toLowerCase()} ${String(it.emitenteCnpj||'').replace(/\D/g,'')} ${[it.valorServico,it.inss,it.irrf,it.pis,it.cofins,it.csll,it.iss].map(v=>fmtMoney(v)).join(' ').toLowerCase()}`;
+              return `<tr class="relRetDetRow" data-busca="${esc(chave)}" data-v="${it.valorServico||0}" data-inss="${it.inss||0}" data-irrf="${it.irrf||0}" data-pis="${it.pis||0}" data-cofins="${it.cofins||0}" data-csll="${it.csll||0}" data-iss="${it.iss||0}"><td>${fmtDate(it.dataEmissao)}</td><td>${esc(it.numeroNfse||'-')}</td><td>${esc(it.emitenteNome||'-')}</td><td>${esc(it.emitenteCnpj||'-')}</td><td>${fmtMoney(it.valorServico)}</td><td>${fmtMoney(it.inss)}</td><td>${fmtMoney(it.irrf)}</td><td>${fmtMoney(it.pis)}</td><td>${fmtMoney(it.cofins)}</td><td>${fmtMoney(it.csll)}</td><td>${fmtMoney(it.iss)}</td><td><a class="btn small" href="/api/nfe/documentos/${it.docId}/pdf" target="_blank" rel="noopener">Ver PDF</a></td></tr>`;
+            }).join('')}
+            <tr id="relRetTotalRow" style="font-weight:700; background:var(--paper);"><td colspan="4">TOTAL</td><td id="relRetTotV">${fmtMoney(somas.valorServico)}</td><td id="relRetTotInss">${fmtMoney(somas.inss)}</td><td id="relRetTotIrrf">${fmtMoney(somas.irrf)}</td><td id="relRetTotPis">${fmtMoney(somas.pis)}</td><td id="relRetTotCofins">${fmtMoney(somas.cofins)}</td><td id="relRetTotCsll">${fmtMoney(somas.csll)}</td><td id="relRetTotIss">${fmtMoney(somas.iss)}</td><td></td></tr>
           </tbody>
         </table>
         </div>
-        <div style="margin-top:14px;"><span class="tag ok" style="font-size:13px; padding:8px 14px;">Total geral de retenções: ${fmtMoney(somas.totalGeral)}</span></div>
+        <div id="relRetVazioFiltro"></div>
+        <div style="margin-top:14px;"><span class="tag ok" id="relRetTotalGeral" style="font-size:13px; padding:8px 14px;">Total geral de retenções: ${fmtMoney(somas.totalGeral)}</span></div>
       `;
+      // Busca por CNPJ, emitente ou valor — filtra as linhas e recalcula TOTAL + total geral do que ficou visível.
+      const inpDet = document.getElementById('relRetBuscaDet');
+      const rowsDet = Array.from(resultBox.querySelectorAll('tr.relRetDetRow'));
+      function aplicarDet(){
+        const q = inpDet.value.trim().toLowerCase();
+        const qDig = q.replace(/\D/g,'');
+        let n=0; const s={v:0,inss:0,irrf:0,pis:0,cofins:0,csll:0,iss:0};
+        rowsDet.forEach(tr=>{
+          const txt = tr.dataset.busca||'';
+          const vis = !q || txt.includes(q) || (qDig.length>=2 && txt.includes(qDig));
+          tr.style.display = vis?'':'none';
+          if(vis){ n++; s.v+=+tr.dataset.v; s.inss+=+tr.dataset.inss; s.irrf+=+tr.dataset.irrf; s.pis+=+tr.dataset.pis; s.cofins+=+tr.dataset.cofins; s.csll+=+tr.dataset.csll; s.iss+=+tr.dataset.iss; }
+        });
+        document.getElementById('relRetTotV').textContent=fmtMoney(s.v);
+        document.getElementById('relRetTotInss').textContent=fmtMoney(s.inss);
+        document.getElementById('relRetTotIrrf').textContent=fmtMoney(s.irrf);
+        document.getElementById('relRetTotPis').textContent=fmtMoney(s.pis);
+        document.getElementById('relRetTotCofins').textContent=fmtMoney(s.cofins);
+        document.getElementById('relRetTotCsll').textContent=fmtMoney(s.csll);
+        document.getElementById('relRetTotIss').textContent=fmtMoney(s.iss);
+        document.getElementById('relRetTotalGeral').textContent='Total geral de retenções: '+fmtMoney(s.inss+s.irrf+s.pis+s.cofins+s.csll+s.iss);
+        document.getElementById('relRetTotalRow').style.display = n?'':'none';
+        document.getElementById('relRetVazioFiltro').innerHTML = (n===0 && q) ? `<div class="empty-state" style="padding:18px;">Nenhuma nota encontrada para “${esc(inpDet.value.trim())}”.</div>` : '';
+      }
+      inpDet.addEventListener('input', ()=>{ retBuscaDet=inpDet.value; aplicarDet(); });
+      if(retBuscaDet) aplicarDet();
       document.getElementById('btnRelRetVoltarGrade').addEventListener('click', limparSelecao);
       btnPdf.href = '/api/relatorios/retencoes/pdf?'+params.toString();
       btnPdf.style.pointerEvents=''; btnPdf.style.opacity='1';
@@ -12816,12 +12853,21 @@ function renderRelRetencoes(box, empresas){
         return;
       }
       resultBox.innerHTML = `
+        <div class="field" style="max-width:340px; margin-bottom:12px;">
+          <label>Buscar empresa</label>
+          <input type="text" id="relRetBuscaGrade" placeholder="CNPJ, nome ou valor…" value="${esc(retBuscaGrade)}" autocomplete="off">
+        </div>
         <div style="overflow-x:auto;">
         <table class="data-table">
-          <thead><tr><th>Empresa</th><th>Notas</th><th>Valor Bruto</th><th>INSS</th><th>IRRF</th><th>PIS</th><th>COFINS</th><th>CSLL</th><th>ISS</th><th>Total Retido</th></tr></thead>
+          <thead><tr><th>Empresa</th><th>CNPJ</th><th>Notas</th><th>Valor Bruto</th><th>INSS</th><th>IRRF</th><th>PIS</th><th>COFINS</th><th>CSLL</th><th>ISS</th><th>Total Retido</th></tr></thead>
           <tbody>
-            ${items.map(it=>`<tr class="nfeEmpresaRow" data-id="${it.empresaId}" style="cursor:pointer;">
+            ${items.map(it=>{
+              const emp = empresas.find(e=>e.id===it.empresaId);
+              const cnpjDig = String(emp&&emp.cnpj||'').replace(/\D/g,'');
+              const chave = `${(it.empresaNome||'').toLowerCase()} ${cnpjDig} ${[it.somas.valorServico,it.somas.inss,it.somas.irrf,it.somas.pis,it.somas.cofins,it.somas.csll,it.somas.iss,it.somas.totalGeral].map(v=>fmtMoney(v)).join(' ').toLowerCase()}`;
+              return `<tr class="nfeEmpresaRow relRetGradeRow" data-id="${it.empresaId}" data-busca="${esc(chave)}" style="cursor:pointer;">
               <td>${esc(it.empresaNome)}</td>
+              <td>${cnpjDig?esc(fmtCnpjCpf(cnpjDig)):'—'}</td>
               <td>${it.qtdNotas}</td>
               <td>${fmtMoney(it.somas.valorServico)}</td>
               <td>${fmtMoney(it.somas.inss)}</td>
@@ -12831,11 +12877,30 @@ function renderRelRetencoes(box, empresas){
               <td>${fmtMoney(it.somas.csll)}</td>
               <td>${fmtMoney(it.somas.iss)}</td>
               <td style="font-weight:700;">${fmtMoney(it.somas.totalGeral)}</td>
-            </tr>`).join('')}
+            </tr>`;
+            }).join('')}
           </tbody>
         </table>
         </div>
+        <div id="relRetGradeVazioFiltro" style="margin-top:10px;"></div>
       `;
+      // Busca por CNPJ, nome ou valor — filtra as empresas da grade (mantém o clique pra abrir o detalhe).
+      const inpGrade = document.getElementById('relRetBuscaGrade');
+      const rowsGrade = Array.from(resultBox.querySelectorAll('tr.relRetGradeRow'));
+      function aplicarGrade(){
+        const q = inpGrade.value.trim().toLowerCase();
+        const qDig = q.replace(/\D/g,'');
+        let n=0;
+        rowsGrade.forEach(tr=>{
+          const txt = tr.dataset.busca||'';
+          const vis = !q || txt.includes(q) || (qDig.length>=2 && txt.includes(qDig));
+          tr.style.display = vis?'':'none';
+          if(vis) n++;
+        });
+        document.getElementById('relRetGradeVazioFiltro').innerHTML = (n===0 && q) ? `<div class="empty-state" style="padding:18px;">Nenhuma empresa encontrada para “${esc(inpGrade.value.trim())}”.</div>` : '';
+      }
+      inpGrade.addEventListener('input', ()=>{ retBuscaGrade=inpGrade.value; aplicarGrade(); });
+      if(retBuscaGrade) aplicarGrade();
       resultBox.querySelectorAll('tr[data-id]').forEach(tr=>tr.addEventListener('click', ()=>selecionarEmpresa(Number(tr.dataset.id))));
     }catch(e){ resultBox.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; }
   }
