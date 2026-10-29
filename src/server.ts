@@ -7333,15 +7333,6 @@ app.post("/api/checklist/pendencias-manuais", blockCliente, requirePermissao("so
   const jaTem = sqlite.prepare(`SELECT id FROM checklist_periodos WHERE atribuicao_id = ? AND ano = ? AND mes = ?`).get(atrib.id, anoNum, mesNum) as any;
   if (!jaTem) sqlite.prepare(`INSERT INTO checklist_periodos (atribuicao_id, ano, mes, rotulo) VALUES (?, ?, ?, NULL)`).run(atrib.id, anoNum, mesNum);
   sqlite.prepare(`INSERT OR IGNORE INTO checklist_pendencias_manuais (atribuicao_id, ano, mes, criado_por) VALUES (?, ?, ?, ?)`).run(atrib.id, anoNum, mesNum, user.id);
-  // Garante que o Painel tenha o card dedicado — assim a cobrança aparece na hora, sem depender de
-  // o escritório ter configurado um card por modelo (que monitora só modelos específicos).
-  const temCard = sqlite.prepare(`SELECT id FROM dashboard_cards WHERE escritorio_id = ? AND tipo = 'solicitacao_cobranca_manual'`).get(user.escritorioId) as any;
-  if (!temCard) {
-    const ordem = (sqlite.prepare(`SELECT COALESCE(MAX(ordem), 0) + 1 as o FROM dashboard_cards WHERE escritorio_id = ?`).get(user.escritorioId) as any).o;
-    sqlite
-      .prepare(`INSERT INTO dashboard_cards (titulo, valor, subtitulo, cor, ordem, created_by, escritorio_id, tipo, parametro) VALUES (?, '0', ?, 'brass', ?, ?, ?, 'solicitacao_cobranca_manual', NULL)`)
-      .run("Cobranças Manuais", "Competências anteriores cobradas à mão, ainda não enviadas", ordem, user.id, user.escritorioId);
-  }
   res.json({ ok: true });
 });
 app.delete("/api/checklist/pendencias-manuais/:id", blockCliente, requirePermissao("solicitacoes", "editar"), (req, res) => {
@@ -19703,7 +19694,7 @@ app.get("/api/financeiro/resumo", blockCliente, requirePermissao("financeiro", "
 // função abaixo devolve a lista (o card mostra só items.length); todas já filtram pelas empresas
 // que o usuário logado pode ver (empresasVisiveis), pro caso de um Colaborador restrito abrir o
 // Painel.
-const CARD_TIPOS: string[] = ["certificados_vencer", "das_atraso", "situacao_fiscal", "caixapostal_nao_lida", "checklist_atraso", "solicitacoes_pendentes", "envio_atraso", "solicitacao_atraso", "solicitacao_cobranca_manual", "licencas_vencer", "pesquisa_pagamento", "efd_omisso", "cnd_estadual", "cnd_municipal"];
+const CARD_TIPOS: string[] = ["certificados_vencer", "das_atraso", "situacao_fiscal", "caixapostal_nao_lida", "checklist_atraso", "solicitacoes_pendentes", "envio_atraso", "solicitacao_atraso", "licencas_vencer", "pesquisa_pagamento", "efd_omisso", "cnd_estadual", "cnd_municipal"];
 
 // Piso de competência (aaaamm, ex.: 202607) configurado em painel_monitoramento_config — null
 // quando não há corte definido (comportamento de sempre: cada card usa o período mais antigo já
@@ -20338,7 +20329,10 @@ function cardSolicitacaoAtraso(user: any, templateIds: number[]): any[] {
         });
     }
   }
-  for (const pm of checklistPendenciasManuaisCard(user, templateIds)) {
+  // Cobranças manuais de QUALQUER modelo entram neste card (não só dos modelos que ele monitora
+  // automaticamente) — é o lugar único de "o que o cliente ainda deve", incluindo meses antigos
+  // cobrados à mão de modelos sem prazo (ex.: Extrato Itaú).
+  for (const pm of checklistPendenciasManuaisCard(user, null)) {
     if (!resultado.some((x) => x.empresaId === pm.empresaId && x.templateNome === pm.templateNome && x.competencia === pm.competencia)) resultado.push(pm);
   }
   return resultado;
@@ -20374,7 +20368,6 @@ async function calcularCardComputado(tipo: string, user: any, parametro?: string
   if (tipo === "caixapostal_nao_lida") return cardCaixaPostalNaoLida(user);
   if (tipo === "pesquisa_pagamento") return cardPesquisaPagamento(user);
   if (tipo === "checklist_atraso") return cardChecklistAtraso(user);
-  if (tipo === "solicitacao_cobranca_manual") return checklistPendenciasManuaisCard(user, null);
   if (tipo === "solicitacoes_pendentes") return cardSolicitacoesPendentes(user);
   if (tipo === "envio_atraso") {
     const templateIds = parseParametroIds(parametro);
