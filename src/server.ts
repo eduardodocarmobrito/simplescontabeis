@@ -3436,7 +3436,7 @@ const DESKCOMM_WAHA_CONNECT_ENV = (process.env.DESKCOMM_WAHA_CONNECT || "deskcom
 function wahaFetch(
   caminho: string,
   init: { method?: string; headers?: Record<string, string>; body?: string } = {}
-): Promise<{ ok: boolean; status: number; json: () => Promise<any>; text: () => Promise<string> }> {
+): Promise<{ ok: boolean; status: number; json: () => Promise<any>; text: () => Promise<string>; buffer: () => Promise<Buffer>; contentType: string }> {
   const ctx = deskcommCtx();
   const wahaUrlAlvo = new URL(ctx.wahaUrl || DESKCOMM_WAHA_URL_ENV);
   const wahaConnectAlvo = ctx.wahaConnect || "";
@@ -3463,6 +3463,8 @@ function wahaFetch(
             status,
             text: async () => buf.toString("utf8"),
             json: async () => JSON.parse(buf.toString("utf8")),
+            buffer: async () => buf,
+            contentType: String(resp.headers["content-type"] || ""),
           });
         });
       }
@@ -23840,6 +23842,119 @@ app.post("/api/atendimento/conversas/:id/citacoes", blockCliente, requireEscrito
   } catch (e: any) {
     res.status(502).json({ error: e.message });
   }
+});
+// ---- Backfill de mídia (imagens/áudios/docs que vieram como texto) ----
+// Quando a sessão do WhatsApp (WAHA/NOWEB) cai por alguns segundos (erros "stream errored out 503" nos
+// logs do WAHA), as mensagens perdidas ao vivo são recuperadas por "history sync" — e mídia nesse
+// caminho chega SÓ como texto ("[📷 imagem] Fulano"), sem o arquivo (media_storage_path null,
+// metadata.importado_do_celular). Aqui pedimos ao WAHA (caminhos fechados /simplescontabeis/waha-get-media
+// + /waha-file no Caddy da VPS) pra RE-BAIXAR a mídia por ID da mensagem (o NOWEB store guarda as chaves
+// — validado em produção, recupera até de dias atrás), subimos o arquivo na própria conversa e corrigimos
+// a linha da mensagem. A bolha passa a exibir a imagem, sem o usuário precisar abrir o celular.
+const BACKFILL_PLACEHOLDER_RE = /^\s*\[(?:📷|🎬|🎤|📄|🏷|📎)/u;
+function backfillTiraPlaceholder(body: string | null | undefined): string {
+  return String(body || "").replace(/^\s*\[[^\]]+\]\s*/u, "").trim();
+}
+async function wahaBaixarMidiaMsg(sessao: string, externalId: string): Promise<{ buf: Buffer; mime: string } | null> {
+  const token = deskcommCtx().wahaSeenToken;
+  const chatId = String(externalId).split("_")[1];
+  if (!chatId || !token) return null;
+  const enc = (s: string) => encodeURIComponent(s).replace(/%40/g, "@");
+  const r = await wahaFetch(`/simplescontabeis/waha-get-media/${enc(sessao)}/${enc(chatId)}/${enc(externalId)}`, { headers: { "X-Simples-Token": token } });
+  if (!r.ok) return null;
+  let j: any;
+  try { j = await r.json(); } catch { return null; }
+  const url = j?.media?.url;
+  if (!j?.hasMedia || !url) return null;
+  const mm = String(url).match(/\/api\/files\/(.+)$/);
+  if (!mm) return null;
+  const rf = await wahaFetch(`/simplescontabeis/waha-file/${mm[1]}`, { headers: { "X-Simples-Token": token } });
+  if (!rf.ok) return null;
+  const buf = await rf.buffer();
+  if (!buf || !buf.length) return null;
+  return { buf, mime: j.media.mimetype || rf.contentType || "application/octet-stream" };
+}
+// Recupera a mídia de UMA mensagem e corrige a linha no banco. true se recuperou.
+async function backfillUmaMensagem(m: any, sessao: string): Promise<boolean> {
+  const ctx = deskcommCtx();
+  let baixado: { buf: Buffer; mime: string } | null = null;
+  try { baixado = await wahaBaixarMidiaMsg(sessao, m.external_id); } catch { baixado = null; }
+  if (!baixado) {
+    const tent = (m.metadata?.backfill_tentativas || 0) + 1;
+    await ctx.admin!.from("messages").update({ metadata: { ...(m.metadata || {}), backfill_tentativas: tent, backfill_ultima_em: new Date().toISOString() } }).eq("id", m.id);
+    return false;
+  }
+  const ext = ((baixado.mime.split("/")[1] || "bin").split(";")[0]).slice(0, 8);
+  const nome = `midia-${String(m.external_id).split("_").pop()}.${ext}`;
+  const fd = new FormData();
+  fd.append("file", new Blob([new Uint8Array(baixado.buf)], { type: baixado.mime }), nome);
+  const up = await deskcommRoboApi(`/conversations/${m.conversation_id}/media`, { method: "POST", body: fd });
+  const legenda = up.kind === "audio" ? null : (backfillTiraPlaceholder(m.body) || null);
+  await ctx.admin!.from("messages").update({
+    type: up.kind,
+    media_storage_path: up.storage_path,
+    media_mime: up.media_mime,
+    media_size_bytes: up.media_size_bytes,
+    body: legenda,
+    metadata: { ...(m.metadata || {}), media_status: "stored", backfill_midia: true, backfill_em: new Date().toISOString() },
+  }).eq("id", m.id);
+  return true;
+}
+// Varre placeholders de mídia recentes e tenta recuperar. convId opcional prioriza uma conversa.
+async function atendimentoBackfillMidia(opts: { convId?: string; limit?: number; diasAtras?: number } = {}): Promise<{ recuperadas: number; tentadas: number }> {
+  const ctx = deskcommCtx();
+  if (!ctx.admin || !ctx.orgId || !ctx.wahaSeenToken) return { recuperadas: 0, tentadas: 0 };
+  const limite = Math.min(Math.max(opts.limit || 20, 1), 100);
+  const desde = new Date(Date.now() - (opts.diasAtras || 20) * 86400_000).toISOString();
+  let q = ctx.admin.from("messages")
+    .select("id, external_id, body, conversation_id, metadata, type")
+    .eq("organization_id", ctx.orgId).eq("direction", "inbound").eq("type", "text")
+    .is("media_storage_path", null)
+    .like("external_id", "false_%")
+    .gte("created_at", desde)
+    .order("created_at", { ascending: false })
+    .limit(limite * 5);
+  if (opts.convId) q = q.eq("conversation_id", opts.convId);
+  const { data: cand } = await q;
+  const alvos = (cand || []).filter((m: any) => BACKFILL_PLACEHOLDER_RE.test(String(m.body || "")) && (m.metadata?.backfill_tentativas || 0) < 4).slice(0, limite);
+  if (!alvos.length) return { recuperadas: 0, tentadas: 0 };
+  const sessPorConv = new Map<string, string>();
+  const convIds = [...new Set(alvos.map((m: any) => m.conversation_id))];
+  const { data: convs } = await ctx.admin.from("conversations").select("id, channel_session:channel_sessions(waha_session_name)").eq("organization_id", ctx.orgId).in("id", convIds);
+  for (const c of (convs || [])) { const s = (c as any).channel_session?.waha_session_name; if (s) sessPorConv.set((c as any).id, s); }
+  let recuperadas = 0, tentadas = 0;
+  const fila = [...alvos];
+  await Promise.all(Array.from({ length: 3 }, async () => {
+    for (let m = fila.shift(); m; m = fila.shift()) {
+      const sessao = sessPorConv.get(m.conversation_id);
+      if (!sessao) continue;
+      tentadas++;
+      try { if (await backfillUmaMensagem(m, sessao)) recuperadas++; } catch (e: any) { console.error("[atendimento] backfill falhou:", e?.message); }
+    }
+  }));
+  return { recuperadas, tentadas };
+}
+let backfillRodando = false;
+async function atendimentoBackfillMidiaLoop() {
+  if (backfillRodando) return;
+  backfillRodando = true;
+  try {
+    const r = await atendimentoBackfillMidia({ limit: 12, diasAtras: 15 });
+    if (r.recuperadas) console.log(`[atendimento] backfill de mídia: ${r.recuperadas}/${r.tentadas} recuperadas`);
+  } catch (e: any) { console.error("[atendimento] backfill loop:", e?.message); }
+  finally { backfillRodando = false; }
+}
+setInterval(() => atendimentoBackfillMidiaLoop(), 3 * 60_000);
+setTimeout(() => atendimentoBackfillMidiaLoop(), 30_000);
+// Recupera, sob demanda, a mídia faltante de uma conversa (chamado ao abrir a conversa e por botão).
+app.post("/api/atendimento/conversas/:id/backfill-midia", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
+  const user = (req as any).user;
+  if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).json({ error: "Você não tem permissão para fazer isso." });
+  if (!deskcommCtx().admin || !deskcommCtx().orgId || !deskcommCtx().wahaSeenToken) return res.status(503).json({ error: "Integração com o deskcomm não configurada no servidor." });
+  try {
+    const r = await atendimentoBackfillMidia({ convId: String(req.params.id), limit: 30, diasAtras: 90 });
+    res.json(r);
+  } catch (e: any) { res.status(502).json({ error: e.message }); }
 });
 // ---- Foto de perfil do cliente ----
 // O WAHA (pelo caminho fechado /simplescontabeis/waha-foto no Caddy da VPS) devolve a URL da foto no WhatsApp; este

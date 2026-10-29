@@ -14034,6 +14034,11 @@ async function atdAbrirConversa(S, id){
   if(listaMsgsEl) listaMsgsEl.addEventListener('scroll', ()=>{ if(listaMsgsEl.scrollTop < 120) atdCarregarAntigas(S); });
   await atdCarregarMensagens(S, true);
   atdMarcarLida(S, id);
+  // Recupera, em segundo plano, imagens/áudios/docs desta conversa que vieram como texto do celular
+  // (history sync após queda de sessão). Se recuperar algo, recarrega a lista pra mostrar a mídia.
+  api('/atendimento/conversas/'+encodeURIComponent(id)+'/backfill-midia', { method:'POST' })
+    .then(r=>{ if(r && r.recuperadas>0 && S.conversaAtiva===id) atdCarregarMensagens(S, false); })
+    .catch(()=>{});
   S.mensagensTimer = setInterval(()=>atdCarregarMensagens(S, false), 6000);
 }
 // Lida no deskcomm (contador) E no WhatsApp (celular + tiques azuis pro cliente — rota nossa,
