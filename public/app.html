@@ -693,6 +693,19 @@ body.theme-glass #envioModeloPanel{
 body.theme-glass .tema-popover .tema-opcao-nome{color:#1D1D1F;}
 body.theme-glass .tema-popover .tema-titulo{color:#6E6E73;}
 body.theme-glass .tema-opcao:hover{background:rgba(0,0,0,.06);}
+/* O popup do calendário fica claro no tema escuro (regra do bloco acima). Mas os itens internos têm
+   cor fixa em var(--ink)/var(--ink-soft) — que no escuro são CLARAS — e sobrepõem a herança escura do
+   container, sumindo no fundo claro. Fixa tudo em tom escuro; reafirma hoje (verde) e selecionado
+   (pill verde + texto branco) por último pra não perderem o contraste. */
+body.theme-glass .cal-popup .cal-label{color:#1D1D1F;}
+body.theme-glass .cal-popup .cal-nav button{color:#4B4B50; background:rgba(0,0,0,.04); border-color:rgba(0,0,0,.14);}
+body.theme-glass .cal-popup .cal-nav button:hover{border-color:var(--accent); color:var(--accent-deep);}
+body.theme-glass .cal-popup .cal-weekdays span{color:#6E6E73;}
+body.theme-glass .cal-popup .cal-day{color:#1D1D1F;}
+body.theme-glass .cal-popup .cal-day.other{color:#9A9AA0;}
+body.theme-glass .cal-popup .cal-day:hover{background:var(--accent-pale); color:var(--accent-deep);}
+body.theme-glass .cal-popup .cal-day.today{color:var(--accent-deep);}
+body.theme-glass .cal-popup .cal-day.selected{background:var(--accent); color:#fff;}
 /* Qualquer <th> solto (sem a classe table.data-table) que ainda dependa do var(--surface) claro —
    pega os casos avulsos sem precisar caçar um por um nas telas. */
 body.theme-glass th{color:#6E6E73;}
