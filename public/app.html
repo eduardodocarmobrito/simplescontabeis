@@ -17010,7 +17010,8 @@ async function renderCfgCertidoes(box){
   const [c, empResp] = await Promise.all([api('/infosimples/config'), podeEditar?api('/empresas'):Promise.resolve({items:[]})]);
   const empresas = empResp.items || [];
   box.innerHTML = `
-    <div class="card" style="max-width:680px;">
+    <div style="display:flex; gap:16px; flex-wrap:wrap; align-items:flex-start;">
+    <div class="card" style="flex:1 1 440px; max-width:680px; margin:0;">
       <h3 style="margin-top:0;">Consulta automática de certidões (Infosimples)</h3>
       <p style="font-size:13px; color:var(--ink-soft); margin-top:-4px;">Consulta as <b>certidões Estadual e Municipal</b> por CNPJ/Inscrição Estadual a partir do Brasil (contorna o bloqueio da SEFA ao servidor). A <b>Federal</b> continua vindo da Situação Fiscal. Cadastre o token da sua conta Infosimples (fica <b>criptografado</b>).</p>
       <div class="field"><label>Token Infosimples</label>
@@ -17023,7 +17024,7 @@ async function renderCfgCertidoes(box){
       <div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">${c.ultimaExecucao?('Última verificação automática: '+fmtDateHora(c.ultimaExecucao)):'Ainda não rodou automaticamente.'} · Custo ~R$ 0,20 por consulta (cobrado pela Infosimples).</div>
       ${podeEditar?'<div class="row" style="gap:8px; margin-top:14px;"><button class="btn primary" id="infoSalvar" disabled>Salvar</button></div>':'<p style="font-size:12px; color:var(--ink-soft);">Só o Administrador altera esta integração.</p>'}
     </div>
-    ${podeEditar?`<div class="card" style="max-width:680px; margin-top:16px;">
+    ${podeEditar?`<div class="card" style="flex:1 1 440px; max-width:680px; margin:0;">
       <h3 style="margin-top:0;">Executar agora</h3>
       <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-4px;">Roda a consulta de CND na hora, sem esperar o vencimento. Escolha a esfera e a empresa (ou todas). <b>Estadual</b> usa a Infosimples (tem custo por consulta); <b>Municipal</b> é via portal de Redenção-PA (sem custo).</p>
       <div class="row" style="gap:12px; align-items:flex-end; flex-wrap:wrap;">
@@ -17034,7 +17035,8 @@ async function renderCfgCertidoes(box){
       </div>
       <label class="checkbox-row" style="margin-top:8px; font-size:12.5px;"><input type="checkbox" id="cndRunDevidas" checked> Quando for <b>Todas</b>, consultar só as vencidas/sem certidão (economiza).</label>
       <div id="cndRunResultado" style="margin-top:10px; font-size:13px; color:var(--ink-soft); white-space:pre-line;"></div>
-    </div>`:''}`;
+    </div>`:''}
+    </div>`;
   if(!podeEditar) return;
   setupComboSelect('cndRunEmpresa', empresas.map(e=>({id:e.id, label:empresaComboLabel(e)})));
   (function(){
