@@ -241,6 +241,20 @@ sqlite.exec(`
     resolvido INTEGER NOT NULL DEFAULT 0
   );
 
+  -- Cobrança manual de uma competência anterior pra UMA empresa específica (ex.: só a Pool Center
+  -- deve o extrato do Itaú de Jan/2026). Entra no card de pendências mesmo abaixo do piso de
+  -- monitoramento e fora da regra do "só o mês anterior"; some sozinho quando a empresa envia todos
+  -- os itens obrigatórios daquela competência. Ver POST /api/checklist/pendencias-manuais.
+  CREATE TABLE IF NOT EXISTS checklist_pendencias_manuais (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    atribuicao_id INTEGER NOT NULL REFERENCES checklist_atribuicoes(id) ON DELETE CASCADE,
+    ano INTEGER NOT NULL,
+    mes INTEGER NOT NULL,
+    criado_por INTEGER REFERENCES app_users(id),
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(atribuicao_id, ano, mes)
+  );
+
   -- ---- Envio de Documentos (sentido contrário de Solicitações: o escritório posta e o cliente recebe) ----
   CREATE TABLE IF NOT EXISTS envio_templates (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -7296,6 +7310,37 @@ app.post("/api/checklist/periodos/gerar", blockCliente, requirePermissao("solici
   res.json({ ok: true, criados });
 });
 
+// Cobrança manual de uma competência anterior pra UMA empresa (não mexe nas outras): entra no card
+// de pendências mesmo abaixo do piso de monitoramento / fora da regra do "mês anterior". Some
+// sozinho quando a empresa envia todos os itens obrigatórios daquela competência. Já garante o
+// período na grade pra a empresa ter onde anexar.
+app.post("/api/checklist/pendencias-manuais", blockCliente, requirePermissao("solicitacoes", "postar"), (req, res) => {
+  const user = (req as any).user;
+  const { atribuicaoId, ano, mes } = req.body || {};
+  const atrib = sqlite
+    .prepare(`SELECT a.*, t.periodicidade FROM checklist_atribuicoes a JOIN checklist_templates t ON t.id = a.template_id WHERE a.id = ? AND t.escritorio_id = ?`)
+    .get(Number(atribuicaoId), user.escritorioId) as any;
+  if (!atrib || !podeAcessarEmpresa(user, atrib.empresa_id)) return res.status(404).json({ error: "Atribuição não encontrada." });
+  if (atrib.periodicidade !== "mensal") return res.status(400).json({ error: "Cobrança de competência anterior só vale para modelos mensais." });
+  const anoNum = Number(ano), mesNum = Number(mes);
+  if (!Number.isInteger(anoNum) || anoNum < 2000 || anoNum > 2100 || !Number.isInteger(mesNum) || mesNum < 1 || mesNum > 12) {
+    return res.status(400).json({ error: "Informe uma competência (mês/ano) válida." });
+  }
+  sqlite.prepare(`INSERT OR IGNORE INTO checklist_periodos (atribuicao_id, ano, mes, rotulo) VALUES (?, ?, ?, NULL)`).run(atrib.id, anoNum, mesNum);
+  sqlite.prepare(`INSERT OR IGNORE INTO checklist_pendencias_manuais (atribuicao_id, ano, mes, criado_por) VALUES (?, ?, ?, ?)`).run(atrib.id, anoNum, mesNum, user.id);
+  res.json({ ok: true });
+});
+app.delete("/api/checklist/pendencias-manuais/:id", blockCliente, requirePermissao("solicitacoes", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const id = Number(req.params.id);
+  const row = sqlite
+    .prepare(`SELECT pm.id, a.empresa_id as empresaId FROM checklist_pendencias_manuais pm JOIN checklist_atribuicoes a ON a.id = pm.atribuicao_id WHERE pm.id = ?`)
+    .get(id) as any;
+  if (!row || !podeAcessarEmpresa(user, row.empresaId)) return res.status(404).json({ error: "Pendência não encontrada." });
+  sqlite.prepare(`DELETE FROM checklist_pendencias_manuais WHERE id = ?`).run(id);
+  res.json({ ok: true });
+});
+
 // Grade completa (períodos + status de upload de cada item) de uma atribuição — usada tanto pelo admin quanto pelo cliente
 app.get("/api/checklist/grade/:atribuicaoId", (req, res) => {
   const user = (req as any).user;
@@ -7361,9 +7406,13 @@ app.get("/api/checklist/grade/:atribuicaoId", (req, res) => {
     }),
   }));
 
+  const pendenciasManuais = sqlite
+    .prepare(`SELECT id, ano, mes FROM checklist_pendencias_manuais WHERE atribuicao_id = ? ORDER BY ano DESC, mes DESC`)
+    .all(atribuicaoId) as any[];
   res.json({
     atribuicao: { id: atrib.id, templateNome: atrib.templateNome, periodicidade: atrib.periodicidade, empresaNome: atrib.empresaNome, empresaId: atrib.empresa_id },
     grade,
+    pendenciasManuais,
   });
 });
 
@@ -20106,6 +20155,58 @@ async function cardPesquisaPagamento(user: any): Promise<any[]> {
   return resultado;
 }
 
+// Itens obrigatórios ainda em falta numa competência específica de uma atribuição de Solicitação —
+// mesma regra do card (upload 'salvo' conta; item reaberto e não resolvido volta a faltar).
+function checklistFaltandoCompetencia(atribuicaoId: number, itensObrigatorios: any[], ano: number, mes: number): string[] {
+  const periodo = sqlite.prepare(`SELECT id FROM checklist_periodos WHERE atribuicao_id = ? AND ano = ? AND mes = ?`).get(atribuicaoId, ano, mes) as any;
+  if (!periodo) return itensObrigatorios.map((it) => it.label);
+  const enviados = new Set(
+    (sqlite.prepare(`SELECT item_chave FROM checklist_uploads WHERE periodo_id = ? AND status = 'salvo'`).all(periodo.id) as any[]).map((u) => u.item_chave)
+  );
+  const reabertos = new Set(
+    (sqlite.prepare(`SELECT item_chave FROM checklist_reaberturas WHERE periodo_id = ? AND resolvido = 0`).all(periodo.id) as any[]).map((r) => r.item_chave)
+  );
+  return itensObrigatorios.filter((it) => !enviados.has(it.chave) || reabertos.has(it.chave)).map((it) => it.label);
+}
+// Cobranças manuais de competências anteriores (checklist_pendencias_manuais): o escritório marcou à
+// mão que UMA empresa deve uma competência antiga. Entram no card independentemente do piso de
+// monitoramento e da regra de "só o mês anterior" — somem sozinhas quando tudo que era obrigatório
+// naquela competência for enviado. Opcionalmente filtra por um conjunto de templates (card por modelo).
+function checklistPendenciasManuaisCard(user: any, templateIds: number[] | null): any[] {
+  const escritorioId = user.escritorioId;
+  const visiveis = new Set(empresasVisiveis(user));
+  let sql = `SELECT pm.id, pm.ano, pm.mes, a.id as atribuicaoId, a.empresa_id as empresaId, e.nome as empresaNome,
+                    t.nome as templateNome, t.itens_json as itensJson, t.prazo_dia as prazoDia
+             FROM checklist_pendencias_manuais pm
+             JOIN checklist_atribuicoes a ON a.id = pm.atribuicao_id AND a.ativo = 1
+             JOIN checklist_templates t ON t.id = a.template_id AND t.escritorio_id = ? AND t.ativo = 1
+             JOIN empresas e ON e.id = a.empresa_id AND e.ativo = 1`;
+  const params: any[] = [escritorioId];
+  if (templateIds && templateIds.length) {
+    sql += ` WHERE t.id IN (${templateIds.map(() => "?").join(",")})`;
+    params.push(...templateIds);
+  }
+  const rows = sqlite.prepare(sql).all(...params) as any[];
+  const resultado: any[] = [];
+  for (const r of rows) {
+    if (!visiveis.has(r.empresaId)) continue;
+    const itensObrigatorios = (JSON.parse(r.itensJson) as any[]).filter((it) => it.obrigatorio);
+    if (!itensObrigatorios.length) continue;
+    const faltando = checklistFaltandoCompetencia(r.atribuicaoId, itensObrigatorios, r.ano, r.mes);
+    if (!faltando.length) continue;
+    resultado.push({
+      empresaId: r.empresaId,
+      empresaNome: r.empresaNome,
+      templateNome: r.templateNome,
+      competencia: `${String(r.mes).padStart(2, "0")}/${r.ano}`,
+      prazoDia: r.prazoDia,
+      itensFaltando: faltando,
+      manual: true,
+    });
+  }
+  return resultado;
+}
+
 // Empresas que já passaram do prazo (dia do mês) de um modelo de Solicitação de Documentos e ainda
 // têm ao menos um item obrigatório sem upload salvo na competência ANTERIOR (ex.: hoje é 08/2026 e
 // o prazo é dia 2 — depois do dia 2 de agosto, verifica se a competência de julho/2026 já foi
@@ -20120,11 +20221,12 @@ function cardChecklistAtraso(user: any): any[] {
   // checar (evita flagrar meses de antes do corte, já que aqui só existe "a competência anterior",
   // sem backlog acumulado pra clampar dentro de um range como no DAS/Envio).
   const corte = painelMonitoramentoCorte(escritorioId);
-  if (corte && anoRef * 100 + mesRef < corte) return [];
-  const templates = sqlite
-    .prepare(`SELECT id, nome, itens_json as itensJson, prazo_dia as prazoDia FROM checklist_templates WHERE escritorio_id = ? AND ativo = 1 AND prazo_dia IS NOT NULL`)
-    .all(escritorioId) as any[];
   const resultado: any[] = [];
+  const templates = (corte && anoRef * 100 + mesRef < corte)
+    ? []
+    : (sqlite
+        .prepare(`SELECT id, nome, itens_json as itensJson, prazo_dia as prazoDia FROM checklist_templates WHERE escritorio_id = ? AND ativo = 1 AND prazo_dia IS NOT NULL`)
+        .all(escritorioId) as any[]);
   for (const t of templates) {
     if (agora.dia <= t.prazoDia) continue; // prazo desse mês (pra entregar a competência anterior) ainda não venceu
     const itensObrigatorios = (JSON.parse(t.itensJson) as any[]).filter((it) => it.obrigatorio);
@@ -20160,6 +20262,11 @@ function cardChecklistAtraso(user: any): any[] {
         });
     }
   }
+  // Cobranças manuais (competências anteriores pedidas à mão pra uma empresa) entram sempre, mesmo
+  // abaixo do piso de monitoramento e fora da regra do "mês anterior".
+  for (const pm of checklistPendenciasManuaisCard(user, null)) {
+    if (!resultado.some((x) => x.empresaId === pm.empresaId && x.templateNome === pm.templateNome && x.competencia === pm.competencia)) resultado.push(pm);
+  }
   return resultado;
 }
 
@@ -20176,9 +20283,9 @@ function cardSolicitacaoAtraso(user: any, templateIds: number[]): any[] {
   const mesRef = agora.mes === 1 ? 12 : agora.mes - 1;
   const anoRef = agora.mes === 1 ? agora.ano - 1 : agora.ano;
   const corte = painelMonitoramentoCorte(escritorioId);
-  if (corte && anoRef * 100 + mesRef < corte) return [];
   const resultado: any[] = [];
-  for (const templateId of templateIds) {
+  const dentroDoCorte = !(corte && anoRef * 100 + mesRef < corte);
+  for (const templateId of dentroDoCorte ? templateIds : []) {
     const t = sqlite
       .prepare(`SELECT id, nome, itens_json as itensJson, prazo_dia as prazoDia FROM checklist_templates WHERE id = ? AND escritorio_id = ? AND ativo = 1 AND prazo_dia IS NOT NULL`)
       .get(templateId, escritorioId) as any;
@@ -20214,6 +20321,9 @@ function cardSolicitacaoAtraso(user: any, templateIds: number[]): any[] {
           itensFaltando: faltando,
         });
     }
+  }
+  for (const pm of checklistPendenciasManuaisCard(user, templateIds)) {
+    if (!resultado.some((x) => x.empresaId === pm.empresaId && x.templateNome === pm.templateNome && x.competencia === pm.competencia)) resultado.push(pm);
   }
   return resultado;
 }

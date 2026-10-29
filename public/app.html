@@ -2856,7 +2856,7 @@ function cardDetalheModal(c){
         }));
       } else if(tipo==='checklist_atraso' || tipo==='solicitacao_atraso'){
         box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Modelo</th><th>Competência</th><th>Prazo</th><th>Itens faltando</th></tr></thead><tbody>
-          ${items.map(i=>`<tr><td>${esc(i.empresaNome)}</td><td>${esc(i.templateNome)}</td><td>${esc(i.competencia)}</td><td>Dia ${i.prazoDia}</td><td>${i.itensFaltando.map(esc).join(', ')}</td></tr>`).join('')}
+          ${items.map(i=>`<tr><td>${esc(i.empresaNome)}</td><td>${esc(i.templateNome)}</td><td>${esc(i.competencia)}${i.manual?' <span class="tag warn" style="font-size:10px; margin-left:4px;">cobrança manual</span>':''}</td><td>${i.manual?'<span style="color:var(--ink-soft);">—</span>':'Dia '+i.prazoDia}</td><td>${i.itensFaltando.map(esc).join(', ')}</td></tr>`).join('')}
         </tbody></table>`;
       } else if(tipo==='solicitacoes_pendentes'){
         box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Modelo</th><th>Competência</th><th>Solicitado em</th></tr></thead><tbody>
@@ -4720,13 +4720,16 @@ function renderSolicTabs(){
   if(SOLIC_TAB==='modelos') renderModelos(); else renderAtribuicoes();
 }
 
+let SOLIC_MODELOS_BUSCA='';
 async function renderModelos(){
   const podePostar = can('solicitacoes','postar');
   const podeEditar = can('solicitacoes','editar');
   const { items } = await api('/checklist/templates');
   const box = document.getElementById('solicContent');
+  const PER={mensal:'Mensal',anual:'Anual',avulso:'Avulso'};
   box.innerHTML = `
     <div class="row" style="margin-bottom:14px;">${podePostar?`<button class="btn primary" id="btnNovoModelo">+ Novo modelo</button>`:''}</div>
+    <div class="field" style="max-width:360px; margin-bottom:10px;"><input type="search" id="modelosBusca" placeholder="Buscar por nome, setor, item…" autocomplete="off" value="${esc(SOLIC_MODELOS_BUSCA)}"></div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
         <thead><tr><th>Nome</th><th>Setor</th><th>Periodicidade</th><th>Itens</th><th>Notificar por e-mail</th><th></th></tr></thead>
@@ -4734,21 +4737,34 @@ async function renderModelos(){
       </table>
     </div>
   `;
-  document.getElementById('modelosBody').innerHTML = items.length? items.map(t=>`
-    <tr data-id="${t.id}">
-      <td><b>${esc(t.nome)}</b>${t.descricao?`<br><span style="color:var(--ink-soft); font-size:12px;">${esc(t.descricao)}</span>`:''}</td>
-      <td>${t.setor?`<span class="tag ok">${esc((SETORES_EMPRESA_UI.find(x=>x.chave===t.setor)||{}).label||t.setor)}</span>`:'<span class="tag bad">sem setor</span>'}</td>
-      <td>${({mensal:'Mensal',anual:'Anual',avulso:'Avulso'})[t.periodicidade]||t.periodicidade}</td>
-      <td>${t.itens.map(i=>`<span class="tag muted">${esc(i.label)}</span>`).join(' ')}</td>
-      <td>${t.notificar_email? 'Sim':'Não'}</td>
-      <td style="text-align:right;">${podeEditar?`<button class="btn small" data-act="edit">Editar</button>`:''}</td>
-    </tr>
-  `).join('') : `<tr><td colspan="5"><div class="empty-state">Nenhum modelo cadastrado ainda.</div></td></tr>`;
+  const tbody = document.getElementById('modelosBody');
+  function setorLabel(t){ return t.setor? ((SETORES_EMPRESA_UI.find(x=>x.chave===t.setor)||{}).label||t.setor) : 'sem setor'; }
+  function desenha(){
+    const termo = normalizaTxt(SOLIC_MODELOS_BUSCA).trim();
+    const visiveis = !termo ? items : items.filter(t=>{
+      const alvo = [t.nome, t.descricao, setorLabel(t), PER[t.periodicidade]||t.periodicidade, ...(t.itens||[]).map(i=>i.label)].join(' ');
+      return normalizaTxt(alvo).includes(termo);
+    });
+    tbody.innerHTML = visiveis.length? visiveis.map(t=>`
+      <tr data-id="${t.id}">
+        <td><b>${esc(t.nome)}</b>${t.descricao?`<br><span style="color:var(--ink-soft); font-size:12px;">${esc(t.descricao)}</span>`:''}</td>
+        <td>${t.setor?`<span class="tag ok">${esc(setorLabel(t))}</span>`:'<span class="tag bad">sem setor</span>'}</td>
+        <td>${PER[t.periodicidade]||t.periodicidade}</td>
+        <td>${t.itens.map(i=>`<span class="tag muted">${esc(i.label)}</span>`).join(' ')}</td>
+        <td>${t.notificar_email? 'Sim':'Não'}</td>
+        <td style="text-align:right;">${podeEditar?`<button class="btn small" data-act="edit">Editar</button>`:''}</td>
+      </tr>
+    `).join('') : `<tr><td colspan="6"><div class="empty-state">${termo?'Nenhum modelo encontrado.':'Nenhum modelo cadastrado ainda.'}</div></td></tr>`;
+    if(podeEditar) tbody.querySelectorAll('[data-act="edit"]').forEach(b=>b.addEventListener('click', e=>{
+      const id=Number(e.target.closest('tr').dataset.id);
+      modeloModal(items.find(x=>x.id===id));
+    }));
+  }
+  desenha();
+  const inp = document.getElementById('modelosBusca');
+  inp.addEventListener('input', e=>{ SOLIC_MODELOS_BUSCA = e.target.value; desenha(); });
+  if(SOLIC_MODELOS_BUSCA){ inp.focus(); try{ inp.setSelectionRange(SOLIC_MODELOS_BUSCA.length, SOLIC_MODELOS_BUSCA.length); }catch(e){} }
   if(podePostar) document.getElementById('btnNovoModelo').addEventListener('click', ()=>modeloModal());
-  if(podeEditar) box.querySelectorAll('[data-act="edit"]').forEach(b=>b.addEventListener('click', e=>{
-    const id=Number(e.target.closest('tr').dataset.id);
-    modeloModal(items.find(x=>x.id===id));
-  }));
 }
 const TIPOS_ACEITE = [
   {v:'ofx', l:'.OFX'}, {v:'pdf', l:'PDF'}, {v:'zip', l:'ZIP/RAR'}, {v:'xml', l:'XML'}, {v:'imagem', l:'Imagem (PNG/JPG)'}, {v:'qualquer', l:'Qualquer arquivo'},
@@ -5035,11 +5051,15 @@ function wireSlotEvents(container, onDepois){
 }
 
 async function abrirGrade(atribuicaoId, souCliente){
-  const { atribuicao, grade } = await api('/checklist/grade/'+atribuicaoId);
+  const { atribuicao, grade, pendenciasManuais } = await api('/checklist/grade/'+atribuicaoId);
   const podePostar = souCliente || can('solicitacoes','postar');
   const podeEditar = !souCliente && can('solicitacoes','editar');
   const podeVerDownload = !souCliente && can('solicitacoes','visualizar');
   const opts = { podePostar, podeVerDownload, podeEditar, mostrarLabel:false, souCliente };
+  const manuais = pendenciasManuais || [];
+  const manuaisSet = new Set(manuais.map(pm=>`${pm.ano}-${pm.mes}`));
+  // Escritório pode cobrar uma competência anterior só desta empresa (vira pendência no card do Painel).
+  const podeCobrar = !souCliente && podePostar && atribuicao.periodicidade==='mensal';
 
   const html = `
     <h1>${esc(atribuicao.templateNome)}</h1>
@@ -5048,7 +5068,13 @@ async function abrirGrade(atribuicaoId, souCliente){
       <button class="btn" id="btnVoltarGrade">← Voltar</button>
       ${podePostar && atribuicao.periodicidade!=='avulso' ? `<button class="btn" id="btnGerarPeriodo">Gerar ano na grade</button>`:''}
       ${podePostar && atribuicao.periodicidade==='avulso' ? `<button class="btn" id="btnNovoAvulso">+ Nova solicitação avulsa</button>`:''}
+      ${podeCobrar ? `<button class="btn" id="btnCobrarAnterior" title="Cobrar uma competência anterior só desta empresa — aparece no card de pendências do Painel, sem afetar as outras empresas.">⚑ Cobrar competência anterior</button>`:''}
     </div>
+    ${(!souCliente && manuais.length)? `<div class="card" style="padding:12px 14px; margin-bottom:12px; border-left:3px solid var(--accent);">
+      <div style="font-weight:600; font-size:13px; margin-bottom:6px;">⚑ Competências cobradas manualmente desta empresa</div>
+      <div id="gradeManuais" style="display:flex; flex-wrap:wrap; gap:8px;"></div>
+      <div style="font-size:11.5px; color:var(--ink-soft); margin-top:6px;">Entram no card de pendências do Painel mesmo sendo de meses antigos. Saem sozinhas quando a empresa envia todos os itens obrigatórios da competência.</div>
+    </div>`:''}
     <div class="card" style="overflow-x:auto;">
       ${grade.length? `<table class="grade-table"><thead><tr><th>Período</th>${grade[0].slots.map(s=>`<th>${esc(s.label)}${s.obrigatorio?' *':''}</th>`).join('')}</tr></thead>
       <tbody id="gradeBody"></tbody></table>` : `<div class="empty-state">Nenhum período gerado ainda.</div>`}
@@ -5057,13 +5083,27 @@ async function abrirGrade(atribuicaoId, souCliente){
   main().innerHTML = html;
   document.getElementById('btnVoltarGrade').addEventListener('click', ()=> souCliente ? pageMeusDocumentos() : pageSolicitacoes());
 
+  const manuaisBox = document.getElementById('gradeManuais');
+  if(manuaisBox){
+    manuaisBox.innerHTML = manuais.map(pm=>`<span class="tag warn" style="display:inline-flex; align-items:center; gap:6px;">${MESES[pm.mes]}/${pm.ano}${podeEditar?` <a href="#" class="manual-rm" data-id="${pm.id}" title="Remover cobrança" style="text-decoration:none; color:var(--debit); font-weight:700;">✕</a>`:''}</span>`).join('');
+    if(podeEditar) manuaisBox.querySelectorAll('.manual-rm').forEach(a=>a.addEventListener('click', async e=>{
+      e.preventDefault();
+      if(!confirmar('Remover esta cobrança manual? A competência deixa de aparecer como pendência no Painel.')) return;
+      try{ await api('/checklist/pendencias-manuais/'+a.dataset.id, { method:'DELETE' }); toast('Cobrança removida.','ok'); abrirGrade(atribuicaoId, souCliente); }
+      catch(err){ toast(err.message,'err'); }
+    }));
+  }
+
   if(grade.length){
     const tbody = document.getElementById('gradeBody');
-    tbody.innerHTML = grade.map(p=>
-      `<tr data-periodo="${p.periodoId}"><td><b>${esc(rotuloPeriodo(p))}</b></td>${p.slots.map(s=>`<td>${slotInner(p.periodoId, s, opts)}</td>`).join('')}</tr>`
-    ).join('');
+    tbody.innerHTML = grade.map(p=>{
+      const cobrada = p.mes && manuaisSet.has(`${p.ano}-${p.mes}`);
+      return `<tr data-periodo="${p.periodoId}"><td><b>${esc(rotuloPeriodo(p))}</b>${cobrada?' <span class="tag warn" style="font-size:10px;">⚑ cobrada</span>':''}</td>${p.slots.map(s=>`<td>${slotInner(p.periodoId, s, opts)}</td>`).join('')}</tr>`;
+    }).join('');
     wireSlotEvents(tbody, ()=>abrirGrade(atribuicaoId, souCliente));
   }
+
+  if(podeCobrar) document.getElementById('btnCobrarAnterior').addEventListener('click', ()=>cobrarCompetenciaModal(atribuicaoId, atribuicao, souCliente));
 
   if(podePostar && atribuicao.periodicidade!=='avulso') document.getElementById('btnGerarPeriodo').addEventListener('click', async ()=>{
     const ano = prompt('Gerar grade de qual ano?', new Date().getFullYear());
@@ -5076,6 +5116,35 @@ async function abrirGrade(atribuicaoId, souCliente){
     if(!rotulo) return;
     await api('/checklist/periodos/gerar', { method:'POST', body:{ atribuicaoId, ano:new Date().getFullYear(), rotulo } });
     abrirGrade(atribuicaoId, souCliente);
+  });
+}
+
+// Escritório cobra uma competência anterior SÓ desta empresa — vira pendência no card do Painel
+// (mesmo sendo de mês antigo e abaixo do piso de monitoramento), sem afetar as outras empresas.
+function cobrarCompetenciaModal(atribuicaoId, atribuicao, souCliente){
+  const hoje = new Date();
+  const mesAnterior = new Date(hoje.getFullYear(), hoje.getMonth()-1, 1);
+  const padrao = `${mesAnterior.getFullYear()}-${String(mesAnterior.getMonth()+1).padStart(2,'0')}`;
+  openModal(`
+    <h3>Cobrar competência anterior</h3>
+    <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-4px;">Marca uma competência antiga como pendente <b>só para ${esc(atribuicao.empresaNome)}</b> no modelo <b>${esc(atribuicao.templateNome)}</b>. Ela aparece no card de pendências do Painel sem mexer nas outras empresas, e sai sozinha quando a empresa enviar todos os itens obrigatórios.</p>
+    <div class="field"><label>Competência (mês/ano)</label><input type="month" id="ccComp" class="inp" value="${padrao}" max="${padrao}"></div>
+    <div class="modal-actions">
+      <button class="btn" id="ccCancel">Cancelar</button>
+      <button class="btn primary" id="ccSalvar">Cobrar no Painel</button>
+    </div>
+  `);
+  document.getElementById('ccCancel').addEventListener('click', closeModal);
+  document.getElementById('ccSalvar').addEventListener('click', async ()=>{
+    const v = document.getElementById('ccComp').value;
+    if(!v){ toast('Escolha a competência (mês/ano).','err'); return; }
+    const [ano, mes] = v.split('-').map(Number);
+    try{
+      await api('/checklist/pendencias-manuais', { method:'POST', body:{ atribuicaoId, ano, mes } });
+      toast('Competência cobrada — já aparece no Painel.','ok');
+      closeModal();
+      abrirGrade(atribuicaoId, souCliente);
+    }catch(e){ toast(e.message,'err'); }
   });
 }
 
@@ -5103,6 +5172,17 @@ function periodoDaVez(atribuicao, grade){
   const abertos = grade.filter(p=>p.slots.some(s=>!s.travado));
   return abertos.length? abertos[abertos.length-1] : null;
 }
+// Competências que o escritório cobrou à mão (pendências manuais) e que a empresa ainda não enviou —
+// entram junto com o período "da vez" pra o cliente também poder anexar aqui (não só no histórico).
+function manuaisPendentesGrade(grade, manuais){
+  if(!grade || !manuais) return [];
+  const out = [];
+  for(const pm of manuais){
+    const p = grade.find(g=>g.ano===pm.ano && g.mes===pm.mes);
+    if(p && p.slots.some(s=>s.obrigatorio && !s.travado)) out.push(p);
+  }
+  return out;
+}
 async function pageMeusDocumentos(){
   const { items } = await api('/checklist/minhas-atribuicoes');
   main().innerHTML = `
@@ -5127,12 +5207,16 @@ async function pageMeusDocumentos(){
 
   // Carrega as grades em paralelo só pra saber se a linha tem pendência (badge). Os slots de upload
   // só são montados quando o cliente EXPANDE a linha — pedido do usuário: linha enxuta, clica e vê.
-  const grades = await Promise.all(items.map(a=>api('/checklist/grade/'+a.id).then(r=>r.grade).catch(()=>null)));
+  const respostas = await Promise.all(items.map(a=>api('/checklist/grade/'+a.id).then(r=>r).catch(()=>null)));
+  const grades = respostas.map(r=>r?r.grade:null);
+  const manuaisTodos = respostas.map(r=>r?(r.pendenciasManuais||[]):[]);
   const PER={mensal:'Mensal',anual:'Anual',avulso:'Avulso'};
   box.innerHTML = items.map((a,idx)=>{
     const grade = grades[idx];
     const p = grade ? periodoDaVez(a, grade) : null;
-    const tag = !grade ? '<span class="tag muted">—</span>' : p ? '<span class="tag warn">Pendente</span>' : '<span class="tag ok">Em dia</span>';
+    const manuaisP = grade ? manuaisPendentesGrade(grade, manuaisTodos[idx]) : [];
+    const temPend = !!p || manuaisP.length>0;
+    const tag = !grade ? '<span class="tag muted">—</span>' : temPend ? '<span class="tag warn">Pendente</span>' : '<span class="tag ok">Em dia</span>';
     return `
       <div class="md-acc" data-idx="${idx}" data-id="${a.id}">
         <button type="button" class="md-acc-head">
@@ -5156,16 +5240,24 @@ async function pageMeusDocumentos(){
       acc.classList.toggle('open', abrindo);
       if(abrindo && !montado){
         montado = true;
-        const p = grade ? periodoDaVez(a, grade) : null;
         if(!grade){ body.innerHTML = `<div class="doc-inline-empty" style="padding:12px 0;">Não consegui carregar — <a href="#" class="md-hist">abrir o histórico</a>.</div>`; }
-        else if(!p){ body.innerHTML = `<div class="doc-inline-empty" style="padding:12px 0;">Nenhuma pendência no momento. <a href="#" class="md-hist">Ver histórico completo →</a></div>`; }
         else {
-          const opts = { podePostar:true, podeVerDownload:false, podeEditar:false, mostrarLabel:true, souCliente:true };
-          body.innerHTML = `
-            <div class="doc-inline-periodo" style="margin:12px 0 8px;">${esc(rotuloPeriodo(p))}</div>
-            <div style="display:flex; gap:24px; align-items:flex-start; flex-wrap:wrap;">${p.slots.map(s=>slotInner(p.periodoId, s, opts)).join('')}</div>
-            <div style="margin-top:10px;"><a href="#" class="md-hist" style="font-size:12px;">Ver histórico completo →</a></div>`;
-          wireSlotEvents(body, ()=>pageMeusDocumentos());
+          // Período "da vez" + competências que o escritório cobrou à mão, sem repetir a mesma.
+          const pdv = periodoDaVez(a, grade);
+          const manuaisP = manuaisPendentesGrade(grade, manuaisTodos[idx]);
+          const manuaisIds = new Set(manuaisP.map(p=>p.periodoId));
+          const vistos = new Set(); const lista = [];
+          [pdv, ...manuaisP].forEach(p=>{ if(p && !vistos.has(p.periodoId)){ vistos.add(p.periodoId); lista.push(p); } });
+          lista.sort((x,y)=> (x.ano-y.ano) || ((x.mes||0)-(y.mes||0)));
+          if(!lista.length){ body.innerHTML = `<div class="doc-inline-empty" style="padding:12px 0;">Nenhuma pendência no momento. <a href="#" class="md-hist">Ver histórico completo →</a></div>`; }
+          else {
+            const opts = { podePostar:true, podeVerDownload:false, podeEditar:false, mostrarLabel:true, souCliente:true };
+            body.innerHTML = lista.map(p=>`
+              <div class="doc-inline-periodo" style="margin:12px 0 8px;">${esc(rotuloPeriodo(p))}${manuaisIds.has(p.periodoId)?' <span class="tag warn" style="font-size:10px;">solicitado pelo escritório</span>':''}</div>
+              <div style="display:flex; gap:24px; align-items:flex-start; flex-wrap:wrap;">${p.slots.map(s=>slotInner(p.periodoId, s, opts)).join('')}</div>
+            `).join('') + `<div style="margin-top:10px;"><a href="#" class="md-hist" style="font-size:12px;">Ver histórico completo →</a></div>`;
+            wireSlotEvents(body, ()=>pageMeusDocumentos());
+          }
         }
         ligarHist();
       }
