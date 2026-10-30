@@ -1918,6 +1918,10 @@ function pararAlertasAtendimento(){
 // Uma chave por tela (crm, dprh, contabil, fiscal): dá pra deixar o CRM mudo e só o DP/RH com som.
 function somNovasLigado(escopo){ try{ return localStorage.getItem('atdSomNovas_'+escopo)!=='0'; }catch(e){ return true; } }
 function definirSomNovas(escopo, on){ try{ localStorage.setItem('atdSomNovas_'+escopo, on?'1':'0'); }catch(e){} }
+// Avisos (popup do sistema + quadro na tela) por escopo — liga/desliga local, igual ao Mudo do som.
+// Default ligado (!=='0'); desligar não some com o som nem com a lista, só com os avisos.
+function avisosLigado(escopo){ try{ return localStorage.getItem('atdAvisos_'+escopo)!=='0'; }catch(e){ return true; } }
+function definirAvisos(escopo, on){ try{ localStorage.setItem('atdAvisos_'+escopo, on?'1':'0'); }catch(e){} }
 // O Chrome só deixa tocar som depois que a pessoa mexeu na página (clique/tecla). Um único AudioContext
 // compartilhado é "destravado" no primeiro clique/tecla; sem isso o som fica mudo em quem só deixa a aba aberta.
 let AUDIO_CTX = null;
@@ -1969,7 +1973,10 @@ async function verificarMensagensNovas(){
   if(itens.some(i=>(i.escopos&&i.escopos.length?i.escopos:[i.escopo]).some(somNovasLigado))) somBloqueado = !somMensagemNova();
   const texto = i => `${i.nome}${i.setor?' · '+i.setor:''}: ${i.previa||'nova mensagem'}`;
   const abrir = i => { window.focus(); STATE.page = i.escopo; renderNav(); atdIrParaConversa(i.escopo, i.id, false); };
-  itens.slice(0,3).forEach(i=>{
+  // Avisos (popup do sistema + quadro) só pras telas em que a pessoa não desativou os avisos.
+  const avisosOn = i => (i.escopos&&i.escopos.length?i.escopos:[i.escopo]).some(avisosLigado);
+  const itensAviso = itens.filter(avisosOn);
+  itensAviso.slice(0,3).forEach(i=>{
     try{
       // Com o site na frente e em foco, o quadro na tela já basta; a notificação do computador é pra quando a pessoa está em outro lugar.
       if(!emFoco && 'Notification' in window && Notification.permission==='granted'){
@@ -1978,7 +1985,7 @@ async function verificarMensagensNovas(){
       }
     }catch(e){}
   });
-  mostrarAvisoAlertas(itens, texto, abrir, '💬 Nova mensagem', 'atdNovaBox');
+  if(itensAviso.length) mostrarAvisoAlertas(itensAviso, texto, abrir, '💬 Nova mensagem', 'atdNovaBox');
   if(somBloqueado){ const b = document.getElementById('atdNovaBox'); if(b) b.insertAdjacentHTML('beforeend','<div style="font-size:11.5px; color:var(--ink-soft); padding:6px 10px; border-top:1px solid var(--rule-soft);">🔇 O navegador bloqueou o som. Clique em qualquer lugar da página uma vez para ativar.</div>'); }
 }
 function alertaSom(){
@@ -2000,10 +2007,13 @@ async function verificarAlertasAtendimento(){
   const vivos = new Set((d.itens||[]).map(i=>i.id));
   Object.keys(ALERTAS.avisados).forEach(id=>{ if(!vivos.has(id)) delete ALERTAS.avisados[id]; });
   if(!novos.length) return;
+  // Só avisa (som + popup + quadro) das telas em que a pessoa não desativou os avisos.
+  const novosAviso = novos.filter(i=>avisosLigado(i.escopo));
+  if(!novosAviso.length) return;
   alertaSom();
   const texto = i => `${i.tipo==='minha'?'Sua conversa':'Fila'}${i.setor?' · '+i.setor:''}: ${i.nome} esperando há ${i.esperaMin} min`;
   const abrir = i => { window.focus(); STATE.page = i.escopo; renderNav(); atdIrParaConversa(i.escopo, i.id, false); };
-  novos.slice(0,3).forEach(i=>{
+  novosAviso.slice(0,3).forEach(i=>{
     try{
       if('Notification' in window && Notification.permission==='granted'){
         const n = new Notification('⏰ Cliente esperando', { body: texto(i), tag: 'atd-'+i.id });
@@ -2011,7 +2021,7 @@ async function verificarAlertasAtendimento(){
       }
     }catch(e){}
   });
-  mostrarAvisoAlertas(novos, texto, abrir);
+  mostrarAvisoAlertas(novosAviso, texto, abrir);
 }
 function mostrarAvisoAlertas(itens, texto, abrir, titulo, boxId){
   boxId = boxId || 'atdAlertaBox'; titulo = titulo || '⏰ Clientes esperando';
@@ -14143,19 +14153,32 @@ async function atendimentoMontar(escopo, box){
   const btnNotif = document.getElementById('atdNotifBtn');
   if(btnNotif){
     const est = ()=>('Notification' in window) ? Notification.permission : 'unsupported';
-    const pintarN = ()=>{ const e = est(); btnNotif.textContent = e==='granted' ? '🖥 Avisos ✓' : e==='denied' ? '🖥 Avisos ✕' : '🖥 Avisos'; btnNotif.style.opacity = e==='granted' ? '1' : '.75'; };
+    // ✓ = ligado; 🔕 = desligado (igual o Mudo do som); ✕ = bloqueado no navegador.
+    const pintarN = ()=>{
+      const e = est(), on = avisosLigado(escopo);
+      btnNotif.textContent = e==='denied' ? '🖥 Avisos ✕' : e!=='granted' ? '🖥 Avisos' : on ? '🖥 Avisos ✓' : '🔕 Avisos';
+      btnNotif.style.opacity = (e==='granted' && on) ? '1' : '.6';
+    };
     pintarN();
     btnNotif.addEventListener('click', async ()=>{
       const e = est();
       if(e==='unsupported'){ toast('Este navegador não suporta notificações do computador.','err'); return; }
-      if(e==='default'){ try{ await Notification.requestPermission(); }catch(x){} }
-      if(est()==='granted'){ try{ new Notification('✅ Avisos ativados', { body: 'Assim vai aparecer quando chegar mensagem ou transferência.' }); }catch(x){} toast('Avisos no computador ativados. Se o popup não apareceu, veja o modo "Não perturbe/Foco" do sistema.','ok'); }
-      else if(est()==='denied'){
+      if(e==='default'){
+        try{ await Notification.requestPermission(); }catch(x){}
+        if(est()==='granted'){ definirAvisos(escopo, true); try{ new Notification('✅ Avisos ativados', { body: 'Assim vai aparecer quando chegar mensagem ou transferência.' }); }catch(x){} toast('Avisos ativados nesta tela.','ok'); }
+        pintarN(); return;
+      }
+      if(e==='denied'){
         openModal(`<h3>Avisos bloqueados neste navegador</h3>
           <p>O navegador está bloqueando as notificações deste site. Para liberar:</p>
           <ol style="line-height:1.7;"><li>Clique no ícone à esquerda do endereço (cadeado ou ajustes) na barra de cima.</li><li>Abra <b>Configurações do site</b> (ou "Permissões").</li><li>Em <b>Notificações</b>, escolha <b>Permitir</b>.</li><li>Recarregue a página (Ctrl+Shift+R) e clique de novo em <b>🖥 Avisos</b>.</li></ol>
           <div class="row" style="justify-content:flex-end; margin-top:10px;"><button class="btn primary" onclick="closeModal()">Entendi</button></div>`);
+        pintarN(); return;
       }
+      // Permissão já concedida: alterna liga/desliga local (igual o Mudo).
+      const novo = !avisosLigado(escopo);
+      definirAvisos(escopo, novo);
+      toast(novo ? 'Avisos ativados nesta tela.' : 'Avisos desativados nesta tela.', 'ok');
       pintarN();
     });
   }
