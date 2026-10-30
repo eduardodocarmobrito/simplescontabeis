@@ -7342,7 +7342,11 @@ async function renderNfseEmitir(){
         r = await api('/nfse/emitir', { method:'POST', body });
       }
       const empresaNome = habilitadas.find(emp=>emp.id===body.empresaId)?.nome || '';
-      resultado.innerHTML = `<div class="slot-locked" style="background:var(--paper);"><span class="fname">Emitida com sucesso</span>Chave de acesso: ${esc(r.chaveAcesso||'—')}<div style="margin-top:8px;"><button class="btn small" id="btnCancelarNfseRecemEmitida" style="color:var(--debit);">Cancelar esta NFS-e</button></div></div>`;
+      resultado.innerHTML = `<div class="slot-locked" style="background:var(--paper);"><span class="fname">Emitida com sucesso</span>Chave de acesso: ${esc(r.chaveAcesso||'—')}<div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;"><button class="btn small primary" id="btnVerNfseRecemEmitida">Ver NFS-e</button><button class="btn small" id="btnCancelarNfseRecemEmitida" style="color:var(--debit);">Cancelar esta NFS-e</button></div></div>`;
+      document.getElementById('btnVerNfseRecemEmitida').addEventListener('click', ()=>{
+        NFSE_NOTAS_EMPRESA_ATUAL = body.empresaId; // já abre direto as notas da empresa emitente
+        NFSE_TAB = 'notas'; renderNfseTabs();
+      });
       document.getElementById('btnCancelarNfseRecemEmitida').addEventListener('click', ()=>{
         nfseCancelarModal({ id:r.emissaoId, empresaNome, tomadorNome:body.tomador.nome, valorServico:body.servico.valor });
       });
@@ -9994,7 +9998,8 @@ async function renderMinhaNfseEmitir(){
       }else{
         r = await api('/nfse/minha-empresa/emitir', { method:'POST', body });
       }
-      resultado.innerHTML = `<div class="slot-locked" style="background:var(--paper);"><span class="fname">Emitida com sucesso</span>Chave de acesso: ${esc(r.chaveAcesso||'—')}<div style="margin-top:8px;"><button class="btn small" id="btnCancelarMinhaNfseRecemEmitida" style="color:var(--debit);">Cancelar esta NFS-e</button></div></div>`;
+      resultado.innerHTML = `<div class="slot-locked" style="background:var(--paper);"><span class="fname">Emitida com sucesso</span>Chave de acesso: ${esc(r.chaveAcesso||'—')}<div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;"><button class="btn small primary" id="btnVerMinhaNfseRecemEmitida">Ver NFS-e</button><button class="btn small" id="btnCancelarMinhaNfseRecemEmitida" style="color:var(--debit);">Cancelar esta NFS-e</button></div></div>`;
+      document.getElementById('btnVerMinhaNfseRecemEmitida').addEventListener('click', ()=>{ MINHA_NFSE_TAB = 'notas'; renderMinhaNfseTabs(); });
       document.getElementById('btnCancelarMinhaNfseRecemEmitida').addEventListener('click', ()=>{
         minhaNfseCancelarModal({ id:r.emissaoId, tomadorNome:body.tomador.nome, valorServico:body.servico.valor });
       });
