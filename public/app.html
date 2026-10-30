@@ -588,10 +588,11 @@ body.theme-glass{
   transition: background .4s ease;
 }
 body.theme-glass .sidebar{
-  background: rgba(var(--glass-rgb,5,31,32),.6);
-  backdrop-filter: saturate(180%) blur(28px);
-  -webkit-backdrop-filter: saturate(180%) blur(28px);
-  border-right: 1px solid rgba(255,255,255,.12);
+  background: rgba(var(--glass-rgb,5,31,32),.42);
+  backdrop-filter: saturate(240%) blur(46px);
+  -webkit-backdrop-filter: saturate(240%) blur(46px);
+  border-right: 1px solid rgba(255,255,255,.3);
+  box-shadow: inset -1px 0 0 rgba(255,255,255,.12), inset 2px 0 0 rgba(255,255,255,.4), 10px 0 40px rgba(0,0,0,.26);
 }
 body.theme-glass .nav-item:hover, body.theme-glass .nav-sub:hover{background:rgba(255,255,255,.1);}
 /* O vidro (cor + blur) vai numa camada ::before atrás do conteúdo, não no elemento em si — colocar
@@ -601,17 +602,53 @@ body.theme-glass .nav-item:hover, body.theme-glass .nav-sub:hover{background:rgb
    cima de qualquer coisa fora dele, como antes. Achado ao vivo em produção em 2026-10-27. */
 body.theme-glass .card, body.theme-glass .kpi, body.theme-glass .modal, body.theme-glass .drawer, body.theme-glass .doc-card, body.theme-glass .doc-inline{
   background: transparent;
-  border: 1px solid rgba(255,255,255,.14);
+  border: 1px solid rgba(255,255,255,.3);
+  box-shadow:
+    inset 0 1.5px 0 rgba(255,255,255,.72),
+    inset 0 0 0 1px rgba(255,255,255,.08),
+    inset 0 -18px 38px rgba(0,0,0,.26),
+    0 24px 56px rgba(0,0,0,.5),
+    0 0 44px rgba(46,204,143,.12);
 }
+body.theme-glass .kpi{ border-radius:26px; }
+body.theme-glass .card{ border-radius:20px; }
+/* Camada do vidro (cor + blur) — "liquid glass": brilho diagonal + blur forte. */
 body.theme-glass .card::before, body.theme-glass .kpi::before, body.theme-glass .modal::before, body.theme-glass .drawer::before, body.theme-glass .doc-card::before, body.theme-glass .doc-inline::before{
   content:'';
   position:absolute; inset:0;
   z-index:-1;
   border-radius:inherit;
-  background: rgba(var(--glass-rgb,5,31,32),.52);
-  backdrop-filter: saturate(180%) blur(20px);
-  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  background: linear-gradient(135deg, rgba(255,255,255,.22), rgba(255,255,255,.03) 56%), rgba(var(--glass-rgb,5,31,32),.4);
+  backdrop-filter: saturate(240%) blur(46px);
+  -webkit-backdrop-filter: saturate(240%) blur(46px);
 }
+/* Reflexo especular por cima do vidro (continua atrás do conteúdo). */
+body.theme-glass .card::after, body.theme-glass .kpi::after, body.theme-glass .modal::after, body.theme-glass .drawer::after, body.theme-glass .doc-card::after, body.theme-glass .doc-inline::after{
+  content:'';
+  position:absolute; inset:0;
+  z-index:-1;
+  border-radius:inherit;
+  pointer-events:none;
+  background:
+    radial-gradient(155% 105% at 9% -20%, rgba(255,255,255,.42), transparent 48%),
+    linear-gradient(118deg, transparent 40%, rgba(255,255,255,.10) 50%, transparent 60%),
+    linear-gradient(180deg, transparent 56%, rgba(255,255,255,.08) 100%);
+}
+/* Hover cristalino só nas tiles do dashboard (.kpi) — cards, modais e tabelas não "pulam". */
+body.theme-glass .kpi:hover{
+  transform: translateY(-6px) scale(1.015);
+  border-color: rgba(255,255,255,.55);
+  box-shadow:
+    inset 0 2px 0 rgba(255,255,255,.9),
+    inset 0 0 0 1.5px rgba(255,255,255,.16),
+    0 44px 88px rgba(0,0,0,.62),
+    0 0 64px rgba(46,204,143,.26);
+}
+/* A tile tracejada "+ Adicionar card" fica leve, sem vidro nem sombra. */
+body.theme-glass .kpi.add{ box-shadow:none; border:1.5px dashed rgba(255,255,255,.3); }
+body.theme-glass .kpi.add::before, body.theme-glass .kpi.add::after{ display:none; }
+body.theme-glass .kpi.add:hover{ transform:translateY(-3px); box-shadow:none; }
+@media (prefers-reduced-motion: reduce){ body.theme-glass .kpi:hover, body.theme-glass .kpi.add:hover{ transform:none; } }
 /* Campos de formulário sempre têm fundo claro (var(--paper)/var(--surface)) — texto precisa continuar escuro, em qualquer lugar da tela, não só dentro de card/modal (inclui a tela de login). */
 body.theme-glass .field input, body.theme-glass .field select, body.theme-glass .field textarea,
 body.theme-glass .combo-input, body.theme-glass .inp, body.theme-glass input.date-text, body.theme-glass input[type=time],
@@ -675,15 +712,16 @@ body.theme-glass table.data-table thead th{
 body.theme-glass table.data-table td{border-bottom-color:rgba(255,255,255,.1);}
 /* Botões secundários (fundo branco sólido por padrão) — mesmo vidro escuro da sidebar */
 body.theme-glass .btn{
-  background: rgba(var(--glass-rgb,5,31,32),.45);
-  backdrop-filter: saturate(180%) blur(16px);
-  -webkit-backdrop-filter: saturate(180%) blur(16px);
-  border-color: rgba(255,255,255,.2);
+  background: linear-gradient(135deg, rgba(255,255,255,.18), rgba(255,255,255,.03)), rgba(var(--glass-rgb,5,31,32),.4);
+  backdrop-filter: saturate(220%) blur(20px);
+  -webkit-backdrop-filter: saturate(220%) blur(20px);
+  border-color: rgba(255,255,255,.42);
   color: #F5F5F7;
+  box-shadow: inset 0 1.5px 0 rgba(255,255,255,.5), inset 0 -6px 14px rgba(0,0,0,.22), 0 8px 20px rgba(0,0,0,.3);
 }
-body.theme-glass .btn:hover{background:rgba(var(--glass-rgb,5,31,32),.65); border-color:rgba(255,255,255,.4); color:#fff;}
-body.theme-glass .btn.primary{background:var(--accent); border-color:var(--accent); color:#fff;}
-body.theme-glass .btn.primary:hover{background:var(--accent-deep); border-color:var(--accent-deep); color:#fff;}
+body.theme-glass .btn:hover{background:linear-gradient(135deg, rgba(255,255,255,.26), rgba(255,255,255,.05)), rgba(var(--glass-rgb,5,31,32),.58); border-color:rgba(255,255,255,.6); color:#fff;}
+body.theme-glass .btn.primary{background:linear-gradient(135deg,#6FF0C0,#159873); border-color:rgba(255,255,255,.4); color:#06231b; box-shadow:inset 0 1.5px 0 rgba(255,255,255,.85), 0 12px 28px rgba(46,204,143,.5);}
+body.theme-glass .btn.primary:hover{background:linear-gradient(135deg,#4BE0A6,#159873); border-color:rgba(255,255,255,.5); color:#06231b;}
 /* Trilho das abas — mesmo vidro escuro da sidebar; a aba ativa continua um chip mais claro por cima, pra dar contraste de seleção */
 body.theme-glass .tabs{
   background: rgba(var(--glass-rgb,5,31,32),.4);
