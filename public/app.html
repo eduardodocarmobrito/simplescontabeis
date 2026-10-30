@@ -1090,20 +1090,36 @@ async function enviarWhatsappDocComConfirmacao(path, body){
 // mão, deixando empresa inativa vazar pra dentro de buscas que deviam ser só de ativas. Uma tela
 // que precisa mesmo das duas (ex.: filtro de contratos, pra achar contrato antigo de empresa já
 // inativada) continua chamando api('/empresas') direto, sem essa função.
+// Cache id→CNPJ de TODAS as empresas (ativas e inativas) — alimenta o rótulo Matriz/Filial em
+// qualquer lista que só tenha o empresaId. Preenchido por empresasAtivas() e no boot().
+let EMPRESA_CNPJ_CACHE = null;
 async function empresasAtivas(){
   const { items } = await api('/empresas');
+  EMPRESA_CNPJ_CACHE = {}; items.forEach(e=>{ EMPRESA_CNPJ_CACHE[e.id] = e.cnpj; });
   return items.filter(e=>e.ativo);
 }
-// Rótulo Matriz/Filial a partir do CNPJ (dígitos 9-12 = ordem da filial; "0001" = matriz, o resto é
-// filial). Serve pra distinguir empresas de mesmo nome na mesma raiz (ex.: 4x "RAIZES AGRO LTDA").
-// Vazio para CPF/produtor rural (sem conceito de filial) ou CNPJ inválido.
-function empresaMatrizFilialHtml(cnpj){
+async function carregarEmpresaCnpjCache(){
+  try{ const { items } = await api('/empresas'); EMPRESA_CNPJ_CACHE = {}; items.forEach(e=>{ EMPRESA_CNPJ_CACHE[e.id] = e.cnpj; }); }catch(e){}
+}
+// Matriz/Filial a partir do CNPJ (dígitos 9-12 = ordem da filial; "0001" = matriz, o resto é filial).
+// Serve pra distinguir empresas de mesmo nome na mesma raiz (ex.: 4x "RAIZES AGRO LTDA"). Vazio para
+// CPF/produtor rural (sem conceito de filial) ou CNPJ inválido.
+function matrizFilialTexto(cnpj){
   const d = String(cnpj||'').replace(/\D/g,'');
   if(d.length!==14) return '';
   const ordem = d.slice(8,12);
-  return ordem==='0001'
+  return ordem==='0001' ? 'Matriz' : ('Filial '+ordem);
+}
+function empresaMatrizFilialHtml(cnpj){
+  const mf = matrizFilialTexto(cnpj);
+  if(!mf) return '';
+  return mf==='Matriz'
     ? ' <span class="tag ok" style="margin-left:6px; flex:none;">Matriz</span>'
-    : ' <span class="tag" style="margin-left:6px; flex:none;">Filial '+ordem+'</span>';
+    : ' <span class="tag" style="margin-left:6px; flex:none;">'+mf+'</span>';
+}
+// Rótulo HTML por empresaId, usando o cache (pra listas/tabelas que só têm o id, não o CNPJ).
+function matrizFilialHtmlPorId(empresaId){
+  return (EMPRESA_CNPJ_CACHE && EMPRESA_CNPJ_CACHE[empresaId]!=null) ? empresaMatrizFilialHtml(EMPRESA_CNPJ_CACHE[empresaId]) : '';
 }
 // Nome sozinho não basta pra escolher a empresa certa em nenhum combobox — nomes duplicados (mesmo
 // grupo econômico com várias empresas de nome igual, cadastro repetido, etc.) são comuns na base
@@ -1113,6 +1129,7 @@ function empresaMatrizFilialHtml(cnpj){
 // buscar digitando o código direto no combo.
 function empresaComboLabel(e){
   const partes = [e.nome];
+  const mf = matrizFilialTexto(e.cnpj); if(mf) partes.push(mf);
   if(e.codigoDominio) partes.push('cód. '+e.codigoDominio);
   if(e.cnpj) partes.push(fmtCnpjCpf(e.cnpj));
   return partes.join(' · ');
@@ -1736,6 +1753,7 @@ async function boot(){
     return;
   }
   document.getElementById('shell').classList.remove('hidden');
+  carregarEmpresaCnpjCache(); // fire-and-forget: alimenta o rótulo Matriz/Filial nas listas
   document.getElementById('whoName').innerHTML = esc(STATE.user.nome);
   document.getElementById('whoProfile').textContent = STATE.user.perfil;
   if(STATE.user.perfil==='Cliente') await renderEmpresaSwitch();
@@ -3426,7 +3444,7 @@ async function renderEmpresasTab(){
     const visiveis = termo ? items.filter(e=> normalizaTxt(e.nome).includes(termo) || normalizaTxt(e.codigoDominio).includes(termo) || normalizaTxt(e.cnpj).includes(termo) || (!!termo.replace(/[^0-9]/g,'') && String(e.cnpj||'').replace(/[^0-9]/g,'').includes(termo.replace(/[^0-9]/g,'')))) : items;
     tbody.innerHTML = visiveis.length ? visiveis.map(e=>`
       <tr data-id="${e.id}">
-        <td>${e.codigoDominio?`<span style="color:var(--ink-soft); font-weight:600; margin-right:8px;">${esc(e.codigoDominio)}</span>`:''}<b>${esc(e.nome)}</b></td>
+        <td>${e.codigoDominio?`<span style="color:var(--ink-soft); font-weight:600; margin-right:8px;">${esc(e.codigoDominio)}</span>`:''}<b>${esc(e.nome)}</b>${empresaMatrizFilialHtml(e.cnpj)}</td>
         <td>${esc(fmtCnpjCpf(e.cnpj)||'—')}</td>
         <td><span class="tag muted">${e.origem==='dominio'?'Domínio Web':'Manual'}</span></td>
         ${ativasTab? `<td><span class="tag ${e.visivelRelatorios?'ok':'muted'}">${e.visivelRelatorios?'Sim':'Não'}</span></td>`:''}
@@ -5014,7 +5032,7 @@ async function renderAtribuicoes(){
     );
     atribBody.innerHTML = visiveis.length? visiveis.map(a=>`
       <tr data-id="${a.id}">
-        <td>${esc(a.empresaNome)}</td>
+        <td>${esc(a.empresaNome)}${matrizFilialHtmlPorId(a.empresa_id)}</td>
         <td>${esc(a.templateNome)}</td>
         <td>${({mensal:'Mensal',anual:'Anual',avulso:'Avulso'})[a.periodicidade]||a.periodicidade}</td>
         <td style="text-align:right; display:flex; gap:6px; justify-content:flex-end;">
@@ -5955,7 +5973,7 @@ async function renderEnvioAtribuicoes(){
     );
     envioAtribBody.innerHTML = visiveis.length? visiveis.map(a=>`
       <tr data-id="${a.id}" class="linha-clicavel" style="cursor:pointer; ${a.pendentesCliente? 'background:var(--accent-pale);':''}">
-        <td>${esc(a.empresaNome)}</td>
+        <td>${esc(a.empresaNome)}${matrizFilialHtmlPorId(a.empresa_id)}</td>
         <td>${esc(a.templateNome)}${a.pendentesCliente? ` <span class="tag warn" title="Pedido feito pelo cliente, ainda sem documento enviado">${a.pendentesCliente} pedido${a.pendentesCliente>1?'s':''} do cliente</span>`:''}</td>
         <td>${PERIODICIDADE_LABELS[a.periodicidade]||a.periodicidade}</td>
         <td style="text-align:right; display:flex; gap:6px; justify-content:flex-end;">
@@ -9352,7 +9370,7 @@ async function pageIntegraContador(deepLinkEmpresaId){
           <tbody>
             ${visiveis.length ? visiveis.map(e=>`
               <tr class="icEmpresaRow" data-id="${e.id}" style="cursor:pointer;">
-                <td><b>${esc(e.nome)}</b></td>
+                <td><b>${esc(e.nome)}</b>${matrizFilialHtmlPorId(e.id)}</td>
                 <td><span class="tag ${e.ativo?'ok':'muted'}">${e.ativo?'Ativo':'Inativo'}</span></td>
                 <td>${[e.optanteSimplesNacional?'<span class="tag ok">Optante</span>':'', e.buscaDctfweb?'<span class="tag ok">DCTF-Web</span>':''].filter(Boolean).join(' ') || '—'}</td>
                 <td>${e.qtdDocumentos}</td>
@@ -12130,7 +12148,7 @@ async function renderLancamentos(){
     `;
     document.getElementById('lancBody').innerHTML = items.length? items.map(l=>`
       <tr data-id="${l.id}">
-        <td>${esc(l.empresaNome)}</td>
+        <td>${esc(l.empresaNome)}${matrizFilialHtmlPorId(l.empresa_id)}</td>
         <td>${fmtMoney(l.valor)}</td>
         <td>${fmtDate(l.vencimento)}</td>
         <td><span class="tag ${l.status==='pago'?'ok':l.status==='atrasado'?'bad':l.status==='cancelado'?'muted':'warn'}">${l.status}</span></td>
