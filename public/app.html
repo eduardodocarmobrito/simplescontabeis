@@ -1179,7 +1179,7 @@ function parseDateBR(str){
   return null;
 }
 const MESES_PT=['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
-let calPopupEl=null, calActiveHiddenId=null, calActiveTextId=null, calViewDate=new Date(), calViewMode='days';
+let calPopupEl=null, calActiveHiddenId=null, calActiveTextId=null, calViewDate=new Date(), calViewMode='days', calMonthOnly=false;
 function isoFromParts(y,m,d){ return y+'-'+String(m+1).padStart(2,'0')+'-'+String(d).padStart(2,'0'); }
 function ensureCalPopup(){
   if(calPopupEl) return calPopupEl;
@@ -1218,7 +1218,7 @@ function positionCalPopup(){
 function openCalendar(hiddenId, textId){
   ensureCalPopup();
   calActiveHiddenId=hiddenId; calActiveTextId=textId;
-  calViewMode='days';
+  calViewMode='days'; calMonthOnly=false;
   const hidden=document.getElementById(hiddenId);
   const d=hidden.value ? parseDateBR(fmtDateIso(hidden.value)) : null;
   calViewDate=(d && !isNaN(d)) ? new Date(d.getFullYear(), d.getMonth(), 1) : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
@@ -1241,6 +1241,7 @@ function selectCalDay(y,m,d){
 }
 function renderCalendar(){
   if(!calActiveHiddenId) return;
+  if(calMonthOnly){ renderMonthPicker(); return; }
   if(calViewMode==='months') renderMonthView(); else renderDayView();
 }
 function renderDayView(){
@@ -1330,6 +1331,73 @@ function setupDatePicker(hiddenId, textId){
 // após inserir o HTML no DOM.
 function dateFieldHtml(hiddenId, label, value){
   return `<div class="date-field"><label>${esc(label)}</label><div class="date-input-wrap"><input type="text" id="${hiddenId}_text" class="date-text" placeholder="dd/mm/aaaa" inputmode="numeric" autocomplete="off" maxlength="10"><input type="date" id="${hiddenId}" value="${value?esc(value):''}" style="display:none;"></div></div>`;
+}
+// --- Seletor de MÊS/competência (valor "AAAA-MM") no MESMO popup do sistema (.cal-popup), pra
+// substituir o <input type="month"> nativo do navegador (que abre um calendário branco fora do tema). ---
+function openMonthCalendar(hiddenId, textId){
+  ensureCalPopup();
+  calActiveHiddenId=hiddenId; calActiveTextId=textId;
+  calMonthOnly=true; calViewMode='months';
+  const v=(document.getElementById(hiddenId).value||'').trim();
+  let y, m;
+  if(/^\d{4}-\d{2}$/.test(v)){ y=+v.slice(0,4); m=+v.slice(5,7)-1; }
+  else { const n=new Date(); y=n.getFullYear(); m=n.getMonth(); }
+  calViewDate=new Date(y, m, 1);
+  renderCalendar();
+  calPopupEl.classList.add('open');
+  positionCalPopup();
+}
+function renderMonthPicker(){
+  const y=calViewDate.getFullYear();
+  const v=(document.getElementById(calActiveHiddenId).value||'').trim();
+  const selY=/^\d{4}-\d{2}$/.test(v)?+v.slice(0,4):null;
+  const selM=/^\d{4}-\d{2}$/.test(v)?+v.slice(5,7)-1:null;
+  const hoje=new Date();
+  let cells='';
+  for(let mi=0; mi<12; mi++){
+    const cls=['cal-day']; if(y===hoje.getFullYear() && mi===hoje.getMonth()) cls.push('today'); if(y===selY && mi===selM) cls.push('selected');
+    cells+=`<button type="button" class="${cls.join(' ')}" data-m="${mi}" style="height:40px;">${MESES_PT[mi].slice(0,3)}</button>`;
+  }
+  calPopupEl.innerHTML=`
+    <div class="cal-head">
+      <div class="cal-nav"><button type="button" id="calYearPrev">‹</button></div>
+      <span class="cal-label">${y}</span>
+      <div class="cal-nav"><button type="button" id="calYearNext">›</button></div>
+    </div>
+    <div class="cal-grid" style="grid-template-columns:repeat(3,1fr); gap:6px;">${cells}</div>
+    <div class="cal-foot"><button type="button" id="calThisMonth">Este mês</button></div>`;
+  calPopupEl.querySelector('#calYearPrev').addEventListener('click', e=>{ e.stopPropagation(); calViewDate=new Date(y-1,0,1); renderCalendar(); });
+  calPopupEl.querySelector('#calYearNext').addEventListener('click', e=>{ e.stopPropagation(); calViewDate=new Date(y+1,0,1); renderCalendar(); });
+  calPopupEl.querySelector('#calThisMonth').addEventListener('click', e=>{ e.stopPropagation(); const t=new Date(); selectCalMonth(t.getFullYear(), t.getMonth()); });
+  calPopupEl.querySelectorAll('.cal-grid .cal-day').forEach(btn=>{
+    btn.addEventListener('click', e=>{ e.stopPropagation(); selectCalMonth(y, +btn.dataset.m); });
+  });
+}
+function selectCalMonth(y,m){
+  const hidden=document.getElementById(calActiveHiddenId), text=document.getElementById(calActiveTextId);
+  hidden.value=y+'-'+String(m+1).padStart(2,'0');
+  hidden.dispatchEvent(new Event('change'));
+  if(text) text.value=MESES_PT[m]+' de '+y;
+  closeCalendar();
+}
+function setupMonthPicker(hiddenId, textId){
+  const hidden=document.getElementById(hiddenId), text=document.getElementById(textId);
+  if(!hidden || !text) return;
+  function syncFromHidden(){ const v=(hidden.value||'').trim(); text.value = /^\d{4}-\d{2}$/.test(v)? MESES_PT[+v.slice(5,7)-1]+' de '+v.slice(0,4) : ''; }
+  syncFromHidden(); hidden._syncText=syncFromHidden;
+  text.addEventListener('focus', ()=>openMonthCalendar(hiddenId, textId));
+  text.addEventListener('click', ()=>{ if(calActiveTextId!==textId) openMonthCalendar(hiddenId, textId); });
+  text.addEventListener('keydown', e=>{ if(e.key==='Escape'){ closeCalendar(); text.blur(); } });
+}
+// Só o campo (sem <label>) — troca um <input type="month"> dentro de um .field já existente.
+function monthInputHtml(hiddenId, value, wrapStyle){
+  return `<div class="date-input-wrap"${wrapStyle?` style="${esc(wrapStyle)}"`:''}><input type="text" id="${hiddenId}_text" class="date-text" placeholder="mês/ano" autocomplete="off" readonly><input type="hidden" id="${hiddenId}" value="${value?esc(value):''}"></div>`;
+}
+// Campo de DATA (sem <label>) no date picker do sistema — troca um <input type="date"> nativo dentro
+// de um .field existente. hiddenClass (opcional) mantém uma classe no input escondido pra leitura em
+// lote (ex.: várias parcelas lidas por querySelectorAll('.rngVenc')). Chamar setupDatePicker depois.
+function dateInputHtml(hiddenId, value, hiddenClass){
+  return `<div class="date-input-wrap"><input type="text" id="${hiddenId}_text" class="date-text" placeholder="dd/mm/aaaa" inputmode="numeric" autocomplete="off" maxlength="10"><input type="date" id="${hiddenId}"${hiddenClass?` class="${esc(hiddenClass)}"`:''} value="${value?esc(value):''}" style="display:none;"></div>`;
 }
 function normalizaTxt(s){ return String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,''); }
 
@@ -5176,12 +5244,13 @@ function cobrarCompetenciaModal(atribuicaoId, atribuicao, souCliente){
   openModal(`
     <h3>Cobrar competência anterior</h3>
     <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-4px;">Marca uma competência antiga como pendente <b>só para ${esc(atribuicao.empresaNome)}</b> no modelo <b>${esc(atribuicao.templateNome)}</b>. Ela aparece no card de pendências do Painel sem mexer nas outras empresas, e sai sozinha quando a empresa enviar todos os itens obrigatórios.</p>
-    <div class="field"><label>Competência (mês/ano)</label><input type="month" id="ccComp" class="inp" value="${padrao}" max="${padrao}"></div>
+    <div class="field"><label>Competência (mês/ano)</label>${monthInputHtml('ccComp', padrao, 'max-width:220px;')}</div>
     <div class="modal-actions">
       <button class="btn" id="ccCancel">Cancelar</button>
       <button class="btn primary" id="ccSalvar">Cobrar no Painel</button>
     </div>
   `);
+  setupMonthPicker('ccComp','ccComp_text');
   document.getElementById('ccCancel').addEventListener('click', closeModal);
   document.getElementById('ccSalvar').addEventListener('click', async ()=>{
     const v = document.getElementById('ccComp').value;
@@ -5799,7 +5868,7 @@ function envioModeloModal(t){
     <p style="font-size:11.5px; color:var(--ink-soft); margin:2px 0 0;">Marque para este modelo aparecer no menu "Solicitar Documentos" do cliente.</p>
     <div class="field" style="margin-top:10px;">
       <label>Suspender a partir de (opcional)</label>
-      <input type="month" id="evSuspensoDesde" value="${t&&t.suspensoDesde?esc(t.suspensoDesde):''}" style="max-width:180px;">
+      ${monthInputHtml('evSuspensoDesde', t&&t.suspensoDesde?t.suspensoDesde:'', 'max-width:200px;')}
     </div>
     <p style="font-size:11.5px; color:var(--ink-soft); margin:2px 0 0;">Pra modelo que vai deixar de existir numa data conhecida (ex.: DARF PIS/COFINS extintos pela reforma tributária, substituídos pela CBS). A partir dessa competência (inclusive) o card "Modelo de Envio em Atraso" para de cobrar — competências anteriores continuam normais. Deixe em branco pra nunca suspender.</p>
     <div class="modal-actions">
@@ -5810,6 +5879,7 @@ function envioModeloModal(t){
   if(t) document.getElementById('evPeriodicidade').value = t.periodicidade;
   if(t&&t.autoRegimeTributario) document.getElementById('evAutoRegime').value = t.autoRegimeTributario;
   if(t&&t.setor) document.getElementById('evSetor').value = t.setor;
+  setupMonthPicker('evSuspensoDesde','evSuspensoDesde_text');
   document.getElementById('evCancel').addEventListener('click', closeModal);
   document.getElementById('evSalvar').addEventListener('click', async ()=>{
     const nome=document.getElementById('evNome').value.trim();
@@ -6035,12 +6105,13 @@ function novaEnvioAtribModal(empresas, templates){
 function vencimentoModal(docId, atualIso, onSalvo){
   openModal(`
     <h3>Vencimento do documento</h3>
-    <div class="field"><label>Data de vencimento</label><input type="date" id="vencInput" value="${atualIso||''}"></div>
+    <div class="field"><label>Data de vencimento</label>${dateInputHtml('vencInput', atualIso||'')}</div>
     <div class="modal-actions">
       <button class="btn" id="vencCancel">Cancelar</button>
       <button class="btn primary" id="vencSalvar">Salvar</button>
     </div>
   `);
+  setupDatePicker('vencInput','vencInput_text');
   document.getElementById('vencCancel').addEventListener('click', closeModal);
   document.getElementById('vencSalvar').addEventListener('click', async ()=>{
     const v = document.getElementById('vencInput').value;
@@ -7101,7 +7172,7 @@ async function renderNfseEmitir(){
       <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Serviço prestado</div>
       <div class="row">
         <div class="field" style="width:140px;"><label>Valor (R$)</label><input id="nfseEmiValor" inputmode="decimal" placeholder="0,00"></div>
-        <div class="field" style="width:160px;"><label>Competência</label><input id="nfseEmiCompetencia" type="date" value="${hoje.toISOString().slice(0,10)}"></div>
+        <div class="field" style="width:160px;"><label>Competência</label>${dateInputHtml('nfseEmiCompetencia', hoje.toISOString().slice(0,10))}</div>
       </div>
       <div class="field"><label>Descrição do serviço</label><textarea id="nfseEmiDescricao" rows="2" placeholder="Ex.: Fabricação de 01 toldo sombrite medidas 6x4"></textarea></div>
       <div class="row">
@@ -7111,6 +7182,7 @@ async function renderNfseEmitir(){
       <div id="nfseEmiResultado" style="margin-top:12px;"></div>
     </div>
   `;
+  setupDatePicker('nfseEmiCompetencia','nfseEmiCompetencia_text');
   if(prefill){
     const setVal=(id,v)=>{ const el=document.getElementById(id); if(el && v!=null) el.value=v; };
     setVal('nfseEmiEmpresa', prefill.empresaId);
@@ -9761,7 +9833,7 @@ async function renderMinhaNfseEmitir(){
       <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Serviço prestado</div>
       <div class="row">
         <div class="field" style="width:140px;"><label>Valor (R$)</label><input id="mnfEmiValor" inputmode="decimal" placeholder="0,00"></div>
-        <div class="field" style="width:160px;"><label>Competência</label><input id="mnfEmiCompetencia" type="date" value="${hoje.toISOString().slice(0,10)}"></div>
+        <div class="field" style="width:160px;"><label>Competência</label>${dateInputHtml('mnfEmiCompetencia', hoje.toISOString().slice(0,10))}</div>
       </div>
       <div class="field"><label>Descrição do serviço</label><textarea id="mnfEmiDescricao" rows="2"></textarea></div>
       <div class="row">
@@ -9771,6 +9843,7 @@ async function renderMinhaNfseEmitir(){
       <div id="mnfEmiResultado" style="margin-top:12px;"></div>
     </div>
   `;
+  setupDatePicker('mnfEmiCompetencia','mnfEmiCompetencia_text');
   if(prefill){
     const setVal=(id,v)=>{ const el=document.getElementById(id); if(el && v!=null) el.value=v; };
     setVal('mnfEmiModelo', prefill.modeloId);
@@ -10694,7 +10767,7 @@ function finRenegociarModal(basePath, tipo, item, onDone){
       const venc = new Date(hoje.getFullYear(), hoje.getMonth()+1+i, hoje.getDate()).toISOString().slice(0,10);
       html += `<div class="row" style="gap:8px; margin-bottom:6px;">
         <div class="field" style="width:140px; margin-bottom:0;"><label>Parcela ${i+1} (R$)</label><input class="rngValor" type="number" step="0.01" min="0" value="${valorParcela.toFixed(2)}"></div>
-        <div class="field" style="width:160px; margin-bottom:0;"><label>Vencimento</label><input class="rngVenc" type="date" value="${venc}"></div>
+        <div class="field" style="width:160px; margin-bottom:0;"><label>Vencimento</label>${dateInputHtml('rngVenc'+i, venc, 'rngVenc')}</div>
       </div>`;
     }
     return html;
@@ -10710,9 +10783,12 @@ function finRenegociarModal(basePath, tipo, item, onDone){
       <button class="btn primary" id="rngSalvar">Renegociar</button>
     </div>
   `, '480px');
+  const wireRngVenc = ()=> document.querySelectorAll('#rngParcelas .rngVenc').forEach(h=>setupDatePicker(h.id, h.id+'_text'));
+  wireRngVenc();
   document.getElementById('rngQtd').addEventListener('change', (e)=>{
     nParcelas = Math.max(1, Math.min(24, Number(e.target.value)||1));
     document.getElementById('rngParcelas').innerHTML = linhasHtml();
+    wireRngVenc();
   });
   document.getElementById('rngCancel').addEventListener('click', closeModal);
   document.getElementById('rngSalvar').addEventListener('click', async ()=>{
@@ -12022,7 +12098,7 @@ async function renderLancamentos(){
   const compDefault = hoje.getFullYear()+'-'+String(hoje.getMonth()+1).padStart(2,'0');
   box.innerHTML = `
     <div class="row" style="margin-bottom:14px;">
-      <div class="field" style="margin-bottom:0;"><label>Competência</label><input type="month" id="finComp" value="${compDefault}"></div>
+      <div class="field" style="margin-bottom:0;"><label>Competência</label>${monthInputHtml('finComp', compDefault, 'max-width:200px;')}</div>
       ${podePostar?`<button class="btn primary" id="btnGerarLanc">Gerar lançamentos do mês</button>`:''}
     </div>
     <div class="kpi-grid" id="finResumo"></div>
@@ -12064,6 +12140,7 @@ async function renderLancamentos(){
       catch(err){ toast(err.message,'err'); }
     }));
   }
+  setupMonthPicker('finComp','finComp_text');
   document.getElementById('finComp').addEventListener('change', carregar);
   if(podePostar) document.getElementById('btnGerarLanc').addEventListener('click', async ()=>{
     const comp = document.getElementById('finComp').value;
@@ -12200,8 +12277,8 @@ async function renderCertDocumentos(){
   const box = document.getElementById('certContent');
   box.innerHTML = `
     <div class="row" style="margin-bottom:14px; gap:8px; flex-wrap:wrap;">
-      <div class="field" style="margin-bottom:0;"><label>De</label><input type="date" id="certDocDe"></div>
-      <div class="field" style="margin-bottom:0;"><label>Até</label><input type="date" id="certDocAte"></div>
+      <div class="field" style="margin-bottom:0;"><label>De</label>${dateInputHtml('certDocDe','')}</div>
+      <div class="field" style="margin-bottom:0;"><label>Até</label>${dateInputHtml('certDocAte','')}</div>
       <button class="btn" id="btnCertDocFiltrar" style="align-self:flex-end;">Filtrar</button>
     </div>
     <div class="card" style="padding:0; overflow-x:auto;">
@@ -12211,6 +12288,8 @@ async function renderCertDocumentos(){
       </table>
     </div>
   `;
+  setupDatePicker('certDocDe','certDocDe_text');
+  setupDatePicker('certDocAte','certDocAte_text');
   async function carregar(){
     const de = document.getElementById('certDocDe').value, ate = document.getElementById('certDocAte').value;
     const qs = new URLSearchParams(); if(de) qs.set('de',de); if(ate) qs.set('ate',ate);
@@ -14760,7 +14839,7 @@ async function atdCompromissoModal(S, c){
     <div class="field"><label>Tipo</label>
       <div class="row" style="gap:6px; flex-wrap:wrap;">${tipos.map((t,i)=>`<button class="btn small ${i===0?'primary':''}" data-tipo="${esc(t.id)}">${esc(t.name)} · ${t.duration_minutes}min</button>`).join('')}</div>
     </div>
-    <div class="field"><label>Dia</label><input type="date" id="atdCompDia" min="${atdHojeISO()}" value="${atdHojeISO()}"></div>
+    <div class="field"><label>Dia</label>${dateInputHtml('atdCompDia', atdHojeISO())}</div>
     <div class="field"><label>Horário</label><div id="atdCompSlots" class="row" style="gap:6px; flex-wrap:wrap;"></div></div>
     <div class="field"><label>Observação (opcional)</label><input type="text" id="atdCompNota" maxlength="2000" placeholder="Ex.: trazer documentos da admissão"></div>
     <label class="checkbox-row"><input type="checkbox" id="atdCompAvisar" checked> Avisar o cliente pelo WhatsApp</label>
@@ -14791,6 +14870,7 @@ async function atdCompromissoModal(S, c){
     document.querySelectorAll('#modalBody [data-tipo]').forEach(x=>x.classList.toggle('primary', x===b));
     carregarSlots();
   }));
+  setupDatePicker('atdCompDia','atdCompDia_text');
   document.getElementById('atdCompDia').addEventListener('change', carregarSlots);
   document.getElementById('atdCompCancel').addEventListener('click', closeModal);
   document.querySelectorAll('#modalBody [data-cancelar]').forEach(b=>b.addEventListener('click', async ()=>{
