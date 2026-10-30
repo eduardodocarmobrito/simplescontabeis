@@ -602,7 +602,26 @@ body.theme-glass .nav-item:hover, body.theme-glass .nav-sub:hover{background:rgb
    cima de qualquer coisa fora dele, como antes. Achado ao vivo em produção em 2026-10-27. */
 body.theme-glass .card, body.theme-glass .kpi, body.theme-glass .modal, body.theme-glass .drawer, body.theme-glass .doc-card, body.theme-glass .doc-inline{
   background: transparent;
-  border: 1px solid rgba(255,255,255,.3);
+  border: 1px solid rgba(255,255,255,.22);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.4), 0 18px 44px rgba(0,0,0,.4);
+}
+body.theme-glass .kpi{ border-radius:26px; }
+body.theme-glass .card{ border-radius:20px; }
+/* Vidro base de TODAS as superfícies (cards, tabelas, modais) — mesmo padrão translúcido escuro do
+   menu lateral. Sem brilho branco grande, que deixava as tabelas esbranquiçadas. */
+body.theme-glass .card::before, body.theme-glass .kpi::before, body.theme-glass .modal::before, body.theme-glass .drawer::before, body.theme-glass .doc-card::before, body.theme-glass .doc-inline::before{
+  content:'';
+  position:absolute; inset:0;
+  z-index:-1;
+  border-radius:inherit;
+  background: rgba(var(--glass-rgb,5,31,32),.5);
+  backdrop-filter: saturate(200%) blur(40px);
+  -webkit-backdrop-filter: saturate(200%) blur(40px);
+}
+
+/* Só as tiles do dashboard (.kpi) ganham o "liquid glass" cheio: brilho especular + reflexo + hover. */
+body.theme-glass .kpi{
+  border-color: rgba(255,255,255,.3);
   box-shadow:
     inset 0 1.5px 0 rgba(255,255,255,.72),
     inset 0 0 0 1px rgba(255,255,255,.08),
@@ -610,20 +629,12 @@ body.theme-glass .card, body.theme-glass .kpi, body.theme-glass .modal, body.the
     0 24px 56px rgba(0,0,0,.5),
     0 0 44px rgba(46,204,143,.12);
 }
-body.theme-glass .kpi{ border-radius:26px; }
-body.theme-glass .card{ border-radius:20px; }
-/* Camada do vidro (cor + blur) — "liquid glass": brilho diagonal + blur forte. */
-body.theme-glass .card::before, body.theme-glass .kpi::before, body.theme-glass .modal::before, body.theme-glass .drawer::before, body.theme-glass .doc-card::before, body.theme-glass .doc-inline::before{
-  content:'';
-  position:absolute; inset:0;
-  z-index:-1;
-  border-radius:inherit;
+body.theme-glass .kpi::before{
   background: linear-gradient(135deg, rgba(255,255,255,.22), rgba(255,255,255,.03) 56%), rgba(var(--glass-rgb,5,31,32),.4);
   backdrop-filter: saturate(240%) blur(46px);
   -webkit-backdrop-filter: saturate(240%) blur(46px);
 }
-/* Reflexo especular por cima do vidro (continua atrás do conteúdo). */
-body.theme-glass .card::after, body.theme-glass .kpi::after, body.theme-glass .modal::after, body.theme-glass .drawer::after, body.theme-glass .doc-card::after, body.theme-glass .doc-inline::after{
+body.theme-glass .kpi::after{
   content:'';
   position:absolute; inset:0;
   z-index:-1;
@@ -634,7 +645,6 @@ body.theme-glass .card::after, body.theme-glass .kpi::after, body.theme-glass .m
     linear-gradient(118deg, transparent 40%, rgba(255,255,255,.10) 50%, transparent 60%),
     linear-gradient(180deg, transparent 56%, rgba(255,255,255,.08) 100%);
 }
-/* Hover cristalino só nas tiles do dashboard (.kpi) — cards, modais e tabelas não "pulam". */
 body.theme-glass .kpi:hover{
   transform: translateY(-6px) scale(1.015);
   border-color: rgba(255,255,255,.55);
