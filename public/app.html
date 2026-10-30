@@ -1094,6 +1094,17 @@ async function empresasAtivas(){
   const { items } = await api('/empresas');
   return items.filter(e=>e.ativo);
 }
+// Rótulo Matriz/Filial a partir do CNPJ (dígitos 9-12 = ordem da filial; "0001" = matriz, o resto é
+// filial). Serve pra distinguir empresas de mesmo nome na mesma raiz (ex.: 4x "RAIZES AGRO LTDA").
+// Vazio para CPF/produtor rural (sem conceito de filial) ou CNPJ inválido.
+function empresaMatrizFilialHtml(cnpj){
+  const d = String(cnpj||'').replace(/\D/g,'');
+  if(d.length!==14) return '';
+  const ordem = d.slice(8,12);
+  return ordem==='0001'
+    ? ' <span class="tag ok" style="margin-left:6px; flex:none;">Matriz</span>'
+    : ' <span class="tag" style="margin-left:6px; flex:none;">Filial '+ordem+'</span>';
+}
 // Nome sozinho não basta pra escolher a empresa certa em nenhum combobox — nomes duplicados (mesmo
 // grupo econômico com várias empresas de nome igual, cadastro repetido, etc.) são comuns na base
 // real. Todo combobox de empresa usa isso como label, tanto na lista de opções quanto depois de
@@ -8251,11 +8262,11 @@ async function pageNfeBusca(){
     const idsConfigurados = new Set(configs.map(c=>c.empresaId));
     const configuradas = [...idsConfigurados].map(id=>{
       const emp = empresas.find(e=>e.id===id);
-      return { id, nome: emp?emp.nome:'(empresa removida)', qtd: contagem[id]||0 };
-    }).sort((a,b)=>a.nome.localeCompare(b.nome));
+      return { id, nome: emp?emp.nome:'(empresa removida)', cnpj: emp?emp.cnpj:'', qtd: contagem[id]||0 };
+    }).sort((a,b)=>a.nome.localeCompare(b.nome) || String(a.cnpj||'').localeCompare(String(b.cnpj||'')));
     const naoConfiguradas = empresas.filter(e=>!idsConfigurados.has(e.id))
-      .map(e=>({ id:e.id, nome:e.nome, qtd: contagem[e.id]||0 }))
-      .sort((a,b)=>a.nome.localeCompare(b.nome));
+      .map(e=>({ id:e.id, nome:e.nome, cnpj:e.cnpj, qtd: contagem[e.id]||0 }))
+      .sort((a,b)=>a.nome.localeCompare(b.nome) || String(a.cnpj||'').localeCompare(String(b.cnpj||'')));
     const visiveis = NFE_TAB==='configuradas' ? configuradas : naoConfiguradas;
     box.innerHTML = `
       <div class="card">
@@ -8268,7 +8279,7 @@ async function pageNfeBusca(){
         <div style="max-height:420px; overflow-y:auto; overflow-x:hidden; border:1px solid var(--rule); border-radius:8px; padding:4px 10px;">
           ${visiveis.length ? visiveis.map(l=>`
             <div class="nfeEmpresaRow" data-id="${l.id}" data-nome="${esc(normalizaTxt(l.nome))}" style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:6px 8px; font-size:13px; cursor:pointer; border-bottom:1px solid var(--rule);">
-              <span>${esc(l.nome)}</span>
+              <span>${esc(l.nome)}${empresaMatrizFilialHtml(l.cnpj)}</span>
               <span class="tag muted" style="flex:none;">${l.qtd} nota${l.qtd===1?'':'s'}</span>
             </div>
           `).join('') : `<div class="empty-state">${NFE_TAB==='configuradas'?'Nenhuma empresa configurada ainda — envie o certificado dela em Empresas → Configurações.':'Todas as empresas já estão configuradas.'}</div>`}
@@ -8308,7 +8319,7 @@ async function pageNfeBusca(){
     box.innerHTML = `
       <button class="btn small" id="btnNfeVoltarLista">← Voltar pra lista de empresas</button>
       <div class="card" style="margin-top:10px;">
-        <h3>${esc(empresa?empresa.nome:'Empresa')}</h3>
+        <h3>${esc(empresa?empresa.nome:'Empresa')}${empresa?empresaMatrizFilialHtml(empresa.cnpj):''}</h3>
         <div id="nfeConfigBody"></div>
       </div>
       <div class="card" id="nfeDashCard">
