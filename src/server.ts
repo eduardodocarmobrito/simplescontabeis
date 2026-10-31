@@ -535,6 +535,7 @@ sqlite.exec(`
     socio2_email TEXT,
     socio2_telefone TEXT,
     sandbox INTEGER NOT NULL DEFAULT 1,
+    webhook_secret_cifrado TEXT, -- gerado no painel da Autentique ao cadastrar o endpoint; valida x-autentique-signature
     updated_at TEXT DEFAULT (datetime('now'))
   );
   CREATE TABLE IF NOT EXISTS contratos_envios (
@@ -2787,6 +2788,12 @@ sqlite.exec(`DROP TABLE IF EXISTS fgts_sync_jobs`);
     sqlite.exec(`ALTER TABLE contratos ADD COLUMN pdf_assinado_path TEXT`);
   }
 }
+{
+  const colsAssinCfg = sqlite.prepare(`PRAGMA table_info(contratos_assinatura_config)`).all() as any[];
+  if (!colsAssinCfg.some((c) => c.name === "webhook_secret_cifrado")) {
+    sqlite.exec(`ALTER TABLE contratos_assinatura_config ADD COLUMN webhook_secret_cifrado TEXT`);
+  }
+}
 
 // Migração: multi-tenant — cada escritório-cliente que contratar este sistema fica isolado dos
 // demais (própria base de empresas, usuários, certificados, contratos, financeiro). O escritório
@@ -4019,7 +4026,15 @@ app.use("/api", (req, res, next) => {
     (req as any).user = u;
     return next();
   }
-  if (req.path.startsWith("/auth/") || req.path === "/health" || req.path.startsWith("/dominio-agent/") || req.path === "/asaas/webhook" || req.path === "/whatsapp/webhook") return next();
+  if (
+    req.path.startsWith("/auth/") ||
+    req.path === "/health" ||
+    req.path.startsWith("/dominio-agent/") ||
+    req.path === "/asaas/webhook" ||
+    req.path === "/whatsapp/webhook" ||
+    req.path === "/autentique/webhook"
+  )
+    return next();
   requireAuth(req, res, next);
 });
 
@@ -20717,7 +20732,7 @@ app.post("/api/contratos/valor-extenso", blockCliente, requirePermissao("contrat
 app.get("/api/contratos/:id", blockCliente, requirePermissao("contratos", "visualizar"), (req, res) => {
   const row = sqlite
     .prepare(
-      `SELECT c.*, e.nome as empresaNome, e.email as empresaEmail, m.nome as modeloNome, m.campos as modeloCampos, pai.titulo as contratoPaiTitulo
+      `SELECT c.*, e.nome as empresaNome, e.email as empresaEmail, e.telefone as empresaTelefone, m.nome as modeloNome, m.campos as modeloCampos, pai.titulo as contratoPaiTitulo
        FROM contratos c JOIN empresas e ON e.id = c.empresa_id
        LEFT JOIN contratos_modelos m ON m.id = c.modelo_id
        LEFT JOIN contratos pai ON pai.id = c.contrato_pai_id
@@ -20730,6 +20745,7 @@ app.get("/api/contratos/:id", blockCliente, requirePermissao("contratos", "visua
     empresaId: row.empresa_id,
     empresaNome: row.empresaNome,
     empresaEmail: row.empresaEmail,
+    empresaTelefone: row.empresaTelefone,
     modeloId: row.modelo_id,
     modeloNome: row.modeloNome,
     modeloCampos: row.modeloCampos ? JSON.parse(row.modeloCampos) : [],
@@ -20918,13 +20934,17 @@ app.get("/api/contratos/assinatura-config", blockCliente, requirePermissao("cont
     socio2Telefone: c?.socio2_telefone || "",
     sandbox: !!c?.sandbox,
     tokenConfigurado: !!process.env.AUTENTIQUE_API_TOKEN,
+    temWebhookSecret: !!c?.webhook_secret_cifrado,
+    webhookUrl: `${req.protocol}://${req.get("host")}/api/autentique/webhook`,
   });
 });
 app.put("/api/contratos/assinatura-config", blockCliente, requirePermissao("contratos", "editar"), (req, res) => {
   const b = req.body || {};
+  const atual = sqlite.prepare(`SELECT webhook_secret_cifrado FROM contratos_assinatura_config WHERE escritorio_id = ?`).get((req as any).user.escritorioId) as any;
+  const webhookSecretCifrado = b.webhookSecret ? nfse.cifrarTexto(String(b.webhookSecret).trim()) : atual?.webhook_secret_cifrado || null;
   sqlite
     .prepare(
-      `UPDATE contratos_assinatura_config SET socio1_nome=?, socio1_email=?, socio1_telefone=?, socio2_nome=?, socio2_email=?, socio2_telefone=?, sandbox=?, updated_at=datetime('now') WHERE escritorio_id=?`
+      `UPDATE contratos_assinatura_config SET socio1_nome=?, socio1_email=?, socio1_telefone=?, socio2_nome=?, socio2_email=?, socio2_telefone=?, sandbox=?, webhook_secret_cifrado=?, updated_at=datetime('now') WHERE escritorio_id=?`
     )
     .run(
       String(b.socio1Nome || "").trim(),
@@ -20934,37 +20954,57 @@ app.put("/api/contratos/assinatura-config", blockCliente, requirePermissao("cont
       String(b.socio2Email || "").trim(),
       String(b.socio2Telefone || "").trim(),
       b.sandbox ? 1 : 0,
+      webhookSecretCifrado,
       (req as any).user.escritorioId
     );
   res.json({ ok: true });
 });
+// Consulta o status atual na Autentique e atualiza o contrato — chamada tanto pelo botão manual
+// "Atualizar status" quanto pelo webhook (quando configurado), pra não duplicar essa lógica.
+async function atualizarStatusAssinaturaContrato(row: any, token: string) {
+  const status = await autentique.consultarDocumento(token, row.autentique_document_id);
+  sqlite.prepare(`UPDATE contratos SET assinatura_detalhe_json = ? WHERE id = ?`).run(JSON.stringify(status.signatarios), row.id);
+  if (status.todosAssinaram && row.status_assinatura !== "assinado" && status.pdfAssinadoUrl) {
+    const pdfAssinado = await autentique.baixarPdfAssinado(token, status.pdfAssinadoUrl);
+    const destino = contratos.caminhoPdfAssinadoContrato(row.id);
+    fs.writeFileSync(destino, pdfAssinado);
+    sqlite.prepare(`UPDATE contratos SET status_assinatura = 'assinado', pdf_assinado_path = ? WHERE id = ?`).run(destino, row.id);
+  } else if (status.algumRejeitou) {
+    sqlite.prepare(`UPDATE contratos SET status_assinatura = 'rejeitado' WHERE id = ?`).run(row.id);
+  }
+  return status;
+}
 // Monta e envia o contrato pra assinatura: os 2 sócios vêm da config (fixos, sempre os mesmos);
-// cliente e testemunhas são informados nesta chamada, porque variam a cada contrato e seus
-// contatos não fazem parte do texto impresso do documento (só nome/CPF aparecem no papel).
+// e-mail/telefone do cliente vêm do próprio cadastro da empresa (pra notificar também por
+// WhatsApp sem precisar digitar de novo); testemunhas são informadas nesta chamada, já que seus
+// contatos não fazem parte do texto impresso do documento (só nome/CPF aparecem no papel) — a
+// requisição ainda pode sobrescrever o e-mail/telefone do cliente, se precisar usar outro.
 app.post("/api/contratos/:id/enviar-assinatura", blockCliente, requirePermissao("contratos", "postar"), async (req, res) => {
   const user = (req as any).user;
   const token = process.env.AUTENTIQUE_API_TOKEN;
   if (!token) return res.status(400).json({ error: "Token da Autentique não configurado no servidor." });
-  const row = sqlite.prepare(`SELECT * FROM contratos WHERE id = ?`).get(Number(req.params.id)) as any;
+  const row = sqlite
+    .prepare(`SELECT c.*, e.email as empresaEmail, e.telefone as empresaTelefone FROM contratos c JOIN empresas e ON e.id = c.empresa_id WHERE c.id = ?`)
+    .get(Number(req.params.id)) as any;
   if (!row || !podeAcessarEmpresa(user, row.empresa_id)) return res.status(404).json({ error: "Contrato não encontrado." });
   const cfg = sqlite.prepare(`SELECT * FROM contratos_assinatura_config WHERE escritorio_id = ?`).get(user.escritorioId) as any;
   if (!cfg?.socio1_email && !cfg?.socio1_telefone) return res.status(400).json({ error: "Configure o e-mail ou telefone do primeiro sócio antes de enviar." });
   if (!cfg?.socio2_email && !cfg?.socio2_telefone) return res.status(400).json({ error: "Configure o e-mail ou telefone do segundo sócio antes de enviar." });
   const b = req.body || {};
-  const clienteEmail = String(b.clienteEmail || "").trim();
-  const clienteTelefone = String(b.clienteTelefone || "").trim();
-  if (!clienteEmail && !clienteTelefone) return res.status(400).json({ error: "Informe o e-mail ou telefone do cliente." });
   const dados = JSON.parse(row.dados_preenchidos || "{}");
+  const clienteEmail = String(b.clienteEmail || "").trim() || row.empresaEmail || dados.email_cliente || "";
+  const clienteTelefone = autentique.normalizarTelefoneBR(String(b.clienteTelefone || "").trim() || row.empresaTelefone);
+  if (!clienteEmail && !clienteTelefone) return res.status(400).json({ error: "O cadastro desta empresa não tem e-mail nem telefone — informe pelo menos um pra enviar." });
   const signers: autentique.AutentiqueSigner[] = [
-    { nome: cfg.socio1_nome, email: cfg.socio1_email || undefined, telefone: cfg.socio1_telefone || undefined, comoAssina: "SIGN" },
-    { nome: cfg.socio2_nome, email: cfg.socio2_email || undefined, telefone: cfg.socio2_telefone || undefined, comoAssina: "SIGN" },
-    { nome: dados.nome_representante_legal || row.titulo, email: clienteEmail || undefined, telefone: clienteTelefone || undefined, comoAssina: "SIGN" },
+    { nome: cfg.socio1_nome, email: cfg.socio1_email || undefined, telefone: autentique.normalizarTelefoneBR(cfg.socio1_telefone), comoAssina: "SIGN" },
+    { nome: cfg.socio2_nome, email: cfg.socio2_email || undefined, telefone: autentique.normalizarTelefoneBR(cfg.socio2_telefone), comoAssina: "SIGN" },
+    { nome: dados.nome_representante_legal || row.titulo, email: clienteEmail || undefined, telefone: clienteTelefone, comoAssina: "SIGN" },
   ];
   for (const n of [1, 2]) {
     const email = String(b[`testemunha${n}Email`] || "").trim();
-    const telefone = String(b[`testemunha${n}Telefone`] || "").trim();
+    const telefone = autentique.normalizarTelefoneBR(String(b[`testemunha${n}Telefone`] || "").trim());
     if (email || telefone) {
-      signers.push({ nome: dados[`testemunha${n}`] || `Testemunha ${n}`, email: email || undefined, telefone: telefone || undefined, comoAssina: "SIGN_AS_A_WITNESS" });
+      signers.push({ nome: dados[`testemunha${n}`] || `Testemunha ${n}`, email: email || undefined, telefone, comoAssina: "SIGN_AS_A_WITNESS" });
     }
   }
   try {
@@ -20985,20 +21025,50 @@ app.get("/api/contratos/:id/status-assinatura", blockCliente, requirePermissao("
   if (!row.autentique_document_id) return res.json({ enviado: false });
   if (!token) return res.status(400).json({ error: "Token da Autentique não configurado no servidor." });
   try {
-    const status = await autentique.consultarDocumento(token, row.autentique_document_id);
-    sqlite.prepare(`UPDATE contratos SET assinatura_detalhe_json = ? WHERE id = ?`).run(JSON.stringify(status.signatarios), row.id);
-    if (status.todosAssinaram && row.status_assinatura !== "assinado" && status.pdfAssinadoUrl) {
-      const pdfAssinado = await autentique.baixarPdfAssinado(token, status.pdfAssinadoUrl);
-      const destino = contratos.caminhoPdfAssinadoContrato(row.id);
-      fs.writeFileSync(destino, pdfAssinado);
-      sqlite.prepare(`UPDATE contratos SET status_assinatura = 'assinado', pdf_assinado_path = ? WHERE id = ?`).run(destino, row.id);
-    } else if (status.algumRejeitou) {
-      sqlite.prepare(`UPDATE contratos SET status_assinatura = 'rejeitado' WHERE id = ?`).run(row.id);
-    }
+    const status = await atualizarStatusAssinaturaContrato(row, token);
     res.json({ enviado: true, signatarios: status.signatarios, todosAssinaram: status.todosAssinaram, algumRejeitou: status.algumRejeitou, temPdfAssinado: status.todosAssinaram && !!status.pdfAssinadoUrl });
   } catch (e: any) {
     res.status(502).json({ error: `Falha ao consultar status na Autentique: ${e.message}` });
   }
+});
+// Webhook da Autentique — ela chama isso direto (sem sessão nossa), por isso fica de fora do
+// requireAuth (ver exceção no início do arquivo). Responde 200 rápido e processa depois, igual ao
+// webhook do WhatsApp — a Autentique reenvia (com backoff) se não receber 2xx rápido. O ID do
+// documento pode vir em 3 formatos diferentes dependendo do tipo de evento (ver autentique.ts) —
+// por isso usa esse ID só pra achar QUAL contrato é, e consulta o status real pela API em vez de
+// confiar no conteúdo exato do payload do webhook.
+app.post("/api/autentique/webhook", (req, res) => {
+  res.sendStatus(200);
+  (async () => {
+    try {
+      const body = req.body || {};
+      const docId = body?.event?.data?.object?.id || body?.event?.data?.document || body?.event?.data?.id;
+      if (!docId || typeof docId !== "string") return;
+      const row = sqlite.prepare(`SELECT * FROM contratos WHERE autentique_document_id = ?`).get(docId) as any;
+      if (!row) return;
+      const cfg = sqlite.prepare(`SELECT webhook_secret_cifrado FROM contratos_assinatura_config WHERE escritorio_id = (SELECT escritorio_id FROM empresas WHERE id = ?)`).get(row.empresa_id) as any;
+      if (!cfg?.webhook_secret_cifrado) {
+        console.warn("[Autentique webhook] segredo não configurado — payload descartado.");
+        return;
+      }
+      const assinatura = req.headers["x-autentique-signature"];
+      const raw = (req as any).rawBody as Buffer | undefined;
+      if (typeof assinatura !== "string" || !raw) return;
+      const secret = nfse.decifrarTexto(cfg.webhook_secret_cifrado);
+      const esperado = crypto.createHmac("sha256", secret).update(raw).digest("hex");
+      const a = Buffer.from(esperado, "hex");
+      const bAssin = Buffer.from(assinatura, "hex");
+      if (a.length !== bAssin.length || !crypto.timingSafeEqual(a, bAssin)) {
+        console.error("[Autentique webhook] assinatura inválida — payload descartado.");
+        return;
+      }
+      const token = process.env.AUTENTIQUE_API_TOKEN;
+      if (!token) return;
+      await atualizarStatusAssinaturaContrato(row, token);
+    } catch (e: any) {
+      console.error("[Autentique webhook] erro processando payload:", e.message);
+    }
+  })();
 });
 app.get("/api/contratos/:id/pdf-assinado", blockCliente, requirePermissao("contratos", "visualizar"), (req, res) => {
   const row = sqlite.prepare(`SELECT * FROM contratos WHERE id = ?`).get(Number(req.params.id)) as any;

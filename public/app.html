@@ -12795,7 +12795,7 @@ function renderAssinaturaCard(c){
       <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-4px;">Envia o contrato pra assinatura eletrônica dos 2 sócios, do cliente e das testemunhas (quem você informar). Salve o contrato antes de enviar, pra assinatura sair com o texto final.</p>
       <div class="row">
         <div class="field" style="flex:1;"><label>E-mail do cliente</label><input id="asEnvCliEmail" value="${esc(c.empresaEmail||dados.email_cliente||'')}"></div>
-        <div class="field" style="flex:1;"><label>WhatsApp do cliente (opcional, com DDI)</label><input id="asEnvCliTel"></div>
+        <div class="field" style="flex:1;"><label>WhatsApp do cliente (opcional, com DDI)</label><input id="asEnvCliTel" value="${esc(c.empresaTelefone||'')}"></div>
       </div>
       <div class="row">
         <div class="field" style="flex:1;"><label>E-mail testemunha 1 (opcional)</label><input id="asEnvT1Email"></div>
@@ -13089,6 +13089,15 @@ function assinaturaConfigDrawer(cfg){
         </div>
       </div>
       <label class="checkbox-row"><input type="checkbox" id="asSandbox" ${cfg.sandbox?'checked':''}> Modo teste (sandbox) — documentos não contam na cota e não valem como assinatura real. Desmarque quando estiver pronto pra usar com clientes reais.</label>
+      <div class="card" style="background:var(--paper); margin:14px 0;">
+        <div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">Webhook (status automático)</div>
+        <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-4px;">
+          No painel da Autentique, em Configurações › Webhooks (ou Developer Panel), cadastre um endpoint
+          com esta URL e copie o "segredo"/"secret" que ela gerar:
+        </p>
+        <div class="field"><label>URL do webhook (cole no painel da Autentique)</label><input readonly value="${esc(cfg.webhookUrl)}" onclick="this.select()"></div>
+        <div class="field"><label>Segredo do webhook ${cfg.temWebhookSecret?'(já configurado — deixe em branco pra manter)':'(ainda não configurado)'}</label><input id="asWebhookSecret" type="password" placeholder="${cfg.temWebhookSecret?'••••••••':'cole o segredo gerado pela Autentique'}"></div>
+      </div>
     </div>
     <div class="modal-actions" style="padding:16px 24px; border-top:1px solid var(--line);">
       <button class="btn primary" id="asSalvar">Salvar</button>
@@ -13105,6 +13114,7 @@ function assinaturaConfigDrawer(cfg){
         socio2Email: document.getElementById('asS2Email').value.trim(),
         socio2Telefone: document.getElementById('asS2Tel').value.trim(),
         sandbox: document.getElementById('asSandbox').checked,
+        webhookSecret: document.getElementById('asWebhookSecret').value.trim(),
       }});
       closeDrawer();
       toast('Configuração de assinatura salva.','ok');

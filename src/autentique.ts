@@ -106,6 +106,17 @@ export async function consultarDocumento(token: string, id: string): Promise<{
   };
 }
 
+// Telefones no cadastro de empresas/testemunhas vêm sem DDI (ex.: "94999999999" ou com máscara
+// "(94) 99999-9999") — a Autentique exige E.164 (+55...) pra entrega por WhatsApp.
+export function normalizarTelefoneBR(telefone: string | null | undefined): string | undefined {
+  if (!telefone) return undefined;
+  const digitos = telefone.replace(/\D/g, "");
+  if (!digitos) return undefined;
+  if (telefone.trim().startsWith("+")) return "+" + digitos;
+  if (digitos.length <= 11) return "+55" + digitos; // DDD + número, sem DDI
+  return "+" + digitos; // já vem com DDI (ex.: 55...)
+}
+
 export async function baixarPdfAssinado(token: string, url: string): Promise<Buffer> {
   const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(30_000) });
   if (!resp.ok) throw new Error(`Falha ao baixar PDF assinado (HTTP ${resp.status})`);
