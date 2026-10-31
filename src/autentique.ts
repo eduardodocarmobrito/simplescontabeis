@@ -37,11 +37,14 @@ export async function criarDocumento(opts: {
       signatures { public_id name email action { name } link { short_link } }
     }
   }`;
+  // A Autentique rejeita um signatário com email E telefone juntos ("only_one_allowed:email,
+  // phone") — prioriza email (canal mais confiável) e só usa telefone/WhatsApp quando não há email.
   const signersPayload = opts.signers.map((s) => {
     const item: Record<string, any> = { action: s.comoAssina || "SIGN" };
     if (s.nome) item.name = s.nome;
-    if (s.email) item.email = s.email;
-    if (s.telefone) {
+    if (s.email) {
+      item.email = s.email;
+    } else if (s.telefone) {
       item.phone = s.telefone;
       item.delivery_method = "DELIVERY_METHOD_WHATSAPP";
     }
