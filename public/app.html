@@ -3138,19 +3138,24 @@ async function pageEmail(){
       <div class="card eml-lista-col">
         <div class="eml-busca">
           <div class="field" style="margin:0;"><input type="text" id="emlBusca" placeholder="Buscar e-mails…" autocomplete="off" value="${esc(EML.busca)}"></div>
-          <div class="field" style="margin:0; width:120px;"><select id="emlFiltro"><option value="todas">Todos</option><option value="nao-lidas">Não lidos</option></select></div>
+          <div style="width:150px;">${comboSelectHtml('emlFiltroCombo', 'Todos')}</div>
         </div>
         <div class="eml-lista" id="emlLista"></div>
         <div class="eml-pag" id="emlPag"></div>
       </div>
       <div class="card eml-leitor" id="emlLeitor"><div class="empty-state" style="margin:auto;">Selecione um e-mail à esquerda.</div></div>
     </div>`;
-  document.getElementById('emlFiltro').value = EML.filtro;
+  const EML_FILTRO_OPCOES = [{id:'todas', label:'Todos'}, {id:'nao-lidas', label:'Não lidos'}];
+  setupComboSelect('emlFiltroCombo', EML_FILTRO_OPCOES, (id)=>{ EML.filtro = id || 'todas'; EML.pagina = 1; emlCarregarLista(); });
+  {
+    const atual = EML_FILTRO_OPCOES.find(o=>o.id===EML.filtro) || EML_FILTRO_OPCOES[0];
+    document.querySelector('#emlFiltroCombo .combo-value').value = atual.id;
+    document.querySelector('#emlFiltroCombo .combo-input').value = atual.label;
+  }
   document.getElementById('emlAtualizar').addEventListener('click', ()=>emlAtualizarTudo());
   if(podeEnviar) document.getElementById('emlNovo').addEventListener('click', ()=>emlEscrever('novo'));
   const busca = document.getElementById('emlBusca');
   busca.addEventListener('keydown', ev=>{ if(ev.key==='Enter'){ EML.busca = busca.value.trim(); EML.pagina = 1; emlCarregarLista(); } });
-  document.getElementById('emlFiltro').addEventListener('change', ev=>{ EML.filtro = ev.target.value; EML.pagina = 1; emlCarregarLista(); });
   window.addEventListener('resize', emlAjustarAltura);
   EML.uid = null; EML.msg = null;
   await emlCarregarPastas();
