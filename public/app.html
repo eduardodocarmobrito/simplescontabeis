@@ -49,7 +49,7 @@
   input:where(:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=file]):not([type=color])), select, textarea{border-radius:10px;}
   .field{display:flex; flex-direction:column; gap:5px; margin-bottom:14px;}
   .field label{font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-soft); font-family:'IBM Plex Mono',monospace;}
-  .campo-ajuda{display:inline-flex; align-items:center; justify-content:center; width:13px; height:13px; border-radius:50%; background:var(--ink-soft); color:var(--surface); font-size:9px; font-weight:700; font-family:'Inter',sans-serif; text-transform:none; letter-spacing:0; cursor:help; vertical-align:middle;}
+  .campo-ajuda{display:inline-flex; align-items:center; justify-content:center; width:13px; height:13px; border-radius:50%; background:var(--ink-soft); color:var(--surface); font-size:9px; font-weight:700; font-family:'Inter',sans-serif; text-transform:none; letter-spacing:0; cursor:pointer; vertical-align:middle;}
   .field input, .field select, .field textarea{font-family:'Inter',sans-serif; font-size:14px; border:1px solid var(--rule); border-radius:10px; padding:9px 11px; background:var(--paper); color:var(--ink); width:100%;}
   .field input:focus, .field select:focus, .field textarea:focus{outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-pale); background:var(--surface);}
   /* Input "solto" (fora de .field) com o mesmo visual do sistema — pros campinhos inline (hora/dia etc.) */
@@ -12726,19 +12726,18 @@ function valorFormatadoCampo(chave, valor){
   if(campoEhCep(chave)) return fmtCep(valor);
   return valor;
 }
-function campoFieldHtml(f, dados){
+function campoFieldHtml(f, dados, comAjuda){
   const largo = f.chave==='cliente_nome' ? ' style="grid-column:1 / -1;"' : '';
   const valor = valorFormatadoCampo(f.chave, dados[f.chave]);
-  return `<div class="field"${largo}><label>${esc(f.rotulo)} <span class="campo-ajuda" title="${esc(campoAjudaTexto(f.chave))}">?</span></label><input class="drwCampo" data-chave="${esc(f.chave)}" value="${esc(valor)}"></div>`;
+  const ajuda = comAjuda ? ` <span class="campo-ajuda" data-ajuda="${esc(campoAjudaTexto(f.chave))}">?</span>` : '';
+  return `<div class="field"${largo}><label>${esc(f.rotulo)}${ajuda}</label><input class="drwCampo" data-chave="${esc(f.chave)}" value="${esc(valor)}"></div>`;
 }
-function campoGrupoHtml(titulo, lista, dados){
+function campoGrupoHtml(titulo, lista, dados, comAjuda){
   if(!lista.length) return '';
   return `
     <div class="card" style="background:var(--paper); margin-bottom:16px;">
       <div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">${esc(titulo)}</div>
-      <div class="campos-grid">
-        ${lista.map(f=>campoFieldHtml(f, dados)).join('')}
-      </div>
+      <div class="campos-grid">${lista.map(f=>campoFieldHtml(f, dados, comAjuda)).join('')}</div>
     </div>
   `;
 }
@@ -12759,9 +12758,9 @@ async function abrirContratoDrawer(id){
       ${c.tipo==='distrato'?`<p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Distrato do contrato: <b>${esc(c.contratoPaiTitulo||'')}</b></p>`:''}
       <div class="field"><label>Título</label><input id="drwTitulo" value="${esc(c.titulo)}"></div>
       ${campos.length?`
-        ${campoGrupoHtml('Dados da empresa (cliente)', camposEmpresa, dados)}
-        ${campoGrupoHtml('Preenchimento do escritório', camposEscritorio, dados)}
-        ${campoGrupoHtml('Testemunhas', camposTestemunhas, dados)}
+        ${campoGrupoHtml('Dados da empresa (cliente)', camposEmpresa, dados, false)}
+        ${campoGrupoHtml('Preenchimento do escritório', camposEscritorio, dados, true)}
+        ${campoGrupoHtml('Testemunhas', camposTestemunhas, dados, false)}
         <div class="card" style="background:var(--paper); margin-bottom:16px;">
           <button class="btn small" id="drwAplicarCampos">Aplicar no documento</button>
         </div>
@@ -12780,6 +12779,7 @@ async function abrirContratoDrawer(id){
     </div>
   `);
   if(c.tipo==='contrato') renderAssinaturaCard(c);
+  document.querySelectorAll('#drawerBody .campo-ajuda').forEach(el=>el.addEventListener('click', ()=>toast(el.dataset.ajuda)));
   const toolbar = document.querySelector('#drawerBody .rte-toolbar');
   const corpo = document.getElementById('drwCorpo');
   setupRte(toolbar, corpo);
@@ -12856,6 +12856,43 @@ async function abrirContratoDrawer(id){
     document.getElementById('drwDistrato').addEventListener('click', ()=>criarDistrato(id));
   }
 }
+function asValorCampoTestemunha(chave){
+  const el = document.querySelector('.drwCampo[data-chave="'+chave+'"]');
+  return el ? el.value.trim() : '';
+}
+function assinaturaFormularioEnvioHtml(c, dados){
+  return `
+    <div class="row">
+      <div class="field" style="flex:1;"><label>E-mail do cliente</label><input id="asEnvCliEmail" value="${esc(c.empresaEmail||dados.email_cliente||'')}"></div>
+      <div class="field" style="flex:1;"><label>WhatsApp do cliente (opcional, com DDI)</label><input id="asEnvCliTel" value="${esc(c.empresaTelefone||'')}"></div>
+    </div>
+    <div class="row">
+      <div class="field" style="flex:1;"><label>E-mail testemunha 1 (opcional)</label><input id="asEnvT1Email" value="${esc(asValorCampoTestemunha('testemunha1_email'))}"></div>
+      <div class="field" style="flex:1;"><label>WhatsApp testemunha 1 (opcional)</label><input id="asEnvT1Tel"></div>
+    </div>
+    <div class="row">
+      <div class="field" style="flex:1;"><label>E-mail testemunha 2 (opcional)</label><input id="asEnvT2Email" value="${esc(asValorCampoTestemunha('testemunha2_email'))}"></div>
+      <div class="field" style="flex:1;"><label>WhatsApp testemunha 2 (opcional)</label><input id="asEnvT2Tel"></div>
+    </div>
+  `;
+}
+function ligarEnvioAssinatura(c, botaoId){
+  document.getElementById(botaoId).addEventListener('click', async ()=>{
+    try{
+      const r = await api('/contratos/'+c.id+'/enviar-assinatura', { method:'POST', body:{
+        clienteEmail: document.getElementById('asEnvCliEmail').value.trim(),
+        clienteTelefone: document.getElementById('asEnvCliTel').value.trim(),
+        testemunha1Email: document.getElementById('asEnvT1Email').value.trim(),
+        testemunha1Telefone: document.getElementById('asEnvT1Tel').value.trim(),
+        testemunha2Email: document.getElementById('asEnvT2Email').value.trim(),
+        testemunha2Telefone: document.getElementById('asEnvT2Tel').value.trim(),
+      }});
+      toast(r.sandbox?'Enviado em modo teste (sandbox) — não vale como assinatura real.':'Enviado para assinatura.','ok');
+      const atualizado = await api('/contratos/'+c.id);
+      renderAssinaturaCard(atualizado);
+    }catch(e){ toast(e.message,'err'); }
+  });
+}
 function renderAssinaturaCard(c){
   const box = document.getElementById('drwAssinaturaCard');
   if(!box) return;
@@ -12864,35 +12901,10 @@ function renderAssinaturaCard(c){
     box.innerHTML = `
       <div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">Assinatura digital</div>
       <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-4px;">Envia o contrato pra assinatura eletrônica dos 2 sócios, do cliente e das testemunhas (quem você informar). Salve o contrato antes de enviar, pra assinatura sair com o texto final.</p>
-      <div class="row">
-        <div class="field" style="flex:1;"><label>E-mail do cliente</label><input id="asEnvCliEmail" value="${esc(c.empresaEmail||dados.email_cliente||'')}"></div>
-        <div class="field" style="flex:1;"><label>WhatsApp do cliente (opcional, com DDI)</label><input id="asEnvCliTel" value="${esc(c.empresaTelefone||'')}"></div>
-      </div>
-      <div class="row">
-        <div class="field" style="flex:1;"><label>E-mail testemunha 1 (opcional)</label><input id="asEnvT1Email"></div>
-        <div class="field" style="flex:1;"><label>WhatsApp testemunha 1 (opcional)</label><input id="asEnvT1Tel"></div>
-      </div>
-      <div class="row">
-        <div class="field" style="flex:1;"><label>E-mail testemunha 2 (opcional)</label><input id="asEnvT2Email"></div>
-        <div class="field" style="flex:1;"><label>WhatsApp testemunha 2 (opcional)</label><input id="asEnvT2Tel"></div>
-      </div>
+      ${assinaturaFormularioEnvioHtml(c, dados)}
       <button class="btn primary small" id="asEnviarBtn">Enviar para assinatura</button>
     `;
-    document.getElementById('asEnviarBtn').addEventListener('click', async ()=>{
-      try{
-        const r = await api('/contratos/'+c.id+'/enviar-assinatura', { method:'POST', body:{
-          clienteEmail: document.getElementById('asEnvCliEmail').value.trim(),
-          clienteTelefone: document.getElementById('asEnvCliTel').value.trim(),
-          testemunha1Email: document.getElementById('asEnvT1Email').value.trim(),
-          testemunha1Telefone: document.getElementById('asEnvT1Tel').value.trim(),
-          testemunha2Email: document.getElementById('asEnvT2Email').value.trim(),
-          testemunha2Telefone: document.getElementById('asEnvT2Tel').value.trim(),
-        }});
-        toast(r.sandbox?'Enviado em modo teste (sandbox) — não vale como assinatura real.':'Enviado para assinatura.','ok');
-        const atualizado = await api('/contratos/'+c.id);
-        renderAssinaturaCard(atualizado);
-      }catch(e){ toast(e.message,'err'); }
-    });
+    ligarEnvioAssinatura(c, 'asEnviarBtn');
     return;
   }
   const assinatarios = c.assinatarios || [];
@@ -12908,6 +12920,8 @@ function renderAssinaturaCard(c){
     `:'<p style="font-size:12.5px; color:var(--ink-soft);">Ainda sem dados de status — clique em atualizar.</p>'}
     <button class="btn small" id="asAtualizarBtn">Atualizar status</button>
     ${c.statusAssinatura==='assinado'?`<a class="btn small primary" href="/api/contratos/${c.id}/pdf-assinado" target="_blank" rel="noopener">Baixar PDF assinado</a>`:''}
+    <button class="btn small" id="asReenviarToggle">Reenviar para assinatura</button>
+    <div id="asReenviarForm" style="display:none; margin-top:10px;"></div>
   `;
   document.getElementById('asAtualizarBtn').addEventListener('click', async ()=>{
     try{
@@ -12916,6 +12930,16 @@ function renderAssinaturaCard(c){
       renderAssinaturaCard(atualizado);
       toast('Status atualizado.','ok');
     }catch(e){ toast(e.message,'err'); }
+  });
+  document.getElementById('asReenviarToggle').addEventListener('click', ()=>{
+    const formBox = document.getElementById('asReenviarForm');
+    if(formBox.style.display==='none'){
+      formBox.style.display='block';
+      formBox.innerHTML = assinaturaFormularioEnvioHtml(c, dados) + `<p style="font-size:12px; color:var(--ink-soft); margin-top:-4px;">Reenviar cria um novo pedido de assinatura do zero (o anterior fica ignorado).</p><button class="btn primary small" id="asReenviarBtn">Confirmar reenvio</button>`;
+      ligarEnvioAssinatura(c, 'asReenviarBtn');
+    } else {
+      formBox.style.display='none';
+    }
   });
 }
 async function criarDistrato(contratoId){
