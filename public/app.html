@@ -12600,9 +12600,6 @@ async function renderContratosLista(){
   const TIPO_LABEL={contrato:'Contrato',aditivo:'Aditivo',distrato:'Distrato'};
   const STATUS_OPCOES=[{id:'',label:'Todos'},{id:'rascunho',label:'Rascunho'},{id:'ativo',label:'Ativo'},{id:'encerrado',label:'Encerrado'}];
   box.innerHTML = `
-    <div class="row" style="margin-bottom:8px; align-items:center;">
-      <button class="btn primary" id="btnNovoContrato">+ Novo contrato</button>
-    </div>
     <div class="row" style="margin-bottom:12px; align-items:flex-end;">
       <div class="field" style="width:280px;"><label>Empresa</label>
         ${comboSelectHtml('ctrFiltroEmpresaCombo', 'Todas as empresas')}
@@ -12610,6 +12607,7 @@ async function renderContratosLista(){
       <div class="field" style="width:200px;"><label>Status</label>
         ${comboSelectHtml('ctrFiltroStatusCombo', 'Todos')}
       </div>
+      <div class="field" style="margin-bottom:0;"><label>&nbsp;</label><button class="btn primary" id="btnNovoContrato">+ Novo contrato</button></div>
     </div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
