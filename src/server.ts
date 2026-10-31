@@ -21051,20 +21051,23 @@ app.post("/api/autentique/webhook", (req, res) => {
       const row = sqlite.prepare(`SELECT * FROM contratos WHERE autentique_document_id = ?`).get(docId) as any;
       if (!row) return;
       const cfg = sqlite.prepare(`SELECT webhook_secret_cifrado FROM contratos_assinatura_config WHERE escritorio_id = (SELECT escritorio_id FROM empresas WHERE id = ?)`).get(row.empresa_id) as any;
-      if (!cfg?.webhook_secret_cifrado) {
-        console.warn("[Autentique webhook] segredo não configurado — payload descartado.");
-        return;
-      }
-      const assinatura = req.headers["x-autentique-signature"];
-      const raw = (req as any).rawBody as Buffer | undefined;
-      if (typeof assinatura !== "string" || !raw) return;
-      const secret = nfse.decifrarTexto(cfg.webhook_secret_cifrado);
-      const esperado = crypto.createHmac("sha256", secret).update(raw).digest("hex");
-      const a = Buffer.from(esperado, "hex");
-      const bAssin = Buffer.from(assinatura, "hex");
-      if (a.length !== bAssin.length || !crypto.timingSafeEqual(a, bAssin)) {
-        console.error("[Autentique webhook] assinatura inválida — payload descartado.");
-        return;
+      // A verificação de assinatura (HMAC) depende do recurso "Autenticação" do webhook, que na
+      // Autentique é só do plano Pro — sem segredo configurado, segue sem verificar: o payload só é
+      // usado pra achar QUAL contrato re-checar, a confirmação real do status sempre vem de uma
+      // consulta autenticada com nosso próprio token (atualizarStatusAssinaturaContrato), nunca do
+      // conteúdo do webhook em si — então um payload forjado no máximo gera uma consulta extra.
+      if (cfg?.webhook_secret_cifrado) {
+        const assinatura = req.headers["x-autentique-signature"];
+        const raw = (req as any).rawBody as Buffer | undefined;
+        if (typeof assinatura !== "string" || !raw) return;
+        const secret = nfse.decifrarTexto(cfg.webhook_secret_cifrado);
+        const esperado = crypto.createHmac("sha256", secret).update(raw).digest("hex");
+        const a = Buffer.from(esperado, "hex");
+        const bAssin = Buffer.from(assinatura, "hex");
+        if (a.length !== bAssin.length || !crypto.timingSafeEqual(a, bAssin)) {
+          console.error("[Autentique webhook] assinatura inválida — payload descartado.");
+          return;
+        }
       }
       const token = process.env.AUTENTIQUE_API_TOKEN;
       if (!token) return;
