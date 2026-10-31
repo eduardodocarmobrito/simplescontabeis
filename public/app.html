@@ -12598,20 +12598,18 @@ async function renderContratosLista(){
   ]);
   const STATUS_LABEL={rascunho:'Rascunho',ativo:'Ativo',encerrado:'Encerrado'};
   const TIPO_LABEL={contrato:'Contrato',aditivo:'Aditivo',distrato:'Distrato'};
+  const STATUS_OPCOES=[{id:'',label:'Todos'},{id:'rascunho',label:'Rascunho'},{id:'ativo',label:'Ativo'},{id:'encerrado',label:'Encerrado'}];
   box.innerHTML = `
+    <div class="row" style="margin-bottom:8px; align-items:center;">
+      <button class="btn primary" id="btnNovoContrato">+ Novo contrato</button>
+    </div>
     <div class="row" style="margin-bottom:12px; align-items:flex-end;">
       <div class="field" style="width:280px;"><label>Empresa</label>
         ${comboSelectHtml('ctrFiltroEmpresaCombo', 'Todas as empresas')}
       </div>
-      <div class="field" style="width:160px;"><label>Status</label>
-        <select id="ctrFiltroStatus">
-          <option value="">Todos</option>
-          <option value="rascunho" ${CONTRATOS_FILTRO.status==='rascunho'?'selected':''}>Rascunho</option>
-          <option value="ativo" ${CONTRATOS_FILTRO.status==='ativo'?'selected':''}>Ativo</option>
-          <option value="encerrado" ${CONTRATOS_FILTRO.status==='encerrado'?'selected':''}>Encerrado</option>
-        </select>
+      <div class="field" style="width:200px;"><label>Status</label>
+        ${comboSelectHtml('ctrFiltroStatusCombo', 'Todos')}
       </div>
-      <button class="btn primary" id="btnNovoContrato">+ Novo contrato</button>
     </div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
@@ -12639,7 +12637,12 @@ async function renderContratosLista(){
     const atual = empresas.find(e=>String(e.id)===String(CONTRATOS_FILTRO.empresaId));
     if(atual){ document.querySelector('#ctrFiltroEmpresaCombo .combo-value').value=atual.id; document.querySelector('#ctrFiltroEmpresaCombo .combo-input').value=atual.nome; }
   }
-  document.getElementById('ctrFiltroStatus').addEventListener('change', e=>{ CONTRATOS_FILTRO.status=e.target.value; renderContratosLista(); });
+  setupComboSelect('ctrFiltroStatusCombo', STATUS_OPCOES, (id)=>{ CONTRATOS_FILTRO.status=id||''; renderContratosLista(); });
+  {
+    const atualStatus = STATUS_OPCOES.find(s=>s.id===CONTRATOS_FILTRO.status) || STATUS_OPCOES[0];
+    document.querySelector('#ctrFiltroStatusCombo .combo-value').value=atualStatus.id;
+    document.querySelector('#ctrFiltroStatusCombo .combo-input').value=atualStatus.id?atualStatus.label:'';
+  }
   document.getElementById('btnNovoContrato').addEventListener('click', ()=>novoContratoModal(empresas.filter(e=>e.ativo)));
   box.querySelectorAll('[data-act="abrir"]').forEach(b=>b.addEventListener('click', ()=>abrirContratoDrawer(Number(b.dataset.id))));
   box.querySelectorAll('[data-act="excluir"]').forEach(b=>b.addEventListener('click', async ()=>{

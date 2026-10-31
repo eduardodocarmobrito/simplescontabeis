@@ -20719,6 +20719,46 @@ app.put("/api/contratos/distrato-config", blockCliente, requirePermissao("contra
     .run(escritorioId, clausulaPadrao ?? "", assinaturasPadrao ?? "");
   res.json({ ok: true });
 });
+// Achado ao vivo (2026-10-31): registradas depois de GET /api/contratos/:id, "assinatura-config"
+// batia no ":id" (Express não distingue — qualquer segmento literal casa com :id) e caía sempre no
+// 404 de "Contrato não encontrado", quebrando silenciosamente a aba Modelos inteira (Promise.all
+// rejeitava sem nenhum catch). Mesmo motivo de distrato-config já ficar antes do :id — mantém aqui.
+app.get("/api/contratos/assinatura-config", blockCliente, requirePermissao("contratos", "visualizar"), (req, res) => {
+  const c = sqlite.prepare(`SELECT * FROM contratos_assinatura_config WHERE escritorio_id = ?`).get((req as any).user.escritorioId) as any;
+  res.json({
+    socio1Nome: c?.socio1_nome || "",
+    socio1Email: c?.socio1_email || "",
+    socio1Telefone: c?.socio1_telefone || "",
+    socio2Nome: c?.socio2_nome || "",
+    socio2Email: c?.socio2_email || "",
+    socio2Telefone: c?.socio2_telefone || "",
+    sandbox: !!c?.sandbox,
+    tokenConfigurado: !!process.env.AUTENTIQUE_API_TOKEN,
+    temWebhookSecret: !!c?.webhook_secret_cifrado,
+    webhookUrl: `${req.protocol}://${req.get("host")}/api/autentique/webhook`,
+  });
+});
+app.put("/api/contratos/assinatura-config", blockCliente, requirePermissao("contratos", "editar"), (req, res) => {
+  const b = req.body || {};
+  const atual = sqlite.prepare(`SELECT webhook_secret_cifrado FROM contratos_assinatura_config WHERE escritorio_id = ?`).get((req as any).user.escritorioId) as any;
+  const webhookSecretCifrado = b.webhookSecret ? nfse.cifrarTexto(String(b.webhookSecret).trim()) : atual?.webhook_secret_cifrado || null;
+  sqlite
+    .prepare(
+      `UPDATE contratos_assinatura_config SET socio1_nome=?, socio1_email=?, socio1_telefone=?, socio2_nome=?, socio2_email=?, socio2_telefone=?, sandbox=?, webhook_secret_cifrado=?, updated_at=datetime('now') WHERE escritorio_id=?`
+    )
+    .run(
+      String(b.socio1Nome || "").trim(),
+      String(b.socio1Email || "").trim(),
+      String(b.socio1Telefone || "").trim(),
+      String(b.socio2Nome || "").trim(),
+      String(b.socio2Email || "").trim(),
+      String(b.socio2Telefone || "").trim(),
+      b.sandbox ? 1 : 0,
+      webhookSecretCifrado,
+      (req as any).user.escritorioId
+    );
+  res.json({ ok: true });
+});
 // Usado pela tela ao aplicar os campos no documento — {{vlr_extenso}} não tem como ser calculado na
 // criação do contrato porque o valor só é digitado depois, no painel "Dados do contrato". O campo é
 // texto livre, então aceita tanto "1500.75" quanto "1.500,75" (só o segundo formato tem vírgula, que
@@ -20923,42 +20963,6 @@ app.post("/api/contratos/:id/enviar-email", blockCliente, requirePermissao("cont
   }
 });
 // ---------- Assinatura digital dos contratos (Autentique) ----------
-app.get("/api/contratos/assinatura-config", blockCliente, requirePermissao("contratos", "visualizar"), (req, res) => {
-  const c = sqlite.prepare(`SELECT * FROM contratos_assinatura_config WHERE escritorio_id = ?`).get((req as any).user.escritorioId) as any;
-  res.json({
-    socio1Nome: c?.socio1_nome || "",
-    socio1Email: c?.socio1_email || "",
-    socio1Telefone: c?.socio1_telefone || "",
-    socio2Nome: c?.socio2_nome || "",
-    socio2Email: c?.socio2_email || "",
-    socio2Telefone: c?.socio2_telefone || "",
-    sandbox: !!c?.sandbox,
-    tokenConfigurado: !!process.env.AUTENTIQUE_API_TOKEN,
-    temWebhookSecret: !!c?.webhook_secret_cifrado,
-    webhookUrl: `${req.protocol}://${req.get("host")}/api/autentique/webhook`,
-  });
-});
-app.put("/api/contratos/assinatura-config", blockCliente, requirePermissao("contratos", "editar"), (req, res) => {
-  const b = req.body || {};
-  const atual = sqlite.prepare(`SELECT webhook_secret_cifrado FROM contratos_assinatura_config WHERE escritorio_id = ?`).get((req as any).user.escritorioId) as any;
-  const webhookSecretCifrado = b.webhookSecret ? nfse.cifrarTexto(String(b.webhookSecret).trim()) : atual?.webhook_secret_cifrado || null;
-  sqlite
-    .prepare(
-      `UPDATE contratos_assinatura_config SET socio1_nome=?, socio1_email=?, socio1_telefone=?, socio2_nome=?, socio2_email=?, socio2_telefone=?, sandbox=?, webhook_secret_cifrado=?, updated_at=datetime('now') WHERE escritorio_id=?`
-    )
-    .run(
-      String(b.socio1Nome || "").trim(),
-      String(b.socio1Email || "").trim(),
-      String(b.socio1Telefone || "").trim(),
-      String(b.socio2Nome || "").trim(),
-      String(b.socio2Email || "").trim(),
-      String(b.socio2Telefone || "").trim(),
-      b.sandbox ? 1 : 0,
-      webhookSecretCifrado,
-      (req as any).user.escritorioId
-    );
-  res.json({ ok: true });
-});
 // Consulta o status atual na Autentique e atualiza o contrato — chamada tanto pelo botão manual
 // "Atualizar status" quanto pelo webhook (quando configurado), pra não duplicar essa lógica.
 async function atualizarStatusAssinaturaContrato(row: any, token: string) {
