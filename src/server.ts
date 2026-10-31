@@ -20748,14 +20748,30 @@ app.post("/api/contratos/:id/aditivo", blockCliente, requirePermissao("contratos
   // é herdado do contrato original (aditivo não gera um número novo — ele referencia o contrato).
   const cabecalho = contratos.extrairTrechoCabecalho(original.conteudo_html) || "";
   const numeroRef = original.numero_sequencial ? ` (nº ${original.numero_sequencial}/${original.numero_sequencial_ano})` : "";
+  // Reaproveita o mesmo bloco de assinaturas já configurado uma única vez pelo admin pro Distrato
+  // (aba Modelos) — Aditivo e Distrato fecham com a mesma assinatura CONTRATANTE/CONTRATADA, não
+  // justifica uma segunda configuração em paralelo só pra isso.
+  const padraoAssin = sqlite.prepare(`SELECT assinaturas_padrao FROM contratos_distrato_config WHERE escritorio_id = ?`).get(user.escritorioId) as any;
+  const agConfig = sqlite.prepare(`SELECT empresa_prestador_id FROM nfse_agendamento_config WHERE escritorio_id = ?`).get(user.escritorioId) as any;
+  const escritorio = agConfig?.empresa_prestador_id ? (sqlite.prepare(`SELECT nome FROM empresas WHERE id = ?`).get(agConfig.empresa_prestador_id) as any) : null;
+  const tokensAssin = {
+    empresa_nome: escHtmlRelatorio(empresa?.nome || ""),
+    escritorio_nome: escHtmlRelatorio(escritorio?.nome || ""),
+    contrato_titulo: escHtmlRelatorio(original.titulo),
+    data: new Date().toLocaleDateString("pt-BR"),
+    n_contrato_sequencial: original.numero_sequencial != null ? String(original.numero_sequencial) : "",
+  };
+  const assinaturas = padraoAssin?.assinaturas_padrao ? contratos.aplicarCamposNoModelo(padraoAssin.assinaturas_padrao, tokensAssin) : "";
   // Achado em auditoria (2026-10-12): titulo/nome aqui também podem conter HTML digitado (titulo
   // vem de "contratos:editar" sem escapar — ver PUT /api/contratos/:id) — mesmo escape do ponto
   // acima, pra não entrar cru no documento/PDF.
   const conteudoInicial = contratos.aplicarCamposNoModelo(
     cabecalho +
-      `<h1>Aditivo Contratual</h1><p>Aditivo ao contrato "${escHtmlRelatorio(original.titulo)}"${numeroRef}, firmado entre o escritório e ${escHtmlRelatorio(empresa?.nome || "")}.</p>` +
+      `<h1>Aditivo Contratual</h1><p>Aditivo ao contrato "${escHtmlRelatorio(original.titulo)}"${numeroRef}, firmado entre o escritório e ${escHtmlRelatorio(empresa?.nome || "")}, com fundamento na Cláusula Primeira (item 1.3) do contrato original, que condiciona qualquer alteração de escopo ou revisão de honorários a aditivo escrito e assinado por ambas as partes.</p>` +
       `<p>As partes acordam alterar/complementar o contrato original nos seguintes termos:</p>` +
-      (dadosAlterados ? `<p>${contratos.escaparEQuebrarLinhas(dadosAlterados)}</p>` : `<p></p>`),
+      (dadosAlterados ? `<p>${contratos.escaparEQuebrarLinhas(dadosAlterados)}</p>` : `<p></p>`) +
+      `<p style="text-align: justify;">Permanecem inalteradas e em pleno vigor todas as demais cláusulas e condições do contrato original não expressamente modificadas por este Aditivo.</p>` +
+      assinaturas,
     { n_contrato_sequencial: original.numero_sequencial != null ? String(original.numero_sequencial) : "" }
   );
   const info = sqlite
