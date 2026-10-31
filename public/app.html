@@ -49,6 +49,7 @@
   input:where(:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=file]):not([type=color])), select, textarea{border-radius:10px;}
   .field{display:flex; flex-direction:column; gap:5px; margin-bottom:14px;}
   .field label{font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-soft); font-family:'IBM Plex Mono',monospace;}
+  .campo-ajuda{display:inline-flex; align-items:center; justify-content:center; width:13px; height:13px; border-radius:50%; background:var(--ink-soft); color:var(--surface); font-size:9px; font-weight:700; font-family:'Inter',sans-serif; text-transform:none; letter-spacing:0; cursor:help; vertical-align:middle;}
   .field input, .field select, .field textarea{font-family:'Inter',sans-serif; font-size:14px; border:1px solid var(--rule); border-radius:10px; padding:9px 11px; background:var(--paper); color:var(--ink); width:100%;}
   .field input:focus, .field select:focus, .field textarea:focus{outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-pale); background:var(--surface);}
   /* Input "solto" (fora de .field) com o mesmo visual do sistema — pros campinhos inline (hora/dia etc.) */
@@ -665,6 +666,10 @@ body.theme-glass .combo-input, body.theme-glass .inp, body.theme-glass input.dat
 body.theme-glass table.data-table td input[type=text], body.theme-glass table.data-table td select{
   background: rgba(255,255,255,.92); color:#1D1D1F;
 }
+/* .rte-body é o "papel" do editor de contrato/documento — fundo branco fixo (#fff, nunca muda com o
+   tema), mas sem essa regra o texto herdava a cor clara do tema escuro e ficava ilegível (texto quase
+   branco em cima de fundo branco). */
+body.theme-glass .rte-body{color:#1D1D1F;}
 /* Tela de login segue o mesmo tema escolhido no sistema — painel direito vira vidro escuro com
    texto claro (igual ao resto do app), painel esquerdo ganha o gradiente vívido do tema, mas com um
    brilho suave e sem bordas atrás da logo (que tem texto escuro, precisa de uma área clara pra
@@ -12686,10 +12691,59 @@ async function novoContratoModal(empresas){
     }catch(e){ toast(e.message,'err'); }
   });
 }
+const CAMPO_AJUDA = {
+  cliente_nome: 'Razão social completa do cliente, como aparece no contrato.',
+  CNPJ: 'CNPJ do cliente — formatado automaticamente.',
+  'endereço': 'Endereço completo do cliente (rua, número, bairro).',
+  cidade: 'Cidade do cliente.',
+  UF: 'Estado (sigla) do cliente.',
+  CEP: 'CEP do cliente — formatado automaticamente.',
+  email_cliente: 'E-mail do cliente — usado também pra notificações e assinatura digital.',
+  'inscrição_municipal': 'Inscrição municipal do cliente, se houver.',
+  nome_representante_legal: 'Nome completo de quem assina pelo cliente (representante legal).',
+  CPF_Representante_Legal: 'CPF do representante legal do cliente — formatado automaticamente.',
+  atividade_principal: 'Atividade principal do cliente — usada no texto do contrato (CONSIDERANDO QUE...).',
+  'serviços_a_ser_executados': 'Quais serviços foram contratados (ex.: Contabilidade, Fiscal, Departamento Pessoal) — define o que aparece nas obrigações do contrato.',
+  'valor_honorário': 'Valor mensal dos honorários, em reais.',
+  testemunha1: 'Nome completo da 1ª testemunha que vai assinar o contrato.',
+  CPF_testumunha1: 'CPF da 1ª testemunha — formatado automaticamente.',
+  testemunha2: 'Nome completo da 2ª testemunha que vai assinar o contrato.',
+  CPF_testemunha2: 'CPF da 2ª testemunha — formatado automaticamente.',
+};
+function campoAjudaTexto(chave){
+  return CAMPO_AJUDA[chave] || `Campo usado no texto do contrato — onde aparecer {{${chave}}} no documento, este valor entra no lugar.`;
+}
+function campoEhCnpjCpf(chave){ return chave==='CNPJ' || /cpf/i.test(chave); }
+function campoEhCep(chave){ return chave==='CEP'; }
+function valorFormatadoCampo(chave, valor){
+  if(!valor) return '';
+  if(campoEhCnpjCpf(chave)) return fmtCnpjCpf(valor);
+  if(campoEhCep(chave)) return fmtCep(valor);
+  return valor;
+}
+function campoFieldHtml(f, dados){
+  const largo = f.chave==='cliente_nome' ? ' style="grid-column:1 / -1;"' : '';
+  const valor = valorFormatadoCampo(f.chave, dados[f.chave]);
+  return `<div class="field"${largo}><label>${esc(f.rotulo)} <span class="campo-ajuda" title="${esc(campoAjudaTexto(f.chave))}">?</span></label><input class="drwCampo" data-chave="${esc(f.chave)}" value="${esc(valor)}"></div>`;
+}
+function campoGrupoHtml(titulo, lista, dados){
+  if(!lista.length) return '';
+  return `
+    <div class="card" style="background:var(--paper); margin-bottom:16px;">
+      <div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">${esc(titulo)}</div>
+      <div class="campos-grid">
+        ${lista.map(f=>campoFieldHtml(f, dados)).join('')}
+      </div>
+    </div>
+  `;
+}
 async function abrirContratoDrawer(id){
   const c = await api('/contratos/'+id);
   const campos = c.modeloCampos || [];
   const dados = c.dadosPreenchidos || {};
+  const camposEmpresa = campos.filter(f=>f.autoPreencherDe);
+  const camposTestemunhas = campos.filter(f=>!f.autoPreencherDe && /testemunha/i.test(f.chave));
+  const camposEscritorio = campos.filter(f=>!f.autoPreencherDe && !/testemunha/i.test(f.chave));
   openDrawer(`
     <div class="drawer-header">
       <h3>${esc(c.titulo)}</h3>
@@ -12700,11 +12754,10 @@ async function abrirContratoDrawer(id){
       ${c.tipo==='distrato'?`<p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Distrato do contrato: <b>${esc(c.contratoPaiTitulo||'')}</b></p>`:''}
       <div class="field"><label>Título</label><input id="drwTitulo" value="${esc(c.titulo)}"></div>
       ${campos.length?`
+        ${campoGrupoHtml('Dados da empresa (cliente)', camposEmpresa, dados)}
+        ${campoGrupoHtml('Preenchimento do escritório', camposEscritorio, dados)}
+        ${campoGrupoHtml('Testemunhas', camposTestemunhas, dados)}
         <div class="card" style="background:var(--paper); margin-bottom:16px;">
-          <div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">Dados do contrato</div>
-          <div class="campos-grid">
-            ${campos.map(f=>`<div class="field"><label>${esc(f.rotulo)}</label><input class="drwCampo" data-chave="${esc(f.chave)}" value="${esc(dados[f.chave]||'')}"></div>`).join('')}
-          </div>
           <button class="btn small" id="drwAplicarCampos">Aplicar no documento</button>
         </div>
       `:''}
@@ -12762,6 +12815,11 @@ async function abrirContratoDrawer(id){
     }
   });
   if(campos.length){
+    document.querySelectorAll('.drwCampo').forEach(inp=>{
+      if(campoEhCnpjCpf(inp.dataset.chave) || campoEhCep(inp.dataset.chave)){
+        inp.addEventListener('blur', ()=>{ inp.value = valorFormatadoCampo(inp.dataset.chave, inp.value); });
+      }
+    });
     document.getElementById('drwAplicarCampos').addEventListener('click', async ()=>{
       const novosDados = {};
       document.querySelectorAll('.drwCampo').forEach(inp=>novosDados[inp.dataset.chave]=inp.value);
