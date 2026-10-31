@@ -12656,7 +12656,7 @@ async function novoContratoModal(empresas){
   openModal(`
     <h3>Novo contrato</h3>
     <div class="field"><label>Modelo</label>
-      <select id="ncModelo">${ativos.map(m=>`<option value="${m.id}">${esc(m.nome)}</option>`).join('')}</select>
+      ${comboSelectHtml('ncModeloCombo', 'Digite para buscar o modelo…')}
     </div>
     <div class="field"><label>Empresa</label>
       ${comboSelectHtml('ncEmpresaCombo', 'Digite para buscar a empresa…')}
@@ -12666,13 +12666,20 @@ async function novoContratoModal(empresas){
       <button class="btn primary" id="ncCriar">Criar</button>
     </div>
   `);
+  setupComboSelect('ncModeloCombo', ativos.map(m=>({id:m.id, label:m.nome})), ()=>{});
+  {
+    document.querySelector('#ncModeloCombo .combo-value').value = ativos[0].id;
+    document.querySelector('#ncModeloCombo .combo-input').value = ativos[0].nome;
+  }
   setupComboSelect('ncEmpresaCombo', empresas.map(e=>({id:e.id, label:empresaComboLabel(e)})), ()=>{});
   document.getElementById('ncCancel').addEventListener('click', closeModal);
   document.getElementById('ncCriar').addEventListener('click', async ()=>{
+    const modeloId = document.querySelector('#ncModeloCombo .combo-value').value;
     const empresaId = document.querySelector('#ncEmpresaCombo .combo-value').value;
+    if(!modeloId){ toast('Selecione o modelo.','err'); return; }
     if(!empresaId){ toast('Selecione a empresa.','err'); return; }
     try{
-      const r = await api('/contratos', { method:'POST', body:{ modeloId:Number(document.getElementById('ncModelo').value), empresaId:Number(empresaId), dados:{} } });
+      const r = await api('/contratos', { method:'POST', body:{ modeloId:Number(modeloId), empresaId:Number(empresaId), dados:{} } });
       closeModal();
       renderContratosLista();
       abrirContratoDrawer(r.id);
