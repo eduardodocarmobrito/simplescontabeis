@@ -215,6 +215,17 @@ function mesAnterior(mmAaaa: string | null): string | null {
   if (mes === 0) { mes = 12; ano -= 1; }
   return `${String(mes).padStart(2, "0")}/${ano}`;
 }
+// GFD - Guia do FGTS Digital: o rótulo "Competência" fica dentro da tabela "Composição do
+// Documento", que o pdf-parse embaralha — o valor MM/AAAA real acaba colado ao fim da linha de
+// totais (ex.: "...0,0009/20263"), sem nenhum regex genérico de extrairCompetenciaMes reconhecendo.
+// Sem isso, a competência ficava null e caía no fallback do mês de PROCESSAMENTO (achado ao vivo:
+// guia de competência 09/2026, com vencimento 20/10/2026, sendo arquivada como 10/2026 — mesmo
+// padrão de bug já visto e corrigido antes só pra DARF/DCTF-Web). O campo "Tag" da GFD, no formato
+// "<raiz do CNPJ> MM/AAAA MENSAL", é estável e não depende da tabela — usa ele como fonte confiável.
+export function extrairCompetenciaTagGfd(texto: string): string | null {
+  const m = /\bTag\b[\s\S]{0,20}?\d{5,9}\s+(0[1-9]|1[0-2])\/(20\d{2})\s+\S/i.exec(texto);
+  return m ? `${m[1]}/${m[2]}` : null;
+}
 const rotuloCompetencia = (p: { inicio: string; fim: string } | null): string | null => {
   const f = p?.fim || p?.inicio;
   return f && /^\d{4}-\d{2}/.test(f) ? `${f.slice(5, 7)}/${f.slice(0, 4)}` : null;
@@ -437,6 +448,8 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     // Data do processamento) - 1, não o mês do processamento em si.
     const competencia = ehContribSindical
       ? (mesAnterior(extrairCompetenciaDataProcessamento(texto)) || extrairCompetenciaMes(texto))
+      : ehFgts
+      ? (extrairCompetenciaTagGfd(texto) || extrairCompetenciaMes(texto) || extrairDataAfastamento(texto) || rotuloCompetencia(d.extrairPeriodo(texto, nomeArquivo)))
       : (extrairCompetenciaMes(texto) || extrairDataAfastamento(texto) || rotuloCompetencia(d.extrairPeriodo(texto, nomeArquivo)));
     const titulo = [tipo?.nome || String(nomeArquivo).replace(/\.pdf$/i, ""), colaborador, empresa?.nome, competencia].filter(Boolean).join(" - ");
     return { texto, agrupar: !!tipo?.agrupar, tipoId: tipo?.id ?? null, tipoNome: tipo?.nome ?? null, tipoSetor: tipo?.setor ?? null, tipoTemplateId: tipo?.template_id ?? null, empresaId: empresa?.id ?? null, cnpj: cnpjDetectado, colaborador, cpf, competencia, titulo };
