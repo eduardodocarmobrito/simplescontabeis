@@ -12700,6 +12700,7 @@ async function abrirContratoDrawer(id){
           <button class="btn small" id="drwAplicarCampos">Aplicar no documento</button>
         </div>
       `:''}
+      ${c.tipo==='contrato'?`<div class="card" style="background:var(--paper); margin-bottom:16px;" id="drwAssinaturaCard"></div>`:''}
       ${rteToolbarHtml()}
       <div class="rte-body" id="drwCorpo" contenteditable="true">${c.conteudoHtml}</div>
     </div>
@@ -12712,6 +12713,7 @@ async function abrirContratoDrawer(id){
       ${c.tipo==='contrato'?`<button class="btn" id="drwAditivo">Criar aditivo</button><button class="btn" id="drwDistrato">Criar distrato</button>`:''}
     </div>
   `);
+  if(c.tipo==='contrato') renderAssinaturaCard(c);
   const toolbar = document.querySelector('#drawerBody .rte-toolbar');
   const corpo = document.getElementById('drwCorpo');
   setupRte(toolbar, corpo);
@@ -12783,6 +12785,68 @@ async function abrirContratoDrawer(id){
     document.getElementById('drwDistrato').addEventListener('click', ()=>criarDistrato(id));
   }
 }
+function renderAssinaturaCard(c){
+  const box = document.getElementById('drwAssinaturaCard');
+  if(!box) return;
+  const dados = c.dadosPreenchidos || {};
+  if(!c.autentiqueDocumentId){
+    box.innerHTML = `
+      <div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">Assinatura digital</div>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-4px;">Envia o contrato pra assinatura eletrônica dos 2 sócios, do cliente e das testemunhas (quem você informar). Salve o contrato antes de enviar, pra assinatura sair com o texto final.</p>
+      <div class="row">
+        <div class="field" style="flex:1;"><label>E-mail do cliente</label><input id="asEnvCliEmail" value="${esc(c.empresaEmail||dados.email_cliente||'')}"></div>
+        <div class="field" style="flex:1;"><label>WhatsApp do cliente (opcional, com DDI)</label><input id="asEnvCliTel"></div>
+      </div>
+      <div class="row">
+        <div class="field" style="flex:1;"><label>E-mail testemunha 1 (opcional)</label><input id="asEnvT1Email"></div>
+        <div class="field" style="flex:1;"><label>WhatsApp testemunha 1 (opcional)</label><input id="asEnvT1Tel"></div>
+      </div>
+      <div class="row">
+        <div class="field" style="flex:1;"><label>E-mail testemunha 2 (opcional)</label><input id="asEnvT2Email"></div>
+        <div class="field" style="flex:1;"><label>WhatsApp testemunha 2 (opcional)</label><input id="asEnvT2Tel"></div>
+      </div>
+      <button class="btn primary small" id="asEnviarBtn">Enviar para assinatura</button>
+    `;
+    document.getElementById('asEnviarBtn').addEventListener('click', async ()=>{
+      try{
+        const r = await api('/contratos/'+c.id+'/enviar-assinatura', { method:'POST', body:{
+          clienteEmail: document.getElementById('asEnvCliEmail').value.trim(),
+          clienteTelefone: document.getElementById('asEnvCliTel').value.trim(),
+          testemunha1Email: document.getElementById('asEnvT1Email').value.trim(),
+          testemunha1Telefone: document.getElementById('asEnvT1Tel').value.trim(),
+          testemunha2Email: document.getElementById('asEnvT2Email').value.trim(),
+          testemunha2Telefone: document.getElementById('asEnvT2Tel').value.trim(),
+        }});
+        toast(r.sandbox?'Enviado em modo teste (sandbox) — não vale como assinatura real.':'Enviado para assinatura.','ok');
+        const atualizado = await api('/contratos/'+c.id);
+        renderAssinaturaCard(atualizado);
+      }catch(e){ toast(e.message,'err'); }
+    });
+    return;
+  }
+  const assinatarios = c.assinatarios || [];
+  box.innerHTML = `
+    <div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">Assinatura digital — ${c.statusAssinatura==='assinado'?'<span class="tag ok">Assinado por todos</span>':c.statusAssinatura==='rejeitado'?'<span class="tag muted">Alguém rejeitou</span>':'<span class="tag muted">Aguardando assinaturas</span>'}</div>
+    ${assinatarios.length?`
+      <table class="data-table" style="margin-bottom:8px;">
+        <thead><tr><th>Nome</th><th>E-mail</th><th>Status</th></tr></thead>
+        <tbody>
+          ${assinatarios.map(s=>`<tr><td>${esc(s.nome||'')}</td><td>${esc(s.email||'')}</td><td>${s.assinadoEm?'Assinado':s.rejeitadoEm?'Rejeitado':s.visualizadoEm?'Visualizou':'Pendente'}</td></tr>`).join('')}
+        </tbody>
+      </table>
+    `:'<p style="font-size:12.5px; color:var(--ink-soft);">Ainda sem dados de status — clique em atualizar.</p>'}
+    <button class="btn small" id="asAtualizarBtn">Atualizar status</button>
+    ${c.statusAssinatura==='assinado'?`<a class="btn small primary" href="/api/contratos/${c.id}/pdf-assinado" target="_blank" rel="noopener">Baixar PDF assinado</a>`:''}
+  `;
+  document.getElementById('asAtualizarBtn').addEventListener('click', async ()=>{
+    try{
+      await api('/contratos/'+c.id+'/status-assinatura');
+      const atualizado = await api('/contratos/'+c.id);
+      renderAssinaturaCard(atualizado);
+      toast('Status atualizado.','ok');
+    }catch(e){ toast(e.message,'err'); }
+  });
+}
 async function criarDistrato(contratoId){
   if(!confirm('Criar um distrato deste contrato? O documento já sai pronto com o cabeçalho do contrato original, a cláusula e as assinaturas padrão — você revisa e ajusta antes de salvar.')) return;
   try{
@@ -12815,9 +12879,10 @@ function novoAditivoModal(contratoId){
 }
 async function renderContratosModelos(){
   const box = document.getElementById('contratosContent');
-  const [{ items }, distratoConfig] = await Promise.all([
+  const [{ items }, distratoConfig, assinaturaConfig] = await Promise.all([
     api('/contratos/modelos'),
     api('/contratos/distrato-config'),
+    api('/contratos/assinatura-config'),
   ]);
   box.innerHTML = `
     <div class="row" style="margin-bottom:12px;">
@@ -12844,11 +12909,18 @@ async function renderContratosModelos(){
             <td><span class="tag muted">Cláusula + assinaturas</span></td>
             <td style="text-align:right;"><button class="btn small" id="btnEditarDistrato">Editar</button></td>
           </tr>
+          <tr>
+            <td>Assinatura digital (sócios)</td>
+            <td>—</td>
+            <td><span class="tag ${assinaturaConfig.sandbox?'muted':'ok'}">${assinaturaConfig.sandbox?'Modo teste (sandbox)':'Modo real'}</span></td>
+            <td style="text-align:right;"><button class="btn small" id="btnEditarAssinatura">Editar</button></td>
+          </tr>
         </tbody>
       </table>
     </div>
   `;
   document.getElementById('btnEditarDistrato').addEventListener('click', ()=>distratoModeloDrawer(distratoConfig));
+  document.getElementById('btnEditarAssinatura').addEventListener('click', ()=>assinaturaConfigDrawer(assinaturaConfig));
   document.getElementById('btnNovoModelo').addEventListener('click', ()=>contratoModeloDrawer(null));
   box.querySelectorAll('[data-act="editar"]').forEach(b=>b.addEventListener('click', ()=>{
     contratoModeloDrawer(items.find(m=>m.id===Number(b.dataset.id)));
@@ -12985,6 +13057,58 @@ function distratoModeloDrawer(config){
       }});
       closeDrawer();
       toast('Modelo de distrato salvo.','ok');
+    }catch(e){ toast(e.message,'err'); }
+  });
+}
+function assinaturaConfigDrawer(cfg){
+  openDrawer(`
+    <div class="drawer-header">
+      <h3>Assinatura digital dos contratos</h3>
+      <button class="btn small" id="asFechar">Fechar</button>
+    </div>
+    <div class="drawer-body">
+      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">
+        Contato dos 2 sócios que assinam todo contrato — configure uma vez só. O cliente e as
+        testemunhas são informados a cada envio, na tela do próprio contrato.
+        ${cfg.tokenConfigurado?'':'<br><b style="color:var(--danger,#b00020);">Atenção: o token da Autentique ainda não foi configurado no servidor.</b>'}
+      </p>
+      <div class="card" style="background:var(--paper); margin:14px 0;">
+        <div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">Sócio 1</div>
+        <div class="field"><label>Nome</label><input id="asS1Nome" value="${esc(cfg.socio1Nome)}"></div>
+        <div class="row">
+          <div class="field" style="flex:1;"><label>E-mail</label><input id="asS1Email" value="${esc(cfg.socio1Email)}"></div>
+          <div class="field" style="flex:1;"><label>WhatsApp (com DDI, ex: +5594999999999)</label><input id="asS1Tel" value="${esc(cfg.socio1Telefone)}"></div>
+        </div>
+      </div>
+      <div class="card" style="background:var(--paper); margin:14px 0;">
+        <div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">Sócio 2</div>
+        <div class="field"><label>Nome</label><input id="asS2Nome" value="${esc(cfg.socio2Nome)}"></div>
+        <div class="row">
+          <div class="field" style="flex:1;"><label>E-mail</label><input id="asS2Email" value="${esc(cfg.socio2Email)}"></div>
+          <div class="field" style="flex:1;"><label>WhatsApp (com DDI, ex: +5594999999999)</label><input id="asS2Tel" value="${esc(cfg.socio2Telefone)}"></div>
+        </div>
+      </div>
+      <label class="checkbox-row"><input type="checkbox" id="asSandbox" ${cfg.sandbox?'checked':''}> Modo teste (sandbox) — documentos não contam na cota e não valem como assinatura real. Desmarque quando estiver pronto pra usar com clientes reais.</label>
+    </div>
+    <div class="modal-actions" style="padding:16px 24px; border-top:1px solid var(--line);">
+      <button class="btn primary" id="asSalvar">Salvar</button>
+    </div>
+  `);
+  document.getElementById('asFechar').addEventListener('click', closeDrawer);
+  document.getElementById('asSalvar').addEventListener('click', async ()=>{
+    try{
+      await api('/contratos/assinatura-config', { method:'PUT', body:{
+        socio1Nome: document.getElementById('asS1Nome').value.trim(),
+        socio1Email: document.getElementById('asS1Email').value.trim(),
+        socio1Telefone: document.getElementById('asS1Tel').value.trim(),
+        socio2Nome: document.getElementById('asS2Nome').value.trim(),
+        socio2Email: document.getElementById('asS2Email').value.trim(),
+        socio2Telefone: document.getElementById('asS2Tel').value.trim(),
+        sandbox: document.getElementById('asSandbox').checked,
+      }});
+      closeDrawer();
+      toast('Configuração de assinatura salva.','ok');
+      renderContratosModelos();
     }catch(e){ toast(e.message,'err'); }
   });
 }

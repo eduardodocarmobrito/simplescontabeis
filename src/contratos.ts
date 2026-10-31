@@ -14,6 +14,10 @@ export function caminhoPdfContrato(contratoId: number): string {
   return path.join(CONTRATOS_PDF_DIR, `${contratoId}.pdf`);
 }
 
+export function caminhoPdfAssinadoContrato(contratoId: number): string {
+  return path.join(CONTRATOS_PDF_DIR, `${contratoId}-assinado.pdf`);
+}
+
 // Escapa texto puro (ex.: descrição digitada pelo admin, não vinda do editor rico) antes de virar
 // parte de um HTML já montado — sem isso, um "<" ou "&" digitado quebraria a estrutura do
 // documento. Quebras de linha viram <br>, já que o campo de origem costuma ser um textarea simples.

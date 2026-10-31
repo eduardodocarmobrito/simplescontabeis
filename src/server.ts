@@ -16,6 +16,7 @@ import { DatabaseSync } from "node:sqlite";
 import * as nfse from "./nfse";
 import * as asaas from "./asaas";
 import * as contratos from "./contratos";
+import * as autentique from "./autentique";
 import * as danfse from "./danfse";
 import * as whatsapp from "./whatsapp";
 import * as nfe from "./nfe";
@@ -521,6 +522,19 @@ sqlite.exec(`
     id INTEGER PRIMARY KEY CHECK (id = 1),
     clausula_padrao TEXT,
     assinaturas_padrao TEXT,
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+  -- Assinatura digital dos contratos (Autentique) — contatos fixos dos sócios (sempre os mesmos em
+  -- todo contrato) configurados uma única vez; cliente e testemunhas são informados a cada envio.
+  CREATE TABLE IF NOT EXISTS contratos_assinatura_config (
+    escritorio_id INTEGER PRIMARY KEY REFERENCES escritorios(id),
+    socio1_nome TEXT NOT NULL DEFAULT 'Eduardo do Carmo Brito',
+    socio1_email TEXT,
+    socio1_telefone TEXT,
+    socio2_nome TEXT NOT NULL DEFAULT 'Elimarcer Fernandes Costa',
+    socio2_email TEXT,
+    socio2_telefone TEXT,
+    sandbox INTEGER NOT NULL DEFAULT 1,
     updated_at TEXT DEFAULT (datetime('now'))
   );
   CREATE TABLE IF NOT EXISTS contratos_envios (
@@ -2766,6 +2780,12 @@ sqlite.exec(`DROP TABLE IF EXISTS fgts_sync_jobs`);
       sqlite.prepare(`UPDATE contratos SET numero_sequencial = ?, numero_sequencial_ano = ? WHERE id = ?`).run(contadorPorAno[c.ano], Number(c.ano), c.id);
     }
   }
+  if (!colsContratos.some((c) => c.name === "autentique_document_id")) {
+    sqlite.exec(`ALTER TABLE contratos ADD COLUMN autentique_document_id TEXT`);
+    sqlite.exec(`ALTER TABLE contratos ADD COLUMN status_assinatura TEXT`); // 'enviado' | 'assinado' | 'rejeitado'
+    sqlite.exec(`ALTER TABLE contratos ADD COLUMN assinatura_detalhe_json TEXT`); // cache do último status consultado na Autentique
+    sqlite.exec(`ALTER TABLE contratos ADD COLUMN pdf_assinado_path TEXT`);
+  }
 }
 
 // Migração: multi-tenant — cada escritório-cliente que contratar este sistema fica isolado dos
@@ -2890,6 +2910,7 @@ migrarSingletonParaEscritorio(
 // PUT /api/email/config) quebram no primeiro escritório sem linha nenhuma ainda.
 function garantirLinhasDeConfig(escritorioId: number) {
   sqlite.prepare(`INSERT OR IGNORE INTO contratos_distrato_config (escritorio_id) VALUES (?)`).run(escritorioId);
+  sqlite.prepare(`INSERT OR IGNORE INTO contratos_assinatura_config (escritorio_id) VALUES (?)`).run(escritorioId);
   sqlite.prepare(`INSERT OR IGNORE INTO agent_heartbeat (escritorio_id) VALUES (?)`).run(escritorioId);
   sqlite.prepare(`INSERT OR IGNORE INTO dominio_config (escritorio_id) VALUES (?)`).run(escritorioId);
   sqlite.prepare(`INSERT OR IGNORE INTO email_config (escritorio_id) VALUES (?)`).run(escritorioId);
@@ -2901,6 +2922,7 @@ function garantirLinhasDeConfig(escritorioId: number) {
 garantirLinhasDeConfig(1);
 // Escritórios criados antes da tabela whatsapp_config existir (ou de garantirLinhasDeConfig ganhar
 // essa linha) também precisam da própria linha — não só o escritório 1.
+sqlite.exec(`INSERT OR IGNORE INTO contratos_assinatura_config (escritorio_id) SELECT id FROM escritorios`);
 sqlite.exec(`INSERT OR IGNORE INTO whatsapp_config (escritorio_id) SELECT id FROM escritorios`);
 sqlite.exec(`INSERT OR IGNORE INTO deskcomm_config (escritorio_id) SELECT id FROM escritorios`);
 sqlite.exec(`INSERT OR IGNORE INTO webdfe_config (escritorio_id) SELECT id FROM escritorios`);
@@ -20722,6 +20744,9 @@ app.get("/api/contratos/:id", blockCliente, requirePermissao("contratos", "visua
     numeroSequencialAno: row.numero_sequencial_ano,
     criadoEm: row.criado_em,
     updatedAt: row.updated_at,
+    autentiqueDocumentId: row.autentique_document_id,
+    statusAssinatura: row.status_assinatura,
+    assinatarios: row.assinatura_detalhe_json ? JSON.parse(row.assinatura_detalhe_json) : null,
   });
 });
 app.put("/api/contratos/:id", blockCliente, requirePermissao("contratos", "editar"), (req, res) => {
@@ -20880,6 +20905,108 @@ app.post("/api/contratos/:id/enviar-email", blockCliente, requirePermissao("cont
     sqlite.prepare(`INSERT INTO contratos_envios (contrato_id, email_destino, sucesso, erro, enviado_por) VALUES (?, ?, 0, ?, ?)`).run(row.id, destino, e.message, user.id);
     res.status(502).json({ error: e.message });
   }
+});
+// ---------- Assinatura digital dos contratos (Autentique) ----------
+app.get("/api/contratos/assinatura-config", blockCliente, requirePermissao("contratos", "visualizar"), (req, res) => {
+  const c = sqlite.prepare(`SELECT * FROM contratos_assinatura_config WHERE escritorio_id = ?`).get((req as any).user.escritorioId) as any;
+  res.json({
+    socio1Nome: c?.socio1_nome || "",
+    socio1Email: c?.socio1_email || "",
+    socio1Telefone: c?.socio1_telefone || "",
+    socio2Nome: c?.socio2_nome || "",
+    socio2Email: c?.socio2_email || "",
+    socio2Telefone: c?.socio2_telefone || "",
+    sandbox: !!c?.sandbox,
+    tokenConfigurado: !!process.env.AUTENTIQUE_API_TOKEN,
+  });
+});
+app.put("/api/contratos/assinatura-config", blockCliente, requirePermissao("contratos", "editar"), (req, res) => {
+  const b = req.body || {};
+  sqlite
+    .prepare(
+      `UPDATE contratos_assinatura_config SET socio1_nome=?, socio1_email=?, socio1_telefone=?, socio2_nome=?, socio2_email=?, socio2_telefone=?, sandbox=?, updated_at=datetime('now') WHERE escritorio_id=?`
+    )
+    .run(
+      String(b.socio1Nome || "").trim(),
+      String(b.socio1Email || "").trim(),
+      String(b.socio1Telefone || "").trim(),
+      String(b.socio2Nome || "").trim(),
+      String(b.socio2Email || "").trim(),
+      String(b.socio2Telefone || "").trim(),
+      b.sandbox ? 1 : 0,
+      (req as any).user.escritorioId
+    );
+  res.json({ ok: true });
+});
+// Monta e envia o contrato pra assinatura: os 2 sócios vêm da config (fixos, sempre os mesmos);
+// cliente e testemunhas são informados nesta chamada, porque variam a cada contrato e seus
+// contatos não fazem parte do texto impresso do documento (só nome/CPF aparecem no papel).
+app.post("/api/contratos/:id/enviar-assinatura", blockCliente, requirePermissao("contratos", "postar"), async (req, res) => {
+  const user = (req as any).user;
+  const token = process.env.AUTENTIQUE_API_TOKEN;
+  if (!token) return res.status(400).json({ error: "Token da Autentique não configurado no servidor." });
+  const row = sqlite.prepare(`SELECT * FROM contratos WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!row || !podeAcessarEmpresa(user, row.empresa_id)) return res.status(404).json({ error: "Contrato não encontrado." });
+  const cfg = sqlite.prepare(`SELECT * FROM contratos_assinatura_config WHERE escritorio_id = ?`).get(user.escritorioId) as any;
+  if (!cfg?.socio1_email && !cfg?.socio1_telefone) return res.status(400).json({ error: "Configure o e-mail ou telefone do primeiro sócio antes de enviar." });
+  if (!cfg?.socio2_email && !cfg?.socio2_telefone) return res.status(400).json({ error: "Configure o e-mail ou telefone do segundo sócio antes de enviar." });
+  const b = req.body || {};
+  const clienteEmail = String(b.clienteEmail || "").trim();
+  const clienteTelefone = String(b.clienteTelefone || "").trim();
+  if (!clienteEmail && !clienteTelefone) return res.status(400).json({ error: "Informe o e-mail ou telefone do cliente." });
+  const dados = JSON.parse(row.dados_preenchidos || "{}");
+  const signers: autentique.AutentiqueSigner[] = [
+    { nome: cfg.socio1_nome, email: cfg.socio1_email || undefined, telefone: cfg.socio1_telefone || undefined, comoAssina: "SIGN" },
+    { nome: cfg.socio2_nome, email: cfg.socio2_email || undefined, telefone: cfg.socio2_telefone || undefined, comoAssina: "SIGN" },
+    { nome: dados.nome_representante_legal || row.titulo, email: clienteEmail || undefined, telefone: clienteTelefone || undefined, comoAssina: "SIGN" },
+  ];
+  for (const n of [1, 2]) {
+    const email = String(b[`testemunha${n}Email`] || "").trim();
+    const telefone = String(b[`testemunha${n}Telefone`] || "").trim();
+    if (email || telefone) {
+      signers.push({ nome: dados[`testemunha${n}`] || `Testemunha ${n}`, email: email || undefined, telefone: telefone || undefined, comoAssina: "SIGN_AS_A_WITNESS" });
+    }
+  }
+  try {
+    const pdf = await contratoObterPdf(row);
+    const doc = await autentique.criarDocumento({ token, nomeDocumento: row.titulo, pdf, signers, sandbox: !!cfg.sandbox });
+    sqlite
+      .prepare(`UPDATE contratos SET autentique_document_id = ?, status_assinatura = 'enviado', assinatura_detalhe_json = NULL WHERE id = ?`)
+      .run(doc.id, row.id);
+    res.json({ ok: true, documentoId: doc.id, sandbox: !!cfg.sandbox });
+  } catch (e: any) {
+    res.status(502).json({ error: `Falha ao enviar para a Autentique: ${e.message}` });
+  }
+});
+app.get("/api/contratos/:id/status-assinatura", blockCliente, requirePermissao("contratos", "visualizar"), async (req, res) => {
+  const token = process.env.AUTENTIQUE_API_TOKEN;
+  const row = sqlite.prepare(`SELECT * FROM contratos WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!row || !podeAcessarEmpresa((req as any).user, row.empresa_id)) return res.status(404).json({ error: "Contrato não encontrado." });
+  if (!row.autentique_document_id) return res.json({ enviado: false });
+  if (!token) return res.status(400).json({ error: "Token da Autentique não configurado no servidor." });
+  try {
+    const status = await autentique.consultarDocumento(token, row.autentique_document_id);
+    sqlite.prepare(`UPDATE contratos SET assinatura_detalhe_json = ? WHERE id = ?`).run(JSON.stringify(status.signatarios), row.id);
+    if (status.todosAssinaram && row.status_assinatura !== "assinado" && status.pdfAssinadoUrl) {
+      const pdfAssinado = await autentique.baixarPdfAssinado(token, status.pdfAssinadoUrl);
+      const destino = contratos.caminhoPdfAssinadoContrato(row.id);
+      fs.writeFileSync(destino, pdfAssinado);
+      sqlite.prepare(`UPDATE contratos SET status_assinatura = 'assinado', pdf_assinado_path = ? WHERE id = ?`).run(destino, row.id);
+    } else if (status.algumRejeitou) {
+      sqlite.prepare(`UPDATE contratos SET status_assinatura = 'rejeitado' WHERE id = ?`).run(row.id);
+    }
+    res.json({ enviado: true, signatarios: status.signatarios, todosAssinaram: status.todosAssinaram, algumRejeitou: status.algumRejeitou, temPdfAssinado: status.todosAssinaram && !!status.pdfAssinadoUrl });
+  } catch (e: any) {
+    res.status(502).json({ error: `Falha ao consultar status na Autentique: ${e.message}` });
+  }
+});
+app.get("/api/contratos/:id/pdf-assinado", blockCliente, requirePermissao("contratos", "visualizar"), (req, res) => {
+  const row = sqlite.prepare(`SELECT * FROM contratos WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!row || !podeAcessarEmpresa((req as any).user, row.empresa_id)) return res.status(404).json({ error: "Contrato não encontrado." });
+  if (!row.pdf_assinado_path || !fs.existsSync(row.pdf_assinado_path)) return res.status(404).json({ error: "Ainda não há PDF assinado pra este contrato." });
+  res.set("Content-Type", "application/pdf");
+  res.set("Content-Disposition", `attachment; filename="${row.titulo.replace(/[^\w\-. ]/g, "")}-assinado.pdf"`);
+  res.send(fs.readFileSync(row.pdf_assinado_path));
 });
 
 // ---------- Relatórios ----------
