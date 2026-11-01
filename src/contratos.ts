@@ -392,7 +392,8 @@ function numeraOlInner(inner: string, prefix: string, startIdx: number): { html:
     const contentEnd = liEnd - "</li>".length;
     let liContent = inner.slice(contentStart, contentEnd);
     idx++;
-    const num = prefix + "." + idx;
+    // prefix vazio (lista fora de cláusula, ex.: distrato/aditivo) → numeração simples "1.", "2.".
+    const num = prefix ? prefix + "." + idx : String(idx);
     liContent = numeraOlsDiretos(liContent, num); // sub-lista(s) deste item
     let novaOpen = openTag.replace(/^<li\b/i, `<li data-num="${num}."`);
     novaOpen = acrescentarStyle(novaOpen, estiloItem(num));
@@ -444,16 +445,14 @@ export function numerarClausulasContrato(html: string): string {
     if (tag === "ol") {
       const end = fimTagCasada(html, m.index, "ol");
       const inner = html.slice(m.index + m[0].length, end - "</ol>".length);
-      if (clause === 0 && !subPrefix) {
-        out += html.slice(m.index, end); // <ol> antes de qualquer cláusula: deixa como está
-      } else {
-        const prefix = subPrefix || String(clause);
-        const start = prefix === lastPrefix ? runIdx : 0;
-        const r = numeraOlInner(inner, prefix, start);
-        runIdx = r.lastIdx;
-        lastPrefix = prefix;
-        out += m[0] + r.html + "</ol>";
-      }
+      // prefix vazio quando a lista está fora de qualquer cláusula (distrato/aditivo) → numeração
+      // simples "1.", "2."; dentro de cláusula/subseção segue cláusula.item / subseção.item.
+      const prefix = subPrefix || (clause > 0 ? String(clause) : "");
+      const start = prefix === lastPrefix ? runIdx : 0;
+      const r = numeraOlInner(inner, prefix, start);
+      runIdx = r.lastIdx;
+      lastPrefix = prefix;
+      out += m[0] + r.html + "</ol>";
       i = end;
     } else {
       const closeTag = `</${tag}>`;
