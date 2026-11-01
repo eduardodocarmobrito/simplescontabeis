@@ -2803,6 +2803,11 @@ sqlite.exec(`DROP TABLE IF EXISTS fgts_sync_jobs`);
   if (!colsAssinCfg.some((c) => c.name === "webhook_secret_cifrado")) {
     sqlite.exec(`ALTER TABLE contratos_assinatura_config ADD COLUMN webhook_secret_cifrado TEXT`);
   }
+  // Sócios assinantes agora são uma LISTA dinâmica (adicionar quantos precisar). Guardada em JSON;
+  // as colunas socio1_/socio2_ ficam pra compatibilidade e são a semente quando o JSON ainda é vazio.
+  if (!colsAssinCfg.some((c) => c.name === "socios_json")) {
+    sqlite.exec(`ALTER TABLE contratos_assinatura_config ADD COLUMN socios_json TEXT`);
+  }
 }
 
 // Migração: multi-tenant — cada escritório-cliente que contratar este sistema fica isolado dos
@@ -20776,15 +20781,29 @@ app.delete("/api/contratos/servicos-catalogo/:id", blockCliente, requirePermissa
 // batia no ":id" (Express não distingue — qualquer segmento literal casa com :id) e caía sempre no
 // 404 de "Contrato não encontrado", quebrando silenciosamente a aba Modelos inteira (Promise.all
 // rejeitava sem nenhum catch). Mesmo motivo de distrato-config já ficar antes do :id — mantém aqui.
+// Lista de sócios assinantes a partir da config: usa socios_json quando houver; senão cai pros campos
+// antigos socio1_/socio2_ (compatibilidade/semente). Descarta entradas sem nome.
+function assinaturaSociosDeConfig(cfg: any): { nome: string; email: string; telefone: string }[] {
+  if (cfg?.socios_json) {
+    try {
+      const arr = JSON.parse(cfg.socios_json);
+      if (Array.isArray(arr)) {
+        const limpos = arr
+          .map((s: any) => ({ nome: String(s?.nome || "").trim(), email: String(s?.email || "").trim(), telefone: String(s?.telefone || "").trim() }))
+          .filter((s) => s.nome);
+        if (limpos.length) return limpos;
+      }
+    } catch {}
+  }
+  return [
+    { nome: String(cfg?.socio1_nome || "").trim(), email: String(cfg?.socio1_email || "").trim(), telefone: String(cfg?.socio1_telefone || "").trim() },
+    { nome: String(cfg?.socio2_nome || "").trim(), email: String(cfg?.socio2_email || "").trim(), telefone: String(cfg?.socio2_telefone || "").trim() },
+  ].filter((s) => s.nome);
+}
 app.get("/api/contratos/assinatura-config", blockCliente, requirePermissao("contratos", "visualizar"), (req, res) => {
   const c = sqlite.prepare(`SELECT * FROM contratos_assinatura_config WHERE escritorio_id = ?`).get((req as any).user.escritorioId) as any;
   res.json({
-    socio1Nome: c?.socio1_nome || "",
-    socio1Email: c?.socio1_email || "",
-    socio1Telefone: c?.socio1_telefone || "",
-    socio2Nome: c?.socio2_nome || "",
-    socio2Email: c?.socio2_email || "",
-    socio2Telefone: c?.socio2_telefone || "",
+    socios: assinaturaSociosDeConfig(c),
     sandbox: !!c?.sandbox,
     tokenConfigurado: !!process.env.AUTENTIQUE_API_TOKEN,
     temWebhookSecret: !!c?.webhook_secret_cifrado,
@@ -20795,21 +20814,24 @@ app.put("/api/contratos/assinatura-config", blockCliente, requirePermissao("cont
   const b = req.body || {};
   const atual = sqlite.prepare(`SELECT webhook_secret_cifrado FROM contratos_assinatura_config WHERE escritorio_id = ?`).get((req as any).user.escritorioId) as any;
   const webhookSecretCifrado = b.webhookSecret ? nfse.cifrarTexto(String(b.webhookSecret).trim()) : atual?.webhook_secret_cifrado || null;
+  // Novo formato: array "socios". Fallback pros campos antigos se um cliente velho mandar socio1/2.
+  let socios: { nome: string; email: string; telefone: string }[];
+  if (Array.isArray(b.socios)) {
+    socios = b.socios.map((s: any) => ({ nome: String(s?.nome || "").trim(), email: String(s?.email || "").trim(), telefone: String(s?.telefone || "").trim() })).filter((s: { nome: string }) => s.nome);
+  } else {
+    socios = [
+      { nome: String(b.socio1Nome || "").trim(), email: String(b.socio1Email || "").trim(), telefone: String(b.socio1Telefone || "").trim() },
+      { nome: String(b.socio2Nome || "").trim(), email: String(b.socio2Email || "").trim(), telefone: String(b.socio2Telefone || "").trim() },
+    ].filter((s) => s.nome);
+  }
+  // socio1/2 continuam preenchidos com os dois primeiros (compat); a lista completa vai no JSON.
+  const s0 = socios[0] || { nome: "", email: "", telefone: "" };
+  const s1 = socios[1] || { nome: "", email: "", telefone: "" };
   sqlite
     .prepare(
-      `UPDATE contratos_assinatura_config SET socio1_nome=?, socio1_email=?, socio1_telefone=?, socio2_nome=?, socio2_email=?, socio2_telefone=?, sandbox=?, webhook_secret_cifrado=?, updated_at=datetime('now') WHERE escritorio_id=?`
+      `UPDATE contratos_assinatura_config SET socio1_nome=?, socio1_email=?, socio1_telefone=?, socio2_nome=?, socio2_email=?, socio2_telefone=?, socios_json=?, sandbox=?, webhook_secret_cifrado=?, updated_at=datetime('now') WHERE escritorio_id=?`
     )
-    .run(
-      String(b.socio1Nome || "").trim(),
-      String(b.socio1Email || "").trim(),
-      String(b.socio1Telefone || "").trim(),
-      String(b.socio2Nome || "").trim(),
-      String(b.socio2Email || "").trim(),
-      String(b.socio2Telefone || "").trim(),
-      b.sandbox ? 1 : 0,
-      webhookSecretCifrado,
-      (req as any).user.escritorioId
-    );
+    .run(s0.nome, s0.email, s0.telefone, s1.nome, s1.email, s1.telefone, JSON.stringify(socios), b.sandbox ? 1 : 0, webhookSecretCifrado, (req as any).user.escritorioId);
   res.json({ ok: true });
 });
 // Usado pela tela ao aplicar os campos no documento — {{vlr_extenso}} não tem como ser calculado na
@@ -21053,16 +21075,17 @@ app.post("/api/contratos/:id/enviar-assinatura", blockCliente, requirePermissao(
     .get(Number(req.params.id)) as any;
   if (!row || !podeAcessarEmpresa(user, row.empresa_id)) return res.status(404).json({ error: "Contrato não encontrado." });
   const cfg = sqlite.prepare(`SELECT * FROM contratos_assinatura_config WHERE escritorio_id = ?`).get(user.escritorioId) as any;
-  if (!cfg?.socio1_email && !cfg?.socio1_telefone) return res.status(400).json({ error: "Configure o e-mail ou telefone do primeiro sócio antes de enviar." });
-  if (!cfg?.socio2_email && !cfg?.socio2_telefone) return res.status(400).json({ error: "Configure o e-mail ou telefone do segundo sócio antes de enviar." });
+  const socios = assinaturaSociosDeConfig(cfg);
+  if (!socios.length) return res.status(400).json({ error: "Configure ao menos um sócio assinante antes de enviar." });
+  const socioSemContato = socios.find((s) => !s.email && !s.telefone);
+  if (socioSemContato) return res.status(400).json({ error: `O sócio "${socioSemContato.nome}" está sem e-mail e sem telefone — preencha ao menos um.` });
   const b = req.body || {};
   const dados = JSON.parse(row.dados_preenchidos || "{}");
   const clienteEmail = String(b.clienteEmail || "").trim() || row.empresaEmail || dados.email_cliente || "";
   const clienteTelefone = autentique.normalizarTelefoneBR(String(b.clienteTelefone || "").trim() || row.empresaTelefone);
   if (!clienteEmail && !clienteTelefone) return res.status(400).json({ error: "O cadastro desta empresa não tem e-mail nem telefone — informe pelo menos um pra enviar." });
   const signers: autentique.AutentiqueSigner[] = [
-    { nome: cfg.socio1_nome, email: cfg.socio1_email || undefined, telefone: autentique.normalizarTelefoneBR(cfg.socio1_telefone), comoAssina: "SIGN" },
-    { nome: cfg.socio2_nome, email: cfg.socio2_email || undefined, telefone: autentique.normalizarTelefoneBR(cfg.socio2_telefone), comoAssina: "SIGN" },
+    ...socios.map((s) => ({ nome: s.nome, email: s.email || undefined, telefone: autentique.normalizarTelefoneBR(s.telefone), comoAssina: "SIGN" as const })),
     { nome: dados.nome_representante_legal || row.titulo, email: clienteEmail || undefined, telefone: clienteTelefone, comoAssina: "SIGN" },
   ];
   for (const n of [1, 2]) {

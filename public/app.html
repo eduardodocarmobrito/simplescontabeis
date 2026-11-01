@@ -13400,6 +13400,8 @@ function distratoModeloDrawer(config){
   });
 }
 function assinaturaConfigDrawer(cfg){
+  // Lista dinâmica de sócios (pode adicionar quantos precisar). Semente: o que veio da config.
+  const socios = (cfg.socios && cfg.socios.length) ? cfg.socios.map(s=>({ nome:s.nome||'', email:s.email||'', telefone:s.telefone||'' })) : [{ nome:'', email:'', telefone:'' }];
   openDrawer(`
     <div class="drawer-header">
       <h3>Assinatura digital dos contratos</h3>
@@ -13407,26 +13409,12 @@ function assinaturaConfigDrawer(cfg){
     </div>
     <div class="drawer-body">
       <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">
-        Contato dos 2 sócios que assinam todo contrato — configure uma vez só. O cliente e as
-        testemunhas são informados a cada envio, na tela do próprio contrato.
+        Contato dos sócios que assinam todo contrato — configure uma vez só e adicione quantos precisar.
+        O cliente e as testemunhas são informados a cada envio, na tela do próprio contrato.
         ${cfg.tokenConfigurado?'':'<br><b style="color:var(--danger,#b00020);">Atenção: o token da Autentique ainda não foi configurado no servidor.</b>'}
       </p>
-      <div class="card" style="background:var(--paper); margin:14px 0;">
-        <div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">Sócio 1</div>
-        <div class="field"><label>Nome</label><input id="asS1Nome" value="${esc(cfg.socio1Nome)}"></div>
-        <div class="row">
-          <div class="field" style="flex:1;"><label>E-mail</label><input id="asS1Email" value="${esc(cfg.socio1Email)}"></div>
-          <div class="field" style="flex:1;"><label>WhatsApp (com DDI, ex: +5594999999999)</label><input id="asS1Tel" value="${esc(cfg.socio1Telefone)}"></div>
-        </div>
-      </div>
-      <div class="card" style="background:var(--paper); margin:14px 0;">
-        <div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">Sócio 2</div>
-        <div class="field"><label>Nome</label><input id="asS2Nome" value="${esc(cfg.socio2Nome)}"></div>
-        <div class="row">
-          <div class="field" style="flex:1;"><label>E-mail</label><input id="asS2Email" value="${esc(cfg.socio2Email)}"></div>
-          <div class="field" style="flex:1;"><label>WhatsApp (com DDI, ex: +5594999999999)</label><input id="asS2Tel" value="${esc(cfg.socio2Telefone)}"></div>
-        </div>
-      </div>
+      <div id="asSociosLista"></div>
+      <button class="btn" id="asAddSocio" style="margin:4px 0 14px;">+ Adicionar sócio</button>
       <label class="checkbox-row"><input type="checkbox" id="asSandbox" ${cfg.sandbox?'checked':''}> Modo teste (sandbox) — documentos não contam na cota e não valem como assinatura real. Desmarque quando estiver pronto pra usar com clientes reais.</label>
       <div class="card" style="background:var(--paper); margin:14px 0;">
         <div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">Webhook (status automático)</div>
@@ -13445,16 +13433,39 @@ function assinaturaConfigDrawer(cfg){
       <button class="btn primary" id="asSalvar">Salvar</button>
     </div>
   `);
+  const lista = document.getElementById('asSociosLista');
+  function capturar(){
+    lista.querySelectorAll('.as-socio').forEach(card=>{
+      const i = Number(card.dataset.i);
+      socios[i] = { nome: card.querySelector('.as-nome').value.trim(), email: card.querySelector('.as-email').value.trim(), telefone: card.querySelector('.as-tel').value.trim() };
+    });
+  }
+  function render(){
+    lista.innerHTML = socios.map((s,i)=>`
+      <div class="card as-socio" data-i="${i}" style="background:var(--paper); margin:14px 0;">
+        <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:8px;">
+          <div style="font-size:12px; color:var(--ink-soft);">Sócio ${i+1}</div>
+          ${socios.length>1?`<button class="btn small danger as-rem" data-i="${i}">Remover</button>`:''}
+        </div>
+        <div class="field"><label>Nome</label><input class="as-nome" value="${esc(s.nome)}"></div>
+        <div class="row">
+          <div class="field" style="flex:1;"><label>E-mail</label><input class="as-email" value="${esc(s.email)}"></div>
+          <div class="field" style="flex:1;"><label>WhatsApp (com DDI, ex: +5594999999999)</label><input class="as-tel" value="${esc(s.telefone)}"></div>
+        </div>
+      </div>
+    `).join('');
+    lista.querySelectorAll('.as-rem').forEach(b=>b.addEventListener('click', ()=>{ capturar(); socios.splice(Number(b.dataset.i),1); render(); }));
+  }
+  render();
+  document.getElementById('asAddSocio').addEventListener('click', ()=>{ capturar(); socios.push({ nome:'', email:'', telefone:'' }); render(); });
   document.getElementById('asFechar').addEventListener('click', closeDrawer);
   document.getElementById('asSalvar').addEventListener('click', async ()=>{
+    capturar();
+    const limpos = socios.filter(s=>s.nome);
+    if(!limpos.length){ toast('Cadastre ao menos um sócio com nome.','err'); return; }
     try{
       await api('/contratos/assinatura-config', { method:'PUT', body:{
-        socio1Nome: document.getElementById('asS1Nome').value.trim(),
-        socio1Email: document.getElementById('asS1Email').value.trim(),
-        socio1Telefone: document.getElementById('asS1Tel').value.trim(),
-        socio2Nome: document.getElementById('asS2Nome').value.trim(),
-        socio2Email: document.getElementById('asS2Email').value.trim(),
-        socio2Telefone: document.getElementById('asS2Tel').value.trim(),
+        socios: limpos,
         sandbox: document.getElementById('asSandbox').checked,
         webhookSecret: document.getElementById('asWebhookSecret').value.trim(),
       }});
