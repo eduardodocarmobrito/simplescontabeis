@@ -12778,7 +12778,16 @@ async function abrirContratoDrawer(id){
       ${c.tipo==='contrato'?`<button class="btn" id="drwAditivo">Criar aditivo</button><button class="btn" id="drwDistrato">Criar distrato</button>`:''}
     </div>
   `);
-  if(c.tipo==='contrato') renderAssinaturaCard(c);
+  // Blindado: se o card de assinatura falhar, NÃO pode derrubar o resto do drawer (Baixar PDF, "?",
+  // Salvar etc. ficavam sem handler quando isto lançava — todo o código abaixo deixava de rodar).
+  if(c.tipo==='contrato'){
+    try{ renderAssinaturaCard(c); }
+    catch(err){
+      console.error('Falha ao montar o card de assinatura digital:', err);
+      const bx = document.getElementById('drwAssinaturaCard');
+      if(bx) bx.innerHTML = '<div style="font-size:12.5px; color:var(--debit);">Não consegui carregar a assinatura digital desta vez (os demais botões — Salvar, Baixar PDF, Enviar por e-mail — continuam funcionando).<br><span style="font-size:11px; color:var(--ink-soft);">Detalhe: '+esc(String(err&&err.message||err))+'</span></div>';
+    }
+  }
   document.querySelectorAll('#drawerBody .campo-ajuda').forEach(el=>el.addEventListener('click', ()=>toast(el.dataset.ajuda)));
   const toolbar = document.querySelector('#drawerBody .rte-toolbar');
   const corpo = document.getElementById('drwCorpo');
@@ -12793,8 +12802,19 @@ async function abrirContratoDrawer(id){
   };
   document.getElementById('drwRascunho').addEventListener('click', ()=>salvarComStatus('rascunho'));
   document.getElementById('drwSalvar').addEventListener('click', ()=>salvarComStatus('ativo'));
-  document.getElementById('drwPdf').addEventListener('click', ()=>{
-    window.open('/api/contratos/'+id+'/pdf', '_blank');
+  document.getElementById('drwPdf').addEventListener('click', async ()=>{
+    // Download robusto (sem aba em branco nem bloqueio de popup) + aviso de erro se a geração falhar.
+    const btn = document.getElementById('drwPdf'); const orig = btn.textContent;
+    btn.disabled = true; btn.textContent = 'Gerando PDF…';
+    try{
+      const resp = await fetch('/api/contratos/'+id+'/pdf', { credentials:'include' });
+      if(!resp.ok){ let msg='Erro '+resp.status; try{ const j=await resp.json(); if(j.error) msg=j.error; }catch(e){} throw new Error(msg); }
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href=url; a.download=(document.getElementById('drwTitulo').value.trim()||'contrato')+'.pdf'; document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(()=>URL.revokeObjectURL(url), 10000);
+    }catch(e){ toast('Não consegui gerar o PDF: '+e.message,'err'); }
+    finally{ btn.disabled=false; btn.textContent=orig; }
   });
   const emailForm = document.getElementById('drwEmailForm');
   document.getElementById('drwEmail').addEventListener('click', ()=>{
