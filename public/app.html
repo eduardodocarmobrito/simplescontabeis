@@ -12778,20 +12778,10 @@ async function abrirContratoDrawer(id){
       ${c.tipo==='contrato'?`<button class="btn" id="drwAditivo">Criar aditivo</button><button class="btn" id="drwDistrato">Criar distrato</button>`:''}
     </div>
   `);
-  // Blindado: se o card de assinatura falhar, NÃO pode derrubar o resto do drawer (Baixar PDF, "?",
-  // Salvar etc. ficavam sem handler quando isto lançava — todo o código abaixo deixava de rodar).
-  if(c.tipo==='contrato'){
-    try{ renderAssinaturaCard(c); }
-    catch(err){
-      console.error('Falha ao montar o card de assinatura digital:', err);
-      const bx = document.getElementById('drwAssinaturaCard');
-      if(bx) bx.innerHTML = '<div style="font-size:12.5px; color:var(--debit);">Não consegui carregar a assinatura digital desta vez (os demais botões — Salvar, Baixar PDF, Enviar por e-mail — continuam funcionando).<br><span style="font-size:11px; color:var(--ink-soft);">Detalhe: '+esc(String(err&&err.message||err))+'</span></div>';
-    }
-  }
-  document.querySelectorAll('#drawerBody .campo-ajuda').forEach(el=>el.addEventListener('click', ()=>toast(el.dataset.ajuda)));
-  const toolbar = document.querySelector('#drawerBody .rte-toolbar');
+  // Handlers essenciais (botões + "?") ligados PRIMEIRO; o opcional/arriscado (editor rico e card de
+  // assinatura) fica por último e em try/catch — assim um erro ali NUNCA deixa os botões sem resposta.
+  document.querySelectorAll('#drawerBody .campo-ajuda').forEach(el=>el.addEventListener('click', ()=>toast(el.dataset.ajuda||'Sem descrição')));
   const corpo = document.getElementById('drwCorpo');
-  setupRte(toolbar, corpo);
   document.getElementById('drwFechar').addEventListener('click', closeDrawer);
   const salvarComStatus = async (status)=>{
     try{
@@ -12874,6 +12864,18 @@ async function abrirContratoDrawer(id){
   if(c.tipo==='contrato'){
     document.getElementById('drwAditivo').addEventListener('click', ()=>novoAditivoModal(id));
     document.getElementById('drwDistrato').addEventListener('click', ()=>criarDistrato(id));
+  }
+  // Por último e isolados (não-críticos): editor rico e card de assinatura digital. Se qualquer um
+  // falhar, os botões acima JÁ estão ligados e continuam funcionando.
+  try{ setupRte(document.querySelector('#drawerBody .rte-toolbar'), corpo); }
+  catch(e){ console.error('Editor do contrato indisponível:', e); }
+  if(c.tipo==='contrato'){
+    try{ renderAssinaturaCard(c); }
+    catch(err){
+      console.error('Card de assinatura digital:', err);
+      const bx = document.getElementById('drwAssinaturaCard');
+      if(bx) bx.innerHTML = '<div style="font-size:12.5px; color:var(--debit);">Assinatura digital indisponível agora (os botões continuam funcionando).<br><span style="font-size:11px; color:var(--ink-soft);">Detalhe: '+esc(String(err&&err.message||err))+'</span></div>';
+    }
   }
 }
 function asValorCampoTestemunha(chave){
