@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx src/server.ts",
     "build": "tsc && npm run copy-assets && npm run build:agente-fgts",
-    "copy-assets": "mkdir -p dist/nfse-tabelas dist/tessdata && cp src/nfse-tabelas/*.json dist/nfse-tabelas/ && cp src/tessdata/* dist/tessdata/",
+    "copy-assets": "mkdir -p dist/nfse-tabelas dist/tessdata dist/assets && cp src/nfse-tabelas/*.json dist/nfse-tabelas/ && cp src/tessdata/* dist/tessdata/ && cp src/assets/* dist/assets/",
     "start": "node dist/server.js",
     "dominio-agent:dev": "tsx src/dominio-agent.ts",
     "dominio-agent": "node dist/dominio-agent.js",

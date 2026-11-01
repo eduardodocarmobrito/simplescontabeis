@@ -20923,7 +20923,7 @@ app.delete("/api/contratos/:id", blockCliente, requirePermissao("contratos", "ed
 });
 async function contratoObterPdf(row: any): Promise<Buffer> {
   if (row.ultimo_pdf_path && fs.existsSync(row.ultimo_pdf_path)) return fs.readFileSync(row.ultimo_pdf_path);
-  const pdf = await contratos.gerarPdfDeHtml(row.conteudo_html, row.titulo);
+  const pdf = await contratos.gerarPdfContrato(row.conteudo_html, row.titulo);
   const destino = contratos.caminhoPdfContrato(row.id);
   fs.writeFileSync(destino, pdf);
   sqlite.prepare(`UPDATE contratos SET ultimo_pdf_path = ? WHERE id = ?`).run(destino, row.id);

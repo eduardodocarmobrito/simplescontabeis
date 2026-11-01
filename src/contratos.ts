@@ -218,8 +218,12 @@ export async function converterDocxParaHtml(buffer: Buffer): Promise<string> {
   // Marcada com a classe "cabecalho-repetido" pra, na hora de gerar o PDF, sair do corpo do texto
   // e virar cabeçalho de página de verdade — repetindo em toda página, igual no Word (ver
   // gerarPdfDeHtml abaixo). No editor, continua aparecendo normal, uma vez só, no topo do texto.
-  const prefixoCabecalho = imagensCabecalho.map((src) => `<p class="align-center cabecalho-repetido"><img src="${src}" width="110"></p>`).join("");
-  return prefixoCabecalho + limparListaAninhadaFantasma(resultado.value);
+  // O timbrado agora é um asset GLOBAL do app (ver gerarPdfContrato) — ele é montado como fundo de
+  // página inteira só na HORA de gerar o PDF, não fica mais embutido no conteúdo. Por isso o editor
+  // do modelo guarda apenas o TEXTO CRU: não prefixamos mais a imagem de cabeçalho aqui. (A extração
+  // acima fica desativada de propósito; mantida no código caso um dia se queira timbrado por-escritório.)
+  void imagensCabecalho;
+  return limparListaAninhadaFantasma(resultado.value);
 }
 
 const CONTRATO_PDF_CSS_BASE = `
@@ -308,6 +312,250 @@ export async function gerarPdfDeHtml(conteudoHtml: string, titulo: string, opts:
         : "<span></span>",
       margin: imagemCabecalho ? { top: `${TIRA_TOPO_MM + 8}mm`, bottom: `${TIRA_RODAPE_MM + 8}mm`, left: "18mm", right: "18mm" } : undefined,
     });
+    return pdf as Buffer;
+  } finally {
+    await browser.close();
+  }
+}
+
+// ===========================================================================================
+//  PDF de CONTRATO com papel timbrado de página inteira + numeração automática de cláusulas.
+//  Separado de gerarPdfDeHtml de propósito: aquele é usado por vários relatórios (DANFSe, NFS-e,
+//  retenções etc.) e NÃO pode mudar. Este é só pra contrato/aditivo/distrato.
+//
+//  Receita validada visualmente (ver memória "Padrão PDF Simples Contábeis" / timbrado): o timbrado
+//  A4 entra como <img.bg position:fixed 210x297mm z-index:-1>, cobrindo TODA página; as margens de
+//  conteúdo vêm de uma tabela com thead/tfoot espaçadores (que o Chromium repete por página) + td
+//  com padding lateral. Texto em Arial justificado, recuo de 1ª linha uniforme. A numeração é feita
+//  AQUI no Node (string), nunca via JS no navegador — o navegador roda com javaScriptEnabled:false
+//  por segurança (anti-SSRF), igual gerarPdfDeHtml.
+// ===========================================================================================
+
+// Acha o índice logo após o fechamento CASADO de uma tag que aninha nela mesma (ol/ul), a partir de
+// openIdx (que aponta pro "<tag"). Conta só aberturas/fechamentos dessa tag.
+function fimTagCasada(html: string, openIdx: number, tag: string): number {
+  const re = new RegExp(`<${tag}\\b[^>]*>|</${tag}>`, "gi");
+  re.lastIndex = openIdx;
+  let depth = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html))) {
+    if (m[0][1] === "/") { depth--; if (depth === 0) return re.lastIndex; }
+    else depth++;
+  }
+  return html.length;
+}
+// Fim do <li> que começa em openIdx, PULANDO listas aninhadas (ol/ul) — o </li> que fecha este item
+// é o primeiro em profundidade-de-lista 0 (um </li> de lista aninhada não conta).
+function fimLi(html: string, openIdx: number): number {
+  const re = /<(?:ol|ul)\b[^>]*>|<\/(?:ol|ul)>|<\/li>/gi;
+  re.lastIndex = html.indexOf(">", openIdx) + 1;
+  let listDepth = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html))) {
+    const tok = m[0].toLowerCase();
+    if (tok === "</li>") { if (listDepth === 0) return re.lastIndex; }
+    else if (tok[1] === "/") listDepth--;
+    else listDepth++;
+  }
+  return html.length;
+}
+// Acrescenta (ou mescla) um style inline numa tag de abertura.
+function acrescentarStyle(openTag: string, extra: string): string {
+  if (/\sstyle\s*=\s*"/i.test(openTag)) {
+    return openTag.replace(/(\sstyle\s*=\s*")([^"]*)(")/i, (_a, p, val, q) => `${p}${String(val).replace(/;?\s*$/, "")};${extra}${q}`);
+  }
+  return openTag.replace(/^<([a-z0-9]+)/i, `<$1 style="${extra}"`);
+}
+// Recuo (outline) por profundidade do número: nível = nº de segmentos. --nl = onde o número começa,
+// --pl = recuo do texto (número + folga). Ex.: "2.1.1" (3 seg) recua mais que "2.1" (2 seg).
+function estiloItem(num: string): string {
+  const seg = num.split(".").length;
+  const nl = (seg - 1) * 0.7;
+  const gutter = 0.5 + seg * 0.35;
+  return `--nl:${nl.toFixed(2)}cm;--pl:${(nl + gutter).toFixed(2)}cm`;
+}
+// Numera os <li> DIRETOS do innerHtml de um <ol> a partir de startIdx; <ol> aninhado dentro de um li
+// é numerado recursivamente com o número do li como prefixo. Retorna o html e o último índice usado.
+function numeraOlInner(inner: string, prefix: string, startIdx: number): { html: string; lastIdx: number } {
+  let out = "";
+  let i = 0;
+  let idx = startIdx;
+  const liOpenRe = /<li\b[^>]*>/gi;
+  while (i < inner.length) {
+    liOpenRe.lastIndex = i;
+    const m = liOpenRe.exec(inner);
+    if (!m) { out += inner.slice(i); break; }
+    out += inner.slice(i, m.index);
+    const liEnd = fimLi(inner, m.index);
+    const openTag = m[0];
+    const contentStart = m.index + openTag.length;
+    const contentEnd = liEnd - "</li>".length;
+    let liContent = inner.slice(contentStart, contentEnd);
+    idx++;
+    const num = prefix + "." + idx;
+    liContent = numeraOlsDiretos(liContent, num); // sub-lista(s) deste item
+    let novaOpen = openTag.replace(/^<li\b/i, `<li data-num="${num}."`);
+    novaOpen = acrescentarStyle(novaOpen, estiloItem(num));
+    out += novaOpen + liContent + "</li>";
+    i = liEnd;
+  }
+  return { html: out, lastIdx: idx };
+}
+// Numera todos os <ol> de TOPO dentro de um trecho (usado dentro de um <li>): irmãos do mesmo nível
+// continuam a contagem (não reiniciam).
+function numeraOlsDiretos(html: string, prefix: string): string {
+  let out = "";
+  let i = 0;
+  let runIdx = 0;
+  const olRe = /<ol\b[^>]*>/gi;
+  while (i < html.length) {
+    olRe.lastIndex = i;
+    const m = olRe.exec(html);
+    if (!m) { out += html.slice(i); break; }
+    out += html.slice(i, m.index);
+    const end = fimTagCasada(html, m.index, "ol");
+    const inner = html.slice(m.index + m[0].length, end - "</ol>".length);
+    const r = numeraOlInner(inner, prefix, runIdx);
+    runIdx = r.lastIdx;
+    out += m[0] + r.html + "</ol>";
+    i = end;
+  }
+  return out;
+}
+// Numeração de cláusulas de contrato (server-side). Percorre os blocos de topo:
+//  - título "CLÁUSULA ..." (p/h) só avança um contador sequencial (1,2,3… — robusto a hífen/ordinal);
+//  - subseção "X.Y. ..." (p começando com o nº, 1ª parte == cláusula atual) vira o prefixo e é recuada;
+//  - <ol> de topo recebe número prefixo.idx (subníveis recuam mais). <ol> irmãos do mesmo prefixo
+//    continuam a contagem (ex.: 2 listas diretas na mesma cláusula não reiniciam em .1).
+export function numerarClausulasContrato(html: string): string {
+  let out = "";
+  let i = 0;
+  let clause = 0;
+  let subPrefix: string | null = null;
+  let lastPrefix: string | null = null;
+  let runIdx = 0;
+  const blocoRe = /<(p|h[1-6]|ol)\b[^>]*>/gi;
+  while (i < html.length) {
+    blocoRe.lastIndex = i;
+    const m = blocoRe.exec(html);
+    if (!m) { out += html.slice(i); break; }
+    out += html.slice(i, m.index);
+    const tag = m[1].toLowerCase();
+    if (tag === "ol") {
+      const end = fimTagCasada(html, m.index, "ol");
+      const inner = html.slice(m.index + m[0].length, end - "</ol>".length);
+      if (clause === 0 && !subPrefix) {
+        out += html.slice(m.index, end); // <ol> antes de qualquer cláusula: deixa como está
+      } else {
+        const prefix = subPrefix || String(clause);
+        const start = prefix === lastPrefix ? runIdx : 0;
+        const r = numeraOlInner(inner, prefix, start);
+        runIdx = r.lastIdx;
+        lastPrefix = prefix;
+        out += m[0] + r.html + "</ol>";
+      }
+      i = end;
+    } else {
+      const closeTag = `</${tag}>`;
+      const cEnd = html.indexOf(closeTag, m.index);
+      const end = cEnd === -1 ? html.length : cEnd + closeTag.length;
+      const bloco = html.slice(m.index, end);
+      const texto = bloco.replace(/<[^>]+>/g, "").replace(/&nbsp;/gi, " ").replace(/ /g, " ").trim();
+      if (/^CL[ÁA]USULA\s/i.test(texto)) {
+        clause++;
+        subPrefix = null;
+        out += bloco;
+      } else {
+        const sm = texto.match(/^(\d{1,2}\.\d{1,2})\.?\s/);
+        if (sm && Number(sm[1].split(".")[0]) === clause) {
+          subPrefix = sm[1];
+          const ml = ((sm[1].split(".").length - 1) * 0.7).toFixed(2);
+          const novaOpen = acrescentarStyle(m[0], `text-indent:0;margin-left:${ml}cm`);
+          out += novaOpen + bloco.slice(m[0].length);
+        } else {
+          out += bloco;
+        }
+      }
+      i = end;
+    }
+  }
+  return out;
+}
+
+// Timbrado global do escritório (asset copiado pro dist no build — ver package.json "copy-assets").
+// Lido uma vez e guardado em memória como data URI. Se faltar o arquivo, cai pro PDF sem timbrado
+// (não derruba a geração).
+let TIMBRADO_CACHE: string | null | undefined;
+function timbradoDataUri(): string | null {
+  if (TIMBRADO_CACHE !== undefined) return TIMBRADO_CACHE;
+  try {
+    const p = path.join(__dirname, "assets", "timbrado-simplescontabeis.jpeg");
+    TIMBRADO_CACHE = `data:image/jpeg;base64,${fs.readFileSync(p).toString("base64")}`;
+  } catch {
+    TIMBRADO_CACHE = null;
+  }
+  return TIMBRADO_CACHE;
+}
+
+const CONTRATO_TIMBRADO_CSS = `
+  @page { size: A4; margin: 0; }
+  html, body { margin: 0; padding: 0; }
+  body { font-family: Arial, Helvetica, 'Segoe UI', sans-serif; font-size: 11.5px; line-height: 1.6; color: #1a1a1a; }
+  .bg { position: fixed; top: 0; left: 0; width: 210mm; height: 297mm; z-index: -1; }
+  table.layout { width: 210mm; border-collapse: collapse; }
+  table.layout td { border: 0; padding: 0; }
+  .espaco-topo { height: 48mm; } .espaco-rodape { height: 40mm; }
+  table.layout td.corpo { padding: 0 25mm; vertical-align: top; }
+  p { margin: 0 0 7px; text-align: justify; text-indent: 1.1cm; }
+  /* Parágrafos que o Word trouxe com text-align:start/left inline justificam igual aos demais. */
+  p[style*="text-align: start"], p[style*="text-align:start"], p[style*="text-align: left"], p[style*="text-align:left"] { text-align: justify !important; }
+  h1 { font-size: 13px; text-align: center; text-transform: uppercase; margin: 0 0 8px; font-weight: bold; }
+  h2 { font-size: 12px; font-weight: bold; margin: 12px 0 6px; }
+  h3 { font-size: 11.5px; font-weight: bold; margin: 10px 0 6px; }
+  b, strong { font-weight: bold; }
+  /* Títulos centralizados (cláusula etc.) não levam recuo de 1ª linha. */
+  p[style*="center"], .align-center, .clausula-titulo { text-indent: 0 !important; text-align: center !important; font-weight: bold; }
+  .align-right { text-align: right !important; text-indent: 0 !important; }
+  table.dados { border-collapse: collapse; width: 100%; margin: 6px 0; }
+  table.dados td, table.dados th { border: 1px solid #999; padding: 4px 8px; }
+  /* Listas numeradas: o número vem do data-num (posto na numeração server-side); recuo por nível
+     via --pl/--nl inline. Texto justificado com recuo pendente (hanging). */
+  ol { list-style: none; margin: 4px 0 7px; padding-left: 0; }
+  ol li { position: relative; text-indent: 0; text-align: justify; margin-bottom: 4px; padding-left: var(--pl, 1.3cm); }
+  ol li::before { content: attr(data-num) " "; position: absolute; left: var(--nl, 0); }
+  ul { margin: 0 0 7px; padding-left: 22px; } ul li { text-align: justify; margin-bottom: 4px; }
+`;
+
+// Prepara o conteúdo cru do contrato pra render: tira timbrado embutido antigo (contratos criados
+// antes dessa mudança guardavam a imagem no corpo), tira &nbsp; de indentação no começo de parágrafo
+// (o recuo passa a ser só o do CSS, uniforme) e numera as cláusulas.
+export function prepararConteudoContrato(conteudoHtml: string): string {
+  let c = conteudoHtml
+    .replace(/<p class="align-center cabecalho-repetido">\s*<img[^>]*>\s*<\/p>/gi, "")
+    .replace(/<img[^>]*src="data:image\/[^"]*"[^>]*>/gi, "");
+  c = c.replace(/(<p\b[^>]*>(?:\s*<[^/][^>]*>)*)\s*(?:&nbsp;| |\s)+/gi, "$1");
+  return numerarClausulasContrato(c);
+}
+
+export async function gerarPdfContrato(conteudoHtml: string, titulo: string): Promise<Buffer> {
+  const corpo = prepararConteudoContrato(conteudoHtml);
+  const timbrado = timbradoDataUri();
+  const bg = timbrado ? `<img class="bg" src="${timbrado}">` : "";
+  // Sem timbrado, usa margens normais de página pra não ficar colado na borda.
+  const semTimbradoCss = timbrado ? "" : `@page { size: A4; margin: 20mm 18mm; } .bg{display:none}`;
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${titulo}</title><style>${CONTRATO_TIMBRADO_CSS}${semTimbradoCss}</style></head><body>${bg}<table class="layout"><thead><tr><td class="espaco-topo"></td></tr></thead><tfoot><tr><td class="espaco-rodape"></td></tr></tfoot><tbody><tr><td class="corpo">${corpo}</td></tr></tbody></table></body></html>`;
+  const { chromium } = require("playwright");
+  const browser = await chromium.launch();
+  try {
+    // Mesma blindagem do gerarPdfDeHtml: JS desligado + toda rede bloqueada (só data:/about: passam).
+    const page = await browser.newPage({ javaScriptEnabled: false });
+    await page.route("**/*", (route: any) => {
+      const url = route.request().url();
+      if (url.startsWith("data:") || url === "about:blank") return route.continue();
+      return route.abort();
+    });
+    await page.setContent(html, { waitUntil: "networkidle" });
+    const pdf = await page.pdf({ format: "A4", printBackground: true, preferCSSPageSize: true });
     return pdf as Buffer;
   } finally {
     await browser.close();
