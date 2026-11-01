@@ -12621,12 +12621,11 @@ async function renderContratosLista(){
     </div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
-        <thead><tr><th>Empresa</th><th>Título</th><th>Tipo</th><th>Status</th><th>Atualizado em</th><th></th></tr></thead>
+        <thead><tr><th>Empresa</th><th>Tipo</th><th>Status</th><th>Atualizado em</th><th></th></tr></thead>
         <tbody>
           ${items.length? items.map(c=>`
             <tr>
               <td>${esc(c.empresaNome)}</td>
-              <td>${esc(c.titulo)}</td>
               <td>${TIPO_LABEL[c.tipo]||c.tipo}</td>
               <td><span class="tag ${c.status==='ativo'?'ok':'muted'}">${STATUS_LABEL[c.status]||c.status}</span></td>
               <td>${fmtDateHora(c.updatedAt)}</td>
@@ -12635,7 +12634,7 @@ async function renderContratosLista(){
                 <button class="btn small danger" data-id="${c.id}" data-act="excluir">Excluir</button>
               </td>
             </tr>
-          `).join('') : `<tr><td colspan="6"><div class="empty-state">Nenhum contrato encontrado.</div></td></tr>`}
+          `).join('') : `<tr><td colspan="5"><div class="empty-state">Nenhum contrato encontrado.</div></td></tr>`}
         </tbody>
       </table>
     </div>
