@@ -12720,6 +12720,7 @@ function campoAjudaTexto(chave){
 function campoEhCnpjCpf(chave){ return chave==='CNPJ' || /cpf/i.test(chave); }
 function campoEhCep(chave){ return chave==='CEP'; }
 function campoEhMoeda(chave){ return /valor/i.test(chave); }
+function campoEhServicos(chave){ return /servi[cç]os_a_ser/i.test(chave); }
 function valorFormatadoCampo(chave, valor){
   if(!valor) return '';
   if(campoEhCnpjCpf(chave)) return fmtCnpjCpf(valor);
@@ -12732,24 +12733,38 @@ function valorFormatadoCampo(chave, valor){
   }
   return valor;
 }
-function campoFieldHtml(f, dados, comAjuda){
+function campoFieldHtml(f, dados, comAjuda, catalogoServicos){
+  const ajuda = comAjuda ? ` <span class="campo-ajuda" data-ajuda="${esc(campoAjudaTexto(f.chave))}">?</span>` : '';
+  // Campo de serviços vira MULTIESCOLHA quando há catálogo cadastrado — senão cai no input de texto
+  // normal (não trava o preenchimento se o escritório ainda não montou a lista).
+  if(campoEhServicos(f.chave) && catalogoServicos && catalogoServicos.length){
+    const sel = String(dados[f.chave]||'').split(/\s*;\s*/).map(x=>x.trim()).filter(Boolean);
+    const checks = catalogoServicos.map(sv=>`<label class="checkbox-row" style="min-width:0;"><input type="checkbox" class="drwServicoChk" data-grupo="${esc(f.chave)}" value="${esc(sv.nome)}" ${sel.includes(sv.nome)?'checked':''}> <span style="overflow:hidden; text-overflow:ellipsis;">${esc(sv.nome)}</span></label>`).join('');
+    return `<div class="field" style="grid-column:1 / -1;"><label>${esc(f.rotulo)}${ajuda}</label>
+      <input type="hidden" class="drwCampo" data-chave="${esc(f.chave)}" value="${esc(dados[f.chave]||'')}">
+      <div class="checkbox-grid drwServicoGrid">${checks}</div>
+      <div style="font-size:11px; color:var(--ink-soft); margin-top:4px;">Marque os serviços contratados — eles entram no texto do contrato separados por "; ".</div>
+    </div>`;
+  }
   const largo = f.chave==='cliente_nome' ? ' style="grid-column:1 / -1;"' : '';
   const valor = valorFormatadoCampo(f.chave, dados[f.chave]);
-  const ajuda = comAjuda ? ` <span class="campo-ajuda" data-ajuda="${esc(campoAjudaTexto(f.chave))}">?</span>` : '';
   const ph = campoEhMoeda(f.chave) ? ' placeholder="0,00"' : '';
   return `<div class="field"${largo}><label>${esc(f.rotulo)}${ajuda}</label><input class="drwCampo" data-chave="${esc(f.chave)}" value="${esc(valor)}"${ph}></div>`;
 }
-function campoGrupoHtml(titulo, lista, dados, comAjuda){
+function campoGrupoHtml(titulo, lista, dados, comAjuda, catalogoServicos){
   if(!lista.length) return '';
   return `
     <div class="card" style="background:var(--paper); margin-bottom:16px;">
       <div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">${esc(titulo)}</div>
-      <div class="campos-grid">${lista.map(f=>campoFieldHtml(f, dados, comAjuda)).join('')}</div>
+      <div class="campos-grid">${lista.map(f=>campoFieldHtml(f, dados, comAjuda, catalogoServicos)).join('')}</div>
     </div>
   `;
 }
 async function abrirContratoDrawer(id){
-  const c = await api('/contratos/'+id);
+  const [c, catalogoServicos] = await Promise.all([
+    api('/contratos/'+id),
+    api('/contratos/servicos-catalogo?ativos=1').then(r=>r.items).catch(()=>[]),
+  ]);
   const campos = c.modeloCampos || [];
   const dados = c.dadosPreenchidos || {};
   const camposEmpresa = campos.filter(f=>f.autoPreencherDe);
@@ -12768,7 +12783,7 @@ async function abrirContratoDrawer(id){
       <div class="field"><label>Título</label><input id="drwTitulo" value="${esc(c.titulo)}"></div>
       ${campos.length?`
         ${campoGrupoHtml('Dados da empresa (cliente)', camposEmpresa, dados, false)}
-        ${campoGrupoHtml('Preenchimento do escritório', camposEscritorio, dados, true)}
+        ${campoGrupoHtml('Preenchimento do escritório', camposEscritorio, dados, true, catalogoServicos)}
         ${campoGrupoHtml('Testemunhas', camposTestemunhas, dados, false)}
         <div class="card" style="background:var(--paper); margin-bottom:16px;">
           <button class="btn small" id="drwAplicarCampos">Aplicar no documento</button>
@@ -12850,6 +12865,13 @@ async function abrirContratoDrawer(id){
         ligarMascaraMoeda(inp);
       }
     });
+    // Multiescolha de serviços: mantém o input oculto (.drwCampo) sincronizado com os checkboxes marcados.
+    document.querySelectorAll('.drwServicoChk').forEach(chk=>chk.addEventListener('change', ()=>{
+      const grupo = chk.dataset.grupo;
+      const sel = [...document.querySelectorAll('.drwServicoChk[data-grupo="'+grupo+'"]:checked')].map(c=>c.value);
+      const hidden = document.querySelector('.drwCampo[data-chave="'+grupo+'"]');
+      if(hidden) hidden.value = sel.join('; ');
+    }));
     document.getElementById('drwAplicarCampos').addEventListener('click', async ()=>{
       const novosDados = {};
       document.querySelectorAll('.drwCampo').forEach(inp=>novosDados[inp.dataset.chave]=inp.value);
@@ -12980,12 +13002,39 @@ function renderAssinaturaCard(c){
   });
 }
 async function criarDistrato(contratoId){
-  if(!confirm('Criar um distrato deste contrato? O documento já sai pronto com o cabeçalho do contrato original, a cláusula e as assinaturas padrão — você revisa e ajusta antes de salvar.')) return;
-  try{
-    const r = await api('/contratos/'+contratoId+'/distrato', { method:'POST' });
-    toast('Distrato criado.','ok');
-    abrirContratoDrawer(r.id);
-  }catch(e){ toast(e.message,'err'); }
+  let catalogo = [];
+  try{ catalogo = (await api('/contratos/servicos-catalogo?ativos=1')).items || []; }catch(e){}
+  openModal(`
+    <h3>Criar distrato</h3>
+    <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-4px;">O documento já sai com o cabeçalho do contrato original, a cláusula e as assinaturas padrão — você revisa e ajusta antes de salvar.</p>
+    <div class="field"><label>Tipo de distrato</label>
+      <label class="checkbox-row"><input type="radio" name="distTipo" value="total" checked> Rescisão total — encerra o contrato inteiro</label>
+      <label class="checkbox-row"><input type="radio" name="distTipo" value="parcial" ${catalogo.length?'':'disabled'}> Distrato parcial — encerrar só alguns serviços${catalogo.length?'':' (cadastre o catálogo de serviços primeiro)'}</label>
+    </div>
+    <div class="field" id="distServicosWrap" style="display:none;"><label>Serviços a encerrar</label>
+      <div class="checkbox-grid">${catalogo.map(sv=>`<label class="checkbox-row" style="min-width:0;"><input type="checkbox" class="distServicoChk" value="${esc(sv.nome)}"> <span style="overflow:hidden; text-overflow:ellipsis;">${esc(sv.nome)}</span></label>`).join('')}</div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" id="distCancel">Cancelar</button>
+      <button class="btn primary" id="distCriar">Criar distrato</button>
+    </div>
+  `);
+  const wrap = document.getElementById('distServicosWrap');
+  document.querySelectorAll('input[name="distTipo"]').forEach(r=>r.addEventListener('change', ()=>{
+    wrap.style.display = document.querySelector('input[name="distTipo"]:checked').value==='parcial' ? '' : 'none';
+  }));
+  document.getElementById('distCancel').addEventListener('click', closeModal);
+  document.getElementById('distCriar').addEventListener('click', async ()=>{
+    const tipo = document.querySelector('input[name="distTipo"]:checked').value;
+    const servicos = tipo==='parcial' ? [...document.querySelectorAll('.distServicoChk:checked')].map(c=>c.value) : [];
+    if(tipo==='parcial' && !servicos.length){ toast('Marque pelo menos um serviço, ou escolha rescisão total.','err'); return; }
+    try{
+      const r = await api('/contratos/'+contratoId+'/distrato', { method:'POST', body:{ total: tipo==='total', servicos } });
+      closeModal();
+      toast('Distrato criado.','ok');
+      abrirContratoDrawer(r.id);
+    }catch(e){ toast(e.message,'err'); }
+  });
 }
 function novoAditivoModal(contratoId){
   openModal(`
@@ -13007,6 +13056,58 @@ function novoAditivoModal(contratoId){
       toast('Aditivo criado.','ok');
       abrirContratoDrawer(r.id);
     }catch(e){ toast(e.message,'err'); }
+  });
+}
+async function servicosCatalogoDrawer(){
+  const { items } = await api('/contratos/servicos-catalogo');
+  openDrawer(`
+    <div class="drawer-header"><h3>Catálogo de serviços</h3><button class="btn small" id="scFechar">Fechar</button></div>
+    <div class="drawer-body">
+      <p style="font-size:12.5px; color:var(--ink-soft);">Lista única de serviços do escritório. Aparece como multiescolha no campo "serviços a ser executados" do contrato e na criação do distrato (quais serviços encerrar). Desmarque "Ativo" pra esconder da lista sem apagar o histórico. O nome é salvo ao sair do campo.</p>
+      <div id="scLista"></div>
+      <div class="row" style="margin-top:12px; gap:8px;">
+        <input id="scNovo" placeholder="Novo serviço (ex.: Contabilidade societária e fiscal)" style="flex:1;">
+        <button class="btn primary" id="scAdicionar">+ Adicionar</button>
+      </div>
+    </div>
+  `);
+  document.getElementById('scFechar').addEventListener('click', closeDrawer);
+  function render(lista){
+    const box = document.getElementById('scLista');
+    box.innerHTML = lista.length ? lista.map(s=>`
+      <div class="row sc-row" data-id="${s.id}" style="align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid var(--rule);">
+        <input class="sc-nome" value="${esc(s.nome)}" style="flex:1;">
+        <label class="checkbox-row" style="min-width:0; white-space:nowrap;"><input type="checkbox" class="sc-ativo" ${s.ativo?'checked':''}> Ativo</label>
+        <button class="btn small danger sc-remover">Remover</button>
+      </div>
+    `).join('') : `<div class="empty-state">Nenhum serviço cadastrado ainda — adicione abaixo.</div>`;
+    box.querySelectorAll('.sc-row').forEach(row=>{
+      const id = row.dataset.id;
+      const nome = row.querySelector('.sc-nome');
+      nome.addEventListener('blur', async ()=>{
+        const v = nome.value.trim();
+        if(!v){ nome.value = nome.defaultValue; toast('O nome não pode ficar vazio.','err'); return; }
+        if(v === nome.defaultValue) return;
+        try{ await api('/contratos/servicos-catalogo/'+id, { method:'PUT', body:{ nome:v } }); nome.defaultValue = v; toast('Salvo.','ok'); }
+        catch(e){ toast(e.message,'err'); }
+      });
+      row.querySelector('.sc-ativo').addEventListener('change', async (e)=>{
+        try{ await api('/contratos/servicos-catalogo/'+id, { method:'PUT', body:{ ativo: e.target.checked } }); }
+        catch(err){ toast(err.message,'err'); e.target.checked = !e.target.checked; }
+      });
+      row.querySelector('.sc-remover').addEventListener('click', async ()=>{
+        if(!confirm('Remover este serviço do catálogo?')) return;
+        try{ await api('/contratos/servicos-catalogo/'+id, { method:'DELETE' }); render((await api('/contratos/servicos-catalogo')).items); }
+        catch(e){ toast(e.message,'err'); }
+      });
+    });
+  }
+  render(items);
+  document.getElementById('scAdicionar').addEventListener('click', async ()=>{
+    const inp = document.getElementById('scNovo'); const v = inp.value.trim();
+    if(!v){ toast('Digite o nome do serviço.','err'); return; }
+    try{ await api('/contratos/servicos-catalogo', { method:'POST', body:{ nome:v } }); inp.value=''; render((await api('/contratos/servicos-catalogo')).items); }
+    catch(e){ toast(e.message,'err'); }
   });
 }
 async function renderContratosModelos(){
@@ -13036,6 +13137,12 @@ async function renderContratosModelos(){
             </tr>
           `).join('') : `<tr><td colspan="4"><div class="empty-state">Nenhum modelo cadastrado ainda.</div></td></tr>`}
           <tr>
+            <td>Catálogo de serviços</td>
+            <td>—</td>
+            <td><span class="tag muted">Multiescolha do contrato + distrato</span></td>
+            <td style="text-align:right;"><button class="btn small" id="btnEditarServicos">Editar</button></td>
+          </tr>
+          <tr>
             <td>Modelo padrão de Distrato</td>
             <td>—</td>
             <td><span class="tag muted">Cláusula + assinaturas</span></td>
@@ -13051,6 +13158,7 @@ async function renderContratosModelos(){
       </table>
     </div>
   `;
+  document.getElementById('btnEditarServicos').addEventListener('click', ()=>servicosCatalogoDrawer());
   document.getElementById('btnEditarDistrato').addEventListener('click', ()=>distratoModeloDrawer(distratoConfig));
   document.getElementById('btnEditarAssinatura').addEventListener('click', ()=>assinaturaConfigDrawer(assinaturaConfig));
   document.getElementById('btnNovoModelo').addEventListener('click', ()=>contratoModeloDrawer(null));
@@ -19292,7 +19400,10 @@ async function renderCfgNfseAgendamento(box){
           </div>
           <div class="field"><label>Valor do serviço (R$)</label><input data-f="valor" inputmode="decimal" placeholder="0,00" value="${s.valorServico!=null?Number(s.valorServico).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}):''}"></div>
           <label class="checkbox-row"><input type="checkbox" data-f="ativo" ${s.ativo?'checked':''}> Ativo (desmarque pra pausar só este serviço)</label>
-          <button class="btn primary small" data-act="salvar-item" data-id="${s.id}" disabled>Salvar este serviço</button>
+          <div class="row" style="gap:8px;">
+            <button class="btn primary small" data-act="salvar-item" data-id="${s.id}" disabled>Salvar este serviço</button>
+            <button class="btn small" data-act="cancelar-item" data-id="${s.id}" disabled>Cancelar</button>
+          </div>
         </div>
       `).join('') : `<div class="empty-state">Nenhum serviço configurado ainda — adicione pelo botão abaixo.</div>`;
       lista.querySelectorAll('[data-f="valor"]').forEach(el=>ligarMascaraMoeda(el));
@@ -19304,16 +19415,36 @@ async function renderCfgNfseAgendamento(box){
           valorServico: moedaInputParaNumero(card.querySelector('[data-f="valor"]')),
           ativo: card.querySelector('[data-f="ativo"]').checked,
         };
-        try{ await api('/nfse/agendamento/itens/'+b.dataset.id, { method:'PUT', body }); toast('Salvo.','ok'); b.disabled=true; carregarQuadroSelecionadas(); }
+        try{
+          await api('/nfse/agendamento/itens/'+b.dataset.id, { method:'PUT', body }); toast('Salvo.','ok');
+          // Atualiza o "estado salvo" em memória (pra o Cancelar reverter pro valor novo, não pro antigo).
+          const s = servicos.find(x=>String(x.id)===b.dataset.id);
+          if(s){ s.modeloId=body.modeloId; s.descricaoServico=body.descricaoServico; s.valorServico=body.valorServico; s.ativo=body.ativo; }
+          b.disabled=true; const cb=card.querySelector('[data-act="cancelar-item"]'); if(cb) cb.disabled=true;
+          carregarQuadroSelecionadas();
+        }
         catch(err){ toast(err.message,'err'); }
       }));
-      // Botão "Salvar este serviço" só habilita quando algo muda no card; volta a desabilitar após salvar.
+      // Cancelar: reverte os campos do card pro último estado salvo e desabilita Salvar/Cancelar de novo.
+      lista.querySelectorAll('[data-act="cancelar-item"]').forEach(b=>b.addEventListener('click', ()=>{
+        const card = b.closest('[data-item-id]');
+        const s = servicos.find(x=>String(x.id)===b.dataset.id);
+        if(!s) return;
+        card.querySelector('[data-f="modelo"]').value = s.modeloId || '';
+        card.querySelector('[data-f="descricao"]').value = s.descricaoServico || '';
+        card.querySelector('[data-f="valor"]').value = s.valorServico!=null ? Number(s.valorServico).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}) : '';
+        card.querySelector('[data-f="ativo"]').checked = !!s.ativo;
+        b.disabled=true; const sb=card.querySelector('[data-act="salvar-item"]'); if(sb) sb.disabled=true;
+      }));
+      // Salvar/Cancelar só habilitam quando algo muda no card; voltam a desabilitar após salvar/cancelar.
       lista.querySelectorAll('[data-item-id]').forEach(card=>{
         const salvarBtn = card.querySelector('[data-act="salvar-item"]');
+        const cancelarBtn = card.querySelector('[data-act="cancelar-item"]');
         if(!salvarBtn) return;
+        const habilitar = ()=>{ salvarBtn.disabled=false; if(cancelarBtn) cancelarBtn.disabled=false; };
         card.querySelectorAll('[data-f]').forEach(el=>{
-          el.addEventListener('input', ()=>{ salvarBtn.disabled=false; });
-          el.addEventListener('change', ()=>{ salvarBtn.disabled=false; });
+          el.addEventListener('input', habilitar);
+          el.addEventListener('change', habilitar);
         });
       });
       lista.querySelectorAll('[data-act="remover-item"]').forEach(b=>b.addEventListener('click', async ()=>{

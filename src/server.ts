@@ -547,6 +547,16 @@ sqlite.exec(`
     enviado_por INTEGER REFERENCES app_users(id),
     enviado_em TEXT DEFAULT (datetime('now'))
   );
+  -- Catálogo GLOBAL de serviços do escritório — lista única usada como multiescolha no campo
+  -- {{serviços_a_ser_executados}} do contrato E na criação do distrato (quais serviços encerrar).
+  CREATE TABLE IF NOT EXISTS contratos_servicos_catalogo (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    escritorio_id INTEGER NOT NULL,
+    nome TEXT NOT NULL,
+    ativo INTEGER NOT NULL DEFAULT 1,
+    ordem INTEGER NOT NULL DEFAULT 0,
+    criado_em TEXT DEFAULT (datetime('now'))
+  );
 
   -- ---- Painel (cards de indicadores configuráveis) ----
   CREATE TABLE IF NOT EXISTS dashboard_cards (
@@ -20729,6 +20739,39 @@ app.put("/api/contratos/distrato-config", blockCliente, requirePermissao("contra
     .run(escritorioId, clausulaPadrao ?? "", assinaturasPadrao ?? "");
   res.json({ ok: true });
 });
+// Catálogo global de serviços (usado no multiescolha do contrato e na criação do distrato). Fica
+// ANTES de /api/contratos/:id de propósito — senão "servicos-catalogo" bateria no :id (ver nota abaixo).
+app.get("/api/contratos/servicos-catalogo", blockCliente, requirePermissao("contratos", "visualizar"), (req, res) => {
+  const soAtivos = req.query.ativos === "1";
+  const rows = sqlite
+    .prepare(`SELECT id, nome, ativo, ordem FROM contratos_servicos_catalogo WHERE escritorio_id = ? ${soAtivos ? "AND ativo = 1" : ""} ORDER BY ordem, nome`)
+    .all((req as any).user.escritorioId);
+  res.json({ items: rows });
+});
+app.post("/api/contratos/servicos-catalogo", blockCliente, requirePermissao("contratos", "editar"), (req, res) => {
+  const nome = String(req.body?.nome ?? "").trim();
+  if (!nome) return res.status(400).json({ error: "Informe o nome do serviço." });
+  const escritorioId = (req as any).user.escritorioId;
+  const prox = sqlite.prepare(`SELECT COALESCE(MAX(ordem), 0) + 1 as o FROM contratos_servicos_catalogo WHERE escritorio_id = ?`).get(escritorioId) as any;
+  const info = sqlite.prepare(`INSERT INTO contratos_servicos_catalogo (escritorio_id, nome, ordem) VALUES (?, ?, ?)`).run(escritorioId, nome, prox?.o || 1);
+  res.json({ id: Number(info.lastInsertRowid) });
+});
+app.put("/api/contratos/servicos-catalogo/:id", blockCliente, requirePermissao("contratos", "editar"), (req, res) => {
+  const escritorioId = (req as any).user.escritorioId;
+  const atual = sqlite.prepare(`SELECT * FROM contratos_servicos_catalogo WHERE id = ? AND escritorio_id = ?`).get(Number(req.params.id), escritorioId) as any;
+  if (!atual) return res.status(404).json({ error: "Serviço não encontrado." });
+  const nome = req.body?.nome !== undefined ? String(req.body.nome).trim() : atual.nome;
+  if (!nome) return res.status(400).json({ error: "Informe o nome do serviço." });
+  const ativo = req.body?.ativo !== undefined ? (req.body.ativo ? 1 : 0) : atual.ativo;
+  const ordem = req.body?.ordem !== undefined ? Number(req.body.ordem) : atual.ordem;
+  sqlite.prepare(`UPDATE contratos_servicos_catalogo SET nome = ?, ativo = ?, ordem = ? WHERE id = ?`).run(nome, ativo, ordem, atual.id);
+  res.json({ ok: true });
+});
+app.delete("/api/contratos/servicos-catalogo/:id", blockCliente, requirePermissao("contratos", "editar"), (req, res) => {
+  const escritorioId = (req as any).user.escritorioId;
+  sqlite.prepare(`DELETE FROM contratos_servicos_catalogo WHERE id = ? AND escritorio_id = ?`).run(Number(req.params.id), escritorioId);
+  res.json({ ok: true });
+});
 // Achado ao vivo (2026-10-31): registradas depois de GET /api/contratos/:id, "assinatura-config"
 // batia no ":id" (Express não distingue — qualquer segmento literal casa com :id) e caía sempre no
 // 404 de "Contrato não encontrado", quebrando silenciosamente a aba Modelos inteira (Promise.all
@@ -20903,9 +20946,17 @@ app.post("/api/contratos/:id/distrato", blockCliente, requirePermissao("contrato
   const numeroRef = original.numero_sequencial ? ` (nº ${original.numero_sequencial}/${original.numero_sequencial_ano})` : "";
   const clausula = padrao?.clausula_padrao ? contratos.aplicarCamposNoModelo(padrao.clausula_padrao, tokens) : "<p>Defina a cláusula padrão de distrato na aba Modelos.</p>";
   const assinaturas = padrao?.assinaturas_padrao ? contratos.aplicarCamposNoModelo(padrao.assinaturas_padrao, tokens) : "";
+  // Distrato pode ser TOTAL (rescisão do contrato inteiro) ou PARCIAL (encerra só alguns serviços do
+  // catálogo). Sem seleção = total. O parágrafo é só o texto inicial — o admin revisa/edita antes de salvar.
+  const servicosSel: string[] = Array.isArray(req.body?.servicos) ? req.body.servicos.map((s: any) => String(s).trim()).filter(Boolean) : [];
+  const total = !!req.body?.total || servicosSel.length === 0;
+  const servicosPar = total
+    ? `<p>O presente distrato tem por objeto a <b>rescisão total</b> do contrato acima referido, encerrando-se todos os serviços nele previstos.</p>`
+    : `<p>O presente distrato tem por objeto o encerramento <b>parcial</b> do contrato acima referido, especificamente do(s) seguinte(s) serviço(s): <b>${servicosSel.map((s) => escHtmlRelatorio(s)).join("; ")}</b>. Os demais serviços contratados permanecem em pleno vigor.</p>`;
   const conteudoInicial =
     cabecalho +
     `<h1>Distrato Contratual</h1><p>Distrato do contrato "${escHtmlRelatorio(original.titulo)}"${numeroRef}, firmado entre o escritório e ${escHtmlRelatorio(empresa?.nome || "")}.</p>` +
+    servicosPar +
     clausula +
     assinaturas;
   const info = sqlite
