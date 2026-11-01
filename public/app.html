@@ -12769,7 +12769,7 @@ function campoFieldHtml(f, dados, comAjuda, catalogoServicos){
         <div class="msel-drop"><input class="msel-busca" placeholder="Buscar serviço…" autocomplete="off"><div class="msel-opts"></div></div>
       </div>
       <div class="msel-valores"></div>
-      <div style="font-size:11px; color:var(--ink-soft); margin-top:4px;">Selecione os serviços contratados. Com 2 ou mais, informe o valor (R$) de cada um — saem discriminados no contrato.</div>
+      <div style="font-size:11px; color:var(--ink-soft); margin-top:4px;">Selecione os serviços contratados. Com 2 ou mais, informe o valor (R$) de cada um — saem discriminados no contrato e o honorário total vira a soma deles automaticamente.</div>
     </div>`;
   }
   const largo = f.chave==='cliente_nome' ? ' style="grid-column:1 / -1;"' : '';
@@ -12967,6 +12967,19 @@ async function abrirContratoDrawer(id){
       if(!novosDados['dia']) novosDados['dia'] = String(hoje.getDate());
       if(!novosDados['mes']) novosDados['mes'] = MESES_PT_EXTENSO_JS[hoje.getMonth()];
       if(!novosDados['ano']) novosDados['ano'] = String(hoje.getFullYear());
+      // Soma automática: quando os serviços têm valor por item (2+), o honorário TOTAL é a soma deles —
+      // sobrescreve {{valor_honorário}} e força recalcular o extenso a partir da soma.
+      const servChave = Object.keys(novosDados).find(k=>campoEhServicos(k));
+      if(servChave && novosDados[servChave]){
+        const valores = [...String(novosDados[servChave]).matchAll(/R\$\s*([\d.]+,\d{2})/g)].map(m=>m[1]);
+        if(valores.length >= 2){
+          const soma = valores.reduce((acc,v)=> acc + Number(v.replace(/\./g,'').replace(',','.')), 0);
+          novosDados['valor_honorário'] = soma.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+          delete novosDados['vlr_extenso'];
+          const vhInput = document.querySelector('.drwCampo[data-chave="valor_honorário"]');
+          if(vhInput) vhInput.value = novosDados['valor_honorário'];
+        }
+      }
       // {{vlr_extenso}} é calculado a partir de {{valor_honorário}} — só busca se o campo existir
       // no modelo e o admin já tiver digitado um valor.
       if(!novosDados['vlr_extenso'] && novosDados['valor_honorário']){
@@ -13150,11 +13163,11 @@ async function servicosCatalogoDrawer(){
     <div class="drawer-header"><h3>Catálogo de serviços</h3><button class="btn small" id="scFechar">Fechar</button></div>
     <div class="drawer-body">
       <p style="font-size:12.5px; color:var(--ink-soft);">Lista única de serviços do escritório. Aparece como multiescolha no campo "serviços a ser executados" do contrato e na criação do distrato (quais serviços encerrar). Desmarque "Ativo" pra esconder da lista sem apagar o histórico. O nome é salvo ao sair do campo.</p>
-      <div id="scLista"></div>
-      <div class="row" style="margin-top:12px; gap:8px; align-items:center;">
+      <div class="row" style="gap:8px; align-items:center; margin-bottom:14px;">
         <div class="field" style="flex:1; max-width:360px; margin-bottom:0;"><input id="scNovo" placeholder="Novo serviço (ex.: Contabilidade societária e fiscal)" autocomplete="off"></div>
         <button class="btn primary" id="scAdicionar">+ Adicionar</button>
       </div>
+      <div id="scLista"></div>
     </div>
   `);
   document.getElementById('scFechar').addEventListener('click', closeDrawer);
@@ -13162,7 +13175,7 @@ async function servicosCatalogoDrawer(){
     const box = document.getElementById('scLista');
     box.innerHTML = lista.length ? lista.map(s=>`
       <div class="row sc-row" data-id="${s.id}" style="align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid var(--rule);">
-        <input class="sc-nome" value="${esc(s.nome)}" style="flex:1;">
+        <input class="inp sc-nome" value="${esc(s.nome)}" style="flex:1;">
         <label class="checkbox-row" style="min-width:0; white-space:nowrap;"><input type="checkbox" class="sc-ativo" ${s.ativo?'checked':''}> Ativo</label>
         <button class="btn small danger sc-remover">Remover</button>
       </div>
