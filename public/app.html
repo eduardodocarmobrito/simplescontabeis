@@ -13065,8 +13065,8 @@ async function servicosCatalogoDrawer(){
     <div class="drawer-body">
       <p style="font-size:12.5px; color:var(--ink-soft);">Lista única de serviços do escritório. Aparece como multiescolha no campo "serviços a ser executados" do contrato e na criação do distrato (quais serviços encerrar). Desmarque "Ativo" pra esconder da lista sem apagar o histórico. O nome é salvo ao sair do campo.</p>
       <div id="scLista"></div>
-      <div class="row" style="margin-top:12px; gap:8px;">
-        <input id="scNovo" placeholder="Novo serviço (ex.: Contabilidade societária e fiscal)" style="flex:1;">
+      <div class="row" style="margin-top:12px; gap:8px; align-items:center;">
+        <div class="field" style="flex:1; max-width:360px; margin-bottom:0;"><input id="scNovo" placeholder="Novo serviço (ex.: Contabilidade societária e fiscal)" autocomplete="off"></div>
         <button class="btn primary" id="scAdicionar">+ Adicionar</button>
       </div>
     </div>
