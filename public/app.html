@@ -72,6 +72,30 @@
   .combo-item:hover{background:var(--paper);}
   .combo-empty{padding:9px 12px; font-size:12.5px; color:var(--ink-soft);}
 
+  /* Multiselect "dentro do campo" (chips + dropdown) — usado no campo de serviços do contrato. */
+  .msel{position:relative;}
+  .msel-box{display:flex; align-items:center; gap:6px; min-height:40px; flex-wrap:wrap; border:1px solid var(--rule); border-radius:10px; padding:6px 10px; background:var(--paper); cursor:pointer;}
+  .msel-box:focus{outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-pale);}
+  .msel-chips{display:flex; flex-wrap:wrap; gap:6px; flex:1; align-items:center; min-width:0;}
+  .msel-ph{color:var(--ink-soft); font-size:14px;}
+  .msel-chip{display:inline-flex; align-items:center; gap:6px; background:var(--accent-pale); color:var(--ink); border:1px solid var(--rule); border-radius:999px; padding:2px 9px; font-size:12.5px;}
+  .msel-chip .x{cursor:pointer; opacity:.55; font-weight:700;}
+  .msel-chip .x:hover{opacity:1;}
+  .msel-caret{color:var(--ink-soft); font-size:12px;}
+  .msel-drop{position:absolute; z-index:60; top:calc(100% + 4px); left:0; right:0; max-height:300px; overflow-y:auto; background:var(--surface); border:1px solid var(--rule); border-radius:10px; box-shadow:var(--shadow); display:none;}
+  .msel-drop.open{display:block;}
+  .msel-busca{width:100%; border:none; border-bottom:1px solid var(--rule); padding:9px 12px; font-size:13.5px; background:transparent; color:var(--ink);}
+  .msel-busca:focus{outline:none;}
+  .msel-opt{display:flex; align-items:center; gap:8px; padding:8px 12px; font-size:13.5px; cursor:pointer;}
+  .msel-opt:hover{background:var(--paper);}
+  .msel-opt input{width:auto; flex:none;}
+  .msel-valores{margin-top:8px; display:flex; flex-direction:column; gap:6px;}
+  .msel-valor-row{display:flex; align-items:center; gap:8px;}
+  .msel-valor-row .nome{flex:1; font-size:13px; min-width:0; overflow:hidden; text-overflow:ellipsis;}
+  .msel-valor-row .rs{font-size:12px; color:var(--ink-soft);}
+  .msel-valor-row input{width:130px; border:1px solid var(--rule); border-radius:8px; padding:6px 9px; background:var(--paper); color:var(--ink); font-size:13.5px;}
+  .msel-valor-row input:focus{outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-pale);}
+
   /* ===== Seletor de datas (calendário) — mesmo padrão do painel-contabil-libra ===== */
   .date-field{display:flex; flex-direction:column; gap:5px; width:168px;}
   .date-field label{font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-soft); font-family:'IBM Plex Mono',monospace;}
@@ -12738,12 +12762,14 @@ function campoFieldHtml(f, dados, comAjuda, catalogoServicos){
   // Campo de serviços vira MULTIESCOLHA quando há catálogo cadastrado — senão cai no input de texto
   // normal (não trava o preenchimento se o escritório ainda não montou a lista).
   if(campoEhServicos(f.chave) && catalogoServicos && catalogoServicos.length){
-    const sel = String(dados[f.chave]||'').split(/\s*;\s*/).map(x=>x.trim()).filter(Boolean);
-    const checks = catalogoServicos.map(sv=>`<label class="checkbox-row" style="min-width:0;"><input type="checkbox" class="drwServicoChk" data-grupo="${esc(f.chave)}" value="${esc(sv.nome)}" ${sel.includes(sv.nome)?'checked':''}> <span style="overflow:hidden; text-overflow:ellipsis;">${esc(sv.nome)}</span></label>`).join('');
     return `<div class="field" style="grid-column:1 / -1;"><label>${esc(f.rotulo)}${ajuda}</label>
       <input type="hidden" class="drwCampo" data-chave="${esc(f.chave)}" value="${esc(dados[f.chave]||'')}">
-      <div class="checkbox-grid drwServicoGrid">${checks}</div>
-      <div style="font-size:11px; color:var(--ink-soft); margin-top:4px;">Marque os serviços contratados — eles entram no texto do contrato separados por "; ".</div>
+      <div class="msel" data-grupo="${esc(f.chave)}">
+        <div class="msel-box" tabindex="0"><div class="msel-chips"></div><span class="msel-caret">▾</span></div>
+        <div class="msel-drop"><input class="msel-busca" placeholder="Buscar serviço…" autocomplete="off"><div class="msel-opts"></div></div>
+      </div>
+      <div class="msel-valores"></div>
+      <div style="font-size:11px; color:var(--ink-soft); margin-top:4px;">Selecione os serviços contratados. Com 2 ou mais, informe o valor (R$) de cada um — saem discriminados no contrato.</div>
     </div>`;
   }
   const largo = f.chave==='cliente_nome' ? ' style="grid-column:1 / -1;"' : '';
@@ -12759,6 +12785,68 @@ function campoGrupoHtml(titulo, lista, dados, comAjuda, catalogoServicos){
       <div class="campos-grid">${lista.map(f=>campoFieldHtml(f, dados, comAjuda, catalogoServicos)).join('')}</div>
     </div>
   `;
+}
+// Multiselect de serviços dentro do campo: chips + dropdown com busca, e campo de R$ por serviço
+// quando há 2+ selecionados. Mantém o input oculto (hidden) sincronizado com o texto discriminado que
+// entra no contrato: "Nome — R$ 1.500,00; Nome2 — R$ 800,00" (ou só os nomes quando houver 1 serviço).
+function setupMultiSelectServicos(wrap, catalogo, hidden){
+  const box = wrap.querySelector('.msel-box');
+  const chipsEl = wrap.querySelector('.msel-chips');
+  const drop = wrap.querySelector('.msel-drop');
+  const optsEl = drop.querySelector('.msel-opts');
+  const busca = drop.querySelector('.msel-busca');
+  const valoresEl = wrap.parentElement.querySelector('.msel-valores');
+  const escRe = s=>String(s).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  const sel = new Map(); // nome -> valor (string formatada, ex "1.500,00")
+  // Reconstrói a seleção a partir do valor salvo.
+  (function parseInicial(){
+    const str = hidden.value || '';
+    catalogo.forEach(sv=>{
+      if(!str.includes(sv.nome)) return;
+      const m = str.match(new RegExp(escRe(sv.nome)+'\\s*[—–-]\\s*R\\$\\s*([\\d.,]+)', 'i'));
+      sel.set(sv.nome, m ? m[1].trim() : '');
+    });
+  })();
+  function construirToken(){
+    const ents = [...sel.entries()];
+    if(ents.length < 2) return ents.map(([n])=>n).join('; ');
+    return ents.map(([n,v])=> v ? (n+' — R$ '+v) : n).join('; ');
+  }
+  function syncHidden(){ hidden.value = construirToken(); }
+  function renderChips(){
+    if(sel.size===0){ chipsEl.innerHTML = '<span class="msel-ph">Selecione os serviços…</span>'; return; }
+    chipsEl.innerHTML = [...sel.keys()].map(n=>`<span class="msel-chip">${esc(n)} <span class="x" data-nome="${esc(n)}">×</span></span>`).join('');
+    chipsEl.querySelectorAll('.x').forEach(x=>x.addEventListener('click', (e)=>{ e.stopPropagation(); sel.delete(x.dataset.nome); refletir(); }));
+  }
+  function renderValores(){
+    if(sel.size < 2){ valoresEl.innerHTML=''; return; }
+    valoresEl.innerHTML = [...sel.keys()].map(n=>`
+      <div class="msel-valor-row" data-nome="${esc(n)}"><span class="nome">${esc(n)}</span><span class="rs">R$</span><input inputmode="decimal" placeholder="0,00" value="${esc(sel.get(n)||'')}"></div>`).join('');
+    valoresEl.querySelectorAll('.msel-valor-row').forEach(row=>{
+      const inp = row.querySelector('input');
+      ligarMascaraMoeda(inp);
+      inp.addEventListener('input', ()=>{ sel.set(row.dataset.nome, inp.value); syncHidden(); });
+    });
+  }
+  function renderOpts(){
+    const f = (busca.value||'').toLowerCase();
+    const lista = catalogo.filter(sv=>!f || sv.nome.toLowerCase().includes(f));
+    optsEl.innerHTML = lista.length ? lista.map(sv=>`<label class="msel-opt"><input type="checkbox" class="msel-chk" value="${esc(sv.nome)}" ${sel.has(sv.nome)?'checked':''}> <span>${esc(sv.nome)}</span></label>`).join('') : '<div class="combo-empty">Nada encontrado.</div>';
+    optsEl.querySelectorAll('.msel-chk').forEach(chk=>chk.addEventListener('change', ()=>{
+      if(chk.checked){ if(!sel.has(chk.value)) sel.set(chk.value, ''); }
+      else sel.delete(chk.value);
+      renderChips(); renderValores(); syncHidden();
+    }));
+  }
+  function refletir(){ renderChips(); renderValores(); renderOpts(); syncHidden(); }
+  box.addEventListener('click', ()=>{
+    const abrir = !drop.classList.contains('open');
+    drop.classList.toggle('open', abrir);
+    if(abrir){ busca.value=''; renderOpts(); busca.focus(); }
+  });
+  document.addEventListener('click', (e)=>{ if(!wrap.contains(e.target)) drop.classList.remove('open'); });
+  busca.addEventListener('input', renderOpts);
+  renderChips(); renderValores(); renderOpts();
 }
 async function abrirContratoDrawer(id){
   const [c, catalogoServicos] = await Promise.all([
@@ -12865,13 +12953,11 @@ async function abrirContratoDrawer(id){
         ligarMascaraMoeda(inp);
       }
     });
-    // Multiescolha de serviços: mantém o input oculto (.drwCampo) sincronizado com os checkboxes marcados.
-    document.querySelectorAll('.drwServicoChk').forEach(chk=>chk.addEventListener('change', ()=>{
-      const grupo = chk.dataset.grupo;
-      const sel = [...document.querySelectorAll('.drwServicoChk[data-grupo="'+grupo+'"]:checked')].map(c=>c.value);
-      const hidden = document.querySelector('.drwCampo[data-chave="'+grupo+'"]');
-      if(hidden) hidden.value = sel.join('; ');
-    }));
+    // Multiescolha de serviços: inicializa o componente (chips + dropdown + valor por serviço).
+    document.querySelectorAll('.msel').forEach(wrap=>{
+      const hidden = document.querySelector('.drwCampo[data-chave="'+wrap.dataset.grupo+'"]');
+      if(hidden) setupMultiSelectServicos(wrap, catalogoServicos, hidden);
+    });
     document.getElementById('drwAplicarCampos').addEventListener('click', async ()=>{
       const novosDados = {};
       document.querySelectorAll('.drwCampo').forEach(inp=>novosDados[inp.dataset.chave]=inp.value);
