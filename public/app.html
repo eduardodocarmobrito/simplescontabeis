@@ -12719,17 +12719,25 @@ function campoAjudaTexto(chave){
 }
 function campoEhCnpjCpf(chave){ return chave==='CNPJ' || /cpf/i.test(chave); }
 function campoEhCep(chave){ return chave==='CEP'; }
+function campoEhMoeda(chave){ return /valor/i.test(chave); }
 function valorFormatadoCampo(chave, valor){
   if(!valor) return '';
   if(campoEhCnpjCpf(chave)) return fmtCnpjCpf(valor);
   if(campoEhCep(chave)) return fmtCep(valor);
+  if(campoEhMoeda(chave)){
+    // Aceita tanto número cru ("20311") quanto já formatado BR ("20.311,00") — vírgula é o sinal de
+    // separador decimal brasileiro. Sai sempre como "0.000,00" (o "R$" já está no texto do contrato).
+    const n = (typeof valor==='string' && valor.includes(',')) ? Number(valor.replace(/\./g,'').replace(',','.')) : Number(valor);
+    return Number.isFinite(n) ? n.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}) : valor;
+  }
   return valor;
 }
 function campoFieldHtml(f, dados, comAjuda){
   const largo = f.chave==='cliente_nome' ? ' style="grid-column:1 / -1;"' : '';
   const valor = valorFormatadoCampo(f.chave, dados[f.chave]);
   const ajuda = comAjuda ? ` <span class="campo-ajuda" data-ajuda="${esc(campoAjudaTexto(f.chave))}">?</span>` : '';
-  return `<div class="field"${largo}><label>${esc(f.rotulo)}${ajuda}</label><input class="drwCampo" data-chave="${esc(f.chave)}" value="${esc(valor)}"></div>`;
+  const ph = campoEhMoeda(f.chave) ? ' placeholder="0,00"' : '';
+  return `<div class="field"${largo}><label>${esc(f.rotulo)}${ajuda}</label><input class="drwCampo" data-chave="${esc(f.chave)}" value="${esc(valor)}"${ph}></div>`;
 }
 function campoGrupoHtml(titulo, lista, dados, comAjuda){
   if(!lista.length) return '';
@@ -12745,8 +12753,10 @@ async function abrirContratoDrawer(id){
   const campos = c.modeloCampos || [];
   const dados = c.dadosPreenchidos || {};
   const camposEmpresa = campos.filter(f=>f.autoPreencherDe);
-  const camposTestemunhas = campos.filter(f=>!f.autoPreencherDe && /testemunha/i.test(f.chave));
-  const camposEscritorio = campos.filter(f=>!f.autoPreencherDe && !/testemunha/i.test(f.chave));
+  // /test[eu]munha/ tolera a grafia com erro "testumunha" (u no lugar de e) que aparece em modelos
+  // reais — senão o CPF da testemunha com essa chave caía no quadro "Preenchimento do escritório".
+  const camposTestemunhas = campos.filter(f=>!f.autoPreencherDe && /test[eu]munha/i.test(f.chave));
+  const camposEscritorio = campos.filter(f=>!f.autoPreencherDe && !/test[eu]munha/i.test(f.chave));
   openDrawer(`
     <div class="drawer-header">
       <h3>${esc(c.titulo)}</h3>
@@ -12836,6 +12846,8 @@ async function abrirContratoDrawer(id){
     document.querySelectorAll('.drwCampo').forEach(inp=>{
       if(campoEhCnpjCpf(inp.dataset.chave) || campoEhCep(inp.dataset.chave)){
         inp.addEventListener('blur', ()=>{ inp.value = valorFormatadoCampo(inp.dataset.chave, inp.value); });
+      } else if(campoEhMoeda(inp.dataset.chave)){
+        ligarMascaraMoeda(inp);
       }
     });
     document.getElementById('drwAplicarCampos').addEventListener('click', async ()=>{
