@@ -20684,7 +20684,14 @@ app.post("/api/contratos", blockCliente, requirePermissao("contratos", "postar")
   dadosFinal["n_contrato_sequencial"] = String(numeroSequencial);
   for (const campo of camposModelo) {
     if (campo.autoPreencherDe && CONTRATO_EMPRESA_CAMPO_SQL[campo.autoPreencherDe] && (dadosFinal[campo.chave] === undefined || dadosFinal[campo.chave] === "")) {
-      dadosFinal[campo.chave] = empresa[CONTRATO_EMPRESA_CAMPO_SQL[campo.autoPreencherDe]] ?? "";
+      let v = empresa[CONTRATO_EMPRESA_CAMPO_SQL[campo.autoPreencherDe]] ?? "";
+      // CNPJ/CPF/CEP saem COM máscara no documento (o Domínio importa só dígitos). Só formata quando
+      // tem valor — vazio mantém o {{token}} visível em vez de virar "-".
+      if (v) {
+        if (campo.autoPreencherDe === "cnpj" || campo.autoPreencherDe === "cpfRepresentanteLegal") v = fmtCnpjRelatorio(v);
+        else if (campo.autoPreencherDe === "cep") v = contratoFmtCep(v);
+      }
+      dadosFinal[campo.chave] = v;
     }
   }
   // Achado em auditoria (2026-10-12): "dados" vem direto do corpo da requisição — a tela sempre
@@ -21367,6 +21374,11 @@ function fmtCnpjRelatorio(doc: string | null): string {
   if (d.length === 14) return d.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/, "$1.$2.$3/$4-$5");
   if (d.length === 11) return d.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, "$1.$2.$3-$4");
   return doc || "-";
+}
+// CEP com máscara (00.000-000) pro auto-preenchimento de contrato; valor sem 8 dígitos volta como está.
+function contratoFmtCep(v: string | null): string {
+  const d = String(v || "").replace(/\D/g, "");
+  return d.length === 8 ? d.replace(/(\d{2})(\d{3})(\d{3})/, "$1.$2-$3") : String(v || "");
 }
 function fmtMoedaRelatorio(v: number): string {
   return (v || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
