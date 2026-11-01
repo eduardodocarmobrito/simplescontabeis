@@ -19046,6 +19046,7 @@ async function renderCfgWppTemporizadores(sub){
 
 // ===================== Emissão de NFS-e (rotina automática de honorários) =====================
 let NFSE_AG_FILTRO_DISPONIVEIS='';
+let NFSE_AG_FILTRO_SELECIONADAS='';
 let NFSE_AG_EMPRESA_ABERTA=null;
 async function renderCfgNfseAgendamento(box){
   const [config, { items: quadro2 }, { items: envioTemplates }, empresas] = await Promise.all([
@@ -19104,6 +19105,7 @@ async function renderCfgNfseAgendamento(box){
       </div>
       <div class="card" style="flex:1; min-width:260px;">
         <h3>Em rotina automática</h3>
+        <div class="field" style="margin-bottom:8px;"><input type="text" id="agFiltroSelecionadas" placeholder="Buscar empresa…" autocomplete="off" value="${esc(NFSE_AG_FILTRO_SELECIONADAS)}"></div>
         <div id="agListaSelecionadas" style="max-height:420px; overflow-y:auto;"></div>
       </div>
       <div class="card" id="agPainelEmpresaWrap" style="flex:1; min-width:260px; ${NFSE_AG_EMPRESA_ABERTA?'':'display:none;'}"></div>
@@ -19161,6 +19163,10 @@ async function renderCfgNfseAgendamento(box){
     NFSE_AG_FILTRO_DISPONIVEIS = e.target.value;
     carregarQuadroDisponiveis();
   });
+  document.getElementById('agFiltroSelecionadas').addEventListener('input', (e)=>{
+    NFSE_AG_FILTRO_SELECIONADAS = e.target.value;
+    carregarQuadroSelecionadas();
+  });
   // Planilha em lote: mostra os nomes de modelo válidos e trata a importação.
   api('/nfse/agendamento/planilha-modelos-servico').then(r=>{
     const el=document.getElementById('agPlanilhaModelos'); if(!el) return;
@@ -19204,7 +19210,10 @@ async function renderCfgNfseAgendamento(box){
   }
   async function carregarQuadroSelecionadas(){
     const lista = document.getElementById('agListaSelecionadas');
-    const { items } = await api('/nfse/agendamento/empresas');
+    const { items: todos } = await api('/nfse/agendamento/empresas');
+    const norm = s=>(s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'');
+    const f = norm(NFSE_AG_FILTRO_SELECIONADAS);
+    const items = f ? todos.filter(e=>norm(e.nome).includes(f)) : todos;
     lista.innerHTML = items.length? items.map(e=>`
       <div class="row" style="justify-content:space-between; align-items:center; padding:6px 0; border-bottom:1px solid var(--rule);">
         <a href="javascript:void(0)" class="link-discreto" data-act="abrir" data-id="${e.empresaId}">${esc(e.nome)}</a>
@@ -19214,7 +19223,7 @@ async function renderCfgNfseAgendamento(box){
           <button class="btn small danger" data-act="remover" data-id="${e.empresaId}">← Remover</button>
         </span>
       </div>
-    `).join('') : `<div class="empty-state">Nenhuma empresa nesta rotina ainda — adicione pelo quadro ao lado.</div>`;
+    `).join('') : `<div class="empty-state">${f? 'Nenhuma empresa encontrada para a busca.' : 'Nenhuma empresa nesta rotina ainda — adicione pelo quadro ao lado.'}</div>`;
     lista.querySelectorAll('[data-act="abrir"]').forEach(a=>a.addEventListener('click', ()=>{ NFSE_AG_EMPRESA_ABERTA=Number(a.dataset.id); abrirPainelEmpresa(items.find(x=>x.empresaId===NFSE_AG_EMPRESA_ABERTA)); }));
     lista.querySelectorAll('[data-act="remover"]').forEach(b=>b.addEventListener('click', async ()=>{
       if(!confirm('Remover esta empresa da rotina automática?')) return;
@@ -19235,12 +19244,18 @@ async function renderCfgNfseAgendamento(box){
     ]);
     const modelosAtivos = modelos.filter(m=>m.ativo);
     painel.innerHTML = `
+      <div class="row" style="margin-bottom:8px;"><button class="btn small" id="agVoltarPainel">← Voltar</button></div>
       <h3>${esc(item.nome)}</h3>
       <label class="checkbox-row"><input type="checkbox" id="agAtivoEmpresa" ${item.ativo?'checked':''}> Empresa ativa nesta rotina (desmarque pra pausar todos os serviços dela sem remover nada)</label>
       <div style="font-size:12px; color:var(--ink-soft); margin:2px 0 12px;">Cada serviço abaixo vira uma NFS-e separada por competência — use quando o mesmo cliente precisar de mais de uma nota (ex.: honorários contábeis + licença do módulo NFS-e).</div>
       <div id="agItensLista"></div>
       <button class="btn" id="agAdicionarItem" style="margin-top:8px;">+ Adicionar outro serviço</button>
     `;
+    document.getElementById('agVoltarPainel').addEventListener('click', ()=>{
+      NFSE_AG_EMPRESA_ABERTA=null;
+      painel.style.display='none';
+      painel.innerHTML='';
+    });
     document.getElementById('agAtivoEmpresa').addEventListener('change', async (e)=>{
       try{ await api('/nfse/agendamento/empresas/'+item.empresaId, { method:'PUT', body:{ ativo: e.target.checked } }); toast('Salvo.','ok'); carregarQuadroSelecionadas(); }
       catch(err){ toast(err.message,'err'); }
@@ -19265,7 +19280,7 @@ async function renderCfgNfseAgendamento(box){
           </div>
           <div class="field"><label>Valor do serviço (R$)</label><input data-f="valor" inputmode="decimal" placeholder="0,00" value="${s.valorServico!=null?Number(s.valorServico).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}):''}"></div>
           <label class="checkbox-row"><input type="checkbox" data-f="ativo" ${s.ativo?'checked':''}> Ativo (desmarque pra pausar só este serviço)</label>
-          <button class="btn primary small" data-act="salvar-item" data-id="${s.id}">Salvar este serviço</button>
+          <button class="btn primary small" data-act="salvar-item" data-id="${s.id}" disabled>Salvar este serviço</button>
         </div>
       `).join('') : `<div class="empty-state">Nenhum serviço configurado ainda — adicione pelo botão abaixo.</div>`;
       lista.querySelectorAll('[data-f="valor"]').forEach(el=>ligarMascaraMoeda(el));
@@ -19277,9 +19292,18 @@ async function renderCfgNfseAgendamento(box){
           valorServico: moedaInputParaNumero(card.querySelector('[data-f="valor"]')),
           ativo: card.querySelector('[data-f="ativo"]').checked,
         };
-        try{ await api('/nfse/agendamento/itens/'+b.dataset.id, { method:'PUT', body }); toast('Salvo.','ok'); carregarQuadroSelecionadas(); }
+        try{ await api('/nfse/agendamento/itens/'+b.dataset.id, { method:'PUT', body }); toast('Salvo.','ok'); b.disabled=true; carregarQuadroSelecionadas(); }
         catch(err){ toast(err.message,'err'); }
       }));
+      // Botão "Salvar este serviço" só habilita quando algo muda no card; volta a desabilitar após salvar.
+      lista.querySelectorAll('[data-item-id]').forEach(card=>{
+        const salvarBtn = card.querySelector('[data-act="salvar-item"]');
+        if(!salvarBtn) return;
+        card.querySelectorAll('[data-f]').forEach(el=>{
+          el.addEventListener('input', ()=>{ salvarBtn.disabled=false; });
+          el.addEventListener('change', ()=>{ salvarBtn.disabled=false; });
+        });
+      });
       lista.querySelectorAll('[data-act="remover-item"]').forEach(b=>b.addEventListener('click', async ()=>{
         if(!confirm('Remover este serviço? Ele deixa de gerar NFS-e nas próximas execuções.')) return;
         try{

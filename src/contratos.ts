@@ -534,7 +534,20 @@ export function prepararConteudoContrato(conteudoHtml: string): string {
     .replace(/<p class="align-center cabecalho-repetido">\s*<img[^>]*>\s*<\/p>/gi, "")
     .replace(/<img[^>]*src="data:image\/[^"]*"[^>]*>/gi, "");
   c = c.replace(/(<p\b[^>]*>(?:\s*<[^/][^>]*>)*)\s*(?:&nbsp;| |\s)+/gi, "$1");
+  c = mascararDocumentos(c);
   return numerarClausulasContrato(c);
+}
+
+// Rede de segurança pra contratos criados ANTES da formatação na origem (que guardaram CNPJ/CPF/CEP
+// só com dígitos no texto): na geração do PDF, mascara o número que vem logo depois do rótulo. É
+// ancorado no rótulo + quantidade EXATA de dígitos (14 CNPJ / 11 CPF / 8 CEP) e exclui "<" pra não
+// atravessar tag — valor já mascarado tem pontos/barra e não casa, então é idempotente (não mexe nos
+// contratos novos, que já saem formatados da origem).
+function mascararDocumentos(html: string): string {
+  return html
+    .replace(/(CNPJ[^\d<]{0,8}?)(\d{14})(?!\d)/gi, (_m, p, d) => p + d.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/, "$1.$2.$3/$4-$5"))
+    .replace(/(CPF[^\d<]{0,8}?)(\d{11})(?!\d)/gi, (_m, p, d) => p + d.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, "$1.$2.$3-$4"))
+    .replace(/(CEP[^\d<]{0,8}?)(\d{8})(?!\d)/gi, (_m, p, d) => p + d.replace(/(\d{2})(\d{3})(\d{3})/, "$1.$2-$3"));
 }
 
 export async function gerarPdfContrato(conteudoHtml: string, titulo: string): Promise<Buffer> {

@@ -20683,15 +20683,18 @@ app.post("/api/contratos", blockCliente, requirePermissao("contratos", "postar")
   const numeroSequencial = (maxNumero?.maxNum || 0) + 1;
   dadosFinal["n_contrato_sequencial"] = String(numeroSequencial);
   for (const campo of camposModelo) {
+    // Auto-preenche da empresa quando o campo veio vazio da tela.
     if (campo.autoPreencherDe && CONTRATO_EMPRESA_CAMPO_SQL[campo.autoPreencherDe] && (dadosFinal[campo.chave] === undefined || dadosFinal[campo.chave] === "")) {
-      let v = empresa[CONTRATO_EMPRESA_CAMPO_SQL[campo.autoPreencherDe]] ?? "";
-      // CNPJ/CPF/CEP saem COM máscara no documento (o Domínio importa só dígitos). Só formata quando
-      // tem valor — vazio mantém o {{token}} visível em vez de virar "-".
-      if (v) {
-        if (campo.autoPreencherDe === "cnpj" || campo.autoPreencherDe === "cpfRepresentanteLegal") v = fmtCnpjRelatorio(v);
-        else if (campo.autoPreencherDe === "cep") v = contratoFmtCep(v);
-      }
-      dadosFinal[campo.chave] = v;
+      dadosFinal[campo.chave] = empresa[CONTRATO_EMPRESA_CAMPO_SQL[campo.autoPreencherDe]] ?? "";
+    }
+    // CNPJ/CPF/CEP saem COM máscara no documento — formata venha de onde vier: auto-preenchido pelo
+    // servidor OU já enviado preenchido pela tela (que manda só dígitos). Formatador é idempotente
+    // (tira não-dígitos antes), então re-aplicar num valor já mascarado não quebra. Só mexe se tiver
+    // valor — vazio mantém o {{token}} visível em vez de virar "-".
+    const v = dadosFinal[campo.chave];
+    if (v && typeof v === "string") {
+      if (campo.autoPreencherDe === "cnpj" || campo.autoPreencherDe === "cpfRepresentanteLegal") dadosFinal[campo.chave] = fmtCnpjRelatorio(v);
+      else if (campo.autoPreencherDe === "cep") dadosFinal[campo.chave] = contratoFmtCep(v);
     }
   }
   // Achado em auditoria (2026-10-12): "dados" vem direto do corpo da requisição — a tela sempre
