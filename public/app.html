@@ -12778,9 +12778,13 @@ async function abrirContratoDrawer(id){
       ${c.tipo==='contrato'?`<button class="btn" id="drwAditivo">Criar aditivo</button><button class="btn" id="drwDistrato">Criar distrato</button>`:''}
     </div>
   `);
+  // Container REAL do drawer: existem duas openDrawer() (a de NF-e cria #nfeDrawer e sobrescreve a
+  // original de #drawerBody). Scopar ao container certo — senão '#drawerBody .campo-ajuda' acha zero
+  // e os "?"/editor ficam sem handler, mesmo com o drawer aberto.
+  const drwScope = document.getElementById('nfeDrawer') || document.getElementById('drawerBody') || document;
   // Handlers essenciais (botões + "?") ligados PRIMEIRO; o opcional/arriscado (editor rico e card de
   // assinatura) fica por último e em try/catch — assim um erro ali NUNCA deixa os botões sem resposta.
-  document.querySelectorAll('#drawerBody .campo-ajuda').forEach(el=>el.addEventListener('click', ()=>toast(el.dataset.ajuda||'Sem descrição')));
+  drwScope.querySelectorAll('.campo-ajuda').forEach(el=>el.addEventListener('click', ()=>toast(el.dataset.ajuda||'Sem descrição')));
   const corpo = document.getElementById('drwCorpo');
   document.getElementById('drwFechar').addEventListener('click', closeDrawer);
   const salvarComStatus = async (status)=>{
@@ -12867,7 +12871,7 @@ async function abrirContratoDrawer(id){
   }
   // Por último e isolados (não-críticos): editor rico e card de assinatura digital. Se qualquer um
   // falhar, os botões acima JÁ estão ligados e continuam funcionando.
-  try{ setupRte(document.querySelector('#drawerBody .rte-toolbar'), corpo); }
+  try{ setupRte(drwScope.querySelector('.rte-toolbar'), corpo); }
   catch(e){ console.error('Editor do contrato indisponível:', e); }
   if(c.tipo==='contrato'){
     try{ renderAssinaturaCard(c); }
