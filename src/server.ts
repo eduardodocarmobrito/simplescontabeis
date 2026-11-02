@@ -14048,30 +14048,50 @@ async function integraContadorBuscarEmpresaInterno(
       let ultimoDasPago = false;
       let numeroDeclaracaoAtual: string | null = null; // nº da declaração da última competência — detecta retificação pra regerar o DAS
       try {
-        const declaracoes: integracontador.DeclaracaoSimplesNacional[] = [];
-        for (const ano of anosParaBuscar) {
-          declaracoes.push(...(await integracontador.consultarDeclaracoesPorAno(token, cnpjEscritorio, empresaCnpj, String(ano))));
-        }
-        const inserirDecl = sqlite.prepare(
-          `INSERT INTO integracontador_documentos (empresa_id, escritorio_id, tipo, periodo_apuracao, numero_documento, detalhes_json) VALUES (?, ?, 'declaracao', ?, ?, ?)`
-        );
-        for (const d of declaracoes) {
-          inserirDecl.run(empresaId, empConfig.escritorio_id, d.periodoApuracao, d.numeroDeclaracao, JSON.stringify(d));
-          novos++;
-          if (!ultimoPeriodoDeclarado || d.periodoApuracao > ultimoPeriodoDeclarado) ultimoPeriodoDeclarado = d.periodoApuracao;
-        }
-        const declUltima = declaracoes.find((d) => d.periodoApuracao === ultimoPeriodoDeclarado);
-        ultimoDasPago = !!declUltima?.dasPago;
-        numeroDeclaracaoAtual = declUltima?.numeroDeclaracao || null;
-        // Monitoramento de atraso: a competência do mês anterior já devia estar declarada a essa
-        // altura (PGDAS-D vence dia 20 do mês seguinte) — se não achou nada pra ela (nem período
-        // mais recente que ela), acende o alerta pra você conferir se o cliente esqueceu de mandar.
+        // Competência que já devia estar declarada (PGDAS-D do mês anterior vence dia 20 do mês seguinte).
         const competenciaEsperada = `${mesAnterior.getFullYear()}${String(mesAnterior.getMonth() + 1).padStart(2, "0")}`;
-        if (!ultimoPeriodoDeclarado || ultimoPeriodoDeclarado < competenciaEsperada) {
-          const rotulo = `${competenciaEsperada.slice(4, 6)}/${competenciaEsperada.slice(0, 4)}`;
-          alertaDeclaracao = `Declaração/DAS de ${rotulo} ainda não localizada — verifique se foi transmitida.`;
-        } else {
+        // Declarações já arquivadas desta empresa (evita rechamar a API PAGA pra competência que já temos).
+        const arquivadas = sqlite
+          .prepare(`SELECT periodo_apuracao as periodo, numero_documento as numero, detalhes_json as dj FROM integracontador_documentos WHERE empresa_id = ? AND tipo = 'declaracao'`)
+          .all(empresaId) as any[];
+        const temEsperada = arquivadas.some((a) => a.periodo === competenciaEsperada);
+        // ECONOMIA (2026-11): na busca AUTOMÁTICA, se a competência esperada já está arquivada, NÃO
+        // reconsulta a API (declaração transmitida não muda) — era a maior fonte de repetição paga.
+        // Deriva período/nº/dasPago do que já temos. Na busca MANUAL (forcarSitfis) sempre reconsulta,
+        // pra pegar eventual retificação quando a pessoa pede "atualizar agora".
+        if (!forcarSitfis && temEsperada) {
+          for (const a of arquivadas) if (!ultimoPeriodoDeclarado || a.periodo > ultimoPeriodoDeclarado) ultimoPeriodoDeclarado = a.periodo;
+          const topo = arquivadas.find((a) => a.periodo === ultimoPeriodoDeclarado);
+          try { const dj = JSON.parse(topo?.dj || "{}"); numeroDeclaracaoAtual = dj.numeroDeclaracao || topo?.numero || null; ultimoDasPago = !!dj.dasPago; } catch {}
           alertaDeclaracao = null;
+        } else {
+          const declaracoes: integracontador.DeclaracaoSimplesNacional[] = [];
+          for (const ano of anosParaBuscar) {
+            declaracoes.push(...(await integracontador.consultarDeclaracoesPorAno(token, cnpjEscritorio, empresaCnpj, String(ano))));
+          }
+          const existeDecl = sqlite.prepare(`SELECT 1 FROM integracontador_documentos WHERE empresa_id = ? AND tipo = 'declaracao' AND periodo_apuracao = ? AND numero_documento = ?`);
+          const inserirDecl = sqlite.prepare(
+            `INSERT INTO integracontador_documentos (empresa_id, escritorio_id, tipo, periodo_apuracao, numero_documento, detalhes_json) VALUES (?, ?, 'declaracao', ?, ?, ?)`
+          );
+          for (const d of declaracoes) {
+            if (!ultimoPeriodoDeclarado || d.periodoApuracao > ultimoPeriodoDeclarado) ultimoPeriodoDeclarado = d.periodoApuracao;
+            // DEDUP (2026-11): não grava de novo uma declaração já arquivada (mesma competência + número) —
+            // antes gravava uma linha a cada rodada, inchando o banco e a lista de documentos.
+            if (existeDecl.get(empresaId, d.periodoApuracao, d.numeroDeclaracao)) continue;
+            inserirDecl.run(empresaId, empConfig.escritorio_id, d.periodoApuracao, d.numeroDeclaracao, JSON.stringify(d));
+            novos++;
+          }
+          const declUltima = declaracoes.find((d) => d.periodoApuracao === ultimoPeriodoDeclarado);
+          ultimoDasPago = !!declUltima?.dasPago;
+          numeroDeclaracaoAtual = declUltima?.numeroDeclaracao || null;
+          // Monitoramento de atraso: se não achou a competência esperada (nem nada mais recente), acende
+          // o alerta pra você conferir se o cliente esqueceu de transmitir.
+          if (!ultimoPeriodoDeclarado || ultimoPeriodoDeclarado < competenciaEsperada) {
+            const rotulo = `${competenciaEsperada.slice(4, 6)}/${competenciaEsperada.slice(0, 4)}`;
+            alertaDeclaracao = `Declaração/DAS de ${rotulo} ainda não localizada — verifique se foi transmitida.`;
+          } else {
+            alertaDeclaracao = null;
+          }
         }
       } catch (e: any) {
         console.error(`[Integra Contador] declarações da empresa ${empresaId} falharam:`, e.message);
@@ -14586,7 +14606,15 @@ sqlite.exec(`CREATE TABLE IF NOT EXISTS integracontador_busca_slots (slot TEXT P
   // Cadência da Situação Fiscal (SITFIS): de quantos em quantos dias a busca automática rebusca a
   // Situação Fiscal de cada empresa. Padrão 7 (semanal) — é o passo mais lento/caro e uma foto do
   // momento, não precisa de todo dia. Controlado na tela do Integra Contador.
-  if (!colsIc.some((c) => c.name === "sitfis_frequencia_dias")) sqlite.exec(`ALTER TABLE integracontador_config ADD COLUMN sitfis_frequencia_dias INTEGER NOT NULL DEFAULT 7`);
+  if (!colsIc.some((c) => c.name === "sitfis_frequencia_dias")) sqlite.exec(`ALTER TABLE integracontador_config ADD COLUMN sitfis_frequencia_dias INTEGER NOT NULL DEFAULT 15`);
+  // ECONOMIA (2026-11): a SITFIS é a chamada mais cara e muda pouco — cadência passa de 7 pra 15 dias.
+  // Uma vez só (marcador): quem estava no padrão antigo (7) sobe pra 15; quem já tinha ajustado na tela
+  // pra outro valor NÃO é mexido, e religar 7 depois pela tela também não é desfeito.
+  if (!colsIc.some((c) => c.name === "sitfis_cadencia_15_aplicada")) {
+    sqlite.exec(`ALTER TABLE integracontador_config ADD COLUMN sitfis_cadencia_15_aplicada INTEGER NOT NULL DEFAULT 0`);
+    sqlite.exec(`UPDATE integracontador_config SET sitfis_frequencia_dias = 15 WHERE sitfis_frequencia_dias = 7`);
+    sqlite.exec(`UPDATE integracontador_config SET sitfis_cadencia_15_aplicada = 1`);
+  }
   // Freio separado do "Automático × Manual" do central-envio (pastas do Drive) — esse aqui é só pro
   // envio automático de DAS/DARF DCTF-Web/Guia FGTS/Parcelamento do DAS (tudo que passa por
   // envioEnviarDocumentoAutomatico). A busca diária e o anexo em Envio de Documentos continuam
