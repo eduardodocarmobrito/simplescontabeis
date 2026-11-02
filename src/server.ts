@@ -14046,6 +14046,7 @@ async function integraContadorBuscarEmpresaInterno(
       const anosParaBuscar = anoMesAnterior === anoAtual ? [anoAtual] : [anoMesAnterior, anoAtual];
       let ultimoPeriodoDeclarado: string | null = null;
       let ultimoDasPago = false;
+      let numeroDeclaracaoAtual: string | null = null; // nº da declaração da última competência — detecta retificação pra regerar o DAS
       try {
         const declaracoes: integracontador.DeclaracaoSimplesNacional[] = [];
         for (const ano of anosParaBuscar) {
@@ -14059,7 +14060,9 @@ async function integraContadorBuscarEmpresaInterno(
           novos++;
           if (!ultimoPeriodoDeclarado || d.periodoApuracao > ultimoPeriodoDeclarado) ultimoPeriodoDeclarado = d.periodoApuracao;
         }
-        ultimoDasPago = !!declaracoes.find((d) => d.periodoApuracao === ultimoPeriodoDeclarado)?.dasPago;
+        const declUltima = declaracoes.find((d) => d.periodoApuracao === ultimoPeriodoDeclarado);
+        ultimoDasPago = !!declUltima?.dasPago;
+        numeroDeclaracaoAtual = declUltima?.numeroDeclaracao || null;
         // Monitoramento de atraso: a competência do mês anterior já devia estar declarada a essa
         // altura (PGDAS-D vence dia 20 do mês seguinte) — se não achou nada pra ela (nem período
         // mais recente que ela), acende o alerta pra você conferir se o cliente esqueceu de mandar.
@@ -14075,10 +14078,24 @@ async function integraContadorBuscarEmpresaInterno(
         falhas.push(`Declaração: ${e.message}`);
       }
       // DAS — da competência mais recente que já tem declaração transmitida (o mês corrente ainda
-      // não tem declaração pra gerar DAS a partir dela). Rodar de novo pro mesmo período recalcula
-      // o DAS (útil se a declaração foi retificada depois da última busca).
-      // DAS da competência já pago: não gera de novo (nada a cobrar, e cada geração é uma chamada paga).
-      if (ultimoPeriodoDeclarado && !ultimoDasPago && !competenciasEmParcelamento(empresaId).has(ultimoPeriodoDeclarado)) {
+      // não tem declaração pra gerar DAS a partir dela).
+      // ECONOMIA (2026-11): cada geração é uma chamada PAGA (~R$0,80). Antes regerava toda rodada até
+      // o cliente pagar, gastando à toa num DAS cujo valor não muda. Agora gera só UMA vez por
+      // competência; só regera se a declaração foi RETIFICADA (nº da declaração mudou desde o DAS que
+      // guardamos — gravado em detalhes_json.numeroDeclaracaoOrigem). DAS já pago também não regera.
+      const dasExistente = sqlite
+        .prepare(`SELECT detalhes_json FROM integracontador_documentos WHERE empresa_id = ? AND tipo = 'das' AND periodo_apuracao = ? ORDER BY criado_em DESC LIMIT 1`)
+        .get(empresaId, ultimoPeriodoDeclarado || "") as any;
+      let dasRetificado = false;
+      if (dasExistente && numeroDeclaracaoAtual) {
+        try {
+          const dj = JSON.parse(dasExistente.detalhes_json || "{}");
+          // Só regera se o DAS antigo tinha um nº gravado E ele mudou. DAS antigo sem nº (gerado antes
+          // desta mudança) NÃO força regeração — evita uma regeração em massa só por causa da migração.
+          if (dj.numeroDeclaracaoOrigem && dj.numeroDeclaracaoOrigem !== numeroDeclaracaoAtual) dasRetificado = true;
+        } catch {}
+      }
+      if (ultimoPeriodoDeclarado && !ultimoDasPago && !competenciasEmParcelamento(empresaId).has(ultimoPeriodoDeclarado) && (!dasExistente || dasRetificado)) {
         try {
           const das = await integracontador.gerarDas(token, cnpjEscritorio, empresaCnpj, ultimoPeriodoDeclarado);
           if (das.pdfBase64) {
@@ -14087,7 +14104,7 @@ async function integraContadorBuscarEmpresaInterno(
               .prepare(
                 `INSERT INTO integracontador_documentos (empresa_id, escritorio_id, tipo, periodo_apuracao, numero_documento, data_vencimento, pdf_path, detalhes_json) VALUES (?, ?, 'das', ?, ?, ?, ?, ?)`
               )
-              .run(empresaId, empConfig.escritorio_id, das.periodoApuracao || ultimoPeriodoDeclarado, das.numeroDocumento, das.dataVencimento, caminho, JSON.stringify(das.valores || {}));
+              .run(empresaId, empConfig.escritorio_id, das.periodoApuracao || ultimoPeriodoDeclarado, das.numeroDocumento, das.dataVencimento, caminho, JSON.stringify({ ...(das.valores || {}), numeroDeclaracaoOrigem: numeroDeclaracaoAtual }));
             integraContadorAnexarDasEmEnvio(
               empConfig.escritorio_id,
               empresaId,
