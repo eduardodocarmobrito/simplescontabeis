@@ -20929,11 +20929,19 @@ app.put("/api/contratos/:id", blockCliente, requirePermissao("contratos", "edita
   const id = Number(req.params.id);
   const existente = sqlite.prepare(`SELECT * FROM contratos WHERE id = ?`).get(id) as any;
   if (!existente || !podeAcessarEmpresa((req as any).user, existente.empresa_id)) return res.status(404).json({ error: "Contrato não encontrado." });
-  const { titulo, conteudoHtml, status } = req.body || {};
+  const { titulo, conteudoHtml, status, dados } = req.body || {};
   const statusValido = ["rascunho", "ativo", "encerrado"].includes(status) ? status : existente.status;
   sqlite
     .prepare(`UPDATE contratos SET titulo=?, conteudo_html=?, status=?, ultimo_pdf_path=NULL, updated_at=datetime('now') WHERE id=?`)
     .run(titulo !== undefined ? String(titulo).trim() : existente.titulo, conteudoHtml !== undefined ? String(conteudoHtml) : existente.conteudo_html, statusValido, id);
+  // Persiste os valores dos campos editados (merge no dados_preenchidos) pra que reabrir o contrato
+  // recarregue o que foi definido (serviços, valores, testemunhas etc.). Merge preserva as chaves que
+  // não são campos de tela (dia/mês/ano/vlr_extenso/nº sequencial, gravadas na criação).
+  if (dados && typeof dados === "object" && !Array.isArray(dados)) {
+    let atual: Record<string, any> = {};
+    try { atual = JSON.parse(existente.dados_preenchidos || "{}"); } catch {}
+    sqlite.prepare(`UPDATE contratos SET dados_preenchidos = ? WHERE id = ?`).run(JSON.stringify({ ...atual, ...dados }), id);
+  }
   if (existente.ultimo_pdf_path && fs.existsSync(existente.ultimo_pdf_path)) fs.unlinkSync(existente.ultimo_pdf_path);
   res.json({ ok: true });
 });

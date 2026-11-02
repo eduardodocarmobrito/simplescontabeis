@@ -12762,7 +12762,7 @@ function campoFieldHtml(f, dados, comAjuda, catalogoServicos){
   // Campo de serviços vira MULTIESCOLHA quando há catálogo cadastrado — senão cai no input de texto
   // normal (não trava o preenchimento se o escritório ainda não montou a lista).
   if(campoEhServicos(f.chave) && catalogoServicos && catalogoServicos.length){
-    return `<div class="field" style="grid-column:1 / -1;"><label>${esc(f.rotulo)}${ajuda}</label>
+    return `<div class="field"><label>${esc(f.rotulo)}${ajuda}</label>
       <input type="hidden" class="drwCampo" data-chave="${esc(f.chave)}" value="${esc(dados[f.chave]||'')}">
       <div class="msel" data-grupo="${esc(f.chave)}">
         <div class="msel-box" tabindex="0"><div class="msel-chips"></div><span class="msel-caret">▾</span></div>
@@ -12909,8 +12909,12 @@ async function abrirContratoDrawer(id){
   const corpo = document.getElementById('drwCorpo');
   document.getElementById('drwFechar').addEventListener('click', closeDrawer);
   const salvarComStatus = async (status)=>{
+    // Persiste os valores dos campos (inclui o hidden de serviços e o honorário somado) junto com o
+    // documento, pra que reabrir o contrato recarregue o que foi definido aqui.
+    const novosDados = {};
+    document.querySelectorAll('.drwCampo').forEach(inp=>{ novosDados[inp.dataset.chave]=inp.value; });
     try{
-      await api('/contratos/'+id, { method:'PUT', body:{ titulo: document.getElementById('drwTitulo').value.trim(), conteudoHtml: corpo.innerHTML, status } });
+      await api('/contratos/'+id, { method:'PUT', body:{ titulo: document.getElementById('drwTitulo').value.trim(), conteudoHtml: corpo.innerHTML, status, dados: novosDados } });
       toast('Salvo.','ok');
       renderContratosLista();
     }catch(e){ toast(e.message,'err'); }
@@ -12959,7 +12963,9 @@ async function abrirContratoDrawer(id){
       if(campoEhCnpjCpf(inp.dataset.chave)){
         // Máscara ao vivo (pontos/traço enquanto digita). CPF limita a 11 dígitos; CNPJ a 14.
         const max = (inp.dataset.chave!=='CNPJ' && /cpf/i.test(inp.dataset.chave)) ? 11 : 14;
-        inp.addEventListener('input', ()=>{ inp.value = formatarDocumentoBR(inp.value.replace(/\D/g,'').slice(0,max)); });
+        const fmt = ()=>{ inp.value = formatarDocumentoBR(inp.value.replace(/\D/g,'').slice(0,max)); };
+        inp.addEventListener('input', fmt);
+        fmt(); // formata/trunca o valor já carregado (ex.: CPF com dígito a mais vira CPF válido formatado)
       } else if(campoEhCep(inp.dataset.chave)){
         ligarMascaraCep(inp);
       } else if(campoEhMoeda(inp.dataset.chave)){
