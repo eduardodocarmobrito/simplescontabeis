@@ -12956,8 +12956,12 @@ async function abrirContratoDrawer(id){
   });
   if(campos.length){
     document.querySelectorAll('.drwCampo').forEach(inp=>{
-      if(campoEhCnpjCpf(inp.dataset.chave) || campoEhCep(inp.dataset.chave)){
-        inp.addEventListener('blur', ()=>{ inp.value = valorFormatadoCampo(inp.dataset.chave, inp.value); });
+      if(campoEhCnpjCpf(inp.dataset.chave)){
+        // Máscara ao vivo (pontos/traço enquanto digita). CPF limita a 11 dígitos; CNPJ a 14.
+        const max = (inp.dataset.chave!=='CNPJ' && /cpf/i.test(inp.dataset.chave)) ? 11 : 14;
+        inp.addEventListener('input', ()=>{ inp.value = formatarDocumentoBR(inp.value.replace(/\D/g,'').slice(0,max)); });
+      } else if(campoEhCep(inp.dataset.chave)){
+        ligarMascaraCep(inp);
       } else if(campoEhMoeda(inp.dataset.chave)){
         ligarMascaraMoeda(inp);
       }
