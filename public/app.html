@@ -1171,6 +1171,22 @@ function fmtCnpjCpf(v){
   if(d.length===14) return d.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/,'$1.$2.$3/$4-$5');
   return v==null?'':String(v);
 }
+// Validação de dígito verificador — pega CPF/CNPJ com a contagem certa mas número inválido (ex.: typo).
+function cpfValido(v){
+  const c = String(v||'').replace(/\D/g,'');
+  if(c.length!==11 || /^(\d)\1{10}$/.test(c)) return false;
+  let s=0; for(let i=0;i<9;i++) s+=Number(c[i])*(10-i);
+  let d1=(s*10)%11; if(d1===10) d1=0; if(d1!==Number(c[9])) return false;
+  s=0; for(let i=0;i<10;i++) s+=Number(c[i])*(11-i);
+  let d2=(s*10)%11; if(d2===10) d2=0; return d2===Number(c[10]);
+}
+function cnpjValido(v){
+  const c = String(v||'').replace(/\D/g,'');
+  if(c.length!==14 || /^(\d)\1{13}$/.test(c)) return false;
+  const calc=(base)=>{ const p=base.length===12?[5,4,3,2,9,8,7,6,5,4,3,2]:[6,5,4,3,2,9,8,7,6,5,4,3,2]; let s=0; for(let i=0;i<base.length;i++) s+=Number(base[i])*p[i]; const r=s%11; return r<2?0:11-r; };
+  if(calc(c.slice(0,12))!==Number(c[12])) return false;
+  return calc(c.slice(0,13))===Number(c[13]);
+}
 // CEP no formato 00.000-000 (ex.: 68.552-675). Valor com outro número de dígitos volta como estava.
 function fmtCep(v){
   const d = String(v==null?'':v).replace(/[^0-9]/g,'');
@@ -12857,6 +12873,32 @@ function setupMultiSelectServicos(wrap, catalogo, hidden){
   busca.addEventListener('input', renderOpts);
   renderChips(); renderValores(); renderOpts(); atualizarHonorario();
 }
+// Valida os campos de documento (CPF/CNPJ/CEP) do drawer: se tiver dígitos mas na quantidade errada,
+// foca, pinta de vermelho, avisa e retorna false (bloqueia salvar/aplicar). Vazio é permitido.
+function validarDrwCampos(){
+  for(const inp of document.querySelectorAll('.drwCampo')){
+    const chave = inp.dataset.chave;
+    const dig = (inp.value||'').replace(/\D/g,'');
+    inp.style.borderColor = '';
+    if(!dig) continue;
+    let esperado = null, rotulo = '', checagem = null;
+    if(chave==='CNPJ'){ esperado=14; rotulo='CNPJ'; checagem=cnpjValido; }
+    else if(/cpf/i.test(chave)){ esperado=11; rotulo='CPF'; checagem=cpfValido; }
+    else if(campoEhCep(chave)){ esperado=8; rotulo='CEP'; }
+    if(esperado){
+      let erro = null;
+      if(dig.length!==esperado) erro = `${rotulo} precisa de ${esperado} dígitos (tem ${dig.length})`;
+      else if(checagem && !checagem(dig)) erro = `${rotulo} inválido — confira os números`;
+      if(erro){
+        inp.style.borderColor = 'var(--debit)';
+        inp.focus();
+        toast(`Campo "${chave}" com formato inválido — ${erro}. Corrija antes de salvar.`,'err');
+        return false;
+      }
+    }
+  }
+  return true;
+}
 async function abrirContratoDrawer(id){
   const [c, catalogoServicos] = await Promise.all([
     api('/contratos/'+id),
@@ -12909,6 +12951,7 @@ async function abrirContratoDrawer(id){
   const corpo = document.getElementById('drwCorpo');
   document.getElementById('drwFechar').addEventListener('click', closeDrawer);
   const salvarComStatus = async (status)=>{
+    if(!validarDrwCampos()) return;
     // Persiste os valores dos campos (inclui o hidden de serviços e o honorário somado) junto com o
     // documento, pra que reabrir o contrato recarregue o que foi definido aqui.
     const novosDados = {};
@@ -12963,7 +13006,7 @@ async function abrirContratoDrawer(id){
       if(campoEhCnpjCpf(inp.dataset.chave)){
         // Máscara ao vivo (pontos/traço enquanto digita). CPF limita a 11 dígitos; CNPJ a 14.
         const max = (inp.dataset.chave!=='CNPJ' && /cpf/i.test(inp.dataset.chave)) ? 11 : 14;
-        const fmt = ()=>{ inp.value = formatarDocumentoBR(inp.value.replace(/\D/g,'').slice(0,max)); };
+        const fmt = ()=>{ inp.value = formatarDocumentoBR(inp.value.replace(/\D/g,'').slice(0,max)); inp.style.borderColor=''; };
         inp.addEventListener('input', fmt);
         fmt(); // formata/trunca o valor já carregado (ex.: CPF com dígito a mais vira CPF válido formatado)
       } else if(campoEhCep(inp.dataset.chave)){
@@ -12978,6 +13021,7 @@ async function abrirContratoDrawer(id){
       if(hidden) setupMultiSelectServicos(wrap, catalogoServicos, hidden);
     });
     document.getElementById('drwAplicarCampos').addEventListener('click', async ()=>{
+      if(!validarDrwCampos()) return;
       const novosDados = {};
       document.querySelectorAll('.drwCampo').forEach(inp=>novosDados[inp.dataset.chave]=inp.value);
       // {{dia}}/{{mes}}/{{ano}} são automáticos (data de hoje) — só não sobrescreve se o admin já
