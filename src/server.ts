@@ -21159,6 +21159,27 @@ app.post("/api/contratos/:id/enviar-assinatura", blockCliente, requirePermissao(
     res.status(502).json({ error: `Falha ao enviar para a Autentique: ${e.message}` });
   }
 });
+// Reenvia o pedido de assinatura só pra quem o usuário escolheu (no mesmo documento). Consulta o
+// status atual antes, pra nunca reenviar pra quem já assinou/rejeitou nem pra um id de outro documento.
+app.post("/api/contratos/:id/reenviar-assinatura", blockCliente, requirePermissao("contratos", "postar"), async (req, res) => {
+  const token = process.env.AUTENTIQUE_API_TOKEN;
+  const row = sqlite.prepare(`SELECT * FROM contratos WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!row || !podeAcessarEmpresa((req as any).user, row.empresa_id)) return res.status(404).json({ error: "Contrato não encontrado." });
+  if (!row.autentique_document_id) return res.status(400).json({ error: "Este contrato ainda não foi enviado para assinatura." });
+  if (!token) return res.status(400).json({ error: "Token da Autentique não configurado no servidor." });
+  const pedidos: string[] = Array.isArray(req.body?.publicIds) ? req.body.publicIds.map((x: any) => String(x)) : [];
+  if (!pedidos.length) return res.status(400).json({ error: "Marque pelo menos um destinatário para reenviar." });
+  try {
+    const status = await atualizarStatusAssinaturaContrato(row, token);
+    const pendentes = status.signatarios.filter((s) => s.publicId && !s.assinadoEm && !s.rejeitadoEm);
+    const escolhidos = pendentes.filter((s) => pedidos.includes(s.publicId!));
+    if (!escolhidos.length) return res.status(400).json({ error: "Nenhum dos selecionados está pendente (quem já assinou não recebe reenvio)." });
+    await autentique.reenviarAssinaturas(token, escolhidos.map((s) => s.publicId!));
+    res.json({ ok: true, reenviados: escolhidos.map((s) => s.email || s.nome), ignorados: pedidos.length - escolhidos.length });
+  } catch (e: any) {
+    res.status(502).json({ error: `Falha ao reenviar pela Autentique: ${e.message}` });
+  }
+});
 app.get("/api/contratos/:id/status-assinatura", blockCliente, requirePermissao("contratos", "visualizar"), async (req, res) => {
   const token = process.env.AUTENTIQUE_API_TOKEN;
   const row = sqlite.prepare(`SELECT * FROM contratos WHERE id = ?`).get(Number(req.params.id)) as any;

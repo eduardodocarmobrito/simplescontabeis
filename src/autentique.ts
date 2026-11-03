@@ -60,6 +60,7 @@ export async function criarDocumento(opts: {
 }
 
 export interface AutentiqueStatusSignatario {
+  publicId: string | null; // id do signatário na Autentique — usado pra reenviar só pra ele
   nome: string | null;
   email: string | null;
   acao: string | null;
@@ -78,7 +79,7 @@ export async function consultarDocumento(token: string, id: string): Promise<{
   const query = `query ConsultarDocumento($id: UUID!) {
     document(id: $id) {
       id name
-      signatures { name email action { name } viewed { created_at } signed { created_at } rejected { created_at } }
+      signatures { public_id name email action { name } viewed { created_at } signed { created_at } rejected { created_at } }
       files { signed pades }
     }
   }`;
@@ -93,6 +94,7 @@ export async function consultarDocumento(token: string, id: string): Promise<{
   if (json.errors?.length) throw new Error(json.errors.map((e: any) => e.message).join("; "));
   const doc = json.data.document;
   const signatarios: AutentiqueStatusSignatario[] = (doc.signatures || []).map((s: any) => ({
+    publicId: s.public_id || null,
     nome: s.name,
     email: s.email,
     acao: s.action?.name || null,
@@ -107,6 +109,14 @@ export async function consultarDocumento(token: string, id: string): Promise<{
     algumRejeitou: signatarios.some((s) => !!s.rejeitadoEm),
     pdfAssinadoUrl: doc.files?.signed || doc.files?.pades || null,
   };
+}
+
+// Reenvia o pedido de assinatura (e-mail/WhatsApp) só pros signatários escolhidos, no MESMO
+// documento — quem já assinou continua assinado.
+export async function reenviarAssinaturas(token: string, publicIds: string[]): Promise<boolean> {
+  const query = `mutation Reenviar($ids: [UUID]) { resendSignatures(public_ids: $ids) }`;
+  const data = await chamarApi(token, JSON.stringify({ query, variables: { ids: publicIds } }), { "Content-Type": "application/json" });
+  return !!data.resendSignatures;
 }
 
 // Telefones no cadastro de empresas/testemunhas vêm sem DDI (ex.: "94999999999" ou com máscara

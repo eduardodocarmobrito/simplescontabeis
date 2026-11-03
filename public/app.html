@@ -13185,15 +13185,52 @@ function renderAssinaturaCard(c){
       toast('Status atualizado.','ok');
     }catch(e){ toast(e.message,'err'); }
   });
-  document.getElementById('asReenviarToggle').addEventListener('click', ()=>{
+  document.getElementById('asReenviarToggle').addEventListener('click', async ()=>{
     const formBox = document.getElementById('asReenviarForm');
-    if(formBox.style.display==='none'){
-      formBox.style.display='block';
-      formBox.innerHTML = assinaturaFormularioEnvioHtml(c, dados) + `<p style="font-size:12px; color:var(--ink-soft); margin-top:-4px;">Reenviar cria um novo pedido de assinatura do zero (o anterior fica ignorado).</p><button class="btn primary small" id="asReenviarBtn">Confirmar reenvio</button>`;
+    if(formBox.style.display!=='none'){ formBox.style.display='none'; return; }
+    // Busca o status atual antes de listar — garante que quem já assinou apareça bloqueado.
+    let lista = assinatarios;
+    try{
+      const st = await api('/contratos/'+c.id+'/status-assinatura');
+      if(st && st.signatarios) lista = st.signatarios;
+    }catch(e){ toast('Não consegui atualizar o status agora: '+e.message,'err'); }
+    const pendente = s=>!s.assinadoEm && !s.rejeitadoEm;
+    formBox.style.display='block';
+    formBox.innerHTML = `
+      <div style="font-size:12.5px; color:var(--ink-soft); margin-bottom:6px;">Escolha quem recebe o lembrete. Reenvia no MESMO documento — quem já assinou continua assinado e não recebe nada.</div>
+      ${lista.map(s=>`<label class="checkbox-row" style="${pendente(s)?'':'opacity:.55;'}">
+        <input type="checkbox" class="asReenvChk" value="${esc(s.publicId||'')}" ${pendente(s)&&s.publicId?'checked':'disabled'}>
+        <span>${esc(s.nome||'')} — ${esc(s.email||'(WhatsApp)')} <span style="color:var(--ink-soft);">(${s.assinadoEm?'já assinou':s.rejeitadoEm?'rejeitou':s.visualizadoEm?'visualizou':'pendente'})</span></span>
+      </label>`).join('')}
+      <div style="margin-top:8px; display:flex; gap:6px; flex-wrap:wrap;">
+        <button class="btn primary small" id="asReenvSelBtn">Reenviar para selecionados</button>
+        <button class="btn small" id="asReenvCancelBtn">Cancelar</button>
+        <button class="btn small" id="asRefazerToggle" title="Cria um documento novo na Autentique — as assinaturas já feitas são perdidas">Refazer envio do zero…</button>
+      </div>
+      <div id="asRefazerForm" style="display:none; margin-top:10px;"></div>`;
+    const btnSel = document.getElementById('asReenvSelBtn');
+    const marcados = ()=>[...formBox.querySelectorAll('.asReenvChk:checked')].map(i=>i.value).filter(Boolean);
+    const sync = ()=>{ btnSel.disabled = !marcados().length; };
+    formBox.querySelectorAll('.asReenvChk').forEach(i=>i.addEventListener('change', sync));
+    sync();
+    btnSel.addEventListener('click', async ()=>{
+      const ids = marcados();
+      if(!ids.length){ toast('Marque pelo menos um destinatário.','err'); return; }
+      btnSel.disabled = true;
+      try{
+        const r = await api('/contratos/'+c.id+'/reenviar-assinatura', { method:'POST', body:{ publicIds: ids } });
+        toast('Reenviado para: '+r.reenviados.join(', ')+'.','ok');
+        renderAssinaturaCard(await api('/contratos/'+c.id));
+      }catch(e){ toast(e.message,'err'); sync(); }
+    });
+    document.getElementById('asReenvCancelBtn').addEventListener('click', ()=>{ formBox.style.display='none'; });
+    document.getElementById('asRefazerToggle').addEventListener('click', ()=>{
+      const rf = document.getElementById('asRefazerForm');
+      if(rf.style.display!=='none'){ rf.style.display='none'; return; }
+      rf.style.display='block';
+      rf.innerHTML = assinaturaFormularioEnvioHtml(c, dados) + `<p style="font-size:12px; color:var(--debit); margin-top:-4px;">Atenção: cria um novo pedido de assinatura do zero e TODOS assinam de novo (inclusive quem já assinou). Use só se o texto do contrato ou um e-mail mudou.</p><button class="btn primary small" id="asReenviarBtn">Confirmar novo envio</button>`;
       ligarEnvioAssinatura(c, 'asReenviarBtn');
-    } else {
-      formBox.style.display='none';
-    }
+    });
   });
 }
 async function criarDistrato(contratoId){
@@ -16479,6 +16516,7 @@ async function pageSetor(escopo){
       <div class="tab ${SETOR_ABA[escopo]==='tags'?'active':''}" data-aba="tags">Tags</div>
       <div class="tab ${SETOR_ABA[escopo]==='envio'?'active':''}" data-aba="envio">📤 Envio de documentos</div>
       ${escopo==='dprh'?`<div class="tab ${SETOR_ABA[escopo]==='ferias'?'active':''}" data-aba="ferias">🏖️ Programação de Férias</div>`:''}
+      ${escopo==='dprh'?`<div class="tab ${SETOR_ABA[escopo]==='obrigacoes'?'active':''}" data-aba="obrigacoes">✅ Obrigações do Mês</div>`:''}
       ${escopo==='fiscal'?`<div class="tab ${SETOR_ABA[escopo]==='entradas_saidas'?'active':''}" data-aba="entradas_saidas">📊 Relatório de Entradas/Saídas</div>`:''}
     </div>
     <div id="setorConteudo"></div>
@@ -16488,12 +16526,17 @@ async function pageSetor(escopo){
   // Agenda e Tags do setor: só dos clientes que o setor atendeu (o CRM tem a visão geral).
   if(SETOR_ABA[escopo]==='envio') await centralEnvioMontar(escopo, box);
   else if(SETOR_ABA[escopo]==='ferias') await feriasMontar(box);
+  else if(SETOR_ABA[escopo]==='obrigacoes') await obrigacoesMontar(box);
   else if(SETOR_ABA[escopo]==='entradas_saidas') await entradasSaidasMontar(box);
   else if(SETOR_ABA[escopo]==='agenda') await crmAgenda(box, escopo);
   else if(SETOR_ABA[escopo]==='tags') await crmTags(box, escopo);
   else await atendimentoMontar(escopo, box);
 }
 
+// ===================== Obrigações do Mês (DP/RH) — quadro de tarefas com status automático =====================
+async function obrigacoesMontar(box){
+  box.innerHTML = `<div class="empty-state">Montando o quadro de obrigações…</div>`;
+}
 // ===================== Relatório de Entradas/Saídas (Fiscal) =====================
 // Lê a tabela mensal do "Relatório de Entradas/Saídas" (importado em Relatórios › Domínio Web). Permite
 // somar um valor numa coluna (salvo por empresa, refaz o Acumulado) e gerar um PDF novo ajustado.
