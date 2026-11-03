@@ -647,6 +647,18 @@ body.theme-glass .card::before, body.theme-glass .kpi::before, body.theme-glass 
   backdrop-filter: saturate(200%) blur(40px);
   -webkit-backdrop-filter: saturate(200%) blur(40px);
 }
+/* Modal = caixa COM ROLAGEM: o ::before (inset:0) só tem a altura da área visível e rola junto com o
+   conteúdo — ao rolar (ex.: Editar empresa), a metade de baixo ficava SEM fundo e a lista de trás
+   aparecia misturada com os campos (achado ao vivo 2026-11-03). No modal o fundo vai no próprio
+   elemento (rola junto e cobre tudo) e quase opaco, pra leitura; ele é a camada de cima, então o
+   problema de empilhamento do comentário acima não se aplica aqui. Fundo do overlay também mais escuro. */
+body.theme-glass .modal{
+  background: rgba(var(--glass-rgb,5,31,32),.94);
+  backdrop-filter: saturate(160%) blur(24px);
+  -webkit-backdrop-filter: saturate(160%) blur(24px);
+}
+body.theme-glass .modal::before{ content:none; }
+body.theme-glass .modal-bg{ background: rgba(0,0,0,.55); }
 
 /* Só as tiles do dashboard (.kpi) ganham o "liquid glass" cheio: brilho especular + reflexo + hover. */
 body.theme-glass .kpi{
