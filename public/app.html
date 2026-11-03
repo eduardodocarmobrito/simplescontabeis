@@ -1826,6 +1826,7 @@ const NAV = [
     { label:'SAT-CF-e', tipo:'satcfe' },
   ] },
   { id:'reforma-tributaria', label:'Reforma Tributária', modulo:'reforma', roles:['Administrador','Colaborador'] },
+  { id:'open-finance', label:'Conciliação Bancária', modulo:'open_finance', roles:['Administrador','Colaborador'] },
   { id:'integracontador', label:'Integra Contador', modulo:'integracontador', roles:['Administrador','Colaborador'] },
   { id:'webdfe', label:'Emissor NF-e', modulo:'webdfe', roles:['Administrador','Colaborador'] },
   { id:'minha-financeiro', label:'Financeiro', modulo:null, roles:['Cliente'] },
@@ -1836,6 +1837,7 @@ const NAV = [
   { id:'documentos-recebidos', label:'Documentos Recebidos', modulo:null, roles:['Cliente'] },
   { id:'notas-entrada', label:'Notas de Entradas/Saídas', modulo:null, roles:['Cliente'] },
   { id:'minha-reforma', label:'Reforma Tributária', modulo:null, roles:['Cliente'] },
+  { id:'minha-conciliacao', label:'Conciliação Bancária', modulo:null, roles:['Cliente'] },
   { id:'minha-assinatura', label:'Assinatura', modulo:null, roles:['Cliente'] },
   { id:'financeiro', label:'Financeiro', modulo:'financeiro', roles:['Administrador','Colaborador'] },
   { id:'certificados', label:'Certificados', modulo:'certificados', roles:['Administrador','Colaborador'] },
@@ -2038,6 +2040,8 @@ async function render(){
     else if(STATE.page==='documentos-recebidos') await pageDocumentosRecebidos();
     else if(STATE.page==='notas-entrada') await pageNotasEntrada();
     else if(STATE.page==='reforma-tributaria') await pageReformaTributaria();
+    else if(STATE.page==='open-finance') await pageOpenFinance();
+    else if(STATE.page==='minha-conciliacao') await pageMinhaConciliacao();
     else if(STATE.page==='minha-reforma') await pageMinhaReforma();
     else if(STATE.page==='minha-nfse') await pageMinhaNfse();
     else if(STATE.page==='minha-financeiro') await pageMinhaFinanceiro();
@@ -8753,6 +8757,172 @@ async function reformaDiagMontar(painel, urlApi, urlPdf, urlPremissas){
       try{ await api(urlPremissas, { method:'PUT', body:{ premissas: null } }); reformaDiagMontar(painel, urlApi, urlPdf, urlPremissas); }catch(err){ toast(err.message,'err'); }
     });
   }
+}
+// ================= Conciliação Bancária (Open Finance) =================
+let OF_EMPRESA_ID = null, OF_COMP = null, OF_STATUS = null;
+function ofBRL(v){ return 'R$ ' + Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function ofDataBr(d){ return d && /^\d{4}-\d{2}-\d{2}$/.test(d) ? d.slice(8,10)+'/'+d.slice(5,7)+'/'+d.slice(0,4) : (d||''); }
+const OF_TIPO_LABEL = { pix:'PIX', ted:'TED/Transf.', transferencia_propria:'Transf. própria', tarifa:'Tarifa', tributo:'Tributo', boleto:'Boleto', outro:'Outro' };
+const OF_STATUS_CHIP = { pendente:['Pendente','tag'], conciliada:['Conciliada','tag ok'], ignorada:['Ignorada','tag'] };
+const OF_BTN_SM = 'style="padding:3px 9px; font-size:12px;"';
+async function pageOpenFinance(){
+  const m = main();
+  try{ OF_STATUS = await api('/open-finance/status'); }catch(e){ OF_STATUS = { modo:'sandbox', provedor:'Sandbox' }; }
+  if(!OF_COMP) OF_COMP = new Date().toISOString().slice(0,7);
+  const podeEditar = STATE.user.perfil==='Administrador' || can('open_finance','editar');
+  const chip = OF_STATUS.modo==='producao'
+    ? `<span class="tag ok">${esc(OF_STATUS.provedor)}</span>`
+    : `<span class="tag" style="background:#fde68a; color:#92400e;">⚙️ Modo Sandbox — dados de teste (configure a Pluggy pra dado real)</span>`;
+  m.innerHTML = `
+    <h1>Conciliação Bancária <span style="font-size:13px; font-weight:500; margin-left:6px;">${chip}</span></h1>
+    <p class="subtitle">Open Finance: o cliente autoriza o acesso, puxamos o extrato, conciliamos e exportamos um OFX pra importar no Domínio.</p>
+    <div class="card" style="margin-bottom:14px;">
+      <div class="row" style="gap:12px; flex-wrap:wrap; align-items:flex-end;">
+        <div class="field" style="flex:1; min-width:280px; margin-bottom:0;"><label>Empresa</label>${comboSelectHtml('ofEmpresaCombo','Digite nome, CNPJ ou código…')}</div>
+        <div class="field" style="margin-bottom:0;"><label>Competência</label>${monthInputHtml('ofComp', OF_COMP)}</div>
+      </div>
+    </div>
+    <div id="ofPainel"><div class="card"><div class="empty-state">Escolha a empresa para ver as conexões bancárias e a conciliação.</div></div></div>`;
+  setupMonthPicker('ofComp','ofComp_text');
+  document.getElementById('ofComp').addEventListener('change', e=>{ OF_COMP = e.target.value || OF_COMP; if(OF_EMPRESA_ID) ofCarregar(); });
+  let empresas = [];
+  try{ empresas = await empresasAtivas(); }catch(e){ document.getElementById('ofPainel').innerHTML = `<div class="card"><div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div></div>`; return; }
+  setupComboSelect('ofEmpresaCombo', empresas.map(e=>({ id:e.id, label: empresaComboLabel(e) })), id=>{ OF_EMPRESA_ID = id?Number(id):null; if(OF_EMPRESA_ID) ofCarregar(); });
+  if(OF_EMPRESA_ID){ const e = empresas.find(x=>x.id===OF_EMPRESA_ID); if(e){ const root=document.getElementById('ofEmpresaCombo'); root.querySelector('.combo-input').value = empresaComboLabel(e); root.querySelector('.combo-value').value=e.id; } ofCarregar(); }
+
+  async function ofCarregar(){
+    const painel = document.getElementById('ofPainel');
+    painel.innerHTML = `<div class="card"><div class="empty-state">Carregando…</div></div>`;
+    let conex, tx;
+    try{ [conex, tx] = await Promise.all([ api('/open-finance/conexoes?empresaId='+OF_EMPRESA_ID), api('/open-finance/transacoes?empresaId='+OF_EMPRESA_ID+'&competencia='+OF_COMP) ]); }
+    catch(e){ painel.innerHTML = `<div class="card"><div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div></div>`; return; }
+    const conexoes = conex.conexoes||[];
+    const contasAtivas = conexoes.filter(c=>c.status==='ativo');
+    const r = tx.resumo||{};
+    painel.innerHTML = `
+      <div class="card" style="margin-bottom:14px;">
+        <div class="row" style="justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+          <b>Conexões bancárias</b>
+          ${podeEditar?`<button class="btn" id="ofConectar">+ Conectar conta ${OF_STATUS.modo==='sandbox'?'(sandbox)':''}</button>`:''}
+        </div>
+        ${conexoes.length? `<div style="overflow-x:auto;"><table class="data-table" style="margin-top:10px;"><thead><tr><th>Banco</th><th>Conta</th><th>Status</th><th>Validade do consentimento</th>${podeEditar?'<th></th>':''}</tr></thead><tbody>
+          ${conexoes.flatMap(c=> (c.contas.length?c.contas:[{banco:'—',numero:'—'}]).map(a=>`<tr>
+            <td>${esc(a.banco||'—')}</td><td style="white-space:nowrap;">${esc(a.numero||'—')}</td>
+            <td><span class="tag ${c.status==='ativo'?'ok':''}">${c.status==='ativo'?'Ativo':(c.status==='revogado'?'Revogado':'Expirado')}</span></td>
+            <td style="white-space:nowrap;">${c.validadeAte?ofDataBr(c.validadeAte):'—'}</td>
+            ${podeEditar?`<td>${c.status==='ativo'?`<button class="btn" ${OF_BTN_SM} data-revogar="${c.id}">Revogar</button>`:''}</td>`:''}
+          </tr>`)).join('')}
+        </tbody></table></div>` : `<div class="empty-state" style="margin-top:8px;">Nenhuma conta conectada. ${podeEditar?'Clique em "Conectar conta" pra simular o consentimento e puxar um extrato.':''}</div>`}
+      </div>
+      <div class="card">
+        <div class="row" style="justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px;">
+          <div><b>Conciliação</b> <span class="mut">· ${MESES_PT[+OF_COMP.slice(5,7)-1]} de ${OF_COMP.slice(0,4)}</span></div>
+          <div class="row" style="gap:8px; flex-wrap:wrap;">
+            ${podeEditar?`<button class="btn" id="ofSync" ${contasAtivas.length?'':'disabled'}>⟳ Sincronizar extrato</button>
+            <button class="btn" id="ofConciliar" ${r.total?'':'disabled'}>✓ Conciliar automático</button>
+            <button class="btn" id="ofRegras">Regras</button>`:''}
+            <button class="btn primary" id="ofOfx" ${r.total?'':'disabled'}>⬇ Exportar OFX</button>
+          </div>
+        </div>
+        <div class="row" style="gap:16px; flex-wrap:wrap; margin-bottom:10px; font-size:13px;">
+          <span><b>${r.total||0}</b> transações</span>
+          <span style="color:var(--credit);">entradas ${ofBRL(r.creditos)}</span>
+          <span style="color:var(--debit);">saídas ${ofBRL(r.debitos)}</span>
+          <span>conciliadas <b>${r.conciliadas||0}</b></span>
+          <span>pendentes <b>${r.pendentes||0}</b></span>
+          <span>ignoradas <b>${r.ignoradas||0}</b></span>
+        </div>
+        ${(tx.items||[]).length? `<div style="overflow-x:auto;"><table class="data-table"><thead><tr><th>Data</th><th>Descrição</th><th>Tipo</th><th style="text-align:right;">Valor</th><th>Conta / Histórico</th><th>Status</th>${podeEditar?'<th></th>':''}</tr></thead><tbody>
+          ${tx.items.map(t=>`<tr>
+            <td style="white-space:nowrap;">${ofDataBr(t.data)}</td>
+            <td>${esc(t.descricao||'')}<br><span class="mut" style="font-size:11px;">${esc(t.banco||'')}${t.contaNumero?' · '+esc(t.contaNumero):''}</span></td>
+            <td><span class="tag">${esc(OF_TIPO_LABEL[t.tipoMov]||t.tipoMov||'—')}</span></td>
+            <td style="text-align:right; white-space:nowrap; color:${t.valor<0?'var(--debit)':'var(--credit)'};">${ofBRL(t.valor)}</td>
+            <td>${t.contaContabil?esc(t.contaContabil):'<span class="mut">—</span>'}${t.historico?'<br><span class="mut" style="font-size:11px;">'+esc(t.historico)+'</span>':''}</td>
+            <td><span class="${OF_STATUS_CHIP[t.status]?OF_STATUS_CHIP[t.status][1]:'tag'}">${OF_STATUS_CHIP[t.status]?OF_STATUS_CHIP[t.status][0]:esc(t.status)}</span></td>
+            ${podeEditar?`<td style="white-space:nowrap;">
+              <button class="btn" ${OF_BTN_SM} data-edit="${t.id}" title="Editar conta/histórico">✎</button>
+              ${t.status!=='conciliada'?`<button class="btn" ${OF_BTN_SM} data-ok="${t.id}" title="Conciliar">✓</button>`:''}
+              ${t.status!=='ignorada'?`<button class="btn" ${OF_BTN_SM} data-ign="${t.id}" title="Ignorar">⊘</button>`:''}
+            </td>`:''}
+          </tr>`).join('')}
+        </tbody></table></div>` : `<div class="empty-state">Nenhuma transação nesta competência. ${contasAtivas.length?(podeEditar?'Clique em "Sincronizar extrato" pra puxar o mês.':''):'Conecte uma conta primeiro.'}</div>`}
+      </div>`;
+    const $ = id=>document.getElementById(id);
+    if($('ofConectar')) $('ofConectar').addEventListener('click', async ev=>{ ev.target.disabled=true; try{ const r = await api('/open-finance/conectar',{method:'POST',body:{empresaId:OF_EMPRESA_ID}}); toast('Conta conectada ('+r.modo+').','ok'); ofCarregar(); }catch(e){ toast(e.message,'err'); ev.target.disabled=false; } });
+    painel.querySelectorAll('[data-revogar]').forEach(b=>b.addEventListener('click', async ()=>{ if(!confirm('Revogar o consentimento desta conexão?')) return; try{ await api('/open-finance/conexoes/'+b.dataset.revogar+'/revogar',{method:'POST'}); toast('Consentimento revogado.','ok'); ofCarregar(); }catch(e){ toast(e.message,'err'); } }));
+    if($('ofSync')) $('ofSync').addEventListener('click', async ev=>{ ev.target.disabled=true; const o=ev.target.textContent; ev.target.textContent='Sincronizando…'; try{ const r = await api('/open-finance/sincronizar',{method:'POST',body:{empresaId:OF_EMPRESA_ID,competencia:OF_COMP}}); toast(r.novas+' novas transações (de '+r.total+' lidas · dedup por fitid).','ok'); ofCarregar(); }catch(e){ toast(e.message,'err'); ev.target.disabled=false; ev.target.textContent=o; } });
+    if($('ofConciliar')) $('ofConciliar').addEventListener('click', async ()=>{ try{ const r = await api('/open-finance/conciliar',{method:'POST',body:{empresaId:OF_EMPRESA_ID,competencia:OF_COMP}}); toast(r.conciliadas+' conciliadas, '+r.ignoradas+' ignoradas, '+r.sugeridas+' com sugestão.','ok'); ofCarregar(); }catch(e){ toast(e.message,'err'); } });
+    if($('ofOfx')) $('ofOfx').addEventListener('click', ev=> rtBaixar('/api/open-finance/exportar-ofx?empresaId='+OF_EMPRESA_ID+'&competencia='+OF_COMP, 'Extrato OFX - '+OF_COMP+'.ofx', ev.currentTarget, 'Gerando OFX…'));
+    if($('ofRegras')) $('ofRegras').addEventListener('click', ()=> ofRegrasModal());
+    painel.querySelectorAll('[data-ok]').forEach(b=>b.addEventListener('click', ()=> ofMarcar(b.dataset.ok,{status:'conciliada'})));
+    painel.querySelectorAll('[data-ign]').forEach(b=>b.addEventListener('click', ()=> ofMarcar(b.dataset.ign,{status:'ignorada'})));
+    painel.querySelectorAll('[data-edit]').forEach(b=>b.addEventListener('click', ()=>{ const t = tx.items.find(x=>String(x.id)===b.dataset.edit); ofEditarModal(t); }));
+    async function ofMarcar(id, body){ try{ await api('/open-finance/transacoes/'+id+'/marcar',{method:'POST',body}); ofCarregar(); }catch(e){ toast(e.message,'err'); } }
+    function ofEditarModal(t){
+      openModal(`<h3 style="margin-bottom:2px;">Lançamento da transação</h3>
+        <div class="mut" style="font-size:12.5px; margin-bottom:12px;">${ofDataBr(t.data)} · ${esc(t.descricao||'')} · ${ofBRL(t.valor)}</div>
+        <div class="field"><label>Conta contábil</label><input id="ofEdConta" value="${esc(t.contaContabil||'')}" placeholder="ex.: 1.1.1.02.001"></div>
+        <div class="field"><label>Histórico</label><input id="ofEdHist" value="${esc(t.historico||'')}" placeholder="ex.: Recebimento de cliente"></div>
+        <div class="modal-actions"><button class="btn" onclick="closeModal()">Cancelar</button><button class="btn primary" id="ofEdSalvar">Salvar e conciliar</button></div>`);
+      document.getElementById('ofEdSalvar').addEventListener('click', async ()=>{ try{ await api('/open-finance/transacoes/'+t.id+'/marcar',{method:'POST',body:{status:'conciliada',contaContabil:document.getElementById('ofEdConta').value,historico:document.getElementById('ofEdHist').value}}); closeModal(); ofCarregar(); }catch(e){ toast(e.message,'err'); } });
+    }
+    async function ofRegrasModal(){
+      let regras = [];
+      try{ ({ regras } = await api('/open-finance/regras?empresaId='+OF_EMPRESA_ID)); }catch(e){ toast(e.message,'err'); return; }
+      const linha = r=>`<tr>
+        <td><input class="ofReg" data-k="padrao" value="${esc(r.padrao||'')}" placeholder="texto no extrato (ex.: TARIFA)"></td>
+        <td><input class="ofReg" data-k="contaContabil" value="${esc(r.contaContabil||'')}" placeholder="conta"></td>
+        <td><input class="ofReg" data-k="historico" value="${esc(r.historico||'')}" placeholder="histórico"></td>
+        <td><button class="btn" ${OF_BTN_SM} data-rm>✕</button></td></tr>`;
+      openModal(`<h3>Regras de conciliação</h3>
+        <p class="mut" style="font-size:12px; margin-top:-4px;">Quando o texto do extrato casar com o padrão, a transação é conciliada com a conta e o histórico definidos (a 1ª regra que casar vence).</p>
+        <div style="overflow-x:auto;"><table class="data-table"><thead><tr><th>Padrão no extrato</th><th>Conta contábil</th><th>Histórico</th><th></th></tr></thead><tbody id="ofRegBody">${regras.map(linha).join('')||''}</tbody></table></div>
+        <button class="btn" id="ofRegAdd" style="margin-top:8px;">+ Adicionar regra</button>
+        <div class="modal-actions"><button class="btn" onclick="closeModal()">Cancelar</button><button class="btn primary" id="ofRegSalvar">Salvar</button></div>`, 'min(720px, 95vw)');
+      const body = document.getElementById('ofRegBody');
+      const wireRm = ()=> body.querySelectorAll('[data-rm]').forEach(b=>b.onclick=()=>{ b.closest('tr').remove(); });
+      wireRm();
+      document.getElementById('ofRegAdd').addEventListener('click', ()=>{ body.insertAdjacentHTML('beforeend', linha({})); wireRm(); });
+      document.getElementById('ofRegSalvar').addEventListener('click', async ()=>{
+        const novas = [...body.querySelectorAll('tr')].map(tr=>{ const o={}; tr.querySelectorAll('.ofReg').forEach(i=>o[i.dataset.k]=i.value); return o; }).filter(o=>(o.padrao||'').trim());
+        try{ await api('/open-finance/regras?empresaId='+OF_EMPRESA_ID, { method:'PUT', body:{ regras:novas } }); toast('Regras salvas.','ok'); closeModal(); }catch(e){ toast(e.message,'err'); }
+      });
+    }
+  }
+}
+// Visão do CLIENTE (self-service): conectar/ver/revogar a própria conta — o consentimento é ato dele.
+async function pageMinhaConciliacao(){
+  const m = main();
+  m.innerHTML = `<h1>Conciliação Bancária</h1>
+    <p class="subtitle">Conecte sua conta pelo Open Finance para o escritório fazer a conciliação automaticamente. O acesso é somente leitura (saldos e extratos) e você pode revogar quando quiser.</p>
+    <div id="ofcPainel"><div class="card"><div class="empty-state">Carregando…</div></div></div>`;
+  let status = { modo:'sandbox' };
+  try{ status = await api('/open-finance/status'); }catch(e){}
+  async function carregar(){
+    const painel = document.getElementById('ofcPainel');
+    let conex;
+    try{ ({ conexoes:conex } = await api('/open-finance/minha-empresa/conexoes')); }catch(e){ painel.innerHTML = `<div class="card"><div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div></div>`; return; }
+    const conexoes = conex||[];
+    painel.innerHTML = `<div class="card">
+      <div class="row" style="justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+        <b>Minhas conexões bancárias</b>
+        <button class="btn primary" id="ofcConectar">+ Conectar conta ${status.modo==='sandbox'?'(demonstração)':''}</button>
+      </div>
+      ${status.modo==='sandbox'?`<p class="mut" style="font-size:12px;">Ambiente de demonstração: a conexão usa dados de teste até o escritório habilitar o Open Finance real.</p>`:''}
+      ${conexoes.length? `<div style="overflow-x:auto;"><table class="data-table" style="margin-top:8px;"><thead><tr><th>Banco</th><th>Conta</th><th>Status</th><th>Validade</th><th></th></tr></thead><tbody>
+        ${conexoes.flatMap(c=>(c.contas.length?c.contas:[{banco:'—',numero:'—'}]).map(a=>`<tr>
+          <td>${esc(a.banco||'—')}</td><td style="white-space:nowrap;">${esc(a.numero||'—')}</td>
+          <td><span class="tag ${c.status==='ativo'?'ok':''}">${c.status==='ativo'?'Ativo':(c.status==='revogado'?'Revogado':'Expirado')}</span></td>
+          <td style="white-space:nowrap;">${c.validadeAte?ofDataBr(c.validadeAte):'—'}</td>
+          <td>${c.status==='ativo'?`<button class="btn" ${OF_BTN_SM} data-rev="${c.id}">Revogar</button>`:''}</td>
+        </tr>`)).join('')}
+      </tbody></table></div>` : `<div class="empty-state" style="margin-top:8px;">Nenhuma conta conectada ainda.</div>`}
+    </div>`;
+    document.getElementById('ofcConectar').addEventListener('click', async ev=>{ ev.target.disabled=true; try{ await api('/open-finance/minha-empresa/conectar',{method:'POST'}); toast('Conta conectada. O escritório já consegue puxar seu extrato.','ok'); carregar(); }catch(e){ toast(e.message,'err'); ev.target.disabled=false; } });
+    painel.querySelectorAll('[data-rev]').forEach(b=>b.addEventListener('click', async ()=>{ if(!confirm('Revogar o acesso à sua conta?')) return; try{ await api('/open-finance/minha-empresa/conexoes/'+b.dataset.rev+'/revogar',{method:'POST'}); toast('Acesso revogado.','ok'); carregar(); }catch(e){ toast(e.message,'err'); } }));
+  }
+  carregar();
 }
 async function pageReformaTributaria(){
   main().innerHTML = `
@@ -18035,7 +18205,7 @@ async function pageUsuarios(){
   document.getElementById('usFiltro').addEventListener('input', e=>{ USUARIOS_FILTRO = e.target.value; desenhaUsuarios(USUARIOS_FILTRO); });
   document.getElementById('btnNovoUsuario').addEventListener('click', ()=>usuarioModal());
 }
-const MODS = [['dashboard','Início'],['empresas','Empresas'],['solicitacoes','Solicitações de Documentos'],['envio','Envio de Documentos'],['nfse','NFS-e'],['nfe-busca','Busca de XML'],['reforma','Reforma Tributária'],['integracontador','Integra Contador'],['licencas','Licenças'],['financeiro','Financeiro'],['certificados','Certificados'],['contratos','Contratos'],['relatorios','Relatórios'],['crm','CRM'],['dprh','DP/RH'],['contabil','Contabilidade'],['fiscal','Fiscal'],['usuarios','Usuários'],['configuracoes','Configurações'],['email','E-mail'],['obrigacoes','Obrigações do Mês — marcar manual (ação "editar")']];
+const MODS = [['dashboard','Início'],['empresas','Empresas'],['solicitacoes','Solicitações de Documentos'],['envio','Envio de Documentos'],['nfse','NFS-e'],['nfe-busca','Busca de XML'],['reforma','Reforma Tributária'],['integracontador','Integra Contador'],['licencas','Licenças'],['financeiro','Financeiro'],['certificados','Certificados'],['contratos','Contratos'],['relatorios','Relatórios'],['crm','CRM'],['dprh','DP/RH'],['contabil','Contabilidade'],['fiscal','Fiscal'],['usuarios','Usuários'],['configuracoes','Configurações'],['email','E-mail'],['obrigacoes','Obrigações do Mês — marcar manual (ação "editar")'],['open_finance','Conciliação Bancária (Open Finance)']];
 // Lista de empresas com busca por texto — usada nos dois pickers de empresa do modal de usuário
 // (Cliente com múltiplas empresas, Colaborador com acesso restrito), já que a base de empresas
 // pode ter centenas de linhas (import do Domínio Web).
