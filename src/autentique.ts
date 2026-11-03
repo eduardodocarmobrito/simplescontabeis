@@ -9,6 +9,8 @@ export interface AutentiqueSigner {
   email?: string;
   telefone?: string; // formato E.164, ex: +5594999999999 — obrigatório ter email OU telefone
   comoAssina?: "SIGN" | "SIGN_AS_A_WITNESS" | "APPROVE" | "RECOGNIZE";
+  // Onde o carimbo da assinatura aparece no PDF: x/y = centro do campo em % da página, z = página (1ª = 1).
+  posicoes?: { x: string; y: string; z: number; element: "SIGNATURE" | "NAME" | "DATE" | "CPF" }[];
 }
 
 async function chamarApi(token: string, body: FormData | string, extraHeaders: Record<string, string> = {}) {
@@ -42,6 +44,7 @@ export async function criarDocumento(opts: {
   const signersPayload = opts.signers.map((s) => {
     const item: Record<string, any> = { action: s.comoAssina || "SIGN" };
     if (s.nome) item.name = s.nome;
+    if (s.posicoes?.length) item.positions = s.posicoes;
     if (s.email) {
       item.email = s.email;
     } else if (s.telefone) {
@@ -50,7 +53,10 @@ export async function criarDocumento(opts: {
     }
     return item;
   });
-  const variables = { document: { name: opts.nomeDocumento }, signers: signersPayload, file: null, sandbox: opts.sandbox };
+  // footer LEFT = faixa na lateral esquerda de TODAS as páginas com a marca de assinatura eletrônica e o
+  // código/link de verificação do documento (estilo dos documentos assinados na Junta Comercial). A
+  // página de auditoria (rastreio: IP, data/hora, e-mail de cada assinatura) já vem por padrão no final.
+  const variables = { document: { name: opts.nomeDocumento, footer: "LEFT", footer_type: "STANDARD" }, signers: signersPayload, file: null, sandbox: opts.sandbox };
   const form = new FormData();
   form.append("operations", JSON.stringify({ query, variables }));
   form.append("map", JSON.stringify({ file: ["variables.file"] }));
