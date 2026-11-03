@@ -17347,7 +17347,7 @@ async function obrigacoesMontar(box, setor){
         <div style="padding:10px 14px; font-weight:600; border-bottom:1px solid var(--rule);">${esc(ob.label)} <span style="font-size:11px; color:var(--ink-soft); font-weight:400;">· ${ob.auto?'leitura automática':'manual'} · prazo transmissão dia ${ob.prazoTransmissao||'—'}, envio dia ${ob.prazoEnvio||'—'} (mês seguinte) · ${linhas.length} empresa(s)${ob.proxyTransmissao==='dctfweb'?' · <span title="A DCTF-Web é apurada a partir do eSocial: guia gerada = folha transmitida ao eSocial.">transmissão via DCTF-Web (eSocial)</span>':''}</span></div>
         <div style="overflow-x:auto;"><table class="data-table"><thead><tr><th>Empresa</th><th>Transmitida</th><th>Enviada ao cliente</th></tr></thead><tbody>
         ${linhas.map(l=>`<tr data-emp="${l.empresaId}" data-ob="${l.obrigacao}">
-          <td>${empresaCodigoMatrizFilialHtml(l.empresaId, l.empresaNome)}</td>
+          <td class="obr-det" style="cursor:pointer;" title="Ver o que foi enviado (notas/documentos, e-mail e WhatsApp)">${empresaCodigoMatrizFilialHtml(l.empresaId, l.empresaNome)} <span style="font-size:11px; color:var(--accent-deep);">🔎 detalhe</span></td>
           <td>${badge(l.transmitida, l.transmitidaManual, l.atrasoTransmissao, 'transmitida')}</td>
           <td>${badge(l.enviada, l.enviadaManual, l.atrasoEnvio, 'enviada')}</td>
         </tr>`).join('')}
@@ -17364,8 +17364,44 @@ async function obrigacoesMontar(box, setor){
         catch(e){ toast(e.message,'err'); }
       }));
     }
+    // Clique no nome da empresa = ver o detalhe do que foi enviado (notas/docs, e-mail e WhatsApp).
+    cont.querySelectorAll('td.obr-det').forEach(td=>td.addEventListener('click', ()=>{
+      const tr=td.closest('tr'); const empresaId=Number(tr.dataset.emp); const obId=tr.dataset.ob;
+      const linha=r.linhas.find(l=>l.empresaId===empresaId && l.obrigacao===obId);
+      const ob=r.obrigacoes.find(o=>o.id===obId);
+      obrigacaoDetalheModal(linha, ob);
+    }));
   }
   render();
+}
+async function obrigacaoDetalheModal(linha, ob){
+  openModal(`
+    <h3 style="margin-bottom:2px;">${esc(linha.empresaNome)}</h3>
+    <div style="font-size:12.5px; color:var(--ink-soft); margin-bottom:10px;">${esc(ob.label)} · competência ${esc(OBR.competencia)}</div>
+    <div id="obrDetBox"><div class="empty-state">Carregando…</div></div>
+    <div class="modal-actions"><button class="btn" id="obrDetFechar">Fechar</button></div>
+  `);
+  document.getElementById('obrDetFechar').addEventListener('click', closeModal);
+  const box=document.getElementById('obrDetBox');
+  const canal = (n)=> n.whatsappEnviado ? (n.tomadorTelefone?('✓ '+esc(n.tomadorTelefone)):'✓ enviado') : (n.whatsappErro? ('<span style="color:var(--debit)">erro</span> · '+esc(n.tomadorTelefone||'')) : (n.tomadorTelefone?('não enviado · '+esc(n.tomadorTelefone)):'<span class="mut">—</span>'));
+  if(ob && ob.fonte==='nfse_honorarios'){
+    try{
+      const { items } = await api('/nfse/emissoes?empresaId='+linha.empresaId);
+      const notas=(items||[]).filter(n=>n.competencia===OBR.competencia);
+      box.innerHTML = notas.length ? `<div style="overflow-x:auto;"><table class="data-table"><thead><tr><th>Nota</th><th>Serviço</th><th>Valor</th><th>Status</th><th>E-mail destino</th><th>WhatsApp destino</th></tr></thead><tbody>
+        ${notas.map(n=>`<tr>
+          <td>${n.numeroNfse?('NFS-e '+esc(n.numeroNfse)):('DPS '+esc(n.numeroDps))}<br><span class="mut" style="font-size:11px;">${n.criadoEm?esc(fmtDateHora(n.criadoEm)):''}</span></td>
+          <td>${esc(n.modeloNome||n.descricaoServico||'—')}</td>
+          <td style="white-space:nowrap;">${n.valorServico!=null?('R$ '+Number(n.valorServico).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})):'—'}</td>
+          <td><span class="tag ${/autoriz|emit/i.test(n.status||'')?'ok':'muted'}">${esc(n.status||'—')}</span></td>
+          <td>${n.tomadorEmail?esc(n.tomadorEmail):'<span class="mut">—</span>'}</td>
+          <td style="white-space:nowrap;">${canal(n)}</td>
+        </tr>`).join('')}
+      </tbody></table></div>` : `<div class="empty-state">Nenhuma NFS-e encontrada para ${esc(OBR.competencia)}.</div>`;
+    }catch(e){ box.innerHTML=`<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; }
+  } else {
+    box.innerHTML = `<div class="empty-state">Detalhe por documento (DCTF-Web, FGTS etc.) vem na próxima etapa — por ora, abra em <b>Envio de Documentos</b> pra ver os anexos e envios desta empresa.</div>`;
+  }
 }
 function obrigacoesPrazosModal(obrigacoes, onSave){
   openModal(`
