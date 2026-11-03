@@ -16600,7 +16600,7 @@ async function obrigacoesMontar(box, setor){
       const linhas = r.linhas.filter(l=>l.obrigacao===ob.id && (!f || norm(l.empresaNome).includes(f)));
       if(!linhas.length) return '';
       return `<div class="card" style="padding:0; margin-bottom:14px;">
-        <div style="padding:10px 14px; font-weight:600; border-bottom:1px solid var(--rule);">${esc(ob.label)} <span style="font-size:11px; color:var(--ink-soft); font-weight:400;">· ${ob.auto?'leitura automática':'manual'} · prazo transmissão dia ${ob.prazoTransmissao||'—'}, envio dia ${ob.prazoEnvio||'—'} (mês seguinte) · ${linhas.length} empresa(s)</span></div>
+        <div style="padding:10px 14px; font-weight:600; border-bottom:1px solid var(--rule);">${esc(ob.label)} <span style="font-size:11px; color:var(--ink-soft); font-weight:400;">· ${ob.auto?'leitura automática':'manual'} · prazo transmissão dia ${ob.prazoTransmissao||'—'}, envio dia ${ob.prazoEnvio||'—'} (mês seguinte) · ${linhas.length} empresa(s)${ob.proxyTransmissao==='dctfweb'?' · <span title="A DCTF-Web é apurada a partir do eSocial: guia gerada = folha transmitida ao eSocial.">transmissão via DCTF-Web (eSocial)</span>':''}</span></div>
         <div style="overflow-x:auto;"><table class="data-table"><thead><tr><th>Empresa</th><th>Transmitida</th><th>Enviada ao cliente</th></tr></thead><tbody>
         ${linhas.map(l=>`<tr data-emp="${l.empresaId}" data-ob="${l.obrigacao}">
           <td>${esc(l.empresaNome)}</td>

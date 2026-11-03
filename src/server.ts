@@ -7153,7 +7153,7 @@ const OBRIGACOES_POR_SETOR: Record<string, any[]> = {
   dprh: [
     { id: "dprh_dctfweb", label: "DCTF-Web", templates: ["DARF - DCTF-Web", "DARF-DCTF-Web"], fonte: "dctfweb", prazoTransmissao: 15, prazoEnvio: 20 },
     { id: "dprh_fgts", label: "Guia FGTS", templates: ["FGTS", "Guia FGTS Digital", "FGTS Relatorio"], fonte: "envio", prazoTransmissao: 7, prazoEnvio: 20 },
-    { id: "dprh_folha", label: "Folha de Pagamento", templates: ["Folha Mensal", "Folha de Pagamento Mensal"], fonte: "envio", prazoTransmissao: 5, prazoEnvio: 10 },
+    { id: "dprh_folha", label: "Folha de Pagamento", templates: ["Folha Mensal", "Folha de Pagamento Mensal"], fonte: "envio", proxyTransmissao: "dctfweb", prazoTransmissao: 5, prazoEnvio: 10 },
   ],
   fiscal: [
     { id: "fiscal_das", label: "DAS (Simples Nacional)", templates: ["DAS - Mensal"], fonte: "das", prazoTransmissao: 20, prazoEnvio: 25 },
@@ -7209,6 +7209,9 @@ app.get("/api/obrigacoes", blockCliente, requirePermissao("empresas", "visualiza
         const ed = envioStmt.get(empId, ...tpls, ano, mes) as any;
         if (ed && ed.n > 0) { transmitidaAuto = true; enviadaAuto = !!(ed.emailEnv || ed.waEnv); enviadaEm = ed.waEm || ed.emailEm || null; }
       }
+      // Proxy de transmissão: a Folha usa a DCTF-Web como sinal de que foi transmitida ao eSocial (a
+      // DCTF-Web é apurada a partir do eSocial — se a guia DARF foi gerada, a folha foi transmitida).
+      if (!transmitidaAuto && ob.proxyTransmissao === "dctfweb") transmitidaAuto = !!temIntegraDoc.get(empId, "darf_dctfweb", periodoApuracao);
       const man = manMap[empId + "|" + ob.id];
       const transmitida = man && man.transmitida != null ? !!man.transmitida : transmitidaAuto;
       const enviada = man && man.enviada != null ? !!man.enviada : enviadaAuto;
@@ -7228,7 +7231,7 @@ app.get("/api/obrigacoes", blockCliente, requirePermissao("empresas", "visualiza
   res.json({
     setor,
     competencia: comp,
-    obrigacoes: obrigacoesSetor.map((o) => ({ id: o.id, label: o.label, fonte: o.fonte, auto: o.fonte !== "manual", prazoTransmissao: cfgMap[o.id]?.prazo_transmissao ?? o.prazoTransmissao, prazoEnvio: cfgMap[o.id]?.prazo_envio ?? o.prazoEnvio })),
+    obrigacoes: obrigacoesSetor.map((o) => ({ id: o.id, label: o.label, fonte: o.fonte, proxyTransmissao: o.proxyTransmissao || null, auto: o.fonte !== "manual", prazoTransmissao: cfgMap[o.id]?.prazo_transmissao ?? o.prazoTransmissao, prazoEnvio: cfgMap[o.id]?.prazo_envio ?? o.prazoEnvio })),
     linhas,
   });
 });
