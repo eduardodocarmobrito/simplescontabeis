@@ -872,6 +872,11 @@ body.theme-glass .tab.active::after, body.theme-glass .nav-item.active::after{
 /* Valores em R$ e números não quebram linha ("R$" numa linha e o valor na outra). */
 .rt-tabela td.num, .rt-legenda td.num, .rt-rank-v{white-space:nowrap;}
 .rt-tabela .rt-chip{white-space:normal; line-height:1.25;}
+/* Tabelas longas rolam dentro da própria caixa (vertical e horizontal) — assim o cabeçalho (thead
+   sticky) fica congelado no topo enquanto desce; com só overflow-x a trava não funcionava. */
+.rt-scroll{max-height:72vh; overflow:auto; border-radius:12px;}
+.rt-scroll table.data-table thead th{position:sticky; top:0; z-index:3;}
+body.theme-glass .rt-scroll table.data-table thead th{background:rgba(var(--glass-rgb,5,31,32),.96);}
 .rt-tabela td:first-child{min-width:190px;}
 .rt-leg-inline{display:flex; gap:16px; font-size:12px; color:var(--ink-soft); margin-top:4px;}
 .rt-rank{display:flex; flex-direction:column; gap:8px;}
@@ -8670,13 +8675,13 @@ function rtPainelHtml(d, urlPdf){
   <div class="card rt-card">
     <div class="rt-card-t">Ranking de fornecedores</div>
     <div class="field" style="max-width:360px; margin:10px 0;"><input type="search" id="rtBuscaForn" placeholder="Pesquisar fornecedor ou CNPJ…" autocomplete="off" value="${esc(RT_BUSCA_FORN)}"></div>
-    <div style="overflow-x:auto;" id="rtFornTabela"></div>
+    <div class="rt-scroll" id="rtFornTabela"></div>
   </div>
 
   <div class="card rt-card">
     <div class="rt-card-t">Mapa de NCM × classificação tributária</div>
     <div class="rt-card-s">Cada NCM comprado, a classificação (cClassTrib) que os fornecedores usaram e a validação na API oficial da RFB.</div>
-    <div style="overflow-x:auto;">${rtNcmHtml(d.ncms)}</div>
+    <div class="rt-scroll">${rtNcmHtml(d.ncms)}</div>
   </div>
 
   <div class="card rt-card" id="rtAchadosCard">
