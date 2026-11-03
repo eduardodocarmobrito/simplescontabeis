@@ -893,6 +893,10 @@ body.theme-glass .rt-fchip.on{background:rgba(46,204,143,.22);}
 .rt-p-atencao::marker{color:#d03b3b;} .rt-p-favor::marker{color:#0ca30c;} .rt-p-info::marker{color:#2a78d6;}
 body.theme-glass .rt-reg{background:rgba(var(--glass-rgb,5,31,32),.55); border-color:rgba(255,255,255,.22); border-top-color:var(--c);}
 body.theme-glass .rt-reg-det summary{color:#5fe0a8;}
+/* Lista de empresas do Anexo I (contrato de terceirização): fica dentro de um .field, então anula o estilo de rótulo. */
+.anexoTercSel label.checklist-item{ text-transform:none; font-family:inherit; letter-spacing:normal; font-size:12.5px; color:var(--ink); display:flex; align-items:center; justify-content:flex-start; text-align:left; gap:8px; margin:3px 0; }
+.anexoTercSel label.checklist-item input[type=checkbox]{ width:auto; flex:0 0 auto; margin:0; }
+.anexoTercSel label.checklist-item > span{ flex:1; }
 /* Valores em R$ e números não quebram linha ("R$" numa linha e o valor na outra). */
 .rt-tabela td.num, .rt-legenda td.num, .rt-rank-v{white-space:nowrap;}
 .rt-tabela .rt-chip{white-space:normal; line-height:1.25;}
@@ -13684,9 +13688,9 @@ function campoFieldHtml(f, dados, comAjuda, catalogoServicos){
   if(campoEhAnexoTerceirizacao(f.chave)){
     return `<div class="field" style="grid-column:1 / -1;"><label>${esc(f.rotulo)}${ajuda}</label>
       <input type="hidden" class="drwCampo" data-chave="${esc(f.chave)}" value="${esc(dados[f.chave]||'')}">
-      ${comboSelectHtml('anexoTercCombo','Incluir empresa: digite o nome, CNPJ ou código Domínio…')}
+      <div class="anexoTercSel"></div>
       <div class="anexoTercLista" style="margin-top:8px; overflow-x:auto;"></div>
-      <div style="font-size:11px; color:var(--ink-soft); margin-top:4px;">Marque os setores terceirizados de cada empresa e o valor mensal (R$) de cada um. O total vira o honorário mensal do contrato. Clique em "Aplicar no documento" pra montar o Anexo I.</div>
+      <div style="font-size:11px; color:var(--ink-soft); margin-top:4px;">Marque as empresas na lista, depois os setores terceirizados de cada uma e o valor mensal (R$) de cada setor. O total vira o honorário mensal do contrato. Clique em "Aplicar no documento" pra montar o Anexo I.</div>
     </div>`;
   }
   // Campo de serviços vira MULTIESCOLHA quando há catálogo cadastrado — senão cai no input de texto
@@ -13806,8 +13810,9 @@ function setupAnexoTerceirizacao(hidden, empresas){
     lista.querySelectorAll('tr[data-i]').forEach(tr=>{ const st = tr.querySelector('.anexoTercSub'); if(st) st.textContent = fmt(subtotal(itens[Number(tr.dataset.i)])); });
   }
   function render(){
-    if(!itens.length){ lista.innerHTML = '<div class="empty-state" style="padding:10px;">Nenhuma empresa no anexo ainda.</div>'; sync(); return; }
-    lista.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Cód. Domínio</th><th>Regime</th>${SETORES_TERCEIRIZACAO.map(([,l])=>`<th>${esc(l)}</th>`).join('')}<th>Subtotal</th><th></th></tr></thead><tbody>
+    marcarChecks();
+    if(!itens.length){ lista.innerHTML = '<div class="empty-state" style="padding:10px;">Nenhuma empresa no anexo ainda — marque na lista acima.</div>'; sync(); return; }
+    lista.innerHTML = `<div class="row" style="gap:6px; align-items:center; flex-wrap:wrap; margin-bottom:8px;"><span class="rt-mut" style="font-size:12px;">Setor em todas:</span>${SETORES_TERCEIRIZACAO.map(([k,l])=>`<button type="button" class="btn small anexoTercSetorTodas" data-setor="${k}" title="Marca (ou desmarca, se todas já tiverem) o setor em todas as empresas do anexo">${esc(l)}</button>`).join('')}</div><table class="data-table"><thead><tr><th>Empresa</th><th>Cód. Domínio</th><th>Regime</th>${SETORES_TERCEIRIZACAO.map(([,l])=>`<th>${esc(l)}</th>`).join('')}<th>Subtotal</th><th></th></tr></thead><tbody>
       ${itens.map((it,i)=>`<tr data-i="${i}">
         <td>${esc(it.nome)}${it.cnpj?` <span style="color:var(--ink-soft); font-size:11px;">${esc(matrizFilialTexto(it.cnpj)||'')}</span>`:''}</td>
         <td>${esc(it.codigoDominio||'—')}</td>
@@ -13832,19 +13837,43 @@ function setupAnexoTerceirizacao(hidden, empresas){
       });
       tr.querySelector('.anexoTercRem').addEventListener('click', ()=>{ itens.splice(Number(tr.dataset.i),1); render(); });
     });
+    lista.querySelectorAll('.anexoTercSetorTodas').forEach(b=>b.addEventListener('click', ()=>{
+      const k = b.dataset.setor, todas = itens.every(it=>it.setores && it.setores[k]!=null);
+      itens.forEach(it=>{ it.setores = it.setores || {}; if(todas) delete it.setores[k]; else if(it.setores[k]==null) it.setores[k] = ''; });
+      render();
+    }));
     sync();
   }
   const ativas = empresas.filter(e=>e.ativo!==false);
-  setupComboSelect('anexoTercCombo', ativas.map(e=>({ id:e.id, label: empresaComboLabel(e) })), (eid)=>{
-    if(!eid) return;
-    const e = ativas.find(x=>x.id===Number(eid));
-    const root = document.getElementById('anexoTercCombo');
-    root.querySelector('.combo-input').value=''; root.querySelector('.combo-value').value='';
-    if(!e) return;
-    if(itens.some(it=>it.empresaId===e.id)){ toast('Essa empresa já está no anexo.','err'); return; }
-    itens.push({ empresaId:e.id, nome:e.nome, cnpj:e.cnpj||'', codigoDominio:e.codigoDominio||'', regime:e.regimeTributario||'', setores:{} });
-    render();
+  const sel = hidden.parentElement.querySelector('.anexoTercSel');
+  sel.innerHTML = `
+    <div class="row" style="gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:6px;">
+      <div class="field" style="flex:1; max-width:360px; margin-bottom:0;"><input type="search" class="anexoTercBusca" placeholder="Pesquisar empresa (nome, CNPJ ou código Domínio)…" autocomplete="off"></div>
+      <button type="button" class="btn small anexoTercTodas">Marcar todas</button>
+      <button type="button" class="btn small anexoTercNenhuma">Desmarcar todas</button>
+      <span class="anexoTercCont" style="font-size:12px; color:var(--ink-soft);"></span>
+    </div>
+    <div style="max-height:240px; overflow-y:auto; overflow-x:hidden; border:1px solid var(--rule); border-radius:8px; padding:8px 10px;">
+      ${ativas.map(e=>`<label class="checklist-item anexoTercLinha" data-busca="${esc(normalizaTxt(e.nome+' '+String(e.cnpj||'').replace(/\D/g,'')+' '+(e.codigoDominio||'')))}"><input type="checkbox" class="anexoTercSelChk" value="${e.id}"><span>${esc(e.nome)}${empresaMatrizFilialHtml(e.cnpj)}<span style="color:var(--ink-soft); font-size:11.5px;">${e.codigoDominio?` · cód. ${esc(e.codigoDominio)}`:''}${e.cnpj?` · ${esc(fmtCnpjCpf(e.cnpj))}`:''} · ${esc(REGIME_TRIBUTARIO_LABELS[e.regimeTributario]||e.regimeTributario||'')}</span></span></label>`).join('') || '<span style="font-size:12px; color:var(--ink-soft);">Nenhuma empresa ativa cadastrada.</span>'}
+    </div>`;
+  const incluir = e=>{ if(!itens.some(it=>it.empresaId===e.id)) itens.push({ empresaId:e.id, nome:e.nome, cnpj:e.cnpj||'', codigoDominio:e.codigoDominio||'', regime:e.regimeTributario||'', setores:{} }); };
+  const tirar = id=>{ itens = itens.filter(it=>it.empresaId!==id); };
+  function marcarChecks(){
+    const ids = new Set(itens.map(it=>it.empresaId));
+    sel.querySelectorAll('.anexoTercSelChk').forEach(chk=>{ chk.checked = ids.has(Number(chk.value)); });
+    const cont = sel.querySelector('.anexoTercCont'); if(cont) cont.textContent = `${itens.length} de ${ativas.length} empresa(s) no anexo`;
+  }
+  sel.querySelectorAll('.anexoTercSelChk').forEach(chk=>chk.addEventListener('change', ()=>{
+    const e = ativas.find(x=>x.id===Number(chk.value)); if(!e) return;
+    chk.checked ? incluir(e) : tirar(e.id); render();
+  }));
+  const visiveis = ()=>[...sel.querySelectorAll('.anexoTercLinha')].filter(l=>l.style.display!=='none');
+  sel.querySelector('.anexoTercBusca').addEventListener('input', ev=>{
+    const t = normalizaTxt(ev.target.value), dig = ev.target.value.replace(/\D/g,'');
+    sel.querySelectorAll('.anexoTercLinha').forEach(l=>{ l.style.display = (!t || l.dataset.busca.includes(t) || (dig && l.dataset.busca.includes(dig))) ? '' : 'none'; });
   });
+  sel.querySelector('.anexoTercTodas').addEventListener('click', ()=>{ visiveis().forEach(l=>{ const e = ativas.find(x=>x.id===Number(l.querySelector('input').value)); if(e) incluir(e); }); render(); });
+  sel.querySelector('.anexoTercNenhuma').addEventListener('click', ()=>{ visiveis().forEach(l=>tirar(Number(l.querySelector('input').value))); render(); });
   render();
 }
 // Tabela do Anexo I que vai pro documento (e pro PDF).
