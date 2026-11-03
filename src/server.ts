@@ -1734,7 +1734,7 @@ for (const tabela of ["chat_mensagens", "chat_equipe_mensagens", "chat_dm_mensag
     ["cpf_representante_legal", "cpf_representante_legal TEXT"],
     ["codigo_municipio_ibge", "codigo_municipio_ibge TEXT"], // código IBGE (7 dígitos) do município — usado na emissão de NFS-e (DPS exige a Tabela do IBGE), centralizado aqui pra não pedir de novo por módulo
     ["nome_municipio_ibge", "nome_municipio_ibge TEXT"], // só exibição do código acima
-    ["regime_tributario", "regime_tributario TEXT NOT NULL DEFAULT 'simples_nacional'"], // 'simples_nacional' | 'lucro_presumido' | 'lucro_real' | 'produtor_rural' — mutuamente exclusivos; opcao_simples_nacional (nfse_empresa_config) é sempre derivado deste campo, nunca editado à parte
+    ["regime_tributario", "regime_tributario TEXT NOT NULL DEFAULT 'simples_nacional'"], // 'simples_nacional' | 'mei' | 'lucro_presumido' | 'lucro_real' | 'produtor_rural' | 'terceirizados' — mutuamente exclusivos; opcao_simples_nacional (nfse_empresa_config) é sempre derivado deste campo, nunca editado à parte
     ["apelido", "apelido TEXT"], // apelido curto do Domínio Web — usado no nome da pasta de exportação de XML ("código-apelido")
     ["cnae_principal_json", "cnae_principal_json TEXT"], // { codigo, descricao } da atividade principal (Receita) — atualizado sob demanda
     ["cnaes_secundarios_json", "cnaes_secundarios_json TEXT"], // [{ codigo, descricao }] das atividades secundárias
@@ -4692,7 +4692,7 @@ app.get("/api/empresas/cnpj/:cnpj", blockCliente, requirePermissao("empresas", "
 });
 // "mei" (SIMEI) é uma modalidade do Simples Nacional — pra NFS-e conta como optante do Simples (ver
 // onde opcaoSimplesNacional é derivado abaixo).
-const REGIMES_TRIBUTARIOS = ["simples_nacional", "mei", "lucro_presumido", "lucro_real", "produtor_rural"] as const;
+const REGIMES_TRIBUTARIOS = ["simples_nacional", "mei", "lucro_presumido", "lucro_real", "produtor_rural", "terceirizados"] as const;
 const REGIMES_OPTANTE_SIMPLES = ["simples_nacional", "mei"];
 // Modelo de Envio de Documentos com "auto_regime_tributario" configurado (ex.: DARF IRPJ/CSLL só
 // se aplica a Lucro Real) ganha atribuição sozinho assim que a empresa é classificada nesse regime
@@ -10644,7 +10644,7 @@ async function reformaAtualizarTabelasOficiais(forcar = false) {
 setTimeout(() => void reformaAtualizarTabelasOficiais(), 90_000);
 setInterval(() => void reformaAtualizarTabelasOficiais(), 6 * 3_600_000);
 
-const REGIME_CLIENTE_LABEL: Record<string, string> = { simples_nacional: "Simples Nacional", mei: "MEI", lucro_presumido: "Lucro Presumido", lucro_real: "Lucro Real", produtor_rural: "Produtor Rural" };
+const REGIME_CLIENTE_LABEL: Record<string, string> = { simples_nacional: "Simples Nacional", mei: "MEI", lucro_presumido: "Lucro Presumido", lucro_real: "Lucro Real", produtor_rural: "Produtor Rural", terceirizados: "Terceirizados" };
 // Recomendação, na auditoria das notas de SAÍDA, pra empresa corrigir o próprio emissor/cadastro.
 const REFORMA_RECO_SAIDA: Record<string, string> = {
   GRUPO_AUSENTE: "Parametrizar o emissor para informar o grupo IBSCBS em todos os itens (obrigatório para o regime regular desde 03/08/2026). Sem o destaque, os clientes empresas não terão crédito a partir de 2027 — risco comercial e de autuação.",
