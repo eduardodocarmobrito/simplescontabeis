@@ -18,6 +18,9 @@ import * as asaas from "./asaas";
 import * as contratos from "./contratos";
 import * as autentique from "./autentique";
 import { localizarLinhasAssinatura, casarLinhas, posicaoAssinatura } from "./assinatura-posicoes";
+import { MODELOS_CONTRATO_PRONTOS } from "./contrato-modelos-prontos";
+import * as reformaAuditoria from "./reforma-auditoria";
+import { gerarPdfRelatorioReforma } from "./reforma-relatorio";
 import * as danfse from "./danfse";
 import * as whatsapp from "./whatsapp";
 import * as nfe from "./nfe";
@@ -4358,7 +4361,7 @@ app.put("/api/users/:id/config-abas", requireAdmin, (req, res) => {
   for (const aba of abas) stmt.run(userId, aba);
   res.json({ ok: true });
 });
-const PAGINAS_CLIENTE_VALIDAS = ["minha-nfse", "meus-documentos", "solicitar-documentos", "documentos-recebidos", "minha-financeiro", "minha-assinatura", "notas-entrada"];
+const PAGINAS_CLIENTE_VALIDAS = ["minha-nfse", "meus-documentos", "solicitar-documentos", "documentos-recebidos", "minha-financeiro", "minha-assinatura", "notas-entrada", "minha-reforma"];
 app.get("/api/users/:id/paginas-cliente", requireAdmin, (req, res) => {
   if (!pertenceAoEscritorio(req, Number(req.params.id))) return res.status(404).json({ error: "Usuário não encontrado." });
   const rows = sqlite.prepare(`SELECT pagina FROM cliente_paginas_visiveis WHERE user_id = ?`).all(Number(req.params.id)) as any[];
@@ -10487,6 +10490,313 @@ app.get("/api/nfe/minha-empresa/dashboard", requireCliente, (req, res) => {
   const dataAte = typeof req.query.dataAte === "string" && req.query.dataAte ? req.query.dataAte : null;
   const direcao = req.query.direcao === "emitida" ? "emitida" : "recebida";
   res.json({ moduloAtivo: true, ...nfeCalcularDashboard(user, user.empresaId, dataDe, dataAte, direcao) });
+});
+// ---------- Reforma Tributária: auditoria IBS/CBS das NF-e de entrada (ver reforma-auditoria.ts) ----------
+// Cache PERMANENTE da validação oficial NCM x cClassTrib (Calculadora de Tributos RFB/CGIBS) — vale pra
+// todos os clientes; a API leva ~1,3s por consulta, então roda numa fila em segundo plano e a tela
+// mostra "validando… N pendentes" até zerar. Revalidado a cada atualização das tabelas (15 dias).
+sqlite.exec(`CREATE TABLE IF NOT EXISTS reforma_ncm_validacao (
+  cclasstrib TEXT NOT NULL, ncm TEXT NOT NULL, ano INTEGER NOT NULL, valido INTEGER NOT NULL,
+  consultado_em TEXT DEFAULT (datetime('now')), PRIMARY KEY (cclasstrib, ncm, ano)
+)`);
+// Vigência do NCM na data da emissão (pra NCM que saiu da lista de vigentes) — a resposta pra uma data
+// passada não muda, então o cache é definitivo.
+sqlite.exec(`CREATE TABLE IF NOT EXISTS reforma_ncm_vigencia (
+  ncm TEXT NOT NULL, data TEXT NOT NULL, vigente INTEGER NOT NULL, consultado_em TEXT DEFAULT (datetime('now')), PRIMARY KEY (ncm, data)
+)`);
+// Última versão das tabelas oficiais baixada da Calculadora (NCM vigentes, cClassTrib, CST) — reaplicada
+// no boot e atualizada a cada 15 dias.
+sqlite.exec(`CREATE TABLE IF NOT EXISTS reforma_tabelas_oficiais (
+  id INTEGER PRIMARY KEY CHECK (id = 1), data TEXT NOT NULL, conteudo TEXT NOT NULL, mudancas TEXT, atualizado_em TEXT DEFAULT (datetime('now'))
+)`);
+const reformaNcmGet = sqlite.prepare(`SELECT valido FROM reforma_ncm_validacao WHERE cclasstrib = ? AND ncm = ? AND ano = ?`);
+const reformaNcmPut = sqlite.prepare(`INSERT OR REPLACE INTO reforma_ncm_validacao (cclasstrib, ncm, ano, valido) VALUES (?, ?, ?, ?)`);
+const reformaVigGet = sqlite.prepare(`SELECT vigente FROM reforma_ncm_vigencia WHERE ncm = ? AND data = ?`);
+const reformaVigPut = sqlite.prepare(`INSERT OR REPLACE INTO reforma_ncm_vigencia (ncm, data, vigente) VALUES (?, ?, ?)`);
+type ReformaConsulta =
+  | { tipo: "aplicavel"; cClassTrib: string; ncm: string; ano: number; tentativas: number }
+  | { tipo: "vigencia"; ncm: string; data: string; tentativas: number };
+const reformaFila = new Map<string, ReformaConsulta>();
+let reformaFilaRodando = false;
+let reformaApiPausaAte = 0;
+let reformaApiUltimoErro: string | null = null;
+function reformaConsultaNcm(cClassTrib: string, ncm: string, ano: number): boolean | undefined {
+  const r = reformaNcmGet.get(cClassTrib, ncm, ano) as any;
+  return r ? !!r.valido : undefined;
+}
+function reformaConsultaVigencia(ncm: string, data: string): boolean | undefined {
+  const r = reformaVigGet.get(ncm, data) as any;
+  return r ? !!r.vigente : undefined;
+}
+function reformaEnfileirar(pares: { cClassTrib: string; ncm: string; ano: number }[], vigencias: { ncm: string; data: string }[]): number {
+  let pend = 0;
+  for (const p of pares) {
+    if (reformaConsultaNcm(p.cClassTrib, p.ncm, p.ano) !== undefined) continue;
+    pend++;
+    const k = `A|${p.cClassTrib}|${p.ncm}|${p.ano}`;
+    if (!reformaFila.has(k)) reformaFila.set(k, { tipo: "aplicavel", ...p, tentativas: 0 });
+  }
+  for (const v of vigencias) {
+    if (reformaConsultaVigencia(v.ncm, v.data) !== undefined) continue;
+    pend++;
+    const k = `V|${v.ncm}|${v.data}`;
+    if (!reformaFila.has(k)) reformaFila.set(k, { tipo: "vigencia", ...v, tentativas: 0 });
+  }
+  if (reformaFila.size && !reformaFilaRodando) void reformaProcessarFila();
+  return pend;
+}
+async function reformaProcessarFila() {
+  reformaFilaRodando = true;
+  try {
+    while (reformaFila.size && Date.now() >= reformaApiPausaAte) {
+      const lote = [...reformaFila.entries()].slice(0, 4);
+      let falhas = 0;
+      await Promise.all(lote.map(async ([k, p]) => {
+        try {
+          if (p.tipo === "aplicavel") reformaNcmPut.run(p.cClassTrib, p.ncm, p.ano, (await reformaAuditoria.consultarNcmAplicavelApi(p.cClassTrib, p.ncm, p.ano)) ? 1 : 0);
+          else reformaVigPut.run(p.ncm, p.data, (await reformaAuditoria.consultarNcmVigenteNaDataApi(p.ncm, p.data)) ? 1 : 0);
+          reformaFila.delete(k);
+          reformaApiUltimoErro = null;
+        } catch (e: any) {
+          falhas++;
+          reformaApiUltimoErro = e.message;
+          p.tentativas++;
+          if (p.tentativas >= 3) reformaFila.delete(k); // desiste do par (fica "não validado"); volta numa próxima auditoria
+        }
+      }));
+      // API fora do ar: pausa 5 min em vez de martelar.
+      if (falhas === lote.length) reformaApiPausaAte = Date.now() + 5 * 60_000;
+    }
+  } finally {
+    reformaFilaRodando = false;
+  }
+}
+// Atualização automática das tabelas oficiais a cada 15 dias (NCM vigentes, cClassTrib, CST da NF-e).
+// Só grava/aplica se as listas vierem íntegras; ao atualizar, as validações NCM × cClassTrib com mais
+// de 15 dias saem do cache e são refeitas na próxima auditoria.
+let reformaUltimasMudancas: string[] = [];
+function reformaCarregarTabelasSalvas() {
+  const row = sqlite.prepare(`SELECT data, conteudo, mudancas FROM reforma_tabelas_oficiais WHERE id = 1`).get() as any;
+  if (!row) return;
+  try {
+    reformaAuditoria.aplicarTabelasOficiais({ data: row.data, ...JSON.parse(row.conteudo) });
+    reformaUltimasMudancas = JSON.parse(row.mudancas || "[]");
+  } catch (e: any) {
+    console.error("[Reforma] tabelas oficiais salvas inválidas:", e.message);
+  }
+}
+reformaCarregarTabelasSalvas();
+async function reformaAtualizarTabelasOficiais(forcar = false) {
+  const row = sqlite.prepare(`SELECT atualizado_em FROM reforma_tabelas_oficiais WHERE id = 1`).get() as any;
+  if (!forcar && row && Date.now() - new Date(String(row.atualizado_em).replace(" ", "T") + "Z").getTime() < 15 * 86_400_000) return;
+  try {
+    const hoje = new Date().toISOString().slice(0, 10);
+    const t: any = await reformaAuditoria.baixarTabelasOficiaisApi(hoje);
+    if (!Array.isArray(t.ncms) || t.ncms.length < 5000 || !Array.isArray(t.classes) || t.classes.length < 100) throw new Error(`listas incompletas (NCM ${t.ncms?.length}, cClassTrib ${t.classes?.length})`);
+    const mudancas = reformaAuditoria.aplicarTabelasOficiais(t);
+    reformaUltimasMudancas = mudancas;
+    sqlite
+      .prepare(`INSERT OR REPLACE INTO reforma_tabelas_oficiais (id, data, conteudo, mudancas, atualizado_em) VALUES (1, ?, ?, ?, datetime('now'))`)
+      .run(hoje, JSON.stringify({ ncms: t.ncms, classes: t.classes, situacoes: t.situacoes }), JSON.stringify(mudancas));
+    sqlite.prepare(`DELETE FROM reforma_ncm_validacao WHERE consultado_em < datetime('now','-15 days')`).run();
+    console.log(`[Reforma] tabelas oficiais atualizadas (${hoje}): ${mudancas.length ? mudancas.slice(0, 20).join("; ") : "sem mudanças"}`);
+  } catch (e: any) {
+    console.error("[Reforma] falha ao atualizar tabelas oficiais (mantida a versão anterior):", e.message);
+  }
+}
+setTimeout(() => void reformaAtualizarTabelasOficiais(), 90_000);
+setInterval(() => void reformaAtualizarTabelasOficiais(), 6 * 3_600_000);
+
+const REGIME_CLIENTE_LABEL: Record<string, string> = { simples_nacional: "Simples Nacional", mei: "MEI", lucro_presumido: "Lucro Presumido", lucro_real: "Lucro Real", produtor_rural: "Produtor Rural" };
+function reformaCalcularAuditoria(escritorioId: number, empresaId: number, de: string, ate: string) {
+  const empresa = sqlite.prepare(`SELECT id, nome, cnpj, regime_tributario FROM empresas WHERE id = ?`).get(empresaId) as any;
+  if (!empresa) throw new Error("Empresa não encontrada.");
+  const regime = empresa.regime_tributario || "simples_nacional";
+  // Crédito de IBS/CBS é do contribuinte do regime regular (Lucro Real e Presumido). O optante do Simples
+  // só se credita se optar pelo regime regular (LC 214, art. 47 §9º, I) — aí a análise é de conformidade.
+  const tomaCredito = regime === "lucro_real" || regime === "lucro_presumido";
+  const emitExpr = `d.emitente_cnpj = REPLACE(REPLACE(REPLACE(e.cnpj,'.',''),'/',''),'-','')`;
+  const canceladaExpr = `EXISTS (SELECT 1 FROM nfe_documentos ev WHERE ev.escritorio_id = d.escritorio_id AND ev.tipo='evento' AND ev.chave_acesso = d.chave_acesso AND ev.evento_descricao LIKE '%ancela%' AND ev.evento_descricao NOT LIKE '%CT-e%' AND ev.evento_descricao NOT LIKE '%MDF-e%')`;
+  const docs = sqlite
+    .prepare(
+      `SELECT d.id, d.xml FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id
+       WHERE d.escritorio_id = ? AND d.empresa_id = ? AND d.tipo IN ('nfe','nfce') AND NOT (${emitExpr})
+         AND substr(d.data_emissao,1,10) >= ? AND substr(d.data_emissao,1,10) <= ? AND NOT ${canceladaExpr}
+       ORDER BY d.data_emissao LIMIT 6000`
+    )
+    .all(escritorioId, empresaId, de, ate) as any[];
+  const notas = docs.map((d) => reformaAuditoria.lerNotaReforma(d.id, d.xml)).filter(Boolean) as reformaAuditoria.NotaRT[];
+  const pendentes = reformaEnfileirar(reformaAuditoria.paresParaValidar(notas), reformaAuditoria.ncmsParaConfirmarVigencia(notas));
+  const res = notas.map((nt) => reformaAuditoria.auditarNota(nt, reformaConsultaNcm, reformaConsultaVigencia));
+
+  const meses = Math.max(1, (Number(ate.slice(0, 4)) - Number(de.slice(0, 4))) * 12 + Number(ate.slice(5, 7)) - Number(de.slice(5, 7)) + 1);
+  const r2 = (v: number) => Math.round(v * 100) / 100;
+  const soma = (f: (r: reformaAuditoria.ResultadoNota) => number) => r2(res.reduce((a, r) => a + f(r), 0));
+  const itensTotal = res.reduce((a, r) => a + r.nota.itens.length, 0);
+  const itensConformes = res.reduce((a, r) => a + r.itensConformes, 0);
+  const notasConformes = res.filter((r) => !r.achados.some((a) => a.severidade === "alta" || a.severidade === "media")).length;
+  const ibs = soma((r) => r.nota.itens.reduce((a, i) => a + (i.uf?.v || 0) + (i.mun?.v || 0), 0));
+  const cbs = soma((r) => r.nota.itens.reduce((a, i) => a + (i.cbs?.v || 0), 0));
+  const ref27 = soma((r) => r.credito.referencia2027), aprov27 = soma((r) => r.credito.aproveitavel2027);
+
+  const mixMap = new Map<string, { regime: string; label: string; valor: number; notas: number }>();
+  const fornMap = new Map<string, any>();
+  const mesMap = new Map<string, { mes: string; valor: number; valorConforme: number; notas: number; ibs: number; cbs: number }>();
+  const ncmMap = new Map<string, any>();
+  const regraMap = new Map<string, { regra: string; titulo: string; severidade: string; qtd: number }>();
+  const achados: any[] = [];
+  for (const r of res) {
+    const nt = r.nota;
+    const valor = nt.vNF;
+    const temFalha = r.achados.some((a) => a.severidade === "alta" || a.severidade === "media");
+    const mx = mixMap.get(r.regime) || { regime: r.regime, label: reformaAuditoria.REGIME_FORNECEDOR_LABEL[r.regime], valor: 0, notas: 0 };
+    mx.valor += valor; mx.notas++; mixMap.set(r.regime, mx);
+    const mk = nt.dhEmi.slice(0, 7);
+    const ms = mesMap.get(mk) || { mes: mk, valor: 0, valorConforme: 0, notas: 0, ibs: 0, cbs: 0 };
+    ms.valor += valor; ms.notas++; if (!temFalha) ms.valorConforme += valor;
+    ms.ibs += nt.itens.reduce((a, i) => a + (i.uf?.v || 0) + (i.mun?.v || 0), 0);
+    ms.cbs += nt.itens.reduce((a, i) => a + (i.cbs?.v || 0), 0);
+    mesMap.set(mk, ms);
+    const f = fornMap.get(nt.emitCnpj) || { cnpj: nt.emitCnpj, nome: nt.emitNome, uf: nt.emitUF, regime: r.regime, notas: 0, notasComGrupo: 0, itens: 0, itensConformes: 0, valor: 0, alta: 0, media: 0, baixa: 0, creditoDestacado: 0, risco: 0, referencia2027: 0, aproveitavel2027: 0, regras: new Set<string>(), ultimaEmissao: "" };
+    f.notas++; f.itens += nt.itens.length; f.itensConformes += r.itensConformes; f.valor += valor;
+    if (nt.itens.some((i) => i.temIBSCBS)) f.notasComGrupo++;
+    f.creditoDestacado += r.credito.aproveitavel; f.risco += r.credito.risco;
+    f.referencia2027 += r.credito.referencia2027; f.aproveitavel2027 += r.credito.aproveitavel2027;
+    if (nt.dhEmi > f.ultimaEmissao) { f.ultimaEmissao = nt.dhEmi; f.regime = r.regime; }
+    for (const a of r.achados) {
+      if (a.severidade === "alta") f.alta++; else if (a.severidade === "media") f.media++; else if (a.severidade === "baixa") f.baixa++;
+      f.regras.add(a.regra);
+      const rg = regraMap.get(a.regra) || { regra: a.regra, titulo: a.titulo.replace(/ \((IBS UF|IBS Mun|CBS)\)$/, ""), severidade: a.severidade, qtd: 0 };
+      rg.qtd++; regraMap.set(a.regra, rg);
+      achados.push({ ...a, docId: nt.docId, chave: nt.chave, numero: nt.numero, serie: nt.serie, dhEmi: nt.dhEmi, fornecedor: nt.emitNome, cnpj: nt.emitCnpj });
+    }
+    fornMap.set(nt.emitCnpj, f);
+    for (const it of nt.itens) {
+      if (!it.ncm) continue;
+      const nn = ncmMap.get(it.ncm) || { ncm: it.ncm, descricao: it.xProd, descricaoOficial: reformaAuditoria.descricaoNcm(it.ncm), vigente: reformaAuditoria.ncmVigenteHoje(it.ncm), naoVigente: 0, cClassTribs: new Set<string>(), valor: 0, itens: 0, semGrupo: 0, foraAnexo: 0, reducaoEsquecida: 0, pendente: 0, fornecedores: new Set<string>() };
+      nn.itens++; nn.valor += it.vProd; nn.fornecedores.add(nt.emitCnpj);
+      if (it.cClassTrib) nn.cClassTribs.add(it.cClassTrib); else nn.semGrupo++;
+      const regrasItem = r.achados.filter((a) => a.nItem === it.nItem).map((a) => a.regra);
+      if (regrasItem.includes("NCM_NAO_VIGENTE") || regrasItem.includes("NCM_INVALIDO")) nn.naoVigente++;
+      if (regrasItem.includes("NCM_FORA_ANEXO")) nn.foraAnexo++;
+      if (regrasItem.includes("REDUCAO_ESQUECIDA")) nn.reducaoEsquecida++;
+      const cls = it.cClassTrib ? reformaAuditoria.infoCClassTrib(it.cClassTrib) : null;
+      if (cls?.anexo && reformaConsultaNcm(cls.cClassTrib, it.ncm, Number(nt.dhEmi.slice(0, 4))) === undefined) nn.pendente++;
+      ncmMap.set(it.ncm, nn);
+    }
+  }
+  const sevPeso: Record<string, number> = { alta: 0, media: 1, baixa: 2, info: 3 };
+  achados.sort((a, b) => sevPeso[a.severidade] - sevPeso[b.severidade] || String(b.dhEmi).localeCompare(String(a.dhEmi)));
+  const brl = (v: number) => "R$ " + v.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const recomendacao = (f: any, perdaAno: number) => {
+    if (f.regras.has("NCM_NAO_VIGENTE") || f.regras.has("NCM_INVALIDO")) return "Notificar o fornecedor: produto(s) emitido(s) com NCM vencido/inexistente na data da emissão. Exigir atualização do cadastro do produto e correção das notas — sem NCM vigente a tributação do item fica sem amparo (risco de glosa).";
+    if (f.regime === "sn_dentro" || f.regime === "sn_indefinido")
+      return `Fornecedor do Simples Nacional ${f.regime === "sn_dentro" ? "recolhendo IBS/CBS dentro do DAS" : "sem informar o regime de IBS/CBS (presume-se dentro do DAS)"}: o crédito de ${empresa.nome} fica limitado ao valor pago no Simples (LC 214, art. 47 §9º). Negociar a opção pelo regime regular de IBS/CBS (janela de março/2027 para o 2º semestre; setembro para o semestre seguinte), renegociar o preço pelo custo líquido (crédito em jogo estimado em ${brl(perdaAno)}/ano em 2027) ou avaliar fornecedor do regime regular.`;
+    if (f.regime === "mei") return `MEI não gera crédito de IBS/CBS. Com o volume de compras deste fornecedor, avaliar alternativa do regime regular (crédito em jogo estimado em ${brl(perdaAno)}/ano em 2027).`;
+    if (["NCM_FORA_ANEXO", "ALIQUOTA_DIVERGENTE", "VALOR_DIVERGENTE", "REDUCAO_INCOERENTE", "REDUCAO_NAO_INFORMADA", "CST_X_CCLASSTRIB", "CCLASSTRIB_INEXISTENTE", "CST_INEXISTENTE", "CCLASSTRIB_FORA_VIGENCIA", "SEM_INCIDENCIA_EM_VENDA"].some((x) => f.regras.has(x)))
+      return "Notificar o fornecedor com as evidências deste relatório e solicitar correção (CC-e ou NF-e complementar): há erro de enquadramento/valor no IBS/CBS que coloca o crédito em risco de glosa ou reduz o crédito.";
+    if (f.regras.has("GRUPO_AUSENTE")) return "Notificar o fornecedor: NF-e sem o grupo IBS/CBS, obrigatório para o regime regular desde 03/08/2026. Sem destaque não há crédito documentado a partir de 2027.";
+    if (f.regras.has("REDUCAO_ESQUECIDA")) return "Produtos com direito a alíquota reduzida sendo tributados integralmente: renegociar o preço líquido.";
+    if (f.regras.has("BASE_DIVERGENTE")) return "Base de cálculo fora da fórmula oficial: alinhar com o fornecedor antes de 2027.";
+    return "Emissão aderente à NT 2025.002 — manter monitoramento.";
+  };
+  const fornecedores = [...fornMap.values()].map((f) => {
+    const pesoFalhas = f.alta + f.media * 0.5 + f.baixa * 0.1;
+    const score = f.itens ? Math.max(0, Math.round(100 * (1 - pesoFalhas / Math.max(f.itens, 1)))) : 100;
+    const perda2027Anual = r2(Math.max(0, f.referencia2027 - f.aproveitavel2027) * (12 / meses));
+    return {
+      cnpj: f.cnpj, nome: f.nome, uf: f.uf, regime: f.regime, regimeLabel: reformaAuditoria.REGIME_FORNECEDOR_LABEL[f.regime as reformaAuditoria.RegimeFornecedor],
+      notas: f.notas, itens: f.itens, valor: r2(f.valor), pctComGrupo: f.notas ? Math.round((f.notasComGrupo / f.notas) * 100) : 0,
+      alta: f.alta, media: f.media, baixa: f.baixa, score, status: score >= 90 && !f.alta ? "conforme" : score >= 70 ? "atencao" : "critico",
+      creditoDestacado: r2(f.creditoDestacado), risco: r2(f.risco), perda2027Anual, regras: [...f.regras], recomendacao: recomendacao(f, perda2027Anual),
+    };
+  }).sort((a, b) => b.perda2027Anual - a.perda2027Anual || b.alta - a.alta || b.valor - a.valor);
+  const ncms = [...ncmMap.values()].map((nn) => ({
+    ncm: nn.ncm, descricao: nn.descricao, descricaoOficial: nn.descricaoOficial, vigente: nn.vigente, cClassTribs: [...nn.cClassTribs],
+    valor: r2(nn.valor), itens: nn.itens, fornecedores: nn.fornecedores.size,
+    status: nn.naoVigente ? "ncm_vencido" : nn.foraAnexo ? "fora_anexo" : nn.reducaoEsquecida ? "reducao_esquecida" : nn.pendente ? "pendente" : nn.semGrupo === nn.itens ? "sem_grupo" : "ok",
+    naoVigente: nn.naoVigente, foraAnexo: nn.foraAnexo, reducaoEsquecida: nn.reducaoEsquecida, semGrupo: nn.semGrupo,
+  })).sort((a, b) => b.valor - a.valor);
+  const perda2027 = Math.max(0, r2(ref27 - aprov27));
+  return {
+    empresa: { id: empresa.id, nome: empresa.nome, cnpj: empresa.cnpj, regime, regimeLabel: REGIME_CLIENTE_LABEL[regime] || regime, tomaCredito },
+    periodo: { de, ate, meses },
+    fontes: {
+      tabela: reformaAuditoria.VERSAO_TABELAS.cClassTrib,
+      versaoNcm: reformaAuditoria.VERSAO_TABELAS.ncm,
+      atualizadoEm: reformaAuditoria.VERSAO_TABELAS.atualizadoEm,
+      ultimasMudancas: reformaUltimasMudancas.slice(0, 30),
+      atualizacao: "Tabelas oficiais (NCM vigentes, cClassTrib e CST) atualizadas automaticamente a cada 15 dias pela API da Calculadora de Tributos (RFB/CGIBS).",
+      notasTecnicas: "NT 2025.002-RTC v1.53 (IBS/CBS/IS na NF-e) · NT 2026.005 v1.00 (Simples Nacional)",
+      api: "Calculadora de Tributos RFB/CGIBS — consumo.tributos.gov.br (NCM × cClassTrib e vigência do NCM)",
+      cbs2027Estimada: reformaAuditoria.CBS_2027_ESTIMADA,
+    },
+    validacao: { pendentes, naFila: reformaFila.size, erroApi: Date.now() < reformaApiPausaAte ? reformaApiUltimoErro : null },
+    kpis: {
+      notas: res.length, itens: itensTotal, notasConformes, itensConformes,
+      conformidade: res.length ? Math.round((notasConformes / res.length) * 1000) / 10 : 0,
+      notasComGrupo: res.filter((r) => r.nota.itens.some((i) => i.temIBSCBS)).length,
+      valorCompras: soma((r) => r.nota.vNF), ibs, cbs,
+      creditoAproveitavel: soma((r) => r.credito.aproveitavel), creditoRisco: soma((r) => r.credito.risco),
+      creditoReferencia: soma((r) => r.credito.referencia), perdaEstrutural: soma((r) => r.credito.perdaEstrutural), perdaErro: soma((r) => r.credito.perdaErro),
+      referencia2027: ref27, aproveitavel2027: aprov27, perda2027, perda2027Anual: r2(perda2027 * (12 / meses)),
+      fornecedores: fornecedores.length, fornecedoresComPendencia: fornecedores.filter((f) => f.status !== "conforme" || f.regime !== "regular").length,
+      ncmsVencidos: ncms.filter((x) => x.status === "ncm_vencido").length,
+    },
+    mixRegime: [...mixMap.values()].map((m) => ({ ...m, valor: r2(m.valor) })).sort((a, b) => b.valor - a.valor),
+    mensal: [...mesMap.values()].sort((a, b) => a.mes.localeCompare(b.mes)).map((m) => ({ ...m, valor: r2(m.valor), valorConforme: r2(m.valorConforme), ibs: r2(m.ibs), cbs: r2(m.cbs) })),
+    fornecedores, ncms: ncms.slice(0, 300),
+    regras: [...regraMap.values()].sort((a, b) => sevPeso[a.severidade] - sevPeso[b.severidade] || b.qtd - a.qtd),
+    achados: achados.slice(0, 3000), achadosTotal: achados.length,
+  };
+}
+function reformaPeriodo(q: any) {
+  const hoje = new Date();
+  const ate = typeof q.ate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(q.ate) ? q.ate : hoje.toISOString().slice(0, 10);
+  const dIni = new Date(hoje.getFullYear(), hoje.getMonth() - 2, 1);
+  const de = typeof q.de === "string" && /^\d{4}-\d{2}-\d{2}$/.test(q.de) ? q.de : dIni.toISOString().slice(0, 10);
+  return { de, ate };
+}
+app.get("/api/reforma/auditoria", blockCliente, requirePermissao("nfe-busca", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.query.empresaId);
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const { de, ate } = reformaPeriodo(req.query);
+  try { res.json(reformaCalcularAuditoria(user.escritorioId, empresaId, de, ate)); }
+  catch (e: any) { res.status(400).json({ error: e.message }); }
+});
+// Relatório em PDF (o documento entregue ao cliente) — mesmo cálculo do painel, com o timbrado do escritório.
+async function reformaEnviarPdf(res: any, escritorioId: number, empresaId: number, q: any) {
+  const { de, ate } = reformaPeriodo(q);
+  try {
+    const dados = reformaCalcularAuditoria(escritorioId, empresaId, de, ate);
+    const esc = sqlite.prepare(`SELECT nome FROM escritorios WHERE id = ?`).get(escritorioId) as any;
+    const pdf = await gerarPdfRelatorioReforma(dados, esc?.nome || "Simples Contábeis", contratos.timbradoDataUri());
+    const nome = `Auditoria Reforma Tributaria - ${String(dados.empresa.nome || "").replace(/[^\w\- ]/g, "").slice(0, 60)}.pdf`;
+    res.set("Content-Type", "application/pdf");
+    res.set("Content-Disposition", `attachment; filename="${nome}"`);
+    res.send(pdf);
+  } catch (e: any) {
+    res.status(500).json({ error: `Não consegui gerar o relatório: ${e.message}` });
+  }
+}
+app.get("/api/reforma/auditoria/pdf", blockCliente, requirePermissao("nfe-busca", "visualizar"), async (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.query.empresaId);
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  await reformaEnviarPdf(res, user.escritorioId, empresaId, req.query);
+});
+app.get("/api/reforma/minha-empresa/auditoria/pdf", requireCliente, async (req, res) => {
+  const user = (req as any).user;
+  if (!user.empresaId) return res.status(400).json({ error: "Nenhuma empresa vinculada." });
+  await reformaEnviarPdf(res, user.escritorioId, user.empresaId, req.query);
+});
+app.get("/api/reforma/minha-empresa/auditoria", requireCliente, (req, res) => {
+  const user = (req as any).user;
+  if (!user.empresaId) return res.status(400).json({ error: "Nenhuma empresa vinculada." });
+  const { de, ate } = reformaPeriodo(req.query);
+  try { res.json(reformaCalcularAuditoria(user.escritorioId, user.empresaId, de, ate)); }
+  catch (e: any) { res.status(400).json({ error: e.message }); }
 });
 app.get("/api/nfe/minha-empresa/documentos/:id/xml", requireCliente, (req, res) => {
   const user = (req as any).user;
@@ -20788,6 +21098,10 @@ const CONTRATO_EMPRESA_CAMPO_SQL: Record<string, string> = {
   nomeRepresentanteLegal: "nome_representante_legal",
   cpfRepresentanteLegal: "cpf_representante_legal",
 };
+// Modelos prontos (texto + campos) que o escritório pode carregar em "Novo modelo" e salvar como seu.
+app.get("/api/contratos/modelos-prontos", blockCliente, requirePermissao("contratos", "visualizar"), (_req, res) => {
+  res.json({ items: MODELOS_CONTRATO_PRONTOS });
+});
 app.get("/api/contratos/modelos", blockCliente, requirePermissao("contratos", "visualizar"), (req, res) => {
   const rows = sqlite
     .prepare(`SELECT id, nome, conteudo_html as conteudoHtml, campos, ativo, criado_em as criadoEm FROM contratos_modelos WHERE escritorio_id = ? ORDER BY nome`)

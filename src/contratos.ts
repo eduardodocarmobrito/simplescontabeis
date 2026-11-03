@@ -485,7 +485,7 @@ export function numerarClausulasContrato(html: string): string {
 // Lido uma vez e guardado em memória como data URI. Se faltar o arquivo, cai pro PDF sem timbrado
 // (não derruba a geração).
 let TIMBRADO_CACHE: string | null | undefined;
-function timbradoDataUri(): string | null {
+export function timbradoDataUri(): string | null {
   if (TIMBRADO_CACHE !== undefined) return TIMBRADO_CACHE;
   try {
     const p = path.join(__dirname, "assets", "timbrado-simplescontabeis.jpeg");
@@ -517,6 +517,12 @@ const CONTRATO_TIMBRADO_CSS = `
   .align-right { text-align: right !important; text-indent: 0 !important; }
   table.dados { border-collapse: collapse; width: 100%; margin: 6px 0; }
   table.dados td, table.dados th { border: 1px solid #999; padding: 4px 8px; }
+  /* Anexo I do contrato de terceirização: tabela larga (8 colunas) — fonte menor e linha sem quebra. */
+  table.anexo-terceirizacao { font-size: 9.5px; line-height: 1.3; }
+  table.anexo-terceirizacao th { background: #ececec; text-align: left; }
+  table.anexo-terceirizacao td, table.anexo-terceirizacao th { padding: 3px 5px; }
+  table.anexo-terceirizacao tr { page-break-inside: avoid; }
+  table.anexo-terceirizacao td:nth-child(n+5) { white-space: nowrap; }
   /* Listas numeradas: o número vem do data-num (posto na numeração server-side); recuo por nível
      via --pl/--nl inline. Texto justificado com recuo pendente (hanging). */
   ol { list-style: none; margin: 4px 0 7px; padding-left: 0; }
