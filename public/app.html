@@ -17820,6 +17820,19 @@ async function pageSetor(escopo){
 
 // ===================== Obrigações do Mês (DP/RH) — quadro de tarefas com status automático =====================
 let OBR = { competencia:null, busca:'' };
+// Filtro por quadro (Transmitida × Enviada ao cliente), por obrigação — persiste entre visitas.
+let OBR_FILTROS = (()=>{ try{ return JSON.parse(localStorage.getItem('obrFiltros')||'{}')||{}; }catch(e){ return {}; } })();
+const OBR_FILTRO_OPC = {
+  transmitida: [['','Todas'],['ok','✓ Transmitida'],['falta','Falta transmitir'],['atraso','⚠ Atrasada'],['manual','Marcada manual']],
+  enviada: [['','Todas'],['ok','✓ Enviada'],['falta','Falta enviar'],['atraso','⚠ Atrasada'],['manual','Marcada manual']],
+};
+function obrPassaFiltro(l, campo, v){
+  if(!v) return true;
+  const ok = campo==='transmitida' ? l.transmitida : l.enviada;
+  const manual = campo==='transmitida' ? l.transmitidaManual : l.enviadaManual;
+  const atraso = campo==='transmitida' ? l.atrasoTransmissao : l.atrasoEnvio;
+  return v==='ok' ? ok : v==='falta' ? !ok : v==='atraso' ? atraso : v==='manual' ? manual : true;
+}
 async function obrigacoesMontar(box, setor){
   setor = setor || 'dprh';
   const norm = s=>(s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'');
@@ -17853,11 +17866,21 @@ async function obrigacoesMontar(box, setor){
   function render(){
     const f = norm(OBR.busca);
     cont.innerHTML = r.obrigacoes.map(ob=>{
-      const linhas = r.linhas.filter(l=>l.obrigacao===ob.id && (!f || norm(l.empresaNome).includes(f)));
-      if(!linhas.length) return '';
+      const daBusca = r.linhas.filter(l=>l.obrigacao===ob.id && (!f || norm(l.empresaNome).includes(f)));
+      if(!daBusca.length) return '';
+      const fl = OBR_FILTROS[ob.id] || {};
+      const linhas = daBusca.filter(l=>obrPassaFiltro(l,'transmitida',fl.t) && obrPassaFiltro(l,'enviada',fl.e));
+      const sel = (campo, chave)=>`<div class="field" style="margin-bottom:0;"><select class="obrFiltro" data-ob="${esc(ob.id)}" data-k="${chave}" style="width:auto; min-width:160px; padding:6px 10px; font-size:13px;">${OBR_FILTRO_OPC[campo].map(([v,t])=>`<option value="${v}" ${(fl[chave]||'')===v?'selected':''}>${esc(t)}</option>`).join('')}</select></div>`;
+      const filtrado = !!(fl.t || fl.e);
       return `<div class="card" style="padding:0; margin-bottom:14px;">
-        <div style="padding:10px 14px; font-weight:600; border-bottom:1px solid var(--rule);">${esc(ob.label)} <span style="font-size:11px; color:var(--ink-soft); font-weight:400;">· ${ob.auto?'leitura automática':'manual'} · prazo transmissão dia ${ob.prazoTransmissao||'—'}, envio dia ${ob.prazoEnvio||'—'} (mês seguinte) · ${linhas.length} empresa(s)${ob.proxyTransmissao==='dctfweb'?' · <span title="A DCTF-Web é apurada a partir do eSocial: guia gerada = folha transmitida ao eSocial.">transmissão via DCTF-Web (eSocial)</span>':''}</span></div>
-        <div style="overflow-x:auto;"><table class="data-table"><thead><tr><th>Empresa</th><th>Transmitida</th><th>Enviada ao cliente</th></tr></thead><tbody>
+        <div style="padding:10px 14px; font-weight:600; border-bottom:1px solid var(--rule);">${esc(ob.label)} <span style="font-size:11px; color:var(--ink-soft); font-weight:400;">· ${ob.auto?'leitura automática':'manual'} · prazo transmissão dia ${ob.prazoTransmissao||'—'}, envio dia ${ob.prazoEnvio||'—'} (mês seguinte) · ${filtrado?`${linhas.length} de ${daBusca.length}`:linhas.length} empresa(s)${ob.proxyTransmissao==='dctfweb'?' · <span title="A DCTF-Web é apurada a partir do eSocial: guia gerada = folha transmitida ao eSocial.">transmissão via DCTF-Web (eSocial)</span>':''}${ob.transmissaoManual?' · <span title="A coluna Transmitida não tem leitura automática por enquanto — a validação virá direto do eSocial. Marque manualmente clicando no status.">transmissão: marcação manual (validação pelo eSocial em breve)</span>':''}</span>
+          <div class="row" style="gap:10px; align-items:center; flex-wrap:wrap; margin-top:8px; font-weight:400;">
+            <span style="font-size:11.5px; color:var(--ink-soft);">Filtrar — Transmitida:</span>${sel('transmitida','t')}
+            <span style="font-size:11.5px; color:var(--ink-soft);">Enviada ao cliente:</span>${sel('enviada','e')}
+            ${filtrado?`<button type="button" class="btn small obrFiltroLimpar" data-ob="${esc(ob.id)}">Limpar filtro</button>`:''}
+          </div></div>
+        ${!linhas.length?`<div class="empty-state" style="padding:14px;">Nenhuma empresa neste filtro.</div>`:''}
+        <div style="overflow-x:auto;${!linhas.length?' display:none;':''}"><table class="data-table"><thead><tr><th>Empresa</th><th>Transmitida</th><th>Enviada ao cliente</th></tr></thead><tbody>
         ${linhas.map(l=>`<tr data-emp="${l.empresaId}" data-ob="${l.obrigacao}">
           <td class="obr-det" style="cursor:pointer;" title="Ver o que foi enviado (notas/documentos, e-mail e WhatsApp)">${empresaCodigoMatrizFilialHtml(l.empresaId, l.empresaNome)} <span style="font-size:11px; color:var(--accent-deep);">🔎 detalhe</span></td>
           <td>${badge(l.transmitida, l.transmitidaManual, l.atrasoTransmissao, 'transmitida')}</td>
@@ -17865,6 +17888,9 @@ async function obrigacoesMontar(box, setor){
         </tr>`).join('')}
         </tbody></table></div></div>`;
     }).join('') || `<div class="empty-state">Nenhuma empresa com obrigações nesta competência. Marque "Precisa de DARF da DCTF-Web" (Integra Contador) e "Busca FGTS" (Empresas) nas empresas que fazem folha.</div>`;
+    const salvarFiltros = ()=>{ try{ localStorage.setItem('obrFiltros', JSON.stringify(OBR_FILTROS)); }catch(e){} render(); };
+    cont.querySelectorAll('.obrFiltro').forEach(s=>s.addEventListener('change', ()=>{ const o = OBR_FILTROS[s.dataset.ob] = OBR_FILTROS[s.dataset.ob] || {}; o[s.dataset.k] = s.value; salvarFiltros(); }));
+    cont.querySelectorAll('.obrFiltroLimpar').forEach(b=>b.addEventListener('click', ()=>{ delete OBR_FILTROS[b.dataset.ob]; salvarFiltros(); }));
     if(podeEditar){
       cont.querySelectorAll('[data-mark]').forEach(el=>el.addEventListener('click', async ()=>{
         const tr = el.closest('tr'); const empresaId=Number(tr.dataset.emp); const ob=tr.dataset.ob; const campo=el.dataset.mark;
@@ -17922,7 +17948,30 @@ async function obrigacaoDetalheModal(linha, ob){
       </tbody></table></div>` : (destinos + `<div class="empty-state">Nenhuma NFS-e de honorários encontrada para ${esc(OBR.competencia)} — a marcação veio da configuração de emissão automática.</div>`);
     }catch(e){ box.innerHTML=`<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; }
   } else {
-    box.innerHTML = `<div class="empty-state">Detalhe por documento (DCTF-Web, FGTS etc.) vem na próxima etapa — por ora, abra em <b>Envio de Documentos</b> pra ver os anexos e envios desta empresa.</div>`;
+    try{
+      const d = await api('/obrigacoes/doc-detalhe?empresaId='+linha.empresaId+'&competencia='+encodeURIComponent(OBR.competencia)+'&obrigacao='+encodeURIComponent(ob.id));
+      const emails=d.emails||[], zaps=d.whatsapps||[];
+      const sim='<span style="color:var(--credit)">✓ sim</span>', nao='<span class="mut">—</span>';
+      const quando = s=>s?`<br><span class="mut" style="font-size:11px;">${esc(fmtDateHora(s))}</span>`:'';
+      const destinos = `<div style="display:flex; gap:18px; flex-wrap:wrap; margin-bottom:12px; font-size:12.5px;">
+        <div><b>✉️ E-mail(s) do cliente:</b> ${emails.length? emails.map(e=>esc(e)).join(', ') : '<span class="mut">nenhum cadastrado</span>'}</div>
+        <div><b>📱 WhatsApp(s) do cliente:</b> ${zaps.length? zaps.map(w=>esc(w)).join(', ') : '<span class="mut">nenhum cadastrado</span>'}</div>
+      </div>`;
+      const guia = d.guiaIntegra ? `<div style="font-size:12.5px; margin-bottom:10px;">🧾 Guia gerada pelo Integra Contador em ${esc(fmtDateHora(d.guiaIntegra.geradaEm))}.</div>` : '';
+      const tabDocs = d.documentos.length ? `<h4 style="margin:6px 0;">📎 Documentos anexados no Envio de Documentos</h4><div style="overflow-x:auto;"><table class="data-table"><thead><tr><th>Arquivo</th><th>Modelo</th><th>Anexado em</th><th>E-mail</th><th>WhatsApp</th></tr></thead><tbody>
+        ${d.documentos.map(x=>`<tr><td>${esc(x.arquivo)}</td><td>${esc(x.modelo)}</td><td style="white-space:nowrap;">${esc(fmtDateHora(x.anexadoEm))}</td>
+          <td style="white-space:nowrap;">${x.emailEnviado?sim+quando(x.emailEm):(x.emailErro?`<span style="color:var(--debit); font-size:11.5px;">${esc(x.emailErro)}</span>`:nao)}</td>
+          <td style="white-space:nowrap;">${x.whatsappEnviado?sim+quando(x.whatsappEm):(x.whatsappErro?`<span style="color:var(--debit); font-size:11.5px;">${esc(x.whatsappErro)}</span>`:nao)}</td></tr>`).join('')}
+        </tbody></table></div>` : `<div class="empty-state" style="padding:10px;">Nenhum documento anexado no Envio de Documentos em ${esc(OBR.competencia)}.</div>`;
+      const tabEnv = (lista, titulo)=>`<h4 style="margin:14px 0 6px;">${titulo}</h4><div style="overflow-x:auto;"><table class="data-table"><thead><tr><th>Documento</th><th>Canal</th><th>Enviado para</th><th>Quando</th><th>Por</th><th>Status</th></tr></thead><tbody>
+        ${lista.map(x=>`<tr><td>${esc(x.titulo||x.tipo||'—')}</td><td style="white-space:nowrap;">${x.canal==='whatsapp'?'📱 WhatsApp':'✉️ E-mail'}</td><td>${esc(x.destino||'—')}</td>
+          <td style="white-space:nowrap;">${esc(fmtDateHora(x.enviadoEm))}</td><td>${esc(x.enviadoPor||'—')}</td>
+          <td style="white-space:nowrap;">${x.status==='ok'?'<span class="tag ok">✓ enviado</span>':`<span class="tag bad" title="${esc(x.erro||'')}">erro</span>`}</td></tr>`).join('')}
+        </tbody></table></div>`;
+      const envios = d.envios.length ? tabEnv(d.envios, '📤 Envios ao cliente (Central de Envio)') : `<div class="empty-state" style="padding:10px; margin-top:10px;">Nenhum envio pela Central de Envio para a competência ${esc(OBR.competencia)}.</div>`;
+      const semComp = d.enviosSemCompetencia.length ? tabEnv(d.enviosSemCompetencia, '⚠️ Envios no mês seguinte sem competência lida (podem ser desta competência — conferir)') : '';
+      box.innerHTML = destinos + guia + tabDocs + envios + semComp;
+    }catch(e){ box.innerHTML=`<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; }
   }
 }
 function obrigacoesPrazosModal(obrigacoes, onSave){

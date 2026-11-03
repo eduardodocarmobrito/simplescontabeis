@@ -7229,7 +7229,9 @@ const OBRIGACOES_POR_SETOR: Record<string, any[]> = {
   dprh: [
     { id: "dprh_dctfweb", label: "DCTF-Web", templates: ["DARF - DCTF-Web", "DARF-DCTF-Web"], fonte: "dctfweb", prazoTransmissao: 15, prazoEnvio: 20 },
     { id: "dprh_fgts", label: "Guia FGTS", templates: ["FGTS", "Guia FGTS Digital", "FGTS Relatorio"], fonte: "envio", prazoTransmissao: 7, prazoEnvio: 20 },
-    { id: "dprh_folha", label: "Folha de Pagamento", templates: ["Folha Mensal", "Folha de Pagamento Mensal"], fonte: "envio", proxyTransmissao: "dctfweb", prazoTransmissao: 5, prazoEnvio: 10 },
+    // Transmissão da Folha SEM leitura automática (pedido 2026-11-03): nem o anexo no Envio nem a DCTF-Web
+    // valem mais como "transmitida" — a validação vai vir direto do eSocial. Até lá é só marcação manual.
+    { id: "dprh_folha", label: "Folha de Pagamento", templates: ["Folha Mensal", "Folha de Pagamento Mensal"], fonte: "envio", transmissaoManual: true, prazoTransmissao: 5, prazoEnvio: 10 },
   ],
   fiscal: [
     { id: "fiscal_nfse_honorarios", label: "NFS-e de Honorários (escritório)", templates: [], fonte: "nfse_honorarios", prazoTransmissao: 10, prazoEnvio: 15 },
@@ -7321,6 +7323,7 @@ app.get("/api/obrigacoes", blockCliente, requirePermissao("empresas", "visualiza
       // Proxy de transmissão: a Folha usa a DCTF-Web como sinal de que foi transmitida ao eSocial (a
       // DCTF-Web é apurada a partir do eSocial — se a guia DARF foi gerada, a folha foi transmitida).
       if (!transmitidaAuto && ob.proxyTransmissao === "dctfweb") transmitidaAuto = !!temIntegraDoc.get(empId, "darf_dctfweb", periodoApuracao);
+      if (ob.transmissaoManual) transmitidaAuto = false;
       const man = manMap[empId + "|" + ob.id];
       const transmitida = man && man.transmitida != null ? !!man.transmitida : transmitidaAuto;
       const enviada = man && man.enviada != null ? !!man.enviada : enviadaAuto;
@@ -7340,7 +7343,7 @@ app.get("/api/obrigacoes", blockCliente, requirePermissao("empresas", "visualiza
   res.json({
     setor,
     competencia: comp,
-    obrigacoes: obrigacoesSetor.map((o) => ({ id: o.id, label: o.label, fonte: o.fonte, proxyTransmissao: o.proxyTransmissao || null, auto: o.fonte !== "manual", prazoTransmissao: cfgMap[o.id]?.prazo_transmissao ?? o.prazoTransmissao, prazoEnvio: cfgMap[o.id]?.prazo_envio ?? o.prazoEnvio })),
+    obrigacoes: obrigacoesSetor.map((o) => ({ id: o.id, label: o.label, fonte: o.fonte, proxyTransmissao: o.proxyTransmissao || null, transmissaoManual: !!o.transmissaoManual, auto: o.fonte !== "manual", prazoTransmissao: cfgMap[o.id]?.prazo_transmissao ?? o.prazoTransmissao, prazoEnvio: cfgMap[o.id]?.prazo_envio ?? o.prazoEnvio })),
     linhas,
   });
 });
@@ -16551,6 +16554,49 @@ app.get("/api/obrigacoes/nfse-detalhe", blockCliente, requirePermissao("empresas
     };
   });
   res.json({ empresaNome: cliente.nome, competencia: comp, emails, whatsapps, items });
+});
+// Detalhe de um quadro de documento (DCTF-Web, FGTS, Folha, ISS...): o que foi anexado na grade do Envio
+// de Documentos na competência + o histórico de envios da Central de Envio (canal, destino, data, quem).
+// Envios da Central gravados SEM competência (a guia não teve o período lido) aparecem à parte quando
+// saíram no mês seguinte ao da competência — só informativo, não mudam o status do quadro.
+app.get("/api/obrigacoes/doc-detalhe", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.query.empresaId);
+  const comp = String(req.query.competencia || "");
+  const mm = comp.match(/^(\d{4})-(\d{2})$/);
+  if (!empresaId || !mm) return res.status(400).json({ error: "Parâmetros inválidos." });
+  if (!podeAcessarEmpresa(user, empresaId)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  const ob = Object.values(OBRIGACOES_POR_SETOR).flat().find((o: any) => o.id === String(req.query.obrigacao || "")) as any;
+  if (!ob) return res.status(400).json({ error: "Obrigação inválida." });
+  const tpls: string[] = ob.templates || [];
+  const ph = tpls.map(() => "?").join(",");
+  const ano = Number(mm[1]), mes = Number(mm[2]);
+  const documentos = tpls.length ? sqlite.prepare(
+    `SELECT d.id, t.nome as modelo, d.file_name as arquivo, d.enviado_em as anexadoEm, d.vencimento,
+            d.email_enviado as emailEnviado, d.email_enviado_em as emailEm, d.email_erro as emailErro,
+            d.whatsapp_enviado as whatsappEnviado, d.whatsapp_enviado_em as whatsappEm, d.whatsapp_erro as whatsappErro
+     FROM envio_documentos d JOIN envio_periodos p ON p.id = d.periodo_id JOIN envio_atribuicoes a ON a.id = p.atribuicao_id JOIN envio_templates t ON t.id = a.template_id
+     WHERE a.empresa_id = ? AND t.nome IN (${ph}) AND p.ano = ? AND p.mes = ? ORDER BY d.id`).all(empresaId, ...tpls, ano, mes) as any[] : [];
+  const cols = `id, titulo, tipo_nome as tipo, competencia, canal, destino, enviado_em as enviadoEm, enviado_por_nome as enviadoPor, status, erro`;
+  const envios = tpls.length ? sqlite.prepare(
+    `SELECT ${cols} FROM central_envio_enviados WHERE escritorio_id = ? AND empresa_id = ? AND tipo_nome IN (${ph}) AND competencia = ? ORDER BY enviado_em DESC, id DESC`
+  ).all(user.escritorioId, empresaId, ...tpls, `${mm[2]}/${mm[1]}`) as any[] : [];
+  let py = ano, pm = mes + 1; if (pm > 12) { pm = 1; py++; }
+  const mesSeg = `${py}-${String(pm).padStart(2, "0")}`;
+  const enviosSemCompetencia = tpls.length ? sqlite.prepare(
+    `SELECT ${cols} FROM central_envio_enviados WHERE escritorio_id = ? AND empresa_id = ? AND tipo_nome IN (${ph}) AND (competencia IS NULL OR competencia = '') AND substr(enviado_em, 1, 7) = ? ORDER BY enviado_em DESC, id DESC`
+  ).all(user.escritorioId, empresaId, ...tpls, mesSeg) as any[] : [];
+  const guiaIntegra = ob.fonte === "dctfweb" || ob.fonte === "das"
+    ? (sqlite.prepare(`SELECT criado_em as geradaEm FROM integracontador_documentos WHERE empresa_id = ? AND tipo = ? AND periodo_apuracao = ? ORDER BY id DESC LIMIT 1`).get(empresaId, ob.fonte === "das" ? "das" : "darf_dctfweb", `${mm[1]}${mm[2]}`) as any) || null
+    : null;
+  const emp = sqlite.prepare(`SELECT nome, cnpj FROM empresas WHERE id = ?`).get(empresaId) as any;
+  const irmas = empresasClientePorDocumento(emp?.cnpj);
+  const idsContato = Array.from(new Set([empresaId, ...irmas.map((e) => e.id)]));
+  res.json({
+    empresaNome: emp?.nome || "", competencia: comp, obrigacao: ob.label,
+    emails: emailContatosDeEmpresas(idsContato), whatsapps: whatsappContatosDeEmpresas(idsContato).map((w) => w.telefone),
+    guiaIntegra, documentos, envios, enviosSemCompetencia,
+  });
 });
 // Nome de exibição pro arquivo baixado: "Tomador - NFS-e Nº <número>" — usa o número da NFS-e (do
 // município) quando já emitida, senão o id interno como fallback (rascunho/rejeitada).
