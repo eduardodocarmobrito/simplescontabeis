@@ -7288,6 +7288,14 @@ app.get("/api/obrigacoes", blockCliente, requirePermissao("empresas", "visualiza
       `SELECT COUNT(*) as n, MAX(d.email_enviado) as emailEnv, MAX(d.whatsapp_enviado) as waEnv, MAX(d.email_enviado_em) as emailEm, MAX(d.whatsapp_enviado_em) as waEm
        FROM envio_documentos d JOIN envio_periodos p ON p.id = d.periodo_id JOIN envio_atribuicoes a ON a.id = p.atribuicao_id JOIN envio_templates t ON t.id = a.template_id
        WHERE a.empresa_id = ? AND t.nome IN (${ph}) AND p.ano = ? AND p.mes = ?`) : null;
+    // Envio feito pela Central de Envio (Pendentes → Enviar, inclusive agendado) também conta como
+    // "enviada ao cliente": ela grava só no próprio histórico (central_envio_enviados), não nos flags
+    // do documento da grade — achado ao vivo 2026-11-03 (Folha 10/2026 do Christo Rei enviada por
+    // WhatsApp/e-mail e o quadro mostrando "Falta enviar"). Competência lá é "MM/AAAA".
+    const centralStmt = tpls.length ? sqlite.prepare(
+      `SELECT MAX(enviado_em) as em FROM central_envio_enviados
+       WHERE escritorio_id = ? AND empresa_id = ? AND status = 'ok' AND tipo_nome IN (${ph}) AND competencia = ?`) : null;
+    const compCentral = `${mm[2]}/${mm[1]}`;
     const prazoT = cfgMap[ob.id]?.prazo_transmissao ?? ob.prazoTransmissao;
     const prazoE = cfgMap[ob.id]?.prazo_envio ?? ob.prazoEnvio;
     const pT = prazoStr(prazoT), pE = prazoStr(prazoE);
@@ -7305,6 +7313,10 @@ app.get("/api/obrigacoes", blockCliente, requirePermissao("empresas", "visualiza
       if (envioStmt) {
         const ed = envioStmt.get(empId, ...tpls, ano, mes) as any;
         if (ed && ed.n > 0) { transmitidaAuto = true; enviadaAuto = !!(ed.emailEnv || ed.waEnv); enviadaEm = ed.waEm || ed.emailEm || null; }
+      }
+      if (!enviadaAuto && centralStmt) {
+        const ce = centralStmt.get(user.escritorioId, empId, ...tpls, compCentral) as any;
+        if (ce?.em) { enviadaAuto = true; enviadaEm = ce.em; if (ob.fonte === "envio") transmitidaAuto = true; }
       }
       // Proxy de transmissão: a Folha usa a DCTF-Web como sinal de que foi transmitida ao eSocial (a
       // DCTF-Web é apurada a partir do eSocial — se a guia DARF foi gerada, a folha foi transmitida).
