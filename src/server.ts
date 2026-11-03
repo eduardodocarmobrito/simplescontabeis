@@ -7608,21 +7608,22 @@ function ofRegrasDaEmpresa(empresaId: number): openFinance.RegraConciliacao[] {
   return (sqlite.prepare(`SELECT padrao, conta_contabil, historico FROM of_regras WHERE empresa_id = ? ORDER BY ordem, id`).all(empresaId) as any[])
     .map((r) => ({ padrao: r.padrao, contaContabil: r.conta_contabil || "", historico: r.historico || "" }));
 }
-// Conciliação automática: transferência entre contas próprias é ignorada; regra do cliente define
+// Conciliação automática: TUDO do extrato é contabilizado (nada é ignorado). Transferência entre
+// contas próprias já concilia (é lançamento real de transferência); regra do cliente define
 // conta/histórico; tarifa e tributo ganham sugestão padrão. O que não casar fica pendente pro operador.
 function ofConciliar(empresaId: number, competencia: string) {
   const regras = ofRegrasDaEmpresa(empresaId);
   const pendentes = sqlite.prepare(`SELECT * FROM of_transacoes WHERE empresa_id = ? AND competencia = ? AND status = 'pendente'`).all(empresaId, competencia) as any[];
   const up = sqlite.prepare(`UPDATE of_transacoes SET status = ?, conta_contabil = ?, historico = ?, match_origem = ? WHERE id = ?`);
-  let conciliadas = 0, ignoradas = 0, sugeridas = 0;
+  let conciliadas = 0, sugeridas = 0;
   for (const t of pendentes) {
-    if (t.tipo_mov === "transferencia_propria") { up.run("ignorada", null, "Transferência entre contas próprias", "transferencia", t.id); ignoradas++; continue; }
+    if (t.tipo_mov === "transferencia_propria") { up.run("conciliada", "Transferência entre contas", "Transferência entre contas próprias", "transferencia", t.id); conciliadas++; continue; }
     const regra = openFinance.aplicarRegras(t.descricao, regras);
     if (regra) { up.run("conciliada", regra.contaContabil, regra.historico, "regra", t.id); conciliadas++; continue; }
     if (t.tipo_mov === "tarifa") { up.run("pendente", "Despesas Bancárias", "Tarifa bancária", "classificacao", t.id); sugeridas++; continue; }
     if (t.tipo_mov === "tributo") { up.run("pendente", "Impostos e Contribuições", "Pagamento de tributo", "classificacao", t.id); sugeridas++; continue; }
   }
-  return { avaliadas: pendentes.length, conciliadas, ignoradas, sugeridas, pendentes: pendentes.length - conciliadas - ignoradas };
+  return { avaliadas: pendentes.length, conciliadas, ignoradas: 0, sugeridas, pendentes: pendentes.length - conciliadas };
 }
 
 app.get("/api/open-finance/status", blockCliente, requirePermissao("open_finance", "visualizar"), (_req, res) => {

@@ -8863,7 +8863,6 @@ async function pageOpenFinance(){
           <span style="color:var(--debit);">saídas ${ofBRL(r.debitos)}</span>
           <span>conciliadas <b>${r.conciliadas||0}</b></span>
           <span>pendentes <b>${r.pendentes||0}</b></span>
-          <span>ignoradas <b>${r.ignoradas||0}</b></span>
         </div>
         ${itens.length? `<div style="overflow-x:auto;"><table class="data-table"><thead><tr><th>Data</th><th>Banco</th><th>Descrição</th><th>Tipo</th><th style="text-align:right;">Valor</th><th>Conta / Histórico</th><th>Status</th>${podeEditar?'<th></th>':''}</tr></thead><tbody>
           ${itens.map(t=>`<tr>
@@ -8877,7 +8876,6 @@ async function pageOpenFinance(){
             ${podeEditar?`<td style="white-space:nowrap;">
               <button class="btn" ${OF_BTN_SM} data-edit="${t.id}" title="Editar conta/histórico">✎</button>
               ${t.status!=='conciliada'?`<button class="btn" ${OF_BTN_SM} data-ok="${t.id}" title="Conciliar">✓</button>`:''}
-              ${t.status!=='ignorada'?`<button class="btn" ${OF_BTN_SM} data-ign="${t.id}" title="Ignorar">⊘</button>`:''}
             </td>`:''}
           </tr>`).join('')}
         </tbody></table></div>` : (OF_CONTA!=='todas' && todas.length ? `<div class="empty-state">Nenhuma transação nesta conta nesta competência. <a href="#" id="ofContaLimpar2">Ver todas as contas</a>.</div>` : `<div class="empty-state">Nenhuma transação nesta competência. ${contasAtivas.length?(podeEditar?'Clique em "Sincronizar extrato" pra puxar o mês.':''):'Conecte uma conta primeiro.'}</div>`)}
@@ -8889,11 +8887,10 @@ async function pageOpenFinance(){
     if($('ofConectar')) $('ofConectar').addEventListener('click', ()=> ofConectarModal());
     painel.querySelectorAll('[data-revogar]').forEach(b=>b.addEventListener('click', async ()=>{ if(!confirm('Revogar o consentimento desta conexão?')) return; try{ await api('/open-finance/conexoes/'+b.dataset.revogar+'/revogar',{method:'POST'}); toast('Consentimento revogado.','ok'); ofCarregar(); }catch(e){ toast(e.message,'err'); } }));
     if($('ofSync')) $('ofSync').addEventListener('click', async ev=>{ ev.target.disabled=true; const o=ev.target.textContent; ev.target.textContent='Sincronizando…'; try{ const r = await api('/open-finance/sincronizar',{method:'POST',body:{empresaId:OF_EMPRESA_ID,competencia:OF_COMP}}); toast(r.novas+' novas transações (de '+r.total+' lidas · dedup por fitid).','ok'); ofCarregar(); }catch(e){ toast(e.message,'err'); ev.target.disabled=false; ev.target.textContent=o; } });
-    if($('ofConciliar')) $('ofConciliar').addEventListener('click', async ()=>{ try{ const r = await api('/open-finance/conciliar',{method:'POST',body:{empresaId:OF_EMPRESA_ID,competencia:OF_COMP}}); toast(r.conciliadas+' conciliadas, '+r.ignoradas+' ignoradas, '+r.sugeridas+' com sugestão.','ok'); ofCarregar(); }catch(e){ toast(e.message,'err'); } });
+    if($('ofConciliar')) $('ofConciliar').addEventListener('click', async ()=>{ try{ const r = await api('/open-finance/conciliar',{method:'POST',body:{empresaId:OF_EMPRESA_ID,competencia:OF_COMP}}); toast(r.conciliadas+' conciliadas, '+r.sugeridas+' com sugestão (revise e confirme).','ok'); ofCarregar(); }catch(e){ toast(e.message,'err'); } });
     if($('ofOfx')) $('ofOfx').addEventListener('click', ev=> rtBaixar('/api/open-finance/exportar-ofx?empresaId='+OF_EMPRESA_ID+'&competencia='+OF_COMP, 'Extrato OFX - '+OF_COMP+'.ofx', ev.currentTarget, 'Gerando OFX…'));
     if($('ofRegras')) $('ofRegras').addEventListener('click', ()=> ofRegrasModal());
     painel.querySelectorAll('[data-ok]').forEach(b=>b.addEventListener('click', ()=> ofMarcar(b.dataset.ok,{status:'conciliada'})));
-    painel.querySelectorAll('[data-ign]').forEach(b=>b.addEventListener('click', ()=> ofMarcar(b.dataset.ign,{status:'ignorada'})));
     painel.querySelectorAll('[data-edit]').forEach(b=>b.addEventListener('click', ()=>{ const t = tx.items.find(x=>String(x.id)===b.dataset.edit); ofEditarModal(t); }));
     async function ofMarcar(id, body){ try{ await api('/open-finance/transacoes/'+id+'/marcar',{method:'POST',body}); ofCarregar(); }catch(e){ toast(e.message,'err'); } }
     function ofConectarModal(){
