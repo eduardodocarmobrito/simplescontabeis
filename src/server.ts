@@ -7481,11 +7481,12 @@ async function dctfwebValidarLote(escritorioId: number, periodo: string, empresa
   } finally { st.rodando = false; st.fim = new Date().toISOString(); }
   return st;
 }
-// Rotina diária (a partir das 07:00 de Brasília): competência do mês anterior. Dias 1–20 todo dia;
-// depois disso a cada 3 dias (quem não transmitiu até lá raramente muda de um dia pro outro).
+// Rotina diária (a partir das 07:00 de Brasília): competência do mês anterior. Dias 5–20 todo dia
+// (antes do dia 5 quase ninguém transmitiu — cada consulta é paga; quem precisar antes usa o botão);
+// depois do dia 20 a cada 3 dias (quem não transmitiu até lá raramente muda de um dia pro outro).
 setInterval(() => {
   const a = agoraBrasilia();
-  if (a.hora < 7) return;
+  if (a.hora < 7 || a.dia < 5) return;
   const hoje = `${a.ano}-${String(a.mes).padStart(2, "0")}-${String(a.dia).padStart(2, "0")}`;
   if (a.dia > 20 && a.dia % 3 !== 0) return;
   const cfgs = sqlite.prepare(`SELECT escritorio_id FROM integracontador_config WHERE ativo = 1`).all() as any[];
