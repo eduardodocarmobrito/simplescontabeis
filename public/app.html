@@ -1992,7 +1992,7 @@ async function render(){
     else if(STATE.page==='relatorios') await pageRelatorios();
     // Abrir o CRM pelo menu sempre cai no WhatsApp (deskcomm) → Fila; a aba Meta recarrega por pageCrm() direto.
     else if(STATE.page==='crm'){ CRM.aba='whatsapp'; await pageCrm(); }
-    else if(SETOR_PAGINAS[STATE.page]){ SETOR_ABA[STATE.page]='whatsapp'; await pageSetor(STATE.page); }
+    else if(SETOR_PAGINAS[STATE.page]){ SETOR_ABA[STATE.page]=SETOR_ABA_INICIAL||'whatsapp'; SETOR_ABA_INICIAL=null; await pageSetor(STATE.page); }
     else if(STATE.page==='email') await pageEmail();
     else if(STATE.page==='usuarios') await pageUsuarios();
     else if(STATE.page==='configuracoes') await pageConfiguracoes();
@@ -2888,10 +2888,46 @@ async function pageDashboard(){
       Monitorando pendências ${competenciaInicio? `a partir de <b>${MESES[competenciaInicio.mes]}/${competenciaInicio.ano}</b>` : 'desde o período mais antigo gerado na grade de cada empresa'} —
       <span class="link-discreto" id="btnMonitoramentoConfig" style="cursor:pointer; text-decoration:underline;">${competenciaInicio?'alterar':'configurar um início'}</span>
     </p>` : ''}
+    <div id="dashObrigAtalhos"></div>
     <div class="kpi-grid" id="kpiGrid"></div>
   `;
   if(podeEditar) document.getElementById('btnMonitoramentoConfig').addEventListener('click', ()=>monitoramentoConfigModal(competenciaInicio));
+  dashObrigacoesAtalhos();
   montarCardsGrid(document.getElementById('kpiGrid'), indicadores, podeEditar, true, 'Nenhum indicador manual ainda — use "+ Adicionar card". Os cards de pendência ficam na aba Pendentes.');
+}
+// Quadros de atalho pras Obrigações do Mês dos 3 setores (DP/RH, Fiscal, Contábil), lado a lado, na
+// aba Indicadores. Cada card leva pra aba Obrigações do setor e mostra um resumo (atrasadas/pendências).
+function dashObrigacoesAtalhos(){
+  const box = document.getElementById('dashObrigAtalhos'); if(!box) return;
+  const setores = [
+    { id:'dprh', nome:'DP/RH', icon:'🧾' },
+    { id:'fiscal', nome:'Fiscal', icon:'📊' },
+    { id:'contabil', nome:'Contabilidade', icon:'📒' },
+  ].filter(s=>can(s.id,'visualizar'));
+  if(!setores.length){ box.innerHTML=''; return; }
+  const d=new Date(); d.setDate(1); d.setMonth(d.getMonth()-1); const comp=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+  box.innerHTML = `
+    <div style="font-size:12px; color:var(--ink-soft); margin:0 0 8px;">Obrigações do Mês · ${MESES_PT[+comp.slice(5,7)-1]}/${comp.slice(0,4)}</div>
+    <div class="row" style="gap:12px; flex-wrap:wrap; margin-bottom:18px;">
+      ${setores.map(s=>`
+        <div class="card painel-clicavel obr-atalho" data-setor="${s.id}" style="flex:1; min-width:220px; max-width:340px; cursor:pointer;">
+          <div style="font-size:14px; font-weight:600;">${s.icon} Obrigações — ${esc(s.nome)}</div>
+          <div class="obr-resumo" style="font-size:12.5px; color:var(--ink-soft); margin-top:6px;">carregando…</div>
+          <div style="font-size:12px; color:var(--accent-deep); margin-top:8px;">Abrir quadro →</div>
+        </div>`).join('')}
+    </div>`;
+  box.querySelectorAll('.obr-atalho').forEach(el=>el.addEventListener('click', ()=>{ SETOR_ABA_INICIAL='obrigacoes'; goPage(el.dataset.setor); }));
+  setores.forEach(async s=>{
+    const alvo = box.querySelector('.obr-atalho[data-setor="'+s.id+'"] .obr-resumo');
+    try{
+      const r = await api('/obrigacoes?setor='+s.id+'&competencia='+comp);
+      const total=r.linhas.length;
+      const atrasadas = r.linhas.filter(l=>l.atrasoTransmissao||l.atrasoEnvio).length;
+      const faltaTransm = r.linhas.filter(l=>!l.transmitida).length;
+      const faltaEnvio = r.linhas.filter(l=>!l.enviada).length;
+      if(alvo) alvo.innerHTML = total? `<b style="color:${atrasadas?'var(--debit)':'var(--accent-deep)'}">${atrasadas} atrasada(s)</b> · ${faltaTransm} a transmitir · ${faltaEnvio} a enviar <span style="color:var(--ink-soft)">· ${total} itens</span>` : 'nenhuma obrigação nesta competência';
+    }catch(e){ if(alvo) alvo.textContent='—'; }
+  });
 }
 // Renderiza uma grade de cards (KPI) com os handlers de clique/editar/excluir. comAdd mostra o
 // "+ Adicionar card" (só na aba Indicadores). Reaproveitado pelas abas Indicadores e Pendentes.
@@ -17135,6 +17171,7 @@ const SETOR_PAGINAS = {
   fiscal:   { titulo:'Fiscal', subtitulo:'Departamento Fiscal — demandas fiscais e tributárias.' },
 };
 const SETOR_ABA = { dprh:'whatsapp', contabil:'whatsapp', fiscal:'whatsapp' };
+let SETOR_ABA_INICIAL = null; // aba a abrir ao navegar pra um setor (ex.: atalho da Área de Trabalho abre em "obrigacoes")
 async function pageSetor(escopo){
   const pg = SETOR_PAGINAS[escopo];
   pararAtendimentoTimers(escopo);
