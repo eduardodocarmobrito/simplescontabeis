@@ -7376,11 +7376,11 @@ function ofConexoesDaEmpresa(empresaId: number) {
     })),
   }));
 }
-async function ofConectarEmpresa(empresaId: number, escritorioId: number) {
+async function ofConectarEmpresa(empresaId: number, escritorioId: number, bancoId?: string) {
   const emp = sqlite.prepare(`SELECT id, nome, cnpj FROM empresas WHERE id = ?`).get(empresaId) as any;
   if (!emp) throw new Error("Empresa não encontrada.");
   const provider = openFinance.getProvider();
-  const consent = await provider.criarConsentimento({ id: emp.id, nome: emp.nome, cnpj: emp.cnpj });
+  const consent = await provider.criarConsentimento({ id: emp.id, nome: emp.nome, cnpj: emp.cnpj }, bancoId ? { bancoId } : undefined);
   const r = sqlite.prepare(`INSERT INTO of_conexoes (empresa_id, escritorio_id, provedor, modo, consent_id, status, validade_ate) VALUES (?, ?, ?, ?, ?, ?, ?)`)
     .run(empresaId, escritorioId, provider.nome, provider.modo, consent.consentId, consent.status, consent.validadeAte);
   const conexaoId = Number(r.lastInsertRowid);
@@ -7430,7 +7430,7 @@ function ofConciliar(empresaId: number, competencia: string) {
 
 app.get("/api/open-finance/status", blockCliente, requirePermissao("open_finance", "visualizar"), (_req, res) => {
   const p = openFinance.getProvider();
-  res.json({ provedor: p.nome, modo: p.modo, pluggyConfigurado: openFinance.pluggyConfigurado() });
+  res.json({ provedor: p.nome, modo: p.modo, pluggyConfigurado: openFinance.pluggyConfigurado(), bancos: openFinance.BANCOS_OPEN_FINANCE });
 });
 app.get("/api/open-finance/conexoes", blockCliente, requirePermissao("open_finance", "visualizar"), (req, res) => {
   const user = (req as any).user;
@@ -7442,7 +7442,7 @@ app.post("/api/open-finance/conectar", blockCliente, requirePermissao("open_fina
   const user = (req as any).user;
   const empresaId = Number(req.body?.empresaId);
   if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(400).json({ error: "Empresa inválida." });
-  try { res.json(await ofConectarEmpresa(empresaId, user.escritorioId)); }
+  try { res.json(await ofConectarEmpresa(empresaId, user.escritorioId, req.body?.banco ? String(req.body.banco) : undefined)); }
   catch (e: any) { res.status(400).json({ error: e.message }); }
 });
 app.post("/api/open-finance/conexoes/:id/revogar", blockCliente, requirePermissao("open_finance", "editar"), (req, res) => {
@@ -7530,7 +7530,7 @@ app.get("/api/open-finance/minha-empresa/conexoes", requireCliente, (req, res) =
 app.post("/api/open-finance/minha-empresa/conectar", requireCliente, async (req, res) => {
   const user = (req as any).user;
   if (!user.empresaId) return res.status(400).json({ error: "Nenhuma empresa vinculada." });
-  try { res.json(await ofConectarEmpresa(user.empresaId, user.escritorioId)); }
+  try { res.json(await ofConectarEmpresa(user.empresaId, user.escritorioId, req.body?.banco ? String(req.body.banco) : undefined)); }
   catch (e: any) { res.status(400).json({ error: e.message }); }
 });
 app.post("/api/open-finance/minha-empresa/conexoes/:id/revogar", requireCliente, (req, res) => {

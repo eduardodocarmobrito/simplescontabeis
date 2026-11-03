@@ -30,8 +30,9 @@ export interface OFConsentimento {
 export interface OpenFinanceProvider {
   nome: string;
   modo: "sandbox" | "producao";
-  // Cria (ou simula) um consentimento do cliente e devolve as contas autorizadas.
-  criarConsentimento(empresa: { id: number; nome: string; cnpj: string | null }): Promise<OFConsentimento>;
+  // Cria (ou simula) um consentimento do cliente e devolve as contas autorizadas. opts.bancoId =
+  // código Febraban do banco escolhido (BANCOS_OPEN_FINANCE); sem ele, demo com banco qualquer.
+  criarConsentimento(empresa: { id: number; nome: string; cnpj: string | null }, opts?: { bancoId?: string }): Promise<OFConsentimento>;
   // Puxa as transações de uma conta num intervalo [dataDe, dataAte] (YYYY-MM-DD).
   listarTransacoes(args: { empresaId: number; conta: OFContaBancaria; dataDe: string; dataAte: string }): Promise<OfxTransacao[]>;
 }
@@ -39,14 +40,23 @@ export interface OpenFinanceProvider {
 // ---------------------------------------------------------------------------------------------------
 // Sandbox: gerador determinístico de extrato de PJ.
 // ---------------------------------------------------------------------------------------------------
-const BANCOS_MOCK: { banco: string; bankId: string }[] = [
+// Bancos oferecidos ao conectar (código Febraban = BANKID no OFX). No sandbox o usuário escolhe qual
+// simular; em produção (Pluggy) o mesmo código mapeia o conector/instituição no Open Finance.
+export const BANCOS_OPEN_FINANCE: { banco: string; bankId: string }[] = [
   { banco: "Banco do Brasil", bankId: "001" },
   { banco: "Caixa Econômica Federal", bankId: "104" },
   { banco: "Bradesco", bankId: "237" },
   { banco: "Itaú Unibanco", bankId: "341" },
   { banco: "Santander", bankId: "033" },
   { banco: "Sicoob", bankId: "756" },
+  { banco: "Sicredi", bankId: "748" },
+  { banco: "Cresol", bankId: "133" },
+  { banco: "Banco Inter", bankId: "077" },
+  { banco: "Banrisul", bankId: "041" },
+  { banco: "Nubank", bankId: "260" },
+  { banco: "BTG Pactual", bankId: "208" },
 ];
+const BANCOS_MOCK = BANCOS_OPEN_FINANCE;
 // PRNG determinístico (mulberry32) a partir de uma semente numérica — mesmo extrato toda vez.
 function prng(seed: number): () => number {
   let a = seed >>> 0;
@@ -107,19 +117,30 @@ export function gerarExtratoSandbox(args: { empresaId: number; conta: OFContaBan
 export class MockProvider implements OpenFinanceProvider {
   nome = "Sandbox (dados de teste)";
   modo = "sandbox" as const;
-  async criarConsentimento(empresa: { id: number; nome: string; cnpj: string | null }): Promise<OFConsentimento> {
+  async criarConsentimento(empresa: { id: number; nome: string; cnpj: string | null }, opts?: { bancoId?: string }): Promise<OFConsentimento> {
+    const escolhido = opts?.bancoId ? BANCOS_OPEN_FINANCE.find((b) => b.bankId === opts.bancoId) : null;
+    const validade = new Date(); validade.setMonth(validade.getMonth() + 12);
+    const validadeAte = validade.toISOString().slice(0, 10);
+    // Banco escolhido: UMA conexão/conta nesse banco (o usuário pode conectar vários, um por vez).
+    if (escolhido) {
+      const rnd = prng(semente(`consent|${empresa.id}|${escolhido.bankId}`));
+      const n = 10000 + Math.floor(rnd() * 89999);
+      const contas: OFContaBancaria[] = [
+        { idExterno: `acc${empresa.id}-${escolhido.bankId}`, banco: escolhido.banco, bankId: escolhido.bankId, numero: `0001 / ${n}-${empresa.id % 10}`, tipo: "CHECKING" },
+      ];
+      return { consentId: `mock-consent-${empresa.id}-${escolhido.bankId}-${Date.now()}`, status: "ativo", validadeAte, contas };
+    }
+    // Sem banco escolhido (demo): 1–2 contas num banco qualquer.
     const rnd = prng(semente(`consent|${empresa.id}`));
     const b1 = BANCOS_MOCK[Math.floor(rnd() * BANCOS_MOCK.length)];
     const contas: OFContaBancaria[] = [
       { idExterno: `acc${empresa.id}a`, banco: b1.banco, bankId: b1.bankId, numero: `0001 / ${10000 + (empresa.id % 90000)}-${empresa.id % 10}`, tipo: "CHECKING" },
     ];
-    // Algumas empresas têm uma segunda conta (pra testar múltiplas contas + transferência entre elas).
     if (rnd() > 0.5) {
       const b2 = BANCOS_MOCK[(Math.floor(rnd() * BANCOS_MOCK.length) + 1) % BANCOS_MOCK.length];
       contas.push({ idExterno: `acc${empresa.id}b`, banco: b2.banco, bankId: b2.bankId, numero: `0001 / ${20000 + (empresa.id % 90000)}-${(empresa.id + 1) % 10}`, tipo: "CHECKING" });
     }
-    const validade = new Date(); validade.setMonth(validade.getMonth() + 12);
-    return { consentId: `mock-consent-${empresa.id}-${Date.now()}`, status: "ativo", validadeAte: validade.toISOString().slice(0, 10), contas };
+    return { consentId: `mock-consent-${empresa.id}-${Date.now()}`, status: "ativo", validadeAte, contas };
   }
   async listarTransacoes(args: { empresaId: number; conta: OFContaBancaria; dataDe: string; dataAte: string }): Promise<OfxTransacao[]> {
     return gerarExtratoSandbox(args);

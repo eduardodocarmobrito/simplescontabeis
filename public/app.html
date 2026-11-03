@@ -8849,7 +8849,7 @@ async function pageOpenFinance(){
         </tbody></table></div>` : `<div class="empty-state">Nenhuma transação nesta competência. ${contasAtivas.length?(podeEditar?'Clique em "Sincronizar extrato" pra puxar o mês.':''):'Conecte uma conta primeiro.'}</div>`}
       </div>`;
     const $ = id=>document.getElementById(id);
-    if($('ofConectar')) $('ofConectar').addEventListener('click', async ev=>{ ev.target.disabled=true; try{ const r = await api('/open-finance/conectar',{method:'POST',body:{empresaId:OF_EMPRESA_ID}}); toast('Conta conectada ('+r.modo+').','ok'); ofCarregar(); }catch(e){ toast(e.message,'err'); ev.target.disabled=false; } });
+    if($('ofConectar')) $('ofConectar').addEventListener('click', ()=> ofConectarModal());
     painel.querySelectorAll('[data-revogar]').forEach(b=>b.addEventListener('click', async ()=>{ if(!confirm('Revogar o consentimento desta conexão?')) return; try{ await api('/open-finance/conexoes/'+b.dataset.revogar+'/revogar',{method:'POST'}); toast('Consentimento revogado.','ok'); ofCarregar(); }catch(e){ toast(e.message,'err'); } }));
     if($('ofSync')) $('ofSync').addEventListener('click', async ev=>{ ev.target.disabled=true; const o=ev.target.textContent; ev.target.textContent='Sincronizando…'; try{ const r = await api('/open-finance/sincronizar',{method:'POST',body:{empresaId:OF_EMPRESA_ID,competencia:OF_COMP}}); toast(r.novas+' novas transações (de '+r.total+' lidas · dedup por fitid).','ok'); ofCarregar(); }catch(e){ toast(e.message,'err'); ev.target.disabled=false; ev.target.textContent=o; } });
     if($('ofConciliar')) $('ofConciliar').addEventListener('click', async ()=>{ try{ const r = await api('/open-finance/conciliar',{method:'POST',body:{empresaId:OF_EMPRESA_ID,competencia:OF_COMP}}); toast(r.conciliadas+' conciliadas, '+r.ignoradas+' ignoradas, '+r.sugeridas+' com sugestão.','ok'); ofCarregar(); }catch(e){ toast(e.message,'err'); } });
@@ -8859,6 +8859,14 @@ async function pageOpenFinance(){
     painel.querySelectorAll('[data-ign]').forEach(b=>b.addEventListener('click', ()=> ofMarcar(b.dataset.ign,{status:'ignorada'})));
     painel.querySelectorAll('[data-edit]').forEach(b=>b.addEventListener('click', ()=>{ const t = tx.items.find(x=>String(x.id)===b.dataset.edit); ofEditarModal(t); }));
     async function ofMarcar(id, body){ try{ await api('/open-finance/transacoes/'+id+'/marcar',{method:'POST',body}); ofCarregar(); }catch(e){ toast(e.message,'err'); } }
+    function ofConectarModal(){
+      const bancos = (OF_STATUS && OF_STATUS.bancos) || [];
+      openModal(`<h3 style="margin-bottom:2px;">Conectar conta bancária</h3>
+        <p class="mut" style="font-size:12.5px; margin-bottom:12px;">${OF_STATUS.modo==='sandbox'?'Modo demonstração: gera um extrato de teste para o banco escolhido.':'O cliente será direcionado ao banco para autorizar o acesso (somente leitura).'}</p>
+        <div class="field"><label>Banco</label><select id="ofBanco">${bancos.map(b=>`<option value="${esc(b.bankId)}">${esc(b.banco)}</option>`).join('')}</select></div>
+        <div class="modal-actions"><button class="btn" onclick="closeModal()">Cancelar</button><button class="btn primary" id="ofBancoConectar">Conectar</button></div>`);
+      document.getElementById('ofBancoConectar').addEventListener('click', async ev=>{ ev.target.disabled=true; try{ const banco=document.getElementById('ofBanco').value; const r = await api('/open-finance/conectar',{method:'POST',body:{empresaId:OF_EMPRESA_ID, banco}}); closeModal(); toast('Conta conectada ('+r.modo+').','ok'); ofCarregar(); }catch(e){ toast(e.message,'err'); ev.target.disabled=false; } });
+    }
     function ofEditarModal(t){
       openModal(`<h3 style="margin-bottom:2px;">Lançamento da transação</h3>
         <div class="mut" style="font-size:12.5px; margin-bottom:12px;">${ofDataBr(t.data)} · ${esc(t.descricao||'')} · ${ofBRL(t.valor)}</div>
@@ -8919,7 +8927,14 @@ async function pageMinhaConciliacao(){
         </tr>`)).join('')}
       </tbody></table></div>` : `<div class="empty-state" style="margin-top:8px;">Nenhuma conta conectada ainda.</div>`}
     </div>`;
-    document.getElementById('ofcConectar').addEventListener('click', async ev=>{ ev.target.disabled=true; try{ await api('/open-finance/minha-empresa/conectar',{method:'POST'}); toast('Conta conectada. O escritório já consegue puxar seu extrato.','ok'); carregar(); }catch(e){ toast(e.message,'err'); ev.target.disabled=false; } });
+    document.getElementById('ofcConectar').addEventListener('click', ()=>{
+      const bancos = (status && status.bancos) || [];
+      openModal(`<h3 style="margin-bottom:2px;">Conectar conta bancária</h3>
+        <p class="mut" style="font-size:12.5px; margin-bottom:12px;">${status.modo==='sandbox'?'Ambiente de demonstração: usa dados de teste para o banco escolhido.':'Você será direcionado ao banco para autorizar o acesso (somente leitura). Você pode revogar quando quiser.'}</p>
+        <div class="field"><label>Banco</label><select id="ofcBanco">${bancos.map(b=>`<option value="${esc(b.bankId)}">${esc(b.banco)}</option>`).join('')}</select></div>
+        <div class="modal-actions"><button class="btn" onclick="closeModal()">Cancelar</button><button class="btn primary" id="ofcBancoConectar">Conectar</button></div>`);
+      document.getElementById('ofcBancoConectar').addEventListener('click', async ev=>{ ev.target.disabled=true; try{ const banco=document.getElementById('ofcBanco').value; await api('/open-finance/minha-empresa/conectar',{method:'POST',body:{banco}}); closeModal(); toast('Conta conectada. O escritório já consegue puxar seu extrato.','ok'); carregar(); }catch(e){ toast(e.message,'err'); ev.target.disabled=false; } });
+    });
     painel.querySelectorAll('[data-rev]').forEach(b=>b.addEventListener('click', async ()=>{ if(!confirm('Revogar o acesso à sua conta?')) return; try{ await api('/open-finance/minha-empresa/conexoes/'+b.dataset.rev+'/revogar',{method:'POST'}); toast('Acesso revogado.','ok'); carregar(); }catch(e){ toast(e.message,'err'); } }));
   }
   carregar();
