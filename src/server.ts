@@ -3440,9 +3440,15 @@ app.use((_req, res, next) => {
 // Meta mandou, não sobre o JSON re-serializado (que pode diferir em espaço/ordem das chaves).
 app.use(express.json({ limit: "20mb", verify: (req: any, _res, buf) => { req.rawBody = buf; } }));
 app.use(cookieParser());
-// cacheControl:false — o site é uma página só, ainda em ajuste frequente; sem isso o navegador
-// segura uma cópia velha do app.html em cache e mudanças de UI não aparecem sem hard refresh.
-app.use(express.static(path.join(__dirname, "..", "public"), { cacheControl: false }));
+// O site é uma página só, em ajuste frequente: o HTML vai com "no-cache" (o navegador SEMPRE confere
+// com o servidor via ETag/Last-Modified — se não mudou, responde 304 sem rebaixar). Antes estava
+// cacheControl:false, que NÃO manda cabeçalho nenhum — e aí o navegador aplicava cache heurístico e
+// seguia mostrando o app.html antigo depois de um deploy (achado 2026-11-03: correção do tema escuro
+// publicada e o usuário ainda via a tela velha).
+app.use(express.static(path.join(__dirname, "..", "public"), {
+  cacheControl: false,
+  setHeaders: (res, arquivo) => { if (/\.html?$/i.test(arquivo)) res.setHeader("Cache-Control", "no-cache"); },
+}));
 
 app.get("/", (_req, res) => {
   res.set("Cache-Control", "no-store");
