@@ -2745,7 +2745,7 @@ async function pagePainelTv(){
 }
 
 // ===================== Dashboard =====================
-let DASH_TAB = 'indicadores';
+let DASH_TAB = 'pendentes';
 async function pageDashboard(){
   pararCrmTimers(); // zera timer do painel ao (re)entrar/trocar de aba — a aba Painel WhatsApp recria.
   const meuSeq = RENDER_SEQ;
@@ -2759,9 +2759,9 @@ async function pageDashboard(){
     <h1>Área de Trabalho</h1>
     <p class="subtitle">Indicadores do escritório — ${esc(STATE.user.nome)}</p>
     <div class="tabs" id="dashTabs">
-      <div class="tab ${DASH_TAB==='indicadores'?'active':''}" data-dtab="indicadores">Indicadores</div>
       <div class="tab ${DASH_TAB==='pendentes'?'active':''}" data-dtab="pendentes">Pendentes</div>
       <div class="tab ${DASH_TAB==='whatsapp'?'active':''}" data-dtab="whatsapp">Painel WhatsApp</div>
+      <div class="tab ${DASH_TAB==='indicadores'?'active':''}" data-dtab="indicadores">Indicadores</div>
     </div>
     <div id="dashConteudo"></div>
   `;
