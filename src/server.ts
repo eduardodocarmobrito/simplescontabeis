@@ -2988,7 +2988,7 @@ sqlite.exec(`INSERT OR IGNORE INTO webdfe_config (escritorio_id) SELECT id FROM 
   }
 }
 
-const MODULOS = ["dashboard", "empresas", "solicitacoes", "envio", "nfse", "nfe-busca", "integracontador", "licencas", "financeiro", "contratos", "relatorios", "crm", "dprh", "contabil", "fiscal", "usuarios", "configuracoes", "email", "certificados", "webdfe"] as const;
+const MODULOS = ["dashboard", "empresas", "solicitacoes", "envio", "nfse", "nfe-busca", "integracontador", "licencas", "financeiro", "contratos", "relatorios", "crm", "dprh", "contabil", "fiscal", "usuarios", "configuracoes", "email", "certificados", "webdfe", "obrigacoes"] as const;
 type Modulo = (typeof MODULOS)[number];
 
 // ========================= LOGIN (senha com hash + sessão via cookie) =========================
@@ -7238,7 +7238,7 @@ app.get("/api/obrigacoes", blockCliente, requirePermissao("empresas", "visualiza
     linhas,
   });
 });
-app.put("/api/obrigacoes/config", blockCliente, requirePermissao("empresas", "editar"), (req, res) => {
+app.put("/api/obrigacoes/config", blockCliente, requirePermissao("obrigacoes", "editar"), (req, res) => {
   const user = (req as any).user;
   const prazos = Array.isArray(req.body?.prazos) ? req.body.prazos : [];
   const up = sqlite.prepare(`INSERT INTO obrigacoes_config (escritorio_id, obrigacao, prazo_transmissao, prazo_envio) VALUES (?, ?, ?, ?)
@@ -7249,7 +7249,7 @@ app.put("/api/obrigacoes/config", blockCliente, requirePermissao("empresas", "ed
   }
   res.json({ ok: true });
 });
-app.post("/api/obrigacoes/marcar", blockCliente, requirePermissao("empresas", "editar"), (req, res) => {
+app.post("/api/obrigacoes/marcar", blockCliente, requirePermissao("obrigacoes", "editar"), (req, res) => {
   const user = (req as any).user;
   const b = req.body || {};
   const empresaId = Number(b.empresaId), comp = String(b.competencia || ""), ob = String(b.obrigacao || ""), campo = String(b.campo || "");

@@ -17172,7 +17172,7 @@ async function obrigacoesMontar(box, setor){
   if(!OBR.competencia){ const d=new Date(); d.setDate(1); d.setMonth(d.getMonth()-1); OBR.competencia = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); }
   box.innerHTML = `<div class="empty-state">Carregando o quadro…</div>`;
   let r; try{ r = await api('/obrigacoes?setor='+encodeURIComponent(setor)+'&competencia='+OBR.competencia); }catch(e){ box.innerHTML=`<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
-  const podeEditar = can('empresas','editar');
+  const podeEditar = can('obrigacoes','editar'); // permissão dedicada pra marcar manualmente (módulo "Obrigações do Mês")
   box.innerHTML = `
     <div class="card" style="margin-bottom:12px;">
       <div class="row" style="gap:12px; align-items:flex-end; flex-wrap:wrap;">
@@ -17518,7 +17518,7 @@ async function pageUsuarios(){
   document.getElementById('usFiltro').addEventListener('input', e=>{ USUARIOS_FILTRO = e.target.value; desenhaUsuarios(USUARIOS_FILTRO); });
   document.getElementById('btnNovoUsuario').addEventListener('click', ()=>usuarioModal());
 }
-const MODS = [['dashboard','Início'],['empresas','Empresas'],['solicitacoes','Solicitações de Documentos'],['envio','Envio de Documentos'],['nfse','NFS-e'],['nfe-busca','Busca de XML'],['integracontador','Integra Contador'],['licencas','Licenças'],['financeiro','Financeiro'],['certificados','Certificados'],['contratos','Contratos'],['relatorios','Relatórios'],['crm','CRM'],['dprh','DP/RH'],['contabil','Contabilidade'],['fiscal','Fiscal'],['usuarios','Usuários'],['configuracoes','Configurações'],['email','E-mail']];
+const MODS = [['dashboard','Início'],['empresas','Empresas'],['solicitacoes','Solicitações de Documentos'],['envio','Envio de Documentos'],['nfse','NFS-e'],['nfe-busca','Busca de XML'],['integracontador','Integra Contador'],['licencas','Licenças'],['financeiro','Financeiro'],['certificados','Certificados'],['contratos','Contratos'],['relatorios','Relatórios'],['crm','CRM'],['dprh','DP/RH'],['contabil','Contabilidade'],['fiscal','Fiscal'],['usuarios','Usuários'],['configuracoes','Configurações'],['email','E-mail'],['obrigacoes','Obrigações do Mês — marcar manual (ação "editar")']];
 // Lista de empresas com busca por texto — usada nos dois pickers de empresa do modal de usuário
 // (Cliente com múltiplas empresas, Colaborador com acesso restrito), já que a base de empresas
 // pode ter centenas de linhas (import do Domínio Web).
