@@ -895,6 +895,16 @@ body.theme-glass .tab.active::after, body.theme-glass .nav-item.active::after{
 .rt-fontes summary{cursor:pointer;}
 .rt-fontes ul{font-size:12.5px; line-height:1.55; margin:10px 0 0; padding-left:18px;}
 @media (max-width:760px){ .rt-kpi-anel{grid-column:auto;} .rt-rank-row{grid-template-columns:1fr; gap:4px;} }
+/* Tema escuro (Liquid Glass): os blocos próprios do painel seguem o mesmo vidro escuro do .card/.kpi —
+   sem isso ficavam com o fundo branco do --surface e a letra clara do tema (ilegível). */
+body.theme-glass .rt-kpi, body.theme-glass .rt-regra, body.theme-glass .rt-ach{
+  background:rgba(var(--glass-rgb,5,31,32),.55); border-color:rgba(255,255,255,.22); box-shadow:inset 0 1px 0 rgba(255,255,255,.18), 0 10px 28px rgba(0,0,0,.28);
+  backdrop-filter:saturate(180%) blur(18px); -webkit-backdrop-filter:saturate(180%) blur(18px);
+}
+body.theme-glass .rt-kpi-destaque{ background:linear-gradient(180deg, rgba(235,104,52,.22), rgba(var(--glass-rgb,5,31,32),.55)); border-color:#eb6834; }
+body.theme-glass .rt-regra:hover, body.theme-glass .rt-rank-row:hover, body.theme-glass .rt-click:hover td{ background:rgba(255,255,255,.10); }
+body.theme-glass .rt-chip{ background:color-mix(in srgb, var(--c) 26%, transparent); }
+body.theme-glass .rt-ach-rec, body.theme-glass .rt-ach-esp summary{ color:#5fe0a8; }
 </style>
 </head>
 <body>
