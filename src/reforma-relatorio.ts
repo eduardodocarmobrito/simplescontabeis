@@ -111,7 +111,7 @@ export function htmlRelatorioReforma(d: any, escritorioNome: string, timbrado: s
   .kpi.dest { border: 1.5px solid #eb6834; }
   .kt { font-size: 8.5px; text-transform: uppercase; letter-spacing: .05em; color: #5b6b63; } .kv { font-size: 15px; font-weight: 700; margin-top: 2px; } .ks { font-size: 9px; color: #5b6b63; margin-top: 2px; }
   .segbar { display: flex; gap: 2px; height: 14px; border-radius: 4px; overflow: hidden; margin: 4px 0 6px; } .segbar div { height: 100%; }
-  table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 9.5px; border: 1px solid #e5eae7; background: rgba(255,255,255,.92); }
+  table:not(.layout) { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 9.5px; border: 1px solid #e5eae7; background: rgba(255,255,255,.92); }
   th { text-align: left; background: #f7faf9; padding: 5px 7px; border-bottom: 1px solid #e5eae7; font-size: 8.5px; letter-spacing: .03em; text-transform: uppercase; color: #3c584a; }
   td { padding: 4px 7px; border-bottom: 1px solid #eef2f0; vertical-align: top; word-wrap: break-word; } th.num, td.num { text-align: right; }
   tr { break-inside: avoid; }
