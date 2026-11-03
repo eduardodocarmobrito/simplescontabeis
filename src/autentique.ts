@@ -53,10 +53,10 @@ export async function criarDocumento(opts: {
     }
     return item;
   });
-  // footer LEFT = faixa na lateral esquerda de TODAS as páginas com a marca de assinatura eletrônica e o
+  // footer RIGHT = faixa na lateral DIREITA de TODAS as páginas com a marca de assinatura eletrônica e o
   // código/link de verificação do documento (estilo dos documentos assinados na Junta Comercial). A
   // página de auditoria (rastreio: IP, data/hora, e-mail de cada assinatura) já vem por padrão no final.
-  const variables = { document: { name: opts.nomeDocumento, footer: "LEFT", footer_type: "STANDARD" }, signers: signersPayload, file: null, sandbox: opts.sandbox };
+  const variables = { document: { name: opts.nomeDocumento, footer: "RIGHT", footer_type: "STANDARD" }, signers: signersPayload, file: null, sandbox: opts.sandbox };
   const form = new FormData();
   form.append("operations", JSON.stringify({ query, variables }));
   form.append("map", JSON.stringify({ file: ["variables.file"] }));
