@@ -16534,8 +16534,80 @@ async function pageSetor(escopo){
 }
 
 // ===================== Obrigações do Mês (DP/RH) — quadro de tarefas com status automático =====================
+let OBR = { competencia:null, busca:'' };
 async function obrigacoesMontar(box){
-  box.innerHTML = `<div class="empty-state">Montando o quadro de obrigações…</div>`;
+  const norm = s=>(s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'');
+  if(!OBR.competencia){ const d=new Date(); d.setDate(1); d.setMonth(d.getMonth()-1); OBR.competencia = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); }
+  box.innerHTML = `<div class="empty-state">Carregando o quadro…</div>`;
+  let r; try{ r = await api('/obrigacoes?competencia='+OBR.competencia); }catch(e){ box.innerHTML=`<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
+  const podeEditar = can('empresas','editar');
+  box.innerHTML = `
+    <div class="card" style="margin-bottom:12px;">
+      <div class="row" style="gap:12px; align-items:flex-end; flex-wrap:wrap;">
+        <div class="field" style="margin-bottom:0;"><label>Competência</label><input type="month" id="obrComp" value="${esc(OBR.competencia)}"></div>
+        <div class="field" style="flex:1; max-width:320px; margin-bottom:0;"><label>Buscar empresa</label><input type="text" id="obrBusca" placeholder="Nome da empresa…" autocomplete="off" value="${esc(OBR.busca)}"></div>
+        ${podeEditar?`<button class="btn" id="obrPrazos">⏱ Prazos</button>`:''}
+      </div>
+      <p style="font-size:11.5px; color:var(--ink-soft); margin:10px 0 0;">DCTF-Web e FGTS leem automático (guia gerada/anexada + envio ao cliente por e-mail/WhatsApp). <b>Folha</b> é manual por enquanto. ${podeEditar?'Clique num status pra marcar/desmarcar manualmente (sobrepõe o automático; clicar de novo volta pro automático).':''}</p>
+    </div>
+    <div id="obrConteudo"></div>
+  `;
+  document.getElementById('obrComp').addEventListener('change', e=>{ if(e.target.value){ OBR.competencia=e.target.value; obrigacoesMontar(box); } });
+  document.getElementById('obrBusca').addEventListener('input', e=>{ OBR.busca=e.target.value; render(); });
+  if(podeEditar) document.getElementById('obrPrazos').addEventListener('click', ()=>obrigacoesPrazosModal(r.obrigacoes, ()=>obrigacoesMontar(box)));
+  const cont = document.getElementById('obrConteudo');
+  function badge(ok, manual, atraso, campo){
+    const cls = ok ? 'ok' : (atraso?'bad':'muted');
+    const txt = ok ? (campo==='transmitida'?'Transmitida':'Enviada') : (campo==='transmitida'?'Falta transmitir':'Falta enviar');
+    return `<span class="tag ${cls}" ${podeEditar?'style="cursor:pointer;"':''} data-mark="${campo}" title="${manual?'marcado manualmente — clique pra voltar ao automático':'automático — clique pra sobrepor'}">${ok?'✓ ':''}${esc(txt)}${manual?' · manual':''}${atraso?' ⚠ atrasada':''}</span>`;
+  }
+  function render(){
+    const f = norm(OBR.busca);
+    cont.innerHTML = r.obrigacoes.map(ob=>{
+      const linhas = r.linhas.filter(l=>l.obrigacao===ob.id && (!f || norm(l.empresaNome).includes(f)));
+      if(!linhas.length) return '';
+      return `<div class="card" style="padding:0; margin-bottom:14px;">
+        <div style="padding:10px 14px; font-weight:600; border-bottom:1px solid var(--rule);">${esc(ob.label)} <span style="font-size:11px; color:var(--ink-soft); font-weight:400;">· ${ob.auto?'leitura automática':'manual'} · prazo transmissão dia ${ob.prazoTransmissao||'—'}, envio dia ${ob.prazoEnvio||'—'} (mês seguinte) · ${linhas.length} empresa(s)</span></div>
+        <div style="overflow-x:auto;"><table class="data-table"><thead><tr><th>Empresa</th><th>Transmitida</th><th>Enviada ao cliente</th></tr></thead><tbody>
+        ${linhas.map(l=>`<tr data-emp="${l.empresaId}" data-ob="${l.obrigacao}">
+          <td>${esc(l.empresaNome)}</td>
+          <td>${badge(l.transmitida, l.transmitidaManual, l.atrasoTransmissao, 'transmitida')}</td>
+          <td>${badge(l.enviada, l.enviadaManual, l.atrasoEnvio, 'enviada')}</td>
+        </tr>`).join('')}
+        </tbody></table></div></div>`;
+    }).join('') || `<div class="empty-state">Nenhuma empresa com obrigações nesta competência. Marque "Precisa de DARF da DCTF-Web" (Integra Contador) e "Busca FGTS" (Empresas) nas empresas que fazem folha.</div>`;
+    if(podeEditar){
+      cont.querySelectorAll('[data-mark]').forEach(el=>el.addEventListener('click', async ()=>{
+        const tr = el.closest('tr'); const empresaId=Number(tr.dataset.emp); const ob=tr.dataset.ob; const campo=el.dataset.mark;
+        const linha = r.linhas.find(l=>l.empresaId===empresaId && l.obrigacao===ob);
+        const jaManual = campo==='transmitida'? linha.transmitidaManual : linha.enviadaManual;
+        const atual = campo==='transmitida'? linha.transmitida : linha.enviada;
+        const valor = jaManual ? null : !atual; // 1º clique sobrepõe (inverte); 2º (já manual) volta pro automático
+        try{ await api('/obrigacoes/marcar', { method:'POST', body:{ empresaId, competencia:OBR.competencia, obrigacao:ob, campo, valor } }); obrigacoesMontar(box); }
+        catch(e){ toast(e.message,'err'); }
+      }));
+    }
+  }
+  render();
+}
+function obrigacoesPrazosModal(obrigacoes, onSave){
+  openModal(`
+    <h3>Prazos das obrigações</h3>
+    <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-4px;">Dia do mês <b>seguinte</b> à competência até quando cada obrigação deve estar transmitida e enviada ao cliente. Passou do prazo e não está feita = marcada como <b>atrasada</b>.</p>
+    <table class="data-table"><thead><tr><th>Obrigação</th><th>Transmitir até (dia)</th><th>Enviar ao cliente até (dia)</th></tr></thead><tbody>
+    ${obrigacoes.map(o=>`<tr><td>${esc(o.label)}</td>
+      <td><input class="inp obrPz" data-ob="${o.id}" data-campo="t" type="number" min="1" max="28" value="${o.prazoTransmissao||''}" style="width:70px;"></td>
+      <td><input class="inp obrPz" data-ob="${o.id}" data-campo="e" type="number" min="1" max="28" value="${o.prazoEnvio||''}" style="width:70px;"></td></tr>`).join('')}
+    </tbody></table>
+    <div class="modal-actions"><button class="btn" id="obrPzCancel">Cancelar</button><button class="btn primary" id="obrPzSalvar">Salvar</button></div>
+  `);
+  document.getElementById('obrPzCancel').addEventListener('click', closeModal);
+  document.getElementById('obrPzSalvar').addEventListener('click', async ()=>{
+    const porOb = {};
+    document.querySelectorAll('.obrPz').forEach(inp=>{ const id=inp.dataset.ob; porOb[id]=porOb[id]||{obrigacao:id}; porOb[id][inp.dataset.campo==='t'?'prazoTransmissao':'prazoEnvio']=inp.value; });
+    try{ await api('/obrigacoes/config', { method:'PUT', body:{ prazos:Object.values(porOb) } }); closeModal(); toast('Prazos salvos.','ok'); onSave&&onSave(); }
+    catch(e){ toast(e.message,'err'); }
+  });
 }
 // ===================== Relatório de Entradas/Saídas (Fiscal) =====================
 // Lê a tabela mensal do "Relatório de Entradas/Saídas" (importado em Relatórios › Domínio Web). Permite

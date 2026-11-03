@@ -7121,6 +7121,128 @@ app.post("/api/fgts/guia", blockCliente, requirePermissao("empresas", "postar"),
   res.json({ ok: true });
 });
 
+// ===================== Obrigações do Mês (DP/RH) — quadro de tarefas com status automático =====================
+// Cruza o que já existe no sistema (guia DARF da DCTF-Web gerada pelo Integra, guia FGTS anexada no
+// Envio, e os flags email_enviado/whatsapp_enviado) pra montar um painel de obrigações por empresa e
+// competência, com prazo e marcação manual (a Folha ainda não tem fonte automática — é manual por ora).
+sqlite.exec(`CREATE TABLE IF NOT EXISTS obrigacoes_config (
+  escritorio_id INTEGER NOT NULL,
+  obrigacao TEXT NOT NULL,
+  prazo_transmissao INTEGER,
+  prazo_envio INTEGER,
+  PRIMARY KEY (escritorio_id, obrigacao)
+)`);
+sqlite.exec(`CREATE TABLE IF NOT EXISTS obrigacoes_manual (
+  escritorio_id INTEGER NOT NULL,
+  empresa_id INTEGER NOT NULL,
+  competencia TEXT NOT NULL,
+  obrigacao TEXT NOT NULL,
+  transmitida INTEGER,
+  transmitida_em TEXT,
+  enviada INTEGER,
+  enviada_em TEXT,
+  PRIMARY KEY (escritorio_id, empresa_id, competencia, obrigacao)
+)`);
+// Definição das obrigações do setor DP/RH. template = nome do template de Envio de Documentos usado
+// pra detectar transmissão/entrega; auto=false quando não há fonte automática ainda (Folha).
+const OBRIGACOES_DPRH = [
+  { id: "dctfweb", label: "DCTF-Web", template: "DARF - DCTF-Web", prazoTransmissao: 15, prazoEnvio: 20, auto: true },
+  { id: "fgts", label: "Guia FGTS", template: "Guia FGTS Digital", prazoTransmissao: 7, prazoEnvio: 20, auto: true },
+  { id: "folha", label: "Folha de Pagamento", template: null as string | null, prazoTransmissao: 5, prazoEnvio: 5, auto: false },
+];
+app.get("/api/obrigacoes", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const comp = String(req.query.competencia || "");
+  const mm = comp.match(/^(\d{4})-(\d{2})$/);
+  if (!mm) return res.status(400).json({ error: "Competência inválida (use AAAA-MM)." });
+  const ano = Number(mm[1]), mes = Number(mm[2]);
+  const periodoApuracao = `${mm[1]}${mm[2]}`;
+  const cfgRows = sqlite.prepare(`SELECT obrigacao, prazo_transmissao, prazo_envio FROM obrigacoes_config WHERE escritorio_id = ?`).all(user.escritorioId) as any[];
+  const cfgMap: Record<string, any> = {}; cfgRows.forEach((c) => (cfgMap[c.obrigacao] = c));
+  const manRows = sqlite.prepare(`SELECT empresa_id, obrigacao, transmitida, transmitida_em, enviada, enviada_em FROM obrigacoes_manual WHERE escritorio_id = ? AND competencia = ?`).all(user.escritorioId, comp) as any[];
+  const manMap: Record<string, any> = {}; manRows.forEach((r) => (manMap[r.empresa_id + "|" + r.obrigacao] = r));
+  const empresas = sqlite
+    .prepare(`SELECT e.id, e.nome, e.cnpj, e.busca_fgts as buscaFgts, COALESCE(ic.busca_dctfweb, 0) as buscaDctf
+              FROM empresas e LEFT JOIN integracontador_empresa_config ic ON ic.empresa_id = e.id
+              WHERE e.escritorio_id = ? AND e.ativo = 1 ORDER BY e.nome`)
+    .all(user.escritorioId) as any[];
+  const temDarfDoc = sqlite.prepare(`SELECT 1 FROM integracontador_documentos WHERE empresa_id = ? AND tipo = 'darf_dctfweb' AND periodo_apuracao = ? LIMIT 1`);
+  const envioDoc = sqlite.prepare(
+    `SELECT COUNT(*) as n, MAX(d.email_enviado) as emailEnv, MAX(d.whatsapp_enviado) as waEnv, MAX(d.email_enviado_em) as emailEm, MAX(d.whatsapp_enviado_em) as waEm
+     FROM envio_documentos d JOIN envio_periodos p ON p.id = d.periodo_id JOIN envio_atribuicoes a ON a.id = p.atribuicao_id JOIN envio_templates t ON t.id = a.template_id
+     WHERE a.empresa_id = ? AND t.nome = ? AND p.ano = ? AND p.mes = ?`
+  );
+  const hoje = agoraBrasilia();
+  const hojeStr = `${hoje.ano}-${String(hoje.mes).padStart(2, "0")}-${String(hoje.dia).padStart(2, "0")}`;
+  // Prazo cai no mês SEGUINTE à competência (obrigação de 10/2026 vence em 11/2026).
+  const prazoStr = (dia: number | null | undefined) => {
+    if (!dia) return null;
+    let py = ano, pm = mes + 1; if (pm > 12) { pm = 1; py++; }
+    return `${py}-${String(pm).padStart(2, "0")}-${String(dia).padStart(2, "0")}`;
+  };
+  const linhas: any[] = [];
+  for (const e of empresas) {
+    for (const ob of OBRIGACOES_DPRH) {
+      const aplica = ob.id === "dctfweb" ? !!e.buscaDctf : ob.id === "fgts" ? !!e.buscaFgts : (!!e.buscaFgts || !!e.buscaDctf);
+      if (!aplica) continue;
+      let transmitidaAuto = false, enviadaAuto = false, enviadaEm: string | null = null;
+      if (ob.id === "dctfweb") transmitidaAuto = !!temDarfDoc.get(e.id, periodoApuracao);
+      if (ob.template) {
+        const ed = envioDoc.get(e.id, ob.template, ano, mes) as any;
+        if (ed && ed.n > 0) {
+          if (ob.id === "fgts") transmitidaAuto = true; // guia FGTS anexada = gerada
+          enviadaAuto = !!(ed.emailEnv || ed.waEnv);
+          enviadaEm = ed.waEm || ed.emailEm || null;
+        }
+      }
+      const man = manMap[e.id + "|" + ob.id];
+      const transmitida = man && man.transmitida != null ? !!man.transmitida : transmitidaAuto;
+      const enviada = man && man.enviada != null ? !!man.enviada : enviadaAuto;
+      const prazoT = cfgMap[ob.id]?.prazo_transmissao ?? ob.prazoTransmissao;
+      const prazoE = cfgMap[ob.id]?.prazo_envio ?? ob.prazoEnvio;
+      const pT = prazoStr(prazoT), pE = prazoStr(prazoE);
+      linhas.push({
+        empresaId: e.id, empresaNome: e.nome, cnpj: e.cnpj,
+        obrigacao: ob.id, obrigacaoLabel: ob.label, auto: ob.auto,
+        transmitida, enviada,
+        transmitidaManual: !!(man && man.transmitida != null), enviadaManual: !!(man && man.enviada != null),
+        enviadaEm: man && man.enviada != null ? man.enviada_em : enviadaEm,
+        prazoTransmissao: prazoT, prazoEnvio: prazoE,
+        atrasoTransmissao: !transmitida && !!pT && hojeStr > pT,
+        atrasoEnvio: !enviada && !!pE && hojeStr > pE,
+      });
+    }
+  }
+  res.json({
+    competencia: comp,
+    obrigacoes: OBRIGACOES_DPRH.map((o) => ({ id: o.id, label: o.label, auto: o.auto, prazoTransmissao: cfgMap[o.id]?.prazo_transmissao ?? o.prazoTransmissao, prazoEnvio: cfgMap[o.id]?.prazo_envio ?? o.prazoEnvio })),
+    linhas,
+  });
+});
+app.put("/api/obrigacoes/config", blockCliente, requirePermissao("empresas", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const prazos = Array.isArray(req.body?.prazos) ? req.body.prazos : [];
+  const up = sqlite.prepare(`INSERT INTO obrigacoes_config (escritorio_id, obrigacao, prazo_transmissao, prazo_envio) VALUES (?, ?, ?, ?)
+    ON CONFLICT(escritorio_id, obrigacao) DO UPDATE SET prazo_transmissao = excluded.prazo_transmissao, prazo_envio = excluded.prazo_envio`);
+  for (const p of prazos) {
+    if (!p || !p.obrigacao) continue;
+    up.run(user.escritorioId, String(p.obrigacao), p.prazoTransmissao != null && p.prazoTransmissao !== "" ? Number(p.prazoTransmissao) : null, p.prazoEnvio != null && p.prazoEnvio !== "" ? Number(p.prazoEnvio) : null);
+  }
+  res.json({ ok: true });
+});
+app.post("/api/obrigacoes/marcar", blockCliente, requirePermissao("empresas", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const b = req.body || {};
+  const empresaId = Number(b.empresaId), comp = String(b.competencia || ""), ob = String(b.obrigacao || ""), campo = String(b.campo || "");
+  if (!empresaId || !/^\d{4}-\d{2}$/.test(comp) || !ob || !["transmitida", "enviada"].includes(campo)) return res.status(400).json({ error: "Dados inválidos." });
+  if (!podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const valor = b.valor === null || b.valor === undefined ? null : (b.valor ? 1 : 0); // null = volta pro automático
+  sqlite.prepare(`INSERT OR IGNORE INTO obrigacoes_manual (escritorio_id, empresa_id, competencia, obrigacao) VALUES (?, ?, ?, ?)`).run(user.escritorioId, empresaId, comp, ob);
+  const col = campo === "transmitida" ? "transmitida" : "enviada";
+  sqlite.prepare(`UPDATE obrigacoes_manual SET ${col} = ?, ${col}_em = CASE WHEN ? = 1 THEN datetime('now') ELSE NULL END WHERE escritorio_id = ? AND empresa_id = ? AND competencia = ? AND obrigacao = ?`).run(valor, valor, user.escritorioId, empresaId, comp, ob);
+  res.json({ ok: true });
+});
+
 app.get("/api/dominio/config", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
   const c = getDominioConfig((req as any).user.escritorioId);
   res.json({
