@@ -2988,8 +2988,14 @@ sqlite.exec(`INSERT OR IGNORE INTO webdfe_config (escritorio_id) SELECT id FROM 
   }
 }
 
-const MODULOS = ["dashboard", "empresas", "solicitacoes", "envio", "nfse", "nfe-busca", "integracontador", "licencas", "financeiro", "contratos", "relatorios", "crm", "dprh", "contabil", "fiscal", "usuarios", "configuracoes", "email", "certificados", "webdfe", "obrigacoes"] as const;
+const MODULOS = ["dashboard", "empresas", "solicitacoes", "envio", "nfse", "nfe-busca", "integracontador", "licencas", "financeiro", "contratos", "relatorios", "crm", "dprh", "contabil", "fiscal", "usuarios", "configuracoes", "email", "certificados", "webdfe", "obrigacoes", "reforma"] as const;
 type Modulo = (typeof MODULOS)[number];
+// Módulo "reforma" (Reforma Tributária) criado em 2026-11-03 — antes a página usava a permissão da
+// Busca de XML. Quem ainda não tem a linha "reforma" herda o "Ver" da Busca de XML (não perde acesso de
+// uma hora pra outra). Salvar as permissões do usuário grava a linha (marcada ou não), então isto nunca
+// reativa algo que o administrador desmarcou.
+sqlite.exec(`INSERT OR IGNORE INTO colaborador_permissoes (user_id, modulo, pode_visualizar, pode_postar, pode_editar)
+  SELECT user_id, 'reforma', pode_visualizar, 0, 0 FROM colaborador_permissoes WHERE modulo = 'nfe-busca'`);
 
 // ========================= LOGIN (senha com hash + sessão via cookie) =========================
 function hashPassword(password: string): string {
@@ -10763,7 +10769,7 @@ function reformaPeriodo(q: any) {
   const de = typeof q.de === "string" && /^\d{4}-\d{2}-\d{2}$/.test(q.de) ? q.de : dIni.toISOString().slice(0, 10);
   return { de, ate };
 }
-app.get("/api/reforma/auditoria", blockCliente, requirePermissao("nfe-busca", "visualizar"), (req, res) => {
+app.get("/api/reforma/auditoria", blockCliente, requirePermissao("reforma", "visualizar"), (req, res) => {
   const user = (req as any).user;
   const empresaId = Number(req.query.empresaId);
   if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
@@ -10786,7 +10792,7 @@ async function reformaEnviarPdf(res: any, escritorioId: number, empresaId: numbe
     res.status(500).json({ error: `Não consegui gerar o relatório: ${e.message}` });
   }
 }
-app.get("/api/reforma/auditoria/pdf", blockCliente, requirePermissao("nfe-busca", "visualizar"), async (req, res) => {
+app.get("/api/reforma/auditoria/pdf", blockCliente, requirePermissao("reforma", "visualizar"), async (req, res) => {
   const user = (req as any).user;
   const empresaId = Number(req.query.empresaId);
   if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
