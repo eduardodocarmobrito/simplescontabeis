@@ -2747,6 +2747,7 @@ async function pagePainelTv(){
 // ===================== Dashboard =====================
 let DASH_TAB = 'indicadores';
 async function pageDashboard(){
+  pararCrmTimers(); // zera timer do painel ao (re)entrar/trocar de aba — a aba Painel WhatsApp recria.
   const meuSeq = RENDER_SEQ;
   const podeEditar = can('dashboard','editar');
   const [{ items }, { competenciaInicio }] = await Promise.all([
@@ -2818,20 +2819,17 @@ function montarCardsGrid(grid, cards, podeEditar, comAdd, emptyMsg){
     }));
   }
 }
-// Aba "Painel WhatsApp": atalho pra tela CRM → Painel (visão geral do atendimento).
+// Aba "Painel WhatsApp": mostra o MESMO painel da tela CRM → Painel, embutido aqui.
 function dashPainelWhatsApp(box){
   const temCrm = NAV.some(n=>n.id==='crm') || STATE.user.perfil==='Administrador';
-  box.innerHTML = temCrm ? `
-    <div class="card painel-clicavel" id="dashIrPainelCrm" style="max-width:520px; cursor:pointer;">
-      <div style="font-size:15px; font-weight:600;">📊 Painel do WhatsApp</div>
-      <p style="font-size:12.5px; color:var(--ink-soft); margin:6px 0 0;">Atalho para a tela <b>CRM → Painel</b>: visão geral do atendimento do WhatsApp (conversas, tempos de resposta, setores).</p>
-      <button class="btn primary" style="margin-top:12px;" id="dashBtnPainelCrm">Abrir Painel do WhatsApp →</button>
+  if(!temCrm){ box.innerHTML = `<div class="empty-state">Você não tem acesso ao CRM.</div>`; return; }
+  box.innerHTML = `
+    <div class="row" style="justify-content:flex-end; margin-bottom:6px;">
+      <button class="btn small" id="dashAbrirCrm">Abrir no CRM →</button>
     </div>
-  ` : `<div class="empty-state">Você não tem acesso ao CRM.</div>`;
-  if(!temCrm) return;
-  const ir = ()=>{ CRM.aba='painel'; goPage('crm'); };
-  document.getElementById('dashBtnPainelCrm').addEventListener('click', ir);
-  document.getElementById('dashIrPainelCrm').addEventListener('click', (e)=>{ if(e.target.closest('button')) return; ir(); });
+    <div id="dashPainelBox"></div>`;
+  document.getElementById('dashAbrirCrm').addEventListener('click', ()=>{ CRM.aba='painel'; goPage('crm'); });
+  crmPainel(document.getElementById('dashPainelBox'));
 }
 const CARD_TIPOS_INFO = {
   certificados_vencer: { label:'Certificados a Vencer', subtitulo:'Vencidos ou vencendo nos próximos 30 dias' },
@@ -14225,7 +14223,11 @@ async function crmPainel(box, silencioso){
   box.querySelectorAll('[data-atendente]').forEach(el=>el.addEventListener('click', ()=>painelListaModal('Com '+el.dataset.atendente, a.emAtendimento.filter(i=>i.atendente===el.dataset.atendente))));
   box.querySelectorAll('[data-setor]').forEach(el=>el.addEventListener('click', ()=>painelListaModal('Setor: '+el.dataset.setor, listas.abertas[1].filter(i=>(i.setor||'Sem setor')===el.dataset.setor))));
   box.querySelectorAll('[data-periodo]').forEach(b=>b.addEventListener('click', ()=>{ PAINEL.periodo=b.dataset.periodo; crmPainel(box); }));
-  if(!PAINEL.timer) PAINEL.timer = setInterval(()=>{ if(CRM.aba==='painel' && STATE.page==='crm' && document.body.contains(box)) crmPainel(box, true); }, 60000);
+  if(!PAINEL.timer) PAINEL.timer = setInterval(()=>{
+    if(!document.body.contains(box)) return;
+    // Atualiza tanto no CRM › Painel quanto no atalho embutido na Área de Trabalho (aba Painel WhatsApp).
+    if((STATE.page==='crm' && CRM.aba==='painel') || (STATE.page==='dashboard' && DASH_TAB==='whatsapp')) crmPainel(box, true);
+  }, 60000);
 }
 // Aba Agenda: os compromissos da Agenda do deskcomm (marcados pelo botão 📅 Compromisso, pela tela de
 // lá ou pela IA). A situação muda aqui mesmo: concluído, não compareceu, cancelar.
