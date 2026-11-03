@@ -7481,14 +7481,17 @@ async function dctfwebValidarLote(escritorioId: number, periodo: string, empresa
   } finally { st.rodando = false; st.fim = new Date().toISOString(); }
   return st;
 }
-// Rotina diária (a partir das 07:00 de Brasília): competência do mês anterior. Dias 5–20 todo dia
-// (antes do dia 5 quase ninguém transmitiu — cada consulta é paga; quem precisar antes usa o botão);
-// depois do dia 20 a cada 3 dias (quem não transmitiu até lá raramente muda de um dia pro outro).
+// Rotina automática (a partir das 07:00 de Brasília), competência do mês anterior — só nos dias
+// DCTFWEB_DIAS_ROTINA de cada mês (pedido do usuário 2026-11-03: cada consulta é paga, rodar só dia 15
+// = prazo da DCTF-Web, e dia 22) + datas avulsas em DCTFWEB_DATAS_EXTRAS (rodada única de 04/11/2026).
+// Fora desses dias, só pelo botão "Validar no e-CAC". Só consulta quem ainda não está confirmado.
+const DCTFWEB_DIAS_ROTINA = [15, 22];
+const DCTFWEB_DATAS_EXTRAS = ["2026-11-04"];
 setInterval(() => {
   const a = agoraBrasilia();
-  if (a.hora < 7 || a.dia < 5) return;
+  if (a.hora < 7) return;
   const hoje = `${a.ano}-${String(a.mes).padStart(2, "0")}-${String(a.dia).padStart(2, "0")}`;
-  if (a.dia > 20 && a.dia % 3 !== 0) return;
+  if (!DCTFWEB_DIAS_ROTINA.includes(a.dia) && !DCTFWEB_DATAS_EXTRAS.includes(hoje)) return;
   const cfgs = sqlite.prepare(`SELECT escritorio_id FROM integracontador_config WHERE ativo = 1`).all() as any[];
   for (const c of cfgs) {
     const r = sqlite.prepare(`SELECT ultima_data FROM dctfweb_situacao_rotina WHERE escritorio_id = ?`).get(c.escritorio_id) as any;
