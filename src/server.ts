@@ -10645,7 +10645,21 @@ setTimeout(() => void reformaAtualizarTabelasOficiais(), 90_000);
 setInterval(() => void reformaAtualizarTabelasOficiais(), 6 * 3_600_000);
 
 const REGIME_CLIENTE_LABEL: Record<string, string> = { simples_nacional: "Simples Nacional", mei: "MEI", lucro_presumido: "Lucro Presumido", lucro_real: "Lucro Real", produtor_rural: "Produtor Rural" };
-function reformaCalcularAuditoria(escritorioId: number, empresaId: number, de: string, ate: string, semLimite = false) {
+// Recomendação, na auditoria das notas de SAÍDA, pra empresa corrigir o próprio emissor/cadastro.
+const REFORMA_RECO_SAIDA: Record<string, string> = {
+  GRUPO_AUSENTE: "Parametrizar o emissor para informar o grupo IBSCBS em todos os itens (obrigatório para o regime regular desde 03/08/2026). Sem o destaque, os clientes empresas não terão crédito a partir de 2027 — risco comercial e de autuação.",
+  NCM_NAO_VIGENTE: "Atualizar o NCM do produto no cadastro para o código vigente e emitir CC-e nas notas afetadas.",
+  NCM_INVALIDO: "Corrigir o NCM do produto no cadastro (8 dígitos, código vigente) e emitir CC-e nas notas afetadas.",
+  NCM_FORA_ANEXO: "Redução aplicada a NCM fora do anexo da LC 214: corrigir o CST/cClassTrib no cadastro do produto (tributação integral) — recolhimento a menor gera risco de autuação.",
+  REDUCAO_ESQUECIDA: "Produto com direito a alíquota reduzida (Anexo I/VII da LC 214) tributado integralmente: ajustar o CST/cClassTrib no cadastro — a empresa está cobrando IBS/CBS a maior do cliente e perdendo competitividade.",
+  SEM_INCIDENCIA_EM_VENDA: "Venda classificada como sem incidência: corrigir o CST/cClassTrib no cadastro (tributação integral) — sem destaque o cliente fica sem crédito e há risco de autuação.",
+  SN_SEM_REGIME: "Atualizar o emissor para informar o regime de IBS/CBS do Simples (tpRegimeIBSCBS ou gTribSN — NT 2026.005).",
+  SN_OPCAO_INCONSISTENTE: "Ajustar o emissor: optante pelo regime regular informa gIBSUF/gIBSMun/gCBS e não informa gTribSN (NT 2026.005).",
+  MEI_COM_IBSCBS: "MEI não informa o grupo IBS/CBS — ajustar o emissor.",
+};
+const REFORMA_RECO_SAIDA_PADRAO = "Corrigir a parametrização do IBS/CBS no emissor (CST/cClassTrib, alíquota, base e valores conforme a NT 2025.002) e emitir CC-e ou NF-e complementar quando cabível.";
+function reformaCalcularAuditoria(escritorioId: number, empresaId: number, de: string, ate: string, semLimite = false, direcao: "entrada" | "saida" = "entrada") {
+  const saida = direcao === "saida";
   const empresa = sqlite.prepare(`SELECT id, nome, cnpj, regime_tributario FROM empresas WHERE id = ?`).get(empresaId) as any;
   if (!empresa) throw new Error("Empresa não encontrada.");
   const regime = empresa.regime_tributario || "simples_nacional";
@@ -10657,7 +10671,7 @@ function reformaCalcularAuditoria(escritorioId: number, empresaId: number, de: s
   const docs = sqlite
     .prepare(
       `SELECT d.id, d.xml FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id
-       WHERE d.escritorio_id = ? AND d.empresa_id = ? AND d.tipo IN ('nfe','nfce') AND NOT (${emitExpr})
+       WHERE d.escritorio_id = ? AND d.empresa_id = ? AND d.tipo IN ('nfe','nfce') AND ${saida ? "" : "NOT"} (${emitExpr})
          AND substr(d.data_emissao,1,10) >= ? AND substr(d.data_emissao,1,10) <= ? AND NOT ${canceladaExpr}
        ORDER BY d.data_emissao LIMIT 6000`
     )
@@ -10686,32 +10700,42 @@ function reformaCalcularAuditoria(escritorioId: number, empresaId: number, de: s
     const nt = r.nota;
     const valor = nt.vNF;
     const temFalha = r.achados.some((a) => a.severidade === "alta" || a.severidade === "media");
-    const mx = mixMap.get(r.regime) || { regime: r.regime, label: reformaAuditoria.REGIME_FORNECEDOR_LABEL[r.regime], valor: 0, notas: 0 };
-    mx.valor += valor; mx.notas++; mixMap.set(r.regime, mx);
+    const destEmpresa = nt.destDoc.replace(/\D/g, "").length === 14;
+    const chaveMix = saida ? (destEmpresa ? "b2b" : "b2c") : r.regime;
+    const labelMix = saida ? (destEmpresa ? "Vendas para empresas (CNPJ)" : "Vendas a consumidor final (CPF/NFC-e)") : reformaAuditoria.REGIME_FORNECEDOR_LABEL[r.regime];
+    const mx = mixMap.get(chaveMix) || { regime: chaveMix, label: labelMix, valor: 0, notas: 0 };
+    mx.valor += valor; mx.notas++; mixMap.set(chaveMix, mx);
+    // Parte analisada: fornecedor (entradas) ou cliente destinatário (saídas).
+    const parte = saida ? { cnpj: nt.destDoc || "CONSUMIDOR", nome: nt.destNome || "Consumidor final", uf: nt.destUF } : { cnpj: nt.emitCnpj, nome: nt.emitNome, uf: nt.emitUF };
+    const regimeParte = saida ? chaveMix : r.regime;
+    if (saida) for (const a of r.achados) {
+      a.detalhe = String(a.detalhe).replace(/\bo fornecedor\b/gi, "a empresa").replace(/\bfornecedor\b/gi, "emitente");
+      a.recomendacao = REFORMA_RECO_SAIDA[a.regra] || (a.severidade === "info" ? a.recomendacao : REFORMA_RECO_SAIDA_PADRAO);
+    }
     const mk = nt.dhEmi.slice(0, 7);
     const ms = mesMap.get(mk) || { mes: mk, valor: 0, valorConforme: 0, notas: 0, ibs: 0, cbs: 0 };
     ms.valor += valor; ms.notas++; if (!temFalha) ms.valorConforme += valor;
     ms.ibs += nt.itens.reduce((a, i) => a + (i.uf?.v || 0) + (i.mun?.v || 0), 0);
     ms.cbs += nt.itens.reduce((a, i) => a + (i.cbs?.v || 0), 0);
     mesMap.set(mk, ms);
-    const f = fornMap.get(nt.emitCnpj) || { cnpj: nt.emitCnpj, nome: nt.emitNome, uf: nt.emitUF, regime: r.regime, notas: 0, notasComGrupo: 0, itens: 0, itensConformes: 0, valor: 0, alta: 0, media: 0, baixa: 0, creditoDestacado: 0, risco: 0, referencia2027: 0, aproveitavel2027: 0, regras: new Set<string>(), ultimaEmissao: "" };
+    const f = fornMap.get(parte.cnpj) || { cnpj: parte.cnpj, nome: parte.nome, uf: parte.uf, regime: regimeParte, notas: 0, notasComGrupo: 0, itens: 0, itensConformes: 0, valor: 0, alta: 0, media: 0, baixa: 0, creditoDestacado: 0, risco: 0, referencia2027: 0, aproveitavel2027: 0, regras: new Set<string>(), ultimaEmissao: "" };
     f.notas++; f.itens += nt.itens.length; f.itensConformes += r.itensConformes; f.valor += valor;
     if (nt.itens.some((i) => i.temIBSCBS)) f.notasComGrupo++;
-    f.creditoDestacado += r.credito.aproveitavel; f.risco += r.credito.risco;
-    f.referencia2027 += r.credito.referencia2027; f.aproveitavel2027 += r.credito.aproveitavel2027;
-    if (nt.dhEmi > f.ultimaEmissao) { f.ultimaEmissao = nt.dhEmi; f.regime = r.regime; }
+    if (saida) f.creditoDestacado += nt.itens.reduce((a, i) => a + (i.uf?.v || 0) + (i.mun?.v || 0) + (i.cbs?.v || 0), 0); // IBS/CBS destacado nas vendas
+    else { f.creditoDestacado += r.credito.aproveitavel; f.risco += r.credito.risco; f.referencia2027 += r.credito.referencia2027; f.aproveitavel2027 += r.credito.aproveitavel2027; }
+    if (nt.dhEmi > f.ultimaEmissao) { f.ultimaEmissao = nt.dhEmi; f.regime = regimeParte; }
     for (const a of r.achados) {
       if (a.severidade === "alta") f.alta++; else if (a.severidade === "media") f.media++; else if (a.severidade === "baixa") f.baixa++;
       f.regras.add(a.regra);
       const rg = regraMap.get(a.regra) || { regra: a.regra, titulo: a.titulo.replace(/ \((IBS UF|IBS Mun|CBS)\)$/, ""), severidade: a.severidade, qtd: 0 };
       rg.qtd++; regraMap.set(a.regra, rg);
-      achados.push({ ...a, docId: nt.docId, chave: nt.chave, numero: nt.numero, serie: nt.serie, dhEmi: nt.dhEmi, fornecedor: nt.emitNome, cnpj: nt.emitCnpj });
+      achados.push({ ...a, docId: nt.docId, chave: nt.chave, numero: nt.numero, serie: nt.serie, dhEmi: nt.dhEmi, fornecedor: parte.nome, cnpj: parte.cnpj });
     }
-    fornMap.set(nt.emitCnpj, f);
+    fornMap.set(parte.cnpj, f);
     for (const it of nt.itens) {
       if (!it.ncm) continue;
       const nn = ncmMap.get(it.ncm) || { ncm: it.ncm, descricao: it.xProd, descricaoOficial: reformaAuditoria.descricaoNcm(it.ncm), vigente: reformaAuditoria.ncmVigenteHoje(it.ncm), naoVigente: 0, cClassTribs: new Set<string>(), valor: 0, itens: 0, semGrupo: 0, foraAnexo: 0, reducaoEsquecida: 0, pendente: 0, fornecedores: new Set<string>() };
-      nn.itens++; nn.valor += it.vProd; nn.fornecedores.add(nt.emitCnpj);
+      nn.itens++; nn.valor += it.vProd; nn.fornecedores.add(parte.cnpj);
       if (it.cClassTrib) nn.cClassTribs.add(it.cClassTrib); else nn.semGrupo++;
       const regrasItem = r.achados.filter((a) => a.nItem === it.nItem).map((a) => a.regra);
       if (regrasItem.includes("NCM_NAO_VIGENTE") || regrasItem.includes("NCM_INVALIDO")) nn.naoVigente++;
@@ -10726,6 +10750,13 @@ function reformaCalcularAuditoria(escritorioId: number, empresaId: number, de: s
   achados.sort((a, b) => sevPeso[a.severidade] - sevPeso[b.severidade] || String(b.dhEmi).localeCompare(String(a.dhEmi)));
   const brl = (v: number) => "R$ " + v.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const recomendacao = (f: any, perdaAno: number) => {
+    if (saida) {
+      const ordem = ["NCM_NAO_VIGENTE", "NCM_INVALIDO", "GRUPO_AUSENTE", "NCM_FORA_ANEXO", "SEM_INCIDENCIA_EM_VENDA", "REDUCAO_ESQUECIDA", "SN_SEM_REGIME", "SN_OPCAO_INCONSISTENTE"];
+      const r0 = ordem.find((x) => f.regras.has(x));
+      if (r0) return REFORMA_RECO_SAIDA[r0];
+      if (f.alta || f.media) return REFORMA_RECO_SAIDA_PADRAO;
+      return "Notas para este destinatário aderentes à NT 2025.002 — manter monitoramento.";
+    }
     if (f.regras.has("NCM_NAO_VIGENTE") || f.regras.has("NCM_INVALIDO")) return "Notificar o fornecedor: produto(s) emitido(s) com NCM vencido/inexistente na data da emissão. Exigir atualização do cadastro do produto e correção das notas — sem NCM vigente a tributação do item fica sem amparo (risco de glosa).";
     if (f.regime === "sn_dentro" || f.regime === "sn_indefinido")
       return `Fornecedor do Simples Nacional ${f.regime === "sn_dentro" ? "recolhendo IBS/CBS dentro do DAS" : "sem informar o regime de IBS/CBS (presume-se dentro do DAS)"}: o crédito de ${empresa.nome} fica limitado ao valor pago no Simples (LC 214, art. 47 §9º). Negociar a opção pelo regime regular de IBS/CBS (janela de março/2027 para o 2º semestre; setembro para o semestre seguinte), renegociar o preço pelo custo líquido (crédito em jogo estimado em ${brl(perdaAno)}/ano em 2027) ou avaliar fornecedor do regime regular.`;
@@ -10742,7 +10773,7 @@ function reformaCalcularAuditoria(escritorioId: number, empresaId: number, de: s
     const score = f.itens ? Math.max(0, Math.round(100 * (1 - pesoFalhas / Math.max(f.itens, 1)))) : 100;
     const perda2027Anual = r2(Math.max(0, f.referencia2027 - f.aproveitavel2027) * (12 / meses));
     return {
-      cnpj: f.cnpj, nome: f.nome, uf: f.uf, regime: f.regime, regimeLabel: reformaAuditoria.REGIME_FORNECEDOR_LABEL[f.regime as reformaAuditoria.RegimeFornecedor],
+      cnpj: f.cnpj, nome: f.nome, uf: f.uf, regime: f.regime, regimeLabel: saida ? (f.regime === "b2b" ? "Empresa (CNPJ)" : "Consumidor final") : reformaAuditoria.REGIME_FORNECEDOR_LABEL[f.regime as reformaAuditoria.RegimeFornecedor],
       notas: f.notas, itens: f.itens, valor: r2(f.valor), pctComGrupo: f.notas ? Math.round((f.notasComGrupo / f.notas) * 100) : 0,
       alta: f.alta, media: f.media, baixa: f.baixa, score, status: score >= 90 && !f.alta ? "conforme" : score >= 70 ? "atencao" : "critico",
       creditoDestacado: r2(f.creditoDestacado), risco: r2(f.risco), perda2027Anual, regras: [...f.regras], recomendacao: recomendacao(f, perda2027Anual),
@@ -10756,6 +10787,7 @@ function reformaCalcularAuditoria(escritorioId: number, empresaId: number, de: s
   })).sort((a, b) => b.valor - a.valor);
   const perda2027 = Math.max(0, r2(ref27 - aprov27));
   return {
+    direcao,
     empresa: { id: empresa.id, nome: empresa.nome, cnpj: empresa.cnpj, regime, regimeLabel: REGIME_CLIENTE_LABEL[regime] || regime, tomaCredito },
     periodo: { de, ate, meses },
     fontes: {
@@ -10799,14 +10831,14 @@ app.get("/api/reforma/auditoria", blockCliente, requirePermissao("reforma", "vis
   const empresaId = Number(req.query.empresaId);
   if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
   const { de, ate } = reformaPeriodo(req.query);
-  try { res.json(reformaCalcularAuditoria(user.escritorioId, empresaId, de, ate)); }
+  try { res.json(reformaCalcularAuditoria(user.escritorioId, empresaId, de, ate, false, req.query.direcao === "saida" ? "saida" : "entrada")); }
   catch (e: any) { res.status(400).json({ error: e.message }); }
 });
 // Relatório em PDF (o documento entregue ao cliente) — mesmo cálculo do painel, com o timbrado do escritório.
 async function reformaEnviarPdf(res: any, escritorioId: number, empresaId: number, q: any) {
   const { de, ate } = reformaPeriodo(q);
   try {
-    const dados = reformaCalcularAuditoria(escritorioId, empresaId, de, ate);
+    const dados = reformaCalcularAuditoria(escritorioId, empresaId, de, ate, false, q.direcao === "saida" ? "saida" : "entrada");
     const esc = sqlite.prepare(`SELECT nome FROM escritorios WHERE id = ?`).get(escritorioId) as any;
     const pdf = await gerarPdfRelatorioReforma(dados, esc?.nome || "Simples Contábeis", contratos.timbradoDataUri());
     const nome = `Auditoria Reforma Tributaria - ${String(dados.empresa.nome || "").replace(/[^\w\- ]/g, "").slice(0, 60)}.pdf`;
@@ -10886,7 +10918,7 @@ async function reformaEnviarRelatorioFornecedores(res: any, escritorioId: number
 async function reformaEnviarMapaNcm(res: any, escritorioId: number, empresaId: number, q: any) {
   const { de, ate } = reformaPeriodo(q);
   try {
-    const d = reformaCalcularAuditoria(escritorioId, empresaId, de, ate, true);
+    const d = reformaCalcularAuditoria(escritorioId, empresaId, de, ate, true, q.direcao === "saida" ? "saida" : "entrada");
     const status = String(q.status || "").split(",").filter(Boolean);
     const norm = (t: any) => String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
     const busca = norm(q.busca || "").trim();
@@ -10930,7 +10962,7 @@ app.get("/api/reforma/minha-empresa/auditoria", requireCliente, (req, res) => {
   const user = (req as any).user;
   if (!user.empresaId) return res.status(400).json({ error: "Nenhuma empresa vinculada." });
   const { de, ate } = reformaPeriodo(req.query);
-  try { res.json(reformaCalcularAuditoria(user.escritorioId, user.empresaId, de, ate)); }
+  try { res.json(reformaCalcularAuditoria(user.escritorioId, user.empresaId, de, ate, false, req.query.direcao === "saida" ? "saida" : "entrada")); }
   catch (e: any) { res.status(400).json({ error: e.message }); }
 });
 // ---------- Reforma Tributária: Diagnóstico de regime pós-reforma (ver reforma-diagnostico.ts) ----------

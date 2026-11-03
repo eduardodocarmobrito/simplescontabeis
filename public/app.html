@@ -2961,7 +2961,7 @@ function dashObrigacoesAtalhos(){
           <div style="font-size:12px; color:var(--accent-deep); margin-top:8px;">Abrir quadro →</div>
         </div>`).join('')}
     </div>`;
-  box.querySelectorAll('.obr-atalho').forEach(el=>el.addEventListener('click', ()=>{ SETOR_ABA_INICIAL='obrigacoes'; goPage(el.dataset.setor); }));
+  box.querySelectorAll('.obr-atalho').forEach(el=>el.addEventListener('click', ()=>{ SETOR_ABA_INICIAL='obrigacoes'; OBR_VOLTAR_DASH = DASH_TAB || 'pendentes'; goPage(el.dataset.setor); }));
   setores.forEach(async s=>{
     const alvo = box.querySelector('.obr-atalho[data-setor="'+s.id+'"] .obr-resumo');
     try{
@@ -8510,7 +8510,8 @@ let RT_FILTRO_REGRA = '';
 let RT_BUSCA_ACH = '';
 let RT_SEQ = 0;
 // Cores fixas por entidade (paleta categórica validada) — a cor segue o regime, nunca a posição.
-const RT_COR_REGIME = { regular:'#2a78d6', sn_regular:'#1baf7a', sn_dentro:'#eb6834', sn_indefinido:'#eda100', mei:'#e87ba4', pf:'#6250d6', desconhecido:'#898781' };
+let RT_DIRECAO = 'entrada'; // 'saida' = auditoria das notas emitidas pela própria empresa
+const RT_COR_REGIME = { b2b:'#2a78d6', b2c:'#eb6834', regular:'#2a78d6', sn_regular:'#1baf7a', sn_dentro:'#eb6834', sn_indefinido:'#eda100', mei:'#e87ba4', pf:'#6250d6', desconhecido:'#898781' };
 // Fornecedores marcados no ranking (pro relatório de inconsistências) e filtro do mapa de NCM.
 let RT_SEL_FORN = new Set();
 let RT_NCM_ST = new Set();
@@ -8572,6 +8573,7 @@ const RT_COR_DIAG = { sn_dentro:'#eb6834', sn_fora:'#1baf7a', presumido:'#6250d6
 function rtAbasHtml(){
   return `<div class="tabs" style="margin-bottom:14px;">
     <div class="tab ${RT_ABA==='auditoria'?'active':''}" data-rtaba="auditoria">🔎 Auditoria de entradas</div>
+    <div class="tab ${RT_ABA==='saidas'?'active':''}" data-rtaba="saidas">📤 Auditoria de saídas</div>
     <div class="tab ${RT_ABA==='regime'?'active':''}" data-rtaba="regime">⚖️ Análise de regime pós-reforma</div>
   </div>`;
 }
@@ -8737,7 +8739,8 @@ async function pageReformaTributaria(){
       return;
     }
     const { de, ate } = rtPeriodoDatas();
-    reformaMontar(painel, `/reforma/auditoria?empresaId=${RT_EMPRESA_ID}&de=${de}&ate=${ate}`, `/api/reforma/auditoria/pdf?empresaId=${RT_EMPRESA_ID}&de=${de}&ate=${ate}`);
+    const dir = RT_ABA==='saidas' ? '&direcao=saida' : '';
+    reformaMontar(painel, `/reforma/auditoria?empresaId=${RT_EMPRESA_ID}&de=${de}&ate=${ate}${dir}`, `/api/reforma/auditoria/pdf?empresaId=${RT_EMPRESA_ID}&de=${de}&ate=${ate}${dir}`);
   }
   carregar();
 }
@@ -8752,7 +8755,8 @@ async function pageMinhaReforma(){
   const painel = document.getElementById('rtPainel');
   const carregar = ()=>{
     if(RT_ABA==='regime'){ reformaDiagMontar(painel, '/reforma/minha-empresa/diagnostico', '/api/reforma/minha-empresa/diagnostico/pdf', null); return; }
-    const { de, ate } = rtPeriodoDatas(); reformaMontar(painel, `/reforma/minha-empresa/auditoria?de=${de}&ate=${ate}`, `/api/reforma/minha-empresa/auditoria/pdf?de=${de}&ate=${ate}`);
+    const { de, ate } = rtPeriodoDatas(); const dir = RT_ABA==='saidas' ? '&direcao=saida' : '';
+    reformaMontar(painel, `/reforma/minha-empresa/auditoria?de=${de}&ate=${ate}${dir}`, `/api/reforma/minha-empresa/auditoria/pdf?de=${de}&ate=${ate}${dir}`);
   };
   main().querySelectorAll('[data-rtaba]').forEach(t=>t.addEventListener('click', ()=>{
     RT_ABA = t.dataset.rtaba;
@@ -8811,6 +8815,7 @@ async function reformaMontar(painel, urlApi, urlPdf, silencioso){
 
 function rtPainelHtml(d, urlPdf){
   const k = d.kpis, e = d.empresa;
+  const S = d.direcao==='saida'; RT_DIRECAO = S ? 'saida' : 'entrada';
   const conf = Math.round(k.conformidade);
   const corConf = conf>=90 ? RT_STATUS.conforme : conf>=70 ? RT_STATUS.atencao : RT_STATUS.critico;
   const validacao = d.validacao.erroApi
@@ -8821,20 +8826,21 @@ function rtPainelHtml(d, urlPdf){
   const anel = (pct, cor)=>{ const r=34, c=2*Math.PI*r, off=c*(1-Math.max(0,Math.min(100,pct))/100);
     return `<svg width="86" height="86" viewBox="0 0 86 86" role="img" aria-label="Conformidade ${pct}%"><circle cx="43" cy="43" r="${r}" fill="none" stroke="var(--rule)" stroke-width="7"/><circle cx="43" cy="43" r="${r}" fill="none" stroke="${cor}" stroke-width="7" stroke-linecap="round" stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}" transform="rotate(-90 43 43)"/><text x="43" y="48" text-anchor="middle" font-size="17" font-weight="700" fill="var(--ink)">${pct}%</text></svg>`; };
   const tile = (titulo, valor, sub, destaque)=>`<div class="rt-kpi${destaque?' rt-kpi-destaque':''}"><div class="rt-kpi-t">${titulo}</div><div class="rt-kpi-v">${valor}</div>${sub?`<div class="rt-kpi-s">${sub}</div>`:''}</div>`;
-  const tomaTxt = e.tomaCredito
+  const tomaTxt = S ? `<b>${esc(e.regimeLabel)}</b> — confere se as notas <b>emitidas</b> por ${esc(e.nome)} destacam o IBS/CBS conforme o leiaute oficial (obrigatório para o regime regular desde 03/08/2026; Simples Nacional com os campos da NT 2026.005). Erro aqui tira o crédito dos clientes empresas a partir de 2027 e gera risco de autuação — as correções são no cadastro de produtos e no emissor da empresa.`
+    : e.tomaCredito
     ? `<b>${esc(e.regimeLabel)}</b> — toma crédito integral de IBS/CBS das compras de fornecedores do regime regular. Compra de Simples "por dentro" e MEI gera crédito limitado ou nenhum (LC 214, art. 47 §9º).`
     : `<b>${esc(e.regimeLabel)}</b> — sem opção pelo regime regular de IBS/CBS a empresa não se credita; a análise abaixo é de conformidade dos fornecedores e do custo embutido. Os valores de crédito são o que ela tomaria se optasse pelo regime regular.`;
   return `
   <div class="rt-hero">
     <div class="rt-hero-top">
       <div>
-        <div class="rt-hero-kicker">⚖️ Auditoria da Reforma Tributária · Notas de entrada</div>
+        <div class="rt-hero-kicker">⚖️ Auditoria da Reforma Tributária · Notas de ${S?'saída (emitidas pela empresa)':'entrada'}</div>
         <div class="rt-hero-nome">${esc(e.nome)} ${empresaMatrizFilialHtml(e.cnpj)}</div>
         <div class="rt-hero-sub">CNPJ ${esc(fmtCnpjCpf(e.cnpj||''))} · ${fmtDateIso(d.periodo.de)} a ${fmtDateIso(d.periodo.ate)} · ${rtNum(k.notas)} NF-e · ${rtNum(k.itens)} itens auditados</div>
       </div>
       <div class="row" style="gap:8px; flex-wrap:wrap;">
         <button class="btn" id="rtCsv">⬇ Evidências (CSV)</button>
-        <button class="btn" id="rtFichas" title="Referências + ficha de conferência de NF-e de compra (em branco e pré-preenchida por fornecedor com pendência), com o timbrado">📋 Fichas de conferência (PDF)</button>
+        ${S?'':`<button class="btn" id="rtFichas" title="Referências + ficha de conferência de NF-e de compra (em branco e pré-preenchida por fornecedor com pendência), com o timbrado">📋 Fichas de conferência (PDF)</button>`}
         <button class="btn primary" id="rtPdf">📄 Relatório para o cliente (PDF)</button>
       </div>
     </div>
@@ -8844,27 +8850,27 @@ function rtPainelHtml(d, urlPdf){
 
   <div class="rt-kpis">
     <div class="rt-kpi rt-kpi-anel">${anel(conf, corConf.cor)}<div><div class="rt-kpi-t">Conformidade das notas</div><div class="rt-kpi-s">${rtNum(k.notasConformes)} de ${rtNum(k.notas)} notas sem falha alta/média · ${rtChip(corConf)}</div></div></div>
-    ${tile('Compras auditadas', rtBRL(k.valorCompras), `${rtNum(k.fornecedores)} fornecedores · ${rtNum(k.fornecedoresComPendencia)} com ponto de atenção`)}
+    ${S ? tile('Vendas auditadas', rtBRL(k.valorCompras), `${rtNum(k.fornecedores)} destinatário(s)`) : tile('Compras auditadas', rtBRL(k.valorCompras), `${rtNum(k.fornecedores)} fornecedores · ${rtNum(k.fornecedoresComPendencia)} com ponto de atenção`)}
     ${tile('IBS/CBS destacado', rtBRL(k.ibs + k.cbs), `CBS ${rtBRL(k.cbs)} · IBS ${rtBRL(k.ibs)} · ${rtNum(k.notasComGrupo)} de ${rtNum(k.notas)} notas com o grupo`)}
-    ${tile(e.tomaCredito?'Crédito aproveitável':'Crédito (se optasse)', rtBRL(k.creditoAproveitavel), k.creditoRisco>0?`<span style="color:#d03b3b;">⛔ ${rtBRL(k.creditoRisco)} em risco de glosa</span>`:'nenhum valor em risco de glosa')}
-    ${tile('Crédito 2027 em jogo', rtBRL(k.perda2027Anual)+'<span class="rt-kpi-un">/ano</span>', `estimativa anualizada com CBS de ${String(d.fontes.cbs2027Estimada).replace('.',',')}% (Simples por dentro, MEI e fornecedores sem destaque)`, true)}
+    ${S ? tile('Notas sem IBS/CBS', rtNum(k.notas - k.notasComGrupo), (k.notas - k.notasComGrupo) ? '<span style="color:#d03b3b;">⛔ grupo obrigatório não informado</span>' : 'todas com o grupo IBS/CBS', true) : tile(e.tomaCredito?'Crédito aproveitável':'Crédito (se optasse)', rtBRL(k.creditoAproveitavel), k.creditoRisco>0?`<span style="color:#d03b3b;">⛔ ${rtBRL(k.creditoRisco)} em risco de glosa</span>`:'nenhum valor em risco de glosa')}
+    ${S ? tile('Itens a corrigir', rtNum(k.itens - k.itensConformes), `de ${rtNum(k.itens)} itens emitidos`) : tile('Crédito 2027 em jogo', rtBRL(k.perda2027Anual)+'<span class="rt-kpi-un">/ano</span>', `estimativa anualizada com CBS de ${String(d.fontes.cbs2027Estimada).replace('.',',')}% (Simples por dentro, MEI e fornecedores sem destaque)`, true)}
     ${tile('NCM vencido', rtNum(k.ncmsVencidos), k.ncmsVencidos?'<span style="color:#d03b3b;">⛔ código(s) extinto(s) na data da emissão</span>':'todos os NCM vigentes na emissão')}
   </div>
 
   <div class="rt-grid2">
     <div class="card rt-card">
-      <div class="rt-card-t">Compras por regime do fornecedor</div>
-      <div class="rt-card-s">Quanto da compra gera crédito integral (regime normal / Simples por fora) × limitado (Simples por dentro) × nenhum (MEI).</div>
+      <div class="rt-card-t">${S?'Vendas por tipo de destinatário':'Compras por regime do fornecedor'}</div>
+      <div class="rt-card-s">${S?'Vendas para empresas (que tomam crédito do IBS/CBS destacado) × consumidor final.':'Quanto da compra gera crédito integral (regime normal / Simples por fora) × limitado (Simples por dentro) × nenhum (MEI).'}</div>
       ${rtMixHtml(d.mixRegime)}
     </div>
     <div class="card rt-card">
-      <div class="rt-card-t">Evolução mensal das compras</div>
-      <div class="rt-card-s">Valor das NF-e de entrada por mês de emissão — parte conforme × com pendência.</div>
+      <div class="rt-card-t">Evolução mensal das ${S?'vendas':'compras'}</div>
+      <div class="rt-card-s">Valor das notas de ${S?'saída':'entrada'} por mês de emissão — parte conforme × com pendência.</div>
       ${rtMensalHtml(d.mensal)}
     </div>
   </div>
 
-  <div class="card rt-card">
+  <div class="card rt-card" ${S?'style="display:none;"':''}>
     <div class="rt-card-t">Fornecedores com mais crédito em jogo em 2027</div>
     <div class="rt-card-s">Crédito anual estimado que ${esc(e.nome)} deixa de tomar se nada mudar — base para renegociar preço, pedir a opção pelo regime regular ou trocar de fornecedor.</div>
     ${rtTopFornHtml(d.fornecedores)}
@@ -8877,18 +8883,18 @@ function rtPainelHtml(d, urlPdf){
   </div>
 
   <div class="card rt-card">
-    <div class="rt-card-t">Ranking de fornecedores</div>
+    <div class="rt-card-t">${S?'Destinatários (clientes)':'Ranking de fornecedores'}</div>
     <div class="row" style="gap:10px; flex-wrap:wrap; align-items:center; margin:10px 0;">
-      <div class="field" style="max-width:360px; flex:1; margin-bottom:0;"><input type="search" id="rtBuscaForn" placeholder="Pesquisar fornecedor ou CNPJ…" autocomplete="off" value="${esc(RT_BUSCA_FORN)}"></div>
-      <button class="btn primary" id="rtRelForn" disabled title="Marque um ou mais fornecedores na tabela">📨 Relatório para fornecedor(es)</button>
+      <div class="field" style="max-width:360px; flex:1; margin-bottom:0;"><input type="search" id="rtBuscaForn" placeholder="${S?'Pesquisar cliente ou CNPJ/CPF…':'Pesquisar fornecedor ou CNPJ…'}" autocomplete="off" value="${esc(RT_BUSCA_FORN)}"></div>
+      <button class="btn primary" id="rtRelForn" ${S?'style="display:none;"':''} disabled title="Marque um ou mais fornecedores na tabela">📨 Relatório para fornecedor(es)</button>
     </div>
-    <div class="rt-mut" style="font-size:12px; margin:-4px 0 8px;">Marque os fornecedores na tabela — sai um relatório completo de cada um (todas as inconsistências, nota a nota, com o preenchimento correto e a fundamentação) para enviar a eles.</div>
+    <div class="rt-mut" style="font-size:12px; margin:-4px 0 8px; ${S?'display:none;':''}">Marque os fornecedores na tabela — sai um relatório completo de cada um (todas as inconsistências, nota a nota, com o preenchimento correto e a fundamentação) para enviar a eles.</div>
     <div class="rt-scroll" id="rtFornTabela"></div>
   </div>
 
   <div class="card rt-card">
     <div class="rt-card-t">Mapa de NCM × classificação tributária</div>
-    <div class="rt-card-s">Cada NCM comprado, a classificação (cClassTrib) que os fornecedores usaram e a validação na API oficial da RFB.</div>
+    <div class="rt-card-s">${S?'Cada NCM vendido, a classificação (cClassTrib) que a empresa usou e a validação na API oficial da RFB — corrigir no cadastro de produtos.':'Cada NCM comprado, a classificação (cClassTrib) que os fornecedores usaram e a validação na API oficial da RFB.'}</div>
     <div class="rt-ncm-filtros" id="rtNcmChips"></div>
     <div class="row" style="gap:10px; flex-wrap:wrap; align-items:center; margin:8px 0 10px;">
       <div class="field" style="max-width:360px; flex:1; margin-bottom:0;"><input type="search" id="rtNcmBusca" placeholder="Pesquisar NCM, produto ou cClassTrib…" autocomplete="off" value="${esc(RT_NCM_BUSCA)}"></div>
@@ -8962,15 +8968,16 @@ function rtFornTabelaHtml(forn){
   const lista = forn.filter(f=>!t || normalizaTxt(f.nome).includes(t) || (dig && f.cnpj.includes(dig)));
   if(!lista.length) return '<div class="empty-state">Nenhum fornecedor encontrado.</div>';
   const todosMarcados = lista.length && lista.every(f=>RT_SEL_FORN.has(f.cnpj));
-  return `<table class="data-table rt-tabela"><thead><tr><th style="width:34px;"><input type="checkbox" id="rtSelTodos" title="Marcar todos os da lista" ${todosMarcados?'checked':''}></th><th>Fornecedor</th><th>Regime IBS/CBS</th><th class="num">Notas</th><th class="num">Compras</th><th class="num">% com IBS/CBS</th><th>Achados</th><th class="num">Crédito destacado</th><th class="num">Em jogo 2027/ano</th><th>Score</th></tr></thead><tbody>
+  const S = RT_DIRECAO==='saida';
+  return `<table class="data-table rt-tabela"><thead><tr>${S?'':`<th style="width:34px;"><input type="checkbox" id="rtSelTodos" title="Marcar todos os da lista" ${todosMarcados?'checked':''}></th>`}<th>${S?'Destinatário':'Fornecedor'}</th><th>${S?'Tipo':'Regime IBS/CBS'}</th><th class="num">Notas</th><th class="num">${S?'Vendas':'Compras'}</th><th class="num">% com IBS/CBS</th><th>Achados</th><th class="num">${S?'IBS/CBS destacado':'Crédito destacado'}</th>${S?'':'<th class="num">Em jogo 2027/ano</th>'}<th>Score</th></tr></thead><tbody>
     ${lista.map(f=>`<tr class="rt-click" data-forn="${esc(f.cnpj)}">
-      <td class="rt-selcel"><input type="checkbox" class="rtSelForn" value="${esc(f.cnpj)}" ${RT_SEL_FORN.has(f.cnpj)?'checked':''}></td>
+      ${S?'':`<td class="rt-selcel"><input type="checkbox" class="rtSelForn" value="${esc(f.cnpj)}" ${RT_SEL_FORN.has(f.cnpj)?'checked':''}></td>`}
       <td><b>${esc(f.nome)}</b><div class="rt-mut" style="font-size:11px;">${esc(fmtCnpjCpf(f.cnpj))} · ${esc(f.uf||'')}</div></td>
       <td>${rtRegimeChip(f.regime, f.regimeLabel)}</td>
       <td class="num">${rtNum(f.notas)}</td><td class="num">${rtBRL(f.valor)}</td><td class="num">${f.pctComGrupo}%</td>
       <td style="white-space:nowrap;">${f.alta?`<span style="color:#d03b3b;">⛔ ${f.alta}</span> `:''}${f.media?`<span style="color:#ec835a;">⚠ ${f.media}</span> `:''}${f.baixa?`<span class="rt-mut">• ${f.baixa}</span>`:''}${!f.alta&&!f.media&&!f.baixa?'<span style="color:#0ca30c;">✔</span>':''}</td>
       <td class="num">${rtBRL(f.creditoDestacado)}${f.risco?`<div style="color:#d03b3b; font-size:11px;">⛔ ${rtBRL(f.risco)} em risco</div>`:''}</td>
-      <td class="num">${f.perda2027Anual?`<b>${rtBRL(f.perda2027Anual)}</b>`:'—'}</td>
+      ${S?'':`<td class="num">${f.perda2027Anual?`<b>${rtBRL(f.perda2027Anual)}</b>`:'—'}</td>`}
       <td style="white-space:nowrap;"><b>${f.score}</b> ${rtChip(RT_STATUS[f.status])}</td>
     </tr>`).join('')}</tbody></table>`;
 }
@@ -9063,7 +9070,7 @@ function rtLigarPainel(painel, d, urlPdf){
     const blob = new Blob(['﻿'+[cols.map(q).join(';'),...linhas].join('\r\n')], { type:'text/csv;charset=utf-8' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `auditoria-reforma-${(d.empresa.nome||'empresa').replace(/[^\w]+/g,'-').slice(0,40)}.csv`; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 2000);
   });
-  document.getElementById('rtFichas').addEventListener('click', async ()=>{
+  if(document.getElementById('rtFichas')) document.getElementById('rtFichas').addEventListener('click', async ()=>{
     const btn = document.getElementById('rtFichas'), orig = btn.textContent;
     btn.disabled = true; btn.textContent = 'Gerando fichas…';
     try{
@@ -9096,12 +9103,12 @@ function rtFornecedorDrawer(d, cnpj, urlPdf){
     <div class="drawer-body">
       <div class="rt-mut" style="margin-top:-6px;">${esc(fmtCnpjCpf(f.cnpj))} · ${esc(f.uf||'')} · ${rtRegimeChip(f.regime, f.regimeLabel)} · ${rtChip(RT_STATUS[f.status])} score ${f.score}</div>
       <div class="rt-kpis" style="margin-top:12px;">
-        <div class="rt-kpi"><div class="rt-kpi-t">Compras</div><div class="rt-kpi-v">${rtBRL(f.valor)}</div><div class="rt-kpi-s">${f.notas} NF · ${f.itens} itens · ${f.pctComGrupo}% com IBS/CBS</div></div>
+        <div class="rt-kpi"><div class="rt-kpi-t">${RT_DIRECAO==='saida'?'Vendas':'Compras'}</div><div class="rt-kpi-v">${rtBRL(f.valor)}</div><div class="rt-kpi-s">${f.notas} NF · ${f.itens} itens · ${f.pctComGrupo}% com IBS/CBS</div></div>
         <div class="rt-kpi"><div class="rt-kpi-t">Crédito destacado</div><div class="rt-kpi-v">${rtBRL(f.creditoDestacado)}</div><div class="rt-kpi-s">${f.risco?`<span style="color:#d03b3b;">⛔ ${rtBRL(f.risco)} em risco</span>`:'sem risco de glosa'}</div></div>
-        <div class="rt-kpi rt-kpi-destaque"><div class="rt-kpi-t">Em jogo 2027</div><div class="rt-kpi-v">${rtBRL(f.perda2027Anual)}<span class="rt-kpi-un">/ano</span></div></div>
+        <div class="rt-kpi rt-kpi-destaque" ${RT_DIRECAO==='saida'?'style="display:none;"':''}><div class="rt-kpi-t">Em jogo 2027</div><div class="rt-kpi-v">${rtBRL(f.perda2027Anual)}<span class="rt-kpi-un">/ano</span></div></div>
       </div>
       <div class="rt-reco"><b>Recomendação:</b> ${esc(f.recomendacao)}</div>
-      <div class="row" style="gap:8px; margin:10px 0; flex-wrap:wrap;"><button class="btn small primary" id="rtRelEste">📄 Relatório completo para este fornecedor (PDF)</button><button class="btn small" id="rtCopiarNotif">✉️ Copiar notificação ao fornecedor</button></div>
+      <div class="row" style="gap:8px; margin:10px 0; flex-wrap:wrap; ${RT_DIRECAO==='saida'?'display:none;':''}"><button class="btn small primary" id="rtRelEste">📄 Relatório completo para este fornecedor (PDF)</button><button class="btn small" id="rtCopiarNotif">✉️ Copiar notificação ao fornecedor</button></div>
       <div class="rt-card-t" style="margin-top:6px;">Evidências (${ach.length})</div>
       ${ach.length ? [...porNota.entries()].map(([k, lst])=>`<div style="margin-top:10px;"><div class="rt-mut" style="font-size:12px; margin-bottom:4px;">NF ${esc(lst[0].numero)}${lst[0].serie?'/'+esc(lst[0].serie):''} · ${fmtDateIso(lst[0].dhEmi)} · chave ${esc(lst[0].chave)}</div>${lst.map(a=>rtAchadoHtml(a, false)).join('')}</div>`).join('') : '<div class="empty-state">✔ Nenhum achado para este fornecedor no período.</div>'}
     </div>`);
@@ -17458,6 +17465,8 @@ const SETOR_PAGINAS = {
   fiscal:   { titulo:'Fiscal', subtitulo:'Departamento Fiscal — demandas fiscais e tributárias.' },
 };
 const SETOR_ABA = { dprh:'whatsapp', contabil:'whatsapp', fiscal:'whatsapp' };
+// Aba do Início de onde veio o atalho "Obrigações do Mês" — mostra o botão "Voltar para as pendências".
+let OBR_VOLTAR_DASH = null;
 let SETOR_ABA_INICIAL = null; // aba a abrir ao navegar pra um setor (ex.: atalho da Área de Trabalho abre em "obrigacoes")
 async function pageSetor(escopo){
   const pg = SETOR_PAGINAS[escopo];
@@ -17497,8 +17506,10 @@ async function obrigacoesMontar(box, setor){
   box.innerHTML = `<div class="empty-state">Carregando o quadro…</div>`;
   let r; try{ r = await api('/obrigacoes?setor='+encodeURIComponent(setor)+'&competencia='+OBR.competencia); }catch(e){ box.innerHTML=`<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
   const podeEditar = can('obrigacoes','editar'); // permissão dedicada pra marcar manualmente (módulo "Obrigações do Mês")
+  setTimeout(()=>{ const bv = document.getElementById('obrVoltar'); if(bv) bv.addEventListener('click', ()=>{ DASH_TAB = OBR_VOLTAR_DASH || 'pendentes'; OBR_VOLTAR_DASH = null; goPage('dashboard'); }); }, 0);
   box.innerHTML = `
     <div class="card" style="margin-bottom:12px;">
+      ${OBR_VOLTAR_DASH?`<button class="btn small" id="obrVoltar" style="margin-bottom:12px;">← Voltar para as pendências</button>`:''}
       <div class="row" style="gap:12px; align-items:flex-end; flex-wrap:wrap;">
         <div class="field" style="margin-bottom:0;"><label>Competência</label>${monthInputHtml('obrComp', OBR.competencia)}</div>
         <div class="field" style="flex:1; max-width:320px; margin-bottom:0;"><label>Buscar empresa</label><input type="text" id="obrBusca" placeholder="Nome da empresa…" autocomplete="off" value="${esc(OBR.busca)}"></div>

@@ -120,6 +120,7 @@ export interface ItemRT {
 export interface NotaRT {
   docId: number; chave: string; numero: string; serie: string; dhEmi: string; mod: string; finNFe: number;
   emitCnpj: string; emitNome: string; emitUF: string; crt: number | null; tpRegimeIBSCBS: string | null;
+  destDoc: string; destNome: string; destUF: string; // destinatário (usado na auditoria das notas de SAÍDA)
   vNF: number; itens: ItemRT[];
   tot: { vBC: number; vIBS: number; vCBS: number; vIBSSN: number; vCBSSN: number; temGrupo: boolean };
 }
@@ -181,6 +182,7 @@ export function lerNotaReforma(docId: number, xml: string): NotaRT | null {
     docId, chave: String(inf["@_Id"] || "").replace(/^NFe/, ""), numero: String(ide.nNF || ""), serie: String(ide.serie || ""),
     dhEmi: String(ide.dhEmi || "").slice(0, 10), mod: String(ide.mod || "55"), finNFe: n(ide.finNFe) || 1,
     emitCnpj: String(emit.CNPJ || emit.CPF || ""), emitNome: String(emit.xNome || ""), emitUF: String(emit.enderEmit?.UF || ""),
+    destDoc: String(inf.dest?.CNPJ || inf.dest?.CPF || ""), destNome: String(inf.dest?.xNome || ""), destUF: String(inf.dest?.enderDest?.UF || ""),
     crt: emit.CRT != null ? Number(emit.CRT) : null, tpRegimeIBSCBS: emit.tpRegimeIBSCBS != null ? String(emit.tpRegimeIBSCBS) : null,
     vNF: n(inf.total?.ICMSTot?.vNF), itens,
     tot: {

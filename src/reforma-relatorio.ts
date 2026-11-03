@@ -13,7 +13,7 @@ const fmtDoc = (d: string) => {
   return d || "";
 };
 const ncmFmt = (n: string) => (/^\d{8}$/.test(n) ? n.replace(/(\d{4})(\d{2})(\d{2})/, "$1.$2.$3") : n);
-const COR_REGIME: Record<string, string> = { regular: "#2a78d6", sn_regular: "#1baf7a", sn_dentro: "#eb6834", sn_indefinido: "#eda100", mei: "#e87ba4", pf: "#6250d6", desconhecido: "#898781" };
+const COR_REGIME: Record<string, string> = { b2b: "#2a78d6", b2c: "#eb6834", regular: "#2a78d6", sn_regular: "#1baf7a", sn_dentro: "#eb6834", sn_indefinido: "#eda100", mei: "#e87ba4", pf: "#6250d6", desconhecido: "#898781" };
 const SEV: Record<string, { cor: string; ic: string; label: string }> = {
   alta: { cor: "#c0392b", ic: "⛔", label: "Alta" }, media: { cor: "#a5730a", ic: "⚠", label: "Média" }, baixa: { cor: "#5b6b63", ic: "•", label: "Baixa" }, info: { cor: "#2a78d6", ic: "ℹ", label: "Info" },
 };
@@ -24,11 +24,17 @@ const NCM_ST: Record<string, string> = { ncm_vencido: "⛔ NCM vencido na emiss�
 
 export function htmlRelatorioReforma(d: any, escritorioNome: string, timbrado: string | null): string {
   const k = d.kpis, e = d.empresa;
+  const saida = d.direcao === "saida";
   const tot = d.mixRegime.reduce((a: number, m: any) => a + m.valor, 0) || 1;
-  const pend = d.fornecedores.filter((f: any) => f.status !== "conforme" || f.regime !== "regular");
+  const pend = d.fornecedores.filter((f: any) => saida ? f.status !== "conforme" : (f.status !== "conforme" || f.regime !== "regular"));
   const top3 = d.fornecedores.filter((f: any) => f.perda2027Anual > 0).slice(0, 3);
   const pctDentro = ((d.mixRegime.filter((m: any) => ["sn_dentro", "sn_indefinido", "mei"].includes(m.regime)).reduce((a: number, m: any) => a + m.valor, 0) / tot) * 100).toFixed(1).replace(".", ",");
-  const resumo = `Foram auditadas <b>${numBR(k.notas)} NF-e de entrada</b> (${numBR(k.itens)} itens) de <b>${numBR(k.fornecedores)} fornecedores</b>, somando <b>${brl(k.valorCompras)}</b> em compras entre ${dataBR(d.periodo.de)} e ${dataBR(d.periodo.ate)}. ` +
+  const resumoSaida = `Foram auditadas <b>${numBR(k.notas)} notas de saída</b> (NF-e/NFC-e emitidas pela empresa, ${numBR(k.itens)} itens) para <b>${numBR(k.fornecedores)} destinatários</b>, somando <b>${brl(k.valorCompras)}</b> em vendas entre ${dataBR(d.periodo.de)} e ${dataBR(d.periodo.ate)}. ` +
+    `<b>${String(k.conformidade).replace(".", ",")}%</b> das notas estão aderentes ao leiaute oficial do IBS/CBS (NT 2025.002-RTC v1.53). ` +
+    (k.notas - k.notasComGrupo > 0 ? `<b>${numBR(k.notas - k.notasComGrupo)} nota(s)</b> saíram sem o grupo IBS/CBS. ` : "") +
+    (k.ncmsVencidos ? `Foram encontrados <b>${k.ncmsVencidos} NCM vencido(s)/inexistente(s)</b> no cadastro de produtos. ` : "") +
+    `Erros na emissão tiram o crédito dos clientes empresas a partir de 2027 e geram risco de autuação — as correções estão detalhadas abaixo.`;
+  const resumo = saida ? resumoSaida : `Foram auditadas <b>${numBR(k.notas)} NF-e de entrada</b> (${numBR(k.itens)} itens) de <b>${numBR(k.fornecedores)} fornecedores</b>, somando <b>${brl(k.valorCompras)}</b> em compras entre ${dataBR(d.periodo.de)} e ${dataBR(d.periodo.ate)}. ` +
     `<b>${String(k.conformidade).replace(".", ",")}%</b> das notas estão aderentes ao leiaute oficial do IBS/CBS (NT 2025.002-RTC v1.53). ` +
     `<b>${pctDentro}%</b> do valor comprado vem de fornecedores do Simples Nacional sem opção pelo regime regular ou MEI, que geram crédito limitado ou nenhum. ` +
     (k.perda2027Anual > 0 ? `Mantido o cenário atual, a estimativa é de <b>${brl(k.perda2027Anual)} por ano de crédito de IBS/CBS deixado de aproveitar em 2027</b>${top3.length ? `, concentrado em ${top3.map((f: any) => esc(f.nome)).join(", ")}` : ""}. ` : "") +
@@ -39,37 +45,37 @@ export function htmlRelatorioReforma(d: any, escritorioNome: string, timbrado: s
   const achados = d.achados.filter((a: any) => a.severidade === "alta" || a.severidade === "media").slice(0, 45);
   const ncmsProb = d.ncms.filter((n: any) => NCM_ST[n.status]).slice(0, 40);
   const corpo = `
-  <h1>Auditoria da Reforma Tributária — IBS/CBS nas notas de entrada</h1>
+  <h1>Auditoria da Reforma Tributária — IBS/CBS nas notas de ${saida ? "saída" : "entrada"}</h1>
   <p class="sub">${esc(escritorioNome)} · gerado em ${new Date().toLocaleDateString("pt-BR")} às ${new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</p>
   <div class="empresa-topo"><div class="empresa-nome">${esc(e.nome)}</div><div class="empresa-sub">CNPJ ${esc(fmtDoc(e.cnpj))} · ${esc(e.regimeLabel)} · ${dataBR(d.periodo.de)} a ${dataBR(d.periodo.ate)}</div></div>
-  <div class="box">${e.tomaCredito ? `Empresa do <b>${esc(e.regimeLabel)}</b>: toma crédito integral de IBS/CBS nas compras de fornecedores do regime regular; na compra de fornecedor do Simples Nacional "por dentro" o crédito é limitado ao valor pago no regime único, e na compra de MEI não há crédito (LC 214/2025, art. 47 §9º).` : `Empresa do <b>${esc(e.regimeLabel)}</b>: sem opção pelo regime regular de IBS/CBS, não há crédito; os valores de crédito indicam o que seria aproveitável com a opção.`}</div>
+  <div class="box">${saida ? `Empresa do <b>${esc(e.regimeLabel)}</b>: confere se as notas emitidas pela empresa destacam o IBS/CBS conforme o leiaute oficial (obrigatório para o regime regular desde 03/08/2026; Simples Nacional com os campos da NT 2026.005). Destaque correto é o que garante o crédito aos clientes empresas.` : e.tomaCredito ? `Empresa do <b>${esc(e.regimeLabel)}</b>: toma crédito integral de IBS/CBS nas compras de fornecedores do regime regular; na compra de fornecedor do Simples Nacional "por dentro" o crédito é limitado ao valor pago no regime único, e na compra de MEI não há crédito (LC 214/2025, art. 47 §9º).` : `Empresa do <b>${esc(e.regimeLabel)}</b>: sem opção pelo regime regular de IBS/CBS, não há crédito; os valores de crédito indicam o que seria aproveitável com a opção.`}</div>
 
   <h2>Resumo executivo</h2>
   <p class="txt">${resumo}</p>
   <div class="kpis">
     ${kpi("Conformidade das notas", String(k.conformidade).replace(".", ",") + "%", `${numBR(k.notasConformes)} de ${numBR(k.notas)} notas sem falha alta/média`)}
-    ${kpi("Compras auditadas", brl(k.valorCompras), `${numBR(k.fornecedores)} fornecedores`)}
+    ${kpi(saida ? "Vendas auditadas" : "Compras auditadas", brl(k.valorCompras), `${numBR(k.fornecedores)} ${saida ? "destinatários" : "fornecedores"}`)}
     ${kpi("IBS/CBS destacado", brl(k.ibs + k.cbs), `CBS ${brl(k.cbs)} · IBS ${brl(k.ibs)}`)}
-    ${kpi("Crédito aproveitável", brl(k.creditoAproveitavel), k.creditoRisco ? `${brl(k.creditoRisco)} em risco de glosa` : "sem risco de glosa")}
-    ${kpi("Crédito 2027 em jogo", brl(k.perda2027Anual) + "/ano", `estimativa com CBS de ${String(d.fontes.cbs2027Estimada).replace(".", ",")}%`, true)}
+    ${saida ? kpi("Notas sem IBS/CBS", numBR(k.notas - k.notasComGrupo), "grupo obrigatório não informado", true) : kpi("Crédito aproveitável", brl(k.creditoAproveitavel), k.creditoRisco ? `${brl(k.creditoRisco)} em risco de glosa` : "sem risco de glosa")}
+    ${saida ? kpi("Itens a corrigir", numBR(k.itens - k.itensConformes), `de ${numBR(k.itens)} itens`) : kpi("Crédito 2027 em jogo", brl(k.perda2027Anual) + "/ano", `estimativa com CBS de ${String(d.fontes.cbs2027Estimada).replace(".", ",")}%`, true)}
     ${kpi("NCM vencido", numBR(k.ncmsVencidos), "na data da emissão")}
   </div>
 
-  <h2>Compras por regime de IBS/CBS do fornecedor</h2>
+  <h2>${saida ? "Vendas por tipo de destinatário" : "Compras por regime de IBS/CBS do fornecedor"}</h2>
   <div class="segbar">${d.mixRegime.map((m: any) => `<div style="width:${((m.valor / tot) * 100).toFixed(2)}%; background:${COR_REGIME[m.regime]};"></div>`).join("")}</div>
   <table><colgroup><col style="width:55%"><col style="width:20%"><col style="width:12%"><col style="width:13%"></colgroup>
-    <thead><tr><th>Regime do fornecedor</th><th class="num">Compras</th><th class="num">%</th><th class="num">Notas</th></tr></thead>
+    <thead><tr><th>${saida ? "Destinatário" : "Regime do fornecedor"}</th><th class="num">${saida ? "Vendas" : "Compras"}</th><th class="num">%</th><th class="num">Notas</th></tr></thead>
     <tbody>${d.mixRegime.map((m: any) => `<tr><td><span class="sw" style="background:${COR_REGIME[m.regime]};"></span>${esc(m.label)}</td><td class="num">${brl(m.valor)}</td><td class="num">${((m.valor / tot) * 100).toFixed(1).replace(".", ",")}%</td><td class="num">${numBR(m.notas)}</td></tr>`).join("")}</tbody></table>
 
-  <h2>Ranking de fornecedores</h2>
+  <h2>${saida ? "Destinatários (clientes)" : "Ranking de fornecedores"}</h2>
   <table><colgroup><col style="width:27%"><col style="width:19%"><col style="width:6%"><col style="width:13%"><col style="width:10%"><col style="width:13%"><col style="width:12%"></colgroup>
-    <thead><tr><th>Fornecedor</th><th>Regime IBS/CBS</th><th class="num">NF</th><th class="num">Compras</th><th>Achados</th><th class="num">Em jogo 2027/ano</th><th>Status</th></tr></thead>
+    <thead><tr><th>${saida ? "Destinatário" : "Fornecedor"}</th><th>${saida ? "Tipo" : "Regime IBS/CBS"}</th><th class="num">NF</th><th class="num">${saida ? "Vendas" : "Compras"}</th><th>Achados</th><th class="num">${saida ? "IBS/CBS destacado" : "Em jogo 2027/ano"}</th><th>Status</th></tr></thead>
     <tbody>${forn.map((f: any) => `<tr><td><b>${esc(f.nome)}</b><br><span class="mut">${esc(fmtDoc(f.cnpj))} · ${esc(f.uf)}</span></td><td><span class="sw" style="background:${COR_REGIME[f.regime]};"></span>${esc(f.regimeLabel)}</td><td class="num">${numBR(f.notas)}</td><td class="num">${brl(f.valor)}</td>
       <td>${f.alta ? `<span style="color:#c0392b;">⛔ ${f.alta}</span> ` : ""}${f.media ? `<span style="color:#a5730a;">⚠ ${f.media}</span> ` : ""}${!f.alta && !f.media ? '<span style="color:#1f8a52;">✔</span>' : ""}</td>
-      <td class="num">${f.perda2027Anual ? `<b>${brl(f.perda2027Anual)}</b>` : "—"}</td><td style="color:${STATUS[f.status].cor}; white-space:nowrap;">${STATUS[f.status].ic} ${STATUS[f.status].label}</td></tr>`).join("")}</tbody></table>
+      <td class="num">${saida ? brl(f.creditoDestacado) : f.perda2027Anual ? `<b>${brl(f.perda2027Anual)}</b>` : "—"}</td><td style="color:${STATUS[f.status].cor}; white-space:nowrap;">${STATUS[f.status].ic} ${STATUS[f.status].label}</td></tr>`).join("")}</tbody></table>
   ${d.fornecedores.length > forn.length ? `<p class="mut">+ ${d.fornecedores.length - forn.length} fornecedor(es) no painel do sistema.</p>` : ""}
 
-  ${pend.length ? `<h2>Recomendações por fornecedor</h2>
+  ${pend.length ? `<h2>${saida ? "Correções por destinatário" : "Recomendações por fornecedor"}</h2>
   ${pend.slice(0, 15).map((f: any) => `<div class="reco"><div class="reco-t">${esc(f.nome)} <span class="mut">· ${esc(fmtDoc(f.cnpj))} · ${esc(f.regimeLabel)}</span></div><div>${esc(f.recomendacao)}</div></div>`).join("")}` : ""}
 
   ${ncmsProb.length ? `<h2>NCM com problema de classificação</h2>
