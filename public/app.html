@@ -17560,7 +17560,7 @@ async function obrigacaoDetalheModal(linha, ob){
     <div style="font-size:12.5px; color:var(--ink-soft); margin-bottom:10px;">${esc(ob.label)} · competência ${esc(OBR.competencia)}</div>
     <div id="obrDetBox"><div class="empty-state">Carregando…</div></div>
     <div class="modal-actions"><button class="btn" id="obrDetFechar">Fechar</button></div>
-  `);
+  `, 'min(1040px, 96vw)');
   document.getElementById('obrDetFechar').addEventListener('click', closeModal);
   const box=document.getElementById('obrDetBox');
   if(ob && ob.fonte==='nfse_honorarios'){
@@ -17573,15 +17573,19 @@ async function obrigacaoDetalheModal(linha, ob){
         <div><b>📱 WhatsApp(s) do cliente:</b> ${zaps.length? zaps.map(w=>esc(w)).join(', ') : '<span class="mut">nenhum cadastrado</span>'}</div>
       </div>`;
       const sim='<span style="color:var(--credit)">✓ sim</span>', nao='<span class="mut">—</span>';
-      box.innerHTML = notas.length ? destinos + `<div style="overflow-x:auto;"><table class="data-table"><thead><tr><th>Nota</th><th>Serviço</th><th>Valor</th><th>Status</th><th>Origem</th><th>E-mail</th><th>WhatsApp</th></tr></thead><tbody>
+      // E-mail de destino da nota; se a nota não gravou e-mail (comum na emissão automática), cai pros
+      // contatos de e-mail do cliente, pra sempre mostrar "pra qual e-mail" quando houver.
+      const emailDestino = (n)=> n.tomadorEmail || emails[0] || '';
+      box.innerHTML = notas.length ? destinos + `<div style="overflow-x:auto;"><table class="data-table"><thead><tr><th>Nota</th><th>Destinatário</th><th>Serviço</th><th style="white-space:nowrap;">Valor</th><th>Status</th><th>Origem</th><th>E-mail</th><th>WhatsApp</th></tr></thead><tbody>
         ${notas.map(n=>`<tr>
-          <td>${n.numeroNfse?('NFS-e '+esc(n.numeroNfse)):('DPS '+esc(n.numeroDps))}<br><span class="mut" style="font-size:11px;">${n.criadoEm?esc(fmtDateHora(n.criadoEm)):''}</span></td>
+          <td style="white-space:nowrap;">${n.numeroNfse?('NFS-e '+esc(n.numeroNfse)):('DPS '+esc(n.numeroDps))}<br><span class="mut" style="font-size:11px;">${n.criadoEm?esc(fmtDateHora(n.criadoEm)):''}</span></td>
+          <td>${n.tomadorNome?esc(n.tomadorNome):'<span class="mut">—</span>'}</td>
           <td>${esc(n.modeloNome||n.descricaoServico||'—')}</td>
           <td style="white-space:nowrap;">${n.valorServico!=null?('R$ '+Number(n.valorServico).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})):'—'}</td>
-          <td><span class="tag ${/autoriz|emit/i.test(n.status||'')?'ok':'muted'}">${esc(n.status||'—')}</span></td>
-          <td style="font-size:11.5px;">${n.origem==='automatica'?'automática':'manual'}</td>
-          <td>${n.enviadoEmail?sim:nao}</td>
-          <td>${n.enviadoWhatsapp?sim:nao}</td>
+          <td style="white-space:nowrap;"><span class="tag ${/autoriz|emit/i.test(n.status||'')?'ok':'muted'}">${esc(n.status||'—')}</span></td>
+          <td style="font-size:11.5px; white-space:nowrap;">${n.origem==='automatica'?'automática':'manual'}</td>
+          <td style="white-space:nowrap;">${n.enviadoEmail?sim:nao}${emailDestino(n)?('<br><span class="mut" style="font-size:11px;">'+esc(emailDestino(n))+'</span>'):''}</td>
+          <td style="white-space:nowrap;">${n.enviadoWhatsapp?sim:nao}${zaps.length?('<br><span class="mut" style="font-size:11px;">'+esc(zaps.join(', '))+'</span>'):''}</td>
         </tr>`).join('')}
       </tbody></table></div>` : (destinos + `<div class="empty-state">Nenhuma NFS-e de honorários encontrada para ${esc(OBR.competencia)} — a marcação veio da configuração de emissão automática.</div>`);
     }catch(e){ box.innerHTML=`<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; }
