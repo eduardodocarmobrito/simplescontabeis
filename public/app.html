@@ -18010,11 +18010,26 @@ let OBR_RECARREGAR = null; // recarrega o quadro aberto (usado depois de consult
 // Filtro por quadro (Transmitida × Enviada ao cliente), por obrigação — persiste entre visitas.
 let OBR_FILTROS = (()=>{ try{ return JSON.parse(localStorage.getItem('obrFiltros')||'{}')||{}; }catch(e){ return {}; } })();
 const OBR_FILTRO_OPC = {
-  transmitida: [['','Todas'],['ok','✓ Transmitida'],['falta','Falta transmitir'],['atraso','⚠ Atrasada'],['manual','Marcada manual']],
+  transmitida: [['','Todas'],['ok','✓ Transmitida'],['falta','Falta transmitir'],['atraso','⚠ Atrasada'],['manual','Marcada manual'],['erro','⚠ Erro no e-CAC']],
   enviada: [['','Todas'],['ok','✓ Enviada'],['falta','Falta enviar'],['atraso','⚠ Atrasada'],['manual','Marcada manual']],
 };
+// Erro da consulta ao e-CAC (Integra Contador) gravado na situação da empresa × competência.
+function obrEcacErro(l){ const m = l.situacaoDctf?.mensagem || ''; return !l.situacaoDctf?.ativa && /^Erro/.test(m) ? m : null; }
+// Traduz o erro técnico da Receita pra uma explicação de o que fazer.
+function obrEcacErroAmigavel(m){
+  if(/ICGERENCIADOR-022|procura[cç][aã]o/i.test(m)){
+    const doc = (m.match(/autor do pedido de dados de n[uú]mero:\s*(\d+)/i)||[])[1];
+    const cnpj = doc && doc.length===14 ? doc.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/,'$1.$2.$3/$4-$5') : (doc||'do escritório');
+    return { titulo:'Sem procuração no e-CAC', texto:`O cliente não deu procuração eletrônica no e-CAC para o escritório (CNPJ ${cnpj}). Sem ela a Receita bloqueia a consulta. O cliente (ou alguém com o certificado dele) precisa cadastrar a procuração no e-CAC › Senhas e Procurações › Cadastro, consulta e cancelamento de procuração, para o CNPJ do escritório, marcando os serviços da DCTFWeb (ou "todos os serviços"). Depois clique em "Consultar agora" no detalhe da empresa.` };
+  }
+  if(/certificado|token|autentica|401|403/i.test(m)) return { titulo:'Falha de autenticação no Integra Contador', texto:'Verifique o certificado e a configuração em Integra Contador › Configuração. Depois consulte de novo.' };
+  if(/CNPJ\/CPF v[aá]lido/i.test(m)) return { titulo:'Cadastro sem CNPJ/CPF', texto:'A empresa está sem CNPJ/CPF válido no cadastro. Corrija em Empresas e consulte de novo.' };
+  if(/timeout|ECONN|fetch failed|50\d|indispon/i.test(m)) return { titulo:'Receita fora do ar / instável', texto:'Falha temporária na comunicação com a Receita. Tente consultar de novo mais tarde.' };
+  return { titulo:'Erro na consulta', texto:'Veja a mensagem da Receita abaixo.' };
+}
 function obrPassaFiltro(l, campo, v){
   if(!v) return true;
+  if(v==='erro') return campo==='transmitida' && !!obrEcacErro(l);
   const ok = campo==='transmitida' ? l.transmitida : l.enviada;
   const manual = campo==='transmitida' ? l.transmitidaManual : l.enviadaManual;
   const atraso = campo==='transmitida' ? l.atrasoTransmissao : l.atrasoEnvio;
@@ -18039,6 +18054,7 @@ async function obrigacoesMontar(box, setor){
       </div>
       <p style="font-size:11.5px; color:var(--ink-soft); margin:10px 0 0;">Status lido automático do sistema: <b>Transmitida/Feita</b> = documento anexado no Envio (DCTF-Web: declaração <b>Ativa</b> no e-CAC; Folha: DCTFWeb Ativa com origem <b>eSocial</b> — consulta automática pelo Integra Contador nos dias da "Agenda e-CAC", ou a qualquer hora no botão "Validar no e-CAC"); <b>Enviada ao cliente</b> = enviado por e-mail/WhatsApp. Empresa aparece se tem o template da obrigação atribuído no Envio de Documentos. ${podeEditar?'Clique num status pra marcar manualmente (sobrepõe o automático; clicar de novo volta pro automático).':''}</p>
     </div>
+    <div id="obrEcacErros"></div>
     <div id="obrConteudo"></div>
   `;
   setupMonthPicker('obrComp','obrComp_text'); // calendário padrão do site (em vez do nativo do navegador)
@@ -18052,7 +18068,7 @@ async function obrigacoesMontar(box, setor){
       for(;;){
         let st; try{ st = await api('/obrigacoes/dctfweb-validar/status'); }catch(e){ break; }
         if(!document.body.contains(bVal)) return;
-        if(!st.rodando){ bVal.disabled=false; bVal.textContent='🛰️ Validar no e-CAC'; if(st.fim) toast(`e-CAC: ${st.feitas} consultada(s), ${st.ativas} ativa(s)${st.erros?`, ${st.erros} com erro`:''}.`, st.erros?'err':'ok'); obrigacoesMontar(box, setor); return; }
+        if(!st.rodando){ bVal.disabled=false; bVal.textContent='🛰️ Validar no e-CAC'; if(st.fim) toast(`e-CAC: ${st.feitas} consultada(s), ${st.ativas} ativa(s)${st.erros?`, ${st.erros} com erro — veja o aviso "Erros na consulta do e-CAC" acima do quadro`:''}.`, st.erros?'err':'ok'); obrigacoesMontar(box, setor); return; }
         bVal.textContent = `🛰️ Consultando ${st.feitas}/${st.total}…`;
         await new Promise(res=>setTimeout(res, 3000));
       }
@@ -18068,6 +18084,38 @@ async function obrigacoesMontar(box, setor){
   if(bAg) bAg.addEventListener('click', ()=>obrAgendaEcacModal());
   const cont = document.getElementById('obrConteudo');
   OBR_RECARREGAR = ()=>obrigacoesMontar(box, setor);
+  // Aviso com as empresas cuja consulta ao e-CAC deu erro nesta competência (uma vez por empresa),
+  // agrupadas pelo motivo, com a explicação do que fazer.
+  (()=>{
+    const porEmp = new Map();
+    r.linhas.forEach(l=>{ const m = obrEcacErro(l); if(m && !porEmp.has(l.empresaId)) porEmp.set(l.empresaId, { l, m }); });
+    const el = document.getElementById('obrEcacErros');
+    if(!porEmp.size){ el.innerHTML=''; return; }
+    const grupos = new Map();
+    [...porEmp.values()].forEach(x=>{ const a = obrEcacErroAmigavel(x.m); const g = grupos.get(a.titulo) || { a, itens:[] }; g.itens.push(x); grupos.set(a.titulo, g); });
+    el.innerHTML = `<div class="card" style="margin-bottom:12px; border-left:4px solid var(--amber);">
+      <div class="row" style="align-items:center; gap:10px; flex-wrap:wrap;">
+        <b>⚠ Erros na consulta do e-CAC — ${porEmp.size} empresa(s)</b>
+        <span style="font-size:12px; color:var(--ink-soft);">Essas empresas ficam como "Falta transmitir" porque a Receita não deixou consultar.</span>
+        <button type="button" class="btn small" id="obrEcacErrosVer" style="margin-left:auto;">Ver erros</button>
+      </div>
+      <div id="obrEcacErrosLista" class="hidden" style="margin-top:10px;">
+        ${[...grupos.values()].map(g=>`<div style="margin-bottom:12px;">
+          <div style="font-weight:600;">${esc(g.a.titulo)} (${g.itens.length})</div>
+          <div style="font-size:12.5px; color:var(--ink-soft); margin:2px 0 6px;">${esc(g.a.texto)}</div>
+          <table class="data-table"><thead><tr><th>Empresa</th><th>Mensagem da Receita</th><th>Consultado em</th></tr></thead><tbody>
+          ${g.itens.map(x=>`<tr data-emp="${x.l.empresaId}" data-ob="${esc(x.l.obrigacao)}"><td class="obrErroDet" style="cursor:pointer;" title="Abrir o detalhe (tem o botão Consultar agora)">${empresaCodigoMatrizFilialHtml(x.l.empresaId, x.l.empresaNome)} <span style="font-size:11px; color:var(--accent-deep);">🔎 detalhe</span></td><td style="font-size:12px;">${esc(x.m.replace(/^Erro na consulta:\s*/,''))}</td><td style="white-space:nowrap; font-size:12px;">${x.l.situacaoDctf.consultadoEm?fmtDateHora(x.l.situacaoDctf.consultadoEm):'—'}</td></tr>`).join('')}
+          </tbody></table></div>`).join('')}
+      </div></div>`;
+    document.getElementById('obrEcacErrosVer').addEventListener('click', ev=>{
+      const lst = document.getElementById('obrEcacErrosLista'); lst.classList.toggle('hidden');
+      ev.target.textContent = lst.classList.contains('hidden') ? 'Ver erros' : 'Esconder';
+    });
+    el.querySelectorAll('.obrErroDet').forEach(td=>td.addEventListener('click', ()=>{
+      const tr = td.closest('tr'); const alvo = cont.querySelector(`tr[data-emp="${tr.dataset.emp}"][data-ob="${tr.dataset.ob}"] td.obr-det`);
+      if(alvo) alvo.click();
+    }));
+  })();
   const sitDica = (l, ob)=>{
     const s = l.situacaoDctf; if(!s) return (ob.fonte==='dctfweb'||ob.transmissaoEsocial) ? 'e-CAC: ainda não consultado' : '';
     const quando = s.consultadoEm ? ` · consultado em ${fmtDateHora(s.consultadoEm)}` : '';
@@ -18099,7 +18147,7 @@ async function obrigacoesMontar(box, setor){
         <div style="overflow-x:auto;${!linhas.length?' display:none;':''}"><table class="data-table"><thead><tr><th>Empresa</th><th>Transmitida</th><th>Enviada ao cliente</th></tr></thead><tbody>
         ${linhas.map(l=>`<tr data-emp="${l.empresaId}" data-ob="${l.obrigacao}">
           <td class="obr-det" style="cursor:pointer;" title="Ver o que foi enviado (notas/documentos, e-mail e WhatsApp)">${empresaCodigoMatrizFilialHtml(l.empresaId, l.empresaNome)} <span style="font-size:11px; color:var(--accent-deep);">🔎 detalhe</span></td>
-          <td>${badge(l.transmitida, l.transmitidaManual, l.atrasoTransmissao, 'transmitida', sitDica(l, ob))}</td>
+          <td>${badge(l.transmitida, l.transmitidaManual, l.atrasoTransmissao, 'transmitida', sitDica(l, ob))}${obrEcacErro(l)?` <span class="tag warn obrErroTag" style="cursor:pointer;" title="${esc(obrEcacErroAmigavel(obrEcacErro(l)).titulo)} — clique para ver o detalhe">⚠ ${esc(obrEcacErroAmigavel(obrEcacErro(l)).titulo)}</span>`:''}</td>
           <td>${badge(l.enviada, l.enviadaManual, l.atrasoEnvio, 'enviada')}</td>
         </tr>`).join('')}
         </tbody></table></div></div>`;
@@ -18107,6 +18155,7 @@ async function obrigacoesMontar(box, setor){
     const salvarFiltros = ()=>{ try{ localStorage.setItem('obrFiltros', JSON.stringify(OBR_FILTROS)); }catch(e){} render(); };
     cont.querySelectorAll('.obrFiltro').forEach(s=>s.addEventListener('change', ()=>{ const o = OBR_FILTROS[s.dataset.ob] = OBR_FILTROS[s.dataset.ob] || {}; o[s.dataset.k] = s.value; salvarFiltros(); }));
     cont.querySelectorAll('.obrFiltroLimpar').forEach(b=>b.addEventListener('click', ()=>{ delete OBR_FILTROS[b.dataset.ob]; salvarFiltros(); }));
+    cont.querySelectorAll('.obrErroTag').forEach(t=>t.addEventListener('click', ()=>t.closest('tr').querySelector('td.obr-det').click()));
     if(podeEditar){
       cont.querySelectorAll('[data-mark]').forEach(el=>el.addEventListener('click', async ()=>{
         const tr = el.closest('tr'); const empresaId=Number(tr.dataset.emp); const ob=tr.dataset.ob; const campo=el.dataset.mark;
@@ -18186,7 +18235,9 @@ async function obrigacaoDetalheModal(linha, ob){
             ? `<span class="tag ok">✓ Ativa (transmitida)</span> ${s.retificadora?'<span class="tag muted">retificadora</span>':''}<br>
                Transmitida em: <b>${esc(dtBr(s.transmitidaEm))}</b> · Recibo nº ${esc(s.numeroRecibo||'—')}<br>
                Origem: <b>${esc(s.origens||'—')}</b> ${s.esocial?'<span class="tag ok">eSocial ✓ folha transmitida</span>':'<span class="tag muted">sem eSocial</span>'}`
-            : `<span class="tag muted">Pendente</span> ${esc(s.mensagem||'')}`}
+            : /^Erro/.test(s.mensagem||'')
+              ? (a=>`<span class="tag warn">⚠ ${esc(a.titulo)}</span><div style="margin:4px 0;">${esc(a.texto)}</div><span class="mut" style="font-size:11.5px;">Mensagem da Receita: ${esc(s.mensagem.replace(/^Erro na consulta:\s*/,''))}</span>`)(obrEcacErroAmigavel(s.mensagem))
+              : `<span class="tag muted">Pendente</span> ${esc(s.mensagem||'')}`}
           ${s.consultadoEm?`<br><span class="mut" style="font-size:11px;">Consultado em ${esc(fmtDateHora(s.consultadoEm))}</span>`:''}
         </div></div>` : '';
       const tabDocs = d.documentos.length ? `<h4 style="margin:6px 0;">📎 Documentos anexados no Envio de Documentos</h4><div style="overflow-x:auto;"><table class="data-table"><thead><tr><th>Arquivo</th><th>Modelo</th><th>Anexado em</th><th>E-mail</th><th>WhatsApp</th></tr></thead><tbody>
