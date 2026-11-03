@@ -7647,17 +7647,29 @@ function ofRegrasDaEmpresa(empresaId: number): openFinance.RegraConciliacao[] {
   return (sqlite.prepare(`SELECT padrao, conta_contabil, historico FROM of_regras WHERE empresa_id = ? ORDER BY ordem, id`).all(empresaId) as any[])
     .map((r) => ({ padrao: r.padrao, contaContabil: r.conta_contabil || "", historico: r.historico || "" }));
 }
-// Espelha a conta bancária do Open Finance numa conta do Financeiro (cria 1x e guarda o vínculo).
+// Espelha a conta bancária do Open Finance numa conta do Financeiro. Prioridade: (1) vínculo já
+// guardado; (2) conta já cadastrada no Financeiro com o MESMO número (casa pelos dígitos) — usa a
+// existente (ex.: a "Cresol" que o escritório já tem), sem duplicar; (3) só então cria uma nova.
 function ofGarantirContaFinanceira(conta: any): number {
   if (conta.financeiro_conta_id) {
     const ok = sqlite.prepare(`SELECT 1 FROM financeiro_contas WHERE id = ? AND empresa_id = ?`).get(conta.financeiro_conta_id, conta.empresa_id);
     if (ok) return conta.financeiro_conta_id;
   }
+  const partes = String(conta.numero || "").split("/");
+  const agencia = partes.length > 1 ? partes[0].replace(/\D/g, "") : "";
+  const contaNum = (partes.length > 1 ? partes.slice(1).join("/") : partes[0] || "").trim();
+  const contaDigits = contaNum.replace(/\D/g, "");
+  const vincular = (id: number) => { sqlite.prepare(`UPDATE of_contas SET financeiro_conta_id = ? WHERE id = ?`).run(id, conta.id); conta.financeiro_conta_id = id; return id; };
+  // (2) casa com uma conta existente pelo número da conta (ignora formatação/agência).
+  if (contaDigits) {
+    const cands = sqlite.prepare(`SELECT id, numero FROM financeiro_contas WHERE empresa_id = ? AND numero IS NOT NULL AND numero != ''`).all(conta.empresa_id) as any[];
+    const hit = cands.find((c) => String(c.numero).replace(/\D/g, "") === contaDigits);
+    if (hit) return vincular(hit.id);
+  }
+  // (3) cria nova já com agência/número preenchidos.
   const nome = `${conta.banco || "Banco"} ${conta.numero || ""}`.trim();
-  const id = Number(sqlite.prepare(`INSERT INTO financeiro_contas (empresa_id, nome, tipo) VALUES (?, ?, 'banco')`).run(conta.empresa_id, nome).lastInsertRowid);
-  sqlite.prepare(`UPDATE of_contas SET financeiro_conta_id = ? WHERE id = ?`).run(id, conta.id);
-  conta.financeiro_conta_id = id;
-  return id;
+  const id = Number(sqlite.prepare(`INSERT INTO financeiro_contas (empresa_id, nome, tipo, agencia, numero) VALUES (?, ?, 'banco', ?, ?)`).run(conta.empresa_id, nome, agencia || null, contaNum || null).lastInsertRowid);
+  return vincular(id);
 }
 // Lança (ou atualiza) o título no Financeiro ao conciliar a transação — idempotente pelo vínculo
 // financeiro_id. Entrada (valor>=0) vira conta a receber paga; saída vira conta a pagar paga.
@@ -20308,12 +20320,12 @@ app.get("/api/financeiro/empresas/:empresaId/contas", blockCliente, requirePermi
 app.post("/api/financeiro/empresas/:empresaId/contas", blockCliente, requirePermissao("financeiro", "postar"), (req, res) => {
   const empresaId = Number(req.params.empresaId);
   if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
-  const { nome, tipo, saldoInicial } = req.body || {};
+  const { nome, tipo, saldoInicial, agencia, numero } = req.body || {};
   if (!nome || !String(nome).trim()) return res.status(400).json({ error: "Informe o nome da conta." });
   const tipoValido = ["banco", "caixa", "outro"].includes(tipo) ? tipo : "banco";
   const info = sqlite
-    .prepare(`INSERT INTO financeiro_contas (empresa_id, nome, tipo, saldo_inicial) VALUES (?, ?, ?, ?)`)
-    .run(empresaId, String(nome).trim(), tipoValido, saldoInicial != null ? Number(saldoInicial) : 0);
+    .prepare(`INSERT INTO financeiro_contas (empresa_id, nome, tipo, saldo_inicial, agencia, numero) VALUES (?, ?, ?, ?, ?, ?)`)
+    .run(empresaId, String(nome).trim(), tipoValido, saldoInicial != null ? Number(saldoInicial) : 0, agencia != null ? String(agencia).trim() : null, numero != null ? String(numero).trim() : null);
   res.json({ id: Number(info.lastInsertRowid) });
 });
 app.put("/api/financeiro/empresas/:empresaId/contas/:id", blockCliente, requirePermissao("financeiro", "editar"), (req, res) => {
@@ -20321,15 +20333,17 @@ app.put("/api/financeiro/empresas/:empresaId/contas/:id", blockCliente, requireP
   if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
   const existente = sqlite.prepare(`SELECT * FROM financeiro_contas WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), empresaId) as any;
   if (!existente) return res.status(404).json({ error: "Conta não encontrada." });
-  const { nome, tipo, ativo, saldoInicial } = req.body || {};
+  const { nome, tipo, ativo, saldoInicial, agencia, numero } = req.body || {};
   const tipoValido = ["banco", "caixa", "outro"].includes(tipo) ? tipo : existente.tipo;
   sqlite
-    .prepare(`UPDATE financeiro_contas SET nome=?, tipo=?, ativo=?, saldo_inicial=? WHERE id=?`)
+    .prepare(`UPDATE financeiro_contas SET nome=?, tipo=?, ativo=?, saldo_inicial=?, agencia=?, numero=? WHERE id=?`)
     .run(
       nome != null ? String(nome).trim() : existente.nome,
       tipoValido,
       ativo != null ? (ativo ? 1 : 0) : existente.ativo,
       saldoInicial != null ? Number(saldoInicial) : existente.saldo_inicial,
+      agencia != null ? String(agencia).trim() : existente.agencia,
+      numero != null ? String(numero).trim() : existente.numero,
       existente.id
     );
   res.json({ ok: true });

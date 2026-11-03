@@ -11605,12 +11605,13 @@ async function finRenderContas(basePath, containerId, podeEditar){
     </div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
-        <thead><tr><th>Nome</th><th>Tipo</th><th>Saldo inicial</th><th title="Saldo inicial + recebido - pago já baixados nesta conta + transferências">Saldo atual</th><th>Ativo</th><th></th></tr></thead>
+        <thead><tr><th>Nome</th><th>Tipo</th><th>Conta (ag./nº)</th><th>Saldo inicial</th><th title="Saldo inicial + recebido - pago já baixados nesta conta + transferências">Saldo atual</th><th>Ativo</th><th></th></tr></thead>
         <tbody>
           ${items.length? items.map(c=>`
             <tr>
               <td><b>${esc(c.nome)}</b></td>
               <td>${TIPO_LABEL[c.tipo]||c.tipo}</td>
+              <td style="white-space:nowrap;">${c.numero?`${c.agencia?esc(c.agencia)+' / ':''}${esc(c.numero)}`:'<span class="mut">—</span>'}</td>
               <td>${fmtMoney(c.saldoInicial||0)}</td>
               <td style="font-weight:600; ${c.saldoAtual<0?'color:var(--debit);':''}">${fmtMoney(c.saldoAtual||0)}</td>
               <td><span class="tag ${c.ativo?'ok':'muted'}">${c.ativo?'Ativa':'Inativa'}</span></td>
@@ -11620,7 +11621,7 @@ async function finRenderContas(basePath, containerId, podeEditar){
                 <button class="btn small" data-id="${c.id}" data-act="excluir">Excluir</button>`:''}
               </td>
             </tr>
-          `).join('') : `<tr><td colspan="6"><div class="empty-state">Nenhuma conta cadastrada — use pra indicar em qual banco/caixa cada título foi pago ou recebido.</div></td></tr>`}
+          `).join('') : `<tr><td colspan="7"><div class="empty-state">Nenhuma conta cadastrada — use pra indicar em qual banco/caixa cada título foi pago ou recebido.</div></td></tr>`}
         </tbody>
       </table>
     </div>
@@ -11717,6 +11718,11 @@ function finContaModal(basePath, item, onSaved){
         <option value="outro" ${item&&item.tipo==='outro'?'selected':''}>Outro</option>
       </select>
     </div>
+    <div class="row" style="gap:12px; flex-wrap:wrap;">
+      <div class="field" style="flex:1; min-width:120px;"><label>Agência</label><input id="mfcAgencia" value="${item?esc(item.agencia||''):''}" placeholder="Ex.: 0001"></div>
+      <div class="field" style="flex:2; min-width:160px;"><label>Número da conta</label><input id="mfcNumero" value="${item?esc(item.numero||''):''}" placeholder="Ex.: 96176-4"></div>
+    </div>
+    <p class="mut" style="font-size:11.5px; margin-top:-6px;">O número da conta faz a conciliação bancária lançar os movimentos <b>nesta</b> conta (casa pelo número, sem duplicar).</p>
     <div class="field"><label>Saldo inicial (R$)</label><input id="mfcSaldoInicial" type="number" step="0.01" value="${item?(item.saldoInicial||0):'0'}"></div>
     ${item?`<label class="checkbox-row"><input type="checkbox" id="mfcAtivo" ${item.ativo?'checked':''}> Ativa</label>`:''}
     <div class="modal-actions">
@@ -11728,7 +11734,7 @@ function finContaModal(basePath, item, onSaved){
   document.getElementById('mfcSalvar').addEventListener('click', async ()=>{
     const nome = document.getElementById('mfcNome').value.trim();
     if(!nome){ toast('Informe o nome da conta.','err'); return; }
-    const body = { nome, tipo: document.getElementById('mfcTipo').value, saldoInicial: Number(document.getElementById('mfcSaldoInicial').value)||0 };
+    const body = { nome, tipo: document.getElementById('mfcTipo').value, saldoInicial: Number(document.getElementById('mfcSaldoInicial').value)||0, agencia: document.getElementById('mfcAgencia').value.trim(), numero: document.getElementById('mfcNumero').value.trim() };
     if(item) body.ativo = document.getElementById('mfcAtivo').checked;
     try{
       if(item) await api(basePath+'/contas/'+item.id, { method:'PUT', body });
