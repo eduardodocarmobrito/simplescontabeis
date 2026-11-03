@@ -7529,13 +7529,18 @@ function dctfwebEmpresasElegiveis(escritorioId: number): number[] {
 }
 const dctfwebValidacao = new Map<number, { rodando: boolean; total: number; feitas: number; ativas: number; erros: number; periodo: string; fim?: string }>();
 async function dctfwebValidarLote(escritorioId: number, periodo: string, empresas: number[], forcar = false) {
-  const st = { rodando: true, total: 0, feitas: 0, ativas: 0, erros: 0, periodo } as any;
+  return dctfwebValidarPares(escritorioId, empresas.map((empresaId) => ({ empresaId, periodo })), forcar, periodo);
+}
+// Consulta uma lista de (empresa × competência AAAAMM) — usado pelo lote de uma competência e pela
+// busca das competências em aberto dos cards (DCTF-Web / Folha desde 07/2026). Pula o que já está Ativa.
+async function dctfwebValidarPares(escritorioId: number, pares: { empresaId: number; periodo: string }[], forcar = false, rotulo = "várias") {
+  const st = { rodando: true, total: 0, feitas: 0, ativas: 0, erros: 0, periodo: rotulo } as any;
   dctfwebValidacao.set(escritorioId, st);
   const confirmada = sqlite.prepare(`SELECT 1 FROM dctfweb_situacao WHERE empresa_id = ? AND periodo_apuracao = ? AND ativa = 1`);
-  const fila = forcar ? empresas : empresas.filter((id) => !confirmada.get(id, periodo));
+  const fila = forcar ? pares : pares.filter((x) => !confirmada.get(x.empresaId, x.periodo));
   st.total = fila.length;
   try {
-    for (const id of fila) {
+    for (const { empresaId: id, periodo } of fila) {
       try { if ((await dctfwebConsultarSituacao(escritorioId, id, periodo)).ativa) st.ativas++; }
       catch (e: any) {
         st.erros++;
@@ -7547,6 +7552,28 @@ async function dctfwebValidarLote(escritorioId: number, periodo: string, empresa
     }
   } finally { st.rodando = false; st.fim = new Date().toISOString(); }
   return st;
+}
+// Competências em aberto nos cards "DCTF-Web Não Entregue" / "Fechamento da Folha" (desde 07/2026) que
+// valem consulta no e-CAC: sem erro de procuração (precisa o cliente cadastrar antes) e, com
+// `soNaoConsultadas`, só as que NUNCA foram consultadas (backfill — cada consulta é paga).
+function dctfwebParesPendentesCards(escritorioId: number, soNaoConsultadas: boolean) {
+  const user = { escritorioId, perfil: "Administrador" };
+  const consultada = sqlite.prepare(`SELECT 1 FROM dctfweb_situacao WHERE empresa_id = ? AND periodo_apuracao = ?`);
+  const vistos = new Set<string>();
+  const pares: { empresaId: number; periodo: string }[] = [];
+  for (const ob of ["dprh_dctfweb", "dprh_folha"]) {
+    for (const it of cardObrigacaoNaoTransmitida(user, ob)) {
+      for (const c of it.competencias) {
+        const periodo = c.competencia.replace("-", "");
+        const k = it.empresaId + "|" + periodo;
+        if (vistos.has(k) || c.erro || c.manual) continue;
+        if (soNaoConsultadas && consultada.get(it.empresaId, periodo)) continue;
+        vistos.add(k);
+        pares.push({ empresaId: it.empresaId, periodo });
+      }
+    }
+  }
+  return pares;
 }
 // Rotina automática (cada consulta é paga): competência do mês anterior, só nos dias/datas da agenda do
 // escritório (dctfwebRotinaCfg), a partir da hora configurada. Dia fixo maior que o último dia do mês
@@ -7564,8 +7591,13 @@ setInterval(() => {
     if (!diaHoje || rc.ultimaData === hoje || dctfwebValidacao.get(c.escritorio_id)?.rodando) continue;
     sqlite.prepare(`INSERT INTO dctfweb_situacao_rotina (escritorio_id, ultima_data) VALUES (?, ?) ON CONFLICT(escritorio_id) DO UPDATE SET ultima_data = excluded.ultima_data`).run(c.escritorio_id, hoje);
     let py = a.ano, pm = a.mes - 1; if (pm < 1) { pm = 12; py--; }
-    dctfwebValidarLote(c.escritorio_id, `${py}${String(pm).padStart(2, "0")}`, dctfwebEmpresasElegiveis(c.escritorio_id))
+    const escId = c.escritorio_id;
+    dctfwebValidarLote(escId, `${py}${String(pm).padStart(2, "0")}`, dctfwebEmpresasElegiveis(escId))
       .then((s) => console.log(`[DCTFWeb situação] rotina ${py}/${pm}: ${s.feitas} consultadas, ${s.ativas} ativas, ${s.erros} erros.`))
+      // Depois do mês anterior: competências antigas em aberto nos cards que nunca foram consultadas
+      // (ex.: 07–09/2026 quando a consulta começou) — uma vez só cada; as já consultadas não repetem.
+      .then(() => dctfwebValidarPares(escId, dctfwebParesPendentesCards(escId, true)))
+      .then((s) => console.log(`[DCTFWeb situação] rotina (competências em aberto): ${s.feitas} consultadas, ${s.ativas} ativas, ${s.erros} erros.`))
       .catch((e) => console.error("[DCTFWeb situação] rotina:", e.message));
   }
 }, 10 * 60 * 1000);
@@ -7601,6 +7633,18 @@ app.post("/api/obrigacoes/dctfweb-validar", blockCliente, requirePermissao("obri
   if (!cfg.ativo) return res.status(400).json({ error: "Integra Contador não está ativo (Integra Contador › Configuração)." });
   const empresas = dctfwebEmpresasElegiveis(user.escritorioId);
   dctfwebValidarLote(user.escritorioId, periodo, empresas).catch((e) => console.error("[DCTFWeb situação] lote:", e.message));
+  res.json({ ok: true, ...dctfwebValidacao.get(user.escritorioId) });
+});
+// Botão nos cards "DCTF-Web Não Entregue" / "Fechamento da Folha": consulta no e-CAC as competências
+// em aberto (desde 07/2026). `previa: true` só devolve quantas consultas seriam feitas (pra confirmar o custo).
+app.post("/api/obrigacoes/dctfweb-validar-pendentes", blockCliente, requirePermissao("obrigacoes", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const soNaoConsultadas = req.body?.soNaoConsultadas !== false;
+  const pares = dctfwebParesPendentesCards(user.escritorioId, soNaoConsultadas);
+  if (req.body?.previa) return res.json({ total: pares.length, competencias: [...new Set(pares.map((x) => x.periodo))].sort() });
+  if (dctfwebValidacao.get(user.escritorioId)?.rodando) return res.status(409).json({ error: "Já existe uma validação em andamento — aguarde terminar." });
+  if (!getIntegraContadorConfig(user.escritorioId).ativo) return res.status(400).json({ error: "Integra Contador não está ativo (Integra Contador › Configuração)." });
+  dctfwebValidarPares(user.escritorioId, pares).catch((e) => console.error("[DCTFWeb situação] pendentes:", e.message));
   res.json({ ok: true, ...dctfwebValidacao.get(user.escritorioId) });
 });
 app.get("/api/obrigacoes/dctfweb-validar/status", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
@@ -21456,6 +21500,8 @@ function cardObrigacaoNaoTransmitida(user: any, obrigacaoId: string): any[] {
         rotulo: `${comp.slice(5, 7)}/${comp.slice(0, 4)}`,
         situacao: l.transmitidaManual ? "Marcado manualmente como não transmitida" : !l.situacaoDctf ? "Ainda não consultado no e-CAC" : l.situacaoDctf.ativa ? "DCTFWeb ativa, mas sem origem eSocial" : msg || "Sem declaração ativa",
         erro: !!(msg && /^Erro/.test(msg) && !l.situacaoDctf?.ativa),
+        manual: !!l.transmitidaManual,
+        naoConsultada: !l.situacaoDctf,
       });
       porEmp.set(l.empresaId, it);
     }
