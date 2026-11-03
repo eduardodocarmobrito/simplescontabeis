@@ -8977,7 +8977,7 @@ async function pageOpenFinance(){
       <div class="card" style="margin-bottom:14px;">
         <b>Plano de Contas da Domínio</b>
         <p class="mut" style="font-size:12px; margin:4px 0 10px;">Cole o plano de contas (exporte do Domínio, ou cole <b>código + descrição</b>, um por linha — separados por <code>;</code>, tab ou espaços). Serve pra buscar e indicar a conta ao classificar as transações. ${OF_PLANO.length?`<b>${OF_PLANO.length}</b> contas importadas.`:''}</p>
-        ${podeEd?`<textarea id="ofPlanoTxt" rows="5" placeholder="1.1.1.02.001;BANCO CRESOL&#10;6.1.1.01.004;TARIFAS BANCARIAS&#10;3.1.1.01.001;RECEITA DE SERVICOS" style="width:100%; font-family:monospace; font-size:12px;"></textarea>
+        ${podeEd?`<textarea id="ofPlanoTxt" class="inp" rows="5" placeholder="1.1.1.02.001;BANCO CRESOL&#10;6.1.1.01.004;TARIFAS BANCARIAS&#10;3.1.1.01.001;RECEITA DE SERVICOS" style="width:100%; font-family:monospace; font-size:12px;"></textarea>
         <div class="row" style="gap:8px; margin-top:8px; flex-wrap:wrap;">
           <button class="btn primary" id="ofPlanoImportar">Importar</button>
           ${OF_PLANO.length?`<button class="btn" id="ofPlanoLimpar">Limpar tudo</button>`:''}
@@ -8986,7 +8986,7 @@ async function pageOpenFinance(){
       <div class="card">
         <div class="row" style="justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px;">
           <b>Contas (${OF_PLANO.length})</b>
-          <input id="ofPlanoBusca" placeholder="Buscar por código ou descrição…" style="max-width:320px;">
+          <input id="ofPlanoBusca" class="inp" placeholder="Buscar por código ou descrição…" style="width:100%; max-width:320px;">
         </div>
         <div id="ofPlanoLista">${render('')}</div>
       </div>`;
@@ -9054,7 +9054,7 @@ async function pageOpenFinance(){
         </div>
         ${contasLista.length>1? `<div class="row" style="gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px;">
           <label class="mut" style="font-size:12.5px;">Conta / banco:</label>
-          <select id="ofContaFiltro" style="max-width:320px;">
+          <select id="ofContaFiltro" class="inp" style="width:100%; max-width:340px;">
             <option value="todas" ${OF_CONTA==='todas'?'selected':''}>Todas as contas (${todas.length})</option>
             ${contasLista.map(a=>{ const n=todas.filter(t=>String(t.contaId)===String(a.id)).length; return `<option value="${a.id}" ${String(OF_CONTA)===String(a.id)?'selected':''}>${esc(a.banco)} · ${esc(a.numero)} (${n})</option>`; }).join('')}
           </select>
