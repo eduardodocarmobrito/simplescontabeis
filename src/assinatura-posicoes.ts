@@ -120,9 +120,10 @@ export function casarLinhas(linhas: LinhaAssinatura[], signatarios: SignatarioPo
   return res;
 }
 
-// Posição do carimbo de assinatura: centralizado na linha, um pouco acima dela (pra não cobrir o
-// nome embaixo). ALTURA_ACIMA_PCT ≈ metade da altura do carimbo da Autentique.
-const ALTURA_ACIMA_PCT = 2.2;
+// Posição do carimbo de assinatura: sobe o carimbo pra ficar MAIS em cima da linha do que embaixo
+// (pedido do usuário — antes ficava centrado/meio pra baixo). y é medido do topo, então subtrair sobe.
+// ALTURA_ACIMA_PCT ≈ altura do carimbo da Autentique (antes era ~metade).
+const ALTURA_ACIMA_PCT = 3.8;
 export function posicaoAssinatura(l: LinhaAssinatura) {
   return {
     x: l.xCentroPct.toFixed(2),
