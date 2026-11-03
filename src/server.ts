@@ -7229,9 +7229,9 @@ const OBRIGACOES_POR_SETOR: Record<string, any[]> = {
   dprh: [
     { id: "dprh_dctfweb", label: "DCTF-Web", templates: ["DARF - DCTF-Web", "DARF-DCTF-Web"], fonte: "dctfweb", prazoTransmissao: 15, prazoEnvio: 20 },
     { id: "dprh_fgts", label: "Guia FGTS", templates: ["FGTS", "Guia FGTS Digital", "FGTS Relatorio"], fonte: "envio", prazoTransmissao: 7, prazoEnvio: 20 },
-    // Transmissão da Folha SEM leitura automática (pedido 2026-11-03): nem o anexo no Envio nem a DCTF-Web
-    // valem mais como "transmitida" — a validação vai vir direto do eSocial. Até lá é só marcação manual.
-    { id: "dprh_folha", label: "Folha de Pagamento", templates: ["Folha Mensal", "Folha de Pagamento Mensal"], fonte: "envio", transmissaoManual: true, prazoTransmissao: 5, prazoEnvio: 10 },
+    // Transmissão da Folha (pedido 2026-11-03): NÃO vale o anexo no Envio nem a guia DARF — só a DCTFWeb
+    // da competência ATIVA no e-CAC com origem eSocial (ver dctfweb_situacao / CONSRECIBO32).
+    { id: "dprh_folha", label: "Folha de Pagamento", templates: ["Folha Mensal", "Folha de Pagamento Mensal"], fonte: "envio", transmissaoEsocial: true, prazoTransmissao: 5, prazoEnvio: 10 },
   ],
   fiscal: [
     { id: "fiscal_nfse_honorarios", label: "NFS-e de Honorários (escritório)", templates: [], fonte: "nfse_honorarios", prazoTransmissao: 10, prazoEnvio: 15 },
@@ -7262,6 +7262,8 @@ app.get("/api/obrigacoes", blockCliente, requirePermissao("empresas", "visualiza
   const empresas = sqlite.prepare(`SELECT e.id, e.nome, e.cnpj FROM empresas e WHERE e.escritorio_id = ? AND e.ativo = 1`).all(user.escritorioId) as any[];
   const empNome: Record<number, any> = {}; empresas.forEach((e) => (empNome[e.id] = e));
   const temIntegraDoc = sqlite.prepare(`SELECT 1 FROM integracontador_documentos WHERE empresa_id = ? AND tipo = ? AND periodo_apuracao = ? LIMIT 1`);
+  // Situação da DCTFWeb no e-CAC (CONSRECIBO32): ativa = transmitida; origens dizem se veio do eSocial.
+  const sitDctf = sqlite.prepare(`SELECT ativa, esocial, origens, retificadora, transmitida_em as transmitidaEm, numero_recibo as numeroRecibo, mensagem, consultado_em as consultadoEm FROM dctfweb_situacao WHERE empresa_id = ? AND periodo_apuracao = ?`);
   // NFS-e de honorários do escritório (competência AAAA-MM, igual à do quadro): emitida = houve emissão
   // automática no log OU uma nota de verdade (numero_dps > 0); enviada = nota com whatsapp enviado.
   const nfseEmitidoLog = sqlite.prepare(`SELECT 1 FROM nfse_agendamento_log WHERE empresa_id = ? AND competencia = ? AND sucesso = 1 LIMIT 1`);
@@ -7304,7 +7306,10 @@ app.get("/api/obrigacoes", blockCliente, requirePermissao("empresas", "visualiza
     for (const empId of elegiveis) {
       const e = empNome[empId]; if (!e) continue;
       let transmitidaAuto = false, enviadaAuto = false, enviadaEm: string | null = null;
-      if (ob.fonte === "dctfweb") transmitidaAuto = !!temIntegraDoc.get(empId, "darf_dctfweb", periodoApuracao);
+      const sit = ob.fonte === "dctfweb" || ob.transmissaoEsocial ? (sitDctf.get(empId, periodoApuracao) as any) || null : null;
+      // DCTF-Web: transmitida = declaração ATIVA no e-CAC (recibo) — a guia DARF gerada pelo Integra
+      // (GERARGUIA31) também só existe pra declaração ativa, então continua valendo como prova.
+      if (ob.fonte === "dctfweb") transmitidaAuto = !!sit?.ativa || !!temIntegraDoc.get(empId, "darf_dctfweb", periodoApuracao);
       else if (ob.fonte === "das") transmitidaAuto = !!temIntegraDoc.get(empId, "das", periodoApuracao);
       else if (ob.fonte === "nfse_honorarios") {
         // Emissão automática ligada = já considera emitida e enviada (pedido do usuário). Senão, olha se
@@ -7314,16 +7319,16 @@ app.get("/api/obrigacoes", blockCliente, requirePermissao("empresas", "visualiza
       }
       if (envioStmt) {
         const ed = envioStmt.get(empId, ...tpls, ano, mes) as any;
-        if (ed && ed.n > 0) { transmitidaAuto = true; enviadaAuto = !!(ed.emailEnv || ed.waEnv); enviadaEm = ed.waEm || ed.emailEm || null; }
+        // Documento anexado só prova "feito" nas obrigações de fonte "envio" — DCTF-Web e Folha dependem do e-CAC.
+        if (ed && ed.n > 0) { if (ob.fonte !== "dctfweb" && !ob.transmissaoEsocial) transmitidaAuto = true; enviadaAuto = !!(ed.emailEnv || ed.waEnv); enviadaEm = ed.waEm || ed.emailEm || null; }
       }
       if (!enviadaAuto && centralStmt) {
         const ce = centralStmt.get(user.escritorioId, empId, ...tpls, compCentral) as any;
-        if (ce?.em) { enviadaAuto = true; enviadaEm = ce.em; if (ob.fonte === "envio") transmitidaAuto = true; }
+        if (ce?.em) { enviadaAuto = true; enviadaEm = ce.em; if (ob.fonte === "envio" && !ob.transmissaoEsocial) transmitidaAuto = true; }
       }
       // Proxy de transmissão: a Folha usa a DCTF-Web como sinal de que foi transmitida ao eSocial (a
       // DCTF-Web é apurada a partir do eSocial — se a guia DARF foi gerada, a folha foi transmitida).
-      if (!transmitidaAuto && ob.proxyTransmissao === "dctfweb") transmitidaAuto = !!temIntegraDoc.get(empId, "darf_dctfweb", periodoApuracao);
-      if (ob.transmissaoManual) transmitidaAuto = false;
+      if (ob.transmissaoEsocial) transmitidaAuto = !!(sit?.ativa && sit?.esocial);
       const man = manMap[empId + "|" + ob.id];
       const transmitida = man && man.transmitida != null ? !!man.transmitida : transmitidaAuto;
       const enviada = man && man.enviada != null ? !!man.enviada : enviadaAuto;
@@ -7332,6 +7337,7 @@ app.get("/api/obrigacoes", blockCliente, requirePermissao("empresas", "visualiza
         obrigacao: ob.id, obrigacaoLabel: ob.label, auto: ob.fonte !== "manual",
         transmitida, enviada,
         transmitidaManual: !!(man && man.transmitida != null), enviadaManual: !!(man && man.enviada != null),
+        situacaoDctf: sit,
         enviadaEm: man && man.enviada != null ? man.enviada_em : enviadaEm,
         prazoTransmissao: prazoT, prazoEnvio: prazoE,
         atrasoTransmissao: !transmitida && !!pT && hojeStr > pT,
@@ -7343,7 +7349,7 @@ app.get("/api/obrigacoes", blockCliente, requirePermissao("empresas", "visualiza
   res.json({
     setor,
     competencia: comp,
-    obrigacoes: obrigacoesSetor.map((o) => ({ id: o.id, label: o.label, fonte: o.fonte, proxyTransmissao: o.proxyTransmissao || null, transmissaoManual: !!o.transmissaoManual, auto: o.fonte !== "manual", prazoTransmissao: cfgMap[o.id]?.prazo_transmissao ?? o.prazoTransmissao, prazoEnvio: cfgMap[o.id]?.prazo_envio ?? o.prazoEnvio })),
+    obrigacoes: obrigacoesSetor.map((o) => ({ id: o.id, label: o.label, fonte: o.fonte, proxyTransmissao: o.proxyTransmissao || null, transmissaoEsocial: !!o.transmissaoEsocial, auto: o.fonte !== "manual", prazoTransmissao: cfgMap[o.id]?.prazo_transmissao ?? o.prazoTransmissao, prazoEnvio: cfgMap[o.id]?.prazo_envio ?? o.prazoEnvio })),
     linhas,
   });
 });
@@ -7369,6 +7375,152 @@ app.post("/api/obrigacoes/marcar", blockCliente, requirePermissao("obrigacoes", 
   const col = campo === "transmitida" ? "transmitida" : "enviada";
   sqlite.prepare(`UPDATE obrigacoes_manual SET ${col} = ?, ${col}_em = CASE WHEN ? = 1 THEN datetime('now') ELSE NULL END WHERE escritorio_id = ? AND empresa_id = ? AND competencia = ? AND obrigacao = ?`).run(valor, valor, user.escritorioId, empresaId, comp, ob);
   res.json({ ok: true });
+});
+
+// ---------- Situação da DCTFWeb no e-CAC (Integra Contador, CONSRECIBO32) ----------
+// Regra pedida (2026-11-03): DCTF-Web "Transmitida" = existe declaração da competência na situação
+// ATIVA (só ela tem recibo de entrega; "Em andamento"/sem declaração = pendente). Folha "Transmitida" =
+// declaração ativa cuja origem inclui eSocial. Cada consulta é PAGA: a rotina diária só consulta quem
+// ainda NÃO foi confirmado (ativa=1 é definitivo — não reconsulta), e o botão "Validar no e-CAC" faz o
+// mesmo sob demanda (com "forçar" só por empresa, no detalhe).
+sqlite.exec(`CREATE TABLE IF NOT EXISTS dctfweb_situacao (
+  empresa_id INTEGER NOT NULL,
+  periodo_apuracao TEXT NOT NULL,
+  ativa INTEGER NOT NULL DEFAULT 0,
+  esocial INTEGER NOT NULL DEFAULT 0,
+  origens TEXT,
+  retificadora INTEGER,
+  transmitida_em TEXT,
+  numero_recibo TEXT,
+  mensagem TEXT,
+  consultado_em TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (empresa_id, periodo_apuracao)
+)`);
+sqlite.exec(`CREATE TABLE IF NOT EXISTS dctfweb_situacao_rotina (escritorio_id INTEGER PRIMARY KEY, ultima_data TEXT)`);
+function dctfwebLerRecibo(texto: string) {
+  const t = texto.replace(/\r/g, "");
+  const per = /Período de apuração\s*(\d{2})\/(\d{4})/i.exec(t);
+  const ret = /Declaração Retificadora\s*(Sim|Não)/i.exec(t);
+  const bloco = (/Identificação da apuração de débitos([\s\S]*?)Totalização/i.exec(t) || [])[1] || "";
+  const origens = Array.from(new Set(Array.from(bloco.matchAll(/\d+\s*\/\s*([^\n]+)/g)).map((m) => m[1].trim()).filter(Boolean)));
+  const rec = /recebida[\s\S]{0,120}?em\s+(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}:\d{2}:\d{2})/i.exec(t);
+  const num = /recibo de entrega\s*(\d{6,})/i.exec(t);
+  return {
+    periodo: per ? `${per[2]}${per[1]}` : null,
+    retificadora: ret ? (/sim/i.test(ret[1]) ? 1 : 0) : null,
+    origens,
+    esocial: origens.some((o) => /esocial/i.test(o)),
+    transmitidaEm: rec ? `${rec[3]}-${rec[2]}-${rec[1]} ${rec[4]}` : null, // horário de Brasília, como no recibo
+    numeroRecibo: num ? num[1] : null,
+  };
+}
+async function dctfwebConsultarSituacao(escritorioId: number, empresaId: number, periodo: string): Promise<{ ativa: boolean; mensagem: string | null }> {
+  const cfg = getIntegraContadorConfig(escritorioId);
+  if (!cfg.ativo || !cfg.cnpj) throw new Error("Integra Contador não configurado/ativo (Integra Contador › Configuração).");
+  const emp = sqlite.prepare(`SELECT cnpj FROM empresas WHERE id = ?`).get(empresaId) as any;
+  const cnpj = String(emp?.cnpj || "").replace(/\D/g, "");
+  if (cnpj.length !== 14 && cnpj.length !== 11) throw new Error("Empresa sem CNPJ/CPF válido no cadastro.");
+  const ano = periodo.slice(0, 4), mes = periodo.slice(4, 6);
+  let r: integracontador.ReciboDctfWeb;
+  try {
+    r = await integracontador.consultarReciboDctfWeb(await obterTokenIntegraContador(cfg), cfg.cnpj, cnpj, ano, mes);
+  } catch (e: any) {
+    if (e.message !== "TOKEN_EXPIRADO") throw e;
+    integraContadorTokens.delete(escritorioId);
+    r = await integracontador.consultarReciboDctfWeb(await obterTokenIntegraContador(cfg), cfg.cnpj, cnpj, ano, mes);
+  }
+  const grava = sqlite.prepare(
+    `INSERT INTO dctfweb_situacao (empresa_id, periodo_apuracao, ativa, esocial, origens, retificadora, transmitida_em, numero_recibo, mensagem, consultado_em)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+     ON CONFLICT(empresa_id, periodo_apuracao) DO UPDATE SET ativa = excluded.ativa, esocial = excluded.esocial, origens = excluded.origens,
+       retificadora = excluded.retificadora, transmitida_em = excluded.transmitida_em, numero_recibo = excluded.numero_recibo,
+       mensagem = excluded.mensagem, consultado_em = excluded.consultado_em`
+  );
+  if (r.pdfBase64) {
+    const texto = (await require("pdf-parse")(new Uint8Array(Buffer.from(r.pdfBase64, "base64")))).text as string;
+    const d = dctfwebLerRecibo(texto);
+    if (d.periodo && d.periodo !== periodo) throw new Error(`Recibo devolvido é de outra competência (${d.periodo}).`);
+    grava.run(empresaId, periodo, 1, d.esocial ? 1 : 0, d.origens.join(", ") || null, d.retificadora, d.transmitidaEm, d.numeroRecibo, "Ativa");
+    return { ativa: true, mensagem: "Ativa" };
+  }
+  const cod = r.mensagens.map((m) => m.codigo || "").join(" ");
+  const mensagem = /MG10/.test(cod)
+    ? "Declaração em andamento (não transmitida)"
+    : /MG08|RELAT00/.test(cod)
+      ? "Nenhuma declaração transmitida (ativa) para a competência"
+      : r.mensagens.filter((m) => !/Sucesso|MSGIC01|MG02/.test(m.codigo || "")).map((m) => m.texto).join(" ") || "Sem recibo de declaração ativa";
+  grava.run(empresaId, periodo, 0, 0, null, null, null, null, mensagem);
+  return { ativa: false, mensagem };
+}
+// Empresas que entram na checagem: as do quadro DCTF-Web e/ou Folha (atribuição ativa no Envio).
+function dctfwebEmpresasElegiveis(escritorioId: number): number[] {
+  const tpls = [...new Set(OBRIGACOES_POR_SETOR.dprh.filter((o: any) => o.id === "dprh_dctfweb" || o.id === "dprh_folha").flatMap((o: any) => o.templates))];
+  return (sqlite.prepare(
+    `SELECT DISTINCT a.empresa_id as id FROM envio_atribuicoes a JOIN envio_templates t ON t.id = a.template_id JOIN empresas e ON e.id = a.empresa_id
+     WHERE a.ativo = 1 AND e.ativo = 1 AND e.escritorio_id = ? AND t.nome IN (${tpls.map(() => "?").join(",")})`
+  ).all(escritorioId, ...tpls) as any[]).map((x) => x.id);
+}
+const dctfwebValidacao = new Map<number, { rodando: boolean; total: number; feitas: number; ativas: number; erros: number; periodo: string; fim?: string }>();
+async function dctfwebValidarLote(escritorioId: number, periodo: string, empresas: number[], forcar = false) {
+  const st = { rodando: true, total: 0, feitas: 0, ativas: 0, erros: 0, periodo } as any;
+  dctfwebValidacao.set(escritorioId, st);
+  const confirmada = sqlite.prepare(`SELECT 1 FROM dctfweb_situacao WHERE empresa_id = ? AND periodo_apuracao = ? AND ativa = 1`);
+  const fila = forcar ? empresas : empresas.filter((id) => !confirmada.get(id, periodo));
+  st.total = fila.length;
+  try {
+    for (const id of fila) {
+      try { if ((await dctfwebConsultarSituacao(escritorioId, id, periodo)).ativa) st.ativas++; }
+      catch (e: any) {
+        st.erros++;
+        console.error(`[DCTFWeb situação] empresa ${id} PA ${periodo}:`, e.message);
+        sqlite.prepare(`INSERT INTO dctfweb_situacao (empresa_id, periodo_apuracao, mensagem) VALUES (?, ?, ?)
+          ON CONFLICT(empresa_id, periodo_apuracao) DO UPDATE SET mensagem = CASE WHEN ativa = 1 THEN mensagem ELSE excluded.mensagem END, consultado_em = datetime('now')`).run(id, periodo, `Erro na consulta: ${String(e.message).slice(0, 200)}`);
+      }
+      st.feitas++;
+    }
+  } finally { st.rodando = false; st.fim = new Date().toISOString(); }
+  return st;
+}
+// Rotina diária (a partir das 07:00 de Brasília): competência do mês anterior. Dias 1–20 todo dia;
+// depois disso a cada 3 dias (quem não transmitiu até lá raramente muda de um dia pro outro).
+setInterval(() => {
+  const a = agoraBrasilia();
+  if (a.hora < 7) return;
+  const hoje = `${a.ano}-${String(a.mes).padStart(2, "0")}-${String(a.dia).padStart(2, "0")}`;
+  if (a.dia > 20 && a.dia % 3 !== 0) return;
+  const cfgs = sqlite.prepare(`SELECT escritorio_id FROM integracontador_config WHERE ativo = 1`).all() as any[];
+  for (const c of cfgs) {
+    const r = sqlite.prepare(`SELECT ultima_data FROM dctfweb_situacao_rotina WHERE escritorio_id = ?`).get(c.escritorio_id) as any;
+    if (r?.ultima_data === hoje || dctfwebValidacao.get(c.escritorio_id)?.rodando) continue;
+    sqlite.prepare(`INSERT INTO dctfweb_situacao_rotina (escritorio_id, ultima_data) VALUES (?, ?) ON CONFLICT(escritorio_id) DO UPDATE SET ultima_data = excluded.ultima_data`).run(c.escritorio_id, hoje);
+    let py = a.ano, pm = a.mes - 1; if (pm < 1) { pm = 12; py--; }
+    dctfwebValidarLote(c.escritorio_id, `${py}${String(pm).padStart(2, "0")}`, dctfwebEmpresasElegiveis(c.escritorio_id))
+      .then((s) => console.log(`[DCTFWeb situação] rotina ${py}/${pm}: ${s.feitas} consultadas, ${s.ativas} ativas, ${s.erros} erros.`))
+      .catch((e) => console.error("[DCTFWeb situação] rotina:", e.message));
+  }
+}, 20 * 60 * 1000);
+// "Validar no e-CAC" (quadro Obrigações do Mês): roda em segundo plano; a tela acompanha pelo /status.
+app.post("/api/obrigacoes/dctfweb-validar", blockCliente, requirePermissao("obrigacoes", "editar"), async (req, res) => {
+  const user = (req as any).user;
+  const comp = String(req.body?.competencia || "");
+  const mm = comp.match(/^(\d{4})-(\d{2})$/);
+  if (!mm) return res.status(400).json({ error: "Competência inválida." });
+  const periodo = `${mm[1]}${mm[2]}`;
+  const empresaId = Number(req.body?.empresaId) || null;
+  if (empresaId) {
+    if (!podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+    try { return res.json({ ok: true, ...(await dctfwebConsultarSituacao(user.escritorioId, empresaId, periodo)) }); }
+    catch (e: any) { return res.status(502).json({ error: e.message }); }
+  }
+  if (dctfwebValidacao.get(user.escritorioId)?.rodando) return res.status(409).json({ error: "Já existe uma validação em andamento — aguarde terminar." });
+  const cfg = getIntegraContadorConfig(user.escritorioId);
+  if (!cfg.ativo) return res.status(400).json({ error: "Integra Contador não está ativo (Integra Contador › Configuração)." });
+  const empresas = dctfwebEmpresasElegiveis(user.escritorioId);
+  dctfwebValidarLote(user.escritorioId, periodo, empresas).catch((e) => console.error("[DCTFWeb situação] lote:", e.message));
+  res.json({ ok: true, ...dctfwebValidacao.get(user.escritorioId) });
+});
+app.get("/api/obrigacoes/dctfweb-validar/status", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
+  res.json(dctfwebValidacao.get((req as any).user.escritorioId) || { rodando: false });
 });
 
 // ================= Open Finance / Conciliação bancária =================
@@ -16596,6 +16748,9 @@ app.get("/api/obrigacoes/doc-detalhe", blockCliente, requirePermissao("empresas"
     empresaNome: emp?.nome || "", competencia: comp, obrigacao: ob.label,
     emails: emailContatosDeEmpresas(idsContato), whatsapps: whatsappContatosDeEmpresas(idsContato).map((w) => w.telefone),
     guiaIntegra, documentos, envios, enviosSemCompetencia,
+    situacaoDctf: ob.fonte === "dctfweb" || ob.transmissaoEsocial
+      ? (sqlite.prepare(`SELECT ativa, esocial, origens, retificadora, transmitida_em as transmitidaEm, numero_recibo as numeroRecibo, mensagem, consultado_em as consultadoEm FROM dctfweb_situacao WHERE empresa_id = ? AND periodo_apuracao = ?`).get(empresaId, `${mm[1]}${mm[2]}`) as any) || { naoConsultado: true }
+      : null,
   });
 });
 // Nome de exibição pro arquivo baixado: "Tomador - NFS-e Nº <número>" — usa o número da NFS-e (do

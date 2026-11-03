@@ -519,10 +519,18 @@ export async function consultarMensagensCaixaPostalNaoLidas(token: TokenIntegraC
     };
   });
 }
-// idServico "CONSRECIBO32" ("Consultar o Recibo da Declaração") também confirmado contra o catálogo
-// oficial (Produção), mas o formato exato de "dados" não foi verificado contra um exemplo real —
-// mantido como estava (não usado pela busca automática; gerarGuiaDctfWeb acima não depende dele).
-export async function consultarDctfWeb(token: TokenIntegraContador, contratanteCnpj: string, cnpjEmpresa: string, periodoApuracao: string): Promise<any> {
+// CONSRECIBO32 ("Consultar Recibo de Transmissão") — testado ao vivo em produção 2026-11-03 (MSM,
+// PA 09/2026 e 10/2026). Só devolve o recibo (PDF) de declaração TRANSMITIDA (situação Ativa); sem
+// numeroReciboEntrega usa a mais recente. Sem declaração ativa NÃO lança erro: volta HTTP 200 com
+// mensagens de negócio — MG08 "Não foi encontrada Declaração com os dados informados", RELAT00 "Não
+// foi encontrada declaração ativa", MG10 "A declaração mais recente está na situação Em Andamento".
+// O PDF traz período, "Declaração Retificadora Sim/Não", as origens ("Identificação da apuração de
+// débitos": "<nº> / eSocial", "/ Reinf CP"...), data/hora de recebimento e nº do recibo (pág. 2).
+export interface ReciboDctfWeb {
+  pdfBase64: string | null;
+  mensagens: { codigo: string; texto: string }[];
+}
+export async function consultarReciboDctfWeb(token: TokenIntegraContador, contratanteCnpj: string, cnpjEmpresa: string, anoPA: string, mesPA: string): Promise<ReciboDctfWeb> {
   const r = await chamarServico(token, {
     base: "Consultar",
     contratanteCnpj,
@@ -530,9 +538,9 @@ export async function consultarDctfWeb(token: TokenIntegraContador, contratanteC
     idSistema: "DCTFWEB",
     idServico: "CONSRECIBO32",
     versaoSistema: "1.0",
-    dados: { periodoApuracao },
+    dados: { categoria: "GERAL_MENSAL", anoPA, mesPA },
   });
-  return r.dados;
+  return { pdfBase64: r.dados?.PDFByteArrayBase64 || null, mensagens: r.mensagens || [] };
 }
 
 // ===================== PARCSN (Integra Parcelamento — Simples Nacional ordinário) — confirmado na
