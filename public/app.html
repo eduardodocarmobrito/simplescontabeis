@@ -1187,6 +1187,37 @@ function cnpjValido(v){
   if(calc(c.slice(0,12))!==Number(c[12])) return false;
   return calc(c.slice(0,13))===Number(c[13]);
 }
+// Trava de CPF/CNPJ usada em TODO campo de documento: confere a quantidade de dígitos e o dígito
+// verificador. tipo: 'cpf' | 'cnpj' | 'ambos' (decide pela quantidade). Vazio passa — a obrigatoriedade
+// é checada por quem chama. Retorna a mensagem de erro, ou null se estiver ok.
+function erroDocumentoBR(valor, tipo){
+  const d = String(valor||'').replace(/\D/g,'');
+  if(!d) return null;
+  const dv = '— o dígito verificador (2 últimos números) não confere';
+  if(tipo==='cpf' || (tipo==='ambos' && d.length===11)){
+    if(d.length!==11) return `CPF precisa de 11 dígitos (tem ${d.length})`;
+    return cpfValido(d) ? null : `CPF inválido ${dv}`;
+  }
+  if(tipo==='cnpj' || (tipo==='ambos' && d.length===14)){
+    if(d.length!==14) return `CNPJ precisa de 14 dígitos (tem ${d.length})`;
+    return cnpjValido(d) ? null : `CNPJ inválido ${dv}`;
+  }
+  return `CPF tem 11 dígitos e CNPJ tem 14 (tem ${d.length})`;
+}
+// Bloqueia o salvar: pinta de vermelho, foca e avisa. Retorna false se o documento estiver inválido.
+function travaDocumentoOk(el, tipo, rotulo){
+  if(!el) return true;
+  const erro = erroDocumentoBR(el.value, tipo);
+  el.style.borderColor = erro ? 'var(--debit)' : '';
+  if(erro){ el.focus(); toast(`${rotulo}: ${erro}. Corrija antes de salvar.`,'err'); }
+  return !erro;
+}
+// Aviso visual ao sair do campo (borda vermelha + dica no mouse), antes mesmo de clicar em Salvar.
+function ligarTravaDocumento(el, tipo){
+  if(!el) return;
+  el.addEventListener('blur', ()=>{ const erro = erroDocumentoBR(el.value, tipo); el.style.borderColor = erro ? 'var(--debit)' : ''; el.title = erro || ''; });
+  el.addEventListener('input', ()=>{ el.style.borderColor = ''; el.title = ''; });
+}
 // CEP no formato 00.000-000 (ex.: 68.552-675). Valor com outro número de dígitos volta como estava.
 function fmtCep(v){
   const d = String(v==null?'':v).replace(/[^0-9]/g,'');
@@ -4392,10 +4423,14 @@ function empresaModal(e){
       status.textContent = err.message;
     }
   });
+  ligarTravaDocumento(_empCnpjEl, 'ambos');
+  ligarTravaDocumento(_empCpfRepEl, 'cpf');
   document.getElementById('empCancel').addEventListener('click', closeModal);
   document.getElementById('empSalvar').addEventListener('click', async ()=>{
     const nome=document.getElementById('empNome').value.trim();
     if(!nome){ toast('Informe o nome.','err'); return; }
+    if(!travaDocumentoOk(document.getElementById('empCnpj'),'ambos','CNPJ/CPF')) return;
+    if(!travaDocumentoOk(document.getElementById('empCpfRepresentante'),'cpf','CPF do representante legal')) return;
     const body = {
       nome,
       cnpj: document.getElementById('empCnpj').value.replace(/[^0-9]/g,''),
@@ -7330,6 +7365,7 @@ async function renderNfseEmitir(){
     NFSE_RASCUNHO_ID = null;
     renderNfseEmitir();
   });
+  ligarTravaDocumento(document.getElementById('nfseEmiDocTomador'), 'ambos');
   document.getElementById('nfseEmiDocTomador').addEventListener('input', async e=>{
     const doc = e.target.value.replace(/[^0-9]/g,'').slice(0,14);
     e.target.value = formatarDocumentoBR(doc);
@@ -7406,6 +7442,7 @@ async function renderNfseEmitir(){
   document.getElementById('btnSalvarNfse').addEventListener('click', async ()=>{
     const body = nfseLerFormulario();
     if(!body.tomador.documento || !body.tomador.nome){ toast('Preencha o documento e o nome do tomador.','err'); return; }
+    if(!travaDocumentoOk(document.getElementById('nfseEmiDocTomador'),'ambos','CPF/CNPJ do tomador')) return;
     if(!body.servico.descricao || !body.servico.valor || !body.servico.competencia){ toast('Preencha a descrição, o valor e a competência.','err'); return; }
     try{
       if(NFSE_RASCUNHO_ID){
@@ -7423,6 +7460,7 @@ async function renderNfseEmitir(){
     const resultado = document.getElementById('nfseEmiResultado');
     const body = nfseLerFormulario();
     if(!body.tomador.documento || !body.tomador.nome){ toast('Preencha o documento e o nome do tomador.','err'); return; }
+    if(!travaDocumentoOk(document.getElementById('nfseEmiDocTomador'),'ambos','CPF/CNPJ do tomador')) return;
     if(!body.servico.descricao || !body.servico.valor || !body.servico.competencia){ toast('Preencha a descrição, o valor e a competência.','err'); return; }
     resultado.innerHTML = `<div class="empty-state">Enviando ao Sistema Nacional NFS-e…</div>`;
     try{
@@ -9362,7 +9400,9 @@ async function pageIntegraContador(deepLinkEmpresaId){
       </div>
     `;
     if(!podeEditar) body.querySelectorAll('input').forEach(el=>el.disabled=true);
+    if(podeEditar) ligarTravaDocumento(document.getElementById('icCnpj'), 'cnpj');
     if(podeEditar) document.getElementById('btnIcSalvarConfig').addEventListener('click', async (ev)=>{
+      if(!travaDocumentoOk(document.getElementById('icCnpj'),'cnpj','CNPJ do escritório')) return;
       const btn = ev.target; btn.disabled = true; btn.textContent = 'Salvando…';
       try{
         const fd = new FormData();
@@ -9989,6 +10029,7 @@ async function renderMinhaNfseEmitir(){
   }
   ligarMascaraMoeda(document.getElementById('mnfEmiValor'));
   ligarMascaraCep(document.getElementById('mnfEmiCep'));
+  ligarTravaDocumento(document.getElementById('mnfEmiDocTomador'), 'ambos');
   document.getElementById('mnfEmiDocTomador').addEventListener('input', async e=>{
     const doc = e.target.value.replace(/[^0-9]/g,'').slice(0,14);
     e.target.value = formatarDocumentoBR(doc);
@@ -10063,6 +10104,7 @@ async function renderMinhaNfseEmitir(){
   document.getElementById('btnSalvarMinhaNfse').addEventListener('click', async ()=>{
     const body = lerFormulario();
     if(!body.tomador.documento || !body.tomador.nome){ toast('Preencha o documento e o nome do tomador.','err'); return; }
+    if(!travaDocumentoOk(document.getElementById('mnfEmiDocTomador'),'ambos','CPF/CNPJ do tomador')) return;
     if(!body.servico.descricao || !body.servico.valor || !body.servico.competencia){ toast('Preencha a descrição, o valor e a competência.','err'); return; }
     try{
       if(NFSE_RASCUNHO_ID){
@@ -10080,6 +10122,7 @@ async function renderMinhaNfseEmitir(){
     const resultado = document.getElementById('mnfEmiResultado');
     const body = lerFormulario();
     if(!body.tomador.documento || !body.tomador.nome){ toast('Preencha o documento e o nome do tomador.','err'); return; }
+    if(!travaDocumentoOk(document.getElementById('mnfEmiDocTomador'),'ambos','CPF/CNPJ do tomador')) return;
     if(!body.servico.descricao || !body.servico.valor || !body.servico.competencia){ toast('Preencha a descrição, o valor e a competência.','err'); return; }
     resultado.innerHTML = `<div class="empty-state">Enviando ao Sistema Nacional NFS-e…</div>`;
     try{
@@ -11926,12 +11969,14 @@ function finCadastroModal(basePath, tipoDefault, item, onSaved){
   `, '480px');
   const docEl = document.getElementById('cadDoc');
   docEl.addEventListener('input', ()=>{ docEl.value = formatarDocumentoBR(docEl.value.replace(/\D/g,'').slice(0,14)); });
+  ligarTravaDocumento(docEl, 'ambos');
   document.getElementById('cadCancel').addEventListener('click', closeModal);
   document.getElementById('cadSalvar').addEventListener('click', async ()=>{
     const nome = document.getElementById('cadNome').value.trim();
     if(!nome){ toast('Informe o nome.','err'); return; }
     const tipos = [...document.querySelectorAll('.cadTipoChk:checked')].map(c=>c.value);
     if(!tipos.length){ toast('Marque ao menos um tipo (Cliente/Fornecedor/Funcionário).','err'); return; }
+    if(!travaDocumentoOk(docEl,'ambos','CPF/CNPJ')) return;
     const body = {
       tipos,
       nome,
@@ -12921,11 +12966,11 @@ function validarDrwCampos(){
     if(esperado){
       let erro = null;
       if(dig.length!==esperado) erro = `${rotulo} precisa de ${esperado} dígitos (tem ${dig.length})`;
-      else if(checagem && !checagem(dig)) erro = `${rotulo} inválido — confira os números`;
+      else if(checagem && !checagem(dig)) erro = `${rotulo} inválido — o dígito verificador (2 últimos números) não confere`;
       if(erro){
         inp.style.borderColor = 'var(--debit)';
         inp.focus();
-        toast(`Campo "${chave}" com formato inválido — ${erro}. Corrija antes de salvar.`,'err');
+        toast(`Campo "${chave}": ${erro}. Corrija antes de salvar.`,'err');
         return false;
       }
     }
@@ -17183,10 +17228,12 @@ function escritorioModal(esc_){
       <button class="btn primary" id="escSalvar">Salvar</button>
     </div>
   `);
+  ligarTravaDocumento(document.getElementById('escCnpj'), 'cnpj');
   document.getElementById('escCancel').addEventListener('click', closeModal);
   document.getElementById('escSalvar').addEventListener('click', async ()=>{
     const nome = document.getElementById('escNome').value.trim();
     if(!nome){ toast('Informe o nome do escritório.','err'); return; }
+    if(!travaDocumentoOk(document.getElementById('escCnpj'),'cnpj','CNPJ')) return;
     const body = {
       nome,
       cnpj: document.getElementById('escCnpj').value.trim() || null,
@@ -19240,7 +19287,9 @@ async function renderCfgAssinaturaPlataforma(box){
     </div>
     <div id="cfgAssinaturaContent"></div>
   `;
+  ligarTravaDocumento(document.getElementById('cfgFatCnpj'), 'cnpj');
   document.getElementById('btnSalvarFaturamento').addEventListener('click', async ()=>{
+    if(!travaDocumentoOk(document.getElementById('cfgFatCnpj'),'cnpj','CNPJ')) return;
     try{
       await api('/escritorio/dados-faturamento', { method:'PUT', body:{
         nome: document.getElementById('cfgFatNome').value.trim(),
@@ -20278,6 +20327,7 @@ async function renderCfgEmailSmtp(box){
     document.getElementById('btnAddDoc').addEventListener('click', async ()=>{
       const documento = document.getElementById('ccDocumento').value.trim();
       if(!documento){ toast('Informe o CNPJ ou CPF.','err'); return; }
+      if(!travaDocumentoOk(document.getElementById('ccDocumento'),'ambos','CNPJ/CPF')) return;
       try{ await api('/empresas/'+empresaId+'/documentos', { method:'POST', body:{ documento } }); carregarContatosEDocs(); }
       catch(e){ toast(e.message,'err'); }
     });
