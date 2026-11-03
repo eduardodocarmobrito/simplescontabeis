@@ -21,6 +21,7 @@ import { localizarLinhasAssinatura, casarLinhas, posicaoAssinatura } from "./ass
 import { MODELOS_CONTRATO_PRONTOS } from "./contrato-modelos-prontos";
 import * as reformaAuditoria from "./reforma-auditoria";
 import { gerarPdfRelatorioReforma } from "./reforma-relatorio";
+import { gerarPdfFichasReforma, FornecedorFicha } from "./reforma-fichas";
 import * as danfse from "./danfse";
 import * as whatsapp from "./whatsapp";
 import * as nfe from "./nfe";
@@ -10813,6 +10814,48 @@ async function reformaEnviarPdf(res: any, escritorioId: number, empresaId: numbe
     res.status(500).json({ error: `Não consegui gerar o relatório: ${e.message}` });
   }
 }
+// Fichas de conferência (Referências + Apêndice A em branco + uma ficha pré-preenchida por fornecedor
+// com pendência) — o material de rotina do setor de compras do cliente.
+async function reformaEnviarFichas(res: any, escritorioId: number, empresaId: number, q: any) {
+  const { de, ate } = reformaPeriodo(q);
+  try {
+    const d = reformaCalcularAuditoria(escritorioId, empresaId, de, ate);
+    const emp = sqlite.prepare(`SELECT nome, cnpj, inscricao_estadual FROM empresas WHERE id = ?`).get(empresaId) as any;
+    const valorDoc = sqlite.prepare(`SELECT valor_total FROM nfe_documentos WHERE id = ?`);
+    const sev: Record<string, number> = { alta: 0, media: 1, baixa: 2, info: 3 };
+    const fichas: FornecedorFicha[] = d.fornecedores
+      .filter((f: any) => f.alta || f.media || f.regime !== "regular")
+      .slice(0, 40)
+      .map((f: any) => {
+        const achados = d.achados.filter((a: any) => a.cnpj === f.cnpj);
+        const principal = [...achados].sort((a: any, b: any) => sev[a.severidade] - sev[b.severidade] || String(b.dhEmi).localeCompare(String(a.dhEmi)))[0];
+        const v = principal ? (valorDoc.get(principal.docId) as any) : null;
+        return {
+          cnpj: f.cnpj, nome: f.nome, uf: f.uf, regime: f.regime, regimeLabel: f.regimeLabel, recomendacao: f.recomendacao,
+          nota: principal ? { numero: principal.numero, serie: principal.serie, dhEmi: principal.dhEmi, valor: v ? v.valor_total : null } : null,
+          temGrupo: f.pctComGrupo > 0, achados,
+        };
+      });
+    const pdf = await gerarPdfFichasReforma({ nome: emp.nome, cnpj: emp.cnpj, ie: emp.inscricao_estadual || "", regimeLabel: d.empresa.regimeLabel }, fichas, contratos.timbradoDataUri());
+    const nome = `Fichas de conferencia - ${String(emp.nome || "").replace(/[^\w\- ]/g, "").slice(0, 60)}.pdf`;
+    res.set("Content-Type", "application/pdf");
+    res.set("Content-Disposition", `attachment; filename="${nome}"`);
+    res.send(pdf);
+  } catch (e: any) {
+    res.status(500).json({ error: `Não consegui gerar as fichas: ${e.message}` });
+  }
+}
+app.get("/api/reforma/auditoria/fichas", blockCliente, requirePermissao("reforma", "visualizar"), async (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.query.empresaId);
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  await reformaEnviarFichas(res, user.escritorioId, empresaId, req.query);
+});
+app.get("/api/reforma/minha-empresa/auditoria/fichas", requireCliente, async (req, res) => {
+  const user = (req as any).user;
+  if (!user.empresaId) return res.status(400).json({ error: "Nenhuma empresa vinculada." });
+  await reformaEnviarFichas(res, user.escritorioId, user.empresaId, req.query);
+});
 app.get("/api/reforma/auditoria/pdf", blockCliente, requirePermissao("reforma", "visualizar"), async (req, res) => {
   const user = (req as any).user;
   const empresaId = Number(req.query.empresaId);

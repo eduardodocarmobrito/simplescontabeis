@@ -8631,6 +8631,7 @@ function rtPainelHtml(d, urlPdf){
       </div>
       <div class="row" style="gap:8px; flex-wrap:wrap;">
         <button class="btn" id="rtCsv">⬇ Evidências (CSV)</button>
+        <button class="btn" id="rtFichas" title="Referências + ficha de conferência de NF-e de compra (em branco e pré-preenchida por fornecedor com pendência), com o timbrado">📋 Fichas de conferência (PDF)</button>
         <button class="btn primary" id="rtPdf">📄 Relatório para o cliente (PDF)</button>
       </div>
     </div>
@@ -8809,6 +8810,17 @@ function rtLigarPainel(painel, d, urlPdf){
     const linhas = rtAchadosFiltrados(d).map(a=>[RT_SEV[a.severidade].label,a.regra,a.titulo,a.fornecedor,a.cnpj,a.numero,a.serie,a.dhEmi,a.nItem||'',a.detalhe,a.evidencia,a.esperado||'',a.recomendacao,a.chave].map(q).join(';'));
     const blob = new Blob(['﻿'+[cols.map(q).join(';'),...linhas].join('\r\n')], { type:'text/csv;charset=utf-8' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `auditoria-reforma-${(d.empresa.nome||'empresa').replace(/[^\w]+/g,'-').slice(0,40)}.csv`; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 2000);
+  });
+  document.getElementById('rtFichas').addEventListener('click', async ()=>{
+    const btn = document.getElementById('rtFichas'), orig = btn.textContent;
+    btn.disabled = true; btn.textContent = 'Gerando fichas…';
+    try{
+      const resp = await fetch(urlPdf.replace('/auditoria/pdf', '/auditoria/fichas'), { credentials:'include' });
+      if(!resp.ok){ let msg='Erro '+resp.status; try{ const j=await resp.json(); if(j.error) msg=j.error; }catch(e){} throw new Error(msg); }
+      const blob = await resp.blob();
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `Fichas de conferencia - ${(d.empresa.nome||'').slice(0,50)}.pdf`; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 4000);
+    }catch(e){ toast(e.message,'err'); }
+    finally{ btn.disabled = false; btn.textContent = orig; }
   });
   document.getElementById('rtPdf').addEventListener('click', async ()=>{
     const btn = document.getElementById('rtPdf'), orig = btn.textContent;
