@@ -21455,6 +21455,7 @@ const CONTRATO_EMPRESA_CAMPO_SQL: Record<string, string> = {
   inscricaoMunicipal: "inscricao_municipal",
   nomeRepresentanteLegal: "nome_representante_legal",
   cpfRepresentanteLegal: "cpf_representante_legal",
+  telefone: "telefone",
 };
 // Modelos prontos (texto + campos) que o escritório pode carregar em "Novo modelo" e salvar como seu.
 app.get("/api/contratos/modelos-prontos", blockCliente, requirePermissao("contratos", "visualizar"), (_req, res) => {
@@ -21556,6 +21557,15 @@ app.post("/api/contratos", blockCliente, requirePermissao("contratos", "postar")
     // Auto-preenche da empresa quando o campo veio vazio da tela.
     if (campo.autoPreencherDe && CONTRATO_EMPRESA_CAMPO_SQL[campo.autoPreencherDe] && (dadosFinal[campo.chave] === undefined || dadosFinal[campo.chave] === "")) {
       dadosFinal[campo.chave] = empresa[CONTRATO_EMPRESA_CAMPO_SQL[campo.autoPreencherDe]] ?? "";
+      if (campo.autoPreencherDe === "telefone" && dadosFinal[campo.chave]) {
+        const t = String(dadosFinal[campo.chave]).replace(/\D/g, "");
+        if (t.length === 11) dadosFinal[campo.chave] = t.replace(/(\d{2})(\d{5})(\d{4})/, "($1) $2-$3");
+        else if (t.length === 10) dadosFinal[campo.chave] = t.replace(/(\d{2})(\d{4})(\d{4})/, "($1) $2-$3");
+      }
+    }
+    // "Data do contrato (assinatura)": a mesma data do fecho do contrato ({{dia}} de {{mes}} de {{ano}}).
+    if (campo.autoPreencherDe === "dataContrato" && (dadosFinal[campo.chave] === undefined || dadosFinal[campo.chave] === "")) {
+      dadosFinal[campo.chave] = `${String(agoraContrato.dia).padStart(2, "0")}/${String(agoraContrato.mes).padStart(2, "0")}/${agoraContrato.ano}`;
     }
     // CNPJ/CPF/CEP saem COM máscara no documento — formata venha de onde vier: auto-preenchido pelo
     // servidor OU já enviado preenchido pela tela (que manda só dígitos). Formatador é idempotente

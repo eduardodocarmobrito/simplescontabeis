@@ -13504,7 +13504,10 @@ const CONTRATO_AUTO_PREENCHER = [
   ['', '— Digitar manualmente —'], ['nome','Nome da empresa'], ['cnpj','CNPJ'],
   ['endereco','Endereço'], ['cidade','Cidade'], ['uf','UF'], ['cep','CEP'], ['email','E-mail'], ['inscricaoMunicipal','Inscrição municipal'],
   ['nomeRepresentanteLegal','Nome do representante legal'], ['cpfRepresentanteLegal','CPF do representante legal'],
+  ['telefone','Telefone'], ['dataContrato','Data do contrato (assinatura)'], ['listaEmpresas','Lista de empresas (Anexo I)'],
 ];
+// Opções que NÃO são dados do cadastro da empresa do contrato (vão pro quadro "Preenchimento do escritório").
+const CONTRATO_AUTO_NAO_EMPRESA = ['dataContrato','listaEmpresas'];
 const MESES_PT_EXTENSO_JS = ['janeiro','fevereiro','março','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro'];
 let CONTRATOS_TAB='contratos';
 async function pageContratos(){
@@ -13653,7 +13656,9 @@ function tipoDocCampo(chave){
 }
 // Anexo de empresas terceirizadas (modelo de Terceirização): lista de empresas da carteira com os
 // setores terceirizados e o valor mensal de cada setor. Guardado como JSON no próprio campo.
-function campoEhAnexoTerceirizacao(chave){ return chave==='anexo_empresas_terceirizadas'; }
+// Campo-anexo: a chave padrão do modelo pronto OU qualquer campo marcado "Lista de empresas (Anexo I)".
+let CAMPOS_ANEXO_EXTRA = new Set();
+function campoEhAnexoTerceirizacao(chave){ return chave==='anexo_empresas_terceirizadas' || CAMPOS_ANEXO_EXTRA.has(chave); }
 const SETORES_TERCEIRIZACAO = [['fiscal','Fiscal'],['contabil','Contábil'],['folha','Folha / DP']];
 function campoEhCep(chave){ return chave==='CEP'; }
 function campoEhMoeda(chave){ return /valor/i.test(chave); }
@@ -13878,14 +13883,15 @@ async function abrirContratoDrawer(id){
     api('/contratos/servicos-catalogo?ativos=1').then(r=>r.items).catch(()=>[]),
   ]);
   const campos = c.modeloCampos || [];
+  CAMPOS_ANEXO_EXTRA = new Set(campos.filter(f=>f.autoPreencherDe==='listaEmpresas').map(f=>f.chave));
   const temAnexoTerc = campos.some(f=>campoEhAnexoTerceirizacao(f.chave));
   const empresasAnexo = temAnexoTerc ? await api('/empresas').then(r=>r.items||[]).catch(()=>[]) : [];
   const dados = c.dadosPreenchidos || {};
-  const camposEmpresa = campos.filter(f=>f.autoPreencherDe);
+  const camposEmpresa = campos.filter(f=>f.autoPreencherDe && !CONTRATO_AUTO_NAO_EMPRESA.includes(f.autoPreencherDe));
   // /test[eu]munha/ tolera a grafia com erro "testumunha" (u no lugar de e) que aparece em modelos
   // reais — senão o CPF da testemunha com essa chave caía no quadro "Preenchimento do escritório".
   const camposTestemunhas = campos.filter(f=>!f.autoPreencherDe && /test[eu]munha/i.test(f.chave));
-  const camposEscritorio = campos.filter(f=>!f.autoPreencherDe && !/test[eu]munha/i.test(f.chave));
+  const camposEscritorio = campos.filter(f=>(!f.autoPreencherDe || CONTRATO_AUTO_NAO_EMPRESA.includes(f.autoPreencherDe)) && !/test[eu]munha/i.test(f.chave));
   openDrawer(`
     <div class="drawer-header">
       <h3>${esc(c.titulo)}</h3>
@@ -13993,7 +13999,7 @@ async function abrirContratoDrawer(id){
       const hidden = document.querySelector('.drwCampo[data-chave="'+wrap.dataset.grupo+'"]');
       if(hidden) setupMultiSelectServicos(wrap, catalogoServicos, hidden);
     });
-    const anexoHidden = document.querySelector('.drwCampo[data-chave="anexo_empresas_terceirizadas"]');
+    const anexoHidden = [...document.querySelectorAll('.drwCampo')].find(i=>campoEhAnexoTerceirizacao(i.dataset.chave));
     if(anexoHidden) setupAnexoTerceirizacao(anexoHidden, empresasAnexo);
     document.getElementById('drwAplicarCampos').addEventListener('click', async ()=>{
       if(!validarDrwCampos()) return;
@@ -14005,6 +14011,10 @@ async function abrirContratoDrawer(id){
       if(!novosDados['dia']) novosDados['dia'] = String(hoje.getDate());
       if(!novosDados['mes']) novosDados['mes'] = MESES_PT_EXTENSO_JS[hoje.getMonth()];
       if(!novosDados['ano']) novosDados['ano'] = String(hoje.getFullYear());
+      // "Data do contrato (assinatura)" vazio → data de hoje (dd/mm/aaaa), igual ao fecho do contrato.
+      campos.filter(f=>f.autoPreencherDe==='dataContrato').forEach(f=>{
+        if(!novosDados[f.chave]){ novosDados[f.chave] = `${String(hoje.getDate()).padStart(2,'0')}/${String(hoje.getMonth()+1).padStart(2,'0')}/${hoje.getFullYear()}`; const el = document.querySelector('.drwCampo[data-chave="'+f.chave+'"]'); if(el) el.value = novosDados[f.chave]; }
+      });
       // Soma automática: quando os serviços têm valor por item (2+), o honorário TOTAL é a soma deles —
       // sobrescreve {{valor_honorário}} e força recalcular o extenso a partir da soma.
       const servChave = Object.keys(novosDados).find(k=>campoEhServicos(k));
