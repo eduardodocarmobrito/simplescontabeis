@@ -31,6 +31,7 @@ import * as nfe from "./nfe";
 import * as cndRedencao from "./cnd-redencao";
 import * as nfePdf from "./nfe-pdf";
 import * as ofx from "./ofx";
+import * as openFinance from "./open-finance";
 import * as onedrive from "./onedrive";
 import * as integracontador from "./integracontador";
 import * as ocr from "./ocr";
@@ -2992,7 +2993,7 @@ sqlite.exec(`INSERT OR IGNORE INTO webdfe_config (escritorio_id) SELECT id FROM 
   }
 }
 
-const MODULOS = ["dashboard", "empresas", "solicitacoes", "envio", "nfse", "nfe-busca", "integracontador", "licencas", "financeiro", "contratos", "relatorios", "crm", "dprh", "contabil", "fiscal", "usuarios", "configuracoes", "email", "certificados", "webdfe", "obrigacoes", "reforma"] as const;
+const MODULOS = ["dashboard", "empresas", "solicitacoes", "envio", "nfse", "nfe-busca", "integracontador", "licencas", "financeiro", "contratos", "relatorios", "crm", "dprh", "contabil", "fiscal", "usuarios", "configuracoes", "email", "certificados", "webdfe", "obrigacoes", "reforma", "open_finance"] as const;
 type Modulo = (typeof MODULOS)[number];
 // Módulo "reforma" (Reforma Tributária) criado em 2026-11-03 — antes a página usava a permissão da
 // Busca de XML. Quem ainda não tem a linha "reforma" herda o "Ver" da Busca de XML (não perde acesso de
@@ -7163,6 +7164,62 @@ sqlite.exec(`CREATE TABLE IF NOT EXISTS obrigacoes_manual (
   enviada_em TEXT,
   PRIMARY KEY (escritorio_id, empresa_id, competencia, obrigacao)
 )`);
+// ---------- Open Finance / Conciliação bancária (ver open-finance.ts) ----------
+// of_conexoes = um consentimento do cliente (empresa) a um provedor; of_contas = as contas que o
+// consentimento liberou; of_transacoes = o extrato puxado (status pendente/conciliada/ignorada);
+// of_regras = regras de histórico por empresa pra sugerir conta/lançamento. Tudo aditivo.
+sqlite.exec(`CREATE TABLE IF NOT EXISTS of_conexoes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  empresa_id INTEGER NOT NULL,
+  escritorio_id INTEGER NOT NULL,
+  provedor TEXT NOT NULL,
+  modo TEXT NOT NULL,
+  consent_id TEXT,
+  status TEXT NOT NULL DEFAULT 'ativo',
+  validade_ate TEXT,
+  criado_em TEXT NOT NULL DEFAULT (datetime('now')),
+  atualizado_em TEXT NOT NULL DEFAULT (datetime('now'))
+)`);
+sqlite.exec(`CREATE TABLE IF NOT EXISTS of_contas (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  conexao_id INTEGER NOT NULL,
+  empresa_id INTEGER NOT NULL,
+  id_externo TEXT NOT NULL,
+  banco TEXT,
+  bank_id TEXT,
+  numero TEXT,
+  tipo TEXT,
+  ativo INTEGER NOT NULL DEFAULT 1
+)`);
+sqlite.exec(`CREATE TABLE IF NOT EXISTS of_transacoes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  conta_id INTEGER NOT NULL,
+  empresa_id INTEGER NOT NULL,
+  fitid TEXT NOT NULL,
+  data TEXT NOT NULL,
+  competencia TEXT NOT NULL,
+  valor REAL NOT NULL,
+  descricao TEXT,
+  tipo_ofx TEXT,
+  tipo_mov TEXT,
+  status TEXT NOT NULL DEFAULT 'pendente',
+  conta_contabil TEXT,
+  historico TEXT,
+  match_origem TEXT,
+  match_ref TEXT,
+  criado_em TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (conta_id, fitid)
+)`);
+sqlite.exec(`CREATE TABLE IF NOT EXISTS of_regras (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  empresa_id INTEGER NOT NULL,
+  escritorio_id INTEGER NOT NULL,
+  padrao TEXT NOT NULL,
+  conta_contabil TEXT,
+  historico TEXT,
+  ordem INTEGER NOT NULL DEFAULT 0,
+  criado_em TEXT NOT NULL DEFAULT (datetime('now'))
+)`);
 // Obrigações POR SETOR. templates = nomes de templates do Envio de Documentos (array cobre variações
 // de nome). fonte: 'dctfweb'/'das' leem a transmissão do Integra Contador; 'envio' = documento anexado
 // no Envio conta como transmitido/feito; 'manual' = sem fonte automática. A entrega ao cliente
@@ -7296,6 +7353,191 @@ app.post("/api/obrigacoes/marcar", blockCliente, requirePermissao("obrigacoes", 
   sqlite.prepare(`INSERT OR IGNORE INTO obrigacoes_manual (escritorio_id, empresa_id, competencia, obrigacao) VALUES (?, ?, ?, ?)`).run(user.escritorioId, empresaId, comp, ob);
   const col = campo === "transmitida" ? "transmitida" : "enviada";
   sqlite.prepare(`UPDATE obrigacoes_manual SET ${col} = ?, ${col}_em = CASE WHEN ? = 1 THEN datetime('now') ELSE NULL END WHERE escritorio_id = ? AND empresa_id = ? AND competencia = ? AND obrigacao = ?`).run(valor, valor, user.escritorioId, empresaId, comp, ob);
+  res.json({ ok: true });
+});
+
+// ================= Open Finance / Conciliação bancária =================
+// Fluxo: conectar (cria consentimento no provedor + salva contas) → sincronizar (puxa o extrato do mês,
+// dedup por fitid) → conciliar (regras + classificação sugerem conta/histórico) → exportar OFX pro Domínio.
+function ofUltimoDiaMes(comp: string): string {
+  const m = /^(\d{4})-(\d{2})$/.exec(comp); if (!m) return comp + "-28";
+  const d = new Date(Number(m[1]), Number(m[2]), 0).getDate();
+  return `${m[1]}-${m[2]}-${String(d).padStart(2, "0")}`;
+}
+function ofContaParaProvedor(row: any): openFinance.OFContaBancaria {
+  return { idExterno: row.id_externo, banco: row.banco, bankId: row.bank_id, numero: row.numero, tipo: row.tipo === "SAVINGS" ? "SAVINGS" : "CHECKING" };
+}
+function ofConexoesDaEmpresa(empresaId: number) {
+  const conexoes = sqlite.prepare(`SELECT * FROM of_conexoes WHERE empresa_id = ? ORDER BY id DESC`).all(empresaId) as any[];
+  return conexoes.map((c) => ({
+    id: c.id, provedor: c.provedor, modo: c.modo, status: c.status, validadeAte: c.validade_ate, criadoEm: c.criado_em,
+    contas: (sqlite.prepare(`SELECT * FROM of_contas WHERE conexao_id = ? AND ativo = 1`).all(c.id) as any[]).map((a) => ({
+      id: a.id, banco: a.banco, bankId: a.bank_id, numero: a.numero, tipo: a.tipo,
+    })),
+  }));
+}
+async function ofConectarEmpresa(empresaId: number, escritorioId: number) {
+  const emp = sqlite.prepare(`SELECT id, nome, cnpj FROM empresas WHERE id = ?`).get(empresaId) as any;
+  if (!emp) throw new Error("Empresa não encontrada.");
+  const provider = openFinance.getProvider();
+  const consent = await provider.criarConsentimento({ id: emp.id, nome: emp.nome, cnpj: emp.cnpj });
+  const r = sqlite.prepare(`INSERT INTO of_conexoes (empresa_id, escritorio_id, provedor, modo, consent_id, status, validade_ate) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run(empresaId, escritorioId, provider.nome, provider.modo, consent.consentId, consent.status, consent.validadeAte);
+  const conexaoId = Number(r.lastInsertRowid);
+  for (const c of consent.contas) {
+    sqlite.prepare(`INSERT INTO of_contas (conexao_id, empresa_id, id_externo, banco, bank_id, numero, tipo) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(conexaoId, empresaId, c.idExterno, c.banco, c.bankId, c.numero, c.tipo);
+  }
+  return { conexaoId, modo: provider.modo, provedor: provider.nome };
+}
+async function ofSincronizar(empresaId: number, competencia: string) {
+  const provider = openFinance.getProvider();
+  const dataDe = competencia + "-01", dataAte = ofUltimoDiaMes(competencia);
+  const contas = sqlite.prepare(`SELECT c.* FROM of_contas c JOIN of_conexoes x ON x.id = c.conexao_id WHERE c.empresa_id = ? AND c.ativo = 1 AND x.status = 'ativo'`).all(empresaId) as any[];
+  let novas = 0, total = 0;
+  const ins = sqlite.prepare(`INSERT OR IGNORE INTO of_transacoes (conta_id, empresa_id, fitid, data, competencia, valor, descricao, tipo_ofx, tipo_mov, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pendente')`);
+  for (const conta of contas) {
+    const tx = await provider.listarTransacoes({ empresaId, conta: ofContaParaProvedor(conta), dataDe, dataAte });
+    for (const t of tx) {
+      total++;
+      const tipoMov = openFinance.classificarMovimento(t.descricao, t.tipoOfx);
+      const r = ins.run(conta.id, empresaId, t.fitid, t.data, t.data.slice(0, 7), t.valor, t.descricao, t.tipoOfx, tipoMov);
+      if (r.changes) novas++;
+    }
+  }
+  return { contas: contas.length, total, novas };
+}
+function ofRegrasDaEmpresa(empresaId: number): openFinance.RegraConciliacao[] {
+  return (sqlite.prepare(`SELECT padrao, conta_contabil, historico FROM of_regras WHERE empresa_id = ? ORDER BY ordem, id`).all(empresaId) as any[])
+    .map((r) => ({ padrao: r.padrao, contaContabil: r.conta_contabil || "", historico: r.historico || "" }));
+}
+// Conciliação automática: transferência entre contas próprias é ignorada; regra do cliente define
+// conta/histórico; tarifa e tributo ganham sugestão padrão. O que não casar fica pendente pro operador.
+function ofConciliar(empresaId: number, competencia: string) {
+  const regras = ofRegrasDaEmpresa(empresaId);
+  const pendentes = sqlite.prepare(`SELECT * FROM of_transacoes WHERE empresa_id = ? AND competencia = ? AND status = 'pendente'`).all(empresaId, competencia) as any[];
+  const up = sqlite.prepare(`UPDATE of_transacoes SET status = ?, conta_contabil = ?, historico = ?, match_origem = ? WHERE id = ?`);
+  let conciliadas = 0, ignoradas = 0, sugeridas = 0;
+  for (const t of pendentes) {
+    if (t.tipo_mov === "transferencia_propria") { up.run("ignorada", null, "Transferência entre contas próprias", "transferencia", t.id); ignoradas++; continue; }
+    const regra = openFinance.aplicarRegras(t.descricao, regras);
+    if (regra) { up.run("conciliada", regra.contaContabil, regra.historico, "regra", t.id); conciliadas++; continue; }
+    if (t.tipo_mov === "tarifa") { up.run("pendente", "Despesas Bancárias", "Tarifa bancária", "classificacao", t.id); sugeridas++; continue; }
+    if (t.tipo_mov === "tributo") { up.run("pendente", "Impostos e Contribuições", "Pagamento de tributo", "classificacao", t.id); sugeridas++; continue; }
+  }
+  return { avaliadas: pendentes.length, conciliadas, ignoradas, sugeridas, pendentes: pendentes.length - conciliadas - ignoradas };
+}
+
+app.get("/api/open-finance/status", blockCliente, requirePermissao("open_finance", "visualizar"), (_req, res) => {
+  const p = openFinance.getProvider();
+  res.json({ provedor: p.nome, modo: p.modo, pluggyConfigurado: openFinance.pluggyConfigurado() });
+});
+app.get("/api/open-finance/conexoes", blockCliente, requirePermissao("open_finance", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.query.empresaId);
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(400).json({ error: "Empresa inválida." });
+  res.json({ conexoes: ofConexoesDaEmpresa(empresaId) });
+});
+app.post("/api/open-finance/conectar", blockCliente, requirePermissao("open_finance", "editar"), async (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.body?.empresaId);
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(400).json({ error: "Empresa inválida." });
+  try { res.json(await ofConectarEmpresa(empresaId, user.escritorioId)); }
+  catch (e: any) { res.status(400).json({ error: e.message }); }
+});
+app.post("/api/open-finance/conexoes/:id/revogar", blockCliente, requirePermissao("open_finance", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const conexao = sqlite.prepare(`SELECT * FROM of_conexoes WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!conexao || !podeAcessarEmpresa(user, conexao.empresa_id)) return res.status(404).json({ error: "Conexão não encontrada." });
+  sqlite.prepare(`UPDATE of_conexoes SET status = 'revogado', atualizado_em = datetime('now') WHERE id = ?`).run(conexao.id);
+  res.json({ ok: true });
+});
+app.post("/api/open-finance/sincronizar", blockCliente, requirePermissao("open_finance", "editar"), async (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.body?.empresaId), comp = String(req.body?.competencia || "");
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId) || !/^\d{4}-\d{2}$/.test(comp)) return res.status(400).json({ error: "Dados inválidos." });
+  try { res.json(await ofSincronizar(empresaId, comp)); }
+  catch (e: any) { res.status(400).json({ error: e.message }); }
+});
+app.get("/api/open-finance/transacoes", blockCliente, requirePermissao("open_finance", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.query.empresaId), comp = String(req.query.competencia || "");
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId) || !/^\d{4}-\d{2}$/.test(comp)) return res.status(400).json({ error: "Dados inválidos." });
+  const rows = sqlite.prepare(`SELECT t.id, t.data, t.valor, t.descricao, t.tipo_mov as tipoMov, t.status, t.conta_contabil as contaContabil, t.historico, t.match_origem as matchOrigem,
+      a.banco, a.numero as contaNumero FROM of_transacoes t JOIN of_contas a ON a.id = t.conta_id
+      WHERE t.empresa_id = ? AND t.competencia = ? ORDER BY t.data, t.id`).all(empresaId, comp) as any[];
+  const resumo = { total: rows.length, conciliadas: rows.filter((r) => r.status === "conciliada").length, pendentes: rows.filter((r) => r.status === "pendente").length, ignoradas: rows.filter((r) => r.status === "ignorada").length,
+    creditos: rows.filter((r) => r.valor >= 0).reduce((a, r) => a + r.valor, 0), debitos: rows.filter((r) => r.valor < 0).reduce((a, r) => a + r.valor, 0) };
+  res.json({ items: rows, resumo });
+});
+app.post("/api/open-finance/conciliar", blockCliente, requirePermissao("open_finance", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.body?.empresaId), comp = String(req.body?.competencia || "");
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId) || !/^\d{4}-\d{2}$/.test(comp)) return res.status(400).json({ error: "Dados inválidos." });
+  res.json(ofConciliar(empresaId, comp));
+});
+app.post("/api/open-finance/transacoes/:id/marcar", blockCliente, requirePermissao("open_finance", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const t = sqlite.prepare(`SELECT * FROM of_transacoes WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!t || !podeAcessarEmpresa(user, t.empresa_id)) return res.status(404).json({ error: "Transação não encontrada." });
+  const b = req.body || {};
+  const status = ["pendente", "conciliada", "ignorada"].includes(b.status) ? b.status : t.status;
+  sqlite.prepare(`UPDATE of_transacoes SET status = ?, conta_contabil = ?, historico = ? WHERE id = ?`)
+    .run(status, b.contaContabil != null ? String(b.contaContabil) : t.conta_contabil, b.historico != null ? String(b.historico) : t.historico, t.id);
+  res.json({ ok: true });
+});
+app.get("/api/open-finance/regras", blockCliente, requirePermissao("open_finance", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.query.empresaId);
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(400).json({ error: "Empresa inválida." });
+  res.json({ regras: sqlite.prepare(`SELECT id, padrao, conta_contabil as contaContabil, historico, ordem FROM of_regras WHERE empresa_id = ? ORDER BY ordem, id`).all(empresaId) });
+});
+app.put("/api/open-finance/regras", blockCliente, requirePermissao("open_finance", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.query.empresaId);
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(400).json({ error: "Empresa inválida." });
+  const regras = Array.isArray(req.body?.regras) ? req.body.regras : [];
+  sqlite.prepare(`DELETE FROM of_regras WHERE empresa_id = ?`).run(empresaId);
+  const ins = sqlite.prepare(`INSERT INTO of_regras (empresa_id, escritorio_id, padrao, conta_contabil, historico, ordem) VALUES (?, ?, ?, ?, ?, ?)`);
+  regras.forEach((r: any, i: number) => { const p = String(r.padrao || "").trim(); if (p) ins.run(empresaId, user.escritorioId, p, String(r.contaContabil || ""), String(r.historico || ""), i); });
+  res.json({ ok: true });
+});
+app.get("/api/open-finance/exportar-ofx", blockCliente, requirePermissao("open_finance", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.query.empresaId), comp = String(req.query.competencia || "");
+  const contaId = req.query.contaId ? Number(req.query.contaId) : null;
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId) || !/^\d{4}-\d{2}$/.test(comp)) return res.status(400).json({ error: "Dados inválidos." });
+  const contas = (contaId ? sqlite.prepare(`SELECT * FROM of_contas WHERE id = ? AND empresa_id = ?`).all(contaId, empresaId) : sqlite.prepare(`SELECT * FROM of_contas WHERE empresa_id = ? AND ativo = 1`).all(empresaId)) as any[];
+  if (!contas.length) return res.status(400).json({ error: "Nenhuma conta conectada." });
+  const partes: string[] = [];
+  for (const conta of contas) {
+    const tx = sqlite.prepare(`SELECT fitid, data, valor, descricao, tipo_ofx as tipoOfx FROM of_transacoes WHERE conta_id = ? AND competencia = ? AND status != 'ignorada' ORDER BY data, id`).all(conta.id, comp) as any[];
+    if (!tx.length) continue;
+    partes.push(openFinance.gerarOfx({ bankId: conta.bank_id || "000", acctId: String(conta.numero || conta.id).replace(/\D/g, "") || String(conta.id), dataInicio: comp + "-01", dataFim: ofUltimoDiaMes(comp), transacoes: tx }));
+  }
+  if (!partes.length) return res.status(400).json({ error: "Nenhuma transação pra exportar nesta competência." });
+  const nome = `Extrato OFX - ${comp}.ofx`;
+  res.set("Content-Type", "application/x-ofx");
+  res.set("Content-Disposition", `attachment; filename="${nome}"`);
+  res.send(partes.join("\n\n"));
+});
+// --- Variantes do CLIENTE (self-service): conectar/ver/revogar a própria conta (consentimento é ato do cliente) ---
+app.get("/api/open-finance/minha-empresa/conexoes", requireCliente, (req, res) => {
+  const user = (req as any).user;
+  if (!user.empresaId) return res.status(400).json({ error: "Nenhuma empresa vinculada." });
+  res.json({ conexoes: ofConexoesDaEmpresa(user.empresaId) });
+});
+app.post("/api/open-finance/minha-empresa/conectar", requireCliente, async (req, res) => {
+  const user = (req as any).user;
+  if (!user.empresaId) return res.status(400).json({ error: "Nenhuma empresa vinculada." });
+  try { res.json(await ofConectarEmpresa(user.empresaId, user.escritorioId)); }
+  catch (e: any) { res.status(400).json({ error: e.message }); }
+});
+app.post("/api/open-finance/minha-empresa/conexoes/:id/revogar", requireCliente, (req, res) => {
+  const user = (req as any).user;
+  const conexao = sqlite.prepare(`SELECT * FROM of_conexoes WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!conexao || conexao.empresa_id !== user.empresaId) return res.status(404).json({ error: "Conexão não encontrada." });
+  sqlite.prepare(`UPDATE of_conexoes SET status = 'revogado', atualizado_em = datetime('now') WHERE id = ?`).run(conexao.id);
   res.json({ ok: true });
 });
 
