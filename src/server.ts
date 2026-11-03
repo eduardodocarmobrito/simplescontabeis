@@ -23,6 +23,8 @@ import * as reformaAuditoria from "./reforma-auditoria";
 import { gerarPdfRelatorioReforma } from "./reforma-relatorio";
 import { gerarPdfFichasReforma, FornecedorFicha } from "./reforma-fichas";
 import { gerarPdfNotificacaoFornecedores, gerarPdfMapaNcm } from "./reforma-notificacao";
+import * as reformaDiagnostico from "./reforma-diagnostico";
+import * as reformaDiagPdf from "./reforma-diagnostico-pdf";
 import * as danfse from "./danfse";
 import * as whatsapp from "./whatsapp";
 import * as nfe from "./nfe";
@@ -10930,6 +10932,139 @@ app.get("/api/reforma/minha-empresa/auditoria", requireCliente, (req, res) => {
   const { de, ate } = reformaPeriodo(req.query);
   try { res.json(reformaCalcularAuditoria(user.escritorioId, user.empresaId, de, ate)); }
   catch (e: any) { res.status(400).json({ error: e.message }); }
+});
+// ---------- Reforma Tributária: Diagnóstico de regime pós-reforma (ver reforma-diagnostico.ts) ----------
+// Dados dos últimos 12 meses vindos da Busca de XML (vendas: NF-e/NFC-e/NFS-e emitidas; compras: NF-e
+// recebidas, com o regime de cada fornecedor) + cadastro (CNAE, regime). Premissas editáveis por empresa.
+sqlite.exec(`CREATE TABLE IF NOT EXISTS reforma_diagnostico_premissas (
+  empresa_id INTEGER PRIMARY KEY, escritorio_id INTEGER NOT NULL, premissas_json TEXT NOT NULL, atualizado_em TEXT DEFAULT (datetime('now'))
+)`);
+function reformaDadosDiagnostico(escritorioId: number, empresaId: number) {
+  const emp = sqlite.prepare(`SELECT id, nome, cnpj, regime_tributario, cnae_principal_json, cidade, uf FROM empresas WHERE id = ?`).get(empresaId) as any;
+  if (!emp) throw new Error("Empresa não encontrada.");
+  let cnae: string | null = null, cnaeDescricao: string | null = null;
+  try { const c = JSON.parse(emp.cnae_principal_json || "null"); if (c) { cnae = String(c.codigo || c.code || "") || null; cnaeDescricao = c.descricao || c.text || null; } } catch {}
+  const ate = new Date(), de = new Date(ate.getFullYear() - 1, ate.getMonth(), ate.getDate() + 1);
+  const iso = (x: Date) => x.toISOString().slice(0, 10);
+  const emitExpr = `d.emitente_cnpj = REPLACE(REPLACE(REPLACE(e.cnpj,'.',''),'/',''),'-','')`;
+  const canceladaExpr = `EXISTS (SELECT 1 FROM nfe_documentos ev WHERE ev.escritorio_id = d.escritorio_id AND ev.tipo='evento' AND ev.chave_acesso = d.chave_acesso AND ev.evento_descricao LIKE '%ancela%' AND ev.evento_descricao NOT LIKE '%CT-e%' AND ev.evento_descricao NOT LIKE '%MDF-e%')`;
+  const base = `FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id
+    WHERE d.escritorio_id = ? AND d.empresa_id = ? AND substr(d.data_emissao,1,10) >= ? AND substr(d.data_emissao,1,10) <= ? AND NOT ${canceladaExpr}`;
+  const args = [escritorioId, empresaId, iso(de), iso(ate)];
+  // CRT do fornecedor e finalidade da nota ficam em cache (parsearECachearTributos) — preenche o que
+  // ainda não foi lido, igual ao painel da Busca de XML, senão compras/vendas sairiam incompletas.
+  const pend = sqlite.prepare(`SELECT id FROM nfe_documentos d WHERE d.escritorio_id = ? AND d.empresa_id = ? AND substr(d.data_emissao,1,10) >= ? AND substr(d.data_emissao,1,10) <= ? AND d.tipo IN ('nfe','nfce') AND (d.tributos_parseado IS NULL OR d.tributos_parseado < ?) LIMIT 5000`).all(...args, NFE_TRIB_VERSAO) as any[];
+  if (pend.length) parsearECachearTributos(pend.map((x) => x.id));
+  const v = sqlite.prepare(
+    `SELECT
+       SUM(CASE WHEN d.tipo IN ('nfe','nfce') THEN COALESCE(d.valor_total,0) ELSE 0 END) AS merc,
+       SUM(CASE WHEN d.tipo = 'nfse' THEN COALESCE(d.valor_total,0) ELSE 0 END) AS serv,
+       SUM(CASE WHEN d.tipo <> 'nfce' AND length(REPLACE(REPLACE(REPLACE(COALESCE(d.destinatario_cnpj,''),'.',''),'/',''),'-','')) = 14 THEN COALESCE(d.valor_total,0) ELSE 0 END) AS b2b,
+       COUNT(DISTINCT substr(d.data_emissao,1,7)) AS meses, COUNT(*) AS qtd
+     ${base} AND d.tipo IN ('nfe','nfce','nfse') AND ${emitExpr} AND COALESCE(d.fin_nfe,1) <> 4`
+  ).get(...args) as any;
+  const c = sqlite.prepare(
+    `SELECT
+       SUM(CASE WHEN d.crt = 3 AND length(COALESCE(d.emitente_cnpj,'')) = 14 THEN COALESCE(d.valor_total,0) ELSE 0 END) AS regular,
+       SUM(CASE WHEN d.crt IN (1,2) THEN COALESCE(d.valor_total,0) ELSE 0 END) AS simples,
+       SUM(CASE WHEN (d.crt IS NULL OR d.crt = 4 OR length(COALESCE(d.emitente_cnpj,'')) = 11) THEN COALESCE(d.valor_total,0) ELSE 0 END) AS outras,
+       COUNT(*) AS qtd
+     ${base} AND d.tipo = 'nfe' AND NOT (${emitExpr}) AND COALESCE(d.fin_nfe,1) <> 4`
+  ).get(...args) as any;
+  const dom = sqlite.prepare(`SELECT SUM(saidas) AS saidas, SUM(servicos) AS servicos, COUNT(*) AS meses FROM entradas_saidas_dados WHERE empresa_id = ? AND (ano * 100 + mes) >= ? AND (ano * 100 + mes) <= ?`)
+    .get(empresaId, de.getFullYear() * 100 + de.getMonth() + 1, ate.getFullYear() * 100 + ate.getMonth() + 1) as any;
+  const dados: reformaDiagnostico.DadosEmpresa = {
+    nome: emp.nome, regimeAtual: emp.regime_tributario || "simples_nacional", cnae, cnaeDescricao,
+    receitaMercadorias12m: Number(v?.merc) || 0, receitaServicos12m: Number(v?.serv) || 0,
+    vendasB2B12m: Number(v?.b2b) || 0, vendasTotal12m: (Number(v?.merc) || 0) + (Number(v?.serv) || 0),
+    comprasRegular12m: Number(c?.regular) || 0, comprasSimples12m: Number(c?.simples) || 0, comprasOutras12m: Number(c?.outras) || 0,
+    meses: 12, mesesComDados: Number(v?.meses) || 0,
+  };
+  return {
+    emp, dados, cnae, cnaeDescricao,
+    periodo: { de: iso(de), ate: iso(ate), descricao: `NF-e/NFC-e/NFS-e de ${iso(de).split("-").reverse().join("/")} a ${iso(ate).split("-").reverse().join("/")} (${dados.mesesComDados} mês(es) com vendas; ${Number(v?.qtd) || 0} notas emitidas e ${Number(c?.qtd) || 0} recebidas)` },
+    dominio: dom && Number(dom.meses) ? { receita: (Number(dom.saidas) || 0) + (Number(dom.servicos) || 0), meses: Number(dom.meses) } : null,
+  };
+}
+function reformaCalcularDiagnosticoEmpresa(escritorioId: number, empresaId: number) {
+  const x = reformaDadosDiagnostico(escritorioId, empresaId);
+  const padrao = reformaDiagnostico.premissasPadrao(x.dados);
+  let salvas: any = null;
+  const row = sqlite.prepare(`SELECT premissas_json FROM reforma_diagnostico_premissas WHERE empresa_id = ?`).get(empresaId) as any;
+  if (row) { try { salvas = JSON.parse(row.premissas_json); } catch {} }
+  const premissas = { ...padrao, ...(salvas || {}) } as reformaDiagnostico.Premissas;
+  // Sem nota emitida no sistema, usa a receita do relatório de Entradas/Saídas do Domínio (se houver).
+  if (premissas.receitaAnual == null && x.dados.vendasTotal12m <= 0 && x.dominio?.receita) premissas.receitaAnual = Math.round(x.dominio.receita * (12 / Math.max(1, x.dominio.meses)));
+  const resultado = reformaDiagnostico.calcularDiagnostico(x.dados, premissas);
+  return {
+    empresa: { id: x.emp.id, nome: x.emp.nome, cnpj: x.emp.cnpj, cidade: x.emp.cidade, uf: x.emp.uf, regime: x.dados.regimeAtual, regimeLabel: REGIME_CLIENTE_LABEL[x.dados.regimeAtual] || x.dados.regimeAtual, cnae: x.cnae, cnaeDescricao: x.cnaeDescricao },
+    periodo: x.periodo, dados: x.dados, dominio: x.dominio,
+    premissas, premissasPadrao: padrao, premissasPersonalizadas: !!salvas,
+    resultado,
+    fundamentacao: reformaDiagPdf.FUNDAMENTACAO_DIAGNOSTICO, ressalvas: reformaDiagPdf.RESSALVAS_DIAGNOSTICO,
+    semDados: x.dados.vendasTotal12m <= 0 && premissas.receitaAnual == null,
+  };
+}
+// Assinaturas do PDF: sócios da configuração de assinatura dos contratos + registro no CRC conhecido.
+const REGISTRO_SOCIOS: Record<string, string> = { "eduardo do carmo brito": "Contador — CRC 021166/O-9 PA", "elimarcer fernandes costa": "Contador — CRC 018074/O PA" };
+async function reformaEnviarDiagnosticoPdf(res: any, escritorioId: number, empresaId: number) {
+  try {
+    const d = reformaCalcularDiagnosticoEmpresa(escritorioId, empresaId);
+    const escr = sqlite.prepare(`SELECT nome, cnpj FROM escritorios WHERE id = ?`).get(escritorioId) as any;
+    const cfg = sqlite.prepare(`SELECT * FROM contratos_assinatura_config WHERE escritorio_id = ?`).get(escritorioId) as any;
+    const socios = assinaturaSociosDeConfig(cfg || {}).map((s) => ({ nome: s.nome, registro: REGISTRO_SOCIOS[s.nome.trim().toLowerCase()] || "Contador" }));
+    const escritorio = { nome: escritorioId === 1 ? "SIMPLES SERVIÇOS DE CONTABILIDADE, PERÍCIA E AUDITORIA CONTABIL LTDA" : escr?.nome || "Simples Contábeis", cnpj: escr?.cnpj || (escritorioId === 1 ? "04801040000193" : ""), cidade: "Redenção", uf: "PA" };
+    const pdf = await reformaDiagPdf.gerarPdfDiagnostico(d, escritorio, socios, contratos.timbradoDataUri());
+    res.set("Content-Type", "application/pdf");
+    res.set("Content-Disposition", `attachment; filename="Diagnostico Tributario - ${String(d.empresa.nome || "").replace(/[^\w\- ]/g, "").slice(0, 60)}.pdf"`);
+    res.send(pdf);
+  } catch (e: any) {
+    res.status(500).json({ error: `Não consegui gerar o diagnóstico: ${e.message}` });
+  }
+}
+app.get("/api/reforma/diagnostico", blockCliente, requirePermissao("reforma", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.query.empresaId);
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  try { res.json(reformaCalcularDiagnosticoEmpresa(user.escritorioId, empresaId)); }
+  catch (e: any) { res.status(400).json({ error: e.message }); }
+});
+app.put("/api/reforma/diagnostico/premissas", blockCliente, requirePermissao("reforma", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.query.empresaId);
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const p = req.body?.premissas;
+  if (p === null) { sqlite.prepare(`DELETE FROM reforma_diagnostico_premissas WHERE empresa_id = ?`).run(empresaId); return res.json({ ok: true }); }
+  if (!p || typeof p !== "object") return res.status(400).json({ error: "Premissas inválidas." });
+  // Só guarda as chaves conhecidas, com tipo certo.
+  const num = (v: any) => (v === "" || v == null ? null : Number.isFinite(Number(v)) ? Number(v) : null);
+  const limpo: any = {};
+  for (const k of ["receitaAnual", "pctMercadorias", "pctB2B"]) if (k in p) limpo[k] = num(p[k]);
+  for (const k of ["folhaAnual", "proLaboreAnual", "margemLucro", "presuncaoIrpjMerc", "presuncaoCsllMerc", "presuncaoIrpjServ", "presuncaoCsllServ", "icmsLiquidoPct", "issPct", "cbsReferencia", "ibsReferencia2033", "pctComprasComCredito", "creditoMedioComprasSimples", "encargosFolhaPct"]) if (k in p && num(p[k]) != null) limpo[k] = num(p[k]);
+  if (["I", "II"].includes(p.anexoMercadorias)) limpo.anexoMercadorias = p.anexoMercadorias;
+  if (["III", "IV", "V", "III/V"].includes(p.anexoServicos)) limpo.anexoServicos = p.anexoServicos;
+  if ([0, 30, 60].includes(Number(p.reducaoSetorial))) limpo.reducaoSetorial = Number(p.reducaoSetorial);
+  if ("acrescimoLc224" in p) limpo.acrescimoLc224 = !!p.acrescimoLc224;
+  sqlite.prepare(`INSERT INTO reforma_diagnostico_premissas (empresa_id, escritorio_id, premissas_json, atualizado_em) VALUES (?, ?, ?, datetime('now'))
+    ON CONFLICT(empresa_id) DO UPDATE SET premissas_json = excluded.premissas_json, atualizado_em = datetime('now')`).run(empresaId, user.escritorioId, JSON.stringify(limpo));
+  res.json({ ok: true });
+});
+app.get("/api/reforma/diagnostico/pdf", blockCliente, requirePermissao("reforma", "visualizar"), async (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.query.empresaId);
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  await reformaEnviarDiagnosticoPdf(res, user.escritorioId, empresaId);
+});
+app.get("/api/reforma/minha-empresa/diagnostico", requireCliente, (req, res) => {
+  const user = (req as any).user;
+  if (!user.empresaId) return res.status(400).json({ error: "Nenhuma empresa vinculada." });
+  try { res.json(reformaCalcularDiagnosticoEmpresa(user.escritorioId, user.empresaId)); }
+  catch (e: any) { res.status(400).json({ error: e.message }); }
+});
+app.get("/api/reforma/minha-empresa/diagnostico/pdf", requireCliente, async (req, res) => {
+  const user = (req as any).user;
+  if (!user.empresaId) return res.status(400).json({ error: "Nenhuma empresa vinculada." });
+  await reformaEnviarDiagnosticoPdf(res, user.escritorioId, user.empresaId);
 });
 app.get("/api/nfe/minha-empresa/documentos/:id/xml", requireCliente, (req, res) => {
   const user = (req as any).user;

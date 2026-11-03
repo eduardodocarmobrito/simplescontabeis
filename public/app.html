@@ -874,6 +874,25 @@ body.theme-glass .tab.active::after, body.theme-glass .nav-item.active::after{
 .rt-fchip.on{outline:2px solid var(--accent); background:color-mix(in srgb, var(--accent) 14%, var(--surface));}
 body.theme-glass .rt-fchip{background:rgba(var(--glass-rgb,5,31,32),.55); border-color:rgba(255,255,255,.22);}
 body.theme-glass .rt-fchip.on{background:rgba(46,204,143,.22);}
+.rt-regs{display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:10px; margin-top:6px;}
+.rt-reg{border:1px solid var(--rule); border-top:4px solid var(--c); border-radius:14px; padding:12px 13px; background:var(--surface);}
+.rt-reg-best{box-shadow:0 0 0 2px #0ca30c inset;}
+.rt-reg-off{opacity:.7;}
+.rt-reg-t{font-weight:700; font-size:13px; display:flex; align-items:center;}
+.rt-reg-v{font-size:22px; font-weight:800; margin:8px 0 6px;}
+.rt-reg-tab{width:100%; font-size:12px; border-collapse:collapse;}
+.rt-reg-tab td{padding:3px 0; border-bottom:1px solid var(--rule);}
+.rt-reg-tab td:last-child{text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums;}
+.rt-reg-det{margin-top:6px; font-size:12px;} .rt-reg-det summary{cursor:pointer; color:var(--accent-deep); font-weight:600;}
+.rt-diag-barras{display:flex; flex-direction:column; gap:12px;}
+.rt-diag-ano-t{font-weight:700; font-size:12.5px; margin-bottom:4px;}
+.rt-diag-linha{display:grid; grid-template-columns:150px 1fr 80px; gap:8px; align-items:center; font-size:12px; margin-bottom:3px;}
+.rt-diag-barra{height:10px; background:var(--rule); border-radius:5px; overflow:hidden;} .rt-diag-barra span{display:block; height:100%; border-radius:0 4px 4px 0;}
+.rt-diag-val{text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap;}
+.rt-pontos{margin:0; padding-left:18px; font-size:12.5px; line-height:1.5;} .rt-pontos li{margin-bottom:6px;}
+.rt-p-atencao::marker{color:#d03b3b;} .rt-p-favor::marker{color:#0ca30c;} .rt-p-info::marker{color:#2a78d6;}
+body.theme-glass .rt-reg{background:rgba(var(--glass-rgb,5,31,32),.55); border-color:rgba(255,255,255,.22); border-top-color:var(--c);}
+body.theme-glass .rt-reg-det summary{color:#5fe0a8;}
 /* Valores em R$ e números não quebram linha ("R$" numa linha e o valor na outra). */
 .rt-tabela td.num, .rt-legenda td.num, .rt-rank-v{white-space:nowrap;}
 .rt-tabela .rt-chip{white-space:normal; line-height:1.25;}
@@ -8543,14 +8562,154 @@ const rtMesLabel = m=>{ const [a,mm]=String(m).split('-'); return ['jan','fev','
 function rtChip(info){ return `<span class="rt-chip" style="--c:${info.cor};"><span aria-hidden="true">${info.ic}</span> ${esc(info.label)}</span>`; }
 function rtRegimeChip(regime, label){ return `<span class="rt-chip" style="--c:${RT_COR_REGIME[regime]||'#898781'};"><span class="rt-dot"></span> ${esc(label)}</span>`; }
 
+// ===================== Reforma Tributária — Análise de regime pós-reforma (diagnóstico) =====================
+// Sub-aba da página Reforma Tributária: compara Simples (IBS/CBS no DAS e por fora), Presumido e Real em
+// 2026/2027/2033 com os dados dos últimos 12 meses (Busca de XML + cadastro) e premissas ajustáveis por
+// empresa. Motor em src/reforma-diagnostico.ts; PDF com timbrado e assinatura dos sócios.
+let RT_ABA = 'auditoria';
+let RT_DIAG_ANO = 2027;
+const RT_COR_DIAG = { sn_dentro:'#eb6834', sn_fora:'#1baf7a', presumido:'#6250d6', real:'#2a78d6' };
+function rtAbasHtml(){
+  return `<div class="tabs" style="margin-bottom:14px;">
+    <div class="tab ${RT_ABA==='auditoria'?'active':''}" data-rtaba="auditoria">🔎 Auditoria de entradas</div>
+    <div class="tab ${RT_ABA==='regime'?'active':''}" data-rtaba="regime">⚖️ Análise de regime pós-reforma</div>
+  </div>`;
+}
+async function reformaDiagMontar(painel, urlApi, urlPdf, urlPremissas){
+  const seq = ++RT_SEQ; const paginaAtual = STATE.page;
+  painel.innerHTML = `<div class="card"><div class="empty-state">⚖️ Montando o diagnóstico — receita, compras e perfil de clientes dos últimos 12 meses…</div></div>`;
+  let d;
+  try{ d = await api(urlApi); }
+  catch(e){ if(seq===RT_SEQ) painel.innerHTML = `<div class="card"><div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div></div>`; return; }
+  if(seq!==RT_SEQ || STATE.page!==paginaAtual) return;
+  const r = d.resultado, en = r.entradas, e = d.empresa;
+  const anoSel = r.anos.find(a=>a.ano===RT_DIAG_ANO) || r.anos[1];
+  const melhor = a=>a.regimes.find(x=>x.id===a.melhor);
+  const pct = v=>(Number(v)||0).toFixed(2).replace('.',',')+'%';
+  const tile = (t,v,s,dest)=>`<div class="rt-kpi${dest?' rt-kpi-destaque':''}"><div class="rt-kpi-t">${t}</div><div class="rt-kpi-v">${v}</div>${s?`<div class="rt-kpi-s">${s}</div>`:''}</div>`;
+  const cardRegime = (g, a)=>{
+    if(!g.disponivel) return `<div class="rt-reg rt-reg-off" style="--c:${RT_COR_DIAG[g.id]};"><div class="rt-reg-t"><span class="rt-sw" style="background:${RT_COR_DIAG[g.id]};"></span>${esc(g.label)}</div><div class="rt-mut" style="margin-top:10px;">${esc(g.motivoIndisponivel||'Não disponível')}</div></div>`;
+    const best = g.id===a.melhor;
+    return `<div class="rt-reg${best?' rt-reg-best':''}" style="--c:${RT_COR_DIAG[g.id]};">
+      <div class="rt-reg-t"><span class="rt-sw" style="background:${RT_COR_DIAG[g.id]};"></span>${esc(g.label)}</div>
+      ${best?`<span class="rt-chip" style="--c:#0ca30c; margin-top:6px;">✔ Menor custo efetivo</span>`:''}
+      <div class="rt-reg-v">${pct(g.custoEfetivoPct)}<span class="rt-kpi-un"> custo efetivo</span></div>
+      <table class="rt-reg-tab">
+        <tr><td>Tributos a recolher</td><td>${rtBRL(g.total)}</td></tr>
+        <tr><td>IBS/CBS cobrado no preço</td><td>${rtBRL(g.ibsCbsPorFora)}</td></tr>
+        <tr><td>Carga própria</td><td>${rtBRL(g.cargaPropria)} <span class="rt-mut">(${pct(g.cargaPropriaPct)})</span></td></tr>
+        ${g.perdaCreditoClientes?`<tr><td>Crédito que seus clientes deixam de tomar</td><td style="color:#d03b3b;">${rtBRL(g.perdaCreditoClientes)}</td></tr>`:''}
+        <tr><td>Crédito nas entradas</td><td>${rtBRL(g.creditoEntradas)}</td></tr>
+        <tr><td>Crédito repassado a clientes B2B</td><td>${rtBRL(g.creditoRepassado)}</td></tr>
+      </table>
+      <details class="rt-reg-det"><summary>Tributos</summary><table class="rt-reg-tab">${g.tributos.map(t=>`<tr><td>${esc(t.nome)}</td><td>${rtBRL(t.valor)}</td></tr>`).join('')}</table></details>
+    </div>`;
+  };
+  // Barras: custo efetivo por regime em cada ano (mesma cor por regime em todos os anos).
+  const maxCusto = Math.max(1, ...r.anos.flatMap(a=>a.regimes.filter(g=>g.disponivel).map(g=>g.custoEfetivoPct)));
+  const barras = `<div class="rt-diag-barras">${r.anos.map(a=>`<div class="rt-diag-ano"><div class="rt-diag-ano-t">${a.ano}</div>${a.regimes.map(g=>`<div class="rt-diag-linha" title="${esc(g.label)} — ${g.disponivel?('custo efetivo '+pct(g.custoEfetivoPct)+' · carga própria '+pct(g.cargaPropriaPct)):esc(g.motivoIndisponivel||'')}"><span class="rt-diag-nome">${esc(g.label.replace('Simples Nacional','Simples'))}</span><span class="rt-diag-barra">${g.disponivel?`<span style="width:${(g.custoEfetivoPct/maxCusto*100).toFixed(1)}%; background:${RT_COR_DIAG[g.id]};"></span>`:''}</span><span class="rt-diag-val">${g.disponivel?pct(g.custoEfetivoPct):'—'}${g.id===a.melhor?' ✔':''}</span></div>`).join('')}</div>`).join('')}</div>`;
+  const p = d.premissas;
+  const campo = (k, rot, val, ajuda, tipo)=>`<div class="field" style="margin-bottom:0;"><label>${rot}</label><input class="rtPrem" data-k="${k}" value="${val==null?'':esc(String(val).replace('.',','))}" ${tipo==='opcional'?'placeholder="automático"':''} ${urlPremissas?'':'disabled'}>${ajuda?`<div class="rt-mut" style="font-size:11px; margin-top:2px;">${ajuda}</div>`:''}</div>`;
+  const sel = (k, rot, val, opts)=>`<div class="field" style="margin-bottom:0;"><label>${rot}</label><select class="rtPrem" data-k="${k}" ${urlPremissas?'':'disabled'}>${opts.map(([v,l])=>`<option value="${v}" ${String(val)===String(v)?'selected':''}>${l}</option>`).join('')}</select></div>`;
+  painel.innerHTML = `
+  <div class="rt-hero">
+    <div class="rt-hero-top">
+      <div>
+        <div class="rt-hero-kicker">⚖️ Diagnóstico de regime tributário pós-reforma</div>
+        <div class="rt-hero-nome">${esc(e.nome)} ${empresaMatrizFilialHtml(e.cnpj)}</div>
+        <div class="rt-hero-sub">CNPJ ${esc(fmtCnpjCpf(e.cnpj||''))}${e.cnae?` · CNAE ${esc(e.cnae)} ${esc(e.cnaeDescricao||'')}`:''} · regime atual: <b>${esc(e.regimeLabel)}</b></div>
+        <div class="rt-hero-sub">${esc(d.periodo.descricao)}</div>
+      </div>
+      <div class="row" style="gap:8px; flex-wrap:wrap;"><button class="btn primary" id="rtDiagPdf">📄 Diagnóstico para o cliente (PDF)</button></div>
+    </div>
+    <div class="rt-hero-regime"><b>Recomendação:</b> ${esc(r.recomendacao)}</div>
+    ${d.semDados?`<div style="margin-top:10px;"><span class="rt-pill" style="--c:#d03b3b;">⛔ Sem notas emitidas nos últimos 12 meses — informe a receita anual nas premissas abaixo</span></div>`:''}
+  </div>
+  <div class="rt-kpis">
+    ${tile('Receita 12 meses', rtBRL(en.receitaAnual), `mercadorias ${rtBRL(en.receitaMercadorias)} · serviços ${rtBRL(en.receitaServicos)}${p.receitaAnual?' · valor informado':''}`)}
+    ${tile('Vendas para empresas (B2B)', pct(en.pctB2B), 'quanto da receita vai para CNPJ — quem pode tomar crédito')}
+    ${tile('Compras com crédito', rtBRL(en.comprasComCredito), `de fornecedores do regime regular · Simples ${rtBRL(en.comprasSimples)}`)}
+    ${tile('Simples Nacional hoje', `Anexo ${en.anexoMercadorias}${en.receitaServicos>0?' / '+en.anexoServicos:''}`, `faixa ${en.faixaSimples} · alíquota efetiva ${pct(en.receitaServicos>en.receitaMercadorias?en.aliquotaEfetivaServ:en.aliquotaEfetivaMerc)} · Fator R ${pct(en.fatorR)}`)}
+    ${tile(`Melhor em ${anoSel.ano}`, esc((melhor(anoSel)||{}).label||'—'), `custo efetivo ${pct((melhor(anoSel)||{}).custoEfetivoPct)}`, true)}
+  </div>
+  <div class="card rt-card">
+    <div class="row" style="justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+      <div><div class="rt-card-t">Quadro comparativo dos regimes</div><div class="rt-card-s" style="margin-bottom:0;">Custo efetivo = carga própria + IBS/CBS que pesa no consumidor final + crédito que os clientes empresas deixam de tomar (Simples por dentro).</div></div>
+      <div class="tabs" style="margin:0;">${r.anos.map(a=>`<div class="tab ${a.ano===anoSel.ano?'active':''}" data-diagano="${a.ano}">${a.ano}</div>`).join('')}</div>
+    </div>
+    <div class="rt-card-s" style="margin-top:8px;"><b>${esc(anoSel.titulo)}</b></div>
+    <div class="rt-regs">${anoSel.regimes.map(g=>cardRegime(g, anoSel)).join('')}</div>
+  </div>
+  <div class="rt-grid2">
+    <div class="card rt-card"><div class="rt-card-t">Custo efetivo por ano</div><div class="rt-card-s">% da receita — a cor segue o regime; ✔ = menor custo do ano.</div>${barras}</div>
+    <div class="card rt-card"><div class="rt-card-t">Pontos de vista para o cliente</div><div class="rt-card-s">Argumentos técnicos a partir dos dados da empresa.</div>
+      <ul class="rt-pontos">${r.pontos.map(x=>`<li class="rt-p-${x.tipo}">${esc(x.texto)}</li>`).join('') || '<li>Sem pontos de atenção específicos com os dados disponíveis.</li>'}
+        <li class="rt-p-info">Crédito nas entradas: a partir de 2027 o IBS/CBS das compras de fornecedores do regime regular vira crédito nos regimes com IBS/CBS por fora (LC 214, art. 47).</li>
+        <li class="rt-p-info">Próxima janela para o Simples com IBS/CBS por fora: 1º a 31/03/2027 (efeitos em 01/07/2027).</li></ul>
+    </div>
+  </div>
+  <details class="card rt-card" ${urlPremissas?'open':''}>
+    <summary><b>Premissas da simulação</b> <span class="rt-mut">${d.premissasPersonalizadas?'(ajustadas para esta empresa)':'(padrão pela atividade — ajuste se souber os números reais)'}</span></summary>
+    <div class="campos-grid" style="margin-top:12px;">
+      ${campo('receitaAnual','Receita anual (R$)', p.receitaAnual, 'vazio = soma das notas emitidas em 12 meses', 'opcional')}
+      ${campo('pctMercadorias','% mercadorias na receita', p.pctMercadorias, 'vazio = pelas notas (NF-e × NFS-e)', 'opcional')}
+      ${campo('pctB2B','% vendas para empresas', p.pctB2B, 'vazio = pelas notas (destinatário CNPJ)', 'opcional')}
+      ${campo('folhaAnual','Folha anual (R$)', p.folhaAnual, 'salários do ano, sem pró-labore')}
+      ${campo('proLaboreAnual','Pró-labore anual (R$)', p.proLaboreAnual)}
+      ${campo('margemLucro','Margem de lucro (%) — Lucro Real', p.margemLucro)}
+      ${sel('anexoMercadorias','Anexo do Simples — mercadorias', p.anexoMercadorias, [['I','Anexo I (comércio)'],['II','Anexo II (indústria)']])}
+      ${sel('anexoServicos','Anexo do Simples — serviços', p.anexoServicos, [['III/V','III ou V pelo Fator R'],['III','Anexo III'],['IV','Anexo IV (CPP fora)'],['V','Anexo V']])}
+      ${sel('reducaoSetorial','Redução de IBS/CBS da atividade', p.reducaoSetorial, [['0','Sem redução'],['30','30% (profissão regulamentada)'],['60','60% (saúde, educação…)']])}
+      ${campo('presuncaoIrpjMerc','Presunção IRPJ mercadorias (%)', p.presuncaoIrpjMerc)}
+      ${campo('presuncaoIrpjServ','Presunção IRPJ serviços (%)', p.presuncaoIrpjServ)}
+      ${campo('presuncaoCsllMerc','Presunção CSLL mercadorias (%)', p.presuncaoCsllMerc)}
+      ${campo('presuncaoCsllServ','Presunção CSLL serviços (%)', p.presuncaoCsllServ)}
+      ${sel('acrescimoLc224','Acréscimo LC 224/2025 (> R$ 5 mi)', p.acrescimoLc224?'1':'0', [['1','Aplicar'],['0','Não aplicar (liminar)']])}
+      ${campo('icmsLiquidoPct','ICMS líquido sobre mercadorias (%)', p.icmsLiquidoPct, 'fora do Simples')}
+      ${campo('issPct','ISS sobre serviços (%)', p.issPct)}
+      ${campo('cbsReferencia','CBS de referência (%)', p.cbsReferencia, 'estimativa TCU 11,3% — Senado até 15/12/2026')}
+      ${campo('ibsReferencia2033','IBS de referência em 2033 (%)', p.ibsReferencia2033)}
+      ${campo('pctComprasComCredito','% das compras que gera crédito', p.pctComprasComCredito, 'exclui uso e consumo pessoal')}
+      ${campo('creditoMedioComprasSimples','Crédito médio em compras do Simples (%)', p.creditoMedioComprasSimples)}
+      ${campo('encargosFolhaPct','Encargos sobre a folha fora do Simples (%)', p.encargosFolhaPct, 'CPP 20% + RAT + terceiros')}
+    </div>
+    ${urlPremissas?`<div class="row" style="gap:8px; margin-top:12px;"><button class="btn primary" id="rtPremSalvar" disabled>Salvar e recalcular</button><button class="btn" id="rtPremCancelar" disabled>Cancelar</button>${d.premissasPersonalizadas?'<button class="btn" id="rtPremPadrao">Voltar ao padrão</button>':''}</div>`:''}
+  </details>
+  <details class="card rt-card rt-fontes"><summary><b>Fundamentação legal e ressalvas</b></summary>
+    <ul>${d.fundamentacao.map(x=>`<li>${esc(x)}</li>`).join('')}</ul><ul>${d.ressalvas.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></details>`;
+  painel.querySelectorAll('[data-diagano]').forEach(t=>t.addEventListener('click', ()=>{ RT_DIAG_ANO = Number(t.dataset.diagano); reformaDiagMontar(painel, urlApi, urlPdf, urlPremissas); }));
+  document.getElementById('rtDiagPdf').addEventListener('click', ev=>rtBaixar(urlPdf, `Diagnostico Tributario - ${(e.nome||'').slice(0,50)}.pdf`, ev.currentTarget, 'Gerando diagnóstico…'));
+  if(urlPremissas){
+    const btnS = document.getElementById('rtPremSalvar'), btnC = document.getElementById('rtPremCancelar');
+    painel.querySelectorAll('.rtPrem').forEach(el=>el.addEventListener(el.tagName==='SELECT'?'change':'input', ()=>{ btnS.disabled = false; btnC.disabled = false; }));
+    btnC.addEventListener('click', ()=>reformaDiagMontar(painel, urlApi, urlPdf, urlPremissas));
+    btnS.addEventListener('click', async ()=>{
+      const body = {};
+      painel.querySelectorAll('.rtPrem').forEach(el=>{
+        const k = el.dataset.k; let v = el.value.trim();
+        if(k==='acrescimoLc224') body[k] = v==='1';
+        else if(['anexoMercadorias','anexoServicos'].includes(k)) body[k] = v;
+        else body[k] = v==='' ? null : (v.includes(',') ? Number(v.replace(/\./g,'').replace(',','.')) : Number(v));
+      });
+      try{ await api(urlPremissas, { method:'PUT', body:{ premissas: body } }); toast('Premissas salvas — diagnóstico recalculado.','ok'); reformaDiagMontar(painel, urlApi, urlPdf, urlPremissas); }
+      catch(err){ toast(err.message,'err'); }
+    });
+    const bp = document.getElementById('rtPremPadrao');
+    if(bp) bp.addEventListener('click', async ()=>{
+      if(!confirm('Voltar todas as premissas desta empresa ao padrão?')) return;
+      try{ await api(urlPremissas, { method:'PUT', body:{ premissas: null } }); reformaDiagMontar(painel, urlApi, urlPdf, urlPremissas); }catch(err){ toast(err.message,'err'); }
+    });
+  }
+}
 async function pageReformaTributaria(){
   main().innerHTML = `
     <h1>Reforma Tributária</h1>
-    <p class="subtitle">Auditoria do IBS/CBS nas notas de entrada: quais fornecedores emitem corretamente, NCM × classificação tributária validados na fonte oficial e o crédito que o cliente está deixando na mesa.</p>
+    <p class="subtitle">Auditoria do IBS/CBS nas notas de entrada e diagnóstico do melhor regime tributário pós-reforma, com base nos XMLs e no cadastro da empresa.</p>
+    ${rtAbasHtml()}
     <div class="card" style="margin-bottom:14px;">
       <div class="row" style="gap:12px; flex-wrap:wrap; align-items:flex-end;">
         <div class="field" style="flex:1; min-width:300px; margin-bottom:0;"><label>Empresa</label>${comboSelectHtml('rtEmpresaCombo','Digite o nome, CNPJ ou código da empresa…')}</div>
-        ${rtFiltroPeriodoHtml()}
+        <div class="row" id="rtPeriodoWrap" style="gap:12px; flex-wrap:wrap; align-items:flex-end; ${RT_ABA==='regime'?'display:none;':''}">${rtFiltroPeriodoHtml()}</div>
       </div>
     </div>
     <div id="rtPainel"></div>
@@ -8564,8 +8723,19 @@ async function pageReformaTributaria(){
     if(e){ const root=document.getElementById('rtEmpresaCombo'); root.querySelector('.combo-input').value = empresaComboLabel(e); root.querySelector('.combo-value').value = e.id; }
   }
   rtLigarFiltroPeriodo(()=>carregar());
+  main().querySelectorAll('[data-rtaba]').forEach(t=>t.addEventListener('click', ()=>{
+    RT_ABA = t.dataset.rtaba;
+    main().querySelectorAll('[data-rtaba]').forEach(x=>x.classList.toggle('active', x.dataset.rtaba===RT_ABA));
+    document.getElementById('rtPeriodoWrap').style.display = RT_ABA==='regime' ? 'none' : '';
+    carregar();
+  }));
   function carregar(){
-    if(!RT_EMPRESA_ID){ painel.innerHTML = `<div class="card"><div class="empty-state">Escolha a empresa para abrir a auditoria das notas de entrada.</div></div>`; return; }
+    if(!RT_EMPRESA_ID){ painel.innerHTML = `<div class="card"><div class="empty-state">Escolha a empresa para abrir ${RT_ABA==='regime'?'o diagnóstico de regime':'a auditoria das notas de entrada'}.</div></div>`; return; }
+    if(RT_ABA==='regime'){
+      const podeEditar = STATE.user.perfil==='Administrador' || can('reforma','editar');
+      reformaDiagMontar(painel, `/reforma/diagnostico?empresaId=${RT_EMPRESA_ID}`, `/api/reforma/diagnostico/pdf?empresaId=${RT_EMPRESA_ID}`, podeEditar ? `/reforma/diagnostico/premissas?empresaId=${RT_EMPRESA_ID}` : null);
+      return;
+    }
     const { de, ate } = rtPeriodoDatas();
     reformaMontar(painel, `/reforma/auditoria?empresaId=${RT_EMPRESA_ID}&de=${de}&ate=${ate}`, `/api/reforma/auditoria/pdf?empresaId=${RT_EMPRESA_ID}&de=${de}&ate=${ate}`);
   }
@@ -8574,12 +8744,22 @@ async function pageReformaTributaria(){
 async function pageMinhaReforma(){
   main().innerHTML = `
     <h1>Reforma Tributária</h1>
-    <p class="subtitle">Auditoria do IBS/CBS nas suas notas de entrada: fornecedores, classificação tributária validada na fonte oficial e crédito em jogo.</p>
-    <div class="card" style="margin-bottom:14px;"><div class="row" style="gap:12px; flex-wrap:wrap; align-items:flex-end;">${rtFiltroPeriodoHtml()}</div></div>
+    <p class="subtitle">Auditoria do IBS/CBS nas suas notas de entrada e diagnóstico do melhor regime tributário pós-reforma.</p>
+    ${rtAbasHtml()}
+    <div class="card" id="rtPeriodoCard" style="margin-bottom:14px; ${RT_ABA==='regime'?'display:none;':''}"><div class="row" style="gap:12px; flex-wrap:wrap; align-items:flex-end;">${rtFiltroPeriodoHtml()}</div></div>
     <div id="rtPainel"></div>
   `;
   const painel = document.getElementById('rtPainel');
-  const carregar = ()=>{ const { de, ate } = rtPeriodoDatas(); reformaMontar(painel, `/reforma/minha-empresa/auditoria?de=${de}&ate=${ate}`, `/api/reforma/minha-empresa/auditoria/pdf?de=${de}&ate=${ate}`); };
+  const carregar = ()=>{
+    if(RT_ABA==='regime'){ reformaDiagMontar(painel, '/reforma/minha-empresa/diagnostico', '/api/reforma/minha-empresa/diagnostico/pdf', null); return; }
+    const { de, ate } = rtPeriodoDatas(); reformaMontar(painel, `/reforma/minha-empresa/auditoria?de=${de}&ate=${ate}`, `/api/reforma/minha-empresa/auditoria/pdf?de=${de}&ate=${ate}`);
+  };
+  main().querySelectorAll('[data-rtaba]').forEach(t=>t.addEventListener('click', ()=>{
+    RT_ABA = t.dataset.rtaba;
+    main().querySelectorAll('[data-rtaba]').forEach(x=>x.classList.toggle('active', x.dataset.rtaba===RT_ABA));
+    document.getElementById('rtPeriodoCard').style.display = RT_ABA==='regime' ? 'none' : '';
+    carregar();
+  }));
   rtLigarFiltroPeriodo(carregar);
   carregar();
 }
