@@ -9098,10 +9098,12 @@ async function pageOpenFinance(){
     if(OF_CONTA!=='todas' && !idsConta.has(Number(OF_CONTA))) OF_CONTA='todas';
     const todas = tx.items||[];
     const itens = todas.filter(t=> OF_CONTA==='todas' || String(t.contaId)===String(OF_CONTA));
+    const semCta = t=> !(t.contaContabil && String(t.contaContabil).trim()); // sem conta contábil informada
     const r = { total: itens.length,
       conciliadas: itens.filter(t=>t.status==='conciliada').length,
       pendentes: itens.filter(t=>t.status==='pendente').length,
       ignoradas: itens.filter(t=>t.status==='ignorada').length,
+      semConta: itens.filter(semCta).length,
       creditos: itens.filter(t=>t.valor>=0).reduce((a,t)=>a+t.valor,0),
       debitos: itens.filter(t=>t.valor<0).reduce((a,t)=>a+t.valor,0) };
     painel.innerHTML = `
@@ -9145,15 +9147,16 @@ async function pageOpenFinance(){
           <span style="color:var(--debit);">saídas ${ofBRL(r.debitos)}</span>
           <span>conciliadas <b>${r.conciliadas||0}</b></span>
           <span>pendentes <b>${r.pendentes||0}</b></span>
+          ${r.semConta?`<span class="tag" style="background:#fde68a; color:#92400e; font-weight:600;">⚠ ${r.semConta} sem conta contábil</span>`:''}
         </div>
         ${itens.length? `<div style="overflow-x:auto;"><table class="data-table"><thead><tr><th>Data</th><th>Banco</th><th>Descrição</th><th>Tipo</th><th style="text-align:right;">Valor</th><th>Conta / Histórico</th><th>Status</th>${podeEditar?'<th></th>':''}</tr></thead><tbody>
-          ${itens.map(t=>`<tr>
-            <td style="white-space:nowrap;">${ofDataBr(t.data)}</td>
+          ${itens.map(t=>`<tr${semCta(t)?' style="background:rgba(245,158,11,.07);"':''}>
+            <td style="white-space:nowrap; ${semCta(t)?'border-left:3px solid #f59e0b;':''}">${ofDataBr(t.data)}</td>
             <td style="white-space:nowrap;">${ofBancoChip(t.banco, t.contaNumero)}</td>
             <td>${esc(t.descricao||'')}</td>
             <td><span class="tag">${esc(OF_TIPO_LABEL[t.tipoMov]||t.tipoMov||'—')}</span></td>
             <td style="text-align:right; white-space:nowrap; color:${t.valor<0?'var(--debit)':'var(--credit)'};">${ofBRL(t.valor)}</td>
-            <td>${t.contaContabil?esc(t.contaContabil):'<span class="mut">—</span>'}${t.historico?'<br><span class="mut" style="font-size:11px;">'+esc(t.historico)+'</span>':''}</td>
+            <td>${semCta(t)?'<span class="tag" style="background:#fde68a; color:#92400e; font-weight:600;" title="Classifique no ✎ ou em Regras">⚠ Sem conta contábil</span>':esc(t.contaContabil)}${t.historico?'<br><span class="mut" style="font-size:11px;">'+esc(t.historico)+'</span>':''}</td>
             <td><span class="${OF_STATUS_CHIP[t.status]?OF_STATUS_CHIP[t.status][1]:'tag'}">${OF_STATUS_CHIP[t.status]?OF_STATUS_CHIP[t.status][0]:esc(t.status)}</span></td>
             ${podeEditar?`<td style="white-space:nowrap;">
               <button class="btn" ${OF_BTN_SM} data-edit="${t.id}" title="Editar conta/histórico">✎</button>
