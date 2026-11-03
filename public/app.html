@@ -2745,6 +2745,7 @@ async function pagePainelTv(){
 }
 
 // ===================== Dashboard =====================
+let DASH_TAB = 'indicadores';
 async function pageDashboard(){
   const meuSeq = RENDER_SEQ;
   const podeEditar = can('dashboard','editar');
@@ -2756,7 +2757,20 @@ async function pageDashboard(){
   main().innerHTML = `
     <h1>Área de Trabalho</h1>
     <p class="subtitle">Indicadores do escritório — ${esc(STATE.user.nome)}</p>
-    ${podeEditar? `<p style="font-size:12.5px; color:var(--ink-soft); margin:-10px 0 16px;">
+    <div class="tabs" id="dashTabs">
+      <div class="tab ${DASH_TAB==='indicadores'?'active':''}" data-dtab="indicadores">Indicadores</div>
+      <div class="tab ${DASH_TAB==='pendentes'?'active':''}" data-dtab="pendentes">Pendentes</div>
+      <div class="tab ${DASH_TAB==='whatsapp'?'active':''}" data-dtab="whatsapp">Painel WhatsApp</div>
+    </div>
+    <div id="dashConteudo"></div>
+  `;
+  document.querySelectorAll('#dashTabs .tab').forEach(t=>t.addEventListener('click', ()=>{ DASH_TAB=t.dataset.dtab; pageDashboard(); }));
+  const conteudo = document.getElementById('dashConteudo');
+  if(DASH_TAB==='whatsapp'){ dashPainelWhatsApp(conteudo); return; }
+  if(DASH_TAB==='pendentes'){ dashPendentes(conteudo); return; }
+  // Aba Indicadores (padrão): a nota de monitoramento + a grade de cards.
+  conteudo.innerHTML = `
+    ${podeEditar? `<p style="font-size:12.5px; color:var(--ink-soft); margin:0 0 16px;">
       Monitorando pendências ${competenciaInicio? `a partir de <b>${MESES[competenciaInicio.mes]}/${competenciaInicio.ano}</b>` : 'desde o período mais antigo gerado na grade de cada empresa'} —
       <span class="link-discreto" id="btnMonitoramentoConfig" style="cursor:pointer; text-decoration:underline;">${competenciaInicio?'alterar':'configurar um início'}</span>
     </p>` : ''}
@@ -2797,6 +2811,25 @@ async function pageDashboard(){
       pageDashboard();
     }));
   }
+}
+// Aba "Painel WhatsApp": atalho pra tela CRM → Painel (visão geral do atendimento).
+function dashPainelWhatsApp(box){
+  const temCrm = NAV.some(n=>n.id==='crm') || STATE.user.perfil==='Administrador';
+  box.innerHTML = temCrm ? `
+    <div class="card painel-clicavel" id="dashIrPainelCrm" style="max-width:520px; cursor:pointer;">
+      <div style="font-size:15px; font-weight:600;">📊 Painel do WhatsApp</div>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin:6px 0 0;">Atalho para a tela <b>CRM → Painel</b>: visão geral do atendimento do WhatsApp (conversas, tempos de resposta, setores).</p>
+      <button class="btn primary" style="margin-top:12px;" id="dashBtnPainelCrm">Abrir Painel do WhatsApp →</button>
+    </div>
+  ` : `<div class="empty-state">Você não tem acesso ao CRM.</div>`;
+  if(!temCrm) return;
+  const ir = ()=>{ CRM.aba='painel'; goPage('crm'); };
+  document.getElementById('dashBtnPainelCrm').addEventListener('click', ir);
+  document.getElementById('dashIrPainelCrm').addEventListener('click', (e)=>{ if(e.target.closest('button')) return; ir(); });
+}
+// Aba "Pendentes": conteúdo a definir com o usuário — por ora, placeholder.
+function dashPendentes(box){
+  box.innerHTML = `<div class="empty-state">Aba Pendentes — o conteúdo será definido.</div>`;
 }
 const CARD_TIPOS_INFO = {
   certificados_vencer: { label:'Certificados a Vencer', subtitulo:'Vencidos ou vencendo nos próximos 30 dias' },
