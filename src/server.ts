@@ -7220,6 +7220,18 @@ sqlite.exec(`CREATE TABLE IF NOT EXISTS of_regras (
   ordem INTEGER NOT NULL DEFAULT 0,
   criado_em TEXT NOT NULL DEFAULT (datetime('now'))
 )`);
+// Vínculos p/ (a) lançar no Financeiro ao conciliar e (b) gerar o arquivo de lançamentos da Domínio.
+// financeiro_conta_id = conta (banco) do Financeiro espelhando esta conta bancária do Open Finance.
+// conta_contabil = conta do banco no plano de contas (lado banco da partida dobrada no arquivo Domínio).
+for (const [tab, col, def] of [
+  ["of_contas", "financeiro_conta_id", "INTEGER"],
+  ["of_contas", "conta_contabil", "TEXT"],
+  ["of_transacoes", "financeiro_tabela", "TEXT"],
+  ["of_transacoes", "financeiro_id", "INTEGER"],
+] as [string, string, string][]) {
+  const cols = sqlite.prepare(`PRAGMA table_info(${tab})`).all() as any[];
+  if (!cols.some((c) => c.name === col)) sqlite.exec(`ALTER TABLE ${tab} ADD COLUMN ${col} ${def}`);
+}
 // Obrigações POR SETOR. templates = nomes de templates do Envio de Documentos (array cobre variações
 // de nome). fonte: 'dctfweb'/'das' leem a transmissão do Integra Contador; 'envio' = documento anexado
 // no Envio conta como transmitido/feito; 'manual' = sem fonte automática. A entrega ao cliente
@@ -7569,7 +7581,7 @@ function ofConexoesDaEmpresa(empresaId: number) {
   return conexoes.map((c) => ({
     id: c.id, provedor: c.provedor, modo: c.modo, status: c.status, validadeAte: c.validade_ate, criadoEm: c.criado_em,
     contas: (sqlite.prepare(`SELECT * FROM of_contas WHERE conexao_id = ? AND ativo = 1`).all(c.id) as any[]).map((a) => ({
-      id: a.id, banco: a.banco, bankId: a.bank_id, numero: a.numero, tipo: a.tipo,
+      id: a.id, banco: a.banco, bankId: a.bank_id, numero: a.numero, tipo: a.tipo, contaContabil: a.conta_contabil || "",
     })),
   }));
 }
@@ -7608,6 +7620,51 @@ function ofRegrasDaEmpresa(empresaId: number): openFinance.RegraConciliacao[] {
   return (sqlite.prepare(`SELECT padrao, conta_contabil, historico FROM of_regras WHERE empresa_id = ? ORDER BY ordem, id`).all(empresaId) as any[])
     .map((r) => ({ padrao: r.padrao, contaContabil: r.conta_contabil || "", historico: r.historico || "" }));
 }
+// Espelha a conta bancária do Open Finance numa conta do Financeiro (cria 1x e guarda o vínculo).
+function ofGarantirContaFinanceira(conta: any): number {
+  if (conta.financeiro_conta_id) {
+    const ok = sqlite.prepare(`SELECT 1 FROM financeiro_contas WHERE id = ? AND empresa_id = ?`).get(conta.financeiro_conta_id, conta.empresa_id);
+    if (ok) return conta.financeiro_conta_id;
+  }
+  const nome = `${conta.banco || "Banco"} ${conta.numero || ""}`.trim();
+  const id = Number(sqlite.prepare(`INSERT INTO financeiro_contas (empresa_id, nome, tipo) VALUES (?, ?, 'banco')`).run(conta.empresa_id, nome).lastInsertRowid);
+  sqlite.prepare(`UPDATE of_contas SET financeiro_conta_id = ? WHERE id = ?`).run(id, conta.id);
+  conta.financeiro_conta_id = id;
+  return id;
+}
+// Lança (ou atualiza) o título no Financeiro ao conciliar a transação — idempotente pelo vínculo
+// financeiro_id. Entrada (valor>=0) vira conta a receber paga; saída vira conta a pagar paga.
+function ofLancarFinanceiro(t: any): void {
+  const conta = sqlite.prepare(`SELECT * FROM of_contas WHERE id = ?`).get(t.conta_id) as any;
+  if (!conta) return;
+  const fcid = ofGarantirContaFinanceira(conta);
+  const desc = (t.historico && String(t.historico).trim()) || t.descricao || "Movimento bancário";
+  const data = String(t.data).slice(0, 10);
+  const terceiro = t.descricao || null;
+  if (t.financeiro_id && t.financeiro_tabela) {
+    if (t.financeiro_tabela === "receber") sqlite.prepare(`UPDATE financeiro_receber SET descricao=?, valor=?, vencimento=?, data_recebimento=?, conta_id=?, status='pago' WHERE id=?`).run(desc, Math.abs(t.valor), data, data, fcid, t.financeiro_id);
+    else sqlite.prepare(`UPDATE financeiro_pagar SET descricao=?, valor=?, vencimento=?, data_pagamento=?, conta_id=?, status='pago' WHERE id=?`).run(desc, Math.abs(t.valor), data, data, fcid, t.financeiro_id);
+    return;
+  }
+  let tabela: string, novoId: number;
+  if (t.valor >= 0) {
+    novoId = Number(sqlite.prepare(`INSERT INTO financeiro_receber (empresa_id, descricao, cliente_nome, valor, vencimento, status, data_recebimento, conta_id, origem) VALUES (?, ?, ?, ?, ?, 'pago', ?, ?, 'manual')`).run(conta.empresa_id, desc, terceiro, Math.abs(t.valor), data, data, fcid).lastInsertRowid);
+    tabela = "receber";
+  } else {
+    novoId = Number(sqlite.prepare(`INSERT INTO financeiro_pagar (empresa_id, descricao, fornecedor, valor, vencimento, status, data_pagamento, conta_id) VALUES (?, ?, ?, ?, ?, 'pago', ?, ?)`).run(conta.empresa_id, desc, terceiro, Math.abs(t.valor), data, data, fcid).lastInsertRowid);
+    tabela = "pagar";
+  }
+  sqlite.prepare(`UPDATE of_transacoes SET financeiro_tabela = ?, financeiro_id = ? WHERE id = ?`).run(tabela, novoId, t.id);
+  t.financeiro_tabela = tabela; t.financeiro_id = novoId;
+}
+// Desfaz o lançamento no Financeiro (quando a transação deixa de estar conciliada).
+function ofRemoverFinanceiro(t: any): void {
+  if (!t.financeiro_id || !t.financeiro_tabela) return;
+  const tab = t.financeiro_tabela === "receber" ? "financeiro_receber" : "financeiro_pagar";
+  sqlite.prepare(`DELETE FROM ${tab} WHERE id = ?`).run(t.financeiro_id);
+  sqlite.prepare(`UPDATE of_transacoes SET financeiro_tabela = NULL, financeiro_id = NULL WHERE id = ?`).run(t.id);
+  t.financeiro_tabela = null; t.financeiro_id = null;
+}
 // Conciliação automática: TUDO do extrato é contabilizado (nada é ignorado). Transferência entre
 // contas próprias já concilia (é lançamento real de transferência); regra do cliente define
 // conta/histórico; tarifa e tributo ganham sugestão padrão. O que não casar fica pendente pro operador.
@@ -7617,9 +7674,9 @@ function ofConciliar(empresaId: number, competencia: string) {
   const up = sqlite.prepare(`UPDATE of_transacoes SET status = ?, conta_contabil = ?, historico = ?, match_origem = ? WHERE id = ?`);
   let conciliadas = 0, sugeridas = 0;
   for (const t of pendentes) {
-    if (t.tipo_mov === "transferencia_propria") { up.run("conciliada", "Transferência entre contas", "Transferência entre contas próprias", "transferencia", t.id); conciliadas++; continue; }
+    if (t.tipo_mov === "transferencia_propria") { up.run("conciliada", "Transferência entre contas", "Transferência entre contas próprias", "transferencia", t.id); t.conta_contabil = "Transferência entre contas"; t.historico = "Transferência entre contas próprias"; ofLancarFinanceiro(t); conciliadas++; continue; }
     const regra = openFinance.aplicarRegras(t.descricao, regras);
-    if (regra) { up.run("conciliada", regra.contaContabil, regra.historico, "regra", t.id); conciliadas++; continue; }
+    if (regra) { up.run("conciliada", regra.contaContabil, regra.historico, "regra", t.id); t.conta_contabil = regra.contaContabil; t.historico = regra.historico; ofLancarFinanceiro(t); conciliadas++; continue; }
     if (t.tipo_mov === "tarifa") { up.run("pendente", "Despesas Bancárias", "Tarifa bancária", "classificacao", t.id); sugeridas++; continue; }
     if (t.tipo_mov === "tributo") { up.run("pendente", "Impostos e Contribuições", "Pagamento de tributo", "classificacao", t.id); sugeridas++; continue; }
   }
@@ -7680,8 +7737,13 @@ app.post("/api/open-finance/transacoes/:id/marcar", blockCliente, requirePermiss
   if (!t || !podeAcessarEmpresa(user, t.empresa_id)) return res.status(404).json({ error: "Transação não encontrada." });
   const b = req.body || {};
   const status = ["pendente", "conciliada", "ignorada"].includes(b.status) ? b.status : t.status;
-  sqlite.prepare(`UPDATE of_transacoes SET status = ?, conta_contabil = ?, historico = ? WHERE id = ?`)
-    .run(status, b.contaContabil != null ? String(b.contaContabil) : t.conta_contabil, b.historico != null ? String(b.historico) : t.historico, t.id);
+  const contaContabil = b.contaContabil != null ? String(b.contaContabil) : t.conta_contabil;
+  const historico = b.historico != null ? String(b.historico) : t.historico;
+  sqlite.prepare(`UPDATE of_transacoes SET status = ?, conta_contabil = ?, historico = ? WHERE id = ?`).run(status, contaContabil, historico, t.id);
+  t.conta_contabil = contaContabil; t.historico = historico;
+  // Reflete no Financeiro: conciliada => lança/atualiza o título; pendente/ignorada => desfaz.
+  if (status === "conciliada") ofLancarFinanceiro(t);
+  else ofRemoverFinanceiro(t);
   res.json({ ok: true });
 });
 app.get("/api/open-finance/regras", blockCliente, requirePermissao("open_finance", "visualizar"), (req, res) => {
@@ -7718,6 +7780,67 @@ app.get("/api/open-finance/exportar-ofx", blockCliente, requirePermissao("open_f
   res.set("Content-Type", "application/x-ofx");
   res.set("Content-Disposition", `attachment; filename="${nome}"`);
   res.send(partes.join("\n\n"));
+});
+// Salvar a conta contábil do banco (lado banco da partida dobrada no arquivo da Domínio).
+app.put("/api/open-finance/contas/:id", blockCliente, requirePermissao("open_finance", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const conta = sqlite.prepare(`SELECT * FROM of_contas WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!conta || !podeAcessarEmpresa(user, conta.empresa_id)) return res.status(404).json({ error: "Conta não encontrada." });
+  sqlite.prepare(`UPDATE of_contas SET conta_contabil = ? WHERE id = ?`).run(req.body?.contaContabil != null ? String(req.body.contaContabil).trim() : conta.conta_contabil, conta.id);
+  res.json({ ok: true });
+});
+// Monta os lançamentos (partida dobrada) da competência: só transações com conta contábil definida
+// (a do banco + a contrapartida). Entrada: D banco / C contrapartida; saída: D contrapartida / C banco.
+function ofMontarLancamentosDominio(empresaId: number, comp: string, contaId: number | null) {
+  const contas = (contaId ? sqlite.prepare(`SELECT * FROM of_contas WHERE id = ? AND empresa_id = ?`).all(contaId, empresaId) : sqlite.prepare(`SELECT * FROM of_contas WHERE empresa_id = ? AND ativo = 1`).all(empresaId)) as any[];
+  const contaBanco: Record<number, string> = {};
+  contas.forEach((c) => (contaBanco[c.id] = (c.conta_contabil || "").trim()));
+  const tx = sqlite.prepare(`SELECT * FROM of_transacoes WHERE empresa_id = ? AND competencia = ? AND status != 'ignorada' ${contaId ? "AND conta_id = ?" : ""} ORDER BY data, id`).all(...(contaId ? [empresaId, comp, contaId] : [empresaId, comp])) as any[];
+  const lancs: openFinance.LancamentoContabil[] = [];
+  let semContrapartida = 0, semBanco = 0;
+  for (const t of tx) {
+    const contrapartida = (t.conta_contabil || "").trim();
+    const banco = contaBanco[t.conta_id] || "";
+    if (!banco) { semBanco++; continue; }
+    if (!contrapartida || contrapartida === "Transferência entre contas") { if (contrapartida !== "Transferência entre contas") semContrapartida++; }
+    if (!contrapartida) continue;
+    const entrada = t.valor >= 0;
+    lancs.push({
+      data: t.data,
+      contaDebito: entrada ? banco : contrapartida,
+      contaCredito: entrada ? contrapartida : banco,
+      valor: t.valor,
+      historico: (t.historico && String(t.historico).trim()) || t.descricao || "",
+    });
+  }
+  return { lancs, semContrapartida, semBanco, totalContas: contas.length, contasSemConta: contas.filter((c) => !(c.conta_contabil || "").trim()).length };
+}
+// Prévia (quantos lançam, quantos faltam conta) — usada pela tela antes de baixar o arquivo.
+app.get("/api/open-finance/dominio-previa", blockCliente, requirePermissao("open_finance", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.query.empresaId), comp = String(req.query.competencia || "");
+  const contaId = req.query.contaId ? Number(req.query.contaId) : null;
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId) || !/^\d{4}-\d{2}$/.test(comp)) return res.status(400).json({ error: "Dados inválidos." });
+  const m = ofMontarLancamentosDominio(empresaId, comp, contaId);
+  res.json({ lancamentos: m.lancs.length, semContrapartida: m.semContrapartida, contasSemConta: m.contasSemConta, totalContas: m.totalContas });
+});
+app.get("/api/open-finance/exportar-dominio", blockCliente, requirePermissao("open_finance", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.query.empresaId), comp = String(req.query.competencia || "");
+  const contaId = req.query.contaId ? Number(req.query.contaId) : null;
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId) || !/^\d{4}-\d{2}$/.test(comp)) return res.status(400).json({ error: "Dados inválidos." });
+  const emp = sqlite.prepare(`SELECT codigo_dominio, cnpj FROM empresas WHERE id = ?`).get(empresaId) as any;
+  if (!emp) return res.status(404).json({ error: "Empresa não encontrada." });
+  const m = ofMontarLancamentosDominio(empresaId, comp, contaId);
+  if (!m.lancs.length) {
+    const motivo = m.contasSemConta ? "Defina a conta contábil do banco (botão ✎ na conta) " : "";
+    return res.status(400).json({ error: `${motivo}e classifique a conta contábil das transações (conciliar/editar) antes de gerar o arquivo da Domínio.` });
+  }
+  const conteudo = openFinance.gerarLancamentosDominio({ codigo: emp.codigo_dominio, cnpj: emp.cnpj }, { inicio: comp + "-01", fim: ofUltimoDiaMes(comp) }, m.lancs);
+  const nome = `Lancamentos Dominio - ${comp}.txt`;
+  res.set("Content-Type", "text/plain; charset=utf-8");
+  res.set("Content-Disposition", `attachment; filename="${nome}"`);
+  res.send(conteudo);
 });
 // --- Variantes do CLIENTE (self-service): conectar/ver/revogar a própria conta (consentimento é ato do cliente) ---
 app.get("/api/open-finance/minha-empresa/conexoes", requireCliente, (req, res) => {

@@ -219,6 +219,34 @@ export function gerarOfx(args: { bankId: string; acctId: string; dataInicio: str
 }
 
 // ---------------------------------------------------------------------------------------------------
+// Arquivo de LANÇAMENTOS CONTÁBEIS pra importar na Domínio ("Leiaute Domínio Sistemas com Separador").
+// Registro 0000 = identificação da empresa + período; registro 6000 = lançamentos em lote (partida
+// dobrada: data | conta débito | conta crédito | valor | cód. histórico | complemento). Campos
+// separados por "|", data dd/mm/aaaa, valor com vírgula decimal, CRLF por linha.
+// OBS: a ordem dos campos do 6000 segue o leiaute com separador da Domínio; validar com 1 importação
+// de teste no Domínio do escritório (se recusar, ajusto pela amostra exportada de lá).
+// ---------------------------------------------------------------------------------------------------
+export interface LancamentoContabil {
+  data: string; // ISO AAAA-MM-DD
+  contaDebito: string;
+  contaCredito: string;
+  valor: number; // sempre positivo no arquivo
+  historico: string; // complemento do histórico (texto)
+  codHistorico?: string; // código de histórico padrão da Domínio (opcional)
+}
+export function gerarLancamentosDominio(empresa: { codigo?: string; cnpj?: string }, periodo: { inicio: string; fim: string }, lancs: LancamentoContabil[]): string {
+  const dt = (iso: string) => { const [a, m, d] = iso.slice(0, 10).split("-"); return `${d}/${m}/${a}`; };
+  const money = (v: number) => Math.abs(v).toFixed(2).replace(".", ",");
+  const campo = (s: string) => String(s == null ? "" : s).replace(/[|\r\n]+/g, " ").trim();
+  const linhas: string[] = [];
+  linhas.push(["0000", campo(empresa.codigo || empresa.cnpj || ""), dt(periodo.inicio), dt(periodo.fim)].join("|"));
+  for (const l of lancs) {
+    linhas.push(["6000", dt(l.data), campo(l.contaDebito), campo(l.contaCredito), money(l.valor), campo(l.codHistorico || ""), campo(l.historico)].join("|"));
+  }
+  return linhas.join("\r\n") + "\r\n";
+}
+
+// ---------------------------------------------------------------------------------------------------
 // Classificação e regras de conciliação (puras — o server faz o acesso ao banco).
 // ---------------------------------------------------------------------------------------------------
 export type TipoMovimento = "pix" | "ted" | "transferencia_propria" | "tarifa" | "tributo" | "boleto" | "outro";

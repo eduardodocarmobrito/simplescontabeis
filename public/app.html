@@ -8830,14 +8830,15 @@ async function pageOpenFinance(){
           <b>Conexões bancárias</b>
           ${podeEditar?`<button class="btn" id="ofConectar">+ Conectar conta ${OF_STATUS.modo==='sandbox'?'(sandbox)':''}</button>`:''}
         </div>
-        ${conexoes.length? `<div style="overflow-x:auto;"><table class="data-table" style="margin-top:10px;"><thead><tr><th>Banco</th><th>Conta</th><th>Status</th><th>Validade do consentimento</th>${podeEditar?'<th></th>':''}</tr></thead><tbody>
+        ${conexoes.length? `<div style="overflow-x:auto;"><table class="data-table" style="margin-top:10px;"><thead><tr><th>Banco</th><th>Conta</th><th>Conta contábil (banco)</th><th>Status</th><th>Validade do consentimento</th>${podeEditar?'<th></th>':''}</tr></thead><tbody>
           ${conexoes.flatMap(c=> (c.contas.length?c.contas:[{banco:'—',numero:'—'}]).map(a=>`<tr>
-            <td>${esc(a.banco||'—')}</td><td style="white-space:nowrap;">${esc(a.numero||'—')}</td>
+            <td>${ofBancoChip(a.banco, null)}</td><td style="white-space:nowrap;">${esc(a.numero||'—')}</td>
+            <td style="white-space:nowrap;">${a.conta_contabil||a.contaContabil?`<span style="font-variant-numeric:tabular-nums;">${esc(a.contaContabil||a.conta_contabil)}</span>`:'<span class="mut">— definir</span>'}${podeEditar&&a.id?` <button class="btn" ${OF_BTN_SM} data-conta-cont="${a.id}" data-conta-val="${esc(a.contaContabil||'')}" data-conta-nome="${esc((a.banco||'')+' '+(a.numero||''))}" title="Definir conta contábil do banco">✎</button>`:''}</td>
             <td><span class="tag ${c.status==='ativo'?'ok':''}">${c.status==='ativo'?'Ativo':(c.status==='revogado'?'Revogado':'Expirado')}</span></td>
             <td style="white-space:nowrap;">${c.validadeAte?ofDataBr(c.validadeAte):'—'}</td>
             ${podeEditar?`<td>${c.status==='ativo'?`<button class="btn" ${OF_BTN_SM} data-revogar="${c.id}">Revogar</button>`:''}</td>`:''}
           </tr>`)).join('')}
-        </tbody></table></div>` : `<div class="empty-state" style="margin-top:8px;">Nenhuma conta conectada. ${podeEditar?'Clique em "Conectar conta" pra simular o consentimento e puxar um extrato.':''}</div>`}
+        </tbody></table></div><p class="mut" style="font-size:11.5px; margin-top:6px;">A <b>conta contábil do banco</b> é o lado banco da partida dobrada no arquivo da Domínio (ex.: 1.1.1.02.001). Defina uma por conta pra gerar o arquivo de lançamentos.</p>` : `<div class="empty-state" style="margin-top:8px;">Nenhuma conta conectada. ${podeEditar?'Clique em "Conectar conta" pra simular o consentimento e puxar um extrato.':''}</div>`}
       </div>
       <div class="card">
         <div class="row" style="justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px;">
@@ -8846,7 +8847,8 @@ async function pageOpenFinance(){
             ${podeEditar?`<button class="btn" id="ofSync" ${contasAtivas.length?'':'disabled'}>⟳ Sincronizar extrato</button>
             <button class="btn" id="ofConciliar" ${todas.length?'':'disabled'}>✓ Conciliar automático</button>
             <button class="btn" id="ofRegras">Regras</button>`:''}
-            <button class="btn primary" id="ofOfx" ${todas.length?'':'disabled'}>⬇ Exportar OFX</button>
+            <button class="btn" id="ofOfx" ${todas.length?'':'disabled'}>⬇ OFX (extrato)</button>
+            <button class="btn primary" id="ofDominio" ${todas.length?'':'disabled'}>⬇ Lançamentos Domínio</button>
           </div>
         </div>
         ${contasLista.length>1? `<div class="row" style="gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px;">
@@ -8888,8 +8890,26 @@ async function pageOpenFinance(){
     painel.querySelectorAll('[data-revogar]').forEach(b=>b.addEventListener('click', async ()=>{ if(!confirm('Revogar o consentimento desta conexão?')) return; try{ await api('/open-finance/conexoes/'+b.dataset.revogar+'/revogar',{method:'POST'}); toast('Consentimento revogado.','ok'); ofCarregar(); }catch(e){ toast(e.message,'err'); } }));
     if($('ofSync')) $('ofSync').addEventListener('click', async ev=>{ ev.target.disabled=true; const o=ev.target.textContent; ev.target.textContent='Sincronizando…'; try{ const r = await api('/open-finance/sincronizar',{method:'POST',body:{empresaId:OF_EMPRESA_ID,competencia:OF_COMP}}); toast(r.novas+' novas transações (de '+r.total+' lidas · dedup por fitid).','ok'); ofCarregar(); }catch(e){ toast(e.message,'err'); ev.target.disabled=false; ev.target.textContent=o; } });
     if($('ofConciliar')) $('ofConciliar').addEventListener('click', async ()=>{ try{ const r = await api('/open-finance/conciliar',{method:'POST',body:{empresaId:OF_EMPRESA_ID,competencia:OF_COMP}}); toast(r.conciliadas+' conciliadas, '+r.sugeridas+' com sugestão (revise e confirme).','ok'); ofCarregar(); }catch(e){ toast(e.message,'err'); } });
-    if($('ofOfx')) $('ofOfx').addEventListener('click', ev=> rtBaixar('/api/open-finance/exportar-ofx?empresaId='+OF_EMPRESA_ID+'&competencia='+OF_COMP, 'Extrato OFX - '+OF_COMP+'.ofx', ev.currentTarget, 'Gerando OFX…'));
+    const ofContaQS = OF_CONTA!=='todas' ? '&contaId='+OF_CONTA : '';
+    if($('ofOfx')) $('ofOfx').addEventListener('click', ev=> rtBaixar('/api/open-finance/exportar-ofx?empresaId='+OF_EMPRESA_ID+'&competencia='+OF_COMP+ofContaQS, 'Extrato OFX - '+OF_COMP+'.ofx', ev.currentTarget, 'Gerando OFX…'));
+    if($('ofDominio')) $('ofDominio').addEventListener('click', async ev=>{
+      try{ const p = await api('/open-finance/dominio-previa?empresaId='+OF_EMPRESA_ID+'&competencia='+OF_COMP+ofContaQS);
+        if(p.contasSemConta>0 && !p.lancamentos){ toast('Defina a conta contábil do banco (botão ✎ na conta) antes de gerar o arquivo da Domínio.','err'); return; }
+        const faltam = p.semContrapartida>0 ? `\n\n${p.semContrapartida} transação(ões) ainda sem conta contábil não entram no arquivo (classifique no ✎ ou em Regras).` : '';
+        if(!confirm(`Gerar o arquivo de lançamentos pra Domínio com ${p.lancamentos} lançamento(s)?${faltam}\n\nLembrete: valide 1 importação no seu Domínio; se recusar o leiaute, me mande o aviso/uma amostra que eu ajusto.`)) return;
+      }catch(e){ toast(e.message,'err'); return; }
+      rtBaixar('/api/open-finance/exportar-dominio?empresaId='+OF_EMPRESA_ID+'&competencia='+OF_COMP+ofContaQS, 'Lancamentos Dominio - '+OF_COMP+'.txt', ev.currentTarget, 'Gerando arquivo…');
+    });
     if($('ofRegras')) $('ofRegras').addEventListener('click', ()=> ofRegrasModal());
+    painel.querySelectorAll('[data-conta-cont]').forEach(b=>b.addEventListener('click', ()=> ofContaContabilModal(b.dataset.contaCont, b.dataset.contaNome, b.dataset.contaVal)));
+    function ofContaContabilModal(id, nome, atual){
+      openModal(`<h3 style="margin-bottom:2px;">Conta contábil do banco</h3>
+        <div class="mut" style="font-size:12.5px; margin-bottom:12px;">${esc(nome||'')} — conta do banco no seu plano de contas (lado banco da partida dobrada no arquivo da Domínio).</div>
+        <div class="field"><label>Conta contábil</label><input id="ofCcInput" value="${esc(atual||'')}" placeholder="ex.: 1.1.1.02.001"></div>
+        <div class="modal-actions"><button class="btn" onclick="closeModal()">Cancelar</button><button class="btn primary" id="ofCcSalvar">Salvar</button></div>`);
+      setTimeout(()=>{ const i=document.getElementById('ofCcInput'); if(i){ i.focus(); i.select(); } },50);
+      document.getElementById('ofCcSalvar').addEventListener('click', async ()=>{ try{ await api('/open-finance/contas/'+id,{method:'PUT',body:{contaContabil:document.getElementById('ofCcInput').value}}); closeModal(); toast('Conta contábil salva.','ok'); ofCarregar(); }catch(e){ toast(e.message,'err'); } });
+    }
     painel.querySelectorAll('[data-ok]').forEach(b=>b.addEventListener('click', ()=> ofMarcar(b.dataset.ok,{status:'conciliada'})));
     painel.querySelectorAll('[data-edit]').forEach(b=>b.addEventListener('click', ()=>{ const t = tx.items.find(x=>String(x.id)===b.dataset.edit); ofEditarModal(t); }));
     async function ofMarcar(id, body){ try{ await api('/open-finance/transacoes/'+id+'/marcar',{method:'POST',body}); ofCarregar(); }catch(e){ toast(e.message,'err'); } }
