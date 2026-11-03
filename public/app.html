@@ -533,6 +533,10 @@
   .eml-editor-tools{display:flex; gap:6px; margin-bottom:6px;}
   .eml-editor{min-height:240px; max-height:46vh; overflow-y:auto; border:1px solid var(--rule); border-radius:10px; padding:10px 12px; background:var(--paper); font-size:14px; line-height:1.5;}
   .eml-editor:focus{outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-pale); background:var(--surface);}
+  /* Tema escuro: o editor vira uma "folha" clara com texto escuro (igual aos campos de formulário e ao painel de
+     leitura) — antes ficava branco no foco com a letra clara do tema, e o e-mail citado traz cores próprias. */
+  body.theme-glass .eml-editor, body.theme-glass .eml-editor:focus{background:#F5F5F7; color:#1D1D1F; border-color:rgba(255,255,255,.35); caret-color:#1D1D1F;}
+  body.theme-glass .eml-editor a{color:#0b6bcb;}
   @media (max-width: 900px){ .eml-wrap{grid-template-columns:1fr; height:auto;} .eml-lista{max-height:50vh;} .eml-corpo{min-height:60vh;} }
   /* Caixa de atendimento mais larga: usa a tela toda (o botão do chat flutuante pode ficar por cima). */
   .main:has(.dprh-wa){padding:18px 18px 16px;}
