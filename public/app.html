@@ -8771,7 +8771,10 @@ async function reformaDiagMontar(painel, urlApi, urlPdf, urlPremissas){
   }
 }
 // ================= Conciliação Bancária (Open Finance) =================
-let OF_EMPRESA_ID = null, OF_COMP = null, OF_STATUS = null;
+let OF_EMPRESA_ID = null, OF_COMP = null, OF_STATUS = null, OF_CONTA = 'todas';
+const OF_BANCO_CORES = ['#2563eb','#16a34a','#db2777','#d97706','#7c3aed','#0891b2','#dc2626','#4f46e5','#059669','#ca8a04','#0d9488','#e11d48'];
+function ofBancoCor(nome){ let h=0; const s=String(nome||''); for(let i=0;i<s.length;i++) h=(h*31+s.charCodeAt(i))>>>0; return OF_BANCO_CORES[h%OF_BANCO_CORES.length]; }
+function ofBancoChip(banco, numero){ if(!banco) return '<span class="mut">—</span>'; const c=ofBancoCor(banco); return `<span style="display:inline-flex; align-items:center; gap:5px; font-size:11.5px; font-weight:600; color:var(--ink);"><span style="width:9px; height:9px; border-radius:50%; background:${c}; flex:none;"></span>${esc(banco)}${numero?` <span class="mut" style="font-weight:500;">· ${esc(numero)}</span>`:''}</span>`; }
 function ofBRL(v){ return 'R$ ' + Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}); }
 function ofDataBr(d){ return d && /^\d{4}-\d{2}-\d{2}$/.test(d) ? d.slice(8,10)+'/'+d.slice(5,7)+'/'+d.slice(0,4) : (d||''); }
 const OF_TIPO_LABEL = { pix:'PIX', ted:'TED/Transf.', transferencia_propria:'Transf. própria', tarifa:'Tarifa', tributo:'Tributo', boleto:'Boleto', outro:'Outro' };
@@ -8810,7 +8813,17 @@ async function pageOpenFinance(){
     catch(e){ painel.innerHTML = `<div class="card"><div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div></div>`; return; }
     const conexoes = conex.conexoes||[];
     const contasAtivas = conexoes.filter(c=>c.status==='ativo');
-    const r = tx.resumo||{};
+    const contasLista = []; const idsConta = new Set();
+    conexoes.forEach(c=>c.contas.forEach(a=>{ if(!idsConta.has(a.id)){ idsConta.add(a.id); contasLista.push(a); } }));
+    if(OF_CONTA!=='todas' && !idsConta.has(Number(OF_CONTA))) OF_CONTA='todas';
+    const todas = tx.items||[];
+    const itens = todas.filter(t=> OF_CONTA==='todas' || String(t.contaId)===String(OF_CONTA));
+    const r = { total: itens.length,
+      conciliadas: itens.filter(t=>t.status==='conciliada').length,
+      pendentes: itens.filter(t=>t.status==='pendente').length,
+      ignoradas: itens.filter(t=>t.status==='ignorada').length,
+      creditos: itens.filter(t=>t.valor>=0).reduce((a,t)=>a+t.valor,0),
+      debitos: itens.filter(t=>t.valor<0).reduce((a,t)=>a+t.valor,0) };
     painel.innerHTML = `
       <div class="card" style="margin-bottom:14px;">
         <div class="row" style="justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
@@ -8831,23 +8844,32 @@ async function pageOpenFinance(){
           <div><b>Conciliação</b> <span class="mut">· ${MESES_PT[+OF_COMP.slice(5,7)-1]} de ${OF_COMP.slice(0,4)}</span></div>
           <div class="row" style="gap:8px; flex-wrap:wrap;">
             ${podeEditar?`<button class="btn" id="ofSync" ${contasAtivas.length?'':'disabled'}>⟳ Sincronizar extrato</button>
-            <button class="btn" id="ofConciliar" ${r.total?'':'disabled'}>✓ Conciliar automático</button>
+            <button class="btn" id="ofConciliar" ${todas.length?'':'disabled'}>✓ Conciliar automático</button>
             <button class="btn" id="ofRegras">Regras</button>`:''}
-            <button class="btn primary" id="ofOfx" ${r.total?'':'disabled'}>⬇ Exportar OFX</button>
+            <button class="btn primary" id="ofOfx" ${todas.length?'':'disabled'}>⬇ Exportar OFX</button>
           </div>
         </div>
+        ${contasLista.length>1? `<div class="row" style="gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px;">
+          <label class="mut" style="font-size:12.5px;">Conta / banco:</label>
+          <select id="ofContaFiltro" style="max-width:320px;">
+            <option value="todas" ${OF_CONTA==='todas'?'selected':''}>Todas as contas (${todas.length})</option>
+            ${contasLista.map(a=>{ const n=todas.filter(t=>String(t.contaId)===String(a.id)).length; return `<option value="${a.id}" ${String(OF_CONTA)===String(a.id)?'selected':''}>${esc(a.banco)} · ${esc(a.numero)} (${n})</option>`; }).join('')}
+          </select>
+          ${OF_CONTA!=='todas'?`<button class="btn" ${OF_BTN_SM} id="ofContaLimpar">Ver todas</button>`:''}
+        </div>`:''}
         <div class="row" style="gap:16px; flex-wrap:wrap; margin-bottom:10px; font-size:13px;">
-          <span><b>${r.total||0}</b> transações</span>
+          <span><b>${r.total||0}</b> transações${OF_CONTA!=='todas'?' <span class="mut">(filtradas)</span>':''}</span>
           <span style="color:var(--credit);">entradas ${ofBRL(r.creditos)}</span>
           <span style="color:var(--debit);">saídas ${ofBRL(r.debitos)}</span>
           <span>conciliadas <b>${r.conciliadas||0}</b></span>
           <span>pendentes <b>${r.pendentes||0}</b></span>
           <span>ignoradas <b>${r.ignoradas||0}</b></span>
         </div>
-        ${(tx.items||[]).length? `<div style="overflow-x:auto;"><table class="data-table"><thead><tr><th>Data</th><th>Descrição</th><th>Tipo</th><th style="text-align:right;">Valor</th><th>Conta / Histórico</th><th>Status</th>${podeEditar?'<th></th>':''}</tr></thead><tbody>
-          ${tx.items.map(t=>`<tr>
+        ${itens.length? `<div style="overflow-x:auto;"><table class="data-table"><thead><tr><th>Data</th><th>Banco</th><th>Descrição</th><th>Tipo</th><th style="text-align:right;">Valor</th><th>Conta / Histórico</th><th>Status</th>${podeEditar?'<th></th>':''}</tr></thead><tbody>
+          ${itens.map(t=>`<tr>
             <td style="white-space:nowrap;">${ofDataBr(t.data)}</td>
-            <td>${esc(t.descricao||'')}<br><span class="mut" style="font-size:11px;">${esc(t.banco||'')}${t.contaNumero?' · '+esc(t.contaNumero):''}</span></td>
+            <td style="white-space:nowrap;">${ofBancoChip(t.banco, t.contaNumero)}</td>
+            <td>${esc(t.descricao||'')}</td>
             <td><span class="tag">${esc(OF_TIPO_LABEL[t.tipoMov]||t.tipoMov||'—')}</span></td>
             <td style="text-align:right; white-space:nowrap; color:${t.valor<0?'var(--debit)':'var(--credit)'};">${ofBRL(t.valor)}</td>
             <td>${t.contaContabil?esc(t.contaContabil):'<span class="mut">—</span>'}${t.historico?'<br><span class="mut" style="font-size:11px;">'+esc(t.historico)+'</span>':''}</td>
@@ -8858,9 +8880,12 @@ async function pageOpenFinance(){
               ${t.status!=='ignorada'?`<button class="btn" ${OF_BTN_SM} data-ign="${t.id}" title="Ignorar">⊘</button>`:''}
             </td>`:''}
           </tr>`).join('')}
-        </tbody></table></div>` : `<div class="empty-state">Nenhuma transação nesta competência. ${contasAtivas.length?(podeEditar?'Clique em "Sincronizar extrato" pra puxar o mês.':''):'Conecte uma conta primeiro.'}</div>`}
+        </tbody></table></div>` : (OF_CONTA!=='todas' && todas.length ? `<div class="empty-state">Nenhuma transação nesta conta nesta competência. <a href="#" id="ofContaLimpar2">Ver todas as contas</a>.</div>` : `<div class="empty-state">Nenhuma transação nesta competência. ${contasAtivas.length?(podeEditar?'Clique em "Sincronizar extrato" pra puxar o mês.':''):'Conecte uma conta primeiro.'}</div>`)}
       </div>`;
     const $ = id=>document.getElementById(id);
+    if($('ofContaFiltro')) $('ofContaFiltro').addEventListener('change', e=>{ OF_CONTA = e.target.value || 'todas'; ofCarregar(); });
+    if($('ofContaLimpar')) $('ofContaLimpar').addEventListener('click', ()=>{ OF_CONTA='todas'; ofCarregar(); });
+    if($('ofContaLimpar2')) $('ofContaLimpar2').addEventListener('click', e=>{ e.preventDefault(); OF_CONTA='todas'; ofCarregar(); });
     if($('ofConectar')) $('ofConectar').addEventListener('click', ()=> ofConectarModal());
     painel.querySelectorAll('[data-revogar]').forEach(b=>b.addEventListener('click', async ()=>{ if(!confirm('Revogar o consentimento desta conexão?')) return; try{ await api('/open-finance/conexoes/'+b.dataset.revogar+'/revogar',{method:'POST'}); toast('Consentimento revogado.','ok'); ofCarregar(); }catch(e){ toast(e.message,'err'); } }));
     if($('ofSync')) $('ofSync').addEventListener('click', async ev=>{ ev.target.disabled=true; const o=ev.target.textContent; ev.target.textContent='Sincronizando…'; try{ const r = await api('/open-finance/sincronizar',{method:'POST',body:{empresaId:OF_EMPRESA_ID,competencia:OF_COMP}}); toast(r.novas+' novas transações (de '+r.total+' lidas · dedup por fitid).','ok'); ofCarregar(); }catch(e){ toast(e.message,'err'); ev.target.disabled=false; ev.target.textContent=o; } });

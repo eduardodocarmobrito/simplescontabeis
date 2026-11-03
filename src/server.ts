@@ -7661,7 +7661,7 @@ app.get("/api/open-finance/transacoes", blockCliente, requirePermissao("open_fin
   const empresaId = Number(req.query.empresaId), comp = String(req.query.competencia || "");
   if (!empresaId || !podeAcessarEmpresa(user, empresaId) || !/^\d{4}-\d{2}$/.test(comp)) return res.status(400).json({ error: "Dados inválidos." });
   const rows = sqlite.prepare(`SELECT t.id, t.data, t.valor, t.descricao, t.tipo_mov as tipoMov, t.status, t.conta_contabil as contaContabil, t.historico, t.match_origem as matchOrigem,
-      a.banco, a.numero as contaNumero FROM of_transacoes t JOIN of_contas a ON a.id = t.conta_id
+      t.conta_id as contaId, a.banco, a.numero as contaNumero FROM of_transacoes t JOIN of_contas a ON a.id = t.conta_id
       WHERE t.empresa_id = ? AND t.competencia = ? ORDER BY t.data, t.id`).all(empresaId, comp) as any[];
   const resumo = { total: rows.length, conciliadas: rows.filter((r) => r.status === "conciliada").length, pendentes: rows.filter((r) => r.status === "pendente").length, ignoradas: rows.filter((r) => r.status === "ignorada").length,
     creditos: rows.filter((r) => r.valor >= 0).reduce((a, r) => a + r.valor, 0), debitos: rows.filter((r) => r.valor < 0).reduce((a, r) => a + r.valor, 0) };
