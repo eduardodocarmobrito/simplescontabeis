@@ -17563,21 +17563,27 @@ async function obrigacaoDetalheModal(linha, ob){
   `);
   document.getElementById('obrDetFechar').addEventListener('click', closeModal);
   const box=document.getElementById('obrDetBox');
-  const canal = (n)=> n.whatsappEnviado ? (n.tomadorTelefone?('✓ '+esc(n.tomadorTelefone)):'✓ enviado') : (n.whatsappErro? ('<span style="color:var(--debit)">erro</span> · '+esc(n.tomadorTelefone||'')) : (n.tomadorTelefone?('não enviado · '+esc(n.tomadorTelefone)):'<span class="mut">—</span>'));
   if(ob && ob.fonte==='nfse_honorarios'){
     try{
-      const { items } = await api('/nfse/emissoes?empresaId='+linha.empresaId);
-      const notas=(items||[]).filter(n=>n.competencia===OBR.competencia);
-      box.innerHTML = notas.length ? `<div style="overflow-x:auto;"><table class="data-table"><thead><tr><th>Nota</th><th>Serviço</th><th>Valor</th><th>Status</th><th>E-mail destino</th><th>WhatsApp destino</th></tr></thead><tbody>
+      const d = await api('/obrigacoes/nfse-detalhe?empresaId='+linha.empresaId+'&competencia='+encodeURIComponent(OBR.competencia));
+      const notas=d.items||[];
+      const emails=d.emails||[]; const zaps=d.whatsapps||[];
+      const destinos = `<div style="display:flex; gap:18px; flex-wrap:wrap; margin-bottom:12px; font-size:12.5px;">
+        <div><b>✉️ E-mail(s) do cliente:</b> ${emails.length? emails.map(e=>esc(e)).join(', ') : '<span class="mut">nenhum cadastrado</span>'}</div>
+        <div><b>📱 WhatsApp(s) do cliente:</b> ${zaps.length? zaps.map(w=>esc(w)).join(', ') : '<span class="mut">nenhum cadastrado</span>'}</div>
+      </div>`;
+      const sim='<span style="color:var(--credit)">✓ sim</span>', nao='<span class="mut">—</span>';
+      box.innerHTML = notas.length ? destinos + `<div style="overflow-x:auto;"><table class="data-table"><thead><tr><th>Nota</th><th>Serviço</th><th>Valor</th><th>Status</th><th>Origem</th><th>E-mail</th><th>WhatsApp</th></tr></thead><tbody>
         ${notas.map(n=>`<tr>
           <td>${n.numeroNfse?('NFS-e '+esc(n.numeroNfse)):('DPS '+esc(n.numeroDps))}<br><span class="mut" style="font-size:11px;">${n.criadoEm?esc(fmtDateHora(n.criadoEm)):''}</span></td>
           <td>${esc(n.modeloNome||n.descricaoServico||'—')}</td>
           <td style="white-space:nowrap;">${n.valorServico!=null?('R$ '+Number(n.valorServico).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})):'—'}</td>
           <td><span class="tag ${/autoriz|emit/i.test(n.status||'')?'ok':'muted'}">${esc(n.status||'—')}</span></td>
-          <td>${n.tomadorEmail?esc(n.tomadorEmail):'<span class="mut">—</span>'}</td>
-          <td style="white-space:nowrap;">${canal(n)}</td>
+          <td style="font-size:11.5px;">${n.origem==='automatica'?'automática':'manual'}</td>
+          <td>${n.enviadoEmail?sim:nao}</td>
+          <td>${n.enviadoWhatsapp?sim:nao}</td>
         </tr>`).join('')}
-      </tbody></table></div>` : `<div class="empty-state">Nenhuma NFS-e encontrada para ${esc(OBR.competencia)}.</div>`;
+      </tbody></table></div>` : (destinos + `<div class="empty-state">Nenhuma NFS-e de honorários encontrada para ${esc(OBR.competencia)} — a marcação veio da configuração de emissão automática.</div>`);
     }catch(e){ box.innerHTML=`<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; }
   } else {
     box.innerHTML = `<div class="empty-state">Detalhe por documento (DCTF-Web, FGTS etc.) vem na próxima etapa — por ora, abra em <b>Envio de Documentos</b> pra ver os anexos e envios desta empresa.</div>`;

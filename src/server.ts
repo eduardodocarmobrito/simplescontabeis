@@ -16108,6 +16108,64 @@ app.get("/api/nfse/emissoes", blockCliente, requirePermissao("nfse", "visualizar
     }),
   });
 });
+// Detalhe da NFS-e de honorários de UM cliente numa competência (AAAA-MM), pro "ver detalhe" do
+// quadro de Obrigações do Mês. Importante: na nfse_emissoes o empresa_id é o ESCRITÓRIO emitente (o
+// prestador), não o cliente — a ligação nota↔cliente vem do nfse_agendamento_log (empresa_id = cliente,
+// competencia = AAAA-MM, emissao_id). Também pega notas emitidas manualmente pro mesmo tomador (match
+// por CNPJ/CPF do cliente). Os destinos (e-mail/WhatsApp) são os contatos marcados do próprio cliente.
+app.get("/api/obrigacoes/nfse-detalhe", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.query.empresaId);
+  const comp = String(req.query.competencia || "");
+  if (!empresaId || !/^\d{4}-\d{2}$/.test(comp)) return res.status(400).json({ error: "Parâmetros inválidos." });
+  if (!podeAcessarEmpresa(user, empresaId)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  const cliente = sqlite.prepare(`SELECT id, nome, cnpj FROM empresas WHERE id = ?`).get(empresaId) as any;
+  if (!cliente) return res.status(404).json({ error: "Empresa não encontrada." });
+  // 1) Notas ligadas ao cliente pelo log de agendamento (emissão automática).
+  const logs = sqlite
+    .prepare(`SELECT emissao_id, mensagem, executado_em FROM nfse_agendamento_log WHERE empresa_id = ? AND competencia = ? AND sucesso = 1 AND emissao_id IS NOT NULL ORDER BY id DESC`)
+    .all(empresaId, comp) as any[];
+  const logPorEmissao = new Map<number, any>();
+  logs.forEach((l) => { if (!logPorEmissao.has(l.emissao_id)) logPorEmissao.set(l.emissao_id, l); });
+  const ids = new Set<number>(logs.map((l) => l.emissao_id));
+  // 2) Notas manuais pro mesmo tomador (match por documento), na competência (mês da data).
+  const cnpjDigs = String(cliente.cnpj || "").replace(/\D/g, "");
+  let manuais: any[] = [];
+  if (cnpjDigs) {
+    manuais = sqlite
+      .prepare(`SELECT id FROM nfse_emissoes WHERE REPLACE(REPLACE(REPLACE(REPLACE(tomador_documento,'.',''),'/',''),'-',''),' ','') = ? AND substr(competencia,1,7) = ?`)
+      .all(cnpjDigs, comp) as any[];
+    manuais.forEach((m) => ids.add(m.id));
+  }
+  const notas = ids.size
+    ? (sqlite
+        .prepare(
+          `SELECT n.id, n.numero_dps as numeroDps, n.numero_nfse as numeroNfse, n.status, n.valor_servico as valorServico,
+                  n.descricao_servico as descricaoServico, n.modelo_nome as modeloNome, n.competencia, n.criado_em as criadoEm,
+                  n.tomador_nome as tomadorNome, n.tomador_email as tomadorEmail, n.tomador_telefone as tomadorTelefone, n.whatsapp_enviado as whatsappEnviado
+           FROM nfse_emissoes n WHERE n.id IN (${[...ids].map(() => "?").join(",")}) ORDER BY n.criado_em DESC, n.id DESC`
+        )
+        .all(...[...ids]) as any[])
+    : [];
+  // Destinos reais de envio: contatos marcados do cliente (e das empresas-irmãs de mesmo CNPJ).
+  const irmas = empresasClientePorDocumento(cliente.cnpj);
+  const idsContato = Array.from(new Set([empresaId, ...irmas.map((e) => e.id)]));
+  const emails = emailContatosDeEmpresas(idsContato);
+  const whatsapps = whatsappContatosDeEmpresas(idsContato).map((w) => w.telefone);
+  const items = notas.map((n) => {
+    const log = logPorEmissao.get(n.id);
+    const msg = String(log?.mensagem || "");
+    return {
+      ...n,
+      origem: log ? "automatica" : "manual",
+      logMensagem: log?.mensagem || null,
+      enviadoEmail: /enviado por e-mail/i.test(msg) || !!n.tomadorEmail,
+      enviadoWhatsapp: /enviado por whatsapp/i.test(msg) || !!n.whatsappEnviado,
+      anexadoEnvio: /anexado em envio de documentos/i.test(msg),
+    };
+  });
+  res.json({ empresaNome: cliente.nome, competencia: comp, emails, whatsapps, items });
+});
 // Nome de exibição pro arquivo baixado: "Tomador - NFS-e Nº <número>" — usa o número da NFS-e (do
 // município) quando já emitida, senão o id interno como fallback (rascunho/rejeitada).
 function nfseNomeArquivo(row: any, extensao: string): string {
