@@ -7259,6 +7259,15 @@ for (const [tab, col, def] of [
   const cols = sqlite.prepare(`PRAGMA table_info(${tab})`).all() as any[];
   if (!cols.some((c) => c.name === col)) sqlite.exec(`ALTER TABLE ${tab} ADD COLUMN ${col} ${def}`);
 }
+// Plano de contas da Domínio importado por empresa — pra buscar/indicar a conta ao classificar.
+sqlite.exec(`CREATE TABLE IF NOT EXISTS of_plano_contas (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  empresa_id INTEGER NOT NULL,
+  codigo TEXT NOT NULL,
+  descricao TEXT,
+  criado_em TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (empresa_id, codigo)
+)`);
 // Obrigações POR SETOR. templates = nomes de templates do Envio de Documentos (array cobre variações
 // de nome). fonte: 'dctfweb'/'das' leem a transmissão do Integra Contador; 'envio' = documento anexado
 // no Envio conta como transmitido/feito; 'manual' = sem fonte automática. A entrega ao cliente
@@ -7285,13 +7294,11 @@ const OBRIGACOES_POR_SETOR: Record<string, any[]> = {
     { id: "contabil_razao", label: "Razão", templates: ["Razão", "Razão Contábil"], fonte: "envio", prazoTransmissao: 30, prazoEnvio: 30 },
   ],
 };
-app.get("/api/obrigacoes", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
-  const user = (req as any).user;
-  const setor = String(req.query.setor || "dprh");
-  const obrigacoesSetor = OBRIGACOES_POR_SETOR[setor] || [];
-  const comp = String(req.query.competencia || "");
-  const mm = comp.match(/^(\d{4})-(\d{2})$/);
-  if (!mm) return res.status(400).json({ error: "Competência inválida (use AAAA-MM)." });
+// Cálculo do quadro "Obrigações do Mês" (empresa × obrigação numa competência AAAA-MM) — usado pela
+// tela e pelos cards do Painel (DCTF-Web / Fechamento da Folha). `soIds` limita às obrigações pedidas.
+function obrigacoesCalcular(user: { escritorioId: number }, setor: string, comp: string, soIds?: string[]) {
+  const obrigacoesSetor = (OBRIGACOES_POR_SETOR[setor] || []).filter((o: any) => !soIds || soIds.includes(o.id));
+  const mm = comp.match(/^(\d{4})-(\d{2})$/) as RegExpMatchArray;
   const ano = Number(mm[1]), mes = Number(mm[2]);
   const periodoApuracao = `${mm[1]}${mm[2]}`;
   const cfgRows = sqlite.prepare(`SELECT obrigacao, prazo_transmissao, prazo_envio FROM obrigacoes_config WHERE escritorio_id = ?`).all(user.escritorioId) as any[];
@@ -7385,12 +7392,18 @@ app.get("/api/obrigacoes", blockCliente, requirePermissao("empresas", "visualiza
     }
   }
   linhas.sort((a, b) => a.empresaNome.localeCompare(b.empresaNome, "pt-BR"));
-  res.json({
+  return {
     setor,
     competencia: comp,
-    obrigacoes: obrigacoesSetor.map((o) => ({ id: o.id, label: o.label, fonte: o.fonte, proxyTransmissao: o.proxyTransmissao || null, transmissaoEsocial: !!o.transmissaoEsocial, auto: o.fonte !== "manual", prazoTransmissao: cfgMap[o.id]?.prazo_transmissao ?? o.prazoTransmissao, prazoEnvio: cfgMap[o.id]?.prazo_envio ?? o.prazoEnvio })),
+    obrigacoes: obrigacoesSetor.map((o: any) => ({ id: o.id, label: o.label, fonte: o.fonte, proxyTransmissao: o.proxyTransmissao || null, transmissaoEsocial: !!o.transmissaoEsocial, auto: o.fonte !== "manual", prazoTransmissao: cfgMap[o.id]?.prazo_transmissao ?? o.prazoTransmissao, prazoEnvio: cfgMap[o.id]?.prazo_envio ?? o.prazoEnvio })),
     linhas,
-  });
+  };
+}
+app.get("/api/obrigacoes", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const comp = String(req.query.competencia || "");
+  if (!/^\d{4}-\d{2}$/.test(comp)) return res.status(400).json({ error: "Competência inválida (use AAAA-MM)." });
+  res.json(obrigacoesCalcular(user, String(req.query.setor || "dprh"), comp));
 });
 app.put("/api/obrigacoes/config", blockCliente, requirePermissao("obrigacoes", "editar"), (req, res) => {
   const user = (req as any).user;
@@ -7714,13 +7727,43 @@ function ofConciliar(empresaId: number, competencia: string) {
   const up = sqlite.prepare(`UPDATE of_transacoes SET status = ?, conta_contabil = ?, historico = ?, match_origem = ? WHERE id = ?`);
   let conciliadas = 0, sugeridas = 0;
   for (const t of pendentes) {
+    const hist = openFinance.comporHistorico(t.valor, t.descricao); // "Pgto Forn ..."/"Rcbto ..."
     if (t.tipo_mov === "transferencia_propria") { up.run("conciliada", "Transferência entre contas", "Transferência entre contas próprias", "transferencia", t.id); t.conta_contabil = "Transferência entre contas"; t.historico = "Transferência entre contas próprias"; ofLancarFinanceiro(t); conciliadas++; continue; }
     const regra = openFinance.aplicarRegras(t.descricao, regras);
-    if (regra) { up.run("conciliada", regra.contaContabil, regra.historico, "regra", t.id); t.conta_contabil = regra.contaContabil; t.historico = regra.historico; ofLancarFinanceiro(t); conciliadas++; continue; }
-    if (t.tipo_mov === "tarifa") { up.run("pendente", "Despesas Bancárias", "Tarifa bancária", "classificacao", t.id); sugeridas++; continue; }
-    if (t.tipo_mov === "tributo") { up.run("pendente", "Impostos e Contribuições", "Pagamento de tributo", "classificacao", t.id); sugeridas++; continue; }
+    if (regra) { up.run("conciliada", regra.contaContabil, hist, "regra", t.id); t.conta_contabil = regra.contaContabil; t.historico = hist; ofLancarFinanceiro(t); conciliadas++; continue; }
+    if (t.tipo_mov === "tarifa") { up.run("pendente", "Despesas Bancárias", hist, "classificacao", t.id); sugeridas++; continue; }
+    if (t.tipo_mov === "tributo") { up.run("pendente", "Impostos e Contribuições", hist, "classificacao", t.id); sugeridas++; continue; }
   }
   return { avaliadas: pendentes.length, conciliadas, ignoradas: 0, sugeridas, pendentes: pendentes.length - conciliadas };
+}
+// Aprendizado: aplica a conta a TODAS as transações da competência cujo descritivo casa com a
+// palavra-chave (concilia + lança no Financeiro) e, se memorizar, grava a regra (of_regras) pra valer
+// automaticamente nas próximas competências. Retorna quantas aplicou.
+function ofAplicarClassificacao(empresaId: number, competencia: string, palavraChave: string, contaContabil: string, memorizar: boolean) {
+  const chave = String(palavraChave || "").trim();
+  const conta = String(contaContabil || "").trim();
+  if (!chave || !conta) return { aplicadas: 0 };
+  if (memorizar) {
+    const existe = sqlite.prepare(`SELECT id FROM of_regras WHERE empresa_id = ? AND lower(padrao) = lower(?)`).get(empresaId, chave) as any;
+    if (existe) sqlite.prepare(`UPDATE of_regras SET conta_contabil = ?, historico = '' WHERE id = ?`).run(conta, existe.id);
+    else {
+      const ordem = (sqlite.prepare(`SELECT COALESCE(MAX(ordem),-1)+1 n FROM of_regras WHERE empresa_id = ?`).get(empresaId) as any).n;
+      sqlite.prepare(`INSERT INTO of_regras (empresa_id, escritorio_id, padrao, conta_contabil, historico, ordem) VALUES (?, (SELECT escritorio_id FROM empresas WHERE id = ?), ?, ?, '', ?)`).run(empresaId, empresaId, chave, conta, ordem);
+    }
+  }
+  const regra = [{ padrao: chave, contaContabil: conta, historico: "" }];
+  const pendentes = sqlite.prepare(`SELECT * FROM of_transacoes WHERE empresa_id = ? AND competencia = ? AND status != 'conciliada'`).all(empresaId, competencia) as any[];
+  const up = sqlite.prepare(`UPDATE of_transacoes SET status = 'conciliada', conta_contabil = ?, historico = ?, match_origem = 'aprendizado' WHERE id = ?`);
+  let aplicadas = 0;
+  for (const t of pendentes) {
+    if (!openFinance.aplicarRegras(t.descricao, regra)) continue;
+    const hist = openFinance.comporHistorico(t.valor, t.descricao);
+    up.run(conta, hist, t.id);
+    t.conta_contabil = conta; t.historico = hist; t.status = "conciliada";
+    ofLancarFinanceiro(t);
+    aplicadas++;
+  }
+  return { aplicadas };
 }
 
 app.get("/api/open-finance/status", blockCliente, requirePermissao("open_finance", "visualizar"), (_req, res) => {
@@ -7778,12 +7821,49 @@ app.post("/api/open-finance/transacoes/:id/marcar", blockCliente, requirePermiss
   const b = req.body || {};
   const status = ["pendente", "conciliada", "ignorada"].includes(b.status) ? b.status : t.status;
   const contaContabil = b.contaContabil != null ? String(b.contaContabil) : t.conta_contabil;
-  const historico = b.historico != null ? String(b.historico) : t.historico;
+  // Histórico padrão ("Pgto Forn"/"Rcbto" + extrato) quando não vier um explícito e for conciliar.
+  const historico = b.historico != null ? String(b.historico)
+    : (status === "conciliada" && t.tipo_mov !== "transferencia_propria" ? openFinance.comporHistorico(t.valor, t.descricao) : t.historico);
   sqlite.prepare(`UPDATE of_transacoes SET status = ?, conta_contabil = ?, historico = ? WHERE id = ?`).run(status, contaContabil, historico, t.id);
   t.conta_contabil = contaContabil; t.historico = historico;
   // Reflete no Financeiro: conciliada => lança/atualiza o título; pendente/ignorada => desfaz.
   if (status === "conciliada") ofLancarFinanceiro(t);
   else ofRemoverFinanceiro(t);
+  res.json({ ok: true });
+});
+// Robô de aprendizado: classifica 1 e aplica a todos os parecidos (palavra-chave) + memoriza a regra.
+app.post("/api/open-finance/aprender", blockCliente, requirePermissao("open_finance", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const b = req.body || {};
+  const empresaId = Number(b.empresaId), comp = String(b.competencia || "");
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId) || !/^\d{4}-\d{2}$/.test(comp)) return res.status(400).json({ error: "Dados inválidos." });
+  if (!String(b.palavraChave || "").trim() || !String(b.contaContabil || "").trim()) return res.status(400).json({ error: "Informe a palavra-chave e a conta contábil." });
+  res.json(ofAplicarClassificacao(empresaId, comp, String(b.palavraChave), String(b.contaContabil), b.memorizar !== false));
+});
+// Plano de contas (por empresa): listar, importar (colar/enviar texto da Domínio) e limpar.
+app.get("/api/open-finance/plano-contas", blockCliente, requirePermissao("open_finance", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.query.empresaId);
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(400).json({ error: "Empresa inválida." });
+  res.json({ contas: sqlite.prepare(`SELECT id, codigo, descricao FROM of_plano_contas WHERE empresa_id = ? ORDER BY codigo`).all(empresaId) });
+});
+app.post("/api/open-finance/plano-contas", blockCliente, requirePermissao("open_finance", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.query.empresaId);
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(400).json({ error: "Empresa inválida." });
+  const contas = openFinance.parsePlanoContas(String(req.body?.texto || ""));
+  if (!contas.length) return res.status(400).json({ error: "Nenhuma conta reconhecida no texto. Cole o plano de contas (código e descrição por linha)." });
+  const ins = sqlite.prepare(`INSERT INTO of_plano_contas (empresa_id, codigo, descricao) VALUES (?, ?, ?)
+    ON CONFLICT(empresa_id, codigo) DO UPDATE SET descricao = excluded.descricao`);
+  let n = 0;
+  for (const c of contas) { ins.run(empresaId, c.codigo, c.descricao || null); n++; }
+  res.json({ importadas: n, total: (sqlite.prepare(`SELECT COUNT(*) c FROM of_plano_contas WHERE empresa_id = ?`).get(empresaId) as any).c });
+});
+app.delete("/api/open-finance/plano-contas", blockCliente, requirePermissao("open_finance", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.query.empresaId);
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(400).json({ error: "Empresa inválida." });
+  sqlite.prepare(`DELETE FROM of_plano_contas WHERE empresa_id = ?`).run(empresaId);
   res.json({ ok: true });
 });
 app.get("/api/open-finance/regras", blockCliente, requirePermissao("open_finance", "visualizar"), (req, res) => {

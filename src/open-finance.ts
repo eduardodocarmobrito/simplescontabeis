@@ -278,6 +278,39 @@ export function aplicarRegras(descricao: string, regras: RegraConciliacao[]): Re
   return null;
 }
 
+// Histórico padrão do escritório: despesa = "Pgto Forn " + extrato; recebimento = "Rcbto " + extrato.
+export function comporHistorico(valor: number, descricao: string): string {
+  const prefixo = valor < 0 ? "Pgto Forn" : "Rcbto";
+  return `${prefixo} ${(descricao || "").trim()}`.trim();
+}
+// Palavra-chave sugerida pra aprender a classificação (token mais "forte" do descritivo, sem ruído).
+const PALAVRA_RUIDO = new Set(["PAGAMENTO","PGTO","PAGTO","PIX","RECEBIDO","RCBTO","RECEBIMENTO","TED","DOC","TRANSFERENCIA","TRANSF","TRANSFER","GUIA","PAGO","CREDITO","DEBITO","PARA","POR","REF","REFERENTE","LTDA","EIRELI","EPP","CIA","COM","CONTA","VALOR"]);
+export function sugerirPalavraChave(descricao: string): string {
+  const norm = (descricao || "").toUpperCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+  const toks = norm.split(/[^A-Z0-9]+/).filter((t) => t && t.length >= 3 && !PALAVRA_RUIDO.has(t) && !/^\d+$/.test(t));
+  return toks[0] || (norm.split(/\s+/).filter(Boolean)[0] || ""); // 1º token significativo (ex.: TARIFA, DAS, ENERGISA)
+}
+// Parser tolerante do plano de contas exportado/colado da Domínio: cada linha = "codigo<sep>descricao"
+// (sep = ; | tab | 2+ espaços). O código é o 1º campo que começa com dígito/ponto; o resto é a conta.
+export function parsePlanoContas(texto: string): { codigo: string; descricao: string }[] {
+  const out: { codigo: string; descricao: string }[] = [];
+  const vistos = new Set<string>();
+  for (const linhaRaw of (texto || "").split(/\r?\n/)) {
+    const linha = linhaRaw.trim();
+    if (!linha) continue;
+    let codigo = "", descricao = "";
+    const m = linha.match(/^(.*?)[;\t]+(.*)$/) || linha.match(/^(\S+)\s{2,}(.*)$/) || linha.match(/^([\d.\-/]+)\s+(.*)$/);
+    if (m) { codigo = m[1].trim(); descricao = m[2].trim(); }
+    else { const sp = linha.indexOf(" "); if (sp > 0 && /[\d.]/.test(linha[0])) { codigo = linha.slice(0, sp).trim(); descricao = linha.slice(sp + 1).trim(); } else { codigo = linha; descricao = ""; } }
+    if (!codigo) continue;
+    const chave = codigo.toUpperCase();
+    if (vistos.has(chave)) continue;
+    vistos.add(chave);
+    out.push({ codigo, descricao });
+  }
+  return out;
+}
+
 // Casamento exato contra candidatos do próprio sistema (NF-e, honorários, lançamentos): mesmo valor
 // (tolerância de centavos) e data próxima (janela de dias). Retorna o candidato casado ou null.
 export interface CandidatoCasamento { id: string; origem: string; valor: number; data: string; descricao: string }

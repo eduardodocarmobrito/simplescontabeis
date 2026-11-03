@@ -8897,7 +8897,13 @@ async function reformaDiagMontar(painel, urlApi, urlPdf, urlPremissas){
   }
 }
 // ================= Conciliação Bancária (Open Finance) =================
-let OF_EMPRESA_ID = null, OF_COMP = null, OF_STATUS = null, OF_CONTA = 'todas';
+let OF_EMPRESA_ID = null, OF_COMP = null, OF_STATUS = null, OF_CONTA = 'todas', OF_ABA = 'conciliacao', OF_PLANO = [];
+// Mesma heurística do servidor (openFinance.sugerirPalavraChave) — palavra-chave sugerida p/ aprender.
+const OF_PALAVRA_RUIDO = new Set(['PAGAMENTO','PGTO','PAGTO','PIX','RECEBIDO','RCBTO','RECEBIMENTO','TED','DOC','TRANSFERENCIA','TRANSF','TRANSFER','GUIA','PAGO','CREDITO','DEBITO','PARA','POR','REF','REFERENTE','LTDA','EIRELI','EPP','CIA','COM','CONTA','VALOR']);
+function ofSugerirPalavra(desc){ const norm=(desc||'').toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g,''); const toks=norm.split(/[^A-Z0-9]+/).filter(t=>t&&t.length>=3&&!OF_PALAVRA_RUIDO.has(t)&&!/^\d+$/.test(t)); return toks[0]||(norm.split(/\s+/).filter(Boolean)[0]||''); }
+function ofExtrairCodigo(v){ v=String(v||'').trim(); const i=v.indexOf(' — '); return (i>0?v.slice(0,i):v).trim(); }
+function ofPlanoDatalist(id){ return `<datalist id="${id}">${OF_PLANO.map(c=>`<option value="${esc(c.codigo+(c.descricao?' — '+c.descricao:''))}">`).join('')}</datalist>`; }
+function ofPlanoDescricao(codigo){ const c=OF_PLANO.find(x=>x.codigo===codigo); return c?c.descricao||'':''; }
 const OF_BANCO_CORES = ['#2563eb','#16a34a','#db2777','#d97706','#7c3aed','#0891b2','#dc2626','#4f46e5','#059669','#ca8a04','#0d9488','#e11d48'];
 function ofBancoCor(nome){ let h=0; const s=String(nome||''); for(let i=0;i<s.length;i++) h=(h*31+s.charCodeAt(i))>>>0; return OF_BANCO_CORES[h%OF_BANCO_CORES.length]; }
 function ofBancoChip(banco, numero){ if(!banco) return '<span class="mut">—</span>'; const c=ofBancoCor(banco); return `<span style="display:inline-flex; align-items:center; gap:5px; font-size:11.5px; font-weight:600; color:var(--ink);"><span style="width:9px; height:9px; border-radius:50%; background:${c}; flex:none;"></span>${esc(banco)}${numero?` <span class="mut" style="font-weight:500;">· ${esc(numero)}</span>`:''}</span>`; }
@@ -8916,20 +8922,74 @@ async function pageOpenFinance(){
     : `<span class="tag" style="background:#fde68a; color:#92400e;">⚙️ Modo Sandbox — dados de teste (configure a Pluggy pra dado real)</span>`;
   m.innerHTML = `
     <h1>Conciliação Bancária <span style="font-size:13px; font-weight:500; margin-left:6px;">${chip}</span></h1>
-    <p class="subtitle">Open Finance: o cliente autoriza o acesso, puxamos o extrato, conciliamos e exportamos um OFX pra importar no Domínio.</p>
+    <p class="subtitle">Open Finance: o cliente autoriza o acesso, puxamos o extrato, conciliamos (com aprendizado) e exportamos pro Domínio.</p>
+    <div class="tabs" style="margin-bottom:12px;">
+      <div class="tab ${OF_ABA==='conciliacao'?'active':''}" data-ofaba="conciliacao">Conciliação</div>
+      <div class="tab ${OF_ABA==='plano'?'active':''}" data-ofaba="plano">Plano de Contas</div>
+    </div>
     <div class="card" style="margin-bottom:14px;">
       <div class="row" style="gap:12px; flex-wrap:wrap; align-items:flex-end;">
         <div class="field" style="flex:1; min-width:280px; margin-bottom:0;"><label>Empresa</label>${comboSelectHtml('ofEmpresaCombo','Digite nome, CNPJ ou código…')}</div>
-        <div class="field" style="margin-bottom:0;"><label>Competência</label>${monthInputHtml('ofComp', OF_COMP)}</div>
+        <div class="field" id="ofCompWrap" style="margin-bottom:0; ${OF_ABA==='plano'?'display:none;':''}"><label>Competência</label>${monthInputHtml('ofComp', OF_COMP)}</div>
       </div>
     </div>
-    <div id="ofPainel"><div class="card"><div class="empty-state">Escolha a empresa para ver as conexões bancárias e a conciliação.</div></div></div>`;
+    <div id="ofPainel"><div class="card"><div class="empty-state">Escolha a empresa para ${OF_ABA==='plano'?'ver/importar o plano de contas.':'ver as conexões bancárias e a conciliação.'}</div></div></div>`;
   setupMonthPicker('ofComp','ofComp_text');
-  document.getElementById('ofComp').addEventListener('change', e=>{ OF_COMP = e.target.value || OF_COMP; if(OF_EMPRESA_ID) ofCarregar(); });
+  document.getElementById('ofComp').addEventListener('change', e=>{ OF_COMP = e.target.value || OF_COMP; if(OF_EMPRESA_ID) ofRouter(); });
+  main().querySelectorAll('[data-ofaba]').forEach(t=>t.addEventListener('click', ()=>{
+    OF_ABA = t.dataset.ofaba;
+    main().querySelectorAll('[data-ofaba]').forEach(x=>x.classList.toggle('active', x.dataset.ofaba===OF_ABA));
+    const cw=document.getElementById('ofCompWrap'); if(cw) cw.style.display = OF_ABA==='plano'?'none':'';
+    ofRouter();
+  }));
+  async function ofRouter(){
+    if(!OF_EMPRESA_ID){ document.getElementById('ofPainel').innerHTML = `<div class="card"><div class="empty-state">Escolha a empresa para ${OF_ABA==='plano'?'ver/importar o plano de contas.':'ver as conexões bancárias e a conciliação.'}</div></div>`; return; }
+    await ofCarregarPlano();
+    if(OF_ABA==='plano') ofRenderPlano(); else ofCarregar();
+  }
+  async function ofCarregarPlano(){ try{ OF_PLANO = (await api('/open-finance/plano-contas?empresaId='+OF_EMPRESA_ID)).contas || []; }catch(e){ OF_PLANO = []; } }
+  function ofRenderPlano(){
+    const painel = document.getElementById('ofPainel');
+    const podeEd = STATE.user.perfil==='Administrador' || can('open_finance','editar');
+    const render = (filtro)=>{
+      const f = (filtro||'').toLowerCase();
+      const lista = OF_PLANO.filter(c=> !f || (c.codigo+' '+(c.descricao||'')).toLowerCase().includes(f));
+      return `<div style="overflow:auto; max-height:440px;"><table class="data-table"><thead><tr><th>Código</th><th>Descrição</th></tr></thead><tbody>
+        ${lista.length? lista.map(c=>`<tr><td style="white-space:nowrap; font-variant-numeric:tabular-nums;">${esc(c.codigo)}</td><td>${esc(c.descricao||'')}</td></tr>`).join('') : `<tr><td colspan="2"><div class="empty-state">${OF_PLANO.length?'Nada encontrado.':'Nenhuma conta importada ainda.'}</div></td></tr>`}
+      </tbody></table></div>`;
+    };
+    painel.innerHTML = `
+      <div class="card" style="margin-bottom:14px;">
+        <b>Plano de Contas da Domínio</b>
+        <p class="mut" style="font-size:12px; margin:4px 0 10px;">Cole o plano de contas (exporte do Domínio, ou cole <b>código + descrição</b>, um por linha — separados por <code>;</code>, tab ou espaços). Serve pra buscar e indicar a conta ao classificar as transações. ${OF_PLANO.length?`<b>${OF_PLANO.length}</b> contas importadas.`:''}</p>
+        ${podeEd?`<textarea id="ofPlanoTxt" rows="5" placeholder="1.1.1.02.001;BANCO CRESOL&#10;6.1.1.01.004;TARIFAS BANCARIAS&#10;3.1.1.01.001;RECEITA DE SERVICOS" style="width:100%; font-family:monospace; font-size:12px;"></textarea>
+        <div class="row" style="gap:8px; margin-top:8px; flex-wrap:wrap;">
+          <button class="btn primary" id="ofPlanoImportar">Importar</button>
+          ${OF_PLANO.length?`<button class="btn" id="ofPlanoLimpar">Limpar tudo</button>`:''}
+        </div>`:''}
+      </div>
+      <div class="card">
+        <div class="row" style="justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px;">
+          <b>Contas (${OF_PLANO.length})</b>
+          <input id="ofPlanoBusca" placeholder="Buscar por código ou descrição…" style="max-width:320px;">
+        </div>
+        <div id="ofPlanoLista">${render('')}</div>
+      </div>`;
+    const $=id=>document.getElementById(id);
+    if($('ofPlanoBusca')) $('ofPlanoBusca').addEventListener('input', e=>{ $('ofPlanoLista').innerHTML = render(e.target.value); });
+    if($('ofPlanoImportar')) $('ofPlanoImportar').addEventListener('click', async ev=>{
+      const txt = $('ofPlanoTxt').value.trim();
+      if(!txt){ toast('Cole o plano de contas.','err'); return; }
+      ev.target.disabled=true;
+      try{ const r = await api('/open-finance/plano-contas?empresaId='+OF_EMPRESA_ID,{method:'POST',body:{texto:txt}}); toast(r.importadas+' contas importadas (total '+r.total+').','ok'); await ofCarregarPlano(); ofRenderPlano(); }
+      catch(e){ toast(e.message,'err'); ev.target.disabled=false; }
+    });
+    if($('ofPlanoLimpar')) $('ofPlanoLimpar').addEventListener('click', async ()=>{ if(!confirm('Apagar todo o plano de contas importado desta empresa?')) return; try{ await api('/open-finance/plano-contas?empresaId='+OF_EMPRESA_ID,{method:'DELETE'}); toast('Plano de contas limpo.','ok'); await ofCarregarPlano(); ofRenderPlano(); }catch(e){ toast(e.message,'err'); } });
+  }
   let empresas = [];
   try{ empresas = await empresasAtivas(); }catch(e){ document.getElementById('ofPainel').innerHTML = `<div class="card"><div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div></div>`; return; }
-  setupComboSelect('ofEmpresaCombo', empresas.map(e=>({ id:e.id, label: empresaComboLabel(e) })), id=>{ OF_EMPRESA_ID = id?Number(id):null; if(OF_EMPRESA_ID) ofCarregar(); });
-  if(OF_EMPRESA_ID){ const e = empresas.find(x=>x.id===OF_EMPRESA_ID); if(e){ const root=document.getElementById('ofEmpresaCombo'); root.querySelector('.combo-input').value = empresaComboLabel(e); root.querySelector('.combo-value').value=e.id; } ofCarregar(); }
+  setupComboSelect('ofEmpresaCombo', empresas.map(e=>({ id:e.id, label: empresaComboLabel(e) })), id=>{ OF_EMPRESA_ID = id?Number(id):null; if(OF_EMPRESA_ID) ofRouter(); });
+  if(OF_EMPRESA_ID){ const e = empresas.find(x=>x.id===OF_EMPRESA_ID); if(e){ const root=document.getElementById('ofEmpresaCombo'); root.querySelector('.combo-input').value = empresaComboLabel(e); root.querySelector('.combo-value').value=e.id; } ofRouter(); }
 
   async function ofCarregar(){
     const painel = document.getElementById('ofPainel');
@@ -9031,10 +9091,12 @@ async function pageOpenFinance(){
     function ofContaContabilModal(id, nome, atual){
       openModal(`<h3 style="margin-bottom:2px;">Conta contábil do banco</h3>
         <div class="mut" style="font-size:12.5px; margin-bottom:12px;">${esc(nome||'')} — conta do banco no seu plano de contas (lado banco da partida dobrada no arquivo da Domínio).</div>
-        <div class="field"><label>Conta contábil</label><input id="ofCcInput" value="${esc(atual||'')}" placeholder="ex.: 1.1.1.02.001"></div>
+        <div class="field"><label>Conta contábil ${OF_PLANO.length?'<span class="mut">(busque por código ou nome)</span>':''}</label><input id="ofCcInput" list="ofCcPlanoList" value="${esc(atual||'')}" placeholder="${OF_PLANO.length?'digite o código ou o nome da conta…':'ex.: 1.1.1.02.001'}" autocomplete="off">${ofPlanoDatalist('ofCcPlanoList')}<div id="ofCcDesc" class="mut" style="font-size:11.5px; margin-top:4px;"></div></div>
         <div class="modal-actions"><button class="btn" onclick="closeModal()">Cancelar</button><button class="btn primary" id="ofCcSalvar">Salvar</button></div>`);
+      const ccDesc=()=>{ const d=document.getElementById('ofCcDesc'); const de=ofPlanoDescricao(ofExtrairCodigo(document.getElementById('ofCcInput').value)); d.textContent = de?('→ '+de):''; };
+      document.getElementById('ofCcInput').addEventListener('input', ccDesc); ccDesc();
       setTimeout(()=>{ const i=document.getElementById('ofCcInput'); if(i){ i.focus(); i.select(); } },50);
-      document.getElementById('ofCcSalvar').addEventListener('click', async ()=>{ try{ await api('/open-finance/contas/'+id,{method:'PUT',body:{contaContabil:document.getElementById('ofCcInput').value}}); closeModal(); toast('Conta contábil salva.','ok'); ofCarregar(); }catch(e){ toast(e.message,'err'); } });
+      document.getElementById('ofCcSalvar').addEventListener('click', async ()=>{ try{ await api('/open-finance/contas/'+id,{method:'PUT',body:{contaContabil:ofExtrairCodigo(document.getElementById('ofCcInput').value)}}); closeModal(); toast('Conta contábil salva.','ok'); ofCarregar(); }catch(e){ toast(e.message,'err'); } });
     }
     painel.querySelectorAll('[data-ok]').forEach(b=>b.addEventListener('click', ()=> ofMarcar(b.dataset.ok,{status:'conciliada'})));
     painel.querySelectorAll('[data-edit]').forEach(b=>b.addEventListener('click', ()=>{ const t = tx.items.find(x=>String(x.id)===b.dataset.edit); ofEditarModal(t); }));
@@ -9048,12 +9110,39 @@ async function pageOpenFinance(){
       document.getElementById('ofBancoConectar').addEventListener('click', async ev=>{ ev.target.disabled=true; try{ const banco=document.getElementById('ofBanco').value; const r = await api('/open-finance/conectar',{method:'POST',body:{empresaId:OF_EMPRESA_ID, banco}}); closeModal(); toast('Conta conectada ('+r.modo+').','ok'); ofCarregar(); }catch(e){ toast(e.message,'err'); ev.target.disabled=false; } });
     }
     function ofEditarModal(t){
-      openModal(`<h3 style="margin-bottom:2px;">Lançamento da transação</h3>
-        <div class="mut" style="font-size:12.5px; margin-bottom:12px;">${ofDataBr(t.data)} · ${esc(t.descricao||'')} · ${ofBRL(t.valor)}</div>
-        <div class="field"><label>Conta contábil</label><input id="ofEdConta" value="${esc(t.contaContabil||'')}" placeholder="ex.: 1.1.1.02.001"></div>
-        <div class="field"><label>Histórico</label><input id="ofEdHist" value="${esc(t.historico||'')}" placeholder="ex.: Recebimento de cliente"></div>
-        <div class="modal-actions"><button class="btn" onclick="closeModal()">Cancelar</button><button class="btn primary" id="ofEdSalvar">Salvar e conciliar</button></div>`);
-      document.getElementById('ofEdSalvar').addEventListener('click', async ()=>{ try{ await api('/open-finance/transacoes/'+t.id+'/marcar',{method:'POST',body:{status:'conciliada',contaContabil:document.getElementById('ofEdConta').value,historico:document.getElementById('ofEdHist').value}}); closeModal(); ofCarregar(); }catch(e){ toast(e.message,'err'); } });
+      const histPadrao = (t.valor<0?'Pgto Forn ':'Rcbto ')+(t.descricao||'');
+      const palavra = ofSugerirPalavra(t.descricao);
+      const naoConc = (tx.items||[]).filter(x=>x.status!=='conciliada');
+      const conta = (pal)=> naoConc.filter(x=>(x.descricao||'').toLowerCase().includes(String(pal||'').toLowerCase())).length;
+      openModal(`<h3 style="margin-bottom:2px;">Classificar lançamento</h3>
+        <div class="mut" style="font-size:12.5px; margin-bottom:12px;">${ofDataBr(t.data)} · ${esc(t.descricao||'')} · <b style="color:${t.valor<0?'var(--debit)':'var(--credit)'}">${ofBRL(t.valor)}</b></div>
+        <div class="field"><label>Conta contábil ${OF_PLANO.length?'<span class="mut">(busque por código ou nome)</span>':`<span class="mut">— importe o Plano de Contas pra buscar</span>`}</label>
+          <input id="ofEdConta" list="ofEdPlanoList" value="${esc(t.contaContabil||'')}" placeholder="${OF_PLANO.length?'digite o código ou o nome da conta…':'ex.: 1.1.1.02.001'}" autocomplete="off">${ofPlanoDatalist('ofEdPlanoList')}
+          <div id="ofEdContaDesc" class="mut" style="font-size:11.5px; margin-top:4px;"></div></div>
+        <div class="field"><label>Histórico <span class="mut">(padrão: ${t.valor<0?'Pgto Forn':'Rcbto'} + extrato)</span></label><input id="ofEdHist" value="${esc(t.historico||histPadrao)}"></div>
+        <label class="checkbox-row" style="align-items:flex-start;"><input type="checkbox" id="ofEdAplicar" checked> <span><b>Aplicar a todos os parecidos e memorizar</b><br><span class="mut" style="font-size:11.5px;">Concilia todos os lançamentos que contêm a palavra-chave e guarda a regra pra conciliar sozinho nas próximas competências.</span></span></label>
+        <div class="field" id="ofEdPalavraWrap"><label>Palavra-chave</label><input id="ofEdPalavra" value="${esc(palavra)}"><div id="ofEdPalavraHint" class="mut" style="font-size:11.5px; margin-top:4px;"></div></div>
+        <div class="modal-actions"><button class="btn" onclick="closeModal()">Cancelar</button><button class="btn primary" id="ofEdSalvar">Salvar e conciliar</button></div>`, 'min(520px, 96vw)');
+      const edDesc=()=>{ const de=ofPlanoDescricao(ofExtrairCodigo(document.getElementById('ofEdConta').value)); document.getElementById('ofEdContaDesc').textContent = de?('→ '+de):''; };
+      document.getElementById('ofEdConta').addEventListener('input', edDesc); edDesc();
+      const palHint=()=>{ const n=conta(document.getElementById('ofEdPalavra').value); document.getElementById('ofEdPalavraHint').textContent = `Vai conciliar ${n} lançamento(s) desta competência que contêm essa palavra.`; };
+      document.getElementById('ofEdPalavra').addEventListener('input', palHint); palHint();
+      document.getElementById('ofEdAplicar').addEventListener('change', e=>{ document.getElementById('ofEdPalavraWrap').style.display = e.target.checked?'':'none'; });
+      document.getElementById('ofEdSalvar').addEventListener('click', async ()=>{
+        const contaCod = ofExtrairCodigo(document.getElementById('ofEdConta').value);
+        if(!contaCod){ toast('Informe a conta contábil.','err'); return; }
+        const aplicar = document.getElementById('ofEdAplicar').checked;
+        const pal = document.getElementById('ofEdPalavra').value.trim();
+        try{
+          if(aplicar && pal){
+            const r = await api('/open-finance/aprender',{method:'POST',body:{empresaId:OF_EMPRESA_ID,competencia:OF_COMP,palavraChave:pal,contaContabil:contaCod,memorizar:true}});
+            toast(`${r.aplicadas} lançamento(s) conciliados com "${pal}" → ${contaCod} e memorizado.`,'ok');
+          } else {
+            await api('/open-finance/transacoes/'+t.id+'/marcar',{method:'POST',body:{status:'conciliada',contaContabil:contaCod,historico:document.getElementById('ofEdHist').value}});
+          }
+          closeModal(); ofCarregar();
+        }catch(e){ toast(e.message,'err'); }
+      });
     }
     async function ofRegrasModal(){
       let regras = [];
