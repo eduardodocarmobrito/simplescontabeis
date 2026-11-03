@@ -404,7 +404,41 @@
   .chat-msg.theirs{align-self:flex-start; background:var(--paper-deep); color:var(--ink); border-bottom-left-radius:3px;}
   .chat-msg .hora{display:block; font-size:9.5px; opacity:.65; margin-top:3px;}
   .chat-msg.mine .hora{opacity:1; color:rgba(255,255,255,.88);}
-  .chat-input-row{display:flex; gap:6px; padding:8px; border-top:1px solid var(--rule); flex:none;}
+  .chat-input-row{display:flex; gap:6px; padding:8px; border-top:1px solid var(--rule); flex:none; align-items:flex-end;}
+  /* Painel esticável: alça no canto superior esquerdo (o painel é ancorado embaixo/à direita) + botão
+     de maximizar no cabeçalho. Tamanho escolhido fica salvo no navegador (localStorage chatPanelTam). */
+  .chat-panel.expandido{width:min(760px, calc(100vw - 32px)) !important; height:calc(100vh - 160px) !important;}
+  .chat-resize-grip{position:absolute; top:0; left:0; width:18px; height:18px; cursor:nwse-resize; z-index:2; border-top-left-radius:14px;
+    background:linear-gradient(135deg, rgba(255,255,255,.6) 0 2px, transparent 2px 5px, rgba(255,255,255,.6) 5px 7px, transparent 7px);}
+  .chat-panel.expandido .chat-resize-grip{display:none;}
+  .chat-panel-acao{margin-left:auto; background:none; border:none; color:#fff; opacity:.7; cursor:pointer; font-size:14px; padding:2px 4px; line-height:1;}
+  .chat-panel-acao:hover{opacity:1;}
+  .chat-panel-acao + .chat-panel-close{margin-left:0;}
+  /* Responder igual WhatsApp: ↩ ao lado da bolha (aparece no hover; no celular fica sempre visível) */
+  .chat-msg{position:relative;}
+  .chat-msg-resp{position:absolute; top:50%; transform:translateY(-50%); width:24px; height:24px; border-radius:50%; border:1px solid var(--rule); background:var(--surface); color:var(--ink-soft); font-size:12px; line-height:1; cursor:pointer; opacity:0; transition:opacity .12s; display:flex; align-items:center; justify-content:center; padding:0;}
+  .chat-msg.mine .chat-msg-resp{left:-30px;}
+  .chat-msg.theirs .chat-msg-resp{right:-30px;}
+  .chat-msg:hover .chat-msg-resp, .chat-msg-resp:focus{opacity:1;}
+  @media (hover:none){ .chat-msg-resp{opacity:.6;} }
+  .chat-cit{display:block; border-left:3px solid var(--accent-deep); background:rgba(0,0,0,.06); border-radius:6px; padding:4px 8px; margin:0 0 5px; font-size:11.5px; line-height:1.35; cursor:pointer; white-space:normal;}
+  .chat-cit b{display:block; font-size:11px; color:var(--accent-deep);}
+  .chat-cit span{display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; white-space:pre-wrap; opacity:.85;}
+  .chat-msg.mine .chat-cit{background:rgba(255,255,255,.16); border-left-color:rgba(255,255,255,.85);}
+  .chat-msg.mine .chat-cit b{color:#fff;}
+  .chat-msg.destaque{animation:chatDestaque 1.6s ease;}
+  @keyframes chatDestaque{0%,60%{box-shadow:0 0 0 3px var(--accent);}100%{box-shadow:0 0 0 0 transparent;}}
+  .chat-resp-bar{margin:6px 8px 0; padding:5px 8px; background:var(--paper-deep); border-left:3px solid var(--accent-deep); border-radius:7px; font-size:11.5px; display:flex; gap:8px; align-items:flex-start; flex:none;}
+  .chat-resp-bar.hidden{display:none;}
+  .chat-resp-bar .txt{flex:1; min-width:0;}
+  .chat-resp-bar .txt b{display:block; font-size:11px; color:var(--accent-deep);}
+  .chat-resp-bar .txt span{display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:var(--ink-soft);}
+  .chat-resp-bar .x{cursor:pointer; opacity:.7; background:none; border:none; color:var(--ink); font-size:13px; padding:0;}
+  .chat-resp-bar .x:hover{opacity:1;}
+  /* Campo de digitar: cresce sozinho com o texto; o botão ⤢ deixa ele grande (pra textos longos). */
+  .chat-input-row button{height:34px;}
+  .chat-input-row button#chatInputExp{background:transparent; color:var(--ink-soft); font-size:14px; width:26px;}
+  .chat-input-row.grande textarea{height:min(45vh, 260px) !important; max-height:none;}
   /* DP/RH › WhatsApp */
   .atd-ficha-sec{margin-top:16px;}
   .atd-ficha-sec h4{margin:0 0 6px; font-size:13px;}
@@ -562,7 +596,7 @@
     .dprh-msgs .chat-msg{max-width:88%;}
     .dprh-midia-img, .dprh-midia-audio{max-width:100%;}
   }
-  .chat-input-row textarea{flex:1; resize:none; border:1px solid var(--rule); border-radius:8px; padding:7px 9px; font-size:12.5px; font-family:inherit; max-height:70px; background:var(--paper); color:var(--ink);}
+  .chat-input-row textarea{flex:1; resize:none; border:1px solid var(--rule); border-radius:8px; padding:7px 9px; font-size:12.5px; font-family:inherit; max-height:160px; min-height:34px; background:var(--paper); color:var(--ink); line-height:1.4;}
   .chat-input-row textarea::placeholder{color:var(--ink-soft);}
   .chat-input-row textarea:focus{outline:none; border-color:var(--accent);}
   .chat-input-row button{border:none; background:var(--accent-deep); color:#fff; border-radius:8px; width:36px; cursor:pointer; font-size:15px; flex:none;}
@@ -747,6 +781,10 @@ body.theme-glass .chat-panel{
   border-color: rgba(255,255,255,.12);
 }
 body.theme-glass .chat-conv-busca{background:transparent; border-bottom-color:rgba(255,255,255,.1);}
+body.theme-glass .chat-msg-resp{background:rgba(var(--glass-rgb,5,31,32),.92); border-color:rgba(255,255,255,.25); color:#F5F5F7;}
+body.theme-glass .chat-cit{background:rgba(255,255,255,.1); border-left-color:var(--accent);}
+body.theme-glass .chat-cit b, body.theme-glass .chat-resp-bar .txt b{color:var(--accent);}
+body.theme-glass .chat-resp-bar{border-left-color:var(--accent);}
 body.theme-glass .chat-conv-item{border-bottom-color:rgba(255,255,255,.08);}
 body.theme-glass .chat-conv-item:hover{background:rgba(255,255,255,.08);}
 body.theme-glass .chat-conv-nome{color:#F5F5F7;}
@@ -2322,6 +2360,47 @@ async function carregarDiretorioChat(){
     if(CHAT.aberto && CHAT.tela==='lista') renderChatConvLista();
   }catch(e){}
 }
+// Tamanho do painel do chat: alça (canto sup. esquerdo) estica; ⤢ maximiza. Fica salvo no navegador.
+function chatTamLer(){ try{ return JSON.parse(localStorage.getItem('chatPanelTam')||'{}'); }catch(e){ return {}; } }
+function chatTamAplicar(){
+  const panel = document.getElementById('chatPanel'); if(!panel) return;
+  const t = chatTamLer();
+  panel.classList.toggle('expandido', !!t.max);
+  panel.style.width = t.w ? Math.min(t.w, window.innerWidth-32)+'px' : '';
+  panel.style.height = t.h ? Math.min(t.h, window.innerHeight-160)+'px' : '';
+  const b = document.getElementById('chatExpandir');
+  if(b){ b.textContent = t.max ? '🗗' : '⤢'; b.title = t.max ? 'Voltar ao tamanho normal' : 'Expandir o chat'; }
+}
+function chatHeaderAcoes(){
+  return `<button class="chat-panel-acao" id="chatExpandir" title="Expandir o chat">⤢</button><button class="chat-panel-close" id="chatFechar" title="Fechar">✕</button>`;
+}
+function chatLigarPainel(){
+  const panel = document.getElementById('chatPanel');
+  document.getElementById('chatFechar').addEventListener('click', toggleChatPanel);
+  document.getElementById('chatExpandir').addEventListener('click', ()=>{
+    const t = chatTamLer(); t.max = !t.max; localStorage.setItem('chatPanelTam', JSON.stringify(t)); chatTamAplicar();
+    const l = document.getElementById('chatLista'); if(l) l.scrollTop = l.scrollHeight;
+  });
+  const grip = document.createElement('div');
+  grip.className = 'chat-resize-grip'; grip.title = 'Arraste para esticar o chat';
+  panel.appendChild(grip);
+  grip.addEventListener('pointerdown', ev=>{
+    ev.preventDefault();
+    const r = panel.getBoundingClientRect(), x0 = ev.clientX, y0 = ev.clientY;
+    grip.setPointerCapture(ev.pointerId);
+    const mover = e=>{
+      const w = Math.max(300, Math.min(window.innerWidth-32, r.width + (x0 - e.clientX)));
+      const h = Math.max(340, Math.min(window.innerHeight-160, r.height + (y0 - e.clientY)));
+      panel.style.width = w+'px'; panel.style.height = h+'px';
+    };
+    const soltar = ()=>{
+      grip.removeEventListener('pointermove', mover); grip.removeEventListener('pointerup', soltar);
+      localStorage.setItem('chatPanelTam', JSON.stringify({ w: Math.round(panel.offsetWidth), h: Math.round(panel.offsetHeight), max:false }));
+    };
+    grip.addEventListener('pointermove', mover); grip.addEventListener('pointerup', soltar);
+  });
+  chatTamAplicar();
+}
 function toggleChatPanel(){
   const panel = document.getElementById('chatPanel');
   if(CHAT.aberto){
@@ -2342,13 +2421,13 @@ function renderChatLista(){
   panel.innerHTML = `
     <div class="chat-panel-header">
       <span class="titulo">Conversas</span>
-      <button class="chat-panel-close" id="chatFechar" title="Fechar">✕</button>
+      ${chatHeaderAcoes()}
     </div>
     <div class="chat-conv-busca"><input type="text" id="chatBusca" placeholder="Buscar empresa ou colaborador…" value="${esc(CHAT.filtro)}"></div>
     <div class="chat-conv-lista" id="chatConvLista"></div>
     ${STATE.user?.perfil==='Administrador' ? '<div style="padding:6px 12px; border-top:1px solid var(--rule-soft); text-align:right;"><a href="#" id="chatLimpar" style="font-size:11.5px; color:var(--ink-soft);">🗑 Limpar todas as conversas</a></div>' : ''}
   `;
-  document.getElementById('chatFechar').addEventListener('click', toggleChatPanel);
+  chatLigarPainel();
   document.getElementById('chatLimpar')?.addEventListener('click', async ev=>{
     ev.preventDefault();
     const conf = prompt('Isto apaga TODAS as conversas do chat interno (clientes, equipe e diretas) de todo o escritório. Um backup é guardado no servidor.\n\nDigite LIMPAR para confirmar:');
@@ -2432,20 +2511,23 @@ async function abrirChatThread(tipo, alvoId, titulo){
         <div class="titulo">${tipo==='dm'?'👤 ':tipo==='equipe'?'👥 ':''}${esc(titulo)}</div>
         ${temStatus?`<div class="chat-status" id="chatStatusHeader"><span class="dot"></span><span class="txt">…</span></div>`:''}
       </div>
-      <button class="chat-panel-close" id="chatFechar" title="Fechar">✕</button>
+      ${chatHeaderAcoes()}
     </div>
     <div class="chat-panel-body">
       <div class="chat-lista" id="chatLista"><div class="empty-state" style="padding:20px; font-size:12px;">Carregando…</div></div>
+      <div id="chatRespBar" class="chat-resp-bar hidden"></div>
       <div id="chatAnexoChip" class="chat-anexo-chip hidden"></div>
-      <div class="chat-input-row">
+      <div class="chat-input-row" id="chatInputRow">
         <button id="chatClipe" title="Anexar arquivo" type="button">📎</button>
         <input type="file" id="chatArquivo" class="hidden">
         <textarea id="chatInput" rows="1" placeholder="Escreva uma mensagem…" maxlength="2000"></textarea>
+        <button id="chatInputExp" type="button" title="Aumentar o campo de digitar">⤢</button>
         <button id="chatEnviar" title="Enviar">➤</button>
       </div>
     </div>
   `;
-  document.getElementById('chatFechar').addEventListener('click', toggleChatPanel);
+  chatLigarPainel();
+  CHAT.respondendo = null;
   const voltar = document.getElementById('chatVoltar');
   if(voltar) voltar.addEventListener('click', ()=>{ if(CHAT.mensagensTimer){ clearInterval(CHAT.mensagensTimer); CHAT.mensagensTimer=null; } renderChatLista(); });
   const input = document.getElementById('chatInput');
@@ -2461,6 +2543,25 @@ async function abrirChatThread(tipo, alvoId, titulo){
   }
   document.getElementById('chatClipe').addEventListener('click', ()=> arquivoInput.click());
   arquivoInput.addEventListener('change', atualizarAnexoChip);
+  // Campo cresce sozinho com o texto (até ~160px); ⤢ deixa ele grande pra textos longos.
+  const inputRow = document.getElementById('chatInputRow');
+  const autoAltura = ()=>{ if(inputRow.classList.contains('grande')) return; input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight+2, 160)+'px'; };
+  input.addEventListener('input', autoAltura);
+  document.getElementById('chatInputExp').addEventListener('click', ()=>{
+    const grande = inputRow.classList.toggle('grande');
+    const b = document.getElementById('chatInputExp'); b.textContent = grande ? '🗕' : '⤢'; b.title = grande ? 'Diminuir o campo de digitar' : 'Aumentar o campo de digitar';
+    if(!grande) autoAltura();
+    input.focus();
+  });
+  CHAT.renderRespBar = ()=>{
+    const bar = document.getElementById('chatRespBar'); if(!bar) return;
+    const r = CHAT.respondendo;
+    if(!r){ bar.classList.add('hidden'); bar.innerHTML=''; return; }
+    bar.classList.remove('hidden');
+    bar.innerHTML = `<div class="txt"><b>↩ Respondendo ${esc(r.autorNome)}</b><span>${esc(r.texto || (r.anexoNome?'📎 '+r.anexoNome:''))}</span></div><button class="x" type="button" title="Cancelar resposta">✕</button>`;
+    bar.querySelector('.x').addEventListener('click', ()=>{ CHAT.respondendo = null; CHAT.renderRespBar(); input.focus(); });
+  };
+  input.addEventListener('keydown', ev=>{ if(ev.key==='Escape' && CHAT.respondendo){ CHAT.respondendo = null; CHAT.renderRespBar(); } });
   // Colar um print (Cmd/Ctrl+V) anexa como se tivesse escolhido pelo clipe.
   input.addEventListener('paste', ev=>{
     const f = [...(ev.clipboardData?.files || [])][0];
@@ -2483,6 +2584,7 @@ async function abrirChatThread(tipo, alvoId, titulo){
       else if(CHAT.tipo==='equipe') campos = { texto, tipo:'equipe' };
       else if(CHAT.tipo==='dm') campos = { texto, tipo:'dm', userId: CHAT.alvoId };
       else campos = { texto, tipo:'empresa', empresaId: CHAT.alvoId };
+      if(CHAT.respondendo) campos.respostaA = CHAT.respondendo.id;
       let body;
       if(arquivo){
         body = new FormData();
@@ -2493,7 +2595,10 @@ async function abrirChatThread(tipo, alvoId, titulo){
       input.value = '';
       arquivoInput.value = '';
       atualizarAnexoChip();
+      CHAT.respondendo = null; CHAT.renderRespBar();
+      inputRow.classList.remove('grande'); document.getElementById('chatInputExp').textContent = '⤢'; autoAltura();
       await carregarChatMensagens();
+      const l = document.getElementById('chatLista'); if(l) l.scrollTop = l.scrollHeight;
     }catch(e){ toast(e.message,'err'); }
     finally{ enviarBtn.disabled = false; input.focus(); }
   }
@@ -2516,13 +2621,34 @@ async function carregarChatMensagens(){
     const lista = document.getElementById('chatLista');
     if(!lista) return;
     const pertoDoFim = lista.scrollTop + lista.clientHeight >= lista.scrollHeight - 30;
+    const scrollAntes = lista.scrollTop;
+    CHAT.msgsPorId = new Map(data.items.map(m=>[m.id, m]));
     lista.innerHTML = data.items.map(m=>{
       const anexoHtml = m.anexoNome
         ? `<a class="chat-anexo-link" href="/api/chat/mensagens/${CHAT.tipo}/${m.id}/anexo" target="_blank" rel="noopener">📎 ${esc(m.anexoNome)}</a>`
         : '';
-      return `<div class="chat-msg ${m.mine?'mine':'theirs'}">${m.texto?esc(m.texto):''}${anexoHtml}<span class="hora">${esc(m.autorNome)} · ${fmtDateHora(m.criadoEm)}</span></div>`;
+      const c = m.respostaA;
+      const citHtml = c ? (c.apagada
+        ? `<span class="chat-cit"><span>Mensagem não disponível</span></span>`
+        : `<span class="chat-cit" data-cit="${c.id}" title="Ir para a mensagem"><b>${esc(c.autorNome)}</b><span>${esc(c.texto || (c.anexoNome?'📎 '+c.anexoNome:''))}</span></span>`) : '';
+      return `<div class="chat-msg ${m.mine?'mine':'theirs'}" data-id="${m.id}">${citHtml}${m.texto?esc(m.texto):''}${anexoHtml}<span class="hora">${esc(m.autorNome)} · ${fmtDateHora(m.criadoEm)}</span><button type="button" class="chat-msg-resp" title="Responder">↩</button></div>`;
     }).join('') || `<div class="empty-state" style="padding:20px; font-size:12px;">Nenhuma mensagem ainda. Escreva a primeira!</div>`;
-    if(pertoDoFim) lista.scrollTop = lista.scrollHeight;
+    lista.querySelectorAll('.chat-msg-resp').forEach(b=>b.addEventListener('click', ev=>{
+      ev.stopPropagation();
+      const m = CHAT.msgsPorId.get(Number(b.closest('.chat-msg').dataset.id)); if(!m) return;
+      CHAT.respondendo = { id:m.id, autorNome:m.mine?'você':m.autorNome, texto:m.texto, anexoNome:m.anexoNome };
+      CHAT.renderRespBar && CHAT.renderRespBar();
+      document.getElementById('chatInput')?.focus();
+    }));
+    lista.querySelectorAll('.chat-cit[data-cit]').forEach(el=>el.addEventListener('click', ()=>{
+      const alvo = lista.querySelector(`.chat-msg[data-id="${el.dataset.cit}"]`);
+      if(!alvo){ toast('Mensagem antiga — fora das últimas carregadas.','err'); return; }
+      alvo.scrollIntoView({ block:'center', behavior:'smooth' });
+      alvo.classList.remove('destaque'); void alvo.offsetWidth; alvo.classList.add('destaque');
+    }));
+    // Duplo clique na bolha também responde (atalho, igual arrastar no WhatsApp).
+    lista.querySelectorAll('.chat-msg[data-id]').forEach(el=>el.addEventListener('dblclick', ev=>{ if(ev.target.closest('a,.chat-cit')) return; el.querySelector('.chat-msg-resp').click(); }));
+    if(pertoDoFim) lista.scrollTop = lista.scrollHeight; else lista.scrollTop = scrollAntes;
     if(chatEhStaff() && CHAT.tipo==='empresa') atualizarChatStatusHeader(data.empresaOnline);
     else if(chatEhStaff() && CHAT.tipo==='dm') atualizarChatStatusHeader(data.colegaOnline);
     atualizarResumoChat();

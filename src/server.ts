@@ -1550,6 +1550,30 @@ for (const tabela of ["chat_mensagens", "chat_equipe_mensagens", "chat_dm_mensag
     sqlite.exec(`ALTER TABLE ${tabela} ADD COLUMN anexo_size INTEGER`);
     console.log(`Migração aplicada: ${tabela}.anexo_*.`);
   }
+  // "Responder" igual WhatsApp: a mensagem guarda o id da mensagem citada (mesma conversa).
+  if (!nomes.has("resposta_a_id")) {
+    sqlite.exec(`ALTER TABLE ${tabela} ADD COLUMN resposta_a_id INTEGER`);
+    console.log(`Migração aplicada: ${tabela}.resposta_a_id.`);
+  }
+}
+// Escopo de cada conversa do chat (a mensagem citada tem que ser da MESMA conversa).
+type ChatEscopo = { tabela: "chat_mensagens" | "chat_equipe_mensagens" | "chat_dm_mensagens"; where: string; args: any[] };
+// Preenche `respostaA` ({id, autorNome, texto, anexoNome}) em cada mensagem que cita outra. A citada
+// normalmente já está nas linhas carregadas; se for mais antiga que o limite, busca avulsa no escopo.
+function chatAnexarCitacoes(rows: any[], escopo: ChatEscopo) {
+  const porId = new Map(rows.map((r) => [r.id, r]));
+  const avulsa = sqlite.prepare(`SELECT id, autor_nome as autorNome, texto, anexo_nome as anexoNome FROM ${escopo.tabela} WHERE id = ? AND ${escopo.where}`);
+  return rows.map((r) => {
+    const { respostaAId, ...resto } = r;
+    if (!respostaAId) return resto;
+    const c = porId.get(respostaAId) || (avulsa.get(respostaAId, ...escopo.args) as any);
+    return { ...resto, respostaA: c ? { id: c.id, autorNome: c.autorNome, texto: String(c.texto || "").slice(0, 300), anexoNome: c.anexoNome || null } : { id: respostaAId, apagada: true } };
+  });
+}
+function chatRespostaValida(valor: any, escopo: ChatEscopo): number | null {
+  const id = Number(valor);
+  if (!Number.isInteger(id) || id <= 0) return null;
+  return sqlite.prepare(`SELECT id FROM ${escopo.tabela} WHERE id = ? AND ${escopo.where}`).get(id, ...escopo.args) ? id : null;
 }
 
 // Migração leve: telefone do usuário (colaborador/administrador) — usado pra avisar por WhatsApp
@@ -2266,6 +2290,9 @@ if ((sqlite.prepare(`SELECT COUNT(*) as c FROM empresa_modulos`).get() as any).c
   if (!colsFinContas.some((c) => c.name === "saldo_inicial")) {
     sqlite.exec(`ALTER TABLE financeiro_contas ADD COLUMN saldo_inicial REAL NOT NULL DEFAULT 0`);
   }
+  // Agência + número da conta (identifica a conta e casa com a conta bancária do Open Finance na conciliação).
+  if (!colsFinContas.some((c) => c.name === "agencia")) sqlite.exec(`ALTER TABLE financeiro_contas ADD COLUMN agencia TEXT`);
+  if (!colsFinContas.some((c) => c.name === "numero")) sqlite.exec(`ALTER TABLE financeiro_contas ADD COLUMN numero TEXT`);
 }
 // Migração: conciliação bancária (extrato .OFX) — tabela nova pra guardar cada transação importada
 // do banco; UNIQUE(conta_id, fitid) usa o ID único que o próprio OFX dá pra cada transação, pra
@@ -5526,7 +5553,7 @@ app.get("/api/chat/mensagens", (req, res) => {
   if (tipo === "equipe") {
     const rows = sqlite
       .prepare(
-        `SELECT id, autor_nome as autorNome, autor_user_id as autorUserId, texto, criado_em as criadoEm, anexo_nome as anexoNome, anexo_size as anexoSize
+        `SELECT id, autor_nome as autorNome, autor_user_id as autorUserId, texto, criado_em as criadoEm, anexo_nome as anexoNome, anexo_size as anexoSize, resposta_a_id as respostaAId
          FROM chat_equipe_mensagens WHERE escritorio_id = ? ORDER BY id ASC LIMIT 300`
       )
       .all(user.escritorioId) as any[];
@@ -5537,7 +5564,7 @@ app.get("/api/chat/mensagens", (req, res) => {
          ON CONFLICT(escritorio_id, user_id) DO UPDATE SET ultima_msg_lida_id = MAX(ultima_msg_lida_id, excluded.ultima_msg_lida_id)`
       )
       .run(user.escritorioId, user.id, maxId);
-    return res.json({ items: rows.map((r) => ({ ...r, mine: r.autorUserId === user.id })) });
+    return res.json({ items: chatAnexarCitacoes(rows, { tabela: "chat_equipe_mensagens", where: "escritorio_id = ?", args: [user.escritorioId] }).map((r) => ({ ...r, mine: r.autorUserId === user.id })) });
   }
   if (tipo === "dm") {
     const colegaId = Number(req.query.userId);
@@ -5546,7 +5573,7 @@ app.get("/api/chat/mensagens", (req, res) => {
     const [a, b] = chatDmPar(user.id, colegaId);
     const rows = sqlite
       .prepare(
-        `SELECT id, autor_nome as autorNome, autor_user_id as autorUserId, texto, criado_em as criadoEm, anexo_nome as anexoNome, anexo_size as anexoSize
+        `SELECT id, autor_nome as autorNome, autor_user_id as autorUserId, texto, criado_em as criadoEm, anexo_nome as anexoNome, anexo_size as anexoSize, resposta_a_id as respostaAId
          FROM chat_dm_mensagens WHERE user_a_id = ? AND user_b_id = ? ORDER BY id ASC LIMIT 300`
       )
       .all(a, b) as any[];
@@ -5557,7 +5584,7 @@ app.get("/api/chat/mensagens", (req, res) => {
          ON CONFLICT(user_a_id, user_b_id, user_id) DO UPDATE SET ultima_msg_lida_id = MAX(ultima_msg_lida_id, excluded.ultima_msg_lida_id)`
       )
       .run(a, b, user.id, maxId);
-    return res.json({ items: rows.map((r) => ({ ...r, mine: r.autorUserId === user.id })), colegaNome: colega.nome, colegaOnline: chatUserOnline(colegaId, user.escritorioId) });
+    return res.json({ items: chatAnexarCitacoes(rows, { tabela: "chat_dm_mensagens", where: "user_a_id = ? AND user_b_id = ?", args: [a, b] }).map((r) => ({ ...r, mine: r.autorUserId === user.id })), colegaNome: colega.nome, colegaOnline: chatUserOnline(colegaId, user.escritorioId) });
   }
 
   let empresaId: number;
@@ -5570,7 +5597,7 @@ app.get("/api/chat/mensagens", (req, res) => {
   }
   const rows = sqlite
     .prepare(
-      `SELECT id, autor_nome as autorNome, autor_lado as autorLado, texto, criado_em as criadoEm, anexo_nome as anexoNome, anexo_size as anexoSize
+      `SELECT id, autor_nome as autorNome, autor_lado as autorLado, texto, criado_em as criadoEm, anexo_nome as anexoNome, anexo_size as anexoSize, resposta_a_id as respostaAId
        FROM chat_mensagens WHERE empresa_id = ? ORDER BY id ASC LIMIT 300`
     )
     .all(empresaId) as any[];
@@ -5581,7 +5608,7 @@ app.get("/api/chat/mensagens", (req, res) => {
   }
   const mineLado = user.perfil === "Cliente" ? "cliente" : "escritorio";
   res.json({
-    items: rows.map((r) => ({ ...r, mine: r.autorLado === mineLado })),
+    items: chatAnexarCitacoes(rows, { tabela: "chat_mensagens", where: "empresa_id = ?", args: [empresaId] }).map((r) => ({ ...r, mine: r.autorLado === mineLado })),
     empresaId,
     empresaOnline: user.perfil === "Cliente" ? undefined : chatEmpresaOnline(empresaId, user.escritorioId),
   });
@@ -5617,8 +5644,8 @@ app.post("/api/chat/mensagens", upload.single("arquivo"), (req, res) => {
 
   if (tipo === "equipe") {
     const info = sqlite
-      .prepare(`INSERT INTO chat_equipe_mensagens (escritorio_id, autor_user_id, autor_nome, texto, anexo_nome, anexo_path, anexo_mime, anexo_size) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(user.escritorioId, user.id, user.nome, texto, anexoNome, anexoPath, anexoMime, anexoSize);
+      .prepare(`INSERT INTO chat_equipe_mensagens (escritorio_id, autor_user_id, autor_nome, texto, anexo_nome, anexo_path, anexo_mime, anexo_size, resposta_a_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(user.escritorioId, user.id, user.nome, texto, anexoNome, anexoPath, anexoMime, anexoSize, chatRespostaValida(req.body?.respostaA, { tabela: "chat_equipe_mensagens", where: "escritorio_id = ?", args: [user.escritorioId] }));
     sqlite
       .prepare(
         `INSERT INTO chat_equipe_leitura (escritorio_id, user_id, ultima_msg_lida_id) VALUES (?, ?, ?)
@@ -5633,8 +5660,8 @@ app.post("/api/chat/mensagens", upload.single("arquivo"), (req, res) => {
     if (!colega) return res.status(404).json({ error: "Colaborador não encontrado." });
     const [a, b] = chatDmPar(user.id, colegaId);
     const info = sqlite
-      .prepare(`INSERT INTO chat_dm_mensagens (escritorio_id, user_a_id, user_b_id, autor_user_id, autor_nome, texto, anexo_nome, anexo_path, anexo_mime, anexo_size) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(user.escritorioId, a, b, user.id, user.nome, texto, anexoNome, anexoPath, anexoMime, anexoSize);
+      .prepare(`INSERT INTO chat_dm_mensagens (escritorio_id, user_a_id, user_b_id, autor_user_id, autor_nome, texto, anexo_nome, anexo_path, anexo_mime, anexo_size, resposta_a_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(user.escritorioId, a, b, user.id, user.nome, texto, anexoNome, anexoPath, anexoMime, anexoSize, chatRespostaValida(req.body?.respostaA, { tabela: "chat_dm_mensagens", where: "user_a_id = ? AND user_b_id = ?", args: [a, b] }));
     const mensagemId = Number(info.lastInsertRowid);
     sqlite
       .prepare(
@@ -5664,10 +5691,10 @@ app.post("/api/chat/mensagens", upload.single("arquivo"), (req, res) => {
   }
   const info = sqlite
     .prepare(
-      `INSERT INTO chat_mensagens (escritorio_id, empresa_id, autor_user_id, autor_nome, autor_lado, texto, lido_pelo_escritorio, lido_pelo_cliente, anexo_nome, anexo_path, anexo_mime, anexo_size)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO chat_mensagens (escritorio_id, empresa_id, autor_user_id, autor_nome, autor_lado, texto, lido_pelo_escritorio, lido_pelo_cliente, anexo_nome, anexo_path, anexo_mime, anexo_size, resposta_a_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(escritorioId, empresaId, user.id, user.nome, autorLado, texto, autorLado === "escritorio" ? 1 : 0, autorLado === "cliente" ? 1 : 0, anexoNome, anexoPath, anexoMime, anexoSize);
+    .run(escritorioId, empresaId, user.id, user.nome, autorLado, texto, autorLado === "escritorio" ? 1 : 0, autorLado === "cliente" ? 1 : 0, anexoNome, anexoPath, anexoMime, anexoSize, chatRespostaValida(req.body?.respostaA, { tabela: "chat_mensagens", where: "empresa_id = ?", args: [empresaId] }));
   res.json({ id: Number(info.lastInsertRowid) });
 });
 // Baixa o anexo de uma mensagem do chat (qualquer um dos 3 tipos) — mesma checagem de acesso da
@@ -18813,7 +18840,7 @@ app.get("/api/nfse/minha-empresa/cep/:cep", requireCliente, requireModuloAtivo('
 function financeiroContasComSaldo(empresaId: number): any[] {
   return sqlite
     .prepare(
-      `SELECT c.id, c.nome, c.tipo, c.ativo, c.saldo_inicial as saldoInicial,
+      `SELECT c.id, c.nome, c.tipo, c.ativo, c.saldo_inicial as saldoInicial, c.agencia, c.numero,
               c.saldo_inicial
                 + COALESCE((SELECT SUM(valor) FROM financeiro_receber WHERE conta_id = c.id AND status = 'pago'), 0)
                 - COALESCE((SELECT SUM(valor) FROM financeiro_pagar WHERE conta_id = c.id AND status = 'pago'), 0)
@@ -19356,27 +19383,29 @@ app.get("/api/financeiro/minha-empresa/contas", requireCliente, requireModuloAti
 });
 app.post("/api/financeiro/minha-empresa/contas", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
   const user = (req as any).user;
-  const { nome, tipo, saldoInicial } = req.body || {};
+  const { nome, tipo, saldoInicial, agencia, numero } = req.body || {};
   if (!nome || !String(nome).trim()) return res.status(400).json({ error: "Informe o nome da conta." });
   const tipoValido = ["banco", "caixa", "outro"].includes(tipo) ? tipo : "banco";
   const info = sqlite
-    .prepare(`INSERT INTO financeiro_contas (empresa_id, nome, tipo, saldo_inicial) VALUES (?, ?, ?, ?)`)
-    .run(user.empresaId, String(nome).trim(), tipoValido, saldoInicial != null ? Number(saldoInicial) : 0);
+    .prepare(`INSERT INTO financeiro_contas (empresa_id, nome, tipo, saldo_inicial, agencia, numero) VALUES (?, ?, ?, ?, ?, ?)`)
+    .run(user.empresaId, String(nome).trim(), tipoValido, saldoInicial != null ? Number(saldoInicial) : 0, agencia != null ? String(agencia).trim() : null, numero != null ? String(numero).trim() : null);
   res.json({ id: Number(info.lastInsertRowid) });
 });
 app.put("/api/financeiro/minha-empresa/contas/:id", requireCliente, requireModuloAtivo('financeiro'), (req, res) => {
   const user = (req as any).user;
   const existente = sqlite.prepare(`SELECT * FROM financeiro_contas WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), user.empresaId) as any;
   if (!existente) return res.status(404).json({ error: "Conta não encontrada." });
-  const { nome, tipo, ativo, saldoInicial } = req.body || {};
+  const { nome, tipo, ativo, saldoInicial, agencia, numero } = req.body || {};
   const tipoValido = ["banco", "caixa", "outro"].includes(tipo) ? tipo : existente.tipo;
   sqlite
-    .prepare(`UPDATE financeiro_contas SET nome=?, tipo=?, ativo=?, saldo_inicial=? WHERE id=?`)
+    .prepare(`UPDATE financeiro_contas SET nome=?, tipo=?, ativo=?, saldo_inicial=?, agencia=?, numero=? WHERE id=?`)
     .run(
       nome != null ? String(nome).trim() : existente.nome,
       tipoValido,
       ativo != null ? (ativo ? 1 : 0) : existente.ativo,
       saldoInicial != null ? Number(saldoInicial) : existente.saldo_inicial,
+      agencia != null ? String(agencia).trim() : existente.agencia,
+      numero != null ? String(numero).trim() : existente.numero,
       existente.id
     );
   res.json({ ok: true });
