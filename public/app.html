@@ -3179,6 +3179,8 @@ const CARD_TIPOS_INFO = {
   efd_omisso: { label:'SPED-Fiscal (EFD ICMS/IPI) Omisso', subtitulo:'Empresas obrigadas com EFD não entregue (Consulta SEFA)' },
   cnd_estadual: { label:'Certidão Estadual (CND)', subtitulo:'Empresas com pendência estadual (sem certidão negativa) — SEFA' },
   cnd_municipal: { label:'Certidão Municipal (CND)', subtitulo:'Empresas com pendência municipal (sem certidão negativa) — Prefeitura' },
+  dctfweb_nao_entregue: { label:'DCTF-Web Não Entregue', subtitulo:'Empresas sem DCTF-Web entregue (ativa no e-CAC) — desde 07/2026' },
+  folha_nao_fechada: { label:'Fechamento da Folha', subtitulo:'Empresas com folha não transmitida ao eSocial — desde 07/2026' },
   caixapostal_nao_lida: { label:'Mensagens no e-CAC', subtitulo:'Empresas com mensagem não lida na Caixa Postal' },
   pesquisa_pagamento: { label:'Pagamento DAS/DCTF-Web', subtitulo:'Cliente respondeu que não pagou, ou não respondeu a pesquisa' },
   checklist_atraso: { label:'Documentos Pendentes', subtitulo:'Competência anterior, após o prazo, sem envio do cliente' },
@@ -3465,6 +3467,19 @@ function cardDetalheModal(c){
           if(!confirmar('Remover '+a.dataset.nome+' da lista de EFD omisso? Use quando a empresa já regularizou.')) return;
           try{ await api('/efd-omisso/empresa/'+a.dataset.emp+'/limpar', { method:'POST' }); toast('Empresa removida da lista.','ok'); carregar(); pageDashboard(); }
           catch(e){ toast(e.message,'err'); }
+        }));
+      } else if(tipo==='dctfweb_nao_entregue' || tipo==='folha_nao_fechada'){
+        // Mesma validação do quadro DP/RH › Obrigações do Mês. Clicar numa competência abre o quadro
+        // naquela competência já filtrado pela empresa (lá tem o detalhe e o "Consultar agora").
+        box.innerHTML = `<div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">${tipo==='dctfweb_nao_entregue'?'Entregue = DCTF-Web da competência <b>Ativa</b> no e-CAC':'Fechada = DCTF-Web da competência <b>Ativa com origem eSocial</b> no e-CAC'} (consulta pelo Integra Contador — Agenda e-CAC ou "Validar no e-CAC"). A competência passa a pendenciar no dia 03 do mês seguinte. Clique numa competência para abrir o quadro.</div>
+          <table class="data-table"><thead><tr><th>Empresa</th><th>Competências em aberto</th></tr></thead><tbody>
+          ${items.map(i=>`<tr><td>${empresaCodigoMatrizFilialHtml(i.empresaId, i.empresaNome)}</td><td>${i.competencias.map(cp=>`<span class="tag ${cp.erro?'warn':'bad'} obr-card-comp" data-comp="${esc(cp.competencia)}" data-nome="${esc(i.empresaNome)}" title="${esc(cp.situacao)}" style="margin:2px 6px 2px 0; display:inline-block; cursor:pointer;">${cp.erro?'⚠ ':''}${esc(cp.rotulo)}</span>`).join('')}</td></tr>`).join('')}
+        </tbody></table>`;
+        box.querySelectorAll('.obr-card-comp').forEach(t=>t.addEventListener('click', ()=>{
+          closeModal();
+          OBR.competencia = t.dataset.comp; OBR.busca = t.dataset.nome;
+          SETOR_ABA_INICIAL = 'obrigacoes'; OBR_VOLTAR_DASH = DASH_TAB || 'pendentes';
+          goPage('dprh');
         }));
       } else if(tipo==='cnd_federal' || tipo==='cnd_estadual' || tipo==='cnd_municipal'){
         const esferaCnd = tipo.replace('cnd_','');

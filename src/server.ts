@@ -2751,6 +2751,8 @@ sqlite.exec(`DROP TABLE IF EXISTS fgts_sync_jobs`);
   seedCard("efd_omisso", "SPED-Fiscal (EFD ICMS/IPI) Omisso", "Empresas obrigadas com EFD não entregue (Consulta SEFA)");
   seedCard("cnd_estadual", "Certidão Estadual (CND)", "Empresas com pendência estadual (sem certidão negativa) — SEFA");
   seedCard("cnd_municipal", "Certidão Municipal (CND)", "Empresas com pendência municipal (sem certidão negativa) — Prefeitura");
+  seedCard("dctfweb_nao_entregue", "DCTF-Web Não Entregue", "Empresas sem DCTF-Web entregue (ativa no e-CAC) — desde 07/2026");
+  seedCard("folha_nao_fechada", "Fechamento da Folha", "Empresas com folha não transmitida ao eSocial — desde 07/2026");
 }
 // Migração leve: prazo (dia do mês) de um modelo de Solicitação de Documentos — usado pelo card
 // "Documentos pendentes" pra saber quando um item obrigatório já venceu sem upload.
@@ -21430,7 +21432,36 @@ app.get("/api/financeiro/resumo", blockCliente, requirePermissao("financeiro", "
 // função abaixo devolve a lista (o card mostra só items.length); todas já filtram pelas empresas
 // que o usuário logado pode ver (empresasVisiveis), pro caso de um Colaborador restrito abrir o
 // Painel.
-const CARD_TIPOS: string[] = ["certificados_vencer", "das_atraso", "situacao_fiscal", "caixapostal_nao_lida", "checklist_atraso", "solicitacoes_pendentes", "envio_atraso", "solicitacao_atraso", "licencas_vencer", "pesquisa_pagamento", "efd_omisso", "cnd_estadual", "cnd_municipal"];
+const CARD_TIPOS: string[] = ["certificados_vencer", "das_atraso", "situacao_fiscal", "caixapostal_nao_lida", "checklist_atraso", "solicitacoes_pendentes", "envio_atraso", "solicitacao_atraso", "licencas_vencer", "pesquisa_pagamento", "efd_omisso", "cnd_estadual", "cnd_municipal", "dctfweb_nao_entregue", "folha_nao_fechada"];
+
+// Cards "DCTF-Web Não Entregue" e "Fechamento da Folha": usam a MESMA validação do quadro DP/RH ›
+// Obrigações do Mês (transmitida = DCTFWeb Ativa no e-CAC; Folha = Ativa com origem eSocial; marcação
+// manual sobrepõe). Varre de 07/2026 (pedido do usuário) até a última competência vencida: a competência
+// M passa a pendenciar no dia 03 do mês M+1. Uma linha por empresa com as competências em aberto.
+const OBRIG_CARD_INICIO = { ano: 2026, mes: 7 };
+function cardObrigacaoNaoTransmitida(user: any, obrigacaoId: string): any[] {
+  const hoje = agoraBrasilia();
+  let ultAno = hoje.ano, ultMes = hoje.mes - (hoje.dia >= 3 ? 1 : 2);
+  while (ultMes <= 0) { ultMes += 12; ultAno--; }
+  const visiveis = new Set(empresasVisiveis(user));
+  const porEmp = new Map<number, any>();
+  for (let a = OBRIG_CARD_INICIO.ano, m = OBRIG_CARD_INICIO.mes; a * 100 + m <= ultAno * 100 + ultMes; m === 12 ? (a++, (m = 1)) : m++) {
+    const comp = `${a}-${String(m).padStart(2, "0")}`;
+    for (const l of obrigacoesCalcular(user, "dprh", comp, [obrigacaoId]).linhas) {
+      if (l.transmitida || !visiveis.has(l.empresaId)) continue;
+      const it = porEmp.get(l.empresaId) || { empresaId: l.empresaId, empresaNome: l.empresaNome, competencias: [] as any[] };
+      const msg = l.situacaoDctf?.mensagem || null;
+      it.competencias.push({
+        competencia: comp,
+        rotulo: `${comp.slice(5, 7)}/${comp.slice(0, 4)}`,
+        situacao: l.transmitidaManual ? "Marcado manualmente como não transmitida" : !l.situacaoDctf ? "Ainda não consultado no e-CAC" : l.situacaoDctf.ativa ? "DCTFWeb ativa, mas sem origem eSocial" : msg || "Sem declaração ativa",
+        erro: !!(msg && /^Erro/.test(msg) && !l.situacaoDctf?.ativa),
+      });
+      porEmp.set(l.empresaId, it);
+    }
+  }
+  return [...porEmp.values()].sort((x, y) => x.empresaNome.localeCompare(y.empresaNome, "pt-BR"));
+}
 
 // Piso de competência (aaaamm, ex.: 202607) configurado em painel_monitoramento_config — null
 // quando não há corte definido (comportamento de sempre: cada card usa o período mais antigo já
@@ -22099,6 +22130,8 @@ async function calcularCardComputado(tipo: string, user: any, parametro?: string
   if (tipo === "das_atraso") return cardDasEmAtraso(user);
   if (tipo === "situacao_fiscal") return cardSituacaoFiscal(user);
   if (tipo === "efd_omisso") return cardEfdOmisso(user);
+  if (tipo === "dctfweb_nao_entregue") return cardObrigacaoNaoTransmitida(user, "dprh_dctfweb");
+  if (tipo === "folha_nao_fechada") return cardObrigacaoNaoTransmitida(user, "dprh_folha");
   if (tipo === "cnd_estadual") return cardCnd(user, "estadual");
   if (tipo === "cnd_municipal") return cardCnd(user, "municipal");
   if (tipo === "caixapostal_nao_lida") return cardCaixaPostalNaoLida(user);
