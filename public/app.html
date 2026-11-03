@@ -1594,6 +1594,7 @@ function closeDrawer(){ document.getElementById('drawerBg').classList.remove('op
 let _drawerMouseDownNoFundo = false;
 document.getElementById('drawerBg').addEventListener('mousedown', e=>{ _drawerMouseDownNoFundo = (e.target.id==='drawerBg'); });
 document.getElementById('drawerBg').addEventListener('click', e=>{ if(e.target.id==='drawerBg' && _drawerMouseDownNoFundo) closeDrawer(); });
+document.addEventListener('keydown', e=>{ if(e.key==='Escape' && document.getElementById('drawerBg').classList.contains('open')) closeDrawer(); });
 
 function confirmar(msg){ return window.confirm(msg); }
 
@@ -8917,22 +8918,10 @@ async function pageNfeBusca(){
   mostrarLista();
 }
 
-// Painel de detalhe de uma nota (abas Geral / Produtos / Impostos / Participantes / XML).
-// Drawer lateral (desliza da direita) — reutilizado pelo detalhe da nota.
-function openDrawer(innerHtml){
-  let bg = document.getElementById('nfeDrawerBg');
-  if(!bg){
-    bg = document.createElement('div');
-    bg.id = 'nfeDrawerBg'; bg.className = 'drawer-bg';
-    bg.innerHTML = `<div class="drawer" id="nfeDrawer"></div>`;
-    document.body.appendChild(bg);
-    bg.addEventListener('click', (e)=>{ if(e.target===bg) closeDrawer(); });
-    document.addEventListener('keydown', (e)=>{ if(e.key==='Escape') closeDrawer(); });
-  }
-  document.getElementById('nfeDrawer').innerHTML = innerHtml;
-  requestAnimationFrame(()=>bg.classList.add('open'));
-}
-function closeDrawer(){ const bg=document.getElementById('nfeDrawerBg'); if(bg){ bg.classList.remove('open'); setTimeout(()=>{ const d=document.getElementById('nfeDrawer'); if(d) d.innerHTML=''; }, 220); } }
+// Painel de detalhe de uma nota (abas Geral / Produtos / Impostos / Participantes / XML): usa o
+// drawer padrão (openDrawer/closeDrawer lá do início). Aqui existia uma 2ª openDrawer() com o mesmo
+// nome que sobrescrevia a padrão no app inteiro e quebrava todo drawer que procura #drawerBody
+// (ex.: "Salvar modelo" de contrato não fazia nada).
 
 // Indenta o XML por profundidade (tag de abertura avança, fechamento recua; declaração <?xml...?> e
 // tag auto-fechada <x/> não mudam o nível) — mesmo efeito visual do Espião.
@@ -13019,10 +13008,8 @@ async function abrirContratoDrawer(id){
       ${c.tipo==='contrato'?`<button class="btn" id="drwAditivo">Criar aditivo</button><button class="btn" id="drwDistrato">Criar distrato</button>`:''}
     </div>
   `);
-  // Container REAL do drawer: existem duas openDrawer() (a de NF-e cria #nfeDrawer e sobrescreve a
-  // original de #drawerBody). Scopar ao container certo — senão '#drawerBody .campo-ajuda' acha zero
-  // e os "?"/editor ficam sem handler, mesmo com o drawer aberto.
-  const drwScope = document.getElementById('nfeDrawer') || document.getElementById('drawerBody') || document;
+  // Escopo do drawer (handlers do contrato procuram só dentro dele).
+  const drwScope = document.getElementById('drawerBody') || document;
   // Handlers essenciais (botões + "?") ligados PRIMEIRO; o opcional/arriscado (editor rico e card de
   // assinatura) fica por último e em try/catch — assim um erro ali NUNCA deixa os botões sem resposta.
   drwScope.querySelectorAll('.campo-ajuda').forEach(el=>el.addEventListener('click', ()=>toast(el.dataset.ajuda||'Sem descrição')));
