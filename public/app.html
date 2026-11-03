@@ -8819,6 +8819,7 @@ async function reformaDiagMontar(painel, urlApi, urlPdf, urlPremissas){
     </div>
     <div class="rt-hero-regime"><b>Recomendação:</b> ${esc(r.recomendacao)}</div>
     ${d.semDados?`<div style="margin-top:10px;"><span class="rt-pill" style="--c:#d03b3b;">⛔ Sem notas emitidas nos últimos 12 meses — informe a receita anual nas premissas abaixo</span></div>`:''}
+    ${d.alertaCte?`<div style="margin-top:8px;"><span class="rt-pill" style="--c:#d08a1b; white-space:normal; text-align:left;">🚚 ${esc(d.alertaCte)}</span></div>`:''}
   </div>
   <div class="rt-kpis">
     ${tile('Receita 12 meses', rtBRL(en.receitaAnual), `mercadorias ${rtBRL(en.receitaMercadorias)} · serviços ${rtBRL(en.receitaServicos)}${p.receitaAnual?' · valor informado':''}`)}
@@ -8962,11 +8963,12 @@ async function pageOpenFinance(){
     <div class="tabs" style="margin-bottom:12px;">
       <div class="tab ${OF_ABA==='conciliacao'?'active':''}" data-ofaba="conciliacao">Conciliação</div>
       <div class="tab ${OF_ABA==='plano'?'active':''}" data-ofaba="plano">Plano de Contas</div>
+      <div class="tab ${OF_ABA==='layout'?'active':''}" data-ofaba="layout">Layout Domínio</div>
     </div>
-    <div class="card" style="margin-bottom:14px;">
+    <div class="card" id="ofFiltroCard" style="margin-bottom:14px; ${OF_ABA==='layout'?'display:none;':''}">
       <div class="row" style="gap:12px; flex-wrap:wrap; align-items:flex-end;">
         <div class="field" style="flex:1; min-width:280px; margin-bottom:0;"><label>Empresa</label>${comboSelectHtml('ofEmpresaCombo','Digite nome, CNPJ ou código…')}</div>
-        <div class="field" id="ofCompWrap" style="margin-bottom:0; ${OF_ABA==='plano'?'display:none;':''}"><label>Competência</label>${monthInputHtml('ofComp', OF_COMP)}</div>
+        <div class="field" id="ofCompWrap" style="margin-bottom:0; ${OF_ABA==='conciliacao'?'':'display:none;'}"><label>Competência</label>${monthInputHtml('ofComp', OF_COMP)}</div>
       </div>
     </div>
     <div id="ofPainel"><div class="card"><div class="empty-state">Escolha a empresa para ${OF_ABA==='plano'?'ver/importar o plano de contas.':'ver as conexões bancárias e a conciliação.'}</div></div></div>`;
@@ -8975,10 +8977,12 @@ async function pageOpenFinance(){
   main().querySelectorAll('[data-ofaba]').forEach(t=>t.addEventListener('click', ()=>{
     OF_ABA = t.dataset.ofaba;
     main().querySelectorAll('[data-ofaba]').forEach(x=>x.classList.toggle('active', x.dataset.ofaba===OF_ABA));
-    const cw=document.getElementById('ofCompWrap'); if(cw) cw.style.display = OF_ABA==='plano'?'none':'';
+    const cw=document.getElementById('ofCompWrap'); if(cw) cw.style.display = OF_ABA==='conciliacao'?'':'none';
+    const fc=document.getElementById('ofFiltroCard'); if(fc) fc.style.display = OF_ABA==='layout'?'none':'';
     ofRouter();
   }));
   async function ofRouter(){
+    if(OF_ABA==='layout'){ ofRenderLayout(); return; }
     if(!OF_EMPRESA_ID){ document.getElementById('ofPainel').innerHTML = `<div class="card"><div class="empty-state">Escolha a empresa para ${OF_ABA==='plano'?'ver/importar o plano de contas.':'ver as conexões bancárias e a conciliação.'}</div></div>`; return; }
     await ofCarregarPlano();
     if(OF_ABA==='plano') ofRenderPlano(); else ofCarregar();
@@ -9021,6 +9025,60 @@ async function pageOpenFinance(){
       catch(e){ toast(e.message,'err'); ev.target.disabled=false; }
     });
     if($('ofPlanoLimpar')) $('ofPlanoLimpar').addEventListener('click', async ()=>{ if(!confirm('Apagar todo o plano de contas importado desta empresa?')) return; try{ await api('/open-finance/plano-contas?empresaId='+OF_EMPRESA_ID,{method:'DELETE'}); toast('Plano de contas limpo.','ok'); await ofCarregarPlano(); ofRenderPlano(); }catch(e){ toast(e.message,'err'); } });
+  }
+  async function ofRenderLayout(){
+    const painel = document.getElementById('ofPainel');
+    const podeEd = STATE.user.perfil==='Administrador' || can('open_finance','editar');
+    const PAPEIS = [['ignorar','Ignorar'],['data','Data'],['debito','Conta Débito'],['credito','Conta Crédito'],['valor','Valor'],['historico','Histórico'],['codHistorico','Código histórico'],['fixo','Texto fixo']];
+    const delimLabel = d=> d===';'?'ponto e vírgula (;)': d==='\t'?'tabulação': d==='|'?'barra (|)': d===','?'vírgula (,)': d==='\\s{2,}'?'espaços':d;
+    let salvo=null; try{ salvo = (await api('/open-finance/dominio-layout')).layout; }catch(e){}
+    painel.innerHTML = `
+      <div class="card" style="margin-bottom:14px;">
+        <b>Modelo de importação de lançamentos da Domínio</b>
+        <p class="mut" style="font-size:12px; margin:4px 0 10px;">Cole o <b>modelo de importação de lançamentos</b> do seu Domínio (abra a planilha-modelo e cole algumas linhas, com o cabeçalho se tiver — ou salve como CSV e cole). Eu detecto o formato (separador e colunas) e o botão <b>Lançamentos Domínio</b> passa a exportar exatamente assim, sem erro na importação. É um ajuste do escritório (vale pra todas as empresas).</p>
+        ${salvo?`<span class="tag ok" style="display:inline-block; margin-bottom:8px;">✔ Layout aprendido · separado por ${delimLabel(salvo.delimitador)} · ${salvo.colunas.length} colunas${salvo.temCabecalho?' · com cabeçalho':''}</span>`:`<span class="tag" style="display:inline-block; margin-bottom:8px;">Usando o layout padrão (registro 0000/6000) até você importar um modelo.</span>`}
+        ${podeEd?`<textarea id="ofLayTxt" class="inp" rows="5" placeholder="Cole aqui as linhas do modelo (com cabeçalho, se houver)…" style="width:100%; font-family:monospace; font-size:12px;"></textarea>
+        <div class="row" style="gap:8px; margin-top:8px; flex-wrap:wrap;">
+          <button class="btn primary" id="ofLayDetectar">Detectar formato</button>
+          ${salvo?`<button class="btn" id="ofLayPadrao">Voltar ao padrão (0000/6000)</button>`:''}
+        </div>`:'<div class="empty-state">Sem permissão para editar o layout.</div>'}
+      </div>
+      <div id="ofLayMap"></div>`;
+    const $=id=>document.getElementById(id);
+    if($('ofLayPadrao')) $('ofLayPadrao').addEventListener('click', async ()=>{ if(!confirm('Voltar ao layout padrão (registro 0000/6000) e esquecer o modelo aprendido?')) return; try{ await api('/open-finance/dominio-layout',{method:'DELETE'}); toast('Voltou ao layout padrão.','ok'); ofRenderLayout(); }catch(e){ toast(e.message,'err'); } });
+    if($('ofLayDetectar')) $('ofLayDetectar').addEventListener('click', async ()=>{
+      const txt=$('ofLayTxt').value.trim(); if(!txt){ toast('Cole o modelo.','err'); return; }
+      let det; try{ det = await api('/open-finance/dominio-layout/detectar',{method:'POST',body:{texto:txt}}); }catch(e){ toast(e.message,'err'); return; }
+      renderMap(det);
+    });
+    function renderMap(det){
+      const cont = $('ofLayMap');
+      const sep = det.layout.delimitador==='\\s{2,}'?'  ':det.layout.delimitador;
+      cont.innerHTML = `<div class="card">
+        <b>Confira o que é cada coluna</b>
+        <p class="mut" style="font-size:12px; margin:4px 0 10px;">Separador detectado: <b>${delimLabel(det.layout.delimitador)}</b>${det.layout.temCabecalho?' · a 1ª linha é cabeçalho':''}. Já preenchi o que consegui detectar — ajuste o que estiver errado.</p>
+        <div style="overflow:auto;"><table class="data-table"><thead><tr><th>Coluna</th><th>Exemplo</th><th>É o quê?</th><th>Texto fixo</th></tr></thead><tbody>
+          ${det.colunas.map((c,i)=>`<tr>
+            <td style="white-space:nowrap;">${esc(c.nome)}</td><td class="mut" style="font-size:12px;">${esc(c.amostra||'—')}</td>
+            <td><select class="inp ofLayPapel" data-i="${i}">${PAPEIS.map(p=>`<option value="${p[0]}" ${c.papel===p[0]?'selected':''}>${p[1]}</option>`).join('')}</select></td>
+            <td><input class="inp ofLayFixo" data-i="${i}" value="${esc((det.layout.colunas[i]&&det.layout.colunas[i].fixo)||'')}" placeholder="—" style="width:130px; ${c.papel==='fixo'?'':'display:none;'}"></td>
+          </tr>`).join('')}
+        </tbody></table></div>
+        <div class="field" style="margin-top:10px;"><label>Prévia de uma linha gerada</label><input id="ofLayPreview" class="inp" readonly style="font-family:monospace; font-size:12px;"></div>
+        <div class="row" style="gap:8px;"><button class="btn primary" id="ofLaySalvar">Salvar layout</button></div>
+      </div>`;
+      const colsAtuais = ()=> [...cont.querySelectorAll('.ofLayPapel')].map((s,i)=>{ const papel=s.value; const fixo=cont.querySelector('.ofLayFixo[data-i="'+i+'"]').value; return papel==='fixo'?{papel,fixo}:{papel}; });
+      const preview = ()=>{ const cols = colsAtuais().map(c=>{ switch(c.papel){ case 'data':return '03/11/2026'; case 'debito':return '1.1.1.02.001'; case 'credito':return '3.1.1.01.001'; case 'valor':return '1792,83'; case 'historico':return 'Rcbto PIX RECEBIDO - CLIENTE'; case 'codHistorico':return ''; case 'fixo':return c.fixo||''; default:return ''; } }); $('ofLayPreview').value = cols.join(sep); };
+      cont.querySelectorAll('.ofLayPapel').forEach(s=>s.addEventListener('change', e=>{ const fx=cont.querySelector('.ofLayFixo[data-i="'+e.target.dataset.i+'"]'); fx.style.display = e.target.value==='fixo'?'':'none'; preview(); }));
+      cont.querySelectorAll('.ofLayFixo').forEach(inp=>inp.addEventListener('input', preview));
+      preview();
+      $('ofLaySalvar').addEventListener('click', async ()=>{
+        const colunas = colsAtuais();
+        const papeis = colunas.map(c=>c.papel);
+        for(const req of [['data','Data'],['debito','Conta Débito'],['credito','Conta Crédito'],['valor','Valor']]) if(!papeis.includes(req[0])){ toast('Falta marcar a coluna de "'+req[1]+'".','err'); return; }
+        try{ await api('/open-finance/dominio-layout',{method:'PUT',body:{layout:{ delimitador: det.layout.delimitador, temCabecalho: det.layout.temCabecalho, cabecalho: det.layout.cabecalho, colunas }}}); toast('Layout salvo. O "Lançamentos Domínio" já exporta nesse formato.','ok'); ofRenderLayout(); }catch(e){ toast(e.message,'err'); }
+      });
+    }
   }
   let empresas = [];
   try{ empresas = await empresasAtivas(); }catch(e){ document.getElementById('ofPainel').innerHTML = `<div class="card"><div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div></div>`; return; }

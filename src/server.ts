@@ -7270,6 +7270,15 @@ sqlite.exec(`CREATE TABLE IF NOT EXISTS of_plano_contas (
   criado_em TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE (empresa_id, codigo)
 )`);
+// Layout de importação de lançamentos da Domínio, aprendido do modelo do escritório (1 por escritório).
+sqlite.exec(`CREATE TABLE IF NOT EXISTS of_dominio_layout (
+  escritorio_id INTEGER PRIMARY KEY,
+  delimitador TEXT NOT NULL,
+  tem_cabecalho INTEGER NOT NULL DEFAULT 0,
+  cabecalho_json TEXT,
+  colunas_json TEXT NOT NULL,
+  atualizado_em TEXT NOT NULL DEFAULT (datetime('now'))
+)`);
 // Obrigações POR SETOR. templates = nomes de templates do Envio de Documentos (array cobre variações
 // de nome). fonte: 'dctfweb'/'das' leem a transmissão do Integra Contador; 'envio' = documento anexado
 // no Envio conta como transmitido/feito; 'manual' = sem fonte automática. A entrega ao cliente
@@ -7912,6 +7921,37 @@ app.delete("/api/open-finance/plano-contas", blockCliente, requirePermissao("ope
   sqlite.prepare(`DELETE FROM of_plano_contas WHERE empresa_id = ?`).run(empresaId);
   res.json({ ok: true });
 });
+// --- Layout de importação de lançamentos da Domínio (aprendido do modelo do escritório) ---
+function ofLayoutDominioSalvo(escritorioId: number): any | null {
+  const r = sqlite.prepare(`SELECT delimitador, tem_cabecalho, cabecalho_json, colunas_json FROM of_dominio_layout WHERE escritorio_id = ?`).get(escritorioId) as any;
+  if (!r) return null;
+  try { return { delimitador: r.delimitador, temCabecalho: !!r.tem_cabecalho, cabecalho: JSON.parse(r.cabecalho_json || "[]"), colunas: JSON.parse(r.colunas_json || "[]") }; }
+  catch { return null; }
+}
+app.post("/api/open-finance/dominio-layout/detectar", blockCliente, requirePermissao("open_finance", "editar"), (req, res) => {
+  const det = openFinance.detectarLayoutDominio(String(req.body?.texto || ""));
+  if (!det) return res.status(400).json({ error: "Não reconheci nenhuma linha. Cole o conteúdo do modelo (ou salve a planilha como CSV)." });
+  res.json(det);
+});
+app.get("/api/open-finance/dominio-layout", blockCliente, requirePermissao("open_finance", "visualizar"), (req, res) => {
+  res.json({ layout: ofLayoutDominioSalvo((req as any).user.escritorioId) });
+});
+app.put("/api/open-finance/dominio-layout", blockCliente, requirePermissao("open_finance", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const l = req.body?.layout || {};
+  const colunas = Array.isArray(l.colunas) ? l.colunas : [];
+  if (!colunas.length) return res.status(400).json({ error: "Layout inválido." });
+  const papeis = new Set(colunas.map((c: any) => c.papel));
+  for (const req2 of ["data", "debito", "credito", "valor"]) if (!papeis.has(req2)) return res.status(400).json({ error: `Falta mapear a coluna de "${req2}". Ajuste o mapeamento.` });
+  sqlite.prepare(`INSERT INTO of_dominio_layout (escritorio_id, delimitador, tem_cabecalho, cabecalho_json, colunas_json, atualizado_em) VALUES (?, ?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(escritorio_id) DO UPDATE SET delimitador=excluded.delimitador, tem_cabecalho=excluded.tem_cabecalho, cabecalho_json=excluded.cabecalho_json, colunas_json=excluded.colunas_json, atualizado_em=datetime('now')`)
+    .run(user.escritorioId, String(l.delimitador || ";"), l.temCabecalho ? 1 : 0, JSON.stringify(l.cabecalho || []), JSON.stringify(colunas));
+  res.json({ ok: true });
+});
+app.delete("/api/open-finance/dominio-layout", blockCliente, requirePermissao("open_finance", "editar"), (req, res) => {
+  sqlite.prepare(`DELETE FROM of_dominio_layout WHERE escritorio_id = ?`).run((req as any).user.escritorioId);
+  res.json({ ok: true });
+});
 app.get("/api/open-finance/regras", blockCliente, requirePermissao("open_finance", "visualizar"), (req, res) => {
   const user = (req as any).user;
   const empresaId = Number(req.query.empresaId);
@@ -8002,7 +8042,11 @@ app.get("/api/open-finance/exportar-dominio", blockCliente, requirePermissao("op
     const motivo = m.contasSemConta ? "Defina a conta contábil do banco (botão ✎ na conta) " : "";
     return res.status(400).json({ error: `${motivo}e classifique a conta contábil das transações (conciliar/editar) antes de gerar o arquivo da Domínio.` });
   }
-  const conteudo = openFinance.gerarLancamentosDominio({ codigo: emp.codigo_dominio, cnpj: emp.cnpj }, { inicio: comp + "-01", fim: ofUltimoDiaMes(comp) }, m.lancs);
+  // Se o escritório importou o modelo do Domínio, gera EXATAMENTE naquele layout; senão, usa o 0000/6000.
+  const layout = ofLayoutDominioSalvo(user.escritorioId);
+  const conteudo = layout
+    ? openFinance.gerarLancamentosLayout(layout, m.lancs)
+    : openFinance.gerarLancamentosDominio({ codigo: emp.codigo_dominio, cnpj: emp.cnpj }, { inicio: comp + "-01", fim: ofUltimoDiaMes(comp) }, m.lancs);
   const nome = `Lancamentos Dominio - ${comp}.txt`;
   res.set("Content-Type", "text/plain; charset=utf-8");
   res.set("Content-Disposition", `attachment; filename="${nome}"`);
@@ -11732,18 +11776,36 @@ function reformaDadosDiagnostico(escritorioId: number, empresaId: number) {
        COUNT(*) AS qtd
      ${base} AND d.tipo = 'nfe' AND NOT (${emitExpr}) AND COALESCE(d.fin_nfe,1) <> 4`
   ).get(...args) as any;
+  // CT-e emitido pela própria empresa (transportadora): o frete (vTPrest) é receita de serviço de
+  // transporte. A Distribuição DFe da Sefaz NÃO devolve ao emitente os CT-e que ele mesmo emitiu — eles
+  // entram pelo "Importar XML" da Busca de XML. Cancelamento de CT-e vem como evento com a mesma chave.
+  // MDF-e próprio não é receita (o valor é o da carga), só serve de sinal de que a empresa é transportadora.
+  const ct = sqlite.prepare(
+    `SELECT
+       SUM(CASE WHEN d.tipo = 'cte' THEN COALESCE(d.valor_total,0) ELSE 0 END) AS frete,
+       SUM(CASE WHEN d.tipo = 'cte' AND length(REPLACE(REPLACE(REPLACE(COALESCE(d.destinatario_cnpj,''),'.',''),'/',''),'-','')) = 14 THEN COALESCE(d.valor_total,0) ELSE 0 END) AS b2b,
+       SUM(d.tipo = 'cte') AS qtdCte, SUM(d.tipo = 'mdfe') AS qtdMdfe,
+       COUNT(DISTINCT CASE WHEN d.tipo = 'cte' THEN substr(d.data_emissao,1,7) END) AS meses
+     FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id
+     WHERE d.escritorio_id = ? AND d.empresa_id = ? AND substr(d.data_emissao,1,10) >= ? AND substr(d.data_emissao,1,10) <= ?
+       AND d.tipo IN ('cte','mdfe') AND ${emitExpr}
+       AND NOT EXISTS (SELECT 1 FROM nfe_documentos ev WHERE ev.escritorio_id = d.escritorio_id AND ev.tipo='evento' AND ev.chave_acesso = d.chave_acesso AND ev.evento_descricao LIKE '%ancela%')`
+  ).get(...args) as any;
+  const frete = Number(ct?.frete) || 0;
   const dom = sqlite.prepare(`SELECT SUM(saidas) AS saidas, SUM(servicos) AS servicos, COUNT(*) AS meses FROM entradas_saidas_dados WHERE empresa_id = ? AND (ano * 100 + mes) >= ? AND (ano * 100 + mes) <= ?`)
     .get(empresaId, de.getFullYear() * 100 + de.getMonth() + 1, ate.getFullYear() * 100 + ate.getMonth() + 1) as any;
   const dados: reformaDiagnostico.DadosEmpresa = {
     nome: emp.nome, regimeAtual: emp.regime_tributario || "simples_nacional", cnae, cnaeDescricao,
-    receitaMercadorias12m: Number(v?.merc) || 0, receitaServicos12m: Number(v?.serv) || 0,
-    vendasB2B12m: Number(v?.b2b) || 0, vendasTotal12m: (Number(v?.merc) || 0) + (Number(v?.serv) || 0),
+    receitaMercadorias12m: Number(v?.merc) || 0, receitaServicos12m: (Number(v?.serv) || 0) + frete,
+    vendasB2B12m: (Number(v?.b2b) || 0) + (Number(ct?.b2b) || 0), vendasTotal12m: (Number(v?.merc) || 0) + (Number(v?.serv) || 0) + frete,
     comprasRegular12m: Number(c?.regular) || 0, comprasSimples12m: Number(c?.simples) || 0, comprasOutras12m: Number(c?.outras) || 0,
-    meses: 12, mesesComDados: Number(v?.meses) || 0,
+    meses: 12, mesesComDados: Math.max(Number(v?.meses) || 0, Number(ct?.meses) || 0),
   };
   return {
     emp, dados, cnae, cnaeDescricao,
-    periodo: { de: iso(de), ate: iso(ate), descricao: `NF-e/NFC-e/NFS-e de ${iso(de).split("-").reverse().join("/")} a ${iso(ate).split("-").reverse().join("/")} (${dados.mesesComDados} mês(es) com vendas; ${Number(v?.qtd) || 0} notas emitidas e ${Number(c?.qtd) || 0} recebidas)` },
+    periodo: { de: iso(de), ate: iso(ate), descricao: `NF-e/NFC-e/NFS-e de ${iso(de).split("-").reverse().join("/")} a ${iso(ate).split("-").reverse().join("/")} (${dados.mesesComDados} mês(es) com vendas; ${Number(v?.qtd) || 0} notas emitidas${Number(ct?.qtdCte) ? `, ${Number(ct.qtdCte)} CT-e emitidos (frete ${frete.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })})` : ""} e ${Number(c?.qtd) || 0} recebidas)` },
+    // Transportadora (emite MDF-e) sem nenhum CT-e emitido no sistema: a receita de frete está faltando.
+    alertaCte: Number(ct?.qtdMdfe) > 0 && !Number(ct?.qtdCte) ? `A empresa emitiu ${Number(ct.qtdMdfe)} MDF-e no período, mas nenhum CT-e emitido por ela está no sistema — a receita de frete não está sendo considerada. A Sefaz não devolve ao próprio emitente os CT-e que ele emitiu: importe os XMLs dos CT-e (Busca de XML › Importar XML) ou informe a receita anual nas premissas.` : null,
     dominio: dom && Number(dom.meses) ? { receita: (Number(dom.saidas) || 0) + (Number(dom.servicos) || 0), meses: Number(dom.meses) } : null,
   };
 }
@@ -11759,7 +11821,7 @@ function reformaCalcularDiagnosticoEmpresa(escritorioId: number, empresaId: numb
   const resultado = reformaDiagnostico.calcularDiagnostico(x.dados, premissas);
   return {
     empresa: { id: x.emp.id, nome: x.emp.nome, cnpj: x.emp.cnpj, cidade: x.emp.cidade, uf: x.emp.uf, regime: x.dados.regimeAtual, regimeLabel: REGIME_CLIENTE_LABEL[x.dados.regimeAtual] || x.dados.regimeAtual, cnae: x.cnae, cnaeDescricao: x.cnaeDescricao },
-    periodo: x.periodo, dados: x.dados, dominio: x.dominio,
+    periodo: x.periodo, dados: x.dados, dominio: x.dominio, alertaCte: x.alertaCte,
     premissas, premissasPadrao: padrao, premissasPersonalizadas: !!salvas,
     resultado,
     fundamentacao: reformaDiagPdf.FUNDAMENTACAO_DIAGNOSTICO, ressalvas: reformaDiagPdf.RESSALVAS_DIAGNOSTICO,

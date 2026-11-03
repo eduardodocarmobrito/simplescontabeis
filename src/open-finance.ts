@@ -247,6 +247,96 @@ export function gerarLancamentosDominio(empresa: { codigo?: string; cnpj?: strin
 }
 
 // ---------------------------------------------------------------------------------------------------
+// LAYOUT APRENDIDO a partir do modelo de importação do Domínio do escritório. Em vez de adivinhar o
+// leiaute (que não é público), o usuário importa a planilha-modelo; detectamos delimitador, cabeçalho
+// e o papel de cada coluna (data/débito/crédito/valor/histórico/código/fixo/ignorar). O export gera
+// EXATAMENTE nesse formato — some o risco de erro na importação. O usuário confere/ajusta o mapeamento.
+// ---------------------------------------------------------------------------------------------------
+export type PapelColuna = "data" | "debito" | "credito" | "valor" | "historico" | "codHistorico" | "fixo" | "ignorar";
+export interface ColunaLayout { papel: PapelColuna; fixo?: string }
+export interface LayoutDominio { delimitador: string; temCabecalho: boolean; cabecalho: string[]; colunas: ColunaLayout[] }
+
+const _ehData = (s: string) => /^\d{1,2}[\/.\-]\d{1,2}[\/.\-]\d{2,4}$/.test(s) || /^\d{4}[\/.\-]\d{1,2}[\/.\-]\d{1,2}$/.test(s);
+const _ehNum = (s: string) => /^-?\d{1,3}(\.\d{3})*,\d{2}$/.test(s) || /^-?\d+([.,]\d{1,2})?$/.test(s);
+const _ehConta = (s: string) => /^[\d]+([.\-/][\d]+)+$/.test(s) || /^\d{3,}$/.test(s);
+
+// Detecta o layout de um texto colado/arquivo do modelo. Não grava — devolve pro usuário conferir.
+export function detectarLayoutDominio(texto: string): { layout: LayoutDominio; colunas: { nome: string; amostra: string; papel: PapelColuna }[]; amostraLinhas: string[][] } | null {
+  const linhas = (texto || "").split(/\r?\n/).map((l) => l.replace(/\s+$/, "")).filter((l) => l.trim());
+  if (!linhas.length) return null;
+  // delimitador: o que mais aparece de forma consistente nas 1ªs linhas
+  let delim = ";", melhor = -1;
+  for (const d of [";", "\t", "|", ","]) {
+    const counts = linhas.slice(0, 6).map((l) => l.split(d).length - 1);
+    const min = Math.min(...counts), avg = counts.reduce((a, b) => a + b, 0) / counts.length;
+    if (min >= 1 && avg > melhor) { melhor = avg; delim = d; }
+  }
+  if (melhor < 1) delim = /\s{2,}/.test(linhas[0]) ? "\\s{2,}" : ";";
+  const split = (l: string) => (delim === "\\s{2,}" ? l.split(/\s{2,}/) : l.split(delim)).map((c) => c.trim());
+  const rows = linhas.map(split);
+  const ncol = Math.max(...rows.map((r) => r.length));
+  const l0 = rows[0];
+  const temCabecalho = l0.every((c) => !_ehData(c) && !_ehNum(c)) && l0.some((c) => /[a-zA-Z]/.test(c));
+  const cabecalho = temCabecalho ? l0 : [];
+  const dados = temCabecalho ? rows.slice(1) : rows;
+  const amostra = dados[0] || [];
+  const KEY: [RegExp, PapelColuna][] = [
+    [/d[ée]bito|\bdeb\b/i, "debito"], [/cr[ée]dito|\bcred\b/i, "credito"],
+    [/valor|montante|vlr/i, "valor"], [/c[óo]d.*hist|hist.*c[óo]d/i, "codHistorico"],
+    [/hist[óo]rico|complement|descri|observa/i, "historico"], [/data|\bdt\b|lan[çc]/i, "data"],
+  ];
+  const usados = new Set<PapelColuna>();
+  const colunas: ColunaLayout[] = [];
+  const info: { nome: string; amostra: string; papel: PapelColuna }[] = [];
+  for (let i = 0; i < ncol; i++) {
+    const nome = (temCabecalho && cabecalho[i]) ? cabecalho[i] : "Coluna " + (i + 1);
+    const amo = amostra[i] || "";
+    const col = dados.map((r) => r[i] || "");
+    let papel: PapelColuna = "ignorar", fixo: string | undefined;
+    if (temCabecalho) { for (const [re, p] of KEY) { if (re.test(nome) && !usados.has(p)) { papel = p; break; } } }
+    // coluna de valor constante (ex.: "6000", "C"/"D") = texto fixo — detecta antes do conteúdo
+    if (papel === "ignorar") { const uniq = [...new Set(col.filter(Boolean))]; if (uniq.length === 1 && dados.length > 1) { papel = "fixo"; fixo = uniq[0]; } }
+    if (papel === "ignorar") { // por conteúdo
+      const nd = col.filter(_ehData).length, nn = col.filter(_ehNum).length, nc = col.filter(_ehConta).length, meta = Math.max(1, col.length / 2);
+      if (nd >= meta && !usados.has("data")) papel = "data";
+      else if (nc >= meta && !usados.has("debito")) papel = "debito";
+      else if (nc >= meta && !usados.has("credito")) papel = "credito";
+      else if (nn >= meta && !usados.has("valor")) papel = "valor";
+    }
+    if (papel !== "ignorar" && papel !== "fixo") usados.add(papel);
+    colunas.push(papel === "fixo" ? { papel, fixo } : { papel });
+    info.push({ nome, amostra: amo, papel });
+  }
+  return { layout: { delimitador: delim, temCabecalho, cabecalho, colunas }, colunas: info, amostraLinhas: dados.slice(0, 3) };
+}
+
+// Gera o arquivo usando o layout aprendido (uma linha por lançamento, + cabeçalho se houver).
+export function gerarLancamentosLayout(layout: LayoutDominio, lancs: LancamentoContabil[]): string {
+  const dt = (iso: string) => { const [a, m, d] = iso.slice(0, 10).split("-"); return `${d}/${m}/${a}`; };
+  const money = (v: number) => Math.abs(v).toFixed(2).replace(".", ",");
+  const sep = layout.delimitador === "\\s{2,}" ? "  " : (layout.delimitador || ";");
+  const campo = (s: string) => String(s == null ? "" : s).split(sep).join(" ").replace(/[\r\n]+/g, " ").trim();
+  const linhas: string[] = [];
+  if (layout.temCabecalho && layout.cabecalho.length) linhas.push(layout.cabecalho.join(sep));
+  for (const l of lancs) {
+    const cols = layout.colunas.map((c) => {
+      switch (c.papel) {
+        case "data": return dt(l.data);
+        case "debito": return campo(l.contaDebito);
+        case "credito": return campo(l.contaCredito);
+        case "valor": return money(l.valor);
+        case "historico": return campo(l.historico);
+        case "codHistorico": return campo(l.codHistorico || "");
+        case "fixo": return campo(c.fixo || "");
+        default: return "";
+      }
+    });
+    linhas.push(cols.join(sep));
+  }
+  return linhas.join("\r\n") + "\r\n";
+}
+
+// ---------------------------------------------------------------------------------------------------
 // Classificação e regras de conciliação (puras — o server faz o acesso ao banco).
 // ---------------------------------------------------------------------------------------------------
 export type TipoMovimento = "pix" | "ted" | "transferencia_propria" | "tarifa" | "tributo" | "boleto" | "outro";
