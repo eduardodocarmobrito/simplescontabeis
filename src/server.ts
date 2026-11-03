@@ -11098,6 +11098,106 @@ app.get("/api/reforma/minha-empresa/diagnostico/pdf", requireCliente, async (req
   if (!user.empresaId) return res.status(400).json({ error: "Nenhuma empresa vinculada." });
   await reformaEnviarDiagnosticoPdf(res, user.escritorioId, user.empresaId);
 });
+// ---------- Reforma Tributária: enviar os relatórios ao cliente (e-mail e/ou WhatsApp na conversa) ----------
+// Reaproveita as MESMAS funções que geram os PDFs pra download: elas escrevem num "res" — aqui um objeto
+// que só captura o arquivo (nome + Buffer), então o que vai pro cliente é idêntico ao botão de baixar.
+function reformaResCaptura() {
+  const r: any = { _status: 200, _headers: {} as Record<string, string>, _body: null as any };
+  r.set = (k: string, v: string) => { r._headers[k] = v; return r; };
+  r.status = (c: number) => { r._status = c; return r; };
+  r.send = (b: any) => { r._body = b; return r; };
+  r.json = (o: any) => { r._body = o; return r; };
+  return r;
+}
+const REFORMA_DOCS_ENVIO: Record<string, string> = {
+  relatorio: "Relatório da auditoria (PDF)", fichas: "Fichas de conferência (PDF)", fornecedores: "Relatório de inconsistências dos fornecedores (PDF)",
+  ncm: "Mapa de NCM (PDF)", diagnostico: "Diagnóstico de regime tributário (PDF)",
+};
+async function reformaGerarDocumento(tipo: string, escritorioId: number, empresaId: number, q: any): Promise<{ nome: string; buffer: Buffer }> {
+  const r = reformaResCaptura();
+  if (tipo === "relatorio") await reformaEnviarPdf(r, escritorioId, empresaId, q);
+  else if (tipo === "fichas") await reformaEnviarFichas(r, escritorioId, empresaId, q);
+  else if (tipo === "fornecedores") await reformaEnviarRelatorioFornecedores(r, escritorioId, empresaId, q);
+  else if (tipo === "ncm") await reformaEnviarMapaNcm(r, escritorioId, empresaId, q);
+  else if (tipo === "diagnostico") await reformaEnviarDiagnosticoPdf(r, escritorioId, empresaId);
+  else throw new Error("Documento inválido.");
+  if (r._status >= 400 || !Buffer.isBuffer(r._body)) throw new Error(r._body?.error || "Falha ao gerar o documento.");
+  const nome = (String(r._headers["Content-Disposition"] || "").match(/filename="([^"]+)"/) || [])[1] || "documento.pdf";
+  return { nome, buffer: r._body };
+}
+// Contatos disponíveis da empresa: e-mail/telefone do cadastro + contatos (Empresas > Contatos).
+function reformaContatosEmpresa(empresaId: number) {
+  const emp = sqlite.prepare(`SELECT nome, email, telefone FROM empresas WHERE id = ?`).get(empresaId) as any;
+  const cont = sqlite.prepare(`SELECT nome, email, telefone, receber_emails, receber_whatsapp FROM empresa_contatos WHERE empresa_id = ? ORDER BY nome`).all(empresaId) as any[];
+  const emails = new Map<string, { email: string; nome: string; origem: string; padrao: boolean }>();
+  const telefones = new Map<string, { telefone: string; nome: string; origem: string; padrao: boolean }>();
+  const addEmail = (email: any, nome: string, origem: string, padrao: boolean) => {
+    for (const e of String(email || "").split(/[;,\s]+/).map((x) => x.trim()).filter((x) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(x))) {
+      const k = e.toLowerCase(); const atual = emails.get(k);
+      if (!atual) emails.set(k, { email: e, nome, origem, padrao }); else if (padrao) atual.padrao = true;
+    }
+  };
+  const addTel = (tel: any, nome: string, origem: string, padrao: boolean) => {
+    const dig = String(tel || "").replace(/\D/g, "");
+    if (dig.length < 10) return;
+    const k = dig.length <= 11 ? "55" + dig : dig; const atual = telefones.get(k);
+    if (!atual) telefones.set(k, { telefone: String(tel).trim(), nome, origem, padrao }); else if (padrao) atual.padrao = true;
+  };
+  if (emp) { addEmail(emp.email, emp.nome, "Cadastro da empresa", false); addTel(emp.telefone, emp.nome, "Cadastro da empresa", false); }
+  for (const c of cont) { addEmail(c.email, c.nome || "Contato", "Contato", !!c.receber_emails); addTel(c.telefone, c.nome || "Contato", "Contato", !!c.receber_whatsapp); }
+  return { empresaNome: emp?.nome || "", emails: [...emails.values()], telefones: [...telefones.values()] };
+}
+app.get("/api/reforma/contatos", blockCliente, requirePermissao("reforma", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.query.empresaId);
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const c = reformaContatosEmpresa(empresaId);
+  let whatsappOk = false;
+  try { whatsappOk = !!(deskcommCtx().admin && deskcommCtx().orgId) && user.escritorioId === DESKCOMM_ESCRITORIO_ID; } catch {}
+  res.json({ ...c, emailOk: emailConfigurado(user.escritorioId), whatsappOk });
+});
+const reformaEnviosPorUsuario = new Map<number, { n: number; ate: number }>();
+app.post("/api/reforma/enviar-cliente", blockCliente, requirePermissao("reforma", "postar"), async (req, res) => {
+  const user = (req as any).user;
+  const b = req.body || {};
+  const empresaId = Number(b.empresaId);
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const docs: { tipo: string; q: any }[] = Array.isArray(b.documentos) ? b.documentos.filter((d: any) => d && REFORMA_DOCS_ENVIO[d.tipo]).slice(0, 5) : [];
+  if (!docs.length) return res.status(400).json({ error: "Escolha pelo menos um documento." });
+  // Só envia pra e-mails/telefones que estão no cadastro da empresa (os que a tela mostrou).
+  const disp = reformaContatosEmpresa(empresaId);
+  const emailsOk = new Set(disp.emails.map((e) => e.email.toLowerCase()));
+  const telOk = new Map(disp.telefones.map((t) => [t.telefone.replace(/\D/g, "").replace(/^(\d{10,11})$/, "55$1"), t]));
+  const emails = (Array.isArray(b.emails) ? b.emails : []).map((e: any) => String(e).trim()).filter((e: string) => emailsOk.has(e.toLowerCase()));
+  const telefones = (Array.isArray(b.telefones) ? b.telefones : []).map((t: any) => String(t).replace(/\D/g, "").replace(/^(\d{10,11})$/, "55$1")).filter((t: string) => telOk.has(t));
+  if (!emails.length && !telefones.length) return res.status(400).json({ error: "Escolha pelo menos um e-mail ou WhatsApp da lista." });
+  const trava = reformaEnviosPorUsuario.get(user.id);
+  if (trava && trava.ate > Date.now() && trava.n >= 20) return res.status(429).json({ error: "Muitos envios em pouco tempo — aguarde alguns minutos." });
+  reformaEnviosPorUsuario.set(user.id, trava && trava.ate > Date.now() ? { n: trava.n + 1, ate: trava.ate } : { n: 1, ate: Date.now() + 10 * 60_000 });
+  let arquivos: { nome: string; buffer: Buffer }[];
+  try { arquivos = []; for (const d of docs) arquivos.push(await reformaGerarDocumento(d.tipo, user.escritorioId, empresaId, d.q || {})); }
+  catch (e: any) { return res.status(500).json({ error: `Não consegui gerar o documento: ${e.message}` }); }
+  const mensagem = String(b.mensagem || "").trim().slice(0, 1500) || `Segue em anexo a análise da Reforma Tributária (IBS/CBS) de ${disp.empresaNome}, preparada pela equipe do escritório. Qualquer dúvida, estamos à disposição.`;
+  const enviados = { email: [] as string[], whatsapp: [] as string[] };
+  const erros: string[] = [];
+  if (emails.length) {
+    try {
+      await enviarEmail(user.escritorioId, { to: emails, subject: `Reforma Tributária — ${disp.empresaNome}`, text: mensagem, attachments: arquivos.map((a) => ({ filename: a.nome, content: a.buffer })) });
+      enviados.email.push(...emails);
+    } catch (e: any) { erros.push(`E-mail: ${e.message}`); }
+  }
+  for (const t of telefones) {
+    const contato = telOk.get(t)!;
+    try {
+      for (let i = 0; i < arquivos.length; i++) {
+        await deskcommRoboEnviarArquivo(t, contato.nome || disp.empresaNome, { nome: arquivos[i].nome, tipo: "application/pdf", buffer: arquivos[i].buffer }, i === 0 ? mensagem : arquivos[i].nome.replace(/\.pdf$/i, ""));
+      }
+      enviados.whatsapp.push(contato.telefone);
+    } catch (e: any) { erros.push(`WhatsApp ${contato.telefone}: ${e.message}`); }
+  }
+  if (!enviados.email.length && !enviados.whatsapp.length) return res.status(502).json({ error: erros.join(" · ") || "Nenhum envio concluído." });
+  res.json({ ok: true, enviados, erros, documentos: arquivos.map((a) => a.nome) });
+});
 app.get("/api/nfe/minha-empresa/documentos/:id/xml", requireCliente, (req, res) => {
   const user = (req as any).user;
   const row = sqlite.prepare(`SELECT * FROM nfe_documentos WHERE id = ?`).get(Number(req.params.id)) as any;

@@ -897,6 +897,9 @@ body.theme-glass .rt-reg-det summary{color:#5fe0a8;}
 .anexoTercSel label.checklist-item{ text-transform:none; font-family:inherit; letter-spacing:normal; font-size:12.5px; color:var(--ink); display:flex; align-items:center; justify-content:flex-start; text-align:left; gap:8px; margin:3px 0; }
 .anexoTercSel label.checklist-item input[type=checkbox]{ width:auto; flex:0 0 auto; margin:0; }
 .anexoTercSel label.checklist-item > span{ flex:1; }
+/* Opções da janela "Enviar ao cliente" (ficam dentro de .field — anula o estilo de rótulo). */
+.field label.rt-env-op{ text-transform:none; font-family:inherit; letter-spacing:normal; font-size:13px; color:var(--ink); margin:4px 0; }
+.field label.rt-env-op input[type=checkbox]{ width:auto; margin-top:3px; }
 /* Valores em R$ e números não quebram linha ("R$" numa linha e o valor na outra). */
 .rt-tabela td.num, .rt-legenda td.num, .rt-rank-v{white-space:nowrap;}
 .rt-tabela .rt-chip{white-space:normal; line-height:1.25;}
@@ -8630,7 +8633,7 @@ async function reformaDiagMontar(painel, urlApi, urlPdf, urlPremissas){
         <div class="rt-hero-sub">CNPJ ${esc(fmtCnpjCpf(e.cnpj||''))}${e.cnae?` · CNAE ${esc(e.cnae)} ${esc(e.cnaeDescricao||'')}`:''} · regime atual: <b>${esc(e.regimeLabel)}</b></div>
         <div class="rt-hero-sub">${esc(d.periodo.descricao)}</div>
       </div>
-      <div class="row" style="gap:8px; flex-wrap:wrap;"><button class="btn primary" id="rtDiagPdf">📄 Diagnóstico para o cliente (PDF)</button></div>
+      <div class="row" style="gap:8px; flex-wrap:wrap;"><button class="btn primary" id="rtDiagPdf">📄 Diagnóstico para o cliente (PDF)</button>${STATE.user.perfil!=='Cliente'?'<button class="btn primary" id="rtDiagEnviar" title="Enviar por e-mail e/ou WhatsApp (anexa na conversa)">📤 Enviar ao cliente</button>':''}</div>
     </div>
     <div class="rt-hero-regime"><b>Recomendação:</b> ${esc(r.recomendacao)}</div>
     ${d.semDados?`<div style="margin-top:10px;"><span class="rt-pill" style="--c:#d03b3b;">⛔ Sem notas emitidas nos últimos 12 meses — informe a receita anual nas premissas abaixo</span></div>`:''}
@@ -8699,6 +8702,7 @@ async function reformaDiagMontar(painel, urlApi, urlPdf, urlPremissas){
   <details class="card rt-card rt-fontes"><summary><b>Fundamentação legal e ressalvas</b></summary>
     <ul>${d.fundamentacao.map(x=>`<li>${esc(x)}</li>`).join('')}</ul><ul>${d.ressalvas.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></details>`;
   painel.querySelectorAll('[data-diagano]').forEach(t=>t.addEventListener('click', ()=>{ RT_DIAG_ANO = Number(t.dataset.diagano); reformaDiagMontar(painel, urlApi, urlPdf, urlPremissas); }));
+  if(document.getElementById('rtDiagEnviar')) document.getElementById('rtDiagEnviar').addEventListener('click', ()=>rtEnviarClienteModal(urlPdf, [{ tipo:'diagnostico', label:'Diagnóstico de regime tributário pós-reforma', sub:'PDF com timbrado e assinatura dos sócios', q:{}, marcado:true }]));
   document.getElementById('rtDiagPdf').addEventListener('click', ev=>rtBaixar(urlPdf, `Diagnostico Tributario - ${(e.nome||'').slice(0,50)}.pdf`, ev.currentTarget, 'Gerando diagnóstico…'));
   if(urlPremissas){
     const btnS = document.getElementById('rtPremSalvar'), btnC = document.getElementById('rtPremCancelar');
@@ -8856,6 +8860,46 @@ async function reformaMontar(painel, urlApi, urlPdf, silencioso){
   }
 }
 
+// Envio dos relatórios da Reforma ao cliente: escolhe documentos + e-mails/WhatsApp cadastrados da empresa
+// (cadastro + Contatos). WhatsApp vai anexado na conversa do Atendimento; e-mail pelo e-mail do escritório.
+async function rtEnviarClienteModal(urlPdf, docs){
+  const q = Object.fromEntries(new URL(urlPdf, location.origin).searchParams);
+  const empresaId = Number(q.empresaId);
+  if(!empresaId){ toast('Escolha a empresa.','err'); return; }
+  let c;
+  try{ c = await api('/reforma/contatos?empresaId='+empresaId); }catch(e){ toast(e.message,'err'); return; }
+  const linha = (cls, valor, titulo, sub, marcado, desab)=>`<label class="checkbox-row rt-env-op" style="align-items:flex-start;"><input type="checkbox" class="${cls}" value="${esc(valor)}" ${marcado?'checked':''} ${desab?'disabled':''}> <span><b>${esc(titulo)}</b><br><span style="font-size:11.5px; color:var(--ink-soft);">${esc(sub)}</span></span></label>`;
+  const algumEmailPadrao = c.emails.some(e=>e.padrao), algumTelPadrao = c.telefones.some(t=>t.padrao);
+  openModal(`
+    <h3>📤 Enviar ao cliente — ${esc(c.empresaNome)}</h3>
+    <div class="field"><label>Documentos</label>${docs.map(d=>linha('rtEnvDoc', d.tipo, d.label, d.sub||'', d.marcado, false)).join('')}</div>
+    <div class="field"><label>E-mail</label>
+      ${!c.emailOk?'<div style="color:var(--debit); font-size:12px;">E-mail corporativo do escritório não configurado (Configurações › E-mail) — envio por e-mail indisponível.</div>':''}
+      ${c.emails.length ? c.emails.map(e=>linha('rtEnvEmail', e.email, e.email, `${e.nome} · ${e.origem}${e.padrao?' · recebe e-mails':''}`, c.emailOk && (e.padrao || (!algumEmailPadrao && e.origem==='Cadastro da empresa')), !c.emailOk)).join('') : '<div style="font-size:12px; color:var(--ink-soft);">Nenhum e-mail cadastrado — cadastre em Empresas › Contatos.</div>'}
+    </div>
+    <div class="field"><label>WhatsApp (anexa na conversa do Atendimento)</label>
+      ${!c.whatsappOk?'<div style="color:var(--debit); font-size:12px;">Integração do Atendimento (WhatsApp) não configurada para este escritório.</div>':''}
+      ${c.telefones.length ? c.telefones.map(t=>linha('rtEnvTel', t.telefone, t.telefone, `${t.nome} · ${t.origem}${t.padrao?' · recebe WhatsApp':''}`, c.whatsappOk && t.padrao, !c.whatsappOk)).join('') : '<div style="font-size:12px; color:var(--ink-soft);">Nenhum telefone cadastrado — cadastre em Empresas › Contatos.</div>'}
+      ${c.telefones.length && c.whatsappOk && !algumTelPadrao?'<div style="font-size:11.5px; color:var(--ink-soft);">Nenhum contato marcado para receber WhatsApp — marque acima quem deve receber.</div>':''}
+    </div>
+    <div class="field"><label>Mensagem</label><textarea id="rtEnvMsg" rows="4">Segue em anexo a análise da Reforma Tributária (IBS/CBS) de ${esc(c.empresaNome)}, preparada pela equipe do escritório. Qualquer dúvida, estamos à disposição.</textarea></div>
+    <div class="modal-actions"><button class="btn" id="rtEnvCancelar">Cancelar</button><button class="btn primary" id="rtEnvEnviar">Enviar</button></div>
+  `, '560px');
+  document.getElementById('rtEnvCancelar').addEventListener('click', closeModal);
+  document.getElementById('rtEnvEnviar').addEventListener('click', async ev=>{
+    const marc = cls=>[...document.querySelectorAll('.'+cls+':checked')].map(i=>i.value);
+    const tipos = marc('rtEnvDoc'), emails = marc('rtEnvEmail'), telefones = marc('rtEnvTel');
+    if(!tipos.length){ toast('Escolha pelo menos um documento.','err'); return; }
+    if(!emails.length && !telefones.length){ toast('Escolha pelo menos um e-mail ou WhatsApp.','err'); return; }
+    const btn = ev.currentTarget; btn.disabled = true; btn.textContent = 'Gerando e enviando…';
+    try{
+      const r = await api('/reforma/enviar-cliente', { method:'POST', body:{ empresaId, documentos: docs.filter(d=>tipos.includes(d.tipo)).map(d=>({ tipo:d.tipo, q:d.q })), emails, telefones, mensagem: document.getElementById('rtEnvMsg').value } });
+      closeModal();
+      const partes = [r.enviados.email.length?`e-mail para ${r.enviados.email.join(', ')}`:'', r.enviados.whatsapp.length?`WhatsApp para ${r.enviados.whatsapp.join(', ')}`:''].filter(Boolean);
+      toast(`Enviado: ${partes.join(' e ')}.${r.erros && r.erros.length ? ' Falhou: '+r.erros.join(' · ') : ''}`, r.erros && r.erros.length ? 'err' : 'ok');
+    }catch(e){ toast(e.message,'err'); btn.disabled = false; btn.textContent = 'Enviar'; }
+  });
+}
 function rtPainelHtml(d, urlPdf){
   const k = d.kpis, e = d.empresa;
   const S = d.direcao==='saida'; RT_DIRECAO = S ? 'saida' : 'entrada';
@@ -8885,6 +8929,7 @@ function rtPainelHtml(d, urlPdf){
         <button class="btn" id="rtCsv">⬇ Evidências (CSV)</button>
         ${S?'':`<button class="btn" id="rtFichas" title="Referências + ficha de conferência de NF-e de compra (em branco e pré-preenchida por fornecedor com pendência), com o timbrado">📋 Fichas de conferência (PDF)</button>`}
         <button class="btn primary" id="rtPdf">📄 Relatório para o cliente (PDF)</button>
+        ${STATE.user.perfil!=='Cliente'?'<button class="btn primary" id="rtEnviarCli" title="Enviar por e-mail e/ou WhatsApp (anexa na conversa) para os contatos da empresa">📤 Enviar ao cliente</button>':''}
       </div>
     </div>
     <div class="rt-hero-regime">${tomaTxt}</div>
@@ -9112,6 +9157,15 @@ function rtLigarPainel(painel, d, urlPdf){
     const linhas = rtAchadosFiltrados(d).map(a=>[RT_SEV[a.severidade].label,a.regra,a.titulo,a.fornecedor,a.cnpj,a.numero,a.serie,a.dhEmi,a.nItem||'',a.detalhe,a.evidencia,a.esperado||'',a.recomendacao,a.chave].map(q).join(';'));
     const blob = new Blob(['﻿'+[cols.map(q).join(';'),...linhas].join('\r\n')], { type:'text/csv;charset=utf-8' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `auditoria-reforma-${(d.empresa.nome||'empresa').replace(/[^\w]+/g,'-').slice(0,40)}.csv`; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 2000);
+  });
+  if(document.getElementById('rtEnviarCli')) document.getElementById('rtEnviarCli').addEventListener('click', ()=>{
+    const q = Object.fromEntries(new URL(urlPdf, location.origin).searchParams); delete q.empresaId;
+    const S = d.direcao==='saida';
+    const docs = [{ tipo:'relatorio', label:`Relatório da auditoria de ${S?'saídas':'entradas'}`, sub:'o mesmo PDF do botão "Relatório para o cliente"', q, marcado:true }];
+    if(!S) docs.push({ tipo:'fichas', label:'Fichas de conferência', sub:'Referências + ficha em branco + fichas pré-preenchidas por fornecedor', q, marcado:false });
+    if(!S && RT_SEL_FORN.size) docs.push({ tipo:'fornecedores', label:`Relatório de inconsistências — ${RT_SEL_FORN.size} fornecedor(es) marcado(s)`, sub:'os marcados no ranking', q:{ ...q, cnpjs:[...RT_SEL_FORN].join(',') }, marcado:false });
+    docs.push({ tipo:'ncm', label:'Mapa de NCM', sub: RT_NCM_ST.size||RT_NCM_BUSCA ? 'somente o filtro aplicado na tela' : 'todos os NCM', q:{ ...q, status:[...RT_NCM_ST].join(','), busca:RT_NCM_BUSCA }, marcado:false });
+    rtEnviarClienteModal(urlPdf, docs);
   });
   if(document.getElementById('rtFichas')) document.getElementById('rtFichas').addEventListener('click', async ()=>{
     const btn = document.getElementById('rtFichas'), orig = btn.textContent;
