@@ -834,6 +834,67 @@ body.theme-glass .tab.active::after, body.theme-glass .nav-item.active::after{
 .tema-swatches span{width:14px; height:22px; margin-left:-6px; border-radius:7px; border:1.5px solid rgba(255,255,255,.9); box-shadow:0 1px 2px rgba(0,0,0,.15);}
 .tema-swatches span:first-child{margin-left:0;}
 .tema-opcao-nome{font-size:13px; font-weight:500; color:var(--ink);}
+
+/* ===== Reforma Tributária (painel de auditoria) ===== */
+.rt-hero{border-radius:var(--radius); padding:18px 20px; margin-bottom:14px; color:#fff; background:linear-gradient(135deg,#1f6f4d 0%,#154d36 55%,#0f3a52 100%); box-shadow:var(--shadow);}
+.rt-hero-top{display:flex; justify-content:space-between; gap:14px; flex-wrap:wrap; align-items:flex-start;}
+.rt-hero-kicker{font-size:11.5px; letter-spacing:.06em; text-transform:uppercase; opacity:.85;}
+.rt-hero-nome{font-size:21px; font-weight:700; margin-top:4px;}
+.rt-hero-sub{font-size:12.5px; opacity:.85; margin-top:3px;}
+.rt-hero-regime{margin-top:12px; font-size:12.5px; background:rgba(255,255,255,.10); border:1px solid rgba(255,255,255,.18); border-radius:12px; padding:9px 12px; line-height:1.5;}
+.rt-hero .btn{background:rgba(255,255,255,.12); color:#fff; border-color:rgba(255,255,255,.28);}
+.rt-hero .btn.primary{background:#fff; color:#154d36; border-color:#fff;}
+.rt-pill{display:inline-flex; align-items:center; gap:6px; font-size:12px; padding:5px 11px; border-radius:999px; background:rgba(255,255,255,.95); color:#1c2b24; border-left:4px solid var(--c);}
+.rt-pulse{animation:rtPulse 1.6s ease-in-out infinite;}
+@keyframes rtPulse{0%,100%{opacity:1}50%{opacity:.62}}
+.rt-kpis{display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:10px; margin-bottom:14px;}
+.rt-kpi{background:var(--surface); border:1px solid var(--rule); border-radius:16px; padding:12px 14px; box-shadow:var(--shadow);}
+.rt-kpi-anel{display:flex; align-items:center; gap:10px; grid-column:span 2;}
+.rt-kpi-t{font-size:10.5px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.05em;}
+.rt-kpi-v{font-size:21px; font-weight:700; margin-top:4px; color:var(--ink);}
+.rt-kpi-un{font-size:12px; font-weight:500; color:var(--ink-soft); margin-left:2px;}
+.rt-kpi-s{font-size:11.5px; color:var(--ink-soft); margin-top:4px; line-height:1.4;}
+.rt-kpi-destaque{border:1.5px solid #eb6834; background:linear-gradient(180deg, rgba(235,104,52,.08), transparent);}
+.rt-grid2{display:grid; grid-template-columns:repeat(auto-fit,minmax(380px,1fr)); gap:14px; margin-bottom:14px;}
+.rt-card{margin-bottom:14px;}
+.rt-grid2 .rt-card{margin-bottom:0;}
+.rt-card-t{font-weight:700; font-size:14px;}
+.rt-card-s{font-size:12px; color:var(--ink-soft); margin:3px 0 10px;}
+.rt-mut{color:var(--ink-soft);}
+.rt-chip{display:inline-flex; align-items:center; gap:4px; font-size:11.5px; padding:2px 8px; border-radius:999px; border:1px solid var(--c); color:var(--ink); background:color-mix(in srgb, var(--c) 12%, transparent); white-space:nowrap;}
+.rt-dot{width:8px; height:8px; border-radius:50%; background:var(--c); display:inline-block;}
+.rt-segbar{display:flex; gap:2px; height:22px; border-radius:6px; overflow:hidden; margin:6px 0 10px;}
+.rt-seg{height:100%; min-width:3px;}
+.rt-sw{display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:6px; vertical-align:-1px;}
+.rt-legenda{width:100%; font-size:12.5px; border-collapse:collapse;}
+.rt-legenda td{padding:4px 2px; border-bottom:1px solid var(--rule);}
+.rt-legenda td.num, .rt-tabela td.num, .rt-tabela th.num{text-align:right; font-variant-numeric:tabular-nums;}
+.rt-leg-inline{display:flex; gap:16px; font-size:12px; color:var(--ink-soft); margin-top:4px;}
+.rt-rank{display:flex; flex-direction:column; gap:8px;}
+.rt-rank-row{display:grid; grid-template-columns:minmax(180px,2fr) 3fr minmax(130px,auto); gap:12px; align-items:center; cursor:pointer; padding:4px 6px; border-radius:10px;}
+.rt-rank-row:hover{background:var(--paper);}
+.rt-rank-nome{font-size:12.5px; font-weight:600;}
+.rt-rank-bar{height:10px; background:var(--rule); border-radius:5px; overflow:hidden;}
+.rt-rank-bar>div{height:100%; background:#eb6834; border-radius:0 4px 4px 0;}
+.rt-rank-v{text-align:right; font-weight:700; font-variant-numeric:tabular-nums;}
+.rt-regras{display:flex; flex-wrap:wrap; gap:8px;}
+.rt-regra{display:inline-flex; align-items:center; gap:7px; padding:7px 12px; border-radius:12px; border:1px solid var(--rule); border-left:4px solid var(--c); background:var(--surface); color:var(--ink); cursor:pointer; font-size:12.5px;}
+.rt-regra:hover{background:var(--paper);}
+.rt-click{cursor:pointer;}
+.rt-click:hover td{background:var(--paper);}
+.rt-ach{border:1px solid var(--rule); border-left:4px solid var(--c); border-radius:12px; padding:10px 12px; margin-bottom:8px; background:var(--surface);}
+.rt-ach-top{display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-size:13px;}
+.rt-ach-d{font-size:12.5px; margin-top:6px; line-height:1.45;}
+.rt-ach-ev{font-size:12px; margin-top:6px;}
+.rt-ach-ev code, .rt-tabela code{font-size:11.5px; background:var(--paper); padding:1px 5px; border-radius:5px; word-break:break-all;}
+.rt-ach-esp{margin-top:6px; font-size:12px;}
+.rt-ach-esp summary{cursor:pointer; color:var(--accent-deep); font-weight:600;}
+.rt-ach-esp pre{white-space:pre-wrap; word-break:break-all; font-size:11.5px; background:var(--paper); padding:8px 10px; border-radius:8px; margin:6px 0 0;}
+.rt-ach-rec{font-size:12.5px; margin-top:6px; color:var(--accent-deep); font-weight:600;}
+.rt-reco{margin-top:12px; font-size:12.5px; line-height:1.5; padding:10px 12px; border-radius:12px; background:var(--paper); border-left:4px solid #eb6834;}
+.rt-fontes summary{cursor:pointer;}
+.rt-fontes ul{font-size:12.5px; line-height:1.55; margin:10px 0 0; padding-left:18px;}
+@media (max-width:760px){ .rt-kpi-anel{grid-column:auto;} .rt-rank-row{grid-template-columns:1fr; gap:4px;} }
 </style>
 </head>
 <body>
@@ -1122,13 +1183,21 @@ async function enviarWhatsappDocComConfirmacao(path, body){
 // Cache id→CNPJ de TODAS as empresas (ativas e inativas) — alimenta o rótulo Matriz/Filial em
 // qualquer lista que só tenha o empresaId. Preenchido por empresasAtivas() e no boot().
 let EMPRESA_CNPJ_CACHE = null;
+let EMPRESA_CODIGO_CACHE = {}; // id -> código do Domínio (pra listas que só têm o empresaId)
+function _popularCacheEmpresas(items){ EMPRESA_CNPJ_CACHE = {}; EMPRESA_CODIGO_CACHE = {}; items.forEach(e=>{ EMPRESA_CNPJ_CACHE[e.id] = e.cnpj; EMPRESA_CODIGO_CACHE[e.id] = e.codigoDominio || ''; }); }
 async function empresasAtivas(){
   const { items } = await api('/empresas');
-  EMPRESA_CNPJ_CACHE = {}; items.forEach(e=>{ EMPRESA_CNPJ_CACHE[e.id] = e.cnpj; });
+  _popularCacheEmpresas(items);
   return items.filter(e=>e.ativo);
 }
 async function carregarEmpresaCnpjCache(){
-  try{ const { items } = await api('/empresas'); EMPRESA_CNPJ_CACHE = {}; items.forEach(e=>{ EMPRESA_CNPJ_CACHE[e.id] = e.cnpj; }); }catch(e){}
+  try{ const { items } = await api('/empresas'); _popularCacheEmpresas(items); }catch(e){}
+}
+// Prefixo "cód · " + nome + tag Matriz/Filial, por empresaId, usando os caches (pra listas que só têm o id).
+function empresaCodigoMatrizFilialHtml(empresaId, nome){
+  const cod = EMPRESA_CODIGO_CACHE[empresaId];
+  const pref = cod ? `<span style="color:var(--ink-soft); font-weight:600; margin-right:8px;">${esc(cod)}</span>` : '';
+  return pref + `<b>${esc(nome)}</b>` + matrizFilialHtmlPorId(empresaId);
 }
 // Matriz/Filial a partir do CNPJ (dígitos 9-12 = ordem da filial; "0001" = matriz, o resto é filial).
 // Serve pra distinguir empresas de mesmo nome na mesma raiz (ex.: 4x "RAIZES AGRO LTDA"). Vazio para
@@ -1700,6 +1769,7 @@ const NAV = [
     { label:'NF3-e', tipo:'nf3e' },
     { label:'SAT-CF-e', tipo:'satcfe' },
   ] },
+  { id:'reforma-tributaria', label:'Reforma Tributária', modulo:'nfe-busca', roles:['Administrador','Colaborador'] },
   { id:'integracontador', label:'Integra Contador', modulo:'integracontador', roles:['Administrador','Colaborador'] },
   { id:'webdfe', label:'Emissor NF-e', modulo:'webdfe', roles:['Administrador','Colaborador'] },
   { id:'minha-financeiro', label:'Financeiro', modulo:null, roles:['Cliente'] },
@@ -1709,6 +1779,7 @@ const NAV = [
   { id:'solicitar-documentos', label:'Solicitar Documentos', modulo:null, roles:['Cliente'] },
   { id:'documentos-recebidos', label:'Documentos Recebidos', modulo:null, roles:['Cliente'] },
   { id:'notas-entrada', label:'Notas de Entradas/Saídas', modulo:null, roles:['Cliente'] },
+  { id:'minha-reforma', label:'Reforma Tributária', modulo:null, roles:['Cliente'] },
   { id:'minha-assinatura', label:'Assinatura', modulo:null, roles:['Cliente'] },
   { id:'financeiro', label:'Financeiro', modulo:'financeiro', roles:['Administrador','Colaborador'] },
   { id:'certificados', label:'Certificados', modulo:'certificados', roles:['Administrador','Colaborador'] },
@@ -1733,13 +1804,14 @@ let NFE_TIPO_SEL = '';
 // o expandido/recolhido só seguia a página atual e clicar de novo no item não tinha efeito (sempre
 // reabria, porque "já estar na página" é justamente a condição que mantém expandido).
 let NAV_FECHADOS = new Set();
-const PAGINAS_CLIENTE_RESTRINGIVEIS = ['minha-nfse','meus-documentos','solicitar-documentos','documentos-recebidos','notas-entrada','minha-financeiro','minha-assinatura','minha-webdfe'];
+const PAGINAS_CLIENTE_RESTRINGIVEIS = ['minha-nfse','meus-documentos','solicitar-documentos','documentos-recebidos','notas-entrada','minha-reforma','minha-financeiro','minha-assinatura','minha-webdfe'];
 const PAGINAS_CLIENTE_TODAS = [
   { id:'minha-nfse', label:'NFS-e' },
   { id:'meus-documentos', label:'Meus Documentos' },
   { id:'solicitar-documentos', label:'Solicitar Documentos' },
   { id:'documentos-recebidos', label:'Documentos Recebidos' },
   { id:'notas-entrada', label:'Notas de Entradas/Saídas (XML)' },
+  { id:'minha-reforma', label:'Reforma Tributária (auditoria IBS/CBS)' },
   { id:'minha-financeiro', label:'Financeiro' },
   { id:'minha-assinatura', label:'Assinatura' },
   { id:'minha-webdfe', label:'Emissor NF-e' },
@@ -1909,6 +1981,8 @@ async function render(){
     else if(STATE.page==='solicitar-documentos') await pageSolicitarDocumentos();
     else if(STATE.page==='documentos-recebidos') await pageDocumentosRecebidos();
     else if(STATE.page==='notas-entrada') await pageNotasEntrada();
+    else if(STATE.page==='reforma-tributaria') await pageReformaTributaria();
+    else if(STATE.page==='minha-reforma') await pageMinhaReforma();
     else if(STATE.page==='minha-nfse') await pageMinhaNfse();
     else if(STATE.page==='minha-financeiro') await pageMinhaFinanceiro();
     else if(STATE.page==='minha-assinatura') await pageMinhaAssinatura();
@@ -8340,6 +8414,388 @@ function ligarEscritorioModuloPaywall(container, chave, aoLiberar){
   });
 }
 let NFE_TAB = 'configuradas';
+// ===================== Reforma Tributária — auditoria IBS/CBS das notas de ENTRADA =====================
+// Escritório (escolhe a empresa) e cliente (a própria empresa) usam o mesmo painel: reformaMontar().
+// Os dados vêm de /api/reforma/auditoria (motor em src/reforma-auditoria.ts): regras da NT 2025.002
+// v1.53 / NT 2026.005, tabela oficial de cClassTrib e validação NCM × cClassTrib / vigência do NCM na
+// API da Calculadora de Tributos (RFB/CGIBS). Enquanto a API valida em segundo plano, o painel se
+// atualiza sozinho.
+let RT_EMPRESA_ID = null;
+let RT_PERIODO = '3m';
+let RT_DE = '', RT_ATE = '';
+let RT_BUSCA_FORN = '';
+let RT_FILTRO_SEV = '';
+let RT_FILTRO_REGRA = '';
+let RT_BUSCA_ACH = '';
+let RT_SEQ = 0;
+// Cores fixas por entidade (paleta categórica validada) — a cor segue o regime, nunca a posição.
+const RT_COR_REGIME = { regular:'#2a78d6', sn_regular:'#1baf7a', sn_dentro:'#eb6834', sn_indefinido:'#eda100', mei:'#e87ba4', desconhecido:'#898781' };
+const RT_STATUS = {
+  conforme:{ cor:'#0ca30c', ic:'✔', label:'Conforme' },
+  atencao:{ cor:'#fab219', ic:'⚠', label:'Atenção' },
+  critico:{ cor:'#d03b3b', ic:'⛔', label:'Crítico' },
+};
+const RT_SEV = {
+  alta:{ cor:'#d03b3b', ic:'⛔', label:'Alta' },
+  media:{ cor:'#ec835a', ic:'⚠', label:'Média' },
+  baixa:{ cor:'#fab219', ic:'•', label:'Baixa' },
+  info:{ cor:'#2a78d6', ic:'ℹ', label:'Info' },
+};
+const RT_NCM_STATUS = {
+  ok:{ ic:'✔', label:'Validado', cor:'#0ca30c' },
+  ncm_vencido:{ ic:'⛔', label:'NCM vencido', cor:'#d03b3b' },
+  fora_anexo:{ ic:'⛔', label:'Redução indevida', cor:'#d03b3b' },
+  reducao_esquecida:{ ic:'💡', label:'Redução não aplicada', cor:'#ec835a' },
+  pendente:{ ic:'⏳', label:'Validando na RFB', cor:'#898781' },
+  sem_grupo:{ ic:'—', label:'Sem IBS/CBS', cor:'#898781' },
+};
+function rtPeriodoDatas(){
+  const h = new Date(), p2 = n=>String(n).padStart(2,'0'), iso = d=>`${d.getFullYear()}-${p2(d.getMonth()+1)}-${p2(d.getDate())}`;
+  const hoje = iso(h);
+  if(RT_PERIODO==='mes') return { de: `${h.getFullYear()}-${p2(h.getMonth()+1)}-01`, ate: hoje };
+  if(RT_PERIODO==='6m') return { de: iso(new Date(h.getFullYear(), h.getMonth()-5, 1)), ate: hoje };
+  if(RT_PERIODO==='ano') return { de: `${h.getFullYear()}-01-01`, ate: hoje };
+  if(RT_PERIODO==='custom' && RT_DE && RT_ATE) return { de: RT_DE, ate: RT_ATE };
+  return { de: iso(new Date(h.getFullYear(), h.getMonth()-2, 1)), ate: hoje };
+}
+const rtBRL = v=>'R$ '+(Number(v)||0).toLocaleString('pt-BR',{minimumFractionDigits:2, maximumFractionDigits:2});
+const rtNum = v=>(Number(v)||0).toLocaleString('pt-BR');
+const rtNcmFmt = n=>/^\d{8}$/.test(n||'') ? n.replace(/(\d{4})(\d{2})(\d{2})/,'$1.$2.$3') : (n||'—');
+const rtMesLabel = m=>{ const [a,mm]=String(m).split('-'); return ['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'][Number(mm)-1]+'/'+String(a).slice(2); };
+function rtChip(info){ return `<span class="rt-chip" style="--c:${info.cor};"><span aria-hidden="true">${info.ic}</span> ${esc(info.label)}</span>`; }
+function rtRegimeChip(regime, label){ return `<span class="rt-chip" style="--c:${RT_COR_REGIME[regime]||'#898781'};"><span class="rt-dot"></span> ${esc(label)}</span>`; }
+
+async function pageReformaTributaria(){
+  main().innerHTML = `
+    <h1>Reforma Tributária</h1>
+    <p class="subtitle">Auditoria do IBS/CBS nas notas de entrada: quais fornecedores emitem corretamente, NCM × classificação tributária validados na fonte oficial e o crédito que o cliente está deixando na mesa.</p>
+    <div class="card" style="margin-bottom:14px;">
+      <div class="row" style="gap:12px; flex-wrap:wrap; align-items:flex-end;">
+        <div class="field" style="flex:1; min-width:300px; margin-bottom:0;"><label>Empresa</label>${comboSelectHtml('rtEmpresaCombo','Digite o nome, CNPJ ou código da empresa…')}</div>
+        ${rtFiltroPeriodoHtml()}
+      </div>
+    </div>
+    <div id="rtPainel"></div>
+  `;
+  const painel = document.getElementById('rtPainel');
+  let empresas = [];
+  try{ empresas = await empresasAtivas(); }catch(e){ painel.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
+  setupComboSelect('rtEmpresaCombo', empresas.map(e=>({ id:e.id, label: empresaComboLabel(e) })), id=>{ RT_EMPRESA_ID = id ? Number(id) : null; carregar(); });
+  if(RT_EMPRESA_ID){
+    const e = empresas.find(x=>x.id===RT_EMPRESA_ID);
+    if(e){ const root=document.getElementById('rtEmpresaCombo'); root.querySelector('.combo-input').value = empresaComboLabel(e); root.querySelector('.combo-value').value = e.id; }
+  }
+  rtLigarFiltroPeriodo(()=>carregar());
+  function carregar(){
+    if(!RT_EMPRESA_ID){ painel.innerHTML = `<div class="card"><div class="empty-state">Escolha a empresa para abrir a auditoria das notas de entrada.</div></div>`; return; }
+    const { de, ate } = rtPeriodoDatas();
+    reformaMontar(painel, `/reforma/auditoria?empresaId=${RT_EMPRESA_ID}&de=${de}&ate=${ate}`, `/api/reforma/auditoria/pdf?empresaId=${RT_EMPRESA_ID}&de=${de}&ate=${ate}`);
+  }
+  carregar();
+}
+async function pageMinhaReforma(){
+  main().innerHTML = `
+    <h1>Reforma Tributária</h1>
+    <p class="subtitle">Auditoria do IBS/CBS nas suas notas de entrada: fornecedores, classificação tributária validada na fonte oficial e crédito em jogo.</p>
+    <div class="card" style="margin-bottom:14px;"><div class="row" style="gap:12px; flex-wrap:wrap; align-items:flex-end;">${rtFiltroPeriodoHtml()}</div></div>
+    <div id="rtPainel"></div>
+  `;
+  const painel = document.getElementById('rtPainel');
+  const carregar = ()=>{ const { de, ate } = rtPeriodoDatas(); reformaMontar(painel, `/reforma/minha-empresa/auditoria?de=${de}&ate=${ate}`, `/api/reforma/minha-empresa/auditoria/pdf?de=${de}&ate=${ate}`); };
+  rtLigarFiltroPeriodo(carregar);
+  carregar();
+}
+function rtFiltroPeriodoHtml(){
+  const op = (v,l)=>`<option value="${v}" ${RT_PERIODO===v?'selected':''}>${l}</option>`;
+  return `
+    <div class="field" style="width:200px; margin-bottom:0;"><label>Período (emissão)</label>
+      <select id="rtPeriodo">${op('mes','Mês atual')}${op('3m','Últimos 3 meses')}${op('6m','Últimos 6 meses')}${op('ano','Ano atual')}${op('custom','Personalizado')}</select></div>
+    <div class="field" id="rtDeWrap" style="width:150px; margin-bottom:0; ${RT_PERIODO==='custom'?'':'display:none;'}"><label>De</label>${dateInputHtml('rtDe', RT_DE)}</div>
+    <div class="field" id="rtAteWrap" style="width:150px; margin-bottom:0; ${RT_PERIODO==='custom'?'':'display:none;'}"><label>Até</label>${dateInputHtml('rtAte', RT_ATE)}</div>`;
+}
+function rtLigarFiltroPeriodo(onChange){
+  setupDatePicker('rtDe','rtDe_text'); setupDatePicker('rtAte','rtAte_text');
+  const sel = document.getElementById('rtPeriodo');
+  sel.addEventListener('change', ()=>{
+    RT_PERIODO = sel.value;
+    document.getElementById('rtDeWrap').style.display = RT_PERIODO==='custom' ? '' : 'none';
+    document.getElementById('rtAteWrap').style.display = RT_PERIODO==='custom' ? '' : 'none';
+    if(RT_PERIODO!=='custom' || (RT_DE && RT_ATE)) onChange();
+  });
+  ['rtDe','rtAte'].forEach(id=>document.getElementById(id).addEventListener('change', ()=>{
+    RT_DE = document.getElementById('rtDe').value; RT_ATE = document.getElementById('rtAte').value;
+    if(RT_DE && RT_ATE) onChange();
+  }));
+}
+
+async function reformaMontar(painel, urlApi, urlPdf, silencioso){
+  const seq = ++RT_SEQ;
+  const paginaAtual = STATE.page;
+  if(!silencioso) painel.innerHTML = `<div class="card"><div class="empty-state">⚖️ Auditando as notas de entrada — lendo cada XML item a item…</div></div>`;
+  let d;
+  try{ d = await api(urlApi); }
+  catch(e){ if(seq===RT_SEQ) painel.innerHTML = `<div class="card"><div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div></div>`; return; }
+  if(seq!==RT_SEQ || STATE.page!==paginaAtual) return;
+  const k = d.kpis;
+  if(!k.notas){
+    painel.innerHTML = `<div class="card"><div class="empty-state">Nenhuma NF-e de entrada no período para <b>${esc(d.empresa.nome)}</b>. As notas chegam pela Busca de XML (certificado da empresa configurado).</div></div>`;
+    return;
+  }
+  // Lembra filtros/scroll quando o painel se atualiza sozinho (validação oficial em andamento).
+  const scrollAntes = silencioso ? (document.scrollingElement||document.documentElement).scrollTop : 0;
+  painel.innerHTML = rtPainelHtml(d, urlPdf);
+  if(silencioso) (document.scrollingElement||document.documentElement).scrollTop = scrollAntes;
+  rtLigarPainel(painel, d, urlPdf);
+  if(d.validacao.pendentes>0 && !d.validacao.erroApi){
+    setTimeout(()=>{ if(seq===RT_SEQ && STATE.page===paginaAtual && document.body.contains(painel)) reformaMontar(painel, urlApi, urlPdf, true); }, 8000);
+  }
+}
+
+function rtPainelHtml(d, urlPdf){
+  const k = d.kpis, e = d.empresa;
+  const conf = Math.round(k.conformidade);
+  const corConf = conf>=90 ? RT_STATUS.conforme : conf>=70 ? RT_STATUS.atencao : RT_STATUS.critico;
+  const validacao = d.validacao.erroApi
+    ? `<span class="rt-pill" style="--c:#d03b3b;">⛔ API oficial indisponível agora — validações pendentes serão refeitas automaticamente (${esc(d.validacao.erroApi)})</span>`
+    : d.validacao.pendentes>0
+      ? `<span class="rt-pill rt-pulse" style="--c:#2a78d6;">⏳ Validando ${rtNum(d.validacao.pendentes)} consulta(s) na API oficial da RFB… o painel se atualiza sozinho</span>`
+      : `<span class="rt-pill" style="--c:#0ca30c;">✔ NCM × cClassTrib e vigência do NCM validados na API oficial da RFB</span>`;
+  const anel = (pct, cor)=>{ const r=34, c=2*Math.PI*r, off=c*(1-Math.max(0,Math.min(100,pct))/100);
+    return `<svg width="86" height="86" viewBox="0 0 86 86" role="img" aria-label="Conformidade ${pct}%"><circle cx="43" cy="43" r="${r}" fill="none" stroke="var(--rule)" stroke-width="7"/><circle cx="43" cy="43" r="${r}" fill="none" stroke="${cor}" stroke-width="7" stroke-linecap="round" stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}" transform="rotate(-90 43 43)"/><text x="43" y="48" text-anchor="middle" font-size="17" font-weight="700" fill="var(--ink)">${pct}%</text></svg>`; };
+  const tile = (titulo, valor, sub, destaque)=>`<div class="rt-kpi${destaque?' rt-kpi-destaque':''}"><div class="rt-kpi-t">${titulo}</div><div class="rt-kpi-v">${valor}</div>${sub?`<div class="rt-kpi-s">${sub}</div>`:''}</div>`;
+  const tomaTxt = e.tomaCredito
+    ? `<b>${esc(e.regimeLabel)}</b> — toma crédito integral de IBS/CBS das compras de fornecedores do regime regular. Compra de Simples "por dentro" e MEI gera crédito limitado ou nenhum (LC 214, art. 47 §9º).`
+    : `<b>${esc(e.regimeLabel)}</b> — sem opção pelo regime regular de IBS/CBS a empresa não se credita; a análise abaixo é de conformidade dos fornecedores e do custo embutido. Os valores de crédito são o que ela tomaria se optasse pelo regime regular.`;
+  return `
+  <div class="rt-hero">
+    <div class="rt-hero-top">
+      <div>
+        <div class="rt-hero-kicker">⚖️ Auditoria da Reforma Tributária · Notas de entrada</div>
+        <div class="rt-hero-nome">${esc(e.nome)} ${empresaMatrizFilialHtml(e.cnpj)}</div>
+        <div class="rt-hero-sub">CNPJ ${esc(fmtCnpjCpf(e.cnpj||''))} · ${fmtDateIso(d.periodo.de)} a ${fmtDateIso(d.periodo.ate)} · ${rtNum(k.notas)} NF-e · ${rtNum(k.itens)} itens auditados</div>
+      </div>
+      <div class="row" style="gap:8px; flex-wrap:wrap;">
+        <button class="btn" id="rtCsv">⬇ Evidências (CSV)</button>
+        <button class="btn primary" id="rtPdf">📄 Relatório para o cliente (PDF)</button>
+      </div>
+    </div>
+    <div class="rt-hero-regime">${tomaTxt}</div>
+    <div style="margin-top:10px;">${validacao}</div>
+  </div>
+
+  <div class="rt-kpis">
+    <div class="rt-kpi rt-kpi-anel">${anel(conf, corConf.cor)}<div><div class="rt-kpi-t">Conformidade das notas</div><div class="rt-kpi-s">${rtNum(k.notasConformes)} de ${rtNum(k.notas)} notas sem falha alta/média · ${rtChip(corConf)}</div></div></div>
+    ${tile('Compras auditadas', rtBRL(k.valorCompras), `${rtNum(k.fornecedores)} fornecedores · ${rtNum(k.fornecedoresComPendencia)} com ponto de atenção`)}
+    ${tile('IBS/CBS destacado', rtBRL(k.ibs + k.cbs), `CBS ${rtBRL(k.cbs)} · IBS ${rtBRL(k.ibs)} · ${rtNum(k.notasComGrupo)} de ${rtNum(k.notas)} notas com o grupo`)}
+    ${tile(e.tomaCredito?'Crédito aproveitável':'Crédito (se optasse)', rtBRL(k.creditoAproveitavel), k.creditoRisco>0?`<span style="color:#d03b3b;">⛔ ${rtBRL(k.creditoRisco)} em risco de glosa</span>`:'nenhum valor em risco de glosa')}
+    ${tile('Crédito 2027 em jogo', rtBRL(k.perda2027Anual)+'<span class="rt-kpi-un">/ano</span>', `estimativa anualizada com CBS de ${String(d.fontes.cbs2027Estimada).replace('.',',')}% (Simples por dentro, MEI e fornecedores sem destaque)`, true)}
+    ${tile('NCM vencido', rtNum(k.ncmsVencidos), k.ncmsVencidos?'<span style="color:#d03b3b;">⛔ código(s) extinto(s) na data da emissão</span>':'todos os NCM vigentes na emissão')}
+  </div>
+
+  <div class="rt-grid2">
+    <div class="card rt-card">
+      <div class="rt-card-t">Compras por regime do fornecedor</div>
+      <div class="rt-card-s">Quanto da compra gera crédito integral (regime normal / Simples por fora) × limitado (Simples por dentro) × nenhum (MEI).</div>
+      ${rtMixHtml(d.mixRegime)}
+    </div>
+    <div class="card rt-card">
+      <div class="rt-card-t">Evolução mensal das compras</div>
+      <div class="rt-card-s">Valor das NF-e de entrada por mês de emissão — parte conforme × com pendência.</div>
+      ${rtMensalHtml(d.mensal)}
+    </div>
+  </div>
+
+  <div class="card rt-card">
+    <div class="rt-card-t">Fornecedores com mais crédito em jogo em 2027</div>
+    <div class="rt-card-s">Crédito anual estimado que ${esc(e.nome)} deixa de tomar se nada mudar — base para renegociar preço, pedir a opção pelo regime regular ou trocar de fornecedor.</div>
+    ${rtTopFornHtml(d.fornecedores)}
+  </div>
+
+  <div class="card rt-card">
+    <div class="rt-card-t">Achados da auditoria por regra</div>
+    <div class="rt-card-s">Clique numa regra para ver as evidências.</div>
+    <div class="rt-regras">${d.regras.length ? d.regras.map(r=>`<button class="rt-regra" data-regra="${esc(r.regra)}" style="--c:${RT_SEV[r.severidade].cor};"><span aria-hidden="true">${RT_SEV[r.severidade].ic}</span><span class="rt-regra-t">${esc(r.titulo)}</span><b>${rtNum(r.qtd)}</b></button>`).join('') : '<div class="empty-state">Nenhum achado — todas as notas aderentes.</div>'}</div>
+  </div>
+
+  <div class="card rt-card">
+    <div class="rt-card-t">Ranking de fornecedores</div>
+    <div class="field" style="max-width:360px; margin:10px 0;"><input type="search" id="rtBuscaForn" placeholder="Pesquisar fornecedor ou CNPJ…" autocomplete="off" value="${esc(RT_BUSCA_FORN)}"></div>
+    <div style="overflow-x:auto;" id="rtFornTabela"></div>
+  </div>
+
+  <div class="card rt-card">
+    <div class="rt-card-t">Mapa de NCM × classificação tributária</div>
+    <div class="rt-card-s">Cada NCM comprado, a classificação (cClassTrib) que os fornecedores usaram e a validação na API oficial da RFB.</div>
+    <div style="overflow-x:auto;">${rtNcmHtml(d.ncms)}</div>
+  </div>
+
+  <div class="card rt-card" id="rtAchadosCard">
+    <div class="rt-card-t">Evidências — nota a nota</div>
+    <div class="rt-card-s">${rtNum(d.achadosTotal)} achado(s)${d.achadosTotal>d.achados.length?` (mostrando os ${rtNum(d.achados.length)} mais relevantes)`:''}. Cada um traz a tag do XML que comprova e como o fornecedor deveria ter emitido.</div>
+    <div class="row" style="gap:10px; flex-wrap:wrap; margin:10px 0;">
+      <div class="field" style="max-width:360px; flex:1; margin-bottom:0;"><input type="search" id="rtBuscaAch" placeholder="Pesquisar fornecedor, NF, NCM…" autocomplete="off" value="${esc(RT_BUSCA_ACH)}"></div>
+      <div class="field" style="width:170px; margin-bottom:0;"><select id="rtSev"><option value="">Todas as severidades</option>${Object.entries(RT_SEV).map(([v,s])=>`<option value="${v}" ${RT_FILTRO_SEV===v?'selected':''}>${s.ic} ${s.label}</option>`).join('')}</select></div>
+      <div class="field" style="width:260px; margin-bottom:0;"><select id="rtRegra"><option value="">Todas as regras</option>${d.regras.map(r=>`<option value="${esc(r.regra)}" ${RT_FILTRO_REGRA===r.regra?'selected':''}>${esc(r.titulo)}</option>`).join('')}</select></div>
+    </div>
+    <div id="rtAchadosLista"></div>
+  </div>
+
+  <details class="card rt-card rt-fontes">
+    <summary><b>Fontes oficiais, versão das tabelas e premissas</b></summary>
+    <ul>
+      <li><b>Leiaute:</b> ${esc(d.fontes.notasTecnicas)}.</li>
+      <li><b>Tabela cClassTrib/CST:</b> ${esc(d.fontes.tabela)}.</li>
+      <li><b>NCM vigentes:</b> ${esc(d.fontes.versaoNcm)}.</li>
+      <li><b>Validação oficial:</b> ${esc(d.fontes.api)}.</li>
+      <li><b>Atualização:</b> ${esc(d.fontes.atualizacao)}${d.fontes.atualizadoEm?` Última: ${fmtDateIso(d.fontes.atualizadoEm)}.`:''}${d.fontes.ultimasMudancas&&d.fontes.ultimasMudancas.length?` Mudanças: ${esc(d.fontes.ultimasMudancas.join('; '))}.`:''}</li>
+      <li><b>Alíquotas:</b> 2026 — CBS 0,9%, IBS UF 0,1%, IBS Mun 0% (LC 214, arts. 343 e 346; ano-teste, compensável com PIS/COFINS). 2027/2028 — IBS 0,05% + 0,05% (art. 344); CBS de 2027 ainda pendente de resolução do Senado — usada a estimativa de ${String(d.fontes.cbs2027Estimada).replace('.',',')}% (referência TCU 11,3% − 0,1 p.p., art. 347).</li>
+      <li><b>Crédito em jogo 2027:</b> diferença entre o crédito que o cliente tomaria se o fornecedor emitisse no regime regular e o crédito efetivo (Simples por dentro: valor do gTribSN; MEI: zero), anualizada pelo período analisado. Premissa: preço mantido — compare sempre o custo líquido (preço − crédito).</li>
+      <li><b>Simples Nacional:</b> crédito do adquirente limitado ao valor pago no regime único, salvo opção pelo regime regular de IBS/CBS (LC 214, art. 47 §9º; LC 123, art. 23). Opção semestral: setembro (1º semestre do ano seguinte) e março (2º semestre).</li>
+      <li><b>Base de cálculo:</b> fórmula oficial UB16-10 (vProd + vFrete + vSeg + vOutro + vII − vDesc − PIS − COFINS − ICMS − ICMS UF Dest − FCP − ICMS mono − ISSQN + IS), tolerância de R$ 0,02 por item.</li>
+    </ul>
+  </details>`;
+}
+function rtMixHtml(mix){
+  const tot = mix.reduce((a,m)=>a+m.valor,0) || 1;
+  const seg = mix.map(m=>{ const p = m.valor/tot*100; return `<div class="rt-seg" style="width:${p.toFixed(2)}%; background:${RT_COR_REGIME[m.regime]};" title="${esc(m.label)}: ${rtBRL(m.valor)} (${p.toFixed(1).replace('.',',')}%) · ${m.notas} nota(s)"></div>`; }).join('');
+  return `<div class="rt-segbar">${seg}</div>
+    <table class="rt-legenda">${mix.map(m=>`<tr><td><span class="rt-sw" style="background:${RT_COR_REGIME[m.regime]};"></span>${esc(m.label)}</td><td class="num">${rtBRL(m.valor)}</td><td class="num rt-mut">${(m.valor/tot*100).toFixed(1).replace('.',',')}%</td><td class="num rt-mut">${m.notas} NF</td></tr>`).join('')}</table>`;
+}
+function rtMensalHtml(mensal){
+  if(!mensal.length) return '<div class="empty-state">Sem dados.</div>';
+  const W = 520, H = 190, pl = 56, pb = 24, pt = 8, max = Math.max(...mensal.map(m=>m.valor), 1);
+  const bw = Math.min(46, (W-pl-10)/mensal.length - 10);
+  const y = v=> pt + (H-pt-pb) * (1 - v/max);
+  const ticks = [0, max/2, max].map(v=>`<line x1="${pl}" x2="${W}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" stroke="var(--rule)" stroke-width="1"/><text x="${pl-6}" y="${(y(v)+4).toFixed(1)}" text-anchor="end" font-size="10" fill="var(--ink-soft)">${v>=1000? (v/1000).toLocaleString('pt-BR',{maximumFractionDigits:0})+' mil' : v.toFixed(0)}</text>`).join('');
+  const barras = mensal.map((m,i)=>{
+    const x = pl + 10 + i*((W-pl-10)/mensal.length);
+    const pend = m.valor - m.valorConforme;
+    const yC = y(m.valorConforme), yT = y(m.valor);
+    return `<g><title>${rtMesLabel(m.mes)} — total ${rtBRL(m.valor)} · conforme ${rtBRL(m.valorConforme)} · com pendência ${rtBRL(pend)} · ${m.notas} NF · IBS/CBS ${rtBRL(m.ibs+m.cbs)}</title>
+      <rect x="${x}" y="${yC.toFixed(1)}" width="${bw}" height="${Math.max(0,(H-pb)-yC).toFixed(1)}" rx="3" fill="#0ca30c"/>
+      ${pend>0?`<rect x="${x}" y="${yT.toFixed(1)}" width="${bw}" height="${Math.max(0,yC-yT-2).toFixed(1)}" rx="3" fill="#ec835a"/>`:''}
+      <text x="${x+bw/2}" y="${H-8}" text-anchor="middle" font-size="10.5" fill="var(--ink-soft)">${rtMesLabel(m.mes)}</text></g>`;
+  }).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%; height:auto;" role="img" aria-label="Compras por mês">${ticks}${barras}</svg>
+    <div class="rt-leg-inline"><span><span class="rt-sw" style="background:#0ca30c;"></span>✔ Conforme</span><span><span class="rt-sw" style="background:#ec835a;"></span>⚠ Com pendência</span></div>`;
+}
+function rtTopFornHtml(forn){
+  const top = forn.filter(f=>f.perda2027Anual>0).slice(0,8);
+  if(!top.length) return '<div class="empty-state">✔ Nenhum fornecedor com crédito em jogo — todas as compras geram crédito integral.</div>';
+  const max = Math.max(...top.map(f=>f.perda2027Anual));
+  return `<div class="rt-rank">${top.map(f=>`<div class="rt-rank-row" data-forn="${esc(f.cnpj)}" title="Clique para ver as evidências">
+    <div class="rt-rank-nome">${esc(f.nome)}<div class="rt-mut" style="font-size:11px;">${rtRegimeChip(f.regime, f.regimeLabel)}</div></div>
+    <div class="rt-rank-bar"><div style="width:${(f.perda2027Anual/max*100).toFixed(1)}%;"></div></div>
+    <div class="rt-rank-v">${rtBRL(f.perda2027Anual)}<span class="rt-mut">/ano</span></div></div>`).join('')}</div>`;
+}
+function rtFornTabelaHtml(forn){
+  const t = normalizaTxt(RT_BUSCA_FORN), dig = RT_BUSCA_FORN.replace(/\D/g,'');
+  const lista = forn.filter(f=>!t || normalizaTxt(f.nome).includes(t) || (dig && f.cnpj.includes(dig)));
+  if(!lista.length) return '<div class="empty-state">Nenhum fornecedor encontrado.</div>';
+  return `<table class="data-table rt-tabela"><thead><tr><th>Fornecedor</th><th>Regime IBS/CBS</th><th class="num">Notas</th><th class="num">Compras</th><th class="num">% com IBS/CBS</th><th>Achados</th><th class="num">Crédito destacado</th><th class="num">Em jogo 2027/ano</th><th>Score</th></tr></thead><tbody>
+    ${lista.map(f=>`<tr class="rt-click" data-forn="${esc(f.cnpj)}">
+      <td><b>${esc(f.nome)}</b><div class="rt-mut" style="font-size:11px;">${esc(fmtCnpjCpf(f.cnpj))} · ${esc(f.uf||'')}</div></td>
+      <td>${rtRegimeChip(f.regime, f.regimeLabel)}</td>
+      <td class="num">${rtNum(f.notas)}</td><td class="num">${rtBRL(f.valor)}</td><td class="num">${f.pctComGrupo}%</td>
+      <td style="white-space:nowrap;">${f.alta?`<span style="color:#d03b3b;">⛔ ${f.alta}</span> `:''}${f.media?`<span style="color:#ec835a;">⚠ ${f.media}</span> `:''}${f.baixa?`<span class="rt-mut">• ${f.baixa}</span>`:''}${!f.alta&&!f.media&&!f.baixa?'<span style="color:#0ca30c;">✔</span>':''}</td>
+      <td class="num">${rtBRL(f.creditoDestacado)}${f.risco?`<div style="color:#d03b3b; font-size:11px;">⛔ ${rtBRL(f.risco)} em risco</div>`:''}</td>
+      <td class="num">${f.perda2027Anual?`<b>${rtBRL(f.perda2027Anual)}</b>`:'—'}</td>
+      <td style="white-space:nowrap;"><b>${f.score}</b> ${rtChip(RT_STATUS[f.status])}</td>
+    </tr>`).join('')}</tbody></table>`;
+}
+function rtNcmHtml(ncms){
+  if(!ncms.length) return '<div class="empty-state">Sem itens.</div>';
+  return `<table class="data-table rt-tabela"><thead><tr><th>NCM</th><th>Produto</th><th>cClassTrib usado</th><th>Validação oficial</th><th class="num">Itens</th><th class="num">Fornecedores</th><th class="num">Valor</th></tr></thead><tbody>
+    ${ncms.map(n=>`<tr><td style="white-space:nowrap;"><b>${rtNcmFmt(n.ncm)}</b>${n.vigente?'':' <span style="color:#d03b3b;" title="Fora da lista de NCM vigentes">⛔</span>'}</td>
+      <td>${esc(n.descricao)}${n.descricaoOficial?`<div class="rt-mut" style="font-size:11px;">TEC: ${esc(n.descricaoOficial)}</div>`:''}</td>
+      <td>${n.cClassTribs.length?n.cClassTribs.map(c=>`<code>${esc(c)}</code>`).join(' '):'<span class="rt-mut">sem grupo IBS/CBS</span>'}</td>
+      <td>${rtChip(RT_NCM_STATUS[n.status]||RT_NCM_STATUS.ok)}</td>
+      <td class="num">${rtNum(n.itens)}</td><td class="num">${rtNum(n.fornecedores)}</td><td class="num">${rtBRL(n.valor)}</td></tr>`).join('')}
+  </tbody></table>`;
+}
+function rtAchadosFiltrados(d){
+  const t = normalizaTxt(RT_BUSCA_ACH);
+  return d.achados.filter(a=>(!RT_FILTRO_SEV || a.severidade===RT_FILTRO_SEV) && (!RT_FILTRO_REGRA || a.regra===RT_FILTRO_REGRA)
+    && (!t || normalizaTxt(`${a.fornecedor} ${a.cnpj} ${a.numero} ${a.detalhe} ${a.evidencia}`).includes(t)));
+}
+function rtAchadoHtml(a, comFornecedor){
+  const s = RT_SEV[a.severidade];
+  return `<div class="rt-ach" style="--c:${s.cor};">
+    <div class="rt-ach-top"><span class="rt-chip" style="--c:${s.cor};"><span aria-hidden="true">${s.ic}</span> ${s.label}</span> <b>${esc(a.titulo)}</b>
+      <span class="rt-mut" style="margin-left:auto; font-size:11.5px;">${comFornecedor?esc(a.fornecedor)+' · ':''}NF ${esc(a.numero)}${a.serie?'/'+esc(a.serie):''} · ${fmtDateIso(a.dhEmi)}${a.nItem?' · item '+a.nItem:''}</span></div>
+    <div class="rt-ach-d">${esc(a.detalhe)}</div>
+    <div class="rt-ach-ev"><span class="rt-mut">Evidência no XML:</span> <code>${esc(a.evidencia)}</code></div>
+    ${a.esperado?`<details class="rt-ach-esp"><summary>Como o fornecedor deveria ter emitido</summary><pre>${esc(a.esperado)}</pre></details>`:''}
+    <div class="rt-ach-rec">➜ ${esc(a.recomendacao)}</div>
+  </div>`;
+}
+function rtLigarPainel(painel, d, urlPdf){
+  const renderForn = ()=>{ document.getElementById('rtFornTabela').innerHTML = rtFornTabelaHtml(d.fornecedores); ligarCliquesForn(); };
+  const renderAch = ()=>{
+    const lista = rtAchadosFiltrados(d);
+    document.getElementById('rtAchadosLista').innerHTML = lista.length ? lista.slice(0,300).map(a=>rtAchadoHtml(a, true)).join('') + (lista.length>300?`<div class="empty-state">+ ${rtNum(lista.length-300)} achado(s) — refine o filtro ou baixe o CSV.</div>`:'') : '<div class="empty-state">Nenhum achado com esses filtros.</div>';
+  };
+  function ligarCliquesForn(){ painel.querySelectorAll('[data-forn]').forEach(el=>el.onclick = ()=>rtFornecedorDrawer(d, el.dataset.forn)); }
+  renderForn(); renderAch();
+  const bf = document.getElementById('rtBuscaForn');
+  bf.addEventListener('input', ()=>{ RT_BUSCA_FORN = bf.value; renderForn(); });
+  const ba = document.getElementById('rtBuscaAch');
+  ba.addEventListener('input', ()=>{ RT_BUSCA_ACH = ba.value; renderAch(); });
+  document.getElementById('rtSev').addEventListener('change', e=>{ RT_FILTRO_SEV = e.target.value; renderAch(); });
+  document.getElementById('rtRegra').addEventListener('change', e=>{ RT_FILTRO_REGRA = e.target.value; renderAch(); });
+  painel.querySelectorAll('.rt-regra').forEach(b=>b.addEventListener('click', ()=>{
+    RT_FILTRO_REGRA = b.dataset.regra; RT_FILTRO_SEV = '';
+    document.getElementById('rtRegra').value = RT_FILTRO_REGRA; document.getElementById('rtSev').value = '';
+    renderAch(); document.getElementById('rtAchadosCard').scrollIntoView({ behavior:'smooth', block:'start' });
+  }));
+  document.getElementById('rtCsv').addEventListener('click', ()=>{
+    const cols = ['Severidade','Regra','Título','Fornecedor','CNPJ','NF','Série','Emissão','Item','Detalhe','Evidência','Como deveria emitir','Recomendação','Chave'];
+    const q = v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"';
+    const linhas = rtAchadosFiltrados(d).map(a=>[RT_SEV[a.severidade].label,a.regra,a.titulo,a.fornecedor,a.cnpj,a.numero,a.serie,a.dhEmi,a.nItem||'',a.detalhe,a.evidencia,a.esperado||'',a.recomendacao,a.chave].map(q).join(';'));
+    const blob = new Blob(['﻿'+[cols.map(q).join(';'),...linhas].join('\r\n')], { type:'text/csv;charset=utf-8' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `auditoria-reforma-${(d.empresa.nome||'empresa').replace(/[^\w]+/g,'-').slice(0,40)}.csv`; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 2000);
+  });
+  document.getElementById('rtPdf').addEventListener('click', async ()=>{
+    const btn = document.getElementById('rtPdf'), orig = btn.textContent;
+    btn.disabled = true; btn.textContent = 'Gerando relatório…';
+    try{
+      const resp = await fetch(urlPdf, { credentials:'include' });
+      if(!resp.ok){ let msg='Erro '+resp.status; try{ const j=await resp.json(); if(j.error) msg=j.error; }catch(e){} throw new Error(msg); }
+      const blob = await resp.blob();
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `Auditoria Reforma Tributaria - ${(d.empresa.nome||'').slice(0,50)}.pdf`; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 4000);
+    }catch(e){ toast(e.message,'err'); }
+    finally{ btn.disabled = false; btn.textContent = orig; }
+  });
+}
+function rtFornecedorDrawer(d, cnpj){
+  const f = d.fornecedores.find(x=>x.cnpj===cnpj);
+  if(!f) return;
+  const ach = d.achados.filter(a=>a.cnpj===cnpj);
+  const porNota = new Map(); ach.forEach(a=>{ const k=a.numero+'|'+a.serie+'|'+a.dhEmi; if(!porNota.has(k)) porNota.set(k, []); porNota.get(k).push(a); });
+  openDrawer(`
+    <div class="drawer-header"><h3>${esc(f.nome)}</h3><button class="btn small" id="rtFornFechar">Fechar</button></div>
+    <div class="drawer-body">
+      <div class="rt-mut" style="margin-top:-6px;">${esc(fmtCnpjCpf(f.cnpj))} · ${esc(f.uf||'')} · ${rtRegimeChip(f.regime, f.regimeLabel)} · ${rtChip(RT_STATUS[f.status])} score ${f.score}</div>
+      <div class="rt-kpis" style="margin-top:12px;">
+        <div class="rt-kpi"><div class="rt-kpi-t">Compras</div><div class="rt-kpi-v">${rtBRL(f.valor)}</div><div class="rt-kpi-s">${f.notas} NF · ${f.itens} itens · ${f.pctComGrupo}% com IBS/CBS</div></div>
+        <div class="rt-kpi"><div class="rt-kpi-t">Crédito destacado</div><div class="rt-kpi-v">${rtBRL(f.creditoDestacado)}</div><div class="rt-kpi-s">${f.risco?`<span style="color:#d03b3b;">⛔ ${rtBRL(f.risco)} em risco</span>`:'sem risco de glosa'}</div></div>
+        <div class="rt-kpi rt-kpi-destaque"><div class="rt-kpi-t">Em jogo 2027</div><div class="rt-kpi-v">${rtBRL(f.perda2027Anual)}<span class="rt-kpi-un">/ano</span></div></div>
+      </div>
+      <div class="rt-reco"><b>Recomendação:</b> ${esc(f.recomendacao)}</div>
+      <div class="row" style="gap:8px; margin:10px 0;"><button class="btn small" id="rtCopiarNotif">✉️ Copiar notificação ao fornecedor</button></div>
+      <div class="rt-card-t" style="margin-top:6px;">Evidências (${ach.length})</div>
+      ${ach.length ? [...porNota.entries()].map(([k, lst])=>`<div style="margin-top:10px;"><div class="rt-mut" style="font-size:12px; margin-bottom:4px;">NF ${esc(lst[0].numero)}${lst[0].serie?'/'+esc(lst[0].serie):''} · ${fmtDateIso(lst[0].dhEmi)} · chave ${esc(lst[0].chave)}</div>${lst.map(a=>rtAchadoHtml(a, false)).join('')}</div>`).join('') : '<div class="empty-state">✔ Nenhum achado para este fornecedor no período.</div>'}
+    </div>`);
+  document.getElementById('rtFornFechar').addEventListener('click', closeDrawer);
+  document.getElementById('rtCopiarNotif').addEventListener('click', async ()=>{
+    const principais = ach.filter(a=>a.severidade==='alta'||a.severidade==='media').slice(0,15);
+    const txt = `Prezados, ${f.nome} (CNPJ ${fmtCnpjCpf(f.cnpj)}),\n\nNa auditoria das notas fiscais emitidas para ${d.empresa.nome} (CNPJ ${fmtCnpjCpf(d.empresa.cnpj||'')}), no período de ${fmtDateIso(d.periodo.de)} a ${fmtDateIso(d.periodo.ate)}, identificamos os pontos abaixo no preenchimento do IBS/CBS (NT 2025.002-RTC v1.53 / NT 2026.005):\n\n` +
+      (principais.length ? principais.map((a,i)=>`${i+1}. NF ${a.numero}${a.nItem?' item '+a.nItem:''} (${fmtDateIso(a.dhEmi)}) — ${a.titulo}\n   Evidência: ${a.evidencia}${a.esperado?`\n   Preenchimento esperado: ${a.esperado}`:''}`).join('\n\n') : `- ${f.recomendacao}`) +
+      `\n\n${f.regime==='sn_dentro'||f.regime==='sn_indefinido'?'Solicitamos também avaliar a opção pelo regime regular de IBS/CBS (LC 214/2025, art. 41 §3º), que permite o crédito integral ao adquirente.\n\n':''}Pedimos a gentileza de ajustar o emissor e, quando cabível, emitir a correção (CC-e ou NF-e complementar).\n\nAtenciosamente,`;
+    try{ await navigator.clipboard.writeText(txt); toast('Notificação copiada — cole no e-mail/WhatsApp do fornecedor.','ok'); }
+    catch(e){ toast('Não consegui copiar automaticamente.','err'); }
+  });
+}
 async function pageNfeBusca(){
   main().innerHTML = `
     <h1>Busca de XML</h1>
@@ -12824,7 +13280,16 @@ const CAMPO_AJUDA = {
 function campoAjudaTexto(chave){
   return CAMPO_AJUDA[chave] || `Campo usado no texto do contrato — onde aparecer {{${chave}}} no documento, este valor entra no lugar.`;
 }
-function campoEhCnpjCpf(chave){ return chave==='CNPJ' || /cpf/i.test(chave); }
+function campoEhCnpjCpf(chave){ return chave==='CNPJ' || /cpf/i.test(chave) || /cnpj/i.test(chave); }
+// Qual documento o campo aceita, pela chave: 'CNPJ_CPF_contratada' (tem os dois) aceita CPF ou CNPJ.
+function tipoDocCampo(chave){
+  const temCpf = /cpf/i.test(chave), temCnpj = chave==='CNPJ' || /cnpj/i.test(chave);
+  return temCpf && temCnpj ? 'ambos' : temCnpj ? 'cnpj' : 'cpf';
+}
+// Anexo de empresas terceirizadas (modelo de Terceirização): lista de empresas da carteira com os
+// setores terceirizados e o valor mensal de cada setor. Guardado como JSON no próprio campo.
+function campoEhAnexoTerceirizacao(chave){ return chave==='anexo_empresas_terceirizadas'; }
+const SETORES_TERCEIRIZACAO = [['fiscal','Fiscal'],['contabil','Contábil'],['folha','Folha / DP']];
 function campoEhCep(chave){ return chave==='CEP'; }
 function campoEhMoeda(chave){ return /valor/i.test(chave); }
 function campoEhServicos(chave){ return /servi[cç]os_a_ser/i.test(chave); }
@@ -12842,6 +13307,14 @@ function valorFormatadoCampo(chave, valor){
 }
 function campoFieldHtml(f, dados, comAjuda, catalogoServicos){
   const ajuda = comAjuda ? ` <span class="campo-ajuda" data-ajuda="${esc(campoAjudaTexto(f.chave))}">?</span>` : '';
+  if(campoEhAnexoTerceirizacao(f.chave)){
+    return `<div class="field" style="grid-column:1 / -1;"><label>${esc(f.rotulo)}${ajuda}</label>
+      <input type="hidden" class="drwCampo" data-chave="${esc(f.chave)}" value="${esc(dados[f.chave]||'')}">
+      ${comboSelectHtml('anexoTercCombo','Incluir empresa: digite o nome, CNPJ ou código Domínio…')}
+      <div class="anexoTercLista" style="margin-top:8px; overflow-x:auto;"></div>
+      <div style="font-size:11px; color:var(--ink-soft); margin-top:4px;">Marque os setores terceirizados de cada empresa e o valor mensal (R$) de cada um. O total vira o honorário mensal do contrato. Clique em "Aplicar no documento" pra montar o Anexo I.</div>
+    </div>`;
+  }
   // Campo de serviços vira MULTIESCOLHA quando há catálogo cadastrado — senão cai no input de texto
   // normal (não trava o preenchimento se o escritório ainda não montou a lista).
   if(campoEhServicos(f.chave) && catalogoServicos && catalogoServicos.length){
@@ -12940,6 +13413,79 @@ function setupMultiSelectServicos(wrap, catalogo, hidden){
   busca.addEventListener('input', renderOpts);
   renderChips(); renderValores(); renderOpts(); atualizarHonorario();
 }
+// Monta o editor do anexo de terceirização: combo pra incluir empresas + tabela com setores/valores.
+// Mantém o hidden (JSON) e o {{valor_honorário}} (soma) sincronizados a cada mudança.
+function setupAnexoTerceirizacao(hidden, empresas){
+  let itens = [];
+  try{ itens = JSON.parse(hidden.value||'[]'); }catch(e){ itens = []; }
+  if(!Array.isArray(itens)) itens = [];
+  const lista = hidden.parentElement.querySelector('.anexoTercLista');
+  const num = v=> v ? Number(String(v).replace(/\./g,'').replace(',','.'))||0 : 0;
+  const fmt = n=> n.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const subtotal = it=> SETORES_TERCEIRIZACAO.reduce((a,[k])=> a + (it.setores && it.setores[k]!=null ? num(it.setores[k]) : 0), 0);
+  function sync(){
+    hidden.value = itens.length ? JSON.stringify(itens) : '';
+    const vh = document.querySelector('.drwCampo[data-chave="valor_honorário"]');
+    if(vh && itens.length) vh.value = fmt(itens.reduce((a,it)=>a+subtotal(it),0));
+    const tot = lista.querySelector('.anexoTercTotal');
+    if(tot) tot.textContent = 'R$ '+fmt(itens.reduce((a,it)=>a+subtotal(it),0));
+    lista.querySelectorAll('tr[data-i]').forEach(tr=>{ const st = tr.querySelector('.anexoTercSub'); if(st) st.textContent = fmt(subtotal(itens[Number(tr.dataset.i)])); });
+  }
+  function render(){
+    if(!itens.length){ lista.innerHTML = '<div class="empty-state" style="padding:10px;">Nenhuma empresa no anexo ainda.</div>'; sync(); return; }
+    lista.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Cód. Domínio</th><th>Regime</th>${SETORES_TERCEIRIZACAO.map(([,l])=>`<th>${esc(l)}</th>`).join('')}<th>Subtotal</th><th></th></tr></thead><tbody>
+      ${itens.map((it,i)=>`<tr data-i="${i}">
+        <td>${esc(it.nome)}${it.cnpj?` <span style="color:var(--ink-soft); font-size:11px;">${esc(matrizFilialTexto(it.cnpj)||'')}</span>`:''}</td>
+        <td>${esc(it.codigoDominio||'—')}</td>
+        <td>${esc(REGIME_TRIBUTARIO_LABELS[it.regime]||it.regime||'—')}</td>
+        ${SETORES_TERCEIRIZACAO.map(([k])=>`<td style="white-space:nowrap;"><label class="checkbox-row" style="margin:0;"><input type="checkbox" class="anexoTercChk" data-setor="${k}" ${it.setores&&it.setores[k]!=null?'checked':''}></label><input class="anexoTercVal" data-setor="${k}" placeholder="0,00" inputmode="decimal" value="${esc(it.setores&&it.setores[k]!=null?it.setores[k]:'')}" style="width:90px; ${it.setores&&it.setores[k]!=null?'':'display:none;'}"></td>`).join('')}
+        <td class="anexoTercSub" style="white-space:nowrap;">${fmt(subtotal(it))}</td>
+        <td><button type="button" class="btn small anexoTercRem" title="Tirar do anexo">×</button></td>
+      </tr>`).join('')}
+      </tbody><tfoot><tr><td colspan="${3+SETORES_TERCEIRIZACAO.length}" style="text-align:right;"><b>Total mensal (${itens.length} empresa${itens.length>1?'s':''})</b></td><td colspan="2"><b class="anexoTercTotal"></b></td></tr></tfoot></table>`;
+    lista.querySelectorAll('tr[data-i]').forEach(tr=>{
+      const it = itens[Number(tr.dataset.i)];
+      it.setores = it.setores || {};
+      tr.querySelectorAll('.anexoTercChk').forEach(chk=>chk.addEventListener('change', ()=>{
+        const val = tr.querySelector('.anexoTercVal[data-setor="'+chk.dataset.setor+'"]');
+        if(chk.checked){ it.setores[chk.dataset.setor] = val.value || ''; val.style.display=''; val.focus(); }
+        else { delete it.setores[chk.dataset.setor]; val.value=''; val.style.display='none'; }
+        sync();
+      }));
+      tr.querySelectorAll('.anexoTercVal').forEach(inp=>{
+        ligarMascaraMoeda(inp);
+        inp.addEventListener('input', ()=>{ it.setores[inp.dataset.setor] = inp.value; sync(); });
+      });
+      tr.querySelector('.anexoTercRem').addEventListener('click', ()=>{ itens.splice(Number(tr.dataset.i),1); render(); });
+    });
+    sync();
+  }
+  const ativas = empresas.filter(e=>e.ativo!==false);
+  setupComboSelect('anexoTercCombo', ativas.map(e=>({ id:e.id, label: empresaComboLabel(e) })), (eid)=>{
+    if(!eid) return;
+    const e = ativas.find(x=>x.id===Number(eid));
+    const root = document.getElementById('anexoTercCombo');
+    root.querySelector('.combo-input').value=''; root.querySelector('.combo-value').value='';
+    if(!e) return;
+    if(itens.some(it=>it.empresaId===e.id)){ toast('Essa empresa já está no anexo.','err'); return; }
+    itens.push({ empresaId:e.id, nome:e.nome, cnpj:e.cnpj||'', codigoDominio:e.codigoDominio||'', regime:e.regimeTributario||'', setores:{} });
+    render();
+  });
+  render();
+}
+// Tabela do Anexo I que vai pro documento (e pro PDF).
+function anexoTerceirizacaoTabelaHtml(itens){
+  const num = v=> v ? Number(String(v).replace(/\./g,'').replace(',','.'))||0 : 0;
+  const fmt = n=> n.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+  let total = 0;
+  const linhas = itens.map((it,i)=>{
+    const sub = SETORES_TERCEIRIZACAO.reduce((a,[k])=> a + (it.setores && it.setores[k]!=null ? num(it.setores[k]) : 0), 0);
+    total += sub;
+    const mf = it.cnpj ? matrizFilialTexto(it.cnpj) : '';
+    return `<tr><td>${i+1}</td><td>${esc(it.nome)}${it.cnpj?`<br>${esc(fmtCnpjCpf(it.cnpj))}${mf?' ('+esc(mf)+')':''}`:''}</td><td>${esc(it.codigoDominio||'—')}</td><td>${esc(REGIME_TRIBUTARIO_LABELS[it.regime]||it.regime||'—')}</td>${SETORES_TERCEIRIZACAO.map(([k])=>`<td>${it.setores && it.setores[k]!=null ? 'R$ '+fmt(num(it.setores[k])) : '—'}</td>`).join('')}<td>R$ ${fmt(sub)}</td></tr>`;
+  }).join('');
+  return `<table class="dados anexo-terceirizacao"><thead><tr><th>Nº</th><th>Empresa / CNPJ</th><th>Cód. Domínio</th><th>Regime tributário</th>${SETORES_TERCEIRIZACAO.map(([,l])=>`<th>${esc(l)}</th>`).join('')}<th>Total mensal</th></tr></thead><tbody>${linhas}</tbody><tfoot><tr><td colspan="${4+SETORES_TERCEIRIZACAO.length}"><b>TOTAL MENSAL DOS SERVIÇOS TERCEIRIZADOS (${itens.length} empresa${itens.length>1?'s':''})</b></td><td><b>R$ ${fmt(total)}</b></td></tr></tfoot></table>`;
+}
 // Valida os campos de documento (CPF/CNPJ/CEP) do drawer: se tiver dígitos mas na quantidade errada,
 // foca, pinta de vermelho, avisa e retorna false (bloqueia salvar/aplicar). Vazio é permitido.
 function validarDrwCampos(){
@@ -12948,20 +13494,15 @@ function validarDrwCampos(){
     const dig = (inp.value||'').replace(/\D/g,'');
     inp.style.borderColor = '';
     if(!dig) continue;
-    let esperado = null, rotulo = '', checagem = null;
-    if(chave==='CNPJ'){ esperado=14; rotulo='CNPJ'; checagem=cnpjValido; }
-    else if(/cpf/i.test(chave)){ esperado=11; rotulo='CPF'; checagem=cpfValido; }
-    else if(campoEhCep(chave)){ esperado=8; rotulo='CEP'; }
-    if(esperado){
-      let erro = null;
-      if(dig.length!==esperado) erro = `${rotulo} precisa de ${esperado} dígitos (tem ${dig.length})`;
-      else if(checagem && !checagem(dig)) erro = `${rotulo} inválido — o dígito verificador (2 últimos números) não confere`;
-      if(erro){
-        inp.style.borderColor = 'var(--debit)';
-        inp.focus();
-        toast(`Campo "${chave}": ${erro}. Corrija antes de salvar.`,'err');
-        return false;
-      }
+    if(campoEhAnexoTerceirizacao(chave)) continue;
+    let erro = null;
+    if(campoEhCnpjCpf(chave)) erro = erroDocumentoBR(dig, tipoDocCampo(chave));
+    else if(campoEhCep(chave) && dig.length!==8) erro = `CEP precisa de 8 dígitos (tem ${dig.length})`;
+    if(erro){
+      inp.style.borderColor = 'var(--debit)';
+      inp.focus();
+      toast(`Campo "${chave}": ${erro}. Corrija antes de salvar.`,'err');
+      return false;
     }
   }
   return true;
@@ -12972,6 +13513,8 @@ async function abrirContratoDrawer(id){
     api('/contratos/servicos-catalogo?ativos=1').then(r=>r.items).catch(()=>[]),
   ]);
   const campos = c.modeloCampos || [];
+  const temAnexoTerc = campos.some(f=>campoEhAnexoTerceirizacao(f.chave));
+  const empresasAnexo = temAnexoTerc ? await api('/empresas').then(r=>r.items||[]).catch(()=>[]) : [];
   const dados = c.dadosPreenchidos || {};
   const camposEmpresa = campos.filter(f=>f.autoPreencherDe);
   // /test[eu]munha/ tolera a grafia com erro "testumunha" (u no lugar de e) que aparece em modelos
@@ -13070,7 +13613,7 @@ async function abrirContratoDrawer(id){
     document.querySelectorAll('.drwCampo').forEach(inp=>{
       if(campoEhCnpjCpf(inp.dataset.chave)){
         // Máscara ao vivo (pontos/traço enquanto digita). CPF limita a 11 dígitos; CNPJ a 14.
-        const max = (inp.dataset.chave!=='CNPJ' && /cpf/i.test(inp.dataset.chave)) ? 11 : 14;
+        const max = tipoDocCampo(inp.dataset.chave)==='cpf' ? 11 : 14;
         const fmt = ()=>{ inp.value = formatarDocumentoBR(inp.value.replace(/\D/g,'').slice(0,max)); inp.style.borderColor=''; };
         inp.addEventListener('input', fmt);
         fmt(); // formata/trunca o valor já carregado (ex.: CPF com dígito a mais vira CPF válido formatado)
@@ -13085,6 +13628,8 @@ async function abrirContratoDrawer(id){
       const hidden = document.querySelector('.drwCampo[data-chave="'+wrap.dataset.grupo+'"]');
       if(hidden) setupMultiSelectServicos(wrap, catalogoServicos, hidden);
     });
+    const anexoHidden = document.querySelector('.drwCampo[data-chave="anexo_empresas_terceirizadas"]');
+    if(anexoHidden) setupAnexoTerceirizacao(anexoHidden, empresasAnexo);
     document.getElementById('drwAplicarCampos').addEventListener('click', async ()=>{
       if(!validarDrwCampos()) return;
       const novosDados = {};
@@ -13116,12 +13661,39 @@ async function abrirContratoDrawer(id){
           novosDados['vlr_extenso'] = r.extenso;
         }catch(e){ toast('Não consegui calcular o valor por extenso: '+e.message,'err'); }
       }
+      // Anexo de terceirização: o JSON vira a tabela do Anexo I (não entra como texto).
+      const anexoChave = Object.keys(novosDados).find(k=>campoEhAnexoTerceirizacao(k));
+      let anexoHtml = null;
+      if(anexoChave){
+        let itensAnexo = [];
+        try{ itensAnexo = JSON.parse(novosDados[anexoChave]||'[]'); }catch(e){}
+        if(itensAnexo.length){
+          const semSetor = itensAnexo.find(it=>!it.setores || !Object.keys(it.setores).length);
+          if(semSetor){ toast(`Marque pelo menos um setor terceirizado para "${semSetor.nome}".`,'err'); return; }
+          anexoHtml = anexoTerceirizacaoTabelaHtml(itensAnexo);
+        }
+        delete novosDados[anexoChave];
+      }
       let html = corpo.innerHTML;
+      // Reaplicar depois de mudar o total (ex.: anexo/serviços alterados): o {{valor_honorário}} já
+      // virou texto na 1ª aplicação — troca o valor e o extenso aplicados antes pelos novos.
+      const ultimo = corpo._ultimoHonorario;
+      const vhNovo = novosDados['valor_honorário'];
+      if(ultimo && ultimo.vh && vhNovo && ultimo.vh!==vhNovo){
+        html = html.split('R$ '+esc(ultimo.vh)).join('R$ '+esc(vhNovo));
+        if(ultimo.ext && novosDados['vlr_extenso']) html = html.split(esc(ultimo.ext)).join(esc(novosDados['vlr_extenso']));
+      }
       Object.keys(novosDados).forEach(chave=>{
         const valor = novosDados[chave];
         if(valor) html = html.split('{{'+chave+'}}').join(esc(valor));
       });
       corpo.innerHTML = html;
+      if(vhNovo) corpo._ultimoHonorario = { vh: vhNovo, ext: novosDados['vlr_extenso'] || '' };
+      if(anexoHtml){
+        const tok = '{{'+anexoChave+'}}';
+        if(corpo.innerHTML.includes(tok)) corpo.innerHTML = corpo.innerHTML.split(tok).join(anexoHtml);
+        else { const t = corpo.querySelector('table.anexo-terceirizacao'); if(t) t.outerHTML = anexoHtml; }
+      }
       toast('Dados aplicados no documento.','ok');
     });
   }
@@ -13457,6 +14029,13 @@ function contratoModeloDrawer(m){
     <div class="drawer-body">
       <div class="field"><label>Nome do modelo</label><input id="cmNome" value="${m?esc(m.nome):''}"></div>
       ${m?`<label class="checkbox-row"><input type="checkbox" id="cmAtivo" ${m.ativo?'checked':''}> Ativo (disponível pra criar contratos novos)</label>`:''}
+      ${m?'':`<div class="card" style="background:var(--paper); margin:14px 0;">
+        <div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">Começar de um modelo pronto — preenche nome, campos e o texto completo (o timbrado do escritório entra sozinho no PDF). Depois é só revisar e clicar em Salvar modelo.</div>
+        <div class="row" style="align-items:center;">
+          <select id="cmProntoSel" style="flex:1;"><option value="">Carregando…</option></select>
+          <button type="button" class="btn small" id="cmProntoCarregar">Carregar modelo pronto</button>
+        </div>
+      </div>`}
       <div class="card" style="background:var(--paper); margin:14px 0;">
         <div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">
           Campos que serão preenchidos por contrato — use <code>{{chave}}</code> no texto do contrato em cada lugar onde esse dado deve aparecer.
@@ -13495,6 +14074,26 @@ function contratoModeloDrawer(m){
   const corpo = document.getElementById('cmCorpo');
   setupRte(toolbar, corpo);
   document.getElementById('cmFechar').addEventListener('click', closeDrawer);
+  if(!m){
+    const sel = document.getElementById('cmProntoSel');
+    let prontos = [];
+    api('/contratos/modelos-prontos').then(r=>{
+      prontos = r.items || [];
+      sel.innerHTML = '<option value="">— Escolha —</option>' + prontos.map(p=>`<option value="${esc(p.id)}">${esc(p.nome)}</option>`).join('');
+    }).catch(()=>{ sel.innerHTML = '<option value="">Nenhum modelo pronto disponível</option>'; });
+    document.getElementById('cmProntoCarregar').addEventListener('click', ()=>{
+      const p = prontos.find(x=>x.id===sel.value);
+      if(!p){ toast('Escolha um modelo pronto.','err'); return; }
+      const temTexto = corpo.innerText.replace(/Contrato de Prestação de Serviços/i,'').trim();
+      if(temTexto && !confirm('Substituir o texto e os campos atuais pelo modelo pronto?')) return;
+      const nomeEl = document.getElementById('cmNome');
+      if(!nomeEl.value.trim()) nomeEl.value = p.nome;
+      lista.innerHTML = p.campos.map(contratoModeloCampoRowHtml).join('');
+      ligarRemover();
+      corpo.innerHTML = p.conteudoHtml;
+      toast('Modelo carregado — revise e clique em Salvar modelo.','ok');
+    });
+  }
   document.getElementById('cmCarregarDocx').addEventListener('click', async ()=>{
     const arquivo = document.getElementById('cmArquivoDocx').files[0];
     if(!arquivo){ toast('Selecione um arquivo .docx.','err'); return; }
@@ -16577,7 +17176,7 @@ async function obrigacoesMontar(box, setor){
   box.innerHTML = `
     <div class="card" style="margin-bottom:12px;">
       <div class="row" style="gap:12px; align-items:flex-end; flex-wrap:wrap;">
-        <div class="field" style="margin-bottom:0;"><label>Competência</label><input type="month" id="obrComp" value="${esc(OBR.competencia)}"></div>
+        <div class="field" style="margin-bottom:0;"><label>Competência</label>${monthInputHtml('obrComp', OBR.competencia)}</div>
         <div class="field" style="flex:1; max-width:320px; margin-bottom:0;"><label>Buscar empresa</label><input type="text" id="obrBusca" placeholder="Nome da empresa…" autocomplete="off" value="${esc(OBR.busca)}"></div>
         ${podeEditar?`<button class="btn" id="obrPrazos">⏱ Prazos</button>`:''}
       </div>
@@ -16585,6 +17184,7 @@ async function obrigacoesMontar(box, setor){
     </div>
     <div id="obrConteudo"></div>
   `;
+  setupMonthPicker('obrComp','obrComp_text'); // calendário padrão do site (em vez do nativo do navegador)
   document.getElementById('obrComp').addEventListener('change', e=>{ if(e.target.value){ OBR.competencia=e.target.value; obrigacoesMontar(box, setor); } });
   document.getElementById('obrBusca').addEventListener('input', e=>{ OBR.busca=e.target.value; render(); });
   if(podeEditar) document.getElementById('obrPrazos').addEventListener('click', ()=>obrigacoesPrazosModal(r.obrigacoes, ()=>obrigacoesMontar(box, setor)));
@@ -16603,7 +17203,7 @@ async function obrigacoesMontar(box, setor){
         <div style="padding:10px 14px; font-weight:600; border-bottom:1px solid var(--rule);">${esc(ob.label)} <span style="font-size:11px; color:var(--ink-soft); font-weight:400;">· ${ob.auto?'leitura automática':'manual'} · prazo transmissão dia ${ob.prazoTransmissao||'—'}, envio dia ${ob.prazoEnvio||'—'} (mês seguinte) · ${linhas.length} empresa(s)${ob.proxyTransmissao==='dctfweb'?' · <span title="A DCTF-Web é apurada a partir do eSocial: guia gerada = folha transmitida ao eSocial.">transmissão via DCTF-Web (eSocial)</span>':''}</span></div>
         <div style="overflow-x:auto;"><table class="data-table"><thead><tr><th>Empresa</th><th>Transmitida</th><th>Enviada ao cliente</th></tr></thead><tbody>
         ${linhas.map(l=>`<tr data-emp="${l.empresaId}" data-ob="${l.obrigacao}">
-          <td>${esc(l.empresaNome)}</td>
+          <td>${empresaCodigoMatrizFilialHtml(l.empresaId, l.empresaNome)}</td>
           <td>${badge(l.transmitida, l.transmitidaManual, l.atrasoTransmissao, 'transmitida')}</td>
           <td>${badge(l.enviada, l.enviadaManual, l.atrasoEnvio, 'enviada')}</td>
         </tr>`).join('')}
