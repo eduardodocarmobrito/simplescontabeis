@@ -17861,9 +17861,9 @@ async function obrigacoesMontar(box, setor){
         <div class="field" style="margin-bottom:0;"><label>Competência</label>${monthInputHtml('obrComp', OBR.competencia)}</div>
         <div class="field" style="flex:1; max-width:320px; margin-bottom:0;"><label>Buscar empresa</label><input type="text" id="obrBusca" placeholder="Nome da empresa…" autocomplete="off" value="${esc(OBR.busca)}"></div>
         ${podeEditar?`<button class="btn" id="obrPrazos">⏱ Prazos</button>`:''}
-        ${podeEditar && r.obrigacoes.some(o=>o.fonte==='dctfweb'||o.transmissaoEsocial)?`<button class="btn" id="obrValidarEcac" title="Consulta no e-CAC (Integra Contador) a DCTFWeb da competência de cada empresa: ATIVA = transmitida; origem eSocial = folha transmitida. Só consulta quem ainda não está confirmado (cada consulta é cobrada).">🛰️ Validar no e-CAC</button>`:''}
+        ${podeEditar && r.obrigacoes.some(o=>o.fonte==='dctfweb'||o.transmissaoEsocial)?`<button class="btn" id="obrValidarEcac" title="Consulta no e-CAC (Integra Contador) a DCTFWeb da competência de cada empresa: ATIVA = transmitida; origem eSocial = folha transmitida. Só consulta quem ainda não está confirmado (cada consulta é cobrada).">🛰️ Validar no e-CAC</button><button class="btn" id="obrAgendaEcac" title="Escolher os dias em que a consulta automática ao e-CAC roda (cada consulta é cobrada)">⚙️ Agenda e-CAC</button>`:''}
       </div>
-      <p style="font-size:11.5px; color:var(--ink-soft); margin:10px 0 0;">Status lido automático do sistema: <b>Transmitida/Feita</b> = documento anexado no Envio (DCTF-Web: declaração <b>Ativa</b> no e-CAC; Folha: DCTFWeb Ativa com origem <b>eSocial</b> — consulta automática pelo Integra Contador nos dias 15 e 22, ou a qualquer hora no botão "Validar no e-CAC"); <b>Enviada ao cliente</b> = enviado por e-mail/WhatsApp. Empresa aparece se tem o template da obrigação atribuído no Envio de Documentos. ${podeEditar?'Clique num status pra marcar manualmente (sobrepõe o automático; clicar de novo volta pro automático).':''}</p>
+      <p style="font-size:11.5px; color:var(--ink-soft); margin:10px 0 0;">Status lido automático do sistema: <b>Transmitida/Feita</b> = documento anexado no Envio (DCTF-Web: declaração <b>Ativa</b> no e-CAC; Folha: DCTFWeb Ativa com origem <b>eSocial</b> — consulta automática pelo Integra Contador nos dias da "Agenda e-CAC", ou a qualquer hora no botão "Validar no e-CAC"); <b>Enviada ao cliente</b> = enviado por e-mail/WhatsApp. Empresa aparece se tem o template da obrigação atribuído no Envio de Documentos. ${podeEditar?'Clique num status pra marcar manualmente (sobrepõe o automático; clicar de novo volta pro automático).':''}</p>
     </div>
     <div id="obrConteudo"></div>
   `;
@@ -17890,6 +17890,8 @@ async function obrigacoesMontar(box, setor){
     });
     api('/obrigacoes/dctfweb-validar/status').then(st=>{ if(st.rodando) acompanhar(); }).catch(()=>{});
   }
+  const bAg = document.getElementById('obrAgendaEcac');
+  if(bAg) bAg.addEventListener('click', ()=>obrAgendaEcacModal());
   const cont = document.getElementById('obrConteudo');
   OBR_RECARREGAR = ()=>obrigacoesMontar(box, setor);
   const sitDica = (l, ob)=>{
@@ -18034,6 +18036,61 @@ async function obrigacaoDetalheModal(linha, ob){
       });
     }catch(e){ box.innerHTML=`<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; }
   }
+}
+// Agenda da consulta automática da DCTFWeb no e-CAC (Integra Contador — cada consulta é cobrada).
+// Dias fixos do mês + datas avulsas + hora + liga/desliga. Salvar/Cancelar habilitam juntos ao mudar;
+// Cancelar volta ao que está salvo. A busca imediata é o botão "Validar no e-CAC".
+async function obrAgendaEcacModal(){
+  let salvo; try{ salvo = await api('/obrigacoes/dctfweb-rotina'); }catch(e){ toast(e.message,'err'); return; }
+  let cfg = JSON.parse(JSON.stringify(salvo));
+  const hoje = new Date(); const hojeIso = hoje.getFullYear()+'-'+String(hoje.getMonth()+1).padStart(2,'0')+'-'+String(hoje.getDate()).padStart(2,'0');
+  const dataBr = d=>d.split('-').reverse().join('/');
+  openModal(`
+    <h3>⚙️ Agenda da consulta automática no e-CAC</h3>
+    <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-4px;">Nos dias marcados, o sistema consulta a DCTFWeb da <b>competência anterior</b> de cada empresa (Ativa = transmitida; origem eSocial = folha transmitida). Só consulta quem ainda não está confirmado. <b>Cada consulta é cobrada</b> pelo Integra Contador. Para buscar na hora, use <b>🛰️ Validar no e-CAC</b>.</p>
+    <div id="agEcacBox"></div>
+    <div class="modal-actions"><button class="btn" id="agEcacFechar">Fechar</button><button class="btn" id="agEcacCancelar" disabled>Cancelar</button><button class="btn primary" id="agEcacSalvar" disabled>Salvar</button></div>
+  `, '600px');
+  const box = document.getElementById('agEcacBox');
+  const bSalvar = document.getElementById('agEcacSalvar'), bCancelar = document.getElementById('agEcacCancelar');
+  const mudou = ()=>JSON.stringify({a:cfg.ativo,d:cfg.dias,x:cfg.datas,h:cfg.hora}) !== JSON.stringify({a:salvo.ativo,d:salvo.dias,x:salvo.datas,h:salvo.hora});
+  const sync = ()=>{ const m = mudou(); bSalvar.disabled = !m; bCancelar.disabled = !m; };
+  function render(){
+    box.innerHTML = `
+      <label class="checkbox-row" style="margin-bottom:10px;"><input type="checkbox" id="agEcacAtivo" ${cfg.ativo?'checked':''}> <span><b>Consulta automática ligada</b></span></label>
+      <div class="field"><label>Dias do mês (repete todo mês)</label>
+        <div style="display:grid; grid-template-columns:repeat(7, 1fr); gap:6px;">
+          ${Array.from({length:31},(_,i)=>i+1).map(d=>`<button type="button" class="btn small agEcacDia ${cfg.dias.includes(d)?'primary':''}" data-dia="${d}" style="padding:6px 0; justify-content:center; text-align:center;">${d}</button>`).join('')}
+        </div>
+        <div style="font-size:11.5px; color:var(--ink-soft); margin-top:6px;">${cfg.dias.length?`Roda todo dia ${cfg.dias.join(', ')} de cada mês.`:'Nenhum dia fixo marcado.'} Dia que não existe no mês (ex.: 31 em novembro) roda no último dia.</div>
+      </div>
+      <div class="field"><label>Datas avulsas (uma vez só)</label>
+        <div class="row" style="gap:8px; align-items:center; flex-wrap:wrap;">
+          <input type="date" id="agEcacData" min="${hojeIso}" style="max-width:190px;">
+          <button type="button" class="btn small" id="agEcacAddData">+ Adicionar data</button>
+        </div>
+        <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:8px;">
+          ${cfg.datas.length ? cfg.datas.map(d=>`<span class="tag ${d<hojeIso?'muted':'ok'}" style="display:inline-flex; gap:6px; align-items:center;">${esc(dataBr(d))}${d<hojeIso?' (passada)':''} <a href="#" class="agEcacRemData" data-data="${d}" title="Remover" style="color:inherit; text-decoration:none; font-weight:700;">×</a></span>`).join('') : '<span style="font-size:12px; color:var(--ink-soft);">Nenhuma data avulsa.</span>'}
+        </div>
+      </div>
+      <div class="field" style="max-width:220px;"><label>A partir de (hora de Brasília)</label>
+        <select id="agEcacHora">${Array.from({length:17},(_,i)=>i+6).map(h=>`<option value="${h}" ${cfg.hora===h?'selected':''}>${String(h).padStart(2,'0')}:00</option>`).join('')}</select>
+      </div>
+      ${salvo.ultimaData?`<div style="font-size:11.5px; color:var(--ink-soft);">Última rodada automática: ${esc(dataBr(salvo.ultimaData))}.</div>`:''}`;
+    document.getElementById('agEcacAtivo').addEventListener('change', e=>{ cfg.ativo = e.target.checked; sync(); });
+    box.querySelectorAll('.agEcacDia').forEach(b=>b.addEventListener('click', ()=>{ const d = Number(b.dataset.dia); cfg.dias = cfg.dias.includes(d) ? cfg.dias.filter(x=>x!==d) : [...cfg.dias, d].sort((a,b)=>a-b); render(); sync(); }));
+    document.getElementById('agEcacAddData').addEventListener('click', ()=>{ const v = document.getElementById('agEcacData').value; if(!v){ toast('Escolha a data.','err'); return; } if(!cfg.datas.includes(v)) cfg.datas = [...cfg.datas, v].sort(); render(); sync(); });
+    box.querySelectorAll('.agEcacRemData').forEach(a=>a.addEventListener('click', ev=>{ ev.preventDefault(); cfg.datas = cfg.datas.filter(x=>x!==a.dataset.data); render(); sync(); }));
+    document.getElementById('agEcacHora').addEventListener('change', e=>{ cfg.hora = Number(e.target.value); sync(); });
+  }
+  render(); sync();
+  document.getElementById('agEcacFechar').addEventListener('click', closeModal);
+  bCancelar.addEventListener('click', ()=>{ cfg = JSON.parse(JSON.stringify(salvo)); render(); sync(); });
+  bSalvar.addEventListener('click', async ()=>{
+    bSalvar.disabled = true;
+    try{ salvo = await api('/obrigacoes/dctfweb-rotina', { method:'PUT', body:{ ativo:cfg.ativo, dias:cfg.dias, datas:cfg.datas, hora:cfg.hora } }); cfg = JSON.parse(JSON.stringify(salvo)); render(); sync(); toast('Agenda salva.','ok'); }
+    catch(e){ toast(e.message,'err'); sync(); }
+  });
 }
 function obrigacoesPrazosModal(obrigacoes, onSave){
   openModal(`

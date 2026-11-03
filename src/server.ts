@@ -7397,6 +7397,19 @@ sqlite.exec(`CREATE TABLE IF NOT EXISTS dctfweb_situacao (
   PRIMARY KEY (empresa_id, periodo_apuracao)
 )`);
 sqlite.exec(`CREATE TABLE IF NOT EXISTS dctfweb_situacao_rotina (escritorio_id INTEGER PRIMARY KEY, ultima_data TEXT)`);
+// Agenda da rotina automática, personalizável na tela (botão "⚙️ Agenda e-CAC"): dias do mês fixos
+// ("15,22"), datas avulsas ("2026-11-04,..."), hora (Brasília) e liga/desliga. Padrão pedido pelo
+// usuário em 2026-11-03: dias 15 e 22 + rodada única em 04/11/2026.
+for (const [col, ddl] of [["ativo", "INTEGER NOT NULL DEFAULT 1"], ["dias", "TEXT"], ["datas", "TEXT"], ["hora", "INTEGER NOT NULL DEFAULT 7"]] as const) {
+  if (!(sqlite.prepare(`PRAGMA table_info(dctfweb_situacao_rotina)`).all() as any[]).some((c) => c.name === col)) sqlite.exec(`ALTER TABLE dctfweb_situacao_rotina ADD COLUMN ${col} ${ddl}`);
+}
+function dctfwebRotinaCfg(escritorioId: number) {
+  sqlite.prepare(`INSERT OR IGNORE INTO dctfweb_situacao_rotina (escritorio_id, dias, datas) VALUES (?, '15,22', '2026-11-04')`).run(escritorioId);
+  const r = sqlite.prepare(`SELECT * FROM dctfweb_situacao_rotina WHERE escritorio_id = ?`).get(escritorioId) as any;
+  const dias = String(r.dias ?? "").split(",").map(Number).filter((n) => n >= 1 && n <= 31);
+  const datas = String(r.datas ?? "").split(",").map((x) => x.trim()).filter((x) => /^\d{4}-\d{2}-\d{2}$/.test(x));
+  return { ativo: !!r.ativo, dias: [...new Set(dias)].sort((a, b) => a - b), datas: [...new Set(datas)].sort(), hora: Math.min(22, Math.max(0, Number(r.hora ?? 7))), ultimaData: r.ultima_data || null };
+}
 function dctfwebLerRecibo(texto: string) {
   const t = texto.replace(/\r/g, "");
   const per = /Período de apuração\s*(\d{2})\/(\d{4})/i.exec(t);
@@ -7481,28 +7494,41 @@ async function dctfwebValidarLote(escritorioId: number, periodo: string, empresa
   } finally { st.rodando = false; st.fim = new Date().toISOString(); }
   return st;
 }
-// Rotina automática (a partir das 07:00 de Brasília), competência do mês anterior — só nos dias
-// DCTFWEB_DIAS_ROTINA de cada mês (pedido do usuário 2026-11-03: cada consulta é paga, rodar só dia 15
-// = prazo da DCTF-Web, e dia 22) + datas avulsas em DCTFWEB_DATAS_EXTRAS (rodada única de 04/11/2026).
-// Fora desses dias, só pelo botão "Validar no e-CAC". Só consulta quem ainda não está confirmado.
-const DCTFWEB_DIAS_ROTINA = [15, 22];
-const DCTFWEB_DATAS_EXTRAS = ["2026-11-04"];
+// Rotina automática (cada consulta é paga): competência do mês anterior, só nos dias/datas da agenda do
+// escritório (dctfwebRotinaCfg), a partir da hora configurada. Dia fixo maior que o último dia do mês
+// (ex.: 31 em novembro) roda no último dia. Só consulta quem ainda não está confirmado como Ativa.
+// Fora da agenda, só pelo botão "Validar no e-CAC" (imediato).
 setInterval(() => {
   const a = agoraBrasilia();
-  if (a.hora < 7) return;
   const hoje = `${a.ano}-${String(a.mes).padStart(2, "0")}-${String(a.dia).padStart(2, "0")}`;
-  if (!DCTFWEB_DIAS_ROTINA.includes(a.dia) && !DCTFWEB_DATAS_EXTRAS.includes(hoje)) return;
+  const ultimoDia = new Date(Date.UTC(a.ano, a.mes, 0)).getUTCDate();
   const cfgs = sqlite.prepare(`SELECT escritorio_id FROM integracontador_config WHERE ativo = 1`).all() as any[];
   for (const c of cfgs) {
-    const r = sqlite.prepare(`SELECT ultima_data FROM dctfweb_situacao_rotina WHERE escritorio_id = ?`).get(c.escritorio_id) as any;
-    if (r?.ultima_data === hoje || dctfwebValidacao.get(c.escritorio_id)?.rodando) continue;
+    const rc = dctfwebRotinaCfg(c.escritorio_id);
+    if (!rc.ativo || a.hora < rc.hora) continue;
+    const diaHoje = rc.dias.some((d) => Math.min(d, ultimoDia) === a.dia) || rc.datas.includes(hoje);
+    if (!diaHoje || rc.ultimaData === hoje || dctfwebValidacao.get(c.escritorio_id)?.rodando) continue;
     sqlite.prepare(`INSERT INTO dctfweb_situacao_rotina (escritorio_id, ultima_data) VALUES (?, ?) ON CONFLICT(escritorio_id) DO UPDATE SET ultima_data = excluded.ultima_data`).run(c.escritorio_id, hoje);
     let py = a.ano, pm = a.mes - 1; if (pm < 1) { pm = 12; py--; }
     dctfwebValidarLote(c.escritorio_id, `${py}${String(pm).padStart(2, "0")}`, dctfwebEmpresasElegiveis(c.escritorio_id))
       .then((s) => console.log(`[DCTFWeb situação] rotina ${py}/${pm}: ${s.feitas} consultadas, ${s.ativas} ativas, ${s.erros} erros.`))
       .catch((e) => console.error("[DCTFWeb situação] rotina:", e.message));
   }
-}, 20 * 60 * 1000);
+}, 10 * 60 * 1000);
+app.get("/api/obrigacoes/dctfweb-rotina", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
+  res.json(dctfwebRotinaCfg((req as any).user.escritorioId));
+});
+app.put("/api/obrigacoes/dctfweb-rotina", blockCliente, requirePermissao("obrigacoes", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const b = req.body || {};
+  const dias = (Array.isArray(b.dias) ? b.dias : []).map(Number).filter((n: number) => Number.isInteger(n) && n >= 1 && n <= 31);
+  const datas = (Array.isArray(b.datas) ? b.datas : []).map(String).filter((x: string) => /^\d{4}-\d{2}-\d{2}$/.test(x));
+  const hora = Math.min(22, Math.max(0, Number(b.hora) || 0));
+  dctfwebRotinaCfg(user.escritorioId);
+  sqlite.prepare(`UPDATE dctfweb_situacao_rotina SET ativo = ?, dias = ?, datas = ?, hora = ? WHERE escritorio_id = ?`)
+    .run(b.ativo === false ? 0 : 1, [...new Set(dias)].join(","), [...new Set(datas)].join(","), hora, user.escritorioId);
+  res.json(dctfwebRotinaCfg(user.escritorioId));
+});
 // "Validar no e-CAC" (quadro Obrigações do Mês): roda em segundo plano; a tela acompanha pelo /status.
 app.post("/api/obrigacoes/dctfweb-validar", blockCliente, requirePermissao("obrigacoes", "editar"), async (req, res) => {
   const user = (req as any).user;
