@@ -8634,6 +8634,17 @@ async function reformaDiagMontar(painel, urlApi, urlPdf, urlPremissas){
     ${tile('Simples Nacional hoje', `Anexo ${en.anexoMercadorias}${en.receitaServicos>0?' / '+en.anexoServicos:''}`, `faixa ${en.faixaSimples} · alíquota efetiva ${pct(en.receitaServicos>en.receitaMercadorias?en.aliquotaEfetivaServ:en.aliquotaEfetivaMerc)} · Fator R ${pct(en.fatorR)}`)}
     ${tile(`Melhor em ${anoSel.ano}`, esc((melhor(anoSel)||{}).label||'—'), `custo efetivo ${pct((melhor(anoSel)||{}).custoEfetivoPct)}`, true)}
   </div>
+  ${urlPremissas?`<div class="card rt-card rt-simfat">
+    <div class="row" style="align-items:flex-end; flex-wrap:wrap; gap:12px;">
+      <div class="field" style="margin-bottom:0; min-width:220px;">
+        <label>💡 Simular faturamento anual (R$)</label>
+        <input id="rtSimFat" inputmode="decimal" placeholder="ex.: 5.000.000,00" value="${p.receitaAnual!=null?esc(Number(p.receitaAnual).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})):''}">
+      </div>
+      <button class="btn primary" id="rtSimFatBtn">Recalcular com este valor</button>
+      ${p.receitaAnual!=null?`<button class="btn" id="rtSimFatLimpar">Voltar ao faturamento das notas</button>`:''}
+      <div class="rt-mut" style="font-size:12px; flex:1; min-width:200px;">${p.receitaAnual!=null?`Simulando <b>${rtBRL(p.receitaAnual)}</b> · os demais valores (mercadorias/serviços, compras) acompanham na proporção. As outras premissas ajustadas são mantidas.`:'Informe um faturamento pra refazer todo o quadro (2026/2027/2033) com esse valor. Em branco = soma das notas dos últimos 12 meses.'}</div>
+    </div>
+  </div>`:''}
   <div class="card rt-card">
     <div class="row" style="justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
       <div><div class="rt-card-t">Quadro comparativo dos regimes</div><div class="rt-card-s" style="margin-bottom:0;">Custo efetivo = carga própria + IBS/CBS que pesa no consumidor final + crédito que os clientes empresas deixam de tomar (Simples por dentro).</div></div>
@@ -8683,9 +8694,9 @@ async function reformaDiagMontar(painel, urlApi, urlPdf, urlPremissas){
   document.getElementById('rtDiagPdf').addEventListener('click', ev=>rtBaixar(urlPdf, `Diagnostico Tributario - ${(e.nome||'').slice(0,50)}.pdf`, ev.currentTarget, 'Gerando diagnóstico…'));
   if(urlPremissas){
     const btnS = document.getElementById('rtPremSalvar'), btnC = document.getElementById('rtPremCancelar');
-    painel.querySelectorAll('.rtPrem').forEach(el=>el.addEventListener(el.tagName==='SELECT'?'change':'input', ()=>{ btnS.disabled = false; btnC.disabled = false; }));
-    btnC.addEventListener('click', ()=>reformaDiagMontar(painel, urlApi, urlPdf, urlPremissas));
-    btnS.addEventListener('click', async ()=>{
+    // Lê todos os campos de premissa da tela (refletem o estado atual: padrão + ajustes salvos) num body
+    // completo — o PUT substitui o conjunto inteiro, então sempre mandamos tudo pra não zerar nada.
+    const coletarPremissas = ()=>{
       const body = {};
       painel.querySelectorAll('.rtPrem').forEach(el=>{
         const k = el.dataset.k; let v = el.value.trim();
@@ -8693,9 +8704,33 @@ async function reformaDiagMontar(painel, urlApi, urlPdf, urlPremissas){
         else if(['anexoMercadorias','anexoServicos'].includes(k)) body[k] = v;
         else body[k] = v==='' ? null : (v.includes(',') ? Number(v.replace(/\./g,'').replace(',','.')) : Number(v));
       });
-      try{ await api(urlPremissas, { method:'PUT', body:{ premissas: body } }); toast('Premissas salvas — diagnóstico recalculado.','ok'); reformaDiagMontar(painel, urlApi, urlPdf, urlPremissas); }
+      return body;
+    };
+    const salvarPremissas = async (body, msg)=>{
+      try{ await api(urlPremissas, { method:'PUT', body:{ premissas: body } }); if(msg) toast(msg,'ok'); reformaDiagMontar(painel, urlApi, urlPdf, urlPremissas); }
       catch(err){ toast(err.message,'err'); }
-    });
+    };
+    painel.querySelectorAll('.rtPrem').forEach(el=>el.addEventListener(el.tagName==='SELECT'?'change':'input', ()=>{ btnS.disabled = false; btnC.disabled = false; }));
+    btnC.addEventListener('click', ()=>reformaDiagMontar(painel, urlApi, urlPdf, urlPremissas));
+    btnS.addEventListener('click', ()=>salvarPremissas(coletarPremissas(), 'Premissas salvas — diagnóstico recalculado.'));
+    // Campo "Simular faturamento" (topo): injeta o valor no override receitaAnual e recalcula, mantendo
+    // as demais premissas. Enter no campo também dispara.
+    const simInput = document.getElementById('rtSimFat'), simBtn = document.getElementById('rtSimFatBtn');
+    const simular = ()=>{
+      const raw = (simInput.value||'').trim();
+      const body = coletarPremissas();
+      if(raw===''){ body.receitaAnual = null; }
+      else {
+        const val = Number(raw.replace(/\./g,'').replace(',','.'));
+        if(!isFinite(val) || val<=0){ toast('Informe um faturamento válido (ex.: 5.000.000,00).','err'); simInput.focus(); return; }
+        body.receitaAnual = val;
+      }
+      salvarPremissas(body, body.receitaAnual!=null ? 'Recalculado com faturamento de R$ '+body.receitaAnual.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}) : 'Voltou ao faturamento das notas.');
+    };
+    if(simBtn) simBtn.addEventListener('click', simular);
+    if(simInput) simInput.addEventListener('keydown', ev=>{ if(ev.key==='Enter'){ ev.preventDefault(); simular(); } });
+    const simLimpar = document.getElementById('rtSimFatLimpar');
+    if(simLimpar) simLimpar.addEventListener('click', ()=>{ const body = coletarPremissas(); body.receitaAnual = null; salvarPremissas(body, 'Voltou ao faturamento das notas.'); });
     const bp = document.getElementById('rtPremPadrao');
     if(bp) bp.addEventListener('click', async ()=>{
       if(!confirm('Voltar todas as premissas desta empresa ao padrão?')) return;
