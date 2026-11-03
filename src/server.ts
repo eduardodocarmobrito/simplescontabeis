@@ -7571,7 +7571,7 @@ function dctfwebParesPendentesCards(escritorioId: number, soNaoConsultadas: bool
   const vistos = new Set<string>();
   const pares: { empresaId: number; periodo: string }[] = [];
   for (const ob of ["dprh_dctfweb", "dprh_folha"]) {
-    for (const it of cardObrigacaoNaoTransmitida(user, ob)) {
+    for (const it of cardObrigacaoNaoTransmitida(user, ob, true)) {
       for (const c of it.competencias) {
         const periodo = c.competencia.replace("-", "");
         const k = it.empresaId + "|" + periodo;
@@ -21545,7 +21545,10 @@ const CARD_TIPOS: string[] = ["certificados_vencer", "das_atraso", "situacao_fis
 // manual sobrepõe). Varre de 07/2026 (pedido do usuário) até a última competência vencida: a competência
 // M passa a pendenciar no dia 03 do mês M+1. Uma linha por empresa com as competências em aberto.
 const OBRIG_CARD_INICIO = { ano: 2026, mes: 7 };
-function cardObrigacaoNaoTransmitida(user: any, obrigacaoId: string): any[] {
+// O card mostra só o que foi CONFIRMADO como não entregue (consultado no e-CAC sem declaração ativa, ou
+// marcado à mão como não transmitida) — pedido do usuário 2026-11-03. Nunca consultada ou com erro na
+// consulta (ex.: sem procuração) fica fora; `incluirNaoConfirmadas` traz tudo (usado pra decidir o que consultar).
+function cardObrigacaoNaoTransmitida(user: any, obrigacaoId: string, incluirNaoConfirmadas = false): any[] {
   const hoje = agoraBrasilia();
   let ultAno = hoje.ano, ultMes = hoje.mes - (hoje.dia >= 3 ? 1 : 2);
   while (ultMes <= 0) { ultMes += 12; ultAno--; }
@@ -21555,6 +21558,8 @@ function cardObrigacaoNaoTransmitida(user: any, obrigacaoId: string): any[] {
     const comp = `${a}-${String(m).padStart(2, "0")}`;
     for (const l of obrigacoesCalcular(user, "dprh", comp, [obrigacaoId]).linhas) {
       if (l.transmitida || !visiveis.has(l.empresaId)) continue;
+      const confirmada = l.transmitidaManual || (l.situacaoDctf && !/^Erro/.test(l.situacaoDctf.mensagem || "") && l.situacaoDctf.consultadoEm);
+      if (!incluirNaoConfirmadas && !confirmada) continue;
       const it = porEmp.get(l.empresaId) || { empresaId: l.empresaId, empresaNome: l.empresaNome, competencias: [] as any[] };
       const msg = l.situacaoDctf?.mensagem || null;
       it.competencias.push({
