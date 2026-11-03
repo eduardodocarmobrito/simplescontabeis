@@ -16561,7 +16561,7 @@ async function pageSetor(escopo){
       <div class="tab ${SETOR_ABA[escopo]==='tags'?'active':''}" data-aba="tags">Tags</div>
       <div class="tab ${SETOR_ABA[escopo]==='envio'?'active':''}" data-aba="envio">📤 Envio de documentos</div>
       ${escopo==='dprh'?`<div class="tab ${SETOR_ABA[escopo]==='ferias'?'active':''}" data-aba="ferias">🏖️ Programação de Férias</div>`:''}
-      ${escopo==='dprh'?`<div class="tab ${SETOR_ABA[escopo]==='obrigacoes'?'active':''}" data-aba="obrigacoes">✅ Obrigações do Mês</div>`:''}
+      ${['dprh','fiscal','contabil'].includes(escopo)?`<div class="tab ${SETOR_ABA[escopo]==='obrigacoes'?'active':''}" data-aba="obrigacoes">✅ Obrigações do Mês</div>`:''}
       ${escopo==='fiscal'?`<div class="tab ${SETOR_ABA[escopo]==='entradas_saidas'?'active':''}" data-aba="entradas_saidas">📊 Relatório de Entradas/Saídas</div>`:''}
     </div>
     <div id="setorConteudo"></div>
@@ -16571,7 +16571,7 @@ async function pageSetor(escopo){
   // Agenda e Tags do setor: só dos clientes que o setor atendeu (o CRM tem a visão geral).
   if(SETOR_ABA[escopo]==='envio') await centralEnvioMontar(escopo, box);
   else if(SETOR_ABA[escopo]==='ferias') await feriasMontar(box);
-  else if(SETOR_ABA[escopo]==='obrigacoes') await obrigacoesMontar(box);
+  else if(SETOR_ABA[escopo]==='obrigacoes') await obrigacoesMontar(box, escopo);
   else if(SETOR_ABA[escopo]==='entradas_saidas') await entradasSaidasMontar(box);
   else if(SETOR_ABA[escopo]==='agenda') await crmAgenda(box, escopo);
   else if(SETOR_ABA[escopo]==='tags') await crmTags(box, escopo);
@@ -16580,11 +16580,12 @@ async function pageSetor(escopo){
 
 // ===================== Obrigações do Mês (DP/RH) — quadro de tarefas com status automático =====================
 let OBR = { competencia:null, busca:'' };
-async function obrigacoesMontar(box){
+async function obrigacoesMontar(box, setor){
+  setor = setor || 'dprh';
   const norm = s=>(s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'');
   if(!OBR.competencia){ const d=new Date(); d.setDate(1); d.setMonth(d.getMonth()-1); OBR.competencia = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); }
   box.innerHTML = `<div class="empty-state">Carregando o quadro…</div>`;
-  let r; try{ r = await api('/obrigacoes?competencia='+OBR.competencia); }catch(e){ box.innerHTML=`<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
+  let r; try{ r = await api('/obrigacoes?setor='+encodeURIComponent(setor)+'&competencia='+OBR.competencia); }catch(e){ box.innerHTML=`<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
   const podeEditar = can('empresas','editar');
   box.innerHTML = `
     <div class="card" style="margin-bottom:12px;">
@@ -16593,13 +16594,13 @@ async function obrigacoesMontar(box){
         <div class="field" style="flex:1; max-width:320px; margin-bottom:0;"><label>Buscar empresa</label><input type="text" id="obrBusca" placeholder="Nome da empresa…" autocomplete="off" value="${esc(OBR.busca)}"></div>
         ${podeEditar?`<button class="btn" id="obrPrazos">⏱ Prazos</button>`:''}
       </div>
-      <p style="font-size:11.5px; color:var(--ink-soft); margin:10px 0 0;">DCTF-Web e FGTS leem automático (guia gerada/anexada + envio ao cliente por e-mail/WhatsApp). <b>Folha</b> é manual por enquanto. ${podeEditar?'Clique num status pra marcar/desmarcar manualmente (sobrepõe o automático; clicar de novo volta pro automático).':''}</p>
+      <p style="font-size:11.5px; color:var(--ink-soft); margin:10px 0 0;">Status lido automático do sistema: <b>Transmitida/Feita</b> = guia gerada (Integra) ou documento anexado no Envio; <b>Enviada ao cliente</b> = enviado por e-mail/WhatsApp. Empresa aparece se tem o template da obrigação atribuído no Envio de Documentos. ${podeEditar?'Clique num status pra marcar manualmente (sobrepõe o automático; clicar de novo volta pro automático).':''}</p>
     </div>
     <div id="obrConteudo"></div>
   `;
-  document.getElementById('obrComp').addEventListener('change', e=>{ if(e.target.value){ OBR.competencia=e.target.value; obrigacoesMontar(box); } });
+  document.getElementById('obrComp').addEventListener('change', e=>{ if(e.target.value){ OBR.competencia=e.target.value; obrigacoesMontar(box, setor); } });
   document.getElementById('obrBusca').addEventListener('input', e=>{ OBR.busca=e.target.value; render(); });
-  if(podeEditar) document.getElementById('obrPrazos').addEventListener('click', ()=>obrigacoesPrazosModal(r.obrigacoes, ()=>obrigacoesMontar(box)));
+  if(podeEditar) document.getElementById('obrPrazos').addEventListener('click', ()=>obrigacoesPrazosModal(r.obrigacoes, ()=>obrigacoesMontar(box, setor)));
   const cont = document.getElementById('obrConteudo');
   function badge(ok, manual, atraso, campo){
     const cls = ok ? 'ok' : (atraso?'bad':'muted');
@@ -16628,7 +16629,7 @@ async function obrigacoesMontar(box){
         const jaManual = campo==='transmitida'? linha.transmitidaManual : linha.enviadaManual;
         const atual = campo==='transmitida'? linha.transmitida : linha.enviada;
         const valor = jaManual ? null : !atual; // 1º clique sobrepõe (inverte); 2º (já manual) volta pro automático
-        try{ await api('/obrigacoes/marcar', { method:'POST', body:{ empresaId, competencia:OBR.competencia, obrigacao:ob, campo, valor } }); obrigacoesMontar(box); }
+        try{ await api('/obrigacoes/marcar', { method:'POST', body:{ empresaId, competencia:OBR.competencia, obrigacao:ob, campo, valor } }); obrigacoesMontar(box, setor); }
         catch(e){ toast(e.message,'err'); }
       }));
     }

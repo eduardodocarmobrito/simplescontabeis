@@ -17,6 +17,7 @@ import * as nfse from "./nfse";
 import * as asaas from "./asaas";
 import * as contratos from "./contratos";
 import * as autentique from "./autentique";
+import { localizarLinhasAssinatura, casarLinhas, posicaoAssinatura } from "./assinatura-posicoes";
 import * as danfse from "./danfse";
 import * as whatsapp from "./whatsapp";
 import * as nfe from "./nfe";
@@ -7143,15 +7144,33 @@ sqlite.exec(`CREATE TABLE IF NOT EXISTS obrigacoes_manual (
   enviada_em TEXT,
   PRIMARY KEY (escritorio_id, empresa_id, competencia, obrigacao)
 )`);
-// Definição das obrigações do setor DP/RH. template = nome do template de Envio de Documentos usado
-// pra detectar transmissão/entrega; auto=false quando não há fonte automática ainda (Folha).
-const OBRIGACOES_DPRH = [
-  { id: "dctfweb", label: "DCTF-Web", template: "DARF - DCTF-Web", prazoTransmissao: 15, prazoEnvio: 20, auto: true },
-  { id: "fgts", label: "Guia FGTS", template: "Guia FGTS Digital", prazoTransmissao: 7, prazoEnvio: 20, auto: true },
-  { id: "folha", label: "Folha de Pagamento", template: null as string | null, prazoTransmissao: 5, prazoEnvio: 5, auto: false },
-];
+// Obrigações POR SETOR. templates = nomes de templates do Envio de Documentos (array cobre variações
+// de nome). fonte: 'dctfweb'/'das' leem a transmissão do Integra Contador; 'envio' = documento anexado
+// no Envio conta como transmitido/feito; 'manual' = sem fonte automática. A entrega ao cliente
+// (e-mail/WhatsApp) sempre vem dos flags do Envio de Documentos. Empresa elegível = tem atribuição ativa
+// a algum dos templates da obrigação (a config do próprio Envio define quem recebe o quê).
+const OBRIGACOES_POR_SETOR: Record<string, any[]> = {
+  dprh: [
+    { id: "dprh_dctfweb", label: "DCTF-Web", templates: ["DARF - DCTF-Web", "DARF-DCTF-Web"], fonte: "dctfweb", prazoTransmissao: 15, prazoEnvio: 20 },
+    { id: "dprh_fgts", label: "Guia FGTS", templates: ["FGTS", "Guia FGTS Digital", "FGTS Relatorio"], fonte: "envio", prazoTransmissao: 7, prazoEnvio: 20 },
+    { id: "dprh_folha", label: "Folha de Pagamento", templates: ["Folha Mensal", "Folha de Pagamento Mensal"], fonte: "envio", prazoTransmissao: 5, prazoEnvio: 10 },
+  ],
+  fiscal: [
+    { id: "fiscal_das", label: "DAS (Simples Nacional)", templates: ["DAS - Mensal"], fonte: "das", prazoTransmissao: 20, prazoEnvio: 25 },
+    { id: "fiscal_iss", label: "ISS", templates: ["ISS"], fonte: "envio", prazoTransmissao: 10, prazoEnvio: 15 },
+    { id: "fiscal_darf_nf", label: "DARF PIS/COFINS/Retenções", templates: ["Darf Pis", "Darf Cofins", "Darf Retenções de Notas Fiscais"], fonte: "envio", prazoTransmissao: 20, prazoEnvio: 25 },
+    { id: "fiscal_icms", label: "ICMS", templates: ["ICMS NORMAL", "ICMS ST", "DIFAL"], fonte: "envio", prazoTransmissao: 15, prazoEnvio: 20 },
+  ],
+  contabil: [
+    { id: "contabil_balancete", label: "Balancete", templates: ["Balancete"], fonte: "envio", prazoTransmissao: 30, prazoEnvio: 30 },
+    { id: "contabil_dre", label: "DRE", templates: ["DRE Mensal", "DRE"], fonte: "envio", prazoTransmissao: 30, prazoEnvio: 30 },
+    { id: "contabil_razao", label: "Razão", templates: ["Razão", "Razão Contábil"], fonte: "envio", prazoTransmissao: 30, prazoEnvio: 30 },
+  ],
+};
 app.get("/api/obrigacoes", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
   const user = (req as any).user;
+  const setor = String(req.query.setor || "dprh");
+  const obrigacoesSetor = OBRIGACOES_POR_SETOR[setor] || [];
   const comp = String(req.query.competencia || "");
   const mm = comp.match(/^(\d{4})-(\d{2})$/);
   if (!mm) return res.status(400).json({ error: "Competência inválida (use AAAA-MM)." });
@@ -7161,49 +7180,41 @@ app.get("/api/obrigacoes", blockCliente, requirePermissao("empresas", "visualiza
   const cfgMap: Record<string, any> = {}; cfgRows.forEach((c) => (cfgMap[c.obrigacao] = c));
   const manRows = sqlite.prepare(`SELECT empresa_id, obrigacao, transmitida, transmitida_em, enviada, enviada_em FROM obrigacoes_manual WHERE escritorio_id = ? AND competencia = ?`).all(user.escritorioId, comp) as any[];
   const manMap: Record<string, any> = {}; manRows.forEach((r) => (manMap[r.empresa_id + "|" + r.obrigacao] = r));
-  const empresas = sqlite
-    .prepare(`SELECT e.id, e.nome, e.cnpj, e.busca_fgts as buscaFgts, COALESCE(ic.busca_dctfweb, 0) as buscaDctf
-              FROM empresas e LEFT JOIN integracontador_empresa_config ic ON ic.empresa_id = e.id
-              WHERE e.escritorio_id = ? AND e.ativo = 1 ORDER BY e.nome`)
-    .all(user.escritorioId) as any[];
-  const temDarfDoc = sqlite.prepare(`SELECT 1 FROM integracontador_documentos WHERE empresa_id = ? AND tipo = 'darf_dctfweb' AND periodo_apuracao = ? LIMIT 1`);
-  const envioDoc = sqlite.prepare(
-    `SELECT COUNT(*) as n, MAX(d.email_enviado) as emailEnv, MAX(d.whatsapp_enviado) as waEnv, MAX(d.email_enviado_em) as emailEm, MAX(d.whatsapp_enviado_em) as waEm
-     FROM envio_documentos d JOIN envio_periodos p ON p.id = d.periodo_id JOIN envio_atribuicoes a ON a.id = p.atribuicao_id JOIN envio_templates t ON t.id = a.template_id
-     WHERE a.empresa_id = ? AND t.nome = ? AND p.ano = ? AND p.mes = ?`
-  );
+  const empresas = sqlite.prepare(`SELECT e.id, e.nome, e.cnpj FROM empresas e WHERE e.escritorio_id = ? AND e.ativo = 1`).all(user.escritorioId) as any[];
+  const empNome: Record<number, any> = {}; empresas.forEach((e) => (empNome[e.id] = e));
+  const temIntegraDoc = sqlite.prepare(`SELECT 1 FROM integracontador_documentos WHERE empresa_id = ? AND tipo = ? AND periodo_apuracao = ? LIMIT 1`);
   const hoje = agoraBrasilia();
   const hojeStr = `${hoje.ano}-${String(hoje.mes).padStart(2, "0")}-${String(hoje.dia).padStart(2, "0")}`;
-  // Prazo cai no mês SEGUINTE à competência (obrigação de 10/2026 vence em 11/2026).
-  const prazoStr = (dia: number | null | undefined) => {
-    if (!dia) return null;
-    let py = ano, pm = mes + 1; if (pm > 12) { pm = 1; py++; }
-    return `${py}-${String(pm).padStart(2, "0")}-${String(dia).padStart(2, "0")}`;
-  };
+  const prazoStr = (dia: number | null | undefined) => { if (!dia) return null; let py = ano, pm = mes + 1; if (pm > 12) { pm = 1; py++; } return `${py}-${String(pm).padStart(2, "0")}-${String(dia).padStart(2, "0")}`; };
   const linhas: any[] = [];
-  for (const e of empresas) {
-    for (const ob of OBRIGACOES_DPRH) {
-      const aplica = ob.id === "dctfweb" ? !!e.buscaDctf : ob.id === "fgts" ? !!e.buscaFgts : (!!e.buscaFgts || !!e.buscaDctf);
-      if (!aplica) continue;
+  for (const ob of obrigacoesSetor) {
+    const tpls: string[] = ob.templates || [];
+    const ph = tpls.map(() => "?").join(",");
+    const elegiveis: number[] = tpls.length
+      ? (sqlite.prepare(`SELECT DISTINCT a.empresa_id as id FROM envio_atribuicoes a JOIN envio_templates t ON t.id = a.template_id WHERE a.ativo = 1 AND t.nome IN (${ph})`).all(...tpls) as any[]).map((x) => x.id)
+      : [];
+    const envioStmt = tpls.length ? sqlite.prepare(
+      `SELECT COUNT(*) as n, MAX(d.email_enviado) as emailEnv, MAX(d.whatsapp_enviado) as waEnv, MAX(d.email_enviado_em) as emailEm, MAX(d.whatsapp_enviado_em) as waEm
+       FROM envio_documentos d JOIN envio_periodos p ON p.id = d.periodo_id JOIN envio_atribuicoes a ON a.id = p.atribuicao_id JOIN envio_templates t ON t.id = a.template_id
+       WHERE a.empresa_id = ? AND t.nome IN (${ph}) AND p.ano = ? AND p.mes = ?`) : null;
+    const prazoT = cfgMap[ob.id]?.prazo_transmissao ?? ob.prazoTransmissao;
+    const prazoE = cfgMap[ob.id]?.prazo_envio ?? ob.prazoEnvio;
+    const pT = prazoStr(prazoT), pE = prazoStr(prazoE);
+    for (const empId of elegiveis) {
+      const e = empNome[empId]; if (!e) continue;
       let transmitidaAuto = false, enviadaAuto = false, enviadaEm: string | null = null;
-      if (ob.id === "dctfweb") transmitidaAuto = !!temDarfDoc.get(e.id, periodoApuracao);
-      if (ob.template) {
-        const ed = envioDoc.get(e.id, ob.template, ano, mes) as any;
-        if (ed && ed.n > 0) {
-          if (ob.id === "fgts") transmitidaAuto = true; // guia FGTS anexada = gerada
-          enviadaAuto = !!(ed.emailEnv || ed.waEnv);
-          enviadaEm = ed.waEm || ed.emailEm || null;
-        }
+      if (ob.fonte === "dctfweb") transmitidaAuto = !!temIntegraDoc.get(empId, "darf_dctfweb", periodoApuracao);
+      else if (ob.fonte === "das") transmitidaAuto = !!temIntegraDoc.get(empId, "das", periodoApuracao);
+      if (envioStmt) {
+        const ed = envioStmt.get(empId, ...tpls, ano, mes) as any;
+        if (ed && ed.n > 0) { transmitidaAuto = true; enviadaAuto = !!(ed.emailEnv || ed.waEnv); enviadaEm = ed.waEm || ed.emailEm || null; }
       }
-      const man = manMap[e.id + "|" + ob.id];
+      const man = manMap[empId + "|" + ob.id];
       const transmitida = man && man.transmitida != null ? !!man.transmitida : transmitidaAuto;
       const enviada = man && man.enviada != null ? !!man.enviada : enviadaAuto;
-      const prazoT = cfgMap[ob.id]?.prazo_transmissao ?? ob.prazoTransmissao;
-      const prazoE = cfgMap[ob.id]?.prazo_envio ?? ob.prazoEnvio;
-      const pT = prazoStr(prazoT), pE = prazoStr(prazoE);
       linhas.push({
-        empresaId: e.id, empresaNome: e.nome, cnpj: e.cnpj,
-        obrigacao: ob.id, obrigacaoLabel: ob.label, auto: ob.auto,
+        empresaId: empId, empresaNome: e.nome, cnpj: e.cnpj,
+        obrigacao: ob.id, obrigacaoLabel: ob.label, auto: ob.fonte !== "manual",
         transmitida, enviada,
         transmitidaManual: !!(man && man.transmitida != null), enviadaManual: !!(man && man.enviada != null),
         enviadaEm: man && man.enviada != null ? man.enviada_em : enviadaEm,
@@ -7213,9 +7224,11 @@ app.get("/api/obrigacoes", blockCliente, requirePermissao("empresas", "visualiza
       });
     }
   }
+  linhas.sort((a, b) => a.empresaNome.localeCompare(b.empresaNome, "pt-BR"));
   res.json({
+    setor,
     competencia: comp,
-    obrigacoes: OBRIGACOES_DPRH.map((o) => ({ id: o.id, label: o.label, auto: o.auto, prazoTransmissao: cfgMap[o.id]?.prazo_transmissao ?? o.prazoTransmissao, prazoEnvio: cfgMap[o.id]?.prazo_envio ?? o.prazoEnvio })),
+    obrigacoes: obrigacoesSetor.map((o) => ({ id: o.id, label: o.label, fonte: o.fonte, auto: o.fonte !== "manual", prazoTransmissao: cfgMap[o.id]?.prazo_transmissao ?? o.prazoTransmissao, prazoEnvio: cfgMap[o.id]?.prazo_envio ?? o.prazoEnvio })),
     linhas,
   });
 });
@@ -21263,15 +21276,28 @@ app.post("/api/contratos/:id/enviar-assinatura", blockCliente, requirePermissao(
     ...socios.map((s) => ({ nome: s.nome, email: s.email || undefined, telefone: autentique.normalizarTelefoneBR(s.telefone), comoAssina: "SIGN" as const })),
     { nome: dados.nome_representante_legal || row.titulo, email: clienteEmail || undefined, telefone: clienteTelefone, comoAssina: "SIGN" },
   ];
+  const testemunhaDe: (number | undefined)[] = signers.map(() => undefined);
   for (const n of [1, 2]) {
     const email = String(b[`testemunha${n}Email`] || "").trim();
     const telefone = autentique.normalizarTelefoneBR(String(b[`testemunha${n}Telefone`] || "").trim());
     if (email || telefone) {
       signers.push({ nome: dados[`testemunha${n}`] || `Testemunha ${n}`, email: email || undefined, telefone, comoAssina: "SIGN_AS_A_WITNESS" });
+      testemunhaDe.push(n);
     }
   }
   try {
     const pdf = await contratoObterPdf(row);
+    // Carimbo de cada assinatura em cima da linha do signatário no próprio contrato. Se não achar a
+    // linha de alguém, ele assina normal (sai só na página de auditoria) — nunca bloqueia o envio.
+    try {
+      const linhas = await localizarLinhasAssinatura(pdf);
+      const casadas = casarLinhas(linhas, signers.map((s, i) => ({ nome: s.nome, testemunha: testemunhaDe[i] })));
+      casadas.forEach((l, i) => { if (l) signers[i].posicoes = [posicaoAssinatura(l)]; });
+      const faltando = signers.filter((s) => !s.posicoes).map((s) => s.nome);
+      if (faltando.length) console.warn(`[Assinatura] contrato ${row.id}: sem linha de assinatura no PDF para ${faltando.join(", ")}`);
+    } catch (e: any) {
+      console.warn(`[Assinatura] contrato ${row.id}: não consegui posicionar as assinaturas (${e.message}) — segue sem posição.`);
+    }
     const doc = await autentique.criarDocumento({ token, nomeDocumento: row.titulo, pdf, signers, sandbox: !!cfg.sandbox });
     sqlite
       .prepare(`UPDATE contratos SET autentique_document_id = ?, status_assinatura = 'enviado', assinatura_detalhe_json = NULL WHERE id = ?`)
