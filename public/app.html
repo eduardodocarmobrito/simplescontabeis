@@ -869,6 +869,10 @@ body.theme-glass .tab.active::after, body.theme-glass .nav-item.active::after{
 .rt-legenda{width:100%; font-size:12.5px; border-collapse:collapse;}
 .rt-legenda td{padding:4px 2px; border-bottom:1px solid var(--rule);}
 .rt-legenda td.num, .rt-tabela td.num, .rt-tabela th.num{text-align:right; font-variant-numeric:tabular-nums;}
+/* Valores em R$ e números não quebram linha ("R$" numa linha e o valor na outra). */
+.rt-tabela td.num, .rt-legenda td.num, .rt-rank-v{white-space:nowrap;}
+.rt-tabela .rt-chip{white-space:normal; line-height:1.25;}
+.rt-tabela td:first-child{min-width:190px;}
 .rt-leg-inline{display:flex; gap:16px; font-size:12px; color:var(--ink-soft); margin-top:4px;}
 .rt-rank{display:flex; flex-direction:column; gap:8px;}
 .rt-rank-row{display:grid; grid-template-columns:minmax(180px,2fr) 3fr minmax(130px,auto); gap:12px; align-items:center; cursor:pointer; padding:4px 6px; border-radius:10px;}
