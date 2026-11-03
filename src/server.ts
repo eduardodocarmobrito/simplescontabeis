@@ -7171,6 +7171,7 @@ const OBRIGACOES_POR_SETOR: Record<string, any[]> = {
     { id: "dprh_folha", label: "Folha de Pagamento", templates: ["Folha Mensal", "Folha de Pagamento Mensal"], fonte: "envio", proxyTransmissao: "dctfweb", prazoTransmissao: 5, prazoEnvio: 10 },
   ],
   fiscal: [
+    { id: "fiscal_nfse_honorarios", label: "NFS-e de Honorários (escritório)", templates: [], fonte: "nfse_honorarios", prazoTransmissao: 10, prazoEnvio: 15 },
     { id: "fiscal_das", label: "DAS (Simples Nacional)", templates: ["DAS - Mensal"], fonte: "das", prazoTransmissao: 20, prazoEnvio: 25 },
     { id: "fiscal_iss", label: "ISS", templates: ["ISS"], fonte: "envio", prazoTransmissao: 10, prazoEnvio: 15 },
     { id: "fiscal_darf_nf", label: "DARF PIS/COFINS/Retenções", templates: ["Darf Pis", "Darf Cofins", "Darf Retenções de Notas Fiscais"], fonte: "envio", prazoTransmissao: 20, prazoEnvio: 25 },
@@ -7198,6 +7199,11 @@ app.get("/api/obrigacoes", blockCliente, requirePermissao("empresas", "visualiza
   const empresas = sqlite.prepare(`SELECT e.id, e.nome, e.cnpj FROM empresas e WHERE e.escritorio_id = ? AND e.ativo = 1`).all(user.escritorioId) as any[];
   const empNome: Record<number, any> = {}; empresas.forEach((e) => (empNome[e.id] = e));
   const temIntegraDoc = sqlite.prepare(`SELECT 1 FROM integracontador_documentos WHERE empresa_id = ? AND tipo = ? AND periodo_apuracao = ? LIMIT 1`);
+  // NFS-e de honorários do escritório (competência AAAA-MM, igual à do quadro): emitida = houve emissão
+  // automática no log OU uma nota de verdade (numero_dps > 0); enviada = nota com whatsapp enviado.
+  const nfseEmitidoLog = sqlite.prepare(`SELECT 1 FROM nfse_agendamento_log WHERE empresa_id = ? AND competencia = ? AND sucesso = 1 LIMIT 1`);
+  const nfseEmissaoReal = sqlite.prepare(`SELECT 1 FROM nfse_emissoes WHERE empresa_id = ? AND competencia = ? AND numero_dps > 0 LIMIT 1`);
+  const nfseEnviada = sqlite.prepare(`SELECT 1 FROM nfse_emissoes WHERE empresa_id = ? AND competencia = ? AND whatsapp_enviado = 1 LIMIT 1`);
   const hoje = agoraBrasilia();
   const hojeStr = `${hoje.ano}-${String(hoje.mes).padStart(2, "0")}-${String(hoje.dia).padStart(2, "0")}`;
   const prazoStr = (dia: number | null | undefined) => { if (!dia) return null; let py = ano, pm = mes + 1; if (pm > 12) { pm = 1; py++; } return `${py}-${String(pm).padStart(2, "0")}-${String(dia).padStart(2, "0")}`; };
@@ -7205,9 +7211,18 @@ app.get("/api/obrigacoes", blockCliente, requirePermissao("empresas", "visualiza
   for (const ob of obrigacoesSetor) {
     const tpls: string[] = ob.templates || [];
     const ph = tpls.map(() => "?").join(",");
-    const elegiveis: number[] = tpls.length
-      ? (sqlite.prepare(`SELECT DISTINCT a.empresa_id as id FROM envio_atribuicoes a JOIN envio_templates t ON t.id = a.template_id WHERE a.ativo = 1 AND t.nome IN (${ph})`).all(...tpls) as any[]).map((x) => x.id)
-      : [];
+    // Elegíveis: NFS-e de honorários = empresas marcadas na rotina de NFS-e (nfse_agendamento_empresas);
+    // demais obrigações = empresas com atribuição a algum template do Envio.
+    const nfseAtivoMap: Record<number, number> = {};
+    let elegiveis: number[];
+    if (ob.fonte === "nfse_honorarios") {
+      const rows = sqlite.prepare(`SELECT ae.empresa_id as id, ae.ativo FROM nfse_agendamento_empresas ae JOIN empresas e ON e.id = ae.empresa_id WHERE e.escritorio_id = ? AND e.ativo = 1`).all(user.escritorioId) as any[];
+      elegiveis = rows.map((r) => { nfseAtivoMap[r.id] = r.ativo; return r.id as number; });
+    } else {
+      elegiveis = tpls.length
+        ? (sqlite.prepare(`SELECT DISTINCT a.empresa_id as id FROM envio_atribuicoes a JOIN envio_templates t ON t.id = a.template_id WHERE a.ativo = 1 AND t.nome IN (${ph})`).all(...tpls) as any[]).map((x) => x.id)
+        : [];
+    }
     const envioStmt = tpls.length ? sqlite.prepare(
       `SELECT COUNT(*) as n, MAX(d.email_enviado) as emailEnv, MAX(d.whatsapp_enviado) as waEnv, MAX(d.email_enviado_em) as emailEm, MAX(d.whatsapp_enviado_em) as waEm
        FROM envio_documentos d JOIN envio_periodos p ON p.id = d.periodo_id JOIN envio_atribuicoes a ON a.id = p.atribuicao_id JOIN envio_templates t ON t.id = a.template_id
@@ -7220,6 +7235,12 @@ app.get("/api/obrigacoes", blockCliente, requirePermissao("empresas", "visualiza
       let transmitidaAuto = false, enviadaAuto = false, enviadaEm: string | null = null;
       if (ob.fonte === "dctfweb") transmitidaAuto = !!temIntegraDoc.get(empId, "darf_dctfweb", periodoApuracao);
       else if (ob.fonte === "das") transmitidaAuto = !!temIntegraDoc.get(empId, "das", periodoApuracao);
+      else if (ob.fonte === "nfse_honorarios") {
+        // Emissão automática ligada = já considera emitida e enviada (pedido do usuário). Senão, olha se
+        // houve emissão de verdade no mês e se a nota foi enviada ao cliente.
+        if (nfseAtivoMap[empId]) { transmitidaAuto = true; enviadaAuto = true; }
+        else { transmitidaAuto = !!nfseEmitidoLog.get(empId, comp) || !!nfseEmissaoReal.get(empId, comp); enviadaAuto = !!nfseEnviada.get(empId, comp); }
+      }
       if (envioStmt) {
         const ed = envioStmt.get(empId, ...tpls, ano, mes) as any;
         if (ed && ed.n > 0) { transmitidaAuto = true; enviadaAuto = !!(ed.emailEnv || ed.waEnv); enviadaEm = ed.waEm || ed.emailEm || null; }
