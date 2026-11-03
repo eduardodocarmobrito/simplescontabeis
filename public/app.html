@@ -2767,8 +2767,15 @@ async function pageDashboard(){
   document.querySelectorAll('#dashTabs .tab').forEach(t=>t.addEventListener('click', ()=>{ DASH_TAB=t.dataset.dtab; pageDashboard(); }));
   const conteudo = document.getElementById('dashConteudo');
   if(DASH_TAB==='whatsapp'){ dashPainelWhatsApp(conteudo); return; }
-  if(DASH_TAB==='pendentes'){ dashPendentes(conteudo); return; }
-  // Aba Indicadores (padrão): a nota de monitoramento + a grade de cards.
+  // Split: cards de monitoramento (com tipo) são as PENDÊNCIAS; cards manuais (sem tipo) ficam em Indicadores.
+  const pendencias = items.filter(c=>c.tipo);
+  const indicadores = items.filter(c=>!c.tipo);
+  if(DASH_TAB==='pendentes'){
+    conteudo.innerHTML = `<div class="kpi-grid" id="kpiGrid"></div>`;
+    montarCardsGrid(document.getElementById('kpiGrid'), pendencias, podeEditar, false, 'Nenhuma pendência monitorada ainda — adicione um card de pendência pela aba Indicadores (botão "+ Adicionar card").');
+    return;
+  }
+  // Aba Indicadores (padrão): a nota de monitoramento + os cards manuais + "Adicionar card".
   conteudo.innerHTML = `
     ${podeEditar? `<p style="font-size:12.5px; color:var(--ink-soft); margin:0 0 16px;">
       Monitorando pendências ${competenciaInicio? `a partir de <b>${MESES[competenciaInicio.mes]}/${competenciaInicio.ano}</b>` : 'desde o período mais antigo gerado na grade de cada empresa'} —
@@ -2777,8 +2784,12 @@ async function pageDashboard(){
     <div class="kpi-grid" id="kpiGrid"></div>
   `;
   if(podeEditar) document.getElementById('btnMonitoramentoConfig').addEventListener('click', ()=>monitoramentoConfigModal(competenciaInicio));
-  const grid = document.getElementById('kpiGrid');
-  grid.innerHTML = items.map(c=>`
+  montarCardsGrid(document.getElementById('kpiGrid'), indicadores, podeEditar, true, 'Nenhum indicador manual ainda — use "+ Adicionar card". Os cards de pendência ficam na aba Pendentes.');
+}
+// Renderiza uma grade de cards (KPI) com os handlers de clique/editar/excluir. comAdd mostra o
+// "+ Adicionar card" (só na aba Indicadores). Reaproveitado pelas abas Indicadores e Pendentes.
+function montarCardsGrid(grid, cards, podeEditar, comAdd, emptyMsg){
+  grid.innerHTML = cards.map(c=>`
     <div class="kpi" data-id="${c.id}" data-tipo="${c.tipo||''}" ${c.tipo?'style="cursor:pointer;"':''}>
       <div class="kpi-actions">
         ${podeEditar? `<button class="btn small" data-act="edit-card">✎</button><button class="btn small danger" data-act="del-card">✕</button>` : ''}
@@ -2787,27 +2798,22 @@ async function pageDashboard(){
       <div class="val">${esc(c.valor)}</div>
       ${c.subtitulo? `<div class="sub">${esc(c.subtitulo)}</div>`:''}
     </div>
-  `).join('') + (podeEditar? `<div class="kpi add" id="addCard">+ Adicionar card</div>` : (items.length? '' : '<div class="empty-state">Nenhum indicador cadastrado ainda.</div>'));
-
+  `).join('') + (comAdd && podeEditar? `<div class="kpi add" id="addCard">+ Adicionar card</div>` : (cards.length? '' : `<div class="empty-state">${esc(emptyMsg||'')}</div>`));
   grid.querySelectorAll('.kpi[data-tipo]').forEach(el=>{
     if(!el.dataset.tipo) return;
     el.addEventListener('click', e=>{
       if(e.target.closest('.kpi-actions')) return;
-      const id = Number(el.dataset.id);
-      cardDetalheModal(items.find(x=>x.id===id));
+      cardDetalheModal(cards.find(x=>x.id===Number(el.dataset.id)));
     });
   });
   if(podeEditar){
-    document.getElementById('addCard').addEventListener('click', ()=>cardModal());
+    const addBtn = grid.querySelector('#addCard'); if(addBtn) addBtn.addEventListener('click', ()=>cardModal());
     grid.querySelectorAll('[data-act="edit-card"]').forEach(b=>b.addEventListener('click', e=>{
-      const id=Number(e.target.closest('.kpi').dataset.id);
-      const c = items.find(x=>x.id===id);
-      cardModal(c);
+      cardModal(cards.find(x=>x.id===Number(e.target.closest('.kpi').dataset.id)));
     }));
     grid.querySelectorAll('[data-act="del-card"]').forEach(b=>b.addEventListener('click', async e=>{
-      const id=Number(e.target.closest('.kpi').dataset.id);
       if(!confirmar('Remover este card?')) return;
-      await api('/dashboard/cards/'+id, { method:'DELETE' });
+      await api('/dashboard/cards/'+Number(e.target.closest('.kpi').dataset.id), { method:'DELETE' });
       pageDashboard();
     }));
   }
@@ -2826,10 +2832,6 @@ function dashPainelWhatsApp(box){
   const ir = ()=>{ CRM.aba='painel'; goPage('crm'); };
   document.getElementById('dashBtnPainelCrm').addEventListener('click', ir);
   document.getElementById('dashIrPainelCrm').addEventListener('click', (e)=>{ if(e.target.closest('button')) return; ir(); });
-}
-// Aba "Pendentes": conteúdo a definir com o usuário — por ora, placeholder.
-function dashPendentes(box){
-  box.innerHTML = `<div class="empty-state">Aba Pendentes — o conteúdo será definido.</div>`;
 }
 const CARD_TIPOS_INFO = {
   certificados_vencer: { label:'Certificados a Vencer', subtitulo:'Vencidos ou vencendo nos próximos 30 dias' },
