@@ -7658,12 +7658,13 @@ function ofGarantirContaFinanceira(conta: any): number {
   const partes = String(conta.numero || "").split("/");
   const agencia = partes.length > 1 ? partes[0].replace(/\D/g, "") : "";
   const contaNum = (partes.length > 1 ? partes.slice(1).join("/") : partes[0] || "").trim();
-  const contaDigits = contaNum.replace(/\D/g, "");
+  const contaDigits = contaNum.replace(/\D/g, "");           // só a conta: "961764"
+  const fullDigits = String(conta.numero || "").replace(/\D/g, ""); // agência+conta: "0001961764"
   const vincular = (id: number) => { sqlite.prepare(`UPDATE of_contas SET financeiro_conta_id = ? WHERE id = ?`).run(id, conta.id); conta.financeiro_conta_id = id; return id; };
-  // (2) casa com uma conta existente pelo número da conta (ignora formatação/agência).
+  // (2) casa com uma conta existente pelo número (tolera o usuário ter digitado com ou sem agência).
   if (contaDigits) {
     const cands = sqlite.prepare(`SELECT id, numero FROM financeiro_contas WHERE empresa_id = ? AND numero IS NOT NULL AND numero != ''`).all(conta.empresa_id) as any[];
-    const hit = cands.find((c) => String(c.numero).replace(/\D/g, "") === contaDigits);
+    const hit = cands.find((c) => { const d = String(c.numero).replace(/\D/g, ""); return d && (d === contaDigits || d === fullDigits); });
     if (hit) return vincular(hit.id);
   }
   // (3) cria nova já com agência/número preenchidos.
