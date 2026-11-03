@@ -191,16 +191,20 @@ export function lerNotaReforma(docId: number, xml: string): NotaRT | null {
 }
 
 // Regime de IBS/CBS do fornecedor, como a NF-e informa (CRT + tpRegimeIBSCBS + gTribSN).
-export type RegimeFornecedor = "regular" | "sn_regular" | "sn_dentro" | "sn_indefinido" | "mei" | "desconhecido";
+export type RegimeFornecedor = "regular" | "sn_regular" | "sn_dentro" | "sn_indefinido" | "mei" | "pf" | "desconhecido";
 export const REGIME_FORNECEDOR_LABEL: Record<RegimeFornecedor, string> = {
   regular: "Regime normal",
   sn_regular: "Simples — IBS/CBS por fora (regime regular)",
   sn_dentro: "Simples — IBS/CBS dentro do DAS",
   sn_indefinido: "Simples — regime de IBS/CBS não informado",
   mei: "MEI",
+  pf: "Produtor rural / pessoa física",
   desconhecido: "Não identificado",
 };
 export function regimeFornecedor(nota: NotaRT): RegimeFornecedor {
+  // Emitente com CPF (NF-e de produtor rural pessoa física): não contribuinte, não destaca IBS/CBS —
+  // não é "regime normal" mesmo com CRT 3 na nota.
+  if (nota.emitCnpj.replace(/\D/g, "").length === 11) return "pf";
   if (nota.crt === 3) return "regular";
   if (nota.crt === 4) return "mei";
   if (nota.crt === 1 || nota.crt === 2) {
@@ -217,6 +221,7 @@ export interface Achado {
   evidencia: string; // tags/valores do XML que comprovam
   esperado?: string; // como o fornecedor deveria ter emitido
   recomendacao: string; nItem?: number; valor?: number;
+  produto?: string; ncm?: string; cfop?: string; fundamento?: string;
 }
 // Validação oficial NCM x cClassTrib: true/false, ou undefined enquanto a API ainda não respondeu.
 export type ConsultaNcm = (cClassTrib: string, ncm: string, ano: number) => boolean | undefined;
@@ -277,6 +282,12 @@ export function auditarNota(nota: NotaRT, consultaNcm: ConsultaNcm, consultaVige
       evidencia: `<tpRegimeIBSCBS>1</tpRegimeIBSCBS> com ${nota.itens.some((i) => i.sn) ? "<gTribSN> informado" : "item sem <gCBS>"}`,
       recomendacao: "Solicitar correção: o crédito integral depende do destaque correto no regime regular." });
   }
+  if (regime === "pf") {
+    add({ regra: "PRODUTOR_RURAL_PF", severidade: "info", titulo: "Compra de produtor rural / pessoa física",
+      detalhe: "Emitente pessoa física (CPF): produtor rural não contribuinte não destaca IBS/CBS. Na aquisição de produtor rural não contribuinte o adquirente pode apropriar crédito presumido de IBS/CBS, nos percentuais fixados em ato do Poder Executivo/CGIBS (LC 214/2025, art. 168).",
+      evidencia: `<emit><CPF>${nota.emitCnpj}</CPF></emit>`,
+      recomendacao: "Não é erro do fornecedor. Avaliar o crédito presumido na apuração do adquirente." });
+  }
   if (regime === "mei" && nota.itens.some((i) => i.temIBSCBS)) {
     add({ regra: "MEI_COM_IBSCBS", severidade: "baixa", titulo: "MEI informando grupo IBS/CBS",
       detalhe: "MEI (CRT 4) não informa o grupo IBSCBS — o valor destacado não gera crédito.", evidencia: "<CRT>4</CRT> com <IBSCBS>",
@@ -302,7 +313,7 @@ export function auditarNota(nota: NotaRT, consultaNcm: ConsultaNcm, consultaVige
   for (const it of nota.itens) {
     const antes = achados.length;
     let altaNoItem = false;
-    const addItem = (a: Achado) => { add({ ...a, nItem: it.nItem }); if (a.severidade === "alta") altaNoItem = true; };
+    const addItem = (a: Achado) => { add({ ...a, nItem: it.nItem, produto: it.xProd, ncm: it.ncm, cfop: it.cfop }); if (a.severidade === "alta") altaNoItem = true; };
     const cls = it.cClassTrib ? CLASS.get(it.cClassTrib) || null : null;
     let pRedIBS = cls && !cls.indTribRegular ? cls.pRedIBS : 0, pRedCBS = cls && !cls.indTribRegular ? cls.pRedCBS : 0;
     const vBCref = it.temIBSCBS && it.vBC > 0 ? it.vBC : Math.max(0, it.baseFormula);
@@ -438,7 +449,7 @@ export function auditarNota(nota: NotaRT, consultaNcm: ConsultaNcm, consultaVige
       const pCBSano = aliq.pCBS ?? CBS_2027_ESTIMADA;
       cred.referencia += (vBCref * (pCBSano * (1 - pRedCBS / 100) + (aliq.pIBSUF + aliq.pIBSMun) * (1 - pRedIBS / 100))) / 100;
     }
-    const ref27 = (vBCref * (CBS_2027_ESTIMADA * (1 - pRedCBS / 100) + 0.1 * (1 - pRedIBS / 100))) / 100;
+    const ref27 = regime === "pf" ? 0 : (vBCref * (CBS_2027_ESTIMADA * (1 - pRedCBS / 100) + 0.1 * (1 - pRedIBS / 100))) / 100;
     cred.referencia2027 += ref27;
     let aprov = 0, aprov27 = 0;
     if (regime === "regular" || regime === "sn_regular") {
@@ -459,7 +470,7 @@ export function auditarNota(nota: NotaRT, consultaNcm: ConsultaNcm, consultaVige
     if (altaNoItem && aprov > 0) cred.risco += aprov;
     else cred.aproveitavel += aprov;
     cred.aproveitavel2027 += aprov27;
-    const refAno = aliq ? (vBCref * ((aliq.pCBS ?? CBS_2027_ESTIMADA) * (1 - pRedCBS / 100) + (aliq.pIBSUF + aliq.pIBSMun) * (1 - pRedIBS / 100))) / 100 : 0;
+    const refAno = aliq && regime !== "pf" ? (vBCref * ((aliq.pCBS ?? CBS_2027_ESTIMADA) * (1 - pRedCBS / 100) + (aliq.pIBSUF + aliq.pIBSMun) * (1 - pRedIBS / 100))) / 100 : 0;
     const perda = Math.max(0, refAno - aprov);
     if (regime === "regular" || regime === "sn_regular") cred.perdaErro += perda;
     else cred.perdaEstrutural += perda;

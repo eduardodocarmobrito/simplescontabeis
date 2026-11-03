@@ -22,6 +22,7 @@ import { MODELOS_CONTRATO_PRONTOS } from "./contrato-modelos-prontos";
 import * as reformaAuditoria from "./reforma-auditoria";
 import { gerarPdfRelatorioReforma } from "./reforma-relatorio";
 import { gerarPdfFichasReforma, FornecedorFicha } from "./reforma-fichas";
+import { gerarPdfNotificacaoFornecedores, gerarPdfMapaNcm } from "./reforma-notificacao";
 import * as danfse from "./danfse";
 import * as whatsapp from "./whatsapp";
 import * as nfe from "./nfe";
@@ -9062,7 +9063,7 @@ app.post("/api/nfe/config", blockCliente, requirePermissao("nfe-busca", "postar"
 // Cada arquivo .pfx/.p12 vem nomeado "EMPRESA ... (senha) ... .pfx" (padrão visto nos certificados reais). O nome
 // costuma trazer o CNPJ/CPF colado; quando bate com o cadastro E a senha abre o arquivo, importa sozinho. Sem
 // bater com certeza, fica pendente pra conferência manual — nunca grava certificado em empresa "no chute".
-const normCert = (s: string) => String(s || "").toUpperCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^A-Z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+const normCert = (s: string) => String(s || "").toUpperCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^A-Z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
 function certParseNomeArquivo(nomeArquivo: string): { senha: string | null; digitos: string | null; nomeBase: string } {
   const semExt = nomeArquivo.replace(/\.(pfx|p12)$/i, "");
   const parenteses = [...semExt.matchAll(/\(([^()]+)\)/g)];
@@ -10137,7 +10138,7 @@ function nfeListarDocumentosQuery(
       eventosPorChave.set(ev.chave, arr);
     }
   }
-  const normEv = (s: string) => (s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+  const normEv = (s: string) => (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
   const derivarEventos = (descricoes: string[]): { manifestacao: string | null; eventos: string[] } => {
     const tem = (sub: string) => descricoes.some((d) => normEv(d).includes(sub));
     // Manifestação do destinatário — fica com a mais "forte"/final do ciclo (confirmação/não realizada/
@@ -10642,7 +10643,7 @@ setTimeout(() => void reformaAtualizarTabelasOficiais(), 90_000);
 setInterval(() => void reformaAtualizarTabelasOficiais(), 6 * 3_600_000);
 
 const REGIME_CLIENTE_LABEL: Record<string, string> = { simples_nacional: "Simples Nacional", mei: "MEI", lucro_presumido: "Lucro Presumido", lucro_real: "Lucro Real", produtor_rural: "Produtor Rural" };
-function reformaCalcularAuditoria(escritorioId: number, empresaId: number, de: string, ate: string) {
+function reformaCalcularAuditoria(escritorioId: number, empresaId: number, de: string, ate: string, semLimite = false) {
   const empresa = sqlite.prepare(`SELECT id, nome, cnpj, regime_tributario FROM empresas WHERE id = ?`).get(empresaId) as any;
   if (!empresa) throw new Error("Empresa não encontrada.");
   const regime = empresa.regime_tributario || "simples_nacional";
@@ -10779,9 +10780,9 @@ function reformaCalcularAuditoria(escritorioId: number, empresaId: number, de: s
     },
     mixRegime: [...mixMap.values()].map((m) => ({ ...m, valor: r2(m.valor) })).sort((a, b) => b.valor - a.valor),
     mensal: [...mesMap.values()].sort((a, b) => a.mes.localeCompare(b.mes)).map((m) => ({ ...m, valor: r2(m.valor), valorConforme: r2(m.valorConforme), ibs: r2(m.ibs), cbs: r2(m.cbs) })),
-    fornecedores, ncms: ncms.slice(0, 300),
+    fornecedores, ncms: semLimite ? ncms : ncms.slice(0, 300),
     regras: [...regraMap.values()].sort((a, b) => sevPeso[a.severidade] - sevPeso[b.severidade] || b.qtd - a.qtd),
-    achados: achados.slice(0, 3000), achadosTotal: achados.length,
+    achados: semLimite ? achados : achados.slice(0, 3000), achadosTotal: achados.length,
   };
 }
 function reformaPeriodo(q: any) {
@@ -10856,6 +10857,62 @@ app.get("/api/reforma/minha-empresa/auditoria/fichas", requireCliente, async (re
   if (!user.empresaId) return res.status(400).json({ error: "Nenhuma empresa vinculada." });
   await reformaEnviarFichas(res, user.escritorioId, user.empresaId, req.query);
 });
+// Relatório POR FORNECEDOR (um ou vários, ?cnpjs=a,b): todas as ocorrências de cada um, nota a nota,
+// com o preenchimento correto e a fundamentação — pra empresa mandar ao fornecedor.
+async function reformaEnviarRelatorioFornecedores(res: any, escritorioId: number, empresaId: number, q: any) {
+  const { de, ate } = reformaPeriodo(q);
+  const cnpjs = String(q.cnpjs || "").split(",").map((x) => x.replace(/\D/g, "")).filter(Boolean);
+  if (!cnpjs.length) return res.status(400).json({ error: "Escolha pelo menos um fornecedor." });
+  try {
+    const d = reformaCalcularAuditoria(escritorioId, empresaId, de, ate, true);
+    const forns = d.fornecedores.filter((f: any) => cnpjs.includes(String(f.cnpj).replace(/\D/g, ""))).map((f: any) => ({
+      cnpj: f.cnpj, nome: f.nome, uf: f.uf, regimeLabel: f.regimeLabel, notas: f.notas, itens: f.itens, valor: f.valor, recomendacao: f.recomendacao,
+      achados: d.achados.filter((a: any) => a.cnpj === f.cnpj),
+    }));
+    if (!forns.length) return res.status(404).json({ error: "Fornecedor não encontrado no período." });
+    const esc = sqlite.prepare(`SELECT nome FROM escritorios WHERE id = ?`).get(escritorioId) as any;
+    const pdf = await gerarPdfNotificacaoFornecedores({ nome: d.empresa.nome, cnpj: d.empresa.cnpj, regimeLabel: d.empresa.regimeLabel }, d.periodo, forns, esc?.nome || "Simples Contábeis", contratos.timbradoDataUri());
+    const nome = forns.length === 1 ? `Inconsistencias IBS-CBS - ${String(forns[0].nome).replace(/[^\w\- ]/g, "").slice(0, 60)}.pdf` : `Inconsistencias IBS-CBS - ${forns.length} fornecedores.pdf`;
+    res.set("Content-Type", "application/pdf");
+    res.set("Content-Disposition", `attachment; filename="${nome}"`);
+    res.send(pdf);
+  } catch (e: any) {
+    res.status(500).json({ error: `Não consegui gerar o relatório: ${e.message}` });
+  }
+}
+// Mapa de NCM em PDF só com o filtro da tela (?status=fora_anexo,ok&busca=texto).
+async function reformaEnviarMapaNcm(res: any, escritorioId: number, empresaId: number, q: any) {
+  const { de, ate } = reformaPeriodo(q);
+  try {
+    const d = reformaCalcularAuditoria(escritorioId, empresaId, de, ate, true);
+    const status = String(q.status || "").split(",").filter(Boolean);
+    const norm = (t: any) => String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+    const busca = norm(q.busca || "").trim();
+    const ncms = d.ncms.filter((n: any) => (!status.length || status.includes(n.status)) && (!busca || norm(`${n.ncm} ${n.descricao} ${n.descricaoOficial || ""} ${n.cClassTribs.join(" ")}`).includes(busca)));
+    const ST: Record<string, string> = { ok: "Validado", ncm_vencido: "NCM vencido", fora_anexo: "Redução indevida", reducao_esquecida: "Redução não aplicada", pendente: "Validando", sem_grupo: "Sem IBS/CBS" };
+    const filtro = [status.length ? status.map((x) => ST[x] || x).join(", ") : "todas as situações", busca ? `busca "${q.busca}"` : ""].filter(Boolean).join(" · ");
+    const esc = sqlite.prepare(`SELECT nome FROM escritorios WHERE id = ?`).get(escritorioId) as any;
+    const pdf = await gerarPdfMapaNcm({ nome: d.empresa.nome, cnpj: d.empresa.cnpj }, d.periodo, filtro, ncms, esc?.nome || "Simples Contábeis", contratos.timbradoDataUri());
+    res.set("Content-Type", "application/pdf");
+    res.set("Content-Disposition", `attachment; filename="Mapa NCM - ${String(d.empresa.nome || "").replace(/[^\w\- ]/g, "").slice(0, 60)}.pdf"`);
+    res.send(pdf);
+  } catch (e: any) {
+    res.status(500).json({ error: `Não consegui gerar o mapa: ${e.message}` });
+  }
+}
+for (const [rota, fn] of [["fornecedores-pdf", reformaEnviarRelatorioFornecedores], ["ncm-pdf", reformaEnviarMapaNcm]] as const) {
+  app.get(`/api/reforma/auditoria/${rota}`, blockCliente, requirePermissao("reforma", "visualizar"), async (req, res) => {
+    const user = (req as any).user;
+    const empresaId = Number(req.query.empresaId);
+    if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+    await fn(res, user.escritorioId, empresaId, req.query);
+  });
+  app.get(`/api/reforma/minha-empresa/auditoria/${rota}`, requireCliente, async (req, res) => {
+    const user = (req as any).user;
+    if (!user.empresaId) return res.status(400).json({ error: "Nenhuma empresa vinculada." });
+    await fn(res, user.escritorioId, user.empresaId, req.query);
+  });
+}
 app.get("/api/reforma/auditoria/pdf", blockCliente, requirePermissao("reforma", "visualizar"), async (req, res) => {
   const user = (req as any).user;
   const empresaId = Number(req.query.empresaId);
@@ -11529,7 +11586,7 @@ try {
 // confiável que procurar palavras no corpo do PDF — um Comparativo pode citar "balancete" no texto e ser
 // arquivado também como Balancete. Sem prefixo reconhecível, cai pro texto.
 function domRelTipoPeloNome(nome: string): DomRelTipo | null {
-  const limpo = nome.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z_]/g, "");
+  const limpo = nome.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z_]/g, "");
   // O robô do Demonstrativo Mensal nomeia "Demonstrativo_Mensal_<cod>_..." → arquivado como
   // "Relatório de Entradas/Saídas" (tipo entradas_saidas), a pedido.
   const m = /^(balancete|balanco|dre|faturamento|razao|comparativo|programacao|demonstrativo)/.exec(limpo);
@@ -13172,7 +13229,7 @@ registerWebmail(app, {
   sqlite,
 });
 function emailNormalizaTxt(s: string): string {
-  return String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").trim();
+  return String(s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
 }
 // Tira sufixo de razão social (LTDA, ME, S/A etc.) antes de comparar — o assunto do e-mail
 // ("...DA RAIZES AGRO") nunca traz o sufixo, só o nome "comercial".
@@ -18575,7 +18632,7 @@ app.get("/api/financeiro/minha-empresa/relatorios/csv", requireCliente, requireM
 const OFX_JANELA_DIAS_MATCH = 15;
 // ---- Conciliação inteligente: normalização + similaridade de texto + aprendizado ----
 function ofxNorm(s: string | null): string {
-  return (s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+  return (s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
 }
 // Chave "estável": igual à normalizada, mas sem sequências de 5+ dígitos (nº de boleto/documento que
 // muda a cada transação) — mantém códigos curtos. Usada pro auto-cadastro reconhecer tarifas recorrentes.
@@ -22399,7 +22456,7 @@ function crmNormalizaTxt(s: string): string {
   return String(s || "")
     .toLowerCase()
     .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
+    .replace(/[\u0300-\u036f]/g, "")
     .trim();
 }
 function crmExtensaoPorMime(mime: string | null): string {

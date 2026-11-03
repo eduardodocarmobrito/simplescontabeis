@@ -13,7 +13,7 @@ const fmtDoc = (d: string) => {
   return d || "";
 };
 const ncmFmt = (n: string) => (/^\d{8}$/.test(n) ? n.replace(/(\d{4})(\d{2})(\d{2})/, "$1.$2.$3") : n);
-const COR_REGIME: Record<string, string> = { regular: "#2a78d6", sn_regular: "#1baf7a", sn_dentro: "#eb6834", sn_indefinido: "#eda100", mei: "#e87ba4", desconhecido: "#898781" };
+const COR_REGIME: Record<string, string> = { regular: "#2a78d6", sn_regular: "#1baf7a", sn_dentro: "#eb6834", sn_indefinido: "#eda100", mei: "#e87ba4", pf: "#6250d6", desconhecido: "#898781" };
 const SEV: Record<string, { cor: string; ic: string; label: string }> = {
   alta: { cor: "#c0392b", ic: "⛔", label: "Alta" }, media: { cor: "#a5730a", ic: "⚠", label: "Média" }, baixa: { cor: "#5b6b63", ic: "•", label: "Baixa" }, info: { cor: "#2a78d6", ic: "ℹ", label: "Info" },
 };

@@ -869,6 +869,11 @@ body.theme-glass .tab.active::after, body.theme-glass .nav-item.active::after{
 .rt-legenda{width:100%; font-size:12.5px; border-collapse:collapse;}
 .rt-legenda td{padding:4px 2px; border-bottom:1px solid var(--rule);}
 .rt-legenda td.num, .rt-tabela td.num, .rt-tabela th.num{text-align:right; font-variant-numeric:tabular-nums;}
+.rt-ncm-filtros{display:flex; flex-wrap:wrap; gap:6px; margin-top:6px;}
+.rt-fchip{display:inline-flex; align-items:center; gap:6px; padding:6px 11px; border-radius:999px; border:1px solid var(--rule); border-left:4px solid var(--c,#898781); background:var(--surface); color:var(--ink); cursor:pointer; font-size:12px;}
+.rt-fchip.on{outline:2px solid var(--accent); background:color-mix(in srgb, var(--accent) 14%, var(--surface));}
+body.theme-glass .rt-fchip{background:rgba(var(--glass-rgb,5,31,32),.55); border-color:rgba(255,255,255,.22);}
+body.theme-glass .rt-fchip.on{background:rgba(46,204,143,.22);}
 /* Valores em R$ e números não quebram linha ("R$" numa linha e o valor na outra). */
 .rt-tabela td.num, .rt-legenda td.num, .rt-rank-v{white-space:nowrap;}
 .rt-tabela .rt-chip{white-space:normal; line-height:1.25;}
@@ -877,7 +882,9 @@ body.theme-glass .tab.active::after, body.theme-glass .nav-item.active::after{
 .rt-scroll{max-height:72vh; overflow:auto; border-radius:12px;}
 .rt-scroll table.data-table thead th{position:sticky; top:0; z-index:3;}
 body.theme-glass .rt-scroll table.data-table thead th{background:rgba(var(--glass-rgb,5,31,32),.96);}
-.rt-tabela td:first-child{min-width:190px;}
+.rt-tabela td:first-child{min-width:110px;}
+.rt-tabela td.rt-selcel{min-width:0; width:34px;}
+.rt-tabela td.rt-selcel + td{min-width:200px;}
 .rt-leg-inline{display:flex; gap:16px; font-size:12px; color:var(--ink-soft); margin-top:4px;}
 .rt-rank{display:flex; flex-direction:column; gap:8px;}
 .rt-rank-row{display:grid; grid-template-columns:minmax(180px,2fr) 3fr minmax(130px,auto); gap:12px; align-items:center; cursor:pointer; padding:4px 6px; border-radius:10px;}
@@ -8484,7 +8491,23 @@ let RT_FILTRO_REGRA = '';
 let RT_BUSCA_ACH = '';
 let RT_SEQ = 0;
 // Cores fixas por entidade (paleta categórica validada) — a cor segue o regime, nunca a posição.
-const RT_COR_REGIME = { regular:'#2a78d6', sn_regular:'#1baf7a', sn_dentro:'#eb6834', sn_indefinido:'#eda100', mei:'#e87ba4', desconhecido:'#898781' };
+const RT_COR_REGIME = { regular:'#2a78d6', sn_regular:'#1baf7a', sn_dentro:'#eb6834', sn_indefinido:'#eda100', mei:'#e87ba4', pf:'#6250d6', desconhecido:'#898781' };
+// Fornecedores marcados no ranking (pro relatório de inconsistências) e filtro do mapa de NCM.
+let RT_SEL_FORN = new Set();
+let RT_NCM_ST = new Set();
+let RT_NCM_BUSCA = '';
+// Baixa um PDF/arquivo da API mostrando "gerando…" no botão e o erro do servidor, se houver.
+async function rtBaixar(url, nomeArquivo, btn, textoGerando){
+  const orig = btn ? btn.textContent : '';
+  if(btn){ btn.disabled = true; btn.textContent = textoGerando || 'Gerando…'; }
+  try{
+    const resp = await fetch(url, { credentials:'include' });
+    if(!resp.ok){ let msg='Erro '+resp.status; try{ const j=await resp.json(); if(j.error) msg=j.error; }catch(e){} throw new Error(msg); }
+    const blob = await resp.blob();
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = nomeArquivo; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 4000);
+  }catch(e){ toast(e.message,'err'); }
+  finally{ if(btn){ btn.disabled = false; btn.textContent = orig; } }
+}
 const RT_STATUS = {
   conforme:{ cor:'#0ca30c', ic:'✔', label:'Conforme' },
   atencao:{ cor:'#fab219', ic:'⚠', label:'Atenção' },
@@ -8675,14 +8698,24 @@ function rtPainelHtml(d, urlPdf){
 
   <div class="card rt-card">
     <div class="rt-card-t">Ranking de fornecedores</div>
-    <div class="field" style="max-width:360px; margin:10px 0;"><input type="search" id="rtBuscaForn" placeholder="Pesquisar fornecedor ou CNPJ…" autocomplete="off" value="${esc(RT_BUSCA_FORN)}"></div>
+    <div class="row" style="gap:10px; flex-wrap:wrap; align-items:center; margin:10px 0;">
+      <div class="field" style="max-width:360px; flex:1; margin-bottom:0;"><input type="search" id="rtBuscaForn" placeholder="Pesquisar fornecedor ou CNPJ…" autocomplete="off" value="${esc(RT_BUSCA_FORN)}"></div>
+      <button class="btn primary" id="rtRelForn" disabled title="Marque um ou mais fornecedores na tabela">📨 Relatório para fornecedor(es)</button>
+    </div>
+    <div class="rt-mut" style="font-size:12px; margin:-4px 0 8px;">Marque os fornecedores na tabela — sai um relatório completo de cada um (todas as inconsistências, nota a nota, com o preenchimento correto e a fundamentação) para enviar a eles.</div>
     <div class="rt-scroll" id="rtFornTabela"></div>
   </div>
 
   <div class="card rt-card">
     <div class="rt-card-t">Mapa de NCM × classificação tributária</div>
     <div class="rt-card-s">Cada NCM comprado, a classificação (cClassTrib) que os fornecedores usaram e a validação na API oficial da RFB.</div>
-    <div class="rt-scroll">${rtNcmHtml(d.ncms)}</div>
+    <div class="rt-ncm-filtros" id="rtNcmChips"></div>
+    <div class="row" style="gap:10px; flex-wrap:wrap; align-items:center; margin:8px 0 10px;">
+      <div class="field" style="max-width:360px; flex:1; margin-bottom:0;"><input type="search" id="rtNcmBusca" placeholder="Pesquisar NCM, produto ou cClassTrib…" autocomplete="off" value="${esc(RT_NCM_BUSCA)}"></div>
+      <button class="btn" id="rtNcmCsv">⬇ Exportar filtro (CSV)</button>
+      <button class="btn" id="rtNcmPdf">📄 Exportar filtro (PDF)</button>
+    </div>
+    <div class="rt-scroll" id="rtNcmTabela"></div>
   </div>
 
   <div class="card rt-card" id="rtAchadosCard">
@@ -8748,8 +8781,10 @@ function rtFornTabelaHtml(forn){
   const t = normalizaTxt(RT_BUSCA_FORN), dig = RT_BUSCA_FORN.replace(/\D/g,'');
   const lista = forn.filter(f=>!t || normalizaTxt(f.nome).includes(t) || (dig && f.cnpj.includes(dig)));
   if(!lista.length) return '<div class="empty-state">Nenhum fornecedor encontrado.</div>';
-  return `<table class="data-table rt-tabela"><thead><tr><th>Fornecedor</th><th>Regime IBS/CBS</th><th class="num">Notas</th><th class="num">Compras</th><th class="num">% com IBS/CBS</th><th>Achados</th><th class="num">Crédito destacado</th><th class="num">Em jogo 2027/ano</th><th>Score</th></tr></thead><tbody>
+  const todosMarcados = lista.length && lista.every(f=>RT_SEL_FORN.has(f.cnpj));
+  return `<table class="data-table rt-tabela"><thead><tr><th style="width:34px;"><input type="checkbox" id="rtSelTodos" title="Marcar todos os da lista" ${todosMarcados?'checked':''}></th><th>Fornecedor</th><th>Regime IBS/CBS</th><th class="num">Notas</th><th class="num">Compras</th><th class="num">% com IBS/CBS</th><th>Achados</th><th class="num">Crédito destacado</th><th class="num">Em jogo 2027/ano</th><th>Score</th></tr></thead><tbody>
     ${lista.map(f=>`<tr class="rt-click" data-forn="${esc(f.cnpj)}">
+      <td class="rt-selcel"><input type="checkbox" class="rtSelForn" value="${esc(f.cnpj)}" ${RT_SEL_FORN.has(f.cnpj)?'checked':''}></td>
       <td><b>${esc(f.nome)}</b><div class="rt-mut" style="font-size:11px;">${esc(fmtCnpjCpf(f.cnpj))} · ${esc(f.uf||'')}</div></td>
       <td>${rtRegimeChip(f.regime, f.regimeLabel)}</td>
       <td class="num">${rtNum(f.notas)}</td><td class="num">${rtBRL(f.valor)}</td><td class="num">${f.pctComGrupo}%</td>
@@ -8791,8 +8826,45 @@ function rtLigarPainel(painel, d, urlPdf){
     const lista = rtAchadosFiltrados(d);
     document.getElementById('rtAchadosLista').innerHTML = lista.length ? lista.slice(0,300).map(a=>rtAchadoHtml(a, true)).join('') + (lista.length>300?`<div class="empty-state">+ ${rtNum(lista.length-300)} achado(s) — refine o filtro ou baixe o CSV.</div>`:'') : '<div class="empty-state">Nenhum achado com esses filtros.</div>';
   };
-  function ligarCliquesForn(){ painel.querySelectorAll('[data-forn]').forEach(el=>el.onclick = ()=>rtFornecedorDrawer(d, el.dataset.forn)); }
-  renderForn(); renderAch();
+  const btnRelForn = document.getElementById('rtRelForn');
+  const atualizarBtnRel = ()=>{ btnRelForn.disabled = !RT_SEL_FORN.size; btnRelForn.textContent = RT_SEL_FORN.size ? `📨 Relatório para ${RT_SEL_FORN.size} fornecedor(es)` : '📨 Relatório para fornecedor(es)'; };
+  function ligarCliquesForn(){
+    painel.querySelectorAll('[data-forn]').forEach(el=>el.onclick = (ev)=>{ if(ev.target.closest('.rt-selcel')) return; rtFornecedorDrawer(d, el.dataset.forn, urlPdf); });
+    painel.querySelectorAll('.rtSelForn').forEach(chk=>chk.addEventListener('change', ()=>{ chk.checked ? RT_SEL_FORN.add(chk.value) : RT_SEL_FORN.delete(chk.value); atualizarBtnRel(); }));
+    const todos = document.getElementById('rtSelTodos');
+    if(todos) todos.addEventListener('change', ()=>{ painel.querySelectorAll('.rtSelForn').forEach(chk=>{ chk.checked = todos.checked; todos.checked ? RT_SEL_FORN.add(chk.value) : RT_SEL_FORN.delete(chk.value); }); atualizarBtnRel(); });
+  }
+  // Fornecedores que não existem mais na lista (outra empresa/período) saem da seleção.
+  const cnpjsAtuais = new Set(d.fornecedores.map(f=>f.cnpj)); [...RT_SEL_FORN].forEach(c=>{ if(!cnpjsAtuais.has(c)) RT_SEL_FORN.delete(c); });
+  btnRelForn.addEventListener('click', ()=>{
+    const cnpjs = [...RT_SEL_FORN];
+    const nome = cnpjs.length===1 ? `Inconsistencias IBS-CBS - ${((d.fornecedores.find(f=>f.cnpj===cnpjs[0])||{}).nome||'').slice(0,50)}.pdf` : `Inconsistencias IBS-CBS - ${cnpjs.length} fornecedores.pdf`;
+    rtBaixar(urlPdf.replace('/auditoria/pdf','/auditoria/fornecedores-pdf')+'&cnpjs='+encodeURIComponent(cnpjs.join(',')), nome, btnRelForn, 'Gerando relatório…').then(atualizarBtnRel);
+  });
+  // ---- Mapa de NCM: filtro por situação + busca; as exportações respeitam o filtro ----
+  const ncmFiltrados = ()=>{ const t = normalizaTxt(RT_NCM_BUSCA); return d.ncms.filter(n=>(!RT_NCM_ST.size || RT_NCM_ST.has(n.status)) && (!t || normalizaTxt(`${n.ncm} ${n.descricao} ${n.descricaoOficial||''} ${n.cClassTribs.join(' ')}`).includes(t))); };
+  const renderNcm = ()=>{
+    const cont = {}; d.ncms.forEach(n=>{ cont[n.status] = (cont[n.status]||0)+1; });
+    document.getElementById('rtNcmChips').innerHTML = `<button class="rt-fchip ${RT_NCM_ST.size?'':'on'}" data-st="">Todas <b>${d.ncms.length}</b></button>` +
+      Object.entries(RT_NCM_STATUS).filter(([k])=>cont[k]).map(([k,v])=>`<button class="rt-fchip ${RT_NCM_ST.has(k)?'on':''}" data-st="${k}" style="--c:${v.cor};"><span aria-hidden="true">${v.ic}</span> ${esc(v.label)} <b>${cont[k]}</b></button>`).join('');
+    document.querySelectorAll('#rtNcmChips .rt-fchip').forEach(b=>b.addEventListener('click', ()=>{
+      const st = b.dataset.st; if(!st) RT_NCM_ST.clear(); else RT_NCM_ST.has(st) ? RT_NCM_ST.delete(st) : RT_NCM_ST.add(st); renderNcm();
+    }));
+    document.getElementById('rtNcmTabela').innerHTML = rtNcmHtml(ncmFiltrados());
+  };
+  const nb = document.getElementById('rtNcmBusca');
+  nb.addEventListener('input', ()=>{ RT_NCM_BUSCA = nb.value; renderNcm(); });
+  document.getElementById('rtNcmCsv').addEventListener('click', ()=>{
+    const q = v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"';
+    const linhas = ncmFiltrados().map(n=>[rtNcmFmt(n.ncm), n.descricao, n.descricaoOficial||'', n.cClassTribs.join(' '), (RT_NCM_STATUS[n.status]||{}).label||n.status, n.itens, n.fornecedores, String(n.valor).replace('.',',')].map(q).join(';'));
+    const blob = new Blob(['﻿'+[['NCM','Produto','Descrição TEC','cClassTrib usado','Validação oficial','Itens','Fornecedores','Valor'].map(q).join(';'),...linhas].join('\r\n')], { type:'text/csv;charset=utf-8' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `mapa-ncm-${(d.empresa.nome||'empresa').replace(/[^\w]+/g,'-').slice(0,40)}.csv`; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 2000);
+  });
+  document.getElementById('rtNcmPdf').addEventListener('click', (ev)=>{
+    const u = urlPdf.replace('/auditoria/pdf','/auditoria/ncm-pdf') + '&status=' + encodeURIComponent([...RT_NCM_ST].join(',')) + '&busca=' + encodeURIComponent(RT_NCM_BUSCA);
+    rtBaixar(u, `Mapa NCM - ${(d.empresa.nome||'').slice(0,50)}.pdf`, ev.currentTarget, 'Gerando PDF…');
+  });
+  renderForn(); renderAch(); renderNcm(); atualizarBtnRel();
   const bf = document.getElementById('rtBuscaForn');
   bf.addEventListener('input', ()=>{ RT_BUSCA_FORN = bf.value; renderForn(); });
   const ba = document.getElementById('rtBuscaAch');
@@ -8834,7 +8906,7 @@ function rtLigarPainel(painel, d, urlPdf){
     finally{ btn.disabled = false; btn.textContent = orig; }
   });
 }
-function rtFornecedorDrawer(d, cnpj){
+function rtFornecedorDrawer(d, cnpj, urlPdf){
   const f = d.fornecedores.find(x=>x.cnpj===cnpj);
   if(!f) return;
   const ach = d.achados.filter(a=>a.cnpj===cnpj);
@@ -8849,11 +8921,15 @@ function rtFornecedorDrawer(d, cnpj){
         <div class="rt-kpi rt-kpi-destaque"><div class="rt-kpi-t">Em jogo 2027</div><div class="rt-kpi-v">${rtBRL(f.perda2027Anual)}<span class="rt-kpi-un">/ano</span></div></div>
       </div>
       <div class="rt-reco"><b>Recomendação:</b> ${esc(f.recomendacao)}</div>
-      <div class="row" style="gap:8px; margin:10px 0;"><button class="btn small" id="rtCopiarNotif">✉️ Copiar notificação ao fornecedor</button></div>
+      <div class="row" style="gap:8px; margin:10px 0; flex-wrap:wrap;"><button class="btn small primary" id="rtRelEste">📄 Relatório completo para este fornecedor (PDF)</button><button class="btn small" id="rtCopiarNotif">✉️ Copiar notificação ao fornecedor</button></div>
       <div class="rt-card-t" style="margin-top:6px;">Evidências (${ach.length})</div>
       ${ach.length ? [...porNota.entries()].map(([k, lst])=>`<div style="margin-top:10px;"><div class="rt-mut" style="font-size:12px; margin-bottom:4px;">NF ${esc(lst[0].numero)}${lst[0].serie?'/'+esc(lst[0].serie):''} · ${fmtDateIso(lst[0].dhEmi)} · chave ${esc(lst[0].chave)}</div>${lst.map(a=>rtAchadoHtml(a, false)).join('')}</div>`).join('') : '<div class="empty-state">✔ Nenhum achado para este fornecedor no período.</div>'}
     </div>`);
   document.getElementById('rtFornFechar').addEventListener('click', closeDrawer);
+  document.getElementById('rtRelEste').addEventListener('click', (ev)=>{
+    if(!urlPdf){ toast('Recarregue a tela e tente de novo.','err'); return; }
+    rtBaixar(urlPdf.replace('/auditoria/pdf','/auditoria/fornecedores-pdf')+'&cnpjs='+encodeURIComponent(f.cnpj), `Inconsistencias IBS-CBS - ${f.nome.slice(0,50)}.pdf`, ev.currentTarget, 'Gerando relatório…');
+  });
   document.getElementById('rtCopiarNotif').addEventListener('click', async ()=>{
     const principais = ach.filter(a=>a.severidade==='alta'||a.severidade==='media').slice(0,15);
     const txt = `Prezados, ${f.nome} (CNPJ ${fmtCnpjCpf(f.cnpj)}),\n\nNa auditoria das notas fiscais emitidas para ${d.empresa.nome} (CNPJ ${fmtCnpjCpf(d.empresa.cnpj||'')}), no período de ${fmtDateIso(d.periodo.de)} a ${fmtDateIso(d.periodo.ate)}, identificamos os pontos abaixo no preenchimento do IBS/CBS (NT 2025.002-RTC v1.53 / NT 2026.005):\n\n` +
