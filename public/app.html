@@ -11377,11 +11377,11 @@ async function renderMinhaNfseModelos(){
   const opts = { basePath:'/nfse/minha-empresa/modelos', ctribPath:'/nfse/minha-empresa/ctribnac', nbsPath:'/nfse/minha-empresa/nbs', cclasstribPath:'/nfse/minha-empresa/cclasstrib', aoSalvar:renderMinhaNfseModelos };
   document.getElementById('minhaNfseModelosBody').innerHTML = items.length? items.map(m=>`
     <tr data-id="${m.id}">
-      <td><b>${esc(m.nome)}</b></td>
+      <td><b>${esc(m.nome)}</b>${m.proprio?'':' <span class="tag muted" style="font-size:10.5px;">escritório</span>'}</td>
       <td>${esc(m.codigoTributacaoNacional)}</td>
       <td>${TRIB_ISSQN_LABEL[m.tribIssqn]||m.tribIssqn}</td>
       <td><span class="tag ${m.ativo?'ok':'muted'}">${m.ativo?'Sim':'Não'}</span></td>
-      <td style="text-align:right;"><button class="btn small" data-act="edit">Editar</button></td>
+      <td style="text-align:right;">${m.proprio?'<button class="btn small" data-act="edit">Editar</button>':'<span class="mut" style="font-size:12px;">Definido pelo escritório</span>'}</td>
     </tr>
   `).join('') : `<tr><td colspan="5"><div class="empty-state">Nenhum modelo cadastrado ainda — crie um antes de emitir.</div></td></tr>`;
   document.getElementById('btnNovoMinhaNfseModelo').addEventListener('click', ()=>nfseModeloModal(null, opts));

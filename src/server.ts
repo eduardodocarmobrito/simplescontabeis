@@ -18045,9 +18045,25 @@ app.post("/api/nfse/minha-empresa/certificado", requireCliente, requireModuloAti
   res.json({ ok: true, titular: info.titular, cnpjCertificado: info.cnpjCertificado, validadeAte: validadeIso });
 });
 app.get("/api/nfse/minha-empresa/modelos", requireCliente, requireModuloAtivo('nfse'), (req, res) => {
-  const empresaId = (req as any).user.empresaId;
-  const rows = sqlite.prepare(`SELECT * FROM nfse_modelos WHERE empresa_id = ? ORDER BY nome`).all(empresaId) as any[];
-  res.json({ items: rows.map(nfseModeloParaJson) });
+  const user = (req as any).user;
+  const empresaId = user.empresaId;
+  // Mesma regra do escritório/emissão: mostra o CATÁLOGO do escritório liberado pra esta empresa
+  // (se houver lista de liberados em nfse_empresa_modelos, só esses; senão, todo o catálogo) +
+  // os modelos PRÓPRIOS da empresa. Antes só trazia os próprios (empresa_id = ?), por isso o cliente
+  // não via os modelos que o escritório configurou/liberou pra ele.
+  const escritorioId = user.escritorioId ?? (sqlite.prepare(`SELECT escritorio_id FROM empresas WHERE id = ?`).get(empresaId) as any)?.escritorio_id;
+  const restritos = sqlite.prepare(`SELECT modelo_id FROM nfse_empresa_modelos WHERE empresa_id = ?`).all(empresaId) as any[];
+  let catalogo: any[];
+  if (restritos.length) {
+    const ids = restritos.map((r) => r.modelo_id);
+    const ph = ids.map(() => "?").join(",");
+    catalogo = sqlite.prepare(`SELECT * FROM nfse_modelos WHERE empresa_id IS NULL AND escritorio_id = ? AND id IN (${ph}) ORDER BY nome`).all(escritorioId, ...ids) as any[];
+  } else {
+    catalogo = sqlite.prepare(`SELECT * FROM nfse_modelos WHERE empresa_id IS NULL AND escritorio_id = ? ORDER BY nome`).all(escritorioId) as any[];
+  }
+  const proprios = sqlite.prepare(`SELECT * FROM nfse_modelos WHERE empresa_id = ? ORDER BY nome`).all(empresaId) as any[];
+  const items = [...catalogo, ...proprios].map((r) => ({ ...nfseModeloParaJson(r), proprio: r.empresa_id != null }));
+  res.json({ items });
 });
 app.post("/api/nfse/minha-empresa/modelos", requireCliente, requireModuloAtivo('nfse'), (req, res) => {
   const user = (req as any).user;
