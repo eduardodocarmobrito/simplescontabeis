@@ -8038,9 +8038,17 @@ app.get("/api/open-finance/exportar-dominio", blockCliente, requirePermissao("op
   const emp = sqlite.prepare(`SELECT codigo_dominio, cnpj FROM empresas WHERE id = ?`).get(empresaId) as any;
   if (!emp) return res.status(404).json({ error: "Empresa não encontrada." });
   const m = ofMontarLancamentosDominio(empresaId, comp, contaId);
+  // Acha pedido: nenhuma linha sem conta contábil pode entrar no arquivo — bloqueia o export inteiro em
+  // vez de gerar só com as classificadas e deixar passar batido o resto (risco de lançamento faltando
+  // na contabilidade sem ninguém perceber).
+  if (m.contasSemConta > 0 || m.semBanco > 0 || m.semContrapartida > 0) {
+    const partes: string[] = [];
+    if (m.contasSemConta > 0) partes.push(`${m.contasSemConta} conta(s) bancária(s) sem conta contábil definida (botão ✎ na conta)`);
+    if (m.semContrapartida > 0) partes.push(`${m.semContrapartida} transação(ões) sem conta contábil classificada (conciliar/editar ou Regras)`);
+    return res.status(400).json({ error: `Não é possível gerar o arquivo: ${partes.join("; ")}. Classifique tudo antes de exportar.` });
+  }
   if (!m.lancs.length) {
-    const motivo = m.contasSemConta ? "Defina a conta contábil do banco (botão ✎ na conta) " : "";
-    return res.status(400).json({ error: `${motivo}e classifique a conta contábil das transações (conciliar/editar) antes de gerar o arquivo da Domínio.` });
+    return res.status(400).json({ error: "Nenhum lançamento encontrado nesta competência." });
   }
   // Se o escritório importou o modelo do Domínio, gera EXATAMENTE naquele layout; senão, usa o 0000/6000.
   const layout = ofLayoutDominioSalvo(user.escritorioId);

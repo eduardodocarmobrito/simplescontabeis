@@ -9183,9 +9183,9 @@ async function pageOpenFinance(){
     if($('ofOfx')) $('ofOfx').addEventListener('click', ev=> rtBaixar('/api/open-finance/exportar-ofx?empresaId='+OF_EMPRESA_ID+'&competencia='+OF_COMP+ofContaQS, 'Extrato OFX - '+OF_COMP+'.ofx', ev.currentTarget, 'Gerando OFX…'));
     if($('ofDominio')) $('ofDominio').addEventListener('click', async ev=>{
       try{ const p = await api('/open-finance/dominio-previa?empresaId='+OF_EMPRESA_ID+'&competencia='+OF_COMP+ofContaQS);
-        if(p.contasSemConta>0 && !p.lancamentos){ toast('Defina a conta contábil do banco (botão ✎ na conta) antes de gerar o arquivo da Domínio.','err'); return; }
-        const faltam = p.semContrapartida>0 ? `\n\n${p.semContrapartida} transação(ões) ainda sem conta contábil não entram no arquivo (classifique no ✎ ou em Regras).` : '';
-        if(!confirm(`Gerar o arquivo de lançamentos pra Domínio com ${p.lancamentos} lançamento(s)?${faltam}\n\nLembrete: valide 1 importação no seu Domínio; se recusar o leiaute, me mande o aviso/uma amostra que eu ajusto.`)) return;
+        if(p.contasSemConta>0){ toast('Defina a conta contábil do banco (botão ✎ na conta) antes de gerar o arquivo da Domínio.','err'); return; }
+        if(p.semContrapartida>0){ toast(p.semContrapartida+' transação(ões) ainda sem conta contábil — classifique todas (✎ ou Regras) antes de exportar.','err'); return; }
+        if(!confirm(`Gerar o arquivo de lançamentos pra Domínio com ${p.lancamentos} lançamento(s)?\n\nLembrete: valide 1 importação no seu Domínio; se recusar o leiaute, me mande o aviso/uma amostra que eu ajusto.`)) return;
       }catch(e){ toast(e.message,'err'); return; }
       rtBaixar('/api/open-finance/exportar-dominio?empresaId='+OF_EMPRESA_ID+'&competencia='+OF_COMP+ofContaQS, 'Lancamentos Dominio - '+OF_COMP+'.txt', ev.currentTarget, 'Gerando arquivo…');
     });
