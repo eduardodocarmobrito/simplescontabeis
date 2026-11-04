@@ -1912,7 +1912,10 @@ let NFE_TIPO_SEL = '';
 // o expandido/recolhido só seguia a página atual e clicar de novo no item não tinha efeito (sempre
 // reabria, porque "já estar na página" é justamente a condição que mantém expandido).
 let NAV_FECHADOS = new Set();
-const PAGINAS_CLIENTE_RESTRINGIVEIS = ['minha-nfse','meus-documentos','solicitar-documentos','documentos-recebidos','notas-entrada','minha-reforma','minha-financeiro','minha-assinatura','minha-webdfe'];
+const PAGINAS_CLIENTE_RESTRINGIVEIS = ['minha-nfse','meus-documentos','solicitar-documentos','documentos-recebidos','notas-entrada','minha-reforma','minha-financeiro','minha-assinatura','minha-webdfe','minha-conciliacao'];
+// Páginas que o cliente só vê quando LIBERADAS explicitamente (opt-in) — não entram no "nenhuma
+// marcada = vê todas"; ficam escondidas por padrão até o admin marcar.
+const PAGINAS_CLIENTE_OPTIN = new Set(['minha-conciliacao']);
 const PAGINAS_CLIENTE_TODAS = [
   { id:'minha-nfse', label:'NFS-e' },
   { id:'meus-documentos', label:'Meus Documentos' },
@@ -1923,12 +1926,20 @@ const PAGINAS_CLIENTE_TODAS = [
   { id:'minha-financeiro', label:'Financeiro' },
   { id:'minha-assinatura', label:'Assinatura' },
   { id:'minha-webdfe', label:'Emissor NF-e' },
+  { id:'minha-conciliacao', label:'Conciliação Bancária', optin:true },
 ];
 function podeVerModulo(item){
   if(!item.roles.includes(STATE.user.perfil)) return false;
   if(!item.modulo){
-    if(STATE.user.perfil==='Cliente' && Array.isArray(STATE.paginasCliente) && PAGINAS_CLIENTE_RESTRINGIVEIS.includes(item.id)){
-      return STATE.paginasCliente.includes(item.id);
+    if(STATE.user.perfil==='Cliente'){
+      const marcadas = Array.isArray(STATE.paginasCliente) ? STATE.paginasCliente : [];
+      // Opt-in: só aparece se liberada explicitamente (padrão escondida), independente do resto.
+      if(PAGINAS_CLIENTE_OPTIN.has(item.id)) return marcadas.includes(item.id);
+      if(PAGINAS_CLIENTE_RESTRINGIVEIS.includes(item.id)){
+        // As opt-in marcadas não contam como "restrição" das demais (que seguem "nada marcado = vê todas").
+        const restr = marcadas.filter(id=>!PAGINAS_CLIENTE_OPTIN.has(id));
+        return restr.length ? restr.includes(item.id) : true;
+      }
     }
     return true;
   }
@@ -18848,7 +18859,7 @@ async function usuarioModal(u){
       ${u? `<div style="margin-top:14px;">
         <div style="font-size:12px; font-weight:600; margin-bottom:4px;">Abas visíveis pro cliente</div>
         <p style="font-size:11.5px; color:var(--ink-soft); margin:-2px 0 8px;">Nenhuma marcada = vê todas. Marque só as que esse cliente deve acessar.</p>
-        <div class="checkbox-grid">${PAGINAS_CLIENTE_TODAS.map(p=>`<label class="checkbox-row"><input type="checkbox" class="usPaginaCliente" value="${p.id}"> ${esc(p.label)}</label>`).join('')}</div>
+        <div class="checkbox-grid">${PAGINAS_CLIENTE_TODAS.map(p=>`<label class="checkbox-row"><input type="checkbox" class="usPaginaCliente" value="${p.id}"> ${esc(p.label)}${p.optin?' <span style="color:var(--ink-soft); font-size:10.5px;">(só aparece se marcada)</span>':''}</label>`).join('')}</div>
       </div>` : ''}
     </div>
     ${u? `<label class="checkbox-row"><input type="checkbox" id="usAtivo" ${u.ativo?'checked':''}> Ativo</label>`:''}

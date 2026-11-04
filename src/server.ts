@@ -4407,7 +4407,7 @@ app.put("/api/users/:id/config-abas", requireAdmin, (req, res) => {
   for (const aba of abas) stmt.run(userId, aba);
   res.json({ ok: true });
 });
-const PAGINAS_CLIENTE_VALIDAS = ["minha-nfse", "meus-documentos", "solicitar-documentos", "documentos-recebidos", "minha-financeiro", "minha-assinatura", "notas-entrada", "minha-reforma"];
+const PAGINAS_CLIENTE_VALIDAS = ["minha-nfse", "meus-documentos", "solicitar-documentos", "documentos-recebidos", "minha-financeiro", "minha-assinatura", "notas-entrada", "minha-reforma", "minha-webdfe", "minha-conciliacao"];
 app.get("/api/users/:id/paginas-cliente", requireAdmin, (req, res) => {
   if (!pertenceAoEscritorio(req, Number(req.params.id))) return res.status(404).json({ error: "Usuário não encontrado." });
   const rows = sqlite.prepare(`SELECT pagina FROM cliente_paginas_visiveis WHERE user_id = ?`).all(Number(req.params.id)) as any[];
