@@ -97,21 +97,33 @@ export interface CobrancaAsaas {
   id: string;
   status: string;
   invoiceUrl: string | null;
+  bankSlipUrl: string | null;
 }
-// Cria uma cobrança com billingType PIX — diferente de "UNDEFINED" (que só gera o QR code depois
-// do pagador escolher Pix na fatura hospedada), isso garante o QR code disponível imediatamente
-// via GET /payments/{id}/pixQrCode. A fatura hospedada (invoiceUrl) continua permitindo pagar com
-// cartão normalmente, então não perde a outra forma de pagamento.
+// Cria a cobrança com billingType "UNDEFINED": a fatura hospedada (invoiceUrl) passa a oferecer as
+// TRÊS formas (Pix, boleto e cartão) e o boleto fica disponível via bankSlipUrl/identificationField.
+// O QR code Pix continua acessível imediatamente via GET /payments/{id}/pixQrCode (Asaas gera o Pix
+// para qualquer cobrança que aceite Pix, UNDEFINED incluído) — o server ainda tenta algumas vezes.
 export async function criarCobranca(params: { customerId: string; valor: number; vencimento: string; descricao: string }): Promise<CobrancaAsaas> {
   const r = await chamarAsaas("POST", "/payments", {
     customer: params.customerId,
-    billingType: "PIX",
+    billingType: "UNDEFINED",
     value: params.valor,
     dueDate: params.vencimento,
     description: params.descricao,
   });
   if (!r.ok) throw new Error(`Não consegui gerar a cobrança no Asaas: ${mensagemErroAsaas(r)}`);
-  return { id: r.corpo.id, status: r.corpo.status, invoiceUrl: r.corpo.invoiceUrl || null };
+  return { id: r.corpo.id, status: r.corpo.status, invoiceUrl: r.corpo.invoiceUrl || null, bankSlipUrl: r.corpo.bankSlipUrl || null };
+}
+// Boleto da cobrança: URL do PDF (bankSlipUrl) + linha digitável/código de barras (identificationField).
+export interface BoletoAsaas { bankSlipUrl: string | null; linhaDigitavel: string | null; codigoBarras: string | null; }
+export async function obterBoleto(paymentId: string): Promise<BoletoAsaas> {
+  const pg = await chamarAsaas("GET", `/payments/${encodeURIComponent(paymentId)}`);
+  const bankSlipUrl = pg.ok ? pg.corpo?.bankSlipUrl || null : null;
+  const idf = await chamarAsaas("GET", `/payments/${encodeURIComponent(paymentId)}/identificationField`);
+  const linhaDigitavel = idf.ok ? idf.corpo?.identificationField || null : null;
+  const codigoBarras = idf.ok ? idf.corpo?.barCode || null : null;
+  if (!bankSlipUrl && !linhaDigitavel) throw new Error(`Não consegui obter o boleto: ${mensagemErroAsaas(idf.ok ? pg : idf)}`);
+  return { bankSlipUrl, linhaDigitavel, codigoBarras };
 }
 
 export interface PixQrCode {

@@ -13567,9 +13567,26 @@ async function renderMinhaAssinatura(){
             </div>
           `:''}
           ${r.invoiceUrl?`<div style="text-align:center; margin-top:12px;"><a class="btn primary" href="${esc(r.invoiceUrl)}" target="_blank" rel="noopener">Pagar com cartão de crédito</a></div>`:''}
+          <div style="text-align:center; margin-top:10px;"><button class="btn" id="assinaturaBoletoBtn">🧾 Gerar boleto</button></div>
+          <div id="assinaturaBoletoBox" style="margin-top:12px;"></div>
           <div style="text-align:center; margin-top:12px; font-size:12px; color:var(--ink-soft);">Assim que o pagamento confirmar, o acesso libera sozinho aqui.</div>
         </div>
       `;
+      const btnBoleto = document.getElementById('assinaturaBoletoBtn');
+      if(btnBoleto) btnBoleto.addEventListener('click', async ()=>{
+        btnBoleto.disabled = true; const rotulo = btnBoleto.textContent; btnBoleto.textContent = 'Gerando boleto…';
+        try{
+          const b = await api('/financeiro/minha-empresa/modulos/boleto', { method:'POST', body:{ modulos: chaves } });
+          document.getElementById('assinaturaBoletoBox').innerHTML = `
+            <div style="text-align:center;">
+              ${b.bankSlipUrl?`<a class="btn primary" href="${esc(b.bankSlipUrl)}" target="_blank" rel="noopener">Abrir boleto (PDF)</a>`:''}
+              ${b.linhaDigitavel?`<div style="font-size:12px; color:var(--ink-soft); margin:10px 0 4px;">Linha digitável (copie e cole no app do banco)</div>
+                <input readonly value="${esc(b.linhaDigitavel)}" class="inp" style="width:100%; font-family:'IBM Plex Mono',monospace; font-size:11px; text-align:center;" onclick="this.select()">`:''}
+              ${!b.bankSlipUrl&&!b.linhaDigitavel?'<div class="mut" style="font-size:12px;">O boleto ainda está sendo registrado no banco — tente de novo em alguns segundos.</div>':''}
+            </div>`;
+          if(b.bankSlipUrl||b.linhaDigitavel){ btnBoleto.style.display='none'; } else { btnBoleto.disabled=false; btnBoleto.textContent=rotulo; }
+        }catch(e){ toast(e.message,'err'); btnBoleto.disabled=false; btnBoleto.textContent=rotulo; }
+      });
       ASSINATURA_POLL = setInterval(async ()=>{
         try{
           const { items: atualizados } = await api('/financeiro/minha-empresa/modulos');

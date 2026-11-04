@@ -21096,6 +21096,26 @@ app.post("/api/financeiro/minha-empresa/modulos/pagar", requireCliente, async (r
     res.status(502).json({ error: e.message });
   }
 });
+// Boleto da cobrança pendente (gerada pelo /pagar): devolve a URL do PDF + a linha digitável.
+app.post("/api/financeiro/minha-empresa/modulos/boleto", requireCliente, async (req, res) => {
+  const empresaId = (req as any).user.empresaId;
+  const chaves: string[] = Array.isArray(req.body?.modulos) ? req.body.modulos : [];
+  const pendentes = sqlite.prepare(`SELECT * FROM financeiro_licenca_cobrancas WHERE empresa_id = ? AND status = 'pendente' ORDER BY id DESC`).all(empresaId) as any[];
+  let cobranca = chaves.length
+    ? pendentes.find((c) => {
+        const itens = sqlite.prepare(`SELECT modulo_chave FROM financeiro_licenca_cobranca_itens WHERE cobranca_id = ?`).all(c.id) as any[];
+        return itens.map((i) => i.modulo_chave).sort().join(",") === [...chaves].sort().join(",");
+      })
+    : pendentes[0];
+  if (!cobranca) cobranca = pendentes[0];
+  if (!cobranca || !cobranca.asaas_payment_id) return res.status(400).json({ error: "Gere o pagamento primeiro (clique em Pagar agora)." });
+  try {
+    const boleto = await asaas.obterBoleto(cobranca.asaas_payment_id);
+    res.json(boleto);
+  } catch (e: any) {
+    res.status(502).json({ error: e.message });
+  }
+});
 
 // ---------- Módulos da plataforma que o próprio escritório-cliente contrata (não confundir com o
 // catálogo acima, que o escritório vende PRA empresa-cliente dele) ----------
