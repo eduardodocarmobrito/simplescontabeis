@@ -12211,14 +12211,17 @@ function nfeChaveNumeroSerie(chave: string | null): { numero: string; serie: str
 function nfePainelPerfilHtmlRelatorio(dash: ReturnType<typeof nfeCalcularDashboard>): string {
   const pf = dash.perfil;
   const pct = (n: number) => (pf.totalNotas ? Math.round((n / pf.totalNotas) * 100) : 0);
+  // flex (não inline-block) pros quadrinhos — achado ao vivo 2026-11-05: com inline-block+width:31% o
+  // motor de PDF deixava sobrar espaço vazio enorme entre os quadros (só 2 cabiam por linha em vez de
+  // 3), com o 3º quebrando pra linha de baixo sozinho. flex:0 0 31% + flex-wrap no container é estável.
   const item = (ic: string, label: string, val: number, cor: string) => {
     const p = pct(val);
-    return `<div style="border:1px solid #ddd; border-radius:5px; padding:4px 6px; margin:3px 4px 3px 0; display:inline-block; width:31%; vertical-align:top;">
+    return `<div style="box-sizing:border-box; flex:0 0 31%; border:1px solid #ddd; border-radius:5px; padding:4px 6px;">
       <div style="font-size:8px; display:flex;"><span style="flex:1;">${ic} ${escHtmlRelatorio(label)}</span><b>${val}</b>&nbsp;<span style="color:#888;">${p}%</span></div>
       <div style="background:#eee; border-radius:3px; height:4px; overflow:hidden; margin-top:3px;"><div style="width:${p}%; height:100%; background:${cor};"></div></div>
     </div>`;
   };
-  const grupo = (titulo: string, cor: string, itens: string) => `<div style="margin-top:6px;"><div style="font-size:7.5px; font-weight:bold; color:${cor}; text-transform:uppercase;">${escHtmlRelatorio(titulo)}</div>${itens}</div>`;
+  const grupo = (titulo: string, cor: string, itens: string) => `<div style="margin-top:6px;"><div style="font-size:7.5px; font-weight:bold; color:${cor}; text-transform:uppercase; margin-bottom:3px;">${escHtmlRelatorio(titulo)}</div><div style="display:flex; flex-wrap:wrap; gap:4px;">${itens}</div></div>`;
   return `<div style="font-weight:bold; font-size:10px; margin-bottom:6px;">🏷️ Perfil das Notas</div>
     <div style="font-size:8.5px; margin-bottom:4px;"><b style="font-size:13px;">${pf.comFlags}</b> NF-e com flags &nbsp;·&nbsp; <b style="font-size:13px;">${pf.itensPorNota.toFixed(1).replace(".", ",")}</b> itens/nota</div>
     ${grupo("Produtos especiais", "#dc2626", item("💊", "Medicamento", pf.produtos.medicamento, "#dc2626") + item("⛽", "Combustível", pf.produtos.combustivel, "#dc2626") + item("🔖", "Rastreável", pf.produtos.rastreavel, "#dc2626"))}
