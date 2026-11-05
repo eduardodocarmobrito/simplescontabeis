@@ -11722,13 +11722,23 @@ async function renderMinhaNfseEmitir(){
   });
 }
 let MINHA_NFSE_SELECIONADAS = new Set();
-let MINHA_NFSE_NOTAS_FILTRO = { dataDe:'', dataAte:'' };
+let MINHA_NFSE_NOTAS_FILTRO = { dataDe:'', dataAte:'', status:'emitida' };
+const MNF_NOTAS_STATUS_OPCOES = [
+  {id:'emitida', label:'Emitida'},
+  {id:'todas', label:'Todas'},
+  {id:'pendente', label:'Pendente'},
+  {id:'rejeitada', label:'Rejeitada'},
+  {id:'erro', label:'Erro'},
+  {id:'rascunho', label:'Rascunho'},
+  {id:'cancelada', label:'Cancelada'},
+];
 async function renderMinhaNfseNotas(){
-  const { dataDe, dataAte } = MINHA_NFSE_NOTAS_FILTRO;
+  const { dataDe, dataAte, status } = MINHA_NFSE_NOTAS_FILTRO;
   const qs = new URLSearchParams();
   if(dataDe) qs.set('dataDe', dataDe);
   if(dataAte) qs.set('dataAte', dataAte);
-  const { items } = await api('/nfse/minha-empresa/emissoes'+(qs.toString()?'?'+qs.toString():''));
+  const { items: todas } = await api('/nfse/minha-empresa/emissoes'+(qs.toString()?'?'+qs.toString():''));
+  const items = status && status!=='todas' ? todas.filter(n=>n.status===status) : todas;
   MINHA_NFSE_SELECIONADAS = new Set([...MINHA_NFSE_SELECIONADAS].filter(id=>items.some(i=>i.id===id)));
   const box = document.getElementById('nfseContent');
   const STATUS_LABEL={emitida:'Emitida',pendente:'Pendente',rejeitada:'Rejeitada',erro:'Erro',rascunho:'Rascunho',cancelada:'Cancelada'};
@@ -11736,6 +11746,7 @@ async function renderMinhaNfseNotas(){
     <div class="row" style="margin-bottom:12px; align-items:flex-end;">
       ${dateFieldHtml('mnfNotasDe','De',dataDe)}
       ${dateFieldHtml('mnfNotasAte','Até',dataAte)}
+      <div class="field" style="margin-bottom:0; width:160px;"><label>Status</label>${comboSelectHtml('mnfNotasStatusCombo')}</div>
       <div id="mnfNotasLoteBar" style="margin-bottom:2px;"></div>
     </div>
     <div class="card" style="padding:0; overflow-x:auto;">
@@ -11760,7 +11771,7 @@ async function renderMinhaNfseNotas(){
                 ${n.status==='emitida'?`<button class="btn small" data-id="${n.id}" data-act="cancelar" style="color:var(--debit);">Cancelar</button>`:''}
               </td>
             </tr>
-          `).join('') : `<tr><td colspan="9"><div class="empty-state">Nenhuma emissão neste período.</div></td></tr>`}
+          `).join('') : `<tr><td colspan="9"><div class="empty-state">Nenhuma emissão neste período${status&&status!=='todas'?' com status "'+(STATUS_LABEL[status]||status)+'"':''}.</div></td></tr>`}
         </tbody>
       </table>
     </div>
@@ -11769,6 +11780,12 @@ async function renderMinhaNfseNotas(){
   setupDatePicker('mnfNotasAte','mnfNotasAte_text');
   document.getElementById('mnfNotasDe').addEventListener('change', e=>{ MINHA_NFSE_NOTAS_FILTRO.dataDe = e.target.value; renderMinhaNfseNotas(); });
   document.getElementById('mnfNotasAte').addEventListener('change', e=>{ MINHA_NFSE_NOTAS_FILTRO.dataAte = e.target.value; renderMinhaNfseNotas(); });
+  setupComboSelect('mnfNotasStatusCombo', MNF_NOTAS_STATUS_OPCOES, (id)=>{ MINHA_NFSE_NOTAS_FILTRO.status = id || 'todas'; renderMinhaNfseNotas(); });
+  {
+    const atual = MNF_NOTAS_STATUS_OPCOES.find(o=>o.id===status) || MNF_NOTAS_STATUS_OPCOES[0];
+    document.querySelector('#mnfNotasStatusCombo .combo-value').value = atual.id;
+    document.querySelector('#mnfNotasStatusCombo .combo-input').value = atual.label;
+  }
   function desenhaLoteBar(){
     const bar = document.getElementById('mnfNotasLoteBar');
     const qtd = MINHA_NFSE_SELECIONADAS.size;
