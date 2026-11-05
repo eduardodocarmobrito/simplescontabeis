@@ -11541,12 +11541,16 @@ function reformaCalcularAuditoria(escritorioId: number, empresaId: number, de: s
     ms.ibs += nt.itens.reduce((a, i) => a + (i.uf?.v || 0) + (i.mun?.v || 0), 0);
     ms.cbs += nt.itens.reduce((a, i) => a + (i.cbs?.v || 0), 0);
     mesMap.set(mk, ms);
-    const f = fornMap.get(parte.cnpj) || { cnpj: parte.cnpj, nome: parte.nome, uf: parte.uf, regime: regimeParte, notas: 0, notasComGrupo: 0, itens: 0, itensConformes: 0, valor: 0, alta: 0, media: 0, baixa: 0, creditoDestacado: 0, risco: 0, referencia2027: 0, aproveitavel2027: 0, regras: new Set<string>(), ultimaEmissao: "" };
+    const f = fornMap.get(parte.cnpj) || { cnpj: parte.cnpj, nome: parte.nome, uf: parte.uf, regime: regimeParte, notas: 0, notasComGrupo: 0, itens: 0, itensConformes: 0, valor: 0, alta: 0, media: 0, baixa: 0, creditoDestacado: 0, risco: 0, referencia2027: 0, aproveitavel2027: 0, regras: new Set<string>(), ultimaEmissao: "", ultimaNotaDocId: null as number | null, ultimaNotaNumero: "", ultimaNotaSerie: "", ultimaNotaValor: 0 };
     f.notas++; f.itens += nt.itens.length; f.itensConformes += r.itensConformes; f.valor += valor;
     if (nt.itens.some((i) => i.temIBSCBS)) f.notasComGrupo++;
     if (saida) f.creditoDestacado += nt.itens.reduce((a, i) => a + (i.uf?.v || 0) + (i.mun?.v || 0) + (i.cbs?.v || 0), 0); // IBS/CBS destacado nas vendas
     else { f.creditoDestacado += r.credito.aproveitavel; f.risco += r.credito.risco; f.referencia2027 += r.credito.referencia2027; f.aproveitavel2027 += r.credito.aproveitavel2027; }
-    if (nt.dhEmi > f.ultimaEmissao) { f.ultimaEmissao = nt.dhEmi; f.regime = regimeParte; }
+    // Guarda a NF-e mais recente deste fornecedor (independente de ter achado/regra violada) — usada
+    // pela ficha de conferência pré-preenchida como referência, quando não há nenhum achado específico
+    // pra puxar o número/data/valor (achado ao vivo 2026-11-05: fornecedor MEI sem nenhuma regra violada
+    // — a maioria dos itens do checklist é N/A pra MEI — ficava com NF-e/Emissão/Valor em branco).
+    if (nt.dhEmi > f.ultimaEmissao) { f.ultimaEmissao = nt.dhEmi; f.regime = regimeParte; f.ultimaNotaDocId = nt.docId; f.ultimaNotaNumero = nt.numero; f.ultimaNotaSerie = nt.serie; f.ultimaNotaValor = valor; }
     for (const a of r.achados) {
       if (a.severidade === "alta") f.alta++; else if (a.severidade === "media") f.media++; else if (a.severidade === "baixa") f.baixa++;
       f.regras.add(a.regra);
@@ -11600,6 +11604,7 @@ function reformaCalcularAuditoria(escritorioId: number, empresaId: number, de: s
       notas: f.notas, itens: f.itens, valor: r2(f.valor), pctComGrupo: f.notas ? Math.round((f.notasComGrupo / f.notas) * 100) : 0,
       alta: f.alta, media: f.media, baixa: f.baixa, score, status: score >= 90 && !f.alta ? "conforme" : score >= 70 ? "atencao" : "critico",
       creditoDestacado: r2(f.creditoDestacado), risco: r2(f.risco), perda2027Anual, regras: [...f.regras], recomendacao: recomendacao(f, perda2027Anual),
+      ultimaNota: f.ultimaNotaDocId ? { docId: f.ultimaNotaDocId, numero: f.ultimaNotaNumero, serie: f.ultimaNotaSerie, dhEmi: f.ultimaEmissao, valor: r2(f.ultimaNotaValor) } : null,
     };
   }).sort((a, b) => b.perda2027Anual - a.perda2027Anual || b.alta - a.alta || b.valor - a.valor);
   const ncms = [...ncmMap.values()].map((nn) => ({
@@ -11688,10 +11693,14 @@ async function reformaEnviarFichas(res: any, escritorioId: number, empresaId: nu
         const achados = d.achados.filter((a: any) => a.cnpj === f.cnpj);
         const principal = [...achados].sort((a: any, b: any) => sev[a.severidade] - sev[b.severidade] || String(b.dhEmi).localeCompare(String(a.dhEmi)))[0];
         const v = principal ? (valorDoc.get(principal.docId) as any) : null;
+        // Sem achado específico (ex.: MEI, onde a maioria das regras é N/A) — usa a NF-e mais recente
+        // do fornecedor como referência, pra NF-e/Emissão/Valor não ficarem em branco na ficha.
+        const nota = principal
+          ? { numero: principal.numero, serie: principal.serie, dhEmi: principal.dhEmi, valor: v ? v.valor_total : null }
+          : f.ultimaNota ? { numero: f.ultimaNota.numero, serie: f.ultimaNota.serie, dhEmi: f.ultimaNota.dhEmi, valor: f.ultimaNota.valor } : null;
         return {
           cnpj: f.cnpj, nome: f.nome, uf: f.uf, regime: f.regime, regimeLabel: f.regimeLabel, recomendacao: f.recomendacao,
-          nota: principal ? { numero: principal.numero, serie: principal.serie, dhEmi: principal.dhEmi, valor: v ? v.valor_total : null } : null,
-          temGrupo: f.pctComGrupo > 0, achados,
+          nota, temGrupo: f.pctComGrupo > 0, achados,
         };
       });
     const pdf = await gerarPdfFichasReforma({ nome: emp.nome, cnpj: emp.cnpj, ie: emp.inscricao_estadual || "", regimeLabel: d.empresa.regimeLabel }, fichas, contratos.timbradoDataUri());
