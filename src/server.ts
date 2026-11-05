@@ -23301,9 +23301,14 @@ app.get("/api/relatorios/retencoes", blockCliente, requirePermissao("relatorios"
 function listarEmpresasComRetencoes(user: any, dataDe: string, dataAte: string) {
   const visiveis = empresasVisiveis(user);
   if (visiveis !== null && visiveis.length === 0) return [];
+  // d.destinatario_cnpj = CNPJ da própria empresa: precisa ser TOMADORA da nota (quem reteve o
+  // imposto do prestador) — achado ao vivo 2026-11-05, essa condição faltava aqui (só existia na
+  // consulta do detalhe, calcularRetencoesNfse) e a grade contava também o sentido oposto (nota em
+  // que a empresa foi PRESTADORA e teve imposto retido DELA), que não pertence a este relatório.
   let sql = `SELECT d.empresa_id as empresaId, e.nome as empresaNome, d.xml
              FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id
              WHERE d.escritorio_id = ? AND d.fonte = 'nfse' AND e.ativo = 1
+               AND d.destinatario_cnpj = REPLACE(REPLACE(REPLACE(e.cnpj,'.',''),'/',''),'-','')
                AND ${competenciaSql("d")} >= ? AND ${competenciaSql("d")} <= ?`;
   const params: any[] = [user.escritorioId, dataDe, dataAte];
   if (visiveis !== null) {
