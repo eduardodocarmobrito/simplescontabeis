@@ -9527,14 +9527,16 @@ function rtLigarFiltroPeriodo(onChange){
 async function reformaMontar(painel, urlApi, urlPdf, silencioso){
   const seq = ++RT_SEQ;
   const paginaAtual = STATE.page;
-  if(!silencioso) painel.innerHTML = `<div class="card"><div class="empty-state">⚖️ Auditando as notas de entrada — lendo cada XML item a item…</div></div>`;
+  const direcaoRotulo = RT_ABA==='saidas' ? 'saída' : 'entrada';
+  if(!silencioso) painel.innerHTML = `<div class="card"><div class="empty-state">⚖️ Auditando as notas de ${direcaoRotulo} — lendo cada XML item a item…</div></div>`;
   let d;
   try{ d = await api(urlApi); }
   catch(e){ if(seq===RT_SEQ) painel.innerHTML = `<div class="card"><div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div></div>`; return; }
   if(seq!==RT_SEQ || STATE.page!==paginaAtual) return;
   const k = d.kpis;
   if(!k.notas){
-    painel.innerHTML = `<div class="card"><div class="empty-state">Nenhuma NF-e de entrada no período para <b>${esc(d.empresa.nome)}</b>. As notas chegam pela Busca de XML (certificado da empresa configurado).</div></div>`;
+    const direcaoReal = d.direcao==='saida' ? 'saída' : 'entrada';
+    painel.innerHTML = `<div class="card"><div class="empty-state">Nenhuma NF-e de ${direcaoReal} no período para <b>${esc(d.empresa.nome)}</b>. As notas chegam pela Busca de XML (certificado da empresa configurado).</div></div>`;
     return;
   }
   // Lembra filtros/scroll quando o painel se atualiza sozinho (validação oficial em andamento).
