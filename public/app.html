@@ -1307,15 +1307,6 @@ function empresaCodigoMatrizFilialHtml(empresaId, nome){
   const pref = cod ? `<span style="color:var(--ink-soft); font-weight:600; margin-right:8px;">${esc(cod)}</span>` : '';
   return pref + `<b>${esc(nome)}</b>` + matrizFilialHtmlPorId(empresaId);
 }
-// Aviso pra empresa cadastrada com CPF (produtor rural/empregador doméstico) nas telas de DCTF-Web/Folha
-// (e-CAC): a consulta automática já mostrou resultado errado nesse caso específico (declaração ativa
-// via eSocial não detectada) — achado ao vivo 2026-11-05. Não dá pra saber via código se o resultado
-// automático está certo ou errado pra essa competência, então só avisa pra conferir no e-CAC de verdade
-// antes de cobrar o cliente — não esconde nem assume confiável.
-function avisoCpfHtml(cnpj){
-  if(String(cnpj||'').replace(/\D/g,'').length!==11) return '';
-  return ` <span style="cursor:help; color:var(--ink-soft);" title="Empresa cadastrada por CPF — a consulta automática ao e-CAC às vezes não pega corretamente declarações transmitidas via eSocial pra esse tipo de contribuinte. Confira no e-CAC de verdade antes de cobrar o cliente.">⚠️</span>`;
-}
 // Matriz/Filial a partir do CNPJ (dígitos 9-12 = ordem da filial; "0001" = matriz, o resto é filial).
 // Serve pra distinguir empresas de mesmo nome na mesma raiz (ex.: 4x "RAIZES AGRO LTDA"). Vazio para
 // CPF/produtor rural (sem conceito de filial) ou CNPJ inválido.
@@ -3567,7 +3558,7 @@ function cardDetalheModal(c){
             <span id="obrCardEcacMsg" style="font-size:12px; color:var(--ink-soft);">${naoConsultadas?`${naoConsultadas} competência(s) ainda <b>nunca consultada(s)</b> no e-CAC (cinza). `:''}Aqui aparecem só as competências <b>confirmadas como não entregues</b> no e-CAC. As ainda não consultadas não aparecem — a rotina da Agenda e-CAC consulta sozinha, ou use este botão.</span>
           </div>`:''}<div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">${tipo==='dctfweb_nao_entregue'?'Entregue = DCTF-Web da competência <b>Ativa</b> no e-CAC':'Fechada = DCTF-Web da competência <b>Ativa com origem eSocial</b> no e-CAC'} (consulta pelo Integra Contador — Agenda e-CAC ou "Validar no e-CAC"). A competência passa a pendenciar no dia 03 do mês seguinte. Clique numa competência para abrir o quadro.</div>
           <table class="data-table"><thead><tr><th>Empresa</th><th>Competências em aberto</th></tr></thead><tbody>
-          ${items.map(i=>`<tr><td>${empresaCodigoMatrizFilialHtml(i.empresaId, i.empresaNome)}${avisoCpfHtml(i.cnpj)}</td><td>${i.competencias.map(cp=>`<span class="tag ${cp.erro?'warn':cp.naoConsultada?'muted':'bad'} obr-card-comp" data-comp="${esc(cp.competencia)}" data-nome="${esc(i.empresaNome)}" title="${esc(cp.situacao)}" style="margin:2px 6px 2px 0; display:inline-block; cursor:pointer;">${cp.erro?'⚠ ':''}${esc(cp.rotulo)}</span>`).join('')}</td></tr>`).join('')}
+          ${items.map(i=>`<tr><td>${empresaCodigoMatrizFilialHtml(i.empresaId, i.empresaNome)}</td><td>${i.competencias.map(cp=>`<span class="tag ${cp.erro?'warn':cp.naoConsultada?'muted':'bad'} obr-card-comp" data-comp="${esc(cp.competencia)}" data-nome="${esc(i.empresaNome)}" title="${esc(cp.situacao)}" style="margin:2px 6px 2px 0; display:inline-block; cursor:pointer;">${cp.erro?'⚠ ':''}${esc(cp.rotulo)}</span>`).join('')}</td></tr>`).join('')}
         </tbody></table>`;
         const bEcac = document.getElementById('obrCardEcac');
         if(bEcac) api('/obrigacoes/dctfweb-validar-pendentes', { method:'POST', body:{ previa:true, soNaoConsultadas:true } }).then(pv=>{
@@ -18479,7 +18470,7 @@ async function obrigacoesMontar(box, setor){
         ${!linhas.length?`<div class="empty-state" style="padding:14px;">Nenhuma empresa neste filtro.</div>`:''}
         <div style="overflow-x:auto;${!linhas.length?' display:none;':''}"><table class="data-table"><thead><tr><th>Empresa</th><th>Transmitida</th><th>Enviada ao cliente</th></tr></thead><tbody>
         ${linhas.map(l=>`<tr data-emp="${l.empresaId}" data-ob="${l.obrigacao}">
-          <td class="obr-det" style="cursor:pointer;" title="Ver o que foi enviado (notas/documentos, e-mail e WhatsApp)">${empresaCodigoMatrizFilialHtml(l.empresaId, l.empresaNome)}${(ob.fonte==='dctfweb'||ob.transmissaoEsocial)?avisoCpfHtml(l.cnpj):''} <span style="font-size:11px; color:var(--accent-deep);">🔎 detalhe</span></td>
+          <td class="obr-det" style="cursor:pointer;" title="Ver o que foi enviado (notas/documentos, e-mail e WhatsApp)">${empresaCodigoMatrizFilialHtml(l.empresaId, l.empresaNome)} <span style="font-size:11px; color:var(--accent-deep);">🔎 detalhe</span></td>
           <td>${badge(l.transmitida, l.transmitidaManual, l.atrasoTransmissao, 'transmitida', sitDica(l, ob))}${obrEcacErro(l)?` <span class="tag warn obrErroTag" style="cursor:pointer;" title="${esc(obrEcacErroAmigavel(obrEcacErro(l)).titulo)} — clique para ver o detalhe">⚠ ${esc(obrEcacErroAmigavel(obrEcacErro(l)).titulo)}</span>`:''}</td>
           <td>${badge(l.enviada, l.enviadaManual, l.atrasoEnvio, 'enviada')}</td>
         </tr>`).join('')}
