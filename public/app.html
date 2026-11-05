@@ -8108,14 +8108,15 @@ async function nfseModeloModal(m, opts){
     const wrap = document.getElementById('nmExigSuspensaWrap');
     if(!document.getElementById('nmExigSuspensa').checked){ wrap.innerHTML=''; return; }
     wrap.innerHTML = `
-      <div class="field grow"><label>Motivo</label>
-        <select id="nmMotivoSuspensao">
-          <option value="1" ${(!m||m.issqnMotivoSuspensao!==2)?'selected':''}>Decisão judicial</option>
-          <option value="2" ${m&&m.issqnMotivoSuspensao===2?'selected':''}>Processo administrativo</option>
-        </select>
-      </div>
+      <div class="field grow"><label>Motivo</label>${comboSelectHtml('nmMotivoSuspensaoCombo', 'Digite para buscar…')}</div>
       <div class="field grow"><label>Número do processo</label><input id="nmNumeroProcesso" value="${m&&m.issqnNumeroProcesso?esc(m.issqnNumeroProcesso):''}"></div>
     `;
+    const motivos = [{id:'1',label:'Decisão judicial'},{id:'2',label:'Processo administrativo'}];
+    setupComboSelect('nmMotivoSuspensaoCombo', motivos, ()=>{});
+    const motivo = (m && m.issqnMotivoSuspensao===2) ? motivos[1] : motivos[0];
+    const motivoCombo = document.getElementById('nmMotivoSuspensaoCombo');
+    motivoCombo.querySelector('.combo-value').value = motivo.id;
+    motivoCombo.querySelector('.combo-input').value = motivo.label;
   }
   desenhaExigSuspensaWrap();
   document.getElementById('nmExigSuspensa').addEventListener('change', desenhaExigSuspensaWrap);
@@ -8167,7 +8168,7 @@ async function nfseModeloModal(m, opts){
       aliquotaIssqn: document.getElementById('nmAliquota').value,
       tipoRetencaoPisCofins: nmComboVal('nmRetPisCofinsCombo'),
       issqnExigibilidadeSuspensa: document.getElementById('nmExigSuspensa').checked,
-      issqnMotivoSuspensao: document.getElementById('nmExigSuspensa').checked ? Number(document.getElementById('nmMotivoSuspensao').value) : '',
+      issqnMotivoSuspensao: document.getElementById('nmExigSuspensa').checked ? Number(document.querySelector('#nmMotivoSuspensaoCombo .combo-value').value || 1) : '',
       issqnNumeroProcesso: document.getElementById('nmExigSuspensa').checked ? document.getElementById('nmNumeroProcesso').value.trim() : '',
       beneficioMunicipalCodigo: document.getElementById('nmBeneficioMunicipal').value.trim(),
       pisCofinsCst: (nmComboVal('nmPisCofinsCstCombo') || '00'),
