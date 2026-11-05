@@ -11583,7 +11583,7 @@ async function renderMinhaNfseEmitir(){
   box.innerHTML = `
     <div class="card">
       <div class="field"><label>Modelo de serviço</label>
-        <select id="mnfEmiModelo">${modelosAtivos.map(m=>`<option value="${m.id}">${esc(m.nome)}</option>`).join('')}</select>
+        ${comboSelectHtml('mnfEmiModeloCombo', 'Digite para buscar…')}
       </div>
       <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Tomador do serviço</div>
       <div class="row">
@@ -11621,9 +11621,19 @@ async function renderMinhaNfseEmitir(){
     </div>
   `;
   setupDatePicker('mnfEmiCompetencia','mnfEmiCompetencia_text');
+  // Combo padrão do site (busca) no lugar do <select> nativo — mesmo visual dos outros campos.
+  const itensModelo = modelosAtivos.map(m=>({id:m.id, label:m.nome}));
+  const setModelo=(val)=>{
+    const combo = document.getElementById('mnfEmiModeloCombo');
+    const item = itensModelo.find(it=>it.id===val);
+    combo.querySelector('.combo-input').value = item ? item.label : '';
+    combo.querySelector('.combo-value').value = item ? item.id : '';
+  };
+  setupComboSelect('mnfEmiModeloCombo', itensModelo, ()=>{});
+  setModelo(itensModelo[0]?.id ?? null);
   if(prefill){
     const setVal=(id,v)=>{ const el=document.getElementById(id); if(el && v!=null) el.value=v; };
-    setVal('mnfEmiModelo', prefill.modeloId);
+    if(prefill.modeloId!=null) setModelo(Number(prefill.modeloId));
     setVal('mnfEmiNomeTomador', prefill.tomadorNome);
     setVal('mnfEmiEmailTomador', prefill.tomadorEmail);
     setVal('mnfEmiTelTomador', prefill.tomadorTelefone);
@@ -11692,7 +11702,7 @@ async function renderMinhaNfseEmitir(){
   });
   function lerFormulario(){
     return {
-      modeloId: Number(document.getElementById('mnfEmiModelo').value),
+      modeloId: Number(document.querySelector('#mnfEmiModeloCombo .combo-value').value),
       tomador: {
         documento: document.getElementById('mnfEmiDocTomador').value.replace(/[^0-9]/g,''),
         nome: document.getElementById('mnfEmiNomeTomador').value.trim(),
