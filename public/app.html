@@ -8035,28 +8035,12 @@ async function nfseModeloModal(m, opts){
     </div>
     <p style="font-size:11.5px; color:var(--ink-soft); margin:2px 0 10px;">O portal oficial do governo trata esse campo como obrigatório na prática.</p>
     <div class="row">
-      <div class="field grow"><label>Tributação do ISSQN</label>
-        <select id="nmTribIssqn">
-          <option value="1" ${(!m||m.tribIssqn===1)?'selected':''}>Operação tributável</option>
-          <option value="2" ${m&&m.tribIssqn===2?'selected':''}>Imunidade</option>
-          <option value="3" ${m&&m.tribIssqn===3?'selected':''}>Exportação de serviço</option>
-          <option value="4" ${m&&m.tribIssqn===4?'selected':''}>Não incidência</option>
-        </select>
+      <div class="field grow"><label>Tributação do ISSQN</label>${comboSelectHtml('nmTribIssqnCombo', 'Digite para buscar…')}
       </div>
-      <div class="field grow"><label>Retenção do ISSQN</label>
-        <select id="nmRetIssqn">
-          <option value="1" ${(!m||m.tipoRetencaoIssqn===1)?'selected':''}>Não retido</option>
-          <option value="2" ${m&&m.tipoRetencaoIssqn===2?'selected':''}>Retido pelo tomador</option>
-          <option value="3" ${m&&m.tipoRetencaoIssqn===3?'selected':''}>Retido pelo intermediário</option>
-        </select>
+      <div class="field grow"><label>Retenção do ISSQN</label>${comboSelectHtml('nmRetIssqnCombo', 'Digite para buscar…')}
       </div>
       <div class="field" style="width:170px;"><label>Alíquota ISSQN % (opcional)</label><input id="nmAliquota" type="number" step="0.01" min="0" value="${m&&m.aliquotaIssqn!=null?m.aliquotaIssqn:''}"></div>
-      <div class="field grow"><label>Retenção de PIS/COFINS</label>
-        <select id="nmRetPisCofins">
-          <option value="">Não informar</option>
-          <option value="1" ${m&&m.tipoRetencaoPisCofins===1?'selected':''}>PIS/COFINS retido</option>
-          <option value="2" ${m&&m.tipoRetencaoPisCofins===2?'selected':''}>PIS/COFINS não retido</option>
-        </select>
+      <div class="field grow"><label>Retenção de PIS/COFINS</label>${comboSelectHtml('nmRetPisCofinsCombo', 'Digite para buscar…')}
       </div>
     </div>
 
@@ -8069,15 +8053,7 @@ async function nfseModeloModal(m, opts){
 
     <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Tributação Federal — retenções (% sobre o valor do serviço)</div>
     <div class="row">
-      <div class="field" style="width:200px;"><label>CST do PIS/COFINS</label>
-        <select id="nmPisCofinsCst">
-          <option value="00" ${(!m||m.pisCofinsCst==='00'||!m.pisCofinsCst)?'selected':''}>00 - Nenhum</option>
-          <option value="01" ${m&&m.pisCofinsCst==='01'?'selected':''}>01 - Tributável alíquota básica</option>
-          <option value="04" ${m&&m.pisCofinsCst==='04'?'selected':''}>04 - Monofásica revenda alíquota zero</option>
-          <option value="06" ${m&&m.pisCofinsCst==='06'?'selected':''}>06 - Tributável alíquota zero</option>
-          <option value="08" ${m&&m.pisCofinsCst==='08'?'selected':''}>08 - Sem incidência da contribuição</option>
-          <option value="09" ${m&&m.pisCofinsCst==='09'?'selected':''}>09 - Suspensão da contribuição</option>
-        </select>
+      <div class="field" style="width:200px;"><label>CST do PIS/COFINS</label>${comboSelectHtml('nmPisCofinsCstCombo', 'Digite para buscar…')}
       </div>
       <div class="field" style="width:105px;"><label>IRRF %</label><input id="nmPctIrrf" type="number" step="0.01" min="0" value="${m&&m.percentualIrrf!=null?m.percentualIrrf:''}"></div>
       <div class="field" style="width:105px;"><label>CSLL %</label><input id="nmPctCsll" type="number" step="0.01" min="0" value="${m&&m.percentualCsll!=null?m.percentualCsll:''}"></div>
@@ -8107,6 +8083,27 @@ async function nfseModeloModal(m, opts){
   `, '960px');
   setupComboSelect('nmCTribNacCombo', ctribItens, ()=>{});
   setupComboSelect('nmNbsCombo', nbsItens, ()=>{});
+  // Combos padrão do site no lugar dos <select> nativos (tributação/retenções/CST).
+  const NM_OPCOES = {
+    nmTribIssqnCombo: [{id:'1',label:'Operação tributável'},{id:'2',label:'Imunidade'},{id:'3',label:'Exportação de serviço'},{id:'4',label:'Não incidência'}],
+    nmRetIssqnCombo: [{id:'1',label:'Não retido'},{id:'2',label:'Retido pelo tomador'},{id:'3',label:'Retido pelo intermediário'}],
+    nmRetPisCofinsCombo: [{id:'',label:'Não informar'},{id:'1',label:'PIS/COFINS retido'},{id:'2',label:'PIS/COFINS não retido'}],
+    nmPisCofinsCstCombo: [{id:'00',label:'00 - Nenhum'},{id:'01',label:'01 - Tributável alíquota básica'},{id:'04',label:'04 - Monofásica revenda alíquota zero'},{id:'06',label:'06 - Tributável alíquota zero'},{id:'08',label:'08 - Sem incidência da contribuição'},{id:'09',label:'09 - Suspensão da contribuição'}],
+  };
+  const NM_INICIAL = {
+    nmTribIssqnCombo: m&&m.tribIssqn!=null ? String(m.tribIssqn) : '1',
+    nmRetIssqnCombo: m&&m.tipoRetencaoIssqn!=null ? String(m.tipoRetencaoIssqn) : '1',
+    nmRetPisCofinsCombo: m&&m.tipoRetencaoPisCofins!=null ? String(m.tipoRetencaoPisCofins) : '',
+    nmPisCofinsCstCombo: m&&m.pisCofinsCst ? String(m.pisCofinsCst) : '00',
+  };
+  Object.entries(NM_OPCOES).forEach(([cid, itens])=>{
+    setupComboSelect(cid, itens, ()=>{});
+    const combo = document.getElementById(cid);
+    const item = itens.find(it=>it.id===NM_INICIAL[cid]) || itens[0];
+    combo.querySelector('.combo-value').value = item.id;
+    combo.querySelector('.combo-input').value = item.label;
+  });
+  const nmComboVal = cid=>document.querySelector('#'+cid+' .combo-value').value;
   function desenhaExigSuspensaWrap(){
     const wrap = document.getElementById('nmExigSuspensaWrap');
     if(!document.getElementById('nmExigSuspensa').checked){ wrap.innerHTML=''; return; }
@@ -8165,15 +8162,15 @@ async function nfseModeloModal(m, opts){
       codigoTributacaoNacional: cTribNac,
       codigoTributacaoMunicipal: document.getElementById('nmCTribMun').value.trim(),
       codigoNbs: document.querySelector('#nmNbsCombo .combo-value').value || '',
-      tribIssqn: Number(document.getElementById('nmTribIssqn').value),
-      tipoRetencaoIssqn: Number(document.getElementById('nmRetIssqn').value),
+      tribIssqn: Number(nmComboVal('nmTribIssqnCombo') || 1),
+      tipoRetencaoIssqn: Number(nmComboVal('nmRetIssqnCombo') || 1),
       aliquotaIssqn: document.getElementById('nmAliquota').value,
-      tipoRetencaoPisCofins: document.getElementById('nmRetPisCofins').value,
+      tipoRetencaoPisCofins: nmComboVal('nmRetPisCofinsCombo'),
       issqnExigibilidadeSuspensa: document.getElementById('nmExigSuspensa').checked,
       issqnMotivoSuspensao: document.getElementById('nmExigSuspensa').checked ? Number(document.getElementById('nmMotivoSuspensao').value) : '',
       issqnNumeroProcesso: document.getElementById('nmExigSuspensa').checked ? document.getElementById('nmNumeroProcesso').value.trim() : '',
       beneficioMunicipalCodigo: document.getElementById('nmBeneficioMunicipal').value.trim(),
-      pisCofinsCst: document.getElementById('nmPisCofinsCst').value,
+      pisCofinsCst: (nmComboVal('nmPisCofinsCstCombo') || '00'),
       percentualIrrf: document.getElementById('nmPctIrrf').value,
       percentualCsll: document.getElementById('nmPctCsll').value,
       percentualCofinsRetido: document.getElementById('nmPctCofins').value,
