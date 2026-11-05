@@ -10418,15 +10418,24 @@ async function pageNfeBusca(){
       }
     }
 
+    function atualizarBotaoAnalitico(){
+      const btn = document.getElementById('btnNfeExportarAnalitico');
+      if(!btn) return;
+      const quem = nfeDocDirecao==='emitida' ? 'cliente' : 'fornecedor';
+      btn.textContent = `📄 Exportar PDF analítico (por ${quem})`;
+    }
     box.querySelectorAll('.tab[data-direcao]').forEach(t=>t.addEventListener('click', ()=>{
       nfeDocDirecao = t.dataset.direcao;
       box.querySelectorAll('.tab[data-direcao]').forEach(x=>x.classList.toggle('active', x===t));
+      atualizarBotaoAnalitico();
       carregarDocumentos();
     }));
     box.querySelector('.tab[data-direcao="emitida"]').classList.add('active');
+    atualizarBotaoAnalitico();
     function irParaAba(direcao){
       nfeDocDirecao = direcao;
       box.querySelectorAll('.tab[data-direcao]').forEach(x=>x.classList.toggle('active', x.dataset.direcao===direcao));
+      atualizarBotaoAnalitico();
       carregarDocumentos();
     }
     const btnImportarXml = document.getElementById('btnNfeImportarXml');
