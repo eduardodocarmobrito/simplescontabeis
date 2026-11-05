@@ -466,6 +466,9 @@ export interface GuiaDctfWeb {
 // transmitida pro período pedido, a Receita devolve erro (propagado por chamarServico), tratado como
 // falha não-fatal por quem chama — igual já acontece com gerarDas.
 export async function gerarGuiaDctfWeb(token: TokenIntegraContador, contratanteCnpj: string, cnpjEmpresa: string, anoPA: string, mesPA: string): Promise<GuiaDctfWeb> {
+  // Mesma distinção de categoria do CONSRECIBO32 (ver nota em consultarReciboDctfWeb) — sem isso, a
+  // guia nunca seria gerada pra contribuinte CPF (a declaração não seria achada sob "GERAL_MENSAL").
+  const categoria = cnpjEmpresa.replace(/\D/g, "").length === 11 ? "PF_MENSAL" : "GERAL_MENSAL";
   const r = await chamarServico(token, {
     base: "Emitir",
     contratanteCnpj,
@@ -473,7 +476,7 @@ export async function gerarGuiaDctfWeb(token: TokenIntegraContador, contratanteC
     idSistema: "DCTFWEB",
     idServico: "GERARGUIA31",
     versaoSistema: "1.0",
-    dados: { categoria: "GERAL_MENSAL", anoPA, mesPA },
+    dados: { categoria, anoPA, mesPA },
   });
   return { periodoApuracao: `${anoPA}${mesPA}`, pdfBase64: r.dados?.PDFByteArrayBase64 || null };
 }
@@ -530,7 +533,15 @@ export interface ReciboDctfWeb {
   pdfBase64: string | null;
   mensagens: { codigo: string; texto: string }[];
 }
+// Achado ao vivo 2026-11-05: pra contribuinte CPF (produtor rural/empregador doméstico), a categoria
+// "GERAL_MENSAL" nunca acha a declaração — o e-CAC real mostra ela sob o filtro "Categoria Declaração:
+// Geral PF", que na documentação de domínio do Integra Contador (apicenter.estaleiro.serpro.gov.br,
+// sistema DCTFWEB) é o valor "PF_MENSAL" (código 50), diferente de "GERAL_MENSAL" (código 40, pra
+// CNPJ). Sem isso, a consulta respondia "Nenhuma declaração transmitida" pra TODO mês de contribuinte
+// CPF, mesmo com declaração ativa via eSocial — confirmado comparando com o e-CAC de verdade
+// (LUCELIO OLIVEIRA MARTINS, WANDERLEY MELO NEPOMUCENO, competências 06-09/2026 "Ativa"/"eSocial").
 export async function consultarReciboDctfWeb(token: TokenIntegraContador, contratanteCnpj: string, cnpjEmpresa: string, anoPA: string, mesPA: string): Promise<ReciboDctfWeb> {
+  const categoria = cnpjEmpresa.replace(/\D/g, "").length === 11 ? "PF_MENSAL" : "GERAL_MENSAL";
   const r = await chamarServico(token, {
     base: "Consultar",
     contratanteCnpj,
@@ -538,7 +549,7 @@ export async function consultarReciboDctfWeb(token: TokenIntegraContador, contra
     idSistema: "DCTFWEB",
     idServico: "CONSRECIBO32",
     versaoSistema: "1.0",
-    dados: { categoria: "GERAL_MENSAL", anoPA, mesPA },
+    dados: { categoria, anoPA, mesPA },
   });
   return { pdfBase64: r.dados?.PDFByteArrayBase64 || null, mensagens: r.mensagens || [] };
 }
