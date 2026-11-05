@@ -2029,8 +2029,13 @@ sqlite.exec(`DROP TABLE IF EXISTS nfse_licenca`);
   }
 }
 // Seed do catálogo de módulos vendáveis — preço 0 até eu configurar em Configurações > Módulos.
-sqlite.exec(`INSERT OR IGNORE INTO modulos_catalogo (chave, nome, valor_mensal) VALUES ('nfse', 'NFS-e', 0)`);
-sqlite.exec(`INSERT OR IGNORE INTO modulos_catalogo (chave, nome, valor_mensal) VALUES ('financeiro', 'Financeiro', 0)`);
+sqlite.exec(`INSERT OR IGNORE INTO modulos_catalogo (chave, nome, valor_mensal) VALUES ('nfse', 'Módulo NFS-e', 0)`);
+sqlite.exec(`INSERT OR IGNORE INTO modulos_catalogo (chave, nome, valor_mensal) VALUES ('financeiro', 'Módulo Financeiro', 0)`);
+// Renomeia quem já tinha a linha com o nome antigo (o INSERT OR IGNORE acima não atualiza linha
+// existente) — só toca se o nome ainda for exatamente o antigo, pra não sobrescrever uma edição manual
+// que o SuperAdmin já tenha feito em Módulos da plataforma.
+sqlite.exec(`UPDATE modulos_catalogo SET nome = 'Módulo NFS-e' WHERE chave = 'nfse' AND nome = 'NFS-e'`);
+sqlite.exec(`UPDATE modulos_catalogo SET nome = 'Módulo Financeiro' WHERE chave = 'financeiro' AND nome = 'Financeiro'`);
 // Canais de envio das notas vendidos à empresa-cliente (Fase 3). Nascem com preço 0 = de graça, sem
 // travar nada (comportamento atual). Quando o SuperAdmin põe preço > 0, os clientes de hoje são
 // "grandfathered" (ver PUT /api/super/modulos-clientes) e só os novos passam a precisar contratar.
