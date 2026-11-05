@@ -19520,16 +19520,7 @@ async function centralEnvioMontar(escopo, box){
       ${ehAdmin?`<button class="btn" id="cenvMinhaPasta">📁 Minha pasta</button>`:''}
       <button class="btn" id="cenvLer" title="Lê a pasta agora (o site já confere sozinho a cada 10 segundos)">↻ Ler pasta agora</button>
       <button class="btn" id="cenvDiag" title="Explica por que um arquivo do Drive não apareceu na lista">🔎 Não apareceu?</button>
-      <div class="field hidden" id="cenvSituacaoBox" style="width:200px; margin:0;">
-        <select id="cenvSituacao">
-          <option value="">Todas as situações</option>
-          <option value="entregue">Enviado · entregue</option>
-          <option value="lido">Enviado · lido</option>
-          <option value="enviado">Enviado</option>
-          <option value="falhou_entrega">Falhou na entrega</option>
-          <option value="erro">Erro</option>
-        </select>
-      </div>
+      <div class="field hidden" id="cenvSituacaoBox" style="width:200px; margin:0;">${comboSelectHtml('cenvSituacaoCombo','Todas as situações')}</div>
       <div class="hidden" id="cenvDataDeBox">${dateFieldHtml('cenvDataDe','De',CENV.dataDe||'')}</div>
       <div class="hidden" id="cenvDataAteBox">${dateFieldHtml('cenvDataAte','Até',CENV.dataAte||'')}</div>
       <button class="btn hidden" id="cenvExportarPdf" title="PDF dos envios com os filtros desta tela, pra conferência interna">📄 Exportar PDF</button>
@@ -19542,8 +19533,20 @@ async function centralEnvioMontar(escopo, box){
   document.querySelectorAll('#cenvSubs .tab').forEach(t=>t.addEventListener('click', ()=>{ CENV.sub=t.dataset.s; centralEnvioMontar(escopo, box); }));
   busca.addEventListener('input', ()=>{ clearTimeout(tBusca); tBusca = setTimeout(carregar, 300); });
   document.getElementById('cenvAgrupar').addEventListener('change', e=>{ CENV.agrupar = e.target.checked; carregar(); });
-  document.getElementById('cenvSituacao').value = CENV.situacao;
-  document.getElementById('cenvSituacao').addEventListener('change', e=>{ CENV.situacao = e.target.value; carregar(); });
+  const CENV_SITUACAO_OPCOES = [
+    {id:'', label:'Todas as situações'},
+    {id:'entregue', label:'Enviado · entregue'},
+    {id:'lido', label:'Enviado · lido'},
+    {id:'enviado', label:'Enviado'},
+    {id:'falhou_entrega', label:'Falhou na entrega'},
+    {id:'erro', label:'Erro'},
+  ];
+  setupComboSelect('cenvSituacaoCombo', CENV_SITUACAO_OPCOES, (id)=>{ CENV.situacao = id || ''; carregar(); });
+  {
+    const atual = CENV_SITUACAO_OPCOES.find(o=>o.id===CENV.situacao) || CENV_SITUACAO_OPCOES[0];
+    document.querySelector('#cenvSituacaoCombo .combo-value').value = atual.id;
+    document.querySelector('#cenvSituacaoCombo .combo-input').value = atual.label;
+  }
   setupDatePicker('cenvDataDe','cenvDataDe_text');
   setupDatePicker('cenvDataAte','cenvDataAte_text');
   document.getElementById('cenvDataDe').addEventListener('change', e=>{ CENV.dataDe = e.target.value; carregar(); });
