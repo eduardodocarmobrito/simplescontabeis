@@ -4203,7 +4203,7 @@ async function renderEmpresasRelatorio(){
   const quadro = (r)=>{
     const lista = ativas.filter(e=>(e.regimeTributario||'simples_nacional')===r.k).sort((a,b)=>a.nome.localeCompare(b.nome,'pt-BR'));
     return `<div class="card" style="flex:1; min-width:260px; padding:0;">
-      <div style="padding:10px 14px; border-bottom:1px solid var(--rule); display:flex; justify-content:space-between; align-items:baseline; background:var(--accent-pale); border-radius:12px 12px 0 0;">
+      <div style="padding:10px 14px; border-bottom:1px solid var(--rule); display:flex; justify-content:space-between; align-items:baseline; background:var(--accent-pale); color:var(--accent-deep); border-radius:12px 12px 0 0;">
         <b>${r.nome}</b><span class="tag ok">${lista.length} empresa${lista.length!==1?'s':''}</span>
       </div>
       <div style="max-height:68vh; overflow:auto;">
