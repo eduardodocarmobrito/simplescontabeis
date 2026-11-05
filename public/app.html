@@ -1584,6 +1584,17 @@ function maskDateInput(input){
   if(v.length>=5) out+='/'+v.slice(4,8);
   input.value=out;
 }
+// Máscara de moeda (R$) baseada em centavos — digita só números, formata sozinho com milhar/decimal
+// (ex.: "500000" vira "5.000,00"). Cursor sempre vai pro fim, que é o esperado nesse tipo de máscara
+// (digitar da direita pra esquerda em centavos, como qualquer input de dinheiro de banco/caixa).
+function maskMoneyInput(input){
+  let d=input.value.replace(/\D/g,'').replace(/^0+(?=\d)/,'');
+  if(!d){ input.value=''; return; }
+  d=d.padStart(3,'0');
+  const centavos=d.slice(-2);
+  const inteiro=d.slice(0,-2).replace(/\B(?=(\d{3})+(?!\d))/g,'.');
+  input.value=inteiro+','+centavos;
+}
 function setupDatePicker(hiddenId, textId){
   const hidden=document.getElementById(hiddenId), text=document.getElementById(textId);
   function syncFromHidden(){ text.value = hidden.value ? fmtDateIso(hidden.value) : ''; }
@@ -9007,6 +9018,7 @@ async function reformaDiagMontar(painel, urlApi, urlPdf, urlPremissas){
     // Campo "Simular faturamento" (topo): injeta o valor no override receitaAnual e recalcula, mantendo
     // as demais premissas. Enter no campo também dispara.
     const simInput = document.getElementById('rtSimFat'), simBtn = document.getElementById('rtSimFatBtn');
+    if(simInput) simInput.addEventListener('input', ()=>maskMoneyInput(simInput));
     const simular = ()=>{
       const raw = (simInput.value||'').trim();
       const body = coletarPremissas();
