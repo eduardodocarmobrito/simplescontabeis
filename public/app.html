@@ -2751,7 +2751,19 @@ function tvpPaginaHtml(blocos, grande){
     if(b.cards){
       let grupo = [];
       while(i < blocos.length && blocos[i].cards){ grupo.push(blocos[i]); i++; }
-      html += `<div class="tvp-secoes-wrap">${grupo.map(cardsBlocoHtml).join('')}</div>`;
+      if(grande){
+        // Página "resumo": todos os cards juntos num grid só, fluindo em linha igual a página 1 — sem
+        // separar por seção em colunas estreitas (era o que prendia cada seção numa coluna só).
+        const todosCards = grupo.flatMap(g=>g.cards);
+        html += `<div class="tvp-grid">${todosCards.map(c=>`
+          <div class="tvp-card" style="--tvp-accent:${c.cor || TVP_CORES[(cor++) % TVP_CORES.length]}">
+            <div class="tvp-eyebrow"><span>${esc(c.titulo)}</span></div>
+            <div class="tvp-val">${esc(String(c.valor))}</div>
+            ${c.sub?`<div class="tvp-sub">${esc(c.sub)}</div>`:''}
+          </div>`).join('')}</div>`;
+      } else {
+        html += `<div class="tvp-secoes-wrap">${grupo.map(cardsBlocoHtml).join('')}</div>`;
+      }
       continue;
     }
     i++;
