@@ -10058,9 +10058,7 @@ async function pageNfeBusca(){
           </div>
           ${dateFieldHtml('nfeDocDataDe','Data de',_mesPrimeiro)}
           ${dateFieldHtml('nfeDocDataAte','Data até',_mesUltimo)}
-          <div class="field" style="margin-bottom:0; width:180px;"><label>Tipo</label>
-            <select id="nfeDocTipo"><option value="">Todos</option><option value="nfe">NF-e</option><option value="nfce">NFC-e</option><option value="nfse">NFS-e</option><option value="cte">CT-e</option><option value="mdfe">MDF-e</option><option value="nf3e">NF3-e</option><option value="satcfe">SAT-CF-e</option><option value="evento">Evento</option><option value="outro">Outro</option></select>
-          </div>
+          <div class="field" style="margin-bottom:0; width:180px;"><label>Tipo</label>${comboSelectHtml('nfeDocTipoCombo')}</div>
         </div>
         <div class="row" style="margin-bottom:8px; align-items:center; gap:10px;">
           <span style="font-size:12.5px; color:var(--ink-soft);"><span id="nfeDocSelecionadosCount">0</span> selecionado(s)</span>
@@ -10218,7 +10216,7 @@ async function pageNfeBusca(){
     document.getElementById('btnNfeBaixarLotePdf').addEventListener('click', ()=>baixarLote('pdf'));
     document.getElementById('btnNfeBaixarLoteAmbos').addEventListener('click', ()=>baixarLote('ambos'));
     function exportarAnaliticoPdf(uf){
-      const tipo = document.getElementById('nfeDocTipo').value;
+      const tipo = document.querySelector('#nfeDocTipoCombo .combo-value').value;
       const busca = document.getElementById('nfeDocBusca').value.trim();
       const dataDe = document.getElementById('nfeDocDataDe').value;
       const dataAte = document.getElementById('nfeDocDataAte').value;
@@ -10260,7 +10258,7 @@ async function pageNfeBusca(){
       // Mesmo motivo do carregarDashboard acima: não apaga a tabela antes de buscar (o HTML inicial já
       // cobre a 1ª carga) — evita o encolhe-e-cresce que empurrava a tela ao trocar o filtro de data.
       document.getElementById('nfeDocSelecionarTodos').checked = false;
-      const tipo = document.getElementById('nfeDocTipo').value;
+      const tipo = document.querySelector('#nfeDocTipoCombo .combo-value').value;
       const busca = document.getElementById('nfeDocBusca').value.trim();
       const dataDe = document.getElementById('nfeDocDataDe').value;
       const dataAte = document.getElementById('nfeDocDataAte').value;
@@ -10460,12 +10458,22 @@ async function pageNfeBusca(){
         btnImportarXml.disabled = false; btnImportarXml.textContent = '⬆️ Importar XML';
       }
     });
-    document.getElementById('nfeDocTipo').addEventListener('change', carregarDocumentos);
+    const NFE_DOC_TIPO_OPCOES = [
+      {id:'', label:'Todos'}, {id:'nfe', label:'NF-e'}, {id:'nfce', label:'NFC-e'}, {id:'nfse', label:'NFS-e'},
+      {id:'cte', label:'CT-e'}, {id:'mdfe', label:'MDF-e'}, {id:'nf3e', label:'NF3-e'}, {id:'satcfe', label:'SAT-CF-e'},
+      {id:'evento', label:'Evento'}, {id:'outro', label:'Outro'},
+    ];
+    const nfeDocTipoSetCombo = (tp)=>{
+      const combo = document.getElementById('nfeDocTipoCombo');
+      const item = NFE_DOC_TIPO_OPCOES.find(o=>o.id===(tp||'')) || NFE_DOC_TIPO_OPCOES[0];
+      combo.querySelector('.combo-value').value = item.id;
+      combo.querySelector('.combo-input').value = item.label;
+    };
+    setupComboSelect('nfeDocTipoCombo', NFE_DOC_TIPO_OPCOES, ()=>carregarDocumentos());
     // Tipo pré-selecionado pelo sub-menu (NF-e/CT-e/NFC-e/NF3-e/SAT-CF-e). Fica disponível pro menu
     // aplicar o filtro na hora, sem sair da empresa aberta.
-    const _selTipoInit = document.getElementById('nfeDocTipo');
-    if(_selTipoInit && NFE_TIPO_SEL) _selTipoInit.value = NFE_TIPO_SEL;
-    window.__nfeAplicarTipo = (tp)=>{ const s=document.getElementById('nfeDocTipo'); if(s){ s.value = tp||''; carregarDocumentos(); } };
+    nfeDocTipoSetCombo(NFE_TIPO_SEL);
+    window.__nfeAplicarTipo = (tp)=>{ nfeDocTipoSetCombo(tp); carregarDocumentos(); };
     setupDatePicker('nfeDocDataDe','nfeDocDataDe_text');
     setupDatePicker('nfeDocDataAte','nfeDocDataAte_text');
     document.getElementById('nfeDocDataDe').addEventListener('change', ()=>{ carregarDocumentos(); carregarDashboard(); });
