@@ -9487,23 +9487,32 @@ async function pageMinhaReforma(){
   rtLigarFiltroPeriodo(carregar);
   carregar();
 }
+const RT_PERIODO_OPCOES = [
+  {id:'mes', label:'Mês atual'},
+  {id:'3m', label:'Últimos 3 meses'},
+  {id:'6m', label:'Últimos 6 meses'},
+  {id:'ano', label:'Ano atual'},
+  {id:'custom', label:'Personalizado'},
+];
 function rtFiltroPeriodoHtml(){
-  const op = (v,l)=>`<option value="${v}" ${RT_PERIODO===v?'selected':''}>${l}</option>`;
   return `
-    <div class="field" style="width:200px; margin-bottom:0;"><label>Período (emissão)</label>
-      <select id="rtPeriodo">${op('mes','Mês atual')}${op('3m','Últimos 3 meses')}${op('6m','Últimos 6 meses')}${op('ano','Ano atual')}${op('custom','Personalizado')}</select></div>
+    <div class="field" style="width:200px; margin-bottom:0;"><label>Período (emissão)</label>${comboSelectHtml('rtPeriodoCombo')}</div>
     <div class="field" id="rtDeWrap" style="width:150px; margin-bottom:0; ${RT_PERIODO==='custom'?'':'display:none;'}"><label>De</label>${dateInputHtml('rtDe', RT_DE)}</div>
     <div class="field" id="rtAteWrap" style="width:150px; margin-bottom:0; ${RT_PERIODO==='custom'?'':'display:none;'}"><label>Até</label>${dateInputHtml('rtAte', RT_ATE)}</div>`;
 }
 function rtLigarFiltroPeriodo(onChange){
   setupDatePicker('rtDe','rtDe_text'); setupDatePicker('rtAte','rtAte_text');
-  const sel = document.getElementById('rtPeriodo');
-  sel.addEventListener('change', ()=>{
-    RT_PERIODO = sel.value;
+  setupComboSelect('rtPeriodoCombo', RT_PERIODO_OPCOES, (id)=>{
+    RT_PERIODO = id || 'mes';
     document.getElementById('rtDeWrap').style.display = RT_PERIODO==='custom' ? '' : 'none';
     document.getElementById('rtAteWrap').style.display = RT_PERIODO==='custom' ? '' : 'none';
     if(RT_PERIODO!=='custom' || (RT_DE && RT_ATE)) onChange();
   });
+  {
+    const atual = RT_PERIODO_OPCOES.find(o=>o.id===RT_PERIODO) || RT_PERIODO_OPCOES[0];
+    document.querySelector('#rtPeriodoCombo .combo-value').value = atual.id;
+    document.querySelector('#rtPeriodoCombo .combo-input').value = atual.label;
+  }
   ['rtDe','rtAte'].forEach(id=>document.getElementById(id).addEventListener('change', ()=>{
     RT_DE = document.getElementById('rtDe').value; RT_ATE = document.getElementById('rtAte').value;
     if(RT_DE && RT_ATE) onChange();
