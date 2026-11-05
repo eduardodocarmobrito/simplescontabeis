@@ -4815,18 +4815,23 @@ function empresaModal(e){
       // MEI (SIMEI) é optante do Simples — mostra o mesmo bloco (regime de apuração + % de tributos pra NFS-e).
       if(!marcado || (marcado.value!=='simples_nacional' && marcado.value!=='mei')){ wrap.innerHTML=''; return; }
       const atual = e.regimeApuracaoSn || '1';
+      const REG_APURACAO_OPCOES = [
+        {id:'1', label:'Tributos federais e municipal apurados pelo Simples Nacional (padrão)'},
+        {id:'2', label:'Tributos federais pelo Simples Nacional, ISSQN por fora (legislação municipal)'},
+        {id:'3', label:'Tributos federais e municipal apurados por fora do Simples Nacional'},
+      ];
       wrap.innerHTML = `
-        <div class="field"><label>Regime de apuração dos tributos do Simples Nacional</label>
-          <select id="empRegApuracao">
-            <option value="1" ${atual==='1'?'selected':''}>Tributos federais e municipal apurados pelo Simples Nacional (padrão)</option>
-            <option value="2" ${atual==='2'?'selected':''}>Tributos federais pelo Simples Nacional, ISSQN por fora (legislação municipal)</option>
-            <option value="3" ${atual==='3'?'selected':''}>Tributos federais e municipal apurados por fora do Simples Nacional</option>
-          </select>
-          <div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">Só muda de "padrão" se a empresa tiver ultrapassado algum sublimite do Simples Nacional — exigido pelo governo pra optante ME/EPP.</div>
+        <div class="row" style="margin-top:8px;">
+          <div class="field grow"><label>Regime de apuração dos tributos do Simples Nacional</label>${comboSelectHtml('empRegApuracaoCombo', 'Digite para buscar…')}</div>
+          <div class="field" style="width:260px;"><label>% total de tributos (Simples Nacional)</label><input id="empTotTribSN" type="number" step="0.01" min="0" max="99.99" value="${e.percentualTotalTributosSn!=null?e.percentualTotalTributosSn:''}" placeholder="Ex.: 6.00"></div>
         </div>
-        <div class="field"><label>% total de tributos (Simples Nacional)</label><input id="empTotTribSN" type="number" step="0.01" min="0" max="99.99" value="${e.percentualTotalTributosSn!=null?e.percentualTotalTributosSn:''}" placeholder="Ex.: 6.00"></div>
-        <div style="font-size:11.5px; color:var(--ink-soft); margin-top:-6px; margin-bottom:14px;">Percentual aproximado do total de tributos embutido no preço (Lei 12.741/2012), conforme a alíquota efetiva do Simples Nacional da empresa (do DAS/faixa atual) — obrigatório pra emitir NFS-e.</div>
+        <div style="font-size:11.5px; color:var(--ink-soft); margin-top:-6px; margin-bottom:14px;">Regime: só muda de "padrão" se a empresa tiver ultrapassado algum sublimite do Simples Nacional — exigido pelo governo pra optante ME/EPP. % de tributos: percentual aproximado embutido no preço (Lei 12.741/2012), conforme a alíquota efetiva do Simples Nacional da empresa (do DAS/faixa atual) — obrigatório pra emitir NFS-e.</div>
       `;
+      setupComboSelect('empRegApuracaoCombo', REG_APURACAO_OPCOES, ()=>{});
+      const regCombo = document.getElementById('empRegApuracaoCombo');
+      const regItem = REG_APURACAO_OPCOES.find(o=>o.id===String(atual)) || REG_APURACAO_OPCOES[0];
+      regCombo.querySelector('.combo-value').value = regItem.id;
+      regCombo.querySelector('.combo-input').value = regItem.label;
     }
     desenhaEmpRegApuracaoWrap();
     document.querySelectorAll('input[name="empRegimeTributario"]').forEach(r=>r.addEventListener('change', desenhaEmpRegApuracaoWrap));
@@ -4916,7 +4921,7 @@ function empresaModal(e){
         body.obrigFolha = document.getElementById('empObrigFolha').checked;
         body.obrigFgts = document.getElementById('empObrigFgts').checked;
         body.regimeTributario = document.querySelector('input[name="empRegimeTributario"]:checked')?.value || 'simples_nacional';
-        body.regimeApuracaoSn = document.getElementById('empRegApuracao')?.value || '1';
+        body.regimeApuracaoSn = document.querySelector('#empRegApuracaoCombo .combo-value')?.value || '1';
         body.percentualTotalTributosSn = document.getElementById('empTotTribSN')?.value || null;
         await api('/empresas/'+e.id, { method:'PUT', body });
         const setoresMarcados = [...document.querySelectorAll('.empSetorCk:checked')].map(c=>c.value);
