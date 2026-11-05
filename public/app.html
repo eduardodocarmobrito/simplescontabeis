@@ -9536,7 +9536,10 @@ async function reformaMontar(painel, urlApi, urlPdf, silencioso){
   const k = d.kpis;
   if(!k.notas){
     const direcaoReal = d.direcao==='saida' ? 'saída' : 'entrada';
-    painel.innerHTML = `<div class="card"><div class="empty-state">Nenhuma NF-e de ${direcaoReal} no período para <b>${esc(d.empresa.nome)}</b>. As notas chegam pela Busca de XML (certificado da empresa configurado).</div></div>`;
+    const avisoNfse = d.direcao==='saida' && d.empresa.nfseHabilitado
+      ? `<div style="margin-top:8px; font-size:12.5px; color:var(--ink-soft);">Esta empresa emite NFS-e (prestadora de serviço) — por isso não há NF-e de saída dela. Esta auditoria hoje só cobre NF-e/NFC-e: o layout nacional de NFS-e ainda não traz os campos de IBS/CBS, então não há como auditar o destaque da reforma tributária nas notas de serviço ainda.</div>`
+      : '';
+    painel.innerHTML = `<div class="card"><div class="empty-state">Nenhuma NF-e de ${direcaoReal} no período para <b>${esc(d.empresa.nome)}</b>. As notas chegam pela Busca de XML (certificado da empresa configurado).${avisoNfse}</div></div>`;
     return;
   }
   // Lembra filtros/scroll quando o painel se atualiza sozinho (validação oficial em andamento).

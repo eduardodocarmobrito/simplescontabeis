@@ -11492,7 +11492,12 @@ const REFORMA_RECO_SAIDA: Record<string, string> = {
 const REFORMA_RECO_SAIDA_PADRAO = "Corrigir a parametrização do IBS/CBS no emissor (CST/cClassTrib, alíquota, base e valores conforme a NT 2025.002) e emitir CC-e ou NF-e complementar quando cabível.";
 function reformaCalcularAuditoria(escritorioId: number, empresaId: number, de: string, ate: string, semLimite = false, direcao: "entrada" | "saida" = "entrada") {
   const saida = direcao === "saida";
-  const empresa = sqlite.prepare(`SELECT id, nome, cnpj, regime_tributario FROM empresas WHERE id = ?`).get(empresaId) as any;
+  const empresa = sqlite
+    .prepare(
+      `SELECT e.id, e.nome, e.cnpj, e.regime_tributario, nc.habilitado as nfse_habilitado
+       FROM empresas e LEFT JOIN nfse_empresa_config nc ON nc.empresa_id = e.id WHERE e.id = ?`
+    )
+    .get(empresaId) as any;
   if (!empresa) throw new Error("Empresa não encontrada.");
   const regime = empresa.regime_tributario || "simples_nacional";
   // Crédito de IBS/CBS é do contribuinte do regime regular (Lucro Real e Presumido). O optante do Simples
@@ -11625,7 +11630,7 @@ function reformaCalcularAuditoria(escritorioId: number, empresaId: number, de: s
   const perda2027 = Math.max(0, r2(ref27 - aprov27));
   return {
     direcao,
-    empresa: { id: empresa.id, nome: empresa.nome, cnpj: empresa.cnpj, regime, regimeLabel: REGIME_CLIENTE_LABEL[regime] || regime, tomaCredito },
+    empresa: { id: empresa.id, nome: empresa.nome, cnpj: empresa.cnpj, regime, regimeLabel: REGIME_CLIENTE_LABEL[regime] || regime, tomaCredito, nfseHabilitado: !!empresa.nfse_habilitado },
     periodo: { de, ate, meses },
     fontes: {
       tabela: reformaAuditoria.VERSAO_TABELAS.cClassTrib,
