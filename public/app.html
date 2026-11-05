@@ -209,6 +209,11 @@
   .modal-close-x:hover{background:var(--rule); color:var(--ink);}
   .modal h3{margin:0 0 16px; font-size:17px;}
   .modal-actions{display:flex; justify-content:flex-end; gap:8px; margin-top:18px;}
+  /* Menu flutuante genérico (abrirMenuFlutuante) — fundo opaco igual ao .modal, mesma razão: um
+     overlay dinâmico (criado via JS, sem o ::before/backdrop-filter que .card/.kpi usam no tema
+     escuro) precisa de regra própria pros dois temas, não pode só herdar --surface/--paper. */
+  #menuFlutuante{background:var(--surface);}
+  body.theme-glass #menuFlutuante{background:rgba(var(--glass-rgb,5,31,32),.94);}
   /* Drawer lateral (detalhe da nota, estilo Espião): desliza da direita.
      Havia DUAS definições conflitantes de .drawer/.drawer-bg nesta folha (achado ao vivo 2026-11-05 —
      usuário viu o conteúdo da tela de baixo "embaralhado" com o do drawer aberto, um clássico sintoma
@@ -10592,7 +10597,12 @@ function abrirMenuFlutuante(botaoEl, itens){
   const rect = botaoEl.getBoundingClientRect();
   const menu = document.createElement('div');
   menu.id = 'menuFlutuante';
-  menu.style.cssText = `position:fixed; top:${rect.bottom+4}px; left:${rect.left}px; background:var(--paper); border:1px solid var(--rule); border-radius:10px; box-shadow:0 8px 24px rgba(0,0,0,.18); padding:6px; z-index:500; min-width:220px;`;
+  // Fundo vem da regra CSS #menuFlutuante (não inline) — achado ao vivo 2026-11-05: um background
+  // inline com var(--paper) ficava translúcido no tema escuro (--paper lá é rgba(255,255,255,.14),
+  // feito pra tingir cards sobre --surface, não pra ser o fundo opaco de um overlay), deixando a linha
+  // da tabela de baixo transparecer e misturar o texto com o do menu. Precisa ser uma regra externa
+  // (não inline) pra poder ter uma versão diferente e opaca no tema escuro (body.theme-glass).
+  menu.style.cssText = `position:fixed; top:${rect.bottom+4}px; left:${rect.left}px; border:1px solid var(--rule); border-radius:10px; box-shadow:0 8px 24px rgba(0,0,0,.18); padding:6px; z-index:500; min-width:220px;`;
   menu.innerHTML = itens.map((it,i)=>`<div class="menuFlutuanteItem" data-i="${i}" style="padding:8px 10px; border-radius:6px; cursor:pointer; font-size:13px; display:flex; align-items:center; gap:8px; white-space:nowrap;">${it.icon||''} ${esc(it.label)}</div>`).join('');
   document.body.appendChild(menu);
   menu.querySelectorAll('.menuFlutuanteItem').forEach(el=>{

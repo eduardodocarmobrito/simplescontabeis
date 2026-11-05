@@ -2043,6 +2043,15 @@ sqlite.exec(`INSERT OR IGNORE INTO modulos_catalogo (chave, nome, valor_mensal) 
     sqlite.exec(`ALTER TABLE escritorios ADD COLUMN asaas_customer_id TEXT`);
   }
 }
+// Preço personalizado por empresa-cliente (pedido 2026-11-05): o valor padrão do módulo
+// (modulos_catalogo.valor_mensal) é único pra toda a plataforma, mas o escritório quer poder cobrar
+// clientes diferentes com preços diferentes do mesmo módulo. NULL = usa o valor padrão do catálogo.
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(empresa_modulos)`).all() as any[];
+  if (!cols.some((c) => c.name === "valor_mensal_custom")) {
+    sqlite.exec(`ALTER TABLE empresa_modulos ADD COLUMN valor_mensal_custom REAL`);
+  }
+}
 // Seed do catálogo de módulos vendáveis pro escritório-cliente da plataforma (não confundir com o
 // catálogo acima, que é vendido pelo escritório PRA empresa-cliente dele). Preço 0 até o SuperAdmin
 // configurar em Escritórios > Módulos da plataforma.
