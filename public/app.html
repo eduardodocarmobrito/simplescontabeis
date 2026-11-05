@@ -3041,12 +3041,14 @@ async function pagePainelTv(){
   TVP_TIMERS.pag2 = setInterval(()=>{ if(permitida(1)) carregarPagina2(); lerTempoDaTroca(); }, 60_000);
   window.addEventListener('resize', ajustarPagina2);
   // Valores atualizam sozinhos a cada 1min (com uma "piscada" rápida, sensação de painel ao vivo) —
-  // bem mais frequente que os 30min pedidos, que são só o teto máximo pra pegar mudança estrutural
-  // (card novo, removido, editado). Mesma rota que a tela normal de Início já usa, sem custo extra.
+  // card novo/editado/removido já aparece sozinho nesse refresh (mesma rota que a tela normal de
+  // Início usa), sem precisar recarregar a página inteira.
   TVP_TIMERS.refresh = setInterval(()=>{ if(permitida(0)) carregar(true); }, 60_000);
-  // Recarrega a página inteira periodicamente — garante que card novo/editado/removido (e qualquer
-  // atualização de código do próprio site) apareça sem precisar mexer na TV manualmente.
-  TVP_TIMERS.reload = setTimeout(()=>location.reload(), 30*60*1000);
+  // NUNCA recarrega a página sozinho — um location.reload() sempre derruba a tela cheia (restrição do
+  // navegador, não dá pra reentrar em tela cheia sem gesto do usuário), e a TV fica rodando o dia
+  // inteiro sem ninguém pra clicar de novo em "Tela cheia" (pedido explícito: só sai da tela cheia
+  // quando a pessoa clicar). Pra pegar uma atualização de código do próprio site, recarregue a TV
+  // manualmente de vez em quando.
   // Efeito "quadro de embarque de aeroporto": vai destacando um card por vez, girando — só visual,
   // não muda dado nenhum, é pra dar movimento e sinal de vida no painel.
   let scanIdx = -1;
