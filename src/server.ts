@@ -12219,19 +12219,24 @@ function nfePainelPerfilHtmlRelatorio(dash: ReturnType<typeof nfeCalcularDashboa
   // flex (não inline-block) pros quadrinhos — achado ao vivo 2026-11-05: com inline-block+width:31% o
   // motor de PDF deixava sobrar espaço vazio enorme entre os quadros (só 2 cabiam por linha em vez de
   // 3), com o 3º quebrando pra linha de baixo sozinho. flex:0 0 31% + flex-wrap no container é estável.
-  const item = (ic: string, label: string, val: number, cor: string) => {
+  const item = (ic: string, label: string, val: number, cor: string, largura = "31%") => {
     const p = pct(val);
-    return `<div style="box-sizing:border-box; flex:0 0 31%; border:1px solid #ddd; border-radius:5px; padding:4px 6px;">
+    return `<div style="box-sizing:border-box; flex:0 0 ${largura}; border:1px solid #ddd; border-radius:5px; padding:4px 6px;">
       <div style="font-size:8px; display:flex;"><span style="flex:1;">${ic} ${escHtmlRelatorio(label)}</span><b>${val}</b>&nbsp;<span style="color:#888;">${p}%</span></div>
       <div style="background:#eee; border-radius:3px; height:4px; overflow:hidden; margin-top:3px;"><div style="width:${p}%; height:100%; background:${cor};"></div></div>
     </div>`;
   };
   const grupo = (titulo: string, cor: string, itens: string) => `<div style="margin-top:6px;"><div style="font-size:7.5px; font-weight:bold; color:${cor}; text-transform:uppercase; margin-bottom:3px;">${escHtmlRelatorio(titulo)}</div><div style="display:flex; flex-wrap:wrap; gap:4px;">${itens}</div></div>`;
+  // Tributário/fiscal e Reforma tributária têm 1 item cada — lado a lado na mesma linha pra não
+  // desperdiçar espaço vertical com dois grupos de uma caixa só, um embaixo do outro.
+  const grupoDuplo = (tituloA: string, corA: string, itensA: string, tituloB: string, corB: string, itensB: string) => `<div style="margin-top:6px; display:flex; gap:8px;">
+    <div style="flex:1;"><div style="font-size:7.5px; font-weight:bold; color:${corA}; text-transform:uppercase; margin-bottom:3px;">${escHtmlRelatorio(tituloA)}</div><div style="display:flex;">${itensA}</div></div>
+    <div style="flex:1;"><div style="font-size:7.5px; font-weight:bold; color:${corB}; text-transform:uppercase; margin-bottom:3px;">${escHtmlRelatorio(tituloB)}</div><div style="display:flex;">${itensB}</div></div>
+  </div>`;
   return `<div style="font-weight:bold; font-size:10px; margin-bottom:6px;">🏷️ Perfil das Notas</div>
     <div style="font-size:8.5px; margin-bottom:4px;"><b style="font-size:13px;">${pf.comFlags}</b> NF-e com flags &nbsp;·&nbsp; <b style="font-size:13px;">${pf.itensPorNota.toFixed(1).replace(".", ",")}</b> itens/nota</div>
     ${grupo("Produtos especiais", "#dc2626", item("💊", "Medicamento", pf.produtos.medicamento, "#dc2626") + item("⛽", "Combustível", pf.produtos.combustivel, "#dc2626") + item("🔖", "Rastreável", pf.produtos.rastreavel, "#dc2626"))}
-    ${grupo("Tributário / fiscal", "#d97706", item("%", "ICMS-ST", pf.fiscal.icmsSt, "#d97706"))}
-    ${grupo("Reforma tributária", "#7c3aed", item("⚖️", "IBS/CBS", pf.reforma.comIbsCbs, "#7c3aed"))}
+    ${grupoDuplo("Tributário / fiscal", "#d97706", item("%", "ICMS-ST", pf.fiscal.icmsSt, "#d97706", "100%"), "Reforma tributária", "#7c3aed", item("⚖️", "IBS/CBS", pf.reforma.comIbsCbs, "#7c3aed", "100%"))}
     ${grupo("Operacional", "#059669", item("📦", "Carrinho", pf.operacional.comCarrinho, "#059669") + item("🚚", "Transportadora", pf.operacional.transportadora, "#059669") + item("🧾", "Duplicatas", pf.operacional.duplicatas, "#059669") + item("💰", "Pagamento", pf.operacional.pagamento, "#059669") + item("💬", "Comentário", pf.operacional.comComentario, "#059669"))}
     ${grupo("Financeiro", "#0369a1", item("💵", "Integradas", pf.financeiro?.integradas || 0, "#0369a1") + item("⏳", "Falta integrar", pf.financeiro?.faltaIntegrar || 0, "#0369a1"))}`;
 }
@@ -12385,7 +12390,7 @@ async function nfeGerarAnaliticoPdf(user: any, empresaId: number, query: any, re
     })
     .join("");
   // Título conforme a direção filtrada: emitidas agrupam por tomador/cliente, recebidas por fornecedor.
-  const tituloAgrupamento = direcao === "emitida" ? "por Tomador" : direcao === "recebida" ? "por Fornecedor" : "por Fornecedor / Tomador";
+  const tituloAgrupamento = direcao === "emitida" ? "por Cliente" : direcao === "recebida" ? "por Fornecedor" : "por Fornecedor / Cliente";
   const numeroDaNota = (n: any): string =>
     n.tipo === "nfse"
       ? `NFS-e ${String(n.xml).match(/<nNFSe>([^<]+)<\/nNFSe>/)?.[1] || "-"}`
