@@ -2599,8 +2599,7 @@ try {
   // Flags de elegibilidade pro quadro "Obrigações do Mês"/cards de pendência (DCTF-Web, Folha, FGTS).
   // DEFAULT 1 preserva o comportamento atual pra toda empresa já existente (ninguém some do
   // monitoramento por padrão) — o escritório desmarca manualmente só quem não se aplica, ex. empresa
-  // que entrega só MIT (sem Folha/DCTF-Web/FGTS) ou CPF (produtor rural/empregador doméstico) onde a
-  // consulta automática ao e-CAC é sabidamente não-confiável (ver empresaTemCnpjAuto).
+  // que entrega só MIT (sem Folha/DCTF-Web/FGTS).
   if (!colsEmpresas.some((c) => c.name === "obrig_dctfweb")) {
     sqlite.exec(`ALTER TABLE empresas ADD COLUMN obrig_dctfweb INTEGER NOT NULL DEFAULT 1`);
   }
@@ -7557,28 +7556,25 @@ async function dctfwebConsultarSituacao(escritorioId: number, empresaId: number,
   grava.run(empresaId, periodo, 0, 0, null, null, null, null, mensagem);
   return { ativa: false, mensagem };
 }
-// Empresas que entram na checagem: as do quadro DCTF-Web e/ou Folha (atribuição ativa no Envio).
-// Exclui quem tem CPF (11 dígitos) em vez de CNPJ no cadastro — achado ao vivo 2026-11-05: a consulta
-// de recibo DCTF-Web pelo Integra Contador (CONSRECIBO32) devolve "nenhuma declaração ativa" pra todo
-// contribuinte CPF (produtor rural/empregador doméstico) mesmo quando o e-CAC de verdade mostra
-// declaração Ativa com origem eSocial — falso negativo sistemático, confirmado comparando com o
-// e-CAC real pra 2 CPFs (LUCELIO OLIVEIRA MARTINS cód.17, WANDERLEY MELO NEPOMUCENO cód.124). Até
-// entender a causa exata (provável limitação da API pra contribuinte tipo CPF nesse serviço
-// específico), não dá pra confiar nesse resultado — melhor não gerar o sinal errado do que avisar
-// "pendente" pra quem já entregou.
-function empresaTemCnpjAuto(cnpj: string | null | undefined): boolean {
-  return String(cnpj || "").replace(/\D/g, "").length === 14;
-}
+// Empresas que entram na checagem: as do quadro DCTF-Web e/ou Folha (atribuição ativa no Envio),
+// respeitando a flag obrig_dctfweb/obrig_folha do cadastro (empresa que só entrega MIT fica de fora).
+// NOTA 2026-11-05: cheguei a excluir daqui quem tem CPF no lugar de CNPJ (suspeita de a consulta do
+// e-CAC via Integra Contador ser sistematicamente não-confiável pra esse tipo de contribuinte, vista
+// em 2 casos — Lucélio e Wanderley — com competências ATIVAS no e-CAC real aparecendo como "sem
+// declaração" aqui). Revertido no mesmo dia: o Wanderley de 10/2026 realmente não tinha sido entregue
+// e a consulta automática acertou, contradizendo a teoria de que falha sempre pra CPF. Os 2 casos
+// errados conhecidos devem ser corrigidos individualmente (reconsultar ou marcar manual), não tratando
+// toda empresa CPF como não-confiável — isso escondia pendência de verdade.
 function dctfwebEmpresasElegiveis(escritorioId: number): number[] {
   const obs = OBRIGACOES_POR_SETOR.dprh.filter((o: any) => o.id === "dprh_dctfweb" || o.id === "dprh_folha");
   const ids = new Set<number>();
   for (const ob of obs) {
     const tpls: string[] = ob.templates;
     const rows = sqlite.prepare(
-      `SELECT DISTINCT a.empresa_id as id, e.cnpj, e.${ob.flagColuna} as flag FROM envio_atribuicoes a JOIN envio_templates t ON t.id = a.template_id JOIN empresas e ON e.id = a.empresa_id
+      `SELECT DISTINCT a.empresa_id as id, e.${ob.flagColuna} as flag FROM envio_atribuicoes a JOIN envio_templates t ON t.id = a.template_id JOIN empresas e ON e.id = a.empresa_id
        WHERE a.ativo = 1 AND e.ativo = 1 AND e.escritorio_id = ? AND t.nome IN (${tpls.map(() => "?").join(",")})`
     ).all(escritorioId, ...tpls) as any[];
-    for (const x of rows) if (empresaTemCnpjAuto(x.cnpj) && x.flag !== 0) ids.add(x.id);
+    for (const x of rows) if (x.flag !== 0) ids.add(x.id);
   }
   return [...ids];
 }
@@ -21648,10 +21644,7 @@ function cardObrigacaoNaoTransmitida(user: any, obrigacaoId: string, incluirNaoC
     const comp = `${a}-${String(m).padStart(2, "0")}`;
     for (const l of obrigacoesCalcular(user, "dprh", comp, [obrigacaoId]).linhas) {
       if (l.transmitida || !visiveis.has(l.empresaId)) continue;
-      // Consulta automática ao e-CAC não é confiável pra contribuinte CPF (ver nota em
-      // dctfwebEmpresasElegiveis) — só confia nela pra quem tem CNPJ de verdade; marcação manual
-      // continua valendo pra qualquer um (é confirmação humana, não depende da consulta).
-      const confirmada = l.transmitidaManual || (empresaTemCnpjAuto(l.cnpj) && l.situacaoDctf && !/^Erro/.test(l.situacaoDctf.mensagem || "") && l.situacaoDctf.consultadoEm);
+      const confirmada = l.transmitidaManual || (l.situacaoDctf && !/^Erro/.test(l.situacaoDctf.mensagem || "") && l.situacaoDctf.consultadoEm);
       if (!incluirNaoConfirmadas && !confirmada) continue;
       const it = porEmp.get(l.empresaId) || { empresaId: l.empresaId, empresaNome: l.empresaNome, cnpj: l.cnpj, competencias: [] as any[] };
       const msg = l.situacaoDctf?.mensagem || null;
