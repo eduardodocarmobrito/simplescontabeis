@@ -4628,6 +4628,9 @@ app.get("/api/empresas", blockCliente, requirePermissao("empresas", "visualizar"
       comparativoMovimentoDiario: !!r.comparativo_movimento_diario,
       programacaoFerias: !!r.programacao_ferias,
       demonstrativoMensal: !!r.demonstrativo_mensal,
+      obrigDctfweb: !!r.obrig_dctfweb,
+      obrigFolha: !!r.obrig_folha,
+      obrigFgts: !!r.obrig_fgts,
       origem: r.origem,
       createdAt: r.created_at,
       temAnexos: empresaTemAnexos(r.id),
@@ -4645,7 +4648,7 @@ app.get("/api/empresas/checklist", blockCliente, requirePermissao("empresas", "v
       `SELECT e.id, e.nome, e.cnpj, e.codigo_dominio, e.telefone, e.email, e.endereco, e.cidade, e.uf, e.cep,
               e.inscricao_estadual, e.inscricao_municipal, e.nome_representante_legal, e.cpf_representante_legal,
               e.ativo, e.visivel_relatorios, e.isento_assinatura, e.busca_fgts, e.comparativo_movimento_diario,
-              e.programacao_ferias, e.demonstrativo_mensal, e.regime_tributario,
+              e.programacao_ferias, e.demonstrativo_mensal, e.obrig_dctfweb, e.obrig_folha, e.obrig_fgts, e.regime_tributario,
               nc.habilitado as nfse_habilitado, nc.metodo_assinatura as nfse_metodo_assinatura,
               nc.opcao_simples_nacional as nfse_simples, nc.regime_apuracao_sn as nfse_regime_apuracao,
               bx.ativo as busca_xml_ativo, bx.manifestacao_automatica as busca_xml_manifestacao,
@@ -4692,6 +4695,9 @@ app.get("/api/empresas/checklist", blockCliente, requirePermissao("empresas", "v
       comparativoMovimentoDiario: !!r.comparativo_movimento_diario,
       programacaoFerias: !!r.programacao_ferias,
       demonstrativoMensal: !!r.demonstrativo_mensal,
+      obrigDctfweb: !!r.obrig_dctfweb,
+      obrigFolha: !!r.obrig_folha,
+      obrigFgts: !!r.obrig_fgts,
       regimeTributario: r.regime_tributario || "simples_nacional",
       nfseHabilitado: !!r.nfse_habilitado,
       nfseMetodoAssinatura: r.nfse_metodo_assinatura || "procuracao_escritorio",
@@ -4813,7 +4819,7 @@ app.put("/api/empresas/:id", blockCliente, requirePermissao("empresas", "editar"
   const id = Number(req.params.id);
   const existing = sqlite.prepare(`SELECT * FROM empresas WHERE id = ?`).get(id) as any;
   if (!existing || !podeAcessarEmpresa((req as any).user, id)) return res.status(404).json({ error: "Empresa não encontrada." });
-  const { nome, cnpj, codigoDominio, apelido, email, telefone, endereco, cidade, uf, cep, inscricaoMunicipal, inscricaoEstadual, nomeRepresentanteLegal, cpfRepresentanteLegal, codigoMunicipioIbge, nomeMunicipioIbge, regimeTributario, ativo, visivelRelatorios, isentoAssinatura, buscaFgts, comparativoMovimentoDiario, programacaoFerias, demonstrativoMensal } = req.body || {};
+  const { nome, cnpj, codigoDominio, apelido, email, telefone, endereco, cidade, uf, cep, inscricaoMunicipal, inscricaoEstadual, nomeRepresentanteLegal, cpfRepresentanteLegal, codigoMunicipioIbge, nomeMunicipioIbge, regimeTributario, ativo, visivelRelatorios, isentoAssinatura, buscaFgts, comparativoMovimentoDiario, programacaoFerias, demonstrativoMensal, obrigDctfweb, obrigFolha, obrigFgts } = req.body || {};
   const regimeTributarioFinal =
     regimeTributario !== undefined
       ? ((REGIMES_TRIBUTARIOS as readonly string[]).includes(regimeTributario) ? regimeTributario : "simples_nacional")
@@ -4821,7 +4827,7 @@ app.put("/api/empresas/:id", blockCliente, requirePermissao("empresas", "editar"
   sqlite
     .prepare(
       `UPDATE empresas SET nome=?, cnpj=?, codigo_dominio=?, apelido=?, email=?, telefone=?, endereco=?, cidade=?, uf=?, cep=?, inscricao_municipal=?, inscricao_estadual=?,
-         nome_representante_legal=?, cpf_representante_legal=?, codigo_municipio_ibge=?, nome_municipio_ibge=?, regime_tributario=?, ativo=?, visivel_relatorios=?, isento_assinatura=?, busca_fgts=?, comparativo_movimento_diario=?, programacao_ferias=?, demonstrativo_mensal=?, updated_at=datetime('now') WHERE id=?`
+         nome_representante_legal=?, cpf_representante_legal=?, codigo_municipio_ibge=?, nome_municipio_ibge=?, regime_tributario=?, ativo=?, visivel_relatorios=?, isento_assinatura=?, busca_fgts=?, comparativo_movimento_diario=?, programacao_ferias=?, demonstrativo_mensal=?, obrig_dctfweb=?, obrig_folha=?, obrig_fgts=?, updated_at=datetime('now') WHERE id=?`
     )
     .run(
       nome ?? existing.nome,
@@ -4848,6 +4854,9 @@ app.put("/api/empresas/:id", blockCliente, requirePermissao("empresas", "editar"
       comparativoMovimentoDiario === undefined ? existing.comparativo_movimento_diario : comparativoMovimentoDiario ? 1 : 0,
       programacaoFerias === undefined ? existing.programacao_ferias : programacaoFerias ? 1 : 0,
       demonstrativoMensal === undefined ? existing.demonstrativo_mensal : demonstrativoMensal ? 1 : 0,
+      obrigDctfweb === undefined ? existing.obrig_dctfweb : obrigDctfweb ? 1 : 0,
+      obrigFolha === undefined ? existing.obrig_folha : obrigFolha ? 1 : 0,
+      obrigFgts === undefined ? existing.obrig_fgts : obrigFgts ? 1 : 0,
       id
     );
   if (regimeTributario !== undefined || req.body.regimeApuracaoSn !== undefined || req.body.percentualTotalTributosSn !== undefined) {
