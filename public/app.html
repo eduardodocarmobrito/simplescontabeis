@@ -8057,10 +8057,11 @@ async function nfseModeloModal(m, opts){
       </div>
       <div class="field" style="width:105px;"><label>IRRF %</label><input id="nmPctIrrf" type="number" step="0.01" min="0" value="${m&&m.percentualIrrf!=null?m.percentualIrrf:''}"></div>
       <div class="field" style="width:105px;"><label>CSLL %</label><input id="nmPctCsll" type="number" step="0.01" min="0" value="${m&&m.percentualCsll!=null?m.percentualCsll:''}"></div>
-      <div class="field" style="width:125px;"><label>COFINS retido %</label><input id="nmPctCofins" type="number" step="0.01" min="0" value="${m&&m.percentualCofinsRetido!=null?m.percentualCofinsRetido:''}"></div>
-      <div class="field" style="width:105px;"><label>PIS retido %</label><input id="nmPctPis" type="number" step="0.01" min="0" value="${m&&m.percentualPisRetido!=null?m.percentualPisRetido:''}"></div>
+      <div class="field" style="width:125px;"><label id="nmPctCofinsLabel">COFINS retido %</label><input id="nmPctCofins" type="number" step="0.01" min="0" value="${m&&m.percentualCofinsRetido!=null?m.percentualCofinsRetido:''}"></div>
+      <div class="field" style="width:105px;"><label id="nmPctPisLabel">PIS retido %</label><input id="nmPctPis" type="number" step="0.01" min="0" value="${m&&m.percentualPisRetido!=null?m.percentualPisRetido:''}"></div>
       <div class="field" style="width:145px;"><label>Contrib. previdenciária %</label><input id="nmPctCp" type="number" step="0.01" min="0" value="${m&&m.percentualContribPrevidenciaria!=null?m.percentualContribPrevidenciaria:''}"></div>
     </div>
+    <div id="nmPisCofinsExtintoAviso"></div>
     <p style="font-size:11.5px; color:var(--ink-soft); margin:2px 0 10px;">Deixe em branco o que não se aplica. O valor retido é calculado automaticamente na hora da emissão (% × valor do serviço).</p>
 
     <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">IBS/CBS (Reforma Tributária)</div>
@@ -8104,6 +8105,19 @@ async function nfseModeloModal(m, opts){
     combo.querySelector('.combo-input').value = item.label;
   });
   const nmComboVal = cid=>document.querySelector('#'+cid+' .combo-value').value;
+  // Reforma Tributária: PIS e COFINS são extintos em 01/01/2027 (EC 132/2023, art. 126 do ADCT;
+  // LC 214/2025, arts. 509 e 542, que revogam as leis que instituem a retenção — Lei 10.833/2003 art.
+  // 30). A retenção na fonte desses dois tributos fica sem objeto a partir dessa data (substituídos
+  // pela CBS) — CSLL continua normal, não é alcançada pela reforma.
+  if(new Date() >= new Date('2027-01-01T00:00:00-03:00')){
+    document.getElementById('nmPctCofinsLabel').innerHTML = '⚠️ COFINS retido %';
+    document.getElementById('nmPctPisLabel').innerHTML = '⚠️ PIS retido %';
+    document.getElementById('nmPctCofins').style.borderColor = 'var(--debit)';
+    document.getElementById('nmPctPis').style.borderColor = 'var(--debit)';
+    document.getElementById('nmPisCofinsExtintoAviso').innerHTML = `<p style="font-size:11.5px; color:var(--debit); margin:-4px 0 10px;">⚠️ PIS e COFINS foram extintos em 01/01/2027 pela Reforma Tributária (substituídos pela CBS) — a retenção na fonte desses dois tributos não se aplica mais. Zere "COFINS retido %" e "PIS retido %" neste modelo.</p>`;
+  } else {
+    document.getElementById('nmPisCofinsExtintoAviso').innerHTML = `<p style="font-size:11.5px; color:var(--ink-soft); margin:-4px 0 10px;">A partir de 01/01/2027 PIS e COFINS são extintos pela Reforma Tributária (substituídos pela CBS) — a retenção de "COFINS retido %" e "PIS retido %" deixa de se aplicar a partir dessa data.</p>`;
+  }
   function desenhaExigSuspensaWrap(){
     const wrap = document.getElementById('nmExigSuspensaWrap');
     if(!document.getElementById('nmExigSuspensa').checked){ wrap.innerHTML=''; return; }
