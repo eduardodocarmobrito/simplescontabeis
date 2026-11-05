@@ -11425,15 +11425,15 @@ async function renderMinhaNfseConfig(){
         <div class="field" style="margin-top:6px;"><label>Arquivo do certificado (.pfx)</label><input type="file" id="mnfCertArquivo" accept=".pfx,.p12"></div>
         <div class="field"><label>Senha do certificado</label><input type="password" id="mnfCertSenha"></div>
       </div>
-      <button class="btn primary" id="mnfSalvar">Salvar</button>
+      <button class="btn primary" id="mnfSalvar" disabled>Salvar</button>
     </div>
   `;
   const mnfSelecionarCidade = setupCidadeIbge('mnfCidadeCombo', '/nfse/minha-empresa/municipios-ibge-todos', it=>{
     document.getElementById('mnfMunicipio').value = it? it.id : '';
     document.getElementById('mnfUf').value = it? it.uf : '';
     document.getElementById('mnfMunicipioDesc').value = it? it.cidade : '';
+    atualizarSalvar();
   });
-  mnfSelecionarCidade({ codigo: e.codigoMunicipio });
   function desenhaRegApuracaoWrap(){
     const wrap = document.getElementById('mnfRegApuracaoWrap');
     if(!document.getElementById('mnfSimples').checked){ wrap.innerHTML=''; return; }
@@ -11450,9 +11450,34 @@ async function renderMinhaNfseConfig(){
       <div class="field"><label>% total de tributos (Simples Nacional)</label><input id="mnfTotTribSN" type="number" step="0.01" min="0" max="99.99" value="${e.percentualTotalTributosSn!=null?e.percentualTotalTributosSn:''}" placeholder="Ex.: 6.00"></div>
       <div style="font-size:11.5px; color:var(--ink-soft); margin-top:-6px; margin-bottom:14px;">Percentual aproximado do total de tributos embutido no preço (Lei 12.741/2012), conforme a alíquota efetiva do Simples Nacional da sua empresa (do DAS/faixa atual) — obrigatório pra emitir.</div>
     `;
+    document.getElementById('mnfRegApuracao').addEventListener('change', atualizarSalvar);
+    document.getElementById('mnfTotTribSN').addEventListener('input', atualizarSalvar);
   }
+  // Botão Salvar começa desabilitado e só libera quando algo muda de verdade (comparado com o que
+  // veio do servidor) — evita salvar sem ter mexido em nada. snapshot() cobre todo campo editável;
+  // o arquivo do certificado entra como "tem arquivo escolhido ou não" (não dá pra comparar conteúdo).
+  function snapshotForm(){
+    return JSON.stringify({
+      municipio: document.getElementById('mnfMunicipio').value,
+      uf: document.getElementById('mnfUf').value,
+      im: document.getElementById('mnfIM').value.trim(),
+      simples: document.getElementById('mnfSimples').checked,
+      regApuracao: document.getElementById('mnfRegApuracao')?.value || null,
+      totTrib: document.getElementById('mnfTotTribSN')?.value || null,
+      temArquivo: !!document.getElementById('mnfCertArquivo').files[0],
+      senha: document.getElementById('mnfCertSenha').value,
+    });
+  }
+  let mnfInicial = '';
+  function atualizarSalvar(){ document.getElementById('mnfSalvar').disabled = snapshotForm()===mnfInicial; }
   desenhaRegApuracaoWrap();
-  document.getElementById('mnfSimples').addEventListener('change', desenhaRegApuracaoWrap);
+  await mnfSelecionarCidade({ codigo: e.codigoMunicipio }); // dispara onEscolha → atualizarSalvar antes de mnfInicial existir; corrigido pela linha abaixo
+  mnfInicial = snapshotForm();
+  atualizarSalvar();
+  document.getElementById('mnfSimples').addEventListener('change', ()=>{ desenhaRegApuracaoWrap(); atualizarSalvar(); });
+  document.getElementById('mnfIM').addEventListener('input', atualizarSalvar);
+  document.getElementById('mnfCertArquivo').addEventListener('change', atualizarSalvar);
+  document.getElementById('mnfCertSenha').addEventListener('input', atualizarSalvar);
   document.getElementById('mnfSalvar').addEventListener('click', async ()=>{
     const body = {
       codigoMunicipio: document.getElementById('mnfMunicipio').value.trim(),
