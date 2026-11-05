@@ -16946,19 +16946,43 @@ async function atdAcao(S, acao, botao){
   if(acao==='compromisso') return atdCompromissoModal(S, c);
   if(acao==='desadiar') return executar(()=>dcApi(base+'/snooze', { method:'DELETE' }), 'Adiamento cancelado.');
   if(acao==='adiar'){
+    const agora = new Date();
+    const daqui1h = new Date(agora.getTime()+3600000);
     openModal(`
       <h3>Adiar conversa</h3>
       <p class="subtitle">Ela sai da fila e volta sozinha quando o prazo acabar (ou antes, se o cliente escrever).</p>
       <div class="row" style="gap:8px; margin-top:12px;">
         <button class="btn" data-h="1">1 hora</button><button class="btn" data-h="3">3 horas</button><button class="btn" data-h="24">24 horas</button>
+        <button class="btn" id="atdAdiarPersonalizarBtn">Personalizar horário</button>
+      </div>
+      <div id="atdAdiarPersonalizar" style="display:none; margin-top:14px;">
+        <div class="row" style="gap:8px; align-items:flex-end;">
+          ${dateFieldHtml('atdAdiarData', 'Volta no dia', daqui1h.toISOString().slice(0,10))}
+          <div class="field"><label>Hora</label><input type="time" id="atdAdiarHora" value="${String(daqui1h.getHours()).padStart(2,'0')}:${String(daqui1h.getMinutes()).padStart(2,'0')}"></div>
+        </div>
+        <button class="btn primary small" id="atdAdiarPersonalizarConfirmar" style="margin-top:10px;">Adiar até esse horário</button>
       </div>
       <div class="modal-actions"><button class="btn" id="atdAdiarCancel">Cancelar</button></div>
     `);
+    setupDatePicker('atdAdiarData', 'atdAdiarData_text');
     document.getElementById('atdAdiarCancel').addEventListener('click', closeModal);
     document.querySelectorAll('#modalBody [data-h]').forEach(b=>b.addEventListener('click', ()=>{
       closeModal();
       executar(()=>dcApi(base+'/snooze', { method:'POST', body:{ duration_hours: Number(b.dataset.h) } }), 'Conversa adiada.');
     }));
+    document.getElementById('atdAdiarPersonalizarBtn').addEventListener('click', ()=>{
+      document.getElementById('atdAdiarPersonalizar').style.display='block';
+    });
+    document.getElementById('atdAdiarPersonalizarConfirmar').addEventListener('click', ()=>{
+      const dataVal = document.getElementById('atdAdiarData').value;
+      const horaVal = document.getElementById('atdAdiarHora').value;
+      if(!dataVal || !horaVal){ toast('Informe a data e a hora.','err'); return; }
+      const alvo = new Date(dataVal+'T'+horaVal+':00');
+      const horas = (alvo.getTime() - Date.now())/3600000;
+      if(!(horas>0)){ toast('Escolha um horário no futuro.','err'); return; }
+      closeModal();
+      executar(()=>dcApi(base+'/snooze', { method:'POST', body:{ duration_hours: horas } }), 'Conversa adiada.');
+    });
     return;
   }
   if(acao==='transferir') return atdTransferirModal(S, c, executar);
