@@ -71,7 +71,7 @@ function fichaHtml(emp: { nome: string; cnpj: string; ie: string; regimeLabel: s
     <p class="res"><b>C) Resultado:</b> ${caixa(resultadoAuto === "aprovada")} Aprovada &nbsp; ${caixa(resultadoAuto === "ressalva")} Aprovada com ressalva &nbsp; ${caixa(false)} Recusada/devolução</p>
     <p class="linha"><b>Providência/ocorrência:</b> ${f ? esc(f.recomendacao) : "_____________________________________________________________________________"}</p>
     <p class="linha"><b>Comunicado ao fornecedor em:</b> ___/___/_____ &nbsp;&nbsp; <b>Responsável:</b> ______________________________</p>
-    <table class="modelo"><thead><tr><th>Texto-modelo para comunicar o fornecedor</th></tr></thead><tbody><tr><td>${textoModelo}</td></tr></tbody></table>
+    <table class="modelo"><thead><tr><th>${f ? "Comunicação ao fornecedor" : "Texto-modelo para comunicar o fornecedor"}</th></tr></thead><tbody><tr><td>${textoModelo}</td></tr></tbody></table>
   </section>`;
 }
 
