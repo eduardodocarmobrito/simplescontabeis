@@ -8020,10 +8020,14 @@ async function nfseModeloModal(m, opts){
   const [{ items: ctribItens }, { items: nbsItens }, { items: cclasstribItens }] = await Promise.all([ api(opts.ctribPath), api(opts.nbsPath), api(opts.cclasstribPath) ]);
   openModal(`
     <h3>${m?'Editar':'Novo'} modelo de serviço</h3>
-    <div class="field"><label>Nome</label><input id="nmNome" value="${m?esc(m.nome):''}" placeholder='Ex.: "Serviços Administrativos"'></div>
-    <div class="field"><label>Código de tributação nacional</label>${comboSelectHtml('nmCTribNacCombo', 'Digite para buscar (ex.: advocacia, consultoria...)…')}</div>
-    <div class="field"><label>Código de tributação municipal (opcional)</label><input id="nmCTribMun" value="${m&&m.codigoTributacaoMunicipal?esc(m.codigoTributacaoMunicipal):''}"></div>
-    <div class="field"><label>Código NBS</label>${comboSelectHtml('nmNbsCombo', 'Digite para buscar…')}</div>
+    <div class="row">
+      <div class="field grow"><label>Nome</label><input id="nmNome" value="${m?esc(m.nome):''}" placeholder='Ex.: "Serviços Administrativos"'></div>
+      <div class="field" style="width:220px;"><label>Código de tributação municipal (opcional)</label><input id="nmCTribMun" value="${m&&m.codigoTributacaoMunicipal?esc(m.codigoTributacaoMunicipal):''}"></div>
+    </div>
+    <div class="row">
+      <div class="field grow"><label>Código de tributação nacional</label>${comboSelectHtml('nmCTribNacCombo', 'Digite para buscar (ex.: advocacia, consultoria...)…')}</div>
+      <div class="field grow"><label>Código NBS</label>${comboSelectHtml('nmNbsCombo', 'Digite para buscar…')}</div>
+    </div>
     <p style="font-size:11.5px; color:var(--ink-soft); margin:2px 0 10px;">O portal oficial do governo trata esse campo como obrigatório na prática.</p>
     <div class="row">
       <div class="field grow"><label>Tributação do ISSQN</label>
@@ -8041,38 +8045,40 @@ async function nfseModeloModal(m, opts){
           <option value="3" ${m&&m.tipoRetencaoIssqn===3?'selected':''}>Retido pelo intermediário</option>
         </select>
       </div>
-    </div>
-    <div class="field" style="width:160px;"><label>Alíquota ISSQN % (opcional)</label><input id="nmAliquota" type="number" step="0.01" min="0" value="${m&&m.aliquotaIssqn!=null?m.aliquotaIssqn:''}"></div>
-    <div class="field"><label>Retenção de PIS/COFINS</label>
-      <select id="nmRetPisCofins">
-        <option value="">Não informar</option>
-        <option value="1" ${m&&m.tipoRetencaoPisCofins===1?'selected':''}>PIS/COFINS retido</option>
-        <option value="2" ${m&&m.tipoRetencaoPisCofins===2?'selected':''}>PIS/COFINS não retido</option>
-      </select>
+      <div class="field" style="width:170px;"><label>Alíquota ISSQN % (opcional)</label><input id="nmAliquota" type="number" step="0.01" min="0" value="${m&&m.aliquotaIssqn!=null?m.aliquotaIssqn:''}"></div>
+      <div class="field grow"><label>Retenção de PIS/COFINS</label>
+        <select id="nmRetPisCofins">
+          <option value="">Não informar</option>
+          <option value="1" ${m&&m.tipoRetencaoPisCofins===1?'selected':''}>PIS/COFINS retido</option>
+          <option value="2" ${m&&m.tipoRetencaoPisCofins===2?'selected':''}>PIS/COFINS não retido</option>
+        </select>
+      </div>
     </div>
 
     <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Tributação Municipal — avançado</div>
-    <label class="checkbox-row"><input type="checkbox" id="nmExigSuspensa" ${m&&m.issqnExigibilidadeSuspensa?'checked':''}> Exigibilidade do ISSQN suspensa (decisão judicial/processo administrativo)</label>
+    <div class="row" style="align-items:center;">
+      <label class="checkbox-row" style="margin:0;"><input type="checkbox" id="nmExigSuspensa" ${m&&m.issqnExigibilidadeSuspensa?'checked':''}> Exigibilidade do ISSQN suspensa (decisão judicial/processo administrativo)</label>
+      <div class="field" style="width:260px; margin-bottom:0;"><label>Código do benefício municipal (opcional)</label><input id="nmBeneficioMunicipal" value="${m&&m.beneficioMunicipalCodigo?esc(m.beneficioMunicipalCodigo):''}" placeholder="nBM — deixe em branco se não houver"></div>
+    </div>
     <div id="nmExigSuspensaWrap" class="row" style="margin-top:8px;"></div>
-    <div class="field"><label>Código do benefício municipal (opcional)</label><input id="nmBeneficioMunicipal" value="${m&&m.beneficioMunicipalCodigo?esc(m.beneficioMunicipalCodigo):''}" placeholder="nBM — deixe em branco se não houver"></div>
 
     <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Tributação Federal — retenções (% sobre o valor do serviço)</div>
-    <div class="field" style="width:220px;"><label>CST do PIS/COFINS</label>
-      <select id="nmPisCofinsCst">
-        <option value="00" ${(!m||m.pisCofinsCst==='00'||!m.pisCofinsCst)?'selected':''}>00 - Nenhum</option>
-        <option value="01" ${m&&m.pisCofinsCst==='01'?'selected':''}>01 - Tributável alíquota básica</option>
-        <option value="04" ${m&&m.pisCofinsCst==='04'?'selected':''}>04 - Monofásica revenda alíquota zero</option>
-        <option value="06" ${m&&m.pisCofinsCst==='06'?'selected':''}>06 - Tributável alíquota zero</option>
-        <option value="08" ${m&&m.pisCofinsCst==='08'?'selected':''}>08 - Sem incidência da contribuição</option>
-        <option value="09" ${m&&m.pisCofinsCst==='09'?'selected':''}>09 - Suspensão da contribuição</option>
-      </select>
-    </div>
     <div class="row">
-      <div class="field" style="width:140px;"><label>IRRF %</label><input id="nmPctIrrf" type="number" step="0.01" min="0" value="${m&&m.percentualIrrf!=null?m.percentualIrrf:''}"></div>
-      <div class="field" style="width:140px;"><label>CSLL %</label><input id="nmPctCsll" type="number" step="0.01" min="0" value="${m&&m.percentualCsll!=null?m.percentualCsll:''}"></div>
-      <div class="field" style="width:140px;"><label>COFINS retido %</label><input id="nmPctCofins" type="number" step="0.01" min="0" value="${m&&m.percentualCofinsRetido!=null?m.percentualCofinsRetido:''}"></div>
-      <div class="field" style="width:140px;"><label>PIS retido %</label><input id="nmPctPis" type="number" step="0.01" min="0" value="${m&&m.percentualPisRetido!=null?m.percentualPisRetido:''}"></div>
-      <div class="field" style="width:180px;"><label>Contrib. previdenciária %</label><input id="nmPctCp" type="number" step="0.01" min="0" value="${m&&m.percentualContribPrevidenciaria!=null?m.percentualContribPrevidenciaria:''}"></div>
+      <div class="field" style="width:200px;"><label>CST do PIS/COFINS</label>
+        <select id="nmPisCofinsCst">
+          <option value="00" ${(!m||m.pisCofinsCst==='00'||!m.pisCofinsCst)?'selected':''}>00 - Nenhum</option>
+          <option value="01" ${m&&m.pisCofinsCst==='01'?'selected':''}>01 - Tributável alíquota básica</option>
+          <option value="04" ${m&&m.pisCofinsCst==='04'?'selected':''}>04 - Monofásica revenda alíquota zero</option>
+          <option value="06" ${m&&m.pisCofinsCst==='06'?'selected':''}>06 - Tributável alíquota zero</option>
+          <option value="08" ${m&&m.pisCofinsCst==='08'?'selected':''}>08 - Sem incidência da contribuição</option>
+          <option value="09" ${m&&m.pisCofinsCst==='09'?'selected':''}>09 - Suspensão da contribuição</option>
+        </select>
+      </div>
+      <div class="field" style="width:105px;"><label>IRRF %</label><input id="nmPctIrrf" type="number" step="0.01" min="0" value="${m&&m.percentualIrrf!=null?m.percentualIrrf:''}"></div>
+      <div class="field" style="width:105px;"><label>CSLL %</label><input id="nmPctCsll" type="number" step="0.01" min="0" value="${m&&m.percentualCsll!=null?m.percentualCsll:''}"></div>
+      <div class="field" style="width:125px;"><label>COFINS retido %</label><input id="nmPctCofins" type="number" step="0.01" min="0" value="${m&&m.percentualCofinsRetido!=null?m.percentualCofinsRetido:''}"></div>
+      <div class="field" style="width:105px;"><label>PIS retido %</label><input id="nmPctPis" type="number" step="0.01" min="0" value="${m&&m.percentualPisRetido!=null?m.percentualPisRetido:''}"></div>
+      <div class="field" style="width:145px;"><label>Contrib. previdenciária %</label><input id="nmPctCp" type="number" step="0.01" min="0" value="${m&&m.percentualContribPrevidenciaria!=null?m.percentualContribPrevidenciaria:''}"></div>
     </div>
     <p style="font-size:11.5px; color:var(--ink-soft); margin:2px 0 10px;">Deixe em branco o que não se aplica. O valor retido é calculado automaticamente na hora da emissão (% × valor do serviço).</p>
 
@@ -8093,7 +8099,7 @@ async function nfseModeloModal(m, opts){
       <button class="btn" id="nmCancel">Cancelar</button>
       <button class="btn primary" id="nmSalvar">Salvar</button>
     </div>
-  `);
+  `, '960px');
   setupComboSelect('nmCTribNacCombo', ctribItens, ()=>{});
   setupComboSelect('nmNbsCombo', nbsItens, ()=>{});
   function desenhaExigSuspensaWrap(){
