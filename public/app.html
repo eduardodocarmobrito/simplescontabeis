@@ -11458,16 +11458,18 @@ async function renderMinhaNfseConfig(){
         <div class="field grow"><label>Cidade (IBGE)</label>${comboSelectHtml('mnfCidadeCombo','Digite a cidade…')}</div>
         <div class="field" style="width:140px;"><label>Código do município</label><input id="mnfMunicipio" readonly style="background:var(--paper);" value="${esc(e.codigoMunicipio||'')}" maxlength="7"></div>
         <div class="field" style="width:70px;"><label>UF</label><input id="mnfUf" readonly style="background:var(--paper);" value=""></div>
+        <div class="field" style="width:200px;"><label>Inscrição municipal</label><input id="mnfIM" value="${esc(e.inscricaoMunicipal||'')}"></div>
       </div>
       <input type="hidden" id="mnfMunicipioDesc" value="${esc(e.nomeMunicipio||'')}">
-      <div class="field"><label>Inscrição municipal</label><input id="mnfIM" value="${esc(e.inscricaoMunicipal||'')}"></div>
       <label class="checkbox-row"><input type="checkbox" id="mnfSimples" ${e.opcaoSimplesNacional!==false?'checked':''}> Optante pelo Simples Nacional</label>
       <div id="mnfRegApuracaoWrap"></div>
       <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Certificado digital</div>
       <div class="card" style="margin:10px 0; background:var(--paper);">
         ${e.temCertificadoProprio? `<p style="font-size:12.5px; color:var(--ink-soft); margin:0;">Certificado já enviado. Envie outro arquivo abaixo só se quiser substituir.</p>`:'<p style="font-size:12.5px; color:var(--ink-soft); margin:0;">Envie o certificado digital (.pfx) da sua empresa — necessário pra emitir.</p>'}
-        <div class="field" style="margin-top:6px;"><label>Arquivo do certificado (.pfx)</label><input type="file" id="mnfCertArquivo" accept=".pfx,.p12"></div>
-        <div class="field"><label>Senha do certificado</label><input type="password" id="mnfCertSenha"></div>
+        <div class="row" style="margin-top:6px;">
+          <div class="field grow"><label>Arquivo do certificado (.pfx)</label><input type="file" id="mnfCertArquivo" accept=".pfx,.p12"></div>
+          <div class="field" style="width:260px;"><label>Senha do certificado</label><input type="password" id="mnfCertSenha"></div>
+        </div>
       </div>
       <button class="btn primary" id="mnfSalvar" disabled>Salvar</button>
     </div>
@@ -11482,19 +11484,23 @@ async function renderMinhaNfseConfig(){
     const wrap = document.getElementById('mnfRegApuracaoWrap');
     if(!document.getElementById('mnfSimples').checked){ wrap.innerHTML=''; return; }
     const atual = e.regimeApuracaoSn || '1';
+    const REG_APURACAO_OPCOES = [
+      {id:'1', label:'Tributos federais e municipal apurados pelo Simples Nacional (padrão)'},
+      {id:'2', label:'Tributos federais pelo Simples Nacional, ISSQN por fora (legislação municipal)'},
+      {id:'3', label:'Tributos federais e municipal apurados por fora do Simples Nacional'},
+    ];
     wrap.innerHTML = `
-      <div class="field"><label>Regime de apuração dos tributos do Simples Nacional</label>
-        <select id="mnfRegApuracao">
-          <option value="1" ${atual==='1'?'selected':''}>Tributos federais e municipal apurados pelo Simples Nacional (padrão)</option>
-          <option value="2" ${atual==='2'?'selected':''}>Tributos federais pelo Simples Nacional, ISSQN por fora (legislação municipal)</option>
-          <option value="3" ${atual==='3'?'selected':''}>Tributos federais e municipal apurados por fora do Simples Nacional</option>
-        </select>
-        <div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">Só muda de "padrão" se sua empresa tiver ultrapassado algum sublimite do Simples Nacional.</div>
+      <div class="row" style="margin-top:8px;">
+        <div class="field grow"><label>Regime de apuração dos tributos do Simples Nacional</label>${comboSelectHtml('mnfRegApuracaoCombo', 'Digite para buscar…')}</div>
+        <div class="field" style="width:260px;"><label>% total de tributos (Simples Nacional)</label><input id="mnfTotTribSN" type="number" step="0.01" min="0" max="99.99" value="${e.percentualTotalTributosSn!=null?e.percentualTotalTributosSn:''}" placeholder="Ex.: 6.00"></div>
       </div>
-      <div class="field"><label>% total de tributos (Simples Nacional)</label><input id="mnfTotTribSN" type="number" step="0.01" min="0" max="99.99" value="${e.percentualTotalTributosSn!=null?e.percentualTotalTributosSn:''}" placeholder="Ex.: 6.00"></div>
-      <div style="font-size:11.5px; color:var(--ink-soft); margin-top:-6px; margin-bottom:14px;">Percentual aproximado do total de tributos embutido no preço (Lei 12.741/2012), conforme a alíquota efetiva do Simples Nacional da sua empresa (do DAS/faixa atual) — obrigatório pra emitir.</div>
+      <div style="font-size:11.5px; color:var(--ink-soft); margin-top:-6px; margin-bottom:14px;">Regime: só muda de "padrão" se sua empresa tiver ultrapassado algum sublimite do Simples Nacional. % de tributos: percentual aproximado embutido no preço (Lei 12.741/2012), conforme a alíquota efetiva do Simples Nacional da sua empresa (do DAS/faixa atual) — obrigatório pra emitir.</div>
     `;
-    document.getElementById('mnfRegApuracao').addEventListener('change', atualizarSalvar);
+    setupComboSelect('mnfRegApuracaoCombo', REG_APURACAO_OPCOES, ()=>atualizarSalvar());
+    const regCombo = document.getElementById('mnfRegApuracaoCombo');
+    const regItem = REG_APURACAO_OPCOES.find(o=>o.id===String(atual)) || REG_APURACAO_OPCOES[0];
+    regCombo.querySelector('.combo-value').value = regItem.id;
+    regCombo.querySelector('.combo-input').value = regItem.label;
     document.getElementById('mnfTotTribSN').addEventListener('input', atualizarSalvar);
   }
   // Botão Salvar começa desabilitado e só libera quando algo muda de verdade (comparado com o que
@@ -11506,7 +11512,7 @@ async function renderMinhaNfseConfig(){
       uf: document.getElementById('mnfUf').value,
       im: document.getElementById('mnfIM').value.trim(),
       simples: document.getElementById('mnfSimples').checked,
-      regApuracao: document.getElementById('mnfRegApuracao')?.value || null,
+      regApuracao: document.querySelector('#mnfRegApuracaoCombo .combo-value')?.value || null,
       totTrib: document.getElementById('mnfTotTribSN')?.value || null,
       temArquivo: !!document.getElementById('mnfCertArquivo').files[0],
       senha: document.getElementById('mnfCertSenha').value,
@@ -11528,7 +11534,7 @@ async function renderMinhaNfseConfig(){
       nomeMunicipio: document.getElementById('mnfMunicipioDesc').value.trim(),
       inscricaoMunicipal: document.getElementById('mnfIM').value.trim(),
       opcaoSimplesNacional: document.getElementById('mnfSimples').checked,
-      regimeApuracaoSn: document.getElementById('mnfRegApuracao')?.value || '1',
+      regimeApuracaoSn: document.querySelector('#mnfRegApuracaoCombo .combo-value')?.value || '1',
       percentualTotalTributosSn: document.getElementById('mnfTotTribSN')?.value || null,
     };
     try{
