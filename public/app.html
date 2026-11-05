@@ -1613,6 +1613,31 @@ function setupDatePicker(hiddenId, textId){
 function dateFieldHtml(hiddenId, label, value){
   return `<div class="date-field"><label>${esc(label)}</label><div class="date-input-wrap"><input type="text" id="${hiddenId}_text" class="date-text" placeholder="dd/mm/aaaa" inputmode="numeric" autocomplete="off" maxlength="10"><input type="date" id="${hiddenId}" value="${value?esc(value):''}" style="display:none;"></div></div>`;
 }
+// Campo de DATA (padrão do site, popup escuro) + HORA lado a lado — usa no lugar de
+// <input type="datetime-local"> nativo, que abre o calendário branco do navegador fora do tema
+// (pedido do usuário 2026-11-05, visto no modal "Agendar mensagem").
+function dateTimeFieldHtml(prefix, label, d){
+  const iso = isoFromParts(d.getFullYear(), d.getMonth(), d.getDate());
+  const hora = `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+  return `<div class="row" style="gap:8px; align-items:flex-end; flex-wrap:wrap;">
+    ${dateFieldHtml(prefix+'Data', label, iso)}
+    <div class="field" style="margin-bottom:0; width:120px;"><label>Hora</label><input type="time" id="${prefix}Hora" value="${hora}"></div>
+  </div>`;
+}
+function setupDateTimeField(prefix){ setupDatePicker(prefix+'Data', prefix+'Data_text'); }
+function dateTimeFieldSet(prefix, d){
+  const hidden=document.getElementById(prefix+'Data');
+  hidden.value = isoFromParts(d.getFullYear(), d.getMonth(), d.getDate());
+  if(hidden._syncText) hidden._syncText();
+  document.getElementById(prefix+'Hora').value = `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+}
+function dateTimeFieldGet(prefix){
+  const dataVal = document.getElementById(prefix+'Data').value;
+  const horaVal = document.getElementById(prefix+'Hora').value;
+  if(!dataVal || !horaVal) return null;
+  const d = new Date(dataVal+'T'+horaVal+':00');
+  return isNaN(d) ? null : d;
+}
 // --- Seletor de MÊS/competência (valor "AAAA-MM") no MESMO popup do sistema (.cal-popup), pra
 // substituir o <input type="month"> nativo do navegador (que abre um calendário branco fora do tema). ---
 function openMonthCalendar(hiddenId, textId){
@@ -16958,7 +16983,7 @@ async function atdAcao(S, acao, botao){
       <div id="atdAdiarPersonalizar" style="display:none; margin-top:14px;">
         <div class="row" style="gap:8px; align-items:flex-end;">
           ${dateFieldHtml('atdAdiarData', 'Volta no dia', daqui1h.toISOString().slice(0,10))}
-          <div class="field"><label>Hora</label><input type="time" id="atdAdiarHora" value="${String(daqui1h.getHours()).padStart(2,'0')}:${String(daqui1h.getMinutes()).padStart(2,'0')}"></div>
+          <div class="field" style="margin-bottom:0; width:120px;"><label>Hora</label><input type="time" id="atdAdiarHora" value="${String(daqui1h.getHours()).padStart(2,'0')}:${String(daqui1h.getMinutes()).padStart(2,'0')}"></div>
         </div>
         <button class="btn primary small" id="atdAdiarPersonalizarConfirmar" style="margin-top:10px;">Adiar até esse horário</button>
       </div>
@@ -18062,15 +18087,16 @@ function atdAgendarModal(S, input){
       <button class="btn small" type="button" id="agAnexarBtn">📎 Anexar arquivo</button>
       <span id="agAnexoNome" style="font-size:12.5px; color:var(--ink-soft); margin-left:8px;"></span>
     </div>
-    <div class="field"><label>Enviar em</label>
-      <div class="row" style="gap:8px; align-items:center; flex-wrap:wrap;"><input type="datetime-local" id="agQuando" value="${cenvParaInputDt(cenvProximas8h())}" style="max-width:230px;">
-        <button class="btn small" type="button" id="ag8h">🕗 08:00 (próximo dia útil)</button><button class="btn small" type="button" id="ag1h">+1 hora</button></div></div>
+    <div class="field">
+      ${dateTimeFieldHtml('ag', 'Enviar em', cenvProximas8h())}
+      <div class="row" style="gap:8px; margin-top:8px;"><button class="btn small" type="button" id="ag8h">🕗 08:00 (próximo dia útil)</button><button class="btn small" type="button" id="ag1h">+1 hora</button></div></div>
     <label class="checkbox-row" style="margin:0 0 6px;"><input type="checkbox" id="agCancelaResp" checked> <span>Cancelar sozinha se o <b>cliente responder</b> antes do horário</span></label>
     <p style="font-size:11.5px; color:var(--ink-soft); margin:0;">A mensagem sai no histórico da conversa como enviada por <b>Automações</b>; o registro de quem agendou fica em Agendadas.</p>
     <div class="row" style="justify-content:space-between; gap:8px; margin-top:12px;"><button class="btn" id="agVer">Ver agendadas desta conversa</button>
       <span class="row" style="gap:8px;"><button class="btn" onclick="closeModal()">Cancelar</button><button class="btn primary" id="agOk">Agendar</button></span></div>`, '560px');
-  document.getElementById('ag8h').addEventListener('click', ()=>{ document.getElementById('agQuando').value = cenvParaInputDt(cenvProximas8h()); });
-  document.getElementById('ag1h').addEventListener('click', ()=>{ document.getElementById('agQuando').value = cenvParaInputDt(new Date(Date.now()+3600000)); });
+  setupDateTimeField('ag');
+  document.getElementById('ag8h').addEventListener('click', ()=>{ dateTimeFieldSet('ag', cenvProximas8h()); });
+  document.getElementById('ag1h').addEventListener('click', ()=>{ dateTimeFieldSet('ag', new Date(Date.now()+3600000)); });
   document.getElementById('agVer').addEventListener('click', ()=>atdAgendadasModal(S, S.conversaAtiva));
   const nomeEl = document.getElementById('agAnexoNome');
   document.getElementById('agAnexarBtn').addEventListener('click', ()=>document.getElementById('agArquivo').click());
@@ -18091,9 +18117,9 @@ function atdAgendarModal(S, input){
   });
   document.getElementById('agOk').addEventListener('click', async ()=>{
     const texto = document.getElementById('agTexto').value.trim();
-    const quando = new Date(document.getElementById('agQuando').value);
+    const quando = dateTimeFieldGet('ag');
     if(!texto && !anexo){ toast('Escreva a mensagem ou anexe um arquivo.','err'); return; }
-    if(isNaN(quando)){ toast('Escolha o dia e o horário.','err'); return; }
+    if(!quando){ toast('Escolha o dia e o horário.','err'); return; }
     const b = document.getElementById('agOk'); b.disabled = true; b.textContent = 'Agendando…';
     try{
       await api(`/atendimento/conversas/${encodeURIComponent(S.conversaAtiva)}/agendar`, { method:'POST', body:{ texto, quando:quando.toISOString(), escopo:S.escopo, cancelarSeResponder: document.getElementById('agCancelaResp').checked, anexo } });

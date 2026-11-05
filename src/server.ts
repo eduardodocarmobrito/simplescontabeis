@@ -2596,6 +2596,20 @@ try {
   if (!colsEmpresas.some((c) => c.name === "demonstrativo_mensal")) {
     sqlite.exec(`ALTER TABLE empresas ADD COLUMN demonstrativo_mensal INTEGER NOT NULL DEFAULT 0`);
   }
+  // Flags de elegibilidade pro quadro "Obrigações do Mês"/cards de pendência (DCTF-Web, Folha, FGTS).
+  // DEFAULT 1 preserva o comportamento atual pra toda empresa já existente (ninguém some do
+  // monitoramento por padrão) — o escritório desmarca manualmente só quem não se aplica, ex. empresa
+  // que entrega só MIT (sem Folha/DCTF-Web/FGTS) ou CPF (produtor rural/empregador doméstico) onde a
+  // consulta automática ao e-CAC é sabidamente não-confiável (ver empresaTemCnpjAuto).
+  if (!colsEmpresas.some((c) => c.name === "obrig_dctfweb")) {
+    sqlite.exec(`ALTER TABLE empresas ADD COLUMN obrig_dctfweb INTEGER NOT NULL DEFAULT 1`);
+  }
+  if (!colsEmpresas.some((c) => c.name === "obrig_folha")) {
+    sqlite.exec(`ALTER TABLE empresas ADD COLUMN obrig_folha INTEGER NOT NULL DEFAULT 1`);
+  }
+  if (!colsEmpresas.some((c) => c.name === "obrig_fgts")) {
+    sqlite.exec(`ALTER TABLE empresas ADD COLUMN obrig_fgts INTEGER NOT NULL DEFAULT 1`);
+  }
 }
 // Relatório de Entradas/Saídas (aba Fiscal): a tabela mensal parseada do PDF, o período e o ajuste por
 // empresa (valor que o usuário soma numa coluna; o Acumulado é recalculado na hora). Guarda só os 3
@@ -7286,11 +7300,14 @@ sqlite.exec(`CREATE TABLE IF NOT EXISTS of_dominio_layout (
 // a algum dos templates da obrigação (a config do próprio Envio define quem recebe o quê).
 const OBRIGACOES_POR_SETOR: Record<string, any[]> = {
   dprh: [
-    { id: "dprh_dctfweb", label: "DCTF-Web", templates: ["DARF - DCTF-Web", "DARF-DCTF-Web"], fonte: "dctfweb", prazoTransmissao: 15, prazoEnvio: 20 },
-    { id: "dprh_fgts", label: "Guia FGTS", templates: ["FGTS", "Guia FGTS Digital", "FGTS Relatorio"], fonte: "envio", prazoTransmissao: 7, prazoEnvio: 20 },
+    // flagColuna: coluna em `empresas` que o escritório desmarca pra empresa não entrar nessa obrigação
+    // (ex. empresa que só entrega MIT, sem DCTF-Web/Folha/FGTS) — default 1 pra não desmonitorar ninguém
+    // que já estava sendo checado (ver migração "Flags de elegibilidade" em server.ts).
+    { id: "dprh_dctfweb", label: "DCTF-Web", templates: ["DARF - DCTF-Web", "DARF-DCTF-Web"], fonte: "dctfweb", flagColuna: "obrig_dctfweb", prazoTransmissao: 15, prazoEnvio: 20 },
+    { id: "dprh_fgts", label: "Guia FGTS", templates: ["FGTS", "Guia FGTS Digital", "FGTS Relatorio"], fonte: "envio", flagColuna: "obrig_fgts", prazoTransmissao: 7, prazoEnvio: 20 },
     // Transmissão da Folha (pedido 2026-11-03): NÃO vale o anexo no Envio nem a guia DARF — só a DCTFWeb
     // da competência ATIVA no e-CAC com origem eSocial (ver dctfweb_situacao / CONSRECIBO32).
-    { id: "dprh_folha", label: "Folha de Pagamento", templates: ["Folha Mensal", "Folha de Pagamento Mensal"], fonte: "envio", transmissaoEsocial: true, prazoTransmissao: 5, prazoEnvio: 10 },
+    { id: "dprh_folha", label: "Folha de Pagamento", templates: ["Folha Mensal", "Folha de Pagamento Mensal"], fonte: "envio", transmissaoEsocial: true, flagColuna: "obrig_folha", prazoTransmissao: 5, prazoEnvio: 10 },
   ],
   fiscal: [
     { id: "fiscal_nfse_honorarios", label: "NFS-e de Honorários (escritório)", templates: [], fonte: "nfse_honorarios", prazoTransmissao: 10, prazoEnvio: 15 },
@@ -7316,7 +7333,7 @@ function obrigacoesCalcular(user: { escritorioId: number }, setor: string, comp:
   const cfgMap: Record<string, any> = {}; cfgRows.forEach((c) => (cfgMap[c.obrigacao] = c));
   const manRows = sqlite.prepare(`SELECT empresa_id, obrigacao, transmitida, transmitida_em, enviada, enviada_em FROM obrigacoes_manual WHERE escritorio_id = ? AND competencia = ?`).all(user.escritorioId, comp) as any[];
   const manMap: Record<string, any> = {}; manRows.forEach((r) => (manMap[r.empresa_id + "|" + r.obrigacao] = r));
-  const empresas = sqlite.prepare(`SELECT e.id, e.nome, e.cnpj FROM empresas e WHERE e.escritorio_id = ? AND e.ativo = 1`).all(user.escritorioId) as any[];
+  const empresas = sqlite.prepare(`SELECT e.id, e.nome, e.cnpj, e.obrig_dctfweb, e.obrig_folha, e.obrig_fgts FROM empresas e WHERE e.escritorio_id = ? AND e.ativo = 1`).all(user.escritorioId) as any[];
   const empNome: Record<number, any> = {}; empresas.forEach((e) => (empNome[e.id] = e));
   const temIntegraDoc = sqlite.prepare(`SELECT 1 FROM integracontador_documentos WHERE empresa_id = ? AND tipo = ? AND periodo_apuracao = ? LIMIT 1`);
   // Situação da DCTFWeb no e-CAC (CONSRECIBO32): ativa = transmitida; origens dizem se veio do eSocial.
@@ -7344,6 +7361,9 @@ function obrigacoesCalcular(user: { escritorioId: number }, setor: string, comp:
       elegiveis = tpls.length
         ? (sqlite.prepare(`SELECT DISTINCT a.empresa_id as id FROM envio_atribuicoes a JOIN envio_templates t ON t.id = a.template_id WHERE a.ativo = 1 AND t.nome IN (${ph})`).all(...tpls) as any[]).map((x) => x.id)
         : [];
+      // Respeita a flag "Buscar DCTF-Web/Folha/FGTS" do cadastro da empresa (default 1) — empresa que só
+      // entrega MIT, por exemplo, não entra nessa obrigação mesmo tendo atribuição ativa no Envio.
+      if (ob.flagColuna) elegiveis = elegiveis.filter((id) => empNome[id]?.[ob.flagColuna] !== 0);
     }
     const envioStmt = tpls.length ? sqlite.prepare(
       `SELECT COUNT(*) as n, MAX(d.email_enviado) as emailEnv, MAX(d.whatsapp_enviado) as waEnv, MAX(d.email_enviado_em) as emailEm, MAX(d.whatsapp_enviado_em) as waEm
@@ -7529,12 +7549,29 @@ async function dctfwebConsultarSituacao(escritorioId: number, empresaId: number,
   return { ativa: false, mensagem };
 }
 // Empresas que entram na checagem: as do quadro DCTF-Web e/ou Folha (atribuição ativa no Envio).
+// Exclui quem tem CPF (11 dígitos) em vez de CNPJ no cadastro — achado ao vivo 2026-11-05: a consulta
+// de recibo DCTF-Web pelo Integra Contador (CONSRECIBO32) devolve "nenhuma declaração ativa" pra todo
+// contribuinte CPF (produtor rural/empregador doméstico) mesmo quando o e-CAC de verdade mostra
+// declaração Ativa com origem eSocial — falso negativo sistemático, confirmado comparando com o
+// e-CAC real pra 2 CPFs (LUCELIO OLIVEIRA MARTINS cód.17, WANDERLEY MELO NEPOMUCENO cód.124). Até
+// entender a causa exata (provável limitação da API pra contribuinte tipo CPF nesse serviço
+// específico), não dá pra confiar nesse resultado — melhor não gerar o sinal errado do que avisar
+// "pendente" pra quem já entregou.
+function empresaTemCnpjAuto(cnpj: string | null | undefined): boolean {
+  return String(cnpj || "").replace(/\D/g, "").length === 14;
+}
 function dctfwebEmpresasElegiveis(escritorioId: number): number[] {
-  const tpls = [...new Set(OBRIGACOES_POR_SETOR.dprh.filter((o: any) => o.id === "dprh_dctfweb" || o.id === "dprh_folha").flatMap((o: any) => o.templates))];
-  return (sqlite.prepare(
-    `SELECT DISTINCT a.empresa_id as id FROM envio_atribuicoes a JOIN envio_templates t ON t.id = a.template_id JOIN empresas e ON e.id = a.empresa_id
-     WHERE a.ativo = 1 AND e.ativo = 1 AND e.escritorio_id = ? AND t.nome IN (${tpls.map(() => "?").join(",")})`
-  ).all(escritorioId, ...tpls) as any[]).map((x) => x.id);
+  const obs = OBRIGACOES_POR_SETOR.dprh.filter((o: any) => o.id === "dprh_dctfweb" || o.id === "dprh_folha");
+  const ids = new Set<number>();
+  for (const ob of obs) {
+    const tpls: string[] = ob.templates;
+    const rows = sqlite.prepare(
+      `SELECT DISTINCT a.empresa_id as id, e.cnpj, e.${ob.flagColuna} as flag FROM envio_atribuicoes a JOIN envio_templates t ON t.id = a.template_id JOIN empresas e ON e.id = a.empresa_id
+       WHERE a.ativo = 1 AND e.ativo = 1 AND e.escritorio_id = ? AND t.nome IN (${tpls.map(() => "?").join(",")})`
+    ).all(escritorioId, ...tpls) as any[];
+    for (const x of rows) if (empresaTemCnpjAuto(x.cnpj) && x.flag !== 0) ids.add(x.id);
+  }
+  return [...ids];
 }
 const dctfwebValidacao = new Map<number, { rodando: boolean; total: number; feitas: number; ativas: number; erros: number; periodo: string; fim?: string }>();
 async function dctfwebValidarLote(escritorioId: number, periodo: string, empresas: number[], forcar = false) {
@@ -21602,9 +21639,12 @@ function cardObrigacaoNaoTransmitida(user: any, obrigacaoId: string, incluirNaoC
     const comp = `${a}-${String(m).padStart(2, "0")}`;
     for (const l of obrigacoesCalcular(user, "dprh", comp, [obrigacaoId]).linhas) {
       if (l.transmitida || !visiveis.has(l.empresaId)) continue;
-      const confirmada = l.transmitidaManual || (l.situacaoDctf && !/^Erro/.test(l.situacaoDctf.mensagem || "") && l.situacaoDctf.consultadoEm);
+      // Consulta automática ao e-CAC não é confiável pra contribuinte CPF (ver nota em
+      // dctfwebEmpresasElegiveis) — só confia nela pra quem tem CNPJ de verdade; marcação manual
+      // continua valendo pra qualquer um (é confirmação humana, não depende da consulta).
+      const confirmada = l.transmitidaManual || (empresaTemCnpjAuto(l.cnpj) && l.situacaoDctf && !/^Erro/.test(l.situacaoDctf.mensagem || "") && l.situacaoDctf.consultadoEm);
       if (!incluirNaoConfirmadas && !confirmada) continue;
-      const it = porEmp.get(l.empresaId) || { empresaId: l.empresaId, empresaNome: l.empresaNome, competencias: [] as any[] };
+      const it = porEmp.get(l.empresaId) || { empresaId: l.empresaId, empresaNome: l.empresaNome, cnpj: l.cnpj, competencias: [] as any[] };
       const msg = l.situacaoDctf?.mensagem || null;
       it.competencias.push({
         competencia: comp,
