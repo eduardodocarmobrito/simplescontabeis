@@ -2729,10 +2729,12 @@ const TVP_DIAS = ['domingo','segunda-feira','terça-feira','quarta-feira','quint
 //   blocos: [{ secao:'Agora', cards:[{titulo, valor, sub, cor}] } | { tabelas:[{titulo, colunas:[..], linhas:[[..]], numericas:[idx], vazio}] }]
 const TVP_COR_ALERTA = '#E85F5F', TVP_COR_ATENCAO = '#E8C15F';
 // Páginas do Painel de TV (id = posição na rotação). Ao criar uma página nova, acrescente aqui.
-const PAGINAS_TV = [ { id:1, label:'Página 1 — Cards do Início' }, { id:2, label:'Página 2 — Painel de atendimento' } ];
-function tvpPaginaHtml(blocos){
+const PAGINAS_TV = [ { id:1, label:'Página 1 — Cards do Início' }, { id:2, label:'Página 2 — Atendimento (resumo)' }, { id:3, label:'Página 3 — Atendimento (detalhes)' } ];
+// grande=true usa o grid normal (cards maiores, como a página 1) em vez do compacto — só faz sentido
+// numa página que não tem muita coisa mais pra disputar espaço (ex.: resumo sozinho, sem as tabelas).
+function tvpPaginaHtml(blocos, grande){
   let cor = 0;
-  const cardsBlocoHtml = b => `<div class="tvp-secao-bloco">${b.secao?`<div class="tvp-secao">${esc(b.secao)}</div>`:''}<div class="tvp-grid tvp-grid-compacta">${b.cards.map(c=>`
+  const cardsBlocoHtml = b => `<div class="tvp-secao-bloco">${b.secao?`<div class="tvp-secao">${esc(b.secao)}</div>`:''}<div class="tvp-grid${grande?'':' tvp-grid-compacta'}">${b.cards.map(c=>`
       <div class="tvp-card" style="--tvp-accent:${c.cor || TVP_CORES[(cor++) % TVP_CORES.length]}">
         <div class="tvp-eyebrow"><span>${esc(c.titulo)}</span></div>
         <div class="tvp-val">${esc(String(c.valor))}</div>
@@ -2787,7 +2789,9 @@ function cenvBlocoPainelRodape(ed){
   return [{ secao:'Documentos por setor', tabelas:[{ titulo:'Documentos por setor', colunas:['Setor','Pendentes','Agendados','Enviados hoje','Enviados no mês'], numericas:[1,2,3,4],
     linhas: ed.setores.map(x=>[CENV_NOMES_SETOR[x.setor]||x.setor, x.pendentes, x.agendados, x.enviadosHoje, x.enviadosMes]), vazio:'Sem setores.' }] }];
 }
-function tvpPaginaAtendimento(d, d7, rankMes, rankAno, envioDocs){
+// Página "resumo": só os cards (Envio de documentos + Atendimento WhatsApp + Hoje) — sem as tabelas de
+// detalhe, pra caber maior na tela (grid normal, não o compacto usado quando tudo ficava junto).
+function tvpPaginaAtendimentoResumo(d, envioDocs){
   const a = d.agora, p = d.periodoDados;
   const maior = a.aguardandoResposta[0]?.esperaMin;
   return tvpPaginaHtml([
@@ -2813,6 +2817,13 @@ function tvpPaginaAtendimento(d, d7, rankMes, rankAno, envioDocs){
       { titulo:'Satisfação', valor:p.satisfacao.media==null?'—':'⭐ '+String(p.satisfacao.media).replace('.',','), sub:`${p.satisfacao.respostas} nota${p.satisfacao.respostas===1?'':'s'} de ${p.satisfacao.enviadas}` },
       { titulo:'Compromissos', valor:p.agenda.total, sub:`${p.agenda.porSituacao.confirmed||0} confirmados · ${p.agenda.porSituacao.completed||0} concluídos` },
     ]},
+  ], true);
+}
+// Página "detalhes": as tabelas (Desempenho por funcionário, Por setor, etc.) — mesma rotina que já
+// existia, só sem os blocos de cards em cima, pra caber maior.
+function tvpPaginaAtendimentoDetalhes(d, d7, rankMes, rankAno, envioDocs){
+  const a = d.agora, p = d.periodoDados;
+  return tvpPaginaHtml([
     { secao:'Detalhes de hoje', tabelas:[
       { titulo:'Desempenho por funcionário', colunas:['Quem','Msgs','Conversas','Resposta média','Na meta','Agora'], numericas:[1,2,3,4,5],
         linhas:p.porFuncionario.slice(0,6).map(f=>[f.nome, f.mensagens, f.conversas, painelDur(f.tempoMedioRespostaSeg), f.dentroMetaPct==null?'—':f.dentroMetaPct+'%', f.emAtendimentoAgora||0]), vazio:'Nenhuma mensagem da equipe hoje.' },
@@ -2862,6 +2873,7 @@ async function pagePainelTv(){
     <div class="tvp-body">
       <div class="tvp-pagina" id="tvpPag1"><div class="tvp-grid" id="tvpGrid"><div class="tvp-empty">Carregando…</div></div></div>
       <div class="tvp-pagina tvp-pagina-painel tvp-off" id="tvpPag2"><div class="tvp-empty">Carregando…</div></div>
+      <div class="tvp-pagina tvp-pagina-painel tvp-off" id="tvpPag3"><div class="tvp-empty">Carregando…</div></div>
     </div>
     <div class="tvp-footer">
       <div class="tvp-sync" id="tvpSync">—</div>
@@ -2956,16 +2968,15 @@ async function pagePainelTv(){
     }
   }
 
-  // ---- Páginas: 1 = cards do Início · 2 = Painel de atendimento do CRM. Troca sozinha a cada
-  // `segundosPorPagina` (Configurações › Painel de TV). Se a 2ª página não puder ser montada (ex.: a
-  // integração com o deskcomm está fora), o painel fica só na 1ª em vez de girar pra uma tela vazia.
-  const PAG = { atual:0, seg:30, pag2ok:false, zoom1:1, zoom2:1 };
+  // ---- Páginas: 1 = cards do Início · 2 = Atendimento (resumo) · 3 = Atendimento (detalhes). Troca
+  // sozinha a cada `segundosPorPagina` (Configurações › Painel de TV). Páginas 2 e 3 compartilham a
+  // mesma fonte de dados (CRM/deskcomm) — se essa integração estiver fora, nenhuma das duas monta.
+  // Se a 1ª não puder ser vista por esta conta, as outras ficam mesmo com erro em vez de girar vazia.
+  const PAG = { atual:0, seg:30, pagAtendOk:false, zoom1:1, zoom2:1, zoom3:1 };
   // Páginas que esta conta pode ver (Usuários › Painel de TV › Páginas); vazio = todas. Índices 0-based.
   const PERMITIDAS = (STATE.user.painelTvPaginas||[]).map(n=>n-1);
   const permitida = i => !PERMITIDAS.length || PERMITIDAS.includes(i);
-  // Páginas que entram na troca agora: permitidas e, no caso da 2ª, com dados.
-  // Se a 2ª é a ÚNICA permitida, fica nela mesmo com erro (mostra o motivo e tenta de novo a cada minuto).
-  function paginasAtivas(){ return [0,1].filter(i=>permitida(i) && (i!==1 || PAG.pag2ok || !permitida(0))); }
+  function paginasAtivas(){ return [0,1,2].filter(i=>permitida(i) && (i===0 || PAG.pagAtendOk || !permitida(0))); }
   function desenharPontos(){
     const dots = document.getElementById('tvpDots');
     if(!dots) return;
@@ -2987,31 +2998,42 @@ async function pagePainelTv(){
     if(!box || box.classList.contains('tvp-off')) return;
     box.style.zoom = String(PAG.zoom2);
   }
+  function ajustarPagina3(){
+    const box = document.getElementById('tvpPag3');
+    if(!box || box.classList.contains('tvp-off')) return;
+    box.style.zoom = String(PAG.zoom3);
+  }
   function mostrarPagina(i){
     PAG.atual = i;
     document.getElementById('tvpPag1')?.classList.toggle('tvp-off', i!==0);
     document.getElementById('tvpPag2')?.classList.toggle('tvp-off', i!==1);
+    document.getElementById('tvpPag3')?.classList.toggle('tvp-off', i!==2);
     desenharPontos();
     if(i===0) ajustarPagina1();
     if(i===1) ajustarPagina2();
+    if(i===2) ajustarPagina3();
   }
-  async function carregarPagina2(){
-    const box = document.getElementById('tvpPag2');
-    if(!box) return;
+  // Busca os dados do CRM/deskcomm UMA vez e preenche as páginas 2 (resumo) e 3 (detalhes) juntas —
+  // elas compartilham a mesma fonte, não faz sentido buscar duas vezes.
+  async function carregarPaginasAtendimento(){
+    const box2 = document.getElementById('tvpPag2'), box3 = document.getElementById('tvpPag3');
+    if(!box2 && !box3) return;
     try{
       const [d, d7, rm, ra, ed] = await Promise.all([api('/atendimento/painel?periodo=hoje'), api('/atendimento/painel?periodo=7d').catch(()=>null),
         api('/atendimento/painel/ranking-empresas?periodo=mes').catch(()=>null), api('/atendimento/painel/ranking-empresas?periodo=ano').catch(()=>null),
         api('/central-envio/painel').catch(()=>null)]);
-      box.innerHTML = tvpPaginaAtendimento(d, d7, rm&&rm.ranking, ra&&ra.ranking, ed);
-      PAG.pag2ok = true;
+      if(box2) box2.innerHTML = tvpPaginaAtendimentoResumo(d, ed);
+      if(box3) box3.innerHTML = tvpPaginaAtendimentoDetalhes(d, d7, rm&&rm.ranking, ra&&ra.ranking, ed);
+      PAG.pagAtendOk = true;
     }catch(e){
       // Sem dados (ex.: deskcomm fora): a TV fica só na 1ª página em vez de girar pra uma tela vazia.
-      if(!PAG.pag2ok) box.innerHTML = `<div class="tvp-empty">${esc(e.message)}</div>`;
-      PAG.pag2ok = false;
+      if(!PAG.pagAtendOk){ const msg = `<div class="tvp-empty">${esc(e.message)}</div>`; if(box2) box2.innerHTML = msg; if(box3) box3.innerHTML = msg; }
+      PAG.pagAtendOk = false;
     }
     if(!paginasAtivas().includes(PAG.atual)) mostrarPagina(paginasAtivas()[0] ?? 0);
     desenharPontos();
     ajustarPagina2();
+    ajustarPagina3();
   }
   function agendarTroca(){
     if(TVP_TIMERS.pagina) clearInterval(TVP_TIMERS.pagina);
@@ -3023,23 +3045,24 @@ async function pagePainelTv(){
   }
   async function lerTempoDaTroca(){
     try{
-      const { segundosPorPagina, zoomPagina1, zoomPagina2 } = await api('/painel-tv/config');
+      const { segundosPorPagina, zoomPagina1, zoomPagina2, zoomPagina3 } = await api('/painel-tv/config');
       const novo = Math.min(600, Math.max(5, Number(segundosPorPagina)||30));
       if(novo !== PAG.seg || !TVP_TIMERS.pagina){ PAG.seg = novo; agendarTroca(); }
-      const z1 = Number(zoomPagina1)||1, z2 = Number(zoomPagina2)||1;
+      const z1 = Number(zoomPagina1)||1, z2 = Number(zoomPagina2)||1, z3 = Number(zoomPagina3)||1;
       if(z1 !== PAG.zoom1){ PAG.zoom1 = z1; ajustarPagina1(); }
       if(z2 !== PAG.zoom2){ PAG.zoom2 = z2; ajustarPagina2(); }
+      if(z3 !== PAG.zoom3){ PAG.zoom3 = z3; ajustarPagina3(); }
     }catch(e){ if(!TVP_TIMERS.pagina) agendarTroca(); }
   }
 
   tvpManterTelaLigada();
   if(permitida(0)) await carregar(false);
   await lerTempoDaTroca();
-  if(!permitida(0)) mostrarPagina(1);
-  if(permitida(1)) carregarPagina2();
+  if(!permitida(0)) mostrarPagina(permitida(1)?1:permitida(2)?2:0);
+  if(permitida(1)||permitida(2)) carregarPaginasAtendimento();
   // Dados do Painel de atendimento e o tempo de troca (se mudou em Configurações) renovam a cada minuto.
-  TVP_TIMERS.pag2 = setInterval(()=>{ if(permitida(1)) carregarPagina2(); lerTempoDaTroca(); }, 60_000);
-  window.addEventListener('resize', ajustarPagina2);
+  TVP_TIMERS.pag2 = setInterval(()=>{ if(permitida(1)||permitida(2)) carregarPaginasAtendimento(); lerTempoDaTroca(); }, 60_000);
+  window.addEventListener('resize', ()=>{ ajustarPagina2(); ajustarPagina3(); });
   // Valores atualizam sozinhos a cada 1min (com uma "piscada" rápida, sensação de painel ao vivo) —
   // card novo/editado/removido já aparece sozinho nesse refresh (mesma rota que a tela normal de
   // Início usa), sem precisar recarregar a página inteira.
@@ -20049,34 +20072,37 @@ function painelTvZoomOptionsHtml(selecionado){
   return PAINEL_TV_ZOOMS.map(z=>`<option value="${z}" ${Number(selecionado)===z?'selected':''}>${Math.round(z*100)}%</option>`).join('');
 }
 async function renderCfgPainelTv(box){
-  const { segundosPorPagina, zoomPagina1, zoomPagina2, padrao } = await api('/painel-tv/config');
+  const { segundosPorPagina, zoomPagina1, zoomPagina2, zoomPagina3, padrao } = await api('/painel-tv/config');
   const podeEditar = STATE.user.perfil==='Administrador';
   box.innerHTML = `
     <div class="card" style="max-width:640px;">
       <h3 style="margin-top:0;">Painel de TV</h3>
-      <p style="font-size:13px; color:var(--ink-soft); margin-top:-4px;">O painel da TV alterna sozinho entre duas páginas: os <b>cards do Início</b> e o <b>Painel de atendimento do CRM</b> (fila, quem está atendendo, tempos de espera e resposta). Defina aqui por quanto tempo cada página fica na tela e o zoom de cada uma.</p>
+      <p style="font-size:13px; color:var(--ink-soft); margin-top:-4px;">O painel da TV alterna sozinho entre três páginas: os <b>cards do Início</b>, o <b>resumo do Atendimento</b> (fila, quem está atendendo, tempos de espera e resposta) e os <b>detalhes do Atendimento</b> (desempenho por funcionário, por setor, ranking de empresas etc.). Defina aqui por quanto tempo cada página fica na tela e o zoom de cada uma.</p>
       <div class="field" style="max-width:260px;"><label>Trocar de página a cada (segundos)</label>
         <input type="number" id="cfgTvSeg" min="5" max="600" step="1" value="${segundosPorPagina}" ${podeEditar?'':'disabled'}></div>
       <p style="font-size:12px; color:var(--ink-soft);">Entre 5 e 600 segundos (padrão: ${padrao}). A TV pega o novo valor em até 1 minuto, sem precisar mexer nela.</p>
       <div class="row">
         <div class="field" style="max-width:200px;"><label>Zoom da página 1 (Início)</label>
           <select id="cfgTvZoom1" ${podeEditar?'':'disabled'}>${painelTvZoomOptionsHtml(zoomPagina1)}</select></div>
-        <div class="field" style="max-width:200px;"><label>Zoom da página 2 (Atendimento)</label>
+        <div class="field" style="max-width:200px;"><label>Zoom da página 2 (Atend. resumo)</label>
           <select id="cfgTvZoom2" ${podeEditar?'':'disabled'}>${painelTvZoomOptionsHtml(zoomPagina2)}</select></div>
+        <div class="field" style="max-width:200px;"><label>Zoom da página 3 (Atend. detalhes)</label>
+          <select id="cfgTvZoom3" ${podeEditar?'':'disabled'}>${painelTvZoomOptionsHtml(zoomPagina3)}</select></div>
       </div>
       <p style="font-size:12px; color:var(--ink-soft);">A TV pega o zoom novo em até 1 minuto, sem precisar mexer nela.</p>
       ${podeEditar?'<div class="row" style="gap:8px;"><button class="btn primary" id="cfgTvSalvar" disabled>Salvar</button></div>':'<p style="font-size:12px; color:var(--ink-soft);">Só o Administrador altera essas opções.</p>'}
     </div>`;
   if(!podeEditar) return;
-  habilitarSalvarAoMudar('cfgTvSalvar', ['cfgTvSeg','cfgTvZoom1','cfgTvZoom2']);
+  habilitarSalvarAoMudar('cfgTvSalvar', ['cfgTvSeg','cfgTvZoom1','cfgTvZoom2','cfgTvZoom3']);
   document.getElementById('cfgTvSalvar').addEventListener('click', async ()=>{
     try{
       const r = await api('/painel-tv/config', { method:'PUT', body:{
         segundosPorPagina: Number(document.getElementById('cfgTvSeg').value),
         zoomPagina1: Number(document.getElementById('cfgTvZoom1').value),
         zoomPagina2: Number(document.getElementById('cfgTvZoom2').value),
+        zoomPagina3: Number(document.getElementById('cfgTvZoom3').value),
       } });
-      toast(`Salvo — página a cada ${r.segundosPorPagina}s, zoom ${Math.round(r.zoomPagina1*100)}% / ${Math.round(r.zoomPagina2*100)}%.`,'ok');
+      toast(`Salvo — página a cada ${r.segundosPorPagina}s, zoom ${Math.round(r.zoomPagina1*100)}% / ${Math.round(r.zoomPagina2*100)}% / ${Math.round(r.zoomPagina3*100)}%.`,'ok');
       document.getElementById('cfgTvSalvar').disabled = true;
     }catch(e){ toast(e.message,'err'); }
   });

@@ -24590,6 +24590,7 @@ sqlite.exec(`
     segundos_por_pagina INTEGER NOT NULL DEFAULT 30,
     zoom_pagina1 REAL NOT NULL DEFAULT 1.0,
     zoom_pagina2 REAL NOT NULL DEFAULT 1.0,
+    zoom_pagina3 REAL NOT NULL DEFAULT 1.0,
     updated_at TEXT
   );
 `);
@@ -24597,11 +24598,12 @@ sqlite.exec(`
   const colsTv = sqlite.prepare(`PRAGMA table_info(painel_tv_config)`).all() as any[];
   if (!colsTv.some((c) => c.name === "zoom_pagina1")) sqlite.exec(`ALTER TABLE painel_tv_config ADD COLUMN zoom_pagina1 REAL NOT NULL DEFAULT 1.0`);
   if (!colsTv.some((c) => c.name === "zoom_pagina2")) sqlite.exec(`ALTER TABLE painel_tv_config ADD COLUMN zoom_pagina2 REAL NOT NULL DEFAULT 1.0`);
+  if (!colsTv.some((c) => c.name === "zoom_pagina3")) sqlite.exec(`ALTER TABLE painel_tv_config ADD COLUMN zoom_pagina3 REAL NOT NULL DEFAULT 1.0`);
 }
 const PAINEL_TV_SEGUNDOS_PADRAO = 30;
 const PAINEL_TV_ZOOMS_VALIDOS = [0.8, 0.85, 0.9, 0.95, 1.0, 1.05, 1.1];
 function painelTvConfigLinha(escritorioId: number | null): any {
-  return escritorioId == null ? null : (sqlite.prepare(`SELECT segundos_por_pagina, zoom_pagina1, zoom_pagina2 FROM painel_tv_config WHERE escritorio_id = ?`).get(escritorioId) as any);
+  return escritorioId == null ? null : (sqlite.prepare(`SELECT segundos_por_pagina, zoom_pagina1, zoom_pagina2, zoom_pagina3 FROM painel_tv_config WHERE escritorio_id = ?`).get(escritorioId) as any);
 }
 function painelTvSegundos(escritorioId: number | null): number {
   const r = painelTvConfigLinha(escritorioId);
@@ -24614,6 +24616,7 @@ app.get("/api/painel-tv/config", blockCliente, (req, res) => {
     segundosPorPagina: r?.segundos_por_pagina ?? PAINEL_TV_SEGUNDOS_PADRAO,
     zoomPagina1: r?.zoom_pagina1 ?? 1.0,
     zoomPagina2: r?.zoom_pagina2 ?? 1.0,
+    zoomPagina3: r?.zoom_pagina3 ?? 1.0,
     padrao: PAINEL_TV_SEGUNDOS_PADRAO,
     zoomsValidos: PAINEL_TV_ZOOMS_VALIDOS,
   });
@@ -24629,13 +24632,14 @@ app.put("/api/painel-tv/config", blockCliente, requireAdmin, (req, res) => {
   };
   const zoom1 = req.body?.zoomPagina1 !== undefined ? validarZoom(req.body.zoomPagina1, atual?.zoom_pagina1 ?? 1.0) : (atual?.zoom_pagina1 ?? 1.0);
   const zoom2 = req.body?.zoomPagina2 !== undefined ? validarZoom(req.body.zoomPagina2, atual?.zoom_pagina2 ?? 1.0) : (atual?.zoom_pagina2 ?? 1.0);
+  const zoom3 = req.body?.zoomPagina3 !== undefined ? validarZoom(req.body.zoomPagina3, atual?.zoom_pagina3 ?? 1.0) : (atual?.zoom_pagina3 ?? 1.0);
   sqlite
     .prepare(
-      `INSERT INTO painel_tv_config (escritorio_id, segundos_por_pagina, zoom_pagina1, zoom_pagina2, updated_at) VALUES (?, ?, ?, ?, datetime('now'))
-       ON CONFLICT(escritorio_id) DO UPDATE SET segundos_por_pagina=excluded.segundos_por_pagina, zoom_pagina1=excluded.zoom_pagina1, zoom_pagina2=excluded.zoom_pagina2, updated_at=datetime('now')`
+      `INSERT INTO painel_tv_config (escritorio_id, segundos_por_pagina, zoom_pagina1, zoom_pagina2, zoom_pagina3, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(escritorio_id) DO UPDATE SET segundos_por_pagina=excluded.segundos_por_pagina, zoom_pagina1=excluded.zoom_pagina1, zoom_pagina2=excluded.zoom_pagina2, zoom_pagina3=excluded.zoom_pagina3, updated_at=datetime('now')`
     )
-    .run(user.escritorioId, n, zoom1, zoom2);
-  res.json({ segundosPorPagina: n, zoomPagina1: zoom1, zoomPagina2: zoom2 });
+    .run(user.escritorioId, n, zoom1, zoom2, zoom3);
+  res.json({ segundosPorPagina: n, zoomPagina1: zoom1, zoomPagina2: zoom2, zoomPagina3: zoom3 });
 });
 app.get("/api/atendimento/config", blockCliente, requireEscritorioPrincipalDeskcomm, (req, res) => {
   const user = (req as any).user;
