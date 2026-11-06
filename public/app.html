@@ -8811,17 +8811,21 @@ async function renderCertificadoBuscaXml(containerEl, empresaId, empresaUfPadrao
         <div class="field grow"><label>Arquivo do certificado (.pfx)</label><input type="file" id="nfeCertArquivo_${empresaId}" accept=".pfx,.p12"></div>
         <div class="field" style="width:160px;"><label>Senha do certificado</label><input type="password" id="nfeCertSenha_${empresaId}"></div>
         <div class="field grow"><label>UF autora</label><input id="nfeCertUf_${empresaId}" maxlength="2" style="text-transform:uppercase;" placeholder="ex.: SP" value="${esc(empresaUfPadrao||'')}"></div>
-        <div class="field grow"><label>Ambiente</label>
-          <select id="nfeCertAmbiente_${empresaId}"><option value="producao">Produção</option><option value="homologacao">Homologação</option></select>
-        </div>
+        <div class="field grow"><label>Ambiente</label>${comboSelectHtml('nfeCertAmbienteCombo_'+empresaId)}</div>
       </div>
       <button class="btn primary" id="btnEnviarNfeCert_${empresaId}">Enviar certificado</button>
     `;
+    // Combo padrão do site no lugar do <select> nativo; começa em Produção.
+    const AMBIENTES = [{id:'producao', label:'Produção'}, {id:'homologacao', label:'Homologação'}];
+    setupComboSelect('nfeCertAmbienteCombo_'+empresaId, AMBIENTES, ()=>{});
+    const ambCombo = containerEl.querySelector('#nfeCertAmbienteCombo_'+empresaId);
+    ambCombo.querySelector('.combo-value').value = 'producao';
+    ambCombo.querySelector('.combo-input').value = 'Produção';
     containerEl.querySelector(`#btnEnviarNfeCert_${empresaId}`).addEventListener('click', async ()=>{
       const arquivo = containerEl.querySelector(`#nfeCertArquivo_${empresaId}`).files[0];
       const senha = containerEl.querySelector(`#nfeCertSenha_${empresaId}`).value;
       const ufAutor = containerEl.querySelector(`#nfeCertUf_${empresaId}`).value.trim().toUpperCase();
-      const ambiente = containerEl.querySelector(`#nfeCertAmbiente_${empresaId}`).value;
+      const ambiente = containerEl.querySelector(`#nfeCertAmbienteCombo_${empresaId} .combo-value`).value || 'producao';
       if(!arquivo){ toast('Selecione o arquivo .pfx.','err'); return; }
       if(!senha){ toast('Informe a senha do certificado.','err'); return; }
       if(!ufAutor){ toast('Informe a UF.','err'); return; }
