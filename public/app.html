@@ -23036,7 +23036,7 @@ async function renderCfgEmailSmtp(box){
 const resetTokenNaUrl = new URLSearchParams(location.search).get('resetToken');
 const conviteTokenNaUrl = new URLSearchParams(location.search).get('convite');
 const cadastroNaUrl = new URLSearchParams(location.search).get('cadastro');
-const moduloNaUrl = new URLSearchParams(location.search).get('modulo');
+const moduloNaUrl = (new URLSearchParams(location.search).get('modulo')||'').trim().toLowerCase() || null;
 if(resetTokenNaUrl) mostrarTelaResetSenha(resetTokenNaUrl);
 // "modulo" na URL só vale pro link público do anúncio — no convite o módulo já foi escolhido pelo
 // Eduardo ao gerar o link (fica salvo no token, não dá pra alguém trocar editando a URL).
