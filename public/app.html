@@ -5402,11 +5402,33 @@ function importarDominioModal(){
     }catch(e){ toast(e.message,'err'); }
   });
 }
+// Barra de progresso da sincronização com o Onvio. Etapas vêm do servidor (progressoSyncOnvio):
+// conectando → abrindo → baixando → gravando (aí já se sabe o total de empresas).
+function progressoSyncHtml(p){
+  const etapas = { conectando:['Conectando ao Onvio…',5], abrindo:['Abrindo a sessão do Onvio…',15], baixando:['Baixando a lista de empresas…',35] };
+  let pct, texto, detalhe = '';
+  if(p && p.etapa==='gravando' && p.total>0){
+    pct = 40 + Math.round(60 * p.processadas / p.total);
+    texto = 'Atualizando empresas…';
+    detalhe = `${p.processadas} de ${p.total} empresas — faltam ${p.total - p.processadas}`;
+  }else{
+    const e = etapas[p?.etapa] || ['Aguardando início…', 2];
+    texto = e[0]; pct = e[1];
+  }
+  return `<div style="max-width:560px;">
+    <div style="display:flex; justify-content:space-between; font-size:12.5px; margin-bottom:6px;"><span>${esc(texto)}</span><b>${pct}%</b></div>
+    <div style="height:10px; border-radius:6px; background:var(--paper-deep, rgba(255,255,255,.12)); overflow:hidden;">
+      <div style="height:100%; width:${pct}%; background:var(--accent); border-radius:6px; transition:width .4s ease;"></div>
+    </div>
+    ${detalhe?`<div style="font-size:12px; color:var(--ink-soft); margin-top:6px;">${esc(detalhe)}</div>`:''}
+  </div>`;
+}
 // Botão "Atualizar Empresas": pede pro agente local sincronizar agora (não espera o ciclo automático).
 async function atualizarEmpresasDoDominio(){
   const btn = document.getElementById('btnAtualizarEmpresas');
   const status = document.getElementById('atualizarEmpresasStatus');
   btn.disabled = true; btn.textContent = 'Atualizando…';
+  status.style.flexBasis = '100%'; // barra de progresso ocupa a linha inteira, abaixo dos botões
   status.textContent = 'Aguardando o agente responder (precisa estar rodando na sua máquina)…';
   try{
     const { id } = await api('/dominio/sincronizar-empresas', { method:'POST' });
@@ -5415,12 +5437,13 @@ async function atualizarEmpresasDoDominio(){
       tentativas++;
       const r = await api('/dominio/sincronizar-empresas/'+id);
       if(r.status==='pending'){
-        if(tentativas>30){
+        if(r.progresso) status.innerHTML = progressoSyncHtml(r.progresso);
+        if(tentativas>60){
           status.textContent = 'Sem resposta do agente — confira se ele está rodando (npm run dominio-agent:dev) e se a sessão do Onvio está válida (npm run onvio-login).';
           btn.disabled=false; btn.textContent='↻ Atualizar Empresas';
           return;
         }
-        setTimeout(poll, 2000);
+        setTimeout(poll, 1000);
         return;
       }
       btn.disabled = false; btn.textContent = '↻ Atualizar Empresas';
@@ -20644,7 +20667,7 @@ function renderCfgDomAcesso(box, sub, dados){
     const btn = document.getElementById('btnTestarOnvioAgora');
     const resultado = document.getElementById('onvioTestarResultado');
     btn.disabled = true; btn.textContent = 'Testando…';
-    resultado.innerHTML = `<div class="empty-state">Sincronizando com o Onvio…</div>`;
+    resultado.innerHTML = progressoSyncHtml({ etapa:'conectando' });
     try{
       const { id } = await api('/dominio/sincronizar-empresas', { method:'POST' });
       let tentativas = 0;
@@ -20652,12 +20675,13 @@ function renderCfgDomAcesso(box, sub, dados){
         tentativas++;
         const r = await api('/dominio/sincronizar-empresas/'+id);
         if(r.status==='pending'){
-          if(tentativas>30){
+          if(r.progresso) resultado.innerHTML = progressoSyncHtml(r.progresso);
+          if(tentativas>60){
             resultado.innerHTML = `<div class="tag bad">Sem resposta</div> <span style="font-size:12.5px;">Demorou demais — tente de novo.</span>`;
             btn.disabled = false; btn.textContent = 'Testar sincronização agora';
             return;
           }
-          setTimeout(poll, 2000);
+          setTimeout(poll, 1000);
           return;
         }
         btn.disabled = false; btn.textContent = 'Testar sincronização agora';

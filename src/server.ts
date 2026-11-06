@@ -6149,7 +6149,12 @@ function calcularSaudeOnvio(escritorioId: number): SaudeOnvio {
     ultimoErro,
   };
 }
+// Progresso da sincronização em andamento (só em memória — some quando o job termina ou o servidor
+// reinicia). Lido pelo GET /api/dominio/sincronizar-empresas/:id pra desenhar a barra na tela.
+const progressoSyncOnvio = new Map<number, { etapa: string; total: number; processadas: number }>();
 async function executarSincronizacaoOnvio(escritorioId: number, jobId?: number): Promise<void> {
+  const progresso = (etapa: string, total = 0, processadas = 0) => { if (jobId) progressoSyncOnvio.set(jobId, { etapa, total, processadas }); };
+  progresso("conectando");
   // Achado em auditoria (2026-10-12): a sessão do Onvio (cookies reais, reutilizáveis sem
   // reautenticar) ficava salva em disco sem cifrar — quem tivesse acesso ao arquivo/backup
   // conseguia raspar dados do Onvio do cliente direto. Agora fica cifrada em repouso (ver POST
@@ -6159,7 +6164,8 @@ async function executarSincronizacaoOnvio(escritorioId: number, jobId?: number):
   let sessaoTempPath: string | null = null;
   try {
     sessaoTempPath = onvioSessionPathDescifradaTemp(escritorioId);
-    const items = (await buscarViaOnvio(sessaoTempPath)).filter((it) => it.codigo && it.nome);
+    const items = (await buscarViaOnvio(sessaoTempPath, (etapa) => progresso(etapa))).filter((it) => it.codigo && it.nome);
+    progresso("gravando", items.length, 0);
     let novas = 0, atualizadas = 0;
     const getByCodigo = sqlite.prepare(`SELECT id FROM empresas WHERE codigo_dominio = ? AND escritorio_id = ?`);
     const insert = sqlite.prepare(
@@ -6178,7 +6184,12 @@ async function executarSincronizacaoOnvio(escritorioId: number, jobId?: number):
     );
     // situação (ativo/inativo) não vem na API do Onvio — não mexe nesse campo pra não
     // reativar/desativar uma empresa por engano (mesma regra do agente local).
+    let processadas = 0;
     for (const it of items) {
+      // Devolve a vez pro event loop a cada 5 empresas — senão o loop roda inteiro sem a tela
+      // conseguir ler o progresso no meio.
+      if (processadas % 5 === 0) { progresso("gravando", items.length, processadas); await new Promise((r) => setImmediate(r)); }
+      processadas++;
       const existente = getByCodigo.get(String(it.codigo), escritorioId) as any;
       if (existente) {
         update.run(
@@ -6208,6 +6219,7 @@ async function executarSincronizacaoOnvio(escritorioId: number, jobId?: number):
     else console.error("Falha na sincronização automática de clientes via Onvio:", e.message);
   } finally {
     if (sessaoTempPath) { try { fs.unlinkSync(sessaoTempPath); } catch {} }
+    if (jobId) progressoSyncOnvio.delete(jobId);
   }
 }
 app.get("/api/dominio/onvio-sessao", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
@@ -8266,7 +8278,7 @@ app.post("/api/dominio/sincronizar-empresas", blockCliente, requirePermissao("em
 app.get("/api/dominio/sincronizar-empresas/:id", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
   const row = sqlite.prepare(`SELECT * FROM dominio_sync_jobs WHERE id = ? AND escritorio_id = ?`).get(Number(req.params.id), (req as any).user.escritorioId) as any;
   if (!row) return res.status(404).json({ error: "Sincronização não encontrada." });
-  res.json({ status: row.status, novas: row.novas, atualizadas: row.atualizadas, erro: row.erro });
+  res.json({ status: row.status, novas: row.novas, atualizadas: row.atualizadas, erro: row.erro, progresso: progressoSyncOnvio.get(row.id) || null });
 });
 
 // ---------- Checklist / Solicitações ----------

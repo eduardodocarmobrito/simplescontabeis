@@ -136,7 +136,8 @@ function extrairApelido(item: any): string | null {
   return apelido ? String(apelido).trim() || null : null;
 }
 
-export async function buscarViaOnvio(sessionPath: string): Promise<EmpresaNormalizadaOnvio[]> {
+// onEtapa (opcional): avisa em que ponto a busca está — usado pela barra de progresso da tela.
+export async function buscarViaOnvio(sessionPath: string, onEtapa?: (etapa: "abrindo" | "baixando") => void): Promise<EmpresaNormalizadaOnvio[]> {
   const fs = require("fs");
   if (!fs.existsSync(sessionPath)) {
     throw new Error(`Sessão do Onvio não encontrada em "${sessionPath}". Faça o login (npm run onvio-login) e envie o arquivo em Configurações › Domínio Web.`);
@@ -158,6 +159,7 @@ export async function buscarViaOnvio(sessionPath: string): Promise<EmpresaNormal
       }
     });
 
+    onEtapa?.("abrindo");
     await page.goto("https://onvio.com.br/br-api-integration/#/enable-clients", { waitUntil: "networkidle", timeout: 30000 });
     await page.waitForTimeout(2500);
 
@@ -168,6 +170,7 @@ export async function buscarViaOnvio(sessionPath: string): Promise<EmpresaNormal
       throw new Error("Não consegui identificar a empresa/token do Onvio nesta sessão — tente fazer o login de novo.");
     }
 
+    onEtapa?.("baixando");
     const resp = await page.request.post(`https://onvio.com.br/api/core/v3/companies/${companyId}/clients/search`, {
       headers: { authorization: authHeader },
       data: {
