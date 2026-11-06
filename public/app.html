@@ -4657,6 +4657,10 @@ function empresaModal(e){
         <div class="field grow"><label>Inscrição estadual</label><input id="empInscricaoEstadual" value="${e&&e.inscricaoEstadual?esc(e.inscricaoEstadual):''}"></div>
       </div>
       <div class="row">
+        <div class="field" style="width:220px;"><label>CEI (produtor rural/obra)</label><input id="empCei" inputmode="numeric" maxlength="20" value="${e&&e.cei?esc(e.cei):''}" placeholder="12 dígitos"></div>
+        <div class="field" style="width:220px;"><label>CAEPF</label><input id="empCaepf" inputmode="numeric" maxlength="20" value="${e&&e.caepf?esc(e.caepf):''}" placeholder="14 dígitos"></div>
+      </div>
+      <div class="row">
         <div class="field grow"><label>Endereço</label><input id="empEndereco" value="${e&&e.endereco?esc(e.endereco):''}"></div>
         <div class="field" style="width:240px;"><label>Cidade (IBGE) — obrigatória pra emitir NFS-e</label>${comboSelectHtml('empCidadeIbge','Digite a cidade…')}</div>
         <div class="field" style="width:110px;"><label>Código do município</label><input id="empCodigoMunicipio" readonly style="background:var(--paper);" value="${e&&e.codigoMunicipioIbge?esc(e.codigoMunicipioIbge):''}" maxlength="7"></div>
@@ -4903,6 +4907,8 @@ function empresaModal(e){
       cep: document.getElementById('empCep').value.replace(/[^0-9]/g,''),
       inscricaoMunicipal: document.getElementById('empInscricaoMunicipal').value.trim(),
       inscricaoEstadual: document.getElementById('empInscricaoEstadual').value.trim(),
+      cei: document.getElementById('empCei').value.replace(/[^0-9]/g,''),
+      caepf: document.getElementById('empCaepf').value.replace(/[^0-9]/g,''),
       nomeRepresentanteLegal: document.getElementById('empNomeRepresentante').value.trim(),
       cpfRepresentanteLegal: document.getElementById('empCpfRepresentante').value.replace(/[^0-9]/g,''),
       codigoMunicipioIbge: document.getElementById('empCodigoMunicipio').value.trim(),

@@ -24,6 +24,8 @@ export type EmpresaNormalizadaOnvio = {
   cep?: string | null;
   inscricaoMunicipal?: string | null;
   inscricaoEstadual?: string | null;
+  cei?: string | null;
+  caepf?: string | null;
   nomeRepresentanteLegal?: string | null;
   cpfRepresentanteLegal?: string | null;
 };
@@ -43,7 +45,57 @@ function extrairDocumento(item: any): string | null {
   const nats = item?.primaryContactExpanded?.nationalIdentitiesExpanded || [];
   const cnpj = nats.find((n: any) => n.kind?.id === "BR-CNPJ" && n.identity);
   const cpf = nats.find((n: any) => n.kind?.id === "BR-CPF" && n.identity);
-  return cnpj?.identity || cpf?.identity || null;
+  // Produtor rural/obra de pessoa física costuma vir no Onvio só com o CAEPF, sem o CPF preenchido
+  // (achado em 2026-11-06: 23 de 212 clientes). O CPF sai do próprio CAEPF — ver cpfDoCaepf.
+  // Último recurso (cadastro só com CEI, ex.: produtor rural pessoa física): no Domínio o CPF fica
+  // num campo separado — "Responsável legal" — que o Onvio devolve em contactDataExpanded.
+  return cnpj?.identity || cpf?.identity || cpfDoCaepf(extrairCaepf(item)) || (extrairCei(item) ? extrairCpfResponsavelLegal(item) : null) || null;
+}
+// Bloco "ContabilClientLegalResponsible" do Domínio, que vem como JSON em texto dentro de
+// primaryContactExpanded.contactDataExpanded.data (achado em 2026-11-06 inspecionando a API).
+function dadosResponsavelLegal(item: any): any {
+  const bruto = item?.primaryContactExpanded?.contactDataExpanded?.data;
+  if (!bruto) return null;
+  try {
+    const d = typeof bruto === "string" ? JSON.parse(bruto) : bruto;
+    return d?.ContabilClientLegalResponsible || null;
+  } catch {
+    return null;
+  }
+}
+function extrairCpfResponsavelLegal(item: any): string | null {
+  const d = String(dadosResponsavelLegal(item)?.LegalResponsibleCpf || "").replace(/\D/g, "");
+  return d.length === 11 ? d : null;
+}
+// CEI (matrícula antiga do INSS, 12 dígitos) e CAEPF (14 dígitos) — cadastro de produtor rural,
+// obra e contribuinte individual. O CEI NÃO contém o CPF (é só um número sequencial do INSS).
+function extrairCei(item: any): string | null {
+  const nats = item?.primaryContactExpanded?.nationalIdentitiesExpanded || [];
+  const cei = nats.find((n: any) => n.kind?.id === "BR-CEI" && n.identity);
+  return cei?.identity ? String(cei.identity).replace(/\D/g, "") || null : null;
+}
+function extrairCaepf(item: any): string | null {
+  const nats = item?.primaryContactExpanded?.nationalIdentitiesExpanded || [];
+  const caepf = nats.find((n: any) => n.kind?.id === "BR-CAEPF" && n.identity);
+  return caepf?.identity ? String(caepf.identity).replace(/\D/g, "") || null : null;
+}
+// CAEPF = 9 primeiros dígitos do CPF da pessoa + 3 de sequência + 2 verificadores próprios. Os 2
+// dígitos verificadores do CPF são calculados a partir desses 9 (regra oficial da Receita), então o
+// CPF completo sai exato do CAEPF.
+export function cpfDoCaepf(caepf: string | null | undefined): string | null {
+  const d = String(caepf || "").replace(/\D/g, "");
+  if (d.length !== 14) return null;
+  const base = d.slice(0, 9);
+  if (/^(\d)\1{8}$/.test(base)) return null;
+  const dv = (nums: string) => {
+    let soma = 0;
+    for (let i = 0; i < nums.length; i++) soma += Number(nums[i]) * (nums.length + 1 - i);
+    const r = (soma * 10) % 11;
+    return r === 10 ? 0 : r;
+  };
+  const d1 = dv(base);
+  const d2 = dv(base + d1);
+  return base + String(d1) + String(d2);
 }
 // Nem toda empresa tem isso preenchido no Onvio (na prática, poucas) — quando não tem, o campo
 // fica em branco e é preenchido manualmente na tela (usado pra emissão de NFS-e).
@@ -65,13 +117,15 @@ function extrairInscricaoEstadual(item: any): string | null {
 // vem junto com o CNPJ na mesma lista de documentos (o CNPJ já é usado em extrairDocumento; aqui só
 // pega o CPF que sobra, que nem sempre existe — nesse caso fica em branco pra preencher na mão).
 function extrairNomeRepresentante(item: any): string | null {
+  const resp = dadosResponsavelLegal(item)?.LegalResponsibleName;
+  if (resp && String(resp).trim()) return String(resp).trim();
   const nome = item?.primaryContactExpanded?.name;
   return nome ? String(nome).trim() : null;
 }
 function extrairCpfRepresentante(item: any): string | null {
   const nats = item?.primaryContactExpanded?.nationalIdentitiesExpanded || [];
   const cpf = nats.find((n: any) => n.kind?.id === "BR-CPF" && n.identity);
-  return cpf?.identity || null;
+  return extrairCpfResponsavelLegal(item) || cpf?.identity || null;
 }
 // "nickname" no Onvio é exatamente o campo "Apelido" que aparece no cadastro do cliente lá dentro
 // (confirmado inspecionando a resposta real da API) — usado no nome da pasta de exportação de XML
@@ -118,7 +172,7 @@ export async function buscarViaOnvio(sessionPath: string): Promise<EmpresaNormal
       headers: { authorization: authHeader },
       data: {
         pagingDataRequest: { startIndex: 1, pageIndex: 1, itemsPerPage: 500 },
-        expand: "primaryContactExpanded,primaryContactExpanded.nationalIdentitiesExpanded",
+        expand: "primaryContactExpanded,primaryContactExpanded.nationalIdentitiesExpanded,primaryContactExpanded.contactDataExpanded",
         filterSearchSort: {},
       },
     });
@@ -137,6 +191,8 @@ export async function buscarViaOnvio(sessionPath: string): Promise<EmpresaNormal
           apelido: extrairApelido(it),
           inscricaoMunicipal: extrairInscricaoMunicipal(it),
           inscricaoEstadual: extrairInscricaoEstadual(it),
+          cei: extrairCei(it),
+          caepf: extrairCaepf(it),
           nomeRepresentanteLegal: extrairNomeRepresentante(it),
           cpfRepresentanteLegal: extrairCpfRepresentante(it),
           ...contato,

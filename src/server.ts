@@ -1755,6 +1755,8 @@ function chatRespostaValida(valor: any, escopo: ChatEscopo): number | null {
     ["cep", "cep TEXT"],
     ["inscricao_municipal", "inscricao_municipal TEXT"],
     ["inscricao_estadual", "inscricao_estadual TEXT"],
+    ["cei", "cei TEXT"], // matrícula CEI (12 dígitos) — produtor rural/obra; vem do Onvio (BR-CEI)
+    ["caepf", "caepf TEXT"], // CAEPF (14 dígitos) — substituto do CEI; vem do Onvio (BR-CAEPF)
     ["nome_representante_legal", "nome_representante_legal TEXT"],
     ["cpf_representante_legal", "cpf_representante_legal TEXT"],
     ["codigo_municipio_ibge", "codigo_municipio_ibge TEXT"], // código IBGE (7 dígitos) do município — usado na emissão de NFS-e (DPS exige a Tabela do IBGE), centralizado aqui pra não pedir de novo por módulo
@@ -4638,6 +4640,8 @@ app.get("/api/empresas", blockCliente, requirePermissao("empresas", "visualizar"
       cep: r.cep,
       inscricaoMunicipal: r.inscricao_municipal,
       inscricaoEstadual: r.inscricao_estadual,
+      cei: r.cei || null,
+      caepf: r.caepf || null,
       nomeRepresentanteLegal: r.nome_representante_legal,
       cpfRepresentanteLegal: r.cpf_representante_legal,
       codigoMunicipioIbge: r.codigo_municipio_ibge,
@@ -4712,6 +4716,8 @@ app.get("/api/empresas/checklist", blockCliente, requirePermissao("empresas", "v
       cep: r.cep,
       inscricaoEstadual: r.inscricao_estadual,
       inscricaoMunicipal: r.inscricao_municipal,
+      cei: r.cei || null,
+      caepf: r.caepf || null,
       nomeRepresentanteLegal: r.nome_representante_legal,
       cpfRepresentanteLegal: r.cpf_representante_legal,
       ativo: !!r.ativo,
@@ -4781,6 +4787,13 @@ function envioAutoAtribuirPorRegime(empresaId: number, escritorioId: number, reg
     sqlite.prepare(`INSERT OR IGNORE INTO envio_atribuicoes (template_id, empresa_id) VALUES (?, ?)`).run(t.id, empresaId);
   }
 }
+// CEI/CAEPF ficam fora do UPDATE grandão do cadastro — só mexe se o campo veio no body (undefined =
+// não altera), guardando só os dígitos.
+function empresaSalvarCeiCaepf(empresaId: number, body: any) {
+  const limpa = (v: any) => (v == null ? null : String(v).replace(/\D/g, "") || null);
+  if (body?.cei !== undefined) sqlite.prepare(`UPDATE empresas SET cei = ? WHERE id = ?`).run(limpa(body.cei), empresaId);
+  if (body?.caepf !== undefined) sqlite.prepare(`UPDATE empresas SET caepf = ? WHERE id = ?`).run(limpa(body.caepf), empresaId);
+}
 app.post("/api/empresas", blockCliente, requirePermissao("empresas", "postar"), (req, res) => {
   const user = (req as any).user;
   const { nome, cnpj, codigoDominio, apelido, email, telefone, endereco, cidade, uf, cep, inscricaoMunicipal, inscricaoEstadual, nomeRepresentanteLegal, cpfRepresentanteLegal, codigoMunicipioIbge, nomeMunicipioIbge, regimeTributario } = req.body || {};
@@ -4811,6 +4824,7 @@ app.post("/api/empresas", blockCliente, requirePermissao("empresas", "postar"), 
       user.escritorioId
     );
   const novaEmpresaId = Number(info.lastInsertRowid);
+  empresaSalvarCeiCaepf(novaEmpresaId, req.body);
   garantirContatosDeTelefoneCadastral(novaEmpresaId);
   envioAutoAtribuirPorRegime(novaEmpresaId, user.escritorioId, (REGIMES_TRIBUTARIOS as readonly string[]).includes(regimeTributario) ? regimeTributario : "simples_nacional");
   if (telefone) deskcommAgendarSyncEmpresasClientes();
@@ -4845,6 +4859,7 @@ app.put("/api/empresas/:id", blockCliente, requirePermissao("empresas", "editar"
   const id = Number(req.params.id);
   const existing = sqlite.prepare(`SELECT * FROM empresas WHERE id = ?`).get(id) as any;
   if (!existing || !podeAcessarEmpresa((req as any).user, id)) return res.status(404).json({ error: "Empresa não encontrada." });
+  empresaSalvarCeiCaepf(id, req.body);
   const { nome, cnpj, codigoDominio, apelido, email, telefone, endereco, cidade, uf, cep, inscricaoMunicipal, inscricaoEstadual, nomeRepresentanteLegal, cpfRepresentanteLegal, codigoMunicipioIbge, nomeMunicipioIbge, regimeTributario, ativo, visivelRelatorios, isentoAssinatura, buscaFgts, comparativoMovimentoDiario, programacaoFerias, demonstrativoMensal, obrigDctfweb, obrigFolha, obrigFgts } = req.body || {};
   const regimeTributarioFinal =
     regimeTributario !== undefined
@@ -6151,6 +6166,8 @@ async function executarSincronizacaoOnvio(escritorioId: number, jobId?: number):
       `INSERT INTO empresas (nome, cnpj, codigo_dominio, apelido, email, telefone, endereco, cidade, uf, cep, inscricao_municipal, inscricao_estadual, nome_representante_legal, cpf_representante_legal, origem, escritorio_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'dominio', ?)`
     );
+    // CEI/CAEPF: mesma regra (só preenche vazio), em statement à parte pra não mexer no UPDATE abaixo.
+    const updateCeiCaepf = sqlite.prepare(`UPDATE empresas SET cei=COALESCE(NULLIF(cei,''), ?), caepf=COALESCE(NULLIF(caepf,''), ?) WHERE id=?`);
     // Só preenche campo vazio — nunca troca o que já está na empresa (ver importar-clientes).
     const update = sqlite.prepare(
       `UPDATE empresas SET nome=COALESCE(NULLIF(nome,''), ?), cnpj=COALESCE(NULLIF(cnpj,''), ?), apelido=COALESCE(NULLIF(apelido,''), ?), email=COALESCE(NULLIF(email,''), ?), telefone=COALESCE(NULLIF(telefone,''), ?),
@@ -6170,14 +6187,16 @@ async function executarSincronizacaoOnvio(escritorioId: number, jobId?: number):
           it.inscricaoEstadual || null, it.nomeRepresentanteLegal || null, it.cpfRepresentanteLegal || null,
           existente.id
         );
+        updateCeiCaepf.run(it.cei || null, it.caepf || null, existente.id);
         atualizadas++;
       } else {
-        insert.run(
+        const novaInfo = insert.run(
           it.nome, it.cnpj || null, String(it.codigo), it.apelido || null, it.email || null, it.telefone || null,
           it.endereco || null, it.cidade || null, it.uf || null, it.cep || null,
           it.inscricaoMunicipal || null, it.inscricaoEstadual || null, it.nomeRepresentanteLegal || null,
           it.cpfRepresentanteLegal || null, escritorioId
         );
+        updateCeiCaepf.run(it.cei || null, it.caepf || null, Number(novaInfo.lastInsertRowid));
         novas++;
       }
     }
