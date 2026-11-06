@@ -19564,9 +19564,125 @@ async function pageModulosPlataforma(){
       <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Aparece na aba Assinatura, no login de cada empresa-cliente (perfil Cliente) — é o que ela pode contratar do próprio escritório (ex.: Financeiro, NFS-e). Desativar some da tela de contratação — quem já contratou continua com acesso.</p>
       ${tabelaModulosHtml('mc', itemsClientes)}
     </div>
+    <div class="card" id="mctCard">
+      <h3>Clientes com módulos contratados</h3>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Quem tem cada módulo, a situação e quanto paga por mês. Preencha <b>Valor cobrado</b> para dar um preço só para aquele cliente; deixe em branco para usar o valor padrão. O novo valor vale a partir da próxima cobrança gerada.</p>
+      <div class="kpi-grid" id="mctKpis" style="margin-bottom:16px;"></div>
+      <div class="row" style="margin-bottom:12px;">
+        <div class="field grow" style="margin-bottom:0;"><label>Buscar cliente</label><input id="mctBusca" placeholder="Nome da empresa ou do escritório"></div>
+        <div class="field" style="width:200px; margin-bottom:0;"><label>Tipo</label>${comboSelectHtml('mctTipoCombo')}</div>
+        <div class="field" style="width:260px; margin-bottom:0;"><label>Módulo</label>${comboSelectHtml('mctModuloCombo')}</div>
+        <div class="field" style="width:220px; margin-bottom:0;"><label>Situação</label>${comboSelectHtml('mctSituacaoCombo')}</div>
+      </div>
+      <div style="overflow-x:auto;" id="mctTabela"><div class="empty-state">Carregando…</div></div>
+    </div>
   `;
   ligarSalvarModulos(main(), 'mp', '/super/modulos-catalogo');
   ligarSalvarModulos(main(), 'mc', '/super/modulos-clientes');
+  await carregarContratosModulos();
+}
+// ---- Controle de contratos: quem tem cada módulo, situação e valor cobrado (personalizável) ----
+const MCT_SITUACAO = {
+  ativo:{label:'Assinatura ativa', cls:'ok'},
+  teste:{label:'Em teste', cls:'warn'},
+  teste_vencido:{label:'Teste vencido', cls:'bad'},
+  vencido:{label:'Assinatura vencida', cls:'bad'},
+  isento:{label:'Isento', cls:'muted'},
+  vitalicio:{label:'Vitalício (grátis)', cls:'muted'},
+};
+const MCT = { items:[], tipo:'', modulo:'', situacao:'', busca:'' };
+async function carregarContratosModulos(){
+  const { items } = await api('/super/modulos-contratos');
+  MCT.items = items;
+  const comboSet = (cid, itens, val)=>{
+    const c = document.getElementById(cid); const it = itens.find(o=>o.id===val) || itens[0];
+    c.querySelector('.combo-value').value = it.id; c.querySelector('.combo-input').value = it.label;
+  };
+  const tipos = [{id:'',label:'Todos'},{id:'escritorio',label:'Escritórios'},{id:'empresa',label:'Empresas'}];
+  const modulosMap = new Map();
+  items.forEach(i=>modulosMap.set(i.tipo+':'+i.moduloChave, (i.tipo==='escritorio'?'Escritório · ':'Empresa · ')+i.moduloNome));
+  const modulos = [{id:'',label:'Todos'}, ...[...modulosMap.entries()].sort((a,b)=>a[1].localeCompare(b[1],'pt-BR')).map(([id,label])=>({id,label}))];
+  const situacoes = [{id:'',label:'Todas'}, {id:'pagantes',label:'Pagando (assinatura ativa)'}, ...Object.entries(MCT_SITUACAO).map(([id,v])=>({id,label:v.label}))];
+  setupComboSelect('mctTipoCombo', tipos, id=>{ MCT.tipo=id||''; renderContratosModulos(); });
+  setupComboSelect('mctModuloCombo', modulos, id=>{ MCT.modulo=id||''; renderContratosModulos(); });
+  setupComboSelect('mctSituacaoCombo', situacoes, id=>{ MCT.situacao=id||''; renderContratosModulos(); });
+  comboSet('mctTipoCombo', tipos, MCT.tipo);
+  comboSet('mctModuloCombo', modulos, MCT.modulo);
+  comboSet('mctSituacaoCombo', situacoes, MCT.situacao);
+  const busca = document.getElementById('mctBusca');
+  busca.value = MCT.busca;
+  busca.addEventListener('input', ()=>{ MCT.busca = busca.value; renderContratosModulos(); });
+  renderContratosModulos();
+}
+function renderContratosModulos(){
+  const termo = normalizaTxt(MCT.busca.trim());
+  const lista = MCT.items.filter(i=>{
+    if(MCT.tipo && i.tipo!==MCT.tipo) return false;
+    if(MCT.modulo && (i.tipo+':'+i.moduloChave)!==MCT.modulo) return false;
+    if(MCT.situacao==='pagantes'){ if(i.situacao!=='ativo') return false; }
+    else if(MCT.situacao && i.situacao!==MCT.situacao) return false;
+    if(termo && !normalizaTxt(i.clienteNome+' '+i.escritorioNome).includes(termo)) return false;
+    return true;
+  });
+  // Indicadores sempre sobre o conjunto filtrado — assim dá pra ver a receita de um módulo/escritório específico.
+  const pagantes = lista.filter(i=>i.situacao==='ativo');
+  const receita = pagantes.reduce((s,i)=>s+Number(i.valorMensal||0),0);
+  const emTeste = lista.filter(i=>i.situacao==='teste').length;
+  const clientesPagantes = new Set(pagantes.map(i=>i.tipo+':'+i.clienteId)).size;
+  const personalizados = lista.filter(i=>i.valorPersonalizado!=null).length;
+  document.getElementById('mctKpis').innerHTML = `
+    <div class="kpi"><div class="eyebrow">Receita mensal (assinaturas ativas)</div><div class="val" style="font-size:28px;">${fmtMoney(receita)}</div><div class="sub">${pagantes.length} contrato(s) pagando</div></div>
+    <div class="kpi"><div class="eyebrow">Clientes pagantes</div><div class="val" style="font-size:28px;">${clientesPagantes}</div><div class="sub">com ao menos 1 módulo ativo</div></div>
+    <div class="kpi"><div class="eyebrow">Em teste grátis</div><div class="val" style="font-size:28px;">${emTeste}</div><div class="sub">podem virar assinatura</div></div>
+    <div class="kpi"><div class="eyebrow">Com preço personalizado</div><div class="val" style="font-size:28px;">${personalizados}</div><div class="sub">de ${lista.length} contrato(s) listados</div></div>
+  `;
+  const box = document.getElementById('mctTabela');
+  if(!lista.length){ box.innerHTML = `<div class="empty-state">Nenhum contrato encontrado com esses filtros.</div>`; return; }
+  const fmtValorInput = v=> v==null ? '' : Number(v).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+  box.innerHTML = `
+    <table class="data-table">
+      <thead><tr><th>Cliente</th><th>Módulo</th><th>Situação</th><th>Válido até</th><th style="text-align:right;">Valor padrão</th><th>Valor cobrado (R$)</th><th style="text-align:right;">Total mensal</th><th></th></tr></thead>
+      <tbody>
+        ${lista.map(i=>{
+          const sit = MCT_SITUACAO[i.situacao] || {label:i.situacao, cls:'muted'};
+          const ate = i.situacao==='teste'||i.situacao==='teste_vencido' ? i.trialFim : (i.situacao==='vitalicio'||i.situacao==='isento' ? null : i.assinaturaAtivaAte);
+          const sufixoUn = i.quantidade!=null ? ' / colaborador' : '';
+          return `<tr data-tipo="${i.tipo}" data-id="${i.id}">
+            <td><div style="font-weight:600;">${esc(i.clienteNome)}</div><div style="font-size:11.5px; color:var(--ink-soft);">${i.tipo==='escritorio'?'Escritório':'Empresa · '+esc(i.escritorioNome||'')}</div></td>
+            <td>${esc(i.moduloNome)}</td>
+            <td><span class="tag ${sit.cls}">${esc(sit.label)}</span></td>
+            <td style="white-space:nowrap;">${ate?fmtDate(ate):'—'}</td>
+            <td style="text-align:right; white-space:nowrap;">${fmtMoney(i.valorPadrao)}${sufixoUn}</td>
+            <td style="width:150px;"><input class="inp mctValor" inputmode="decimal" placeholder="${fmtValorInput(i.valorPadrao)} (padrão)" value="${fmtValorInput(i.valorPersonalizado)}" style="width:100%;${i.valorPersonalizado!=null?' border-color:var(--accent);':''}"></td>
+            <td style="text-align:right; white-space:nowrap;">${fmtMoney(i.valorMensal)}${i.quantidade!=null?`<div style="font-size:11px; color:var(--ink-soft);">${i.quantidade} colaborador(es)</div>`:''}</td>
+            <td style="white-space:nowrap; width:170px;">
+              <button class="btn small primary mctSalvar" disabled>Salvar</button>
+              ${i.valorPersonalizado!=null?'<button class="btn small mctPadrao" title="Voltar a cobrar o valor padrão">Usar padrão</button>':''}
+            </td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+  `;
+  box.querySelectorAll('tr[data-id]').forEach(tr=>{
+    const inp = tr.querySelector('.mctValor');
+    const btn = tr.querySelector('.mctSalvar');
+    const original = inp.value;
+    ligarMascaraMoeda(inp);
+    inp.addEventListener('input', ()=>{ btn.disabled = inp.value===original; });
+    inp.addEventListener('keydown', e=>{ if(e.key==='Enter' && !btn.disabled) btn.click(); });
+    const salvar = async valor=>{
+      try{
+        await api(`/super/modulos-contratos/${tr.dataset.tipo}/${tr.dataset.id}`, { method:'PUT', body:{ valorMensalCustom: valor } });
+        toast(valor==null ? 'Voltou ao valor padrão.' : 'Valor do cliente atualizado.', 'ok');
+        const { items } = await api('/super/modulos-contratos');
+        MCT.items = items;
+        renderContratosModulos();
+      }catch(e){ toast(e.message,'err'); }
+    };
+    btn.addEventListener('click', ()=>salvar(inp.value.trim() ? moedaInputParaNumero(inp) : null));
+    tr.querySelector('.mctPadrao')?.addEventListener('click', ()=>salvar(null));
+  });
 }
 
 // ===================== Central de Envio de Documentos (por setor) =====================

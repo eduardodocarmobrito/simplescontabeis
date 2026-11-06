@@ -2057,6 +2057,19 @@ sqlite.exec(`INSERT OR IGNORE INTO modulos_catalogo (chave, nome, valor_mensal) 
     sqlite.exec(`ALTER TABLE empresa_modulos ADD COLUMN valor_mensal_custom REAL`);
   }
 }
+// Mesmo preço personalizado, agora pro escritório-cliente (módulos da plataforma). Pro módulo
+// 'assento_colaborador' o valor personalizado é o preço UNITÁRIO por colaborador.
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(escritorio_modulos)`).all() as any[];
+  if (!cols.some((c) => c.name === "valor_mensal_custom")) {
+    sqlite.exec(`ALTER TABLE escritorio_modulos ADD COLUMN valor_mensal_custom REAL`);
+  }
+}
+// Preço que vale pra ESTE cliente: o personalizado (se o SuperAdmin definiu) ou o padrão do catálogo.
+function precoModuloEfetivo(valorCatalogo: any, contratado: any): number {
+  const custom = contratado?.valor_mensal_custom;
+  return custom != null ? Number(custom) : Number(valorCatalogo) || 0;
+}
 // Seed do catálogo de módulos vendáveis pro escritório-cliente da plataforma (não confundir com o
 // catálogo acima, que é vendido pelo escritório PRA empresa-cliente dele). Preço 0 até o SuperAdmin
 // configurar em Escritórios > Módulos da plataforma.
@@ -15456,10 +15469,11 @@ function integraContadorAnexarPdfEmEnvio(
 // trava. Grátis/isento = sempre ok. Senão, exige teste/assinatura ativa (moduloStatusParaEmpresa).
 function empresaCanalContratado(empresaId: number, chave: "envio_notas_email" | "envio_notas_whatsapp"): boolean {
   const catalogo = sqlite.prepare(`SELECT valor_mensal FROM modulos_catalogo WHERE chave = ? AND ativo = 1`).get(chave) as any;
-  if (!catalogo || !(catalogo.valor_mensal > 0)) return true; // módulo inexistente ou grátis → não trava
+  if (!catalogo) return true; // módulo inexistente → não trava
+  const contratado = sqlite.prepare(`SELECT * FROM empresa_modulos WHERE empresa_id = ? AND modulo_chave = ?`).get(empresaId, chave) as any;
+  if (!(precoModuloEfetivo(catalogo.valor_mensal, contratado) > 0)) return true; // grátis (padrão ou preço personalizado 0) → não trava
   const empresa = sqlite.prepare(`SELECT isento_assinatura FROM empresas WHERE id = ?`).get(empresaId) as any;
   if (empresa?.isento_assinatura) return true;
-  const contratado = sqlite.prepare(`SELECT * FROM empresa_modulos WHERE empresa_id = ? AND modulo_chave = ?`).get(empresaId, chave) as any;
   return moduloStatusParaEmpresa(catalogo, contratado).acesso;
 }
 // Remetente do WhatsApp desta empresa (Fase 4 — base). mode 'escritorio' (default) ou 'proprio'.
@@ -21085,14 +21099,14 @@ function nfseModulosDaEmpresa(empresaId: number) {
   // Os canais de envio (Fase 3) só aparecem pra contratar quando têm preço > 0 — enquanto são de
   // graça, ficam fora da tela de assinatura pra não confundir (o envio funciona do mesmo jeito).
   return catalogo
-    .filter((m) => !((m.chave === "envio_notas_email" || m.chave === "envio_notas_whatsapp") && !(m.valor_mensal > 0)))
+    .filter((m) => !((m.chave === "envio_notas_email" || m.chave === "envio_notas_whatsapp") && !(precoModuloEfetivo(m.valor_mensal, porChave.get(m.chave)) > 0)))
     .map((m) => {
     const contratado = porChave.get(m.chave);
     const { status, acesso } = isento ? { status: "isento", acesso: true } : moduloStatusParaEmpresa(m, contratado);
     return {
       chave: m.chave,
       nome: m.nome,
-      valorMensal: m.valor_mensal,
+      valorMensal: precoModuloEfetivo(m.valor_mensal, contratado),
       ativo: !!m.ativo,
       status,
       acesso,
@@ -21125,6 +21139,11 @@ app.post("/api/financeiro/minha-empresa/modulos/pagar", requireCliente, async (r
     .prepare(`SELECT chave, nome, valor_mensal FROM modulos_catalogo WHERE ativo = 1 AND chave IN (${chaves.map(() => "?").join(",")})`)
     .all(...chaves) as any[];
   if (!catalogo.length) return res.status(400).json({ error: "Nenhum dos módulos selecionados está disponível." });
+  // Preço personalizado desta empresa (se houver) substitui o padrão do catálogo, item a item.
+  for (const m of catalogo) {
+    const contratado = sqlite.prepare(`SELECT valor_mensal_custom FROM empresa_modulos WHERE empresa_id = ? AND modulo_chave = ?`).get(empresaId, m.chave) as any;
+    m.valor_mensal = precoModuloEfetivo(m.valor_mensal, contratado);
+  }
   const valorTotal = catalogo.reduce((soma, m) => soma + Number(m.valor_mensal), 0);
   if (!valorTotal) return res.status(400).json({ error: "O valor desses módulos ainda não foi configurado — entre em contato com o suporte." });
   const empresa = sqlite.prepare(`SELECT nome, cnpj, email, telefone, asaas_customer_id FROM empresas WHERE id = ?`).get(empresaId) as any;
@@ -21134,7 +21153,8 @@ app.post("/api/financeiro/minha-empresa/modulos/pagar", requireCliente, async (r
   let cobranca = pendentes.find((c) => {
     const itens = sqlite.prepare(`SELECT modulo_chave FROM financeiro_licenca_cobranca_itens WHERE cobranca_id = ?`).all(c.id) as any[];
     const chavesCobranca = itens.map((i) => i.modulo_chave).sort().join(",");
-    return chavesCobranca === [...chaves].sort().join(",");
+    // Se o preço mudou (ex.: SuperAdmin ajustou o valor desta empresa), não reaproveita a cobrança antiga.
+    return chavesCobranca === [...chaves].sort().join(",") && Math.abs(Number(c.valor_total) - valorTotal) < 0.005;
   });
   try {
     let customerId = empresa.asaas_customer_id;
@@ -21212,6 +21232,101 @@ app.put("/api/super/modulos-catalogo/:chave", requireSuperAdmin, (req, res) => {
     .run(nome ?? null, valorMensal != null ? Number(valorMensal) : null, ativo != null ? (ativo ? 1 : 0) : null, chave);
   res.json({ ok: true });
 });
+// ---------- Controle de contratos (SuperAdmin): quem tem cada módulo, situação e quanto paga ----------
+// Junta os dois níveis numa lista só: módulos que o ESCRITÓRIO contrata da plataforma
+// (escritorio_modulos) e módulos que a EMPRESA-cliente contrata (empresa_modulos). O valor
+// personalizado (valor_mensal_custom) vale só praquele cliente; NULL = usa o preço padrão do catálogo.
+function situacaoContratoModulo(contratado: any, isento: boolean, statusBase: string): string {
+  if (isento) return "isento";
+  if (contratado.assinatura_ativa_ate && contratado.assinatura_ativa_ate >= "2099-01-01") return "vitalicio";
+  return statusBase;
+}
+app.get("/api/super/modulos-contratos", requireSuperAdmin, (_req, res) => {
+  const escr = sqlite
+    .prepare(
+      `SELECT em.*, c.nome as modulo_nome, c.valor_mensal as valor_padrao, e.nome as cliente_nome, e.isento_assinatura
+         FROM escritorio_modulos em
+         JOIN modulos_escritorio_catalogo c ON c.chave = em.modulo_chave
+         JOIN escritorios e ON e.id = em.escritorio_id`
+    )
+    .all() as any[];
+  const assentosPorEscritorio = new Map<number, number>();
+  const itensEscr = escr.map((r) => {
+    const porAssento = r.modulo_chave === "assento_colaborador";
+    let qtd = 1;
+    if (porAssento) {
+      if (!assentosPorEscritorio.has(r.escritorio_id)) assentosPorEscritorio.set(r.escritorio_id, contarAssentosColaborador(r.escritorio_id));
+      qtd = assentosPorEscritorio.get(r.escritorio_id)!;
+    }
+    const preco = precoModuloEfetivo(r.valor_padrao, r);
+    const { status } = moduloStatusParaEscritorio(null, r);
+    return {
+      tipo: "escritorio",
+      id: r.id,
+      clienteId: r.escritorio_id,
+      clienteNome: r.cliente_nome,
+      escritorioNome: r.cliente_nome,
+      moduloChave: r.modulo_chave,
+      moduloNome: r.modulo_nome,
+      situacao: situacaoContratoModulo(r, !!r.isento_assinatura, status),
+      trialFim: r.trial_fim,
+      assinaturaAtivaAte: r.assinatura_ativa_ate,
+      valorPadrao: Number(r.valor_padrao) || 0,
+      valorPersonalizado: r.valor_mensal_custom != null ? Number(r.valor_mensal_custom) : null,
+      quantidade: porAssento ? qtd : null,
+      valorMensal: preco * qtd,
+    };
+  });
+  const emp = sqlite
+    .prepare(
+      `SELECT em.*, c.nome as modulo_nome, c.valor_mensal as valor_padrao, e.nome as cliente_nome, e.isento_assinatura, o.nome as escritorio_nome
+         FROM empresa_modulos em
+         JOIN modulos_catalogo c ON c.chave = em.modulo_chave
+         JOIN empresas e ON e.id = em.empresa_id
+         LEFT JOIN escritorios o ON o.id = e.escritorio_id`
+    )
+    .all() as any[];
+  const itensEmp = emp.map((r) => {
+    const { status } = moduloStatusParaEmpresa(null, r);
+    return {
+      tipo: "empresa",
+      id: r.id,
+      clienteId: r.empresa_id,
+      clienteNome: r.cliente_nome,
+      escritorioNome: r.escritorio_nome || "",
+      moduloChave: r.modulo_chave,
+      moduloNome: r.modulo_nome,
+      situacao: situacaoContratoModulo(r, !!r.isento_assinatura, status),
+      trialFim: r.trial_fim,
+      assinaturaAtivaAte: r.assinatura_ativa_ate,
+      valorPadrao: Number(r.valor_padrao) || 0,
+      valorPersonalizado: r.valor_mensal_custom != null ? Number(r.valor_mensal_custom) : null,
+      quantidade: null,
+      valorMensal: precoModuloEfetivo(r.valor_padrao, r),
+    };
+  });
+  const items = [...itensEscr, ...itensEmp].sort(
+    (a, b) => a.tipo.localeCompare(b.tipo) || String(a.clienteNome).localeCompare(String(b.clienteNome), "pt-BR") || String(a.moduloNome).localeCompare(String(b.moduloNome), "pt-BR")
+  );
+  res.json({ items });
+});
+// Define (ou limpa, com valorMensalCustom = null/"") o preço personalizado de UM contrato.
+// Vale a partir da próxima cobrança gerada — cobrança já paga não muda.
+app.put("/api/super/modulos-contratos/:tipo/:id", requireSuperAdmin, (req, res) => {
+  const tabela = req.params.tipo === "escritorio" ? "escritorio_modulos" : req.params.tipo === "empresa" ? "empresa_modulos" : null;
+  if (!tabela) return res.status(400).json({ error: "Tipo inválido." });
+  const id = Number(req.params.id);
+  const bruto = req.body?.valorMensalCustom;
+  let valor: number | null = null;
+  if (bruto !== null && bruto !== undefined && String(bruto).trim() !== "") {
+    valor = Number(String(bruto).replace(",", "."));
+    if (!Number.isFinite(valor) || valor < 0) return res.status(400).json({ error: "Valor inválido." });
+    valor = Math.round(valor * 100) / 100;
+  }
+  const info = sqlite.prepare(`UPDATE ${tabela} SET valor_mensal_custom = ? WHERE id = ?`).run(valor, id);
+  if (!info.changes) return res.status(404).json({ error: "Contrato não encontrado." });
+  res.json({ ok: true });
+});
 function moduloStatusParaEscritorio(catalogo: any, contratado: any) {
   const agora = new Date().toISOString().replace("T", " ").slice(0, 19);
   if (!contratado) return { status: "nao_contratado", acesso: false };
@@ -21242,11 +21357,12 @@ function modulosDoEscritorio(escritorioId: number) {
     const contratado = porChave.get(m.chave);
     const { status, acesso } = isento ? { status: "isento", acesso: true } : moduloStatusParaEscritorio(m, contratado);
     const porAssento = m.chave === "assento_colaborador";
+    const preco = precoModuloEfetivo(m.valor_mensal, contratado);
     return {
       chave: m.chave,
       nome: m.nome,
-      valorMensal: porAssento ? m.valor_mensal * assentos : m.valor_mensal,
-      valorUnitario: porAssento ? m.valor_mensal : null,
+      valorMensal: porAssento ? preco * assentos : preco,
+      valorUnitario: porAssento ? preco : null,
       quantidade: porAssento ? assentos : null,
       ativo: !!m.ativo,
       status,
@@ -21298,7 +21414,7 @@ app.get("/api/colaborador/minha-assinatura", (req, res) => {
   const { status, acesso } = moduloStatusParaEscritorio(m, contratado);
   res.json({
     isento: !!isento?.isento_assinatura,
-    valorUnitario: m?.valor_mensal ?? 0,
+    valorUnitario: m ? precoModuloEfetivo(m.valor_mensal, contratado) : 0,
     status,
     acesso,
     trialFim: contratado?.trial_fim || null,
@@ -21327,6 +21443,11 @@ app.post("/api/escritorio/modulos/pagar", blockCliente, requirePermissao("config
     .all(...chaves) as any[];
   if (!catalogo.length) return res.status(400).json({ error: "Nenhum dos módulos selecionados está disponível." });
   const assentos = contarAssentosColaborador(escritorioId);
+  // Preço personalizado deste escritório (se houver) substitui o padrão do catálogo, item a item.
+  for (const m of catalogo) {
+    const contratado = sqlite.prepare(`SELECT valor_mensal_custom FROM escritorio_modulos WHERE escritorio_id = ? AND modulo_chave = ?`).get(escritorioId, m.chave) as any;
+    m.valor_mensal = precoModuloEfetivo(m.valor_mensal, contratado);
+  }
   // 'assento_colaborador' não é preço fixo — o item cobra o valor unitário do catálogo multiplicado
   // pela quantidade de colaboradores ativos e não isentos no momento da cobrança.
   const itensCalculados = catalogo.map((m) => ({
@@ -21346,7 +21467,9 @@ app.post("/api/escritorio/modulos/pagar", blockCliente, requirePermissao("config
     // Se a quantidade de assentos mudou desde a última cobrança pendente gerada, não reaproveita —
     // gera uma nova, senão o cliente pagaria um valor desatualizado.
     const itemAssento = itens.find((i) => i.modulo_chave === "assento_colaborador");
-    return !itemAssento || itemAssento.quantidade === assentos;
+    if (itemAssento && itemAssento.quantidade !== assentos) return false;
+    // Preço mudou (ex.: SuperAdmin ajustou o valor deste escritório) → gera cobrança nova.
+    return Math.abs(Number(c.valor_total) - valorTotal) < 0.005;
   });
   try {
     let customerId = escritorio.asaas_customer_id;
