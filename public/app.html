@@ -744,6 +744,11 @@ body.theme-glass .combo-input, body.theme-glass .inp, body.theme-glass input.dat
 body.theme-glass table.data-table td input[type=text], body.theme-glass table.data-table td select{
   background: rgba(255,255,255,.92); color:#1D1D1F;
 }
+/* Campo somente leitura (ex.: Código do município/UF, preenchidos pela cidade escolhida) — vários
+   têm style="background:var(--paper)" inline, e no tema escuro --paper é translúcido: o campo ficava
+   escuro com texto escuro, ilegível. Aqui vira um cinza-claro opaco (dá pra ver que é travado) com
+   texto escuro; !important porque precisa vencer o estilo inline. */
+body.theme-glass .field input[readonly]{ background: rgba(228,230,235,.92) !important; color:#3A3A3C !important; -webkit-text-fill-color:#3A3A3C; opacity:1; }
 /* .rte-body é o "papel" do editor de contrato/documento — fundo branco fixo (#fff, nunca muda com o
    tema), mas sem essa regra o texto herdava a cor clara do tema escuro e ficava ilegível (texto quase
    branco em cima de fundo branco). */
