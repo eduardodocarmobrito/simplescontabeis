@@ -3602,8 +3602,11 @@ app.use(express.static(path.join(__dirname, "..", "public"), {
   setHeaders: (res, arquivo) => { if (/\.html?$/i.test(arquivo)) res.setHeader("Cache-Control", "no-cache"); },
 }));
 
+// "no-cache" (e não "no-store"): o navegador sempre confere com o servidor, então nunca mostra versão
+// velha depois de deploy — mas, se o app.html não mudou, recebe só um 304 em vez de rebaixar ~450 KB
+// comprimidos (1,7 MB) a cada visita. Faz diferença porque a VPS fica em Boston (~200 ms de ida e volta).
 app.get("/", (_req, res) => {
-  res.set("Cache-Control", "no-store");
+  res.set("Cache-Control", "no-cache");
   res.sendFile(path.join(__dirname, "..", "public", "app.html"));
 });
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
