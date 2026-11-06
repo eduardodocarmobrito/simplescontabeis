@@ -1061,7 +1061,7 @@ body.theme-glass .rt-ach-rec, body.theme-glass .rt-ach-esp summary{ color:#5fe0a
   <div class="login-visual"><div class="login-visual-logo-wrap"><img src="/img/logo-escritorio.png" alt="Simples Contábeis" class="login-visual-logo"><span class="login-visual-marca-r">&reg;</span></div></div>
   <div class="login-form-side">
     <div class="login-box">
-      <div class="eyebrow">NFS-e — crie sua conta</div>
+      <div class="eyebrow" id="cadEyebrow">NFS-e — crie sua conta</div>
       <h1>Começar agora</h1>
       <div class="field"><label>Seu nome</label><input id="cadNome" autocomplete="name"></div>
       <div class="field"><label>E-mail (login)</label><input id="cadEmail" type="email" autocomplete="username"></div>
@@ -1930,17 +1930,27 @@ document.getElementById('resetConfirmaSenha').addEventListener('keydown', e=>{ i
 // filtrar a 1ª visita da tela de Assinatura logo após o cadastro, sem precisar persistir nada no
 // banco. Consumido (e zerado) por pageMinhaAssinatura() na primeira renderização.
 let CADASTRO_MODULO_SUGERIDO = null;
+// Rótulo do olho-mágico (eyebrow) da tela de cadastro, conforme o módulo do link — nomes conhecidos
+// do catálogo público (não precisa de rota nova só pra isso); convite usa o nome que já vem da API.
+const CADASTRO_MODULO_EYEBROW = { nfse:'NFS-e', financeiro:'Financeiro' };
+function cadAtualizarEyebrow(moduloChave, moduloNomeServidor){
+  const el = document.getElementById('cadEyebrow');
+  const nome = moduloNomeServidor ? moduloNomeServidor.replace(/^Módulo\s+/i,'') : CADASTRO_MODULO_EYEBROW[moduloChave];
+  el.textContent = nome ? `${nome} — Crie sua conta` : 'Crie sua conta';
+}
 async function mostrarTelaCadastro(conviteToken, moduloSugerido){
   document.getElementById('loginScreen').classList.add('hidden');
   document.getElementById('shell').classList.add('hidden');
   document.getElementById('cadastroScreen').classList.remove('hidden');
   document.getElementById('cadastroScreen').dataset.convite = conviteToken || '';
   CADASTRO_MODULO_SUGERIDO = moduloSugerido || null;
+  cadAtualizarEyebrow(moduloSugerido || null, null);
   if(conviteToken){
     try{
       const r = await api('/cadastro/convite/'+conviteToken);
       if(r.nome) document.getElementById('cadNome').value = r.nome;
       if(r.email) document.getElementById('cadEmail').value = r.email;
+      if(r.moduloChave){ CADASTRO_MODULO_SUGERIDO = r.moduloChave; cadAtualizarEyebrow(r.moduloChave, r.moduloNome); }
     }catch(e){
       const errEl = document.getElementById('cadastroError');
       errEl.textContent = e.message;

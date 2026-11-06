@@ -4507,7 +4507,8 @@ app.get("/api/cadastro/convite/:token", cadastroRateLimiter, (req, res) => {
   const tokenHash = crypto.createHash("sha256").update(String(req.params.token)).digest("hex");
   const convite = sqlite.prepare(`SELECT * FROM convites_cadastro WHERE token_hash = ? AND used_at IS NULL AND expires_at > datetime('now')`).get(tokenHash) as any;
   if (!convite) return res.status(400).json({ error: "Link de convite inválido ou expirado." });
-  res.json({ ok: true, nome: convite.nome_prefill || "", email: convite.email_prefill || "" });
+  const moduloNome = convite.modulo_chave ? (sqlite.prepare(`SELECT nome FROM modulos_catalogo WHERE chave = ?`).get(convite.modulo_chave) as any)?.nome : null;
+  res.json({ ok: true, nome: convite.nome_prefill || "", email: convite.email_prefill || "", moduloChave: convite.modulo_chave || null, moduloNome: moduloNome || null });
 });
 app.post("/api/cadastro", cadastroRateLimiter, (req, res) => {
   const { nomeResponsavel, email, senha, nomeEmpresa, cnpj, token } = req.body || {};
