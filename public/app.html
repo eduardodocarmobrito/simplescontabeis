@@ -1052,6 +1052,25 @@ body.theme-glass .rt-ach-rec, body.theme-glass .rt-ach-esp summary{ color:#5fe0a
   </div>
 </div>
 
+<div id="cadastroScreen" class="login-screen hidden">
+  <div class="login-visual"><div class="login-visual-logo-wrap"><img src="/img/logo-escritorio.png" alt="Simples Contábeis" class="login-visual-logo"><span class="login-visual-marca-r">&reg;</span></div></div>
+  <div class="login-form-side">
+    <div class="login-box">
+      <div class="eyebrow">NFS-e — crie sua conta</div>
+      <h1>Começar agora</h1>
+      <div class="field"><label>Seu nome</label><input id="cadNome" autocomplete="name"></div>
+      <div class="field"><label>E-mail (login)</label><input id="cadEmail" type="email" autocomplete="username"></div>
+      <div class="field"><label>Senha</label><div class="pw-wrap"><input id="cadSenha" type="password" autocomplete="new-password"><button type="button" class="pw-olho" data-alvo="cadSenha" tabindex="-1" title="Mostrar/ocultar a senha" aria-label="Mostrar ou ocultar a senha">👁</button></div></div>
+      <p style="font-size:11.5px; color:var(--ink-soft); margin:-8px 0 10px;">Mínimo 10 caracteres, com letras e números.</p>
+      <div class="field"><label>Nome da sua empresa</label><input id="cadNomeEmpresa"></div>
+      <div class="field"><label>CNPJ (opcional — pode completar depois)</label><input id="cadCnpj"></div>
+      <button class="btn primary" style="width:100%; justify-content:center;" id="btnCadastrar">Criar conta</button>
+      <div id="cadastroError" class="login-error hidden"></div>
+      <div style="margin-top:14px; text-align:center;"><a href="#" id="btnCadVoltarLogin" style="font-size:12.5px; color:var(--ink-soft);">Já tenho conta — entrar</a></div>
+    </div>
+  </div>
+</div>
+
 <div id="shell" class="shell hidden">
   <button id="btnTema" class="tema-fab" title="Escolher tema" aria-label="Escolher tema"></button>
   <div id="temaPopover" class="tema-popover hidden"></div>
@@ -1899,6 +1918,65 @@ async function doResetarSenha(){
 document.getElementById('btnResetarSenha').addEventListener('click', doResetarSenha);
 document.getElementById('resetConfirmaSenha').addEventListener('keydown', e=>{ if(e.key==='Enter') doResetarSenha(); });
 
+// ===================== cadastro de cliente direto (público, Instagram/internet) =====================
+// Dois jeitos de chegar aqui: link fixo "?cadastro=1" (Instagram) ou link de convite "?convite=TOKEN"
+// (pré-preenche nome/e-mail do convite e trava a origem como "convite" no backend).
+async function mostrarTelaCadastro(conviteToken){
+  document.getElementById('loginScreen').classList.add('hidden');
+  document.getElementById('shell').classList.add('hidden');
+  document.getElementById('cadastroScreen').classList.remove('hidden');
+  document.getElementById('cadastroScreen').dataset.convite = conviteToken || '';
+  if(conviteToken){
+    try{
+      const r = await api('/cadastro/convite/'+conviteToken);
+      if(r.nome) document.getElementById('cadNome').value = r.nome;
+      if(r.email) document.getElementById('cadEmail').value = r.email;
+    }catch(e){
+      const errEl = document.getElementById('cadastroError');
+      errEl.textContent = e.message;
+      errEl.classList.remove('hidden');
+    }
+  }
+}
+document.getElementById('btnCadVoltarLogin').addEventListener('click', (e)=>{
+  e.preventDefault();
+  history.replaceState(null, '', location.pathname);
+  document.getElementById('cadastroScreen').classList.add('hidden');
+  showLogin();
+});
+async function doCadastrar(){
+  const errEl = document.getElementById('cadastroError');
+  errEl.classList.add('hidden');
+  const body = {
+    nomeResponsavel: document.getElementById('cadNome').value.trim(),
+    email: document.getElementById('cadEmail').value.trim(),
+    senha: document.getElementById('cadSenha').value,
+    nomeEmpresa: document.getElementById('cadNomeEmpresa').value.trim(),
+    cnpj: document.getElementById('cadCnpj').value.trim()||null,
+    token: document.getElementById('cadastroScreen').dataset.convite || null,
+  };
+  if(!body.nomeResponsavel || !body.email || !body.senha || !body.nomeEmpresa){
+    errEl.textContent = 'Preencha nome, e-mail, senha e nome da empresa.';
+    errEl.classList.remove('hidden');
+    return;
+  }
+  try{
+    await api('/cadastro', { method:'POST', body });
+    history.replaceState(null, '', location.pathname);
+    document.getElementById('cadastroScreen').classList.add('hidden');
+    // Pra quem acabou de criar conta o que importa é pagar e liberar o módulo — manda direto pra
+    // Assinatura em vez do padrão (boot() só chama render() UMA vez, sem risco de corrida entre dois
+    // renders concorrentes brigando pelo mesmo #main).
+    await boot('minha-assinatura');
+    toast('Conta criada! Agora é só contratar o módulo NFS-e pra começar a emitir.','ok');
+  }catch(e){
+    errEl.textContent = e.message;
+    errEl.classList.remove('hidden');
+  }
+}
+document.getElementById('btnCadastrar').addEventListener('click', doCadastrar);
+document.getElementById('cadCnpj').addEventListener('keydown', e=>{ if(e.key==='Enter') doCadastrar(); });
+
 // ===================== navegação =====================
 const NAV = [
   { id:'dashboard', label:'Início', modulo:'dashboard', roles:['Administrador','Colaborador','Cliente'] },
@@ -1929,6 +2007,7 @@ const NAV = [
   { id:'minha-reforma', label:'Reforma Tributária', modulo:null, roles:['Cliente'] },
   { id:'minha-conciliacao', label:'Conciliação Bancária', modulo:null, roles:['Cliente'] },
   { id:'minha-assinatura', label:'Assinatura', modulo:null, roles:['Cliente'] },
+  { id:'minha-empresa-config', label:'Empresa', modulo:null, roles:['Cliente'] },
   { id:'financeiro', label:'Financeiro', modulo:'financeiro', roles:['Administrador','Colaborador'] },
   { id:'certificados', label:'Certificados', modulo:'certificados', roles:['Administrador','Colaborador'] },
   { id:'contratos', label:'Contratos', modulo:'contratos', roles:['Administrador','Colaborador'] },
@@ -1944,6 +2023,7 @@ const NAV = [
   { id:'minha-assinatura-colaborador', label:'Assinatura', modulo:null, roles:[] },
   { id:'escritorios', label:'Escritórios', modulo:null, roles:['SuperAdmin'] },
   { id:'modulos-plataforma', label:'Módulos da plataforma', modulo:null, roles:['SuperAdmin'] },
+  { id:'clientes-diretos', label:'Clientes Diretos', modulo:null, roles:['SuperAdmin'] },
 ];
 // Tipo escolhido no sub-menu da Busca de XML (NF-e/CT-e/NFC-e/NF3-e/SAT-CF-e) — pré-filtra a lista
 // quando o usuário abre uma empresa. '' = Todos.
@@ -1969,6 +2049,9 @@ const PAGINAS_CLIENTE_TODAS = [
   { id:'minha-conciliacao', label:'Conciliação Bancária', optin:true },
 ];
 function podeVerModulo(item){
+  // "Empresa" (Configuração > Empresa) só existe pro cliente direto (venda avulsa) — é quem precisa
+  // preencher o próprio cadastro sozinho; cliente comum do escritório já chega com tudo pronto.
+  if(item.id==='minha-empresa-config') return STATE.user.perfil==='Cliente' && !!STATE.user.ehClienteDireto;
   if(!item.roles.includes(STATE.user.perfil)) return false;
   if(!item.modulo){
     if(STATE.user.perfil==='Cliente'){
@@ -2041,7 +2124,7 @@ function goPage(id){
 }
 
 // ===================== boot =====================
-async function boot(){
+async function boot(paginaInicial){
   try{
     const data = await api('/auth/me');
     STATE.user = data.user;
@@ -2068,9 +2151,12 @@ async function boot(){
   else document.getElementById('sidebarBrand').innerHTML = `<div class="eyebrow">Escritório contábil</div><h2>Simples Contábeis</h2>`;
   if(STATE.user.perfil==='Cliente'){
     // Igual ao Colaborador abaixo: cai na primeira página do menu que esse cliente realmente
-    // enxerga, caso a página padrão (NFS-e) tenha sido restringida pra ele.
+    // enxerga, caso a página padrão (NFS-e) tenha sido restringida pra ele. `paginaInicial` (opcional)
+    // força uma página específica — ex.: pós-cadastro manda direto pra Assinatura — só se o cliente
+    // realmente enxerga ela, senão cai no padrão de sempre.
     const primeiraDisponivel = NAV.find(item=>podeVerModulo(item));
-    STATE.page = primeiraDisponivel ? primeiraDisponivel.id : 'minha-nfse';
+    const forcada = paginaInicial && NAV.find(item=>item.id===paginaInicial && podeVerModulo(item));
+    STATE.page = forcada ? forcada.id : (primeiraDisponivel ? primeiraDisponivel.id : 'minha-nfse');
   }
   else if(STATE.user.perfil==='SuperAdmin') STATE.page = 'escritorios';
   else{
@@ -2147,6 +2233,7 @@ async function render(){
     else if(STATE.page==='minha-nfse') await pageMinhaNfse();
     else if(STATE.page==='minha-financeiro') await pageMinhaFinanceiro();
     else if(STATE.page==='minha-assinatura') await pageMinhaAssinatura();
+    else if(STATE.page==='minha-empresa-config') await pageMinhaEmpresaConfig();
     else if(STATE.page==='financeiro') await pageFinanceiro();
     else if(STATE.page==='certificados') await pageCertificados();
     else if(STATE.page==='contratos') await pageContratos();
@@ -2160,6 +2247,7 @@ async function render(){
     else if(STATE.page==='minha-assinatura-colaborador') await pageMinhaAssinaturaColaborador();
     else if(STATE.page==='escritorios') await pageEscritorios();
     else if(STATE.page==='modulos-plataforma') await pageModulosPlataforma();
+    else if(STATE.page==='clientes-diretos') await pageClientesDiretos();
     else m.innerHTML = '<div class="empty-state">Página não encontrada.</div>';
   }catch(e){
     if(meuSeq !== RENDER_SEQ) return; // usuário já navegou pra outra tela — essa resposta chegou atrasada, não sobrescreve
@@ -13738,6 +13826,96 @@ async function pageMinhaAssinaturaColaborador(){
     </div>
   `;
 }
+// ===================== Configuração › Empresa (self-service, cliente direto) =====================
+async function pageMinhaEmpresaConfig(){
+  const e = await api('/minha-empresa');
+  main().innerHTML = `
+    <h1>Empresa</h1>
+    <p class="subtitle">Dados cadastrais da sua empresa — preencha pra poder emitir NFS-e.</p>
+    <div class="card">
+      <div class="row">
+        <div class="field grow"><label>Nome / Razão social</label><input id="mecNome" value="${esc(e.nome||'')}"></div>
+        <div class="field" style="width:220px;"><label>CNPJ</label><input id="mecCnpj" value="${e.cnpj?esc(fmtCnpjCpf(e.cnpj)):''}" ${e.cnpjTravado?'disabled title="Não dá pra trocar o CNPJ depois de emitir a primeira NFS-e — fale com o suporte."':''}></div>
+      </div>
+      <div class="row">
+        <div class="field grow"><label>E-mail</label><input id="mecEmail" type="email" value="${esc(e.email||'')}"></div>
+        <div class="field grow"><label>Telefone</label><input id="mecTelefone" value="${esc(e.telefone||'')}"></div>
+      </div>
+      <div class="row">
+        <div class="field grow"><label>Endereço</label><input id="mecEndereco" value="${esc(e.endereco||'')}"></div>
+        <div class="field" style="width:220px;"><label>Cidade</label><input id="mecCidade" value="${esc(e.cidade||'')}"></div>
+        <div class="field" style="width:80px;"><label>UF</label><input id="mecUf" maxlength="2" value="${esc((e.uf||'').toUpperCase())}"></div>
+        <div class="field" style="width:140px;"><label>CEP</label><input id="mecCep" value="${esc(e.cep||'')}"></div>
+      </div>
+      <div class="row">
+        <div class="field grow"><label>Inscrição estadual</label><input id="mecIe" value="${esc(e.inscricaoEstadual||'')}"></div>
+        <div class="field grow"><label>Inscrição municipal</label><input id="mecIm" value="${esc(e.inscricaoMunicipal||'')}"></div>
+      </div>
+      <div class="row">
+        <div class="field grow"><label>Representante legal</label><input id="mecRepLegal" value="${esc(e.nomeRepresentanteLegal||'')}"></div>
+        <div class="field" style="width:220px;"><label>CPF do representante</label><input id="mecRepCpf" value="${e.cpfRepresentanteLegal?esc(fmtCnpjCpf(e.cpfRepresentanteLegal)):''}"></div>
+      </div>
+      <div class="field" style="width:320px;"><label>Regime tributário</label>${comboSelectHtml('mecRegimeCombo','Digite para buscar…')}</div>
+      <button class="btn primary" id="mecSalvar" disabled>Salvar</button>
+    </div>
+  `;
+  ligarTravaDocumento(document.getElementById('mecCnpj'), 'cnpj');
+  ligarTravaDocumento(document.getElementById('mecRepCpf'), 'cpf');
+  const REGIME_OPCOES = Object.entries(REGIME_TRIBUTARIO_LABELS).map(([id,label])=>({id,label}));
+  setupComboSelect('mecRegimeCombo', REGIME_OPCOES, ()=>atualizarSalvarMec());
+  const regimeCombo = document.getElementById('mecRegimeCombo');
+  const regimeAtual = REGIME_OPCOES.find(o=>o.id===e.regimeTributario) || REGIME_OPCOES[0];
+  regimeCombo.querySelector('.combo-value').value = regimeAtual.id;
+  regimeCombo.querySelector('.combo-input').value = regimeAtual.label;
+  function snapshotMec(){
+    return JSON.stringify({
+      nome: document.getElementById('mecNome').value.trim(),
+      cnpj: document.getElementById('mecCnpj').value.trim(),
+      email: document.getElementById('mecEmail').value.trim(),
+      telefone: document.getElementById('mecTelefone').value.trim(),
+      endereco: document.getElementById('mecEndereco').value.trim(),
+      cidade: document.getElementById('mecCidade').value.trim(),
+      uf: document.getElementById('mecUf').value.trim(),
+      cep: document.getElementById('mecCep').value.trim(),
+      ie: document.getElementById('mecIe').value.trim(),
+      im: document.getElementById('mecIm').value.trim(),
+      repLegal: document.getElementById('mecRepLegal').value.trim(),
+      repCpf: document.getElementById('mecRepCpf').value.trim(),
+      regime: document.querySelector('#mecRegimeCombo .combo-value')?.value||'',
+    });
+  }
+  let mecInicial = snapshotMec();
+  function atualizarSalvarMec(){ document.getElementById('mecSalvar').disabled = snapshotMec()===mecInicial; }
+  ['mecNome','mecCnpj','mecEmail','mecTelefone','mecEndereco','mecCidade','mecUf','mecCep','mecIe','mecIm','mecRepLegal','mecRepCpf'].forEach(id=>{
+    document.getElementById(id).addEventListener('input', atualizarSalvarMec);
+  });
+  document.getElementById('mecSalvar').addEventListener('click', async ()=>{
+    const nome = document.getElementById('mecNome').value.trim();
+    if(!nome){ toast('Informe o nome da empresa.','err'); return; }
+    if(document.getElementById('mecCnpj').value.trim() && !travaDocumentoOk(document.getElementById('mecCnpj'),'cnpj','CNPJ')) return;
+    if(document.getElementById('mecRepCpf').value.trim() && !travaDocumentoOk(document.getElementById('mecRepCpf'),'cpf','CPF')) return;
+    const body = {
+      nome,
+      cnpj: document.getElementById('mecCnpj').value.trim()||null,
+      email: document.getElementById('mecEmail').value.trim()||null,
+      telefone: document.getElementById('mecTelefone').value.trim()||null,
+      endereco: document.getElementById('mecEndereco').value.trim()||null,
+      cidade: document.getElementById('mecCidade').value.trim()||null,
+      uf: document.getElementById('mecUf').value.trim().toUpperCase()||null,
+      cep: document.getElementById('mecCep').value.trim()||null,
+      inscricaoEstadual: document.getElementById('mecIe').value.trim()||null,
+      inscricaoMunicipal: document.getElementById('mecIm').value.trim()||null,
+      nomeRepresentanteLegal: document.getElementById('mecRepLegal').value.trim()||null,
+      cpfRepresentanteLegal: document.getElementById('mecRepCpf').value.trim()||null,
+      regimeTributario: document.querySelector('#mecRegimeCombo .combo-value')?.value||'simples_nacional',
+    };
+    try{
+      await api('/minha-empresa', { method:'PUT', body });
+      toast('Dados da empresa salvos.','ok');
+      pageMinhaEmpresaConfig();
+    }catch(e){ toast(e.message,'err'); }
+  });
+}
 async function pageMinhaAssinatura(){
   main().innerHTML = `
     <h1>Assinatura</h1>
@@ -13747,7 +13925,7 @@ async function pageMinhaAssinatura(){
   await renderMinhaAssinatura();
 }
 let ASSINATURA_POLL = null;
-function assinaturaModuloCardHtml(item){
+function assinaturaModuloCardHtml(item, semTesteGratis){
   let badgeClass='muted', badgeText='Não contratado';
   // Contas migradas antes de existir o controle de teste/assinatura ganharam acesso liberado "pra
   // sempre" (ver migração de compatibilidade em src/server.ts) — uma data 100 anos no futuro é só
@@ -13759,7 +13937,8 @@ function assinaturaModuloCardHtml(item){
   else if(item.status==='teste_vencido'){ badgeClass='bad'; badgeText='Teste grátis vencido'; }
   else if(item.status==='ativo'){ badgeClass='ok'; badgeText = semVencimento ? 'Ativo' : 'Ativo até '+fmtDateIso(String(item.assinaturaAtivaAte||'').slice(0,10)); }
   else if(item.status==='vencido'){ badgeClass='bad'; badgeText='Assinatura vencida'; }
-  const mostraBotaoTeste = item.status==='nao_contratado';
+  // Cliente direto (venda avulsa) não tem teste grátis — vai direto pro pagamento.
+  const mostraBotaoTeste = item.status==='nao_contratado' && !semTesteGratis;
   const rotuloCheckbox = item.status==='ativo' ? 'Incluir no pagamento (renovar antecipado)' : 'Incluir no pagamento';
   return `
     <div class="card" style="margin-bottom:10px;">
@@ -13781,10 +13960,10 @@ function assinaturaModuloCardHtml(item){
 }
 async function renderMinhaAssinatura(){
   if(ASSINATURA_POLL){ clearInterval(ASSINATURA_POLL); ASSINATURA_POLL=null; }
-  const { items } = await api('/financeiro/minha-empresa/modulos');
+  const { items, semTesteGratis } = await api('/financeiro/minha-empresa/modulos');
   const box = document.getElementById('assinaturaContent');
   box.innerHTML = `
-    ${items.map(assinaturaModuloCardHtml).join('')}
+    ${items.map(item=>assinaturaModuloCardHtml(item, semTesteGratis)).join('')}
     <div class="card" style="margin-top:14px;">
       <div class="row" style="justify-content:space-between; align-items:center;">
         <div>Total selecionado: <b id="assinaturaTotal">${fmtMoney(0)}</b></div>
@@ -19381,7 +19560,7 @@ async function pageEscritorios(){
       <td>${esc(e.email||'—')}</td>
       <td>${e.totalEmpresas}</td>
       <td>${e.totalUsuarios}</td>
-      <td><span class="tag ${e.ativo?'ok':'bad'}">${e.ativo?'Ativo':'Inativo'}</span>${e.isentoAssinatura?' <span class="tag ok" title="Isento da cobrança da plataforma — acesso liberado a todos os módulos sem pagar">Isento</span>':''}</td>
+      <td><span class="tag ${e.ativo?'ok':'bad'}">${e.ativo?'Ativo':'Inativo'}</span>${e.isentoAssinatura?' <span class="tag ok" title="Isento da cobrança da plataforma — acesso liberado a todos os módulos sem pagar">Isento</span>':''}${e.ehClienteDireto?' <span class="tag muted" title="Escritório virtual — recebe os clientes avulsos do auto-cadastro/convite (Clientes Diretos)">Clientes Diretos</span>':''}</td>
       <td style="text-align:right; white-space:nowrap;">
         <button class="btn small" data-act="editar">Editar</button>
         <button class="btn small" data-act="admin">+ Administrador</button>
@@ -19436,6 +19615,8 @@ function escritorioModal(esc_){
     <div class="field"><label>CNPJ</label><input id="escCnpj" value="${esc_&&esc_.cnpj?esc(fmtCnpjCpf(esc_.cnpj)):''}"></div>
     <div class="field"><label>E-mail</label><input id="escEmail" type="email" value="${esc_&&esc_.email?esc(esc_.email):''}"></div>
     <div class="field"><label>Telefone</label><input id="escTelefone" value="${esc_&&esc_.telefone?esc(esc_.telefone):''}"></div>
+    <label class="checkbox-row"><input type="checkbox" id="escClienteDireto" ${esc_&&esc_.ehClienteDireto?'checked':''}> Este é o escritório de clientes diretos (avulsos)</label>
+    <p style="font-size:11.5px; color:var(--ink-soft); margin:2px 0 10px;">Recebe os clientes que compraram direto (auto-cadastro/convite), sem vínculo com nenhum escritório contábil real. Só pode haver UM marcado — marcar este desmarca qualquer outro automaticamente.</p>
     ${!esc_?'<p class="subtitle" style="margin-top:0;">Depois de criado, use o botão "+ Administrador" na lista pra cadastrar o primeiro acesso desse escritório.</p>':''}
     <div class="modal-actions">
       <button class="btn" id="escCancel">Cancelar</button>
@@ -19453,6 +19634,7 @@ function escritorioModal(esc_){
       cnpj: document.getElementById('escCnpj').value.trim() || null,
       email: document.getElementById('escEmail').value.trim() || null,
       telefone: document.getElementById('escTelefone').value.trim() || null,
+      ehClienteDireto: document.getElementById('escClienteDireto').checked,
     };
     try{
       if(esc_) await api('/super/escritorios/'+esc_.id, { method:'PUT', body });
@@ -19644,6 +19826,112 @@ async function pageModulosPlataforma(){
   ligarSalvarModulos(main(), 'mp', '/super/modulos-catalogo');
   ligarSalvarModulos(main(), 'mc', '/super/modulos-clientes');
   await carregarContratosModulos();
+}
+// ===================== Clientes Diretos (venda avulsa via Instagram/internet, SuperAdmin) =====================
+// Controle separado dos clientes reais do escritório contábil — vivem num escritório "virtual"
+// (eh_cliente_direto=1, marcado em Escritórios) controlado só por aqui. Três jeitos de entrar: link de
+// convite, auto-cadastro público, ou cadastrado manualmente nesta tela.
+const CD_ORIGEM_LABEL = { 'auto-cadastro':'Auto-cadastro', 'convite':'Convite', 'manual':'Manual' };
+const CD_STATUS_LABEL = { nao_contratado:'Não contratado', teste:'Em teste', teste_vencido:'Teste vencido', ativo:'Ativo', vencido:'Vencido', isento:'Isento' };
+async function pageClientesDiretos(){
+  const { escritorioConfigurado, items } = await api('/super/clientes-diretos');
+  main().innerHTML = `
+    <h1>Clientes Diretos</h1>
+    <p class="subtitle">Quem compra o NFS-e direto (Instagram/internet), sem vínculo com nenhum escritório contábil real — fica isolado num escritório próprio, controlado só por aqui.</p>
+    <div id="cdContent"></div>
+  `;
+  const box = document.getElementById('cdContent');
+  if(!escritorioConfigurado){
+    box.innerHTML = `<div class="card"><div class="empty-state">Ainda não existe um escritório marcado como "clientes diretos". Vá em <b>Escritórios</b>, crie (ou edite) um escritório e marque o checkbox "Este é o escritório de clientes diretos (avulsos)".</div></div>`;
+    return;
+  }
+  box.innerHTML = `
+    <div class="row" style="margin-bottom:14px;">
+      <button class="btn primary" id="btnCdConvite">+ Gerar link de convite</button>
+      <button class="btn" id="btnCdManual">+ Cadastrar manualmente</button>
+    </div>
+    <div class="card" style="padding:0; overflow-x:auto;">
+      <table class="data-table">
+        <thead><tr><th>Empresa</th><th>CNPJ</th><th>E-mail</th><th>Origem</th><th>Módulo NFS-e</th><th>Cadastrado em</th></tr></thead>
+        <tbody>
+          ${items.length? items.map(e=>`
+            <tr>
+              <td>${esc(e.nome)}</td>
+              <td>${esc(fmtCnpjCpf(e.cnpj)||'—')}</td>
+              <td>${esc(e.email||'—')}</td>
+              <td>${esc(CD_ORIGEM_LABEL[e.origemCadastro]||e.origemCadastro||'—')}</td>
+              <td><span class="tag ${e.statusNfse==='ativo'||e.statusNfse==='isento'?'ok':(e.statusNfse==='teste'?'muted':'bad')}">${esc(CD_STATUS_LABEL[e.statusNfse]||e.statusNfse)}</span></td>
+              <td>${fmtDateHora(e.criadoEm)}</td>
+            </tr>
+          `).join('') : '<tr><td colspan="6"><div class="empty-state">Nenhum cliente direto cadastrado ainda.</div></td></tr>'}
+        </tbody>
+      </table>
+    </div>
+  `;
+  document.getElementById('btnCdConvite').addEventListener('click', cdConviteModal);
+  document.getElementById('btnCdManual').addEventListener('click', cdManualModal);
+}
+function cdConviteModal(){
+  openModal(`
+    <h3>Gerar link de convite</h3>
+    <p style="font-size:12.5px; color:var(--ink-soft); margin-top:0;">Nome e e-mail são opcionais — só pra pré-preencher o formulário de quem abrir o link. A pessoa escolhe a própria senha e preenche o resto depois de logar.</p>
+    <div class="field"><label>Nome (opcional)</label><input id="cdcNome"></div>
+    <div class="field"><label>E-mail (opcional)</label><input id="cdcEmail" type="email"></div>
+    <div class="modal-actions">
+      <button class="btn" id="cdcCancel">Cancelar</button>
+      <button class="btn primary" id="cdcGerar">Gerar link</button>
+    </div>
+  `, '480px');
+  document.getElementById('cdcCancel').addEventListener('click', closeModal);
+  document.getElementById('cdcGerar').addEventListener('click', async ()=>{
+    try{
+      const body = { nome: document.getElementById('cdcNome').value.trim()||null, email: document.getElementById('cdcEmail').value.trim()||null };
+      const { link } = await api('/super/clientes-diretos/convites', { method:'POST', body });
+      openModal(`
+        <h3>Link de convite gerado</h3>
+        <p style="font-size:12.5px; color:var(--ink-soft); margin-top:0;">Válido por 7 dias, uso único. Copie e mande pra pessoa (WhatsApp, e-mail etc.).</p>
+        <div class="field"><input id="cdcLink" value="${esc(link)}" readonly></div>
+        <div class="modal-actions">
+          <button class="btn" onclick="closeModal()">Fechar</button>
+          <button class="btn primary" id="cdcCopiar">Copiar link</button>
+        </div>
+      `, '560px');
+      document.getElementById('cdcCopiar').addEventListener('click', async ()=>{
+        try{ await navigator.clipboard.writeText(link); toast('Link copiado.','ok'); }catch(e){ toast('Não foi possível copiar.','err'); }
+      });
+    }catch(e){ toast(e.message,'err'); }
+  });
+}
+function cdManualModal(){
+  openModal(`
+    <h3>Cadastrar cliente direto manualmente</h3>
+    <div class="field"><label>Nome do responsável</label><input id="cdmNomeResp"></div>
+    <div class="field"><label>E-mail (login)</label><input id="cdmEmail" type="email"></div>
+    <div class="field"><label>Senha</label><input id="cdmSenha" type="password"></div>
+    <p style="font-size:11.5px; color:var(--ink-soft); margin:-8px 0 10px;">Mínimo 10 caracteres, com letras e números.</p>
+    <div class="field"><label>Nome da empresa</label><input id="cdmNomeEmpresa"></div>
+    <div class="field"><label>CNPJ (opcional)</label><input id="cdmCnpj"></div>
+    <div class="modal-actions">
+      <button class="btn" id="cdmCancel">Cancelar</button>
+      <button class="btn primary" id="cdmSalvar">Cadastrar</button>
+    </div>
+  `, '480px');
+  ligarTravaDocumento(document.getElementById('cdmCnpj'), 'cnpj');
+  document.getElementById('cdmCancel').addEventListener('click', closeModal);
+  document.getElementById('cdmSalvar').addEventListener('click', async ()=>{
+    if(document.getElementById('cdmCnpj').value.trim() && !travaDocumentoOk(document.getElementById('cdmCnpj'),'cnpj','CNPJ')) return;
+    const body = {
+      nomeResponsavel: document.getElementById('cdmNomeResp').value.trim(),
+      email: document.getElementById('cdmEmail').value.trim(),
+      senha: document.getElementById('cdmSenha').value,
+      nomeEmpresa: document.getElementById('cdmNomeEmpresa').value.trim(),
+      cnpj: document.getElementById('cdmCnpj').value.trim()||null,
+    };
+    try{
+      await api('/super/clientes-diretos/manual', { method:'POST', body });
+      closeModal(); toast('Cliente direto cadastrado.','ok'); pageClientesDiretos();
+    }catch(e){ toast(e.message,'err'); }
+  });
 }
 // ---- Controle de contratos: quem tem cada módulo, situação e valor cobrado (personalizável) ----
 const MCT_SITUACAO = {
@@ -22679,7 +22967,11 @@ async function renderCfgEmailSmtp(box){
 
 // ===================== start =====================
 const resetTokenNaUrl = new URLSearchParams(location.search).get('resetToken');
+const conviteTokenNaUrl = new URLSearchParams(location.search).get('convite');
+const cadastroNaUrl = new URLSearchParams(location.search).get('cadastro');
 if(resetTokenNaUrl) mostrarTelaResetSenha(resetTokenNaUrl);
+else if(conviteTokenNaUrl) mostrarTelaCadastro(conviteTokenNaUrl);
+else if(cadastroNaUrl) mostrarTelaCadastro(null);
 else boot();
 </script>
 </body>

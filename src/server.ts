@@ -136,6 +136,22 @@ sqlite.exec(`
     created_at TEXT DEFAULT (datetime('now'))
   );
 
+  -- Convite de auto-cadastro pra cliente direto (venda avulsa) — mesmo desenho de
+  -- password_reset_tokens (só o hash do token fica salvo), usado pelo link que o SuperAdmin gera em
+  -- "Clientes Diretos" pra mandar pra alguém criar a própria conta sem precisar de ninguém do
+  -- escritório. nome_prefill/email_prefill são opcionais (o SuperAdmin pode gerar um link em branco).
+  CREATE TABLE IF NOT EXISTS convites_cadastro (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_hash TEXT NOT NULL UNIQUE,
+    nome_prefill TEXT,
+    email_prefill TEXT,
+    escritorio_id INTEGER NOT NULL REFERENCES escritorios(id) ON DELETE CASCADE,
+    criado_por INTEGER REFERENCES app_users(id),
+    expires_at TEXT NOT NULL,
+    used_at TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+
   -- Empresas que um Colaborador com acesso_todas_empresas=0 pode enxergar
   CREATE TABLE IF NOT EXISTS colaborador_empresas (
     user_id INTEGER NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
@@ -2564,6 +2580,25 @@ try {
     sqlite.exec(`ALTER TABLE escritorios ADD COLUMN isento_assinatura INTEGER NOT NULL DEFAULT 0`);
   }
 }
+// Migração leve: escritório "virtual" de clientes diretos (venda avulsa via Instagram/internet, sem
+// vínculo com nenhum escritório contábil real) — controlado só pelo SuperAdmin, nunca tem Administrador
+// logando nele. Isolamento vem de graça do próprio mecanismo multi-tenant (escritorio_id), essa coluna
+// só marca QUAL escritório é esse pra achar sem hardcode de ID. Só um pode estar marcado por vez.
+{
+  const colsEscr = sqlite.prepare(`PRAGMA table_info(escritorios)`).all() as any[];
+  if (!colsEscr.some((c) => c.name === "eh_cliente_direto")) {
+    sqlite.exec(`ALTER TABLE escritorios ADD COLUMN eh_cliente_direto INTEGER NOT NULL DEFAULT 0`);
+  }
+}
+// Migração leve: como uma empresa-cliente foi cadastrada — só usado hoje pelos clientes diretos
+// (auto-cadastro público, convite, ou manual pelo SuperAdmin); clientes normais do escritório ficam
+// null (sempre foram cadastrados pelo próprio escritório, não precisa registrar).
+{
+  const colsEmp2 = sqlite.prepare(`PRAGMA table_info(empresas)`).all() as any[];
+  if (!colsEmp2.some((c) => c.name === "origem_cadastro")) {
+    sqlite.exec(`ALTER TABLE empresas ADD COLUMN origem_cadastro TEXT`);
+  }
+}
 // Migração leve: monitor de IBS/CBS (reforma tributária, NT 2025.002) por nota — valores lidos do XML
 // (grupo total/IBSCBSTot). tributos_parseado=0 = ainda não lido; 1 = já lido (mesmo que a nota não
 // traga o grupo ainda, na transição da reforma). Backfill preguiçoso na listagem de documentos.
@@ -4068,7 +4103,8 @@ app.get("/api/auth/me", (req, res) => {
     const paginas = sqlite.prepare(`SELECT pagina FROM cliente_paginas_visiveis WHERE user_id = ?`).all(user.id) as any[];
     if (paginas.length) paginasCliente = paginas.map((p) => p.pagina);
   }
-  res.json({ user, permissoes, configAbas, paginasCliente });
+  const userComFlag = user.perfil === "Cliente" && user.empresaId ? { ...user, ehClienteDireto: empresaEhClienteDireto(user.empresaId) } : user;
+  res.json({ user: userComFlag, permissoes, configAbas, paginasCliente });
 });
 app.get("/api/auth/minhas-empresas", requireAuth, (req, res) => {
   const user = (req as any).user;
@@ -4139,7 +4175,8 @@ app.use("/api", (req, res, next) => {
     req.path.startsWith("/dominio-agent/") ||
     req.path === "/asaas/webhook" ||
     req.path === "/whatsapp/webhook" ||
-    req.path === "/autentique/webhook"
+    req.path === "/autentique/webhook" ||
+    req.path.startsWith("/cadastro")
   )
     return next();
   requireAuth(req, res, next);
@@ -4149,14 +4186,14 @@ app.use("/api", (req, res, next) => {
 app.get("/api/super/escritorios", requireSuperAdmin, (_req, res) => {
   const rows = sqlite
     .prepare(
-      `SELECT id, nome, cnpj, email, telefone, empresa_id as empresaId, ativo, isento_assinatura as isentoAssinatura, criado_em as criadoEm,
+      `SELECT id, nome, cnpj, email, telefone, empresa_id as empresaId, ativo, isento_assinatura as isentoAssinatura, eh_cliente_direto as ehClienteDireto, criado_em as criadoEm,
               (SELECT COUNT(*) FROM empresas e WHERE e.escritorio_id = escritorios.id) as totalEmpresas,
               (SELECT COUNT(*) FROM app_users u WHERE u.escritorio_id = escritorios.id) as totalUsuarios,
               (SELECT ativo FROM deskcomm_config d WHERE d.escritorio_id = escritorios.id) as deskcommAtivo
        FROM escritorios ORDER BY nome`
     )
     .all() as any[];
-  res.json({ items: rows.map((r) => ({ ...r, ativo: !!r.ativo, isentoAssinatura: !!r.isentoAssinatura, deskcommAtivo: !!r.deskcommAtivo })) });
+  res.json({ items: rows.map((r) => ({ ...r, ativo: !!r.ativo, isentoAssinatura: !!r.isentoAssinatura, ehClienteDireto: !!r.ehClienteDireto, deskcommAtivo: !!r.deskcommAtivo })) });
 });
 // Config da pilha de atendimento por WhatsApp (deskcomm+WAHA) deste escritório — só o SuperAdmin vê/
 // edita (são credenciais de infraestrutura de uma pilha provisionada à parte, não config comum do
@@ -4213,13 +4250,18 @@ app.put("/api/super/escritorios/:id/isencao", requireSuperAdmin, (req, res) => {
   res.json({ ok: true, isentoAssinatura: !!isento });
 });
 app.post("/api/super/escritorios", requireSuperAdmin, (req, res) => {
-  const { nome, cnpj, email, telefone } = req.body || {};
+  const { nome, cnpj, email, telefone, ehClienteDireto } = req.body || {};
   if (!nome) return res.status(400).json({ error: "Informe o nome do escritório." });
   const agentToken = crypto.randomBytes(24).toString("hex");
   const info = sqlite
     .prepare(`INSERT INTO escritorios (nome, cnpj, email, telefone, agent_token, envio_rollover_ultimo_ano) VALUES (?, ?, ?, ?, ?, ?)`)
     .run(nome, cnpj || null, email || null, telefone || null, agentToken, agoraBrasilia().ano);
   const escritorioId = Number(info.lastInsertRowid);
+  // Só pode existir UM escritório marcado como "clientes diretos" — desmarca qualquer outro antes.
+  if (ehClienteDireto) {
+    sqlite.prepare(`UPDATE escritorios SET eh_cliente_direto = 0`).run();
+    sqlite.prepare(`UPDATE escritorios SET eh_cliente_direto = 1 WHERE id = ?`).run(escritorioId);
+  }
   // Empresa que representa o próprio escritório — "Contratada" nos contratos, prestador nas NFS-e.
   const empresaInfo = sqlite
     .prepare(`INSERT INTO empresas (nome, cnpj, email, telefone, origem, escritorio_id) VALUES (?, ?, ?, ?, 'manual', ?)`)
@@ -4240,11 +4282,15 @@ app.put("/api/super/escritorios/:id", requireSuperAdmin, (req, res) => {
   const id = Number(req.params.id);
   const existente = sqlite.prepare(`SELECT * FROM escritorios WHERE id = ?`).get(id) as any;
   if (!existente) return res.status(404).json({ error: "Escritório não encontrado." });
-  const { nome, cnpj, email, telefone } = req.body || {};
+  const { nome, cnpj, email, telefone, ehClienteDireto } = req.body || {};
   if (!nome) return res.status(400).json({ error: "Informe o nome do escritório." });
   sqlite
     .prepare(`UPDATE escritorios SET nome=?, cnpj=?, email=?, telefone=?, updated_at=datetime('now') WHERE id=?`)
     .run(nome, cnpj || null, email || null, telefone || null, id);
+  if (ehClienteDireto != null) {
+    if (ehClienteDireto) sqlite.prepare(`UPDATE escritorios SET eh_cliente_direto = 0`).run();
+    sqlite.prepare(`UPDATE escritorios SET eh_cliente_direto = ? WHERE id = ?`).run(ehClienteDireto ? 1 : 0, id);
+  }
   // A empresa "Contratada" vinculada (prestador nas NFS-e, parte nos contratos) reflete os mesmos
   // dados — evita ficar com nome/CNPJ desatualizado lá depois de uma edição feita aqui.
   if (existente.empresa_id) {
@@ -4274,6 +4320,219 @@ app.post("/api/super/escritorios/:id/administrador", requireSuperAdmin, (req, re
     if (String(e.message).includes("UNIQUE")) return res.status(409).json({ error: "Já existe um usuário com esse e-mail." });
     res.status(500).json({ error: e.message });
   }
+});
+
+// ======================= Clientes Diretos (venda avulsa via Instagram/internet) =======================
+// Escritório "virtual" (escritorios.eh_cliente_direto=1) controlado só pelo SuperAdmin — nunca tem
+// Administrador logando nele. O isolamento desses clientes dos clientes reais do escritório contábil
+// vem de graça do próprio mecanismo multi-tenant (toda query filtra por escritorio_id); aqui só
+// resolvemos QUAL escritório é esse pela flag, nunca por um ID fixo (funciona igual em qualquer banco).
+// Três portas de entrada convergem nas mesmas duas funções abaixo: auto-cadastro público, link de
+// convite, e cadastro manual pelo SuperAdmin.
+function escritorioClienteDiretoId(): number | null {
+  const row = sqlite.prepare(`SELECT id FROM escritorios WHERE eh_cliente_direto = 1 LIMIT 1`).get() as any;
+  return row ? Number(row.id) : null;
+}
+// Habilita o módulo NFS-e self-service pra uma empresa recém-criada — o mesmo efeito que o escritório
+// teria que dar manualmente em NFS-e › Empresas (PUT /api/nfse/empresas/:id), automático aqui porque
+// não existe ninguém do escritório pra apertar esse botão pelos clientes diretos.
+function nfseHabilitarParaEmpresa(empresaId: number) {
+  sqlite
+    .prepare(
+      `INSERT INTO nfse_empresa_config (empresa_id, habilitado, metodo_assinatura, updated_at)
+       VALUES (?, 1, 'certificado_proprio', datetime('now'))
+       ON CONFLICT(empresa_id) DO UPDATE SET habilitado=1, metodo_assinatura='certificado_proprio', updated_at=datetime('now')`
+    )
+    .run(empresaId);
+}
+// Cria a empresa + usuário Cliente de um cliente direto. `senha` já deve ter passado por
+// passwordPolicyError antes de chegar aqui. Lança erro com mensagem amigável em caso de e-mail
+// duplicado (capturado pelas 3 rotas que chamam esta função).
+function clienteDiretoCriar(opts: {
+  nomeResponsavel: string;
+  email: string;
+  senha: string;
+  nomeEmpresa: string;
+  cnpj: string | null;
+  origem: "auto-cadastro" | "convite" | "manual";
+}): { empresaId: number; userId: number } {
+  const escritorioId = escritorioClienteDiretoId();
+  if (!escritorioId) throw new Error("O escritório de clientes diretos ainda não foi configurado — fale com o suporte.");
+  const emailNorm = opts.email.trim().toLowerCase();
+  const empresaInfo = sqlite
+    .prepare(`INSERT INTO empresas (nome, cnpj, email, origem, origem_cadastro, escritorio_id) VALUES (?, ?, ?, 'manual', ?, ?)`)
+    .run(opts.nomeEmpresa, opts.cnpj || null, emailNorm, opts.origem, escritorioId);
+  const empresaId = Number(empresaInfo.lastInsertRowid);
+  nfseHabilitarParaEmpresa(empresaId);
+  let userId: number;
+  try {
+    const userInfo = sqlite
+      .prepare(`INSERT INTO app_users (nome, email, perfil, password_hash, escritorio_id, empresa_id) VALUES (?, ?, 'Cliente', ?, ?, ?)`)
+      .run(opts.nomeResponsavel, emailNorm, hashPassword(opts.senha), escritorioId, empresaId);
+    userId = Number(userInfo.lastInsertRowid);
+  } catch (e: any) {
+    sqlite.prepare(`DELETE FROM empresas WHERE id = ?`).run(empresaId);
+    if (String(e.message).includes("UNIQUE")) throw new Error("Já existe uma conta com esse e-mail. Use outro e-mail ou faça login.");
+    throw e;
+  }
+  sqlite.prepare(`INSERT OR IGNORE INTO cliente_empresas (user_id, empresa_id) VALUES (?, ?)`).run(userId, empresaId);
+  return { empresaId, userId };
+}
+
+// ---------- Fase 1: tela SuperAdmin "Clientes Diretos" ----------
+app.get("/api/super/clientes-diretos", requireSuperAdmin, (_req, res) => {
+  const escritorioId = escritorioClienteDiretoId();
+  if (!escritorioId) return res.json({ escritorioConfigurado: false, items: [] });
+  // Exclui a empresa "Contratada" do próprio escritório (criada automaticamente por POST
+  // /api/super/escritorios pra representar o escritório como prestador) — não é cliente nenhum.
+  const empresas = sqlite
+    .prepare(
+      `SELECT e.id, e.nome, e.cnpj, e.email, e.origem_cadastro as origemCadastro, e.created_at as criadoEm
+       FROM empresas e JOIN escritorios o ON o.id = e.escritorio_id
+       WHERE e.escritorio_id = ? AND (o.empresa_id IS NULL OR o.empresa_id != e.id)
+       ORDER BY e.created_at DESC`
+    )
+    .all(escritorioId) as any[];
+  const catalogoNfse = sqlite.prepare(`SELECT * FROM modulos_catalogo WHERE chave = 'nfse'`).get() as any;
+  const items = empresas.map((e) => {
+    const contratado = sqlite.prepare(`SELECT * FROM empresa_modulos WHERE empresa_id = ? AND modulo_chave = 'nfse'`).get(e.id) as any;
+    const isento = (sqlite.prepare(`SELECT isento_assinatura FROM empresas WHERE id = ?`).get(e.id) as any)?.isento_assinatura;
+    const { status } = isento ? { status: "isento" } : moduloStatusParaEmpresa(catalogoNfse, contratado);
+    return { ...e, statusNfse: status };
+  });
+  res.json({ escritorioConfigurado: true, items });
+});
+app.post("/api/super/clientes-diretos/convites", requireSuperAdmin, (req, res) => {
+  const user = (req as any).user;
+  const escritorioId = escritorioClienteDiretoId();
+  if (!escritorioId) return res.status(400).json({ error: "Configure o escritório de clientes diretos antes (SuperAdmin › Escritórios)." });
+  const { nome, email } = req.body || {};
+  const tokenCru = crypto.randomBytes(32).toString("hex");
+  const tokenHash = crypto.createHash("sha256").update(tokenCru).digest("hex");
+  sqlite
+    .prepare(`INSERT INTO convites_cadastro (token_hash, nome_prefill, email_prefill, escritorio_id, criado_por, expires_at) VALUES (?, ?, ?, ?, ?, datetime('now', '+7 days'))`)
+    .run(tokenHash, nome || null, email || null, escritorioId, user.id);
+  const link = `${req.protocol}://${req.get("host")}/?convite=${tokenCru}`;
+  res.json({ link });
+});
+app.post("/api/super/clientes-diretos/manual", requireSuperAdmin, (req, res) => {
+  const { nomeResponsavel, email, senha, nomeEmpresa, cnpj } = req.body || {};
+  if (!nomeResponsavel || !email || !senha || !nomeEmpresa) return res.status(400).json({ error: "Preencha nome do responsável, e-mail, senha e nome da empresa." });
+  const pwError = passwordPolicyError(senha);
+  if (pwError) return res.status(400).json({ error: pwError });
+  try {
+    const { empresaId } = clienteDiretoCriar({ nomeResponsavel, email, senha, nomeEmpresa, cnpj: cnpj || null, origem: "manual" });
+    res.json({ ok: true, empresaId });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// ---------- Fase 2: convite + auto-cadastro público (sem login) ----------
+const cadastroRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Muitas tentativas. Aguarde alguns minutos e tente de novo." },
+});
+app.get("/api/cadastro/convite/:token", cadastroRateLimiter, (req, res) => {
+  const tokenHash = crypto.createHash("sha256").update(String(req.params.token)).digest("hex");
+  const convite = sqlite.prepare(`SELECT * FROM convites_cadastro WHERE token_hash = ? AND used_at IS NULL AND expires_at > datetime('now')`).get(tokenHash) as any;
+  if (!convite) return res.status(400).json({ error: "Link de convite inválido ou expirado." });
+  res.json({ ok: true, nome: convite.nome_prefill || "", email: convite.email_prefill || "" });
+});
+app.post("/api/cadastro", cadastroRateLimiter, (req, res) => {
+  const { nomeResponsavel, email, senha, nomeEmpresa, cnpj, token } = req.body || {};
+  if (!nomeResponsavel || !email || !senha || !nomeEmpresa) return res.status(400).json({ error: "Preencha nome do responsável, e-mail, senha e nome da empresa." });
+  const pwError = passwordPolicyError(senha);
+  if (pwError) return res.status(400).json({ error: pwError });
+  let convite: any = null;
+  if (token) {
+    const tokenHash = crypto.createHash("sha256").update(String(token)).digest("hex");
+    convite = sqlite.prepare(`SELECT * FROM convites_cadastro WHERE token_hash = ? AND used_at IS NULL AND expires_at > datetime('now')`).get(tokenHash) as any;
+    if (!convite) return res.status(400).json({ error: "Link de convite inválido ou expirado. Peça um novo." });
+  }
+  try {
+    const { empresaId, userId } = clienteDiretoCriar({
+      nomeResponsavel,
+      email,
+      senha,
+      nomeEmpresa,
+      cnpj: cnpj || null,
+      origem: convite ? "convite" : "auto-cadastro",
+    });
+    if (convite) sqlite.prepare(`UPDATE convites_cadastro SET used_at = datetime('now') WHERE id = ?`).run(convite.id);
+    // Login automático — a pessoa já entra direto, sem precisar logar de novo com a senha que acabou
+    // de escolher (mesmo padrão de cookie/sessão do login normal).
+    const sessionToken = createSession(userId);
+    res.cookie("sid", sessionToken, { httpOnly: true, sameSite: "lax", secure: req.secure, maxAge: SESSION_DAYS * 24 * 60 * 60 * 1000 });
+    res.json({ ok: true, empresaId });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// ---------- Fase 3: "Configuração › Empresa" — dados cadastrais básicos, self-service (Cliente) ----------
+// Hoje só aparece pro cliente direto (empresaEhClienteDireto) — é a tela que completa o cadastro de
+// quem veio do auto-cadastro/convite (que só grava nome+CNPJ). Rota própria, não reaproveita o handler
+// gigante de PUT /api/empresas/:id porque aquele expõe campos internos do escritório (ativo,
+// visivelRelatorios, isentoAssinatura, obrigações etc.) que um Cliente não deve poder mexer sozinho —
+// só os campos cadastrais mesmo, igual aqui.
+app.get("/api/minha-empresa", requireCliente, (req, res) => {
+  const empresaId = (req as any).user.empresaId;
+  const r = sqlite
+    .prepare(
+      `SELECT nome, cnpj, email, telefone, endereco, cidade, uf, cep, inscricao_municipal as inscricaoMunicipal, inscricao_estadual as inscricaoEstadual,
+              nome_representante_legal as nomeRepresentanteLegal, cpf_representante_legal as cpfRepresentanteLegal,
+              codigo_municipio_ibge as codigoMunicipioIbge, nome_municipio_ibge as nomeMunicipioIbge, regime_tributario as regimeTributario
+       FROM empresas WHERE id = ?`
+    )
+    .get(empresaId) as any;
+  if (!r) return res.status(404).json({ error: "Empresa não encontrada." });
+  const cnpjTravado = !!sqlite.prepare(`SELECT 1 FROM nfse_emissoes WHERE empresa_id = ? AND status = 'emitida' LIMIT 1`).get(empresaId);
+  res.json({ ...r, cnpjTravado });
+});
+app.put("/api/minha-empresa", requireCliente, (req, res) => {
+  const empresaId = (req as any).user.empresaId;
+  const existing = sqlite.prepare(`SELECT * FROM empresas WHERE id = ?`).get(empresaId) as any;
+  if (!existing) return res.status(404).json({ error: "Empresa não encontrada." });
+  const { nome, cnpj, email, telefone, endereco, cidade, uf, cep, inscricaoMunicipal, inscricaoEstadual, nomeRepresentanteLegal, cpfRepresentanteLegal, codigoMunicipioIbge, nomeMunicipioIbge, regimeTributario } = req.body || {};
+  if (!nome) return res.status(400).json({ error: "Informe o nome da empresa." });
+  const cnpjTravado = !!sqlite.prepare(`SELECT 1 FROM nfse_emissoes WHERE empresa_id = ? AND status = 'emitida' LIMIT 1`).get(empresaId);
+  if (cnpjTravado && cnpj !== undefined && String(cnpj || "").replace(/\D/g, "") !== String(existing.cnpj || "").replace(/\D/g, "")) {
+    return res.status(400).json({ error: "Não é possível alterar o CNPJ depois de emitir a primeira NFS-e — fale com o suporte." });
+  }
+  const regimeTributarioFinal =
+    regimeTributario !== undefined
+      ? ((REGIMES_TRIBUTARIOS as readonly string[]).includes(regimeTributario) ? regimeTributario : "simples_nacional")
+      : existing.regime_tributario;
+  sqlite
+    .prepare(
+      `UPDATE empresas SET nome=?, cnpj=?, email=?, telefone=?, endereco=?, cidade=?, uf=?, cep=?, inscricao_municipal=?, inscricao_estadual=?,
+         nome_representante_legal=?, cpf_representante_legal=?, codigo_municipio_ibge=?, nome_municipio_ibge=?, regime_tributario=?, updated_at=datetime('now') WHERE id=?`
+    )
+    .run(
+      nome,
+      cnpjTravado ? existing.cnpj : cnpj !== undefined ? cnpj : existing.cnpj,
+      email !== undefined ? email : existing.email,
+      telefone !== undefined ? telefone : existing.telefone,
+      endereco !== undefined ? endereco : existing.endereco,
+      cidade !== undefined ? cidade : existing.cidade,
+      uf !== undefined ? uf : existing.uf,
+      cep !== undefined ? cep : existing.cep,
+      inscricaoMunicipal !== undefined ? inscricaoMunicipal : existing.inscricao_municipal,
+      inscricaoEstadual !== undefined ? inscricaoEstadual : existing.inscricao_estadual,
+      nomeRepresentanteLegal !== undefined ? nomeRepresentanteLegal : existing.nome_representante_legal,
+      cpfRepresentanteLegal !== undefined ? cpfRepresentanteLegal : existing.cpf_representante_legal,
+      codigoMunicipioIbge !== undefined ? codigoMunicipioIbge : existing.codigo_municipio_ibge,
+      nomeMunicipioIbge !== undefined ? nomeMunicipioIbge : existing.nome_municipio_ibge,
+      regimeTributarioFinal,
+      empresaId
+    );
+  if (regimeTributario !== undefined) envioAutoAtribuirPorRegime(empresaId, existing.escritorio_id, regimeTributarioFinal);
+  garantirContatosDeTelefoneCadastral(empresaId);
+  res.json({ ok: true });
 });
 
 // ---------- Usuários (Administrador cadastra Colaboradores e Clientes) ----------
@@ -21169,12 +21428,20 @@ function nfseModulosDaEmpresa(empresaId: number) {
     };
   });
 }
+// Cliente direto (venda avulsa — escritório eh_cliente_direto) não tem teste grátis: decisão
+// confirmada com o Eduardo, cobra na hora. Checa pelo escritório da própria empresa, não por ID fixo.
+function empresaEhClienteDireto(empresaId: number): boolean {
+  const row = sqlite.prepare(`SELECT 1 FROM empresas e JOIN escritorios o ON o.id = e.escritorio_id WHERE e.id = ? AND o.eh_cliente_direto = 1`).get(empresaId);
+  return !!row;
+}
 app.get("/api/financeiro/minha-empresa/modulos", requireCliente, (req, res) => {
-  res.json({ items: nfseModulosDaEmpresa((req as any).user.empresaId) });
+  const empresaId = (req as any).user.empresaId;
+  res.json({ items: nfseModulosDaEmpresa(empresaId), semTesteGratis: empresaEhClienteDireto(empresaId) });
 });
 app.post("/api/financeiro/minha-empresa/modulos/:chave/iniciar-teste", requireCliente, (req, res) => {
   const empresaId = (req as any).user.empresaId;
   const chave = String(req.params.chave);
+  if (empresaEhClienteDireto(empresaId)) return res.status(403).json({ error: "Clientes diretos não têm teste grátis — contrate direto pelo Pix/boleto/cartão." });
   const modulo = sqlite.prepare(`SELECT * FROM modulos_catalogo WHERE chave = ? AND ativo = 1`).get(chave) as any;
   if (!modulo) return res.status(404).json({ error: "Módulo não encontrado." });
   const existente = sqlite.prepare(`SELECT 1 FROM empresa_modulos WHERE empresa_id = ? AND modulo_chave = ?`).get(empresaId, chave);
