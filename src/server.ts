@@ -145,6 +145,8 @@ sqlite.exec(`
     token_hash TEXT NOT NULL UNIQUE,
     nome_prefill TEXT,
     email_prefill TEXT,
+    modulo_chave TEXT, -- módulo a liberar direto (pagamento já combinado por fora) — null = sem liberar nada, cobra normal dentro do site
+    meses INTEGER NOT NULL DEFAULT 1, -- por quantos meses liberar modulo_chave
     escritorio_id INTEGER NOT NULL REFERENCES escritorios(id) ON DELETE CASCADE,
     criado_por INTEGER REFERENCES app_users(id),
     expires_at TEXT NOT NULL,
@@ -2599,6 +2601,18 @@ try {
     sqlite.exec(`ALTER TABLE empresas ADD COLUMN origem_cadastro TEXT`);
   }
 }
+// Migração leve: convite de cliente direto ganha a opção de já liberar um módulo (pagamento
+// combinado por fora, ex. Pix direto pelo Instagram) — sem isso o convidado teria que pagar de novo
+// dentro do site mesmo já tendo pago o Eduardo.
+{
+  const colsConvite = sqlite.prepare(`PRAGMA table_info(convites_cadastro)`).all() as any[];
+  if (!colsConvite.some((c) => c.name === "modulo_chave")) {
+    sqlite.exec(`ALTER TABLE convites_cadastro ADD COLUMN modulo_chave TEXT`);
+  }
+  if (!colsConvite.some((c) => c.name === "meses")) {
+    sqlite.exec(`ALTER TABLE convites_cadastro ADD COLUMN meses INTEGER NOT NULL DEFAULT 1`);
+  }
+}
 // Migração leve: monitor de IBS/CBS (reforma tributária, NT 2025.002) por nota — valores lidos do XML
 // (grupo total/IBSCBSTot). tributos_parseado=0 = ainda não lido; 1 = já lido (mesmo que a nota não
 // traga o grupo ainda, na transição da reforma). Backfill preguiçoso na listagem de documentos.
@@ -4345,9 +4359,22 @@ function nfseHabilitarParaEmpresa(empresaId: number) {
     )
     .run(empresaId);
 }
+// Ativa um módulo direto (sem passar pelo Pix/cartão/boleto do site) — usado só quando o pagamento já
+// foi combinado por fora (convite/manual, Eduardo que controla). A empresa é recém-criada aqui dentro
+// de clienteDiretoCriar, então não existe linha prévia em empresa_modulos — INSERT direto, sem upsert.
+function clienteDiretoAtivarModulo(empresaId: number, moduloChave: string, meses: number) {
+  const modificador = `+${Math.max(1, Math.min(36, Math.round(meses || 1)))} months`;
+  sqlite
+    .prepare(
+      `INSERT INTO empresa_modulos (empresa_id, modulo_chave, trial_inicio, trial_fim, assinatura_ativa_ate)
+       VALUES (?, ?, datetime('now'), datetime('now'), datetime('now', ?))`
+    )
+    .run(empresaId, moduloChave, modificador);
+}
 // Cria a empresa + usuário Cliente de um cliente direto. `senha` já deve ter passado por
 // passwordPolicyError antes de chegar aqui. Lança erro com mensagem amigável em caso de e-mail
-// duplicado (capturado pelas 3 rotas que chamam esta função).
+// duplicado (capturado pelas 3 rotas que chamam esta função). `ativarModulo` é só pra convite/manual
+// (pagamento já combinado por fora) — auto-cadastro nunca passa isso, sempre cobra pelo site.
 function clienteDiretoCriar(opts: {
   nomeResponsavel: string;
   email: string;
@@ -4355,6 +4382,7 @@ function clienteDiretoCriar(opts: {
   nomeEmpresa: string;
   cnpj: string | null;
   origem: "auto-cadastro" | "convite" | "manual";
+  ativarModulo?: { chave: string; meses: number } | null;
 }): { empresaId: number; userId: number } {
   const escritorioId = escritorioClienteDiretoId();
   if (!escritorioId) throw new Error("O escritório de clientes diretos ainda não foi configurado — fale com o suporte.");
@@ -4364,6 +4392,10 @@ function clienteDiretoCriar(opts: {
     .run(opts.nomeEmpresa, opts.cnpj || null, emailNorm, opts.origem, escritorioId);
   const empresaId = Number(empresaInfo.lastInsertRowid);
   nfseHabilitarParaEmpresa(empresaId);
+  if (opts.ativarModulo?.chave) {
+    const valido = sqlite.prepare(`SELECT 1 FROM modulos_catalogo WHERE chave = ? AND ativo = 1`).get(opts.ativarModulo.chave);
+    if (valido) clienteDiretoAtivarModulo(empresaId, opts.ativarModulo.chave, opts.ativarModulo.meses);
+  }
   let userId: number;
   try {
     const userInfo = sqlite
@@ -4406,22 +4438,36 @@ app.post("/api/super/clientes-diretos/convites", requireSuperAdmin, (req, res) =
   const user = (req as any).user;
   const escritorioId = escritorioClienteDiretoId();
   if (!escritorioId) return res.status(400).json({ error: "Configure o escritório de clientes diretos antes (SuperAdmin › Escritórios)." });
-  const { nome, email } = req.body || {};
+  const { nome, email, modulo, meses } = req.body || {};
+  if (modulo && !sqlite.prepare(`SELECT 1 FROM modulos_catalogo WHERE chave = ? AND ativo = 1`).get(modulo)) {
+    return res.status(400).json({ error: "Módulo inválido." });
+  }
   const tokenCru = crypto.randomBytes(32).toString("hex");
   const tokenHash = crypto.createHash("sha256").update(tokenCru).digest("hex");
   sqlite
-    .prepare(`INSERT INTO convites_cadastro (token_hash, nome_prefill, email_prefill, escritorio_id, criado_por, expires_at) VALUES (?, ?, ?, ?, ?, datetime('now', '+7 days'))`)
-    .run(tokenHash, nome || null, email || null, escritorioId, user.id);
+    .prepare(
+      `INSERT INTO convites_cadastro (token_hash, nome_prefill, email_prefill, modulo_chave, meses, escritorio_id, criado_por, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now', '+7 days'))`
+    )
+    .run(tokenHash, nome || null, email || null, modulo || null, Math.max(1, Math.min(36, Math.round(meses || 1))), escritorioId, user.id);
   const link = `${req.protocol}://${req.get("host")}/?convite=${tokenCru}`;
   res.json({ link });
 });
 app.post("/api/super/clientes-diretos/manual", requireSuperAdmin, (req, res) => {
-  const { nomeResponsavel, email, senha, nomeEmpresa, cnpj } = req.body || {};
+  const { nomeResponsavel, email, senha, nomeEmpresa, cnpj, modulo, meses } = req.body || {};
   if (!nomeResponsavel || !email || !senha || !nomeEmpresa) return res.status(400).json({ error: "Preencha nome do responsável, e-mail, senha e nome da empresa." });
   const pwError = passwordPolicyError(senha);
   if (pwError) return res.status(400).json({ error: pwError });
   try {
-    const { empresaId } = clienteDiretoCriar({ nomeResponsavel, email, senha, nomeEmpresa, cnpj: cnpj || null, origem: "manual" });
+    const { empresaId } = clienteDiretoCriar({
+      nomeResponsavel,
+      email,
+      senha,
+      nomeEmpresa,
+      cnpj: cnpj || null,
+      origem: "manual",
+      ativarModulo: modulo ? { chave: modulo, meses: Math.max(1, Math.min(36, Math.round(meses || 1))) } : null,
+    });
     res.json({ ok: true, empresaId });
   } catch (e: any) {
     res.status(400).json({ error: e.message });
@@ -4461,6 +4507,7 @@ app.post("/api/cadastro", cadastroRateLimiter, (req, res) => {
       nomeEmpresa,
       cnpj: cnpj || null,
       origem: convite ? "convite" : "auto-cadastro",
+      ativarModulo: convite?.modulo_chave ? { chave: convite.modulo_chave, meses: convite.meses || 1 } : null,
     });
     if (convite) sqlite.prepare(`UPDATE convites_cadastro SET used_at = datetime('now') WHERE id = ?`).run(convite.id);
     // Login automático — a pessoa já entra direto, sem precisar logar de novo com a senha que acabou

@@ -1926,11 +1926,16 @@ document.getElementById('resetConfirmaSenha').addEventListener('keydown', e=>{ i
 // ===================== cadastro de cliente direto (público, Instagram/internet) =====================
 // Dois jeitos de chegar aqui: link fixo "?cadastro=1" (Instagram) ou link de convite "?convite=TOKEN"
 // (pré-preenche nome/e-mail do convite e trava a origem como "convite" no backend).
-async function mostrarTelaCadastro(conviteToken){
+// Módulo único prometido no link do anúncio (ex.: "?cadastro=1&modulo=nfse") — guardado aqui pra
+// filtrar a 1ª visita da tela de Assinatura logo após o cadastro, sem precisar persistir nada no
+// banco. Consumido (e zerado) por pageMinhaAssinatura() na primeira renderização.
+let CADASTRO_MODULO_SUGERIDO = null;
+async function mostrarTelaCadastro(conviteToken, moduloSugerido){
   document.getElementById('loginScreen').classList.add('hidden');
   document.getElementById('shell').classList.add('hidden');
   document.getElementById('cadastroScreen').classList.remove('hidden');
   document.getElementById('cadastroScreen').dataset.convite = conviteToken || '';
+  CADASTRO_MODULO_SUGERIDO = moduloSugerido || null;
   if(conviteToken){
     try{
       const r = await api('/cadastro/convite/'+conviteToken);
@@ -13926,12 +13931,16 @@ async function pageMinhaEmpresaConfig(){
   });
 }
 async function pageMinhaAssinatura(){
+  // Só filtra na 1ª visita logo após um cadastro vindo de um link de anúncio com módulo específico
+  // (?cadastro=1&modulo=nfse) — navegações seguintes pela aba normal mostram todos os módulos.
+  const moduloFiltro = CADASTRO_MODULO_SUGERIDO;
+  CADASTRO_MODULO_SUGERIDO = null;
   main().innerHTML = `
     <h1>Assinatura</h1>
     <p class="subtitle">Teste qualquer módulo grátis por 3 dias, ou contrate direto via Pix/cartão.</p>
     <div id="assinaturaContent"></div>
   `;
-  await renderMinhaAssinatura();
+  await renderMinhaAssinatura(moduloFiltro);
 }
 let ASSINATURA_POLL = null;
 function assinaturaModuloCardHtml(item, semTesteGratis){
@@ -13967,12 +13976,15 @@ function assinaturaModuloCardHtml(item, semTesteGratis){
     </div>
   `;
 }
-async function renderMinhaAssinatura(){
+async function renderMinhaAssinatura(moduloFiltro){
   if(ASSINATURA_POLL){ clearInterval(ASSINATURA_POLL); ASSINATURA_POLL=null; }
   const { items, semTesteGratis } = await api('/financeiro/minha-empresa/modulos');
+  const itemsFiltrados = moduloFiltro ? items.filter(i=>i.chave===moduloFiltro) : items;
+  const itemsExibidos = itemsFiltrados.length ? itemsFiltrados : items;
   const box = document.getElementById('assinaturaContent');
   box.innerHTML = `
-    ${items.map(item=>assinaturaModuloCardHtml(item, semTesteGratis)).join('')}
+    ${moduloFiltro && itemsFiltrados.length ? `<p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Mostrando só o módulo do seu plano. <a href="#" id="assinaturaVerTodos">Ver todos os módulos</a></p>` : ''}
+    ${itemsExibidos.map(item=>assinaturaModuloCardHtml(item, semTesteGratis)).join('')}
     <div class="card" style="margin-top:14px;">
       <div class="row" style="justify-content:space-between; align-items:center;">
         <div>Total selecionado: <b id="assinaturaTotal">${fmtMoney(0)}</b></div>
@@ -13981,6 +13993,8 @@ async function renderMinhaAssinatura(){
       <div id="assinaturaPagamentoResultado" style="margin-top:12px;"></div>
     </div>
   `;
+  const linkVerTodos = document.getElementById('assinaturaVerTodos');
+  if(linkVerTodos) linkVerTodos.addEventListener('click', e=>{ e.preventDefault(); renderMinhaAssinatura(); });
   box.querySelectorAll('[data-acao="testar"]').forEach(b=>b.addEventListener('click', async ()=>{
     try{
       await api('/financeiro/minha-empresa/modulos/'+b.dataset.chave+'/iniciar-teste', { method:'POST' });
@@ -19880,21 +19894,51 @@ async function pageClientesDiretos(){
   document.getElementById('btnCdConvite').addEventListener('click', cdConviteModal);
   document.getElementById('btnCdManual').addEventListener('click', cdManualModal);
 }
+async function cdCarregarModulosVendaveis(){
+  const { items } = await api('/super/modulos-clientes');
+  // Só os módulos de verdade vendáveis aqui (NFS-e/Financeiro) — os canais de envio (e-mail/WhatsApp)
+  // não fazem sentido como "liberar direto pra cliente avulso".
+  return items.filter(m=>m.ativo && !m.chave.startsWith('envio_notas_'));
+}
+function cdModuloMesesHtml(prefixo){
+  return `
+    <div class="row">
+      <div class="field grow"><label>Módulo já pago por fora (opcional)</label>${comboSelectHtml(prefixo+'Modulo','Nenhum — cobra normal pelo site')}</div>
+      <div class="field" style="width:140px;"><label>Meses</label><input id="${prefixo}Meses" type="number" min="1" max="36" value="1"></div>
+    </div>
+    <p style="font-size:11.5px; color:var(--ink-soft); margin:-8px 0 10px;">Se escolher um módulo, ele já entra ATIVO na hora — pra quando você já recebeu o pagamento por fora (Pix direto, Instagram etc.) e não quer cobrar de novo dentro do site. Deixe em branco pra cobrar normal (Pix/cartão/boleto) dentro do site.</p>
+  `;
+}
+async function cdLigarModuloMeses(prefixo){
+  const modulos = await cdCarregarModulosVendaveis();
+  const opcoes = [{ id:'', label:'Nenhum — cobra normal pelo site' }, ...modulos.map(m=>({ id:m.chave, label:m.nome }))];
+  setupComboSelect(prefixo+'Modulo', opcoes, ()=>{});
+  const combo = document.getElementById(prefixo+'Modulo');
+  combo.querySelector('.combo-value').value = '';
+  combo.querySelector('.combo-input').value = opcoes[0].label;
+}
 function cdConviteModal(){
   openModal(`
     <h3>Gerar link de convite</h3>
     <p style="font-size:12.5px; color:var(--ink-soft); margin-top:0;">Nome e e-mail são opcionais — só pra pré-preencher o formulário de quem abrir o link. A pessoa escolhe a própria senha e preenche o resto depois de logar.</p>
     <div class="field"><label>Nome (opcional)</label><input id="cdcNome"></div>
     <div class="field"><label>E-mail (opcional)</label><input id="cdcEmail" type="email"></div>
+    ${cdModuloMesesHtml('cdc')}
     <div class="modal-actions">
       <button class="btn" id="cdcCancel">Cancelar</button>
       <button class="btn primary" id="cdcGerar">Gerar link</button>
     </div>
   `, '480px');
+  cdLigarModuloMeses('cdc');
   document.getElementById('cdcCancel').addEventListener('click', closeModal);
   document.getElementById('cdcGerar').addEventListener('click', async ()=>{
     try{
-      const body = { nome: document.getElementById('cdcNome').value.trim()||null, email: document.getElementById('cdcEmail').value.trim()||null };
+      const body = {
+        nome: document.getElementById('cdcNome').value.trim()||null,
+        email: document.getElementById('cdcEmail').value.trim()||null,
+        modulo: document.querySelector('#cdcModulo .combo-value')?.value||null,
+        meses: Number(document.getElementById('cdcMeses').value)||1,
+      };
       const { link } = await api('/super/clientes-diretos/convites', { method:'POST', body });
       openModal(`
         <h3>Link de convite gerado</h3>
@@ -19920,12 +19964,14 @@ function cdManualModal(){
     <p style="font-size:11.5px; color:var(--ink-soft); margin:-8px 0 10px;">Mínimo 10 caracteres, com letras e números.</p>
     <div class="field"><label>Nome da empresa</label><input id="cdmNomeEmpresa"></div>
     <div class="field"><label>CNPJ (opcional)</label><input id="cdmCnpj"></div>
+    ${cdModuloMesesHtml('cdm')}
     <div class="modal-actions">
       <button class="btn" id="cdmCancel">Cancelar</button>
       <button class="btn primary" id="cdmSalvar">Cadastrar</button>
     </div>
   `, '480px');
   ligarTravaDocumento(document.getElementById('cdmCnpj'), 'cnpj');
+  cdLigarModuloMeses('cdm');
   document.getElementById('cdmCancel').addEventListener('click', closeModal);
   document.getElementById('cdmSalvar').addEventListener('click', async ()=>{
     if(document.getElementById('cdmCnpj').value.trim() && !travaDocumentoOk(document.getElementById('cdmCnpj'),'cnpj','CNPJ')) return;
@@ -19935,6 +19981,8 @@ function cdManualModal(){
       senha: document.getElementById('cdmSenha').value,
       nomeEmpresa: document.getElementById('cdmNomeEmpresa').value.trim(),
       cnpj: document.getElementById('cdmCnpj').value.trim()||null,
+      modulo: document.querySelector('#cdmModulo .combo-value')?.value||null,
+      meses: Number(document.getElementById('cdmMeses').value)||1,
     };
     try{
       await api('/super/clientes-diretos/manual', { method:'POST', body });
@@ -22978,9 +23026,12 @@ async function renderCfgEmailSmtp(box){
 const resetTokenNaUrl = new URLSearchParams(location.search).get('resetToken');
 const conviteTokenNaUrl = new URLSearchParams(location.search).get('convite');
 const cadastroNaUrl = new URLSearchParams(location.search).get('cadastro');
+const moduloNaUrl = new URLSearchParams(location.search).get('modulo');
 if(resetTokenNaUrl) mostrarTelaResetSenha(resetTokenNaUrl);
-else if(conviteTokenNaUrl) mostrarTelaCadastro(conviteTokenNaUrl);
-else if(cadastroNaUrl) mostrarTelaCadastro(null);
+// "modulo" na URL só vale pro link público do anúncio — no convite o módulo já foi escolhido pelo
+// Eduardo ao gerar o link (fica salvo no token, não dá pra alguém trocar editando a URL).
+else if(conviteTokenNaUrl) mostrarTelaCadastro(conviteTokenNaUrl, null);
+else if(cadastroNaUrl) mostrarTelaCadastro(null, moduloNaUrl);
 else boot();
 </script>
 </body>
