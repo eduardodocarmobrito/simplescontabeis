@@ -3517,6 +3517,27 @@ async function enviarEmail(escritorioId: number, opts: { to: string[]; subject: 
 // ========================= APP =========================
 const app = express();
 app.set("trust proxy", 1);
+// Diagnóstico de lentidão (2026-11-06): registra no log toda requisição que passa de 800 ms e os
+// momentos em que o event loop ficou travado (tarefa pesada síncrona segurando o servidor inteiro).
+// Leve (só mede tempo) — ver com: docker logs simplescontabeis-app-1 | grep "\[lento\]"
+app.use((req, res, next) => {
+  const t0 = process.hrtime.bigint();
+  res.on("finish", () => {
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    if (ms >= 800) console.log(`[lento] ${new Date().toISOString()} ${req.method} ${req.originalUrl.split("?")[0]} ${res.statusCode} ${ms.toFixed(0)}ms`);
+  });
+  next();
+});
+{
+  const { monitorEventLoopDelay } = require("perf_hooks");
+  const h = monitorEventLoopDelay({ resolution: 20 });
+  h.enable();
+  setInterval(() => {
+    const maxMs = h.max / 1e6;
+    if (maxMs >= 500) console.log(`[lento] ${new Date().toISOString()} event loop travado: max ${maxMs.toFixed(0)}ms, p99 ${(h.percentile(99) / 1e6).toFixed(0)}ms no último minuto`);
+    h.reset();
+  }, 60_000).unref();
+}
 // Interruptor de "mudamos de endereço" — pensado pra ligar só no Railway depois da migração pra VPS
 // (REDIRECIONAR_PARA=https://simplescontabeis.com.br no ambiente do Railway, sem mexer em nada na
 // VPS). Responde QUALQUER rota com uma página pedindo pra clicar no link novo, em vez de rodar o app
