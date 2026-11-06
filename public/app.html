@@ -7961,7 +7961,7 @@ async function renderNfseEmitir(){
       nfseLimparFormularioEmissao('nfseEmi');
       document.getElementById('btnSalvarNfse').textContent = 'Salvar como rascunho';
     }catch(e){
-      resultado.innerHTML = `<div class="slot-locked" style="background:var(--paper); border-color:var(--debit);"><span class="fname">Rejeitada pelo Sistema Nacional NFS-e</span>${esc(e.message)}</div>`;
+      resultado.innerHTML = `<div class="slot-locked" style="background:var(--paper); border-color:var(--debit);"><span class="fname">Rejeitada pelo Sistema Nacional NFS-e</span>${nfseErroHtml(e.message)}</div>`;
       toast(e.message,'err');
     }
   });
@@ -8382,7 +8382,7 @@ async function renderNfseNotasDetalhe(empresaId){
               <td>${esc(n.modeloNome||'—')}</td>
               <td>${esc(n.descricaoServico)}</td>
               <td>${fmtMoney(n.valorServico)}</td>
-              <td><span class="tag ${n.status==='emitida'?'ok':(n.status==='pendente'?'muted':(n.status==='rascunho'?'muted':'bad'))}">${STATUS_LABEL[n.status]||n.status}</span></td>
+              <td><span class="tag ${n.status==='emitida'?'ok':(n.status==='pendente'?'muted':(n.status==='rascunho'?'muted':'bad'))}">${STATUS_LABEL[n.status]||n.status}</span>${(n.status==='erro'||n.status==='rejeitada')&&n.erro?` <span class="tag warn nfseErroTag" data-erro="${esc(n.erro)}" style="cursor:pointer;" title="${esc(nfseErroAmigavel(n.erro).titulo)} — clique para ver a solução">⚠ ${esc(nfseErroAmigavel(n.erro).titulo)}</span>`:''}</td>
               <td>${fmtDateHora(n.criadoEm)}</td>
               <td style="text-align:right; white-space:nowrap;">
                 ${n.status==='rascunho'?`<button class="btn small" data-id="${n.id}" data-act="continuar">Continuar</button> <button class="btn small" data-id="${n.id}" data-act="excluir">Excluir</button>`:''}
@@ -8411,6 +8411,9 @@ async function renderNfseNotasDetalhe(empresaId){
     selAll.indeterminate = boxes.some(b=>b.checked) && !selAll.checked;
   }
   atualizaSelAll();
+  box.querySelectorAll('.nfseErroTag').forEach(t=>t.addEventListener('click', ()=>{
+    openModal(`<h3>Motivo da rejeição</h3>${nfseErroHtml(t.dataset.erro)}<div class="modal-actions"><button class="btn primary" onclick="closeModal()">Fechar</button></div>`, '560px');
+  }));
   box.querySelectorAll('.nfseNotaSel').forEach(b=>b.addEventListener('change', ()=>{
     const id = Number(b.dataset.id);
     if(b.checked) NFSE_NOTAS_SELECIONADAS.add(id); else NFSE_NOTAS_SELECIONADAS.delete(id);
@@ -11793,7 +11796,7 @@ async function renderMinhaNfseEmitir(){
       nfseLimparFormularioEmissao('mnfEmi');
       document.getElementById('btnSalvarMinhaNfse').textContent = 'Salvar como rascunho';
     }catch(e){
-      resultado.innerHTML = `<div class="slot-locked" style="background:var(--paper); border-color:var(--debit);"><span class="fname">Rejeitada pelo Sistema Nacional NFS-e</span>${esc(e.message)}</div>`;
+      resultado.innerHTML = `<div class="slot-locked" style="background:var(--paper); border-color:var(--debit);"><span class="fname">Rejeitada pelo Sistema Nacional NFS-e</span>${nfseErroHtml(e.message)}</div>`;
       toast(e.message,'err');
     }
   });
@@ -11838,7 +11841,7 @@ async function renderMinhaNfseNotas(){
               <td>${esc(n.modeloNome||'—')}</td>
               <td>${esc(n.descricaoServico)}</td>
               <td>${fmtMoney(n.valorServico)}</td>
-              <td><span class="tag ${n.status==='emitida'?'ok':(n.status==='pendente'?'muted':(n.status==='rascunho'?'muted':'bad'))}">${STATUS_LABEL[n.status]||n.status}</span></td>
+              <td><span class="tag ${n.status==='emitida'?'ok':(n.status==='pendente'?'muted':(n.status==='rascunho'?'muted':'bad'))}">${STATUS_LABEL[n.status]||n.status}</span>${(n.status==='erro'||n.status==='rejeitada')&&n.erro?` <span class="tag warn mnfErroTag" data-erro="${esc(n.erro)}" style="cursor:pointer;" title="${esc(nfseErroAmigavel(n.erro).titulo)} — clique para ver a solução">⚠ ${esc(nfseErroAmigavel(n.erro).titulo)}</span>`:''}</td>
               <td>${fmtDateHora(n.criadoEm)}</td>
               <td style="text-align:right; white-space:nowrap;">
                 ${n.status==='rascunho'?`<button class="btn small" data-id="${n.id}" data-act="continuar">Continuar</button> <button class="btn small" data-id="${n.id}" data-act="excluir">Excluir</button>`:''}
@@ -11885,6 +11888,9 @@ async function renderMinhaNfseNotas(){
     selAll.indeterminate = boxes.some(b=>b.checked) && !selAll.checked;
   }
   atualizaSelAll();
+  box.querySelectorAll('.mnfErroTag').forEach(t=>t.addEventListener('click', ()=>{
+    openModal(`<h3>Motivo da rejeição</h3>${nfseErroHtml(t.dataset.erro)}<div class="modal-actions"><button class="btn primary" onclick="closeModal()">Fechar</button></div>`, '560px');
+  }));
   box.querySelectorAll('.mnfNotaSel').forEach(b=>b.addEventListener('change', ()=>{
     const id = Number(b.dataset.id);
     if(b.checked) MINHA_NFSE_SELECIONADAS.add(id); else MINHA_NFSE_SELECIONADAS.delete(id);
@@ -18494,6 +18500,35 @@ function obrEcacErroAmigavel(m){
   if(/CNPJ\/CPF v[aá]lido/i.test(m)) return { titulo:'Cadastro sem CNPJ/CPF', texto:'A empresa está sem CNPJ/CPF válido no cadastro. Corrija em Empresas e consulte de novo.' };
   if(/timeout|ECONN|fetch failed|50\d|indispon/i.test(m)) return { titulo:'Receita fora do ar / instável', texto:'Falha temporária na comunicação com a Receita. Tente consultar de novo mais tarde.' };
   return { titulo:'Erro na consulta', texto:'Veja a mensagem da Receita abaixo.' };
+}
+// Traduz o erro cru de emissão de NFS-e (Sistema Nacional NFS-e / certificado / rede) numa explicação +
+// solução pro usuário leigo — mesmo padrão/estilo de obrEcacErroAmigavel, acima. Nunca esconde a
+// mensagem original: quem chama sempre mostra o `texto` junto com a mensagem crua, não no lugar dela.
+function nfseErroAmigavel(m){
+  m = String(m||'');
+  if(/IM do prestador n[aã]o deve ser informado|inscri[cç][aã]o municipal.*n[aã]o deve/i.test(m))
+    return { titulo:'Inscrição Municipal não deve ser enviada', texto:'Esse município não aceita Inscrição Municipal pra esse tipo de prestador. Vá em NFS-e › Configuração e APAGUE o campo "Inscrição Municipal" (deixe em branco) — depois tente emitir de novo.' };
+  if(/E0712|pTotTribSN/i.test(m))
+    return { titulo:'% total de tributos não preenchido', texto:'Preencha o campo "% total de tributos (Simples Nacional)" em NFS-e › Configuração — é obrigatório pra optante do Simples Nacional.' };
+  if(/E0166|regApTribSN/i.test(m))
+    return { titulo:'Regime de apuração do Simples não informado', texto:'Confira o campo "Regime de apuração" em NFS-e › Configuração.' };
+  if(/E0160|opSimpNac/i.test(m))
+    return { titulo:'Divergência na opção do Simples Nacional', texto:'Confira o checkbox "Optante pelo Simples Nacional" em NFS-e › Configuração contra a situação real da empresa na Receita.' };
+  if(/certificate has expired|certificado.*venc/i.test(m))
+    return { titulo:'Certificado digital vencido', texto:'Envie um certificado digital válido em NFS-e › Configuração.' };
+  if(/unable to verify|self[- ]signed|SSL|TLS|handshake/i.test(m))
+    return { titulo:'Problema de comunicação com o certificado digital', texto:'Reenvie o certificado em NFS-e › Configuração. Se continuar falhando, fale com o suporte.' };
+  if(/tempo esgotado|timeout|ECONNRESET|fetch failed|ECONNREFUSED/i.test(m))
+    return { titulo:'Sistema Nacional NFS-e demorou pra responder', texto:'Tente emitir de novo em alguns minutos.' };
+  if(/\b50\d\b|indispon[ií]vel/i.test(m))
+    return { titulo:'Sistema Nacional NFS-e fora do ar', texto:'Falha temporária do governo. Tente novamente mais tarde.' };
+  if(/CNPJ.*(diverg|n[aã]o.*confere|diferente)/i.test(m))
+    return { titulo:'CNPJ do prestador divergente', texto:'Confira o CNPJ cadastrado da empresa e o certificado digital em NFS-e › Configuração.' };
+  return { titulo:'Erro na emissão', texto:'Confira a mensagem oficial do governo abaixo. Se não conseguir resolver, fale com o suporte.' };
+}
+function nfseErroHtml(m){
+  const a = nfseErroAmigavel(m);
+  return `<span class="tag warn">⚠ ${esc(a.titulo)}</span><div style="margin:4px 0;">${esc(a.texto)}</div><span class="mut" style="font-size:11.5px;">Mensagem oficial: ${esc(m)}</span>`;
 }
 function obrPassaFiltro(l, campo, v){
   if(!v) return true;

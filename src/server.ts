@@ -17856,7 +17856,7 @@ function nfseInserirEmissao(user: any, empresaId: number, modelo: any, tomador: 
 // Transmite de verdade uma linha já existente (rascunho ou recém-criada) — assina e envia ao ADN,
 // atualizando a linha com o resultado. Usado tanto pela emissão direta quanto por "Emitir" a
 // partir de um rascunho salvo.
-async function nfseTransmitirEmissao(emissaoId: number, empresaId: number, modelo: any, tomador: any, servico: any, res: any) {
+async function nfseTransmitirEmissao(emissaoId: number, empresaId: number, modelo: any, tomador: any, servico: any, res: any, contexto: "escritorio" | "cliente" = "escritorio") {
   // Falhas de validação (antes de tentar transmitir) também marcam a linha como 'erro' — assim ela
   // não fica presa em 'pendente' pra sempre e continua editável/reemitível como um rascunho normal.
   const falhaValidacao = (msg: string) => {
@@ -17877,7 +17877,8 @@ async function nfseTransmitirEmissao(emissaoId: number, empresaId: number, model
   const inscricaoMunicipalPrestador = config.inscricao_municipal || config.emp_inscricao_municipal;
   if (!codigoMunicipioPrestador) return falhaValidacao("Preencha o código do município (IBGE) da empresa antes de emitir.");
   if (config.opcao_simples_nacional && config.percentual_total_tributos_sn == null) {
-    return falhaValidacao('Preencha o "% total de tributos (Simples Nacional)" da empresa em Empresas › Configurações antes de emitir — obrigatório pra optante ME/EPP.');
+    const caminho = contexto === "cliente" ? "em NFS-e › Configuração" : "em Empresas › Configurações";
+    return falhaValidacao(`Preencha o "% total de tributos (Simples Nacional)" da empresa ${caminho} antes de emitir — obrigatório pra optante ME/EPP.`);
   }
 
   let cert: nfse.CertificadoInfo, cnpjPrestador: string;
@@ -18089,6 +18090,12 @@ app.put("/api/nfse/minha-empresa", requireCliente, requireModuloAtivo('nfse'), (
   const atual = sqlite.prepare(`SELECT habilitado FROM nfse_empresa_config WHERE empresa_id = ?`).get(empresaId) as any;
   if (!atual || !atual.habilitado) return res.status(403).json({ error: "Seu acesso ao módulo NFS-e ainda não foi liberado — entre em contato com o suporte." });
   const { codigoMunicipio, nomeMunicipio, inscricaoMunicipal, opcaoSimplesNacional, regimeEspecialTrib, regimeApuracaoSn, percentualTotalTributosSn } = req.body || {};
+  // Cobrado aqui (ao salvar), não só na emissão (nfseTransmitirEmissao já cobrava isso, mas só na
+  // hora de emitir a 1ª nota) — antecipa o erro pro momento em que o cliente está preenchendo o
+  // cadastro, como a própria tela já promete ("obrigatório pra emitir").
+  if (opcaoSimplesNacional !== false && (percentualTotalTributosSn == null || percentualTotalTributosSn === "")) {
+    return res.status(400).json({ error: 'Preencha o "% total de tributos (Simples Nacional)" antes de salvar — é obrigatório pra emitir NFS-e optando pelo Simples Nacional.' });
+  }
   sqlite
     .prepare(
       `UPDATE nfse_empresa_config SET metodo_assinatura='certificado_proprio', codigo_municipio=?, nome_municipio=?, inscricao_municipal=?,
@@ -18118,6 +18125,21 @@ app.post("/api/nfse/minha-empresa/certificado", requireCliente, requireModuloAti
     info = nfse.lerCertificadoPfx(req.file.buffer, senha);
   } catch (e: any) {
     return res.status(400).json({ error: e.message });
+  }
+  // Bloqueia na hora do upload — sem isso, os dois problemas abaixo só apareceriam (crus, sem
+  // explicação) na hora de emitir a 1ª nota, dias depois. Decisão confirmada com o Eduardo
+  // (self-service via Instagram/internet): bloquear, não só avisar.
+  if (info.validadeAte && info.validadeAte.getTime() < Date.now()) {
+    return res.status(400).json({ error: `Este certificado está vencido desde ${info.validadeAte.toLocaleDateString("pt-BR")}. Envie um certificado digital válido.` });
+  }
+  const empresaCnpjRow = sqlite.prepare(`SELECT cnpj FROM empresas WHERE id = ?`).get(empresaId) as any;
+  const empresaCnpjDigits = String(empresaCnpjRow?.cnpj || "").replace(/\D/g, "");
+  // Certificado e-CPF legítimo não traz CNPJ no CN (cnpjCertificado fica null) — nesse caso não dá
+  // pra comparar, então não bloqueia, só deixa de validar.
+  if (info.cnpjCertificado && empresaCnpjDigits && info.cnpjCertificado !== empresaCnpjDigits) {
+    return res.status(400).json({
+      error: `O certificado enviado é da empresa ${fmtCnpjRelatorio(info.cnpjCertificado)}, mas o CNPJ cadastrado aqui é ${fmtCnpjRelatorio(empresaCnpjDigits)}. Envie o certificado da sua própria empresa, ou corrija o CNPJ cadastrado antes.`,
+    });
   }
   const existente = sqlite.prepare(`SELECT * FROM nfse_certificados WHERE empresa_id = ?`).get(empresaId) as any;
   const arquivoPath = nfse.salvarCertificadoCifrado(req.file.buffer, req.file.originalname);
@@ -18964,7 +18986,7 @@ app.post("/api/nfse/minha-empresa/emitir", requireCliente, requireModuloAtivo('n
   const v = nfseValidarEntrada(user, { ...req.body, empresaId: user.empresaId });
   if ("erro" in v) return res.status(v.status || 400).json({ error: v.erro });
   const emissaoId = nfseInserirEmissao(user, v.empresaId, v.modelo, v.tomador, v.servico, "pendente");
-  await nfseTransmitirEmissao(emissaoId, v.empresaId, v.modelo, v.tomador, v.servico, res);
+  await nfseTransmitirEmissao(emissaoId, v.empresaId, v.modelo, v.tomador, v.servico, res, "cliente");
   nfseGerarRecebivelSeEmitida(emissaoId);
 });
 app.post("/api/nfse/minha-empresa/rascunhos", requireCliente, requireModuloAtivo('nfse'), (req, res) => {
@@ -19027,7 +19049,7 @@ app.post("/api/nfse/minha-empresa/rascunhos/:id/emitir", requireCliente, require
     codigoMunicipio: existente.tomador_codigo_municipio,
   };
   const servico = { descricao: existente.descricao_servico, valor: existente.valor_servico, competencia: existente.competencia };
-  await nfseTransmitirEmissao(existente.id, existente.empresa_id, modelo, tomador, servico, res);
+  await nfseTransmitirEmissao(existente.id, existente.empresa_id, modelo, tomador, servico, res, "cliente");
   nfseGerarRecebivelSeEmitida(existente.id);
 });
 app.delete("/api/nfse/minha-empresa/emissoes/:id", requireCliente, requireModuloAtivo('nfse'), (req, res) => {
