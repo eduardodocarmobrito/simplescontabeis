@@ -20928,14 +20928,7 @@ function renderCfgDomAcesso(box, sub, dados){
     <div class="card">
       <h3>Acesso do agente (src/dominio-agent.ts)</h3>
       <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Preencha aqui os dados de acesso ao Domínio Web.</p>
-      <div class="field"><label>Forma de acesso</label>
-        <select id="domSource">
-          <option value="">Ainda não definido</option>
-          <option value="onvio">Onvio (login web)</option>
-          <option value="db">Banco de dados (rede local/VPN do escritório)</option>
-          <option value="http">API HTTP do Domínio Web/TOTVS</option>
-        </select>
-      </div>
+      <div class="field"><label>Forma de acesso</label>${comboSelectHtml('domSource', 'Digite para buscar…')}</div>
       <div id="domOnvioFields" class="hidden">
         <p style="font-size:12.5px; color:var(--ink-soft);">
           Nesse modo o login do Onvio (que exige verificação em duas etapas) é feito uma vez em qualquer computador,
@@ -21052,10 +21045,14 @@ function renderCfgDomAcesso(box, sub, dados){
       btn.disabled = false; btn.textContent = 'Testar sincronização agora';
     }
   });
-  document.getElementById('domSource').value = cfg.source || '';
-  document.getElementById('domDbDriver').value = cfg.dbDriver || 'mssql';
+  const DOM_SOURCE_OPCOES = [
+    {id:'', label:'Ainda não definido'},
+    {id:'onvio', label:'Onvio (login web)'},
+    {id:'db', label:'Banco de dados (rede local/VPN do escritório)'},
+    {id:'http', label:'API HTTP do Domínio Web/TOTVS'},
+  ];
   function syncSourceUI(){
-    const v = document.getElementById('domSource').value;
+    const v = document.querySelector('#domSource .combo-value').value;
     document.getElementById('domOnvioFields').classList.toggle('hidden', v!=='onvio');
     document.getElementById('domDbFields').classList.toggle('hidden', v!=='db');
     document.getElementById('domHttpFields').classList.toggle('hidden', v!=='http');
@@ -21064,12 +21061,18 @@ function renderCfgDomAcesso(box, sub, dados){
     // dentro do próprio card do Onvio (ver btnTestarOnvioAgora), porque roda direto no servidor.
     document.getElementById('btnTestarDomCfg').classList.toggle('hidden', v!=='db' && v!=='http');
   }
-  document.getElementById('domSource').addEventListener('change', syncSourceUI);
+  setupComboSelect('domSource', DOM_SOURCE_OPCOES, ()=>{ syncSourceUI(); document.getElementById('btnSalvarDomCfg').disabled = false; });
+  {
+    const fonteAtual = DOM_SOURCE_OPCOES.find(o=>o.id===(cfg.source||'')) || DOM_SOURCE_OPCOES[0];
+    document.querySelector('#domSource .combo-value').value = fonteAtual.id;
+    document.querySelector('#domSource .combo-input').value = fonteAtual.label;
+  }
+  document.getElementById('domDbDriver').value = cfg.dbDriver || 'mssql';
   syncSourceUI();
-  habilitarSalvarAoMudar('btnSalvarDomCfg', ['domSource','domDbDriver','domDbHost','domDbPort','domDbName','domDbUser','domDbPassword','domDbConnectString','domQuery','domColCodigo','domColNome','domColCnpj','domColStatus','domApiUrl','domApiToken']);
+  habilitarSalvarAoMudar('btnSalvarDomCfg', ['domDbDriver','domDbHost','domDbPort','domDbName','domDbUser','domDbPassword','domDbConnectString','domQuery','domColCodigo','domColNome','domColCnpj','domColStatus','domApiUrl','domApiToken']);
   document.getElementById('btnSalvarDomCfg').addEventListener('click', async ()=>{
     const body = {
-      source: document.getElementById('domSource').value,
+      source: document.querySelector('#domSource .combo-value').value,
       dbDriver: document.getElementById('domDbDriver').value,
       dbHost: document.getElementById('domDbHost').value.trim(),
       dbPort: document.getElementById('domDbPort').value,
