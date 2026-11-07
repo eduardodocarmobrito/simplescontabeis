@@ -3115,6 +3115,34 @@ sqlite.exec(`INSERT OR IGNORE INTO webdfe_config (escritorio_id) SELECT id FROM 
 
 const MODULOS = ["dashboard", "empresas", "solicitacoes", "envio", "nfse", "nfe-busca", "integracontador", "licencas", "financeiro", "contratos", "relatorios", "crm", "dprh", "contabil", "fiscal", "usuarios", "configuracoes", "email", "certificados", "webdfe", "obrigacoes", "reforma", "open_finance"] as const;
 type Modulo = (typeof MODULOS)[number];
+// ---- Funcionalidades liberadas por escritório (controle do SuperAdmin) ----
+// Cada escritório só usa os módulos que contratou (ex.: só NFS-e + Busca de XML). Linha presente =
+// liberado. Escritório novo nasce sem nada (só os essenciais abaixo, que nunca desligam — sem eles o
+// escritório nem consegue cadastrar empresa/usuário). Na criação desta tabela (2026-11-06) os
+// escritórios que JÁ existiam recebem tudo liberado, pra ninguém perder acesso de uma hora pra outra.
+const MODULOS_ESSENCIAIS: readonly string[] = ["dashboard", "empresas", "usuarios", "configuracoes"];
+{
+  const existia = sqlite.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='escritorio_funcionalidades'`).get();
+  sqlite.exec(`CREATE TABLE IF NOT EXISTS escritorio_funcionalidades (
+    escritorio_id INTEGER NOT NULL REFERENCES escritorios(id) ON DELETE CASCADE,
+    modulo TEXT NOT NULL,
+    PRIMARY KEY (escritorio_id, modulo)
+  )`);
+  if (!existia) {
+    const ins = sqlite.prepare(`INSERT OR IGNORE INTO escritorio_funcionalidades (escritorio_id, modulo) VALUES (?, ?)`);
+    for (const e of sqlite.prepare(`SELECT id FROM escritorios`).all() as any[]) for (const m of MODULOS) ins.run(e.id, m);
+  }
+}
+function escritorioTemFuncionalidade(escritorioId: number | null | undefined, modulo: string): boolean {
+  if (MODULOS_ESSENCIAIS.includes(modulo)) return true;
+  if (!escritorioId) return false;
+  return !!sqlite.prepare(`SELECT 1 FROM escritorio_funcionalidades WHERE escritorio_id = ? AND modulo = ?`).get(escritorioId, modulo);
+}
+function funcionalidadesDoEscritorio(escritorioId: number | null | undefined): string[] {
+  const set = new Set<string>(MODULOS_ESSENCIAIS);
+  if (escritorioId) for (const r of sqlite.prepare(`SELECT modulo FROM escritorio_funcionalidades WHERE escritorio_id = ?`).all(escritorioId) as any[]) set.add(r.modulo);
+  return [...set];
+}
 // Módulo "reforma" (Reforma Tributária) criado em 2026-11-03 — antes a página usava a permissão da
 // Busca de XML. Quem ainda não tem a linha "reforma" herda o "Ver" da Busca de XML (não perde acesso de
 // uma hora pra outra). Salvar as permissões do usuário grava a linha (marcada ou não), então isto nunca
@@ -3260,6 +3288,9 @@ function blockCliente(req: express.Request, res: express.Response, next: express
   next();
 }
 function hasPermissao(user: any, modulo: Modulo, acao: "visualizar" | "postar" | "editar"): boolean {
+  // Funcionalidade não liberada pro escritório (controle do SuperAdmin) vale pra todo mundo dele,
+  // inclusive o Administrador.
+  if ((user.perfil === "Administrador" || user.perfil === "Colaborador") && !escritorioTemFuncionalidade(user.escritorioId, modulo)) return false;
   if (user.perfil === "Administrador") return true;
   if (user.perfil === "Cliente") return false;
   // Achado em auditoria (2026-10-12): a conta de Painel de TV é um Colaborador comum com uma sessão
@@ -4108,12 +4139,16 @@ app.get("/api/auth/me", (req, res) => {
   let permissoes: Record<string, { visualizar: boolean; postar: boolean; editar: boolean }> = {};
   let configAbas: string[] | null = null; // null = sem restrição (vê todas)
   let paginasCliente: string[] | null = null; // null = sem restrição (cliente vê todas as próprias páginas)
+  const funcionalidades = user.perfil === "SuperAdmin" ? null : funcionalidadesDoEscritorio(user.escritorioId);
   if (user.perfil === "Administrador") {
-    for (const m of MODULOS) permissoes[m] = { visualizar: true, postar: true, editar: true };
+    for (const m of MODULOS) { const ok = funcionalidades!.includes(m); permissoes[m] = { visualizar: ok, postar: ok, editar: ok }; }
   } else if (user.perfil === "Colaborador") {
     const rows = sqlite.prepare(`SELECT * FROM colaborador_permissoes WHERE user_id = ?`).all(user.id) as any[];
     for (const m of MODULOS) permissoes[m] = { visualizar: false, postar: false, editar: false };
-    for (const r of rows) permissoes[r.modulo] = { visualizar: !!r.pode_visualizar, postar: !!r.pode_postar, editar: !!r.pode_editar };
+    for (const r of rows) {
+      if (!funcionalidades!.includes(r.modulo)) continue; // escritório não tem essa funcionalidade liberada
+      permissoes[r.modulo] = { visualizar: !!r.pode_visualizar, postar: !!r.pode_postar, editar: !!r.pode_editar };
+    }
     const abas = sqlite.prepare(`SELECT aba FROM colaborador_config_abas WHERE user_id = ?`).all(user.id) as any[];
     if (abas.length) configAbas = abas.map((a) => a.aba);
   } else if (user.perfil === "Cliente") {
@@ -4121,7 +4156,7 @@ app.get("/api/auth/me", (req, res) => {
     if (paginas.length) paginasCliente = paginas.map((p) => p.pagina);
   }
   const userComFlag = user.perfil === "Cliente" && user.empresaId ? { ...user, ehClienteDireto: empresaEhClienteDireto(user.empresaId) } : user;
-  res.json({ user: userComFlag, permissoes, configAbas, paginasCliente });
+  res.json({ user: userComFlag, permissoes, configAbas, paginasCliente, funcionalidades });
 });
 app.get("/api/auth/minhas-empresas", requireAuth, (req, res) => {
   const user = (req as any).user;
@@ -4343,6 +4378,29 @@ app.get("/api/super/escritorios/:id/usuarios", requireSuperAdmin, (req, res) => 
     })),
     totalClientes: clientes,
   });
+});
+// Funcionalidades liberadas do escritório (SuperAdmin): lista o que está marcado e salva a seleção.
+app.get("/api/super/escritorios/:id/funcionalidades", requireSuperAdmin, (req, res) => {
+  const escritorioId = Number(req.params.id);
+  if (!sqlite.prepare(`SELECT 1 FROM escritorios WHERE id = ?`).get(escritorioId)) return res.status(404).json({ error: "Escritório não encontrado." });
+  res.json({ liberadas: funcionalidadesDoEscritorio(escritorioId), essenciais: MODULOS_ESSENCIAIS, todas: MODULOS });
+});
+app.put("/api/super/escritorios/:id/funcionalidades", requireSuperAdmin, (req, res) => {
+  const escritorioId = Number(req.params.id);
+  if (!sqlite.prepare(`SELECT 1 FROM escritorios WHERE id = ?`).get(escritorioId)) return res.status(404).json({ error: "Escritório não encontrado." });
+  const pedidas: string[] = Array.isArray(req.body?.modulos) ? req.body.modulos.map(String) : [];
+  const validas = new Set([...pedidas.filter((m) => (MODULOS as readonly string[]).includes(m)), ...MODULOS_ESSENCIAIS]);
+  sqlite.exec("BEGIN");
+  try {
+    sqlite.prepare(`DELETE FROM escritorio_funcionalidades WHERE escritorio_id = ?`).run(escritorioId);
+    const ins = sqlite.prepare(`INSERT INTO escritorio_funcionalidades (escritorio_id, modulo) VALUES (?, ?)`);
+    for (const m of validas) ins.run(escritorioId, m);
+    sqlite.exec("COMMIT");
+  } catch (e: any) {
+    sqlite.exec("ROLLBACK");
+    return res.status(500).json({ error: e.message });
+  }
+  res.json({ ok: true, liberadas: [...validas] });
 });
 app.post("/api/super/escritorios/:id/administrador", requireSuperAdmin, (req, res) => {
   const escritorioId = Number(req.params.id);

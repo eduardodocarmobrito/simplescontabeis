@@ -2068,7 +2068,13 @@ const PAGINAS_CLIENTE_TODAS = [
   { id:'minha-webdfe', label:'Emissor NF-e' },
   { id:'minha-conciliacao', label:'Conciliação Bancária', optin:true },
 ];
+// Página do perfil Cliente → módulo do escritório que precisa estar liberado pra ela aparecer.
+const PAGINA_CLIENTE_MODULO = { 'minha-nfse':'nfse', 'minha-financeiro':'financeiro', 'minha-webdfe':'webdfe', 'notas-entrada':'nfe-busca', 'minha-reforma':'reforma', 'minha-conciliacao':'open_finance' };
+function escritorioTemFuncionalidade(modulo){
+  return !Array.isArray(STATE.funcionalidades) || STATE.funcionalidades.includes(modulo);
+}
 function podeVerModulo(item){
+  if(STATE.user.perfil==='Cliente' && PAGINA_CLIENTE_MODULO[item.id] && !escritorioTemFuncionalidade(PAGINA_CLIENTE_MODULO[item.id])) return false;
   // "Empresa" (Configuração > Empresa) só existe pro cliente direto (venda avulsa) — é quem precisa
   // preencher o próprio cadastro sozinho; cliente comum do escritório já chega com tudo pronto.
   if(item.id==='minha-empresa-config') return STATE.user.perfil==='Cliente' && !!STATE.user.ehClienteDireto;
@@ -2086,7 +2092,7 @@ function podeVerModulo(item){
     }
     return true;
   }
-  if(STATE.user.perfil==='Administrador') return true;
+  if(STATE.user.perfil==='Administrador') return escritorioTemFuncionalidade(item.modulo);
   if(STATE.user.perfil==='Cliente') return false;
   return STATE.permissoes[item.modulo] && STATE.permissoes[item.modulo].visualizar;
 }
@@ -2151,6 +2157,7 @@ async function boot(paginaInicial){
     STATE.permissoes = data.permissoes || {};
     STATE.configAbas = data.configAbas || null; // null = sem restrição, vê todas as abas de Configurações
     STATE.paginasCliente = data.paginasCliente || null; // null = sem restrição, cliente vê todas as próprias páginas
+    STATE.funcionalidades = data.funcionalidades || null; // módulos liberados pro escritório (null = SuperAdmin, sem restrição)
   }catch(e){
     showLogin();
     return;
@@ -2217,7 +2224,7 @@ async function renderEmpresaSwitch(){
 
 function main(){ return document.getElementById('main'); }
 function can(modulo, acao){
-  if(STATE.user.perfil==='Administrador') return true;
+  if(STATE.user.perfil==='Administrador') return escritorioTemFuncionalidade(modulo);
   if(STATE.user.perfil==='Cliente') return false;
   return !!(STATE.permissoes[modulo] && STATE.permissoes[modulo][acao]);
 }
@@ -19597,6 +19604,7 @@ async function pageEscritorios(){
       <td style="text-align:right; white-space:nowrap;">
         <button class="btn small" data-act="editar">Editar</button>
         <button class="btn small" data-act="admin" title="Ver quem está cadastrado e adicionar administrador">👤 Administradores</button>
+        <button class="btn small" data-act="funcionalidades" title="Escolher quais módulos do site este escritório pode usar">🧩 Funcionalidades</button>
         <button class="btn small ${e.deskcommAtivo?'primary':''}" data-act="deskcomm" title="${e.deskcommAtivo?'Atendimento por WhatsApp configurado e ativo':'Atendimento por WhatsApp — ainda não configurado'}">📱 Atendimento WhatsApp</button>
         <button class="btn small" data-act="isencao">${e.isentoAssinatura?'Voltar a cobrar':'Isentar cobrança'}</button>
         <button class="btn small" data-act="toggle">${e.ativo?'Desativar':'Ativar'}</button>
@@ -19613,6 +19621,10 @@ async function pageEscritorios(){
     const tr = e.target.closest('tr');
     const id = Number(tr.dataset.id);
     administradorModal(items.find(x=>x.id===id));
+  }));
+  document.getElementById('escritoriosBody').querySelectorAll('[data-act="funcionalidades"]').forEach(b=>b.addEventListener('click', e=>{
+    const id = Number(e.target.closest('tr').dataset.id);
+    funcionalidadesEscritorioModal(items.find(x=>x.id===id));
   }));
   document.getElementById('escritoriosBody').querySelectorAll('[data-act="deskcomm"]').forEach(b=>b.addEventListener('click', e=>{
     const tr = e.target.closest('tr');
@@ -19673,6 +19685,51 @@ function escritorioModal(esc_){
       if(esc_) await api('/super/escritorios/'+esc_.id, { method:'PUT', body });
       else await api('/super/escritorios', { method:'POST', body });
       closeModal(); pageEscritorios();
+    }catch(e){ toast(e.message,'err'); }
+  });
+}
+// Funcionalidades do escritório (SuperAdmin): quais módulos do site esse escritório pode usar —
+// escritório novo nasce só com os essenciais (Início, Empresas, Usuários, Configurações), que não
+// desligam. Vale pra Administrador, Colaboradores e pras páginas equivalentes dos Clientes dele.
+async function funcionalidadesEscritorioModal(esc_){
+  openModal(`<h3>Funcionalidades — ${esc(esc_.nome)}</h3><div class="empty-state">Carregando…</div>`, '760px');
+  let d;
+  try{ d = await api('/super/escritorios/'+esc_.id+'/funcionalidades'); }
+  catch(e){ openModal(`<h3>Funcionalidades — ${esc(esc_.nome)}</h3><div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`, '760px'); return; }
+  const rotulo = Object.assign({ webdfe:'Emissor NF-e' }, Object.fromEntries(MODS.map(([k,l])=>[k, k==='obrigacoes' ? 'Obrigações do Mês' : l])));
+  const ordem = MODS.map(([k])=>k).filter(k=>d.todas.includes(k)).concat(d.todas.filter(k=>!MODS.some(([m])=>m===k)));
+  const item = k => {
+    const essencial = d.essenciais.includes(k);
+    return `<label style="display:grid; grid-template-columns:20px 1fr; gap:8px; align-items:center; padding:6px 0; font-size:13.5px; ${essencial?'opacity:.7;':''}">
+      <input type="checkbox" class="funcMod" value="${esc(k)}" ${d.liberadas.includes(k)||essencial?'checked':''} ${essencial?'disabled':''}>
+      <span>${esc(rotulo[k]||k)}${essencial?' <span class="tag muted">sempre liberado</span>':''}</span>
+    </label>`;
+  };
+  openModal(`
+    <h3>Funcionalidades — ${esc(esc_.nome)}</h3>
+    <p class="subtitle" style="margin-top:-4px;">Marque só o que este escritório contratou. O que ficar desmarcado some do menu e é bloqueado no servidor, pro Administrador, os Colaboradores e os Clientes dele.</p>
+    <div class="row" style="gap:8px; margin-bottom:8px;">
+      <button class="btn small" id="funcTodas">Marcar todas</button>
+      <button class="btn small" id="funcNenhuma">Desmarcar todas</button>
+      <span id="funcContagem" style="font-size:12px; color:var(--ink-soft); align-self:center;"></span>
+    </div>
+    <div style="display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); column-gap:24px;">${ordem.map(item).join('')}</div>
+    <div class="modal-actions">
+      <button class="btn" id="funcCancel">Cancelar</button>
+      <button class="btn primary" id="funcSalvar">Salvar</button>
+    </div>
+  `, '760px');
+  const caixas = ()=>[...document.querySelectorAll('.funcMod')];
+  const contar = ()=>{ document.getElementById('funcContagem').textContent = `${caixas().filter(c=>c.checked).length} de ${caixas().length} liberadas`; };
+  caixas().forEach(c=>c.addEventListener('change', contar)); contar();
+  document.getElementById('funcTodas').addEventListener('click', ()=>{ caixas().forEach(c=>{ c.checked = true; }); contar(); });
+  document.getElementById('funcNenhuma').addEventListener('click', ()=>{ caixas().forEach(c=>{ if(!c.disabled) c.checked = false; }); contar(); });
+  document.getElementById('funcCancel').addEventListener('click', closeModal);
+  document.getElementById('funcSalvar').addEventListener('click', async ()=>{
+    const modulos = caixas().filter(c=>c.checked).map(c=>c.value);
+    try{
+      await api('/super/escritorios/'+esc_.id+'/funcionalidades', { method:'PUT', body:{ modulos } });
+      closeModal(); toast('Funcionalidades salvas — valem no próximo carregamento da página de quem usa esse escritório.','ok');
     }catch(e){ toast(e.message,'err'); }
   });
 }
