@@ -19732,7 +19732,7 @@ async function administradorModal(esc_){
 // (fora deste app, manual); aqui só cadastra pra ONDE apontar depois que ela existir. Nasce vazia/
 // desligada pra todo escritório novo — ninguém tem atendimento até o SuperAdmin preencher isto.
 async function deskcommConfigModal(esc_){
-  openModal(`<h3>Atendimento por WhatsApp — ${esc(esc_.nome)}</h3><div class="empty-state">Carregando…</div>`);
+  openModal(`<h3>Atendimento por WhatsApp — ${esc(esc_.nome)}</h3><div class="empty-state">Carregando…</div>`, '900px');
   let c;
   try{ c = await api('/super/escritorios/'+esc_.id+'/deskcomm-config'); }
   catch(e){ openModal(`<h3>Atendimento por WhatsApp — ${esc(esc_.nome)}</h3><div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`); return; }
@@ -19741,25 +19741,25 @@ async function deskcommConfigModal(esc_){
     <p class="subtitle" style="margin-top:-4px;">Credenciais da pilha deskcomm+WAHA PRÓPRIA deste escritório — provisionada à parte (outra VPS ou outra pasta isolada), nunca a mesma do escritório principal. Deixe em branco o que ainda não existir.</p>
     <label class="checkbox-row"><input type="checkbox" id="dcAtivo" ${c.ativo?'checked':''}> Atendimento ativo (pilha já provisionada e pronta)</label>
     <div class="row">
-      <div class="field"><label>URL base do deskcomm</label><input id="dcUrl" value="${esc(c.url)}" placeholder="https://..."></div>
-      <div class="field"><label>Host público (Caddy)</label><input id="dcPublicHost" value="${esc(c.publicHost)}"></div>
+      <div class="field grow"><label>URL base do deskcomm</label><input id="dcUrl" value="${esc(c.url)}" placeholder="https://..."></div>
+      <div class="field grow"><label>Host público (Caddy)</label><input id="dcPublicHost" value="${esc(c.publicHost)}"></div>
     </div>
     <div class="row">
-      <div class="field"><label>URL do WAHA</label><input id="dcWahaUrl" value="${esc(c.wahaUrl)}" placeholder="https://..."></div>
-      <div class="field"><label>Nome do container Caddy (proxy interno)</label><input id="dcWahaConnect" value="${esc(c.wahaConnect)}"></div>
+      <div class="field grow"><label>URL do WAHA</label><input id="dcWahaUrl" value="${esc(c.wahaUrl)}" placeholder="https://..."></div>
+      <div class="field grow"><label>Nome do container Caddy (proxy interno)</label><input id="dcWahaConnect" value="${esc(c.wahaConnect)}"></div>
     </div>
     <div class="row">
-      <div class="field"><label>Supabase URL</label><input id="dcSupabaseUrl" value="${esc(c.supabaseUrl)}" placeholder="https://xxx.supabase.co"></div>
-      <div class="field"><label>Organization ID (deskcomm)</label><input id="dcOrgId" value="${esc(c.orgId)}"></div>
+      <div class="field grow"><label>Supabase URL</label><input id="dcSupabaseUrl" value="${esc(c.supabaseUrl)}" placeholder="https://xxx.supabase.co"></div>
+      <div class="field grow"><label>Organization ID (deskcomm)</label><input id="dcOrgId" value="${esc(c.orgId)}"></div>
     </div>
     <div class="row">
-      <div class="field"><label>Supabase Service Role Key</label><input id="dcSupabaseKey" type="password" placeholder="${c.temSupabaseServiceRoleKey?'••••••••  (deixe em branco pra manter)':''}"></div>
+      <div class="field grow"><label>Supabase Service Role Key</label><input id="dcSupabaseKey" type="password" placeholder="${c.temSupabaseServiceRoleKey?'••••••••  (deixe em branco pra manter)':''}"></div>
     </div>
     <div class="modal-actions">
       <button class="btn" id="dcCancel">Cancelar</button>
       <button class="btn primary" id="dcSalvar">Salvar</button>
     </div>
-  `);
+  `, '900px');
   document.getElementById('dcCancel').addEventListener('click', closeModal);
   document.getElementById('dcSalvar').addEventListener('click', async ()=>{
     const body = {
