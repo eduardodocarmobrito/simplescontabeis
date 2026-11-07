@@ -1449,6 +1449,67 @@ function formatarDocumentoBR(digitos){
   }
   return digitos.replace(/(\d{2})(\d)/,'$1.$2').replace(/(\d{3})(\d)/,'$1.$2').replace(/(\d{3})(\d)/,'$1/$2').replace(/(\d{4})(\d{1,2})$/,'$1-$2');
 }
+// Telefone BR progressivo: (94) 99222-1064 (celular, 11 dígitos) ou (94) 3421-1234 (fixo, 10).
+// Número colado com +55/55 na frente tem o DDI removido. Mais de 11 dígitos fica só com os 11 primeiros.
+function formatarTelefoneBR(valor){
+  let d = String(valor||'').replace(/[^0-9]/g,'');
+  if(d.length>11 && d.startsWith('55')) d = d.slice(2);
+  d = d.slice(0,11);
+  if(!d) return '';
+  if(d.length<=2) return '('+d;
+  if(d.length<=6) return `(${d.slice(0,2)}) ${d.slice(2)}`;
+  if(d.length<=10) return `(${d.slice(0,2)}) ${d.slice(2,6)}-${d.slice(6)}`;
+  return `(${d.slice(0,2)}) ${d.slice(2,7)}-${d.slice(7)}`;
+}
+// ---- Máscaras automáticas do site inteiro (pedido 2026-11-06) ----
+// CNPJ/CPF e telefone formatam sozinhos enquanto digita, em qualquer tela, sem precisar ligar campo a
+// campo: um listener só, no document. Campos por lista explícita (o nome do id sozinho pega campo
+// errado, ex.: "domColCnpj" é nome de coluna, "nfeDocBusca" é busca). Pra campo novo: pôr o id aqui
+// ou usar data-mask="doc" | "cpf" | "tel" (ou type="tel"). O servidor já tira a formatação ao ler
+// (replace(/\D/g, "")), e o banco já tinha os dois formatos misturados — enviar formatado é seguro.
+const MASCARA_CNPJ_IDS = new Set(['escCnpj','cfgFatCnpj']); // só CNPJ (escritório): formata como CNPJ desde o 1º dígito
+const MASCARA_DOC_IDS = new Set(['cadCnpj','cadDoc','cdmCnpj','empCnpj','icCnpj','mecCnpj','ccDocumento','mnfEmiDocTomador','nfseEmiDocTomador']);
+const MASCARA_CPF_IDS = new Set(['empCpfRepresentante','mecRepCpf']);
+const MASCARA_TEL_IDS = new Set(['asEnvCliTel','asEnvT1Tel','asEnvT2Tel','atdEncTelefone','atdNovaTelefone','cadTel','ccTelefone','cfgFatTelefone','empTelefone','escTelefone','mecTelefone','mnfEmiTelTomador','nfseEmiTelTomador','usTelefone','vcTel']);
+function tipoMascara(el){
+  if(!el || el.tagName!=='INPUT' || el.type==='checkbox' || el.type==='radio' || el.type==='hidden') return null;
+  if(el.dataset.mask) return el.dataset.mask;
+  if(MASCARA_CNPJ_IDS.has(el.id)) return 'cnpj';
+  if(MASCARA_DOC_IDS.has(el.id)) return 'doc';
+  if(MASCARA_CPF_IDS.has(el.id)) return 'cpf';
+  if(MASCARA_TEL_IDS.has(el.id) || el.type==='tel' || el.dataset.f==='telefone' || el.classList.contains('as-tel')) return 'tel';
+  return null;
+}
+function aplicarMascara(el, tipo){
+  const v = el.value;
+  if(!v) return;
+  let novo;
+  if(tipo==='tel') novo = formatarTelefoneBR(v);
+  else if(tipo==='cnpj'){
+    const d = v.replace(/[^0-9]/g,'').slice(0,14);
+    novo = d.replace(/^(\d{2})(\d)/,'$1.$2').replace(/^(\d{2})\.(\d{3})(\d)/,'$1.$2.$3').replace(/\.(\d{3})(\d)/,'.$1/$2').replace(/(\d{4})(\d{1,2})$/,'$1-$2');
+  }
+  else if(tipo==='cpf') novo = formatarDocumentoBR(v.replace(/[^0-9]/g,'').slice(0,11));
+  else novo = formatarDocumentoBR(v.replace(/[^0-9]/g,'').slice(0,14));
+  if(novo!==v) el.value = novo;
+}
+document.addEventListener('input', e=>{
+  const el = e.target; const tipo = tipoMascara(el);
+  if(!tipo) return;
+  // Só reformata com o cursor no fim (digitação normal) — editando no meio, formata ao sair do campo,
+  // pra não pular o cursor.
+  if(el.selectionStart!=null && el.selectionStart < el.value.length) return;
+  aplicarMascara(el, tipo);
+}, true);
+document.addEventListener('blur', e=>{ const tipo = tipoMascara(e.target); if(tipo) aplicarMascara(e.target, tipo); }, true);
+// Valor que já vem do banco (ao abrir um formulário) também aparece formatado.
+new MutationObserver(muts=>{
+  for(const m of muts) for(const n of m.addedNodes){
+    if(n.nodeType!==1) continue;
+    const alvos = n.tagName==='INPUT' ? [n] : n.querySelectorAll ? n.querySelectorAll('input') : [];
+    for(const el of alvos){ const tipo = tipoMascara(el); if(tipo) aplicarMascara(el, tipo); }
+  }
+}).observe(document.documentElement, { childList:true, subtree:true });
 function ligarMascaraCep(el){
   el.addEventListener('input', ()=>{
     const digitos = el.value.replace(/[^0-9]/g,'').slice(0,8);
