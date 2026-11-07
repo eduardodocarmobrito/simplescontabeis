@@ -4320,6 +4320,30 @@ app.put("/api/super/escritorios/:id", requireSuperAdmin, (req, res) => {
 // Bootstrap do primeiro usuário de um escritório novo — sem isso, ninguém consegue logar nele pra
 // criar os demais usuários pela tela normal de Usuários (que exige já ser Administrador do
 // escritório). Só o SuperAdmin tem esse poder, e só entrega o essencial (Administrador full).
+// Quem está cadastrado no escritório (Administradores e Colaboradores; Clientes só pela contagem,
+// que podem ser centenas). "Último acesso" = login mais recente ainda guardado em sessions.
+app.get("/api/super/escritorios/:id/usuarios", requireSuperAdmin, (req, res) => {
+  const escritorioId = Number(req.params.id);
+  const escritorio = sqlite.prepare(`SELECT id FROM escritorios WHERE id = ?`).get(escritorioId);
+  if (!escritorio) return res.status(404).json({ error: "Escritório não encontrado." });
+  const rows = sqlite
+    .prepare(
+      `SELECT u.id, u.nome, u.email, u.perfil, u.ativo, u.telefone, u.painel_tv, u.created_at,
+              (SELECT MAX(s.created_at) FROM sessions s WHERE s.user_id = u.id) as ultimo_acesso
+         FROM app_users u
+        WHERE u.escritorio_id = ? AND u.perfil IN ('Administrador', 'Colaborador')
+        ORDER BY CASE u.perfil WHEN 'Administrador' THEN 0 ELSE 1 END, u.ativo DESC, u.nome`
+    )
+    .all(escritorioId) as any[];
+  const clientes = (sqlite.prepare(`SELECT COUNT(*) as c FROM app_users WHERE escritorio_id = ? AND perfil = 'Cliente'`).get(escritorioId) as any).c;
+  res.json({
+    items: rows.map((r) => ({
+      id: r.id, nome: r.nome, email: r.email, perfil: r.perfil, ativo: !!r.ativo, telefone: r.telefone || null,
+      painelTv: !!r.painel_tv, criadoEm: r.created_at, ultimoAcesso: r.ultimo_acesso || null,
+    })),
+    totalClientes: clientes,
+  });
+});
 app.post("/api/super/escritorios/:id/administrador", requireSuperAdmin, (req, res) => {
   const escritorioId = Number(req.params.id);
   const escritorio = sqlite.prepare(`SELECT id FROM escritorios WHERE id = ?`).get(escritorioId);

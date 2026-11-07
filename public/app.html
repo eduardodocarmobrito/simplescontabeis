@@ -19596,7 +19596,7 @@ async function pageEscritorios(){
       <td><span class="tag ${e.ativo?'ok':'bad'}">${e.ativo?'Ativo':'Inativo'}</span>${e.isentoAssinatura?' <span class="tag ok" title="Isento da cobrança da plataforma — acesso liberado a todos os módulos sem pagar">Isento</span>':''}${e.ehClienteDireto?' <span class="tag muted" title="Escritório virtual — recebe os clientes avulsos do auto-cadastro/convite (Clientes Diretos)">Clientes Diretos</span>':''}</td>
       <td style="text-align:right; white-space:nowrap;">
         <button class="btn small" data-act="editar">Editar</button>
-        <button class="btn small" data-act="admin">+ Administrador</button>
+        <button class="btn small" data-act="admin" title="Ver quem está cadastrado e adicionar administrador">👤 Administradores</button>
         <button class="btn small ${e.deskcommAtivo?'primary':''}" data-act="deskcomm" title="${e.deskcommAtivo?'Atendimento por WhatsApp configurado e ativo':'Atendimento por WhatsApp — ainda não configurado'}">📱 Atendimento WhatsApp</button>
         <button class="btn small" data-act="isencao">${e.isentoAssinatura?'Voltar a cobrar':'Isentar cobrança'}</button>
         <button class="btn small" data-act="toggle">${e.ativo?'Desativar':'Ativar'}</button>
@@ -19650,7 +19650,7 @@ function escritorioModal(esc_){
     <div class="field"><label>Telefone</label><input id="escTelefone" value="${esc_&&esc_.telefone?esc(esc_.telefone):''}"></div>
     <label class="checkbox-row"><input type="checkbox" id="escClienteDireto" ${esc_&&esc_.ehClienteDireto?'checked':''}> Este é o escritório de clientes diretos (avulsos)</label>
     <p style="font-size:11.5px; color:var(--ink-soft); margin:2px 0 10px;">Recebe os clientes que compraram direto (auto-cadastro/convite), sem vínculo com nenhum escritório contábil real. Só pode haver UM marcado — marcar este desmarca qualquer outro automaticamente.</p>
-    ${!esc_?'<p class="subtitle" style="margin-top:0;">Depois de criado, use o botão "+ Administrador" na lista pra cadastrar o primeiro acesso desse escritório.</p>':''}
+    ${!esc_?'<p class="subtitle" style="margin-top:0;">Depois de criado, use o botão "Administradores" na lista pra cadastrar o primeiro acesso desse escritório.</p>':''}
     <div class="modal-actions">
       <button class="btn" id="escCancel">Cancelar</button>
       <button class="btn primary" id="escSalvar">Salvar</button>
@@ -19676,18 +19676,44 @@ function escritorioModal(esc_){
     }catch(e){ toast(e.message,'err'); }
   });
 }
-function administradorModal(esc_){
+// Janela "Administradores" do escritório (SuperAdmin): primeiro mostra quem já está cadastrado
+// (Administradores e Colaboradores, com situação e último acesso), depois o formulário de novo admin.
+async function administradorModal(esc_){
+  openModal(`<h3>Administradores — ${esc(esc_.nome)}</h3><div class="empty-state">Carregando…</div>`, '820px');
+  let dados;
+  try{ dados = await api('/super/escritorios/'+esc_.id+'/usuarios'); }
+  catch(e){ openModal(`<h3>Administradores — ${esc(esc_.nome)}</h3><div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`, '820px'); return; }
+  const admins = dados.items.filter(u=>u.perfil==='Administrador');
+  const colabs = dados.items.filter(u=>u.perfil==='Colaborador');
+  const linhas = lista => lista.map(u=>`
+    <tr>
+      <td><div style="font-weight:600;">${esc(u.nome)}${u.painelTv?' <span class="tag muted">Painel de TV</span>':''}</div><div style="font-size:11.5px; color:var(--ink-soft);">${esc(u.email)}${u.telefone?' · '+esc(u.telefone):''}</div></td>
+      <td><span class="tag ${u.ativo?'ok':'bad'}">${u.ativo?'Ativo':'Inativo'}</span></td>
+      <td style="white-space:nowrap;">${u.ultimoAcesso?fmtDateHora(u.ultimoAcesso):'—'}</td>
+      <td style="white-space:nowrap;">${fmtDate(u.criadoEm)}</td>
+    </tr>`).join('');
+  const tabela = (lista, vazio) => lista.length ? `
+    <div style="overflow-x:auto;"><table class="data-table">
+      <thead><tr><th>Nome / e-mail</th><th>Situação</th><th>Último acesso</th><th>Cadastrado em</th></tr></thead>
+      <tbody>${linhas(lista)}</tbody>
+    </table></div>` : `<div class="empty-state">${vazio}</div>`;
   openModal(`
-    <h3>Novo Administrador — ${esc(esc_.nome)}</h3>
-    <div class="field"><label>Nome</label><input id="admNome"></div>
-    <div class="field"><label>E-mail</label><input id="admEmail" type="email"></div>
-    <div class="field"><label>Senha</label><input id="admSenha" type="password"></div>
+    <h3>Administradores — ${esc(esc_.nome)}</h3>
+    ${tabela(admins, 'Nenhum administrador cadastrado ainda — cadastre o primeiro abaixo.')}
+    ${colabs.length?`<details style="margin-top:12px;"><summary style="cursor:pointer; font-size:13px; font-weight:600;">Colaboradores (${colabs.length})</summary><div style="margin-top:8px;">${tabela(colabs,'')}</div></details>`:''}
+    <p style="font-size:12px; color:var(--ink-soft); margin:10px 0 0;">${dados.totalClientes} usuário(s) de empresas-cliente (perfil Cliente) também acessam por este escritório.</p>
+    <div style="margin:16px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Novo administrador</div>
+    <div class="row">
+      <div class="field grow"><label>Nome</label><input id="admNome"></div>
+      <div class="field grow"><label>E-mail</label><input id="admEmail" type="email"></div>
+      <div class="field" style="width:220px;"><label>Senha</label><input id="admSenha" type="password"></div>
+    </div>
     <p class="subtitle" style="margin-top:0;">Mínimo 10 caracteres, com letras e números.</p>
     <div class="modal-actions">
-      <button class="btn" id="admCancel">Cancelar</button>
-      <button class="btn primary" id="admSalvar">Salvar</button>
+      <button class="btn" id="admCancel">Fechar</button>
+      <button class="btn primary" id="admSalvar">Cadastrar administrador</button>
     </div>
-  `);
+  `, '820px');
   document.getElementById('admCancel').addEventListener('click', closeModal);
   document.getElementById('admSalvar').addEventListener('click', async ()=>{
     const nome = document.getElementById('admNome').value.trim();
@@ -19696,7 +19722,9 @@ function administradorModal(esc_){
     if(!nome || !email || !password){ toast('Preencha nome, e-mail e senha.','err'); return; }
     try{
       await api('/super/escritorios/'+esc_.id+'/administrador', { method:'POST', body:{ nome, email, password } });
-      closeModal(); toast('Administrador criado.','ok'); pageEscritorios();
+      toast('Administrador criado.','ok');
+      administradorModal(esc_); // reabre já com o novo na lista
+      pageEscritorios();
     }catch(e){ toast(e.message,'err'); }
   });
 }
