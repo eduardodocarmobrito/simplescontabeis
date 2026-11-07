@@ -1993,7 +1993,7 @@ document.getElementById('resetConfirmaSenha').addEventListener('keydown', e=>{ i
 let CADASTRO_MODULO_SUGERIDO = null;
 // Rótulo do olho-mágico (eyebrow) da tela de cadastro, conforme o módulo do link — nomes conhecidos
 // do catálogo público (não precisa de rota nova só pra isso); convite usa o nome que já vem da API.
-const CADASTRO_MODULO_EYEBROW = { nfse:'NFS-e', financeiro:'Financeiro' };
+const CADASTRO_MODULO_EYEBROW = { nfse:'NFS-e', financeiro:'Financeiro', nfse_automatica:'Emissão Automática' };
 function cadAtualizarEyebrow(moduloChave, moduloNomeServidor){
   const el = document.getElementById('cadEyebrow');
   const nome = moduloNomeServidor ? moduloNomeServidor.replace(/^Módulo\s+/i,'') : CADASTRO_MODULO_EYEBROW[moduloChave];
@@ -11605,13 +11605,22 @@ async function pageIntegraContador(deepLinkEmpresaId){
 // Bloqueio de acesso por módulo — teste grátis de 3 dias ou assinatura paga (Asaas). Reaproveitado
 // pelas telas de NFS-e e Financeiro (A Receber/A Pagar) do perfil Cliente.
 async function moduloDaChave(chave){
-  const { items } = await api('/financeiro/minha-empresa/modulos');
-  return items.find(i=>i.chave===chave);
+  const { items, semTesteGratis } = await api('/financeiro/minha-empresa/modulos');
+  const item = items.find(i=>i.chave===chave);
+  return item ? { ...item, semTesteGratis } : item;
 }
 function moduloPaywallHtml(item){
   const preco = fmtMoney(item.valorMensal);
   let titulo, texto, botaoHtml;
-  if(item.status==='nao_contratado'){
+  // Cliente direto não tem teste grátis (decisão confirmada com o Eduardo) — achado ao vivo: esse
+  // paywall genérico (usado sempre que uma página/aba tenta abrir um módulo não contratado) mostrava
+  // "Iniciar teste grátis" mesmo pra quem nunca vai conseguir (o backend já bloqueia, mas a tela
+  // prometia um botão que só ia dar erro) — manda direto pra Assinatura nesse caso.
+  if(item.status==='nao_contratado' && item.semTesteGratis){
+    titulo = 'Você ainda não contratou este módulo';
+    texto = `Contrate direto por ${preco}/mês via Pix/boleto/cartão.`;
+    botaoHtml = `<button class="btn primary" id="paywallAcao" data-acao="assinatura">Ir para Assinatura</button>`;
+  } else if(item.status==='nao_contratado'){
     titulo = 'Você ainda não contratou este módulo';
     texto = `Teste grátis por 3 dias, sem compromisso. Depois do teste, ${preco}/mês.`;
     botaoHtml = `<button class="btn primary" id="paywallAcao" data-acao="testar" data-chave="${item.chave}">Iniciar teste grátis de 3 dias</button>`;
@@ -11661,6 +11670,7 @@ async function pageMinhaNfse(){
       <div class="tab" data-tab="notas">Notas emitidas</div>
       <div class="tab" data-tab="modelos">Modelos</div>
       <div class="tab" data-tab="config">Configuração</div>
+      <div class="tab" data-tab="automatica">Emissão Automática</div>
     </div>
     <div id="nfseContent"></div>
   `;
@@ -11672,6 +11682,7 @@ function renderMinhaNfseTabs(){
   if(MINHA_NFSE_TAB==='notas') renderMinhaNfseNotas();
   else if(MINHA_NFSE_TAB==='modelos') renderMinhaNfseModelos();
   else if(MINHA_NFSE_TAB==='config') renderMinhaNfseConfig();
+  else if(MINHA_NFSE_TAB==='automatica') renderMinhaNfseAutomatica();
   else renderMinhaNfseEmitir();
 }
 async function renderMinhaNfseConfig(){
@@ -11778,6 +11789,287 @@ async function renderMinhaNfseConfig(){
       toast('Configuração salva.','ok');
       renderMinhaNfseConfig();
     }catch(err){ toast(err.message,'err'); }
+  });
+}
+// ===================== Emissão Automática (self-service, módulo "nfse_automatica") =====================
+async function renderMinhaNfseAutomatica(){
+  const item = await moduloDaChave('nfse_automatica');
+  const box = document.getElementById('nfseContent');
+  if(!item || !item.acesso){
+    box.innerHTML = moduloPaywallHtml(item);
+    ligarModuloPaywall(box, renderMinhaNfseAutomatica);
+    return;
+  }
+  const [{ items: clientes }, agendamento, emailCfg, { items: modelos }, { items: log }] = await Promise.all([
+    api('/minha-empresa/clientes-recorrentes'),
+    api('/minha-empresa/agendamento'),
+    api('/minha-empresa/email-config'),
+    api('/nfse/minha-empresa/modelos'),
+    api('/minha-empresa/agendamento/log'),
+  ]);
+  const modelosAtivos = modelos.filter(m=>m.ativo);
+  box.innerHTML = `
+    <div class="card">
+      <h3>Clientes recorrentes</h3>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-4px;">Quem você cobra todo mês automaticamente — a nota sai sozinha na data configurada em "Agendamento" abaixo.</p>
+      <button class="btn primary" id="btnNovoClienteRecorrente" style="margin-bottom:10px;">+ Novo cliente recorrente</button>
+      <div style="overflow-x:auto;">
+      <table class="data-table">
+        <thead><tr><th>Nome</th><th>CPF/CNPJ</th><th>E-mail</th><th>Serviços</th><th>Ativo</th><th></th></tr></thead>
+        <tbody id="clientesRecorrentesBody"></tbody>
+      </table>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Agendamento</h3>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-4px;">Quando a rotina dispara sozinha, emitindo uma nota pra cada serviço ativo de cada cliente recorrente ativo.</p>
+      <label class="checkbox-row"><input type="checkbox" id="autoAtivo" ${agendamento.ativo?'checked':''}> Rotina ativa (dispara sozinha no dia/hora configurado, todo mês)</label>
+      <div class="row" style="margin-top:10px;">
+        <div class="field" style="width:140px;"><label>Dia do mês</label><input id="autoDiaMes" type="number" min="1" max="28" value="${agendamento.diaMes}"></div>
+        <div class="field" style="width:140px;"><label>Hora</label><input id="autoHora" type="number" min="0" max="23" value="${agendamento.hora}"></div>
+        <div class="field" style="width:140px;"><label>Minuto</label><input id="autoMinuto" type="number" min="0" max="59" value="${agendamento.minuto}"></div>
+      </div>
+      ${agendamento.ultimaExecucaoCompetencia? `<p style="font-size:12.5px; color:var(--ink-soft);">Última execução: competência ${esc(agendamento.ultimaExecucaoCompetencia)}.</p>`:''}
+      <div class="row" style="margin-top:6px;">
+        <button class="btn primary" id="btnSalvarAgendamento">Salvar agendamento</button>
+        <button class="btn" id="btnExecutarAgora">Executar agora</button>
+      </div>
+      <div style="margin-top:16px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Histórico</div>
+      <div style="overflow-x:auto;">
+      <table class="data-table">
+        <thead><tr><th>Competência</th><th>Cliente</th><th>Resultado</th><th>Quando</th></tr></thead>
+        <tbody id="autoLogBody"></tbody>
+      </table>
+      </div>
+    </div>
+    <div class="card">
+      <h3>E-mail de envio</h3>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-4px;">A NFS-e emitida automaticamente é enviada por e-mail pro seu cliente usando ESTA conta — configure o e-mail/senha da SUA empresa (não é o seu login do sistema).</p>
+      <div class="row">
+        <div class="field grow"><label>Servidor SMTP</label><input id="autoSmtpHost" value="${esc(emailCfg.smtpHost||'')}" placeholder="smtp.gmail.com"></div>
+        <div class="field" style="width:120px;"><label>Porta</label><input id="autoSmtpPort" type="number" value="${emailCfg.smtpPort||587}"></div>
+        <div class="field" style="width:160px;"><label>Segurança</label>
+          <select id="autoSmtpSecure">
+            <option value="0" ${!emailCfg.smtpSecure?'selected':''}>STARTTLS (porta 587)</option>
+            <option value="1" ${emailCfg.smtpSecure?'selected':''}>SSL/TLS (porta 465)</option>
+          </select>
+        </div>
+      </div>
+      <div class="row">
+        <div class="field grow"><label>Usuário (geralmente seu e-mail)</label><input id="autoSmtpUser" value="${esc(emailCfg.smtpUser||'')}"></div>
+        <div class="field grow"><label>Senha</label><input id="autoSmtpPassword" type="password" placeholder="${emailCfg.configurado?'•••••••• (deixe em branco pra manter)':''}"></div>
+      </div>
+      <div class="row">
+        <div class="field grow"><label>Nome do remetente (opcional)</label><input id="autoFromName" value="${esc(emailCfg.fromName||'')}"></div>
+        <div class="field grow"><label>E-mail do remetente (opcional — padrão é o usuário acima)</label><input id="autoFromEmail" value="${esc(emailCfg.fromEmail||'')}"></div>
+      </div>
+      <p style="font-size:11.5px; color:var(--ink-soft);">Gmail/Outlook exigem uma "senha de aplicativo" (não a senha normal da conta) — procure por "senha de app" nas configurações de segurança do seu e-mail.</p>
+      <div class="row">
+        <button class="btn primary" id="btnSalvarEmailAuto">Salvar e-mail</button>
+        <button class="btn" id="btnTestarEmailAuto" ${emailCfg.configurado?'':'disabled'}>Enviar e-mail de teste</button>
+      </div>
+      <div id="autoEmailResultado" style="margin-top:10px;"></div>
+    </div>
+  `;
+
+  function desenharClientes(){
+    document.getElementById('clientesRecorrentesBody').innerHTML = clientes.length? clientes.map(c=>`
+      <tr data-id="${c.id}">
+        <td>${esc(c.nome)}</td>
+        <td>${c.documento?esc(fmtCnpjCpf(c.documento)):'—'}</td>
+        <td>${esc(c.email||'—')}</td>
+        <td>${c.itens.length} serviço(s) — ${fmtMoney(c.itens.reduce((a,i)=>a+(i.ativo?i.valorServico:0),0))}/mês</td>
+        <td><span class="tag ${c.ativo?'ok':'muted'}">${c.ativo?'Sim':'Não'}</span></td>
+        <td style="text-align:right; white-space:nowrap;">
+          <button class="btn small" data-act="servicos">Serviços</button>
+          <button class="btn small" data-act="editar">Editar</button>
+        </td>
+      </tr>
+    `).join('') : '<tr><td colspan="6"><div class="empty-state">Nenhum cliente recorrente cadastrado ainda.</div></td></tr>';
+    document.getElementById('clientesRecorrentesBody').querySelectorAll('[data-act="editar"]').forEach(b=>b.addEventListener('click', e=>{
+      const id = Number(e.target.closest('tr').dataset.id);
+      clienteRecorrenteModal(clientes.find(c=>c.id===id));
+    }));
+    document.getElementById('clientesRecorrentesBody').querySelectorAll('[data-act="servicos"]').forEach(b=>b.addEventListener('click', e=>{
+      const id = Number(e.target.closest('tr').dataset.id);
+      clienteRecorrenteServicosModal(clientes.find(c=>c.id===id), modelosAtivos);
+    }));
+  }
+  desenharClientes();
+  document.getElementById('btnNovoClienteRecorrente').addEventListener('click', ()=>clienteRecorrenteModal(null));
+
+  function desenharLog(logItens){
+    document.getElementById('autoLogBody').innerHTML = logItens.length? logItens.map(l=>`
+      <tr>
+        <td>${esc(l.competencia)}</td>
+        <td>${esc(l.clienteNome||'—')}</td>
+        <td><span class="tag ${l.sucesso?'ok':'bad'}">${l.sucesso?'Emitida':'Falhou'}</span> <span style="font-size:11.5px; color:var(--ink-soft);">${esc(l.mensagem||'')}</span></td>
+        <td>${fmtDateHora(l.executadoEm)}</td>
+      </tr>
+    `).join('') : '<tr><td colspan="4"><div class="empty-state">Ainda não rodou nenhuma vez.</div></td></tr>';
+  }
+  desenharLog(log);
+  async function recarregarLogAutomatica(){
+    const { items } = await api('/minha-empresa/agendamento/log');
+    desenharLog(items);
+  }
+
+  function clienteRecorrenteModal(cliente){
+    openModal(`
+      <h3>${cliente?'Editar':'Novo'} cliente recorrente</h3>
+      <div class="row">
+        <div class="field grow"><label>Nome</label><input id="crNome" value="${cliente?esc(cliente.nome):''}"></div>
+        <div class="field" style="width:200px;"><label>CPF/CNPJ</label><input id="crDocumento" value="${cliente&&cliente.documento?esc(fmtCnpjCpf(cliente.documento)):''}"></div>
+      </div>
+      <div class="row">
+        <div class="field grow"><label>E-mail (recebe a nota automaticamente)</label><input id="crEmail" type="email" value="${cliente?esc(cliente.email||''):''}"></div>
+        <div class="field" style="width:140px;"><label>CEP (opcional)</label><input id="crCep" value="${cliente?esc(cliente.cep||''):''}"></div>
+      </div>
+      ${cliente?`<label class="checkbox-row"><input type="checkbox" id="crAtivo" ${cliente.ativo?'checked':''}> Ativo (participa da cobrança automática)</label>`:''}
+      <div class="modal-actions">
+        <button class="btn" id="crCancel">Cancelar</button>
+        <button class="btn primary" id="crSalvar">${cliente?'Salvar':'Criar'}</button>
+      </div>
+    `, '560px');
+    ligarTravaDocumento(document.getElementById('crDocumento'), 'cnpj');
+    document.getElementById('crCancel').addEventListener('click', closeModal);
+    document.getElementById('crSalvar').addEventListener('click', async ()=>{
+      const nome = document.getElementById('crNome').value.trim();
+      if(!nome){ toast('Informe o nome.','err'); return; }
+      const body = {
+        nome,
+        documento: document.getElementById('crDocumento').value.trim()||null,
+        email: document.getElementById('crEmail').value.trim()||null,
+        cep: document.getElementById('crCep').value.trim()||null,
+      };
+      if(cliente) body.ativo = document.getElementById('crAtivo').checked;
+      try{
+        if(cliente) await api('/minha-empresa/clientes-recorrentes/'+cliente.id, { method:'PUT', body });
+        else await api('/minha-empresa/clientes-recorrentes', { method:'POST', body });
+        closeModal(); toast('Cliente recorrente salvo.','ok'); renderMinhaNfseAutomatica();
+      }catch(e){ toast(e.message,'err'); }
+    });
+  }
+
+  function clienteRecorrenteServicosModal(cliente, modelosAtivos){
+    function montarHtml(itens){
+      return `
+        <h3>Serviços — ${esc(cliente.nome)}</h3>
+        <div style="overflow-x:auto;">
+        <table class="data-table">
+          <thead><tr><th>Modelo</th><th>Descrição</th><th>Valor</th><th>Ativo</th><th></th></tr></thead>
+          <tbody id="crsBody">
+            ${itens.length? itens.map(i=>{
+              const modelo = modelosAtivos.find(m=>m.id===i.modeloId);
+              return `<tr data-id="${i.id}">
+                <td>${esc(modelo?modelo.nome:'—')}</td>
+                <td>${esc(i.descricaoServico)}</td>
+                <td>${fmtMoney(i.valorServico)}</td>
+                <td><span class="tag ${i.ativo?'ok':'muted'}">${i.ativo?'Sim':'Não'}</span></td>
+                <td style="text-align:right; white-space:nowrap;">
+                  <button class="btn small" data-act="toggle">${i.ativo?'Desativar':'Ativar'}</button>
+                  <button class="btn small" data-act="excluir" style="color:var(--debit);">Excluir</button>
+                </td>
+              </tr>`;
+            }).join('') : '<tr><td colspan="5"><div class="empty-state">Nenhum serviço ainda.</div></td></tr>'}
+          </tbody>
+        </table>
+        </div>
+        <div style="margin-top:16px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Adicionar serviço</div>
+        <div class="row">
+          <div class="field grow"><label>Modelo de serviço</label>${comboSelectHtml('crsModeloCombo','Digite para buscar…')}</div>
+          <div class="field" style="width:140px;"><label>Valor</label><input id="crsValor" type="number" step="0.01" min="0"></div>
+          <button class="btn" id="btnCrsAdd" style="margin-bottom:5px;">+ Adicionar</button>
+        </div>
+        <div class="field"><label>Descrição (opcional — "{{mes_competencia}}" vira o mês/ano na hora de emitir)</label><input id="crsDescricao" placeholder="Referente ao Mês {{mes_competencia}}"></div>
+        <div class="modal-actions"><button class="btn primary" onclick="closeModal()">Fechar</button></div>
+      `;
+    }
+    async function recarregar(){
+      const { items } = await api('/minha-empresa/clientes-recorrentes');
+      const atualizado = items.find(c=>c.id===cliente.id);
+      cliente = atualizado || cliente;
+      openModal(montarHtml(cliente.itens), '720px');
+      ligar();
+    }
+    function ligar(){
+      setupComboSelect('crsModeloCombo', modelosAtivos.map(m=>({id:m.id, label:m.nome})), ()=>{});
+      document.getElementById('btnCrsAdd').addEventListener('click', async ()=>{
+        const modeloId = Number(document.querySelector('#crsModeloCombo .combo-value').value);
+        const valorServico = Number(document.getElementById('crsValor').value);
+        if(!modeloId || !valorServico){ toast('Escolha o modelo e informe o valor.','err'); return; }
+        const descricaoServico = document.getElementById('crsDescricao').value.trim()||undefined;
+        try{
+          await api('/minha-empresa/clientes-recorrentes/'+cliente.id+'/itens', { method:'POST', body:{ modeloId, valorServico, descricaoServico } });
+          toast('Serviço adicionado.','ok');
+          await recarregar();
+          renderMinhaNfseAutomatica();
+        }catch(e){ toast(e.message,'err'); }
+      });
+      document.getElementById('crsBody').querySelectorAll('[data-act="toggle"]').forEach(b=>b.addEventListener('click', async e=>{
+        const id = Number(e.target.closest('tr').dataset.id);
+        const i = cliente.itens.find(x=>x.id===id);
+        try{ await api('/minha-empresa/clientes-recorrentes/itens/'+id, { method:'PUT', body:{ ativo: !i.ativo } }); await recarregar(); renderMinhaNfseAutomatica(); }
+        catch(err){ toast(err.message,'err'); }
+      }));
+      document.getElementById('crsBody').querySelectorAll('[data-act="excluir"]').forEach(b=>b.addEventListener('click', async e=>{
+        const id = Number(e.target.closest('tr').dataset.id);
+        if(!confirmar('Excluir este serviço? Essa ação não pode ser desfeita.')) return;
+        try{ await api('/minha-empresa/clientes-recorrentes/itens/'+id, { method:'DELETE' }); await recarregar(); renderMinhaNfseAutomatica(); }
+        catch(err){ toast(err.message,'err'); }
+      }));
+    }
+    openModal(montarHtml(cliente.itens), '720px');
+    ligar();
+  }
+
+  document.getElementById('btnSalvarAgendamento').addEventListener('click', async ()=>{
+    const body = {
+      ativo: document.getElementById('autoAtivo').checked,
+      diaMes: Number(document.getElementById('autoDiaMes').value)||1,
+      hora: Number(document.getElementById('autoHora').value)||0,
+      minuto: Number(document.getElementById('autoMinuto').value)||0,
+    };
+    try{ await api('/minha-empresa/agendamento', { method:'PUT', body }); toast('Agendamento salvo.','ok'); }
+    catch(e){ toast(e.message,'err'); }
+  });
+  document.getElementById('btnExecutarAgora').addEventListener('click', async ()=>{
+    if(!confirm('Isso vai emitir de verdade a NFS-e de cada serviço ativo dos seus clientes recorrentes ativos, agora — não é uma simulação. Confirma?')) return;
+    const btn = document.getElementById('btnExecutarAgora');
+    btn.disabled = true; btn.textContent = 'Executando…';
+    try{
+      toast('Executando… isso pode levar um instante.','ok');
+      const r = await api('/minha-empresa/agendamento/executar-agora', { method:'POST' });
+      if(r.processados===0) toast(r.motivo||'Nada foi processado.','err');
+      else toast(`Execução concluída: ${r.sucesso} emitida(s), ${r.falha} com falha, de ${r.processados} serviço(s) processado(s) — confira o histórico abaixo.`, r.falha>0?'err':'ok');
+      await recarregarLogAutomatica();
+    }catch(e){ toast(e.message,'err'); }
+    finally{ btn.disabled = false; btn.textContent = 'Executar agora'; }
+  });
+
+  document.getElementById('btnSalvarEmailAuto').addEventListener('click', async ()=>{
+    const body = {
+      smtpHost: document.getElementById('autoSmtpHost').value.trim(),
+      smtpPort: Number(document.getElementById('autoSmtpPort').value)||587,
+      smtpSecure: document.getElementById('autoSmtpSecure').value==='1',
+      smtpUser: document.getElementById('autoSmtpUser').value.trim(),
+      smtpPassword: document.getElementById('autoSmtpPassword').value||undefined,
+      fromName: document.getElementById('autoFromName').value.trim(),
+      fromEmail: document.getElementById('autoFromEmail').value.trim(),
+    };
+    if(!body.smtpHost || !body.smtpUser){ toast('Preencha pelo menos o servidor SMTP e o usuário.','err'); return; }
+    try{ await api('/minha-empresa/email-config', { method:'PUT', body }); toast('E-mail salvo.','ok'); renderMinhaNfseAutomatica(); }
+    catch(e){ toast(e.message,'err'); }
+  });
+  document.getElementById('btnTestarEmailAuto').addEventListener('click', async ()=>{
+    const btn = document.getElementById('btnTestarEmailAuto');
+    const resultado = document.getElementById('autoEmailResultado');
+    btn.disabled = true; btn.textContent = 'Enviando…';
+    try{
+      await api('/minha-empresa/email-config/testar', { method:'POST' });
+      resultado.innerHTML = `<span class="tag ok">E-mail de teste enviado — confira sua caixa de entrada.</span>`;
+    }catch(e){ resultado.innerHTML = `<span class="tag bad">${esc(e.message)}</span>`; }
+    finally{ btn.disabled = false; btn.textContent = 'Enviar e-mail de teste'; }
   });
 }
 async function renderMinhaNfseModelos(){

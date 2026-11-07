@@ -907,6 +907,65 @@ sqlite.exec(`
     executado_em TEXT DEFAULT (datetime('now'))
   );
 
+  -- ---- Emissão Automática self-service (módulo "nfse_automatica", pra cliente direto) ----
+  -- Paralelo ao bloco acima (rotina do próprio escritório) — nunca compartilha tabela/linha com ele.
+  -- Prestador é sempre a própria empresa, por isso nenhuma das tabelas abaixo precisa de
+  -- "empresa_prestador_id": o empresa_id já É quem emite.
+  CREATE TABLE IF NOT EXISTS cliente_email_config (
+    empresa_id INTEGER PRIMARY KEY REFERENCES empresas(id) ON DELETE CASCADE,
+    smtp_host TEXT,
+    smtp_port INTEGER,
+    smtp_secure INTEGER,
+    smtp_user TEXT,
+    smtp_password TEXT,
+    from_name TEXT,
+    from_email TEXT,
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+  -- "Meus clientes recorrentes" — quem o cliente direto cobra todo mês. Nunca é uma linha da tabela
+  -- empresas (aquela tabela é o cadastro de clientes CONTÁBEIS do escritório, outro conceito).
+  CREATE TABLE IF NOT EXISTS cliente_recorrentes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+    nome TEXT NOT NULL,
+    documento TEXT,
+    email TEXT,
+    cep TEXT,
+    ativo INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+  -- Um item = um serviço = uma NFS-e por competência, igual nfse_agendamento_itens (um cliente
+  -- recorrente pode ter mais de um serviço cobrado separadamente).
+  CREATE TABLE IF NOT EXISTS cliente_recorrente_itens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cliente_recorrente_id INTEGER NOT NULL REFERENCES cliente_recorrentes(id) ON DELETE CASCADE,
+    modelo_id INTEGER REFERENCES nfse_modelos(id),
+    descricao_servico TEXT NOT NULL DEFAULT 'Referente ao Mês {{mes_competencia}}',
+    valor_servico REAL,
+    ativo INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS cliente_agendamento_config (
+    empresa_id INTEGER PRIMARY KEY REFERENCES empresas(id) ON DELETE CASCADE,
+    ativo INTEGER NOT NULL DEFAULT 0,
+    dia_mes INTEGER NOT NULL DEFAULT 1,
+    hora INTEGER NOT NULL DEFAULT 8,
+    minuto INTEGER NOT NULL DEFAULT 0,
+    ultima_execucao_competencia TEXT,
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS cliente_agendamento_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+    item_id INTEGER REFERENCES cliente_recorrente_itens(id),
+    competencia TEXT NOT NULL,
+    sucesso INTEGER NOT NULL,
+    emissao_id INTEGER REFERENCES nfse_emissoes(id),
+    mensagem TEXT,
+    executado_em TEXT DEFAULT (datetime('now'))
+  );
+
   -- Pedido de sincronização imediata de empresas (botão "Atualizar Empresas") — o agente local
   -- atende isso no ciclo rápido, sem esperar a sincronia automática de 60 em 60 minutos.
   CREATE TABLE IF NOT EXISTS dominio_sync_jobs (
@@ -2056,6 +2115,9 @@ sqlite.exec(`INSERT OR IGNORE INTO modulos_catalogo (chave, nome, valor_mensal) 
 // que o SuperAdmin já tenha feito em Módulos da plataforma.
 sqlite.exec(`UPDATE modulos_catalogo SET nome = 'Módulo NFS-e' WHERE chave = 'nfse' AND nome = 'NFS-e'`);
 sqlite.exec(`UPDATE modulos_catalogo SET nome = 'Módulo Financeiro' WHERE chave = 'financeiro' AND nome = 'Financeiro'`);
+// Emissão Automática (cliente direto cobra os PRÓPRIOS clientes todo mês sozinho, com e-mail de envio
+// próprio) — paralelo à rotina automática do escritório (nfse_agendamento_config), nunca a mesma coisa.
+sqlite.exec(`INSERT OR IGNORE INTO modulos_catalogo (chave, nome, valor_mensal) VALUES ('nfse_automatica', 'Módulo Emissão Automática', 0)`);
 // Canais de envio das notas vendidos à empresa-cliente (Fase 3). Nascem com preço 0 = de graça, sem
 // travar nada (comportamento atual). Quando o SuperAdmin põe preço > 0, os clientes de hoje são
 // "grandfathered" (ver PUT /api/super/modulos-clientes) e só os novos passam a precisar contratar.
@@ -2897,6 +2959,14 @@ sqlite.exec(`DROP TABLE IF EXISTS fgts_sync_jobs`);
   }
   // (a coluna acima só existe a partir daqui — o índice tem que vir depois do ALTER TABLE, não antes)
   sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_nfse_emissoes_agendamento_competencia ON nfse_emissoes(agendamento_item_id, competencia);`);
+  // Coluna IRMÃ, separada, pra rotina de Emissão Automática do cliente direto (cliente_recorrente_itens)
+  // — nunca reaproveitar agendamento_item_id pra isso: são sequências autoincrement independentes, um
+  // id=7 de nfse_agendamento_itens (escritório) e um id=7 de cliente_recorrente_itens (cliente direto)
+  // coincidiriam na mesma coluna e quebrariam a trava de "já emitiu este mês" de um jeito cruzado.
+  if (!colsEmissoes.some((c) => c.name === "cliente_recorrente_item_id")) {
+    sqlite.exec(`ALTER TABLE nfse_emissoes ADD COLUMN cliente_recorrente_item_id INTEGER REFERENCES cliente_recorrente_itens(id)`);
+  }
+  sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_nfse_emissoes_cliente_recorrente_competencia ON nfse_emissoes(cliente_recorrente_item_id, competencia);`);
   const colsLog = sqlite.prepare(`PRAGMA table_info(nfse_agendamento_log)`).all() as any[];
   if (!colsLog.some((c) => c.name === "item_id")) {
     sqlite.exec(`ALTER TABLE nfse_agendamento_log ADD COLUMN item_id INTEGER REFERENCES nfse_agendamento_itens(id)`);
@@ -3536,6 +3606,44 @@ async function enviarEmail(escritorioId: number, opts: { to: string[]; subject: 
   const fallback = escritorioId === 1;
   const fromName = c.from_name || (fallback && process.env.SMTP_FROM_NAME) || "Simples Contábeis";
   const fromEmail = c.from_email || (fallback && process.env.SMTP_FROM_EMAIL) || c.smtp_user || (fallback && process.env.SMTP_USER);
+  await t.sendMail({
+    from: `"${fromName}" <${fromEmail}>`,
+    to: opts.to.join(", "),
+    subject: opts.subject,
+    text: opts.text,
+    attachments: opts.attachments,
+  });
+}
+
+// ===================== E-MAIL POR EMPRESA (cliente direto — Emissão Automática) =====================
+// Espelho exato das funções de e-mail corporativo acima, só que por empresa em vez de por escritório —
+// usado pela Emissão Automática self-service, pra sair de verdade pelo e-mail do próprio cliente
+// direto, não pelo e-mail do escritório Simples Contábeis. Sem fallback de .env (sempre específico da
+// empresa, nunca existiu config "global" aqui).
+function getEmailConfigEmpresa(empresaId: number): any {
+  return sqlite.prepare(`SELECT * FROM cliente_email_config WHERE empresa_id = ?`).get(empresaId) || {};
+}
+function emailConfiguradoEmpresa(empresaId: number): boolean {
+  const c = getEmailConfigEmpresa(empresaId);
+  return !!(c.smtp_host && c.smtp_user && c.smtp_password);
+}
+function getTransporterEmpresa(empresaId: number) {
+  if (!emailConfiguradoEmpresa(empresaId)) return null;
+  const c = getEmailConfigEmpresa(empresaId);
+  return nodemailer.createTransport({
+    host: c.smtp_host,
+    port: Number(c.smtp_port || 587),
+    secure: !!c.smtp_secure,
+    auth: { user: c.smtp_user, pass: c.smtp_password },
+  });
+}
+async function enviarEmailComoEmpresa(empresaId: number, opts: { to: string[]; subject: string; text: string; attachments?: { filename: string; content: Buffer }[] }) {
+  const t = getTransporterEmpresa(empresaId);
+  if (!t) throw new Error("E-mail de envio não configurado — configure em NFS-e > Emissão Automática.");
+  const c = getEmailConfigEmpresa(empresaId);
+  const empresa = sqlite.prepare(`SELECT nome FROM empresas WHERE id = ?`).get(empresaId) as any;
+  const fromName = c.from_name || empresa?.nome || "";
+  const fromEmail = c.from_email || c.smtp_user;
   await t.sendMail({
     from: `"${fromName}" <${fromEmail}>`,
     to: opts.to.join(", "),
@@ -4666,6 +4774,174 @@ app.put("/api/minha-empresa", requireCliente, (req, res) => {
   if (regimeTributario !== undefined) envioAutoAtribuirPorRegime(empresaId, existing.escritorio_id, regimeTributarioFinal);
   garantirContatosDeTelefoneCadastral(empresaId);
   res.json({ ok: true });
+});
+
+// ======================= Emissão Automática self-service (módulo "nfse_automatica") =======================
+// requireModuloAtivo é definida mais abaixo (perto de nfseExecutarAgendamentoAutomatico) mas é
+// function declaration — hoisted, pode ser referenciada aqui sem problema.
+// Exige os DOIS módulos ('nfse' + 'nfse_automatica') — achado ao vivo testando: um cliente que comprou
+// só "nfse_automatica" conseguia cadastrar clientes recorrentes e ligar o agendamento, mas a tela de
+// configurar o certificado/município (NFS-e > Configuração) fica atrás do módulo 'nfse' — sem ele a
+// rotina ia falhar todo mês sem nenhum certificado configurado. Emissão Automática não faz sentido sem
+// a base de NFS-e já funcionando.
+app.get("/api/minha-empresa/email-config", requireCliente, requireModuloAtivo("nfse"), requireModuloAtivo("nfse_automatica"), (req, res) => {
+  const empresaId = (req as any).user.empresaId;
+  const c = sqlite
+    .prepare(`SELECT smtp_host as smtpHost, smtp_port as smtpPort, smtp_secure as smtpSecure, smtp_user as smtpUser, from_name as fromName, from_email as fromEmail FROM cliente_email_config WHERE empresa_id = ?`)
+    .get(empresaId) as any;
+  res.json({ smtpHost: c?.smtpHost || "", smtpPort: c?.smtpPort || 587, smtpSecure: !!c?.smtpSecure, smtpUser: c?.smtpUser || "", fromName: c?.fromName || "", fromEmail: c?.fromEmail || "", configurado: emailConfiguradoEmpresa(empresaId) });
+});
+app.put("/api/minha-empresa/email-config", requireCliente, requireModuloAtivo("nfse"), requireModuloAtivo("nfse_automatica"), (req, res) => {
+  const empresaId = (req as any).user.empresaId;
+  const { smtpHost, smtpPort, smtpSecure, smtpUser, smtpPassword, fromName, fromEmail } = req.body || {};
+  if (!smtpHost || !smtpUser) return res.status(400).json({ error: "Preencha pelo menos o servidor SMTP e o usuário." });
+  // Senha em branco = mantém a atual (mesmo padrão já usado pra certificado/usuário em outras telas).
+  const existente = sqlite.prepare(`SELECT smtp_password FROM cliente_email_config WHERE empresa_id = ?`).get(empresaId) as any;
+  sqlite
+    .prepare(
+      `INSERT INTO cliente_email_config (empresa_id, smtp_host, smtp_port, smtp_secure, smtp_user, smtp_password, from_name, from_email, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(empresa_id) DO UPDATE SET smtp_host=excluded.smtp_host, smtp_port=excluded.smtp_port, smtp_secure=excluded.smtp_secure,
+         smtp_user=excluded.smtp_user, smtp_password=excluded.smtp_password, from_name=excluded.from_name, from_email=excluded.from_email, updated_at=datetime('now')`
+    )
+    .run(empresaId, smtpHost.trim(), Number(smtpPort) || 587, smtpSecure ? 1 : 0, smtpUser.trim(), smtpPassword || existente?.smtp_password || null, (fromName || "").trim() || null, (fromEmail || "").trim() || null);
+  res.json({ ok: true });
+});
+app.post("/api/minha-empresa/email-config/testar", requireCliente, requireModuloAtivo("nfse"), requireModuloAtivo("nfse_automatica"), async (req, res) => {
+  const user = (req as any).user;
+  try {
+    await enviarEmailComoEmpresa(user.empresaId, {
+      to: [user.email],
+      subject: "Teste de envio — Simples Contábeis",
+      text: "Se você recebeu este e-mail, a configuração de envio da Emissão Automática está funcionando corretamente.",
+    });
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// ---- "Meus clientes recorrentes" (quem o cliente direto cobra todo mês) ----
+app.get("/api/minha-empresa/clientes-recorrentes", requireCliente, requireModuloAtivo("nfse"), requireModuloAtivo("nfse_automatica"), (req, res) => {
+  const empresaId = (req as any).user.empresaId;
+  const items = sqlite.prepare(`SELECT id, nome, documento, email, cep, ativo FROM cliente_recorrentes WHERE empresa_id = ? ORDER BY nome`).all(empresaId) as any[];
+  const comItens = items.map((c) => ({
+    ...c,
+    ativo: !!c.ativo,
+    itens: (sqlite.prepare(`SELECT id, modelo_id as modeloId, descricao_servico as descricaoServico, valor_servico as valorServico, ativo FROM cliente_recorrente_itens WHERE cliente_recorrente_id = ? ORDER BY id`).all(c.id) as any[]).map((i) => ({ ...i, ativo: !!i.ativo })),
+  }));
+  res.json({ items: comItens });
+});
+app.post("/api/minha-empresa/clientes-recorrentes", requireCliente, requireModuloAtivo("nfse"), requireModuloAtivo("nfse_automatica"), (req, res) => {
+  const empresaId = (req as any).user.empresaId;
+  const { nome, documento, email, cep } = req.body || {};
+  if (!nome) return res.status(400).json({ error: "Informe o nome." });
+  const info = sqlite.prepare(`INSERT INTO cliente_recorrentes (empresa_id, nome, documento, email, cep) VALUES (?, ?, ?, ?, ?)`).run(empresaId, nome.trim(), (documento || "").replace(/\D/g, "") || null, (email || "").trim() || null, (cep || "").trim() || null);
+  res.json({ id: Number(info.lastInsertRowid) });
+});
+app.put("/api/minha-empresa/clientes-recorrentes/:id", requireCliente, requireModuloAtivo("nfse"), requireModuloAtivo("nfse_automatica"), (req, res) => {
+  const empresaId = (req as any).user.empresaId;
+  const id = Number(req.params.id);
+  const existente = sqlite.prepare(`SELECT 1 FROM cliente_recorrentes WHERE id = ? AND empresa_id = ?`).get(id, empresaId);
+  if (!existente) return res.status(404).json({ error: "Cliente recorrente não encontrado." });
+  const { nome, documento, email, cep, ativo } = req.body || {};
+  if (!nome) return res.status(400).json({ error: "Informe o nome." });
+  sqlite
+    .prepare(`UPDATE cliente_recorrentes SET nome=?, documento=?, email=?, cep=?, ativo=?, updated_at=datetime('now') WHERE id=?`)
+    .run(nome.trim(), (documento || "").replace(/\D/g, "") || null, (email || "").trim() || null, (cep || "").trim() || null, ativo === false ? 0 : 1, id);
+  res.json({ ok: true });
+});
+app.delete("/api/minha-empresa/clientes-recorrentes/:id", requireCliente, requireModuloAtivo("nfse"), requireModuloAtivo("nfse_automatica"), (req, res) => {
+  const empresaId = (req as any).user.empresaId;
+  const id = Number(req.params.id);
+  const existente = sqlite.prepare(`SELECT 1 FROM cliente_recorrentes WHERE id = ? AND empresa_id = ?`).get(id, empresaId);
+  if (!existente) return res.status(404).json({ error: "Cliente recorrente não encontrado." });
+  sqlite.prepare(`DELETE FROM cliente_recorrentes WHERE id = ?`).run(id);
+  res.json({ ok: true });
+});
+app.post("/api/minha-empresa/clientes-recorrentes/:id/itens", requireCliente, requireModuloAtivo("nfse"), requireModuloAtivo("nfse_automatica"), (req, res) => {
+  const empresaId = (req as any).user.empresaId;
+  const clienteId = Number(req.params.id);
+  const cliente = sqlite.prepare(`SELECT 1 FROM cliente_recorrentes WHERE id = ? AND empresa_id = ?`).get(clienteId, empresaId);
+  if (!cliente) return res.status(404).json({ error: "Cliente recorrente não encontrado." });
+  const { modeloId, descricaoServico, valorServico } = req.body || {};
+  if (!modeloId || !valorServico) return res.status(400).json({ error: "Escolha o modelo de serviço e informe o valor." });
+  const modelo = sqlite.prepare(`SELECT 1 FROM nfse_modelos WHERE id = ? AND empresa_id = ?`).get(modeloId, empresaId);
+  if (!modelo) return res.status(400).json({ error: "Modelo de serviço inválido." });
+  const info = sqlite
+    .prepare(`INSERT INTO cliente_recorrente_itens (cliente_recorrente_id, modelo_id, descricao_servico, valor_servico) VALUES (?, ?, ?, ?)`)
+    .run(clienteId, modeloId, (descricaoServico || "Referente ao Mês {{mes_competencia}}").trim(), Number(valorServico));
+  res.json({ id: Number(info.lastInsertRowid) });
+});
+app.put("/api/minha-empresa/clientes-recorrentes/itens/:itemId", requireCliente, requireModuloAtivo("nfse"), requireModuloAtivo("nfse_automatica"), (req, res) => {
+  const empresaId = (req as any).user.empresaId;
+  const itemId = Number(req.params.itemId);
+  const item = sqlite
+    .prepare(`SELECT i.* FROM cliente_recorrente_itens i JOIN cliente_recorrentes c ON c.id = i.cliente_recorrente_id WHERE i.id = ? AND c.empresa_id = ?`)
+    .get(itemId, empresaId) as any;
+  if (!item) return res.status(404).json({ error: "Item não encontrado." });
+  const { modeloId, descricaoServico, valorServico, ativo } = req.body || {};
+  if (modeloId) {
+    const modelo = sqlite.prepare(`SELECT 1 FROM nfse_modelos WHERE id = ? AND empresa_id = ?`).get(modeloId, empresaId);
+    if (!modelo) return res.status(400).json({ error: "Modelo de serviço inválido." });
+  }
+  sqlite
+    .prepare(`UPDATE cliente_recorrente_itens SET modelo_id=?, descricao_servico=?, valor_servico=?, ativo=?, updated_at=datetime('now') WHERE id=?`)
+    .run(modeloId || item.modelo_id, descricaoServico !== undefined ? descricaoServico : item.descricao_servico, valorServico != null ? Number(valorServico) : item.valor_servico, ativo === false ? 0 : 1, itemId);
+  res.json({ ok: true });
+});
+app.delete("/api/minha-empresa/clientes-recorrentes/itens/:itemId", requireCliente, requireModuloAtivo("nfse"), requireModuloAtivo("nfse_automatica"), (req, res) => {
+  const empresaId = (req as any).user.empresaId;
+  const itemId = Number(req.params.itemId);
+  const item = sqlite
+    .prepare(`SELECT i.id FROM cliente_recorrente_itens i JOIN cliente_recorrentes c ON c.id = i.cliente_recorrente_id WHERE i.id = ? AND c.empresa_id = ?`)
+    .get(itemId, empresaId);
+  if (!item) return res.status(404).json({ error: "Item não encontrado." });
+  sqlite.prepare(`DELETE FROM cliente_recorrente_itens WHERE id = ?`).run(itemId);
+  res.json({ ok: true });
+});
+
+// ---- Agendamento (dia/hora de disparo automático) ----
+app.get("/api/minha-empresa/agendamento", requireCliente, requireModuloAtivo("nfse"), requireModuloAtivo("nfse_automatica"), (req, res) => {
+  const empresaId = (req as any).user.empresaId;
+  const cfg = sqlite
+    .prepare(`SELECT ativo, dia_mes as diaMes, hora, minuto, ultima_execucao_competencia as ultimaExecucaoCompetencia FROM cliente_agendamento_config WHERE empresa_id = ?`)
+    .get(empresaId) as any;
+  res.json(cfg ? { ...cfg, ativo: !!cfg.ativo } : { ativo: false, diaMes: 1, hora: 8, minuto: 0, ultimaExecucaoCompetencia: null });
+});
+app.put("/api/minha-empresa/agendamento", requireCliente, requireModuloAtivo("nfse"), requireModuloAtivo("nfse_automatica"), (req, res) => {
+  const empresaId = (req as any).user.empresaId;
+  const { ativo, diaMes, hora, minuto } = req.body || {};
+  sqlite
+    .prepare(
+      `INSERT INTO cliente_agendamento_config (empresa_id, ativo, dia_mes, hora, minuto, updated_at)
+       VALUES (?, ?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(empresa_id) DO UPDATE SET ativo=excluded.ativo, dia_mes=excluded.dia_mes, hora=excluded.hora, minuto=excluded.minuto, updated_at=datetime('now')`
+    )
+    .run(empresaId, ativo ? 1 : 0, Math.min(28, Math.max(1, Number(diaMes) || 1)), Math.min(23, Math.max(0, Number(hora) || 0)), Math.min(59, Math.max(0, Number(minuto) || 0)));
+  res.json({ ok: true });
+});
+app.post("/api/minha-empresa/agendamento/executar-agora", requireCliente, requireModuloAtivo("nfse"), requireModuloAtivo("nfse_automatica"), async (req, res) => {
+  const empresaId = (req as any).user.empresaId;
+  try {
+    const resumo = await clienteRecorrenteExecutarAgendamento(true, empresaId);
+    res.json(resumo);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+app.get("/api/minha-empresa/agendamento/log", requireCliente, requireModuloAtivo("nfse"), requireModuloAtivo("nfse_automatica"), (req, res) => {
+  const empresaId = (req as any).user.empresaId;
+  const items = sqlite
+    .prepare(
+      `SELECT l.id, l.competencia, l.sucesso, l.mensagem, l.executado_em as executadoEm, c.nome as clienteNome
+       FROM cliente_agendamento_log l
+       LEFT JOIN cliente_recorrente_itens i ON i.id = l.item_id
+       LEFT JOIN cliente_recorrentes c ON c.id = i.cliente_recorrente_id
+       WHERE l.empresa_id = ? ORDER BY l.executado_em DESC LIMIT 100`
+    )
+    .all(empresaId) as any[];
+  res.json({ items: items.map((i) => ({ ...i, sucesso: !!i.sucesso })) });
 });
 
 // ---------- Usuários (Administrador cadastra Colaboradores e Clientes) ----------
@@ -18997,6 +19273,123 @@ async function nfseAnexarEEnviarDocumento(escritorioId: number, emissaoId: numbe
 
   return `Anexado em Envio de Documentos; ${msgEmail}${msgWhatsapp ? ` E ${msgWhatsapp}` : ""}`;
 }
+// ===================== Emissão Automática self-service (módulo "nfse_automatica") =====================
+// Espelho estrutural de nfseExecutarAgendamentoAutomatico, acima — mesmo "claim atômico" e mesma
+// trava por item — mas: (1) 1 config por EMPRESA, nunca por escritório; (2) prestador é sempre a
+// própria empresa (empresaId = o prestador, sem precisar de um "empresa_prestador_id" separado);
+// (3) o envio de e-mail é direto (gera o PDF e manda com o SMTP da própria empresa), sem passar pelo
+// sistema de Envio de Documentos do escritório (nfseAnexarEEnviarDocumento), que não faz sentido
+// aqui — o cliente direto não tem "templates"/"períodos" de envio, só quer mandar a nota pro cliente
+// dele por e-mail.
+async function clienteRecorrenteExecutarAgendamento(forcarMesmoSeJaExecutou = false, empresaIdFiltro?: number): Promise<ResumoExecucaoAgendamento> {
+  const config = empresaIdFiltro
+    ? (sqlite.prepare(`SELECT * FROM cliente_agendamento_config WHERE empresa_id = ?`).get(empresaIdFiltro) as any)
+    : null;
+  if (empresaIdFiltro && !config) {
+    return { processados: 0, sucesso: 0, falha: 0, motivo: "Configure o agendamento antes de executar." };
+  }
+  // Exige os DOIS módulos — mesmo motivo das rotas HTTP (ver comentário em
+  // GET /api/minha-empresa/email-config): sem 'nfse' ativo não tem certificado/município configurado.
+  if (empresaIdFiltro && !(empresaTemAcessoModulo(empresaIdFiltro, "nfse") && empresaTemAcessoModulo(empresaIdFiltro, "nfse_automatica"))) {
+    return { processados: 0, sucesso: 0, falha: 0, motivo: "Módulo de NFS-e e/ou Emissão Automática não contratado — veja em Assinatura." };
+  }
+  const agora = agoraBrasilia();
+  const competenciaAtual = `${agora.ano}-${String(agora.mes).padStart(2, "0")}`;
+  if (!forcarMesmoSeJaExecutou && config) {
+    if (!config.ativo) return { processados: 0, sucesso: 0, falha: 0, motivo: "Rotina desativada." };
+    const claim = sqlite
+      .prepare(`UPDATE cliente_agendamento_config SET ultima_execucao_competencia = ? WHERE empresa_id = ? AND (ultima_execucao_competencia IS NULL OR ultima_execucao_competencia != ?)`)
+      .run(competenciaAtual, config.empresa_id, competenciaAtual);
+    if (!claim.changes) return { processados: 0, sucesso: 0, falha: 0, motivo: "Já executou nesta competência." };
+  }
+  const configs = config
+    ? [config]
+    : (sqlite.prepare(`SELECT * FROM cliente_agendamento_config WHERE ativo = 1`).all() as any[]).filter(
+        (c: any) => empresaTemAcessoModulo(c.empresa_id, "nfse") && empresaTemAcessoModulo(c.empresa_id, "nfse_automatica")
+      );
+
+  let processadosTotal = 0, sucessoTotal = 0, falhaTotal = 0;
+  for (const config of configs) {
+    const empresaId = config.empresa_id as number;
+    const empresaRow = sqlite.prepare(`SELECT escritorio_id FROM empresas WHERE id = ?`).get(empresaId) as any;
+    if (!empresaRow) continue;
+    const usuarioSistema = { id: null as number | null, perfil: "Administrador" as const, empresaId: null, escritorioId: empresaRow.escritorio_id };
+    const itens = sqlite
+      .prepare(
+        `SELECT i.* FROM cliente_recorrente_itens i
+         JOIN cliente_recorrentes c ON c.id = i.cliente_recorrente_id
+         WHERE i.ativo = 1 AND c.ativo = 1 AND c.empresa_id = ?`
+      )
+      .all(empresaId) as any[];
+    let sucesso = 0, falha = 0;
+    for (const item of itens) {
+      const clienteRec = sqlite.prepare(`SELECT * FROM cliente_recorrentes WHERE id = ?`).get(item.cliente_recorrente_id) as any;
+      const registrarLog = (ok: boolean, mensagem: string, emissaoId?: number) => {
+        ok ? sucesso++ : falha++;
+        sqlite
+          .prepare(`INSERT INTO cliente_agendamento_log (empresa_id, item_id, competencia, sucesso, emissao_id, mensagem) VALUES (?, ?, ?, ?, ?, ?)`)
+          .run(empresaId, item.id, competenciaAtual, ok ? 1 : 0, emissaoId ?? null, mensagem);
+      };
+      try {
+        if (!clienteRec) { registrarLog(false, "Cliente recorrente não encontrado (pode ter sido excluído)."); continue; }
+        if (!item.modelo_id || !item.valor_servico) { registrarLog(false, "Falta configurar o modelo ou o valor deste serviço."); continue; }
+        const documentoTomador = String(clienteRec.documento || "").replace(/\D/g, "");
+        if (!documentoTomador) { registrarLog(false, "Cliente recorrente sem CPF/CNPJ cadastrado."); continue; }
+        const jaEmitida = sqlite
+          .prepare(`SELECT 1 FROM nfse_emissoes WHERE cliente_recorrente_item_id = ? AND competencia LIKE ? AND status = 'emitida'`)
+          .get(item.id, `${competenciaAtual}%`);
+        if (jaEmitida) { registrarLog(false, "Este serviço já foi emitido pra esse cliente nesta competência — pulado."); continue; }
+        const descricao = item.descricao_servico.replace(/\{\{mes_competencia\}\}/g, `${MESES_PT_EXTENSO[agora.mes - 1]}/${agora.ano}`);
+        const v = nfseValidarEntrada(usuarioSistema, {
+          empresaId,
+          modeloId: item.modelo_id,
+          tomador: { documento: documentoTomador, nome: clienteRec.nome, email: primeiroEmailValido(clienteRec.email), cep: clienteRec.cep || null },
+          servico: { descricao, valor: Number(item.valor_servico), competencia: `${competenciaAtual}-01` },
+        });
+        if ("erro" in v) { registrarLog(false, v.erro); continue; }
+        const emissaoId = nfseInserirEmissao(usuarioSistema, v.empresaId, v.modelo, v.tomador, v.servico, "pendente");
+        sqlite.prepare(`UPDATE nfse_emissoes SET cliente_recorrente_item_id = ? WHERE id = ?`).run(item.id, emissaoId);
+        const res = resFalso();
+        await nfseTransmitirEmissao(emissaoId, v.empresaId, v.modelo, v.tomador, v.servico, res, "cliente");
+        if (res._estado.codigo >= 400) {
+          registrarLog(false, res._estado.corpo?.error || "Falha desconhecida na emissão.", emissaoId);
+          continue;
+        }
+        nfseGerarRecebivelSeEmitida(emissaoId);
+        let mensagemLog = "NFS-e emitida com sucesso.";
+        if (clienteRec.email && emailConfiguradoEmpresa(empresaId)) {
+          try {
+            const emissaoRow = sqlite.prepare(`SELECT * FROM nfse_emissoes WHERE id = ?`).get(emissaoId) as any;
+            const { pdf, erro } = await nfseObterDanfsePdf(emissaoRow);
+            if (!pdf) throw new Error(erro || "DANFSe indisponível");
+            await enviarEmailComoEmpresa(empresaId, {
+              to: [clienteRec.email],
+              subject: `Nota Fiscal de Serviço — ${descricao}`,
+              text: `Segue em anexo a Nota Fiscal de Serviço referente a ${MESES_PT_EXTENSO[agora.mes - 1]}/${agora.ano}.\n\nServiço: ${descricao}`,
+              attachments: [{ filename: nfseNomeArquivo(emissaoRow, "pdf"), content: pdf }],
+            });
+            mensagemLog += " E-mail enviado.";
+          } catch (e: any) {
+            mensagemLog += ` (não consegui mandar o e-mail: ${e.message})`;
+          }
+        }
+        registrarLog(true, mensagemLog, emissaoId);
+      } catch (e: any) {
+        registrarLog(false, `Erro inesperado: ${e.message}`);
+      }
+    }
+    sqlite.prepare(`UPDATE cliente_agendamento_config SET ultima_execucao_competencia = ? WHERE empresa_id = ?`).run(competenciaAtual, empresaId);
+    processadosTotal += itens.length;
+    sucessoTotal += sucesso;
+    falhaTotal += falha;
+  }
+  return {
+    processados: processadosTotal,
+    sucesso: sucessoTotal,
+    falha: falhaTotal,
+    motivo: processadosTotal === 0 ? "Nenhum serviço ativo configurado nos clientes recorrentes." : undefined,
+  };
+}
 // Confere a cada minuto se é hora de rodar a rotina — sobrevive a reinício porque a trava real
 // (ultima_execucao_competencia) fica no banco, não em memória. Usa "já passou do horário hoje"
 // em vez de "é exatamente este minuto": um reinício do servidor (deploy) bem na hora configurada
@@ -19013,6 +19406,14 @@ setInterval(() => {
     .all(agora.dia, minutosAgora) as any[];
   for (const c of configs) {
     nfseExecutarAgendamentoAutomatico(false, c.escritorio_id).catch((e) => console.error("Erro na rotina automática de NFS-e:", e.message));
+  }
+  // Irmã da rotina acima, pro cliente direto (Emissão Automática self-service) — tabela separada,
+  // nunca mexe na config/claim do escritório.
+  const configsClientes = sqlite
+    .prepare(`SELECT empresa_id FROM cliente_agendamento_config WHERE dia_mes = ? AND (hora * 60 + minuto) <= ?`)
+    .all(agora.dia, minutosAgora) as any[];
+  for (const c of configsClientes) {
+    clienteRecorrenteExecutarAgendamento(false, c.empresa_id).catch((e) => console.error("Erro na Emissão Automática (cliente direto):", e.message));
   }
 }, 60_000);
 
