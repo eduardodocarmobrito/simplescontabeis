@@ -16795,6 +16795,11 @@ app.post("/api/integracontador/empresas/:id/buscar", blockCliente, requirePermis
 // as empresas com Integra Contador habilitado, sem disparar o resto da busca paga (DAS/DCTF-Web/
 // Situação Fiscal). Mesmo padrão síncrono (sem polling) já usado em POST /api/cnd/:esfera/consultar.
 const integraContadorCaixaPostalEmAndamento = new Set<number>();
+function integraContadorSalvarResultadoCaixaPostal(escritorioId: number, resultado: { ok: number; total: number; erros: { empresa: string; erro: string }[] }) {
+  sqlite
+    .prepare(`UPDATE integracontador_config SET caixapostal_ultima_consulta_em = datetime('now'), caixapostal_ultimo_resultado_json = ? WHERE escritorio_id = ?`)
+    .run(JSON.stringify(resultado), escritorioId);
+}
 async function integraContadorConsultarCaixaPostalTodas(escritorioId: number): Promise<{ ok: number; total: number; erros: { empresa: string; erro: string }[] }> {
   const cfg = getIntegraContadorConfig(escritorioId);
   if (!cfg.ativo) throw new Error("Configure e ative o Integra Contador em Configurações antes de consultar.");
@@ -16806,7 +16811,14 @@ async function integraContadorConsultarCaixaPostalTodas(escritorioId: number): P
        ORDER BY e.nome`
     )
     .all(escritorioId) as any[];
-  const token = await obterTokenIntegraContador(cfg);
+  let token: integracontador.TokenIntegraContador;
+  try {
+    token = await obterTokenIntegraContador(cfg);
+  } catch (e: any) {
+    const resultado = { ok: 0, total: empresas.length, erros: [{ empresa: "(autenticação no Integra Contador)", erro: e.message }] };
+    integraContadorSalvarResultadoCaixaPostal(escritorioId, resultado);
+    throw e;
+  }
   const inserirMsg = sqlite.prepare(
     `INSERT INTO integracontador_caixapostal_mensagens (empresa_id, numero_controle, assunto, data_envio, relevancia) VALUES (?, ?, ?, ?, ?)`
   );
@@ -16823,7 +16835,10 @@ async function integraContadorConsultarCaixaPostalTodas(escritorioId: number): P
       erros.push({ empresa: emp.empresaNome, erro: e.message });
     }
   }
-  return { ok, total: empresas.length, erros };
+  const resultado = { ok, total: empresas.length, erros };
+  integraContadorSalvarResultadoCaixaPostal(escritorioId, resultado);
+  console.log(`[Integra Contador] Caixa Postal avulsa: ${ok}/${empresas.length} empresas${erros.length ? `, ${erros.length} com erro (${erros.slice(0, 3).map((e) => e.empresa).join(", ")}${erros.length > 3 ? "…" : ""})` : ""}`);
+  return resultado;
 }
 app.post("/api/integracontador/caixapostal/consultar", blockCliente, requirePermissao("dashboard", "editar"), async (req, res) => {
   const user = (req as any).user;
@@ -17122,6 +17137,12 @@ sqlite.exec(`CREATE TABLE IF NOT EXISTS integracontador_busca_slots (slot TEXT P
     sqlite.exec(`ALTER TABLE integracontador_config ADD COLUMN pesquisa_pagamento_freio_inicial INTEGER NOT NULL DEFAULT 1`);
     sqlite.exec(`UPDATE integracontador_config SET pesquisa_pagamento_ativa = 0`);
   }
+  // Resultado do botão "Consultar agora" (card "Mensagens no e-CAC") — a mensagem de resultado só
+  // vivia na memória do modal, então fechar/reabrir (ou um usuário impaciente que não esperou o fim)
+  // perdia a confirmação de que a consulta rodou, parecendo que o botão não fez nada. Persistido aqui
+  // pra aparecer de novo toda vez que o modal é reaberto, até a próxima consulta.
+  if (!colsIc.some((c) => c.name === "caixapostal_ultima_consulta_em")) sqlite.exec(`ALTER TABLE integracontador_config ADD COLUMN caixapostal_ultima_consulta_em TEXT`);
+  if (!colsIc.some((c) => c.name === "caixapostal_ultimo_resultado_json")) sqlite.exec(`ALTER TABLE integracontador_config ADD COLUMN caixapostal_ultimo_resultado_json TEXT`);
 }
 function agoraBrasiliaTextos() {
   const a = agoraBrasilia();
@@ -23464,7 +23485,13 @@ app.get("/api/dashboard/cards/:id/detalhe", requirePermissao("dashboard", "visua
   const card = sqlite.prepare(`SELECT * FROM dashboard_cards WHERE id = ? AND escritorio_id = ?`).get(Number(req.params.id), user.escritorioId) as any;
   if (!card) return res.status(404).json({ error: "Card não encontrado." });
   if (!card.tipo) return res.status(400).json({ error: "Este card não tem detalhamento — é um valor digitado manualmente." });
-  res.json({ tipo: card.tipo, items: await calcularCardComputado(card.tipo, user, card.parametro) });
+  const extra: any = {};
+  if (card.tipo === "caixapostal_nao_lida") {
+    const cfgIc = getIntegraContadorConfig(user.escritorioId);
+    extra.caixaPostalUltimaConsultaEm = cfgIc.caixapostal_ultima_consulta_em || null;
+    extra.caixaPostalUltimoResultado = cfgIc.caixapostal_ultimo_resultado_json ? JSON.parse(cfgIc.caixapostal_ultimo_resultado_json) : null;
+  }
+  res.json({ tipo: card.tipo, items: await calcularCardComputado(card.tipo, user, card.parametro), ...extra });
 });
 // Dispensar uma competência do card "DAS que Falta Entregar" (declaração entregue SEM MOVIMENTO, sem
 // DAS a pagar). Recebe empresaId + competencia ("MM/AAAA" ou "AAAAMM"); guarda como AAAAMM.

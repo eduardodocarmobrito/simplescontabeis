@@ -3644,11 +3644,13 @@ function cardDetalheModal(c){
       finally{ cBtn.disabled = false; cBtn.textContent = txt0; }
     });
   }
+  let caixaPostalConsultouNestaSessao = false;
   if(consultaCaixaPostal){
     const cpBtn = document.getElementById('caixaPostalConsultarBtn');
     const cpMsg = document.getElementById('caixaPostalMsg');
     cpBtn.addEventListener('click', async ()=>{
       if(!confirmar('Consultar a Caixa Postal do e-CAC de todas as empresas habilitadas agora?')) return;
+      caixaPostalConsultouNestaSessao = true;
       cpBtn.disabled = true; const txt0 = cpBtn.textContent; cpBtn.textContent = 'Consultando…';
       cpMsg.style.color = 'var(--ink-soft)'; cpMsg.textContent = 'Consultando no e-CAC via Integra Contador — pode levar alguns minutos…';
       try{
@@ -3665,8 +3667,16 @@ function cardDetalheModal(c){
     const filtroEl = document.getElementById('cdFiltro');
     let todos;
     try{
-      const { tipo, items } = await api('/dashboard/cards/'+c.id+'/detalhe');
+      const { tipo, items, caixaPostalUltimaConsultaEm, caixaPostalUltimoResultado } = await api('/dashboard/cards/'+c.id+'/detalhe');
       todos = items;
+      if(consultaCaixaPostal && !caixaPostalConsultouNestaSessao){
+        const cpMsg = document.getElementById('caixaPostalMsg');
+        if(cpMsg && caixaPostalUltimaConsultaEm){
+          const r = caixaPostalUltimoResultado;
+          cpMsg.style.color = r && r.erros && r.erros.length ? 'var(--debit)' : 'var(--ink-soft)';
+          cpMsg.textContent = `Última consulta: ${fmtDateHora(caixaPostalUltimaConsultaEm)} — ${r?`${r.ok}/${r.total} consultadas${r.erros&&r.erros.length?`, ${r.erros.length} com erro (${r.erros.slice(0,3).map(e=>e.empresa).join(', ')}${r.erros.length>3?'…':''})`:''}`:''}.`;
+        }
+      }
       if(!items.length){
         // cards importáveis (EFD/CND) podem ser reimportados na hora: mantém o filtro (oculto) pra não quebrar o reload.
         if(importavel){ filtroEl.style.display='none'; box.innerHTML = `<div class="empty-state">${c.tipo&&c.tipo.startsWith('cnd_')?'Nenhuma certidão importada ainda — importe o PDF da Certidão acima.':'Nenhuma pendência de EFD importada ainda — importe o PDF da Consulta de Débitos da SEFA acima.'}</div>`; return; }
