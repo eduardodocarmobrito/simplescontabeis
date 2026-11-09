@@ -3587,6 +3587,9 @@ function cardDetalheModal(c){
   const importavel = !!(c.tipo && IMPORT_SEFA[c.tipo]);
   // Consulta automática: Estadual via Infosimples (~R$0,20/empresa); Municipal via portal da prefeitura (sem custo).
   const consultaEsfera = ((c.tipo==='cnd_estadual' || c.tipo==='cnd_municipal') && can('dashboard','editar')) ? c.tipo.replace('cnd_','') : null;
+  // Consulta avulsa da Caixa Postal do e-CAC — não espera a busca semanal do Integra Contador, só
+  // esse serviço pra todas as empresas habilitadas (sem disparar DAS/DCTF-Web/Situação Fiscal junto).
+  const consultaCaixaPostal = c.tipo==='caixapostal_nao_lida' && can('dashboard','editar');
   openModal(`
     <h3>${esc(c.titulo)}</h3>
     ${impCfg? `<div class="row" style="align-items:center; gap:10px; margin-bottom:10px; flex-wrap:wrap;">
@@ -3594,6 +3597,10 @@ function cardDetalheModal(c){
       <input type="file" id="sefaImpFile" accept="application/pdf" class="hidden">
       <button class="btn" id="sefaImpBtn">${impCfg.botao}</button>
       <span id="sefaImpMsg" style="font-size:12px; color:var(--ink-soft);">${impCfg.ajuda}</span>
+    </div>`:''}
+    ${consultaCaixaPostal? `<div class="row" style="align-items:center; gap:10px; margin-bottom:10px; flex-wrap:wrap;">
+      <button class="btn primary" id="caixaPostalConsultarBtn" title="Consulta no e-CAC via Integra Contador, pra todas as empresas habilitadas">🔄 Consultar agora</button>
+      <span id="caixaPostalMsg" style="font-size:12px; color:var(--ink-soft);">Busca as mensagens não lidas de todas as empresas agora, sem esperar a rotina automática.</span>
     </div>`:''}
     <div class="field" style="max-width:360px; margin-bottom:10px;"><input type="text" id="cdFiltro" placeholder="Buscar por empresa…" autocomplete="off" disabled></div>
     <div id="cardDetalheBody"><div class="empty-state">Carregando…</div></div>
@@ -3635,6 +3642,22 @@ function cardDetalheModal(c){
         carregar(); pageDashboard();
       }catch(e){ if(msgEl){ msgEl.style.color='var(--debit)'; msgEl.textContent = e.message; } }
       finally{ cBtn.disabled = false; cBtn.textContent = txt0; }
+    });
+  }
+  if(consultaCaixaPostal){
+    const cpBtn = document.getElementById('caixaPostalConsultarBtn');
+    const cpMsg = document.getElementById('caixaPostalMsg');
+    cpBtn.addEventListener('click', async ()=>{
+      if(!confirmar('Consultar a Caixa Postal do e-CAC de todas as empresas habilitadas agora?')) return;
+      cpBtn.disabled = true; const txt0 = cpBtn.textContent; cpBtn.textContent = 'Consultando…';
+      cpMsg.style.color = 'var(--ink-soft)'; cpMsg.textContent = 'Consultando no e-CAC via Integra Contador — pode levar alguns minutos…';
+      try{
+        const r = await api('/integracontador/caixapostal/consultar', { method:'POST' });
+        cpMsg.style.color = 'var(--credit)';
+        cpMsg.textContent = `${r.ok}/${r.total} consultadas com sucesso${r.erros&&r.erros.length?` · ${r.erros.length} com erro (${r.erros.slice(0,3).map(e=>e.empresa).join(', ')}${r.erros.length>3?'…':''})`:''}.`;
+        carregar(); pageDashboard();
+      }catch(e){ cpMsg.style.color = 'var(--debit)'; cpMsg.textContent = e.message; }
+      finally{ cpBtn.disabled = false; cpBtn.textContent = txt0; }
     });
   }
   async function carregar(){

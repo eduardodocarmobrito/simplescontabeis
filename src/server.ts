@@ -16791,6 +16791,52 @@ app.post("/api/integracontador/empresas/:id/buscar", blockCliente, requirePermis
   });
   res.json({ ok: true, buscaIniciada: true });
 });
+// Consulta avulsa da Caixa Postal (card "Mensagens no e-CAC" do Início) — só esse serviço, pra todas
+// as empresas com Integra Contador habilitado, sem disparar o resto da busca paga (DAS/DCTF-Web/
+// Situação Fiscal). Mesmo padrão síncrono (sem polling) já usado em POST /api/cnd/:esfera/consultar.
+const integraContadorCaixaPostalEmAndamento = new Set<number>();
+async function integraContadorConsultarCaixaPostalTodas(escritorioId: number): Promise<{ ok: number; total: number; erros: { empresa: string; erro: string }[] }> {
+  const cfg = getIntegraContadorConfig(escritorioId);
+  if (!cfg.ativo) throw new Error("Configure e ative o Integra Contador em Configurações antes de consultar.");
+  const empresas = sqlite
+    .prepare(
+      `SELECT c.empresa_id as empresaId, e.nome as empresaNome, e.cnpj
+       FROM integracontador_empresa_config c JOIN empresas e ON e.id = c.empresa_id
+       WHERE c.escritorio_id = ? AND c.ativo = 1 AND e.ativo = 1
+       ORDER BY e.nome`
+    )
+    .all(escritorioId) as any[];
+  const token = await obterTokenIntegraContador(cfg);
+  const inserirMsg = sqlite.prepare(
+    `INSERT INTO integracontador_caixapostal_mensagens (empresa_id, numero_controle, assunto, data_envio, relevancia) VALUES (?, ?, ?, ?, ?)`
+  );
+  let ok = 0;
+  const erros: { empresa: string; erro: string }[] = [];
+  for (const emp of empresas) {
+    if (!emp.cnpj) continue;
+    try {
+      const mensagens = await integracontador.consultarMensagensCaixaPostalNaoLidas(token, cfg.cnpj, emp.cnpj);
+      sqlite.prepare(`DELETE FROM integracontador_caixapostal_mensagens WHERE empresa_id = ?`).run(emp.empresaId);
+      for (const m of mensagens) inserirMsg.run(emp.empresaId, m.numeroControle, m.assunto, m.dataEnvio, m.relevancia);
+      ok++;
+    } catch (e: any) {
+      erros.push({ empresa: emp.empresaNome, erro: e.message });
+    }
+  }
+  return { ok, total: empresas.length, erros };
+}
+app.post("/api/integracontador/caixapostal/consultar", blockCliente, requirePermissao("dashboard", "editar"), async (req, res) => {
+  const user = (req as any).user;
+  if (integraContadorCaixaPostalEmAndamento.has(user.escritorioId)) return res.status(409).json({ error: "Já existe uma consulta em andamento." });
+  integraContadorCaixaPostalEmAndamento.add(user.escritorioId);
+  try {
+    res.json(await integraContadorConsultarCaixaPostalTodas(user.escritorioId));
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  } finally {
+    integraContadorCaixaPostalEmAndamento.delete(user.escritorioId);
+  }
+});
 // ---- Parcelamento de DAS (PARCSN) — vincular um parcelamento JÁ CONCEDIDO (a adesão em si é feita
 // pelo escritório no e-CAC, fora do sistema — a API não permite simular nem aderir, só consultar) ----
 app.get("/api/integracontador/parcelamentos/pedidos", blockCliente, requirePermissao("integracontador", "postar"), async (req, res) => {
