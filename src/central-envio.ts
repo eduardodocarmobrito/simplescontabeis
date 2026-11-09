@@ -406,10 +406,21 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     try { texto = (await d.pdfParse(buf)).text || ""; } catch { /* PDF de imagem/protegido: cai em "sem tipo" */ }
     const tipos = db.prepare(`SELECT * FROM central_envio_tipos WHERE escritorio_id = ? AND ativo = 1 AND (setor = ? OR setor = 'crm') ORDER BY (setor = ?) DESC, ordem, id`).all(escId, setor, setor) as any[];
     const tn = norm(texto);
-    const tipo = tipos.find((t) => {
+    // Entre os tipos que batem, vence o mais ESPECÍFICO (maior soma do tamanho das palavras-chave
+    // que realmente aparecem no texto), não o primeiro cadastrado — senão um tipo genérico (ex.:
+    // "Adiantamento de Salário"/"ADIANTAMENTO") sempre vencia um tipo mais específico criado depois
+    // (ex.: "13° Adiantamento"/"13o. Adiantamento") só por ter uma `ordem` menor. Empate preserva a
+    // ordem original (primeiro da lista ganha).
+    let tipo: any = null, melhorScore = -1;
+    for (const t of tipos) {
       const ps: string[] = JSON.parse(t.palavras_json || "[]").map(norm).filter(Boolean);
-      return ps.length && (t.exige_todas ? ps.every((p) => tn.includes(p)) : ps.some((p) => tn.includes(p)));
-    });
+      if (!ps.length) continue;
+      const casadas = ps.filter((p) => tn.includes(p));
+      const bateu = t.exige_todas ? casadas.length === ps.length : casadas.length > 0;
+      if (!bateu) continue;
+      const score = casadas.reduce((s, p) => s + p.length, 0);
+      if (score > melhorScore) { tipo = t; melhorScore = score; }
+    }
     let { empresa, cnpjDetectado } = d.identificarEmpresa(d.mapaDocumentos(escId), texto, nomeArquivo);
     // Documentos sem CNPJ (aviso/recibo de férias): acha a empresa pelo NOME dentro do texto (o mais longo que aparecer).
     if (!empresa) {
@@ -675,7 +686,13 @@ export function registerCentralEnvio(app: express.Express, d: Deps) {
     if (!setor || !nome || !palavras.length) return res.status(400).json({ error: "Informe o setor, o nome do tipo e pelo menos uma palavra que identifica o documento." });
     if (!setorDoUsuario(user, setor)) return semAcesso(res);
     if (id) db.prepare(`UPDATE central_envio_tipos SET setor=?, nome=?, palavras_json=?, exige_todas=?, texto_whatsapp=?, ativo=?, agrupar=? WHERE id=? AND escritorio_id=?`).run(setor, nome, JSON.stringify(palavras), b.exigeTodas === false ? 0 : 1, String(b.textoWhatsapp || "").trim() || null, b.ativo === false ? 0 : 1, b.agrupar ? 1 : 0, id, user.escritorioId);
-    else db.prepare(`INSERT INTO central_envio_tipos (escritorio_id, setor, nome, palavras_json, exige_todas, texto_whatsapp, agrupar, ordem) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(user.escritorioId, setor, nome, JSON.stringify(palavras), b.exigeTodas === false ? 0 : 1, String(b.textoWhatsapp || "").trim() || null, b.agrupar ? 1 : 0, Date.now() % 100000);
+    else {
+      // `ordem` é só pra exibição/desempate agora (a classificação virou "mais específico vence",
+      // não "primeiro na ordem") — antes usava Date.now()%100000, um valor pseudo-aleatório que
+      // bagunçava a lista. Próximo da fila, igual qualquer outra tela com ordenação manual do site.
+      const proxima = (db.prepare(`SELECT COALESCE(MAX(ordem), -1) + 1 AS n FROM central_envio_tipos WHERE escritorio_id = ? AND setor = ?`).get(user.escritorioId, setor) as any).n;
+      db.prepare(`INSERT INTO central_envio_tipos (escritorio_id, setor, nome, palavras_json, exige_todas, texto_whatsapp, agrupar, ordem) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(user.escritorioId, setor, nome, JSON.stringify(palavras), b.exigeTodas === false ? 0 : 1, String(b.textoWhatsapp || "").trim() || null, b.agrupar ? 1 : 0, proxima);
+    }
     res.json({ ok: true });
   };
   app.post("/api/central-envio/tipos", d.blockCliente, gerir, (req, res) => salvarTipo(req, res));
