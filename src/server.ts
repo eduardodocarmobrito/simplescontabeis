@@ -4621,11 +4621,24 @@ app.get("/api/super/clientes-diretos", requireSuperAdmin, (_req, res) => {
   const catalogoNfse = sqlite.prepare(`SELECT * FROM modulos_catalogo WHERE chave = 'nfse'`).get() as any;
   const items = empresas.map((e) => {
     const contratado = sqlite.prepare(`SELECT * FROM empresa_modulos WHERE empresa_id = ? AND modulo_chave = 'nfse'`).get(e.id) as any;
-    const isento = (sqlite.prepare(`SELECT isento_assinatura FROM empresas WHERE id = ?`).get(e.id) as any)?.isento_assinatura;
+    const isento = !!(sqlite.prepare(`SELECT isento_assinatura FROM empresas WHERE id = ?`).get(e.id) as any)?.isento_assinatura;
     const { status } = isento ? { status: "isento" } : moduloStatusParaEmpresa(catalogoNfse, contratado);
-    return { ...e, statusNfse: status };
+    return { ...e, statusNfse: status, demonstracao: isento };
   });
   res.json({ escritorioConfigurado: true, items });
+});
+// Demonstração: liga isento_assinatura da empresa (já usado em todo o sistema pra "conta cortesia" —
+// empresaTemAcessoModulo devolve acesso liberado a QUALQUER módulo sem olhar trial/assinatura) pra
+// destravar tudo na hora de mostrar o sistema pra um cliente direto em potencial. Desmarcar não apaga
+// nem mexe no trial/assinatura real por baixo — a cobrança volta a valer exatamente de onde estava.
+app.put("/api/super/clientes-diretos/:empresaId/demonstracao", requireSuperAdmin, (req, res) => {
+  const escritorioId = escritorioClienteDiretoId();
+  const empresaId = Number(req.params.empresaId);
+  const empresa = sqlite.prepare(`SELECT id FROM empresas WHERE id = ? AND escritorio_id = ?`).get(empresaId, escritorioId);
+  if (!empresa) return res.status(404).json({ error: "Empresa não encontrada." });
+  const ativo = !!req.body?.ativo;
+  sqlite.prepare(`UPDATE empresas SET isento_assinatura = ?, updated_at = datetime('now') WHERE id = ?`).run(ativo ? 1 : 0, empresaId);
+  res.json({ ok: true, demonstracao: ativo });
 });
 app.post("/api/super/clientes-diretos/convites", requireSuperAdmin, (req, res) => {
   const user = (req as any).user;

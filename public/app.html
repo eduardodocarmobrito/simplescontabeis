@@ -20367,7 +20367,7 @@ async function pageClientesDiretos(){
     </div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
-        <thead><tr><th>Empresa</th><th>CNPJ</th><th>E-mail</th><th>Origem</th><th>Módulo NFS-e</th><th>Cadastrado em</th></tr></thead>
+        <thead><tr><th>Empresa</th><th>CNPJ</th><th>E-mail</th><th>Origem</th><th>Módulo NFS-e</th><th>Demonstração</th><th>Cadastrado em</th></tr></thead>
         <tbody>
           ${items.length? items.map(e=>`
             <tr>
@@ -20376,15 +20376,25 @@ async function pageClientesDiretos(){
               <td>${esc(e.email||'—')}</td>
               <td>${esc(CD_ORIGEM_LABEL[e.origemCadastro]||e.origemCadastro||'—')}</td>
               <td><span class="tag ${e.statusNfse==='ativo'||e.statusNfse==='isento'?'ok':(e.statusNfse==='teste'?'muted':'bad')}">${esc(CD_STATUS_LABEL[e.statusNfse]||e.statusNfse)}</span></td>
+              <td><span class="tag ${e.demonstracao?'ok':'muted'} cdDemoToggle" data-id="${e.id}" data-ativo="${e.demonstracao?'1':'0'}" style="cursor:pointer;" title="Clique pra ${e.demonstracao?'desligar':'ligar'} — libera todos os módulos sem cobrar enquanto estiver ligado">${e.demonstracao?'Ligada':'Desligada'}</span></td>
               <td>${fmtDateHora(e.criadoEm)}</td>
             </tr>
-          `).join('') : '<tr><td colspan="6"><div class="empty-state">Nenhum cliente direto cadastrado ainda.</div></td></tr>'}
+          `).join('') : '<tr><td colspan="7"><div class="empty-state">Nenhum cliente direto cadastrado ainda.</div></td></tr>'}
         </tbody>
       </table>
     </div>
   `;
   document.getElementById('btnCdConvite').addEventListener('click', cdConviteModal);
   document.getElementById('btnCdManual').addEventListener('click', cdManualModal);
+  box.querySelectorAll('.cdDemoToggle').forEach(el=>el.addEventListener('click', async ()=>{
+    const ligar = el.dataset.ativo !== '1';
+    if(!confirmar(ligar? 'Ligar demonstração? Libera TODOS os módulos pra esta empresa sem cobrar, até você desligar de novo.' : 'Desligar demonstração? A cobrança normal (teste/assinatura) volta a valer pra esta empresa.')) return;
+    try{
+      await api('/super/clientes-diretos/'+el.dataset.id+'/demonstracao', { method:'PUT', body:{ ativo: ligar } });
+      toast(ligar?'Demonstração ligada — todos os módulos liberados.':'Demonstração desligada — cobrança normal de volta.','ok');
+      pageClientesDiretos();
+    }catch(e){ toast(e.message,'err'); }
+  }));
 }
 async function cdCarregarModulosVendaveis(){
   const { items } = await api('/super/modulos-clientes');
