@@ -2134,8 +2134,16 @@ const PAGINA_CLIENTE_MODULO = { 'minha-nfse':'nfse', 'minha-financeiro':'finance
 function escritorioTemFuncionalidade(modulo){
   return !Array.isArray(STATE.funcionalidades) || STATE.funcionalidades.includes(modulo);
 }
+// Pro Cliente, o toggle de plataforma do escritório (escritorioTemFuncionalidade) não é a única
+// fonte válida: módulos do catálogo de assinatura (nfse/financeiro/...) também liberam o menu pela
+// própria assinatura/trial/isenção da EMPRESA (STATE.modulosAtivos, mesma fonte da tela Assinatura) —
+// achado em auditoria (2026-11-09): Cliente Direto isento não via o item de menu porque o escritório
+// virtual dele nunca tinha o toggle de plataforma ligado (ninguém visita essa tela pra ele).
+function clientePodeVerModulo(modulo){
+  return escritorioTemFuncionalidade(modulo) || (Array.isArray(STATE.modulosAtivos) && STATE.modulosAtivos.includes(modulo));
+}
 function podeVerModulo(item){
-  if(STATE.user.perfil==='Cliente' && PAGINA_CLIENTE_MODULO[item.id] && !escritorioTemFuncionalidade(PAGINA_CLIENTE_MODULO[item.id])) return false;
+  if(STATE.user.perfil==='Cliente' && PAGINA_CLIENTE_MODULO[item.id] && !clientePodeVerModulo(PAGINA_CLIENTE_MODULO[item.id])) return false;
   // "Empresa" (Configuração > Empresa) só existe pro cliente direto (venda avulsa) — é quem precisa
   // preencher o próprio cadastro sozinho; cliente comum do escritório já chega com tudo pronto.
   if(item.id==='minha-empresa-config') return STATE.user.perfil==='Cliente' && !!STATE.user.ehClienteDireto;
@@ -2219,6 +2227,7 @@ async function boot(paginaInicial){
     STATE.configAbas = data.configAbas || null; // null = sem restrição, vê todas as abas de Configurações
     STATE.paginasCliente = data.paginasCliente || null; // null = sem restrição, cliente vê todas as próprias páginas
     STATE.funcionalidades = data.funcionalidades || null; // módulos liberados pro escritório (null = SuperAdmin, sem restrição)
+    STATE.modulosAtivos = data.modulosAtivos || null; // Cliente: módulos do catálogo com acesso real (isento/trial/assinatura)
   }catch(e){
     showLogin();
     return;

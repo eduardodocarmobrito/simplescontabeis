@@ -4247,6 +4247,7 @@ app.get("/api/auth/me", (req, res) => {
   let permissoes: Record<string, { visualizar: boolean; postar: boolean; editar: boolean }> = {};
   let configAbas: string[] | null = null; // null = sem restrição (vê todas)
   let paginasCliente: string[] | null = null; // null = sem restrição (cliente vê todas as próprias páginas)
+  let modulosAtivos: string[] | null = null; // Cliente: chaves do catálogo (nfse/financeiro/...) com acesso de verdade (isento/trial/assinatura)
   const funcionalidades = user.perfil === "SuperAdmin" ? null : funcionalidadesDoEscritorio(user.escritorioId);
   if (user.perfil === "Administrador") {
     for (const m of MODULOS) { const ok = funcionalidades!.includes(m); permissoes[m] = { visualizar: ok, postar: ok, editar: ok }; }
@@ -4262,9 +4263,15 @@ app.get("/api/auth/me", (req, res) => {
   } else if (user.perfil === "Cliente") {
     const paginas = sqlite.prepare(`SELECT pagina FROM cliente_paginas_visiveis WHERE user_id = ?`).all(user.id) as any[];
     if (paginas.length) paginasCliente = paginas.map((p) => p.pagina);
+    // escritorio_funcionalidades (via `funcionalidades` acima) é um toggle de PLATAFORMA do
+    // escritório contábil — não tem nenhuma relação com isento_assinatura/trial/assinatura da
+    // EMPRESA do cliente. Pro menu esconder/mostrar NFS-e/Financeiro/Emissão Automática certo pro
+    // cliente (inclusive Cliente Direto isento), precisa da mesma fonte que a tela de Assinatura já
+    // usa — achado em auditoria (2026-11-09): item de menu sumia mesmo com acesso liberado.
+    modulosAtivos = user.empresaId ? nfseModulosDaEmpresa(user.empresaId).filter((m) => m.acesso).map((m) => m.chave) : [];
   }
   const userComFlag = user.perfil === "Cliente" && user.empresaId ? { ...user, ehClienteDireto: empresaEhClienteDireto(user.empresaId) } : user;
-  res.json({ user: userComFlag, permissoes, configAbas, paginasCliente, funcionalidades });
+  res.json({ user: userComFlag, permissoes, configAbas, paginasCliente, funcionalidades, modulosAtivos });
 });
 app.get("/api/auth/minhas-empresas", requireAuth, (req, res) => {
   const user = (req as any).user;
