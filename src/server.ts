@@ -7806,7 +7806,13 @@ app.post("/api/ferias-robo/executar", blockCliente, requirePermissao("configurac
 });
 app.post("/api/ferias-robo/parar", blockCliente, requirePermissao("configuracoes", "editar"), requireEscritorioPrincipalDominio, (_req, res) => {
   garantirFeriasEstado(1);
-  sqlite.prepare(`UPDATE ferias_robo_estado SET parar_em = datetime('now'), ligado = 0, run_now_em = NULL WHERE escritorio_id = 1`).run();
+  // "Parar robô" promete "desliga o automático" (tooltip do botão) — mas o único gatilho automático
+  // real deste robô é o encadeamento com o Comparativo (encadeado_apos_comparativo), nunca `ligado`
+  // (coluna legada, nunca mais religada a 1). Sem desligar esse campo aqui, no dia seguinte o
+  // Comparativo termina de novo (agenda própria) e religa o Férias sozinho — o freio "parar_em" é
+  // resetado a NULL nesse religamento (comparativo-progresso), então o robô volta a rodar como se
+  // nunca tivesse sido parado. Achado em auditoria (2026-11-09).
+  sqlite.prepare(`UPDATE ferias_robo_estado SET parar_em = datetime('now'), ligado = 0, encadeado_apos_comparativo = 0, run_now_em = NULL WHERE escritorio_id = 1`).run();
   res.json({ ok: true });
 });
 app.get("/api/empresas/comparativo-movimento/log", blockCliente, requirePermissao("empresas", "visualizar"), (req, res) => {
