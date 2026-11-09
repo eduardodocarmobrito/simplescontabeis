@@ -11194,12 +11194,7 @@ async function pageIntegraContador(deepLinkEmpresaId){
           <div style="font-weight:600; margin-bottom:4px;">Frequência da Situação Fiscal</div>
           <p style="font-size:12px; color:var(--ink-soft); margin:0 0 8px;">A Situação Fiscal (SITFIS) é a consulta mais lenta e cara, e é uma "foto do momento" que quase não muda de um dia pro outro. Deixá-la menos frequente reduz os erros de "não respondeu em 5 minutos" e o custo, sem afetar DAS/DARF/Declaração (que continuam diários). <b>"Buscar agora" sempre traz a Situação Fiscal na hora.</b></p>
           <div class="field" style="max-width:280px;">
-            <select id="icSitfisFreq" ${podeEditar?'':'disabled'}>
-              <option value="1" ${Number(cfg.sitfisFrequenciaDias)===1?'selected':''}>Todo dia (junto com o resto)</option>
-              <option value="7" ${Number(cfg.sitfisFrequenciaDias)===7||cfg.sitfisFrequenciaDias==null?'selected':''}>Toda semana (recomendado)</option>
-              <option value="15" ${Number(cfg.sitfisFrequenciaDias)===15?'selected':''}>A cada 15 dias</option>
-              <option value="30" ${Number(cfg.sitfisFrequenciaDias)===30?'selected':''}>Todo mês</option>
-            </select>
+            ${comboSelectHtml('icSitfisFreq', 'Selecione…')}
           </div>
         </div>
       </div>
@@ -11214,12 +11209,25 @@ async function pageIntegraContador(deepLinkEmpresaId){
         <label class="checkbox-row"><input type="checkbox" id="icPesquisaPagamentoAtiva" ${cfg.pesquisaPagamentoAtiva?'checked':''} ${podeEditar?'':'disabled'}> Perguntar automaticamente se o cliente já pagou</label>
         <div class="field" style="max-width:280px; margin-top:8px;">
           <label>Quantos dias depois disparar a pergunta</label>
-          <select id="icPesquisaPagamentoDias" ${podeEditar?'':'disabled'}>
-            ${[2,3,5,7,10,15].map(d=>`<option value="${d}" ${Number(cfg.pesquisaPagamentoDias)===d?'selected':''}>${d} dias</option>`).join('')}
-          </select>
+          ${comboSelectHtml('icPesquisaPagamentoDias', 'Selecione…')}
         </div>
       </div>
     `;
+    const IC_SITFIS_FREQ_OPCOES = [
+      {id:'1', label:'Todo dia (junto com o resto)'},
+      {id:'7', label:'Toda semana (recomendado)'},
+      {id:'15', label:'A cada 15 dias'},
+      {id:'30', label:'Todo mês'},
+    ];
+    const IC_PESQUISA_DIAS_OPCOES = [2,3,5,7,10,15].map(d=>({id:String(d), label:`${d} dias`}));
+    {
+      const freqAtual = IC_SITFIS_FREQ_OPCOES.find(o=>o.id===String(cfg.sitfisFrequenciaDias ?? 7)) || IC_SITFIS_FREQ_OPCOES[1];
+      document.querySelector('#icSitfisFreq .combo-value').value = freqAtual.id;
+      document.querySelector('#icSitfisFreq .combo-input').value = freqAtual.label;
+      const diasAtual = IC_PESQUISA_DIAS_OPCOES.find(o=>o.id===String(cfg.pesquisaPagamentoDias ?? 5)) || IC_PESQUISA_DIAS_OPCOES[2];
+      document.querySelector('#icPesquisaPagamentoDias .combo-value').value = diasAtual.id;
+      document.querySelector('#icPesquisaPagamentoDias .combo-input').value = diasAtual.label;
+    }
     if(!podeEditar) body.querySelectorAll('input').forEach(el=>el.disabled=true);
     if(podeEditar) ligarTravaDocumento(document.getElementById('icCnpj'), 'cnpj');
     if(podeEditar) document.getElementById('btnIcSalvarConfig').addEventListener('click', async (ev)=>{
@@ -11284,25 +11292,28 @@ async function pageIntegraContador(deepLinkEmpresaId){
       finally{ chk.disabled = false; }
     });
     if(podeEditar){
+      const selDias = document.querySelector('#icPesquisaPagamentoDias .combo-value');
       const salvarPesquisaPagamento = async ()=>{
         const chk = document.getElementById('icPesquisaPagamentoAtiva');
-        const sel = document.getElementById('icPesquisaPagamentoDias');
-        chk.disabled = true; sel.disabled = true;
-        try{ await api('/integracontador/pesquisa-pagamento', { method:'PUT', body:{ ativa: chk.checked, dias: Number(sel.value) } }); toast('Pesquisa de pagamento salva.','ok'); }
+        chk.disabled = true;
+        try{ await api('/integracontador/pesquisa-pagamento', { method:'PUT', body:{ ativa: chk.checked, dias: Number(selDias.value) } }); toast('Pesquisa de pagamento salva.','ok'); }
         catch(e){ toast(e.message,'err'); }
-        finally{ chk.disabled = false; sel.disabled = false; }
+        finally{ chk.disabled = false; }
       };
       document.getElementById('icPesquisaPagamentoAtiva').addEventListener('change', salvarPesquisaPagamento);
-      document.getElementById('icPesquisaPagamentoDias').addEventListener('change', salvarPesquisaPagamento);
+      setupComboSelect('icPesquisaPagamentoDias', IC_PESQUISA_DIAS_OPCOES, salvarPesquisaPagamento);
     }
     if(podeEditar){
-      const selFreq = document.getElementById('icSitfisFreq');
+      const selFreq = document.querySelector('#icSitfisFreq .combo-value');
       let freqAnterior = selFreq.value;
-      selFreq.addEventListener('change', async ()=>{
-        selFreq.disabled = true;
+      setupComboSelect('icSitfisFreq', IC_SITFIS_FREQ_OPCOES, async ()=>{
         try{ await api('/integracontador/sitfis-frequencia', { method:'PUT', body:{ dias: Number(selFreq.value) } }); freqAnterior = selFreq.value; toast('Frequência da Situação Fiscal salva.','ok'); }
-        catch(e){ toast(e.message,'err'); selFreq.value = freqAnterior; }
-        finally{ selFreq.disabled = false; }
+        catch(e){
+          toast(e.message,'err');
+          selFreq.value = freqAnterior;
+          const freqItem = IC_SITFIS_FREQ_OPCOES.find(o=>o.id===freqAnterior);
+          if(freqItem) document.querySelector('#icSitfisFreq .combo-input').value = freqItem.label;
+        }
       });
     }
   }
