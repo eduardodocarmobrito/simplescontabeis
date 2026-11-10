@@ -298,7 +298,7 @@ const LICENCA_NFSE_HTML = `
 <li>A tolerância de uma parte quanto ao descumprimento de qualquer cláusula não implica novação nem renúncia de direitos. Alterações somente valerão por termo aditivo assinado pelas partes.</li>
 <li>Este contrato não cria vínculo societário, trabalhista, de representação ou de exclusividade entre as partes.</li>
 <li>A LICENCIADA não poderá ceder este contrato sem anuência escrita da LICENCIANTE. A LICENCIANTE poderá cedê-lo a sociedade que a suceda ou integre seu grupo, mediante comunicação à LICENCIADA, mantidas as mesmas condições.</li>
-<li>As partes admitem a assinatura eletrônica deste instrumento, inclusive por meio que não utilize certificado ICP-Brasil, como a plataforma Autentique (Lei nº 14.063/2020 e art. 10, §2º, da MP nº 2.200-2/2001), reconhecendo a validade, a autoria e a integridade das assinaturas assim apostas, e, assinado também por 2 (duas) testemunhas, constitui título executivo extrajudicial (art. 784, III e §4º, do Código de Processo Civil).</li>
+<li>As partes admitem a assinatura eletrônica deste instrumento, inclusive por meio que não utilize certificado ICP-Brasil, como a plataforma Autentique (Lei nº 14.063/2020 e art. 10, §2º, da MP nº 2.200-2/2001), reconhecendo a validade, a autoria e a integridade das assinaturas assim apostas, e que, assinado também por 2 (duas) testemunhas, constitui título executivo extrajudicial (art. 784, III e §4º, do Código de Processo Civil).</li>
 <li>Fica eleito o foro da comarca do domicílio da LICENCIADA, {{licenciada_cidade}}-{{licenciada_uf}}, para dirimir quaisquer questões oriundas deste contrato.</li>
 </ol>
 
