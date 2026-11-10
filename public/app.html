@@ -7474,7 +7474,7 @@ async function pageNotasEntrada(){
     try{ d = await api('/nfe/minha-empresa/dashboard?'+p.toString()); }
     catch(e){ body.innerHTML = '<div class="empty-state" style="color:var(--debit)">'+esc(e.message)+'</div>'; return; }
     if(!d.moduloAtivo){ body.innerHTML = ''; document.getElementById('neDashCard').style.display='none'; return; }
-    const tile = (label, val, sub, cor)=>`<div class="kpi" style="min-width:130px; flex:1;"><div style="font-size:10.5px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.3px;">${label}</div><div style="font-size:22px; font-weight:700; ${cor?'color:'+cor+';':''}">${val}</div>${sub?`<div style="font-size:11.5px; color:var(--ink-soft);">${sub}</div>`:''}</div>`;
+    const tile = (label, val, sub, cor)=>`<div class="kpi" style="min-width:130px; flex:1;"><div style="font-size:10.5px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.3px;">${label}</div><div style="font-size:22px; font-weight:700; ${cor?'color:'+cor+';':''}">${val}</div><div style="font-size:11.5px; color:var(--ink-soft);">${sub||'&nbsp;'}</div></div>`;
     const imp = d.impostos;
     const maxImp = Math.max(imp.icms,imp.pis,imp.cofins,imp.ipi,imp.ibs,imp.cbs,1);
     const bar = (label, val, cor)=>{ const pct = Math.round((val/maxImp)*100); return `<div style="margin-bottom:7px;"><div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:2px;"><span>${label}</span><span style="font-weight:600;">${fmtMoney(val)}</span></div><div style="background:var(--rule); border-radius:5px; height:10px; overflow:hidden;"><div style="width:${pct}%; height:100%; background:${cor};"></div></div></div>`; };
@@ -7485,20 +7485,20 @@ async function pageNotasEntrada(){
     const perfilItem = (ic, label, val, cor, flagKey)=>{
       const p = pct(val);
       const ativo = flagKey && nePerfilFlag===flagKey;
-      return `<div class="nePerfilTile" data-flag="${flagKey||''}" title="Clique pra filtrar os documentos por: ${esc(label)}" style="min-width:150px; flex:1; background:${ativo?'var(--accent-pale)':'var(--paper)'}; border:1px solid ${ativo?'var(--accent)':'var(--rule)'}; border-radius:8px; padding:8px 10px; cursor:pointer;">
+      return `<div class="nePerfilTile" data-flag="${flagKey||''}" title="Clique pra filtrar os documentos por: ${esc(label)}" style="min-width:150px; flex:1; background:${ativo?'var(--accent-pale)':'var(--paper)'}; ${ativo?'color:#0b3d2e;':''} border:1px solid ${ativo?'var(--accent)':'var(--rule)'}; border-radius:8px; padding:8px 10px; cursor:pointer;">
         <div style="display:flex; align-items:center; gap:6px; font-size:12.5px;"><span>${ic}</span><span style="flex:1;">${label}</span><b>${val}</b><span style="color:var(--ink-soft); font-size:11px;">${p}%</span></div>
         <div style="background:var(--rule); border-radius:4px; height:5px; overflow:hidden; margin-top:5px;"><div style="width:${p}%; height:100%; background:${cor};"></div></div>
       </div>`;
     };
     const todasAtivo = !nePerfilFlag;
-    const perfilTodas = `<div class="nePerfilTile" data-flag="" title="Mostrar todos os documentos (sem filtro de marcador)" style="min-width:150px; flex:1; display:flex; align-items:center; justify-content:center; gap:6px; font-size:12.5px; font-weight:600; background:${todasAtivo?'var(--accent-pale)':'var(--paper)'}; border:1px solid ${todasAtivo?'var(--accent)':'var(--rule)'}; border-radius:8px; padding:8px 10px; cursor:pointer;">🗂️ Todas</div>`;
+    const perfilTodas = `<div class="nePerfilTile" data-flag="" title="Mostrar todos os documentos (sem filtro de marcador)" style="min-width:150px; flex:1; display:flex; align-items:center; justify-content:center; gap:6px; font-size:12.5px; font-weight:600; background:${todasAtivo?'var(--accent-pale)':'var(--paper)'}; ${todasAtivo?'color:#0b3d2e;':''} border:1px solid ${todasAtivo?'var(--accent)':'var(--rule)'}; border-radius:8px; padding:8px 10px; cursor:pointer;">🗂️ Todas</div>`;
     const grupo = (titulo, cor, itens)=>`
       <div style="margin-top:10px;">
         <div style="font-size:11px; font-weight:700; color:${cor}; text-transform:uppercase; letter-spacing:.3px; margin-bottom:6px;">● ${titulo}</div>
         <div class="row" style="gap:8px; flex-wrap:wrap;">${itens}</div>
       </div>`;
     body.innerHTML = `
-      <div class="row" style="gap:10px; flex-wrap:wrap;">
+      <div class="row" style="gap:10px; flex-wrap:wrap; align-items:stretch;">
         ${tile('Total de notas', d.total, '')}
         ${saida ? tile('Emitidas', d.emitidas.qtd, fmtMoney(d.emitidas.valor)) : tile('Recebidas', d.recebidas.qtd, fmtMoney(d.recebidas.valor))}
         ${tile('Autorizadas', d.autorizadas, '', 'var(--accent-deep)')}
@@ -10421,7 +10421,7 @@ async function pageNfeBusca(){
       let d;
       try{ d = await api('/nfe/documentos/dashboard?'+p.toString()); }
       catch(e){ body.innerHTML = '<div class="empty-state" style="color:var(--debit)">'+esc(e.message)+'</div>'; return; }
-      const tile = (label, val, sub, cor)=>`<div class="kpi" style="min-width:130px; flex:1;"><div style="font-size:10.5px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.3px;">${label}</div><div style="font-size:22px; font-weight:700; ${cor?'color:'+cor+';':''}">${val}</div>${sub?`<div style="font-size:11.5px; color:var(--ink-soft);">${sub}</div>`:''}</div>`;
+      const tile = (label, val, sub, cor)=>`<div class="kpi" style="min-width:130px; flex:1;"><div style="font-size:10.5px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.3px;">${label}</div><div style="font-size:22px; font-weight:700; ${cor?'color:'+cor+';':''}">${val}</div><div style="font-size:11.5px; color:var(--ink-soft);">${sub||'&nbsp;'}</div></div>`;
       const imp = d.impostos;
       const maxImp = Math.max(imp.icms,imp.pis,imp.cofins,imp.ipi,imp.ibs,imp.cbs,1);
       const bar = (label, val, cor)=>{ const pct = Math.round((val/maxImp)*100); return `<div style="margin-bottom:7px;"><div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:2px;"><span>${label}</span><span style="font-weight:600;">${fmtMoney(val)}</span></div><div style="background:var(--rule); border-radius:5px; height:10px; overflow:hidden;"><div style="width:${pct}%; height:100%; background:${cor};"></div></div></div>`; };
@@ -10434,20 +10434,20 @@ async function pageNfeBusca(){
       const perfilItem = (ic, label, val, cor, flagKey)=>{
         const p = pct(val);
         const ativo = flagKey && nfePerfilFlag===flagKey;
-        return `<div class="nfePerfilTile" data-flag="${flagKey||''}" title="Clique pra filtrar os documentos por: ${esc(label)}" style="min-width:150px; flex:1; background:${ativo?'var(--accent-pale)':'var(--paper)'}; border:1px solid ${ativo?'var(--accent)':'var(--rule)'}; border-radius:8px; padding:8px 10px; cursor:pointer;">
+        return `<div class="nfePerfilTile" data-flag="${flagKey||''}" title="Clique pra filtrar os documentos por: ${esc(label)}" style="min-width:150px; flex:1; background:${ativo?'var(--accent-pale)':'var(--paper)'}; ${ativo?'color:#0b3d2e;':''} border:1px solid ${ativo?'var(--accent)':'var(--rule)'}; border-radius:8px; padding:8px 10px; cursor:pointer;">
           <div style="display:flex; align-items:center; gap:6px; font-size:12.5px;"><span>${ic}</span><span style="flex:1;">${label}</span><b>${val}</b><span style="color:var(--ink-soft); font-size:11px;">${p}%</span></div>
           <div style="background:var(--rule); border-radius:4px; height:5px; overflow:hidden; margin-top:5px;"><div style="width:${p}%; height:100%; background:${cor};"></div></div>
         </div>`;
       };
       const todasAtivo = !nfePerfilFlag;
-      const perfilTodas = `<div class="nfePerfilTile" data-flag="" title="Mostrar todos os documentos (sem filtro de marcador)" style="min-width:150px; flex:1; display:flex; align-items:center; justify-content:center; gap:6px; font-size:12.5px; font-weight:600; background:${todasAtivo?'var(--accent-pale)':'var(--paper)'}; border:1px solid ${todasAtivo?'var(--accent)':'var(--rule)'}; border-radius:8px; padding:8px 10px; cursor:pointer;">🗂️ Todas</div>`;
+      const perfilTodas = `<div class="nfePerfilTile" data-flag="" title="Mostrar todos os documentos (sem filtro de marcador)" style="min-width:150px; flex:1; display:flex; align-items:center; justify-content:center; gap:6px; font-size:12.5px; font-weight:600; background:${todasAtivo?'var(--accent-pale)':'var(--paper)'}; ${todasAtivo?'color:#0b3d2e;':''} border:1px solid ${todasAtivo?'var(--accent)':'var(--rule)'}; border-radius:8px; padding:8px 10px; cursor:pointer;">🗂️ Todas</div>`;
       const grupo = (titulo, cor, itens)=>`
         <div style="margin-top:10px;">
           <div style="font-size:11px; font-weight:700; color:${cor}; text-transform:uppercase; letter-spacing:.3px; margin-bottom:6px;">● ${titulo}</div>
           <div class="row" style="gap:8px; flex-wrap:wrap;">${itens}</div>
         </div>`;
       body.innerHTML = `
-        <div class="row" style="gap:10px; flex-wrap:wrap;">
+        <div class="row" style="gap:10px; flex-wrap:wrap; align-items:stretch;">
           ${tile('Total de notas', d.total, '')}
           ${tile('Recebidas', d.recebidas.qtd, fmtMoney(d.recebidas.valor))}
           ${tile('Emitidas', d.emitidas.qtd, fmtMoney(d.emitidas.valor))}
