@@ -25641,8 +25641,8 @@ if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'pesquisa_sati
 // com o indicador "Pago" (igual à tela do e-CAC). Guardamos a situação por competência aqui e o card
 // "DAS Não Pago" do Início lê só desta tabela (nunca chama a API ao abrir o Início). Atualiza:
 //  - de graça, sempre que a busca do Integra Contador ou o recálculo já consultam as declarações;
-//  - por uma verificação diária própria (dasPagamentoVerificarTodas) que só consulta empresas com DAS
-//    VENCIDO ainda não confirmado como pago — cada consulta é uma chamada PAGA ao SERPRO.
+//  - pela verificação MENSAL (dia 23, dasPagamentoVerificarTodas) ou "Executar agora" no card — consulta
+//    todas as optantes; cada consulta é uma chamada PAGA ao SERPRO.
 sqlite.exec(`CREATE TABLE IF NOT EXISTS integracontador_das_situacao (
   empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
   escritorio_id INTEGER NOT NULL,
@@ -25762,66 +25762,76 @@ async function dasPagamentoVerificarEmpresa(empresaId: number, anos: number[]): 
     throw e;
   }
 }
-// Rotina diária (a partir das 08h de Brasília). Economia: só consulta quem precisa —
-//  - nunca verificada: 1ª carga (ano atual + anterior);
-//  - competência do mês anterior já vencida (com folga) e sem "pago" confirmado;
-//  - competências antigas não pagas: diário até 60 dias de atraso, depois só às segundas.
-// Nunca mais de 1 consulta por empresa a cada ~20h (sobrevive a reinício do container).
-let dasPagamentoRodando = false;
-async function dasPagamentoVerificarTodas() {
-  if (dasPagamentoRodando) return;
+// Rotina MENSAL (pedido do usuário 2026-11-10): roda uma vez por mês, no dia 23 (a partir das 08h de
+// Brasília — 3 dias depois do vencimento do dia 20, já com a compensação bancária). Se o servidor
+// estiver fora no dia 23, roda no primeiro momento depois disso, ainda no mesmo mês. Consulta TODAS
+// as empresas optantes ativas (ano corrente + anos com DAS ainda em aberto; em janeiro também o ano
+// anterior). "Executar agora" no card dispara a mesma rotina na hora.
+sqlite.exec(`CREATE TABLE IF NOT EXISTS integracontador_das_rotina (mes TEXT PRIMARY KEY, iniciada_em TEXT DEFAULT (datetime('now')), concluida_em TEXT, origem TEXT)`);
+// A carga inicial já rodou em 10/11/2026 — a próxima automática é só em 23/12/2026.
+sqlite.exec(`INSERT OR IGNORE INTO integracontador_das_rotina (mes, concluida_em, origem) VALUES ('2026-11', datetime('now'), 'carga_inicial')`);
+const DAS_ROTINA_DIA = 23;
+let dasPagamentoProgresso: { rodando: boolean; total: number; feitas: number; erros: number; iniciadaEm: string | null; concluidaEm: string | null } = { rodando: false, total: 0, feitas: 0, erros: 0, iniciadaEm: null, concluidaEm: null };
+async function dasPagamentoVerificarTodas(origem: "mensal" | "manual" = "mensal") {
+  if (dasPagamentoProgresso.rodando) return;
   const agora = agoraBrasilia();
-  if (agora.hora < 8) return;
-  dasPagamentoRodando = true;
+  const mesChave = `${agora.ano}-${String(agora.mes).padStart(2, "0")}`;
+  sqlite.prepare(`INSERT INTO integracontador_das_rotina (mes, origem) VALUES (?, ?) ON CONFLICT(mes) DO UPDATE SET iniciada_em = datetime('now'), concluida_em = NULL, origem = excluded.origem`).run(mesChave, origem);
+  const empresas = sqlite
+    .prepare(
+      `SELECT c.empresa_id as empresaId
+       FROM integracontador_empresa_config c
+       JOIN integracontador_config g ON g.escritorio_id = c.escritorio_id AND g.ativo = 1
+       JOIN empresas e ON e.id = c.empresa_id AND e.ativo = 1
+       WHERE c.ativo = 1 AND c.optante_simples_nacional = 1
+       ORDER BY e.nome`
+    )
+    .all() as any[];
+  dasPagamentoProgresso = { rodando: true, total: empresas.length, feitas: 0, erros: 0, iniciadaEm: new Date().toISOString(), concluidaEm: null };
   try {
-    const hoje = hojeBrasiliaIso();
-    const segunda = new Date(hoje + "T00:00:00Z").getUTCDay() === 1;
-    const mesAnt = new Date(Date.UTC(agora.ano, agora.mes - 2, 1));
-    const compMesAnt = `${mesAnt.getUTCFullYear()}${String(mesAnt.getUTCMonth() + 1).padStart(2, "0")}`;
-    const empresas = sqlite
-      .prepare(
-        `SELECT c.empresa_id as empresaId, c.escritorio_id as escritorioId, v.verificado_em as verificadoEm
-         FROM integracontador_empresa_config c
-         JOIN integracontador_config g ON g.escritorio_id = c.escritorio_id AND g.ativo = 1
-         JOIN empresas e ON e.id = c.empresa_id AND e.ativo = 1
-         LEFT JOIN integracontador_das_verificacao v ON v.empresa_id = c.empresa_id
-         WHERE c.ativo = 1 AND c.optante_simples_nacional = 1 AND (v.verificado_em IS NULL OR v.verificado_em < datetime('now', '-20 hours'))`
-      )
-      .all() as any[];
     for (const emp of empresas) {
-      const anos = new Set<number>();
-      if (!emp.verificadoEm) {
-        anos.add(agora.ano); anos.add(agora.ano - 1);
-      } else {
-        const corte = painelMonitoramentoCorte(emp.escritorioId);
-        const situMesAnt = sqlite.prepare(`SELECT pago FROM integracontador_das_situacao WHERE empresa_id = ? AND periodo_apuracao = ?`).get(emp.empresaId, compMesAnt) as any;
-        const mesAntVencido = hoje > somarDiasIso(dasVencimentoIso(compMesAnt), DAS_FOLGA_DIAS);
-        if (mesAntVencido && !competenciasEmParcelamento(emp.empresaId).has(compMesAnt)) {
-          // Sem linha = ainda não sabíamos da declaração (o card "DAS em Atraso" cobre a não entregue) —
-          // só reconfere 1x por semana pra não pagar consulta todo dia por empresa que não declarou.
-          if (situMesAnt ? situMesAnt.pago === 0 : segunda) anos.add(mesAnt.getUTCFullYear());
-        }
-        for (const r of dasPendentesDaEmpresa(emp.empresaId, corte)) {
-          const atraso = (Date.parse(hoje + "T00:00:00Z") - Date.parse(r.venc + "T00:00:00Z")) / 86_400_000;
-          if (atraso <= 60 || segunda) anos.add(Number(r.p.slice(0, 4)));
-        }
-      }
-      if (!anos.size) continue;
+      const anos = new Set<number>([agora.ano]);
+      if (agora.mes === 1) anos.add(agora.ano - 1);
+      for (const r of sqlite.prepare(`SELECT DISTINCT substr(periodo_apuracao, 1, 4) a FROM integracontador_das_situacao WHERE empresa_id = ? AND pago = 0`).all(emp.empresaId) as any[]) anos.add(Number(r.a));
       try {
         await dasPagamentoVerificarEmpresa(emp.empresaId, [...anos]);
       } catch (e: any) {
+        dasPagamentoProgresso.erros++;
         console.error(`[DAS pago] verificação (empresa ${emp.empresaId}) falhou:`, e.message);
       }
+      dasPagamentoProgresso.feitas++;
       await new Promise((r) => setTimeout(r, 1500));
     }
   } catch (e: any) {
     console.error("[DAS pago] rotina:", e.message);
   } finally {
-    dasPagamentoRodando = false;
+    dasPagamentoProgresso.rodando = false;
+    dasPagamentoProgresso.concluidaEm = new Date().toISOString();
+    sqlite.prepare(`UPDATE integracontador_das_rotina SET concluida_em = datetime('now') WHERE mes = ?`).run(mesChave);
   }
 }
-setInterval(() => void dasPagamentoVerificarTodas(), 30 * 60_000);
-setTimeout(() => void dasPagamentoVerificarTodas(), 3 * 60_000);
+function dasPagamentoAgendador() {
+  const agora = agoraBrasilia();
+  if (agora.dia < DAS_ROTINA_DIA || agora.hora < 8) return;
+  const mesChave = `${agora.ano}-${String(agora.mes).padStart(2, "0")}`;
+  if (sqlite.prepare(`SELECT 1 FROM integracontador_das_rotina WHERE mes = ?`).get(mesChave)) return;
+  void dasPagamentoVerificarTodas("mensal");
+}
+setInterval(dasPagamentoAgendador, 30 * 60_000);
+// "Executar agora" (card DAS Não Pago): roda a verificação de TODAS as empresas em segundo plano.
+app.post("/api/dashboard/das-nao-pago/executar", blockCliente, requirePermissao("dashboard", "editar"), (req, res) => {
+  if (dasPagamentoProgresso.rodando) return res.status(409).json({ error: "A verificação já está em andamento." });
+  void dasPagamentoVerificarTodas("manual");
+  res.json({ ok: true, progresso: dasPagamentoProgresso });
+});
+app.get("/api/dashboard/das-nao-pago/status", requirePermissao("dashboard", "visualizar"), (req, res) => {
+  const ultima = sqlite.prepare(`SELECT mes, iniciada_em, concluida_em, origem FROM integracontador_das_rotina ORDER BY mes DESC LIMIT 1`).get() as any;
+  const h = agoraBrasilia();
+  const proxima = h.dia < DAS_ROTINA_DIA && !sqlite.prepare(`SELECT 1 FROM integracontador_das_rotina WHERE mes = ?`).get(`${h.ano}-${String(h.mes).padStart(2, "0")}`)
+    ? `${String(DAS_ROTINA_DIA)}/${String(h.mes).padStart(2, "0")}/${h.ano}`
+    : (() => { const d = new Date(Date.UTC(h.ano, h.mes, DAS_ROTINA_DIA)); return `${DAS_ROTINA_DIA}/${String(d.getUTCMonth() + 1).padStart(2, "0")}/${d.getUTCFullYear()}`; })();
+  res.json({ progresso: dasPagamentoProgresso, ultima, proxima });
+});
 // "Verificar agora" (card DAS Não Pago) — consulta paga, então no máximo 1x a cada 10 min por empresa.
 app.post("/api/dashboard/das-nao-pago/verificar", blockCliente, requirePermissao("dashboard", "visualizar"), async (req, res) => {
   const user = (req as any).user;

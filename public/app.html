@@ -3606,6 +3606,7 @@ function cardDetalheModal(c){
   // Consulta avulsa da Caixa Postal do e-CAC — não espera a busca semanal do Integra Contador, só
   // esse serviço pra todas as empresas habilitadas (sem disparar DAS/DCTF-Web/Situação Fiscal junto).
   const consultaCaixaPostal = c.tipo==='caixapostal_nao_lida' && can('dashboard','editar');
+  const execDasNaoPago = c.tipo==='das_nao_pago' && can('dashboard','editar');
   openModal(`
     <h3>${esc(c.titulo)}</h3>
     ${impCfg? `<div class="row" style="align-items:center; gap:10px; margin-bottom:10px; flex-wrap:wrap;">
@@ -3617,6 +3618,10 @@ function cardDetalheModal(c){
     ${consultaCaixaPostal? `<div class="row" style="align-items:center; gap:10px; margin-bottom:10px; flex-wrap:wrap;">
       <button class="btn primary" id="caixaPostalConsultarBtn" title="Consulta no e-CAC via Integra Contador, pra todas as empresas habilitadas">🔄 Consultar agora</button>
       <span id="caixaPostalMsg" style="font-size:12px; color:var(--ink-soft);">Busca as mensagens não lidas de todas as empresas agora, sem esperar a rotina automática.</span>
+    </div>`:''}
+    ${execDasNaoPago? `<div class="row" style="align-items:center; gap:10px; margin-bottom:10px; flex-wrap:wrap;">
+      <button class="btn primary" id="dasNpExecBtn" title="Consulta na Receita (Integra Contador) o pagamento do DAS de todas as empresas optantes — cada consulta é cobrada pelo SERPRO">🔄 Executar agora</button>
+      <span id="dasNpMsg" style="font-size:12px; color:var(--ink-soft);">Verificação automática uma vez por mês, todo dia 23.</span>
     </div>`:''}
     <div class="field" style="max-width:360px; margin-bottom:10px;"><input type="text" id="cdFiltro" placeholder="Buscar por empresa…" autocomplete="off" disabled></div>
     <div id="cardDetalheBody"><div class="empty-state">Carregando…</div></div>
@@ -3661,6 +3666,38 @@ function cardDetalheModal(c){
     });
   }
   let caixaPostalConsultouNestaSessao = false;
+  if(execDasNaoPago){
+    const btn = document.getElementById('dasNpExecBtn'), msg = document.getElementById('dasNpMsg');
+    let timer = null;
+    const mostrar = (st)=>{
+      const p = st.progresso||{};
+      if(p.rodando){
+        btn.disabled = true; btn.textContent = 'Executando…';
+        msg.style.color = 'var(--ink-soft)';
+        msg.textContent = `Consultando na Receita: ${p.feitas}/${p.total} empresa(s)${p.erros?` · ${p.erros} com erro`:''}…`;
+        return true;
+      }
+      btn.disabled = false; btn.textContent = '🔄 Executar agora';
+      const u = st.ultima;
+      msg.style.color = 'var(--ink-soft)';
+      msg.textContent = `Automática uma vez por mês, todo dia 23 — próxima: ${st.proxima}.${u&&u.concluida_em?` Última: ${fmtDateHora(u.concluida_em)}${p.concluidaEm&&p.total?` (${p.total-p.erros}/${p.total} ok${p.erros?`, ${p.erros} com erro — sem procuração no e-CAC ou CPF`:''})`:''}.`:''}`;
+      return false;
+    };
+    const acompanhar = async ()=>{
+      try{
+        const st = await api('/dashboard/das-nao-pago/status');
+        const rodando = mostrar(st);
+        if(rodando){ timer = setTimeout(acompanhar, 3000); }
+        else if(timer!==null){ timer = null; carregar(); pageDashboard(); }
+      }catch(e){}
+    };
+    btn.addEventListener('click', async ()=>{
+      if(!confirmar('Consultar agora na Receita o pagamento do DAS de todas as empresas optantes? (cada consulta é cobrada pelo SERPRO)')) return;
+      try{ await api('/dashboard/das-nao-pago/executar', { method:'POST' }); timer = 0; acompanhar(); }
+      catch(e){ msg.style.color = 'var(--debit)'; msg.textContent = e.message; }
+    });
+    acompanhar().then(()=>{ if(btn.disabled) timer = timer||0; });
+  }
   if(consultaCaixaPostal){
     const cpBtn = document.getElementById('caixaPostalConsultarBtn');
     const cpMsg = document.getElementById('caixaPostalMsg');
@@ -3741,7 +3778,7 @@ function cardDetalheModal(c){
             <td style="white-space:nowrap;">${i.verificadoEm?fmtDateHora(i.verificadoEm):'—'}${i.ultimoErro?`<div style="font-size:11px; color:var(--debit);" title="${esc(i.ultimoErro)}">falhou na última tentativa</div>`:''}</td>
             <td style="text-align:right;"><button class="btn small das-np-verif" data-emp="${i.empresaId}">Verificar agora</button></td></tr>`).join('')}
         </tbody></table>
-        <div style="font-size:11.5px; color:var(--ink-soft); margin-top:8px;">Consulta automática diária na Receita (PGDAS-D, coluna "Pago" do e-CAC) — só das empresas com DAS vencido. Pagamento feito hoje pode levar até ${2} dias pra aparecer. Competências em parcelamento não entram.</div>`;
+        <div style="font-size:11.5px; color:var(--ink-soft); margin-top:8px;">Consulta na Receita (PGDAS-D, coluna "Pago" do e-CAC) uma vez por mês, todo dia 23 — ou em "Executar agora". Pagamento feito hoje pode levar até ${2} dias pra aparecer. Competências em parcelamento não entram.</div>`;
         box.querySelectorAll('.das-np-verif').forEach(b=>b.addEventListener('click', async ()=>{
           b.disabled = true; b.textContent = 'Consultando…';
           try{ const r = await api('/dashboard/das-nao-pago/verificar', { method:'POST', body:{ empresaId:Number(b.dataset.emp) } }); toast(r.pendentes?'Ainda consta como não pago na Receita.':'Pagamento confirmado na Receita ✅','ok'); cardDetalheModal(c); }
