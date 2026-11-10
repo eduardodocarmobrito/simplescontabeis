@@ -7028,9 +7028,23 @@ function novaEnvioAtribModal(empresas, templates){
 }
 
 function recalcularDasModal(periodoId, onConcluido){
+  recalcularGuiaModal(periodoId, {
+    titulo: 'Solicitar recálculo do DAS',
+    ajuda: 'Busca a guia recalculada direto na Receita. Se quiser, informe a data de vencimento — deixe em branco pra usar a data que a Receita devolver.',
+    rota: '/envio/periodos/'+periodoId+'/solicitar-recalculo-das',
+  }, onConcluido);
+}
+function recalcularDarfDctfwebModal(periodoId, onConcluido){
+  recalcularGuiaModal(periodoId, {
+    titulo: 'Solicitar recálculo do DARF-DCTF-Web',
+    ajuda: 'Busca a guia recalculada direto na Receita a partir da declaração já transmitida. A Receita não devolve a data de vencimento dessa guia — tentamos identificar automaticamente no PDF, mas vale informar aqui se souber, pra garantir.',
+    rota: '/envio/periodos/'+periodoId+'/solicitar-recalculo-darf-dctfweb',
+  }, onConcluido);
+}
+function recalcularGuiaModal(periodoId, { titulo, ajuda, rota }, onConcluido){
   openModal(`
-    <h3>Solicitar recálculo do DAS</h3>
-    <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-4px;">Busca a guia recalculada direto na Receita. Se quiser, informe a data de vencimento — deixe em branco pra usar a data que a Receita devolver.</p>
+    <h3>${esc(titulo)}</h3>
+    <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-4px;">${esc(ajuda)}</p>
     <div class="field"><label>Data de vencimento (opcional)</label>${dateInputHtml('recalcDasVenc', '')}</div>
     <div class="modal-actions">
       <button class="btn" id="recalcDasCancel">Cancelar</button>
@@ -7044,9 +7058,9 @@ function recalcularDasModal(periodoId, onConcluido){
     const btn = document.getElementById('recalcDasConfirmar');
     btn.disabled = true; btn.textContent = 'Recalculando…';
     try{
-      await api('/envio/periodos/'+periodoId+'/solicitar-recalculo-das', { method:'POST', body:{ vencimento } });
+      await api(rota, { method:'POST', body:{ vencimento } });
       closeModal();
-      toast('DAS recalculado — já disponível pra baixar.','ok');
+      toast('Recalculado — já disponível pra baixar.','ok');
       onConcluido();
     }catch(e){ toast(e.message,'err'); btn.disabled = false; btn.textContent = 'Solicitar recálculo'; }
   });
@@ -7091,7 +7105,7 @@ function envioDocBlocoHtml(d, podeEditar, podePostar, souCliente, mostrarVencime
     </div>
   </div>`;
 }
-function envioCelulaHtml(p, accept, podePostar, podeEditar, souCliente, mostrarVencimento, ehDas, ehAvulso, periodicidade){
+function envioCelulaHtml(p, accept, podePostar, podeEditar, souCliente, mostrarVencimento, ehDas, ehAvulso, periodicidade, ehDarfDctfweb){
   const inputId = `ef_${p.periodoId}`;
   const docs = p.documentos || [];
   const quotaBadge = p.parcelaNumero
@@ -7118,8 +7132,11 @@ function envioCelulaHtml(p, accept, podePostar, podeEditar, souCliente, mostrarV
   // Antes só o cliente via esse botão — o escritório (Colaborador/Administrador) tinha que abrir o
   // Integra Contador e usar "Buscar agora" pra conseguir o mesmo resultado. Agora quem pode postar
   // nessa grade também recalcula direto daqui, sem sair da tela.
-  const btnRecalculo = (souCliente || podePostar) && ehDas && docs.length
-    ? `<button class="btn small" data-act="recalcular-das" data-periodo="${p.periodoId}" style="margin-top:6px;">Solicitar recálculo do DAS</button>` : '';
+  const podeRecalcular = (souCliente || podePostar) && docs.length;
+  const btnRecalculo = podeRecalcular && ehDas
+    ? `<button class="btn small" data-act="recalcular-das" data-periodo="${p.periodoId}" style="margin-top:6px;">Solicitar recálculo do DAS</button>`
+    : podeRecalcular && ehDarfDctfweb
+    ? `<button class="btn small" data-act="recalcular-darf-dctfweb" data-periodo="${p.periodoId}" style="margin-top:6px;">Solicitar recálculo do DARF-DCTF-Web</button>` : '';
   // "Sem imposto devido" — pra competência (ex.: IRPJ/CSLL trimestral com prejuízo fiscal) em que
   // não existe guia nenhuma pra anexar, mas a pendência do card continuaria acesa pra sempre sem
   // isso. Só faz sentido pra período com mês (mensal/trimestral) e ainda sem documento nenhum.
@@ -7214,6 +7231,9 @@ function wireEnvioGradeEvents(container, atribuicaoId, souCliente){
   container.querySelectorAll('[data-act="recalcular-das"]').forEach(b=>b.addEventListener('click', ()=>{
     recalcularDasModal(b.dataset.periodo, ()=>abrirEnvioGrade(atribuicaoId, souCliente));
   }));
+  container.querySelectorAll('[data-act="recalcular-darf-dctfweb"]').forEach(b=>b.addEventListener('click', ()=>{
+    recalcularDarfDctfwebModal(b.dataset.periodo, ()=>abrirEnvioGrade(atribuicaoId, souCliente));
+  }));
   container.querySelectorAll('[data-act="excluir-doc"]').forEach(b=>b.addEventListener('click', async ()=>{
     if(!confirmar('Excluir este documento enviado? O cliente já pode ter recebido por e-mail — isso só remove daqui do site.')) return;
     try{ await api('/envio/documentos/'+b.dataset.doc, { method:'DELETE' }); toast('Excluído.','ok'); abrirEnvioGrade(atribuicaoId, souCliente); }
@@ -7283,6 +7303,7 @@ async function abrirEnvioGrade(atribuicaoId, souCliente){
   const podePostar = !souCliente && can('envio','postar');
   const podeEditar = !souCliente && can('envio','editar');
   const ehDas = atribuicao.templateNome === 'DAS - Mensal';
+  const ehDarfDctfweb = atribuicao.templateNome === 'DARF - DCTF-Web';
   const accept = (atribuicao.accept||[]).includes('qualquer') ? '' : (atribuicao.accept||[]).map(a=>({ofx:'.ofx',pdf:'.pdf',zip:'.zip,.rar,.7z',xml:'.xml',imagem:'.png,.jpg,.jpeg'}[a]||'')).join(',');
 
   main().innerHTML = `
@@ -7303,7 +7324,7 @@ async function abrirEnvioGrade(atribuicaoId, souCliente){
   if(grade.length){
     const tbody = document.getElementById('envioGradeBody');
     const ehAvulso = atribuicao.periodicidade==='avulso';
-    const rowHtml = (p, extra='') => `<tr ${extra} data-periodo="${p.periodoId}"><td><b>${esc(rotuloPeriodoEnvio(p, atribuicao.periodicidade))}</b></td><td>${envioCelulaHtml(p, accept, podePostar, podeEditar, souCliente, atribuicao.detectarVencimento, ehDas, ehAvulso, atribuicao.periodicidade)}</td></tr>`;
+    const rowHtml = (p, extra='') => `<tr ${extra} data-periodo="${p.periodoId}"><td><b>${esc(rotuloPeriodoEnvio(p, atribuicao.periodicidade))}</b></td><td>${envioCelulaHtml(p, accept, podePostar, podeEditar, souCliente, atribuicao.detectarVencimento, ehDas, ehAvulso, atribuicao.periodicidade, ehDarfDctfweb)}</td></tr>`;
     if(ehAvulso){
       tbody.innerHTML = grade.map(p=>rowHtml(p)).join('');
     } else {

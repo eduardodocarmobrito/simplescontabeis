@@ -10173,6 +10173,75 @@ app.post("/api/envio/solicitar-recalculo-das", requireCliente, empresaInativaBlo
   if (!r.ok) return res.status(r.status).json({ error: r.error });
   res.json({ ok: true });
 });
+// Mesmo conceito do recálculo de DAS, pro DARF da DCTF-Web (GERARGUIA31) — acrescido em 2026-11-10.
+// Diferenças importantes em relação ao DAS: (1) a API não devolve vencimento nem número do documento
+// estruturados, então tenta extrair do texto do próprio PDF devolvido e aceita um valor manual como
+// reforço/substituição; (2) não existe checagem de "já pago" aqui (o DAS tem duas, via
+// consultarDeclaracoesPorAno/consultarPagamentos — não há como cruzar isso sem um numeroDocumento pro
+// DARF); (3) GERARGUIA31 nunca tinha sido exercitado contra uma conta real antes desta função.
+async function executarRecalculoDarfDctfweb(periodoId: number, user: any, vencimentoManual?: string | null): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+  const periodo = sqlite
+    .prepare(
+      `SELECT p.*, a.empresa_id as empresaId, t.nome as templateNome
+       FROM envio_periodos p JOIN envio_atribuicoes a ON a.id = p.atribuicao_id JOIN envio_templates t ON t.id = a.template_id
+       WHERE p.id = ?`
+    )
+    .get(periodoId) as any;
+  if (!periodo) return { ok: false, status: 404, error: "Período não encontrado." };
+  if (user.perfil === "Cliente") {
+    if (periodo.empresaId !== user.empresaId) return { ok: false, status: 404, error: "Período não encontrado." };
+  } else if (!podeAcessarEmpresa(user, periodo.empresaId)) {
+    return { ok: false, status: 403, error: "Sem acesso a esta empresa." };
+  }
+  if (periodo.templateNome !== "DARF - DCTF-Web") return { ok: false, status: 400, error: "Esse período não é de DARF-DCTF-Web." };
+  const temDocumento = sqlite.prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id = ?`).get(periodoId);
+  if (!temDocumento) return { ok: false, status: 409, error: "O DARF original dessa competência ainda não foi disponibilizado — aguarde a rotina mensal antes de pedir recálculo." };
+  const jaPediuHoje = sqlite
+    .prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id = ? AND observacao LIKE 'DARF%recalculado%' AND date(enviado_em) = date('now')`)
+    .get(periodoId);
+  if (jaPediuHoje) return { ok: false, status: 429, error: "Só é possível pedir um recálculo por dia pra essa competência — tente de novo amanhã." };
+  const empConfig = getIntegraContadorEmpresaConfig(periodo.empresaId);
+  const cfg = getIntegraContadorConfig(empConfig.escritorio_id);
+  if (!cfg.ativo || !empConfig.ativo) return { ok: false, status: 400, error: "O Integra Contador não está ativo pra essa empresa — fale com o escritório." };
+  const empresa = sqlite.prepare(`SELECT cnpj FROM empresas WHERE id = ?`).get(periodo.empresaId) as any;
+  const anoPA = String(periodo.ano);
+  const mesPA = String(periodo.mes).padStart(2, "0");
+  try {
+    const token = await obterTokenIntegraContador(cfg);
+    const guia = await integracontador.gerarGuiaDctfWeb(token, cfg.cnpj, empresa.cnpj, anoPA, mesPA);
+    if (!guia.pdfBase64) return { ok: false, status: 502, error: "A Receita não devolveu a guia recalculada — tente de novo mais tarde (pode ser que a declaração DCTFWeb dessa competência ainda não tenha sido transmitida)." };
+    const quem = user.perfil === "Cliente" ? "pelo cliente" : `pelo escritório (${user.nome})`;
+    const observacao = `DARF (DCTF-Web) recalculado — solicitado ${quem} em ${new Date().toLocaleDateString("pt-BR")}.`;
+    let vencIso: string | null = vencimentoManual || null;
+    if (!vencIso) {
+      try {
+        vencIso = await extrairVencimentoDeAnexo(Buffer.from(guia.pdfBase64, "base64"), "application/pdf");
+      } catch (e: any) {
+        console.error(`[Integra Contador] extração de vencimento do DARF DCTF-Web (empresa ${periodo.empresaId}) falhou:`, e.message);
+      }
+    }
+    integraContadorAnexarDarfDctfwebEmEnvio(empConfig.escritorio_id, periodo.empresaId, guia, observacao, true, vencIso, vencimentoManual ? "manual" : "automatico");
+    sqlite.prepare(`UPDATE envio_periodos SET solicitado_em = datetime('now'), solicitado_por = ?, solicitacao_tipo = 'recalculo_darf_dctfweb' WHERE id = ?`).run(user.id, periodoId);
+    const caminho = salvarPdfBase64EmCache(`darf_dctfweb_${periodo.empresaId}_${anoPA}${mesPA}_${Date.now()}`, guia.pdfBase64);
+    sqlite
+      .prepare(`INSERT INTO integracontador_documentos (empresa_id, escritorio_id, tipo, periodo_apuracao, data_vencimento, pdf_path) VALUES (?, ?, 'darf_dctfweb', ?, ?, ?)`)
+      .run(periodo.empresaId, empConfig.escritorio_id, guia.periodoApuracao, vencIso ? vencIso.replace(/-/g, "") : null, caminho);
+    return { ok: true };
+  } catch (e: any) {
+    return { ok: false, status: 502, error: e.message };
+  }
+}
+app.post("/api/envio/periodos/:periodoId/solicitar-recalculo-darf-dctfweb", async (req, res) => {
+  const user = (req as any).user;
+  if (user.perfil === "Colaborador" && !hasPermissao(user, "envio", "postar")) {
+    return res.status(403).json({ error: "Sem permissão para recalcular DARF-DCTF-Web." });
+  }
+  const vencimento = req.body?.vencimento;
+  if (vencimento && !/^\d{4}-\d{2}-\d{2}$/.test(vencimento)) return res.status(400).json({ error: "Data de vencimento inválida." });
+  const r = await executarRecalculoDarfDctfweb(Number(req.params.periodoId), user, vencimento || null);
+  if (!r.ok) return res.status(r.status).json({ error: r.error });
+  res.json({ ok: true });
+});
 // Cliente pede parcelamento do DAS em atraso — diferente do recálculo, aqui não tem nada pra buscar
 // na hora: a Receita não expõe simulação nem adesão a parcelamento novo por API (só consulta de um
 // parcelamento que já existe), então esse pedido só avisa o escritório, que negocia no e-CAC como já
@@ -16409,7 +16478,11 @@ function integraContadorAnexarDarfDctfwebEmEnvio(
   empresaId: number,
   guia: integracontador.GuiaDctfWeb,
   observacao: string,
-  forcarNovoDocumento = false
+  forcarNovoDocumento = false,
+  // GERARGUIA31 não devolve vencimento estruturado (diferente do DAS) — quem chama tenta extrair do
+  // texto do PDF e/ou aceita um valor manual do calendário do site; formato ISO "AAAA-MM-DD".
+  vencimentoIso?: string | null,
+  vencimentoOrigem: "automatico" | "manual" = "automatico"
 ): void {
   if (!guia.pdfBase64) return;
   const atribuicaoId = integraContadorObterOuCriarAtribuicaoModelo(
@@ -16431,9 +16504,10 @@ function integraContadorAnexarDarfDctfwebEmEnvio(
   const docId = integraContadorAnexarPdfEmEnvio(
     atribuicaoId, empresaId, ano, mes, nomeArquivo, guia.pdfBase64,
     retificado ? `${observacao} DARF retificado — substitui a guia anterior.` : observacao,
-    null, retificado
+    vencimentoIso || null, retificado, false, vencimentoOrigem
   );
   const rotulo = `${String(mes).padStart(2, "0")}/${ano}`;
+  const vencTxt = vencimentoIso ? `\n\nVencimento: ${vencimentoIso.split("-").reverse().join("/")}` : "";
   void envioEnviarDocumentoAutomatico({
     escritorioId,
     empresaId,
@@ -16442,8 +16516,8 @@ function integraContadorAnexarDarfDctfwebEmEnvio(
     pdf: Buffer.from(guia.pdfBase64, "base64"),
     assunto: retificado ? `DARF DCTF-Web retificado — ${rotulo}` : `DARF DCTF-Web — ${rotulo}`,
     corpoEmail: retificado
-      ? `A guia do DARF (DCTF-Web) referente a ${rotulo} foi retificada — segue em anexo a versão atualizada, que substitui a anterior.`
-      : `Segue em anexo a guia do DARF (DCTF-Web) referente a ${rotulo}.`,
+      ? `A guia do DARF (DCTF-Web) referente a ${rotulo} foi retificada — segue em anexo a versão atualizada, que substitui a anterior.${vencTxt}`
+      : `Segue em anexo a guia do DARF (DCTF-Web) referente a ${rotulo}.${vencTxt}`,
     descricaoWhatsapp: retificado ? `DARF DCTF-Web retificado — ${rotulo}` : `Guia do DARF DCTF-Web — ${rotulo}`,
   }).catch((e) => console.error(`[Integra Contador] envio automático do DARF DCTF-Web (empresa ${empresaId}) falhou:`, e.message));
 }
