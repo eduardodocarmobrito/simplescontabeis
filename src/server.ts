@@ -9419,6 +9419,7 @@ app.post("/api/envio/templates", blockCliente, requirePermissao("envio", "postar
   if (setor && !SETOR_ROTULO[setor]) return res.status(400).json({ error: "Setor inválido." });
   if (suspensoDesde && !/^\d{4}-\d{2}$/.test(suspensoDesde)) return res.status(400).json({ error: "Competência de suspensão inválida." });
   if (autoRegimeTributario && !(REGIMES_TRIBUTARIOS as readonly string[]).includes(autoRegimeTributario)) return res.status(400).json({ error: "Regime tributário inválido." });
+  { const dup = envioTemplateAcharPorNome(user.escritorioId, nome); if (dup) return res.status(409).json({ error: `Já existe o modelo "${dup.nome}" — use ele em vez de criar outro com o mesmo nome.` }); }
   const acceptFinal = Array.isArray(accept) && accept.length ? accept : ["pdf"];
   const info = sqlite
     .prepare(`INSERT INTO envio_templates (nome, descricao, periodicidade, accept_json, detectar_vencimento, considera_mes_atual, visivel_cliente, suspenso_desde, auto_regime_tributario, created_by, escritorio_id, setor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
@@ -9435,6 +9436,7 @@ app.put("/api/envio/templates/:id", blockCliente, requirePermissao("envio", "edi
   if (protegido && nome !== undefined && nome !== existing.nome) {
     return res.status(409).json({ error: `"${existing.nome}" é usado automaticamente pelo Integra Contador — renomear quebraria o anexo automático de DAS/Situação Fiscal.` });
   }
+  if (nome !== undefined && nome !== existing.nome) { const dup = envioTemplateAcharPorNome((req as any).user.escritorioId, nome, id); if (dup) return res.status(409).json({ error: `Já existe o modelo "${dup.nome}" — não dá pra ter dois modelos com o mesmo nome.` }); }
   if (periodicidade !== undefined && !ENVIO_PERIODICIDADES.includes(periodicidade)) {
     return res.status(400).json({ error: "Periodicidade inválida." });
   }
@@ -16178,6 +16180,19 @@ function checklistSalvarUpload(periodoId: number, empresaId: number, itemChave: 
 // empresa — assim toda empresa que tiver DAS habilitado no Integra Contador já ganha, sozinha, o
 // mesmo mecanismo de Envio de Documentos que qualquer outro modelo usa, e o cliente já enxerga o
 // DAS em "Meus Documentos" no login dele, sem o escritório precisar anexar nada na mão.
+// Chave de comparação de nome de modelo: ignora maiúsc./minúsc., acento, espaço e pontuação — achado
+// ao vivo 2026-11-10: o leitor de pasta criou "Programação de férias" ao lado de "Programação de
+// Férias", "DARF-DCTF-Web" ao lado de "DARF - DCTF-Web" e "Termo de quitação" ao lado de "Termo de
+// Quitação", porque a busca era por nome EXATO. Toda busca/criação de modelo passa por aqui.
+function nomeModeloChave(nome: string): string {
+  return String(nome || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+function envioTemplateAcharPorNome(escritorioId: number, nome: string, ignorarId?: number): { id: number; nome: string } | null {
+  const chave = nomeModeloChave(nome);
+  if (!chave) return null;
+  const rows = sqlite.prepare(`SELECT id, nome FROM envio_templates WHERE escritorio_id = ? ORDER BY id`).all(escritorioId) as any[];
+  return rows.find((t) => t.id !== ignorarId && nomeModeloChave(t.nome) === chave) || null;
+}
 function integraContadorObterOuCriarAtribuicaoModelo(
   escritorioId: number,
   empresaId: number,
@@ -16186,7 +16201,7 @@ function integraContadorObterOuCriarAtribuicaoModelo(
   periodicidade: "mensal" | "anual" | "avulso" = "mensal",
   visivelCliente = true
 ): number {
-  let template = sqlite.prepare(`SELECT id FROM envio_templates WHERE escritorio_id = ? AND nome = ?`).get(escritorioId, nomeTemplate) as any;
+  let template: { id: number } | null = envioTemplateAcharPorNome(escritorioId, nomeTemplate);
   if (!template) {
     // considera_mes_atual=0: todo modelo criado por aqui (DAS - Mensal, Situação Fiscal,
     // Parcelamento de DAS) só existe DEPOIS que o mês fecha (é resultado de uma declaração/consulta
@@ -16220,7 +16235,7 @@ function envioAtribuicaoObterOuCriar(templateId: number, empresaId: number): num
 // pendente_revisao=1, visivel_cliente=0 (fica só interno até o escritório abrir e confirmar em
 // Envio de Documentos > Modelos, salvando o modelo pelo menos uma vez).
 function envioObterOuCriarTemplateDraft(escritorioId: number, nome: string): number {
-  const existente = sqlite.prepare(`SELECT id FROM envio_templates WHERE escritorio_id = ? AND nome = ?`).get(escritorioId, nome) as any;
+  const existente = envioTemplateAcharPorNome(escritorioId, nome);
   if (existente) return existente.id;
   const info = sqlite
     .prepare(`INSERT INTO envio_templates (nome, descricao, periodicidade, accept_json, detectar_vencimento, considera_mes_atual, visivel_cliente, pendente_revisao, escritorio_id) VALUES (?, ?, 'mensal', '["pdf"]', 1, 1, 0, 1, ?)`)
@@ -25938,6 +25953,77 @@ if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'card_das_nao_
   }
   sqlite.exec(`INSERT INTO migracoes_unicas (chave) VALUES ('card_das_nao_pago_20261110')`);
 }
+// Unifica modelos de Envio de Documentos com o MESMO nome (pela chave de nomeModeloChave) — roda a cada
+// boot (barato) e é a rede de segurança caso algum caminho novo volte a criar duplicado. Fica o modelo
+// MAIS ANTIGO; as atribuições, períodos e documentos do duplicado são movidos pra ele (período da mesma
+// competência é fundido; documento idêntico — mesmo arquivo e tamanho — no mesmo período é descartado),
+// e as referências (leitor de pasta, cards do Início) passam a apontar pro que ficou.
+function envioUnificarModelosDuplicados(): void {
+  const tabelas = (sqlite.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as any[]).map((r) => r.name as string);
+  const refs = (alvo: string): Array<[string, string]> => {
+    const out: Array<[string, string]> = [];
+    for (const t of tabelas) for (const fk of sqlite.prepare(`PRAGMA foreign_key_list("${t}")`).all() as any[]) if (fk.table === alvo) out.push([t, fk.from]);
+    return out;
+  };
+  const refsPeriodo = refs("envio_periodos");
+  const refsAtrib = refs("envio_atribuicoes").filter(([t]) => t !== "envio_periodos");
+  const refsTemplate = refs("envio_templates").filter(([t]) => t !== "envio_atribuicoes");
+  const refsDoc = refs("envio_documentos");
+  const todos = sqlite.prepare(`SELECT id, nome, escritorio_id FROM envio_templates ORDER BY id`).all() as any[];
+  const grupos = new Map<string, any[]>();
+  for (const t of todos) {
+    const k = `${t.escritorio_id}|${nomeModeloChave(t.nome)}`;
+    if (!grupos.has(k)) grupos.set(k, []);
+    grupos.get(k)!.push(t);
+  }
+  for (const lista of grupos.values()) {
+    if (lista.length < 2) continue;
+    const fica = lista[0];
+    for (const dup of lista.slice(1)) {
+      try {
+        sqlite.exec("BEGIN");
+        for (const atr of sqlite.prepare(`SELECT id, empresa_id, ativo FROM envio_atribuicoes WHERE template_id = ?`).all(dup.id) as any[]) {
+          const alvo = sqlite.prepare(`SELECT id, ativo FROM envio_atribuicoes WHERE template_id = ? AND empresa_id = ?`).get(fica.id, atr.empresa_id) as any;
+          if (!alvo) { sqlite.prepare(`UPDATE envio_atribuicoes SET template_id = ? WHERE id = ?`).run(fica.id, atr.id); continue; }
+          for (const per of sqlite.prepare(`SELECT id, ano, mes, rotulo FROM envio_periodos WHERE atribuicao_id = ?`).all(atr.id) as any[]) {
+            const pAlvo = sqlite.prepare(`SELECT id FROM envio_periodos WHERE atribuicao_id = ? AND ano = ? AND mes IS ? AND rotulo IS ?`).get(alvo.id, per.ano, per.mes, per.rotulo) as any;
+            if (!pAlvo) { sqlite.prepare(`UPDATE envio_periodos SET atribuicao_id = ? WHERE id = ?`).run(alvo.id, per.id); continue; }
+            // Documento idêntico (mesmo nome de arquivo e tamanho) já presente no período que fica: descarta a cópia
+            // (só o registro; e só se nada mais aponta pra ela).
+            for (const d of sqlite.prepare(`SELECT id, file_name, size_bytes FROM envio_documentos WHERE periodo_id = ?`).all(per.id) as any[]) {
+              const igual = sqlite.prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id = ? AND file_name = ? AND size_bytes IS ?`).get(pAlvo.id, d.file_name, d.size_bytes);
+              const referenciado = refsDoc.some(([t, c]) => sqlite.prepare(`SELECT 1 FROM "${t}" WHERE "${c}" = ? LIMIT 1`).get(d.id));
+              if (igual && !referenciado) sqlite.prepare(`DELETE FROM envio_documentos WHERE id = ?`).run(d.id);
+            }
+            for (const [t, c] of refsPeriodo) sqlite.prepare(`UPDATE "${t}" SET "${c}" = ? WHERE "${c}" = ?`).run(pAlvo.id, per.id);
+            sqlite.prepare(`DELETE FROM envio_periodos WHERE id = ?`).run(per.id);
+          }
+          for (const [t, c] of refsAtrib) sqlite.prepare(`UPDATE "${t}" SET "${c}" = ? WHERE "${c}" = ?`).run(alvo.id, atr.id);
+          if (atr.ativo && !alvo.ativo) sqlite.prepare(`UPDATE envio_atribuicoes SET ativo = 1 WHERE id = ?`).run(alvo.id);
+          sqlite.prepare(`DELETE FROM envio_atribuicoes WHERE id = ?`).run(atr.id);
+        }
+        for (const [t, c] of refsTemplate) sqlite.prepare(`UPDATE "${t}" SET "${c}" = ? WHERE "${c}" = ?`).run(fica.id, dup.id);
+        if (tabelas.includes("central_envio_tipos")) sqlite.prepare(`UPDATE central_envio_tipos SET template_id = ? WHERE template_id = ?`).run(fica.id, dup.id);
+        for (const card of sqlite.prepare(`SELECT id, parametro FROM dashboard_cards WHERE parametro IS NOT NULL AND escritorio_id = ?`).all(fica.escritorio_id) as any[]) {
+          try {
+            const ids = JSON.parse(card.parametro);
+            if (Array.isArray(ids) && ids.includes(dup.id)) {
+              const novos = [...new Set(ids.map((x: number) => (x === dup.id ? fica.id : x)))];
+              sqlite.prepare(`UPDATE dashboard_cards SET parametro = ? WHERE id = ?`).run(JSON.stringify(novos), card.id);
+            }
+          } catch {}
+        }
+        sqlite.prepare(`DELETE FROM envio_templates WHERE id = ?`).run(dup.id);
+        sqlite.exec("COMMIT");
+        console.log(`[modelos] "${dup.nome}" (#${dup.id}) unificado em "${fica.nome}" (#${fica.id}).`);
+      } catch (e: any) {
+        try { sqlite.exec("ROLLBACK"); } catch {}
+        console.error(`[modelos] falha ao unificar "${dup.nome}" (#${dup.id}) em #${fica.id}:`, e.message);
+      }
+    }
+  }
+}
+envioUnificarModelosDuplicados();
 // Compatibilidade: preenche deskcomm_config do escritório ATUAL (o único com atendimento hoje) com os
 // valores que já vêm do .env — deixa o dado certo no banco pra quando o runtime passar a ler daqui
 // (fase seguinte), SEM mudar nada agora (nenhuma rota lê deskcomm_config ainda). Roda uma única vez;
