@@ -2166,6 +2166,17 @@ sqlite.exec(`INSERT OR IGNORE INTO modulos_catalogo (chave, nome, valor_mensal) 
     sqlite.exec(`ALTER TABLE escritorio_modulos ADD COLUMN valor_mensal_custom REAL`);
   }
 }
+// Valor de IMPLANTAÇÃO (cobrança única na entrada do cliente — pedido 2026-11-10): padrão no catálogo
+// e, opcionalmente, um valor só daquele cliente no contrato do módulo (NULL = usa o padrão).
+for (const [tabela, coluna] of [["modulos_catalogo", "valor_implantacao REAL NOT NULL DEFAULT 0"], ["modulos_escritorio_catalogo", "valor_implantacao REAL NOT NULL DEFAULT 0"], ["empresa_modulos", "valor_implantacao_custom REAL"], ["escritorio_modulos", "valor_implantacao_custom REAL"]]) {
+  const nome = coluna.split(" ")[0];
+  const cols = sqlite.prepare(`PRAGMA table_info(${tabela})`).all() as any[];
+  if (!cols.some((c) => c.name === nome)) sqlite.exec(`ALTER TABLE ${tabela} ADD COLUMN ${coluna}`);
+}
+function precoImplantacaoEfetivo(valorCatalogo: any, contratado: any): number {
+  const custom = contratado?.valor_implantacao_custom;
+  return custom != null ? Number(custom) : Number(valorCatalogo) || 0;
+}
 // Preço que vale pra ESTE cliente: o personalizado (se o SuperAdmin definiu) ou o padrão do catálogo.
 function precoModuloEfetivo(valorCatalogo: any, contratado: any): number {
   const custom = contratado?.valor_mensal_custom;
@@ -17885,7 +17896,7 @@ app.post("/api/nfse/empresas/:id/modulos/:chave/prorrogar", blockCliente, requir
 // escritório específico). Ver também /api/super/modulos-catalogo, que é o catálogo irmão vendido
 // pra ESCRITÓRIOS (WhatsApp, Busca de XML etc.) — catálogos e tabelas diferentes.
 app.get("/api/super/modulos-clientes", requireSuperAdmin, (_req, res) => {
-  const rows = sqlite.prepare(`SELECT chave, nome, valor_mensal as valorMensal, ativo FROM modulos_catalogo ORDER BY chave`).all() as any[];
+  const rows = sqlite.prepare(`SELECT chave, nome, valor_mensal as valorMensal, valor_implantacao as valorImplantacao, ativo FROM modulos_catalogo ORDER BY chave`).all() as any[];
   res.json({ items: rows.map((r) => ({ ...r, ativo: !!r.ativo })) });
 });
 app.put("/api/super/modulos-clientes/:chave", requireSuperAdmin, (req, res) => {
@@ -17897,6 +17908,7 @@ app.put("/api/super/modulos-clientes/:chave", requireSuperAdmin, (req, res) => {
   sqlite
     .prepare(`UPDATE modulos_catalogo SET nome = COALESCE(?, nome), valor_mensal = COALESCE(?, valor_mensal), ativo = COALESCE(?, ativo), updated_at = datetime('now') WHERE chave = ?`)
     .run(nome ?? null, novoValor, ativo != null ? (ativo ? 1 : 0) : null, chave);
+  if (req.body?.valorImplantacao != null) sqlite.prepare(`UPDATE modulos_catalogo SET valor_implantacao = ? WHERE chave = ?`).run(Math.max(0, Number(req.body.valorImplantacao) || 0), chave);
   // Grandfather: ao ligar a cobrança de um canal de envio (preço saindo de 0 pra > 0), os clientes
   // que JÁ existem continuam recebendo de graça (assinatura vitalícia), e só os novos vão precisar
   // contratar — igual ao que foi combinado. Roda uma vez, só na virada 0→>0.
@@ -22196,7 +22208,7 @@ app.post("/api/financeiro/minha-empresa/modulos/boleto", requireCliente, async (
 // catálogo acima, que o escritório vende PRA empresa-cliente dele) ----------
 // SuperAdmin: gerencia preço/nome/ativo do catálogo (rota administrativa da plataforma).
 app.get("/api/super/modulos-catalogo", requireSuperAdmin, (_req, res) => {
-  const rows = sqlite.prepare(`SELECT chave, nome, valor_mensal as valorMensal, ativo FROM modulos_escritorio_catalogo ORDER BY chave`).all() as any[];
+  const rows = sqlite.prepare(`SELECT chave, nome, valor_mensal as valorMensal, valor_implantacao as valorImplantacao, ativo FROM modulos_escritorio_catalogo ORDER BY chave`).all() as any[];
   res.json({ items: rows.map((r) => ({ ...r, ativo: !!r.ativo })) });
 });
 app.put("/api/super/modulos-catalogo/:chave", requireSuperAdmin, (req, res) => {
@@ -22207,6 +22219,7 @@ app.put("/api/super/modulos-catalogo/:chave", requireSuperAdmin, (req, res) => {
   sqlite
     .prepare(`UPDATE modulos_escritorio_catalogo SET nome = COALESCE(?, nome), valor_mensal = COALESCE(?, valor_mensal), ativo = COALESCE(?, ativo), updated_at = datetime('now') WHERE chave = ?`)
     .run(nome ?? null, valorMensal != null ? Number(valorMensal) : null, ativo != null ? (ativo ? 1 : 0) : null, chave);
+  if (req.body?.valorImplantacao != null) sqlite.prepare(`UPDATE modulos_escritorio_catalogo SET valor_implantacao = ? WHERE chave = ?`).run(Math.max(0, Number(req.body.valorImplantacao) || 0), chave);
   res.json({ ok: true });
 });
 // ---------- Controle de contratos (SuperAdmin): quem tem cada módulo, situação e quanto paga ----------
@@ -22221,7 +22234,7 @@ function situacaoContratoModulo(contratado: any, isento: boolean, statusBase: st
 app.get("/api/super/modulos-contratos", requireSuperAdmin, (_req, res) => {
   const escr = sqlite
     .prepare(
-      `SELECT em.*, c.nome as modulo_nome, c.valor_mensal as valor_padrao, e.nome as cliente_nome, e.isento_assinatura
+      `SELECT em.*, c.nome as modulo_nome, c.valor_mensal as valor_padrao, c.valor_implantacao as implantacao_padrao, e.nome as cliente_nome, e.isento_assinatura
          FROM escritorio_modulos em
          JOIN modulos_escritorio_catalogo c ON c.chave = em.modulo_chave
          JOIN escritorios e ON e.id = em.escritorio_id`
@@ -22250,13 +22263,15 @@ app.get("/api/super/modulos-contratos", requireSuperAdmin, (_req, res) => {
       assinaturaAtivaAte: r.assinatura_ativa_ate,
       valorPadrao: Number(r.valor_padrao) || 0,
       valorPersonalizado: r.valor_mensal_custom != null ? Number(r.valor_mensal_custom) : null,
+      implantacaoPadrao: Number(r.implantacao_padrao) || 0,
+      implantacaoPersonalizada: r.valor_implantacao_custom != null ? Number(r.valor_implantacao_custom) : null,
       quantidade: porAssento ? qtd : null,
       valorMensal: preco * qtd,
     };
   });
   const emp = sqlite
     .prepare(
-      `SELECT em.*, c.nome as modulo_nome, c.valor_mensal as valor_padrao, e.nome as cliente_nome, e.isento_assinatura, o.nome as escritorio_nome
+      `SELECT em.*, c.nome as modulo_nome, c.valor_mensal as valor_padrao, c.valor_implantacao as implantacao_padrao, e.nome as cliente_nome, e.isento_assinatura, o.nome as escritorio_nome
          FROM empresa_modulos em
          JOIN modulos_catalogo c ON c.chave = em.modulo_chave
          JOIN empresas e ON e.id = em.empresa_id
@@ -22278,6 +22293,8 @@ app.get("/api/super/modulos-contratos", requireSuperAdmin, (_req, res) => {
       assinaturaAtivaAte: r.assinatura_ativa_ate,
       valorPadrao: Number(r.valor_padrao) || 0,
       valorPersonalizado: r.valor_mensal_custom != null ? Number(r.valor_mensal_custom) : null,
+      implantacaoPadrao: Number(r.implantacao_padrao) || 0,
+      implantacaoPersonalizada: r.valor_implantacao_custom != null ? Number(r.valor_implantacao_custom) : null,
       quantidade: null,
       valorMensal: precoModuloEfetivo(r.valor_padrao, r),
     };
@@ -22293,15 +22310,19 @@ app.put("/api/super/modulos-contratos/:tipo/:id", requireSuperAdmin, (req, res) 
   const tabela = req.params.tipo === "escritorio" ? "escritorio_modulos" : req.params.tipo === "empresa" ? "empresa_modulos" : null;
   if (!tabela) return res.status(400).json({ error: "Tipo inválido." });
   const id = Number(req.params.id);
-  const bruto = req.body?.valorMensalCustom;
-  let valor: number | null = null;
-  if (bruto !== null && bruto !== undefined && String(bruto).trim() !== "") {
-    valor = Number(String(bruto).replace(",", "."));
-    if (!Number.isFinite(valor) || valor < 0) return res.status(400).json({ error: "Valor inválido." });
-    valor = Math.round(valor * 100) / 100;
+  if (!sqlite.prepare(`SELECT 1 FROM ${tabela} WHERE id = ?`).get(id)) return res.status(404).json({ error: "Contrato não encontrado." });
+  // Cada valor só muda se veio no corpo (undefined = não mexe); null/"" = volta ao padrão do catálogo.
+  const lerValor = (bruto: any): number | null | "invalido" => {
+    if (bruto === null || String(bruto).trim() === "") return null;
+    const v = Number(String(bruto).replace(",", "."));
+    return !Number.isFinite(v) || v < 0 ? "invalido" : Math.round(v * 100) / 100;
+  };
+  for (const [campo, coluna] of [["valorMensalCustom", "valor_mensal_custom"], ["valorImplantacaoCustom", "valor_implantacao_custom"]] as const) {
+    if (req.body?.[campo] === undefined) continue;
+    const v = lerValor(req.body[campo]);
+    if (v === "invalido") return res.status(400).json({ error: "Valor inválido." });
+    sqlite.prepare(`UPDATE ${tabela} SET ${coluna} = ? WHERE id = ?`).run(v, id);
   }
-  const info = sqlite.prepare(`UPDATE ${tabela} SET valor_mensal_custom = ? WHERE id = ?`).run(valor, id);
-  if (!info.changes) return res.status(404).json({ error: "Contrato não encontrado." });
   res.json({ ok: true });
 });
 function moduloStatusParaEscritorio(catalogo: any, contratado: any) {
@@ -23760,7 +23781,24 @@ app.post("/api/contratos", blockCliente, requirePermissao("contratos", "postar")
     .get(agoraContrato.ano, user.escritorioId) as any;
   const numeroSequencial = (maxNumero?.maxNum || 0) + 1;
   dadosFinal["n_contrato_sequencial"] = String(numeroSequencial);
+  // Preço do módulo NFS-e pra ESTA empresa (pedido 2026-11-10): vem do catálogo do SuperAdmin
+  // (Módulos da plataforma), com o valor personalizado do cliente por cima quando existir.
+  const precoNfse = (() => {
+    const cat = sqlite.prepare(`SELECT valor_mensal, valor_implantacao FROM modulos_catalogo WHERE chave = 'nfse'`).get() as any;
+    const contratado = sqlite.prepare(`SELECT valor_mensal_custom, valor_implantacao_custom FROM empresa_modulos WHERE empresa_id = ? AND modulo_chave = 'nfse'`).get(empresa.id) as any;
+    return { mensal: precoModuloEfetivo(cat?.valor_mensal, contratado), implantacao: precoImplantacaoEfetivo(cat?.valor_implantacao, contratado) };
+  })();
+  const brl = (v: number) => v.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const AUTO_PRECO: Record<string, () => string> = {
+    moduloNfseMensal: () => brl(precoNfse.mensal),
+    moduloNfseImplantacao: () => brl(precoNfse.implantacao),
+    moduloNfseMensalExtenso: () => contratos.valorPorExtenso(precoNfse.mensal),
+    moduloNfseImplantacaoExtenso: () => contratos.valorPorExtenso(precoNfse.implantacao),
+  };
   for (const campo of camposModelo) {
+    if (campo.autoPreencherDe && AUTO_PRECO[campo.autoPreencherDe] && (dadosFinal[campo.chave] === undefined || dadosFinal[campo.chave] === "")) {
+      dadosFinal[campo.chave] = AUTO_PRECO[campo.autoPreencherDe]();
+    }
     // Auto-preenche da empresa quando o campo veio vazio da tela.
     if (campo.autoPreencherDe && CONTRATO_EMPRESA_CAMPO_SQL[campo.autoPreencherDe] && (dadosFinal[campo.chave] === undefined || dadosFinal[campo.chave] === "")) {
       dadosFinal[campo.chave] = empresa[CONTRATO_EMPRESA_CAMPO_SQL[campo.autoPreencherDe]] ?? "";

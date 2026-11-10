@@ -15146,9 +15146,11 @@ const CONTRATO_AUTO_PREENCHER = [
   ['endereco','Endereço'], ['cidade','Cidade'], ['uf','UF'], ['cep','CEP'], ['email','E-mail'], ['inscricaoMunicipal','Inscrição municipal'],
   ['nomeRepresentanteLegal','Nome do representante legal'], ['cpfRepresentanteLegal','CPF do representante legal'],
   ['telefone','Telefone'], ['dataContrato','Data do contrato (assinatura)'], ['listaEmpresas','Lista de empresas (Anexo I)'],
+  ['moduloNfseMensal','Módulo NFS-e — mensalidade (preço do master)'], ['moduloNfseMensalExtenso','Módulo NFS-e — mensalidade por extenso'],
+  ['moduloNfseImplantacao','Módulo NFS-e — implantação (preço do master)'], ['moduloNfseImplantacaoExtenso','Módulo NFS-e — implantação por extenso'],
 ];
 // Opções que NÃO são dados do cadastro da empresa do contrato (vão pro quadro "Preenchimento do escritório").
-const CONTRATO_AUTO_NAO_EMPRESA = ['dataContrato','listaEmpresas'];
+const CONTRATO_AUTO_NAO_EMPRESA = ['dataContrato','listaEmpresas','moduloNfseMensal','moduloNfseMensalExtenso','moduloNfseImplantacao','moduloNfseImplantacaoExtenso'];
 const MESES_PT_EXTENSO_JS = ['janeiro','fevereiro','março','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro'];
 let CONTRATOS_TAB='contratos';
 async function pageContratos(){
@@ -15700,6 +15702,16 @@ async function abrirContratoDrawer(id){
         try{
           const r = await api('/contratos/valor-extenso', { method:'POST', body:{ valor: novosDados['valor_honorário'] } });
           novosDados['vlr_extenso'] = r.extenso;
+        }catch(e){ toast('Não consegui calcular o valor por extenso: '+e.message,'err'); }
+      }
+      // Contrato de licença de módulo: o extenso sempre acompanha o valor (recalcula a cada aplicação,
+      // porque o valor vem preenchido do preço do master e pode ser ajustado aqui).
+      for(const [chValor, chExt] of [['valor_mensalidade','mensalidade_extenso'],['valor_implantacao','implantacao_extenso']]){
+        if(!(chValor in novosDados) || !(chExt in novosDados) || !novosDados[chValor]) continue;
+        try{
+          const r = await api('/contratos/valor-extenso', { method:'POST', body:{ valor: novosDados[chValor] } });
+          novosDados[chExt] = r.extenso;
+          const el = document.querySelector('.drwCampo[data-chave="'+chExt+'"]'); if(el) el.value = r.extenso;
         }catch(e){ toast('Não consegui calcular o valor por extenso: '+e.message,'err'); }
       }
       // Anexo de terceirização: o JSON vira a tabela do Anexo I (não entra como texto).
@@ -20348,12 +20360,13 @@ async function deskcommConfigModal(esc_){
 function tabelaModulosHtml(prefixo, items){
   return `
     <table class="data-table">
-      <thead><tr><th>Módulo</th><th>Valor mensal (R$)</th><th>Ativo</th><th></th></tr></thead>
+      <thead><tr><th>Módulo</th><th>Valor mensal (R$)</th><th>Implantação (R$)</th><th>Ativo</th><th></th></tr></thead>
       <tbody>
         ${items.map(m=>`
           <tr data-chave="${m.chave}">
             <td><input class="${prefixo}Nome inp" value="${esc(m.nome)}" style="width:100%;" disabled></td>
-            <td style="width:160px;"><input class="${prefixo}Valor inp" type="number" step="0.01" min="0" value="${m.valorMensal}" style="width:100%;" disabled></td>
+            <td style="width:150px;"><input class="${prefixo}Valor inp" type="number" step="0.01" min="0" value="${m.valorMensal}" style="width:100%;" disabled></td>
+            <td style="width:150px;"><input class="${prefixo}Impl inp" type="number" step="0.01" min="0" value="${m.valorImplantacao||0}" style="width:100%;" disabled title="Cobrança única na entrada do cliente — vai pro contrato do módulo"></td>
             <td style="width:70px; text-align:center;"><input class="${prefixo}Ativo" type="checkbox" ${m.ativo?'checked':''} disabled></td>
             <td style="width:150px; white-space:nowrap;">
               <button class="btn small ${prefixo}Editar">Editar</button>
@@ -20371,14 +20384,16 @@ function ligarSalvarModulos(container, prefixo, endpoint){
     const inputNome = tr.querySelector('.'+prefixo+'Nome');
     const inputValor = tr.querySelector('.'+prefixo+'Valor');
     const inputAtivo = tr.querySelector('.'+prefixo+'Ativo');
+    const inputImpl = tr.querySelector('.'+prefixo+'Impl');
     if(!inputNome || !inputValor || !inputAtivo) return;   // linha de OUTRA tabela (outro prefixo) — ignora
     const btnEditar = tr.querySelector('.'+prefixo+'Editar');
     const btnSalvar = tr.querySelector('.'+prefixo+'Salvar');
     const btnCancelar = tr.querySelector('.'+prefixo+'Cancelar');
-    let original = { nome: inputNome.value, valor: inputValor.value, ativo: inputAtivo.checked };
+    let original = { nome: inputNome.value, valor: inputValor.value, impl: inputImpl?.value, ativo: inputAtivo.checked };
     function entrarModoEdicao(){
       inputNome.disabled = false;
       inputValor.disabled = false;
+      if(inputImpl) inputImpl.disabled = false;
       inputAtivo.disabled = false;
       btnEditar.style.display = 'none';
       btnSalvar.style.display = '';
@@ -20388,6 +20403,7 @@ function ligarSalvarModulos(container, prefixo, endpoint){
     function sairModoEdicao(){
       inputNome.disabled = true;
       inputValor.disabled = true;
+      if(inputImpl) inputImpl.disabled = true;
       inputAtivo.disabled = true;
       btnEditar.style.display = '';
       btnSalvar.style.display = 'none';
@@ -20398,6 +20414,7 @@ function ligarSalvarModulos(container, prefixo, endpoint){
     btnCancelar.addEventListener('click', ()=>{
       inputNome.value = original.nome;
       inputValor.value = original.valor;
+      if(inputImpl) inputImpl.value = original.impl;
       inputAtivo.checked = original.ativo;
       sairModoEdicao();
     });
@@ -20408,10 +20425,11 @@ function ligarSalvarModulos(container, prefixo, endpoint){
         valorMensal: Number(inputValor.value) || 0,
         ativo: inputAtivo.checked,
       };
+      if(inputImpl) body.valorImplantacao = Number(inputImpl.value) || 0;
       try{
         await api(endpoint+'/'+chave, { method:'PUT', body });
         toast('Módulo atualizado.','ok');
-        original = { nome: inputNome.value, valor: inputValor.value, ativo: inputAtivo.checked };
+        original = { nome: inputNome.value, valor: inputValor.value, impl: inputImpl?.value, ativo: inputAtivo.checked };
         sairModoEdicao();
       }catch(e){ toast(e.message,'err'); }
     });
@@ -20662,7 +20680,7 @@ function renderContratosModulos(){
   const fmtValorInput = v=> v==null ? '' : Number(v).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
   box.innerHTML = `
     <table class="data-table">
-      <thead><tr><th>Cliente</th><th>Módulo</th><th>Situação</th><th>Válido até</th><th style="text-align:right;">Valor padrão</th><th>Valor cobrado (R$)</th><th style="text-align:right;">Total mensal</th><th></th></tr></thead>
+      <thead><tr><th>Cliente</th><th>Módulo</th><th>Situação</th><th>Válido até</th><th style="text-align:right;">Valor padrão</th><th>Valor cobrado (R$)</th><th style="text-align:right;">Total mensal</th><th>Implantação (R$)</th><th></th></tr></thead>
       <tbody>
         ${lista.map(i=>{
           const sit = MCT_SITUACAO[i.situacao] || {label:i.situacao, cls:'muted'};
@@ -20676,9 +20694,10 @@ function renderContratosModulos(){
             <td style="text-align:right; white-space:nowrap;">${fmtMoney(i.valorPadrao)}${sufixoUn}</td>
             <td style="width:150px;"><input class="inp mctValor" inputmode="decimal" placeholder="${fmtValorInput(i.valorPadrao)} (padrão)" value="${fmtValorInput(i.valorPersonalizado)}" style="width:100%;${i.valorPersonalizado!=null?' border-color:var(--accent);':''}"></td>
             <td style="text-align:right; white-space:nowrap;">${fmtMoney(i.valorMensal)}${i.quantidade!=null?`<div style="font-size:11px; color:var(--ink-soft);">${i.quantidade} colaborador(es)</div>`:''}</td>
+            <td style="width:140px;"><input class="inp mctImpl" inputmode="decimal" placeholder="${fmtValorInput(i.implantacaoPadrao)} (padrão)" value="${fmtValorInput(i.implantacaoPersonalizada)}" style="width:100%;${i.implantacaoPersonalizada!=null?' border-color:var(--accent);':''}" title="Valor único de implantação deste cliente — vazio = padrão do módulo"></td>
             <td style="white-space:nowrap; width:170px;">
               <button class="btn small primary mctSalvar" disabled>Salvar</button>
-              ${i.valorPersonalizado!=null?'<button class="btn small mctPadrao" title="Voltar a cobrar o valor padrão">Usar padrão</button>':''}
+              ${(i.valorPersonalizado!=null||i.implantacaoPersonalizada!=null)?'<button class="btn small mctPadrao" title="Voltar aos valores padrão (mensal e implantação)">Usar padrão</button>':''}
             </td>
           </tr>`;
         }).join('')}
@@ -20687,22 +20706,23 @@ function renderContratosModulos(){
   `;
   box.querySelectorAll('tr[data-id]').forEach(tr=>{
     const inp = tr.querySelector('.mctValor');
+    const impl = tr.querySelector('.mctImpl');
     const btn = tr.querySelector('.mctSalvar');
-    const original = inp.value;
-    ligarMascaraMoeda(inp);
-    inp.addEventListener('input', ()=>{ btn.disabled = inp.value===original; });
-    inp.addEventListener('keydown', e=>{ if(e.key==='Enter' && !btn.disabled) btn.click(); });
-    const salvar = async valor=>{
+    const original = inp.value, originalImpl = impl.value;
+    ligarMascaraMoeda(inp); ligarMascaraMoeda(impl);
+    const sujo = ()=>{ btn.disabled = inp.value===original && impl.value===originalImpl; };
+    [inp, impl].forEach(el=>{ el.addEventListener('input', sujo); el.addEventListener('keydown', e=>{ if(e.key==='Enter' && !btn.disabled) btn.click(); }); });
+    const salvar = async (valor, valorImpl)=>{
       try{
-        await api(`/super/modulos-contratos/${tr.dataset.tipo}/${tr.dataset.id}`, { method:'PUT', body:{ valorMensalCustom: valor } });
-        toast(valor==null ? 'Voltou ao valor padrão.' : 'Valor do cliente atualizado.', 'ok');
+        await api(`/super/modulos-contratos/${tr.dataset.tipo}/${tr.dataset.id}`, { method:'PUT', body:{ valorMensalCustom: valor, valorImplantacaoCustom: valorImpl } });
+        toast(valor==null && valorImpl==null ? 'Voltou aos valores padrão.' : 'Valores do cliente atualizados.', 'ok');
         const { items } = await api('/super/modulos-contratos');
         MCT.items = items;
         renderContratosModulos();
       }catch(e){ toast(e.message,'err'); }
     };
-    btn.addEventListener('click', ()=>salvar(inp.value.trim() ? moedaInputParaNumero(inp) : null));
-    tr.querySelector('.mctPadrao')?.addEventListener('click', ()=>salvar(null));
+    btn.addEventListener('click', ()=>salvar(inp.value.trim() ? moedaInputParaNumero(inp) : null, impl.value.trim() ? moedaInputParaNumero(impl) : null));
+    tr.querySelector('.mctPadrao')?.addEventListener('click', ()=>salvar(null, null));
   });
 }
 

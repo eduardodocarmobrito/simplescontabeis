@@ -187,6 +187,151 @@ const TERCEIRIZACAO_HTML = `
 </table>
 `;
 
+
+// Licença de uso do Módulo NFS-e (SaaS) — pesquisa nov/2026. Base: Lei 9.609/98 (arts. 2º, 9º e 10:
+// licença de uso, não venda); Lei 9.610/98; CC arts. 393 (força maior), 421-A (paridade), 473
+// (resilição com aviso), 389/395/406 (mora), 413; CTN arts. 121 e 123 (sujeito passivo; convenção
+// particular não oponível ao Fisco — o conteúdo fiscal das notas é da LICENCIADA); MP 2.200-2/2001
+// (certificado ICP-Brasil); LGPD arts. 5º VI-VII, 16, 37-39, 46-48 (controladora x operadora, segurança,
+// incidente) e Res. CD/ANPD 15/2024; Marco Civil (Lei 12.965/14) art. 15 (guarda de registros);
+// LC 116/2003 item 1.05 + STF ADIs 1945/5659 (licenciamento de software tributado pelo ISS);
+// Lei 14.063/2020 e CPC art. 784, III e §4º (assinatura eletrônica e título executivo).
+const LICENCA_NFSE_HTML = `
+<h1>CONTRATO DE LICENÇA DE USO DE SOFTWARE EM NUVEM (SaaS) – MÓDULO NFS-e Nº {{n_contrato_sequencial}}/{{ano}}</h1>
+<p>Pelo presente instrumento particular, de um lado, <b>SIMPLES SERVIÇOS DE CONTABILIDADE, PERÍCIA E AUDITORIA CONTABIL LTDA</b>, inscrita no CNPJ sob o nº 04.801.040/0001-93, com sede na Rua Sérgio Luiz de Farias, nº 656, Bairro Morada da Paz, Redenção-PA, CEP 68.550-510, telefones (94) 99222-1064 / (94) 99164-9036, e-mail simplescontabeis@gmail.com, titular e mantenedora da plataforma <b>Simples Contábeis</b> (simplescontabeis.com.br), neste ato representada por seus sócios <b>EDUARDO DO CARMO BRITO</b>, CPF 017.055.832-02, e <b>ELIMARCER FERNANDES COSTA</b>, CPF 431.133.032-49, doravante denominada <b>LICENCIANTE</b>; e, de outro lado, <b>{{licenciada_nome}}</b>, inscrita no CNPJ/CPF sob o nº {{CNPJ_CPF_licenciada}}, com endereço na {{licenciada_endereco}}, {{licenciada_cidade}}-{{licenciada_uf}}, CEP {{CEP}}, e-mail {{email_licenciada}}, telefone {{telefone_licenciada}}, neste ato representada por <b>{{nome_representante_legal}}</b>, CPF {{CPF_Representante_Legal}}, doravante denominada <b>LICENCIADA</b>; têm entre si justo e contratado o presente Contrato de Licença de Uso de Software em Nuvem, que se regerá pelas cláusulas seguintes.</p>
+
+<p class="clausula-titulo">CLÁUSULA PRIMEIRA – DO OBJETO</p>
+<ol>
+<li>O objeto deste contrato é a concessão, pela LICENCIANTE à LICENCIADA, de licença de uso temporária, onerosa, não exclusiva e intransferível do <b>Módulo NFS-e</b> da plataforma Simples Contábeis, acessado pela internet (modalidade <i>Software as a Service</i> – SaaS), para emissão, consulta, cancelamento, envio e armazenamento das Notas Fiscais de Serviço Eletrônicas (NFS-e) da própria LICENCIADA por meio do Sistema Nacional NFS-e.</li>
+<li>Integram a licença, sem custo adicional: a hospedagem do sistema, as atualizações e correções, as adequações às mudanças de leiaute e regras do Sistema Nacional NFS-e, o armazenamento das notas emitidas enquanto vigente o contrato e o suporte técnico previsto na Cláusula Sétima.</li>
+<li>Não integram o objeto, salvo contratação à parte: serviços de contabilidade, consultoria ou assessoria fiscal e tributária; a aquisição ou renovação do certificado digital; desenvolvimento de funcionalidades sob medida; e a emissão de notas fiscais de outros modelos (NF-e, NFC-e, CT-e).</li>
+</ol>
+
+<p class="clausula-titulo">CLÁUSULA SEGUNDA – DA NATUREZA DA LICENÇA E DA PROPRIEDADE INTELECTUAL</p>
+<ol>
+<li>O uso do programa de computador é objeto de licença, e não de venda ou cessão de direitos (arts. 9º e 10 da Lei nº 9.609/1998). O código-fonte, a marca, o banco de dados, a documentação e todos os direitos sobre a plataforma pertencem exclusivamente à LICENCIANTE.</li>
+<li>É vedado à LICENCIADA, por si ou por terceiros: copiar, modificar, descompilar ou fazer engenharia reversa do sistema; sublicenciar, ceder, alugar ou disponibilizar o acesso a terceiros; compartilhar logins e senhas; e usar o sistema para fins ilícitos ou para emitir notas de outras pessoas físicas ou jurídicas.</li>
+<li>Os dados e documentos fiscais inseridos ou gerados pela LICENCIADA (notas, XMLs, cadastros de tomadores) pertencem à LICENCIADA.</li>
+</ol>
+
+<p class="clausula-titulo">CLÁUSULA TERCEIRA – DA IMPLANTAÇÃO</p>
+<ol>
+<li>A implantação compreende: liberação do acesso; configuração do cadastro fiscal da LICENCIADA (município, inscrição municipal, regime tributário e alíquotas informados por ela); instalação do certificado digital fornecido pela LICENCIADA; cadastro dos modelos de serviço; e treinamento inicial remoto dos usuários.</li>
+<li>Pela implantação, a LICENCIADA pagará à LICENCIANTE o valor único de <b>R$ {{valor_implantacao}}</b> ({{implantacao_extenso}}), com vencimento em até 5 (cinco) dias da assinatura deste contrato.</li>
+<li>A implantação será concluída em até 5 (cinco) dias úteis contados do pagamento e do envio, pela LICENCIADA, dos dados e do certificado digital necessários. Uma vez concluída, o valor da implantação não é reembolsável.</li>
+</ol>
+
+<p class="clausula-titulo">CLÁUSULA QUARTA – DO PREÇO E DO PAGAMENTO</p>
+<ol>
+<li>Pela licença de uso, a LICENCIADA pagará à LICENCIANTE a mensalidade de <b>R$ {{valor_mensalidade}}</b> ({{mensalidade_extenso}}), com vencimento todo dia <b>{{dia_vencimento}}</b> de cada mês, a partir de {{data_inicio}}.</li>
+<li>Os pagamentos serão feitos por Pix, boleto ou cartão gerados pela plataforma ou enviados pela LICENCIANTE, que emitirá a nota fiscal correspondente.</li>
+<li>Os valores serão reajustados a cada 12 (doze) meses pela variação positiva do IPCA/IBGE acumulada no período, ou por outro índice oficial que o substitua.</li>
+<li>O atraso no pagamento sujeitará a LICENCIADA a multa de 2% (dois por cento), juros de mora de 1% (um por cento) ao mês e correção monetária pelo IPCA, calculados <i>pro rata die</i>.</li>
+<li>Persistindo o atraso por mais de 15 (quinze) dias, a LICENCIANTE poderá, mediante aviso prévio de 5 (cinco) dias, suspender o acesso à emissão de novas notas até a regularização, preservados os dados e o acesso às notas já emitidas.</li>
+</ol>
+
+<p class="clausula-titulo">CLÁUSULA QUINTA – DA VIGÊNCIA</p>
+<ol>
+<li>Este contrato vigora por 12 (doze) meses a partir de {{data_inicio}}, renovando-se automaticamente por iguais períodos, salvo manifestação contrária de qualquer das partes com antecedência mínima de 30 (trinta) dias do término.</li>
+</ol>
+
+<p class="clausula-titulo">CLÁUSULA SEXTA – DAS OBRIGAÇÕES DA LICENCIADA</p>
+<ol>
+<li>Informar e manter atualizados, de forma completa e verdadeira, seus dados cadastrais e fiscais, sendo a única responsável pelo conteúdo de cada nota emitida: tomador, descrição, valores, códigos de serviço, alíquotas, retenções e regime tributário.</li>
+<li>Conferir cada NFS-e antes de transmiti-la e acompanhar as notas emitidas, ciente de que a responsabilidade tributária é sua e não se transfere à LICENCIANTE por este contrato (arts. 121 e 123 do Código Tributário Nacional).</li>
+<li>Manter certificado digital ICP-Brasil válido (MP nº 2.200-2/2001), providenciando sua renovação antes do vencimento.</li>
+<li>Manter sob sigilo as credenciais de acesso dos seus usuários, respondendo pelos atos praticados com elas, e comunicar imediatamente à LICENCIANTE qualquer uso indevido.</li>
+<li>Guardar cópia dos XMLs e PDFs de suas notas pelo prazo exigido na legislação, podendo baixá-los a qualquer tempo na plataforma.</li>
+</ol>
+
+<p class="clausula-titulo">CLÁUSULA SÉTIMA – DAS OBRIGAÇÕES DA LICENCIANTE E DO NÍVEL DE SERVIÇO</p>
+<ol>
+<li>Manter o sistema disponível, com meta de 99% (noventa e nove por cento) de disponibilidade mensal, excluídas as manutenções programadas, comunicadas com 24 (vinte e quatro) horas de antecedência, e as indisponibilidades de sistemas de terceiros previstas na Cláusula Oitava.</li>
+<li>Prestar suporte técnico remoto, por WhatsApp, e-mail ou chat da plataforma, em dias úteis, das 8h às 18h (horário de Brasília), com primeiro atendimento em até 1 (um) dia útil.</li>
+<li>Adequar o sistema às alterações de leiaute e regras do Sistema Nacional NFS-e em prazo compatível com a entrada em vigor de cada mudança.</li>
+<li>Manter cópias de segurança (backup) diárias dos dados e adotar medidas técnicas e administrativas de segurança da informação compatíveis com o padrão de mercado.</li>
+</ol>
+
+<p class="clausula-titulo">CLÁUSULA OITAVA – DOS LIMITES DE RESPONSABILIDADE</p>
+<ol>
+<li>A LICENCIANTE não responde por: (a) erros, multas ou autuações decorrentes de dados, códigos, alíquotas ou informações fornecidos ou aprovados pela LICENCIADA; (b) indisponibilidade, lentidão ou falhas do Sistema Nacional NFS-e, dos sistemas das prefeituras, da Receita Federal, de autoridades certificadoras, de provedores de internet ou de energia; (c) uso indevido das credenciais da LICENCIADA; (d) caso fortuito ou força maior (art. 393 do Código Civil).</li>
+<li>Ressalvados os casos de dolo ou culpa grave, a responsabilidade total da LICENCIANTE por qualquer dano decorrente deste contrato fica limitada ao valor efetivamente pago pela LICENCIADA nos 12 (doze) meses anteriores ao evento.</li>
+</ol>
+
+<p class="clausula-titulo">CLÁUSULA NONA – DA PROTEÇÃO DE DADOS PESSOAIS (LGPD)</p>
+<ol>
+<li>Para os fins da Lei nº 13.709/2018 (LGPD), a LICENCIADA é a <b>controladora</b> dos dados pessoais inseridos na plataforma (inclusive dos tomadores de serviço), e a LICENCIANTE atua como <b>operadora</b>, tratando-os apenas para executar este contrato e conforme as instruções da LICENCIADA (arts. 5º, VI e VII, e 39).</li>
+<li>A LICENCIANTE adotará medidas de segurança aptas a proteger os dados contra acessos não autorizados e situações acidentais ou ilícitas (art. 46) e comunicará à LICENCIADA, em até 48 (quarenta e oito) horas da ciência, qualquer incidente de segurança que possa acarretar risco ou dano relevante aos titulares (art. 48).</li>
+<li>A LICENCIADA autoriza o uso de suboperadores necessários à prestação do serviço (hospedagem em nuvem, intermediação de pagamentos, assinatura eletrônica e envio de mensagens), que ficam sujeitos às mesmas obrigações de proteção de dados.</li>
+<li>Encerrado o contrato e decorrido o prazo de exportação da Cláusula Décima Primeira, os dados serão eliminados, ressalvada a guarda exigida por lei (art. 16 da LGPD e art. 15 da Lei nº 12.965/2014).</li>
+</ol>
+
+<p class="clausula-titulo">CLÁUSULA DÉCIMA – DA CONFIDENCIALIDADE</p>
+<ol>
+<li>As partes manterão em sigilo as informações técnicas, comerciais, fiscais e financeiras a que tiverem acesso em razão deste contrato, durante a vigência e por 5 (cinco) anos após o seu término, salvo ordem judicial ou exigência legal.</li>
+</ol>
+
+<p class="clausula-titulo">CLÁUSULA DÉCIMA PRIMEIRA – DA RESCISÃO E DO ENCERRAMENTO</p>
+<ol>
+<li>Qualquer das partes poderá encerrar este contrato, sem multa, mediante aviso escrito com antecedência mínima de 30 (trinta) dias (art. 473 do Código Civil), sendo devidas as mensalidades até o fim do aviso.</li>
+<li>O contrato poderá ser rescindido de imediato, mediante notificação, em caso de descumprimento de cláusula não sanado em 10 (dez) dias após o aviso, ou de atraso de pagamento superior a 30 (trinta) dias.</li>
+<li>Encerrado o contrato, a LICENCIADA terá 30 (trinta) dias para exportar os XMLs e PDFs de suas notas, período em que o acesso ficará limitado à consulta e ao download.</li>
+</ol>
+
+<p class="clausula-titulo">CLÁUSULA DÉCIMA SEGUNDA – DAS COMUNICAÇÕES</p>
+<ol>
+<li>As comunicações e notificações serão feitas por escrito, valendo o e-mail como meio oficial. LICENCIANTE: simplescontabeis@gmail.com, (94) 99222-1064. LICENCIADA: {{email_licenciada}}, {{telefone_licenciada}}.</li>
+</ol>
+
+<p class="clausula-titulo">CLÁUSULA DÉCIMA TERCEIRA – DISPOSIÇÕES GERAIS E FORO</p>
+<ol>
+<li>A tolerância de uma parte quanto ao descumprimento de qualquer cláusula não implica novação nem renúncia de direitos. Alterações somente valerão por termo aditivo assinado pelas partes.</li>
+<li>As partes admitem a assinatura eletrônica deste instrumento (Lei nº 14.063/2020 e MP nº 2.200-2/2001), que, assinado também por 2 (duas) testemunhas, constitui título executivo extrajudicial (art. 784, III e §4º, do Código de Processo Civil).</li>
+<li>Fica eleito o foro da Comarca de Redenção-PA para dirimir quaisquer questões oriundas deste contrato.</li>
+</ol>
+
+<p>E por estarem assim justas e contratadas, as partes firmam o presente instrumento, na presença das 2 (duas) testemunhas abaixo identificadas.</p>
+<p class="align-right">Redenção, Pará, {{dia}} de {{mes}} de {{ano}}.</p>
+
+<p class="align-center">.................................................................................................</p>
+<p class="align-center">SIMPLES SERVIÇOS DE CONTABILIDADE, PERÍCIA E AUDITORIA CONTABIL LTDA</p>
+<p class="align-center">CNPJ: 04.801.040/0001-93</p>
+<p class="align-center">EDUARDO DO CARMO BRITO</p>
+<p class="align-center">CPF: 017.055.832-02</p>
+<p class="align-center">LICENCIANTE</p>
+<p class="align-center">.................................................................................................</p>
+<p class="align-center">SIMPLES SERVIÇOS DE CONTABILIDADE, PERÍCIA E AUDITORIA CONTABIL LTDA</p>
+<p class="align-center">CNPJ: 04.801.040/0001-93</p>
+<p class="align-center">ELIMARCER FERNANDES COSTA</p>
+<p class="align-center">CPF: 431.133.032-49</p>
+<p class="align-center">LICENCIANTE</p>
+<p class="align-center">.................................................................................................</p>
+<p class="align-center">{{licenciada_nome}}</p>
+<p class="align-center">CNPJ/CPF: {{CNPJ_CPF_licenciada}}</p>
+<p class="align-center">{{nome_representante_legal}}</p>
+<p class="align-center">CPF: {{CPF_Representante_Legal}}</p>
+<p class="align-center">LICENCIADA</p>
+<p><b>Testemunhas:</b></p>
+<table style="width:100%"><tr><td>1.________________________________</td><td>2.________________________________</td></tr>
+<tr><td>Nome: {{testemunha1}}</td><td>Nome: {{testemunha2}}</td></tr>
+<tr><td>CPF: {{CPF_testemunha1}}</td><td>CPF: {{CPF_testemunha2}}</td></tr></table>
+
+<h1 style="page-break-before: always;">ANEXO I – CONDIÇÕES COMERCIAIS</h1>
+<p>Contrato de Licença de Uso de Software em Nuvem – Módulo NFS-e nº {{n_contrato_sequencial}}/{{ano}} — LICENCIADA: {{licenciada_nome}}.</p>
+<table class="dados">
+<thead><tr><th>Item</th><th>Condição</th></tr></thead>
+<tbody>
+<tr><td>Módulo licenciado</td><td>Módulo NFS-e – plataforma Simples Contábeis (Sistema Nacional NFS-e)</td></tr>
+<tr><td>Implantação (valor único)</td><td>R$ {{valor_implantacao}} ({{implantacao_extenso}})</td></tr>
+<tr><td>Mensalidade da licença</td><td>R$ {{valor_mensalidade}} ({{mensalidade_extenso}})</td></tr>
+<tr><td>Vencimento da mensalidade</td><td>Todo dia {{dia_vencimento}}</td></tr>
+<tr><td>Início da vigência</td><td>{{data_inicio}} – 12 meses, com renovação automática</td></tr>
+<tr><td>Reajuste</td><td>Anual, pelo IPCA/IBGE</td></tr>
+<tr><td>Suporte</td><td>Remoto, dias úteis, 8h às 18h (Brasília)</td></tr>
+</tbody>
+</table>
+`;
+
 export const MODELOS_CONTRATO_PRONTOS: ModeloContratoPronto[] = [
   {
     id: "terceirizacao-setores",
@@ -216,5 +361,34 @@ export const MODELOS_CONTRATO_PRONTOS: ModeloContratoPronto[] = [
       { chave: "testemunha2_email", rotulo: "E-mail da testemunha 2", autoPreencherDe: null },
     ],
     conteudoHtml: TERCEIRIZACAO_HTML.trim(),
+  },
+  {
+    id: "licenca-modulo-nfse",
+    nome: "Contrato - Licença de Uso do Módulo NFS-e (SaaS)",
+    campos: [
+      { chave: "licenciada_nome", rotulo: "Licenciada — nome/razão social", autoPreencherDe: "nome" },
+      { chave: "CNPJ_CPF_licenciada", rotulo: "CNPJ/CPF da licenciada", autoPreencherDe: "cnpj" },
+      { chave: "licenciada_endereco", rotulo: "Endereço da licenciada", autoPreencherDe: "endereco" },
+      { chave: "licenciada_cidade", rotulo: "Cidade da licenciada", autoPreencherDe: "cidade" },
+      { chave: "licenciada_uf", rotulo: "UF da licenciada", autoPreencherDe: "uf" },
+      { chave: "CEP", rotulo: "CEP da licenciada", autoPreencherDe: "cep" },
+      { chave: "email_licenciada", rotulo: "E-mail da licenciada", autoPreencherDe: "email" },
+      { chave: "telefone_licenciada", rotulo: "Telefone da licenciada", autoPreencherDe: "telefone" },
+      { chave: "nome_representante_legal", rotulo: "Representante legal", autoPreencherDe: "nomeRepresentanteLegal" },
+      { chave: "CPF_Representante_Legal", rotulo: "CPF do representante legal", autoPreencherDe: "cpfRepresentanteLegal" },
+      { chave: "valor_implantacao", rotulo: "Valor da implantação (R$) — vem do preço do master", autoPreencherDe: "moduloNfseImplantacao" },
+      { chave: "implantacao_extenso", rotulo: "Implantação por extenso", autoPreencherDe: "moduloNfseImplantacaoExtenso" },
+      { chave: "valor_mensalidade", rotulo: "Mensalidade (R$) — vem do preço do master", autoPreencherDe: "moduloNfseMensal" },
+      { chave: "mensalidade_extenso", rotulo: "Mensalidade por extenso", autoPreencherDe: "moduloNfseMensalExtenso" },
+      { chave: "dia_vencimento", rotulo: "Dia do vencimento da mensalidade", autoPreencherDe: null },
+      { chave: "data_inicio", rotulo: "Início da vigência (dd/mm/aaaa)", autoPreencherDe: "dataContrato" },
+      { chave: "testemunha1", rotulo: "Testemunha 1", autoPreencherDe: null },
+      { chave: "CPF_testemunha1", rotulo: "CPF da testemunha 1", autoPreencherDe: null },
+      { chave: "testemunha1_email", rotulo: "E-mail da testemunha 1", autoPreencherDe: null },
+      { chave: "testemunha2", rotulo: "Testemunha 2", autoPreencherDe: null },
+      { chave: "CPF_testemunha2", rotulo: "CPF da testemunha 2", autoPreencherDe: null },
+      { chave: "testemunha2_email", rotulo: "E-mail da testemunha 2", autoPreencherDe: null },
+    ],
+    conteudoHtml: LICENCA_NFSE_HTML.trim(),
   },
 ];
