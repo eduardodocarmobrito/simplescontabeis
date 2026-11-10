@@ -10382,9 +10382,9 @@ async function pageNfeBusca(){
           <button class="btn small" id="btnNfeExportarUfDentro" title="Mesmo relatório, só com as notas cujo emitente/destinatário (o outro lado da operação) está no mesmo Estado da empresa">📍 Exportar — dentro do Estado</button>
           <button class="btn small" id="btnNfeExportarUfFora" title="Mesmo relatório, só com as notas cujo emitente/destinatário está em outro Estado">📍 Exportar — fora do Estado</button>
           <button class="btn small" id="btnNfeImportarXml" title="Importar o XML completo de uma ou mais notas na mão (ou um .zip com várias) — use quando a busca automática na Sefaz falhar ou estiver fora do ar">⬆️ Importar XML</button>
+          <button class="btn small" id="btnNfeMonitorReforma" title="Relatório detalhado da reforma (IBS/CBS), nota por nota">🧾 Monitor reforma (IBS/CBS)</button>
           <input type="file" id="nfeImportarXmlInput" accept=".xml,.zip" multiple style="display:none;">
         </div>
-        <div id="nfeReformaSumario" style="margin-bottom:8px;"></div>
         <!-- Barra de rolagem horizontal fixa no topo da tabela (sincronizada): a barra nativa fica no
              rodapé da caixa de 62vh, que cai abaixo da dobra; esta aqui fica sempre acessível. -->
         <div id="nfeDocScrollTop" style="overflow-x:auto; overflow-y:hidden; margin-bottom:4px;"><div id="nfeDocScrollTopInner" style="height:1px;"></div></div>
@@ -10586,15 +10586,14 @@ async function pageNfeBusca(){
       const comReforma = items.filter(d=>(d.valorIbs>0||d.valorCbs>0));
       const totIbs = items.reduce((s,d)=>s+(d.valorIbs||0),0);
       const totCbs = items.reduce((s,d)=>s+(d.valorCbs||0),0);
-      const sumario = document.getElementById('nfeReformaSumario');
-      if(sumario){
-        sumario.innerHTML = comReforma.length
-          ? `<div class="card" id="nfeReformaCard" style="margin:0; padding:10px 14px; background:var(--accent-pale); border:1px solid var(--accent); cursor:pointer;" title="Clique pra ver o relatório detalhado, nota por nota">
-               <b style="color:var(--accent-deep);">🧾 Monitor reforma (IBS/CBS)</b> — <b>${comReforma.length}</b> de ${items.length} nota(s) já trazem IBS/CBS no XML ·
-               Total <b>IBS</b>: ${fmtMoney(totIbs)} · Total <b>CBS</b>: ${fmtMoney(totCbs)}
-             </div>`
-          : `<div id="nfeReformaCard" style="font-size:12px; color:var(--ink-soft); cursor:pointer;" title="Clique pra ver o relatório detalhado, nota por nota">🧾 Monitor reforma (IBS/CBS): nenhuma nota desta lista traz IBS/CBS no XML ainda (reforma em transição).</div>`;
-        document.getElementById('nfeReformaCard')?.addEventListener('click', ()=>abrirRelatorioReformaModal(items.filter(d=>d.tipo!=='evento')));
+      // Monitor da reforma: botão padrão ao lado de "Importar XML"; o resumo vai no próprio botão + tooltip.
+      const btnReforma = document.getElementById('btnNfeMonitorReforma');
+      if(btnReforma){
+        btnReforma.textContent = `🧾 Monitor reforma (IBS/CBS)${comReforma.length ? ' · '+comReforma.length+' de '+items.length : ''}`;
+        btnReforma.title = comReforma.length
+          ? `${comReforma.length} de ${items.length} nota(s) já trazem IBS/CBS no XML — Total IBS: ${fmtMoney(totIbs)} · Total CBS: ${fmtMoney(totCbs)}. Clique pro relatório detalhado, nota por nota.`
+          : 'Nenhuma nota desta lista traz IBS/CBS no XML ainda (reforma em transição). Clique pro relatório detalhado.';
+        btnReforma.onclick = ()=>abrirRelatorioReformaModal(items.filter(d=>d.tipo!=='evento'));
       }
       // Marcadores da nota (estilo Espião): cada um abre o detalhe já na aba certa.
       // [ícone, descrição, aba-destino do drawer]
