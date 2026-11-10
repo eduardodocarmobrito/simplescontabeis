@@ -21785,6 +21785,12 @@ function renderCfgDomRelatorios(box, sub, dados){
   const { oneDriveCfg } = dados;
   sub.innerHTML = `
     <div class="card">
+      <h3>Executar todos os robôs agora</h3>
+      <p style="font-size:12px; color:var(--ink-soft); margin-top:-6px;">Pede a execução dos três robôs abaixo em sequência — Comparativo, depois Férias, depois Demonstrativo (mesma ordem da tela). A prioridade entre eles já garante que nunca rodam juntos: cada um só começa quando o anterior termina.</p>
+      <button class="btn primary" id="btnExecutarTodosRobos">▶ Executar todos os robôs agora</button>
+      <div id="executarTodosRobosResultado" style="margin-top:10px; font-size:12.5px;"></div>
+    </div>
+    <div class="card">
       <h3>Importar Relatórios do Domínio Web</h3>
       <p style="font-size:12px; color:var(--ink-soft); margin-top:-6px;">
         Lê periodicamente uma pasta do Google Drive com os PDFs de Balanço, DRE, Balancete, Comparativo
@@ -21926,6 +21932,34 @@ function renderCfgDomRelatorios(box, sub, dados){
       <div id="roboDemoProgresso" style="margin-top:12px;"></div>
     </div>
   `;
+  document.getElementById('btnExecutarTodosRobos')?.addEventListener('click', async (ev)=>{
+    if(!confirmar('Isso vai pedir a execução dos 3 robôs em sequência (Comparativo, Férias, Demonstrativo) — não é uma simulação. Confirma?')) return;
+    const btn = ev.target;
+    btn.disabled = true;
+    const resultado = document.getElementById('executarTodosRobosResultado');
+    resultado.innerHTML = '';
+    // Só pede a execução de cada um (grava o pedido) — quem efetivamente roda em sequência é a
+    // prioridade que o backend já aplica entre os robôs (Comparativo > Férias > Demonstrativo), a
+    // mesma que impede dois rodarem juntos. Não precisa esperar um terminar pra pedir o próximo.
+    const passos = [
+      { nome:'Comparativo de Movimento', rota:'/comparativo-robo/executar', body:{ periodoIni:document.getElementById('roboCompPerIni').value.trim(), periodoFim:document.getElementById('roboCompPerFim').value.trim() } },
+      { nome:'Programação de Férias', rota:'/ferias-robo/executar' },
+      { nome:'Demonstrativo Mensal', rota:'/demonstrativo-robo/executar', body:{ periodoIni:document.getElementById('roboDemoPerIni').value.trim(), periodoFim:document.getElementById('roboDemoPerFim').value.trim() } },
+    ];
+    for(const p of passos){
+      const linha = document.createElement('div');
+      linha.textContent = `⏳ Pedindo ${p.nome}…`;
+      resultado.appendChild(linha);
+      try{
+        await api(p.rota, { method:'POST', body:p.body });
+        linha.textContent = `✅ ${p.nome}: pedido enviado.`;
+      }catch(e){
+        linha.textContent = `❌ ${p.nome}: ${e.message}`;
+      }
+    }
+    toast('Pedido enviado pros 3 robôs — a prioridade entre eles garante que rodam um de cada vez, na ordem.','ok');
+    btn.disabled = false;
+  });
   document.getElementById('irEnvioDocs')?.addEventListener('click', ()=>{ STATE.page='configuracoes'; CFG_TAB='envio-docs'; render(); });
   const escolherPastaDrive = ()=>certImportPastaModal(async (pastaId, pastaNome)=>{
     try{ await api('/onedrive/relatorios/config-drive', { method:'PUT', body:{ pastaId, pastaNome } }); toast('Pasta do Google Drive salva.','ok'); renderCfgDominio(box); }

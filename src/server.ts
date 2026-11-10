@@ -7366,19 +7366,18 @@ app.post("/api/dominio-agent/comparativo-progresso", requireDominioAgent, (req, 
   if (!b.rodando) {
     sqlite.prepare(`UPDATE comparativo_robo_estado SET parar_em = NULL WHERE escritorio_id = 1`).run();
     // Encadeamento: dispara o Férias se o Comparativo estava mesmo rodando e terminou sozinho (não foi
-    // "Parar robô"). Vale pra AGENDA e pro "Executar agora" MANUAL — assim dá pra disparar a cadeia na mão.
+    // "Parar robô"), e SÓ quando foi a AGENDA que disparou — um "Executar agora" manual do Comparativo
+    // nunca encadeia (a própria tela promete isso: "pra não atrapalhar teste passo a passo"). Achado ao
+    // vivo (2026-11-10): o código antigo também deixava o MANUAL encadear (e ainda ignorava o dedup de
+    // 1x/dia pro manual) — religava o Férias toda vez que alguém rodava o Comparativo na mão, mesmo que
+    // o Férias já tivesse rodado hoje por conta própria, dando a impressão de loop ("terminou e rodou
+    // de novo sozinho"). Quem quiser disparar a cadeia inteira na mão agora usa "Executar todos os
+    // robôs agora" (dispara os 3 em sequência, sem depender desse encadeamento implícito).
     const ehAgenda = antes?.ultimoMotivo === "agenda";
-    const ehManual = antes?.ultimoMotivo === "manual";
-    if (antes?.progRodando && !antes?.pararEm && (ehAgenda || ehManual)) {
+    if (antes?.progRodando && !antes?.pararEm && ehAgenda) {
       garantirFeriasEstado(1);
       const hojeSp = new Date(Date.now() - 3 * 3600 * 1000).toISOString().slice(0, 10);
       const f = sqlite.prepare(`SELECT encadeado_apos_comparativo AS encadeado, encadeado_ultimo_dia AS encadeadoUltimoDia FROM ferias_robo_estado WHERE escritorio_id = 1`).get() as any;
-      // No máximo 1x/dia, SEMPRE — agenda ou manual. Achado ao vivo (2026-11-10): "Manual: sempre"
-      // religava o Férias toda vez que o Comparativo rodava manualmente, mesmo que o Férias já tivesse
-      // rodado hoje (ex.: via "Executar agora" dele mesmo) — parecia um loop ("terminou e rodou de
-      // novo sozinho"). Quem quiser forçar o Férias de novo no mesmo dia já tem o botão "Executar
-      // agora" dele mesmo, incondicional (`POST /api/ferias-robo/executar`); o encadeamento automático
-      // não precisa ignorar o dedup nesse caso.
       if (f?.encadeado && f.encadeadoUltimoDia !== hojeSp) {
         sqlite.prepare(`UPDATE ferias_robo_estado SET run_now_em = datetime('now'), parar_em = NULL, encadeado_ultimo_dia = ? WHERE escritorio_id = 1`).run(hojeSp);
       }
