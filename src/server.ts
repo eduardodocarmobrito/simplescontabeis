@@ -10056,7 +10056,7 @@ function competenciasEmParcelamento(empresaId: number): Map<string, number> {
   for (const r of rows) { try { varre(JSON.parse(r.j), r.n); } catch {} }
   return mapa;
 }
-async function executarRecalculoDas(periodoId: number, user: any): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+async function executarRecalculoDas(periodoId: number, user: any, vencimentoManual?: string | null): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
   const periodo = sqlite
     .prepare(
       `SELECT p.*, a.empresa_id as empresaId, t.nome as templateNome
@@ -10120,17 +10120,19 @@ async function executarRecalculoDas(periodoId: number, user: any): Promise<{ ok:
     if (!das.pdfBase64) return { ok: false, status: 502, error: "A Receita não devolveu o DAS recalculado — tente de novo mais tarde." };
     const quem = user.perfil === "Cliente" ? "pelo cliente" : `pelo escritório (${user.nome})`;
     const observacao = `DAS recalculado — solicitado ${quem} em ${new Date().toLocaleDateString("pt-BR")}.`;
-    integraContadorAnexarDasEmEnvio(empConfig.escritorio_id, periodo.empresaId, das, das.periodoApuracao || periodoApuracao, observacao, true);
+    integraContadorAnexarDasEmEnvio(empConfig.escritorio_id, periodo.empresaId, das, das.periodoApuracao || periodoApuracao, observacao, true, vencimentoManual);
     // Registra a solicitação de verdade (mesmo campo que "Solicitar Documentos" já usa pros modelos
     // normais) — sem isso o pedido de recálculo não ficava registrado em lugar nenhum: nem na lista
     // "Solicitar Documentos" do próprio cliente, nem em nenhum histórico do escritório. DAS - Mensal
     // não é visivel_cliente, então esse campo nunca é preenchido por outro caminho.
     sqlite.prepare(`UPDATE envio_periodos SET solicitado_em = datetime('now'), solicitado_por = ?, solicitacao_tipo = 'recalculo_das' WHERE id = ?`).run(user.id, periodoId);
+    // "data_vencimento" aqui segue o formato cru AAAAMMDD que a Receita devolve (das.dataVencimento) —
+    // com data manual (ISO "AAAA-MM-DD" do calendário do site), converte removendo os traços.
     sqlite
       .prepare(
         `INSERT INTO integracontador_documentos (empresa_id, escritorio_id, tipo, periodo_apuracao, numero_documento, data_vencimento, detalhes_json) VALUES (?, ?, 'das', ?, ?, ?, ?)`
       )
-      .run(periodo.empresaId, empConfig.escritorio_id, das.periodoApuracao || periodoApuracao, das.numeroDocumento, das.dataVencimento, JSON.stringify(das.valores || {}));
+      .run(periodo.empresaId, empConfig.escritorio_id, das.periodoApuracao || periodoApuracao, das.numeroDocumento, vencimentoManual ? vencimentoManual.replace(/-/g, "") : das.dataVencimento, JSON.stringify(das.valores || {}));
     return { ok: true };
   } catch (e: any) {
     return { ok: false, status: 502, error: e.message };
@@ -10144,7 +10146,9 @@ app.post("/api/envio/periodos/:periodoId/solicitar-recalculo-das", async (req, r
   if (user.perfil === "Colaborador" && !hasPermissao(user, "envio", "postar")) {
     return res.status(403).json({ error: "Sem permissão para recalcular DAS." });
   }
-  const r = await executarRecalculoDas(Number(req.params.periodoId), user);
+  const vencimento = req.body?.vencimento;
+  if (vencimento && !/^\d{4}-\d{2}-\d{2}$/.test(vencimento)) return res.status(400).json({ error: "Data de vencimento inválida." });
+  const r = await executarRecalculoDas(Number(req.params.periodoId), user, vencimento || null);
   if (!r.ok) return res.status(r.status).json({ error: r.error });
   res.json({ ok: true });
 });
@@ -16182,7 +16186,8 @@ function integraContadorAnexarPdfEmEnvio(
   // demais — necessário pro balaio genérico "Outros Documentos Financeiros" do e-mail, onde vários
   // arquivos DIFERENTES (Fluxo de Caixa, Razão Financeira de bancos distintos etc.) coexistem no
   // mesmo período (achado ao vivo: o 2º arquivo "outro" do mesmo e-mail estava apagando o 1º).
-  substituirApenasMesmoNome = false
+  substituirApenasMesmoNome = false,
+  vencimentoOrigem: "automatico" | "manual" = "automatico"
 ): number {
   // "mes IS ?" (não "mes = ?"): pra template ANUAL, mes vem null — em SQLite "coluna = NULL" nunca é
   // verdadeiro, então com "=" isso nunca acharia o período já existente e duplicaria envio_periodos a
@@ -16226,9 +16231,9 @@ function integraContadorAnexarPdfEmEnvio(
   fs.writeFileSync(destino, buf);
   const info = sqlite
     .prepare(
-      `INSERT INTO envio_documentos (periodo_id, file_name, file_path, mime, size_bytes, observacao, vencimento, vencimento_origem) VALUES (?, ?, ?, 'application/pdf', ?, ?, ?, 'automatico')`
+      `INSERT INTO envio_documentos (periodo_id, file_name, file_path, mime, size_bytes, observacao, vencimento, vencimento_origem) VALUES (?, ?, ?, 'application/pdf', ?, ?, ?, ?)`
     )
-    .run(periodo.id, nomeArquivo, destino, buf.length, observacao, vencimentoIso);
+    .run(periodo.id, nomeArquivo, destino, buf.length, observacao, vencimentoIso, vencimentoIso ? vencimentoOrigem : null);
   return Number(info.lastInsertRowid);
 }
 // O canal virou módulo pago e esta empresa tem contrato ativo? Preço 0 (default) = de graça, não
@@ -16337,7 +16342,10 @@ function integraContadorAnexarDasEmEnvio(
   das: integracontador.DasEmitido,
   periodoApuracao: string,
   observacao: string,
-  forcarNovoDocumento = false
+  forcarNovoDocumento = false,
+  // Quem pede o recálculo pode informar a própria data de vencimento (calendário do site) em vez de
+  // confiar só na data que a Receita devolveu — formato ISO "AAAA-MM-DD", igual o resto do sistema.
+  vencimentoManual?: string | null
 ): void {
   if (!das.pdfBase64) return;
   const atribuicaoId = integraContadorObterOuCriarAtribuicaoModelo(
@@ -16354,11 +16362,11 @@ function integraContadorAnexarDasEmEnvio(
   // automático, que não é uma correção de nada.
   const retificado = forcarNovoDocumento;
   const nomeArquivo = `DAS ${MESES_PT_EXTENSO[mes - 1]} ${ano}${das.numeroDocumento ? " - " + das.numeroDocumento : ""}.pdf`;
-  const vencIso = integraContadorFormatarVencimento(das.dataVencimento);
+  const vencIso = vencimentoManual || integraContadorFormatarVencimento(das.dataVencimento);
   const docId = integraContadorAnexarPdfEmEnvio(
     atribuicaoId, empresaId, ano, mes, nomeArquivo, das.pdfBase64,
     retificado ? `${observacao} DAS recalculado — substitui a guia anterior.` : observacao,
-    vencIso
+    vencIso, false, false, vencimentoManual ? "manual" : "automatico"
   );
   const rotulo = `${String(mes).padStart(2, "0")}/${ano}`;
   const vencTxt = vencIso ? `\n\nVencimento: ${vencIso.split("-").reverse().join("/")}` : "";

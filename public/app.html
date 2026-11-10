@@ -6990,6 +6990,30 @@ function novaEnvioAtribModal(empresas, templates){
   });
 }
 
+function recalcularDasModal(periodoId, onConcluido){
+  openModal(`
+    <h3>Solicitar recálculo do DAS</h3>
+    <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-4px;">Busca a guia recalculada direto na Receita. Se quiser, informe a data de vencimento — deixe em branco pra usar a data que a Receita devolver.</p>
+    <div class="field"><label>Data de vencimento (opcional)</label>${dateInputHtml('recalcDasVenc', '')}</div>
+    <div class="modal-actions">
+      <button class="btn" id="recalcDasCancel">Cancelar</button>
+      <button class="btn primary" id="recalcDasConfirmar">Solicitar recálculo</button>
+    </div>
+  `);
+  setupDatePicker('recalcDasVenc','recalcDasVenc_text');
+  document.getElementById('recalcDasCancel').addEventListener('click', closeModal);
+  document.getElementById('recalcDasConfirmar').addEventListener('click', async ()=>{
+    const vencimento = document.getElementById('recalcDasVenc').value || undefined;
+    const btn = document.getElementById('recalcDasConfirmar');
+    btn.disabled = true; btn.textContent = 'Recalculando…';
+    try{
+      await api('/envio/periodos/'+periodoId+'/solicitar-recalculo-das', { method:'POST', body:{ vencimento } });
+      closeModal();
+      toast('DAS recalculado — já disponível pra baixar.','ok');
+      onConcluido();
+    }catch(e){ toast(e.message,'err'); btn.disabled = false; btn.textContent = 'Solicitar recálculo'; }
+  });
+}
 function vencimentoModal(docId, atualIso, onSalvo){
   openModal(`
     <h3>Vencimento do documento</h3>
@@ -7150,13 +7174,8 @@ function wireEnvioGradeEvents(container, atribuicaoId, souCliente){
   container.querySelectorAll('[data-act="enviar-whatsapp"]').forEach(b=>b.addEventListener('click', ()=>{
     envioDocWhatsappModal(b.dataset.doc, b.dataset.canal, ()=>abrirEnvioGrade(atribuicaoId, souCliente));
   }));
-  container.querySelectorAll('[data-act="recalcular-das"]').forEach(b=>b.addEventListener('click', async ()=>{
-    b.disabled = true; b.textContent = 'Recalculando…';
-    try{
-      await api('/envio/periodos/'+b.dataset.periodo+'/solicitar-recalculo-das', { method:'POST' });
-      toast('DAS recalculado — já disponível pra baixar.','ok');
-      abrirEnvioGrade(atribuicaoId, souCliente);
-    }catch(e){ toast(e.message,'err'); b.disabled = false; b.textContent = 'Solicitar recálculo do DAS'; }
+  container.querySelectorAll('[data-act="recalcular-das"]').forEach(b=>b.addEventListener('click', ()=>{
+    recalcularDasModal(b.dataset.periodo, ()=>abrirEnvioGrade(atribuicaoId, souCliente));
   }));
   container.querySelectorAll('[data-act="excluir-doc"]').forEach(b=>b.addEventListener('click', async ()=>{
     if(!confirmar('Excluir este documento enviado? O cliente já pode ter recebido por e-mail — isso só remove daqui do site.')) return;
