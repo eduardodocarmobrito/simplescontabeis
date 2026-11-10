@@ -214,6 +214,9 @@
      escuro) precisa de regra própria pros dois temas, não pode só herdar --surface/--paper. */
   #menuFlutuante{background:var(--surface);}
   body.theme-glass #menuFlutuante{background:rgba(var(--glass-rgb,5,31,32),.94);}
+  /* Hover do item: no tema escuro --sidebar-active continua verde-claro e a letra é branca → ilegível. */
+  .menuFlutuanteItem:hover{background:var(--sidebar-active); color:var(--ink);}
+  body.theme-glass .menuFlutuanteItem:hover, body.theme-glass .xml-linha:hover{background:rgba(52,199,89,.28); color:#fff;}
   /* Drawer lateral (detalhe da nota, estilo Espião): desliza da direita.
      Havia DUAS definições conflitantes de .drawer/.drawer-bg nesta folha (achado ao vivo 2026-11-05 —
      usuário viu o conteúdo da tela de baixo "embaralhado" com o do drawer aberto, um clássico sintoma
@@ -10900,8 +10903,6 @@ function abrirMenuFlutuante(botaoEl, itens){
   menu.innerHTML = itens.map((it,i)=>`<div class="menuFlutuanteItem" data-i="${i}" style="padding:8px 10px; border-radius:6px; cursor:pointer; font-size:13px; display:flex; align-items:center; gap:8px; white-space:nowrap;">${it.icon||''} ${esc(it.label)}</div>`).join('');
   document.body.appendChild(menu);
   menu.querySelectorAll('.menuFlutuanteItem').forEach(el=>{
-    el.addEventListener('mouseenter', ()=>el.style.background='var(--sidebar-active)');
-    el.addEventListener('mouseleave', ()=>el.style.background='');
     el.addEventListener('click', ()=>{ fecharMenuFlutuante(); itens[Number(el.dataset.i)].onClick(); });
   });
   setTimeout(()=>document.addEventListener('click', fecharMenuFlutuanteClique, true), 0);
