@@ -2080,6 +2080,7 @@ const NAV = [
   { id:'webdfe', label:'Emissor NF-e', modulo:'webdfe', roles:['Administrador','Colaborador'] },
   { id:'minha-financeiro', label:'Financeiro', modulo:null, roles:['Cliente'] },
   { id:'minha-nfse', label:'NFS-e', modulo:null, roles:['Cliente'] },
+  { id:'minha-clientes', label:'Clientes', modulo:null, roles:['Cliente'] },
   { id:'minha-webdfe', label:'Emissor NF-e', modulo:null, roles:['Cliente'] },
   { id:'meus-documentos', label:'Meus Documentos', modulo:null, roles:['Cliente'] },
   { id:'solicitar-documentos', label:'Solicitar Documentos', modulo:null, roles:['Cliente'] },
@@ -2113,12 +2114,13 @@ let NFE_TIPO_SEL = '';
 // o expandido/recolhido só seguia a página atual e clicar de novo no item não tinha efeito (sempre
 // reabria, porque "já estar na página" é justamente a condição que mantém expandido).
 let NAV_FECHADOS = new Set();
-const PAGINAS_CLIENTE_RESTRINGIVEIS = ['minha-nfse','meus-documentos','solicitar-documentos','documentos-recebidos','notas-entrada','minha-reforma','minha-financeiro','minha-assinatura','minha-webdfe','minha-conciliacao'];
+const PAGINAS_CLIENTE_RESTRINGIVEIS = ['minha-nfse','minha-clientes','meus-documentos','solicitar-documentos','documentos-recebidos','notas-entrada','minha-reforma','minha-financeiro','minha-assinatura','minha-webdfe','minha-conciliacao'];
 // Páginas que o cliente só vê quando LIBERADAS explicitamente (opt-in) — não entram no "nenhuma
 // marcada = vê todas"; ficam escondidas por padrão até o admin marcar.
 const PAGINAS_CLIENTE_OPTIN = new Set(['minha-conciliacao']);
 const PAGINAS_CLIENTE_TODAS = [
   { id:'minha-nfse', label:'NFS-e' },
+  { id:'minha-clientes', label:'Clientes' },
   { id:'meus-documentos', label:'Meus Documentos' },
   { id:'solicitar-documentos', label:'Solicitar Documentos' },
   { id:'documentos-recebidos', label:'Documentos Recebidos' },
@@ -2130,7 +2132,7 @@ const PAGINAS_CLIENTE_TODAS = [
   { id:'minha-conciliacao', label:'Conciliação Bancária', optin:true },
 ];
 // Página do perfil Cliente → módulo do escritório que precisa estar liberado pra ela aparecer.
-const PAGINA_CLIENTE_MODULO = { 'minha-nfse':'nfse', 'minha-financeiro':'financeiro', 'minha-webdfe':'webdfe', 'notas-entrada':'nfe-busca', 'minha-reforma':'reforma', 'minha-conciliacao':'open_finance' };
+const PAGINA_CLIENTE_MODULO = { 'minha-nfse':'nfse', 'minha-clientes':'nfse', 'minha-financeiro':'financeiro', 'minha-webdfe':'webdfe', 'notas-entrada':'nfe-busca', 'minha-reforma':'reforma', 'minha-conciliacao':'open_finance' };
 function escritorioTemFuncionalidade(modulo){
   return !Array.isArray(STATE.funcionalidades) || STATE.funcionalidades.includes(modulo);
 }
@@ -2328,6 +2330,7 @@ async function render(){
     else if(STATE.page==='minha-conciliacao') await pageMinhaConciliacao();
     else if(STATE.page==='minha-reforma') await pageMinhaReforma();
     else if(STATE.page==='minha-nfse') await pageMinhaNfse();
+    else if(STATE.page==='minha-clientes') await pageMinhaClientes();
     else if(STATE.page==='minha-financeiro') await pageMinhaFinanceiro();
     else if(STATE.page==='minha-assinatura') await pageMinhaAssinatura();
     else if(STATE.page==='minha-empresa-config') await pageMinhaEmpresaConfig();
@@ -11844,6 +11847,191 @@ async function renderMinhaNfseConfig(){
     }catch(err){ toast(err.message,'err'); }
   });
 }
+// Cadastro de "Clientes" (tomadores do cliente direto) — usado pela página de menu "Clientes" e
+// pelo bloco "Clientes recorrentes" dentro de Emissão Automática. `aoSalvar` é chamado pra recarregar
+// a tela que abriu o modal (cada uma recarrega do jeito dela).
+function clienteRecorrenteModal(cliente, aoSalvar){
+  openModal(`
+    <h3>${cliente?'Editar':'Novo'} cliente</h3>
+    <div class="row">
+      <div class="field grow"><label>Nome</label><input id="crNome" value="${cliente?esc(cliente.nome):''}"></div>
+      <div class="field" style="width:200px;"><label>CPF/CNPJ</label><input id="crDocumento" value="${cliente&&cliente.documento?esc(fmtCnpjCpf(cliente.documento)):''}"></div>
+    </div>
+    <div class="row">
+      <div class="field grow"><label>E-mail (recebe a nota automaticamente)</label><input id="crEmail" type="email" value="${cliente?esc(cliente.email||''):''}"></div>
+      <div class="field grow"><label>Telefone (opcional)</label><input id="crTelefone" value="${cliente?esc(cliente.telefone||''):''}"></div>
+    </div>
+    <div class="row">
+      <div class="field grow"><label>Endereço (opcional)</label><input id="crEndereco" value="${cliente?esc(cliente.endereco||''):''}"></div>
+      <div class="field" style="width:140px;"><label>CEP (opcional)</label><input id="crCep" value="${cliente?esc(cliente.cep||''):''}"></div>
+    </div>
+    <div class="row">
+      <div class="field grow"><label>Cidade (opcional)</label><input id="crCidade" value="${cliente?esc(cliente.cidade||''):''}"></div>
+      <div class="field" style="width:80px;"><label>UF</label><input id="crUf" maxlength="2" value="${cliente?esc(cliente.uf||''):''}"></div>
+    </div>
+    ${cliente?`<label class="checkbox-row"><input type="checkbox" id="crAtivo" ${cliente.ativo?'checked':''}> Ativo (participa da cobrança automática e aparece pra emitir)</label>`:''}
+    <div class="modal-actions">
+      <button class="btn" id="crCancel">Cancelar</button>
+      <button class="btn primary" id="crSalvar">${cliente?'Salvar':'Criar'}</button>
+    </div>
+  `, '560px');
+  ligarTravaDocumento(document.getElementById('crDocumento'), 'ambos');
+  ligarMascaraCep(document.getElementById('crCep'));
+  document.getElementById('crCancel').addEventListener('click', closeModal);
+  document.getElementById('crSalvar').addEventListener('click', async ()=>{
+    const nome = document.getElementById('crNome').value.trim();
+    if(!nome){ toast('Informe o nome.','err'); return; }
+    const body = {
+      nome,
+      documento: document.getElementById('crDocumento').value.trim()||null,
+      email: document.getElementById('crEmail').value.trim()||null,
+      telefone: document.getElementById('crTelefone').value.trim()||null,
+      endereco: document.getElementById('crEndereco').value.trim()||null,
+      cidade: document.getElementById('crCidade').value.trim()||null,
+      uf: document.getElementById('crUf').value.trim()||null,
+      cep: document.getElementById('crCep').value.trim()||null,
+    };
+    if(cliente) body.ativo = document.getElementById('crAtivo').checked;
+    try{
+      if(cliente) await api('/minha-empresa/clientes-recorrentes/'+cliente.id, { method:'PUT', body });
+      else await api('/minha-empresa/clientes-recorrentes', { method:'POST', body });
+      closeModal(); toast('Cliente salvo.','ok'); aoSalvar();
+    }catch(e){ toast(e.message,'err'); }
+  });
+}
+function clienteRecorrenteServicosModal(cliente, modelosAtivos, aoSalvar){
+  function montarHtml(itens){
+    return `
+      <h3>Serviços — ${esc(cliente.nome)}</h3>
+      <div style="overflow-x:auto;">
+      <table class="data-table">
+        <thead><tr><th>Modelo</th><th>Descrição</th><th>Valor</th><th>Ativo</th><th></th></tr></thead>
+        <tbody id="crsBody">
+          ${itens.length? itens.map(i=>{
+            const modelo = modelosAtivos.find(m=>m.id===i.modeloId);
+            return `<tr data-id="${i.id}">
+              <td>${esc(modelo?modelo.nome:'—')}</td>
+              <td>${esc(i.descricaoServico)}</td>
+              <td>${fmtMoney(i.valorServico)}</td>
+              <td><span class="tag ${i.ativo?'ok':'muted'}">${i.ativo?'Sim':'Não'}</span></td>
+              <td style="text-align:right; white-space:nowrap;">
+                <button class="btn small" data-act="toggle">${i.ativo?'Desativar':'Ativar'}</button>
+                <button class="btn small" data-act="excluir" style="color:var(--debit);">Excluir</button>
+              </td>
+            </tr>`;
+          }).join('') : '<tr><td colspan="5"><div class="empty-state">Nenhum serviço ainda.</div></td></tr>'}
+        </tbody>
+      </table>
+      </div>
+      <div style="margin-top:16px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Adicionar serviço</div>
+      <div class="row">
+        <div class="field grow"><label>Modelo de serviço</label>${comboSelectHtml('crsModeloCombo','Digite para buscar…')}</div>
+        <div class="field" style="width:140px;"><label>Valor</label><input id="crsValor" type="number" step="0.01" min="0"></div>
+        <button class="btn" id="btnCrsAdd" style="margin-bottom:5px;">+ Adicionar</button>
+      </div>
+      <div class="field"><label>Descrição (opcional — "{{mes_competencia}}" vira o mês/ano na hora de emitir)</label><input id="crsDescricao" placeholder="Referente ao Mês {{mes_competencia}}"></div>
+      <div class="modal-actions"><button class="btn primary" onclick="closeModal()">Fechar</button></div>
+    `;
+  }
+  async function recarregar(){
+    const { items } = await api('/minha-empresa/clientes-recorrentes');
+    const atualizado = items.find(c=>c.id===cliente.id);
+    cliente = atualizado || cliente;
+    openModal(montarHtml(cliente.itens), '720px');
+    ligar();
+  }
+  function ligar(){
+    setupComboSelect('crsModeloCombo', modelosAtivos.map(m=>({id:m.id, label:m.nome})), ()=>{});
+    document.getElementById('btnCrsAdd').addEventListener('click', async ()=>{
+      const modeloId = Number(document.querySelector('#crsModeloCombo .combo-value').value);
+      const valorServico = Number(document.getElementById('crsValor').value);
+      if(!modeloId || !valorServico){ toast('Escolha o modelo e informe o valor.','err'); return; }
+      const descricaoServico = document.getElementById('crsDescricao').value.trim()||undefined;
+      try{
+        await api('/minha-empresa/clientes-recorrentes/'+cliente.id+'/itens', { method:'POST', body:{ modeloId, valorServico, descricaoServico } });
+        toast('Serviço adicionado.','ok');
+        await recarregar();
+        aoSalvar();
+      }catch(e){ toast(e.message,'err'); }
+    });
+    document.getElementById('crsBody').querySelectorAll('[data-act="toggle"]').forEach(b=>b.addEventListener('click', async e=>{
+      const id = Number(e.target.closest('tr').dataset.id);
+      const i = cliente.itens.find(x=>x.id===id);
+      try{ await api('/minha-empresa/clientes-recorrentes/itens/'+id, { method:'PUT', body:{ ativo: !i.ativo } }); await recarregar(); aoSalvar(); }
+      catch(err){ toast(err.message,'err'); }
+    }));
+    document.getElementById('crsBody').querySelectorAll('[data-act="excluir"]').forEach(b=>b.addEventListener('click', async e=>{
+      const id = Number(e.target.closest('tr').dataset.id);
+      if(!confirmar('Excluir este serviço? Essa ação não pode ser desfeita.')) return;
+      try{ await api('/minha-empresa/clientes-recorrentes/itens/'+id, { method:'DELETE' }); await recarregar(); aoSalvar(); }
+      catch(err){ toast(err.message,'err'); }
+    }));
+  }
+  openModal(montarHtml(cliente.itens), '720px');
+  ligar();
+}
+// Página de menu "Clientes" — cadastro dos tomadores do cliente direto (pra quem ele emite nota),
+// logo abaixo de NFS-e. Mesma tabela que já alimenta a Emissão Automática e o combo "Cliente
+// cadastrado" da aba Emitir — aqui é só o cadastro completo (dados de contato/endereço).
+async function pageMinhaClientes(){
+  const item = await moduloDaChave('nfse');
+  if(!item.acesso){
+    main().innerHTML = `<h1>Clientes</h1>` + moduloPaywallHtml(item);
+    ligarModuloPaywall(main(), pageMinhaClientes);
+    return;
+  }
+  const [{ items: clientes }, { items: modelos }, itemAuto] = await Promise.all([
+    api('/minha-empresa/clientes-recorrentes'),
+    api('/nfse/minha-empresa/modelos'),
+    moduloDaChave('nfse_automatica'),
+  ]);
+  const modelosAtivos = modelos.filter(m=>m.ativo);
+  const temAutomatica = !!itemAuto?.acesso;
+  main().innerHTML = `
+    <h1>Clientes</h1>
+    <p class="subtitle">Cadastre pra quem você emite nota — preenche sozinho os dados na hora de emitir, e (se você tiver a Emissão Automática) alimenta a cobrança mensal.</p>
+    <div class="row" style="margin-bottom:14px;"><button class="btn primary" id="btnNovoCliente">+ Novo cliente</button></div>
+    <div class="card" style="padding:0; overflow-x:auto;">
+      <table class="data-table">
+        <thead><tr><th>Nome</th><th>CPF/CNPJ</th><th>E-mail</th><th>Telefone</th><th>Cidade/UF</th><th>Ativo</th><th></th></tr></thead>
+        <tbody id="minhaClientesBody"></tbody>
+      </table>
+    </div>
+  `;
+  function desenhar(){
+    document.getElementById('minhaClientesBody').innerHTML = clientes.length? clientes.map(c=>`
+      <tr data-id="${c.id}">
+        <td>${esc(c.nome)}</td>
+        <td>${c.documento?esc(fmtCnpjCpf(c.documento)):'—'}</td>
+        <td>${esc(c.email||'—')}</td>
+        <td>${esc(c.telefone||'—')}</td>
+        <td>${c.cidade?esc(c.cidade)+(c.uf?'/'+esc(c.uf):''):'—'}</td>
+        <td><span class="tag ${c.ativo?'ok':'muted'}">${c.ativo?'Sim':'Não'}</span></td>
+        <td style="text-align:right; white-space:nowrap;">
+          ${temAutomatica?'<button class="btn small" data-act="servicos">Serviços</button>':''}
+          <button class="btn small" data-act="editar">Editar</button>
+          <button class="btn small" data-act="excluir" style="color:var(--debit);">Excluir</button>
+        </td>
+      </tr>
+    `).join('') : '<tr><td colspan="7"><div class="empty-state">Nenhum cliente cadastrado ainda.</div></td></tr>';
+    document.getElementById('minhaClientesBody').querySelectorAll('[data-act="editar"]').forEach(b=>b.addEventListener('click', e=>{
+      const id = Number(e.target.closest('tr').dataset.id);
+      clienteRecorrenteModal(clientes.find(c=>c.id===id), pageMinhaClientes);
+    }));
+    document.getElementById('minhaClientesBody').querySelectorAll('[data-act="servicos"]').forEach(b=>b.addEventListener('click', e=>{
+      const id = Number(e.target.closest('tr').dataset.id);
+      clienteRecorrenteServicosModal(clientes.find(c=>c.id===id), modelosAtivos, pageMinhaClientes);
+    }));
+    document.getElementById('minhaClientesBody').querySelectorAll('[data-act="excluir"]').forEach(b=>b.addEventListener('click', async e=>{
+      const id = Number(e.target.closest('tr').dataset.id);
+      if(!confirmar('Excluir este cliente? Os serviços recorrentes dele também são excluídos. Essa ação não pode ser desfeita.')) return;
+      try{ await api('/minha-empresa/clientes-recorrentes/'+id, { method:'DELETE' }); toast('Cliente excluído.','ok'); pageMinhaClientes(); }
+      catch(err){ toast(err.message,'err'); }
+    }));
+  }
+  desenhar();
+  document.getElementById('btnNovoCliente').addEventListener('click', ()=>clienteRecorrenteModal(null, pageMinhaClientes));
+}
 // ===================== Emissão Automática (self-service, módulo "nfse_automatica") =====================
 async function renderMinhaNfseAutomatica(){
   const item = await moduloDaChave('nfse_automatica');
@@ -11864,8 +12052,7 @@ async function renderMinhaNfseAutomatica(){
   box.innerHTML = `
     <div class="card">
       <h3>Clientes recorrentes</h3>
-      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-4px;">Quem você cobra todo mês automaticamente — a nota sai sozinha na data configurada em "Agendamento" abaixo.</p>
-      <button class="btn primary" id="btnNovoClienteRecorrente" style="margin-bottom:10px;">+ Novo cliente recorrente</button>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-4px;">Quem você cobra todo mês automaticamente — a nota sai sozinha na data configurada em "Agendamento" abaixo. Cadastre e edite seus clientes em <a href="#" id="linkMinhaClientes">Clientes</a>; aqui você só configura os serviços cobrados de cada um.</p>
       <div style="overflow-x:auto;">
       <table class="data-table">
         <thead><tr><th>Nome</th><th>CPF/CNPJ</th><th>E-mail</th><th>Serviços</th><th>Ativo</th><th></th></tr></thead>
@@ -11935,21 +12122,18 @@ async function renderMinhaNfseAutomatica(){
         <td><span class="tag ${c.ativo?'ok':'muted'}">${c.ativo?'Sim':'Não'}</span></td>
         <td style="text-align:right; white-space:nowrap;">
           <button class="btn small" data-act="servicos">Serviços</button>
-          <button class="btn small" data-act="editar">Editar</button>
         </td>
       </tr>
-    `).join('') : '<tr><td colspan="6"><div class="empty-state">Nenhum cliente recorrente cadastrado ainda.</div></td></tr>';
-    document.getElementById('clientesRecorrentesBody').querySelectorAll('[data-act="editar"]').forEach(b=>b.addEventListener('click', e=>{
-      const id = Number(e.target.closest('tr').dataset.id);
-      clienteRecorrenteModal(clientes.find(c=>c.id===id));
-    }));
+    `).join('') : `<tr><td colspan="6"><div class="empty-state">Nenhum cliente cadastrado ainda — cadastre em <a href="#" id="linkMinhaClientesVazio">Clientes</a>.</div></td></tr>`;
     document.getElementById('clientesRecorrentesBody').querySelectorAll('[data-act="servicos"]').forEach(b=>b.addEventListener('click', e=>{
       const id = Number(e.target.closest('tr').dataset.id);
-      clienteRecorrenteServicosModal(clientes.find(c=>c.id===id), modelosAtivos);
+      clienteRecorrenteServicosModal(clientes.find(c=>c.id===id), modelosAtivos, renderMinhaNfseAutomatica);
     }));
+    const linkVazio = document.getElementById('linkMinhaClientesVazio');
+    if(linkVazio) linkVazio.addEventListener('click', e=>{ e.preventDefault(); goPage('minha-clientes'); });
   }
   desenharClientes();
-  document.getElementById('btnNovoClienteRecorrente').addEventListener('click', ()=>clienteRecorrenteModal(null));
+  document.getElementById('linkMinhaClientes').addEventListener('click', e=>{ e.preventDefault(); goPage('minha-clientes'); });
 
   function desenharLog(logItens){
     document.getElementById('autoLogBody').innerHTML = logItens.length? logItens.map(l=>`
@@ -11965,115 +12149,6 @@ async function renderMinhaNfseAutomatica(){
   async function recarregarLogAutomatica(){
     const { items } = await api('/minha-empresa/agendamento/log');
     desenharLog(items);
-  }
-
-  function clienteRecorrenteModal(cliente){
-    openModal(`
-      <h3>${cliente?'Editar':'Novo'} cliente recorrente</h3>
-      <div class="row">
-        <div class="field grow"><label>Nome</label><input id="crNome" value="${cliente?esc(cliente.nome):''}"></div>
-        <div class="field" style="width:200px;"><label>CPF/CNPJ</label><input id="crDocumento" value="${cliente&&cliente.documento?esc(fmtCnpjCpf(cliente.documento)):''}"></div>
-      </div>
-      <div class="row">
-        <div class="field grow"><label>E-mail (recebe a nota automaticamente)</label><input id="crEmail" type="email" value="${cliente?esc(cliente.email||''):''}"></div>
-        <div class="field" style="width:140px;"><label>CEP (opcional)</label><input id="crCep" value="${cliente?esc(cliente.cep||''):''}"></div>
-      </div>
-      ${cliente?`<label class="checkbox-row"><input type="checkbox" id="crAtivo" ${cliente.ativo?'checked':''}> Ativo (participa da cobrança automática)</label>`:''}
-      <div class="modal-actions">
-        <button class="btn" id="crCancel">Cancelar</button>
-        <button class="btn primary" id="crSalvar">${cliente?'Salvar':'Criar'}</button>
-      </div>
-    `, '560px');
-    ligarTravaDocumento(document.getElementById('crDocumento'), 'cnpj');
-    document.getElementById('crCancel').addEventListener('click', closeModal);
-    document.getElementById('crSalvar').addEventListener('click', async ()=>{
-      const nome = document.getElementById('crNome').value.trim();
-      if(!nome){ toast('Informe o nome.','err'); return; }
-      const body = {
-        nome,
-        documento: document.getElementById('crDocumento').value.trim()||null,
-        email: document.getElementById('crEmail').value.trim()||null,
-        cep: document.getElementById('crCep').value.trim()||null,
-      };
-      if(cliente) body.ativo = document.getElementById('crAtivo').checked;
-      try{
-        if(cliente) await api('/minha-empresa/clientes-recorrentes/'+cliente.id, { method:'PUT', body });
-        else await api('/minha-empresa/clientes-recorrentes', { method:'POST', body });
-        closeModal(); toast('Cliente recorrente salvo.','ok'); renderMinhaNfseAutomatica();
-      }catch(e){ toast(e.message,'err'); }
-    });
-  }
-
-  function clienteRecorrenteServicosModal(cliente, modelosAtivos){
-    function montarHtml(itens){
-      return `
-        <h3>Serviços — ${esc(cliente.nome)}</h3>
-        <div style="overflow-x:auto;">
-        <table class="data-table">
-          <thead><tr><th>Modelo</th><th>Descrição</th><th>Valor</th><th>Ativo</th><th></th></tr></thead>
-          <tbody id="crsBody">
-            ${itens.length? itens.map(i=>{
-              const modelo = modelosAtivos.find(m=>m.id===i.modeloId);
-              return `<tr data-id="${i.id}">
-                <td>${esc(modelo?modelo.nome:'—')}</td>
-                <td>${esc(i.descricaoServico)}</td>
-                <td>${fmtMoney(i.valorServico)}</td>
-                <td><span class="tag ${i.ativo?'ok':'muted'}">${i.ativo?'Sim':'Não'}</span></td>
-                <td style="text-align:right; white-space:nowrap;">
-                  <button class="btn small" data-act="toggle">${i.ativo?'Desativar':'Ativar'}</button>
-                  <button class="btn small" data-act="excluir" style="color:var(--debit);">Excluir</button>
-                </td>
-              </tr>`;
-            }).join('') : '<tr><td colspan="5"><div class="empty-state">Nenhum serviço ainda.</div></td></tr>'}
-          </tbody>
-        </table>
-        </div>
-        <div style="margin-top:16px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Adicionar serviço</div>
-        <div class="row">
-          <div class="field grow"><label>Modelo de serviço</label>${comboSelectHtml('crsModeloCombo','Digite para buscar…')}</div>
-          <div class="field" style="width:140px;"><label>Valor</label><input id="crsValor" type="number" step="0.01" min="0"></div>
-          <button class="btn" id="btnCrsAdd" style="margin-bottom:5px;">+ Adicionar</button>
-        </div>
-        <div class="field"><label>Descrição (opcional — "{{mes_competencia}}" vira o mês/ano na hora de emitir)</label><input id="crsDescricao" placeholder="Referente ao Mês {{mes_competencia}}"></div>
-        <div class="modal-actions"><button class="btn primary" onclick="closeModal()">Fechar</button></div>
-      `;
-    }
-    async function recarregar(){
-      const { items } = await api('/minha-empresa/clientes-recorrentes');
-      const atualizado = items.find(c=>c.id===cliente.id);
-      cliente = atualizado || cliente;
-      openModal(montarHtml(cliente.itens), '720px');
-      ligar();
-    }
-    function ligar(){
-      setupComboSelect('crsModeloCombo', modelosAtivos.map(m=>({id:m.id, label:m.nome})), ()=>{});
-      document.getElementById('btnCrsAdd').addEventListener('click', async ()=>{
-        const modeloId = Number(document.querySelector('#crsModeloCombo .combo-value').value);
-        const valorServico = Number(document.getElementById('crsValor').value);
-        if(!modeloId || !valorServico){ toast('Escolha o modelo e informe o valor.','err'); return; }
-        const descricaoServico = document.getElementById('crsDescricao').value.trim()||undefined;
-        try{
-          await api('/minha-empresa/clientes-recorrentes/'+cliente.id+'/itens', { method:'POST', body:{ modeloId, valorServico, descricaoServico } });
-          toast('Serviço adicionado.','ok');
-          await recarregar();
-          renderMinhaNfseAutomatica();
-        }catch(e){ toast(e.message,'err'); }
-      });
-      document.getElementById('crsBody').querySelectorAll('[data-act="toggle"]').forEach(b=>b.addEventListener('click', async e=>{
-        const id = Number(e.target.closest('tr').dataset.id);
-        const i = cliente.itens.find(x=>x.id===id);
-        try{ await api('/minha-empresa/clientes-recorrentes/itens/'+id, { method:'PUT', body:{ ativo: !i.ativo } }); await recarregar(); renderMinhaNfseAutomatica(); }
-        catch(err){ toast(err.message,'err'); }
-      }));
-      document.getElementById('crsBody').querySelectorAll('[data-act="excluir"]').forEach(b=>b.addEventListener('click', async e=>{
-        const id = Number(e.target.closest('tr').dataset.id);
-        if(!confirmar('Excluir este serviço? Essa ação não pode ser desfeita.')) return;
-        try{ await api('/minha-empresa/clientes-recorrentes/itens/'+id, { method:'DELETE' }); await recarregar(); renderMinhaNfseAutomatica(); }
-        catch(err){ toast(err.message,'err'); }
-      }));
-    }
-    openModal(montarHtml(cliente.itens), '720px');
-    ligar();
   }
 
   document.getElementById('btnSalvarAgendamento').addEventListener('click', async ()=>{
@@ -12158,8 +12233,12 @@ async function renderMinhaNfseEmitir(){
   const prefill = NFSE_PREFILL;
   NFSE_PREFILL = null;
   NFSE_RASCUNHO_ID = (prefill && prefill.__modo === 'continuar') ? prefill.id : null;
-  const { items: modelos } = await api('/nfse/minha-empresa/modelos');
+  const [{ items: modelos }, { items: clientesCadastrados }] = await Promise.all([
+    api('/nfse/minha-empresa/modelos'),
+    api('/minha-empresa/clientes-recorrentes'),
+  ]);
   const modelosAtivos = modelos.filter(m=>m.ativo);
+  const clientesAtivos = clientesCadastrados.filter(c=>c.ativo);
   const box = document.getElementById('nfseContent');
   if(!modelosAtivos.length){
     box.innerHTML = `<div class="empty-state">Nenhum modelo de serviço cadastrado ainda — crie um na aba Modelos antes de emitir.</div>`;
@@ -12172,6 +12251,7 @@ async function renderMinhaNfseEmitir(){
         ${comboSelectHtml('mnfEmiModeloCombo', 'Digite para buscar…')}
       </div>
       <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Tomador do serviço</div>
+      ${clientesAtivos.length? `<div class="field"><label>Cliente cadastrado (opcional — preenche os campos abaixo)</label>${comboSelectHtml('mnfEmiClienteCombo','Digite para buscar em Clientes…')}</div>` : ''}
       <div class="row">
         <div class="field grow"><label>CPF ou CNPJ</label><input id="mnfEmiDocTomador" placeholder="Só números"></div>
         <div class="field grow"><label>Nome / Razão social</label><input id="mnfEmiNomeTomador"></div>
@@ -12217,6 +12297,27 @@ async function renderMinhaNfseEmitir(){
   };
   setupComboSelect('mnfEmiModeloCombo', itensModelo, ()=>{});
   setModelo(itensModelo[0]?.id ?? null);
+  if(clientesAtivos.length){
+    setupComboSelect('mnfEmiClienteCombo', clientesAtivos.map(c=>({id:c.id, label:c.nome})), (clienteId)=>{
+      const c = clientesAtivos.find(x=>x.id===clienteId);
+      if(!c) return;
+      document.getElementById('mnfEmiDocTomador').value = c.documento ? formatarDocumentoBR(c.documento) : '';
+      document.getElementById('mnfEmiNomeTomador').value = c.nome || '';
+      document.getElementById('mnfEmiEmailTomador').value = c.email || '';
+      document.getElementById('mnfEmiTelTomador').value = c.telefone || '';
+      document.getElementById('mnfEmiEndereco').value = c.endereco || '';
+      document.getElementById('mnfEmiCidade').value = c.cidade || '';
+      document.getElementById('mnfEmiUf').value = c.uf || '';
+      document.getElementById('mnfEmiCodMun').value = '';
+      if(c.cep){
+        const cepEl = document.getElementById('mnfEmiCep');
+        cepEl.value = fmtCep(c.cep);
+        // Dispara o mesmo fluxo de autopreenchimento do CEP (bairro/cidade/UF/código IBGE) já
+        // ligado abaixo — evita duplicar a consulta aqui.
+        cepEl.dispatchEvent(new Event('input'));
+      }
+    });
+  }
   if(prefill){
     const setVal=(id,v)=>{ const el=document.getElementById(id); if(el && v!=null) el.value=v; };
     if(prefill.modeloId!=null) setModelo(Number(prefill.modeloId));

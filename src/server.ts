@@ -930,6 +930,10 @@ sqlite.exec(`
     nome TEXT NOT NULL,
     documento TEXT,
     email TEXT,
+    telefone TEXT,
+    endereco TEXT,
+    cidade TEXT,
+    uf TEXT,
     cep TEXT,
     ativo INTEGER NOT NULL DEFAULT 1,
     created_at TEXT DEFAULT (datetime('now')),
@@ -1845,6 +1849,21 @@ function chatRespostaValida(valor: any, escopo: ChatEscopo): number | null {
     ["atividades_atualizadas_em", "atividades_atualizadas_em TEXT"],
   ]) {
     if (!nomes.has(coluna)) sqlite.exec(`ALTER TABLE empresas ADD COLUMN ${ddl}`);
+  }
+}
+
+// Migração leve: "Meus clientes recorrentes" ganhou telefone/endereço/cidade/UF — viraram o cadastro
+// completo de tomador usado pela tela "Clientes" (nova, nível de menu), não só o agendamento mensal.
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(cliente_recorrentes)`).all() as any[];
+  const nomes = new Set(cols.map((c) => c.name));
+  for (const [coluna, ddl] of [
+    ["telefone", "telefone TEXT"],
+    ["endereco", "endereco TEXT"],
+    ["cidade", "cidade TEXT"],
+    ["uf", "uf TEXT"],
+  ]) {
+    if (!nomes.has(coluna)) sqlite.exec(`ALTER TABLE cliente_recorrentes ADD COLUMN ${ddl}`);
   }
 }
 
@@ -4841,10 +4860,14 @@ app.post("/api/minha-empresa/email-config/testar", requireCliente, requireModulo
   }
 });
 
-// ---- "Meus clientes recorrentes" (quem o cliente direto cobra todo mês) ----
-app.get("/api/minha-empresa/clientes-recorrentes", requireCliente, requireModuloAtivo("nfse"), requireModuloAtivo("nfse_automatica"), (req, res) => {
+// ---- "Clientes" (tomadores pra quem o cliente direto emite nota — cadastro básico) ----
+// Gate só de 'nfse' (não exige 'nfse_automatica'): esse cadastro agora também alimenta a emissão
+// MANUAL (combo "Cliente cadastrado" na aba Emitir), não só a rotina automática. Os ITENS
+// (cliente_recorrente_itens, serviço recorrente cobrado automaticamente) continuam exigindo os dois
+// módulos — são exclusivos da Emissão Automática.
+app.get("/api/minha-empresa/clientes-recorrentes", requireCliente, requireModuloAtivo("nfse"), (req, res) => {
   const empresaId = (req as any).user.empresaId;
-  const items = sqlite.prepare(`SELECT id, nome, documento, email, cep, ativo FROM cliente_recorrentes WHERE empresa_id = ? ORDER BY nome`).all(empresaId) as any[];
+  const items = sqlite.prepare(`SELECT id, nome, documento, email, telefone, endereco, cidade, uf, cep, ativo FROM cliente_recorrentes WHERE empresa_id = ? ORDER BY nome`).all(empresaId) as any[];
   const comItens = items.map((c) => ({
     ...c,
     ativo: !!c.ativo,
@@ -4852,26 +4875,28 @@ app.get("/api/minha-empresa/clientes-recorrentes", requireCliente, requireModulo
   }));
   res.json({ items: comItens });
 });
-app.post("/api/minha-empresa/clientes-recorrentes", requireCliente, requireModuloAtivo("nfse"), requireModuloAtivo("nfse_automatica"), (req, res) => {
+app.post("/api/minha-empresa/clientes-recorrentes", requireCliente, requireModuloAtivo("nfse"), (req, res) => {
   const empresaId = (req as any).user.empresaId;
-  const { nome, documento, email, cep } = req.body || {};
+  const { nome, documento, email, telefone, endereco, cidade, uf, cep } = req.body || {};
   if (!nome) return res.status(400).json({ error: "Informe o nome." });
-  const info = sqlite.prepare(`INSERT INTO cliente_recorrentes (empresa_id, nome, documento, email, cep) VALUES (?, ?, ?, ?, ?)`).run(empresaId, nome.trim(), (documento || "").replace(/\D/g, "") || null, (email || "").trim() || null, (cep || "").trim() || null);
+  const info = sqlite
+    .prepare(`INSERT INTO cliente_recorrentes (empresa_id, nome, documento, email, telefone, endereco, cidade, uf, cep) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(empresaId, nome.trim(), (documento || "").replace(/\D/g, "") || null, (email || "").trim() || null, (telefone || "").trim() || null, (endereco || "").trim() || null, (cidade || "").trim() || null, (uf || "").trim().toUpperCase() || null, (cep || "").trim() || null);
   res.json({ id: Number(info.lastInsertRowid) });
 });
-app.put("/api/minha-empresa/clientes-recorrentes/:id", requireCliente, requireModuloAtivo("nfse"), requireModuloAtivo("nfse_automatica"), (req, res) => {
+app.put("/api/minha-empresa/clientes-recorrentes/:id", requireCliente, requireModuloAtivo("nfse"), (req, res) => {
   const empresaId = (req as any).user.empresaId;
   const id = Number(req.params.id);
   const existente = sqlite.prepare(`SELECT 1 FROM cliente_recorrentes WHERE id = ? AND empresa_id = ?`).get(id, empresaId);
   if (!existente) return res.status(404).json({ error: "Cliente recorrente não encontrado." });
-  const { nome, documento, email, cep, ativo } = req.body || {};
+  const { nome, documento, email, telefone, endereco, cidade, uf, cep, ativo } = req.body || {};
   if (!nome) return res.status(400).json({ error: "Informe o nome." });
   sqlite
-    .prepare(`UPDATE cliente_recorrentes SET nome=?, documento=?, email=?, cep=?, ativo=?, updated_at=datetime('now') WHERE id=?`)
-    .run(nome.trim(), (documento || "").replace(/\D/g, "") || null, (email || "").trim() || null, (cep || "").trim() || null, ativo === false ? 0 : 1, id);
+    .prepare(`UPDATE cliente_recorrentes SET nome=?, documento=?, email=?, telefone=?, endereco=?, cidade=?, uf=?, cep=?, ativo=?, updated_at=datetime('now') WHERE id=?`)
+    .run(nome.trim(), (documento || "").replace(/\D/g, "") || null, (email || "").trim() || null, (telefone || "").trim() || null, (endereco || "").trim() || null, (cidade || "").trim() || null, (uf || "").trim().toUpperCase() || null, (cep || "").trim() || null, ativo === false ? 0 : 1, id);
   res.json({ ok: true });
 });
-app.delete("/api/minha-empresa/clientes-recorrentes/:id", requireCliente, requireModuloAtivo("nfse"), requireModuloAtivo("nfse_automatica"), (req, res) => {
+app.delete("/api/minha-empresa/clientes-recorrentes/:id", requireCliente, requireModuloAtivo("nfse"), (req, res) => {
   const empresaId = (req as any).user.empresaId;
   const id = Number(req.params.id);
   const existente = sqlite.prepare(`SELECT 1 FROM cliente_recorrentes WHERE id = ? AND empresa_id = ?`).get(id, empresaId);
