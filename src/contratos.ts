@@ -73,13 +73,14 @@ function extensoInteiro(n: number): string {
   if (centenas > 0) grupos.push({ texto: extensoAte999(centenas), valor: centenas });
   if (grupos.length === 1) return grupos[0].texto;
   // "e" antes do último grupo quando ele é < 100 ou é uma centena redonda (200, 300...900) — senão
-  // vírgula entre os grupos, com o "e" interno de cada grupo (ex.: "cento e cinquenta") preservado.
+  // só espaço entre os grupos (ex.: "mil duzentos e noventa"), com o "e" interno de cada grupo
+  // preservado. Antes usava vírgula ("mil, duzentos e noventa"), que não é a forma usada em contrato.
   const ultimo = grupos[grupos.length - 1];
   const usaE = ultimo.valor > 0 && (ultimo.valor < 100 || ultimo.valor % 100 === 0);
   return grupos
     .slice(0, -1)
     .map((g) => g.texto)
-    .join(", ") + (usaE ? " e " : ", ") + ultimo.texto;
+    .join(" ") + (usaE ? " e " : " ") + ultimo.texto;
 }
 // Valor monetário por extenso (padrão de contrato/nota fiscal brasileiro) — ex.: 1500.75 ->
 // "mil e quinhentos reais e setenta e cinco centavos". Trabalha em centavos internamente pra não
@@ -90,7 +91,9 @@ export function valorPorExtenso(valor: number): string {
   const reais = Math.floor(totalCentavos / 100);
   const centavos = totalCentavos % 100;
   const partes: string[] = [];
-  if (reais > 0) partes.push(`${extensoInteiro(reais)} ${reais === 1 ? "real" : "reais"}`);
+  // Milhão/milhões redondos levam "de": "um milhão de reais", "dois milhões de reais".
+  const de = reais >= 1_000_000 && reais % 1_000_000 === 0 ? "de " : "";
+  if (reais > 0) partes.push(`${extensoInteiro(reais)} ${de}${reais === 1 ? "real" : "reais"}`);
   if (centavos > 0) partes.push(`${extensoInteiro(centavos)} ${centavos === 1 ? "centavo" : "centavos"}`);
   if (partes.length === 0) return "zero reais";
   return (negativo ? "menos " : "") + partes.join(" e ");

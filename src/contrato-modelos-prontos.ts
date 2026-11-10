@@ -196,15 +196,20 @@ const TERCEIRIZACAO_HTML = `
 // incidente) e Res. CD/ANPD 15/2024; Marco Civil (Lei 12.965/14) art. 15 (guarda de registros);
 // LC 116/2003 item 1.05 + STF ADIs 1945/5659 (licenciamento de software tributado pelo ISS);
 // Lei 14.063/2020 e CPC art. 784, III e §4º (assinatura eletrônica e título executivo).
+// Revisão 2026-11-10: condição de adesão do município ao Sistema Nacional NFS-e (1.4), garantia de
+// titularidade (2.4), tributos/ISS (4.3), teto de responsabilidade com ressalvas LGPD art. 42 e CDC
+// art. 51, I (8.2–8.4), base legal da controladora (9.5), cessão, ausência de vínculo, assinatura sem
+// ICP-Brasil (MP 2.200-2 art. 10 §2º) e foro no domicílio da LICENCIADA (13).
 const LICENCA_NFSE_HTML = `
 <h1>CONTRATO DE LICENÇA DE USO DE SOFTWARE EM NUVEM (SaaS) – MÓDULO NFS-e Nº {{n_contrato_sequencial}}/{{ano}}</h1>
 <p>Pelo presente instrumento particular, de um lado, <b>SIMPLES SERVIÇOS DE CONTABILIDADE, PERÍCIA E AUDITORIA CONTABIL LTDA</b>, inscrita no CNPJ sob o nº 04.801.040/0001-93, com sede na Rua Sérgio Luiz de Farias, nº 656, Bairro Morada da Paz, Redenção-PA, CEP 68.550-510, telefones (94) 99222-1064 / (94) 99164-9036, e-mail simplescontabeis@gmail.com, titular e mantenedora da plataforma <b>Simples Contábeis</b> (simplescontabeis.com.br), neste ato representada por seus sócios <b>EDUARDO DO CARMO BRITO</b>, CPF 017.055.832-02, e <b>ELIMARCER FERNANDES COSTA</b>, CPF 431.133.032-49, doravante denominada <b>LICENCIANTE</b>; e, de outro lado, <b>{{licenciada_nome}}</b>, inscrita no CNPJ/CPF sob o nº {{CNPJ_CPF_licenciada}}, com endereço na {{licenciada_endereco}}, {{licenciada_cidade}}-{{licenciada_uf}}, CEP {{CEP}}, e-mail {{email_licenciada}}, telefone {{telefone_licenciada}}, neste ato representada por <b>{{nome_representante_legal}}</b>, CPF {{CPF_Representante_Legal}}, doravante denominada <b>LICENCIADA</b>; têm entre si justo e contratado o presente Contrato de Licença de Uso de Software em Nuvem, que se regerá pelas cláusulas seguintes.</p>
 
 <p class="clausula-titulo">CLÁUSULA PRIMEIRA – DO OBJETO</p>
 <ol>
-<li>O objeto deste contrato é a concessão, pela LICENCIANTE à LICENCIADA, de licença de uso temporária, onerosa, não exclusiva e intransferível do <b>Módulo NFS-e</b> da plataforma Simples Contábeis, acessado pela internet (modalidade <i>Software as a Service</i> – SaaS), para emissão, consulta, cancelamento, envio e armazenamento das Notas Fiscais de Serviço Eletrônicas (NFS-e) da própria LICENCIADA por meio do Sistema Nacional NFS-e.</li>
+<li>O objeto deste contrato é a concessão, pela LICENCIANTE à LICENCIADA, de licença de uso temporária, onerosa, não exclusiva e intransferível do <b>Módulo NFS-e</b> da plataforma Simples Contábeis, acessado pela internet (modalidade <i>Software as a Service</i> – SaaS), para emissão, consulta, cancelamento, envio e armazenamento das Notas Fiscais de Serviço Eletrônicas (NFS-e) da própria LICENCIADA por meio do Sistema Nacional NFS-e, nas condições comerciais do <b>Anexo I</b>, que integra este contrato.</li>
 <li>Integram a licença, sem custo adicional: a hospedagem do sistema, as atualizações e correções, as adequações às mudanças de leiaute e regras do Sistema Nacional NFS-e, o armazenamento das notas emitidas enquanto vigente o contrato e o suporte técnico previsto na Cláusula Sétima.</li>
 <li>Não integram o objeto, salvo contratação à parte: serviços de contabilidade, consultoria ou assessoria fiscal e tributária; a aquisição ou renovação do certificado digital; desenvolvimento de funcionalidades sob medida; e a emissão de notas fiscais de outros modelos (NF-e, NFC-e, CT-e).</li>
+<li>A emissão depende de o município da LICENCIADA utilizar o Sistema Nacional NFS-e. Se, antes de concluída a implantação, verificar-se que o município não o utiliza, o contrato será desfeito com a devolução integral do que tiver sido pago; se o município deixar de utilizá-lo durante a vigência, qualquer das partes poderá encerrar o contrato sem multa, devidas apenas as mensalidades até a data do encerramento.</li>
 </ol>
 
 <p class="clausula-titulo">CLÁUSULA SEGUNDA – DA NATUREZA DA LICENÇA E DA PROPRIEDADE INTELECTUAL</p>
@@ -212,6 +217,7 @@ const LICENCA_NFSE_HTML = `
 <li>O uso do programa de computador é objeto de licença, e não de venda ou cessão de direitos (arts. 9º e 10 da Lei nº 9.609/1998). O código-fonte, a marca, o banco de dados, a documentação e todos os direitos sobre a plataforma pertencem exclusivamente à LICENCIANTE.</li>
 <li>É vedado à LICENCIADA, por si ou por terceiros: copiar, modificar, descompilar ou fazer engenharia reversa do sistema; sublicenciar, ceder, alugar ou disponibilizar o acesso a terceiros; compartilhar logins e senhas; e usar o sistema para fins ilícitos ou para emitir notas de outras pessoas físicas ou jurídicas.</li>
 <li>Os dados e documentos fiscais inseridos ou gerados pela LICENCIADA (notas, XMLs, cadastros de tomadores) pertencem à LICENCIADA.</li>
+<li>A LICENCIANTE declara ser a única titular dos direitos sobre a plataforma e garante que o uso licenciado não viola direitos de terceiros, respondendo por eventual reclamação nesse sentido.</li>
 </ol>
 
 <p class="clausula-titulo">CLÁUSULA TERCEIRA – DA IMPLANTAÇÃO</p>
@@ -225,6 +231,7 @@ const LICENCA_NFSE_HTML = `
 <ol>
 <li>Pela licença de uso, a LICENCIADA pagará à LICENCIANTE a mensalidade de <b>R$ {{valor_mensalidade}}</b> ({{mensalidade_extenso}}), com vencimento todo dia <b>{{dia_vencimento}}</b> de cada mês, a partir de {{data_inicio}}.</li>
 <li>Os pagamentos serão feitos por Pix, boleto ou cartão gerados pela plataforma ou enviados pela LICENCIANTE, que emitirá a nota fiscal correspondente.</li>
+<li>Os valores incluem os tributos incidentes sobre o licenciamento (ISS, item 1.05 da lista anexa à Lei Complementar nº 116/2003), recolhidos pela LICENCIANTE, ressalvadas as retenções na fonte que a lei atribuir à LICENCIADA.</li>
 <li>Os valores serão reajustados a cada 12 (doze) meses pela variação positiva do IPCA/IBGE acumulada no período, ou por outro índice oficial que o substitua.</li>
 <li>O atraso no pagamento sujeitará a LICENCIADA a multa de 2% (dois por cento), juros de mora de 1% (um por cento) ao mês e correção monetária pelo IPCA, calculados <i>pro rata die</i>.</li>
 <li>Persistindo o atraso por mais de 15 (quinze) dias, a LICENCIANTE poderá, mediante aviso prévio de 5 (cinco) dias, suspender o acesso à emissão de novas notas até a regularização, preservados os dados e o acesso às notas já emitidas.</li>
@@ -255,7 +262,9 @@ const LICENCA_NFSE_HTML = `
 <p class="clausula-titulo">CLÁUSULA OITAVA – DOS LIMITES DE RESPONSABILIDADE</p>
 <ol>
 <li>A LICENCIANTE não responde por: (a) erros, multas ou autuações decorrentes de dados, códigos, alíquotas ou informações fornecidos ou aprovados pela LICENCIADA; (b) indisponibilidade, lentidão ou falhas do Sistema Nacional NFS-e, dos sistemas das prefeituras, da Receita Federal, de autoridades certificadoras, de provedores de internet ou de energia; (c) uso indevido das credenciais da LICENCIADA; (d) caso fortuito ou força maior (art. 393 do Código Civil).</li>
-<li>Ressalvados os casos de dolo ou culpa grave, a responsabilidade total da LICENCIANTE por qualquer dano decorrente deste contrato fica limitada ao valor efetivamente pago pela LICENCIADA nos 12 (doze) meses anteriores ao evento.</li>
+<li>Ressalvados os casos de dolo ou culpa grave, os danos decorrentes de descumprimento da LGPD pela LICENCIANTE (art. 42 da Lei nº 13.709/2018) e as hipóteses em que a lei não admita limitação, a responsabilidade total da LICENCIANTE por qualquer dano decorrente deste contrato fica limitada ao valor efetivamente pago pela LICENCIADA nos 12 (doze) meses anteriores ao evento.</li>
+<li>Nenhuma das partes responde perante a outra por lucros cessantes ou danos indiretos, ressalvado o dolo.</li>
+<li>Se a LICENCIADA for consumidora, nos termos do Código de Defesa do Consumidor, esta cláusula será aplicada nos limites admitidos pelo art. 51, I, daquele Código.</li>
 </ol>
 
 <p class="clausula-titulo">CLÁUSULA NONA – DA PROTEÇÃO DE DADOS PESSOAIS (LGPD)</p>
@@ -263,6 +272,7 @@ const LICENCA_NFSE_HTML = `
 <li>Para os fins da Lei nº 13.709/2018 (LGPD), a LICENCIADA é a <b>controladora</b> dos dados pessoais inseridos na plataforma (inclusive dos tomadores de serviço), e a LICENCIANTE atua como <b>operadora</b>, tratando-os apenas para executar este contrato e conforme as instruções da LICENCIADA (arts. 5º, VI e VII, e 39).</li>
 <li>A LICENCIANTE adotará medidas de segurança aptas a proteger os dados contra acessos não autorizados e situações acidentais ou ilícitas (art. 46) e comunicará à LICENCIADA, em até 48 (quarenta e oito) horas da ciência, qualquer incidente de segurança que possa acarretar risco ou dano relevante aos titulares (art. 48).</li>
 <li>A LICENCIADA autoriza o uso de suboperadores necessários à prestação do serviço (hospedagem em nuvem, intermediação de pagamentos, assinatura eletrônica e envio de mensagens), que ficam sujeitos às mesmas obrigações de proteção de dados.</li>
+<li>Cabe à LICENCIADA, como controladora, garantir a base legal para o tratamento dos dados que inserir na plataforma (art. 7º da LGPD), em especial os dos tomadores, cujo uso para emissão de nota fiscal decorre de obrigação legal.</li>
 <li>Encerrado o contrato e decorrido o prazo de exportação da Cláusula Décima Primeira, os dados serão eliminados, ressalvada a guarda exigida por lei (art. 16 da LGPD e art. 15 da Lei nº 12.965/2014).</li>
 </ol>
 
@@ -286,8 +296,10 @@ const LICENCA_NFSE_HTML = `
 <p class="clausula-titulo">CLÁUSULA DÉCIMA TERCEIRA – DISPOSIÇÕES GERAIS E FORO</p>
 <ol>
 <li>A tolerância de uma parte quanto ao descumprimento de qualquer cláusula não implica novação nem renúncia de direitos. Alterações somente valerão por termo aditivo assinado pelas partes.</li>
-<li>As partes admitem a assinatura eletrônica deste instrumento (Lei nº 14.063/2020 e MP nº 2.200-2/2001), que, assinado também por 2 (duas) testemunhas, constitui título executivo extrajudicial (art. 784, III e §4º, do Código de Processo Civil).</li>
-<li>Fica eleito o foro da Comarca de Redenção-PA para dirimir quaisquer questões oriundas deste contrato.</li>
+<li>Este contrato não cria vínculo societário, trabalhista, de representação ou de exclusividade entre as partes.</li>
+<li>A LICENCIADA não poderá ceder este contrato sem anuência escrita da LICENCIANTE. A LICENCIANTE poderá cedê-lo a sociedade que a suceda ou integre seu grupo, mediante comunicação à LICENCIADA, mantidas as mesmas condições.</li>
+<li>As partes admitem a assinatura eletrônica deste instrumento, inclusive por meio que não utilize certificado ICP-Brasil (Lei nº 14.063/2020 e art. 10, §2º, da MP nº 2.200-2/2001), e reconhecem que, assinado também por 2 (duas) testemunhas, constitui título executivo extrajudicial (art. 784, III e §4º, do Código de Processo Civil).</li>
+<li>Fica eleito o foro da comarca do domicílio da LICENCIADA, {{licenciada_cidade}}-{{licenciada_uf}}, para dirimir quaisquer questões oriundas deste contrato.</li>
 </ol>
 
 <p>E por estarem assim justas e contratadas, as partes firmam o presente instrumento, na presença das 2 (duas) testemunhas abaixo identificadas.</p>
