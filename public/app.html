@@ -3458,6 +3458,7 @@ const CARD_TIPOS_INFO = {
   certificados_vencer: { label:'Certificados a Vencer', subtitulo:'Vencidos ou vencendo nos próximos 30 dias' },
   licencas_vencer: { label:'Licenças a Vencer', subtitulo:'Vencidas ou vencendo nos próximos 30 dias' },
   das_atraso: { label:'DAS em Atraso', subtitulo:'Competências não entregues' },
+  das_nao_pago: { label:'DAS Não Pago', subtitulo:'Vencido e não pago — confirmado na Receita' },
   situacao_fiscal: { label:'Situação Fiscal', subtitulo:'Empresas com pendência' },
   efd_omisso: { label:'SPED-Fiscal (EFD ICMS/IPI) Omisso', subtitulo:'Empresas obrigadas com EFD não entregue (Consulta SEFA)' },
   cnd_estadual: { label:'Certidão Estadual (CND)', subtitulo:'Empresas com pendência estadual (sem certidão negativa) — SEFA' },
@@ -3729,8 +3730,22 @@ function cardDetalheModal(c){
         if(podeDispensar) box.querySelectorAll('.das-disp').forEach(a=>a.addEventListener('click', async (ev)=>{
           ev.preventDefault();
           if(!confirmar('Dispensar '+a.dataset.comp+' desta empresa? Marque só quando a competência foi entregue SEM MOVIMENTO (sem DAS a pagar).')) return;
-          try{ await api('/dashboard/das-dispensa', { method:'POST', body:{ empresaId:Number(a.dataset.emp), competencia:a.dataset.comp } }); toast('Competência dispensada (sem movimento).','ok'); cardModal(c); }
+          try{ await api('/dashboard/das-dispensa', { method:'POST', body:{ empresaId:Number(a.dataset.emp), competencia:a.dataset.comp } }); toast('Competência dispensada (sem movimento).','ok'); cardDetalheModal(c); }
           catch(e){ toast(e.message,'err'); }
+        }));
+      } else if(tipo==='das_nao_pago'){
+        const fmtD = iso=>iso?iso.slice(8,10)+'/'+iso.slice(5,7)+'/'+iso.slice(0,4):'—';
+        box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>DAS vencido e não pago</th><th>Conferido na Receita</th><th></th></tr></thead><tbody>
+          ${items.map(i=>`<tr><td>${esc(i.empresaNome)}</td>
+            <td>${i.competencias.map(c=>`<span class="tag ${c.diasAtraso>30?'bad':'warn'}" style="margin:2px 6px 2px 0; display:inline-block;" title="${c.numeroDas?'Último DAS gerado: '+esc(c.numeroDas):''}">${esc(c.competencia)} · venc. ${fmtD(c.vencimento)} · ${c.diasAtraso} dia(s)</span>`).join('')}</td>
+            <td style="white-space:nowrap;">${i.verificadoEm?fmtDateHora(i.verificadoEm):'—'}${i.ultimoErro?`<div style="font-size:11px; color:var(--debit);" title="${esc(i.ultimoErro)}">falhou na última tentativa</div>`:''}</td>
+            <td style="text-align:right;"><button class="btn small das-np-verif" data-emp="${i.empresaId}">Verificar agora</button></td></tr>`).join('')}
+        </tbody></table>
+        <div style="font-size:11.5px; color:var(--ink-soft); margin-top:8px;">Consulta automática diária na Receita (PGDAS-D, coluna "Pago" do e-CAC) — só das empresas com DAS vencido. Pagamento feito hoje pode levar até ${2} dias pra aparecer. Competências em parcelamento não entram.</div>`;
+        box.querySelectorAll('.das-np-verif').forEach(b=>b.addEventListener('click', async ()=>{
+          b.disabled = true; b.textContent = 'Consultando…';
+          try{ const r = await api('/dashboard/das-nao-pago/verificar', { method:'POST', body:{ empresaId:Number(b.dataset.emp) } }); toast(r.pendentes?'Ainda consta como não pago na Receita.':'Pagamento confirmado na Receita ✅','ok'); cardDetalheModal(c); }
+          catch(e){ toast(e.message,'err'); b.disabled = false; b.textContent = 'Verificar agora'; }
         }));
       } else if(tipo==='situacao_fiscal'){
         box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Alerta</th><th></th></tr></thead><tbody>

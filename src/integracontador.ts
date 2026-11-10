@@ -328,7 +328,9 @@ export async function consultarDeclaracoesPorAno(token: TokenIntegraContador, co
       periodoApuracao: String(p.periodoApuracao),
       dataTransmissao: original.indiceDeclaracao.dataHoraTransmissao || null,
       numeroDasGerado: ultimoDas?.numeroDas || null,
-      dasPago: ultimoDas ? !!ultimoDas.dasPago : null,
+      // Pago = QUALQUER DAS da competência pago (não só o último): o cliente costuma gerar vários DAS
+      // no mês (ex.: um por dia) e pagar um do meio — olhar só o último dava "não pago" falso.
+      dasPago: dasOperacoes.length ? dasOperacoes.some((x: any) => !!x.dasPago) : null,
     });
   }
   return resultado;

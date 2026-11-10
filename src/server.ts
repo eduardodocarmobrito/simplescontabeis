@@ -10096,6 +10096,7 @@ async function executarRecalculoDas(periodoId: number, user: any): Promise<{ ok:
     // Receita; se essa consulta falhar não bloqueia — só não dá pra saber.
     try {
       const decls = await integracontador.consultarDeclaracoesPorAno(token, cfg.cnpj, empresa.cnpj, String(periodo.ano));
+      dasSituacaoGravar(periodo.empresaId, empConfig.escritorio_id, decls);
       if (decls.find((d) => d.periodoApuracao === periodoApuracao)?.dasPago) {
         return { ok: false, status: 409, error: `O DAS de ${String(periodo.mes).padStart(2, "0")}/${periodo.ano} já está pago — não há o que recalcular.` };
       }
@@ -16585,6 +16586,7 @@ async function integraContadorBuscarEmpresaInterno(
             inserirDecl.run(empresaId, empConfig.escritorio_id, d.periodoApuracao, d.numeroDeclaracao, JSON.stringify(d));
             novos++;
           }
+          dasSituacaoGravar(empresaId, empConfig.escritorio_id, declaracoes);
           const declUltima = declaracoes.find((d) => d.periodoApuracao === ultimoPeriodoDeclarado);
           ultimoDasPago = !!declUltima?.dasPago;
           numeroDeclaracaoAtual = declUltima?.numeroDeclaracao || null;
@@ -17309,6 +17311,8 @@ async function integraContadorEnviarPesquisasPagamento() {
       if (vistos.has(chave)) continue;
       vistos.add(chave);
       if (sqlite.prepare(`SELECT 1 FROM integracontador_pesquisas_pagamento WHERE empresa_id = ? AND tipo = ? AND periodo_apuracao = ?`).get(doc.empresaId, doc.tipo, doc.periodoApuracao)) continue;
+      // DAS já confirmado como pago na Receita (integracontador_das_situacao) — não pergunta ao cliente.
+      if (doc.tipo === "das" && sqlite.prepare(`SELECT 1 FROM integracontador_das_situacao WHERE empresa_id = ? AND periodo_apuracao = ? AND pago = 1`).get(doc.empresaId, doc.periodoApuracao)) continue;
       if (!escritorioTemModulo(doc.escritorioId, "envio_whatsapp") || !empresaCanalAtivo(doc.empresaId, "whatsapp")) continue;
       if (!cfgCache.has(doc.escritorioId)) cfgCache.set(doc.escritorioId, getIntegraContadorConfig(doc.escritorioId));
       const cfg = cfgCache.get(doc.escritorioId);
@@ -22780,7 +22784,7 @@ app.get("/api/financeiro/resumo", blockCliente, requirePermissao("financeiro", "
 // função abaixo devolve a lista (o card mostra só items.length); todas já filtram pelas empresas
 // que o usuário logado pode ver (empresasVisiveis), pro caso de um Colaborador restrito abrir o
 // Painel.
-const CARD_TIPOS: string[] = ["certificados_vencer", "das_atraso", "situacao_fiscal", "caixapostal_nao_lida", "checklist_atraso", "solicitacoes_pendentes", "envio_atraso", "solicitacao_atraso", "licencas_vencer", "pesquisa_pagamento", "efd_omisso", "cnd_estadual", "cnd_municipal", "dctfweb_nao_entregue", "folha_nao_fechada"];
+const CARD_TIPOS: string[] = ["certificados_vencer", "das_atraso", "situacao_fiscal", "caixapostal_nao_lida", "checklist_atraso", "solicitacoes_pendentes", "envio_atraso", "solicitacao_atraso", "licencas_vencer", "pesquisa_pagamento", "efd_omisso", "cnd_estadual", "cnd_municipal", "dctfweb_nao_entregue", "folha_nao_fechada", "das_nao_pago"];
 
 // Cards "DCTF-Web Não Entregue" e "Fechamento da Folha": usam a MESMA validação do quadro DP/RH ›
 // Obrigações do Mês (transmitida = DCTFWeb Ativa no e-CAC; Folha = Ativa com origem eSocial; marcação
@@ -23483,6 +23487,7 @@ async function calcularCardComputado(tipo: string, user: any, parametro?: string
   if (tipo === "certificados_vencer") return cardCertificadosAVencer(user);
   if (tipo === "licencas_vencer") return cardLicencasAVencer(user);
   if (tipo === "das_atraso") return cardDasEmAtraso(user);
+  if (tipo === "das_nao_pago") return cardDasNaoPago(user);
   if (tipo === "situacao_fiscal") return cardSituacaoFiscal(user);
   if (tipo === "efd_omisso") return cardEfdOmisso(user);
   if (tipo === "dctfweb_nao_entregue") return cardObrigacaoNaoTransmitida(user, "dprh_dctfweb");
@@ -25622,6 +25627,224 @@ sqlite.exec(`CREATE TABLE IF NOT EXISTS migracoes_unicas (chave TEXT PRIMARY KEY
 if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'pesquisa_satisfacao_off_20260924'`).get()) {
   sqlite.exec(`UPDATE atendimento_config SET pesquisa_ativa = 0`);
   sqlite.exec(`INSERT INTO migracoes_unicas (chave) VALUES ('pesquisa_satisfacao_off_20260924')`);
+}
+// ---------- Monitor de pagamento do DAS (Simples Nacional) ----------
+// A Receita devolve, na mesma consulta das declarações do PGDAS-D (CONSDECLARACAO13), cada DAS gerado
+// com o indicador "Pago" (igual à tela do e-CAC). Guardamos a situação por competência aqui e o card
+// "DAS Não Pago" do Início lê só desta tabela (nunca chama a API ao abrir o Início). Atualiza:
+//  - de graça, sempre que a busca do Integra Contador ou o recálculo já consultam as declarações;
+//  - por uma verificação diária própria (dasPagamentoVerificarTodas) que só consulta empresas com DAS
+//    VENCIDO ainda não confirmado como pago — cada consulta é uma chamada PAGA ao SERPRO.
+sqlite.exec(`CREATE TABLE IF NOT EXISTS integracontador_das_situacao (
+  empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+  escritorio_id INTEGER NOT NULL,
+  periodo_apuracao TEXT NOT NULL, -- AAAAMM
+  numero_declaracao TEXT,
+  numero_das TEXT,
+  pago INTEGER, -- 1 pago | 0 não pago | NULL declaração sem DAS gerado (ex.: sem valor a pagar)
+  pago_detectado_em TEXT,
+  verificado_em TEXT NOT NULL,
+  PRIMARY KEY (empresa_id, periodo_apuracao)
+)`);
+sqlite.exec(`CREATE TABLE IF NOT EXISTS integracontador_das_verificacao (
+  empresa_id INTEGER PRIMARY KEY REFERENCES empresas(id) ON DELETE CASCADE,
+  verificado_em TEXT NOT NULL,
+  ultimo_erro TEXT
+)`);
+function dasSituacaoGravar(empresaId: number, escritorioId: number, decls: integracontador.DeclaracaoSimplesNacional[]) {
+  try {
+    const up = sqlite.prepare(
+      `INSERT INTO integracontador_das_situacao (empresa_id, escritorio_id, periodo_apuracao, numero_declaracao, numero_das, pago, pago_detectado_em, verificado_em)
+       VALUES (?, ?, ?, ?, ?, ?, CASE WHEN ? = 1 THEN datetime('now') END, datetime('now'))
+       ON CONFLICT(empresa_id, periodo_apuracao) DO UPDATE SET
+         numero_declaracao = excluded.numero_declaracao, numero_das = excluded.numero_das, pago = excluded.pago,
+         pago_detectado_em = CASE WHEN excluded.pago = 1 AND COALESCE(integracontador_das_situacao.pago, 0) = 0 THEN datetime('now') ELSE integracontador_das_situacao.pago_detectado_em END,
+         verificado_em = datetime('now')`
+    );
+    for (const d of decls) {
+      const pago = d.dasPago === null ? null : d.dasPago ? 1 : 0;
+      up.run(empresaId, escritorioId, d.periodoApuracao, d.numeroDeclaracao, d.numeroDasGerado, pago, pago);
+    }
+    sqlite.prepare(`INSERT INTO integracontador_das_verificacao (empresa_id, verificado_em, ultimo_erro) VALUES (?, datetime('now'), NULL)
+      ON CONFLICT(empresa_id) DO UPDATE SET verificado_em = datetime('now'), ultimo_erro = NULL`).run(empresaId);
+  } catch (e: any) {
+    console.error(`[DAS pago] gravar situação (empresa ${empresaId}):`, e.message);
+  }
+}
+// Vencimento do DAS: dia 20 do mês seguinte à competência; sábado/domingo passa pro dia útil seguinte
+// (Res. CGSN 140/2018, art. 40). Feriado não é considerado — por isso o card ainda dá folga de 2 dias.
+function dasVencimentoIso(periodo: string): string {
+  const ano = Number(periodo.slice(0, 4)), mes = Number(periodo.slice(4, 6));
+  const d = new Date(Date.UTC(ano, mes, 20)); // mes (1-12) como índice 0-11 = mês seguinte
+  const dow = d.getUTCDay();
+  if (dow === 6) d.setUTCDate(d.getUTCDate() + 2);
+  if (dow === 0) d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+function hojeBrasiliaIso(): string {
+  const h = agoraBrasilia();
+  return `${h.ano}-${String(h.mes).padStart(2, "0")}-${String(h.dia).padStart(2, "0")}`;
+}
+function somarDiasIso(iso: string, dias: number): string {
+  const d = new Date(iso + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + dias);
+  return d.toISOString().slice(0, 10);
+}
+// Folga pro pagamento aparecer na Receita (compensação bancária) antes de virar pendência.
+const DAS_FOLGA_DIAS = 2;
+// Competências não pagas e vencidas (com folga) de uma empresa — fora parcelamento e piso do painel.
+function dasPendentesDaEmpresa(empresaId: number, corte: number | null): any[] {
+  const hoje = hojeBrasiliaIso();
+  const parc = competenciasEmParcelamento(empresaId);
+  return (sqlite.prepare(`SELECT periodo_apuracao p, numero_das n, verificado_em v FROM integracontador_das_situacao WHERE empresa_id = ? AND pago = 0 ORDER BY periodo_apuracao`).all(empresaId) as any[])
+    .filter((r) => !parc.has(r.p) && (!corte || Number(r.p) >= corte))
+    .map((r) => ({ ...r, venc: dasVencimentoIso(r.p) }))
+    .filter((r) => hoje > somarDiasIso(r.venc, DAS_FOLGA_DIAS));
+}
+function cardDasNaoPago(user: any): any[] {
+  const escritorioId = user.escritorioId;
+  const visiveis = new Set(empresasVisiveis(user));
+  const corte = painelMonitoramentoCorte(escritorioId);
+  const hoje = hojeBrasiliaIso();
+  const empresas = sqlite
+    .prepare(
+      `SELECT c.empresa_id as empresaId, e.nome as empresaNome, v.verificado_em as verificadoEm, v.ultimo_erro as ultimoErro
+       FROM integracontador_empresa_config c JOIN empresas e ON e.id = c.empresa_id AND e.ativo = 1 AND e.escritorio_id = ?
+       LEFT JOIN integracontador_das_verificacao v ON v.empresa_id = c.empresa_id
+       WHERE c.escritorio_id = ? AND c.ativo = 1 AND c.optante_simples_nacional = 1`
+    )
+    .all(escritorioId, escritorioId) as any[];
+  const out: any[] = [];
+  for (const emp of empresas) {
+    if (!visiveis.has(emp.empresaId)) continue;
+    const pend = dasPendentesDaEmpresa(emp.empresaId, corte);
+    if (!pend.length) continue;
+    out.push({
+      empresaId: emp.empresaId,
+      empresaNome: emp.empresaNome,
+      verificadoEm: emp.verificadoEm,
+      ultimoErro: emp.ultimoErro,
+      competencias: pend.map((r) => ({
+        competencia: `${r.p.slice(4, 6)}/${r.p.slice(0, 4)}`,
+        vencimento: r.venc,
+        diasAtraso: Math.round((Date.parse(hoje + "T00:00:00Z") - Date.parse(r.venc + "T00:00:00Z")) / 86_400_000),
+        numeroDas: r.n,
+      })),
+    });
+  }
+  out.sort((a, b) => b.competencias[0].diasAtraso - a.competencias[0].diasAtraso || String(a.empresaNome).localeCompare(String(b.empresaNome)));
+  return out;
+}
+// Consulta a Receita pra UMA empresa (anos informados) e grava. Usada pela rotina diária e pelo botão
+// "Verificar agora" do card.
+async function dasPagamentoVerificarEmpresa(empresaId: number, anos: number[]): Promise<void> {
+  const empConfig = getIntegraContadorEmpresaConfig(empresaId);
+  const cfg = getIntegraContadorConfig(empConfig.escritorio_id);
+  if (!cfg.ativo || !empConfig.ativo || !empConfig.optante_simples_nacional) throw new Error("Integra Contador não está ativo (ou a empresa não está marcada como optante do Simples).");
+  const empresa = sqlite.prepare(`SELECT cnpj FROM empresas WHERE id = ?`).get(empresaId) as any;
+  if (!empresa?.cnpj) throw new Error("Empresa sem CNPJ.");
+  try {
+    const token = await obterTokenIntegraContador(cfg);
+    const decls: integracontador.DeclaracaoSimplesNacional[] = [];
+    for (const ano of [...new Set(anos)].sort()) decls.push(...(await integracontador.consultarDeclaracoesPorAno(token, cfg.cnpj, empresa.cnpj, String(ano))));
+    dasSituacaoGravar(empresaId, empConfig.escritorio_id, decls);
+  } catch (e: any) {
+    sqlite.prepare(`INSERT INTO integracontador_das_verificacao (empresa_id, verificado_em, ultimo_erro) VALUES (?, datetime('now'), ?)
+      ON CONFLICT(empresa_id) DO UPDATE SET verificado_em = datetime('now'), ultimo_erro = excluded.ultimo_erro`).run(empresaId, String(e.message || e).slice(0, 500));
+    throw e;
+  }
+}
+// Rotina diária (a partir das 08h de Brasília). Economia: só consulta quem precisa —
+//  - nunca verificada: 1ª carga (ano atual + anterior);
+//  - competência do mês anterior já vencida (com folga) e sem "pago" confirmado;
+//  - competências antigas não pagas: diário até 60 dias de atraso, depois só às segundas.
+// Nunca mais de 1 consulta por empresa a cada ~20h (sobrevive a reinício do container).
+let dasPagamentoRodando = false;
+async function dasPagamentoVerificarTodas() {
+  if (dasPagamentoRodando) return;
+  const agora = agoraBrasilia();
+  if (agora.hora < 8) return;
+  dasPagamentoRodando = true;
+  try {
+    const hoje = hojeBrasiliaIso();
+    const segunda = new Date(hoje + "T00:00:00Z").getUTCDay() === 1;
+    const mesAnt = new Date(Date.UTC(agora.ano, agora.mes - 2, 1));
+    const compMesAnt = `${mesAnt.getUTCFullYear()}${String(mesAnt.getUTCMonth() + 1).padStart(2, "0")}`;
+    const empresas = sqlite
+      .prepare(
+        `SELECT c.empresa_id as empresaId, c.escritorio_id as escritorioId, v.verificado_em as verificadoEm
+         FROM integracontador_empresa_config c
+         JOIN integracontador_config g ON g.escritorio_id = c.escritorio_id AND g.ativo = 1
+         JOIN empresas e ON e.id = c.empresa_id AND e.ativo = 1
+         LEFT JOIN integracontador_das_verificacao v ON v.empresa_id = c.empresa_id
+         WHERE c.ativo = 1 AND c.optante_simples_nacional = 1 AND (v.verificado_em IS NULL OR v.verificado_em < datetime('now', '-20 hours'))`
+      )
+      .all() as any[];
+    for (const emp of empresas) {
+      const anos = new Set<number>();
+      if (!emp.verificadoEm) {
+        anos.add(agora.ano); anos.add(agora.ano - 1);
+      } else {
+        const corte = painelMonitoramentoCorte(emp.escritorioId);
+        const situMesAnt = sqlite.prepare(`SELECT pago FROM integracontador_das_situacao WHERE empresa_id = ? AND periodo_apuracao = ?`).get(emp.empresaId, compMesAnt) as any;
+        const mesAntVencido = hoje > somarDiasIso(dasVencimentoIso(compMesAnt), DAS_FOLGA_DIAS);
+        if (mesAntVencido && !competenciasEmParcelamento(emp.empresaId).has(compMesAnt)) {
+          // Sem linha = ainda não sabíamos da declaração (o card "DAS em Atraso" cobre a não entregue) —
+          // só reconfere 1x por semana pra não pagar consulta todo dia por empresa que não declarou.
+          if (situMesAnt ? situMesAnt.pago === 0 : segunda) anos.add(mesAnt.getUTCFullYear());
+        }
+        for (const r of dasPendentesDaEmpresa(emp.empresaId, corte)) {
+          const atraso = (Date.parse(hoje + "T00:00:00Z") - Date.parse(r.venc + "T00:00:00Z")) / 86_400_000;
+          if (atraso <= 60 || segunda) anos.add(Number(r.p.slice(0, 4)));
+        }
+      }
+      if (!anos.size) continue;
+      try {
+        await dasPagamentoVerificarEmpresa(emp.empresaId, [...anos]);
+      } catch (e: any) {
+        console.error(`[DAS pago] verificação (empresa ${emp.empresaId}) falhou:`, e.message);
+      }
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+  } catch (e: any) {
+    console.error("[DAS pago] rotina:", e.message);
+  } finally {
+    dasPagamentoRodando = false;
+  }
+}
+setInterval(() => void dasPagamentoVerificarTodas(), 30 * 60_000);
+setTimeout(() => void dasPagamentoVerificarTodas(), 3 * 60_000);
+// "Verificar agora" (card DAS Não Pago) — consulta paga, então no máximo 1x a cada 10 min por empresa.
+app.post("/api/dashboard/das-nao-pago/verificar", blockCliente, requirePermissao("dashboard", "visualizar"), async (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.body?.empresaId);
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  const emp = sqlite.prepare(`SELECT escritorio_id FROM empresas WHERE id = ?`).get(empresaId) as any;
+  if (!emp || emp.escritorio_id !== user.escritorioId) return res.status(404).json({ error: "Empresa não encontrada." });
+  const recente = sqlite.prepare(`SELECT 1 FROM integracontador_das_verificacao WHERE empresa_id = ? AND verificado_em > datetime('now', '-10 minutes')`).get(empresaId);
+  if (recente) return res.status(429).json({ error: "Essa empresa foi verificada há menos de 10 minutos — aguarde um pouco." });
+  const anos = new Set<number>([agoraBrasilia().ano]);
+  for (const r of sqlite.prepare(`SELECT DISTINCT substr(periodo_apuracao, 1, 4) a FROM integracontador_das_situacao WHERE empresa_id = ? AND pago = 0`).all(empresaId) as any[]) anos.add(Number(r.a));
+  const h = agoraBrasilia();
+  if (h.mes === 1) anos.add(h.ano - 1);
+  try {
+    await dasPagamentoVerificarEmpresa(empresaId, [...anos]);
+    res.json({ ok: true, pendentes: dasPendentesDaEmpresa(empresaId, painelMonitoramentoCorte(user.escritorioId)).length });
+  } catch (e: any) {
+    res.status(502).json({ error: e.message });
+  }
+});
+// Cria o card "DAS Não Pago" no Início de cada escritório com Integra Contador ativo (uma vez só — se
+// excluírem o card depois, não volta).
+if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'card_das_nao_pago_20261110'`).get()) {
+  for (const r of sqlite.prepare(`SELECT escritorio_id FROM integracontador_config WHERE ativo = 1`).all() as any[]) {
+    if (sqlite.prepare(`SELECT 1 FROM dashboard_cards WHERE escritorio_id = ? AND tipo = 'das_nao_pago'`).get(r.escritorio_id)) continue;
+    const ref = sqlite.prepare(`SELECT ordem, cor FROM dashboard_cards WHERE escritorio_id = ? AND tipo = 'das_atraso' ORDER BY ordem LIMIT 1`).get(r.escritorio_id) as any;
+    sqlite
+      .prepare(`INSERT INTO dashboard_cards (titulo, valor, subtitulo, cor, ordem, escritorio_id, tipo) VALUES (?, '0', ?, ?, ?, ?, 'das_nao_pago')`)
+      .run("DAS Não Pago", "Vencido e não pago — confirmado na Receita", ref?.cor || "brass", ref ? Number(ref.ordem) : 0, r.escritorio_id);
+  }
+  sqlite.exec(`INSERT INTO migracoes_unicas (chave) VALUES ('card_das_nao_pago_20261110')`);
 }
 // Compatibilidade: preenche deskcomm_config do escritório ATUAL (o único com atendimento hoje) com os
 // valores que já vêm do .env — deixa o dado certo no banco pra quando o runtime passar a ler daqui
