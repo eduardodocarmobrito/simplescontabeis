@@ -16325,7 +16325,7 @@ function contratoModeloDrawer(m){
       ${m?'':`<div class="card" style="background:var(--paper); margin:14px 0;">
         <div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">Começar de um modelo pronto — preenche nome, campos e o texto completo (o timbrado do escritório entra sozinho no PDF). Depois é só revisar e clicar em Salvar modelo.</div>
         <div class="row" style="align-items:center;">
-          <select id="cmProntoSel" style="flex:1;"><option value="">Carregando…</option></select>
+          ${comboSelectHtml('cmProntoSel', 'Carregando…')}
           <button type="button" class="btn small" id="cmProntoCarregar">Carregar modelo pronto</button>
         </div>
       </div>`}
@@ -16368,14 +16368,18 @@ function contratoModeloDrawer(m){
   setupRte(toolbar, corpo);
   document.getElementById('cmFechar').addEventListener('click', closeDrawer);
   if(!m){
-    const sel = document.getElementById('cmProntoSel');
+    const selInput = document.querySelector('#cmProntoSel .combo-input');
     let prontos = [];
+    let prontoEscolhidoId = null;
+    setupComboSelect('cmProntoSel', [], id=>{ prontoEscolhidoId = id; });
+    selInput.placeholder = 'Carregando…';
     api('/contratos/modelos-prontos').then(r=>{
       prontos = r.items || [];
-      sel.innerHTML = '<option value="">— Escolha —</option>' + prontos.map(p=>`<option value="${esc(p.id)}">${esc(p.nome)}</option>`).join('');
-    }).catch(()=>{ sel.innerHTML = '<option value="">Nenhum modelo pronto disponível</option>'; });
+      selInput.placeholder = 'Digite para buscar o modelo…';
+      setupComboSelect('cmProntoSel', prontos.map(p=>({ id:p.id, label:p.nome })), id=>{ prontoEscolhidoId = id; });
+    }).catch(()=>{ selInput.placeholder = 'Nenhum modelo pronto disponível'; });
     document.getElementById('cmProntoCarregar').addEventListener('click', ()=>{
-      const p = prontos.find(x=>x.id===sel.value);
+      const p = prontos.find(x=>String(x.id)===String(prontoEscolhidoId));
       if(!p){ toast('Escolha um modelo pronto.','err'); return; }
       const temTexto = corpo.innerText.replace(/Contrato de Prestação de Serviços/i,'').trim();
       if(temTexto && !confirm('Substituir o texto e os campos atuais pelo modelo pronto?')) return;
