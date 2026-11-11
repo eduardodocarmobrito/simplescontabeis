@@ -11377,7 +11377,10 @@ async function nfeENfseBuscarTudo(empresaId: number, cfg: any, cert: nfse.Certif
     novosNfe: 0, novosNfse: 0, novosCte: 0, novosMdfe: 0,
     erroNfe: null as string | null, erroNfse: null as string | null, erroCte: null as string | null, erroMdfe: null as string | null,
     porSchema: {} as Record<string, number>,
+    viaExtratoNfe: false,
   };
+  // Empresa marcada no Extrato NFE: busca própria (Sefaz/ADN) PAUSADA — as notas vêm de lá (extratonfeSincronizar).
+  if (extratonfeEmpresaAtiva(empresaId)) { resultado.viaExtratoNfe = true; return resultado; }
   try {
     const r = await nfeBuscarDocumentosNovos(empresaId, cfg, cert);
     resultado.novosNfe = r.novos;
@@ -11410,6 +11413,18 @@ app.post("/api/nfe/config/:empresaId/buscar", blockCliente, requirePermissao("nf
   if (!podeAcessarEmpresa(user, empId)) return res.status(404).json({ error: "Empresa não encontrada." });
   if (!escritorioTemModulo(user.escritorioId, "busca_xml_nfe")) {
     return res.status(403).json({ error: "Módulo de busca de XML não contratado para este escritório." });
+  }
+  // Empresa no Extrato NFE: "Buscar agora" puxa as novidades de lá (sincronização do escritório inteiro).
+  if (extratonfeEmpresaAtiva(empId)) {
+    const antes = (sqlite.prepare(`SELECT COUNT(*) n FROM nfe_documentos WHERE empresa_id = ?`).get(empId) as any).n;
+    try {
+      const r = await extratonfeSincronizar(user.escritorioId);
+      if (r?.emAndamento) return res.status(409).json({ error: "A sincronização com o Extrato NFE já está em andamento — aguarde terminar." });
+      const depois = (sqlite.prepare(`SELECT COUNT(*) n FROM nfe_documentos WHERE empresa_id = ?`).get(empId) as any).n;
+      return res.json({ ok: true, viaExtratoNfe: true, novos: depois - antes, novosNfe: depois - antes, novosNfse: 0, novosCte: 0, novosMdfe: 0, erroExtrato: r?.primeiroErro || null });
+    } catch (e: any) {
+      return res.status(502).json({ error: `Extrato NFE: ${e.message}` });
+    }
   }
   if (nfeBuscasEmAndamento.has(empId)) {
     return res.status(409).json({ error: "Já tem uma busca em andamento pra esta empresa (pode ser a rotina automática) — aguarde terminar e tente de novo." });
@@ -11616,6 +11631,7 @@ async function nfeExecutarBuscaAutomatica() {
   for (const cfg of configs) {
     if (nfeBuscasEmAndamento.has(cfg.empresa_id)) continue;
     if (!escritorioTemModulo(cfg.escritorio_id, "busca_xml_nfe")) continue;
+    if (extratonfeEmpresaAtiva(cfg.empresa_id)) continue; // busca pelo Extrato NFE
     const ultimaBuscaMs = cfg.ultima_busca_em ? new Date(String(cfg.ultima_busca_em).replace(" ", "T") + "Z").getTime() : 0;
     if (ultimaBuscaMs && Date.now() - ultimaBuscaMs < 55 * 60 * 1000) continue;
     nfeBuscasEmAndamento.add(cfg.empresa_id);
@@ -11636,6 +11652,337 @@ async function nfeExecutarBuscaAutomatica() {
 setInterval(() => {
   nfeExecutarBuscaAutomatica().catch((e) => console.error("Erro na busca automática de XML:", e.message));
 }, NFE_AUTO_INTERVALO_MS);
+// ===================== Integração Extrato NFE (extratonfe.com.br) =====================
+// Pedido do usuário (2026-11-11): o escritório contratou o Extrato NFE, que consegue baixar as notas de
+// SAÍDA dos clientes (coisa que a nossa Distribuição DFe não entrega ao emitente — cStat 641; CT-e
+// emitido pela transportadora idem). Para cada empresa cadastrada lá, a busca PRÓPRIA (Sefaz/ADN com o
+// certificado) fica PAUSADA e as notas passam a vir da API deles, gravadas em nfe_documentos exatamente
+// como a busca própria grava (mesmo dedup por chave, mesmos tipos/fontes), então todo o resto do site
+// (listas, resumo, relatórios, financeiro) continua igual. Desligar a marcação da empresa volta a busca
+// própria.
+//
+// API (descoberta testando, 2026-11-11 — não há doc pública):
+//  GET /api/monitor/empresas?page=&pageSize=   (pageSize máx. 100)
+//  GET /api/monitor/notas?page=&pageSize=      (pageSize máx. 200; mais nova → mais antiga por criado_em;
+//      modelo 55 NF-e, 65 NFC-e, 57 CT-e, 99 NFS-e; campo cancelada; sem filtro de data)
+//  GET /api/monitor/notas/{id}/xml             (nfeProc / cteProc / NFSe nacional — XML completo)
+//  Header: Authorization: Bearer sk_...
+// O cancelamento NÃO vem no XML, só no campo "cancelada" da lista — vira uma linha tipo='evento' com a
+// mesma chave (mesma convenção que notaCanceladaExpr/canceladaExpr já procuram).
+sqlite.exec(`CREATE TABLE IF NOT EXISTS extratonfe_config (
+  escritorio_id INTEGER PRIMARY KEY REFERENCES escritorios(id),
+  api_key_cifrada TEXT,
+  ativo INTEGER NOT NULL DEFAULT 1,
+  forcar_completa INTEGER NOT NULL DEFAULT 1,
+  ultima_sync_em TEXT,
+  ultima_sync_completa_em TEXT,
+  ultimo_erro TEXT,
+  ultimo_resultado TEXT,
+  updated_at TEXT DEFAULT (datetime('now'))
+)`);
+// Marcação por empresa: ativo=1 → busca pelo Extrato NFE (busca própria pausada); ativo=0 → busca própria.
+// Nasce sozinha (ativo=1) quando a empresa aparece cadastrada no Extrato NFE; alterado_por preenchido =
+// alguém mexeu à mão, e aí a sincronização nunca mais liga/desliga sozinha.
+sqlite.exec(`CREATE TABLE IF NOT EXISTS extratonfe_empresas (
+  empresa_id INTEGER PRIMARY KEY REFERENCES empresas(id) ON DELETE CASCADE,
+  escritorio_id INTEGER NOT NULL,
+  ativo INTEGER NOT NULL DEFAULT 1,
+  extratonfe_id TEXT,
+  presente_no_extrato INTEGER NOT NULL DEFAULT 1,
+  vinculada_em TEXT DEFAULT (datetime('now')),
+  alterado_por INTEGER,
+  alterado_em TEXT,
+  notas_importadas INTEGER NOT NULL DEFAULT 0,
+  ultima_nota_em TEXT
+)`);
+// Notas da API já processadas (pra a sincronização incremental parar cedo e não rebaixar XML).
+sqlite.exec(`CREATE TABLE IF NOT EXISTS extratonfe_notas_vistas (
+  id TEXT PRIMARY KEY,
+  escritorio_id INTEGER NOT NULL,
+  chave TEXT,
+  modelo TEXT,
+  atualizado_em TEXT,
+  cancelada INTEGER NOT NULL DEFAULT 0,
+  empresas TEXT, -- ids (nossos) em que a nota foi gravada, separados por vírgula
+  cnpjs_hash TEXT, -- "foto" das empresas marcadas na hora — mudou (empresa nova marcada) → reprocessa
+  processada_em TEXT DEFAULT (datetime('now'))
+)`);
+const EXTRATONFE_BASE = "https://www.extratonfe.com.br";
+function extratonfeEmpresaAtiva(empresaId: number): boolean {
+  const r = sqlite
+    .prepare(
+      `SELECT 1 FROM extratonfe_empresas x JOIN extratonfe_config c ON c.escritorio_id = x.escritorio_id AND c.ativo = 1 AND c.api_key_cifrada IS NOT NULL
+       WHERE x.empresa_id = ? AND x.ativo = 1`
+    )
+    .get(empresaId);
+  return !!r;
+}
+function extratonfeChave(escritorioId: number): string | null {
+  const c = sqlite.prepare(`SELECT api_key_cifrada FROM extratonfe_config WHERE escritorio_id = ?`).get(escritorioId) as any;
+  if (!c?.api_key_cifrada) return null;
+  try { return nfse.decifrarTexto(c.api_key_cifrada); } catch { return null; }
+}
+async function extratonfeRequisitar(chave: string, caminho: string, comoTexto = false): Promise<any> {
+  const r = await fetch(EXTRATONFE_BASE + caminho, {
+    headers: { Authorization: `Bearer ${chave}`, "User-Agent": "SimplesContabeis-Integracao/1.0", Accept: comoTexto ? "application/xml" : "application/json" },
+    signal: AbortSignal.timeout(60_000),
+  });
+  if (r.status === 401 || r.status === 403) throw new Error("A chave da API do Extrato NFE foi recusada (inválida ou revogada) — gere uma nova lá e cole aqui.");
+  if (!r.ok) throw new Error(`O Extrato NFE respondeu HTTP ${r.status} em ${caminho.split("?")[0]}.`);
+  const tipo = r.headers.get("content-type") || "";
+  if (comoTexto) {
+    if (/html/i.test(tipo)) throw new Error(`O Extrato NFE devolveu uma página em vez do XML (${caminho.split("?")[0]}).`);
+    return r.text();
+  }
+  if (!/json/i.test(tipo)) throw new Error(`O Extrato NFE devolveu um formato inesperado (${tipo || "sem tipo"}) em ${caminho.split("?")[0]} — a API pode ter mudado.`);
+  return r.json();
+}
+const soDigitos = (s: any) => String(s || "").replace(/\D/g, "");
+// Liga/desliga a marcação das empresas conforme o que está cadastrado no Extrato NFE.
+async function extratonfeSincronizarEmpresas(escritorioId: number, chave: string): Promise<{ vinculadas: number; novas: number; semCadastroAqui: string[] }> {
+  const lista: any[] = [];
+  for (let page = 1; page <= 50; page++) {
+    const r = await extratonfeRequisitar(chave, `/api/monitor/empresas?page=${page}&pageSize=100`);
+    const emp = Array.isArray(r?.empresas) ? r.empresas : [];
+    lista.push(...emp);
+    const totalPaginas = Number(r?.totalPaginas) || 1;
+    if (!emp.length || page >= totalPaginas) break;
+  }
+  const nossas = sqlite.prepare(`SELECT id, cnpj FROM empresas WHERE escritorio_id = ? AND ativo = 1`).all(escritorioId) as any[];
+  const porCnpj = new Map<string, number>();
+  for (const e of nossas) { const d = soDigitos(e.cnpj); if (d) porCnpj.set(d, e.id); }
+  const presentes = new Set<number>();
+  let novas = 0;
+  const semCadastroAqui: string[] = [];
+  for (const x of lista) {
+    if (x.ativo === false) continue;
+    const empresaId = porCnpj.get(soDigitos(x.cnpj));
+    if (!empresaId) { semCadastroAqui.push(`${x.nome || ""} (${x.cnpj})`); continue; }
+    presentes.add(empresaId);
+    const atual = sqlite.prepare(`SELECT * FROM extratonfe_empresas WHERE empresa_id = ?`).get(empresaId) as any;
+    if (!atual) {
+      sqlite.prepare(`INSERT INTO extratonfe_empresas (empresa_id, escritorio_id, ativo, extratonfe_id, presente_no_extrato) VALUES (?, ?, 1, ?, 1)`).run(empresaId, escritorioId, x.id || null);
+      novas++;
+    } else {
+      sqlite.prepare(`UPDATE extratonfe_empresas SET extratonfe_id = ?, presente_no_extrato = 1 WHERE empresa_id = ?`).run(x.id || null, empresaId);
+      // Saiu e voltou pro Extrato NFE sem ninguém ter mexido na marcação à mão → religa sozinha.
+      if (!atual.ativo && !atual.alterado_por) { sqlite.prepare(`UPDATE extratonfe_empresas SET ativo = 1 WHERE empresa_id = ?`).run(empresaId); novas++; }
+    }
+  }
+  // Empresa que saiu do Extrato NFE: marca ausente; se a marcação foi automática, desliga → busca própria volta.
+  for (const r of sqlite.prepare(`SELECT empresa_id, alterado_por FROM extratonfe_empresas WHERE escritorio_id = ?`).all(escritorioId) as any[]) {
+    if (presentes.has(r.empresa_id)) continue;
+    sqlite.prepare(`UPDATE extratonfe_empresas SET presente_no_extrato = 0 ${r.alterado_por ? "" : ", ativo = 0"} WHERE empresa_id = ?`).run(r.empresa_id);
+  }
+  if (novas) sqlite.prepare(`UPDATE extratonfe_config SET forcar_completa = 1 WHERE escritorio_id = ?`).run(escritorioId);
+  return { vinculadas: presentes.size, novas, semCadastroAqui };
+}
+function extratonfeFonteDoModelo(modelo: string): "nfe" | "cte" | "nfse" {
+  if (modelo === "57" || modelo === "67") return "cte";
+  if (modelo === "99") return "nfse";
+  return "nfe";
+}
+// CNPJs/CPFs que aparecem no XML (fora de autXML/infRespTec, que trazem o escritório e o fornecedor do
+// emissor, não partes da operação) — acha o tomador do CT-e e qualquer outra parte da nota.
+function extratonfeDocumentosNoXml(xml: string): Set<string> {
+  const limpo = xml.replace(/<autXML>[\s\S]*?<\/autXML>/g, "").replace(/<infRespTec>[\s\S]*?<\/infRespTec>/g, "");
+  const out = new Set<string>();
+  for (const m of limpo.matchAll(/<(?:[a-zA-Z0-9]+:)?(CNPJ|CPF)>(\d{11}|\d{14})<\//g)) out.add(m[2]);
+  return out;
+}
+const extratonfeRodando = new Set<number>();
+async function extratonfeSincronizar(escritorioId: number, opts: { completa?: boolean } = {}): Promise<any> {
+  if (extratonfeRodando.has(escritorioId)) return { emAndamento: true };
+  const chave = extratonfeChave(escritorioId);
+  const cfg = sqlite.prepare(`SELECT * FROM extratonfe_config WHERE escritorio_id = ?`).get(escritorioId) as any;
+  if (!chave || !cfg?.ativo) return { desativada: true };
+  extratonfeRodando.add(escritorioId);
+  const res = { completa: false, paginas: 0, lidas: 0, importadas: 0, atualizadas: 0, cancelamentos: 0, semEmpresa: 0, erros: 0, empresas: null as any, primeiroErro: null as string | null };
+  try {
+    res.empresas = await extratonfeSincronizarEmpresas(escritorioId, chave);
+    const marcadas = sqlite
+      .prepare(`SELECT x.empresa_id, e.cnpj FROM extratonfe_empresas x JOIN empresas e ON e.id = x.empresa_id WHERE x.escritorio_id = ? AND x.ativo = 1`)
+      .all(escritorioId) as any[];
+    const porDoc = new Map<string, number>();
+    for (const m of marcadas) { const d = soDigitos(m.cnpj); if (d) porDoc.set(d, m.empresa_id); }
+    const cnpjsHash = [...porDoc.keys()].sort().join(",");
+    const ultimaCompletaMs = cfg.ultima_sync_completa_em ? Date.parse(String(cfg.ultima_sync_completa_em).replace(" ", "T") + "Z") : 0;
+    const completa = !!opts.completa || !!cfg.forcar_completa || !ultimaCompletaMs || Date.now() - ultimaCompletaMs > 20 * 3600_000;
+    res.completa = completa;
+    if (!porDoc.size) return res;
+    const temDoc = sqlite.prepare(`SELECT 1 FROM nfe_documentos WHERE empresa_id = ? AND chave_acesso = ? AND tipo != 'evento'`);
+    const ultimaSyncMs = cfg.ultima_sync_em ? Date.parse(String(cfg.ultima_sync_em).replace(" ", "T") + "Z") : 0;
+    for (let page = 0; page < 1000; page++) {
+      const r = await extratonfeRequisitar(chave, `/api/monitor/notas?page=${page}&pageSize=200`);
+      const notas: any[] = Array.isArray(r?.data) ? r.data : [];
+      res.paginas++;
+      if (!notas.length) break;
+      let trabalhoNaPagina = 0;
+      for (const n of notas) {
+        res.lidas++;
+        try {
+          const vista = sqlite.prepare(`SELECT * FROM extratonfe_notas_vistas WHERE id = ?`).get(n.id) as any;
+          const fonte = extratonfeFonteDoModelo(String(n.modelo));
+          const chaveNota = soDigitos(n.chave_nfe) || null;
+          // Empresas candidatas pela lista (sem baixar XML): emitente / destinatário.
+          const candidatas = new Set<number>();
+          for (const d of [soDigitos(n.cnpj_emitente), soDigitos(n.destinatario_cpf_cnpj)]) { const id = porDoc.get(d); if (id) candidatas.add(id); }
+          const mudouNota = !vista || vista.atualizado_em !== n.atualizado_em || !!vista.cancelada !== !!n.cancelada;
+          const mudouMarcadas = !vista || vista.cnpjs_hash !== cnpjsHash;
+          const faltaAlguma = chaveNota ? [...candidatas].some((id) => !temDoc.get(id, chaveNota)) : true;
+          if (!mudouNota && !mudouMarcadas && !faltaAlguma) continue;
+          trabalhoNaPagina++;
+          let empresasGravadas = new Set<number>((vista?.empresas || "").split(",").filter(Boolean).map(Number));
+          // Baixa o XML se alguma empresa (candidata, ou ainda desconhecida — ex.: tomador do CT-e) pode estar sem ele.
+          const precisaXml = n.has_xml !== false && (!vista || mudouMarcadas || faltaAlguma || (candidatas.size === 0 && !empresasGravadas.size));
+          if (precisaXml) {
+            const xml: string = await extratonfeRequisitar(chave, `/api/monitor/notas/${encodeURIComponent(n.id)}/xml`, true);
+            const destinos = new Set<number>(candidatas);
+            for (const d of extratonfeDocumentosNoXml(xml)) { const id = porDoc.get(d); if (id) destinos.add(id); }
+            if (!destinos.size) res.semEmpresa++;
+            for (const empresaId of destinos) {
+              let ins: { inserido: boolean; atualizado: boolean; id: number | null };
+              if (fonte === "nfse") {
+                const info = nfse.identificarNfseDistribuida(xml);
+                ins = nfeInserirDocumentoDedup({
+                  empresaId, escritorioId, fonte: "nfse", nsu: `extratonfe_${n.id}`, schema: "extratonfe_NFSe", tipo: "nfse",
+                  chaveAcesso: info.chaveAcesso || chaveNota, emitenteCnpj: info.emitenteDocumento, emitenteNome: info.emitenteNome,
+                  destinatarioCnpj: info.tomadorDocumento, destinatarioNome: info.tomadorNome, valorTotal: info.valorTotal,
+                  dataEmissao: info.dataEmissao, xml, eventoDescricao: null,
+                });
+              } else {
+                const info = nfe.identificarDocumento(xml, "extratonfe");
+                if (!info.chaveAcesso || info.tipo === "outro") throw new Error(`XML não reconhecido (modelo ${n.modelo})`);
+                ins = nfeInserirDocumentoDedup({
+                  empresaId, escritorioId, fonte, nsu: `extratonfe_${n.id}`, schema: "extratonfe", tipo: info.tipo,
+                  chaveAcesso: info.chaveAcesso, emitenteCnpj: info.emitenteCnpj, emitenteNome: info.emitenteNome,
+                  destinatarioCnpj: info.destinatarioCnpj, destinatarioNome: info.destinatarioNome, valorTotal: info.valorTotal,
+                  dataEmissao: info.dataEmissao, xml, eventoDescricao: null,
+                });
+              }
+              if (ins.inserido) {
+                res.importadas++;
+                sqlite.prepare(`UPDATE extratonfe_empresas SET notas_importadas = notas_importadas + 1, ultima_nota_em = datetime('now') WHERE empresa_id = ?`).run(empresaId);
+              } else if (ins.atualizado) res.atualizadas++;
+              empresasGravadas.add(empresaId);
+            }
+          }
+          // Cancelamento (só vem na lista): evento com a mesma chave em cada empresa onde a nota está.
+          if (n.cancelada && chaveNota) {
+            for (const empresaId of empresasGravadas) {
+              const r2 = nfeInserirDocumento.run(
+                empresaId, escritorioId, fonte, `extratonfe_canc_${chaveNota}`, "extratonfe_cancelamento", "evento",
+                chaveNota, soDigitos(n.cnpj_emitente) || null, n.emitente_nome || null, soDigitos(n.destinatario_cpf_cnpj) || null, n.destinatario_nome || null,
+                null, n.atualizado_em || new Date().toISOString(), `<cancelamentoExtratoNfe chave="${chaveNota}" origem="extratonfe"/>`,
+                fonte === "nfse" ? "Cancelamento de NFS-e" : "Cancelamento"
+              );
+              if (r2.changes > 0) res.cancelamentos++;
+            }
+          }
+          sqlite
+            .prepare(
+              `INSERT INTO extratonfe_notas_vistas (id, escritorio_id, chave, modelo, atualizado_em, cancelada, empresas, cnpjs_hash, processada_em)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+               ON CONFLICT(id) DO UPDATE SET chave = excluded.chave, modelo = excluded.modelo, atualizado_em = excluded.atualizado_em,
+                 cancelada = excluded.cancelada, empresas = excluded.empresas, cnpjs_hash = excluded.cnpjs_hash, processada_em = datetime('now')`
+            )
+            .run(n.id, escritorioId, chaveNota, String(n.modelo), n.atualizado_em || null, n.cancelada ? 1 : 0, [...empresasGravadas].join(","), cnpjsHash);
+        } catch (e: any) {
+          res.erros++;
+          if (!res.primeiroErro) res.primeiroErro = `${n.modelo}/${n.numero}: ${e.message}`;
+          console.error(`[extratonfe] nota ${n.id} (${n.chave_nfe}):`, e.message);
+          if (/recusada/.test(e.message)) throw e;
+        }
+      }
+      if (notas.length < 200) break;
+      // Incremental: a lista vem da mais nova pra mais antiga — página sem nada novo e já anterior à última
+      // sincronização (com 2h de folga) = o resto já foi visto. A completa (1x/dia) varre tudo (pega
+      // cancelamento de nota antiga, que só muda atualizado_em).
+      if (!completa && !trabalhoNaPagina) {
+        const maisAntiga = Date.parse(notas[notas.length - 1].criado_em || "");
+        if (!ultimaSyncMs || (maisAntiga && maisAntiga < ultimaSyncMs - 2 * 3600_000)) break;
+      }
+    }
+    sqlite
+      .prepare(
+        `UPDATE extratonfe_config SET ultima_sync_em = datetime('now'), ultimo_erro = ?, ultimo_resultado = ?
+           ${completa ? ", ultima_sync_completa_em = datetime('now'), forcar_completa = 0" : ""} WHERE escritorio_id = ?`
+      )
+      .run(res.primeiroErro ? `${res.erros} nota(s) com erro — ex.: ${res.primeiroErro}` : null, JSON.stringify(res), escritorioId);
+    if (res.importadas || res.cancelamentos) console.log(`[extratonfe] escritório ${escritorioId}: ${res.importadas} nota(s) nova(s), ${res.cancelamentos} cancelamento(s), ${res.lidas} lida(s) em ${res.paginas} página(s)${completa ? " (completa)" : ""}.`);
+    return res;
+  } catch (e: any) {
+    sqlite.prepare(`UPDATE extratonfe_config SET ultima_sync_em = datetime('now'), ultimo_erro = ?, ultimo_resultado = ? WHERE escritorio_id = ?`).run(e.message, JSON.stringify(res), escritorioId);
+    throw e;
+  } finally {
+    extratonfeRodando.delete(escritorioId);
+  }
+}
+// Rotina: a cada 15 min, incremental; 1x/dia (ou quando uma empresa nova é marcada) varre tudo.
+async function extratonfeRotina() {
+  for (const c of sqlite.prepare(`SELECT escritorio_id FROM extratonfe_config WHERE ativo = 1 AND api_key_cifrada IS NOT NULL`).all() as any[]) {
+    if (!escritorioTemModulo(c.escritorio_id, "busca_xml_nfe")) continue;
+    try { await extratonfeSincronizar(c.escritorio_id); }
+    catch (e: any) { console.error(`[extratonfe] escritório ${c.escritorio_id}:`, e.message); }
+  }
+}
+setInterval(() => void extratonfeRotina(), 15 * 60_000);
+setTimeout(() => void extratonfeRotina(), 2 * 60_000);
+
+app.get("/api/nfe/extratonfe", blockCliente, requirePermissao("nfe-busca", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const c = sqlite.prepare(`SELECT * FROM extratonfe_config WHERE escritorio_id = ?`).get(user.escritorioId) as any;
+  let final: string | null = null;
+  if (c?.api_key_cifrada) { try { const k = nfse.decifrarTexto(c.api_key_cifrada); final = k.slice(0, 7) + "…" + k.slice(-4); } catch {} }
+  const empresas = sqlite
+    .prepare(
+      `SELECT x.empresa_id as empresaId, e.nome, e.cnpj, x.ativo, x.presente_no_extrato as presenteNoExtrato, x.vinculada_em as vinculadaEm,
+              x.alterado_por as alteradoPor, x.notas_importadas as notasImportadas, x.ultima_nota_em as ultimaNotaEm
+       FROM extratonfe_empresas x JOIN empresas e ON e.id = x.empresa_id WHERE x.escritorio_id = ? ORDER BY e.nome`
+    )
+    .all(user.escritorioId);
+  let ultimoResultado = null;
+  try { ultimoResultado = c?.ultimo_resultado ? JSON.parse(c.ultimo_resultado) : null; } catch {}
+  res.json({
+    configurada: !!c?.api_key_cifrada, ativo: c ? !!c.ativo : false, chaveMascarada: final,
+    ultimaSyncEm: c?.ultima_sync_em || null, ultimaSyncCompletaEm: c?.ultima_sync_completa_em || null, ultimoErro: c?.ultimo_erro || null,
+    ultimoResultado, rodando: extratonfeRodando.has(user.escritorioId), empresas,
+  });
+});
+app.put("/api/nfe/extratonfe", blockCliente, requirePermissao("nfe-busca", "editar"), async (req, res) => {
+  const user = (req as any).user;
+  const { apiKey, ativo } = req.body || {};
+  sqlite.prepare(`INSERT OR IGNORE INTO extratonfe_config (escritorio_id) VALUES (?)`).run(user.escritorioId);
+  if (apiKey !== undefined && apiKey !== null && String(apiKey).trim()) {
+    const k = String(apiKey).trim();
+    if (!/^sk_[A-Za-z0-9]{10,}$/.test(k)) return res.status(400).json({ error: "Chave em formato inesperado — ela começa com sk_ (copie de Integrações › API de dados, no Extrato NFE)." });
+    try { await extratonfeRequisitar(k, `/api/monitor/empresas?page=1&pageSize=1`); }
+    catch (e: any) { return res.status(400).json({ error: e.message }); }
+    sqlite.prepare(`UPDATE extratonfe_config SET api_key_cifrada = ?, ultimo_erro = NULL, forcar_completa = 1, updated_at = datetime('now') WHERE escritorio_id = ?`).run(nfse.cifrarTexto(k), user.escritorioId);
+  }
+  if (ativo !== undefined) sqlite.prepare(`UPDATE extratonfe_config SET ativo = ?, updated_at = datetime('now') WHERE escritorio_id = ?`).run(ativo ? 1 : 0, user.escritorioId);
+  // Já sincroniza em segundo plano (vincula as empresas e traz as notas).
+  if (extratonfeChave(user.escritorioId)) void extratonfeSincronizar(user.escritorioId).catch((e) => console.error("[extratonfe] sync após salvar:", e.message));
+  res.json({ ok: true });
+});
+app.post("/api/nfe/extratonfe/sincronizar", blockCliente, requirePermissao("nfe-busca", "postar"), (req, res) => {
+  const user = (req as any).user;
+  if (!extratonfeChave(user.escritorioId)) return res.status(400).json({ error: "Cadastre a chave da API do Extrato NFE primeiro." });
+  if (extratonfeRodando.has(user.escritorioId)) return res.status(409).json({ error: "A sincronização com o Extrato NFE já está em andamento." });
+  void extratonfeSincronizar(user.escritorioId, { completa: !!req.body?.completa }).catch((e) => console.error("[extratonfe] sync manual:", e.message));
+  res.json({ ok: true, iniciada: true });
+});
+app.put("/api/nfe/extratonfe/empresas/:empresaId", blockCliente, requirePermissao("nfe-busca", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.params.empresaId);
+  if (!podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const ativo = req.body?.ativo ? 1 : 0;
+  const existe = sqlite.prepare(`SELECT 1 FROM extratonfe_empresas WHERE empresa_id = ?`).get(empresaId);
+  if (existe) sqlite.prepare(`UPDATE extratonfe_empresas SET ativo = ?, alterado_por = ?, alterado_em = datetime('now') WHERE empresa_id = ?`).run(ativo, user.id, empresaId);
+  else sqlite.prepare(`INSERT INTO extratonfe_empresas (empresa_id, escritorio_id, ativo, presente_no_extrato, alterado_por, alterado_em) VALUES (?, ?, ?, 0, ?, datetime('now'))`).run(empresaId, user.escritorioId, ativo, user.id);
+  if (ativo) sqlite.prepare(`UPDATE extratonfe_config SET forcar_completa = 1 WHERE escritorio_id = ?`).run(user.escritorioId);
+  res.json({ ok: true });
+});
 // Versão do parser de tributos — ao subir (novas colunas/lógica), força reparsear os docs já lidos.
 const NFE_TRIB_VERSAO = 5; // v5: + fin_nfe/nat_op (tipo de operação); v4: + crt, + flag "st"
 // Lê o XML das notas (ids) e cacheia IBS/CBS/ICMS/PIS/COFINS/IPI/flags/qtd_itens/crt nas colunas.

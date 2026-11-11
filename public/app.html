@@ -9102,12 +9102,20 @@ async function renderBuscaXmlResumoCertificado(containerEl, empresaId, empresaNo
   const { items, moduloAtivo } = await api('/nfe/config');
   if(opts.onModuloStatus) opts.onModuloStatus(moduloAtivo);
   const cfg = items.find(c=>c.empresaId===Number(empresaId));
+  if(!NFE_EXTRATO) NFE_EXTRATO = await api('/nfe/extratonfe').catch(()=>null);
+  const faixaExtrato = extratoNfeFaixaEmpresaHtml(empresaId);
+  const regExtrato = NFE_EXTRATO && NFE_EXTRATO.ativo && (NFE_EXTRATO.empresas||[]).find(e=>e.empresaId===Number(empresaId) && e.ativo);
+  const refazer = ()=>renderBuscaXmlResumoCertificado(containerEl, empresaId, empresaNome, opts);
   if(!cfg){
-    containerEl.innerHTML = `<div class="empty-state">Nenhum certificado configurado ainda — envie em Empresas → ${esc(empresaNome||'')} → Configurações.</div>`;
+    containerEl.innerHTML = faixaExtrato + (regExtrato
+      ? `${podePostar?`<div class="row" style="margin-top:6px; align-items:center;"><button class="btn primary" id="btnNfeBuscarAgora_${empresaId}" ${moduloAtivo?'':'disabled'}>Buscar agora</button><span style="font-size:12px; color:var(--ink-soft);">Puxa as novidades do Extrato NFE.</span></div><div id="nfeBuscaResultado_${empresaId}" style="margin-top:10px;"></div>`:''}`
+      : `<div class="empty-state">Nenhum certificado configurado ainda — envie em Empresas → ${esc(empresaNome||'')} → Configurações.</div>`);
+    ligarExtratoNfeFaixaEmpresa(containerEl, empresaId, refazer);
+    if(regExtrato && podePostar) ligarBuscarAgoraNfe(containerEl, empresaId, opts);
     return cfg;
   }
-  containerEl.innerHTML = `
-    <div class="slot-locked" style="background:var(--paper);">
+  containerEl.innerHTML = faixaExtrato + `
+    <div class="slot-locked" style="background:var(--paper);${regExtrato?' opacity:.6;':''}">
       <span class="fname">${esc(cfg.titular||'Certificado configurado')}</span>
       CNPJ do certificado: ${esc(cfg.cnpjCertificado||'—')} · Válido até ${fmtValidade(cfg.validadeAte)} · UF autora: ${esc(cfg.ufAutor)} · Ambiente: ${cfg.ambiente==='homologacao'?'Homologação':'Produção'}
       <br>NF-e/NFC-e — última busca: ${cfg.ultimaBuscaEm?fmtDateHora(cfg.ultimaBuscaEm):'nunca'}${cfg.ultimoErro?` — <span style="color:var(--debit);">${esc(cfg.ultimoErro)}</span>`:''}
@@ -9117,18 +9125,28 @@ async function renderBuscaXmlResumoCertificado(containerEl, empresaId, empresaNo
       ${!cfg.ativo?`<br><span class="tag muted" style="margin-top:6px;">Busca desativada — ative em Empresas → Configurações.</span>`:''}
     </div>
     <div class="row" style="margin-top:6px; align-items:center;">
-      ${podePostar?`<button class="btn primary" id="btnNfeBuscarAgora_${empresaId}" ${(moduloAtivo&&cfg.ativo)?'':'disabled'}>Buscar agora</button>`:''}
-      <span style="font-size:12px; color:var(--ink-soft);">Certificado gerenciado em Empresas → Configurações.</span>
+      ${podePostar?`<button class="btn primary" id="btnNfeBuscarAgora_${empresaId}" ${(moduloAtivo&&(cfg.ativo||regExtrato))?'':'disabled'}>Buscar agora</button>`:''}
+      <span style="font-size:12px; color:var(--ink-soft);">${regExtrato?'Puxa as novidades do Extrato NFE (busca própria pausada).':'Certificado gerenciado em Empresas → Configurações.'}</span>
     </div>
     <div id="nfeBuscaResultado_${empresaId}" style="margin-top:10px;"></div>
   `;
-  if(podePostar) containerEl.querySelector(`#btnNfeBuscarAgora_${empresaId}`).addEventListener('click', async ()=>{
+  ligarExtratoNfeFaixaEmpresa(containerEl, empresaId, refazer);
+  if(podePostar) ligarBuscarAgoraNfe(containerEl, empresaId, opts);
+  return cfg;
+}
+function ligarBuscarAgoraNfe(containerEl, empresaId, opts){
+  containerEl.querySelector(`#btnNfeBuscarAgora_${empresaId}`)?.addEventListener('click', async ()=>{
     const btn = containerEl.querySelector(`#btnNfeBuscarAgora_${empresaId}`);
     const resultado = containerEl.querySelector(`#nfeBuscaResultado_${empresaId}`);
     btn.disabled = true; btn.textContent = 'Buscando…';
     resultado.innerHTML = `<div class="empty-state">Consultando a Sefaz e o Sistema Nacional NFS-e…</div>`;
     try{
       const r = await api('/nfe/config/'+empresaId+'/buscar', { method:'POST' });
+      if(r.viaExtratoNfe){
+        resultado.innerHTML = `<div class="tag ${r.erroExtrato?'bad':'ok'}">${r.erroExtrato?'Concluído com falhas':'Concluído'}</div> <span style="font-size:12.5px;">Extrato NFE: ${r.novos} documento(s) novo(s) pra esta empresa.</span>${r.erroExtrato?`<div style="font-size:12px; color:var(--debit); margin-top:4px;">${esc(r.erroExtrato)}</div>`:''}`;
+        if(opts.onDocumentosMudou) opts.onDocumentosMudou();
+        return;
+      }
       const partes = [`${r.novosNfe} NF-e/NFC-e`, `${r.novosCte} CT-e`, `${r.novosNfse} NFS-e`, `${r.novosMdfe} MDF-e`];
       resultado.innerHTML = `<div class="tag ${(r.erroNfe||r.erroNfse||r.erroCte)?'bad':'ok'}">${(r.erroNfe||r.erroNfse||r.erroCte)?'Concluído com falhas':'Concluído'}</div> <span style="font-size:12.5px;">${partes.join(' · ')} novo(s).</span>
         ${r.erroNfe?`<div style="font-size:12px; color:var(--debit); margin-top:4px;">NF-e/NFC-e: ${esc(r.erroNfe)}</div>`:''}
@@ -9141,7 +9159,6 @@ async function renderBuscaXmlResumoCertificado(containerEl, empresaId, empresaNo
       btn.disabled = false; btn.textContent = 'Buscar agora';
     }
   });
-  return cfg;
 }
 // Duas telas: lista de empresas (o que já tem certificado configurado ou algum documento) e, ao
 // clicar numa delas, o detalhe (certificado + documentos daquela empresa só). Evita jogar tudo solto
@@ -10310,6 +10327,93 @@ function rtFornecedorDrawer(d, cnpj, urlPdf){
     catch(e){ toast('Não consegui copiar automaticamente.','err'); }
   });
 }
+// ---------- Integração Extrato NFE (extratonfe.com.br) ----------
+// Empresas cadastradas lá: busca própria pausada, notas (entrada/saída, NF-e/CT-e/NFS-e) vêm da API deles.
+let NFE_EXTRATO = null;
+function renderExtratoNfeCard(el, recarregar){
+  if(!el) return;
+  const x = NFE_EXTRATO || { configurada:false, empresas:[] };
+  const podeEditar = can('nfe-busca','editar'), podePostar = can('nfe-busca','postar');
+  if(!x.configurada && !podeEditar){ el.innerHTML = ''; return; }
+  const ativas = (x.empresas||[]).filter(e=>e.ativo);
+  const res = x.ultimoResultado || {};
+  const fora = (res.empresas && res.empresas.semCadastroAqui) || [];
+  el.innerHTML = `
+    <div class="card" style="margin-bottom:12px; border-left:4px solid #F97316;">
+      <div class="row" style="justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+        <div><b>🔗 Extrato NFE</b> <span class="tag ${x.configurada&&x.ativo?'ok':'muted'}">${x.configurada?(x.ativo?'Conectado':'Pausado'):'Não configurado'}</span>
+          ${x.configurada?`<span style="font-size:12px; color:var(--ink-soft); margin-left:6px;">${ativas.length} empresa(s) buscando por lá · última sincronização: ${x.ultimaSyncEm?fmtDateHora(x.ultimaSyncEm):'nunca'}${x.rodando?' · <b>sincronizando agora…</b>':''}</span>`:''}
+        </div>
+        <div class="row" style="gap:6px;">
+          ${x.configurada&&podePostar?`<button class="btn small" id="extratoSyncBtn" ${x.rodando?'disabled':''}>🔄 Sincronizar agora</button>`:''}
+          ${podeEditar?`<button class="btn small" id="extratoCfgBtn">${x.configurada?'Configurar':'Conectar'}</button>`:''}
+        </div>
+      </div>
+      <div style="font-size:12px; color:var(--ink-soft); margin-top:6px;">Empresa cadastrada no Extrato NFE fica com a <b>busca própria pausada</b> e as notas (entradas e saídas — NF-e, CT-e e NFS-e) passam a vir de lá, a cada 15 min. Desmarque a empresa (no detalhe dela) pra voltar à busca própria.</div>
+      ${x.ultimoErro?`<div style="font-size:12px; color:var(--debit); margin-top:4px;">${esc(x.ultimoErro)}</div>`:''}
+      ${res.lidas!=null?`<div style="font-size:12px; color:var(--ink-soft); margin-top:4px;">Última rodada: ${res.importadas||0} nota(s) nova(s), ${res.cancelamentos||0} cancelamento(s), ${res.lidas} conferida(s)${res.completa?' (varredura completa)':''}.</div>`:''}
+      ${fora.length?`<div style="font-size:12px; color:#b45309; margin-top:4px;" title="${esc(fora.join('\n'))}">⚠ ${fora.length} empresa(s) do Extrato NFE sem cadastro aqui (CNPJ não encontrado) — passe o mouse pra ver.</div>`:''}
+      <div id="extratoCfgBox" style="display:none; margin-top:10px;">
+        <div class="row" style="gap:8px; align-items:flex-end; flex-wrap:wrap;">
+          <div class="field grow" style="margin:0; min-width:280px;"><label>Chave da API (Extrato NFE › Integrações › API de dados)</label><input type="password" id="extratoKey" placeholder="${x.chaveMascarada?esc(x.chaveMascarada)+' — cole uma nova pra trocar':'sk_…'}" autocomplete="off"></div>
+          <button class="btn primary" id="extratoSalvar">Salvar e conectar</button>
+          ${x.configurada?`<button class="btn" id="extratoAtivo">${x.ativo?'Pausar integração':'Reativar integração'}</button>`:''}
+        </div>
+      </div>
+    </div>`;
+  const cfgBtn = el.querySelector('#extratoCfgBtn');
+  if(cfgBtn) cfgBtn.addEventListener('click', ()=>{ const b = el.querySelector('#extratoCfgBox'); b.style.display = b.style.display==='none'?'':'none'; });
+  el.querySelector('#extratoSalvar')?.addEventListener('click', async (ev)=>{
+    const k = el.querySelector('#extratoKey').value.trim();
+    if(!k){ toast('Cole a chave da API (começa com sk_).','err'); return; }
+    ev.target.disabled = true; ev.target.textContent = 'Validando…';
+    try{ await api('/nfe/extratonfe', { method:'PUT', body:{ apiKey:k } }); toast('Extrato NFE conectado — sincronizando as empresas e notas em segundo plano.','ok'); NFE_EXTRATO = await api('/nfe/extratonfe'); recarregar(); }
+    catch(e){ toast(e.message,'err'); ev.target.disabled = false; ev.target.textContent = 'Salvar e conectar'; }
+  });
+  el.querySelector('#extratoAtivo')?.addEventListener('click', async ()=>{
+    if(x.ativo && !confirmar('Pausar a integração? As empresas marcadas voltam pra busca própria até reativar.')) return;
+    try{ await api('/nfe/extratonfe', { method:'PUT', body:{ ativo: !x.ativo } }); NFE_EXTRATO = await api('/nfe/extratonfe'); recarregar(); }
+    catch(e){ toast(e.message,'err'); }
+  });
+  el.querySelector('#extratoSyncBtn')?.addEventListener('click', async (ev)=>{
+    ev.target.disabled = true; ev.target.textContent = 'Sincronizando…';
+    try{
+      await api('/nfe/extratonfe/sincronizar', { method:'POST', body:{} });
+      toast('Sincronização iniciada — as notas vão aparecendo em instantes.','ok');
+      let n = 0;
+      const espera = async ()=>{ NFE_EXTRATO = await api('/nfe/extratonfe').catch(()=>NFE_EXTRATO); if(NFE_EXTRATO && NFE_EXTRATO.rodando && n++ < 200){ setTimeout(espera, 4000); } else if(document.getElementById('nfeExtratoCard')) recarregar(); };
+      setTimeout(espera, 3000);
+    }catch(e){ toast(e.message,'err'); ev.target.disabled = false; ev.target.textContent = '🔄 Sincronizar agora'; }
+  });
+}
+// Faixa no detalhe da empresa: mostra/alterna se a busca dela é pelo Extrato NFE ou própria.
+function extratoNfeFaixaEmpresaHtml(empresaId){
+  const x = NFE_EXTRATO;
+  if(!x || !x.configurada) return '';
+  const reg = (x.empresas||[]).find(e=>e.empresaId===Number(empresaId));
+  const ativa = !!(reg && reg.ativo && x.ativo);
+  const podeEditar = can('nfe-busca','editar');
+  return `<div class="card" style="margin:0 0 10px; padding:10px 12px; border-left:4px solid ${ativa?'#F97316':'var(--rule)'};">
+    <div class="row" style="justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+      <div style="font-size:13px;">${ativa
+        ? `🔗 <b>Busca de XML sendo feita pelo Extrato NFE</b> — busca própria pausada.${reg.notasImportadas?` <span style="color:var(--ink-soft);">${reg.notasImportadas} nota(s) trazida(s) de lá.</span>`:''}${reg.presenteNoExtrato?'':' <span style="color:#b45309;">(empresa não encontrada no Extrato NFE)</span>'}`
+        : `Busca de XML <b>própria</b> (Sefaz/ADN com o certificado).${reg&&reg.presenteNoExtrato?' <span style="color:var(--ink-soft);">Esta empresa está cadastrada no Extrato NFE.</span>':''}`}</div>
+      ${podeEditar?`<button class="btn small" id="extratoToggleEmp" data-ativo="${ativa?1:0}">${ativa?'Voltar pra busca própria':'Buscar pelo Extrato NFE'}</button>`:''}
+    </div>
+  </div>`;
+}
+function ligarExtratoNfeFaixaEmpresa(rootEl, empresaId, depois){
+  rootEl.querySelector('#extratoToggleEmp')?.addEventListener('click', async (ev)=>{
+    const ligar = ev.target.dataset.ativo!=='1';
+    if(!confirmar(ligar ? 'Passar a buscar os XMLs desta empresa pelo Extrato NFE (a busca própria fica pausada)? A empresa precisa estar cadastrada lá.' : 'Voltar a buscar os XMLs desta empresa pela busca própria (Sefaz/ADN com o certificado)?')) return;
+    try{
+      await api('/nfe/extratonfe/empresas/'+empresaId, { method:'PUT', body:{ ativo: ligar } });
+      NFE_EXTRATO = await api('/nfe/extratonfe');
+      toast(ligar?'Empresa marcada: busca pelo Extrato NFE.':'Empresa desmarcada: busca própria religada.','ok');
+      if(depois) depois();
+    }catch(e){ toast(e.message,'err'); }
+  });
+}
 async function pageNfeBusca(){
   main().innerHTML = `
     <h1>Busca de XML</h1>
@@ -10370,8 +10474,8 @@ async function pageNfeBusca(){
     box.innerHTML = `<div class="empty-state">Carregando…</div>`;
     let configs, moduloAtivo, contagens;
     try{
-      const r = await Promise.all([ api('/nfe/config'), api('/nfe/documentos/contagem') ]);
-      configs = r[0].items; moduloAtivo = r[0].moduloAtivo; contagens = r[1].items;
+      const r = await Promise.all([ api('/nfe/config'), api('/nfe/documentos/contagem'), api('/nfe/extratonfe').catch(()=>null) ]);
+      configs = r[0].items; moduloAtivo = r[0].moduloAtivo; contagens = r[1].items; NFE_EXTRATO = r[2];
     }catch(e){ box.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)} <button class="btn small" id="nfeBuscaTentarDeNovo">Tentar de novo</button></div>`; document.getElementById('nfeBuscaTentarDeNovo')?.addEventListener('click', mostrarLista); return; }
     if(!moduloAtivo){
       box.innerHTML = await escritorioModuloPaywallHtml('busca_xml_nfe');
@@ -10384,6 +10488,8 @@ async function pageNfeBusca(){
     // usa "Buscar dados desta empresa" pra separar as abas — as demais empresas ativas do escritório
     // caem em "Não Configuradas", mesmo que tenham nota antiga de um certificado já removido.
     const idsConfigurados = new Set(configs.map(c=>c.empresaId));
+    const idsExtrato = new Set(((NFE_EXTRATO&&NFE_EXTRATO.empresas)||[]).filter(x=>x.ativo).map(x=>x.empresaId));
+    idsExtrato.forEach(id=>idsConfigurados.add(id));
     const configuradas = [...idsConfigurados].map(id=>{
       const emp = empresas.find(e=>e.id===id);
       return { id, nome: emp?emp.nome:'(empresa removida)', cnpj: emp?emp.cnpj:'', qtd: contagem[id]||0 };
@@ -10393,6 +10499,7 @@ async function pageNfeBusca(){
       .sort((a,b)=>a.nome.localeCompare(b.nome) || String(a.cnpj||'').localeCompare(String(b.cnpj||'')));
     const visiveis = NFE_TAB==='configuradas' ? configuradas : naoConfiguradas;
     box.innerHTML = `
+      <div id="nfeExtratoCard"></div>
       <div class="card">
         <div class="tabs">
           <div class="tab" data-tab="configuradas">Empresas Configuradas <span class="tag ok">${configuradas.length}</span></div>
@@ -10403,7 +10510,7 @@ async function pageNfeBusca(){
         <div style="max-height:420px; overflow-y:auto; overflow-x:hidden; border:1px solid var(--rule); border-radius:8px; padding:4px 10px;">
           ${visiveis.length ? visiveis.map(l=>`
             <div class="nfeEmpresaRow" data-id="${l.id}" data-nome="${esc(normalizaTxt(l.nome))}" style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:6px 8px; font-size:13px; cursor:pointer; border-bottom:1px solid var(--rule);">
-              <span>${esc(l.nome)}${empresaMatrizFilialHtml(l.cnpj)}</span>
+              <span>${esc(l.nome)}${empresaMatrizFilialHtml(l.cnpj)}${idsExtrato.has(l.id)?' <span class="tag" style="background:#F97316; color:#fff; border-color:#F97316; margin-left:6px;" title="Busca de XML feita pelo Extrato NFE (busca própria pausada)">Extrato NFE</span>':''}</span>
               <span class="tag muted" style="flex:none;">${l.qtd} nota${l.qtd===1?'':'s'}</span>
             </div>
           `).join('') : `<div class="empty-state">${NFE_TAB==='configuradas'?'Nenhuma empresa configurada ainda — envie o certificado dela em Empresas → Configurações.':'Todas as empresas já estão configuradas.'}</div>`}
@@ -10415,6 +10522,7 @@ async function pageNfeBusca(){
       t.addEventListener('click', ()=>{ NFE_TAB = t.dataset.tab; mostrarLista(); });
     });
     box.querySelectorAll('.nfeEmpresaRow').forEach(row=>row.addEventListener('click', ()=>mostrarDetalhe(Number(row.dataset.id))));
+    renderExtratoNfeCard(document.getElementById('nfeExtratoCard'), mostrarLista);
     const filtro = document.getElementById('nfeListaFiltro');
     if(filtro) filtro.addEventListener('input', ()=>{
       const termo = normalizaTxt(filtro.value);
