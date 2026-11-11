@@ -11211,8 +11211,12 @@ async function nfeBuscarDocumentosNovos(empresaId: number, cfg: any, cert: nfse.
         // Ciência da Operação automática (opt-in): só pra captura DIRETA (nunca autXML — o CNPJ que
         // manifestaria não é o nosso cert nesse caso) de uma nota nova que chegou só como resumo. Uma
         // manifestação que falhar não aborta a busca inteira — só essa nota continua em resumo até a
-        // próxima tentativa.
-        if (cfg.manifestacao_automatica && r.inserido && empresaDestino === empresaId && (info.tipo === "nfe" || info.tipo === "nfce") && info.chaveAcesso && nfeEhResumo(doc.xml)) {
+        // próxima tentativa. "Ciência" é um direito do DESTINATÁRIO — nunca manifesta numa nota em que
+        // a própria empresa é a EMITENTE (venda/saída dela mesma): além de não fazer sentido (não é ela
+        // quem precisa "tomar ciência" da própria venda), a Sefaz nunca libera o completo (procNFe) pro
+        // emitente de qualquer forma (cStat 641), então a manifestação não traria benefício nenhum —
+        // achado em auditoria (2026-11-11), nunca tinha sido testado contra a Sefaz nesse cenário.
+        if (cfg.manifestacao_automatica && r.inserido && empresaDestino === empresaId && info.emitenteCnpj !== cnpjBusca.replace(/\D/g, "") && (info.tipo === "nfe" || info.tipo === "nfce") && info.chaveAcesso && nfeEhResumo(doc.xml)) {
           try {
             const manif = await nfe.enviarManifestacaoCiencia({ ambiente: cfg.ambiente as nfe.AmbienteNfe, cnpj: cnpjBusca, cUF: nfe.UF_CODIGO_IBGE[cfg.uf_autor], cert, chave: info.chaveAcesso });
             nfeInserirDocumento.run(
