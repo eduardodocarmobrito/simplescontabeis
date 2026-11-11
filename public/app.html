@@ -5221,7 +5221,16 @@ function empresaModal(e){
 // Card de UM anexo — reaproveitado pela lista simples (Constituição) e pelo histórico por ano/tipo
 // (Licenças). Só licença ganha o campo de vencimento (contrato social/cartão CNPJ não vencem).
 function anexoCardHtml(a){
-  const tipoLabel = a.categoria==='anexo' ? (a.descricao||'Documento') : rotuloTipoLicenca(a.tipo);
+  const arquivoLink = `<a href="/api/empresas/anexos/${a.id}/arquivo" target="_blank" rel="noopener">${esc(a.nomeArquivo)}</a>`;
+  // Com descrição própria (só existe pra categoria "anexo"), ela vira o texto grande — o arquivo em
+  // si fica discreto embaixo (link pequeno, não precisa saber o nome do arquivo pra reconhecer o
+  // documento). Sem descrição (ou em Constituição/Licenças, que usam o catálogo fixo de tipos), mantém
+  // o comportamento antigo: rótulo pequeno em cima, nome do arquivo em destaque.
+  const cabecalhoHtml = (a.categoria==='anexo' && a.descricao)
+    ? `<div style="font-weight:600; font-size:14px;">${esc(a.descricao)}</div>
+       <div style="font-size:11.5px; color:var(--ink-soft);">📎 ${arquivoLink}</div>`
+    : `<div style="font-size:11px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.04em;">${esc(a.categoria==='anexo' ? 'Documento' : rotuloTipoLicenca(a.tipo))}</div>
+       <div style="font-weight:600;">${arquivoLink}</div>`;
   const vencTag = a.vencimentoOrigem==='automatico' ? `<span class="tag ok" style="font-size:10px;">lido automaticamente do PDF</span>`
     : a.vencimentoOrigem==='manual' ? `<span class="tag muted" style="font-size:10px;">informado manualmente</span>`
     : `<span class="tag bad" style="font-size:10px;">não identificado — informe a data</span>`;
@@ -5229,8 +5238,7 @@ function anexoCardHtml(a){
   <div class="card" style="padding:10px 12px; margin-bottom:8px;">
     <div class="row" style="justify-content:space-between; align-items:flex-start; gap:10px;">
       <div>
-        <div style="font-size:11px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.04em;">${esc(tipoLabel)}</div>
-        <a href="/api/empresas/anexos/${a.id}/arquivo" target="_blank" rel="noopener" style="font-weight:600;">${esc(a.nomeArquivo)}</a>
+        ${cabecalhoHtml}
         <div style="font-size:11.5px; color:var(--ink-soft);">Enviado em ${fmtDateHora(a.criadoEm)}${a.criadoPorNome? ' por '+esc(a.criadoPorNome):''}</div>
       </div>
       <button class="btn small danger" data-act="rm-anexo" data-id="${a.id}">Excluir</button>
