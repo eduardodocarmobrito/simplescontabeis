@@ -16119,15 +16119,16 @@ async function renderContratosModelos(){
     api('/contratos/assinatura-config'),
   ]);
   box.innerHTML = `
-    <div class="row" style="margin-bottom:12px;">
+    <div class="row" style="margin-bottom:12px; gap:12px; align-items:center; flex-wrap:wrap;">
       <button class="btn primary" id="btnNovoModelo">+ Novo modelo</button>
+      <div class="field" style="margin:0; flex:1; min-width:240px; max-width:520px;"><input type="text" id="ctmBusca" placeholder="Buscar modelo…" autocomplete="off"></div>
     </div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
         <thead><tr><th>Nome</th><th>Campos</th><th>Ativo</th><th></th></tr></thead>
         <tbody>
           ${items.length? items.map(m=>`
-            <tr>
+            <tr class="ctmLinha" data-busca="${esc(m.nome)}">
               <td>${esc(m.nome)}</td>
               <td>${m.campos.length}</td>
               <td><span class="tag ${m.ativo?'ok':'muted'}">${m.ativo?'Ativo':'Inativo'}</span></td>
@@ -16137,28 +16138,39 @@ async function renderContratosModelos(){
               </td>
             </tr>
           `).join('') : `<tr><td colspan="4"><div class="empty-state">Nenhum modelo cadastrado ainda.</div></td></tr>`}
-          <tr>
+          <tr class="ctmLinha" data-busca="Catálogo de serviços">
             <td>Catálogo de serviços</td>
             <td>—</td>
             <td><span class="tag muted">Multiescolha do contrato + distrato</span></td>
             <td style="text-align:right;"><button class="btn small" id="btnEditarServicos">Editar</button></td>
           </tr>
-          <tr>
+          <tr class="ctmLinha" data-busca="Modelo padrão de Distrato">
             <td>Modelo padrão de Distrato</td>
             <td>—</td>
             <td><span class="tag muted">Cláusula + assinaturas</span></td>
             <td style="text-align:right;"><button class="btn small" id="btnEditarDistrato">Editar</button></td>
           </tr>
-          <tr>
+          <tr class="ctmLinha" data-busca="Assinatura digital (sócios)">
             <td>Assinatura digital (sócios)</td>
             <td>—</td>
             <td><span class="tag ${assinaturaConfig.sandbox?'muted':'ok'}">${assinaturaConfig.sandbox?'Modo teste (sandbox)':'Modo real'}</span></td>
             <td style="text-align:right;"><button class="btn small" id="btnEditarAssinatura">Editar</button></td>
           </tr>
+          <tr id="ctmVazio" style="display:none;"><td colspan="4"><div class="empty-state">Nenhum modelo encontrado com essa busca.</div></td></tr>
         </tbody>
       </table>
     </div>
   `;
+  document.getElementById('ctmBusca').addEventListener('input', (e)=>{
+    const termo = normalizaTxt(e.target.value).trim();
+    let visiveis = 0;
+    box.querySelectorAll('.ctmLinha').forEach(tr=>{
+      const ok = !termo || normalizaTxt(tr.dataset.busca||'').includes(termo);
+      tr.style.display = ok ? '' : 'none';
+      if(ok) visiveis++;
+    });
+    document.getElementById('ctmVazio').style.display = visiveis ? 'none' : '';
+  });
   document.getElementById('btnEditarServicos').addEventListener('click', ()=>servicosCatalogoDrawer());
   document.getElementById('btnEditarDistrato').addEventListener('click', ()=>distratoModeloDrawer(distratoConfig));
   document.getElementById('btnEditarAssinatura').addEventListener('click', ()=>assinaturaConfigDrawer(assinaturaConfig));
