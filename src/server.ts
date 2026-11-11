@@ -11707,7 +11707,29 @@ sqlite.exec(`CREATE TABLE IF NOT EXISTS extratonfe_notas_vistas (
   cnpjs_hash TEXT, -- "foto" das empresas marcadas na hora — mudou (empresa nova marcada) → reprocessa
   processada_em TEXT DEFAULT (datetime('now'))
 )`);
+sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_extratonfe_notas_vistas_chave ON extratonfe_notas_vistas (escritorio_id, chave)`);
 const EXTRATONFE_BASE = "https://www.extratonfe.com.br";
+// PDF oficial deles (DANFE / DACTE / DANFSe) de uma nota que já passou pela sincronização.
+// null = o Extrato NFE não conhece essa chave (ou a integração está desligada) → usa o nosso layout.
+async function extratonfeBaixarPdf(escritorioId: number, chaveAcesso: string): Promise<Buffer | null> {
+  const chaveNota = soDigitos(chaveAcesso);
+  if (!chaveNota) return null;
+  const vista = sqlite
+    .prepare(`SELECT id FROM extratonfe_notas_vistas WHERE escritorio_id = ? AND chave = ? ORDER BY processada_em DESC LIMIT 1`)
+    .get(escritorioId, chaveNota) as any;
+  if (!vista) return null;
+  const cfg = sqlite.prepare(`SELECT ativo FROM extratonfe_config WHERE escritorio_id = ?`).get(escritorioId) as any;
+  const chave = cfg?.ativo ? extratonfeChave(escritorioId) : null;
+  if (!chave) return null;
+  const r = await fetch(`${EXTRATONFE_BASE}/api/monitor/notas/${encodeURIComponent(vista.id)}/danfe`, {
+    headers: { Authorization: `Bearer ${chave}`, "User-Agent": "SimplesContabeis-Integracao/1.0", Accept: "application/pdf" },
+    signal: AbortSignal.timeout(60_000),
+  });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const buf = Buffer.from(await r.arrayBuffer());
+  if (buf.subarray(0, 4).toString("latin1") !== "%PDF") throw new Error(`resposta não é PDF (${r.headers.get("content-type") || "sem tipo"})`);
+  return buf;
+}
 function extratonfeEmpresaAtiva(empresaId: number): boolean {
   const r = sqlite
     .prepare(
@@ -11765,6 +11787,8 @@ async function extratonfeSincronizarEmpresas(escritorioId: number, chave: string
       novas++;
     } else {
       sqlite.prepare(`UPDATE extratonfe_empresas SET extratonfe_id = ?, presente_no_extrato = 1 WHERE empresa_id = ?`).run(x.id || null, empresaId);
+      // Acabou de aparecer no Extrato NFE (estava marcada à mão antes de ser cadastrada lá) → varredura completa.
+      if (!atual.presente_no_extrato && atual.ativo) novas++;
       // Saiu e voltou pro Extrato NFE sem ninguém ter mexido na marcação à mão → religa sozinha.
       if (!atual.ativo && !atual.alterado_por) { sqlite.prepare(`UPDATE extratonfe_empresas SET ativo = 1 WHERE empresa_id = ?`).run(empresaId); novas++; }
     }
@@ -12398,8 +12422,23 @@ function nfeDocNomeArquivo(row: any, extensao: string): string {
 // própria (não é o DANFE oficial certificado — layout mais simples, mas com os mesmos dados do XML).
 // Eventos não têm representação em PDF. Cache em disco (nfe_documentos.pdf_path) — só renderiza uma vez.
 async function nfeDocumentoObterPdf(row: any): Promise<{ pdf: Buffer | null; erro: string | null }> {
-  if (row.pdf_path && fs.existsSync(row.pdf_path)) return { pdf: fs.readFileSync(row.pdf_path), erro: null };
   if (row.tipo === "evento") return { pdf: null, erro: "Eventos não têm representação em PDF — baixe o XML." };
+  // Nota que o Extrato NFE conhece (veio de lá ou também está lá) → usa o DANFE/DACTE/DANFSe deles,
+  // pra ficar idêntico ao que aparece no Extrato NFE. Falhou (fora do ar, nota removida) → cai no nosso.
+  const cacheDoExtrato = !!row.pdf_path && path.basename(String(row.pdf_path)).startsWith("extratonfe-") && fs.existsSync(row.pdf_path);
+  if (cacheDoExtrato) return { pdf: fs.readFileSync(row.pdf_path), erro: null };
+  if (row.chave_acesso) {
+    const pdfExtrato = await extratonfeBaixarPdf(row.escritorio_id, String(row.chave_acesso)).catch((e) => {
+      console.warn(`[extratonfe] PDF da chave ${row.chave_acesso}: ${e.message} — usando o nosso layout.`);
+      return null;
+    });
+    if (pdfExtrato) {
+      const caminho = nfePdf.salvarPdfEmCache(`extratonfe-${row.chave_acesso}`, pdfExtrato);
+      sqlite.prepare(`UPDATE nfe_documentos SET pdf_path = ? WHERE id = ?`).run(caminho, row.id);
+      return { pdf: pdfExtrato, erro: null };
+    }
+  }
+  if (row.pdf_path && fs.existsSync(row.pdf_path)) return { pdf: fs.readFileSync(row.pdf_path), erro: null };
   try {
     const pdf = row.fonte === "nfse" ? await danfse.gerarDanfsePdf(row.xml) : row.tipo === "cte" ? await nfePdf.gerarPdfSimplificadoCte(row.xml) : await nfePdf.gerarPdfSimplificadoNfe(row.xml);
     const caminho = nfePdf.salvarPdfEmCache(row.chave_acesso || `doc-${row.id}`, pdf);
