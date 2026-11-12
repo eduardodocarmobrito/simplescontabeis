@@ -15564,6 +15564,9 @@ function campoEhCep(chave){ return chave==='CEP'; }
 // Campo de dinheiro: nome com "valor" ou "preço"/"preco" (ex.: modulo_preco, modulo_preco_implantacao),
 // nunca o "por extenso" (esse é texto).
 function campoEhMoeda(chave){ return /valor|pre[cç]o/i.test(chave) && !/extenso/i.test(chave); }
+// Campo "por extenso": sempre calculado a partir do campo de dinheiro correspondente — nunca
+// digitado à mão (trava pra edição, ver campoFieldHtml).
+function campoEhExtenso(chave){ return /extenso/i.test(chave); }
 function campoEhServicos(chave){ return /servi[cç]os_a_ser/i.test(chave); }
 function valorFormatadoCampo(chave, valor){
   if(!valor) return '';
@@ -15608,7 +15611,8 @@ function campoFieldHtml(f, dados, comAjuda, catalogoServicos){
     // contrato já escreve "R$ {{campo}}".
     return `<div class="field"${largo}><label>${esc(f.rotulo)}${ajuda}</label><div style="position:relative;"><span style="position:absolute; left:12px; top:50%; transform:translateY(-50%); color:var(--ink-soft); pointer-events:none; font-size:14px;">R$</span><input class="drwCampo" data-chave="${esc(f.chave)}" data-auto="${esc(f.autoPreencherDe||'')}" value="${esc(valor)}"${ph} inputmode="numeric" style="padding-left:38px;"></div></div>`;
   }
-  return `<div class="field"${largo}><label>${esc(f.rotulo)}${ajuda}</label><input class="drwCampo" data-chave="${esc(f.chave)}" data-auto="${esc(f.autoPreencherDe||'')}" value="${esc(valor)}"${ph}></div>`;
+  const ro = campoEhExtenso(f.chave) ? ' readonly title="Calculado sozinho a partir do valor — não dá pra editar aqui"' : '';
+  return `<div class="field"${largo}><label>${esc(f.rotulo)}${ajuda}</label><input class="drwCampo" data-chave="${esc(f.chave)}" data-auto="${esc(f.autoPreencherDe||'')}" value="${esc(valor)}"${ph}${ro}></div>`;
 }
 function campoGrupoHtml(titulo, lista, dados, comAjuda, catalogoServicos){
   if(!lista.length) return '';
@@ -15809,6 +15813,26 @@ function validarDrwCampos(){
   }
   return true;
 }
+// Acha o campo "por extenso" de um campo de dinheiro, pelo autoPreencherDe (ex.: moduloNfseMensal →
+// moduloNfseMensalExtenso) ou, na falta disso, pelo nome (<chave>_extenso) — mesmo critério usado
+// pro recálculo ao vivo no blur (ver dentro do if(campos.length) abaixo).
+function campoExtensoPar(inp, todos){
+  const auto = inp.dataset.auto;
+  return (auto && todos.find(x=>x.dataset.auto===auto+'Extenso')) || todos.find(x=>x.dataset.chave===inp.dataset.chave+'_extenso');
+}
+// Recalcula TODOS os pares valor/extenso ainda visíveis no drawer — chamado antes de "Aplicar no
+// documento" pra não cair numa corrida com o recálculo assíncrono disparado no blur (digitar o
+// valor e já clicar em Aplicar, sem passar por outro campo antes, capturava o extenso desatualizado).
+async function recalcularTodosExtensos(){
+  const todos = [...document.querySelectorAll('.drwCampo')];
+  for(const inp of todos){
+    if(!campoEhMoeda(inp.dataset.chave) || !inp.value) continue;
+    const ext = campoExtensoPar(inp, todos);
+    if(!ext) continue;
+    try{ const r = await api('/contratos/valor-extenso', { method:'POST', body:{ valor: inp.value } }); ext.value = r.extenso; }
+    catch(e){ /* mantém o que já tinha — se o blur já tinha avisado do erro, não repete o toast */ }
+  }
+}
 async function abrirContratoDrawer(id){
   const [c, catalogoServicos] = await Promise.all([
     api('/contratos/'+id),
@@ -15860,6 +15884,21 @@ async function abrirContratoDrawer(id){
   // assinatura) fica por último e em try/catch — assim um erro ali NUNCA deixa os botões sem resposta.
   drwScope.querySelectorAll('.campo-ajuda').forEach(el=>el.addEventListener('click', ()=>toast(el.dataset.ajuda||'Sem descrição')));
   const corpo = document.getElementById('drwCorpo');
+  // Semeia o "último valor aplicado" de cada par valor/extenso com o que já está pré-preenchido nos
+  // campos agora (o servidor já substitui {{moduloNfseMensal}}/{{...Extenso}} etc. pelo valor padrão
+  // do catálogo já na criação do contrato) — sem isso, a 1ª vez que o admin mudasse o preço e clicasse
+  // em "Aplicar no documento" não achava nem {{token}} (já consumido na criação) nem um "último
+  // valor" registrado, e o texto do contrato nunca saía do valor padrão.
+  {
+    const paresIniciais = {};
+    for(const inp of [...document.querySelectorAll('.drwCampo')]){
+      if(!campoEhMoeda(inp.dataset.chave) || !inp.value) continue;
+      const ext = campoExtensoPar(inp, [...document.querySelectorAll('.drwCampo')]);
+      if(!ext) continue;
+      paresIniciais[inp.dataset.chave] = { valor: inp.value, ext: ext.value || '' };
+    }
+    corpo._ultimosPares = paresIniciais;
+  }
   document.getElementById('drwFechar').addEventListener('click', closeDrawer);
   const salvarComStatus = async (status)=>{
     if(!validarDrwCampos()) return;
@@ -15926,9 +15965,7 @@ async function abrirContratoDrawer(id){
         ligarMascaraMoeda(inp);
         // "Por extenso" acompanha o valor ao sair do campo: acha o par pelo autoPreencherDe
         // (moduloNfseMensal → moduloNfseMensalExtenso) ou pelo nome (<campo>_extenso).
-        const auto = inp.dataset.auto;
-        const campos = [...document.querySelectorAll('.drwCampo')];
-        const ext = (auto && campos.find(x=>x.dataset.auto===auto+'Extenso')) || campos.find(x=>x.dataset.chave===inp.dataset.chave+'_extenso');
+        const ext = campoExtensoPar(inp, [...document.querySelectorAll('.drwCampo')]);
         if(ext) inp.addEventListener('change', async ()=>{
           if(!inp.value){ ext.value=''; return; }
           try{ const r = await api('/contratos/valor-extenso', { method:'POST', body:{ valor: inp.value } }); ext.value = r.extenso; }
@@ -15945,6 +15982,11 @@ async function abrirContratoDrawer(id){
     if(anexoHidden) setupAnexoTerceirizacao(anexoHidden, empresasAnexo);
     document.getElementById('drwAplicarCampos').addEventListener('click', async ()=>{
       if(!validarDrwCampos()) return;
+      // Recalcula de novo TODOS os pares valor/extenso antes de ler os campos — sem isso, clicar em
+      // "Aplicar no documento" logo depois de digitar o valor (sem clicar antes em outro campo pra dar
+      // tempo do recálculo do blur terminar) aplicava o extenso ainda desatualizado, numa corrida com
+      // a chamada assíncrona disparada no blur.
+      await recalcularTodosExtensos();
       const novosDados = {};
       document.querySelectorAll('.drwCampo').forEach(inp=>novosDados[inp.dataset.chave]=inp.value);
       // {{dia}}/{{mes}}/{{ano}} são automáticos (data de hoje) — só não sobrescreve se o admin já
@@ -15978,16 +16020,6 @@ async function abrirContratoDrawer(id){
           novosDados['vlr_extenso'] = r.extenso;
         }catch(e){ toast('Não consegui calcular o valor por extenso: '+e.message,'err'); }
       }
-      // Contrato de licença de módulo: o extenso sempre acompanha o valor (recalcula a cada aplicação,
-      // porque o valor vem preenchido do preço do master e pode ser ajustado aqui).
-      for(const [chValor, chExt] of [['valor_mensalidade','mensalidade_extenso'],['valor_implantacao','implantacao_extenso']]){
-        if(!(chValor in novosDados) || !(chExt in novosDados) || !novosDados[chValor]) continue;
-        try{
-          const r = await api('/contratos/valor-extenso', { method:'POST', body:{ valor: novosDados[chValor] } });
-          novosDados[chExt] = r.extenso;
-          const el = document.querySelector('.drwCampo[data-chave="'+chExt+'"]'); if(el) el.value = r.extenso;
-        }catch(e){ toast('Não consegui calcular o valor por extenso: '+e.message,'err'); }
-      }
       // Anexo de terceirização: o JSON vira a tabela do Anexo I (não entra como texto).
       const anexoChave = Object.keys(novosDados).find(k=>campoEhAnexoTerceirizacao(k));
       let anexoHtml = null;
@@ -16010,12 +16042,35 @@ async function abrirContratoDrawer(id){
         html = html.split('R$ '+esc(ultimo.vh)).join('R$ '+esc(vhNovo));
         if(ultimo.ext && novosDados['vlr_extenso']) html = html.split(esc(ultimo.ext)).join(esc(novosDados['vlr_extenso']));
       }
+      // Mesma ideia pra QUALQUER outro par valor/extenso do modelo (ex.: preço do módulo e da
+      // implantação): na 1ª aplicação o {{token}} ainda existe e o loop de baixo já resolve, mas
+      // reaplicar com um valor NOVO (ex.: corrigir o preço) não tem mais token pra substituir — sem
+      // isso, o texto do contrato ficava preso no valor aplicado da 1ª vez pra sempre.
+      const ultimosPares = corpo._ultimosPares || {};
+      const paresAgora = {};
+      for(const inp of [...document.querySelectorAll('.drwCampo')]){
+        if(!campoEhMoeda(inp.dataset.chave)) continue;
+        const ext = campoExtensoPar(inp, [...document.querySelectorAll('.drwCampo')]);
+        if(!ext) continue;
+        const chValor = inp.dataset.chave, chExt = ext.dataset.chave;
+        const valorNovo = novosDados[chValor], extNovo = novosDados[chExt];
+        const antigo = ultimosPares[chValor];
+        if(antigo && valorNovo && antigo.valor !== valorNovo){
+          // Tenta primeiro com o "R$ " na frente (padrão do texto dos modelos — ver campoFieldHtml);
+          // se não achar assim, tenta o valor sozinho (modelo pode ter digitado diferente).
+          const comRs = html.split('R$ '+esc(antigo.valor)).join('R$ '+esc(valorNovo));
+          html = comRs !== html ? comRs : html.split(esc(antigo.valor)).join(esc(valorNovo));
+          if(antigo.ext && extNovo) html = html.split(esc(antigo.ext)).join(esc(extNovo));
+        }
+        if(valorNovo) paresAgora[chValor] = { valor: valorNovo, ext: extNovo || '' };
+      }
       Object.keys(novosDados).forEach(chave=>{
         const valor = novosDados[chave];
         if(valor) html = html.split('{{'+chave+'}}').join(esc(valor));
       });
       corpo.innerHTML = html;
       if(vhNovo) corpo._ultimoHonorario = { vh: vhNovo, ext: novosDados['vlr_extenso'] || '' };
+      corpo._ultimosPares = { ...ultimosPares, ...paresAgora };
       if(anexoHtml){
         const tok = '{{'+anexoChave+'}}';
         if(corpo.innerHTML.includes(tok)) corpo.innerHTML = corpo.innerHTML.split(tok).join(anexoHtml);
