@@ -26423,6 +26423,104 @@ if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'modelo_licenc
   }
   sqlite.exec(`INSERT INTO migracoes_unicas (chave) VALUES ('modelo_licenca_nfse_preencher_20261112')`);
 }
+// ---------- Reajuste anual automático da mensalidade (IPCA) — pedido 2026-11-12 ----------
+// Cláusula 4.4 do contrato de licença do Módulo NFS-e: a cada 12 meses, contados do 1º pagamento do
+// módulo, a mensalidade da empresa sobe pela variação positiva do IPCA acumulada nos 12 meses
+// anteriores (série 433 do Banco Central = IPCA mensal do IBGE). O novo preço vira o valor
+// personalizado da empresa (empresa_modulos.valor_mensal_custom) — vale a partir das próximas cobranças.
+// Só módulos com contrato que prevê reajuste (REAJUSTE_MODULOS); vitalício, grátis e teste ficam de fora.
+const REAJUSTE_MODULOS = ["nfse"];
+for (const [col, tipo] of [["reajuste_base_em", "TEXT"], ["ultimo_reajuste_em", "TEXT"]] as const) {
+  const cols = sqlite.prepare(`PRAGMA table_info(empresa_modulos)`).all() as any[];
+  if (!cols.some((c) => c.name === col)) sqlite.exec(`ALTER TABLE empresa_modulos ADD COLUMN ${col} ${tipo}`);
+}
+sqlite.exec(`CREATE TABLE IF NOT EXISTS modulos_reajustes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+  modulo_chave TEXT NOT NULL,
+  aniversario TEXT NOT NULL,          -- data (aaaa-mm-dd) em que completou os 12 meses
+  ipca_meses TEXT,                    -- ex.: "09/2025 a 08/2026"
+  ipca_percentual REAL,               -- acumulado no período (pode ser <= 0 → não reajusta)
+  valor_anterior REAL,
+  valor_novo REAL,
+  aplicado_em TEXT DEFAULT (datetime('now')),
+  UNIQUE(empresa_id, modulo_chave, aniversario)
+)`);
+const addMeses = (iso: string, n: number) => {
+  const [a, m, d] = iso.slice(0, 10).split("-").map(Number);
+  const alvo = new Date(Date.UTC(a, m - 1 + n, 1));
+  const ultimoDia = new Date(Date.UTC(alvo.getUTCFullYear(), alvo.getUTCMonth() + 1, 0)).getUTCDate();
+  return `${alvo.getUTCFullYear()}-${String(alvo.getUTCMonth() + 1).padStart(2, "0")}-${String(Math.min(d, ultimoDia)).padStart(2, "0")}`;
+};
+// Início da contagem: o que estiver gravado, senão o 1º pagamento confirmado que incluiu o módulo.
+function reajusteBaseDoModulo(empresaId: number, chave: string, gravado: string | null): string | null {
+  if (gravado) return gravado.slice(0, 10);
+  const r = sqlite
+    .prepare(
+      `SELECT MIN(c.criado_em) d FROM financeiro_licenca_cobrancas c JOIN financeiro_licenca_cobranca_itens i ON i.cobranca_id = c.id
+       WHERE c.empresa_id = ? AND i.modulo_chave = ? AND c.status IN ('confirmado','recebido')`
+    )
+    .get(empresaId, chave) as any;
+  return r?.d ? String(r.d).slice(0, 10) : null;
+}
+// IPCA acumulado dos 12 meses publicados antes do mês do aniversário. null = ainda não saiu o último mês.
+async function ipcaAcumulado12Meses(aniversario: string): Promise<{ percentual: number; meses: string } | null> {
+  const mesAniv = aniversario.slice(0, 7);
+  const ini = addMeses(`${mesAniv}-01`, -12).slice(0, 7);
+  const br = (ym: string) => `01/${ym.slice(5, 7)}/${ym.slice(0, 4)}`;
+  const fim = addMeses(`${mesAniv}-01`, -1).slice(0, 7);
+  const r = await fetch(`https://api.bcb.gov.br/dados/serie/bcdata.sgs.433/dados?formato=json&dataInicial=${br(ini)}&dataFinal=${br(fim)}`, { signal: AbortSignal.timeout(30_000) });
+  if (r.status === 404) return null; // período ainda sem dado publicado
+  if (!r.ok) throw new Error(`Banco Central respondeu HTTP ${r.status}`);
+  const j = (await r.json()) as any[];
+  const meses = (Array.isArray(j) ? j : [])
+    .map((x) => { const [, mm, aa] = String(x.data).split("/"); return { mes: `${aa}-${mm}`, v: Number(x.valor) }; })
+    .filter((x) => Number.isFinite(x.v) && x.mes >= ini && x.mes < mesAniv);
+  if (meses.length < 12) return null; // IPCA do último mês ainda não saiu
+  const fator = meses.reduce((f, x) => f * (1 + x.v / 100), 1);
+  const fmt = (ym: string) => `${ym.slice(5, 7)}/${ym.slice(0, 4)}`;
+  return { percentual: Math.round((fator - 1) * 10000) / 100, meses: `${fmt(meses[0].mes)} a ${fmt(meses[meses.length - 1].mes)}` };
+}
+async function reajustarModulosPorIpca(): Promise<void> {
+  const hoje = new Date().toISOString().slice(0, 10);
+  const linhas = sqlite
+    .prepare(
+      `SELECT m.*, c.valor_mensal AS valor_catalogo FROM empresa_modulos m JOIN modulos_catalogo c ON c.chave = m.modulo_chave
+       WHERE m.modulo_chave IN (${REAJUSTE_MODULOS.map(() => "?").join(",")}) AND m.assinatura_ativa_ate IS NOT NULL AND m.assinatura_ativa_ate < '2099-01-01'`
+    )
+    .all(...REAJUSTE_MODULOS) as any[];
+  for (const m of linhas) {
+    try {
+      const base = reajusteBaseDoModulo(m.empresa_id, m.modulo_chave, m.reajuste_base_em);
+      if (!base) continue;
+      if (!m.reajuste_base_em) sqlite.prepare(`UPDATE empresa_modulos SET reajuste_base_em = ? WHERE id = ?`).run(base, m.id);
+      // Próximo aniversário ainda não reajustado (aplica um por vez, em ordem, se estiver atrasado).
+      let k = 1;
+      while (addMeses(base, 12 * k) <= (m.ultimo_reajuste_em || "0000")) k++;
+      const aniversario = addMeses(base, 12 * k);
+      if (aniversario > hoje) continue;
+      const ipca = await ipcaAcumulado12Meses(aniversario);
+      if (!ipca) continue; // IPCA do último mês ainda não publicado — tenta de novo amanhã
+      const anterior = precoModuloEfetivo(m.valor_catalogo, m);
+      const novo = ipca.percentual > 0 && anterior > 0 ? Math.round(anterior * (1 + ipca.percentual / 100) * 100) / 100 : anterior;
+      sqlite.exec("BEGIN");
+      try {
+        sqlite
+          .prepare(`INSERT OR IGNORE INTO modulos_reajustes (empresa_id, modulo_chave, aniversario, ipca_meses, ipca_percentual, valor_anterior, valor_novo) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+          .run(m.empresa_id, m.modulo_chave, aniversario, ipca.meses, ipca.percentual, anterior, novo);
+        if (novo !== anterior) sqlite.prepare(`UPDATE empresa_modulos SET valor_mensal_custom = ? WHERE id = ?`).run(novo, m.id);
+        sqlite.prepare(`UPDATE empresa_modulos SET ultimo_reajuste_em = ? WHERE id = ?`).run(aniversario, m.id);
+        sqlite.exec("COMMIT");
+      } catch (e) { sqlite.exec("ROLLBACK"); throw e; }
+      console.log(`[reajuste] empresa ${m.empresa_id} módulo ${m.modulo_chave}: IPCA ${ipca.meses} = ${ipca.percentual}% → R$ ${anterior.toFixed(2)} para R$ ${novo.toFixed(2)} (aniversário ${aniversario}).`);
+    } catch (e: any) {
+      console.error(`[reajuste] empresa ${m.empresa_id} módulo ${m.modulo_chave}: ${e.message}`);
+    }
+  }
+}
+setTimeout(() => void reajustarModulosPorIpca().catch((e) => console.error("[reajuste]", e.message)), 5 * 60_000);
+setInterval(() => void reajustarModulosPorIpca().catch((e) => console.error("[reajuste]", e.message)), 6 * 3600_000);
+
 // Licença do Módulo NFS-e SEM fidelidade (pedido 2026-11-12): mês a mês, pago antes; sem pagamento o
 // módulo é suspenso no dia seguinte ao vencimento e o cliente vai pra tela de pagamento (é como o site já
 // funciona — assinatura_ativa_ate). Troca as cláusulas antigas (12 meses + renovação, aviso de 30 dias,
@@ -26447,6 +26545,24 @@ if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'licenca_nfse_
     if (novo !== c.conteudo_html) { sqlite.prepare(`UPDATE contratos SET conteudo_html = ?, ultimo_pdf_path = NULL, updated_at = datetime('now') WHERE id = ?`).run(novo, c.id); console.log(`[migração] contrato #${c.id}: licença NFS-e sem fidelidade.`); }
   }
   sqlite.exec(`INSERT INTO migracoes_unicas (chave) VALUES ('licenca_nfse_sem_fidelidade_20261112')`);
+}
+// 3.2: pagamento da implantação também pelo portal (menu Assinaturas); 4.4: reajuste automático.
+function licencaNfseTextos20261112(html: string): string {
+  return html
+    .replace(/(<li>Pela implantação, a LICENCIADA pagará(?:(?!<\/li>)[\s\S])*?com vencimento em até 5 \(cinco\) dias da assinatura deste contrato)\.<\/li>/g, "$1, ou diretamente pelo portal de acesso do site, no menu Assinaturas.</li>")
+    .replace(/<li>Os valores serão reajustados a cada 12 \(doze\) meses pela variação positiva do IPCA\/IBGE acumulada no período, ou por outro índice oficial que o substitua\.<\/li>/g, "<li>A mensalidade será reajustada automaticamente pela plataforma a cada 12 (doze) meses, contados do primeiro pagamento, pela variação positiva do IPCA/IBGE acumulada nos 12 (doze) meses anteriores, ou por outro índice oficial que o substitua; o novo valor vale a partir das cobranças seguintes, sem necessidade de aditivo.</li>")
+    .replace(/<tr><td>Reajuste<\/td><td>Anual, pelo IPCA\/IBGE<\/td><\/tr>/g, "<tr><td>Reajuste</td><td>Anual e automático, pelo IPCA/IBGE (a partir do 1º pagamento)</td></tr>");
+}
+if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'licenca_nfse_textos_20261112b'`).get()) {
+  for (const m of sqlite.prepare(`SELECT id, conteudo_html FROM contratos_modelos WHERE conteudo_html LIKE '%Módulo NFS-e%' AND conteudo_html LIKE '%LICENCIADA%'`).all() as any[]) {
+    const novo = licencaNfseTextos20261112(String(m.conteudo_html || ""));
+    if (novo !== m.conteudo_html) { sqlite.prepare(`UPDATE contratos_modelos SET conteudo_html = ?, updated_at = datetime('now') WHERE id = ?`).run(novo, m.id); console.log(`[migração] modelo #${m.id}: itens 3.2/4.4 da licença atualizados.`); }
+  }
+  for (const c of sqlite.prepare(`SELECT id, conteudo_html FROM contratos WHERE autentique_document_id IS NULL AND conteudo_html LIKE '%Módulo NFS-e%' AND conteudo_html LIKE '%LICENCIADA%'`).all() as any[]) {
+    const novo = licencaNfseTextos20261112(String(c.conteudo_html || ""));
+    if (novo !== c.conteudo_html) { sqlite.prepare(`UPDATE contratos SET conteudo_html = ?, ultimo_pdf_path = NULL, updated_at = datetime('now') WHERE id = ?`).run(novo, c.id); console.log(`[migração] contrato #${c.id}: itens 3.2/4.4 da licença atualizados.`); }
+  }
+  sqlite.exec(`INSERT INTO migracoes_unicas (chave) VALUES ('licenca_nfse_textos_20261112b')`);
 }
 // Unifica modelos de Envio de Documentos com o MESMO nome (pela chave de nomeModeloChave) — roda a cada
 // boot (barato) e é a rede de segurança caso algum caminho novo volte a criar duplicado. Fica o modelo

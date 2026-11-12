@@ -223,7 +223,7 @@ const LICENCA_NFSE_HTML = `
 <p class="clausula-titulo">CLÁUSULA TERCEIRA – DA IMPLANTAÇÃO</p>
 <ol>
 <li>A implantação compreende: liberação do acesso; configuração do cadastro fiscal da LICENCIADA (município, inscrição municipal, regime tributário e alíquotas informados por ela); instalação do certificado digital fornecido pela LICENCIADA; cadastro dos modelos de serviço; e treinamento inicial remoto dos usuários.</li>
-<li>Pela implantação, a LICENCIADA pagará à LICENCIANTE o valor único de <b>R$ {{valor_implantacao}}</b> ({{implantacao_extenso}}), com vencimento em até 5 (cinco) dias da assinatura deste contrato.</li>
+<li>Pela implantação, a LICENCIADA pagará à LICENCIANTE o valor único de <b>R$ {{valor_implantacao}}</b> ({{implantacao_extenso}}), com vencimento em até 5 (cinco) dias da assinatura deste contrato, ou diretamente pelo portal de acesso do site, no menu Assinaturas.</li>
 <li>A implantação será concluída em até 5 (cinco) dias úteis contados do pagamento e do envio, pela LICENCIADA, dos dados e do certificado digital necessários. Uma vez concluída, o valor da implantação não é reembolsável.</li>
 </ol>
 
@@ -232,7 +232,7 @@ const LICENCA_NFSE_HTML = `
 <li>Pela licença de uso, a LICENCIADA pagará à LICENCIANTE a mensalidade de <b>R$ {{valor_mensalidade}}</b> ({{mensalidade_extenso}}), com vencimento todo dia <b>{{dia_vencimento}}</b> de cada mês, a partir de {{data_inicio}}.</li>
 <li>Os pagamentos serão feitos por Pix, boleto ou cartão gerados pela plataforma ou enviados pela LICENCIANTE, que emitirá a nota fiscal correspondente.</li>
 <li>Os valores incluem os tributos incidentes sobre o licenciamento (ISS, item 1.05 da lista anexa à Lei Complementar nº 116/2003), recolhidos pela LICENCIANTE, ressalvadas as retenções na fonte que a lei atribuir à LICENCIADA.</li>
-<li>Os valores serão reajustados a cada 12 (doze) meses pela variação positiva do IPCA/IBGE acumulada no período, ou por outro índice oficial que o substitua.</li>
+<li>A mensalidade será reajustada automaticamente pela plataforma a cada 12 (doze) meses, contados do primeiro pagamento, pela variação positiva do IPCA/IBGE acumulada nos 12 (doze) meses anteriores, ou por outro índice oficial que o substitua; o novo valor vale a partir das cobranças seguintes, sem necessidade de aditivo.</li>
 <li>Não há multa, juros nem cobrança de mensalidade referente a período em que o acesso esteve suspenso por falta de pagamento.</li>
 <li>A mensalidade é paga antecipadamente e libera o uso do Módulo NFS-e pelo mês correspondente. Não havendo pagamento até o vencimento, o acesso ao Módulo NFS-e será suspenso automaticamente no dia seguinte, independentemente de aviso, e a LICENCIADA será direcionada à tela de pagamento da plataforma; confirmado o pagamento, o acesso é restabelecido automaticamente. Durante a suspensão, os dados e as notas já emitidas ficam preservados.</li>
 </ol>
@@ -339,7 +339,7 @@ const LICENCA_NFSE_HTML = `
 <tr><td>Vencimento da mensalidade</td><td>Todo dia {{dia_vencimento}}</td></tr>
 <tr><td>Início da vigência</td><td>{{data_inicio}} – prazo indeterminado, sem fidelidade (mês a mês)</td></tr>
 <tr><td>Falta de pagamento</td><td>Suspensão automática do módulo no dia seguinte ao vencimento; volta a funcionar após o pagamento</td></tr>
-<tr><td>Reajuste</td><td>Anual, pelo IPCA/IBGE</td></tr>
+<tr><td>Reajuste</td><td>Anual e automático, pelo IPCA/IBGE (a partir do 1º pagamento)</td></tr>
 <tr><td>Suporte</td><td>Remoto, dias úteis, 8h às 18h (Brasília)</td></tr>
 </tbody>
 </table>
