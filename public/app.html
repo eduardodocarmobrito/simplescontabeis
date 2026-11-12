@@ -9111,19 +9111,27 @@ async function renderBuscaXmlResumoCertificado(containerEl, empresaId, empresaNo
   if(opts.onModuloStatus) opts.onModuloStatus(moduloAtivo);
   const cfg = items.find(c=>c.empresaId===Number(empresaId));
   if(!NFE_EXTRATO) NFE_EXTRATO = await api('/nfe/extratonfe').catch(()=>null);
-  const faixaExtrato = extratoNfeFaixaEmpresaHtml(empresaId);
   const regExtrato = NFE_EXTRATO && NFE_EXTRATO.ativo && (NFE_EXTRATO.empresas||[]).find(e=>e.empresaId===Number(empresaId) && e.ativo);
+  // Com a busca pelo Extrato NFE ligada, o "Buscar agora" entra direto na faixa, ao lado do botão
+  // "Voltar pra busca própria" — mais compacto do que uma linha própria embaixo.
+  const btnBuscarAgoraHtml = podePostar
+    ? `<button class="btn primary" id="btnNfeBuscarAgora_${empresaId}" ${(moduloAtivo&&(regExtrato||(cfg&&cfg.ativo)))?'':'disabled'}>Buscar agora</button>`
+    : '';
+  const faixaExtrato = extratoNfeFaixaEmpresaHtml(empresaId, regExtrato?btnBuscarAgoraHtml:'');
   const refazer = ()=>renderBuscaXmlResumoCertificado(containerEl, empresaId, empresaNome, opts);
   if(!cfg){
     containerEl.innerHTML = faixaExtrato + (regExtrato
-      ? `${podePostar?`<div class="row" style="margin-top:6px; align-items:center;"><button class="btn primary" id="btnNfeBuscarAgora_${empresaId}" ${moduloAtivo?'':'disabled'}>Buscar agora</button><span style="font-size:12px; color:var(--ink-soft);">Puxa as novidades do Extrato NFE.</span></div><div id="nfeBuscaResultado_${empresaId}" style="margin-top:10px;"></div>`:''}`
+      ? `<div id="nfeBuscaResultado_${empresaId}" style="margin-top:10px;"></div>`
       : `<div class="empty-state">Nenhum certificado configurado ainda — envie em Empresas → ${esc(empresaNome||'')} → Configurações.</div>`);
     ligarExtratoNfeFaixaEmpresa(containerEl, empresaId, refazer);
     if(regExtrato && podePostar) ligarBuscarAgoraNfe(containerEl, empresaId, opts);
     return cfg;
   }
-  containerEl.innerHTML = faixaExtrato + `
-    <div class="slot-locked" style="background:var(--paper);${regExtrato?' opacity:.6;':''}">
+  // Com busca própria pausada (regExtrato), o quadro do certificado só repetiria dados que já não
+  // valem mais pro dia a dia — some daqui pra ganhar espaço (continua gerenciável em Empresas →
+  // Configurações).
+  containerEl.innerHTML = faixaExtrato + (regExtrato ? '' : `
+    <div class="slot-locked" style="background:var(--paper);">
       <span class="fname">${esc(cfg.titular||'Certificado configurado')}</span>
       CNPJ do certificado: ${esc(cfg.cnpjCertificado||'—')} · Válido até ${fmtValidade(cfg.validadeAte)} · UF autora: ${esc(cfg.ufAutor)} · Ambiente: ${cfg.ambiente==='homologacao'?'Homologação':'Produção'}
       <br>NF-e/NFC-e — última busca: ${cfg.ultimaBuscaEm?fmtDateHora(cfg.ultimaBuscaEm):'nunca'}${cfg.ultimoErro?` — <span style="color:var(--debit);">${esc(cfg.ultimoErro)}</span>`:''}
@@ -9133,11 +9141,10 @@ async function renderBuscaXmlResumoCertificado(containerEl, empresaId, empresaNo
       ${!cfg.ativo?`<br><span class="tag muted" style="margin-top:6px;">Busca desativada — ative em Empresas → Configurações.</span>`:''}
     </div>
     <div class="row" style="margin-top:6px; align-items:center;">
-      ${podePostar?`<button class="btn primary" id="btnNfeBuscarAgora_${empresaId}" ${(moduloAtivo&&(cfg.ativo||regExtrato))?'':'disabled'}>Buscar agora</button>`:''}
-      <span style="font-size:12px; color:var(--ink-soft);">${regExtrato?'Puxa as novidades do Extrato NFE (busca própria pausada).':'Certificado gerenciado em Empresas → Configurações.'}</span>
+      ${btnBuscarAgoraHtml}
+      <span style="font-size:12px; color:var(--ink-soft);">Certificado gerenciado em Empresas → Configurações.</span>
     </div>
-    <div id="nfeBuscaResultado_${empresaId}" style="margin-top:10px;"></div>
-  `;
+  `) + `<div id="nfeBuscaResultado_${empresaId}" style="margin-top:10px;"></div>`;
   ligarExtratoNfeFaixaEmpresa(containerEl, empresaId, refazer);
   if(podePostar) ligarBuscarAgoraNfe(containerEl, empresaId, opts);
   return cfg;
@@ -10395,7 +10402,7 @@ function renderExtratoNfeCard(el, recarregar){
   });
 }
 // Faixa no detalhe da empresa: mostra/alterna se a busca dela é pelo Extrato NFE ou própria.
-function extratoNfeFaixaEmpresaHtml(empresaId){
+function extratoNfeFaixaEmpresaHtml(empresaId, extraHtml){
   const x = NFE_EXTRATO;
   if(!x || !x.configurada) return '';
   const reg = (x.empresas||[]).find(e=>e.empresaId===Number(empresaId));
@@ -10406,7 +10413,10 @@ function extratoNfeFaixaEmpresaHtml(empresaId){
       <div style="font-size:13px;">${ativa
         ? `🔗 <b>Busca de XML sendo feita pelo Extrato NFE</b> — busca própria pausada.${reg.notasImportadas?` <span style="color:var(--ink-soft);">${reg.notasImportadas} nota(s) trazida(s) de lá.</span>`:''}${reg.presenteNoExtrato?'':' <span style="color:#b45309;">(empresa não encontrada no Extrato NFE)</span>'}`
         : `Busca de XML <b>própria</b> (Sefaz/ADN com o certificado).${reg&&reg.presenteNoExtrato?' <span style="color:var(--ink-soft);">Esta empresa está cadastrada no Extrato NFE.</span>':''}`}</div>
-      ${podeEditar?`<button class="btn small" id="extratoToggleEmp" data-ativo="${ativa?1:0}">${ativa?'Voltar pra busca própria':'Buscar pelo Extrato NFE'}</button>`:''}
+      <div class="row" style="align-items:center; gap:8px; flex-wrap:wrap;">
+        ${ativa&&extraHtml?extraHtml:''}
+        ${podeEditar?`<button class="btn small" id="extratoToggleEmp" data-ativo="${ativa?1:0}">${ativa?'Voltar pra busca própria':'Buscar pelo Extrato NFE'}</button>`:''}
+      </div>
     </div>
   </div>`;
 }
