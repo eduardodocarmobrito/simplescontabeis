@@ -9295,6 +9295,8 @@ const RT_COR_REGIME = { b2b:'#2a78d6', b2c:'#eb6834', regular:'#2a78d6', sn_regu
 let RT_SEL_FORN = new Set();
 let RT_NCM_ST = new Set();
 let RT_NCM_BUSCA = '';
+// Filtro de conformidade do ranking de fornecedores (mesmo padrão de chips do mapa de NCM acima).
+let RT_FORN_ST = new Set();
 // Baixa um PDF/arquivo da API mostrando "gerando…" no botão e o erro do servidor, se houver.
 async function rtBaixar(url, nomeArquivo, btn, textoGerando){
   const orig = btn ? btn.textContent : '';
@@ -10130,6 +10132,7 @@ function rtPainelHtml(d, urlPdf){
 
   <div class="card rt-card">
     <div class="rt-card-t">${S?'Destinatários (clientes)':'Ranking de fornecedores'}</div>
+    <div class="rt-ncm-filtros" id="rtFornChips"></div>
     <div class="row" style="gap:10px; flex-wrap:wrap; align-items:center; margin:10px 0;">
       <div class="field" style="max-width:360px; flex:1; margin-bottom:0;"><input type="search" id="rtBuscaForn" placeholder="${S?'Pesquisar cliente ou CNPJ/CPF…':'Pesquisar fornecedor ou CNPJ…'}" autocomplete="off" value="${esc(RT_BUSCA_FORN)}"></div>
       <button class="btn primary" id="rtRelForn" ${S?'style="display:none;"':''} disabled title="Marque um ou mais fornecedores na tabela">📨 Relatório para fornecedor(es)</button>
@@ -10211,7 +10214,7 @@ function rtTopFornHtml(forn){
 }
 function rtFornTabelaHtml(forn){
   const t = normalizaTxt(RT_BUSCA_FORN), dig = RT_BUSCA_FORN.replace(/\D/g,'');
-  const lista = forn.filter(f=>!t || normalizaTxt(f.nome).includes(t) || (dig && f.cnpj.includes(dig)));
+  const lista = forn.filter(f=>(!RT_FORN_ST.size || RT_FORN_ST.has(f.status)) && (!t || normalizaTxt(f.nome).includes(t) || (dig && f.cnpj.includes(dig))));
   if(!lista.length) return '<div class="empty-state">Nenhum fornecedor encontrado.</div>';
   const todosMarcados = lista.length && lista.every(f=>RT_SEL_FORN.has(f.cnpj));
   const S = RT_DIRECAO==='saida';
@@ -10254,7 +10257,15 @@ function rtAchadoHtml(a, comFornecedor){
   </div>`;
 }
 function rtLigarPainel(painel, d, urlPdf){
-  const renderForn = ()=>{ document.getElementById('rtFornTabela').innerHTML = rtFornTabelaHtml(d.fornecedores); ligarCliquesForn(); };
+  const renderForn = ()=>{
+    const cont = {}; d.fornecedores.forEach(f=>{ cont[f.status] = (cont[f.status]||0)+1; });
+    document.getElementById('rtFornChips').innerHTML = `<button class="rt-fchip ${RT_FORN_ST.size?'':'on'}" data-st="">Todas <b>${d.fornecedores.length}</b></button>` +
+      Object.entries(RT_STATUS).filter(([k])=>cont[k]).map(([k,v])=>`<button class="rt-fchip ${RT_FORN_ST.has(k)?'on':''}" data-st="${k}" style="--c:${v.cor};"><span aria-hidden="true">${v.ic}</span> ${esc(v.label)} <b>${cont[k]}</b></button>`).join('');
+    document.querySelectorAll('#rtFornChips .rt-fchip').forEach(b=>b.addEventListener('click', ()=>{
+      const st = b.dataset.st; if(!st) RT_FORN_ST.clear(); else RT_FORN_ST.has(st) ? RT_FORN_ST.delete(st) : RT_FORN_ST.add(st); renderForn();
+    }));
+    document.getElementById('rtFornTabela').innerHTML = rtFornTabelaHtml(d.fornecedores); ligarCliquesForn();
+  };
   const renderAch = ()=>{
     const lista = rtAchadosFiltrados(d);
     document.getElementById('rtAchadosLista').innerHTML = lista.length ? lista.slice(0,300).map(a=>rtAchadoHtml(a, true)).join('') + (lista.length>300?`<div class="empty-state">+ ${rtNum(lista.length-300)} achado(s) — refine o filtro ou baixe o CSV.</div>`:'') : '<div class="empty-state">Nenhum achado com esses filtros.</div>';
