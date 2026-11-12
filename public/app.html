@@ -2258,9 +2258,12 @@ async function boot(paginaInicial){
     // Igual ao Colaborador abaixo: cai na primeira página do menu que esse cliente realmente
     // enxerga, caso a página padrão (NFS-e) tenha sido restringida pra ele. `paginaInicial` (opcional)
     // força uma página específica — ex.: pós-cadastro manda direto pra Assinatura — só se o cliente
-    // realmente enxerga ela, senão cai no padrão de sempre.
+    // realmente enxerga ela, senão cai no padrão de sempre. Sem nenhum módulo com acesso real (ex.:
+    // contrato recém-assinado, ainda sem pagar), também força Assinatura — é o que falta pra liberar.
+    const semModuloAtivo = !Array.isArray(STATE.modulosAtivos) || !STATE.modulosAtivos.length;
+    const pedida = paginaInicial || (semModuloAtivo ? 'minha-assinatura' : null);
     const primeiraDisponivel = NAV.find(item=>podeVerModulo(item));
-    const forcada = paginaInicial && NAV.find(item=>item.id===paginaInicial && podeVerModulo(item));
+    const forcada = pedida && NAV.find(item=>item.id===pedida && podeVerModulo(item));
     STATE.page = forcada ? forcada.id : (primeiraDisponivel ? primeiraDisponivel.id : 'minha-nfse');
   }
   else if(STATE.user.perfil==='SuperAdmin') STATE.page = 'escritorios';
@@ -14746,18 +14749,23 @@ function assinaturaModuloCardHtml(item, semTesteGratis){
   // Cliente direto (venda avulsa) não tem teste grátis — vai direto pro pagamento.
   const mostraBotaoTeste = item.status==='nao_contratado' && !semTesteGratis;
   const rotuloCheckbox = item.status==='ativo' ? 'Incluir no pagamento (renovar antecipado)' : 'Incluir no pagamento';
+  // Implantação: cobrança única (ver valorImplantacaoDevida no backend) — enquanto não paga, soma no
+  // mesmo checkbox da mensalidade (um clique só, uma cobrança combinada só).
+  const implantacaoDevida = Number(item.valorImplantacaoDevida) > 0;
+  const valorCheckbox = Number(item.valorMensal) + (implantacaoDevida ? Number(item.valorImplantacaoDevida) : 0);
   return `
     <div class="card" style="margin-bottom:10px;">
       <div class="row" style="justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
         <div>
           <div style="font-weight:600;">${esc(item.nome)}</div>
           <div style="font-size:12.5px; color:var(--ink-soft);">${item.quantidade!=null?`${item.quantidade} × ${fmtMoney(item.valorUnitario)} = `:''}${fmtMoney(item.valorMensal)}/mês</div>
+          ${implantacaoDevida?`<div style="font-size:12.5px; color:var(--ink-soft);">+ ${fmtMoney(item.valorImplantacaoDevida)} de implantação (cobrança única)</div>`:''}
         </div>
         <div style="display:flex; align-items:center; gap:14px;">
           <span class="tag ${badgeClass}">${esc(badgeText)}</span>
           ${item.status==='isento' ? '' : `
             ${mostraBotaoTeste?`<button class="btn small" data-acao="testar" data-chave="${item.chave}">Iniciar teste grátis</button>`:''}
-            <label class="checkbox-row" style="margin:0;"><input type="checkbox" class="assinaturaCheck" data-chave="${item.chave}" data-valor="${item.valorMensal}" data-nome="${esc(item.nome)}"> ${rotuloCheckbox}</label>
+            <label class="checkbox-row" style="margin:0;"><input type="checkbox" class="assinaturaCheck" data-chave="${item.chave}" data-valor="${valorCheckbox}" data-nome="${esc(item.nome)}"> ${rotuloCheckbox}</label>
           `}
         </div>
       </div>
@@ -15613,6 +15621,26 @@ function campoFieldHtml(f, dados, comAjuda, catalogoServicos){
   const largo = f.chave==='cliente_nome' ? ' style="grid-column:1 / -1;"' : '';
   const valor = valorFormatadoCampo(f.chave, dados[f.chave]);
   const ph = campoEhMoeda(f.chave) ? ' placeholder="0,00"' : '';
+  // Implantação do módulo isentada (checkbox abaixo) — vale tanto pro campo de preço quanto pro par
+  // "por extenso", achados pela convenção de autoPreencherDe (estável mesmo quando o modelo muda o
+  // nome do campo), não pelo nome do campo em si.
+  const isentoImplantacao = dados['__isento_moduloNfseImplantacao'] === '1';
+  if(f.autoPreencherDe === 'moduloNfseImplantacao'){
+    // Isento: o valor guardado fica "0,00 (isento)" — com o "R$" fixo na frente (igual todo campo de
+    // dinheiro), o texto do contrato sai "R$ 0,00 (isento)", sem ficar com fraseado estranho.
+    return `<div class="field"${largo}>
+      <label>${esc(f.rotulo)}${ajuda}</label>
+      <div style="position:relative;">
+        <span style="position:absolute; left:12px; top:50%; transform:translateY(-50%); color:var(--ink-soft); pointer-events:none; font-size:14px;">R$</span>
+        <input class="drwCampo" data-chave="${esc(f.chave)}" data-auto="${esc(f.autoPreencherDe)}" value="${isentoImplantacao?'0,00 (isento)':esc(valor)}"${isentoImplantacao?' readonly':ph+' inputmode="numeric"'} style="padding-left:38px;">
+      </div>
+      <label class="checkbox-row" style="margin-top:6px;"><input type="checkbox" class="cmpIsentoImplantacao" ${isentoImplantacao?'checked':''}> Isentar implantação (não cobrar)</label>
+      <input type="hidden" class="drwCampo" data-chave="__isento_moduloNfseImplantacao" value="${isentoImplantacao?'1':''}">
+    </div>`;
+  }
+  if(f.autoPreencherDe === 'moduloNfseImplantacaoExtenso' && isentoImplantacao){
+    return `<div class="field"${largo}><label>${esc(f.rotulo)}${ajuda}</label><input class="drwCampo" data-chave="${esc(f.chave)}" data-auto="${esc(f.autoPreencherDe)}" value="Isento de cobrança" readonly title="Calculado sozinho a partir do valor — não dá pra editar aqui"></div>`;
+  }
   if(campoEhMoeda(f.chave)){
     // "R$" fixo dentro do campo (só visual): o valor guardado continua "0.000,00", porque o texto do
     // contrato já escreve "R$ {{campo}}".
@@ -15968,7 +15996,7 @@ async function abrirContratoDrawer(id){
         fmt(); // formata/trunca o valor já carregado (ex.: CPF com dígito a mais vira CPF válido formatado)
       } else if(campoEhCep(inp.dataset.chave)){
         ligarMascaraCep(inp);
-      } else if(campoEhMoeda(inp.dataset.chave)){
+      } else if(campoEhMoeda(inp.dataset.chave) && inp.dataset.auto !== 'moduloNfseImplantacao'){
         ligarMascaraMoeda(inp);
         // "Por extenso" acompanha o valor ao sair do campo: acha o par pelo autoPreencherDe
         // (moduloNfseMensal → moduloNfseMensalExtenso) ou pelo nome (<campo>_extenso).
@@ -15980,6 +16008,31 @@ async function abrirContratoDrawer(id){
         });
       }
     });
+    // Campo de preço da implantação tem tratamento à parte (não entra no loop genérico acima) por
+    // causa do checkbox "Isentar implantação", que precisa recriar o próprio campo (e o par "por
+    // extenso") sempre que o estado muda — ver campoFieldHtml.
+    (function ligarCampoImplantacaoIsenta(){
+      const chk = document.querySelector('.cmpIsentoImplantacao');
+      if(!chk) return;
+      const precoField = campos.find(f=>f.autoPreencherDe==='moduloNfseImplantacao');
+      const extField = campos.find(f=>f.autoPreencherDe==='moduloNfseImplantacaoExtenso');
+      const precoInput = precoField && document.querySelector('.drwCampo[data-chave="'+precoField.chave+'"]');
+      if(precoInput && !precoInput.readOnly){
+        ligarMascaraMoeda(precoInput);
+        const extInput = extField && document.querySelector('.drwCampo[data-chave="'+extField.chave+'"]');
+        if(extInput) precoInput.addEventListener('change', async ()=>{
+          if(!precoInput.value){ extInput.value=''; return; }
+          try{ const r = await api('/contratos/valor-extenso', { method:'POST', body:{ valor: precoInput.value } }); extInput.value = r.extenso; }
+          catch(e){ toast('Não consegui calcular o valor por extenso: '+e.message,'err'); }
+        });
+      }
+      chk.addEventListener('change', ()=>{
+        dados['__isento_moduloNfseImplantacao'] = chk.checked ? '1' : '';
+        if(precoField){ const el = document.querySelector('.drwCampo[data-chave="'+precoField.chave+'"]').closest('.field'); el.outerHTML = campoFieldHtml(precoField, dados, true, catalogoServicos); }
+        if(extField){ const el = document.querySelector('.drwCampo[data-chave="'+extField.chave+'"]').closest('.field'); el.outerHTML = campoFieldHtml(extField, dados, true, catalogoServicos); }
+        ligarCampoImplantacaoIsenta();
+      });
+    })();
     // Multiescolha de serviços: inicializa o componente (chips + dropdown + valor por serviço).
     document.querySelectorAll('.msel').forEach(wrap=>{
       const hidden = document.querySelector('.drwCampo[data-chave="'+wrap.dataset.grupo+'"]');
@@ -16451,7 +16504,8 @@ function cmRefrescarAutoCombos(lista){
     }
   });
 }
-function contratoModeloDrawer(m){
+async function contratoModeloDrawer(m){
+  const modulosCatalogo = await api('/contratos/modulos-catalogo').then(r=>r.items||[]).catch(()=>[]);
   openDrawer(`
     <div class="drawer-header">
       <h3>${m?'Editar modelo':'Novo modelo'}</h3>
@@ -16460,6 +16514,11 @@ function contratoModeloDrawer(m){
     <div class="drawer-body">
       <div class="field"><label>Nome do modelo</label><input id="cmNome" value="${m?esc(m.nome):''}"></div>
       ${m?`<label class="checkbox-row"><input type="checkbox" id="cmAtivo" ${m.ativo?'checked':''}> Ativo (disponível pra criar contratos novos)</label>`:''}
+      <div class="field">
+        <label>Este modelo vende o módulo</label>
+        ${comboSelectHtml('cmAtivaModulo', '— Nenhum (contrato comum) —')}
+        <div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">Quando o contrato ficar 100% assinado, o módulo escolhido aqui é ativado sozinho pra empresa (ela entra na tela de Assinatura pra pagar implantação + mensalidade) e um e-mail/WhatsApp de boas-vindas é enviado. Deixe em branco pra um contrato comum, que não ativa módulo nenhum.</div>
+      </div>
       ${m?'':`<div class="card" style="background:var(--paper); margin:14px 0;">
         <div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">Começar de um modelo pronto — preenche nome, campos e o texto completo (o timbrado do escritório entra sozinho no PDF). Depois é só revisar e clicar em Salvar modelo.</div>
         <div class="row" style="align-items:center;">
@@ -16507,6 +16566,16 @@ function contratoModeloDrawer(m){
   const corpo = document.getElementById('cmCorpo');
   setupRte(toolbar, corpo);
   document.getElementById('cmFechar').addEventListener('click', closeDrawer);
+  let cmAtivaModuloEscolhido = m?.ativaModuloChave || '';
+  setupComboSelect('cmAtivaModulo', modulosCatalogo.map(x=>({ id:x.chave, label:x.nome })), id=>{ cmAtivaModuloEscolhido = id || ''; });
+  if(cmAtivaModuloEscolhido){
+    const item = modulosCatalogo.find(x=>x.chave===cmAtivaModuloEscolhido);
+    if(item){
+      const comboEl = document.getElementById('cmAtivaModulo');
+      comboEl.querySelector('.combo-input').value = item.nome;
+      comboEl.querySelector('.combo-value').value = item.chave;
+    }
+  }
   if(!m){
     const selInput = document.querySelector('#cmProntoSel .combo-input');
     let prontos = [];
@@ -16550,7 +16619,7 @@ function contratoModeloDrawer(m){
       rotulo: row.querySelector('.cmRotulo').value.trim(),
       autoPreencherDe: row.dataset.autoValor || null,
     })).filter(c=>c.chave && c.rotulo);
-    const body = { nome, conteudoHtml: corpo.innerHTML, campos };
+    const body = { nome, conteudoHtml: corpo.innerHTML, campos, ativaModuloChave: cmAtivaModuloEscolhido || null };
     if(m) body.ativo = document.getElementById('cmAtivo').checked;
     try{
       if(m) await api('/contratos/modelos/'+m.id, { method:'PUT', body });

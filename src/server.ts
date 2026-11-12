@@ -2177,6 +2177,31 @@ function precoImplantacaoEfetivo(valorCatalogo: any, contratado: any): number {
   const custom = contratado?.valor_implantacao_custom;
   return custom != null ? Number(custom) : Number(valorCatalogo) || 0;
 }
+// Cobrança de implantação (pedido 2026-11-12): item único, nunca renova — ao contrário da
+// mensalidade (assinatura_ativa_ate, renovada a cada pagamento), implantação é "paga uma vez e
+// pronto". `implantacao_paga_em` NULL = ainda não cobrada/paga.
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(empresa_modulos)`).all() as any[];
+  if (!cols.some((c) => c.name === "implantacao_paga_em")) {
+    sqlite.exec(`ALTER TABLE empresa_modulos ADD COLUMN implantacao_paga_em TEXT`);
+  }
+}
+// Distingue, dentro de uma cobrança combinada, qual item é mensalidade (renova assinatura_ativa_ate)
+// e qual é implantação (só marca implantacao_paga_em, nunca renova nada) — ver webhook do Asaas.
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(financeiro_licenca_cobranca_itens)`).all() as any[];
+  if (!cols.some((c) => c.name === "tipo")) {
+    sqlite.exec(`ALTER TABLE financeiro_licenca_cobranca_itens ADD COLUMN tipo TEXT NOT NULL DEFAULT 'mensal'`);
+  }
+}
+// Marca, no MODELO de contrato, qual módulo do catálogo ele vende (NULL = contrato comum, não mexe
+// em módulo nenhum) — usado por processarContratoModuloVendido ao detectar assinatura completa.
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(contratos_modelos)`).all() as any[];
+  if (!cols.some((c) => c.name === "ativa_modulo_chave")) {
+    sqlite.exec(`ALTER TABLE contratos_modelos ADD COLUMN ativa_modulo_chave TEXT REFERENCES modulos_catalogo(chave)`);
+  }
+}
 // Preço que vale pra ESTE cliente: o personalizado (se o SuperAdmin definiu) ou o padrão do catálogo.
 function precoModuloEfetivo(valorCatalogo: any, contratado: any): number {
   const custom = contratado?.valor_mensal_custom;
@@ -22624,6 +22649,10 @@ function nfseModulosDaEmpresa(empresaId: number) {
       trialFim: contratado?.trial_fim || null,
       trialProrrogado: !!contratado?.trial_prorrogado,
       assinaturaAtivaAte: contratado?.assinatura_ativa_ate || null,
+      // Implantação: cobrança única, nunca renova — só entra como "devida" enquanto não tiver sido
+      // paga ainda (implantacao_paga_em) e tiver valor de verdade (isenta = 0 nunca aparece pra cobrar).
+      valorImplantacaoDevida: contratado?.implantacao_paga_em ? 0 : precoImplantacaoEfetivo(m.valor_implantacao, contratado),
+      implantacaoPaga: !!contratado?.implantacao_paga_em,
     };
   });
 }
@@ -22655,25 +22684,32 @@ app.post("/api/financeiro/minha-empresa/modulos/pagar", requireCliente, async (r
   const chaves: string[] = Array.isArray(req.body?.modulos) ? req.body.modulos : [];
   if (!chaves.length) return res.status(400).json({ error: "Selecione ao menos um módulo." });
   const catalogo = sqlite
-    .prepare(`SELECT chave, nome, valor_mensal FROM modulos_catalogo WHERE ativo = 1 AND chave IN (${chaves.map(() => "?").join(",")})`)
+    .prepare(`SELECT chave, nome, valor_mensal, valor_implantacao FROM modulos_catalogo WHERE ativo = 1 AND chave IN (${chaves.map(() => "?").join(",")})`)
     .all(...chaves) as any[];
   if (!catalogo.length) return res.status(400).json({ error: "Nenhum dos módulos selecionados está disponível." });
-  // Preço personalizado desta empresa (se houver) substitui o padrão do catálogo, item a item.
+  // Preço personalizado desta empresa (se houver) substitui o padrão do catálogo, item a item. A
+  // implantação é uma cobrança única — só entra se ainda não foi paga (implantacao_paga_em) e tiver
+  // valor de verdade (isenta = 0 nunca vira cobrança, o Asaas rejeita valor zerado).
+  const itens: { chave: string; nome: string; valor: number; tipo: "mensal" | "implantacao" }[] = [];
   for (const m of catalogo) {
-    const contratado = sqlite.prepare(`SELECT valor_mensal_custom FROM empresa_modulos WHERE empresa_id = ? AND modulo_chave = ?`).get(empresaId, m.chave) as any;
-    m.valor_mensal = precoModuloEfetivo(m.valor_mensal, contratado);
+    const contratado = sqlite.prepare(`SELECT valor_mensal_custom, valor_implantacao_custom, implantacao_paga_em FROM empresa_modulos WHERE empresa_id = ? AND modulo_chave = ?`).get(empresaId, m.chave) as any;
+    itens.push({ chave: m.chave, nome: m.nome, valor: precoModuloEfetivo(m.valor_mensal, contratado), tipo: "mensal" });
+    if (!contratado?.implantacao_paga_em) {
+      const valorImplantacao = precoImplantacaoEfetivo(m.valor_implantacao, contratado);
+      if (valorImplantacao > 0) itens.push({ chave: m.chave, nome: `${m.nome} — implantação`, valor: valorImplantacao, tipo: "implantacao" });
+    }
   }
-  const valorTotal = catalogo.reduce((soma, m) => soma + Number(m.valor_mensal), 0);
+  const valorTotal = itens.reduce((soma, i) => soma + Number(i.valor), 0);
   if (!valorTotal) return res.status(400).json({ error: "O valor desses módulos ainda não foi configurado — entre em contato com o suporte." });
   const empresa = sqlite.prepare(`SELECT nome, cnpj, email, telefone, asaas_customer_id FROM empresas WHERE id = ?`).get(empresaId) as any;
-  // Reaproveita uma cobrança pendente já gerada com exatamente o mesmo conjunto de módulos, pra não
-  // duplicar cobrança no Asaas se o cliente clicar "Pagar" mais de uma vez.
+  // Reaproveita uma cobrança pendente já gerada com exatamente o mesmo conjunto de itens (módulo +
+  // tipo), pra não duplicar cobrança no Asaas se o cliente clicar "Pagar" mais de uma vez.
+  const chaveItens = (lista: { chave: string; tipo: string }[]) => [...lista].map((i) => `${i.chave}:${i.tipo}`).sort().join(",");
   const pendentes = sqlite.prepare(`SELECT * FROM financeiro_licenca_cobrancas WHERE empresa_id = ? AND status = 'pendente' ORDER BY id DESC`).all(empresaId) as any[];
   let cobranca = pendentes.find((c) => {
-    const itens = sqlite.prepare(`SELECT modulo_chave FROM financeiro_licenca_cobranca_itens WHERE cobranca_id = ?`).all(c.id) as any[];
-    const chavesCobranca = itens.map((i) => i.modulo_chave).sort().join(",");
+    const itensCobranca = sqlite.prepare(`SELECT modulo_chave, tipo FROM financeiro_licenca_cobranca_itens WHERE cobranca_id = ?`).all(c.id) as any[];
     // Se o preço mudou (ex.: SuperAdmin ajustou o valor desta empresa), não reaproveita a cobrança antiga.
-    return chavesCobranca === [...chaves].sort().join(",") && Math.abs(Number(c.valor_total) - valorTotal) < 0.005;
+    return chaveItens(itensCobranca.map((i) => ({ chave: i.modulo_chave, tipo: i.tipo }))) === chaveItens(itens) && Math.abs(Number(c.valor_total) - valorTotal) < 0.005;
   });
   try {
     let customerId = empresa.asaas_customer_id;
@@ -22689,8 +22725,8 @@ app.post("/api/financeiro/minha-empresa/modulos/pagar", requireCliente, async (r
         .prepare(`INSERT INTO financeiro_licenca_cobrancas (empresa_id, valor_total, vencimento, status, asaas_payment_id, invoice_url) VALUES (?, ?, ?, 'pendente', ?, ?)`)
         .run(empresaId, valorTotal, vencimento, gerada.id, gerada.invoiceUrl);
       const cobrancaId = Number(info.lastInsertRowid);
-      for (const m of catalogo) {
-        sqlite.prepare(`INSERT INTO financeiro_licenca_cobranca_itens (cobranca_id, modulo_chave, valor) VALUES (?, ?, ?)`).run(cobrancaId, m.chave, m.valor_mensal);
+      for (const i of itens) {
+        sqlite.prepare(`INSERT INTO financeiro_licenca_cobranca_itens (cobranca_id, modulo_chave, valor, tipo) VALUES (?, ?, ?, ?)`).run(cobrancaId, i.chave, i.valor, i.tipo);
       }
       cobranca = sqlite.prepare(`SELECT * FROM financeiro_licenca_cobrancas WHERE id = ?`).get(cobrancaId);
     }
@@ -23081,8 +23117,17 @@ app.post("/api/asaas/webhook", (req, res) => {
         sqlite.prepare(`UPDATE ${tabelaCobranca} SET status = ? WHERE id = ?`).run(novoStatus, cobranca.id);
         return;
       }
-      const itens = sqlite.prepare(`SELECT modulo_chave FROM ${tabelaItens} WHERE cobranca_id = ?`).all(cobranca.id) as any[];
+      const itens = sqlite.prepare(`SELECT modulo_chave, tipo FROM ${tabelaItens} WHERE cobranca_id = ?`).all(cobranca.id) as any[];
       for (const item of itens) {
+        // Implantação é cobrança única — nunca estende assinatura_ativa_ate, só marca
+        // implantacao_paga_em (coluna só existe em empresa_modulos; cobrança de escritório nunca tem
+        // item 'implantacao', então este ramo nunca roda pra escritorio_modulos).
+        if (item.tipo === "implantacao" && tabelaModulos === "empresa_modulos") {
+          sqlite
+            .prepare(`UPDATE empresa_modulos SET implantacao_paga_em = COALESCE(implantacao_paga_em, datetime('now')) WHERE empresa_id = ? AND modulo_chave = ?`)
+            .run(cobranca[colDono], item.modulo_chave);
+          continue;
+        }
         const atual = sqlite.prepare(`SELECT assinatura_ativa_ate FROM ${tabelaModulos} WHERE ${colDono} = ? AND modulo_chave = ?`).get(cobranca[colDono], item.modulo_chave) as any;
         if (atual) {
           const base = atual.assinatura_ativa_ate && atual.assinatura_ativa_ate > agora ? atual.assinatura_ativa_ate : agora;
@@ -24222,9 +24267,16 @@ app.get("/api/contratos/modelos-prontos", blockCliente, requirePermissao("contra
 });
 app.get("/api/contratos/modelos", blockCliente, requirePermissao("contratos", "visualizar"), (req, res) => {
   const rows = sqlite
-    .prepare(`SELECT id, nome, conteudo_html as conteudoHtml, campos, ativo, criado_em as criadoEm FROM contratos_modelos WHERE escritorio_id = ? ORDER BY nome`)
+    .prepare(`SELECT id, nome, conteudo_html as conteudoHtml, campos, ativo, ativa_modulo_chave as ativaModuloChave, criado_em as criadoEm FROM contratos_modelos WHERE escritorio_id = ? ORDER BY nome`)
     .all((req as any).user.escritorioId) as any[];
   res.json({ items: rows.map((r) => ({ ...r, campos: JSON.parse(r.campos || "[]"), ativo: !!r.ativo })) });
+});
+// Catálogo de módulos vendáveis, só chave+nome — pra popular o combo "Este modelo vende o módulo" em
+// Contratos › Modelos. Leitura simples, sem dado sensível, liberada pra quem já vê Contratos (não
+// precisa de SuperAdmin como o catálogo completo em /api/super/modulos-clientes).
+app.get("/api/contratos/modulos-catalogo", blockCliente, requirePermissao("contratos", "visualizar"), (_req, res) => {
+  const rows = sqlite.prepare(`SELECT chave, nome FROM modulos_catalogo WHERE ativo = 1 ORDER BY nome`).all();
+  res.json({ items: rows });
 });
 app.post("/api/contratos/modelos/importar-docx", blockCliente, requirePermissao("contratos", "postar"), upload.single("arquivo"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "Envie um arquivo .docx." });
@@ -24237,25 +24289,26 @@ app.post("/api/contratos/modelos/importar-docx", blockCliente, requirePermissao(
   }
 });
 app.post("/api/contratos/modelos", blockCliente, requirePermissao("contratos", "postar"), (req, res) => {
-  const { nome, conteudoHtml, campos } = req.body || {};
+  const { nome, conteudoHtml, campos, ativaModuloChave } = req.body || {};
   if (!nome || !conteudoHtml) return res.status(400).json({ error: "Informe o nome e o conteúdo do modelo." });
   const info = sqlite
-    .prepare(`INSERT INTO contratos_modelos (nome, conteudo_html, campos, escritorio_id) VALUES (?, ?, ?, ?)`)
-    .run(String(nome).trim(), String(conteudoHtml), JSON.stringify(Array.isArray(campos) ? campos : []), (req as any).user.escritorioId);
+    .prepare(`INSERT INTO contratos_modelos (nome, conteudo_html, campos, ativa_modulo_chave, escritorio_id) VALUES (?, ?, ?, ?, ?)`)
+    .run(String(nome).trim(), String(conteudoHtml), JSON.stringify(Array.isArray(campos) ? campos : []), ativaModuloChave || null, (req as any).user.escritorioId);
   res.json({ id: Number(info.lastInsertRowid) });
 });
 app.put("/api/contratos/modelos/:id", blockCliente, requirePermissao("contratos", "editar"), (req, res) => {
   const id = Number(req.params.id);
   const existente = sqlite.prepare(`SELECT * FROM contratos_modelos WHERE id = ? AND escritorio_id = ?`).get(id, (req as any).user.escritorioId) as any;
   if (!existente) return res.status(404).json({ error: "Modelo não encontrado." });
-  const { nome, conteudoHtml, campos, ativo } = req.body || {};
+  const { nome, conteudoHtml, campos, ativo, ativaModuloChave } = req.body || {};
   sqlite
-    .prepare(`UPDATE contratos_modelos SET nome=?, conteudo_html=?, campos=?, ativo=?, updated_at=datetime('now') WHERE id=?`)
+    .prepare(`UPDATE contratos_modelos SET nome=?, conteudo_html=?, campos=?, ativo=?, ativa_modulo_chave=?, updated_at=datetime('now') WHERE id=?`)
     .run(
       nome !== undefined ? String(nome).trim() : existente.nome,
       conteudoHtml !== undefined ? String(conteudoHtml) : existente.conteudo_html,
       campos !== undefined ? JSON.stringify(campos) : existente.campos,
       ativo !== undefined ? (ativo ? 1 : 0) : existente.ativo,
+      ativaModuloChave !== undefined ? (ativaModuloChave || null) : existente.ativa_modulo_chave,
       id
     );
   res.json({ ok: true });
@@ -24720,10 +24773,111 @@ async function atualizarStatusAssinaturaContrato(row: any, token: string) {
     const destino = contratos.caminhoPdfAssinadoContrato(row.id);
     fs.writeFileSync(destino, pdfAssinado);
     sqlite.prepare(`UPDATE contratos SET status_assinatura = 'assinado', pdf_assinado_path = ? WHERE id = ?`).run(destino, row.id);
+    // Contrato de venda de módulo (ativa_modulo_chave): ativa acesso (sem pular cobrança), acha/cria
+    // o usuário do cliente e avisa por e-mail+WhatsApp — roda em segundo plano, nunca atrasa nem
+    // derruba a confirmação de assinatura em si.
+    void processarContratoModuloVendido(row.id).catch((e: any) => console.error(`[contrato-modulo] contrato #${row.id}:`, e.message));
   } else if (status.algumRejeitou) {
     sqlite.prepare(`UPDATE contratos SET status_assinatura = 'rejeitado' WHERE id = ?`).run(row.id);
   }
   return status;
+}
+const SITE_URL_PADRAO = "https://simplescontabeis.com.br";
+const SENHA_PADRAO_NOVO_CLIENTE = "@Simples123";
+// Dispara quando um contrato de venda de módulo (contratos_modelos.ativa_modulo_chave) termina de ser
+// assinado por todos: ativa o módulo pra empresa SEM pular a cobrança (vai pra "teste vencido", a tela
+// de Assinatura é quem cobra implantação + mensalidade de verdade), acha ou cria o usuário Cliente pelo
+// e-mail preenchido no contrato (reaproveita se a empresa já tiver um usuário com esse e-mail — nunca
+// mexe na senha de quem já existe), e avisa por e-mail + WhatsApp que o módulo já está disponível.
+// Best-effort: cada canal tem seu próprio try/catch, uma falha nunca desfaz o que já foi feito.
+async function processarContratoModuloVendido(contratoId: number) {
+  const contrato = sqlite
+    .prepare(`SELECT c.*, e.escritorio_id as escritorioId FROM contratos c JOIN empresas e ON e.id = c.empresa_id WHERE c.id = ?`)
+    .get(contratoId) as any;
+  if (!contrato) return;
+  const modelo = sqlite.prepare(`SELECT ativa_modulo_chave, campos FROM contratos_modelos WHERE id = ?`).get(contrato.modelo_id) as any;
+  if (!modelo?.ativa_modulo_chave) return; // contrato comum — não vende módulo nenhum
+  const moduloChave = String(modelo.ativa_modulo_chave);
+  const catalogo = sqlite.prepare(`SELECT nome FROM modulos_catalogo WHERE chave = ?`).get(moduloChave) as any;
+  if (!catalogo) {
+    console.error(`[contrato-modulo] contrato #${contratoId}: módulo "${moduloChave}" não existe (ou foi removido) do catálogo.`);
+    return;
+  }
+  let campos: any[] = [];
+  try { campos = JSON.parse(modelo.campos || "[]"); } catch {}
+  let dados: Record<string, any> = {};
+  try { dados = JSON.parse(contrato.dados_preenchidos || "{}"); } catch {}
+  const valorCampo = (autoPreencherDe: string) => {
+    const campo = campos.find((f) => f.autoPreencherDe === autoPreencherDe);
+    return campo ? String(dados[campo.chave] || "").trim() : "";
+  };
+  const nomeCliente = valorCampo("nome") || contrato.titulo;
+  const email = valorCampo("email").toLowerCase();
+  const telefone = valorCampo("telefone");
+  // Valores de implantação/mensalidade: hoje só o módulo NFS-e tem essa convenção de autoPreencherDe
+  // (ver AUTO_PRECO, em POST /api/contratos) — ao vender outro módulo por contrato, estender aqui.
+  // A isenção é guardada pela convenção de autoPreencherDe (não pelo nome do campo, que varia de
+  // modelo pra modelo) — mesma chave que o front usa em campoFieldHtml/abrirContratoDrawer.
+  const implantacaoIsenta = dados["__isento_moduloNfseImplantacao"] === "1";
+  const paraNumero = (v: string) => { const n = Number(v.replace(/\./g, "").replace(",", ".")); return Number.isFinite(n) ? n : null; };
+  const valorMensalCustom = paraNumero(valorCampo("moduloNfseMensal"));
+  const valorImplantacaoCustom = implantacaoIsenta ? 0 : paraNumero(valorCampo("moduloNfseImplantacao"));
+
+  // ---- Usuário: reaproveita se a empresa já tiver um com esse e-mail; cria com senha padrão se não ----
+  let contaNova = false;
+  if (email) {
+    const existente = sqlite
+      .prepare(`SELECT u.id FROM app_users u JOIN cliente_empresas ce ON ce.user_id = u.id WHERE ce.empresa_id = ? AND lower(u.email) = ?`)
+      .get(contrato.empresa_id, email) as any;
+    if (!existente) {
+      try {
+        const info = sqlite
+          .prepare(`INSERT INTO app_users (nome, email, perfil, password_hash, escritorio_id, empresa_id) VALUES (?, ?, 'Cliente', ?, ?, ?)`)
+          .run(nomeCliente || email, email, hashPassword(SENHA_PADRAO_NOVO_CLIENTE), contrato.escritorioId, contrato.empresa_id);
+        sqlite.prepare(`INSERT OR IGNORE INTO cliente_empresas (user_id, empresa_id) VALUES (?, ?)`).run(Number(info.lastInsertRowid), contrato.empresa_id);
+        contaNova = true;
+      } catch (e: any) {
+        // E-mail já existe (de outra empresa) — vincula essa conta à empresa em vez de falhar.
+        const outro = sqlite.prepare(`SELECT id FROM app_users WHERE lower(email) = ?`).get(email) as any;
+        if (outro) sqlite.prepare(`INSERT OR IGNORE INTO cliente_empresas (user_id, empresa_id) VALUES (?, ?)`).run(outro.id, contrato.empresa_id);
+        else console.error(`[contrato-modulo] contrato #${contratoId}: falha ao criar usuário Cliente:`, e.message);
+      }
+    }
+  }
+
+  // ---- Módulo: ativa sem pular cobrança (trial já vencido, assinatura_ativa_ate fica NULL até pagar) ----
+  const jaTinha = sqlite.prepare(`SELECT 1 FROM empresa_modulos WHERE empresa_id = ? AND modulo_chave = ?`).get(contrato.empresa_id, moduloChave);
+  if (!jaTinha) {
+    sqlite
+      .prepare(
+        `INSERT INTO empresa_modulos (empresa_id, modulo_chave, trial_inicio, trial_fim, assinatura_ativa_ate, valor_mensal_custom, valor_implantacao_custom)
+         VALUES (?, ?, datetime('now'), datetime('now'), NULL, ?, ?)`
+      )
+      .run(contrato.empresa_id, moduloChave, valorMensalCustom, valorImplantacaoCustom);
+  } else {
+    sqlite
+      .prepare(`UPDATE empresa_modulos SET valor_mensal_custom = COALESCE(?, valor_mensal_custom), valor_implantacao_custom = COALESCE(?, valor_implantacao_custom) WHERE empresa_id = ? AND modulo_chave = ?`)
+      .run(valorMensalCustom, valorImplantacaoCustom, contrato.empresa_id, moduloChave);
+  }
+
+  // ---- Avisos (best-effort — nunca desfazem o que já foi feito acima) ----
+  if (email) {
+    try {
+      const corpo = contaNova
+        ? `Olá, ${nomeCliente}!\n\nSeu módulo ${catalogo.nome} já está disponível no Simples Contábeis.\n\nAcesse: ${SITE_URL_PADRAO}\nUsuário (e-mail): ${email}\nSenha temporária: ${SENHA_PADRAO_NOVO_CLIENTE}\n\nPor segurança, troque sua senha assim que entrar pela primeira vez.\n\nQualquer dúvida, é só chamar a gente.`
+        : `Olá, ${nomeCliente}!\n\nSeu módulo ${catalogo.nome} já está disponível no Simples Contábeis.\n\nAcesse: ${SITE_URL_PADRAO}\nUse seu e-mail (${email}) e sua senha de sempre pra entrar.\n\nQualquer dúvida, é só chamar a gente.`;
+      await enviarEmail(contrato.escritorioId, { to: [email], subject: `Seu acesso ao ${catalogo.nome} já está liberado`, text: corpo });
+    } catch (e: any) {
+      console.error(`[contrato-modulo] contrato #${contratoId}: falha ao mandar e-mail de boas-vindas:`, e.message);
+    }
+  }
+  if (telefone) {
+    try {
+      await whatsappEnviarBoasVindasModulo(contrato.escritorioId, telefone, { nome: nomeCliente || "cliente", modulo: catalogo.nome, link: SITE_URL_PADRAO });
+    } catch (e: any) {
+      console.error(`[contrato-modulo] contrato #${contratoId}: falha ao mandar WhatsApp de boas-vindas:`, e.message);
+    }
+  }
 }
 // Monta e envia o contrato pra assinatura: os 2 sócios vêm da config (fixos, sempre os mesmos);
 // e-mail/telefone do cliente vêm do próprio cadastro da empresa (pra notificar também por
@@ -26581,6 +26735,13 @@ if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'licenca_nfse_
     if (novo !== c.conteudo_html) { sqlite.prepare(`UPDATE contratos SET conteudo_html = ?, ultimo_pdf_path = NULL, updated_at = datetime('now') WHERE id = ?`).run(novo, c.id); console.log(`[migração] contrato #${c.id}: itens 3.2/4.4 da licença atualizados.`); }
   }
   sqlite.exec(`INSERT INTO migracoes_unicas (chave) VALUES ('licenca_nfse_textos_20261112b')`);
+}
+// Marca o modelo "Venda de Licença de Modulo NFS-e" já existente pra ativar o módulo 'nfse' sozinho
+// quando terminar de ser assinado (ver processarContratoModuloVendido) — sem isso o Eduardo precisaria
+// abrir o modelo e escolher manualmente no combo novo "Este modelo vende o módulo".
+if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'modelo_licenca_nfse_ativa_modulo_20261112'`).get()) {
+  sqlite.exec(`UPDATE contratos_modelos SET ativa_modulo_chave = 'nfse' WHERE nome LIKE '%Licen%Modulo%NFS%' AND ativa_modulo_chave IS NULL`);
+  sqlite.exec(`INSERT INTO migracoes_unicas (chave) VALUES ('modelo_licenca_nfse_ativa_modulo_20261112')`);
 }
 // Unifica modelos de Envio de Documentos com o MESMO nome (pela chave de nomeModeloChave) — roda a cada
 // boot (barato) e é a rede de segurança caso algum caminho novo volte a criar duplicado. Fica o modelo
@@ -29550,6 +29711,29 @@ async function whatsappEnviarTexto(
       .prepare(`INSERT OR IGNORE INTO whatsapp_mensagens (escritorio_id, wamid, origem_tabela, origem_id, telefone) VALUES (?, ?, ?, ?, ?)`)
       .run(escritorioId, wamid, origem.tabela, origem.id, numeroNormalizado);
   }
+}
+// Nome do template (Meta) do aviso "seu módulo já está disponível" — pedido 2026-11-12. Precisa ser
+// submetido e aprovado no Business Manager antes do primeiro envio real (categoria Utilidade, corpo
+// com parâmetros NOMEADOS: {{nome}}, {{modulo}}, {{link}}). Troque aqui se a Meta aprovar com nome
+// diferente do sugerido.
+const WHATSAPP_TEMPLATE_MODULO_DISPONIVEL = "modulo_disponivel";
+async function whatsappEnviarBoasVindasModulo(escritorioId: number, paraNumero: string, vars: { nome: string; modulo: string; link: string }): Promise<void> {
+  const c = getWhatsappConfig(escritorioId);
+  if (!c.ativo || !c.phone_number_id || !c.access_token_cifrado) {
+    throw new Error("WhatsApp não configurado ou desativado — configure em Configurações > WhatsApp.");
+  }
+  await whatsapp.enviarTexto({
+    phoneNumberId: c.phone_number_id,
+    accessToken: nfse.decifrarTexto(c.access_token_cifrado),
+    templateName: WHATSAPP_TEMPLATE_MODULO_DISPONIVEL,
+    templateIdioma: c.template_idioma || "pt_BR",
+    paraNumero,
+    variaveisCorpo: [
+      { nome: "nome", valor: vars.nome },
+      { nome: "modulo", valor: vars.modulo },
+      { nome: "link", valor: vars.link },
+    ],
+  });
 }
 
 // Identificação automática do cliente a partir de um arquivo (PDF, OFX ou XML): extrai texto,
