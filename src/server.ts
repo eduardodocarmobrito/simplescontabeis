@@ -8232,9 +8232,18 @@ function obrigacoesCalcular(user: { escritorioId: number }, setor: string, comp:
       const e = empNome[empId]; if (!e) continue;
       let transmitidaAuto = false, enviadaAuto = false, enviadaEm: string | null = null;
       const sit = ob.fonte === "dctfweb" || ob.transmissaoEsocial ? (sitDctf.get(empId, periodoApuracao) as any) || null : null;
-      // DCTF-Web: transmitida = declaração ATIVA no e-CAC (recibo) — a guia DARF gerada pelo Integra
-      // (GERARGUIA31) também só existe pra declaração ativa, então continua valendo como prova.
-      if (ob.fonte === "dctfweb") transmitidaAuto = !!sit?.ativa || !!temIntegraDoc.get(empId, "darf_dctfweb", periodoApuracao);
+      // DCTF-Web: transmitida = declaração ATIVA no e-CAC (recibo). A suposição antiga de que "a guia
+      // DARF gerada pelo Integra (GERARGUIA31) só existe pra declaração ativa" se provou FALSA em
+      // auditoria (2026-11-12, achado real: JR Manutenção Industrial, competência 08/2026 — guia gerada
+      // normalmente em 09/2026, e o e-CAC seguiu mostrando "Em Andamento" até ser retificada/transmitida
+      // de verdade só em 03/11/2026, com multa MAED por atraso). O GERARGUIA31 pode gerar um PDF mesmo
+      // com a declaração ainda em edição/incompleta no e-CAC — não é prova confiável de transmissão.
+      // Por isso: quando JÁ existe uma consulta real de situação (sit, ver dctfweb_situacao) pra essa
+      // empresa+competência, ela manda — é o retrato mais fiel do e-CAC e pode ser reconsultada a
+      // qualquer momento ("Validar no e-CAC"/clique na etiqueta). A guia só serve de prova quando a
+      // situação NUNCA foi checada (sit null — empresa de fora do quadro DCTF-Web/Folha, ou período
+      // anterior a 2026-11-03, quando essa consulta nem existia ainda).
+      if (ob.fonte === "dctfweb") transmitidaAuto = sit ? !!sit.ativa : !!temIntegraDoc.get(empId, "darf_dctfweb", periodoApuracao);
       else if (ob.fonte === "das") transmitidaAuto = !!temIntegraDoc.get(empId, "das", periodoApuracao);
       else if (ob.fonte === "nfse_honorarios") {
         // Emissão automática ligada = já considera emitida e enviada (pedido do usuário). Senão, olha se
