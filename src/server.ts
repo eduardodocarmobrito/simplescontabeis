@@ -26363,6 +26363,42 @@ if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'card_das_nao_
   }
   sqlite.exec(`INSERT INTO migracoes_unicas (chave) VALUES ('card_das_nao_pago_20261110')`);
 }
+// Modelo "Venda de Licença de Modulo NFS-e" foi criado em branco (só o título padrão) e o contrato gerado
+// dele saiu com o PDF vazio. Preenche o modelo com o texto pronto "Licença de Uso do Módulo NFS-e (SaaS)"
+// (texto + campos) e, nos contratos desse modelo ainda em branco e não enviados pra assinatura, coloca o
+// texto e traduz os campos já digitados pros nomes do modelo pronto. Falta só "Aplicar no documento" + Salvar.
+if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'modelo_licenca_nfse_preencher_20261112'`).get()) {
+  const pronto = MODELOS_CONTRATO_PRONTOS.find((m) => m.id === "licenca-modulo-nfse");
+  const emBranco = (html: any) => String(html || "").replace(/<[^>]+>/g, "").replace(/Contrato de Presta[çc][ãa]o de Servi[çc]os/i, "").trim() === "";
+  if (pronto) {
+    const modelos = sqlite.prepare(`SELECT id, conteudo_html FROM contratos_modelos WHERE nome LIKE '%Licen%Modulo%NFS%'`).all() as any[];
+    for (const m of modelos) {
+      if (!emBranco(m.conteudo_html)) continue;
+      sqlite.prepare(`UPDATE contratos_modelos SET conteudo_html = ?, campos = ?, updated_at = datetime('now') WHERE id = ?`).run(pronto.conteudoHtml, JSON.stringify(pronto.campos), m.id);
+      const de: Record<string, string> = {
+        cliente_nome: "licenciada_nome", CNPJ: "CNPJ_CPF_licenciada", "endereço_cliente": "licenciada_endereco", cidade_cliente: "licenciada_cidade",
+        UF_cliente: "licenciada_uf", CEP_cliente: "CEP", "e-mail_cliente": "email_licenciada", telefone_cliente: "telefone_licenciada",
+        representante_legal: "nome_representante_legal", CPF_representante_legal: "CPF_Representante_Legal",
+        modulo_preco: "valor_mensalidade", modulo_preco_implantacao: "valor_implantacao", data_contrato: "data_inicio",
+      };
+      const contratosDoModelo = sqlite.prepare(`SELECT id, conteudo_html, dados_preenchidos FROM contratos WHERE modelo_id = ? AND autentique_document_id IS NULL`).all(m.id) as any[];
+      for (const c of contratosDoModelo) {
+        if (!emBranco(c.conteudo_html)) continue;
+        let dados: Record<string, any> = {};
+        try { dados = JSON.parse(c.dados_preenchidos || "{}") || {}; } catch {}
+        const novos: Record<string, any> = { ...dados };
+        for (const [velho, novo] of Object.entries(de)) if (dados[velho] && !novos[novo]) novos[novo] = dados[velho];
+        const extenso = (v: any) => { const n = Number(String(v || "").replace(/\./g, "").replace(",", ".")); return Number.isFinite(n) && String(v || "").trim() ? contratos.valorPorExtenso(n) : ""; };
+        if (novos.valor_mensalidade) novos.mensalidade_extenso = extenso(novos.valor_mensalidade);
+        if (novos.valor_implantacao) novos.implantacao_extenso = extenso(novos.valor_implantacao);
+        sqlite.prepare(`UPDATE contratos SET conteudo_html = ?, dados_preenchidos = ?, ultimo_pdf_path = NULL, updated_at = datetime('now') WHERE id = ?`).run(pronto.conteudoHtml, JSON.stringify(novos), c.id);
+        console.log(`[migração] contrato #${c.id}: texto da licença do Módulo NFS-e colocado (falta Aplicar no documento + Salvar).`);
+      }
+      console.log(`[migração] modelo #${m.id} "Venda de Licença de Modulo NFS-e" preenchido com o texto pronto.`);
+    }
+  }
+  sqlite.exec(`INSERT INTO migracoes_unicas (chave) VALUES ('modelo_licenca_nfse_preencher_20261112')`);
+}
 // Unifica modelos de Envio de Documentos com o MESMO nome (pela chave de nomeModeloChave) — roda a cada
 // boot (barato) e é a rede de segurança caso algum caminho novo volte a criar duplicado. Fica o modelo
 // MAIS ANTIGO; as atribuições, períodos e documentos do duplicado são movidos pra ele (período da mesma
