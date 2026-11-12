@@ -206,7 +206,8 @@ const LICENCA_NFSE_HTML = `
 
 <p class="clausula-titulo">CLÁUSULA PRIMEIRA – DO OBJETO</p>
 <ol>
-<li>O objeto deste contrato é a concessão, pela LICENCIANTE à LICENCIADA, de licença de uso temporária, onerosa, não exclusiva e intransferível do <b>Módulo NFS-e</b> da plataforma Simples Contábeis, acessado pela internet (modalidade <i>Software as a Service</i> – SaaS), para emissão, consulta, cancelamento, envio e armazenamento das Notas Fiscais de Serviço Eletrônicas (NFS-e) da própria LICENCIADA por meio do Sistema Nacional NFS-e, nas condições comerciais do <b>Anexo I</b>, que integra este contrato.</li>
+<li>O objeto deste contrato é a concessão, pela LICENCIANTE à LICENCIADA, de licença de uso temporária, onerosa, não exclusiva e intransferível do <b>Módulo NFS-e</b> da plataforma Simples Contábeis, nas funcionalidades contratadas — <b>{{modulos_contratados}}</b> —, acessado pela internet (modalidade <i>Software as a Service</i> – SaaS), para emissão, consulta, cancelamento, envio e armazenamento das Notas Fiscais de Serviço Eletrônicas (NFS-e) da própria LICENCIADA por meio do Sistema Nacional NFS-e, nas condições comerciais do <b>Anexo I</b>, que integra este contrato.</li>
+<li>Na <b>emissão manual</b>, a LICENCIADA cadastra seus tomadores e serviços e emite cada NFS-e pela plataforma, quando quiser. Na <b>emissão automática</b>, quando contratada, a plataforma emite sozinha as NFS-e recorrentes nas datas e condições programadas pela LICENCIADA, que continua responsável pelos dados cadastrados. A LICENCIADA pode contratar só a emissão manual ou as duas juntas, conforme o <b>Anexo I</b>.</li>
 <li>Integram a licença, sem custo adicional: a hospedagem do sistema, as atualizações e correções, as adequações às mudanças de leiaute e regras do Sistema Nacional NFS-e, o armazenamento das notas emitidas enquanto vigente o contrato e o suporte técnico previsto na Cláusula Sétima.</li>
 <li>Não integram o objeto, salvo contratação à parte: serviços de contabilidade, consultoria ou assessoria fiscal e tributária; a aquisição ou renovação do certificado digital; desenvolvimento de funcionalidades sob medida; e a emissão de notas fiscais de outros modelos (NF-e, NFC-e, CT-e).</li>
 <li>A emissão depende de o município da LICENCIADA utilizar o Sistema Nacional NFS-e. Se, antes de concluída a implantação, verificar-se que o município não o utiliza, o contrato será desfeito com a devolução integral do que tiver sido pago; se o município deixar de utilizá-lo durante a vigência, qualquer das partes poderá encerrar o contrato sem multa, devidas apenas as mensalidades até a data do encerramento.</li>
@@ -223,13 +224,13 @@ const LICENCA_NFSE_HTML = `
 <p class="clausula-titulo">CLÁUSULA TERCEIRA – DA IMPLANTAÇÃO</p>
 <ol>
 <li>A implantação compreende: liberação do acesso; configuração do cadastro fiscal da LICENCIADA (município, inscrição municipal, regime tributário e alíquotas informados por ela); instalação do certificado digital fornecido pela LICENCIADA; cadastro dos modelos de serviço; e treinamento inicial remoto dos usuários.</li>
-<li>Pela implantação, a LICENCIADA pagará à LICENCIANTE o valor único de <b>R$ {{valor_implantacao}}</b> ({{implantacao_extenso}}), com vencimento em até 5 (cinco) dias da assinatura deste contrato, ou diretamente pelo portal de acesso do site, no menu Assinaturas.</li>
+<li>Pela implantação, a LICENCIADA pagará à LICENCIANTE o valor único de <b>R$ {{implantacao_total}}</b> ({{implantacao_total_extenso}}){{implantacao_detalhe}}, com vencimento em até 5 (cinco) dias da assinatura deste contrato, ou diretamente pelo portal de acesso do site, no menu Assinaturas.</li>
 <li>A implantação será concluída em até 5 (cinco) dias úteis contados do pagamento e do envio, pela LICENCIADA, dos dados e do certificado digital necessários. Uma vez concluída, o valor da implantação não é reembolsável.</li>
 </ol>
 
 <p class="clausula-titulo">CLÁUSULA QUARTA – DO PREÇO E DO PAGAMENTO</p>
 <ol>
-<li>Pela licença de uso, a LICENCIADA pagará à LICENCIANTE a mensalidade de <b>R$ {{valor_mensalidade}}</b> ({{mensalidade_extenso}}), com vencimento todo dia <b>{{dia_vencimento}}</b> de cada mês, a partir de {{data_inicio}}.</li>
+<li>Pela licença de uso, a LICENCIADA pagará à LICENCIANTE a mensalidade de <b>R$ {{mensalidade_total}}</b> ({{mensalidade_total_extenso}}){{mensalidade_detalhe}}, com vencimento todo dia <b>{{dia_vencimento}}</b> de cada mês, a partir de {{data_inicio}}.</li>
 <li>Os pagamentos serão feitos por Pix, boleto ou cartão gerados pela plataforma ou enviados pela LICENCIANTE, que emitirá a nota fiscal correspondente.</li>
 <li>Os valores incluem os tributos incidentes sobre o licenciamento (ISS, item 1.05 da lista anexa à Lei Complementar nº 116/2003), recolhidos pela LICENCIANTE, ressalvadas as retenções na fonte que a lei atribuir à LICENCIADA.</li>
 <li>A mensalidade será reajustada automaticamente pela plataforma a cada 12 (doze) meses, contados do primeiro pagamento, pela variação positiva do IPCA/IBGE acumulada nos 12 (doze) meses anteriores, ou por outro índice oficial que o substitua; o novo valor vale a partir das cobranças seguintes, sem necessidade de aditivo.</li>
@@ -334,8 +335,13 @@ const LICENCA_NFSE_HTML = `
 <thead><tr><th>Item</th><th>Condição</th></tr></thead>
 <tbody>
 <tr><td>Módulo licenciado</td><td>Módulo NFS-e – plataforma Simples Contábeis (Sistema Nacional NFS-e)</td></tr>
-<tr><td>Implantação (valor único)</td><td>R$ {{valor_implantacao}} ({{implantacao_extenso}})</td></tr>
-<tr><td>Mensalidade da licença</td><td>R$ {{valor_mensalidade}} ({{mensalidade_extenso}})</td></tr>
+<tr><td>Funcionalidades contratadas</td><td>{{modulos_contratados}}</td></tr>
+<tr><td>Implantação – emissão manual</td><td>{{anexo_impl_manual}}</td></tr>
+<tr><td>Implantação – emissão automática</td><td>{{anexo_impl_automatica}}</td></tr>
+<tr><td><b>Implantação – total (valor único)</b></td><td><b>R$ {{implantacao_total}}</b> ({{implantacao_total_extenso}})</td></tr>
+<tr><td>Mensalidade – emissão manual</td><td>{{anexo_mensal_manual}}</td></tr>
+<tr><td>Mensalidade – emissão automática</td><td>{{anexo_mensal_automatica}}</td></tr>
+<tr><td><b>Mensalidade – total</b></td><td><b>R$ {{mensalidade_total}}</b> ({{mensalidade_total_extenso}})</td></tr>
 <tr><td>Vencimento da mensalidade</td><td>Todo dia {{dia_vencimento}}</td></tr>
 <tr><td>Início da vigência</td><td>{{data_inicio}} – prazo indeterminado, sem fidelidade (mês a mês)</td></tr>
 <tr><td>Falta de pagamento</td><td>Suspensão automática do módulo no dia seguinte ao vencimento; volta a funcionar após o pagamento</td></tr>
@@ -389,10 +395,10 @@ export const MODELOS_CONTRATO_PRONTOS: ModeloContratoPronto[] = [
       { chave: "telefone_licenciada", rotulo: "Telefone da licenciada", autoPreencherDe: "telefone" },
       { chave: "nome_representante_legal", rotulo: "Representante legal", autoPreencherDe: "nomeRepresentanteLegal" },
       { chave: "CPF_Representante_Legal", rotulo: "CPF do representante legal", autoPreencherDe: "cpfRepresentanteLegal" },
-      { chave: "valor_implantacao", rotulo: "Valor da implantação (R$) — vem do preço do master", autoPreencherDe: "moduloNfseImplantacao" },
-      { chave: "implantacao_extenso", rotulo: "Implantação por extenso", autoPreencherDe: "moduloNfseImplantacaoExtenso" },
-      { chave: "valor_mensalidade", rotulo: "Mensalidade (R$) — vem do preço do master", autoPreencherDe: "moduloNfseMensal" },
-      { chave: "mensalidade_extenso", rotulo: "Mensalidade por extenso", autoPreencherDe: "moduloNfseMensalExtenso" },
+      { chave: "valor_mensalidade", rotulo: "Mensalidade — emissão manual (R$) — vazio = não contrata", autoPreencherDe: "moduloNfseMensal" },
+      { chave: "valor_implantacao", rotulo: "Implantação — emissão manual (R$)", autoPreencherDe: "moduloNfseImplantacao" },
+      { chave: "valor_mensalidade_automatica", rotulo: "Mensalidade — emissão automática (R$) — vazio = não contrata", autoPreencherDe: "moduloNfseAutoMensal" },
+      { chave: "valor_implantacao_automatica", rotulo: "Implantação — emissão automática (R$)", autoPreencherDe: "moduloNfseAutoImplantacao" },
       { chave: "dia_vencimento", rotulo: "Dia do vencimento da mensalidade", autoPreencherDe: null },
       { chave: "data_inicio", rotulo: "Início da vigência (dd/mm/aaaa)", autoPreencherDe: "dataContrato" },
       { chave: "testemunha1", rotulo: "Testemunha 1", autoPreencherDe: null },

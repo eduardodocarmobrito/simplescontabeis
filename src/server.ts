@@ -24372,8 +24372,18 @@ app.post("/api/contratos", blockCliente, requirePermissao("contratos", "postar")
     const contratado = sqlite.prepare(`SELECT valor_mensal_custom, valor_implantacao_custom FROM empresa_modulos WHERE empresa_id = ? AND modulo_chave = 'nfse'`).get(empresa.id) as any;
     return { mensal: precoModuloEfetivo(cat?.valor_mensal, contratado), implantacao: precoImplantacaoEfetivo(cat?.valor_implantacao, contratado) };
   })();
+  // Emissão Automática (módulo nfse_automatica): só vem preenchido se a empresa já tem esse módulo —
+  // senão fica vazio (= não contratado) e o contrato sai só com a emissão manual.
+  const precoNfseAuto = (() => {
+    const cat = sqlite.prepare(`SELECT valor_mensal, valor_implantacao FROM modulos_catalogo WHERE chave = 'nfse_automatica'`).get() as any;
+    const contratado = sqlite.prepare(`SELECT valor_mensal_custom, valor_implantacao_custom FROM empresa_modulos WHERE empresa_id = ? AND modulo_chave = 'nfse_automatica'`).get(empresa.id) as any;
+    if (!contratado) return null;
+    return { mensal: precoModuloEfetivo(cat?.valor_mensal, contratado), implantacao: precoImplantacaoEfetivo(cat?.valor_implantacao, contratado) };
+  })();
   const brl = (v: number) => v.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const AUTO_PRECO: Record<string, () => string> = {
+    moduloNfseAutoMensal: () => (precoNfseAuto ? brl(precoNfseAuto.mensal) : ""),
+    moduloNfseAutoImplantacao: () => (precoNfseAuto ? brl(precoNfseAuto.implantacao) : ""),
     moduloNfseMensal: () => brl(precoNfse.mensal),
     moduloNfseImplantacao: () => brl(precoNfse.implantacao),
     moduloNfseMensalExtenso: () => contratos.valorPorExtenso(precoNfse.mensal),
@@ -24411,10 +24421,20 @@ app.post("/api/contratos", blockCliente, requirePermissao("contratos", "postar")
   // app.html, que já usa esc()), mas a API em si não pode depender disso: sem escapar aqui, dava pra
   // chamar esta rota direto (fora da tela) e injetar HTML/<script> num campo, que ia reto pro PDF
   // (Chromium) e pro e-mail do contrato. Mesmo escape usado pelos relatórios (escHtmlRelatorio).
+  // Licença NFS-e com emissão manual e/ou automática: total, detalhamento e lista do que foi contratado.
+  // Nesse contrato os valores ficam como {{campo}} na criação: são conferidos/ajustados no drawer e o
+  // "Aplicar no documento" calcula total e detalhamento de uma vez (senão mudar o valor depois não
+  // atualizaria o total já escrito no texto).
+  const calcLicenca = licencaValoresCalculados(dadosFinal, camposModelo);
+  Object.assign(dadosFinal, calcLicenca);
   for (const chave of Object.keys(dadosFinal)) {
     if (typeof dadosFinal[chave] === "string") dadosFinal[chave] = escHtmlRelatorio(dadosFinal[chave]);
   }
-  const conteudoHtml = contratos.aplicarCamposNoModelo(modelo.conteudo_html, dadosFinal);
+  const dadosNoTexto: Record<string, any> = { ...dadosFinal };
+  if (Object.keys(calcLicenca).length) {
+    for (const k of [...Object.keys(calcLicenca), "valor_mensalidade", "valor_mensalidade_automatica", "valor_implantacao", "valor_implantacao_automatica"]) delete dadosNoTexto[k];
+  }
+  const conteudoHtml = contratos.aplicarCamposNoModelo(modelo.conteudo_html, dadosNoTexto);
   const info = sqlite
     .prepare(
       `INSERT INTO contratos (modelo_id, empresa_id, titulo, conteudo_html, dados_preenchidos, numero_sequencial, numero_sequencial_ano, criado_por)
@@ -24703,6 +24723,35 @@ app.delete("/api/contratos/:id", blockCliente, requirePermissao("contratos", "ed
   sqlite.prepare(`DELETE FROM contratos WHERE id = ?`).run(Number(req.params.id));
   res.json({ ok: true });
 });
+// Contrato de licença do Módulo NFS-e: separa emissão MANUAL (valor_mensalidade / valor_implantacao) da
+// emissão AUTOMÁTICA (valor_mensalidade_automatica / valor_implantacao_automatica). Valor vazio ou 0 =
+// não contratado. Só entra em ação se o modelo tiver o campo da automática. A tela (Aplicar no
+// documento) faz a mesma conta — ver licencaCalcularValores em app.html.
+function licencaValoresCalculados(dados: Record<string, any>, campos: any[]): Record<string, string> {
+  if (!campos.some((c: any) => c.chave === "valor_mensalidade_automatica")) return {};
+  const num = (v: any) => Number(String(v ?? "").replace(/\./g, "").replace(",", ".")) || 0;
+  const brl = (v: number) => v.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const man = num(dados.valor_mensalidade), aut = num(dados.valor_mensalidade_automatica);
+  const iman = num(dados.valor_implantacao), iaut = num(dados.valor_implantacao_automatica);
+  const temAut = aut > 0 || iaut > 0;
+  const temMan = man > 0 || iman > 0 || !temAut;
+  const modulos = [temMan ? "Módulo NFS-e – emissão manual" : null, temAut ? "Módulo NFS-e – emissão automática" : null].filter(Boolean).join(" e ");
+  const det = (a: number, b: number) => (temMan && temAut ? `, sendo R$ ${brl(a)} pela emissão manual e R$ ${brl(b)} pela emissão automática` : "");
+  const cel = (contratado: boolean, v: number) => (contratado ? `R$ ${brl(v)} (${contratos.valorPorExtenso(v)})` : "Não contratada");
+  return {
+    modulos_contratados: modulos,
+    mensalidade_total: brl(man + aut),
+    mensalidade_total_extenso: contratos.valorPorExtenso(man + aut),
+    mensalidade_detalhe: det(man, aut),
+    implantacao_total: brl(iman + iaut),
+    implantacao_total_extenso: contratos.valorPorExtenso(iman + iaut),
+    implantacao_detalhe: det(iman, iaut),
+    anexo_mensal_manual: cel(temMan, man),
+    anexo_mensal_automatica: cel(temAut, aut),
+    anexo_impl_manual: cel(temMan, iman),
+    anexo_impl_automatica: cel(temAut, iaut),
+  };
+}
 // CPF do representante legal nos dados do contrato — o nome da variável muda de modelo pra modelo
 // (CPF_Representante_Legal, CPF_representante_legal, cpf_representante...). Só aceita 11 dígitos.
 function contratoCpfRepresentante(dados: Record<string, any>): string | undefined {
@@ -26595,7 +26644,7 @@ if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'modelo_licenc
 // anteriores (série 433 do Banco Central = IPCA mensal do IBGE). O novo preço vira o valor
 // personalizado da empresa (empresa_modulos.valor_mensal_custom) — vale a partir das próximas cobranças.
 // Só módulos com contrato que prevê reajuste (REAJUSTE_MODULOS); vitalício, grátis e teste ficam de fora.
-const REAJUSTE_MODULOS = ["nfse"];
+const REAJUSTE_MODULOS = ["nfse", "nfse_automatica"];
 for (const [col, tipo] of [["reajuste_base_em", "TEXT"], ["ultimo_reajuste_em", "TEXT"]] as const) {
   const cols = sqlite.prepare(`PRAGMA table_info(empresa_modulos)`).all() as any[];
   if (!cols.some((c) => c.name === col)) sqlite.exec(`ALTER TABLE empresa_modulos ADD COLUMN ${col} ${tipo}`);
@@ -26687,6 +26736,19 @@ async function reajustarModulosPorIpca(): Promise<void> {
 setTimeout(() => void reajustarModulosPorIpca().catch((e) => console.error("[reajuste]", e.message)), 5 * 60_000);
 setInterval(() => void reajustarModulosPorIpca().catch((e) => console.error("[reajuste]", e.message)), 6 * 3600_000);
 
+// Licença NFS-e com emissão manual e/ou automática (pedido 2026-11-12): o modelo #13 e o contrato #37
+// (não enviado) ainda estão exatamente como as migrações anteriores deixaram (ninguém editou à mão
+// depois — conferido pelo updated_at) → remonta os dois com o texto/campos novos do modelo pronto. O
+// contrato mantém os dados digitados; falta só "Aplicar no documento" + Salvar.
+if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'licenca_nfse_manual_automatica_20261112'`).get()) {
+  const pronto = MODELOS_CONTRATO_PRONTOS.find((m) => m.id === "licenca-modulo-nfse");
+  if (pronto) {
+    const r1 = sqlite.prepare(`UPDATE contratos_modelos SET conteudo_html = ?, campos = ?, updated_at = datetime('now') WHERE id = 13 AND updated_at = '2026-11-12 02:14:11'`).run(pronto.conteudoHtml, JSON.stringify(pronto.campos));
+    const r2 = sqlite.prepare(`UPDATE contratos SET conteudo_html = ?, ultimo_pdf_path = NULL, updated_at = datetime('now') WHERE id = 37 AND modelo_id = 13 AND autentique_document_id IS NULL AND updated_at = '2026-11-12 02:14:11'`).run(pronto.conteudoHtml);
+    console.log(`[migração] licença NFS-e manual/automática: modelo #13 ${r1.changes ? "atualizado" : "não mexido (editado depois)"}, contrato #37 ${r2.changes ? "atualizado" : "não mexido"}.`);
+  }
+  sqlite.exec(`INSERT INTO migracoes_unicas (chave) VALUES ('licenca_nfse_manual_automatica_20261112')`);
+}
 // PDF guardado de contrato ainda não enviado que tinha {{variável}} vazia: descarta pra regerar já em branco.
 if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'contrato_pdf_sem_tokens_20261112'`).get()) {
   const r = sqlite.prepare(`UPDATE contratos SET ultimo_pdf_path = NULL WHERE autentique_document_id IS NULL AND ultimo_pdf_path IS NOT NULL AND conteudo_html LIKE '%{{%'`).run();

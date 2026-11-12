@@ -15420,9 +15420,10 @@ const CONTRATO_AUTO_PREENCHER = [
   ['telefone','Telefone'], ['dataContrato','Data do contrato (assinatura)'], ['listaEmpresas','Lista de empresas (Anexo I)'],
   ['moduloNfseMensal','Módulo NFS-e — mensalidade (preço do master)'], ['moduloNfseMensalExtenso','Módulo NFS-e — mensalidade por extenso'],
   ['moduloNfseImplantacao','Módulo NFS-e — implantação (preço do master)'], ['moduloNfseImplantacaoExtenso','Módulo NFS-e — implantação por extenso'],
+  ['moduloNfseAutoMensal','Emissão Automática — mensalidade (se a empresa já tem o módulo)'], ['moduloNfseAutoImplantacao','Emissão Automática — implantação (se a empresa já tem o módulo)'],
 ];
 // Opções que NÃO são dados do cadastro da empresa do contrato (vão pro quadro "Preenchimento do escritório").
-const CONTRATO_AUTO_NAO_EMPRESA = ['dataContrato','listaEmpresas','moduloNfseMensal','moduloNfseMensalExtenso','moduloNfseImplantacao','moduloNfseImplantacaoExtenso'];
+const CONTRATO_AUTO_NAO_EMPRESA = ['dataContrato','listaEmpresas','moduloNfseMensal','moduloNfseMensalExtenso','moduloNfseImplantacao','moduloNfseImplantacaoExtenso','moduloNfseAutoMensal','moduloNfseAutoImplantacao'];
 const MESES_PT_EXTENSO_JS = ['janeiro','fevereiro','março','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro'];
 let CONTRATOS_TAB='contratos';
 async function pageContratos(){
@@ -15858,6 +15859,26 @@ function campoExtensoPar(inp, todos){
 // Recalcula TODOS os pares valor/extenso ainda visíveis no drawer — chamado antes de "Aplicar no
 // documento" pra não cair numa corrida com o recálculo assíncrono disparado no blur (digitar o
 // valor e já clicar em Aplicar, sem passar por outro campo antes, capturava o extenso desatualizado).
+// Licença do Módulo NFS-e com emissão MANUAL e/ou AUTOMÁTICA (mesma conta de licencaValoresCalculados no
+// servidor): total, detalhamento e o que foi contratado. Valor vazio/0 = não contratado. Só roda se o
+// modelo tiver o campo valor_mensalidade_automatica.
+async function licencaCalcularValores(d){
+  if(!('valor_mensalidade_automatica' in d)) return null;
+  const num = v=>Number(String(v??'').replace(/\./g,'').replace(',','.'))||0;
+  const brl = v=>v.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const ext = async v=>{ try{ return (await api('/contratos/valor-extenso',{method:'POST',body:{valor:brl(v)}})).extenso; }catch(e){ return ''; } };
+  const man=num(d.valor_mensalidade), aut=num(d.valor_mensalidade_automatica), iman=num(d.valor_implantacao), iaut=num(d.valor_implantacao_automatica);
+  const temAut = aut>0 || iaut>0, temMan = man>0 || iman>0 || !temAut;
+  const det = (a,b)=> temMan && temAut ? `, sendo R$ ${brl(a)} pela emissão manual e R$ ${brl(b)} pela emissão automática` : '';
+  const cel = async (ok,v)=> ok ? `R$ ${brl(v)} (${await ext(v)})` : 'Não contratada';
+  return {
+    modulos_contratados: [temMan?'Módulo NFS-e – emissão manual':null, temAut?'Módulo NFS-e – emissão automática':null].filter(Boolean).join(' e '),
+    mensalidade_total: brl(man+aut), mensalidade_total_extenso: await ext(man+aut), mensalidade_detalhe: det(man,aut),
+    implantacao_total: brl(iman+iaut), implantacao_total_extenso: await ext(iman+iaut), implantacao_detalhe: det(iman,iaut),
+    anexo_mensal_manual: await cel(temMan,man), anexo_mensal_automatica: await cel(temAut,aut),
+    anexo_impl_manual: await cel(temMan,iman), anexo_impl_automatica: await cel(temAut,iaut),
+  };
+}
 async function recalcularTodosExtensos(){
   const todos = [...document.querySelectorAll('.drwCampo')];
   for(const inp of todos){
@@ -16096,7 +16117,12 @@ async function abrirContratoDrawer(id){
         }
         delete novosDados[anexoChave];
       }
+      const calcLicenca = await licencaCalcularValores(novosDados);
+      if(calcLicenca) Object.assign(novosDados, calcLicenca);
       let html = corpo.innerHTML;
+      // Licença: reaplicar com valores novos troca os textos calculados da aplicação anterior.
+      const ultimosCalc = corpo._ultimosCalc || {};
+      if(calcLicenca) for(const [k,v] of Object.entries(calcLicenca)){ const ant = ultimosCalc[k]; if(ant && ant!==v) html = html.split(esc(ant)).join(esc(v)); }
       // Reaplicar depois de mudar o total (ex.: anexo/serviços alterados): o {{valor_honorário}} já
       // virou texto na 1ª aplicação — troca o valor e o extenso aplicados antes pelos novos.
       const ultimo = corpo._ultimoHonorario;
@@ -16131,6 +16157,8 @@ async function abrirContratoDrawer(id){
         const valor = novosDados[chave];
         if(valor) html = html.split('{{'+chave+'}}').join(esc(valor));
       });
+      // Detalhamento vazio (só um tipo de emissão contratado) some do texto em vez de ficar o {{token}}.
+      if(calcLicenca){ for(const [k,v] of Object.entries(calcLicenca)) if(!v) html = html.split('{{'+k+'}}').join(''); corpo._ultimosCalc = calcLicenca; }
       corpo.innerHTML = html;
       if(vhNovo) corpo._ultimoHonorario = { vh: vhNovo, ext: novosDados['vlr_extenso'] || '' };
       corpo._ultimosPares = { ...ultimosPares, ...paresAgora };
