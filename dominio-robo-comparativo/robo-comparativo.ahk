@@ -251,6 +251,7 @@ TrocarEmpresa(codigo) {
     global T_CURTO, T_MEDIO, T_LONGO
     Loop 3 {
         tentativa := A_Index
+        ChecarParada()
         Send "{F8}"
         Sleep T_MEDIO
         aviso := AvisoFecharJanelas()
@@ -335,6 +336,7 @@ EsperarRender() {
     global T_RENDER_TIMEOUT
     inicio := A_TickCount
     while (A_TickCount - inicio < T_RENDER_TIMEOUT) {
+        ChecarParada()
         if (PixelSearch(&px, &py, 130, 150, 1600, 520, 0x000000, 70)) {
             Sleep 1500
             return "ok"
@@ -454,6 +456,7 @@ ProcessarEmpresa(codigo, compIni, compFim) {
         return "sem_troca"
     }
     Logar("  [2] apos F8/troca empresa: " . ListarJanelasDominio())
+    ChecarParada()
     AbrirComparativo()
     Logar("  [3] apos Favoritos/Comparativo: " . ListarJanelasDominio())
     st := PreencherEGerar(compIni, compFim)
@@ -476,14 +479,17 @@ ProcessarEmpresa(codigo, compIni, compFim) {
     }
     ; --- Salvar em PDF ---
     ; Relatorios GRANDES demoram pra terminar de desenhar: espera antes de mandar o Ctrl+D.
+    ChecarParada()
     Sleep 8000
     Click("700 260")
     Sleep T_CURTO
     Send "^d"
     ; ESPERA a janela "Salvar em PDF" abrir DE VERDADE (relatorio grande gera o PDF e demora ate ~30s).
     ini := A_TickCount
-    while (!WinExist("Salvar em PDF") && (A_TickCount - ini) < 30000)
+    while (!WinExist("Salvar em PDF") && (A_TickCount - ini) < 30000) {
+        ChecarParada()
         Sleep 500
+    }
     if !WinExist("Salvar em PDF") {   ; nao abriu -> pode ser erro de caminho: OK e espera de novo
         Send "{Enter}"
         Sleep 5000
@@ -520,6 +526,7 @@ ProcessarEmpresaVerificado(codigo, compIni, compFim) {
     global PASTA_LOCAL, MAX_TENTATIVAS, T_MEDIO
     caminho := PASTA_LOCAL . "\" . MontarNome(codigo, compIni, compFim)
     Loop MAX_TENTATIVAS {
+        ChecarParada()
         try FileDelete(caminho)          ; remove a versao anterior (vamos regerar)
         st := ProcessarEmpresa(codigo, compIni, compFim)
         if (st = "pular") {              ; sem dados / tela nao abriu -> NAO repete, segue pra proxima
@@ -536,6 +543,7 @@ ProcessarEmpresaVerificado(codigo, compIni, compFim) {
                 Logar("Empresa " . codigo . ": PDF confirmado (tentativa " . A_Index . ")")
                 return "ok"
             }
+            ChecarParada()
             Sleep 2000
         }
         ; Diagnostico do Bug 1 (1a empresa as vezes nao confirma): lista o que TEM na pasta com esse codigo,
@@ -600,6 +608,19 @@ AtualizarTempos(body) {
 DevePararSite() {
     body := HttpReq("GET", "/api/dominio-agent/comparativo-comando")
     return InStr(body, '"parar":true') ? true : false
+}
+
+; FREIO no meio da empresa: antes o "Parar robo" do site so era olhado ENTRE uma empresa e
+; outra, e uma empresa pode levar varios minutos (render, PDF, ate 3 tentativas). Agora as
+; esperas chamam isto; no maximo 1 consulta ao site a cada 5s. Se o site mandou parar, lanca
+; "PARADO" e o RodarCiclo encerra a execucao na hora.
+ChecarParada() {
+    static ultimo := 0
+    if (A_TickCount - ultimo < 5000)
+        return
+    ultimo := A_TickCount
+    if (DevePararSite())
+        throw Error("PARADO")
 }
 
 ReportarProgresso(rodando, total, feitas, atual, iniciando) {
@@ -689,6 +710,11 @@ RodarCiclo(compIni, compFim) {
         try {
             res := ProcessarEmpresaVerificado(e.codigo, compIni, compFim)
         } catch as err {
+            if (err.Message = "PARADO") {
+                Logar("=== PARADO pelo site (freio) no meio da empresa " . e.codigo . " apos " . feitas . "/" . total . " ===")
+                try LimparTelas()
+                break
+            }
             Logar("Empresa " . e.codigo . ": ERRO " . err.Message)
         }
         if (res = "ok")
