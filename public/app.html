@@ -10232,10 +10232,10 @@ function rtFornTabelaHtml(forn){
 }
 function rtNcmHtml(ncms){
   if(!ncms.length) return '<div class="empty-state">Sem itens.</div>';
-  return `<table class="data-table rt-tabela"><thead><tr><th>NCM</th><th>Produto</th><th>cClassTrib usado</th><th>Validação oficial</th><th class="num">Itens</th><th class="num">Fornecedores</th><th class="num">Valor</th></tr></thead><tbody>
-    ${ncms.map(n=>`<tr><td style="white-space:nowrap;"><b>${rtNcmFmt(n.ncm)}</b>${n.vigente?'':' <span style="color:#d03b3b;" title="Fora da lista de NCM vigentes">⛔</span>'}</td>
+  return `<table class="data-table rt-tabela"><thead><tr><th>NCM</th><th>Produto</th><th>CST / cClassTrib destacado</th><th>Validação oficial</th><th class="num">Itens</th><th class="num">Fornecedores</th><th class="num">Valor</th></tr></thead><tbody>
+    ${ncms.map(n=>`<tr><td style="white-space:nowrap;"><b>${n.ncm?rtNcmFmt(n.ncm):'<span class="rt-mut">sem NCM</span>'}</b>${n.vigente?'':' <span style="color:#d03b3b;" title="Fora da lista de NCM vigentes">⛔</span>'}</td>
       <td>${esc(n.descricao)}${n.descricaoOficial?`<div class="rt-mut" style="font-size:11px;">TEC: ${esc(n.descricaoOficial)}</div>`:''}</td>
-      <td>${n.cClassTribs.length?n.cClassTribs.map(c=>`<code>${esc(c)}</code>`).join(' '):'<span class="rt-mut">sem grupo IBS/CBS</span>'}</td>
+      <td>${(n.classes&&n.classes.length)?n.classes.map(c=>`<div style="white-space:nowrap;" title="${esc(c.nome||'')}">CST <code>${esc(c.cst||'—')}</code> · <code>${esc(c.cClassTrib)}</code></div>${c.nome?`<div class="rt-mut" style="font-size:11px; margin-bottom:3px;">${esc(c.nome)}</div>`:''}`).join(''):n.cClassTribs.length?n.cClassTribs.map(c=>`<code>${esc(c)}</code>`).join(' '):'<span class="rt-mut">sem grupo IBS/CBS</span>'}</td>
       <td>${rtChip(RT_NCM_STATUS[n.status]||RT_NCM_STATUS.ok)}</td>
       <td class="num">${rtNum(n.itens)}</td><td class="num">${rtNum(n.fornecedores)}</td><td class="num">${rtBRL(n.valor)}</td></tr>`).join('')}
   </tbody></table>`;

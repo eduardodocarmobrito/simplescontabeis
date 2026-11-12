@@ -12888,17 +12888,23 @@ function reformaCalcularAuditoria(escritorioId: number, empresaId: number, de: s
     }
     fornMap.set(parte.cnpj, f);
     for (const it of nt.itens) {
-      if (!it.ncm) continue;
-      const nn = ncmMap.get(it.ncm) || { ncm: it.ncm, descricao: it.xProd, descricaoOficial: reformaAuditoria.descricaoNcm(it.ncm), vigente: reformaAuditoria.ncmVigenteHoje(it.ncm), naoVigente: 0, cClassTribs: new Set<string>(), valor: 0, itens: 0, semGrupo: 0, foraAnexo: 0, reducaoEsquecida: 0, pendente: 0, fornecedores: new Set<string>() };
+      // Item sem NCM (frete do CT-e / serviço): entra no mapa numa linha própria por CFOP, pra mostrar o
+      // CST/cClassTrib destacado mesmo quando está tudo certo.
+      const chaveMapa = it.ncm || `sem-ncm|${nt.mod === "57" ? "cte" : "serv"}|${it.cfop}`;
+      const nn = ncmMap.get(chaveMapa) || { ncm: it.ncm, descricao: it.ncm ? it.xProd : nt.mod === "57" ? `Frete — prestação de serviço de transporte (CT-e, CFOP ${it.cfop})` : it.xProd, descricaoOficial: it.ncm ? reformaAuditoria.descricaoNcm(it.ncm) : null, vigente: it.ncm ? reformaAuditoria.ncmVigenteHoje(it.ncm) : true, naoVigente: 0, cClassTribs: new Set<string>(), classes: new Map<string, any>(), valor: 0, itens: 0, semGrupo: 0, foraAnexo: 0, reducaoEsquecida: 0, pendente: 0, fornecedores: new Set<string>() };
       nn.itens++; nn.valor += it.vProd; nn.fornecedores.add(parte.cnpj);
-      if (it.cClassTrib) nn.cClassTribs.add(it.cClassTrib); else nn.semGrupo++;
+      if (it.cClassTrib) {
+        nn.cClassTribs.add(it.cClassTrib);
+        const k = `${it.cst || ""}|${it.cClassTrib}`;
+        if (!nn.classes.has(k)) nn.classes.set(k, { cst: it.cst || null, cClassTrib: it.cClassTrib, nome: reformaAuditoria.infoCClassTrib(it.cClassTrib)?.nome || null });
+      } else nn.semGrupo++;
       const regrasItem = r.achados.filter((a) => a.nItem === it.nItem).map((a) => a.regra);
       if (regrasItem.includes("NCM_NAO_VIGENTE") || regrasItem.includes("NCM_INVALIDO")) nn.naoVigente++;
       if (regrasItem.includes("NCM_FORA_ANEXO")) nn.foraAnexo++;
       if (regrasItem.includes("REDUCAO_ESQUECIDA")) nn.reducaoEsquecida++;
       const cls = it.cClassTrib ? reformaAuditoria.infoCClassTrib(it.cClassTrib) : null;
-      if (cls?.anexo && reformaConsultaNcm(cls.cClassTrib, it.ncm, Number(nt.dhEmi.slice(0, 4))) === undefined) nn.pendente++;
-      ncmMap.set(it.ncm, nn);
+      if (it.ncm && cls?.anexo && reformaConsultaNcm(cls.cClassTrib, it.ncm, Number(nt.dhEmi.slice(0, 4))) === undefined) nn.pendente++;
+      ncmMap.set(chaveMapa, nn);
     }
   }
   const sevPeso: Record<string, number> = { alta: 0, media: 1, baixa: 2, info: 3 };
@@ -12936,7 +12942,7 @@ function reformaCalcularAuditoria(escritorioId: number, empresaId: number, de: s
     };
   }).sort((a, b) => b.perda2027Anual - a.perda2027Anual || b.alta - a.alta || b.valor - a.valor);
   const ncms = [...ncmMap.values()].map((nn) => ({
-    ncm: nn.ncm, descricao: nn.descricao, descricaoOficial: nn.descricaoOficial, vigente: nn.vigente, cClassTribs: [...nn.cClassTribs],
+    ncm: nn.ncm, descricao: nn.descricao, descricaoOficial: nn.descricaoOficial, vigente: nn.vigente, cClassTribs: [...nn.cClassTribs], classes: [...nn.classes.values()],
     valor: r2(nn.valor), itens: nn.itens, fornecedores: nn.fornecedores.size,
     status: nn.naoVigente ? "ncm_vencido" : nn.foraAnexo ? "fora_anexo" : nn.reducaoEsquecida ? "reducao_esquecida" : nn.pendente ? "pendente" : nn.semGrupo === nn.itens ? "sem_grupo" : "ok",
     naoVigente: nn.naoVigente, foraAnexo: nn.foraAnexo, reducaoEsquecida: nn.reducaoEsquecida, semGrupo: nn.semGrupo,
