@@ -11,6 +11,9 @@ export interface AutentiqueSigner {
   comoAssina?: "SIGN" | "SIGN_AS_A_WITNESS" | "APPROVE" | "RECOGNIZE";
   // Onde o carimbo da assinatura aparece no PDF: x/y = centro do campo em % da página, z = página (1ª = 1).
   posicoes?: { x: string; y: string; z: number; element: "SIGNATURE" | "NAME" | "DATE" | "CPF" }[];
+  // CPF (só dígitos) que a Autentique exige do signatário: só quem informar exatamente esse CPF assina
+  // (signers[].configs.cpf — docs "Criando um documento", Additional Validations).
+  cpf?: string;
 }
 
 async function chamarApi(token: string, body: FormData | string, extraHeaders: Record<string, string> = {}) {
@@ -45,6 +48,8 @@ export async function criarDocumento(opts: {
     const item: Record<string, any> = { action: s.comoAssina || "SIGN" };
     if (s.nome) item.name = s.nome;
     if (s.posicoes?.length) item.positions = s.posicoes;
+    const cpf = String(s.cpf || "").replace(/\D/g, "");
+    if (cpf.length === 11) item.configs = { cpf };
     if (s.email) {
       item.email = s.email;
     } else if (s.telefone) {

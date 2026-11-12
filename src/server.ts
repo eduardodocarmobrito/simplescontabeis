@@ -24650,9 +24650,20 @@ app.delete("/api/contratos/:id", blockCliente, requirePermissao("contratos", "ed
   sqlite.prepare(`DELETE FROM contratos WHERE id = ?`).run(Number(req.params.id));
   res.json({ ok: true });
 });
+// CPF do representante legal nos dados do contrato — o nome da variável muda de modelo pra modelo
+// (CPF_Representante_Legal, CPF_representante_legal, cpf_representante...). Só aceita 11 dígitos.
+function contratoCpfRepresentante(dados: Record<string, any>): string | undefined {
+  const chave = Object.keys(dados || {}).find((k) => /cpf/i.test(k) && /represent/i.test(k) && String(dados[k] || "").replace(/\D/g, "").length === 11);
+  return chave ? String(dados[chave]).replace(/\D/g, "") : undefined;
+}
 async function contratoObterPdf(row: any): Promise<Buffer> {
   if (row.ultimo_pdf_path && fs.existsSync(row.ultimo_pdf_path)) return fs.readFileSync(row.ultimo_pdf_path);
-  const pdf = await contratos.gerarPdfContrato(row.conteudo_html, row.titulo);
+  // Variável que ficou sem preencher (ex.: testemunha não informada) sai em BRANCO no PDF, em vez do
+  // {{token}} cru. O nº do contrato é automático, então vira o número mesmo se ainda estiver cru.
+  let html = String(row.conteudo_html || "");
+  if (row.numero_sequencial != null) html = html.replace(/\{\{\s*n_contrato_sequencial\s*\}\}/gi, String(row.numero_sequencial).padStart(2, "0"));
+  html = html.replace(/\{\{\s*[^{}<>]{1,80}?\s*\}\}/g, "");
+  const pdf = await contratos.gerarPdfContrato(html, row.titulo);
   const destino = contratos.caminhoPdfContrato(row.id);
   fs.writeFileSync(destino, pdf);
   sqlite.prepare(`UPDATE contratos SET ultimo_pdf_path = ? WHERE id = ?`).run(destino, row.id);
@@ -24739,7 +24750,8 @@ app.post("/api/contratos/:id/enviar-assinatura", blockCliente, requirePermissao(
   if (!clienteEmail && !clienteTelefone) return res.status(400).json({ error: "O cadastro desta empresa não tem e-mail nem telefone — informe pelo menos um pra enviar." });
   const signers: autentique.AutentiqueSigner[] = [
     ...socios.map((s) => ({ nome: s.nome, email: s.email || undefined, telefone: autentique.normalizarTelefoneBR(s.telefone), comoAssina: "SIGN" as const })),
-    { nome: dados.nome_representante_legal || row.titulo, email: clienteEmail || undefined, telefone: clienteTelefone, comoAssina: "SIGN" },
+    // CPF do representante legal travado na Autentique (configs.cpf): só assina quem digitar esse CPF.
+    { nome: dados.nome_representante_legal || row.titulo, email: clienteEmail || undefined, telefone: clienteTelefone, comoAssina: "SIGN", cpf: contratoCpfRepresentante(dados) },
   ];
   const testemunhaDe: (number | undefined)[] = signers.map(() => undefined);
   for (const n of [1, 2]) {
@@ -26521,6 +26533,12 @@ async function reajustarModulosPorIpca(): Promise<void> {
 setTimeout(() => void reajustarModulosPorIpca().catch((e) => console.error("[reajuste]", e.message)), 5 * 60_000);
 setInterval(() => void reajustarModulosPorIpca().catch((e) => console.error("[reajuste]", e.message)), 6 * 3600_000);
 
+// PDF guardado de contrato ainda não enviado que tinha {{variável}} vazia: descarta pra regerar já em branco.
+if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'contrato_pdf_sem_tokens_20261112'`).get()) {
+  const r = sqlite.prepare(`UPDATE contratos SET ultimo_pdf_path = NULL WHERE autentique_document_id IS NULL AND ultimo_pdf_path IS NOT NULL AND conteudo_html LIKE '%{{%'`).run();
+  if (r.changes) console.log(`[migração] ${r.changes} PDF(s) de contrato com variável vazia descartado(s) pra regerar.`);
+  sqlite.exec(`INSERT INTO migracoes_unicas (chave) VALUES ('contrato_pdf_sem_tokens_20261112')`);
+}
 // Licença do Módulo NFS-e SEM fidelidade (pedido 2026-11-12): mês a mês, pago antes; sem pagamento o
 // módulo é suspenso no dia seguinte ao vencimento e o cliente vai pra tela de pagamento (é como o site já
 // funciona — assinatura_ativa_ate). Troca as cláusulas antigas (12 meses + renovação, aviso de 30 dias,
