@@ -17242,15 +17242,35 @@ async function integraContadorBuscarEmpresaInterno(
            WHERE a.empresa_id = ? AND t.nome = 'DARF - DCTF-Web' AND p.ano = ? AND p.mes = ? AND EXISTS (SELECT 1 FROM envio_documentos d WHERE d.periodo_id = p.id)`
         )
         .get(empresaId, Number(anoPA), Number(mesPA));
+      // Achado em auditoria (2026-11-12, JR Manutenção Industrial competência 08/2026): a guia DARF
+      // gerada pelo GERARGUIA31 NÃO é garantia de que a declaração estava fechada na hora — ela pode
+      // sair com a declaração ainda "Em Andamento" (valor provisório), e só mais tarde a declaração
+      // é efetivamente retificada/transmitida com valor diferente (inclusive com multa MAED por
+      // atraso). Quando já existe uma consulta real de situação (dctfweb_situacao) pra essa mesma
+      // competência dizendo que NÃO está ativa, a guia anexada não é confiável — tenta gerar de novo e,
+      // se conseguir, SUBSTITUI a guia antiga (forcarNovoDocumento, mesmo mecanismo do "Solicitar
+      // recálculo" manual) em vez de simplesmente pular.
+      const situacaoNaoAtiva = !jaEntregue
+        ? false
+        : (() => {
+            const sit = sqlite.prepare(`SELECT ativa FROM dctfweb_situacao WHERE empresa_id = ? AND periodo_apuracao = ?`).get(empresaId, `${anoPA}${mesPA}`) as any;
+            return !!sit && !sit.ativa;
+          })();
       try {
-        if (jaEntregue) throw Object.assign(new Error("já entregue"), { pular: true });
+        if (jaEntregue && !situacaoNaoAtiva) throw Object.assign(new Error("já entregue"), { pular: true });
         const guia = await integracontador.gerarGuiaDctfWeb(token, cnpjEscritorio, empresaCnpj, anoPA, mesPA);
         if (guia.pdfBase64) {
           const caminho = salvarPdfBase64EmCache(`darf_dctfweb_${empresaId}_${anoPA}${mesPA}_${Date.now()}`, guia.pdfBase64);
           sqlite
             .prepare(`INSERT INTO integracontador_documentos (empresa_id, escritorio_id, tipo, periodo_apuracao, pdf_path) VALUES (?, ?, 'darf_dctfweb', ?, ?)`)
             .run(empresaId, empConfig.escritorio_id, guia.periodoApuracao, caminho);
-          integraContadorAnexarDarfDctfwebEmEnvio(empConfig.escritorio_id, empresaId, guia, "DARF (DCTF-Web) — gerado automaticamente pela busca do Integra Contador.");
+          integraContadorAnexarDarfDctfwebEmEnvio(
+            empConfig.escritorio_id,
+            empresaId,
+            guia,
+            "DARF (DCTF-Web) — gerado automaticamente pela busca do Integra Contador.",
+            situacaoNaoAtiva
+          );
           novos++;
         }
       } catch (e: any) {
@@ -23795,13 +23815,23 @@ function cardEnvioAtraso(user: any, templateIds: number[]): any[] {
     // emitida a qualquer momento do mês — já DRE/Balancete/Razão Contábil (considera_mes_atual=0)
     // só existem depois que o mês fecha, então param no mês anterior, igual DAS e Solicitações.
     const incluirMesAtual = !!atrib.considerarMesAtual;
+    // DARF - DCTF-Web: ter documento anexado não garante que a declaração estava fechada quando a
+    // guia foi gerada (ver achado 2026-11-12, JR Manutenção Industrial 08/2026 — GERARGUIA31 pode
+    // devolver PDF com a declaração ainda "Em Andamento"). Quando já existe consulta real de situação
+    // (dctfweb_situacao) pra essa competência dizendo que NÃO está ativa, a guia anexada não conta —
+    // a competência volta a aparecer aqui como pendente (a busca automática tenta gerar/substituir a
+    // guia sozinha, ver integraContadorBuscarEmpresaInterno).
+    const ehDctfweb = atrib.templateNome === "DARF - DCTF-Web" || atrib.templateNome === "DARF-DCTF-Web";
+    const sitDctfStmt = ehDctfweb ? sqlite.prepare(`SELECT ativa FROM dctfweb_situacao WHERE empresa_id = ? AND periodo_apuracao = ?`) : null;
     while ((ano < agora.ano || (ano === agora.ano && (incluirMesAtual ? mes <= agora.mes : mes < agora.mes))) && iteracoes < 60) {
       iteracoes++;
       if (suspensoAnoMes !== null && ano * 100 + mes >= suspensoAnoMes) break;
       const chave = `${ano}${String(mes).padStart(2, "0")}`;
       const periodo = porCompetencia.get(chave);
       const temDocumento = periodo ? sqlite.prepare(`SELECT 1 FROM envio_documentos WHERE periodo_id = ?`).get(periodo.id) : null;
-      if (!temDocumento && !(periodo && periodo.semMovimento)) competenciasFaltando.push(`${String(mes).padStart(2, "0")}/${ano}`);
+      const sit = sitDctfStmt ? (sitDctfStmt.get(atrib.empresaId, chave) as any) : null;
+      const guiaNaoConfiavel = !!sit && !sit.ativa;
+      if ((!temDocumento || guiaNaoConfiavel) && !(periodo && periodo.semMovimento)) competenciasFaltando.push(`${String(mes).padStart(2, "0")}/${ano}`);
       mes += passoMes;
       while (mes > 12) {
         mes -= 12;
