@@ -4507,7 +4507,7 @@ async function renderEmpresasRelatorio(){
       </div>
       <div style="max-height:68vh; overflow:auto;">
         <table class="data-table" style="font-size:12.5px;"><tbody>
-          ${lista.length? lista.map((e,i)=>`<tr><td style="width:34px; color:var(--ink-soft); text-align:right;">${i+1}</td><td>${esc(e.nome)}</td></tr>`).join('') : '<tr><td style="color:var(--ink-soft); padding:14px;">Nenhuma empresa.</td></tr>'}
+          ${lista.length? lista.map((e,i)=>`<tr class="relEmpLinha" data-id="${e.id}" style="cursor:pointer;" title="Abrir o cadastro"><td style="width:34px; color:var(--ink-soft); text-align:right;">${i+1}</td><td>${esc(e.nome)}</td></tr>`).join('') : '<tr><td style="color:var(--ink-soft); padding:14px;">Nenhuma empresa.</td></tr>'}
         </tbody></table>
       </div>
     </div>`;
@@ -4517,6 +4517,11 @@ async function renderEmpresasRelatorio(){
     <div class="row" style="gap:12px; align-items:flex-start; flex-wrap:wrap;">
       ${regimes.map(quadro).join('')}
     </div>`;
+  // Clicar numa empresa abre o cadastro dela (mesmo modal do "Editar" da lista de Ativas).
+  box.querySelectorAll('.relEmpLinha').forEach(tr=>tr.addEventListener('click', ()=>{
+    const emp = items.find(x=>x.id===Number(tr.dataset.id));
+    if(emp) empresaModal(emp);
+  }));
 }
 // Aba "Checklist": consolida num só lugar as ~20 flags/configurações por empresa que hoje ficam
 // espalhadas em telas diferentes (modal de empresa, NFS-e, Busca de XML, Integra Contador,
