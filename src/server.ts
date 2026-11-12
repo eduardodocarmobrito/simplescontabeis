@@ -24007,7 +24007,9 @@ async function regularizeSincronizar(escritorioId: number): Promise<{ novos: num
     // "Todos os e-mails" pega também o que já foi arquivado/lido na caixa; sem ela, só a Caixa de entrada.
     const pastas = await client.list();
     const todos = pastas.find((p: any) => p.specialUse === "\\All")?.path || "INBOX";
-    const ultimo = (sqlite.prepare(`SELECT MAX(recebido_em) as m FROM regularize_avisos WHERE escritorio_id = ?`).get(escritorioId) as any)?.m;
+    // Começa do aviso mais antigo ainda sem contribuinte identificado (pra reler) ou, se não houver, do último recebido.
+    const semDoc = (sqlite.prepare(`SELECT MIN(recebido_em) as m FROM regularize_avisos WHERE escritorio_id = ? AND documento IS NULL`).get(escritorioId) as any)?.m;
+    const ultimo = semDoc || (sqlite.prepare(`SELECT MAX(recebido_em) as m FROM regularize_avisos WHERE escritorio_id = ?`).get(escritorioId) as any)?.m;
     const desde = ultimo ? new Date(new Date(ultimo.replace(" ", "T") + "Z").getTime() - 3 * 86400_000) : new Date(Date.now() - 30 * 86400_000);
     const lock = await client.getMailboxLock(todos);
     try {
