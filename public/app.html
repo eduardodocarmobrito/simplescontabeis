@@ -7541,7 +7541,7 @@ async function pageNotasEntrada(){
       <div class="tab" data-direcao="emitida">Notas emitidas</div>
     </div>
     <div class="card" id="neDashCard">
-      <h3 style="margin:0;">📊 Resumo (NF-e / NFC-e)</h3>
+      <h3 style="margin:0;">📊 Resumo (NF-e / NFC-e / CT-e emitido)</h3>
       <div style="font-size:11.5px; color:var(--ink-soft); margin-top:2px;">Segue o filtro de data logo abaixo.</div>
       <div id="neDashBody" style="margin-top:12px;"><div class="empty-state">Carregando…</div></div>
     </div>
@@ -7600,7 +7600,7 @@ async function pageNotasEntrada(){
     body.innerHTML = `
       <div class="row" style="gap:10px; flex-wrap:wrap; align-items:stretch;">
         ${tile('Total de notas', d.total, '')}
-        ${saida ? tile('Emitidas', d.emitidas.qtd, fmtMoney(d.emitidas.valor)) : tile('Recebidas', d.recebidas.qtd, fmtMoney(d.recebidas.valor))}
+        ${saida ? tile('Emitidas', d.emitidas.qtd, fmtMoney(d.emitidas.valor) + (d.emitidas.cte && d.emitidas.cte.qtd ? ` · ${d.emitidas.cte.qtd} CT-e (${fmtMoney(d.emitidas.cte.valor)})` : '')) : tile('Recebidas', d.recebidas.qtd, fmtMoney(d.recebidas.valor))}
         ${tile('Autorizadas', d.autorizadas, '', 'var(--accent-deep)')}
         ${tile('Canceladas', d.canceladas, '', d.canceladas?'var(--debit)':'')}
         ${tile('Com IBS/CBS', d.comReforma, 'reforma', 'var(--accent-deep)')}
@@ -10573,7 +10573,7 @@ async function pageNfeBusca(){
         <div id="nfeConfigBody"></div>
       </div>
       <div class="card" id="nfeDashCard">
-        <h3 style="margin:0;">📊 Resumo (NF-e / NFC-e)</h3>
+        <h3 style="margin:0;">📊 Resumo (NF-e / NFC-e / CT-e emitido)</h3>
         <div style="font-size:11.5px; color:var(--ink-soft); margin-top:2px;">Segue o filtro de data de "Documentos", logo abaixo.</div>
         <div id="nfeDashBody" style="margin-top:12px;"><div class="empty-state">Carregando…</div></div>
       </div>
@@ -10668,7 +10668,7 @@ async function pageNfeBusca(){
         <div class="row" style="gap:10px; flex-wrap:wrap; align-items:stretch;">
           ${tile('Total de notas', d.total, '')}
           ${tile('Recebidas', d.recebidas.qtd, fmtMoney(d.recebidas.valor))}
-          ${tile('Emitidas', d.emitidas.qtd, fmtMoney(d.emitidas.valor))}
+          ${tile('Emitidas', d.emitidas.qtd, fmtMoney(d.emitidas.valor) + (d.emitidas.cte && d.emitidas.cte.qtd ? ` · ${d.emitidas.cte.qtd} CT-e (${fmtMoney(d.emitidas.cte.valor)})` : ''))}
           ${tile('Autorizadas', d.autorizadas, '', 'var(--accent-deep)')}
           ${tile('Canceladas', d.canceladas, '', d.canceladas?'var(--debit)':'')}
           ${tile('Com IBS/CBS', d.comReforma, 'reforma', 'var(--accent-deep)')}

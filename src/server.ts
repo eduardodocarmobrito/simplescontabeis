@@ -12071,7 +12071,17 @@ function nfeListarDocumentosQuery(
   // nenhuma pro escritório (achado ao vivo: "Registro de Passagem", "MDF-e Autorizado" etc. — mais
   // de 3900 eventos capturados, nenhum era cancelamento de verdade) — só evento com "Cancelamento"
   // na descrição (xEvento) tem valor de ficar na listagem; o resto fica só escondido, sem apagar.
-  const condicoes: string[] = [`d.escritorio_id = ?`, `d.empresa_id IN (${placeholders})`, `(d.tipo != 'evento' OR d.evento_descricao LIKE '%ancela%')`];
+  // Cancelamento da própria nota (NF-e/CT-e/NFS-e) não vira linha separada: a nota original já aparece
+  // riscada em vermelho como "Cancelada". A linha do evento só aparece se a nota original não estiver
+  // aqui (sem ela, não teria onde mostrar o cancelamento). Eventos de terceiros com "Cancelamento" no
+  // nome ("MDF-e Cancelado", "Registro de Cancelamento de CT-e para a NF-e"...) ficam escondidos.
+  // Filtrando Tipo = evento, mostra todos os cancelamentos como antes.
+  const eventoVisivel =
+    tipo === "evento"
+      ? `d.evento_descricao LIKE '%ancela%'`
+      : `(d.evento_descricao LIKE '%ancela%' AND d.evento_descricao NOT LIKE '%CT-e%' AND d.evento_descricao NOT LIKE '%MDF-e%'
+          AND NOT EXISTS (SELECT 1 FROM nfe_documentos o WHERE o.empresa_id = d.empresa_id AND o.chave_acesso = d.chave_acesso AND o.tipo != 'evento'))`;
+  const condicoes: string[] = [`d.escritorio_id = ?`, `d.empresa_id IN (${placeholders})`, `(d.tipo != 'evento' OR ${eventoVisivel})`];
   const params: any[] = [user.escritorioId, ...empresasIds];
   if (tipo) {
     condicoes.push(`d.tipo = ?`);
@@ -12251,6 +12261,8 @@ app.get("/api/nfe/documentos", blockCliente, requirePermissao("nfe-busca", "visu
 // Reaproveitado pelo /dashboard (JSON pra tela) e pelo /exportar-analitico-pdf (cabeçalho do relatório
 // com os dois painéis — Perfil das Notas + Impostos no período — igual ao que a tela mostra).
 function nfeCalcularDashboard(user: any, empresaId: number, dataDe: string | null, dataAte: string | null, direcao?: "emitida" | "recebida" | null) {
+  // CT-e EMITIDO pela própria empresa (transportadora) entra nos KPIs (total/emitidas/autorizadas/canceladas)
+  // junto com as NF-e — o filtro de tipo é trocado só na consulta dos KPIs (ver whereKpi abaixo).
   const cond: string[] = [`d.escritorio_id = ?`, `d.empresa_id = ?`, `d.tipo IN ('nfe','nfce')`];
   const params: any[] = [user.escritorioId, empresaId];
   if (dataDe) {
@@ -12274,20 +12286,23 @@ function nfeCalcularDashboard(user: any, empresaId: number, dataDe: string | nul
   // mudaria. direcao=null/undefined (telas do escritório) mantém o total combinado, como sempre foi.
   const whereDir = direcao === "emitida" ? `${where} AND ${emitExpr}` : direcao === "recebida" ? `${where} AND NOT (${emitExpr})` : where;
   const canceladaExpr = `EXISTS (SELECT 1 FROM nfe_documentos ev WHERE ev.escritorio_id = d.escritorio_id AND ev.tipo='evento' AND ev.chave_acesso = d.chave_acesso AND ev.evento_descricao LIKE '%ancela%' AND ev.evento_descricao NOT LIKE '%CT-e%' AND ev.evento_descricao NOT LIKE '%MDF-e%')`;
+  const whereKpi = whereDir.replace(`d.tipo IN ('nfe','nfce')`, `(d.tipo IN ('nfe','nfce') OR (d.tipo = 'cte' AND ${emitExpr}))`);
   const r = sqlite
     .prepare(
       `SELECT COUNT(*) as total,
          SUM(CASE WHEN ${emitExpr} THEN 1 ELSE 0 END) as emitidasQtd,
-         SUM(CASE WHEN ${emitExpr} THEN COALESCE(d.valor_total,0) ELSE 0 END) as emitidasValor,
+         SUM(CASE WHEN ${emitExpr} AND NOT ${canceladaExpr} THEN COALESCE(d.valor_total,0) ELSE 0 END) as emitidasValor,
+         SUM(CASE WHEN d.tipo = 'cte' THEN 1 ELSE 0 END) as cteQtd,
+         SUM(CASE WHEN d.tipo = 'cte' AND NOT ${canceladaExpr} THEN COALESCE(d.valor_total,0) ELSE 0 END) as cteValor,
          SUM(CASE WHEN NOT (${emitExpr}) THEN 1 ELSE 0 END) as recebidasQtd,
-         SUM(CASE WHEN NOT (${emitExpr}) THEN COALESCE(d.valor_total,0) ELSE 0 END) as recebidasValor,
+         SUM(CASE WHEN NOT (${emitExpr}) AND NOT ${canceladaExpr} THEN COALESCE(d.valor_total,0) ELSE 0 END) as recebidasValor,
          SUM(CASE WHEN ${canceladaExpr} THEN 1 ELSE 0 END) as canceladasQtd,
          SUM(COALESCE(d.valor_total,0)) as valorTotal,
          SUM(COALESCE(d.valor_icms,0)) as icms, SUM(COALESCE(d.valor_pis,0)) as pis,
          SUM(COALESCE(d.valor_cofins,0)) as cofins, SUM(COALESCE(d.valor_ipi,0)) as ipi,
          SUM(COALESCE(d.valor_ibs,0)) as ibs, SUM(COALESCE(d.valor_cbs,0)) as cbs,
          SUM(CASE WHEN COALESCE(d.valor_ibs,0)>0 OR COALESCE(d.valor_cbs,0)>0 THEN 1 ELSE 0 END) as comReforma
-       FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id WHERE ${whereDir}`
+       FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id WHERE ${whereKpi}`
     )
     .get(...params) as any;
   // Perfil das Notas (estilo Espião): quantas notas têm cada marcador, dentro do mesmo período/escopo
@@ -12325,7 +12340,7 @@ function nfeCalcularDashboard(user: any, empresaId: number, dataDe: string | nul
     .get(...params) as any;
   return {
     total: r.total || 0,
-    emitidas: { qtd: r.emitidasQtd || 0, valor: r.emitidasValor || 0 },
+    emitidas: { qtd: r.emitidasQtd || 0, valor: r.emitidasValor || 0, cte: { qtd: r.cteQtd || 0, valor: r.cteValor || 0 } },
     recebidas: { qtd: r.recebidasQtd || 0, valor: r.recebidasValor || 0 },
     canceladas: r.canceladasQtd || 0,
     autorizadas: (r.total || 0) - (r.canceladasQtd || 0),
