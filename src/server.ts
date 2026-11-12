@@ -27135,6 +27135,20 @@ if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'dctfweb_situa
   );
   sqlite.exec(`INSERT INTO migracoes_unicas (chave) VALUES ('dctfweb_situacao_mensagem_limpa_20261112')`);
 }
+// Contatos fixos dos 2 sócios que sempre assinam contrato (pedido do usuário, 2026-11-12) — grava
+// também em socios_json pra bater com a prioridade de assinaturaSociosDeConfig (ver linha ~24660).
+if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'contratos_assinatura_socios_fixos_20261112'`).get()) {
+  const socios = [
+    { nome: "Eduardo do Carmo Brito", email: "contador.94@hotmail.com", telefone: "+5594991296138" },
+    { nome: "Elimarcer Fernandes Costa", email: "elimarcer.ie@gmail.com", telefone: "+5594991649036" },
+  ];
+  sqlite
+    .prepare(
+      `UPDATE contratos_assinatura_config SET socio1_nome=?, socio1_email=?, socio1_telefone=?, socio2_nome=?, socio2_email=?, socio2_telefone=?, socios_json=?, updated_at=datetime('now')`
+    )
+    .run(socios[0].nome, socios[0].email, socios[0].telefone, socios[1].nome, socios[1].email, socios[1].telefone, JSON.stringify(socios));
+  sqlite.exec(`INSERT INTO migracoes_unicas (chave) VALUES ('contratos_assinatura_socios_fixos_20261112')`);
+}
 // Unifica modelos de Envio de Documentos com o MESMO nome (pela chave de nomeModeloChave) — roda a cada
 // boot (barato) e é a rede de segurança caso algum caminho novo volte a criar duplicado. Fica o modelo
 // MAIS ANTIGO; as atribuições, períodos e documentos do duplicado são movidos pra ele (período da mesma

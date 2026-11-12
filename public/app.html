@@ -16288,12 +16288,11 @@ async function abrirContratoDrawer(id){
   try{ setupRte(drwScope.querySelector('.rte-toolbar'), corpo); }
   catch(e){ console.error('Editor do contrato indisponível:', e); }
   if(c.tipo==='contrato'){
-    try{ renderAssinaturaCard(c); }
-    catch(err){
+    Promise.resolve().then(()=>renderAssinaturaCard(c)).catch(err=>{
       console.error('Card de assinatura digital:', err);
       const bx = document.getElementById('drwAssinaturaCard');
       if(bx) bx.innerHTML = '<div style="font-size:12.5px; color:var(--debit);">Assinatura digital indisponível agora (os botões continuam funcionando).<br><span style="font-size:11px; color:var(--ink-soft);">Detalhe: '+esc(String(err&&err.message||err))+'</span></div>';
-    }
+    });
   }
 }
 function asValorCampoTestemunha(chave){
@@ -16333,14 +16332,23 @@ function ligarEnvioAssinatura(c, botaoId){
     }catch(e){ toast(e.message,'err'); }
   });
 }
-function renderAssinaturaCard(c){
+async function renderAssinaturaCard(c){
   const box = document.getElementById('drwAssinaturaCard');
   if(!box) return;
   const dados = c.dadosPreenchidos || {};
   if(!c.autentiqueDocumentId){
+    let socios = [];
+    try{ socios = (await api('/contratos/assinatura-config')).socios || []; }catch(e){ console.error('Config de sócios da assinatura:', e); }
+    const sociosHtml = socios.length
+      ? socios.map(s=>`<div>• ${esc(s.nome)} — ${esc(s.email||'sem e-mail')}${s.telefone?' · '+esc(s.telefone):''}</div>`).join('')
+      : '<div style="color:var(--debit);">Nenhum sócio configurado — configure em Contratos › Configurações antes de enviar.</div>';
     box.innerHTML = `
       <div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">Assinatura digital</div>
       <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-4px;">Envia o contrato pra assinatura eletrônica dos 2 sócios, do cliente e das testemunhas (quem você informar). Salve o contrato antes de enviar, pra assinatura sair com o texto final.</p>
+      <div style="font-size:12.5px; color:var(--ink-soft); background:var(--paper); border:1px solid var(--rule); border-radius:10px; padding:8px 10px; margin-bottom:10px;">
+        <div style="margin-bottom:4px;">Sempre assinam (fixo, todo contrato):</div>
+        ${sociosHtml}
+      </div>
       ${assinaturaFormularioEnvioHtml(c, dados)}
       <button class="btn primary small" id="asEnviarBtn">Enviar para assinatura</button>
     `;
