@@ -24013,7 +24013,8 @@ async function regularizeSincronizar(escritorioId: number): Promise<{ novos: num
     try {
       const uids = ((await client.search({ from: "regularize", since: desde }, { uid: true })) || []) as number[];
       if (!uids.length) return { novos: 0 };
-      const existe = sqlite.prepare(`SELECT 1 FROM regularize_avisos WHERE escritorio_id = ? AND message_id = ?`);
+      // Aviso já gravado mas sem contribuinte identificado: lê de novo (o padrão de leitura pode ter melhorado).
+      const existe = sqlite.prepare(`SELECT 1 FROM regularize_avisos WHERE escritorio_id = ? AND message_id = ? AND documento IS NOT NULL`);
       const pendentes: number[] = [];
       for await (const m of client.fetch(uids.join(","), { envelope: true }, { uid: true })) {
         const mid = m.envelope?.messageId || `uid-${m.uid}`;
@@ -24022,13 +24023,19 @@ async function regularizeSincronizar(escritorioId: number): Promise<{ novos: num
         if (!existe.get(escritorioId, mid)) pendentes.push(m.uid);
       }
       const inserir = sqlite.prepare(
-        `INSERT OR IGNORE INTO regularize_avisos (escritorio_id, message_id, empresa_id, documento, nome, assunto, recebido_em) VALUES (?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO regularize_avisos (escritorio_id, message_id, empresa_id, documento, nome, assunto, recebido_em) VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(escritorio_id, message_id) DO UPDATE SET empresa_id = excluded.empresa_id, documento = excluded.documento, nome = excluded.nome
+         WHERE regularize_avisos.documento IS NULL`
       );
       for (const uid of pendentes) {
         const msg = await client.fetchOne(String(uid), { source: true, envelope: true }, { uid: true });
         if (!msg || !msg.source) continue;
         const parsed = await simpleParser(msg.source);
-        const texto = (parsed.text || String(parsed.html || "").replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ");
+        // O aviso vem só em HTML, com acentos em entidades (Ol&aacute;) — decodifica antes de procurar o contribuinte.
+        const texto = (parsed.text || String(parsed.html || "").replace(/<[^>]+>/g, " "))
+          .replace(/&([a-z])(acute|grave|circ|tilde|cedil|uml);/gi, "$1")
+          .replace(/&amp;/g, "&").replace(/&nbsp;/g, " ").replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+          .replace(/\s+/g, " ");
         const m = texto.match(/Ol[áa],?\s*(.+?)\s*\((\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}|\d{3}\.?\d{3}\.?\d{3}-?\d{2})\)/i);
         const doc = m ? soDigitos(m[2]) : "";
         const nome = m ? m[1].trim().slice(0, 200) : "";
