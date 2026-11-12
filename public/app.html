@@ -16372,6 +16372,7 @@ async function renderAssinaturaCard(c){
   const assinatarios = c.assinatarios || [];
   box.innerHTML = `
     <div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">Assinatura digital — ${c.statusAssinatura==='assinado'?'<span class="tag ok">Assinado por todos</span>':c.statusAssinatura==='rejeitado'?'<span class="tag muted">Alguém rejeitou</span>':'<span class="tag muted">Aguardando assinaturas</span>'}</div>
+    <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-4px;">Se alguém não receber o e-mail da Autentique (ou travar no código de confirmação — e-mail errado, caixa de spam etc.), use o botão <b>Gerar link</b>/<b>Copiar link</b> da linha da pessoa e mande por WhatsApp, outro e-mail etc. Esse link abre a assinatura direto, sem passar pela confirmação de e-mail.</p>
     ${assinatarios.length?`
       <table class="data-table" style="margin-bottom:8px;">
         <thead><tr><th>Nome</th><th>E-mail</th><th>Status</th><th>Link</th></tr></thead>
@@ -16379,8 +16380,8 @@ async function renderAssinaturaCard(c){
           ${assinatarios.map(s=>{
             const pendente = !s.assinadoEm && !s.rejeitadoEm;
             const acaoLink = s.link
-              ? `<button class="btn small asCopiarLinkBtn" data-link="${esc(s.link)}">Copiar link</button>`
-              : (s.publicId && pendente ? `<button class="btn small asGerarLinkBtn" data-public-id="${esc(s.publicId)}">Gerar link</button>` : '—');
+              ? `<button class="btn small primary asCopiarLinkBtn" data-link="${esc(s.link)}">Copiar link</button>`
+              : (s.publicId && pendente ? `<button class="btn small primary asGerarLinkBtn" data-public-id="${esc(s.publicId)}">Gerar link</button>` : '—');
             return `<tr><td>${esc(s.nome||'')}</td><td>${esc(s.email||'')}</td><td>${s.assinadoEm?'Assinado':s.rejeitadoEm?'Rejeitado':s.visualizadoEm?'Visualizou':'Pendente'}</td><td>${acaoLink}</td></tr>`;
           }).join('')}
         </tbody>
@@ -16401,7 +16402,7 @@ async function renderAssinaturaCard(c){
       const r = await api('/contratos/'+c.id+'/gerar-link-assinatura', { method:'POST', body:{ publicId: btn.dataset.publicId } });
       await navigator.clipboard.writeText(r.link).catch(()=>{});
       toast('Link gerado e copiado! Cole no WhatsApp, e-mail etc.','ok');
-      btn.outerHTML = `<button class="btn small asCopiarLinkBtn" data-link="${esc(r.link)}">Copiar link</button>`;
+      btn.outerHTML = `<button class="btn small primary asCopiarLinkBtn" data-link="${esc(r.link)}">Copiar link</button>`;
       box.querySelector(`.asCopiarLinkBtn[data-link="${esc(r.link)}"]`)?.addEventListener('click', async ()=>{
         try{ await navigator.clipboard.writeText(r.link); toast('Link copiado! Cole no WhatsApp, e-mail etc.','ok'); }
         catch(e){ toast('Não consegui copiar automaticamente — link: '+r.link,'err'); }
