@@ -233,13 +233,13 @@ const LICENCA_NFSE_HTML = `
 <li>Os pagamentos serão feitos por Pix, boleto ou cartão gerados pela plataforma ou enviados pela LICENCIANTE, que emitirá a nota fiscal correspondente.</li>
 <li>Os valores incluem os tributos incidentes sobre o licenciamento (ISS, item 1.05 da lista anexa à Lei Complementar nº 116/2003), recolhidos pela LICENCIANTE, ressalvadas as retenções na fonte que a lei atribuir à LICENCIADA.</li>
 <li>Os valores serão reajustados a cada 12 (doze) meses pela variação positiva do IPCA/IBGE acumulada no período, ou por outro índice oficial que o substitua.</li>
-<li>O atraso no pagamento sujeitará a LICENCIADA a multa de 2% (dois por cento), juros de mora de 1% (um por cento) ao mês e correção monetária pelo IPCA, calculados <i>pro rata die</i>.</li>
-<li>Persistindo o atraso por mais de 15 (quinze) dias, a LICENCIANTE poderá, mediante aviso prévio de 5 (cinco) dias, suspender o acesso à emissão de novas notas até a regularização, preservados os dados e o acesso às notas já emitidas.</li>
+<li>Não há multa, juros nem cobrança de mensalidade referente a período em que o acesso esteve suspenso por falta de pagamento.</li>
+<li>A mensalidade é paga antecipadamente e libera o uso do Módulo NFS-e pelo mês correspondente. Não havendo pagamento até o vencimento, o acesso ao Módulo NFS-e será suspenso automaticamente no dia seguinte, independentemente de aviso, e a LICENCIADA será direcionada à tela de pagamento da plataforma; confirmado o pagamento, o acesso é restabelecido automaticamente. Durante a suspensão, os dados e as notas já emitidas ficam preservados.</li>
 </ol>
 
 <p class="clausula-titulo">CLÁUSULA QUINTA – DA VIGÊNCIA</p>
 <ol>
-<li>Este contrato vigora por 12 (doze) meses a partir de {{data_inicio}}, renovando-se automaticamente por iguais períodos, salvo manifestação contrária de qualquer das partes com antecedência mínima de 30 (trinta) dias do término.</li>
+<li>Este contrato vigora por prazo indeterminado a partir de {{data_inicio}}, sem prazo mínimo de permanência (sem fidelidade), renovando-se mês a mês com o pagamento de cada mensalidade.</li>
 </ol>
 
 <p class="clausula-titulo">CLÁUSULA SEXTA – DAS OBRIGAÇÕES DA LICENCIADA</p>
@@ -283,8 +283,8 @@ const LICENCA_NFSE_HTML = `
 
 <p class="clausula-titulo">CLÁUSULA DÉCIMA PRIMEIRA – DA RESCISÃO E DO ENCERRAMENTO</p>
 <ol>
-<li>Qualquer das partes poderá encerrar este contrato, sem multa, mediante aviso escrito com antecedência mínima de 30 (trinta) dias (art. 473 do Código Civil), sendo devidas as mensalidades até o fim do aviso.</li>
-<li>O contrato poderá ser rescindido de imediato, mediante notificação, em caso de descumprimento de cláusula não sanado em 10 (dez) dias após o aviso, ou de atraso de pagamento superior a 30 (trinta) dias.</li>
+<li>Por não haver fidelidade, qualquer das partes poderá encerrar este contrato a qualquer tempo, sem multa, mediante simples aviso por escrito (e-mail ou WhatsApp). O acesso permanece até o fim do mês já pago, sem devolução proporcional, e nenhuma nova mensalidade será cobrada.</li>
+<li>O contrato também se encerra, independentemente de aviso, se o acesso da LICENCIADA permanecer suspenso por falta de pagamento por mais de 30 (trinta) dias, e poderá ser rescindido mediante notificação em caso de descumprimento de cláusula não sanado em 10 (dez) dias após o aviso.</li>
 <li>Encerrado o contrato, a LICENCIADA terá 30 (trinta) dias para exportar os XMLs e PDFs de suas notas, período em que o acesso ficará limitado à consulta e ao download.</li>
 </ol>
 
@@ -337,7 +337,8 @@ const LICENCA_NFSE_HTML = `
 <tr><td>Implantação (valor único)</td><td>R$ {{valor_implantacao}} ({{implantacao_extenso}})</td></tr>
 <tr><td>Mensalidade da licença</td><td>R$ {{valor_mensalidade}} ({{mensalidade_extenso}})</td></tr>
 <tr><td>Vencimento da mensalidade</td><td>Todo dia {{dia_vencimento}}</td></tr>
-<tr><td>Início da vigência</td><td>{{data_inicio}} – 12 meses, com renovação automática</td></tr>
+<tr><td>Início da vigência</td><td>{{data_inicio}} – prazo indeterminado, sem fidelidade (mês a mês)</td></tr>
+<tr><td>Falta de pagamento</td><td>Suspensão automática do módulo no dia seguinte ao vencimento; volta a funcionar após o pagamento</td></tr>
 <tr><td>Reajuste</td><td>Anual, pelo IPCA/IBGE</td></tr>
 <tr><td>Suporte</td><td>Remoto, dias úteis, 8h às 18h (Brasília)</td></tr>
 </tbody>

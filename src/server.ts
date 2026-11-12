@@ -24527,9 +24527,13 @@ app.put("/api/contratos/:id", blockCliente, requirePermissao("contratos", "edita
   if (!existente || !podeAcessarEmpresa((req as any).user, existente.empresa_id)) return res.status(404).json({ error: "Contrato não encontrado." });
   const { titulo, conteudoHtml, status, dados } = req.body || {};
   const statusValido = ["rascunho", "ativo", "encerrado"].includes(status) ? status : existente.status;
+  // {{n_contrato_sequencial}} é automático: se ainda estiver cru no texto (texto colado/carregado depois
+  // da criação), troca pelo número do contrato com 2 dígitos ao salvar.
+  let conteudoSalvar = conteudoHtml !== undefined ? String(conteudoHtml) : existente.conteudo_html;
+  if (existente.numero_sequencial != null && conteudoSalvar) conteudoSalvar = String(conteudoSalvar).replace(/\{\{\s*n_contrato_sequencial\s*\}\}/gi, String(existente.numero_sequencial).padStart(2, "0"));
   sqlite
     .prepare(`UPDATE contratos SET titulo=?, conteudo_html=?, status=?, ultimo_pdf_path=NULL, updated_at=datetime('now') WHERE id=?`)
-    .run(titulo !== undefined ? String(titulo).trim() : existente.titulo, conteudoHtml !== undefined ? String(conteudoHtml) : existente.conteudo_html, statusValido, id);
+    .run(titulo !== undefined ? String(titulo).trim() : existente.titulo, conteudoSalvar, statusValido, id);
   // Persiste os valores dos campos editados (merge no dados_preenchidos) pra que reabrir o contrato
   // recarregue o que foi definido (serviços, valores, testemunhas etc.). Merge preserva as chaves que
   // não são campos de tela (dia/mês/ano/vlr_extenso/nº sequencial, gravadas na criação).
@@ -26418,6 +26422,31 @@ if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'modelo_licenc
     }
   }
   sqlite.exec(`INSERT INTO migracoes_unicas (chave) VALUES ('modelo_licenca_nfse_preencher_20261112')`);
+}
+// Licença do Módulo NFS-e SEM fidelidade (pedido 2026-11-12): mês a mês, pago antes; sem pagamento o
+// módulo é suspenso no dia seguinte ao vencimento e o cliente vai pra tela de pagamento (é como o site já
+// funciona — assinatura_ativa_ate). Troca as cláusulas antigas (12 meses + renovação, aviso de 30 dias,
+// multa/juros, suspensão só após 15+5 dias) nos modelos e nos contratos ainda não enviados pra assinatura.
+function licencaNfseSemFidelidade(html: string): string {
+  const li = (inicio: string) => new RegExp(`<li>${inicio}(?:(?!</li>)[\\s\\S])*?</li>`, "g");
+  return html
+    .replace(li("O atraso no pagamento sujeitará a LICENCIADA a multa de 2%"), "<li>Não há multa, juros nem cobrança de mensalidade referente a período em que o acesso esteve suspenso por falta de pagamento.</li>")
+    .replace(li("Persistindo o atraso por mais de 15 \\(quinze\\) dias"), "<li>A mensalidade é paga antecipadamente e libera o uso do Módulo NFS-e pelo mês correspondente. Não havendo pagamento até o vencimento, o acesso ao Módulo NFS-e será suspenso automaticamente no dia seguinte, independentemente de aviso, e a LICENCIADA será direcionada à tela de pagamento da plataforma; confirmado o pagamento, o acesso é restabelecido automaticamente. Durante a suspensão, os dados e as notas já emitidas ficam preservados.</li>")
+    .replace(/<li>Este contrato vigora por 12 \(doze\) meses a partir de ((?:(?!<\/li>)[\s\S])*?), renovando-se automaticamente por iguais períodos(?:(?!<\/li>)[\s\S])*?<\/li>/g, (_m, data) => `<li>Este contrato vigora por prazo indeterminado a partir de ${data}, sem prazo mínimo de permanência (sem fidelidade), renovando-se mês a mês com o pagamento de cada mensalidade.</li>`)
+    .replace(li("Qualquer das partes poderá encerrar este contrato, sem multa, mediante aviso escrito com antecedência mínima de 30"), "<li>Por não haver fidelidade, qualquer das partes poderá encerrar este contrato a qualquer tempo, sem multa, mediante simples aviso por escrito (e-mail ou WhatsApp). O acesso permanece até o fim do mês já pago, sem devolução proporcional, e nenhuma nova mensalidade será cobrada.</li>")
+    .replace(li("O contrato poderá ser rescindido de imediato, mediante notificação"), "<li>O contrato também se encerra, independentemente de aviso, se o acesso da LICENCIADA permanecer suspenso por falta de pagamento por mais de 30 (trinta) dias, e poderá ser rescindido mediante notificação em caso de descumprimento de cláusula não sanado em 10 (dez) dias após o aviso.</li>")
+    .replace(/<tr><td>Início da vigência<\/td><td>((?:(?!<\/td>)[\s\S])*?) – 12 meses, com renovação automática<\/td><\/tr>/g, (_m, data) => `<tr><td>Início da vigência</td><td>${data} – prazo indeterminado, sem fidelidade (mês a mês)</td></tr>\n<tr><td>Falta de pagamento</td><td>Suspensão automática do módulo no dia seguinte ao vencimento; volta a funcionar após o pagamento</td></tr>`);
+}
+if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'licenca_nfse_sem_fidelidade_20261112'`).get()) {
+  for (const m of sqlite.prepare(`SELECT id, conteudo_html FROM contratos_modelos WHERE conteudo_html LIKE '%Módulo NFS-e%' AND conteudo_html LIKE '%LICENCIADA%'`).all() as any[]) {
+    const novo = licencaNfseSemFidelidade(String(m.conteudo_html || ""));
+    if (novo !== m.conteudo_html) { sqlite.prepare(`UPDATE contratos_modelos SET conteudo_html = ?, updated_at = datetime('now') WHERE id = ?`).run(novo, m.id); console.log(`[migração] modelo #${m.id}: licença NFS-e sem fidelidade.`); }
+  }
+  for (const c of sqlite.prepare(`SELECT id, conteudo_html FROM contratos WHERE autentique_document_id IS NULL AND conteudo_html LIKE '%Módulo NFS-e%' AND conteudo_html LIKE '%LICENCIADA%'`).all() as any[]) {
+    const novo = licencaNfseSemFidelidade(String(c.conteudo_html || ""));
+    if (novo !== c.conteudo_html) { sqlite.prepare(`UPDATE contratos SET conteudo_html = ?, ultimo_pdf_path = NULL, updated_at = datetime('now') WHERE id = ?`).run(novo, c.id); console.log(`[migração] contrato #${c.id}: licença NFS-e sem fidelidade.`); }
+  }
+  sqlite.exec(`INSERT INTO migracoes_unicas (chave) VALUES ('licenca_nfse_sem_fidelidade_20261112')`);
 }
 // Unifica modelos de Envio de Documentos com o MESMO nome (pela chave de nomeModeloChave) — roda a cada
 // boot (barato) e é a rede de segurança caso algum caminho novo volte a criar duplicado. Fica o modelo
