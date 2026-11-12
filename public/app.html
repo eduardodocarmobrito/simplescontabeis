@@ -16375,7 +16375,13 @@ async function renderAssinaturaCard(c){
       <table class="data-table" style="margin-bottom:8px;">
         <thead><tr><th>Nome</th><th>E-mail</th><th>Status</th><th>Link</th></tr></thead>
         <tbody>
-          ${assinatarios.map(s=>`<tr><td>${esc(s.nome||'')}</td><td>${esc(s.email||'')}</td><td>${s.assinadoEm?'Assinado':s.rejeitadoEm?'Rejeitado':s.visualizadoEm?'Visualizou':'Pendente'}</td><td>${s.link?`<button class="btn small asCopiarLinkBtn" data-link="${esc(s.link)}">Copiar link</button>`:'—'}</td></tr>`).join('')}
+          ${assinatarios.map(s=>{
+            const pendente = !s.assinadoEm && !s.rejeitadoEm;
+            const acaoLink = s.link
+              ? `<button class="btn small asCopiarLinkBtn" data-link="${esc(s.link)}">Copiar link</button>`
+              : (s.publicId && pendente ? `<button class="btn small asGerarLinkBtn" data-public-id="${esc(s.publicId)}">Gerar link</button>` : '—');
+            return `<tr><td>${esc(s.nome||'')}</td><td>${esc(s.email||'')}</td><td>${s.assinadoEm?'Assinado':s.rejeitadoEm?'Rejeitado':s.visualizadoEm?'Visualizou':'Pendente'}</td><td>${acaoLink}</td></tr>`;
+          }).join('')}
         </tbody>
       </table>
     `:'<p style="font-size:12.5px; color:var(--ink-soft);">Ainda sem dados de status — clique em atualizar.</p>'}
@@ -16387,6 +16393,19 @@ async function renderAssinaturaCard(c){
   box.querySelectorAll('.asCopiarLinkBtn').forEach(btn=>btn.addEventListener('click', async ()=>{
     try{ await navigator.clipboard.writeText(btn.dataset.link); toast('Link copiado! Cole no WhatsApp, e-mail etc.','ok'); }
     catch(e){ toast('Não consegui copiar automaticamente — link: '+btn.dataset.link,'err'); }
+  }));
+  box.querySelectorAll('.asGerarLinkBtn').forEach(btn=>btn.addEventListener('click', async ()=>{
+    btn.disabled = true;
+    try{
+      const r = await api('/contratos/'+c.id+'/gerar-link-assinatura', { method:'POST', body:{ publicId: btn.dataset.publicId } });
+      await navigator.clipboard.writeText(r.link).catch(()=>{});
+      toast('Link gerado e copiado! Cole no WhatsApp, e-mail etc.','ok');
+      btn.outerHTML = `<button class="btn small asCopiarLinkBtn" data-link="${esc(r.link)}">Copiar link</button>`;
+      box.querySelector(`.asCopiarLinkBtn[data-link="${esc(r.link)}"]`)?.addEventListener('click', async ()=>{
+        try{ await navigator.clipboard.writeText(r.link); toast('Link copiado! Cole no WhatsApp, e-mail etc.','ok'); }
+        catch(e){ toast('Não consegui copiar automaticamente — link: '+r.link,'err'); }
+      });
+    }catch(e){ toast(e.message,'err'); btn.disabled = false; }
   }));
   document.getElementById('asAtualizarBtn').addEventListener('click', async ()=>{
     try{

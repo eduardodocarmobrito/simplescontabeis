@@ -25323,6 +25323,25 @@ app.post("/api/contratos/:id/reenviar-assinatura", blockCliente, requirePermissa
     res.status(502).json({ error: `Falha ao reenviar pela Autentique: ${e.message}` });
   }
 });
+// Gera um link avulso pra um signatário que já existe no documento (criado por e-mail/WhatsApp, sem
+// "somente link") — não manda nada de novo, só devolve o link pra copiar manualmente.
+app.post("/api/contratos/:id/gerar-link-assinatura", blockCliente, requirePermissao("contratos", "postar"), async (req, res) => {
+  const token = process.env.AUTENTIQUE_API_TOKEN;
+  const row = sqlite.prepare(`SELECT * FROM contratos WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!row || !podeAcessarEmpresa((req as any).user, row.empresa_id)) return res.status(404).json({ error: "Contrato não encontrado." });
+  if (!row.autentique_document_id) return res.status(400).json({ error: "Este contrato ainda não foi enviado para assinatura." });
+  if (!token) return res.status(400).json({ error: "Token da Autentique não configurado no servidor." });
+  const publicId = String(req.body?.publicId || "").trim();
+  const detalhe = JSON.parse(row.assinatura_detalhe_json || "[]") as any[];
+  if (!publicId || !detalhe.some((s) => s.publicId === publicId)) return res.status(400).json({ error: "Signatário não encontrado neste contrato — atualize o status e tente de novo." });
+  try {
+    const link = await autentique.criarLinkParaSignatario(token, publicId);
+    if (!link) return res.status(502).json({ error: "A Autentique não devolveu um link pra esse signatário." });
+    res.json({ link });
+  } catch (e: any) {
+    res.status(502).json({ error: `Falha ao gerar link pela Autentique: ${e.message}` });
+  }
+});
 app.get("/api/contratos/:id/status-assinatura", blockCliente, requirePermissao("contratos", "visualizar"), async (req, res) => {
   const token = process.env.AUTENTIQUE_API_TOKEN;
   const row = sqlite.prepare(`SELECT * FROM contratos WHERE id = ?`).get(Number(req.params.id)) as any;

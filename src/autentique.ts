@@ -141,6 +141,15 @@ export async function reenviarAssinaturas(token: string, publicIds: string[]): P
   return !!data.resendSignatures;
 }
 
+// Gera um link pra um signatário JÁ EXISTENTE (criado com e-mail/WhatsApp), sem mandar nada de novo
+// nem recriar o documento inteiro — pra quando alguém esqueceu de marcar "só gerar link" no envio
+// original e precisa do link avulso pra colar manualmente depois.
+export async function criarLinkParaSignatario(token: string, publicId: string): Promise<string | null> {
+  const query = `mutation CriarLink($id: UUID!) { createLinkToSignature(public_id: $id) { short_link } }`;
+  const data = await chamarApi(token, JSON.stringify({ query, variables: { id: publicId } }), { "Content-Type": "application/json" });
+  return data.createLinkToSignature?.short_link || null;
+}
+
 // Telefones no cadastro de empresas/testemunhas vêm sem DDI (ex.: "94999999999" ou com máscara
 // "(94) 99999-9999") — a Autentique exige E.164 (+55...) pra entrega por WhatsApp.
 export function normalizarTelefoneBR(telefone: string | null | undefined): string | undefined {
