@@ -10158,8 +10158,8 @@ function rtPainelHtml(d, urlPdf){
     <div class="rt-card-s">${rtNum(d.achadosTotal)} achado(s)${d.achadosTotal>d.achados.length?` (mostrando os ${rtNum(d.achados.length)} mais relevantes)`:''}. Cada um traz a tag do XML que comprova e como o fornecedor deveria ter emitido.</div>
     <div class="row" style="gap:10px; flex-wrap:wrap; margin:10px 0;">
       <div class="field" style="max-width:360px; flex:1; margin-bottom:0;"><input type="search" id="rtBuscaAch" placeholder="Pesquisar fornecedor, NF, NCM…" autocomplete="off" value="${esc(RT_BUSCA_ACH)}"></div>
-      <div class="field" style="width:170px; margin-bottom:0;"><select id="rtSev"><option value="">Todas as severidades</option>${Object.entries(RT_SEV).map(([v,s])=>`<option value="${v}" ${RT_FILTRO_SEV===v?'selected':''}>${s.ic} ${s.label}</option>`).join('')}</select></div>
-      <div class="field" style="width:260px; margin-bottom:0;"><select id="rtRegra"><option value="">Todas as regras</option>${d.regras.map(r=>`<option value="${esc(r.regra)}" ${RT_FILTRO_REGRA===r.regra?'selected':''}>${esc(r.titulo)}</option>`).join('')}</select></div>
+      <div class="field" style="width:220px; margin-bottom:0;">${comboSelectHtml('rtSev', 'Todas as severidades')}</div>
+      <div class="field" style="width:300px; margin-bottom:0;">${comboSelectHtml('rtRegra', 'Todas as regras')}</div>
     </div>
     <div id="rtAchadosLista"></div>
   </div>
@@ -10313,11 +10313,23 @@ function rtLigarPainel(painel, d, urlPdf){
   bf.addEventListener('input', ()=>{ RT_BUSCA_FORN = bf.value; renderForn(); });
   const ba = document.getElementById('rtBuscaAch');
   ba.addEventListener('input', ()=>{ RT_BUSCA_ACH = ba.value; renderAch(); });
-  document.getElementById('rtSev').addEventListener('change', e=>{ RT_FILTRO_SEV = e.target.value; renderAch(); });
-  document.getElementById('rtRegra').addEventListener('change', e=>{ RT_FILTRO_REGRA = e.target.value; renderAch(); });
+  // Combo com busca (padrão do site) no lugar dos <select> nativos — setSelecaoCombo() cobre tanto a
+  // escolha pelo próprio combo quanto o valor sendo forçado de fora (clique num chip de regra abaixo).
+  function setSelecaoCombo(comboId, itens, valor){
+    const el = document.getElementById(comboId);
+    const item = itens.find(it=>it.id===valor);
+    el.querySelector('.combo-input').value = item? item.label : '';
+    el.querySelector('.combo-value').value = item? item.id : '';
+  }
+  const rtSevItens = Object.entries(RT_SEV).map(([v,s])=>({ id:v, label:`${s.ic} ${s.label}` }));
+  const rtRegraItens = d.regras.map(r=>({ id:r.regra, label:r.titulo }));
+  setupComboSelect('rtSev', rtSevItens, id=>{ RT_FILTRO_SEV = id||''; renderAch(); });
+  setupComboSelect('rtRegra', rtRegraItens, id=>{ RT_FILTRO_REGRA = id||''; renderAch(); });
+  setSelecaoCombo('rtSev', rtSevItens, RT_FILTRO_SEV);
+  setSelecaoCombo('rtRegra', rtRegraItens, RT_FILTRO_REGRA);
   painel.querySelectorAll('.rt-regra').forEach(b=>b.addEventListener('click', ()=>{
     RT_FILTRO_REGRA = b.dataset.regra; RT_FILTRO_SEV = '';
-    document.getElementById('rtRegra').value = RT_FILTRO_REGRA; document.getElementById('rtSev').value = '';
+    setSelecaoCombo('rtRegra', rtRegraItens, RT_FILTRO_REGRA); setSelecaoCombo('rtSev', rtSevItens, '');
     renderAch(); document.getElementById('rtAchadosCard').scrollIntoView({ behavior:'smooth', block:'start' });
   }));
   document.getElementById('rtCsv').addEventListener('click', ()=>{
