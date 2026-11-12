@@ -5015,8 +5015,28 @@ app.get("/api/users", requireAdmin, (req, res) => {
     .all(user.escritorioId) as any[];
   // "Logado agora" reaproveita o heartbeat de presença do chat interno (mesmo ping que acende o
   // indicador de "online" nas conversas) — já roda pra Administrador/Colaborador/Cliente.
-  const comOnline = rows.map((r) => ({ ...r, online: chatUserOnline(r.id, user.escritorioId) }));
+  // Sessões abertas (login ainda válido em algum navegador) — habilita o botão "Deslogar".
+  const agoraIso = new Date().toISOString();
+  const sessoesPorUsuario = new Map<number, number>();
+  for (const s of sqlite.prepare(`SELECT s.user_id, COUNT(*) n FROM sessions s JOIN app_users u ON u.id = s.user_id WHERE u.escritorio_id = ? AND s.expires_at > ? GROUP BY s.user_id`).all(user.escritorioId, agoraIso) as any[]) {
+    sessoesPorUsuario.set(s.user_id, s.n);
+  }
+  const comOnline = rows.map((r) => ({ ...r, online: chatUserOnline(r.id, user.escritorioId), sessoesAtivas: sessoesPorUsuario.get(r.id) || 0, eu: r.id === user.id }));
   res.json({ items: comOnline });
+});
+// Administrador encerra todas as sessões de um usuário (logado e esquecido aberto em algum lugar).
+// Na próxima chamada à API (o heartbeat de presença roda sozinho a cada poucos segundos) a tela dele
+// recebe 401 e volta pro login. Não desativa o usuário: ele pode entrar de novo com a senha.
+app.post("/api/users/:id/deslogar", requireAdmin, (req, res) => {
+  const user = (req as any).user;
+  const id = Number(req.params.id);
+  const alvo = sqlite.prepare(`SELECT id, nome, escritorio_id FROM app_users WHERE id = ?`).get(id) as any;
+  if (!alvo || alvo.escritorio_id !== user.escritorioId) return res.status(404).json({ error: "Usuário não encontrado." });
+  if (alvo.id === user.id) return res.status(400).json({ error: "Pra sair da sua própria conta use o botão Sair do menu." });
+  const r = sqlite.prepare(`DELETE FROM sessions WHERE user_id = ?`).run(id);
+  sqlite.prepare(`DELETE FROM chat_presenca WHERE user_id = ?`).run(id);
+  console.log(`[usuarios] ${user.nome} deslogou ${alvo.nome} (#${id}) — ${r.changes} sessão(ões) encerrada(s).`);
+  res.json({ ok: true, sessoesEncerradas: Number(r.changes) });
 });
 app.post("/api/users", requireAdmin, (req, res) => {
   const user = (req as any).user;
