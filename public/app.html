@@ -703,6 +703,14 @@ body.theme-glass .modal{
 }
 body.theme-glass .modal::before{ content:none; }
 body.theme-glass .modal-bg{ background: rgba(0,0,0,.55); }
+/* Drawer (painel lateral): mesmo problema do modal — o vidro em ::before com 50% de opacidade e o blur
+   não funcionando dentro do painel que desliza (transform) deixavam a tela de trás aparecer misturada com
+   o conteúdo (achado ao vivo 2026-11-12, Reforma › fornecedor). Fundo quase opaco no próprio drawer. */
+body.theme-glass .drawer{
+  background: rgba(var(--glass-rgb,5,31,32),.97);
+}
+body.theme-glass .drawer::before{ content:none; }
+body.theme-glass .drawer-bg{ background: rgba(0,0,0,.55); }
 
 /* Só as tiles do dashboard (.kpi) ganham o "liquid glass" cheio: brilho especular + reflexo + hover. */
 body.theme-glass .kpi{
