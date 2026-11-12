@@ -14,6 +14,11 @@ export interface AutentiqueSigner {
   // CPF (só dígitos) que a Autentique exige do signatário: só quem informar exatamente esse CPF assina
   // (signers[].configs.cpf — docs "Criando um documento", Additional Validations).
   cpf?: string;
+  // true = não manda e-mail/WhatsApp automático (delivery_method LINK) — só gera o link de assinatura,
+  // pra quem enviou copiar e mandar manualmente (ex.: colar no WhatsApp de quem não tem e-mail aberto
+  // no momento). Achado real (2026-11-12): a Autentique só permite UM canal automático por
+  // signatário — não dá pra mandar e-mail E WhatsApp pro mesmo signatário ao mesmo tempo.
+  somenteLink?: boolean;
 }
 
 async function chamarApi(token: string, body: FormData | string, extraHeaders: Record<string, string> = {}) {
@@ -56,6 +61,8 @@ export async function criarDocumento(opts: {
       item.phone = s.telefone;
       item.delivery_method = "DELIVERY_METHOD_WHATSAPP";
     }
+    // Sobrescreve o canal automático (se houver) — gera só o link, sem mandar nada sozinha.
+    if (s.somenteLink) item.delivery_method = "DELIVERY_METHOD_LINK";
     return item;
   });
   // footer RIGHT = faixa na lateral DIREITA de TODAS as páginas com a marca de assinatura eletrônica e o
@@ -78,6 +85,9 @@ export interface AutentiqueStatusSignatario {
   visualizadoEm: string | null;
   assinadoEm: string | null;
   rejeitadoEm: string | null;
+  // Só vem preenchido pra signatário enviado com somenteLink (delivery_method LINK) — link direto
+  // pra página de assinatura, pra copiar e mandar manualmente (WhatsApp, e-mail, etc.).
+  link: string | null;
 }
 
 export async function consultarDocumento(token: string, id: string): Promise<{
@@ -90,7 +100,7 @@ export async function consultarDocumento(token: string, id: string): Promise<{
   const query = `query ConsultarDocumento($id: UUID!) {
     document(id: $id) {
       id name
-      signatures { public_id name email action { name } viewed { created_at } signed { created_at } rejected { created_at } }
+      signatures { public_id name email action { name } viewed { created_at } signed { created_at } rejected { created_at } link { short_link } }
       files { signed pades }
     }
   }`;
@@ -112,6 +122,7 @@ export async function consultarDocumento(token: string, id: string): Promise<{
     visualizadoEm: s.viewed?.created_at || null,
     assinadoEm: s.signed?.created_at || null,
     rejeitadoEm: s.rejected?.created_at || null,
+    link: s.link?.short_link || null,
   }));
   return {
     id: doc.id,

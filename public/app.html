@@ -16299,34 +16299,47 @@ function asValorCampoTestemunha(chave){
   const el = document.querySelector('.drwCampo[data-chave="'+chave+'"]');
   return el ? el.value.trim() : '';
 }
+function asSomenteLinkCheckboxHtml(id){
+  return `<label class="checkbox-row" style="margin:-4px 0 10px;"><input type="checkbox" id="${id}"> <span>Só gerar link (não manda e-mail/WhatsApp automático — você copia e manda manualmente)</span></label>`;
+}
 function assinaturaFormularioEnvioHtml(c, dados){
   return `
     <div class="row">
       <div class="field" style="flex:1;"><label>E-mail do cliente</label><input id="asEnvCliEmail" value="${esc(c.empresaEmail||dados.email_cliente||'')}"></div>
       <div class="field" style="flex:1;"><label>WhatsApp do cliente (opcional, com DDI)</label><input id="asEnvCliTel" value="${esc(c.empresaTelefone||'')}"></div>
     </div>
+    ${asSomenteLinkCheckboxHtml('asEnvCliSomenteLink')}
     <div class="row">
       <div class="field" style="flex:1;"><label>E-mail testemunha 1 (opcional)</label><input id="asEnvT1Email" value="${esc(asValorCampoTestemunha('testemunha1_email'))}"></div>
       <div class="field" style="flex:1;"><label>WhatsApp testemunha 1 (opcional)</label><input id="asEnvT1Tel"></div>
     </div>
+    ${asSomenteLinkCheckboxHtml('asEnvT1SomenteLink')}
     <div class="row">
       <div class="field" style="flex:1;"><label>E-mail testemunha 2 (opcional)</label><input id="asEnvT2Email" value="${esc(asValorCampoTestemunha('testemunha2_email'))}"></div>
       <div class="field" style="flex:1;"><label>WhatsApp testemunha 2 (opcional)</label><input id="asEnvT2Tel"></div>
     </div>
+    ${asSomenteLinkCheckboxHtml('asEnvT2SomenteLink')}
   `;
 }
 function ligarEnvioAssinatura(c, botaoId){
   document.getElementById(botaoId).addEventListener('click', async ()=>{
     try{
+      const chk = id=>{ const el = document.getElementById(id); return !!(el && el.checked); };
+      const sociosSomenteLink = [...document.querySelectorAll('[id^="asSocioLink"]')].map(el=>el.checked);
       const r = await api('/contratos/'+c.id+'/enviar-assinatura', { method:'POST', body:{
         clienteEmail: document.getElementById('asEnvCliEmail').value.trim(),
         clienteTelefone: document.getElementById('asEnvCliTel').value.trim(),
+        clienteSomenteLink: chk('asEnvCliSomenteLink'),
         testemunha1Email: document.getElementById('asEnvT1Email').value.trim(),
         testemunha1Telefone: document.getElementById('asEnvT1Tel').value.trim(),
+        testemunha1SomenteLink: chk('asEnvT1SomenteLink'),
         testemunha2Email: document.getElementById('asEnvT2Email').value.trim(),
         testemunha2Telefone: document.getElementById('asEnvT2Tel').value.trim(),
+        testemunha2SomenteLink: chk('asEnvT2SomenteLink'),
+        sociosSomenteLink,
       }});
       toast(r.sandbox?'Enviado em modo teste (sandbox) — não vale como assinatura real.':'Enviado para assinatura.','ok');
+      try{ await api('/contratos/'+c.id+'/status-assinatura'); }catch(e){}
       const atualizado = await api('/contratos/'+c.id);
       renderAssinaturaCard(atualizado);
     }catch(e){ toast(e.message,'err'); }
@@ -16340,7 +16353,7 @@ async function renderAssinaturaCard(c){
     let socios = [];
     try{ socios = (await api('/contratos/assinatura-config')).socios || []; }catch(e){ console.error('Config de sócios da assinatura:', e); }
     const sociosHtml = socios.length
-      ? socios.map(s=>`<div>• ${esc(s.nome)} — ${esc(s.email||'sem e-mail')}${s.telefone?' · '+esc(s.telefone):''}</div>`).join('')
+      ? socios.map((s,i)=>`<label class="checkbox-row" style="margin:2px 0;"><input type="checkbox" id="asSocioLink${i}"><span>${esc(s.nome)} — ${esc(s.email||'sem e-mail')}${s.telefone?' · '+esc(s.telefone):''} <span style="color:var(--ink-soft);">(marque pra só gerar link, sem e-mail automático)</span></span></label>`).join('')
       : '<div style="color:var(--debit);">Nenhum sócio configurado — configure em Contratos › Configurações antes de enviar.</div>';
     box.innerHTML = `
       <div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">Assinatura digital</div>
@@ -16360,9 +16373,9 @@ async function renderAssinaturaCard(c){
     <div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">Assinatura digital — ${c.statusAssinatura==='assinado'?'<span class="tag ok">Assinado por todos</span>':c.statusAssinatura==='rejeitado'?'<span class="tag muted">Alguém rejeitou</span>':'<span class="tag muted">Aguardando assinaturas</span>'}</div>
     ${assinatarios.length?`
       <table class="data-table" style="margin-bottom:8px;">
-        <thead><tr><th>Nome</th><th>E-mail</th><th>Status</th></tr></thead>
+        <thead><tr><th>Nome</th><th>E-mail</th><th>Status</th><th>Link</th></tr></thead>
         <tbody>
-          ${assinatarios.map(s=>`<tr><td>${esc(s.nome||'')}</td><td>${esc(s.email||'')}</td><td>${s.assinadoEm?'Assinado':s.rejeitadoEm?'Rejeitado':s.visualizadoEm?'Visualizou':'Pendente'}</td></tr>`).join('')}
+          ${assinatarios.map(s=>`<tr><td>${esc(s.nome||'')}</td><td>${esc(s.email||'')}</td><td>${s.assinadoEm?'Assinado':s.rejeitadoEm?'Rejeitado':s.visualizadoEm?'Visualizou':'Pendente'}</td><td>${s.link?`<button class="btn small asCopiarLinkBtn" data-link="${esc(s.link)}">Copiar link</button>`:'—'}</td></tr>`).join('')}
         </tbody>
       </table>
     `:'<p style="font-size:12.5px; color:var(--ink-soft);">Ainda sem dados de status — clique em atualizar.</p>'}
@@ -16371,6 +16384,10 @@ async function renderAssinaturaCard(c){
     <button class="btn small" id="asReenviarToggle">Reenviar para assinatura</button>
     <div id="asReenviarForm" style="display:none; margin-top:10px;"></div>
   `;
+  box.querySelectorAll('.asCopiarLinkBtn').forEach(btn=>btn.addEventListener('click', async ()=>{
+    try{ await navigator.clipboard.writeText(btn.dataset.link); toast('Link copiado! Cole no WhatsApp, e-mail etc.','ok'); }
+    catch(e){ toast('Não consegui copiar automaticamente — link: '+btn.dataset.link,'err'); }
+  }));
   document.getElementById('asAtualizarBtn').addEventListener('click', async ()=>{
     try{
       await api('/contratos/'+c.id+'/status-assinatura');

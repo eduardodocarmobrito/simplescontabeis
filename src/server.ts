@@ -25265,17 +25265,18 @@ app.post("/api/contratos/:id/enviar-assinatura", blockCliente, requirePermissao(
   const clienteEmail = String(b.clienteEmail || "").trim() || row.empresaEmail || dados.email_cliente || "";
   const clienteTelefone = autentique.normalizarTelefoneBR(String(b.clienteTelefone || "").trim() || row.empresaTelefone);
   if (!clienteEmail && !clienteTelefone) return res.status(400).json({ error: "O cadastro desta empresa não tem e-mail nem telefone — informe pelo menos um pra enviar." });
+  const sociosSomenteLink: boolean[] = Array.isArray(b.sociosSomenteLink) ? b.sociosSomenteLink.map((x: any) => !!x) : [];
   const signers: autentique.AutentiqueSigner[] = [
-    ...socios.map((s) => ({ nome: s.nome, email: s.email || undefined, telefone: autentique.normalizarTelefoneBR(s.telefone), comoAssina: "SIGN" as const })),
+    ...socios.map((s, i) => ({ nome: s.nome, email: s.email || undefined, telefone: autentique.normalizarTelefoneBR(s.telefone), comoAssina: "SIGN" as const, somenteLink: !!sociosSomenteLink[i] })),
     // CPF do representante legal travado na Autentique (configs.cpf): só assina quem digitar esse CPF.
-    { nome: dados.nome_representante_legal || row.titulo, email: clienteEmail || undefined, telefone: clienteTelefone, comoAssina: "SIGN", cpf: contratoCpfRepresentante(dados) },
+    { nome: dados.nome_representante_legal || row.titulo, email: clienteEmail || undefined, telefone: clienteTelefone, comoAssina: "SIGN", cpf: contratoCpfRepresentante(dados), somenteLink: !!b.clienteSomenteLink },
   ];
   const testemunhaDe: (number | undefined)[] = signers.map(() => undefined);
   for (const n of [1, 2]) {
     const email = String(b[`testemunha${n}Email`] || "").trim();
     const telefone = autentique.normalizarTelefoneBR(String(b[`testemunha${n}Telefone`] || "").trim());
     if (email || telefone) {
-      signers.push({ nome: dados[`testemunha${n}`] || `Testemunha ${n}`, email: email || undefined, telefone, comoAssina: "SIGN_AS_A_WITNESS" });
+      signers.push({ nome: dados[`testemunha${n}`] || `Testemunha ${n}`, email: email || undefined, telefone, comoAssina: "SIGN_AS_A_WITNESS", somenteLink: !!b[`testemunha${n}SomenteLink`] });
       testemunhaDe.push(n);
     }
   }
