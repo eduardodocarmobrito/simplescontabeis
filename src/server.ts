@@ -8374,14 +8374,6 @@ async function dctfwebConsultarSituacao(escritorioId: number, empresaId: number,
   const cnpj = String(emp?.cnpj || "").replace(/\D/g, "");
   if (cnpj.length !== 14 && cnpj.length !== 11) throw new Error("Empresa sem CNPJ/CPF válido no cadastro.");
   const ano = periodo.slice(0, 4), mes = periodo.slice(4, 6);
-  let r: integracontador.ReciboDctfWeb;
-  try {
-    r = await integracontador.consultarReciboDctfWeb(await obterTokenIntegraContador(cfg), cfg.cnpj, cnpj, ano, mes);
-  } catch (e: any) {
-    if (e.message !== "TOKEN_EXPIRADO") throw e;
-    integraContadorTokens.delete(escritorioId);
-    r = await integracontador.consultarReciboDctfWeb(await obterTokenIntegraContador(cfg), cfg.cnpj, cnpj, ano, mes);
-  }
   const grava = sqlite.prepare(
     `INSERT INTO dctfweb_situacao (empresa_id, periodo_apuracao, ativa, esocial, origens, retificadora, transmitida_em, numero_recibo, mensagem, consultado_em)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
@@ -8389,6 +8381,36 @@ async function dctfwebConsultarSituacao(escritorioId: number, empresaId: number,
        retificadora = excluded.retificadora, transmitida_em = excluded.transmitida_em, numero_recibo = excluded.numero_recibo,
        mensagem = excluded.mensagem, consultado_em = excluded.consultado_em`
   );
+  let r: integracontador.ReciboDctfWeb;
+  try {
+    try {
+      r = await integracontador.consultarReciboDctfWeb(await obterTokenIntegraContador(cfg), cfg.cnpj, cnpj, ano, mes);
+    } catch (e: any) {
+      if (e.message !== "TOKEN_EXPIRADO") throw e;
+      integraContadorTokens.delete(escritorioId);
+      r = await integracontador.consultarReciboDctfWeb(await obterTokenIntegraContador(cfg), cfg.cnpj, cnpj, ano, mes);
+    }
+  } catch (e: any) {
+    // Achado em auditoria (2026-11-12, POOL CENTRO NORTE LTDA): o CONSRECIBO32 às vezes devolve os
+    // MESMOS códigos de negócio que o resto desta função já trata como resposta normal (MG08/RELAT00
+    // "sem declaração ativa", MG10 "em andamento") num HTTP não-2xx em vez do HTTP 200 de costume —
+    // chamarServico então lança exceção em vez de devolver "mensagens". Sem este tratamento, essas
+    // competências nunca ficavam "confirmadas" (ficavam com "Erro na consulta: ..." genérico) e
+    // cardObrigacaoNaoTransmitida (cards "DCTF-Web Não Entregue"/"Fechamento da Folha") as descartava
+    // como inconclusivas — mesmo sendo uma resposta clara e definitiva da Receita de que a competência
+    // ainda não foi transmitida.
+    if (/MG10/.test(e.message)) {
+      const mensagem = "Declaração em andamento (não transmitida)";
+      grava.run(empresaId, periodo, 0, 0, null, null, null, null, mensagem);
+      return { ativa: false, mensagem };
+    }
+    if (/MG08|RELAT00/.test(e.message)) {
+      const mensagem = "Nenhuma declaração transmitida (ativa) para a competência";
+      grava.run(empresaId, periodo, 0, 0, null, null, null, null, mensagem);
+      return { ativa: false, mensagem };
+    }
+    throw e;
+  }
   if (r.pdfBase64) {
     const texto = (await require("pdf-parse")(new Uint8Array(Buffer.from(r.pdfBase64, "base64")))).text as string;
     const d = dctfwebLerRecibo(texto);
@@ -26942,6 +26964,22 @@ if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'licenca_nfse_
 if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'modelo_licenca_nfse_ativa_modulo_20261112'`).get()) {
   sqlite.exec(`UPDATE contratos_modelos SET ativa_modulo_chave = 'nfse' WHERE nome LIKE '%Licen%Modulo%NFS%' AND ativa_modulo_chave IS NULL`);
   sqlite.exec(`INSERT INTO migracoes_unicas (chave) VALUES ('modelo_licenca_nfse_ativa_modulo_20261112')`);
+}
+// Achado em auditoria (2026-11-12, POOL CENTRO NORTE LTDA e outras): antes do fix em
+// dctfwebConsultarSituacao, uma resposta MG08/RELAT00/MG10 do CONSRECIBO32 entregue via HTTP não-2xx
+// virava "Erro na consulta: ..." em vez da mensagem limpa de costume — o que fazia essas competências
+// (já sabidamente NÃO transmitidas, ativa=0 correto) ficarem de fora dos cards "DCTF-Web Não
+// Entregue"/"Fechamento da Folha" (que só mostram confirmadas, ver cardObrigacaoNaoTransmitida). Os
+// dados já estavam certos (ativa=0) — só a mensagem precisa virar a forma limpa, sem gastar uma
+// consulta paga nova.
+if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'dctfweb_situacao_mensagem_limpa_20261112'`).get()) {
+  sqlite.exec(
+    `UPDATE dctfweb_situacao SET mensagem = 'Declaração em andamento (não transmitida)' WHERE ativa = 0 AND mensagem LIKE 'Erro na consulta:%MG10%'`
+  );
+  sqlite.exec(
+    `UPDATE dctfweb_situacao SET mensagem = 'Nenhuma declaração transmitida (ativa) para a competência' WHERE ativa = 0 AND (mensagem LIKE 'Erro na consulta:%MG08%' OR mensagem LIKE 'Erro na consulta:%RELAT00%')`
+  );
+  sqlite.exec(`INSERT INTO migracoes_unicas (chave) VALUES ('dctfweb_situacao_mensagem_limpa_20261112')`);
 }
 // Unifica modelos de Envio de Documentos com o MESMO nome (pela chave de nomeModeloChave) — roda a cada
 // boot (barato) e é a rede de segurança caso algum caminho novo volte a criar duplicado. Fica o modelo
