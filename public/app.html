@@ -11535,6 +11535,7 @@ async function pageIntegraContador(deepLinkEmpresaId){
         <div class="checkbox-grid">${ICAGENDA_DIAS.map((d,i)=>`<label class="checkbox-row"><input type="checkbox" class="icAgendaDia" value="${i}" ${(cfg.agenda?.dias||[]).includes(i)?'checked':''} ${podeEditar?'':'disabled'}> ${d}</label>`).join('')}</div>
         <div id="icAgendaHoras" class="row" style="gap:8px; flex-wrap:wrap; margin-top:10px;">${(cfg.agenda?.horas||[]).map(icAgendaHoraHtml).join('')}</div>
         ${podeEditar?`<div class="row" style="margin-top:8px; gap:8px;"><button class="btn small" id="btnIcAgendaHora">+ Horário</button><button class="btn primary" id="btnIcAgendaSalvar" disabled>Salvar agenda</button></div>`:''}
+        ${podePostar?`<div class="row" style="margin-top:10px; gap:8px; align-items:center;"><button class="btn" id="btnIcDctfwebTodas">Buscar agora só DCTF-Web de todos</button><span id="icDctfwebTodasStatus" style="font-size:12px; color:var(--ink-soft);"></span></div>`:''}
         <div style="margin-top:14px;">
           <div style="font-weight:600; margin-bottom:4px;">Frequência da Situação Fiscal</div>
           <p style="font-size:12px; color:var(--ink-soft); margin:0 0 8px;">A Situação Fiscal (SITFIS) é a consulta mais lenta e cara, e é uma "foto do momento" que quase não muda de um dia pro outro. Deixá-la menos frequente reduz os erros de "não respondeu em 5 minutos" e o custo, sem afetar DAS/DARF/Declaração (que continuam diários). <b>"Buscar agora" sempre traz a Situação Fiscal na hora.</b></p>
@@ -11621,6 +11622,23 @@ async function pageIntegraContador(deepLinkEmpresaId){
         }catch(e){ toast(e.message,'err'); btnAgendaSalvar.disabled = false; }
       });
     }
+    const btnDctfwebTodas = document.getElementById('btnIcDctfwebTodas');
+    if(btnDctfwebTodas) btnDctfwebTodas.addEventListener('click', async ()=>{
+      btnDctfwebTodas.disabled = true; btnDctfwebTodas.textContent = 'Buscando…';
+      const statusEl = document.getElementById('icDctfwebTodasStatus');
+      if(statusEl) statusEl.textContent = '';
+      try{
+        await api('/integracontador/buscar-dctfweb-todas', { method:'POST' });
+        for(let i=0;i<200;i++){
+          await new Promise(r=>setTimeout(r,3000));
+          const st = await api('/integracontador/buscar-dctfweb-todas/status');
+          const resumo = st.total ? `${st.feitas}/${st.total} empresas — ${st.novos} guia(s) nova(s)${st.erros?`, ${st.erros} com erro`:''}` : 'Nenhuma empresa com "Precisa de DARF da DCTF-Web" marcado.';
+          if(statusEl) statusEl.textContent = resumo;
+          if(!st.rodando){ toast(resumo,st.erros?'err':'ok'); break; }
+        }
+      }catch(e){ toast(e.message,'err'); }
+      finally{ btnDctfwebTodas.disabled = false; btnDctfwebTodas.textContent = 'Buscar agora só DCTF-Web de todos'; }
+    });
     const btnTestar = document.getElementById('btnIcTestar');
     if(btnTestar) btnTestar.addEventListener('click', async ()=>{
       btnTestar.disabled = true; btnTestar.textContent = 'Testando…';

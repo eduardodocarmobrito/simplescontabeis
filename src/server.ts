@@ -17065,9 +17065,9 @@ function integraContadorComLimiteTempo<T>(p: Promise<T>, ms: number, msgErro: st
     new Promise<T>((_, reject) => setTimeout(() => reject(new Error(msgErro)), ms)),
   ]);
 }
-async function integraContadorBuscarEmpresa(empresaId: number, empresaCnpj: string, optante: boolean, buscaDctfweb: boolean, forcarSitfis = false): Promise<{ novos: number; erro: string | null }> {
+async function integraContadorBuscarEmpresa(empresaId: number, empresaCnpj: string, optante: boolean, buscaDctfweb: boolean, forcarSitfis = false, apenasDctfweb = false): Promise<{ novos: number; erro: string | null }> {
   return Promise.race([
-    integraContadorBuscarEmpresaInterno(empresaId, empresaCnpj, optante, buscaDctfweb, forcarSitfis),
+    integraContadorBuscarEmpresaInterno(empresaId, empresaCnpj, optante, buscaDctfweb, forcarSitfis, false, apenasDctfweb),
     new Promise<{ novos: number; erro: string | null }>((resolve) =>
       setTimeout(() => {
         const msg = "A busca não respondeu em 5 minutos (Receita/SERPRO travado ou muito lento) — tente de novo mais tarde.";
@@ -17077,13 +17077,18 @@ async function integraContadorBuscarEmpresa(empresaId: number, empresaCnpj: stri
     ),
   ]);
 }
+// apenasDctfweb (botão "Buscar só DCTF-Web" na tela da empresa): roda só o bloco de geração do DARF
+// da DCTF-Web abaixo, pulando declaração/DAS, parcelamento, Situação Fiscal e Caixa Postal — útil pra
+// pegar a guia assim que a competência fecha sem esperar (ou pagar) o resto da busca completa. Ignora
+// a flag "busca_dctfweb" do cadastro (é um pedido explícito e pontual, independente dela estar marcada).
 async function integraContadorBuscarEmpresaInterno(
   empresaId: number,
   empresaCnpj: string,
   optante: boolean,
   buscaDctfweb: boolean,
   forcarSitfis = false,
-  tentandoComTokenNovo = false
+  tentandoComTokenNovo = false,
+  apenasDctfweb = false
 ): Promise<{ novos: number; erro: string | null }> {
   const empConfig = getIntegraContadorEmpresaConfig(empresaId);
   const cfg = getIntegraContadorConfig(empConfig.escritorio_id);
@@ -17101,7 +17106,7 @@ async function integraContadorBuscarEmpresaInterno(
     // se falta ou não, então não sobrescreve o alerta anterior) — só vira null/mensagem quando a
     // consulta realmente funcionou.
     let alertaDeclaracao: string | null | undefined;
-    if (optante) {
+    if (!apenasDctfweb && optante) {
       const anoAtual = new Date().getFullYear();
       // Em janeiro, "mês anterior" é dezembro do ano QUE PASSOU — consultarDeclaracoesPorAno só com
       // anoAtual nunca pegava a declaração de dezembro nesse caso (ela fica no ano anterior), então
@@ -17215,7 +17220,7 @@ async function integraContadorBuscarEmpresaInterno(
     // acima): se a declaração daquele período ainda não foi transmitida, a Receita só devolve erro,
     // tratado como falha não-fatal abaixo — mesmo comportamento de gerarDas quando não há nada pra
     // gerar ainda.
-    if (buscaDctfweb) {
+    if (buscaDctfweb || apenasDctfweb) {
       const hoje = new Date();
       const mesAnterior = new Date(hoje.getFullYear(), hoje.getMonth() - 1, 1);
       const anoPA = String(mesAnterior.getFullYear());
@@ -17250,9 +17255,11 @@ async function integraContadorBuscarEmpresaInterno(
     // parcelamento concedido (ver POST /api/integracontador/parcelamentos); tenta emitir a guia da
     // parcela do mês corrente, igual já faz pro DAS normal. Uma empresa raramente tem mais de um
     // parcelamento ativo ao mesmo tempo, mas o loop cobre esse caso sem problema.
-    const parcelamentosAtivos = sqlite
-      .prepare(`SELECT id, numero_parcelamento as numero, atribuicao_id as atribuicaoId FROM integracontador_parcelamentos WHERE empresa_id = ? AND ativo = 1`)
-      .all(empresaId) as any[];
+    const parcelamentosAtivos = apenasDctfweb
+      ? []
+      : (sqlite
+          .prepare(`SELECT id, numero_parcelamento as numero, atribuicao_id as atribuicaoId FROM integracontador_parcelamentos WHERE empresa_id = ? AND ativo = 1`)
+          .all(empresaId) as any[]);
     for (const parc of parcelamentosAtivos) {
       if (!parc.atribuicaoId) continue;
       // Atualiza a situação do parcelamento (ex.: "Aguardando Pagamento da 1ª Parcela" → "Em parcelamento") — antes ela
@@ -17298,7 +17305,7 @@ async function integraContadorBuscarEmpresaInterno(
     // como "recente" e roda de novo — sem afetar as cadências maiores (7/15/30).
     const sitfisJanelaMs = (sitfisFreqDias * 86400 - 43200) * 1000;
     const sitfisRecente = !!ultimaSitfis?.m && Date.now() - new Date(String(ultimaSitfis.m).replace(" ", "T") + "Z").getTime() < sitfisJanelaMs;
-    if (forcarSitfis || !sitfisRecente) {
+    if (!apenasDctfweb && (forcarSitfis || !sitfisRecente)) {
       try {
         const pdfBase64 = await integraContadorComLimiteTempo(
           integracontador.obterRelatorioSitfisCompleto(token, cnpjEscritorio, empresaCnpj),
@@ -17321,6 +17328,7 @@ async function integraContadorBuscarEmpresaInterno(
     // sempre o estado atual de "não lida" segundo a Receita (não é um alerta que a gente "resolve"
     // aqui — uma vez lida de verdade no e-CAC, some sozinha na próxima busca).
     try {
+      if (apenasDctfweb) throw Object.assign(new Error("pulado"), { pular: true });
       const mensagens = await integracontador.consultarMensagensCaixaPostalNaoLidas(token, cnpjEscritorio, empresaCnpj);
       sqlite.prepare(`DELETE FROM integracontador_caixapostal_mensagens WHERE empresa_id = ?`).run(empresaId);
       const inserirMsg = sqlite.prepare(
@@ -17328,8 +17336,10 @@ async function integraContadorBuscarEmpresaInterno(
       );
       for (const m of mensagens) inserirMsg.run(empresaId, m.numeroControle, m.assunto, m.dataEnvio, m.relevancia);
     } catch (e: any) {
-      console.error(`[Integra Contador] caixa postal da empresa ${empresaId} falhou:`, e.message);
-      falhas.push(`Caixa Postal: ${e.message}`);
+      if (e.pular) { /* apenasDctfweb — não consulta Caixa Postal */ } else {
+        console.error(`[Integra Contador] caixa postal da empresa ${empresaId} falhou:`, e.message);
+        falhas.push(`Caixa Postal: ${e.message}`);
+      }
     }
     // Achado ao vivo: um token com validade "ainda dentro do prazo" localmente (ver tokenValido) às
     // vezes já não é mais aceito pelo SERPRO — cada chamada com ele responde 401 (convertido em
@@ -17340,7 +17350,7 @@ async function integraContadorBuscarEmpresaInterno(
     // também falhar).
     if (!tentandoComTokenNovo && falhas.some((f) => f.includes("TOKEN_EXPIRADO"))) {
       integraContadorTokens.delete(empConfig.escritorio_id);
-      return integraContadorBuscarEmpresaInterno(empresaId, empresaCnpj, optante, buscaDctfweb, forcarSitfis, true);
+      return integraContadorBuscarEmpresaInterno(empresaId, empresaCnpj, optante, buscaDctfweb, forcarSitfis, true, apenasDctfweb);
     }
     const erroResumo = falhas.length ? falhas.join(" | ") : null;
     sqlite.prepare(`UPDATE integracontador_empresa_config SET ultima_busca_em = datetime('now'), ultimo_erro = ? WHERE empresa_id = ?`).run(erroResumo, empresaId);
@@ -17417,6 +17427,31 @@ app.post("/api/integracontador/empresas/:id/buscar", blockCliente, requirePermis
   // de Situação Fiscal que demora — o front confere o resultado consultando de novo em alguns segundos.
   // forcarSitfis=true: busca MANUAL ignora a cadência da Situação Fiscal (a pessoa pediu tudo agora).
   integraContadorBuscarEmpresa(empId, empresa?.cnpj || "", !!empConfig.optante_simples_nacional, !!empConfig.busca_dctfweb, true).finally(() => {
+    integraContadorBuscasEmAndamento.delete(empId);
+  });
+  res.json({ ok: true, buscaIniciada: true });
+});
+// Botão "Buscar só DCTF-Web" na tela da empresa: dispara só a geração do DARF da DCTF-Web (pula
+// declaração/DAS, parcelamento, Situação Fiscal e Caixa Postal) — pra quando o contador quer só essa
+// guia na hora, sem esperar/pagar o resto da busca completa. Mesma trava de concorrência e cooldown
+// da busca completa (/buscar acima) — é uma chamada paga ao SERPRO igual.
+app.post("/api/integracontador/empresas/:id/buscar-dctfweb", blockCliente, requirePermissao("integracontador", "postar"), async (req, res) => {
+  const user = (req as any).user;
+  const empId = Number(req.params.id);
+  if (!podeAcessarEmpresa(user, empId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const cfg = getIntegraContadorConfig(user.escritorioId);
+  if (!cfg.ativo) return res.status(400).json({ error: "Configure e ative o Integra Contador em Configurações antes de buscar." });
+  const empConfig = getIntegraContadorEmpresaConfig(empId);
+  if (!empConfig.ativo) return res.status(400).json({ error: "Habilite esta empresa antes de buscar." });
+  if (integraContadorBuscasEmAndamento.has(empId)) return res.status(409).json({ error: "Já existe uma busca em andamento pra esta empresa." });
+  const ultimaManual = integraContadorUltimaBuscaManual.get(empId);
+  if (ultimaManual && Date.now() - ultimaManual < 2 * 60_000) {
+    return res.status(429).json({ error: "Essa empresa já foi buscada há pouco — espere 2 minutos antes de buscar de novo (cada busca é uma chamada paga)." });
+  }
+  integraContadorUltimaBuscaManual.set(empId, Date.now());
+  integraContadorBuscasEmAndamento.add(empId);
+  const empresa = sqlite.prepare(`SELECT cnpj FROM empresas WHERE id = ?`).get(empId) as any;
+  integraContadorBuscarEmpresa(empId, empresa?.cnpj || "", !!empConfig.optante_simples_nacional, !!empConfig.busca_dctfweb, false, true).finally(() => {
     integraContadorBuscasEmAndamento.delete(empId);
   });
   res.json({ ok: true, buscaIniciada: true });
@@ -17710,6 +17745,60 @@ async function integraContadorExecutarBuscaAutomatica(desde?: string) {
     await new Promise((resolve) => setTimeout(resolve, INTEGRACONTADOR_AUTO_PAUSA_ENTRE_EMPRESAS_MS));
   }
 }
+// Botão manual "Buscar agora só DCTF-Web de todos" (tela Integra Contador, junto do Agendamento): roda
+// só a geração do DARF da DCTF-Web (apenasDctfweb=true, ver integraContadorBuscarEmpresaInterno) pra
+// toda empresa com "Precisa de DARF da DCTF-Web" marcado — sem esperar o horário agendado nem pagar o
+// resto da busca completa (declaração/DAS/parcelamento/Situação Fiscal/Caixa Postal). Mesmo esquema de
+// status em memória (polling) já usado pro resto do sistema, já que pode levar minutos com várias
+// empresas (pausa de 5s entre cada uma, igual a rotina automática).
+const integraContadorDctfwebTodasStatus = new Map<number, { rodando: boolean; total: number; feitas: number; novos: number; erros: number; fim?: string }>();
+async function integraContadorExecutarDctfWebTodas(escritorioId: number) {
+  const st = { rodando: true, total: 0, feitas: 0, novos: 0, erros: 0 } as { rodando: boolean; total: number; feitas: number; novos: number; erros: number; fim?: string };
+  integraContadorDctfwebTodasStatus.set(escritorioId, st);
+  try {
+    const configs = sqlite
+      .prepare(
+        `SELECT c.empresa_id as empresaId, e.cnpj as cnpj
+         FROM integracontador_empresa_config c
+         JOIN empresas e ON e.id = c.empresa_id
+         JOIN integracontador_config ic ON ic.escritorio_id = c.escritorio_id
+         WHERE c.ativo = 1 AND c.busca_dctfweb = 1 AND ic.ativo = 1 AND e.ativo = 1 AND c.escritorio_id = ?`
+      )
+      .all(escritorioId) as any[];
+    st.total = configs.length;
+    for (const cfg of configs) {
+      if (integraContadorBuscasEmAndamento.has(cfg.empresaId)) { st.feitas++; continue; } // já tem outra busca rodando pra essa empresa — pula, sem travar a rodada toda
+      integraContadorBuscasEmAndamento.add(cfg.empresaId);
+      try {
+        const r = await integraContadorBuscarEmpresa(cfg.empresaId, cfg.cnpj || "", false, true, false, true);
+        if (r.erro) { st.erros++; console.error(`[Integra Contador] DCTF-Web (busca de todas) da empresa ${cfg.empresaId} falhou:`, r.erro); }
+        else st.novos += r.novos;
+      } catch (e: any) {
+        st.erros++;
+        console.error(`[Integra Contador] DCTF-Web (busca de todas) da empresa ${cfg.empresaId} falhou:`, e.message);
+      } finally {
+        integraContadorBuscasEmAndamento.delete(cfg.empresaId);
+      }
+      st.feitas++;
+      await new Promise((resolve) => setTimeout(resolve, INTEGRACONTADOR_AUTO_PAUSA_ENTRE_EMPRESAS_MS));
+    }
+  } finally {
+    st.rodando = false;
+    st.fim = new Date().toISOString();
+  }
+}
+app.post("/api/integracontador/buscar-dctfweb-todas", blockCliente, requireAdmin, (req, res) => {
+  const user = (req as any).user;
+  const cfg = getIntegraContadorConfig(user.escritorioId);
+  if (!cfg.ativo) return res.status(400).json({ error: "Configure e ative o Integra Contador antes de buscar." });
+  if (integraContadorDctfwebTodasStatus.get(user.escritorioId)?.rodando) return res.status(409).json({ error: "Já existe uma busca de DCTF-Web de todas as empresas em andamento." });
+  integraContadorExecutarDctfWebTodas(user.escritorioId).catch((e) => console.error("[Integra Contador] busca DCTF-Web de todas falhou:", e.message));
+  res.json({ ok: true, iniciada: true });
+});
+app.get("/api/integracontador/buscar-dctfweb-todas/status", blockCliente, requireAdmin, (req, res) => {
+  const user = (req as any).user;
+  res.json(integraContadorDctfwebTodasStatus.get(user.escritorioId) || { rodando: false, total: 0, feitas: 0, novos: 0, erros: 0 });
+});
 // Agenda da busca automática do Integra Contador: dias da semana e horários (Brasília), definidos na
 // tela. Padrão = todos os dias às 12h (como era). Cada dia+horário vira uma "marca" no banco, então
 // roda uma só vez mesmo se o servidor reiniciar no meio do dia.
