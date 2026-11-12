@@ -20146,8 +20146,10 @@ async function pageUsuarios(){
   main().innerHTML = `
     <h1>Usuários</h1>
     <p class="subtitle">Equipe do escritório e acessos dos clientes</p>
-    <div class="row" style="margin-bottom:14px;"><button class="btn primary" id="btnNovoUsuario">+ Novo usuário</button></div>
-    <div class="field" style="max-width:360px; margin-bottom:10px;"><input type="text" id="usFiltro" placeholder="Buscar por nome, e-mail ou empresa…" autocomplete="off" value="${esc(USUARIOS_FILTRO)}"></div>
+    <div class="row" style="margin-bottom:14px; gap:12px; align-items:center; flex-wrap:wrap;">
+      <button class="btn primary" id="btnNovoUsuario">+ Novo usuário</button>
+      <div class="field" style="margin:0; flex:1; min-width:240px; max-width:360px;"><input type="text" id="usFiltro" placeholder="Buscar por nome, e-mail ou empresa…" autocomplete="off" value="${esc(USUARIOS_FILTRO)}"></div>
+    </div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
         <thead><tr><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Empresa</th><th>Ativo</th><th></th></tr></thead>
