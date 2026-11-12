@@ -1903,7 +1903,7 @@ function closeModal(){ document.getElementById('modalBg').classList.remove('open
 let _modalMouseDownNoFundo = false;
 document.getElementById('modalBg').addEventListener('mousedown', e=>{ _modalMouseDownNoFundo = (e.target.id==='modalBg'); });
 document.getElementById('modalBg').addEventListener('click', e=>{ if(e.target.id==='modalBg' && _modalMouseDownNoFundo) closeModal(); });
-function openDrawer(html){ document.getElementById('drawerBody').innerHTML='<button type="button" class="modal-close-x" onclick="closeDrawer()" title="Fechar" aria-label="Fechar">×</button>'+html; document.getElementById('drawerBg').classList.add('open'); }
+function openDrawer(html){ document.getElementById('drawerBody').innerHTML=html; document.getElementById('drawerBg').classList.add('open'); }
 function closeDrawer(){ document.getElementById('drawerBg').classList.remove('open'); document.getElementById('drawerBody').innerHTML=''; }
 let _drawerMouseDownNoFundo = false;
 document.getElementById('drawerBg').addEventListener('mousedown', e=>{ _drawerMouseDownNoFundo = (e.target.id==='drawerBg'); });
@@ -15555,6 +15555,7 @@ function renderContratosTab(){
 let CONTRATOS_FILTRO={ empresaId:'', status:'' };
 async function renderContratosLista(){
   const box = document.getElementById('contratosContent');
+  box.innerHTML = '<div class="empty-state">Carregando…</div>';
   const qs = new URLSearchParams();
   if(CONTRATOS_FILTRO.empresaId) qs.set('empresaId', CONTRATOS_FILTRO.empresaId);
   if(CONTRATOS_FILTRO.status) qs.set('status', CONTRATOS_FILTRO.status);
@@ -16574,6 +16575,7 @@ async function servicosCatalogoDrawer(){
 }
 async function renderContratosModelos(){
   const box = document.getElementById('contratosContent');
+  box.innerHTML = '<div class="empty-state">Carregando…</div>';
   const [{ items }, distratoConfig, assinaturaConfig] = await Promise.all([
     api('/contratos/modelos'),
     api('/contratos/distrato-config'),
