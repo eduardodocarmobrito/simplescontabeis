@@ -24311,7 +24311,7 @@ app.post("/api/contratos", blockCliente, requirePermissao("contratos", "postar")
     )
     .get(agoraContrato.ano, user.escritorioId) as any;
   const numeroSequencial = (maxNumero?.maxNum || 0) + 1;
-  dadosFinal["n_contrato_sequencial"] = String(numeroSequencial);
+  dadosFinal["n_contrato_sequencial"] = String(numeroSequencial).padStart(2, "0");
   // Preço do módulo NFS-e pra ESTA empresa (pedido 2026-11-10): vem do catálogo do SuperAdmin
   // (Módulos da plataforma), com o valor personalizado do cliente por cima quando existir.
   const precoNfse = (() => {
@@ -24564,7 +24564,7 @@ app.post("/api/contratos/:id/aditivo", blockCliente, requirePermissao("contratos
     escritorio_nome: escHtmlRelatorio(escritorio?.nome || ""),
     contrato_titulo: escHtmlRelatorio(original.titulo),
     data: new Date().toLocaleDateString("pt-BR"),
-    n_contrato_sequencial: original.numero_sequencial != null ? String(original.numero_sequencial) : "",
+    n_contrato_sequencial: original.numero_sequencial != null ? String(original.numero_sequencial).padStart(2, "0") : "",
   };
   const assinaturas = padraoAssin?.assinaturas_padrao ? contratos.aplicarCamposNoModelo(padraoAssin.assinaturas_padrao, tokensAssin) : "";
   // Achado em auditoria (2026-10-12): titulo/nome aqui também podem conter HTML digitado (titulo
@@ -24577,7 +24577,7 @@ app.post("/api/contratos/:id/aditivo", blockCliente, requirePermissao("contratos
       (dadosAlterados ? `<p>${contratos.escaparEQuebrarLinhas(dadosAlterados)}</p>` : `<p></p>`) +
       `<p style="text-align: justify;">Permanecem inalteradas e em pleno vigor todas as demais cláusulas e condições do contrato original não expressamente modificadas por este Aditivo.</p>` +
       assinaturas,
-    { n_contrato_sequencial: original.numero_sequencial != null ? String(original.numero_sequencial) : "" }
+    { n_contrato_sequencial: original.numero_sequencial != null ? String(original.numero_sequencial).padStart(2, "0") : "" }
   );
   const info = sqlite
     .prepare(
@@ -24611,7 +24611,7 @@ app.post("/api/contratos/:id/distrato", blockCliente, requirePermissao("contrato
     escritorio_nome: escHtmlRelatorio(escritorio?.nome || ""),
     contrato_titulo: escHtmlRelatorio(original.titulo),
     data: new Date().toLocaleDateString("pt-BR"),
-    n_contrato_sequencial: original.numero_sequencial != null ? String(original.numero_sequencial) : "",
+    n_contrato_sequencial: original.numero_sequencial != null ? String(original.numero_sequencial).padStart(2, "0") : "",
   };
   const cabecalho = contratos.extrairTrechoCabecalho(original.conteudo_html) || "";
   const numeroRef = original.numero_sequencial ? ` (nº ${original.numero_sequencial}/${original.numero_sequencial_ano})` : "";

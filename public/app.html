@@ -15995,6 +15995,9 @@ async function abrirContratoDrawer(id){
       if(!novosDados['dia']) novosDados['dia'] = String(hoje.getDate());
       if(!novosDados['mes']) novosDados['mes'] = MESES_PT_EXTENSO_JS[hoje.getMonth()];
       if(!novosDados['ano']) novosDados['ano'] = String(hoje.getFullYear());
+      // {{n_contrato_sequencial}} é automático (número do contrato no ano, 2 dígitos: 01, 02...) — vem do
+      // próprio contrato; sem isso ficava o token cru quando o texto entrou depois da criação.
+      if(!novosDados['n_contrato_sequencial'] && c.numeroSequencial!=null) novosDados['n_contrato_sequencial'] = String(c.numeroSequencial).padStart(2,'0');
       // "Data do contrato (assinatura)" vazio → data de hoje (dd/mm/aaaa), igual ao fecho do contrato.
       campos.filter(f=>f.autoPreencherDe==='dataContrato').forEach(f=>{
         if(!novosDados[f.chave]){ novosDados[f.chave] = `${String(hoje.getDate()).padStart(2,'0')}/${String(hoje.getMonth()+1).padStart(2,'0')}/${hoje.getFullYear()}`; const el = document.querySelector('.drwCampo[data-chave="'+f.chave+'"]'); if(el) el.value = novosDados[f.chave]; }
