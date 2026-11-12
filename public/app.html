@@ -16300,18 +16300,45 @@ async function renderContratosModelos(){
     catch(e){ toast(e.message,'err'); }
   }));
 }
+let cmCampoSeq = 0;
 function contratoModeloCampoRowHtml(campo){
   campo = campo || { chave:'', rotulo:'', autoPreencherDe:'' };
+  const n = cmCampoSeq++;
   return `
-    <div class="row cmCampoRow" style="margin-bottom:8px; align-items:center;">
+    <div class="row cmCampoRow" style="margin-bottom:8px; align-items:center;" data-combo-n="${n}" data-auto-valor="${esc(campo.autoPreencherDe||'')}">
       <input class="cmChave" placeholder="chave (ex: cliente_nome)" value="${esc(campo.chave)}" style="width:170px;">
       <input class="cmRotulo" placeholder="Rótulo exibido" value="${esc(campo.rotulo)}" style="flex:1;">
-      <select class="cmAuto" style="width:200px;">
-        ${CONTRATO_AUTO_PREENCHER.map(([v,l])=>`<option value="${v}" ${campo.autoPreencherDe===v?'selected':''}>${esc(l)}</option>`).join('')}
-      </select>
+      <div class="cmAutoWrap" style="width:240px;"></div>
       <button type="button" class="btn small cmRemover">Remover</button>
     </div>
   `;
+}
+// Atualiza o combo "preencher automaticamente de" de cada linha de campo, removendo da lista de
+// cada linha as opções já escolhidas nas OUTRAS linhas — assim fica claro o que ainda falta mapear.
+function cmRefrescarAutoCombos(lista){
+  const linhas = [...lista.querySelectorAll('.cmCampoRow')];
+  const valores = linhas.map(row=>row.dataset.autoValor||'');
+  linhas.forEach((row, idx)=>{
+    const valorAtual = valores[idx];
+    const usadosOutras = new Set(valores.filter((v,i)=>i!==idx && v));
+    const itens = CONTRATO_AUTO_PREENCHER
+      .filter(([v])=>v===''||v===valorAtual||!usadosOutras.has(v))
+      .map(([v,l])=>({ id:v, label:l }));
+    const comboId = 'cmAutoCombo'+row.dataset.comboN;
+    row.querySelector('.cmAutoWrap').innerHTML = comboSelectHtml(comboId, '— Digitar manualmente —');
+    setupComboSelect(comboId, itens, id=>{
+      row.dataset.autoValor = id || '';
+      cmRefrescarAutoCombos(lista);
+    });
+    if(valorAtual){
+      const item = itens.find(it=>it.id===valorAtual);
+      if(item){
+        const comboEl = document.getElementById(comboId);
+        comboEl.querySelector('.combo-input').value = item.label;
+        comboEl.querySelector('.combo-value').value = item.id;
+      }
+    }
+  });
 }
 function contratoModeloDrawer(m){
   openDrawer(`
@@ -16356,12 +16383,14 @@ function contratoModeloDrawer(m){
   `);
   const lista = document.getElementById('cmCamposList');
   function ligarRemover(){
-    lista.querySelectorAll('.cmRemover').forEach(b=>b.addEventListener('click', ()=>{ b.closest('.cmCampoRow').remove(); }));
+    lista.querySelectorAll('.cmRemover').forEach(b=>b.addEventListener('click', ()=>{ b.closest('.cmCampoRow').remove(); cmRefrescarAutoCombos(lista); }));
   }
   ligarRemover();
+  cmRefrescarAutoCombos(lista);
   document.getElementById('cmAddCampo').addEventListener('click', ()=>{
     lista.insertAdjacentHTML('beforeend', contratoModeloCampoRowHtml());
     ligarRemover();
+    cmRefrescarAutoCombos(lista);
   });
   const toolbar = document.querySelector('#drawerBody .rte-toolbar');
   const corpo = document.getElementById('cmCorpo');
@@ -16387,6 +16416,7 @@ function contratoModeloDrawer(m){
       if(!nomeEl.value.trim()) nomeEl.value = p.nome;
       lista.innerHTML = p.campos.map(contratoModeloCampoRowHtml).join('');
       ligarRemover();
+      cmRefrescarAutoCombos(lista);
       corpo.innerHTML = p.conteudoHtml;
       toast('Modelo carregado — revise e clique em Salvar modelo.','ok');
     });
@@ -16407,7 +16437,7 @@ function contratoModeloDrawer(m){
     const campos = [...lista.querySelectorAll('.cmCampoRow')].map(row=>({
       chave: row.querySelector('.cmChave').value.trim(),
       rotulo: row.querySelector('.cmRotulo').value.trim(),
-      autoPreencherDe: row.querySelector('.cmAuto').value || null,
+      autoPreencherDe: row.dataset.autoValor || null,
     })).filter(c=>c.chave && c.rotulo);
     const body = { nome, conteudoHtml: corpo.innerHTML, campos };
     if(m) body.ativo = document.getElementById('cmAtivo').checked;
