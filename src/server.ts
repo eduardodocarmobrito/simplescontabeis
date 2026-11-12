@@ -12822,7 +12822,7 @@ function reformaCalcularAuditoria(escritorioId: number, empresaId: number, de: s
   const docs = sqlite
     .prepare(
       `SELECT d.id, d.xml FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id
-       WHERE d.escritorio_id = ? AND d.empresa_id = ? AND d.tipo IN ('nfe','nfce') AND ${saida ? "" : "NOT"} (${emitExpr})
+       WHERE d.escritorio_id = ? AND d.empresa_id = ? AND (d.tipo IN ('nfe','nfce') OR (d.tipo = 'cte' AND ${saida ? "1" : "0"})) AND ${saida ? "" : "NOT"} (${emitExpr})
          AND substr(d.data_emissao,1,10) >= ? AND substr(d.data_emissao,1,10) <= ? AND NOT ${canceladaExpr}
        ORDER BY d.data_emissao LIMIT 6000`
     )
@@ -12958,6 +12958,10 @@ function reformaCalcularAuditoria(escritorioId: number, empresaId: number, de: s
     },
     validacao: { pendentes, naFila: reformaFila.size, erroApi: Date.now() < reformaApiPausaAte ? reformaApiUltimoErro : null },
     kpis: {
+      // Notas que chegaram só como RESUMO (resNFe, sem itens) — a Sefaz não entrega o XML completo da nota
+      // emitida pela própria empresa; não dá pra auditar. Vêm completas se a empresa estiver no Extrato NFE.
+      resumosSemItens: docs.length - notas.length,
+      cte: notas.filter((x) => x.mod === "57").length,
       notas: res.length, itens: itensTotal, notasConformes, itensConformes,
       conformidade: res.length ? Math.round((notasConformes / res.length) * 1000) / 10 : 0,
       notasComGrupo: res.filter((r) => r.nota.itens.some((i) => i.temIBSCBS)).length,

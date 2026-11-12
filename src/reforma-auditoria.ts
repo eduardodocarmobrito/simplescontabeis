@@ -143,7 +143,7 @@ export function lerNotaReforma(docId: number, xml: string): NotaRT | null {
   let j: any;
   try { j = parser.parse(xml); } catch { return null; }
   const inf = j?.nfeProc?.NFe?.infNFe || j?.NFe?.infNFe;
-  if (!inf) return null;
+  if (!inf) return lerCteReforma(docId, j);
   const ide = inf.ide || {}, emit = inf.emit || {};
   const itens: ItemRT[] = arr(inf.det).map((d: any, i: number) => {
     const prod = d.prod || {}, imp = d.imposto || {};
@@ -189,6 +189,50 @@ export function lerNotaReforma(docId: number, xml: string): NotaRT | null {
       temGrupo: !!t, vBC: n(t?.vBCIBSCBS), vIBS: n(t?.gIBS?.vIBS) || n(t?.gIBS?.gIBSUF?.vIBSUF) + n(t?.gIBS?.gIBSMun?.vIBSMun), vCBS: n(t?.gCBS?.vCBS),
       vIBSSN: n(tSN?.vIBSSN), vCBSSN: n(tSN?.vCBSSN),
     },
+  };
+}
+
+// CT-e (modelo 57): o IBS/CBS vem num grupo único da prestação (<imp><IBSCBS>, NT 2025.001 do CT-e), sem
+// itens e sem NCM — vira uma nota de 1 "item" (o frete), pra passar pelas mesmas regras de CST/cClassTrib,
+// alíquota e base. Base esperada: valor da prestação (vTPrest) − ICMS (LC 214, art. 12 §2º, na transição).
+// Destinatário (pra auditoria de saída) = o TOMADOR do serviço (toma3/toma4).
+function lerCteReforma(docId: number, j: any): NotaRT | null {
+  const inf = j?.cteProc?.CTe?.infCte || j?.CTe?.infCte;
+  if (!inf) return null;
+  const ide = inf.ide || {}, emit = inf.emit || {}, imp = inf.imp || {};
+  const icms = primeiroFilho(imp.ICMS);
+  const vICMS = n(icms.vICMS ?? icms.vICMSOutraUF);
+  const vTPrest = n(inf.vPrest?.vTPrest);
+  const toma3 = ide.toma3?.toma != null ? String(ide.toma3.toma) : null;
+  const toma = toma3 === "0" ? inf.rem : toma3 === "1" ? inf.exped : toma3 === "2" ? inf.receb : toma3 === "3" ? inf.dest : ide.toma4 || inf.dest || {};
+  const enderToma = toma?.enderToma || toma?.enderReme || toma?.enderExped || toma?.enderReceb || toma?.enderDest || {};
+  const ib = imp.IBSCBS;
+  const g = ib?.gIBSCBS;
+  const sn = ib ? achar(ib, "gTribSN") : undefined;
+  const item: ItemRT = {
+    nItem: 1, cProd: "FRETE", xProd: `Prestação de serviço de transporte (CT-e ${ide.nCT || ""})`, ncm: "", cfop: String(ide.CFOP || ""),
+    vProd: vTPrest, baseFormula: r2(vTPrest - vICMS),
+    temIBSCBS: !!ib,
+    cst: ib?.CST != null ? String(ib.CST).padStart(3, "0") : null,
+    cClassTrib: ib?.cClassTrib != null ? String(ib.cClassTrib).padStart(6, "0") : null,
+    vBC: n(g?.vBC),
+    uf: lerGrupo(g?.gIBSUF), mun: lerGrupo(g?.gIBSMun), cbs: lerGrupo(g?.gCBS),
+    temTribRegular: !!(ib && achar(ib, "gTribRegular")),
+    temMono: false,
+    temCredPres: !!(ib && (achar(ib, "gCredPresOper") || achar(ib, "gCredPresIBSZFM"))),
+    sn: sn ? { pIBSSN: n(sn.gIBSSN?.pIBSSN), vIBSSN: n(sn.gIBSSN?.vIBSSN), pCBSSN: n(sn.gCBSSN?.pCBSSN), vCBSSN: n(sn.gCBSSN?.vCBSSN) } : null,
+    combustivelMono: false,
+  };
+  const tpCTe = n(ide.tpCTe);
+  return {
+    docId, chave: String(inf["@_Id"] || "").replace(/^CTe/, ""), numero: String(ide.nCT || ""), serie: String(ide.serie || ""),
+    dhEmi: String(ide.dhEmi || "").slice(0, 10), mod: "57", finNFe: tpCTe === 1 ? 2 : 1, // CT-e complementar ~ NF-e complementar
+    emitCnpj: String(emit.CNPJ || emit.CPF || ""), emitNome: String(emit.xNome || ""), emitUF: String(emit.enderEmit?.UF || ""),
+    destDoc: String(toma?.CNPJ || toma?.CPF || ""), destNome: String(toma?.xNome || ""), destUF: String(enderToma.UF || ""),
+    crt: emit.CRT != null ? Number(emit.CRT) : null, tpRegimeIBSCBS: emit.tpRegimeIBSCBS != null ? String(emit.tpRegimeIBSCBS) : null,
+    vNF: vTPrest, itens: [item],
+    // CT-e não tem bloco de totais separado: o próprio grupo da prestação é o total (sem regra de soma).
+    tot: { temGrupo: false, vBC: n(g?.vBC), vIBS: n(g?.vIBS) || n(g?.gIBSUF?.vIBSUF) + n(g?.gIBSMun?.vIBSMun), vCBS: n(g?.gCBS?.vCBS), vIBSSN: n(sn?.gIBSSN?.vIBSSN), vCBSSN: n(sn?.gCBSSN?.vCBSSN) },
   };
 }
 

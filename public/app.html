@@ -9995,7 +9995,8 @@ async function reformaMontar(painel, urlApi, urlPdf, silencioso){
     const avisoNfse = d.direcao==='saida' && d.empresa.nfseHabilitado
       ? `<div style="margin-top:8px; font-size:12.5px; color:var(--ink-soft);">Esta empresa emite NFS-e (prestadora de serviço) — por isso não há NF-e de saída dela. Esta auditoria hoje só cobre NF-e/NFC-e: o layout nacional de NFS-e ainda não traz os campos de IBS/CBS, então não há como auditar o destaque da reforma tributária nas notas de serviço ainda.</div>`
       : '';
-    painel.innerHTML = `<div class="card"><div class="empty-state">Nenhuma NF-e de ${direcaoReal} no período para <b>${esc(d.empresa.nome)}</b>. As notas chegam pela Busca de XML (certificado da empresa configurado).${avisoNfse}</div></div>`;
+    const avisoResumo = k.resumosSemItens>0 ? `<div style="margin-top:8px; font-size:12.5px; color:var(--ink-soft);">${rtNum(k.resumosSemItens)} nota(s) de ${direcaoReal} do período chegaram só como <b>resumo</b> (sem itens) e não dá pra auditar. A Sefaz não entrega o XML completo da nota emitida pela própria empresa — cadastre a empresa no Extrato NFE (Busca de XML › card Extrato NFE) que as notas completas substituem os resumos.</div>` : '';
+    painel.innerHTML = `<div class="card"><div class="empty-state">Nenhuma NF-e/CT-e de ${direcaoReal} no período para <b>${esc(d.empresa.nome)}</b>. As notas chegam pela Busca de XML (certificado da empresa configurado).${avisoResumo}${avisoNfse}</div></div>`;
     return;
   }
   // Lembra filtros/scroll quando o painel se atualiza sozinho (validação oficial em andamento).
@@ -10071,7 +10072,8 @@ function rtPainelHtml(d, urlPdf){
       <div>
         <div class="rt-hero-kicker">⚖️ Auditoria da Reforma Tributária · Notas de ${S?'saída (emitidas pela empresa)':'entrada'}</div>
         <div class="rt-hero-nome">${esc(e.nome)} ${empresaMatrizFilialHtml(e.cnpj)}</div>
-        <div class="rt-hero-sub">CNPJ ${esc(fmtCnpjCpf(e.cnpj||''))} · ${fmtDateIso(d.periodo.de)} a ${fmtDateIso(d.periodo.ate)} · ${rtNum(k.notas)} NF-e · ${rtNum(k.itens)} itens auditados</div>
+        <div class="rt-hero-sub">CNPJ ${esc(fmtCnpjCpf(e.cnpj||''))} · ${fmtDateIso(d.periodo.de)} a ${fmtDateIso(d.periodo.ate)} · ${rtNum(k.notas - (k.cte||0))} NF-e${k.cte?` · ${rtNum(k.cte)} CT-e`:''} · ${rtNum(k.itens)} itens auditados</div>
+        ${k.resumosSemItens>0 ? `<div class="rt-hero-sub" style="color:#d08a1b;">⚠️ ${rtNum(k.resumosSemItens)} nota(s) do período chegaram só como resumo (sem itens) e ficaram fora da auditoria — a Sefaz não entrega o XML completo da nota emitida pela própria empresa. Cadastre a empresa no Extrato NFE pra vir completa.</div>` : ''}
       </div>
       <div class="row" style="gap:8px; flex-wrap:wrap;">
         <button class="btn" id="rtCsv">⬇ Evidências (CSV)</button>
