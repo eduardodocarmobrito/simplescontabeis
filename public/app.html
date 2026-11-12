@@ -16315,10 +16315,10 @@ function contratoModeloCampoRowHtml(campo){
   campo = campo || { chave:'', rotulo:'', autoPreencherDe:'' };
   const n = cmCampoSeq++;
   return `
-    <div class="row cmCampoRow" style="margin-bottom:8px; align-items:center;" data-combo-n="${n}" data-auto-valor="${esc(campo.autoPreencherDe||'')}">
-      <input class="cmChave" placeholder="chave (ex: cliente_nome)" value="${esc(campo.chave)}" style="width:170px;">
-      <input class="cmRotulo" placeholder="Rótulo exibido" value="${esc(campo.rotulo)}" style="flex:1;">
-      <div class="cmAutoWrap" style="width:240px;"></div>
+    <div class="row cmCampoRow" style="margin-bottom:8px; align-items:flex-end;" data-combo-n="${n}" data-auto-valor="${esc(campo.autoPreencherDe||'')}">
+      <div class="field" style="width:170px; margin-bottom:0;"><label>Chave</label><input class="cmChave" placeholder="ex: cliente_nome" value="${esc(campo.chave)}"></div>
+      <div class="field" style="flex:1; margin-bottom:0;"><label>Rótulo exibido</label><input class="cmRotulo" placeholder="ex: Nome do Cliente" value="${esc(campo.rotulo)}"></div>
+      <div class="field" style="width:240px; margin-bottom:0;"><label>Preencher automaticamente de</label><div class="cmAutoWrap"></div></div>
       <button type="button" class="btn small cmRemover">Remover</button>
     </div>
   `;
