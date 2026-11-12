@@ -205,16 +205,84 @@ FecharErroSistema() {
         Sleep 300
 }
 
+; Aviso do Dominio "Para trocar de empresa voce tera que fechar todas as janelas abertas"
+; (titulo "Atencao"). Aparece quando o F8 e usado com alguma janela interna ainda aberta
+; (ex.: previa/tela do Comparativo da empresa anterior que o Esc nao fechou).
+AvisoFecharJanelas() {
+    for hwnd in WinGetList("ahk_exe AppController.exe") {
+        t := WinGetTitle("ahk_id " . hwnd)
+        if !InStr(t, "Aten")
+            continue
+        w := 0, h := 0
+        try WinGetPos(, , &w, &h, "ahk_id " . hwnd)
+        if (w > 60 && h > 60 && w <= 900 && h <= 600)
+            return hwnd
+    }
+    return 0
+}
+
+; Fecha o aviso (OK) e a tela "Troca de empresas", voltando pro estado de antes do F8.
+FecharAvisoETroca(hwnd) {
+    global T_CURTO
+    try WinActivate("ahk_id " . hwnd)
+    Sleep 300
+    Send "{Enter}"                         ; OK do aviso
+    Sleep T_CURTO
+    if WinExist("ahk_id " . hwnd)
+        try WinClose("ahk_id " . hwnd)
+    Sleep 500
+    if WinExist("Troca de empresas") {
+        try WinActivate("Troca de empresas")
+        Sleep 300
+        Send "{Esc}"
+        Sleep T_CURTO
+        if WinExist("Troca de empresas")
+            try WinClose("Troca de empresas")
+        Sleep 500
+    }
+}
+
+; Troca de empresa pelo F8. Se o Dominio recusar por ter janela aberta, fecha o aviso,
+; fecha as janelas internas e tenta de novo (1a vez com Esc; depois com Ctrl+F4, que so e
+; seguro aqui porque o proprio aviso CONFIRMOU que existe janela interna aberta).
+; Retorna false se nao conseguiu trocar - a empresa NAO e gerada (senao o relatorio sairia
+; da empresa anterior com o nome da nova).
 TrocarEmpresa(codigo) {
     global T_CURTO, T_MEDIO, T_LONGO
-    Send "{F8}"
-    Sleep T_MEDIO
-    Send "^a"
-    Sleep 200
-    SendText codigo
-    Sleep T_MEDIO
-    Send "{Enter}"
-    Sleep T_LONGO
+    Loop 3 {
+        tentativa := A_Index
+        Send "{F8}"
+        Sleep T_MEDIO
+        aviso := AvisoFecharJanelas()
+        if (!aviso) {
+            Send "^a"
+            Sleep 200
+            SendText codigo
+            Sleep T_MEDIO
+            Send "{Enter}"
+            Sleep T_LONGO
+            aviso := AvisoFecharJanelas()
+        }
+        if (!aviso)
+            return true
+        Logar("  AVISO: Dominio pediu pra fechar as janelas abertas antes de trocar (tentativa " . tentativa . "/3) - janelas: " . ListarJanelasDominio())
+        FecharAvisoETroca(aviso)
+        if (tentativa = 1) {
+            LimparTelas()
+        } else {
+            Click("700 400")
+            Sleep 400
+            Send "^{F4}"                   ; fecha a janela interna que o Esc nao fechou
+            Sleep T_MEDIO
+            FecharErroSistema()
+            if (NoLauncher() || !DominioAberto())
+                throw Error("Dominio fechou ao fechar as janelas internas (Ctrl+F4)")
+            LimparTelas()
+        }
+        Click("700 400")
+        Sleep 500
+    }
+    return false
 }
 
 ; Abre Favoritos > Comparativo de Movimento (Alt+F -> Down -> Enter), com foco antes.
@@ -380,7 +448,11 @@ ProcessarEmpresa(codigo, compIni, compFim) {
     Click("700 400")                 ; clica no app (canvas vazio) pra dar FOCO DE TECLADO (streaming)
     Sleep 500
     Logar("  [1] apos LimparTelas+foco: " . ListarJanelasDominio())
-    TrocarEmpresa(codigo)
+    if !TrocarEmpresa(codigo) {
+        Logar("Empresa " . codigo . ": NAO conseguiu trocar de empresa (janela aberta no Dominio) - nao gera o relatorio")
+        LimparTelas()
+        return "sem_troca"
+    }
     Logar("  [2] apos F8/troca empresa: " . ListarJanelasDominio())
     AbrirComparativo()
     Logar("  [3] apos Favoritos/Comparativo: " . ListarJanelasDominio())
@@ -453,6 +525,10 @@ ProcessarEmpresaVerificado(codigo, compIni, compFim) {
         if (st = "pular") {              ; sem dados / tela nao abriu -> NAO repete, segue pra proxima
             Logar("Empresa " . codigo . ": pulada (sem dados / tela nao abriu)")
             return "pular"
+        }
+        if (st = "sem_troca") {          ; Dominio nao deixou trocar -> tenta de novo do zero
+            Sleep T_MEDIO
+            continue
         }
         inicio := A_TickCount
         while (A_TickCount - inicio < 60000) {   ; espera o PDF aparecer no Drive (ate 60s)
