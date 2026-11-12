@@ -20149,7 +20149,7 @@ async function pageUsuarios(){
     const visiveis = termo ? items.filter(u=> normalizaTxt(u.nome).includes(termo) || normalizaTxt(u.email).includes(termo) || normalizaTxt(u.empresaNome||'').includes(termo)) : items;
     usersBody.innerHTML = visiveis.length ? visiveis.map(u=>`
       <tr data-id="${u.id}">
-        <td>${esc(u.nome)}</td>
+        <td><span class="chat-conv-dot ${u.online?'online':''}" title="${u.online?'Logado agora':'Offline'}" style="display:inline-block; margin-right:6px;"></span>${esc(u.nome)}</td>
         <td>${esc(u.email)}</td>
         <td><span class="tag muted">${u.perfil}</span>${u.painelTv?' <span class="tag ok">Painel de TV</span>':''}</td>
         <td>${u.totalEmpresas>1?`${u.totalEmpresas} empresas`:esc(u.empresaNome||'—')}</td>

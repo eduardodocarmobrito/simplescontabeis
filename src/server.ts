@@ -5012,8 +5012,11 @@ app.get("/api/users", requireAdmin, (req, res) => {
        WHERE u.escritorio_id = ?
        ORDER BY u.perfil, u.nome`
     )
-    .all(user.escritorioId);
-  res.json({ items: rows });
+    .all(user.escritorioId) as any[];
+  // "Logado agora" reaproveita o heartbeat de presença do chat interno (mesmo ping que acende o
+  // indicador de "online" nas conversas) — já roda pra Administrador/Colaborador/Cliente.
+  const comOnline = rows.map((r) => ({ ...r, online: chatUserOnline(r.id, user.escritorioId) }));
+  res.json({ items: comOnline });
 });
 app.post("/api/users", requireAdmin, (req, res) => {
   const user = (req as any).user;
