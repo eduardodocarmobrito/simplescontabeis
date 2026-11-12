@@ -377,6 +377,7 @@
   .tvp-ticker{flex:1; overflow:hidden; white-space:nowrap; position:relative; height:1.4em;}
   .tvp-ticker-track{position:absolute; white-space:nowrap; animation:tvpTicker linear infinite; will-change:transform;}
   .tvp-sync{white-space:nowrap;}
+  .tvp-sync-erro{color:#FF8A65; font-weight:700;}
   .tvp-fs-btn{position:fixed; right:18px; bottom:18px; z-index:600; background:rgba(234,243,238,.08); border:1px solid rgba(234,243,238,.18); color:#EAF3EE; font-family:'IBM Plex Mono',monospace; font-size:11px; letter-spacing:.06em; text-transform:uppercase; padding:9px 14px; border-radius:9px; cursor:pointer; opacity:.55; transition:opacity .2s;}
   .tvp-fs-btn:hover{opacity:1;}
   .tvp-exit{position:fixed; left:18px; bottom:18px; z-index:600; font-size:11px; color:#4E6B5F; text-decoration:none; opacity:.4; font-family:'IBM Plex Mono',monospace;}
@@ -3202,16 +3203,27 @@ async function pagePainelTv(){
     track.style.animation = '';
     track.style.animationDuration = Math.max(18, largura/55) + 's';
   }
+  let tvpFalhasSeguidas = 0, tvpRetryTimer = null;
   async function carregar(animar){
     try{
       const { items } = await api('/dashboard/cards');
       renderCards(items, animar);
       await montarTicker(items);
+      tvpFalhasSeguidas = 0;
+      if(tvpRetryTimer){ clearTimeout(tvpRetryTimer); tvpRetryTimer = null; }
       const syncEl = document.getElementById('tvpSync');
-      if(syncEl) syncEl.textContent = 'Atualizado às ' + new Date().toLocaleTimeString('pt-BR');
+      if(syncEl){ syncEl.textContent = 'Atualizado às ' + new Date().toLocaleTimeString('pt-BR'); syncEl.classList.remove('tvp-sync-erro'); }
     }catch(e){
+      tvpFalhasSeguidas++;
       const syncEl = document.getElementById('tvpSync');
-      if(syncEl) syncEl.textContent = 'Falha ao atualizar — tentando de novo…';
+      if(syncEl){
+        syncEl.textContent = (tvpFalhasSeguidas>=3?'⚠ Sem atualizar há alguns minutos — ':'') + 'Falha ao atualizar — tentando de novo…';
+        syncEl.classList.toggle('tvp-sync-erro', tvpFalhasSeguidas>=3);
+      }
+      // Instabilidade passageira de rede não pode deixar o painel travado em dado velho pelo resto do
+      // ciclo de 60s — tenta de novo bem mais cedo até voltar a funcionar.
+      if(tvpRetryTimer) clearTimeout(tvpRetryTimer);
+      tvpRetryTimer = setTimeout(()=>{ if(permitida(0)) carregar(false); }, 10_000);
     }
   }
 
