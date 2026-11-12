@@ -16382,7 +16382,10 @@ async function renderAssinaturaCard(c){
             const acaoLink = s.link
               ? `<button class="btn small primary asCopiarLinkBtn" data-link="${esc(s.link)}">Copiar link</button>`
               : (s.publicId && pendente ? `<button class="btn small primary asGerarLinkBtn" data-public-id="${esc(s.publicId)}">Gerar link</button>` : '—');
-            return `<tr><td>${esc(s.nome||'')}</td><td>${esc(s.email||'')}</td><td>${s.assinadoEm?'Assinado':s.rejeitadoEm?'Rejeitado':s.visualizadoEm?'Visualizou':'Pendente'}</td><td>${acaoLink}</td></tr>`;
+            const editarEmail = (s.publicId && pendente)
+              ? ` <button class="btn small asCorrigirEmailBtn" data-public-id="${esc(s.publicId)}" title="E-mail errado? Corrija aqui — a Autentique trava a assinatura no e-mail cadastrado, mesmo pelo link direto.">✎ corrigir</button>`
+              : '';
+            return `<tr><td>${esc(s.nome||'')}</td><td>${esc(s.email||'')}${editarEmail}</td><td>${s.assinadoEm?'Assinado':s.rejeitadoEm?'Rejeitado':s.visualizadoEm?'Visualizou':'Pendente'}</td><td>${acaoLink}</td></tr>`;
           }).join('')}
         </tbody>
       </table>
@@ -16407,6 +16410,18 @@ async function renderAssinaturaCard(c){
         try{ await navigator.clipboard.writeText(r.link); toast('Link copiado! Cole no WhatsApp, e-mail etc.','ok'); }
         catch(e){ toast('Não consegui copiar automaticamente — link: '+r.link,'err'); }
       });
+    }catch(e){ toast(e.message,'err'); btn.disabled = false; }
+  }));
+  box.querySelectorAll('.asCorrigirEmailBtn').forEach(btn=>btn.addEventListener('click', async ()=>{
+    const novoEmail = prompt('E-mail certo pra essa pessoa (a Autentique vai exigir confirmar esse e-mail de novo):');
+    if(novoEmail===null) return;
+    const v = novoEmail.trim();
+    if(!v || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)){ toast('Digite um e-mail válido.','err'); return; }
+    btn.disabled = true;
+    try{
+      await api('/contratos/'+c.id+'/corrigir-email-assinatura', { method:'POST', body:{ publicId: btn.dataset.publicId, email: v } });
+      toast('E-mail corrigido! A Autentique vai mandar a confirmação pro endereço novo.','ok');
+      renderAssinaturaCard(c);
     }catch(e){ toast(e.message,'err'); btn.disabled = false; }
   }));
   document.getElementById('asAtualizarBtn').addEventListener('click', async ()=>{

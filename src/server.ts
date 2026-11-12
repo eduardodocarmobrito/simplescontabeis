@@ -25342,6 +25342,37 @@ app.post("/api/contratos/:id/gerar-link-assinatura", blockCliente, requirePermis
     res.status(502).json({ error: `Falha ao gerar link pela Autentique: ${e.message}` });
   }
 });
+// Corrige o e-mail de um signatário cadastrado errado (documento já enviado) — a Autentique não tem
+// mutation pra EDITAR e-mail de signatário existente (confirmado na doc oficial, 2026-11-12), só dá
+// pra excluir o errado e recriar com o e-mail certo. Preserva nome/forma de assinatura; o signatário
+// novo fica com publicId diferente do antigo (que deixa de existir na Autentique).
+app.post("/api/contratos/:id/corrigir-email-assinatura", blockCliente, requirePermissao("contratos", "postar"), async (req, res) => {
+  const token = process.env.AUTENTIQUE_API_TOKEN;
+  const row = sqlite.prepare(`SELECT * FROM contratos WHERE id = ?`).get(Number(req.params.id)) as any;
+  if (!row || !podeAcessarEmpresa((req as any).user, row.empresa_id)) return res.status(404).json({ error: "Contrato não encontrado." });
+  if (!row.autentique_document_id) return res.status(400).json({ error: "Este contrato ainda não foi enviado para assinatura." });
+  if (!token) return res.status(400).json({ error: "Token da Autentique não configurado no servidor." });
+  const publicId = String(req.body?.publicId || "").trim();
+  const novoEmail = String(req.body?.email || "").trim();
+  if (!novoEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(novoEmail)) return res.status(400).json({ error: "Informe um e-mail válido." });
+  const detalhe = JSON.parse(row.assinatura_detalhe_json || "[]") as any[];
+  const alvo = detalhe.find((s) => s.publicId === publicId);
+  if (!publicId || !alvo) return res.status(400).json({ error: "Signatário não encontrado neste contrato — atualize o status e tente de novo." });
+  if (alvo.assinadoEm) return res.status(400).json({ error: "Esse signatário já assinou — não dá pra trocar o e-mail dele." });
+  try {
+    await autentique.excluirSignatario(token, row.autentique_document_id, publicId);
+    const novo = await autentique.adicionarSignatario(token, row.autentique_document_id, {
+      nome: alvo.nome || undefined,
+      email: novoEmail,
+      comoAssina: (alvo.acao as any) || "SIGN",
+    });
+    const novoDetalhe = detalhe.map((s) => (s.publicId === publicId ? novo : s));
+    sqlite.prepare(`UPDATE contratos SET assinatura_detalhe_json = ? WHERE id = ?`).run(JSON.stringify(novoDetalhe), row.id);
+    res.json({ ok: true, signatario: novo });
+  } catch (e: any) {
+    res.status(502).json({ error: `Falha ao corrigir e-mail pela Autentique: ${e.message}` });
+  }
+});
 app.get("/api/contratos/:id/status-assinatura", blockCliente, requirePermissao("contratos", "visualizar"), async (req, res) => {
   const token = process.env.AUTENTIQUE_API_TOKEN;
   const row = sqlite.prepare(`SELECT * FROM contratos WHERE id = ?`).get(Number(req.params.id)) as any;

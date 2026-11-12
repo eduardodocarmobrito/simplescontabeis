@@ -49,22 +49,8 @@ export async function criarDocumento(opts: {
   }`;
   // A Autentique rejeita um signatário com email E telefone juntos ("only_one_allowed:email,
   // phone") — prioriza email (canal mais confiável) e só usa telefone/WhatsApp quando não há email.
-  const signersPayload = opts.signers.map((s) => {
-    const item: Record<string, any> = { action: s.comoAssina || "SIGN" };
-    if (s.nome) item.name = s.nome;
-    if (s.posicoes?.length) item.positions = s.posicoes;
-    const cpf = String(s.cpf || "").replace(/\D/g, "");
-    if (cpf.length === 11) item.configs = { cpf };
-    if (s.email) {
-      item.email = s.email;
-    } else if (s.telefone) {
-      item.phone = s.telefone;
-      item.delivery_method = "DELIVERY_METHOD_WHATSAPP";
-    }
-    // Sobrescreve o canal automático (se houver) — gera só o link, sem mandar nada sozinha.
-    if (s.somenteLink) item.delivery_method = "DELIVERY_METHOD_LINK";
-    return item;
-  });
+  // (regra concentrada em signerPayload, reaproveitada por adicionarSignatario mais abaixo)
+  const signersPayload = opts.signers.map(signerPayload);
   // footer RIGHT = faixa na lateral DIREITA de TODAS as páginas com a marca de assinatura eletrônica e o
   // código/link de verificação do documento (estilo dos documentos assinados na Junta Comercial). A
   // página de auditoria (rastreio: IP, data/hora, e-mail de cada assinatura) já vem por padrão no final.
@@ -139,6 +125,60 @@ export async function reenviarAssinaturas(token: string, publicIds: string[]): P
   const query = `mutation Reenviar($ids: [UUID]) { resendSignatures(public_ids: $ids) }`;
   const data = await chamarApi(token, JSON.stringify({ query, variables: { ids: publicIds } }), { "Content-Type": "application/json" });
   return !!data.resendSignatures;
+}
+
+// Monta o payload de 1 signatário igual ao de criarDocumento (mesma regra de email x telefone,
+// somenteLink etc.) — extraído pra ser reaproveitado também por adicionarSignatario.
+function signerPayload(s: AutentiqueSigner): Record<string, any> {
+  const item: Record<string, any> = { action: s.comoAssina || "SIGN" };
+  if (s.nome) item.name = s.nome;
+  if (s.posicoes?.length) item.positions = s.posicoes;
+  const cpf = String(s.cpf || "").replace(/\D/g, "");
+  if (cpf.length === 11) item.configs = { cpf };
+  if (s.email) {
+    item.email = s.email;
+  } else if (s.telefone) {
+    item.phone = s.telefone;
+    item.delivery_method = "DELIVERY_METHOD_WHATSAPP";
+  }
+  if (s.somenteLink) item.delivery_method = "DELIVERY_METHOD_LINK";
+  return item;
+}
+
+// Remove um signatário de um documento já criado (ex.: cadastrado com e-mail errado) — a Autentique
+// não tem mutation pra EDITAR e-mail de signatário existente (confirmado na doc oficial,
+// 2026-11-12: docs.autentique.com.br/api/mutations/editing-a-document.md só cobre config do
+// documento, não de signatário). O jeito documentado é excluir e recriar (ver adicionarSignatario).
+export async function excluirSignatario(token: string, documentId: string, publicId: string): Promise<boolean> {
+  const query = `mutation ExcluirSignatario($publicId: UUID!, $documentId: UUID!) { deleteSigner(public_id: $publicId, document_id: $documentId) }`;
+  const data = await chamarApi(token, JSON.stringify({ query, variables: { publicId, documentId } }), { "Content-Type": "application/json" });
+  return !!data.deleteSigner;
+}
+
+// Adiciona um signatário novo a um documento já existente — usado em conjunto com excluirSignatario
+// pra "corrigir" o e-mail de alguém que foi cadastrado errado no envio original.
+export async function adicionarSignatario(token: string, documentId: string, signer: AutentiqueSigner): Promise<AutentiqueStatusSignatario> {
+  const query = `mutation AdicionarSignatario($documentId: UUID!, $signer: SignerInput) {
+    createSigner(document_id: $documentId, signer: $signer) {
+      public_id name email action { name } link { short_link }
+    }
+  }`;
+  const data = await chamarApi(
+    token,
+    JSON.stringify({ query, variables: { documentId, signer: signerPayload(signer) } }),
+    { "Content-Type": "application/json" }
+  );
+  const s = data.createSigner;
+  return {
+    publicId: s?.public_id || null,
+    nome: s?.name || null,
+    email: s?.email || null,
+    acao: s?.action?.name || null,
+    visualizadoEm: null,
+    assinadoEm: null,
+    rejeitadoEm: null,
+    link: s?.link?.short_link || null,
+  };
 }
 
 // Gera um link pra um signatário JÁ EXISTENTE (criado com e-mail/WhatsApp), sem mandar nada de novo
