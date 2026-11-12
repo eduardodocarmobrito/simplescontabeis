@@ -11980,6 +11980,18 @@ function ligarModuloPaywall(box, aoLiberar){
 }
 
 let MINHA_NFSE_TAB='emitir';
+// Induz o cliente a terminar o próprio cadastro antes de emitir (pedido 2026-11-12): sem certificado
+// → manda pra Configuração; com certificado mas sem nenhum modelo de serviço ativo → manda pra
+// Modelos; com os dois, não mexe (segue pro normal). Texto do aviso mostrado na aba forçada.
+let NFSE_ONBOARDING_BANNER = null;
+async function nfseProximoPassoOnboarding(){
+  try{
+    const [e, { items: modelos }] = await Promise.all([ api('/nfse/minha-empresa'), api('/nfse/minha-empresa/modelos') ]);
+    if(!e.temCertificadoProprio) return 'config';
+    if(!modelos.some(m=>m.ativo)) return 'modelos';
+    return null;
+  }catch(err){ return null; } // falha de rede não deve travar a navegação normal
+}
 async function pageMinhaNfse(){
   const item = await moduloDaChave('nfse');
   if(!item.acesso){
@@ -11999,7 +12011,10 @@ async function pageMinhaNfse(){
     </div>
     <div id="nfseContent"></div>
   `;
-  main().querySelectorAll('.tab').forEach(t=>t.addEventListener('click', ()=>{ MINHA_NFSE_TAB=t.dataset.tab; renderMinhaNfseTabs(); }));
+  main().querySelectorAll('.tab').forEach(t=>t.addEventListener('click', ()=>{ MINHA_NFSE_TAB=t.dataset.tab; NFSE_ONBOARDING_BANNER=null; renderMinhaNfseTabs(); }));
+  const passo = await nfseProximoPassoOnboarding();
+  if(passo==='config'){ MINHA_NFSE_TAB='config'; NFSE_ONBOARDING_BANNER='Falta pouco! Cadastre seu certificado digital antes de emitir — é ele que assina suas notas.'; }
+  else if(passo==='modelos'){ MINHA_NFSE_TAB='modelos'; NFSE_ONBOARDING_BANNER='Agora cadastre um modelo de serviço — é ele que define o que aparece na nota (descrição, tributação).'; }
   renderMinhaNfseTabs();
 }
 function renderMinhaNfseTabs(){
@@ -12017,7 +12032,9 @@ async function renderMinhaNfseConfig(){
     box.innerHTML = `<div class="empty-state">Seu acesso ao módulo de emissão de NFS-e ainda não foi liberado. Entre em contato com o suporte.</div>`;
     return;
   }
+  const banner = NFSE_ONBOARDING_BANNER; NFSE_ONBOARDING_BANNER = null;
   box.innerHTML = `
+    ${banner?`<div class="card" style="background:var(--accent-pale); border-left:4px solid var(--accent); margin-bottom:14px;">${esc(banner)}</div>`:''}
     <div class="card">
       <div class="row">
         <div class="field grow"><label>Cidade (IBGE)</label>${comboSelectHtml('mnfCidadeCombo','Digite a cidade…')}</div>
@@ -12112,6 +12129,14 @@ async function renderMinhaNfseConfig(){
       }
       await api('/nfse/minha-empresa', { method:'PUT', body });
       toast('Configuração salva.','ok');
+      // Só induz o próximo passo quando este salvamento acabou de resolver o certificado que faltava
+      // (acabou de enviar um arquivo agora) — uma empresa já configurada ajustando outro campo (ex.:
+      // inscrição municipal) continua na mesma tela, sem ser redirecionada à toa.
+      if(arquivo){
+        const passo = await nfseProximoPassoOnboarding();
+        if(passo==='modelos'){ MINHA_NFSE_TAB='modelos'; NFSE_ONBOARDING_BANNER='Agora cadastre um modelo de serviço — é ele que define o que aparece na nota (descrição, tributação).'; renderMinhaNfseTabs(); return; }
+        if(!passo){ MINHA_NFSE_TAB='emitir'; renderMinhaNfseTabs(); return; }
+      }
       renderMinhaNfseConfig();
     }catch(err){ toast(err.message,'err'); }
   });
@@ -12471,8 +12496,13 @@ async function renderMinhaNfseAutomatica(){
 }
 async function renderMinhaNfseModelos(){
   const { items } = await api('/nfse/minha-empresa/modelos');
+  // Só induz o próximo passo (ir pra Emitir) se, ANTES deste salvamento, não existia nenhum modelo
+  // ativo — cadastrar um 2º/3º modelo depois não deve sair redirecionando a tela à toa.
+  const semModeloAtivoAntes = !items.some(m=>m.ativo);
   const box = document.getElementById('nfseContent');
+  const banner = NFSE_ONBOARDING_BANNER; NFSE_ONBOARDING_BANNER = null;
   box.innerHTML = `
+    ${banner?`<div class="card" style="background:var(--accent-pale); border-left:4px solid var(--accent); margin-bottom:14px;">${esc(banner)}</div>`:''}
     <div class="row" style="margin-bottom:14px;"><button class="btn primary" id="btnNovoMinhaNfseModelo">+ Novo modelo</button></div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
@@ -12482,7 +12512,14 @@ async function renderMinhaNfseModelos(){
     </div>
   `;
   const TRIB_ISSQN_LABEL={1:'Operação tributável',2:'Imunidade',3:'Exportação de serviço',4:'Não incidência'};
-  const opts = { basePath:'/nfse/minha-empresa/modelos', ctribPath:'/nfse/minha-empresa/ctribnac', nbsPath:'/nfse/minha-empresa/nbs', cclasstribPath:'/nfse/minha-empresa/cclasstrib', aoSalvar:renderMinhaNfseModelos };
+  const aposSalvarModelo = async ()=>{
+    if(semModeloAtivoAntes){
+      const passo = await nfseProximoPassoOnboarding();
+      if(!passo){ MINHA_NFSE_TAB='emitir'; renderMinhaNfseTabs(); return; }
+    }
+    renderMinhaNfseModelos();
+  };
+  const opts = { basePath:'/nfse/minha-empresa/modelos', ctribPath:'/nfse/minha-empresa/ctribnac', nbsPath:'/nfse/minha-empresa/nbs', cclasstribPath:'/nfse/minha-empresa/cclasstrib', aoSalvar:aposSalvarModelo };
   document.getElementById('minhaNfseModelosBody').innerHTML = items.length? items.map(m=>`
     <tr data-id="${m.id}">
       <td><b>${esc(m.nome)}</b>${m.proprio?'':' <span class="tag muted" style="font-size:10.5px;">escritório</span>'}</td>
