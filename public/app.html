@@ -7693,7 +7693,7 @@ async function pageNotasEntrada(){
             <input id="neBusca" placeholder="Número da nota, nome, CNPJ ou valor…">
           </div>
           <div class="field" style="margin-bottom:0; min-width:140px;"><label>Tipo</label>
-            <select id="neTipo"><option value="">Todos</option><option value="nfe">NF-e</option><option value="nfce">NFC-e</option><option value="nfse">NFS-e</option><option value="cte">CT-e</option><option value="mdfe">MDF-e</option><option value="nf3e">NF3-e</option><option value="satcfe">SAT-CF-e</option><option value="evento">Evento</option><option value="outro">Outro</option></select>
+            <select id="neTipo"><option value="">Todos</option><option value="nfe">NF-e</option><option value="nfce">NFC-e</option><option value="nfse">NFS-e</option><option value="cte">CT-e</option><option value="nf3e">NF3-e</option><option value="satcfe">SAT-CF-e</option><option value="evento">Evento</option><option value="outro">Outro</option></select>
           </div>
           <div class="field" style="margin-bottom:0; min-width:140px;"><label>Situação</label>
             <select id="neSituacao"><option value="">Todas</option><option value="autorizadas">Autorizadas</option><option value="canceladas">Canceladas</option></select>
@@ -10999,7 +10999,7 @@ async function pageNfeBusca(){
     });
     const NFE_DOC_TIPO_OPCOES = [
       {id:'', label:'Todos'}, {id:'nfe', label:'NF-e'}, {id:'nfce', label:'NFC-e'}, {id:'nfse', label:'NFS-e'},
-      {id:'cte', label:'CT-e'}, {id:'mdfe', label:'MDF-e'}, {id:'nf3e', label:'NF3-e'}, {id:'satcfe', label:'SAT-CF-e'},
+      {id:'cte', label:'CT-e'}, {id:'nf3e', label:'NF3-e'}, {id:'satcfe', label:'SAT-CF-e'},
       {id:'evento', label:'Evento'}, {id:'outro', label:'Outro'},
     ];
     const nfeDocTipoSetCombo = (tp)=>{

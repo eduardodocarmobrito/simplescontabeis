@@ -12081,7 +12081,9 @@ function nfeListarDocumentosQuery(
       ? `d.evento_descricao LIKE '%ancela%'`
       : `(d.evento_descricao LIKE '%ancela%' AND d.evento_descricao NOT LIKE '%CT-e%' AND d.evento_descricao NOT LIKE '%MDF-e%'
           AND NOT EXISTS (SELECT 1 FROM nfe_documentos o WHERE o.empresa_id = d.empresa_id AND o.chave_acesso = d.chave_acesso AND o.tipo != 'evento'))`;
-  const condicoes: string[] = [`d.escritorio_id = ?`, `d.empresa_id IN (${placeholders})`, `(d.tipo != 'evento' OR ${eventoVisivel})`];
+  // MDF-e não aparece na lista (pedido do escritório: não tem uso contábil). Continua sendo baixado e
+  // guardado porque alimenta a flag "Transportadora (MDF-e)" das NF-e (mdfe_vinculos) e o "Ver detalhes do MDF-e".
+  const condicoes: string[] = [`d.escritorio_id = ?`, `d.empresa_id IN (${placeholders})`, `d.tipo != 'mdfe'`, `(d.tipo != 'evento' OR ${eventoVisivel})`];
   const params: any[] = [user.escritorioId, ...empresasIds];
   if (tipo) {
     condicoes.push(`d.tipo = ?`);
