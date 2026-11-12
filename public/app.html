@@ -3490,7 +3490,7 @@ const CARD_TIPOS_INFO = {
   cnd_municipal: { label:'Certidão Municipal (CND)', subtitulo:'Empresas com pendência municipal (sem certidão negativa) — Prefeitura' },
   dctfweb_nao_entregue: { label:'DCTF-Web Não Entregue', subtitulo:'Empresas sem DCTF-Web entregue (ativa no e-CAC) — desde 07/2026' },
   folha_nao_fechada: { label:'Fechamento da Folha', subtitulo:'Empresas com folha não transmitida ao eSocial — desde 07/2026' },
-  caixapostal_nao_lida: { label:'Mensagens no e-CAC', subtitulo:'Empresas com mensagem não lida na Caixa Postal' },
+  caixapostal_nao_lida: { label:'Mensagens no e-CAC', subtitulo:'Empresas com mensagem não lida na Caixa Postal do e-CAC ou aviso novo do Regularize (PGFN)' },
   pesquisa_pagamento: { label:'Pagamento DAS/DCTF-Web', subtitulo:'Cliente respondeu que não pagou, ou não respondeu a pesquisa' },
   checklist_atraso: { label:'Documentos Pendentes', subtitulo:'Competência anterior, após o prazo, sem envio do cliente' },
   solicitacoes_pendentes: { label:'Solicitações dos Clientes', subtitulo:'Aguardando retorno do escritório' },
@@ -3642,7 +3642,7 @@ function cardDetalheModal(c){
     </div>`:''}
     ${consultaCaixaPostal? `<div class="row" style="align-items:center; gap:10px; margin-bottom:10px; flex-wrap:wrap;">
       <button class="btn primary" id="caixaPostalConsultarBtn" title="Consulta no e-CAC via Integra Contador, pra todas as empresas habilitadas">🔄 Consultar agora</button>
-      <span id="caixaPostalMsg" style="font-size:12px; color:var(--ink-soft);">Busca as mensagens não lidas de todas as empresas agora, sem esperar a rotina automática.</span>
+      <span id="caixaPostalMsg" style="font-size:12px; color:var(--ink-soft);">Busca as mensagens não lidas do e-CAC e os avisos do Regularize (PGFN) que chegaram no e-mail do escritório, sem esperar a rotina automática.</span>
     </div>`:''}
     ${execDasNaoPago? `<div class="row" style="align-items:center; gap:10px; margin-bottom:10px; flex-wrap:wrap;">
       <button class="btn primary" id="dasNpExecBtn" title="Consulta na Receita (Integra Contador) o pagamento do DAS de todas as empresas optantes — cada consulta é cobrada pelo SERPRO">🔄 Executar agora</button>
@@ -3732,9 +3732,14 @@ function cardDetalheModal(c){
       cpBtn.disabled = true; const txt0 = cpBtn.textContent; cpBtn.textContent = 'Consultando…';
       cpMsg.style.color = 'var(--ink-soft)'; cpMsg.textContent = 'Consultando no e-CAC via Integra Contador — pode levar alguns minutos…';
       try{
-        const r = await api('/integracontador/caixapostal/consultar', { method:'POST' });
+        const [r, rg] = await Promise.all([
+          api('/integracontador/caixapostal/consultar', { method:'POST' }).catch(e=>({ falha:e.message })),
+          api('/regularize/consultar', { method:'POST' }).catch(e=>({ falha:e.message })),
+        ]);
+        if(r.falha && rg.falha) throw new Error(r.falha);
         cpMsg.style.color = 'var(--credit)';
-        cpMsg.textContent = `${r.ok}/${r.total} consultadas com sucesso${r.erros&&r.erros.length?` · ${r.erros.length} com erro (${r.erros.slice(0,3).map(e=>e.empresa).join(', ')}${r.erros.length>3?'…':''})`:''}.`;
+        cpMsg.textContent = (r.falha? `e-CAC: ${r.falha}` : `e-CAC: ${r.ok}/${r.total} consultadas com sucesso${r.erros&&r.erros.length?` · ${r.erros.length} com erro (${r.erros.slice(0,3).map(e=>e.empresa).join(', ')}${r.erros.length>3?'…':''})`:''}.`)
+          + (rg.falha? ` · Regularize: ${rg.falha}` : ` · Regularize: ${rg.novos? rg.novos+' aviso(s) novo(s) no e-mail' : 'nenhum aviso novo no e-mail'}.`);
         carregar(); pageDashboard();
       }catch(e){ cpMsg.style.color = 'var(--debit)'; cpMsg.textContent = e.message; }
       finally{ cpBtn.disabled = false; cpBtn.textContent = txt0; }
@@ -3814,9 +3819,25 @@ function cardDetalheModal(c){
           ${items.map(i=>`<tr><td>${esc(i.empresaNome)}</td><td>${esc(i.alerta)}</td><td style="text-align:right;">${i.docId?`<a class="btn small" href="/api/integracontador/documentos/${i.docId}/pdf" target="_blank" rel="noopener">Baixar Situação Fiscal</a>`:''}</td></tr>`).join('')}
         </tbody></table>`;
       } else if(tipo==='caixapostal_nao_lida'){
+        const podeVisto = can('dashboard','editar');
+        const regHtml = r => `<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <span class="tag warn" title="Aviso da Caixa de Mensagens do REGULARIZE (PGFN), recebido no e-mail do escritório">Regularize · PGFN</span>
+            <span>${r.quantidade} aviso${r.quantidade>1?'s':''} novo${r.quantidade>1?'s':''} — último em ${fmtDateHora(r.ultimoEm)}${r.cadastrada?'':` <span class="mut">(${esc(r.documento||'')} não cadastrado)</span>`}</span>
+            <a class="btn small" href="https://www.regularize.pgfn.gov.br/" target="_blank" rel="noopener" data-noclick="1">Abrir Regularize</a>
+            ${podeVisto?`<button class="btn small regVisto" data-empresa="${r.empresaId||''}" data-doc="${esc(r.documento||'')}" data-noclick="1">✓ Visto</button>`:''}
+          </div>`;
         box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Não lidas</th><th>Assuntos recentes</th></tr></thead><tbody>
-          ${items.map(i=>`<tr class="linha-clicavel" data-empresa="${i.empresaId}" style="cursor:pointer;"><td>${esc(i.empresaNome)}</td><td>${i.quantidade}</td><td>${i.mensagens.map(m=>esc(m.assunto||'(sem assunto)')).join(', ')}</td></tr>`).join('')}
+          ${items.map(i=>`<tr class="${i.quantidade?'linha-clicavel':''}" data-empresa="${i.empresaId||''}" style="${i.quantidade?'cursor:pointer;':''}"><td>${esc(i.empresaNome)}</td><td>${i.quantidade?i.quantidade:'—'}${i.regularize?` <span class="mut" style="font-size:11px;">+${i.regularize.quantidade} PGFN</span>`:''}</td><td>${i.mensagens.map(m=>esc(m.assunto||'(sem assunto)')).join(', ')}${i.regularize?(i.mensagens.length?'<div style="height:6px"></div>':'')+regHtml(i.regularize):''}</td></tr>`).join('')}
         </tbody></table>`;
+        box.querySelectorAll('[data-noclick]').forEach(el=>el.addEventListener('click', ev=>ev.stopPropagation()));
+        box.querySelectorAll('.regVisto').forEach(b=>b.addEventListener('click', async ()=>{
+          b.disabled = true;
+          try{
+            await api('/regularize/visto', { method:'POST', body: JSON.stringify({ empresaId: Number(b.dataset.empresa)||null, documento: b.dataset.doc||null }) });
+            toast('Aviso do Regularize marcado como visto.');
+            carregar(); pageDashboard();
+          }catch(e){ toast(e.message,'err'); b.disabled = false; }
+        }));
         box.querySelectorAll('.linha-clicavel').forEach(tr=>tr.addEventListener('click', ()=>{
           closeModal();
           STATE.page = 'integracontador'; renderNav();

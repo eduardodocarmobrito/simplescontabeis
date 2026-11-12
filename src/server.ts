@@ -23961,6 +23961,144 @@ async function cardSituacaoFiscal(user: any): Promise<any[]> {
   }
   return resultado;
 }
+// ---------- Regularize (PGFN): a PGFN não tem API pra Caixa de Mensagens do Regularize, mas manda um e-mail
+// "Aviso da Caixa de Mensagens do REGULARIZE" (nao.responda-regularize@pgfn.gov.br) pro e-mail do escritório,
+// com o nome e o CNPJ/CPF do contribuinte. Lemos esses avisos no Gmail (mesma conta do módulo E-mail) e
+// mostramos no card "Mensagens no e-CAC" do Início até alguém marcar como visto. ----------
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS regularize_avisos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    escritorio_id INTEGER NOT NULL,
+    message_id TEXT NOT NULL,
+    empresa_id INTEGER,
+    documento TEXT,
+    nome TEXT,
+    assunto TEXT,
+    recebido_em TEXT,
+    visto_em TEXT,
+    visto_por INTEGER,
+    UNIQUE(escritorio_id, message_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_regularize_avisos_empresa ON regularize_avisos(escritorio_id, empresa_id);
+`);
+const regularizeEmAndamento = new Set<number>();
+function regularizeAcharEmpresa(escritorioId: number, doc: string): number | null {
+  if (!doc) return null;
+  const empresas = sqlite.prepare(`SELECT id, cnpj FROM empresas WHERE escritorio_id = ? AND cnpj IS NOT NULL AND cnpj != ''`).all(escritorioId) as any[];
+  const exata = empresas.find((e) => soDigitos(e.cnpj) === doc);
+  if (exata) return exata.id;
+  // Aviso da matriz vale pra filial cadastrada (e vice-versa): compara a raiz do CNPJ.
+  if (doc.length === 14) {
+    const raiz = empresas.filter((e) => soDigitos(e.cnpj).slice(0, 8) === doc.slice(0, 8));
+    if (raiz.length) return (raiz.find((e) => soDigitos(e.cnpj).slice(8, 12) === "0001") || raiz[0]).id;
+  }
+  return null;
+}
+async function regularizeSincronizar(escritorioId: number): Promise<{ novos: number }> {
+  const cfg = getEmailExtratosConfig(escritorioId);
+  if (!cfg.email || !cfg.senha_app_cifrada) return { novos: 0 };
+  if (regularizeEmAndamento.has(escritorioId)) return { novos: 0 };
+  regularizeEmAndamento.add(escritorioId);
+  const client = new ImapFlow({ host: "imap.gmail.com", port: 993, secure: true, auth: { user: cfg.email, pass: nfse.decifrarTexto(cfg.senha_app_cifrada) }, logger: false });
+  client.on("error", () => { /* socket caiu: a próxima rodada reconecta */ });
+  let novos = 0;
+  try {
+    await client.connect();
+    // "Todos os e-mails" pega também o que já foi arquivado/lido na caixa; sem ela, só a Caixa de entrada.
+    const pastas = await client.list();
+    const todos = pastas.find((p: any) => p.specialUse === "\\All")?.path || "INBOX";
+    const ultimo = (sqlite.prepare(`SELECT MAX(recebido_em) as m FROM regularize_avisos WHERE escritorio_id = ?`).get(escritorioId) as any)?.m;
+    const desde = ultimo ? new Date(new Date(ultimo.replace(" ", "T") + "Z").getTime() - 3 * 86400_000) : new Date(Date.now() - 30 * 86400_000);
+    const lock = await client.getMailboxLock(todos);
+    try {
+      const uids = ((await client.search({ from: "regularize", since: desde }, { uid: true })) || []) as number[];
+      if (!uids.length) return { novos: 0 };
+      const existe = sqlite.prepare(`SELECT 1 FROM regularize_avisos WHERE escritorio_id = ? AND message_id = ?`);
+      const pendentes: number[] = [];
+      for await (const m of client.fetch(uids.join(","), { envelope: true }, { uid: true })) {
+        const mid = m.envelope?.messageId || `uid-${m.uid}`;
+        const de = (m.envelope?.from || []).map((f: any) => f.address || "").join(" ");
+        if (!/pgfn\.gov\.br/i.test(de)) continue;
+        if (!existe.get(escritorioId, mid)) pendentes.push(m.uid);
+      }
+      const inserir = sqlite.prepare(
+        `INSERT OR IGNORE INTO regularize_avisos (escritorio_id, message_id, empresa_id, documento, nome, assunto, recebido_em) VALUES (?, ?, ?, ?, ?, ?, ?)`
+      );
+      for (const uid of pendentes) {
+        const msg = await client.fetchOne(String(uid), { source: true, envelope: true }, { uid: true });
+        if (!msg || !msg.source) continue;
+        const parsed = await simpleParser(msg.source);
+        const texto = (parsed.text || String(parsed.html || "").replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ");
+        const m = texto.match(/Ol[áa],?\s*(.+?)\s*\((\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}|\d{3}\.?\d{3}\.?\d{3}-?\d{2})\)/i);
+        const doc = m ? soDigitos(m[2]) : "";
+        const nome = m ? m[1].trim().slice(0, 200) : "";
+        const data = (parsed.date || msg.envelope?.date || new Date()) as Date;
+        const r = inserir.run(
+          escritorioId,
+          parsed.messageId || msg.envelope?.messageId || `uid-${uid}`,
+          regularizeAcharEmpresa(escritorioId, doc),
+          doc || null,
+          nome || null,
+          parsed.subject || null,
+          new Date(data).toISOString().slice(0, 19).replace("T", " ")
+        );
+        if (Number(r.changes)) novos++;
+      }
+    } finally {
+      lock.release();
+    }
+  } finally {
+    regularizeEmAndamento.delete(escritorioId);
+    try { await client.logout(); } catch { /* ignora */ }
+  }
+  if (novos) console.log(`[Regularize] ${novos} aviso(s) novo(s) no e-mail do escritório ${escritorioId}`);
+  return { novos };
+}
+function regularizeSincronizarTodos() {
+  const configs = sqlite.prepare(`SELECT escritorio_id FROM email_extratos_config WHERE email IS NOT NULL AND senha_app_cifrada IS NOT NULL`).all() as any[];
+  for (const c of configs) regularizeSincronizar(c.escritorio_id).catch((e) => console.error("[Regularize] Erro lendo avisos no e-mail:", e.message));
+}
+setTimeout(regularizeSincronizarTodos, 60_000);
+setInterval(regularizeSincronizarTodos, 15 * 60_000);
+// Avisos do Regularize ainda não vistos, agrupados por empresa (ou pelo documento, se o CNPJ não está cadastrado).
+function regularizePendentes(user: any): any[] {
+  const visiveis = new Set(empresasVisiveis(user));
+  const rows = sqlite
+    .prepare(
+      `SELECT a.empresa_id as empresaId, e.nome as empresaNome, a.documento, a.nome, a.recebido_em as recebidoEm
+       FROM regularize_avisos a LEFT JOIN empresas e ON e.id = a.empresa_id
+       WHERE a.escritorio_id = ? AND a.visto_em IS NULL AND (e.id IS NULL OR e.ativo = 1)
+       ORDER BY a.recebido_em DESC`
+    )
+    .all(user.escritorioId) as any[];
+  const grupos = new Map<string, any>();
+  for (const r of rows) {
+    if (r.empresaId && !visiveis.has(r.empresaId)) continue;
+    const chave = r.empresaId ? `e${r.empresaId}` : `d${r.documento || r.nome || "?"}`;
+    const g = grupos.get(chave) || { empresaId: r.empresaId || null, empresaNome: r.empresaNome || r.nome || "(contribuinte não identificado)", documento: r.documento, cadastrada: !!r.empresaId, quantidade: 0, ultimoEm: r.recebidoEm };
+    g.quantidade++;
+    grupos.set(chave, g);
+  }
+  return [...grupos.values()];
+}
+app.post("/api/regularize/consultar", blockCliente, requirePermissao("dashboard", "editar"), async (req, res) => {
+  try {
+    res.json(await regularizeSincronizar((req as any).user.escritorioId));
+  } catch (e: any) {
+    res.status(400).json({ error: "Não foi possível ler os avisos do Regularize no e-mail: " + e.message });
+  }
+});
+// Marca como visto todos os avisos pendentes de uma empresa (ou de um documento não cadastrado).
+app.post("/api/regularize/visto", blockCliente, requirePermissao("dashboard", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.body?.empresaId) || null;
+  const documento = req.body?.documento ? soDigitos(req.body.documento) : null;
+  if (!empresaId && !documento) return res.status(400).json({ error: "Informe a empresa." });
+  const r = empresaId
+    ? sqlite.prepare(`UPDATE regularize_avisos SET visto_em = datetime('now'), visto_por = ? WHERE escritorio_id = ? AND empresa_id = ? AND visto_em IS NULL`).run(user.id, user.escritorioId, empresaId)
+    : sqlite.prepare(`UPDATE regularize_avisos SET visto_em = datetime('now'), visto_por = ? WHERE escritorio_id = ? AND empresa_id IS NULL AND documento = ? AND visto_em IS NULL`).run(user.id, user.escritorioId, documento);
+  res.json({ ok: true, marcados: Number(r.changes) });
+});
 // Mesmo molde do card de Situação Fiscal acima, mas pra mensagens não lidas na Caixa Postal do
 // e-CAC (tabela integracontador_caixapostal_mensagens, populada pela busca automática — ver
 // integraContadorBuscarEmpresaInterno). "mensagens" vem limitado às mais recentes só pra não deixar
@@ -23986,6 +24124,13 @@ async function cardCaixaPostalNaoLida(user: any): Promise<any[]> {
     const quantidade = (sqlite.prepare(`SELECT COUNT(*) as n FROM integracontador_caixapostal_mensagens WHERE empresa_id = ?`).get(r.empresaId) as any).n;
     resultado.push({ empresaId: r.empresaId, empresaNome: r.empresaNome, quantidade, mensagens });
   }
+  // Avisos do Regularize (PGFN) entram no mesmo card: soma na linha da empresa ou viram linha própria.
+  for (const g of regularizePendentes(user)) {
+    const linha = g.empresaId ? resultado.find((x) => x.empresaId === g.empresaId) : null;
+    if (linha) linha.regularize = g;
+    else resultado.push({ empresaId: g.empresaId, empresaNome: g.empresaNome, quantidade: 0, mensagens: [], regularize: g });
+  }
+  resultado.sort((a, b) => String(a.empresaNome).localeCompare(String(b.empresaNome), "pt-BR"));
   return resultado;
 }
 // Mostra as pesquisas de pagamento (DAS/DARF DCTF-Web, ver integraContadorEnviarPesquisasPagamento)
