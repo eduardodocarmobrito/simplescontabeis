@@ -250,6 +250,8 @@
   .rte-body .align-justify{text-align:justify;}
   .rte-body .clausula-titulo{font-weight:700; text-align:center; font-size:15px; margin:22px 0 10px;}
   .campos-grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:12px; margin-bottom:16px;}
+  /* Rótulo de 1 ou 2 linhas na mesma fileira: o campo fica sempre alinhado pela base. */
+  .campos-grid > .field{display:flex; flex-direction:column; justify-content:flex-end;}
 
   .toast-wrap{position:fixed; bottom:20px; right:20px; z-index:2000; display:flex; flex-direction:column; gap:8px;}
   .toast{background:#22302B; color:#fff; padding:11px 16px; border-radius:8px; font-size:13px; box-shadow:var(--shadow); max-width:340px;}
