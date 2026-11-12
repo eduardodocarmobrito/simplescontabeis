@@ -15561,7 +15561,9 @@ let CAMPOS_ANEXO_EXTRA = new Set();
 function campoEhAnexoTerceirizacao(chave){ return chave==='anexo_empresas_terceirizadas' || CAMPOS_ANEXO_EXTRA.has(chave); }
 const SETORES_TERCEIRIZACAO = [['fiscal','Fiscal'],['contabil','Contábil'],['folha','Folha / DP']];
 function campoEhCep(chave){ return chave==='CEP'; }
-function campoEhMoeda(chave){ return /valor/i.test(chave); }
+// Campo de dinheiro: nome com "valor" ou "preço"/"preco" (ex.: modulo_preco, modulo_preco_implantacao),
+// nunca o "por extenso" (esse é texto).
+function campoEhMoeda(chave){ return /valor|pre[cç]o/i.test(chave) && !/extenso/i.test(chave); }
 function campoEhServicos(chave){ return /servi[cç]os_a_ser/i.test(chave); }
 function valorFormatadoCampo(chave, valor){
   if(!valor) return '';
@@ -15601,7 +15603,12 @@ function campoFieldHtml(f, dados, comAjuda, catalogoServicos){
   const largo = f.chave==='cliente_nome' ? ' style="grid-column:1 / -1;"' : '';
   const valor = valorFormatadoCampo(f.chave, dados[f.chave]);
   const ph = campoEhMoeda(f.chave) ? ' placeholder="0,00"' : '';
-  return `<div class="field"${largo}><label>${esc(f.rotulo)}${ajuda}</label><input class="drwCampo" data-chave="${esc(f.chave)}" value="${esc(valor)}"${ph}></div>`;
+  if(campoEhMoeda(f.chave)){
+    // "R$" fixo dentro do campo (só visual): o valor guardado continua "0.000,00", porque o texto do
+    // contrato já escreve "R$ {{campo}}".
+    return `<div class="field"${largo}><label>${esc(f.rotulo)}${ajuda}</label><div style="position:relative;"><span style="position:absolute; left:12px; top:50%; transform:translateY(-50%); color:var(--ink-soft); pointer-events:none; font-size:14px;">R$</span><input class="drwCampo" data-chave="${esc(f.chave)}" data-auto="${esc(f.autoPreencherDe||'')}" value="${esc(valor)}"${ph} inputmode="numeric" style="padding-left:38px;"></div></div>`;
+  }
+  return `<div class="field"${largo}><label>${esc(f.rotulo)}${ajuda}</label><input class="drwCampo" data-chave="${esc(f.chave)}" data-auto="${esc(f.autoPreencherDe||'')}" value="${esc(valor)}"${ph}></div>`;
 }
 function campoGrupoHtml(titulo, lista, dados, comAjuda, catalogoServicos){
   if(!lista.length) return '';
@@ -15917,6 +15924,16 @@ async function abrirContratoDrawer(id){
         ligarMascaraCep(inp);
       } else if(campoEhMoeda(inp.dataset.chave)){
         ligarMascaraMoeda(inp);
+        // "Por extenso" acompanha o valor ao sair do campo: acha o par pelo autoPreencherDe
+        // (moduloNfseMensal → moduloNfseMensalExtenso) ou pelo nome (<campo>_extenso).
+        const auto = inp.dataset.auto;
+        const campos = [...document.querySelectorAll('.drwCampo')];
+        const ext = (auto && campos.find(x=>x.dataset.auto===auto+'Extenso')) || campos.find(x=>x.dataset.chave===inp.dataset.chave+'_extenso');
+        if(ext) inp.addEventListener('change', async ()=>{
+          if(!inp.value){ ext.value=''; return; }
+          try{ const r = await api('/contratos/valor-extenso', { method:'POST', body:{ valor: inp.value } }); ext.value = r.extenso; }
+          catch(e){ toast('Não consegui calcular o valor por extenso: '+e.message,'err'); }
+        });
       }
     });
     // Multiescolha de serviços: inicializa o componente (chips + dropdown + valor por serviço).
