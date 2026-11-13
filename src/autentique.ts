@@ -110,10 +110,14 @@ export async function consultarDocumento(token: string, id: string): Promise<{
     rejeitadoEm: s.rejected?.created_at || null,
     link: s.link?.short_link || null,
   }));
+  // A Autentique inclui sozinha, em TODO documento, a linha da conta dona do token (sem "action" —
+  // achado real, 2026-11-12) — nunca precisa assinar. Contar ela em "todosAssinaram" travaria o
+  // contrato pra sempre em "Aguardando assinaturas", mesmo com todo mundo de verdade já assinado.
+  const signatariosReais = signatarios.filter((s) => s.acao);
   return {
     id: doc.id,
     signatarios,
-    todosAssinaram: signatarios.length > 0 && signatarios.every((s) => !!s.assinadoEm),
+    todosAssinaram: signatariosReais.length > 0 && signatariosReais.every((s) => !!s.assinadoEm),
     algumRejeitou: signatarios.some((s) => !!s.rejeitadoEm),
     pdfAssinadoUrl: doc.files?.signed || doc.files?.pades || null,
   };

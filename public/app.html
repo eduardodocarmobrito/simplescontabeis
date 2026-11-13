@@ -16369,7 +16369,10 @@ async function renderAssinaturaCard(c){
     ligarEnvioAssinatura(c, 'asEnviarBtn');
     return;
   }
-  const assinatarios = c.assinatarios || [];
+  // Filtra a linha "dona da conta" que a Autentique inclui sozinha em todo documento (sem ação —
+  // não precisa assinar, só aparece pra quem está logado na conta de verdade). Nunca fizemos parte
+  // dela enviar nada, não faz sentido mostrar nem deixar "corrigir"/"gerar link" nela.
+  const assinatarios = (c.assinatarios || []).filter(s=>s.acao);
   box.innerHTML = `
     <div style="font-size:12px; color:var(--ink-soft); margin-bottom:8px;">Assinatura digital — ${c.statusAssinatura==='assinado'?'<span class="tag ok">Assinado por todos</span>':c.statusAssinatura==='rejeitado'?'<span class="tag muted">Alguém rejeitou</span>':'<span class="tag muted">Aguardando assinaturas</span>'}</div>
     <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-4px;">Se alguém não receber o e-mail da Autentique (ou travar no código de confirmação — e-mail errado, caixa de spam etc.), use o botão <b>Gerar link</b>/<b>Copiar link</b> da linha da pessoa e mande por WhatsApp, outro e-mail etc. Esse link abre a assinatura direto, sem passar pela confirmação de e-mail.</p>
@@ -16439,7 +16442,7 @@ async function renderAssinaturaCard(c){
     let lista = assinatarios;
     try{
       const st = await api('/contratos/'+c.id+'/status-assinatura');
-      if(st && st.signatarios) lista = st.signatarios;
+      if(st && st.signatarios) lista = st.signatarios.filter(s=>s.acao);
     }catch(e){ toast('Não consegui atualizar o status agora: '+e.message,'err'); }
     const pendente = s=>!s.assinadoEm && !s.rejeitadoEm;
     formBox.style.display='block';
