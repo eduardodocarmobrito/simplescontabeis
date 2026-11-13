@@ -11697,14 +11697,27 @@ async function pageIntegraContador(deepLinkEmpresaId){
       btnDctfwebTodas.disabled = true; btnDctfwebTodas.textContent = 'Buscando…';
       const statusEl = document.getElementById('icDctfwebTodasStatus');
       if(statusEl) statusEl.textContent = '';
+      const renderStatusDctfweb = (st)=>{
+        if(!statusEl) return;
+        const resumo = st.total ? `${st.feitas}/${st.total} empresas — ${st.novos} guia(s) nova(s)${st.erros?`, ${st.erros} com erro`:''}` : 'Nenhuma empresa com "Precisa de DARF da DCTF-Web" marcado.';
+        let html = esc(resumo);
+        const det = st.detalhesErros||[];
+        if(det.length){
+          html += `<div style="margin-top:6px; border:1px solid var(--debit); border-radius:8px; padding:8px 10px; max-width:680px; background:rgba(220,53,69,.06);">
+            <div style="font-weight:600; color:var(--debit); margin-bottom:4px;">Empresas com erro (${det.length}) — clique para identificar:</div>
+            <ul style="margin:0; padding-left:18px; display:flex; flex-direction:column; gap:6px;">
+              ${det.map(d=>`<li><b>${esc(d.nome)}</b>${d.cnpj?` <span style="color:var(--ink-soft);">(${esc(fmtCnpjCpf(d.cnpj))})</span>`:''}<br><span style="color:var(--debit);">${esc(d.erro)}</span></li>`).join('')}
+            </ul></div>`;
+        }
+        statusEl.innerHTML = html;
+      };
       try{
         await api('/integracontador/buscar-dctfweb-todas', { method:'POST' });
         for(let i=0;i<200;i++){
           await new Promise(r=>setTimeout(r,3000));
           const st = await api('/integracontador/buscar-dctfweb-todas/status');
-          const resumo = st.total ? `${st.feitas}/${st.total} empresas — ${st.novos} guia(s) nova(s)${st.erros?`, ${st.erros} com erro`:''}` : 'Nenhuma empresa com "Precisa de DARF da DCTF-Web" marcado.';
-          if(statusEl) statusEl.textContent = resumo;
-          if(!st.rodando){ toast(resumo,st.erros?'err':'ok'); break; }
+          renderStatusDctfweb(st);
+          if(!st.rodando){ toast(st.erros?`${st.erros} empresa(s) com erro — veja a lista abaixo do botão.`:`${st.feitas}/${st.total} empresas — ${st.novos} guia(s) nova(s).`, st.erros?'err':'ok'); break; }
         }
       }catch(e){ toast(e.message,'err'); }
       finally{ btnDctfwebTodas.disabled = false; btnDctfwebTodas.textContent = 'Buscar agora só DCTF-Web de todos'; }

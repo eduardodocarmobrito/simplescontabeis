@@ -17866,14 +17866,16 @@ async function integraContadorExecutarBuscaAutomatica(desde?: string) {
 // resto da busca completa (declaração/DAS/parcelamento/Situação Fiscal/Caixa Postal). Mesmo esquema de
 // status em memória (polling) já usado pro resto do sistema, já que pode levar minutos com várias
 // empresas (pausa de 5s entre cada uma, igual a rotina automática).
-const integraContadorDctfwebTodasStatus = new Map<number, { rodando: boolean; total: number; feitas: number; novos: number; erros: number; fim?: string }>();
+type DctfwebTodasErro = { empresaId: number; nome: string; cnpj: string; erro: string };
+type DctfwebTodasStatus = { rodando: boolean; total: number; feitas: number; novos: number; erros: number; detalhesErros: DctfwebTodasErro[]; fim?: string };
+const integraContadorDctfwebTodasStatus = new Map<number, DctfwebTodasStatus>();
 async function integraContadorExecutarDctfWebTodas(escritorioId: number) {
-  const st = { rodando: true, total: 0, feitas: 0, novos: 0, erros: 0 } as { rodando: boolean; total: number; feitas: number; novos: number; erros: number; fim?: string };
+  const st: DctfwebTodasStatus = { rodando: true, total: 0, feitas: 0, novos: 0, erros: 0, detalhesErros: [] };
   integraContadorDctfwebTodasStatus.set(escritorioId, st);
   try {
     const configs = sqlite
       .prepare(
-        `SELECT c.empresa_id as empresaId, e.cnpj as cnpj
+        `SELECT c.empresa_id as empresaId, e.cnpj as cnpj, e.nome as nome
          FROM integracontador_empresa_config c
          JOIN empresas e ON e.id = c.empresa_id
          JOIN integracontador_config ic ON ic.escritorio_id = c.escritorio_id
@@ -17884,13 +17886,17 @@ async function integraContadorExecutarDctfWebTodas(escritorioId: number) {
     for (const cfg of configs) {
       if (integraContadorBuscasEmAndamento.has(cfg.empresaId)) { st.feitas++; continue; } // já tem outra busca rodando pra essa empresa — pula, sem travar a rodada toda
       integraContadorBuscasEmAndamento.add(cfg.empresaId);
+      const registrarErro = (msg: string) => {
+        st.erros++;
+        st.detalhesErros.push({ empresaId: cfg.empresaId, nome: cfg.nome || `Empresa ${cfg.empresaId}`, cnpj: cfg.cnpj || "", erro: (msg || "erro desconhecido").slice(0, 400) });
+        console.error(`[Integra Contador] DCTF-Web (busca de todas) da empresa ${cfg.empresaId} (${cfg.nome || ""}) falhou:`, msg);
+      };
       try {
         const r = await integraContadorBuscarEmpresa(cfg.empresaId, cfg.cnpj || "", false, true, false, true);
-        if (r.erro) { st.erros++; console.error(`[Integra Contador] DCTF-Web (busca de todas) da empresa ${cfg.empresaId} falhou:`, r.erro); }
+        if (r.erro) registrarErro(r.erro);
         else st.novos += r.novos;
       } catch (e: any) {
-        st.erros++;
-        console.error(`[Integra Contador] DCTF-Web (busca de todas) da empresa ${cfg.empresaId} falhou:`, e.message);
+        registrarErro(e?.message || String(e));
       } finally {
         integraContadorBuscasEmAndamento.delete(cfg.empresaId);
       }
@@ -17912,7 +17918,7 @@ app.post("/api/integracontador/buscar-dctfweb-todas", blockCliente, requireAdmin
 });
 app.get("/api/integracontador/buscar-dctfweb-todas/status", blockCliente, requireAdmin, (req, res) => {
   const user = (req as any).user;
-  res.json(integraContadorDctfwebTodasStatus.get(user.escritorioId) || { rodando: false, total: 0, feitas: 0, novos: 0, erros: 0 });
+  res.json(integraContadorDctfwebTodasStatus.get(user.escritorioId) || { rodando: false, total: 0, feitas: 0, novos: 0, erros: 0, detalhesErros: [] });
 });
 // Agenda da busca automática do Integra Contador: dias da semana e horários (Brasília), definidos na
 // tela. Padrão = todos os dias às 12h (como era). Cada dia+horário vira uma "marca" no banco, então
