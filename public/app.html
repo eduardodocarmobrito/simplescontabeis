@@ -16382,9 +16382,9 @@ async function renderAssinaturaCard(c){
         <tbody>
           ${assinatarios.map(s=>{
             const pendente = !s.assinadoEm && !s.rejeitadoEm;
-            const acaoLink = s.link
+            const acaoLink = !pendente ? '—' : (s.link
               ? `<button class="btn small primary asCopiarLinkBtn" data-link="${esc(s.link)}">Copiar link</button>`
-              : (s.publicId && pendente ? `<button class="btn small primary asGerarLinkBtn" data-public-id="${esc(s.publicId)}">Gerar link</button>` : '—');
+              : (s.publicId ? `<button class="btn small primary asGerarLinkBtn" data-public-id="${esc(s.publicId)}">Gerar link</button>` : '—'));
             const editarEmail = (s.publicId && pendente)
               ? ` <button class="btn small asCorrigirEmailBtn" data-public-id="${esc(s.publicId)}" title="E-mail errado? Corrija aqui — a Autentique trava a assinatura no e-mail cadastrado, mesmo pelo link direto.">✎ corrigir</button>`
               : '';
