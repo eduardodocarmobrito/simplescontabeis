@@ -14200,7 +14200,12 @@ function domRelEhAnual(inicio: string, fim: string): boolean {
 function domRelMapaDocumentos(escritorioId: number): { porDocumento: Map<string, any>; porCodigo: Map<string, any> } {
   const porDocumento = new Map<string, any>();
   const porCodigo = new Map<string, any>();
-  const empresas = sqlite.prepare(`SELECT id, nome, cnpj, codigo_dominio FROM empresas WHERE escritorio_id = ?`).all(escritorioId) as any[];
+  // Só empresas ATIVAS — achado real (2026-11-13, PADOK): uma empresa desativada (duplicata antiga,
+  // CNPJ reaproveitando a mesma raiz da empresa ativa de verdade) ficava disputando a raiz do CNPJ no
+  // fallback abaixo, criando ambiguidade falsa (ids.size > 1) que nunca deveria existir — a tela de
+  // "Corrigir" já só lista empresas ativas no combo; a identificação automática precisa seguir a mesma
+  // regra, senão uma duplicata desativada bloqueia pra sempre a identificação da empresa certa.
+  const empresas = sqlite.prepare(`SELECT id, nome, cnpj, codigo_dominio FROM empresas WHERE escritorio_id = ? AND ativo = 1`).all(escritorioId) as any[];
   for (const e of empresas) {
     if (e.cnpj) {
       const digitos = String(e.cnpj).replace(/\D/g, "");
@@ -14214,7 +14219,7 @@ function domRelMapaDocumentos(escritorioId: number): { porDocumento: Map<string,
     }
   }
   const docs = sqlite
-    .prepare(`SELECT ed.documento, e.id, e.nome FROM empresa_documentos ed JOIN empresas e ON e.id = ed.empresa_id WHERE e.escritorio_id = ? AND ed.tipo = 'cnpj'`)
+    .prepare(`SELECT ed.documento, e.id, e.nome FROM empresa_documentos ed JOIN empresas e ON e.id = ed.empresa_id WHERE e.escritorio_id = ? AND e.ativo = 1 AND ed.tipo = 'cnpj'`)
     .all(escritorioId) as any[];
   for (const d of docs) {
     if (!porDocumento.has(d.documento)) porDocumento.set(d.documento, { id: d.id, nome: d.nome });
