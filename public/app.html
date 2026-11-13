@@ -3484,6 +3484,7 @@ const CARD_TIPOS_INFO = {
   licencas_vencer: { label:'Licenças a Vencer', subtitulo:'Vencidas ou vencendo nos próximos 30 dias' },
   das_atraso: { label:'DAS em Atraso', subtitulo:'Competências não entregues' },
   das_nao_pago: { label:'DAS Não Pago', subtitulo:'Vencido e não pago — confirmado na Receita' },
+  pgfn_divida_ativa: { label:'Débitos na PGFN (Dívida Ativa)', subtitulo:'Com débito confirmado — lido da Situação Fiscal (SITFIS)' },
   situacao_fiscal: { label:'Situação Fiscal', subtitulo:'Empresas com pendência' },
   efd_omisso: { label:'SPED-Fiscal (EFD ICMS/IPI) Omisso', subtitulo:'Empresas obrigadas com EFD não entregue (Consulta SEFA)' },
   cnd_estadual: { label:'Certidão Estadual (CND)', subtitulo:'Empresas com pendência estadual (sem certidão negativa) — SEFA' },
@@ -3632,6 +3633,7 @@ function cardDetalheModal(c){
   // esse serviço pra todas as empresas habilitadas (sem disparar DAS/DCTF-Web/Situação Fiscal junto).
   const consultaCaixaPostal = c.tipo==='caixapostal_nao_lida' && can('dashboard','editar');
   const execDasNaoPago = c.tipo==='das_nao_pago' && can('dashboard','editar');
+  const execPgfnDivida = c.tipo==='pgfn_divida_ativa' && can('dashboard','editar');
   openModal(`
     <h3>${esc(c.titulo)}</h3>
     ${impCfg? `<div class="row" style="align-items:center; gap:10px; margin-bottom:10px; flex-wrap:wrap;">
@@ -3647,6 +3649,10 @@ function cardDetalheModal(c){
     ${execDasNaoPago? `<div class="row" style="align-items:center; gap:10px; margin-bottom:10px; flex-wrap:wrap;">
       <button class="btn primary" id="dasNpExecBtn" title="Consulta na Receita (Integra Contador) o pagamento do DAS de todas as empresas optantes — cada consulta é cobrada pelo SERPRO">🔄 Executar agora</button>
       <span id="dasNpMsg" style="font-size:12px; color:var(--ink-soft);">Verificação automática uma vez por mês, todo dia 23.</span>
+    </div>`:''}
+    ${execPgfnDivida? `<div class="row" style="align-items:center; gap:10px; margin-bottom:10px; flex-wrap:wrap;">
+      <button class="btn primary" id="pgfnDivExecBtn" title="Reprocessa o Relatório de Situação Fiscal já baixado de cada empresa — sem custo, não consulta a Receita de novo">🔄 Executar agora</button>
+      <span id="pgfnDivMsg" style="font-size:12px; color:var(--ink-soft);">Atualiza sozinho sempre que a Situação Fiscal é consultada pelo Integra Contador.</span>
     </div>`:''}
     <div class="field" style="max-width:360px; margin-bottom:10px;"><input type="text" id="cdFiltro" placeholder="Buscar por empresa…" autocomplete="off" disabled></div>
     <div id="cardDetalheBody"><div class="empty-state">Carregando…</div></div>
@@ -3719,6 +3725,36 @@ function cardDetalheModal(c){
     btn.addEventListener('click', async ()=>{
       if(!confirmar('Consultar agora na Receita o pagamento do DAS de todas as empresas optantes? (cada consulta é cobrada pelo SERPRO)')) return;
       try{ await api('/dashboard/das-nao-pago/executar', { method:'POST' }); timer = 0; acompanhar(); }
+      catch(e){ msg.style.color = 'var(--debit)'; msg.textContent = e.message; }
+    });
+    acompanhar().then(()=>{ if(btn.disabled) timer = timer||0; });
+  }
+  if(execPgfnDivida){
+    const btn = document.getElementById('pgfnDivExecBtn'), msg = document.getElementById('pgfnDivMsg');
+    let timer = null;
+    const mostrar = (st)=>{
+      const p = st.progresso||{};
+      if(p.rodando){
+        btn.disabled = true; btn.textContent = 'Executando…';
+        msg.style.color = 'var(--ink-soft)';
+        msg.textContent = `Reprocessando: ${p.feitas}/${p.total} empresa(s)…`;
+        return true;
+      }
+      btn.disabled = false; btn.textContent = '🔄 Executar agora';
+      msg.style.color = 'var(--ink-soft)';
+      msg.textContent = 'Atualiza sozinho sempre que a Situação Fiscal é consultada pelo Integra Contador — clique aqui pra reprocessar os relatórios já baixados agora, sem custo.';
+      return false;
+    };
+    const acompanhar = async ()=>{
+      try{
+        const st = await api('/dashboard/pgfn-divida-ativa/status');
+        const rodando = mostrar(st);
+        if(rodando){ timer = setTimeout(acompanhar, 3000); }
+        else if(timer!==null){ timer = null; carregar(); pageDashboard(); }
+      }catch(e){}
+    };
+    btn.addEventListener('click', async ()=>{
+      try{ await api('/dashboard/pgfn-divida-ativa/executar', { method:'POST' }); timer = 0; acompanhar(); }
       catch(e){ msg.style.color = 'var(--debit)'; msg.textContent = e.message; }
     });
     acompanhar().then(()=>{ if(btn.disabled) timer = timer||0; });
@@ -3813,6 +3849,19 @@ function cardDetalheModal(c){
           b.disabled = true; b.textContent = 'Consultando…';
           try{ const r = await api('/dashboard/das-nao-pago/verificar', { method:'POST', body:{ empresaId:Number(b.dataset.emp) } }); toast(r.pendentes?'Ainda consta como não pago na Receita.':'Pagamento confirmado na Receita ✅','ok'); cardDetalheModal(c); }
           catch(e){ toast(e.message,'err'); b.disabled = false; b.textContent = 'Verificar agora'; }
+        }));
+      } else if(tipo==='pgfn_divida_ativa'){
+        const fmtBRL = n => 'R$ ' + Number(n||0).toLocaleString('pt-BR',{minimumFractionDigits:2, maximumFractionDigits:2});
+        box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Débitos na PGFN</th><th style="text-align:right;">Total consolidado</th></tr></thead><tbody>
+          ${items.map(i=>`<tr class="linha-clicavel" data-empresa="${i.empresaId}" style="cursor:pointer;" title="Ver detalhe na empresa"><td>${esc(i.empresaNome)}</td>
+            <td>${(i.debitos||[]).length?i.debitos.map(d=>`<span class="tag bad" style="margin:2px 6px 2px 0; display:inline-block;">${esc(d.receita)} · venc. ${esc(d.vencimento||'—')} · ${esc(d.situacao)}</span>`).join(''):'<span class="tag warn">Parcelamento/omissão — ver detalhe</span>'}</td>
+            <td style="text-align:right;"><b>${fmtBRL(i.totalConsolidado)}</b></td></tr>`).join('')}
+        </tbody></table>
+        <div style="font-size:11.5px; color:var(--ink-soft); margin-top:8px;">Lido do Relatório de Situação Fiscal (SITFIS), que é integrado Receita Federal + PGFN. Clique numa linha pra ver o detalhe completo na empresa.</div>`;
+        box.querySelectorAll('.linha-clicavel').forEach(tr=>tr.addEventListener('click', ()=>{
+          closeModal();
+          STATE.page = 'integracontador'; renderNav();
+          pageIntegraContador(Number(tr.dataset.empresa));
         }));
       } else if(tipo==='situacao_fiscal'){
         box.innerHTML = `<table class="data-table"><thead><tr><th>Empresa</th><th>Alerta</th><th></th></tr></thead><tbody>

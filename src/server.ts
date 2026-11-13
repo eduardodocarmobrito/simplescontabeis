@@ -16621,6 +16621,37 @@ function sitfisExtrairPgfn(texto: string): {
   else status = "indefinido";
   return { status, debitos, parcelamento, omissoes, totalConsolidado, valores, trecho };
 }
+// Persistência do resultado de sitfisExtrairPgfn — alimenta o card "Débitos na PGFN (Dívida Ativa)" do
+// Início sem precisar reler o PDF a cada carregamento do painel. Gravado (1) automaticamente toda vez
+// que a Situação Fiscal é atualizada na busca do Integra Contador (zero custo extra — já é o MESMO PDF
+// que seria baixado de qualquer forma) e (2) no "Executar agora" do card, que reprocessa os PDFs JÁ
+// baixados de todas as empresas (também sem custo — não consulta a Receita de novo).
+sqlite.exec(`CREATE TABLE IF NOT EXISTS integracontador_pgfn_situacao (
+  empresa_id INTEGER PRIMARY KEY REFERENCES empresas(id) ON DELETE CASCADE,
+  escritorio_id INTEGER NOT NULL,
+  status TEXT NOT NULL, -- 'com_debito' | 'sem_debito' | 'indefinido'
+  total_consolidado REAL NOT NULL DEFAULT 0,
+  debitos_json TEXT,
+  sitfis_em TEXT,
+  verificado_em TEXT NOT NULL DEFAULT (datetime('now'))
+)`);
+async function pgfnExtrairEGravar(empresaId: number, escritorioId: number, pdfPath: string, sitfisEm: string | null): Promise<void> {
+  try {
+    const pdfParse = require("pdf-parse");
+    const data = await pdfParse(new Uint8Array(fs.readFileSync(pdfPath)));
+    const r = sitfisExtrairPgfn(data.text || "");
+    sqlite
+      .prepare(
+        `INSERT INTO integracontador_pgfn_situacao (empresa_id, escritorio_id, status, total_consolidado, debitos_json, sitfis_em, verificado_em)
+         VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+         ON CONFLICT(empresa_id) DO UPDATE SET escritorio_id = excluded.escritorio_id, status = excluded.status,
+           total_consolidado = excluded.total_consolidado, debitos_json = excluded.debitos_json, sitfis_em = excluded.sitfis_em, verificado_em = datetime('now')`
+      )
+      .run(empresaId, escritorioId, r.status, r.totalConsolidado, JSON.stringify(r.debitos), sitfisEm);
+  } catch (e: any) {
+    console.error(`[PGFN] extrair situação (empresa ${empresaId}):`, e.message);
+  }
+}
 app.get("/api/integracontador/empresas/:id/pgfn", blockCliente, requirePermissao("integracontador", "visualizar"), async (req, res) => {
   const empresaId = Number(req.params.id);
   if (!podeAcessarEmpresa((req as any).user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
@@ -17395,6 +17426,7 @@ async function integraContadorBuscarEmpresaInterno(
           .prepare(`INSERT INTO integracontador_documentos (empresa_id, escritorio_id, tipo, pdf_path) VALUES (?, ?, 'situacao_fiscal', ?)`)
           .run(empresaId, empConfig.escritorio_id, caminho);
         integraContadorAnexarSitfisEmEnvio(empConfig.escritorio_id, empresaId, pdfBase64);
+        await pgfnExtrairEGravar(empresaId, empConfig.escritorio_id, caminho, new Date().toISOString());
         novos++;
       } catch (e: any) {
         console.error(`[Integra Contador] situação fiscal da empresa ${empresaId} falhou:`, e.message);
@@ -23534,7 +23566,7 @@ app.get("/api/financeiro/resumo", blockCliente, requirePermissao("financeiro", "
 // função abaixo devolve a lista (o card mostra só items.length); todas já filtram pelas empresas
 // que o usuário logado pode ver (empresasVisiveis), pro caso de um Colaborador restrito abrir o
 // Painel.
-const CARD_TIPOS: string[] = ["certificados_vencer", "das_atraso", "situacao_fiscal", "caixapostal_nao_lida", "checklist_atraso", "solicitacoes_pendentes", "envio_atraso", "solicitacao_atraso", "licencas_vencer", "pesquisa_pagamento", "efd_omisso", "cnd_estadual", "cnd_municipal", "dctfweb_nao_entregue", "folha_nao_fechada", "das_nao_pago"];
+const CARD_TIPOS: string[] = ["certificados_vencer", "das_atraso", "situacao_fiscal", "caixapostal_nao_lida", "checklist_atraso", "solicitacoes_pendentes", "envio_atraso", "solicitacao_atraso", "licencas_vencer", "pesquisa_pagamento", "efd_omisso", "cnd_estadual", "cnd_municipal", "dctfweb_nao_entregue", "folha_nao_fechada", "das_nao_pago", "pgfn_divida_ativa"];
 
 // Cards "DCTF-Web Não Entregue" e "Fechamento da Folha": usam a MESMA validação do quadro DP/RH ›
 // Obrigações do Mês (transmitida = DCTFWeb Ativa no e-CAC; Folha = Ativa com origem eSocial; marcação
@@ -24402,6 +24434,7 @@ async function calcularCardComputado(tipo: string, user: any, parametro?: string
   if (tipo === "licencas_vencer") return cardLicencasAVencer(user);
   if (tipo === "das_atraso") return cardDasEmAtraso(user);
   if (tipo === "das_nao_pago") return cardDasNaoPago(user);
+  if (tipo === "pgfn_divida_ativa") return cardPgfnDividaAtiva(user);
   if (tipo === "situacao_fiscal") return cardSituacaoFiscal(user);
   if (tipo === "efd_omisso") return cardEfdOmisso(user);
   if (tipo === "dctfweb_nao_entregue") return cardObrigacaoNaoTransmitida(user, "dprh_dctfweb");
@@ -26994,6 +27027,82 @@ if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'card_das_nao_
       .run("DAS Não Pago", "Vencido e não pago — confirmado na Receita", ref?.cor || "brass", ref ? Number(ref.ordem) : 0, r.escritorio_id);
   }
   sqlite.exec(`INSERT INTO migracoes_unicas (chave) VALUES ('card_das_nao_pago_20261110')`);
+}
+// Card "Débitos na PGFN (Dívida Ativa)" — pedido do usuário (2026-11-13), ao lado do "DAS Não Pago".
+// Diferente do DAS, não consulta nada na hora: só lê o que já está gravado em
+// integracontador_pgfn_situacao (ver pgfnExtrairEGravar), alimentado sozinho a cada Situação Fiscal
+// nova e, sob demanda, pelo "Executar agora" (que reprocessa os PDFs já baixados, sem custo).
+function cardPgfnDividaAtiva(user: any): any[] {
+  const escritorioId = user.escritorioId;
+  const visiveis = new Set(empresasVisiveis(user));
+  const rows = sqlite
+    .prepare(
+      `SELECT p.empresa_id as empresaId, e.nome as empresaNome, p.total_consolidado as totalConsolidado,
+              p.debitos_json as debitosJson, p.sitfis_em as sitfisEm, p.verificado_em as verificadoEm
+       FROM integracontador_pgfn_situacao p
+       JOIN empresas e ON e.id = p.empresa_id AND e.ativo = 1 AND e.escritorio_id = ?
+       WHERE p.escritorio_id = ? AND p.status = 'com_debito'`
+    )
+    .all(escritorioId, escritorioId) as any[];
+  const out: any[] = [];
+  for (const r of rows) {
+    if (!visiveis.has(r.empresaId)) continue;
+    let debitos: any[] = [];
+    try { debitos = JSON.parse(r.debitosJson || "[]"); } catch {}
+    out.push({ empresaId: r.empresaId, empresaNome: r.empresaNome, totalConsolidado: r.totalConsolidado, sitfisEm: r.sitfisEm, verificadoEm: r.verificadoEm, debitos });
+  }
+  out.sort((a, b) => b.totalConsolidado - a.totalConsolidado || String(a.empresaNome).localeCompare(String(b.empresaNome)));
+  return out;
+}
+let pgfnDividaAtivaProgresso: { rodando: boolean; total: number; feitas: number; erros: number } = { rodando: false, total: 0, feitas: 0, erros: 0 };
+// Reprocessa os PDFs de Situação Fiscal JÁ BAIXADOS de todas as empresas do escritório — não consulta
+// a Receita de novo (zero custo), só relê o que já está em disco. Usado pelo "Executar agora" do card
+// e serve pra popular o histórico na primeira vez (empresas cuja Situação Fiscal já existia antes
+// desse card existir).
+async function pgfnDividaAtivaVerificarTodas(escritorioId: number) {
+  if (pgfnDividaAtivaProgresso.rodando) return;
+  const empresas = sqlite
+    .prepare(
+      `SELECT c.empresa_id as empresaId
+       FROM integracontador_empresa_config c JOIN empresas e ON e.id = c.empresa_id AND e.ativo = 1
+       WHERE c.escritorio_id = ? AND c.ativo = 1`
+    )
+    .all(escritorioId) as any[];
+  pgfnDividaAtivaProgresso = { rodando: true, total: empresas.length, feitas: 0, erros: 0 };
+  try {
+    for (const emp of empresas) {
+      const doc = sqlite
+        .prepare(`SELECT pdf_path, criado_em FROM integracontador_documentos WHERE empresa_id = ? AND tipo = 'situacao_fiscal' AND pdf_path IS NOT NULL ORDER BY criado_em DESC LIMIT 1`)
+        .get(emp.empresaId) as any;
+      if (doc?.pdf_path && fs.existsSync(doc.pdf_path)) {
+        await pgfnExtrairEGravar(emp.empresaId, escritorioId, doc.pdf_path, doc.criado_em);
+      }
+      pgfnDividaAtivaProgresso.feitas++;
+    }
+  } catch (e: any) {
+    console.error("[PGFN dívida ativa] verificar todas:", e.message);
+  } finally {
+    pgfnDividaAtivaProgresso.rodando = false;
+  }
+}
+app.post("/api/dashboard/pgfn-divida-ativa/executar", blockCliente, requirePermissao("dashboard", "editar"), (req, res) => {
+  if (pgfnDividaAtivaProgresso.rodando) return res.status(409).json({ error: "Já está em andamento." });
+  void pgfnDividaAtivaVerificarTodas((req as any).user.escritorioId);
+  res.json({ ok: true, progresso: pgfnDividaAtivaProgresso });
+});
+app.get("/api/dashboard/pgfn-divida-ativa/status", requirePermissao("dashboard", "visualizar"), (req, res) => {
+  res.json({ progresso: pgfnDividaAtivaProgresso });
+});
+// Cria o card "Débitos na PGFN (Dívida Ativa)" logo ao lado do "DAS Não Pago" (mesma ordem + 1).
+if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'card_pgfn_divida_ativa_20261113'`).get()) {
+  for (const r of sqlite.prepare(`SELECT escritorio_id FROM integracontador_config WHERE ativo = 1`).all() as any[]) {
+    if (sqlite.prepare(`SELECT 1 FROM dashboard_cards WHERE escritorio_id = ? AND tipo = 'pgfn_divida_ativa'`).get(r.escritorio_id)) continue;
+    const ref = sqlite.prepare(`SELECT ordem, cor FROM dashboard_cards WHERE escritorio_id = ? AND tipo = 'das_nao_pago' ORDER BY ordem LIMIT 1`).get(r.escritorio_id) as any;
+    sqlite
+      .prepare(`INSERT INTO dashboard_cards (titulo, valor, subtitulo, cor, ordem, escritorio_id, tipo) VALUES (?, '0', ?, ?, ?, ?, 'pgfn_divida_ativa')`)
+      .run("Débitos na PGFN (Dívida Ativa)", "Com débito confirmado — lido da Situação Fiscal (SITFIS)", ref?.cor || "brass", ref ? Number(ref.ordem) + 1 : 0, r.escritorio_id);
+  }
+  sqlite.exec(`INSERT INTO migracoes_unicas (chave) VALUES ('card_pgfn_divida_ativa_20261113')`);
 }
 // Modelo "Venda de Licença de Modulo NFS-e" foi criado em branco (só o título padrão) e o contrato gerado
 // dele saiu com o PDF vazio. Preenche o modelo com o texto pronto "Licença de Uso do Módulo NFS-e (SaaS)"
