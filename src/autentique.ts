@@ -158,7 +158,7 @@ export async function excluirSignatario(token: string, documentId: string, publi
 // Adiciona um signatário novo a um documento já existente — usado em conjunto com excluirSignatario
 // pra "corrigir" o e-mail de alguém que foi cadastrado errado no envio original.
 export async function adicionarSignatario(token: string, documentId: string, signer: AutentiqueSigner): Promise<AutentiqueStatusSignatario> {
-  const query = `mutation AdicionarSignatario($documentId: UUID!, $signer: SignerInput) {
+  const query = `mutation AdicionarSignatario($documentId: UUID!, $signer: SignerInput!) {
     createSigner(document_id: $documentId, signer: $signer) {
       public_id name email action { name } link { short_link }
     }
