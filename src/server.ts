@@ -8163,6 +8163,12 @@ const OBRIGACOES_POR_SETOR: Record<string, any[]> = {
     { id: "fiscal_iss", label: "ISS", templates: ["ISS"], fonte: "envio", prazoTransmissao: 10, prazoEnvio: 15 },
     { id: "fiscal_darf_nf", label: "DARF PIS/COFINS/Retenções", templates: ["Darf Pis", "Darf Cofins", "Darf Retenções de Notas Fiscais"], fonte: "envio", prazoTransmissao: 20, prazoEnvio: 25 },
     { id: "fiscal_icms", label: "ICMS", templates: ["ICMS NORMAL", "ICMS ST", "DIFAL"], fonte: "envio", prazoTransmissao: 15, prazoEnvio: 20 },
+    // Parcelamento de DAS (PARCSN vinculado — ver integracontador_parcelamentos): elegível = empresa com
+    // parcelamento ativo; "baixada" = guia da parcela anexada na grade do Envio (a rotina automática
+    // busca todo dia); "enviada" = mesmo critério das demais. mesSeguinte: na competência 10/2026 entra a
+    // parcela que VENCE em 11/2026 (a grade do parcelamento é pelo mês de vencimento da parcela), igual
+    // ao DAS de 10/2026 que também é pago em novembro.
+    { id: "fiscal_parcelamento_das", label: "Parcelamento de DAS", templates: ["Parcelamento de DAS"], fonte: "envio", parcelamento: true, mesSeguinte: true, rotuloFeito: "Guia baixada", rotuloFalta: "Falta baixar a guia", prazoTransmissao: 20, prazoEnvio: 25 },
   ],
   contabil: [
     { id: "contabil_balancete", label: "Balancete", templates: ["Balancete"], fonte: "envio", prazoTransmissao: 30, prazoEnvio: 30 },
@@ -8205,6 +8211,8 @@ function obrigacoesCalcular(user: { escritorioId: number }, setor: string, comp:
     if (ob.fonte === "nfse_honorarios") {
       const rows = sqlite.prepare(`SELECT ae.empresa_id as id, ae.ativo FROM nfse_agendamento_empresas ae JOIN empresas e ON e.id = ae.empresa_id WHERE e.escritorio_id = ? AND e.ativo = 1`).all(user.escritorioId) as any[];
       elegiveis = rows.map((r) => { nfseAtivoMap[r.id] = r.ativo; return r.id as number; });
+    } else if (ob.parcelamento) {
+      elegiveis = [];
     } else {
       elegiveis = tpls.length
         ? (sqlite.prepare(`SELECT DISTINCT a.empresa_id as id FROM envio_atribuicoes a JOIN envio_templates t ON t.id = a.template_id WHERE a.ativo = 1 AND t.nome IN (${ph})`).all(...tpls) as any[]).map((x) => x.id)
@@ -8213,6 +8221,23 @@ function obrigacoesCalcular(user: { escritorioId: number }, setor: string, comp:
       // entrega MIT, por exemplo, não entra nessa obrigação mesmo tendo atribuição ativa no Envio.
       if (ob.flagColuna) elegiveis = elegiveis.filter((id) => empNome[id]?.[ob.flagColuna] !== 0);
     }
+    // Parcelamentos ativos por empresa (encerrado/rescindido/liquidado na Receita não entra).
+    const parcMap: Record<number, any[]> = {};
+    if (ob.parcelamento) {
+      const rows = sqlite.prepare(
+        `SELECT p.empresa_id as empresaId, p.numero_parcelamento as numero, p.situacao, p.ultimo_erro as ultimoErro, p.quantidade_parcelas as qtdParcelas
+         FROM integracontador_parcelamentos p JOIN empresas e ON e.id = p.empresa_id
+         WHERE p.escritorio_id = ? AND p.ativo = 1 AND e.ativo = 1`
+      ).all(user.escritorioId) as any[];
+      for (const r of rows) {
+        if (/encerrad|rescindid|liquidad|quitad|exclu|cancelad/i.test(r.situacao || "")) continue;
+        (parcMap[r.empresaId] = parcMap[r.empresaId] || []).push(r);
+      }
+      elegiveis = Object.keys(parcMap).map(Number);
+    }
+    // Ano/mês do período na grade do Envio (parcelamento: mês seguinte à competência do quadro).
+    let anoP = ano, mesP = mes;
+    if (ob.mesSeguinte) { mesP++; if (mesP > 12) { mesP = 1; anoP++; } }
     const envioStmt = tpls.length ? sqlite.prepare(
       `SELECT COUNT(*) as n, MAX(d.email_enviado) as emailEnv, MAX(d.whatsapp_enviado) as waEnv, MAX(d.email_enviado_em) as emailEm, MAX(d.whatsapp_enviado_em) as waEm
        FROM envio_documentos d JOIN envio_periodos p ON p.id = d.periodo_id JOIN envio_atribuicoes a ON a.id = p.atribuicao_id JOIN envio_templates t ON t.id = a.template_id
@@ -8224,7 +8249,7 @@ function obrigacoesCalcular(user: { escritorioId: number }, setor: string, comp:
     const centralStmt = tpls.length ? sqlite.prepare(
       `SELECT MAX(enviado_em) as em FROM central_envio_enviados
        WHERE escritorio_id = ? AND empresa_id = ? AND status = 'ok' AND tipo_nome IN (${ph}) AND competencia = ?`) : null;
-    const compCentral = `${mm[2]}/${mm[1]}`;
+    const compCentral = `${String(mesP).padStart(2, "0")}/${anoP}`;
     const prazoT = cfgMap[ob.id]?.prazo_transmissao ?? ob.prazoTransmissao;
     const prazoE = cfgMap[ob.id]?.prazo_envio ?? ob.prazoEnvio;
     const pT = prazoStr(prazoT), pE = prazoStr(prazoE);
@@ -8252,7 +8277,7 @@ function obrigacoesCalcular(user: { escritorioId: number }, setor: string, comp:
         else { transmitidaAuto = !!nfseEmitidoLog.get(empId, comp) || !!nfseEmissaoReal.get(empId, comp); enviadaAuto = !!nfseEnviada.get(empId, comp); }
       }
       if (envioStmt) {
-        const ed = envioStmt.get(empId, ...tpls, ano, mes) as any;
+        const ed = envioStmt.get(empId, ...tpls, anoP, mesP) as any;
         // Documento anexado só prova "feito" nas obrigações de fonte "envio" — DCTF-Web e Folha dependem do e-CAC.
         if (ed && ed.n > 0) { if (ob.fonte !== "dctfweb" && !ob.transmissaoEsocial) transmitidaAuto = true; enviadaAuto = !!(ed.emailEnv || ed.waEnv); enviadaEm = ed.waEm || ed.emailEm || null; }
       }
@@ -8272,6 +8297,8 @@ function obrigacoesCalcular(user: { escritorioId: number }, setor: string, comp:
         transmitida, enviada,
         transmitidaManual: !!(man && man.transmitida != null), enviadaManual: !!(man && man.enviada != null),
         situacaoDctf: sit,
+        parcelamentos: ob.parcelamento ? parcMap[empId] || [] : undefined,
+        periodoGrade: ob.mesSeguinte ? `${String(mesP).padStart(2, "0")}/${anoP}` : undefined,
         enviadaEm: man && man.enviada != null ? man.enviada_em : enviadaEm,
         prazoTransmissao: prazoT, prazoEnvio: prazoE,
         atrasoTransmissao: !transmitida && !!pT && hojeStr > pT,
@@ -8283,7 +8310,7 @@ function obrigacoesCalcular(user: { escritorioId: number }, setor: string, comp:
   return {
     setor,
     competencia: comp,
-    obrigacoes: obrigacoesSetor.map((o: any) => ({ id: o.id, label: o.label, fonte: o.fonte, proxyTransmissao: o.proxyTransmissao || null, transmissaoEsocial: !!o.transmissaoEsocial, auto: o.fonte !== "manual", prazoTransmissao: cfgMap[o.id]?.prazo_transmissao ?? o.prazoTransmissao, prazoEnvio: cfgMap[o.id]?.prazo_envio ?? o.prazoEnvio })),
+    obrigacoes: obrigacoesSetor.map((o: any) => ({ id: o.id, label: o.label, fonte: o.fonte, parcelamento: !!o.parcelamento, mesSeguinte: !!o.mesSeguinte, rotuloFeito: o.rotuloFeito || null, rotuloFalta: o.rotuloFalta || null, proxyTransmissao: o.proxyTransmissao || null, transmissaoEsocial: !!o.transmissaoEsocial, auto: o.fonte !== "manual", prazoTransmissao: cfgMap[o.id]?.prazo_transmissao ?? o.prazoTransmissao, prazoEnvio: cfgMap[o.id]?.prazo_envio ?? o.prazoEnvio })),
     linhas,
   };
 }
@@ -18743,7 +18770,8 @@ app.get("/api/obrigacoes/doc-detalhe", blockCliente, requirePermissao("empresas"
   if (!ob) return res.status(400).json({ error: "Obrigação inválida." });
   const tpls: string[] = ob.templates || [];
   const ph = tpls.map(() => "?").join(",");
-  const ano = Number(mm[1]), mes = Number(mm[2]);
+  let ano = Number(mm[1]), mes = Number(mm[2]);
+  if (ob.mesSeguinte) { mes++; if (mes > 12) { mes = 1; ano++; } }
   const documentos = tpls.length ? sqlite.prepare(
     `SELECT d.id, t.nome as modelo, d.file_name as arquivo, d.enviado_em as anexadoEm, d.vencimento,
             d.email_enviado as emailEnviado, d.email_enviado_em as emailEm, d.email_erro as emailErro,
@@ -18753,7 +18781,7 @@ app.get("/api/obrigacoes/doc-detalhe", blockCliente, requirePermissao("empresas"
   const cols = `id, titulo, tipo_nome as tipo, competencia, canal, destino, enviado_em as enviadoEm, enviado_por_nome as enviadoPor, status, erro`;
   const envios = tpls.length ? sqlite.prepare(
     `SELECT ${cols} FROM central_envio_enviados WHERE escritorio_id = ? AND empresa_id = ? AND tipo_nome IN (${ph}) AND competencia = ? ORDER BY enviado_em DESC, id DESC`
-  ).all(user.escritorioId, empresaId, ...tpls, `${mm[2]}/${mm[1]}`) as any[] : [];
+  ).all(user.escritorioId, empresaId, ...tpls, `${String(mes).padStart(2, "0")}/${ano}`) as any[] : [];
   let py = ano, pm = mes + 1; if (pm > 12) { pm = 1; py++; }
   const mesSeg = `${py}-${String(pm).padStart(2, "0")}`;
   const enviosSemCompetencia = tpls.length ? sqlite.prepare(
