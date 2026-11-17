@@ -2096,7 +2096,7 @@ const NAV = [
   { id:'minha-nfse', label:'NFS-e', modulo:null, roles:['Cliente'] },
   { id:'minha-clientes', label:'Clientes', modulo:null, roles:['Cliente'] },
   { id:'minha-webdfe', label:'Emissor NF-e', modulo:null, roles:['Cliente'] },
-  { id:'meus-documentos', label:'Meus Documentos', modulo:null, roles:['Cliente'] },
+  { id:'meus-documentos', label:'Documentos a serem enviados', modulo:null, roles:['Cliente'] },
   { id:'solicitar-documentos', label:'Solicitar Documentos', modulo:null, roles:['Cliente'] },
   { id:'documentos-recebidos', label:'Documentos Recebidos', modulo:null, roles:['Cliente'] },
   { id:'notas-entrada', label:'Notas de Entradas/Saídas', modulo:null, roles:['Cliente'] },
@@ -2139,7 +2139,7 @@ const PAGINAS_CLIENTE_OPTIN = new Set(['minha-nfse','minha-clientes','minha-fina
 const PAGINAS_CLIENTE_TODAS = [
   { id:'minha-nfse', label:'NFS-e', optin:true },
   { id:'minha-clientes', label:'Clientes', optin:true },
-  { id:'meus-documentos', label:'Meus Documentos' },
+  { id:'meus-documentos', label:'Documentos a serem enviados' },
   { id:'solicitar-documentos', label:'Solicitar Documentos' },
   { id:'documentos-recebidos', label:'Documentos Recebidos' },
   { id:'notas-entrada', label:'Notas de Entradas/Saídas (XML)', optin:true },
@@ -6353,7 +6353,7 @@ function manuaisPendentesGrade(grade, manuais){
 async function pageMeusDocumentos(){
   const { items } = await api('/checklist/minhas-atribuicoes');
   main().innerHTML = `
-    <h1>Meus Documentos</h1>
+    <h1>Documentos a serem enviados</h1>
     <p class="subtitle">Envie aqui os arquivos solicitados pelo seu escritório de contabilidade</p>
     <style>
       .md-acc{border:1px solid var(--rule); border-radius:var(--radius); background:var(--surface); box-shadow:var(--shadow); margin-bottom:8px; overflow:hidden;}

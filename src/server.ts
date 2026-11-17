@@ -15964,7 +15964,44 @@ function emailIdentificarBanco(nomeArquivo: string, texto: string): string | nul
 // nome do arquivo disser isso — qualquer outro PDF (ou xlsx, doc etc.) vai pro balaio genérico.
 function emailEhExtrato(nomeArquivo: string, ext: string): boolean {
   if (ext === "ofx") return true;
-  return ext === "pdf" && /extrato/i.test(nomeArquivo);
+  // "PGDASD-EXTRATO-..." é o extrato da declaração do Simples Nacional, não extrato bancário.
+  return ext === "pdf" && /extrato/i.test(nomeArquivo) && !emailClassificarFiscal(nomeArquivo);
+}
+// Documentos FISCAIS que o escritório manda pro cliente (e-mail "Fechamento Fiscal") também chegam
+// nessa caixa — achado ao vivo 2026-11-17: PGDASD-EXTRATO caía em "Extrato Bancário" e Guia DAS/ISS
+// em "Outros Documentos Financeiros" (o checklist do que o CLIENTE envia). Agora vão pro modelo certo
+// do Envio de Documentos: Guia DAS, extrato/recibo/declaração do PGDAS-D → "DAS - Mensal"; Guia
+// ISS → "ISS" (ou "ISS RETIDO", se a empresa usa esse modelo).
+function emailClassificarFiscal(nomeArquivo: string): "das" | "iss" | null {
+  const n = String(nomeArquivo || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  if (/guia[\s_-]*iss|\biss[\s_-]*retid/i.test(n)) return "iss";
+  if (/pgdas|guia[\s_-]*das|guiadas|^das[\s_-]/i.test(n)) return "das";
+  if (/^(recibo|declaracao)[\s_-]*\d{6}/i.test(n)) return "das";
+  return null;
+}
+function emailModeloFiscal(escritorioId: number, empresaId: number, tipo: "das" | "iss", nomeArquivo: string): string {
+  if (tipo === "das") return "DAS - Mensal";
+  if (/retid/i.test(nomeArquivo)) {
+    const t = envioTemplateAcharPorNome(escritorioId, "ISS RETIDO");
+    if (t && sqlite.prepare(`SELECT 1 FROM envio_atribuicoes WHERE template_id = ? AND empresa_id = ? AND ativo = 1`).get(t.id, empresaId)) return t.nome;
+  }
+  return envioTemplateAcharPorNome(escritorioId, "ISS")?.nome || "ISS";
+}
+// Anexa um documento fiscal vindo do e-mail no modelo certo do Envio de Documentos (sem disparar
+// envio — o escritório já mandou esse e-mail pro cliente). Mesmo nome no mesmo mês = substitui.
+function emailAnexarFiscal(escritorioId: number, empresaId: number, tipo: "das" | "iss", nomeArquivo: string, buf: Buffer, ano: number, mes: number): number {
+  const nomeTemplate = emailModeloFiscal(escritorioId, empresaId, tipo, nomeArquivo);
+  const atribuicaoId = integraContadorObterOuCriarAtribuicaoModelo(escritorioId, empresaId, nomeTemplate, `${nomeTemplate} — importado automaticamente do e-mail.`);
+  return integraContadorAnexarPdfEmEnvio(atribuicaoId, empresaId, ano, mes, nomeArquivo, buf.toString("base64"), "Importado automaticamente do e-mail.", null, true, true);
+}
+// E-mail enviado pela PRÓPRIA caixa configurada (cópia do que o sistema já mandou: NFS-e, DRE, DAS,
+// DARF…) — o documento já está na grade de Envio de Documentos; importar de novo duplicava do lado
+// do cliente (achado ao vivo 2026-11-17).
+function emailEhCopiaPropria(remetente: string, emailCaixa: string | null | undefined): boolean {
+  const caixa = String(emailCaixa || "").trim().toLowerCase();
+  if (!caixa) return false;
+  const m = /<([^>]+)>/.exec(remetente || "");
+  return String(m ? m[1] : remetente || "").trim().toLowerCase() === caixa;
 }
 // Itens fixos do checklist_templates "Outros Documentos Financeiros" — checklist_templates.itens
 // precisa ser uma lista pequena e fixa (colunas da grade em Solicitações de Documentos), diferente
@@ -16119,7 +16156,8 @@ async function emailExtratosSincronizar(
           const dataRecebimento = parsed.date || new Date();
           const messageId = parsed.messageId || `uid-${escritorioId}-${uid}`;
           const empresaPorAssunto = emailIdentificarEmpresaPorAssunto(escritorioId, assunto);
-          const anexos = (parsed.attachments || []).filter((a) => {
+          const copiaPropria = emailEhCopiaPropria(remetente, cfg.email);
+          const anexos = (copiaPropria ? [] : parsed.attachments || []).filter((a) => {
             if (!a.content || !a.filename || a.related) return false;
             const ext = (a.filename.split(".").pop() || "").toLowerCase();
             return ext === "ofx" || EMAIL_EXTENSOES_OUTROS.has(ext);
@@ -16129,6 +16167,7 @@ async function emailExtratosSincronizar(
             const ext = (nomeArquivo.split(".").pop() || "").toLowerCase();
             const buf = anexo.content as Buffer;
             const { ano, mes } = emailCompetenciaDoAnexo(nomeArquivo, assunto, dataRecebimento);
+            const fiscal = ext === "pdf" ? emailClassificarFiscal(nomeArquivo) : null;
             const ehExtrato = emailEhExtrato(nomeArquivo, ext);
             let texto = "";
             if (ext === "pdf") texto = await obterTextoDoPdf(buf);
@@ -16140,7 +16179,7 @@ async function emailExtratosSincronizar(
               previews.push({
                 emailAssunto: assunto,
                 nomeArquivo,
-                tipoDetectado: ehExtrato ? "extrato" : "outro",
+                tipoDetectado: fiscal || (ehExtrato ? "extrato" : "outro"),
                 bancoDetectado: banco,
                 cnpjDetectado,
                 ano,
@@ -16156,7 +16195,7 @@ async function emailExtratosSincronizar(
               emailRemetente: remetente,
               emailRecebidoEm: dataRecebimento.toISOString(),
               nomeArquivo,
-              tipoDetectado: ehExtrato ? "extrato" : "outro",
+              tipoDetectado: fiscal || (ehExtrato ? "extrato" : "outro"),
               bancoDetectado: banco,
               cnpjDetectado,
             };
@@ -16172,6 +16211,13 @@ async function emailExtratosSincronizar(
               pendentes++;
               continue;
             }
+            if (fiscal) {
+              const docId = emailAnexarFiscal(escritorioId, empresa.id, fiscal, nomeArquivo, buf, ano, mes);
+              emailGravarControle({ ...base, empresaId: empresa.id, checklistUploadId: null, status: "ok", erro: null, arquivoPendentePath: null });
+              sqlite.prepare(`UPDATE email_extratos_importados SET envio_documento_id = ? WHERE escritorio_id = ? AND message_id = ? AND nome_arquivo = ?`).run(docId, escritorioId, messageId, nomeArquivo);
+              ok++;
+              continue;
+            }
             const nomeTemplate = ehExtrato ? `Extrato ${banco || "Bancário"}` : "Outros Documentos Financeiros";
             const itens = ehExtrato ? [{ chave: "arquivo", label: nomeTemplate, accept: ["pdf", "ofx"], obrigatorio: false }] : CHECKLIST_OUTROS_ITENS;
             const atribuicaoId = checklistObterOuCriarAtribuicaoModelo(
@@ -16179,7 +16225,9 @@ async function emailExtratosSincronizar(
               empresa.id,
               nomeTemplate,
               `${nomeTemplate} — importado automaticamente do e-mail.`,
-              itens
+              itens,
+              "mensal",
+              false
             );
             const periodoId = checklistObterOuCriarPeriodo(atribuicaoId, ano, mes);
             const itemChave = ehExtrato ? "arquivo" : emailClassificarItemOutro(nomeArquivo).chave;
@@ -16285,6 +16333,19 @@ app.post("/api/email-extratos/pendentes/:id/atribuir", blockCliente, requirePerm
   if (!empresa) return res.status(400).json({ error: "Selecione uma empresa válida." });
   if (!Number.isInteger(Number(ano)) || !Number.isInteger(Number(mes))) return res.status(400).json({ error: "Informe o mês e o ano." });
   const buf = fs.readFileSync(row.arquivo_pendente_path);
+  const fiscalPend = emailClassificarFiscal(row.nome_arquivo);
+  if (fiscalPend) {
+    const docId = emailAnexarFiscal(escritorioId, empresa.id, fiscalPend, row.nome_arquivo, buf, Number(ano), Number(mes));
+    sqlite
+      .prepare(`UPDATE email_extratos_importados SET status='ok', erro=NULL, empresa_id=?, tipo_detectado=?, banco_detectado=NULL, checklist_upload_id=NULL, envio_documento_id=?, arquivo_pendente_path=NULL WHERE id=?`)
+      .run(empresa.id, fiscalPend, docId, row.id);
+    try {
+      fs.unlinkSync(row.arquivo_pendente_path);
+    } catch {
+      /* segue mesmo se não conseguir apagar o arquivo temporário */
+    }
+    return res.json({ ok: true, envioDocumentoId: docId });
+  }
   const ehExtrato = tipo === "extrato";
   const nomeTemplate = ehExtrato ? `Extrato ${String(banco || "Bancário").trim() || "Bancário"}` : "Outros Documentos Financeiros";
   const itens = ehExtrato ? [{ chave: "arquivo", label: nomeTemplate, accept: ["pdf", "ofx"], obrigatorio: false }] : CHECKLIST_OUTROS_ITENS;
@@ -16308,6 +16369,63 @@ app.post("/api/email-extratos/pendentes/:id/atribuir", blockCliente, requirePerm
   }
   res.json({ ok: true, uploadId });
 });
+// Corrige o que já tinha sido importado errado (2026-11-17): documento fiscal sai do checklist do
+// cliente e vai pro modelo certo do Envio de Documentos; cópia da própria caixa só sai (já está na
+// grade). Idempotente — só processa linha que ainda aponta pra um upload do checklist. Atribuição de
+// checklist criada pela importação (created_by NULL) que ficou sem nenhum arquivo é desativada, pra
+// não sobrar "Extrato Bancário" vazio no Meus Documentos do cliente.
+function emailCorrigirImportacoesFiscais(): void {
+  const caixas = new Map((sqlite.prepare(`SELECT escritorio_id, email FROM email_extratos_config`).all() as any[]).map((c) => [c.escritorio_id, c.email]));
+  const rows = sqlite
+    .prepare(
+      `SELECT i.*, u.file_path, u.periodo_id, p.ano, p.mes, p.atribuicao_id
+         FROM email_extratos_importados i
+         JOIN checklist_uploads u ON u.id = i.checklist_upload_id
+         JOIN checklist_periodos p ON p.id = u.periodo_id`
+    )
+    .all() as any[];
+  const atribuicoesMexidas = new Set<number>();
+  let movidos = 0,
+    removidos = 0;
+  for (const r of rows) {
+    const copia = emailEhCopiaPropria(r.email_remetente, caixas.get(r.escritorio_id));
+    const fiscal = /\.pdf$/i.test(r.nome_arquivo) ? emailClassificarFiscal(r.nome_arquivo) : null;
+    if (!copia && !fiscal) continue;
+    try {
+      let docId: number | null = null;
+      if (fiscal && !copia && r.empresa_id && r.mes && fs.existsSync(r.file_path)) {
+        docId = emailAnexarFiscal(r.escritorio_id, r.empresa_id, fiscal, r.nome_arquivo, fs.readFileSync(r.file_path), r.ano, r.mes);
+        movidos++;
+      } else removidos++;
+      const versoes = sqlite.prepare(`SELECT id, file_path FROM checklist_uploads WHERE periodo_id = ? AND file_name = ?`).all(r.periodo_id, r.nome_arquivo) as any[];
+      sqlite.prepare(`DELETE FROM checklist_uploads WHERE periodo_id = ? AND file_name = ?`).run(r.periodo_id, r.nome_arquivo);
+      for (const v of versoes) if (v.file_path !== r.file_path) try { fs.unlinkSync(v.file_path); } catch { /* já não existe */ }
+      sqlite
+        .prepare(`UPDATE email_extratos_importados SET checklist_upload_id = NULL, envio_documento_id = ?, tipo_detectado = ?, banco_detectado = NULL, status = ? WHERE id = ?`)
+        .run(docId, fiscal || r.tipo_detectado, copia ? "ignorado_copia_propria" : "ok", r.id);
+      try {
+        fs.unlinkSync(r.file_path);
+      } catch {
+        /* arquivo já não existe — segue */
+      }
+      atribuicoesMexidas.add(r.atribuicao_id);
+    } catch (e: any) {
+      console.error(`[E-mail Extratos] correção do anexo #${r.id} (${r.nome_arquivo}) falhou:`, e.message);
+    }
+  }
+  for (const atribuicaoId of atribuicoesMexidas) {
+    const temArquivo = sqlite.prepare(`SELECT 1 FROM checklist_uploads u JOIN checklist_periodos p ON p.id = u.periodo_id WHERE p.atribuicao_id = ? LIMIT 1`).get(atribuicaoId);
+    if (!temArquivo) sqlite.prepare(`UPDATE checklist_atribuicoes SET ativo = 0 WHERE id = ? AND created_by IS NULL`).run(atribuicaoId);
+  }
+  if (movidos || removidos) console.log(`[E-mail Extratos] correção: ${movidos} documento(s) fiscal(is) movido(s) pro Envio de Documentos, ${removidos} cópia(s) removida(s) do checklist.`);
+}
+setTimeout(() => {
+  try {
+    emailCorrigirImportacoesFiscais();
+  } catch (e: any) {
+    console.error("[E-mail Extratos] correção falhou:", e.message);
+  }
+}, 20_000);
 // Varredura automática de 15 em 15 minutos — só escritórios com a importação ligada e senha salva.
 setInterval(() => {
   const configs = sqlite.prepare(`SELECT escritorio_id FROM email_extratos_config WHERE ativo = 1 AND senha_app_cifrada IS NOT NULL`).all() as any[];
@@ -16831,7 +16949,10 @@ function checklistObterOuCriarAtribuicaoModelo(
   nomeTemplate: string,
   descricaoTemplate: string,
   itens: { chave: string; label: string; accept: string[]; obrigatorio: boolean }[],
-  periodicidade: "mensal" | "anual" | "avulso" = "mensal"
+  periodicidade: "mensal" | "anual" | "avulso" = "mensal",
+  // false na importação AUTOMÁTICA: atribuição desativada pelo escritório (ex.: cliente sem nada pra
+  // mandar) não volta sozinha a cada anexo de e-mail — o arquivo fica guardado, só não aparece.
+  reativar = true
 ): number {
   let template = sqlite.prepare(`SELECT id FROM checklist_templates WHERE escritorio_id = ? AND nome = ?`).get(escritorioId, nomeTemplate) as any;
   if (!template) {
@@ -16844,7 +16965,7 @@ function checklistObterOuCriarAtribuicaoModelo(
   if (!atribuicao) {
     const info = sqlite.prepare(`INSERT INTO checklist_atribuicoes (template_id, empresa_id, ativo) VALUES (?, ?, 1)`).run(template.id, empresaId);
     atribuicao = { id: Number(info.lastInsertRowid) };
-  } else {
+  } else if (reativar) {
     sqlite.prepare(`UPDATE checklist_atribuicoes SET ativo = 1 WHERE id = ?`).run(atribuicao.id);
   }
   return atribuicao.id;
