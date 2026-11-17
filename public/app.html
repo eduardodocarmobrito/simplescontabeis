@@ -21967,11 +21967,14 @@ function intRenderEscopos(catalogo){
   if(!escEl) return;
   const puxar = (catalogo||[]).filter(c=>c.grupo==='puxar');
   const enviar = (catalogo||[]).filter(c=>c.grupo==='enviar');
-  const grupoHtml = (titulo, arr)=> arr.length ? `<div style="min-width:240px;">
+  const grupoHtml = (titulo, arr)=> arr.length ? `<div style="width:100%;">
       <div style="font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--ink-soft); margin-bottom:6px;">${esc(titulo)}</div>
-      ${arr.map(c=>`<label class="checkbox-row" title="${esc(c.descricao||'')}"><input type="checkbox" class="intEscopo" value="${esc(c.id)}" ${c.id==='retencoes'?'checked':''}> ${esc(c.label)}</label>`).join('')}
+      <div style="display:flex; flex-wrap:wrap; gap:6px 22px;">
+        ${arr.map(c=>`<label class="checkbox-row" style="white-space:nowrap;" title="${esc(c.descricao||'')}"><input type="checkbox" class="intEscopo" value="${esc(c.id)}" ${c.id==='retencoes'?'checked':''}> ${esc(c.label)}</label>`).join('')}
+      </div>
     </div>` : '';
-  escEl.style.gap='28px';
+  escEl.style.flexDirection='column';
+  escEl.style.gap='14px';
   escEl.innerHTML = grupoHtml('Relatórios que o parceiro puxa de nós', puxar) + grupoHtml('Dados que o parceiro envia pra nós', enviar)
     || '<span style="color:var(--ink-soft)">Nenhum relatório disponível.</span>';
 }
