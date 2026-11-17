@@ -1847,7 +1847,7 @@ function setupComboSelect(id, items, onChange){
       hidden.value = item.id;
       input.value = item.label;
       list.classList.remove('open');
-      onChange(item.id);
+      if(onChange) onChange(item.id);
     }));
   }
   input.addEventListener('focus', ()=>{ renderList(input.value===selectedLabel()? '' : input.value); list.classList.add('open'); });
@@ -1856,7 +1856,7 @@ function setupComboSelect(id, items, onChange){
     setTimeout(()=>{
       list.classList.remove('open');
       // se o texto não corresponde mais ao item selecionado, considera que o usuário limpou a escolha
-      if(hidden.value && input.value !== selectedLabel()){ hidden.value=''; input.value=''; onChange(null); }
+      if(hidden.value && input.value !== selectedLabel()){ hidden.value=''; input.value=''; if(onChange) onChange(null); }
     }, 150);
   });
   function selectedLabel(){ const it = items.find(it=>String(it.id)===hidden.value); return it? it.label : ''; }
@@ -17073,7 +17073,8 @@ function renderRelRetencoes(box, empresas){
     <p style="font-size:12.5px; color:var(--ink-soft); margin:-10px 0 14px;">Sem cliente selecionado, mostra a grade de empresas com nota retida no período (competência anterior por padrão — troque a data pra buscar outro período). Escolha um cliente pra ver o detalhe nota a nota.</p>
     <div id="relRetResultado" class="card"><div class="empty-state">Carregando…</div></div>
   `;
-  setupComboSelect('relRetEmpresaCombo', empresas.map(e=>({id:e.id, label:empresaComboLabel(e)})));
+  // Escolher o cliente já filtra (detalhe nota a nota); apagar o nome volta pra grade de todas as empresas.
+  setupComboSelect('relRetEmpresaCombo', empresas.map(e=>({id:e.id, label:empresaComboLabel(e)})), ()=>gerar());
   setupDatePicker('relRetDataDe','relRetDataDe_text');
   setupDatePicker('relRetDataAte','relRetDataAte_text');
   let retBuscaDet=''; let retBuscaGrade=''; // filtros de busca persistidos enquanto digita
