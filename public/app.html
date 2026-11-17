@@ -2132,18 +2132,21 @@ let NAV_FECHADOS = new Set();
 const PAGINAS_CLIENTE_RESTRINGIVEIS = ['minha-nfse','minha-clientes','meus-documentos','solicitar-documentos','documentos-recebidos','notas-entrada','minha-reforma','minha-financeiro','minha-assinatura','minha-webdfe','minha-conciliacao'];
 // Páginas que o cliente só vê quando LIBERADAS explicitamente (opt-in) — não entram no "nenhuma
 // marcada = vê todas"; ficam escondidas por padrão até o admin marcar.
-const PAGINAS_CLIENTE_OPTIN = new Set(['minha-conciliacao']);
+// Toda aba ligada a um módulo (PAGINA_CLIENTE_MODULO) é opt-in: só aparece pro cliente quando o admin
+// marca explicitamente. Assim um módulo ligado no escritório NÃO vaza pro cliente pelo "vê todas".
+// As abas básicas (Meus Documentos, Solicitar, Recebidos, Assinatura) seguem no "nenhuma marcada = vê todas".
+const PAGINAS_CLIENTE_OPTIN = new Set(['minha-nfse','minha-clientes','minha-financeiro','minha-webdfe','notas-entrada','minha-reforma','minha-conciliacao']);
 const PAGINAS_CLIENTE_TODAS = [
-  { id:'minha-nfse', label:'NFS-e' },
-  { id:'minha-clientes', label:'Clientes' },
+  { id:'minha-nfse', label:'NFS-e', optin:true },
+  { id:'minha-clientes', label:'Clientes', optin:true },
   { id:'meus-documentos', label:'Meus Documentos' },
   { id:'solicitar-documentos', label:'Solicitar Documentos' },
   { id:'documentos-recebidos', label:'Documentos Recebidos' },
-  { id:'notas-entrada', label:'Notas de Entradas/Saídas (XML)' },
-  { id:'minha-reforma', label:'Reforma Tributária (auditoria IBS/CBS)' },
-  { id:'minha-financeiro', label:'Financeiro' },
+  { id:'notas-entrada', label:'Notas de Entradas/Saídas (XML)', optin:true },
+  { id:'minha-reforma', label:'Reforma Tributária (auditoria IBS/CBS)', optin:true },
+  { id:'minha-financeiro', label:'Financeiro', optin:true },
   { id:'minha-assinatura', label:'Assinatura' },
-  { id:'minha-webdfe', label:'Emissor NF-e' },
+  { id:'minha-webdfe', label:'Emissor NF-e', optin:true },
   { id:'minha-conciliacao', label:'Conciliação Bancária', optin:true },
 ];
 // Página do perfil Cliente → módulo do escritório que precisa estar liberado pra ela aparecer.
@@ -20663,7 +20666,7 @@ async function usuarioModal(u){
       ${checklistComFiltroHtml('usCliEmp', empresas, [])}
       ${u? `<div style="margin-top:14px;">
         <div style="font-size:12px; font-weight:600; margin-bottom:4px;">Abas visíveis pro cliente</div>
-        <p style="font-size:11.5px; color:var(--ink-soft); margin:-2px 0 8px;">Nenhuma marcada = vê todas. Marque só as que esse cliente deve acessar.</p>
+        <p style="font-size:11.5px; color:var(--ink-soft); margin:-2px 0 8px;">As abas de módulo marcadas com <b>(só aparece se marcada)</b> ficam escondidas por padrão — marque pra liberar pro cliente. As abas básicas (sem esse aviso) seguem a regra "nenhuma marcada = vê todas".</p>
         <div class="checkbox-grid">${PAGINAS_CLIENTE_TODAS.map(p=>`<label class="checkbox-row"><input type="checkbox" class="usPaginaCliente" value="${p.id}"> ${esc(p.label)}${p.optin?' <span style="color:var(--ink-soft); font-size:10.5px;">(só aparece se marcada)</span>':''}</label>`).join('')}</div>
       </div>` : ''}
     </div>
