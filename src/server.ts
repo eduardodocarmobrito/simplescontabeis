@@ -23364,6 +23364,16 @@ app.put("/api/super/modulos-contratos/:tipo/:id", requireSuperAdmin, (req, res) 
     if (v === "invalido") return res.status(400).json({ error: "Valor inválido." });
     sqlite.prepare(`UPDATE ${tabela} SET ${coluna} = ? WHERE id = ?`).run(v, id);
   }
+  // "Direto para pagamento" num módulo EM TESTE: encerra o teste grátis agora (trial_fim = agora), só
+  // enquanto o teste ainda está valendo e não há assinatura paga ativa. O módulo vira "teste vencido"
+  // (acesso cortado) e o cliente passa a ter que pagar pra usar. Não mexe em módulo já ativo/pago, e em
+  // "teste vencido" é no-op (já está nesse estado). Não há como reabrir teste (o INSERT de iniciar-teste
+  // barra quando a linha já existe), então a ação é de mão única — combinado com o dono.
+  if (req.body?.semTeste === true) {
+    sqlite
+      .prepare(`UPDATE ${tabela} SET trial_fim = datetime('now') WHERE id = ? AND trial_fim > datetime('now') AND (assinatura_ativa_ate IS NULL OR assinatura_ativa_ate < datetime('now'))`)
+      .run(id);
+  }
   res.json({ ok: true });
 });
 function moduloStatusParaEscritorio(catalogo: any, contratado: any) {

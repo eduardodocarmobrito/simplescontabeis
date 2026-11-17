@@ -21464,7 +21464,12 @@ function mctMontarTabela(box, lista, { mostrarCliente=true, aoSalvar }={}){
             ${mostrarCliente?`<td><div style="font-weight:600;">${esc(i.clienteNome)}</div><div style="font-size:11.5px; color:var(--ink-soft);">${i.tipo==='escritorio'?'Escritório':'Empresa · '+esc(i.escritorioNome||'')}</div></td>`:''}
             <td>${esc(i.moduloNome)}${i.situacao==='nao_contratado'?`
               <label class="checkbox-row" style="margin:6px 0 0; font-size:11.5px;" title="Cliente já assinou contrato: some o 'Iniciar teste grátis', fica só o pagamento"><input type="checkbox" class="mctSemTeste" ${i.semTeste?'checked':''}> Direto para pagamento</label>
-              <label class="checkbox-row" style="margin:2px 0 0; font-size:11.5px;" title="Módulo fora do contrato: some da Assinatura e do menu do cliente"><input type="checkbox" class="mctOculto" ${i.oculto?'checked':''}> Ocultar do cliente</label>`:''}</td>
+              <label class="checkbox-row" style="margin:2px 0 0; font-size:11.5px;" title="Módulo fora do contrato: some da Assinatura e do menu do cliente"><input type="checkbox" class="mctOculto" ${i.oculto?'checked':''}> Ocultar do cliente</label>`
+            : i.situacao==='teste'?`
+              <label class="checkbox-row" style="margin:6px 0 0; font-size:11.5px;" title="Encerra o teste grátis AGORA — o cliente passa a ter que pagar pra continuar usando (vira 'pague para usar' na Assinatura dele). Ação de mão única."><input type="checkbox" class="mctSemTeste"> Direto para pagamento</label>`
+            : i.situacao==='teste_vencido'?`
+              <label class="checkbox-row" style="margin:6px 0 0; font-size:11.5px; opacity:.7;" title="Teste vencido — este módulo já vai direto pro pagamento (não tem mais teste grátis)."><input type="checkbox" class="mctSemTeste" checked disabled> Direto para pagamento</label>`
+            : ''}</td>
             <td><span class="tag ${sit.cls}">${esc(sit.label)}</span>${i.oculto?'<div style="font-size:11px; color:var(--ink-soft); margin-top:4px;">Oculto pro cliente</div>':(i.semTeste?'<div style="font-size:11px; color:var(--ink-soft); margin-top:4px;">Sem teste grátis</div>':'')}</td>
             <td style="white-space:nowrap;">${ate?fmtDate(ate):'—'}</td>
             <td style="text-align:right; white-space:nowrap;">${fmtMoney(i.valorPadrao)}${sufixoUn}</td>
