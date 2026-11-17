@@ -4412,8 +4412,31 @@ sqlite.exec(`
     recebido_em TEXT NOT NULL DEFAULT (datetime('now'))
   );
 `);
-const API_EXTERNA_ESCOPOS = ["retencoes", "retencoes-importar"] as const;
+// Relatórios de documento que a API externa pode expor — casam 1:1 com domRelTemplateNomesParaTipo
+// (o escritório já importa esses PDFs por empresa; a API só lista o que existe e serve o arquivo).
+const API_EXTERNA_DOC_TIPOS = ["balanco", "balancete", "dre", "faturamento", "razao", "comparativo", "entradas_saidas", "programacao_ferias"] as const;
+// Catálogo de permissões (escopos) de uma chave de API externa. grupo "puxar" = o parceiro LÊ um
+// relatório nosso; grupo "enviar" = o parceiro EMPURRA dado pra nós. Serve pra validação no backend
+// e pra montar as opções (checkboxes) na tela Integrações — adicionar um relatório aqui já reflete lá.
+const API_EXTERNA_CATALOGO: { id: string; label: string; grupo: "puxar" | "enviar"; descricao: string }[] = [
+  { id: "retencoes", label: "Relatório de Retenções", grupo: "puxar", descricao: "Retenções de impostos (INSS, IRRF, PIS, COFINS, CSLL, ISS) em JSON, por competência." },
+  { id: "balanco", label: "Balanço", grupo: "puxar", descricao: "Documentos de Balanço (PDF) disponíveis da empresa, por competência." },
+  { id: "balancete", label: "Balancete", grupo: "puxar", descricao: "Documentos de Balancete (PDF) disponíveis da empresa, por competência." },
+  { id: "dre", label: "DRE", grupo: "puxar", descricao: "Demonstração de Resultado (DRE) em PDF disponível da empresa." },
+  { id: "faturamento", label: "Relação de Faturamento", grupo: "puxar", descricao: "Relação de Faturamento (PDF) disponível da empresa." },
+  { id: "razao", label: "Razão", grupo: "puxar", descricao: "Razão contábil (PDF) disponível da empresa." },
+  { id: "comparativo", label: "Comparativo de Movimento", grupo: "puxar", descricao: "Comparativo de Movimento (PDF) disponível da empresa." },
+  { id: "entradas_saidas", label: "Entradas/Saídas (Fiscal)", grupo: "puxar", descricao: "Relatório de Entradas/Saídas (PDF) disponível da empresa." },
+  { id: "programacao_ferias", label: "Programação de Férias", grupo: "puxar", descricao: "Programação de Férias (PDF) disponível da empresa." },
+  { id: "retencoes-importar", label: "Receber Retenções prontas (eles enviam pra nós)", grupo: "enviar", descricao: "Permite o parceiro ENVIAR um relatório de retenções pronto (POST), gravado aqui para conferência." },
+];
+const API_EXTERNA_ESCOPOS: string[] = API_EXTERNA_CATALOGO.map((c) => c.id);
 const hashApiExterna = (t: string) => crypto.createHash("sha256").update(t).digest("hex");
+// A chave tem este escopo? (lê o CSV gravado na própria chave — usado nas rotas de documento, onde o
+// escopo exigido é dinâmico pelo :tipo da URL, então requireApiExterna() só autentica e a checagem é aqui.)
+function apiKeyTemEscopo(req: any, escopo: string): boolean {
+  return String(req.apiKey?.escopos || "").split(",").map((s: string) => s.trim()).includes(escopo);
+}
 // Rate limit simples em memória por chave: janela deslizante de 1 min.
 const apiExternaRate = new Map<number, number[]>();
 const API_EXTERNA_LIMITE_MIN = 120;
@@ -25756,8 +25779,11 @@ app.get("/api/externa/v1", (_req, res) => {
     endpoints: [
       { metodo: "GET", caminho: "/api/externa/v1/ping", descricao: "Valida a chave e devolve a empresa vinculada." },
       { metodo: "GET", caminho: "/api/externa/v1/retencoes?competencia=AAAA-MM", descricao: "Relatório de retenções de impostos (INSS, IRRF, PIS, COFINS, CSLL, ISS) da empresa no período. Também aceita dataDe/dataAte (AAAA-MM-DD). Sem período = mês anterior." },
+      { metodo: "GET", caminho: "/api/externa/v1/documentos/{tipo}", descricao: `Lista os documentos (PDF) disponíveis de um relatório da empresa, agrupados por competência, cada um com downloadUrl. {tipo} é um de: ${API_EXTERNA_DOC_TIPOS.join(", ")}. A chave precisa ter a permissão correspondente ao tipo.` },
+      { metodo: "GET", caminho: "/api/externa/v1/documentos/{tipo}/{docId}/download", descricao: "Baixa o PDF de um documento específico (o docId vem do downloadUrl da listagem acima)." },
       { metodo: "POST", caminho: "/api/externa/v1/retencoes/importar", descricao: "Recebe um relatório de retenções já pronto, calculado do lado do sistema parceiro (JSON livre no corpo). Fica registrado para conferência em Integrações — ainda não há processamento automático desse dado." },
     ],
+    permissoes: API_EXTERNA_CATALOGO.map((c) => ({ escopo: c.id, descricao: c.descricao })),
   });
 });
 app.get("/api/externa/v1/ping", requireApiExterna(), (req, res) => {
@@ -25803,6 +25829,71 @@ app.post("/api/externa/v1/retencoes/importar", requireApiExterna("retencoes-impo
   });
 });
 
+// Lista os documentos de um relatório (Balanço, DRE, Faturamento…) disponíveis pra empresa da chave.
+// Reaproveita o mesmo esquema de envio_atribuicoes/periodos/documentos da tela Relatórios. Respeita
+// pendente_revisao (igual ao acesso do Cliente): modelo não revisado não aparece. Cada documento vem
+// com um downloadUrl pronto, que o parceiro chama com a mesma chave.
+function apiExternaListarDocumentos(user: any, empresaId: number, tipo: string, base: string) {
+  const nomes = domRelTemplateNomesParaTipo(tipo);
+  if (!nomes.length) return [];
+  const atribuicoes = sqlite
+    .prepare(
+      `SELECT a.id as atribuicaoId, t.nome as templateNome FROM envio_atribuicoes a JOIN envio_templates t ON t.id = a.template_id
+       WHERE t.escritorio_id = ? AND a.empresa_id = ? AND t.pendente_revisao = 0 AND t.nome IN (${nomes.map(() => "?").join(",")})`
+    )
+    .all(user.escritorioId, empresaId, ...nomes) as any[];
+  return atribuicoes
+    .map((a) => {
+      const periodos = sqlite.prepare(`SELECT id, ano, mes, rotulo FROM envio_periodos WHERE atribuicao_id = ? ORDER BY ano DESC, mes DESC`).all(a.atribuicaoId) as any[];
+      const periodoIds = periodos.map((p) => p.id);
+      const docs = periodoIds.length
+        ? (sqlite
+            .prepare(`SELECT id, periodo_id as periodoId, file_name as fileName, enviado_em as enviadoEm FROM envio_documentos WHERE periodo_id IN (${periodoIds.map(() => "?").join(",")}) ORDER BY enviado_em DESC`)
+            .all(...periodoIds) as any[])
+        : [];
+      const porPeriodo = new Map<number, any[]>();
+      for (const d of docs) {
+        if (!porPeriodo.has(d.periodoId)) porPeriodo.set(d.periodoId, []);
+        porPeriodo.get(d.periodoId)!.push({ docId: d.id, fileName: d.fileName, enviadoEm: d.enviadoEm, downloadUrl: `${base}/api/externa/v1/documentos/${tipo}/${d.id}/download` });
+      }
+      return { templateNome: a.templateNome, periodos: periodos.filter((p) => porPeriodo.has(p.id)).map((p) => ({ ano: p.ano, mes: p.mes, rotulo: p.rotulo, documentos: porPeriodo.get(p.id) || [] })) };
+    })
+    .filter((g) => g.periodos.length);
+}
+function apiExternaBase(req: any): string {
+  const proto = String(req.headers["x-forwarded-proto"] || req.protocol || "https").split(",")[0].trim();
+  return `${proto}://${req.headers.host}`;
+}
+app.get("/api/externa/v1/documentos/:tipo", requireApiExterna(), (req, res) => {
+  const tipo = String(req.params.tipo);
+  if (!(API_EXTERNA_DOC_TIPOS as readonly string[]).includes(tipo)) return res.status(404).json({ error: "Relatório não disponível nesta API." });
+  if (!apiKeyTemEscopo(req, tipo)) return res.status(403).json({ error: `A chave não tem permissão para '${tipo}'.` });
+  const k = (req as any).apiKey;
+  const e = sqlite.prepare(`SELECT id, nome, cnpj FROM empresas WHERE id = ?`).get(k.empresa_id) as any;
+  const grupos = apiExternaListarDocumentos((req as any).apiUser, k.empresa_id, tipo, apiExternaBase(req));
+  res.json({ empresa: e ? { id: e.id, nome: e.nome, cnpj: e.cnpj } : null, tipo, grupos, geradoEm: new Date().toISOString() });
+});
+app.get("/api/externa/v1/documentos/:tipo/:docId/download", requireApiExterna(), (req, res) => {
+  const tipo = String(req.params.tipo);
+  if (!(API_EXTERNA_DOC_TIPOS as readonly string[]).includes(tipo)) return res.status(404).json({ error: "Relatório não disponível nesta API." });
+  if (!apiKeyTemEscopo(req, tipo)) return res.status(403).json({ error: `A chave não tem permissão para '${tipo}'.` });
+  const k = (req as any).apiKey;
+  const nomes = domRelTemplateNomesParaTipo(tipo);
+  const doc = sqlite
+    .prepare(
+      `SELECT d.id, d.file_path as filePath, d.file_name as fileName
+       FROM envio_documentos d
+       JOIN envio_periodos p ON p.id = d.periodo_id
+       JOIN envio_atribuicoes a ON a.id = p.atribuicao_id
+       JOIN envio_templates t ON t.id = a.template_id
+       WHERE d.id = ? AND a.empresa_id = ? AND t.escritorio_id = ? AND t.pendente_revisao = 0 AND t.nome IN (${nomes.map(() => "?").join(",")})`
+    )
+    .get(Number(req.params.docId), k.empresa_id, k.escritorio_id, ...nomes) as any;
+  if (!doc) return res.status(404).json({ error: "Documento não encontrado." });
+  if (!fs.existsSync(doc.filePath)) return res.status(404).json({ error: "Arquivo não encontrado." });
+  res.download(doc.filePath, doc.fileName);
+});
+
 // ---------- Admin: gestão das chaves de API externa (tela Integrações) ----------
 app.get("/api/integracoes/chaves", blockCliente, requireAdmin, (req, res) => {
   const user = (req as any).user;
@@ -25815,6 +25906,7 @@ app.get("/api/integracoes/chaves", blockCliente, requireAdmin, (req, res) => {
   res.json({
     items: rows.map((r) => ({ ...r, ativo: !!r.ativo, escopos: String(r.escopos || "").split(",").filter(Boolean) })),
     escoposDisponiveis: API_EXTERNA_ESCOPOS,
+    catalogo: API_EXTERNA_CATALOGO,
   });
 });
 app.post("/api/integracoes/chaves", blockCliente, requireAdmin, (req, res) => {

@@ -21958,7 +21958,22 @@ const CFG_ABAS_TODAS = [
 ];
 // ---------- Integrações (API externa): o escritório gera chaves pra sistemas de terceiros ----------
 // puxarem dados autorizados de UMA empresa (ex.: ERP da Libra lê o Relatório de Retenções da Libra).
-const INT_ESCOPO_LABEL = { retencoes: 'Relatório de Retenções (eles puxam de nós)', 'retencoes-importar': 'Receber Retenções prontas (eles enviam pra nós)' };
+// Preenchido a partir do catálogo que o backend devolve em /integracoes/chaves (fonte única da verdade).
+let INT_ESCOPO_LABEL = { retencoes: 'Relatório de Retenções', 'retencoes-importar': 'Receber Retenções prontas (eles enviam pra nós)' };
+function intRenderEscopos(catalogo){
+  (catalogo||[]).forEach(c=>{ INT_ESCOPO_LABEL[c.id] = c.label; });
+  const escEl = document.getElementById('intEscopos');
+  if(!escEl) return;
+  const puxar = (catalogo||[]).filter(c=>c.grupo==='puxar');
+  const enviar = (catalogo||[]).filter(c=>c.grupo==='enviar');
+  const grupoHtml = (titulo, arr)=> arr.length ? `<div style="min-width:240px;">
+      <div style="font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--ink-soft); margin-bottom:6px;">${esc(titulo)}</div>
+      ${arr.map(c=>`<label class="checkbox-row" title="${esc(c.descricao||'')}"><input type="checkbox" class="intEscopo" value="${esc(c.id)}" ${c.id==='retencoes'?'checked':''}> ${esc(c.label)}</label>`).join('')}
+    </div>` : '';
+  escEl.style.gap='28px';
+  escEl.innerHTML = grupoHtml('Relatórios que o parceiro puxa de nós', puxar) + grupoHtml('Dados que o parceiro envia pra nós', enviar)
+    || '<span style="color:var(--ink-soft)">Nenhum relatório disponível.</span>';
+}
 async function pageIntegracoes(){
   const m = document.getElementById('main');
   m.innerHTML = `
@@ -21994,6 +22009,8 @@ async function pageIntegracoes(){
         <ul style="margin:4px 0 8px 18px;">
           <li><code>GET /ping</code> — valida a chave e devolve a empresa vinculada.</li>
           <li><code>GET /retencoes?competencia=AAAA-MM</code> — Relatório de Retenções (INSS, IRRF, PIS, COFINS, CSLL, ISS) do período. Também aceita <code>dataDe</code>/<code>dataAte</code> (AAAA-MM-DD). Sem período = mês anterior.</li>
+          <li><code>GET /documentos/{tipo}</code> — lista os PDFs disponíveis de um relatório (<code>balanco</code>, <code>balancete</code>, <code>dre</code>, <code>faturamento</code>, <code>razao</code>, <code>comparativo</code>, <code>entradas_saidas</code>, <code>programacao_ferias</code>), agrupados por competência, cada um com um <code>downloadUrl</code>. Só funciona pros tipos que a chave tem permissão.</li>
+          <li><code>GET /documentos/{tipo}/{docId}/download</code> — baixa o PDF de um documento (o <code>docId</code> vem do <code>downloadUrl</code> da lista acima).</li>
           <li><code>POST /retencoes/importar</code> — recebe um JSON livre com um relatório de retenções já pronto do lado do parceiro. Fica gravado aqui em "Recebimentos" pra conferência (ainda sem processamento automático).</li>
         </ul>
         <p><b>Exemplo (curl) — puxando de nós:</b></p>
@@ -22006,10 +22023,9 @@ async function pageIntegracoes(){
       </div>
     </details>`;
 
-  // escopos (checkboxes)
-  const escEl = document.getElementById('intEscopos');
-  escEl.innerHTML = Object.entries(INT_ESCOPO_LABEL).map(([id,label])=>
-    `<label class="checkbox-row"><input type="checkbox" class="intEscopo" value="${id}" checked> ${esc(label)}</label>`).join('');
+  // escopos (checkboxes) — montados a partir do catálogo que o backend devolve (fonte única da verdade)
+  try{ intRenderEscopos((await api('/integracoes/chaves')).catalogo); }
+  catch(e){ intRenderEscopos([{id:'retencoes',label:'Relatório de Retenções',grupo:'puxar'}]); }
 
   // combo de empresas
   let empresas = [];
@@ -22019,6 +22035,7 @@ async function pageIntegracoes(){
   async function carregarLista(){
     const box = document.getElementById('intLista');
     let data; try{ data = await api('/integracoes/chaves'); }catch(e){ box.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
+    (data.catalogo||[]).forEach(c=>{ INT_ESCOPO_LABEL[c.id] = c.label; });
     if(!data.items.length){ box.innerHTML = '<div class="empty-state">Nenhuma chave criada ainda.</div>'; return; }
     box.innerHTML = `<table class="data-table"><thead><tr>
         <th>Empresa</th><th>Nome</th><th>Chave</th><th>Permissões</th><th>Último uso</th><th>Status</th><th></th>
