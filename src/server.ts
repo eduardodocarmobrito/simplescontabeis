@@ -23273,9 +23273,16 @@ function empresaEhClienteDireto(empresaId: number): boolean {
   const row = sqlite.prepare(`SELECT 1 FROM empresas e JOIN escritorios o ON o.id = e.escritorio_id WHERE e.id = ? AND o.eh_cliente_direto = 1`).get(empresaId);
   return !!row;
 }
+// Regra de visibilidade na Assinatura do CLIENTE: só aparece módulo que ele JÁ TEM (contratado/teste/
+// teste vencido/ativo/vencido/isento) OU que o escritório ofereceu de propósito (sem_teste = "direto
+// pro pagamento"). Módulo de catálogo puro, nunca contratado nem oferecido, NÃO aparece pro cliente —
+// o escritório controla o que cada um pode contratar (nada de upsell automático na tela deles).
+function moduloVisivelProCliente(m: any): boolean {
+  return !m.oculto && (m.status !== "nao_contratado" || !!m.semTeste);
+}
 app.get("/api/financeiro/minha-empresa/modulos", requireCliente, (req, res) => {
   const empresaId = (req as any).user.empresaId;
-  res.json({ items: nfseModulosDaEmpresa(empresaId).filter((m) => !m.oculto), semTesteGratis: empresaEhClienteDireto(empresaId) });
+  res.json({ items: nfseModulosDaEmpresa(empresaId).filter(moduloVisivelProCliente), semTesteGratis: empresaEhClienteDireto(empresaId) });
 });
 app.post("/api/financeiro/minha-empresa/modulos/:chave/iniciar-teste", requireCliente, (req, res) => {
   const empresaId = (req as any).user.empresaId;
@@ -23291,7 +23298,7 @@ app.post("/api/financeiro/minha-empresa/modulos/:chave/iniciar-teste", requireCl
   sqlite
     .prepare(`INSERT INTO empresa_modulos (empresa_id, modulo_chave, trial_inicio, trial_fim) VALUES (?, ?, datetime('now'), datetime('now','+3 days'))`)
     .run(empresaId, chave);
-  res.json({ ok: true, items: nfseModulosDaEmpresa(empresaId).filter((m) => !m.oculto) });
+  res.json({ ok: true, items: nfseModulosDaEmpresa(empresaId).filter(moduloVisivelProCliente) });
 });
 app.post("/api/financeiro/minha-empresa/modulos/pagar", requireCliente, async (req, res) => {
   const empresaId = (req as any).user.empresaId;
