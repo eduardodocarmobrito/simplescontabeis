@@ -16391,25 +16391,43 @@ function emailCorrigirImportacoesFiscais(): void {
     const copia = emailEhCopiaPropria(r.email_remetente, caixas.get(r.escritorio_id));
     const fiscal = /\.pdf$/i.test(r.nome_arquivo) ? emailClassificarFiscal(r.nome_arquivo) : null;
     if (!copia && !fiscal) continue;
+    // Linha já resolvida junto com outra versão do mesmo arquivo (mesmo período/nome) — pula.
+    if (!sqlite.prepare(`SELECT 1 FROM checklist_uploads WHERE id = ?`).get(r.checklist_upload_id)) continue;
+    // Uma transação por arquivo: ou move/remove tudo (documento novo + checklist + controle), ou nada.
+    sqlite.exec("BEGIN");
     try {
       let docId: number | null = null;
       if (fiscal && !copia && r.empresa_id && r.mes && fs.existsSync(r.file_path)) {
         docId = emailAnexarFiscal(r.escritorio_id, r.empresa_id, fiscal, r.nome_arquivo, fs.readFileSync(r.file_path), r.ano, r.mes);
-        movidos++;
-      } else removidos++;
+      }
+      // Todas as versões desse arquivo no período (substituídas inclusive) saem; antes, solta as linhas
+      // de controle que apontam pra elas (FK checklist_upload_id → checklist_uploads).
       const versoes = sqlite.prepare(`SELECT id, file_path FROM checklist_uploads WHERE periodo_id = ? AND file_name = ?`).all(r.periodo_id, r.nome_arquivo) as any[];
-      sqlite.prepare(`DELETE FROM checklist_uploads WHERE periodo_id = ? AND file_name = ?`).run(r.periodo_id, r.nome_arquivo);
-      for (const v of versoes) if (v.file_path !== r.file_path) try { fs.unlinkSync(v.file_path); } catch { /* já não existe */ }
+      const ids = versoes.map((v) => v.id);
       sqlite
-        .prepare(`UPDATE email_extratos_importados SET checklist_upload_id = NULL, envio_documento_id = ?, tipo_detectado = ?, banco_detectado = NULL, status = ? WHERE id = ?`)
-        .run(docId, fiscal || r.tipo_detectado, copia ? "ignorado_copia_propria" : "ok", r.id);
-      try {
-        fs.unlinkSync(r.file_path);
-      } catch {
-        /* arquivo já não existe — segue */
+        .prepare(
+          `UPDATE email_extratos_importados SET checklist_upload_id = NULL, envio_documento_id = ?, tipo_detectado = ?, banco_detectado = NULL, status = ?
+            WHERE checklist_upload_id IN (${ids.map(() => "?").join(",")})`
+        )
+        .run(docId, fiscal || r.tipo_detectado, copia ? "ignorado_copia_propria" : "ok", ...ids);
+      sqlite.prepare(`DELETE FROM checklist_uploads WHERE id IN (${ids.map(() => "?").join(",")})`).run(...ids);
+      sqlite.exec("COMMIT");
+      if (docId) movidos++;
+      else removidos++;
+      for (const v of versoes) {
+        try {
+          fs.unlinkSync(v.file_path);
+        } catch {
+          /* arquivo já não existe — segue */
+        }
       }
       atribuicoesMexidas.add(r.atribuicao_id);
     } catch (e: any) {
+      try {
+        sqlite.exec("ROLLBACK");
+      } catch {
+        /* nada a desfazer */
+      }
       console.error(`[E-mail Extratos] correção do anexo #${r.id} (${r.nome_arquivo}) falhou:`, e.message);
     }
   }
