@@ -14887,7 +14887,10 @@ async function pageMinhaEmpresaConfig(){
         <div class="field" style="width:220px;"><label>CPF do representante</label><input id="mecRepCpf" value="${e.cpfRepresentanteLegal?esc(fmtCnpjCpf(e.cpfRepresentanteLegal)):''}"></div>
       </div>
       <div class="field" style="width:320px;"><label>Regime tributário</label>${comboSelectHtml('mecRegimeCombo','Digite para buscar…')}</div>
-      <button class="btn primary" id="mecSalvar" disabled>Salvar</button>
+      <div class="row" style="gap:8px; margin-top:4px;">
+        <button class="btn primary" id="mecSalvar" disabled>Salvar</button>
+        <button class="btn" id="mecCancelar" disabled>Cancelar</button>
+      </div>
     </div>
   `;
   ligarTravaDocumento(document.getElementById('mecCnpj'), 'cnpj');
@@ -14916,7 +14919,24 @@ async function pageMinhaEmpresaConfig(){
     });
   }
   let mecInicial = snapshotMec();
-  function atualizarSalvarMec(){ document.getElementById('mecSalvar').disabled = snapshotMec()===mecInicial; }
+  function atualizarSalvarMec(){ const sujo = snapshotMec()!==mecInicial; document.getElementById('mecSalvar').disabled = !sujo; document.getElementById('mecCancelar').disabled = !sujo; }
+  document.getElementById('mecCancelar').addEventListener('click', ()=>{
+    document.getElementById('mecNome').value = e.nome||'';
+    document.getElementById('mecCnpj').value = e.cnpj?fmtCnpjCpf(e.cnpj):'';
+    document.getElementById('mecEmail').value = e.email||'';
+    document.getElementById('mecTelefone').value = e.telefone||'';
+    document.getElementById('mecEndereco').value = e.endereco||'';
+    document.getElementById('mecCidade').value = e.cidade||'';
+    document.getElementById('mecUf').value = (e.uf||'').toUpperCase();
+    document.getElementById('mecCep').value = e.cep||'';
+    document.getElementById('mecIe').value = e.inscricaoEstadual||'';
+    document.getElementById('mecIm').value = e.inscricaoMunicipal||'';
+    document.getElementById('mecRepLegal').value = e.nomeRepresentanteLegal||'';
+    document.getElementById('mecRepCpf').value = e.cpfRepresentanteLegal?fmtCnpjCpf(e.cpfRepresentanteLegal):'';
+    regimeCombo.querySelector('.combo-value').value = regimeAtual.id;
+    regimeCombo.querySelector('.combo-input').value = regimeAtual.label;
+    atualizarSalvarMec();
+  });
   ['mecNome','mecCnpj','mecEmail','mecTelefone','mecEndereco','mecCidade','mecUf','mecCep','mecIe','mecIm','mecRepLegal','mecRepCpf'].forEach(id=>{
     document.getElementById(id).addEventListener('input', atualizarSalvarMec);
   });
