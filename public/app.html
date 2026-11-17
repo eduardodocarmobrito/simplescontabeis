@@ -21958,7 +21958,7 @@ const CFG_ABAS_TODAS = [
 ];
 // ---------- Integrações (API externa): o escritório gera chaves pra sistemas de terceiros ----------
 // puxarem dados autorizados de UMA empresa (ex.: ERP da Libra lê o Relatório de Retenções da Libra).
-const INT_ESCOPO_LABEL = { retencoes: 'Relatório de Retenções' };
+const INT_ESCOPO_LABEL = { retencoes: 'Relatório de Retenções (eles puxam de nós)', 'retencoes-importar': 'Receber Retenções prontas (eles enviam pra nós)' };
 async function pageIntegracoes(){
   const m = document.getElementById('main');
   m.innerHTML = `
@@ -21980,6 +21980,11 @@ async function pageIntegracoes(){
       <h3 style="margin:0 0 10px;">Chaves ativas</h3>
       <div id="intLista"><div class="empty-state">Carregando…</div></div>
     </div>
+    <div class="card" style="margin-bottom:14px;">
+      <h3 style="margin:0 0 4px;">Recebimentos</h3>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:0;">O que chegou pela porta de entrada (sistema parceiro empurrando dados pra nós). Ainda sem processamento automático — é só pra conferência.</p>
+      <div id="intRecebLista"><div class="empty-state">Carregando…</div></div>
+    </div>
     <details class="card">
       <summary style="cursor:pointer; font-weight:600;">Como o sistema parceiro usa a API (documentação)</summary>
       <div style="font-size:13px; line-height:1.6; margin-top:10px;">
@@ -21989,10 +21994,15 @@ async function pageIntegracoes(){
         <ul style="margin:4px 0 8px 18px;">
           <li><code>GET /ping</code> — valida a chave e devolve a empresa vinculada.</li>
           <li><code>GET /retencoes?competencia=AAAA-MM</code> — Relatório de Retenções (INSS, IRRF, PIS, COFINS, CSLL, ISS) do período. Também aceita <code>dataDe</code>/<code>dataAte</code> (AAAA-MM-DD). Sem período = mês anterior.</li>
+          <li><code>POST /retencoes/importar</code> — recebe um JSON livre com um relatório de retenções já pronto do lado do parceiro. Fica gravado aqui em "Recebimentos" pra conferência (ainda sem processamento automático).</li>
         </ul>
-        <p><b>Exemplo (curl):</b></p>
+        <p><b>Exemplo (curl) — puxando de nós:</b></p>
         <pre style="white-space:pre-wrap; background:var(--paper); border:1px solid var(--rule); border-radius:8px; padding:10px; color:var(--ink); overflow:auto;">curl -H "Authorization: Bearer scx_SEU_TOKEN" \\
   "${esc(location.origin)}/api/externa/v1/retencoes?competencia=2026-10"</pre>
+        <p><b>Exemplo (curl) — enviando pra nós:</b></p>
+        <pre style="white-space:pre-wrap; background:var(--paper); border:1px solid var(--rule); border-radius:8px; padding:10px; color:var(--ink); overflow:auto;">curl -X POST -H "Authorization: Bearer scx_SEU_TOKEN" -H "Content-Type: application/json" \\
+  -d '{"qualquer":"json"}' \\
+  "${esc(location.origin)}/api/externa/v1/retencoes/importar"</pre>
       </div>
     </details>`;
 
@@ -22019,7 +22029,7 @@ async function pageIntegracoes(){
         <td>${k.escopos.map(s=>`<span class="tag">${esc(INT_ESCOPO_LABEL[s]||s)}</span>`).join(' ')}</td>
         <td>${k.ultimoUsoEm?`${esc(fmtDateHora(k.ultimoUsoEm))}${k.ultimoUsoIp?`<br><span style="color:var(--ink-soft); font-size:12px;">${esc(k.ultimoUsoIp)}</span>`:''}`:'<span style="color:var(--ink-soft)">nunca</span>'}</td>
         <td>${k.ativo?'<span class="tag ok">ativa</span>':'<span class="tag">revogada</span>'}</td>
-        <td style="text-align:right;">${k.ativo?`<button class="btn small danger" data-revogar="${k.id}">Revogar</button>`:`<button class="btn small" data-excluir="${k.id}">Excluir</button>`}</td>
+        <td style="text-align:right; white-space:nowrap;">${k.ativo?`<button class="btn small" data-editar-escopos="${k.id}" data-escopos-atuais='${esc(JSON.stringify(k.escopos))}'>Editar permissões</button> <button class="btn small danger" data-revogar="${k.id}">Revogar</button>`:`<button class="btn small" data-excluir="${k.id}">Excluir</button>`}</td>
       </tr>`).join('')}</tbody></table>`;
     box.querySelectorAll('[data-revogar]').forEach(b=>b.addEventListener('click', async ()=>{
       if(!confirm('Revogar esta chave? O sistema parceiro perde o acesso na hora.')) return;
@@ -22029,8 +22039,40 @@ async function pageIntegracoes(){
       if(!confirm('Excluir esta chave revogada do histórico?')) return;
       try{ await api('/integracoes/chaves/'+b.dataset.excluir, { method:'DELETE' }); toast('Chave excluída.','ok'); carregarLista(); }catch(e){ toast(e.message,'err'); }
     }));
+    box.querySelectorAll('[data-editar-escopos]').forEach(b=>b.addEventListener('click', async ()=>{
+      const id = b.dataset.editarEscopos;
+      const atuais = JSON.parse(b.dataset.escoposAtuais||'[]');
+      const linha = b.closest('tr');
+      linha.querySelector('td:last-child').innerHTML = `<div style="display:flex; gap:10px; flex-wrap:wrap; justify-content:flex-end; align-items:center;">
+        ${Object.entries(INT_ESCOPO_LABEL).map(([id2,label])=>`<label class="checkbox-row" style="font-size:12.5px;"><input type="checkbox" class="editEscopo" value="${id2}" ${atuais.includes(id2)?'checked':''}> ${esc(label)}</label>`).join('')}
+        <button class="btn small primary" id="salvarEscopos${id}">Salvar</button>
+      </div>`;
+      document.getElementById('salvarEscopos'+id).addEventListener('click', async ()=>{
+        const escopos = [...linha.querySelectorAll('.editEscopo:checked')].map(c=>c.value);
+        if(!escopos.length){ toast('Marque ao menos uma permissão.','err'); return; }
+        try{ await api('/integracoes/chaves/'+id+'/escopos', { method:'POST', body:{ escopos } }); toast('Permissões atualizadas.','ok'); carregarLista(); }
+        catch(e){ toast(e.message,'err'); }
+      });
+    }));
   }
   await carregarLista();
+
+  async function carregarRecebimentos(){
+    const box = document.getElementById('intRecebLista');
+    let data; try{ data = await api('/integracoes/recebimentos'); }catch(e){ box.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
+    if(!data.items.length){ box.innerHTML = '<div class="empty-state">Nada recebido ainda.</div>'; return; }
+    box.innerHTML = `<table class="data-table"><thead><tr><th>Data</th><th>Empresa</th><th>Tipo</th><th>Origem (IP)</th><th>Payload</th></tr></thead><tbody>${data.items.map(r=>`<tr>
+        <td>${esc(fmtDateHora(r.recebidoEm))}</td>
+        <td>${esc(r.empresaNome)}</td>
+        <td><span class="tag">${esc(r.tipo)}</span></td>
+        <td style="color:var(--ink-soft); font-size:12px;">${esc(r.ip||'—')}</td>
+        <td><button class="btn small" data-ver-payload='${esc(r.payloadJson)}'>Ver JSON</button></td>
+      </tr>`).join('')}</tbody></table>`;
+    box.querySelectorAll('[data-ver-payload]').forEach(b=>b.addEventListener('click', ()=>{
+      alert(JSON.stringify(JSON.parse(b.dataset.verPayload), null, 2));
+    }));
+  }
+  await carregarRecebimentos();
 
   document.getElementById('intCriar').addEventListener('click', async (ev)=>{
     const empresaId = Number(document.querySelector('#intEmpCombo .combo-value')?.value||0);

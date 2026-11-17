@@ -4397,7 +4397,22 @@ sqlite.exec(`
     revogado_em TEXT
   );
 `);
-const API_EXTERNA_ESCOPOS = ["retencoes"] as const;
+// Recebimentos: o caminho CONTRÁRIO do de cima — um sistema de terceiro EMPURRA um dado pronto pra
+// cá (ex.: relatório de retenções calculado do lado dele), em vez de a gente calcular e ele puxar.
+// Só grava e deixa visível em Integrações pra conferência; processamento automático fica pra quando
+// o formato de verdade for definido com o parceiro (porta pronta, sem regra de negócio ainda).
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS api_externa_recebimentos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chave_id INTEGER NOT NULL,
+    empresa_id INTEGER NOT NULL,
+    tipo TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    ip TEXT,
+    recebido_em TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+`);
+const API_EXTERNA_ESCOPOS = ["retencoes", "retencoes-importar"] as const;
 const hashApiExterna = (t: string) => crypto.createHash("sha256").update(t).digest("hex");
 // Rate limit simples em memória por chave: janela deslizante de 1 min.
 const apiExternaRate = new Map<number, number[]>();
@@ -25741,6 +25756,7 @@ app.get("/api/externa/v1", (_req, res) => {
     endpoints: [
       { metodo: "GET", caminho: "/api/externa/v1/ping", descricao: "Valida a chave e devolve a empresa vinculada." },
       { metodo: "GET", caminho: "/api/externa/v1/retencoes?competencia=AAAA-MM", descricao: "Relatório de retenções de impostos (INSS, IRRF, PIS, COFINS, CSLL, ISS) da empresa no período. Também aceita dataDe/dataAte (AAAA-MM-DD). Sem período = mês anterior." },
+      { metodo: "POST", caminho: "/api/externa/v1/retencoes/importar", descricao: "Recebe um relatório de retenções já pronto, calculado do lado do sistema parceiro (JSON livre no corpo). Fica registrado para conferência em Integrações — ainda não há processamento automático desse dado." },
     ],
   });
 });
@@ -25763,6 +25779,28 @@ app.get("/api/externa/v1/retencoes", requireApiExterna("retencoes"), (req, res) 
   } catch (e: any) {
     res.status(e.status || 500).json({ error: e.message });
   }
+});
+// Caminho de ENTRADA (o sistema parceiro empurra o dado, em vez de a gente calcular e ele puxar).
+// Formato do corpo ainda não é fechado com o parceiro — por isso só valida JSON + tamanho e grava
+// como veio, sem exigir um schema. Processamento automático fica pra quando o formato for definido.
+app.post("/api/externa/v1/retencoes/importar", requireApiExterna("retencoes-importar"), (req, res) => {
+  const k = (req as any).apiKey;
+  const payload = req.body;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return res.status(400).json({ error: "Envie um objeto JSON no corpo da requisição (Content-Type: application/json)." });
+  }
+  const payloadStr = JSON.stringify(payload);
+  if (payloadStr.length > 2_000_000) return res.status(413).json({ error: "Payload grande demais (limite 2MB)." });
+  const ip = String(req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "").split(",")[0].trim();
+  const info = sqlite
+    .prepare(`INSERT INTO api_externa_recebimentos (chave_id, empresa_id, tipo, payload_json, ip) VALUES (?,?,?,?,?)`)
+    .run(k.id, k.empresa_id, "retencoes", payloadStr, ip || null);
+  res.status(201).json({
+    ok: true,
+    id: info.lastInsertRowid,
+    recebidoEm: new Date().toISOString(),
+    mensagem: "Recebido e registrado para conferência em Integrações. Ainda não há processamento automático deste dado.",
+  });
 });
 
 // ---------- Admin: gestão das chaves de API externa (tela Integrações) ----------
@@ -25802,11 +25840,37 @@ app.post("/api/integracoes/chaves/:id/revogar", blockCliente, requireAdmin, (req
   if (!r.changes) return res.status(404).json({ error: "Chave não encontrada ou já revogada." });
   res.json({ ok: true });
 });
+// Edita os escopos de uma chave JÁ ENTREGUE ao parceiro, sem trocar o token (gerar de novo invalidaria
+// o token que ele já está usando) — ex.: dar permissão pra "retencoes-importar" numa chave que só
+// tinha "retencoes".
+app.post("/api/integracoes/chaves/:id/escopos", blockCliente, requireAdmin, (req, res) => {
+  const user = (req as any).user;
+  const escopos = Array.isArray(req.body?.escopos) ? req.body.escopos.filter((s: string) => (API_EXTERNA_ESCOPOS as readonly string[]).includes(s)) : [];
+  if (!escopos.length) return res.status(400).json({ error: "Marque ao menos uma permissão." });
+  const r = sqlite.prepare(`UPDATE api_externa_chaves SET escopos = ? WHERE id = ? AND escritorio_id = ? AND ativo = 1`).run(escopos.join(","), Number(req.params.id), user.escritorioId);
+  if (!r.changes) return res.status(404).json({ error: "Chave não encontrada ou revogada." });
+  res.json({ ok: true });
+});
 app.delete("/api/integracoes/chaves/:id", blockCliente, requireAdmin, (req, res) => {
   const user = (req as any).user;
   const r = sqlite.prepare(`DELETE FROM api_externa_chaves WHERE id = ? AND escritorio_id = ?`).run(Number(req.params.id), user.escritorioId);
   if (!r.changes) return res.status(404).json({ error: "Chave não encontrada." });
   res.json({ ok: true });
+});
+// Lista o que chegou pela porta de entrada (POST /retencoes/importar etc.), pra conferência manual.
+app.get("/api/integracoes/recebimentos", blockCliente, requireAdmin, (req, res) => {
+  const user = (req as any).user;
+  const rows = sqlite
+    .prepare(
+      `SELECT r.id, r.empresa_id as empresaId, e.nome as empresaNome, r.tipo, r.payload_json as payloadJson, r.ip, r.recebido_em as recebidoEm
+       FROM api_externa_recebimentos r
+       JOIN api_externa_chaves k ON k.id = r.chave_id
+       JOIN empresas e ON e.id = r.empresa_id
+       WHERE k.escritorio_id = ?
+       ORDER BY r.recebido_em DESC LIMIT 200`
+    )
+    .all(user.escritorioId) as any[];
+  res.json({ items: rows });
 });
 // Grade "quais empresas têm nota com retenção nesse período" — mostrada de cara na aba (competência
 // anterior por padrão, calculado no frontend), sem precisar escolher um cliente primeiro. Varre os
