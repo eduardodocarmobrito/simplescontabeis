@@ -2143,7 +2143,7 @@ const PAGINAS_CLIENTE_RESTRINGIVEIS = ['minha-nfse','minha-clientes','meus-docum
 // Toda aba ligada a um módulo (PAGINA_CLIENTE_MODULO) é opt-in: só aparece pro cliente quando o admin
 // marca explicitamente. Assim um módulo ligado no escritório NÃO vaza pro cliente pelo "vê todas".
 // As abas básicas (Meus Documentos, Solicitar, Recebidos, Assinatura) seguem no "nenhuma marcada = vê todas".
-const PAGINAS_CLIENTE_OPTIN = new Set(['minha-nfse','minha-clientes','minha-financeiro','minha-webdfe','notas-entrada','minha-reforma','minha-conciliacao']);
+const PAGINAS_CLIENTE_OPTIN = new Set(['minha-nfse','minha-clientes','minha-financeiro','minha-webdfe','notas-entrada','minha-reforma','minha-conciliacao','minha-empresa-config']);
 const PAGINAS_CLIENTE_TODAS = [
   { id:'minha-nfse', label:'NFS-e', optin:true },
   { id:'minha-clientes', label:'Clientes', optin:true },
@@ -2156,6 +2156,7 @@ const PAGINAS_CLIENTE_TODAS = [
   { id:'minha-assinatura', label:'Assinatura' },
   { id:'minha-webdfe', label:'Emissor NF-e', optin:true },
   { id:'minha-conciliacao', label:'Conciliação Bancária', optin:true },
+  { id:'minha-empresa-config', label:'Empresa (cadastro da própria empresa)', optin:true },
 ];
 // Página do perfil Cliente → módulo do escritório que precisa estar liberado pra ela aparecer.
 const PAGINA_CLIENTE_MODULO = { 'minha-nfse':'nfse', 'minha-clientes':'nfse', 'minha-financeiro':'financeiro', 'minha-webdfe':'webdfe', 'notas-entrada':'nfe-busca', 'minha-reforma':'reforma', 'minha-conciliacao':'open_finance' };
@@ -2180,7 +2181,9 @@ function podeVerModulo(item){
   if(STATE.user.perfil==='Cliente' && PAGINA_CLIENTE_MODULO[item.id] && (STATE.modulosOcultos||[]).includes(PAGINA_CLIENTE_MODULO[item.id])) return false;
   // "Empresa" (Configuração > Empresa) só existe pro cliente direto (venda avulsa) — é quem precisa
   // preencher o próprio cadastro sozinho; cliente comum do escritório já chega com tudo pronto.
-  if(item.id==='minha-empresa-config') return STATE.user.perfil==='Cliente' && !!STATE.user.ehClienteDireto;
+  // Cliente direto sempre vê (preenche o próprio cadastro); cliente do escritório só quando o admin
+  // libera a aba no cadastro do usuário (opt-in) — o cadastro dele normalmente vem pronto do Domínio.
+  if(item.id==='minha-empresa-config') return STATE.user.perfil==='Cliente' && (!!STATE.user.ehClienteDireto || (Array.isArray(STATE.paginasCliente) && STATE.paginasCliente.includes('minha-empresa-config')));
   if(!item.roles.includes(STATE.user.perfil)) return false;
   if(!item.modulo){
     if(STATE.user.perfil==='Cliente'){
