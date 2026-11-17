@@ -2199,6 +2199,26 @@ sqlite.exec(`
     DELETE FROM empresa_modulos_preco_previo WHERE empresa_id = NEW.empresa_id AND modulo_chave = NEW.modulo_chave;
   END;
 `);
+// Combinado prévio também guarda como o módulo aparece pro cliente enquanto não contratado (pedido
+// 2026-11-17): sem_teste = cliente já assinou contrato, vai direto pro pagamento (sem "Iniciar teste
+// grátis"); oculto = módulo não faz parte do contrato dele, some da Assinatura e do menu.
+for (const col of ["sem_teste INTEGER NOT NULL DEFAULT 0", "oculto INTEGER NOT NULL DEFAULT 0"]) {
+  const nome = col.split(" ")[0];
+  const cols = sqlite.prepare(`PRAGMA table_info(empresa_modulos_preco_previo)`).all() as any[];
+  if (!cols.some((c) => c.name === nome)) sqlite.exec(`ALTER TABLE empresa_modulos_preco_previo ADD COLUMN ${col}`);
+}
+// Módulos ocultos pro cliente (só os ainda não contratados — contrato existente sempre aparece).
+function empresaModulosOcultos(empresaId: number): string[] {
+  return (
+    sqlite
+      .prepare(
+        `SELECT p.modulo_chave FROM empresa_modulos_preco_previo p
+          WHERE p.empresa_id = ? AND p.oculto = 1
+            AND NOT EXISTS (SELECT 1 FROM empresa_modulos m WHERE m.empresa_id = p.empresa_id AND m.modulo_chave = p.modulo_chave)`
+      )
+      .all(empresaId) as any[]
+  ).map((r) => r.modulo_chave);
+}
 // Linha que define o preço da empresa pra um módulo: o contrato (empresa_modulos) ou, se ainda não
 // contratou, o preço combinado antes. Pra quem lê preço sem decidir se "tem o módulo".
 function empresaModuloPrecoLinha(empresaId: number, chave: string): any {
@@ -4333,6 +4353,7 @@ app.get("/api/auth/me", (req, res) => {
   let configAbas: string[] | null = null; // null = sem restrição (vê todas)
   let paginasCliente: string[] | null = null; // null = sem restrição (cliente vê todas as próprias páginas)
   let modulosAtivos: string[] | null = null; // Cliente: chaves do catálogo (nfse/financeiro/...) com acesso de verdade (isento/trial/assinatura)
+  let modulosOcultos: string[] = [];
   const funcionalidades = user.perfil === "SuperAdmin" ? null : funcionalidadesDoEscritorio(user.escritorioId);
   if (user.perfil === "Administrador") {
     for (const m of MODULOS) { const ok = funcionalidades!.includes(m); permissoes[m] = { visualizar: ok, postar: ok, editar: ok }; }
@@ -4354,9 +4375,10 @@ app.get("/api/auth/me", (req, res) => {
     // cliente (inclusive Cliente Direto isento), precisa da mesma fonte que a tela de Assinatura já
     // usa — achado em auditoria (2026-11-09): item de menu sumia mesmo com acesso liberado.
     modulosAtivos = user.empresaId ? nfseModulosDaEmpresa(user.empresaId).filter((m) => m.acesso).map((m) => m.chave) : [];
+    modulosOcultos = user.empresaId ? empresaModulosOcultos(user.empresaId) : [];
   }
   const userComFlag = user.perfil === "Cliente" && user.empresaId ? { ...user, ehClienteDireto: empresaEhClienteDireto(user.empresaId) } : user;
-  res.json({ user: userComFlag, permissoes, configAbas, paginasCliente, funcionalidades, modulosAtivos });
+  res.json({ user: userComFlag, permissoes, configAbas, paginasCliente, funcionalidades, modulosAtivos, modulosOcultos });
 });
 app.get("/api/auth/minhas-empresas", requireAuth, (req, res) => {
   const user = (req as any).user;
@@ -23000,6 +23022,9 @@ function nfseModulosDaEmpresa(empresaId: number) {
       // paga ainda (implantacao_paga_em) e tiver valor de verdade (isenta = 0 nunca aparece pra cobrar).
       valorImplantacaoDevida: contratado?.implantacao_paga_em ? 0 : precoImplantacaoEfetivo(m.valor_implantacao, precoLinha(m.chave)),
       implantacaoPaga: !!contratado?.implantacao_paga_em,
+      // Só valem enquanto não há contrato (ver empresa_modulos_preco_previo).
+      semTeste: !contratado && !!previos.get(m.chave)?.sem_teste,
+      oculto: !contratado && !!previos.get(m.chave)?.oculto,
     };
   });
 }
@@ -23011,7 +23036,7 @@ function empresaEhClienteDireto(empresaId: number): boolean {
 }
 app.get("/api/financeiro/minha-empresa/modulos", requireCliente, (req, res) => {
   const empresaId = (req as any).user.empresaId;
-  res.json({ items: nfseModulosDaEmpresa(empresaId), semTesteGratis: empresaEhClienteDireto(empresaId) });
+  res.json({ items: nfseModulosDaEmpresa(empresaId).filter((m) => !m.oculto), semTesteGratis: empresaEhClienteDireto(empresaId) });
 });
 app.post("/api/financeiro/minha-empresa/modulos/:chave/iniciar-teste", requireCliente, (req, res) => {
   const empresaId = (req as any).user.empresaId;
@@ -23021,15 +23046,20 @@ app.post("/api/financeiro/minha-empresa/modulos/:chave/iniciar-teste", requireCl
   if (!modulo) return res.status(404).json({ error: "Módulo não encontrado." });
   const existente = sqlite.prepare(`SELECT 1 FROM empresa_modulos WHERE empresa_id = ? AND modulo_chave = ?`).get(empresaId, chave);
   if (existente) return res.status(409).json({ error: "O teste desse módulo já foi iniciado antes." });
+  const previo = sqlite.prepare(`SELECT sem_teste, oculto FROM empresa_modulos_preco_previo WHERE empresa_id = ? AND modulo_chave = ?`).get(empresaId, chave) as any;
+  if (previo?.oculto) return res.status(404).json({ error: "Módulo não encontrado." });
+  if (previo?.sem_teste) return res.status(403).json({ error: "Este módulo já está no seu contrato — vá direto para o pagamento." });
   sqlite
     .prepare(`INSERT INTO empresa_modulos (empresa_id, modulo_chave, trial_inicio, trial_fim) VALUES (?, ?, datetime('now'), datetime('now','+3 days'))`)
     .run(empresaId, chave);
-  res.json({ ok: true, items: nfseModulosDaEmpresa(empresaId) });
+  res.json({ ok: true, items: nfseModulosDaEmpresa(empresaId).filter((m) => !m.oculto) });
 });
 app.post("/api/financeiro/minha-empresa/modulos/pagar", requireCliente, async (req, res) => {
   const empresaId = (req as any).user.empresaId;
   const chaves: string[] = Array.isArray(req.body?.modulos) ? req.body.modulos : [];
   if (!chaves.length) return res.status(400).json({ error: "Selecione ao menos um módulo." });
+  const ocultos = empresaModulosOcultos(empresaId);
+  if (chaves.some((c) => ocultos.includes(c))) return res.status(404).json({ error: "Módulo não encontrado." });
   const catalogo = sqlite
     .prepare(`SELECT chave, nome, valor_mensal, valor_implantacao FROM modulos_catalogo WHERE ativo = 1 AND chave IN (${chaves.map(() => "?").join(",")})`)
     .all(...chaves) as any[];
@@ -23250,6 +23280,8 @@ app.get("/api/super/modulos-contratos", requireSuperAdmin, (_req, res) => {
         implantacaoPersonalizada: p?.valor_implantacao_custom != null ? Number(p.valor_implantacao_custom) : null,
         quantidade: null,
         valorMensal: precoModuloEfetivo(m.valor_mensal, p),
+        semTeste: !!p?.sem_teste,
+        oculto: !!p?.oculto,
       });
     }
   }
@@ -23290,17 +23322,20 @@ app.put("/api/super/modulos-contratos/:tipo/:id", requireSuperAdmin, (req, res) 
       if (v === "invalido") return res.status(400).json({ error: "Valor inválido." });
       implantacao = v;
     }
+    const semTeste = req.body?.semTeste !== undefined ? (req.body.semTeste ? 1 : 0) : contrato ? 0 : Number(atual.sem_teste) || 0;
+    const oculto = req.body?.oculto !== undefined ? (req.body.oculto ? 1 : 0) : contrato ? 0 : Number(atual.oculto) || 0;
     if (contrato) {
       sqlite.prepare(`UPDATE empresa_modulos SET valor_mensal_custom = ?, valor_implantacao_custom = ? WHERE id = ?`).run(mensal, implantacao, contrato.id);
-    } else if (mensal == null && implantacao == null) {
+    } else if (mensal == null && implantacao == null && !semTeste && !oculto) {
       sqlite.prepare(`DELETE FROM empresa_modulos_preco_previo WHERE empresa_id = ? AND modulo_chave = ?`).run(empresaId, chave);
     } else {
       sqlite
         .prepare(
-          `INSERT INTO empresa_modulos_preco_previo (empresa_id, modulo_chave, valor_mensal_custom, valor_implantacao_custom) VALUES (?, ?, ?, ?)
-           ON CONFLICT(empresa_id, modulo_chave) DO UPDATE SET valor_mensal_custom = excluded.valor_mensal_custom, valor_implantacao_custom = excluded.valor_implantacao_custom`
+          `INSERT INTO empresa_modulos_preco_previo (empresa_id, modulo_chave, valor_mensal_custom, valor_implantacao_custom, sem_teste, oculto) VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(empresa_id, modulo_chave) DO UPDATE SET valor_mensal_custom = excluded.valor_mensal_custom, valor_implantacao_custom = excluded.valor_implantacao_custom,
+             sem_teste = excluded.sem_teste, oculto = excluded.oculto`
         )
-        .run(empresaId, chave, mensal, implantacao);
+        .run(empresaId, chave, mensal, implantacao, semTeste, oculto);
     }
     return res.json({ ok: true });
   }

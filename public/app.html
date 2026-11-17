@@ -2161,6 +2161,7 @@ function clientePodeVerModulo(modulo){
 }
 function podeVerModulo(item){
   if(STATE.user.perfil==='Cliente' && PAGINA_CLIENTE_MODULO[item.id] && !clientePodeVerModulo(PAGINA_CLIENTE_MODULO[item.id])) return false;
+  if(STATE.user.perfil==='Cliente' && PAGINA_CLIENTE_MODULO[item.id] && (STATE.modulosOcultos||[]).includes(PAGINA_CLIENTE_MODULO[item.id])) return false;
   // "Empresa" (Configuração > Empresa) só existe pro cliente direto (venda avulsa) — é quem precisa
   // preencher o próprio cadastro sozinho; cliente comum do escritório já chega com tudo pronto.
   if(item.id==='minha-empresa-config') return STATE.user.perfil==='Cliente' && !!STATE.user.ehClienteDireto;
@@ -2244,6 +2245,7 @@ async function boot(paginaInicial){
     STATE.configAbas = data.configAbas || null; // null = sem restrição, vê todas as abas de Configurações
     STATE.paginasCliente = data.paginasCliente || null; // null = sem restrição, cliente vê todas as próprias páginas
     STATE.funcionalidades = data.funcionalidades || null; // módulos liberados pro escritório (null = SuperAdmin, sem restrição)
+    STATE.modulosOcultos = data.modulosOcultos || []; // Cliente: módulos fora do contrato dele (SuperAdmin marcou "Ocultar do cliente")
     STATE.modulosAtivos = data.modulosAtivos || null; // Cliente: módulos do catálogo com acesso real (isento/trial/assinatura)
   }catch(e){
     showLogin();
@@ -12075,7 +12077,7 @@ function moduloPaywallHtml(item){
   // paywall genérico (usado sempre que uma página/aba tenta abrir um módulo não contratado) mostrava
   // "Iniciar teste grátis" mesmo pra quem nunca vai conseguir (o backend já bloqueia, mas a tela
   // prometia um botão que só ia dar erro) — manda direto pra Assinatura nesse caso.
-  if(item.status==='nao_contratado' && item.semTesteGratis){
+  if(item.status==='nao_contratado' && (item.semTesteGratis || item.semTeste)){
     titulo = 'Você ainda não contratou este módulo';
     texto = `Contrate direto por ${preco}/mês via Pix/boleto/cartão.`;
     botaoHtml = `<button class="btn primary" id="paywallAcao" data-acao="assinatura">Ir para Assinatura</button>`;
@@ -14920,7 +14922,8 @@ function assinaturaModuloCardHtml(item, semTesteGratis){
   else if(item.status==='ativo'){ badgeClass='ok'; badgeText = semVencimento ? 'Ativo' : 'Ativo até '+fmtDateIso(String(item.assinaturaAtivaAte||'').slice(0,10)); }
   else if(item.status==='vencido'){ badgeClass='bad'; badgeText='Assinatura vencida'; }
   // Cliente direto (venda avulsa) não tem teste grátis — vai direto pro pagamento.
-  const mostraBotaoTeste = item.status==='nao_contratado' && !semTesteGratis;
+  // "Direto para pagamento" marcado pro cliente (já assinou contrato) também esconde o teste.
+  const mostraBotaoTeste = item.status==='nao_contratado' && !semTesteGratis && !item.semTeste;
   const rotuloCheckbox = item.status==='ativo' ? 'Incluir no pagamento (renovar antecipado)' : 'Incluir no pagamento';
   // Implantação: cobrança única (ver valorImplantacaoDevida no backend) — enquanto não paga, soma no
   // mesmo checkbox da mensalidade (um clique só, uma cobrança combinada só).
@@ -21427,8 +21430,10 @@ function renderContratosModulos(){
           const sufixoUn = i.quantidade!=null ? ' / colaborador' : '';
           return `<tr data-tipo="${i.tipo}" data-id="${i.id}">
             <td><div style="font-weight:600;">${esc(i.clienteNome)}</div><div style="font-size:11.5px; color:var(--ink-soft);">${i.tipo==='escritorio'?'Escritório':'Empresa · '+esc(i.escritorioNome||'')}</div></td>
-            <td>${esc(i.moduloNome)}</td>
-            <td><span class="tag ${sit.cls}">${esc(sit.label)}</span></td>
+            <td>${esc(i.moduloNome)}${i.situacao==='nao_contratado'?`
+              <label class="checkbox-row" style="margin:6px 0 0; font-size:11.5px;" title="Cliente já assinou contrato: some o 'Iniciar teste grátis', fica só o pagamento"><input type="checkbox" class="mctSemTeste" ${i.semTeste?'checked':''}> Direto para pagamento</label>
+              <label class="checkbox-row" style="margin:2px 0 0; font-size:11.5px;" title="Módulo fora do contrato: some da Assinatura e do menu do cliente"><input type="checkbox" class="mctOculto" ${i.oculto?'checked':''}> Ocultar do cliente</label>`:''}</td>
+            <td><span class="tag ${sit.cls}">${esc(sit.label)}</span>${i.oculto?'<div style="font-size:11px; color:var(--ink-soft); margin-top:4px;">Oculto pro cliente</div>':(i.semTeste?'<div style="font-size:11px; color:var(--ink-soft); margin-top:4px;">Sem teste grátis</div>':'')}</td>
             <td style="white-space:nowrap;">${ate?fmtDate(ate):'—'}</td>
             <td style="text-align:right; white-space:nowrap;">${fmtMoney(i.valorPadrao)}${sufixoUn}</td>
             <td style="width:150px;"><input class="inp mctValor" inputmode="decimal" placeholder="${fmtValorInput(i.valorPadrao)} (padrão)" value="${fmtValorInput(i.valorPersonalizado)}" style="width:100%;${i.valorPersonalizado!=null?' border-color:var(--accent);':''}"></td>
@@ -21448,13 +21453,19 @@ function renderContratosModulos(){
     const impl = tr.querySelector('.mctImpl');
     const btn = tr.querySelector('.mctSalvar');
     const original = inp.value, originalImpl = impl.value;
+    const semTeste = tr.querySelector('.mctSemTeste'), oculto = tr.querySelector('.mctOculto');
+    const originalSemTeste = !!semTeste?.checked, originalOculto = !!oculto?.checked;
     ligarMascaraMoeda(inp); ligarMascaraMoeda(impl);
-    const sujo = ()=>{ btn.disabled = inp.value===original && impl.value===originalImpl; };
+    const sujo = ()=>{ btn.disabled = inp.value===original && impl.value===originalImpl && !!semTeste?.checked===originalSemTeste && !!oculto?.checked===originalOculto; };
     [inp, impl].forEach(el=>{ el.addEventListener('input', sujo); el.addEventListener('keydown', e=>{ if(e.key==='Enter' && !btn.disabled) btn.click(); }); });
+    [semTeste, oculto].forEach(el=>el?.addEventListener('change', sujo));
     const salvar = async (valor, valorImpl)=>{
       try{
-        await api(`/super/modulos-contratos/${tr.dataset.tipo}/${encodeURIComponent(tr.dataset.id)}`, { method:'PUT', body:{ valorMensalCustom: valor, valorImplantacaoCustom: valorImpl } });
-        toast(valor==null && valorImpl==null ? 'Voltou aos valores padrão.' : 'Valores do cliente atualizados.', 'ok');
+        const body = { valorMensalCustom: valor, valorImplantacaoCustom: valorImpl };
+        if(semTeste) body.semTeste = semTeste.checked;
+        if(oculto) body.oculto = oculto.checked;
+        await api(`/super/modulos-contratos/${tr.dataset.tipo}/${encodeURIComponent(tr.dataset.id)}`, { method:'PUT', body });
+        toast(valor==null && valorImpl==null && !(semTeste&&semTeste.checked!==originalSemTeste) && !(oculto&&oculto.checked!==originalOculto) ? 'Voltou aos valores padrão.' : 'Cliente atualizado.', 'ok');
         const { items } = await api('/super/modulos-contratos');
         MCT.items = items;
         renderContratosModulos();
