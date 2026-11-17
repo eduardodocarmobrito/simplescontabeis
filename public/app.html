@@ -2171,6 +2171,11 @@ function clientePodeVerModulo(modulo){
   return escritorioTemFuncionalidade(modulo) || (Array.isArray(STATE.modulosAtivos) && STATE.modulosAtivos.includes(modulo));
 }
 function podeVerModulo(item){
+  // Área vendida por revenda (módulo revendável ativo no catálogo): aparece só se o escritório liberou
+  // (pagou o repasse) pra esta empresa — independente da aba marcada e da funcionalidade do escritório.
+  if(STATE.user.perfil==='Cliente' && PAGINA_CLIENTE_MODULO[item.id] && (STATE.revendaVendidas||[]).includes(PAGINA_CLIENTE_MODULO[item.id])){
+    return item.roles.includes('Cliente') && (STATE.revendaLiberadas||[]).includes(PAGINA_CLIENTE_MODULO[item.id]);
+  }
   if(STATE.user.perfil==='Cliente' && PAGINA_CLIENTE_MODULO[item.id] && !clientePodeVerModulo(PAGINA_CLIENTE_MODULO[item.id])) return false;
   if(STATE.user.perfil==='Cliente' && PAGINA_CLIENTE_MODULO[item.id] && (STATE.modulosOcultos||[]).includes(PAGINA_CLIENTE_MODULO[item.id])) return false;
   // "Empresa" (Configuração > Empresa) só existe pro cliente direto (venda avulsa) — é quem precisa
@@ -2256,6 +2261,8 @@ async function boot(paginaInicial){
     STATE.configAbas = data.configAbas || null; // null = sem restrição, vê todas as abas de Configurações
     STATE.paginasCliente = data.paginasCliente || null; // null = sem restrição, cliente vê todas as próprias páginas
     STATE.funcionalidades = data.funcionalidades || null; // módulos liberados pro escritório (null = SuperAdmin, sem restrição)
+    STATE.revendaVendidas = data.revendaVendidas || []; // Cliente: áreas vendidas por revenda do escritório
+    STATE.revendaLiberadas = data.revendaLiberadas || []; // ...e as que o escritório já liberou (pagou) pra esta empresa
     STATE.modulosOcultos = data.modulosOcultos || []; // Cliente: módulos fora do contrato dele (SuperAdmin marcou "Ocultar do cliente")
     STATE.modulosAtivos = data.modulosAtivos || null; // Cliente: módulos do catálogo com acesso real (isento/trial/assinatura)
   }catch(e){
@@ -10001,6 +10008,18 @@ async function pageMinhaConciliacao(){
   carregar();
 }
 async function pageReformaTributaria(){
+  // Reforma virou módulo pago do escritório (quando ativo no catálogo): sem contrato, mostra a contratação.
+  try{
+    const { items } = await api('/escritorio/modulos');
+    const m = items.find(i=>i.chave==='reforma');
+    if(m && m.ativo && !m.acesso){
+      main().innerHTML = `<h1>Reforma Tributária</h1><div id="rtPaywall"></div>`;
+      const pw = document.getElementById('rtPaywall');
+      pw.innerHTML = await escritorioModuloPaywallHtml('reforma');
+      ligarEscritorioModuloPaywall(pw, 'reforma', ()=>pageReformaTributaria());
+      return;
+    }
+  }catch(e){ /* sem permissão de ver a assinatura — o servidor ainda bloqueia as rotas */ }
   main().innerHTML = `
     <h1>Reforma Tributária</h1>
     <p class="subtitle">Auditoria do IBS/CBS nas notas de entrada e diagnóstico do melhor regime tributário pós-reforma, com base nos XMLs e no cadastro da empresa.</p>
@@ -21223,6 +21242,17 @@ async function pageModulosPlataforma(){
       <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Aparece na aba Assinatura, no login de cada empresa-cliente (perfil Cliente) — é o que ela pode contratar do próprio escritório (ex.: Financeiro, NFS-e). Desativar some da tela de contratação — quem já contratou continua com acesso.</p>
       ${tabelaModulosHtml('mc', itemsClientes)}
     </div>
+    <div class="card" id="revSuperCard">
+      <h3>Revenda para clientes</h3>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">O escritório libera um módulo que ele já contratou (ex.: Reforma Tributária) pra uma empresa-cliente dele, informando o valor negociado; a plataforma cobra do escritório este percentual por mês. Só aparece pra revender o módulo do catálogo do escritório que estiver <b>ativo</b>. Mudanças valem pras próximas liberações.</p>
+      <div class="row" style="align-items:flex-end; gap:12px; flex-wrap:wrap;">
+        <div class="field" style="width:160px; margin-bottom:0;"><label>Percentual (%)</label><input id="revPct" inputmode="decimal"></div>
+        <div class="field" style="width:200px; margin-bottom:0;"><label>Valor mínimo de venda (R$)</label><input id="revMin" inputmode="decimal"></div>
+        <button class="btn primary" id="btnRevRegras" disabled>Salvar</button>
+        <button class="btn" id="btnRevRegrasCancelar" disabled>Cancelar</button>
+      </div>
+      <div id="revSuperLista" style="overflow-x:auto; margin-top:14px;"></div>
+    </div>
     <div class="card" id="mctCard">
       <h3>Clientes com módulos contratados</h3>
       <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Quem tem cada módulo, a situação e quanto paga por mês. Preencha <b>Valor cobrado</b> para dar um preço só para aquele cliente; deixe em branco para usar o valor padrão. O novo valor vale a partir da próxima cobrança gerada. Módulos que o cliente ainda não contratou aparecem como <b>Não contratado</b>: o preço definido ali já aparece na Assinatura do cliente e vale quando ele contratar.</p>
@@ -21238,7 +21268,41 @@ async function pageModulosPlataforma(){
   `;
   ligarSalvarModulos(main(), 'mp', '/super/modulos-catalogo');
   ligarSalvarModulos(main(), 'mc', '/super/modulos-clientes');
+  carregarRevendasSuper();
   await carregarContratosModulos();
+}
+async function carregarRevendasSuper(){
+  let dados;
+  try{ dados = await api('/super/revendas'); }catch(e){ return; }
+  const { regras, items } = dados;
+  const pct = document.getElementById('revPct'), min = document.getElementById('revMin');
+  const salvar = document.getElementById('btnRevRegras'), cancelar = document.getElementById('btnRevRegrasCancelar');
+  const fmt = v=> Number(v).toLocaleString('pt-BR',{ minimumFractionDigits:2, maximumFractionDigits:2 });
+  pct.value = fmt(regras.percentual); min.value = fmt(regras.minimo);
+  ligarMascaraMoeda(pct); ligarMascaraMoeda(min);
+  const orig = [pct.value, min.value];
+  const sujo = ()=>{ const mudou = pct.value!==orig[0] || min.value!==orig[1]; salvar.disabled = !mudou; cancelar.disabled = !mudou; };
+  [pct, min].forEach(el=>el.addEventListener('input', sujo));
+  cancelar.addEventListener('click', ()=>{ pct.value = orig[0]; min.value = orig[1]; sujo(); });
+  salvar.addEventListener('click', async ()=>{
+    try{
+      await api('/super/revendas/regras', { method:'PUT', body:{ percentual: moedaInputParaNumero(pct), minimo: moedaInputParaNumero(min) } });
+      toast('Regras da revenda salvas.','ok');
+      carregarRevendasSuper();
+    }catch(e){ toast(e.message,'err'); }
+  });
+  const lista = document.getElementById('revSuperLista');
+  const receita = items.filter(i=>i.status==='ativa').reduce((s,i)=>s+Number(i.valorRepasse||0),0);
+  lista.innerHTML = items.length ? `
+    <div style="font-size:12.5px; color:var(--ink-soft); margin-bottom:6px;">${items.length} revenda(s) · receita mensal das ativas: <b>${fmtMoney(receita)}</b></div>
+    <table class="data-table">
+      <thead><tr><th>Escritório</th><th>Cliente</th><th>Módulo</th><th style="text-align:right;">Valor negociado</th><th style="text-align:right;">Repasse</th><th>Situação</th><th>Válido até</th></tr></thead>
+      <tbody>${items.map(i=>{ const st = REVENDA_STATUS[i.status]||{label:i.status,cls:'muted'}; return `<tr>
+        <td>${esc(i.escritorioNome)}</td><td>${esc(i.empresaNome)}</td><td>${esc(i.moduloNome)}</td>
+        <td style="text-align:right;">${fmtMoney(i.valorNegociado)}</td><td style="text-align:right;">${fmtMoney(i.valorRepasse)} <span style="font-size:11px; color:var(--ink-soft);">(${fmtPctRevenda(i.percentual)})</span></td>
+        <td><span class="tag ${st.cls}">${esc(st.label)}</span></td><td>${i.assinaturaAtivaAte && !String(i.assinaturaAtivaAte).startsWith('2099') ? fmtDate(i.assinaturaAtivaAte) : (i.assinaturaAtivaAte?'Sem vencimento':'—')}</td>
+      </tr>`; }).join('')}</tbody>
+    </table>` : '<div class="empty-state">Nenhuma revenda ainda.</div>';
 }
 // ===================== Clientes Diretos (venda avulsa via Instagram/internet, SuperAdmin) =====================
 // Controle separado dos clientes reais do escritório contábil — vivem num escritório "virtual"
@@ -23670,8 +23734,10 @@ async function renderCfgAssinaturaPlataforma(box){
   });
   habilitarSalvarAoMudar('btnSalvarFaturamento', ['cfgFatNome','cfgFatCnpj','cfgFatEmail','cfgFatTelefone']);
   const content = document.getElementById('cfgAssinaturaContent');
+  // Módulo desativado no catálogo some da contratação (quem já contratou continua vendo o dele).
+  const itemsVisiveis = items.filter(i=>i.ativo || i.status!=='nao_contratado');
   content.innerHTML = `
-    ${items.map(assinaturaModuloCardHtml).join('')}
+    ${itemsVisiveis.map(assinaturaModuloCardHtml).join('')}
     <div class="card" style="margin-top:14px;">
       <div class="row" style="justify-content:space-between; align-items:center;">
         <div>Total selecionado: <b id="cfgAssinaturaTotal">${fmtMoney(0)}</b></div>
@@ -23679,7 +23745,9 @@ async function renderCfgAssinaturaPlataforma(box){
       </div>
       <div id="cfgAssinaturaPagamentoResultado" style="margin-top:12px;"></div>
     </div>
+    <div id="cfgRevendaContent"></div>
   `;
+  renderCfgRevenda(document.getElementById('cfgRevendaContent'));
   content.querySelectorAll('[data-acao="testar"]').forEach(b=>b.addEventListener('click', async ()=>{
     try{
       await api('/escritorio/modulos/'+b.dataset.chave+'/iniciar-teste', { method:'POST' });
@@ -23729,6 +23797,197 @@ async function renderCfgAssinaturaPlataforma(box){
     }catch(e){
       resultado.innerHTML = `<div class="slot-locked" style="background:var(--paper); border-color:var(--debit);"><span class="fname">Não consegui gerar a cobrança</span>${esc(e.message)}</div>`;
     }
+  });
+}
+
+// ---------- Revenda de módulos pro cliente final ----------
+// O escritório libera um módulo que ele já tem pra uma empresa-cliente, informando o valor que negociou
+// com ela; paga à plataforma o percentual (30% padrão) por mês e o acesso do cliente libera quando o
+// pagamento confirma. Regras (percentual/valor mínimo) vêm do SuperAdmin.
+let CFG_REVENDA_POLL = null;
+const REVENDA_STATUS = {
+  ativa:{ label:'Ativa', cls:'ok' },
+  aguardando_pagamento:{ label:'Aguardando pagamento', cls:'warn' },
+  vencida:{ label:'Vencida', cls:'bad' },
+  cancelada:{ label:'Cancelada', cls:'muted' },
+};
+const fmtPctRevenda = v=> Number(v).toLocaleString('pt-BR',{ maximumFractionDigits:2 })+'%';
+function revendaPagamentoHtml(r){
+  return `
+    <div class="card" style="background:var(--paper);">
+      <div style="text-align:center; font-weight:600; margin-bottom:8px;">Cobrança de ${fmtMoney(r.valorTotal)}</div>
+      ${r.pixImagemBase64?`
+        <div style="text-align:center;">
+          <img src="data:image/png;base64,${r.pixImagemBase64}" alt="QR Code Pix" style="width:200px; height:200px;">
+          <div style="font-size:12px; color:var(--ink-soft); margin:8px 0 4px;">Pix copia e cola</div>
+          <input readonly value="${esc(r.pixPayload||'')}" style="width:100%; font-family:'IBM Plex Mono',monospace; font-size:11px; text-align:center;" onclick="this.select()">
+        </div>
+      `:''}
+      ${r.invoiceUrl?`<div style="text-align:center; margin-top:12px;"><a class="btn primary" href="${esc(r.invoiceUrl)}" target="_blank" rel="noopener">Pagar com cartão ou boleto</a></div>`:''}
+      <div style="text-align:center; margin-top:12px; font-size:12px; color:var(--ink-soft);">Assim que o pagamento confirmar, o acesso do cliente libera sozinho.</div>
+    </div>`;
+}
+async function renderCfgRevenda(box){
+  if(!box) return;
+  if(CFG_REVENDA_POLL){ clearInterval(CFG_REVENDA_POLL); CFG_REVENDA_POLL=null; }
+  let dados;
+  try{ dados = await api('/escritorio/revendas'); }catch(e){ box.innerHTML=''; return; }
+  const { regras, modulos, items, isento } = dados;
+  if(!modulos.length && !items.length){ box.innerHTML=''; return; }
+  const disponiveis = modulos.filter(m=>m.acesso);
+  box.innerHTML = `
+    <div class="card" style="margin-top:14px;">
+      <div class="row" style="justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:10px;">
+        <div style="flex:1; min-width:260px;">
+          <div style="font-weight:600;">Revenda para clientes</div>
+          <div style="font-size:12.5px; color:var(--ink-soft); margin-top:2px;">Libere um módulo do seu escritório pra uma empresa-cliente. Informe o valor que você negociou com ela:
+            ${isento ? 'seu escritório é isento, então a liberação é imediata, sem cobrança.' : `a plataforma cobra <b>${fmtPctRevenda(regras.percentual)}</b> desse valor por mês (valor mínimo de venda <b>${fmtMoney(regras.minimo)}</b>), e o acesso do cliente libera assim que o pagamento confirmar.`}</div>
+        </div>
+        <button class="btn primary" id="btnRevendaNova" ${disponiveis.length?'':'disabled'}>+ Liberar módulo para cliente</button>
+      </div>
+      ${!disponiveis.length ? `<p style="font-size:12.5px; color:var(--ink-soft); margin:10px 0 0;">Pra revender, seu escritório precisa ter o módulo ativo: ${modulos.map(m=>esc(m.nome)).join(', ')} — contrate acima.</p>` : ''}
+      <div style="overflow-x:auto; margin-top:12px;">
+        ${items.length ? `
+        <table class="data-table">
+          <thead><tr><th>Cliente</th><th>Módulo</th><th style="text-align:right;">Valor negociado</th><th style="text-align:right;">Cobrança mensal</th><th>Situação</th><th>Válido até</th><th></th></tr></thead>
+          <tbody>
+            ${items.map(i=>{
+              const st = REVENDA_STATUS[i.status] || { label:i.status, cls:'muted' };
+              const ate = i.assinaturaAtivaAte && !String(i.assinaturaAtivaAte).startsWith('2099') ? fmtDate(i.assinaturaAtivaAte) : (i.assinaturaAtivaAte ? 'Sem vencimento' : '—');
+              return `<tr data-id="${i.id}">
+                <td><div style="font-weight:600;">${esc(i.empresaNome)} ${empresaMatrizFilialHtml(i.empresaCnpj)}</div><div style="font-size:11.5px; color:var(--ink-soft);">${esc(fmtCnpjCpf(i.empresaCnpj)||'')}</div></td>
+                <td>${esc(i.moduloNome)}</td>
+                <td style="text-align:right; white-space:nowrap;">${fmtMoney(i.valorNegociado)}</td>
+                <td style="text-align:right; white-space:nowrap;">${fmtMoney(i.valorRepasse)}<div style="font-size:11px; color:var(--ink-soft);">${fmtPctRevenda(i.percentual)}</div></td>
+                <td><span class="tag ${st.cls}">${esc(st.label)}</span></td>
+                <td style="white-space:nowrap;">${ate}</td>
+                <td style="white-space:nowrap;">
+                  ${isento ? '' : `<button class="btn small primary revPagar">${i.status==='ativa'?'Renovar':'Pagar'}</button>`}
+                  <button class="btn small revEditar" title="Mudar o valor negociado — gera nova cobrança">Alterar valor</button>
+                  ${i.status!=='cancelada'?'<button class="btn small revCancelar" title="Tira o acesso do cliente agora">Cancelar</button>':''}
+                </td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>` : '<div class="empty-state">Nenhum módulo liberado para clientes ainda.</div>'}
+      </div>
+      <div id="revendaPagamento" style="margin-top:12px;"></div>
+    </div>`;
+  const pagamentoBox = box.querySelector('#revendaPagamento');
+  // Mostra o Pix/link e fica conferindo até a validade da revenda mudar (pagamento confirmado).
+  const acompanhar = (revendaId, r, ateAntes)=>{
+    if(r.liberado){ toast('Módulo liberado para o cliente.','ok'); renderCfgRevenda(box); return; }
+    pagamentoBox.innerHTML = revendaPagamentoHtml(r);
+    pagamentoBox.scrollIntoView({ behavior:'smooth', block:'center' });
+    if(CFG_REVENDA_POLL) clearInterval(CFG_REVENDA_POLL);
+    CFG_REVENDA_POLL = setInterval(async ()=>{
+      try{
+        const { items: atual } = await api('/escritorio/revendas');
+        const rv = atual.find(x=>x.id===revendaId);
+        if(rv && rv.status==='ativa' && rv.assinaturaAtivaAte!==ateAntes){
+          clearInterval(CFG_REVENDA_POLL); CFG_REVENDA_POLL=null;
+          toast('Pagamento confirmado — acesso do cliente liberado!','ok');
+          renderCfgRevenda(box);
+        }
+      }catch(e){ /* falha pontual de rede no polling */ }
+    }, 5000);
+  };
+  const abrirModal = (existente)=>{
+    openModal(`
+      <h3>${existente?'Alterar valor negociado':'Liberar módulo para cliente'}</h3>
+      <div class="field"><label>Cliente</label>${existente?`<input value="${esc(existente.empresaNome)}" disabled>`:comboSelectHtml('rvEmpresaCombo','Digite o nome, CNPJ ou código…')}</div>
+      <div class="field"><label>Módulo</label>${existente?`<input value="${esc(existente.moduloNome)}" disabled>`:comboSelectHtml('rvModuloCombo','Selecione o módulo…')}</div>
+      <div class="field"><label>Valor negociado com o cliente (R$ por mês)</label><input id="rvValor" inputmode="decimal" placeholder="mínimo ${fmtMoney(regras.minimo)}"></div>
+      <div id="rvCalculo" style="font-size:13px; margin:-4px 0 12px; color:var(--ink-soft);"></div>
+      <div class="modal-actions">
+        <button class="btn" id="rvCancelar">Cancelar</button>
+        <button class="btn primary" id="rvGerar">${isento?'Liberar':'Gerar cobrança'}</button>
+      </div>
+    `, '520px');
+    const inpValor = document.getElementById('rvValor');
+    ligarMascaraMoeda(inpValor);
+    if(existente){ inpValor.value = Number(existente.valorNegociado).toLocaleString('pt-BR',{minimumFractionDigits:2, maximumFractionDigits:2}); }
+    const calc = document.getElementById('rvCalculo');
+    const atualizarCalculo = ()=>{
+      inpValor.style.borderColor='';
+      const v = inpValor.value.trim() ? moedaInputParaNumero(inpValor) : 0;
+      if(!v){ calc.textContent = ''; return; }
+      if(v < regras.minimo){ calc.innerHTML = `<span style="color:var(--debit);">Abaixo do mínimo de venda (${fmtMoney(regras.minimo)}).</span>`; return; }
+      calc.innerHTML = isento ? 'Liberação imediata, sem cobrança (escritório isento).' : `Cobrança mensal ao seu escritório: <b>${fmtMoney(Math.round(v*regras.percentual)/100)}</b> (${fmtPctRevenda(regras.percentual)} de ${fmtMoney(v)}).`;
+    };
+    inpValor.addEventListener('input', atualizarCalculo);
+    atualizarCalculo();
+    let empresaSel = null, moduloSel = null;
+    if(!existente){
+      empresasAtivas().then(empresas=>{
+        setupComboSelect('rvEmpresaCombo', empresas.map(e=>({ id:e.id, label:empresaComboLabel(e) })), id=>{ empresaSel = id ? Number(id) : null; });
+      }).catch(()=>{});
+      setupComboSelect('rvModuloCombo', disponiveis.map(m=>({ id:m.chave, label:m.nome })), id=>{ moduloSel = id || null; });
+      if(disponiveis.length===1){
+        moduloSel = disponiveis[0].chave;
+        document.querySelector('#rvModuloCombo .combo-value').value = moduloSel;
+        document.querySelector('#rvModuloCombo .combo-input').value = disponiveis[0].nome;
+      }
+    }
+    document.getElementById('rvCancelar').addEventListener('click', closeModal);
+    document.getElementById('rvGerar').addEventListener('click', async ()=>{
+      const marcarErro = (el, msg)=>{ toast(msg,'err'); if(el){ el.style.borderColor='var(--debit)'; el.focus(); } };
+      const empresaId = existente ? existente.empresaId : empresaSel;
+      const moduloChave = existente ? existente.moduloChave : moduloSel;
+      if(!empresaId) return marcarErro(document.querySelector('#rvEmpresaCombo .combo-input'), 'Selecione o cliente.');
+      if(!moduloChave) return marcarErro(document.querySelector('#rvModuloCombo .combo-input'), 'Selecione o módulo.');
+      const valor = inpValor.value.trim() ? moedaInputParaNumero(inpValor) : 0;
+      if(!valor || valor < regras.minimo) return marcarErro(inpValor, `Informe o valor negociado (mínimo ${fmtMoney(regras.minimo)}).`);
+      const btn = document.getElementById('rvGerar');
+      btn.disabled = true;
+      try{
+        const ateAntes = existente ? existente.assinaturaAtivaAte : null;
+        const r = await api('/escritorio/revendas', { method:'POST', body:{ empresaId, moduloChave, valorNegociado: valor } });
+        closeModal();
+        await renderCfgRevenda(box);
+        const box2 = box.querySelector('#revendaPagamento');
+        if(box2) acompanharDepois(r.revendaId, r, ateAntes);
+      }catch(e){ btn.disabled = false; toast(e.message,'err'); }
+    });
+  };
+  // Depois de re-renderizar a lista (nova linha), liga o acompanhamento na caixa nova.
+  const acompanharDepois = (revendaId, r, ateAntes)=>{
+    const novaCaixa = box.querySelector('#revendaPagamento');
+    if(!novaCaixa) return;
+    if(r.liberado){ toast('Módulo liberado para o cliente.','ok'); return; }
+    novaCaixa.innerHTML = revendaPagamentoHtml(r);
+    novaCaixa.scrollIntoView({ behavior:'smooth', block:'center' });
+    if(CFG_REVENDA_POLL) clearInterval(CFG_REVENDA_POLL);
+    CFG_REVENDA_POLL = setInterval(async ()=>{
+      try{
+        const { items: atual } = await api('/escritorio/revendas');
+        const rv = atual.find(x=>x.id===revendaId);
+        if(rv && rv.status==='ativa' && rv.assinaturaAtivaAte!==ateAntes){
+          clearInterval(CFG_REVENDA_POLL); CFG_REVENDA_POLL=null;
+          toast('Pagamento confirmado — acesso do cliente liberado!','ok');
+          renderCfgRevenda(box);
+        }
+      }catch(e){ /* falha pontual de rede no polling */ }
+    }, 5000);
+  };
+  box.querySelector('#btnRevendaNova')?.addEventListener('click', ()=>abrirModal(null));
+  box.querySelectorAll('tr[data-id]').forEach(tr=>{
+    const item = items.find(i=>i.id===Number(tr.dataset.id));
+    tr.querySelector('.revEditar')?.addEventListener('click', ()=>abrirModal(item));
+    tr.querySelector('.revPagar')?.addEventListener('click', async e=>{
+      e.target.disabled = true;
+      pagamentoBox.innerHTML = '<div class="empty-state">Gerando cobrança…</div>';
+      try{
+        const r = await api('/escritorio/revendas/'+item.id+'/pagar', { method:'POST' });
+        acompanhar(item.id, r, item.assinaturaAtivaAte);
+      }catch(err){ pagamentoBox.innerHTML=''; toast(err.message,'err'); }
+      e.target.disabled = false;
+    });
+    tr.querySelector('.revCancelar')?.addEventListener('click', async ()=>{
+      if(!confirmar(`Cancelar o ${item.moduloNome} de ${item.empresaNome}? O cliente perde o acesso agora e não será mais cobrado.`)) return;
+      try{ await api('/escritorio/revendas/'+item.id+'/cancelar', { method:'POST' }); toast('Revenda cancelada.','ok'); renderCfgRevenda(box); }
+      catch(err){ toast(err.message,'err'); }
+    });
   });
 }
 

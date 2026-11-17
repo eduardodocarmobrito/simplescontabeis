@@ -2283,6 +2283,40 @@ sqlite.exec(`INSERT OR IGNORE INTO modulos_escritorio_catalogo (chave, nome, val
 // isentos (ver contarAssentosColaborador). Preço 0 até o SuperAdmin configurar em Escritórios >
 // Módulos da plataforma — mesma tela que já edita os outros módulos desse catálogo.
 sqlite.exec(`INSERT OR IGNORE INTO modulos_escritorio_catalogo (chave, nome, valor_mensal) VALUES ('assento_colaborador', 'Assento por colaborador (cobrado por usuário)', 0)`);
+// ---------- Revenda de módulos pro cliente final (pedido 2026-11-17) ----------
+// O escritório contrata o módulo pra si (ex.: Reforma Tributária) e pode liberar o mesmo módulo pra
+// uma empresa-cliente dele: informa o valor que negociou com o cliente e paga à plataforma um
+// percentual desse valor por mês (padrão 30%, com valor negociado mínimo de R$ 120 — os dois
+// editáveis pelo SuperAdmin em Módulos da plataforma). O acesso do cliente vale até
+// escritorio_revendas.assinatura_ativa_ate, renovado a cada pagamento (webhook do Asaas).
+// funcionalidade_cliente liga a chave do catálogo do escritório à área do cliente (mesmas chaves de
+// PAGINA_CLIENTE_MODULO no front) — só módulo com ela preenchida é revendável.
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(modulos_escritorio_catalogo)`).all() as any[];
+  if (!cols.some((c) => c.name === "funcionalidade_cliente")) sqlite.exec(`ALTER TABLE modulos_escritorio_catalogo ADD COLUMN funcionalidade_cliente TEXT`);
+  const colsItens = sqlite.prepare(`PRAGMA table_info(escritorio_licenca_cobranca_itens)`).all() as any[];
+  if (!colsItens.some((c) => c.name === "revenda_id")) sqlite.exec(`ALTER TABLE escritorio_licenca_cobranca_itens ADD COLUMN revenda_id INTEGER`);
+}
+// Nasce DESATIVADO (preço 0): nada muda pra ninguém até o SuperAdmin pôr o preço e ativar.
+sqlite.exec(`INSERT OR IGNORE INTO modulos_escritorio_catalogo (chave, nome, valor_mensal, ativo, funcionalidade_cliente) VALUES ('reforma', 'Reforma Tributária', 0, 0, 'reforma')`);
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS plataforma_config (chave TEXT PRIMARY KEY, valor TEXT);
+  INSERT OR IGNORE INTO plataforma_config (chave, valor) VALUES ('revenda_percentual', '30'), ('revenda_minimo', '120');
+  CREATE TABLE IF NOT EXISTS escritorio_revendas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    escritorio_id INTEGER NOT NULL REFERENCES escritorios(id) ON DELETE CASCADE,
+    empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+    modulo_chave TEXT NOT NULL,
+    valor_negociado REAL NOT NULL,
+    percentual REAL NOT NULL,
+    valor_repasse REAL NOT NULL,
+    assinatura_ativa_ate TEXT,
+    cancelado_em TEXT,
+    criado_por INTEGER,
+    criado_em TEXT DEFAULT (datetime('now')),
+    UNIQUE(escritorio_id, empresa_id, modulo_chave)
+  );
+`);
 sqlite.exec(`UPDATE modulos_escritorio_catalogo SET nome = 'Busca automática de XML (NF-e/NFC-e/NFS-e)' WHERE chave = 'busca_xml_nfe' AND nome = 'Busca automática de NF-e/NFC-e'`);
 // Migração de compatibilidade: empresas que JÁ usam NFS-e ou Financeiro de verdade (antes de existir
 // o controle de teste/assinatura) ganham acesso permanente automático — nunca bloqueia quem já era
@@ -4365,6 +4399,8 @@ app.get("/api/auth/me", (req, res) => {
   let paginasCliente: string[] | null = null; // null = sem restrição (cliente vê todas as próprias páginas)
   let modulosAtivos: string[] | null = null; // Cliente: chaves do catálogo (nfse/financeiro/...) com acesso de verdade (isento/trial/assinatura)
   let modulosOcultos: string[] = [];
+  let revendaVendidas: string[] = [];
+  let revendaLiberadas: string[] = [];
   const funcionalidades = user.perfil === "SuperAdmin" ? null : funcionalidadesDoEscritorio(user.escritorioId);
   if (user.perfil === "Administrador") {
     for (const m of MODULOS) { const ok = funcionalidades!.includes(m); permissoes[m] = { visualizar: ok, postar: ok, editar: ok }; }
@@ -4387,9 +4423,13 @@ app.get("/api/auth/me", (req, res) => {
     // usa — achado em auditoria (2026-11-09): item de menu sumia mesmo com acesso liberado.
     modulosAtivos = user.empresaId ? nfseModulosDaEmpresa(user.empresaId).filter((m) => m.acesso).map((m) => m.chave) : [];
     modulosOcultos = user.empresaId ? empresaModulosOcultos(user.empresaId) : [];
+    // Áreas vendidas por revenda: aparecem só se o escritório liberou (pagou) pra esta empresa.
+    revendaVendidas = funcionalidadesVendidasPorRevenda();
+    const empresaIdRevenda = user.empresaId as number | null;
+    revendaLiberadas = empresaIdRevenda ? revendaVendidas.filter((f) => clienteAcessoPorRevenda(empresaIdRevenda, f)) : [];
   }
   const userComFlag = user.perfil === "Cliente" && user.empresaId ? { ...user, ehClienteDireto: empresaEhClienteDireto(user.empresaId) } : user;
-  res.json({ user: userComFlag, permissoes, configAbas, paginasCliente, funcionalidades, modulosAtivos, modulosOcultos });
+  res.json({ user: userComFlag, permissoes, configAbas, paginasCliente, funcionalidades, modulosAtivos, modulosOcultos, revendaVendidas, revendaLiberadas });
 });
 app.get("/api/auth/minhas-empresas", requireAuth, (req, res) => {
   const user = (req as any).user;
@@ -13255,7 +13295,7 @@ function reformaPeriodo(q: any) {
   const de = typeof q.de === "string" && /^\d{4}-\d{2}-\d{2}$/.test(q.de) ? q.de : dIni.toISOString().slice(0, 10);
   return { de, ate };
 }
-app.get("/api/reforma/auditoria", blockCliente, requirePermissao("reforma", "visualizar"), (req, res) => {
+app.get("/api/reforma/auditoria", blockCliente, requirePermissao("reforma", "visualizar"), requireModuloEscritorioVendido("reforma"), (req, res) => {
   const user = (req as any).user;
   const empresaId = Number(req.query.empresaId);
   if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
@@ -13313,13 +13353,13 @@ async function reformaEnviarFichas(res: any, escritorioId: number, empresaId: nu
     res.status(500).json({ error: `Não consegui gerar as fichas: ${e.message}` });
   }
 }
-app.get("/api/reforma/auditoria/fichas", blockCliente, requirePermissao("reforma", "visualizar"), async (req, res) => {
+app.get("/api/reforma/auditoria/fichas", blockCliente, requirePermissao("reforma", "visualizar"), requireModuloEscritorioVendido("reforma"), async (req, res) => {
   const user = (req as any).user;
   const empresaId = Number(req.query.empresaId);
   if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
   await reformaEnviarFichas(res, user.escritorioId, empresaId, req.query);
 });
-app.get("/api/reforma/minha-empresa/auditoria/fichas", requireCliente, async (req, res) => {
+app.get("/api/reforma/minha-empresa/auditoria/fichas", requireCliente, requireRevendaCliente("reforma"), async (req, res) => {
   const user = (req as any).user;
   if (!user.empresaId) return res.status(400).json({ error: "Nenhuma empresa vinculada." });
   await reformaEnviarFichas(res, user.escritorioId, user.empresaId, req.query);
@@ -13368,30 +13408,30 @@ async function reformaEnviarMapaNcm(res: any, escritorioId: number, empresaId: n
   }
 }
 for (const [rota, fn] of [["fornecedores-pdf", reformaEnviarRelatorioFornecedores], ["ncm-pdf", reformaEnviarMapaNcm]] as const) {
-  app.get(`/api/reforma/auditoria/${rota}`, blockCliente, requirePermissao("reforma", "visualizar"), async (req, res) => {
+  app.get(`/api/reforma/auditoria/${rota}`, blockCliente, requirePermissao("reforma", "visualizar"), requireModuloEscritorioVendido("reforma"), async (req, res) => {
     const user = (req as any).user;
     const empresaId = Number(req.query.empresaId);
     if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
     await fn(res, user.escritorioId, empresaId, req.query);
   });
-  app.get(`/api/reforma/minha-empresa/auditoria/${rota}`, requireCliente, async (req, res) => {
+  app.get(`/api/reforma/minha-empresa/auditoria/${rota}`, requireCliente, requireRevendaCliente("reforma"), async (req, res) => {
     const user = (req as any).user;
     if (!user.empresaId) return res.status(400).json({ error: "Nenhuma empresa vinculada." });
     await fn(res, user.escritorioId, user.empresaId, req.query);
   });
 }
-app.get("/api/reforma/auditoria/pdf", blockCliente, requirePermissao("reforma", "visualizar"), async (req, res) => {
+app.get("/api/reforma/auditoria/pdf", blockCliente, requirePermissao("reforma", "visualizar"), requireModuloEscritorioVendido("reforma"), async (req, res) => {
   const user = (req as any).user;
   const empresaId = Number(req.query.empresaId);
   if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
   await reformaEnviarPdf(res, user.escritorioId, empresaId, req.query);
 });
-app.get("/api/reforma/minha-empresa/auditoria/pdf", requireCliente, async (req, res) => {
+app.get("/api/reforma/minha-empresa/auditoria/pdf", requireCliente, requireRevendaCliente("reforma"), async (req, res) => {
   const user = (req as any).user;
   if (!user.empresaId) return res.status(400).json({ error: "Nenhuma empresa vinculada." });
   await reformaEnviarPdf(res, user.escritorioId, user.empresaId, req.query);
 });
-app.get("/api/reforma/minha-empresa/auditoria", requireCliente, (req, res) => {
+app.get("/api/reforma/minha-empresa/auditoria", requireCliente, requireRevendaCliente("reforma"), (req, res) => {
   const user = (req as any).user;
   if (!user.empresaId) return res.status(400).json({ error: "Nenhuma empresa vinculada." });
   const { de, ate } = reformaPeriodo(req.query);
@@ -13505,14 +13545,14 @@ async function reformaEnviarDiagnosticoPdf(res: any, escritorioId: number, empre
     res.status(500).json({ error: `Não consegui gerar o diagnóstico: ${e.message}` });
   }
 }
-app.get("/api/reforma/diagnostico", blockCliente, requirePermissao("reforma", "visualizar"), (req, res) => {
+app.get("/api/reforma/diagnostico", blockCliente, requirePermissao("reforma", "visualizar"), requireModuloEscritorioVendido("reforma"), (req, res) => {
   const user = (req as any).user;
   const empresaId = Number(req.query.empresaId);
   if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
   try { res.json(reformaCalcularDiagnosticoEmpresa(user.escritorioId, empresaId)); }
   catch (e: any) { res.status(400).json({ error: e.message }); }
 });
-app.put("/api/reforma/diagnostico/premissas", blockCliente, requirePermissao("reforma", "editar"), (req, res) => {
+app.put("/api/reforma/diagnostico/premissas", blockCliente, requirePermissao("reforma", "editar"), requireModuloEscritorioVendido("reforma"), (req, res) => {
   const user = (req as any).user;
   const empresaId = Number(req.query.empresaId);
   if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
@@ -13532,19 +13572,19 @@ app.put("/api/reforma/diagnostico/premissas", blockCliente, requirePermissao("re
     ON CONFLICT(empresa_id) DO UPDATE SET premissas_json = excluded.premissas_json, atualizado_em = datetime('now')`).run(empresaId, user.escritorioId, JSON.stringify(limpo));
   res.json({ ok: true });
 });
-app.get("/api/reforma/diagnostico/pdf", blockCliente, requirePermissao("reforma", "visualizar"), async (req, res) => {
+app.get("/api/reforma/diagnostico/pdf", blockCliente, requirePermissao("reforma", "visualizar"), requireModuloEscritorioVendido("reforma"), async (req, res) => {
   const user = (req as any).user;
   const empresaId = Number(req.query.empresaId);
   if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
   await reformaEnviarDiagnosticoPdf(res, user.escritorioId, empresaId);
 });
-app.get("/api/reforma/minha-empresa/diagnostico", requireCliente, (req, res) => {
+app.get("/api/reforma/minha-empresa/diagnostico", requireCliente, requireRevendaCliente("reforma"), (req, res) => {
   const user = (req as any).user;
   if (!user.empresaId) return res.status(400).json({ error: "Nenhuma empresa vinculada." });
   try { res.json(reformaCalcularDiagnosticoEmpresa(user.escritorioId, user.empresaId)); }
   catch (e: any) { res.status(400).json({ error: e.message }); }
 });
-app.get("/api/reforma/minha-empresa/diagnostico/pdf", requireCliente, async (req, res) => {
+app.get("/api/reforma/minha-empresa/diagnostico/pdf", requireCliente, requireRevendaCliente("reforma"), async (req, res) => {
   const user = (req as any).user;
   if (!user.empresaId) return res.status(400).json({ error: "Nenhuma empresa vinculada." });
   await reformaEnviarDiagnosticoPdf(res, user.escritorioId, user.empresaId);
@@ -13598,7 +13638,7 @@ function reformaContatosEmpresa(empresaId: number) {
   for (const c of cont) { addEmail(c.email, c.nome || "Contato", "Contato", !!c.receber_emails); addTel(c.telefone, c.nome || "Contato", "Contato", !!c.receber_whatsapp); }
   return { empresaNome: emp?.nome || "", emails: [...emails.values()], telefones: [...telefones.values()] };
 }
-app.get("/api/reforma/contatos", blockCliente, requirePermissao("reforma", "visualizar"), (req, res) => {
+app.get("/api/reforma/contatos", blockCliente, requirePermissao("reforma", "visualizar"), requireModuloEscritorioVendido("reforma"), (req, res) => {
   const user = (req as any).user;
   const empresaId = Number(req.query.empresaId);
   if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
@@ -13608,7 +13648,7 @@ app.get("/api/reforma/contatos", blockCliente, requirePermissao("reforma", "visu
   res.json({ ...c, emailOk: emailConfigurado(user.escritorioId), whatsappOk });
 });
 const reformaEnviosPorUsuario = new Map<number, { n: number; ate: number }>();
-app.post("/api/reforma/enviar-cliente", blockCliente, requirePermissao("reforma", "postar"), async (req, res) => {
+app.post("/api/reforma/enviar-cliente", blockCliente, requirePermissao("reforma", "postar"), requireModuloEscritorioVendido("reforma"), async (req, res) => {
   const user = (req as any).user;
   const b = req.body || {};
   const empresaId = Number(b.empresaId);
@@ -23623,6 +23663,109 @@ function modulosDoEscritorio(escritorioId: number) {
 }
 // Confere se um escritório tem acesso ativo (teste ou pago) a um módulo específico — usado pelos
 // pontos do código que gatilham comportamento automático (rotina de NFS-e, envio automático).
+// ---------- Revenda (ver CREATE TABLE escritorio_revendas) ----------
+function revendaRegras(): { percentual: number; minimo: number } {
+  const ler = (chave: string, padrao: number) => {
+    const n = Number((sqlite.prepare(`SELECT valor FROM plataforma_config WHERE chave = ?`).get(chave) as any)?.valor);
+    return Number.isFinite(n) && n >= 0 ? n : padrao;
+  };
+  return { percentual: ler("revenda_percentual", 30), minimo: ler("revenda_minimo", 120) };
+}
+const agoraSqlRevenda = () => new Date().toISOString().replace("T", " ").slice(0, 19);
+// Áreas do cliente cuja liberação passou a ser pela revenda (módulo revendável ATIVO no catálogo).
+// Enquanto o módulo está desativado no catálogo, vale a regra antiga (funcionalidade + aba marcada).
+function funcionalidadesVendidasPorRevenda(): string[] {
+  return (sqlite.prepare(`SELECT DISTINCT funcionalidade_cliente f FROM modulos_escritorio_catalogo WHERE ativo = 1 AND funcionalidade_cliente IS NOT NULL`).all() as any[]).map((r) => r.f);
+}
+// Revenda paga, em dia e não cancelada — e o escritório ainda tem o próprio módulo (sem ele, não revende).
+function revendaAtiva(r: any): boolean {
+  return !!r && !r.cancelado_em && !!r.assinatura_ativa_ate && r.assinatura_ativa_ate >= agoraSqlRevenda() && escritorioTemModulo(r.escritorio_id, r.modulo_chave);
+}
+function funcionalidadesRevendaDaEmpresa(empresaId: number): string[] {
+  const rows = sqlite
+    .prepare(
+      `SELECT r.*, c.funcionalidade_cliente f FROM escritorio_revendas r JOIN modulos_escritorio_catalogo c ON c.chave = r.modulo_chave
+        WHERE r.empresa_id = ? AND c.funcionalidade_cliente IS NOT NULL`
+    )
+    .all(empresaId) as any[];
+  return [...new Set(rows.filter(revendaAtiva).map((r) => r.f as string))];
+}
+// null = área não é vendida por revenda (vale a regra antiga); true/false = decide pela revenda.
+function clienteAcessoPorRevenda(empresaId: number, funcionalidade: string): boolean | null {
+  if (!funcionalidadesVendidasPorRevenda().includes(funcionalidade)) return null;
+  if ((sqlite.prepare(`SELECT isento_assinatura FROM empresas WHERE id = ?`).get(empresaId) as any)?.isento_assinatura) return true;
+  return funcionalidadesRevendaDaEmpresa(empresaId).includes(funcionalidade);
+}
+function requireRevendaCliente(funcionalidade: string) {
+  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (clienteAcessoPorRevenda((req as any).user.empresaId, funcionalidade) === false) {
+      return res.status(402).json({ error: "Este módulo ainda não foi liberado pro seu acesso — fale com o seu escritório de contabilidade.", bloqueado: true, modulo: funcionalidade });
+    }
+    next();
+  };
+}
+// Lado do ESCRITÓRIO: módulo revendável ativo no catálogo exige o escritório ter contratado (teste
+// ou assinatura). Desativado no catálogo = segue liberado como antes.
+function requireModuloEscritorioVendido(chave: string) {
+  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const user = (req as any).user;
+    if (user?.perfil === "SuperAdmin" || !user?.escritorioId) return next();
+    const m = sqlite.prepare(`SELECT ativo FROM modulos_escritorio_catalogo WHERE chave = ?`).get(chave) as any;
+    if (m?.ativo && !escritorioTemModulo(user.escritorioId, chave)) {
+      return res.status(402).json({ error: "Módulo não contratado — contrate em Configurações › Assinatura da plataforma.", bloqueado: true, modulo: chave });
+    }
+    next();
+  };
+}
+function revendaStatus(r: any): "ativa" | "aguardando_pagamento" | "vencida" | "cancelada" {
+  const emDia = !!r.assinatura_ativa_ate && r.assinatura_ativa_ate >= agoraSqlRevenda();
+  if (r.cancelado_em) return "cancelada";
+  if (emDia) return "ativa";
+  return r.assinatura_ativa_ate ? "vencida" : "aguardando_pagamento";
+}
+// Gera (ou reaproveita, se já existe uma pendente do mesmo valor) a cobrança da revenda pro escritório.
+async function escritorioCobrarRevenda(escritorioId: number, revenda: any): Promise<{ invoiceUrl: string | null; pixPayload: string | null; pixImagemBase64: string | null; valorTotal: number }> {
+  const escritorio = sqlite.prepare(`SELECT nome, cnpj, email, telefone, asaas_customer_id FROM escritorios WHERE id = ?`).get(escritorioId) as any;
+  if (!escritorio?.cnpj) throw new Error("Cadastre o CNPJ do escritório em Dados de faturamento antes de gerar a cobrança.");
+  const empresa = sqlite.prepare(`SELECT nome FROM empresas WHERE id = ?`).get(revenda.empresa_id) as any;
+  const modulo = sqlite.prepare(`SELECT nome FROM modulos_escritorio_catalogo WHERE chave = ?`).get(revenda.modulo_chave) as any;
+  const valorTotal = Math.round(Number(revenda.valor_repasse) * 100) / 100;
+  let cobranca = sqlite
+    .prepare(
+      `SELECT c.* FROM escritorio_licenca_cobrancas c JOIN escritorio_licenca_cobranca_itens i ON i.cobranca_id = c.id
+        WHERE c.escritorio_id = ? AND c.status = 'pendente' AND i.revenda_id = ? AND abs(c.valor_total - ?) < 0.005 ORDER BY c.id DESC LIMIT 1`
+    )
+    .get(escritorioId, revenda.id, valorTotal) as any;
+  let customerId = escritorio.asaas_customer_id;
+  if (!customerId) {
+    customerId = await asaas.obterOuCriarCliente({ cpfCnpj: escritorio.cnpj, nome: escritorio.nome, email: escritorio.email, telefone: escritorio.telefone });
+    sqlite.prepare(`UPDATE escritorios SET asaas_customer_id = ? WHERE id = ?`).run(customerId, escritorioId);
+  }
+  if (!cobranca) {
+    const vencimento = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const brl = (v: number) => v.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const descricao = `Revenda — ${modulo?.nome || revenda.modulo_chave} para ${empresa?.nome || "cliente"} (${revenda.percentual}% de R$ ${brl(Number(revenda.valor_negociado))})`;
+    const gerada = await asaas.criarCobranca({ customerId, valor: valorTotal, vencimento, descricao });
+    const info = sqlite
+      .prepare(`INSERT INTO escritorio_licenca_cobrancas (escritorio_id, valor_total, vencimento, status, asaas_payment_id, invoice_url) VALUES (?, ?, ?, 'pendente', ?, ?)`)
+      .run(escritorioId, valorTotal, vencimento, gerada.id, gerada.invoiceUrl);
+    const cobrancaId = Number(info.lastInsertRowid);
+    sqlite
+      .prepare(`INSERT INTO escritorio_licenca_cobranca_itens (cobranca_id, modulo_chave, valor, quantidade, revenda_id) VALUES (?, ?, ?, 1, ?)`)
+      .run(cobrancaId, revenda.modulo_chave, valorTotal, revenda.id);
+    cobranca = sqlite.prepare(`SELECT * FROM escritorio_licenca_cobrancas WHERE id = ?`).get(cobrancaId);
+  }
+  let pix: asaas.PixQrCode | null = null;
+  for (let tentativa = 0; tentativa < 3 && !pix; tentativa++) {
+    try {
+      pix = await asaas.obterQrCodePix(cobranca.asaas_payment_id);
+    } catch {
+      if (tentativa < 2) await new Promise((r) => setTimeout(r, 1200));
+    }
+  }
+  if (pix) sqlite.prepare(`UPDATE escritorio_licenca_cobrancas SET pix_qrcode = ?, pix_qrcode_imagem = ? WHERE id = ?`).run(pix.payload, pix.imagemBase64, cobranca.id);
+  return { invoiceUrl: cobranca.invoice_url, pixPayload: pix?.payload || null, pixImagemBase64: pix?.imagemBase64 || null, valorTotal };
+}
 function escritorioTemModulo(escritorioId: number, chave: string): boolean {
   const escr = sqlite.prepare(`SELECT isento_assinatura FROM escritorios WHERE id = ?`).get(escritorioId) as any;
   if (escr?.isento_assinatura) return true; // escritório isento tem acesso a tudo
@@ -23755,6 +23898,131 @@ app.post("/api/escritorio/modulos/pagar", blockCliente, requirePermissao("config
   }
 });
 
+// ---------- Revenda: telas do escritório (Configurações › Assinatura da plataforma) ----------
+app.get("/api/escritorio/revendas", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
+  const escritorioId = (req as any).user.escritorioId;
+  const modulos = (sqlite.prepare(`SELECT chave, nome FROM modulos_escritorio_catalogo WHERE ativo = 1 AND funcionalidade_cliente IS NOT NULL ORDER BY nome`).all() as any[]).map((m) => ({
+    chave: m.chave,
+    nome: m.nome,
+    acesso: escritorioTemModulo(escritorioId, m.chave),
+  }));
+  const rows = sqlite
+    .prepare(
+      `SELECT r.*, e.nome as empresa_nome, e.cnpj as empresa_cnpj, c.nome as modulo_nome
+         FROM escritorio_revendas r JOIN empresas e ON e.id = r.empresa_id JOIN modulos_escritorio_catalogo c ON c.chave = r.modulo_chave
+        WHERE r.escritorio_id = ? ORDER BY e.nome, c.nome`
+    )
+    .all(escritorioId) as any[];
+  const isento = !!(sqlite.prepare(`SELECT isento_assinatura FROM escritorios WHERE id = ?`).get(escritorioId) as any)?.isento_assinatura;
+  res.json({
+    regras: revendaRegras(),
+    isento,
+    modulos,
+    items: rows.map((r) => ({
+      id: r.id,
+      empresaId: r.empresa_id,
+      empresaNome: r.empresa_nome,
+      empresaCnpj: r.empresa_cnpj,
+      moduloChave: r.modulo_chave,
+      moduloNome: r.modulo_nome,
+      valorNegociado: Number(r.valor_negociado),
+      percentual: Number(r.percentual),
+      valorRepasse: Number(r.valor_repasse),
+      assinaturaAtivaAte: r.assinatura_ativa_ate,
+      status: revendaStatus(r),
+    })),
+  });
+});
+// Libera (ou muda o valor de) um módulo pra uma empresa-cliente e já gera a cobrança do repasse.
+app.post("/api/escritorio/revendas", blockCliente, requirePermissao("configuracoes", "postar"), async (req, res) => {
+  const user = (req as any).user;
+  const escritorioId = user.escritorioId;
+  const empresaId = Number(req.body?.empresaId);
+  const moduloChave = String(req.body?.moduloChave || "");
+  const empresa = sqlite.prepare(`SELECT id, escritorio_id FROM empresas WHERE id = ?`).get(empresaId) as any;
+  if (!empresa || empresa.escritorio_id !== escritorioId || !podeAcessarEmpresa(user, empresaId)) return res.status(400).json({ error: "Selecione um cliente válido." });
+  const modulo = sqlite.prepare(`SELECT chave, nome FROM modulos_escritorio_catalogo WHERE chave = ? AND ativo = 1 AND funcionalidade_cliente IS NOT NULL`).get(moduloChave) as any;
+  if (!modulo) return res.status(400).json({ error: "Selecione um módulo revendável." });
+  if (!escritorioTemModulo(escritorioId, moduloChave)) return res.status(400).json({ error: `Seu escritório precisa ter o módulo ${modulo.nome} ativo pra revender — contrate acima.` });
+  const valor = Math.round(Number(String(req.body?.valorNegociado ?? "").replace(",", ".")) * 100) / 100;
+  const regras = revendaRegras();
+  const brl = (v: number) => v.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  if (!Number.isFinite(valor) || valor < regras.minimo) return res.status(400).json({ error: `O valor negociado mínimo é R$ ${brl(regras.minimo)}.` });
+  const repasse = Math.round(valor * regras.percentual) / 100;
+  sqlite
+    .prepare(
+      `INSERT INTO escritorio_revendas (escritorio_id, empresa_id, modulo_chave, valor_negociado, percentual, valor_repasse, criado_por) VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(escritorio_id, empresa_id, modulo_chave) DO UPDATE SET valor_negociado = excluded.valor_negociado, percentual = excluded.percentual,
+         valor_repasse = excluded.valor_repasse, cancelado_em = NULL`
+    )
+    .run(escritorioId, empresaId, moduloChave, valor, regras.percentual, repasse, user.id);
+  const revenda = sqlite.prepare(`SELECT * FROM escritorio_revendas WHERE escritorio_id = ? AND empresa_id = ? AND modulo_chave = ?`).get(escritorioId, empresaId, moduloChave) as any;
+  // Escritório isento da plataforma (cortesia) libera sem cobrança.
+  if ((sqlite.prepare(`SELECT isento_assinatura FROM escritorios WHERE id = ?`).get(escritorioId) as any)?.isento_assinatura) {
+    sqlite.prepare(`UPDATE escritorio_revendas SET assinatura_ativa_ate = '2099-12-31 23:59:59' WHERE id = ?`).run(revenda.id);
+    return res.json({ revendaId: revenda.id, liberado: true });
+  }
+  try {
+    res.json({ revendaId: revenda.id, ...(await escritorioCobrarRevenda(escritorioId, revenda)) });
+  } catch (e: any) {
+    res.status(502).json({ error: e.message });
+  }
+});
+// Pagar/renovar uma revenda existente (mesmo valor negociado de antes) — reativa se estava cancelada.
+app.post("/api/escritorio/revendas/:id/pagar", blockCliente, requirePermissao("configuracoes", "postar"), async (req, res) => {
+  const escritorioId = (req as any).user.escritorioId;
+  const revenda = sqlite.prepare(`SELECT * FROM escritorio_revendas WHERE id = ? AND escritorio_id = ?`).get(Number(req.params.id), escritorioId) as any;
+  if (!revenda) return res.status(404).json({ error: "Revenda não encontrada." });
+  if (!escritorioTemModulo(escritorioId, revenda.modulo_chave)) return res.status(400).json({ error: "Seu escritório precisa ter esse módulo ativo pra revender — contrate acima." });
+  sqlite.prepare(`UPDATE escritorio_revendas SET cancelado_em = NULL WHERE id = ?`).run(revenda.id);
+  try {
+    res.json({ revendaId: revenda.id, ...(await escritorioCobrarRevenda(escritorioId, revenda)) });
+  } catch (e: any) {
+    res.status(502).json({ error: e.message });
+  }
+});
+// Cancelar = o cliente perde o acesso na hora e não gera mais cobrança (o que já foi pago não volta).
+app.post("/api/escritorio/revendas/:id/cancelar", blockCliente, requirePermissao("configuracoes", "postar"), (req, res) => {
+  const escritorioId = (req as any).user.escritorioId;
+  const r = sqlite.prepare(`UPDATE escritorio_revendas SET cancelado_em = datetime('now') WHERE id = ? AND escritorio_id = ?`).run(Number(req.params.id), escritorioId);
+  if (!r.changes) return res.status(404).json({ error: "Revenda não encontrada." });
+  res.json({ ok: true });
+});
+// SuperAdmin: regras (percentual e valor mínimo) e visão de todas as revendas da plataforma.
+app.get("/api/super/revendas", requireSuperAdmin, (_req, res) => {
+  const rows = sqlite
+    .prepare(
+      `SELECT r.*, e.nome as empresa_nome, o.nome as escritorio_nome, c.nome as modulo_nome
+         FROM escritorio_revendas r JOIN empresas e ON e.id = r.empresa_id JOIN escritorios o ON o.id = r.escritorio_id
+         JOIN modulos_escritorio_catalogo c ON c.chave = r.modulo_chave ORDER BY o.nome, e.nome`
+    )
+    .all() as any[];
+  res.json({
+    regras: revendaRegras(),
+    items: rows.map((r) => ({
+      id: r.id,
+      escritorioNome: r.escritorio_nome,
+      empresaNome: r.empresa_nome,
+      moduloNome: r.modulo_nome,
+      valorNegociado: Number(r.valor_negociado),
+      percentual: Number(r.percentual),
+      valorRepasse: Number(r.valor_repasse),
+      assinaturaAtivaAte: r.assinatura_ativa_ate,
+      status: revendaStatus(r),
+    })),
+  });
+});
+app.put("/api/super/revendas/regras", requireSuperAdmin, (req, res) => {
+  const percentual = Number(String(req.body?.percentual ?? "").replace(",", "."));
+  const minimo = Number(String(req.body?.minimo ?? "").replace(",", "."));
+  if (!Number.isFinite(percentual) || percentual <= 0 || percentual > 100) return res.status(400).json({ error: "Percentual inválido (entre 0 e 100)." });
+  if (!Number.isFinite(minimo) || minimo < 0) return res.status(400).json({ error: "Valor mínimo inválido." });
+  const up = sqlite.prepare(`INSERT INTO plataforma_config (chave, valor) VALUES (?, ?) ON CONFLICT(chave) DO UPDATE SET valor = excluded.valor`);
+  up.run("revenda_percentual", String(Math.round(percentual * 100) / 100));
+  up.run("revenda_minimo", String(Math.round(minimo * 100) / 100));
+  res.json({ ok: true, regras: revendaRegras() });
+});
+
 // Webhook público do Asaas — validado por um token simples configurado no painel deles (query
 // string ?token=... apontando pro mesmo valor de ASAAS_WEBHOOK_TOKEN no .env), já que não tem
 // sessão de usuário nessa chamada (o Asaas quem chama, não o navegador de ninguém).
@@ -23801,8 +24069,20 @@ app.post("/api/asaas/webhook", (req, res) => {
         sqlite.prepare(`UPDATE ${tabelaCobranca} SET status = ? WHERE id = ?`).run(novoStatus, cobranca.id);
         return;
       }
-      const itens = sqlite.prepare(`SELECT modulo_chave, tipo FROM ${tabelaItens} WHERE cobranca_id = ?`).all(cobranca.id) as any[];
+      // SELECT * (não "modulo_chave, tipo"): a tabela de itens do ESCRITÓRIO não tem a coluna tipo — o
+      // SELECT antigo dava "no such column" e o pagamento de escritório marcava pago sem liberar nada
+      // (achado 2026-11-17). Assim cada tabela devolve as colunas que tem (tipo / revenda_id).
+      const itens = sqlite.prepare(`SELECT * FROM ${tabelaItens} WHERE cobranca_id = ?`).all(cobranca.id) as any[];
       for (const item of itens) {
+        // Repasse de revenda: estende o acesso DO CLIENTE (escritorio_revendas), não o módulo do escritório.
+        if (item.revenda_id) {
+          const rv = sqlite.prepare(`SELECT assinatura_ativa_ate FROM escritorio_revendas WHERE id = ?`).get(item.revenda_id) as any;
+          if (rv) {
+            const base = rv.assinatura_ativa_ate && rv.assinatura_ativa_ate > agora ? rv.assinatura_ativa_ate : agora;
+            sqlite.prepare(`UPDATE escritorio_revendas SET assinatura_ativa_ate = datetime(?, '+1 month'), cancelado_em = NULL WHERE id = ?`).run(base, item.revenda_id);
+          }
+          continue;
+        }
         // Implantação é cobrança única — nunca estende assinatura_ativa_ate, só marca
         // implantacao_paga_em (coluna só existe em empresa_modulos; cobrança de escritório nunca tem
         // item 'implantacao', então este ramo nunca roda pra escritorio_modulos).
