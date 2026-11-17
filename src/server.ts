@@ -2177,6 +2177,36 @@ function precoImplantacaoEfetivo(valorCatalogo: any, contratado: any): number {
   const custom = contratado?.valor_implantacao_custom;
   return custom != null ? Number(custom) : Number(valorCatalogo) || 0;
 }
+// Preço combinado ANTES da contratação (pedido 2026-11-17): o SuperAdmin define o valor de um módulo
+// que a empresa ainda não testou/contratou. Não dá pra criar a linha em empresa_modulos pra isso (ela
+// é o próprio contrato — queimaria o teste grátis e marcaria "teste vencido"), então o preço fica
+// aqui e o trigger copia pra empresa_modulos no instante em que a linha nasce, seja qual for o
+// caminho (teste grátis, pagamento direto, contrato assinado).
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS empresa_modulos_preco_previo (
+    empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+    modulo_chave TEXT NOT NULL,
+    valor_mensal_custom REAL,
+    valor_implantacao_custom REAL,
+    PRIMARY KEY (empresa_id, modulo_chave)
+  );
+  CREATE TRIGGER IF NOT EXISTS trg_empresa_modulos_preco_previo AFTER INSERT ON empresa_modulos
+  BEGIN
+    UPDATE empresa_modulos SET
+      valor_mensal_custom = COALESCE(NEW.valor_mensal_custom, (SELECT p.valor_mensal_custom FROM empresa_modulos_preco_previo p WHERE p.empresa_id = NEW.empresa_id AND p.modulo_chave = NEW.modulo_chave)),
+      valor_implantacao_custom = COALESCE(NEW.valor_implantacao_custom, (SELECT p.valor_implantacao_custom FROM empresa_modulos_preco_previo p WHERE p.empresa_id = NEW.empresa_id AND p.modulo_chave = NEW.modulo_chave))
+    WHERE id = NEW.id;
+    DELETE FROM empresa_modulos_preco_previo WHERE empresa_id = NEW.empresa_id AND modulo_chave = NEW.modulo_chave;
+  END;
+`);
+// Linha que define o preço da empresa pra um módulo: o contrato (empresa_modulos) ou, se ainda não
+// contratou, o preço combinado antes. Pra quem lê preço sem decidir se "tem o módulo".
+function empresaModuloPrecoLinha(empresaId: number, chave: string): any {
+  return (
+    (sqlite.prepare(`SELECT * FROM empresa_modulos WHERE empresa_id = ? AND modulo_chave = ?`).get(empresaId, chave) as any) ||
+    (sqlite.prepare(`SELECT valor_mensal_custom, valor_implantacao_custom FROM empresa_modulos_preco_previo WHERE empresa_id = ? AND modulo_chave = ?`).get(empresaId, chave) as any)
+  );
+}
 // Cobrança de implantação (pedido 2026-11-12): item único, nunca renova — ao contrário da
 // mensalidade (assinatura_ativa_ate, renovada a cada pagamento), implantação é "paga uma vez e
 // pronto". `implantacao_paga_em` NULL = ainda não cobrada/paga.
@@ -22946,17 +22976,20 @@ function nfseModulosDaEmpresa(empresaId: number) {
   const catalogo = sqlite.prepare(`SELECT * FROM modulos_catalogo ORDER BY chave`).all() as any[];
   const contratados = sqlite.prepare(`SELECT * FROM empresa_modulos WHERE empresa_id = ?`).all(empresaId) as any[];
   const porChave = new Map(contratados.map((c) => [c.modulo_chave, c]));
+  // Preço combinado antes da contratação (empresa_modulos_preco_previo) — vale enquanto não há contrato.
+  const previos = new Map((sqlite.prepare(`SELECT * FROM empresa_modulos_preco_previo WHERE empresa_id = ?`).all(empresaId) as any[]).map((p) => [p.modulo_chave, p]));
+  const precoLinha = (chave: string) => porChave.get(chave) || previos.get(chave);
   // Os canais de envio (Fase 3) só aparecem pra contratar quando têm preço > 0 — enquanto são de
   // graça, ficam fora da tela de assinatura pra não confundir (o envio funciona do mesmo jeito).
   return catalogo
-    .filter((m) => !((m.chave === "envio_notas_email" || m.chave === "envio_notas_whatsapp") && !(precoModuloEfetivo(m.valor_mensal, porChave.get(m.chave)) > 0)))
+    .filter((m) => !((m.chave === "envio_notas_email" || m.chave === "envio_notas_whatsapp") && !(precoModuloEfetivo(m.valor_mensal, precoLinha(m.chave)) > 0)))
     .map((m) => {
     const contratado = porChave.get(m.chave);
     const { status, acesso } = isento ? { status: "isento", acesso: true } : moduloStatusParaEmpresa(m, contratado);
     return {
       chave: m.chave,
       nome: m.nome,
-      valorMensal: precoModuloEfetivo(m.valor_mensal, contratado),
+      valorMensal: precoModuloEfetivo(m.valor_mensal, precoLinha(m.chave)),
       ativo: !!m.ativo,
       status,
       acesso,
@@ -22965,7 +22998,7 @@ function nfseModulosDaEmpresa(empresaId: number) {
       assinaturaAtivaAte: contratado?.assinatura_ativa_ate || null,
       // Implantação: cobrança única, nunca renova — só entra como "devida" enquanto não tiver sido
       // paga ainda (implantacao_paga_em) e tiver valor de verdade (isenta = 0 nunca aparece pra cobrar).
-      valorImplantacaoDevida: contratado?.implantacao_paga_em ? 0 : precoImplantacaoEfetivo(m.valor_implantacao, contratado),
+      valorImplantacaoDevida: contratado?.implantacao_paga_em ? 0 : precoImplantacaoEfetivo(m.valor_implantacao, precoLinha(m.chave)),
       implantacaoPaga: !!contratado?.implantacao_paga_em,
     };
   });
@@ -23006,7 +23039,7 @@ app.post("/api/financeiro/minha-empresa/modulos/pagar", requireCliente, async (r
   // valor de verdade (isenta = 0 nunca vira cobrança, o Asaas rejeita valor zerado).
   const itens: { chave: string; nome: string; valor: number; tipo: "mensal" | "implantacao" }[] = [];
   for (const m of catalogo) {
-    const contratado = sqlite.prepare(`SELECT valor_mensal_custom, valor_implantacao_custom, implantacao_paga_em FROM empresa_modulos WHERE empresa_id = ? AND modulo_chave = ?`).get(empresaId, m.chave) as any;
+    const contratado = empresaModuloPrecoLinha(empresaId, m.chave);
     itens.push({ chave: m.chave, nome: m.nome, valor: precoModuloEfetivo(m.valor_mensal, contratado), tipo: "mensal" });
     if (!contratado?.implantacao_paga_em) {
       const valorImplantacao = precoImplantacaoEfetivo(m.valor_implantacao, contratado);
@@ -23179,14 +23212,98 @@ app.get("/api/super/modulos-contratos", requireSuperAdmin, (_req, res) => {
       valorMensal: precoModuloEfetivo(r.valor_padrao, r),
     };
   });
-  const items = [...itensEscr, ...itensEmp].sort(
-    (a, b) => a.tipo.localeCompare(b.tipo) || String(a.clienteNome).localeCompare(String(b.clienteNome), "pt-BR") || String(a.moduloNome).localeCompare(String(b.moduloNome), "pt-BR")
+  // Módulos que a empresa AINDA NÃO contratou também entram ("Não contratado"), pra poder combinar o
+  // preço antes — só pras empresas que já aparecem aqui (têm algum módulo) ou que já têm preço prévio.
+  const catalogoEmp = sqlite.prepare(`SELECT chave, nome, valor_mensal, valor_implantacao FROM modulos_catalogo WHERE ativo = 1`).all() as any[];
+  const previos = sqlite
+    .prepare(
+      `SELECT p.*, e.nome as cliente_nome, e.isento_assinatura, o.nome as escritorio_nome
+         FROM empresa_modulos_preco_previo p JOIN empresas e ON e.id = p.empresa_id LEFT JOIN escritorios o ON o.id = e.escritorio_id`
+    )
+    .all() as any[];
+  const previoPorChave = new Map(previos.map((p) => [`${p.empresa_id}:${p.modulo_chave}`, p]));
+  const temContrato = new Set(emp.map((r) => `${r.empresa_id}:${r.modulo_chave}`));
+  const empresasNaLista = new Map<number, any>();
+  for (const r of [...emp, ...previos]) if (!r.isento_assinatura && !empresasNaLista.has(r.empresa_id)) empresasNaLista.set(r.empresa_id, r);
+  const itensPrevios: any[] = [];
+  for (const [empresaId, r] of empresasNaLista) {
+    for (const m of catalogoEmp) {
+      const k = `${empresaId}:${m.chave}`;
+      if (temContrato.has(k)) continue;
+      const p = previoPorChave.get(k);
+      // Canais de envio grátis não são vendidos (mesma regra da tela de Assinatura do cliente).
+      if (m.chave.startsWith("envio_notas_") && !(precoModuloEfetivo(m.valor_mensal, p) > 0)) continue;
+      itensPrevios.push({
+        tipo: "empresa_previo",
+        id: `${empresaId}~${m.chave}`,
+        clienteId: empresaId,
+        clienteNome: r.cliente_nome,
+        escritorioNome: r.escritorio_nome || "",
+        moduloChave: m.chave,
+        moduloNome: m.nome,
+        situacao: "nao_contratado",
+        trialFim: null,
+        assinaturaAtivaAte: null,
+        valorPadrao: Number(m.valor_mensal) || 0,
+        valorPersonalizado: p?.valor_mensal_custom != null ? Number(p.valor_mensal_custom) : null,
+        implantacaoPadrao: Number(m.valor_implantacao) || 0,
+        implantacaoPersonalizada: p?.valor_implantacao_custom != null ? Number(p.valor_implantacao_custom) : null,
+        quantidade: null,
+        valorMensal: precoModuloEfetivo(m.valor_mensal, p),
+      });
+    }
+  }
+  const items = [...itensEscr, ...itensEmp, ...itensPrevios].sort(
+    (a, b) =>
+      (a.tipo === "escritorio" ? 1 : 0) - (b.tipo === "escritorio" ? 1 : 0) ||
+      String(a.clienteNome).localeCompare(String(b.clienteNome), "pt-BR") ||
+      String(a.moduloNome).localeCompare(String(b.moduloNome), "pt-BR")
   );
   res.json({ items });
 });
 // Define (ou limpa, com valorMensalCustom = null/"") o preço personalizado de UM contrato.
 // Vale a partir da próxima cobrança gerada — cobrança já paga não muda.
 app.put("/api/super/modulos-contratos/:tipo/:id", requireSuperAdmin, (req, res) => {
+  // Preço combinado antes da contratação: id = "<empresaId>~<chave do módulo>".
+  if (req.params.tipo === "empresa_previo") {
+    const [empStr, chave] = String(req.params.id).split("~");
+    const empresaId = Number(empStr);
+    if (!empresaId || !chave || !sqlite.prepare(`SELECT 1 FROM empresas WHERE id = ?`).get(empresaId) || !sqlite.prepare(`SELECT 1 FROM modulos_catalogo WHERE chave = ?`).get(chave))
+      return res.status(404).json({ error: "Cliente ou módulo não encontrado." });
+    const lerPrevio = (bruto: any): number | null | "invalido" => {
+      if (bruto === null || String(bruto).trim() === "") return null;
+      const v = Number(String(bruto).replace(",", "."));
+      return !Number.isFinite(v) || v < 0 ? "invalido" : Math.round(v * 100) / 100;
+    };
+    // Se o cliente contratou nesse meio-tempo, o valor vai direto pro contrato.
+    const contrato = sqlite.prepare(`SELECT * FROM empresa_modulos WHERE empresa_id = ? AND modulo_chave = ?`).get(empresaId, chave) as any;
+    const atual = contrato || (sqlite.prepare(`SELECT * FROM empresa_modulos_preco_previo WHERE empresa_id = ? AND modulo_chave = ?`).get(empresaId, chave) as any) || {};
+    let mensal = atual.valor_mensal_custom ?? null;
+    let implantacao = atual.valor_implantacao_custom ?? null;
+    if (req.body?.valorMensalCustom !== undefined) {
+      const v = lerPrevio(req.body.valorMensalCustom);
+      if (v === "invalido") return res.status(400).json({ error: "Valor inválido." });
+      mensal = v;
+    }
+    if (req.body?.valorImplantacaoCustom !== undefined) {
+      const v = lerPrevio(req.body.valorImplantacaoCustom);
+      if (v === "invalido") return res.status(400).json({ error: "Valor inválido." });
+      implantacao = v;
+    }
+    if (contrato) {
+      sqlite.prepare(`UPDATE empresa_modulos SET valor_mensal_custom = ?, valor_implantacao_custom = ? WHERE id = ?`).run(mensal, implantacao, contrato.id);
+    } else if (mensal == null && implantacao == null) {
+      sqlite.prepare(`DELETE FROM empresa_modulos_preco_previo WHERE empresa_id = ? AND modulo_chave = ?`).run(empresaId, chave);
+    } else {
+      sqlite
+        .prepare(
+          `INSERT INTO empresa_modulos_preco_previo (empresa_id, modulo_chave, valor_mensal_custom, valor_implantacao_custom) VALUES (?, ?, ?, ?)
+           ON CONFLICT(empresa_id, modulo_chave) DO UPDATE SET valor_mensal_custom = excluded.valor_mensal_custom, valor_implantacao_custom = excluded.valor_implantacao_custom`
+        )
+        .run(empresaId, chave, mensal, implantacao);
+    }
+    return res.json({ ok: true });
+  }
   const tabela = req.params.tipo === "escritorio" ? "escritorio_modulos" : req.params.tipo === "empresa" ? "empresa_modulos" : null;
   if (!tabela) return res.status(400).json({ error: "Tipo inválido." });
   const id = Number(req.params.id);
@@ -24848,7 +24965,7 @@ app.post("/api/contratos", blockCliente, requirePermissao("contratos", "postar")
   // (Módulos da plataforma), com o valor personalizado do cliente por cima quando existir.
   const precoNfse = (() => {
     const cat = sqlite.prepare(`SELECT valor_mensal, valor_implantacao FROM modulos_catalogo WHERE chave = 'nfse'`).get() as any;
-    const contratado = sqlite.prepare(`SELECT valor_mensal_custom, valor_implantacao_custom FROM empresa_modulos WHERE empresa_id = ? AND modulo_chave = 'nfse'`).get(empresa.id) as any;
+    const contratado = empresaModuloPrecoLinha(empresa.id, "nfse");
     return { mensal: precoModuloEfetivo(cat?.valor_mensal, contratado), implantacao: precoImplantacaoEfetivo(cat?.valor_implantacao, contratado) };
   })();
   // Emissão Automática (módulo nfse_automatica): só vem preenchido se a empresa já tem esse módulo —

@@ -21190,7 +21190,7 @@ async function pageModulosPlataforma(){
     </div>
     <div class="card" id="mctCard">
       <h3>Clientes com módulos contratados</h3>
-      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Quem tem cada módulo, a situação e quanto paga por mês. Preencha <b>Valor cobrado</b> para dar um preço só para aquele cliente; deixe em branco para usar o valor padrão. O novo valor vale a partir da próxima cobrança gerada.</p>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Quem tem cada módulo, a situação e quanto paga por mês. Preencha <b>Valor cobrado</b> para dar um preço só para aquele cliente; deixe em branco para usar o valor padrão. O novo valor vale a partir da próxima cobrança gerada. Módulos que o cliente ainda não contratou aparecem como <b>Não contratado</b>: o preço definido ali já aparece na Assinatura do cliente e vale quando ele contratar.</p>
       <div class="kpi-grid" id="mctKpis" style="margin-bottom:16px;"></div>
       <div class="row" style="margin-bottom:12px;">
         <div class="field grow" style="margin-bottom:0;"><label>Buscar cliente</label><input id="mctBusca" placeholder="Nome da empresa ou do escritório"></div>
@@ -21363,7 +21363,10 @@ const MCT_SITUACAO = {
   vencido:{label:'Assinatura vencida', cls:'bad'},
   isento:{label:'Isento', cls:'muted'},
   vitalicio:{label:'Vitalício (grátis)', cls:'muted'},
+  nao_contratado:{label:'Não contratado', cls:'muted'},
 };
+// Linha de módulo ainda não contratado (preço combinado antes) conta como "Empresa" nos filtros.
+const mctTipoBase = i=> i.tipo==='escritorio' ? 'escritorio' : 'empresa';
 const MCT = { items:[], tipo:'', modulo:'', situacao:'', busca:'' };
 async function carregarContratosModulos(){
   const { items } = await api('/super/modulos-contratos');
@@ -21374,7 +21377,7 @@ async function carregarContratosModulos(){
   };
   const tipos = [{id:'',label:'Todos'},{id:'escritorio',label:'Escritórios'},{id:'empresa',label:'Empresas'}];
   const modulosMap = new Map();
-  items.forEach(i=>modulosMap.set(i.tipo+':'+i.moduloChave, (i.tipo==='escritorio'?'Escritório · ':'Empresa · ')+i.moduloNome));
+  items.forEach(i=>modulosMap.set(mctTipoBase(i)+':'+i.moduloChave, (i.tipo==='escritorio'?'Escritório · ':'Empresa · ')+i.moduloNome));
   const modulos = [{id:'',label:'Todos'}, ...[...modulosMap.entries()].sort((a,b)=>a[1].localeCompare(b[1],'pt-BR')).map(([id,label])=>({id,label}))];
   const situacoes = [{id:'',label:'Todas'}, {id:'pagantes',label:'Pagando (assinatura ativa)'}, ...Object.entries(MCT_SITUACAO).map(([id,v])=>({id,label:v.label}))];
   setupComboSelect('mctTipoCombo', tipos, id=>{ MCT.tipo=id||''; renderContratosModulos(); });
@@ -21391,8 +21394,8 @@ async function carregarContratosModulos(){
 function renderContratosModulos(){
   const termo = normalizaTxt(MCT.busca.trim());
   const lista = MCT.items.filter(i=>{
-    if(MCT.tipo && i.tipo!==MCT.tipo) return false;
-    if(MCT.modulo && (i.tipo+':'+i.moduloChave)!==MCT.modulo) return false;
+    if(MCT.tipo && mctTipoBase(i)!==MCT.tipo) return false;
+    if(MCT.modulo && (mctTipoBase(i)+':'+i.moduloChave)!==MCT.modulo) return false;
     if(MCT.situacao==='pagantes'){ if(i.situacao!=='ativo') return false; }
     else if(MCT.situacao && i.situacao!==MCT.situacao) return false;
     if(termo && !normalizaTxt(i.clienteNome+' '+i.escritorioNome).includes(termo)) return false;
@@ -21404,11 +21407,12 @@ function renderContratosModulos(){
   const emTeste = lista.filter(i=>i.situacao==='teste').length;
   const clientesPagantes = new Set(pagantes.map(i=>i.tipo+':'+i.clienteId)).size;
   const personalizados = lista.filter(i=>i.valorPersonalizado!=null).length;
+  const qtdContratos = lista.filter(i=>i.situacao!=='nao_contratado').length;
   document.getElementById('mctKpis').innerHTML = `
     <div class="kpi"><div class="eyebrow">Receita mensal (assinaturas ativas)</div><div class="val" style="font-size:28px;">${fmtMoney(receita)}</div><div class="sub">${pagantes.length} contrato(s) pagando</div></div>
     <div class="kpi"><div class="eyebrow">Clientes pagantes</div><div class="val" style="font-size:28px;">${clientesPagantes}</div><div class="sub">com ao menos 1 módulo ativo</div></div>
     <div class="kpi"><div class="eyebrow">Em teste grátis</div><div class="val" style="font-size:28px;">${emTeste}</div><div class="sub">podem virar assinatura</div></div>
-    <div class="kpi"><div class="eyebrow">Com preço personalizado</div><div class="val" style="font-size:28px;">${personalizados}</div><div class="sub">de ${lista.length} contrato(s) listados</div></div>
+    <div class="kpi"><div class="eyebrow">Com preço personalizado</div><div class="val" style="font-size:28px;">${personalizados}</div><div class="sub">${qtdContratos} contrato(s) + ${lista.length-qtdContratos} não contratado(s) listados</div></div>
   `;
   const box = document.getElementById('mctTabela');
   if(!lista.length){ box.innerHTML = `<div class="empty-state">Nenhum contrato encontrado com esses filtros.</div>`; return; }
@@ -21449,7 +21453,7 @@ function renderContratosModulos(){
     [inp, impl].forEach(el=>{ el.addEventListener('input', sujo); el.addEventListener('keydown', e=>{ if(e.key==='Enter' && !btn.disabled) btn.click(); }); });
     const salvar = async (valor, valorImpl)=>{
       try{
-        await api(`/super/modulos-contratos/${tr.dataset.tipo}/${tr.dataset.id}`, { method:'PUT', body:{ valorMensalCustom: valor, valorImplantacaoCustom: valorImpl } });
+        await api(`/super/modulos-contratos/${tr.dataset.tipo}/${encodeURIComponent(tr.dataset.id)}`, { method:'PUT', body:{ valorMensalCustom: valor, valorImplantacaoCustom: valorImpl } });
         toast(valor==null && valorImpl==null ? 'Voltou aos valores padrão.' : 'Valores do cliente atualizados.', 'ok');
         const { items } = await api('/super/modulos-contratos');
         MCT.items = items;
