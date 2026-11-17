@@ -9390,6 +9390,7 @@ function ligarEscritorioModuloPaywall(container, chave, aoLiberar){
   });
 }
 let NFE_TAB = 'configuradas';
+let NFE_MOSTRAR_PAUSADAS = false; // na aba Configuradas, esconde por padrão as empresas com busca pausada (ativo=0 e fora do Extrato NFE)
 // ===================== Reforma Tributária — auditoria IBS/CBS das notas de ENTRADA =====================
 // Escritório (escolhe a empresa) e cliente (a própria empresa) usam o mesmo painel: reformaMontar().
 // Os dados vêm de /api/reforma/auditoria (motor em src/reforma-auditoria.ts): regras da NT 2025.002
@@ -10698,27 +10699,35 @@ async function pageNfeBusca(){
     const idsConfigurados = new Set(configs.map(c=>c.empresaId));
     const idsExtrato = new Set(((NFE_EXTRATO&&NFE_EXTRATO.empresas)||[]).filter(x=>x.ativo).map(x=>x.empresaId));
     idsExtrato.forEach(id=>idsConfigurados.add(id));
+    // Busca própria ligada por empresa (ativo=1). Quem está no Extrato NFE também está "coletando".
+    const buscaPropriaAtiva = new Map(configs.map(c=>[c.empresaId, !!c.ativo]));
     const configuradas = [...idsConfigurados].map(id=>{
       const emp = empresas.find(e=>e.id===id);
-      return { id, nome: emp?emp.nome:'(empresa removida)', cnpj: emp?emp.cnpj:'', codigo: (emp&&emp.codigoDominio)||EMPRESA_CODIGO_CACHE[id]||'', qtd: contagem[id]||0 };
+      // "Pausada" = tem certificado mas a busca própria está desligada e não está no Extrato NFE → não recebe mais XML.
+      const pausada = !idsExtrato.has(id) && buscaPropriaAtiva.get(id)===false;
+      return { id, nome: emp?emp.nome:'(empresa removida)', cnpj: emp?emp.cnpj:'', codigo: (emp&&emp.codigoDominio)||EMPRESA_CODIGO_CACHE[id]||'', qtd: contagem[id]||0, pausada };
     }).sort((a,b)=>a.nome.localeCompare(b.nome) || String(a.cnpj||'').localeCompare(String(b.cnpj||'')));
+    const configPausadas = configuradas.filter(c=>c.pausada);
+    // Por padrão só mostra quem está realmente recebendo XML (ativa ou via Extrato NFE); pausadas ficam ocultas atrás do link.
+    const configVisiveis = NFE_MOSTRAR_PAUSADAS ? configuradas : configuradas.filter(c=>!c.pausada);
     const naoConfiguradas = empresas.filter(e=>!idsConfigurados.has(e.id))
       .map(e=>({ id:e.id, nome:e.nome, cnpj:e.cnpj, codigo: e.codigoDominio||EMPRESA_CODIGO_CACHE[e.id]||'', qtd: contagem[e.id]||0 }))
       .sort((a,b)=>a.nome.localeCompare(b.nome) || String(a.cnpj||'').localeCompare(String(b.cnpj||'')));
-    const visiveis = NFE_TAB==='configuradas' ? configuradas : naoConfiguradas;
+    const visiveis = NFE_TAB==='configuradas' ? configVisiveis : naoConfiguradas;
     box.innerHTML = `
       <div id="nfeExtratoCard"></div>
       <div class="card">
         <div class="tabs">
-          <div class="tab" data-tab="configuradas">Empresas Configuradas <span class="tag ok">${configuradas.length}</span></div>
+          <div class="tab" data-tab="configuradas">Empresas Configuradas <span class="tag ok">${NFE_MOSTRAR_PAUSADAS?configuradas.length:configVisiveis.length}</span></div>
           <div class="tab" data-tab="naoConfiguradas">Empresas Não Configuradas <span class="tag warn">${naoConfiguradas.length}</span></div>
           <div class="tab" data-tab="diagnostico">🔍 Diagnóstico</div>
         </div>
         <div class="field" style="margin:10px 0 6px;"><label>Buscar</label><input type="text" id="nfeListaFiltro" placeholder="Buscar por código ou nome da empresa…"></div>
+        ${NFE_TAB==='configuradas' && configPausadas.length ? `<div style="font-size:12px; color:var(--ink-soft); margin:0 0 8px;">${NFE_MOSTRAR_PAUSADAS?`Mostrando ${configPausadas.length} empresa(s) com busca pausada. `:`${configPausadas.length} empresa(s) com busca pausada estão ocultas (não recebem mais XML). `}<a href="#" id="nfeTogglePausadas" style="color:var(--accent); font-weight:600;">${NFE_MOSTRAR_PAUSADAS?'Ocultar pausadas':'Mostrar pausadas'}</a></div>` : ''}
         <div style="max-height:420px; overflow-y:auto; overflow-x:hidden; border:1px solid var(--rule); border-radius:8px; padding:4px 10px;">
           ${visiveis.length ? visiveis.map(l=>`
-            <div class="nfeEmpresaRow" data-id="${l.id}" data-nome="${esc(normalizaTxt(l.nome))}" data-codigo="${esc(normalizaTxt(l.codigo))}" style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:6px 8px; font-size:13px; cursor:pointer; border-bottom:1px solid var(--rule);">
-              <span>${l.codigo?`<span style="color:var(--ink-soft); font-weight:600; margin-right:8px;">${esc(l.codigo)}</span>`:''}${esc(l.nome)}${empresaMatrizFilialHtml(l.cnpj)}${idsExtrato.has(l.id)?' <span class="tag" style="background:#F97316; color:#fff; border-color:#F97316; margin-left:6px;" title="Busca de XML feita pelo Extrato NFE (busca própria pausada)">Extrato NFE</span>':''}</span>
+            <div class="nfeEmpresaRow" data-id="${l.id}" data-nome="${esc(normalizaTxt(l.nome))}" data-codigo="${esc(normalizaTxt(l.codigo))}" style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:6px 8px; font-size:13px; cursor:pointer; border-bottom:1px solid var(--rule);${l.pausada?' opacity:.6;':''}">
+              <span>${l.codigo?`<span style="color:var(--ink-soft); font-weight:600; margin-right:8px;">${esc(l.codigo)}</span>`:''}${esc(l.nome)}${empresaMatrizFilialHtml(l.cnpj)}${idsExtrato.has(l.id)?' <span class="tag" style="background:#F97316; color:#fff; border-color:#F97316; margin-left:6px;" title="Busca de XML feita pelo Extrato NFE (busca própria pausada)">Extrato NFE</span>':''}${l.pausada?' <span class="tag muted" style="margin-left:6px;" title="Busca própria desligada — não recebe mais XML">Pausada</span>':''}</span>
               <span class="tag muted" style="flex:none;">${l.qtd} nota${l.qtd===1?'':'s'}</span>
             </div>
           `).join('') : `<div class="empty-state">${NFE_TAB==='configuradas'?'Nenhuma empresa configurada ainda — envie o certificado dela em Empresas → Configurações.':'Todas as empresas já estão configuradas.'}</div>`}
@@ -10731,6 +10740,8 @@ async function pageNfeBusca(){
     });
     box.querySelectorAll('.nfeEmpresaRow').forEach(row=>row.addEventListener('click', ()=>mostrarDetalhe(Number(row.dataset.id))));
     renderExtratoNfeCard(document.getElementById('nfeExtratoCard'), mostrarLista);
+    const togglePausadas = document.getElementById('nfeTogglePausadas');
+    if(togglePausadas) togglePausadas.addEventListener('click', (ev)=>{ ev.preventDefault(); NFE_MOSTRAR_PAUSADAS = !NFE_MOSTRAR_PAUSADAS; mostrarLista(); });
     const filtro = document.getElementById('nfeListaFiltro');
     if(filtro) filtro.addEventListener('input', ()=>{
       const termo = normalizaTxt(filtro.value);
