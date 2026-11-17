@@ -4375,6 +4375,60 @@ sqlite.exec(`
   );
 `);
 const hashTokenAgente = (t: string) => crypto.createHash("sha256").update(t).digest("hex");
+
+// ---------- API externa (integração com sistemas de terceiros, ex.: ERP do cliente) ----------
+// Chaves de API por EMPRESA: cada chave dá acesso SOMENTE aos dados daquela empresa (escopo mínimo,
+// nunca a base inteira do escritório). Guardada só como hash sha256 — o token em claro só aparece
+// uma vez, na criação. Revogável. Nada é exposto até o admin criar uma chave (opt-in por natureza).
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS api_externa_chaves (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    escritorio_id INTEGER NOT NULL,
+    empresa_id INTEGER NOT NULL,
+    nome TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    token_prefixo TEXT NOT NULL,
+    escopos TEXT NOT NULL DEFAULT 'retencoes',
+    ativo INTEGER NOT NULL DEFAULT 1,
+    criado_por INTEGER,
+    criado_em TEXT NOT NULL DEFAULT (datetime('now')),
+    ultimo_uso_em TEXT,
+    ultimo_uso_ip TEXT,
+    revogado_em TEXT
+  );
+`);
+const API_EXTERNA_ESCOPOS = ["retencoes"] as const;
+const hashApiExterna = (t: string) => crypto.createHash("sha256").update(t).digest("hex");
+// Rate limit simples em memória por chave: janela deslizante de 1 min.
+const apiExternaRate = new Map<number, number[]>();
+const API_EXTERNA_LIMITE_MIN = 120;
+function apiExternaDentroDoLimite(chaveId: number): boolean {
+  const agora = Date.now();
+  const janela = (apiExternaRate.get(chaveId) || []).filter((t) => agora - t < 60_000);
+  if (janela.length >= API_EXTERNA_LIMITE_MIN) { apiExternaRate.set(chaveId, janela); return false; }
+  janela.push(agora);
+  apiExternaRate.set(chaveId, janela);
+  return true;
+}
+// Middleware: valida "Authorization: Bearer scx_...", confere escopo, aplica rate-limit e monta
+// req.apiUser = um "Cliente" sintético da empresa da chave (reaproveita podeAcessarEmpresa/escopo).
+function requireApiExterna(...escoposNecessarios: string[]) {
+  return (req: any, res: any, next: any) => {
+    const m = /^Bearer (scx_[a-f0-9]{48,64})$/.exec(String(req.headers.authorization || ""));
+    if (!m) return res.status(401).json({ error: "Informe a chave no cabeçalho Authorization: Bearer scx_..." });
+    const row = sqlite.prepare(`SELECT * FROM api_externa_chaves WHERE token_hash = ?`).get(hashApiExterna(m[1])) as any;
+    if (!row || !row.ativo || row.revogado_em) return res.status(401).json({ error: "Chave de API inválida ou revogada." });
+    const escopos = String(row.escopos || "").split(",").map((s: string) => s.trim()).filter(Boolean);
+    for (const e of escoposNecessarios) if (!escopos.includes(e)) return res.status(403).json({ error: `A chave não tem permissão para '${e}'.` });
+    if (!apiExternaDentroDoLimite(row.id)) return res.status(429).json({ error: "Muitas requisições. Limite de 120/min por chave." });
+    const ip = String(req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "").split(",")[0].trim();
+    try { sqlite.prepare(`UPDATE api_externa_chaves SET ultimo_uso_em = datetime('now'), ultimo_uso_ip = ? WHERE id = ?`).run(ip || null, row.id); } catch {}
+    req.apiKey = row;
+    req.apiUser = { perfil: "Cliente", empresaId: row.empresa_id, escritorioId: row.escritorio_id, id: null };
+    next();
+  };
+}
+
 function usuarioPorTokenAgente(token: string): any | null {
   const t = sqlite.prepare(`SELECT user_id FROM fgts_agente_tokens WHERE token_hash = ?`).get(hashTokenAgente(token)) as any;
   if (!t) return null;
@@ -4395,6 +4449,7 @@ app.use("/api", (req, res, next) => {
     req.path.startsWith("/auth/") ||
     req.path === "/health" ||
     req.path.startsWith("/dominio-agent/") ||
+    req.path.startsWith("/externa/") ||
     req.path === "/asaas/webhook" ||
     req.path === "/whatsapp/webhook" ||
     req.path === "/autentique/webhook" ||
@@ -25660,6 +25715,98 @@ app.get("/api/relatorios/retencoes", blockCliente, requirePermissao("relatorios"
   } catch (e: any) {
     res.status(e.status || 500).json({ error: e.message });
   }
+});
+
+// ================= API EXTERNA v1 (sistemas de terceiros, ex.: ERP do cliente) =================
+// Autenticada por chave (Bearer scx_...) escopada a UMA empresa — ver requireApiExterna. Fora do
+// gate de sessão (isenção /externa/ no app.use("/api")). Documentação pro consumidor: /api/externa/v1.
+function apiExternaIntervaloCompetencia(req: any): { dataDe: string | null; dataAte: string | null } {
+  const comp = typeof req.query.competencia === "string" ? req.query.competencia.trim() : "";
+  if (/^\d{4}-\d{2}$/.test(comp)) return { dataDe: `${comp}-01`, dataAte: `${comp}-31` };
+  const de = typeof req.query.dataDe === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.query.dataDe) ? req.query.dataDe : null;
+  const ate = typeof req.query.dataAte === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.query.dataAte) ? req.query.dataAte : null;
+  if (de || ate) return { dataDe: de, dataAte: ate };
+  // padrão: mês anterior completo
+  const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1);
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  return { dataDe: `${d.getFullYear()}-${mm}-01`, dataAte: `${d.getFullYear()}-${mm}-31` };
+}
+// Página de documentação simples (sem auth) — pra entregar o link ao desenvolvedor do sistema parceiro.
+app.get("/api/externa/v1", (_req, res) => {
+  res.json({
+    servico: "Simples Contábeis — API de Integração",
+    versao: "v1",
+    autenticacao: "Cabeçalho HTTP: Authorization: Bearer scx_SEU_TOKEN (gerado pelo escritório em Integrações). A chave dá acesso apenas aos dados da empresa vinculada.",
+    limite: "120 requisições por minuto por chave.",
+    endpoints: [
+      { metodo: "GET", caminho: "/api/externa/v1/ping", descricao: "Valida a chave e devolve a empresa vinculada." },
+      { metodo: "GET", caminho: "/api/externa/v1/retencoes?competencia=AAAA-MM", descricao: "Relatório de retenções de impostos (INSS, IRRF, PIS, COFINS, CSLL, ISS) da empresa no período. Também aceita dataDe/dataAte (AAAA-MM-DD). Sem período = mês anterior." },
+    ],
+  });
+});
+app.get("/api/externa/v1/ping", requireApiExterna(), (req, res) => {
+  const k = (req as any).apiKey;
+  const e = sqlite.prepare(`SELECT id, nome, cnpj FROM empresas WHERE id = ?`).get(k.empresa_id) as any;
+  res.json({ ok: true, servico: "Simples Contábeis API", versao: "v1", empresa: e ? { id: e.id, nome: e.nome, cnpj: e.cnpj } : null, escopos: String(k.escopos || "").split(",").filter(Boolean) });
+});
+app.get("/api/externa/v1/retencoes", requireApiExterna("retencoes"), (req, res) => {
+  try {
+    const { dataDe, dataAte } = apiExternaIntervaloCompetencia(req);
+    const { empresa, itens, somas } = calcularRetencoesNfse((req as any).apiUser, (req as any).apiKey.empresa_id, dataDe, dataAte);
+    res.json({
+      empresa: { id: empresa.id, nome: empresa.nome, cnpj: empresa.cnpj },
+      periodo: { dataDe, dataAte },
+      itens,
+      somas,
+      geradoEm: new Date().toISOString(),
+    });
+  } catch (e: any) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+// ---------- Admin: gestão das chaves de API externa (tela Integrações) ----------
+app.get("/api/integracoes/chaves", blockCliente, requireAdmin, (req, res) => {
+  const user = (req as any).user;
+  const rows = sqlite.prepare(`
+    SELECT k.id, k.empresa_id as empresaId, e.nome as empresaNome, e.cnpj as empresaCnpj, k.nome, k.token_prefixo as tokenPrefixo,
+           k.escopos, k.ativo, k.criado_em as criadoEm, k.ultimo_uso_em as ultimoUsoEm, k.ultimo_uso_ip as ultimoUsoIp, k.revogado_em as revogadoEm
+    FROM api_externa_chaves k JOIN empresas e ON e.id = k.empresa_id
+    WHERE k.escritorio_id = ? ORDER BY k.ativo DESC, k.criado_em DESC
+  `).all(user.escritorioId) as any[];
+  res.json({
+    items: rows.map((r) => ({ ...r, ativo: !!r.ativo, escopos: String(r.escopos || "").split(",").filter(Boolean) })),
+    escoposDisponiveis: API_EXTERNA_ESCOPOS,
+  });
+});
+app.post("/api/integracoes/chaves", blockCliente, requireAdmin, (req, res) => {
+  const user = (req as any).user;
+  const b = req.body || {};
+  const empresaId = Number(b.empresaId);
+  const nome = String(b.nome || "").trim();
+  let escopos = Array.isArray(b.escopos) ? b.escopos.filter((s: string) => (API_EXTERNA_ESCOPOS as readonly string[]).includes(s)) : [];
+  if (!escopos.length) escopos = ["retencoes"];
+  if (!empresaId || !nome) return res.status(400).json({ error: "Informe a empresa e um nome para a chave." });
+  const emp = sqlite.prepare(`SELECT id FROM empresas WHERE id = ? AND escritorio_id = ?`).get(empresaId, user.escritorioId) as any;
+  if (!emp) return res.status(404).json({ error: "Empresa não encontrada neste escritório." });
+  const tokenCru = "scx_" + crypto.randomBytes(24).toString("hex"); // scx_ + 48 hex
+  const tokenHash = hashApiExterna(tokenCru);
+  const prefixo = tokenCru.slice(0, 12) + "…";
+  sqlite.prepare(`INSERT INTO api_externa_chaves (escritorio_id, empresa_id, nome, token_hash, token_prefixo, escopos, criado_por) VALUES (?,?,?,?,?,?,?)`)
+    .run(user.escritorioId, empresaId, nome, tokenHash, prefixo, escopos.join(","), user.id);
+  res.json({ ok: true, token: tokenCru, aviso: "Guarde este token agora — por segurança, ele não será mostrado de novo." });
+});
+app.post("/api/integracoes/chaves/:id/revogar", blockCliente, requireAdmin, (req, res) => {
+  const user = (req as any).user;
+  const r = sqlite.prepare(`UPDATE api_externa_chaves SET ativo = 0, revogado_em = datetime('now') WHERE id = ? AND escritorio_id = ? AND ativo = 1`).run(Number(req.params.id), user.escritorioId);
+  if (!r.changes) return res.status(404).json({ error: "Chave não encontrada ou já revogada." });
+  res.json({ ok: true });
+});
+app.delete("/api/integracoes/chaves/:id", blockCliente, requireAdmin, (req, res) => {
+  const user = (req as any).user;
+  const r = sqlite.prepare(`DELETE FROM api_externa_chaves WHERE id = ? AND escritorio_id = ?`).run(Number(req.params.id), user.escritorioId);
+  if (!r.changes) return res.status(404).json({ error: "Chave não encontrada." });
+  res.json({ ok: true });
 });
 // Grade "quais empresas têm nota com retenção nesse período" — mostrada de cara na aba (competência
 // anterior por padrão, calculado no frontend), sem precisar escolher um cliente primeiro. Varre os

@@ -2115,6 +2115,7 @@ const NAV = [
   { id:'usuarios', label:'Usuários', modulo:'usuarios', roles:['Administrador'] },
   { id:'email', label:'E-mail', modulo:'email', roles:['Administrador','Colaborador'] },
   { id:'configuracoes', label:'Configurações', modulo:'configuracoes', roles:['Administrador','Colaborador'] },
+  { id:'integracoes', label:'Integrações (API)', modulo:null, roles:['Administrador'] },
   // Colaborador não vê mais o item Assinatura no menu (roles vazio = ninguém enxerga); a página segue existindo.
   { id:'minha-assinatura-colaborador', label:'Assinatura', modulo:null, roles:[] },
   { id:'escritorios', label:'Escritórios', modulo:null, roles:['SuperAdmin'] },
@@ -2361,6 +2362,7 @@ async function render(){
     else if(STATE.page==='email') await pageEmail();
     else if(STATE.page==='usuarios') await pageUsuarios();
     else if(STATE.page==='configuracoes') await pageConfiguracoes();
+    else if(STATE.page==='integracoes') await pageIntegracoes();
     else if(STATE.page==='minha-assinatura-colaborador') await pageMinhaAssinaturaColaborador();
     else if(STATE.page==='escritorios') await pageEscritorios();
     else if(STATE.page==='modulos-plataforma') await pageModulosPlataforma();
@@ -21954,6 +21956,109 @@ const CFG_ABAS_TODAS = [
   { id:'assinatura-plataforma', label:'Assinatura da plataforma' },
   { id:'senhas', label:'Senhas e acessos', soAdmin:true },
 ];
+// ---------- Integrações (API externa): o escritório gera chaves pra sistemas de terceiros ----------
+// puxarem dados autorizados de UMA empresa (ex.: ERP da Libra lê o Relatório de Retenções da Libra).
+const INT_ESCOPO_LABEL = { retencoes: 'Relatório de Retenções' };
+async function pageIntegracoes(){
+  const m = document.getElementById('main');
+  m.innerHTML = `
+    <h1>Integrações (API)</h1>
+    <p class="subtitle">Gere chaves de API pra sistemas de terceiros (ex.: o ERP de um cliente) puxarem dados autorizados — cada chave dá acesso <b>somente</b> aos dados da empresa escolhida.</p>
+    <div class="card" style="margin-bottom:14px;">
+      <h3 style="margin:0 0 10px;">Nova chave</h3>
+      <div class="row" style="gap:12px; flex-wrap:wrap; align-items:flex-end;">
+        <div class="field grow" style="min-width:260px;"><label>Empresa (a quem a chave dá acesso)</label>${comboSelectHtml('intEmpCombo','Digite para buscar a empresa…')}</div>
+        <div class="field grow" style="min-width:200px;"><label>Nome da chave (referência)</label><input id="intNome" class="inp" placeholder='Ex.: ERP da Libra'></div>
+      </div>
+      <div class="field" style="margin-top:8px;"><label>Permissões (escopos)</label>
+        <div id="intEscopos" class="row" style="gap:14px; flex-wrap:wrap;"></div>
+      </div>
+      <div class="row" style="margin-top:10px;"><button class="btn primary" id="intCriar">Gerar chave</button></div>
+      <div id="intTokenBox"></div>
+    </div>
+    <div class="card" style="margin-bottom:14px;">
+      <h3 style="margin:0 0 10px;">Chaves ativas</h3>
+      <div id="intLista"><div class="empty-state">Carregando…</div></div>
+    </div>
+    <details class="card">
+      <summary style="cursor:pointer; font-weight:600;">Como o sistema parceiro usa a API (documentação)</summary>
+      <div style="font-size:13px; line-height:1.6; margin-top:10px;">
+        <p><b>Autenticação:</b> toda requisição leva o cabeçalho <code>Authorization: Bearer scx_...</code> (a chave gerada acima). Limite de 120 req/min por chave. Tudo por HTTPS.</p>
+        <p><b>Base:</b> <code>${esc(location.origin)}/api/externa/v1</code></p>
+        <p><b>Endpoints:</b></p>
+        <ul style="margin:4px 0 8px 18px;">
+          <li><code>GET /ping</code> — valida a chave e devolve a empresa vinculada.</li>
+          <li><code>GET /retencoes?competencia=AAAA-MM</code> — Relatório de Retenções (INSS, IRRF, PIS, COFINS, CSLL, ISS) do período. Também aceita <code>dataDe</code>/<code>dataAte</code> (AAAA-MM-DD). Sem período = mês anterior.</li>
+        </ul>
+        <p><b>Exemplo (curl):</b></p>
+        <pre style="white-space:pre-wrap; background:var(--paper); border:1px solid var(--rule); border-radius:8px; padding:10px; color:var(--ink); overflow:auto;">curl -H "Authorization: Bearer scx_SEU_TOKEN" \\
+  "${esc(location.origin)}/api/externa/v1/retencoes?competencia=2026-10"</pre>
+      </div>
+    </details>`;
+
+  // escopos (checkboxes)
+  const escEl = document.getElementById('intEscopos');
+  escEl.innerHTML = Object.entries(INT_ESCOPO_LABEL).map(([id,label])=>
+    `<label class="checkbox-row"><input type="checkbox" class="intEscopo" value="${id}" checked> ${esc(label)}</label>`).join('');
+
+  // combo de empresas
+  let empresas = [];
+  try{ empresas = (await api('/empresas')).items.filter(e=>e.ativo); }catch(e){}
+  setupComboSelect('intEmpCombo', empresas.map(e=>({id:e.id, label:empresaComboLabel(e)})), ()=>{});
+
+  async function carregarLista(){
+    const box = document.getElementById('intLista');
+    let data; try{ data = await api('/integracoes/chaves'); }catch(e){ box.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
+    if(!data.items.length){ box.innerHTML = '<div class="empty-state">Nenhuma chave criada ainda.</div>'; return; }
+    box.innerHTML = `<table class="data-table"><thead><tr>
+        <th>Empresa</th><th>Nome</th><th>Chave</th><th>Permissões</th><th>Último uso</th><th>Status</th><th></th>
+      </tr></thead><tbody>${data.items.map(k=>`<tr>
+        <td>${esc(k.empresaNome)}${k.empresaCnpj?`<br><span style="color:var(--ink-soft); font-size:12px;">${esc(fmtCnpjCpf(k.empresaCnpj))}</span>`:''}</td>
+        <td>${esc(k.nome)}</td>
+        <td><code>${esc(k.tokenPrefixo)}</code></td>
+        <td>${k.escopos.map(s=>`<span class="tag">${esc(INT_ESCOPO_LABEL[s]||s)}</span>`).join(' ')}</td>
+        <td>${k.ultimoUsoEm?`${esc(fmtDateHora(k.ultimoUsoEm))}${k.ultimoUsoIp?`<br><span style="color:var(--ink-soft); font-size:12px;">${esc(k.ultimoUsoIp)}</span>`:''}`:'<span style="color:var(--ink-soft)">nunca</span>'}</td>
+        <td>${k.ativo?'<span class="tag ok">ativa</span>':'<span class="tag">revogada</span>'}</td>
+        <td style="text-align:right;">${k.ativo?`<button class="btn small danger" data-revogar="${k.id}">Revogar</button>`:`<button class="btn small" data-excluir="${k.id}">Excluir</button>`}</td>
+      </tr>`).join('')}</tbody></table>`;
+    box.querySelectorAll('[data-revogar]').forEach(b=>b.addEventListener('click', async ()=>{
+      if(!confirm('Revogar esta chave? O sistema parceiro perde o acesso na hora.')) return;
+      try{ await api('/integracoes/chaves/'+b.dataset.revogar+'/revogar', { method:'POST' }); toast('Chave revogada.','ok'); carregarLista(); }catch(e){ toast(e.message,'err'); }
+    }));
+    box.querySelectorAll('[data-excluir]').forEach(b=>b.addEventListener('click', async ()=>{
+      if(!confirm('Excluir esta chave revogada do histórico?')) return;
+      try{ await api('/integracoes/chaves/'+b.dataset.excluir, { method:'DELETE' }); toast('Chave excluída.','ok'); carregarLista(); }catch(e){ toast(e.message,'err'); }
+    }));
+  }
+  await carregarLista();
+
+  document.getElementById('intCriar').addEventListener('click', async (ev)=>{
+    const empresaId = Number(document.querySelector('#intEmpCombo .combo-value')?.value||0);
+    const nome = document.getElementById('intNome').value.trim();
+    const escopos = [...document.querySelectorAll('.intEscopo:checked')].map(c=>c.value);
+    if(!empresaId){ toast('Escolha a empresa.','err'); return; }
+    if(!nome){ toast('Dê um nome pra chave.','err'); return; }
+    if(!escopos.length){ toast('Marque ao menos uma permissão.','err'); return; }
+    ev.target.disabled = true;
+    try{
+      const r = await api('/integracoes/chaves', { method:'POST', body:{ empresaId, nome, escopos } });
+      document.getElementById('intNome').value = '';
+      const tb = document.getElementById('intTokenBox');
+      tb.innerHTML = `<div style="margin-top:12px; border:1px solid var(--credit); background:var(--paper); border-radius:10px; padding:12px;">
+        <div style="font-weight:600; color:var(--credit); margin-bottom:6px;">✔ Chave criada — copie agora (não será mostrada de novo):</div>
+        <div class="row" style="gap:8px; align-items:center;">
+          <input id="intTokenVal" class="inp" readonly value="${esc(r.token)}" style="font-family:monospace; flex:1;">
+          <button class="btn small" id="intCopiar">Copiar</button>
+        </div>
+        <div style="font-size:12px; color:var(--ink-soft); margin-top:6px;">Entregue este token ao responsável pelo sistema parceiro. Se vazar, revogue e gere outro.</div>
+      </div>`;
+      document.getElementById('intCopiar').addEventListener('click', ()=>{ const i=document.getElementById('intTokenVal'); i.select(); try{ navigator.clipboard.writeText(r.token); toast('Copiado.','ok'); }catch(e){ document.execCommand('copy'); } });
+      carregarLista();
+    }catch(e){ toast(e.message,'err'); }
+    finally{ ev.target.disabled = false; }
+  });
+}
+
 async function pageConfiguracoes(){
   // Administrador e Colaborador sem restrição explícita (configAbas===null) veem todas as abas —
   // um Colaborador só fica restrito quando o admin marca abas específicas pra ele em Usuários.
