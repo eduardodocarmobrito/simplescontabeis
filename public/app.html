@@ -9337,7 +9337,7 @@ async function escritorioModuloPaywallHtml(chave){
   const item = items.find(i=>i.chave===chave);
   if(!item) return '<div class="empty-state">Módulo não encontrado.</div>';
   const preco = fmtMoney(item.valorMensal);
-  const titulo = item.status==='teste_vencido' ? 'Seu teste grátis venceu' : (item.status==='vencido' ? 'Assinatura vencida' : 'Módulo não contratado');
+  const titulo = item.status==='teste_vencido' ? 'Pagamento pendente' : (item.status==='vencido' ? 'Assinatura vencida' : 'Módulo não contratado');
   return `
     <div class="card" style="max-width:480px; margin:40px auto; text-align:center; padding:32px;">
       <h3>${esc(titulo)}</h3>
@@ -12137,8 +12137,8 @@ function moduloPaywallHtml(item){
     texto = `Teste grátis por 3 dias, sem compromisso. Depois do teste, ${preco}/mês.`;
     botaoHtml = `<button class="btn primary" id="paywallAcao" data-acao="testar" data-chave="${item.chave}">Iniciar teste grátis de 3 dias</button>`;
   } else if(item.status==='teste_vencido'){
-    titulo = 'Seu teste grátis venceu';
-    texto = `Contrate este módulo por ${preco}/mês pra continuar usando.`;
+    titulo = 'Pagamento pendente';
+    texto = `Faça o pagamento deste módulo (${preco}/mês) pra liberar o acesso.`;
     botaoHtml = `<button class="btn primary" id="paywallAcao" data-acao="assinatura">Ir para Assinatura</button>`;
   } else {
     titulo = 'Assinatura vencida';
@@ -14967,9 +14967,12 @@ function assinaturaModuloCardHtml(item, semTesteGratis){
   // um jeito de representar isso no banco, não deve aparecer literalmente pro cliente.
   const dataAssinatura = item.assinaturaAtivaAte ? new Date(String(item.assinaturaAtivaAte).replace(' ','T')) : null;
   const semVencimento = dataAssinatura && (dataAssinatura.getTime() - Date.now()) > 1000*60*60*24*365*3;
+  if(item.status==='nao_contratado' && item.semTeste){ badgeClass='warn'; badgeText='Aguardando pagamento'; }
   if(item.status==='isento'){ badgeClass='ok'; badgeText='Isento (cortesia)'; }
   else if(item.status==='teste'){ badgeClass='ok'; badgeText='Em teste até '+fmtDateHora(item.trialFim); }
-  else if(item.status==='teste_vencido'){ badgeClass='bad'; badgeText='Teste grátis vencido'; }
+  // Teste vencido = "direto para pagamento" (é assim que a tela do SuperAdmin trata) — pro cliente
+  // aparece como pagamento pendente, não como "teste grátis vencido" (pedido 2026-11-17).
+  else if(item.status==='teste_vencido'){ badgeClass='warn'; badgeText='Aguardando pagamento'; }
   else if(item.status==='ativo'){ badgeClass='ok'; badgeText = semVencimento ? 'Ativo' : 'Ativo até '+fmtDateIso(String(item.assinaturaAtivaAte||'').slice(0,10)); }
   else if(item.status==='vencido'){ badgeClass='bad'; badgeText='Assinatura vencida'; }
   // Cliente direto (venda avulsa) não tem teste grátis — vai direto pro pagamento.
