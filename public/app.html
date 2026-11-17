@@ -22012,14 +22012,20 @@ async function pageIntegracoes(){
           <li><code>GET /retencoes?competencia=AAAA-MM</code> — Relatório de Retenções (INSS, IRRF, PIS, COFINS, CSLL, ISS) do período. Também aceita <code>dataDe</code>/<code>dataAte</code> (AAAA-MM-DD). Sem período = mês anterior.</li>
           <li><code>GET /documentos/{tipo}</code> — lista os PDFs disponíveis de um relatório (<code>balanco</code>, <code>balancete</code>, <code>dre</code>, <code>faturamento</code>, <code>razao</code>, <code>comparativo</code>, <code>entradas_saidas</code>, <code>programacao_ferias</code>), agrupados por competência, cada um com um <code>downloadUrl</code>. Só funciona pros tipos que a chave tem permissão.</li>
           <li><code>GET /documentos/{tipo}/{docId}/download</code> — baixa o PDF de um documento (o <code>docId</code> vem do <code>downloadUrl</code> da lista acima).</li>
-          <li><code>POST /retencoes/importar</code> — recebe um JSON livre com um relatório de retenções já pronto do lado do parceiro. Fica gravado aqui em "Recebimentos" pra conferência (ainda sem processamento automático).</li>
+          <li><code>POST /retencoes/importar</code> — recebe um relatório de retenções já pronto do lado do parceiro, no mesmo formato de <code>GET /retencoes</code> (campo <code>itens</code>, cada um com numeroNfse/emitenteNome/emitenteCnpj/dataEmissao/valorServico/inss/irrf/pis/cofins/csll/iss). Fica gravado aqui em "Recebimentos" pra conferência (os totais são sempre recalculados por nós, não confiamos no que vier pronto).</li>
         </ul>
         <p><b>Exemplo (curl) — puxando de nós:</b></p>
         <pre style="white-space:pre-wrap; background:var(--paper); border:1px solid var(--rule); border-radius:8px; padding:10px; color:var(--ink); overflow:auto;">curl -H "Authorization: Bearer scx_SEU_TOKEN" \\
   "${esc(location.origin)}/api/externa/v1/retencoes?competencia=2026-10"</pre>
         <p><b>Exemplo (curl) — enviando pra nós:</b></p>
         <pre style="white-space:pre-wrap; background:var(--paper); border:1px solid var(--rule); border-radius:8px; padding:10px; color:var(--ink); overflow:auto;">curl -X POST -H "Authorization: Bearer scx_SEU_TOKEN" -H "Content-Type: application/json" \\
-  -d '{"qualquer":"json"}' \\
+  -d '{
+    "periodo": {"dataDe":"2026-10-01","dataAte":"2026-10-31"},
+    "itens": [
+      {"numeroNfse":"5695","emitenteNome":"SUPERARE TECNOLOGIA DA INFORMACAO LTDA","emitenteCnpj":"63953285000103",
+       "dataEmissao":"2026-10-01","valorServico":2164.42,"inss":0,"irrf":32.47,"pis":14.07,"cofins":64.93,"csll":21.64,"iss":0}
+    ]
+  }' \\
   "${esc(location.origin)}/api/externa/v1/retencoes/importar"</pre>
       </div>
     </details>`;
@@ -22075,20 +22081,51 @@ async function pageIntegracoes(){
   }
   await carregarLista();
 
+  function tabelaItensRetencaoImportados(dados){
+    const itens = Array.isArray(dados.itens) ? dados.itens : [];
+    const s = dados.somas || {};
+    return `<div class="card" style="background:var(--paper); margin-top:8px;">
+      <table class="data-table"><thead><tr>
+        <th>Data Emissão</th><th>Número</th><th>Emitente</th><th>CNPJ</th><th>Valor Bruto</th><th>INSS</th><th>IRRF</th><th>PIS</th><th>COFINS</th><th>CSLL</th><th>ISS</th>
+      </tr></thead><tbody>
+        ${itens.map(it=>`<tr>
+          <td>${it.dataEmissao?esc(fmtDateHora(it.dataEmissao).split(' ')[0]):'—'}</td>
+          <td>${esc(it.numeroNfse||'—')}</td>
+          <td>${esc(it.emitenteNome||'—')}</td>
+          <td>${esc(fmtCnpjCpf(it.emitenteCnpj||''))}</td>
+          <td>${fmtMoney(it.valorServico)}</td>
+          <td>${fmtMoney(it.inss)}</td>
+          <td>${fmtMoney(it.irrf)}</td>
+          <td>${fmtMoney(it.pis)}</td>
+          <td>${fmtMoney(it.cofins)}</td>
+          <td>${fmtMoney(it.csll)}</td>
+          <td>${fmtMoney(it.iss)}</td>
+        </tr>`).join('') || `<tr><td colspan="11" class="empty-state">Sem itens.</td></tr>`}
+      </tbody>
+      <tfoot><tr style="font-weight:600;">
+        <td colspan="4">TOTAL</td>
+        <td>${fmtMoney(s.valorServico)}</td><td>${fmtMoney(s.inss)}</td><td>${fmtMoney(s.irrf)}</td>
+        <td>${fmtMoney(s.pis)}</td><td>${fmtMoney(s.cofins)}</td><td>${fmtMoney(s.csll)}</td><td>${fmtMoney(s.iss)}</td>
+      </tr></tfoot></table>
+      <div style="margin-top:8px; font-weight:600; color:var(--credit);">Total geral de retenções: ${fmtMoney(s.totalGeral)}</div>
+    </div>`;
+  }
   async function carregarRecebimentos(){
     const box = document.getElementById('intRecebLista');
     let data; try{ data = await api('/integracoes/recebimentos'); }catch(e){ box.innerHTML = `<div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div>`; return; }
     if(!data.items.length){ box.innerHTML = '<div class="empty-state">Nada recebido ainda.</div>'; return; }
-    box.innerHTML = `<table class="data-table"><thead><tr><th>Data</th><th>Empresa</th><th>Tipo</th><th>Origem (IP)</th><th>Payload</th></tr></thead><tbody>${data.items.map(r=>`<tr>
-        <td>${esc(fmtDateHora(r.recebidoEm))}</td>
-        <td>${esc(r.empresaNome)}</td>
-        <td><span class="tag">${esc(r.tipo)}</span></td>
-        <td style="color:var(--ink-soft); font-size:12px;">${esc(r.ip||'—')}</td>
-        <td><button class="btn small" data-ver-payload='${esc(r.payloadJson)}'>Ver JSON</button></td>
-      </tr>`).join('')}</tbody></table>`;
-    box.querySelectorAll('[data-ver-payload]').forEach(b=>b.addEventListener('click', ()=>{
-      alert(JSON.stringify(JSON.parse(b.dataset.verPayload), null, 2));
-    }));
+    box.innerHTML = data.items.map(r=>{
+      let dados={}; try{ dados = JSON.parse(r.payloadJson); }catch(e){}
+      const qtdItens = Array.isArray(dados.itens) ? dados.itens.length : 0;
+      return `<details style="margin-bottom:8px;">
+        <summary style="cursor:pointer; padding:8px 0;">
+          <b>${esc(fmtDateHora(r.recebidoEm))}</b> — ${esc(r.empresaNome)} · <span class="tag">${esc(r.tipo)}</span> · ${qtdItens} nota(s)
+          ${dados.somas?.totalGeral!=null?` · total <b>${fmtMoney(dados.somas.totalGeral)}</b>`:''}
+          ${r.ip?` · <span style="color:var(--ink-soft); font-size:12px;">${esc(r.ip)}</span>`:''}
+        </summary>
+        ${tabelaItensRetencaoImportados(dados)}
+      </details>`;
+    }).join('');
   }
   await carregarRecebimentos();
 

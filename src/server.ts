@@ -25781,7 +25781,7 @@ app.get("/api/externa/v1", (_req, res) => {
       { metodo: "GET", caminho: "/api/externa/v1/retencoes?competencia=AAAA-MM", descricao: "Relatório de retenções de impostos (INSS, IRRF, PIS, COFINS, CSLL, ISS) da empresa no período. Também aceita dataDe/dataAte (AAAA-MM-DD). Sem período = mês anterior." },
       { metodo: "GET", caminho: "/api/externa/v1/documentos/{tipo}", descricao: `Lista os documentos (PDF) disponíveis de um relatório da empresa, agrupados por competência, cada um com downloadUrl. {tipo} é um de: ${API_EXTERNA_DOC_TIPOS.join(", ")}. A chave precisa ter a permissão correspondente ao tipo.` },
       { metodo: "GET", caminho: "/api/externa/v1/documentos/{tipo}/{docId}/download", descricao: "Baixa o PDF de um documento específico (o docId vem do downloadUrl da listagem acima)." },
-      { metodo: "POST", caminho: "/api/externa/v1/retencoes/importar", descricao: "Recebe um relatório de retenções já pronto, calculado do lado do sistema parceiro (JSON livre no corpo). Fica registrado para conferência em Integrações — ainda não há processamento automático desse dado." },
+      { metodo: "POST", caminho: "/api/externa/v1/retencoes/importar", descricao: 'Recebe um relatório de retenções já pronto, calculado do lado do sistema parceiro. Corpo: {"periodo":{"dataDe":"AAAA-MM-DD","dataAte":"AAAA-MM-DD"},"itens":[{"numeroNfse":"123","emitenteNome":"...","emitenteCnpj":"00000000000000","dataEmissao":"AAAA-MM-DD","valorServico":0,"inss":0,"irrf":0,"pis":0,"cofins":0,"csll":0,"iss":0}]} — mesmo formato de GET /retencoes. Fica registrado para conferência em Integrações.' },
     ],
     permissoes: API_EXTERNA_CATALOGO.map((c) => ({ escopo: c.id, descricao: c.descricao })),
   });
@@ -25807,15 +25807,55 @@ app.get("/api/externa/v1/retencoes", requireApiExterna("retencoes"), (req, res) 
   }
 });
 // Caminho de ENTRADA (o sistema parceiro empurra o dado, em vez de a gente calcular e ele puxar).
-// Formato do corpo ainda não é fechado com o parceiro — por isso só valida JSON + tamanho e grava
-// como veio, sem exigir um schema. Processamento automático fica pra quando o formato for definido.
+// Formato fechado com o parceiro: mesmo shape do que GET /retencoes já devolve (RetencaoNfseItem +
+// somas) — cada item vira uma linha igual à do nosso próprio Relatório de Retenções (Relatórios ›
+// Retenções de Impostos). "somas" é sempre RECALCULADO aqui, nunca confiado do corpo recebido —
+// mesmo princípio do cálculo original (coluna mostra o que é devido, não o que vier declarado).
+const RETENCAO_CAMPOS_VALOR = ["valorServico", "inss", "irrf", "pis", "cofins", "csll", "iss"] as const;
+function validarItemRetencaoImportado(it: any, idx: number): { item: Record<string, any>; erro: string | null } {
+  if (!it || typeof it !== "object" || Array.isArray(it)) return { item: {}, erro: `Item ${idx + 1}: não é um objeto.` };
+  const emitenteCnpj = String(it.emitenteCnpj || "").replace(/\D/g, "");
+  if (!emitenteCnpj && !String(it.numeroNfse || "").trim()) return { item: {}, erro: `Item ${idx + 1}: informe ao menos emitenteCnpj ou numeroNfse.` };
+  const item: Record<string, any> = {
+    numeroNfse: it.numeroNfse != null ? String(it.numeroNfse) : null,
+    emitenteNome: it.emitenteNome != null ? String(it.emitenteNome) : "",
+    emitenteCnpj,
+    dataEmissao: typeof it.dataEmissao === "string" ? it.dataEmissao : null,
+  };
+  for (const campo of RETENCAO_CAMPOS_VALOR) {
+    const v = Number(it[campo]);
+    if (it[campo] != null && !Number.isFinite(v)) return { item: {}, erro: `Item ${idx + 1}: campo "${campo}" não é um número válido.` };
+    item[campo] = Number.isFinite(v) ? v : 0;
+  }
+  return { item, erro: null };
+}
 app.post("/api/externa/v1/retencoes/importar", requireApiExterna("retencoes-importar"), (req, res) => {
   const k = (req as any).apiKey;
-  const payload = req.body;
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+  const body = req.body;
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
     return res.status(400).json({ error: "Envie um objeto JSON no corpo da requisição (Content-Type: application/json)." });
   }
-  const payloadStr = JSON.stringify(payload);
+  if (!Array.isArray(body.itens) || !body.itens.length) {
+    return res.status(400).json({ error: 'Envie "itens": [...] com ao menos 1 nota (mesmo formato de GET /retencoes).' });
+  }
+  if (body.itens.length > 5000) return res.status(413).json({ error: "Limite de 5000 itens por envio." });
+  const itens: Record<string, any>[] = [];
+  for (let i = 0; i < body.itens.length; i++) {
+    const { item, erro } = validarItemRetencaoImportado(body.itens[i], i);
+    if (erro) return res.status(400).json({ error: erro });
+    itens.push(item);
+  }
+  const somas: Record<string, number> = itens.reduce((acc, it) => {
+    for (const campo of RETENCAO_CAMPOS_VALOR) acc[campo] += it[campo];
+    return acc;
+  }, Object.fromEntries(RETENCAO_CAMPOS_VALOR.map((c) => [c, 0])) as Record<string, number>);
+  somas.totalGeral = somas.inss + somas.irrf + somas.pis + somas.cofins + somas.csll + somas.iss;
+  const registro = {
+    periodo: { dataDe: typeof body.periodo?.dataDe === "string" ? body.periodo.dataDe : null, dataAte: typeof body.periodo?.dataAte === "string" ? body.periodo.dataAte : null },
+    itens,
+    somas,
+  };
+  const payloadStr = JSON.stringify(registro);
   if (payloadStr.length > 2_000_000) return res.status(413).json({ error: "Payload grande demais (limite 2MB)." });
   const ip = String(req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "").split(",")[0].trim();
   const info = sqlite
@@ -25825,7 +25865,9 @@ app.post("/api/externa/v1/retencoes/importar", requireApiExterna("retencoes-impo
     ok: true,
     id: info.lastInsertRowid,
     recebidoEm: new Date().toISOString(),
-    mensagem: "Recebido e registrado para conferência em Integrações. Ainda não há processamento automático deste dado.",
+    itensRecebidos: itens.length,
+    somas,
+    mensagem: "Recebido, validado e registrado para conferência em Integrações.",
   });
 });
 
