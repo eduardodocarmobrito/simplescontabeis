@@ -21239,8 +21239,8 @@ async function pageClientesDiretos(){
         <thead><tr><th>Empresa</th><th>CNPJ</th><th>E-mail</th><th>Origem</th><th>Módulo NFS-e</th><th>Demonstração</th><th>Cadastrado em</th></tr></thead>
         <tbody>
           ${items.length? items.map(e=>`
-            <tr>
-              <td>${esc(e.nome)}</td>
+            <tr class="cdLinha" data-id="${e.id}" style="cursor:pointer;" title="Clique pra ver os módulos deste cliente">
+              <td><span class="cdSeta" style="display:inline-block; width:14px; color:var(--ink-soft);">▸</span>${esc(e.nome)}</td>
               <td>${esc(fmtCnpjCpf(e.cnpj)||'—')}</td>
               <td>${esc(e.email||'—')}</td>
               <td>${esc(CD_ORIGEM_LABEL[e.origemCadastro]||e.origemCadastro||'—')}</td>
@@ -21255,6 +21255,19 @@ async function pageClientesDiretos(){
   `;
   document.getElementById('btnCdConvite').addEventListener('click', cdConviteModal);
   document.getElementById('btnCdManual').addEventListener('click', cdManualModal);
+  // Clique na linha: abre/fecha logo abaixo os módulos do cliente (contratados e não contratados),
+  // com a mesma edição de preço/opções da lista de Módulos da plataforma.
+  box.querySelectorAll('tr.cdLinha').forEach(tr=>tr.addEventListener('click', e=>{
+    if(e.target.closest('.cdDemoToggle')) return;
+    const aberta = tr.nextElementSibling?.classList.contains('cdModulosRow');
+    if(aberta){ tr.nextElementSibling.remove(); tr.querySelector('.cdSeta').textContent='▸'; return; }
+    tr.querySelector('.cdSeta').textContent='▾';
+    const det = document.createElement('tr');
+    det.className = 'cdModulosRow';
+    det.innerHTML = `<td colspan="7" style="background:var(--paper); padding:12px 14px;"><div class="cdModulosBox" style="overflow-x:auto;"><div class="empty-state">Carregando módulos…</div></div></td>`;
+    tr.after(det);
+    cdCarregarModulosCliente(Number(tr.dataset.id), det.querySelector('.cdModulosBox'));
+  }));
   box.querySelectorAll('.cdDemoToggle').forEach(el=>el.addEventListener('click', async ()=>{
     const ligar = el.dataset.ativo !== '1';
     if(!confirmar(ligar? 'Ligar demonstração? Libera TODOS os módulos pra esta empresa sem cobrar, até você desligar de novo.' : 'Desligar demonstração? A cobrança normal (teste/assinatura) volta a valer pra esta empresa.')) return;
@@ -21264,6 +21277,13 @@ async function pageClientesDiretos(){
       pageClientesDiretos();
     }catch(e){ toast(e.message,'err'); }
   }));
+}
+async function cdCarregarModulosCliente(empresaId, box){
+  try{
+    const { items } = await api('/super/modulos-contratos?empresaId='+empresaId);
+    if(!items.length){ box.innerHTML = '<div class="empty-state">Nenhum módulo disponível pra este cliente.</div>'; return; }
+    mctMontarTabela(box, items, { mostrarCliente:false, aoSalvar: ()=>cdCarregarModulosCliente(empresaId, box) });
+  }catch(e){ box.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; }
 }
 async function cdCarregarModulosVendaveis(){
   const { items } = await api('/super/modulos-clientes');
@@ -21422,17 +21442,26 @@ function renderContratosModulos(){
   `;
   const box = document.getElementById('mctTabela');
   if(!lista.length){ box.innerHTML = `<div class="empty-state">Nenhum contrato encontrado com esses filtros.</div>`; return; }
+  mctMontarTabela(box, lista, { mostrarCliente:true, aoSalvar: async ()=>{
+    const { items } = await api('/super/modulos-contratos');
+    MCT.items = items;
+    renderContratosModulos();
+  }});
+}
+// Tabela editável de contratos de módulos (preço, implantação, "Direto para pagamento", "Ocultar do
+// cliente") — usada na lista geral (Módulos da plataforma) e no detalhe de cada Cliente Direto.
+function mctMontarTabela(box, lista, { mostrarCliente=true, aoSalvar }={}){
   const fmtValorInput = v=> v==null ? '' : Number(v).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
   box.innerHTML = `
     <table class="data-table">
-      <thead><tr><th>Cliente</th><th>Módulo</th><th>Situação</th><th>Válido até</th><th style="text-align:right;">Valor padrão</th><th>Valor cobrado (R$)</th><th style="text-align:right;">Total mensal</th><th>Implantação (R$)</th><th></th></tr></thead>
+      <thead><tr>${mostrarCliente?'<th>Cliente</th>':''}<th>Módulo</th><th>Situação</th><th>Válido até</th><th style="text-align:right;">Valor padrão</th><th>Valor cobrado (R$)</th><th style="text-align:right;">Total mensal</th><th>Implantação (R$)</th><th></th></tr></thead>
       <tbody>
         ${lista.map(i=>{
           const sit = MCT_SITUACAO[i.situacao] || {label:i.situacao, cls:'muted'};
           const ate = i.situacao==='teste'||i.situacao==='teste_vencido' ? i.trialFim : (i.situacao==='vitalicio'||i.situacao==='isento' ? null : i.assinaturaAtivaAte);
           const sufixoUn = i.quantidade!=null ? ' / colaborador' : '';
           return `<tr data-tipo="${i.tipo}" data-id="${i.id}">
-            <td><div style="font-weight:600;">${esc(i.clienteNome)}</div><div style="font-size:11.5px; color:var(--ink-soft);">${i.tipo==='escritorio'?'Escritório':'Empresa · '+esc(i.escritorioNome||'')}</div></td>
+            ${mostrarCliente?`<td><div style="font-weight:600;">${esc(i.clienteNome)}</div><div style="font-size:11.5px; color:var(--ink-soft);">${i.tipo==='escritorio'?'Escritório':'Empresa · '+esc(i.escritorioNome||'')}</div></td>`:''}
             <td>${esc(i.moduloNome)}${i.situacao==='nao_contratado'?`
               <label class="checkbox-row" style="margin:6px 0 0; font-size:11.5px;" title="Cliente já assinou contrato: some o 'Iniciar teste grátis', fica só o pagamento"><input type="checkbox" class="mctSemTeste" ${i.semTeste?'checked':''}> Direto para pagamento</label>
               <label class="checkbox-row" style="margin:2px 0 0; font-size:11.5px;" title="Módulo fora do contrato: some da Assinatura e do menu do cliente"><input type="checkbox" class="mctOculto" ${i.oculto?'checked':''}> Ocultar do cliente</label>`:''}</td>
@@ -21469,9 +21498,7 @@ function renderContratosModulos(){
         if(oculto) body.oculto = oculto.checked;
         await api(`/super/modulos-contratos/${tr.dataset.tipo}/${encodeURIComponent(tr.dataset.id)}`, { method:'PUT', body });
         toast(valor==null && valorImpl==null && !(semTeste&&semTeste.checked!==originalSemTeste) && !(oculto&&oculto.checked!==originalOculto) ? 'Voltou aos valores padrão.' : 'Cliente atualizado.', 'ok');
-        const { items } = await api('/super/modulos-contratos');
-        MCT.items = items;
-        renderContratosModulos();
+        if(aoSalvar) await aoSalvar();
       }catch(e){ toast(e.message,'err'); }
     };
     btn.addEventListener('click', ()=>salvar(inp.value.trim() ? moedaInputParaNumero(inp) : null, impl.value.trim() ? moedaInputParaNumero(impl) : null));

@@ -23174,7 +23174,10 @@ function situacaoContratoModulo(contratado: any, isento: boolean, statusBase: st
   if (contratado.assinatura_ativa_ate && contratado.assinatura_ativa_ate >= "2099-01-01") return "vitalicio";
   return statusBase;
 }
-app.get("/api/super/modulos-contratos", requireSuperAdmin, (_req, res) => {
+app.get("/api/super/modulos-contratos", requireSuperAdmin, (req, res) => {
+  // ?empresaId=N: só os módulos dessa empresa (contratados + todos os não contratados do catálogo,
+  // mesmo se ela não tiver nenhum ainda ou estiver isenta) — usado no detalhe de Clientes Diretos.
+  const soEmpresaId = Number(req.query.empresaId) || 0;
   const escr = sqlite
     .prepare(
       `SELECT em.*, c.nome as modulo_nome, c.valor_mensal as valor_padrao, c.valor_implantacao as implantacao_padrao, e.nome as cliente_nome, e.isento_assinatura
@@ -23255,6 +23258,12 @@ app.get("/api/super/modulos-contratos", requireSuperAdmin, (_req, res) => {
   const temContrato = new Set(emp.map((r) => `${r.empresa_id}:${r.modulo_chave}`));
   const empresasNaLista = new Map<number, any>();
   for (const r of [...emp, ...previos]) if (!r.isento_assinatura && !empresasNaLista.has(r.empresa_id)) empresasNaLista.set(r.empresa_id, r);
+  if (soEmpresaId) {
+    const e = sqlite
+      .prepare(`SELECT e.id as empresa_id, e.nome as cliente_nome, o.nome as escritorio_nome FROM empresas e LEFT JOIN escritorios o ON o.id = e.escritorio_id WHERE e.id = ?`)
+      .get(soEmpresaId) as any;
+    if (e) empresasNaLista.set(soEmpresaId, e);
+  }
   const itensPrevios: any[] = [];
   for (const [empresaId, r] of empresasNaLista) {
     for (const m of catalogoEmp) {
@@ -23291,7 +23300,7 @@ app.get("/api/super/modulos-contratos", requireSuperAdmin, (_req, res) => {
       String(a.clienteNome).localeCompare(String(b.clienteNome), "pt-BR") ||
       String(a.moduloNome).localeCompare(String(b.moduloNome), "pt-BR")
   );
-  res.json({ items });
+  res.json({ items: soEmpresaId ? items.filter((i) => i.tipo !== "escritorio" && i.clienteId === soEmpresaId) : items });
 });
 // Define (ou limpa, com valorMensalCustom = null/"") o preço personalizado de UM contrato.
 // Vale a partir da próxima cobrança gerada — cobrança já paga não muda.
