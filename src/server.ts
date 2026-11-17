@@ -1067,6 +1067,17 @@ sqlite.exec(`
     ultimo_ping TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  -- "Está digitando…" — sinal efêmero por conversa. contexto = empresa:<id> | dm:<a>-<b> | equipe:<esc>.
+  -- Quem digita regrava a linha a cada poucos segundos; ela vale só até 'ate' (poucos segundos à frente)
+  -- e é ignorada/limpa depois. O outro lado vê pelo GET de mensagens.
+  CREATE TABLE IF NOT EXISTS chat_digitando (
+    user_id INTEGER NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+    contexto TEXT NOT NULL,
+    autor_nome TEXT NOT NULL,
+    ate TEXT NOT NULL,
+    PRIMARY KEY (user_id, contexto)
+  );
+
   -- Temporizadores do chat/aviso por WhatsApp, personalizáveis por escritório (ver getChatConfig) —
   -- sem linha aqui pra um escritório, valem os defaults (os mesmos valores fixos que o sistema
   -- sempre usou antes disso virar configurável).
@@ -6459,6 +6470,48 @@ app.post("/api/chat/presenca", (req, res) => {
     .run(user.id);
   res.json({ ok: true });
 });
+// Contexto de uma conversa pro sinal de "digitando" (empresa:<id> | dm:<a>-<b> | equipe:<esc>).
+function chatDigitandoContexto(tipo: string, user: any, empresaId: number | null, colegaId: number | null): string | null {
+  if (tipo === "equipe") return `equipe:${user.escritorioId}`;
+  if (tipo === "dm") {
+    if (!colegaId) return null;
+    const [a, b] = chatDmPar(user.id, colegaId);
+    return `dm:${a}-${b}`;
+  }
+  return empresaId ? `empresa:${empresaId}` : null;
+}
+// Sinaliza "fulano está digitando" numa conversa — vale ~6s (o cliente regrava enquanto digita). Mesma
+// resolução de tipo/alvo do POST de mensagens; o outro lado lê isso no GET /api/chat/mensagens.
+app.post("/api/chat/digitando", (req, res) => {
+  const user = (req as any).user;
+  if (!user || user.perfil === "SuperAdmin") return res.json({ ok: true });
+  const tipo = user.perfil === "Cliente" ? "empresa" : typeof req.body?.tipo === "string" ? req.body.tipo : "empresa";
+  let empresaId: number | null = null;
+  let colegaId: number | null = null;
+  if (tipo === "dm") {
+    colegaId = Number(req.body?.userId) || null;
+  } else if (tipo === "empresa") {
+    empresaId = user.perfil === "Cliente" ? user.empresaId : Number(req.body?.empresaId) || null;
+    if (user.perfil !== "Cliente" && (!empresaId || !podeAcessarEmpresa(user, empresaId))) return res.json({ ok: true });
+  }
+  const contexto = chatDigitandoContexto(tipo, user, empresaId, colegaId);
+  if (!contexto) return res.json({ ok: true });
+  try { sqlite.prepare(`DELETE FROM chat_digitando WHERE ate < datetime('now')`).run(); } catch {}
+  sqlite
+    .prepare(
+      `INSERT INTO chat_digitando (user_id, contexto, autor_nome, ate) VALUES (?, ?, ?, datetime('now', '+6 seconds'))
+       ON CONFLICT(user_id, contexto) DO UPDATE SET ate = datetime('now', '+6 seconds'), autor_nome = excluded.autor_nome`
+    )
+    .run(user.id, contexto, user.nome);
+  res.json({ ok: true });
+});
+// Quem (além de mim) está digitando AGORA nessa conversa — devolve o nome ou null.
+function chatQuemDigitando(contexto: string, meuUserId: number): string | null {
+  const row = sqlite
+    .prepare(`SELECT autor_nome FROM chat_digitando WHERE contexto = ? AND user_id != ? AND ate >= datetime('now') ORDER BY ate DESC LIMIT 1`)
+    .get(contexto, meuUserId) as any;
+  return row ? row.autor_nome : null;
+}
 // Poll leve (a cada poucos segundos) — cobre tanto o número de não lidas pro balãozinho piscar
 // quanto, pro lado do escritório, a lista de conversas recentes (evita duas rotas/dois pollings).
 app.get("/api/chat/resumo", (req, res) => {
@@ -6547,7 +6600,7 @@ app.get("/api/chat/mensagens", (req, res) => {
          ON CONFLICT(escritorio_id, user_id) DO UPDATE SET ultima_msg_lida_id = MAX(ultima_msg_lida_id, excluded.ultima_msg_lida_id)`
       )
       .run(user.escritorioId, user.id, maxId);
-    return res.json({ items: chatAnexarCitacoes(rows, { tabela: "chat_equipe_mensagens", where: "escritorio_id = ?", args: [user.escritorioId] }).map((r) => ({ ...r, mine: r.autorUserId === user.id })) });
+    return res.json({ items: chatAnexarCitacoes(rows, { tabela: "chat_equipe_mensagens", where: "escritorio_id = ?", args: [user.escritorioId] }).map((r) => ({ ...r, mine: r.autorUserId === user.id })), digitando: chatQuemDigitando(`equipe:${user.escritorioId}`, user.id) });
   }
   if (tipo === "dm") {
     const colegaId = Number(req.query.userId);
@@ -6567,7 +6620,8 @@ app.get("/api/chat/mensagens", (req, res) => {
          ON CONFLICT(user_a_id, user_b_id, user_id) DO UPDATE SET ultima_msg_lida_id = MAX(ultima_msg_lida_id, excluded.ultima_msg_lida_id)`
       )
       .run(a, b, user.id, maxId);
-    return res.json({ items: chatAnexarCitacoes(rows, { tabela: "chat_dm_mensagens", where: "user_a_id = ? AND user_b_id = ?", args: [a, b] }).map((r) => ({ ...r, mine: r.autorUserId === user.id })), colegaNome: colega.nome, colegaOnline: chatUserOnline(colegaId, user.escritorioId) });
+    const leituraColega = sqlite.prepare(`SELECT ultima_msg_lida_id FROM chat_dm_leitura WHERE user_a_id = ? AND user_b_id = ? AND user_id = ?`).get(a, b, colegaId) as any;
+    return res.json({ items: chatAnexarCitacoes(rows, { tabela: "chat_dm_mensagens", where: "user_a_id = ? AND user_b_id = ?", args: [a, b] }).map((r) => ({ ...r, mine: r.autorUserId === user.id })), colegaNome: colega.nome, colegaOnline: chatUserOnline(colegaId, user.escritorioId), digitando: chatQuemDigitando(`dm:${a}-${b}`, user.id), lidoAteId: leituraColega ? leituraColega.ultima_msg_lida_id : 0 });
   }
 
   let empresaId: number;
@@ -6590,10 +6644,16 @@ app.get("/api/chat/mensagens", (req, res) => {
     sqlite.prepare(`UPDATE chat_mensagens SET lido_pelo_escritorio = 1 WHERE empresa_id = ? AND autor_lado = 'cliente' AND lido_pelo_escritorio = 0`).run(empresaId);
   }
   const mineLado = user.perfil === "Cliente" ? "cliente" : "escritorio";
+  // "Visto": maior id das MINHAS mensagens que o outro lado já leu (lido_pelo_* do lado oposto).
+  const lidoAteRow = (user.perfil === "Cliente"
+    ? sqlite.prepare(`SELECT MAX(id) as m FROM chat_mensagens WHERE empresa_id = ? AND autor_lado = 'cliente' AND lido_pelo_escritorio = 1`).get(empresaId)
+    : sqlite.prepare(`SELECT MAX(id) as m FROM chat_mensagens WHERE empresa_id = ? AND autor_lado = 'escritorio' AND lido_pelo_cliente = 1`).get(empresaId)) as any;
   res.json({
     items: chatAnexarCitacoes(rows, { tabela: "chat_mensagens", where: "empresa_id = ?", args: [empresaId] }).map((r) => ({ ...r, mine: r.autorLado === mineLado })),
     empresaId,
     empresaOnline: user.perfil === "Cliente" ? undefined : chatEmpresaOnline(empresaId, user.escritorioId),
+    digitando: chatQuemDigitando(`empresa:${empresaId}`, user.id),
+    lidoAteId: (lidoAteRow && lidoAteRow.m) || 0,
   });
 });
 app.post("/api/chat/mensagens", upload.single("arquivo"), (req, res) => {
