@@ -12153,9 +12153,27 @@ async function extratonfeSincronizarEmpresas(escritorioId: number, chave: string
     const totalPaginas = Number(r?.totalPaginas) || 1;
     if (!emp.length || page >= totalPaginas) break;
   }
-  const nossas = sqlite.prepare(`SELECT id, cnpj FROM empresas WHERE escritorio_id = ? AND ativo = 1`).all(escritorioId) as any[];
-  const porCnpj = new Map<string, number>();
-  for (const e of nossas) { const d = soDigitos(e.cnpj); if (d) porCnpj.set(d, e.id); }
+  // Vínculo CPF/CNPJ -> UM cadastro nosso. Para produtor rural (mesmo CPF em várias fazendas/IEs),
+  // escolhe deterministicamente o "guarda-chuva" (não o último aleatório): prefere quem já está no
+  // Extrato NFE, depois quem tem busca própria ativa (o cadastro mantido na consolidação), e por fim
+  // o menor id. Assim as notas do CPF sempre caem no cadastro certo, não num espelho pausado/escondido.
+  const nossas = sqlite
+    .prepare(
+      `SELECT e.id, e.cnpj,
+         COALESCE((SELECT nb.ativo FROM nfe_busca_config nb WHERE nb.empresa_id = e.id), 0) AS buscaAtiva,
+         (SELECT COUNT(*) FROM extratonfe_empresas xe WHERE xe.empresa_id = e.id AND xe.ativo = 1) AS jaExtrato
+       FROM empresas e WHERE e.escritorio_id = ? AND e.ativo = 1`
+    )
+    .all(escritorioId) as any[];
+  const porCnpjCand = new Map<string, { id: number; score: number }>();
+  for (const e of nossas) {
+    const d = soDigitos(e.cnpj);
+    if (!d) continue;
+    const score = (e.jaExtrato ? 2 : 0) + (e.buscaAtiva ? 1 : 0);
+    const cur = porCnpjCand.get(d);
+    if (!cur || score > cur.score || (score === cur.score && e.id < cur.id)) porCnpjCand.set(d, { id: e.id, score });
+  }
+  const porCnpj = new Map<string, number>([...porCnpjCand].map(([d, v]) => [d, v.id]));
   const presentes = new Set<number>();
   let novas = 0;
   const semCadastroAqui: string[] = [];
