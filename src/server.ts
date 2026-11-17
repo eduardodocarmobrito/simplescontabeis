@@ -5005,7 +5005,32 @@ app.get("/api/minha-empresa", requireCliente, (req, res) => {
     .get(empresaId) as any;
   if (!r) return res.status(404).json({ error: "Empresa não encontrada." });
   const cnpjTravado = !!sqlite.prepare(`SELECT 1 FROM nfse_emissoes WHERE empresa_id = ? AND status = 'emitida' LIMIT 1`).get(empresaId);
-  res.json({ ...r, cnpjTravado });
+  const certificadoCadastrado =
+    !!sqlite.prepare(`SELECT 1 FROM nfe_busca_config WHERE empresa_id = ?`).get(empresaId) || !!sqlite.prepare(`SELECT 1 FROM nfse_certificados WHERE empresa_id = ?`).get(empresaId);
+  res.json({ ...r, cnpjTravado, certificadoCadastrado });
+});
+// Aba Empresa (cliente): envia o certificado digital da própria empresa e só salva (pedido 2026-11-17 —
+// sem tela de validação/busca). Grava nos MESMOS lugares que o escritório usa (Empresas › Configurações
+// e NFS-e › Certificados, via certSalvarNasDuasTelas), sem exigir módulo pago. Só recusa senha errada /
+// arquivo ilegível, porque aí não há o que salvar.
+app.post("/api/minha-empresa/certificado", requireCliente, upload.single("arquivo"), (req, res) => {
+  const user = (req as any).user;
+  if (!req.file) return res.status(400).json({ error: "Selecione o arquivo do certificado (.pfx ou .p12)." });
+  const senha = String(req.body?.senha || "");
+  if (!senha) return res.status(400).json({ error: "Informe a senha do certificado." });
+  const empresa = sqlite.prepare(`SELECT uf, escritorio_id FROM empresas WHERE id = ?`).get(user.empresaId) as any;
+  if (!empresa) return res.status(404).json({ error: "Empresa não encontrada." });
+  try {
+    nfse.lerCertificadoPfx(req.file.buffer, senha);
+  } catch {
+    return res.status(400).json({ error: "Não consegui abrir o certificado — confira a senha e se o arquivo é o .pfx/.p12 correto." });
+  }
+  try {
+    certSalvarNasDuasTelas(user.empresaId, { ...user, escritorioId: empresa.escritorio_id }, req.file.buffer, senha, String(empresa.uf || "").toUpperCase(), null);
+  } catch (e: any) {
+    return res.status(500).json({ error: `Não foi possível salvar o certificado: ${e.message}` });
+  }
+  res.json({ ok: true });
 });
 app.put("/api/minha-empresa", requireCliente, (req, res) => {
   const empresaId = (req as any).user.empresaId;
@@ -11141,6 +11166,11 @@ function certAchaEmpresa(escritorioId: number, digitos: string | null, nomeBase:
     if (candidatos.length) return { certo: null, sugestoes: candidatos.slice(0, 5).map((c) => c.e) }; // nome nunca decide sozinho, só sugere
   }
   return { certo: null, sugestoes: [] };
+}
+// Também na inicialização (não só nesta rota): certSalvarNasDuasTelas grava essa coluna e é usado
+// por outras telas (ex.: certificado enviado pelo cliente na aba Empresa) — banco novo quebrava.
+if (!(sqlite.prepare(`PRAGMA table_info(nfe_busca_config)`).all() as any[]).some((c) => c.name === "origem_drive_file_id")) {
+  sqlite.exec(`ALTER TABLE nfe_busca_config ADD COLUMN origem_drive_file_id TEXT`);
 }
 app.get("/api/empresas/certificados-drive/candidatos", blockCliente, requireAdmin, async (req, res) => {
   const user = (req as any).user;

@@ -14895,7 +14895,33 @@ async function pageMinhaEmpresaConfig(){
         <button class="btn" id="mecCancelar" disabled>Cancelar</button>
       </div>
     </div>
+    <div class="card">
+      <div style="font-weight:600; margin-bottom:4px;">Certificado digital</div>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-2px;">${e.certificadoCadastrado?'Já existe um certificado salvo. Envie outro só se quiser trocar.':'Envie o certificado digital da empresa (arquivo .pfx ou .p12) e a senha.'}</p>
+      <div class="row" style="align-items:flex-end; gap:12px; flex-wrap:wrap;">
+        <div class="field grow" style="margin-bottom:0; min-width:240px;"><label>Arquivo do certificado</label><input type="file" id="mecCertArquivo" accept=".pfx,.p12"></div>
+        <div class="field" style="width:240px; margin-bottom:0;"><label>Senha do certificado</label><input type="password" id="mecCertSenha" autocomplete="new-password"></div>
+        <button class="btn primary" id="mecCertSalvar">Salvar</button>
+      </div>
+    </div>
   `;
+  // Certificado: só salva (sem tela de validação) — grava onde o escritório usa.
+  document.getElementById('mecCertSalvar').addEventListener('click', async ()=>{
+    const arq = document.getElementById('mecCertArquivo'), senha = document.getElementById('mecCertSenha');
+    [arq, senha].forEach(el=>el.style.borderColor='');
+    if(!arq.files.length){ arq.style.borderColor='var(--debit)'; arq.focus(); return toast('Selecione o arquivo do certificado.','err'); }
+    if(!senha.value){ senha.style.borderColor='var(--debit)'; senha.focus(); return toast('Informe a senha do certificado.','err'); }
+    const fd = new FormData();
+    fd.append('arquivo', arq.files[0]);
+    fd.append('senha', senha.value);
+    const btn = document.getElementById('mecCertSalvar');
+    btn.disabled = true;
+    try{
+      await api('/minha-empresa/certificado', { method:'POST', body:fd });
+      toast('Certificado salvo.','ok');
+      pageMinhaEmpresaConfig();
+    }catch(err){ btn.disabled = false; toast(err.message,'err'); }
+  });
   ligarTravaDocumento(document.getElementById('mecCnpj'), 'cnpj');
   ligarTravaDocumento(document.getElementById('mecRepCpf'), 'cpf');
   const REGIME_OPCOES = Object.entries(REGIME_TRIBUTARIO_LABELS).map(([id,label])=>({id,label}));
