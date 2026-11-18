@@ -3650,6 +3650,11 @@ const loginRateLimiter = rateLimit({
   limit: 10,
   standardHeaders: true,
   legacyHeaders: false,
+  // skipSuccessfulRequests: sem isso, todo login CERTO também contava pro limite de 10/15min por IP —
+  // um escritório inteiro atrás do mesmo IP (rede/NAT) estourava o limite só de uso normal do dia (vários
+  // logins certos de pessoas diferentes), travando todo mundo por até 15min mesmo sem nenhuma tentativa
+  // de invasão. Esse limitador é pra brute-force (senha errada repetida) — login certo nunca deveria contar.
+  skipSuccessfulRequests: true,
   message: { error: "Muitas tentativas de login. Aguarde alguns minutos e tente de novo." },
 });
 

@@ -1931,17 +1931,25 @@ function showLogin(){
 }
 document.getElementById('btnLogin').addEventListener('click', doLogin);
 document.getElementById('loginPassword').addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
+let loginEmAndamento = false;
 async function doLogin(){
+  // Trava clique duplo / Enter repetido — cada tentativa é 1 request contra o limite de tentativas de
+  // login por IP; sem isso, impaciência (duplo clique, Enter nervoso) já consumia parte do limite sozinha.
+  if(loginEmAndamento) return;
   const email=document.getElementById('loginEmail').value.trim();
   const password=document.getElementById('loginPassword').value;
   const errEl=document.getElementById('loginError');
+  const btnEl=document.getElementById('btnLogin');
   errEl.classList.add('hidden');
+  loginEmAndamento = true; btnEl.disabled = true; const txt0 = btnEl.textContent; btnEl.textContent = 'Entrando…';
   try{
     await api('/auth/login', { method:'POST', body:{ email, password } });
     await boot();
   }catch(e){
     errEl.textContent = e.message;
     errEl.classList.remove('hidden');
+  }finally{
+    loginEmAndamento = false; btnEl.disabled = false; btnEl.textContent = txt0;
   }
 }
 document.getElementById('btnLogout').addEventListener('click', async ()=>{
