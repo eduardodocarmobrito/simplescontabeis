@@ -5449,7 +5449,11 @@ app.put("/api/users/:id/config-abas", requireAdmin, (req, res) => {
   for (const aba of abas) stmt.run(userId, aba);
   res.json({ ok: true });
 });
-const PAGINAS_CLIENTE_VALIDAS = ["minha-nfse", "meus-documentos", "solicitar-documentos", "documentos-recebidos", "minha-financeiro", "minha-assinatura", "notas-entrada", "minha-reforma", "minha-webdfe", "minha-conciliacao", "minha-empresa-config"];
+// "minha-clientes" faltava aqui (achado 2026-11-18): o frontend já oferecia o checkbox "Clientes" em
+// PAGINAS_CLIENTE_TODAS, mas como não estava nesta allowlist o filter() do PUT abaixo descartava a
+// marcação silenciosamente — salvava, mas nunca gravava nada, e reabrir o modal mostrava desmarcado de
+// novo (porque de fato nunca tinha sido persistido).
+const PAGINAS_CLIENTE_VALIDAS = ["minha-nfse", "minha-clientes", "meus-documentos", "solicitar-documentos", "documentos-recebidos", "minha-financeiro", "minha-assinatura", "notas-entrada", "minha-reforma", "minha-webdfe", "minha-conciliacao", "minha-empresa-config"];
 app.get("/api/users/:id/paginas-cliente", requireAdmin, (req, res) => {
   if (!pertenceAoEscritorio(req, Number(req.params.id))) return res.status(404).json({ error: "Usuário não encontrado." });
   const rows = sqlite.prepare(`SELECT pagina FROM cliente_paginas_visiveis WHERE user_id = ?`).all(Number(req.params.id)) as any[];
