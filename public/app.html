@@ -23730,10 +23730,7 @@ function renderCfgDomGoogleDrive(box, sub, dados){
         <div class="field grow"><label>Client ID (do app OAuth do Google)</label><input id="gdClientId" value="${esc(g.clientId)}"></div>
         <div class="field grow"><label>Client Secret ${g.temClientSecret?'(já salvo — preencha só se quiser trocar)':''}</label><input id="gdClientSecret" type="password" placeholder="${g.temClientSecret?'••••••••':''}"></div>
       </div>
-      <div class="field"><label>Nome da pasta no Drive — notas tomadas/entradas (NF-e, NFC-e, NFS-e tomadas)</label><input id="gdPastaDestino" value="${esc(g.pastaDestino)}">
-        ${g.pastaDestinoId?`<div style="font-size:11.5px; margin-top:4px;"><a href="https://drive.google.com/drive/folders/${esc(g.pastaDestinoId)}" target="_blank" rel="noopener" class="link-discreto">Abrir pasta no Drive ↗</a></div>`:''}</div>
-      <div class="field"><label>Nome da pasta — NFS-e de serviços PRESTADOS (a empresa é a emitente)</label><input id="gdPastaDestinoServicos" value="${esc(g.pastaDestinoServicos||'Notas Fiscais Serviços Prestados - Clientes')}">
-        <div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">As NFS-e que a própria empresa emitiu vão pra esta pasta separada — pra não misturar com as notas que o Domínio importa como entrada.${g.pastaDestinoServicosId?` <a href="https://drive.google.com/drive/folders/${esc(g.pastaDestinoServicosId)}" target="_blank" rel="noopener" class="link-discreto">Abrir pasta no Drive ↗</a>`:''}</div></div>
+      <div style="font-size:12px; color:var(--ink-soft); margin:2px 0 10px;">O app cria sozinho as pastas no Drive (<b>${esc(g.pastaDestino)}</b>, organizadas por <b>código-apelido/competência</b>).${(g.pastaDestinoId||g.pastaDestinoServicosId)?` ${g.pastaDestinoId?`<a href="https://drive.google.com/drive/folders/${esc(g.pastaDestinoId)}" target="_blank" rel="noopener" class="link-discreto">Abrir pasta ↗</a>`:''}${g.pastaDestinoServicosId?` · <a href="https://drive.google.com/drive/folders/${esc(g.pastaDestinoServicosId)}" target="_blank" rel="noopener" class="link-discreto">Serviços prestados ↗</a>`:''}`:''}</div>
       <label class="checkbox-row"><input type="checkbox" id="gdAtivo" ${g.ativo?'checked':''}> Manter o Google Drive sincronizado automaticamente (desliga o OneDrive)</label>
       ${g.ultimaExportacaoEm?`<p style="font-size:12px; color:var(--ink-soft);">Última exportação: ${fmtDateHora(g.ultimaExportacaoEm)}${g.ultimoErro?` — <span style="color:var(--debit);">${esc(g.ultimoErro)}</span>`:''}</p>`:(g.ultimoErro?`<p style="font-size:12px; color:var(--debit);">${esc(g.ultimoErro)}</p>`:'')}
       <div class="row" style="margin-top:6px;">
@@ -23744,13 +23741,14 @@ function renderCfgDomGoogleDrive(box, sub, dados){
       <div id="gdResultado" style="margin-top:10px;"></div>
     </div>
   `;
-  habilitarSalvarAoMudar('btnSalvarGDrive', ['gdClientId','gdClientSecret','gdPastaDestino','gdPastaDestinoServicos','gdAtivo']);
+  habilitarSalvarAoMudar('btnSalvarGDrive', ['gdClientId','gdClientSecret','gdAtivo']);
   document.getElementById('btnSalvarGDrive').addEventListener('click', async ()=>{
     const body = {
       clientId: document.getElementById('gdClientId').value.trim(),
       clientSecret: document.getElementById('gdClientSecret').value,
-      pastaDestino: document.getElementById('gdPastaDestino').value.trim(),
-      pastaDestinoServicos: document.getElementById('gdPastaDestinoServicos').value.trim(),
+      // Nomes das pastas não são mais editáveis na tela — mantém os já salvos (padrão).
+      pastaDestino: g.pastaDestino,
+      pastaDestinoServicos: g.pastaDestinoServicos,
       ativo: document.getElementById('gdAtivo').checked,
     };
     try{ await api('/gdrive/config', { method:'PUT', body }); toast('Configuração salva.','ok'); renderCfgDominio(box); }
