@@ -33,6 +33,7 @@ import * as nfePdf from "./nfe-pdf";
 import * as ofx from "./ofx";
 import * as openFinance from "./open-finance";
 import * as onedrive from "./onedrive";
+import * as gdrive from "./gdrive";
 import * as integracontador from "./integracontador";
 import * as ocr from "./ocr";
 import { buscarViaOnvio } from "./onvio-sync";
@@ -1260,6 +1261,29 @@ sqlite.exec(`
     -- NFS-e de serviços PRESTADOS (a empresa é a prestadora/emitente) vão pra uma pasta separada, pra
     -- não misturar com as notas tomadas/entradas que o Domínio importa (senão dá erro na importação).
     pasta_destino_servicos TEXT NOT NULL DEFAULT 'Notas Fiscais Serviços Prestados - Clientes',
+    ativo INTEGER NOT NULL DEFAULT 0,
+    ultimo_id_exportado INTEGER NOT NULL DEFAULT 0,
+    oauth_state_pendente TEXT,
+    ultima_exportacao_em TEXT,
+    ultimo_erro TEXT,
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+
+  -- Exportação de XML pro Google Drive (OAuth de usuário, conta Google COMUM do escritório — os
+  -- arquivos ficam na cota dele). Alternativa ao OneDrive acima; o app cria a árvore de pastas que ele
+  -- mesmo gerencia (escopo drive.file). client_secret e refresh_token cifrados (AES-256-GCM, igual ao
+  -- resto). pasta_destino_id/servicos_id = ids das pastas-raiz já criadas (cache, evita recriar).
+  CREATE TABLE IF NOT EXISTS gdrive_config (
+    escritorio_id INTEGER PRIMARY KEY REFERENCES escritorios(id),
+    client_id TEXT,
+    client_secret_cifrado TEXT,
+    refresh_token_cifrado TEXT,
+    conta_nome TEXT,
+    conta_email TEXT,
+    pasta_destino TEXT NOT NULL DEFAULT 'Notas Fiscais - Clientes',
+    pasta_destino_servicos TEXT NOT NULL DEFAULT 'Notas Fiscais Serviços Prestados - Clientes',
+    pasta_destino_id TEXT,
+    pasta_destino_servicos_id TEXT,
     ativo INTEGER NOT NULL DEFAULT 0,
     ultimo_id_exportado INTEGER NOT NULL DEFAULT 0,
     oauth_state_pendente TEXT,
@@ -14375,6 +14399,201 @@ setInterval(() => {
   const configs = sqlite.prepare(`SELECT escritorio_id FROM onedrive_config WHERE ativo = 1 AND refresh_token_cifrado IS NOT NULL`).all() as any[];
   for (const c of configs) {
     onedriveExportarDocumentosNovos(c.escritorio_id).catch((e) => console.error("Erro na exportação automática pro OneDrive:", e.message));
+  }
+}, 5 * 60 * 1000);
+
+// ========================= Exportação de XML pro Google Drive =========================
+// Mesma ideia do OneDrive acima (cursor por id, roda no servidor), só que destino é o Google Drive da
+// conta do escritório (OAuth de usuário — conta Gmail comum). O app cria/gerencia a árvore de pastas
+// (escopo drive.file): raiz "Notas Fiscais - Clientes" (+ "...Serviços Prestados") e por baixo
+// "código-apelido/competência". Ver src/gdrive.ts.
+function getGdriveConfig(escritorioId: number): any {
+  return sqlite.prepare(`SELECT * FROM gdrive_config WHERE escritorio_id = ?`).get(escritorioId) || {};
+}
+app.get("/api/gdrive/config", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
+  const c = getGdriveConfig((req as any).user.escritorioId);
+  res.json({
+    clientId: c.client_id || "",
+    temClientSecret: !!c.client_secret_cifrado,
+    conectado: !!c.refresh_token_cifrado,
+    contaNome: c.conta_nome || null,
+    contaEmail: c.conta_email || null,
+    pastaDestino: c.pasta_destino || "Notas Fiscais - Clientes",
+    pastaDestinoServicos: c.pasta_destino_servicos || "Notas Fiscais Serviços Prestados - Clientes",
+    pastaDestinoId: c.pasta_destino_id || null,
+    pastaDestinoServicosId: c.pasta_destino_servicos_id || null,
+    ativo: !!c.ativo,
+    ultimaExportacaoEm: c.ultima_exportacao_em || null,
+    ultimoErro: c.ultimo_erro || null,
+  });
+});
+app.put("/api/gdrive/config", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
+  const escritorioId = (req as any).user.escritorioId;
+  const b = req.body || {};
+  const atual = getGdriveConfig(escritorioId);
+  // Trocar o NOME da pasta-raiz invalida o id em cache (o app vai criar/achar a nova pasta na próxima
+  // exportação) — senão continuaria subindo na pasta antiga mesmo depois de renomear.
+  const nomeNotas = b.pastaDestino || "Notas Fiscais - Clientes";
+  const nomeServicos = b.pastaDestinoServicos || "Notas Fiscais Serviços Prestados - Clientes";
+  const idNotas = nomeNotas === (atual.pasta_destino || "Notas Fiscais - Clientes") ? atual.pasta_destino_id || null : null;
+  const idServicos = nomeServicos === (atual.pasta_destino_servicos || "Notas Fiscais Serviços Prestados - Clientes") ? atual.pasta_destino_servicos_id || null : null;
+  const ativar = b.ativo ? 1 : 0;
+  // 1ª vez que liga: começa o cursor de onde o OneDrive parou (o histórico já exportado pro OneDrive o
+  // usuário move à mão; o rabo ainda não exportado vai pro Drive). Sem OneDrive usado antes, começa do
+  // último doc atual pra não despejar TODO o histórico no Drive.
+  let cursor = atual.ultimo_id_exportado || 0;
+  if (ativar && !atual.ativo && !atual.ultimo_id_exportado) {
+    const od = getOnedriveConfig(escritorioId);
+    const odCursor = od.ultimo_id_exportado || 0;
+    cursor = odCursor > 0 ? odCursor : ((sqlite.prepare(`SELECT MAX(id) AS m FROM nfe_documentos WHERE escritorio_id = ?`).get(escritorioId) as any)?.m || 0);
+  }
+  sqlite
+    .prepare(
+      `INSERT INTO gdrive_config (escritorio_id, client_id, client_secret_cifrado, pasta_destino, pasta_destino_servicos, pasta_destino_id, pasta_destino_servicos_id, ativo, ultimo_id_exportado, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(escritorio_id) DO UPDATE SET client_id=excluded.client_id, client_secret_cifrado=excluded.client_secret_cifrado,
+         pasta_destino=excluded.pasta_destino, pasta_destino_servicos=excluded.pasta_destino_servicos,
+         pasta_destino_id=excluded.pasta_destino_id, pasta_destino_servicos_id=excluded.pasta_destino_servicos_id,
+         ativo=excluded.ativo, ultimo_id_exportado=excluded.ultimo_id_exportado, updated_at=datetime('now')`
+    )
+    .run(
+      escritorioId,
+      b.clientId || null,
+      b.clientSecret ? nfse.cifrarTexto(String(b.clientSecret)) : atual.client_secret_cifrado || null,
+      nomeNotas,
+      nomeServicos,
+      idNotas,
+      idServicos,
+      ativar,
+      cursor
+    );
+  // "Tudo pro Google Drive, nada no OneDrive": ao ligar o Drive, desliga a exportação pro OneDrive.
+  if (ativar && !atual.ativo) sqlite.prepare(`UPDATE onedrive_config SET ativo = 0 WHERE escritorio_id = ?`).run(escritorioId);
+  res.json({ ok: true });
+});
+app.post("/api/gdrive/desconectar", blockCliente, requirePermissao("configuracoes", "editar"), (req, res) => {
+  sqlite.prepare(`UPDATE gdrive_config SET refresh_token_cifrado = NULL, conta_nome = NULL, conta_email = NULL WHERE escritorio_id = ?`).run((req as any).user.escritorioId);
+  res.json({ ok: true });
+});
+function gdriveRedirectUri(req: express.Request): string {
+  return `${req.protocol}://${req.get("host")}/api/gdrive/callback`;
+}
+app.get("/api/gdrive/conectar", requirePermissao("configuracoes", "editar"), (req, res) => {
+  const escritorioId = (req as any).user.escritorioId;
+  const cfg = getGdriveConfig(escritorioId);
+  if (!cfg.client_id || !cfg.client_secret_cifrado) {
+    return res.status(400).send("Configure o Client ID e o Client Secret do Google antes de conectar (Configurações › Domínio Web › Google Drive).");
+  }
+  const state = crypto.randomBytes(16).toString("hex");
+  sqlite.prepare(`UPDATE gdrive_config SET oauth_state_pendente = ? WHERE escritorio_id = ?`).run(state, escritorioId);
+  res.redirect(gdrive.montarUrlAutorizacao(cfg.client_id, gdriveRedirectUri(req), state));
+});
+app.get("/api/gdrive/callback", requirePermissao("configuracoes", "editar"), async (req, res) => {
+  const escritorioId = (req as any).user.escritorioId;
+  const cfg = getGdriveConfig(escritorioId);
+  const { code, state, error } = req.query as any;
+  if (error) return res.status(400).send(`Autorização recusada pelo Google: ${error}`);
+  if (!code || !state || state !== cfg.oauth_state_pendente) return res.status(400).send("Autorização inválida ou expirada — tente conectar de novo.");
+  try {
+    const clientSecret = nfse.decifrarTexto(cfg.client_secret_cifrado);
+    const token = await gdrive.trocarCodePorToken(cfg.client_id, clientSecret, code, gdriveRedirectUri(req));
+    if (!token.refreshToken) throw new Error("O Google não devolveu um refresh_token — confira se o app está publicado 'Em produção' e tente conectar de novo.");
+    let perfil: { nome: string | null; email: string | null } = { nome: null, email: null };
+    try { perfil = await gdrive.obterPerfil(token.accessToken); } catch { /* conexão já válida pelo refresh_token */ }
+    sqlite
+      .prepare(`UPDATE gdrive_config SET refresh_token_cifrado = ?, conta_nome = ?, conta_email = ?, oauth_state_pendente = NULL, ultimo_erro = NULL WHERE escritorio_id = ?`)
+      .run(nfse.cifrarTexto(token.refreshToken), perfil.nome, perfil.email, escritorioId);
+    res.send(`<html><body style="font-family:sans-serif; padding:40px; text-align:center;"><h2>Google Drive conectado!</h2><p>Conta: ${perfil.nome || perfil.email || ""}</p><p>Pode fechar esta aba e voltar pro Simples Contábeis.</p></body></html>`);
+  } catch (e: any) {
+    sqlite.prepare(`UPDATE gdrive_config SET oauth_state_pendente = NULL, ultimo_erro = ? WHERE escritorio_id = ?`).run(e.message, escritorioId);
+    res.status(400).send(`Falha ao conectar com o Google Drive: ${e.message}`);
+  }
+});
+async function gdriveExportarDocumentosNovos(escritorioId: number): Promise<{ novos: number }> {
+  const cfg = getGdriveConfig(escritorioId);
+  if (!cfg.ativo || !cfg.refresh_token_cifrado || !cfg.client_id || !cfg.client_secret_cifrado) return { novos: 0 };
+  let novos = 0;
+  try {
+    const clientSecret = nfse.decifrarTexto(cfg.client_secret_cifrado);
+    const refreshToken = nfse.decifrarTexto(cfg.refresh_token_cifrado);
+    const token = await gdrive.renovarAccessToken(cfg.client_id, clientSecret, refreshToken);
+    const accessToken = token.accessToken;
+    // Pastas-raiz (notas tomadas e serviços prestados) — acha/cria uma vez e guarda o id.
+    let notasRaizId = cfg.pasta_destino_id as string | null;
+    let servicosRaizId = cfg.pasta_destino_servicos_id as string | null;
+    const nomeNotas = cfg.pasta_destino || "Notas Fiscais - Clientes";
+    const nomeServicos = cfg.pasta_destino_servicos || "Notas Fiscais Serviços Prestados - Clientes";
+    // Cache de pastas por caminho dentro da raiz (ex.: "125-AGR/092026") pra não reconsultar o Drive.
+    const cachePasta = new Map<string, string>();
+    const garantirPasta = async (raizId: string, prefixo: string, partes: string[]): Promise<string> => {
+      let paiId = raizId;
+      let chave = prefixo;
+      for (const parte of partes) {
+        chave += "/" + parte;
+        let id = cachePasta.get(chave);
+        if (!id) { id = await gdrive.acharOuCriarPasta(accessToken, parte, paiId); cachePasta.set(chave, id); }
+        paiId = id;
+      }
+      return paiId;
+    };
+    let ultimoId = cfg.ultimo_id_exportado || 0;
+    for (;;) {
+      const rows = sqlite
+        .prepare(
+          `SELECT d.id, d.xml, d.tipo, d.chave_acesso as chaveAcesso, d.emitente_cnpj as emitenteCnpj, d.nsu, d.data_emissao as dataEmissao,
+                  e.nome as empresaNome, e.codigo_dominio as empresaCodigo, e.apelido as empresaApelido, e.cnpj as empresaCnpj
+           FROM nfe_documentos d JOIN empresas e ON e.id = d.empresa_id
+           WHERE d.escritorio_id = ? AND d.id > ?
+             AND (d.tipo != 'evento' OR d.xml LIKE '%<tpEvento>110111</tpEvento>%' OR d.xml LIKE '%<tpEvento>110112</tpEvento>%')
+           ORDER BY d.id ASC LIMIT 200`
+        )
+        .all(escritorioId, ultimoId) as any[];
+      if (!rows.length) break;
+      for (const doc of rows) {
+        if (doc.tipo === "cte") {
+          const tomador = nfePdf.extrairTomadorCteDocumento(doc.xml || "");
+          const empresaDig = String(doc.empresaCnpj || "").replace(/\D/g, "");
+          if (tomador && empresaDig && tomador !== empresaDig) { ultimoId = doc.id; continue; }
+        }
+        const competencia = doc.dataEmissao ? `${String(doc.dataEmissao).slice(5, 7)}${String(doc.dataEmissao).slice(0, 4)}` : "sem-data";
+        const pastaEmpresa = (doc.empresaCodigo && doc.empresaApelido ? `${doc.empresaCodigo}-${doc.empresaApelido}` : String(doc.empresaNome || "Sem empresa")).replace(/[\\/:*?"<>|]/g, "_");
+        const baseNome = String(doc.chaveAcesso || `doc-${doc.id}`).replace(/[\\/:*?"<>|]/g, "_");
+        const nomeArquivo = doc.tipo === "evento" ? `${baseNome}-cancelamento.xml` : `${baseNome}.xml`;
+        const ehServicoPrestado = doc.tipo === "nfse" && doc.emitenteCnpj && String(doc.emitenteCnpj).replace(/\D/g, "") === String(doc.empresaCnpj || "").replace(/\D/g, "");
+        let raizId: string;
+        if (ehServicoPrestado) {
+          if (!servicosRaizId) { servicosRaizId = await gdrive.acharOuCriarPasta(accessToken, nomeServicos, "root"); sqlite.prepare(`UPDATE gdrive_config SET pasta_destino_servicos_id = ? WHERE escritorio_id = ?`).run(servicosRaizId, escritorioId); }
+          raizId = servicosRaizId;
+        } else {
+          if (!notasRaizId) { notasRaizId = await gdrive.acharOuCriarPasta(accessToken, nomeNotas, "root"); sqlite.prepare(`UPDATE gdrive_config SET pasta_destino_id = ? WHERE escritorio_id = ?`).run(notasRaizId, escritorioId); }
+          raizId = notasRaizId;
+        }
+        const pastaFinalId = await garantirPasta(raizId, ehServicoPrestado ? "S" : "N", [pastaEmpresa, competencia]);
+        await gdrive.enviarArquivo(accessToken, pastaFinalId, nomeArquivo, Buffer.from(doc.xml, "utf8"));
+        ultimoId = doc.id;
+        novos++;
+      }
+      sqlite.prepare(`UPDATE gdrive_config SET ultimo_id_exportado = ?, ultima_exportacao_em = datetime('now'), ultimo_erro = NULL WHERE escritorio_id = ?`).run(ultimoId, escritorioId);
+      if (rows.length < 200) break;
+    }
+  } catch (e: any) {
+    sqlite.prepare(`UPDATE gdrive_config SET ultima_exportacao_em = datetime('now'), ultimo_erro = ? WHERE escritorio_id = ?`).run(e.message || String(e), escritorioId);
+    throw e;
+  }
+  return { novos };
+}
+app.post("/api/gdrive/exportar-agora", blockCliente, requirePermissao("configuracoes", "postar"), async (req, res) => {
+  try {
+    const r = await gdriveExportarDocumentosNovos((req as any).user.escritorioId);
+    res.json({ ok: true, novos: r.novos });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+setInterval(() => {
+  const configs = sqlite.prepare(`SELECT escritorio_id FROM gdrive_config WHERE ativo = 1 AND refresh_token_cifrado IS NOT NULL`).all() as any[];
+  for (const c of configs) {
+    gdriveExportarDocumentosNovos(c.escritorio_id).catch((e) => console.error("Erro na exportação automática pro Google Drive:", e.message));
   }
 }, 5 * 60 * 1000);
 

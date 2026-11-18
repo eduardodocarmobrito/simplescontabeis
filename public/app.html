@@ -22878,6 +22878,7 @@ const CFG_DOM_SUBABAS = [
   { id:'acesso', label:'Acesso' },
   { id:'exportar-xml', label:'Exportar XML' },
   { id:'relatorios', label:'Relatórios' },
+  { id:'gdrive', label:'Google Drive' },
   { id:'onedrive', label:'OneDrive' },
   { id:'historico', label:'Histórico' },
 ];
@@ -22896,7 +22897,7 @@ function habilitarSalvarAoMudar(btnId, fieldIds){
   });
 }
 async function renderCfgDominio(box){
-  const [{ items, agente, saudeOnvio }, cfg, oneDriveCfg, onvioSessao] = await Promise.all([ api('/dominio/sync-log'), api('/dominio/config'), api('/onedrive/config'), api('/dominio/onvio-sessao') ]);
+  const [{ items, agente, saudeOnvio }, cfg, oneDriveCfg, gDriveCfg, onvioSessao] = await Promise.all([ api('/dominio/sync-log'), api('/dominio/config'), api('/onedrive/config'), api('/gdrive/config'), api('/dominio/onvio-sessao') ]);
   box.innerHTML = `
     ${saudeOnvio && saudeOnvio.quebrado ? `
       <div class="alerta-critico">
@@ -22909,7 +22910,7 @@ async function renderCfgDominio(box){
     </div>
     <div id="cfgDomSubContent"></div>
   `;
-  const dados = { items, agente, saudeOnvio, cfg, oneDriveCfg, onvioSessao };
+  const dados = { items, agente, saudeOnvio, cfg, oneDriveCfg, gDriveCfg, onvioSessao };
   box.querySelectorAll('[data-domsubtab]').forEach(t=>t.addEventListener('click', ()=>{ CFG_DOM_SUBTAB=t.dataset.domsubtab; renderCfgDomSubTab(box, dados); }));
   renderCfgDomSubTab(box, dados);
 }
@@ -22918,6 +22919,7 @@ function renderCfgDomSubTab(box, dados){
   const sub = document.getElementById('cfgDomSubContent');
   if(CFG_DOM_SUBTAB==='exportar-xml') renderCfgDomXmlExport(box, sub, dados);
   else if(CFG_DOM_SUBTAB==='relatorios') renderCfgDomRelatorios(box, sub, dados);
+  else if(CFG_DOM_SUBTAB==='gdrive') renderCfgDomGoogleDrive(box, sub, dados);
   else if(CFG_DOM_SUBTAB==='onedrive') renderCfgDomOneDrive(box, sub, dados);
   else if(CFG_DOM_SUBTAB==='historico') renderCfgDomHistorico(sub, dados);
   else renderCfgDomAcesso(box, sub, dados);
@@ -23701,6 +23703,79 @@ async function abrirRoboMarcadasModal(tipo, titulo){
       </div>
     </div>
   `;
+}
+function renderCfgDomGoogleDrive(box, sub, dados){
+  const g = dados.gDriveCfg;
+  const redirectUri = location.origin + '/api/gdrive/callback';
+  sub.innerHTML = `
+    <div class="card">
+      <h3>Google Drive (direto da nuvem, sem depender do computador ligado)</h3>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">
+        O próprio servidor sobe os XML buscados direto pro Google Drive do escritório, organizados por
+        empresa (<b>código-apelido</b>) e competência — prontos pra importar no Domínio. Precisa de um
+        login Google do escritório (OAuth), passo único. Ao ligar aqui, a exportação pro OneDrive é desligada.
+      </p>
+      <p style="font-size:13px;">${g.conectado ? `<span class="tag ok">Conectado</span> ${esc(g.contaNome||g.contaEmail||'')}` : `<span class="tag bad">Não conectado</span>`}</p>
+      <details style="margin:4px 0 12px; font-size:12.5px;">
+        <summary style="cursor:pointer; font-weight:600;">Como criar o login Google (Client ID/Secret) — passo a passo</summary>
+        <ol style="color:var(--ink-soft); line-height:1.6; margin-top:8px;">
+          <li>Acesse o <a href="https://console.cloud.google.com/" target="_blank" rel="noopener" class="link-discreto">Google Cloud Console</a> logado na conta Google do escritório e crie (ou escolha) um projeto.</li>
+          <li>Ative a <b>Google Drive API</b> (APIs e serviços › Biblioteca › "Google Drive API" › Ativar).</li>
+          <li>Em <b>Tela de permissão OAuth</b>: tipo <b>Externo</b>; preencha o básico; em Escopos pode deixar vazio; adicione a conta do escritório como <b>usuário de teste</b> e depois <b>PUBLIQUE o app ("Em produção")</b> — senão o login expira a cada 7 dias.</li>
+          <li>Em <b>Credenciais › Criar credenciais › ID do cliente OAuth</b>, tipo <b>Aplicativo da Web</b>. Em <b>URIs de redirecionamento autorizados</b> cole exatamente:<br><code style="background:var(--paper); padding:2px 6px; border-radius:6px; display:inline-block; margin-top:4px;">${esc(redirectUri)}</code></li>
+          <li>Copie o <b>Client ID</b> e o <b>Client Secret</b> gerados e cole abaixo. Salve, depois clique em <b>Conectar</b>.</li>
+        </ol>
+      </details>
+      <div class="row">
+        <div class="field grow"><label>Client ID (do app OAuth do Google)</label><input id="gdClientId" value="${esc(g.clientId)}"></div>
+        <div class="field grow"><label>Client Secret ${g.temClientSecret?'(já salvo — preencha só se quiser trocar)':''}</label><input id="gdClientSecret" type="password" placeholder="${g.temClientSecret?'••••••••':''}"></div>
+      </div>
+      <div class="field"><label>Nome da pasta no Drive — notas tomadas/entradas (NF-e, NFC-e, NFS-e tomadas)</label><input id="gdPastaDestino" value="${esc(g.pastaDestino)}">
+        ${g.pastaDestinoId?`<div style="font-size:11.5px; margin-top:4px;"><a href="https://drive.google.com/drive/folders/${esc(g.pastaDestinoId)}" target="_blank" rel="noopener" class="link-discreto">Abrir pasta no Drive ↗</a></div>`:''}</div>
+      <div class="field"><label>Nome da pasta — NFS-e de serviços PRESTADOS (a empresa é a emitente)</label><input id="gdPastaDestinoServicos" value="${esc(g.pastaDestinoServicos||'Notas Fiscais Serviços Prestados - Clientes')}">
+        <div style="font-size:11.5px; color:var(--ink-soft); margin-top:4px;">As NFS-e que a própria empresa emitiu vão pra esta pasta separada — pra não misturar com as notas que o Domínio importa como entrada.${g.pastaDestinoServicosId?` <a href="https://drive.google.com/drive/folders/${esc(g.pastaDestinoServicosId)}" target="_blank" rel="noopener" class="link-discreto">Abrir pasta no Drive ↗</a>`:''}</div></div>
+      <label class="checkbox-row"><input type="checkbox" id="gdAtivo" ${g.ativo?'checked':''}> Manter o Google Drive sincronizado automaticamente (desliga o OneDrive)</label>
+      ${g.ultimaExportacaoEm?`<p style="font-size:12px; color:var(--ink-soft);">Última exportação: ${fmtDateHora(g.ultimaExportacaoEm)}${g.ultimoErro?` — <span style="color:var(--debit);">${esc(g.ultimoErro)}</span>`:''}</p>`:(g.ultimoErro?`<p style="font-size:12px; color:var(--debit);">${esc(g.ultimoErro)}</p>`:'')}
+      <div class="row" style="margin-top:6px;">
+        <button class="btn primary" id="btnSalvarGDrive" disabled>Salvar</button>
+        <a class="btn" href="/api/gdrive/conectar">${g.conectado?'Reconectar':'Conectar com o Google'}</a>
+        ${g.conectado?'<button class="btn danger" id="btnDesconectarGDrive">Desconectar</button><button class="btn" id="btnExportarGDriveAgora">Exportar agora</button>':''}
+      </div>
+      <div id="gdResultado" style="margin-top:10px;"></div>
+    </div>
+  `;
+  habilitarSalvarAoMudar('btnSalvarGDrive', ['gdClientId','gdClientSecret','gdPastaDestino','gdPastaDestinoServicos','gdAtivo']);
+  document.getElementById('btnSalvarGDrive').addEventListener('click', async ()=>{
+    const body = {
+      clientId: document.getElementById('gdClientId').value.trim(),
+      clientSecret: document.getElementById('gdClientSecret').value,
+      pastaDestino: document.getElementById('gdPastaDestino').value.trim(),
+      pastaDestinoServicos: document.getElementById('gdPastaDestinoServicos').value.trim(),
+      ativo: document.getElementById('gdAtivo').checked,
+    };
+    try{ await api('/gdrive/config', { method:'PUT', body }); toast('Configuração salva.','ok'); renderCfgDominio(box); }
+    catch(e){ toast(e.message,'err'); }
+  });
+  const btnDesconectarGDrive = document.getElementById('btnDesconectarGDrive');
+  if(btnDesconectarGDrive) btnDesconectarGDrive.addEventListener('click', async ()=>{
+    if(!confirmar('Desconectar o Google Drive? A exportação automática para de funcionar até você conectar de novo.')) return;
+    try{ await api('/gdrive/desconectar', { method:'POST' }); toast('Desconectado.','ok'); renderCfgDominio(box); }
+    catch(e){ toast(e.message,'err'); }
+  });
+  const btnExportarGDriveAgora = document.getElementById('btnExportarGDriveAgora');
+  if(btnExportarGDriveAgora) btnExportarGDriveAgora.addEventListener('click', async ()=>{
+    const resultado = document.getElementById('gdResultado');
+    btnExportarGDriveAgora.disabled = true; btnExportarGDriveAgora.textContent = 'Exportando…';
+    resultado.innerHTML = `<div class="empty-state">Enviando pro Google Drive…</div>`;
+    try{
+      const r = await api('/gdrive/exportar-agora', { method:'POST' });
+      resultado.innerHTML = `<div class="tag ok">Concluído</div> <span style="font-size:12.5px;">${r.novos} documento(s) novo(s) enviado(s).</span>`;
+    }catch(e){
+      resultado.innerHTML = `<div class="tag bad">Falhou</div> <span style="font-size:12.5px;">${esc(e.message)}</span>`;
+    }finally{
+      btnExportarGDriveAgora.disabled = false; btnExportarGDriveAgora.textContent = 'Exportar agora';
+    }
+  });
 }
 function renderCfgDomOneDrive(box, sub, dados){
   const { oneDriveCfg } = dados;
