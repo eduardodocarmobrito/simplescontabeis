@@ -12464,6 +12464,7 @@ function clienteRecorrenteServicosModal(cliente, modelosAtivos, aoSalvar){
               <td>${fmtMoney(i.valorServico)}</td>
               <td><span class="tag ${i.ativo?'ok':'muted'}">${i.ativo?'Sim':'Não'}</span></td>
               <td style="text-align:right; white-space:nowrap;">
+                <button class="btn small" data-act="editar">Editar</button>
                 <button class="btn small" data-act="toggle">${i.ativo?'Desativar':'Ativar'}</button>
                 <button class="btn small" data-act="excluir" style="color:var(--debit);">Excluir</button>
               </td>
@@ -12472,11 +12473,12 @@ function clienteRecorrenteServicosModal(cliente, modelosAtivos, aoSalvar){
         </tbody>
       </table>
       </div>
-      <div style="margin-top:16px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Adicionar serviço</div>
+      <div id="crsFormTitulo" style="margin-top:16px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Adicionar serviço</div>
       <div class="row">
         <div class="field grow"><label>Modelo de serviço</label>${comboSelectHtml('crsModeloCombo','Digite para buscar…')}</div>
         <div class="field" style="width:140px;"><label>Valor</label><input id="crsValor" inputmode="numeric" placeholder="0,00"></div>
         <button class="btn" id="btnCrsAdd" style="margin-bottom:5px;">+ Adicionar</button>
+        <button class="btn" id="btnCrsCancelarEdit" style="margin-bottom:5px; display:none;">Cancelar</button>
       </div>
       <div class="field"><label>Descrição (opcional — "{{mes_competencia}}" vira o mês/ano na hora de emitir)</label><input id="crsDescricao" placeholder="Referente ao Mês {{mes_competencia}}"></div>
       <div class="modal-actions"><button class="btn primary" onclick="closeModal()">Fechar</button></div>
@@ -12490,20 +12492,57 @@ function clienteRecorrenteServicosModal(cliente, modelosAtivos, aoSalvar){
     ligar();
   }
   function ligar(){
+    let editId = null;   // null = modo "Adicionar"; id = modo "Salvar edição" do item
+    const comboModelo = ()=>document.getElementById('crsModeloCombo');
+    function setModeloCombo(modeloId){
+      const c = comboModelo(); if(!c) return;
+      const m = modelosAtivos.find(x=>x.id===modeloId);
+      c.querySelector('.combo-input').value = m?m.nome:'';
+      c.querySelector('.combo-value').value = m?m.id:'';
+    }
+    function sairModoEdicao(){
+      editId = null;
+      document.getElementById('crsFormTitulo').textContent = 'Adicionar serviço';
+      document.getElementById('btnCrsAdd').textContent = '+ Adicionar';
+      document.getElementById('btnCrsCancelarEdit').style.display = 'none';
+      setModeloCombo(null);
+      document.getElementById('crsValor').value = '';
+      document.getElementById('crsDescricao').value = '';
+    }
     setupComboSelect('crsModeloCombo', modelosAtivos.map(m=>({id:m.id, label:m.nome})), ()=>{});
     ligarMascaraMoeda(document.getElementById('crsValor'));
+    document.getElementById('btnCrsCancelarEdit').addEventListener('click', sairModoEdicao);
     document.getElementById('btnCrsAdd').addEventListener('click', async ()=>{
       const modeloId = Number(document.querySelector('#crsModeloCombo .combo-value').value);
       const valorServico = moedaInputParaNumero(document.getElementById('crsValor'));
       if(!modeloId || !valorServico){ toast('Escolha o modelo e informe o valor.','err'); return; }
       const descricaoServico = document.getElementById('crsDescricao').value.trim()||undefined;
       try{
-        await api('/minha-empresa/clientes-recorrentes/'+cliente.id+'/itens', { method:'POST', body:{ modeloId, valorServico, descricaoServico } });
-        toast('Serviço adicionado.','ok');
+        if(editId){
+          const atual = cliente.itens.find(x=>x.id===editId);
+          await api('/minha-empresa/clientes-recorrentes/itens/'+editId, { method:'PUT', body:{ modeloId, valorServico, descricaoServico: descricaoServico||'', ativo: atual?atual.ativo:true } });
+          toast('Serviço atualizado.','ok');
+        }else{
+          await api('/minha-empresa/clientes-recorrentes/'+cliente.id+'/itens', { method:'POST', body:{ modeloId, valorServico, descricaoServico } });
+          toast('Serviço adicionado.','ok');
+        }
         await recarregar();
         aoSalvar();
       }catch(e){ toast(e.message,'err'); }
     });
+    document.getElementById('crsBody').querySelectorAll('[data-act="editar"]').forEach(b=>b.addEventListener('click', e=>{
+      const id = Number(e.target.closest('tr').dataset.id);
+      const it = cliente.itens.find(x=>x.id===id);
+      if(!it) return;
+      editId = id;
+      document.getElementById('crsFormTitulo').textContent = 'Editar serviço';
+      document.getElementById('btnCrsAdd').textContent = 'Salvar edição';
+      document.getElementById('btnCrsCancelarEdit').style.display = '';
+      setModeloCombo(it.modeloId);
+      document.getElementById('crsValor').value = Number(it.valorServico).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+      document.getElementById('crsDescricao').value = it.descricaoServico||'';
+      document.getElementById('crsFormTitulo').scrollIntoView({ behavior:'smooth', block:'center' });
+    }));
     document.getElementById('crsBody').querySelectorAll('[data-act="toggle"]').forEach(b=>b.addEventListener('click', async e=>{
       const id = Number(e.target.closest('tr').dataset.id);
       const i = cliente.itens.find(x=>x.id===id);
