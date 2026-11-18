@@ -5113,9 +5113,12 @@ app.put("/api/minha-empresa/email-config", requireCliente, requireModuloAtivo("n
 app.post("/api/minha-empresa/email-config/testar", requireCliente, requireModuloAtivo("nfse"), requireModuloAtivo("envio_notas_email"), async (req, res) => {
   const user = (req as any).user;
   try {
+    const cfgTeste = getEmailConfigEmpresa(user.empresaId);
+    const empTeste = sqlite.prepare(`SELECT nome FROM empresas WHERE id = ?`).get(user.empresaId) as any;
+    const nomeTeste = String(cfgTeste?.from_name || empTeste?.nome || "").trim();
     await enviarEmailComoEmpresa(user.empresaId, {
       to: [user.email],
-      subject: "Teste de envio — Simples Contábeis",
+      subject: nomeTeste ? `Teste de envio — ${nomeTeste}` : "Teste de envio de e-mail",
       text: "Se você recebeu este e-mail, a configuração de envio das suas notas fiscais está funcionando corretamente.",
     });
     res.json({ ok: true });
