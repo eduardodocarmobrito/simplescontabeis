@@ -3794,7 +3794,7 @@ function getTransporterEmpresa(empresaId: number) {
 }
 async function enviarEmailComoEmpresa(empresaId: number, opts: { to: string[]; subject: string; text: string; attachments?: { filename: string; content: Buffer }[] }) {
   const t = getTransporterEmpresa(empresaId);
-  if (!t) throw new Error("E-mail de envio não configurado — configure em NFS-e > Emissão Automática.");
+  if (!t) throw new Error("E-mail de envio não configurado — configure em NFS-e > Configuração > E-mail de envio.");
   const c = getEmailConfigEmpresa(empresaId);
   const empresa = sqlite.prepare(`SELECT nome FROM empresas WHERE id = ?`).get(empresaId) as any;
   const fromName = c.from_name || empresa?.nome || "";
@@ -5087,14 +5087,14 @@ app.put("/api/minha-empresa", requireCliente, (req, res) => {
 // configurar o certificado/município (NFS-e > Configuração) fica atrás do módulo 'nfse' — sem ele a
 // rotina ia falhar todo mês sem nenhum certificado configurado. Emissão Automática não faz sentido sem
 // a base de NFS-e já funcionando.
-app.get("/api/minha-empresa/email-config", requireCliente, requireModuloAtivo("nfse"), requireModuloAtivo("nfse_automatica"), (req, res) => {
+app.get("/api/minha-empresa/email-config", requireCliente, requireModuloAtivo("nfse"), (req, res) => {
   const empresaId = (req as any).user.empresaId;
   const c = sqlite
     .prepare(`SELECT smtp_host as smtpHost, smtp_port as smtpPort, smtp_secure as smtpSecure, smtp_user as smtpUser, from_name as fromName, from_email as fromEmail FROM cliente_email_config WHERE empresa_id = ?`)
     .get(empresaId) as any;
   res.json({ smtpHost: c?.smtpHost || "", smtpPort: c?.smtpPort || 587, smtpSecure: !!c?.smtpSecure, smtpUser: c?.smtpUser || "", fromName: c?.fromName || "", fromEmail: c?.fromEmail || "", configurado: emailConfiguradoEmpresa(empresaId) });
 });
-app.put("/api/minha-empresa/email-config", requireCliente, requireModuloAtivo("nfse"), requireModuloAtivo("nfse_automatica"), (req, res) => {
+app.put("/api/minha-empresa/email-config", requireCliente, requireModuloAtivo("nfse"), (req, res) => {
   const empresaId = (req as any).user.empresaId;
   const { smtpHost, smtpPort, smtpSecure, smtpUser, smtpPassword, fromName, fromEmail } = req.body || {};
   if (!smtpHost || !smtpUser) return res.status(400).json({ error: "Preencha pelo menos o servidor SMTP e o usuário." });
@@ -5110,13 +5110,13 @@ app.put("/api/minha-empresa/email-config", requireCliente, requireModuloAtivo("n
     .run(empresaId, smtpHost.trim(), Number(smtpPort) || 587, smtpSecure ? 1 : 0, smtpUser.trim(), smtpPassword || existente?.smtp_password || null, (fromName || "").trim() || null, (fromEmail || "").trim() || null);
   res.json({ ok: true });
 });
-app.post("/api/minha-empresa/email-config/testar", requireCliente, requireModuloAtivo("nfse"), requireModuloAtivo("nfse_automatica"), async (req, res) => {
+app.post("/api/minha-empresa/email-config/testar", requireCliente, requireModuloAtivo("nfse"), async (req, res) => {
   const user = (req as any).user;
   try {
     await enviarEmailComoEmpresa(user.empresaId, {
       to: [user.email],
       subject: "Teste de envio — Simples Contábeis",
-      text: "Se você recebeu este e-mail, a configuração de envio da Emissão Automática está funcionando corretamente.",
+      text: "Se você recebeu este e-mail, a configuração de envio das suas notas fiscais está funcionando corretamente.",
     });
     res.json({ ok: true });
   } catch (e: any) {
@@ -21168,6 +21168,56 @@ app.post("/api/nfse/agendamento/emissoes/:id/reenviar-documento", blockCliente, 
   }
 });
 
+// ---- Enviar a nota emitida por e-mail pro tomador (cliente, pedido 2026-11-18) ----
+// Sempre pela conta de e-mail DA EMPRESA-CLIENTE (cliente_email_config, NFS-e › Configuração) — nunca
+// pelo e-mail do escritório. Destino sugerido: e-mail do cadastro em "Clientes" (mesmo CPF/CNPJ do
+// tomador) ou, sem cadastro, o e-mail digitado na emissão.
+function minhaNfseEmailSugerido(empresaId: number, emissao: any): string {
+  const doc = String(emissao.tomador_documento || "").replace(/\D/g, "");
+  const cad = doc
+    ? (sqlite.prepare(`SELECT email FROM cliente_recorrentes WHERE empresa_id = ? AND replace(replace(replace(documento,'.',''),'/',''),'-','') = ? AND email IS NOT NULL AND email != '' ORDER BY ativo DESC, id DESC LIMIT 1`).get(empresaId, doc) as any)
+    : null;
+  return String(cad?.email || emissao.tomador_email || "").trim();
+}
+app.get("/api/nfse/minha-empresa/emissoes/:id/email-destino", requireCliente, requireModuloAtivo("nfse"), (req, res) => {
+  const empresaId = (req as any).user.empresaId;
+  const emissao = sqlite.prepare(`SELECT * FROM nfse_emissoes WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), empresaId) as any;
+  if (!emissao) return res.status(404).json({ error: "Nota não encontrada." });
+  res.json({ email: minhaNfseEmailSugerido(empresaId, emissao), configurado: emailConfiguradoEmpresa(empresaId), tomadorNome: emissao.tomador_nome });
+});
+app.post("/api/nfse/minha-empresa/emissoes/:id/enviar-email", requireCliente, requireModuloAtivo("nfse"), async (req, res) => {
+  const empresaId = (req as any).user.empresaId;
+  const emissao = sqlite.prepare(`SELECT * FROM nfse_emissoes WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), empresaId) as any;
+  if (!emissao) return res.status(404).json({ error: "Nota não encontrada." });
+  if (emissao.status !== "emitida") return res.status(400).json({ error: "Só dá pra enviar nota emitida." });
+  if (!emailConfiguradoEmpresa(empresaId)) return res.status(400).json({ error: "Configure primeiro o e-mail de envio em NFS-e › Configuração." });
+  // Aceita mais de um e-mail separado por vírgula/ponto e vírgula; valida cada um.
+  const destinos = String(req.body?.email || minhaNfseEmailSugerido(empresaId, emissao))
+    .split(/[;,\s]+/)
+    .map((e) => e.trim())
+    .filter(Boolean);
+  if (!destinos.length) return res.status(400).json({ error: "Informe o e-mail do cliente." });
+  const invalido = destinos.find((e) => !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e));
+  if (invalido) return res.status(400).json({ error: `E-mail inválido: ${invalido}` });
+  try {
+    const { pdf, erro } = await nfseObterDanfsePdf(emissao);
+    if (!pdf) throw new Error(erro || "PDF da nota indisponível no momento.");
+    const anexos: { filename: string; content: Buffer }[] = [{ filename: nfseNomeArquivo(emissao, "pdf"), content: pdf }];
+    if (emissao.xml_nfse) anexos.push({ filename: nfseNomeArquivo(emissao, "xml"), content: Buffer.from(emissao.xml_nfse, "utf8") });
+    const empresa = sqlite.prepare(`SELECT nome FROM empresas WHERE id = ?`).get(empresaId) as any;
+    const numero = emissao.numero_nfse ? ` nº ${emissao.numero_nfse}` : "";
+    const valor = Number(emissao.valor_servico || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+    await enviarEmailComoEmpresa(empresaId, {
+      to: destinos,
+      subject: `Nota Fiscal de Serviço${numero} — ${empresa?.nome || ""}`.trim(),
+      text: `Olá, ${emissao.tomador_nome || ""}!\n\nSegue em anexo a Nota Fiscal de Serviço${numero} (PDF e XML).\n\nServiço: ${emissao.descricao_servico || ""}\nValor: ${valor}\n\n${empresa?.nome || ""}`,
+      attachments: anexos,
+    });
+    res.json({ ok: true, enviadoPara: destinos });
+  } catch (e: any) {
+    res.status(400).json({ error: `Não consegui enviar o e-mail: ${e.message}` });
+  }
+});
 app.post("/api/nfse/minha-empresa/emitir", requireCliente, requireModuloAtivo('nfse'), async (req, res) => {
   const user = (req as any).user;
   const v = nfseValidarEntrada(user, { ...req.body, empresaId: user.empresaId });

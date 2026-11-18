@@ -12251,7 +12251,7 @@ function renderMinhaNfseTabs(){
   main().querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===MINHA_NFSE_TAB));
   if(MINHA_NFSE_TAB==='notas') renderMinhaNfseNotas();
   else if(MINHA_NFSE_TAB==='modelos') renderMinhaNfseModelos();
-  else if(MINHA_NFSE_TAB==='config') renderMinhaNfseConfig();
+  else if(MINHA_NFSE_TAB==='config') renderMinhaNfseConfig().then(()=>{ if(MINHA_NFSE_TAB==='config') renderMinhaEmailEnvio(); });
   else if(MINHA_NFSE_TAB==='automatica') renderMinhaNfseAutomatica();
   else renderMinhaNfseEmitir();
 }
@@ -13013,6 +13013,106 @@ const MNF_NOTAS_STATUS_OPCOES = [
   {id:'rascunho', label:'Rascunho'},
   {id:'cancelada', label:'Cancelada'},
 ];
+// Envia a nota emitida pro e-mail do tomador pela conta de e-mail DA EMPRESA (NFS-e › Configuração).
+// O e-mail já vem preenchido do cadastro em "Clientes" (mesmo CPF/CNPJ) ou do que foi digitado na emissão.
+async function minhaNfseEnviarEmailModal(id){
+  let info;
+  try{ info = await api('/nfse/minha-empresa/emissoes/'+id+'/email-destino'); }catch(e){ return toast(e.message,'err'); }
+  if(!info.configurado){
+    openModal(`<h3>Configure o e-mail de envio</h3><p style="color:var(--ink-soft);">Pra enviar a nota pro seu cliente, configure antes a conta de e-mail da sua empresa em <b>NFS-e › Configuração › E-mail de envio</b>.</p>
+      <div class="modal-actions"><button class="btn" onclick="closeModal()">Fechar</button><button class="btn primary" id="mneIrConfig">Configurar agora</button></div>`, '480px');
+    document.getElementById('mneIrConfig').addEventListener('click', ()=>{ closeModal(); MINHA_NFSE_TAB='config'; renderMinhaNfseTabs(); });
+    return;
+  }
+  openModal(`
+    <h3>Enviar nota por e-mail</h3>
+    <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-4px;">Vai o PDF e o XML da nota${info.tomadorNome?' de <b>'+esc(info.tomadorNome)+'</b>':''}. Pra mais de um e-mail, separe por vírgula.</p>
+    <div class="field"><label>E-mail do cliente</label><input id="mneEmail" type="text" value="${esc(info.email||'')}" placeholder="cliente@exemplo.com"></div>
+    ${info.email?'':'<p style="font-size:12px; color:var(--ink-soft); margin:-6px 0 10px;">Esse cliente não tem e-mail no cadastro — dá pra salvar o e-mail dele em <b>Clientes</b> pra vir preenchido da próxima vez.</p>'}
+    <div class="modal-actions"><button class="btn" id="mneCancelar">Cancelar</button><button class="btn primary" id="mneEnviar">Enviar</button></div>
+  `, '480px');
+  const inp = document.getElementById('mneEmail');
+  inp.focus();
+  document.getElementById('mneCancelar').addEventListener('click', closeModal);
+  document.getElementById('mneEnviar').addEventListener('click', async ()=>{
+    inp.style.borderColor='';
+    if(!inp.value.trim()){ inp.style.borderColor='var(--debit)'; inp.focus(); return toast('Informe o e-mail do cliente.','err'); }
+    const btn = document.getElementById('mneEnviar');
+    btn.disabled = true; btn.textContent = 'Enviando…';
+    try{
+      const r = await api('/nfse/minha-empresa/emissoes/'+id+'/enviar-email', { method:'POST', body:{ email: inp.value.trim() } });
+      closeModal();
+      toast('Nota enviada para '+r.enviadoPara.join(', ')+'.','ok');
+    }catch(e){ btn.disabled = false; btn.textContent = 'Enviar'; inp.style.borderColor='var(--debit)'; toast(e.message,'err'); }
+  });
+}
+// Quadro "E-mail de envio" na aba Configuração (cliente) — mesma configuração da Emissão Automática,
+// mas disponível pra quem só tem o módulo NFS-e. É a conta DA EMPRESA-CLIENTE, não a do escritório.
+async function renderMinhaEmailEnvio(){
+  const box = document.getElementById('nfseContent');
+  if(!box) return;
+  let cfg;
+  try{ cfg = await api('/minha-empresa/email-config'); }catch(e){ return; }
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.innerHTML = `
+    <h3>E-mail de envio</h3>
+    <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-4px;">É por esta conta que a nota sai pro e-mail do seu cliente (botão "Enviar por e-mail" em Notas emitidas). Use o e-mail da SUA empresa — não é o seu login do sistema.</p>
+    <div class="row">
+      <div class="field grow"><label>Servidor SMTP</label><input id="meeHost" value="${esc(cfg.smtpHost||'')}" placeholder="smtp.gmail.com"></div>
+      <div class="field" style="width:120px;"><label>Porta</label><input id="meePort" type="number" value="${cfg.smtpPort||587}"></div>
+      <div class="field" style="width:190px;"><label>Segurança</label>
+        <select id="meeSecure"><option value="0" ${!cfg.smtpSecure?'selected':''}>STARTTLS (porta 587)</option><option value="1" ${cfg.smtpSecure?'selected':''}>SSL/TLS (porta 465)</option></select>
+      </div>
+    </div>
+    <div class="row">
+      <div class="field grow"><label>Usuário (seu e-mail)</label><input id="meeUser" value="${esc(cfg.smtpUser||'')}" placeholder="voce@suaempresa.com"></div>
+      <div class="field grow"><label>Senha de aplicativo</label><input id="meeSenha" type="password" autocomplete="new-password" placeholder="${cfg.configurado?'•••••••• (deixe em branco pra manter)':''}"></div>
+    </div>
+    <div class="row">
+      <div class="field grow"><label>Nome do remetente (opcional)</label><input id="meeFromName" value="${esc(cfg.fromName||'')}"></div>
+      <div class="field grow"><label>E-mail do remetente (opcional — padrão é o usuário acima)</label><input id="meeFromEmail" value="${esc(cfg.fromEmail||'')}"></div>
+    </div>
+    <p style="font-size:11.5px; color:var(--ink-soft);">Gmail: servidor <b>smtp.gmail.com</b>, porta <b>587</b>, STARTTLS — e a senha precisa ser uma <b>senha de app</b> (myaccount.google.com › Segurança › Senhas de app; exige verificação em duas etapas ligada). Outlook/Hotmail: <b>smtp-mail.outlook.com</b>, porta 587.</p>
+    <div class="row" style="gap:8px;">
+      <button class="btn primary" id="meeSalvar" disabled>Salvar e-mail</button>
+      <button class="btn" id="meeCancelar" disabled>Cancelar</button>
+      <button class="btn" id="meeTestar" ${cfg.configurado?'':'disabled'}>Enviar e-mail de teste</button>
+    </div>
+    <div id="meeResultado" style="margin-top:10px;"></div>
+  `;
+  box.appendChild(card);
+  const ids = ['meeHost','meePort','meeSecure','meeUser','meeSenha','meeFromName','meeFromEmail'];
+  const valores = ()=>ids.map(i=>document.getElementById(i).value).join('|');
+  const inicial = valores();
+  const sujo = ()=>{ const m = valores()!==inicial; document.getElementById('meeSalvar').disabled = !m; document.getElementById('meeCancelar').disabled = !m; };
+  ids.forEach(i=>{ const el = document.getElementById(i); el.addEventListener('input', sujo); el.addEventListener('change', sujo); });
+  document.getElementById('meeSecure').addEventListener('change', e=>{ document.getElementById('meePort').value = e.target.value==='1' ? 465 : 587; sujo(); });
+  document.getElementById('meeCancelar').addEventListener('click', ()=>{ card.remove(); renderMinhaEmailEnvio(); });
+  document.getElementById('meeSalvar').addEventListener('click', async ()=>{
+    const host = document.getElementById('meeHost'), user = document.getElementById('meeUser'), senha = document.getElementById('meeSenha');
+    [host,user,senha].forEach(el=>el.style.borderColor='');
+    if(!host.value.trim()){ host.style.borderColor='var(--debit)'; host.focus(); return toast('Informe o servidor SMTP.','err'); }
+    if(!user.value.trim()){ user.style.borderColor='var(--debit)'; user.focus(); return toast('Informe o usuário (seu e-mail).','err'); }
+    if(!cfg.configurado && !senha.value){ senha.style.borderColor='var(--debit)'; senha.focus(); return toast('Informe a senha de aplicativo.','err'); }
+    try{
+      await api('/minha-empresa/email-config', { method:'PUT', body:{
+        smtpHost: host.value.trim(), smtpPort: Number(document.getElementById('meePort').value)||587, smtpSecure: document.getElementById('meeSecure').value==='1',
+        smtpUser: user.value.trim(), smtpPassword: senha.value||undefined,
+        fromName: document.getElementById('meeFromName').value.trim(), fromEmail: document.getElementById('meeFromEmail').value.trim(),
+      }});
+      toast('E-mail de envio salvo.','ok');
+      card.remove(); renderMinhaEmailEnvio();
+    }catch(e){ toast(e.message,'err'); }
+  });
+  document.getElementById('meeTestar').addEventListener('click', async ()=>{
+    const btn = document.getElementById('meeTestar'), resultado = document.getElementById('meeResultado');
+    btn.disabled = true; btn.textContent = 'Enviando…';
+    try{ await api('/minha-empresa/email-config/testar', { method:'POST' }); resultado.innerHTML = `<span class="tag ok">E-mail de teste enviado — confira a caixa de entrada.</span>`; }
+    catch(e){ resultado.innerHTML = `<span class="tag bad">${esc(e.message)}</span>`; }
+    finally{ btn.disabled = false; btn.textContent = 'Enviar e-mail de teste'; }
+  });
+}
 async function renderMinhaNfseNotas(){
   const { dataDe, dataAte, status } = MINHA_NFSE_NOTAS_FILTRO;
   const qs = new URLSearchParams();
@@ -13048,6 +13148,7 @@ async function renderMinhaNfseNotas(){
                 ${n.status==='rascunho'?`<button class="btn small" data-id="${n.id}" data-act="continuar">Continuar</button> <button class="btn small" data-id="${n.id}" data-act="excluir">Excluir</button>`:''}
                 ${n.status!=='rascunho'?`<button class="btn small" data-id="${n.id}" data-act="duplicar">Duplicar</button>`:''}
                 ${n.status==='emitida'||n.status==='cancelada'?`<button class="btn small" data-id="${n.id}" data-act="baixar-xml">XML</button> <button class="btn small" data-id="${n.id}" data-act="baixar-pdf">PDF</button>`:''}
+                ${n.status==='emitida'?`<button class="btn small" data-id="${n.id}" data-act="enviar-email" title="Envia o PDF e o XML desta nota pro e-mail do seu cliente">Enviar por e-mail</button>`:''}
                 ${n.status==='emitida'?`<button class="btn small" data-id="${n.id}" data-act="consulta-governo" title="Confere se esta nota existe no Sistema Nacional NFS-e (governo)">Consultar no governo</button>`:''}
                 ${n.status==='emitida'?`<button class="btn small" data-id="${n.id}" data-act="cancelar" style="color:var(--debit);">Cancelar</button>`:''}
               </td>
@@ -13114,6 +13215,7 @@ async function renderMinhaNfseNotas(){
     window.open('/api/nfse/minha-empresa/emissoes/'+b.dataset.id+'/danfse', '_blank');
   }));
   box.querySelectorAll('[data-act="consulta-governo"]').forEach(b=>b.addEventListener('click', ()=>nfseConsultaGovernoModal(Number(b.dataset.id), b)));
+  box.querySelectorAll('[data-act="enviar-email"]').forEach(b=>b.addEventListener('click', ()=>minhaNfseEnviarEmailModal(Number(b.dataset.id))));
   box.querySelectorAll('[data-act="cancelar"]').forEach(b=>b.addEventListener('click', ()=>{
     const n = items.find(i=>i.id===Number(b.dataset.id));
     minhaNfseCancelarModal(n);
