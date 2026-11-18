@@ -12761,6 +12761,7 @@ async function renderMinhaNfseEmitir(){
       </div>
       <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Tomador do serviço</div>
       ${clientesAtivos.length? `<div class="field"><label>Cliente cadastrado (opcional — preenche os campos abaixo)</label>${comboSelectHtml('mnfEmiClienteCombo','Digite para buscar em Clientes…')}</div>` : ''}
+      <div class="checkbox-row" style="margin:2px 0 10px;"><input type="checkbox" id="mnfEmiCadastrarCliente" checked> <label for="mnfEmiCadastrarCliente" style="cursor:pointer;">Cadastrar na base de Clientes <span style="color:var(--ink-soft); font-weight:400;">— se marcado, o tomador abaixo é salvo em Clientes ao emitir (não duplica se já existir).</span></label></div>
       <div class="row">
         <div class="field grow"><label>CPF ou CNPJ</label><input id="mnfEmiDocTomador" placeholder="Só números"></div>
         <div class="field grow"><label>Nome / Razão social</label><input id="mnfEmiNomeTomador"></div>
@@ -12918,6 +12919,22 @@ async function renderMinhaNfseEmitir(){
       },
     };
   }
+  // Se a flag "Cadastrar na base de Clientes" estiver marcada, salva o tomador em Clientes
+  // ao emitir — sem duplicar quem já existe (casa por documento, ou por nome quando sem documento).
+  async function cadastrarTomadorEmClientes(tomador){
+    const chk = document.getElementById('mnfEmiCadastrarCliente');
+    if(!chk || !chk.checked) return;
+    const doc = (tomador.documento||'').replace(/\D/g,'');
+    const nomeNorm = normalizaTxt(tomador.nome||'');
+    const jaExiste = clientesCadastrados.some(c=> doc ? (c.documento||'').replace(/\D/g,'')===doc : normalizaTxt(c.nome||'')===nomeNorm );
+    if(jaExiste) return;
+    try{
+      const novo = { nome:tomador.nome, documento:doc||null, email:tomador.email||null, telefone:tomador.telefone||null, endereco:tomador.logradouro||null, cidade:document.getElementById('mnfEmiCidade').value.trim()||null, uf:document.getElementById('mnfEmiUf').value.trim()||null, cep:tomador.cep||null };
+      const r = await api('/minha-empresa/clientes-recorrentes', { method:'POST', body:novo });
+      clientesCadastrados.push({ id:r.id, ...novo, ativo:true });
+      toast('Tomador também cadastrado em Clientes.','ok');
+    }catch(e){ /* não trava a emissão por causa do cadastro — nota já foi emitida */ }
+  }
   document.getElementById('btnSalvarMinhaNfse').addEventListener('click', async ()=>{
     const body = lerFormulario();
     if(!body.tomador.documento || !body.tomador.nome){ toast('Preencha o documento e o nome do tomador.','err'); return; }
@@ -12957,6 +12974,7 @@ async function renderMinhaNfseEmitir(){
         minhaNfseCancelarModal({ id:r.emissaoId, tomadorNome:body.tomador.nome, valorServico:body.servico.valor });
       });
       toast('NFS-e emitida com sucesso.','ok');
+      await cadastrarTomadorEmClientes(body.tomador);
       nfseLimparFormularioEmissao('mnfEmi');
       document.getElementById('btnSalvarMinhaNfse').textContent = 'Salvar como rascunho';
     }catch(e){
