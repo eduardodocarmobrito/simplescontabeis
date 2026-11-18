@@ -2150,7 +2150,8 @@ const PAGINAS_CLIENTE_RESTRINGIVEIS = ['minha-nfse','minha-clientes','meus-docum
 // marcada = vê todas"; ficam escondidas por padrão até o admin marcar.
 // Toda aba ligada a um módulo (PAGINA_CLIENTE_MODULO) é opt-in: só aparece pro cliente quando o admin
 // marca explicitamente. Assim um módulo ligado no escritório NÃO vaza pro cliente pelo "vê todas".
-// As abas básicas (Meus Documentos, Solicitar, Recebidos, Assinatura) seguem no "nenhuma marcada = vê todas".
+// As abas básicas (Documentos a serem enviados, Solicitar, Recebidos, Assinatura): com qualquer aba marcada,
+// o cliente vê só as marcadas; sem nenhuma marcada, vê as básicas (cliente ainda não configurado).
 const PAGINAS_CLIENTE_OPTIN = new Set(['minha-nfse','minha-clientes','minha-financeiro','minha-webdfe','notas-entrada','minha-reforma','minha-conciliacao','minha-empresa-config']);
 const PAGINAS_CLIENTE_TODAS = [
   { id:'minha-nfse', label:'NFS-e', optin:true },
@@ -2199,9 +2200,10 @@ function podeVerModulo(item){
       // Opt-in: só aparece se liberada explicitamente (padrão escondida), independente do resto.
       if(PAGINAS_CLIENTE_OPTIN.has(item.id)) return marcadas.includes(item.id);
       if(PAGINAS_CLIENTE_RESTRINGIVEIS.includes(item.id)){
-        // As opt-in marcadas não contam como "restrição" das demais (que seguem "nada marcado = vê todas").
-        const restr = marcadas.filter(id=>!PAGINAS_CLIENTE_OPTIN.has(id));
-        return restr.length ? restr.includes(item.id) : true;
+        // Usuário configurado (qualquer aba marcada, básica ou de módulo) vê SÓ o que está marcado
+        // (pedido 2026-11-18). Sem nada marcado (cliente recém-criado/auto-cadastro) vê as básicas, pra
+        // não entrar com o menu vazio.
+        return marcadas.length ? marcadas.includes(item.id) : true;
       }
     }
     return true;
@@ -20805,7 +20807,7 @@ async function usuarioModal(u){
       ${checklistComFiltroHtml('usCliEmp', empresas, [])}
       ${u? `<div style="margin-top:14px;">
         <div style="font-size:12px; font-weight:600; margin-bottom:4px;">Abas visíveis pro cliente</div>
-        <p style="font-size:11.5px; color:var(--ink-soft); margin:-2px 0 10px;">As abas de módulo ficam escondidas por padrão — marque pra liberar pro cliente. As abas básicas seguem a regra "nenhuma marcada = vê todas".</p>
+        <p style="font-size:11.5px; color:var(--ink-soft); margin:-2px 0 10px;">O cliente vê só as abas marcadas. Se nenhuma aba estiver marcada, ele vê apenas as abas básicas.</p>
         <div style="font-size:11px; font-weight:700; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.04em; margin:0 0 5px;">Abas básicas</div>
         <div class="checkbox-grid" style="grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); row-gap:2px;">${PAGINAS_CLIENTE_TODAS.filter(p=>!p.optin).map(p=>`<label class="checkbox-row"><input type="checkbox" class="usPaginaCliente" value="${p.id}"> ${esc(p.label)}</label>`).join('')}</div>
         <div style="font-size:11px; font-weight:700; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.04em; margin:13px 0 5px;">Abas de módulo <span style="font-weight:500; text-transform:none; letter-spacing:0;">— só aparecem se marcadas</span></div>
