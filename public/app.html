@@ -8746,7 +8746,8 @@ async function nfseConsultaGovernoModal(id, btn){
   const rotulo = btn ? btn.textContent : '';
   if(btn){ btn.disabled = true; btn.textContent = 'Consultando…'; }
   try{
-    const r = await api('/nfse/emissoes/'+id+'/consulta-governo');
+    const rota = STATE.user.perfil==='Cliente' ? '/nfse/minha-empresa/emissoes/'+id+'/consulta-governo' : '/nfse/emissoes/'+id+'/consulta-governo';
+    const r = await api(rota);
     const cnpj = v=>String(v||'').replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/,'$1.$2.$3/$4-$5');
     const linhas = r.existe ? `
       <p style="margin:0 0 10px;"><span class="tag ok">✓ A nota EXISTE no Sistema Nacional NFS-e</span></p>

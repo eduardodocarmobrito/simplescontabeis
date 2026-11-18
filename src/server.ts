@@ -20305,6 +20305,26 @@ app.get("/api/nfse/minha-empresa/emissoes/:id/danfse", requireCliente, requireMo
     res.status(500).json({ error: e.message });
   }
 });
+app.get("/api/nfse/minha-empresa/emissoes/:id/consulta-governo", requireCliente, requireModuloAtivo('nfse'), async (req, res) => {
+  const user = (req as any).user;
+  const row = sqlite.prepare(`SELECT * FROM nfse_emissoes WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), user.empresaId) as any;
+  if (!row) return res.status(404).json({ error: "Emissão não encontrada." });
+  if (!row.chave_acesso) return res.status(400).json({ error: "Esta emissão não tem chave de acesso (não foi aceita pelo governo)." });
+  const empresa = sqlite.prepare(`SELECT nome, cnpj FROM empresas WHERE id = ?`).get(row.empresa_id) as any;
+  const config = sqlite.prepare(`SELECT metodo_assinatura FROM nfse_empresa_config WHERE empresa_id = ?`).get(row.empresa_id) as any;
+  let cert: nfse.CertificadoInfo;
+  try {
+    ({ cert } = nfseCertificadoParaEmpresa(row.empresa_id, config?.metodo_assinatura));
+  } catch (e: any) {
+    return res.status(400).json({ error: e.message });
+  }
+  try {
+    const r = await nfse.consultarNfsePorChave(row.ambiente as nfse.AmbienteNfse, row.chave_acesso, cert);
+    res.json({ ...r, chaveAcesso: row.chave_acesso, ambiente: row.ambiente, statusNoSite: row.status, numeroNoSite: row.numero_nfse, cnpjPrestadorNoSite: (empresa?.cnpj || "").replace(/\D/g, "") });
+  } catch (e: any) {
+    res.status(502).json({ error: "Não foi possível consultar o governo agora: " + e.message });
+  }
+});
 app.get("/api/nfse/minha-empresa/baixar-lote", requireCliente, requireModuloAtivo('nfse'), async (req, res) => {
   const empresaId = (req as any).user.empresaId;
   const ids = String(req.query.ids || "")
