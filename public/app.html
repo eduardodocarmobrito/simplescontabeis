@@ -20805,8 +20805,11 @@ async function usuarioModal(u){
       ${checklistComFiltroHtml('usCliEmp', empresas, [])}
       ${u? `<div style="margin-top:14px;">
         <div style="font-size:12px; font-weight:600; margin-bottom:4px;">Abas visíveis pro cliente</div>
-        <p style="font-size:11.5px; color:var(--ink-soft); margin:-2px 0 8px;">As abas de módulo marcadas com <b>(só aparece se marcada)</b> ficam escondidas por padrão — marque pra liberar pro cliente. As abas básicas (sem esse aviso) seguem a regra "nenhuma marcada = vê todas".</p>
-        <div class="checkbox-grid">${PAGINAS_CLIENTE_TODAS.map(p=>`<label class="checkbox-row"><input type="checkbox" class="usPaginaCliente" value="${p.id}"> ${esc(p.label)}${p.optin?' <span style="color:var(--ink-soft); font-size:10.5px;">(só aparece se marcada)</span>':''}</label>`).join('')}</div>
+        <p style="font-size:11.5px; color:var(--ink-soft); margin:-2px 0 10px;">As abas de módulo ficam escondidas por padrão — marque pra liberar pro cliente. As abas básicas seguem a regra "nenhuma marcada = vê todas".</p>
+        <div style="font-size:11px; font-weight:700; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.04em; margin:0 0 5px;">Abas básicas</div>
+        <div class="checkbox-grid" style="grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); row-gap:2px;">${PAGINAS_CLIENTE_TODAS.filter(p=>!p.optin).map(p=>`<label class="checkbox-row"><input type="checkbox" class="usPaginaCliente" value="${p.id}"> ${esc(p.label)}</label>`).join('')}</div>
+        <div style="font-size:11px; font-weight:700; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.04em; margin:13px 0 5px;">Abas de módulo <span style="font-weight:500; text-transform:none; letter-spacing:0;">— só aparecem se marcadas</span></div>
+        <div class="checkbox-grid" style="grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); row-gap:2px;">${PAGINAS_CLIENTE_TODAS.filter(p=>p.optin).map(p=>`<label class="checkbox-row"><input type="checkbox" class="usPaginaCliente" value="${p.id}"> ${esc(p.label)}</label>`).join('')}</div>
       </div>` : ''}
     </div>
     ${u? `<label class="checkbox-row"><input type="checkbox" id="usAtivo" ${u.ativo?'checked':''}> Ativo</label>`:''}
@@ -20844,7 +20847,7 @@ async function usuarioModal(u){
       <button class="btn" id="usCancel">Cancelar</button>
       <button class="btn primary" id="usSalvar">Salvar</button>
     </div>
-  `, '760px');
+  `, '880px');
   setupChecklistFiltro('usCliEmp');
   setupChecklistFiltro('usColabEmp');
   const perfilSel = document.getElementById('usPerfil');
