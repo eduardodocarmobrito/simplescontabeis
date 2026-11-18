@@ -12459,9 +12459,9 @@ function clienteRecorrenteServicosModal(cliente, modelosAtivos, aoSalvar){
           ${itens.length? itens.map(i=>{
             const modelo = modelosAtivos.find(m=>m.id===i.modeloId);
             return `<tr data-id="${i.id}">
-              <td>${esc(modelo?modelo.nome:'—')}</td>
+              <td style="white-space:nowrap;">${esc(modelo?modelo.nome:'—')}</td>
               <td>${esc(i.descricaoServico)}</td>
-              <td>${fmtMoney(i.valorServico)}</td>
+              <td style="white-space:nowrap;">${fmtMoney(i.valorServico)}</td>
               <td><span class="tag ${i.ativo?'ok':'muted'}">${i.ativo?'Sim':'Não'}</span></td>
               <td style="text-align:right; white-space:nowrap;">
                 <button class="btn small" data-act="editar">Editar</button>
@@ -12488,7 +12488,7 @@ function clienteRecorrenteServicosModal(cliente, modelosAtivos, aoSalvar){
     const { items } = await api('/minha-empresa/clientes-recorrentes');
     const atualizado = items.find(c=>c.id===cliente.id);
     cliente = atualizado || cliente;
-    openModal(montarHtml(cliente.itens), '720px');
+    openModal(montarHtml(cliente.itens), 'min(1200px, 95vw)');
     ligar();
   }
   function ligar(){
@@ -12556,7 +12556,7 @@ function clienteRecorrenteServicosModal(cliente, modelosAtivos, aoSalvar){
       catch(err){ toast(err.message,'err'); }
     }));
   }
-  openModal(montarHtml(cliente.itens), '720px');
+  openModal(montarHtml(cliente.itens), 'min(1200px, 95vw)');
   ligar();
 }
 // Página de menu "Clientes" — cadastro dos tomadores do cliente direto (pra quem ele emite nota),
