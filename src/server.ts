@@ -5178,7 +5178,11 @@ app.post("/api/minha-empresa/clientes-recorrentes/:id/itens", requireCliente, re
   if (!cliente) return res.status(404).json({ error: "Cliente recorrente não encontrado." });
   const { modeloId, descricaoServico, valorServico } = req.body || {};
   if (!modeloId || !valorServico) return res.status(400).json({ error: "Escolha o modelo de serviço e informe o valor." });
-  const modelo = sqlite.prepare(`SELECT 1 FROM nfse_modelos WHERE id = ? AND empresa_id = ?`).get(modeloId, empresaId);
+  // Aceita tanto o modelo PRÓPRIO da empresa quanto o modelo do CATÁLOGO do escritório liberado pra ela
+  // (empresa_id IS NULL) — mesma regra do dropdown e da emissão (ver ~19857). Antes só aceitava empresa_id=?,
+  // então um modelo do catálogo (o caso comum) caía em "Modelo de serviço inválido".
+  const escritorioId = (req as any).user.escritorioId ?? (sqlite.prepare(`SELECT escritorio_id FROM empresas WHERE id = ?`).get(empresaId) as any)?.escritorio_id;
+  const modelo = sqlite.prepare(`SELECT 1 FROM nfse_modelos WHERE id = ? AND ((empresa_id IS NULL AND escritorio_id = ?) OR empresa_id = ?)`).get(modeloId, escritorioId, empresaId);
   if (!modelo) return res.status(400).json({ error: "Modelo de serviço inválido." });
   const info = sqlite
     .prepare(`INSERT INTO cliente_recorrente_itens (cliente_recorrente_id, modelo_id, descricao_servico, valor_servico) VALUES (?, ?, ?, ?)`)
@@ -5194,7 +5198,8 @@ app.put("/api/minha-empresa/clientes-recorrentes/itens/:itemId", requireCliente,
   if (!item) return res.status(404).json({ error: "Item não encontrado." });
   const { modeloId, descricaoServico, valorServico, ativo } = req.body || {};
   if (modeloId) {
-    const modelo = sqlite.prepare(`SELECT 1 FROM nfse_modelos WHERE id = ? AND empresa_id = ?`).get(modeloId, empresaId);
+    const escritorioId = (req as any).user.escritorioId ?? (sqlite.prepare(`SELECT escritorio_id FROM empresas WHERE id = ?`).get(empresaId) as any)?.escritorio_id;
+    const modelo = sqlite.prepare(`SELECT 1 FROM nfse_modelos WHERE id = ? AND ((empresa_id IS NULL AND escritorio_id = ?) OR empresa_id = ?)`).get(modeloId, escritorioId, empresaId);
     if (!modelo) return res.status(400).json({ error: "Modelo de serviço inválido." });
   }
   sqlite
@@ -21294,7 +21299,9 @@ app.post("/api/nfse/minha-empresa/rascunhos/:id/emitir", requireCliente, require
   if (!existente) return res.status(404).json({ error: "Rascunho não encontrado." });
   if (!["rascunho", "rejeitada", "erro"].includes(existente.status)) return res.status(409).json({ error: "Esta emissão já foi transmitida." });
   if (!existente.modelo_id) return res.status(400).json({ error: "Este rascunho não tem um modelo de serviço válido — edite antes de emitir." });
-  const modelo = sqlite.prepare(`SELECT * FROM nfse_modelos WHERE id = ? AND ativo = 1 AND empresa_id = ?`).get(existente.modelo_id, user.empresaId) as any;
+  // Aceita modelo próprio OU do catálogo do escritório liberado (empresa_id IS NULL) — mesma regra da emissão direta (~19857).
+  const escritorioId = user.escritorioId ?? (sqlite.prepare(`SELECT escritorio_id FROM empresas WHERE id = ?`).get(user.empresaId) as any)?.escritorio_id;
+  const modelo = sqlite.prepare(`SELECT * FROM nfse_modelos WHERE id = ? AND ativo = 1 AND ((empresa_id IS NULL AND escritorio_id = ?) OR empresa_id = ?)`).get(existente.modelo_id, escritorioId, user.empresaId) as any;
   if (!modelo) return res.status(404).json({ error: "O modelo de serviço deste rascunho não existe mais ou está inativo." });
   const tomador = {
     documento: existente.tomador_documento,
