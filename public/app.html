@@ -2257,6 +2257,25 @@ function renderNav(){
     wrap.insertAdjacentHTML('beforeend', `<a class="nav-item" href="/deskcomm-login">CRM (deskcomm)</a>`);
   }
 }
+// Achado 2026-11-18: o polling de "pagamento confirmou" (assinatura do Cliente e da Plataforma) só
+// recarregava a PRÓPRIA tela (lista de módulos daquela página) — STATE.modulosAtivos/funcionalidades
+// (quem decide o que aparece no menu lateral) ficava do jeito que estava no login, então o item de menu
+// do módulo recém-pago só aparecia depois de um F5/relogin manual, mesmo o backend já tendo liberado o
+// acesso sozinho na hora. Reconsulta /auth/me e redesenha o menu, sem precisar recarregar a página toda.
+async function atualizarMenuAposPagamento(){
+  try{
+    const data = await api('/auth/me');
+    STATE.permissoes = data.permissoes || {};
+    STATE.configAbas = data.configAbas || null;
+    STATE.paginasCliente = data.paginasCliente || null;
+    STATE.funcionalidades = data.funcionalidades || null;
+    STATE.revendaVendidas = data.revendaVendidas || [];
+    STATE.revendaLiberadas = data.revendaLiberadas || [];
+    STATE.modulosOcultos = data.modulosOcultos || [];
+    STATE.modulosAtivos = data.modulosAtivos || null;
+    renderNav();
+  }catch(e){ /* ignora falha pontual — o menu só fica desatualizado até o próximo refresh/login */ }
+}
 function goPage(id){
   STATE.page=id;
   renderNav();
@@ -15148,6 +15167,7 @@ async function renderMinhaAssinatura(moduloFiltro){
           if(todosLiberados){
             clearInterval(ASSINATURA_POLL); ASSINATURA_POLL=null;
             toast('Pagamento confirmado!','ok');
+            await atualizarMenuAposPagamento();
             renderMinhaAssinatura();
           }
         }catch(e){ /* ignora falha pontual de rede no polling */ }
@@ -23864,6 +23884,7 @@ async function renderCfgAssinaturaPlataforma(box){
           if(todosLiberados){
             clearInterval(CFG_ASSINATURA_POLL); CFG_ASSINATURA_POLL=null;
             toast('Pagamento confirmado!','ok');
+            await atualizarMenuAposPagamento();
             renderCfgAssinaturaPlataforma(box);
           }
         }catch(e){ /* ignora falha pontual de rede no polling */ }
