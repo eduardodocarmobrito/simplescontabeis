@@ -20126,8 +20126,11 @@ app.get("/api/nfse/minha-empresa", requireCliente, requireModuloAtivo('nfse'), (
   const empresaId = (req as any).user.empresaId;
   const row = sqlite
     .prepare(
-      `SELECT c.habilitado, c.metodo_assinatura as metodoAssinatura, c.codigo_municipio as codigoMunicipio, c.nome_municipio as nomeMunicipio,
-              c.inscricao_municipal as inscricaoMunicipal, c.opcao_simples_nacional as opcaoSimplesNacional,
+      `SELECT c.habilitado, c.metodo_assinatura as metodoAssinatura,
+              COALESCE(c.codigo_municipio, e.codigo_municipio_ibge) as codigoMunicipio,
+              COALESCE(c.nome_municipio, e.nome_municipio_ibge) as nomeMunicipio,
+              COALESCE(c.inscricao_municipal, e.inscricao_municipal) as inscricaoMunicipal,
+              c.opcao_simples_nacional as opcaoSimplesNacional,
               c.regime_especial_trib as regimeEspecialTrib, c.regime_apuracao_sn as regimeApuracaoSn, c.percentual_total_tributos_sn as percentualTotalTributosSn,
               ((SELECT 1 FROM nfe_busca_config nb WHERE nb.empresa_id = e.id) IS NOT NULL
                 OR (SELECT 1 FROM nfse_certificados nc WHERE nc.empresa_id = e.id) IS NOT NULL) as temCertificadoProprio,
