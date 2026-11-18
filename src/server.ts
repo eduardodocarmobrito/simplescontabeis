@@ -26605,6 +26605,7 @@ app.get("/api/externa/v1", (_req, res) => {
       { metodo: "GET", caminho: "/api/externa/v1/documentos/{tipo}/{docId}/download", descricao: "Baixa o PDF de um documento específico (o docId vem do downloadUrl da listagem acima)." },
       { metodo: "GET", caminho: "/api/externa/v1/xml?competencia=AAAA-MM", descricao: "Lista os documentos fiscais (NF-e/NFC-e/NFS-e/CT-e) capturados da empresa no período, com downloadUrl pro XML de cada um. Aceita também dataDe/dataAte, tipo (nfe/nfce/nfse/cte/evento), direcao (emitida/recebida) e busca. Exige o módulo de Busca de XML contratado pelo escritório." },
       { metodo: "GET", caminho: "/api/externa/v1/xml/{id}/download", descricao: "Baixa o XML de um documento específico (o id vem da listagem acima)." },
+      { metodo: "GET", caminho: "/api/externa/v1/xml/dashboard?competencia=AAAA-MM&direcao=recebida", descricao: "Resumo do período (mesmo da tela Busca de XML): KPIs (total/recebidas ou emitidas/autorizadas/canceladas/com IBS-CBS), marcadores do \"Perfil das Notas\" e impostos (ICMS/PIS/COFINS/IPI/IBS/CBS)." },
       { metodo: "GET", caminho: "/api/externa/v1/reforma?de=AAAA-MM-DD&ate=AAAA-MM-DD", descricao: "Auditoria IBS/CBS (Reforma Tributária) das NF-e de entrada (ou saída, com direcao=saida) da empresa no período. Sem período = últimos ~3 meses. Exige o módulo de Reforma Tributária contratado pelo escritório." },
       { metodo: "POST", caminho: "/api/externa/v1/retencoes/importar", descricao: 'Recebe um relatório de retenções já pronto, calculado do lado do sistema parceiro. Corpo: {"periodo":{"dataDe":"AAAA-MM-DD","dataAte":"AAAA-MM-DD"},"itens":[{"numeroNfse":"123","emitenteNome":"...","emitenteCnpj":"00000000000000","dataEmissao":"AAAA-MM-DD","valorServico":0,"inss":0,"irrf":0,"pis":0,"cofins":0,"csll":0,"iss":0}]} — mesmo formato de GET /retencoes. Fica registrado para conferência em Integrações.' },
     ],
@@ -26651,6 +26652,8 @@ app.get("/api/externa/v1/xml", requireApiExterna("busca_xml"), (req, res) => {
       destinatarioCnpj: it.destinatarioCnpj, destinatarioNome: it.destinatarioNome,
       valorTotal: it.valorTotal, dataEmissao: it.dataEmissao, direcao: it.direcao,
       notaCancelada: it.notaCancelada, numeroNfse: it.numeroNfse,
+      flags: it.flags || "", qtdItens: it.qtdItens || 0, temMdfe: !!it.temMdfe,
+      integradoFinanceiro: !!it.integradoFinanceiro, valorIbs: it.valorIbs || 0, valorCbs: it.valorCbs || 0,
       downloadUrl: `${base}/api/externa/v1/xml/${it.id}/download`,
     })),
     geradoEm: new Date().toISOString(),
@@ -26664,6 +26667,17 @@ app.get("/api/externa/v1/xml/:id/download", requireApiExterna("busca_xml"), (req
   res.setHeader("Content-Type", "application/xml; charset=utf-8");
   res.setHeader("Content-Disposition", `attachment; filename="${row.chave_acesso || row.nsu}.xml"`);
   res.send(row.xml);
+});
+// Resumo/"Perfil das Notas" do período (mesmo cálculo da tela de Busca de XML — nfeCalcularDashboard),
+// restrito à empresa da chave: KPIs (total/recebidas/emitidas/autorizadas/canceladas/com IBS-CBS),
+// marcadores (medicamento, combustível, rastreável, ICMS-ST, MDF-e, duplicatas, financeiro...) e
+// impostos do período (ICMS/PIS/COFINS/IPI/IBS/CBS).
+app.get("/api/externa/v1/xml/dashboard", requireApiExterna("busca_xml"), (req, res) => {
+  const k = (req as any).apiKey;
+  if (!escritorioTemModulo(k.escritorio_id, "busca_xml_nfe")) return res.status(402).json({ error: "Módulo de Busca de XML não contratado pelo escritório." });
+  const { dataDe, dataAte } = apiExternaIntervaloCompetencia(req);
+  const direcao = req.query.direcao === "emitida" ? "emitida" : "recebida";
+  res.json({ periodo: { dataDe, dataAte }, direcao, ...nfeCalcularDashboard((req as any).apiUser, k.empresa_id, dataDe, dataAte, direcao), geradoEm: new Date().toISOString() });
 });
 // Reforma Tributária: mesmo cálculo de auditoria IBS/CBS do painel (reformaCalcularAuditoria), restrito
 // à empresa da chave. Exige o módulo "reforma" contratado pelo escritório, igual à tela.
