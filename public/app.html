@@ -22879,7 +22879,6 @@ const CFG_DOM_SUBABAS = [
   { id:'exportar-xml', label:'Exportar XML' },
   { id:'relatorios', label:'Relatórios' },
   { id:'gdrive', label:'Google Drive' },
-  { id:'onedrive', label:'OneDrive' },
   { id:'historico', label:'Histórico' },
 ];
 let CFG_DOM_SUBTAB = 'acesso';
@@ -22920,7 +22919,6 @@ function renderCfgDomSubTab(box, dados){
   if(CFG_DOM_SUBTAB==='exportar-xml') renderCfgDomXmlExport(box, sub, dados);
   else if(CFG_DOM_SUBTAB==='relatorios') renderCfgDomRelatorios(box, sub, dados);
   else if(CFG_DOM_SUBTAB==='gdrive') renderCfgDomGoogleDrive(box, sub, dados);
-  else if(CFG_DOM_SUBTAB==='onedrive') renderCfgDomOneDrive(box, sub, dados);
   else if(CFG_DOM_SUBTAB==='historico') renderCfgDomHistorico(sub, dados);
   else renderCfgDomAcesso(box, sub, dados);
 }
