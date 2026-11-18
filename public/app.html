@@ -13032,9 +13032,9 @@ async function renderMinhaEmailEnvio(){
     <h3>E-mail de envio</h3>
     <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-4px;">É por esta conta que a nota sai pro e-mail do seu cliente (botão "Enviar por e-mail" em Notas emitidas). Use o e-mail da SUA empresa — não é o seu login do sistema.</p>
     <div class="row">
-      <div class="field grow"><label>Servidor SMTP</label><input id="meeHost" value="${esc(cfg.smtpHost||'')}" placeholder="smtp.gmail.com"></div>
+      <div class="field" style="width:340px; max-width:100%;"><label>Servidor SMTP</label><input id="meeHost" value="${esc(cfg.smtpHost||'')}" placeholder="smtp.gmail.com"></div>
       <div class="field" style="width:120px;"><label>Porta</label><input id="meePort" type="number" value="${cfg.smtpPort||587}"></div>
-      <div class="field" style="width:190px;"><label>Segurança</label>
+      <div class="field" style="width:260px;"><label>Segurança</label>
         <select id="meeSecure"><option value="0" ${!cfg.smtpSecure?'selected':''}>STARTTLS (porta 587)</option><option value="1" ${cfg.smtpSecure?'selected':''}>SSL/TLS (porta 465)</option></select>
       </div>
     </div>
