@@ -12475,7 +12475,7 @@ function clienteRecorrenteServicosModal(cliente, modelosAtivos, aoSalvar){
       <div style="margin-top:16px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Adicionar serviço</div>
       <div class="row">
         <div class="field grow"><label>Modelo de serviço</label>${comboSelectHtml('crsModeloCombo','Digite para buscar…')}</div>
-        <div class="field" style="width:140px;"><label>Valor</label><input id="crsValor" type="number" step="0.01" min="0"></div>
+        <div class="field" style="width:140px;"><label>Valor</label><input id="crsValor" inputmode="numeric" placeholder="0,00"></div>
         <button class="btn" id="btnCrsAdd" style="margin-bottom:5px;">+ Adicionar</button>
       </div>
       <div class="field"><label>Descrição (opcional — "{{mes_competencia}}" vira o mês/ano na hora de emitir)</label><input id="crsDescricao" placeholder="Referente ao Mês {{mes_competencia}}"></div>
@@ -12491,9 +12491,10 @@ function clienteRecorrenteServicosModal(cliente, modelosAtivos, aoSalvar){
   }
   function ligar(){
     setupComboSelect('crsModeloCombo', modelosAtivos.map(m=>({id:m.id, label:m.nome})), ()=>{});
+    ligarMascaraMoeda(document.getElementById('crsValor'));
     document.getElementById('btnCrsAdd').addEventListener('click', async ()=>{
       const modeloId = Number(document.querySelector('#crsModeloCombo .combo-value').value);
-      const valorServico = Number(document.getElementById('crsValor').value);
+      const valorServico = moedaInputParaNumero(document.getElementById('crsValor'));
       if(!modeloId || !valorServico){ toast('Escolha o modelo e informe o valor.','err'); return; }
       const descricaoServico = document.getElementById('crsDescricao').value.trim()||undefined;
       try{
