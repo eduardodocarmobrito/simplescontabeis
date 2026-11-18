@@ -12451,7 +12451,7 @@ function clienteRecorrenteModal(cliente, aoSalvar){
 function clienteRecorrenteServicosModal(cliente, modelosAtivos, aoSalvar){
   function montarHtml(itens){
     return `
-      <h3>Serviços — ${esc(cliente.nome)}</h3>
+      <h3>Serviços — ${cliente.codigo!=null?esc(String(cliente.codigo))+' - ':''}${esc(cliente.nome)}</h3>
       <div style="overflow-x:auto;">
       <table class="data-table">
         <thead><tr><th>Modelo</th><th>Descrição</th><th>Valor</th><th>Ativo</th><th></th></tr></thead>
@@ -12582,7 +12582,7 @@ async function pageMinhaClientes(){
     <div class="row" style="margin-bottom:14px;"><button class="btn primary" id="btnNovoCliente">+ Novo cliente</button></div>
     <div class="card" style="padding:0; overflow-x:auto;">
       <table class="data-table">
-        <thead><tr><th>Nome</th><th>CPF/CNPJ</th><th>E-mail</th><th>Telefone</th><th>Cidade/UF</th><th>Ativo</th><th></th></tr></thead>
+        <thead><tr><th>Código</th><th>Nome</th><th>CPF/CNPJ</th><th>E-mail</th><th>Telefone</th><th>Cidade/UF</th><th>Ativo</th><th></th></tr></thead>
         <tbody id="minhaClientesBody"></tbody>
       </table>
     </div>
@@ -12590,6 +12590,7 @@ async function pageMinhaClientes(){
   function desenhar(){
     document.getElementById('minhaClientesBody').innerHTML = clientes.length? clientes.map(c=>`
       <tr data-id="${c.id}">
+        <td><span class="tag">${c.codigo!=null?c.codigo:'—'}</span></td>
         <td>${esc(c.nome)}</td>
         <td>${c.documento?esc(fmtCnpjCpf(c.documento)):'—'}</td>
         <td>${esc(c.email||'—')}</td>
@@ -12602,7 +12603,7 @@ async function pageMinhaClientes(){
           <button class="btn small" data-act="excluir" style="color:var(--debit);">Excluir</button>
         </td>
       </tr>
-    `).join('') : '<tr><td colspan="7"><div class="empty-state">Nenhum cliente cadastrado ainda.</div></td></tr>';
+    `).join('') : '<tr><td colspan="8"><div class="empty-state">Nenhum cliente cadastrado ainda.</div></td></tr>';
     document.getElementById('minhaClientesBody').querySelectorAll('[data-act="editar"]').forEach(b=>b.addEventListener('click', e=>{
       const id = Number(e.target.closest('tr').dataset.id);
       clienteRecorrenteModal(clientes.find(c=>c.id===id), pageMinhaClientes);
@@ -12643,7 +12644,7 @@ async function renderMinhaNfseAutomatica(){
       <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-4px;">Quem você cobra todo mês automaticamente — a nota sai sozinha na data configurada em "Agendamento" abaixo. Cadastre e edite seus clientes em <a href="#" id="linkMinhaClientes">Clientes</a>; aqui você só configura os serviços cobrados de cada um.</p>
       <div style="overflow-x:auto;">
       <table class="data-table">
-        <thead><tr><th>Nome</th><th>CPF/CNPJ</th><th>E-mail</th><th>Serviços</th><th>Ativo</th><th></th></tr></thead>
+        <thead><tr><th>Código</th><th>Nome</th><th>CPF/CNPJ</th><th>E-mail</th><th>Serviços</th><th>Ativo</th><th></th></tr></thead>
         <tbody id="clientesRecorrentesBody"></tbody>
       </table>
       </div>
@@ -12676,6 +12677,7 @@ async function renderMinhaNfseAutomatica(){
   function desenharClientes(){
     document.getElementById('clientesRecorrentesBody').innerHTML = clientes.length? clientes.map(c=>`
       <tr data-id="${c.id}">
+        <td><span class="tag">${c.codigo!=null?c.codigo:'—'}</span></td>
         <td>${esc(c.nome)}</td>
         <td>${c.documento?esc(fmtCnpjCpf(c.documento)):'—'}</td>
         <td>${esc(c.email||'—')}</td>
@@ -12685,7 +12687,7 @@ async function renderMinhaNfseAutomatica(){
           <button class="btn small" data-act="servicos">Serviços</button>
         </td>
       </tr>
-    `).join('') : `<tr><td colspan="6"><div class="empty-state">Nenhum cliente cadastrado ainda — cadastre em <a href="#" id="linkMinhaClientesVazio">Clientes</a>.</div></td></tr>`;
+    `).join('') : `<tr><td colspan="7"><div class="empty-state">Nenhum cliente cadastrado ainda — cadastre em <a href="#" id="linkMinhaClientesVazio">Clientes</a>.</div></td></tr>`;
     document.getElementById('clientesRecorrentesBody').querySelectorAll('[data-act="servicos"]').forEach(b=>b.addEventListener('click', e=>{
       const id = Number(e.target.closest('tr').dataset.id);
       clienteRecorrenteServicosModal(clientes.find(c=>c.id===id), modelosAtivos, renderMinhaNfseAutomatica);
@@ -12848,7 +12850,7 @@ async function renderMinhaNfseEmitir(){
   setupComboSelect('mnfEmiModeloCombo', itensModelo, ()=>{});
   setModelo(itensModelo[0]?.id ?? null);
   if(clientesAtivos.length){
-    setupComboSelect('mnfEmiClienteCombo', clientesAtivos.map(c=>({id:c.id, label:c.nome})), (clienteId)=>{
+    setupComboSelect('mnfEmiClienteCombo', clientesAtivos.map(c=>({id:c.id, label:(c.codigo!=null?c.codigo+' - ':'')+c.nome})), (clienteId)=>{
       const c = clientesAtivos.find(x=>x.id===clienteId);
       if(!c) return;
       document.getElementById('mnfEmiDocTomador').value = c.documento ? formatarDocumentoBR(c.documento) : '';
@@ -12971,7 +12973,7 @@ async function renderMinhaNfseEmitir(){
     try{
       const novo = { nome:tomador.nome, documento:doc||null, email:tomador.email||null, telefone:tomador.telefone||null, endereco:tomador.logradouro||null, cidade:document.getElementById('mnfEmiCidade').value.trim()||null, uf:document.getElementById('mnfEmiUf').value.trim()||null, cep:tomador.cep||null };
       const r = await api('/minha-empresa/clientes-recorrentes', { method:'POST', body:novo });
-      clientesCadastrados.push({ id:r.id, ...novo, ativo:true });
+      clientesCadastrados.push({ id:r.id, codigo:r.codigo, ...novo, ativo:true });
       toast('Tomador também cadastrado em Clientes.','ok');
     }catch(e){ /* não trava a emissão por causa do cadastro — nota já foi emitida */ }
   }

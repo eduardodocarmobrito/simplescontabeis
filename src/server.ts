@@ -3117,6 +3117,19 @@ sqlite.exec(`DROP TABLE IF EXISTS fgts_sync_jobs`);
     sqlite.exec(`ALTER TABLE nfse_emissoes ADD COLUMN cliente_recorrente_item_id INTEGER REFERENCES cliente_recorrente_itens(id)`);
   }
   sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_nfse_emissoes_cliente_recorrente_competencia ON nfse_emissoes(cliente_recorrente_item_id, competencia);`);
+  // Código sequencial por empresa pros clientes recorrentes (1, 2, 3… na ordem de cadastro) — mostrado
+  // na lista de Clientes. Backfill numera os existentes por ordem de id dentro de cada empresa.
+  const colsClientesRec = sqlite.prepare(`PRAGMA table_info(cliente_recorrentes)`).all() as any[];
+  if (!colsClientesRec.some((c) => c.name === "codigo")) {
+    sqlite.exec(`ALTER TABLE cliente_recorrentes ADD COLUMN codigo INTEGER`);
+    const empresasComClientes = sqlite.prepare(`SELECT DISTINCT empresa_id FROM cliente_recorrentes`).all() as any[];
+    const atualizarCodigo = sqlite.prepare(`UPDATE cliente_recorrentes SET codigo = ? WHERE id = ?`);
+    for (const { empresa_id } of empresasComClientes) {
+      const ids = sqlite.prepare(`SELECT id FROM cliente_recorrentes WHERE empresa_id = ? ORDER BY id`).all(empresa_id) as any[];
+      ids.forEach((row, idx) => atualizarCodigo.run(idx + 1, row.id));
+    }
+  }
+  sqlite.exec(`CREATE INDEX IF NOT EXISTS idx_cliente_recorrentes_empresa_codigo ON cliente_recorrentes(empresa_id, codigo);`);
   const colsLog = sqlite.prepare(`PRAGMA table_info(nfse_agendamento_log)`).all() as any[];
   if (!colsLog.some((c) => c.name === "item_id")) {
     sqlite.exec(`ALTER TABLE nfse_agendamento_log ADD COLUMN item_id INTEGER REFERENCES nfse_agendamento_itens(id)`);
@@ -5134,7 +5147,7 @@ app.post("/api/minha-empresa/email-config/testar", requireCliente, requireModulo
 // módulos — são exclusivos da Emissão Automática.
 app.get("/api/minha-empresa/clientes-recorrentes", requireCliente, requireModuloAtivo("nfse"), (req, res) => {
   const empresaId = (req as any).user.empresaId;
-  const items = sqlite.prepare(`SELECT id, nome, documento, email, telefone, endereco, cidade, uf, cep, ativo FROM cliente_recorrentes WHERE empresa_id = ? ORDER BY nome`).all(empresaId) as any[];
+  const items = sqlite.prepare(`SELECT id, codigo, nome, documento, email, telefone, endereco, cidade, uf, cep, ativo FROM cliente_recorrentes WHERE empresa_id = ? ORDER BY codigo, nome`).all(empresaId) as any[];
   const comItens = items.map((c) => ({
     ...c,
     ativo: !!c.ativo,
@@ -5146,10 +5159,12 @@ app.post("/api/minha-empresa/clientes-recorrentes", requireCliente, requireModul
   const empresaId = (req as any).user.empresaId;
   const { nome, documento, email, telefone, endereco, cidade, uf, cep } = req.body || {};
   if (!nome) return res.status(400).json({ error: "Informe o nome." });
+  // Código sequencial por empresa (1, 2, 3…): próximo = maior código atual + 1.
+  const proximoCodigo = ((sqlite.prepare(`SELECT MAX(codigo) AS m FROM cliente_recorrentes WHERE empresa_id = ?`).get(empresaId) as any)?.m || 0) + 1;
   const info = sqlite
-    .prepare(`INSERT INTO cliente_recorrentes (empresa_id, nome, documento, email, telefone, endereco, cidade, uf, cep) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(empresaId, nome.trim(), (documento || "").replace(/\D/g, "") || null, (email || "").trim() || null, (telefone || "").trim() || null, (endereco || "").trim() || null, (cidade || "").trim() || null, (uf || "").trim().toUpperCase() || null, (cep || "").trim() || null);
-  res.json({ id: Number(info.lastInsertRowid) });
+    .prepare(`INSERT INTO cliente_recorrentes (empresa_id, codigo, nome, documento, email, telefone, endereco, cidade, uf, cep) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(empresaId, proximoCodigo, nome.trim(), (documento || "").replace(/\D/g, "") || null, (email || "").trim() || null, (telefone || "").trim() || null, (endereco || "").trim() || null, (cidade || "").trim() || null, (uf || "").trim().toUpperCase() || null, (cep || "").trim() || null);
+  res.json({ id: Number(info.lastInsertRowid), codigo: proximoCodigo });
 });
 app.put("/api/minha-empresa/clientes-recorrentes/:id", requireCliente, requireModuloAtivo("nfse"), (req, res) => {
   const empresaId = (req as any).user.empresaId;
