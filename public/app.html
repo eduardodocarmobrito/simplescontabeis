@@ -12263,6 +12263,16 @@ async function renderMinhaNfseConfig(){
     return;
   }
   const banner = NFSE_ONBOARDING_BANNER; NFSE_ONBOARDING_BANNER = null;
+  const certVenc = e.certValidadeAte ? new Date(e.certValidadeAte) : null;
+  const certVencido = certVenc && certVenc.getTime() < Date.now();
+  const certInfoHtml = e.temCertificadoProprio
+    ? `<div style="font-size:12.5px; line-height:1.55;">
+         <div style="font-weight:600; color:var(--ink);">${esc(e.certTitular || 'Certificado digital enviado')}</div>
+         ${e.certCnpj?`<div style="color:var(--ink-soft);">CNPJ do certificado: ${esc(fmtCnpjCpf(e.certCnpj))}</div>`:''}
+         ${certVenc?`<div style="color:${certVencido?'var(--debit)':'var(--ink-soft)'};">Válido até ${certVenc.toLocaleDateString('pt-BR')}${certVencido?' — vencido, envie um novo abaixo':''}</div>`:''}
+         <div style="color:var(--ink-soft); margin-top:4px;">Esse é o mesmo certificado do cadastro da sua empresa. Envie outro arquivo abaixo só se quiser substituir.</div>
+       </div>`
+    : `<p style="font-size:12.5px; color:var(--ink-soft); margin:0;">Envie o certificado digital (.pfx) da sua empresa — necessário pra emitir.</p>`;
   box.innerHTML = `
     ${banner?`<div class="card" style="background:var(--accent-pale); border-left:4px solid var(--accent); margin-bottom:14px;">${esc(banner)}</div>`:''}
     <div class="card">
@@ -12277,7 +12287,7 @@ async function renderMinhaNfseConfig(){
       <div id="mnfRegApuracaoWrap"></div>
       <div style="margin:14px 0 8px; font-weight:600; font-size:13px; color:var(--ink-soft); border-top:1px solid var(--rule); padding-top:12px;">Certificado digital</div>
       <div class="card" style="margin:10px 0; background:var(--paper);">
-        ${e.temCertificadoProprio? `<p style="font-size:12.5px; color:var(--ink-soft); margin:0;">Certificado já enviado. Envie outro arquivo abaixo só se quiser substituir.</p>`:'<p style="font-size:12.5px; color:var(--ink-soft); margin:0;">Envie o certificado digital (.pfx) da sua empresa — necessário pra emitir.</p>'}
+        ${certInfoHtml}
         <div class="row" style="margin-top:6px;">
           <div class="field grow"><label>Arquivo do certificado (.pfx)</label><input type="file" id="mnfCertArquivo" accept=".pfx,.p12"></div>
           <div class="field" style="width:260px;"><label>Senha do certificado</label><input type="password" id="mnfCertSenha"></div>

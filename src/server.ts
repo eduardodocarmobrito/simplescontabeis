@@ -20134,6 +20134,12 @@ app.get("/api/nfse/minha-empresa", requireCliente, requireModuloAtivo('nfse'), (
               c.regime_especial_trib as regimeEspecialTrib, c.regime_apuracao_sn as regimeApuracaoSn, c.percentual_total_tributos_sn as percentualTotalTributosSn,
               ((SELECT 1 FROM nfe_busca_config nb WHERE nb.empresa_id = e.id) IS NOT NULL
                 OR (SELECT 1 FROM nfse_certificados nc WHERE nc.empresa_id = e.id) IS NOT NULL) as temCertificadoProprio,
+              COALESCE((SELECT nb.titular FROM nfe_busca_config nb WHERE nb.empresa_id = e.id),
+                       (SELECT nc.titular FROM nfse_certificados nc WHERE nc.empresa_id = e.id)) as certTitular,
+              COALESCE((SELECT nb.cnpj_certificado FROM nfe_busca_config nb WHERE nb.empresa_id = e.id),
+                       (SELECT nc.cnpj_certificado FROM nfse_certificados nc WHERE nc.empresa_id = e.id)) as certCnpj,
+              COALESCE((SELECT nb.validade_ate FROM nfe_busca_config nb WHERE nb.empresa_id = e.id),
+                       (SELECT nc.validade_ate FROM nfse_certificados nc WHERE nc.empresa_id = e.id)) as certValidadeAte,
               e.nome as empresaNome, e.cnpj
        FROM empresas e LEFT JOIN nfse_empresa_config c ON c.empresa_id = e.id WHERE e.id = ?`
     )
