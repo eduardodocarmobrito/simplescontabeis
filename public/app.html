@@ -12590,10 +12590,9 @@ async function renderMinhaNfseAutomatica(){
     ligarModuloPaywall(box, renderMinhaNfseAutomatica);
     return;
   }
-  const [{ items: clientes }, agendamento, emailCfg, { items: modelos }, { items: log }] = await Promise.all([
+  const [{ items: clientes }, agendamento, { items: modelos }, { items: log }] = await Promise.all([
     api('/minha-empresa/clientes-recorrentes'),
     api('/minha-empresa/agendamento'),
-    api('/minha-empresa/email-config'),
     api('/nfse/minha-empresa/modelos'),
     api('/minha-empresa/agendamento/log'),
   ]);
@@ -12631,34 +12630,7 @@ async function renderMinhaNfseAutomatica(){
       </table>
       </div>
     </div>
-    <div class="card">
-      <h3>E-mail de envio</h3>
-      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-4px;">A NFS-e emitida automaticamente é enviada por e-mail pro seu cliente usando ESTA conta — configure o e-mail/senha da SUA empresa (não é o seu login do sistema).</p>
-      <div class="row">
-        <div class="field grow"><label>Servidor SMTP</label><input id="autoSmtpHost" value="${esc(emailCfg.smtpHost||'')}" placeholder="smtp.gmail.com"></div>
-        <div class="field" style="width:120px;"><label>Porta</label><input id="autoSmtpPort" type="number" value="${emailCfg.smtpPort||587}"></div>
-        <div class="field" style="width:160px;"><label>Segurança</label>
-          <select id="autoSmtpSecure">
-            <option value="0" ${!emailCfg.smtpSecure?'selected':''}>STARTTLS (porta 587)</option>
-            <option value="1" ${emailCfg.smtpSecure?'selected':''}>SSL/TLS (porta 465)</option>
-          </select>
-        </div>
-      </div>
-      <div class="row">
-        <div class="field grow"><label>Usuário (geralmente seu e-mail)</label><input id="autoSmtpUser" value="${esc(emailCfg.smtpUser||'')}"></div>
-        <div class="field grow"><label>Senha</label><input id="autoSmtpPassword" type="password" placeholder="${emailCfg.configurado?'•••••••• (deixe em branco pra manter)':''}"></div>
-      </div>
-      <div class="row">
-        <div class="field grow"><label>Nome do remetente (opcional)</label><input id="autoFromName" value="${esc(emailCfg.fromName||'')}"></div>
-        <div class="field grow"><label>E-mail do remetente (opcional — padrão é o usuário acima)</label><input id="autoFromEmail" value="${esc(emailCfg.fromEmail||'')}"></div>
-      </div>
-      <p style="font-size:11.5px; color:var(--ink-soft);">Gmail/Outlook exigem uma "senha de aplicativo" (não a senha normal da conta) — procure por "senha de app" nas configurações de segurança do seu e-mail.</p>
-      <div class="row">
-        <button class="btn primary" id="btnSalvarEmailAuto">Salvar e-mail</button>
-        <button class="btn" id="btnTestarEmailAuto" ${emailCfg.configurado?'':'disabled'}>Enviar e-mail de teste</button>
-      </div>
-      <div id="autoEmailResultado" style="margin-top:10px;"></div>
-    </div>
+    <p style="font-size:12px; color:var(--ink-soft); margin:4px 2px 0;">O e-mail das notas emitidas automaticamente sai pela conta configurada em <b>Configuração › E-mail de envio</b> (módulo "Envio das notas por e-mail").</p>
   `;
 
   function desenharClientes(){
@@ -12724,30 +12696,6 @@ async function renderMinhaNfseAutomatica(){
     finally{ btn.disabled = false; btn.textContent = 'Executar agora'; }
   });
 
-  document.getElementById('btnSalvarEmailAuto').addEventListener('click', async ()=>{
-    const body = {
-      smtpHost: document.getElementById('autoSmtpHost').value.trim(),
-      smtpPort: Number(document.getElementById('autoSmtpPort').value)||587,
-      smtpSecure: document.getElementById('autoSmtpSecure').value==='1',
-      smtpUser: document.getElementById('autoSmtpUser').value.trim(),
-      smtpPassword: document.getElementById('autoSmtpPassword').value||undefined,
-      fromName: document.getElementById('autoFromName').value.trim(),
-      fromEmail: document.getElementById('autoFromEmail').value.trim(),
-    };
-    if(!body.smtpHost || !body.smtpUser){ toast('Preencha pelo menos o servidor SMTP e o usuário.','err'); return; }
-    try{ await api('/minha-empresa/email-config', { method:'PUT', body }); toast('E-mail salvo.','ok'); renderMinhaNfseAutomatica(); }
-    catch(e){ toast(e.message,'err'); }
-  });
-  document.getElementById('btnTestarEmailAuto').addEventListener('click', async ()=>{
-    const btn = document.getElementById('btnTestarEmailAuto');
-    const resultado = document.getElementById('autoEmailResultado');
-    btn.disabled = true; btn.textContent = 'Enviando…';
-    try{
-      await api('/minha-empresa/email-config/testar', { method:'POST' });
-      resultado.innerHTML = `<span class="tag ok">E-mail de teste enviado — confira sua caixa de entrada.</span>`;
-    }catch(e){ resultado.innerHTML = `<span class="tag bad">${esc(e.message)}</span>`; }
-    finally{ btn.disabled = false; btn.textContent = 'Enviar e-mail de teste'; }
-  });
 }
 async function renderMinhaNfseModelos(){
   const { items } = await api('/nfse/minha-empresa/modelos');
@@ -13066,6 +13014,16 @@ async function minhaNfseEnviarEmailModal(id){
 async function renderMinhaEmailEnvio(){
   const box = document.getElementById('nfseContent');
   if(!box) return;
+  // Envio por e-mail é o módulo "Envio das notas por e-mail" — sem ele, só o convite pra contratar.
+  const modEmail = await moduloDaChave('envio_notas_email').catch(()=>null);
+  if(!modEmail || !modEmail.acesso){
+    const aviso = document.createElement('div');
+    aviso.className = 'card';
+    aviso.innerHTML = `<h3>E-mail de envio</h3><p style="font-size:12.5px; color:var(--ink-soft); margin-top:-4px;">Enviar as notas pro e-mail dos seus clientes faz parte do módulo <b>Envio das notas por e-mail</b>, que ainda não está ativo pra sua empresa.</p><button class="btn primary" id="meeIrAssinatura">Ver na Assinatura</button>`;
+    box.appendChild(aviso);
+    aviso.querySelector('#meeIrAssinatura').addEventListener('click', ()=>goPage('minha-assinatura'));
+    return;
+  }
   let cfg;
   try{ cfg = await api('/minha-empresa/email-config'); }catch(e){ return; }
   const card = document.createElement('div');
@@ -13133,7 +13091,11 @@ async function renderMinhaNfseNotas(){
   const qs = new URLSearchParams();
   if(dataDe) qs.set('dataDe', dataDe);
   if(dataAte) qs.set('dataAte', dataAte);
-  const { items: todas } = await api('/nfse/minha-empresa/emissoes'+(qs.toString()?'?'+qs.toString():''));
+  const [{ items: todas }, modEmailNotas] = await Promise.all([
+    api('/nfse/minha-empresa/emissoes'+(qs.toString()?'?'+qs.toString():'')),
+    moduloDaChave('envio_notas_email').catch(()=>null),
+  ]);
+  const podeEnviarEmail = !!(modEmailNotas && modEmailNotas.acesso);
   const items = status && status!=='todas' ? todas.filter(n=>n.status===status) : todas;
   MINHA_NFSE_SELECIONADAS = new Set([...MINHA_NFSE_SELECIONADAS].filter(id=>items.some(i=>i.id===id)));
   const box = document.getElementById('nfseContent');
@@ -13163,7 +13125,7 @@ async function renderMinhaNfseNotas(){
                 ${n.status==='rascunho'?`<button class="btn small" data-id="${n.id}" data-act="continuar">Continuar</button> <button class="btn small" data-id="${n.id}" data-act="excluir">Excluir</button>`:''}
                 ${n.status!=='rascunho'?`<button class="btn small" data-id="${n.id}" data-act="duplicar">Duplicar</button>`:''}
                 ${n.status==='emitida'||n.status==='cancelada'?`<button class="btn small" data-id="${n.id}" data-act="baixar-xml">XML</button> <button class="btn small" data-id="${n.id}" data-act="baixar-pdf">PDF</button>`:''}
-                ${n.status==='emitida'?`<button class="btn small" data-id="${n.id}" data-act="enviar-email" title="Envia o PDF e o XML desta nota pro e-mail do seu cliente">Enviar por e-mail</button>`:''}
+                ${n.status==='emitida' && podeEnviarEmail?`<button class="btn small" data-id="${n.id}" data-act="enviar-email" title="Envia o PDF e o XML desta nota pro e-mail do seu cliente">Enviar por e-mail</button>`:''}
                 ${n.status==='emitida'?`<button class="btn small" data-id="${n.id}" data-act="consulta-governo" title="Confere se esta nota existe no Sistema Nacional NFS-e (governo)">Consultar no governo</button>`:''}
                 ${n.status==='emitida'?`<button class="btn small" data-id="${n.id}" data-act="cancelar" style="color:var(--debit);">Cancelar</button>`:''}
               </td>
@@ -15189,7 +15151,8 @@ function assinaturaModuloCardHtml(item, semTesteGratis){
   // Teste vencido = "direto para pagamento" (é assim que a tela do SuperAdmin trata) — pro cliente
   // aparece como pagamento pendente, não como "teste grátis vencido" (pedido 2026-11-17).
   else if(item.status==='teste_vencido'){ badgeClass='warn'; badgeText='Aguardando pagamento'; }
-  else if(item.status==='ativo'){ badgeClass='ok'; badgeText = semVencimento ? 'Ativo' : 'Ativo até '+fmtDateIso(String(item.assinaturaAtivaAte||'').slice(0,10)); }
+  // Sem vencimento (2099) = cortesia concedida pelo escritório — não cobra, não tem o que pagar.
+  else if(item.status==='ativo'){ badgeClass='ok'; badgeText = semVencimento ? 'Cortesia' : 'Ativo até '+fmtDateIso(String(item.assinaturaAtivaAte||'').slice(0,10)); }
   else if(item.status==='vencido'){ badgeClass='bad'; badgeText='Assinatura vencida'; }
   // Cliente direto (venda avulsa) não tem teste grátis — vai direto pro pagamento.
   // "Direto para pagamento" marcado pro cliente (já assinou contrato) também esconde o teste.
@@ -15209,7 +15172,7 @@ function assinaturaModuloCardHtml(item, semTesteGratis){
         </div>
         <div style="display:flex; align-items:center; gap:14px;">
           <span class="tag ${badgeClass}">${esc(badgeText)}</span>
-          ${item.status==='isento' ? '' : `
+          ${item.status==='isento' || (item.status==='ativo' && semVencimento) ? '' : `
             ${mostraBotaoTeste?`<button class="btn small" data-acao="testar" data-chave="${item.chave}">Iniciar teste grátis</button>`:''}
             <label class="checkbox-row" style="margin:0;"><input type="checkbox" class="assinaturaCheck" data-chave="${item.chave}" data-valor="${valorCheckbox}" data-nome="${esc(item.nome)}"> ${rotuloCheckbox}</label>
           `}
@@ -21704,7 +21667,7 @@ const MCT_SITUACAO = {
   teste_vencido:{label:'Teste vencido', cls:'bad'},
   vencido:{label:'Assinatura vencida', cls:'bad'},
   isento:{label:'Isento', cls:'muted'},
-  vitalicio:{label:'Vitalício (grátis)', cls:'muted'},
+  vitalicio:{label:'Cortesia', cls:'ok'},
   nao_contratado:{label:'Não contratado', cls:'muted'},
 };
 // Linha de módulo ainda não contratado (preço combinado antes) conta como "Empresa" nos filtros.
@@ -21795,6 +21758,7 @@ function mctMontarTabela(box, lista, { mostrarCliente=true, aoSalvar }={}){
             <td style="white-space:nowrap; width:170px;">
               <button class="btn small primary mctSalvar" disabled>Salvar</button>
               ${(i.valorPersonalizado!=null||i.implantacaoPersonalizada!=null)?'<button class="btn small mctPadrao" title="Voltar aos valores padrão (mensal e implantação)">Usar padrão</button>':''}
+              ${i.tipo!=='escritorio' && i.situacao!=='isento' ? (i.situacao==='vitalicio' ? '<button class="btn small mctCortesia" data-ativo="0" title="Tira a cortesia — o acesso a este módulo encerra agora">Tirar cortesia</button>' : '<button class="btn small mctCortesia" data-ativo="1" title="Libera este módulo pro cliente sem cobrança">Dar cortesia</button>') : ''}
             </td>
           </tr>`;
         }).join('')}
@@ -21824,6 +21788,15 @@ function mctMontarTabela(box, lista, { mostrarCliente=true, aoSalvar }={}){
     };
     btn.addEventListener('click', ()=>salvar(inp.value.trim() ? moedaInputParaNumero(inp) : null, impl.value.trim() ? moedaInputParaNumero(impl) : null));
     tr.querySelector('.mctPadrao')?.addEventListener('click', ()=>salvar(null, null));
+    tr.querySelector('.mctCortesia')?.addEventListener('click', async e=>{
+      const ativo = e.target.dataset.ativo==='1';
+      if(!confirmar(ativo ? 'Liberar este módulo pro cliente como CORTESIA (sem cobrança)?' : 'Tirar a cortesia? O cliente perde o acesso a este módulo agora.')) return;
+      try{
+        await api(`/super/modulos-contratos/${tr.dataset.tipo}/${encodeURIComponent(tr.dataset.id)}/cortesia`, { method:'PUT', body:{ ativo } });
+        toast(ativo ? 'Cortesia liberada.' : 'Cortesia removida.', 'ok');
+        if(aoSalvar) await aoSalvar();
+      }catch(err){ toast(err.message,'err'); }
+    });
   });
 }
 

@@ -5087,14 +5087,14 @@ app.put("/api/minha-empresa", requireCliente, (req, res) => {
 // configurar o certificado/município (NFS-e > Configuração) fica atrás do módulo 'nfse' — sem ele a
 // rotina ia falhar todo mês sem nenhum certificado configurado. Emissão Automática não faz sentido sem
 // a base de NFS-e já funcionando.
-app.get("/api/minha-empresa/email-config", requireCliente, requireModuloAtivo("nfse"), (req, res) => {
+app.get("/api/minha-empresa/email-config", requireCliente, requireModuloAtivo("nfse"), requireModuloAtivo("envio_notas_email"), (req, res) => {
   const empresaId = (req as any).user.empresaId;
   const c = sqlite
     .prepare(`SELECT smtp_host as smtpHost, smtp_port as smtpPort, smtp_secure as smtpSecure, smtp_user as smtpUser, from_name as fromName, from_email as fromEmail FROM cliente_email_config WHERE empresa_id = ?`)
     .get(empresaId) as any;
   res.json({ smtpHost: c?.smtpHost || "", smtpPort: c?.smtpPort || 587, smtpSecure: !!c?.smtpSecure, smtpUser: c?.smtpUser || "", fromName: c?.fromName || "", fromEmail: c?.fromEmail || "", configurado: emailConfiguradoEmpresa(empresaId) });
 });
-app.put("/api/minha-empresa/email-config", requireCliente, requireModuloAtivo("nfse"), (req, res) => {
+app.put("/api/minha-empresa/email-config", requireCliente, requireModuloAtivo("nfse"), requireModuloAtivo("envio_notas_email"), (req, res) => {
   const empresaId = (req as any).user.empresaId;
   const { smtpHost, smtpPort, smtpSecure, smtpUser, smtpPassword, fromName, fromEmail } = req.body || {};
   if (!smtpHost || !smtpUser) return res.status(400).json({ error: "Preencha pelo menos o servidor SMTP e o usuário." });
@@ -5110,7 +5110,7 @@ app.put("/api/minha-empresa/email-config", requireCliente, requireModuloAtivo("n
     .run(empresaId, smtpHost.trim(), Number(smtpPort) || 587, smtpSecure ? 1 : 0, smtpUser.trim(), smtpPassword || existente?.smtp_password || null, (fromName || "").trim() || null, (fromEmail || "").trim() || null);
   res.json({ ok: true });
 });
-app.post("/api/minha-empresa/email-config/testar", requireCliente, requireModuloAtivo("nfse"), async (req, res) => {
+app.post("/api/minha-empresa/email-config/testar", requireCliente, requireModuloAtivo("nfse"), requireModuloAtivo("envio_notas_email"), async (req, res) => {
   const user = (req as any).user;
   try {
     await enviarEmailComoEmpresa(user.empresaId, {
@@ -20740,7 +20740,7 @@ async function clienteRecorrenteExecutarAgendamento(forcarMesmoSeJaExecutou = fa
         }
         nfseGerarRecebivelSeEmitida(emissaoId);
         let mensagemLog = "NFS-e emitida com sucesso.";
-        if (clienteRec.email && emailConfiguradoEmpresa(empresaId)) {
+        if (clienteRec.email && emailConfiguradoEmpresa(empresaId) && empresaTemAcessoModulo(empresaId, "envio_notas_email")) {
           try {
             const emissaoRow = sqlite.prepare(`SELECT * FROM nfse_emissoes WHERE id = ?`).get(emissaoId) as any;
             const { pdf, erro } = await nfseObterDanfsePdf(emissaoRow);
@@ -21199,13 +21199,13 @@ function minhaNfseEmailSugerido(empresaId: number, emissao: any): string {
     : null;
   return String(cad?.email || emissao.tomador_email || "").trim();
 }
-app.get("/api/nfse/minha-empresa/emissoes/:id/email-destino", requireCliente, requireModuloAtivo("nfse"), (req, res) => {
+app.get("/api/nfse/minha-empresa/emissoes/:id/email-destino", requireCliente, requireModuloAtivo("nfse"), requireModuloAtivo("envio_notas_email"), (req, res) => {
   const empresaId = (req as any).user.empresaId;
   const emissao = sqlite.prepare(`SELECT * FROM nfse_emissoes WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), empresaId) as any;
   if (!emissao) return res.status(404).json({ error: "Nota não encontrada." });
   res.json({ email: minhaNfseEmailSugerido(empresaId, emissao), configurado: emailConfiguradoEmpresa(empresaId), tomadorNome: emissao.tomador_nome });
 });
-app.post("/api/nfse/minha-empresa/emissoes/:id/enviar-email", requireCliente, requireModuloAtivo("nfse"), async (req, res) => {
+app.post("/api/nfse/minha-empresa/emissoes/:id/enviar-email", requireCliente, requireModuloAtivo("nfse"), requireModuloAtivo("envio_notas_email"), async (req, res) => {
   const empresaId = (req as any).user.empresaId;
   const emissao = sqlite.prepare(`SELECT * FROM nfse_emissoes WHERE id = ? AND empresa_id = ?`).get(Number(req.params.id), empresaId) as any;
   if (!emissao) return res.status(404).json({ error: "Nota não encontrada." });
@@ -23381,7 +23381,7 @@ function nfseModulosDaEmpresa(empresaId: number) {
   // Os canais de envio (Fase 3) só aparecem pra contratar quando têm preço > 0 — enquanto são de
   // graça, ficam fora da tela de assinatura pra não confundir (o envio funciona do mesmo jeito).
   return catalogo
-    .filter((m) => !((m.chave === "envio_notas_email" || m.chave === "envio_notas_whatsapp") && !(precoModuloEfetivo(m.valor_mensal, precoLinha(m.chave)) > 0)))
+    .filter((m) => !((m.chave === "envio_notas_email" || m.chave === "envio_notas_whatsapp") && !porChave.get(m.chave) && !(precoModuloEfetivo(m.valor_mensal, precoLinha(m.chave)) > 0)))
     .map((m) => {
     const contratado = porChave.get(m.chave);
     const { status, acesso } = isento ? { status: "isento", acesso: true } : moduloStatusParaEmpresa(m, contratado);
@@ -23654,8 +23654,6 @@ app.get("/api/super/modulos-contratos", requireSuperAdmin, (req, res) => {
       const k = `${empresaId}:${m.chave}`;
       if (temContrato.has(k)) continue;
       const p = previoPorChave.get(k);
-      // Canais de envio grátis não são vendidos (mesma regra da tela de Assinatura do cliente).
-      if (m.chave.startsWith("envio_notas_") && !(precoModuloEfetivo(m.valor_mensal, p) > 0)) continue;
       itensPrevios.push({
         tipo: "empresa_previo",
         id: `${empresaId}~${m.chave}`,
@@ -23758,6 +23756,35 @@ app.put("/api/super/modulos-contratos/:tipo/:id", requireSuperAdmin, (req, res) 
       .prepare(`UPDATE ${tabela} SET trial_fim = datetime('now') WHERE id = ? AND trial_fim > datetime('now') AND (assinatura_ativa_ate IS NULL OR assinatura_ativa_ate < datetime('now'))`)
       .run(id);
   }
+  res.json({ ok: true });
+});
+// Cortesia (pedido 2026-11-18): libera UM módulo de um cliente sem cobrança — assinatura_ativa_ate em
+// 2099 (o mesmo "vitalício" que a lista já reconhece). Tirar a cortesia encerra o acesso agora.
+// Em linha "Não contratado" (empresa_previo) cria o contrato já como cortesia.
+app.put("/api/super/modulos-contratos/:tipo/:id/cortesia", requireSuperAdmin, (req, res) => {
+  const ativo = !!req.body?.ativo;
+  const CORTESIA = "2099-12-31 23:59:59";
+  if (req.params.tipo === "empresa_previo") {
+    if (!ativo) return res.json({ ok: true });
+    const [empStr, chave] = String(req.params.id).split("~");
+    const empresaId = Number(empStr);
+    if (!empresaId || !sqlite.prepare(`SELECT 1 FROM empresas WHERE id = ?`).get(empresaId) || !sqlite.prepare(`SELECT 1 FROM modulos_catalogo WHERE chave = ?`).get(chave))
+      return res.status(404).json({ error: "Cliente ou módulo não encontrado." });
+    if (!sqlite.prepare(`SELECT 1 FROM empresa_modulos WHERE empresa_id = ? AND modulo_chave = ?`).get(empresaId, chave)) {
+      sqlite
+        .prepare(`INSERT INTO empresa_modulos (empresa_id, modulo_chave, trial_inicio, trial_fim, assinatura_ativa_ate) VALUES (?, ?, datetime('now'), datetime('now'), ?)`)
+        .run(empresaId, chave, CORTESIA);
+    } else {
+      sqlite.prepare(`UPDATE empresa_modulos SET assinatura_ativa_ate = ? WHERE empresa_id = ? AND modulo_chave = ?`).run(CORTESIA, empresaId, chave);
+    }
+    return res.json({ ok: true });
+  }
+  const tabela = req.params.tipo === "escritorio" ? "escritorio_modulos" : req.params.tipo === "empresa" ? "empresa_modulos" : null;
+  if (!tabela) return res.status(400).json({ error: "Tipo inválido." });
+  const id = Number(req.params.id);
+  if (!sqlite.prepare(`SELECT 1 FROM ${tabela} WHERE id = ?`).get(id)) return res.status(404).json({ error: "Contrato não encontrado." });
+  if (ativo) sqlite.prepare(`UPDATE ${tabela} SET assinatura_ativa_ate = ? WHERE id = ?`).run(CORTESIA, id);
+  else sqlite.prepare(`UPDATE ${tabela} SET assinatura_ativa_ate = datetime('now') WHERE id = ? AND assinatura_ativa_ate >= '2099-01-01'`).run(id);
   res.json({ ok: true });
 });
 function moduloStatusParaEscritorio(catalogo: any, contratado: any) {
