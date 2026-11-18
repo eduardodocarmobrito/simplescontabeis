@@ -12805,8 +12805,8 @@ async function renderMinhaNfseEmitir(){
       ${clientesAtivos.length? `<div class="field"><label>Cliente cadastrado (opcional — preenche os campos abaixo)</label>${comboSelectHtml('mnfEmiClienteCombo','Digite para buscar em Clientes…')}</div>` : ''}
       <div class="checkbox-row" style="margin:2px 0 10px;"><input type="checkbox" id="mnfEmiCadastrarCliente" checked> <label for="mnfEmiCadastrarCliente" style="cursor:pointer;">Cadastrar na base de Clientes <span style="color:var(--ink-soft); font-weight:400;">— se marcado, o tomador abaixo é salvo em Clientes ao emitir (não duplica se já existir).</span></label></div>
       <div class="row">
-        <div class="field grow"><label>CPF ou CNPJ</label><input id="mnfEmiDocTomador" placeholder="Só números"></div>
-        <div class="field grow"><label>Nome / Razão social</label><input id="mnfEmiNomeTomador"></div>
+        <div class="field grow"><label>CPF ou CNPJ</label><div class="combo"><input id="mnfEmiDocTomador" placeholder="Só números" autocomplete="off"><div class="combo-list" id="mnfEmiDocSug"></div></div></div>
+        <div class="field grow"><label>Nome / Razão social</label><div class="combo"><input id="mnfEmiNomeTomador" autocomplete="off"><div class="combo-list" id="mnfEmiNomeSug"></div></div></div>
       </div>
       <div id="mnfEmiCnpjStatus" style="font-size:11.5px; color:var(--ink-soft); margin:-6px 0 8px;"></div>
       <div class="row">
@@ -12849,10 +12849,15 @@ async function renderMinhaNfseEmitir(){
   };
   setupComboSelect('mnfEmiModeloCombo', itensModelo, ()=>{});
   setModelo(itensModelo[0]?.id ?? null);
-  if(clientesAtivos.length){
-    setupComboSelect('mnfEmiClienteCombo', clientesAtivos.map(c=>({id:c.id, label:(c.codigo!=null?c.codigo+' - ':'')+c.nome})), (clienteId)=>{
-      const c = clientesAtivos.find(x=>x.id===clienteId);
+  // Preenche o tomador a partir de um cliente já cadastrado — usado pelo combo "Cliente cadastrado"
+  // e pela busca direto nos campos CPF/CNPJ e Nome.
+  function mnfPreencherCliente(c){
       if(!c) return;
+      const comboCli = document.getElementById('mnfEmiClienteCombo');
+      if(comboCli){
+        comboCli.querySelector('.combo-input').value = (c.codigo!=null?c.codigo+' - ':'')+c.nome;
+        comboCli.querySelector('.combo-value').value = c.id;
+      }
       document.getElementById('mnfEmiDocTomador').value = c.documento ? formatarDocumentoBR(c.documento) : '';
       document.getElementById('mnfEmiNomeTomador').value = c.nome || '';
       document.getElementById('mnfEmiEmailTomador').value = c.email || '';
@@ -12868,8 +12873,45 @@ async function renderMinhaNfseEmitir(){
         // ligado abaixo — evita duplicar a consulta aqui.
         cepEl.dispatchEvent(new Event('input'));
       }
+  }
+  if(clientesAtivos.length){
+    setupComboSelect('mnfEmiClienteCombo', clientesAtivos.map(c=>({id:c.id, label:(c.codigo!=null?c.codigo+' - ':'')+c.nome})), (clienteId)=>{
+      mnfPreencherCliente(clientesAtivos.find(x=>x.id===clienteId));
     });
   }
+  // Busca nos clientes já cadastrados enquanto digita CPF/CNPJ ou Nome: mostra sugestões embaixo do
+  // campo; clicar preenche tudo. Sem resultado, nada aparece e o preenchimento segue normal.
+  const mnfSemAcento = (t)=>normalizaTxt(t);
+  function mnfLigarSugestao(inputId, listaId, filtrar){
+    const input = document.getElementById(inputId);
+    const lista = document.getElementById(listaId);
+    const fechar = ()=>{ lista.classList.remove('open'); lista.innerHTML=''; };
+    input.addEventListener('input', ()=>{
+      const achados = clientesAtivos.length ? filtrar(input.value).slice(0,8) : [];
+      if(!achados.length){ fechar(); return; }
+      lista.innerHTML = achados.map(c=>`<div class="combo-item" data-id="${c.id}"><b>${esc(c.nome)}</b>${c.documento?` <span style="color:var(--ink-soft);">— ${esc(formatarDocumentoBR(c.documento))}</span>`:''}${c.cidade?` <span style="color:var(--ink-soft);">· ${esc(c.cidade)}${c.uf?'/'+esc(c.uf):''}</span>`:''}</div>`).join('');
+      lista.classList.add('open');
+      lista.querySelectorAll('.combo-item').forEach(el=>el.addEventListener('mousedown', e=>{
+        e.preventDefault();
+        mnfPreencherCliente(clientesAtivos.find(x=>x.id===Number(el.dataset.id)));
+        fechar();
+        document.getElementById('mnfEmiCnpjStatus').textContent = 'Dados preenchidos a partir do cadastro de Clientes.';
+      }));
+    });
+    input.addEventListener('blur', ()=>setTimeout(fechar, 150));
+    input.addEventListener('keydown', e=>{ if(e.key==='Escape') fechar(); });
+  }
+  mnfLigarSugestao('mnfEmiDocTomador', 'mnfEmiDocSug', (v)=>{
+    const d = v.replace(/[^0-9]/g,'');
+    if(d.length<3) return [];
+    return clientesAtivos.filter(c=>String(c.documento||'').includes(d));
+  });
+  mnfLigarSugestao('mnfEmiNomeTomador', 'mnfEmiNomeSug', (v)=>{
+    const t = mnfSemAcento(v).trim();
+    if(t.length<2) return [];
+    const partes = t.split(/\s+/);
+    return clientesAtivos.filter(c=>{ const n = mnfSemAcento(c.nome); return partes.every(p=>n.includes(p)); });
+  });
   if(prefill){
     const setVal=(id,v)=>{ const el=document.getElementById(id); if(el && v!=null) el.value=v; };
     if(prefill.modeloId!=null) setModelo(Number(prefill.modeloId));
@@ -12894,6 +12936,7 @@ async function renderMinhaNfseEmitir(){
     const doc = e.target.value.replace(/[^0-9]/g,'').slice(0,14);
     e.target.value = formatarDocumentoBR(doc);
     if(doc.length!==14) return;
+    if(clientesAtivos.some(c=>String(c.documento||'')===doc)) return; // já cadastrado: a sugestão embaixo do campo preenche
     const status = document.getElementById('mnfEmiCnpjStatus');
     status.textContent = 'Consultando CNPJ na Receita Federal…';
     try{
