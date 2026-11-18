@@ -3920,6 +3920,10 @@ app.get("/", (_req, res) => {
   res.sendFile(path.join(__dirname, "..", "public", "app.html"));
 });
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
+// Páginas públicas de Política de Privacidade e Termos — exigidas pelo Google pra publicar o app OAuth
+// "Em produção" (consentimento do Google Drive). URLs limpas servindo os HTML estáticos de public/.
+app.get("/privacidade", (_req, res) => { res.set("Cache-Control", "no-cache"); res.sendFile(path.join(__dirname, "..", "public", "privacidade.html")); });
+app.get("/termos", (_req, res) => { res.set("Cache-Control", "no-cache"); res.sendFile(path.join(__dirname, "..", "public", "termos.html")); });
 
 // ---------- Ponte com o deskcomm (CRM de terceiros, rodando numa VPS separada) ----------
 // O proxy deixa o deskcomm acessível dentro do mesmo domínio (`/deskcomm/*`), protegido pela MESMA

@@ -1,59 +1,96 @@
-<!DOCTYPE html>
-<html lang="pt-BR" translate="no">
+<!doctype html>
+<html lang="pt-BR">
 <head>
-<meta name="google" content="notranslate">
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Política de Privacidade — Simples Contábeis</title>
 <style>
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 760px; margin: 40px auto; padding: 0 20px; line-height: 1.6; color: #222; }
-  h1 { font-size: 1.6em; }
-  h2 { font-size: 1.15em; margin-top: 1.8em; }
-  footer { margin-top: 3em; font-size: 0.85em; color: #666; }
+  :root{ --accent:#2ECC8F; --accent-deep:#159873; --ink:#1D1D1F; --ink-soft:#6E6E73; --rule:#E3E3E8; --paper:#F5F5F7; }
+  *{ box-sizing:border-box; }
+  body{ margin:0; background:#fff; color:var(--ink); font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+  header{ background:var(--accent-deep); color:#fff; padding:28px 16px; }
+  .wrap{ max-width:760px; margin:0 auto; padding:0 16px; }
+  header .wrap{ display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; }
+  header b{ font-size:20px; font-weight:700; }
+  header span{ opacity:.85; font-size:14px; }
+  main{ padding:36px 0 64px; }
+  h1{ font-size:28px; margin:0 0 6px; }
+  .meta{ color:var(--ink-soft); font-size:14px; margin:0 0 28px; }
+  h2{ font-size:19px; margin:30px 0 8px; }
+  p,li{ color:#2b2b2e; }
+  a{ color:var(--accent-deep); }
+  ul{ padding-left:22px; }
+  .box{ background:var(--paper); border:1px solid var(--rule); border-radius:12px; padding:16px 18px; margin:18px 0; }
+  footer{ border-top:1px solid var(--rule); color:var(--ink-soft); font-size:13px; padding:22px 0; }
 </style>
 </head>
 <body>
-<h1>Política de Privacidade</h1>
-<p>Última atualização: 30/08/2026</p>
+<header><div class="wrap"><b>Simples Contábeis</b><span>Simples Soluções Contábeis</span></div></header>
+<main class="wrap">
+  <h1>Política de Privacidade</h1>
+  <p class="meta">Última atualização: 18 de novembro de 2026</p>
 
-<p>Esta Política de Privacidade descreve como o <strong>Simples Contábeis</strong>, sistema de gestão
-utilizado pelo escritório de contabilidade Simples Serviços de Contabilidade, trata os dados
-pessoais e empresariais de seus clientes no exercício da atividade contábil.</p>
+  <p>Esta Política de Privacidade descreve como o <b>Simples Contábeis</b> (operado por Simples Soluções Contábeis),
+  disponível em <a href="https://simplescontabeis.com.br">simplescontabeis.com.br</a>, coleta, usa, armazena e protege
+  as informações no contexto da prestação de serviços contábeis ao próprio escritório e aos seus clientes.</p>
 
-<h2>Quais dados tratamos</h2>
-<p>Tratamos dados cadastrais das empresas-cliente (razão social, CNPJ, endereço, dados de contato),
-dados de representantes e responsáveis (nome, CPF, telefone, e-mail), documentos fiscais e
-contábeis (notas fiscais, guias de imposto, declarações, extratos), e informações de contato usadas
-para envio de documentos e comunicados, incluindo número de WhatsApp.</p>
+  <h2>1. Quem somos</h2>
+  <p>O Simples Contábeis é um sistema de uso interno do escritório contábil Simples Soluções Contábeis, utilizado para
+  organizar documentos fiscais, emitir notas e automatizar rotinas contábeis dos clientes do escritório.</p>
 
-<h2>Como usamos os dados</h2>
-<p>Os dados são usados exclusivamente para a prestação dos serviços contábeis contratados: emissão e
-envio de notas fiscais e guias, apuração de tributos junto aos órgãos oficiais (incluindo a API
-Integra Contador da Receita Federal/SERPRO), comunicação com o cliente sobre pendências e documentos
-disponíveis, e cobrança dos honorários contratados.</p>
+  <h2>2. Dados que tratamos</h2>
+  <ul>
+    <li><b>Dados de acesso:</b> nome, e-mail e credenciais dos usuários do escritório e dos clientes autorizados.</li>
+    <li><b>Dados fiscais e cadastrais:</b> documentos fiscais eletrônicos (NF-e, NFC-e, NFS-e, CT-e), CNPJ/CPF, dados de
+    empresas e tomadores, necessários à escrituração e às obrigações contábeis.</li>
+    <li><b>Dados de integrações:</b> tokens de autorização de serviços conectados pelo próprio escritório (como
+    armazenamento em nuvem), guardados de forma cifrada.</li>
+  </ul>
 
-<h2>Compartilhamento</h2>
-<p>Não vendemos nem compartilhamos dados pessoais com terceiros para fins de marketing. Os dados
-podem ser transmitidos a órgãos públicos (Receita Federal, prefeituras, SERPRO) exclusivamente para
-cumprimento das obrigações fiscais do cliente, e a prestadores de infraestrutura técnica (hospedagem,
-envio de e-mail e WhatsApp) estritamente para operacionalizar o serviço.</p>
+  <h2>3. Uso de dados do Google (Google API Services)</h2>
+  <div class="box">
+    <p>Quando o escritório conecta a sua conta Google ao Simples Contábeis, o aplicativo solicita o escopo
+    <code>https://www.googleapis.com/auth/drive.file</code>. Com ele, o aplicativo <b>cria e gerencia apenas os
+    arquivos e pastas que ele próprio cria no Google Drive do escritório</b> — para depositar os XML dos documentos
+    fiscais, organizados por empresa e competência, prontos para importação no sistema contábil. O aplicativo
+    <b>não lê, acessa nem modifica</b> outros arquivos existentes no Drive do usuário.</p>
+    <p>O uso e a transferência de informações recebidas das APIs do Google pelo Simples Contábeis obedecem à
+    <a href="https://developers.google.com/terms/api-services-user-data-policy" target="_blank" rel="noopener">Política
+    de Dados do Usuário dos Serviços de API do Google</a>, incluindo os requisitos de <b>Uso Limitado</b>. Os dados do
+    Google são usados exclusivamente para a finalidade acima (gravação dos XML no Drive do escritório) e não são
+    vendidos, nem usados para publicidade, nem compartilhados com terceiros.</p>
+  </div>
 
-<h2>WhatsApp Business Platform</h2>
-<p>Usamos a WhatsApp Business Platform (Meta) para enviar documentos e avisos aos clientes que
-autorizaram esse canal de contato. O número de telefone informado é usado somente para esse fim.</p>
+  <h2>4. Como usamos os dados</h2>
+  <ul>
+    <li>Prestar os serviços contábeis contratados (escrituração, emissão de notas, organização de documentos).</li>
+    <li>Executar automações autorizadas pelo escritório (busca e exportação de documentos fiscais).</li>
+    <li>Cumprir obrigações legais, fiscais e regulatórias.</li>
+  </ul>
 
-<h2>Retenção e segurança</h2>
-<p>Os dados são mantidos pelo prazo exigido pela legislação fiscal e contábil aplicável, e armazenados
-com controles de acesso restritos à equipe do escritório e ao próprio cliente titular dos dados.</p>
+  <h2>5. Armazenamento e segurança</h2>
+  <p>Os dados são armazenados em servidor próprio e em serviços de nuvem autorizados pelo escritório. Credenciais e
+  tokens de integração são guardados cifrados (AES-256-GCM). O acesso é restrito por autenticação e perfis de
+  permissão.</p>
 
-<h2>Direitos do titular</h2>
-<p>Nos termos da Lei Geral de Proteção de Dados (Lei 13.709/2018), o titular pode solicitar acesso,
-correção ou exclusão de seus dados pessoais entrando em contato diretamente com o escritório.</p>
+  <h2>6. Compartilhamento</h2>
+  <p>Não vendemos nem compartilhamos dados com terceiros para fins de marketing. Dados podem ser compartilhados apenas
+  com órgãos oficiais quando exigido por lei, com provedores de infraestrutura estritamente necessários à operação, e
+  com o próprio cliente a quem os dados pertencem.</p>
 
-<h2>Contato</h2>
-<p>Dúvidas sobre esta política podem ser enviadas ao escritório Simples Serviços de Contabilidade
-pelos canais de atendimento já utilizados no relacionamento com o cliente.</p>
+  <h2>7. Retenção e exclusão</h2>
+  <p>Os dados fiscais são mantidos pelos prazos legais. O escritório pode, a qualquer momento, revogar as integrações
+  (como a conexão com o Google Drive) diretamente no sistema ou na sua Conta do Google, o que encerra o acesso do
+  aplicativo aos respectivos dados.</p>
 
-<footer>Simples Contábeis</footer>
+  <h2>8. Direitos do titular</h2>
+  <p>Nos termos da LGPD (Lei nº 13.709/2018), o titular pode solicitar acesso, correção, portabilidade ou exclusão de
+  seus dados pelos contatos abaixo.</p>
+
+  <h2>9. Contato</h2>
+  <p>Dúvidas sobre esta política ou sobre o tratamento de dados: <a href="mailto:simplescontabeis@gmail.com">simplescontabeis@gmail.com</a>.</p>
+
+  <footer>© 2026 Simples Soluções Contábeis — <a href="/termos">Termos de Serviço</a></footer>
+</main>
 </body>
 </html>
