@@ -31110,6 +31110,31 @@ app.get("/api/atendimento/conversas/:id/buscar", blockCliente, requireEscritorio
 // Mídia de uma mensagem servida pelo servidor (sessão do robô, que é admin no deskcomm), pelo mesmo
 // motivo acima: a sessão do Colaborador não baixa a mídia de uma conversa que não é dele. Faz streaming
 // do arquivo que vem da API do deskcomm.
+const ATENDIMENTO_EXT_POR_MIME: Record<string, string> = {
+  "application/pdf": "pdf", "application/vnd.ms-excel": "xls", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+  "application/msword": "doc", "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+  "application/vnd.ms-powerpoint": "ppt", "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+  "text/csv": "csv", "text/plain": "txt", "application/xml": "xml", "text/xml": "xml", "application/zip": "zip", "application/x-rar-compressed": "rar",
+  "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "audio/ogg": "ogg", "audio/mpeg": "mp3", "video/mp4": "mp4",
+};
+/** Nome do arquivo de uma mídia do atendimento: metadata.filename, ou "arquivo-AAAA-MM-DD.<ext>". */
+async function atendimentoNomeArquivoMidia(messageId: string, contentType: string): Promise<string> {
+  let m: any = null;
+  try {
+    if (deskcommCtx().admin && deskcommCtx().orgId) {
+      const r = await deskcommCtx().admin.from("messages").select("created_at, media_storage_path, media_mime, metadata")
+        .eq("organization_id", deskcommCtx().orgId).eq("id", messageId).maybeSingle();
+      m = r.data;
+    }
+  } catch { /* sem a linha, usa só o MIME */ }
+  const original = String(m?.metadata?.filename || "").trim();
+  if (original) return original;
+  const doPath = (String(m?.media_storage_path || "").match(/\.([a-z0-9]{1,5})$/i) || [])[1];
+  const mime = String(m?.media_mime || contentType || "").split(";")[0].trim().toLowerCase();
+  const ext = (doPath || ATENDIMENTO_EXT_POR_MIME[mime] || "").toLowerCase();
+  const dia = m?.created_at ? String(m.created_at).slice(0, 10) : new Date().toISOString().slice(0, 10);
+  return ext ? `arquivo-${dia}.${ext}` : "";
+}
 app.get("/api/atendimento/mensagens/:id/media", blockCliente, requireEscritorioPrincipalDeskcomm, async (req, res) => {
   const user = (req as any).user;
   if (!atendimentoAlgumaPermissao(user, "visualizar")) return res.status(403).end();
@@ -31118,7 +31143,18 @@ app.get("/api/atendimento/mensagens/:id/media", blockCliente, requireEscritorioP
     const r = await fetch(`${deskcommCtx().url}/deskcomm/api/v1/messages/${encodeURIComponent(String(req.params.id))}/media`, { headers: { cookie: deskcommRoboSessao!.cookie, "x-forwarded-host": deskcommCtx().publicHost, "x-forwarded-proto": "https" } });
     if (!r.ok) return res.status(r.status).end();
     const ct = r.headers.get("content-type"); if (ct) res.setHeader("Content-Type", ct);
-    const cd = r.headers.get("content-disposition"); if (cd) res.setHeader("Content-Disposition", cd);
+    const cd = r.headers.get("content-disposition");
+    if (cd) res.setHeader("Content-Disposition", cd);
+    else {
+      // O deskcomm não manda nome do arquivo: sem isso o navegador salva como "media" (sem extensão) e o
+      // Windows não abre (caso real: planilha .xls recebida sem nome no WhatsApp). Monta o nome a partir
+      // do metadata.filename ou da extensão do arquivo guardado / do tipo MIME.
+      const nome = await atendimentoNomeArquivoMidia(String(req.params.id), ct || "");
+      if (nome) {
+        const inline = /^(image|audio|video)\//i.test(ct || "") || /pdf/i.test(ct || "");
+        res.setHeader("Content-Disposition", `${inline ? "inline" : "attachment"}; filename="${nome.replace(/[^\x20-\x7e]/g, "_").replace(/"/g, "")}"; filename*=UTF-8''${encodeURIComponent(nome)}`);
+      }
+    }
     res.setHeader("Cache-Control", "private, max-age=86400");
     res.send(Buffer.from(await r.arrayBuffer()));
   } catch (e: any) {

@@ -19699,7 +19699,10 @@ function atdMidiaHtml(m){
   if(m.type==='image' || m.type==='sticker') return `<a href="${src}" target="_blank" rel="noopener"><img src="${src}" loading="lazy" class="dprh-midia-img" alt="imagem"></a>`;
   if(m.type==='audio') return `<audio controls preload="none" src="${src}" class="dprh-midia-audio"></audio>`;
   if(m.type==='video') return `<video controls preload="none" src="${src}" class="dprh-midia-img"></video>`;
-  return `<a class="chat-anexo-link" href="${src}" target="_blank" rel="noopener">📎 ${esc((m.metadata&&m.metadata.filename)||'Abrir arquivo')}</a>`;
+  // Sem nome vindo do WhatsApp: mostra a extensão do arquivo guardado (ex.: "Abrir arquivo (.xls)").
+  const extArq = (String(m.media_storage_path||'').match(/\.([a-z0-9]{1,5})$/i)||[])[1];
+  const rotuloArq = (m.metadata&&m.metadata.filename) || ('Abrir arquivo' + (extArq ? ` (.${extArq.toLowerCase()})` : ''));
+  return `<a class="chat-anexo-link" href="${src}" target="_blank" rel="noopener">📎 ${esc(rotuloArq)}</a>`;
 }
 // Foto de perfil do cliente por cima das iniciais; sem foto (404) a imagem some e ficam as iniciais.
 function atdFotoHtml(contatoId){
