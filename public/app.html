@@ -23169,37 +23169,12 @@ function renderCfgDomXmlExport(box, sub, dados){
   });
 }
 function renderCfgDomRelatorios(box, sub, dados){
-  const { oneDriveCfg } = dados;
   sub.innerHTML = `
     <div class="card">
       <h3>Executar todos os robôs agora</h3>
       <p style="font-size:12px; color:var(--ink-soft); margin-top:-6px;">Pede a execução dos três robôs abaixo em sequência — Comparativo, depois Férias, depois Demonstrativo (mesma ordem da tela). A prioridade entre eles já garante que nunca rodam juntos: cada um só começa quando o anterior termina.</p>
       <button class="btn primary" id="btnExecutarTodosRobos">▶ Executar todos os robôs agora</button>
       <div id="executarTodosRobosResultado" style="margin-top:10px; font-size:12.5px;"></div>
-    </div>
-    <div class="card">
-      <h3>Importar Relatórios do Domínio Web</h3>
-      <p style="font-size:12px; color:var(--ink-soft); margin-top:-6px;">
-        Lê periodicamente uma pasta do Google Drive com os PDFs de Balanço, DRE, Balancete, Comparativo
-        de Movimento etc. do Domínio, e já disponibiliza cada um em Relatórios e Envio de Documentos.
-      </p>
-      <div style="margin:14px 0 10px; padding-top:0;">
-        <div style="font-weight:600; font-size:13px;">Pasta no Google Drive</div>
-        <p style="font-size:12px; color:var(--ink-soft); margin:2px 0 8px;">Reaproveita a conexão do Google já feita em <b>Envio de documentos</b> — não precisa autorizar de novo, só compartilhar mais essa pasta com <b>agente-drive@simples-contabeis.iam.gserviceaccount.com</b> como Leitor.</p>
-        ${oneDriveCfg.driveConectado
-          ? `<p style="font-size:13px;">📁 ${oneDriveCfg.relatoriosDrivePastaId?`<b>${esc(oneDriveCfg.relatoriosDrivePastaNome||'pasta escolhida')}</b> <span class="link-discreto" id="btnDomRelTrocarPasta">trocar</span> <span class="link-discreto" id="btnDomRelRemoverPasta" style="color:var(--debit); margin-left:8px;">remover</span>` : `<span style="color:var(--ink-soft);">Nenhuma pasta escolhida ainda.</span> <button class="btn small" id="btnDomRelEscolherPasta">Escolher pasta do Drive</button>`}</p>
-             ${oneDriveCfg.relatoriosDrivePastaId?`<p style="font-size:11.5px; color:var(--ink-soft); margin:2px 0 0;">🔁 Essa pasta é lida a cada <b>10 segundos</b> — última leitura: <b id="odRelDriveTimer">${oneDriveCfg.relatoriosDriveUltimaVarredura?'agora há pouco':'ainda não rodou'}</b></p>`:''}`
-          : `<p style="font-size:12.5px; color:var(--ink-soft);">Conecte o Google Drive primeiro em <span class="link-discreto" id="irEnvioDocs">Configurações › Envio de documentos</span>.</p>`}
-      </div>
-      <label class="checkbox-row"><input type="checkbox" id="odRelAtivo" ${oneDriveCfg.relatoriosAtivo?'checked':''}> Manter a importação automática ligada</label>
-      ${oneDriveCfg.relatoriosUltimaImportacaoEm?`<p style="font-size:12px; color:var(--ink-soft);">Última importação (qualquer origem): ${fmtDateHora(oneDriveCfg.relatoriosUltimaImportacaoEm)}${oneDriveCfg.relatoriosUltimoErro?` — <span style="color:var(--debit);">${esc(oneDriveCfg.relatoriosUltimoErro)}</span>`:''}</p>`:''}
-      <div class="row" style="margin-top:6px;">
-        <button class="btn primary" id="btnSalvarOdRel" disabled>Salvar</button>
-        <button class="btn" id="btnOdRelDryRun">Testar (não grava nada)</button>
-        ${(oneDriveCfg.conectado || oneDriveCfg.relatoriosDrivePastaId)?'<button class="btn" id="btnOdRelImportarAgora">🔄 Ler pasta agora</button>':''}
-        <button class="btn" id="btnOdRelPendencias">Pendências de relatórios</button>
-      </div>
-      <div id="odRelResultado" style="margin-top:10px;"></div>
     </div>
     <div class="card" id="cardRoboComp">
       <h3>Robô do Comparativo de Movimento</h3>
@@ -23347,87 +23322,6 @@ function renderCfgDomRelatorios(box, sub, dados){
     toast('Pedido enviado pros 3 robôs — a prioridade entre eles garante que rodam um de cada vez, na ordem.','ok');
     btn.disabled = false;
   });
-  document.getElementById('irEnvioDocs')?.addEventListener('click', ()=>{ STATE.page='configuracoes'; CFG_TAB='envio-docs'; render(); });
-  const escolherPastaDrive = ()=>certImportPastaModal(async (pastaId, pastaNome)=>{
-    try{ await api('/onedrive/relatorios/config-drive', { method:'PUT', body:{ pastaId, pastaNome } }); toast('Pasta do Google Drive salva.','ok'); renderCfgDominio(box); }
-    catch(e){ toast(e.message,'err'); }
-  }, 'dos relatórios');
-  document.getElementById('btnDomRelEscolherPasta')?.addEventListener('click', escolherPastaDrive);
-  document.getElementById('btnDomRelTrocarPasta')?.addEventListener('click', escolherPastaDrive);
-  document.getElementById('btnDomRelRemoverPasta')?.addEventListener('click', async ()=>{
-    if(!confirmar('Parar de ler essa pasta do Google Drive? O que já foi importado continua no sistema.')) return;
-    try{ await api('/onedrive/relatorios/config-drive', { method:'PUT', body:{ pastaId:null, pastaNome:null } }); toast('Pasta removida.','ok'); renderCfgDominio(box); }
-    catch(e){ toast(e.message,'err'); }
-  });
-  habilitarSalvarAoMudar('btnSalvarOdRel', ['odRelAtivo']);
-  document.getElementById('btnSalvarOdRel').addEventListener('click', async ()=>{
-    const body = {
-      clientId: oneDriveCfg.clientId, pastaDestino: oneDriveCfg.pastaDestino, pastaDestinoServicos: oneDriveCfg.pastaDestinoServicos, ativo: oneDriveCfg.ativo,
-      relatoriosPastaOrigem: '', // OneDrive não é mais usado como origem de Relatórios — só Google Drive
-      relatoriosAtivo: document.getElementById('odRelAtivo').checked,
-    };
-    try{ await api('/onedrive/config', { method:'PUT', body }); toast('Configuração salva.','ok'); renderCfgDominio(box); }
-    catch(e){ toast(e.message,'err'); }
-  });
-  document.getElementById('btnOdRelDryRun').addEventListener('click', async (ev)=>{
-    const btn = ev.target; btn.disabled = true; btn.textContent = 'Testando…';
-    const resultado = document.getElementById('odRelResultado');
-    resultado.innerHTML = '<div class="empty-state">Lendo a pasta do OneDrive…</div>';
-    try{
-      const r = await api('/onedrive/relatorios/dry-run', { method:'POST', body:{ limite:5 } });
-      resultado.innerHTML = !r.previews.length ? '<div class="empty-state">Nenhum PDF novo encontrado na pasta.</div>' : r.previews.map(p=>`
-        <div class="card" style="background:var(--paper); margin-bottom:8px;">
-          <b>${esc(p.nomeArquivo)}</b>
-          <div style="font-size:12px; color:var(--ink-soft); margin-top:4px;">
-            Tipo: ${p.tiposDetectados.length?esc(p.tiposDetectados.join(', ')):'não identificado'} ·
-            Período: ${p.periodoInicio?fmtDateIso(p.periodoInicio)+' a '+fmtDateIso(p.periodoFim):'não identificado'} ·
-            CNPJ: ${esc(p.cnpjDetectado||'não encontrado')} ·
-            Empresa: ${p.empresaEncontrada?esc(p.empresaEncontrada.nome):'não encontrada'}
-          </div>
-        </div>
-      `).join('');
-    }catch(e){ resultado.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; }
-    finally{ btn.disabled = false; btn.textContent = 'Testar (não grava nada)'; }
-  });
-  const btnOdRelImportarAgora = document.getElementById('btnOdRelImportarAgora');
-  if(btnOdRelImportarAgora) btnOdRelImportarAgora.addEventListener('click', async (ev)=>{
-    const btn = ev.target; btn.disabled = true; btn.textContent = 'Lendo a pasta agora…';
-    const resultado = document.getElementById('odRelResultado');
-    resultado.innerHTML = '<div class="empty-state">Indo direto no OneDrive/Google Drive conferir o que tem lá agora…</div>';
-    try{
-      const r = await api('/onedrive/relatorios/importar-agora', { method:'POST' });
-      resultado.innerHTML = `<div class="tag ok">Concluído</div> <span style="font-size:12.5px;">${r.ok} importado(s), ${r.pendentes} pendência(s), ${r.erros} erro(s)${r.limpas?`, ${r.limpas} pendência(s) antiga(s) removida(s) (arquivo não existe mais na pasta)`:''}.</span>`;
-    }catch(e){ resultado.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; }
-    finally{ btn.disabled = false; btn.textContent = '🔄 Ler pasta agora'; }
-  });
-  document.getElementById('btnOdRelPendencias').addEventListener('click', abrirOdRelPendenciasModal);
-  // ---- Timer ao vivo da leitura do Drive (10s) — mostra "há Xs" pra confirmar que está rodando,
-  // sem precisar recarregar a página. Refaz a leitura do config a cada 5s (bem mais barato que redesenhar
-  // a tela toda) e para sozinho quando o elemento some (troca de aba, navegação etc.), igual o padrão
-  // já usado noutros pollers da tela (EML.timer, ESC_PAYWALL_POLL).
-  if(document.getElementById('odRelDriveTimer')){
-    let ultimaMs = oneDriveCfg.relatoriosDriveUltimaVarredura ? new Date(temFusoExplicito(oneDriveCfg.relatoriosDriveUltimaVarredura)?oneDriveCfg.relatoriosDriveUltimaVarredura:oneDriveCfg.relatoriosDriveUltimaVarredura+'Z').getTime() : null;
-    function pintarTimer(){
-      const el = document.getElementById('odRelDriveTimer');
-      if(!el) return false;
-      if(!ultimaMs){ el.textContent = 'ainda não rodou'; return true; }
-      const s = Math.max(0, Math.round((Date.now()-ultimaMs)/1000));
-      el.textContent = s<60 ? `há ${s}s` : `há ${Math.floor(s/60)}min`;
-      return true;
-    }
-    pintarTimer();
-    const tickTimer = setInterval(()=>{ if(!pintarTimer()) clearInterval(tickTimer); }, 1000);
-    const refreshTimer = setInterval(async ()=>{
-      if(!document.getElementById('odRelDriveTimer')){ clearInterval(refreshTimer); return; }
-      try{
-        const c = await api('/onedrive/config');
-        if(c.relatoriosDriveUltimaVarredura){
-          const s = temFusoExplicito(c.relatoriosDriveUltimaVarredura)?c.relatoriosDriveUltimaVarredura:c.relatoriosDriveUltimaVarredura+'Z';
-          ultimaMs = new Date(s).getTime();
-        }
-      }catch(e){ /* ignora falha pontual, mantém o último valor conhecido */ }
-    }, 5000);
-  }
   // ---- Robô do Comparativo de Movimento (controle + progresso ao vivo) ----
   (function(){
     const $ = id => document.getElementById(id);
@@ -23707,6 +23601,7 @@ async function abrirRoboMarcadasModal(tipo, titulo){
 }
 function renderCfgDomGoogleDrive(box, sub, dados){
   const g = dados.gDriveCfg;
+  const { oneDriveCfg } = dados;
   const redirectUri = location.origin + '/api/gdrive/callback';
   sub.innerHTML = `
     <div class="card">
@@ -23740,6 +23635,30 @@ function renderCfgDomGoogleDrive(box, sub, dados){
         ${g.conectado?'<button class="btn danger" id="btnDesconectarGDrive">Desconectar</button><button class="btn" id="btnExportarGDriveAgora">Exportar agora</button>':''}
       </div>
       <div id="gdResultado" style="margin-top:10px;"></div>
+    </div>
+    <div class="card">
+      <h3>Importar Relatórios do Domínio Web</h3>
+      <p style="font-size:12px; color:var(--ink-soft); margin-top:-6px;">
+        Lê periodicamente uma pasta do Google Drive com os PDFs de Balanço, DRE, Balancete, Comparativo
+        de Movimento etc. do Domínio, e já disponibiliza cada um em Relatórios e Envio de Documentos.
+      </p>
+      <div style="margin:14px 0 10px; padding-top:0;">
+        <div style="font-weight:600; font-size:13px;">Pasta no Google Drive</div>
+        <p style="font-size:12px; color:var(--ink-soft); margin:2px 0 8px;">Reaproveita a conexão do Google já feita em <b>Envio de documentos</b> — não precisa autorizar de novo, só compartilhar mais essa pasta com <b>agente-drive@simples-contabeis.iam.gserviceaccount.com</b> como Leitor.</p>
+        ${oneDriveCfg.driveConectado
+          ? `<p style="font-size:13px;">📁 ${oneDriveCfg.relatoriosDrivePastaId?`<b>${esc(oneDriveCfg.relatoriosDrivePastaNome||'pasta escolhida')}</b> <span class="link-discreto" id="btnDomRelTrocarPasta">trocar</span> <span class="link-discreto" id="btnDomRelRemoverPasta" style="color:var(--debit); margin-left:8px;">remover</span>` : `<span style="color:var(--ink-soft);">Nenhuma pasta escolhida ainda.</span> <button class="btn small" id="btnDomRelEscolherPasta">Escolher pasta do Drive</button>`}</p>
+             ${oneDriveCfg.relatoriosDrivePastaId?`<p style="font-size:11.5px; color:var(--ink-soft); margin:2px 0 0;">🔁 Essa pasta é lida a cada <b>10 segundos</b> — última leitura: <b id="odRelDriveTimer">${oneDriveCfg.relatoriosDriveUltimaVarredura?'agora há pouco':'ainda não rodou'}</b></p>`:''}`
+          : `<p style="font-size:12.5px; color:var(--ink-soft);">Conecte o Google Drive primeiro em <span class="link-discreto" id="irEnvioDocs">Configurações › Envio de documentos</span>.</p>`}
+      </div>
+      <label class="checkbox-row"><input type="checkbox" id="odRelAtivo" ${oneDriveCfg.relatoriosAtivo?'checked':''}> Manter a importação automática ligada</label>
+      ${oneDriveCfg.relatoriosUltimaImportacaoEm?`<p style="font-size:12px; color:var(--ink-soft);">Última importação (qualquer origem): ${fmtDateHora(oneDriveCfg.relatoriosUltimaImportacaoEm)}${oneDriveCfg.relatoriosUltimoErro?` — <span style="color:var(--debit);">${esc(oneDriveCfg.relatoriosUltimoErro)}</span>`:''}</p>`:''}
+      <div class="row" style="margin-top:6px;">
+        <button class="btn primary" id="btnSalvarOdRel" disabled>Salvar</button>
+        <button class="btn" id="btnOdRelDryRun">Testar (não grava nada)</button>
+        ${(oneDriveCfg.conectado || oneDriveCfg.relatoriosDrivePastaId)?'<button class="btn" id="btnOdRelImportarAgora">🔄 Ler pasta agora</button>':''}
+        <button class="btn" id="btnOdRelPendencias">Pendências de relatórios</button>
+      </div>
+      <div id="odRelResultado" style="margin-top:10px;"></div>
     </div>
   `;
   habilitarSalvarAoMudar('btnSalvarGDrive', ['gdClientId','gdClientSecret','gdAtivo']);
@@ -23775,6 +23694,87 @@ function renderCfgDomGoogleDrive(box, sub, dados){
       btnExportarGDriveAgora.disabled = false; btnExportarGDriveAgora.textContent = 'Exportar agora';
     }
   });
+  document.getElementById('irEnvioDocs')?.addEventListener('click', ()=>{ STATE.page='configuracoes'; CFG_TAB='envio-docs'; render(); });
+  const escolherPastaDrive = ()=>certImportPastaModal(async (pastaId, pastaNome)=>{
+    try{ await api('/onedrive/relatorios/config-drive', { method:'PUT', body:{ pastaId, pastaNome } }); toast('Pasta do Google Drive salva.','ok'); renderCfgDominio(box); }
+    catch(e){ toast(e.message,'err'); }
+  }, 'dos relatórios');
+  document.getElementById('btnDomRelEscolherPasta')?.addEventListener('click', escolherPastaDrive);
+  document.getElementById('btnDomRelTrocarPasta')?.addEventListener('click', escolherPastaDrive);
+  document.getElementById('btnDomRelRemoverPasta')?.addEventListener('click', async ()=>{
+    if(!confirmar('Parar de ler essa pasta do Google Drive? O que já foi importado continua no sistema.')) return;
+    try{ await api('/onedrive/relatorios/config-drive', { method:'PUT', body:{ pastaId:null, pastaNome:null } }); toast('Pasta removida.','ok'); renderCfgDominio(box); }
+    catch(e){ toast(e.message,'err'); }
+  });
+  habilitarSalvarAoMudar('btnSalvarOdRel', ['odRelAtivo']);
+  document.getElementById('btnSalvarOdRel').addEventListener('click', async ()=>{
+    const body = {
+      clientId: oneDriveCfg.clientId, pastaDestino: oneDriveCfg.pastaDestino, pastaDestinoServicos: oneDriveCfg.pastaDestinoServicos, ativo: oneDriveCfg.ativo,
+      relatoriosPastaOrigem: '', // OneDrive não é mais usado como origem de Relatórios — só Google Drive
+      relatoriosAtivo: document.getElementById('odRelAtivo').checked,
+    };
+    try{ await api('/onedrive/config', { method:'PUT', body }); toast('Configuração salva.','ok'); renderCfgDominio(box); }
+    catch(e){ toast(e.message,'err'); }
+  });
+  document.getElementById('btnOdRelDryRun').addEventListener('click', async (ev)=>{
+    const btn = ev.target; btn.disabled = true; btn.textContent = 'Testando…';
+    const resultado = document.getElementById('odRelResultado');
+    resultado.innerHTML = '<div class="empty-state">Lendo a pasta do OneDrive…</div>';
+    try{
+      const r = await api('/onedrive/relatorios/dry-run', { method:'POST', body:{ limite:5 } });
+      resultado.innerHTML = !r.previews.length ? '<div class="empty-state">Nenhum PDF novo encontrado na pasta.</div>' : r.previews.map(p=>`
+        <div class="card" style="background:var(--paper); margin-bottom:8px;">
+          <b>${esc(p.nomeArquivo)}</b>
+          <div style="font-size:12px; color:var(--ink-soft); margin-top:4px;">
+            Tipo: ${p.tiposDetectados.length?esc(p.tiposDetectados.join(', ')):'não identificado'} ·
+            Período: ${p.periodoInicio?fmtDateIso(p.periodoInicio)+' a '+fmtDateIso(p.periodoFim):'não identificado'} ·
+            CNPJ: ${esc(p.cnpjDetectado||'não encontrado')} ·
+            Empresa: ${p.empresaEncontrada?esc(p.empresaEncontrada.nome):'não encontrada'}
+          </div>
+        </div>
+      `).join('');
+    }catch(e){ resultado.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; }
+    finally{ btn.disabled = false; btn.textContent = 'Testar (não grava nada)'; }
+  });
+  const btnOdRelImportarAgora = document.getElementById('btnOdRelImportarAgora');
+  if(btnOdRelImportarAgora) btnOdRelImportarAgora.addEventListener('click', async (ev)=>{
+    const btn = ev.target; btn.disabled = true; btn.textContent = 'Lendo a pasta agora…';
+    const resultado = document.getElementById('odRelResultado');
+    resultado.innerHTML = '<div class="empty-state">Indo direto no OneDrive/Google Drive conferir o que tem lá agora…</div>';
+    try{
+      const r = await api('/onedrive/relatorios/importar-agora', { method:'POST' });
+      resultado.innerHTML = `<div class="tag ok">Concluído</div> <span style="font-size:12.5px;">${r.ok} importado(s), ${r.pendentes} pendência(s), ${r.erros} erro(s)${r.limpas?`, ${r.limpas} pendência(s) antiga(s) removida(s) (arquivo não existe mais na pasta)`:''}.</span>`;
+    }catch(e){ resultado.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; }
+    finally{ btn.disabled = false; btn.textContent = '🔄 Ler pasta agora'; }
+  });
+  document.getElementById('btnOdRelPendencias').addEventListener('click', abrirOdRelPendenciasModal);
+  // ---- Timer ao vivo da leitura do Drive (10s) — mostra "há Xs" pra confirmar que está rodando,
+  // sem precisar recarregar a página. Refaz a leitura do config a cada 5s (bem mais barato que redesenhar
+  // a tela toda) e para sozinho quando o elemento some (troca de aba, navegação etc.), igual o padrão
+  // já usado noutros pollers da tela (EML.timer, ESC_PAYWALL_POLL).
+  if(document.getElementById('odRelDriveTimer')){
+    let ultimaMs = oneDriveCfg.relatoriosDriveUltimaVarredura ? new Date(temFusoExplicito(oneDriveCfg.relatoriosDriveUltimaVarredura)?oneDriveCfg.relatoriosDriveUltimaVarredura:oneDriveCfg.relatoriosDriveUltimaVarredura+'Z').getTime() : null;
+    function pintarTimer(){
+      const el = document.getElementById('odRelDriveTimer');
+      if(!el) return false;
+      if(!ultimaMs){ el.textContent = 'ainda não rodou'; return true; }
+      const s = Math.max(0, Math.round((Date.now()-ultimaMs)/1000));
+      el.textContent = s<60 ? `há ${s}s` : `há ${Math.floor(s/60)}min`;
+      return true;
+    }
+    pintarTimer();
+    const tickTimer = setInterval(()=>{ if(!pintarTimer()) clearInterval(tickTimer); }, 1000);
+    const refreshTimer = setInterval(async ()=>{
+      if(!document.getElementById('odRelDriveTimer')){ clearInterval(refreshTimer); return; }
+      try{
+        const c = await api('/onedrive/config');
+        if(c.relatoriosDriveUltimaVarredura){
+          const s = temFusoExplicito(c.relatoriosDriveUltimaVarredura)?c.relatoriosDriveUltimaVarredura:c.relatoriosDriveUltimaVarredura+'Z';
+          ultimaMs = new Date(s).getTime();
+        }
+      }catch(e){ /* ignora falha pontual, mantém o último valor conhecido */ }
+    }, 5000);
+  }
 }
 function renderCfgDomOneDrive(box, sub, dados){
   const { oneDriveCfg } = dados;
