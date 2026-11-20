@@ -43,6 +43,7 @@ import { registerWebmail } from "./webmail";
 import { registerCentralEnvio, credencialDriveDoEscritorio, driveGet, driveBaixar } from "./central-envio";
 import { registerFerias, feriasProcessarPdf, feriasExtrairFuncionarios } from "./ferias";
 import { registerCertificados } from "./certificados";
+import { registerIrpfRural } from "./irpf-rural";
 import { createProxyMiddleware, responseInterceptor } from "http-proxy-middleware";
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 
@@ -3370,7 +3371,7 @@ sqlite.exec(`INSERT OR IGNORE INTO webdfe_config (escritorio_id) SELECT id FROM 
   }
 }
 
-const MODULOS = ["dashboard", "empresas", "solicitacoes", "envio", "nfse", "nfe-busca", "integracontador", "licencas", "financeiro", "contratos", "relatorios", "crm", "dprh", "contabil", "fiscal", "usuarios", "configuracoes", "email", "certificados", "webdfe", "obrigacoes", "reforma", "open_finance"] as const;
+const MODULOS = ["dashboard", "empresas", "solicitacoes", "envio", "nfse", "nfe-busca", "integracontador", "licencas", "financeiro", "contratos", "relatorios", "crm", "dprh", "contabil", "fiscal", "usuarios", "configuracoes", "email", "certificados", "webdfe", "obrigacoes", "reforma", "open_finance", "irpf_rural"] as const;
 type Modulo = (typeof MODULOS)[number];
 // ---- Funcionalidades liberadas por escritório (controle do SuperAdmin) ----
 // Cada escritório só usa os módulos que contratou (ex.: só NFS-e + Busca de XML). Linha presente =
@@ -3406,6 +3407,20 @@ function funcionalidadesDoEscritorio(escritorioId: number | null | undefined): s
 // reativa algo que o administrador desmarcou.
 sqlite.exec(`INSERT OR IGNORE INTO colaborador_permissoes (user_id, modulo, pode_visualizar, pode_postar, pode_editar)
   SELECT user_id, 'reforma', pode_visualizar, 0, 0 FROM colaborador_permissoes WHERE modulo = 'nfe-busca'`);
+
+// Módulo "irpf_rural" (IRPF · Atividade Rural) criado em 2026-11-19. A tabela escritorio_funcionalidades
+// só nasce com tudo liberado pra quem já existia no dia em que ELA foi criada — um módulo novo entra
+// desmarcado pra todos, e sem a linha o menu nem aparece (escritorioTemFuncionalidade barra até o
+// Administrador). Então libera uma vez pros escritórios que já existem, porque ninguém "deixou de
+// contratar" um módulo que ainda não existia.
+// Roda UMA vez e fica marcado em migracoes_unicas: se o SuperAdmin desmarcar o módulo pra algum
+// escritório depois, o próximo boot não reativa. (O INSERT OR IGNORE solto, usado na migração do
+// "reforma" acima, reinseriria a linha em cada boot.)
+sqlite.exec(`CREATE TABLE IF NOT EXISTS migracoes_unicas (chave TEXT PRIMARY KEY, feita_em TEXT DEFAULT (datetime('now')))`);
+if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'irpf_rural_liberar_20261119'`).get()) {
+  sqlite.exec(`INSERT OR IGNORE INTO escritorio_funcionalidades (escritorio_id, modulo) SELECT id, 'irpf_rural' FROM escritorios`);
+  sqlite.prepare(`INSERT INTO migracoes_unicas (chave) VALUES ('irpf_rural_liberar_20261119')`).run();
+}
 
 // ========================= LOGIN (senha com hash + sessão via cookie) =========================
 function hashPassword(password: string): string {
@@ -16290,6 +16305,17 @@ registerCertificados(app, {
   excluirCertificadoDoDisco: nfse.excluirCertificadoDoDisco,
   uploadsDir: UPLOADS_DIR,
   podeAcessarEmpresa,
+});
+// Módulo "IRPF · Atividade Rural": caixa de entrada de documentos do produtor rural que vira livro
+// caixa, demonstrativo da ficha Atividade Rural e arquivo do LCDPR (leiaute 1.3) pro e-CAC.
+registerIrpfRural(app, {
+  sqlite,
+  blockCliente,
+  requirePermissao,
+  podeAcessarEmpresa,
+  uploadsDir: UPLOADS_DIR,
+  obterTextoDoPdf,
+  corrigirNomeArquivo,
 });
 // Módulo E-mail (webmail): reaproveita o e-mail + senha de app de Configurações › E-mail corporativo.
 registerWebmail(app, {

@@ -12,7 +12,8 @@
     "dominio-agent": "node dist/dominio-agent.js",
     "onvio-login": "tsx src/onvio-login-setup.ts",
     "fgts-login": "tsx src/fgts-login-setup.ts",
-    "build:agente-fgts": "esbuild src/fgts-login-setup.ts --bundle --platform=node --target=node22 --outfile=dist/agente-fgts/agente-fgts.js --external:playwright --external:playwright-core"
+    "build:agente-fgts": "esbuild src/fgts-login-setup.ts --bundle --platform=node --target=node22 --outfile=dist/agente-fgts/agente-fgts.js --external:playwright --external:playwright-core",
+    "teste:rural": "tsx src/lcdpr-teste.ts && tsx src/irpf-rural-classificador-teste.ts"
   },
   "keywords": [],
   "author": "",
@@ -22,6 +23,7 @@
     "node": ">=22.5.0"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.11.0",
     "@signpdf/placeholder-pdf-lib": "^3.3.0",
     "@signpdf/signer-p12": "^3.3.0",
     "@signpdf/signpdf": "^3.3.0",

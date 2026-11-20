@@ -232,7 +232,7 @@
   .drawer-x{border:0; background:transparent; font-size:22px; line-height:1; cursor:pointer; color:var(--ink-soft); padding:2px 6px;}
   .drawer-x:hover{color:var(--ink);}
   .drawer-body{flex:1; overflow-y:auto; padding:20px 24px;}
-  .drawer-footer{display:flex; justify-content:flex-end; gap:8px; flex-wrap:wrap; padding:16px 24px; border-top:1px solid var(--line);}
+  .drawer-footer{display:flex; justify-content:flex-end; gap:8px; flex-wrap:wrap; padding:16px 24px; border-top:1px solid var(--rule);}
   .xml-view-wrap{background:var(--paper); border:1px solid var(--rule); border-radius:8px; overflow:auto; max-height:52vh;}
   .xml-linha{display:flex;}
   .xml-linha:hover{background:var(--sidebar-active);}
@@ -2106,6 +2106,7 @@ const NAV = [
   ] },
   { id:'reforma-tributaria', label:'Reforma Tributária', modulo:'reforma', roles:['Administrador','Colaborador'] },
   { id:'open-finance', label:'Conciliação Bancária', modulo:'open_finance', roles:['Administrador','Colaborador'] },
+  { id:'irpf-rural', label:'IRPF · Atividade Rural', modulo:'irpf_rural', roles:['Administrador','Colaborador'] },
   { id:'integracontador', label:'Integra Contador', modulo:'integracontador', roles:['Administrador','Colaborador'] },
   { id:'webdfe', label:'Emissor NF-e', modulo:'webdfe', roles:['Administrador','Colaborador'] },
   { id:'minha-financeiro', label:'Financeiro', modulo:null, roles:['Cliente'] },
@@ -2379,6 +2380,7 @@ async function render(){
   // painel flutuante como o chat) — para o polling dela aqui, senão continuaria rodando em segundo
   // plano depois de navegar pra outro lugar.
   if(STATE.page!=='crm') pararCrmTimers();
+  if(STATE.page!=='irpf-rural') ruralPararPoll();
   Object.keys(ATEND).forEach(e=>{ if(STATE.page!==e) pararAtendimentoTimers(e); });
   try{
     if(STATE.page==='dashboard') await pageDashboard();
@@ -2397,6 +2399,7 @@ async function render(){
     else if(STATE.page==='notas-entrada') await pageNotasEntrada();
     else if(STATE.page==='reforma-tributaria') await pageReformaTributaria();
     else if(STATE.page==='open-finance') await pageOpenFinance();
+    else if(STATE.page==='irpf-rural') await pageIrpfRural();
     else if(STATE.page==='minha-conciliacao') await pageMinhaConciliacao();
     else if(STATE.page==='minha-reforma') await pageMinhaReforma();
     else if(STATE.page==='minha-nfse') await pageMinhaNfse();
@@ -9685,6 +9688,710 @@ function ofDataBr(d){ return d && /^\d{4}-\d{2}-\d{2}$/.test(d) ? d.slice(8,10)+
 const OF_TIPO_LABEL = { pix:'PIX', ted:'TED/Transf.', transferencia_propria:'Transf. própria', tarifa:'Tarifa', tributo:'Tributo', boleto:'Boleto', outro:'Outro' };
 const OF_STATUS_CHIP = { pendente:['Pendente','tag'], conciliada:['Conciliada','tag ok'], ignorada:['Ignorada','tag'] };
 const OF_BTN_SM = 'style="padding:3px 9px; font-size:12px;"';
+// ===================== IRPF · Atividade Rural =====================
+// Caixa de entrada de documentos do produtor rural -> prévia de lançamento -> livro caixa ->
+// demonstrativo da ficha Atividade Rural + arquivo do LCDPR (leiaute 1.3) pro e-CAC.
+// Backend: src/irpf-rural.ts (schema, fila de leitura/classificação) e src/lcdpr.ts (gerador).
+let RURAL = {
+  empresaId: null,
+  ano: new Date().getFullYear() - 1, // o IR de um ano é feito no ano seguinte
+  aba: 'entrada',
+  produtor: null,
+  imoveis: [],
+  terceiros: [],
+  contas: [],
+  iaLigada: false,
+  sugestoesImovel: {},
+  pollTimer: null,
+};
+const RURAL_NATUREZA_LABEL = {
+  receita: 'Receita da atividade',
+  receita_adiantamento: 'Receita de adiantamento',
+  custeio: 'Despesa de custeio',
+  investimento: 'Investimento',
+  devolucao: 'Devolução de venda',
+};
+const RURAL_TIPO_DOC_LABEL = { 1: 'Nota fiscal', 2: 'Fatura', 3: 'Recibo', 4: 'Contrato', 5: 'Folha de pagamento', 6: 'Outros' };
+const RURAL_TIPO_DETECTADO_LABEL = {
+  nfe_venda: 'NF-e de venda',
+  nfe_compra_insumo: 'NF-e de compra (insumo)',
+  nfe_compra_bem: 'NF-e de compra (bem)',
+  nfe_devolucao_venda: 'Devolução de venda',
+  nfe_devolucao_compra: 'Devolução de compra',
+  taxa_gta: 'Taxa de GTA',
+  guia_tributo: 'Guia de tributo',
+  recibo_despesa: 'Recibo de despesa',
+  folha_pagamento: 'Folha de pagamento',
+  extrato_bancario: 'Extrato bancário',
+  contrato: 'Contrato',
+  outro: 'Outro',
+};
+const RURAL_EXPLORACAO_LABEL = { 1: 'Individual (imóvel próprio)', 2: 'Condomínio', 3: 'Arrendado', 4: 'Parceria', 5: 'Comodato', 6: 'Outros' };
+const RURAL_CONTRAPARTE_LABEL = { 1: 'Condômino', 2: 'Arrendador', 3: 'Parceiro', 4: 'Comodante', 5: 'Outro' };
+
+function ruralPararPoll(){ if(RURAL.pollTimer){ clearInterval(RURAL.pollTimer); RURAL.pollTimer = null; } }
+
+async function pageIrpfRural(){
+  ruralPararPoll();
+  const m = main();
+  const anoAtual = new Date().getFullYear();
+  const anos = [];
+  for(let a = anoAtual; a >= 2019; a--) anos.push(a); // leiaute 1.3 do LCDPR vale do ano-calendário 2019 em diante
+  m.innerHTML = `
+    <h1>IRPF · Atividade Rural</h1>
+    <p class="subtitle">Jogue aqui os documentos do produtor — notas de venda e de compra, taxas de GTA, guias, recibos, extratos. O sistema lê, separa por mês e monta a prévia dos lançamentos do livro caixa. No fim do ano sai o demonstrativo da ficha Atividade Rural e o arquivo do LCDPR pro e-CAC.</p>
+    <div class="card" style="margin-bottom:14px;">
+      <div class="row" style="gap:12px; flex-wrap:wrap; align-items:flex-end;">
+        <div class="field" style="flex:1; min-width:280px; margin-bottom:0;"><label>Produtor (empresa-cliente)</label>${comboSelectHtml('ruralEmpresaCombo','Digite nome, CPF/CNPJ ou código…')}</div>
+        <div class="field" style="margin-bottom:0; min-width:130px;"><label>Ano-calendário</label>
+          <select id="ruralAno" class="inp">${anos.map(a=>`<option value="${a}" ${a===RURAL.ano?'selected':''}>${a}</option>`).join('')}</select>
+        </div>
+      </div>
+    </div>
+    <div id="ruralPainel"><div class="card"><div class="empty-state">Escolha o produtor para abrir a escrituração do ano.</div></div></div>`;
+
+  document.getElementById('ruralAno').addEventListener('change', e=>{ RURAL.ano = Number(e.target.value); if(RURAL.empresaId) ruralAbrir(); });
+
+  let empresas = [];
+  try{ empresas = await empresasAtivas(); }
+  catch(e){ document.getElementById('ruralPainel').innerHTML = `<div class="card"><div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div></div>`; return; }
+  setupComboSelect('ruralEmpresaCombo', empresas.map(e=>({ id:e.id, label: empresaComboLabel(e) })), id=>{
+    RURAL.empresaId = id ? Number(id) : null;
+    if(RURAL.empresaId) ruralAbrir();
+    else { ruralPararPoll(); document.getElementById('ruralPainel').innerHTML = `<div class="card"><div class="empty-state">Escolha o produtor para abrir a escrituração do ano.</div></div>`; }
+  });
+  if(RURAL.empresaId){
+    const e = empresas.find(x=>x.id===RURAL.empresaId);
+    if(e){ const root=document.getElementById('ruralEmpresaCombo'); root.querySelector('.combo-input').value = empresaComboLabel(e); root.querySelector('.combo-value').value = e.id; }
+    ruralAbrir();
+  }
+}
+
+// Abre (ou cria) a escrituração do ano escolhido e desenha as abas.
+async function ruralAbrir(){
+  ruralPararPoll();
+  const painel = document.getElementById('ruralPainel');
+  painel.innerHTML = `<div class="card"><div class="empty-state">Carregando…</div></div>`;
+  let r;
+  try{ r = await api(`/rural/escrituracao?empresaId=${RURAL.empresaId}&ano=${RURAL.ano}`); }
+  catch(e){ painel.innerHTML = `<div class="card"><div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div></div>`; return; }
+  RURAL.produtor = r.produtor;
+  RURAL.iaLigada = !!r.iaLigada;
+  RURAL.sugestoesImovel = r.sugestoesImovel || {};
+  await ruralCarregarCadastro();
+  ruralRenderAbas();
+}
+
+async function ruralCarregarCadastro(){
+  try{
+    const [im, ct] = await Promise.all([
+      api('/rural/imoveis?produtorId='+RURAL.produtor.id),
+      api('/rural/contas?produtorId='+RURAL.produtor.id),
+    ]);
+    RURAL.imoveis = im.imoveis || [];
+    RURAL.terceiros = im.terceiros || [];
+    RURAL.contas = ct.contas || [];
+  }catch(e){ RURAL.imoveis = []; RURAL.terceiros = []; RURAL.contas = []; }
+}
+
+function ruralRenderAbas(){
+  const painel = document.getElementById('ruralPainel');
+  const avisoIa = RURAL.iaLigada
+    ? ''
+    : `<div class="card" style="margin-bottom:12px; border-left:3px solid #f59e0b;"><b>Leitura por IA desligada</b><p class="mut" style="font-size:12px; margin:4px 0 0;">Falta a variável <code>ANTHROPIC_API_KEY</code> no servidor. Sem ela, XML de NF-e, OFX e os documentos de formato fixo (taxa de GTA, DARF, DANFE) continuam sendo lidos pelas regras; o resto cai em “Não identificado” pra classificar à mão.</p></div>`;
+  painel.innerHTML = `
+    ${avisoIa}
+    <div class="tabs" style="margin-bottom:12px;">
+      <div class="tab ${RURAL.aba==='entrada'?'active':''}" data-ruralaba="entrada">Caixa de entrada</div>
+      <div class="tab ${RURAL.aba==='lancamentos'?'active':''}" data-ruralaba="lancamentos">Lançamentos</div>
+      <div class="tab ${RURAL.aba==='cadastro'?'active':''}" data-ruralaba="cadastro">Produtor, imóveis e contas</div>
+      <div class="tab ${RURAL.aba==='fechamento'?'active':''}" data-ruralaba="fechamento">Fechamento do ano</div>
+    </div>
+    <div id="ruralConteudo"></div>`;
+  painel.querySelectorAll('[data-ruralaba]').forEach(t=>t.addEventListener('click', ()=>{
+    RURAL.aba = t.dataset.ruralaba;
+    ruralPararPoll();
+    painel.querySelectorAll('[data-ruralaba]').forEach(x=>x.classList.toggle('active', x.dataset.ruralaba===RURAL.aba));
+    ruralRouter();
+  }));
+  ruralRouter();
+}
+
+function ruralRouter(){
+  if(RURAL.aba==='entrada') ruralRenderEntrada();
+  else if(RURAL.aba==='lancamentos') ruralRenderLancamentos();
+  else if(RURAL.aba==='cadastro') ruralRenderCadastro();
+  else ruralRenderFechamento();
+}
+
+// --------------------------- Caixa de entrada ---------------------------
+async function ruralRenderEntrada(){
+  const alvo = document.getElementById('ruralConteudo');
+  const podePostar = STATE.user.perfil==='Administrador' || can('irpf_rural','postar');
+  const podeEditar = STATE.user.perfil==='Administrador' || can('irpf_rural','editar');
+  alvo.innerHTML = `<div class="card"><div class="empty-state">Carregando…</div></div>`;
+  let r;
+  try{ r = await api('/rural/documentos?produtorId='+RURAL.produtor.id); }
+  catch(e){ alvo.innerHTML = `<div class="card"><div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div></div>`; return; }
+  const docs = r.documentos || [];
+  const naFila = r.naFila || 0;
+
+  const statusTag = (dc)=>{
+    if(dc.status==='processando') return `<span class="tag">⏳ lendo…</span>`;
+    if(dc.status==='erro') return `<span class="tag" style="background:#fee2e2; color:#991b1b;">falhou</span>`;
+    if(dc.status==='nao_identificado') return `<span class="tag" style="background:#fde68a; color:#92400e;">não identificado</span>`;
+    if(dc.status==='conferir') return `<span class="tag" style="background:#fde68a; color:#92400e;">conferir</span>`;
+    return `<span class="tag ok">lido</span>`;
+  };
+  const motorLabel = { xml:'XML da nota', ofx:'extrato OFX', regra:'regra', regra_aprendida:'regra que você salvou', ia:'IA', manual:'manual' };
+
+  alvo.innerHTML = `
+    ${podePostar?`<div class="card" style="margin-bottom:14px;">
+      <b>Jogar documentos aqui</b>
+      <p class="mut" style="font-size:12px; margin:4px 0 10px;">Pode mandar tudo junto e misturado: PDF, foto, XML de NF-e, OFX de extrato ou um ZIP com as notas do mês. O mesmo arquivo enviado duas vezes é descartado sozinho (confere pelo conteúdo, não pelo nome).</p>
+      <div class="field" style="margin-bottom:8px;"><label>Arquivos</label><input type="file" id="ruralArquivos" class="inp" multiple></div>
+      <div class="field" style="max-width:260px;"><label>De onde veio</label>
+        <select id="ruralOrigem" class="inp">
+          <option value="escritorio">Escritório (eu estou subindo)</option>
+          <option value="portal">Cliente mandou pelo portal</option>
+          <option value="email">Chegou por e-mail</option>
+          <option value="whatsapp">Chegou por WhatsApp</option>
+        </select>
+      </div>
+      <div class="row" style="gap:8px; flex-wrap:wrap;">
+        <button class="btn primary" id="ruralEnviar">Enviar e ler</button>
+        <span class="mut" id="ruralEnvioStatus" style="font-size:12px; align-self:center;">${naFila?`${naFila} documento(s) na fila de leitura.`:''}</span>
+      </div>
+    </div>`:''}
+    <div class="card">
+      <div class="row" style="justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px;">
+        <b>Documentos do ano (${docs.length})</b>
+        ${naFila?`<span class="tag">⏳ ${naFila} na fila</span>`:''}
+      </div>
+      <div style="overflow:auto;">
+        <table class="data-table">
+          <thead><tr><th>Arquivo</th><th>Situação</th><th>O que é</th><th>Como foi lido</th><th>Lançamentos</th><th></th></tr></thead>
+          <tbody>
+            ${docs.length ? docs.map(dc=>`
+              <tr>
+                <td><a href="/api/rural/documentos/${dc.id}/arquivo" target="_blank" rel="noopener">${esc(dc.nomeArquivo)}</a>
+                  <div class="mut" style="font-size:11px;">${esc(dc.origem)} · ${dc.sizeBytes?Math.round(dc.sizeBytes/1024)+' KB':''}</div>
+                  ${dc.observacao?`<div class="mut" style="font-size:11px; margin-top:3px;">${esc(dc.observacao)}</div>`:''}
+                  ${dc.erro?`<div style="font-size:11px; color:var(--debit); margin-top:3px;">${esc(dc.erro)}</div>`:''}
+                </td>
+                <td>${statusTag(dc)}</td>
+                <td>${dc.tipoDetectado?esc(RURAL_TIPO_DETECTADO_LABEL[dc.tipoDetectado]||dc.tipoDetectado):'—'}</td>
+                <td>${dc.motor?esc(motorLabel[dc.motor]||dc.motor):'—'}${dc.confianca!=null?`<div class="mut" style="font-size:11px;">confiança ${Math.round(dc.confianca*100)}%</div>`:''}</td>
+                <td style="text-align:center;">${dc.lancamentos||0}</td>
+                <td style="white-space:nowrap;">
+                  ${podePostar?`<button class="btn" data-ruralreproc="${dc.id}" title="Ler de novo">↻</button>`:''}
+                  ${podeEditar?`<button class="btn" data-ruraldeldoc="${dc.id}" title="Excluir">✕</button>`:''}
+                </td>
+              </tr>`).join('') : `<tr><td colspan="6"><div class="empty-state">Nenhum documento ainda. Suba o primeiro acima.</div></td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+
+  const $ = id=>document.getElementById(id);
+  if($('ruralEnviar')) $('ruralEnviar').addEventListener('click', async ev=>{
+    const input = $('ruralArquivos');
+    if(!input.files || !input.files.length){ toast('Escolha pelo menos um arquivo.','err'); return; }
+    const fd = new FormData();
+    fd.append('produtorId', RURAL.produtor.id);
+    fd.append('origem', $('ruralOrigem').value);
+    for(const f of input.files) fd.append('arquivos', f);
+    ev.target.disabled = true;
+    $('ruralEnvioStatus').textContent = 'Enviando…';
+    try{
+      const res = await api('/rural/documentos', { method:'POST', body: fd });
+      toast(`${res.recebidos} documento(s) na fila${res.duplicados?`; ${res.duplicados} já tinham sido enviados antes`:''}.`,'ok');
+      input.value = '';
+      ruralRenderEntrada();
+    }catch(e){ toast(e.message,'err'); ev.target.disabled = false; $('ruralEnvioStatus').textContent = ''; }
+  });
+  alvo.querySelectorAll('[data-ruralreproc]').forEach(b=>b.addEventListener('click', async ()=>{
+    try{ await api(`/rural/documentos/${b.dataset.ruralreproc}/reprocessar`, { method:'POST' }); toast('Na fila pra ler de novo.','ok'); ruralRenderEntrada(); }
+    catch(e){ toast(e.message,'err'); }
+  }));
+  alvo.querySelectorAll('[data-ruraldeldoc]').forEach(b=>b.addEventListener('click', async ()=>{
+    if(!confirm('Excluir este documento e a prévia de lançamento que veio dele?')) return;
+    try{ await api(`/rural/documentos/${b.dataset.ruraldeldoc}`, { method:'DELETE' }); toast('Excluído.','ok'); ruralRenderEntrada(); }
+    catch(e){ toast(e.message,'err'); }
+  }));
+
+  // Enquanto tem documento na fila, recarrega sozinho — o contador sobe a pasta e vê ir preenchendo.
+  ruralPararPoll();
+  if(naFila || docs.some(dc=>dc.status==='processando')){
+    RURAL.pollTimer = setInterval(()=>{ if(STATE.page!=='irpf-rural' || RURAL.aba!=='entrada'){ ruralPararPoll(); return; } ruralRenderEntrada(); }, 4000);
+  }
+}
+
+// --------------------------- Lançamentos ---------------------------
+async function ruralRenderLancamentos(){
+  const alvo = document.getElementById('ruralConteudo');
+  const podeEditar = STATE.user.perfil==='Administrador' || can('irpf_rural','editar');
+  alvo.innerHTML = `<div class="card"><div class="empty-state">Carregando…</div></div>`;
+  let r;
+  try{ r = await api('/rural/lancamentos?produtorId='+RURAL.produtor.id); }
+  catch(e){ alvo.innerHTML = `<div class="card"><div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div></div>`; return; }
+  const todos = r.lancamentos || [];
+  const previas = todos.filter(l=>l.status==='previa');
+  const aprovados = todos.filter(l=>l.status==='aprovado');
+
+  const optImoveis = (sel)=> `<option value="" ${sel==null?'selected':''}>— escolher —</option>` +
+    RURAL.imoveis.map(i=>`<option value="${i.cod_imovel}" ${Number(sel)===i.cod_imovel?'selected':''}>${esc(i.nome)}</option>`).join('');
+  const optContas = (sel)=> [
+    `<option value="999" ${Number(sel)===999?'selected':''}>Numerário em trânsito (999)</option>`,
+    `<option value="0" ${Number(sel)===0?'selected':''}>Em espécie (000)</option>`,
+  ].join('') + RURAL.contas.map(c=>`<option value="${c.cod_conta}" ${Number(sel)===c.cod_conta?'selected':''}>${esc(c.nome_banco)} ag. ${esc(c.agencia||'')} c/c ${esc(c.numero_conta||'')}</option>`).join('');
+  const optNatureza = (sel)=> Object.entries(RURAL_NATUREZA_LABEL).map(([k,v])=>`<option value="${k}" ${sel===k?'selected':''}>${esc(v)}</option>`).join('');
+  const optTipoDoc = (sel)=> Object.entries(RURAL_TIPO_DOC_LABEL).map(([k,v])=>`<option value="${k}" ${Number(sel)===Number(k)?'selected':''}>${esc(v)}</option>`).join('');
+
+  const linhaPrevia = (l)=>`
+    <tr data-rurallinha="${l.id}">
+      <td style="text-align:center;"><input type="checkbox" class="rural-sel" value="${l.id}"></td>
+      <td><input type="date" class="inp" data-rcampo="data" value="${esc(l.data||'')}" style="min-width:140px;"></td>
+      <td><select class="inp" data-rcampo="codImovel">${optImoveis(l.cod_imovel)}</select></td>
+      <td><select class="inp" data-rcampo="natureza">${optNatureza(l.natureza)}</select></td>
+      <td><input class="inp" data-rcampo="historico" value="${esc(l.historico||'')}" style="min-width:220px;"></td>
+      <td><input class="inp" data-rcampo="participanteDoc" value="${esc(l.participante_doc||'')}" placeholder="CPF/CNPJ" style="min-width:130px;">
+        ${l.participante_nome?`<div class="mut" style="font-size:11px;">${esc(l.participante_nome)}</div>`:''}</td>
+      <td><select class="inp" data-rcampo="tipoDoc">${optTipoDoc(l.tipo_doc)}</select></td>
+      <td><input class="inp" data-rcampo="numDoc" value="${esc(l.num_doc||'')}" style="max-width:90px;"></td>
+      <td><select class="inp" data-rcampo="codConta">${optContas(l.cod_conta)}</select></td>
+      <td><input class="inp" data-rcampo="valor" value="${l.valor!=null?Number(l.valor).toFixed(2):''}" inputmode="decimal" style="max-width:110px; text-align:right;"></td>
+      <td style="white-space:nowrap;">
+        ${l.confianca!=null?`<div class="mut" style="font-size:11px;">${Math.round(l.confianca*100)}%</div>`:''}
+        ${l.documentoNome?`<a href="#" data-rdoc="${l.documento_id}" title="${esc(l.documentoNome)}">doc</a>`:''}
+        ${podeEditar?`<button class="btn" data-rdel="${l.id}" title="Excluir">✕</button>`:''}
+      </td>
+    </tr>
+    ${l.observacao?`<tr data-robs="${l.id}"><td></td><td colspan="10" class="mut" style="font-size:11px; padding-top:0;">⚠ ${esc(l.observacao)}</td></tr>`:''}`;
+
+  alvo.innerHTML = `
+    <div class="card" style="margin-bottom:14px;">
+      <div class="row" style="justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px;">
+        <b>Prévias a conferir (${previas.length})</b>
+        ${podeEditar?`<div class="row" style="gap:8px;">
+          <button class="btn" id="ruralSelTodos">Marcar todos</button>
+          <button class="btn primary" id="ruralAprovar">Aprovar marcados</button>
+        </div>`:''}
+      </div>
+      <p class="mut" style="font-size:12px; margin:0 0 10px;">Nada entra no livro caixa antes de você aprovar. Corrija o que estiver errado — quando você muda a natureza de um lançamento com CPF/CNPJ preenchido, o sistema guarda a correção e passa a acertar esse fornecedor sozinho nos próximos documentos.</p>
+      ${podeEditar && previas.length?`<div style="background:var(--paper); border-radius:10px; padding:10px 12px; margin-bottom:12px;">
+        <b style="font-size:12.5px;">Aplicar aos marcados</b>
+        <p class="mut" style="font-size:11.5px; margin:3px 0 8px;">Imóvel e conta são os dois campos que o sistema não tem como adivinhar — o XML da nota não diz a qual fazenda a despesa pertence nem por qual conta o dinheiro passou. Defina de uma vez para o bloco marcado.</p>
+        <div class="row" style="gap:10px; flex-wrap:wrap; align-items:flex-end;">
+          <div class="field" style="margin-bottom:0; min-width:190px;"><label>Imóvel</label>
+            <select class="inp" id="ruralLoteImovel"><option value="">— não alterar —</option><option value="0">Vários imóveis (código 000)</option>${RURAL.imoveis.map(i=>`<option value="${i.cod_imovel}">${esc(i.nome)}</option>`).join('')}</select>
+          </div>
+          <div class="field" style="margin-bottom:0; min-width:230px;"><label>Conta</label>
+            <select class="inp" id="ruralLoteConta"><option value="">— não alterar —</option><option value="999">Numerário em trânsito (999)</option><option value="0">Em espécie (000)</option>${RURAL.contas.map(c=>`<option value="${c.cod_conta}">${esc(c.nome_banco)} ag. ${esc(c.agencia||'')} c/c ${esc(c.numero_conta||'')}</option>`).join('')}</select>
+          </div>
+          <div class="field" style="margin-bottom:0; min-width:190px;"><label>Natureza</label>
+            <select class="inp" id="ruralLoteNatureza"><option value="">— não alterar —</option>${Object.entries(RURAL_NATUREZA_LABEL).map(([k,v])=>`<option value="${k}">${esc(v)}</option>`).join('')}</select>
+          </div>
+          <button class="btn" id="ruralLoteAplicar" style="margin-bottom:0;">Aplicar</button>
+        </div>
+      </div>`:''}
+      <div style="overflow:auto;">
+        <table class="data-table">
+          <thead><tr><th></th><th>Data</th><th>Imóvel</th><th>Natureza</th><th>Histórico</th><th>Participante</th><th>Tipo doc.</th><th>Nº</th><th>Conta</th><th style="text-align:right;">Valor</th><th></th></tr></thead>
+          <tbody>${previas.length?previas.map(linhaPrevia).join(''):`<tr><td colspan="11"><div class="empty-state">Nenhuma prévia pendente. Suba documentos na Caixa de entrada.</div></td></tr>`}</tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <div class="row" style="justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px;">
+        <b>No livro caixa (${aprovados.length})</b>
+        ${podeEditar && aprovados.length?`<button class="btn" id="ruralReabrir">Reabrir marcados</button>`:''}
+      </div>
+      <div style="overflow:auto; max-height:460px;">
+        <table class="data-table">
+          <thead><tr><th></th><th>Data</th><th>Imóvel</th><th>Natureza</th><th>Histórico</th><th>Participante</th><th style="text-align:right;">Valor</th></tr></thead>
+          <tbody>
+            ${aprovados.length?aprovados.map(l=>`<tr>
+              <td style="text-align:center;"><input type="checkbox" class="rural-sel-ap" value="${l.id}"></td>
+              <td style="white-space:nowrap;">${esc(l.data||'')}</td>
+              <td>${esc((RURAL.imoveis.find(i=>i.cod_imovel===l.cod_imovel)||{}).nome||'—')}</td>
+              <td>${esc(RURAL_NATUREZA_LABEL[l.natureza]||l.natureza||'')}</td>
+              <td>${esc(l.historico||'')}</td>
+              <td>${esc(l.participante_nome||l.participante_doc||'')}</td>
+              <td style="text-align:right; white-space:nowrap;">${fmtMoney(l.valor)}</td>
+            </tr>`).join(''):`<tr><td colspan="7"><div class="empty-state">Nada aprovado ainda.</div></td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+
+  // Salva o campo ao sair dele — conferir em lote fica fluido, sem botão por linha.
+  alvo.querySelectorAll('tr[data-rurallinha]').forEach(tr=>{
+    const id = tr.dataset.rurallinha;
+    tr.querySelectorAll('[data-rcampo]').forEach(el=>{
+      el.addEventListener('change', async ()=>{
+        const campo = el.dataset.rcampo;
+        let valor = el.value;
+        if(campo==='valor') valor = Number(String(valor).replace(/\./g,'').replace(',','.')) || 0;
+        try{ await api(`/rural/lancamentos/${id}`, { method:'PUT', body: { [campo]: valor } }); el.style.borderColor = 'var(--credit)'; setTimeout(()=>{ el.style.borderColor=''; }, 900); }
+        catch(e){ toast(e.message,'err'); }
+      });
+    });
+  });
+  alvo.querySelectorAll('[data-rdel]').forEach(b=>b.addEventListener('click', async ()=>{
+    if(!confirm('Excluir esta prévia de lançamento?')) return;
+    try{ await api(`/rural/lancamentos/${b.dataset.rdel}`, { method:'DELETE' }); ruralRenderLancamentos(); }catch(e){ toast(e.message,'err'); }
+  }));
+  alvo.querySelectorAll('[data-rdoc]').forEach(a=>a.addEventListener('click', ev=>{ ev.preventDefault(); window.open(`/api/rural/documentos/${a.dataset.rdoc}/arquivo`, '_blank', 'noopener'); }));
+  const $ = id=>document.getElementById(id);
+  if($('ruralSelTodos')) $('ruralSelTodos').addEventListener('click', ()=>{
+    const cbs = [...alvo.querySelectorAll('.rural-sel')];
+    const marcar = cbs.some(c=>!c.checked);
+    cbs.forEach(c=>{ c.checked = marcar; });
+  });
+  if($('ruralLoteAplicar')) $('ruralLoteAplicar').addEventListener('click', async ev=>{
+    const ids = [...alvo.querySelectorAll('.rural-sel:checked')].map(c=>Number(c.value));
+    if(!ids.length){ toast('Marque primeiro os lançamentos.','err'); return; }
+    const corpo = { produtorId: RURAL.produtor.id, ids };
+    const im = $('ruralLoteImovel').value, ct = $('ruralLoteConta').value, nat = $('ruralLoteNatureza').value;
+    if(im!=='') corpo.codImovel = im;
+    if(ct!=='') corpo.codConta = ct;
+    if(nat!=='') corpo.natureza = nat;
+    if(im==='' && ct==='' && nat===''){ toast('Escolha o que aplicar.','err'); return; }
+    ev.target.disabled = true;
+    try{ const r = await api('/rural/lancamentos/aplicar-em-lote', { method:'POST', body: corpo }); toast(`${r.alterados} lançamento(s) atualizado(s).`,'ok'); ruralRenderLancamentos(); }
+    catch(e){ toast(e.message,'err'); ev.target.disabled = false; }
+  });
+  if($('ruralAprovar')) $('ruralAprovar').addEventListener('click', async ev=>{
+    const ids = [...alvo.querySelectorAll('.rural-sel:checked')].map(c=>Number(c.value));
+    if(!ids.length){ toast('Marque os lançamentos que quer aprovar.','err'); return; }
+    ev.target.disabled = true;
+    try{
+      const res = await api('/rural/lancamentos/aprovar', { method:'POST', body: { produtorId: RURAL.produtor.id, ids } });
+      if(res.recusados && res.recusados.length){
+        toast(`${res.aprovados} aprovado(s). ${res.recusados.length} ficaram de fora: ${res.recusados.slice(0,3).map(x=>x.motivo).join('; ')}${res.recusados.length>3?'…':''}`,'err');
+      } else {
+        toast(`${res.aprovados} lançamento(s) no livro caixa.`,'ok');
+      }
+      ruralRenderLancamentos();
+    }catch(e){ toast(e.message,'err'); ev.target.disabled = false; }
+  });
+  if($('ruralReabrir')) $('ruralReabrir').addEventListener('click', async ()=>{
+    const ids = [...alvo.querySelectorAll('.rural-sel-ap:checked')].map(c=>Number(c.value));
+    if(!ids.length){ toast('Marque os lançamentos que quer reabrir.','err'); return; }
+    try{ await api('/rural/lancamentos/reabrir', { method:'POST', body: { produtorId: RURAL.produtor.id, ids } }); toast('Voltaram pra prévia.','ok'); ruralRenderLancamentos(); }
+    catch(e){ toast(e.message,'err'); }
+  });
+}
+
+// --------------------------- Produtor, imóveis e contas ---------------------------
+function ruralRenderCadastro(){
+  const alvo = document.getElementById('ruralConteudo');
+  const p = RURAL.produtor;
+  const podeEditar = STATE.user.perfil==='Administrador' || can('irpf_rural','editar');
+  const podePostar = STATE.user.perfil==='Administrador' || can('irpf_rural','postar');
+  // O que o cadastro da empresa já tem (CAEPF, inscrição estadual, código IBGE) entra como sugestão
+  // no formulário do imóvel — são justamente os campos que o leiaute cobra e ninguém quer redigitar.
+  const sug = RURAL.sugestoesImovel || {};
+
+  alvo.innerHTML = `
+    <div class="card" style="margin-bottom:14px;">
+      <b>Dados do produtor</b>
+      <p class="mut" style="font-size:12px; margin:4px 0 12px;">Vão nos registros 0000 e 0030 do arquivo do LCDPR. O código do município é o da tabela do IBGE (7 dígitos) — o e-CAC recusa o arquivo sem ele.</p>
+      <div class="row" style="gap:12px; flex-wrap:wrap;">
+        <div class="field" style="min-width:180px;"><label>CPF do produtor</label><input class="inp" id="rpCpf" value="${esc(p.cpf||'')}"></div>
+        <div class="field" style="flex:1; min-width:260px;"><label>Nome</label><input class="inp" id="rpNome" value="${esc(p.nome||'')}"></div>
+      </div>
+      <div class="row" style="gap:12px; flex-wrap:wrap;">
+        <div class="field" style="flex:1; min-width:240px;"><label>Endereço</label><input class="inp" id="rpEndereco" value="${esc(p.endereco||'')}"></div>
+        <div class="field" style="max-width:110px;"><label>Número</label><input class="inp" id="rpNumero" value="${esc(p.numero||'')}"></div>
+        <div class="field" style="min-width:160px;"><label>Complemento</label><input class="inp" id="rpComplemento" value="${esc(p.complemento||'')}"></div>
+      </div>
+      <div class="row" style="gap:12px; flex-wrap:wrap;">
+        <div class="field" style="min-width:180px;"><label>Bairro / distrito</label><input class="inp" id="rpBairro" value="${esc(p.bairro||'')}"></div>
+        <div class="field" style="max-width:90px;"><label>UF</label><input class="inp" id="rpUf" maxlength="2" value="${esc(p.uf||'')}"></div>
+        <div class="field" style="max-width:150px;"><label>Cód. município (IBGE)</label><input class="inp" id="rpCodMunicipio" value="${esc(p.cod_municipio||'')}"></div>
+        <div class="field" style="max-width:130px;"><label>CEP</label><input class="inp" id="rpCep" value="${esc(p.cep||'')}"></div>
+      </div>
+      <div class="row" style="gap:12px; flex-wrap:wrap;">
+        <div class="field" style="min-width:160px;"><label>Telefone</label><input class="inp" id="rpTelefone" value="${esc(p.telefone||'')}"></div>
+        <div class="field" style="flex:1; min-width:220px;"><label>E-mail</label><input class="inp" id="rpEmail" value="${esc(p.email||'')}"></div>
+      </div>
+      <div class="row" style="gap:12px; flex-wrap:wrap;">
+        <div class="field" style="min-width:280px;"><label>Forma de apuração do resultado</label>
+          <select class="inp" id="rpFormaApuracao">
+            <option value="1" ${Number(p.forma_apuracao)!==2?'selected':''}>Pelo livro caixa (escrituração)</option>
+            <option value="2" ${Number(p.forma_apuracao)===2?'selected':''}>Presunção de 20% da receita bruta (art. 5º da Lei 8.023/1990)</option>
+          </select>
+        </div>
+        <div class="field" style="min-width:240px;"><label>Início do período</label>
+          <select class="inp" id="rpIndInicio">
+            <option value="0" ${Number(p.ind_inicio_periodo)===0?'selected':''}>Regular (1º de janeiro)</option>
+            <option value="1" ${Number(p.ind_inicio_periodo)===1?'selected':''}>Abertura (início de atividade no ano)</option>
+            <option value="2" ${Number(p.ind_inicio_periodo)===2?'selected':''}>Início da obrigatoriedade no curso do ano</option>
+          </select>
+        </div>
+        <div class="field" style="min-width:200px;"><label>Situação especial</label>
+          <select class="inp" id="rpSitEspecial">
+            <option value="0" ${Number(p.situacao_especial)===0?'selected':''}>Normal</option>
+            <option value="1" ${Number(p.situacao_especial)===1?'selected':''}>Falecimento</option>
+            <option value="2" ${Number(p.situacao_especial)===2?'selected':''}>Espólio</option>
+            <option value="3" ${Number(p.situacao_especial)===3?'selected':''}>Saída definitiva do País</option>
+          </select>
+        </div>
+        <div class="field" style="max-width:170px;"><label>Data da situação especial</label><input type="date" class="inp" id="rpDataSitEspecial" value="${esc(p.data_situacao_especial||'')}"></div>
+      </div>
+      <b style="display:block; margin-top:10px;">Signatário (contador)</b>
+      <p class="mut" style="font-size:12px; margin:4px 0 8px;">Registro 9999. Os campos são opcionais no leiaute, mas o e-CAC costuma cobrar.</p>
+      <div class="row" style="gap:12px; flex-wrap:wrap;">
+        <div class="field" style="flex:1; min-width:220px;"><label>Nome</label><input class="inp" id="rpSigNome" value="${esc(p.signatario_nome||'')}"></div>
+        <div class="field" style="min-width:170px;"><label>CPF/CNPJ</label><input class="inp" id="rpSigDoc" value="${esc(p.signatario_cpf_cnpj||'')}"></div>
+        <div class="field" style="max-width:150px;"><label>CRC</label><input class="inp" id="rpSigCrc" value="${esc(p.signatario_crc||'')}"></div>
+        <div class="field" style="min-width:200px;"><label>E-mail</label><input class="inp" id="rpSigEmail" value="${esc(p.signatario_email||'')}"></div>
+        <div class="field" style="min-width:150px;"><label>Telefone</label><input class="inp" id="rpSigTelefone" value="${esc(p.signatario_telefone||'')}"></div>
+      </div>
+      ${podeEditar?`<button class="btn primary" id="rpSalvar">Salvar dados do produtor</button>`:'<div class="empty-state">Sem permissão para editar.</div>'}
+    </div>
+
+    <div class="card" style="margin-bottom:14px;">
+      <b>Imóveis rurais (${RURAL.imoveis.length})</b>
+      <p class="mut" style="font-size:12px; margin:4px 0 10px;">Registro 0040. Cada fazenda é um imóvel; o código sequencial é atribuído pelo sistema porque todo lançamento aponta pra ele. Imóvel no Brasil exige o NIRF/CAFIR (cadastro do ITR).</p>
+      <div style="overflow:auto;">
+        <table class="data-table">
+          <thead><tr><th>Cód.</th><th>Nome</th><th>NIRF/CAFIR</th><th>CAEPF</th><th>Município</th><th>Exploração</th><th style="text-align:right;">Particip.</th><th></th></tr></thead>
+          <tbody>
+            ${RURAL.imoveis.length?RURAL.imoveis.map(i=>{
+              const tc = RURAL.terceiros.filter(t=>t.imovel_id===i.id);
+              return `<tr>
+                <td>${String(i.cod_imovel).padStart(3,'0')}</td>
+                <td><b>${esc(i.nome)}</b>${tc.length?`<div class="mut" style="font-size:11px;">${tc.map(t=>`${esc(RURAL_CONTRAPARTE_LABEL[t.tipo_contraparte]||'')}: ${esc(t.nome)} (${Number(t.percentual).toFixed(2)}%)`).join(' · ')}</div>`:''}</td>
+                <td>${esc(i.cad_itr||'—')}</td>
+                <td>${esc(i.caepf||'—')}</td>
+                <td>${esc((i.uf||'')+' '+(i.cod_municipio||''))}</td>
+                <td>${esc(RURAL_EXPLORACAO_LABEL[i.tipo_exploracao]||'')}</td>
+                <td style="text-align:right;">${Number(i.participacao).toFixed(2)}%</td>
+                <td style="white-space:nowrap;">${podePostar?`<button class="btn" data-rterc="${i.id}" title="Adicionar contraparte (condômino, parceiro, arrendador)">+ parte</button>`:''}${podeEditar?`<button class="btn" data-rdelimovel="${i.id}" title="Excluir">✕</button>`:''}</td>
+              </tr>`;
+            }).join(''):`<tr><td colspan="8"><div class="empty-state">Nenhum imóvel cadastrado. Sem imóvel não dá pra gerar o LCDPR.</div></td></tr>`}
+          </tbody>
+        </table>
+      </div>
+      ${podePostar?`<div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--rule);">
+        <b style="font-size:13px;">Novo imóvel</b>
+        <div class="row" style="gap:12px; flex-wrap:wrap; margin-top:8px;">
+          <div class="field" style="flex:1; min-width:200px;"><label>Nome do imóvel</label><input class="inp" id="riNome" placeholder="Fazenda…"></div>
+          <div class="field" style="max-width:150px;"><label>NIRF/CAFIR (ITR)</label><input class="inp" id="riCadItr"></div>
+          <div class="field" style="max-width:180px;"><label>CAEPF</label><input class="inp" id="riCaepf" value="${esc(sug.caepf||'')}"></div>
+          <div class="field" style="max-width:170px;"><label>Inscrição estadual</label><input class="inp" id="riIe" value="${esc(sug.inscricaoEstadual||'')}"></div>
+        </div>
+        <div class="row" style="gap:12px; flex-wrap:wrap;">
+          <div class="field" style="flex:1; min-width:220px;"><label>Endereço</label><input class="inp" id="riEndereco"></div>
+          <div class="field" style="max-width:100px;"><label>Número</label><input class="inp" id="riNumero"></div>
+          <div class="field" style="min-width:160px;"><label>Bairro / distrito</label><input class="inp" id="riBairro"></div>
+        </div>
+        <div class="row" style="gap:12px; flex-wrap:wrap;">
+          <div class="field" style="max-width:90px;"><label>UF</label><input class="inp" id="riUf" maxlength="2" value="${esc(sug.uf||'')}"></div>
+          <div class="field" style="max-width:150px;"><label>Cód. município (IBGE)</label><input class="inp" id="riCodMunicipio" value="${esc(sug.codMunicipio||'')}"></div>
+          <div class="field" style="max-width:130px;"><label>CEP</label><input class="inp" id="riCep" value="${esc(sug.cep||'')}"></div>
+          <div class="field" style="min-width:210px;"><label>Tipo de exploração</label>
+            <select class="inp" id="riTipoExploracao">${Object.entries(RURAL_EXPLORACAO_LABEL).map(([k,v])=>`<option value="${k}">${esc(v)}</option>`).join('')}</select>
+          </div>
+          <div class="field" style="max-width:130px;"><label>Participação (%)</label><input class="inp" id="riParticipacao" value="100"></div>
+        </div>
+        <button class="btn primary" id="riSalvar">Adicionar imóvel</button>
+      </div>`:''}
+    </div>
+
+    <div class="card">
+      <b>Contas bancárias usadas na atividade (${RURAL.contas.length})</b>
+      <p class="mut" style="font-size:12px; margin:4px 0 10px;">Registro 0050. Serve pra apontar em cada lançamento por onde o dinheiro passou — e é o que permite casar o extrato OFX automaticamente. Os códigos 000 (espécie) e 999 (numerário em trânsito) são do próprio leiaute e já existem.</p>
+      <div style="overflow:auto;">
+        <table class="data-table">
+          <thead><tr><th>Cód.</th><th>Banco</th><th>Nº banco</th><th>Agência</th><th>Conta</th><th></th></tr></thead>
+          <tbody>
+            ${RURAL.contas.length?RURAL.contas.map(c=>`<tr>
+              <td>${String(c.cod_conta).padStart(3,'0')}</td>
+              <td>${esc(c.nome_banco)}</td><td>${esc(c.banco||'—')}</td><td>${esc(c.agencia||'—')}</td><td>${esc(c.numero_conta||'—')}</td>
+              <td>${podeEditar?`<button class="btn" data-rdelconta="${c.id}" title="Excluir">✕</button>`:''}</td>
+            </tr>`).join(''):`<tr><td colspan="6"><div class="empty-state">Nenhuma conta cadastrada.</div></td></tr>`}
+          </tbody>
+        </table>
+      </div>
+      ${podePostar?`<div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--rule);">
+        <div class="row" style="gap:12px; flex-wrap:wrap;">
+          <div class="field" style="flex:1; min-width:200px;"><label>Nome do banco</label><input class="inp" id="rcNome" placeholder="Banco do Brasil"></div>
+          <div class="field" style="max-width:120px;"><label>Nº do banco</label><input class="inp" id="rcBanco" placeholder="001"></div>
+          <div class="field" style="max-width:130px;"><label>Agência (sem dígito)</label><input class="inp" id="rcAgencia"></div>
+          <div class="field" style="max-width:180px;"><label>Conta (com dígito)</label><input class="inp" id="rcConta"></div>
+        </div>
+        <button class="btn primary" id="rcSalvar">Adicionar conta</button>
+      </div>`:''}
+    </div>`;
+
+  const $ = id=>document.getElementById(id);
+  const v = id=>($(id)?$(id).value.trim():'');
+  if($('rpSalvar')) $('rpSalvar').addEventListener('click', async ev=>{
+    ev.target.disabled = true;
+    try{
+      const r = await api(`/rural/escrituracao/${RURAL.produtor.id}`, { method:'PUT', body: {
+        cpf:v('rpCpf'), nome:v('rpNome'), endereco:v('rpEndereco'), numero:v('rpNumero'), complemento:v('rpComplemento'),
+        bairro:v('rpBairro'), uf:v('rpUf'), codMunicipio:v('rpCodMunicipio'), cep:v('rpCep'), telefone:v('rpTelefone'), email:v('rpEmail'),
+        formaApuracao:Number(v('rpFormaApuracao')), indInicioPeriodo:Number(v('rpIndInicio')), situacaoEspecial:Number(v('rpSitEspecial')),
+        dataSituacaoEspecial:v('rpDataSitEspecial'),
+        signatarioNome:v('rpSigNome'), signatarioCpfCnpj:v('rpSigDoc'), signatarioCrc:v('rpSigCrc'), signatarioEmail:v('rpSigEmail'), signatarioTelefone:v('rpSigTelefone'),
+      }});
+      RURAL.produtor = r.produtor;
+      toast('Dados salvos.','ok');
+      ev.target.disabled = false;
+    }catch(e){ toast(e.message,'err'); ev.target.disabled = false; }
+  });
+  if($('riSalvar')) $('riSalvar').addEventListener('click', async ev=>{
+    if(!v('riNome')){ toast('Informe o nome do imóvel.','err'); return; }
+    ev.target.disabled = true;
+    try{
+      await api('/rural/imoveis', { method:'POST', body: {
+        produtorId: RURAL.produtor.id, nome:v('riNome'), cadItr:v('riCadItr'), caepf:v('riCaepf'), inscricaoEstadual:v('riIe'),
+        endereco:v('riEndereco'), numero:v('riNumero'), bairro:v('riBairro'), uf:v('riUf'), codMunicipio:v('riCodMunicipio'), cep:v('riCep'),
+        tipoExploracao:Number(v('riTipoExploracao')), participacao:Number(v('riParticipacao').replace(',','.'))||100,
+      }});
+      toast('Imóvel adicionado.','ok');
+      await ruralCarregarCadastro();
+      ruralRenderCadastro();
+    }catch(e){ toast(e.message,'err'); ev.target.disabled = false; }
+  });
+  if($('rcSalvar')) $('rcSalvar').addEventListener('click', async ev=>{
+    if(!v('rcNome')){ toast('Informe o nome do banco.','err'); return; }
+    ev.target.disabled = true;
+    try{
+      await api('/rural/contas', { method:'POST', body: { produtorId: RURAL.produtor.id, nomeBanco:v('rcNome'), banco:v('rcBanco'), agencia:v('rcAgencia'), numeroConta:v('rcConta') }});
+      toast('Conta adicionada.','ok');
+      await ruralCarregarCadastro();
+      ruralRenderCadastro();
+    }catch(e){ toast(e.message,'err'); ev.target.disabled = false; }
+  });
+  alvo.querySelectorAll('[data-rdelimovel]').forEach(b=>b.addEventListener('click', async ()=>{
+    if(!confirm('Excluir este imóvel?')) return;
+    try{ await api(`/rural/imoveis/${b.dataset.rdelimovel}`, { method:'DELETE' }); await ruralCarregarCadastro(); ruralRenderCadastro(); }catch(e){ toast(e.message,'err'); }
+  }));
+  alvo.querySelectorAll('[data-rdelconta]').forEach(b=>b.addEventListener('click', async ()=>{
+    if(!confirm('Excluir esta conta?')) return;
+    try{ await api(`/rural/contas/${b.dataset.rdelconta}`, { method:'DELETE' }); await ruralCarregarCadastro(); ruralRenderCadastro(); }catch(e){ toast(e.message,'err'); }
+  }));
+  alvo.querySelectorAll('[data-rterc]').forEach(b=>b.addEventListener('click', async ()=>{
+    const imovelId = Number(b.dataset.rterc);
+    const nome = prompt('Nome do condômino / parceiro / arrendador:');
+    if(!nome) return;
+    const doc = prompt('CPF (11 dígitos) ou CNPJ (14 dígitos):');
+    if(!doc) return;
+    const perc = prompt('Percentual de participação dele na exploração (ex.: 50):', '50');
+    if(perc==null) return;
+    const tipo = prompt('Tipo — 1 condômino, 2 arrendador, 3 parceiro, 4 comodante, 5 outro:', '3');
+    try{
+      await api('/rural/terceiros', { method:'POST', body: { imovelId, nome, idContraparte:doc, percentual:Number(String(perc).replace(',','.'))||0, tipoContraparte:Number(tipo)||5 }});
+      toast('Contraparte adicionada.','ok');
+      await ruralCarregarCadastro();
+      ruralRenderCadastro();
+    }catch(e){ toast(e.message,'err'); }
+  }));
+}
+
+// --------------------------- Fechamento do ano ---------------------------
+async function ruralRenderFechamento(){
+  const alvo = document.getElementById('ruralConteudo');
+  alvo.innerHTML = `<div class="card"><div class="empty-state">Apurando…</div></div>`;
+  let dem, prev;
+  try{
+    [dem, prev] = await Promise.all([
+      api('/rural/demonstrativo?produtorId='+RURAL.produtor.id),
+      api('/rural/lcdpr/previa?produtorId='+RURAL.produtor.id),
+    ]);
+  }catch(e){ alvo.innerHTML = `<div class="card"><div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div></div>`; return; }
+  const dm = dem.demonstrativo;
+  const erros = (prev.pendencias||[]).filter(x=>x.gravidade==='erro');
+  const avisos = (prev.pendencias||[]).filter(x=>x.gravidade==='aviso');
+  const mesNome = (m)=>{
+    if(m==='sem-data') return 'Sem data';
+    const [a,mm] = m.split('-');
+    return ['','Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'][Number(mm)]+'/'+a.slice(2);
+  };
+
+  alvo.innerHTML = `
+    <div class="card" style="margin-bottom:14px;">
+      <b>Resultado da atividade rural — ${RURAL.ano}</b>
+      <p class="mut" style="font-size:12px; margin:4px 0 12px;">Conta só o que você aprovou no livro caixa.${dm.pendentes?` <b>Atenção: ${dm.pendentes} prévia(s) ainda não aprovada(s)</b> — esses valores não estão aqui.`:''}</p>
+      <div style="overflow:auto;">
+        <table class="data-table">
+          <tbody>
+            <tr><td>Receita bruta da atividade rural</td><td style="text-align:right; white-space:nowrap;">${fmtMoney(dm.receitaBruta)}</td></tr>
+            <tr><td>(–) Devoluções de venda</td><td style="text-align:right; white-space:nowrap;">${fmtMoney(dm.devolucoes)}</td></tr>
+            <tr><td><b>Receita bruta líquida</b></td><td style="text-align:right; white-space:nowrap;"><b>${fmtMoney(dm.receitaLiquida)}</b></td></tr>
+            <tr><td>(–) Despesas de custeio</td><td style="text-align:right; white-space:nowrap;">${fmtMoney(dm.despesasCusteio)}</td></tr>
+            <tr><td>(–) Investimentos</td><td style="text-align:right; white-space:nowrap;">${fmtMoney(dm.investimentos)}</td></tr>
+            <tr><td><b>Resultado pelo livro caixa</b></td><td style="text-align:right; white-space:nowrap;"><b style="color:${dm.resultado<0?'var(--debit)':'var(--credit)'}">${fmtMoney(dm.resultado)}</b></td></tr>
+            <tr><td>Resultado presumido (20% da receita líquida)</td><td style="text-align:right; white-space:nowrap;">${fmtMoney(dm.resultadoPresumido)}</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="mut" style="font-size:12px; margin:10px 0 0;">O IRPF deixa optar pelo resultado presumido de 20% da receita bruta (art. 5º da Lei 8.023/1990) quando ele for menor que o do livro caixa. Aqui estão os dois pra você comparar — ${dm.resultadoPresumido < dm.resultado ? '<b>neste caso o presumido é menor</b>' : 'neste caso o livro caixa é mais vantajoso'}.</p>
+      <p class="mut" style="font-size:12px; margin:6px 0 0;">${dem.obrigadoLcdpr
+        ? `<b>Receita acima de ${fmtMoney(dem.limiteObrigatoriedade)}: a entrega do LCDPR é obrigatória</b> (art. 23-A da IN SRF 83/2001).`
+        : `Receita abaixo de ${fmtMoney(dem.limiteObrigatoriedade)}: a entrega do LCDPR é facultativa — mas o arquivo continua valendo como escrituração organizada.`}</p>
+    </div>
+
+    <div class="card" style="margin-bottom:14px;">
+      <b>Por mês</b>
+      <div style="overflow:auto; margin-top:8px;">
+        <table class="data-table">
+          <thead><tr><th>Mês</th><th style="text-align:right;">Receita</th><th style="text-align:right;">Devolução</th><th style="text-align:right;">Custeio</th><th style="text-align:right;">Investimento</th></tr></thead>
+          <tbody>${(dm.porMes||[]).length?dm.porMes.map(x=>`<tr>
+            <td>${esc(mesNome(x.mes))}</td>
+            <td style="text-align:right; white-space:nowrap;">${fmtMoney(x.receita)}</td>
+            <td style="text-align:right; white-space:nowrap;">${fmtMoney(x.devolucao)}</td>
+            <td style="text-align:right; white-space:nowrap;">${fmtMoney(x.custeio)}</td>
+            <td style="text-align:right; white-space:nowrap;">${fmtMoney(x.investimento)}</td>
+          </tr>`).join(''):`<tr><td colspan="5"><div class="empty-state">Nada aprovado ainda.</div></td></tr>`}</tbody>
+        </table>
+      </div>
+      ${(dm.porImovel||[]).length>1?`<b style="display:block; margin-top:14px;">Por imóvel</b>
+      <div style="overflow:auto; margin-top:8px;">
+        <table class="data-table">
+          <thead><tr><th>Imóvel</th><th style="text-align:right;">Receita</th><th style="text-align:right;">Custeio</th><th style="text-align:right;">Investimento</th></tr></thead>
+          <tbody>${dm.porImovel.map(x=>`<tr><td>${esc(x.nome)}</td>
+            <td style="text-align:right; white-space:nowrap;">${fmtMoney(x.receita)}</td>
+            <td style="text-align:right; white-space:nowrap;">${fmtMoney(x.custeio)}</td>
+            <td style="text-align:right; white-space:nowrap;">${fmtMoney(x.investimento)}</td></tr>`).join('')}</tbody>
+        </table>
+      </div>`:''}
+    </div>
+
+    <div class="card">
+      <b>Arquivo do LCDPR (leiaute 1.3)</b>
+      <p class="mut" style="font-size:12px; margin:4px 0 10px;">Arquivo de texto pra entregar no e-CAC, em “Cobrança e fiscalização › Obrigação Acessória — Formulários online e Arquivo de Dados”, assinado com certificado digital.
+      <br><b>Importante:</b> este arquivo não é importado pelo programa do IRPF — a própria Receita diz que isso ainda não é possível. A ficha Atividade Rural você preenche com os números do demonstrativo acima (ou pelo programa LCAR, que o IRPF importa).</p>
+      ${erros.length?`<div style="margin-bottom:10px;"><span class="tag" style="background:#fee2e2; color:#991b1b;">${erros.length} pendência(s) impedem gerar</span>
+        <ul style="margin:8px 0 0; padding-left:18px; font-size:12px;">${erros.map(x=>`<li>${esc(x.mensagem)}</li>`).join('')}</ul></div>`:''}
+      ${avisos.length?`<div style="margin-bottom:10px;"><span class="tag" style="background:#fde68a; color:#92400e;">${avisos.length} aviso(s)</span>
+        <ul style="margin:8px 0 0; padding-left:18px; font-size:12px;">${avisos.map(x=>`<li>${esc(x.mensagem)}</li>`).join('')}</ul></div>`:''}
+      ${prev.podeGerar && prev.resumo?`
+        <div style="overflow:auto;">
+          <table class="data-table">
+            <tbody>
+              <tr><td>Linhas no arquivo</td><td style="text-align:right;">${prev.resumo.qtdLinhas}</td></tr>
+              <tr><td>Total de entradas</td><td style="text-align:right; white-space:nowrap;">${fmtMoney(prev.resumo.totalEntradas)}</td></tr>
+              <tr><td>Total de saídas</td><td style="text-align:right; white-space:nowrap;">${fmtMoney(prev.resumo.totalSaidas)}</td></tr>
+              <tr><td>Saldo final</td><td style="text-align:right; white-space:nowrap;">${fmtMoney(prev.resumo.saldoFinal)}</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <details style="margin-top:10px;"><summary style="cursor:pointer; font-size:12px;">Ver as primeiras linhas do arquivo</summary>
+          <pre style="font-family:monospace; font-size:11px; overflow:auto; background:var(--paper-deep); padding:8px; border-radius:6px; margin-top:8px;">${esc((prev.resumo.amostra||[]).join('\n'))}</pre>
+        </details>
+        <div class="row" style="gap:8px; margin-top:12px;">
+          <a class="btn primary" href="/api/rural/lcdpr?produtorId=${RURAL.produtor.id}" download>Baixar o arquivo do LCDPR</a>
+        </div>`:`<div class="empty-state">Resolva as pendências acima para gerar o arquivo.</div>`}
+    </div>`;
+}
+
 async function pageOpenFinance(){
   const m = main();
   try{ OF_STATUS = await api('/open-finance/status'); }catch(e){ OF_STATUS = { modo:'sandbox', provedor:'Sandbox' }; }
@@ -17153,7 +17860,7 @@ async function contratoModeloDrawer(m){
       ${rteToolbarHtml()}
       <div class="rte-body" id="cmCorpo" contenteditable="true">${m?m.conteudoHtml:'<h1>Contrato de Prestação de Serviços</h1><p></p>'}</div>
     </div>
-    <div class="modal-actions" style="padding:16px 24px; border-top:1px solid var(--line);">
+    <div class="modal-actions" style="padding:16px 24px; border-top:1px solid var(--rule);">
       <button class="btn primary" id="cmSalvar">Salvar modelo</button>
     </div>
   `);
@@ -17257,7 +17964,7 @@ function distratoModeloDrawer(config){
       ${rteToolbarHtml()}
       <div class="rte-body" id="dtAssinaturasCorpo" contenteditable="true">${config.assinaturasPadrao || '<p>{{contrato_titulo}}, {{data}}.</p><p>_________________________________<br>CONTRATANTE</p><p>_________________________________<br>CONTRATADA</p>'}</div>
     </div>
-    <div class="modal-actions" style="padding:16px 24px; border-top:1px solid var(--line);">
+    <div class="modal-actions" style="padding:16px 24px; border-top:1px solid var(--rule);">
       <button class="btn primary" id="dtSalvar">Salvar modelo de distrato</button>
     </div>
   `);
@@ -17306,7 +18013,7 @@ function assinaturaConfigDrawer(cfg){
         <div class="field"><label>Segredo do webhook — opcional, só no plano Pro ${cfg.temWebhookSecret?'(já configurado — deixe em branco pra manter)':'(sem segredo, o webhook funciona do mesmo jeito)'}</label><input id="asWebhookSecret" type="password" placeholder="${cfg.temWebhookSecret?'••••••••':'só se tiver o plano Pro com Autenticação'}"></div>
       </div>
     </div>
-    <div class="modal-actions" style="padding:16px 24px; border-top:1px solid var(--line);">
+    <div class="modal-actions" style="padding:16px 24px; border-top:1px solid var(--rule);">
       <button class="btn primary" id="asSalvar">Salvar</button>
     </div>
   `);
@@ -20960,7 +21667,7 @@ async function pageUsuarios(){
   document.getElementById('usFiltro').addEventListener('input', e=>{ USUARIOS_FILTRO = e.target.value; desenhaUsuarios(USUARIOS_FILTRO); });
   document.getElementById('btnNovoUsuario').addEventListener('click', ()=>usuarioModal());
 }
-const MODS = [['dashboard','Início'],['empresas','Empresas'],['solicitacoes','Solicitações de Documentos'],['envio','Envio de Documentos'],['nfse','NFS-e'],['nfe-busca','Busca de XML'],['reforma','Reforma Tributária'],['integracontador','Integra Contador'],['licencas','Licenças'],['financeiro','Financeiro'],['certificados','Certificados'],['contratos','Contratos'],['relatorios','Relatórios'],['crm','CRM'],['dprh','DP/RH'],['contabil','Contabilidade'],['fiscal','Fiscal'],['usuarios','Usuários'],['configuracoes','Configurações'],['email','E-mail'],['obrigacoes','Obrigações do Mês — marcar manual (ação "editar")'],['open_finance','Conciliação Bancária (Open Finance)']];
+const MODS = [['dashboard','Início'],['empresas','Empresas'],['solicitacoes','Solicitações de Documentos'],['envio','Envio de Documentos'],['nfse','NFS-e'],['nfe-busca','Busca de XML'],['reforma','Reforma Tributária'],['integracontador','Integra Contador'],['licencas','Licenças'],['financeiro','Financeiro'],['certificados','Certificados'],['contratos','Contratos'],['relatorios','Relatórios'],['crm','CRM'],['dprh','DP/RH'],['contabil','Contabilidade'],['fiscal','Fiscal'],['usuarios','Usuários'],['configuracoes','Configurações'],['email','E-mail'],['obrigacoes','Obrigações do Mês — marcar manual (ação "editar")'],['open_finance','Conciliação Bancária (Open Finance)'],['irpf_rural','IRPF · Atividade Rural']];
 // Lista de empresas com busca por texto — usada nos dois pickers de empresa do modal de usuário
 // (Cliente com múltiplas empresas, Colaborador com acesso restrito), já que a base de empresas
 // pode ter centenas de linhas (import do Domínio Web).
