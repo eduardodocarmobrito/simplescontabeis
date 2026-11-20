@@ -3408,18 +3408,17 @@ function funcionalidadesDoEscritorio(escritorioId: number | null | undefined): s
 sqlite.exec(`INSERT OR IGNORE INTO colaborador_permissoes (user_id, modulo, pode_visualizar, pode_postar, pode_editar)
   SELECT user_id, 'reforma', pode_visualizar, 0, 0 FROM colaborador_permissoes WHERE modulo = 'nfe-busca'`);
 
-// Módulo "irpf_rural" (IRPF · Atividade Rural) criado em 2026-11-19. A tabela escritorio_funcionalidades
-// só nasce com tudo liberado pra quem já existia no dia em que ELA foi criada — um módulo novo entra
-// desmarcado pra todos, e sem a linha o menu nem aparece (escritorioTemFuncionalidade barra até o
-// Administrador). Então libera uma vez pros escritórios que já existem, porque ninguém "deixou de
-// contratar" um módulo que ainda não existia.
-// Roda UMA vez e fica marcado em migracoes_unicas: se o SuperAdmin desmarcar o módulo pra algum
-// escritório depois, o próximo boot não reativa. (O INSERT OR IGNORE solto, usado na migração do
-// "reforma" acima, reinseriria a linha em cada boot.)
+// Módulo "irpf_rural" (IRPF · Atividade Rural): construído em 2026-11-19 e DESLIGADO em 2026-11-20 a
+// pedido do usuário — o controle de IRPF do produtor rural passou a viver fora deste site, numa
+// ferramenta pessoal dele. O código do módulo (src/irpf-rural.ts, src/lcdpr.ts, as abas no app.html)
+// fica no repositório sem rodar: o item sai do menu (roles vazio no NAV) e o servidor barra as rotas,
+// porque hasPermissao exige a linha em escritorio_funcionalidades.
+// Pra religar, basta marcar "IRPF · Atividade Rural" em Escritórios › Funcionalidades: esta migração
+// roda UMA vez (marca em migracoes_unicas) e não desliga de novo no próximo boot.
 sqlite.exec(`CREATE TABLE IF NOT EXISTS migracoes_unicas (chave TEXT PRIMARY KEY, feita_em TEXT DEFAULT (datetime('now')))`);
-if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'irpf_rural_liberar_20261119'`).get()) {
-  sqlite.exec(`INSERT OR IGNORE INTO escritorio_funcionalidades (escritorio_id, modulo) SELECT id, 'irpf_rural' FROM escritorios`);
-  sqlite.prepare(`INSERT INTO migracoes_unicas (chave) VALUES ('irpf_rural_liberar_20261119')`).run();
+if (!sqlite.prepare(`SELECT 1 FROM migracoes_unicas WHERE chave = 'irpf_rural_desligar_20261120'`).get()) {
+  sqlite.exec(`DELETE FROM escritorio_funcionalidades WHERE modulo = 'irpf_rural'`);
+  sqlite.prepare(`INSERT INTO migracoes_unicas (chave) VALUES ('irpf_rural_desligar_20261120')`).run();
 }
 
 // ========================= LOGIN (senha com hash + sessão via cookie) =========================
