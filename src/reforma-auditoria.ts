@@ -298,6 +298,11 @@ const CFOP_VENDA = /^[56](101|102|103|104|105|106|109|110|111|113|114|115|116|11
 // é catch-all demais pra presumir que não é venda disfarçada.
 const CFOP_NAO_ONEROSO = /^[1256](151|152|90[1-9]|91[0-9]|92[01])$/;
 const CFOP_TRANSFERENCIA = /^[1256](151|152)$/;
+// cClassTrib que, pela própria definição na tabela oficial (IT 2025.002), só existem porque o
+// FORNECEDOR é não contribuinte do IBS/CBS — não é uma redução/benefício que alguém "esqueceu" de
+// aplicar, é o preenchimento correto pra quem nunca vai destacar imposto nenhum: 410014 produtor rural
+// pessoa física (LC 214/2025, art. 164), 410015 transportador autônomo pessoa física (art. 169).
+const CCLASSTRIB_NAO_CONTRIBUINTE = new Set(["410014", "410015"]);
 
 function xmlEsperado(cst: string, cClassTrib: string, vBC: number, a: { pCBS: number | null; pIBSUF: number; pIBSMun: number }, pRedIBS: number, pRedCBS: number) {
   const ef = (p: number, red: number) => p * (1 - red / 100);
@@ -456,8 +461,12 @@ export function auditarNota(nota: NotaRT, consultaNcm: ConsultaNcm, consultaVige
               recomendacao: "Redução indevida: o crédito destacado é menor que o devido e o fornecedor tem passivo. Solicitar NF-e complementar/correção.", valor: vBCref });
           }
         }
-        // Sem incidência (410xxx) numa venda onerosa.
-        if (cls.cst === "410" && CFOP_VENDA.test(it.cfop)) {
+        // Sem incidência (410xxx) numa venda onerosa — EXCETO quando o próprio cClassTrib já diz que o
+        // fornecedor é não contribuinte por definição (produtor rural PF art. 164, transportador autônomo
+        // PF art. 169 da LC 214/2025): aí CST 410/não-incidência é o preenchimento CORRETO, não erro —
+        // achado real (2026-11-23), um produtor rural vendendo pra outro caía como "venda sem incidência"
+        // de severidade alta, pedindo pra notificar alguém que não tem nada a corrigir.
+        if (cls.cst === "410" && CFOP_VENDA.test(it.cfop) && !CCLASSTRIB_NAO_CONTRIBUINTE.has(cls.cClassTrib)) {
           addItem({ regra: "SEM_INCIDENCIA_EM_VENDA", severidade: "alta", titulo: "Venda classificada como sem incidência", detalhe: `${ident}: CFOP ${it.cfop} (venda) com cClassTrib ${cls.cClassTrib} — ${cls.nome}.`, evidencia: `<CFOP>${it.cfop}</CFOP> · <cClassTrib>${it.cClassTrib}</cClassTrib>`, esperado: aliq ? xmlEsperado("000", "000001", vBCref, aliq, 0, 0) : undefined, recomendacao: "O fornecedor deixou de destacar IBS/CBS numa operação onerosa — sem destaque não há crédito. Solicitar correção.", valor: vBCref });
         }
         // Alíquotas nominais do ano.
