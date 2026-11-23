@@ -87,11 +87,10 @@ export interface FornecedorNotificacao {
 export function htmlNotificacaoFornecedores(emp: { nome: string; cnpj: string; regimeLabel: string }, periodo: { de: string; ate: string }, forns: FornecedorNotificacao[], escritorioNome: string, timbrado: string | null) {
   const hoje = new Date().toLocaleDateString("pt-BR");
   const secoes = forns.map((f, idx) => {
-    // GRUPO_AUSENTE em CFOP não oneroso (remessa/transferência) cai pra "baixa" (ver reforma-auditoria.ts)
-    // de propósito — não é um "fornecedor errou, exija a correção" como os outros itens desta carta; é
-    // "confirme com o fornecedor antes de cobrar nada". Fica fora da carta formal; continua visível no
-    // painel pro contador avaliar caso a caso.
-    const ach = f.achados.filter((a) => (a.severidade !== "info" || a.regra === "PRODUTOR_RURAL_PF") && !(a.regra === "GRUPO_AUSENTE" && a.severidade === "baixa"));
+    // Pedido do usuário (2026-11-23): notificar TUDO que estiver em desacordo, mesmo a menor correção —
+    // inclusive GRUPO_AUSENTE em CFOP não oneroso (severidade "baixa", ver reforma-auditoria.ts): mesmo
+    // sendo uma operação sem IBS/CBS a recolher, o grupo com CST 410 ainda é obrigatório no documento.
+    const ach = f.achados.filter((a) => a.severidade !== "info" || a.regra === "PRODUTOR_RURAL_PF");
     const porRegra = new Map<string, { titulo: string; sev: string; qtd: number }>();
     for (const a of ach) {
       const k = a.regra; const t = porRegra.get(k) || { titulo: String(a.titulo).replace(/ \((IBS UF|IBS Mun|CBS)\)$/, ""), sev: a.severidade, qtd: 0 };

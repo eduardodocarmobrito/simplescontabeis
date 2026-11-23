@@ -11266,7 +11266,9 @@ function rtFornecedorDrawer(d, cnpj, urlPdf){
     rtBaixar(urlPdf.replace('/auditoria/pdf','/auditoria/fornecedores-pdf')+'&cnpjs='+encodeURIComponent(f.cnpj), `Inconsistencias IBS-CBS - ${f.nome.slice(0,50)}.pdf`, ev.currentTarget, 'Gerando relatório…');
   });
   document.getElementById('rtCopiarNotif').addEventListener('click', async ()=>{
-    const principais = ach.filter(a=>a.severidade==='alta'||a.severidade==='media').slice(0,15);
+    // Pedido do usuário (2026-11-23): notificar tudo que estiver em desacordo, mesmo a menor correção —
+    // não só alta/média. Só "info" fica de fora (não é erro do fornecedor, ex. produtor rural PF).
+    const principais = ach.filter(a=>a.severidade!=='info'||a.regra==='PRODUTOR_RURAL_PF').slice(0,15);
     const txt = `Prezados, ${f.nome} (CNPJ ${fmtCnpjCpf(f.cnpj)}),\n\nNa auditoria das notas fiscais emitidas para ${d.empresa.nome} (CNPJ ${fmtCnpjCpf(d.empresa.cnpj||'')}), no período de ${fmtDateIso(d.periodo.de)} a ${fmtDateIso(d.periodo.ate)}, identificamos os pontos abaixo no preenchimento do IBS/CBS (NT 2025.002-RTC v1.53 / NT 2026.005):\n\n` +
       (principais.length ? principais.map((a,i)=>`${i+1}. NF ${a.numero}${a.nItem?' item '+a.nItem:''} (${fmtDateIso(a.dhEmi)}) — ${a.titulo}\n   Evidência: ${a.evidencia}${a.esperado?`\n   Preenchimento esperado: ${a.esperado}`:''}`).join('\n\n') : `- ${f.recomendacao}`) +
       `\n\n${f.regime==='sn_dentro'||f.regime==='sn_indefinido'?'Solicitamos também avaliar a opção pelo regime regular de IBS/CBS (LC 214/2025, art. 41 §3º), que permite o crédito integral ao adquirente.\n\n':''}Pedimos a gentileza de ajustar o emissor e, quando cabível, emitir a correção (CC-e ou NF-e complementar).\n\nAtenciosamente,`;
