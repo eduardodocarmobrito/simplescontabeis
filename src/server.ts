@@ -13254,7 +13254,14 @@ function reformaCalcularAuditoria(escritorioId: number, empresaId: number, de: s
        ORDER BY d.data_emissao LIMIT 6000`
     )
     .all(escritorioId, empresaId, de, ate) as any[];
-  const notas = docs.map((d) => reformaAuditoria.lerNotaReforma(d.id, d.xml)).filter(Boolean) as reformaAuditoria.NotaRT[];
+  let notas = docs.map((d) => reformaAuditoria.lerNotaReforma(d.id, d.xml)).filter(Boolean) as reformaAuditoria.NotaRT[];
+  // Nota de ENTRADA (tpNF=0, ex.: CFOP 1101 "Compra para industrialização") emitida por OUTRA empresa com
+  // a nossa como <dest> não é uma compra nossa — é o inverso: quem emite é o COMPRADOR (ex.: frigorífico) e
+  // o <dest> é o VENDEDOR (ex.: produtor rural pessoa física, que não emite a própria nota). Achado real
+  // (2026-11-23): essas notas apareciam como "possível compra/crédito em jogo" pra quem na verdade vendeu,
+  // não comprou nada. Não auditamos a venda do produtor rural aqui (ele é não contribuinte — ver regime
+  // "pf" em regimeFornecedor) — só paramos de contar como compra o que não é.
+  if (!saida) notas = notas.filter((nt) => nt.tpNF !== 0);
   const pendentes = reformaEnfileirar(reformaAuditoria.paresParaValidar(notas), reformaAuditoria.ncmsParaConfirmarVigencia(notas));
   const res = notas.map((nt) => reformaAuditoria.auditarNota(nt, reformaConsultaNcm, reformaConsultaVigencia));
 

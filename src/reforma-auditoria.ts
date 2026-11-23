@@ -121,6 +121,13 @@ export interface NotaRT {
   docId: number; chave: string; numero: string; serie: string; dhEmi: string; mod: string; finNFe: number;
   emitCnpj: string; emitNome: string; emitUF: string; crt: number | null; tpRegimeIBSCBS: string | null;
   destDoc: string; destNome: string; destUF: string; // destinatário (usado na auditoria das notas de SAÍDA)
+  // 0 = nota de ENTRADA (do ponto de vista de quem emitiu — ex.: CFOP 1101 "Compra para industrialização"),
+  // 1 = nota de SAÍDA (venda normal). Achado real (2026-11-23): numa nota de entrada, quem emite é o
+  // COMPRADOR (ex.: frigorífico comprando gado) e o campo <dest> é o VENDEDOR (ex.: produtor rural pessoa
+  // física, que não emite a própria nota) — os papéis ficam invertidos em relação ao <emit>/<dest> de uma
+  // venda normal. Sem isso, uma venda de produtor rural documentada por nota de entrada do comprador cai
+  // como se fosse uma COMPRA do produtor rural na auditoria.
+  tpNF: number;
   vNF: number; itens: ItemRT[];
   tot: { vBC: number; vIBS: number; vCBS: number; vIBSSN: number; vCBSSN: number; temGrupo: boolean };
 }
@@ -181,6 +188,9 @@ export function lerNotaReforma(docId: number, xml: string): NotaRT | null {
   return {
     docId, chave: String(inf["@_Id"] || "").replace(/^NFe/, ""), numero: String(ide.nNF || ""), serie: String(ide.serie || ""),
     dhEmi: String(ide.dhEmi || "").slice(0, 10), mod: String(ide.mod || "55"), finNFe: n(ide.finNFe) || 1,
+    // Default 1 (saída) se o campo vier ausente/malformado — é o caso comum; só vira 0 com o valor
+    // explícito da nota, pra nunca esconder uma compra de verdade por dado faltando.
+    tpNF: ide.tpNF != null && String(ide.tpNF) !== "" ? n(ide.tpNF) : 1,
     emitCnpj: String(emit.CNPJ || emit.CPF || ""), emitNome: String(emit.xNome || ""), emitUF: String(emit.enderEmit?.UF || ""),
     destDoc: String(inf.dest?.CNPJ || inf.dest?.CPF || ""), destNome: String(inf.dest?.xNome || ""), destUF: String(inf.dest?.enderDest?.UF || ""),
     crt: emit.CRT != null ? Number(emit.CRT) : null, tpRegimeIBSCBS: emit.tpRegimeIBSCBS != null ? String(emit.tpRegimeIBSCBS) : null,
@@ -227,6 +237,7 @@ function lerCteReforma(docId: number, j: any): NotaRT | null {
   return {
     docId, chave: String(inf["@_Id"] || "").replace(/^CTe/, ""), numero: String(ide.nCT || ""), serie: String(ide.serie || ""),
     dhEmi: String(ide.dhEmi || "").slice(0, 10), mod: "57", finNFe: tpCTe === 1 ? 2 : 1, // CT-e complementar ~ NF-e complementar
+    tpNF: 1, // CT-e não tem a ambiguidade entrada/saída da NF-e (papéis já vêm de emit/toma) — mantém como estava
     emitCnpj: String(emit.CNPJ || emit.CPF || ""), emitNome: String(emit.xNome || ""), emitUF: String(emit.enderEmit?.UF || ""),
     destDoc: String(toma?.CNPJ || toma?.CPF || ""), destNome: String(toma?.xNome || ""), destUF: String(enderToma.UF || ""),
     crt: emit.CRT != null ? Number(emit.CRT) : null, tpRegimeIBSCBS: emit.tpRegimeIBSCBS != null ? String(emit.tpRegimeIBSCBS) : null,
