@@ -278,6 +278,15 @@ const fmt = (v: number, casas = 2) => v.toLocaleString("pt-BR", { minimumFractio
 // Valores dentro de trechos de XML (evidência / "como deveria emitir") saem como no XML: ponto decimal.
 const fx = (v: number, casas = 2) => v.toFixed(casas);
 const CFOP_VENDA = /^[56](101|102|103|104|105|106|109|110|111|113|114|115|116|117|118|119|120|122|123|124|125|401|402|403|405|651|652|653|654|655|656)$/;
+// CFOPs de remessa/movimentação SEM contraprestação (transferência entre estabelecimentos do mesmo
+// contribuinte, industrialização/depósito/demonstração/conserto por conta de terceiro, consignação,
+// bonificação/doação/amostra grátis — tabela oficial de CFOP, família 151/152 e 901-921) — achado real
+// (2026-11-23): o GRUPO_AUSENTE sugeria sempre CST 000/cClassTrib 000001 (tributação integral) como "o
+// jeito certo de emitir", mas pra essas operações o certo é CST 410 (não incidência — LC 214/2025, art.
+// 4º a 9º), não tributação integral. 949 ("outra saída não especificada") fica de fora de propósito —
+// é catch-all demais pra presumir que não é venda disfarçada.
+const CFOP_NAO_ONEROSO = /^[1256](151|152|90[1-9]|91[0-9]|92[01])$/;
+const CFOP_TRANSFERENCIA = /^[1256](151|152)$/;
 
 function xmlEsperado(cst: string, cClassTrib: string, vBC: number, a: { pCBS: number | null; pIBSUF: number; pIBSMun: number }, pRedIBS: number, pRedCBS: number) {
   const ef = (p: number, red: number) => p * (1 - red / 100);
@@ -387,11 +396,21 @@ export function auditarNota(nota: NotaRT, consultaNcm: ConsultaNcm, consultaVige
     }
     if (!it.temIBSCBS) {
       if ((regime === "regular" || regime === "sn_regular") && nota.dhEmi >= INICIO_OBRIGACAO_REGULAR && !grupoDispensado(nota, it)) {
-        addItem({ regra: "GRUPO_AUSENTE", severidade: ano >= 2027 ? "alta" : "media", titulo: "Item sem o grupo IBS/CBS",
-          detalhe: `${ident}: fornecedor do regime regular emitiu sem o grupo IBSCBS, obrigatório desde 03/08/2026 (Ato Conjunto RFB/CGIBS nº 4/2026; NT 2025.002, UB12). A SEFAZ ainda não rejeita (regra UB12-10 em "implementação futura" na produção), por isso a nota foi autorizada.`,
+        const naoOneroso = CFOP_NAO_ONEROSO.test(it.cfop);
+        const transferencia = CFOP_TRANSFERENCIA.test(it.cfop);
+        addItem({ regra: "GRUPO_AUSENTE", severidade: naoOneroso ? "baixa" : (ano >= 2027 ? "alta" : "media"), titulo: "Item sem o grupo IBS/CBS",
+          detalhe: naoOneroso
+            ? `${ident}: fornecedor emitiu sem o grupo IBSCBS. CFOP ${it.cfop} é de remessa/movimentação sem contraprestação (não é venda) — pela LC 214/2025 (art. 4º a 9º) normalmente não há incidência de IBS/CBS nesse tipo de operação, mas o grupo com CST 410 (não incidência) ainda é obrigatório no documento desde 03/08/2026 (Ato Conjunto RFB/CGIBS nº 4/2026; NT 2025.002, UB12). A SEFAZ ainda não rejeita (regra UB12-10 em "implementação futura" na produção), por isso a nota foi autorizada.`
+            : `${ident}: fornecedor do regime regular emitiu sem o grupo IBSCBS, obrigatório desde 03/08/2026 (Ato Conjunto RFB/CGIBS nº 4/2026; NT 2025.002, UB12). A SEFAZ ainda não rejeita (regra UB12-10 em "implementação futura" na produção), por isso a nota foi autorizada.`,
           evidencia: `<det nItem="${it.nItem}"><imposto> sem <IBSCBS>`,
-          esperado: aliq ? xmlEsperado("000", "000001", vBCref, aliq, 0, 0) : undefined,
-          recomendacao: ano >= 2027 ? "Sem destaque não há crédito documentado de CBS/IBS. Exigir NF-e com o grupo IBSCBS." : "Notificar o fornecedor para adequar o emissor antes de 2027, quando o crédito passa a valer em dinheiro.",
+          esperado: naoOneroso
+            ? (transferencia
+                ? `<IBSCBS><CST>410</CST><cClassTrib>410002</cClassTrib>…</IBSCBS> — transferência entre estabelecimentos do mesmo contribuinte (LC 214/2025, art. 6º, II; tabela IT 2025.002)`
+                : `<IBSCBS><CST>410</CST><cClassTrib>(conforme o motivo da remessa)</cClassTrib>…</IBSCBS> — não incidência (LC 214/2025, art. 4º a 9º). Confirme com o fornecedor o motivo exato pra achar o cClassTrib certo na tabela oficial (ex.: 410001 bonificação, 410003 doação/amostra grátis, 410999 outras operações não onerosas sem previsão específica)`)
+            : (aliq ? xmlEsperado("000", "000001", vBCref, aliq, 0, 0) : undefined),
+          recomendacao: naoOneroso
+            ? "Não é venda — confirme com o fornecedor se a operação é mesmo não onerosa (nesse caso, exigir o grupo com CST 410/cClassTrib 410xxx) ou se há contraprestação disfarçada de remessa (nesse caso o CFOP está errado e a nota deveria ter sido emitida como venda, com CST 000)."
+            : (ano >= 2027 ? "Sem destaque não há crédito documentado de CBS/IBS. Exigir NF-e com o grupo IBSCBS." : "Notificar o fornecedor para adequar o emissor antes de 2027, quando o crédito passa a valer em dinheiro."),
           valor: vBCref });
       }
     } else {
