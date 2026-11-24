@@ -5,12 +5,15 @@
 // do colaborador, sistemas substituídos e receita de revenda de módulos aos clientes do escritório).
 // PDF no papel timbrado, mesmo visual da proposta de Reforma (src/propostas.ts).
 
-export interface ModuloProposta { chave: string; nome: string; valor: number; incluido: boolean }
+export interface ModuloProposta { chave: string; nome: string; valor: number; incluido: boolean; descontoPct: number; isento: boolean }
+// Cada cobrança (base, módulo, usuários, implantação) tem desconto próprio (%) e pode ser isenta; o
+// desconto geral (descontoPct) entra por cima do subtotal já com os descontos de cada item.
 export interface ConfigEscritorio {
   escritorio: { nome: string; cnpj: string; cidade: string; uf: string; responsavel: string; cpfResponsavel: string; email: string; telefone: string };
   clientes: number; colaboradores: number;
-  baseMensal: number; assentoValor: number; modulos: ModuloProposta[];
-  descontoPct: number; implantacao: number; validadeDias: number; observacoes: string;
+  baseMensal: number; baseDescontoPct: number; baseIsento: boolean;
+  assentoValor: number; assentoDescontoPct: number; assentoIsento: boolean; modulos: ModuloProposta[];
+  descontoPct: number; implantacao: number; implantacaoDescontoPct: number; implantacaoIsenta: boolean; validadeDias: number; observacoes: string;
   salarioColaborador: number; horasPorCliente: number; gastoSistemasAtual: number; adesaoRevendaPct: number; ticketRevenda: number;
 }
 
@@ -48,12 +51,13 @@ export const DESCRICAO_MODULO: Record<string, string> = {
 
 const r2 = (v: number) => Math.round(v * 100) / 100;
 
-export function catalogoParaModulos(catalogo: { chave: string; nome: string; valor_mensal: number; ativo: number }[]): { modulos: ModuloProposta[]; assentoValor: number } {
+export function catalogoParaModulos(catalogo: { chave: string; nome: string; valor_mensal: number; ativo: number }[]): { modulos: ModuloProposta[]; assentoValor: number; baseMensal: number } {
   const assento = catalogo.find((m) => m.chave === "assento_colaborador");
+  const base = catalogo.find((m) => m.chave === "plataforma_base");
   const modulos = catalogo
-    .filter((m) => m.chave !== "assento_colaborador" && (m.ativo || m.chave === "reforma"))
-    .map((m) => ({ chave: m.chave, nome: m.nome, valor: m.chave === "reforma" && !m.valor_mensal ? PRECO_REFORMA_PADRAO : r2(m.valor_mensal || 0), incluido: true }));
-  return { modulos, assentoValor: r2(assento?.valor_mensal || 0) };
+    .filter((m) => m.chave !== "assento_colaborador" && m.chave !== "plataforma_base" && (m.ativo || m.chave === "reforma"))
+    .map((m) => ({ chave: m.chave, nome: m.nome, valor: m.chave === "reforma" && !m.valor_mensal ? PRECO_REFORMA_PADRAO : r2(m.valor_mensal || 0), incluido: true, descontoPct: 0, isento: false }));
+  return { modulos, assentoValor: r2(assento?.valor_mensal || 0), baseMensal: r2(base?.valor_mensal || BASE_MENSAL_PADRAO) };
 }
 export function horasSugeridas(modulos: ModuloProposta[]) {
   return r2(HORAS_BASE + modulos.filter((m) => m.incluido).reduce((a, m) => a + (HORAS_MODULO[m.chave] || 0), 0));
@@ -62,11 +66,11 @@ export function implantacaoSugerida(clientes: number) {
   return Math.round((1500 + 10 * Math.max(0, clientes)) / 50) * 50;
 }
 export function configPadrao(catalogo: any[], ticketRevenda: number): ConfigEscritorio {
-  const { modulos, assentoValor } = catalogoParaModulos(catalogo);
+  const { modulos, assentoValor, baseMensal } = catalogoParaModulos(catalogo);
   return {
     escritorio: { nome: "", cnpj: "", cidade: "", uf: "", responsavel: "", cpfResponsavel: "", email: "", telefone: "" },
-    clientes: 100, colaboradores: 5, baseMensal: BASE_MENSAL_PADRAO, assentoValor, modulos,
-    descontoPct: 0, implantacao: implantacaoSugerida(100), validadeDias: 30, observacoes: "",
+    clientes: 100, colaboradores: 5, baseMensal, baseDescontoPct: 0, baseIsento: false, assentoValor, assentoDescontoPct: 0, assentoIsento: false, modulos,
+    descontoPct: 0, implantacao: implantacaoSugerida(100), implantacaoDescontoPct: 0, implantacaoIsenta: false, validadeDias: 30, observacoes: "",
     salarioColaborador: SALARIO_COLABORADOR_PADRAO, horasPorCliente: horasSugeridas(modulos), gastoSistemasAtual: 0, adesaoRevendaPct: 10, ticketRevenda: r2(ticketRevenda || 49.99),
   };
 }
@@ -76,7 +80,7 @@ export function normalizarConfig(c: any, base: ConfigEscritorio): ConfigEscritor
   const e = c?.escritorio || {};
   const modsBase = new Map(base.modulos.map((m) => [m.chave, m]));
   const modulos = Array.isArray(c?.modulos)
-    ? c.modulos.filter((m: any) => modsBase.has(String(m?.chave))).map((m: any) => ({ chave: String(m.chave), nome: modsBase.get(String(m.chave))!.nome, valor: r2(n(m.valor, modsBase.get(String(m.chave))!.valor)), incluido: !!m.incluido }))
+    ? c.modulos.filter((m: any) => modsBase.has(String(m?.chave))).map((m: any) => { const b = modsBase.get(String(m.chave))!; return { chave: b.chave, nome: b.nome, valor: r2(n(m.valor, b.valor)), incluido: !!m.incluido, descontoPct: r2(n(m.descontoPct, b.descontoPct || 0, 0, 100)), isento: m.isento !== undefined ? !!m.isento : !!b.isento }; })
     : base.modulos;
   for (const m of base.modulos) if (!modulos.some((x: ModuloProposta) => x.chave === m.chave)) modulos.push(m);
   return {
@@ -86,20 +90,35 @@ export function normalizarConfig(c: any, base: ConfigEscritorio): ConfigEscritor
       email: s(e.email, base.escritorio.email, 150), telefone: s(e.telefone, base.escritorio.telefone, 30),
     },
     clientes: Math.round(n(c?.clientes, base.clientes, 0, 100000)), colaboradores: Math.round(n(c?.colaboradores, base.colaboradores, 0, 10000)),
-    baseMensal: r2(n(c?.baseMensal, base.baseMensal)), assentoValor: r2(n(c?.assentoValor, base.assentoValor)), modulos,
+    baseMensal: r2(n(c?.baseMensal, base.baseMensal)), baseDescontoPct: r2(n(c?.baseDescontoPct, base.baseDescontoPct || 0, 0, 100)), baseIsento: c?.baseIsento !== undefined ? !!c.baseIsento : !!base.baseIsento,
+    assentoValor: r2(n(c?.assentoValor, base.assentoValor)), assentoDescontoPct: r2(n(c?.assentoDescontoPct, base.assentoDescontoPct || 0, 0, 100)), assentoIsento: c?.assentoIsento !== undefined ? !!c.assentoIsento : !!base.assentoIsento, modulos,
     descontoPct: r2(n(c?.descontoPct, base.descontoPct, 0, 100)), implantacao: r2(n(c?.implantacao, base.implantacao)),
+    implantacaoDescontoPct: r2(n(c?.implantacaoDescontoPct, base.implantacaoDescontoPct || 0, 0, 100)), implantacaoIsenta: c?.implantacaoIsenta !== undefined ? !!c.implantacaoIsenta : !!base.implantacaoIsenta,
     validadeDias: Math.round(n(c?.validadeDias, base.validadeDias, 1, 365)), observacoes: s(c?.observacoes, base.observacoes, 2000),
     salarioColaborador: r2(n(c?.salarioColaborador, base.salarioColaborador)), horasPorCliente: r2(n(c?.horasPorCliente, base.horasPorCliente, 0, 100)),
     gastoSistemasAtual: r2(n(c?.gastoSistemasAtual, base.gastoSistemasAtual)), adesaoRevendaPct: r2(n(c?.adesaoRevendaPct, base.adesaoRevendaPct, 0, 100)), ticketRevenda: r2(n(c?.ticketRevenda, base.ticketRevenda)),
   };
 }
+// Itens cobrados por mês, cada um com valor de tabela, desconto próprio e valor final (isento = 0).
+export function itensCobranca(c: ConfigEscritorio) {
+  const item = (chave: string, nome: string, tabela: number, descontoPct: number, isento: boolean) => ({ chave, nome, tabela: r2(tabela), descontoPct, isento, final: isento ? 0 : r2(tabela * (1 - descontoPct / 100)) });
+  const itens = [
+    item("plataforma_base", "Plataforma base: todos os itens do item 1", c.baseMensal, c.baseDescontoPct, c.baseIsento),
+    ...c.modulos.filter((m) => m.incluido).map((m) => item(m.chave, m.nome, m.valor, m.descontoPct, m.isento)),
+  ];
+  if (c.colaboradores > 0 && c.assentoValor > 0) itens.push(item("assento_colaborador", `Usuários da equipe: ${c.colaboradores} × ${brl(c.assentoValor)}`, c.assentoValor * c.colaboradores, c.assentoDescontoPct, c.assentoIsento));
+  return itens;
+}
 // Mesma conta da tela (app.html › propEscCalcular) — manter as duas iguais.
 export function calcularValores(c: ConfigEscritorio) {
-  const modulosMensal = r2(c.modulos.filter((m) => m.incluido).reduce((a, m) => a + m.valor, 0));
-  const assentos = r2(c.assentoValor * c.colaboradores);
-  const mensalBruto = r2(c.baseMensal + modulosMensal + assentos);
-  const descontoValor = r2((mensalBruto * c.descontoPct) / 100);
-  const mensal = r2(mensalBruto - descontoValor);
+  const itens = itensCobranca(c);
+  const mensalBruto = r2(itens.reduce((a, i) => a + i.tabela, 0));
+  const subtotal = r2(itens.reduce((a, i) => a + i.final, 0));
+  const descontoItens = r2(mensalBruto - subtotal);
+  const descontoGeral = r2((subtotal * c.descontoPct) / 100);
+  const descontoValor = r2(descontoItens + descontoGeral);
+  const mensal = r2(subtotal - descontoGeral);
+  const implantacaoFinal = c.implantacaoIsenta ? 0 : r2(c.implantacao * (1 - c.implantacaoDescontoPct / 100));
   const custoHora = (c.salarioColaborador * FATOR_ENCARGOS + BENEFICIOS) / HORAS_MES;
   const horasMes = Math.round(c.horasPorCliente * c.clientes);
   const economiaEquipe = Math.round(horasMes * custoHora * 12);
@@ -107,12 +126,17 @@ export function calcularValores(c: ConfigEscritorio) {
   const economiaSistemas = Math.round(c.gastoSistemasAtual * 12);
   const receitaRevenda = Math.round(c.clientes * (c.adesaoRevendaPct / 100) * c.ticketRevenda * 12);
   const ganho = economiaEquipe + economiaSistemas + receitaRevenda;
-  const investimentoAno1 = r2(mensal * 12 + c.implantacao);
+  const investimentoAno1 = r2(mensal * 12 + implantacaoFinal);
   const liquido = Math.round(ganho - investimentoAno1);
   const roi = investimentoAno1 > 0 ? Math.round((ganho / investimentoAno1) * 10) / 10 : 0;
   const paybackMeses = ganho > 0 ? Math.round((investimentoAno1 / (ganho / 12)) * 10) / 10 : null;
   const custoPorCliente = c.clientes ? r2(mensal / c.clientes) : 0;
-  return { modulosMensal, assentos, mensalBruto, descontoValor, mensal, custoHora: r2(custoHora), horasMes, economiaEquipe, colaboradoresLiberados, economiaSistemas, receitaRevenda, ganho, investimentoAno1, liquido, roi, paybackMeses, custoPorCliente };
+  return { itens, mensalBruto, subtotal, descontoItens, descontoGeral, descontoValor, mensal, implantacaoFinal, custoHora: r2(custoHora), horasMes, economiaEquipe, colaboradoresLiberados, economiaSistemas, receitaRevenda, ganho, investimentoAno1, liquido, roi, paybackMeses, custoPorCliente };
+}
+// Preço mensal efetivo de cada item na plataforma (desconto do item + desconto geral); isento = cortesia.
+export function precoEfetivoItens(c: ConfigEscritorio) {
+  const g = 1 - c.descontoPct / 100;
+  return itensCobranca(c).map((i) => ({ chave: i.chave, isento: i.isento, mensal: i.isento ? 0 : r2(i.final * g), unitarioAssento: i.chave === "assento_colaborador" ? (i.isento ? 0 : r2(c.assentoValor * (1 - i.descontoPct / 100) * g)) : null }));
 }
 
 function esc(s: any) { return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
@@ -174,18 +198,17 @@ ${ganhos.map((g: any, i: number) => `<div class="eco${g.q ? "" : " q"}"><div cla
 
 <h2>4. Investimento</h2>
 <div class="preco"><table>
-  <tr><td>Plataforma base: todos os itens do item 1</td><td class="num">${brl(c.baseMensal)}/mês</td></tr>
-  ${inclusos.map((m) => `<tr><td>${esc(m.nome)}</td><td class="num">${brl(m.valor)}/mês</td></tr>`).join("")}
-  ${c.colaboradores && c.assentoValor ? `<tr><td>Usuários da equipe: ${num(c.colaboradores)} × ${brl(c.assentoValor)}</td><td class="num">${brl(v.assentos)}/mês</td></tr>` : ""}
-  ${v.descontoValor ? `<tr><td>Subtotal</td><td class="num">${brl(v.mensalBruto)}/mês</td></tr><tr><td><b>Desconto especial (${String(c.descontoPct).replace(".", ",")}%)</b></td><td class="num ok">− ${brl(v.descontoValor)}/mês</td></tr>` : ""}
-  <tr class="total"><td>Mensalidade</td><td class="num">${brl(v.mensal)}/mês</td></tr>
-  <tr><td>Implantação, cobrada uma vez: configuração do escritório, importação das empresas e contatos, configuração dos robôs e dos envios, e treinamento da equipe</td><td class="num">${c.implantacao ? brl(c.implantacao) : "<b>isenta</b>"}</td></tr>
+  <tr class="cab"><td><b>Item</b></td><td class="num"><b>Tabela</b></td><td class="num"><b>Desconto</b></td><td class="num"><b>Valor</b></td></tr>
+  ${v.itens.map((i) => `<tr><td>${esc(i.nome)}</td><td class="num">${brl(i.tabela)}</td><td class="num ok">${i.isento ? "isento" : i.descontoPct ? `${String(i.descontoPct).replace(".", ",")}%` : "—"}</td><td class="num">${i.isento ? "<b>isento</b>" : brl(i.final)}</td></tr>`).join("")}
+  ${v.descontoGeral ? `<tr><td colspan="3">Subtotal</td><td class="num">${brl(v.subtotal)}</td></tr><tr><td colspan="3"><b>Desconto especial (${String(c.descontoPct).replace(".", ",")}%)</b></td><td class="num ok">− ${brl(v.descontoGeral)}</td></tr>` : ""}
+  <tr class="total"><td colspan="3">Mensalidade${v.descontoValor ? ` <span style="font-size:9px; font-weight:600; color:#1f6e43;">(economia de ${brl(v.descontoValor)}/mês sobre a tabela de ${brl(v.mensalBruto)})</span>` : ""}</td><td class="num">${brl(v.mensal)}/mês</td></tr>
+  <tr><td>Implantação, cobrada uma vez: configuração do escritório, importação das empresas e contatos, configuração dos robôs e dos envios, e treinamento da equipe</td><td class="num">${brl(c.implantacao)}</td><td class="num ok">${c.implantacaoIsenta ? "isenta" : c.implantacaoDescontoPct ? `${String(c.implantacaoDescontoPct).replace(".", ",")}%` : "—"}</td><td class="num">${v.implantacaoFinal ? brl(v.implantacaoFinal) : "<b>isenta</b>"}</td></tr>
 </table></div>
 <table class="t" style="break-inside:avoid">
   <thead><tr><th>Retorno no 1º ano</th><th class="num" style="width:24%">Valor</th></tr></thead>
   <tbody>
     <tr><td>Ganho estimado: horas da equipe${v.economiaSistemas ? " + sistemas substituídos" : ""}${v.receitaRevenda ? " + revenda de módulos" : ""}</td><td class="num ok">${brl0(v.ganho)}</td></tr>
-    <tr><td>Investimento: ${c.implantacao ? "implantação + " : ""}12 mensalidades</td><td class="num no">− ${brl0(v.investimentoAno1)}</td></tr>
+    <tr><td>Investimento: ${v.implantacaoFinal ? "implantação + " : ""}12 mensalidades</td><td class="num no">− ${brl0(v.investimentoAno1)}</td></tr>
     <tr class="tot"><td>Resultado estimado no 1º ano</td><td class="num">${brl0(v.liquido)}</td></tr>
     <tr><td>Retorno sobre o investimento</td><td class="num"><b>≈ ${num(v.roi)} vezes</b></td></tr>
     ${v.paybackMeses != null ? `<tr><td>Prazo para se pagar</td><td class="num"><b>${v.paybackMeses <= 1 ? "menos de 1 mês" : `cerca de ${Math.ceil(v.paybackMeses)} meses`}</b></td></tr>` : ""}
@@ -248,6 +271,7 @@ tr.tot td { background: #f3eed9; font-weight: 700; } .num { text-align: right; w
 .fluxo2 div { background:#f0f4f6; border-top:3px solid #2f3b42; padding:7px; font-size:8.4px; text-align:center; } .fluxo2 b { display:block; font-size:9px; margin-bottom:2px; }
 .preco { border:2px solid #c9a227; background:#fffdf5; padding:12px 14px; margin:10px 0; break-inside:avoid; }
 .preco table { width:100%; border-collapse:collapse; font-size:9.6px; } .preco td { padding:5px 4px; border-bottom:1px dashed #e4d8a8; }
+.preco tr.cab td { font-size:8.4px; text-transform:uppercase; letter-spacing:.04em; color:#6b5410; border-bottom:1.5px solid #c9a227; }
 .preco tr.total td { font-size:12px; font-weight:800; border-bottom:none; border-top:2px solid #c9a227; padding-top:7px; }
 .ok { color:#1f6e43; font-weight:700; } .no { color:#9c3a24; font-weight:700; }
 </style></head><body>${bg}<table class="layout"><thead><tr><td class="espaco-topo"></td></tr></thead><tfoot><tr><td class="espaco-rodape"></td></tr></tfoot><tbody><tr><td class="corpo">${corpo}</td></tr></tbody></table></body></html>`;
@@ -274,10 +298,10 @@ export async function gerarPdfPropostaEscritorio(...args: Parameters<typeof html
 // Anexo I do contrato da plataforma (HTML já escapado — entra cru no modelo).
 export function anexoModulosHtml(c: ConfigEscritorio) {
   const v = calcularValores(c);
-  const linhas = [
-    `<tr><td>Plataforma base (${FUNCIONALIDADES_BASE.map((f) => esc(f.titulo)).join("; ")})</td><td>R$ ${c.baseMensal.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</td></tr>`,
-    ...c.modulos.filter((m) => m.incluido).map((m) => `<tr><td>${esc(m.nome)}</td><td>R$ ${m.valor.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</td></tr>`),
-    c.colaboradores && c.assentoValor ? `<tr><td>Usuários da equipe (${c.colaboradores} × R$ ${c.assentoValor.toLocaleString("pt-BR", { minimumFractionDigits: 2 })})</td><td>R$ ${v.assentos.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</td></tr>` : "",
-  ].filter(Boolean);
-  return `<table class="dados"><thead><tr><th>Item contratado</th><th>Mensalidade</th></tr></thead><tbody>${linhas.join("")}</tbody></table>`;
+  const f = (x: number) => "R$ " + x.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const linhas = v.itens.map((i) => `<tr><td>${i.chave === "plataforma_base" ? `Plataforma base (${FUNCIONALIDADES_BASE.map((x) => esc(x.titulo)).join("; ")})` : esc(i.nome)}</td><td>${f(i.tabela)}</td><td>${i.isento ? "Isento" : i.descontoPct ? `${String(i.descontoPct).replace(".", ",")}%` : "—"}</td><td>${i.isento ? "Isento" : f(i.final)}</td></tr>`);
+  if (v.descontoGeral) linhas.push(`<tr><td colspan="3">Desconto especial sobre o total (${String(c.descontoPct).replace(".", ",")}%)</td><td>− ${f(v.descontoGeral)}</td></tr>`);
+  linhas.push(`<tr><td colspan="3"><b>Mensalidade total</b></td><td><b>${f(v.mensal)}</b></td></tr>`);
+  linhas.push(`<tr><td>Implantação (valor único)</td><td>${f(c.implantacao)}</td><td>${c.implantacaoIsenta ? "Isenta" : c.implantacaoDescontoPct ? `${String(c.implantacaoDescontoPct).replace(".", ",")}%` : "—"}</td><td>${v.implantacaoFinal ? f(v.implantacaoFinal) : "Isenta"}</td></tr>`);
+  return `<table class="dados"><thead><tr><th>Item contratado</th><th>Valor de tabela</th><th>Desconto</th><th>Valor contratado</th></tr></thead><tbody>${linhas.join("")}</tbody></table>`;
 }

@@ -2310,6 +2310,12 @@ sqlite.exec(`INSERT OR IGNORE INTO modulos_escritorio_catalogo (chave, nome, val
 // isentos (ver contarAssentosColaborador). Preço 0 até o SuperAdmin configurar em Escritórios >
 // Módulos da plataforma — mesma tela que já edita os outros módulos desse catálogo.
 sqlite.exec(`INSERT OR IGNORE INTO modulos_escritorio_catalogo (chave, nome, valor_mensal) VALUES ('assento_colaborador', 'Assento por colaborador (cobrado por usuário)', 0)`);
+// Mensalidade base da plataforma (sistema completo) — vendida pela proposta de escritório (Contratos ›
+// Propostas). Vale SÓ para quem tem a linha em escritorio_modulos, criada quando o contrato da proposta é
+// assinado: os escritórios que já existiam não veem nem pagam esse item (ver modulosDoEscritorio, pagar
+// e iniciar-teste). Não bloqueia nada do sistema — é só cobrança.
+sqlite.exec(`INSERT OR IGNORE INTO modulos_escritorio_catalogo (chave, nome, valor_mensal) VALUES ('plataforma_base', 'Plataforma base (sistema completo)', 990)`);
+const MODULO_PLATAFORMA_BASE = "plataforma_base";
 // ---------- Revenda de módulos pro cliente final (pedido 2026-11-17) ----------
 // O escritório contrata o módulo pra si (ex.: Reforma Tributária) e pode liberar o mesmo módulo pra
 // uma empresa-cliente dele: informa o valor que negociou com o cliente e paga à plataforma um
@@ -24095,7 +24101,7 @@ function modulosDoEscritorio(escritorioId: number) {
   const contratados = sqlite.prepare(`SELECT * FROM escritorio_modulos WHERE escritorio_id = ?`).all(escritorioId) as any[];
   const porChave = new Map(contratados.map((c) => [c.modulo_chave, c]));
   const assentos = contarAssentosColaborador(escritorioId);
-  return catalogo.map((m) => {
+  return catalogo.filter((m) => m.chave !== MODULO_PLATAFORMA_BASE || porChave.has(m.chave)).map((m) => {
     const contratado = porChave.get(m.chave);
     const { status, acesso } = isento ? { status: "isento", acesso: true } : moduloStatusParaEscritorio(m, contratado);
     const porAssento = m.chave === "assento_colaborador";
@@ -24270,7 +24276,7 @@ app.post("/api/escritorio/modulos/:chave/iniciar-teste", blockCliente, requirePe
   const escritorioId = (req as any).user.escritorioId;
   const chave = String(req.params.chave);
   const modulo = sqlite.prepare(`SELECT * FROM modulos_escritorio_catalogo WHERE chave = ? AND ativo = 1`).get(chave) as any;
-  if (!modulo) return res.status(404).json({ error: "Módulo não encontrado." });
+  if (!modulo || chave === MODULO_PLATAFORMA_BASE) return res.status(404).json({ error: "Módulo não encontrado." });
   const existente = sqlite.prepare(`SELECT 1 FROM escritorio_modulos WHERE escritorio_id = ? AND modulo_chave = ?`).get(escritorioId, chave);
   if (existente) return res.status(409).json({ error: "O teste desse módulo já foi iniciado antes." });
   sqlite
@@ -24281,7 +24287,9 @@ app.post("/api/escritorio/modulos/:chave/iniciar-teste", blockCliente, requirePe
 app.post("/api/escritorio/modulos/pagar", blockCliente, requirePermissao("configuracoes", "postar"), async (req, res) => {
   const user = (req as any).user;
   const escritorioId = user.escritorioId;
-  const chaves: string[] = Array.isArray(req.body?.modulos) ? req.body.modulos : [];
+  // Plataforma base só é cobrável por quem a contratou (proposta de escritório assinada).
+  const temBase = !!sqlite.prepare(`SELECT 1 FROM escritorio_modulos WHERE escritorio_id = ? AND modulo_chave = ?`).get(escritorioId, MODULO_PLATAFORMA_BASE);
+  const chaves: string[] = (Array.isArray(req.body?.modulos) ? req.body.modulos : []).filter((c: any) => c !== MODULO_PLATAFORMA_BASE || temBase);
   if (!chaves.length) return res.status(400).json({ error: "Selecione ao menos um módulo." });
   const catalogo = sqlite
     .prepare(`SELECT chave, nome, valor_mensal FROM modulos_escritorio_catalogo WHERE ativo = 1 AND chave IN (${chaves.map(() => "?").join(",")})`)
@@ -26236,10 +26244,11 @@ app.post("/api/propostas/:id/aprovar", blockCliente, requirePermissao("contratos
   const estabelecimentos = ids.map((id) => sqlite.prepare(`SELECT nome, cnpj, cidade, uf FROM empresas WHERE id = ?`).get(id) as any).filter(Boolean);
   const dados: Record<string, string> = {
     mensalidade_total: brlC(r.valores.mensal), mensalidade_total_extenso: contratos.valorPorExtenso(r.valores.mensal),
-    implantacao_total: brlC(r.config.implantacao), implantacao_total_extenso: contratos.valorPorExtenso(r.config.implantacao),
-    mensalidade_busca: brlC(r.config.buscaMensal), mensalidade_reforma: brlC(r.config.reformaMensal),
-    desconto_texto: r.valores.descontoValor ? `, já aplicado o desconto de ${String(r.config.descontoPct).replace(".", ",")}% sobre o valor de tabela de R$ ${brlC(r.valores.mensalBruto)}` : "",
-    desconto_anexo: r.valores.descontoValor ? `${String(r.config.descontoPct).replace(".", ",")}% (− R$ ${brlC(r.valores.descontoValor)} por mês)` : "Sem desconto",
+    implantacao_total: brlC(r.valores.implantacaoFinal), implantacao_total_extenso: contratos.valorPorExtenso(r.valores.implantacaoFinal),
+    mensalidade_busca: r.config.buscaIsento ? "0,00 (isento)" : `${brlC(r.valores.buscaFinal)}${r.valores.buscaFinal < r.config.buscaMensal ? ` (tabela R$ ${brlC(r.config.buscaMensal)}, desconto de ${String(r.config.buscaDescontoPct).replace(".", ",")}%)` : ""}`,
+    mensalidade_reforma: r.config.reformaIsento ? "0,00 (isento)" : `${brlC(r.valores.reformaFinal)}${r.valores.reformaFinal < r.config.reformaMensal ? ` (tabela R$ ${brlC(r.config.reformaMensal)}, desconto de ${String(r.config.reformaDescontoPct).replace(".", ",")}%)` : ""}`,
+    desconto_texto: r.valores.descontoValor ? `, já aplicados os descontos e isenções do Anexo II (economia de R$ ${brlC(r.valores.descontoValor)} por mês sobre o valor de tabela de R$ ${brlC(r.valores.mensalBruto)})` : "",
+    desconto_anexo: r.valores.descontoValor ? [r.valores.descontoGeral ? `Desconto geral de ${String(r.config.descontoPct).replace(".", ",")}% (− R$ ${brlC(r.valores.descontoGeral)}/mês)` : "", `Economia total de R$ ${brlC(r.valores.descontoValor)} por mês`, r.config.implantacaoIsenta ? "Implantação isenta" : r.valores.implantacaoFinal < r.config.implantacao ? `Implantação com ${String(r.config.implantacaoDescontoPct).replace(".", ",")}% de desconto (tabela R$ ${brlC(r.config.implantacao)})` : ""].filter(Boolean).join(" · ") : (r.config.implantacaoIsenta ? "Implantação isenta" : "Sem desconto"),
     qtd_estabelecimentos: String(estabelecimentos.length), n_proposta: r.numero,
   };
   if (dia >= 1 && dia <= 31) dados.dia_vencimento = String(dia);
@@ -26349,13 +26358,18 @@ function propostaEscCriarAcesso(c: propostasEscritorio.ConfigEscritorio, admin: 
   sqlite.prepare(`UPDATE escritorios SET empresa_id = ? WHERE id = ?`).run(empresaPropria, escritorioId);
   garantirLinhasDeConfig(escritorioId);
   sqlite.prepare(`UPDATE nfse_agendamento_config SET empresa_prestador_id = ? WHERE escritorio_id = ?`).run(empresaPropria, escritorioId);
-  const fator = 1 - c.descontoPct / 100;
-  const r2 = (v: number) => Math.round(v * 100) / 100;
-  const insMod = sqlite.prepare(`INSERT INTO escritorio_modulos (escritorio_id, modulo_chave, trial_inicio, trial_fim, valor_mensal_custom) VALUES (?, ?, datetime('now'), datetime('now','+30 days'), ?)`);
+  // Preço de cada item = valor da proposta (desconto do item + desconto geral); item isento vira
+  // cortesia (assinatura até 2099, mesmo valor usado em Controle de contratos › Cortesia).
+  const insMod = sqlite.prepare(`INSERT INTO escritorio_modulos (escritorio_id, modulo_chave, trial_inicio, trial_fim, valor_mensal_custom, assinatura_ativa_ate) VALUES (?, ?, datetime('now'), datetime('now','+30 days'), ?, ?)`);
   const noCatalogo = new Set((sqlite.prepare(`SELECT chave FROM modulos_escritorio_catalogo`).all() as any[]).map((m) => m.chave));
+  const nomes = new Map(propostasEscritorio.itensCobranca(c).map((i) => [i.chave, i.chave === MODULO_PLATAFORMA_BASE ? "Plataforma base" : i.chave === "assento_colaborador" ? "Usuários da equipe" : i.nome]));
   const modulos: string[] = [];
-  for (const m of c.modulos.filter((x) => x.incluido && noCatalogo.has(x.chave))) { insMod.run(escritorioId, m.chave, r2(m.valor * fator)); modulos.push(m.nome); }
-  if (c.colaboradores > 0 && c.assentoValor > 0 && noCatalogo.has("assento_colaborador")) { insMod.run(escritorioId, "assento_colaborador", r2(c.assentoValor * fator)); modulos.push("Usuários da equipe"); }
+  for (const i of propostasEscritorio.precoEfetivoItens(c)) {
+    if (!noCatalogo.has(i.chave)) continue;
+    if (i.chave === MODULO_PLATAFORMA_BASE && !c.baseMensal) continue;
+    insMod.run(escritorioId, i.chave, i.isento ? 0 : i.unitarioAssento ?? i.mensal, i.isento ? "2099-12-31 23:59:59" : null);
+    modulos.push(nomes.get(i.chave)! + (i.isento ? " (isento)" : ""));
+  }
   const existe = sqlite.prepare(`SELECT 1 FROM app_users WHERE email = ?`).get(admin.email);
   if (existe) throw new Error(`Já existe um usuário com o e-mail ${admin.email} — informe outro e-mail para o administrador.`);
   const senhaInutilizavel = crypto.randomBytes(24).toString("base64url") + "9a";
@@ -26459,9 +26473,9 @@ app.post("/api/propostas-escritorio/:id/aprovar", blockCliente, requirePermissao
   const dia = Math.round(Number(req.body?.diaVencimento));
   const dados: Record<string, string> = {
     mensalidade_total: brlC(r.valores.mensal), mensalidade_total_extenso: contratos.valorPorExtenso(r.valores.mensal),
-    implantacao_total: brlC(r.config.implantacao), implantacao_total_extenso: contratos.valorPorExtenso(r.config.implantacao),
-    desconto_texto: r.valores.descontoValor ? `, já aplicado o desconto de ${String(r.config.descontoPct).replace(".", ",")}% sobre o valor de tabela de R$ ${brlC(r.valores.mensalBruto)}` : "",
-    desconto_anexo: r.valores.descontoValor ? `${String(r.config.descontoPct).replace(".", ",")}% (− R$ ${brlC(r.valores.descontoValor)} por mês)` : "Sem desconto",
+    implantacao_total: brlC(r.valores.implantacaoFinal), implantacao_total_extenso: contratos.valorPorExtenso(r.valores.implantacaoFinal),
+    desconto_texto: r.valores.descontoValor ? `, já aplicados os descontos e isenções do Anexo I (economia de R$ ${brlC(r.valores.descontoValor)} por mês sobre o valor de tabela de R$ ${brlC(r.valores.mensalBruto)})` : "",
+    desconto_anexo: r.valores.descontoValor ? `R$ ${brlC(r.valores.descontoValor)} por mês, conforme os itens acima` : "Sem desconto",
     qtd_usuarios: String(r.config.colaboradores || 1), n_proposta: r.numero,
   };
   if (dia >= 1 && dia <= 31) dados.dia_vencimento = String(dia);

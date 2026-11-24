@@ -16752,18 +16752,23 @@ function propNum(txt){
 // Mesma conta do servidor (src/propostas.ts › calcularValores) — manter as duas iguais.
 function propCalcular(a, c, par){
   const r2 = v => Math.round(v*100)/100;
+  const fin = (v, d, isento) => isento ? 0 : r2(v * (1 - (d||0)/100));
+  const buscaFinal = fin(c.buscaMensal, c.buscaDescontoPct, c.buscaIsento), reformaFinal = fin(c.reformaMensal, c.reformaDescontoPct, c.reformaIsento);
   const mensalBruto = r2(c.buscaMensal + c.reformaMensal);
-  const descontoValor = r2(mensalBruto * c.descontoPct / 100);
-  const mensal = r2(mensalBruto - descontoValor);
+  const subtotal = r2(buscaFinal + reformaFinal);
+  const descontoGeral = r2(subtotal * c.descontoPct / 100);
+  const descontoValor = r2(mensalBruto - subtotal + descontoGeral);
+  const mensal = r2(subtotal - descontoGeral);
+  const implantacaoFinal = fin(c.implantacao, c.implantacaoDescontoPct, c.implantacaoIsenta);
   const analistaMensal = r2(c.salarioAnalista * par.fatorEncargos + par.beneficiosAnalista);
   const analistaAno = Math.round(analistaMensal * 12 * (c.dedicacaoPct/100));
   const credito = Math.round(a.totais.perda2027Ano);
   const economia = analistaAno + credito;
-  const investimentoAno1 = r2(mensal*12 + c.implantacao);
+  const investimentoAno1 = r2(mensal*12 + implantacaoFinal);
   const liquido = Math.round(economia - investimentoAno1);
   const roi = investimentoAno1 > 0 ? Math.round(economia/investimentoAno1*10)/10 : 0;
   const paybackMeses = economia > 0 ? Math.round(investimentoAno1/(economia/12)*10)/10 : null;
-  return { mensalBruto, descontoValor, mensal, analistaMensal, analistaAno, credito, economia, investimentoAno1, liquido, roi, paybackMeses };
+  return { mensalBruto, buscaFinal, reformaFinal, subtotal, descontoGeral, descontoValor, mensal, implantacaoFinal, analistaMensal, analistaAno, credito, economia, investimentoAno1, liquido, roi, paybackMeses };
 }
 async function renderContratosPropostas(){
   if(PROPOSTA_ABERTA) return PROPOSTA_ABERTA.tipo==='escritorio' ? renderPropostaEscritorio(PROPOSTA_ABERTA.id) : renderPropostaEditor(PROPOSTA_ABERTA.id);
@@ -16910,11 +16915,21 @@ async function renderPropostaEditor(id){
         <div class="field" style="flex:2; min-width:240px;"><label>Nome do cliente na proposta</label><input type="text" id="ppNome" value="${esc(P.clienteNome)}" ${dis}></div>
         ${campo('ppValidade','Validade da proposta (dias)', c.validadeDias)}
       </div>
+      <div style="overflow-x:auto;"><table class="data-table" style="margin:4px 0 10px;">
+        <thead><tr><th>Cobrança</th><th style="width:150px;">Valor de tabela (R$)</th><th style="width:120px;">Desconto (%)</th><th style="width:80px;">Isento</th><th style="width:130px; text-align:right;">Valor final</th></tr></thead>
+        <tbody>${[
+          ['Busca', 'Busca de XML', 'mensal', c.buscaMensal, c.buscaDescontoPct, c.buscaIsento, `Sugestão: ${propBRL(a.sugestao.buscaMensal)} (${t.cnpjs} CNPJ${t.cnpjs>1?'s':''} × R$ 99,00)`],
+          ['Reforma', 'Auditoria Reforma Tributária', 'mensal', c.reformaMensal, c.reformaDescontoPct, c.reformaIsento, `Sugestão pelo volume (${a.volume.notasMes} NF-e/mês): ${propBRL(a.sugestao.reformaMensal)}`],
+          ['Implantacao', 'Implantação', 'valor único', c.implantacao, c.implantacaoDescontoPct, c.implantacaoIsenta, `Sugestão: ${propBRL(a.sugestao.implantacao)}`],
+        ].map(([k, nome, tipo, valor, d, isento, dica])=>`<tr>
+          <td><b>${nome}</b><div style="font-size:11.5px; color:var(--ink-soft);">${tipo} · ${dica}</div></td>
+          <td><input type="text" id="pp${k}" value="${esc(propMoedaTxt(valor))}" ${dis} style="width:120px;"></td>
+          <td><input type="text" id="pp${k}Desc" value="${esc(String(d||0).replace('.',','))}" ${dis} style="width:80px;"></td>
+          <td><input type="checkbox" id="pp${k}Isento" ${isento?'checked':''} ${dis}></td>
+          <td style="text-align:right;" id="pp${k}Final"></td></tr>`).join('')}</tbody>
+      </table></div>
       <div class="row">
-        ${campo('ppBusca','Mensalidade · Busca de XML (R$)', propMoedaTxt(c.buscaMensal), `Sugestão: ${propBRL(a.sugestao.buscaMensal)} (${t.cnpjs} CNPJ${t.cnpjs>1?'s':''} × R$ 99,00)`)}
-        ${campo('ppReforma','Mensalidade · Auditoria Reforma (R$)', propMoedaTxt(c.reformaMensal), `Sugestão pelo volume (${a.volume.notasMes} NF-e/mês): ${propBRL(a.sugestao.reformaMensal)}`)}
-        ${campo('ppDesconto','Desconto na mensalidade (%)', String(c.descontoPct).replace('.',','), 'Sai destacado no PDF e no contrato')}
-        ${campo('ppImplantacao','Implantação (R$)', propMoedaTxt(c.implantacao), `Sugestão: ${propBRL(a.sugestao.implantacao)} · 0 = isenta`)}
+        ${campo('ppDesconto','Desconto geral sobre a mensalidade (%)', String(c.descontoPct).replace('.',','), 'Opcional · aplicado depois dos descontos de cada item')}
       </div>
       <div class="row">
         ${campo('ppSalario','Salário do analista de referência (R$)', propMoedaTxt(c.salarioAnalista), 'Com encargos do Lucro Presumido e benefícios')}
@@ -16954,17 +16969,24 @@ async function renderPropostaEditor(id){
   const lerCfg = () => ({
     buscaMensal: propNum(document.getElementById('ppBusca').value), reformaMensal: propNum(document.getElementById('ppReforma').value),
     descontoPct: Math.min(100, Math.max(0, propNum(document.getElementById('ppDesconto').value))), implantacao: propNum(document.getElementById('ppImplantacao').value),
+    buscaDescontoPct: Math.min(100, Math.max(0, propNum(document.getElementById('ppBuscaDesc').value))), buscaIsento: document.getElementById('ppBuscaIsento').checked,
+    reformaDescontoPct: Math.min(100, Math.max(0, propNum(document.getElementById('ppReformaDesc').value))), reformaIsento: document.getElementById('ppReformaIsento').checked,
+    implantacaoDescontoPct: Math.min(100, Math.max(0, propNum(document.getElementById('ppImplantacaoDesc').value))), implantacaoIsenta: document.getElementById('ppImplantacaoIsento').checked,
     salarioAnalista: propNum(document.getElementById('ppSalario').value), dedicacaoPct: Math.min(100, Math.max(0, Math.round(propNum(document.getElementById('ppDedicacao').value)))),
     validadeDias: Math.max(1, Math.round(propNum(document.getElementById('ppValidade').value)) || 30), observacoes: document.getElementById('ppObs').value,
   });
   const desenhaResumo = () => {
     const cfg = lerCfg(), v = propCalcular(a, cfg, P.parametros);
     const item = (rot, val, cor) => `<div style="background:var(--paper); border-radius:12px; padding:10px 12px;"><div style="font-size:11.5px; color:var(--ink-soft);">${rot}</div><div style="font-size:17px; font-weight:800; ${cor?`color:${cor};`:''}">${val}</div></div>`;
+    const finalHtml = (fin, tab) => fin===0 && tab>0 ? '<span class="tag ok">isento</span>' : `<b>${propBRL(fin)}</b>${fin<tab?`<div style="font-size:11px; color:var(--ink-soft); text-decoration:line-through;">${propBRL(tab)}</div>`:''}`;
+    document.getElementById('ppBuscaFinal').innerHTML = finalHtml(v.buscaFinal, cfg.buscaMensal);
+    document.getElementById('ppReformaFinal').innerHTML = finalHtml(v.reformaFinal, cfg.reformaMensal);
+    document.getElementById('ppImplantacaoFinal').innerHTML = finalHtml(v.implantacaoFinal, cfg.implantacao);
     document.getElementById('ppResumo').innerHTML =
       item('Mensalidade de tabela', propBRL(v.mensalBruto)) +
-      item('Desconto', v.descontoValor ? '− '+propBRL(v.descontoValor) : 'sem desconto') +
+      item('Descontos e isenções', v.descontoValor ? '− '+propBRL(v.descontoValor) : 'sem desconto') +
       item('Mensalidade final', propBRL(v.mensal), 'var(--accent-deep)') +
-      item('Implantação', cfg.implantacao ? propBRL(cfg.implantacao) : 'isenta') +
+      item('Implantação', v.implantacaoFinal ? propBRL(v.implantacaoFinal) : 'isenta') +
       item('Investimento no 1º ano', propBRL0(v.investimentoAno1)) +
       item('Retorno para o cliente', v.roi ? `≈ ${v.roi.toLocaleString('pt-BR')}× · se paga em ${v.paybackMeses==null?'—':v.paybackMeses<=1?'< 1 mês':Math.ceil(v.paybackMeses)+' meses'}` : '—');
     document.getElementById('ppKpiEco').textContent = propBRL0(v.economia) + '/ano';
@@ -16979,7 +17001,8 @@ async function renderPropostaEditor(id){
     }).join('');
   };
   desenhaResumo();
-  box.querySelectorAll('#ppBusca,#ppReforma,#ppDesconto,#ppImplantacao,#ppSalario,#ppDedicacao').forEach(i=>i.addEventListener('input', desenhaResumo));
+  box.querySelectorAll('#ppBusca,#ppReforma,#ppDesconto,#ppImplantacao,#ppSalario,#ppDedicacao,#ppBuscaDesc,#ppReformaDesc,#ppImplantacaoDesc').forEach(i=>i.addEventListener('input', desenhaResumo));
+  box.querySelectorAll('#ppBuscaIsento,#ppReformaIsento,#ppImplantacaoIsento').forEach(i=>i.addEventListener('change', desenhaResumo));
   const salvar = async () => {
     if(travada) return;
     const r = await api('/propostas/'+id, { method:'PUT', body:{ config: lerCfg(), clienteNome: document.getElementById('ppNome').value } });
@@ -17009,7 +17032,7 @@ async function renderPropostaEditor(id){
     const v = propCalcular(a, lerCfg(), P.parametros);
     openModal(`
       <h3>Aprovar a proposta e gerar o contrato</h3>
-      <div style="font-size:13px; color:var(--ink-soft); margin-bottom:12px;">O contrato sai pelo modelo "Licença de Uso – Reforma Tributária e Busca de XML", em nome de <b>${esc(a.empresas[0].nome)}</b>, com os ${t.cnpjs} CNPJ(s) no Anexo I, mensalidade de <b>${propBRL(v.mensal)}</b> e implantação de <b>${lerCfg().implantacao?propBRL(lerCfg().implantacao):'R$ 0,00 (isenta)'}</b>. Depois é só conferir as testemunhas e mandar para assinatura.</div>
+      <div style="font-size:13px; color:var(--ink-soft); margin-bottom:12px;">O contrato sai pelo modelo "Licença de Uso – Reforma Tributária e Busca de XML", em nome de <b>${esc(a.empresas[0].nome)}</b>, com os ${t.cnpjs} CNPJ(s) no Anexo I, mensalidade de <b>${propBRL(v.mensal)}</b> e implantação de <b>${v.implantacaoFinal?propBRL(v.implantacaoFinal):'R$ 0,00 (isenta)'}</b>. Depois é só conferir as testemunhas e mandar para assinatura.</div>
       <div class="field" style="max-width:220px;"><label>Dia do vencimento da mensalidade</label><input type="text" id="ppDiaVenc" value="10"></div>
       <div class="modal-actions"><button class="btn" id="ppAprCancel">Cancelar</button><button class="btn primary" id="ppAprOk">Aprovar e gerar contrato</button></div>
     `);
@@ -17030,11 +17053,15 @@ async function renderPropostaEditor(id){
 // Mesma conta do servidor (src/propostas-escritorio.ts › calcularValores) — manter as duas iguais.
 function propEscCalcular(c, par){
   const r2 = v => Math.round(v*100)/100;
-  const modulosMensal = r2(c.modulos.filter(m=>m.incluido).reduce((a,m)=>a+m.valor,0));
-  const assentos = r2(c.assentoValor * c.colaboradores);
-  const mensalBruto = r2(c.baseMensal + modulosMensal + assentos);
-  const descontoValor = r2(mensalBruto * c.descontoPct / 100);
-  const mensal = r2(mensalBruto - descontoValor);
+  const item = (chave, tabela, d, isento) => ({ chave, tabela:r2(tabela), final: isento ? 0 : r2(tabela*(1-d/100)) });
+  const itens = [item('plataforma_base', c.baseMensal, c.baseDescontoPct, c.baseIsento), ...c.modulos.filter(m=>m.incluido).map(m=>item(m.chave, m.valor, m.descontoPct, m.isento))];
+  if(c.colaboradores>0 && c.assentoValor>0) itens.push(item('assento_colaborador', c.assentoValor*c.colaboradores, c.assentoDescontoPct, c.assentoIsento));
+  const mensalBruto = r2(itens.reduce((a,i)=>a+i.tabela,0));
+  const subtotal = r2(itens.reduce((a,i)=>a+i.final,0));
+  const descontoGeral = r2(subtotal * c.descontoPct / 100);
+  const descontoValor = r2(mensalBruto - subtotal + descontoGeral);
+  const mensal = r2(subtotal - descontoGeral);
+  const implantacaoFinal = c.implantacaoIsenta ? 0 : r2(c.implantacao * (1 - c.implantacaoDescontoPct/100));
   const custoHora = (c.salarioColaborador * par.fatorEncargos + par.beneficios) / par.horasMes;
   const horasMes = Math.round(c.horasPorCliente * c.clientes);
   const economiaEquipe = Math.round(horasMes * custoHora * 12);
@@ -17042,11 +17069,11 @@ function propEscCalcular(c, par){
   const economiaSistemas = Math.round(c.gastoSistemasAtual * 12);
   const receitaRevenda = Math.round(c.clientes * (c.adesaoRevendaPct/100) * c.ticketRevenda * 12);
   const ganho = economiaEquipe + economiaSistemas + receitaRevenda;
-  const investimentoAno1 = r2(mensal*12 + c.implantacao);
+  const investimentoAno1 = r2(mensal*12 + implantacaoFinal);
   const roi = investimentoAno1 > 0 ? Math.round(ganho/investimentoAno1*10)/10 : 0;
   const paybackMeses = ganho > 0 ? Math.round(investimentoAno1/(ganho/12)*10)/10 : null;
   const custoPorCliente = c.clientes ? r2(mensal / c.clientes) : 0;
-  return { modulosMensal, assentos, mensalBruto, descontoValor, mensal, horasMes, economiaEquipe, colaboradoresLiberados, economiaSistemas, receitaRevenda, ganho, investimentoAno1, liquido: Math.round(ganho-investimentoAno1), roi, paybackMeses, custoPorCliente };
+  return { itens, mensalBruto, subtotal, descontoGeral, descontoValor, mensal, implantacaoFinal, horasMes, economiaEquipe, colaboradoresLiberados, economiaSistemas, receitaRevenda, ganho, investimentoAno1, liquido: Math.round(ganho-investimentoAno1), roi, paybackMeses, custoPorCliente };
 }
 async function novaPropostaEscritorio(){
   try{
@@ -17112,25 +17139,37 @@ async function renderPropostaEscritorio(id){
         ${campo('peColab','Nº de colaboradores (usuários)', c.colaboradores)}
       </div>
     </div>
-    <div class="card">
-      <h3>Plataforma e módulos</h3>
-      <div class="row">
-        ${campo('peBase','Mensalidade base da plataforma (R$)', propMoedaTxt(c.baseMensal), 'Todos os recursos principais do sistema')}
-        ${campo('peAssento','Valor por usuário (R$/mês)', propMoedaTxt(c.assentoValor), 'Do catálogo da plataforma · × nº de colaboradores')}
-      </div>
-      <table class="data-table" style="margin-top:6px;">
-        <thead><tr><th style="width:40px;"></th><th>Módulo</th><th style="width:200px;">Mensalidade (R$)</th></tr></thead>
-        <tbody>${c.modulos.map((m,i)=>`<tr>
-          <td><input type="checkbox" class="peModChk" data-i="${i}" ${m.incluido?'checked':''} ${dis}></td>
-          <td>${esc(m.nome)}</td>
-          <td><input type="text" class="peModVal" data-i="${i}" value="${esc(propMoedaTxt(m.valor))}" ${dis} style="width:140px;"></td></tr>`).join('')}</tbody>
+    <div class="card" style="overflow-x:auto;">
+      <h3>Cobranças da proposta</h3>
+      <div style="font-size:12.5px; color:var(--ink-soft); margin-bottom:8px;">Cada cobrança tem desconto próprio e pode ser isenta. Tudo sai no PDF e no contrato, e o preço vai para a plataforma quando o acesso for criado (item isento vira cortesia).</div>
+      <table class="data-table">
+        <thead><tr><th style="width:40px;"></th><th>Cobrança</th><th style="width:150px;">Valor de tabela (R$)</th><th style="width:120px;">Desconto (%)</th><th style="width:80px;">Isento</th><th style="width:130px; text-align:right;">Valor final</th></tr></thead>
+        <tbody>
+          <tr><td><input type="checkbox" checked disabled></td><td><b>Plataforma base</b><div style="font-size:11.5px; color:var(--ink-soft);">Todos os recursos principais do sistema · mensal</div></td>
+            <td><input type="text" id="peBase" value="${esc(propMoedaTxt(c.baseMensal))}" ${dis} style="width:120px;"></td>
+            <td><input type="text" id="peBaseDesc" value="${esc(String(c.baseDescontoPct||0).replace('.',','))}" ${dis} style="width:80px;"></td>
+            <td><input type="checkbox" id="peBaseIsento" ${c.baseIsento?'checked':''} ${dis}></td><td style="text-align:right;" class="peFinal" data-k="plataforma_base"></td></tr>
+          ${c.modulos.map((m,i)=>`<tr>
+            <td><input type="checkbox" class="peModChk" data-i="${i}" ${m.incluido?'checked':''} ${dis}></td>
+            <td>${esc(m.nome)}<div style="font-size:11.5px; color:var(--ink-soft);">mensal</div></td>
+            <td><input type="text" class="peModVal" data-i="${i}" value="${esc(propMoedaTxt(m.valor))}" ${dis} style="width:120px;"></td>
+            <td><input type="text" class="peModDesc" data-i="${i}" value="${esc(String(m.descontoPct||0).replace('.',','))}" ${dis} style="width:80px;"></td>
+            <td><input type="checkbox" class="peModIsento" data-i="${i}" ${m.isento?'checked':''} ${dis}></td><td style="text-align:right;" class="peFinal" data-k="${esc(m.chave)}"></td></tr>`).join('')}
+          <tr><td><input type="checkbox" checked disabled></td><td><b>Usuários da equipe</b><div style="font-size:11.5px; color:var(--ink-soft);">valor por usuário/mês × nº de colaboradores</div></td>
+            <td><input type="text" id="peAssento" value="${esc(propMoedaTxt(c.assentoValor))}" ${dis} style="width:120px;"></td>
+            <td><input type="text" id="peAssentoDesc" value="${esc(String(c.assentoDescontoPct||0).replace('.',','))}" ${dis} style="width:80px;"></td>
+            <td><input type="checkbox" id="peAssentoIsento" ${c.assentoIsento?'checked':''} ${dis}></td><td style="text-align:right;" class="peFinal" data-k="assento_colaborador"></td></tr>
+          <tr><td><input type="checkbox" checked disabled></td><td><b>Implantação</b><div style="font-size:11.5px; color:var(--ink-soft);">valor único · sugestão ${propBRL(P.sugestoes.implantacao)} (R$ 1.500 + R$ 10 por cliente)</div></td>
+            <td><input type="text" id="peImplantacao" value="${esc(propMoedaTxt(c.implantacao))}" ${dis} style="width:120px;"></td>
+            <td><input type="text" id="peImplDesc" value="${esc(String(c.implantacaoDescontoPct||0).replace('.',','))}" ${dis} style="width:80px;"></td>
+            <td><input type="checkbox" id="peImplIsenta" ${c.implantacaoIsenta?'checked':''} ${dis}></td><td style="text-align:right;" id="peImplFinal"></td></tr>
+        </tbody>
       </table>
     </div>
     <div class="card">
       <h3>Valores e premissas</h3>
       <div class="row">
-        ${campo('peDesconto','Desconto na mensalidade (%)', String(c.descontoPct).replace('.',','), 'Sai destacado no PDF e no contrato')}
-        ${campo('peImplantacao','Implantação (R$)', propMoedaTxt(c.implantacao), `Sugestão: ${propBRL(P.sugestoes.implantacao)} (R$ 1.500 + R$ 10 por cliente) · 0 = isenta`)}
+        ${campo('peDesconto','Desconto geral sobre a mensalidade (%)', String(c.descontoPct).replace('.',','), 'Opcional · aplicado depois dos descontos de cada item')}
         ${campo('peValidade','Validade da proposta (dias)', c.validadeDias)}
       </div>
       <div class="row">
@@ -17147,12 +17186,14 @@ async function renderPropostaEscritorio(id){
       ${!travada ? `<div class="row" style="margin-top:12px;"><button class="btn primary" id="peSalvar">Salvar</button><span id="peSalvoMsg" style="font-size:12.5px; color:var(--ink-soft);"></span></div>` : ''}
     </div>`;
   const val = id => document.getElementById(id).value;
+  const pct = x => Math.min(100, Math.max(0, propNum(x)));
   const lerCfg = () => ({
     escritorio:{ nome: val('peNome'), cnpj: val('peCnpj'), cidade: val('peCidade'), uf: val('peUf'), responsavel: val('peResp'), cpfResponsavel: val('peCpf'), email: val('peEmail'), telefone: val('peTel') },
     clientes: Math.max(0, Math.round(propNum(val('peClientes')))), colaboradores: Math.max(0, Math.round(propNum(val('peColab')))),
-    baseMensal: propNum(val('peBase')), assentoValor: propNum(val('peAssento')),
-    modulos: c.modulos.map((m,i)=>({ chave:m.chave, nome:m.nome, incluido: document.querySelector(`.peModChk[data-i="${i}"]`).checked, valor: propNum(document.querySelector(`.peModVal[data-i="${i}"]`).value) })),
-    descontoPct: Math.min(100, Math.max(0, propNum(val('peDesconto')))), implantacao: propNum(val('peImplantacao')), validadeDias: Math.max(1, Math.round(propNum(val('peValidade')))||30),
+    baseMensal: propNum(val('peBase')), baseDescontoPct: pct(val('peBaseDesc')), baseIsento: document.getElementById('peBaseIsento').checked,
+    assentoValor: propNum(val('peAssento')), assentoDescontoPct: pct(val('peAssentoDesc')), assentoIsento: document.getElementById('peAssentoIsento').checked,
+    modulos: c.modulos.map((m,i)=>({ chave:m.chave, nome:m.nome, incluido: document.querySelector(`.peModChk[data-i="${i}"]`).checked, valor: propNum(document.querySelector(`.peModVal[data-i="${i}"]`).value), descontoPct: pct(document.querySelector(`.peModDesc[data-i="${i}"]`).value), isento: document.querySelector(`.peModIsento[data-i="${i}"]`).checked })),
+    descontoPct: pct(val('peDesconto')), implantacao: propNum(val('peImplantacao')), implantacaoDescontoPct: pct(val('peImplDesc')), implantacaoIsenta: document.getElementById('peImplIsenta').checked, validadeDias: Math.max(1, Math.round(propNum(val('peValidade')))||30),
     horasPorCliente: propNum(val('peHoras')), salarioColaborador: propNum(val('peSalario')), gastoSistemasAtual: propNum(val('peSistemas')),
     adesaoRevendaPct: Math.min(100, Math.max(0, propNum(val('peAdesao')))), ticketRevenda: propNum(val('peTicket')), observacoes: val('peObs'),
   });
@@ -17170,10 +17211,16 @@ async function renderPropostaEscritorio(id){
     document.getElementById('peKpiRoi').textContent = v.roi ? `≈ ${v.roi.toLocaleString('pt-BR')}×` : '—';
     document.getElementById('peKpiRoiSub').textContent = `investimento ${propBRL0(v.investimentoAno1)} · se paga em ${v.paybackMeses==null?'—':v.paybackMeses<=1?'< 1 mês':Math.ceil(v.paybackMeses)+' meses'}`;
     const item = (rot, x, cor) => `<div style="background:var(--paper); border-radius:12px; padding:10px 12px;"><div style="font-size:11.5px; color:var(--ink-soft);">${rot}</div><div style="font-size:17px; font-weight:800; ${cor?`color:${cor};`:''}">${x}</div></div>`;
+    const porChave = new Map(v.itens.map(i=>[i.chave,i]));
+    box.querySelectorAll('.peFinal').forEach(td=>{
+      const i = porChave.get(td.dataset.k);
+      td.innerHTML = !i ? '<span style="color:var(--ink-soft);">fora</span>' : i.final===0 && i.tabela>0 ? '<span class="tag ok">isento</span>' : `<b>${propBRL(i.final)}</b>${i.final<i.tabela?`<div style="font-size:11px; color:var(--ink-soft); text-decoration:line-through;">${propBRL(i.tabela)}</div>`:''}`;
+    });
+    document.getElementById('peImplFinal').innerHTML = cfg.implantacaoIsenta || !v.implantacaoFinal ? '<span class="tag ok">isenta</span>' : `<b>${propBRL(v.implantacaoFinal)}</b>${v.implantacaoFinal<cfg.implantacao?`<div style="font-size:11px; color:var(--ink-soft); text-decoration:line-through;">${propBRL(cfg.implantacao)}</div>`:''}`;
     document.getElementById('peResumo').innerHTML =
-      item('Base + módulos', propBRL(cfg.baseMensal + v.modulosMensal)) + item('Usuários', propBRL(v.assentos)) +
-      item('Desconto', v.descontoValor ? '− '+propBRL(v.descontoValor) : 'sem desconto') + item('Mensalidade final', propBRL(v.mensal), 'var(--accent-deep)') +
-      item('Implantação', cfg.implantacao ? propBRL(cfg.implantacao) : 'isenta') + item('Resultado no 1º ano', propBRL0(v.liquido), v.liquido>=0?'var(--accent-deep)':'var(--debit)');
+      item('Mensalidade de tabela', propBRL(v.mensalBruto)) +
+      item('Descontos e isenções', v.descontoValor ? '− '+propBRL(v.descontoValor) : 'sem desconto') + item('Mensalidade final', propBRL(v.mensal), 'var(--accent-deep)') +
+      item('Implantação', v.implantacaoFinal ? propBRL(v.implantacaoFinal) : 'isenta') + item('Resultado no 1º ano', propBRL0(v.liquido), v.liquido>=0?'var(--accent-deep)':'var(--debit)');
   };
   desenha();
   box.querySelectorAll('input, textarea').forEach(i=>i.addEventListener(i.type==='checkbox'?'change':'input', desenha));
@@ -17219,13 +17266,13 @@ async function renderPropostaEscritorio(id){
     const jaCadastrada = cnpjDig ? empresas.find(x=>String(x.cnpj||'').replace(/\D/g,'')===cnpjDig) : null;
     openModal(`
       <h3>Aprovar a proposta e gerar o contrato</h3>
-      <div style="font-size:13px; color:var(--ink-soft); margin-bottom:12px;">O contrato sai pelo modelo "Licença de Uso da Plataforma Simples Contábeis", com os módulos no Anexo I, mensalidade de <b>${propBRL(v.mensal)}</b> e implantação de <b>${cfg.implantacao?propBRL(cfg.implantacao):'R$ 0,00 (isenta)'}</b>.</div>
+      <div style="font-size:13px; color:var(--ink-soft); margin-bottom:12px;">O contrato sai pelo modelo "Licença de Uso da Plataforma Simples Contábeis", com os módulos no Anexo I, mensalidade de <b>${propBRL(v.mensal)}</b> e implantação de <b>${v.implantacaoFinal?propBRL(v.implantacaoFinal):'R$ 0,00 (isenta)'}</b>.</div>
       <div class="field"><label>Quem assina como licenciada</label>
         ${comboSelectHtml('peEmpCombo', 'Digite para buscar a empresa…')}
         <div style="font-size:11.5px; color:var(--ink-soft); margin-top:3px;">Em branco = cadastro novo com os dados da proposta (fica inativo e fora dos relatórios, pois não é cliente contábil).</div>
       </div>
       <div class="field" style="max-width:220px;"><label>Dia do vencimento da mensalidade</label><input type="text" id="peDiaVenc" value="10"></div>
-      ${P.podeCriarAcesso ? `<label class="checklist-item" style="margin:6px 0 8px;"><input type="checkbox" id="peCriarAcesso" checked><span><b>Criar o acesso do escritório na plataforma quando o contrato for assinado por todos</b>: escritório, administrador e os módulos da proposta com o preço combinado (desconto aplicado), liberados por 30 dias de implantação. O administrador recebe por e-mail o link para criar a senha. Depois dos 30 dias, a cobrança segue em Configurações › Assinatura da plataforma.</span></label>
+      ${P.podeCriarAcesso ? `<label class="checklist-item" style="margin:6px 0 8px;"><input type="checkbox" id="peCriarAcesso" checked><span><b>Criar o acesso do escritório na plataforma quando o contrato for assinado por todos</b>: escritório, administrador e os itens da proposta com o preço combinado (descontos aplicados; itens isentos entram como cortesia), liberados por 30 dias de implantação. O administrador recebe por e-mail o link para criar a senha. Depois dos 30 dias, a cobrança segue em Configurações › Assinatura da plataforma.</span></label>
       <div class="row" id="peAcessoCampos">
         <div class="field" style="flex:1; min-width:200px;"><label>Nome do administrador</label><input type="text" id="peAdmNome" value="${esc(cfg.escritorio.responsavel || '')}"></div>
         <div class="field" style="flex:1; min-width:200px;"><label>E-mail de login do administrador</label><input type="text" id="peAdmEmail" value="${esc(cfg.escritorio.email || '')}"></div>
