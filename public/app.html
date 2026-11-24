@@ -1050,11 +1050,11 @@ body.theme-glass .rt-ach-rec, body.theme-glass .rt-ach-esp summary{ color:#5fe0a
 </svg>
 
 <div id="loginScreen" class="login-screen hidden">
-  <div class="login-visual"><div class="login-visual-logo-wrap"><img src="/img/logo-escritorio.png" alt="Simples Contábeis" class="login-visual-logo"><span class="login-visual-marca-r">&reg;</span></div></div>
+  <div class="login-visual"><div class="login-visual-logo-wrap"><img src="/api/branding/logo" alt="Escritório contábil" class="login-visual-logo"><span class="login-visual-marca-r">&reg;</span></div></div>
   <div class="login-form-side">
     <div class="login-box">
       <div class="eyebrow">Escritório contábil</div>
-      <h1>Simples Contábeis</h1>
+      <h1 id="loginNomeEscritorio">Simples Contábeis</h1>
       <div class="field"><label>E-mail</label><input id="loginEmail" type="email" autocomplete="username"></div>
       <div class="field"><label>Senha</label><div class="pw-wrap"><input id="loginPassword" type="password" autocomplete="current-password"><button type="button" class="pw-olho" data-alvo="loginPassword" tabindex="-1" title="Mostrar/ocultar a senha" aria-label="Mostrar ou ocultar a senha">👁</button></div></div>
       <button class="btn primary" style="width:100%; justify-content:center;" id="btnLogin">Entrar</button>
@@ -1065,7 +1065,7 @@ body.theme-glass .rt-ach-rec, body.theme-glass .rt-ach-esp summary{ color:#5fe0a
 </div>
 
 <div id="resetSenhaScreen" class="login-screen hidden">
-  <div class="login-visual"><div class="login-visual-logo-wrap"><img src="/img/logo-escritorio.png" alt="Simples Contábeis" class="login-visual-logo"><span class="login-visual-marca-r">&reg;</span></div></div>
+  <div class="login-visual"><div class="login-visual-logo-wrap"><img src="/api/branding/logo" alt="Escritório contábil" class="login-visual-logo"><span class="login-visual-marca-r">&reg;</span></div></div>
   <div class="login-form-side">
     <div class="login-box">
       <div class="eyebrow">Escritório contábil</div>
@@ -1080,7 +1080,7 @@ body.theme-glass .rt-ach-rec, body.theme-glass .rt-ach-esp summary{ color:#5fe0a
 </div>
 
 <div id="cadastroScreen" class="login-screen hidden">
-  <div class="login-visual"><div class="login-visual-logo-wrap"><img src="/img/logo-escritorio.png" alt="Simples Contábeis" class="login-visual-logo"><span class="login-visual-marca-r">&reg;</span></div></div>
+  <div class="login-visual"><div class="login-visual-logo-wrap"><img src="/api/branding/logo" alt="Escritório contábil" class="login-visual-logo"><span class="login-visual-marca-r">&reg;</span></div></div>
   <div class="login-form-side">
     <div class="login-box">
       <div class="eyebrow" id="cadEyebrow">NFS-e — crie sua conta</div>
@@ -1133,6 +1133,10 @@ body.theme-glass .rt-ach-rec, body.theme-glass .rt-ach-esp summary{ color:#5fe0a
 
 // ===================== estado & helpers =====================
 let STATE = { user:null, permissoes:{}, page:'dashboard', configAbas:null, paginasCliente:null };
+// Nome do escritório pra exibir na tela de login e no topo do menu — padrão até a identidade visual
+// carregar (ver aplicarIdentidadeVisual). Quando outro escritório implanta o site, troca sozinho pelo
+// nome real dele (Configurações › Identidade Visual), sem precisar editar HTML nenhum.
+let NOME_ESCRITORIO = 'Simples Contábeis';
 // Incrementado a cada render() disparado — protege contra a resposta atrasada de uma página que o
 // usuário já saiu (ex.: dashboard.card demora pra carregar, usuário já clicou em outro menu; sem
 // isso, quando o dashboard finalmente responde ele sobrescreve a página nova com a antiga).
@@ -1170,7 +1174,7 @@ function aplicarTema(id, opts){
   // texto em branco (mesmo ícone dourado/prateado), já que não dá pra recolorir só o texto via CSS
   // num PNG achatado.
   document.querySelectorAll('.login-visual-logo').forEach(img=>{
-    img.src = tema.glass ? '/img/logo-escritorio-claro.png' : '/img/logo-escritorio.png';
+    img.src = tema.glass ? '/api/branding/logo-claro' : '/api/branding/logo';
   });
   try{ localStorage.setItem('sc_tema', id); }catch(e){}
   if(!opts || !opts.semRepintar) pintarTemaPopover(id);
@@ -2319,7 +2323,7 @@ async function boot(paginaInicial){
   document.getElementById('whoName').innerHTML = esc(STATE.user.nome);
   document.getElementById('whoProfile').textContent = STATE.user.perfil;
   if(STATE.user.perfil==='Cliente') await renderEmpresaSwitch();
-  else document.getElementById('sidebarBrand').innerHTML = `<div class="eyebrow">Escritório contábil</div><h2>Simples Contábeis</h2>`;
+  else document.getElementById('sidebarBrand').innerHTML = `<div class="eyebrow">Escritório contábil</div><h2>${esc(NOME_ESCRITORIO)}</h2>`;
   if(STATE.user.perfil==='Cliente'){
     // Igual ao Colaborador abaixo: cai na primeira página do menu que esse cliente realmente
     // enxerga, caso a página padrão (NFS-e) tenha sido restringida pra ele. `paginaInicial` (opcional)
@@ -2366,7 +2370,7 @@ async function renderEmpresaSwitch(){
         location.reload();
       }catch(e){ toast(e.message,'err'); }
     });
-  }catch(e){ wrap.innerHTML = `<div class="eyebrow">Escritório contábil</div><h2>Simples Contábeis</h2>`; }
+  }catch(e){ wrap.innerHTML = `<div class="eyebrow">Escritório contábil</div><h2>${esc(NOME_ESCRITORIO)}</h2>`; }
 }
 
 function main(){ return document.getElementById('main'); }
@@ -23703,6 +23707,7 @@ const CFG_ABAS_TODAS = [
   { id:'atendimento', label:'Atendimento' },
   { id:'certidoes', label:'Certidões (Infosimples)' },
   { id:'assinatura-plataforma', label:'Assinatura da plataforma' },
+  { id:'identidade', label:'Identidade Visual', soAdmin:true },
   { id:'senhas', label:'Senhas e acessos', soAdmin:true },
 ];
 // ---------- Integrações (API externa): o escritório gera chaves pra sistemas de terceiros ----------
@@ -23946,11 +23951,87 @@ async function renderCfgTab(){
     else if(CFG_TAB==='envio-docs') await renderCfgEnvioDocs(box);
     else if(CFG_TAB==='atendimento') await renderCfgAtendimento(box);
     else if(CFG_TAB==='certidoes') await renderCfgCertidoes(box);
+    else if(CFG_TAB==='identidade') await renderCfgIdentidade(box);
     else if(CFG_TAB==='senhas') await renderCfgSenhas(box);
     else await renderCfgEmail(box);
   }catch(e){
     box.innerHTML = `<div class="empty-state">Não foi possível carregar esta aba: ${esc(e.message||'erro desconhecido')}</div>`;
   }
+}
+
+// Identidade visual (logo + papel timbrado) — pensado pra quando o site for implantado pra outro
+// escritório: ele sobe a própria marca aqui, sem precisar editar nada do código. Sem nada enviado,
+// continua usando o logo/timbrado padrão do Simples Contábeis (ver escritorio_branding no server.ts).
+async function renderCfgIdentidade(box){
+  const { temLogo, temLogoClaro, temTimbrado } = await api('/configuracoes/identidade');
+  const cacheBust = Date.now();
+  box.innerHTML = `
+    <div class="card">
+      <h3>Logo</h3>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Aparece na tela de login e no topo do menu lateral. Duas versões — uma pra cada tema do sistema (a cor de fundo muda entre claro e escuro).</p>
+      <div class="row" style="gap:24px; flex-wrap:wrap; align-items:flex-start;">
+        <div>
+          <div style="font-weight:600; font-size:12.5px; margin-bottom:6px;">Tema escuro (padrão)</div>
+          <div style="background:#15241c; border-radius:10px; padding:14px; display:inline-block;"><img id="idLogoPreview" src="/api/branding/logo?v=${cacheBust}" style="max-width:180px; max-height:70px; display:block;"></div>
+          <div class="row" style="margin-top:8px;">
+            <input type="file" id="idLogoFile" accept="image/png,image/jpeg,image/svg+xml" class="hidden">
+            <button class="btn small" id="idLogoBtn">${temLogo?'Trocar':'Enviar'}</button>
+            ${temLogo?'<button class="btn small" id="idLogoRemover" style="color:var(--debit);">Remover</button>':''}
+          </div>
+        </div>
+        <div>
+          <div style="font-weight:600; font-size:12.5px; margin-bottom:6px;">Tema claro</div>
+          <div style="background:#fff; border:1px solid var(--rule); border-radius:10px; padding:14px; display:inline-block;"><img id="idLogoClaroPreview" src="/api/branding/logo-claro?v=${cacheBust}" style="max-width:180px; max-height:70px; display:block;"></div>
+          <div class="row" style="margin-top:8px;">
+            <input type="file" id="idLogoClaroFile" accept="image/png,image/jpeg,image/svg+xml" class="hidden">
+            <button class="btn small" id="idLogoClaroBtn">${temLogoClaro?'Trocar':'Enviar'}</button>
+            ${temLogoClaro?'<button class="btn small" id="idLogoClaroRemover" style="color:var(--debit);">Remover</button>':''}
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Papel timbrado</h3>
+      <p style="font-size:12.5px; color:var(--ink-soft); margin-top:-6px;">Usado como fundo de página nos PDFs gerados pelo sistema (contratos, relatórios da Reforma Tributária etc.) — uma imagem A4 inteira (210×297mm), já com o cabeçalho e o rodapé do escritório desenhados nela.</p>
+      <input type="file" id="idTimbradoFile" accept="image/png,image/jpeg" class="hidden">
+      <div class="row">
+        <button class="btn small" id="idTimbradoBtn">${temTimbrado?'Trocar':'Enviar'}</button>
+        ${temTimbrado?'<button class="btn small" id="idTimbradoRemover" style="color:var(--debit);">Remover (usar padrão)</button>':''}
+      </div>
+      <div id="idTimbradoMsg" style="font-size:12px; color:var(--ink-soft); margin-top:8px;">${temTimbrado?'Papel timbrado próprio configurado.':'Usando o papel timbrado padrão do Simples Contábeis.'}</div>
+    </div>
+  `;
+  // Um helper só, reusado pros 3 uploads (logo, logo claro, timbrado) — mesmo fluxo: escolher arquivo
+  // → enviar → recarrega a aba (atualiza preview e mostra o botão "Remover").
+  function ligarUpload(tipo, inputId, btnId, previewId){
+    const input = document.getElementById(inputId);
+    document.getElementById(btnId).addEventListener('click', ()=>input.click());
+    input.addEventListener('change', async ()=>{
+      const f = input.files[0]; if(!f) return;
+      try{
+        const fd = new FormData(); fd.append('arquivo', f);
+        await api('/configuracoes/identidade/'+tipo, { method:'POST', body:fd });
+        toast('Enviado.','ok');
+        renderCfgIdentidade(box);
+      }catch(e){ toast(e.message,'err'); }
+      finally{ input.value=''; }
+    });
+  }
+  function ligarRemover(tipo, btnId){
+    const btn = document.getElementById(btnId);
+    if(!btn) return;
+    btn.addEventListener('click', async ()=>{
+      if(!confirmar('Remover e voltar pro padrão do Simples Contábeis?')) return;
+      try{ await api('/configuracoes/identidade/'+tipo, { method:'DELETE' }); toast('Removido.','ok'); renderCfgIdentidade(box); }
+      catch(e){ toast(e.message,'err'); }
+    });
+  }
+  ligarUpload('logo', 'idLogoFile', 'idLogoBtn', 'idLogoPreview');
+  ligarRemover('logo', 'idLogoRemover');
+  ligarUpload('logo-claro', 'idLogoClaroFile', 'idLogoClaroBtn', 'idLogoClaroPreview');
+  ligarRemover('logo-claro', 'idLogoClaroRemover');
+  ligarUpload('timbrado', 'idTimbradoFile', 'idTimbradoBtn', null);
+  ligarRemover('timbrado', 'idTimbradoRemover');
 }
 
 // Cofre de senhas do escritório — só Administrador. A listagem não traz a senha; ela é buscada sob
@@ -26649,16 +26730,31 @@ async function renderCfgEmailSmtp(box){
 }
 
 // ===================== start =====================
+// Nome/logo do escritório desta instalação (Configurações › Identidade Visual) — roda ANTES de
+// qualquer tela aparecer, pra já nascer com a marca certa (sem flash do nome padrão). Rota pública
+// (sem login), por isso dá pra chamar aqui, antes do boot()/sessão existir.
+async function aplicarIdentidadeVisual(){
+  try{
+    const info = await api('/branding/info');
+    if(info && info.nome){
+      NOME_ESCRITORIO = info.nome;
+      document.title = info.nome;
+      const h1 = document.getElementById('loginNomeEscritorio'); if(h1) h1.textContent = info.nome;
+    }
+  }catch(e){ /* sem o endpoint (ou rede fora), segue com a marca padrão do Simples Contábeis */ }
+}
 const resetTokenNaUrl = new URLSearchParams(location.search).get('resetToken');
 const conviteTokenNaUrl = new URLSearchParams(location.search).get('convite');
 const cadastroNaUrl = new URLSearchParams(location.search).get('cadastro');
 const moduloNaUrl = (new URLSearchParams(location.search).get('modulo')||'').trim().toLowerCase() || null;
-if(resetTokenNaUrl) mostrarTelaResetSenha(resetTokenNaUrl);
-// "modulo" na URL só vale pro link público do anúncio — no convite o módulo já foi escolhido pelo
-// Eduardo ao gerar o link (fica salvo no token, não dá pra alguém trocar editando a URL).
-else if(conviteTokenNaUrl) mostrarTelaCadastro(conviteTokenNaUrl, null);
-else if(cadastroNaUrl) mostrarTelaCadastro(null, moduloNaUrl);
-else boot();
+aplicarIdentidadeVisual().then(()=>{
+  if(resetTokenNaUrl) mostrarTelaResetSenha(resetTokenNaUrl);
+  // "modulo" na URL só vale pro link público do anúncio — no convite o módulo já foi escolhido pelo
+  // Eduardo ao gerar o link (fica salvo no token, não dá pra alguém trocar editando a URL).
+  else if(conviteTokenNaUrl) mostrarTelaCadastro(conviteTokenNaUrl, null);
+  else if(cadastroNaUrl) mostrarTelaCadastro(null, moduloNaUrl);
+  else boot();
+});
 </script>
 </body>
 </html>

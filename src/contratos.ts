@@ -484,19 +484,32 @@ export function numerarClausulasContrato(html: string): string {
   return out;
 }
 
-// Timbrado global do escritório (asset copiado pro dist no build — ver package.json "copy-assets").
-// Lido uma vez e guardado em memória como data URI. Se faltar o arquivo, cai pro PDF sem timbrado
-// (não derruba a geração).
-let TIMBRADO_CACHE: string | null | undefined;
-export function timbradoDataUri(): string | null {
-  if (TIMBRADO_CACHE !== undefined) return TIMBRADO_CACHE;
+// Timbrado do escritório. `overridePath` (opcional) é o papel timbrado PRÓPRIO que o escritório subiu
+// em Configurações › Identidade Visual (ver escritorio_branding/timbradoParaEscritorio no server.ts) —
+// sem ele, cai no asset padrão do Simples Contábeis (copiado pro dist no build — "copy-assets"), pra
+// quem ainda não subiu o próprio não ficar sem papel timbrado nenhum. Cada caminho (padrão ou de um
+// escritório específico) é lido uma vez e cacheado em memória como data URI; se faltar o arquivo, cai
+// pro PDF sem timbrado (não derruba a geração).
+const TIMBRADO_CACHE = new Map<string, string | null>();
+export function timbradoDataUri(overridePath?: string | null): string | null {
+  const p = overridePath || path.join(__dirname, "assets", "timbrado-simplescontabeis.jpeg");
+  const cacheado = TIMBRADO_CACHE.get(p);
+  if (cacheado !== undefined) return cacheado;
+  let r: string | null;
   try {
-    const p = path.join(__dirname, "assets", "timbrado-simplescontabeis.jpeg");
-    TIMBRADO_CACHE = `data:image/jpeg;base64,${fs.readFileSync(p).toString("base64")}`;
+    const ext = path.extname(p).toLowerCase();
+    const mime = ext === ".png" ? "image/png" : "image/jpeg";
+    r = `data:${mime};base64,${fs.readFileSync(p).toString("base64")}`;
   } catch {
-    TIMBRADO_CACHE = null;
+    r = null;
   }
-  return TIMBRADO_CACHE;
+  TIMBRADO_CACHE.set(p, r);
+  return r;
+}
+// Invalida o cache de um caminho específico — chamado pelo server.ts logo depois de salvar um novo
+// papel timbrado, senão o PDF continuaria usando a versão antiga (em memória) até o processo reiniciar.
+export function limparCacheTimbrado(p: string): void {
+  TIMBRADO_CACHE.delete(p);
 }
 
 const CONTRATO_TIMBRADO_CSS = `
@@ -558,9 +571,9 @@ function mascararDocumentos(html: string): string {
     .replace(/(CEP[^\d<]{0,8}?)(\d{8})(?!\d)/gi, (_m, p, d) => p + d.replace(/(\d{2})(\d{3})(\d{3})/, "$1.$2-$3"));
 }
 
-export async function gerarPdfContrato(conteudoHtml: string, titulo: string): Promise<Buffer> {
+export async function gerarPdfContrato(conteudoHtml: string, titulo: string, timbradoPath?: string | null): Promise<Buffer> {
   const corpo = prepararConteudoContrato(conteudoHtml);
-  const timbrado = timbradoDataUri();
+  const timbrado = timbradoDataUri(timbradoPath);
   const bg = timbrado ? `<img class="bg" src="${timbrado}">` : "";
   // Sem timbrado, usa margens normais de página pra não ficar colado na borda.
   const semTimbradoCss = timbrado ? "" : `@page { size: A4; margin: 20mm 18mm; } .bg{display:none}`;

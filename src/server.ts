@@ -736,6 +736,18 @@ sqlite.exec(`
     resolvido_em TEXT
   );
 
+  -- ---- Identidade visual (logo + papel timbrado) — pra quando o site for implantado pra outro
+  -- escritório: ele troca a própria marca aqui, sem precisar editar arquivo nenhum do código. Guarda só
+  -- o CAMINHO do arquivo (em UPLOADS_DIR, fora da imagem Docker — sobrevive a deploy) — sem path
+  -- configurado, cai no logo/timbrado padrão do Simples Contábeis (ver brandingConfig/timbradoParaEscritorio).
+  CREATE TABLE IF NOT EXISTS escritorio_branding (
+    escritorio_id INTEGER PRIMARY KEY REFERENCES escritorios(id) ON DELETE CASCADE,
+    logo_path TEXT,
+    logo_claro_path TEXT,
+    timbrado_path TEXT,
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+
   -- ---- E-mail corporativo (editável pela tela, sem mexer no .env) ----
   CREATE TABLE IF NOT EXISTS email_config (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -4664,7 +4676,12 @@ app.use("/api", (req, res, next) => {
     req.path === "/asaas/webhook" ||
     req.path === "/whatsapp/webhook" ||
     req.path === "/autentique/webhook" ||
-    req.path.startsWith("/cadastro")
+    req.path.startsWith("/cadastro") ||
+    // Identidade visual (logo + papel timbrado): a tela de login precisa dela ANTES de qualquer sessão
+    // existir — não dá pra exigir login pra mostrar a própria tela de login.
+    req.path === "/branding/info" ||
+    req.path === "/branding/logo" ||
+    req.path === "/branding/logo-claro"
   )
     return next();
   requireAuth(req, res, next);
@@ -13448,7 +13465,7 @@ async function reformaEnviarPdf(res: any, escritorioId: number, empresaId: numbe
   try {
     const dados = reformaCalcularAuditoria(escritorioId, empresaId, de, ate, false, q.direcao === "saida" ? "saida" : "entrada");
     const esc = sqlite.prepare(`SELECT nome FROM escritorios WHERE id = ?`).get(escritorioId) as any;
-    const pdf = await gerarPdfRelatorioReforma(dados, esc?.nome || "Simples Contábeis", contratos.timbradoDataUri());
+    const pdf = await gerarPdfRelatorioReforma(dados, esc?.nome || "Simples Contábeis", contratos.timbradoDataUri(timbradoParaEscritorio(escritorioId)));
     const nome = `Auditoria Reforma Tributaria - ${String(dados.empresa.nome || "").replace(/[^\w\- ]/g, "").slice(0, 60)}.pdf`;
     res.set("Content-Type", "application/pdf");
     res.set("Content-Disposition", `attachment; filename="${nome}"`);
@@ -13483,7 +13500,7 @@ async function reformaEnviarFichas(res: any, escritorioId: number, empresaId: nu
           nota, temGrupo: f.pctComGrupo > 0, achados,
         };
       });
-    const pdf = await gerarPdfFichasReforma({ nome: emp.nome, cnpj: emp.cnpj, ie: emp.inscricao_estadual || "", regimeLabel: d.empresa.regimeLabel }, fichas, contratos.timbradoDataUri());
+    const pdf = await gerarPdfFichasReforma({ nome: emp.nome, cnpj: emp.cnpj, ie: emp.inscricao_estadual || "", regimeLabel: d.empresa.regimeLabel }, fichas, contratos.timbradoDataUri(timbradoParaEscritorio(escritorioId)));
     const nome = `Fichas de conferencia - ${String(emp.nome || "").replace(/[^\w\- ]/g, "").slice(0, 60)}.pdf`;
     res.set("Content-Type", "application/pdf");
     res.set("Content-Disposition", `attachment; filename="${nome}"`);
@@ -13517,7 +13534,7 @@ async function reformaEnviarRelatorioFornecedores(res: any, escritorioId: number
     }));
     if (!forns.length) return res.status(404).json({ error: "Fornecedor não encontrado no período." });
     const esc = sqlite.prepare(`SELECT nome FROM escritorios WHERE id = ?`).get(escritorioId) as any;
-    const pdf = await gerarPdfNotificacaoFornecedores({ nome: d.empresa.nome, cnpj: d.empresa.cnpj, regimeLabel: d.empresa.regimeLabel }, d.periodo, forns, esc?.nome || "Simples Contábeis", contratos.timbradoDataUri());
+    const pdf = await gerarPdfNotificacaoFornecedores({ nome: d.empresa.nome, cnpj: d.empresa.cnpj, regimeLabel: d.empresa.regimeLabel }, d.periodo, forns, esc?.nome || "Simples Contábeis", contratos.timbradoDataUri(timbradoParaEscritorio(escritorioId)));
     const nome = forns.length === 1 ? `Inconsistencias IBS-CBS - ${String(forns[0].nome).replace(/[^\w\- ]/g, "").slice(0, 60)}.pdf` : `Inconsistencias IBS-CBS - ${forns.length} fornecedores.pdf`;
     res.set("Content-Type", "application/pdf");
     res.set("Content-Disposition", `attachment; filename="${nome}"`);
@@ -13538,7 +13555,7 @@ async function reformaEnviarMapaNcm(res: any, escritorioId: number, empresaId: n
     const ST: Record<string, string> = { ok: "Validado", ncm_vencido: "NCM vencido", fora_anexo: "Redução indevida", reducao_esquecida: "Redução não aplicada", pendente: "Validando", sem_grupo: "Sem IBS/CBS" };
     const filtro = [status.length ? status.map((x) => ST[x] || x).join(", ") : "todas as situações", busca ? `busca "${q.busca}"` : ""].filter(Boolean).join(" · ");
     const esc = sqlite.prepare(`SELECT nome FROM escritorios WHERE id = ?`).get(escritorioId) as any;
-    const pdf = await gerarPdfMapaNcm({ nome: d.empresa.nome, cnpj: d.empresa.cnpj }, d.periodo, filtro, ncms, esc?.nome || "Simples Contábeis", contratos.timbradoDataUri());
+    const pdf = await gerarPdfMapaNcm({ nome: d.empresa.nome, cnpj: d.empresa.cnpj }, d.periodo, filtro, ncms, esc?.nome || "Simples Contábeis", contratos.timbradoDataUri(timbradoParaEscritorio(escritorioId)));
     res.set("Content-Type", "application/pdf");
     res.set("Content-Disposition", `attachment; filename="Mapa NCM - ${String(d.empresa.nome || "").replace(/[^\w\- ]/g, "").slice(0, 60)}.pdf"`);
     res.send(pdf);
@@ -13676,7 +13693,7 @@ async function reformaEnviarDiagnosticoPdf(res: any, escritorioId: number, empre
     const cfg = sqlite.prepare(`SELECT * FROM contratos_assinatura_config WHERE escritorio_id = ?`).get(escritorioId) as any;
     const socios = assinaturaSociosDeConfig(cfg || {}).map((s) => ({ nome: s.nome, registro: REGISTRO_SOCIOS[s.nome.trim().toLowerCase()] || "Contador" }));
     const escritorio = { nome: escritorioId === 1 ? "SIMPLES SERVIÇOS DE CONTABILIDADE, PERÍCIA E AUDITORIA CONTABIL LTDA" : escr?.nome || "Simples Contábeis", cnpj: escr?.cnpj || (escritorioId === 1 ? "04801040000193" : ""), cidade: "Redenção", uf: "PA" };
-    const pdf = await reformaDiagPdf.gerarPdfDiagnostico(d, escritorio, socios, contratos.timbradoDataUri());
+    const pdf = await reformaDiagPdf.gerarPdfDiagnostico(d, escritorio, socios, contratos.timbradoDataUri(timbradoParaEscritorio(escritorioId)));
     res.set("Content-Type", "application/pdf");
     res.set("Content-Disposition", `attachment; filename="Diagnostico Tributario - ${String(d.empresa.nome || "").replace(/[^\w\- ]/g, "").slice(0, 60)}.pdf"`);
     res.send(pdf);
@@ -26915,7 +26932,8 @@ async function contratoObterPdf(row: any): Promise<Buffer> {
   let html = String(row.conteudo_html || "");
   if (row.numero_sequencial != null) html = html.replace(/\{\{\s*n_contrato_sequencial\s*\}\}/gi, String(row.numero_sequencial).padStart(2, "0"));
   html = html.replace(/\{\{\s*[^{}<>]{1,80}?\s*\}\}/g, "");
-  const pdf = await contratos.gerarPdfContrato(html, row.titulo);
+  const empEsc = sqlite.prepare(`SELECT escritorio_id FROM empresas WHERE id = ?`).get(row.empresa_id) as any;
+  const pdf = await contratos.gerarPdfContrato(html, row.titulo, empEsc ? timbradoParaEscritorio(empEsc.escritorio_id) : null);
   const destino = contratos.caminhoPdfContrato(row.id);
   fs.writeFileSync(destino, pdf);
   sqlite.prepare(`UPDATE contratos SET ultimo_pdf_path = ? WHERE id = ?`).run(destino, row.id);
@@ -28050,6 +28068,94 @@ app.get("/api/relatorios/:tipo", blockCliente, requirePermissao("relatorios", "v
   });
 });
 
+
+// ---------- Identidade visual (logo + papel timbrado) ----------
+// Pensado pra quando o site for implantado pra outro escritório: ele sobe a própria marca aqui, sem
+// precisar mexer em arquivo nenhum do código/repositório. Cada instalação roda só um escritório de
+// verdade — por isso as rotas PÚBLICAS (login, antes de qualquer sessão) sempre resolvem o escritório
+// de menor id ativo ("o escritório desta instalação"), igual outras rotas do sistema já fazem (ex.:
+// DESKCOMM_ESCRITORIO_ID). Sem nada configurado, cai no logo/timbrado padrão do Simples Contábeis — a
+// instalação original nunca quebra por causa dessa funcionalidade nova.
+function brandingEscritorioPrincipalId(): number {
+  const r = sqlite.prepare(`SELECT id FROM escritorios WHERE ativo = 1 ORDER BY id LIMIT 1`).get() as any;
+  return r ? r.id : 1;
+}
+function brandingConfig(escritorioId: number): { logoPath: string | null; logoClaroPath: string | null; timbradoPath: string | null } {
+  const r = sqlite.prepare(`SELECT logo_path, logo_claro_path, timbrado_path FROM escritorio_branding WHERE escritorio_id = ?`).get(escritorioId) as any;
+  return { logoPath: r?.logo_path || null, logoClaroPath: r?.logo_claro_path || null, timbradoPath: r?.timbrado_path || null };
+}
+// Usado pelas rotas que geram PDF (contratos, relatórios da Reforma Tributária etc.) — resolve o
+// papel timbrado PRÓPRIO do escritório, com fallback pro padrão do Simples Contábeis dentro do
+// próprio contratos.timbradoDataUri() quando não houver path configurado.
+function timbradoParaEscritorio(escritorioId: number): string | null {
+  return brandingConfig(escritorioId).timbradoPath;
+}
+const BRANDING_MIME_EXT: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/svg+xml": "svg" };
+function brandingSalvarArquivo(escritorioId: number, tipo: "logo" | "logo-claro" | "timbrado", file: Express.Multer.File): string {
+  const ext = BRANDING_MIME_EXT[file.mimetype];
+  if (!ext) throw new Error("Envie um arquivo PNG, JPG ou SVG.");
+  const dir = path.join(UPLOADS_DIR, "branding", String(escritorioId));
+  fs.mkdirSync(dir, { recursive: true });
+  // Limpa qualquer versão anterior (extensão pode ter mudado) antes de gravar a nova, pra não deixar lixo.
+  for (const e of Object.values(BRANDING_MIME_EXT)) { const p = path.join(dir, `${tipo}.${e}`); if (fs.existsSync(p)) fs.unlinkSync(p); }
+  const destino = path.join(dir, `${tipo}.${ext}`);
+  fs.writeFileSync(destino, file.buffer);
+  return destino;
+}
+app.get("/api/configuracoes/identidade", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
+  const b = brandingConfig((req as any).user.escritorioId);
+  res.json({ temLogo: !!b.logoPath, temLogoClaro: !!b.logoClaroPath, temTimbrado: !!b.timbradoPath });
+});
+function brandingUpload(tipo: "logo" | "logo-claro" | "timbrado") {
+  const coluna = tipo === "logo" ? "logo_path" : tipo === "logo-claro" ? "logo_claro_path" : "timbrado_path";
+  return (req: express.Request, res: express.Response) => {
+    const user = (req as any).user;
+    const file = (req as any).file as Express.Multer.File | undefined;
+    if (!file) return res.status(400).json({ error: "Selecione um arquivo." });
+    let destino: string;
+    try { destino = brandingSalvarArquivo(user.escritorioId, tipo, file); }
+    catch (e: any) { return res.status(400).json({ error: e.message }); }
+    sqlite
+      .prepare(`INSERT INTO escritorio_branding (escritorio_id, ${coluna}, updated_at) VALUES (?, ?, datetime('now'))
+                 ON CONFLICT(escritorio_id) DO UPDATE SET ${coluna} = excluded.${coluna}, updated_at = datetime('now')`)
+      .run(user.escritorioId, destino);
+    if (tipo === "timbrado") contratos.limparCacheTimbrado(destino);
+    res.json({ ok: true });
+  };
+}
+function brandingRemover(tipo: "logo" | "logo-claro" | "timbrado") {
+  const coluna = tipo === "logo" ? "logo_path" : tipo === "logo-claro" ? "logo_claro_path" : "timbrado_path";
+  return (req: express.Request, res: express.Response) => {
+    const user = (req as any).user;
+    const atual = brandingConfig(user.escritorioId);
+    const pathAtual = tipo === "logo" ? atual.logoPath : tipo === "logo-claro" ? atual.logoClaroPath : atual.timbradoPath;
+    if (pathAtual && fs.existsSync(pathAtual)) { try { fs.unlinkSync(pathAtual); } catch { /* arquivo já sumiu, segue */ } }
+    sqlite.prepare(`UPDATE escritorio_branding SET ${coluna} = NULL, updated_at = datetime('now') WHERE escritorio_id = ?`).run(user.escritorioId);
+    if (tipo === "timbrado" && pathAtual) contratos.limparCacheTimbrado(pathAtual);
+    res.json({ ok: true });
+  };
+}
+for (const tipo of ["logo", "logo-claro", "timbrado"] as const) {
+  app.post(`/api/configuracoes/identidade/${tipo}`, blockCliente, requirePermissao("configuracoes", "editar"), upload.single("arquivo"), brandingUpload(tipo));
+  app.delete(`/api/configuracoes/identidade/${tipo}`, blockCliente, requirePermissao("configuracoes", "editar"), brandingRemover(tipo));
+}
+// Rotas PÚBLICAS (sem login) — a tela de login precisa da marca antes de qualquer sessão existir.
+app.get("/api/branding/info", (req, res) => {
+  const escId = brandingEscritorioPrincipalId();
+  const esc = sqlite.prepare(`SELECT nome FROM escritorios WHERE id = ?`).get(escId) as any;
+  const b = brandingConfig(escId);
+  res.json({ nome: esc?.nome || "Simples Contábeis", temLogo: !!b.logoPath, temLogoClaro: !!b.logoClaroPath });
+});
+app.get("/api/branding/logo", (req, res) => {
+  const b = brandingConfig(brandingEscritorioPrincipalId());
+  if (b.logoPath && fs.existsSync(b.logoPath)) return res.sendFile(b.logoPath);
+  res.redirect("/img/logo-escritorio.png");
+});
+app.get("/api/branding/logo-claro", (req, res) => {
+  const b = brandingConfig(brandingEscritorioPrincipalId());
+  if (b.logoClaroPath && fs.existsSync(b.logoClaroPath)) return res.sendFile(b.logoClaroPath);
+  res.redirect("/img/logo-escritorio-claro.png");
+});
 
 // ---------- E-mail corporativo ----------
 app.get("/api/email/status", blockCliente, (req, res) => {
