@@ -26119,6 +26119,7 @@ function propostaMontarResposta(p: any) {
   return {
     id: p.id, numero: `${String(p.numero).padStart(3, "0")}/${p.numero_ano}`, empresaId: p.empresa_id, empresasIds: JSON.parse(p.empresas_ids || "[]"),
     clienteNome: p.cliente_nome, status: p.status, contratoId: p.contrato_id, criadoEm: p.criado_em, updatedAt: p.updated_at, aprovadoEm: p.aprovado_em,
+    assinada: p.assinada_path ? { nome: p.assinada_nome, em: p.assinada_em } : null,
     analise, config, valores, economias: propostas.listarEconomias(analise, valores, config),
     parametros: { fatorEncargos: propostas.FATOR_ENCARGOS, beneficiosAnalista: propostas.BENEFICIOS_ANALISTA },
   };
@@ -26227,6 +26228,7 @@ app.post("/api/propostas/:id/aprovar", blockCliente, requirePermissao("contratos
   const p = propostaLinha(user, Number(req.params.id));
   if (!p) return res.status(404).json({ error: "Proposta não encontrada." });
   if (p.status === "aprovada" && p.contrato_id) return res.json({ contratoId: p.contrato_id });
+  if (!p.assinada_path) return res.status(409).json({ error: "Anexe a proposta assinada pelo cliente e pelo escritório antes de gerar o contrato." });
   const pronto = MODELOS_CONTRATO_PRONTOS.find((m) => m.id === PROPOSTA_MODELO_PRONTO_ID)!;
   // Usa o modelo do escritório com esse nome (pode ter sido revisado em Contratos › Modelos); se ainda
   // não existe, cria a partir do modelo pronto.
@@ -26260,6 +26262,16 @@ app.post("/api/propostas/:id/aprovar", blockCliente, requirePermissao("contratos
     res.status(500).json({ error: `Não consegui gerar o contrato: ${e.message}` });
   }
 });
+app.post("/api/propostas/:id/assinada", blockCliente, requirePermissao("contratos", "editar"), upload.single("arquivo"), (req, res) => {
+  const p = propostaLinha((req as any).user, Number(req.params.id));
+  if (!p) return res.status(404).json({ error: "Proposta não encontrada." });
+  if (p.status === "aprovada") return res.status(409).json({ error: "Proposta já aprovada." });
+  if (!req.file) return res.status(400).json({ error: "Anexe o arquivo da proposta assinada." });
+  try { res.json(propostaSalvarAssinada("propostas", p, req.file)); } catch (e: any) { res.status(400).json({ error: e.message }); }
+});
+app.get("/api/propostas/:id/assinada", blockCliente, requirePermissao("contratos", "visualizar"), (req, res) => {
+  propostaEnviarAssinada(res, propostaLinha((req as any).user, Number(req.params.id)));
+});
 app.delete("/api/propostas/:id", blockCliente, requirePermissao("contratos", "editar"), (req, res) => {
   const p = propostaLinha((req as any).user, Number(req.params.id));
   if (!p) return res.status(404).json({ error: "Proposta não encontrada." });
@@ -26290,6 +26302,31 @@ sqlite.exec(`
   );
 `);
 const PROPOSTA_ESC_MODELO_PRONTO_ID = "licenca-plataforma-escritorio";
+// Proposta assinada FORA do site (cliente e escritório assinam o PDF impresso/escaneado): o arquivo é
+// anexado na proposta e é exigido para gerar o contrato. Vale pros dois tipos de proposta.
+for (const tabela of ["propostas", "propostas_escritorio"]) {
+  const cols = sqlite.prepare(`PRAGMA table_info(${tabela})`).all() as any[];
+  for (const [col, tipo] of [["assinada_path", "TEXT"], ["assinada_nome", "TEXT"], ["assinada_em", "TEXT"]]) {
+    if (!cols.some((c) => c.name === col)) sqlite.exec(`ALTER TABLE ${tabela} ADD COLUMN ${col} ${tipo}`);
+  }
+}
+const PROPOSTAS_ASSINADAS_DIR = path.join(DATA_DIR, "propostas-assinadas");
+fs.mkdirSync(PROPOSTAS_ASSINADAS_DIR, { recursive: true });
+const PROPOSTA_ASSINADA_TIPOS: Record<string, string> = { "application/pdf": "pdf", "image/jpeg": "jpg", "image/png": "png" };
+function propostaSalvarAssinada(tabela: "propostas" | "propostas_escritorio", p: any, file: any) {
+  const ext = PROPOSTA_ASSINADA_TIPOS[file.mimetype] || (/\.pdf$/i.test(file.originalname) ? "pdf" : null);
+  if (!ext) throw new Error("Anexe a proposta assinada em PDF, JPG ou PNG.");
+  const destino = path.join(PROPOSTAS_ASSINADAS_DIR, `${tabela === "propostas" ? "cliente" : "escritorio"}-${p.id}-${Date.now()}.${ext}`);
+  fs.writeFileSync(destino, file.buffer);
+  if (p.assinada_path && p.assinada_path !== destino) { try { fs.unlinkSync(p.assinada_path); } catch {} }
+  const nome = corrigirNomeArquivo(file.originalname || `proposta-assinada.${ext}`).slice(0, 200);
+  sqlite.prepare(`UPDATE ${tabela} SET assinada_path = ?, assinada_nome = ?, assinada_em = datetime('now'), updated_at = datetime('now') WHERE id = ?`).run(destino, nome, p.id);
+  return { nome };
+}
+function propostaEnviarAssinada(res: any, p: any) {
+  if (!p?.assinada_path || !fs.existsSync(p.assinada_path)) return res.status(404).json({ error: "Proposta assinada não anexada." });
+  res.download(p.assinada_path, p.assinada_nome || path.basename(p.assinada_path));
+}
 {
   const cols = sqlite.prepare(`PRAGMA table_info(propostas_escritorio)`).all() as any[];
   if (!cols.some((c) => c.name === "escritorio_criado_id")) sqlite.exec(`ALTER TABLE propostas_escritorio ADD COLUMN escritorio_criado_id INTEGER REFERENCES escritorios(id) ON DELETE SET NULL`);
@@ -26390,6 +26427,7 @@ function propostaEscResposta(p: any) {
   return {
     id: p.id, tipo: "escritorio", numero: `${String(p.numero).padStart(3, "0")}/${p.numero_ano}`, status: p.status, empresaId: p.empresa_id, contratoId: p.contrato_id,
     criadoEm: p.criado_em, updatedAt: p.updated_at, aprovadoEm: p.aprovado_em, config, valores: propostasEscritorio.calcularValores(config), escritorioCriadoId: p.escritorio_criado_id || null,
+    assinada: p.assinada_path ? { nome: p.assinada_nome, em: p.assinada_em } : null,
     acesso: { pendente: p.acesso_pendente ? JSON.parse(p.acesso_pendente) : null, criadoEm: p.acesso_criado_em || null, erro: p.acesso_erro || null },
     sugestoes: { horasPorCliente: propostasEscritorio.horasSugeridas(config.modulos), implantacao: propostasEscritorio.implantacaoSugerida(config.clientes) },
     parametros: { fatorEncargos: propostasEscritorio.FATOR_ENCARGOS, beneficios: propostasEscritorio.BENEFICIOS, horasMes: propostasEscritorio.HORAS_MES },
@@ -26458,6 +26496,7 @@ app.post("/api/propostas-escritorio/:id/aprovar", blockCliente, requirePermissao
   const p = propostaEscLinha(user, Number(req.params.id));
   if (!p) return res.status(404).json({ error: "Proposta não encontrada." });
   if (p.status === "aprovada" && p.contrato_id) return res.json({ contratoId: p.contrato_id });
+  if (!p.assinada_path) return res.status(409).json({ error: "Anexe a proposta assinada pelo cliente e pelo escritório antes de gerar o contrato." });
   const r = propostaEscResposta(p);
   const e = r.config.escritorio;
   let empresaId = Number(req.body?.empresaId) || 0;
@@ -26536,6 +26575,16 @@ app.post("/api/propostas-escritorio/:id/link-senha", blockCliente, requirePermis
   sqlite.prepare(`DELETE FROM password_reset_tokens WHERE user_id = ? AND used_at IS NULL`).run(adm.id);
   sqlite.prepare(`INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES (?, ?, datetime('now', '+7 days'))`).run(adm.id, crypto.createHash("sha256").update(tokenCru).digest("hex"));
   res.json({ email: adm.email, link: `${SITE_URL_PADRAO}/?resetToken=${tokenCru}` });
+});
+app.post("/api/propostas-escritorio/:id/assinada", blockCliente, requirePermissao("contratos", "editar"), upload.single("arquivo"), (req, res) => {
+  const p = propostaEscLinha((req as any).user, Number(req.params.id));
+  if (!p) return res.status(404).json({ error: "Proposta não encontrada." });
+  if (p.status === "aprovada") return res.status(409).json({ error: "Proposta já aprovada." });
+  if (!req.file) return res.status(400).json({ error: "Anexe o arquivo da proposta assinada." });
+  try { res.json(propostaSalvarAssinada("propostas_escritorio", p, req.file)); } catch (e: any) { res.status(400).json({ error: e.message }); }
+});
+app.get("/api/propostas-escritorio/:id/assinada", blockCliente, requirePermissao("contratos", "visualizar"), (req, res) => {
+  propostaEnviarAssinada(res, propostaEscLinha((req as any).user, Number(req.params.id)));
 });
 app.delete("/api/propostas-escritorio/:id", blockCliente, requirePermissao("contratos", "editar"), (req, res) => {
   const p = propostaEscLinha((req as any).user, Number(req.params.id));

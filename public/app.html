@@ -16770,6 +16770,18 @@ function propCalcular(a, c, par){
   const paybackMeses = economia > 0 ? Math.round(investimentoAno1/(economia/12)*10)/10 : null;
   return { mensalBruto, buscaFinal, reformaFinal, subtotal, descontoGeral, descontoValor, mensal, implantacaoFinal, analistaMensal, analistaAno, credito, economia, investimentoAno1, liquido, roi, paybackMeses };
 }
+// Campo de anexo da proposta assinada (fora do site) no modal de aprovação + envio antes de aprovar.
+function propAssinadaCampoHtml(P, idInput){
+  return `<div class="field"><label>Proposta assinada pelo cliente e pelo escritório (PDF, JPG ou PNG)</label>
+    <input type="file" id="${idInput}" accept="application/pdf,image/jpeg,image/png">
+    <div style="font-size:11.5px; color:var(--ink-soft); margin-top:3px;">${P.assinada ? `Já anexada: <b>${esc(P.assinada.nome||'arquivo')}</b> em ${fmtDateHora(P.assinada.em)}. Escolha outro arquivo só se quiser substituir.` : 'Obrigatório: o contrato só é gerado com a proposta assinada anexada.'}</div></div>`;
+}
+async function propEnviarAssinada(urlBase, P, idInput){
+  const f = document.getElementById(idInput)?.files?.[0];
+  if(!f){ if(P.assinada) return; throw new Error('Anexe a proposta assinada pelo cliente e pelo escritório.'); }
+  const fd = new FormData(); fd.append('arquivo', f);
+  await api(urlBase+'/assinada', { method:'POST', body: fd });
+}
 async function renderContratosPropostas(){
   if(PROPOSTA_ABERTA) return PROPOSTA_ABERTA.tipo==='escritorio' ? renderPropostaEscritorio(PROPOSTA_ABERTA.id) : renderPropostaEditor(PROPOSTA_ABERTA.id);
   const box = document.getElementById('contratosContent');
@@ -16896,10 +16908,11 @@ async function renderPropostaEditor(id){
       </div>
       <div class="row" style="gap:8px;">
         <button class="btn" id="ppPdf">⬇ Baixar PDF</button>
+        ${P.assinada ? `<button class="btn" id="ppBaixarAssinada" title="Anexada em ${esc(fmtDateHora(P.assinada.em))}">📄 Proposta assinada</button>` : ''}
         ${!travada ? `<button class="btn" id="ppReanalisar">↻ Reanalisar notas</button>
         ${P.status!=='enviada' ? `<button class="btn" data-st="enviada">Marcar como enviada</button>` : ''}
         ${P.status!=='recusada' ? `<button class="btn" data-st="recusada">Recusada</button>` : `<button class="btn" data-st="rascunho">Reabrir</button>`}
-        <button class="btn primary" id="ppAprovar">✓ Aprovar e gerar contrato</button>` : (P.contratoId ? `<button class="btn primary" id="ppAbrirContrato">Abrir contrato</button>` : '')}
+        <button class="btn primary" id="ppAprovar">📎 Anexar proposta assinada e gerar contrato</button>` : (P.contratoId ? `<button class="btn primary" id="ppAbrirContrato">Abrir contrato</button>` : '')}
       </div>
     </div>
     <div class="kpi-grid">
@@ -17011,6 +17024,7 @@ async function renderPropostaEditor(id){
     return r;
   };
   document.getElementById('ppVoltar').addEventListener('click', ()=>{ PROPOSTA_ABERTA=null; renderContratosPropostas(); });
+  document.getElementById('ppBaixarAssinada')?.addEventListener('click', ev=>rtBaixar('/api/propostas/'+id+'/assinada', P.assinada.nome || 'proposta-assinada.pdf', ev.currentTarget, 'Baixando…'));
   document.getElementById('ppSalvar')?.addEventListener('click', async ()=>{ try{ await salvar(); desenhaResumo(); toast('Valores salvos.','ok'); }catch(e){ toast(e.message,'err'); } });
   document.getElementById('ppPdf').addEventListener('click', async (ev)=>{
     try{ await salvar(); }catch(e){ toast(e.message,'err'); return; }
@@ -17031,21 +17045,23 @@ async function renderPropostaEditor(id){
     try{ await salvar(); }catch(e){ toast(e.message,'err'); return; }
     const v = propCalcular(a, lerCfg(), P.parametros);
     openModal(`
-      <h3>Aprovar a proposta e gerar o contrato</h3>
+      <h3>Anexar proposta assinada e gerar o contrato</h3>
       <div style="font-size:13px; color:var(--ink-soft); margin-bottom:12px;">O contrato sai pelo modelo "Licença de Uso – Reforma Tributária e Busca de XML", em nome de <b>${esc(a.empresas[0].nome)}</b>, com os ${t.cnpjs} CNPJ(s) no Anexo I, mensalidade de <b>${propBRL(v.mensal)}</b> e implantação de <b>${v.implantacaoFinal?propBRL(v.implantacaoFinal):'R$ 0,00 (isenta)'}</b>. Depois é só conferir as testemunhas e mandar para assinatura.</div>
+      ${propAssinadaCampoHtml(P, 'ppArqAssinada')}
       <div class="field" style="max-width:220px;"><label>Dia do vencimento da mensalidade</label><input type="text" id="ppDiaVenc" value="10"></div>
-      <div class="modal-actions"><button class="btn" id="ppAprCancel">Cancelar</button><button class="btn primary" id="ppAprOk">Aprovar e gerar contrato</button></div>
+      <div class="modal-actions"><button class="btn" id="ppAprCancel">Cancelar</button><button class="btn primary" id="ppAprOk">Gerar proposta assinada e contrato</button></div>
     `);
     document.getElementById('ppAprCancel').addEventListener('click', closeModal);
     document.getElementById('ppAprOk').addEventListener('click', async (ev)=>{
       const dia = Math.round(propNum(document.getElementById('ppDiaVenc').value));
       if(!(dia>=1 && dia<=31)){ toast('Informe um dia entre 1 e 31.','err'); return; }
-      ev.currentTarget.disabled = true;
+      const btn = ev.currentTarget; btn.disabled = true;
       try{
+        await propEnviarAssinada('/propostas/'+id, P, 'ppArqAssinada');
         const { contratoId } = await api('/propostas/'+id+'/aprovar', { method:'POST', body:{ diaVencimento: dia } });
         closeModal(); toast('Proposta aprovada. Contrato gerado.','ok');
         PROPOSTA_ABERTA = null; CONTRATOS_TAB='contratos'; renderContratosTab(); abrirContratoDrawer(contratoId);
-      }catch(e){ ev.currentTarget.disabled = false; toast(e.message,'err'); }
+      }catch(e){ btn.disabled = false; toast(e.message,'err'); }
     });
   });
 }
@@ -17098,9 +17114,10 @@ async function renderPropostaEscritorio(id){
       </div>
       <div class="row" style="gap:8px;">
         <button class="btn" id="pePdf">⬇ Baixar PDF</button>
+        ${P.assinada ? `<button class="btn" id="peBaixarAssinada" title="Anexada em ${esc(fmtDateHora(P.assinada.em))}">📄 Proposta assinada</button>` : ''}
         ${!travada ? `${P.status!=='enviada' ? `<button class="btn" data-st="enviada">Marcar como enviada</button>` : ''}
         ${P.status!=='recusada' ? `<button class="btn" data-st="recusada">Recusada</button>` : `<button class="btn" data-st="rascunho">Reabrir</button>`}
-        <button class="btn primary" id="peAprovar">✓ Aprovar e gerar contrato</button>` : (P.contratoId ? `<button class="btn primary" id="peAbrirContrato">Abrir contrato</button>` : '')}
+        <button class="btn primary" id="peAprovar">📎 Anexar proposta assinada e gerar contrato</button>` : (P.contratoId ? `<button class="btn primary" id="peAbrirContrato">Abrir contrato</button>` : '')}
       </div>
     </div>
     ${P.acesso && (P.acesso.pendente || P.acesso.criadoEm || P.acesso.erro) ? `<div class="card" style="padding:16px 20px;">
@@ -17231,6 +17248,7 @@ async function renderPropostaEscritorio(id){
     return r;
   };
   document.getElementById('peVoltar').addEventListener('click', ()=>{ PROPOSTA_ABERTA=null; renderContratosPropostas(); });
+  document.getElementById('peBaixarAssinada')?.addEventListener('click', ev=>rtBaixar('/api/propostas-escritorio/'+id+'/assinada', P.assinada.nome || 'proposta-assinada.pdf', ev.currentTarget, 'Baixando…'));
   document.getElementById('peNovoLink')?.addEventListener('click', async ()=>{
     if(!confirm('Gerar um novo link? O link anterior deixa de valer.')) return;
     try{
@@ -17265,19 +17283,20 @@ async function renderPropostaEscritorio(id){
     const cnpjDig = String(cfg.escritorio.cnpj||'').replace(/\D/g,'');
     const jaCadastrada = cnpjDig ? empresas.find(x=>String(x.cnpj||'').replace(/\D/g,'')===cnpjDig) : null;
     openModal(`
-      <h3>Aprovar a proposta e gerar o contrato</h3>
+      <h3>Anexar proposta assinada e gerar o contrato</h3>
       <div style="font-size:13px; color:var(--ink-soft); margin-bottom:12px;">O contrato sai pelo modelo "Licença de Uso da Plataforma Simples Contábeis", com os módulos no Anexo I, mensalidade de <b>${propBRL(v.mensal)}</b> e implantação de <b>${v.implantacaoFinal?propBRL(v.implantacaoFinal):'R$ 0,00 (isenta)'}</b>.</div>
       <div class="field"><label>Quem assina como licenciada</label>
         ${comboSelectHtml('peEmpCombo', 'Digite para buscar a empresa…')}
         <div style="font-size:11.5px; color:var(--ink-soft); margin-top:3px;">Em branco = cadastro novo com os dados da proposta (fica inativo e fora dos relatórios, pois não é cliente contábil).</div>
       </div>
+      ${propAssinadaCampoHtml(P, 'peArqAssinada')}
       <div class="field" style="max-width:220px;"><label>Dia do vencimento da mensalidade</label><input type="text" id="peDiaVenc" value="10"></div>
       ${P.podeCriarAcesso ? `<label class="checklist-item" style="margin:6px 0 8px;"><input type="checkbox" id="peCriarAcesso" checked><span><b>Criar o acesso do escritório na plataforma quando o contrato for assinado por todos</b>: escritório, administrador e os itens da proposta com o preço combinado (descontos aplicados; itens isentos entram como cortesia), liberados por 30 dias de implantação. O administrador recebe por e-mail o link para criar a senha. Depois dos 30 dias, a cobrança segue em Configurações › Assinatura da plataforma.</span></label>
       <div class="row" id="peAcessoCampos">
         <div class="field" style="flex:1; min-width:200px;"><label>Nome do administrador</label><input type="text" id="peAdmNome" value="${esc(cfg.escritorio.responsavel || '')}"></div>
         <div class="field" style="flex:1; min-width:200px;"><label>E-mail de login do administrador</label><input type="text" id="peAdmEmail" value="${esc(cfg.escritorio.email || '')}"></div>
       </div>` : ''}
-      <div class="modal-actions"><button class="btn" id="peAprCancel">Cancelar</button><button class="btn primary" id="peAprOk">Aprovar e gerar contrato</button></div>
+      <div class="modal-actions"><button class="btn" id="peAprCancel">Cancelar</button><button class="btn primary" id="peAprOk">Gerar proposta assinada e contrato</button></div>
     `);
     setupComboSelect('peEmpCombo', empresas.map(x=>({id:x.id, label:empresaComboLabel(x)})), ()=>{});
     if(jaCadastrada){ document.querySelector('#peEmpCombo .combo-value').value = jaCadastrada.id; document.querySelector('#peEmpCombo .combo-input').value = jaCadastrada.nome; }
@@ -17293,6 +17312,7 @@ async function renderPropostaEscritorio(id){
         const criarAcesso = !!document.getElementById('peCriarAcesso')?.checked;
         const body = { diaVencimento: dia, empresaId, criarAcesso };
         if(criarAcesso){ body.adminNome = document.getElementById('peAdmNome').value.trim(); body.adminEmail = document.getElementById('peAdmEmail').value.trim(); }
+        await propEnviarAssinada('/propostas-escritorio/'+id, P, 'peArqAssinada');
         const r = await api('/propostas-escritorio/'+id+'/aprovar', { method:'POST', body });
         closeModal();
         toast(r.acessoPendente ? `Contrato gerado. O acesso de ${r.acessoPendente.adminEmail} será criado quando todos assinarem.` : 'Proposta aprovada. Contrato gerado.','ok');
