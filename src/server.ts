@@ -26231,7 +26231,7 @@ app.get("/api/propostas/:id/pdf", blockCliente, requirePermissao("contratos", "v
   if (!p) return res.status(404).json({ error: "Proposta não encontrada." });
   try {
     const r = propostaMontarResposta(p);
-    const pdf = await propostas.gerarPdfProposta(r.analise, r.config, { clienteNome: r.clienteNome, data: String(p.updated_at || p.criado_em).slice(0, 10), numero: r.numero }, contratos.timbradoDataUri());
+    const pdf = await propostas.gerarPdfProposta(r.analise, r.config, { clienteNome: r.clienteNome, data: String(p.updated_at || p.criado_em).slice(0, 10), numero: r.numero }, contratos.timbradoDataUri(timbradoParaEscritorio((req as any).user.escritorioId)));
     const nome = `Proposta ${r.numero.replace("/", "-")} - ${String(r.clienteNome).replace(/[^\w\- ]/g, "").slice(0, 60)}.pdf`;
     res.set("Content-Type", "application/pdf");
     res.set("Content-Disposition", `attachment; filename="${nome}"`);
@@ -26499,7 +26499,7 @@ app.get("/api/propostas-escritorio/:id/pdf", blockCliente, requirePermissao("con
   if (!p) return res.status(404).json({ error: "Proposta não encontrada." });
   try {
     const r = propostaEscResposta(p);
-    const pdf = await propostasEscritorio.gerarPdfPropostaEscritorio(r.config, { numero: r.numero, data: String(p.updated_at || p.criado_em).slice(0, 10) }, contratos.timbradoDataUri());
+    const pdf = await propostasEscritorio.gerarPdfPropostaEscritorio(r.config, { numero: r.numero, data: String(p.updated_at || p.criado_em).slice(0, 10) }, contratos.timbradoDataUri(timbradoParaEscritorio((req as any).user.escritorioId)));
     const nome = `Proposta ${r.numero.replace("/", "-")} - ${String(r.config.escritorio.nome).replace(/[^\w\- ]/g, "").slice(0, 60)}.pdf`;
     res.set("Content-Type", "application/pdf");
     res.set("Content-Disposition", `attachment; filename="${nome}"`);
