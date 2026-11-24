@@ -17,6 +17,7 @@ import * as nfse from "./nfse";
 import * as asaas from "./asaas";
 import * as contratos from "./contratos";
 import * as propostas from "./propostas";
+import * as propostasEscritorio from "./propostas-escritorio";
 import * as autentique from "./autentique";
 import { localizarLinhasAssinatura, casarLinhas, posicaoAssinatura } from "./assinatura-posicoes";
 import { MODELOS_CONTRATO_PRONTOS } from "./contrato-modelos-prontos";
@@ -26063,6 +26064,13 @@ function propostaHojeIso() {
   const a = agoraBrasilia();
   return `${a.ano}-${String(a.mes).padStart(2, "0")}-${String(a.dia).padStart(2, "0")}`;
 }
+// Numeração única por escritório e ano, somando os dois tipos de proposta (cliente e escritório).
+function propostaProximoNumero(escritorioId: number, ano: number): number {
+  const m = sqlite
+    .prepare(`SELECT MAX(n) m FROM (SELECT MAX(numero) n FROM propostas WHERE escritorio_id = ? AND numero_ano = ? UNION ALL SELECT MAX(numero) n FROM propostas_escritorio WHERE escritorio_id = ? AND numero_ano = ?)`)
+    .get(escritorioId, ano, escritorioId, ano) as any;
+  return (m?.m || 0) + 1;
+}
 function propostaAnalisar(escritorioId: number, empresaIds: number[]) {
   const ate = propostaHojeIso();
   const [ano, mes] = [Number(ate.slice(0, 4)), Number(ate.slice(5, 7))];
@@ -26144,11 +26152,11 @@ app.post("/api/propostas", blockCliente, requirePermissao("contratos", "postar")
     const analise = propostaAnalisar(user.escritorioId, ids);
     const config = propostas.configPadrao(analise);
     const ano = agoraBrasilia().ano;
-    const max = sqlite.prepare(`SELECT MAX(numero) m FROM propostas WHERE escritorio_id = ? AND numero_ano = ?`).get(user.escritorioId, ano) as any;
+
     const clienteNome = String(req.body?.clienteNome || "").trim().slice(0, 150) || principal.nome;
     const info = sqlite
       .prepare(`INSERT INTO propostas (escritorio_id, empresa_id, empresas_ids, cliente_nome, numero, numero_ano, analise, config, criado_por) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(user.escritorioId, empresaId, JSON.stringify(ids), clienteNome, (max?.m || 0) + 1, ano, JSON.stringify(analise), JSON.stringify(config), user.id);
+      .run(user.escritorioId, empresaId, JSON.stringify(ids), clienteNome, propostaProximoNumero(user.escritorioId, ano), ano, JSON.stringify(analise), JSON.stringify(config), user.id);
     res.json({ id: Number(info.lastInsertRowid) });
   } catch (e: any) {
     res.status(500).json({ error: `Não consegui analisar as notas: ${e.message}` });
@@ -26248,6 +26256,156 @@ app.delete("/api/propostas/:id", blockCliente, requirePermissao("contratos", "ed
   if (!p) return res.status(404).json({ error: "Proposta não encontrada." });
   if (p.status === "aprovada") return res.status(409).json({ error: "Proposta aprovada não pode ser excluída — o contrato já foi gerado a partir dela." });
   sqlite.prepare(`DELETE FROM propostas WHERE id = ?`).run(p.id);
+  res.json({ ok: true });
+});
+
+// ---- Propostas da PLATAFORMA para outro escritório contábil (Contratos › Propostas, tipo "Escritório") ----
+// Não tem análise de notas (o escritório prospect não é cliente): preço vem do catálogo de módulos de
+// escritório + mensalidade base, e o ganho de premissas editáveis (src/propostas-escritorio.ts). Na
+// aprovação, gera o contrato "Licença de Uso da Plataforma" — em nome de uma empresa já cadastrada ou de
+// um cadastro novo criado com os dados da proposta (inativo, fora dos relatórios: não é cliente contábil).
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS propostas_escritorio (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    escritorio_id INTEGER NOT NULL,
+    numero INTEGER NOT NULL,
+    numero_ano INTEGER NOT NULL,
+    config TEXT NOT NULL, -- JSON (propostasEscritorio.ConfigEscritorio)
+    status TEXT NOT NULL DEFAULT 'rascunho', -- 'rascunho' | 'enviada' | 'aprovada' | 'recusada'
+    empresa_id INTEGER REFERENCES empresas(id) ON DELETE SET NULL, -- cadastro que assina o contrato (na aprovação)
+    contrato_id INTEGER REFERENCES contratos(id) ON DELETE SET NULL,
+    criado_por INTEGER,
+    criado_em TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now')),
+    aprovado_em TEXT
+  );
+`);
+const PROPOSTA_ESC_MODELO_PRONTO_ID = "licenca-plataforma-escritorio";
+function propostaEscBase() {
+  const catalogo = sqlite.prepare(`SELECT chave, nome, valor_mensal, ativo FROM modulos_escritorio_catalogo ORDER BY nome`).all() as any[];
+  const nfse = sqlite.prepare(`SELECT valor_mensal FROM modulos_catalogo WHERE chave = 'nfse'`).get() as any;
+  return propostasEscritorio.configPadrao(catalogo, nfse?.valor_mensal || 49.99);
+}
+function propostaEscResposta(p: any) {
+  const config = propostasEscritorio.normalizarConfig(JSON.parse(p.config || "{}"), propostaEscBase());
+  return {
+    id: p.id, tipo: "escritorio", numero: `${String(p.numero).padStart(3, "0")}/${p.numero_ano}`, status: p.status, empresaId: p.empresa_id, contratoId: p.contrato_id,
+    criadoEm: p.criado_em, updatedAt: p.updated_at, aprovadoEm: p.aprovado_em, config, valores: propostasEscritorio.calcularValores(config),
+    sugestoes: { horasPorCliente: propostasEscritorio.horasSugeridas(config.modulos), implantacao: propostasEscritorio.implantacaoSugerida(config.clientes) },
+    parametros: { fatorEncargos: propostasEscritorio.FATOR_ENCARGOS, beneficios: propostasEscritorio.BENEFICIOS, horasMes: propostasEscritorio.HORAS_MES },
+  };
+}
+function propostaEscLinha(user: any, id: number) {
+  return (sqlite.prepare(`SELECT * FROM propostas_escritorio WHERE id = ? AND escritorio_id = ?`).get(id, user.escritorioId) as any) || null;
+}
+app.get("/api/propostas-escritorio", blockCliente, requirePermissao("contratos", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const rows = sqlite.prepare(`SELECT * FROM propostas_escritorio WHERE escritorio_id = ? ORDER BY updated_at DESC`).all(user.escritorioId) as any[];
+  res.json({ items: rows.map((p) => { const r = propostaEscResposta(p); return { id: r.id, tipo: "escritorio", numero: r.numero, clienteNome: r.config.escritorio.nome || "(escritório sem nome)", clientes: r.config.clientes, mensal: r.valores.mensal, implantacao: r.config.implantacao, economia: r.valores.ganho, status: r.status, contratoId: r.contratoId, updatedAt: r.updatedAt }; }) });
+});
+app.post("/api/propostas-escritorio", blockCliente, requirePermissao("contratos", "postar"), (req, res) => {
+  const user = (req as any).user;
+  const base = propostaEscBase();
+  const config = propostasEscritorio.normalizarConfig(req.body?.config || {}, base);
+  // Sem horas/implantação digitadas: usa a sugestão pelos módulos e pelo nº de clientes.
+  if (req.body?.config?.horasPorCliente === undefined) config.horasPorCliente = propostasEscritorio.horasSugeridas(config.modulos);
+  if (req.body?.config?.implantacao === undefined) config.implantacao = propostasEscritorio.implantacaoSugerida(config.clientes);
+  if (!config.escritorio.nome) return res.status(400).json({ error: "Informe o nome do escritório." });
+  const ano = agoraBrasilia().ano;
+  const info = sqlite.prepare(`INSERT INTO propostas_escritorio (escritorio_id, numero, numero_ano, config, criado_por) VALUES (?, ?, ?, ?, ?)`).run(user.escritorioId, propostaProximoNumero(user.escritorioId, ano), ano, JSON.stringify(config), user.id);
+  res.json({ id: Number(info.lastInsertRowid) });
+});
+app.get("/api/propostas-escritorio/:id", blockCliente, requirePermissao("contratos", "visualizar"), (req, res) => {
+  const p = propostaEscLinha((req as any).user, Number(req.params.id));
+  if (!p) return res.status(404).json({ error: "Proposta não encontrada." });
+  res.json(propostaEscResposta(p));
+});
+app.put("/api/propostas-escritorio/:id", blockCliente, requirePermissao("contratos", "editar"), (req, res) => {
+  const p = propostaEscLinha((req as any).user, Number(req.params.id));
+  if (!p) return res.status(404).json({ error: "Proposta não encontrada." });
+  if (p.status === "aprovada") return res.status(409).json({ error: "Proposta já aprovada — o contrato já foi gerado com esses valores." });
+  const atual = propostasEscritorio.normalizarConfig(JSON.parse(p.config || "{}"), propostaEscBase());
+  const config = propostasEscritorio.normalizarConfig(req.body?.config || {}, atual);
+  if (!config.escritorio.nome) return res.status(400).json({ error: "Informe o nome do escritório." });
+  sqlite.prepare(`UPDATE propostas_escritorio SET config = ?, updated_at = datetime('now') WHERE id = ?`).run(JSON.stringify(config), p.id);
+  res.json(propostaEscResposta({ ...p, config: JSON.stringify(config) }));
+});
+app.post("/api/propostas-escritorio/:id/status", blockCliente, requirePermissao("contratos", "editar"), (req, res) => {
+  const p = propostaEscLinha((req as any).user, Number(req.params.id));
+  if (!p) return res.status(404).json({ error: "Proposta não encontrada." });
+  const status = String(req.body?.status || "");
+  if (!["rascunho", "enviada", "recusada"].includes(status)) return res.status(400).json({ error: "Situação inválida." });
+  if (p.status === "aprovada") return res.status(409).json({ error: "Proposta já aprovada." });
+  sqlite.prepare(`UPDATE propostas_escritorio SET status = ?, updated_at = datetime('now') WHERE id = ?`).run(status, p.id);
+  res.json({ ok: true });
+});
+app.get("/api/propostas-escritorio/:id/pdf", blockCliente, requirePermissao("contratos", "visualizar"), async (req, res) => {
+  const p = propostaEscLinha((req as any).user, Number(req.params.id));
+  if (!p) return res.status(404).json({ error: "Proposta não encontrada." });
+  try {
+    const r = propostaEscResposta(p);
+    const pdf = await propostasEscritorio.gerarPdfPropostaEscritorio(r.config, { numero: r.numero, data: String(p.updated_at || p.criado_em).slice(0, 10) }, contratos.timbradoDataUri());
+    const nome = `Proposta ${r.numero.replace("/", "-")} - ${String(r.config.escritorio.nome).replace(/[^\w\- ]/g, "").slice(0, 60)}.pdf`;
+    res.set("Content-Type", "application/pdf");
+    res.set("Content-Disposition", `attachment; filename="${nome}"`);
+    res.send(pdf);
+  } catch (e: any) {
+    res.status(500).json({ error: `Não consegui gerar o PDF: ${e.message}` });
+  }
+});
+app.post("/api/propostas-escritorio/:id/aprovar", blockCliente, requirePermissao("contratos", "postar"), (req, res) => {
+  const user = (req as any).user;
+  const p = propostaEscLinha(user, Number(req.params.id));
+  if (!p) return res.status(404).json({ error: "Proposta não encontrada." });
+  if (p.status === "aprovada" && p.contrato_id) return res.json({ contratoId: p.contrato_id });
+  const r = propostaEscResposta(p);
+  const e = r.config.escritorio;
+  let empresaId = Number(req.body?.empresaId) || 0;
+  if (empresaId && !podeAcessarEmpresa(user, empresaId)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  const pronto = MODELOS_CONTRATO_PRONTOS.find((m) => m.id === PROPOSTA_ESC_MODELO_PRONTO_ID)!;
+  let modelo = sqlite.prepare(`SELECT * FROM contratos_modelos WHERE escritorio_id = ? AND nome = ? AND ativo = 1 ORDER BY id DESC LIMIT 1`).get(user.escritorioId, pronto.nome) as any;
+  const brlC = (v: number) => v.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const dia = Math.round(Number(req.body?.diaVencimento));
+  const dados: Record<string, string> = {
+    mensalidade_total: brlC(r.valores.mensal), mensalidade_total_extenso: contratos.valorPorExtenso(r.valores.mensal),
+    implantacao_total: brlC(r.config.implantacao), implantacao_total_extenso: contratos.valorPorExtenso(r.config.implantacao),
+    desconto_texto: r.valores.descontoValor ? `, já aplicado o desconto de ${String(r.config.descontoPct).replace(".", ",")}% sobre o valor de tabela de R$ ${brlC(r.valores.mensalBruto)}` : "",
+    desconto_anexo: r.valores.descontoValor ? `${String(r.config.descontoPct).replace(".", ",")}% (− R$ ${brlC(r.valores.descontoValor)} por mês)` : "Sem desconto",
+    qtd_usuarios: String(r.config.colaboradores || 1), n_proposta: r.numero,
+  };
+  if (dia >= 1 && dia <= 31) dados.dia_vencimento = String(dia);
+  try {
+    let contratoId = 0;
+    sqlite.exec("BEGIN");
+    try {
+      if (!modelo) {
+        const info = sqlite.prepare(`INSERT INTO contratos_modelos (nome, conteudo_html, campos, escritorio_id) VALUES (?, ?, ?, ?)`).run(pronto.nome, pronto.conteudoHtml, JSON.stringify(pronto.campos), user.escritorioId);
+        modelo = sqlite.prepare(`SELECT * FROM contratos_modelos WHERE id = ?`).get(Number(info.lastInsertRowid));
+      }
+      if (!empresaId) {
+        const info = sqlite
+          .prepare(`INSERT INTO empresas (nome, cnpj, email, telefone, cidade, uf, nome_representante_legal, cpf_representante_legal, escritorio_id, ativo, visivel_relatorios, origem) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 'proposta')`)
+          .run(e.nome, e.cnpj || null, e.email || null, e.telefone || null, e.cidade || null, e.uf || null, e.responsavel || null, e.cpfResponsavel || null, user.escritorioId);
+        empresaId = Number(info.lastInsertRowid);
+      }
+      const empresa = sqlite.prepare(`SELECT * FROM empresas WHERE id = ?`).get(empresaId) as any;
+      contratoId = contratoCriar(user, modelo, empresa, dados, { anexo_modulos: propostasEscritorio.anexoModulosHtml(r.config) });
+      sqlite.prepare(`UPDATE propostas_escritorio SET status = 'aprovada', empresa_id = ?, contrato_id = ?, aprovado_em = datetime('now'), updated_at = datetime('now') WHERE id = ?`).run(empresaId, contratoId, p.id);
+      sqlite.exec("COMMIT");
+    } catch (err) {
+      sqlite.exec("ROLLBACK");
+      throw err;
+    }
+    res.json({ contratoId, empresaId });
+  } catch (err: any) {
+    res.status(500).json({ error: `Não consegui gerar o contrato: ${err.message}` });
+  }
+});
+app.delete("/api/propostas-escritorio/:id", blockCliente, requirePermissao("contratos", "editar"), (req, res) => {
+  const p = propostaEscLinha((req as any).user, Number(req.params.id));
+  if (!p) return res.status(404).json({ error: "Proposta não encontrada." });
+  if (p.status === "aprovada") return res.status(409).json({ error: "Proposta aprovada não pode ser excluída — o contrato já foi gerado a partir dela." });
+  sqlite.prepare(`DELETE FROM propostas_escritorio WHERE id = ?`).run(p.id);
   res.json({ ok: true });
 });
 app.get("/api/contratos/distrato-config", blockCliente, requirePermissao("contratos", "visualizar"), (req, res) => {
