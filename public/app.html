@@ -17199,11 +17199,17 @@ async function renderPropostaEscritorio(id){
         <div style="font-size:11.5px; color:var(--ink-soft); margin-top:3px;">Em branco = cadastro novo com os dados da proposta (fica inativo e fora dos relatórios, pois não é cliente contábil).</div>
       </div>
       <div class="field" style="max-width:220px;"><label>Dia do vencimento da mensalidade</label><input type="text" id="peDiaVenc" value="10"></div>
+      ${P.podeCriarAcesso ? `<label class="checklist-item" style="margin:6px 0 8px;"><input type="checkbox" id="peCriarAcesso" checked><span><b>Criar o acesso do escritório na plataforma</b>: escritório, administrador e os módulos da proposta com o preço combinado (desconto aplicado), liberados por 30 dias de implantação. Depois disso a cobrança segue em Configurações › Assinatura da plataforma.</span></label>
+      <div class="row" id="peAcessoCampos">
+        <div class="field" style="flex:1; min-width:200px;"><label>Nome do administrador</label><input type="text" id="peAdmNome" value="${esc(cfg.escritorio.responsavel || '')}"></div>
+        <div class="field" style="flex:1; min-width:200px;"><label>E-mail de login do administrador</label><input type="text" id="peAdmEmail" value="${esc(cfg.escritorio.email || '')}"></div>
+      </div>` : ''}
       <div class="modal-actions"><button class="btn" id="peAprCancel">Cancelar</button><button class="btn primary" id="peAprOk">Aprovar e gerar contrato</button></div>
     `);
     setupComboSelect('peEmpCombo', empresas.map(x=>({id:x.id, label:empresaComboLabel(x)})), ()=>{});
     if(jaCadastrada){ document.querySelector('#peEmpCombo .combo-value').value = jaCadastrada.id; document.querySelector('#peEmpCombo .combo-input').value = jaCadastrada.nome; }
     document.getElementById('peAprCancel').addEventListener('click', closeModal);
+    document.getElementById('peCriarAcesso')?.addEventListener('change', ev=>{ document.getElementById('peAcessoCampos').style.display = ev.target.checked ? '' : 'none'; });
     document.getElementById('peAprOk').addEventListener('click', async (ev)=>{
       const dia = Math.round(propNum(document.getElementById('peDiaVenc').value));
       if(!(dia>=1 && dia<=31)){ toast('Informe um dia entre 1 e 31.','err'); return; }
@@ -17211,9 +17217,22 @@ async function renderPropostaEscritorio(id){
       const empresaId = empInput ? Number(document.querySelector('#peEmpCombo .combo-value').value)||0 : 0;
       const b = ev.currentTarget; b.disabled = true;
       try{
-        const { contratoId } = await api('/propostas-escritorio/'+id+'/aprovar', { method:'POST', body:{ diaVencimento: dia, empresaId } });
-        closeModal(); toast('Proposta aprovada. Contrato gerado.','ok');
-        PROPOSTA_ABERTA = null; CONTRATOS_TAB='contratos'; renderContratosTab(); abrirContratoDrawer(contratoId);
+        const criarAcesso = !!document.getElementById('peCriarAcesso')?.checked;
+        const body = { diaVencimento: dia, empresaId, criarAcesso };
+        if(criarAcesso){ body.adminNome = document.getElementById('peAdmNome').value.trim(); body.adminEmail = document.getElementById('peAdmEmail').value.trim(); }
+        const r = await api('/propostas-escritorio/'+id+'/aprovar', { method:'POST', body });
+        toast('Proposta aprovada. Contrato gerado.','ok');
+        const irContrato = () => { closeModal(); PROPOSTA_ABERTA = null; CONTRATOS_TAB='contratos'; renderContratosTab(); abrirContratoDrawer(r.contratoId); };
+        if(!r.acesso) return irContrato();
+        openModal(`
+          <h3>Acesso do escritório criado</h3>
+          <div style="font-size:13px; margin-bottom:10px;">O escritório já existe na plataforma, com ${r.acesso.modulos.length ? `os módulos: <b>${r.acesso.modulos.map(esc).join(', ')}</b>` : 'a plataforma base'}, liberados por 30 dias de implantação.</div>
+          <div class="field"><label>Login do administrador</label><input type="text" readonly value="${esc(r.acesso.adminEmail)}"></div>
+          <div class="field"><label>Link para o administrador criar a senha (vale 7 dias, uso único)</label><input type="text" id="peLinkSenha" readonly value="${esc(r.acesso.link)}"></div>
+          <div style="font-size:12px; color:var(--ink-soft);">Mande esse link junto com o contrato. Ele só aparece agora. Se expirar, o administrador usa "Esqueci minha senha" na tela de login.</div>
+          <div class="modal-actions"><button class="btn" id="peCopiarLink">Copiar link</button><button class="btn primary" id="peIrContrato">Abrir contrato</button></div>`);
+        document.getElementById('peCopiarLink').addEventListener('click', ()=>{ navigator.clipboard.writeText(r.acesso.link).then(()=>toast('Link copiado.','ok')).catch(()=>{ document.getElementById('peLinkSenha').select(); }); });
+        document.getElementById('peIrContrato').addEventListener('click', irContrato);
       }catch(err){ b.disabled = false; toast(err.message,'err'); }
     });
   });

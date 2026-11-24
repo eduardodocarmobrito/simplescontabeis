@@ -26281,6 +26281,54 @@ sqlite.exec(`
   );
 `);
 const PROPOSTA_ESC_MODELO_PRONTO_ID = "licenca-plataforma-escritorio";
+{
+  const cols = sqlite.prepare(`PRAGMA table_info(propostas_escritorio)`).all() as any[];
+  if (!cols.some((c) => c.name === "escritorio_criado_id")) sqlite.exec(`ALTER TABLE propostas_escritorio ADD COLUMN escritorio_criado_id INTEGER REFERENCES escritorios(id) ON DELETE SET NULL`);
+}
+// Só quem é dono da plataforma cria escritório novo pela aprovação: SuperAdmin ou o escritório isento
+// que não é o de "clientes diretos" (a Simples Contábeis). Um escritório-cliente usando a aba
+// Propostas nunca cria tenant na plataforma.
+function propostaEscPodeCriarAcesso(user: any): boolean {
+  if (user?.perfil === "SuperAdmin") return true;
+  if (user?.perfil !== "Administrador" || !user?.escritorioId) return false;
+  const e = sqlite.prepare(`SELECT isento_assinatura, eh_cliente_direto FROM escritorios WHERE id = ?`).get(user.escritorioId) as any;
+  return !!e?.isento_assinatura && !e?.eh_cliente_direto;
+}
+// Cria o escritório na plataforma (mesmos passos do POST /api/super/escritorios), o Administrador
+// (sem senha utilizável — define pelo link) e os módulos contratados com o preço da proposta, já com
+// o desconto, em teste até o fim da implantação (30 dias). Depois disso a cobrança segue o fluxo normal
+// de Configurações › Assinatura da plataforma. Roda dentro da transação da aprovação.
+function propostaEscCriarAcesso(c: propostasEscritorio.ConfigEscritorio, admin: { nome: string; email: string }) {
+  const e = c.escritorio;
+  const agentToken = crypto.randomBytes(24).toString("hex");
+  const info = sqlite
+    .prepare(`INSERT INTO escritorios (nome, cnpj, email, telefone, agent_token, envio_rollover_ultimo_ano) VALUES (?, ?, ?, ?, ?, ?)`)
+    .run(e.nome, e.cnpj || null, e.email || null, e.telefone ? e.telefone.replace(/\D/g, "") : null, agentToken, agoraBrasilia().ano);
+  const escritorioId = Number(info.lastInsertRowid);
+  const empInfo = sqlite
+    .prepare(`INSERT INTO empresas (nome, cnpj, email, telefone, cidade, uf, origem, escritorio_id) VALUES (?, ?, ?, ?, ?, ?, 'manual', ?)`)
+    .run(e.nome, e.cnpj || null, e.email || null, e.telefone || null, e.cidade || null, e.uf || null, escritorioId);
+  const empresaPropria = Number(empInfo.lastInsertRowid);
+  sqlite.prepare(`UPDATE escritorios SET empresa_id = ? WHERE id = ?`).run(empresaPropria, escritorioId);
+  garantirLinhasDeConfig(escritorioId);
+  sqlite.prepare(`UPDATE nfse_agendamento_config SET empresa_prestador_id = ? WHERE escritorio_id = ?`).run(empresaPropria, escritorioId);
+  const fator = 1 - c.descontoPct / 100;
+  const r2 = (v: number) => Math.round(v * 100) / 100;
+  const insMod = sqlite.prepare(`INSERT INTO escritorio_modulos (escritorio_id, modulo_chave, trial_inicio, trial_fim, valor_mensal_custom) VALUES (?, ?, datetime('now'), datetime('now','+30 days'), ?)`);
+  const noCatalogo = new Set((sqlite.prepare(`SELECT chave FROM modulos_escritorio_catalogo`).all() as any[]).map((m) => m.chave));
+  const modulos: string[] = [];
+  for (const m of c.modulos.filter((x) => x.incluido && noCatalogo.has(x.chave))) { insMod.run(escritorioId, m.chave, r2(m.valor * fator)); modulos.push(m.nome); }
+  if (c.colaboradores > 0 && c.assentoValor > 0 && noCatalogo.has("assento_colaborador")) { insMod.run(escritorioId, "assento_colaborador", r2(c.assentoValor * fator)); modulos.push("Usuários da equipe"); }
+  const existe = sqlite.prepare(`SELECT 1 FROM app_users WHERE email = ?`).get(admin.email);
+  if (existe) throw new Error(`Já existe um usuário com o e-mail ${admin.email} — informe outro e-mail para o administrador.`);
+  const senhaInutilizavel = crypto.randomBytes(24).toString("base64url") + "9a";
+  const u = sqlite
+    .prepare(`INSERT INTO app_users (nome, email, perfil, acesso_todas_empresas, password_hash, escritorio_id) VALUES (?, ?, 'Administrador', 1, ?, ?)`)
+    .run(admin.nome, admin.email, hashPassword(senhaInutilizavel), escritorioId);
+  const tokenCru = crypto.randomBytes(32).toString("hex");
+  sqlite.prepare(`INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES (?, ?, datetime('now', '+7 days'))`).run(Number(u.lastInsertRowid), crypto.createHash("sha256").update(tokenCru).digest("hex"));
+  return { escritorioId, tokenCru, modulos };
+}
 function propostaEscBase() {
   const catalogo = sqlite.prepare(`SELECT chave, nome, valor_mensal, ativo FROM modulos_escritorio_catalogo ORDER BY nome`).all() as any[];
   const nfse = sqlite.prepare(`SELECT valor_mensal FROM modulos_catalogo WHERE chave = 'nfse'`).get() as any;
@@ -26290,7 +26338,7 @@ function propostaEscResposta(p: any) {
   const config = propostasEscritorio.normalizarConfig(JSON.parse(p.config || "{}"), propostaEscBase());
   return {
     id: p.id, tipo: "escritorio", numero: `${String(p.numero).padStart(3, "0")}/${p.numero_ano}`, status: p.status, empresaId: p.empresa_id, contratoId: p.contrato_id,
-    criadoEm: p.criado_em, updatedAt: p.updated_at, aprovadoEm: p.aprovado_em, config, valores: propostasEscritorio.calcularValores(config),
+    criadoEm: p.criado_em, updatedAt: p.updated_at, aprovadoEm: p.aprovado_em, config, valores: propostasEscritorio.calcularValores(config), escritorioCriadoId: p.escritorio_criado_id || null,
     sugestoes: { horasPorCliente: propostasEscritorio.horasSugeridas(config.modulos), implantacao: propostasEscritorio.implantacaoSugerida(config.clientes) },
     parametros: { fatorEncargos: propostasEscritorio.FATOR_ENCARGOS, beneficios: propostasEscritorio.BENEFICIOS, horasMes: propostasEscritorio.HORAS_MES },
   };
@@ -26318,7 +26366,7 @@ app.post("/api/propostas-escritorio", blockCliente, requirePermissao("contratos"
 app.get("/api/propostas-escritorio/:id", blockCliente, requirePermissao("contratos", "visualizar"), (req, res) => {
   const p = propostaEscLinha((req as any).user, Number(req.params.id));
   if (!p) return res.status(404).json({ error: "Proposta não encontrada." });
-  res.json(propostaEscResposta(p));
+  res.json({ ...propostaEscResposta(p), podeCriarAcesso: propostaEscPodeCriarAcesso((req as any).user) });
 });
 app.put("/api/propostas-escritorio/:id", blockCliente, requirePermissao("contratos", "editar"), (req, res) => {
   const p = propostaEscLinha((req as any).user, Number(req.params.id));
@@ -26362,6 +26410,10 @@ app.post("/api/propostas-escritorio/:id/aprovar", blockCliente, requirePermissao
   const e = r.config.escritorio;
   let empresaId = Number(req.body?.empresaId) || 0;
   if (empresaId && !podeAcessarEmpresa(user, empresaId)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  const criarAcesso = !!req.body?.criarAcesso && !p.escritorio_criado_id;
+  if (criarAcesso && !propostaEscPodeCriarAcesso(user)) return res.status(403).json({ error: "Só o dono da plataforma pode criar o acesso de um escritório novo." });
+  const admin = { nome: String(req.body?.adminNome || e.responsavel || e.nome).trim().slice(0, 120), email: String(req.body?.adminEmail || e.email || "").trim().toLowerCase().slice(0, 150) };
+  if (criarAcesso && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(admin.email)) return res.status(400).json({ error: "Informe um e-mail válido para o administrador do escritório." });
   const pronto = MODELOS_CONTRATO_PRONTOS.find((m) => m.id === PROPOSTA_ESC_MODELO_PRONTO_ID)!;
   let modelo = sqlite.prepare(`SELECT * FROM contratos_modelos WHERE escritorio_id = ? AND nome = ? AND ativo = 1 ORDER BY id DESC LIMIT 1`).get(user.escritorioId, pronto.nome) as any;
   const brlC = (v: number) => v.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -26376,6 +26428,7 @@ app.post("/api/propostas-escritorio/:id/aprovar", blockCliente, requirePermissao
   if (dia >= 1 && dia <= 31) dados.dia_vencimento = String(dia);
   try {
     let contratoId = 0;
+    let acesso: { escritorioId: number; tokenCru: string; modulos: string[] } | null = null;
     sqlite.exec("BEGIN");
     try {
       if (!modelo) {
@@ -26390,13 +26443,17 @@ app.post("/api/propostas-escritorio/:id/aprovar", blockCliente, requirePermissao
       }
       const empresa = sqlite.prepare(`SELECT * FROM empresas WHERE id = ?`).get(empresaId) as any;
       contratoId = contratoCriar(user, modelo, empresa, dados, { anexo_modulos: propostasEscritorio.anexoModulosHtml(r.config) });
-      sqlite.prepare(`UPDATE propostas_escritorio SET status = 'aprovada', empresa_id = ?, contrato_id = ?, aprovado_em = datetime('now'), updated_at = datetime('now') WHERE id = ?`).run(empresaId, contratoId, p.id);
+      if (criarAcesso) acesso = propostaEscCriarAcesso(r.config, admin);
+      sqlite.prepare(`UPDATE propostas_escritorio SET status = 'aprovada', empresa_id = ?, contrato_id = ?, escritorio_criado_id = COALESCE(?, escritorio_criado_id), aprovado_em = datetime('now'), updated_at = datetime('now') WHERE id = ?`).run(empresaId, contratoId, acesso?.escritorioId ?? null, p.id);
       sqlite.exec("COMMIT");
     } catch (err) {
       sqlite.exec("ROLLBACK");
       throw err;
     }
-    res.json({ contratoId, empresaId });
+    res.json({
+      contratoId, empresaId,
+      acesso: acesso ? { escritorioId: acesso.escritorioId, adminEmail: admin.email, modulos: acesso.modulos, link: `${req.protocol}://${req.get("host")}/?resetToken=${acesso.tokenCru}` } : null,
+    });
   } catch (err: any) {
     res.status(500).json({ error: `Não consegui gerar o contrato: ${err.message}` });
   }
