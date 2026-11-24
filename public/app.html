@@ -16659,6 +16659,7 @@ async function pageContratos(){
     <div class="tabs">
       <div class="tab" data-tab="contratos">Contratos</div>
       <div class="tab" data-tab="modelos">Modelos</div>
+      <div class="tab" data-tab="propostas">Propostas</div>
     </div>
     <div id="contratosContent"></div>
   `;
@@ -16667,7 +16668,7 @@ async function pageContratos(){
 }
 function renderContratosTab(){
   main().querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===CONTRATOS_TAB));
-  if(CONTRATOS_TAB==='modelos') renderContratosModelos(); else renderContratosLista();
+  if(CONTRATOS_TAB==='modelos') renderContratosModelos(); else if(CONTRATOS_TAB==='propostas') renderContratosPropostas(); else renderContratosLista();
 }
 let CONTRATOS_FILTRO={ empresaId:'', status:'' };
 async function renderContratosLista(){
@@ -16731,6 +16732,297 @@ async function renderContratosLista(){
     try{ await api('/contratos/'+b.dataset.id, { method:'DELETE' }); toast('Excluído.','ok'); renderContratosLista(); }
     catch(e){ toast(e.message,'err'); }
   }));
+}
+// ---- Contratos › Propostas (pacote Busca de XML + Auditoria da Reforma Tributária) ----
+// O servidor audita as notas de entrada reais de cada CNPJ e monta a análise; aqui ajusta preço,
+// desconto e implantação, baixa o PDF timbrado e, ao aprovar, gera o contrato (modelo "Licença de Uso –
+// Reforma Tributária e Busca de XML").
+let PROPOSTA_ABERTA = null;
+const PROP_STATUS = { rascunho:{l:'Rascunho',c:'muted'}, enviada:{l:'Enviada ao cliente',c:'warn'}, aprovada:{l:'Aprovada',c:'ok'}, recusada:{l:'Recusada',c:'bad'} };
+const propBRL = v => 'R$ ' + Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2, maximumFractionDigits:2});
+const propBRL0 = v => 'R$ ' + Math.round(Number(v||0)).toLocaleString('pt-BR');
+const propDataBR = iso => String(iso||'').slice(0,10).split('-').reverse().join('/');
+const propMoedaTxt = v => Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2, maximumFractionDigits:2});
+function propNum(txt){
+  const s = String(txt||'').trim().replace(/[^\d,.\-]/g,'');
+  if(!s) return 0;
+  const n = s.includes(',') ? Number(s.replace(/\./g,'').replace(',','.')) : Number(s);
+  return Number.isFinite(n) ? n : 0;
+}
+// Mesma conta do servidor (src/propostas.ts › calcularValores) — manter as duas iguais.
+function propCalcular(a, c, par){
+  const r2 = v => Math.round(v*100)/100;
+  const mensalBruto = r2(c.buscaMensal + c.reformaMensal);
+  const descontoValor = r2(mensalBruto * c.descontoPct / 100);
+  const mensal = r2(mensalBruto - descontoValor);
+  const analistaMensal = r2(c.salarioAnalista * par.fatorEncargos + par.beneficiosAnalista);
+  const analistaAno = Math.round(analistaMensal * 12 * (c.dedicacaoPct/100));
+  const credito = Math.round(a.totais.perda2027Ano);
+  const economia = analistaAno + credito;
+  const investimentoAno1 = r2(mensal*12 + c.implantacao);
+  const liquido = Math.round(economia - investimentoAno1);
+  const roi = investimentoAno1 > 0 ? Math.round(economia/investimentoAno1*10)/10 : 0;
+  const paybackMeses = economia > 0 ? Math.round(investimentoAno1/(economia/12)*10)/10 : null;
+  return { mensalBruto, descontoValor, mensal, analistaMensal, analistaAno, credito, economia, investimentoAno1, liquido, roi, paybackMeses };
+}
+async function renderContratosPropostas(){
+  if(PROPOSTA_ABERTA) return renderPropostaEditor(PROPOSTA_ABERTA);
+  const box = document.getElementById('contratosContent');
+  box.innerHTML = '<div class="empty-state">Carregando…</div>';
+  const { items } = await api('/propostas');
+  box.innerHTML = `
+    <div class="row" style="margin-bottom:12px; justify-content:space-between;">
+      <div style="font-size:13px; color:var(--ink-soft); max-width:720px;">Escolha o cliente: o site audita as notas de entrada reais de cada CNPJ, calcula a economia com a Reforma Tributária e a Busca de XML, sugere o preço e monta a proposta em PDF no papel timbrado. Depois de aprovada, o contrato é gerado sozinho.</div>
+      <button class="btn primary" id="btnNovaProposta">+ Nova proposta</button>
+    </div>
+    <div class="card" style="padding:0; overflow-x:auto;">
+      <table class="data-table">
+        <thead><tr><th>Nº</th><th>Cliente</th><th>CNPJs</th><th style="text-align:right;">Mensalidade</th><th style="text-align:right;">Economia estimada/ano</th><th>Situação</th><th>Atualizada em</th><th></th></tr></thead>
+        <tbody>
+          ${items.length ? items.map(p=>`
+            <tr data-id="${p.id}" style="cursor:pointer;" title="Clique pra abrir">
+              <td>${esc(p.numero)}</td>
+              <td>${esc(p.clienteNome)}</td>
+              <td>${p.cnpjs}</td>
+              <td style="text-align:right; white-space:nowrap;">${propBRL(p.mensal)}</td>
+              <td style="text-align:right; white-space:nowrap;">${propBRL0(p.economia)}</td>
+              <td><span class="tag ${PROP_STATUS[p.status]?.c||'muted'}">${PROP_STATUS[p.status]?.l||esc(p.status)}</span></td>
+              <td>${fmtDateHora(p.updatedAt)}</td>
+              <td style="text-align:right; white-space:nowrap;">
+                ${p.status!=='aprovada' ? `<button class="btn small danger" data-id="${p.id}" data-act="excluir">Excluir</button>` : ''}
+              </td>
+            </tr>`).join('') : `<tr><td colspan="8"><div class="empty-state">Nenhuma proposta ainda. Clique em "+ Nova proposta".</div></td></tr>`}
+        </tbody>
+      </table>
+    </div>`;
+  document.getElementById('btnNovaProposta').addEventListener('click', novaPropostaModal);
+  box.querySelectorAll('tr[data-id]').forEach(tr=>tr.addEventListener('click', ev=>{
+    if(ev.target.closest('[data-act="excluir"]')) return;
+    PROPOSTA_ABERTA = Number(tr.dataset.id); renderContratosPropostas();
+  }));
+  box.querySelectorAll('[data-act="excluir"]').forEach(b=>b.addEventListener('click', async ()=>{
+    if(!confirm('Excluir esta proposta?')) return;
+    try{ await api('/propostas/'+b.dataset.id, { method:'DELETE' }); toast('Proposta excluída.','ok'); renderContratosPropostas(); }
+    catch(e){ toast(e.message,'err'); }
+  }));
+}
+async function novaPropostaModal(){
+  const empresas = (await api('/empresas')).items.filter(e=>e.ativo);
+  openModal(`
+    <h3>Nova proposta · Reforma Tributária + Busca de XML</h3>
+    <div class="field"><label>Cliente (empresa principal, que assina o contrato)</label>
+      ${comboSelectHtml('ppEmpresaCombo', 'Digite para buscar a empresa…')}
+    </div>
+    <div class="field"><label>Nome do cliente na proposta</label><input type="text" id="ppClienteNome" placeholder="Ex.: Grupo Raízes"></div>
+    <div class="field"><label>Outros CNPJs incluídos na proposta (filiais e empresas do mesmo grupo)</label>
+      <div id="ppOutrasBox"><div style="font-size:12.5px; color:var(--ink-soft);">Escolha o cliente primeiro. As filiais com a mesma raiz de CNPJ já vêm marcadas.</div></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" id="ppCancel">Cancelar</button>
+      <button class="btn primary" id="ppGerar">Analisar e gerar proposta</button>
+    </div>
+  `);
+  let principalId = null;
+  setupComboSelect('ppEmpresaCombo', empresas.map(e=>({id:e.id, label:empresaComboLabel(e)})), async (id)=>{
+    principalId = id ? Number(id) : null;
+    const box = document.getElementById('ppOutrasBox');
+    if(!principalId){ box.innerHTML=''; return; }
+    const emp = empresas.find(e=>e.id===principalId);
+    const nomeInp = document.getElementById('ppClienteNome');
+    if(emp && !nomeInp.dataset.editado) nomeInp.value = emp.nome;
+    let grupo = [];
+    try{ grupo = (await api('/propostas/empresas-grupo?empresaId='+principalId)).ids; }catch(e){}
+    const outras = empresas.filter(e=>e.id!==principalId).sort((a,b)=>(grupo.includes(b.id)-grupo.includes(a.id)) || a.nome.localeCompare(b.nome));
+    box.innerHTML = checklistComFiltroHtml('ppEmp', outras, grupo) + (grupo.length ? `<div style="font-size:12px; color:var(--ink-soft); margin-top:4px;">${grupo.length} filial(is) do mesmo CNPJ marcada(s).</div>` : '');
+    setupChecklistFiltro('ppEmp');
+  });
+  document.getElementById('ppClienteNome').addEventListener('input', e=>{ e.target.dataset.editado='1'; });
+  document.getElementById('ppCancel').addEventListener('click', closeModal);
+  document.getElementById('ppGerar').addEventListener('click', async ()=>{
+    if(!principalId){ toast('Escolha o cliente.','err'); return; }
+    const empresaIds = [...document.querySelectorAll('.ppEmpCheck:checked')].map(c=>Number(c.value));
+    const clienteNome = document.getElementById('ppClienteNome').value.trim();
+    const qtd = empresaIds.length + 1;
+    const passos = [
+      `Lendo os XMLs de entrada dos últimos 4 meses (${qtd} CNPJ${qtd>1?'s':''})`,
+      'Auditando item a item: grupo IBS/CBS, CST × cClassTrib, NCM, base e alíquotas',
+      'Validando NCM e classificação na tabela oficial da Receita',
+      'Separando fornecedores com falha, Simples e MEI',
+      'Projetando o crédito de 2027 em jogo',
+      'Estimando as horas de conferência manual e o custo do analista',
+      'Levantando as economias do perfil do cliente (exportação, insumos, combustível, serviços)',
+      'Calculando o preço sugerido e o retorno',
+    ];
+    const alvo = document.getElementById('modalBody');
+    alvo.innerHTML = `<h3>Analisando ${esc(clienteNome || 'o cliente')}…</h3>
+      <div style="font-size:13px; color:var(--ink-soft); margin-bottom:10px;">O site está pensando: auditando as notas reais antes de montar a proposta.</div>
+      <div id="ppPassos">${passos.map((p,i)=>`<div class="pp-passo" data-i="${i}" style="display:flex; gap:10px; align-items:center; padding:5px 0; font-size:13.5px; color:var(--ink-soft);"><span class="pp-ic" style="width:18px; text-align:center;">○</span><span>${esc(p)}</span></div>`).join('')}</div>`;
+    let i = 0;
+    const marca = (n, ic, cor) => { const el = alvo.querySelector(`.pp-passo[data-i="${n}"]`); if(!el) return; el.querySelector('.pp-ic').textContent = ic; el.style.color = cor; };
+    marca(0,'◐','var(--ink)');
+    const timer = setInterval(()=>{ if(i < passos.length-1){ marca(i,'✓','var(--accent-deep)'); i++; marca(i,'◐','var(--ink)'); } }, 1100);
+    try{
+      const { id } = await api('/propostas', { method:'POST', body:{ empresaId: principalId, empresaIds, clienteNome } });
+      clearInterval(timer);
+      for(let k=0;k<passos.length;k++) marca(k,'✓','var(--accent-deep)');
+      await new Promise(r=>setTimeout(r,500));
+      closeModal();
+      PROPOSTA_ABERTA = id; renderContratosPropostas();
+    }catch(e){ clearInterval(timer); closeModal(); toast(e.message,'err'); }
+  });
+}
+async function renderPropostaEditor(id){
+  const box = document.getElementById('contratosContent');
+  box.innerHTML = '<div class="empty-state">Carregando…</div>';
+  let P;
+  try{ P = await api('/propostas/'+id); }catch(e){ PROPOSTA_ABERTA=null; toast(e.message,'err'); return renderContratosPropostas(); }
+  const a = P.analise, t = a.totais, c = P.config, travada = P.status==='aprovada';
+  const st = PROP_STATUS[P.status] || PROP_STATUS.rascunho;
+  const dis = travada ? 'disabled' : '';
+  const campo = (id, label, valor, dica) => `<div class="field" style="min-width:180px; flex:1;"><label>${label}</label><input type="text" id="${id}" value="${esc(valor)}" ${dis}>${dica?`<div style="font-size:11.5px; color:var(--ink-soft); margin-top:3px;">${dica}</div>`:''}</div>`;
+  box.innerHTML = `
+    <div class="row" style="justify-content:space-between; margin-bottom:14px;">
+      <div>
+        <span class="link-discreto" id="ppVoltar">← Voltar para as propostas</span>
+        <h2 style="margin:6px 0 2px;">Proposta nº ${esc(P.numero)} · ${esc(P.clienteNome)} <span class="tag ${st.c}" style="vertical-align:middle;">${st.l}</span></h2>
+        <div style="font-size:12.5px; color:var(--ink-soft);">Notas de ${propDataBR(a.periodo.de)} a ${propDataBR(a.periodo.ate)} · análise de ${fmtDateHora(a.geradoEm)}</div>
+      </div>
+      <div class="row" style="gap:8px;">
+        <button class="btn" id="ppPdf">⬇ Baixar PDF</button>
+        ${!travada ? `<button class="btn" id="ppReanalisar">↻ Reanalisar notas</button>
+        ${P.status!=='enviada' ? `<button class="btn" data-st="enviada">Marcar como enviada</button>` : ''}
+        ${P.status!=='recusada' ? `<button class="btn" data-st="recusada">Recusada</button>` : `<button class="btn" data-st="rascunho">Reabrir</button>`}
+        <button class="btn primary" id="ppAprovar">✓ Aprovar e gerar contrato</button>` : (P.contratoId ? `<button class="btn primary" id="ppAbrirContrato">Abrir contrato</button>` : '')}
+      </div>
+    </div>
+    <div class="kpi-grid">
+      <div class="kpi"><div class="eyebrow">Economia estimada para o cliente</div><div class="val" id="ppKpiEco" style="font-size:30px;">—</div><div class="sub" id="ppKpiEcoSub"></div></div>
+      <div class="kpi"><div class="eyebrow">Crédito 2027 em jogo</div><div class="val" style="font-size:30px;">${propBRL0(t.perda2027Ano)}</div><div class="sub">por ano · ${a.notificarTotal} fornecedor(es) a notificar</div></div>
+      <div class="kpi"><div class="eyebrow">Notas de entrada auditadas</div><div class="val" style="font-size:30px;">${t.notas.toLocaleString('pt-BR')}</div><div class="sub">${t.notasComFalha} com falha · ${t.fornecedores} fornecedores · ${propBRL0(t.valor)}</div></div>
+      <div class="kpi"><div class="eyebrow">Conferência manual equivalente</div><div class="val" style="font-size:30px;">${a.horasMes} h/mês</div><div class="sub">${a.volume.notasMes} NF-e e ${a.volume.itensMes} itens por mês${a.volume.nfseMes?` · ${a.volume.nfseMes} NFS-e`:''}</div></div>
+    </div>
+    <div class="card">
+      <h3>Valores da proposta</h3>
+      ${travada ? '<div style="font-size:12.5px; color:var(--ink-soft); margin-bottom:10px;">Proposta aprovada: os valores ficaram fixos no contrato gerado.</div>' : ''}
+      <div class="row">
+        <div class="field" style="flex:2; min-width:240px;"><label>Nome do cliente na proposta</label><input type="text" id="ppNome" value="${esc(P.clienteNome)}" ${dis}></div>
+        ${campo('ppValidade','Validade da proposta (dias)', c.validadeDias)}
+      </div>
+      <div class="row">
+        ${campo('ppBusca','Mensalidade · Busca de XML (R$)', propMoedaTxt(c.buscaMensal), `Sugestão: ${propBRL(a.sugestao.buscaMensal)} (${t.cnpjs} CNPJ${t.cnpjs>1?'s':''} × R$ 99,00)`)}
+        ${campo('ppReforma','Mensalidade · Auditoria Reforma (R$)', propMoedaTxt(c.reformaMensal), `Sugestão pelo volume (${a.volume.notasMes} NF-e/mês): ${propBRL(a.sugestao.reformaMensal)}`)}
+        ${campo('ppDesconto','Desconto na mensalidade (%)', String(c.descontoPct).replace('.',','), 'Sai destacado no PDF e no contrato')}
+        ${campo('ppImplantacao','Implantação (R$)', propMoedaTxt(c.implantacao), `Sugestão: ${propBRL(a.sugestao.implantacao)} · 0 = isenta`)}
+      </div>
+      <div class="row">
+        ${campo('ppSalario','Salário do analista de referência (R$)', propMoedaTxt(c.salarioAnalista), 'Com encargos do Lucro Presumido e benefícios')}
+        ${campo('ppDedicacao','Dedicação do analista substituída (%)', c.dedicacaoPct, `Sugestão pelo volume: ${a.dedicacaoSugerida}% (${a.horasMes} h/mês de conferência)`)}
+      </div>
+      <div class="field"><label>Condições especiais (saem no PDF)</label><textarea id="ppObs" rows="2" ${dis} placeholder="Ex.: desconto válido para assinatura até 10/12; primeira mensalidade em janeiro.">${esc(c.observacoes||'')}</textarea></div>
+      <div id="ppResumo" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; margin-top:6px;"></div>
+      ${!travada ? `<div class="row" style="margin-top:12px;"><button class="btn primary" id="ppSalvar">Salvar valores</button><span id="ppSalvoMsg" style="font-size:12.5px; color:var(--ink-soft);"></span></div>` : ''}
+    </div>
+    <div class="card" style="overflow-x:auto;">
+      <h3>Análise por CNPJ</h3>
+      <table class="data-table">
+        <thead><tr><th>Empresa</th><th>Regime</th><th style="text-align:right;">NF-e</th><th style="text-align:right;">Compras</th><th style="text-align:right;">Com falha</th><th style="text-align:right;">Fornec. c/ falha</th><th style="text-align:right;">Crédito 2027/ano</th></tr></thead>
+        <tbody>${a.empresas.map(e=>`<tr>
+          <td>${esc(e.nome)}<div style="font-size:11.5px; color:var(--ink-soft);">${esc(fmtCnpjCpf(e.cnpj))}${e.semNotas?' · <b style="color:var(--debit);">nenhuma nota captada no período</b>':''}</div></td>
+          <td>${esc(e.regimeLabel)}${!e.tomaCredito?'<div style="font-size:11.5px; color:var(--amber);">não toma crédito: fora da soma</div>':''}</td>
+          <td style="text-align:right;">${e.notas}</td><td style="text-align:right; white-space:nowrap;">${propBRL0(e.valor)}</td>
+          <td style="text-align:right;">${e.notasComFalha}</td><td style="text-align:right;">${e.fornecedoresComFalha} de ${e.fornecedores}</td>
+          <td style="text-align:right; white-space:nowrap;"><b>${e.tomaCredito?propBRL0(e.perda2027Ano):'—'}</b></td></tr>`).join('')}</tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h3>Economias que entram na proposta</h3>
+      <div id="ppEconomias"></div>
+    </div>
+    ${a.notificar.length ? `<div class="card" style="overflow-x:auto;">
+      <h3>Fornecedores a notificar${a.notificarTotal>a.notificar.length?` (os ${a.notificar.length} principais de ${a.notificarTotal})`:''}</h3>
+      <table class="data-table"><thead><tr><th>Fornecedor</th><th>Comprador</th><th style="text-align:right;">Notas</th><th>Problema</th><th style="text-align:right;">Crédito 2027/ano</th></tr></thead>
+      <tbody>${a.notificar.map(f=>`<tr><td>${esc(f.nome)}</td><td>${esc(f.comprador)}</td><td style="text-align:right;">${f.notas}</td><td>${esc(f.problema)}</td><td style="text-align:right; white-space:nowrap;">${f.perdaAno?propBRL0(f.perdaAno):'risco de glosa'}</td></tr>`).join('')}</tbody></table>
+    </div>` : ''}
+    ${a.erros.length ? `<div class="card" style="overflow-x:auto;">
+      <h3>Erros encontrados nas notas</h3>
+      <table class="data-table"><thead><tr><th>Erro do fornecedor</th><th style="text-align:right;">Ocorrências</th></tr></thead>
+      <tbody>${a.erros.map(e=>`<tr><td>${esc(e.titulo)}</td><td style="text-align:right;">${e.qtd}</td></tr>`).join('')}</tbody></table>
+    </div>` : ''}
+  `;
+  const lerCfg = () => ({
+    buscaMensal: propNum(document.getElementById('ppBusca').value), reformaMensal: propNum(document.getElementById('ppReforma').value),
+    descontoPct: Math.min(100, Math.max(0, propNum(document.getElementById('ppDesconto').value))), implantacao: propNum(document.getElementById('ppImplantacao').value),
+    salarioAnalista: propNum(document.getElementById('ppSalario').value), dedicacaoPct: Math.min(100, Math.max(0, Math.round(propNum(document.getElementById('ppDedicacao').value)))),
+    validadeDias: Math.max(1, Math.round(propNum(document.getElementById('ppValidade').value)) || 30), observacoes: document.getElementById('ppObs').value,
+  });
+  const desenhaResumo = () => {
+    const cfg = lerCfg(), v = propCalcular(a, cfg, P.parametros);
+    const item = (rot, val, cor) => `<div style="background:var(--paper); border-radius:12px; padding:10px 12px;"><div style="font-size:11.5px; color:var(--ink-soft);">${rot}</div><div style="font-size:17px; font-weight:800; ${cor?`color:${cor};`:''}">${val}</div></div>`;
+    document.getElementById('ppResumo').innerHTML =
+      item('Mensalidade de tabela', propBRL(v.mensalBruto)) +
+      item('Desconto', v.descontoValor ? '− '+propBRL(v.descontoValor) : 'sem desconto') +
+      item('Mensalidade final', propBRL(v.mensal), 'var(--accent-deep)') +
+      item('Implantação', cfg.implantacao ? propBRL(cfg.implantacao) : 'isenta') +
+      item('Investimento no 1º ano', propBRL0(v.investimentoAno1)) +
+      item('Retorno para o cliente', v.roi ? `≈ ${v.roi.toLocaleString('pt-BR')}× · se paga em ${v.paybackMeses==null?'—':v.paybackMeses<=1?'< 1 mês':Math.ceil(v.paybackMeses)+' meses'}` : '—');
+    document.getElementById('ppKpiEco').textContent = propBRL0(v.economia) + '/ano';
+    document.getElementById('ppKpiEcoSub').textContent = `${propBRL0(v.credito)} de crédito + ${propBRL0(v.analistaAno)} de analista (${cfg.dedicacaoPct}%)`;
+    document.getElementById('ppEconomias').innerHTML = (P.economias||[]).map((e,i)=>{
+      let valor = e.valor;
+      if(e.quantificada && /analista/i.test(e.titulo)) valor = propBRL0(v.analistaAno);
+      return `<div style="display:flex; gap:12px; align-items:flex-start; padding:9px 0; border-bottom:1px solid var(--rule-soft);">
+        <span style="flex:0 0 26px; height:26px; border-radius:50%; background:${e.quantificada?'var(--accent-pale)':'var(--paper-deep)'}; display:flex; align-items:center; justify-content:center; font-weight:800; font-size:12px;">${i+1}</span>
+        <div style="flex:1;"><div style="font-weight:700;">${esc(e.titulo)}</div><div style="font-size:12.5px; color:var(--ink-soft);">${e.texto}</div></div>
+        <div style="text-align:right; white-space:nowrap; font-weight:800; color:${e.quantificada?'var(--accent-deep)':'var(--amber)'};">${esc(valor)}<div style="font-size:10.5px; font-weight:600; color:var(--ink-soft);">${esc(e.rotulo)}</div></div></div>`;
+    }).join('');
+  };
+  desenhaResumo();
+  box.querySelectorAll('#ppBusca,#ppReforma,#ppDesconto,#ppImplantacao,#ppSalario,#ppDedicacao').forEach(i=>i.addEventListener('input', desenhaResumo));
+  const salvar = async () => {
+    if(travada) return;
+    const r = await api('/propostas/'+id, { method:'PUT', body:{ config: lerCfg(), clienteNome: document.getElementById('ppNome').value } });
+    P.economias = r.economias; P.clienteNome = r.clienteNome;
+    const msg = document.getElementById('ppSalvoMsg'); if(msg) msg.textContent = 'Salvo ' + new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
+    return r;
+  };
+  document.getElementById('ppVoltar').addEventListener('click', ()=>{ PROPOSTA_ABERTA=null; renderContratosPropostas(); });
+  document.getElementById('ppSalvar')?.addEventListener('click', async ()=>{ try{ await salvar(); desenhaResumo(); toast('Valores salvos.','ok'); }catch(e){ toast(e.message,'err'); } });
+  document.getElementById('ppPdf').addEventListener('click', async (ev)=>{
+    try{ await salvar(); }catch(e){ toast(e.message,'err'); return; }
+    rtBaixar('/api/propostas/'+id+'/pdf', `Proposta ${P.numero.replace('/','-')} - ${P.clienteNome}.pdf`, ev.currentTarget, 'Gerando PDF…');
+  });
+  document.getElementById('ppReanalisar')?.addEventListener('click', async (ev)=>{
+    if(!confirm('Refazer a análise com as notas de hoje? Os valores e o desconto que você digitou continuam.')) return;
+    const b = ev.currentTarget; b.disabled = true; b.textContent = 'Analisando as notas…';
+    try{ await salvar(); await api('/propostas/'+id+'/reanalisar', { method:'POST' }); toast('Análise atualizada.','ok'); renderPropostaEditor(id); }
+    catch(e){ toast(e.message,'err'); b.disabled=false; b.textContent='↻ Reanalisar notas'; }
+  });
+  box.querySelectorAll('[data-st]').forEach(b=>b.addEventListener('click', async ()=>{
+    try{ await salvar(); await api('/propostas/'+id+'/status', { method:'POST', body:{ status:b.dataset.st } }); renderPropostaEditor(id); }
+    catch(e){ toast(e.message,'err'); }
+  }));
+  document.getElementById('ppAbrirContrato')?.addEventListener('click', ()=>{ CONTRATOS_TAB='contratos'; renderContratosTab(); abrirContratoDrawer(P.contratoId); });
+  document.getElementById('ppAprovar')?.addEventListener('click', async ()=>{
+    try{ await salvar(); }catch(e){ toast(e.message,'err'); return; }
+    const v = propCalcular(a, lerCfg(), P.parametros);
+    openModal(`
+      <h3>Aprovar a proposta e gerar o contrato</h3>
+      <div style="font-size:13px; color:var(--ink-soft); margin-bottom:12px;">O contrato sai pelo modelo "Licença de Uso – Reforma Tributária e Busca de XML", em nome de <b>${esc(a.empresas[0].nome)}</b>, com os ${t.cnpjs} CNPJ(s) no Anexo I, mensalidade de <b>${propBRL(v.mensal)}</b> e implantação de <b>${lerCfg().implantacao?propBRL(lerCfg().implantacao):'R$ 0,00 (isenta)'}</b>. Depois é só conferir as testemunhas e mandar para assinatura.</div>
+      <div class="field" style="max-width:220px;"><label>Dia do vencimento da mensalidade</label><input type="text" id="ppDiaVenc" value="10"></div>
+      <div class="modal-actions"><button class="btn" id="ppAprCancel">Cancelar</button><button class="btn primary" id="ppAprOk">Aprovar e gerar contrato</button></div>
+    `);
+    document.getElementById('ppAprCancel').addEventListener('click', closeModal);
+    document.getElementById('ppAprOk').addEventListener('click', async (ev)=>{
+      const dia = Math.round(propNum(document.getElementById('ppDiaVenc').value));
+      if(!(dia>=1 && dia<=31)){ toast('Informe um dia entre 1 e 31.','err'); return; }
+      ev.currentTarget.disabled = true;
+      try{
+        const { contratoId } = await api('/propostas/'+id+'/aprovar', { method:'POST', body:{ diaVencimento: dia } });
+        closeModal(); toast('Proposta aprovada. Contrato gerado.','ok');
+        PROPOSTA_ABERTA = null; CONTRATOS_TAB='contratos'; renderContratosTab(); abrirContratoDrawer(contratoId);
+      }catch(e){ ev.currentTarget.disabled = false; toast(e.message,'err'); }
+    });
+  });
 }
 async function novoContratoModal(empresas){
   const { items: modelos } = await api('/contratos/modelos');

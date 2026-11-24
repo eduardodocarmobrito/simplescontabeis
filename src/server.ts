@@ -16,6 +16,7 @@ import { DatabaseSync } from "node:sqlite";
 import * as nfse from "./nfse";
 import * as asaas from "./asaas";
 import * as contratos from "./contratos";
+import * as propostas from "./propostas";
 import * as autentique from "./autentique";
 import { localizarLinhasAssinatura, casarLinhas, posicaoAssinatura } from "./assinatura-posicoes";
 import { MODELOS_CONTRATO_PRONTOS } from "./contrato-modelos-prontos";
@@ -25929,6 +25930,10 @@ app.post("/api/contratos", blockCliente, requirePermissao("contratos", "postar")
   if (!podeAcessarEmpresa(user, Number(empresaId))) return res.status(403).json({ error: "Sem acesso a esta empresa." });
   const empresa = sqlite.prepare(`SELECT * FROM empresas WHERE id = ?`).get(Number(empresaId)) as any;
   if (!empresa) return res.status(404).json({ error: "Empresa não encontrada." });
+  res.json({ id: contratoCriar(user, modelo, empresa, dados) });
+});
+// Cria o contrato a partir de um modelo (usado pela tela "Novo contrato" e pela aprovação de proposta).
+function contratoCriar(user: any, modelo: any, empresa: any, dados: Record<string, any> | null | undefined, dadosHtml: Record<string, string> = {}): number {
   const camposModelo = JSON.parse(modelo.campos || "[]") as any[];
   const dadosFinal: Record<string, any> = { ...(dados || {}) };
   // {{dia}}/{{mes}}/{{ano}} são tokens reservados — sempre a data de hoje, sem precisar declarar
@@ -26011,6 +26016,9 @@ app.post("/api/contratos", blockCliente, requirePermissao("contratos", "postar")
   for (const chave of Object.keys(dadosFinal)) {
     if (typeof dadosFinal[chave] === "string") dadosFinal[chave] = escHtmlRelatorio(dadosFinal[chave]);
   }
+  // Campos que já vêm como HTML montado e escapado pelo próprio servidor (ex.: Anexo I de estabelecimentos
+  // da proposta) — nunca vêm do corpo da requisição.
+  Object.assign(dadosFinal, dadosHtml);
   const dadosNoTexto: Record<string, any> = { ...dadosFinal };
   if (Object.keys(calcLicenca).length) {
     for (const k of [...Object.keys(calcLicenca), "valor_mensalidade", "valor_mensalidade_automatica", "valor_implantacao", "valor_implantacao_automatica"]) delete dadosNoTexto[k];
@@ -26022,7 +26030,225 @@ app.post("/api/contratos", blockCliente, requirePermissao("contratos", "postar")
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(modelo.id, empresa.id, `${modelo.nome} — ${empresa.nome}`, conteudoHtml, JSON.stringify(dadosFinal), numeroSequencial, agoraContrato.ano, user.id);
-  res.json({ id: Number(info.lastInsertRowid) });
+  return Number(info.lastInsertRowid);
+}
+
+// ===================== Propostas comerciais (Contratos › Propostas) =====================
+// Pacote Busca de XML + Auditoria da Reforma Tributária: escolhe o cliente (e os CNPJs do grupo), o
+// servidor roda a auditoria real das notas de entrada de cada CNPJ, monta a análise de economia e a
+// sugestão de preço (src/propostas.ts). A tela ajusta desconto/implantação, baixa o PDF timbrado e, ao
+// aprovar, gera o contrato pelo modelo "Licença de Uso – Reforma Tributária e Busca de XML".
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS propostas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    escritorio_id INTEGER NOT NULL,
+    empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE, -- empresa principal (vai no contrato)
+    empresas_ids TEXT NOT NULL DEFAULT '[]', -- JSON com todos os CNPJs da proposta (principal primeiro)
+    cliente_nome TEXT NOT NULL,
+    numero INTEGER NOT NULL,
+    numero_ano INTEGER NOT NULL,
+    analise TEXT NOT NULL, -- JSON (propostas.montarAnalise) — fotografia do dia da análise
+    config TEXT NOT NULL, -- JSON (preços, desconto, implantação, premissas do analista)
+    status TEXT NOT NULL DEFAULT 'rascunho', -- 'rascunho' | 'enviada' | 'aprovada' | 'recusada'
+    contrato_id INTEGER REFERENCES contratos(id) ON DELETE SET NULL,
+    criado_por INTEGER,
+    criado_em TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now')),
+    aprovado_em TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_propostas_escritorio ON propostas(escritorio_id, updated_at);
+`);
+const PROPOSTA_MODELO_PRONTO_ID = "licenca-reforma-busca-xml";
+function propostaHojeIso() {
+  const a = agoraBrasilia();
+  return `${a.ano}-${String(a.mes).padStart(2, "0")}-${String(a.dia).padStart(2, "0")}`;
+}
+function propostaAnalisar(escritorioId: number, empresaIds: number[]) {
+  const ate = propostaHojeIso();
+  const [ano, mes] = [Number(ate.slice(0, 4)), Number(ate.slice(5, 7))];
+  const ini = new Date(Date.UTC(ano, mes - 1 - 3, 1));
+  const de = ini.toISOString().slice(0, 10);
+  const entradas: propostas.EmpresaEntrada[] = empresaIds.map((id) => {
+    const e = sqlite.prepare(`SELECT id, nome, cnpj, regime_tributario, cidade, uf, cnae_principal_json FROM empresas WHERE id = ? AND escritorio_id = ?`).get(id, escritorioId) as any;
+    if (!e) throw new Error("Empresa não encontrada.");
+    const auditoria = reformaCalcularAuditoria(escritorioId, id, de, ate, true, "entrada");
+    const cnpj = String(e.cnpj || "").replace(/\D/g, "");
+    const um = (sql: string, ...p: any[]) => sqlite.prepare(sql).get(...p) as any;
+    const nfse = um(`SELECT COUNT(*) n, COALESCE(SUM(valor_total),0) v FROM nfe_documentos WHERE empresa_id = ? AND tipo = 'nfse' AND COALESCE(emitente_cnpj,'') <> ? AND substr(data_emissao,1,10) >= date(?, '-12 months')`, id, cnpj, ate);
+    const cte = um(`SELECT COUNT(*) n FROM nfe_documentos WHERE empresa_id = ? AND tipo = 'cte' AND COALESCE(emitente_cnpj,'') <> ? AND substr(data_emissao,1,10) BETWEEN ? AND ?`, id, cnpj, de, ate);
+    const canc = um(`SELECT COUNT(*) n FROM nfe_documentos WHERE empresa_id = ? AND tipo = 'evento' AND evento_descricao LIKE '%ancela%' AND substr(COALESCE(data_emissao, criado_em),1,10) BETWEEN ? AND ?`, id, de, ate);
+    const exp = um(`SELECT COUNT(*) n, COALESCE(SUM(valor_total),0) v FROM nfe_documentos WHERE empresa_id = ? AND tipo = 'nfe' AND emitente_cnpj = ? AND (UPPER(nat_op) LIKE '%EXPORT%' OR UPPER(nat_op) LIKE '%FIM ESPEC%' OR UPPER(nat_op) LIKE '%FORMACAO DE LOTE%' OR UPPER(nat_op) LIKE '%FORMAÇÃO DE LOTE%') AND substr(data_emissao,1,10) >= date(?, '-12 months')`, id, cnpj, ate);
+    const docs = um(`SELECT COUNT(*) n FROM nfe_documentos WHERE empresa_id = ? AND tipo IN ('nfe','nfce','nfse','cte') AND substr(data_emissao,1,10) BETWEEN ? AND ?`, id, de, ate);
+    let cnae: string | null = null;
+    try { cnae = JSON.parse(e.cnae_principal_json || "null")?.codigo || null; } catch {}
+    return {
+      empresa: { id, nome: e.nome, cnpj: e.cnpj, regime: auditoria.empresa.regime, regimeLabel: auditoria.empresa.regimeLabel, tomaCredito: auditoria.empresa.tomaCredito, cidade: e.cidade, uf: e.uf, cnae },
+      auditoria,
+      extras: { nfseTomadas12m: nfse.n, nfseTomadasValor12m: nfse.v, cteTomados: cte.n, cancelamentos: canc.n, exportacoes12m: exp.n, exportacoesValor12m: exp.v, documentosPeriodo: docs.n },
+    };
+  });
+  return propostas.montarAnalise(entradas, { de, ate, meses: 4 });
+}
+function propostaLinha(user: any, id: number) {
+  const p = sqlite.prepare(`SELECT * FROM propostas WHERE id = ? AND escritorio_id = ?`).get(id, user.escritorioId) as any;
+  if (!p) return null;
+  const ids = JSON.parse(p.empresas_ids || "[]") as number[];
+  if (!ids.every((e) => podeAcessarEmpresa(user, e))) return null;
+  return p;
+}
+function propostaMontarResposta(p: any) {
+  const analise = JSON.parse(p.analise);
+  const config = propostas.normalizarConfig(JSON.parse(p.config || "{}"), propostas.configPadrao(analise));
+  const valores = propostas.calcularValores(analise, config);
+  return {
+    id: p.id, numero: `${String(p.numero).padStart(3, "0")}/${p.numero_ano}`, empresaId: p.empresa_id, empresasIds: JSON.parse(p.empresas_ids || "[]"),
+    clienteNome: p.cliente_nome, status: p.status, contratoId: p.contrato_id, criadoEm: p.criado_em, updatedAt: p.updated_at, aprovadoEm: p.aprovado_em,
+    analise, config, valores, economias: propostas.listarEconomias(analise, valores, config),
+    parametros: { fatorEncargos: propostas.FATOR_ENCARGOS, beneficiosAnalista: propostas.BENEFICIOS_ANALISTA },
+  };
+}
+app.get("/api/propostas", blockCliente, requirePermissao("contratos", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const rows = sqlite.prepare(`SELECT * FROM propostas WHERE escritorio_id = ? ORDER BY updated_at DESC`).all(user.escritorioId) as any[];
+  const items = rows
+    .filter((p) => (JSON.parse(p.empresas_ids || "[]") as number[]).every((e) => podeAcessarEmpresa(user, e)))
+    .map((p) => {
+      const r = propostaMontarResposta(p);
+      return { id: r.id, numero: r.numero, clienteNome: r.clienteNome, cnpjs: r.empresasIds.length, mensal: r.valores.mensal, implantacao: r.config.implantacao, economia: r.valores.economia, status: r.status, contratoId: r.contratoId, updatedAt: r.updatedAt };
+    });
+  res.json({ items });
+});
+// Outros CNPJs do mesmo grupo (mesma raiz de CNPJ = matriz e filiais) — já vêm marcados na tela.
+app.get("/api/propostas/empresas-grupo", blockCliente, requirePermissao("contratos", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.query.empresaId);
+  const e = sqlite.prepare(`SELECT cnpj FROM empresas WHERE id = ? AND escritorio_id = ?`).get(empresaId, user.escritorioId) as any;
+  if (!e || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const raiz = String(e.cnpj || "").replace(/\D/g, "").slice(0, 8);
+  if (raiz.length < 8) return res.json({ ids: [] });
+  const ids = (sqlite.prepare(`SELECT id, cnpj FROM empresas WHERE escritorio_id = ? AND ativo = 1 AND id <> ?`).all(user.escritorioId, empresaId) as any[])
+    .filter((x) => String(x.cnpj || "").replace(/\D/g, "").slice(0, 8) === raiz && podeAcessarEmpresa(user, x.id))
+    .map((x) => x.id);
+  res.json({ ids });
+});
+app.post("/api/propostas", blockCliente, requirePermissao("contratos", "postar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.body?.empresaId);
+  const extras = Array.isArray(req.body?.empresaIds) ? req.body.empresaIds.map(Number).filter((n: number) => n && n !== empresaId) : [];
+  const ids = [empresaId, ...new Set<number>(extras)];
+  if (!empresaId || !ids.every((id) => podeAcessarEmpresa(user, id))) return res.status(403).json({ error: "Sem acesso a alguma das empresas escolhidas." });
+  if (ids.length > 30) return res.status(400).json({ error: "Escolha no máximo 30 CNPJs por proposta." });
+  const principal = sqlite.prepare(`SELECT nome FROM empresas WHERE id = ? AND escritorio_id = ?`).get(empresaId, user.escritorioId) as any;
+  if (!principal) return res.status(404).json({ error: "Empresa não encontrada." });
+  try {
+    const analise = propostaAnalisar(user.escritorioId, ids);
+    const config = propostas.configPadrao(analise);
+    const ano = agoraBrasilia().ano;
+    const max = sqlite.prepare(`SELECT MAX(numero) m FROM propostas WHERE escritorio_id = ? AND numero_ano = ?`).get(user.escritorioId, ano) as any;
+    const clienteNome = String(req.body?.clienteNome || "").trim().slice(0, 150) || principal.nome;
+    const info = sqlite
+      .prepare(`INSERT INTO propostas (escritorio_id, empresa_id, empresas_ids, cliente_nome, numero, numero_ano, analise, config, criado_por) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(user.escritorioId, empresaId, JSON.stringify(ids), clienteNome, (max?.m || 0) + 1, ano, JSON.stringify(analise), JSON.stringify(config), user.id);
+    res.json({ id: Number(info.lastInsertRowid) });
+  } catch (e: any) {
+    res.status(500).json({ error: `Não consegui analisar as notas: ${e.message}` });
+  }
+});
+app.get("/api/propostas/:id", blockCliente, requirePermissao("contratos", "visualizar"), (req, res) => {
+  const p = propostaLinha((req as any).user, Number(req.params.id));
+  if (!p) return res.status(404).json({ error: "Proposta não encontrada." });
+  res.json(propostaMontarResposta(p));
+});
+app.put("/api/propostas/:id", blockCliente, requirePermissao("contratos", "editar"), (req, res) => {
+  const p = propostaLinha((req as any).user, Number(req.params.id));
+  if (!p) return res.status(404).json({ error: "Proposta não encontrada." });
+  if (p.status === "aprovada") return res.status(409).json({ error: "Proposta já aprovada — o contrato já foi gerado com esses valores." });
+  const analise = JSON.parse(p.analise);
+  const atual = propostas.normalizarConfig(JSON.parse(p.config || "{}"), propostas.configPadrao(analise));
+  const config = propostas.normalizarConfig(req.body?.config || {}, atual);
+  const clienteNome = req.body?.clienteNome !== undefined ? String(req.body.clienteNome).trim().slice(0, 150) || p.cliente_nome : p.cliente_nome;
+  sqlite.prepare(`UPDATE propostas SET config = ?, cliente_nome = ?, updated_at = datetime('now') WHERE id = ?`).run(JSON.stringify(config), clienteNome, p.id);
+  res.json(propostaMontarResposta({ ...p, config: JSON.stringify(config), cliente_nome: clienteNome }));
+});
+app.post("/api/propostas/:id/reanalisar", blockCliente, requirePermissao("contratos", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const p = propostaLinha(user, Number(req.params.id));
+  if (!p) return res.status(404).json({ error: "Proposta não encontrada." });
+  if (p.status === "aprovada") return res.status(409).json({ error: "Proposta já aprovada." });
+  try {
+    const analise = propostaAnalisar(user.escritorioId, JSON.parse(p.empresas_ids));
+    sqlite.prepare(`UPDATE propostas SET analise = ?, updated_at = datetime('now') WHERE id = ?`).run(JSON.stringify(analise), p.id);
+    res.json(propostaMontarResposta({ ...p, analise: JSON.stringify(analise) }));
+  } catch (e: any) {
+    res.status(500).json({ error: `Não consegui analisar as notas: ${e.message}` });
+  }
+});
+app.post("/api/propostas/:id/status", blockCliente, requirePermissao("contratos", "editar"), (req, res) => {
+  const p = propostaLinha((req as any).user, Number(req.params.id));
+  if (!p) return res.status(404).json({ error: "Proposta não encontrada." });
+  const status = String(req.body?.status || "");
+  if (!["rascunho", "enviada", "recusada"].includes(status)) return res.status(400).json({ error: "Situação inválida." });
+  if (p.status === "aprovada") return res.status(409).json({ error: "Proposta já aprovada." });
+  sqlite.prepare(`UPDATE propostas SET status = ?, updated_at = datetime('now') WHERE id = ?`).run(status, p.id);
+  res.json({ ok: true });
+});
+app.get("/api/propostas/:id/pdf", blockCliente, requirePermissao("contratos", "visualizar"), async (req, res) => {
+  const p = propostaLinha((req as any).user, Number(req.params.id));
+  if (!p) return res.status(404).json({ error: "Proposta não encontrada." });
+  try {
+    const r = propostaMontarResposta(p);
+    const pdf = await propostas.gerarPdfProposta(r.analise, r.config, { clienteNome: r.clienteNome, data: String(p.updated_at || p.criado_em).slice(0, 10), numero: r.numero }, contratos.timbradoDataUri());
+    const nome = `Proposta ${r.numero.replace("/", "-")} - ${String(r.clienteNome).replace(/[^\w\- ]/g, "").slice(0, 60)}.pdf`;
+    res.set("Content-Type", "application/pdf");
+    res.set("Content-Disposition", `attachment; filename="${nome}"`);
+    res.send(pdf);
+  } catch (e: any) {
+    res.status(500).json({ error: `Não consegui gerar o PDF: ${e.message}` });
+  }
+});
+app.post("/api/propostas/:id/aprovar", blockCliente, requirePermissao("contratos", "postar"), (req, res) => {
+  const user = (req as any).user;
+  const p = propostaLinha(user, Number(req.params.id));
+  if (!p) return res.status(404).json({ error: "Proposta não encontrada." });
+  if (p.status === "aprovada" && p.contrato_id) return res.json({ contratoId: p.contrato_id });
+  const pronto = MODELOS_CONTRATO_PRONTOS.find((m) => m.id === PROPOSTA_MODELO_PRONTO_ID)!;
+  // Usa o modelo do escritório com esse nome (pode ter sido revisado em Contratos › Modelos); se ainda
+  // não existe, cria a partir do modelo pronto.
+  let modelo = sqlite.prepare(`SELECT * FROM contratos_modelos WHERE escritorio_id = ? AND nome = ? AND ativo = 1 ORDER BY id DESC LIMIT 1`).get(user.escritorioId, pronto.nome) as any;
+  if (!modelo) {
+    const info = sqlite.prepare(`INSERT INTO contratos_modelos (nome, conteudo_html, campos, escritorio_id) VALUES (?, ?, ?, ?)`).run(pronto.nome, pronto.conteudoHtml, JSON.stringify(pronto.campos), user.escritorioId);
+    modelo = sqlite.prepare(`SELECT * FROM contratos_modelos WHERE id = ?`).get(Number(info.lastInsertRowid));
+  }
+  const empresa = sqlite.prepare(`SELECT * FROM empresas WHERE id = ?`).get(p.empresa_id) as any;
+  if (!empresa) return res.status(404).json({ error: "Empresa principal não encontrada." });
+  const r = propostaMontarResposta(p);
+  const brlC = (v: number) => v.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const dia = Math.round(Number(req.body?.diaVencimento));
+  const ids = r.empresasIds as number[];
+  const estabelecimentos = ids.map((id) => sqlite.prepare(`SELECT nome, cnpj, cidade, uf FROM empresas WHERE id = ?`).get(id) as any).filter(Boolean);
+  const dados: Record<string, string> = {
+    mensalidade_total: brlC(r.valores.mensal), mensalidade_total_extenso: contratos.valorPorExtenso(r.valores.mensal),
+    implantacao_total: brlC(r.config.implantacao), implantacao_total_extenso: contratos.valorPorExtenso(r.config.implantacao),
+    mensalidade_busca: brlC(r.config.buscaMensal), mensalidade_reforma: brlC(r.config.reformaMensal),
+    desconto_texto: r.valores.descontoValor ? `, já aplicado o desconto de ${String(r.config.descontoPct).replace(".", ",")}% sobre o valor de tabela de R$ ${brlC(r.valores.mensalBruto)}` : "",
+    desconto_anexo: r.valores.descontoValor ? `${String(r.config.descontoPct).replace(".", ",")}% (− R$ ${brlC(r.valores.descontoValor)} por mês)` : "Sem desconto",
+    qtd_estabelecimentos: String(estabelecimentos.length), n_proposta: r.numero,
+  };
+  if (dia >= 1 && dia <= 31) dados.dia_vencimento = String(dia);
+  try {
+    const contratoId = contratoCriar(user, modelo, empresa, dados, { anexo_estabelecimentos: propostas.anexoEstabelecimentosHtml(estabelecimentos) });
+    sqlite.prepare(`UPDATE propostas SET status = 'aprovada', contrato_id = ?, aprovado_em = datetime('now'), updated_at = datetime('now') WHERE id = ?`).run(contratoId, p.id);
+    res.json({ contratoId });
+  } catch (e: any) {
+    res.status(500).json({ error: `Não consegui gerar o contrato: ${e.message}` });
+  }
+});
+app.delete("/api/propostas/:id", blockCliente, requirePermissao("contratos", "editar"), (req, res) => {
+  const p = propostaLinha((req as any).user, Number(req.params.id));
+  if (!p) return res.status(404).json({ error: "Proposta não encontrada." });
+  if (p.status === "aprovada") return res.status(409).json({ error: "Proposta aprovada não pode ser excluída — o contrato já foi gerado a partir dela." });
+  sqlite.prepare(`DELETE FROM propostas WHERE id = ?`).run(p.id);
+  res.json({ ok: true });
 });
 app.get("/api/contratos/distrato-config", blockCliente, requirePermissao("contratos", "visualizar"), (req, res) => {
   const c = sqlite.prepare(`SELECT * FROM contratos_distrato_config WHERE escritorio_id = ?`).get((req as any).user.escritorioId) as any;
