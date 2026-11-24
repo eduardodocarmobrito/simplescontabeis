@@ -26284,6 +26284,43 @@ const PROPOSTA_ESC_MODELO_PRONTO_ID = "licenca-plataforma-escritorio";
 {
   const cols = sqlite.prepare(`PRAGMA table_info(propostas_escritorio)`).all() as any[];
   if (!cols.some((c) => c.name === "escritorio_criado_id")) sqlite.exec(`ALTER TABLE propostas_escritorio ADD COLUMN escritorio_criado_id INTEGER REFERENCES escritorios(id) ON DELETE SET NULL`);
+  // Pedido de criação do acesso feito na aprovação ({adminNome, adminEmail}); só é executado quando o
+  // contrato termina de ser assinado por todos (ver propostaEscProcessarContratoAssinado).
+  if (!cols.some((c) => c.name === "acesso_pendente")) sqlite.exec(`ALTER TABLE propostas_escritorio ADD COLUMN acesso_pendente TEXT`);
+  if (!cols.some((c) => c.name === "acesso_criado_em")) sqlite.exec(`ALTER TABLE propostas_escritorio ADD COLUMN acesso_criado_em TEXT`);
+  if (!cols.some((c) => c.name === "acesso_erro")) sqlite.exec(`ALTER TABLE propostas_escritorio ADD COLUMN acesso_erro TEXT`);
+}
+// Contrato da proposta de escritório assinado por todos (Autentique) → cria o acesso na plataforma e
+// manda ao administrador o link pra criar a senha. Idempotente: só roda com pedido pendente e sem
+// escritório já criado. Falha (ex.: e-mail já usado) fica gravada em acesso_erro e aparece na proposta.
+async function propostaEscProcessarContratoAssinado(contratoId: number) {
+  const p = sqlite.prepare(`SELECT * FROM propostas_escritorio WHERE contrato_id = ? AND acesso_pendente IS NOT NULL AND escritorio_criado_id IS NULL`).get(contratoId) as any;
+  if (!p) return;
+  const admin = JSON.parse(p.acesso_pendente);
+  const config = propostasEscritorio.normalizarConfig(JSON.parse(p.config || "{}"), propostaEscBase());
+  let acesso: { escritorioId: number; tokenCru: string; modulos: string[] };
+  sqlite.exec("BEGIN");
+  try {
+    acesso = propostaEscCriarAcesso(config, admin);
+    sqlite.prepare(`UPDATE propostas_escritorio SET escritorio_criado_id = ?, acesso_pendente = NULL, acesso_criado_em = datetime('now'), acesso_erro = NULL, updated_at = datetime('now') WHERE id = ?`).run(acesso.escritorioId, p.id);
+    sqlite.exec("COMMIT");
+  } catch (e: any) {
+    sqlite.exec("ROLLBACK");
+    sqlite.prepare(`UPDATE propostas_escritorio SET acesso_erro = ?, updated_at = datetime('now') WHERE id = ?`).run(String(e.message).slice(0, 500), p.id);
+    console.error(`[proposta-escritorio] #${p.id}: falha ao criar o acesso:`, e.message);
+    return;
+  }
+  const link = `${SITE_URL_PADRAO}/?resetToken=${acesso.tokenCru}`;
+  try {
+    await enviarEmail(p.escritorio_id, {
+      to: [admin.email],
+      subject: "Seu acesso à plataforma Simples Contábeis está pronto",
+      text: `Olá, ${admin.nome}!\n\nO contrato foi assinado e o acesso do ${config.escritorio.nome} à plataforma Simples Contábeis já está criado${acesso.modulos.length ? `, com: ${acesso.modulos.join(", ")}` : ""}.\n\nCrie a sua senha por este link (vale 7 dias, uso único):\n${link}\n\nDepois é só entrar em ${SITE_URL_PADRAO} com o e-mail ${admin.email}. Se o link expirar, use "Esqueci minha senha" na tela de login.\n\nVamos agendar a implantação com a sua equipe. Qualquer dúvida, é só chamar a gente.`,
+    });
+  } catch (e: any) {
+    console.error(`[proposta-escritorio] #${p.id}: acesso criado, mas falhou o e-mail ao administrador:`, e.message);
+    sqlite.prepare(`UPDATE propostas_escritorio SET acesso_erro = ? WHERE id = ?`).run(`Acesso criado, mas o e-mail com o link não foi enviado (${String(e.message).slice(0, 200)}). Gere um novo link na proposta.`, p.id);
+  }
 }
 // Só quem é dono da plataforma cria escritório novo pela aprovação: SuperAdmin ou o escritório isento
 // que não é o de "clientes diretos" (a Simples Contábeis). Um escritório-cliente usando a aba
@@ -26339,6 +26376,7 @@ function propostaEscResposta(p: any) {
   return {
     id: p.id, tipo: "escritorio", numero: `${String(p.numero).padStart(3, "0")}/${p.numero_ano}`, status: p.status, empresaId: p.empresa_id, contratoId: p.contrato_id,
     criadoEm: p.criado_em, updatedAt: p.updated_at, aprovadoEm: p.aprovado_em, config, valores: propostasEscritorio.calcularValores(config), escritorioCriadoId: p.escritorio_criado_id || null,
+    acesso: { pendente: p.acesso_pendente ? JSON.parse(p.acesso_pendente) : null, criadoEm: p.acesso_criado_em || null, erro: p.acesso_erro || null },
     sugestoes: { horasPorCliente: propostasEscritorio.horasSugeridas(config.modulos), implantacao: propostasEscritorio.implantacaoSugerida(config.clientes) },
     parametros: { fatorEncargos: propostasEscritorio.FATOR_ENCARGOS, beneficios: propostasEscritorio.BENEFICIOS, horasMes: propostasEscritorio.HORAS_MES },
   };
@@ -26414,6 +26452,7 @@ app.post("/api/propostas-escritorio/:id/aprovar", blockCliente, requirePermissao
   if (criarAcesso && !propostaEscPodeCriarAcesso(user)) return res.status(403).json({ error: "Só o dono da plataforma pode criar o acesso de um escritório novo." });
   const admin = { nome: String(req.body?.adminNome || e.responsavel || e.nome).trim().slice(0, 120), email: String(req.body?.adminEmail || e.email || "").trim().toLowerCase().slice(0, 150) };
   if (criarAcesso && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(admin.email)) return res.status(400).json({ error: "Informe um e-mail válido para o administrador do escritório." });
+  if (criarAcesso && sqlite.prepare(`SELECT 1 FROM app_users WHERE email = ?`).get(admin.email)) return res.status(409).json({ error: `Já existe um usuário com o e-mail ${admin.email} — informe outro e-mail para o administrador.` });
   const pronto = MODELOS_CONTRATO_PRONTOS.find((m) => m.id === PROPOSTA_ESC_MODELO_PRONTO_ID)!;
   let modelo = sqlite.prepare(`SELECT * FROM contratos_modelos WHERE escritorio_id = ? AND nome = ? AND ativo = 1 ORDER BY id DESC LIMIT 1`).get(user.escritorioId, pronto.nome) as any;
   const brlC = (v: number) => v.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -26428,7 +26467,6 @@ app.post("/api/propostas-escritorio/:id/aprovar", blockCliente, requirePermissao
   if (dia >= 1 && dia <= 31) dados.dia_vencimento = String(dia);
   try {
     let contratoId = 0;
-    let acesso: { escritorioId: number; tokenCru: string; modulos: string[] } | null = null;
     sqlite.exec("BEGIN");
     try {
       if (!modelo) {
@@ -26443,20 +26481,47 @@ app.post("/api/propostas-escritorio/:id/aprovar", blockCliente, requirePermissao
       }
       const empresa = sqlite.prepare(`SELECT * FROM empresas WHERE id = ?`).get(empresaId) as any;
       contratoId = contratoCriar(user, modelo, empresa, dados, { anexo_modulos: propostasEscritorio.anexoModulosHtml(r.config) });
-      if (criarAcesso) acesso = propostaEscCriarAcesso(r.config, admin);
-      sqlite.prepare(`UPDATE propostas_escritorio SET status = 'aprovada', empresa_id = ?, contrato_id = ?, escritorio_criado_id = COALESCE(?, escritorio_criado_id), aprovado_em = datetime('now'), updated_at = datetime('now') WHERE id = ?`).run(empresaId, contratoId, acesso?.escritorioId ?? null, p.id);
+      sqlite.prepare(`UPDATE propostas_escritorio SET status = 'aprovada', empresa_id = ?, contrato_id = ?, acesso_pendente = ?, aprovado_em = datetime('now'), updated_at = datetime('now') WHERE id = ?`).run(empresaId, contratoId, criarAcesso ? JSON.stringify(admin) : null, p.id);
       sqlite.exec("COMMIT");
     } catch (err) {
       sqlite.exec("ROLLBACK");
       throw err;
     }
-    res.json({
-      contratoId, empresaId,
-      acesso: acesso ? { escritorioId: acesso.escritorioId, adminEmail: admin.email, modulos: acesso.modulos, link: `${req.protocol}://${req.get("host")}/?resetToken=${acesso.tokenCru}` } : null,
-    });
+    res.json({ contratoId, empresaId, acessoPendente: criarAcesso ? { adminEmail: admin.email } : null });
   } catch (err: any) {
     res.status(500).json({ error: `Não consegui gerar o contrato: ${err.message}` });
   }
+});
+// Contrato já assinado mas o acesso falhou (ex.: e-mail em uso): corrige o e-mail e tenta de novo.
+app.post("/api/propostas-escritorio/:id/criar-acesso", blockCliente, requirePermissao("contratos", "postar"), async (req, res) => {
+  const user = (req as any).user;
+  if (!propostaEscPodeCriarAcesso(user)) return res.status(403).json({ error: "Só o dono da plataforma pode criar o acesso de um escritório." });
+  const p = propostaEscLinha(user, Number(req.params.id));
+  if (!p || !p.contrato_id) return res.status(404).json({ error: "Proposta aprovada não encontrada." });
+  if (p.escritorio_criado_id) return res.status(409).json({ error: "O acesso deste escritório já foi criado." });
+  const c = sqlite.prepare(`SELECT status_assinatura FROM contratos WHERE id = ?`).get(p.contrato_id) as any;
+  if (c?.status_assinatura !== "assinado") return res.status(409).json({ error: "O contrato ainda não foi assinado por todos." });
+  const atual = p.acesso_pendente ? JSON.parse(p.acesso_pendente) : {};
+  const admin = { nome: String(req.body?.adminNome || atual.nome || "").trim().slice(0, 120), email: String(req.body?.adminEmail || atual.email || "").trim().toLowerCase().slice(0, 150) };
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(admin.email)) return res.status(400).json({ error: "Informe um e-mail válido para o administrador." });
+  sqlite.prepare(`UPDATE propostas_escritorio SET acesso_pendente = ?, acesso_erro = NULL WHERE id = ?`).run(JSON.stringify(admin), p.id);
+  await propostaEscProcessarContratoAssinado(p.contrato_id);
+  const depois = sqlite.prepare(`SELECT escritorio_criado_id, acesso_erro FROM propostas_escritorio WHERE id = ?`).get(p.id) as any;
+  if (!depois.escritorio_criado_id) return res.status(500).json({ error: depois.acesso_erro || "Não consegui criar o acesso." });
+  res.json({ ok: true, aviso: depois.acesso_erro || null });
+});
+// Novo link de criação de senha pro administrador do escritório criado pela proposta (o anterior deixa de valer).
+app.post("/api/propostas-escritorio/:id/link-senha", blockCliente, requirePermissao("contratos", "postar"), (req, res) => {
+  const user = (req as any).user;
+  if (!propostaEscPodeCriarAcesso(user)) return res.status(403).json({ error: "Só o dono da plataforma pode gerar esse link." });
+  const p = propostaEscLinha(user, Number(req.params.id));
+  if (!p?.escritorio_criado_id) return res.status(404).json({ error: "O acesso deste escritório ainda não foi criado." });
+  const adm = sqlite.prepare(`SELECT id, email FROM app_users WHERE escritorio_id = ? AND perfil = 'Administrador' AND ativo = 1 ORDER BY id LIMIT 1`).get(p.escritorio_criado_id) as any;
+  if (!adm) return res.status(404).json({ error: "Administrador do escritório não encontrado." });
+  const tokenCru = crypto.randomBytes(32).toString("hex");
+  sqlite.prepare(`DELETE FROM password_reset_tokens WHERE user_id = ? AND used_at IS NULL`).run(adm.id);
+  sqlite.prepare(`INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES (?, ?, datetime('now', '+7 days'))`).run(adm.id, crypto.createHash("sha256").update(tokenCru).digest("hex"));
+  res.json({ email: adm.email, link: `${SITE_URL_PADRAO}/?resetToken=${tokenCru}` });
 });
 app.delete("/api/propostas-escritorio/:id", blockCliente, requirePermissao("contratos", "editar"), (req, res) => {
   const p = propostaEscLinha((req as any).user, Number(req.params.id));
@@ -26848,6 +26913,8 @@ async function atualizarStatusAssinaturaContrato(row: any, token: string) {
     // o usuário do cliente e avisa por e-mail+WhatsApp — roda em segundo plano, nunca atrasa nem
     // derruba a confirmação de assinatura em si.
     void processarContratoModuloVendido(row.id).catch((e: any) => console.error(`[contrato-modulo] contrato #${row.id}:`, e.message));
+    // Contrato de proposta de escritório: cria o acesso na plataforma só agora, com todos assinados.
+    void propostaEscProcessarContratoAssinado(row.id).catch((e: any) => console.error(`[proposta-escritorio] contrato #${row.id}:`, e.message));
   } else if (status.algumRejeitou) {
     sqlite.prepare(`UPDATE contratos SET status_assinatura = 'rejeitado' WHERE id = ?`).run(row.id);
   }

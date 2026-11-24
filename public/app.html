@@ -17076,6 +17076,16 @@ async function renderPropostaEscritorio(id){
         <button class="btn primary" id="peAprovar">✓ Aprovar e gerar contrato</button>` : (P.contratoId ? `<button class="btn primary" id="peAbrirContrato">Abrir contrato</button>` : '')}
       </div>
     </div>
+    ${P.acesso && (P.acesso.pendente || P.acesso.criadoEm || P.acesso.erro) ? `<div class="card" style="padding:16px 20px;">
+      <h3 style="margin-bottom:6px;">Acesso do escritório na plataforma</h3>
+      ${P.acesso.criadoEm ? `<div><span class="tag ok">Criado</span> em ${fmtDateHora(P.acesso.criadoEm)}, depois da assinatura do contrato. O administrador recebeu o link de senha por e-mail.</div>`
+        : `<div><span class="tag warn">Aguardando assinatura</span> O acesso de <b>${esc(P.acesso.pendente?.email||'')}</b> é criado sozinho quando todos assinarem o contrato.</div>`}
+      ${P.acesso.erro ? `<div style="color:var(--debit); font-size:13px; margin-top:6px;">⚠ ${esc(P.acesso.erro)}</div>` : ''}
+      ${P.podeCriarAcesso ? `<div class="row" style="margin-top:10px; gap:8px;">
+        ${P.acesso.criadoEm ? `<button class="btn small" id="peNovoLink">Gerar novo link de senha</button>`
+          : P.acesso.erro ? `<div class="field" style="min-width:240px;"><label>E-mail do administrador</label><input type="text" id="peRetryEmail" value="${esc(P.acesso.pendente?.email||'')}"></div><button class="btn small primary" id="peRetry">Tentar criar de novo</button>` : ''}
+      </div>` : ''}
+    </div>` : ''}
     <div class="kpi-grid">
       <div class="kpi"><div class="eyebrow">Ganho estimado do escritório</div><div class="val" id="peKpiGanho" style="font-size:30px;">—</div><div class="sub" id="peKpiGanhoSub"></div></div>
       <div class="kpi"><div class="eyebrow">Mensalidade</div><div class="val" id="peKpiMensal" style="font-size:30px;">—</div><div class="sub" id="peKpiMensalSub"></div></div>
@@ -17174,6 +17184,22 @@ async function renderPropostaEscritorio(id){
     return r;
   };
   document.getElementById('peVoltar').addEventListener('click', ()=>{ PROPOSTA_ABERTA=null; renderContratosPropostas(); });
+  document.getElementById('peNovoLink')?.addEventListener('click', async ()=>{
+    if(!confirm('Gerar um novo link? O link anterior deixa de valer.')) return;
+    try{
+      const r = await api('/propostas-escritorio/'+id+'/link-senha', { method:'POST' });
+      openModal(`<h3>Novo link de senha</h3>
+        <div class="field"><label>Login do administrador</label><input type="text" readonly value="${esc(r.email)}"></div>
+        <div class="field"><label>Link para criar a senha (vale 7 dias, uso único)</label><input type="text" id="peLinkSenha" readonly value="${esc(r.link)}"></div>
+        <div class="modal-actions"><button class="btn" id="peCopiarLink">Copiar link</button><button class="btn primary" onclick="closeModal()">Fechar</button></div>`);
+      document.getElementById('peCopiarLink').addEventListener('click', ()=>{ navigator.clipboard.writeText(r.link).then(()=>toast('Link copiado.','ok')).catch(()=>document.getElementById('peLinkSenha').select()); });
+    }catch(err){ toast(err.message,'err'); }
+  });
+  document.getElementById('peRetry')?.addEventListener('click', async (ev)=>{
+    const b = ev.currentTarget; b.disabled = true;
+    try{ const r = await api('/propostas-escritorio/'+id+'/criar-acesso', { method:'POST', body:{ adminEmail: document.getElementById('peRetryEmail').value.trim() } }); toast(r.aviso || 'Acesso criado e link enviado ao administrador.', r.aviso?'err':'ok'); renderPropostaEscritorio(id); }
+    catch(err){ b.disabled = false; toast(err.message,'err'); }
+  });
   document.getElementById('peSalvar')?.addEventListener('click', async ()=>{ try{ await salvar(); toast('Proposta salva.','ok'); }catch(err){ toast(err.message,'err'); } });
   document.getElementById('pePdf').addEventListener('click', async (ev)=>{
     const b = ev.currentTarget;
@@ -17199,7 +17225,7 @@ async function renderPropostaEscritorio(id){
         <div style="font-size:11.5px; color:var(--ink-soft); margin-top:3px;">Em branco = cadastro novo com os dados da proposta (fica inativo e fora dos relatórios, pois não é cliente contábil).</div>
       </div>
       <div class="field" style="max-width:220px;"><label>Dia do vencimento da mensalidade</label><input type="text" id="peDiaVenc" value="10"></div>
-      ${P.podeCriarAcesso ? `<label class="checklist-item" style="margin:6px 0 8px;"><input type="checkbox" id="peCriarAcesso" checked><span><b>Criar o acesso do escritório na plataforma</b>: escritório, administrador e os módulos da proposta com o preço combinado (desconto aplicado), liberados por 30 dias de implantação. Depois disso a cobrança segue em Configurações › Assinatura da plataforma.</span></label>
+      ${P.podeCriarAcesso ? `<label class="checklist-item" style="margin:6px 0 8px;"><input type="checkbox" id="peCriarAcesso" checked><span><b>Criar o acesso do escritório na plataforma quando o contrato for assinado por todos</b>: escritório, administrador e os módulos da proposta com o preço combinado (desconto aplicado), liberados por 30 dias de implantação. O administrador recebe por e-mail o link para criar a senha. Depois dos 30 dias, a cobrança segue em Configurações › Assinatura da plataforma.</span></label>
       <div class="row" id="peAcessoCampos">
         <div class="field" style="flex:1; min-width:200px;"><label>Nome do administrador</label><input type="text" id="peAdmNome" value="${esc(cfg.escritorio.responsavel || '')}"></div>
         <div class="field" style="flex:1; min-width:200px;"><label>E-mail de login do administrador</label><input type="text" id="peAdmEmail" value="${esc(cfg.escritorio.email || '')}"></div>
@@ -17221,18 +17247,9 @@ async function renderPropostaEscritorio(id){
         const body = { diaVencimento: dia, empresaId, criarAcesso };
         if(criarAcesso){ body.adminNome = document.getElementById('peAdmNome').value.trim(); body.adminEmail = document.getElementById('peAdmEmail').value.trim(); }
         const r = await api('/propostas-escritorio/'+id+'/aprovar', { method:'POST', body });
-        toast('Proposta aprovada. Contrato gerado.','ok');
-        const irContrato = () => { closeModal(); PROPOSTA_ABERTA = null; CONTRATOS_TAB='contratos'; renderContratosTab(); abrirContratoDrawer(r.contratoId); };
-        if(!r.acesso) return irContrato();
-        openModal(`
-          <h3>Acesso do escritório criado</h3>
-          <div style="font-size:13px; margin-bottom:10px;">O escritório já existe na plataforma, com ${r.acesso.modulos.length ? `os módulos: <b>${r.acesso.modulos.map(esc).join(', ')}</b>` : 'a plataforma base'}, liberados por 30 dias de implantação.</div>
-          <div class="field"><label>Login do administrador</label><input type="text" readonly value="${esc(r.acesso.adminEmail)}"></div>
-          <div class="field"><label>Link para o administrador criar a senha (vale 7 dias, uso único)</label><input type="text" id="peLinkSenha" readonly value="${esc(r.acesso.link)}"></div>
-          <div style="font-size:12px; color:var(--ink-soft);">Mande esse link junto com o contrato. Ele só aparece agora. Se expirar, o administrador usa "Esqueci minha senha" na tela de login.</div>
-          <div class="modal-actions"><button class="btn" id="peCopiarLink">Copiar link</button><button class="btn primary" id="peIrContrato">Abrir contrato</button></div>`);
-        document.getElementById('peCopiarLink').addEventListener('click', ()=>{ navigator.clipboard.writeText(r.acesso.link).then(()=>toast('Link copiado.','ok')).catch(()=>{ document.getElementById('peLinkSenha').select(); }); });
-        document.getElementById('peIrContrato').addEventListener('click', irContrato);
+        closeModal();
+        toast(r.acessoPendente ? `Contrato gerado. O acesso de ${r.acessoPendente.adminEmail} será criado quando todos assinarem.` : 'Proposta aprovada. Contrato gerado.','ok');
+        PROPOSTA_ABERTA = null; CONTRATOS_TAB='contratos'; renderContratosTab(); abrirContratoDrawer(r.contratoId);
       }catch(err){ b.disabled = false; toast(err.message,'err'); }
     });
   });
