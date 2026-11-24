@@ -343,7 +343,15 @@ ${c.observacoes ? `<div class="destaque"><b>Condições:</b> ${esc(c.observacoes
 <b>Economias não quantificadas:</b> são economias reais, mas dependem de fiscalização, do comportamento dos fornecedores e de regulamentação ainda em curso. Por isso não entram na soma.<br>
 Esta proposta não é garantia de resultado nem parecer jurídico. A recuperação efetiva de cada crédito depende da correção pelo fornecedor e da escrituração regular.
 </div>
-<div class="assin"><div class="linha"></div><b>Simples Contábeis</b><br>Escritório Contábil · Redenção/PA</div>`;
+<div class="aceite">
+<h2>8. Aceite da proposta</h2>
+<p>Declaro que li esta proposta e <b>aceito as condições comerciais nela descritas</b>, autorizando a Simples Contábeis a emitir o contrato correspondente para assinatura.</p>
+<div class="data">Local e data: ____________________________, ____/____/________</div>
+<div class="cols">
+  <div class="ass"><div class="linha"></div><b>Simples Contábeis</b><br>SIMPLES SERVIÇOS DE CONTABILIDADE, PERÍCIA E AUDITORIA CONTABIL LTDA<br>CNPJ 04.801.040/0001-93<br>Proponente</div>
+  <div class="ass"><div class="linha"></div><b>${esc(meta.clienteNome)}</b><br>CNPJ ${fmtCnpj(a.empresas[0]?.cnpj || "")}<br>Representante: _________________________________<br>CPF: ______________________<br>De acordo (cliente)</div>
+</div>
+</div>`;
   const bg = timbrado ? `<img class="bg" src="${timbrado}">` : "";
   return `<!doctype html><html><head><meta charset="utf-8"><title>Proposta ${esc(meta.numero)}</title><style>
 @page { size: A4; margin: ${timbrado ? "0" : "16mm 14mm"}; }
@@ -368,6 +376,10 @@ tr.tot td { background: #f3eed9; font-weight: 700; } .num { text-align: right; w
 .alerta { background: #fdf6e3; border: 1px solid #c9a227; border-left: 4px solid #c9a227; padding: 9px 11px; margin: 12px 0; font-size: 9.4px; text-align: justify; break-inside: avoid; }
 .destaque { background: #f0f4f6; border-left: 4px solid #2f3b42; padding: 9px 11px; margin: 10px 0; font-size: 9.4px; text-align: justify; break-inside: avoid; }
 .rodape-nota { margin-top: 10px; padding: 9px 11px; background: #f7f8f9; border: 1px solid #e2e7ea; font-size: 8.4px; color: #52616a; text-align: justify; break-inside: avoid; }
+.aceite { margin-top: 18px; break-inside: avoid; } .aceite p { text-align: justify; margin: 4px 0 6px; }
+.aceite .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14mm; margin-top: 22px; }
+.aceite .ass { text-align: center; font-size: 9.2px; line-height: 1.5; } .aceite .ass .linha { border-top: 1px solid #2f3b42; margin: 0 4mm 5px; }
+.aceite .data { margin-top: 10px; font-size: 9.4px; }
 .assin { margin-top: 26px; text-align: center; font-size: 9.4px; break-inside: avoid; } .assin .linha { width: 62mm; border-top: 1px solid #2f3b42; margin: 0 auto 5px; }
 .capa-tag { display:inline-block; font-size:8.4px; letter-spacing:.14em; text-transform:uppercase; color:#6b5410; background:#f3eed9; border:1px solid #c9a227; padding:2px 8px; border-radius:2px; margin-bottom:6px; }
 .hero { background:#2f3b42; color:#fff; padding:14px 16px; margin:12px 0 10px; break-inside:avoid; border-bottom:4px solid #c9a227; }
