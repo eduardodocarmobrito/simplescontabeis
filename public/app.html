@@ -17162,7 +17162,10 @@ function propEscCalcular(c, par){
   const economiaEquipe = Math.round(horasMes * custoHora * 12);
   const colaboradoresLiberados = Math.round(horasMes / par.horasMes * 10) / 10;
   const economiaSistemas = Math.round(c.gastoSistemasAtual * 12);
-  const receitaRevenda = Math.round(c.clientes * (c.adesaoRevendaPct/100) * c.ticketRevenda * 12);
+  // Receita líquida da revenda = mensalidade cobrada − participação da plataforma (% do preço base da NFS-e). = propostas-escritorio.ts
+  const rvRef = (c.revendaModulos||[]).find(m=>m.incluido && m.chave==='nfse') || (c.revendaModulos||[]).find(m=>m.incluido);
+  const rvPart = rvRef ? Math.round(rvRef.precoBase * (c.revendaPct ?? 30))/100 : 0;
+  const receitaRevenda = Math.round(c.clientes * (c.adesaoRevendaPct/100) * Math.max(0, c.ticketRevenda - rvPart) * 12);
   const ganho = economiaEquipe + economiaSistemas + receitaRevenda;
   const investimentoAno1 = r2(mensal*12 + implantacaoFinal);
   const roi = investimentoAno1 > 0 ? Math.round(ganho/investimentoAno1*10)/10 : 0;
@@ -17262,6 +17265,19 @@ async function renderPropostaEscritorio(id){
         </tbody>
       </table>
     </div>
+    <div class="card" style="overflow-x:auto;">
+      <h3>Revenda de módulos aos clientes do escritório</h3>
+      <div style="font-size:12.5px; color:var(--ink-soft); margin-bottom:8px; text-align:justify;">O escritório revende estes módulos aos clientes dele pelo preço que quiser. A Simples Contábeis fica só com o percentual abaixo sobre o <b>preço base</b> de cada módulo, por cliente liberado, por mês — o que o escritório cobrar acima do preço base é dele. Sai no PDF e no contrato, e o preço base vira o mínimo de venda na plataforma quando o acesso for criado.</div>
+      <div class="row" style="align-items:flex-start;">${campo('peRevPct','Participação da Simples Contábeis (% do preço base)', String(c.revendaPct ?? 30).replace('.',','), '', 'max-width:300px;')}</div>
+      <table class="data-table">
+        <thead><tr><th style="width:40px;"></th><th>Módulo para revenda</th><th style="width:150px;">Preço base (R$/mês)</th><th style="width:200px; text-align:right;">Participação por cliente/mês</th></tr></thead>
+        <tbody>${(c.revendaModulos||[]).map((m,i)=>`<tr>
+          <td><input type="checkbox" class="peRevChk" data-i="${i}" ${m.incluido?'checked':''} ${dis}></td>
+          <td>${esc(m.nome)}</td>
+          <td><input type="text" class="peRevBase" data-i="${i}" value="${esc(propMoedaTxt(m.precoBase))}" ${dis} style="width:120px;"></td>
+          <td style="text-align:right; white-space:nowrap;" class="peRevPart" data-i="${i}"></td></tr>`).join('')}</tbody>
+      </table>
+    </div>
     <div class="card">
       <h3>Valores e premissas</h3>
       <div class="row" style="align-items:flex-start;">
@@ -17275,7 +17291,7 @@ async function renderPropostaEscritorio(id){
       </div>
       <div class="row" style="align-items:flex-start;">
         ${campo('peAdesao','Adesão dos clientes à revenda de módulos (%)', String(c.adesaoRevendaPct).replace('.',','), 'Clientes que contratam um módulo (ex.: NFS-e)')}
-        ${campo('peTicket','Mensalidade do módulo revendido (R$)', propMoedaTxt(c.ticketRevenda), 'Padrão: preço do módulo NFS-e')}
+        ${campo('peTicket','Mensalidade cobrada do cliente na revenda (R$)', propMoedaTxt(c.ticketRevenda), 'Ganho do escritório = este valor − participação da NFS-e')}
       </div>
       <div class="field"><label>Condições especiais (saem no PDF)</label><textarea id="peObs" rows="2" ${dis} placeholder="Ex.: implantação parcelada em 3x; primeira mensalidade 30 dias após a implantação.">${esc(c.observacoes||'')}</textarea></div>
       <div id="peResumo" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; margin-top:6px;"></div>
@@ -17292,6 +17308,8 @@ async function renderPropostaEscritorio(id){
     descontoPct: pct(val('peDesconto')), implantacao: propNum(val('peImplantacao')), implantacaoDescontoPct: pct(val('peImplDesc')), implantacaoIsenta: document.getElementById('peImplIsenta').checked, implantacaoParcelas: Math.min(48, Math.max(1, Math.round(propNum(val('peImplParcelas')))||1)), validadeDias: Math.max(1, Math.round(propNum(val('peValidade')))||30),
     horasPorCliente: propNum(val('peHoras')), salarioColaborador: propNum(val('peSalario')), gastoSistemasAtual: propNum(val('peSistemas')),
     adesaoRevendaPct: Math.min(100, Math.max(0, propNum(val('peAdesao')))), ticketRevenda: propNum(val('peTicket')), observacoes: val('peObs'),
+    revendaPct: Math.min(100, Math.max(0, propNum(val('peRevPct')))),
+    revendaModulos: (c.revendaModulos||[]).map((m,i)=>({ chave:m.chave, nome:m.nome, incluido: document.querySelector(`.peRevChk[data-i="${i}"]`).checked, precoBase: propNum(document.querySelector(`.peRevBase[data-i="${i}"]`).value) })),
   });
   const HORAS_MOD = { busca_xml_nfe:0.6, envio_whatsapp:0.3, envio_email_automatico:0.2, atendimento_whatsapp:0.3, nfse_automatico:0.2, reforma:0.3 }; // = src/propostas-escritorio.ts
   const desenha = () => {
@@ -17315,6 +17333,10 @@ async function renderPropostaEscritorio(id){
     });
     const aInc = cfg.assentosInclusos||0, aExtra = Math.max(0, (cfg.colaboradores||0)-aInc), aInfo = document.getElementById('peAssentoInfo');
     if(aInfo) aInfo.innerHTML = aExtra>0 ? `→ <b style="color:var(--accent-deep);">${aExtra} cobrado(s) × ${propBRL(cfg.assentoValor)}</b>` : `<span style="color:var(--ink-soft);">(todos os ${cfg.colaboradores||0} inclusos)</span>`;
+    box.querySelectorAll('.peRevPart').forEach(td=>{
+      const m = cfg.revendaModulos[Number(td.dataset.i)];
+      td.innerHTML = m && m.incluido ? `<b>${propBRL(Math.round(m.precoBase*cfg.revendaPct)/100)}</b>` : '<span style="color:var(--ink-soft);">fora</span>';
+    });
     document.getElementById('peImplFinal').innerHTML = cfg.implantacaoIsenta || !v.implantacaoFinal ? '<span class="tag ok">isenta</span>' : `<b>${propBRL(v.implantacaoFinal)}</b>${v.implantacaoFinal<cfg.implantacao?`<div style="font-size:11px; color:var(--ink-soft); text-decoration:line-through;">${propBRL(cfg.implantacao)}</div>`:''}`;
     const nParc = cfg.implantacaoParcelas||1, pInfo = document.getElementById('peImplParcelaInfo');
     if(pInfo) pInfo.innerHTML = (nParc>1 && v.implantacaoFinal) ? `→ <b style="color:var(--accent-deep);">${nParc}× de ${propBRL(Math.floor(v.implantacaoFinal*100/nParc)/100)}</b>` : (nParc>1 ? '' : '<span style="color:var(--ink-soft);">(à vista)</span>');
@@ -25760,25 +25782,34 @@ async function renderCfgRevenda(box){
     ligarMascaraMoeda(inpValor);
     if(existente){ inpValor.value = Number(existente.valorNegociado).toLocaleString('pt-BR',{minimumFractionDigits:2, maximumFractionDigits:2}); }
     const calc = document.getElementById('rvCalculo');
+    // Preço base combinado no contrato: participação = % × preço base (o excedente é do escritório);
+    // sem preço combinado: % × valor negociado, com o mínimo geral.
+    const regraDo = (chave)=>{ const m = modulos.find(x=>x.chave===chave); return m && m.precoBase!=null ? { percentual:m.percentual, minimo:m.precoBase, base:m.precoBase } : { percentual:regras.percentual, minimo:regras.minimo, base:null }; };
+    let moduloSel = null;
     const atualizarCalculo = ()=>{
       inpValor.style.borderColor='';
+      const rg = regraDo(existente ? existente.moduloChave : moduloSel);
       const v = inpValor.value.trim() ? moedaInputParaNumero(inpValor) : 0;
-      if(!v){ calc.textContent = ''; return; }
-      if(v < regras.minimo){ calc.innerHTML = `<span style="color:var(--debit);">Abaixo do mínimo de venda (${fmtMoney(regras.minimo)}).</span>`; return; }
-      calc.innerHTML = isento ? 'Liberação imediata, sem cobrança (escritório isento).' : `Cobrança mensal ao seu escritório: <b>${fmtMoney(Math.round(v*regras.percentual)/100)}</b> (${fmtPctRevenda(regras.percentual)} de ${fmtMoney(v)}).`;
+      if(!v){ calc.textContent = rg.base!=null ? `Preço base combinado: ${fmtMoney(rg.base)} — a plataforma cobra ${fmtPctRevenda(rg.percentual)} do preço base; o que passar dele é do seu escritório.` : ''; return; }
+      if(v < rg.minimo){ calc.innerHTML = `<span style="color:var(--debit);">Abaixo do ${rg.base!=null?'preço base combinado':'mínimo de venda'} (${fmtMoney(rg.minimo)}).</span>`; return; }
+      const cobranca = Math.round((rg.base!=null ? rg.base : v)*rg.percentual)/100;
+      calc.innerHTML = isento ? 'Liberação imediata, sem cobrança (escritório isento).' : rg.base!=null
+        ? `Cobrança mensal ao seu escritório: <b>${fmtMoney(cobranca)}</b> (${fmtPctRevenda(rg.percentual)} do preço base de ${fmtMoney(rg.base)}). Seu escritório fica com <b>${fmtMoney(v - cobranca)}</b> por mês.`
+        : `Cobrança mensal ao seu escritório: <b>${fmtMoney(cobranca)}</b> (${fmtPctRevenda(rg.percentual)} de ${fmtMoney(v)}).`;
     };
     inpValor.addEventListener('input', atualizarCalculo);
     atualizarCalculo();
-    let empresaSel = null, moduloSel = null;
+    let empresaSel = null;
     if(!existente){
       empresasAtivas().then(empresas=>{
         setupComboSelect('rvEmpresaCombo', empresas.map(e=>({ id:e.id, label:empresaComboLabel(e) })), id=>{ empresaSel = id ? Number(id) : null; });
       }).catch(()=>{});
-      setupComboSelect('rvModuloCombo', disponiveis.map(m=>({ id:m.chave, label:m.nome })), id=>{ moduloSel = id || null; });
+      setupComboSelect('rvModuloCombo', disponiveis.map(m=>({ id:m.chave, label:m.nome })), id=>{ moduloSel = id || null; atualizarCalculo(); });
       if(disponiveis.length===1){
         moduloSel = disponiveis[0].chave;
         document.querySelector('#rvModuloCombo .combo-value').value = moduloSel;
         document.querySelector('#rvModuloCombo .combo-input').value = disponiveis[0].nome;
+        atualizarCalculo();
       }
     }
     document.getElementById('rvCancelar').addEventListener('click', closeModal);
@@ -25789,7 +25820,8 @@ async function renderCfgRevenda(box){
       if(!empresaId) return marcarErro(document.querySelector('#rvEmpresaCombo .combo-input'), 'Selecione o cliente.');
       if(!moduloChave) return marcarErro(document.querySelector('#rvModuloCombo .combo-input'), 'Selecione o módulo.');
       const valor = inpValor.value.trim() ? moedaInputParaNumero(inpValor) : 0;
-      if(!valor || valor < regras.minimo) return marcarErro(inpValor, `Informe o valor negociado (mínimo ${fmtMoney(regras.minimo)}).`);
+      const rgSel = regraDo(moduloChave);
+      if(!valor || valor < rgSel.minimo) return marcarErro(inpValor, `Informe o valor negociado (mínimo ${fmtMoney(rgSel.minimo)}).`);
       const btn = document.getElementById('rvGerar');
       btn.disabled = true;
       try{

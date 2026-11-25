@@ -15,7 +15,17 @@ export interface ConfigEscritorio {
   assentoValor: number; assentoDescontoPct: number; assentoIsento: boolean; assentosInclusos: number; modulos: ModuloProposta[];
   descontoPct: number; implantacao: number; implantacaoDescontoPct: number; implantacaoIsenta: boolean; implantacaoParcelas: number; validadeDias: number; observacoes: string;
   salarioColaborador: number; horasPorCliente: number; gastoSistemasAtual: number; adesaoRevendaPct: number; ticketRevenda: number;
+  // Revenda aos clientes do escritório: a Simples Contábeis fica com revendaPct% do PREÇO BASE de cada
+  // módulo (por cliente liberado, por mês); o que o escritório cobrar acima do preço base é dele.
+  revendaPct: number; revendaModulos: RevendaModulo[];
 }
+export interface RevendaModulo { chave: string; nome: string; precoBase: number; incluido: boolean }
+export const REVENDA_MODULOS: { chave: string; nome: string; descricao: string }[] = [
+  { chave: "nfse", nome: "Emissão de NFS-e", descricao: "O cliente emite as próprias NFS-e no Sistema Nacional pelo portal, com cadastro de tomadores e modelos." },
+  { chave: "reforma", nome: "Reforma Tributária (com Busca de XML)", descricao: "Auditoria do IBS/CBS nas notas do cliente, ranking de fornecedores, notificação e a Busca de XML das notas dele." },
+];
+export const REVENDA_PCT_PADRAO = 30;
+export const participacaoRevenda = (precoBase: number, pct: number) => Math.round(precoBase * pct) / 100;
 
 export const BASE_MENSAL_PADRAO = 990;
 export const SALARIO_COLABORADOR_PADRAO = 2800;
@@ -98,13 +108,15 @@ export function horasSugeridas(modulos: ModuloProposta[]) {
 export function implantacaoSugerida(clientes: number) {
   return Math.round((1500 + 10 * Math.max(0, clientes)) / 50) * 50;
 }
-export function configPadrao(catalogo: any[], ticketRevenda: number): ConfigEscritorio {
+export function configPadrao(catalogo: any[], ticketRevenda: number, precosRevenda: Record<string, number> = {}): ConfigEscritorio {
   const { modulos, assentoValor, baseMensal } = catalogoParaModulos(catalogo);
   return {
     escritorio: { nome: "", cnpj: "", cidade: "", uf: "", responsavel: "", cpfResponsavel: "", email: "", telefone: "" },
     clientes: 100, colaboradores: 5, baseMensal, baseDescontoPct: 0, baseIsento: false, assentoValor, assentoDescontoPct: 0, assentoIsento: false, assentosInclusos: 5, modulos,
     descontoPct: 0, implantacao: implantacaoSugerida(100), implantacaoDescontoPct: 0, implantacaoIsenta: false, implantacaoParcelas: 1, validadeDias: 30, observacoes: "",
     salarioColaborador: SALARIO_COLABORADOR_PADRAO, horasPorCliente: horasSugeridas(modulos), gastoSistemasAtual: 0, adesaoRevendaPct: 10, ticketRevenda: r2(ticketRevenda || 49.99),
+    revendaPct: REVENDA_PCT_PADRAO,
+    revendaModulos: REVENDA_MODULOS.map((m) => ({ chave: m.chave, nome: m.nome, precoBase: r2(precosRevenda[m.chave] || (m.chave === "nfse" ? ticketRevenda || 49.99 : 120)), incluido: true })),
   };
 }
 export function normalizarConfig(c: any, base: ConfigEscritorio): ConfigEscritorio {
@@ -131,6 +143,11 @@ export function normalizarConfig(c: any, base: ConfigEscritorio): ConfigEscritor
     validadeDias: Math.round(n(c?.validadeDias, base.validadeDias, 1, 365)), observacoes: s(c?.observacoes, base.observacoes, 2000),
     salarioColaborador: r2(n(c?.salarioColaborador, base.salarioColaborador)), horasPorCliente: r2(n(c?.horasPorCliente, base.horasPorCliente, 0, 100)),
     gastoSistemasAtual: r2(n(c?.gastoSistemasAtual, base.gastoSistemasAtual)), adesaoRevendaPct: r2(n(c?.adesaoRevendaPct, base.adesaoRevendaPct, 0, 100)), ticketRevenda: r2(n(c?.ticketRevenda, base.ticketRevenda)),
+    revendaPct: r2(n(c?.revendaPct, base.revendaPct ?? REVENDA_PCT_PADRAO, 0, 100)),
+    revendaModulos: (base.revendaModulos || []).map((b) => {
+      const m = Array.isArray(c?.revendaModulos) ? c.revendaModulos.find((x: any) => String(x?.chave) === b.chave) : null;
+      return { chave: b.chave, nome: b.nome, precoBase: r2(n(m?.precoBase, b.precoBase)), incluido: m ? !!m.incluido : b.incluido };
+    }),
   };
 }
 // Itens cobrados por mês, cada um com valor de tabela, desconto próprio e valor final (isento = 0).
@@ -159,7 +176,11 @@ export function calcularValores(c: ConfigEscritorio) {
   const economiaEquipe = Math.round(horasMes * custoHora * 12);
   const colaboradoresLiberados = Math.round((horasMes / HORAS_MES) * 10) / 10;
   const economiaSistemas = Math.round(c.gastoSistemasAtual * 12);
-  const receitaRevenda = Math.round(c.clientes * (c.adesaoRevendaPct / 100) * c.ticketRevenda * 12);
+  // Receita LÍQUIDA do escritório na revenda: mensalidade cobrada do cliente − participação da Simples
+  // Contábeis (revendaPct% do preço base do módulo de referência, a NFS-e). Mesma conta em app.html › propEscCalcular.
+  const refRevenda = (c.revendaModulos || []).find((m) => m.incluido && m.chave === "nfse") || (c.revendaModulos || []).find((m) => m.incluido);
+  const participacaoMes = refRevenda ? participacaoRevenda(refRevenda.precoBase, c.revendaPct ?? REVENDA_PCT_PADRAO) : 0;
+  const receitaRevenda = Math.round(c.clientes * (c.adesaoRevendaPct / 100) * Math.max(0, c.ticketRevenda - participacaoMes) * 12);
   const ganho = economiaEquipe + economiaSistemas + receitaRevenda;
   const investimentoAno1 = r2(mensal * 12 + implantacaoFinal);
   const liquido = Math.round(ganho - investimentoAno1);
@@ -208,7 +229,7 @@ export function htmlPropostaEscritorio(c: ConfigEscritorio, meta: { numero: stri
   const ganhos = [
     v.economiaEquipe ? { t: "Horas da equipe devolvidas ao escritório", x: `Cerca de <b>${num(v.horasMes)} horas por mês</b> deixam de ir para tarefa repetitiva (${num(c.horasPorCliente)} h por cliente × ${num(c.clientes)} clientes). Isso equivale a <b>${num(v.colaboradoresLiberados)} colaborador(es)</b> em tempo integral, que podem atender mais clientes sem novas contratações.`, val: brl0(v.economiaEquipe), rot: "por ano", q: true } : null,
     v.economiaSistemas ? { t: "Sistemas que deixam de ser pagos", x: `A plataforma substitui ferramentas que hoje custam ${brl(c.gastoSistemasAtual)} por mês ao escritório.`, val: brl0(v.economiaSistemas), rot: "por ano", q: true } : null,
-    v.receitaRevenda ? { t: "Nova receita: revenda de módulos aos clientes", x: `O escritório pode oferecer aos próprios clientes módulos como emissão de NFS-e, financeiro e auditoria da Reforma, com cobrança automática pela plataforma. Com ${num(c.adesaoRevendaPct)}% de adesão a ${brl(c.ticketRevenda)}/mês, a receita é de <b>${brl0(v.receitaRevenda / 12)} por mês</b>.`, val: brl0(v.receitaRevenda), rot: "por ano", q: true } : null,
+    v.receitaRevenda ? { t: "Nova receita: revenda de módulos aos clientes", x: `O escritório pode oferecer aos próprios clientes módulos como emissão de NFS-e, financeiro e auditoria da Reforma, com cobrança automática pela plataforma. Com ${num(c.adesaoRevendaPct)}% de adesão a ${brl(c.ticketRevenda)}/mês, a receita líquida do escritório (já descontada a participação da Simples Contábeis) é de <b>${brl0(v.receitaRevenda / 12)} por mês</b>.`, val: brl0(v.receitaRevenda), rot: "por ano", q: true } : null,
     { t: "Menos multa por obrigação perdida", x: "Cada obrigação de cada empresa fica num quadro com prazo e responsável. O que está atrasado aparece antes de virar multa paga pelo escritório.", val: "multa evitada", rot: "por prazo controlado", q: false },
     { t: "Cliente melhor atendido, menos cancelamento", x: "Documento enviado na hora e com protocolo, portal do cliente e atendimento pelo WhatsApp com fila e histórico. Cliente bem atendido não troca de contador.", val: "retenção", rot: "da carteira", q: false },
     { t: "Escritório preparado para a Reforma Tributária", x: "Auditoria do IBS/CBS e diagnóstico de regime prontos para oferecer aos clientes, em vez de montar planilha caso a caso.", val: "novo serviço", rot: "consultivo", q: false },
@@ -244,6 +265,8 @@ ${fora.length ? `<p class="small">Podem ser contratados depois, a qualquer momen
 
 <h2>3. Onde o escritório ganha</h2>
 ${ganhos.map((g: any, i: number) => `<div class="eco${g.q ? "" : " q"}"><div class="n">${i + 1}</div><div><div class="t">${g.t}</div><div class="x">${g.x}</div></div><div class="val">${g.val}<small>${g.rot}</small></div></div>`).join("")}
+
+${revendaHtml(c)}
 
 <h2>4. Investimento</h2>
 <div class="preco"><table>
@@ -358,6 +381,18 @@ export async function gerarPdfPropostaEscritorio(...args: Parameters<typeof html
 }
 
 // Anexo I do contrato da plataforma (HTML já escapado — entra cru no modelo).
+// Quadro da revenda (PDF da proposta e anexo do contrato).
+export function revendaHtml(c: ConfigEscritorio, anexo = false) {
+  const mods = (c.revendaModulos || []).filter((m) => m.incluido);
+  if (!mods.length) return "";
+  const pct = c.revendaPct ?? REVENDA_PCT_PADRAO;
+  const f = (x: number) => "R$ " + x.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const pctTxt = pct.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + "%";
+  const ex = mods[0], exPart = participacaoRevenda(ex.precoBase, pct), exVenda = Math.round(ex.precoBase * 1.8 * 10) / 10;
+  const texto = `O escritório pode revender aos seus clientes os módulos abaixo, com a liberação e a cobrança feitas pela plataforma. O preço de venda ao cliente é livre. A participação da Simples Contábeis é de <b>${pctTxt} do preço base</b> de cada módulo, por cliente liberado, por mês. O que o escritório cobrar acima do preço base fica integralmente com o escritório e não entra no cálculo da participação. Exemplo: ${esc(ex.nome)} com preço base de ${f(ex.precoBase)}: a participação é de ${f(exPart)} por mês; se o escritório vender a ${f(exVenda)}, fica com ${f(exVenda - exPart)}.`;
+  const tabela = `<table class="${anexo ? "dados" : "t"}"><thead><tr><th>Módulo para revenda</th>${anexo ? "" : "<th>O que o cliente recebe</th>"}<th${anexo ? "" : ' class="num"'}>Preço base</th><th${anexo ? "" : ' class="num"'}>Participação (${pctTxt})</th></tr></thead><tbody>${mods.map((m) => `<tr><td><b>${esc(m.nome)}</b></td>${anexo ? "" : `<td>${esc(REVENDA_MODULOS.find((x) => x.chave === m.chave)?.descricao || "")}</td>`}<td${anexo ? "" : ' class="num"'}>${f(m.precoBase)}/mês</td><td${anexo ? "" : ' class="num"'}>${f(participacaoRevenda(m.precoBase, pct))}/mês por cliente</td></tr>`).join("")}</tbody></table>`;
+  return anexo ? `<p><b>Revenda de módulos aos clientes do escritório.</b> ${texto}</p>${tabela}` : `<h2>Revenda de módulos aos seus clientes</h2><p class="txt">${texto}</p>${tabela}`;
+}
 export function anexoModulosHtml(c: ConfigEscritorio) {
   const v = calcularValores(c);
   const f = (x: number) => "R$ " + x.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -365,5 +400,5 @@ export function anexoModulosHtml(c: ConfigEscritorio) {
   if (v.descontoGeral) linhas.push(`<tr><td colspan="3">Desconto especial sobre o total (${String(c.descontoPct).replace(".", ",")}%)</td><td>− ${f(v.descontoGeral)}</td></tr>`);
   linhas.push(`<tr><td colspan="3"><b>Mensalidade total</b></td><td><b>${f(v.mensal)}</b></td></tr>`);
   linhas.push(`<tr><td>Implantação (valor único)${c.implantacaoParcelas > 1 && v.implantacaoFinal ? ` — parcelada em ${parcelasTexto(v.implantacaoFinal, c.implantacaoParcelas)}` : ""}</td><td>${f(c.implantacao)}</td><td>${c.implantacaoIsenta ? "Isenta" : c.implantacaoDescontoPct ? `${String(c.implantacaoDescontoPct).replace(".", ",")}%` : "—"}</td><td>${v.implantacaoFinal ? f(v.implantacaoFinal) : "Isenta"}</td></tr>`);
-  return `<table class="dados"><thead><tr><th>Item contratado</th><th>Valor de tabela</th><th>Desconto</th><th>Valor contratado</th></tr></thead><tbody>${linhas.join("")}</tbody></table>`;
+  return `<table class="dados"><thead><tr><th>Item contratado</th><th>Valor de tabela</th><th>Desconto</th><th>Valor contratado</th></tr></thead><tbody>${linhas.join("")}</tbody></table>${revendaHtml(c, true)}`;
 }

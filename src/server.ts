@@ -24181,6 +24181,22 @@ function modulosDoEscritorio(escritorioId: number) {
 // Confere se um escritório tem acesso ativo (teste ou pago) a um módulo específico — usado pelos
 // pontos do código que gatilham comportamento automático (rotina de NFS-e, envio automático).
 // ---------- Revenda (ver CREATE TABLE escritorio_revendas) ----------
+// Preço base de revenda combinado na proposta do escritório (por módulo). Com ele, a participação da
+// plataforma é percentual × PREÇO BASE (não sobre o valor negociado) e o mínimo de venda é o preço base;
+// o que o escritório cobrar acima disso é dele. Sem linha = regra geral (percentual × valor negociado).
+sqlite.exec(`CREATE TABLE IF NOT EXISTS escritorio_revenda_precos (
+  escritorio_id INTEGER NOT NULL REFERENCES escritorios(id) ON DELETE CASCADE,
+  modulo_chave TEXT NOT NULL,
+  preco_base REAL NOT NULL,
+  percentual REAL NOT NULL,
+  origem TEXT,
+  atualizado_em TEXT DEFAULT (datetime('now')),
+  PRIMARY KEY (escritorio_id, modulo_chave)
+)`);
+function revendaPrecoBase(escritorioId: number, moduloChave: string): { precoBase: number; percentual: number } | null {
+  const r = sqlite.prepare(`SELECT preco_base, percentual FROM escritorio_revenda_precos WHERE escritorio_id = ? AND modulo_chave = ?`).get(escritorioId, moduloChave) as any;
+  return r ? { precoBase: Number(r.preco_base), percentual: Number(r.percentual) } : null;
+}
 function revendaRegras(): { percentual: number; minimo: number } {
   const ler = (chave: string, padrao: number) => {
     const n = Number((sqlite.prepare(`SELECT valor FROM plataforma_config WHERE chave = ?`).get(chave) as any)?.valor);
@@ -24420,11 +24436,10 @@ app.post("/api/escritorio/modulos/pagar", blockCliente, requirePermissao("config
 // ---------- Revenda: telas do escritório (Configurações › Assinatura da plataforma) ----------
 app.get("/api/escritorio/revendas", blockCliente, requirePermissao("configuracoes", "visualizar"), (req, res) => {
   const escritorioId = (req as any).user.escritorioId;
-  const modulos = (sqlite.prepare(`SELECT chave, nome FROM modulos_escritorio_catalogo WHERE ativo = 1 AND funcionalidade_cliente IS NOT NULL ORDER BY nome`).all() as any[]).map((m) => ({
-    chave: m.chave,
-    nome: m.nome,
-    acesso: escritorioTemModulo(escritorioId, m.chave),
-  }));
+  const modulos = (sqlite.prepare(`SELECT chave, nome FROM modulos_escritorio_catalogo WHERE ativo = 1 AND funcionalidade_cliente IS NOT NULL ORDER BY nome`).all() as any[]).map((m) => {
+    const pb = revendaPrecoBase(escritorioId, m.chave);
+    return { chave: m.chave, nome: m.nome, acesso: escritorioTemModulo(escritorioId, m.chave), precoBase: pb?.precoBase ?? null, percentual: pb?.percentual ?? null };
+  });
   const rows = sqlite
     .prepare(
       `SELECT r.*, e.nome as empresa_nome, e.cnpj as empresa_cnpj, c.nome as modulo_nome
@@ -24464,10 +24479,13 @@ app.post("/api/escritorio/revendas", blockCliente, requirePermissao("configuraco
   if (!modulo) return res.status(400).json({ error: "Selecione um módulo revendável." });
   if (!escritorioTemModulo(escritorioId, moduloChave)) return res.status(400).json({ error: `Seu escritório precisa ter o módulo ${modulo.nome} ativo pra revender — contrate acima.` });
   const valor = Math.round(Number(String(req.body?.valorNegociado ?? "").replace(",", ".")) * 100) / 100;
-  const regras = revendaRegras();
+  const geral = revendaRegras();
+  const combinado = revendaPrecoBase(escritorioId, moduloChave);
+  const regras = combinado ? { percentual: combinado.percentual, minimo: combinado.precoBase } : geral;
   const brl = (v: number) => v.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  if (!Number.isFinite(valor) || valor < regras.minimo) return res.status(400).json({ error: `O valor negociado mínimo é R$ ${brl(regras.minimo)}.` });
-  const repasse = Math.round(valor * regras.percentual) / 100;
+  if (!Number.isFinite(valor) || valor < regras.minimo) return res.status(400).json({ error: `O valor negociado mínimo é R$ ${brl(regras.minimo)}${combinado ? " (preço base combinado no contrato)" : ""}.` });
+  // Preço base combinado: participação só sobre o preço base, o excedente é do escritório.
+  const repasse = Math.round((combinado ? combinado.precoBase : valor) * regras.percentual) / 100;
   sqlite
     .prepare(
       `INSERT INTO escritorio_revendas (escritorio_id, empresa_id, modulo_chave, valor_negociado, percentual, valor_repasse, criado_por) VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -26468,6 +26486,9 @@ function propostaEscCriarAcesso(c: propostasEscritorio.ConfigEscritorio, admin: 
     insMod.run(escritorioId, i.chave, i.isento ? 0 : i.unitarioAssento ?? i.mensal, i.isento ? "2099-12-31 23:59:59" : null);
     modulos.push(nomes.get(i.chave)! + (i.isento ? " (isento)" : ""));
   }
+  // Preço base de revenda combinado na proposta (participação da plataforma = % × preço base).
+  const insRev = sqlite.prepare(`INSERT OR REPLACE INTO escritorio_revenda_precos (escritorio_id, modulo_chave, preco_base, percentual, origem) VALUES (?, ?, ?, ?, 'proposta')`);
+  for (const m of c.revendaModulos || []) if (m.incluido) insRev.run(escritorioId, m.chave, m.precoBase, c.revendaPct);
   // Funcionalidades do sistema marcadas na proposta (Certificados, Financeiro…): liberadas pro escritório.
   const insFunc = sqlite.prepare(`INSERT OR IGNORE INTO escritorio_funcionalidades (escritorio_id, modulo) VALUES (?, ?)`);
   for (const m of c.modulos) {
@@ -26491,7 +26512,7 @@ function propostaEscCriarAcesso(c: propostasEscritorio.ConfigEscritorio, admin: 
 function propostaEscBase() {
   const catalogo = sqlite.prepare(`SELECT chave, nome, valor_mensal, ativo FROM modulos_escritorio_catalogo ORDER BY nome`).all() as any[];
   const nfse = sqlite.prepare(`SELECT valor_mensal FROM modulos_catalogo WHERE chave = 'nfse'`).get() as any;
-  return propostasEscritorio.configPadrao(catalogo, nfse?.valor_mensal || 49.99);
+  return propostasEscritorio.configPadrao(catalogo, nfse?.valor_mensal || 49.99, { nfse: nfse?.valor_mensal || 49.99, reforma: revendaRegras().minimo });
 }
 function propostaEscResposta(p: any) {
   const config = propostasEscritorio.normalizarConfig(JSON.parse(p.config || "{}"), propostaEscBase());
