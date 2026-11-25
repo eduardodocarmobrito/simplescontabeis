@@ -17581,7 +17581,7 @@ async function renderPropostaEditor(id){
       </div>
       <div class="field"><label>Condições especiais (saem no PDF)</label><textarea id="ppObs" rows="2" ${dis} placeholder="Ex.: desconto válido para assinatura até 10/12; primeira mensalidade em janeiro.">${esc(c.observacoes||'')}</textarea></div>
       <div id="ppResumo" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; margin-top:6px;"></div>
-      ${!travada ? `<div class="row" style="margin-top:12px;"><button class="btn primary" id="ppSalvar">Salvar valores</button><span id="ppSalvoMsg" style="font-size:12.5px; color:var(--ink-soft);"></span></div>` : ''}
+      ${!travada ? `<div class="row" style="margin-top:12px;"><button class="btn primary" id="ppSalvar" disabled>Salvar valores</button><button class="btn" id="ppCancelar" disabled>Cancelar</button><span id="ppSalvoMsg" style="font-size:12.5px; color:var(--ink-soft);"></span></div>` : ''}
     </div>
     <div class="card" style="overflow-x:auto;">
       <h3>Análise por CNPJ</h3>
@@ -17653,15 +17653,26 @@ async function renderPropostaEditor(id){
   desenhaResumo();
   box.querySelectorAll('#ppBusca,#ppReforma,#ppDesconto,#ppImplantacao,#ppSalario,#ppDedicacao,#ppBuscaDesc,#ppReformaDesc,#ppImplantacaoDesc,#ppNotif,#ppNotifDesc').forEach(i=>i.addEventListener('input', desenhaResumo));
   box.querySelectorAll('#ppBuscaIsento,#ppReformaIsento,#ppImplantacaoIsento,#ppNotifIsento,#ppNotifIncluido').forEach(i=>i.addEventListener('change', desenhaResumo));
+  // Salvar/Cancelar só habilitam quando algo mudou em relação ao último estado salvo (padrão do site).
+  const ppEstado = () => JSON.stringify({ c: lerCfg(), n: document.getElementById('ppNome')?.value || '' });
+  let ppBaseline = ppEstado();
+  const ppAtualizarBotoes = () => {
+    const dirty = ppEstado() !== ppBaseline;
+    const bs = document.getElementById('ppSalvar'), bc = document.getElementById('ppCancelar');
+    if(bs) bs.disabled = !dirty; if(bc) bc.disabled = !dirty;
+  };
+  box.querySelectorAll('input, textarea').forEach(i=>i.addEventListener(i.type==='checkbox'?'change':'input', ppAtualizarBotoes));
   const salvar = async () => {
     if(travada) return;
     const r = await api('/propostas/'+id, { method:'PUT', body:{ config: lerCfg(), clienteNome: document.getElementById('ppNome').value } });
     P.economias = r.economias; P.clienteNome = r.clienteNome;
+    ppBaseline = ppEstado(); ppAtualizarBotoes(); // novo estado salvo = limpo
     const msg = document.getElementById('ppSalvoMsg'); if(msg) msg.textContent = 'Salvo ' + new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
     return r;
   };
   document.getElementById('ppVoltar').addEventListener('click', ()=>{ PROPOSTA_ABERTA=null; renderContratosPropostas(); });
   document.getElementById('ppBaixarAssinada')?.addEventListener('click', ev=>rtBaixar('/api/propostas/'+id+'/assinada', P.assinada.nome || 'proposta-assinada.pdf', ev.currentTarget, 'Baixando…'));
+  document.getElementById('ppCancelar')?.addEventListener('click', ()=>{ renderPropostaEditor(id); });
   document.getElementById('ppSalvar')?.addEventListener('click', async ()=>{ try{ await salvar(); desenhaResumo(); toast('Valores salvos.','ok'); }catch(e){ toast(e.message,'err'); } });
   document.getElementById('ppPdf').addEventListener('click', async (ev)=>{
     try{ await salvar(); }catch(e){ toast(e.message,'err'); return; }
