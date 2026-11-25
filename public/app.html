@@ -10974,11 +10974,14 @@ function radPerspectivaHtml(d){
   const totValor = forn.reduce((s,f)=>s+(f.valor||0),0);
   const totCredito = forn.reduce((s,f)=>s+(f.creditoDestacado||0),0);
   const totRisco = forn.reduce((s,f)=>s+(f.risco||0),0);
+  const cbs2027 = (d.fontes && d.fontes.cbs2027Estimada) || 11.2, fator2027 = cbs2027 / 0.9;
+  const tot2027 = totCredito * fator2027;
   const linhas = forn.map(f=>`<tr>
     <td><b>${esc(f.nome)}</b><div class="rt-mut" style="font-size:11px;">${esc(fmtCnpjCpf(f.cnpj))}${f.uf?' · '+esc(f.uf):''}</div></td>
     <td style="text-align:right; white-space:nowrap;">${rtNum(f.notas||0)}</td>
     <td style="text-align:right; white-space:nowrap;">${rtBRL(f.valor)}</td>
     <td style="text-align:right; white-space:nowrap;"><b>${rtBRL(f.creditoDestacado)}</b></td>
+    <td style="text-align:right; white-space:nowrap; color:#1f6e43;"><b>${rtBRL(f.creditoDestacado*fator2027)}</b></td>
     <td>${f.risco>0 ? `<span style="color:#d03b3b;">⛔ Crédito em risco — pelo RAD você recolhe a CBS e <b>garante o crédito</b></span>` : `<span style="color:#0ca30c;">✔ Crédito ok — fornecedor com destaque consistente</span>`}</td>
   </tr>`).join('');
   return `<div class="card" style="overflow-x:auto;">
@@ -10986,11 +10989,11 @@ function radPerspectivaHtml(d){
     <p class="subtitle" style="margin:0 0 10px;">Demonstração com as <b>suas notas de compra reais</b> (extraídas dos XMLs). Mostra, por fornecedor, a CBS destacada no crédito e o que o Recolhimento pelo Adquirente (RAD) faz. <b>Valores estimados · simulação, não é emissão.</b></p>
     <div class="rt-mut" style="font-size:11.5px; margin:-4px 0 10px; color:#d08a1b;">⚠️ A CBS destacada hoje está na <b>alíquota de transição de 2026 (0,9%)</b> — por isso o valor parece pequeno. A partir de <b>2027</b> ela vai à alíquota cheia (estimada ~8,8%–11%) e o crédito fica cerca de <b>10× maior</b> (ver o KPI "Crédito 2027 em jogo").</div>
     <table class="data-table">
-      <thead><tr><th>Fornecedor</th><th style="text-align:right;">Notas</th><th style="text-align:right;">Compras</th><th style="text-align:right;">CBS no crédito</th><th>O que o RAD faz</th></tr></thead>
+      <thead><tr><th>Fornecedor</th><th style="text-align:right;">Notas</th><th style="text-align:right;">Compras</th><th style="text-align:right;">CBS no crédito<div style="font-weight:400; font-size:10px; color:var(--ink-soft);">2026 · 0,9%</div></th><th style="text-align:right;">CBS 2027 (est.)<div style="font-weight:400; font-size:10px; color:var(--ink-soft);">${String(cbs2027).replace('.',',')}%</div></th><th>O que o RAD faz</th></tr></thead>
       <tbody>${linhas}</tbody>
-      <tfoot><tr style="font-weight:700; background:var(--paper);"><td>Total</td><td style="text-align:right;">${rtNum(forn.reduce((s,f)=>s+(f.notas||0),0))}</td><td style="text-align:right;">${rtBRL(totValor)}</td><td style="text-align:right;">${rtBRL(totCredito)}</td><td>${totRisco>0?`<span style="color:#d03b3b;">${rtBRL(totRisco)} de crédito em risco — o RAD protege</span>`:'Créditos consistentes'}</td></tr></tfoot>
+      <tfoot><tr style="font-weight:700; background:var(--paper);"><td>Total</td><td style="text-align:right;">${rtNum(forn.reduce((s,f)=>s+(f.notas||0),0))}</td><td style="text-align:right;">${rtBRL(totValor)}</td><td style="text-align:right;">${rtBRL(totCredito)}</td><td style="text-align:right; color:#1f6e43;">${rtBRL(tot2027)}</td><td>${totRisco>0?`<span style="color:#d03b3b;">${rtBRL(totRisco)} de crédito em risco — o RAD protege</span>`:'Créditos consistentes'}</td></tr></tfoot>
     </table>
-    <div class="rt-mut" style="font-size:11.5px; margin-top:8px;">Como vai funcionar: para as compras com crédito em risco (fornecedor que pode não recolher a CBS), o <b>adquirente</b> usa o RAD para recolher a CBS da operação e <b>assegurar o crédito</b>, quitando o débito do fornecedor. A emissão do DARF é feita pela integração com a Receita Federal (operação plena a partir de jan/2027).</div>
+    <div class="rt-mut" style="font-size:11.5px; margin-top:8px;">Como vai funcionar: para as compras com crédito em risco (fornecedor que pode não recolher a CBS), o <b>adquirente</b> usa o RAD para recolher a CBS da operação e <b>assegurar o crédito</b>, quitando o débito do fornecedor. A emissão do DARF é feita pela integração com a Receita Federal (operação plena a partir de jan/2027).<br>A coluna <b>CBS 2027 (est.)</b> projeta o crédito de hoje para a alíquota estimada de <b>${String(cbs2027).replace('.',',')}%</b> — estimativa simples (não considera reduções por NCM de 2027; o valor fino por item está na aba "Auditoria de entradas").</div>
   </div>`;
 }
 // Painel de configuração + emissão do RAD via API da RFB (só escritório). Valida a conexão ao entrar.
@@ -11233,6 +11236,7 @@ function rtPainelHtml(d, urlPdf){
     </div>
     <div class="rt-hero-regime">${tomaTxt}</div>
     <div style="margin-top:10px;">${validacao}</div>
+    ${k.foraDoPeriodo ? `<div style="margin-top:8px; font-size:12.5px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;"><span>ℹ️ Há mais <b>${rtNum(k.foraDoPeriodo.notas)}</b> NF-e de ${d.direcao==='saida'?'saída':'entrada'} desta empresa fora do período escolhido (de ${fmtDateIso(k.foraDoPeriodo.de)} a ${fmtDateIso(k.foraDoPeriodo.ate)}).</span><button class="btn small" id="rtAmpliarPeriodo">Incluir no período</button></div>` : ''}
   </div>
 
   <div class="rt-kpis">
@@ -11438,6 +11442,25 @@ async function rtNotifAutoCarregar(d){
 }
 function rtLigarPainel(painel, d, urlPdf){
   rtNotifAutoCarregar(d);
+  // Amplia o período (Personalizado) para cobrir as notas que ficaram de fora.
+  const ampliar = document.getElementById('rtAmpliarPeriodo');
+  if(ampliar) ampliar.addEventListener('click', ()=>{
+    const fp = d.kpis.foraDoPeriodo; if(!fp) return;
+    RT_PERIODO = 'custom';
+    RT_DE = fp.de < d.periodo.de ? fp.de : d.periodo.de;
+    RT_ATE = fp.ate > d.periodo.ate ? fp.ate : d.periodo.ate;
+    const combo = document.getElementById('rtPeriodoCombo');
+    if(combo){ combo.querySelector('.combo-value').value = 'custom'; combo.querySelector('.combo-input').value = 'Personalizado'; }
+    ['rtDeWrap','rtAteWrap'].forEach(id=>{ const el=document.getElementById(id); if(el) el.style.display=''; });
+    const br = iso=>iso.split('-').reverse().join('/');
+    const de = document.getElementById('rtDe'), ate = document.getElementById('rtAte');
+    if(de && ate){
+      de.value = RT_DE; ate.value = RT_ATE;
+      const dt = document.getElementById('rtDe_text'), at = document.getElementById('rtAte_text');
+      if(dt) dt.value = br(RT_DE); if(at) at.value = br(RT_ATE);
+      ate.dispatchEvent(new Event('change'));
+    }
+  });
   const renderForn = ()=>{
     const cont = {}; d.fornecedores.forEach(f=>{ cont[f.status] = (cont[f.status]||0)+1; });
     document.getElementById('rtFornChips').innerHTML = `<button class="rt-fchip ${RT_FORN_ST.size?'':'on'}" data-st="">Todas <b>${d.fornecedores.length}</b></button>` +
