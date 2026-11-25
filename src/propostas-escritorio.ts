@@ -51,12 +51,39 @@ export const DESCRICAO_MODULO: Record<string, string> = {
 
 const r2 = (v: number) => Math.round(v * 100) / 100;
 
+// Funcionalidades do sistema (menu do escritório) que também podem entrar na proposta, item a item.
+// Chave "func:<modulo>" — nascem DESMARCADAS e sem preço; marcada, a funcionalidade é liberada pro
+// escritório quando o acesso é criado (escritorio_funcionalidades). Fora: os essenciais (sempre ligados),
+// a Reforma (já é módulo do catálogo) e o IRPF Rural (desligado).
+export const FUNCIONALIDADES_PROPOSTA: { modulo: string; nome: string; descricao: string }[] = [
+  { modulo: "solicitacoes", nome: "Solicitações de Documentos", descricao: "Pedido de documentos aos clientes com prazo, lembrete e recebimento pelo portal." },
+  { modulo: "envio", nome: "Envio de Documentos", descricao: "Central de envio de guias e documentos aos clientes, com protocolo de entrega." },
+  { modulo: "nfse", nome: "NFS-e", descricao: "Emissão de NFS-e no Sistema Nacional pelo escritório e pelos clientes." },
+  { modulo: "nfe-busca", nome: "Busca de XML", descricao: "Consulta e download dos XML de notas dos clientes." },
+  { modulo: "open_finance", nome: "Conciliação Bancária", descricao: "Extratos bancários dos clientes via Open Finance/OFX para conciliação." },
+  { modulo: "integracontador", nome: "Integra Contador", descricao: "Integração com a Receita Federal: DAS, PGDAS-D, situação fiscal e caixas postais." },
+  { modulo: "webdfe", nome: "Emissor NF-e", descricao: "Emissão de NF-e pelo próprio sistema." },
+  { modulo: "licencas", nome: "Licenças", descricao: "Controle de vencimento de licenças e alvarás dos clientes." },
+  { modulo: "certificados", nome: "Certificados", descricao: "Controle dos certificados digitais dos clientes e alerta de vencimento." },
+  { modulo: "financeiro", nome: "Financeiro", descricao: "Contas a pagar e a receber, honorários e cobrança do escritório." },
+  { modulo: "contratos", nome: "Contratos", descricao: "Propostas, contratos e assinatura eletrônica." },
+  { modulo: "relatorios", nome: "Relatórios", descricao: "Relatórios gerenciais e fiscais dos clientes." },
+  { modulo: "crm", nome: "CRM", descricao: "Funil de clientes e acompanhamento comercial." },
+  { modulo: "dprh", nome: "DP/RH", descricao: "Rotinas de departamento pessoal: folha, férias e obrigações." },
+  { modulo: "contabil", nome: "Contabilidade", descricao: "Rotinas contábeis e fechamento dos clientes." },
+  { modulo: "fiscal", nome: "Fiscal", descricao: "Rotinas fiscais, apurações e fechamento fiscal dos clientes." },
+  { modulo: "email", nome: "E-mail", descricao: "Caixa de e-mail integrada e importação automática de documentos." },
+  { modulo: "obrigacoes", nome: "Obrigações do Mês", descricao: "Quadro de obrigações por empresa e competência, com prazo e responsável." },
+];
+export const ehFuncionalidade = (chave: string) => chave.startsWith("func:");
+
 export function catalogoParaModulos(catalogo: { chave: string; nome: string; valor_mensal: number; ativo: number }[]): { modulos: ModuloProposta[]; assentoValor: number; baseMensal: number } {
   const assento = catalogo.find((m) => m.chave === "assento_colaborador");
   const base = catalogo.find((m) => m.chave === "plataforma_base");
   const modulos = catalogo
     .filter((m) => m.chave !== "assento_colaborador" && m.chave !== "plataforma_base" && (m.ativo || m.chave === "reforma"))
     .map((m) => ({ chave: m.chave, nome: m.nome, valor: m.chave === "reforma" && !m.valor_mensal ? PRECO_REFORMA_PADRAO : r2(m.valor_mensal || 0), incluido: true, descontoPct: 0, isento: false }));
+  for (const f of FUNCIONALIDADES_PROPOSTA) modulos.push({ chave: "func:" + f.modulo, nome: f.nome, valor: 0, incluido: false, descontoPct: 0, isento: false });
   return { modulos, assentoValor: r2(assento?.valor_mensal || 0), baseMensal: r2(base?.valor_mensal || BASE_MENSAL_PADRAO) };
 }
 export function horasSugeridas(modulos: ModuloProposta[]) {
@@ -154,7 +181,7 @@ const dataBR = (iso: string) => iso.slice(0, 10).split("-").reverse().join("/");
 export function htmlPropostaEscritorio(c: ConfigEscritorio, meta: { numero: string; data: string }, timbrado: string | null) {
   const v = calcularValores(c);
   const e = c.escritorio;
-  const inclusos = c.modulos.filter((m) => m.incluido), fora = c.modulos.filter((m) => !m.incluido);
+  const inclusos = c.modulos.filter((m) => m.incluido), fora = c.modulos.filter((m) => !m.incluido && !ehFuncionalidade(m.chave));
   const validade = (() => { const d = new Date(meta.data + "T12:00:00"); d.setDate(d.getDate() + c.validadeDias); return d.toISOString().slice(0, 10); })();
   const ganhos = [
     v.economiaEquipe ? { t: "Horas da equipe devolvidas ao escritório", x: `Cerca de <b>${num(v.horasMes)} horas por mês</b> deixam de ir para tarefa repetitiva (${num(c.horasPorCliente)} h por cliente × ${num(c.clientes)} clientes). Isso equivale a <b>${num(v.colaboradoresLiberados)} colaborador(es)</b> em tempo integral, que podem atender mais clientes sem novas contratações.`, val: brl0(v.economiaEquipe), rot: "por ano", q: true } : null,
@@ -190,7 +217,7 @@ Simples Contábeis · Redenção/PA, ${dataBR(meta.data)} · Proposta válida at
 <table class="t"><tbody>${FUNCIONALIDADES_BASE.map((f) => `<tr><td style="width:32%"><b>${esc(f.titulo)}</b></td><td>${esc(f.texto)}</td></tr>`).join("")}</tbody></table>
 
 <h2>2. Módulos de automação desta proposta</h2>
-${inclusos.length ? `<table class="t"><thead><tr><th style="width:32%">Módulo</th><th>O que faz</th><th class="num" style="width:16%">Mensalidade</th></tr></thead><tbody>${inclusos.map((m) => `<tr><td><b>${esc(m.nome)}</b></td><td>${esc(DESCRICAO_MODULO[m.chave] || "")}</td><td class="num">${brl(m.valor)}</td></tr>`).join("")}</tbody></table>` : `<p class="txt">Nenhum módulo opcional nesta proposta: só a plataforma base.</p>`}
+${inclusos.length ? `<table class="t"><thead><tr><th style="width:32%">Módulo</th><th>O que faz</th><th class="num" style="width:16%">Mensalidade</th></tr></thead><tbody>${inclusos.map((m) => `<tr><td><b>${esc(m.nome)}</b></td><td>${esc(DESCRICAO_MODULO[m.chave] || FUNCIONALIDADES_PROPOSTA.find((f) => "func:" + f.modulo === m.chave)?.descricao || "")}</td><td class="num">${brl(m.valor)}</td></tr>`).join("")}</tbody></table>` : `<p class="txt">Nenhum módulo opcional nesta proposta: só a plataforma base.</p>`}
 ${fora.length ? `<p class="small">Podem ser contratados depois, a qualquer momento: ${fora.map((m) => `${esc(m.nome)} (${brl(m.valor)}/mês)`).join("; ")}.</p>` : ""}
 
 <h2>3. Onde o escritório ganha</h2>

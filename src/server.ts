@@ -26424,6 +26424,15 @@ function propostaEscCriarAcesso(c: propostasEscritorio.ConfigEscritorio, admin: 
     insMod.run(escritorioId, i.chave, i.isento ? 0 : i.unitarioAssento ?? i.mensal, i.isento ? "2099-12-31 23:59:59" : null);
     modulos.push(nomes.get(i.chave)! + (i.isento ? " (isento)" : ""));
   }
+  // Funcionalidades do sistema marcadas na proposta (Certificados, Financeiro…): liberadas pro escritório.
+  const insFunc = sqlite.prepare(`INSERT OR IGNORE INTO escritorio_funcionalidades (escritorio_id, modulo) VALUES (?, ?)`);
+  for (const m of c.modulos) {
+    if (!m.incluido || !propostasEscritorio.ehFuncionalidade(m.chave)) continue;
+    const modulo = m.chave.slice(5);
+    if (!(MODULOS as readonly string[]).includes(modulo)) continue;
+    insFunc.run(escritorioId, modulo);
+    modulos.push(m.nome + (m.isento ? " (isento)" : ""));
+  }
   const existe = sqlite.prepare(`SELECT 1 FROM app_users WHERE email = ?`).get(admin.email);
   if (existe) throw new Error(`Já existe um usuário com o e-mail ${admin.email} — informe outro e-mail para o administrador.`);
   const senhaInutilizavel = crypto.randomBytes(24).toString("base64url") + "9a";
