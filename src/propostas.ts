@@ -15,7 +15,7 @@ export interface ConfigProposta {
   buscaMensal: number; reformaMensal: number; descontoPct: number; implantacao: number;
   // Desconto próprio (%) e isenção de cada cobrança; descontoPct é o desconto geral, por cima.
   buscaDescontoPct: number; buscaIsento: boolean; reformaDescontoPct: number; reformaIsento: boolean; implantacaoDescontoPct: number; implantacaoIsenta: boolean;
-  salarioAnalista: number; dedicacaoPct: number; validadeDias: number; observacoes: string;
+  salarioAnalista: number; dedicacaoPct: number; implantacaoParcelas: number; validadeDias: number; observacoes: string;
 }
 
 // ---- Parâmetros de preço e de custo (sugestão; tudo é editável na proposta) ----
@@ -150,7 +150,7 @@ export function montarAnalise(entradas: EmpresaEntrada[], periodo: { de: string;
 export type AnaliseProposta = ReturnType<typeof montarAnalise>;
 
 export function configPadrao(a: AnaliseProposta): ConfigProposta {
-  return { buscaMensal: a.sugestao.buscaMensal, reformaMensal: a.sugestao.reformaMensal, descontoPct: 0, implantacao: a.sugestao.implantacao, buscaDescontoPct: 0, buscaIsento: false, reformaDescontoPct: 0, reformaIsento: false, implantacaoDescontoPct: 0, implantacaoIsenta: false, salarioAnalista: SALARIO_ANALISTA_PADRAO, dedicacaoPct: a.dedicacaoSugerida, validadeDias: 30, observacoes: "" };
+  return { buscaMensal: a.sugestao.buscaMensal, reformaMensal: a.sugestao.reformaMensal, descontoPct: 0, implantacao: a.sugestao.implantacao, buscaDescontoPct: 0, buscaIsento: false, reformaDescontoPct: 0, reformaIsento: false, implantacaoDescontoPct: 0, implantacaoIsenta: false, implantacaoParcelas: 1, salarioAnalista: SALARIO_ANALISTA_PADRAO, dedicacaoPct: a.dedicacaoSugerida, validadeDias: 30, observacoes: "" };
 }
 export function normalizarConfig(c: any, base: ConfigProposta): ConfigProposta {
   const n = (v: any, d: number, min = 0, max = 1e9) => { const x = Number(v); return Number.isFinite(x) ? Math.min(max, Math.max(min, x)) : d; };
@@ -160,6 +160,7 @@ export function normalizarConfig(c: any, base: ConfigProposta): ConfigProposta {
     buscaDescontoPct: r2(n(c?.buscaDescontoPct, base.buscaDescontoPct || 0, 0, 100)), buscaIsento: c?.buscaIsento !== undefined ? !!c.buscaIsento : !!base.buscaIsento,
     reformaDescontoPct: r2(n(c?.reformaDescontoPct, base.reformaDescontoPct || 0, 0, 100)), reformaIsento: c?.reformaIsento !== undefined ? !!c.reformaIsento : !!base.reformaIsento,
     implantacaoDescontoPct: r2(n(c?.implantacaoDescontoPct, base.implantacaoDescontoPct || 0, 0, 100)), implantacaoIsenta: c?.implantacaoIsenta !== undefined ? !!c.implantacaoIsenta : !!base.implantacaoIsenta,
+    implantacaoParcelas: Math.round(n(c?.implantacaoParcelas, base.implantacaoParcelas || 1, 1, 48)),
     salarioAnalista: r2(n(c?.salarioAnalista, base.salarioAnalista)), dedicacaoPct: Math.round(n(c?.dedicacaoPct, base.dedicacaoPct, 0, 100)),
     validadeDias: Math.round(n(c?.validadeDias, base.validadeDias, 1, 365)), observacoes: String(c?.observacoes ?? base.observacoes).slice(0, 2000),
   };
@@ -193,6 +194,20 @@ const brl0 = (v: number) => "R$ " + Math.round(Number(v || 0)).toLocaleString("p
 const mil = (v: number) => (Math.abs(v) >= 1e6 ? `R$ ${(v / 1e6).toLocaleString("pt-BR", { maximumFractionDigits: 2 })} milhões` : Math.abs(v) >= 1000 ? `R$ ${(v / 1000).toLocaleString("pt-BR", { maximumFractionDigits: 1 })} mil` : brl0(v));
 const num = (v: number) => Math.round(v).toLocaleString("pt-BR");
 const dataBR = (iso: string) => iso.slice(0, 10).split("-").reverse().join("/");
+
+// Parcelamento da implantação em N parcelas iguais; a última ajusta o centavo da divisão.
+export function parcelasImplantacao(total: number, parcelas: number) {
+  const nn = Math.max(1, Math.round(parcelas || 1));
+  if (nn <= 1 || total <= 0) return { n: 1, valor: r2(total), ultima: r2(total), uniforme: true };
+  const base = Math.floor((total * 100) / nn) / 100;
+  const ultima = r2(total - base * (nn - 1));
+  return { n: nn, valor: r2(base), ultima, uniforme: Math.abs(base - ultima) < 0.005 };
+}
+export function parcelasTexto(total: number, parcelas: number) {
+  const p = parcelasImplantacao(total, parcelas);
+  if (p.n <= 1) return "";
+  return p.uniforme ? `${p.n}× de ${brl(p.valor)}` : `${p.n}×: ${p.n - 1}× de ${brl(p.valor)} e 1× de ${brl(p.ultima)}`;
+}
 const nomeCurto = (n: string) => String(n || "").replace(/\s+(LTDA|S\/?A|EIRELI|ME|EPP)\.?$/i, "").trim();
 const vezes = (v: number) => v.toLocaleString("pt-BR", { maximumFractionDigits: 1 });
 
@@ -321,7 +336,7 @@ ${eco.map((e, i) => `<div class="eco${e.quantificada ? "" : " q"}"><div class="n
   ].map(([nome, tab, d, isento, fin]: any) => `<tr><td>${nome}</td><td class="num">${brl(tab)}</td><td class="num ok">${isento ? "isento" : d ? `${String(d).replace(".", ",")}%` : "—"}</td><td class="num">${isento ? "<b>isento</b>" : brl(fin)}</td></tr>`).join("")}
   ${v.descontoGeral ? `<tr><td colspan="3">Subtotal</td><td class="num">${brl(v.subtotal)}</td></tr><tr><td colspan="3"><b>Desconto especial (${String(c.descontoPct).replace(".", ",")}%)</b></td><td class="num ok">− ${brl(v.descontoGeral)}</td></tr>` : ""}
   <tr class="total"><td colspan="3">Mensalidade${v.descontoValor ? ` <span style="font-size:9px; font-weight:600; color:#1f6e43;">(economia de ${brl(v.descontoValor)}/mês sobre a tabela de ${brl(v.mensalBruto)})</span>` : ""}</td><td class="num">${brl(v.mensal)}/mês</td></tr>
-  <tr><td>Implantação, cobrada uma vez: cadastro das inscrições, carga das notas do ano, primeira auditoria completa e primeira rodada de notificação aos fornecedores com falha</td><td class="num">${brl(c.implantacao)}</td><td class="num ok">${c.implantacaoIsenta ? "isenta" : c.implantacaoDescontoPct ? `${String(c.implantacaoDescontoPct).replace(".", ",")}%` : "—"}</td><td class="num">${v.implantacaoFinal ? brl(v.implantacaoFinal) : "<b>isenta</b>"}</td></tr>
+  <tr><td>Implantação, cobrada uma vez: cadastro das inscrições, carga das notas do ano, primeira auditoria completa e primeira rodada de notificação aos fornecedores com falha${c.implantacaoParcelas > 1 && v.implantacaoFinal ? ` <b>— parcelada em ${parcelasTexto(v.implantacaoFinal, c.implantacaoParcelas)}</b>` : ""}</td><td class="num">${brl(c.implantacao)}</td><td class="num ok">${c.implantacaoIsenta ? "isenta" : c.implantacaoDescontoPct ? `${String(c.implantacaoDescontoPct).replace(".", ",")}%` : "—"}</td><td class="num">${v.implantacaoFinal ? brl(v.implantacaoFinal) : "<b>isenta</b>"}</td></tr>
 </table></div>
 <table class="t" style="break-inside:avoid">
   <thead><tr><th>Retorno no 1º ano</th><th class="num" style="width:24%">Valor</th></tr></thead>

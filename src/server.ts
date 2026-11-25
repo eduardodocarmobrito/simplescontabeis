@@ -13328,11 +13328,18 @@ function reformaCalcularAuditoria(escritorioId: number, empresaId: number, de: s
     ms.ibs += nt.itens.reduce((a, i) => a + (i.uf?.v || 0) + (i.mun?.v || 0), 0);
     ms.cbs += nt.itens.reduce((a, i) => a + (i.cbs?.v || 0), 0);
     mesMap.set(mk, ms);
-    const f = fornMap.get(parte.cnpj) || { cnpj: parte.cnpj, nome: parte.nome, uf: parte.uf, regime: regimeParte, notas: 0, notasComGrupo: 0, itens: 0, itensConformes: 0, valor: 0, alta: 0, media: 0, baixa: 0, creditoDestacado: 0, risco: 0, referencia2027: 0, aproveitavel2027: 0, regras: new Set<string>(), ultimaEmissao: "", ultimaNotaDocId: null as number | null, ultimaNotaNumero: "", ultimaNotaSerie: "", ultimaNotaValor: 0 };
+    const f = fornMap.get(parte.cnpj) || { cnpj: parte.cnpj, nome: parte.nome, uf: parte.uf, regime: regimeParte, notas: 0, notasComGrupo: 0, itens: 0, itensConformes: 0, valor: 0, alta: 0, media: 0, baixa: 0, creditoDestacado: 0, risco: 0, referencia2027: 0, aproveitavel2027: 0, memoria: new Map<string, any>(), regras: new Set<string>(), ultimaEmissao: "", ultimaNotaDocId: null as number | null, ultimaNotaNumero: "", ultimaNotaSerie: "", ultimaNotaValor: 0 };
     f.notas++; f.itens += nt.itens.length; f.itensConformes += r.itensConformes; f.valor += valor;
     if (nt.itens.some((i) => i.temIBSCBS)) f.notasComGrupo++;
     if (saida) f.creditoDestacado += nt.itens.reduce((a, i) => a + (i.uf?.v || 0) + (i.mun?.v || 0) + (i.cbs?.v || 0), 0); // IBS/CBS destacado nas vendas
-    else { f.creditoDestacado += r.credito.aproveitavel; f.risco += r.credito.risco; f.referencia2027 += r.credito.referencia2027; f.aproveitavel2027 += r.credito.aproveitavel2027; }
+    else { f.creditoDestacado += r.credito.aproveitavel; f.risco += r.credito.risco; f.referencia2027 += r.credito.referencia2027; f.aproveitavel2027 += r.credito.aproveitavel2027;
+      for (const l of r.memoria2027) {
+        const k = `${l.situacao}|${l.aliq.toFixed(4)}|${l.reducao}`;
+        const m = f.memoria.get(k) || { situacao: l.situacao, reducao: l.reducao, aliq: l.aliq, base: 0, ref: 0, aprov: 0, itens: 0 };
+        m.base += l.base; m.ref += l.ref; m.aprov += l.aprov; m.itens++;
+        f.memoria.set(k, m);
+      }
+    }
     // Guarda a NF-e mais recente deste fornecedor (independente de ter achado/regra violada) — usada
     // pela ficha de conferência pré-preenchida como referência, quando não há nenhum achado específico
     // pra puxar o número/data/valor (achado ao vivo 2026-11-05: fornecedor MEI sem nenhuma regra violada
@@ -13397,6 +13404,12 @@ function reformaCalcularAuditoria(escritorioId: number, empresaId: number, de: s
       notas: f.notas, itens: f.itens, valor: r2(f.valor), pctComGrupo: f.notas ? Math.round((f.notasComGrupo / f.notas) * 100) : 0,
       alta: f.alta, media: f.media, baixa: f.baixa, score, status: score >= 90 && !f.alta ? "conforme" : score >= 70 ? "atencao" : "critico",
       creditoDestacado: r2(f.creditoDestacado), risco: r2(f.risco), perda2027Anual, regras: [...f.regras], recomendacao: recomendacao(f, perda2027Anual),
+      memoria2027: saida ? null : {
+        meses, de, ate, cbs: reformaAuditoria.CBS_2027_ESTIMADA,
+        linhas: [...f.memoria.values()].map((m: any) => ({ situacao: m.situacao, reducao: m.reducao, aliq: Math.round(m.aliq * 10000) / 10000, itens: m.itens, base: r2(m.base), ref: r2(m.ref), aprov: r2(m.aprov), perda: r2(Math.max(0, m.ref - m.aprov)) }))
+          .sort((a: any, b: any) => b.perda - a.perda || b.base - a.base),
+        perdaPeriodo: r2(Math.max(0, f.referencia2027 - f.aproveitavel2027)),
+      },
       ultimaNota: f.ultimaNotaDocId ? { docId: f.ultimaNotaDocId, numero: f.ultimaNotaNumero, serie: f.ultimaNotaSerie, dhEmi: f.ultimaEmissao, valor: r2(f.ultimaNotaValor) } : null,
     };
   }).sort((a, b) => b.perda2027Anual - a.perda2027Anual || b.alta - a.alta || b.valor - a.valor);
@@ -26264,6 +26277,9 @@ app.post("/api/propostas/:id/aprovar", blockCliente, requirePermissao("contratos
   const dados: Record<string, string> = {
     mensalidade_total: brlC(r.valores.mensal), mensalidade_total_extenso: contratos.valorPorExtenso(r.valores.mensal),
     implantacao_total: brlC(r.valores.implantacaoFinal), implantacao_total_extenso: contratos.valorPorExtenso(r.valores.implantacaoFinal),
+    implantacao_detalhe: r.config.implantacaoParcelas > 1 && r.valores.implantacaoFinal > 0
+      ? `, parcelado em ${propostas.parcelasTexto(r.valores.implantacaoFinal, r.config.implantacaoParcelas)}, com a 1ª parcela em até 5 (cinco) dias da assinatura e as demais a cada 30 (trinta) dias, pelo portal de acesso do site, no menu Assinaturas`
+      : `, com vencimento em até 5 (cinco) dias da assinatura deste contrato, ou diretamente pelo portal de acesso do site, no menu Assinaturas`,
     mensalidade_busca: r.config.buscaIsento ? "0,00 (isento)" : `${brlC(r.valores.buscaFinal)}${r.valores.buscaFinal < r.config.buscaMensal ? ` (tabela R$ ${brlC(r.config.buscaMensal)}, desconto de ${String(r.config.buscaDescontoPct).replace(".", ",")}%)` : ""}`,
     mensalidade_reforma: r.config.reformaIsento ? "0,00 (isento)" : `${brlC(r.valores.reformaFinal)}${r.valores.reformaFinal < r.config.reformaMensal ? ` (tabela R$ ${brlC(r.config.reformaMensal)}, desconto de ${String(r.config.reformaDescontoPct).replace(".", ",")}%)` : ""}`,
     desconto_texto: r.valores.descontoValor ? `, já aplicados os descontos e isenções do Anexo II (economia de R$ ${brlC(r.valores.descontoValor)} por mês sobre o valor de tabela de R$ ${brlC(r.valores.mensalBruto)})` : "",
@@ -26540,6 +26556,9 @@ app.post("/api/propostas-escritorio/:id/aprovar", blockCliente, requirePermissao
   const dados: Record<string, string> = {
     mensalidade_total: brlC(r.valores.mensal), mensalidade_total_extenso: contratos.valorPorExtenso(r.valores.mensal),
     implantacao_total: brlC(r.valores.implantacaoFinal), implantacao_total_extenso: contratos.valorPorExtenso(r.valores.implantacaoFinal),
+    implantacao_detalhe: r.config.implantacaoParcelas > 1 && r.valores.implantacaoFinal > 0
+      ? `, parcelado em ${propostasEscritorio.parcelasTexto(r.valores.implantacaoFinal, r.config.implantacaoParcelas)}, com a 1ª parcela em até 5 (cinco) dias da assinatura e as demais a cada 30 (trinta) dias, pelo portal de acesso do site, no menu Assinaturas`
+      : `, com vencimento em até 5 (cinco) dias da assinatura deste contrato, ou diretamente pelo portal de acesso do site, no menu Assinaturas`,
     desconto_texto: r.valores.descontoValor ? `, já aplicados os descontos e isenções do Anexo I (economia de R$ ${brlC(r.valores.descontoValor)} por mês sobre o valor de tabela de R$ ${brlC(r.valores.mensalBruto)})` : "",
     desconto_anexo: r.valores.descontoValor ? `R$ ${brlC(r.valores.descontoValor)} por mês, conforme os itens acima` : "Sem desconto",
     qtd_usuarios: String(r.config.colaboradores || 1), n_proposta: r.numero,

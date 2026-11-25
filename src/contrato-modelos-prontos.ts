@@ -378,7 +378,7 @@ const LICENCA_PLATAFORMA_HTML = `
 <p class="clausula-titulo">CLÁUSULA TERCEIRA – DA IMPLANTAÇÃO</p>
 <ol>
 <li>A implantação compreende: liberação do acesso; configuração do escritório, dos usuários e das permissões; importação das empresas-clientes e contatos fornecidos pela LICENCIADA; configuração dos módulos contratados e dos envios automáticos; e treinamento inicial remoto da equipe.</li>
-<li>Pela implantação, a LICENCIADA pagará à LICENCIANTE o valor único de <b>R$ {{implantacao_total}}</b> ({{implantacao_total_extenso}}), com vencimento em até 5 (cinco) dias da assinatura deste contrato, ou diretamente pelo portal de acesso do site, no menu Assinaturas.</li>
+<li>Pela implantação, a LICENCIADA pagará à LICENCIANTE o valor único de <b>R$ {{implantacao_total}}</b> ({{implantacao_total_extenso}}){{implantacao_detalhe}}.</li>
 <li>A implantação será concluída em até 15 (quinze) dias úteis contados do pagamento e do envio, pela LICENCIADA, dos dados e dos acessos necessários. Uma vez concluída, o valor da implantação não é reembolsável.</li>
 </ol>
 
@@ -530,7 +530,7 @@ const LICENCA_REFORMA_HTML = `
 <p class="clausula-titulo">CLÁUSULA TERCEIRA – DA IMPLANTAÇÃO</p>
 <ol>
 <li>A implantação compreende: liberação do acesso; cadastro dos estabelecimentos do Anexo I; configuração da captura dos documentos, inclusive com o certificado digital fornecido pela LICENCIADA, quando necessário; carga dos documentos disponíveis do ano corrente; primeira auditoria completa; primeira rodada de notificação aos fornecedores com falha; e treinamento inicial remoto dos usuários.</li>
-<li>Pela implantação, a LICENCIADA pagará à LICENCIANTE o valor único de <b>R$ {{implantacao_total}}</b> ({{implantacao_total_extenso}}), com vencimento em até 5 (cinco) dias da assinatura deste contrato, ou diretamente pelo portal de acesso do site, no menu Assinaturas.</li>
+<li>Pela implantação, a LICENCIADA pagará à LICENCIANTE o valor único de <b>R$ {{implantacao_total}}</b> ({{implantacao_total_extenso}}){{implantacao_detalhe}}.</li>
 <li>A implantação será concluída em até 10 (dez) dias úteis contados do pagamento e do envio, pela LICENCIADA, dos dados e, quando necessário, do certificado digital. Uma vez concluída, o valor da implantação não é reembolsável.</li>
 </ol>
 

@@ -16939,7 +16939,7 @@ async function renderPropostaEditor(id){
           ['Reforma', 'Auditoria Reforma Tributária', 'mensal', c.reformaMensal, c.reformaDescontoPct, c.reformaIsento, `Sugestão pelo volume (${a.volume.notasMes} NF-e/mês): ${propBRL(a.sugestao.reformaMensal)}`],
           ['Implantacao', 'Implantação', 'valor único', c.implantacao, c.implantacaoDescontoPct, c.implantacaoIsenta, `Sugestão: ${propBRL(a.sugestao.implantacao)}`],
         ].map(([k, nome, tipo, valor, d, isento, dica])=>`<tr>
-          <td><b>${nome}</b><div style="font-size:11.5px; color:var(--ink-soft);">${tipo} · ${dica}</div></td>
+          <td><b>${nome}</b><div style="font-size:11.5px; color:var(--ink-soft);">${tipo} · ${dica}</div>${k==='Implantacao'?`<div style="font-size:11.5px; color:var(--ink-soft); margin-top:5px; display:flex; align-items:center; gap:6px; flex-wrap:wrap;">Parcelar em <input type="number" id="ppImplParcelas" min="1" max="48" value="${c.implantacaoParcelas||1}" ${dis} style="width:56px; padding:5px 7px; border:1px solid var(--rule); border-radius:8px; background:var(--paper); color:var(--ink); font-size:13px;"> vez(es) <span id="ppImplParcelaInfo"></span></div>`:''}</td>
           <td><input type="text" id="pp${k}" value="${esc(propMoedaTxt(valor))}" ${dis} style="width:120px;"></td>
           <td><input type="text" id="pp${k}Desc" value="${esc(String(d||0).replace('.',','))}" ${dis} style="width:80px;"></td>
           <td><input type="checkbox" id="pp${k}Isento" ${isento?'checked':''} ${dis}></td>
@@ -16989,6 +16989,7 @@ async function renderPropostaEditor(id){
     buscaDescontoPct: Math.min(100, Math.max(0, propNum(document.getElementById('ppBuscaDesc').value))), buscaIsento: document.getElementById('ppBuscaIsento').checked,
     reformaDescontoPct: Math.min(100, Math.max(0, propNum(document.getElementById('ppReformaDesc').value))), reformaIsento: document.getElementById('ppReformaIsento').checked,
     implantacaoDescontoPct: Math.min(100, Math.max(0, propNum(document.getElementById('ppImplantacaoDesc').value))), implantacaoIsenta: document.getElementById('ppImplantacaoIsento').checked,
+    implantacaoParcelas: Math.min(48, Math.max(1, Math.round(propNum(document.getElementById('ppImplParcelas')?.value))||1)),
     salarioAnalista: propNum(document.getElementById('ppSalario').value), dedicacaoPct: Math.min(100, Math.max(0, Math.round(propNum(document.getElementById('ppDedicacao').value)))),
     validadeDias: Math.max(1, Math.round(propNum(document.getElementById('ppValidade').value)) || 30), observacoes: document.getElementById('ppObs').value,
   });
@@ -16999,11 +17000,13 @@ async function renderPropostaEditor(id){
     document.getElementById('ppBuscaFinal').innerHTML = finalHtml(v.buscaFinal, cfg.buscaMensal);
     document.getElementById('ppReformaFinal').innerHTML = finalHtml(v.reformaFinal, cfg.reformaMensal);
     document.getElementById('ppImplantacaoFinal').innerHTML = finalHtml(v.implantacaoFinal, cfg.implantacao);
+    const ppNParc = cfg.implantacaoParcelas||1, ppPInfo = document.getElementById('ppImplParcelaInfo');
+    if(ppPInfo) ppPInfo.innerHTML = (ppNParc>1 && v.implantacaoFinal) ? `→ <b style="color:var(--accent-deep);">${ppNParc}× de ${propBRL(Math.floor(v.implantacaoFinal*100/ppNParc)/100)}</b>` : (ppNParc>1?'':'<span style="color:var(--ink-soft);">(à vista)</span>');
     document.getElementById('ppResumo').innerHTML =
       item('Mensalidade de tabela', propBRL(v.mensalBruto)) +
       item('Descontos e isenções', v.descontoValor ? '− '+propBRL(v.descontoValor) : 'sem desconto') +
       item('Mensalidade final', propBRL(v.mensal), 'var(--accent-deep)') +
-      item('Implantação', v.implantacaoFinal ? propBRL(v.implantacaoFinal) : 'isenta') +
+      item('Implantação', v.implantacaoFinal ? (propBRL(v.implantacaoFinal) + (cfg.implantacaoParcelas>1?` <span style="font-size:11px; font-weight:600; color:var(--ink-soft);">em ${cfg.implantacaoParcelas}×</span>`:'')) : 'isenta') +
       item('Investimento no 1º ano', propBRL0(v.investimentoAno1)) +
       item('Retorno para o cliente', v.roi ? `≈ ${v.roi.toLocaleString('pt-BR')}× · se paga em ${v.paybackMeses==null?'—':v.paybackMeses<=1?'< 1 mês':Math.ceil(v.paybackMeses)+' meses'}` : '—');
     document.getElementById('ppKpiEco').textContent = propBRL0(v.economia) + '/ano';
