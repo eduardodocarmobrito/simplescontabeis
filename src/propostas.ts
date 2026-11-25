@@ -16,7 +16,10 @@ export interface ConfigProposta {
   // Desconto próprio (%) e isenção de cada cobrança; descontoPct é o desconto geral, por cima.
   buscaDescontoPct: number; buscaIsento: boolean; reformaDescontoPct: number; reformaIsento: boolean; implantacaoDescontoPct: number; implantacaoIsenta: boolean;
   salarioAnalista: number; dedicacaoPct: number; implantacaoParcelas: number; validadeDias: number; observacoes: string;
+  // Módulo opcional: notificação AUTOMÁTICA dos fornecedores por e-mail (robô). Só entra se incluído.
+  notifIncluido: boolean; notifMensal: number; notifDescontoPct: number; notifIsento: boolean;
 }
+export const NOTIF_TITULO = "Notificação automática dos fornecedores por e-mail: a cada NF-e com inconsistência, o robô envia ao fornecedor a notificação com o relatório completo em PDF";
 
 // ---- Parâmetros de preço e de custo (sugestão; tudo é editável na proposta) ----
 export const PRECO_BUSCA_POR_CNPJ = 99;
@@ -150,7 +153,7 @@ export function montarAnalise(entradas: EmpresaEntrada[], periodo: { de: string;
 export type AnaliseProposta = ReturnType<typeof montarAnalise>;
 
 export function configPadrao(a: AnaliseProposta): ConfigProposta {
-  return { buscaMensal: a.sugestao.buscaMensal, reformaMensal: a.sugestao.reformaMensal, descontoPct: 0, implantacao: a.sugestao.implantacao, buscaDescontoPct: 0, buscaIsento: false, reformaDescontoPct: 0, reformaIsento: false, implantacaoDescontoPct: 0, implantacaoIsenta: false, implantacaoParcelas: 1, salarioAnalista: SALARIO_ANALISTA_PADRAO, dedicacaoPct: a.dedicacaoSugerida, validadeDias: 30, observacoes: "" };
+  return { buscaMensal: a.sugestao.buscaMensal, reformaMensal: a.sugestao.reformaMensal, descontoPct: 0, implantacao: a.sugestao.implantacao, buscaDescontoPct: 0, buscaIsento: false, reformaDescontoPct: 0, reformaIsento: false, implantacaoDescontoPct: 0, implantacaoIsenta: false, implantacaoParcelas: 1, salarioAnalista: SALARIO_ANALISTA_PADRAO, dedicacaoPct: a.dedicacaoSugerida, validadeDias: 30, observacoes: "", notifIncluido: false, notifMensal: 0, notifDescontoPct: 0, notifIsento: false };
 }
 export function normalizarConfig(c: any, base: ConfigProposta): ConfigProposta {
   const n = (v: any, d: number, min = 0, max = 1e9) => { const x = Number(v); return Number.isFinite(x) ? Math.min(max, Math.max(min, x)) : d; };
@@ -163,14 +166,17 @@ export function normalizarConfig(c: any, base: ConfigProposta): ConfigProposta {
     implantacaoParcelas: Math.round(n(c?.implantacaoParcelas, base.implantacaoParcelas || 1, 1, 48)),
     salarioAnalista: r2(n(c?.salarioAnalista, base.salarioAnalista)), dedicacaoPct: Math.round(n(c?.dedicacaoPct, base.dedicacaoPct, 0, 100)),
     validadeDias: Math.round(n(c?.validadeDias, base.validadeDias, 1, 365)), observacoes: String(c?.observacoes ?? base.observacoes).slice(0, 2000),
+    notifIncluido: c?.notifIncluido !== undefined ? !!c.notifIncluido : !!base.notifIncluido, notifMensal: r2(n(c?.notifMensal, base.notifMensal || 0)),
+    notifDescontoPct: r2(n(c?.notifDescontoPct, base.notifDescontoPct || 0, 0, 100)), notifIsento: c?.notifIsento !== undefined ? !!c.notifIsento : !!base.notifIsento,
   };
 }
 // Mesma conta da tela (app.html › propCalcular) — manter as duas iguais.
 export function calcularValores(a: AnaliseProposta, c: ConfigProposta) {
   const fin = (v: number, d: number, isento: boolean) => (isento ? 0 : r2(v * (1 - (d || 0) / 100)));
   const buscaFinal = fin(c.buscaMensal, c.buscaDescontoPct, c.buscaIsento), reformaFinal = fin(c.reformaMensal, c.reformaDescontoPct, c.reformaIsento);
-  const mensalBruto = r2(c.buscaMensal + c.reformaMensal);
-  const subtotal = r2(buscaFinal + reformaFinal);
+  const notifTabela = c.notifIncluido ? c.notifMensal || 0 : 0, notifFinal = c.notifIncluido ? fin(c.notifMensal || 0, c.notifDescontoPct, c.notifIsento) : 0;
+  const mensalBruto = r2(c.buscaMensal + c.reformaMensal + notifTabela);
+  const subtotal = r2(buscaFinal + reformaFinal + notifFinal);
   const descontoGeral = r2((subtotal * c.descontoPct) / 100);
   const descontoValor = r2(mensalBruto - subtotal + descontoGeral);
   const mensal = r2(subtotal - descontoGeral);
@@ -183,7 +189,7 @@ export function calcularValores(a: AnaliseProposta, c: ConfigProposta) {
   const liquido = Math.round(economia - investimentoAno1);
   const roi = investimentoAno1 > 0 ? Math.round((economia / investimentoAno1) * 10) / 10 : 0;
   const paybackMeses = economia > 0 ? Math.round((investimentoAno1 / (economia / 12)) * 10) / 10 : null;
-  return { mensalBruto, buscaFinal, reformaFinal, subtotal, descontoGeral, descontoValor, mensal, implantacaoFinal, analistaMensal, analistaAno, credito, economia, investimentoAno1, liquido, roi, paybackMeses };
+  return { mensalBruto, buscaFinal, reformaFinal, notifFinal, subtotal, descontoGeral, descontoValor, mensal, implantacaoFinal, analistaMensal, analistaAno, credito, economia, investimentoAno1, liquido, roi, paybackMeses };
 }
 
 // ---- Formatação ----
@@ -332,7 +338,8 @@ ${eco.map((e, i) => `<div class="eco${e.quantificada ? "" : " q"}"><div class="n
   <tr class="cab"><td><b>Item</b></td><td class="num"><b>Tabela</b></td><td class="num"><b>Desconto</b></td><td class="num"><b>Valor</b></td></tr>
   ${[
     [`Busca automática de XML: NF-e, NFC-e, NFS-e, CT-e e MDF-e, ${t.cnpjs} inscrição(ões)`, c.buscaMensal, c.buscaDescontoPct, c.buscaIsento, v.buscaFinal],
-    ["Auditoria Reforma Tributária: entradas e saídas, validação na API da Receita, notificação automática dos fornecedores e relatório mensal", c.reformaMensal, c.reformaDescontoPct, c.reformaIsento, v.reformaFinal],
+    ["Auditoria Reforma Tributária: entradas e saídas, validação na API da Receita, relatório de inconsistências por fornecedor e relatório mensal", c.reformaMensal, c.reformaDescontoPct, c.reformaIsento, v.reformaFinal],
+    ...(c.notifIncluido ? [[NOTIF_TITULO, c.notifMensal, c.notifDescontoPct, c.notifIsento, v.notifFinal]] : []),
   ].map(([nome, tab, d, isento, fin]: any) => `<tr><td>${nome}</td><td class="num">${brl(tab)}</td><td class="num ok">${isento ? "isento" : d ? `${String(d).replace(".", ",")}%` : "—"}</td><td class="num">${isento ? "<b>isento</b>" : brl(fin)}</td></tr>`).join("")}
   ${v.descontoGeral ? `<tr><td colspan="3">Subtotal</td><td class="num">${brl(v.subtotal)}</td></tr><tr><td colspan="3"><b>Desconto especial (${String(c.descontoPct).replace(".", ",")}%)</b></td><td class="num ok">− ${brl(v.descontoGeral)}</td></tr>` : ""}
   <tr class="total"><td colspan="3">Mensalidade${v.descontoValor ? ` <span style="font-size:9px; font-weight:600; color:#1f6e43;">(economia de ${brl(v.descontoValor)}/mês sobre a tabela de ${brl(v.mensalBruto)})</span>` : ""}</td><td class="num">${brl(v.mensal)}/mês</td></tr>

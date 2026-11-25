@@ -13414,6 +13414,7 @@ function reformaCalcularAuditoria(escritorioId: number, empresaId: number, de: s
       // ao pago no Simples); "por fora" = regime regular (gIBSCBS, crédito integral).
       // Só pra fornecedor do SIMPLES que destacou no XML (regime normal sempre é "por fora" — não precisa dizer).
       tipoCredito: saida || !(f.creditoDestacado > 0) ? null : f.regime === "sn_dentro" ? "por_dentro" : f.regime === "sn_regular" ? "por_fora" : null,
+      emailsNotificacao: saida ? [] : reformaEmailsFornecedor(empresa.id, f.cnpj),
       // Simples sem regime informado e MEI: o crédito limitado ao DAS não vem na nota — fica como zero (advertência).
       advertencia2027: !saida && perda2027Anual > 0 && (f.regime === "sn_indefinido" || f.regime === "mei")
         ? (f.regime === "mei" ? "Estimativa: MEI não destaca IBS/CBS na nota; o crédito foi considerado zero." : "Estimativa: o fornecedor do Simples não informou o regime de IBS/CBS na nota; o crédito limitado ao valor pago no DAS não aparece e foi considerado zero — o valor real em jogo pode ser um pouco menor.")
@@ -13738,6 +13739,201 @@ app.get("/api/reforma/minha-empresa/auditoria", requireCliente, requireRevendaCl
   try { res.json(await reformaCalcularValidado(user.escritorioId, user.empresaId, de, ate, false, req.query.direcao === "saida" ? "saida" : "entrada", 20_000)); }
   catch (e: any) { res.status(400).json({ error: e.message }); }
 });
+// ---------- Reforma Tributária: notificação AUTOMÁTICA dos fornecedores por e-mail ----------
+// Pedido do usuário (2026-11-25): quando uma NF-e de entrada cair na auditoria com inconsistência, o robô
+// manda ao fornecedor o mesmo conteúdo do "Copiar notificação ao fornecedor" + o PDF "Relatório completo
+// para este fornecedor". O e-mail do fornecedor fica cadastrado por CNPJ (por empresa-cliente). Nasce
+// DESLIGADO por empresa: só o Administrador do escritório liga (módulo contratado na proposta).
+// Remetente: o e-mail da própria empresa (E-mail de envio do cliente); sem ele, o e-mail corporativo do escritório.
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS reforma_fornecedor_emails (
+    empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+    cnpj TEXT NOT NULL,
+    emails TEXT NOT NULL,
+    atualizado_em TEXT DEFAULT (datetime('now')),
+    atualizado_por INTEGER,
+    PRIMARY KEY (empresa_id, cnpj)
+  );
+  CREATE TABLE IF NOT EXISTS reforma_notif_config (
+    empresa_id INTEGER PRIMARY KEY REFERENCES empresas(id) ON DELETE CASCADE,
+    ativo INTEGER NOT NULL DEFAULT 0,
+    desde TEXT NOT NULL,
+    atualizado_em TEXT DEFAULT (datetime('now')),
+    atualizado_por INTEGER
+  );
+  CREATE TABLE IF NOT EXISTS reforma_notif_envios (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    empresa_id INTEGER NOT NULL REFERENCES empresas(id) ON DELETE CASCADE,
+    cnpj TEXT NOT NULL,
+    fornecedor TEXT,
+    doc_ids TEXT NOT NULL,
+    notas TEXT,
+    emails TEXT,
+    status TEXT NOT NULL,
+    erro TEXT,
+    remetente TEXT,
+    criado_em TEXT DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS reforma_notif_docs (
+    empresa_id INTEGER NOT NULL,
+    doc_id INTEGER NOT NULL,
+    tentativas INTEGER NOT NULL DEFAULT 0,
+    enviado_em TEXT,
+    PRIMARY KEY (empresa_id, doc_id)
+  );
+`);
+const RT_EMAIL_RE = /^[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+$/;
+function reformaEmailsFornecedor(empresaId: number, cnpj: string): string[] {
+  const r = sqlite.prepare(`SELECT emails FROM reforma_fornecedor_emails WHERE empresa_id = ? AND cnpj = ?`).get(empresaId, String(cnpj).replace(/\D/g, "")) as any;
+  return r ? String(r.emails).split(/[,;\s]+/).filter((e) => RT_EMAIL_RE.test(e)) : [];
+}
+function reformaSalvarEmailsFornecedor(empresaId: number, cnpj: string, entrada: any, userId: number | null): string[] {
+  const doc = String(cnpj || "").replace(/\D/g, "");
+  if (doc.length !== 14 && doc.length !== 11) throw new Error("CNPJ/CPF do fornecedor inválido.");
+  const lista = [...new Set(String(entrada || "").split(/[,;\s]+/).map((e) => e.trim().toLowerCase()).filter(Boolean))];
+  const invalido = lista.find((e) => !RT_EMAIL_RE.test(e));
+  if (invalido) throw new Error(`E-mail inválido: ${invalido}`);
+  if (lista.length > 5) throw new Error("No máximo 5 e-mails por fornecedor.");
+  if (!lista.length) sqlite.prepare(`DELETE FROM reforma_fornecedor_emails WHERE empresa_id = ? AND cnpj = ?`).run(empresaId, doc);
+  else sqlite.prepare(`INSERT INTO reforma_fornecedor_emails (empresa_id, cnpj, emails, atualizado_por) VALUES (?, ?, ?, ?)
+      ON CONFLICT(empresa_id, cnpj) DO UPDATE SET emails = excluded.emails, atualizado_em = datetime('now'), atualizado_por = excluded.atualizado_por`).run(empresaId, doc, lista.join(", "), userId);
+  return lista;
+}
+// Mesmo texto do botão "Copiar notificação ao fornecedor" (app.html › rtFornecedorDrawer), só com as notas novas.
+function reformaTextoNotificacao(d: any, f: any, ach: any[]): string {
+  const fd = (iso: string) => String(iso || "").slice(0, 10).split("-").reverse().join("/");
+  const fc = (c: string) => { const x = String(c || "").replace(/\D/g, ""); return x.length === 14 ? x.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/, "$1.$2.$3/$4-$5") : x.length === 11 ? x.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, "$1.$2.$3-$4") : c; };
+  const principais = ach.slice(0, 30);
+  const datas = ach.map((a) => String(a.dhEmi).slice(0, 10)).sort();
+  return `Prezados, ${f.nome} (CNPJ ${fc(f.cnpj)}),\n\nNa auditoria das notas fiscais emitidas para ${d.empresa.nome} (CNPJ ${fc(d.empresa.cnpj || "")}), ${datas.length ? `de ${fd(datas[0])} a ${fd(datas[datas.length - 1])}` : ""}, identificamos os pontos abaixo no preenchimento do IBS/CBS (NT 2025.002-RTC v1.53 / NT 2026.005):\n\n` +
+    principais.map((a, i) => `${i + 1}. NF ${a.numero}${a.nItem ? " item " + a.nItem : ""} (${fd(a.dhEmi)}) — ${a.titulo}\n   Evidência: ${a.evidencia}${a.esperado ? `\n   Preenchimento esperado: ${a.esperado}` : ""}`).join("\n\n") +
+    (ach.length > principais.length ? `\n\n(+ ${ach.length - principais.length} ponto(s) no relatório em anexo)` : "") +
+    `\n\n${f.regime === "sn_dentro" || f.regime === "sn_indefinido" ? "Solicitamos também avaliar a opção pelo regime regular de IBS/CBS (LC 214/2025, art. 41 §3º), que permite o crédito integral ao adquirente.\n\n" : ""}` +
+    `O relatório completo, com o preenchimento correto de cada item e a fundamentação, segue em anexo (PDF).\n\nPedimos a gentileza de ajustar o emissor e, quando cabível, emitir a correção (CC-e ou NF-e complementar).\n\nAtenciosamente,\n${d.empresa.nome}`;
+}
+function reformaRemetenteNotif(empresaId: number, escritorioId: number): "empresa" | "escritorio" | null {
+  if (emailConfiguradoEmpresa(empresaId)) return "empresa";
+  if (getTransporter(escritorioId)) return "escritorio";
+  return null;
+}
+// Roda a notificação de UMA empresa: audita as entradas desde a ativação, junta por fornecedor as notas com
+// inconsistência ainda não notificadas e manda um e-mail por fornecedor (com o PDF). Uma nota é avisada uma vez.
+async function reformaNotificarEmpresa(empresaId: number, manual = false): Promise<{ enviados: number; semEmail: number; erros: number; mensagem: string }> {
+  const cfg = sqlite.prepare(`SELECT * FROM reforma_notif_config WHERE empresa_id = ?`).get(empresaId) as any;
+  if (!cfg?.ativo && !manual) return { enviados: 0, semEmail: 0, erros: 0, mensagem: "Notificação automática desligada." };
+  const emp = sqlite.prepare(`SELECT id, escritorio_id FROM empresas WHERE id = ?`).get(empresaId) as any;
+  if (!emp) return { enviados: 0, semEmail: 0, erros: 0, mensagem: "Empresa não encontrada." };
+  const remetente = reformaRemetenteNotif(empresaId, emp.escritorio_id);
+  if (!remetente) return { enviados: 0, semEmail: 0, erros: 0, mensagem: "Nenhum e-mail de envio configurado (nem da empresa, nem o corporativo do escritório)." };
+  const hoje = new Date(Date.now() - 3 * 3600_000).toISOString().slice(0, 10);
+  const desde = String(cfg?.desde || hoje).slice(0, 10);
+  const d: any = await reformaCalcularValidado(emp.escritorio_id, empresaId, desde, hoje, true, "entrada", 120_000);
+  if (d.validacao?.pendentes > 0) return { enviados: 0, semEmail: 0, erros: 0, mensagem: "Aguardando a validação da Calculadora RFB — tenta de novo na próxima rodada." };
+  const docInfo = sqlite.prepare(`SELECT tentativas, enviado_em FROM reforma_notif_docs WHERE empresa_id = ? AND doc_id = ?`);
+  let enviados = 0, semEmail = 0, erros = 0;
+  for (const f of d.fornecedores) {
+    // Mesmo filtro do "Copiar notificação": tudo que estiver em desacordo; "info" fica de fora (exceto produtor PF).
+    const ach = d.achados.filter((a: any) => a.cnpj === f.cnpj && (a.severidade !== "info" || a.regra === "PRODUTOR_RURAL_PF"));
+    const novos = ach.filter((a: any) => { const r = docInfo.get(empresaId, a.docId) as any; return !r?.enviado_em && (r?.tentativas || 0) < 3; });
+    if (!novos.length) continue;
+    const emails = reformaEmailsFornecedor(empresaId, f.cnpj);
+    if (!emails.length) { semEmail++; continue; }
+    const docIds = [...new Set(novos.map((a: any) => a.docId))] as number[];
+    const notas = [...new Set(novos.map((a: any) => a.numero))].join(", ");
+    try {
+      const esc = sqlite.prepare(`SELECT nome FROM escritorios WHERE id = ?`).get(emp.escritorio_id) as any;
+      const pdf = await gerarPdfNotificacaoFornecedores({ nome: d.empresa.nome, cnpj: d.empresa.cnpj, regimeLabel: d.empresa.regimeLabel }, d.periodo,
+        [{ cnpj: f.cnpj, nome: f.nome, uf: f.uf, regimeLabel: f.regimeLabel, notas: f.notas, itens: f.itens, valor: f.valor, recomendacao: f.recomendacao, achados: novos }],
+        esc?.nome || "Simples Contábeis", contratos.timbradoDataUri(timbradoParaEscritorio(emp.escritorio_id)));
+      const opts = {
+        to: emails,
+        subject: `Inconsistências no IBS/CBS — NF-e ${notas.length > 60 ? notas.slice(0, 60) + "…" : notas} emitida(s) para ${d.empresa.nome}`,
+        text: reformaTextoNotificacao(d, f, novos),
+        attachments: [{ filename: `Inconsistencias IBS-CBS - ${String(f.nome).replace(/[^\w\- ]/g, "").slice(0, 60)}.pdf`, content: pdf }],
+      };
+      if (remetente === "empresa") await enviarEmailComoEmpresa(empresaId, opts);
+      else await enviarEmail(emp.escritorio_id, opts);
+      const marca = sqlite.prepare(`INSERT INTO reforma_notif_docs (empresa_id, doc_id, enviado_em) VALUES (?, ?, datetime('now')) ON CONFLICT(empresa_id, doc_id) DO UPDATE SET enviado_em = datetime('now')`);
+      for (const id of docIds) marca.run(empresaId, id);
+      sqlite.prepare(`INSERT INTO reforma_notif_envios (empresa_id, cnpj, fornecedor, doc_ids, notas, emails, status, remetente) VALUES (?, ?, ?, ?, ?, ?, 'enviado', ?)`).run(empresaId, f.cnpj, f.nome, docIds.join(","), notas, emails.join(", "), remetente);
+      enviados++;
+    } catch (e: any) {
+      const tenta = sqlite.prepare(`INSERT INTO reforma_notif_docs (empresa_id, doc_id, tentativas) VALUES (?, ?, 1) ON CONFLICT(empresa_id, doc_id) DO UPDATE SET tentativas = tentativas + 1`);
+      for (const id of docIds) tenta.run(empresaId, id);
+      sqlite.prepare(`INSERT INTO reforma_notif_envios (empresa_id, cnpj, fornecedor, doc_ids, notas, emails, status, erro, remetente) VALUES (?, ?, ?, ?, ?, ?, 'erro', ?, ?)`).run(empresaId, f.cnpj, f.nome, docIds.join(","), notas, emails.join(", "), String(e.message || e).slice(0, 500), remetente);
+      erros++;
+    }
+  }
+  return { enviados, semEmail, erros, mensagem: `${enviados} e-mail(s) enviado(s)${semEmail ? ` · ${semEmail} fornecedor(es) com inconsistência sem e-mail cadastrado` : ""}${erros ? ` · ${erros} com erro` : ""}.` };
+}
+let reformaNotifRodando = false;
+async function reformaNotificarTodas() {
+  if (reformaNotifRodando) return;
+  reformaNotifRodando = true;
+  try {
+    for (const c of sqlite.prepare(`SELECT c.empresa_id, e.escritorio_id FROM reforma_notif_config c JOIN empresas e ON e.id = c.empresa_id WHERE c.ativo = 1`).all() as any[]) {
+      if (!escritorioTemFuncionalidade(c.escritorio_id, "reforma")) continue;
+      try { await reformaNotificarEmpresa(c.empresa_id); } catch (e: any) { console.error("[Reforma notificação]", c.empresa_id, e.message); }
+    }
+  } finally {
+    reformaNotifRodando = false;
+  }
+}
+setInterval(() => void reformaNotificarTodas(), 60 * 60_000);
+setTimeout(() => void reformaNotificarTodas(), 3 * 60_000);
+function reformaNotifStatus(empresaId: number) {
+  const emp = sqlite.prepare(`SELECT escritorio_id FROM empresas WHERE id = ?`).get(empresaId) as any;
+  const cfg = sqlite.prepare(`SELECT ativo, desde, atualizado_em FROM reforma_notif_config WHERE empresa_id = ?`).get(empresaId) as any;
+  return {
+    ativo: !!cfg?.ativo, desde: cfg?.desde || null, atualizadoEm: cfg?.atualizado_em || null,
+    remetente: emp ? reformaRemetenteNotif(empresaId, emp.escritorio_id) : null,
+    fornecedoresComEmail: (sqlite.prepare(`SELECT COUNT(*) n FROM reforma_fornecedor_emails WHERE empresa_id = ?`).get(empresaId) as any).n,
+    envios: (sqlite.prepare(`SELECT id, cnpj, fornecedor, notas, emails, status, erro, remetente, criado_em FROM reforma_notif_envios WHERE empresa_id = ? ORDER BY id DESC LIMIT 30`).all(empresaId) as any[]),
+  };
+}
+app.get("/api/reforma/notificacao-auto", blockCliente, requirePermissao("reforma", "visualizar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.query.empresaId);
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  res.json({ ...reformaNotifStatus(empresaId), podeLigar: user.perfil === "Administrador" || user.perfil === "SuperAdmin" });
+});
+app.put("/api/reforma/notificacao-auto", blockCliente, requirePermissao("reforma", "editar"), (req, res) => {
+  const user = (req as any).user;
+  if (user.perfil !== "Administrador" && user.perfil !== "SuperAdmin") return res.status(403).json({ error: "Só o Administrador do escritório liga ou desliga o envio automático." });
+  const empresaId = Number(req.body?.empresaId);
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const hoje = new Date(Date.now() - 3 * 3600_000).toISOString().slice(0, 10);
+  const desde = /^\d{4}-\d{2}-\d{2}$/.test(String(req.body?.desde || "")) ? String(req.body.desde) : hoje;
+  sqlite.prepare(`INSERT INTO reforma_notif_config (empresa_id, ativo, desde, atualizado_por) VALUES (?, ?, ?, ?)
+    ON CONFLICT(empresa_id) DO UPDATE SET ativo = excluded.ativo, desde = excluded.desde, atualizado_em = datetime('now'), atualizado_por = excluded.atualizado_por`).run(empresaId, req.body?.ativo ? 1 : 0, desde, user.id);
+  res.json(reformaNotifStatus(empresaId));
+});
+app.post("/api/reforma/notificacao-auto/rodar", blockCliente, requirePermissao("reforma", "editar"), async (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.body?.empresaId);
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  const cfg = sqlite.prepare(`SELECT ativo FROM reforma_notif_config WHERE empresa_id = ?`).get(empresaId) as any;
+  if (!cfg?.ativo) return res.status(400).json({ error: "Ligue o envio automático antes de rodar." });
+  try { res.json(await reformaNotificarEmpresa(empresaId)); } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+app.put("/api/reforma/fornecedor-email", blockCliente, requirePermissao("reforma", "editar"), (req, res) => {
+  const user = (req as any).user;
+  const empresaId = Number(req.body?.empresaId);
+  if (!empresaId || !podeAcessarEmpresa(user, empresaId)) return res.status(404).json({ error: "Empresa não encontrada." });
+  try { res.json({ emails: reformaSalvarEmailsFornecedor(empresaId, req.body?.cnpj, req.body?.emails, user.id) }); } catch (e: any) { res.status(400).json({ error: e.message }); }
+});
+// Lado do CLIENTE (paridade): cadastra os e-mails dos fornecedores e acompanha os envios; ligar/desligar é do escritório.
+app.get("/api/reforma/minha-empresa/notificacao-auto", requireCliente, requireRevendaCliente("reforma"), (req, res) => {
+  const user = (req as any).user;
+  if (!user.empresaId) return res.status(400).json({ error: "Nenhuma empresa vinculada." });
+  res.json({ ...reformaNotifStatus(user.empresaId), podeLigar: false });
+});
+app.put("/api/reforma/minha-empresa/fornecedor-email", requireCliente, requireRevendaCliente("reforma"), (req, res) => {
+  const user = (req as any).user;
+  if (!user.empresaId) return res.status(400).json({ error: "Nenhuma empresa vinculada." });
+  try { res.json({ emails: reformaSalvarEmailsFornecedor(user.empresaId, req.body?.cnpj, req.body?.emails, user.id) }); } catch (e: any) { res.status(400).json({ error: e.message }); }
+});
+
 // ---------- Reforma Tributária: Diagnóstico de regime pós-reforma (ver reforma-diagnostico.ts) ----------
 // Dados dos últimos 12 meses vindos da Busca de XML (vendas: NF-e/NFC-e/NFS-e emitidas; compras: NF-e
 // recebidas, com o regime de cada fornecedor) + cadastro (CNAE, regime). Premissas editáveis por empresa.
@@ -26464,7 +26660,9 @@ app.post("/api/propostas/:id/aprovar", blockCliente, requirePermissao("contratos
       ? `, parcelado em ${propostas.parcelasTexto(r.valores.implantacaoFinal, r.config.implantacaoParcelas)}, com a 1ª parcela em até 5 (cinco) dias da assinatura e as demais a cada 30 (trinta) dias, pelo portal de acesso do site, no menu Assinaturas`
       : `, com vencimento em até 5 (cinco) dias da assinatura deste contrato, ou diretamente pelo portal de acesso do site, no menu Assinaturas`,
     mensalidade_busca: r.config.buscaIsento ? "0,00 (isento)" : `${brlC(r.valores.buscaFinal)}${r.valores.buscaFinal < r.config.buscaMensal ? ` (tabela R$ ${brlC(r.config.buscaMensal)}, desconto de ${String(r.config.buscaDescontoPct).replace(".", ",")}%)` : ""}`,
-    mensalidade_reforma: r.config.reformaIsento ? "0,00 (isento)" : `${brlC(r.valores.reformaFinal)}${r.valores.reformaFinal < r.config.reformaMensal ? ` (tabela R$ ${brlC(r.config.reformaMensal)}, desconto de ${String(r.config.reformaDescontoPct).replace(".", ",")}%)` : ""}`,
+    mensalidade_reforma: (r.config.reformaIsento ? "0,00 (isento)" : `${brlC(r.valores.reformaFinal)}${r.valores.reformaFinal < r.config.reformaMensal ? ` (tabela R$ ${brlC(r.config.reformaMensal)}, desconto de ${String(r.config.reformaDescontoPct).replace(".", ",")}%)` : ""}`)
+      // Notificação automática dos fornecedores (módulo opcional da proposta) — o modelo de contrato só tem a linha da Reforma.
+      + (r.config.notifIncluido ? `, mais R$ ${r.config.notifIsento ? "0,00 (isento)" : brlC(r.valores.notifFinal)} por mês do módulo de notificação automática dos fornecedores por e-mail` : ""),
     desconto_texto: r.valores.descontoValor ? `, já aplicados os descontos e isenções do Anexo II (economia de R$ ${brlC(r.valores.descontoValor)} por mês sobre o valor de tabela de R$ ${brlC(r.valores.mensalBruto)})` : "",
     desconto_anexo: r.valores.descontoValor ? [r.valores.descontoGeral ? `Desconto geral de ${String(r.config.descontoPct).replace(".", ",")}% (− R$ ${brlC(r.valores.descontoGeral)}/mês)` : "", `Economia total de R$ ${brlC(r.valores.descontoValor)} por mês`, r.config.implantacaoIsenta ? "Implantação isenta" : r.valores.implantacaoFinal < r.config.implantacao ? `Implantação com ${String(r.config.implantacaoDescontoPct).replace(".", ",")}% de desconto (tabela R$ ${brlC(r.config.implantacao)})` : ""].filter(Boolean).join(" · ") : (r.config.implantacaoIsenta ? "Implantação isenta" : "Sem desconto"),
     qtd_estabelecimentos: String(estabelecimentos.length), n_proposta: r.numero,
