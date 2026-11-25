@@ -1735,6 +1735,9 @@ function chatRespostaValida(valor: any, escopo: ChatEscopo): number | null {
 // status='ok'. Guarda o lastModifiedDateTime visto na última importação pra comparar depois.
 {
   const cols = sqlite.prepare(`PRAGMA table_info(dominio_relatorios_importados)`).all() as any[];
+  // MD5 do conteúdo (Google Drive dá de graça na listagem): pega a troca do arquivo mesmo quando a cópia nova
+  // mantém uma data de modificação antiga (achado 2026-11-25 — balancete substituído não era reconhecido).
+  if (!cols.some((c) => c.name === "conteudo_md5")) sqlite.exec(`ALTER TABLE dominio_relatorios_importados ADD COLUMN conteudo_md5 TEXT`);
   if (!cols.some((c) => c.name === "onedrive_modificado_em")) {
     sqlite.exec(`ALTER TABLE dominio_relatorios_importados ADD COLUMN onedrive_modificado_em TEXT`);
     console.log("Migração aplicada: dominio_relatorios_importados.onedrive_modificado_em.");
@@ -15320,12 +15323,12 @@ function domRelGravarControle(row: {
       row.modificadoEm
     );
 }
-type DomRelItem = { id: string; nome: string; modificadoEm: string | null; origem: "onedrive" | "gdrive"; baixar: () => Promise<Buffer> };
+type DomRelItem = { id: string; nome: string; modificadoEm: string | null; md5?: string | null; origem: "onedrive" | "gdrive"; baixar: () => Promise<Buffer> };
 async function dominioRelatoriosSincronizar(
   escritorioId: number,
   // somenteOrigens: usado pelo poll rápido do Drive (10s) pra não mexer no OneDrive a cada rodada — sem isso,
   // considera as duas origens configuradas (usado por "Testar"/"Importar agora" e pelo poll do OneDrive, 5 min).
-  opts: { dryRun: boolean; limite?: number; somenteOrigens?: ("onedrive" | "gdrive")[] }
+  opts: { dryRun: boolean; limite?: number; somenteOrigens?: ("onedrive" | "gdrive")[]; varreduraCompleta?: boolean }
 ): Promise<{ processados: number; ok: number; pendentes: number; erros: number; previews?: any[]; limpas?: number }> {
   const cfg = getOnedriveConfig(escritorioId);
   const usa = (o: "onedrive" | "gdrive") => !opts.somenteOrigens || opts.somenteOrigens.includes(o);
@@ -15356,12 +15359,14 @@ async function dominioRelatoriosSincronizar(
     inicioVarreduraDrive = new Date().toISOString();
     // No poll rápido (10s), só pergunta ao Drive o que mudou DESDE a última varredura (com 2min de folga) — a
     // listagem completa (sem esse filtro, usada por "Testar"/"Importar agora") seria cara de repetir a cada 10s.
-    const desde = opts.somenteOrigens && cfg.relatorios_drive_ultima_varredura ? new Date(new Date(cfg.relatorios_drive_ultima_varredura).getTime() - 2 * 60_000).toISOString() : null;
+    // varreduraCompleta (1×/min): lista a pasta inteira e compara data + MD5 — rede de segurança pro arquivo
+    // substituído por uma cópia com data de modificação antiga, que o filtro "modifiedTime > última varredura" perde.
+    const desde = opts.somenteOrigens && !opts.varreduraCompleta && cfg.relatorios_drive_ultima_varredura ? new Date(new Date(cfg.relatorios_drive_ultima_varredura).getTime() - 2 * 60_000).toISOString() : null;
     let pagina: string | undefined;
     do {
       const q = `'${cfg.relatorios_drive_pasta_id}' in parents and trashed=false` + (desde ? ` and modifiedTime > '${desde}'` : "");
-      const j: any = await driveGet(escritorioId, credDrive, "files", { q, orderBy: "modifiedTime", pageSize: "200", fields: "nextPageToken,files(id,name,modifiedTime)", ...(pagina ? { pageToken: pagina } : {}) });
-      for (const f of j.files || []) if (/\.pdf$/i.test(f.name)) itens.push({ id: `gdrive:${f.id}`, nome: f.name, modificadoEm: f.modifiedTime, origem: "gdrive", baixar: () => driveBaixar(escritorioId, credDrive, f.id) });
+      const j: any = await driveGet(escritorioId, credDrive, "files", { q, orderBy: "modifiedTime", pageSize: "200", fields: "nextPageToken,files(id,name,modifiedTime,md5Checksum)", ...(pagina ? { pageToken: pagina } : {}) });
+      for (const f of j.files || []) if (/\.pdf$/i.test(f.name)) itens.push({ id: `gdrive:${f.id}`, nome: f.name, modificadoEm: f.modifiedTime, md5: f.md5Checksum || null, origem: "gdrive", baixar: () => driveBaixar(escritorioId, credDrive, f.id) });
       pagina = j.nextPageToken;
     } while (pagina);
   }
@@ -15398,6 +15403,7 @@ async function dominioRelatoriosSincronizar(
     erros = 0,
     processados = 0;
   const previews: any[] = [];
+  const domRelMd5Vistos: DomRelItem[] = [];
 
   for (const item of itens) {
     if (!opts.dryRun) {
@@ -15409,15 +15415,21 @@ async function dominioRelatoriosSincronizar(
       // primeira versão importada). Linha sem onedrive_modificado_em salvo ainda (de antes dessa
       // checagem existir) também reprocessa uma vez, só pra preencher a data — repescagem única e
       // barata (só download + leitura de PDF, sem API paga envolvida).
-      const existente = sqlite.prepare(`SELECT status, onedrive_modificado_em FROM dominio_relatorios_importados WHERE escritorio_id = ? AND onedrive_item_id = ?`).get(escritorioId, item.id) as any;
+      const existente = sqlite.prepare(`SELECT status, onedrive_modificado_em, conteudo_md5 FROM dominio_relatorios_importados WHERE escritorio_id = ? AND onedrive_item_id = ?`).get(escritorioId, item.id) as any;
+      const mesmoConteudo = !item.md5 || !existente?.conteudo_md5 || item.md5 === existente.conteudo_md5;
       if (
         existente &&
         existente.status !== "erro" &&
         existente.onedrive_modificado_em &&
         item.modificadoEm &&
-        item.modificadoEm <= existente.onedrive_modificado_em
-      )
+        item.modificadoEm <= existente.onedrive_modificado_em &&
+        mesmoConteudo
+      ) {
+        // Linha antiga sem MD5 guardado: só registra o MD5 atual (sem reprocessar), pra comparar dali pra frente.
+        if (item.md5 && !existente.conteudo_md5) sqlite.prepare(`UPDATE dominio_relatorios_importados SET conteudo_md5 = ? WHERE escritorio_id = ? AND onedrive_item_id = ?`).run(item.md5, escritorioId, item.id);
         continue;
+      }
+      if (item.md5) domRelMd5Vistos.push(item);
     }
     processados++;
     try {
@@ -15569,6 +15581,7 @@ async function dominioRelatoriosSincronizar(
   }
 
   if (!opts.dryRun) {
+    for (const it of domRelMd5Vistos) sqlite.prepare(`UPDATE dominio_relatorios_importados SET conteudo_md5 = ? WHERE escritorio_id = ? AND onedrive_item_id = ?`).run(it.md5 ?? null, escritorioId, it.id);
     sqlite.prepare(`UPDATE onedrive_config SET relatorios_ultima_importacao_em = datetime('now'), relatorios_ultimo_erro = NULL${inicioVarreduraDrive ? ", relatorios_drive_ultima_varredura = ?" : ""} WHERE escritorio_id = ?`)
       .run(...(inicioVarreduraDrive ? [inicioVarreduraDrive, escritorioId] : [escritorioId]));
   }
@@ -15687,10 +15700,13 @@ setInterval(() => {
 // Google Drive: confere a cada 10s (igual à Central de Envio) — o Domínio Web pode ficar "descarregando" os
 // relatórios nessa pasta em rodadas automáticas, sobrescrevendo o mesmo arquivo; a data de modificação muda a
 // cada vez, e isso pega a versão fresca quase na hora, sem esperar os 5 minutos do OneDrive.
+let domRelDriveTick = 0;
 setInterval(() => {
+  // A cada 6ª rodada (1×/min) lista a pasta inteira (data + MD5); nas outras, só o que mudou desde a última varredura.
+  const completa = ++domRelDriveTick % 6 === 0;
   const configs = sqlite.prepare(`SELECT escritorio_id FROM onedrive_config WHERE relatorios_ativo = 1 AND relatorios_drive_pasta_id IS NOT NULL`).all() as any[];
   for (const c of configs) {
-    dominioRelatoriosSincronizar(c.escritorio_id, { dryRun: false, somenteOrigens: ["gdrive"] }).catch((e) => console.error("Erro na importação automática de relatórios do Google Drive:", e.message));
+    dominioRelatoriosSincronizar(c.escritorio_id, { dryRun: false, somenteOrigens: ["gdrive"], varreduraCompleta: completa }).catch((e) => console.error("Erro na importação automática de relatórios do Google Drive:", e.message));
   }
 }, 10_000);
 
