@@ -17651,8 +17651,8 @@ async function renderPropostaEditor(id){
     }).join('');
   };
   desenhaResumo();
-  box.querySelectorAll('#ppBusca,#ppReforma,#ppDesconto,#ppImplantacao,#ppSalario,#ppDedicacao,#ppBuscaDesc,#ppReformaDesc,#ppImplantacaoDesc').forEach(i=>i.addEventListener('input', desenhaResumo));
-  box.querySelectorAll('#ppBuscaIsento,#ppReformaIsento,#ppImplantacaoIsento').forEach(i=>i.addEventListener('change', desenhaResumo));
+  box.querySelectorAll('#ppBusca,#ppReforma,#ppDesconto,#ppImplantacao,#ppSalario,#ppDedicacao,#ppBuscaDesc,#ppReformaDesc,#ppImplantacaoDesc,#ppNotif,#ppNotifDesc').forEach(i=>i.addEventListener('input', desenhaResumo));
+  box.querySelectorAll('#ppBuscaIsento,#ppReformaIsento,#ppImplantacaoIsento,#ppNotifIsento,#ppNotifIncluido').forEach(i=>i.addEventListener('change', desenhaResumo));
   const salvar = async () => {
     if(travada) return;
     const r = await api('/propostas/'+id, { method:'PUT', body:{ config: lerCfg(), clienteNome: document.getElementById('ppNome').value } });
