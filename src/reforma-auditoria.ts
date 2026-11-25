@@ -570,7 +570,7 @@ export function auditarNota(nota: NotaRT, consultaNcm: ConsultaNcm, consultaVige
     let reducaoTxt = cls && (pRedIBS || pRedCBS) ? `redução de ${fmt(pRedCBS, 0)}% (cClassTrib ${cls.cClassTrib}${cls.anexo && /^\d{1,2}$/.test(String(cls.anexo)) ? `, Anexo ${romano(Number(cls.anexo))}` : ""})` : "alíquota cheia";
     if (!it.temIBSCBS && !cls && /^\d{8}$/.test(it.ncm)) {
       // Primeiro as classificações que o próprio fornecedor usa nesta nota (ex.: insumo agro → Anexo IX).
-      const daNota = nota.itens.map((x) => x.cClassTrib).filter((c) => REDUCOES_ANEXO_SEM_GRUPO.includes(c));
+      const daNota = nota.itens.map((x) => x.cClassTrib || "").filter((c) => REDUCOES_ANEXO_SEM_GRUPO.includes(c));
       for (const c of [...new Set([...daNota, ...REDUCOES_ANEXO_SEM_GRUPO])]) {
         if (consultaNcm(c, it.ncm, ano) !== true) continue;
         const ci = CLASS.get(c);
