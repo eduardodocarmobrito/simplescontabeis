@@ -941,6 +941,9 @@ body.theme-glass .tab.active::after, body.theme-glass .nav-item.active::after{
 .waterbar-pct{position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-weight:800; font-size:15px; color:#fff; letter-spacing:.03em; text-shadow:0 1px 4px rgba(0,0,0,.6); z-index:2;}
 @keyframes waterflow{from{background-position:0 0;} to{background-position:300% 0;}}
 @keyframes waterwave{from{transform:translateX(0);} to{transform:translateX(34px);}}
+/* Versão indeterminada: uma "onda" de água deslizando (sem % fixo) */
+.waterbar-indet .waterbar-fill{width:42% !important; border-radius:20px; animation:waterflow 2.4s linear infinite, waterslide 1.9s cubic-bezier(.45,0,.55,1) infinite;}
+@keyframes waterslide{0%{left:-46%;} 100%{left:100%;}}
 .rt-kpi{background:var(--surface); border:1px solid var(--rule); border-radius:16px; padding:12px 14px; box-shadow:var(--shadow);}
 .rt-kpi-anel{display:flex; align-items:center; gap:10px; grid-column:span 2;}
 .rt-kpi-t{font-size:10.5px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.05em;}
@@ -9530,7 +9533,7 @@ function rtAbasHtml(){
 }
 async function reformaDiagMontar(painel, urlApi, urlPdf, urlPremissas){
   const seq = ++RT_SEQ; const paginaAtual = STATE.page;
-  painel.innerHTML = `<div class="card"><div class="empty-state">⚖️ Montando o diagnóstico — receita, compras e perfil de clientes dos últimos 12 meses…</div></div>`;
+  painel.innerHTML = rtWaterBarIndetHtml(`⚖️ Montando o diagnóstico — receita, compras e perfil de clientes dos últimos 12 meses…`, 'Comparando os regimes tributários…');
   let d;
   try{ d = await api(urlApi); }
   catch(e){ if(seq===RT_SEQ) painel.innerHTML = `<div class="card"><div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div></div>`; return; }
@@ -10884,7 +10887,7 @@ function rtLigarFiltroPeriodo(onChange){
 // assegurar o crédito. Reaproveita o motor da auditoria de entradas (/reforma/auditoria).
 async function reformaRadMontar(painel, urlApi){
   const seq = ++RT_SEQ; const paginaAtual = STATE.page;
-  painel.innerHTML = `<div class="card"><div class="empty-state">🧾 Levantando os créditos de CBS que o RAD garante ao adquirente…</div></div>`;
+  painel.innerHTML = rtWaterBarIndetHtml(`🧾 Levantando os créditos de CBS que o RAD garante ao adquirente…`, 'Lendo as notas de entrada…');
   let d;
   try{ d = await api(urlApi); }
   catch(e){ if(seq===RT_SEQ) painel.innerHTML = `<div class="card"><div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div></div>`; return; }
@@ -11144,12 +11147,20 @@ function rtPctValidacao(painel, pend){
   const total = painel._rtTotalConsultas || pend || 1;
   return (total - pend) / total * 100;
 }
+// Barra de água INDETERMINADA (carregamento sem % — a onda desliza).
+function rtWaterBarIndetHtml(titulo, sub){
+  return `<div class="card" style="padding:24px 20px;">
+    <div style="text-align:center; margin-bottom:16px; font-size:14.5px;">${titulo}</div>
+    <div class="waterbar waterbar-indet"><div class="waterbar-fill"></div></div>
+    ${sub?`<div style="text-align:center; margin-top:14px; font-size:12.5px; color:var(--ink-soft);">${sub}</div>`:''}
+  </div>`;
+}
 async function reformaMontar(painel, urlApi, urlPdf, silencioso){
   const seq = ++RT_SEQ;
   const paginaAtual = STATE.page;
   const direcaoRotulo = RT_ABA==='saidas' ? 'saída' : 'entrada';
   if(!silencioso){ painel._rtTentativas = 0; painel._rtTotalConsultas = 0; }
-  if(!silencioso) painel.innerHTML = `<div class="card"><div class="empty-state">⚖️ Auditando as notas de ${direcaoRotulo} — lendo cada XML item a item…</div></div>`;
+  if(!silencioso) painel.innerHTML = rtWaterBarIndetHtml(`⚖️ Auditando as notas de ${direcaoRotulo} — lendo cada XML item a item…`, 'Preparando a análise das suas notas fiscais…');
   let d;
   try{ d = await api(urlApi); }
   catch(e){ if(seq===RT_SEQ) painel.innerHTML = `<div class="card"><div class="empty-state" style="color:var(--debit)">${esc(e.message)}</div></div>`; return; }
