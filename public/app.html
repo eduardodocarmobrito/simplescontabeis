@@ -11218,7 +11218,7 @@ function nfeCompDominioRender(){
       <td style="vertical-align:top; white-space:nowrap;">${i.site?nfeCompData(i.site.dataEmissao):'—'}</td>
       <td style="vertical-align:top; text-align:right; white-space:nowrap;">${i.dominio?fmtMoney(i.dominio.valor):'—'}</td>
       <td style="vertical-align:top; text-align:right; white-space:nowrap;">${i.site?fmtMoney(i.site.valor)+(i.site.cancelada?' <span style="color:#d64545;">(cancelada)</span>':''):'—'}</td>
-      <td style="vertical-align:top; text-align:right; white-space:nowrap; ${Math.abs(i.diferenca)>0.009?'color:#d64545; font-weight:700;':''}">${fmtMoney(i.diferenca)}</td></tr>`;
+      <td style="vertical-align:top; text-align:right; white-space:nowrap; ${i.erro && Math.abs(i.diferenca)>0.009?'color:#d64545; font-weight:700;':''}">${fmtMoney(i.diferenca)}</td></tr>`;
   }).join('');
   const per = `${nfeCompData(r.periodo.de)} até ${nfeCompData(r.periodo.ate)}`;
   openModal(`<h3 style="margin-top:0;">📑 Comparativo Domínio x Site — entradas</h3>

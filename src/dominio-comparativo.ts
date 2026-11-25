@@ -475,7 +475,7 @@ export function relatorioHtml(r: ResultadoComparativo, empresaNome: string, cnpj
     return `<tr><td><span class="tag t-${i.erro ? "err" : i.situacao === "ok" || i.situacao === "cancelada_ok" ? "ok" : "info"}">${esc(ROTULO_SITUACAO[i.situacao])}</span></td>
       <td><b>${esc(i.titulo)}</b>${i.site && i.site.chave ? `<div class="ch">${esc(i.site.chave)}</div>` : ""}${i.detalhe ? `<div class="det">${esc(i.detalhe)}</div>` : ""}${cf}</td>
       <td class="n">${i.dominio ? fmtData(i.dominio.data) : "—"}</td><td class="n">${i.site ? fmtData(i.site.dataEmissao) : "—"}</td>
-      <td class="n">${dVal}</td><td class="n">${sVal}</td><td class="n ${Math.abs(i.diferenca) > 0.009 ? "neg" : ""}">${fmt(i.diferenca)}</td></tr>`;
+      <td class="n">${dVal}</td><td class="n">${sVal}</td><td class="n ${i.erro && Math.abs(i.diferenca) > 0.009 ? "neg" : ""}">${fmt(i.diferenca)}</td></tr>`;
   };
   const tabela = (lista: ItemComparativo[]) => `<table class="rep"><colgroup><col style="width:12%"><col style="width:44%"><col style="width:7.5%"><col style="width:7.5%"><col style="width:9.5%"><col style="width:10%"><col style="width:9.5%"></colgroup><thead><tr><th>Situação</th><th>Nota / explicação</th><th class="n">Entrada (Dom.)</th><th class="n">Emissão (XML)</th><th class="n">Domínio</th><th class="n">Site (XML)</th><th class="n">Dif. (site − Dom.)</th></tr></thead><tbody>${lista.map(linhaItem).join("")}</tbody></table>`;
   const statusHtml = r.status === "ok"
