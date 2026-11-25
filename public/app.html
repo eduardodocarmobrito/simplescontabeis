@@ -16948,7 +16948,7 @@ async function renderPropostaEditor(id){
       <div class="row">
         ${campo('ppDesconto','Desconto geral sobre a mensalidade (%)', String(c.descontoPct).replace('.',','), 'Opcional · aplicado depois dos descontos de cada item')}
       </div>
-      <div class="row">
+      <div class="row" style="align-items:flex-start;">
         ${campo('ppSalario','Salário do analista de referência (R$)', propMoedaTxt(c.salarioAnalista), 'Com encargos do Lucro Presumido e benefícios')}
         ${campo('ppDedicacao','Dedicação do analista substituída (%)', c.dedicacaoPct, `Sugestão pelo volume: ${a.dedicacaoSugerida}% (${a.horasMes} h/mês de conferência)`)}
       </div>
@@ -17189,16 +17189,16 @@ async function renderPropostaEscritorio(id){
     </div>
     <div class="card">
       <h3>Valores e premissas</h3>
-      <div class="row">
+      <div class="row" style="align-items:flex-start;">
         ${campo('peDesconto','Desconto geral sobre a mensalidade (%)', String(c.descontoPct).replace('.',','), 'Opcional · aplicado depois dos descontos de cada item')}
         ${campo('peValidade','Validade da proposta (dias)', c.validadeDias)}
       </div>
-      <div class="row">
+      <div class="row" style="align-items:flex-start;">
         ${campo('peHoras','Horas poupadas por cliente/mês', String(c.horasPorCliente).replace('.',','), `<span id="peHorasSug">Sugestão pelos módulos: ${String(P.sugestoes.horasPorCliente).replace('.',',')} h</span>`)}
         ${campo('peSalario','Salário médio do colaborador (R$)', propMoedaTxt(c.salarioColaborador), 'Com encargos e benefícios na conta')}
         ${campo('peSistemas','Gasto atual com sistemas substituídos (R$/mês)', propMoedaTxt(c.gastoSistemasAtual), 'O que o escritório deixa de pagar')}
       </div>
-      <div class="row">
+      <div class="row" style="align-items:flex-start;">
         ${campo('peAdesao','Adesão dos clientes à revenda de módulos (%)', String(c.adesaoRevendaPct).replace('.',','), 'Clientes que contratam um módulo (ex.: NFS-e)')}
         ${campo('peTicket','Mensalidade do módulo revendido (R$)', propMoedaTxt(c.ticketRevenda), 'Padrão: preço do módulo NFS-e')}
       </div>
