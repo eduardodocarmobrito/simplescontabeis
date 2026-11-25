@@ -12,7 +12,7 @@ export interface ConfigEscritorio {
   escritorio: { nome: string; cnpj: string; cidade: string; uf: string; responsavel: string; cpfResponsavel: string; email: string; telefone: string };
   clientes: number; colaboradores: number;
   baseMensal: number; baseDescontoPct: number; baseIsento: boolean;
-  assentoValor: number; assentoDescontoPct: number; assentoIsento: boolean; modulos: ModuloProposta[];
+  assentoValor: number; assentoDescontoPct: number; assentoIsento: boolean; assentosInclusos: number; modulos: ModuloProposta[];
   descontoPct: number; implantacao: number; implantacaoDescontoPct: number; implantacaoIsenta: boolean; implantacaoParcelas: number; validadeDias: number; observacoes: string;
   salarioColaborador: number; horasPorCliente: number; gastoSistemasAtual: number; adesaoRevendaPct: number; ticketRevenda: number;
 }
@@ -102,7 +102,7 @@ export function configPadrao(catalogo: any[], ticketRevenda: number): ConfigEscr
   const { modulos, assentoValor, baseMensal } = catalogoParaModulos(catalogo);
   return {
     escritorio: { nome: "", cnpj: "", cidade: "", uf: "", responsavel: "", cpfResponsavel: "", email: "", telefone: "" },
-    clientes: 100, colaboradores: 5, baseMensal, baseDescontoPct: 0, baseIsento: false, assentoValor, assentoDescontoPct: 0, assentoIsento: false, modulos,
+    clientes: 100, colaboradores: 5, baseMensal, baseDescontoPct: 0, baseIsento: false, assentoValor, assentoDescontoPct: 0, assentoIsento: false, assentosInclusos: 5, modulos,
     descontoPct: 0, implantacao: implantacaoSugerida(100), implantacaoDescontoPct: 0, implantacaoIsenta: false, implantacaoParcelas: 1, validadeDias: 30, observacoes: "",
     salarioColaborador: SALARIO_COLABORADOR_PADRAO, horasPorCliente: horasSugeridas(modulos), gastoSistemasAtual: 0, adesaoRevendaPct: 10, ticketRevenda: r2(ticketRevenda || 49.99),
   };
@@ -124,7 +124,7 @@ export function normalizarConfig(c: any, base: ConfigEscritorio): ConfigEscritor
     },
     clientes: Math.round(n(c?.clientes, base.clientes, 0, 100000)), colaboradores: Math.round(n(c?.colaboradores, base.colaboradores, 0, 10000)),
     baseMensal: r2(n(c?.baseMensal, base.baseMensal)), baseDescontoPct: r2(n(c?.baseDescontoPct, base.baseDescontoPct || 0, 0, 100)), baseIsento: c?.baseIsento !== undefined ? !!c.baseIsento : !!base.baseIsento,
-    assentoValor: r2(n(c?.assentoValor, base.assentoValor)), assentoDescontoPct: r2(n(c?.assentoDescontoPct, base.assentoDescontoPct || 0, 0, 100)), assentoIsento: c?.assentoIsento !== undefined ? !!c.assentoIsento : !!base.assentoIsento, modulos,
+    assentoValor: r2(n(c?.assentoValor, base.assentoValor)), assentoDescontoPct: r2(n(c?.assentoDescontoPct, base.assentoDescontoPct || 0, 0, 100)), assentoIsento: c?.assentoIsento !== undefined ? !!c.assentoIsento : !!base.assentoIsento, assentosInclusos: Math.round(n(c?.assentosInclusos, base.assentosInclusos ?? 5, 0, 10000)), modulos,
     descontoPct: r2(n(c?.descontoPct, base.descontoPct, 0, 100)), implantacao: r2(n(c?.implantacao, base.implantacao)),
     implantacaoDescontoPct: r2(n(c?.implantacaoDescontoPct, base.implantacaoDescontoPct || 0, 0, 100)), implantacaoIsenta: c?.implantacaoIsenta !== undefined ? !!c.implantacaoIsenta : !!base.implantacaoIsenta,
     implantacaoParcelas: Math.round(n(c?.implantacaoParcelas, base.implantacaoParcelas || 1, 1, 48)),
@@ -140,7 +140,8 @@ export function itensCobranca(c: ConfigEscritorio) {
     item("plataforma_base", "Plataforma base: todos os itens do item 1", c.baseMensal, c.baseDescontoPct, c.baseIsento),
     ...c.modulos.filter((m) => m.incluido).map((m) => item(m.chave, m.nome, m.valor, m.descontoPct, m.isento)),
   ];
-  if (c.colaboradores > 0 && c.assentoValor > 0) itens.push(item("assento_colaborador", `Usuários da equipe: ${c.colaboradores} × ${brl(c.assentoValor)}`, c.assentoValor * c.colaboradores, c.assentoDescontoPct, c.assentoIsento));
+  const assentosExtras = Math.max(0, c.colaboradores - (c.assentosInclusos || 0));
+  if (assentosExtras > 0 && c.assentoValor > 0) itens.push(item("assento_colaborador", `Usuários adicionais da equipe: ${assentosExtras} × ${brl(c.assentoValor)} (${c.assentosInclusos} incluso(s) na base)`, c.assentoValor * assentosExtras, c.assentoDescontoPct, c.assentoIsento));
   return itens;
 }
 // Mesma conta da tela (app.html › propEscCalcular) — manter as duas iguais.
@@ -252,6 +253,7 @@ ${ganhos.map((g: any, i: number) => `<div class="eco${g.q ? "" : " q"}"><div cla
   <tr class="total"><td colspan="3">Mensalidade${v.descontoValor ? ` <span style="font-size:9px; font-weight:600; color:#1f6e43;">(economia de ${brl(v.descontoValor)}/mês sobre a tabela de ${brl(v.mensalBruto)})</span>` : ""}</td><td class="num">${brl(v.mensal)}/mês</td></tr>
   <tr><td>Implantação, cobrada uma vez: configuração do escritório, importação das empresas e contatos, configuração dos robôs e dos envios, e treinamento da equipe${c.implantacaoParcelas > 1 && v.implantacaoFinal ? ` <b>— parcelada em ${parcelasTexto(v.implantacaoFinal, c.implantacaoParcelas)}</b>` : ""}</td><td class="num">${brl(c.implantacao)}</td><td class="num ok">${c.implantacaoIsenta ? "isenta" : c.implantacaoDescontoPct ? `${String(c.implantacaoDescontoPct).replace(".", ",")}%` : "—"}</td><td class="num">${v.implantacaoFinal ? brl(v.implantacaoFinal) : "<b>isenta</b>"}</td></tr>
 </table></div>
+${c.assentosInclusos > 0 ? `<p class="small">Inclui ${c.assentosInclusos} usuário(s) da equipe na mensalidade base; cada usuário adicional custa ${brl(c.assentoValor)} por mês.</p>` : ""}
 <table class="t" style="break-inside:avoid">
   <thead><tr><th>Retorno no 1º ano</th><th class="num" style="width:24%">Valor</th></tr></thead>
   <tbody>

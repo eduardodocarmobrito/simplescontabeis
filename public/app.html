@@ -17149,7 +17149,8 @@ function propEscCalcular(c, par){
   const r2 = v => Math.round(v*100)/100;
   const item = (chave, tabela, d, isento) => ({ chave, tabela:r2(tabela), final: isento ? 0 : r2(tabela*(1-d/100)) });
   const itens = [item('plataforma_base', c.baseMensal, c.baseDescontoPct, c.baseIsento), ...c.modulos.filter(m=>m.incluido).map(m=>item(m.chave, m.valor, m.descontoPct, m.isento))];
-  if(c.colaboradores>0 && c.assentoValor>0) itens.push(item('assento_colaborador', c.assentoValor*c.colaboradores, c.assentoDescontoPct, c.assentoIsento));
+  const assentosExtras = Math.max(0, (c.colaboradores||0) - (c.assentosInclusos||0));
+  if(assentosExtras>0 && c.assentoValor>0) itens.push(item('assento_colaborador', c.assentoValor*assentosExtras, c.assentoDescontoPct, c.assentoIsento));
   const mensalBruto = r2(itens.reduce((a,i)=>a+i.tabela,0));
   const subtotal = r2(itens.reduce((a,i)=>a+i.final,0));
   const descontoGeral = r2(subtotal * c.descontoPct / 100);
@@ -17250,7 +17251,7 @@ async function renderPropostaEscritorio(id){
             <td><input type="text" class="peModVal" data-i="${i}" value="${esc(propMoedaTxt(m.valor))}" ${dis} style="width:120px;"></td>
             <td><input type="text" class="peModDesc" data-i="${i}" value="${esc(String(m.descontoPct||0).replace('.',','))}" ${dis} style="width:80px;"></td>
             <td><input type="checkbox" class="peModIsento" data-i="${i}" ${m.isento?'checked':''} ${dis}></td><td style="text-align:right;" class="peFinal" data-k="${esc(m.chave)}"></td></tr>`).join('')}
-          <tr><td><input type="checkbox" checked disabled></td><td><b>Usuários da equipe</b><div style="font-size:11.5px; color:var(--ink-soft);">valor por usuário/mês × nº de colaboradores</div></td>
+          <tr><td><input type="checkbox" checked disabled></td><td><b>Usuários da equipe</b><div style="font-size:11.5px; color:var(--ink-soft);">valor por usuário/mês dos que passam dos inclusos</div><div style="font-size:11.5px; color:var(--ink-soft); margin-top:5px; display:flex; align-items:center; gap:6px; flex-wrap:wrap;"><input type="number" id="peAssentosInclusos" min="0" max="999" value="${c.assentosInclusos!=null?c.assentosInclusos:5}" ${dis} style="width:56px; padding:5px 7px; border:1px solid var(--rule); border-radius:8px; background:var(--paper); color:var(--ink); font-size:13px;"> usuário(s) inclusos na base · acima disso cobra por assento <span id="peAssentoInfo"></span></div></td>
             <td><input type="text" id="peAssento" value="${esc(propMoedaTxt(c.assentoValor))}" ${dis} style="width:120px;"></td>
             <td><input type="text" id="peAssentoDesc" value="${esc(String(c.assentoDescontoPct||0).replace('.',','))}" ${dis} style="width:80px;"></td>
             <td><input type="checkbox" id="peAssentoIsento" ${c.assentoIsento?'checked':''} ${dis}></td><td style="text-align:right;" class="peFinal" data-k="assento_colaborador"></td></tr>
@@ -17286,7 +17287,7 @@ async function renderPropostaEscritorio(id){
     escritorio:{ nome: val('peNome'), cnpj: val('peCnpj'), cidade: val('peCidade'), uf: val('peUf'), responsavel: val('peResp'), cpfResponsavel: val('peCpf'), email: val('peEmail'), telefone: val('peTel') },
     clientes: Math.max(0, Math.round(propNum(val('peClientes')))), colaboradores: Math.max(0, Math.round(propNum(val('peColab')))),
     baseMensal: propNum(val('peBase')), baseDescontoPct: pct(val('peBaseDesc')), baseIsento: document.getElementById('peBaseIsento').checked,
-    assentoValor: propNum(val('peAssento')), assentoDescontoPct: pct(val('peAssentoDesc')), assentoIsento: document.getElementById('peAssentoIsento').checked,
+    assentoValor: propNum(val('peAssento')), assentoDescontoPct: pct(val('peAssentoDesc')), assentoIsento: document.getElementById('peAssentoIsento').checked, assentosInclusos: Math.max(0, Math.round(propNum(val('peAssentosInclusos')))||0),
     modulos: c.modulos.map((m,i)=>({ chave:m.chave, nome:m.nome, incluido: document.querySelector(`.peModChk[data-i="${i}"]`).checked, valor: propNum(document.querySelector(`.peModVal[data-i="${i}"]`).value), descontoPct: pct(document.querySelector(`.peModDesc[data-i="${i}"]`).value), isento: document.querySelector(`.peModIsento[data-i="${i}"]`).checked })),
     descontoPct: pct(val('peDesconto')), implantacao: propNum(val('peImplantacao')), implantacaoDescontoPct: pct(val('peImplDesc')), implantacaoIsenta: document.getElementById('peImplIsenta').checked, implantacaoParcelas: Math.min(48, Math.max(1, Math.round(propNum(val('peImplParcelas')))||1)), validadeDias: Math.max(1, Math.round(propNum(val('peValidade')))||30),
     horasPorCliente: propNum(val('peHoras')), salarioColaborador: propNum(val('peSalario')), gastoSistemasAtual: propNum(val('peSistemas')),
@@ -17309,8 +17310,11 @@ async function renderPropostaEscritorio(id){
     const porChave = new Map(v.itens.map(i=>[i.chave,i]));
     box.querySelectorAll('.peFinal').forEach(td=>{
       const i = porChave.get(td.dataset.k);
+      if(!i && td.dataset.k==='assento_colaborador'){ td.innerHTML = '<span class="tag ok">incluso</span>'; return; }
       td.innerHTML = !i ? '<span style="color:var(--ink-soft);">fora</span>' : i.final===0 && i.tabela>0 ? '<span class="tag ok">isento</span>' : `<b>${propBRL(i.final)}</b>${i.final<i.tabela?`<div style="font-size:11px; color:var(--ink-soft); text-decoration:line-through;">${propBRL(i.tabela)}</div>`:''}`;
     });
+    const aInc = cfg.assentosInclusos||0, aExtra = Math.max(0, (cfg.colaboradores||0)-aInc), aInfo = document.getElementById('peAssentoInfo');
+    if(aInfo) aInfo.innerHTML = aExtra>0 ? `→ <b style="color:var(--accent-deep);">${aExtra} cobrado(s) × ${propBRL(cfg.assentoValor)}</b>` : `<span style="color:var(--ink-soft);">(todos os ${cfg.colaboradores||0} inclusos)</span>`;
     document.getElementById('peImplFinal').innerHTML = cfg.implantacaoIsenta || !v.implantacaoFinal ? '<span class="tag ok">isenta</span>' : `<b>${propBRL(v.implantacaoFinal)}</b>${v.implantacaoFinal<cfg.implantacao?`<div style="font-size:11px; color:var(--ink-soft); text-decoration:line-through;">${propBRL(cfg.implantacao)}</div>`:''}`;
     const nParc = cfg.implantacaoParcelas||1, pInfo = document.getElementById('peImplParcelaInfo');
     if(pInfo) pInfo.innerHTML = (nParc>1 && v.implantacaoFinal) ? `→ <b style="color:var(--accent-deep);">${nParc}× de ${propBRL(Math.floor(v.implantacaoFinal*100/nParc)/100)}</b>` : (nParc>1 ? '' : '<span style="color:var(--ink-soft);">(à vista)</span>');
